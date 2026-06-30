@@ -39,6 +39,7 @@ class _TelegramSink(Sink):
         self.msg_id: int | None = None
         self.last_sent = ""
         self.last_edit = 0.0
+        self._body_shown = False  # 首句正文是否已露出(用于立即刷新)
 
     def _compose(self) -> str:
         """状态行 + 正文。两者都有则状态行在上(正文出来后状态行只剩工具进度)。"""
@@ -49,7 +50,9 @@ class _TelegramSink(Sink):
         return head or body
 
     async def render(self) -> None:
-        await self._flush(force=False)
+        # 思考→首句正文的瞬间立即刷新(否则要等满 0.8s/24字,体感卡)
+        first_body = bool(self.answer) and not self._body_shown
+        await self._flush(force=first_body)
 
     async def done(self, reply: AgentReply) -> None:
         # 最终只留正文(去掉状态行);超长则分片重发
@@ -89,6 +92,8 @@ class _TelegramSink(Sink):
                     text=content,
                 )
             self.last_sent, self.last_edit = content, now
+            if self.answer:
+                self._body_shown = True
         except TelegramError:
             pass
 
