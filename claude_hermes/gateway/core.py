@@ -24,13 +24,66 @@ from ..memory import session_store
 
 
 class Sink:
-    """渲染层接口。各平台子类化,默认全部 no-op(只实现关心的)。"""
+    """渲染层接口 + 状态聚合(平台无关)。
 
-    async def thinking(self, text: str) -> None: ...
-    async def text(self, text: str) -> None: ...
-    async def tool_started(self, name: str) -> None: ...
-    async def tool_finished(self, name: str, ok: bool, preview: str) -> None: ...
-    async def done(self, reply: AgentReply) -> None: ...
+    基类把事件流聚合成可显示状态:思考缓冲、工具进度、正文增量,
+    并生成单行状态串(💭 思考中 / 🔧 Read✓ · Bash⏳)。
+    子类通常只需实现 render()(把当前状态显示出去),
+    各端(TG editMessageText / TUI rich.Live / 将来飞书卡片)复用同一套聚合。
+    """
+
+    def __init__(self) -> None:
+        self.thinking_buf = ""
+        self.answer = ""
+        # 每项 {name, done, ok, preview};done=False 即进行中
+        self.tools: list[dict] = []
+
+    # --- 事件入口(子类一般不覆盖,只覆盖 render)---
+    async def thinking(self, text: str) -> None:
+        self.thinking_buf += text
+        await self.render()
+
+    async def text(self, text: str) -> None:
+        self.answer += text
+        await self.render()
+
+    async def tool_started(self, name: str) -> None:
+        self.tools.append({"name": name, "done": False, "ok": True, "preview": ""})
+        await self.render()
+
+    async def tool_finished(self, name: str, ok: bool, preview: str) -> None:
+        for t in self.tools:  # 标记最近一个同名未完成项
+            if t["name"] == name and not t["done"]:
+                t.update(done=True, ok=ok, preview=preview)
+                break
+        else:
+            self.tools.append({"name": name, "done": True, "ok": ok, "preview": preview})
+        await self.render()
+
+    async def done(self, reply: AgentReply) -> None:
+        if reply.text:
+            self.answer = reply.text
+        await self.render()
+
+    # --- 渲染(子类实现:把当前聚合状态显示出去)---
+    async def render(self) -> None: ...
+
+    # --- 状态串 helper(供子类拼装显示)---
+    def tools_summary(self) -> str:
+        marks = {"pending": "⏳", "ok": "✓", "err": "✗"}
+        bits = []
+        for t in self.tools:
+            key = "pending" if not t["done"] else ("ok" if t["ok"] else "err")
+            bits.append(f"{t['name']}{marks[key]}")
+        return " · ".join(bits)
+
+    def status_line(self) -> str:
+        """单行状态。有工具→显示工具进度;否则正文未开始时→💭 思考中。"""
+        if self.tools:
+            return "🔧 " + self.tools_summary()
+        if self.thinking_buf and not self.answer:
+            return "💭 思考中…"
+        return ""
 
 
 async def converse(

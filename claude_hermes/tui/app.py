@@ -41,10 +41,8 @@ class RichSink(core.Sink):
     """把事件流渲染成 rich.Live:💭思考 + 🔧工具 + 流式 Markdown 正文。"""
 
     def __init__(self, console: Console):
+        super().__init__()  # thinking_buf / answer / tools 由基类聚合
         self.console = console
-        self.thinking_buf = ""
-        self.answer = ""
-        self.tools: list[dict] = []
         self.reply: AgentReply | None = None
         self.live = Live(self._render(), console=console, refresh_per_second=12)
 
@@ -81,28 +79,13 @@ class RichSink(core.Sink):
             parts.append(Text("Hermes 思考中…", style="cyan"))
         return Group(*parts)
 
-    async def thinking(self, text: str) -> None:
-        self.thinking_buf += text
-        self.live.update(self._render())
-
-    async def text(self, text: str) -> None:
-        self.answer += text
-        self.live.update(self._render())
-
-    async def tool_started(self, name: str) -> None:
-        self.tools.append({"name": name, "done": False, "ok": True, "preview": ""})
-        self.live.update(self._render())
-
-    async def tool_finished(self, name: str, ok: bool, preview: str) -> None:
-        for t in self.tools:
-            if t["name"] == name and not t["done"]:
-                t.update(done=True, ok=ok, preview=preview)
-                break
+    async def render(self) -> None:
+        # 思考/正文/工具状态全由基类聚合,这里只负责刷新 rich.Live
         self.live.update(self._render())
 
     async def done(self, reply: AgentReply) -> None:
         self.reply = reply
-        self.live.update(self._render())
+        await super().done(reply)  # 写入 answer 并 render
 
 
 async def run_tui() -> None:

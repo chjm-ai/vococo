@@ -16,8 +16,8 @@ from ..core import COMMAND_LIST, Choice, Sink
 from .base import Incoming
 
 TG_LIMIT = 4000
-EDIT_MIN_INTERVAL = 1.1
-EDIT_MIN_CHARS = 50
+EDIT_MIN_INTERVAL = 0.8  # editMessageText 节流(TG 上限约每秒 1 次)
+EDIT_MIN_CHARS = 24      # 正文增量满这么多字才编辑(攒批省请求)
 
 
 class TelegramError(RuntimeError):
@@ -25,45 +25,60 @@ class TelegramError(RuntimeError):
 
 
 class _TelegramSink(Sink):
-    """把事件流渲染到 Telegram:工具发通知,正文节流 editMessageText。"""
+    """把事件流渲染到 Telegram:单条消息滚动更新。
+
+    顶部一行实时状态(💭 思考中 / 🔧 Read✓ · Bash⏳),下面流式正文,
+    都进同一条消息(editMessageText)。不再为每个工具刷屏。
+    首条消息立即发出(首字延迟最小),之后按节流编辑。
+    """
 
     def __init__(self, adapter: "TelegramAdapter", chat_id: int | str):
+        super().__init__()
         self.a = adapter
         self.chat_id = chat_id
-        self.answer = ""
         self.msg_id: int | None = None
-        self.last_text = ""
+        self.last_sent = ""
         self.last_edit = 0.0
 
-    async def tool_started(self, name: str) -> None:
-        await self.a._call("sendMessage", chat_id=self.chat_id, text=f"🔧 {name}")
+    def _compose(self) -> str:
+        """状态行 + 正文。两者都有则状态行在上(正文出来后状态行只剩工具进度)。"""
+        head = self.status_line()
+        body = self.answer
+        if head and body:
+            return f"{head}\n\n{body}"
+        return head or body
 
-    async def text(self, delta: str) -> None:
-        self.answer += delta
+    async def render(self) -> None:
         await self._flush(force=False)
 
     async def done(self, reply: AgentReply) -> None:
+        # 最终只留正文(去掉状态行);超长则分片重发
         self.answer = reply.text or "(空回复)"
+        self.tools.clear()
         if len(self.answer) > TG_LIMIT or self.msg_id is None:
             await self.a.send(self.chat_id, self.answer)
         else:
             await self._flush(force=True)
 
     async def _flush(self, force: bool) -> None:
-        if not self.answer or len(self.answer) > TG_LIMIT:
+        content = self._compose()
+        if not content or len(content) > TG_LIMIT:
+            return
+        if content == self.last_sent:
             return
         now = time.monotonic()
-        if not force and (
-            now - self.last_edit < EDIT_MIN_INTERVAL
-            or len(self.answer) - len(self.last_text) < EDIT_MIN_CHARS
-        ):
-            return
-        if self.answer == self.last_text:
-            return
+        # 首条消息立即发(首字延迟最小);后续编辑才节流。
+        # 工具进度变化也值得即时反馈,放宽字数门槛。
+        if self.msg_id is not None and not force:
+            if now - self.last_edit < EDIT_MIN_INTERVAL:
+                return
+            tool_active = self.status_line().startswith("🔧")
+            if not tool_active and len(content) - len(self.last_sent) < EDIT_MIN_CHARS:
+                return
         try:
             if self.msg_id is None:
                 res = await self.a._call(
-                    "sendMessage", chat_id=self.chat_id, text=self.answer
+                    "sendMessage", chat_id=self.chat_id, text=content
                 )
                 self.msg_id = res.get("message_id")
             else:
@@ -71,9 +86,9 @@ class _TelegramSink(Sink):
                     "editMessageText",
                     chat_id=self.chat_id,
                     message_id=self.msg_id,
-                    text=self.answer,
+                    text=content,
                 )
-            self.last_text, self.last_edit = self.answer, now
+            self.last_sent, self.last_edit = content, now
         except TelegramError:
             pass
 
