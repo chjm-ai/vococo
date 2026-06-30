@@ -6,6 +6,7 @@
   claude-hermes serve      # 常驻:Telegram 收发 + 调度器(heartbeat/主动推送)
   claude-hermes telegram   # serve 的别名
   claude-hermes cron       # 列出定时任务
+  claude-hermes doctor     # 自检:配置/认证/DB/AI_BRAIN/进程
 """
 from __future__ import annotations
 
@@ -58,6 +59,92 @@ def _cmd_serve() -> None:
         print("\n已停止。")
 
 
+def _cmd_doctor() -> None:
+    """自检:配置 / 认证 / DB / AI_BRAIN / 进程 / Telegram。有 ❌ 则退出码 1。"""
+    import os
+    import subprocess
+
+    oks: list[str] = []
+    warns: list[str] = []
+    errs: list[str] = []
+
+    # 1) 订阅认证(import config 即校验,缺 token 会抛 ConfigError)
+    try:
+        from . import config
+    except Exception as e:  # noqa: BLE001 —— 配置问题原样报给用户
+        print(f"❌ 配置加载失败:{e}")
+        sys.exit(1)
+    oks.append("CLAUDE_CODE_OAUTH_TOKEN 已配置(走订阅)")
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        warns.append("ANTHROPIC_API_KEY 仍在环境里 —— 会走 API 按量计费,应移除")
+    else:
+        oks.append("无 ANTHROPIC_API_KEY 干扰(不会误走按量计费)")
+
+    # 2) 数据目录可写 + 会话库
+    try:
+        config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        probe = config.DATA_DIR / ".doctor_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        oks.append(f"数据目录可写:{config.DATA_DIR}")
+    except OSError as e:
+        errs.append(f"数据目录不可写:{e}")
+    try:
+        from .memory import session_store
+
+        n = len(session_store.search("", limit=1))  # 触发连库
+        oks.append(f"会话库可读(state.db),近期检索可用")
+    except Exception as e:  # noqa: BLE001
+        errs.append(f"会话库异常:{e}")
+
+    # 3) AI_BRAIN 记忆
+    brain = config.AI_BRAIN_DIR
+    if (brain / "USER.md").exists():
+        oks.append(f"AI_BRAIN 画像可读:{brain}/USER.md")
+    else:
+        warns.append(f"AI_BRAIN/USER.md 不存在({brain})—— 启动不会注入画像")
+    if brain.exists():
+        try:
+            (brain / "memory").mkdir(parents=True, exist_ok=True)
+            oks.append("AI_BRAIN/memory 可写(save_memory 能落盘)")
+        except OSError as e:
+            errs.append(f"AI_BRAIN/memory 不可写:{e}")
+    else:
+        warns.append(f"AI_BRAIN 目录不存在:{brain}")
+
+    # 4) serve 进程
+    try:
+        running = subprocess.run(
+            ["pgrep", "-f", "claude-hermes serve"], capture_output=True
+        ).returncode == 0
+    except Exception:  # noqa: BLE001
+        running = False
+    (oks if running else warns).append(
+        "serve 常驻进程在跑" if running else "serve 未在跑(bash deploy/run.sh 启动)"
+    )
+
+    # 5) Telegram
+    if config.TELEGRAM_BOT_TOKEN:
+        if config.TELEGRAM_ALLOWED_CHAT_IDS:
+            oks.append(
+                f"Telegram 已配置,白名单 {len(config.TELEGRAM_ALLOWED_CHAT_IDS)} 个 chat"
+            )
+        else:
+            warns.append("Telegram 已配置但白名单为空 —— 任何人都能用,建议设白名单")
+    else:
+        warns.append("Telegram 未配置(仅 CLI/TUI 可用)")
+
+    for s in oks:
+        print(f"✅ {s}")
+    for s in warns:
+        print(f"⚠️  {s}")
+    for s in errs:
+        print(f"❌ {s}")
+    print(f"\n{len(oks)} 项正常 · {len(warns)} 项提醒 · {len(errs)} 项错误")
+    if errs:
+        sys.exit(1)
+
+
 def _cmd_cron() -> None:
     from .cron import scheduler
 
@@ -82,6 +169,7 @@ def main() -> None:
         ("serve", "常驻:Telegram + 调度器"),
         ("telegram", "serve 的别名"),
         ("cron", "列出定时任务"),
+        ("doctor", "自检:配置/认证/DB/AI_BRAIN/进程"),
     ]:
         sub.add_parser(name, help=help_)
 
@@ -93,6 +181,7 @@ def main() -> None:
         "serve": _cmd_serve,
         "telegram": _cmd_serve,  # 别名
         "cron": _cmd_cron,
+        "doctor": _cmd_doctor,
     }
     if cmd not in handlers:
         parser.print_help()

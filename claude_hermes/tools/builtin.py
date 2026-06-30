@@ -21,7 +21,7 @@ from .. import config
 from ..memory import session_store
 
 _TOPIC_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
-_OTHER_SECTION = "## 其他主题"
+_DEFAULT_CATEGORY = "其他主题"
 
 
 def _ok(text: str) -> dict:
@@ -56,16 +56,29 @@ async def recall_past(args: dict) -> dict:
     "把一条值得【长期记住】的新主题记忆写进 Wesley 的 AI_BRAIN(~/AI_BRAIN/memory/<topic>.md),"
     "并自动登记到 MEMORY.md 索引。仅用于【新建独立主题文件】(如某服务器/工具的关键路径与踩坑)。"
     "若该 topic 文件已存在,本工具会拒绝(不覆盖);要往已有记忆或 lessons/preferences/"
-    "tech-decisions 等分类文件追加,请改用 Read+Edit 文件工具按其现有格式追加。"
+    "tech-decisions 等分类文件追加,请改用 Read+Edit 文件工具按其现有格式追加。\n"
     "topic:英文短横线 slug(如 vpn-speeedai-server);title:中文标题;"
-    "summary:一句话摘要(也会写进索引);body:markdown 正文。",
-    {"topic": str, "title": str, "summary": str, "body": str},
+    "summary:一句话摘要(也会写进索引);body:markdown 正文;"
+    "category:索引分节名(不带 ##,如「服务器 / 基础设施」「工作偏好 / 设置」),"
+    "登记到该分节;省略则进「其他主题」。",
+    {
+        "type": "object",
+        "properties": {
+            "topic": {"type": "string"},
+            "title": {"type": "string"},
+            "summary": {"type": "string"},
+            "body": {"type": "string"},
+            "category": {"type": "string"},
+        },
+        "required": ["topic", "title", "summary", "body"],
+    },
 )
 async def save_memory(args: dict) -> dict:
     topic = (args.get("topic") or "").strip()
     title = (args.get("title") or "").strip()
     summary = (args.get("summary") or "").strip()
     body = (args.get("body") or "").strip()
+    category = (args.get("category") or "").strip() or _DEFAULT_CATEGORY
 
     if not (topic and title and summary and body):
         return _ok("save_memory 需要 topic / title / summary / body 四项都非空。")
@@ -85,25 +98,44 @@ async def save_memory(args: dict) -> dict:
     mem_dir.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
 
-    _append_index(topic, summary)
-    return _ok(f"✅ 已写入 memory/{topic}.md 并登记索引。")
+    _append_index(topic, summary, category)
+    return _ok(f"✅ 已写入 memory/{topic}.md 并登记到索引「{category}」。")
 
 
-def _append_index(topic: str, summary: str) -> None:
-    """在 MEMORY.md 的「## 其他主题」分节末尾登记一行;没有索引文件则新建。"""
+def _append_index(topic: str, summary: str, category: str) -> None:
+    """把一行索引登记到 MEMORY.md 的「## <category>」分节末尾。
+
+    分节存在 → 追加到该节最后一条之后;不存在 → 在文件末尾新建该分节;
+    索引文件不存在 → 新建。
+    """
     index = config.AI_BRAIN_DIR / "MEMORY.md"
+    header = f"## {category}"
     line = f"→ memory/{topic}.md — {summary}"
     try:
         text = index.read_text(encoding="utf-8")
     except (FileNotFoundError, OSError):
-        index.write_text(f"# 记忆索引\n\n{_OTHER_SECTION}\n{line}\n", encoding="utf-8")
+        index.write_text(f"# 记忆索引\n\n{header}\n{line}\n", encoding="utf-8")
         return
-    text = text.rstrip("\n")
-    if _OTHER_SECTION in text:
-        text = f"{text}\n{line}\n"
-    else:
-        text = f"{text}\n\n{_OTHER_SECTION}\n{line}\n"
-    index.write_text(text, encoding="utf-8")
+
+    lines = text.splitlines()
+    try:
+        hi = next(i for i, ln in enumerate(lines) if ln.strip() == header)
+    except StopIteration:
+        # 没有该分节 → 末尾新建
+        body = "\n".join(lines).rstrip("\n")
+        index.write_text(f"{body}\n\n{header}\n{line}\n", encoding="utf-8")
+        return
+
+    # 找该分节的结束(下一个 ## 标题处),把新行插在分节末尾
+    end = next(
+        (i for i in range(hi + 1, len(lines)) if lines[i].startswith("## ")),
+        len(lines),
+    )
+    insert_at = end
+    while insert_at > hi + 1 and not lines[insert_at - 1].strip():
+        insert_at -= 1  # 跳过分节末尾空行,插在最后一条之后
+    lines.insert(insert_at, line)
+    index.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
 
 
 def build_mcp_servers() -> dict:

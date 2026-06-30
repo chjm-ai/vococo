@@ -93,11 +93,24 @@ def clear(session_key: str) -> None:
 
 
 def search(text: str, limit: int = 10) -> list[tuple[str, str, str]]:
-    """子串检索,返回 (session_key, user_text, assistant_text)。"""
-    like = f"%{text}%"
+    """子串检索,返回 (session_key, user_text, assistant_text)。
+
+    按空白把查询拆成多个关键词:任一命中即返回(OR),命中关键词多的排前面,
+    其次按时间倒序。中文长句直接整串 LIKE 很难命中,拆词后召回率高得多
+    (agent 传「出差 名古屋」比传整句更容易召回到历史片段)。
+    """
+    terms = [t for t in text.split() if t] or [text]
+    # 每个关键词:命中 user 或 assistant 记 1 分,SUM 为该轮总命中分
+    score = " + ".join(
+        "(CASE WHEN user_text LIKE ? OR assistant_text LIKE ? THEN 1 ELSE 0 END)"
+        for _ in terms
+    )
+    where = " OR ".join("user_text LIKE ? OR assistant_text LIKE ?" for _ in terms)
+    likes = [f"%{t}%" for t in terms]
+    score_params = [p for like in likes for p in (like, like)]
+    where_params = list(score_params)
     return _conn().execute(
-        "SELECT session_key, user_text, assistant_text FROM turns "
-        "WHERE user_text LIKE ? OR assistant_text LIKE ? "
-        "ORDER BY id DESC LIMIT ?",
-        (like, like, limit),
+        f"SELECT session_key, user_text, assistant_text FROM turns "
+        f"WHERE {where} ORDER BY ({score}) DESC, id DESC LIMIT ?",
+        (*where_params, *score_params, limit),
     ).fetchall()
