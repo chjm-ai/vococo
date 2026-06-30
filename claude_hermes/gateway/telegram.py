@@ -13,7 +13,8 @@ import time
 import httpx
 
 from .. import config
-from ..core.agent import Done, TextDelta, ToolStarted, Turn, stream_turn
+from ..core.agent import Done, TextDelta, ToolStarted, stream_turn
+from ..memory import session_store
 
 WELCOME = "👋 我是 claude-hermes,你的私人助理。直接发消息即可。/clear 清空上下文。"
 EDIT_MIN_INTERVAL = 1.1  # 秒,Telegram 编辑频率限制
@@ -43,8 +44,9 @@ async def _send(client, base, chat_id: int, text: str) -> int | None:
     return last_id
 
 
-async def _stream_reply(client, base, chat_id: int, history: list[Turn], text: str) -> None:
-    """消费事件流,流式回 Telegram。"""
+async def _stream_reply(client, base, chat_id: int, text: str, session_key: str) -> None:
+    """消费事件流,流式回 Telegram,并把本轮落库。"""
+    history = session_store.load_recent(session_key)
     answer = ""
     msg_id: int | None = None
     last_text = ""
@@ -87,7 +89,7 @@ async def _stream_reply(client, base, chat_id: int, history: list[Turn], text: s
     else:
         answer = final
         await flush(force=True)
-    history.append(Turn(user=text, assistant=final))
+    session_store.append(session_key, text, final)
 
 
 async def run_telegram() -> None:
@@ -100,7 +102,6 @@ async def run_telegram() -> None:
         )
     base = f"https://api.telegram.org/bot{token}"
     allowed = config.TELEGRAM_ALLOWED_CHAT_IDS
-    histories: dict[int, list[Turn]] = {}
     offset: int | None = None
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(70.0)) as client:
@@ -129,13 +130,12 @@ async def run_telegram() -> None:
                     await _send(client, base, chat_id, WELCOME)
                     continue
                 if text == "/clear":
-                    histories.pop(chat_id, None)
+                    session_store.clear(f"tg:{chat_id}")
                     await _send(client, base, chat_id, "🧹 上下文已清空。")
                     continue
 
                 await _api(client, base, "sendChatAction", chat_id=chat_id, action="typing")
-                hist = histories.setdefault(chat_id, [])
                 try:
-                    await _stream_reply(client, base, chat_id, hist, text)
+                    await _stream_reply(client, base, chat_id, text, f"tg:{chat_id}")
                 except Exception as e:
                     await _send(client, base, chat_id, f"⚠️ 出错了:{e}")

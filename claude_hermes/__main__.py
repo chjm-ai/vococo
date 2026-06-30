@@ -23,10 +23,11 @@ def _cmd_chat() -> None:
     """纯文本多轮对话(无依赖渲染,留作调试 fallback)。"""
     from . import config
     from .core.agent import Turn, run_turn
+    from .memory import session_store
 
     print(f"claude-hermes · 模型 {config.MODEL} · 走订阅")
     print("输入对话,/exit 退出。\n")
-    history: list[Turn] = []
+    history: list[Turn] = session_store.load_recent("cli")
 
     async def loop() -> None:
         while True:
@@ -46,6 +47,7 @@ def _cmd_chat() -> None:
             tag = f"  [工具:{', '.join(reply.tool_calls)}]" if reply.tool_calls else ""
             print(f"\nHermes > {reply.text}{tag}\n")
             history.append(Turn(user=user_text, assistant=reply.text))
+            session_store.append("cli", user_text, reply.text)
 
     anyio.run(loop)
 

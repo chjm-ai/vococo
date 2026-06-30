@@ -26,6 +26,9 @@ from ..core.agent import (
     Turn,
     stream_turn,
 )
+from ..memory import session_store
+
+SESSION_KEY = "cli"
 
 SLASH_COMMANDS = {
     "/help": "显示帮助",
@@ -109,14 +112,17 @@ async def _dialogue(console: Console, history: list[Turn], text: str, model: str
         if reply.cost_usd is not None:
             console.print(f"[dim]≈${reply.cost_usd:.4f}(订阅理论值)[/dim]")
         history.append(Turn(user=text, assistant=reply.text))
+        session_store.append(SESSION_KEY, text, reply.text)
 
 
 async def run_tui() -> None:
     console = Console()
     current_model = config.MODEL
-    history: list[Turn] = []
+    history: list[Turn] = session_store.load_recent(SESSION_KEY)
 
     _header(console, current_model)
+    if history:
+        console.print(f"[dim]已载入 {len(history)} 轮历史(/clear 清空)[/dim]")
 
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     session: PromptSession = PromptSession(
@@ -146,6 +152,7 @@ async def run_tui() -> None:
                 continue
             if cmd == "/clear":
                 history.clear()
+                session_store.clear(SESSION_KEY)
                 console.clear()
                 _header(console, current_model)
                 console.print("[dim]上下文已清空。[/dim]")
