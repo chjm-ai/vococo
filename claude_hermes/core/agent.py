@@ -120,6 +120,7 @@ async def stream_turn(
         permission_mode=config.PERMISSION_MODE,
         include_partial_messages=True,
         mcp_servers=build_mcp_servers(),
+        skills=config.SKILLS,  # None=全量;白名单则只挂这些(瘦身 tool schema)
     )
 
     text_parts: list[str] = []

@@ -24,6 +24,7 @@ from croniter import croniter
 
 from .. import config
 from ..core.agent import run_turn
+from ..memory import session_store
 
 PushFn = Callable[[str, object, str], Awaitable[None]]  # (platform, chat_id, text)
 
@@ -96,13 +97,60 @@ async def _tick(push: PushFn) -> None:
         save_jobs(jobs)
 
 
+# === 记忆晋升:定时反思,把会话沉淀成 AI_BRAIN 长期记忆 ===
+_REFLECT_PROMPT = (
+    "下面是我们最近的对话。请回顾,挑出【值得长期记住】的东西"
+    "(踩过的坑+根因+修复、技术/方案决策、我明确表达的偏好、"
+    "某工具/服务器/项目的关键路径与配置),用 save_memory 沉淀成新主题记忆;"
+    "若属于已有分类(lessons/preferences/tech-decisions 等)就用文件工具按原格式追加。"
+    "没有值得记的就什么都别做,绝不为凑数硬写。最后一句话告诉我你记了什么(或没记)。\n\n"
+    "[最近对话]\n{convo}"
+)
+
+
+async def _reflect(push: PushFn) -> None:
+    """回顾统一会话,让 agent 自主用 save_memory 沉淀长期记忆。"""
+    history = session_store.load_recent(config.SESSION_KEY, limit=80)
+    if not history:
+        print("[反思] 当前会话无历史,跳过。")
+        return
+    convo = "\n".join(
+        f"我:{t.user}" + (f"\n你:{t.assistant}" if t.assistant else "")
+        for t in history
+    )
+    reply = await run_turn([], _REFLECT_PROMPT.format(convo=convo))
+    summary = (reply.text or "").strip() if reply else ""
+    target = config.REFLECT_TARGET
+    if summary and ":" in target:
+        platform, _, chat_id = target.partition(":")
+        await push(platform.strip(), chat_id.strip(), f"🧠 记忆复盘\n\n{summary}")
+    else:
+        print(f"[反思] {summary or '(无输出)'}")
+
+
+def _schedule_after(expr: str, after: float) -> float:
+    return croniter(expr, datetime.datetime.fromtimestamp(after)).get_next(float)
+
+
 async def run_scheduler(push: PushFn) -> None:
-    """常驻调度循环:心跳 + 到期任务。"""
-    print(f"⏱  调度器启动(每 {config.SCHEDULER_TICK_SEC}s 一跳)")
+    """常驻调度循环:心跳 + 到期任务 +(可选)定时反思。"""
+    extra = f" · 反思 {config.REFLECT_CRON}" if config.REFLECT_ENABLED else ""
+    print(f"⏱  调度器启动(每 {config.SCHEDULER_TICK_SEC}s 一跳{extra})")
+    reflect_next: float | None = None
     while True:
         try:
             _write_heartbeat()
             await _tick(push)
+            if config.REFLECT_ENABLED:
+                now = time.time()
+                if reflect_next is None:
+                    reflect_next = _schedule_after(config.REFLECT_CRON, now)
+                elif now >= reflect_next:
+                    reflect_next = _schedule_after(config.REFLECT_CRON, now)
+                    try:
+                        await _reflect(push)
+                    except Exception as e:  # 反思失败不拖垮调度
+                        print(f"[反思] 出错: {e}")
         except Exception as e:
             print(f"[调度器] tick 出错: {e}")
         await anyio.sleep(config.SCHEDULER_TICK_SEC)

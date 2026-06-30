@@ -21,7 +21,6 @@ from ..core.agent import AgentReply
 from ..gateway import core
 from ..memory import session_store
 
-SESSION_KEY = "cli"
 SLASH = ["/new", "/clear", "/model", "/history", "/status", "/help", "/exit"]
 
 
@@ -109,9 +108,10 @@ class RichSink(core.Sink):
 async def run_tui() -> None:
     console = Console()
     current_model = config.MODEL
+    session_key = config.resolve_session_key("cli", "local")
 
     _header(console, current_model)
-    n = len(session_store.load_recent(SESSION_KEY))
+    n = len(session_store.load_recent(session_key))
     if n:
         console.print(f"[dim]已载入 {n} 轮历史(/new 开新会话)[/dim]")
 
@@ -132,7 +132,7 @@ async def run_tui() -> None:
             continue
 
         if core.is_command(text):
-            outcome = core.handle_command(text, SESSION_KEY, current_model)
+            outcome = core.handle_command(text, session_key, current_model)
             # 交互选项:弹选择框(方向键 + 鼠标点),选中=执行那条命令
             if outcome.choice is not None:
                 picked = await radiolist_dialog(
@@ -142,7 +142,7 @@ async def run_tui() -> None:
                 ).run_async()
                 if not picked:
                     continue
-                outcome = core.handle_command(picked, SESSION_KEY, current_model)
+                outcome = core.handle_command(picked, session_key, current_model)
             if outcome.exit:
                 console.print("[dim]再见。[/dim]")
                 return
@@ -156,6 +156,6 @@ async def run_tui() -> None:
             continue
 
         with RichSink(console) as sink:
-            await core.converse(SESSION_KEY, text, current_model, sink)
+            await core.converse(session_key, text, current_model, sink)
         if sink.reply and sink.reply.cost_usd is not None:
             console.print(f"[dim]≈${sink.reply.cost_usd:.4f}(订阅理论值)[/dim]")

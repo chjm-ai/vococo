@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import AsyncIterator, Protocol
 
+from ... import config
 from ..core import Choice, Sink
 
 
@@ -17,7 +18,8 @@ class Incoming:
 
     @property
     def session_key(self) -> str:
-        return f"{self.platform}:{self.chat_id}"
+        # 统一开关下各入口共享同一会话(跨入口连续);否则按平台隔离
+        return config.resolve_session_key(self.platform, self.chat_id)
 
 
 class Adapter(Protocol):

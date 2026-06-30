@@ -28,6 +28,7 @@ def _cmd_chat() -> None:
     from .memory import session_store
 
     print(f"claude-hermes · 模型 {config.MODEL} · 走订阅\n输入对话,/exit 退出。\n")
+    key = config.resolve_session_key("cli", "local")
 
     async def loop() -> None:
         while True:
@@ -41,11 +42,11 @@ def _cmd_chat() -> None:
             if user_text in ("/exit", "/quit"):
                 print("再见。")
                 return
-            history = session_store.load_recent("cli")
+            history = session_store.load_recent(key)
             reply = await run_turn(history, user_text)
             tag = f"  [工具:{', '.join(reply.tool_calls)}]" if reply.tool_calls else ""
             print(f"\nHermes > {reply.text}{tag}\n")
-            session_store.append("cli", user_text, reply.text)
+            session_store.append(key, user_text, reply.text)
 
     anyio.run(loop)
 

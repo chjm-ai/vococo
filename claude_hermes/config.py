@@ -44,6 +44,24 @@ def _parse_chat_ids(raw: str) -> set[int]:
     return out
 
 
+def _parse_bool(raw: str, default: bool) -> bool:
+    s = raw.strip().lower()
+    if not s:
+        return default
+    return s not in ("0", "false", "no", "off")
+
+
+def _parse_skills(raw: str) -> list[str] | str | None:
+    """AGENT_SKILLS:空=None(全量,CLI 默认 ~全部 skill);'all'=显式全部;
+    其余按逗号/空白拆成白名单(只挂这些,瘦身 tool schema)。"""
+    s = raw.strip()
+    if not s:
+        return None
+    if s.lower() == "all":
+        return "all"
+    return [t.strip() for t in s.replace(",", " ").split() if t.strip()]
+
+
 OAUTH_TOKEN: str = _ensure_subscription_auth()
 MODEL: str = os.environ.get("AGENT_MODEL", "claude-opus-4-8").strip()
 MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "40"))
@@ -67,3 +85,27 @@ TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_ALLOWED_CHAT_IDS: set[int] = _parse_chat_ids(
     os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
 )
+
+# === 会话统一(跨入口连续)===
+# 开启时:CLI / TUI / Telegram / 飞书 都归到同一会话 SESSION_KEY,
+# "飞书问一半切 CLI 接着聊" 成立(单用户自用的默认)。关闭则按 平台:chat 隔离。
+UNIFY_SESSIONS: bool = _parse_bool(os.environ.get("UNIFY_SESSIONS", ""), True)
+SESSION_KEY: str = os.environ.get("SESSION_KEY", "main").strip() or "main"
+
+
+def resolve_session_key(platform: str, chat_id: object) -> str:
+    """各入口统一经此取会话键:开统一则共享一个,否则按平台隔离。"""
+    return SESSION_KEY if UNIFY_SESSIONS else f"{platform}:{chat_id}"
+
+
+# === Skill 加载范围 ===
+# 全量挂载会把 ~110 个 skill 都塞进 tool schema(费 token、可能超限)。
+# 在 .env 配 AGENT_SKILLS=monthly-planner,things-assistant,... 只挂常用的。
+SKILLS: list[str] | str | None = _parse_skills(os.environ.get("AGENT_SKILLS", ""))
+
+# === 记忆晋升:定时反思(把会话沉淀成 AI_BRAIN 长期记忆)===
+# 默认关:开启后按 REFLECT_CRON 定时回顾统一会话,让 agent 用 save_memory 沉淀。
+REFLECT_ENABLED: bool = _parse_bool(os.environ.get("REFLECT_ENABLED", ""), False)
+REFLECT_CRON: str = os.environ.get("REFLECT_CRON", "0 23 * * *").strip()
+# 反思结果推送目标 "platform:chat_id"(可选;不配则只写日志)
+REFLECT_TARGET: str = os.environ.get("REFLECT_TARGET", "").strip()

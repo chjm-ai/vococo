@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from typing import TYPE_CHECKING
 
 from .. import config
-from ..core.agent import Turn
+
+if TYPE_CHECKING:  # 仅类型注解;运行时延迟 import,避免 agent↔store 循环导入
+    from ..core.agent import Turn
 
 _DB: sqlite3.Connection | None = None
 
@@ -52,6 +55,8 @@ def _watermark(c: sqlite3.Connection, session_key: str) -> int:
 
 def load_recent(session_key: str, limit: int = 40) -> list[Turn]:
     """只取当前会话(水位线之后)的最近 N 轮。"""
+    from ..core.agent import Turn  # 延迟 import:打破模块级循环依赖
+
     c = _conn()
     wm = _watermark(c, session_key)
     rows = c.execute(
