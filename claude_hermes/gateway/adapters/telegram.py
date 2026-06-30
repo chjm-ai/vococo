@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 from typing import AsyncIterator
 
+import anyio
 import httpx
 
 from ... import config
@@ -107,13 +108,25 @@ class TelegramAdapter:
         return _TelegramSink(self, chat_id)
 
     async def receive(self) -> AsyncIterator[Incoming]:
-        me = await self._call("getMe")
+        # 连上为止(网络没就绪时不崩,重试)
+        while True:
+            try:
+                me = await self._call("getMe")
+                break
+            except (httpx.HTTPError, TelegramError) as e:
+                print(f"[tg] getMe 失败,5s 后重试: {e}")
+                await anyio.sleep(5)
         print(f"✅ Telegram @{me.get('username')} 已上线 · 模型 {config.MODEL}")
         if not self.allowed:
             print("⚠️  未配白名单:任何人都能聊。发条消息看控制台 chat_id,填 .env 再重启。")
         offset: int | None = None
         while True:
-            updates = await self._call("getUpdates", timeout=50, offset=offset)
+            try:
+                updates = await self._call("getUpdates", timeout=50, offset=offset)
+            except (httpx.HTTPError, TelegramError) as e:
+                print(f"[tg] getUpdates 出错,3s 后重试: {e}")
+                await anyio.sleep(3)
+                continue
             for upd in updates:
                 offset = upd["update_id"] + 1
                 msg = upd.get("message") or upd.get("edited_message") or {}
@@ -122,10 +135,13 @@ class TelegramAdapter:
                 if chat_id is None or not text:
                     continue
                 print(f"[收] tg chat_id={chat_id}: {text[:60]}")
-                if self.allowed and chat_id not in self.allowed:
-                    await self.send(
-                        chat_id, f"未授权。你的 chat_id 是 {chat_id},让主人加进白名单。"
-                    )
-                    continue
-                await self._call("sendChatAction", chat_id=chat_id, action="typing")
+                try:
+                    if self.allowed and chat_id not in self.allowed:
+                        await self.send(
+                            chat_id, f"未授权。你的 chat_id 是 {chat_id},让主人加进白名单。"
+                        )
+                        continue
+                    await self._call("sendChatAction", chat_id=chat_id, action="typing")
+                except (httpx.HTTPError, TelegramError):
+                    pass
                 yield Incoming(self.platform, chat_id, text)

@@ -40,8 +40,14 @@ class GatewayRunner:
             await adapter.send(inc.chat_id, f"⚠️ 出错了:{e}")
 
     async def _serve(self, adapter: Adapter) -> None:
-        async for inc in adapter.receive():
-            await self._dispatch(adapter, inc)
+        # 监督:adapter 整体挂了也只重启它自己,不连累调度器/其它 adapter
+        while True:
+            try:
+                async for inc in adapter.receive():
+                    await self._dispatch(adapter, inc)
+            except Exception as e:
+                print(f"[gateway] adapter {adapter.platform} 异常,5s 后重启: {e}")
+                await anyio.sleep(5)
 
     async def run(self) -> None:
         async with anyio.create_task_group() as tg:
