@@ -18,8 +18,10 @@ _gen_plist() {
 <plist version="1.0">
 <dict>
   <key>Label</key><string>$LABEL</string>
+  <!-- 经登录 shell 启动:给进程完整会话上下文(env/keychain),
+       否则 launchd 直接 spawn 在某些 Mac 上会卡死(子进程/路径解析挂起) -->
   <key>ProgramArguments</key>
-  <array><string>$BIN</string><string>serve</string></array>
+  <array><string>/bin/zsh</string><string>-lc</string><string>"$BIN" serve</string></array>
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>EnvironmentVariables</key>
   <dict>
