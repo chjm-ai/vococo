@@ -18,3 +18,8 @@ venv/
 
 # 系统
 .DS_Store
+
+# 构建元数据
+*.egg-info/
+build/
+dist/
