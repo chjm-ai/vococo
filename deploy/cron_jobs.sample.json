@@ -1,0 +1,14 @@
+[
+  {
+    "id": "morning",
+    "name": "晨间简报",
+    "prompt": "用一句话跟我问早,然后基于你了解的我的情况,给我今天值得关注的 1-2 件事,简短即可。",
+    "schedule": { "kind": "cron", "expr": "0 8 * * *" },
+    "target": { "platform": "telegram", "chat_id": "<填你的_chat_id>" },
+    "model": null,
+    "enabled": false,
+    "next_run_at": null,
+    "last_run_at": null,
+    "last_status": null
+  }
+]

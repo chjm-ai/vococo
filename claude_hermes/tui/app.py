@@ -1,8 +1,7 @@
-"""rich + prompt_toolkit 的流式 TUI(参考 Hermes 体验)。
+"""rich + prompt_toolkit 流式 TUI。
 
-- slash 命令补全 + 输入历史
-- 实时渲染:💭 思考块(流式)+ 🔧 工具调用过程 + Markdown 正文(流式)
-底层消费 agent.stream_turn 的事件流。
+复用 gateway.core 的命令注册表 + converse;TUI 只提供 RichSink(rich.Live 渲染)
+和输入循环。和 Telegram/飞书共用同一套命令与会话逻辑。
 """
 from __future__ import annotations
 
@@ -17,26 +16,12 @@ from rich.panel import Panel
 from rich.text import Text
 
 from .. import config
-from ..core.agent import (
-    Done,
-    TextDelta,
-    ThinkingDelta,
-    ToolFinished,
-    ToolStarted,
-    Turn,
-    stream_turn,
-)
+from ..core.agent import AgentReply
+from ..gateway import core
 from ..memory import session_store
 
 SESSION_KEY = "cli"
-
-SLASH_COMMANDS = {
-    "/help": "显示帮助",
-    "/clear": "清空本次会话上下文 + 屏幕",
-    "/model": "查看或切换模型(/model claude-opus-4-8)",
-    "/exit": "退出",
-    "/quit": "退出",
-}
+SLASH = ["/new", "/clear", "/model", "/history", "/status", "/help", "/exit"]
 
 
 def _header(console: Console, model: str) -> None:
@@ -52,82 +37,87 @@ def _header(console: Console, model: str) -> None:
     )
 
 
-def _render(thinking: str, tools: list[dict], answer: str):
-    """根据当前状态拼一个可渲染对象。"""
-    parts = []
-    if thinking and not answer:
-        parts.append(
-            Panel(
-                Text(thinking.strip()[-300:], style="italic"),
-                title="💭 思考中",
-                border_style="grey37",
-                title_align="left",
-            )
-        )
-    for t in tools:
-        if not t["done"]:
-            parts.append(Text(f"🔧 {t['name']} …", style="yellow"))
-        else:
-            icon, style = ("✓", "green") if t["ok"] else ("✗", "red")
+class RichSink(core.Sink):
+    """把事件流渲染成 rich.Live:💭思考 + 🔧工具 + 流式 Markdown 正文。"""
+
+    def __init__(self, console: Console):
+        self.console = console
+        self.thinking_buf = ""
+        self.answer = ""
+        self.tools: list[dict] = []
+        self.reply: AgentReply | None = None
+        self.live = Live(self._render(), console=console, refresh_per_second=12)
+
+    def __enter__(self):
+        self.live.__enter__()
+        return self
+
+    def __exit__(self, *a):
+        self.live.__exit__(*a)
+
+    def _render(self):
+        parts = []
+        if self.thinking_buf and not self.answer:
             parts.append(
-                Text.assemble(
-                    (f"{icon} {t['name']}  ", style), (t["preview"], "dim")
+                Panel(
+                    Text(self.thinking_buf.strip()[-300:], style="italic"),
+                    title="💭 思考中", border_style="grey37", title_align="left",
                 )
             )
-    if answer:
-        parts.append(
-            Panel(Markdown(answer), title="Hermes", border_style="green", title_align="left")
-        )
-    elif not parts:
-        parts.append(Text("Hermes 思考中…", style="cyan"))
-    return Group(*parts)
+        for t in self.tools:
+            if not t["done"]:
+                parts.append(Text(f"🔧 {t['name']} …", style="yellow"))
+            else:
+                icon, style = ("✓", "green") if t["ok"] else ("✗", "red")
+                parts.append(
+                    Text.assemble((f"{icon} {t['name']}  ", style), (t["preview"], "dim"))
+                )
+        if self.answer:
+            parts.append(
+                Panel(Markdown(self.answer), title="Hermes", border_style="green",
+                      title_align="left")
+            )
+        elif not parts:
+            parts.append(Text("Hermes 思考中…", style="cyan"))
+        return Group(*parts)
 
+    async def thinking(self, text: str) -> None:
+        self.thinking_buf += text
+        self.live.update(self._render())
 
-async def _dialogue(console: Console, history: list[Turn], text: str, model: str) -> None:
-    thinking = ""
-    answer = ""
-    tools: list[dict] = []
-    reply = None
+    async def text(self, text: str) -> None:
+        self.answer += text
+        self.live.update(self._render())
 
-    with Live(_render(thinking, tools, answer), console=console, refresh_per_second=12) as live:
-        async for ev in stream_turn(history, text, model=model):
-            if isinstance(ev, TextDelta):
-                answer += ev.text
-            elif isinstance(ev, ThinkingDelta):
-                thinking += ev.text
-            elif isinstance(ev, ToolStarted):
-                tools.append({"name": ev.name, "done": False, "ok": True, "preview": ""})
-            elif isinstance(ev, ToolFinished):
-                for t in tools:
-                    if t["name"] == ev.name and not t["done"]:
-                        t.update(done=True, ok=ev.ok, preview=ev.preview)
-                        break
-            elif isinstance(ev, Done):
-                reply = ev.reply
-            live.update(_render(thinking, tools, answer))
+    async def tool_started(self, name: str) -> None:
+        self.tools.append({"name": name, "done": False, "ok": True, "preview": ""})
+        self.live.update(self._render())
 
-    if reply is not None:
-        if reply.is_error:
-            console.print("[red]⚠️  本轮出错(可能是认证/限额)。[/red]")
-        if reply.cost_usd is not None:
-            console.print(f"[dim]≈${reply.cost_usd:.4f}(订阅理论值)[/dim]")
-        history.append(Turn(user=text, assistant=reply.text))
-        session_store.append(SESSION_KEY, text, reply.text)
+    async def tool_finished(self, name: str, ok: bool, preview: str) -> None:
+        for t in self.tools:
+            if t["name"] == name and not t["done"]:
+                t.update(done=True, ok=ok, preview=preview)
+                break
+        self.live.update(self._render())
+
+    async def done(self, reply: AgentReply) -> None:
+        self.reply = reply
+        self.live.update(self._render())
 
 
 async def run_tui() -> None:
     console = Console()
     current_model = config.MODEL
-    history: list[Turn] = session_store.load_recent(SESSION_KEY)
 
     _header(console, current_model)
-    if history:
-        console.print(f"[dim]已载入 {len(history)} 轮历史(/clear 清空)[/dim]")
+    n = len(session_store.load_recent(SESSION_KEY))
+    if n:
+        console.print(f"[dim]已载入 {n} 轮历史(/new 开新会话)[/dim]")
 
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     session: PromptSession = PromptSession(
         history=FileHistory(str(config.DATA_DIR / "tui_history")),
-        completer=WordCompleter(list(SLASH_COMMANDS), sentence=True),
+        completer=WordCompleter(SLASH, sentence=True),
         style=Style.from_dict({"prompt": "bold ansicyan"}),
     )
 
@@ -137,34 +127,24 @@ async def run_tui() -> None:
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]再见。[/dim]")
             return
-
         if not text:
             continue
 
-        if text.startswith("/"):
-            cmd, _, arg = text.partition(" ")
-            if cmd in ("/exit", "/quit"):
+        if core.is_command(text):
+            outcome = core.handle_command(text, SESSION_KEY, current_model)
+            if outcome.exit:
                 console.print("[dim]再见。[/dim]")
                 return
-            if cmd == "/help":
-                for c, desc in SLASH_COMMANDS.items():
-                    console.print(f"  [yellow]{c}[/yellow]  {desc}")
-                continue
-            if cmd == "/clear":
-                history.clear()
-                session_store.clear(SESSION_KEY)
+            if outcome.new_model:
+                current_model = outcome.new_model
+            if outcome.clear_screen:
                 console.clear()
                 _header(console, current_model)
-                console.print("[dim]上下文已清空。[/dim]")
-                continue
-            if cmd == "/model":
-                if arg.strip():
-                    current_model = arg.strip()
-                    console.print(f"[dim]已切换模型 → [cyan]{current_model}[/cyan][/dim]")
-                else:
-                    console.print(f"当前模型:[cyan]{current_model}[/cyan]")
-                continue
-            console.print(f"[red]未知命令 {cmd}[/red] · /help 看可用命令")
+            if outcome.reply:
+                console.print(f"[dim]{outcome.reply}[/dim]")
             continue
 
-        await _dialogue(console, history, text, current_model)
+        with RichSink(console) as sink:
+            await core.converse(SESSION_KEY, text, current_model, sink)
+        if sink.reply and sink.reply.cost_usd is not None:
+            console.print(f"[dim]≈${sink.reply.cost_usd:.4f}(订阅理论值)[/dim]")

@@ -57,6 +57,11 @@ AI_BRAIN_DIR: Path = Path(
 # 运行时数据目录(prompt_toolkit 历史等)
 DATA_DIR: Path = _ROOT / "data"
 
+# === 调度 / 心跳 ===
+CRON_JOBS_PATH: Path = DATA_DIR / "cron_jobs.json"
+HEARTBEAT_PATH: Path = DATA_DIR / "heartbeat"
+SCHEDULER_TICK_SEC: int = int(os.environ.get("SCHEDULER_TICK_SEC", "30"))
+
 # === Telegram ===
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_ALLOWED_CHAT_IDS: set[int] = _parse_chat_ids(

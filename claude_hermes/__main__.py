@@ -1,9 +1,11 @@
 """CLI 入口。
 
-  claude-hermes            # 默认进 TUI(推荐)
-  claude-hermes tui        # 同上,rich 界面
-  claude-hermes chat       # 纯文本对话(无 rich,调试用)
-  claude-hermes telegram   # 启动 Telegram bot
+  claude-hermes            # 默认进 TUI
+  claude-hermes tui        # rich TUI
+  claude-hermes chat       # 纯文本对话(调试 fallback)
+  claude-hermes serve      # 常驻:Telegram 收发 + 调度器(heartbeat/主动推送)
+  claude-hermes telegram   # serve 的别名
+  claude-hermes cron       # 列出定时任务
 """
 from __future__ import annotations
 
@@ -20,14 +22,11 @@ def _cmd_tui() -> None:
 
 
 def _cmd_chat() -> None:
-    """纯文本多轮对话(无依赖渲染,留作调试 fallback)。"""
     from . import config
-    from .core.agent import Turn, run_turn
+    from .core.agent import run_turn
     from .memory import session_store
 
-    print(f"claude-hermes · 模型 {config.MODEL} · 走订阅")
-    print("输入对话,/exit 退出。\n")
-    history: list[Turn] = session_store.load_recent("cli")
+    print(f"claude-hermes · 模型 {config.MODEL} · 走订阅\n输入对话,/exit 退出。\n")
 
     async def loop() -> None:
         while True:
@@ -41,40 +40,64 @@ def _cmd_chat() -> None:
             if user_text in ("/exit", "/quit"):
                 print("再见。")
                 return
+            history = session_store.load_recent("cli")
             reply = await run_turn(history, user_text)
-            if reply.is_error:
-                print("⚠️  本轮出错(可能是认证/限额)。")
             tag = f"  [工具:{', '.join(reply.tool_calls)}]" if reply.tool_calls else ""
             print(f"\nHermes > {reply.text}{tag}\n")
-            history.append(Turn(user=user_text, assistant=reply.text))
             session_store.append("cli", user_text, reply.text)
 
     anyio.run(loop)
 
 
-def _cmd_telegram() -> None:
-    from .gateway.telegram import run_telegram
+def _cmd_serve() -> None:
+    from .gateway.run import run_serve
 
     try:
-        anyio.run(run_telegram)
+        anyio.run(run_serve)
     except KeyboardInterrupt:
-        print("\nTelegram bot 已停止。")
+        print("\n已停止。")
+
+
+def _cmd_cron() -> None:
+    from .cron import scheduler
+
+    jobs = scheduler.load_jobs()
+    if not jobs:
+        print("(没有定时任务。编辑 data/cron_jobs.json 添加。)")
+        return
+    for j in jobs:
+        flag = "✅" if j.get("enabled") else "⏸"
+        print(
+            f"{flag} {j.get('id')} · {j.get('name')} · "
+            f"{j.get('schedule', {}).get('kind')} · 上次={j.get('last_status')}"
+        )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="claude-hermes")
     sub = parser.add_subparsers(dest="cmd")
-    sub.add_parser("tui", help="rich TUI 界面(默认)")
-    sub.add_parser("chat", help="纯文本对话(调试用)")
-    sub.add_parser("telegram", help="启动 Telegram bot")
+    for name, help_ in [
+        ("tui", "rich TUI(默认)"),
+        ("chat", "纯文本对话(调试)"),
+        ("serve", "常驻:Telegram + 调度器"),
+        ("telegram", "serve 的别名"),
+        ("cron", "列出定时任务"),
+    ]:
+        sub.add_parser(name, help=help_)
 
     args = parser.parse_args()
-    cmd = args.cmd or "tui"  # 无参默认 TUI
-    {
+    cmd = args.cmd or "tui"
+    handlers = {
         "tui": _cmd_tui,
         "chat": _cmd_chat,
-        "telegram": _cmd_telegram,
-    }[cmd]()
+        "serve": _cmd_serve,
+        "telegram": _cmd_serve,  # 别名
+        "cron": _cmd_cron,
+    }
+    if cmd not in handlers:
+        parser.print_help()
+        sys.exit(1)
+    handlers[cmd]()
 
 
 if __name__ == "__main__":

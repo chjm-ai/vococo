@@ -9,20 +9,48 @@
 
 | 里程碑 | 状态 |
 |---|---|
-| **M0** CLI 内核(订阅 agent loop + 命令行对话 + 注入 AI_BRAIN 画像) | ✅ |
-| **M0+** rich/prompt_toolkit TUI(slash 补全 + spinner + Markdown 渲染) | ✅ |
-| M1 记忆闭环(SQLite 会话 + 调 skill + AI_BRAIN 读写) | ⬜ |
-| **M2** 多入口 · Telegram | 🚧 代码完成,待 bot token 实测 |
-| M2 多入口 · 飞书 | ⬜ |
-| M3 主动化(cron + 定时投递) | ⬜ |
+| **M0** CLI 内核(订阅 agent loop + 注入 AI_BRAIN 画像) | ✅ |
+| **M0+** rich/prompt_toolkit 流式 TUI(思考 + 工具过程 + Markdown) | ✅ |
+| **M1** 记忆闭环(SQLite 会话持久化 + 接通 ~110 个 skill) | ✅ |
+| **M2** Telegram(@Claude077bot,流式 + 白名单) | ✅ |
+| **M3** 主动化(gateway + cron 定时推送 + 心跳) | ✅ |
+| M2 飞书入口 | ⬜(gateway 已就绪,只差 FeishuAdapter) |
+
+## 架构(gateway)
+
+```
+gateway/core.py    平台无关:命令注册表 + converse(消费事件流)+ 会话
+gateway/adapters/  各平台薄层:telegram(收发+流式Sink),将来 feishu
+gateway/run.py     GatewayRunner:跑所有 adapter + 调度器,主动推送经 adapter
+cron/scheduler.py  心跳 + cron/interval/once 定时任务 → 推送
+```
 
 ## 入口
 
 ```bash
-claude-hermes            # 默认进 TUI(推荐)
+claude-hermes            # 默认进 TUI
 claude-hermes chat       # 纯文本对话(调试 fallback)
-claude-hermes telegram   # 启动 Telegram bot(需先配 TELEGRAM_BOT_TOKEN)
+claude-hermes serve      # 常驻:Telegram 收发 + 调度器(heartbeat/主动推送)
+claude-hermes cron       # 列出定时任务
 ```
+
+## 快捷命令(TUI/Telegram 通用)
+
+`/new` 开新会话(旧史保留) · `/clear` 清屏+开新 · `/model [名]` 切模型 · `/history` 看历史 · `/status` 会话信息 · `/help`
+
+## 常驻(macOS launchd)
+
+```bash
+bash deploy/launchd.sh install     # 开机自启 + 崩溃自愈
+bash deploy/launchd.sh status      # 看状态
+bash deploy/launchd.sh logs        # 看日志
+bash deploy/launchd.sh uninstall   # 卸载
+```
+
+## 定时主动推送
+
+编辑 `data/cron_jobs.json`(模板见 `deploy/cron_jobs.sample.json`),把任务 `enabled` 设 true,
+`serve` 进程每 30s 检查到期任务,跑 agent 后推到 Telegram。支持 `cron` / `interval` / `once` 三种调度。
 
 ## 快速开始(M0)
 

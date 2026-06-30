@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wesley.claude-hermes</string>
+
+  <!-- 跑 serve:Telegram 收发 + 定时调度(heartbeat/主动推送)一进程 -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/wesley/Desktop/Repos/claude-hermes/.venv/bin/claude-hermes</string>
+    <string>serve</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/wesley/Desktop/Repos/claude-hermes</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <!-- ⚠️ 关键:launchd 无 shell PATH,SDK 靠它找 claude 命令 -->
+    <key>PATH</key>
+    <string>/Users/wesley/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- 崩了自动拉起(常驻核心) -->
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/wesley/Desktop/Repos/claude-hermes/data/logs/hermes.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/wesley/Desktop/Repos/claude-hermes/data/logs/hermes.err.log</string>
+</dict>
+</plist>
