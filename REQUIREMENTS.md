@@ -52,7 +52,7 @@
 | **Gateway(网关)** | 常驻进程,统一接收各平台消息、分发给 agent、投递回复 | `gateway/run.py` |
 | **Adapter(平台适配器)** | 每个入口一个适配器(飞书/Telegram/CLI),把平台消息归一成统一格式 | `gateway/platforms/*.py` |
 | **Agent loop** | 单轮对话的核心循环:载入上下文 → 调 Claude → 工具调用 → 落库 → 回复 | `run_agent.py` |
-| **Memory(记忆)** | 多层:会话历史(SQLite+FTS5)+ 用户画像(USER/SOUL)+ AI_BRAIN 知识 | `hermes_state.py` + `memory_manager.py` |
+| **Memory(记忆)** | 多层:会话历史(SQLite,LIKE 子串检索)+ 用户画像(USER/SOUL)+ AI_BRAIN 知识 | `hermes_state.py` + `memory_manager.py` |
 | **Skill/Tool** | 能力单元。直接复用 Wesley 已有的 Claude Code skills + 少量原生工具 | `tools/registry.py` |
 | **Cron(定时)** | 定时任务 + 主动投递(早报/提醒),P1 阶段做 | `cron/scheduler.py` |
 
@@ -65,7 +65,7 @@
 | 编号 | 需求 | 验收标准 |
 |---|---|---|
 | P0-1 | **Claude 订阅驱动 agent loop** | 设好 `CLAUDE_CODE_OAUTH_TOKEN`,能完成一轮带工具调用的对话,`is_error=False` |
-| P0-2 | **长期记忆对话** | 关掉进程重启后,它仍记得之前会话的关键信息;能跨会话检索(FTS5) |
+| P0-2 | **长期记忆对话** | 关掉进程重启后,它仍记得之前会话的关键信息;能跨会话检索(`recall_past` 工具 → SQLite LIKE 子串,中文友好) |
 | P0-3 | **调用现有 skills** | 能加载并触发至少 1 个 Wesley 现有 skill(如 monthly-planner)完成任务 |
 | P0-4 | **CLI 入口** | `python -m claude_hermes chat` 可直接对话,作为最快验证通道 |
 | P0-5 | **接入 AI_BRAIN** | 启动时载入 `~/AI_BRAIN/USER.md`;能把新记忆按现有规范写回 `~/AI_BRAIN/memory/` |
@@ -118,7 +118,7 @@
 ┌──────────────┐      ┌────────────────────────┐
 │ 记忆层        │      │ 工具/Skill 层          │
 │ ① 会话 SQLite │      │ - 复用现有 Claude skill│
-│   + FTS5      │      │ - 原生工具(记忆读写等)│
+│   + LIKE 检索 │      │ - 原生工具(记忆读写等)│
 │ ② USER/SOUL   │      │ - 热注册(import 即用) │
 │ ③ AI_BRAIN    │      └────────────────────────┘
 └──────────────┘
@@ -132,7 +132,7 @@
 | Agent 内核 | `claude-agent-sdk`(pin 版本) | 已验证可跑订阅;原生支持 skill/MCP |
 | 认证 | `CLAUDE_CODE_OAUTH_TOKEN` + 删 `ANTHROPIC_API_KEY` | 订阅唯一正路 |
 | 默认模型 | `claude-opus-4-8`(可配) | SDK 默认给 Sonnet,个人用要好脑子就显式上 Opus(注意周限额) |
-| 会话存储 | SQLite + FTS5 | 本地、零依赖、可全文检索,照搬 Hermes |
+| 会话存储 | SQLite(LIKE 子串检索) | 本地、零依赖;FTS5 默认分词器切不开中文,个人规模 LIKE 已够,故不上 FTS5 |
 | 平台接入 | 自写轻量 adapter | 飞书复用 intertrade-bot 经验;TG 用官方 bot API |
 
 ### 5.2 与 Hermes 的差异(砍了什么)
@@ -140,7 +140,7 @@
 - ❌ 29 个平台 → ✅ 飞书 + TG + CLI 三个
 - ❌ 6 种终端后端(docker/ssh/modal…) → ✅ 本地直跑
 - ❌ 命令审批 UI、RL 训练、credential pool → ✅ 不要
-- ✅ 保留:统一网关思想、SQLite+FTS5 记忆、工具热注册、cron 主动投递
+- ✅ 保留:统一网关思想、SQLite 会话记忆(LIKE 检索)、工具热注册、cron 主动投递
 
 ---
 
@@ -166,7 +166,7 @@ AGENT_MODEL=claude-opus-4-8
 
 | 层 | 存储 | 内容 | 读写时机 |
 |---|---|---|---|
-| ① 会话记忆 | `data/state.db`(SQLite+FTS5) | 完整聊天历史、工具调用 | 每轮落库;检索时 FTS5 召回 |
+| ① 会话记忆 | `data/state.db`(SQLite) | 完整聊天历史、工具调用 | 每轮落库;`recall_past` 工具用 LIKE 子串召回 |
 | ② 用户画像 | `~/AI_BRAIN/USER.md` | 我是谁、长期偏好 | 启动时载入 system prompt |
 | ③ 知识/经验 | `~/AI_BRAIN/memory/` + `MEMORY.md` 索引 | 沉淀的事实/坑/决策 | 按需读;新经验按现有规范写回 |
 
@@ -193,7 +193,7 @@ claude-hermes/
 │   │   ├── agent.py           # ★ agent loop(claude-agent-sdk)
 │   │   └── prompt.py          # system prompt 组装(画像+记忆+技能)
 │   ├── memory/
-│   │   ├── session_store.py   # SQLite+FTS5 会话
+│   │   ├── session_store.py   # SQLite 会话(LIKE 检索)
 │   │   └── brain.py           # AI_BRAIN 读写桥
 │   ├── gateway/
 │   │   ├── run.py             # 常驻网关

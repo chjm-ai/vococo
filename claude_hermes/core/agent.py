@@ -21,6 +21,7 @@ from claude_agent_sdk import (
 )
 
 from .. import config
+from ..tools.builtin import build_mcp_servers
 from .prompt import build_system_prompt
 
 
@@ -118,6 +119,7 @@ async def stream_turn(
         max_turns=config.MAX_TURNS,
         permission_mode=config.PERMISSION_MODE,
         include_partial_messages=True,
+        mcp_servers=build_mcp_servers(),
     )
 
     text_parts: list[str] = []
