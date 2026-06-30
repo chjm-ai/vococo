@@ -47,6 +47,9 @@ def _parse_chat_ids(raw: str) -> set[int]:
 OAUTH_TOKEN: str = _ensure_subscription_auth()
 MODEL: str = os.environ.get("AGENT_MODEL", "claude-opus-4-8").strip()
 MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "40"))
+# 工具权限模式:bypassPermissions=自动执行工具(shell/读写等),个人本机助理用
+# 想更保守可设 acceptEdits(只自动接受文件编辑)。
+PERMISSION_MODE: str = os.environ.get("AGENT_PERMISSION_MODE", "bypassPermissions").strip()
 AI_BRAIN_DIR: Path = Path(
     os.path.expanduser(os.environ.get("AI_BRAIN_DIR", "~/AI_BRAIN"))
 )
