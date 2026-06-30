@@ -37,15 +37,9 @@ async def converse(
     session_key: str, user_text: str, model: str | None, sink: Sink
 ) -> AgentReply | None:
     """跑一轮:载入历史 → 流式 → 喂 sink → 落库。"""
-    print(f"[converse] start key={session_key} text={user_text[:30]!r}", flush=True)
     history = session_store.load_recent(session_key)
-    print(f"[converse] history={len(history)} 轮, 进入 stream_turn", flush=True)
     reply: AgentReply | None = None
-    n = 0
     async for ev in stream_turn(history, user_text, model=model):
-        n += 1
-        if n <= 3 or isinstance(ev, (ToolStarted, ToolFinished, Done)):
-            print(f"[converse] event#{n} {type(ev).__name__}", flush=True)
         if isinstance(ev, TextDelta):
             await sink.text(ev.text)
         elif isinstance(ev, ThinkingDelta):
@@ -56,11 +50,9 @@ async def converse(
             await sink.tool_finished(ev.name, ev.ok, ev.preview)
         elif isinstance(ev, Done):
             reply = ev.reply
-    print(f"[converse] stream 结束, {n} events, reply={'有' if reply else '无'}", flush=True)
     if reply is not None:
         session_store.append(session_key, user_text, reply.text)
         await sink.done(reply)
-    print("[converse] 完成(已落库+回复)", flush=True)
     return reply
 
 

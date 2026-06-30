@@ -36,16 +36,12 @@ class GatewayRunner:
             elif outcome.reply:
                 await adapter.send(inc.chat_id, outcome.reply)
             return
-        print(f"[dispatch] 进入 converse key={key}", flush=True)
         try:
             with anyio.fail_after(180):  # 单轮硬超时,卡死也能恢复
                 await core.converse(key, inc.text, model, adapter.make_sink(inc.chat_id))
-            print("[dispatch] converse 返回", flush=True)
         except TimeoutError:
-            print("[dispatch] ⚠️ converse 超时 180s", flush=True)
             await adapter.send(inc.chat_id, "⚠️ 处理超时了,请再试一次。")
         except Exception as e:
-            print(f"[dispatch] ⚠️ 异常: {e}", flush=True)
             await adapter.send(inc.chat_id, f"⚠️ 出错了:{e}")
 
     async def _serve(self, adapter: Adapter) -> None:

@@ -38,14 +38,21 @@ claude-hermes cron       # 列出定时任务
 
 `/new` 开新会话(旧史保留) · `/clear` 清屏+开新 · `/model [名]` 切模型 · `/history` 看历史 · `/status` 会话信息 · `/help`
 
-## 常驻(macOS launchd)
+## 常驻
 
 ```bash
-bash deploy/launchd.sh install     # 开机自启 + 崩溃自愈
-bash deploy/launchd.sh status      # 看状态
-bash deploy/launchd.sh logs        # 看日志
-bash deploy/launchd.sh uninstall   # 卸载
+bash deploy/run.sh     # 后台启动(登录 shell,推荐)
+bash deploy/stop.sh    # 停止
+tail -f data/logs/hermes.out.log   # 看日志
 ```
+
+⚠️ **不要把项目放在 iCloud 同步的 `~/Desktop`/`~/Documents` 下**——常驻进程
+`open()` 这些文件会被 File Provider 阻塞。放 `~/Repos` 等纯本地目录。
+
+⚠️ **launchd 直接拉起在某些 Mac 上会卡死**:launchd 会话上下文不完整,
+agent 派生的 `claude` 子进程会同步阻塞冻住事件循环。所以用 `deploy/run.sh`
+(登录 shell)而非 `deploy/launchd.sh`。开机自启可把 `run.sh` 加为**登录项**
+(系统设置 → 通用 → 登录项),它运行在完整 GUI 登录会话里,不受此限。
 
 ## 定时主动推送
 
