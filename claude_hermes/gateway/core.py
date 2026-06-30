@@ -56,17 +56,16 @@ async def converse(
     return reply
 
 
-# === 命令注册表 ===
-HELP_TEXT = (
-    "可用命令:\n"
-    "/new(/reset) 开新会话(旧历史保留)\n"
-    "/clear 清屏并开新会话\n"
-    "/model [名称] 查看或切换模型\n"
-    "/history 看最近历史\n"
-    "/status 会话信息\n"
-    "/help 帮助\n"
-    "/exit 退出(仅 CLI)"
-)
+# === 命令注册表(单一来源:TG 菜单 setMyCommands 和 /help 都从这生成)===
+COMMAND_LIST: list[tuple[str, str]] = [
+    ("new", "开新会话(旧历史保留)"),
+    ("clear", "清屏并开新会话"),
+    ("model", "查看或切换模型,如 /model claude-opus-4-8"),
+    ("history", "看最近历史"),
+    ("status", "会话信息"),
+    ("help", "显示帮助"),
+]
+HELP_TEXT = "可用命令:\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_LIST)
 
 
 @dataclass

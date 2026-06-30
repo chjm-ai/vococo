@@ -12,7 +12,7 @@ import httpx
 
 from ... import config
 from ...core.agent import AgentReply
-from ..core import Sink
+from ..core import COMMAND_LIST, Sink
 from .base import Incoming
 
 TG_LIMIT = 4000
@@ -107,6 +107,11 @@ class TelegramAdapter:
     def make_sink(self, chat_id: int | str) -> Sink:
         return _TelegramSink(self, chat_id)
 
+    async def _register_commands(self) -> None:
+        """注册命令菜单 → TG 客户端打 / 就能弹出选择。"""
+        cmds = [{"command": n, "description": d} for n, d in COMMAND_LIST]
+        await self._call("setMyCommands", commands=cmds)
+
     async def receive(self) -> AsyncIterator[Incoming]:
         # 连上为止(网络没就绪时不崩,重试)
         while True:
@@ -116,6 +121,10 @@ class TelegramAdapter:
             except (httpx.HTTPError, TelegramError) as e:
                 print(f"[tg] getMe 失败,5s 后重试: {e}")
                 await anyio.sleep(5)
+        try:
+            await self._register_commands()
+        except (httpx.HTTPError, TelegramError):
+            pass
         print(f"✅ Telegram @{me.get('username')} 已上线 · 模型 {config.MODEL}")
         if not self.allowed:
             print("⚠️  未配白名单:任何人都能聊。发条消息看控制台 chat_id,填 .env 再重启。")
