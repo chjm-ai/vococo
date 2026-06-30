@@ -1,0 +1,20 @@
+[project]
+name = "claude-hermes"
+version = "0.1.0"
+description = "基于 Claude 订阅的个人 AI 助理(personal Hermes)"
+requires-python = ">=3.11"
+dependencies = [
+    "claude-agent-sdk==0.2.110",
+    "python-dotenv>=1.0.0",
+    "anyio>=4.0.0",
+]
+
+[project.scripts]
+claude-hermes = "claude_hermes.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["claude_hermes*"]

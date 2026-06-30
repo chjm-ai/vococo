@@ -1,0 +1,20 @@
+# 环境/密钥
+.env
+.oat
+*.token
+
+# 运行时数据
+data/
+*.db
+*.db-wal
+*.db-shm
+logs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 系统
+.DS_Store
