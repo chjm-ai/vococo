@@ -34,9 +34,28 @@ def _ensure_subscription_auth() -> str:
     return token
 
 
+def _parse_chat_ids(raw: str) -> set[int]:
+    """'123,-456 789' -> {123, -456, 789}。空 = 不限制(危险,会警告)。"""
+    out: set[int] = set()
+    for tok in raw.replace(",", " ").split():
+        tok = tok.strip()
+        if tok.lstrip("-").isdigit():
+            out.add(int(tok))
+    return out
+
+
 OAUTH_TOKEN: str = _ensure_subscription_auth()
 MODEL: str = os.environ.get("AGENT_MODEL", "claude-opus-4-8").strip()
 MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "40"))
 AI_BRAIN_DIR: Path = Path(
     os.path.expanduser(os.environ.get("AI_BRAIN_DIR", "~/AI_BRAIN"))
+)
+
+# 运行时数据目录(prompt_toolkit 历史等)
+DATA_DIR: Path = _ROOT / "data"
+
+# === Telegram ===
+TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_ALLOWED_CHAT_IDS: set[int] = _parse_chat_ids(
+    os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
 )

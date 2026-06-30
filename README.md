@@ -9,10 +9,20 @@
 
 | 里程碑 | 状态 |
 |---|---|
-| **M0** CLI 内核(订阅 agent loop + 命令行对话 + 注入 AI_BRAIN 画像) | 🚧 骨架完成 |
+| **M0** CLI 内核(订阅 agent loop + 命令行对话 + 注入 AI_BRAIN 画像) | ✅ |
+| **M0+** rich/prompt_toolkit TUI(slash 补全 + spinner + Markdown 渲染) | ✅ |
 | M1 记忆闭环(SQLite 会话 + 调 skill + AI_BRAIN 读写) | ⬜ |
-| M2 多入口(飞书 + Telegram) | ⬜ |
+| **M2** 多入口 · Telegram | 🚧 代码完成,待 bot token 实测 |
+| M2 多入口 · 飞书 | ⬜ |
 | M3 主动化(cron + 定时投递) | ⬜ |
+
+## 入口
+
+```bash
+claude-hermes            # 默认进 TUI(推荐)
+claude-hermes chat       # 纯文本对话(调试 fallback)
+claude-hermes telegram   # 启动 Telegram bot(需先配 TELEGRAM_BOT_TOKEN)
+```
 
 ## 快速开始(M0)
 

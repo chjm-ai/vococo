@@ -50,10 +50,12 @@ def _compose_prompt(history: list[Turn], user_text: str) -> str:
     return "\n".join(lines)
 
 
-async def run_turn(history: list[Turn], user_text: str) -> AgentReply:
-    """跑一轮,返回助理回复。"""
+async def run_turn(
+    history: list[Turn], user_text: str, model: str | None = None
+) -> AgentReply:
+    """跑一轮,返回助理回复。model 缺省用 config.MODEL。"""
     options = ClaudeAgentOptions(
-        model=config.MODEL,
+        model=model or config.MODEL,
         system_prompt=build_system_prompt(),
         max_turns=config.MAX_TURNS,
         permission_mode="acceptEdits",

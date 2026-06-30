@@ -1,0 +1,2 @@
+[console_scripts]
+claude-hermes = claude_hermes.__main__:main
