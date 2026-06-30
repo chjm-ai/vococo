@@ -12,7 +12,7 @@ import httpx
 
 from ... import config
 from ...core.agent import AgentReply
-from ..core import COMMAND_LIST, Sink
+from ..core import COMMAND_LIST, Choice, Sink
 from .base import Incoming
 
 TG_LIMIT = 4000
@@ -112,6 +112,16 @@ class TelegramAdapter:
         cmds = [{"command": n, "description": d} for n, d in COMMAND_LIST]
         await self._call("setMyCommands", commands=cmds)
 
+    async def present_choice(self, chat_id: int | str, choice: Choice) -> None:
+        """用 inline keyboard 渲染选项,callback_data=选中后要执行的命令。"""
+        keyboard = [[{"text": label, "callback_data": cmd}] for cmd, label in choice.options]
+        await self._call(
+            "sendMessage",
+            chat_id=chat_id,
+            text=choice.prompt,
+            reply_markup={"inline_keyboard": keyboard},
+        )
+
     async def receive(self) -> AsyncIterator[Incoming]:
         # 连上为止(网络没就绪时不崩,重试)
         while True:
@@ -138,6 +148,24 @@ class TelegramAdapter:
                 continue
             for upd in updates:
                 offset = upd["update_id"] + 1
+
+                # 按钮点击:callback_data 就是要执行的命令
+                cq = upd.get("callback_query")
+                if cq:
+                    data = (cq.get("data") or "").strip()
+                    cq_chat = ((cq.get("message") or {}).get("chat") or {}).get("id")
+                    try:
+                        await self._call("answerCallbackQuery", callback_query_id=cq["id"])
+                    except (httpx.HTTPError, TelegramError):
+                        pass
+                    if cq_chat is None or not data:
+                        continue
+                    if self.allowed and cq_chat not in self.allowed:
+                        continue
+                    print(f"[收] tg 点击 chat_id={cq_chat}: {data}")
+                    yield Incoming(self.platform, cq_chat, data)
+                    continue
+
                 msg = upd.get("message") or upd.get("edited_message") or {}
                 chat_id = (msg.get("chat") or {}).get("id")
                 text = (msg.get("text") or "").strip()

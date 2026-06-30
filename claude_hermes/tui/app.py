@@ -8,6 +8,7 @@ from __future__ import annotations
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.shortcuts import radiolist_dialog
 from prompt_toolkit.styles import Style
 from rich.console import Console, Group
 from rich.live import Live
@@ -132,6 +133,16 @@ async def run_tui() -> None:
 
         if core.is_command(text):
             outcome = core.handle_command(text, SESSION_KEY, current_model)
+            # 交互选项:弹选择框(方向键 + 鼠标点),选中=执行那条命令
+            if outcome.choice is not None:
+                picked = await radiolist_dialog(
+                    title="claude-hermes",
+                    text=outcome.choice.prompt,
+                    values=outcome.choice.options,
+                ).run_async()
+                if not picked:
+                    continue
+                outcome = core.handle_command(picked, SESSION_KEY, current_model)
             if outcome.exit:
                 console.print("[dim]再见。[/dim]")
                 return

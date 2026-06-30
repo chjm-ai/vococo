@@ -67,6 +67,24 @@ COMMAND_LIST: list[tuple[str, str]] = [
 ]
 HELP_TEXT = "可用命令:\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_LIST)
 
+# 可选模型(/model 无参时弹这些供选择)
+MODEL_CHOICES: list[tuple[str, str]] = [
+    ("claude-opus-4-8", "Opus 4.8 · 最强(吃周限额)"),
+    ("claude-sonnet-4-6", "Sonnet 4.6 · 日常均衡"),
+    ("claude-haiku-4-5", "Haiku 4.5 · 最快最省"),
+]
+
+
+@dataclass
+class Choice:
+    """通用交互选项。每个 option 是 (选中后执行的命令, 显示文字)。
+
+    各端各自渲染(TUI 选择框 / TG inline 按钮 / 飞书卡片),选中=执行那条命令。
+    """
+
+    prompt: str
+    options: list[tuple[str, str]]
+
 
 @dataclass
 class CommandOutcome:
@@ -76,6 +94,7 @@ class CommandOutcome:
     clear_screen: bool = False
     reset_history: bool = False
     new_model: str | None = None
+    choice: Choice | None = None
 
 
 def is_command(text: str) -> bool:
@@ -102,7 +121,11 @@ def handle_command(text: str, session_key: str, current_model: str) -> CommandOu
     if cmd == "/model":
         if arg:
             return CommandOutcome(reply=f"已切换模型 → {arg}", new_model=arg)
-        return CommandOutcome(reply=f"当前模型:{current_model}")
+        opts = [
+            (f"/model {v}", f"{label}{' ✓ 当前' if v == current_model else ''}")
+            for v, label in MODEL_CHOICES
+        ]
+        return CommandOutcome(choice=Choice(prompt="选择模型:", options=opts))
     if cmd == "/history":
         h = session_store.load_recent(session_key, limit=10)
         if not h:

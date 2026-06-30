@@ -31,7 +31,9 @@ class GatewayRunner:
             outcome = core.handle_command(inc.text, key, model)
             if outcome.new_model:
                 self.models[key] = outcome.new_model
-            if outcome.reply:
+            if outcome.choice is not None:
+                await adapter.present_choice(inc.chat_id, outcome.choice)
+            elif outcome.reply:
                 await adapter.send(inc.chat_id, outcome.reply)
             return
         try:

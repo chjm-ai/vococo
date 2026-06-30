@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import AsyncIterator, Protocol
 
-from ..core import Sink
+from ..core import Choice, Sink
 
 
 @dataclass
@@ -33,4 +33,8 @@ class Adapter(Protocol):
 
     def make_sink(self, chat_id: int | str) -> Sink:
         """给一轮对话造一个渲染 sink(流式更新)。"""
+        ...
+
+    async def present_choice(self, chat_id: int | str, choice: Choice) -> None:
+        """渲染交互选项(各端原生:TG inline 按钮 / 飞书卡片)。选中后由该端把命令回灌 dispatch。"""
         ...
