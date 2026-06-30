@@ -94,7 +94,13 @@ SESSION_KEY: str = os.environ.get("SESSION_KEY", "main").strip() or "main"
 
 
 def resolve_session_key(platform: str, chat_id: object) -> str:
-    """各入口统一经此取会话键:开统一则共享一个,否则按平台隔离。"""
+    """各入口统一经此取会话键。
+
+    群聊(TG 群 chat_id 为负)永远独立成一个会话 = 一个群一个项目;
+    私聊则按 UNIFY_SESSIONS:开统一则共享主会话,否则按平台隔离。
+    """
+    if platform == "telegram" and isinstance(chat_id, int) and chat_id < 0:
+        return f"tg:{chat_id}"
     return SESSION_KEY if UNIFY_SESSIONS else f"{platform}:{chat_id}"
 
 
