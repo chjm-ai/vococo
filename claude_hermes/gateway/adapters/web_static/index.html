@@ -248,6 +248,24 @@
   #composer .cwrap{max-width:820px;margin:0 auto}
   /* 键盘弹出时:此刻已无 home indicator 留白,去掉安全区、缩小底部间距,让输入框贴近键盘 */
   body.kb #composer{padding-bottom:6px;padding-top:8px}
+  /* 模型选择器(输入框右上角小胶囊)*/
+  .ctoolbar{display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px}
+  #modelBox{position:relative}
+  #modelBtn{display:flex;align-items:center;gap:5px;font-size:12.5px;color:var(--dim);font-weight:500;
+    background:var(--panel2);border:1px solid var(--line2);border-radius:20px;padding:5px 11px;
+    transition:border-color .16s,color .16s,transform .12s}
+  #modelBtn:hover{border-color:var(--accent);color:var(--text)}
+  #modelBtn:active{transform:scale(.96)}
+  #modelBtn .caret{font-size:10px;opacity:.6}
+  #modelPop{position:absolute;bottom:calc(100% + 8px);right:0;min-width:236px;z-index:20;
+    background:var(--card);border:1px solid var(--line2);border-radius:14px;padding:6px;
+    box-shadow:var(--shadow);animation:pop .16s ease}
+  #modelPop[hidden]{display:none}
+  #modelPop .mi{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;
+    text-align:left;padding:9px 11px;border-radius:10px;font-size:13px;color:var(--text);transition:background .14s}
+  #modelPop .mi:hover{background:var(--panel2)}
+  #modelPop .mi.on{color:var(--accent)}
+  #modelPop .mi .mk{color:var(--accent);font-size:12px;flex-shrink:0}
   #thumbs{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
   #thumbs .t{position:relative}
   #thumbs img{width:56px;height:56px;object-fit:cover;border-radius:10px;border:1px solid var(--line2)}
@@ -337,6 +355,14 @@
     </div>
     <form id="composer" autocomplete="off">
       <div class="cwrap">
+        <div class="ctoolbar">
+          <div id="modelBox">
+            <button type="button" id="modelBtn" title="切换模型">
+              <span id="modelName">模型</span><span class="caret">▾</span>
+            </button>
+            <div id="modelPop" hidden></div>
+          </div>
+        </div>
         <div id="thumbs"></div>
         <div class="inrow">
           <button type="button" id="imgBtn">＋</button>
@@ -360,6 +386,8 @@ const S = {
   stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
   es: null,
   lastId: 0,            // 已处理的最大事件编号,用于断线重连后去重
+  models: {default:"", choices:[]},  // /models 拉到的可选模型
+  model: "",            // 当前会话使用的模型(空=用默认)
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -405,7 +433,7 @@ async function tryEnter(){
     if(r.status===401){ $("#loginErr").textContent="口令错误"; return; }
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
-    connect(); await loadConvs();
+    connect(); await loadConvs(); await loadModels();
     // 默认打开最近活跃的会话(排序后的第一个),而非固定的主会话
     await openConv(S.convs[0] ? S.convs[0].conv : "main");
   }catch(e){ $("#loginErr").textContent="连接失败"; }
@@ -476,8 +504,40 @@ function setMeta(d){
     ctx:+d.ctx_tokens||0, total:+d.total_tokens||0, win:+d.ctx_window||CTX_WINDOW,
     lin:+d.last_in||0, lc:+d.last_cache||0, lout:+d.last_out||0, model:d.model||"",
   };
+  setModel(d.model||"");   // 会话记录里的模型;空则回落默认
   renderMeta();
 }
+
+// ── 模型选择器 ────────────────────────────────────────────────────────────
+async function loadModels(){
+  try{ const r=await api("/models"); S.models=await r.json(); renderModelChip(); }catch(e){}
+}
+function modelShort(id){
+  if(!id) return "模型";
+  const c=(S.models.choices||[]).find(x=>x[0]===id);
+  if(c) return c[1].split("·")[0].trim();   // 取 "Opus 4.8 · 最强" 里的短名
+  return id.replace(/^claude-/,"");
+}
+function curModel(){ return S.model || S.models.default || ""; }
+function setModel(id){ S.model=id||""; renderModelChip(); }
+function renderModelChip(){ $("#modelName").textContent=modelShort(curModel()); }
+function renderModelPop(){
+  const pop=$("#modelPop"), cur=curModel();
+  pop.innerHTML=(S.models.choices||[]).map(([id,label])=>
+    '<button type="button" class="mi'+(id===cur?" on":"")+'" data-m="'+esc(id)+'">'+
+    '<span class="ml">'+esc(label)+'</span>'+(id===cur?'<span class="mk">✓</span>':'')+'</button>'
+  ).join("") || '<div style="padding:9px 11px;color:var(--dim);font-size:13px">暂无可选模型</div>';
+  pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickModel(b.dataset.m); });
+}
+function pickModel(id){
+  $("#modelPop").hidden=true;
+  if(!id || id===curModel()) return;
+  setModel(id);            // 乐观更新胶囊,下一轮 done 事件会与服务端对齐
+  sendCmd("/model "+id);   // 复用后端 /model 命令,按会话切换
+}
+$("#modelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#modelPop");
+  if(p.hidden){ renderModelPop(); p.hidden=false; } else p.hidden=true; };
+document.addEventListener("click", e=>{ const b=$("#modelBox"); if(b && !b.contains(e.target)) $("#modelPop").hidden=true; });
 function metaRow(k, v, pp, cls){
   return '<div class="pr'+(cls?" "+cls:"")+'"><span class="k">'+k+'</span>'+
     '<span class="v">'+v+(pp?'<span class="pp">'+pp+'</span>':'')+'</span></div>';
@@ -654,6 +714,16 @@ async function send(text){
   const wasLocal=String(S.conv).startsWith("local-");
   if(wasLocal){ S.conv=S.conv.replace("local-",""); payload.conv=S.conv; }
   S.images=[]; renderThumbs(); $("#ta").value=""; autoGrow();
+  try{
+    await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(wasLocal) setTimeout(loadConvs, 400);
+  }catch(err){ addBubble("ai","⚠️ 发送失败:"+err.message); }
+}
+// 静默发命令(如 /model 切换):不渲染用户气泡,回执由服务端 message 事件带回
+async function sendCmd(cmd){
+  const payload={conv:S.conv, text:cmd, images:[]};
+  const wasLocal=String(S.conv).startsWith("local-");
+  if(wasLocal){ S.conv=S.conv.replace("local-",""); payload.conv=S.conv; }
   try{
     await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(wasLocal) setTimeout(loadConvs, 400);
