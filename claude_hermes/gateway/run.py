@@ -10,6 +10,7 @@ import anyio
 
 from .. import config
 from ..cron.scheduler import run_scheduler
+from ..memory import session_store
 from . import clarify, core
 from .adapters.base import Adapter, Incoming
 
@@ -70,7 +71,8 @@ class GatewayRunner:
 
     async def _handle(self, adapter: Adapter, inc: Incoming) -> None:
         key = inc.session_key
-        model = self.models.get(key, config.MODEL)
+        # 优先内存里本次会话的切换,其次库里持久化的选定(重启后仍在),最后默认
+        model = self.models.get(key) or session_store.get_chosen_model(key) or config.MODEL
         if core.is_command(inc.text):
             outcome = core.handle_command(inc.text, key, model)
             if outcome.new_model:

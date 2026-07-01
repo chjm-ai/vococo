@@ -191,6 +191,7 @@ def handle_command(text: str, session_key: str, current_model: str) -> CommandOu
         return CommandOutcome(reply=HELP_TEXT)
     if cmd == "/model":
         if arg:
+            session_store.set_chosen_model(session_key, arg)  # 持久化,刷新/重启不丢
             return CommandOutcome(reply=f"已切换模型 → {arg}", new_model=arg)
         opts = [
             (f"/model {v}", f"{label}{' ✓ 当前' if v == current_model else ''}")

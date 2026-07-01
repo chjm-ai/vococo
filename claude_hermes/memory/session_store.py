@@ -62,6 +62,9 @@ def _conn() -> sqlite3.Connection:
                 )
         if "model" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN model TEXT")
+        # chosen_model=用户为该会话选定、下一轮要用的模型(与 model「实际跑过的带日期 id」分开)
+        if "chosen_model" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN chosen_model TEXT")
         _DB.commit()
     return _DB
 
@@ -211,7 +214,8 @@ def list_sessions(prefix: str) -> list[dict]:
         "  COALESCE(MAX(t.ts), strftime('%s','now')), "
         "  COALESCE(MAX(m.ctx_tokens),0), COALESCE(MAX(m.total_tokens),0), "
         "  COALESCE(MAX(m.ctx_window),0), COALESCE(MAX(m.last_in),0), "
-        "  COALESCE(MAX(m.last_cache),0), COALESCE(MAX(m.last_out),0), MAX(m.model) "
+        "  COALESCE(MAX(m.last_cache),0), COALESCE(MAX(m.last_out),0), MAX(m.model), "
+        "  MAX(m.chosen_model) "
         "FROM keys k "
         "LEFT JOIN session_meta m ON k.session_key = m.session_key "
         "LEFT JOIN turns t ON t.session_key = k.session_key "
@@ -229,8 +233,8 @@ def list_sessions(prefix: str) -> list[dict]:
 
 
 def _usage_fields(vals) -> dict:
-    """把 (ctx, total, window, last_in, last_cache, last_out, model) 组装成统一字段。"""
-    ctx, total, window, l_in, l_cache, l_out, model = vals
+    """把 (ctx, total, window, last_in, last_cache, last_out, model, chosen_model) 组装成统一字段。"""
+    ctx, total, window, l_in, l_cache, l_out, model, chosen = vals
     return {
         "ctx_tokens": ctx or 0,
         "total_tokens": total or 0,
@@ -238,7 +242,8 @@ def _usage_fields(vals) -> dict:
         "last_in": l_in or 0,
         "last_cache": l_cache or 0,
         "last_out": l_out or 0,
-        "model": model or "",
+        "model": model or "",         # 实际跑过的模型(带日期,给 token 面板)
+        "chosen_model": chosen or "",  # 会话选定的模型(给输入框胶囊,空=用默认)
     }
 
 
@@ -255,7 +260,7 @@ def session_summary(session_key: str) -> dict:
     trow = c.execute(
         "SELECT COALESCE(ctx_tokens,0), COALESCE(total_tokens,0), "
         "COALESCE(ctx_window,0), COALESCE(last_in,0), COALESCE(last_cache,0), "
-        "COALESCE(last_out,0), model FROM session_meta WHERE session_key=?",
+        "COALESCE(last_out,0), model, chosen_model FROM session_meta WHERE session_key=?",
         (session_key,),
     ).fetchone()
     out = {
@@ -264,8 +269,27 @@ def session_summary(session_key: str) -> dict:
         "turns": turns,
         "last_ts": last_ts,
     }
-    out.update(_usage_fields(trow if trow else (0, 0, 0, 0, 0, 0, "")))
+    out.update(_usage_fields(trow if trow else (0, 0, 0, 0, 0, 0, "", "")))
     return out
+
+
+def set_chosen_model(session_key: str, model: str) -> None:
+    """记住某会话用户选定的模型(下一轮要用哪个);/model 切换时写入,刷新/重启都不丢。"""
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta(session_key, watermark_id, chosen_model) VALUES (?,0,?) "
+        "ON CONFLICT(session_key) DO UPDATE SET chosen_model=excluded.chosen_model",
+        (session_key, model),
+    )
+    c.commit()
+
+
+def get_chosen_model(session_key: str) -> str:
+    """会话选定的模型;没设过返回空串(调用方回落到 config.MODEL 默认)。"""
+    row = _conn().execute(
+        "SELECT chosen_model FROM session_meta WHERE session_key=?", (session_key,)
+    ).fetchone()
+    return (row[0] if row else "") or ""
 
 
 def delete_session(session_key: str) -> None:

@@ -509,7 +509,7 @@ function setMeta(d){
     ctx:+d.ctx_tokens||0, total:+d.total_tokens||0, win:+d.ctx_window||CTX_WINDOW,
     lin:+d.last_in||0, lc:+d.last_cache||0, lout:+d.last_out||0, model:d.model||"",
   };
-  setModel(d.model||"");   // 会话记录里的模型;空则回落默认
+  setModel(d.chosen_model||"");   // 胶囊显示"会话选定的模型",空则回落默认(不用带日期的实跑 id)
   renderMeta();
 }
 
@@ -519,9 +519,11 @@ async function loadModels(){
 }
 function modelShort(id){
   if(!id) return "模型";
-  const c=(S.models.choices||[]).find(x=>x[0]===id);
+  const ch=S.models.choices||[];
+  // 精确命中,否则按前缀兜底(实跑 id 常带日期,如 claude-haiku-4-5-20251001)
+  const c=ch.find(x=>x[0]===id) || ch.find(x=>id.indexOf(x[0])===0 || x[0].indexOf(id)===0);
   if(c) return c[1].split("·")[0].trim();   // 取 "Opus 4.8 · 最强" 里的短名
-  return id.replace(/^claude-/,"");
+  return id.replace(/^claude-/,"").replace(/-\d{6,}$/,"");  // 去 claude- 前缀与日期后缀
 }
 function curModel(){ return S.model || S.models.default || ""; }
 function setModel(id){ S.model=id||""; renderModelChip(); }

@@ -84,6 +84,7 @@ class _WebSink(Sink):
                 "last_cache": meta.get("last_cache", 0),
                 "last_out": meta.get("last_out", 0),
                 "model": meta.get("model", ""),
+                "chosen_model": meta.get("chosen_model", ""),
             }
         )
 
