@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import deque
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -33,21 +34,25 @@ _STATIC = Path(__file__).resolve().parent / "web_static"
 class _WebSink(Sink):
     """把一轮事件流以 SSE 增量推给浏览器(按 conv 打标)。
 
-    不做 Telegram 那种整条节流重发:浏览器侧累积增量、本地渲染 Markdown,
-    真表格 / 代码高亮 / 折叠思考都交给前端。
+    像 Telegram 一样发【全文快照】而非增量:每个 thinking/text 事件都带当前累积
+    的完整内容。这样断线补发时任何一帧都能把画面修正确,丢几帧也不会缺字。
     """
 
     def __init__(self, adapter: "WebAdapter", conv: str):
         super().__init__()
         self.a = adapter
         self.conv = conv
+        self._text = ""  # 累积正文,每次发全文
+        self._think = ""  # 累积思考
         self.a._emit({"conv": conv, "type": "start"})
 
     async def thinking(self, text: str) -> None:
-        self.a._emit({"conv": self.conv, "type": "thinking", "delta": text})
+        self._think += text
+        self.a._emit({"conv": self.conv, "type": "thinking", "text": self._think})
 
     async def text(self, text: str) -> None:
-        self.a._emit({"conv": self.conv, "type": "text", "delta": text})
+        self._text += text
+        self.a._emit({"conv": self.conv, "type": "text", "text": self._text})
 
     async def tool_started(self, name: str) -> None:
         self.a._emit({"conv": self.conv, "type": "tool_start", "name": name})
@@ -74,7 +79,10 @@ class WebAdapter:
 
     def __init__(self) -> None:
         self._inbox: asyncio.Queue[Incoming] = asyncio.Queue()
-        self._clients: set[asyncio.Queue[str]] = set()  # 每个浏览器 SSE 连接一个队列
+        # 每个浏览器 SSE 连接一个队列,元素是 (事件编号, JSON 串)
+        self._clients: set[asyncio.Queue[tuple[int, str]]] = set()
+        self._seq = 0  # 全局单调递增的事件编号
+        self._buffer: deque[tuple[int, str]] = deque(maxlen=512)  # 断线补发用的环形缓冲
         self._runner: web.AppRunner | None = None
         try:
             self._index = (_STATIC / "index.html").read_text(encoding="utf-8")
@@ -95,11 +103,19 @@ class WebAdapter:
 
     # ── SSE 广播 ─────────────────────────────────────────────────────────
     def _emit(self, payload: dict) -> None:
-        """把一个事件塞进所有在线浏览器的 SSE 队列(单用户,广播即可)。"""
+        """给事件编号、进环形缓冲,再塞进所有在线浏览器的 SSE 队列。
+
+        编号(id)让前端能去重、让重连时按 Last-Event-ID 补发漏掉的事件——
+        这就是 web 版的"中间仓库",丢一帧断一线都能补回来。
+        """
+        self._seq += 1
+        seq = self._seq
+        payload = {**payload, "id": seq}
         data = json.dumps(payload, ensure_ascii=False)
+        self._buffer.append((seq, data))
         for q in list(self._clients):
             try:
-                q.put_nowait(data)
+                q.put_nowait((seq, data))
             except asyncio.QueueFull:
                 pass
 
@@ -142,17 +158,29 @@ class WebAdapter:
             }
         )
         await resp.prepare(request)
-        q: asyncio.Queue[str] = asyncio.Queue(maxsize=1000)
-        self._clients.add(q)
+        # 重连时浏览器会自动带上 Last-Event-ID(上次收到的最后编号);首连则为空。
+        # 首连不带 → 从当前最新编号起步,只接新事件(旧历史走 HTTP 拉,不重放缓冲);
+        # 重连带了 → 从该编号补发漏掉的事件。
+        raw_last = request.headers.get("Last-Event-ID") or request.query.get("last_id")
+        try:
+            last_id = int(raw_last) if raw_last else self._seq
+        except ValueError:
+            last_id = self._seq
+        q: asyncio.Queue[tuple[int, str]] = asyncio.Queue(maxsize=1000)
+        self._clients.add(q)  # 先挂上队列,再补发,漏网的靠前端按 id 去重
         try:
             await resp.write(b": connected\n\n")
+            # 补发断线期间漏掉的事件(全文快照,直接重放即还原画面)
+            for seq, data in list(self._buffer):
+                if seq > last_id:
+                    await resp.write(f"id: {seq}\ndata: {data}\n\n".encode("utf-8"))
             while True:
                 try:
-                    data = await asyncio.wait_for(q.get(), timeout=15)
+                    seq, data = await asyncio.wait_for(q.get(), timeout=15)
                 except asyncio.TimeoutError:
                     await resp.write(b": ping\n\n")  # 心跳保活,防代理掐断
                     continue
-                await resp.write(f"data: {data}\n\n".encode("utf-8"))
+                await resp.write(f"id: {seq}\ndata: {data}\n\n".encode("utf-8"))
         except (asyncio.CancelledError, ConnectionResetError, RuntimeError):
             pass
         finally:

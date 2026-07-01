@@ -71,7 +71,13 @@
   .row.ai .bubble{background:var(--panel);border:1px solid var(--line);border-bottom-left-radius:5px}
   .bubble.pending{color:var(--dim)}
   .status{font-size:13px;color:var(--dim);margin:2px 0 8px;display:flex;flex-wrap:wrap;gap:6px}
-  .status .chip{background:var(--panel2);border:1px solid var(--line);border-radius:20px;padding:2px 10px}
+  .status .chip{background:var(--panel2);border:1px solid var(--line);border-radius:20px;padding:2px 10px;
+    display:inline-flex;align-items:center}
+  .status .chip.live{color:var(--accent)}
+  .dots{display:inline-flex;gap:3px;margin-left:5px;align-items:center}
+  .dots i{width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.28;animation:blink 1.2s infinite}
+  .dots i:nth-child(2){animation-delay:.2s} .dots i:nth-child(3){animation-delay:.4s}
+  @keyframes blink{0%,60%,100%{opacity:.28} 30%{opacity:1}}
   .think{font-size:13px;color:var(--dim);border-left:2px solid var(--line);padding:2px 0 2px 10px;margin-bottom:8px;
     white-space:pre-wrap;max-height:140px;overflow:auto;display:none}
   .think.show{display:block}
@@ -185,6 +191,7 @@ const S = {
   images: [],           // {data,media_type,url}
   stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
   es: null,
+  lastId: 0,            // 已处理的最大事件编号,用于断线重连后去重
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -328,15 +335,19 @@ function scrollDown(){ const m=$("#messages"); requestAnimationFrame(()=>{ m.scr
 function connect(){
   if(S.es) S.es.close();
   S.es = new EventSource("/events?token="+encodeURIComponent(S.token));
-  S.es.onmessage = ev=>{ try{ handleEvent(JSON.parse(ev.data)); }catch(e){} };
-  S.es.onerror = ()=>{ /* EventSource 会自动重连 */ };
+  S.es.onmessage = ev=>{ try{
+    const d=JSON.parse(ev.data);
+    if(d.id){ if(d.id<=S.lastId) return; S.lastId=d.id; }  // 补发/重复的老事件直接丢弃
+    handleEvent(d);
+  }catch(e){} };
+  S.es.onerror = ()=>{ /* EventSource 会自动重连,并带上 Last-Event-ID */ };
 }
 function ensureStream(){
   // 为当前会话准备一个流式 assistant 气泡(含状态行/思考/正文)
   if(S.stream) return S.stream;
   const row=el("div","row ai");
   const bubble=el("div","bubble");
-  const status=el("div","status"); status.innerHTML='<span class="chip">💭 思考中…</span>';
+  const status=el("div","status");
   const thinktog=el("div","thinktog"); thinktog.textContent="▸ 思考过程";
   const think=el("div","think");
   const body=el("div"); body.dataset.raw="";
@@ -344,6 +355,7 @@ function ensureStream(){
   row.append(bubble); $("#wrap").append(row);
   thinktog.onclick=()=>{ think.classList.toggle("show"); };
   S.stream={row,bubble,status,think,thinktog,body,tools:[]};
+  renderStatus();  // 初始即显示"💭 思考中…"动画
   scrollDown(); return S.stream;
 }
 let renderPending=false;
@@ -351,10 +363,16 @@ function renderBody(){
   if(renderPending||!S.stream) return; renderPending=true;
   requestAnimationFrame(()=>{ renderPending=false; if(S.stream){ S.stream.body.innerHTML=mdToHtml(S.stream.body.dataset.raw); scrollDown(); } });
 }
+const DOTS='<span class="dots"><i></i><i></i><i></i></span>';
 function renderStatus(){
-  if(!S.stream) return; const t=S.stream.tools;
-  if(!t.length){ S.stream.status.innerHTML = S.stream.body.dataset.raw?'':'<span class="chip">💭 思考中…</span>'; return; }
-  S.stream.status.innerHTML = t.map(x=>'<span class="chip">🔧 '+esc(x.name)+(x.done?(x.ok?" ✓":" ✗"):" ⏳")+'</span>').join("");
+  if(!S.stream) return;
+  const t=S.stream.tools, hasBody=!!S.stream.body.dataset.raw;
+  // 工具 chip:未完成的用动画点表示"进行中",完成的打 ✓/✗
+  const bits = t.map(x=>'<span class="chip">🔧 '+esc(x.name)+(x.done?(x.ok?" ✓":" ✗"):DOTS)+'</span>');
+  // 持续的"输入中"指示:还没出正文→思考中;已在出正文→输入中(始终带动画,像 TG)
+  if(!hasBody && !t.some(x=>!x.done)) bits.push('<span class="chip live">💭 思考中'+DOTS+'</span>');
+  else if(hasBody) bits.push('<span class="chip live">✍️ 输入中'+DOTS+'</span>');
+  S.stream.status.innerHTML = bits.join("");
 }
 function finalizeStream(finalText){
   if(!S.stream) return;
@@ -369,8 +387,8 @@ function handleEvent(e){
   }
   switch(e.type){
     case "start": ensureStream(); break;
-    case "thinking": { const s=ensureStream(); s.thinktog.style.display="block"; s.think.textContent+=e.delta; break; }
-    case "text": { const s=ensureStream(); s.body.dataset.raw+=e.delta; renderBody(); renderStatus(); break; }
+    case "thinking": { const s=ensureStream(); s.thinktog.style.display="block"; s.think.textContent=e.text; renderStatus(); break; }
+    case "text": { const s=ensureStream(); s.body.dataset.raw=e.text; renderBody(); renderStatus(); break; }
     case "tool_start": { const s=ensureStream(); s.tools.push({name:e.name,done:false,ok:true}); renderStatus(); break; }
     case "tool_end": { const s=ensureStream(); const it=s.tools.find(x=>x.name===e.name&&!x.done)||s.tools[s.tools.length-1]; if(it){it.done=true;it.ok=e.ok;} renderStatus(); break; }
     case "done": finalizeStream(e.text); loadConvs(); break;
@@ -382,6 +400,7 @@ function handleEvent(e){
   }
 }
 function renderChoice(e){
+  if(S.stream && !S.stream.body.dataset.raw){ S.stream.row.remove(); }  // 清掉可能残留的空"思考中"气泡
   S.stream=null;
   const b=addBubble("ai", e.prompt);
   const box=el("div","choice");
@@ -394,6 +413,8 @@ async function send(text){
   text=(text||"").trim(); if(!text && !S.images.length) return;
   const imgs=S.images.map(x=>x.url);
   if(text || imgs.length) addBubble("me", text||"(图片)", imgs);
+  // 非命令消息:立刻挂一个"💭 思考中…"气泡,不等服务器 start 事件,反馈更即时(像 TG 秒回 typing)
+  if(!text.startsWith("/") && !S.stream){ ensureStream(); }
   const payload={conv:S.conv, text, images:S.images.map(x=>({data:x.data,media_type:x.media_type}))};
   // 新会话:发出第一条后,把本地临时会话转正
   const wasLocal=String(S.conv).startsWith("local-");
