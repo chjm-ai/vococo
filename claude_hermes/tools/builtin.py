@@ -287,6 +287,41 @@ async def delete_cron_job(args: dict) -> dict:
     return _ok(f"🗑 已删除任务「{j.get('name')}」。")
 
 
+@tool(
+    "probe",
+    "报告当前 clarify 上下文(session_key / adapter / chat_id / 待答事项)。"
+    "用于诊断:看当前轮是否有激活的 clarify 环境、待答了多少个问题。",
+    {"type": "object", "properties": {}},
+)
+async def probe(args: dict) -> dict:
+    from ..gateway import clarify
+
+    ctx = clarify.current()
+    if ctx is None:
+        return _ok("当前无 clarify 上下文(非 TG/Web 环境,或对话轮未激活)。")
+
+    session_key = ctx.session_key
+    pending_ids = clarify._by_session.get(session_key, [])
+    pending_count = len(pending_ids)
+
+    parts = [
+        f"会话 session_key: {session_key}",
+        f"adapter: {ctx.adapter.__class__.__name__}",
+        f"chat_id: {ctx.chat_id}",
+        f"待答事项: {pending_count} 个",
+    ]
+
+    if pending_ids:
+        parts.append("\n待答详情:")
+        for cid in pending_ids:
+            p = clarify._pending.get(cid)
+            if p:
+                choices_str = f"{len(p.choices)} 选项" if p.choices else "开放式"
+                parts.append(f"  - {cid}: {choices_str} · awaiting_text={p.awaiting_text}")
+
+    return _ok("\n".join(parts))
+
+
 def build_mcp_servers() -> dict:
     """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
     return {
@@ -299,6 +334,7 @@ def build_mcp_servers() -> dict:
                 list_cron_jobs,
                 set_cron_job_enabled,
                 delete_cron_job,
+                probe,
             ],
         )
     }
