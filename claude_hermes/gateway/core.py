@@ -116,6 +116,7 @@ COMMAND_LIST: list[tuple[str, str]] = [
     ("model", "查看或切换模型,如 /model claude-opus-4-8"),
     ("history", "看最近历史"),
     ("status", "会话信息"),
+    ("suggest", "看/接受 Hermes 提的自动化建议"),
     ("help", "显示帮助"),
 ]
 HELP_TEXT = "可用命令:\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_LIST)
@@ -192,4 +193,59 @@ def handle_command(text: str, session_key: str, current_model: str) -> CommandOu
         return CommandOutcome(
             reply=f"会话:{session_key}\n模型:{current_model}\n本会话轮数:{n}"
         )
+    if cmd in ("/suggest", "/建议"):
+        return _handle_suggest(arg, session_key)
     return CommandOutcome(handled=False, reply=f"未知命令 {cmd} · /help 看命令")
+
+
+def _origin_from_session_key(session_key: str) -> dict | None:
+    """从会话键推导接受任务的推送目标(结果推回用户接受时所在的聊天)。"""
+    if session_key.startswith("tg:"):
+        try:
+            return {"platform": "telegram", "chat_id": int(session_key[3:])}
+        except ValueError:
+            return None
+    if ":" in session_key:  # 非统一模式 platform:chat_id
+        platform, _, cid = session_key.partition(":")
+        try:
+            return {"platform": platform, "chat_id": int(cid)}
+        except ValueError:
+            return {"platform": platform, "chat_id": cid}
+    # 统一主会话拿不到 chat_id → 回退到 REFLECT_TARGET
+    from .. import config
+
+    if ":" in config.REFLECT_TARGET:
+        platform, _, cid = config.REFLECT_TARGET.partition(":")
+        try:
+            return {"platform": platform.strip(), "chat_id": int(cid.strip())}
+        except ValueError:
+            return {"platform": platform.strip(), "chat_id": cid.strip()}
+    return None
+
+
+def _handle_suggest(arg: str, session_key: str) -> CommandOutcome:
+    """/suggest:无参列出待定建议(带接受/忽略按钮);accept/dismiss <ref> 处理单条。"""
+    from ..cron import suggestions
+
+    action, _, ref = arg.partition(" ")
+    action, ref = action.strip().lower(), ref.strip()
+
+    if action in ("accept", "接受") and ref:
+        job = suggestions.accept_suggestion(ref, origin=_origin_from_session_key(session_key))
+        if job is None:
+            return CommandOutcome(reply="没找到这条待定建议(可能已处理)。/suggest 看列表。")
+        return CommandOutcome(reply=f"✅ 已接受,建好定时任务「{job.get('name')}」。")
+    if action in ("dismiss", "忽略") and ref:
+        ok = suggestions.dismiss_suggestion(ref)
+        return CommandOutcome(reply="🗑 已忽略,同类不再提。" if ok else "没找到这条建议。")
+
+    pending = suggestions.list_pending()
+    if not pending:
+        return CommandOutcome(reply="✨ 暂无待定的自动化建议。")
+    lines = ["💡 待定的自动化建议(点按钮接受/忽略):"]
+    opts: list[tuple[str, str]] = []
+    for i, s in enumerate(pending, 1):
+        lines.append(f"{i}. {s['title']} — {s.get('description', '')}")
+        opts.append((f"/suggest accept {s['id']}", f"✅ 接受: {s['title']}"))
+        opts.append((f"/suggest dismiss {s['id']}", f"🗑 忽略: {s['title']}"))
+    return CommandOutcome(choice=Choice(prompt="\n".join(lines), options=opts))

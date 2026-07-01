@@ -77,6 +77,7 @@ DATA_DIR: Path = _ROOT / "data"
 
 # === 调度 / 心跳 ===
 CRON_JOBS_PATH: Path = DATA_DIR / "cron_jobs.json"
+SUGGESTIONS_PATH: Path = DATA_DIR / "suggestions.json"  # 待用户接受的自动化建议
 HEARTBEAT_PATH: Path = DATA_DIR / "heartbeat"
 SCHEDULER_TICK_SEC: int = int(os.environ.get("SCHEDULER_TICK_SEC", "30"))
 
@@ -115,14 +116,3 @@ REFLECT_ENABLED: bool = _parse_bool(os.environ.get("REFLECT_ENABLED", ""), False
 REFLECT_CRON: str = os.environ.get("REFLECT_CRON", "0 23 * * *").strip()
 # 反思结果推送目标 "platform:chat_id"(可选;不配则只写日志)
 REFLECT_TARGET: str = os.environ.get("REFLECT_TARGET", "").strip()
-
-# === 主动自检(proactive heartbeat)===
-# 默认关:开启后按 PROACTIVE_CRON 定时让 agent 读 AI_BRAIN/HEARTBEAT.md,
-# 自主判断此刻要不要主动提醒 Wesley;没事回 HEARTBEAT_OK 则静默,文件空则跳过省额度。
-# 注意:这与上面的 liveness 时间戳(HEARTBEAT_PATH)是两回事,别混淆。
-PROACTIVE_ENABLED: bool = _parse_bool(os.environ.get("PROACTIVE_ENABLED", ""), False)
-PROACTIVE_CRON: str = os.environ.get("PROACTIVE_CRON", "*/30 * * * *").strip()
-# 主动推送目标 "platform:chat_id"(不配则只写日志)
-PROACTIVE_TARGET: str = os.environ.get("PROACTIVE_TARGET", "").strip()
-# 关注清单文件:和 USER.md 放一起,方便手改
-PROACTIVE_FILE: Path = AI_BRAIN_DIR / "HEARTBEAT.md"

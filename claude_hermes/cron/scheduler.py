@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import json
 import time
+import uuid
 from typing import Awaitable, Callable
 
 import anyio
@@ -41,6 +42,29 @@ def save_jobs(jobs: list[dict]) -> None:
     config.CRON_JOBS_PATH.write_text(
         json.dumps(jobs, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def create_job(
+    *, name: str, prompt: str, schedule: dict, target: dict | None = None,
+    model: str | None = None,
+) -> dict:
+    """新建一个 cron 任务并落盘,返回该任务。接受建议(accept_suggestion)时由此创建。"""
+    jobs = load_jobs()
+    job = {
+        "id": uuid.uuid4().hex[:8],
+        "name": name,
+        "prompt": prompt,
+        "schedule": schedule,
+        "target": target,
+        "model": model,
+        "enabled": True,
+        "next_run_at": None,
+        "last_run_at": None,
+        "last_status": None,
+    }
+    jobs.append(job)
+    save_jobs(jobs)
+    return job
 
 
 def _next_run(schedule: dict, after: float) -> float | None:
@@ -99,11 +123,13 @@ async def _tick(push: PushFn) -> None:
 
 # === 记忆晋升:定时反思,把会话沉淀成 AI_BRAIN 长期记忆 ===
 _REFLECT_PROMPT = (
-    "下面是我们最近的对话。请回顾,挑出【值得长期记住】的东西"
-    "(踩过的坑+根因+修复、技术/方案决策、我明确表达的偏好、"
-    "某工具/服务器/项目的关键路径与配置),用 save_memory 沉淀成新主题记忆;"
-    "若属于已有分类(lessons/preferences/tech-decisions 等)就用文件工具按原格式追加。"
-    "没有值得记的就什么都别做,绝不为凑数硬写。最后一句话告诉我你记了什么(或没记)。\n\n"
+    "下面是我们最近的对话。请回顾,做两件事:\n"
+    "1)挑出【值得长期记住】的东西(踩过的坑+根因+修复、技术/方案决策、我明确表达的"
+    "偏好、某工具/服务器/项目的关键路径与配置),用 save_memory 沉淀成新主题记忆;"
+    "若属于已有分类(lessons/preferences/tech-decisions 等)就用文件工具按原格式追加。\n"
+    "2)如果发现我【反复问/反复做】的事适合排成定时任务(如每天简报、定期检查),"
+    "用 suggest_automation 提一条【建议】(不会自动开跑,等我一键接受)。\n"
+    "没有值得记/值得提的就什么都别做,绝不为凑数硬写。最后一句话告诉我你记了/提了什么(或没有)。\n\n"
     "[最近对话]\n{convo}"
 )
 
@@ -128,54 +154,22 @@ async def _reflect(push: PushFn) -> None:
         print(f"[反思] {summary or '(无输出)'}")
 
 
-# === 主动自检:定时让 agent 读 HEARTBEAT.md,自主判断要不要主动提醒 ===
-_PROACTIVE_PROMPT = (
-    "【后台自主心跳】现在是一次定时自检,Wesley 没有主动找你。\n"
-    "下面是他让你长期关注的清单。请判断【此刻】有没有值得【主动提醒/推送】给他的事"
-    "(到点该做的事、你能查到的异常或变化)。可以用工具去查(日历/文件/记忆等)。\n"
-    "- 没有任何值得打扰他的事 → 只回复四个字:HEARTBEAT_OK,别的什么都别说。\n"
-    "- 确有值得主动说的 → 用一两句话简短说清,像微信消息一样口语、直接。\n\n"
-    "[关注清单]\n{directive}"
-)
-
-
-def _read_directive() -> str:
-    """读 HEARTBEAT.md,去掉注释行(#)和空行;没有实质内容则返回空串(→ 跳过省额度)。"""
-    try:
-        text = config.PROACTIVE_FILE.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
-        return ""
-    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    return "\n".join(lines).strip()
-
-
-async def _proactive(push: PushFn) -> None:
-    """一次主动自检:文件空 → 跳过;agent 回 HEARTBEAT_OK → 静默;否则推送。"""
-    directive = _read_directive()
-    if not directive:
-        return  # 文件空/纯注释 → 不调 API,省额度
-    reply = await run_turn([], _PROACTIVE_PROMPT.format(directive=directive))
-    text = (reply.text or "").strip() if reply else ""
-    if not text or text.startswith("HEARTBEAT_OK"):
-        return  # agent 判断无事可说 → 静默不打扰
-    platform, _, chat_id = config.PROACTIVE_TARGET.partition(":")
-    if chat_id.strip():
-        await push(platform.strip(), chat_id.strip(), text)
-    else:
-        print(f"[主动] 无推送目标(PROACTIVE_TARGET),输出:{text}")
-
-
 def _schedule_after(expr: str, after: float) -> float:
     return croniter(expr, datetime.datetime.fromtimestamp(after)).get_next(float)
 
 
 async def run_scheduler(push: PushFn) -> None:
-    """常驻调度循环:心跳 + 到期任务 +(可选)定时反思。"""
+    """常驻调度循环:心跳 + 到期任务 +(可选)定时反思。启动时播种起步建议目录。"""
+    try:
+        from . import suggestion_catalog
+        n = suggestion_catalog.seed()
+        if n:
+            print(f"💡 已登记 {n} 条起步自动化建议(用 /建议 查看接受)")
+    except Exception as e:  # 播种失败不拖垮调度
+        print(f"[建议] 播种起步目录出错: {e}")
     extra = f" · 反思 {config.REFLECT_CRON}" if config.REFLECT_ENABLED else ""
-    extra += f" · 主动 {config.PROACTIVE_CRON}" if config.PROACTIVE_ENABLED else ""
     print(f"⏱  调度器启动(每 {config.SCHEDULER_TICK_SEC}s 一跳{extra})")
     reflect_next: float | None = None
-    proactive_next: float | None = None
     while True:
         try:
             _write_heartbeat()
@@ -190,16 +184,6 @@ async def run_scheduler(push: PushFn) -> None:
                         await _reflect(push)
                     except Exception as e:  # 反思失败不拖垮调度
                         print(f"[反思] 出错: {e}")
-            if config.PROACTIVE_ENABLED:
-                now = time.time()
-                if proactive_next is None:
-                    proactive_next = _schedule_after(config.PROACTIVE_CRON, now)
-                elif now >= proactive_next:
-                    proactive_next = _schedule_after(config.PROACTIVE_CRON, now)
-                    try:
-                        await _proactive(push)
-                    except Exception as e:  # 自检失败不拖垮调度
-                        print(f"[主动] 出错: {e}")
         except Exception as e:
             print(f"[调度器] tick 出错: {e}")
         await anyio.sleep(config.SCHEDULER_TICK_SEC)

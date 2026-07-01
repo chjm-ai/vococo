@@ -18,6 +18,7 @@ import re
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from .. import config
+from ..cron import suggestions
 from ..memory import session_store
 
 _TOPIC_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -144,10 +145,59 @@ def _append_index(topic: str, summary: str, category: str) -> None:
     index.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
 
 
+@tool(
+    "suggest_automation",
+    "给 Wesley 提一条【定时自动化建议】(不会自动开跑,等他用 /建议 一键接受)。"
+    "当你发现他反复问/做同一件事、适合排成定时任务时用。\n"
+    "title:简短名;description:一句话说明做什么;cron:5 段 cron 表达式"
+    "(如 '0 8 * * *' = 每天早 8 点);prompt:到点时你要执行的任务指令;"
+    "dedup_key:去重键(同键被忽略后不再提,省略则用 title)。",
+    {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "cron": {"type": "string"},
+            "prompt": {"type": "string"},
+            "dedup_key": {"type": "string"},
+        },
+        "required": ["title", "description", "cron", "prompt"],
+    },
+)
+async def suggest_automation(args: dict) -> dict:
+    title = (args.get("title") or "").strip()
+    description = (args.get("description") or "").strip()
+    cron = (args.get("cron") or "").strip()
+    prompt = (args.get("prompt") or "").strip()
+    dedup_key = (args.get("dedup_key") or "").strip() or f"usage:{title}"
+    if not (title and cron and prompt):
+        return _ok("suggest_automation 需要 title / cron / prompt 都非空。")
+    try:
+        from croniter import croniter
+
+        croniter(cron)
+    except Exception:
+        return _ok(f"cron 表达式「{cron}」不合法(要 5 段,如 '0 8 * * *')。")
+    rec = suggestions.add_suggestion(
+        title=title,
+        description=description,
+        source="usage",
+        job_spec={
+            "name": title,
+            "prompt": prompt,
+            "schedule": {"kind": "cron", "expr": cron},
+        },
+        dedup_key=dedup_key,
+    )
+    if rec is None:
+        return _ok(f"「{title}」这类建议已提过或建议已满,跳过(不重复打扰)。")
+    return _ok(f"✅ 已提建议「{title}」。用 /建议 查看并一键接受(接受后才会真正定时跑)。")
+
+
 def build_mcp_servers() -> dict:
     """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
     return {
         "hermes": create_sdk_mcp_server(
-            "hermes", tools=[recall_past, save_memory]
+            "hermes", tools=[recall_past, save_memory, suggest_automation]
         )
     }
