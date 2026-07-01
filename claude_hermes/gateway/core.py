@@ -123,7 +123,8 @@ HELP_TEXT = "可用命令:\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_LI
 # 可选模型(/model 无参时弹这些供选择)
 MODEL_CHOICES: list[tuple[str, str]] = [
     ("claude-opus-4-8", "Opus 4.8 · 最强(吃周限额)"),
-    ("claude-sonnet-4-6", "Sonnet 4.6 · 日常均衡"),
+    ("claude-sonnet-5", "Sonnet 5 · 日常均衡(新)"),
+    ("claude-sonnet-4-6", "Sonnet 4.6 · 上一代均衡"),
     ("claude-haiku-4-5", "Haiku 4.5 · 最快最省"),
 ]
 
