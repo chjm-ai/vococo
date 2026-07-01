@@ -111,3 +111,12 @@ def test_save_missing_fields(isolated):
         {"topic": "a", "title": "", "summary": "y", "body": "z"}
     )))
     assert "四项都非空" in out
+
+
+def test_save_summary_too_long(isolated):
+    from claude_hermes.tools import builtin
+
+    out = _text(_run(builtin.save_memory.handler(
+        {"topic": "long", "title": "x", "summary": "字" * 200, "body": "z"}
+    )))
+    assert "太长" in out
