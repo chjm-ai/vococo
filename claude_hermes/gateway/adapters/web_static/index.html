@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0b0d10">
@@ -33,7 +33,8 @@
   #login .err{color:var(--err);font-size:13px;height:18px;margin-top:8px}
 
   /* 布局 */
-  #app{display:flex;height:100%;overflow:hidden}
+  #app{display:flex;overflow:hidden;
+    position:fixed;top:var(--app-top,0);left:0;right:0;height:var(--app-h,100%)}
   #sidebar{width:280px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);
     display:flex;flex-direction:column;transition:transform .25s ease;z-index:30}
   #sidebar .shead{padding:16px 16px 10px;display:flex;align-items:center;gap:8px}
@@ -106,6 +107,8 @@
   /* 输入区 */
   #composer{border-top:1px solid var(--line);background:var(--bg);padding:10px 12px;
     padding-bottom:calc(10px + env(safe-area-inset-bottom))}
+  /* 键盘弹出时:此刻已无 home indicator 留白,去掉安全区、缩小底部间距,让输入框贴近键盘 */
+  body.kb #composer{padding-bottom:6px;padding-top:8px}
   #thumbs{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
   #thumbs .t{position:relative}
   #thumbs img{width:56px;height:56px;object-fit:cover;border-radius:8px}
@@ -424,6 +427,24 @@ $("#modelBtn").onclick = ()=>send("/model");
 $("#hamb").onclick = ()=>{ $("#sidebar").classList.add("open"); $("#backdrop").classList.add("show"); };
 $("#backdrop").onclick = closeSidebar;
 function closeSidebar(){ $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("show"); }
+
+// ── 键盘/视口自适应 ──────────────────────────────────────────────────────
+// 把 #app 高度绑定到「可视视口」而非布局视口:键盘弹出时整体缩短,
+// 输入框自动贴在键盘上方,既不被遮挡、间距也不会过大。
+function fitViewport(){
+  const vv = window.visualViewport; if(!vv) return;
+  const st = document.documentElement.style;
+  st.setProperty("--app-h", vv.height + "px");
+  st.setProperty("--app-top", vv.offsetTop + "px");
+  const kbOpen = (window.innerHeight - vv.height) > 120;  // 视口缩水超阈值 → 判定键盘弹出
+  document.body.classList.toggle("kb", kbOpen);
+  if(kbOpen) scrollDown();
+}
+if(window.visualViewport){
+  window.visualViewport.addEventListener("resize", fitViewport);
+  window.visualViewport.addEventListener("scroll", fitViewport);
+  fitViewport();
+}
 
 // ── 启动 ────────────────────────────────────────────────────────────────
 if(S.token){ tryEnter(); } else { $("#pw").focus(); }
