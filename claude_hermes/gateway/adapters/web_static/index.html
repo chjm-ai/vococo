@@ -131,6 +131,10 @@
     #hamb{display:flex}
     #backdrop.show{display:block}
   }
+  /* 桌面宽屏:基础字号调小(手机保持 16px 不变,避免 iOS 聚焦缩放) */
+  @media(min-width:761px){
+    html,body{font-size:15px}
+  }
 </style>
 </head>
 <body>
