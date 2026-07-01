@@ -638,15 +638,17 @@ function renderChoice(e){
   S.stream=null;
   const b=addBubble("ai", e.prompt);
   const box=el("div","choice");
-  for(const [cmd,label] of e.options){ const btn=el("button"); btn.textContent=label; btn.onclick=()=>{ box.remove(); send(cmd); }; box.append(btn); }
+  for(const [cmd,label] of e.options){ const btn=el("button"); btn.textContent=label; btn.onclick=()=>{ box.remove(); send(cmd, label); }; box.append(btn); }
   b.append(box); scrollDown();
 }
 
 // ── 发送 ────────────────────────────────────────────────────────────────
-async function send(text){
+async function send(text, display){
   text=(text||"").trim(); if(!text && !S.images.length) return;
   const imgs=S.images.map(x=>x.url);
-  if(text || imgs.length) addBubble("me", text||"(图片)", imgs);
+  // display:点按钮时传选项文字,气泡显示友好文字而非原始命令(如 /clarify id 0)
+  const shown=(display!=null)?display:text;
+  if(shown || imgs.length) addBubble("me", shown||"(图片)", imgs);
   // 非命令消息:立刻挂一个"💭 思考中…"气泡,不等服务器 start 事件,反馈更即时(像 TG 秒回 typing)
   if(!text.startsWith("/") && !S.stream){ ensureStream(); }
   const payload={conv:S.conv, text, images:S.images.map(x=>({data:x.data,media_type:x.media_type}))};
