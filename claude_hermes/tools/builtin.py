@@ -194,10 +194,192 @@ async def suggest_automation(args: dict) -> dict:
     return _ok(f"✅ 已提建议「{title}」。用 /建议 查看并一键接受(接受后才会真正定时跑)。")
 
 
+# === cron 任务管理(查看/停用/删除;创建仍走建议 consent-first)===
+def _sched_desc(sch: dict) -> str:
+    kind = sch.get("kind")
+    if kind == "cron":
+        return sch.get("expr", "?")
+    if kind == "interval":
+        return f"每{sch.get('minutes', 60)}分钟"
+    if kind == "once":
+        return "一次性"
+    return kind or "?"
+
+
+def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:
+    """按 id / 1-based 序号 / 名字(不分大小写)解析一个任务。"""
+    ref = ref.strip()
+    for j in jobs:
+        if j.get("id") == ref:
+            return j
+    if ref.isdigit():
+        i = int(ref) - 1
+        if 0 <= i < len(jobs):
+            return jobs[i]
+    for j in jobs:
+        if j.get("name", "").lower() == ref.lower():
+            return j
+    return None
+
+
+@tool(
+    "list_cron_jobs",
+    "列出当前所有定时任务(序号/id/名字/计划/是否启用/上次状态)。"
+    "用户问「有哪些定时任务/自动化在跑」时用。",
+    {"type": "object", "properties": {}},
+)
+async def list_cron_jobs(args: dict) -> dict:
+    from ..cron import scheduler
+
+    jobs = scheduler.load_jobs()
+    if not jobs:
+        return _ok("当前没有定时任务。(建议用 /建议 或 suggest_automation 提议后接受)")
+    lines = []
+    for i, j in enumerate(jobs, 1):
+        state = "✅启用" if j.get("enabled") else "⏸停用"
+        lines.append(
+            f"{i}. [{j.get('id')}] {j.get('name')} — {_sched_desc(j.get('schedule', {}))}"
+            f" — {state} — 上次:{j.get('last_status') or '未跑'}"
+        )
+    return _ok("定时任务:\n" + "\n".join(lines))
+
+
+@tool(
+    "set_cron_job_enabled",
+    "启用或停用一个定时任务(按 序号/id/名字)。用户说「把 X 关掉/开启」时用。",
+    {
+        "type": "object",
+        "properties": {"ref": {"type": "string"}, "enabled": {"type": "boolean"}},
+        "required": ["ref", "enabled"],
+    },
+)
+async def set_cron_job_enabled(args: dict) -> dict:
+    from ..cron import scheduler
+
+    ref = (args.get("ref") or "").strip()
+    enabled = bool(args.get("enabled"))
+    jobs = scheduler.load_jobs()
+    j = _resolve_job(ref, jobs)
+    if not j:
+        return _ok(f"没找到任务「{ref}」。用 list_cron_jobs 看列表。")
+    j["enabled"] = enabled
+    if not enabled:
+        j["next_run_at"] = None
+    scheduler.save_jobs(jobs)
+    return _ok(f"{'✅ 已启用' if enabled else '⏸ 已停用'}任务「{j.get('name')}」。")
+
+
+@tool(
+    "delete_cron_job",
+    "删除一个定时任务(按 序号/id/名字)。不可恢复,删前最好先向用户确认。",
+    {"type": "object", "properties": {"ref": {"type": "string"}}, "required": ["ref"]},
+)
+async def delete_cron_job(args: dict) -> dict:
+    from ..cron import scheduler
+
+    ref = (args.get("ref") or "").strip()
+    jobs = scheduler.load_jobs()
+    j = _resolve_job(ref, jobs)
+    if not j:
+        return _ok(f"没找到任务「{ref}」。用 list_cron_jobs 看列表。")
+    jobs.remove(j)
+    scheduler.save_jobs(jobs)
+    return _ok(f"🗑 已删除任务「{j.get('name')}」。")
+
+
+@tool(
+    "ask_user",
+    "需要用户拍板/补充信息、你不该瞎猜时,用它问一个问题并【阻塞等回答】再继续本轮。"
+    "question:问题;options:可选的选项列表(给了就渲染成按钮,没给就开放式等用户打字)。"
+    "仅在 TG/Web 等消息渠道生效;拿到答案(字符串)后接着往下做。",
+    {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string"},
+            "options": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["question"],
+    },
+)
+async def ask_user(args: dict) -> dict:
+    from ..gateway import clarify
+
+    question = (args.get("question") or "").strip()
+    options = [str(o).strip() for o in (args.get("options") or []) if str(o).strip()]
+    if not question:
+        return _ok("ask_user 需要一个非空 question。")
+    ctx = clarify.current()
+    if ctx is None:
+        return _ok("(当前环境不支持交互提问,请直接在回复正文里问用户。)")
+
+    p = clarify.register(ctx.session_key, options)
+    try:
+        if options:
+            from ..gateway.core import Choice
+
+            opts = [(f"/clarify {p.clarify_id} {i}", o) for i, o in enumerate(options)]
+            opts.append((f"/clarify {p.clarify_id} other", "✍️ 其他(直接打字回答)"))
+            await ctx.adapter.present_choice(
+                ctx.chat_id, Choice(prompt=f"❓ {question}", options=opts)
+            )
+        else:
+            await ctx.adapter.send(ctx.chat_id, f"❓ {question}\n(直接回复即可)")
+    except Exception as e:
+        clarify.resolve(p.clarify_id, "")
+        return _ok(f"(提问没能发出去:{e};请直接在正文里问。)")
+
+    answer = await clarify.wait(p.clarify_id, config.CLARIFY_TIMEOUT)
+    if not answer:
+        return _ok("(用户未在时限内回答;请基于已有信息继续,或稍后再问。)")
+    return _ok(f"用户回答:{answer}")
+
+
+@tool(
+    "send_message",
+    "主动给用户发一条【独立消息】(不是本轮回复正文)。用于:单独发长内容、发进度提醒、"
+    "或从后台任务 ping 用户。to:'current'(默认,当前聊天)或 'platform:chat_id'(如 telegram:123)。",
+    {
+        "type": "object",
+        "properties": {"text": {"type": "string"}, "to": {"type": "string"}},
+        "required": ["text"],
+    },
+)
+async def send_message(args: dict) -> dict:
+    from ..gateway import clarify
+
+    text = (args.get("text") or "").strip()
+    to = (args.get("to") or "current").strip() or "current"
+    if not text:
+        return _ok("send_message 需要非空 text。")
+    if to == "current":
+        ctx = clarify.current()
+        if ctx is None:
+            return _ok("(当前无聊天上下文,无法主动发;请直接在正文回复。)")
+        await ctx.adapter.send(ctx.chat_id, text)
+        return _ok("已发送到当前聊天。")
+    if ":" not in to:
+        return _ok("to 应为 'current' 或 'platform:chat_id'(如 telegram:123)。")
+    platform, _, cid = to.partition(":")
+    cid = cid.strip()
+    target = int(cid) if cid.lstrip("-").isdigit() else cid
+    ok = await clarify.push(platform.strip(), target, text)
+    return _ok(f"已发送到 {to}。" if ok else "发送失败(网关未就绪或平台不存在)。")
+
+
 def build_mcp_servers() -> dict:
     """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
     return {
         "hermes": create_sdk_mcp_server(
-            "hermes", tools=[recall_past, save_memory, suggest_automation]
+            "hermes",
+            tools=[
+                recall_past,
+                save_memory,
+                suggest_automation,
+                list_cron_jobs,
+                set_cron_job_enabled,
+                delete_cron_job,
+                ask_user,
+                send_message,
+            ],
         )
     }
