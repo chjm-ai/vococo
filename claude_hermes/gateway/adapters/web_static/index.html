@@ -405,6 +405,7 @@ const S = {
   lastId: 0,            // 已处理的最大事件编号,用于断线重连后去重
   models: {default:"", choices:[]},  // /models 拉到的可选模型
   model: "",            // 当前会话使用的模型(空=用默认)
+  histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -608,25 +609,48 @@ function renderConvs(){
 }
 async function delConv(conv){
   if(!confirm("删除这个会话?")) return;
-  await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
-  if(S.conv===conv) S.conv="main";
-  await loadConvs(); await openConv(S.conv);
+  const idx=S.convs.findIndex(x=>x.conv===conv);
+  if(idx<0) return;
+  const removed=S.convs[idx], wasActive=(S.conv===conv);
+  // 乐观假删:先从列表移除并立即重绘,不等服务器
+  S.convs.splice(idx,1); delete S.histCache[conv]; renderConvs();
+  if(wasActive) openConv(S.convs[0]?S.convs[0].conv:"main");   // 删的是当前会话→切到最近一个
+  // 纯本地会话(从未发过消息)服务端没有记录,删完即止
+  if(String(conv).startsWith("local-")) return;
+  try{
+    await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
+  }catch(err){
+    // 删除失败:回滚列表并提示
+    S.convs.splice(idx,0,removed); renderConvs();
+    alert("删除失败,已恢复该会话");
+  }
 }
 
 // ── 打开 / 切换会话 ──────────────────────────────────────────────────────
+// 把一组 turns 铺进消息区(切会话 / 缓存回填共用)
+function renderTurns(turns){
+  $("#wrap").innerHTML="";
+  for(const t of turns){ addBubble("me", t.user); const b=addBubble("ai",""); b.innerHTML=mdToHtml(t.assistant); }
+  updateEmpty(); scrollDown();
+}
 async function openConv(conv){
   S.conv=conv; S.stream=null;
   const c=S.convs.find(x=>x.conv===conv);
   $("#convTitle").textContent = c ? (c.title||"新对话") : "新对话";
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   renderConvs(); closeSidebar();
-  $("#wrap").innerHTML=""; updateEmpty();
+  const cached = S.histCache[conv];
+  if(cached){ renderTurns(cached); }            // 命中缓存:立即渲染,消除"先闪空屏再出内容"
+  else { $("#wrap").innerHTML=""; updateEmpty(); }
   if(conv && !String(conv).startsWith("local-")){
     try{
       const r=await api("/history?conv="+encodeURIComponent(conv)); const d=await r.json();
       if(S.conv!==conv) return;   // 拉取期间已切到别的会话 → 丢弃过期结果,避免内容错乱
-      for(const t of d.turns){ addBubble("me", t.user); const b=addBubble("ai",""); b.innerHTML=mdToHtml(t.assistant); }
+      S.histCache[conv]=d.turns;
+      // 仅当与已渲染的缓存不一致才重绘,避免命中缓存时白闪一下
+      if(!cached || JSON.stringify(cached)!==JSON.stringify(d.turns)) renderTurns(d.turns);
     }catch(e){}
+    return;
   }
   if(S.conv!==conv) return;
   updateEmpty(); scrollDown();
@@ -694,6 +718,8 @@ function finalizeStream(finalText){
   S.stream=null; scrollDown();
 }
 function handleEvent(e){
+  // 会话有新回合 → 历史已变,作废其缓存,下次打开会重新拉取
+  if(e.type==="done"||e.type==="message") delete S.histCache[e.conv];
   if(e.conv!==S.conv){ // 别的会话在后台完成 → 刷新侧边栏,不打断当前视图
     if(e.type==="done"||e.type==="message") loadConvs();
     return;
