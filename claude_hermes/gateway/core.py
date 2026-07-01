@@ -110,6 +110,17 @@ async def converse(
             reply = ev.reply
     if reply is not None:
         session_store.append(session_key, user_text, reply.text)
+        if reply.context_tokens or reply.turn_tokens:
+            session_store.record_usage(
+                session_key,
+                reply.context_tokens,
+                reply.turn_tokens,
+                window=reply.context_window,
+                last_in=reply.input_fresh,
+                last_cache=reply.cache_read,
+                last_out=reply.output_tokens,
+                model=reply.model,
+            )
         await sink.done(reply)
     return reply
 

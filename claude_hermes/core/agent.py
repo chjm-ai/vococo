@@ -13,7 +13,6 @@ from typing import Any, AsyncIterator, Union
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
-    HookMatcher,
     ResultMessage,
     StreamEvent,
     ToolResultBlock,
@@ -24,15 +23,6 @@ from claude_agent_sdk import (
 from .. import config
 from ..tools.builtin import build_mcp_servers
 from .prompt import build_system_prompt
-
-
-def _build_hooks() -> dict:
-    """危险命令拦截:PreToolUse 挂在 Bash 上(DANGER_GUARD 开时)。"""
-    if not config.DANGER_GUARD:
-        return {}
-    from ..tools.danger import pretool_danger_hook
-
-    return {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[pretool_danger_hook])]}
 
 
 @dataclass
@@ -51,12 +41,37 @@ class ImageAttachment:
     media_type: str  # 如 image/jpeg
 
 
+# 各模型上下文窗口(token)。前缀匹配,未知默认 200k。
+# 注:Sonnet 支持 1M context 需专门开 beta header,本项目未开,故按 200k。
+_CONTEXT_WINDOWS: dict[str, int] = {
+    "claude-opus-4": 200_000,
+    "claude-sonnet-5": 200_000,
+    "claude-sonnet-4": 200_000,
+    "claude-haiku-4": 200_000,
+}
+
+
+def context_window(model: str) -> int:
+    m = (model or "").lower()
+    for prefix, win in _CONTEXT_WINDOWS.items():
+        if m.startswith(prefix):
+            return win
+    return 200_000
+
+
 @dataclass
 class AgentReply:
     text: str
     tool_calls: list[str]
     cost_usd: float | None
     is_error: bool
+    context_tokens: int = 0  # 当前上下文占用(input+cache),≈ 塞进窗口的总量
+    turn_tokens: int = 0  # 本轮新增吞吐(input+output),累计即"消耗"
+    context_window: int = 200_000  # 该模型的上下文窗口
+    input_fresh: int = 0  # 本轮非缓存输入
+    cache_read: int = 0  # 本轮缓存命中(便宜的复读)
+    output_tokens: int = 0  # 本轮输出
+    model: str = ""  # 实际使用的模型
 
 
 # === 流式事件类型 ===
@@ -175,7 +190,6 @@ async def stream_turn(
         include_partial_messages=True,
         mcp_servers=build_mcp_servers(),
         skills=config.SKILLS,  # None=全量;白名单则只挂这些(瘦身 tool schema)
-        hooks=_build_hooks(),  # 危险命令拦截
     )
 
     text_parts: list[str] = []
@@ -183,6 +197,12 @@ async def stream_turn(
     tool_name_by_id: dict[str, str] = {}
     cost_usd: float | None = None
     is_error = False
+    context_tokens = 0
+    turn_tokens = 0
+    input_fresh = 0
+    cache_read = 0
+    output_tokens = 0
+    used_model = model or config.MODEL
 
     async for msg in query(
         prompt=_build_prompt(history, user_text, images or []), options=options
@@ -223,6 +243,21 @@ async def stream_turn(
         elif isinstance(msg, ResultMessage):
             cost_usd = getattr(msg, "total_cost_usd", None)
             is_error = bool(getattr(msg, "is_error", False))
+            u = getattr(msg, "usage", None) or {}
+            in_t = int(u.get("input_tokens", 0) or 0)
+            out_t = int(u.get("output_tokens", 0) or 0)
+            cache_r = int(u.get("cache_read_input_tokens", 0) or 0)
+            cache_c = int(u.get("cache_creation_input_tokens", 0) or 0)
+            # input_tokens 不含缓存,上下文实际占用 = 新处理 + 缓存复用
+            input_fresh = in_t + cache_c  # 本轮真正处理的输入(含新写入缓存的部分)
+            cache_read = cache_r  # 缓存命中(便宜的复读)
+            output_tokens = out_t
+            context_tokens = input_fresh + cache_read  # 二者之和 = 塞进窗口的总量
+            turn_tokens = input_fresh + out_t  # 本轮新鲜吞吐,累计即消耗(不含缓存复读)
+            # 实际模型优先取 model_usage 的 key(SDK 报告的真实模型)
+            mu = getattr(msg, "model_usage", None) or {}
+            if mu:
+                used_model = next(iter(mu), used_model)
 
     yield Done(
         AgentReply(
@@ -230,6 +265,13 @@ async def stream_turn(
             tool_calls=tool_calls,
             cost_usd=cost_usd,
             is_error=is_error,
+            context_tokens=context_tokens,
+            turn_tokens=turn_tokens,
+            context_window=context_window(used_model),
+            input_fresh=input_fresh,
+            cache_read=cache_read,
+            output_tokens=output_tokens,
+            model=used_model,
         )
     )
 

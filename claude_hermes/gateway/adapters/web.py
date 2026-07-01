@@ -69,8 +69,22 @@ class _WebSink(Sink):
         )
 
     async def done(self, reply: AgentReply) -> None:
+        # converse() 已在此之前写好 token 计量,读回最新明细推给前端(实时刷新顶栏)
+        key = config.resolve_session_key("web", self.conv)
+        meta = session_store.session_summary(key)
         self.a._emit(
-            {"conv": self.conv, "type": "done", "text": reply.text or "(空回复)"}
+            {
+                "conv": self.conv,
+                "type": "done",
+                "text": reply.text or "(空回复)",
+                "ctx_tokens": meta.get("ctx_tokens", 0),
+                "total_tokens": meta.get("total_tokens", 0),
+                "ctx_window": meta.get("ctx_window", 0),
+                "last_in": meta.get("last_in", 0),
+                "last_cache": meta.get("last_cache", 0),
+                "last_out": meta.get("last_out", 0),
+                "model": meta.get("model", ""),
+            }
         )
 
 

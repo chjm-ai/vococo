@@ -42,10 +42,26 @@ def _conn() -> sqlite3.Connection:
         )
         _DB.execute("PRAGMA journal_mode=WAL")
         _DB.executescript(_SCHEMA)
-        # 迁移:session_meta 加 title 列(Web 会话列表用,老库平滑升级)
+        # 迁移:session_meta 增列(老库平滑升级)
         cols = {r[1] for r in _DB.execute("PRAGMA table_info(session_meta)")}
-        if "title" not in cols:
+        if "title" not in cols:  # Web 会话列表用
             _DB.execute("ALTER TABLE session_meta ADD COLUMN title TEXT")
+        # token 计量:ctx=当前上下文占用,total=累计消耗,window=模型窗口,
+        # last_*=最近一轮明细(展开面板用),model=实际模型
+        for col in (
+            "ctx_tokens",
+            "total_tokens",
+            "ctx_window",
+            "last_in",
+            "last_cache",
+            "last_out",
+        ):
+            if col not in cols:
+                _DB.execute(
+                    f"ALTER TABLE session_meta ADD COLUMN {col} INTEGER DEFAULT 0"
+                )
+        if "model" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN model TEXT")
         _DB.commit()
     return _DB
 
@@ -77,10 +93,44 @@ def new_session(session_key: str) -> None:
     row = c.execute(
         "SELECT COALESCE(MAX(id),0) FROM turns WHERE session_key=?", (session_key,)
     ).fetchone()
+    # 上下文清零 → token 计量也归零(进度/消耗都描述"当前窗口")
     c.execute(
-        "INSERT INTO session_meta(session_key, watermark_id) VALUES (?,?) "
-        "ON CONFLICT(session_key) DO UPDATE SET watermark_id=excluded.watermark_id",
+        "INSERT INTO session_meta(session_key, watermark_id, ctx_tokens, total_tokens) "
+        "VALUES (?,?,0,0) "
+        "ON CONFLICT(session_key) DO UPDATE SET "
+        "watermark_id=excluded.watermark_id, ctx_tokens=0, total_tokens=0, "
+        "last_in=0, last_cache=0, last_out=0",
         (session_key, row[0]),
+    )
+    c.commit()
+
+
+def record_usage(
+    session_key: str,
+    ctx_tokens: int,
+    add_tokens: int,
+    *,
+    window: int = 0,
+    last_in: int = 0,
+    last_cache: int = 0,
+    last_out: int = 0,
+    model: str = "",
+) -> None:
+    """一轮结束后更新 token 计量:ctx_tokens/明细取最新(=当前上下文占用),
+    total_tokens 累加(=当前窗口的消耗)。"""
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta"
+        "(session_key, watermark_id, ctx_tokens, total_tokens, ctx_window, "
+        " last_in, last_cache, last_out, model) "
+        "VALUES (?,0,?,?,?,?,?,?,?) "
+        "ON CONFLICT(session_key) DO UPDATE SET "
+        "ctx_tokens=excluded.ctx_tokens, "
+        "total_tokens=COALESCE(session_meta.total_tokens,0)+excluded.total_tokens, "
+        "ctx_window=excluded.ctx_window, last_in=excluded.last_in, "
+        "last_cache=excluded.last_cache, last_out=excluded.last_out, "
+        "model=excluded.model",
+        (session_key, ctx_tokens, add_tokens, window, last_in, last_cache, last_out, model),
     )
     c.commit()
 
@@ -98,6 +148,11 @@ def append(session_key: str, user_text: str, assistant_text: str) -> None:
 def clear(session_key: str) -> None:
     c = _conn()
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
+    c.execute(
+        "UPDATE session_meta SET ctx_tokens=0, total_tokens=0, "
+        "last_in=0, last_cache=0, last_out=0 WHERE session_key=?",
+        (session_key,),
+    )
     c.commit()
 
 
@@ -153,7 +208,10 @@ def list_sessions(prefix: str) -> list[dict]:
         # 还没 turn 的新会话用「当前时间」兜底,好让它在等首条回复期间稳定
         # 排在列表最前(前端按 last_ts 倒序);回复落库后自然换成真实 turn 时间。
         "SELECT k.session_key, COUNT(t.id), "
-        "  COALESCE(MAX(t.ts), strftime('%s','now')) "
+        "  COALESCE(MAX(t.ts), strftime('%s','now')), "
+        "  COALESCE(MAX(m.ctx_tokens),0), COALESCE(MAX(m.total_tokens),0), "
+        "  COALESCE(MAX(m.ctx_window),0), COALESCE(MAX(m.last_in),0), "
+        "  COALESCE(MAX(m.last_cache),0), COALESCE(MAX(m.last_out),0), MAX(m.model) "
         "FROM keys k "
         "LEFT JOIN session_meta m ON k.session_key = m.session_key "
         "LEFT JOIN turns t ON t.session_key = k.session_key "
@@ -162,16 +220,26 @@ def list_sessions(prefix: str) -> list[dict]:
         (prefix + "%", prefix + "%"),
     ).fetchall()
     out: list[dict] = []
-    for key, turns, last_ts in rows:
-        out.append(
-            {
-                "key": key,
-                "title": get_title(key) or "新对话",
-                "turns": turns,
-                "last_ts": last_ts,
-            }
-        )
+    for row in rows:
+        key, turns, last_ts = row[0], row[1], row[2]
+        item = {"key": key, "title": get_title(key) or "新对话", "turns": turns, "last_ts": last_ts}
+        item.update(_usage_fields(row[3:]))
+        out.append(item)
     return out
+
+
+def _usage_fields(vals) -> dict:
+    """把 (ctx, total, window, last_in, last_cache, last_out, model) 组装成统一字段。"""
+    ctx, total, window, l_in, l_cache, l_out, model = vals
+    return {
+        "ctx_tokens": ctx or 0,
+        "total_tokens": total or 0,
+        "ctx_window": window or 0,
+        "last_in": l_in or 0,
+        "last_cache": l_cache or 0,
+        "last_out": l_out or 0,
+        "model": model or "",
+    }
 
 
 def session_summary(session_key: str) -> dict:
@@ -184,12 +252,20 @@ def session_summary(session_key: str) -> dict:
     ).fetchone()
     turns = row[0] if row else 0
     last_ts = row[1] if row and row[1] else None
-    return {
+    trow = c.execute(
+        "SELECT COALESCE(ctx_tokens,0), COALESCE(total_tokens,0), "
+        "COALESCE(ctx_window,0), COALESCE(last_in,0), COALESCE(last_cache,0), "
+        "COALESCE(last_out,0), model FROM session_meta WHERE session_key=?",
+        (session_key,),
+    ).fetchone()
+    out = {
         "key": session_key,
         "title": get_title(session_key),
         "turns": turns,
         "last_ts": last_ts,
     }
+    out.update(_usage_fields(trow if trow else (0, 0, 0, 0, 0, 0, "")))
+    return out
 
 
 def delete_session(session_key: str) -> None:
