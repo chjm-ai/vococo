@@ -96,7 +96,8 @@
   #app{display:flex;overflow:hidden;
     position:fixed;top:var(--app-top,0);left:0;right:0;height:var(--app-h,100%)}
   #sidebar{width:280px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);
-    display:flex;flex-direction:column;transition:transform .25s cubic-bezier(.4,0,.2,1);z-index:30}
+    display:flex;flex-direction:column;
+    transition:transform .25s cubic-bezier(.4,0,.2,1),width .25s cubic-bezier(.4,0,.2,1);z-index:30}
   #sidebar .shead{padding:18px 16px 12px;display:flex;align-items:center;gap:10px}
   #sidebar .shead .brand{flex:1;display:flex;align-items:center;gap:9px;font-size:16px;font-weight:700}
   #sidebar .shead .brand .dot{width:26px;height:26px;border-radius:8px;
@@ -107,6 +108,12 @@
     transition:background .18s,border-color .18s,transform .12s}
   #newBtn:hover{border-color:var(--accent)}
   #newBtn:active{transform:scale(.95)}
+  /* 侧边栏收起按钮(仅桌面显示)*/
+  #collapseBtn{display:none;width:30px;height:30px;border-radius:9px;flex-shrink:0;
+    align-items:center;justify-content:center;font-size:18px;color:var(--dim);
+    transition:background .16s,color .16s,transform .12s}
+  #collapseBtn:hover{background:var(--panel2);color:var(--text)}
+  #collapseBtn:active{transform:scale(.9)}
   #convList{flex:1;overflow-y:auto;padding:6px 10px}
   .conv{padding:8px 12px;border-radius:10px;margin-bottom:1px;display:flex;align-items:center;gap:8px;
     color:var(--dim);position:relative;cursor:pointer;transition:background .16s,color .16s}
@@ -301,6 +308,10 @@
   /* 桌面宽屏:基础字号调小(手机保持 16px 不变,避免 iOS 聚焦缩放) */
   @media(min-width:761px){
     html,body{font-size:14px;line-height:1.55}
+    #collapseBtn{display:flex}
+    /* 收起:侧边栏宽度归零,顶栏 ☰ 变身为"展开"入口 */
+    body.sb-collapsed #sidebar{width:0;border-right-color:transparent;overflow:hidden}
+    body.sb-collapsed #hamb{display:flex}
   }
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -324,6 +335,7 @@
     <div class="shead">
       <div class="brand"><span class="dot">✦</span>会话</div>
       <button id="newBtn"><span>＋</span>新对话</button>
+      <button id="collapseBtn" title="收起侧边栏">«</button>
     </div>
     <div id="convList"></div>
     <div class="sfoot" id="sfoot">Hermes · Web</div>
@@ -778,9 +790,19 @@ $("#newBtn").onclick = ()=>{
   openConv("local-"+id); $("#ta").focus();
 };
 $("#themeBtn").onclick = toggleTheme;
-$("#hamb").onclick = ()=>{ $("#sidebar").classList.add("open"); $("#backdrop").classList.add("show"); };
+// 顶栏 ☰:桌面(收起态)= 展开侧边栏;移动端 = 抽屉式打开
+$("#hamb").onclick = ()=>{
+  if(window.innerWidth>760){ setSidebarCollapsed(false); }
+  else { $("#sidebar").classList.add("open"); $("#backdrop").classList.add("show"); }
+};
+$("#collapseBtn").onclick = ()=> setSidebarCollapsed(true);   // 侧边栏内「«」:收起
 $("#backdrop").onclick = closeSidebar;
 function closeSidebar(){ $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("show"); }
+// 桌面侧边栏折叠态(记忆到 localStorage)
+function setSidebarCollapsed(v){
+  document.body.classList.toggle("sb-collapsed", v);
+  try{ localStorage.setItem("hermes_sb", v?"1":"0"); }catch(e){}
+}
 
 // ── 回到底部按钮 ─────────────────────────────────────────────────────────
 $("#messages").addEventListener("scroll", ()=>{
@@ -809,6 +831,7 @@ if(window.visualViewport){
 }
 
 // ── 启动 ────────────────────────────────────────────────────────────────
+try{ if(localStorage.getItem("hermes_sb")==="1") document.body.classList.add("sb-collapsed"); }catch(e){}
 syncTheme();
 if(S.token){ tryEnter(); } else { $("#pw").focus(); }
 </script>
