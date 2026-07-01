@@ -40,10 +40,27 @@ def _load_user_profile() -> str:
     return f"\n\n=== 关于 Wesley(来自 AI_BRAIN/USER.md)===\n{text}" if text else ""
 
 
+def _load_memory_index() -> str:
+    """注入 AI_BRAIN/MEMORY.md 索引,让 agent「看得见」有哪些长期记忆可召回。
+
+    不注入的话,存进 AI_BRAIN 的记忆 agent 根本不知道存在,想不起来 recall_past
+    (社区点名的头号失败点:存了却没被读)。索引通常就几十行,成本极低。
+    """
+    index_md = config.AI_BRAIN_DIR / "MEMORY.md"
+    try:
+        text = index_md.read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, OSError):
+        return ""
+    return (
+        f"\n\n=== 你的长期记忆索引(需要时用 recall_past 或读对应文件展开)===\n{text}"
+        if text else ""
+    )
+
+
 def build_system_prompt() -> dict:
-    """返回 SDK 的 preset system prompt(claude_code 默认 + append 人格/画像)。"""
+    """返回 SDK 的 preset system prompt(claude_code 默认 + append 人格/画像/记忆索引)。"""
     return {
         "type": "preset",
         "preset": "claude_code",
-        "append": PERSONA + _load_user_profile(),
+        "append": PERSONA + _load_user_profile() + _load_memory_index(),
     }
