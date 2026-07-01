@@ -300,9 +300,11 @@ async function openConv(conv){
   if(conv && !String(conv).startsWith("local-")){
     try{
       const r=await api("/history?conv="+encodeURIComponent(conv)); const d=await r.json();
+      if(S.conv!==conv) return;   // 拉取期间已切到别的会话 → 丢弃过期结果,避免内容错乱
       for(const t of d.turns){ addBubble("me", t.user); const b=addBubble("ai",""); b.innerHTML=mdToHtml(t.assistant); }
     }catch(e){}
   }
+  if(S.conv!==conv) return;
   scrollDown();
 }
 
