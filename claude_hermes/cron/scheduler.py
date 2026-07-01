@@ -128,6 +128,43 @@ async def _reflect(push: PushFn) -> None:
         print(f"[反思] {summary or '(无输出)'}")
 
 
+# === 主动自检:定时让 agent 读 HEARTBEAT.md,自主判断要不要主动提醒 ===
+_PROACTIVE_PROMPT = (
+    "【后台自主心跳】现在是一次定时自检,Wesley 没有主动找你。\n"
+    "下面是他让你长期关注的清单。请判断【此刻】有没有值得【主动提醒/推送】给他的事"
+    "(到点该做的事、你能查到的异常或变化)。可以用工具去查(日历/文件/记忆等)。\n"
+    "- 没有任何值得打扰他的事 → 只回复四个字:HEARTBEAT_OK,别的什么都别说。\n"
+    "- 确有值得主动说的 → 用一两句话简短说清,像微信消息一样口语、直接。\n\n"
+    "[关注清单]\n{directive}"
+)
+
+
+def _read_directive() -> str:
+    """读 HEARTBEAT.md,去掉注释行(#)和空行;没有实质内容则返回空串(→ 跳过省额度)。"""
+    try:
+        text = config.PROACTIVE_FILE.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return ""
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    return "\n".join(lines).strip()
+
+
+async def _proactive(push: PushFn) -> None:
+    """一次主动自检:文件空 → 跳过;agent 回 HEARTBEAT_OK → 静默;否则推送。"""
+    directive = _read_directive()
+    if not directive:
+        return  # 文件空/纯注释 → 不调 API,省额度
+    reply = await run_turn([], _PROACTIVE_PROMPT.format(directive=directive))
+    text = (reply.text or "").strip() if reply else ""
+    if not text or text.startswith("HEARTBEAT_OK"):
+        return  # agent 判断无事可说 → 静默不打扰
+    platform, _, chat_id = config.PROACTIVE_TARGET.partition(":")
+    if chat_id.strip():
+        await push(platform.strip(), chat_id.strip(), text)
+    else:
+        print(f"[主动] 无推送目标(PROACTIVE_TARGET),输出:{text}")
+
+
 def _schedule_after(expr: str, after: float) -> float:
     return croniter(expr, datetime.datetime.fromtimestamp(after)).get_next(float)
 
@@ -135,8 +172,10 @@ def _schedule_after(expr: str, after: float) -> float:
 async def run_scheduler(push: PushFn) -> None:
     """常驻调度循环:心跳 + 到期任务 +(可选)定时反思。"""
     extra = f" · 反思 {config.REFLECT_CRON}" if config.REFLECT_ENABLED else ""
+    extra += f" · 主动 {config.PROACTIVE_CRON}" if config.PROACTIVE_ENABLED else ""
     print(f"⏱  调度器启动(每 {config.SCHEDULER_TICK_SEC}s 一跳{extra})")
     reflect_next: float | None = None
+    proactive_next: float | None = None
     while True:
         try:
             _write_heartbeat()
@@ -151,6 +190,16 @@ async def run_scheduler(push: PushFn) -> None:
                         await _reflect(push)
                     except Exception as e:  # 反思失败不拖垮调度
                         print(f"[反思] 出错: {e}")
+            if config.PROACTIVE_ENABLED:
+                now = time.time()
+                if proactive_next is None:
+                    proactive_next = _schedule_after(config.PROACTIVE_CRON, now)
+                elif now >= proactive_next:
+                    proactive_next = _schedule_after(config.PROACTIVE_CRON, now)
+                    try:
+                        await _proactive(push)
+                    except Exception as e:  # 自检失败不拖垮调度
+                        print(f"[主动] 出错: {e}")
         except Exception as e:
             print(f"[调度器] tick 出错: {e}")
         await anyio.sleep(config.SCHEDULER_TICK_SEC)

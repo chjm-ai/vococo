@@ -22,6 +22,7 @@ from ..memory import session_store
 
 _TOPIC_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 _DEFAULT_CATEGORY = "其他主题"
+_SUMMARY_MAX = 120  # summary 会写进索引,须一句话;详细内容放 body
 
 
 def _ok(text: str) -> dict:
@@ -84,6 +85,11 @@ async def save_memory(args: dict) -> dict:
         return _ok("save_memory 需要 topic / title / summary / body 四项都非空。")
     if not _TOPIC_RE.match(topic):
         return _ok(f"topic「{topic}」非法:只允许字母、数字、下划线、短横线(防路径穿越)。")
+    if len(summary) > _SUMMARY_MAX:
+        return _ok(
+            f"summary 太长了({len(summary)} 字)。它会写进索引,请压到一句话"
+            f"(≤{_SUMMARY_MAX} 字),详细内容放进 body。"
+        )
 
     mem_dir = config.AI_BRAIN_DIR / "memory"
     path = mem_dir / f"{topic}.md"
