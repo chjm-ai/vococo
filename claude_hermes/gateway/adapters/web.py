@@ -25,7 +25,7 @@ from aiohttp import web
 from ... import config
 from ...core.agent import AgentReply
 from ...memory import session_store
-from ..core import Choice, Sink
+from ..core import MODEL_CHOICES, Choice, Sink
 from .base import ImageAttachment, Incoming
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
@@ -240,6 +240,17 @@ class WebAdapter:
         main["conv"] = "main"
         return web.json_response({"main": main, "conversations": convs})
 
+    async def _handle_models(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        # 模型清单与默认值单一来源在 core.MODEL_CHOICES / config.MODEL
+        return web.json_response(
+            {
+                "default": config.MODEL,
+                "choices": [[v, label] for v, label in MODEL_CHOICES],
+            }
+        )
+
     async def _handle_history(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
@@ -277,6 +288,7 @@ class WebAdapter:
                 web.get("/events", self._handle_events),
                 web.post("/send", self._handle_send),
                 web.get("/conversations", self._handle_conversations),
+                web.get("/models", self._handle_models),
                 web.get("/history", self._handle_history),
                 web.post("/conv/rename", self._handle_rename),
                 web.post("/conv/delete", self._handle_delete),
