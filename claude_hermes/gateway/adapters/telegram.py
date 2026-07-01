@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import time
 from typing import AsyncIterator
 
@@ -18,6 +19,97 @@ from ..core import COMMAND_LIST, Choice, Sink
 from .base import ImageAttachment, Incoming
 
 TG_LIMIT = 4000
+
+# ── Markdown 表格 → 分组列表 ────────────────────────────────────────────────
+# Telegram 没有表格渲染,竖线表格会原样露出 `| --- |` 很丑。照原版 hermes 的
+# 做法:把每行拆成「小标题 + `• 表头：值`」的分组,纯文本就读得舒服,不靠等宽对齐。
+# GFM 分隔行:可选外竖线 + 若干 `---`(带可选对齐冒号)格,至少一个内部竖线。
+_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$")
+
+
+def _split_row(line: str) -> list[str]:
+    """一行 GFM 表格 → 去掉首尾竖线后的各单元格(已 strip)。"""
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def _is_table_row(line: str) -> bool:
+    s = line.strip()
+    return bool(s) and "|" in s
+
+
+def _render_table(block: list[str]) -> str:
+    """一张 GFM 表格(表头 + 分隔行 + 数据行) → 每行一组的列表文本。"""
+    if len(block) < 3:
+        return "\n".join(block)
+    headers = _split_row(block[0])
+    if len(headers) < 2:
+        return "\n".join(block)
+    first = _split_row(block[2])
+    # 首列比表头多一列 → 首列是行标签(如"项目/名称"),用它当小标题。
+    row_label = len(first) == len(headers) + 1
+
+    groups: list[str] = []
+    for idx, row in enumerate(block[2:], start=1):
+        cells = _split_row(row)
+        if row_label:
+            heading = cells[0] if cells and cells[0] else f"第{idx}行"
+            data = cells[1:]
+        else:
+            # 没有行标签列:拿本行第一个非空单元格当小标题,其余列做 bullet。
+            heading = next((c for c in cells if c), f"第{idx}行")
+            data = cells
+        if len(data) < len(headers):
+            data += [""] * (len(headers) - len(data))
+        else:
+            data = data[: len(headers)]
+        bullets = [
+            f"• {h}：{v}"
+            for h, v in zip(headers, data)
+            if not (not row_label and v == heading)  # 跳过与小标题重复的那格
+        ]
+        groups.append("\n".join([f"▸ {heading}", *bullets]))
+    return "\n\n".join(groups)
+
+
+def format_tables(text: str) -> str:
+    """把正文里的 Markdown 竖线表格改写成分组列表;代码块内的表格保持原样。
+
+    幂等:改写后不再含分隔行,重复调用不会二次处理。
+    """
+    if "|" not in text or "-" not in text:
+        return text
+    lines = text.split("\n")
+    out: list[str] = []
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if not in_fence and (
+            "|" in line
+            and i + 1 < len(lines)
+            and _TABLE_SEP_RE.match(lines[i + 1])
+        ):
+            block = [line, lines[i + 1]]
+            j = i + 2
+            while j < len(lines) and _is_table_row(lines[j]):
+                block.append(lines[j])
+                j += 1
+            out.append(_render_table(block))
+            i = j
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
 EDIT_MIN_INTERVAL = 0.8  # editMessageText 节流(TG 上限约每秒 1 次)
 EDIT_MIN_CHARS = 24      # 正文增量满这么多字才编辑(攒批省请求)
 TYPING_INTERVAL = 4.0    # 每 4s 发一次 typing(TG 的"正在输入…"约持续 5s)
@@ -82,8 +174,8 @@ class _TelegramSink(Sink):
 
     async def done(self, reply: AgentReply) -> None:
         self._stop_typing()  # 回复结束 → 停"正在输入…",用户即知已完成
-        # 最终只留正文(去掉状态行);超长则分片重发
-        self.answer = reply.text or "(空回复)"
+        # 最终只留正文(去掉状态行);竖线表格改写成分组列表;超长则分片重发
+        self.answer = format_tables(reply.text or "(空回复)")
         self.tools.clear()
         if len(self.answer) > TG_LIMIT or self.msg_id is None:
             await self.a.send(self.chat_id, self.answer)
@@ -146,6 +238,7 @@ class TelegramAdapter:
         return data["result"]
 
     async def send(self, chat_id: int | str, text: str) -> None:
+        text = format_tables(text)
         for i in range(0, len(text) or 1, TG_LIMIT):
             await self._call(
                 "sendMessage", chat_id=chat_id, text=text[i : i + TG_LIMIT] or "(空)"
