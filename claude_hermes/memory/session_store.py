@@ -137,14 +137,29 @@ def list_sessions(prefix: str) -> list[dict]:
 
     返回 [{key, title, turns, last_ts}, ...]。turns 只算当前上下文窗口
     (水位线之后),= 该会话现在带着多少轮记忆。
+
+    会话键来源取「有 turn」∪「有标题」:新建会话在 AI 回复完之前只写了
+    session_meta 标题、还没有 turn 落库,若只按 turns 表列会导致它刚发完
+    第一条就从侧边栏消失(要等回复完才出现)。带标题即视为一个会话。
     """
     c = _conn()
     rows = c.execute(
-        "SELECT t.session_key, COUNT(*), MAX(t.ts) "
-        "FROM turns t LEFT JOIN session_meta m ON t.session_key=m.session_key "
-        "WHERE t.session_key LIKE ? AND t.id > COALESCE(m.watermark_id, 0) "
-        "GROUP BY t.session_key ORDER BY MAX(t.ts) DESC",
-        (prefix + "%",),
+        "WITH keys AS ("
+        "  SELECT session_key FROM turns WHERE session_key LIKE ?"
+        "  UNION"
+        "  SELECT session_key FROM session_meta "
+        "  WHERE session_key LIKE ? AND title IS NOT NULL AND title != ''"
+        ") "
+        # 还没 turn 的新会话用「当前时间」兜底,好让它在等首条回复期间稳定
+        # 排在列表最前(前端按 last_ts 倒序);回复落库后自然换成真实 turn 时间。
+        "SELECT k.session_key, COUNT(t.id), "
+        "  COALESCE(MAX(t.ts), strftime('%s','now')) "
+        "FROM keys k "
+        "LEFT JOIN session_meta m ON k.session_key = m.session_key "
+        "LEFT JOIN turns t ON t.session_key = k.session_key "
+        "  AND t.id > COALESCE(m.watermark_id, 0) "
+        "GROUP BY k.session_key ORDER BY 3 DESC",
+        (prefix + "%", prefix + "%"),
     ).fetchall()
     out: list[dict] = []
     for key, turns, last_ts in rows:
