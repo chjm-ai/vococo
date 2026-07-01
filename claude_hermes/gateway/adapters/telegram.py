@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import AsyncIterator
 
@@ -18,6 +19,8 @@ from .base import Incoming
 TG_LIMIT = 4000
 EDIT_MIN_INTERVAL = 0.8  # editMessageText 节流(TG 上限约每秒 1 次)
 EDIT_MIN_CHARS = 24      # 正文增量满这么多字才编辑(攒批省请求)
+TYPING_INTERVAL = 4.0    # 每 4s 发一次 typing(TG 的"正在输入…"约持续 5s)
+TYPING_MAX_TICKS = 45    # 自限 ~180s,防某轮没走到 done 时心跳泄漏
 
 
 class TelegramError(RuntimeError):
@@ -40,6 +43,27 @@ class _TelegramSink(Sink):
         self.last_sent = ""
         self.last_edit = 0.0
         self._body_shown = False  # 首句正文是否已露出(用于立即刷新)
+        self._typing_task: asyncio.Task | None = None
+
+    def _ensure_typing(self) -> None:
+        """一轮内持续发 typing → TG 一直显示"正在输入…"(动态省略号),直到 done。"""
+        if self._typing_task is None or self._typing_task.done():
+            self._typing_task = asyncio.ensure_future(self._typing_loop())
+
+    async def _typing_loop(self) -> None:
+        for _ in range(TYPING_MAX_TICKS):
+            try:
+                await self.a._call(
+                    "sendChatAction", chat_id=self.chat_id, action="typing"
+                )
+            except (TelegramError, httpx.HTTPError):
+                pass
+            await anyio.sleep(TYPING_INTERVAL)
+
+    def _stop_typing(self) -> None:
+        if self._typing_task is not None and not self._typing_task.done():
+            self._typing_task.cancel()
+        self._typing_task = None
 
     def _compose(self) -> str:
         """状态行 + 正文。两者都有则状态行在上(正文出来后状态行只剩工具进度)。"""
@@ -50,11 +74,13 @@ class _TelegramSink(Sink):
         return head or body
 
     async def render(self) -> None:
+        self._ensure_typing()  # 第一个事件即开始"正在输入…",贯穿全轮
         # 思考→首句正文的瞬间立即刷新(否则要等满 0.8s/24字,体感卡)
         first_body = bool(self.answer) and not self._body_shown
         await self._flush(force=first_body)
 
     async def done(self, reply: AgentReply) -> None:
+        self._stop_typing()  # 回复结束 → 停"正在输入…",用户即知已完成
         # 最终只留正文(去掉状态行);超长则分片重发
         self.answer = reply.text or "(空回复)"
         self.tools.clear()
