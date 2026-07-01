@@ -9,7 +9,7 @@ run_turn() 是其上的便捷封装(累积成最终回复),给纯文本 chat 用
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Union
+from typing import Any, AsyncIterator, Union
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -31,6 +31,14 @@ class Turn:
 
     user: str
     assistant: str = ""
+
+
+@dataclass
+class ImageAttachment:
+    """一张图片,base64 编码,直接喂给 Claude 的多模态 content block。"""
+
+    data: str  # base64
+    media_type: str  # 如 image/jpeg
 
 
 @dataclass
@@ -109,8 +117,44 @@ def _preview(content, n: int = 80) -> str:
     return s[:n] + ("…" if len(s) > n else "")
 
 
+async def _image_prompt_stream(
+    content: list[dict[str, Any]],
+) -> AsyncIterator[dict[str, Any]]:
+    """把带图片的一轮包成 SDK 要的流式输入(单条 user 消息)。"""
+    yield {
+        "type": "user",
+        "session_id": "",
+        "message": {"role": "user", "content": content},
+        "parent_tool_use_id": None,
+    }
+
+
+def _build_prompt(
+    history: list[Turn], user_text: str, images: list[ImageAttachment]
+) -> str | AsyncIterator[dict[str, Any]]:
+    text = _compose_prompt(history, user_text)
+    if not images:
+        return text
+    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    for img in images:
+        content.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.media_type,
+                    "data": img.data,
+                },
+            }
+        )
+    return _image_prompt_stream(content)
+
+
 async def stream_turn(
-    history: list[Turn], user_text: str, model: str | None = None
+    history: list[Turn],
+    user_text: str,
+    model: str | None = None,
+    images: list[ImageAttachment] | None = None,
 ) -> AsyncIterator[Event]:
     """流式跑一轮,逐个 yield 事件,最后 yield Done。"""
     options = ClaudeAgentOptions(
@@ -130,7 +174,7 @@ async def stream_turn(
     is_error = False
 
     async for msg in query(
-        prompt=_compose_prompt(history, user_text), options=options
+        prompt=_build_prompt(history, user_text, images or []), options=options
     ):
         if isinstance(msg, StreamEvent):
             ev = msg.event if isinstance(msg.event, dict) else {}

@@ -87,6 +87,15 @@ TELEGRAM_ALLOWED_CHAT_IDS: set[int] = _parse_chat_ids(
     os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
 )
 
+# === Web 渠道(手机浏览器访问,自建 UI)===
+# 一个进程内起 aiohttp:SSE 流式 + 会话侧边栏。默认只监听 127.0.0.1,
+# 靠 Cloudflare Tunnel / Tailscale 把本地端口安全暴露到公网(带 HTTPS)。
+WEB_ENABLED: bool = _parse_bool(os.environ.get("WEB_ENABLED", ""), False)
+WEB_HOST: str = os.environ.get("WEB_HOST", "127.0.0.1").strip() or "127.0.0.1"
+WEB_PORT: int = int(os.environ.get("WEB_PORT", "8848"))
+# 访问口令:非空则每次数据请求都要带上(浏览器首次输入后记住)。留空=不校验(仅本机调试用)。
+WEB_AUTH_TOKEN: str = os.environ.get("WEB_AUTH_TOKEN", "").strip()
+
 # === 会话统一(跨入口连续)===
 # 开启时:CLI / TUI / Telegram / 飞书 都归到同一会话 SESSION_KEY,
 # "飞书问一半切 CLI 接着聊" 成立(单用户自用的默认)。关闭则按 平台:chat 隔离。
@@ -98,10 +107,14 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     """各入口统一经此取会话键。
 
     群聊(TG 群 chat_id 为负)永远独立成一个会话 = 一个群一个项目;
+    Web 端自带多会话管理:每个对话独立成 web:<conv_id>,不受 UNIFY 影响;
+    但特殊 conv_id "main" 汇入统一主会话(从网页也能接着 TG/CLI 那条线聊);
     私聊则按 UNIFY_SESSIONS:开统一则共享主会话,否则按平台隔离。
     """
     if platform == "telegram" and isinstance(chat_id, int) and chat_id < 0:
         return f"tg:{chat_id}"
+    if platform == "web":
+        return SESSION_KEY if chat_id == "main" else f"web:{chat_id}"
     return SESSION_KEY if UNIFY_SESSIONS else f"{platform}:{chat_id}"
 
 

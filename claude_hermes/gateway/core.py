@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from ..core.agent import (
     AgentReply,
     Done,
+    ImageAttachment,
     TextDelta,
     ThinkingDelta,
     ToolFinished,
@@ -87,12 +88,16 @@ class Sink:
 
 
 async def converse(
-    session_key: str, user_text: str, model: str | None, sink: Sink
+    session_key: str,
+    user_text: str,
+    model: str | None,
+    sink: Sink,
+    images: list[ImageAttachment] | None = None,
 ) -> AgentReply | None:
     """跑一轮:载入历史 → 流式 → 喂 sink → 落库。"""
     history = session_store.load_recent(session_key)
     reply: AgentReply | None = None
-    async for ev in stream_turn(history, user_text, model=model):
+    async for ev in stream_turn(history, user_text, model=model, images=images):
         if isinstance(ev, TextDelta):
             await sink.text(ev.text)
         elif isinstance(ev, ThinkingDelta):
@@ -124,7 +129,8 @@ HELP_TEXT = "可用命令:\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_LI
 # 可选模型(/model 无参时弹这些供选择)
 MODEL_CHOICES: list[tuple[str, str]] = [
     ("claude-opus-4-8", "Opus 4.8 · 最强(吃周限额)"),
-    ("claude-sonnet-4-6", "Sonnet 4.6 · 日常均衡"),
+    ("claude-sonnet-5", "Sonnet 5 · 日常均衡(新)"),
+    ("claude-sonnet-4-6", "Sonnet 4.6 · 上一代均衡"),
     ("claude-haiku-4-5", "Haiku 4.5 · 最快最省"),
 ]
 

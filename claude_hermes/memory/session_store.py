@@ -42,6 +42,10 @@ def _conn() -> sqlite3.Connection:
         )
         _DB.execute("PRAGMA journal_mode=WAL")
         _DB.executescript(_SCHEMA)
+        # 迁移:session_meta 加 title 列(Web 会话列表用,老库平滑升级)
+        cols = {r[1] for r in _DB.execute("PRAGMA table_info(session_meta)")}
+        if "title" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN title TEXT")
         _DB.commit()
     return _DB
 
@@ -94,6 +98,105 @@ def append(session_key: str, user_text: str, assistant_text: str) -> None:
 def clear(session_key: str) -> None:
     c = _conn()
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
+    c.commit()
+
+
+# === Web 会话管理(侧边栏)===
+# Web 端自带多会话:每个对话一个 session_key(如 web:1720000000abc)。
+# 下面这几个 helper 让前端能列出/命名/删除会话,TG/CLI 不受影响。
+
+
+def set_title(session_key: str, title: str) -> None:
+    """给会话起个显示名(upsert,不动 watermark)。"""
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta(session_key, watermark_id, title) VALUES (?,0,?) "
+        "ON CONFLICT(session_key) DO UPDATE SET title=excluded.title",
+        (session_key, title),
+    )
+    c.commit()
+
+
+def get_title(session_key: str) -> str | None:
+    row = _conn().execute(
+        "SELECT title FROM session_meta WHERE session_key=?", (session_key,)
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
+
+def ensure_title(session_key: str, from_text: str, limit: int = 24) -> None:
+    """会话还没名字时,拿首句用户输入截断当标题。"""
+    if get_title(session_key):
+        return
+    title = " ".join(from_text.split())[:limit].strip() or "新对话"
+    set_title(session_key, title)
+
+
+def list_sessions(prefix: str) -> list[dict]:
+    """列出 session_key 以 prefix 开头的会话摘要,最近活跃的排前面。
+
+    返回 [{key, title, turns, last_ts}, ...]。turns 只算当前上下文窗口
+    (水位线之后),= 该会话现在带着多少轮记忆。
+
+    会话键来源取「有 turn」∪「有标题」:新建会话在 AI 回复完之前只写了
+    session_meta 标题、还没有 turn 落库,若只按 turns 表列会导致它刚发完
+    第一条就从侧边栏消失(要等回复完才出现)。带标题即视为一个会话。
+    """
+    c = _conn()
+    rows = c.execute(
+        "WITH keys AS ("
+        "  SELECT session_key FROM turns WHERE session_key LIKE ?"
+        "  UNION"
+        "  SELECT session_key FROM session_meta "
+        "  WHERE session_key LIKE ? AND title IS NOT NULL AND title != ''"
+        ") "
+        # 还没 turn 的新会话用「当前时间」兜底,好让它在等首条回复期间稳定
+        # 排在列表最前(前端按 last_ts 倒序);回复落库后自然换成真实 turn 时间。
+        "SELECT k.session_key, COUNT(t.id), "
+        "  COALESCE(MAX(t.ts), strftime('%s','now')) "
+        "FROM keys k "
+        "LEFT JOIN session_meta m ON k.session_key = m.session_key "
+        "LEFT JOIN turns t ON t.session_key = k.session_key "
+        "  AND t.id > COALESCE(m.watermark_id, 0) "
+        "GROUP BY k.session_key ORDER BY 3 DESC",
+        (prefix + "%", prefix + "%"),
+    ).fetchall()
+    out: list[dict] = []
+    for key, turns, last_ts in rows:
+        out.append(
+            {
+                "key": key,
+                "title": get_title(key) or "新对话",
+                "turns": turns,
+                "last_ts": last_ts,
+            }
+        )
+    return out
+
+
+def session_summary(session_key: str) -> dict:
+    """单个会话摘要(给固定入口如统一主会话用)。"""
+    c = _conn()
+    wm = _watermark(c, session_key)
+    row = c.execute(
+        "SELECT COUNT(*), MAX(ts) FROM turns WHERE session_key=? AND id>?",
+        (session_key, wm),
+    ).fetchone()
+    turns = row[0] if row else 0
+    last_ts = row[1] if row and row[1] else None
+    return {
+        "key": session_key,
+        "title": get_title(session_key),
+        "turns": turns,
+        "last_ts": last_ts,
+    }
+
+
+def delete_session(session_key: str) -> None:
+    """彻底删掉一个会话(所有轮次 + 元数据)。"""
+    c = _conn()
+    c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
+    c.execute("DELETE FROM session_meta WHERE session_key=?", (session_key,))
     c.commit()
 
 

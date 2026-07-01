@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0d10">
+<title>Hermes</title>
+<style>
+  :root{
+    --bg:#0b0d10; --panel:#14171c; --panel2:#1b1f26; --line:#262b33;
+    --text:#e7eaee; --dim:#98a1ad; --accent:#5b9dff; --accent2:#3d7be0;
+    --user:#2b6ef0; --ok:#3fb950; --err:#f0603a; --radius:16px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    overscroll-behavior:none}
+  button{font:inherit;cursor:pointer;border:none;background:none;color:inherit}
+  a{color:var(--accent)}
+
+  /* 登录 */
+  #login{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:var(--bg);z-index:50;padding:24px}
+  #login .card{width:100%;max-width:340px;text-align:center}
+  #login h1{font-size:26px;margin:0 0 4px;letter-spacing:.5px}
+  #login p{color:var(--dim);margin:0 0 24px;font-size:14px}
+  #login input{width:100%;padding:14px 16px;border-radius:14px;border:1px solid var(--line);
+    background:var(--panel);color:var(--text);font-size:16px;margin-bottom:12px}
+  #login button{width:100%;padding:14px;border-radius:14px;background:var(--user);
+    color:#fff;font-weight:600}
+  #login .err{color:var(--err);font-size:13px;height:18px;margin-top:8px}
+
+  /* 布局 */
+  #app{display:flex;overflow:hidden;
+    position:fixed;top:var(--app-top,0);left:0;right:0;height:var(--app-h,100%)}
+  #sidebar{width:280px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;transition:transform .25s ease;z-index:30}
+  #sidebar .shead{padding:16px 16px 10px;display:flex;align-items:center;gap:8px}
+  #sidebar .shead b{font-size:17px;flex:1}
+  #newBtn{background:var(--user);color:#fff;border-radius:10px;padding:8px 12px;font-size:14px;font-weight:600}
+  #convList{flex:1;overflow-y:auto;padding:6px 10px}
+  .conv{padding:11px 12px;border-radius:12px;margin-bottom:4px;display:flex;align-items:center;gap:8px;
+    color:var(--dim);position:relative}
+  .conv.active{background:var(--panel2);color:var(--text)}
+  .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}
+  .conv .cmeta{font-size:11px;color:var(--dim);flex-shrink:0}
+  .conv.pinned .ct::before{content:"★ ";color:var(--accent)}
+  .conv .del{opacity:0;font-size:16px;color:var(--dim);padding:2px 6px;flex-shrink:0}
+  .conv:hover .del{opacity:.7}
+  .sfoot{padding:12px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim)}
+
+  /* 主区 */
+  main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
+  header.bar{display:flex;align-items:center;gap:10px;padding:12px 14px;
+    padding-top:calc(12px + env(safe-area-inset-top));
+    border-bottom:1px solid var(--line);background:var(--bg);position:sticky;top:0;z-index:10}
+  .icon{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+    font-size:20px;color:var(--dim);flex-shrink:0}
+  .icon:active{background:var(--panel)}
+  header.bar .title{flex:1;font-size:16px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #hamb{display:none}
+
+  #messages{flex:1;overflow-y:auto;padding:16px 14px 8px;-webkit-overflow-scrolling:touch}
+  .wrap{max-width:820px;margin:0 auto}
+  .row{display:flex;margin:10px 0}
+  .row.me{justify-content:flex-end}
+  .bubble{max-width:86%;padding:11px 15px;border-radius:var(--radius);white-space:normal;word-wrap:break-word;overflow-wrap:anywhere}
+  .row.me .bubble{background:var(--user);color:#fff;border-bottom-right-radius:5px}
+  .row.ai .bubble{background:var(--panel);border:1px solid var(--line);border-bottom-left-radius:5px}
+  .bubble.pending{color:var(--dim)}
+  .status{font-size:13px;color:var(--dim);margin:2px 0 8px;display:flex;flex-wrap:wrap;gap:6px}
+  .status .chip{background:var(--panel2);border:1px solid var(--line);border-radius:20px;padding:2px 10px;
+    display:inline-flex;align-items:center}
+  .status .chip.live{color:var(--accent)}
+  .dots{display:inline-flex;gap:3px;margin-left:5px;align-items:center}
+  .dots i{width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.28;animation:blink 1.2s infinite}
+  .dots i:nth-child(2){animation-delay:.2s} .dots i:nth-child(3){animation-delay:.4s}
+  @keyframes blink{0%,60%,100%{opacity:.28} 30%{opacity:1}}
+  .think{font-size:13px;color:var(--dim);border-left:2px solid var(--line);padding:2px 0 2px 10px;margin-bottom:8px;
+    white-space:pre-wrap;max-height:140px;overflow:auto;display:none}
+  .think.show{display:block}
+  .thinktog{font-size:12px;color:var(--accent);margin-bottom:6px;display:none}
+
+  /* markdown */
+  .bubble p{margin:.5em 0}
+  .bubble p:first-child{margin-top:0}.bubble p:last-child{margin-bottom:0}
+  .bubble h1,.bubble h2,.bubble h3,.bubble h4{margin:.7em 0 .4em;line-height:1.3}
+  .bubble h1{font-size:1.35em}.bubble h2{font-size:1.2em}.bubble h3{font-size:1.08em}
+  .bubble ul,.bubble ol{margin:.4em 0;padding-left:1.3em}
+  .bubble li{margin:.2em 0}
+  .bubble code{background:rgba(140,150,165,.18);padding:.12em .4em;border-radius:6px;font-size:.9em;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .row.me code{background:rgba(255,255,255,.2)}
+  .bubble pre.code{background:#0d1117;border:1px solid var(--line);border-radius:10px;padding:12px 14px;
+    overflow-x:auto;margin:.6em 0}
+  .bubble pre.code code{background:none;padding:0;font-size:.86em;line-height:1.5;color:#c9d3df}
+  .bubble blockquote{margin:.5em 0;padding:.2em .9em;border-left:3px solid var(--accent2);color:var(--dim)}
+  .bubble table{border-collapse:collapse;margin:.6em 0;width:100%;font-size:.92em;display:block;overflow-x:auto}
+  .bubble th,.bubble td{border:1px solid var(--line);padding:7px 11px;text-align:left}
+  .bubble th{background:var(--panel2);font-weight:600}
+  .bubble a{word-break:break-all}
+  .bubble img{max-width:100%;border-radius:10px}
+  .imgs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .imgs img{width:120px;height:120px;object-fit:cover;border-radius:10px}
+
+  /* 选项按钮(如 /model) */
+  .choice{display:flex;flex-direction:column;gap:8px;margin:8px 0}
+  .choice button{text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 14px}
+  .choice button:active{background:var(--panel2)}
+
+  /* 输入区 */
+  #composer{border-top:1px solid var(--line);background:var(--bg);padding:10px 12px;
+    padding-bottom:calc(10px + env(safe-area-inset-bottom))}
+  /* 键盘弹出时:此刻已无 home indicator 留白,去掉安全区、缩小底部间距,让输入框贴近键盘 */
+  body.kb #composer{padding-bottom:6px;padding-top:8px}
+  #thumbs{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  #thumbs .t{position:relative}
+  #thumbs img{width:56px;height:56px;object-fit:cover;border-radius:8px}
+  #thumbs .x{position:absolute;top:-6px;right:-6px;background:var(--err);color:#fff;border-radius:50%;
+    width:20px;height:20px;font-size:13px;display:flex;align-items:center;justify-content:center}
+  .inrow{display:flex;align-items:flex-end;gap:8px;background:var(--panel);border:1px solid var(--line);
+    border-radius:22px;padding:6px 6px 6px 12px}
+  #ta{flex:1;background:none;border:none;color:var(--text);resize:none;font:inherit;max-height:160px;
+    padding:7px 0;outline:none}
+  #imgBtn{color:var(--dim);font-size:22px;padding:6px}
+  #sendBtn{background:var(--user);color:#fff;border-radius:50%;width:40px;height:40px;font-size:19px;
+    flex-shrink:0;display:flex;align-items:center;justify-content:center}
+  #sendBtn:disabled{opacity:.4}
+
+  #backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:25}
+
+  @media(max-width:760px){
+    #sidebar{position:fixed;inset:0 auto 0 0;transform:translateX(-100%);box-shadow:2px 0 20px rgba(0,0,0,.4)}
+    #sidebar.open{transform:translateX(0)}
+    #hamb{display:flex}
+    #backdrop.show{display:block}
+  }
+  /* 桌面宽屏:基础字号调小(手机保持 16px 不变,避免 iOS 聚焦缩放) */
+  @media(min-width:761px){
+    html,body{font-size:15px}
+  }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="card">
+    <h1>Hermes</h1>
+    <p>输入访问口令</p>
+    <input id="pw" type="password" placeholder="口令" autocomplete="current-password">
+    <button id="loginBtn">进入</button>
+    <div class="err" id="loginErr"></div>
+  </div>
+</div>
+
+<div id="app" hidden>
+  <div id="backdrop"></div>
+  <aside id="sidebar">
+    <div class="shead"><b>会话</b><button id="newBtn">+ 新对话</button></div>
+    <div id="convList"></div>
+    <div class="sfoot" id="sfoot">Hermes · Web</div>
+  </aside>
+  <main>
+    <header class="bar">
+      <button class="icon" id="hamb">☰</button>
+      <div class="title" id="convTitle">主会话</div>
+      <button class="icon" id="modelBtn" title="切换模型">⚙︎</button>
+    </header>
+    <div id="messages"><div class="wrap" id="wrap"></div></div>
+    <form id="composer" autocomplete="off">
+      <div id="thumbs"></div>
+      <div class="inrow">
+        <button type="button" id="imgBtn">＋</button>
+        <textarea id="ta" rows="1" placeholder="发消息…"></textarea>
+        <button type="submit" id="sendBtn">↑</button>
+      </div>
+      <input type="file" id="file" accept="image/*" multiple hidden>
+    </form>
+  </main>
+</div>
+
+<script>
+"use strict";
+// ── 状态 ────────────────────────────────────────────────────────────────
+const S = {
+  token: localStorage.getItem("hermes_token") || "",
+  conv: "main",
+  convs: [],            // [{conv,title,turns,last_ts,pinned}]
+  images: [],           // {data,media_type,url}
+  stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
+  es: null,
+  lastId: 0,            // 已处理的最大事件编号,用于断线重连后去重
+};
+const $ = s => document.querySelector(s);
+const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
+const esc = s => s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// ── API ─────────────────────────────────────────────────────────────────
+async function api(path, opts={}){
+  opts.headers = Object.assign({"X-Auth-Token": S.token}, opts.headers||{});
+  const r = await fetch(path, opts);
+  if(r.status===401){ showLogin(); throw new Error("401"); }
+  return r;
+}
+
+// ── 登录 ────────────────────────────────────────────────────────────────
+function showLogin(){ $("#login").style.display="flex"; $("#app").hidden=true; if(S.es){S.es.close();S.es=null;} }
+async function tryEnter(){
+  try{
+    const r = await fetch("/conversations", {headers:{"X-Auth-Token":S.token}});
+    if(r.status===401){ $("#loginErr").textContent="口令错误"; return; }
+    localStorage.setItem("hermes_token", S.token);
+    $("#login").style.display="none"; $("#app").hidden=false;
+    connect(); await loadConvs();
+    // 默认打开最近活跃的会话(排序后的第一个),而非固定的主会话
+    await openConv(S.convs[0] ? S.convs[0].conv : "main");
+  }catch(e){ $("#loginErr").textContent="连接失败"; }
+}
+$("#loginBtn").onclick = ()=>{ S.token = $("#pw").value.trim(); tryEnter(); };
+$("#pw").onkeydown = e=>{ if(e.key==="Enter"){ S.token=$("#pw").value.trim(); tryEnter(); } };
+
+// ── Markdown 渲染(内置,不依赖 CDN)────────────────────────────────────────
+function inlineMd(t){
+  t = esc(t);
+  const links=[];                                   // 先把 [文字](url) 抠出来占位,避免下面裸链接二次包裹
+  t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,(m,txt,url)=>{
+    links.push('<a href="'+url+'" target="_blank" rel="noopener">'+txt+'</a>'); return "L"+(links.length-1)+""; });
+  t = t.replace(/`([^`]+)`/g,(m,c)=>"<code>"+c+"</code>");
+  t = t.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
+  t = t.replace(/\*([^*\n]+)\*/g,"<em>$1</em>");
+  t = t.replace(/(https?:\/\/[^\s<]+[^\s<.,)])/g,'<a href="$1" target="_blank" rel="noopener">$1</a>');
+  t = t.replace(/L(\d+)/g,(m,i)=>links[+i]);   // 还原 Markdown 链接
+  return t;
+}
+function mdToHtml(src){
+  src = (src||"").replace(/\r\n/g,"\n");
+  const codes=[];
+  src = src.replace(/```(\w*)\n?([\s\S]*?)```/g,(m,lang,code)=>{
+    codes.push('<pre class="code"><code>'+esc(code.replace(/\n$/,""))+"</code></pre>");
+    return " C"+(codes.length-1)+" ";
+  });
+  const L = src.split("\n"); let out=""; let i=0; let para=[];
+  const flush=()=>{ if(para.length){ out+="<p>"+para.map(inlineMd).join("<br>")+"</p>"; para=[]; } };
+  const sepRe=/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$/;
+  while(i<L.length){
+    let ln=L[i];
+    const cm=ln.match(/^ C(\d+) $/);
+    if(cm){ flush(); out+=codes[+cm[1]]; i++; continue; }
+    if(!ln.trim()){ flush(); i++; continue; }
+    let m;
+    if(m=ln.match(/^(#{1,6})\s+(.*)$/)){ flush(); const n=m[1].length; out+="<h"+n+">"+inlineMd(m[2])+"</h"+n+">"; i++; continue; }
+    if(/^\s*(---|\*\*\*|___)\s*$/.test(ln)){ flush(); out+="<hr>"; i++; continue; }
+    // 表格
+    if(ln.includes("|") && i+1<L.length && sepRe.test(L[i+1])){
+      flush();
+      const cells=r=>r.replace(/^\s*\|/,"").replace(/\|\s*$/,"").split("|").map(c=>c.trim());
+      const head=cells(ln); i+=2; const rows=[];
+      while(i<L.length && L[i].includes("|") && L[i].trim()){ rows.push(cells(L[i])); i++; }
+      let t="<table><thead><tr>"+head.map(h=>"<th>"+inlineMd(h)+"</th>").join("")+"</tr></thead><tbody>";
+      for(const r of rows){ t+="<tr>"+head.map((_,k)=>"<td>"+inlineMd(r[k]||"")+"</td>").join("")+"</tr>"; }
+      out+=t+"</tbody></table>"; continue;
+    }
+    if(m=ln.match(/^\s*>\s?(.*)$/)){ flush(); const q=[]; while(i<L.length&&(m=L[i].match(/^\s*>\s?(.*)$/))){ q.push(m[1]); i++; } out+="<blockquote>"+q.map(inlineMd).join("<br>")+"</blockquote>"; continue; }
+    if(/^\s*[-*+]\s+/.test(ln)){ flush(); let h="<ul>"; while(i<L.length&&(m=L[i].match(/^\s*[-*+]\s+(.*)$/))){ h+="<li>"+inlineMd(m[1])+"</li>"; i++; } out+=h+"</ul>"; continue; }
+    if(/^\s*\d+\.\s+/.test(ln)){ flush(); let h="<ol>"; while(i<L.length&&(m=L[i].match(/^\s*\d+\.\s+(.*)$/))){ h+="<li>"+inlineMd(m[1])+"</li>"; i++; } out+=h+"</ol>"; continue; }
+    para.push(ln); i++;
+  }
+  flush();
+  return out;
+}
+
+// ── 会话列表 ─────────────────────────────────────────────────────────────
+function fmtTime(ts){ if(!ts) return ""; const d=new Date(ts*1000), n=new Date();
+  const sameDay=d.toDateString()===n.toDateString();
+  return sameDay ? d.toTimeString().slice(0,5) : (d.getMonth()+1)+"/"+d.getDate(); }
+async function loadConvs(){
+  const r = await api("/conversations"); const d = await r.json();
+  const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
+  // 全部会话(含主会话)按最近活跃排序,最新的排最前面
+  S.convs = [main, ...d.conversations].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
+  renderConvs();
+}
+function renderConvs(){
+  const box=$("#convList"); box.innerHTML="";
+  for(const c of S.convs){
+    const e=el("div","conv"+(c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
+    const ct=el("div","ct"); ct.textContent=c.title||"新对话";
+    const meta=el("div","cmeta"); meta.textContent=(c.turns?c.turns+"轮 ":"")+fmtTime(c.last_ts);
+    e.append(ct,meta);
+    if(!c.pinned){ const del=el("button","del"); del.textContent="🗑"; del.onclick=ev=>{ev.stopPropagation();delConv(c.conv);}; e.append(del); }
+    e.onclick=()=>openConv(c.conv);
+    box.append(e);
+  }
+}
+async function delConv(conv){
+  if(!confirm("删除这个会话?")) return;
+  await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
+  if(S.conv===conv) S.conv="main";
+  await loadConvs(); await openConv(S.conv);
+}
+
+// ── 打开 / 切换会话 ──────────────────────────────────────────────────────
+async function openConv(conv){
+  S.conv=conv; S.stream=null;
+  const c=S.convs.find(x=>x.conv===conv);
+  $("#convTitle").textContent = c ? (c.title||"新对话") : "新对话";
+  renderConvs(); closeSidebar();
+  $("#wrap").innerHTML="";
+  if(conv && !String(conv).startsWith("local-")){
+    try{
+      const r=await api("/history?conv="+encodeURIComponent(conv)); const d=await r.json();
+      if(S.conv!==conv) return;   // 拉取期间已切到别的会话 → 丢弃过期结果,避免内容错乱
+      for(const t of d.turns){ addBubble("me", t.user); const b=addBubble("ai",""); b.innerHTML=mdToHtml(t.assistant); }
+    }catch(e){}
+  }
+  if(S.conv!==conv) return;
+  scrollDown();
+}
+
+// ── 消息气泡 ─────────────────────────────────────────────────────────────
+function addBubble(who, text, imgs){
+  const row=el("div","row "+(who==="me"?"me":"ai"));
+  const b=el("div","bubble");
+  if(who==="me"){ b.textContent=text; } else { b.innerHTML = text?mdToHtml(text):""; }
+  row.append(b);
+  if(imgs&&imgs.length){ const g=el("div","imgs"); for(const u of imgs){ const im=el("img"); im.src=u; g.append(im);} b.append(g); }
+  $("#wrap").append(row); scrollDown();
+  return b;
+}
+function scrollDown(){ const m=$("#messages"); requestAnimationFrame(()=>{ m.scrollTop=m.scrollHeight; }); }
+
+// ── SSE 流式接收 ─────────────────────────────────────────────────────────
+function connect(){
+  if(S.es) S.es.close();
+  S.es = new EventSource("/events?token="+encodeURIComponent(S.token));
+  S.es.onmessage = ev=>{ try{
+    const d=JSON.parse(ev.data);
+    if(d.id){ if(d.id<=S.lastId) return; S.lastId=d.id; }  // 补发/重复的老事件直接丢弃
+    handleEvent(d);
+  }catch(e){} };
+  S.es.onerror = ()=>{ /* EventSource 会自动重连,并带上 Last-Event-ID */ };
+}
+function ensureStream(){
+  // 为当前会话准备一个流式 assistant 气泡(含状态行/思考/正文)
+  if(S.stream) return S.stream;
+  const row=el("div","row ai");
+  const bubble=el("div","bubble");
+  const status=el("div","status");
+  const thinktog=el("div","thinktog"); thinktog.textContent="▸ 思考过程";
+  const think=el("div","think");
+  const body=el("div"); body.dataset.raw="";
+  bubble.append(status,thinktog,think,body);
+  row.append(bubble); $("#wrap").append(row);
+  thinktog.onclick=()=>{ think.classList.toggle("show"); };
+  S.stream={row,bubble,status,think,thinktog,body,tools:[]};
+  renderStatus();  // 初始即显示"💭 思考中…"动画
+  scrollDown(); return S.stream;
+}
+let renderPending=false;
+function renderBody(){
+  if(renderPending||!S.stream) return; renderPending=true;
+  requestAnimationFrame(()=>{ renderPending=false; if(S.stream){ S.stream.body.innerHTML=mdToHtml(S.stream.body.dataset.raw); scrollDown(); } });
+}
+const DOTS='<span class="dots"><i></i><i></i><i></i></span>';
+function renderStatus(){
+  if(!S.stream) return;
+  const t=S.stream.tools, hasBody=!!S.stream.body.dataset.raw;
+  // 工具 chip:未完成的用动画点表示"进行中",完成的打 ✓/✗
+  const bits = t.map(x=>'<span class="chip">🔧 '+esc(x.name)+(x.done?(x.ok?" ✓":" ✗"):DOTS)+'</span>');
+  // 持续的"输入中"指示:还没出正文→思考中;已在出正文→输入中(始终带动画,像 TG)
+  if(!hasBody && !t.some(x=>!x.done)) bits.push('<span class="chip live">💭 思考中'+DOTS+'</span>');
+  else if(hasBody) bits.push('<span class="chip live">✍️ 输入中'+DOTS+'</span>');
+  S.stream.status.innerHTML = bits.join("");
+}
+function finalizeStream(finalText){
+  if(!S.stream) return;
+  S.stream.status.remove(); S.stream.thinktog.remove(); S.stream.think.remove();
+  S.stream.body.innerHTML = mdToHtml(finalText!==undefined?finalText:S.stream.body.dataset.raw);
+  S.stream=null; scrollDown();
+}
+function handleEvent(e){
+  if(e.conv!==S.conv){ // 别的会话在后台完成 → 刷新侧边栏,不打断当前视图
+    if(e.type==="done"||e.type==="message") loadConvs();
+    return;
+  }
+  switch(e.type){
+    case "start": ensureStream(); break;
+    case "thinking": { const s=ensureStream(); s.thinktog.style.display="block"; s.think.textContent=e.text; renderStatus(); break; }
+    case "text": { const s=ensureStream(); s.body.dataset.raw=e.text; renderBody(); renderStatus(); break; }
+    case "tool_start": { const s=ensureStream(); s.tools.push({name:e.name,done:false,ok:true}); renderStatus(); break; }
+    case "tool_end": { const s=ensureStream(); const it=s.tools.find(x=>x.name===e.name&&!x.done)||s.tools[s.tools.length-1]; if(it){it.done=true;it.ok=e.ok;} renderStatus(); break; }
+    case "done": finalizeStream(e.text); loadConvs(); break;
+    case "message": // 命令回复 / 报错 / cron 推送
+      if(S.stream && !S.stream.body.dataset.raw){ finalizeStream(e.text); }
+      else { S.stream=null; addBubble("ai", e.text); }
+      loadConvs(); break;
+    case "choice": renderChoice(e); break;
+  }
+}
+function renderChoice(e){
+  if(S.stream && !S.stream.body.dataset.raw){ S.stream.row.remove(); }  // 清掉可能残留的空"思考中"气泡
+  S.stream=null;
+  const b=addBubble("ai", e.prompt);
+  const box=el("div","choice");
+  for(const [cmd,label] of e.options){ const btn=el("button"); btn.textContent=label; btn.onclick=()=>{ box.remove(); send(cmd); }; box.append(btn); }
+  b.append(box); scrollDown();
+}
+
+// ── 发送 ────────────────────────────────────────────────────────────────
+async function send(text){
+  text=(text||"").trim(); if(!text && !S.images.length) return;
+  const imgs=S.images.map(x=>x.url);
+  if(text || imgs.length) addBubble("me", text||"(图片)", imgs);
+  // 非命令消息:立刻挂一个"💭 思考中…"气泡,不等服务器 start 事件,反馈更即时(像 TG 秒回 typing)
+  if(!text.startsWith("/") && !S.stream){ ensureStream(); }
+  const payload={conv:S.conv, text, images:S.images.map(x=>({data:x.data,media_type:x.media_type}))};
+  // 新会话:发出第一条后,把本地临时会话转正
+  const wasLocal=String(S.conv).startsWith("local-");
+  if(wasLocal){ S.conv=S.conv.replace("local-",""); payload.conv=S.conv; }
+  S.images=[]; renderThumbs(); $("#ta").value=""; autoGrow();
+  try{
+    await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(wasLocal) setTimeout(loadConvs, 400);
+  }catch(err){ addBubble("ai","⚠️ 发送失败:"+err.message); }
+}
+$("#composer").onsubmit = e=>{ e.preventDefault(); send($("#ta").value); };
+$("#ta").addEventListener("keydown", e=>{
+  // 输入法组合中(中文/日文等候选未上屏)的回车只上屏,不发送
+  if(e.isComposing || e.keyCode===229) return;
+  if(e.key==="Enter" && !e.shiftKey && window.innerWidth>760){ e.preventDefault(); send($("#ta").value); }
+});
+function autoGrow(){ const t=$("#ta"); t.style.height="auto"; t.style.height=Math.min(t.scrollHeight,160)+"px"; }
+$("#ta").addEventListener("input", autoGrow);
+
+// ── 图片 ────────────────────────────────────────────────────────────────
+$("#imgBtn").onclick = ()=>$("#file").click();
+$("#file").onchange = e=>{
+  for(const f of e.target.files){
+    const rd=new FileReader();
+    rd.onload=()=>{ const url=rd.result; const data=url.split(",")[1]; S.images.push({data,media_type:f.type||"image/jpeg",url}); renderThumbs(); };
+    rd.readAsDataURL(f);
+  }
+  e.target.value="";
+};
+function renderThumbs(){
+  const box=$("#thumbs"); box.innerHTML="";
+  S.images.forEach((im,idx)=>{ const w=el("div","t"); const g=el("img"); g.src=im.url; const x=el("button","x"); x.textContent="×"; x.onclick=()=>{S.images.splice(idx,1);renderThumbs();}; w.append(g,x); box.append(w); });
+}
+
+// ── 新会话 / 侧边栏 ──────────────────────────────────────────────────────
+$("#newBtn").onclick = ()=>{
+  const id = Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  S.convs.unshift({conv:"local-"+id, title:"新对话", turns:0, last_ts:null});
+  openConv("local-"+id); $("#ta").focus();
+};
+$("#modelBtn").onclick = ()=>send("/model");
+$("#hamb").onclick = ()=>{ $("#sidebar").classList.add("open"); $("#backdrop").classList.add("show"); };
+$("#backdrop").onclick = closeSidebar;
+function closeSidebar(){ $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("show"); }
+
+// ── 键盘/视口自适应 ──────────────────────────────────────────────────────
+// 把 #app 高度绑定到「可视视口」而非布局视口:键盘弹出时整体缩短,
+// 输入框自动贴在键盘上方,既不被遮挡、间距也不会过大。
+function fitViewport(){
+  const vv = window.visualViewport; if(!vv) return;
+  const st = document.documentElement.style;
+  st.setProperty("--app-h", vv.height + "px");
+  st.setProperty("--app-top", vv.offsetTop + "px");
+  const kbOpen = (window.innerHeight - vv.height) > 120;  // 视口缩水超阈值 → 判定键盘弹出
+  document.body.classList.toggle("kb", kbOpen);
+  if(kbOpen) scrollDown();
+}
+if(window.visualViewport){
+  window.visualViewport.addEventListener("resize", fitViewport);
+  window.visualViewport.addEventListener("scroll", fitViewport);
+  fitViewport();
+}
+
+// ── 启动 ────────────────────────────────────────────────────────────────
+if(S.token){ tryEnter(); } else { $("#pw").focus(); }
+</script>
+</body>
+</html>

@@ -59,7 +59,9 @@ class GatewayRunner:
             return
         try:
             with anyio.fail_after(180):  # 单轮硬超时,卡死也能恢复
-                await core.converse(key, inc.text, model, adapter.make_sink(inc.chat_id))
+                await core.converse(
+                    key, inc.text, model, adapter.make_sink(inc.chat_id), images=inc.images
+                )
         except TimeoutError:
             await adapter.send(inc.chat_id, "⚠️ 处理超时了,请再试一次。")
 
@@ -86,13 +88,17 @@ class GatewayRunner:
 
 
 async def run_serve() -> None:
-    """组装并启动 gateway(目前:Telegram + 调度器)。"""
+    """组装并启动 gateway(Telegram + Web + 调度器,按配置挂载)。"""
     from .adapters.telegram import TelegramAdapter
 
     adapters: list[Adapter] = []
     if config.TELEGRAM_BOT_TOKEN:
         adapters.append(TelegramAdapter())
-    else:
-        print("⚠️  未配 TELEGRAM_BOT_TOKEN,本次只跑调度器(无收发入口)。")
+    if config.WEB_ENABLED:
+        from .adapters.web import WebAdapter
+
+        adapters.append(WebAdapter())
+    if not adapters:
+        print("⚠️  没启用任何入口(Telegram/Web),本次只跑调度器。")
 
     await GatewayRunner(adapters).run()
