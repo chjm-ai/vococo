@@ -202,7 +202,9 @@ async function tryEnter(){
     if(r.status===401){ $("#loginErr").textContent="口令错误"; return; }
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
-    connect(); await loadConvs(); await openConv("main");
+    connect(); await loadConvs();
+    // 默认打开最近活跃的会话(排序后的第一个),而非固定的主会话
+    await openConv(S.convs[0] ? S.convs[0].conv : "main");
   }catch(e){ $("#loginErr").textContent="连接失败"; }
 }
 $("#loginBtn").onclick = ()=>{ S.token = $("#pw").value.trim(); tryEnter(); };
@@ -265,7 +267,8 @@ function fmtTime(ts){ if(!ts) return ""; const d=new Date(ts*1000), n=new Date()
 async function loadConvs(){
   const r = await api("/conversations"); const d = await r.json();
   const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
-  S.convs = [main, ...d.conversations];
+  // 全部会话(含主会话)按最近活跃排序,最新的排最前面
+  S.convs = [main, ...d.conversations].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
   renderConvs();
 }
 function renderConvs(){
