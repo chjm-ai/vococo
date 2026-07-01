@@ -98,10 +98,6 @@ class WebAdapter:
         self._seq = 0  # 全局单调递增的事件编号
         self._buffer: deque[tuple[int, str]] = deque(maxlen=512)  # 断线补发用的环形缓冲
         self._runner: web.AppRunner | None = None
-        try:
-            self._index = (_STATIC / "index.html").read_text(encoding="utf-8")
-        except OSError:
-            self._index = "<h1>index.html 缺失</h1>"
 
     # ── 认证 ────────────────────────────────────────────────────────────
     def _ok_token(self, request: web.Request) -> bool:
@@ -158,7 +154,14 @@ class WebAdapter:
 
     # ── HTTP 路由 ────────────────────────────────────────────────────────
     async def _handle_index(self, request: web.Request) -> web.Response:
-        return web.Response(text=self._index, content_type="text/html")
+        # 每次请求实时读盘:改了 UI 刷新浏览器即可,不用重启 serve;no-cache 让浏览器也别缓存
+        try:
+            html = (_STATIC / "index.html").read_text(encoding="utf-8")
+        except OSError:
+            html = "<h1>index.html 缺失</h1>"
+        return web.Response(
+            text=html, content_type="text/html", headers={"Cache-Control": "no-cache"}
+        )
 
     async def _handle_events(self, request: web.Request) -> web.StreamResponse:
         if not self._ok_token(request):
