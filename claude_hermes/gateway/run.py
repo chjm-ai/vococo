@@ -64,13 +64,17 @@ class GatewayRunner:
 
 
 async def run_serve() -> None:
-    """组装并启动 gateway(目前:Telegram + 调度器)。"""
+    """组装并启动 gateway(Telegram + Web + 调度器,按配置挂载)。"""
     from .adapters.telegram import TelegramAdapter
 
     adapters: list[Adapter] = []
     if config.TELEGRAM_BOT_TOKEN:
         adapters.append(TelegramAdapter())
-    else:
-        print("⚠️  未配 TELEGRAM_BOT_TOKEN,本次只跑调度器(无收发入口)。")
+    if config.WEB_ENABLED:
+        from .adapters.web import WebAdapter
+
+        adapters.append(WebAdapter())
+    if not adapters:
+        print("⚠️  没启用任何入口(Telegram/Web),本次只跑调度器。")
 
     await GatewayRunner(adapters).run()
