@@ -194,10 +194,111 @@ async def suggest_automation(args: dict) -> dict:
     return _ok(f"✅ 已提建议「{title}」。用 /建议 查看并一键接受(接受后才会真正定时跑)。")
 
 
+# === cron 任务管理(查看/停用/删除;创建仍走建议 consent-first)===
+def _sched_desc(sch: dict) -> str:
+    kind = sch.get("kind")
+    if kind == "cron":
+        return sch.get("expr", "?")
+    if kind == "interval":
+        return f"每{sch.get('minutes', 60)}分钟"
+    if kind == "once":
+        return "一次性"
+    return kind or "?"
+
+
+def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:
+    """按 id / 1-based 序号 / 名字(不分大小写)解析一个任务。"""
+    ref = ref.strip()
+    for j in jobs:
+        if j.get("id") == ref:
+            return j
+    if ref.isdigit():
+        i = int(ref) - 1
+        if 0 <= i < len(jobs):
+            return jobs[i]
+    for j in jobs:
+        if j.get("name", "").lower() == ref.lower():
+            return j
+    return None
+
+
+@tool(
+    "list_cron_jobs",
+    "列出当前所有定时任务(序号/id/名字/计划/是否启用/上次状态)。"
+    "用户问「有哪些定时任务/自动化在跑」时用。",
+    {"type": "object", "properties": {}},
+)
+async def list_cron_jobs(args: dict) -> dict:
+    from ..cron import scheduler
+
+    jobs = scheduler.load_jobs()
+    if not jobs:
+        return _ok("当前没有定时任务。(建议用 /建议 或 suggest_automation 提议后接受)")
+    lines = []
+    for i, j in enumerate(jobs, 1):
+        state = "✅启用" if j.get("enabled") else "⏸停用"
+        lines.append(
+            f"{i}. [{j.get('id')}] {j.get('name')} — {_sched_desc(j.get('schedule', {}))}"
+            f" — {state} — 上次:{j.get('last_status') or '未跑'}"
+        )
+    return _ok("定时任务:\n" + "\n".join(lines))
+
+
+@tool(
+    "set_cron_job_enabled",
+    "启用或停用一个定时任务(按 序号/id/名字)。用户说「把 X 关掉/开启」时用。",
+    {
+        "type": "object",
+        "properties": {"ref": {"type": "string"}, "enabled": {"type": "boolean"}},
+        "required": ["ref", "enabled"],
+    },
+)
+async def set_cron_job_enabled(args: dict) -> dict:
+    from ..cron import scheduler
+
+    ref = (args.get("ref") or "").strip()
+    enabled = bool(args.get("enabled"))
+    jobs = scheduler.load_jobs()
+    j = _resolve_job(ref, jobs)
+    if not j:
+        return _ok(f"没找到任务「{ref}」。用 list_cron_jobs 看列表。")
+    j["enabled"] = enabled
+    if not enabled:
+        j["next_run_at"] = None
+    scheduler.save_jobs(jobs)
+    return _ok(f"{'✅ 已启用' if enabled else '⏸ 已停用'}任务「{j.get('name')}」。")
+
+
+@tool(
+    "delete_cron_job",
+    "删除一个定时任务(按 序号/id/名字)。不可恢复,删前最好先向用户确认。",
+    {"type": "object", "properties": {"ref": {"type": "string"}}, "required": ["ref"]},
+)
+async def delete_cron_job(args: dict) -> dict:
+    from ..cron import scheduler
+
+    ref = (args.get("ref") or "").strip()
+    jobs = scheduler.load_jobs()
+    j = _resolve_job(ref, jobs)
+    if not j:
+        return _ok(f"没找到任务「{ref}」。用 list_cron_jobs 看列表。")
+    jobs.remove(j)
+    scheduler.save_jobs(jobs)
+    return _ok(f"🗑 已删除任务「{j.get('name')}」。")
+
+
 def build_mcp_servers() -> dict:
     """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
     return {
         "hermes": create_sdk_mcp_server(
-            "hermes", tools=[recall_past, save_memory, suggest_automation]
+            "hermes",
+            tools=[
+                recall_past,
+                save_memory,
+                suggest_automation,
+                list_cron_jobs,
+                set_cron_job_enabled,
+                delete_cron_job,
+            ],
         )
     }

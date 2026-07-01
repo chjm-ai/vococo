@@ -148,3 +148,33 @@ def test_suggest_command_lists_and_accepts(sugg_env):
     # 接受第 1 条(用 1-based 序号)
     out2 = core.handle_command("/suggest accept 1", "tg:-100", "m")
     assert "已接受" in out2.reply
+
+
+# === cron 管理工具 ===
+def test_cron_admin_list_toggle_delete(sugg_env):
+    from claude_hermes.cron import scheduler, suggestions
+    from claude_hermes.tools import builtin
+
+    # 先接受一条建议造出一个任务
+    suggestions.add_suggestion(
+        title="晨报", description="", source="catalog", job_spec=_spec(), dedup_key="c"
+    )
+    sid = suggestions.list_pending()[0]["id"]
+    suggestions.accept_suggestion(sid, origin={"platform": "telegram", "chat_id": 1})
+
+    assert "晨报" in _text(asyncio.run(builtin.list_cron_jobs.handler({})))
+
+    out = _text(asyncio.run(builtin.set_cron_job_enabled.handler({"ref": "晨报", "enabled": False})))
+    assert "已停用" in out
+    assert scheduler.load_jobs()[0]["enabled"] is False
+
+    out = _text(asyncio.run(builtin.delete_cron_job.handler({"ref": "1"})))  # 按序号
+    assert "已删除" in out
+    assert scheduler.load_jobs() == []
+
+
+def test_cron_admin_not_found(sugg_env):
+    from claude_hermes.tools import builtin
+
+    out = _text(asyncio.run(builtin.delete_cron_job.handler({"ref": "查无此任务"})))
+    assert "没找到" in out
