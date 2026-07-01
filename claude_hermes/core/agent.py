@@ -13,11 +13,11 @@ from typing import Any, AsyncIterator, Union
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
+    ClaudeSDKClient,
     ResultMessage,
     StreamEvent,
     ToolResultBlock,
     UserMessage,
-    query,
 )
 
 from .. import config
@@ -148,7 +148,6 @@ async def _image_prompt_stream(
     """把带图片的一轮包成 SDK 要的流式输入(单条 user 消息)。"""
     yield {
         "type": "user",
-        "session_id": "",
         "message": {"role": "user", "content": content},
         "parent_tool_use_id": None,
     }
@@ -181,7 +180,13 @@ async def stream_turn(
     model: str | None = None,
     images: list[ImageAttachment] | None = None,
 ) -> AsyncIterator[Event]:
-    """流式跑一轮,逐个 yield 事件,最后 yield Done。"""
+    """流式跑一轮,逐个 yield 事件,最后 yield Done。
+
+    上下文占用(context_tokens)取 SDK 的 get_context_usage() —— 即 CLI /context
+    的真实窗口占用。不再用 ResultMessage.usage 现算:后者是本轮跨多次工具调用的
+    累计值,cache_read 会被反复累加,导致数字虚高("看着超了实际没超")。
+    turn_tokens / 成本 / 明细仍取 ResultMessage.usage —— 那本就是本轮累计消耗,语义正确。
+    """
     options = ClaudeAgentOptions(
         model=model or config.MODEL,
         system_prompt=build_system_prompt(),
@@ -203,61 +208,76 @@ async def stream_turn(
     cache_read = 0
     output_tokens = 0
     used_model = model or config.MODEL
+    ctx_window_val = context_window(used_model)
 
-    async for msg in query(
-        prompt=_build_prompt(history, user_text, images or []), options=options
-    ):
-        if isinstance(msg, StreamEvent):
-            ev = msg.event if isinstance(msg.event, dict) else {}
-            etype = ev.get("type")
-            if etype == "content_block_delta":
-                delta = ev.get("delta", {})
-                dt = delta.get("type")
-                if dt == "text_delta":
-                    t = delta.get("text", "")
-                    if t:
-                        text_parts.append(t)
-                        yield TextDelta(t)
-                elif dt == "thinking_delta":
-                    t = delta.get("thinking", "")
-                    if t:
-                        yield ThinkingDelta(t)
-            elif etype == "content_block_start":
-                cb = ev.get("content_block", {})
-                if cb.get("type") == "tool_use":
-                    name = cb.get("name", "?")
-                    tid = cb.get("id", "")
-                    if tid:
-                        tool_name_by_id[tid] = name
-                    tool_calls.append(name)
-                    yield ToolStarted(name)
-        elif isinstance(msg, UserMessage):
-            for b in msg.content:
-                if isinstance(b, ToolResultBlock):
-                    name = tool_name_by_id.get(b.tool_use_id, "工具")
-                    yield ToolFinished(
-                        name=name,
-                        ok=not bool(b.is_error),
-                        preview=_preview(b.content),
-                    )
-        elif isinstance(msg, ResultMessage):
-            cost_usd = getattr(msg, "total_cost_usd", None)
-            is_error = bool(getattr(msg, "is_error", False))
-            u = getattr(msg, "usage", None) or {}
-            in_t = int(u.get("input_tokens", 0) or 0)
-            out_t = int(u.get("output_tokens", 0) or 0)
-            cache_r = int(u.get("cache_read_input_tokens", 0) or 0)
-            cache_c = int(u.get("cache_creation_input_tokens", 0) or 0)
-            # input_tokens 不含缓存,上下文实际占用 = 新处理 + 缓存复用
-            input_fresh = in_t + cache_c  # 本轮真正处理的输入(含新写入缓存的部分)
-            cache_read = cache_r  # 缓存命中(便宜的复读)
-            output_tokens = out_t
-            context_tokens = input_fresh + cache_read  # 二者之和 = 塞进窗口的总量
-            turn_tokens = input_fresh + out_t  # 本轮新鲜吞吐,累计即消耗(不含缓存复读)
-            # 实际模型优先取 model_usage 的 key(SDK 报告的真实模型)
-            mu = getattr(msg, "model_usage", None) or {}
-            if mu:
-                used_model = next(iter(mu), used_model)
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(_build_prompt(history, user_text, images or []))
+        async for msg in client.receive_response():
+            if isinstance(msg, StreamEvent):
+                ev = msg.event if isinstance(msg.event, dict) else {}
+                etype = ev.get("type")
+                if etype == "content_block_delta":
+                    delta = ev.get("delta", {})
+                    dt = delta.get("type")
+                    if dt == "text_delta":
+                        t = delta.get("text", "")
+                        if t:
+                            text_parts.append(t)
+                            yield TextDelta(t)
+                    elif dt == "thinking_delta":
+                        t = delta.get("thinking", "")
+                        if t:
+                            yield ThinkingDelta(t)
+                elif etype == "content_block_start":
+                    cb = ev.get("content_block", {})
+                    if cb.get("type") == "tool_use":
+                        name = cb.get("name", "?")
+                        tid = cb.get("id", "")
+                        if tid:
+                            tool_name_by_id[tid] = name
+                        tool_calls.append(name)
+                        yield ToolStarted(name)
+            elif isinstance(msg, UserMessage):
+                for b in msg.content:
+                    if isinstance(b, ToolResultBlock):
+                        name = tool_name_by_id.get(b.tool_use_id, "工具")
+                        yield ToolFinished(
+                            name=name,
+                            ok=not bool(b.is_error),
+                            preview=_preview(b.content),
+                        )
+            elif isinstance(msg, ResultMessage):
+                cost_usd = getattr(msg, "total_cost_usd", None)
+                is_error = bool(getattr(msg, "is_error", False))
+                u = getattr(msg, "usage", None) or {}
+                in_t = int(u.get("input_tokens", 0) or 0)
+                out_t = int(u.get("output_tokens", 0) or 0)
+                cache_r = int(u.get("cache_read_input_tokens", 0) or 0)
+                cache_c = int(u.get("cache_creation_input_tokens", 0) or 0)
+                # input_tokens 不含缓存;这些明细是本轮累计吞吐(展示/落库用)
+                input_fresh = in_t + cache_c  # 本轮真正处理的输入(含新写入缓存的部分)
+                cache_read = cache_r  # 缓存命中(便宜的复读)
+                output_tokens = out_t
+                turn_tokens = input_fresh + out_t  # 本轮新鲜吞吐,累计即消耗(不含缓存复读)
+                # 上下文占用先用累计值兜底,下面 get_context_usage 成功则覆盖为真实值
+                context_tokens = input_fresh + cache_read
+                # 实际模型优先取 model_usage 的 key(SDK 报告的真实模型)
+                mu = getattr(msg, "model_usage", None) or {}
+                if mu:
+                    used_model = next(iter(mu), used_model)
+
+        # ResultMessage 已到、会话尚未断开 —— 此刻问 SDK 当前窗口的真实占用
+        # (等价 CLI /context)。失败(旧 CLI 不支持等)则静默保留上面的兜底值。
+        try:
+            cu = await client.get_context_usage()
+            total = int(cu.get("totalTokens", 0) or 0)
+            raw_max = int(cu.get("rawMaxTokens") or cu.get("maxTokens") or 0)
+            if total:
+                context_tokens = total
+            if raw_max:
+                ctx_window_val = raw_max
+        except Exception:
+            ctx_window_val = context_window(used_model)  # 兜底:按模型名估窗口
 
     yield Done(
         AgentReply(
@@ -267,7 +287,7 @@ async def stream_turn(
             is_error=is_error,
             context_tokens=context_tokens,
             turn_tokens=turn_tokens,
-            context_window=context_window(used_model),
+            context_window=ctx_window_val,
             input_fresh=input_fresh,
             cache_read=cache_read,
             output_tokens=output_tokens,
