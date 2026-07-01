@@ -45,7 +45,6 @@ class ImageAttachment:
 # 注:Sonnet 支持 1M context 需专门开 beta header,本项目未开,故按 200k。
 _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-opus-4": 200_000,
-    "claude-sonnet-5": 200_000,
     "claude-sonnet-4": 200_000,
     "claude-haiku-4": 200_000,
 }
