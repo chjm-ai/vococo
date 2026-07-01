@@ -67,6 +67,22 @@ def current() -> Optional[_Ctx]:
     return _current.get()
 
 
+# ── 主动推送桥(让进程内工具能发消息到任意 platform:chat)──
+_push_fn = None  # 由 GatewayRunner 注册: async (platform, chat_id, text) -> None
+
+
+def register_push(fn) -> None:
+    global _push_fn
+    _push_fn = fn
+
+
+async def push(platform: str, chat_id, text: str) -> bool:
+    if _push_fn is None:
+        return False
+    await _push_fn(platform, chat_id, text)
+    return True
+
+
 # ── 工具侧:登记 + 阻塞等 ──
 def register(session_key: str, choices: list[str]) -> _Pending:
     p = _Pending(

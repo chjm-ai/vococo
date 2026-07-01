@@ -108,6 +108,7 @@ class GatewayRunner:
                 await anyio.sleep(5)
 
     async def run(self) -> None:
+        clarify.register_push(self.push)  # 让 send_message 等工具能主动发消息
         async with anyio.create_task_group() as tg:
             self._tg = tg
             for adapter in self.adapters.values():

@@ -144,3 +144,54 @@ def test_ask_user_full_roundtrip():
     result = anyio.run(go)
     assert "用户回答:B" in _text(result)
     assert sent and hasattr(sent[0], "options")  # 确实弹了 Choice 按钮
+
+
+# === send_message ===
+def test_send_message_to_current_chat():
+    from claude_hermes.gateway import clarify
+    from claude_hermes.tools import builtin
+
+    sent = []
+
+    class FA:
+        platform = "telegram"
+
+        async def send(self, c, t):
+            sent.append((c, t))
+
+        async def present_choice(self, c, ch):  # 未用
+            ...
+
+    async def go():
+        token = clarify.set_current("s1", FA(), 77)
+        r = await builtin.send_message.handler({"text": "嗨"})
+        clarify.reset_current(token)
+        return r
+
+    assert "已发送" in _text(anyio.run(go))
+    assert sent == [(77, "嗨")]
+
+
+def test_send_message_to_target():
+    from claude_hermes.gateway import clarify
+    from claude_hermes.tools import builtin
+
+    pushed = []
+
+    async def fake_push(p, c, t):
+        pushed.append((p, c, t))
+
+    clarify.register_push(fake_push)
+    try:
+        r = anyio.run(lambda: builtin.send_message.handler({"text": "hi", "to": "telegram:5"}))
+    finally:
+        clarify.register_push(None)
+    assert "已发送到 telegram:5" in _text(r)
+    assert pushed == [("telegram", 5, "hi")]
+
+
+def test_send_message_no_context():
+    from claude_hermes.tools import builtin
+
+    out = _text(anyio.run(lambda: builtin.send_message.handler({"text": "x"})))
+    assert "无聊天上下文" in out

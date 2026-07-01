@@ -322,6 +322,85 @@ async def probe(args: dict) -> dict:
     return _ok("\n".join(parts))
 
 
+@tool(
+    "ask_user",
+    "需要用户拍板/补充信息、你不该瞎猜时,用它问一个问题并【阻塞等回答】再继续本轮。"
+    "question:问题;options:可选的选项列表(给了就渲染成按钮,没给就开放式等用户打字)。"
+    "仅在 TG/Web 等消息渠道生效;拿到答案(字符串)后接着往下做。",
+    {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string"},
+            "options": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["question"],
+    },
+)
+async def ask_user(args: dict) -> dict:
+    from ..gateway import clarify
+
+    question = (args.get("question") or "").strip()
+    options = [str(o).strip() for o in (args.get("options") or []) if str(o).strip()]
+    if not question:
+        return _ok("ask_user 需要一个非空 question。")
+    ctx = clarify.current()
+    if ctx is None:
+        return _ok("(当前环境不支持交互提问,请直接在回复正文里问用户。)")
+
+    p = clarify.register(ctx.session_key, options)
+    try:
+        if options:
+            from ..gateway.core import Choice
+
+            opts = [(f"/clarify {p.clarify_id} {i}", o) for i, o in enumerate(options)]
+            opts.append((f"/clarify {p.clarify_id} other", "✍️ 其他(直接打字回答)"))
+            await ctx.adapter.present_choice(
+                ctx.chat_id, Choice(prompt=f"❓ {question}", options=opts)
+            )
+        else:
+            await ctx.adapter.send(ctx.chat_id, f"❓ {question}\n(直接回复即可)")
+    except Exception as e:
+        clarify.resolve(p.clarify_id, "")
+        return _ok(f"(提问没能发出去:{e};请直接在正文里问。)")
+
+    answer = await clarify.wait(p.clarify_id, config.CLARIFY_TIMEOUT)
+    if not answer:
+        return _ok("(用户未在时限内回答;请基于已有信息继续,或稍后再问。)")
+    return _ok(f"用户回答:{answer}")
+
+
+@tool(
+    "send_message",
+    "主动给用户发一条【独立消息】(不是本轮回复正文)。用于:单独发长内容、发进度提醒、"
+    "或从后台任务 ping 用户。to:'current'(默认,当前聊天)或 'platform:chat_id'(如 telegram:123)。",
+    {
+        "type": "object",
+        "properties": {"text": {"type": "string"}, "to": {"type": "string"}},
+        "required": ["text"],
+    },
+)
+async def send_message(args: dict) -> dict:
+    from ..gateway import clarify
+
+    text = (args.get("text") or "").strip()
+    to = (args.get("to") or "current").strip() or "current"
+    if not text:
+        return _ok("send_message 需要非空 text。")
+    if to == "current":
+        ctx = clarify.current()
+        if ctx is None:
+            return _ok("(当前无聊天上下文,无法主动发;请直接在正文回复。)")
+        await ctx.adapter.send(ctx.chat_id, text)
+        return _ok("已发送到当前聊天。")
+    if ":" not in to:
+        return _ok("to 应为 'current' 或 'platform:chat_id'(如 telegram:123)。")
+    platform, _, cid = to.partition(":")
+    cid = cid.strip()
+    target = int(cid) if cid.lstrip("-").isdigit() else cid
+    ok = await clarify.push(platform.strip(), target, text)
+    return _ok(f"已发送到 {to}。" if ok else "发送失败(网关未就绪或平台不存在)。")
+
+
 def build_mcp_servers() -> dict:
     """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
     return {
@@ -334,6 +413,8 @@ def build_mcp_servers() -> dict:
                 list_cron_jobs,
                 set_cron_job_enabled,
                 delete_cron_job,
+                ask_user,
+                send_message,
                 probe,
             ],
         )

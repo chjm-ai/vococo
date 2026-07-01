@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, Union
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
+    HookMatcher,
     ResultMessage,
     StreamEvent,
     ToolResultBlock,
@@ -23,6 +24,15 @@ from claude_agent_sdk import (
 from .. import config
 from ..tools.builtin import build_mcp_servers
 from .prompt import build_system_prompt
+
+
+def _build_hooks() -> dict:
+    """危险命令拦截:PreToolUse 挂在 Bash 上(DANGER_GUARD 开时)。"""
+    if not config.DANGER_GUARD:
+        return {}
+    from ..tools.danger import pretool_danger_hook
+
+    return {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[pretool_danger_hook])]}
 
 
 @dataclass
@@ -165,6 +175,7 @@ async def stream_turn(
         include_partial_messages=True,
         mcp_servers=build_mcp_servers(),
         skills=config.SKILLS,  # None=全量;白名单则只挂这些(瘦身 tool schema)
+        hooks=_build_hooks(),  # 危险命令拦截
     )
 
     text_parts: list[str] = []

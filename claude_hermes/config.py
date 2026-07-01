@@ -72,6 +72,8 @@ PERMISSION_MODE: str = os.environ.get("AGENT_PERMISSION_MODE", "bypassPermission
 AGENT_TURN_TIMEOUT: int = int(os.environ.get("AGENT_TURN_TIMEOUT", "600"))
 # ask_user 等用户回复的超时(秒),须 < AGENT_TURN_TIMEOUT,好让 clarify 先返回、本轮别被硬砍。
 CLARIFY_TIMEOUT: int = int(os.environ.get("CLARIFY_TIMEOUT", "300"))
+# 危险命令拦截(PreToolUse hook):默认开,只拦灾难级命令(删根/格式化/强推等)。
+DANGER_GUARD: bool = _parse_bool(os.environ.get("DANGER_GUARD", ""), True)
 AI_BRAIN_DIR: Path = Path(
     os.path.expanduser(os.environ.get("AI_BRAIN_DIR", "~/AI_BRAIN"))
 )
