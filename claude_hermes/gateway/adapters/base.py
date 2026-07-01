@@ -1,10 +1,11 @@
 """Adapter 协议 —— 每个平台只需实现:收消息、发消息、给一个渲染用的 Sink。"""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncIterator, Protocol
 
 from ... import config
+from ...core.agent import ImageAttachment
 from ..core import Choice, Sink
 
 
@@ -15,6 +16,7 @@ class Incoming:
     platform: str
     chat_id: int | str
     text: str
+    images: list[ImageAttachment] = field(default_factory=list)
 
     @property
     def session_key(self) -> str:

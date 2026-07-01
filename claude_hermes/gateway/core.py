@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from ..core.agent import (
     AgentReply,
     Done,
+    ImageAttachment,
     TextDelta,
     ThinkingDelta,
     ToolFinished,
@@ -87,12 +88,16 @@ class Sink:
 
 
 async def converse(
-    session_key: str, user_text: str, model: str | None, sink: Sink
+    session_key: str,
+    user_text: str,
+    model: str | None,
+    sink: Sink,
+    images: list[ImageAttachment] | None = None,
 ) -> AgentReply | None:
     """跑一轮:载入历史 → 流式 → 喂 sink → 落库。"""
     history = session_store.load_recent(session_key)
     reply: AgentReply | None = None
-    async for ev in stream_turn(history, user_text, model=model):
+    async for ev in stream_turn(history, user_text, model=model, images=images):
         if isinstance(ev, TextDelta):
             await sink.text(ev.text)
         elif isinstance(ev, ThinkingDelta):

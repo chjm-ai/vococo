@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 from typing import AsyncIterator
 
@@ -14,7 +15,7 @@ import httpx
 from ... import config
 from ...core.agent import AgentReply
 from ..core import COMMAND_LIST, Choice, Sink
-from .base import Incoming
+from .base import ImageAttachment, Incoming
 
 TG_LIMIT = 4000
 EDIT_MIN_INTERVAL = 0.8  # editMessageText 节流(TG 上限约每秒 1 次)
@@ -150,6 +151,21 @@ class TelegramAdapter:
                 "sendMessage", chat_id=chat_id, text=text[i : i + TG_LIMIT] or "(空)"
             )
 
+    async def _download_photo(self, file_id: str) -> ImageAttachment | None:
+        """file_id → getFile 拿路径 → 下载字节 → base64。压缩图固定 jpeg。"""
+        try:
+            info = await self._call("getFile", file_id=file_id)
+            file_path = info["file_path"]
+            url = f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{file_path}"
+            r = await self.client.get(url)
+            r.raise_for_status()
+            return ImageAttachment(
+                data=base64.b64encode(r.content).decode("ascii"),
+                media_type="image/jpeg",
+            )
+        except (httpx.HTTPError, TelegramError, KeyError):
+            return None
+
     def make_sink(self, chat_id: int | str) -> Sink:
         return _TelegramSink(self, chat_id)
 
@@ -214,10 +230,11 @@ class TelegramAdapter:
 
                 msg = upd.get("message") or upd.get("edited_message") or {}
                 chat_id = (msg.get("chat") or {}).get("id")
-                text = (msg.get("text") or "").strip()
-                if chat_id is None or not text:
+                photos = msg.get("photo") or []
+                text = (msg.get("text") or msg.get("caption") or "").strip()
+                if chat_id is None or (not text and not photos):
                     continue
-                print(f"[收] tg chat_id={chat_id}: {text[:60]}")
+                print(f"[收] tg chat_id={chat_id}: {text[:60]}{' [图片]' if photos else ''}")
                 try:
                     if self.allowed and chat_id not in self.allowed:
                         await self.send(
@@ -227,4 +244,13 @@ class TelegramAdapter:
                     await self._call("sendChatAction", chat_id=chat_id, action="typing")
                 except (httpx.HTTPError, TelegramError):
                     pass
-                yield Incoming(self.platform, chat_id, text)
+                images = []
+                if photos:
+                    # photo 是同一张图的多档分辨率,取最大的那档
+                    biggest = max(photos, key=lambda p: p.get("file_size", 0))
+                    img = await self._download_photo(biggest["file_id"])
+                    if img is not None:
+                        images.append(img)
+                    if not text:
+                        text = "(图片,无文字说明,看看图里是什么)"
+                yield Incoming(self.platform, chat_id, text, images=images)

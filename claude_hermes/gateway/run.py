@@ -38,7 +38,9 @@ class GatewayRunner:
             return
         try:
             with anyio.fail_after(180):  # 单轮硬超时,卡死也能恢复
-                await core.converse(key, inc.text, model, adapter.make_sink(inc.chat_id))
+                await core.converse(
+                    key, inc.text, model, adapter.make_sink(inc.chat_id), images=inc.images
+                )
         except TimeoutError:
             await adapter.send(inc.chat_id, "⚠️ 处理超时了,请再试一次。")
         except Exception as e:
