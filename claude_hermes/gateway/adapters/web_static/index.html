@@ -124,12 +124,23 @@
   .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
   .conv .cmeta{font-size:11px;color:var(--dim2);flex-shrink:0;transition:opacity .16s}
   .conv.pinned .ct::before{content:"★ ";color:var(--accent)}
-  /* 删除键绝对定位:不占布局宽度,hover 时浮现并让时间淡出,列表更紧凑 */
-  .conv .del{position:absolute;right:9px;top:50%;transform:translateY(-50%);opacity:0;pointer-events:none;
-    font-size:14px;color:var(--dim2);padding:3px 6px;border-radius:7px;transition:opacity .16s,color .16s,background .16s}
+  /* 「⋯」更多键绝对定位:不占布局宽度,hover 时浮现并让时间淡出,列表更紧凑 */
+  .conv .more{position:absolute;right:9px;top:50%;transform:translateY(-50%);opacity:0;pointer-events:none;
+    font-size:16px;line-height:1;color:var(--dim2);padding:2px 6px;border-radius:7px;transition:opacity .16s,color .16s,background .16s}
   .conv:hover .cmeta{opacity:0}
-  .conv:hover .del{opacity:.65;pointer-events:auto}
-  .conv .del:hover{color:var(--err);background:#f0603a1a;opacity:1}
+  .conv:hover .more{opacity:.65;pointer-events:auto}
+  .conv .more:hover,.conv .more.on{color:var(--text);background:var(--panel2);opacity:1}
+  /* 触屏无 hover:常驻显示「⋯」,否则点不到 */
+  @media(hover:none){ .conv .more{opacity:.6;pointer-events:auto} }
+  /* 会话「更多」浮层菜单(挂在 body 上,避开侧栏 overflow 裁剪) */
+  .convmenu{position:fixed;z-index:40;min-width:130px;
+    background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:5px;
+    box-shadow:var(--shadow);animation:pop .14s ease}
+  .convmenu .cmitem{display:flex;align-items:center;gap:8px;width:100%;text-align:left;
+    padding:9px 11px;border-radius:8px;font-size:13.5px;color:var(--text);transition:background .14s}
+  .convmenu .cmitem:hover{background:var(--panel2)}
+  .convmenu .cmitem.danger{color:var(--err)}
+  .convmenu .cmitem.danger:hover{background:#f0603a1a}
   .sfoot{padding:13px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px}
   .sfoot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
 
@@ -600,13 +611,35 @@ function renderConvs(){
     const ct=el("div","ct"); ct.textContent=c.title||"新对话";
     const meta=el("div","cmeta"); meta.textContent=(c.turns?c.turns+"轮 ":"")+fmtTime(c.last_ts);
     e.append(ct,meta);
-    if(!c.pinned){ const del=el("button","del"); del.textContent="🗑"; del.onclick=ev=>{ev.stopPropagation();delConv(c.conv);}; e.append(del); }
+    if(!c.pinned){ const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; e.append(more); }
     e.onclick=()=>openConv(c.conv);
     box.append(e);
   }
 }
+// 会话「更多」浮层菜单(单例):点 ⋯ 弹出,目前只放「删除」,点即执行(不再二次确认)
+let convMenuEl=null, convMenuBtn=null;
+function closeConvMenu(){
+  if(convMenuBtn){ convMenuBtn.classList.remove("on"); convMenuBtn=null; }
+  if(convMenuEl){ convMenuEl.remove(); convMenuEl=null; }
+}
+function openConvMenu(btn, conv){
+  if(convMenuBtn===btn){ closeConvMenu(); return; }   // 再点一次同一个 → 收起
+  closeConvMenu();
+  convMenuBtn=btn; btn.classList.add("on");
+  const m=el("div","convmenu"); m.style.visibility="hidden";
+  const del=el("button","cmitem danger"); del.textContent="🗑 删除";
+  del.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); delConv(conv); };
+  m.append(del); document.body.append(m); convMenuEl=m;
+  // 右对齐按钮,默认显示在其下方;贴到视口底部时自动上翻
+  const r=btn.getBoundingClientRect();
+  let top=r.bottom+4, left=r.right-m.offsetWidth;
+  if(top+m.offsetHeight>window.innerHeight) top=r.top-4-m.offsetHeight;
+  m.style.top=Math.max(6,top)+"px"; m.style.left=Math.max(6,left)+"px"; m.style.visibility="visible";
+}
+document.addEventListener("click", closeConvMenu);       // 点空白处关闭
+$("#convList").addEventListener("scroll", closeConvMenu); // 列表滚动时关闭,避免菜单错位
+
 async function delConv(conv){
-  if(!confirm("删除这个会话?")) return;
   const idx=S.convs.findIndex(x=>x.conv===conv);
   if(idx<0) return;
   const removed=S.convs[idx], wasActive=(S.conv===conv);
