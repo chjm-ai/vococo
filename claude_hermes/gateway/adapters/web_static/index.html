@@ -7,6 +7,10 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#1f1e1d">
 <title>Hermes</title>
+<!-- PWA:装到主屏 + Web Push 系统通知 -->
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <!-- 防闪烁:渲染前先套用上次选择的主题 -->
 <script>(function(){try{var t=localStorage.getItem("hermes_theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
 <style>
@@ -147,6 +151,11 @@
   .convmenu .cmitem.danger:hover{background:rgba(209,103,74,.12)}
   .sfoot{padding:13px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px}
   .sfoot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
+  #notifyBtn{margin-left:auto;display:flex;align-items:center;gap:5px;padding:5px 9px;border-radius:9px;
+    border:1px solid var(--line2);background:var(--card);color:var(--dim);font-size:11.5px;cursor:pointer;transition:.15s}
+  #notifyBtn:hover{border-color:var(--accent);color:var(--text)}
+  #notifyBtn.on{border-color:var(--accent);color:var(--accent);background:transparent}
+  #notifyBtn .ic{width:14px;height:14px}
 
   /* 项目分组(手风琴;行的内边距/圆角走上面的统一规范) */
   .projgrp{gap:6px;margin-top:2px;color:var(--dim);font-size:13px;font-weight:600;user-select:none}
@@ -474,7 +483,11 @@
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
     <div id="convList"></div>
-    <div class="sfoot" id="sfoot">Hermes · Web</div>
+    <div class="sfoot" id="sfoot"><span class="sfoot-t">Hermes · Web</span>
+      <button id="notifyBtn" type="button" title="系统通知" hidden>
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></svg><span id="notifyLabel">通知</span>
+      </button>
+    </div>
   </aside>
   <main>
     <header class="bar">
@@ -577,6 +590,8 @@ const ICONS = {
   doc:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/>',
   edit:'<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
   zap:'<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+  bell:'<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9z"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+  bellOff:'<path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M18.63 13A17.9 17.9 0 0 1 18 8"/><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/><path d="M18 8a6 6 0 0 0-9.33-5"/><path d="M1 1l22 22"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 
@@ -620,7 +635,7 @@ async function tryEnter(){
     if(r.status===401){ $("#loginErr").textContent="口令错误"; return; }
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
-    connect(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
+    connect(); initPush(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
     await loadProjects(); await loadConvs(); await loadModels();
     // 打开最近活跃的会话;openConv 内会同步活跃项目、展开其分组并重绘侧边栏
     await openConv(S.convs[0] ? S.convs[0].conv : "main");
@@ -628,6 +643,80 @@ async function tryEnter(){
 }
 $("#loginBtn").onclick = ()=>{ S.token = $("#pw").value.trim(); tryEnter(); };
 $("#pw").onkeydown = e=>{ if(e.key==="Enter"){ S.token=$("#pw").value.trim(); tryEnter(); } };
+
+// ── Web Push 系统通知 ─────────────────────────────────────────────────────
+// 装了 Service Worker + 订阅 VAPID 公钥后,页面关了/锁屏了也能收到系统通知。
+// 后端未配 VAPID 时 /push/config 返回 enabled:false,按钮保持隐藏(不显示坏开关)。
+const PUSH = { pubKey:"", enabled:false, ready:false };
+function b64ToU8(base64){
+  const pad="=".repeat((4-base64.length%4)%4);
+  const b=(base64+pad).replace(/-/g,"+").replace(/_/g,"/");
+  const raw=atob(b), arr=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++) arr[i]=raw.charCodeAt(i);
+  return arr;
+}
+function isStandalone(){
+  return (window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone===true;
+}
+async function initPush(){
+  if(!("serviceWorker" in navigator)) return;
+  try{ await navigator.serviceWorker.register("/sw.js"); }catch(e){ return; }
+  // 点系统通知 → SW 让页面切到对应会话
+  navigator.serviceWorker.addEventListener("message", ev=>{
+    const m=ev.data||{};
+    if(m.type==="open" && m.conv){ try{ openConv(m.conv); }catch(e){} }
+  });
+  try{
+    const cfg = await (await api("/push/config")).json();
+    PUSH.enabled=!!cfg.enabled; PUSH.pubKey=cfg.vapidPublicKey||"";
+  }catch(e){ return; }
+  PUSH.ready=true; await refreshNotifyBtn();
+}
+async function currentSub(){
+  if(!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+  const reg=await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+function setNotifyBtn(state){  // off | on | denied
+  const btn=$("#notifyBtn"); if(!btn) return;
+  const ic=btn.querySelector(".ic"), lab=$("#notifyLabel");
+  btn.hidden=false;
+  if(state==="on"){ btn.classList.add("on"); ic.innerHTML=ICONS.bell; lab.textContent="通知已开"; btn.title="点击关闭系统通知"; }
+  else if(state==="denied"){ btn.classList.remove("on"); ic.innerHTML=ICONS.bellOff; lab.textContent="通知被拒"; btn.title="浏览器已拒绝通知,请到系统设置里放行"; }
+  else { btn.classList.remove("on"); ic.innerHTML=ICONS.bellOff; lab.textContent="开启通知"; btn.title="开启系统通知"; }
+}
+async function refreshNotifyBtn(){
+  const btn=$("#notifyBtn");
+  if(!PUSH.ready || !PUSH.enabled || !("PushManager" in window)){ if(btn) btn.hidden=true; return; }
+  if(typeof Notification!=="undefined" && Notification.permission==="denied"){ setNotifyBtn("denied"); return; }
+  setNotifyBtn((await currentSub()) ? "on" : "off");
+}
+async function enableNotify(){
+  if(!isStandalone() && /iP(hone|ad|od)/.test(navigator.userAgent)){
+    alert("iPhone 需先把本页「添加到主屏幕」,再从主屏图标打开,才能开启系统通知。"); return;
+  }
+  let perm = (typeof Notification!=="undefined") ? Notification.permission : "denied";
+  if(perm==="default") perm=await Notification.requestPermission();
+  if(perm!=="granted"){ setNotifyBtn(perm==="denied"?"denied":"off"); return; }
+  const reg=await navigator.serviceWorker.ready;
+  const sub=await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:b64ToU8(PUSH.pubKey) });
+  await api("/push/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sub)});
+  setNotifyBtn("on");
+}
+async function disableNotify(){
+  const sub=await currentSub();
+  if(sub){
+    try{ await api("/push/unsubscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({endpoint:sub.endpoint})}); }catch(e){}
+    try{ await sub.unsubscribe(); }catch(e){}
+  }
+  setNotifyBtn("off");
+}
+$("#notifyBtn").onclick = async ()=>{
+  const btn=$("#notifyBtn"); btn.disabled=true;
+  try{ (await currentSub()) ? await disableNotify() : await enableNotify(); }
+  catch(e){ alert("通知开启失败:"+(e&&e.message||e)); }
+  finally{ btn.disabled=false; }
+};
 
 // ── Markdown 渲染(内置,不依赖 CDN)────────────────────────────────────────
 function inlineMd(t){

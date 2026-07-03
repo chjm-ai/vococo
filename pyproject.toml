@@ -13,6 +13,7 @@ dependencies = [
     "croniter>=2.0.0",
     "aiohttp>=3.9",
     "socksio>=1.0",
+    "pywebpush>=1.14",
 ]
 
 [project.optional-dependencies]
@@ -32,4 +33,9 @@ build-backend = "setuptools.build_meta"
 include = ["claude_hermes*"]
 
 [tool.setuptools.package-data]
-"claude_hermes.gateway.adapters" = ["web_static/*.html"]
+"claude_hermes.gateway.adapters" = [
+    "web_static/*.html",
+    "web_static/*.json",
+    "web_static/*.js",
+    "web_static/*.png",
+]
