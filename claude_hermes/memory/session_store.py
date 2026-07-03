@@ -86,9 +86,21 @@ def _watermark(c: sqlite3.Connection, session_key: str) -> int:
 
 
 def load_recent(session_key: str, limit: int = 40) -> list[Turn]:
-    """只取当前会话(水位线之后)的最近 N 轮。"""
+    """只取当前会话(水位线之后)的最近 N 轮;跳过进行中(assistant_text='')的 turn。"""
     from ..core.agent import Turn  # 延迟 import:打破模块级循环依赖
 
+    c = _conn()
+    wm = _watermark(c, session_key)
+    rows = c.execute(
+        "SELECT user_text, assistant_text FROM turns "
+        "WHERE session_key=? AND id>? AND assistant_text!='' ORDER BY id DESC LIMIT ?",
+        (session_key, wm, limit),
+    ).fetchall()
+    return [Turn(user=u, assistant=a) for u, a in reversed(rows)]
+
+
+def load_history(session_key: str, limit: int = 40) -> list[dict]:
+    """历史展示用:含进行中 turn,pending=True 标注。"""
     c = _conn()
     wm = _watermark(c, session_key)
     rows = c.execute(
@@ -96,7 +108,10 @@ def load_recent(session_key: str, limit: int = 40) -> list[Turn]:
         "WHERE session_key=? AND id>? ORDER BY id DESC LIMIT ?",
         (session_key, wm, limit),
     ).fetchall()
-    return [Turn(user=u, assistant=a) for u, a in reversed(rows)]
+    return [
+        {"user": u, "assistant": a, "pending": a == ""}
+        for u, a in reversed(rows)
+    ]
 
 
 def new_session(session_key: str) -> None:
@@ -154,6 +169,31 @@ def append(session_key: str, user_text: str, assistant_text: str) -> None:
         "VALUES (?,?,?,?)",
         (session_key, time.time(), user_text, assistant_text),
     )
+    c.commit()
+
+
+def start_turn(session_key: str, user_text: str) -> int:
+    """入库进行中 turn(assistant_text 留空);返回 row id 供 finish_turn/cancel_turn 配对。"""
+    c = _conn()
+    cur = c.execute(
+        "INSERT INTO turns(session_key, ts, user_text, assistant_text) VALUES (?,?,?,'')",
+        (session_key, time.time(), user_text),
+    )
+    c.commit()
+    return cur.lastrowid  # type: ignore[return-value]
+
+
+def finish_turn(turn_id: int, assistant_text: str) -> None:
+    """用 AI 回复填完 start_turn 占的坑。"""
+    c = _conn()
+    c.execute("UPDATE turns SET assistant_text=? WHERE id=?", (assistant_text, turn_id))
+    c.commit()
+
+
+def cancel_turn(turn_id: int) -> None:
+    """AI 回复出错/取消时删掉进行中的 turn,避免孤儿 pending 行残留。"""
+    c = _conn()
+    c.execute("DELETE FROM turns WHERE id=? AND assistant_text=''", (turn_id,))
     c.commit()
 
 

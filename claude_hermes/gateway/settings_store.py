@@ -31,6 +31,7 @@ _DEFAULTS: dict = {
     "skills_hidden": [],        # 仅设置列表折叠用
     "hermes_mcp_enabled": True,
     "external_mcp": {},         # name -> {type,command,args,env,url,headers,enabled}
+    "web_default_model": "",    # web 端上次选定的模型;新会话没显式选就用它(空=回落 config.MODEL)
 }
 
 
@@ -195,6 +196,20 @@ def reset_skills() -> None:
         d = _load()
         d["skills_mode"] = "default"
         d["skills_enabled"] = []
+        _save(d)
+
+
+# ── web 端默认模型 ──────────────────────────────────────────────────────
+def get_web_default_model() -> str:
+    """web 端上次选定的模型;没设过返回空串(调用方回落 config.MODEL)。"""
+    return _load().get("web_default_model") or ""
+
+
+def set_web_default_model(model: str) -> None:
+    """web 端切模型时记住它:新开的 web 会话没显式选就默认用这个。"""
+    with _LOCK:
+        d = _load()
+        d["web_default_model"] = model or ""
         _save(d)
 
 

@@ -12,7 +12,7 @@ from .. import config
 from ..cron.scheduler import run_scheduler
 from ..memory import session_store
 from ..tools import selfops
-from . import clarify, core
+from . import clarify, core, settings_store
 from .adapters.base import Adapter, Incoming
 
 
@@ -22,6 +22,7 @@ class GatewayRunner:
         self.models: dict[str, str] = {}  # 每会话模型覆盖(/model 切换)
         self._locks: dict[str, anyio.Lock] = {}  # 每会话一把锁:同会话串行
         self._tg: anyio.abc.TaskGroup | None = None  # nursery,用于并发派发
+        self._cancel_scopes: dict[str, anyio.CancelScope] = {}  # 每会话当前轮 CancelScope
 
     async def push(self, platform: str, chat_id, text: str) -> None:
         adapter = self.adapters.get(platform)
@@ -34,6 +35,14 @@ class GatewayRunner:
             lock = anyio.Lock()
             self._locks[key] = lock
         return lock
+
+    def cancel_turn(self, session_key: str) -> bool:
+        """取消某会话当前正在进行的 AI 回复轮次;返回是否找到并取消了。"""
+        scope = self._cancel_scopes.get(session_key)
+        if scope is not None:
+            scope.cancel()
+            return True
+        return False
 
     async def _dispatch(self, adapter: Adapter, inc: Incoming) -> None:
         # clarify 回复必须在【拿锁前】拦截:发起 ask_user 的那一轮还占着会话锁、
@@ -77,12 +86,18 @@ class GatewayRunner:
 
     async def _handle(self, adapter: Adapter, inc: Incoming) -> None:
         key = inc.session_key
-        # 优先内存里本次会话的切换,其次库里持久化的选定(重启后仍在),最后默认
-        model = self.models.get(key) or session_store.get_chosen_model(key) or config.MODEL
+        # 优先内存里本次会话的切换,其次库里持久化的选定(重启后仍在);
+        # web 端新会话没显式选过 → 回落"这个端上次用的模型",最后才是全局默认
+        model = self.models.get(key) or session_store.get_chosen_model(key)
+        if not model and inc.platform == "web":
+            model = settings_store.get_web_default_model()
+        model = model or config.MODEL
         if core.is_command(inc.text):
             outcome = core.handle_command(inc.text, key, model)
             if outcome.new_model:
                 self.models[key] = outcome.new_model
+                if inc.platform == "web":
+                    settings_store.set_web_default_model(outcome.new_model)
             if outcome.choice is not None:
                 await adapter.present_choice(inc.chat_id, outcome.choice)
             elif outcome.reply:
@@ -90,15 +105,20 @@ class GatewayRunner:
             return
         # 设置本轮路由上下文(供 ask_user 工具反问时找到该发给谁),随 contextvar 传入工具
         token = clarify.set_current(key, adapter, inc.chat_id)
+        scope = anyio.CancelScope()
+        self._cancel_scopes[key] = scope
         try:
-            with anyio.fail_after(config.AGENT_TURN_TIMEOUT):  # 单轮硬超时(含等 clarify)
-                await core.converse(
-                    key, inc.text, model, adapter.make_sink(inc.chat_id),
-                    images=inc.images, store_user=inc.store_text,
-                )
-        except TimeoutError:
-            pass  # 超时静默处理,不向用户发送错误消息
+            with scope:
+                try:
+                    with anyio.fail_after(config.AGENT_TURN_TIMEOUT):  # 单轮硬超时(含等 clarify)
+                        await core.converse(
+                            key, inc.text, model, adapter.make_sink(inc.chat_id),
+                            images=inc.images, store_user=inc.store_text,
+                        )
+                except TimeoutError:
+                    pass  # 超时静默处理,不向用户发送错误消息
         finally:
+            self._cancel_scopes.pop(key, None)
             clarify.reset_current(token)
             clarify.clear_session(key)  # 轮结束,取消任何还挂着的 clarify
 
@@ -142,6 +162,10 @@ class GatewayRunner:
 
     async def run(self) -> None:
         clarify.register_push(self.push)  # 让 send_message 等工具能主动发消息
+        # 注册取消回调到所有支持的 adapter(如 WebAdapter)
+        for adapter in self.adapters.values():
+            if hasattr(adapter, "set_cancel_callback"):
+                adapter.set_cancel_callback(self.cancel_turn)
         async with anyio.create_task_group() as tg:
             self._tg = tg
             for adapter in self.adapters.values():

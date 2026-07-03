@@ -176,6 +176,8 @@ async def converse(
     history = session_store.load_recent(session_key)
     cwd = config.project_cwd_for(session_key)  # 项目会话→该文件夹当 cwd;否则 None(进程默认目录)
     cwd_token = danger.set_cwd(cwd)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
+    stored_user = store_user if store_user is not None else user_text
+    turn_id = session_store.start_turn(session_key, stored_user)
     reply: AgentReply | None = None
     try:
         async for ev in stream_turn(history, user_text, model=model, images=images, cwd=cwd):
@@ -196,9 +198,7 @@ async def converse(
     finally:
         danger.reset_cwd(cwd_token)
     if reply is not None:
-        session_store.append(
-            session_key, store_user if store_user is not None else user_text, reply.text
-        )
+        session_store.finish_turn(turn_id, reply.text)
         if reply.context_tokens or reply.turn_tokens:
             session_store.record_usage(
                 session_key,
@@ -211,6 +211,8 @@ async def converse(
                 model=reply.model,
             )
         await sink.done(reply)
+    else:
+        session_store.cancel_turn(turn_id)
     return reply
 
 

@@ -17,9 +17,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import time
 from collections import deque
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 import aiohttp
 from aiohttp import web
@@ -155,6 +157,10 @@ class WebAdapter:
         self._seq = 0  # 全局单调递增的事件编号
         self._buffer: deque[tuple[int, str]] = deque(maxlen=512)  # 断线补发用的环形缓冲
         self._runner: web.AppRunner | None = None
+        self._cancel_callback: Callable[[str], bool] | None = None
+
+    def set_cancel_callback(self, cb: Callable[[str], bool]) -> None:
+        self._cancel_callback = cb
 
     # ── 认证 ────────────────────────────────────────────────────────────
     def _ok_token(self, request: web.Request) -> bool:
@@ -333,6 +339,18 @@ class WebAdapter:
         self._inbox.put_nowait(Incoming(self.platform, conv, text, images=images))
         return web.json_response({"ok": True})
 
+    async def _handle_abort(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        conv = str(body.get("conv") or "main")
+        session_key = config.resolve_session_key("web", conv)
+        stopped = bool(self._cancel_callback and self._cancel_callback(session_key))
+        return web.json_response({"ok": True, "stopped": stopped})
+
     async def _handle_conversations(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
@@ -420,7 +438,9 @@ class WebAdapter:
         # 模型清单 = 官方档 + cc-switch 里配好的 DeepSeek/Kimi 等(available_models);
         # 只显示模型名(label=id,不带描述);default=当前激活的模型(跟随 cc-switch)。
         choices = providers.available_models(MODEL_CHOICES)
-        active_model = providers.resolve(None, config.MODEL)[0]
+        # default = web 端上次选定的模型;没设过才回落到全局激活模型(cc-switch)
+        active_model = settings_store.get_web_default_model() \
+            or providers.resolve(None, config.MODEL)[0]
         return web.json_response(
             {
                 "default": active_model,
@@ -438,10 +458,20 @@ class WebAdapter:
                 {"error": "未配置语音转写:请在 .env 设 SILICONFLOW_API_KEY"},
                 status=503,
             )
+        t0 = time.monotonic()
         audio, filename, ctype = await self._read_audio(request)
         if not audio:
             return web.json_response({"error": "没收到音频"}, status=400)
-        return await self._transcribe(audio, filename, ctype)
+        t1 = time.monotonic()
+        resp = await self._transcribe(audio, filename, ctype)
+        t2 = time.monotonic()
+        # 诊断"转写慢"到底慢在哪:recv=接收上传耗时, stt=SenseVoice 往返耗时
+        print(
+            f"[transcribe] size={len(audio) / 1024:.1f}KB "
+            f"recv={t1 - t0:.2f}s stt={t2 - t1:.2f}s total={t2 - t0:.2f}s",
+            flush=True,
+        )
+        return resp
 
     async def _read_audio(
         self, request: web.Request
@@ -488,10 +518,8 @@ class WebAdapter:
             return g
         conv = request.query.get("conv", "main")
         key = config.resolve_session_key("web", conv)
-        turns = session_store.load_recent(key, limit=40)
-        return web.json_response(
-            {"turns": [{"user": t.user, "assistant": t.assistant} for t in turns]}
-        )
+        turns = session_store.load_history(key, limit=40)
+        return web.json_response({"turns": turns})
 
     async def _handle_rename(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
@@ -511,6 +539,97 @@ class WebAdapter:
         if conv and conv != "main":
             session_store.delete_session(config.resolve_session_key("web", conv))
         return web.json_response({"ok": True})
+
+    # ── 项目 Git 状态 ────────────────────────────────────────────────────
+    def _conv_cwd(self, conv: str) -> str | None:
+        """会话对应的项目工作目录;非项目会话(main/普通 web)返回 None。"""
+        key = config.resolve_session_key("web", conv)
+        return config.project_cwd_for(key)
+
+    async def _run_git(self, cwd: str, *args: str) -> tuple[int, str, str]:
+        """在 cwd 里跑一条 git 命令,返回 (returncode, stdout, stderr)。"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", *args, cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await proc.communicate()
+        except (OSError, ValueError) as e:
+            return 127, "", str(e)
+        return (
+            proc.returncode or 0,
+            out.decode("utf-8", "replace"),
+            err.decode("utf-8", "replace"),
+        )
+
+    async def _git_status(self, cwd: str) -> dict:
+        """收集一份 git 状态:分支、领先/落后、改动文件清单。"""
+        code, out, _ = await self._run_git(cwd, "rev-parse", "--is-inside-work-tree")
+        if code != 0 or out.strip() != "true":
+            return {"is_repo": False}
+        _, raw, _ = await self._run_git(cwd, "status", "--porcelain=v1", "--branch")
+        branch, ahead, behind = "", 0, 0
+        files: list[dict] = []
+        for line in raw.splitlines():
+            if line.startswith("## "):
+                # 形如 "main...origin/main [ahead 1, behind 2]" / "HEAD (no branch)"
+                # / "No commits yet on main"
+                head = line[3:]
+                if head.startswith("No commits yet on "):
+                    branch = head[len("No commits yet on "):].strip()
+                    continue
+                branch = head.split(" ", 1)[0].split("...", 1)[0]
+                if m := re.search(r"ahead (\d+)", head):
+                    ahead = int(m.group(1))
+                if m := re.search(r"behind (\d+)", head):
+                    behind = int(m.group(1))
+            elif line:
+                files.append({"x": line[:2], "path": line[3:]})  # XY 状态码 + 路径
+        return {
+            "is_repo": True,
+            "branch": branch or "(游离 HEAD)",
+            "ahead": ahead,
+            "behind": behind,
+            "dirty": len(files),
+            "files": files[:60],  # 改动太多只回前 60 条,够看
+        }
+
+    async def _handle_conv_git(self, request: web.Request) -> web.Response:
+        """会话对应项目的 git 状态;非项目会话返回 {is_project: false}。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        cwd = self._conv_cwd(request.query.get("conv", ""))
+        if not cwd:
+            return web.json_response({"is_project": False})
+        info = await self._git_status(cwd)
+        info.update(is_project=True, path=cwd, name=os.path.basename(cwd) or cwd)
+        return web.json_response(info)
+
+    async def _handle_conv_git_branch(self, request: web.Request) -> web.Response:
+        """在项目工作目录建并切到新分支(当前改动随之带过去)。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        name = (body.get("name") or "").strip()
+        cwd = self._conv_cwd(str(body.get("conv") or ""))
+        if not cwd:
+            return web.json_response({"error": "该会话不是项目会话"}, status=400)
+        if not name or " " in name or name.startswith("-"):
+            return web.json_response({"error": "分支名非法"}, status=400)
+        # 交给 git 兜底校验(拒绝 .. / ~ / 控制字符 / 已占用等)
+        code, _, _ = await self._run_git(cwd, "check-ref-format", "--branch", name)
+        if code != 0:
+            return web.json_response({"error": f"分支名非法:{name}"}, status=400)
+        code, _, err = await self._run_git(cwd, "checkout", "-b", name)
+        if code != 0:
+            return web.json_response({"error": err.strip() or "创建分支失败"}, status=400)
+        info = await self._git_status(cwd)
+        info.update(is_project=True, path=cwd, name=os.path.basename(cwd) or cwd)
+        return web.json_response(info)
 
     # ── 设置:技能 / MCP ─────────────────────────────────────────────────
     async def _handle_settings(self, request: web.Request) -> web.Response:
@@ -768,6 +887,7 @@ class WebAdapter:
                 web.post("/push/unsubscribe", self._handle_push_unsubscribe),
                 web.get("/events", self._handle_events),
                 web.post("/send", self._handle_send),
+                web.post("/abort", self._handle_abort),
                 web.get("/conversations", self._handle_conversations),
                 web.get("/projects", self._handle_projects),
                 web.get("/browse", self._handle_browse),
@@ -778,6 +898,8 @@ class WebAdapter:
                 web.post("/transcribe", self._handle_transcribe),
                 web.post("/conv/rename", self._handle_rename),
                 web.post("/conv/delete", self._handle_delete),
+                web.get("/conv/git", self._handle_conv_git),
+                web.post("/conv/git/branch", self._handle_conv_git_branch),
                 # 设置页
                 web.get("/settings", self._handle_settings),
                 web.post("/settings/skill", self._handle_settings_skill),
