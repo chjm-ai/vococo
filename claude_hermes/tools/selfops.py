@@ -38,7 +38,8 @@ _RATE_WINDOW_SEC = 15 * 60
 _RATE_MAX = 3
 _EXIT_CODE = 51  # 区别于崩溃的退出码,run.sh 日志里一眼认出"这是主动重启"
 
-_restart_pending = False
+# 每会话的重启标志(按 session_key):一个会话最多一次,同一时刻只有被授权的会话能标记
+_restart_pending: dict[str, dict] = {}
 
 
 # ── git / 预检(均为阻塞调用,工具侧经 anyio.to_thread 执行)──
@@ -128,8 +129,7 @@ def request_restart(
     allow_dirty: bool = False,
 ) -> str:
     """全部保险丝通过则写遗书 + 标记待重启;返回给 agent 的结果文案。"""
-    global _restart_pending
-    if _restart_pending:
+    if session_key in _restart_pending:
         return "已有一个重启在排队(本轮回复结束即执行),不用重复调用。"
     recent = _recent_restarts()
     if len(recent) >= _RATE_MAX:
@@ -148,24 +148,21 @@ def request_restart(
 
     head = git_head()
     RESUME_PATH.parent.mkdir(parents=True, exist_ok=True)
+    task_data = {
+        "platform": platform,
+        "chat_id": chat_id,
+        "session_key": session_key,
+        "reason": reason,
+        "verify_plan": verify_plan,
+        "rollback_commit": head,
+        "requested_at": int(time.time()),
+    }
     RESUME_PATH.write_text(
-        json.dumps(
-            {
-                "platform": platform,
-                "chat_id": chat_id,
-                "session_key": session_key,
-                "reason": reason,
-                "verify_plan": verify_plan,
-                "rollback_commit": head,
-                "requested_at": int(time.time()),
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
+        json.dumps(task_data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     _record_restart(recent)
-    _restart_pending = True
+    _restart_pending[session_key] = task_data  # 仅标记该会话
     return (
         "✅ 预检通过,已安排重启:本轮回复结束后进程自动退出,守护脚本约 5 秒后拉起新代码,"
         "然后自动回到本对话执行你的验证计划。"
@@ -174,8 +171,14 @@ def request_restart(
     )
 
 
-def restart_pending() -> bool:
-    return _restart_pending
+def restart_pending(session_key: str) -> bool:
+    """检查指定会话是否标记了待重启。"""
+    return session_key in _restart_pending
+
+
+def pop_restart_pending(session_key: str) -> dict | None:
+    """消费该会话的待重启标记(消费即删)—— 确保只退出一次。"""
+    return _restart_pending.pop(session_key, None)
 
 
 async def exit_for_restart(adapter: object, chat_id: object) -> None:
