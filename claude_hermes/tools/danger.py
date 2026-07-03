@@ -106,8 +106,15 @@ _cwd_var: contextvars.ContextVar = contextvars.ContextVar("hermes_agent_cwd", de
 
 
 def set_cwd(path: str | None) -> contextvars.Token:
-    """开轮时登记本轮工作目录(供越界写检测)。工作目录功能落地后调用。"""
+    """开轮时登记本轮工作目录(供越界写检测)。converse 每轮调用,随 contextvar 传进 hook。"""
     return _cwd_var.set(path or None)
+
+
+def reset_cwd(token: contextvars.Token) -> None:
+    try:
+        _cwd_var.reset(token)
+    except (ValueError, LookupError):
+        pass
 
 
 def current_cwd() -> str | None:

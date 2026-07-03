@@ -38,10 +38,11 @@ Hermes 底座 = `claude-agent-sdk` = Claude Code 内核。**编码能力一轮�
 
 ## 待接 / 暂缓
 
-- **工作目录 cwd**(另一个会话在开发):`danger.set_cwd(path)` 已留好钩子,工作目录功能开轮时调用它,
-  「写 cwd 外文件」这条规则即生效(现在 cwd=None,该规则休眠,其余 4 条 Bash 规则已生效)。
+- ✅ **工作目录 cwd(已落地并接线)**:主线的「项目」功能提供 `config.project_cwd_for()` +
+  `stream_turn(cwd=)`;`converse` 每轮 `danger.set_cwd(cwd)`,**「写 cwd 外文件」规则已生效**
+  (5 类全齐)。非项目会话 cwd=None,该条自然休眠。
 - **Phase 3 原生 session(跨轮连续性 + 省缓存):暂缓**。与「工作目录」改同一块 session 模型,现在动必冲突;
-  且收益只在多轮编码对话体现。等工作目录落地、session 稳定后再评估。见 [ADR 0001](adr/0001-coding-experience-sequencing.md)。
+  且收益只在多轮编码对话体现。等工作目录落地、session 稳定后再评估。见 [ADR 0002](adr/0002-coding-experience-sequencing.md)。
 
 ## 需要真机验证的点(订阅令牌 + 真流式)
 

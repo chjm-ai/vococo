@@ -148,22 +148,29 @@ class _FakeAdapter:
         pass
 
 
-def _run_approval(click_token: str) -> dict:
+def _run_approval(
+    click_token: str,
+    tool_name: str = "Bash",
+    tool_input: dict | None = None,
+    cwd: str | None = None,
+) -> dict:
     """开一轮审批,模拟用户点某个按钮(token='0' 允许 / '1' 拒绝),返回 hook 输出。"""
     from claude_hermes.gateway import clarify
+    from claude_hermes.tools import danger
+
+    ti = tool_input or {"command": "git push"}
 
     async def scenario():
         adapter = _FakeAdapter()
         token = clarify.set_current("sess-approval", adapter, "chat")
+        cwd_token = danger.set_cwd(cwd)
         out: dict = {}
         try:
             async with anyio.create_task_group() as tg:
 
                 async def run_hook():
                     out["v"] = await pretool_guard_hook(
-                        {"tool_name": "Bash", "tool_input": {"command": "git push"}},
-                        None,
-                        {},
+                        {"tool_name": tool_name, "tool_input": ti}, None, {}
                     )
 
                 tg.start_soon(run_hook)
@@ -174,6 +181,7 @@ def _run_approval(click_token: str) -> dict:
                 cid = adapter.choice.options[0][0].split()[1]
                 clarify.resolve_button(cid, click_token)
         finally:
+            danger.reset_cwd(cwd_token)
             clarify.reset_current(token)
             clarify.clear_session("sess-approval")
         return out["v"]
@@ -188,3 +196,20 @@ def test_guard_hook_escalate_approved_allows():
 def test_guard_hook_escalate_denied_blocks():
     out = _run_approval("1")  # 点「拒绝」→ deny
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_guard_hook_write_outside_cwd_denied(tmp_path):
+    # cwd 设定后,写 cwd 外的文件 → 升级审批;点拒绝 → deny(验证 set_cwd 经 hook 生效)
+    out = _run_approval(
+        "1", tool_name="Write", tool_input={"file_path": "/etc/evil"}, cwd=str(tmp_path)
+    )
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_setcwd_roundtrip():
+    from claude_hermes.tools import danger
+
+    tok = danger.set_cwd("/tmp/proj")
+    assert danger.current_cwd() == "/tmp/proj"
+    danger.reset_cwd(tok)
+    assert danger.current_cwd() is None

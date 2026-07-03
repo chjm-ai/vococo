@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections import deque
 from pathlib import Path
 from typing import AsyncIterator
@@ -240,6 +241,9 @@ class WebAdapter:
         # 首条消息自动给会话起个名(命令 / 主会话除外)
         if not text.startswith("/") and conv != "main":
             session_store.ensure_title(config.resolve_session_key("web", conv), text)
+        # 项目会话(conv = p<hash>:<convid>)→ 刷新项目最近使用时间,好让侧边栏排序
+        if conv.startswith("p") and ":" in conv:
+            session_store.touch_project(conv[1:].split(":", 1)[0])
         self._inbox.put_nowait(Incoming(self.platform, conv, text, images=images))
         return web.json_response({"ok": True})
 
@@ -255,6 +259,74 @@ class WebAdapter:
             c["conv"] = c["key"].split(":", 1)[1] if ":" in c["key"] else c["key"]
         main["conv"] = "main"
         return web.json_response({"main": main, "conversations": convs})
+
+    # ── 项目 ─────────────────────────────────────────────────────────────
+    async def _handle_projects(self, request: web.Request) -> web.Response:
+        """项目列表(侧边栏按项目分组用)。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        return web.json_response({"projects": session_store.list_projects()})
+
+    async def _handle_browse(self, request: web.Request) -> web.Response:
+        """服务端目录浏览器:列出某目录下的子文件夹(默认从用户主目录起)。
+
+        只列目录、跳过隐藏(. 开头)项;返回可上翻的 parent。服务跑在本机,
+        且本接口同样过 _ok_token —— 但一旦开了公网隧道又没设口令,等于把整块
+        硬盘目录结构暴露出去,故务必设 WEB_AUTH_TOKEN。
+        """
+        if (g := self._guard(request)) is not None:
+            return g
+        raw = request.query.get("dir") or str(Path.home())
+        try:
+            base = Path(os.path.expanduser(raw)).resolve()
+        except (OSError, ValueError):
+            base = Path.home()
+        if not base.is_dir():
+            base = Path.home()
+        entries: list[dict] = []
+        try:
+            for name in sorted(os.listdir(base), key=str.lower):
+                if name.startswith("."):
+                    continue
+                p = base / name
+                try:
+                    if p.is_dir():
+                        entries.append({"name": name, "path": str(p)})
+                except OSError:
+                    continue
+        except (PermissionError, OSError):
+            pass
+        parent = str(base.parent) if base.parent != base else None
+        return web.json_response({"dir": str(base), "parent": parent, "entries": entries})
+
+    async def _handle_project_create(self, request: web.Request) -> web.Response:
+        """新建/复活项目:校验路径是真实目录 → 入库,返回项目信息。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        path = (body.get("path") or "").strip()
+        if not path:
+            return web.json_response({"error": "路径不能为空"}, status=400)
+        norm = session_store.normalize_project_path(path)
+        if not Path(norm).is_dir():
+            return web.json_response({"error": f"不是有效目录:{norm}"}, status=400)
+        return web.json_response({"project": session_store.upsert_project(norm)})
+
+    async def _handle_project_remove(self, request: web.Request) -> web.Response:
+        """软移除项目:仅从列表隐藏,文件夹与会话历史都不动。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        h = (body.get("hash") or "").strip()
+        if h:
+            session_store.hide_project(h)
+        return web.json_response({"ok": True})
 
     async def _handle_models(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
@@ -304,6 +376,10 @@ class WebAdapter:
                 web.get("/events", self._handle_events),
                 web.post("/send", self._handle_send),
                 web.get("/conversations", self._handle_conversations),
+                web.get("/projects", self._handle_projects),
+                web.get("/browse", self._handle_browse),
+                web.post("/projects/create", self._handle_project_create),
+                web.post("/projects/remove", self._handle_project_remove),
                 web.get("/models", self._handle_models),
                 web.get("/history", self._handle_history),
                 web.post("/conv/rename", self._handle_rename),

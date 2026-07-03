@@ -110,21 +110,30 @@ async def converse(
     images: list[ImageAttachment] | None = None,
 ) -> AgentReply | None:
     """跑一轮:载入历史 → 流式 → 喂 sink → 落库。"""
+    from .. import config  # 懒加载,与本模块其余用法一致
+
+    from ..tools import danger  # 懒加载,避免 config↔tools 循环
+
     history = session_store.load_recent(session_key)
+    cwd = config.project_cwd_for(session_key)  # 项目会话→该文件夹当 cwd;否则 None(进程默认目录)
+    cwd_token = danger.set_cwd(cwd)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
     reply: AgentReply | None = None
-    async for ev in stream_turn(history, user_text, model=model, images=images):
-        if isinstance(ev, TextDelta):
-            await sink.text(ev.text)
-        elif isinstance(ev, ThinkingDelta):
-            await sink.thinking(ev.text)
-        elif isinstance(ev, ToolStarted):
-            await sink.tool_started(ev.name)
-        elif isinstance(ev, ToolInput):
-            await sink.tool_input(ev.name, ev.tool_id, ev.tool_input)
-        elif isinstance(ev, ToolFinished):
-            await sink.tool_finished(ev.name, ev.ok, ev.preview)
-        elif isinstance(ev, Done):
-            reply = ev.reply
+    try:
+        async for ev in stream_turn(history, user_text, model=model, images=images, cwd=cwd):
+            if isinstance(ev, TextDelta):
+                await sink.text(ev.text)
+            elif isinstance(ev, ThinkingDelta):
+                await sink.thinking(ev.text)
+            elif isinstance(ev, ToolStarted):
+                await sink.tool_started(ev.name)
+            elif isinstance(ev, ToolInput):
+                await sink.tool_input(ev.name, ev.tool_id, ev.tool_input)
+            elif isinstance(ev, ToolFinished):
+                await sink.tool_finished(ev.name, ev.ok, ev.preview)
+            elif isinstance(ev, Done):
+                reply = ev.reply
+    finally:
+        danger.reset_cwd(cwd_token)
     if reply is not None:
         session_store.append(session_key, user_text, reply.text)
         if reply.context_tokens or reply.turn_tokens:
