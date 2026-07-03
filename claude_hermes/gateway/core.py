@@ -18,6 +18,7 @@ from ..core.agent import (
     TextDelta,
     ThinkingDelta,
     ToolFinished,
+    ToolInput,
     ToolStarted,
     stream_turn,
 )
@@ -49,7 +50,21 @@ class Sink:
         await self.render()
 
     async def tool_started(self, name: str) -> None:
-        self.tools.append({"name": name, "done": False, "ok": True, "preview": ""})
+        self.tools.append(
+            {"name": name, "done": False, "ok": True, "preview": "", "input": None}
+        )
+        await self.render()
+
+    async def tool_input(self, name: str, tool_id: str, tool_input: dict) -> None:
+        """收到某工具的完整入参 → 挂到最近一个同名、尚无入参的工具项上。
+
+        基类默认只做聚合(供 TUI/TG 复用状态);富渲染(diff/todo/计划卡)由
+        Web Sink 覆盖本方法自行推事件。
+        """
+        for t in reversed(self.tools):
+            if t["name"] == name and t.get("input") is None:
+                t["input"] = tool_input
+                break
         await self.render()
 
     async def tool_finished(self, name: str, ok: bool, preview: str) -> None:
@@ -104,6 +119,8 @@ async def converse(
             await sink.thinking(ev.text)
         elif isinstance(ev, ToolStarted):
             await sink.tool_started(ev.name)
+        elif isinstance(ev, ToolInput):
+            await sink.tool_input(ev.name, ev.tool_id, ev.tool_input)
         elif isinstance(ev, ToolFinished):
             await sink.tool_finished(ev.name, ev.ok, ev.preview)
         elif isinstance(ev, Done):

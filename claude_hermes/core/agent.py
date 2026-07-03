@@ -8,6 +8,7 @@ run_turn() 是其上的便捷封装(累积成最终回复),给纯文本 chat 用
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
 
@@ -22,6 +23,7 @@ from claude_agent_sdk import (
 
 from .. import config
 from ..tools.builtin import build_mcp_servers
+from ..tools.danger import build_hooks
 from .prompt import build_system_prompt
 
 
@@ -96,6 +98,19 @@ class ToolStarted:
 
 
 @dataclass
+class ToolInput:
+    """某工具调用的完整入参(流式拼装完成后发出)。
+
+    Phase 0 keystone:没有入参,前端就渲染不出 diff / todo / 计划卡。
+    在 content_block_stop 时把累积的 input_json_delta 解析成 dict 发出。
+    """
+
+    name: str
+    tool_id: str
+    tool_input: dict
+
+
+@dataclass
 class ToolFinished:
     """工具返回结果。"""
 
@@ -111,7 +126,19 @@ class Done:
     reply: AgentReply
 
 
-Event = Union[TextDelta, ThinkingDelta, ToolStarted, ToolFinished, Done]
+Event = Union[TextDelta, ThinkingDelta, ToolStarted, ToolInput, ToolFinished, Done]
+
+
+def assemble_tool_input(raw: str) -> dict:
+    """把累积的 input_json_delta 片段解析成 dict;空/坏 JSON 都安全退化成 {}。"""
+    s = (raw or "").strip()
+    if not s:
+        return {}
+    try:
+        parsed = json.loads(s)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _compose_prompt(history: list[Turn], user_text: str) -> str:
@@ -193,12 +220,15 @@ async def stream_turn(
         permission_mode=config.PERMISSION_MODE,
         include_partial_messages=True,
         mcp_servers=build_mcp_servers(),
+        hooks=build_hooks(),  # PreToolUse:灾难拦截 + 危险操作审批闸
         skills=config.SKILLS,  # None=全量;白名单则只挂这些(瘦身 tool schema)
     )
 
     text_parts: list[str] = []
     tool_calls: list[str] = []
     tool_name_by_id: dict[str, str] = {}
+    tool_json: dict[int, str] = {}  # 块索引 -> 累积的入参 JSON 片段
+    tool_meta: dict[int, tuple[str, str]] = {}  # 块索引 -> (tool_id, name)
     cost_usd: float | None = None
     is_error = False
     context_tokens = 0
@@ -227,6 +257,13 @@ async def stream_turn(
                         t = delta.get("thinking", "")
                         if t:
                             yield ThinkingDelta(t)
+                    elif dt == "input_json_delta":
+                        # 工具入参是流式的 partial_json,按块索引累积,块结束时解析
+                        idx = ev.get("index")
+                        if isinstance(idx, int):
+                            tool_json[idx] = tool_json.get(idx, "") + (
+                                delta.get("partial_json", "") or ""
+                            )
                 elif etype == "content_block_start":
                     cb = ev.get("content_block", {})
                     if cb.get("type") == "tool_use":
@@ -234,8 +271,19 @@ async def stream_turn(
                         tid = cb.get("id", "")
                         if tid:
                             tool_name_by_id[tid] = name
+                        idx = ev.get("index")
+                        if isinstance(idx, int):
+                            tool_meta[idx] = (tid, name)
+                            tool_json.setdefault(idx, "")
                         tool_calls.append(name)
                         yield ToolStarted(name)
+                elif etype == "content_block_stop":
+                    # 该工具块的入参已流完 → 解析并发出 ToolInput(喂 diff/todo/审批)
+                    idx = ev.get("index")
+                    if isinstance(idx, int) and idx in tool_meta:
+                        tid, name = tool_meta.pop(idx)
+                        parsed = assemble_tool_input(tool_json.pop(idx, ""))
+                        yield ToolInput(name=name, tool_id=tid, tool_input=parsed)
             elif isinstance(msg, UserMessage):
                 for b in msg.content:
                     if isinstance(b, ToolResultBlock):

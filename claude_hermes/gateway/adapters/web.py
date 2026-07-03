@@ -57,6 +57,18 @@ class _WebSink(Sink):
     async def tool_started(self, name: str) -> None:
         self.a._emit({"conv": self.conv, "type": "tool_start", "name": name})
 
+    async def tool_input(self, name: str, tool_id: str, tool_input: dict) -> None:
+        # 把工具入参推给前端 → 渲染 diff / todo 清单 / 计划卡 / 命令预览
+        self.a._emit(
+            {
+                "conv": self.conv,
+                "type": "tool_input",
+                "name": name,
+                "id": tool_id,
+                "input": tool_input,
+            }
+        )
+
     async def tool_finished(self, name: str, ok: bool, preview: str) -> None:
         self.a._emit(
             {

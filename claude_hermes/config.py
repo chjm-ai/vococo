@@ -74,6 +74,10 @@ AGENT_TURN_TIMEOUT: int = int(os.environ.get("AGENT_TURN_TIMEOUT", "600"))
 CLARIFY_TIMEOUT: int = int(os.environ.get("CLARIFY_TIMEOUT", "300"))
 # 危险命令拦截(PreToolUse hook):默认开,只拦灾难级命令(删根/格式化/强推等)。
 DANGER_GUARD: bool = _parse_bool(os.environ.get("DANGER_GUARD", ""), True)
+# 审批闸(PreToolUse hook):默认开。对「危险但非灾难」的操作(写工作目录外、
+# git push/reset --hard、rm -rf、包安装、curl|sh)在【有交互通道时】弹按钮请你批准;
+# 无交互通道(CLI/eval/cron)则放行(信任该通道)。关掉 = 回到纯 bypass。
+APPROVAL_GATE: bool = _parse_bool(os.environ.get("APPROVAL_GATE", ""), True)
 AI_BRAIN_DIR: Path = Path(
     os.path.expanduser(os.environ.get("AI_BRAIN_DIR", "~/AI_BRAIN"))
 )

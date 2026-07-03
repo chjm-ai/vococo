@@ -1,0 +1,20 @@
+[
+  {
+    "id": "sample-add-flag",
+    "title": "示例:给某模块加一个开关(照抄改成你的真任务)",
+    "repo": "/absolute/path/to/a/throwaway/repo",
+    "baseline": "HEAD",
+    "prompt": "在 X 模块加一个环境变量开关 FOO_ENABLED(默认关),并补一个测试。保持现有代码风格。",
+    "verify": "python -m pytest -q",
+    "verify_timeout": 180
+  },
+  {
+    "id": "sample-fix-bug",
+    "title": "示例:修一个已知 bug",
+    "repo": "/absolute/path/to/a/throwaway/repo",
+    "baseline": "HEAD",
+    "prompt": "修复 <具体 bug 描述>。加一个能复现该 bug 的测试并让它通过。",
+    "verify": "python -m pytest -q tests/test_the_bug.py",
+    "verify_timeout": 180
+  }
+]
