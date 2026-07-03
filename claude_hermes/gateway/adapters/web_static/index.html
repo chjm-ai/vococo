@@ -126,11 +126,12 @@
   .conv{margin-bottom:1px;gap:8px;color:var(--dim);position:relative}
   .conv:hover,.conv.active{color:var(--text)}
   .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+  .conv .ctime{flex-shrink:0;color:var(--dim2);font-size:11px;font-variant-numeric:tabular-nums;transition:opacity .16s}  /* 会话时刻:名称右侧 */
   .conv .star{flex-shrink:0;color:var(--dim2);font-size:11px;transition:opacity .16s}   /* 主会话:弱化星标 */
   /* 「⋯」更多键绝对定位:不占布局宽度,hover 时浮现 */
   .conv .more{position:absolute;right:8px;top:50%;transform:translateY(-50%);opacity:0;pointer-events:none;
     font-size:16px;line-height:1;color:var(--dim2);padding:2px 6px;border-radius:7px;transition:opacity .16s,color .16s,background .16s}
-  .conv:hover .star{opacity:0}
+  .conv:hover .star,.conv:hover .ctime{opacity:0}
   .conv:hover .more{opacity:.6;pointer-events:auto}
   .conv .more:hover,.conv .more.on{color:var(--text);background:var(--card);opacity:1}
   /* 触屏无 hover:常驻显示「⋯」,否则点不到 */
@@ -752,6 +753,7 @@ function renderConvs(){
     for(const c of convs){
       const e=el("div","conv ingroup"+(c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
       const ct=el("div","ct"); ct.textContent=c.title||"新对话"; e.append(ct);
+      const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; e.append(tmEl); }   // 会话时刻:名称右侧
       if(c.pinned){ const star=el("span","star"); star.textContent="★"; e.append(star); }   // 主会话:右侧弱化星标
       else { const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; e.append(more); }
       e.onclick=()=>openConv(c.conv);
