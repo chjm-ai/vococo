@@ -419,8 +419,8 @@
   #backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:25;backdrop-filter:blur(2px)}
 
   @media(max-width:760px){
-    #sidebar{position:fixed;inset:0 auto 0 0;transform:translateX(-100%);box-shadow:2px 0 30px rgba(0,0,0,.5)}
-    #sidebar.open{transform:translateX(0)}
+    #sidebar{position:fixed;inset:0 auto 0 0;transform:translateX(-100%)}
+    #sidebar.open{transform:translateX(0);box-shadow:2px 0 30px rgba(0,0,0,.5)}
     #hamb{display:flex}
     #backdrop.show{display:block}
   }
@@ -1356,11 +1356,18 @@ $("#scrollBtn").onclick = scrollDown;
 function fitViewport(){
   const vv = window.visualViewport; if(!vv) return;
   const st = document.documentElement.style;
-  st.setProperty("--app-h", vv.height + "px");
-  st.setProperty("--app-top", vv.offsetTop + "px");
   const kbOpen = (window.innerHeight - vv.height) > 120;  // 视口缩水超阈值 → 判定键盘弹出
   document.body.classList.toggle("kb", kbOpen);
-  if(kbOpen) scrollDown();
+  if(kbOpen){
+    st.setProperty("--app-h", vv.height + "px");
+    st.setProperty("--app-top", vv.offsetTop + "px");
+    scrollDown();
+  }else{
+    // 键盘收起时交还布局视口(100%):iOS 独立 PWA 下 visualViewport 高度
+    // 常偏小且不再触发 resize,固定绑定会在底部留一条空白
+    st.removeProperty("--app-h");
+    st.removeProperty("--app-top");
+  }
 }
 if(window.visualViewport){
   window.visualViewport.addEventListener("resize", fitViewport);
