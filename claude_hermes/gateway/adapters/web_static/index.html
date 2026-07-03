@@ -145,8 +145,15 @@
   .convmenu .cmitem:hover{background:var(--panel2)}
   .convmenu .cmitem.danger{color:var(--err)}
   .convmenu .cmitem.danger:hover{background:rgba(209,103,74,.12)}
-  .sfoot{padding:13px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px}
-  .sfoot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
+  .sfoot{padding:9px 12px 9px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px}
+  .sfoot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok);flex-shrink:0}
+  .sfoot .sfoottxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* 设置入口:状态栏最右一个齿轮图标 */
+  .sfoicon{width:30px;height:30px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+    color:var(--dim);transition:background .16s,color .16s}
+  .sfoicon:hover{background:var(--panel2);color:var(--text)}
+  .sfoicon:active{transform:scale(.9)}
+  .sfoicon .ic{width:17px;height:17px;vertical-align:0}
 
   /* 项目分组(手风琴;行的内边距/圆角走上面的统一规范) */
   .projgrp{gap:6px;margin-top:2px;color:var(--dim);font-size:13px;font-weight:600;user-select:none}
@@ -178,13 +185,6 @@
   #projModal .pmfoot{display:flex;gap:10px;justify-content:flex-end;padding:13px 16px;border-top:1px solid var(--line)}
   #projModal .pmfoot button{padding:9px 16px;border-radius:9px;cursor:pointer;font-size:13.5px;border:1px solid var(--line2);background:var(--panel2);color:var(--text)}
   #projModal .pmfoot .pmok{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
-
-  /* 侧边栏「设置」入口(左下角,状态行上方) */
-  .sfootbtn{display:flex;align-items:center;gap:9px;margin:6px 12px 2px;padding:9px 12px;
-    border-radius:9px;color:var(--dim);font-size:14px;font-weight:600;
-    transition:background .15s,color .15s;text-align:left}
-  .sfootbtn:hover{background:var(--panel2);color:var(--text)}
-  .sfootbtn .ic{width:16px;height:16px;vertical-align:0}
 
   /* 设置弹窗 */
   #setModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
@@ -613,8 +613,7 @@
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
     <div id="convList"></div>
-    <button id="settingsBtn" class="sfootbtn" title="设置"><span class="sgear"></span>设置</button>
-    <div class="sfoot" id="sfoot">Hermes · Web</div>
+    <div class="sfoot" id="sfoot"><span class="sfoottxt">Hermes · Web</span><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
   </aside>
   <main>
     <header class="bar">
@@ -1024,7 +1023,7 @@ $("#projModal").onclick = e=>{ if(e.target===$("#projModal")) closeProjModal(); 
 
 // ── 设置(MCP / 技能 / 记忆 / 人设)────────────────────────────────────────
 const SET = { data:null, tab:"mcp", skq:"", mcpFormOpen:false };
-$(".sgear").innerHTML = ic("gear");
+$("#settingsBtn").innerHTML = ic("gear");
 
 async function openSettings(){
   $("#setModal").hidden=false;
@@ -1032,8 +1031,13 @@ async function openSettings(){
   $("#setPane").innerHTML = '<div class="setload">加载中…</div>';
   try{
     const r = await api("/settings");
+    if(!r.ok) throw new Error("HTTP "+r.status);
     SET.data = await r.json();
-  }catch(e){ $("#setPane").innerHTML = '<div class="setempty">加载失败,请重试</div>'; return; }
+  }catch(e){
+    $("#setPane").innerHTML = '<div class="setempty">加载失败:'+esc(String(e&&e.message||e))+
+      '<br><button class="btn ghost sm" style="margin-top:12px" onclick="openSettings()">重试</button></div>';
+    return;
+  }
   renderSetTab();
 }
 function closeSettings(){ $("#setModal").hidden=true; }
