@@ -1346,6 +1346,19 @@ async function openConv(conv){
   updateEmpty(); scrollDown();
 }
 
+// ── 重加载历史(SSE 连接恢复后)──────────────────────────────────────────
+async function reloadHistory(){
+  if(!S.conv || String(S.conv).startsWith("local-")) return;  // 只在非本地会话拉
+  try{
+    const r=await api("/history?conv="+encodeURIComponent(S.conv));
+    const d=await r.json();
+    if(S.conv!==S.conv) return;  // 拉取期间已切会话 → 丢弃
+    const cached=S.histCache[S.conv];
+    S.histCache[S.conv]=d.turns;
+    if(!cached || JSON.stringify(cached)!==JSON.stringify(d.turns)) renderTurns(d.turns);
+  }catch(e){}
+}
+
 // ── 消息气泡 ─────────────────────────────────────────────────────────────
 function addBubble(who, text, imgs){
   const row=el("div","row "+(who==="me"?"me":"ai"));
@@ -1367,7 +1380,11 @@ function connect(){
     if(d.id){ if(d.id<=S.lastId) return; S.lastId=d.id; }  // 补发/重复的老事件直接丢弃
     handleEvent(d);
   }catch(e){} };
-  S.es.onerror = ()=>{ /* EventSource 会自动重连,并带上 Last-Event-ID */ };
+  S.es.onerror = ()=>{
+    // EventSource 会自动重连,但重连后的历史消息可能丢失(缓冲转圈或服务端重启)
+    // 延迟一下,待连接稳定后拉一下历史,确保没漏消息(特别是重启后的系统消息)
+    setTimeout(()=>{ if(S.es&&S.es.readyState===1) reloadHistory(); }, 1500);
+  };
 }
 function ensureStream(){
   // 为当前会话准备一个流式 assistant 气泡(含状态行/思考/正文)
