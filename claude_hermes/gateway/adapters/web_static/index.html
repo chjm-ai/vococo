@@ -130,6 +130,8 @@
   .conv{margin-bottom:1px;gap:8px;color:var(--dim);position:relative}
   .conv:hover,.conv.active{color:var(--text)}
   .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+  .conv .livedot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}   /* AI 正在回复:闪烁圆点 */
+  @keyframes livepulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
   .conv .ctime{flex-shrink:0;color:var(--dim2);font-size:11px;font-variant-numeric:tabular-nums;transition:opacity .16s}  /* 会话时刻:名称右侧 */
   .conv .star{flex-shrink:0;color:var(--dim2);font-size:11px;transition:opacity .16s}   /* 主会话:弱化星标 */
   /* 「⋯」更多键绝对定位:不占布局宽度,hover 时浮现 */
@@ -705,6 +707,7 @@ const S = {
   model: "",            // 当前会话使用的模型(空=用默认)
   histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁
   pendingChoice: {},    // conv → choice 事件:审批发给非当前会话时暂存,切回该会话再渲染
+  live: {},             // conv → 进行中回合的事件缓冲:任意会话(含后台)都记录,切回时重放重建流式气泡
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -961,6 +964,7 @@ function renderConvs(){
     if(!open) continue;
     for(const c of convs){
       const e=el("div","conv ingroup"+(c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
+      if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; e.append(dot); }   // 该会话正在流式 → 闪烁圆点
       const ct=el("div","ct"); ct.textContent=c.title||"新对话"; e.append(ct);
       const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; e.append(tmEl); }   // 会话时刻:名称右侧
       if(c.pinned){ const star=el("span","star"); star.textContent="★"; e.append(star); }   // 主会话:右侧弱化星标
@@ -1404,7 +1408,7 @@ async function delConv(conv){
   if(idx<0) return;
   const removed=S.convs[idx], wasActive=(S.conv===conv);
   // 乐观假删:先从列表移除并立即重绘,不等服务器
-  S.convs.splice(idx,1); delete S.histCache[conv]; renderConvs();
+  S.convs.splice(idx,1); delete S.histCache[conv]; delete S.live[conv]; markLive(); renderConvs();
   if(wasActive) openConv(S.convs[0]?S.convs[0].conv:"main");   // 删的是当前会话→切到最近一个
   // 纯本地会话(从未发过消息)服务端没有记录,删完即止
   if(String(conv).startsWith("local-")) return;
@@ -1452,11 +1456,13 @@ async function openConv(conv){
       // 仅当与已渲染的缓存不一致才重绘,避免命中缓存时白闪一下
       if(!cached || JSON.stringify(cached)!==JSON.stringify(d.turns)) renderTurns(d.turns);
     }catch(e){}
+    maybeReplayStream(conv);   // 该会话仍在流式 → 用缓冲在历史下方重建流式气泡(切换不中断)
     if(S.conv===conv && S.pendingChoice[conv]) renderChoice(S.pendingChoice[conv]);  // 切回带待审批的会话 → 补出按钮
     return;
   }
   if(S.conv!==conv) return;
   updateEmpty(); scrollDown();
+  maybeReplayStream(conv);
   if(S.pendingChoice[conv]) renderChoice(S.pendingChoice[conv]);
 }
 
@@ -1621,10 +1627,32 @@ function finalizeStream(finalText){
   S.stream.body.innerHTML = mdToHtml(finalText!==undefined?finalText:S.stream.body.dataset.raw);
   S.stream=null; scrollDown();
 }
+// 构成一个"进行中回合"的流式事件类型(可重放以重建气泡)。done/message/choice 不在此列。
+const STREAMY = ["user","start","thinking","text","tool_start","tool_input","tool_end"];
+// 每会话缓冲进行中回合的事件;text/thinking 是全量快照,只留最后一条防止长回复撑爆缓冲。
+function bufPush(conv, e){
+  const b = S.live[conv] || (S.live[conv]=[]);
+  if(e.type==="text"||e.type==="thinking"){
+    const i=b.map(x=>x.type).lastIndexOf(e.type);
+    if(i>=0){ b[i]=e; return; }
+  }
+  b.push(e);
+}
+// 仅当"正在回复的会话集合"变化时才重绘列表(圆点靠 CSS 动画常闪,不需逐帧 JS)。
+let _liveSig="";
+function markLive(){
+  const sig=Object.keys(S.live).sort().join(",");
+  if(sig===_liveSig) return;
+  _liveSig=sig; renderConvs();
+}
 function handleEvent(e){
   // 会话有新回合 → 历史已变,作废其缓存,下次打开会重新拉取
   if(e.type==="done"||e.type==="message") delete S.histCache[e.conv];
-  if(e.conv!==S.conv){ // 别的会话在后台的事件 → 不打断当前视图
+  // 维护每会话"进行中"缓冲:无论前台/后台都记录,切回该会话时可完整重建流式气泡
+  if(STREAMY.indexOf(e.type)>=0){ bufPush(e.conv, e); markLive(); }
+  if(e.type==="done"||e.type==="message"){ delete S.live[e.conv]; markLive(); }
+
+  if(e.conv!==S.conv){ // 别的会话在后台的事件 → 不打断当前视图(已缓冲,圆点已更新)
     // 审批发给非当前会话:暂存,切回该会话时补渲染,别静默丢弃(否则那轮会一直卡到超时)
     if(e.type==="choice"){ S.pendingChoice[e.conv]=e; loadConvs(); return; }
     // 该会话这一轮结束了 → 之前暂存的审批已作废,清掉
@@ -1633,6 +1661,18 @@ function handleEvent(e){
   }
   // 当前会话本轮结束 → 清掉可能残留的暂存审批
   if(e.type==="done"||e.type==="message") delete S.pendingChoice[e.conv];
+  if(STREAMY.indexOf(e.type)>=0){ applyStreamEvent(e); return; }
+  switch(e.type){
+    case "done": finalizeStream(e.text); setMeta(e); loadConvs(); break;
+    case "message": // 命令回复 / 报错 / cron 推送
+      if(S.stream && !S.stream.body.dataset.raw){ finalizeStream(e.text); }
+      else { S.stream=null; addBubble("ai", e.text); }
+      loadConvs(); break;
+    case "choice": delete S.pendingChoice[e.conv]; renderChoice(e); break;
+  }
+}
+// 把单个流式事件落到 DOM(供前台实时渲染 + 切回会话时按缓冲重放两用)
+function applyStreamEvent(e){
   switch(e.type){
     case "user":
       if(S.localSent){ S.localSent=false; break; }  // 本客户端发的,气泡已在 send() 里加了
@@ -1655,13 +1695,14 @@ function handleEvent(e){
         ||s.tools.find(x=>x.name===e.name&&!x.done)||s.tools[s.tools.length-1];
       if(it){it.done=true;it.ok=e.ok;}
       attachResult(s, e); renderStatus(); break; }
-    case "done": finalizeStream(e.text); setMeta(e); loadConvs(); break;
-    case "message": // 命令回复 / 报错 / cron 推送
-      if(S.stream && !S.stream.body.dataset.raw){ finalizeStream(e.text); }
-      else { S.stream=null; addBubble("ai", e.text); }
-      loadConvs(); break;
-    case "choice": delete S.pendingChoice[e.conv]; renderChoice(e); break;
   }
+}
+// 切回某会话:若它有进行中的缓冲,重放事件在历史下方重建流式气泡
+function maybeReplayStream(conv){
+  if(S.conv!==conv) return;
+  const buf=S.live[conv]; if(!buf||!buf.length) return;
+  S.stream=null;
+  for(const e of buf) applyStreamEvent(e);
 }
 function renderChoice(e){
   const box=el("div","choice");
