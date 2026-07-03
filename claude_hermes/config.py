@@ -124,6 +124,21 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     return SESSION_KEY if UNIFY_SESSIONS else f"{platform}:{chat_id}"
 
 
+def project_cwd_for(session_key: str) -> str | None:
+    """项目会话的工作目录(cwd);非项目会话返回 None(用进程默认目录)。
+
+    项目会话 key 形如 web:p<hash>:<conv>(三段);其余(main/默认项目的老
+    web:<conv>/TG/CLI)都不带项目哈希,返回 None。反查走 session_store 的
+    哈希→路径 映射表(延迟 import 打破 config↔store 循环依赖)。
+    """
+    parts = session_key.split(":")
+    if len(parts) >= 3 and parts[0] == "web" and len(parts[1]) > 1 and parts[1][0] == "p":
+        from .memory import session_store
+
+        return session_store.path_for_hash(parts[1][1:])
+    return None
+
+
 # === Skill 加载范围 ===
 # 全量挂载会把 ~110 个 skill 都塞进 tool schema(费 token、可能超限)。
 # 在 .env 配 AGENT_SKILLS=monthly-planner,things-assistant,... 只挂常用的。

@@ -42,3 +42,20 @@ def test_resolve_session_key_isolated(monkeypatch):
     monkeypatch.setattr(config, "UNIFY_SESSIONS", False)
     assert config.resolve_session_key("telegram", 123) == "telegram:123"
     assert config.resolve_session_key("cli", "local") == "cli:local"
+
+
+def test_project_cwd_for(isolated, tmp_path):
+    from claude_hermes import config
+    from claude_hermes.memory import session_store
+
+    d = tmp_path / "repo"
+    d.mkdir()
+    h = session_store.upsert_project(str(d))["hash"]
+    # 项目会话:web:p<hash>:<conv> → 该文件夹
+    assert config.project_cwd_for(f"web:p{h}:c1") == str(d.resolve())
+    # 非项目会话都回落到 None(进程默认目录)
+    assert config.project_cwd_for("web:legacyconv") is None
+    assert config.project_cwd_for("main") is None
+    assert config.project_cwd_for("tg:-100") is None
+    # 未知哈希 → None
+    assert config.project_cwd_for("web:pdeadbeef00:c1") is None

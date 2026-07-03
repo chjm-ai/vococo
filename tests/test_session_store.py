@@ -56,3 +56,29 @@ def test_clear(isolated):
     session_store.append("cli", "a", "b")
     session_store.clear("cli")
     assert session_store.load_recent("cli") == []
+
+
+def test_project_upsert_dedup_and_hash(isolated, tmp_path):
+    from claude_hermes.memory import session_store
+
+    d = tmp_path / "repo"
+    d.mkdir()
+    p1 = session_store.upsert_project(str(d))
+    p2 = session_store.upsert_project(str(d) + "/")  # 带尾斜杠 → 规范化到同一路径
+    assert p1["hash"] == p2["hash"] == session_store.project_hash(str(d))
+    assert p1["name"] == "repo"
+    assert len(session_store.list_projects()) == 1  # 同文件夹去重
+    assert session_store.path_for_hash(p1["hash"]) == p1["path"]
+
+
+def test_project_soft_remove_and_revive(isolated, tmp_path):
+    from claude_hermes.memory import session_store
+
+    d = tmp_path / "repo"
+    d.mkdir()
+    h = session_store.upsert_project(str(d))["hash"]
+    session_store.hide_project(h)
+    assert session_store.list_projects() == []              # 列表里没了
+    assert session_store.path_for_hash(h) == str(d.resolve())  # 但仍可反查(在跑会话不断链)
+    session_store.upsert_project(str(d))                    # 再加回同一文件夹
+    assert len(session_store.list_projects()) == 1          # 复活

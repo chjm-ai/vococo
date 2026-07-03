@@ -178,6 +178,7 @@ async def stream_turn(
     user_text: str,
     model: str | None = None,
     images: list[ImageAttachment] | None = None,
+    cwd: str | None = None,
 ) -> AsyncIterator[Event]:
     """流式跑一轮,逐个 yield 事件,最后 yield Done。
 
@@ -194,6 +195,7 @@ async def stream_turn(
         include_partial_messages=True,
         mcp_servers=build_mcp_servers(),
         skills=config.SKILLS,  # None=全量;白名单则只挂这些(瘦身 tool schema)
+        cwd=cwd,  # 项目会话→该文件夹当工作根(自动加载其 CLAUDE.md/.claude);None=进程默认目录
     )
 
     text_parts: list[str] = []
