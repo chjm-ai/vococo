@@ -24,7 +24,7 @@ from typing import AsyncIterator
 import aiohttp
 from aiohttp import web
 
-from ... import config
+from ... import config, providers
 from ...core.agent import AgentReply
 from ...memory import session_store
 from .. import settings_store
@@ -362,11 +362,14 @@ class WebAdapter:
     async def _handle_models(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
-        # 模型清单与默认值单一来源在 core.MODEL_CHOICES / config.MODEL
+        # 模型清单 = 官方档 + cc-switch 里配好的 DeepSeek/Kimi 等(available_models);
+        # 只显示模型名(label=id,不带描述);default=当前激活的模型(跟随 cc-switch)。
+        choices = providers.available_models(MODEL_CHOICES)
+        active_model = providers.resolve(None, config.MODEL)[0]
         return web.json_response(
             {
-                "default": config.MODEL,
-                "choices": [[v, label] for v, label in MODEL_CHOICES],
+                "default": active_model,
+                "choices": [[v, v] for v, _ in choices],
             }
         )
 
