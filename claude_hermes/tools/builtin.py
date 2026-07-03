@@ -13,8 +13,10 @@
 from __future__ import annotations
 
 import datetime
+import functools
 import re
 
+import anyio
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from .. import config
@@ -366,6 +368,55 @@ async def send_message(args: dict) -> dict:
     return _ok(f"已发送到 {to}。" if ok else "发送失败(网关未就绪或平台不存在)。")
 
 
+@tool(
+    "restart_self",
+    "修改完 claude-hermes【自身代码】后,重启进程加载新代码,重启完自动回到当前对话"
+    "继续执行你的验证计划(对话历史在 SQLite 里,不会丢)。调用前必须:"
+    "1)已把代码改动 git commit(该 commit 即回滚锚点,工作区脏会被拒);"
+    "2)想好 verify_plan —— 重启后你会收到一条系统消息,照着它验证并把结果告诉用户。"
+    "重启发生在【本轮回复完整结束之后】,所以调用本工具后直接在正文告诉用户改了什么即可,"
+    "不要等待。预检失败/15分钟内重启超过3次会被拒绝(进程不会退出)。\n"
+    "reason:为什么改代码(一句话);verify_plan:重启后的验证步骤(具体到命令/接口);"
+    "allow_dirty:true 才允许带未提交改动重启(回滚会不可靠,慎用)。",
+    {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string"},
+            "verify_plan": {"type": "string"},
+            "allow_dirty": {"type": "boolean"},
+        },
+        "required": ["reason", "verify_plan"],
+    },
+)
+async def restart_self(args: dict) -> dict:
+    from ..gateway import clarify
+    from . import selfops
+
+    reason = (args.get("reason") or "").strip()
+    verify_plan = (args.get("verify_plan") or "").strip()
+    if not (reason and verify_plan):
+        return _ok("restart_self 需要 reason 和 verify_plan 都非空。")
+    ctx = clarify.current()
+    if ctx is None:
+        return _ok("(当前无聊天上下文(CLI/定时任务?),重启后无处回归对话,已取消。)")
+    platform = getattr(ctx.adapter, "platform", "")
+    if not platform:
+        return _ok("(拿不到当前入口平台,无法安排重启后还魂,已取消。)")
+    # 预检含 compileall/git 子进程,扔线程池免得卡住事件循环里别的会话
+    msg = await anyio.to_thread.run_sync(
+        functools.partial(
+            selfops.request_restart,
+            platform=platform,
+            chat_id=ctx.chat_id,
+            session_key=ctx.session_key,
+            reason=reason,
+            verify_plan=verify_plan,
+            allow_dirty=bool(args.get("allow_dirty")),
+        )
+    )
+    return _ok(msg)
+
+
 def build_mcp_servers() -> dict:
     """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
     return {
@@ -380,6 +431,7 @@ def build_mcp_servers() -> dict:
                 delete_cron_job,
                 ask_user,
                 send_message,
+                restart_self,
             ],
         )
     }
