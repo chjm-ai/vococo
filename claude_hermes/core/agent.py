@@ -76,6 +76,8 @@ class AgentReply:
 
 
 # === 流式事件类型 ===
+# parent_id:非空表示该事件来自子代理(Task 工具)内部,值为所属 Task 调用的 tool_id。
+# 渲染层据此把子代理的动作嵌进对应 Task 卡片,而不是混进主消息流。
 @dataclass
 class TextDelta:
     """正文 token 增量。"""
@@ -95,6 +97,8 @@ class ToolStarted:
     """模型开始调用某工具。"""
 
     name: str
+    tool_id: str = ""
+    parent_id: str | None = None
 
 
 @dataclass
@@ -108,15 +112,19 @@ class ToolInput:
     name: str
     tool_id: str
     tool_input: dict
+    parent_id: str | None = None
 
 
 @dataclass
 class ToolFinished:
-    """工具返回结果。"""
+    """工具返回结果。preview 是单行摘要;detail 是截断全文(前端折叠展开用)。"""
 
     name: str
     ok: bool
     preview: str
+    tool_id: str = ""
+    detail: str = ""
+    parent_id: str | None = None
 
 
 @dataclass
@@ -154,18 +162,27 @@ def _compose_prompt(history: list[Turn], user_text: str) -> str:
     return "\n".join(lines)
 
 
-def _preview(content, n: int = 80) -> str:
-    """把工具结果压成一行预览。"""
+def _result_text(content) -> str:
+    """把工具结果统一成纯文本(保留换行)。"""
     if isinstance(content, str):
-        s = content
-    elif isinstance(content, list):
-        s = " ".join(
+        return content
+    if isinstance(content, list):
+        return "\n".join(
             (p.get("text", "") if isinstance(p, dict) else str(p)) for p in content
         )
-    else:
-        s = str(content)
-    s = " ".join(s.split())
+    return "" if content is None else str(content)
+
+
+def _preview(content, n: int = 80) -> str:
+    """把工具结果压成一行预览。"""
+    s = " ".join(_result_text(content).split())
     return s[:n] + ("…" if len(s) > n else "")
+
+
+def _detail(content, n: int = 4000) -> str:
+    """工具结果的截断全文(保留换行),供前端"⎿ 结果"折叠块展开看。"""
+    s = _result_text(content).strip()
+    return s[:n] + ("\n…(已截断)" if len(s) > n else "")
 
 
 async def _image_prompt_stream(
@@ -229,8 +246,9 @@ async def stream_turn(
     text_parts: list[str] = []
     tool_calls: list[str] = []
     tool_name_by_id: dict[str, str] = {}
-    tool_json: dict[int, str] = {}  # 块索引 -> 累积的入参 JSON 片段
-    tool_meta: dict[int, tuple[str, str]] = {}  # 块索引 -> (tool_id, name)
+    # 主代理和各子代理的流各有自己的块索引,单用 idx 会撞车 → 键统一为 (parent_id, idx)
+    tool_json: dict[tuple[str, int], str] = {}  # 累积的入参 JSON 片段
+    tool_meta: dict[tuple[str, int], tuple[str, str]] = {}  # -> (tool_id, name)
     cost_usd: float | None = None
     is_error = False
     context_tokens = 0
@@ -245,6 +263,8 @@ async def stream_turn(
         await client.query(_build_prompt(history, user_text, images or []))
         async for msg in client.receive_response():
             if isinstance(msg, StreamEvent):
+                # 子代理(Task)的流式事件带 parent_tool_use_id=所属 Task 调用的 id
+                pid = getattr(msg, "parent_tool_use_id", None)
                 ev = msg.event if isinstance(msg.event, dict) else {}
                 etype = ev.get("type")
                 if etype == "content_block_delta":
@@ -252,18 +272,21 @@ async def stream_turn(
                     dt = delta.get("type")
                     if dt == "text_delta":
                         t = delta.get("text", "")
-                        if t:
+                        # 子代理的正文/思考不进主消息流(否则会把主回复搅浑);
+                        # 它的动态靠下面的工具事件(带 parent_id)体现。
+                        if t and not pid:
                             text_parts.append(t)
                             yield TextDelta(t)
                     elif dt == "thinking_delta":
                         t = delta.get("thinking", "")
-                        if t:
+                        if t and not pid:
                             yield ThinkingDelta(t)
                     elif dt == "input_json_delta":
-                        # 工具入参是流式的 partial_json,按块索引累积,块结束时解析
+                        # 工具入参是流式的 partial_json,按 (parent,块索引) 累积,块结束时解析
                         idx = ev.get("index")
                         if isinstance(idx, int):
-                            tool_json[idx] = tool_json.get(idx, "") + (
+                            key = (pid or "", idx)
+                            tool_json[key] = tool_json.get(key, "") + (
                                 delta.get("partial_json", "") or ""
                             )
                 elif etype == "content_block_start":
@@ -275,18 +298,24 @@ async def stream_turn(
                             tool_name_by_id[tid] = name
                         idx = ev.get("index")
                         if isinstance(idx, int):
-                            tool_meta[idx] = (tid, name)
-                            tool_json.setdefault(idx, "")
-                        tool_calls.append(name)
-                        yield ToolStarted(name)
+                            key = (pid or "", idx)
+                            tool_meta[key] = (tid, name)
+                            tool_json.setdefault(key, "")
+                        if not pid:
+                            tool_calls.append(name)
+                        yield ToolStarted(name, tool_id=tid, parent_id=pid)
                 elif etype == "content_block_stop":
                     # 该工具块的入参已流完 → 解析并发出 ToolInput(喂 diff/todo/审批)
                     idx = ev.get("index")
-                    if isinstance(idx, int) and idx in tool_meta:
-                        tid, name = tool_meta.pop(idx)
-                        parsed = assemble_tool_input(tool_json.pop(idx, ""))
-                        yield ToolInput(name=name, tool_id=tid, tool_input=parsed)
+                    key = (pid or "", idx) if isinstance(idx, int) else None
+                    if key is not None and key in tool_meta:
+                        tid, name = tool_meta.pop(key)
+                        parsed = assemble_tool_input(tool_json.pop(key, ""))
+                        yield ToolInput(
+                            name=name, tool_id=tid, tool_input=parsed, parent_id=pid
+                        )
             elif isinstance(msg, UserMessage):
+                pid = getattr(msg, "parent_tool_use_id", None)
                 for b in msg.content:
                     if isinstance(b, ToolResultBlock):
                         name = tool_name_by_id.get(b.tool_use_id, "工具")
@@ -294,6 +323,9 @@ async def stream_turn(
                             name=name,
                             ok=not bool(b.is_error),
                             preview=_preview(b.content),
+                            tool_id=b.tool_use_id,
+                            detail=_detail(b.content),
+                            parent_id=pid,
                         )
             elif isinstance(msg, ResultMessage):
                 cost_usd = getattr(msg, "total_cost_usd", None)

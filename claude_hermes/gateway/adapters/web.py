@@ -56,29 +56,58 @@ class _WebSink(Sink):
         self._text += text
         self.a._emit({"conv": self.conv, "type": "text", "text": self._text})
 
-    async def tool_started(self, name: str) -> None:
-        self.a._emit({"conv": self.conv, "type": "tool_start", "name": name})
+    async def tool_started(
+        self, name: str, tool_id: str = "", parent_id: str | None = None
+    ) -> None:
+        # parent 非空 = 子代理(Task)内部的工具,前端嵌进对应 Task 卡片
+        self.a._emit(
+            {
+                "conv": self.conv,
+                "type": "tool_start",
+                "name": name,
+                "tool_id": tool_id,
+                "parent": parent_id or "",
+            }
+        )
 
-    async def tool_input(self, name: str, tool_id: str, tool_input: dict) -> None:
+    async def tool_input(
+        self,
+        name: str,
+        tool_id: str,
+        tool_input: dict,
+        parent_id: str | None = None,
+    ) -> None:
         # 把工具入参推给前端 → 渲染 diff / todo 清单 / 计划卡 / 命令预览
         self.a._emit(
             {
                 "conv": self.conv,
                 "type": "tool_input",
                 "name": name,
-                "id": tool_id,
+                "tool_id": tool_id,
                 "input": tool_input,
+                "parent": parent_id or "",
             }
         )
 
-    async def tool_finished(self, name: str, ok: bool, preview: str) -> None:
+    async def tool_finished(
+        self,
+        name: str,
+        ok: bool,
+        preview: str,
+        tool_id: str = "",
+        detail: str = "",
+        parent_id: str | None = None,
+    ) -> None:
         self.a._emit(
             {
                 "conv": self.conv,
                 "type": "tool_end",
                 "name": name,
+                "tool_id": tool_id,
                 "ok": ok,
                 "preview": preview,
+                "detail": detail,
+                "parent": parent_id or "",
             }
         )
 

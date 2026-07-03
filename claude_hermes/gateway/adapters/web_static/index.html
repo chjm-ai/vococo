@@ -276,6 +276,7 @@
     transition:background .16s,border-color .16s,transform .12s}
   .choice button:hover{border-color:var(--accent)}
   .choice button:active{transform:scale(.98)}
+  .choice button:disabled{opacity:.45;pointer-events:none}
 
   /* 工具卡片:diff / todo 清单 / 计划卡 / 命令预览(复刻 Claude Code 的结构化过程) */
   .toolbox{display:flex;flex-direction:column;gap:8px;margin:6px 0}
@@ -300,6 +301,19 @@
   .todo li.doing{font-weight:600;color:var(--accent)}
   .plan{font-size:13.5px;line-height:1.6}
   .plan h1,.plan h2,.plan h3{font-size:14.5px;margin:.5em 0 .3em}
+  /* 工具结果块(⎿ 折叠展开,复刻 Claude Code 的结果预览) */
+  .tc-res{border-top:1px solid var(--line2)}
+  .tc-res-head{padding:5px 11px;font-size:12px;color:var(--dim);display:flex;gap:6px;align-items:center;
+    cursor:pointer;user-select:none}
+  .tc-res-head .tc-res-prev{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+  .tc-res.err .tc-res-head{color:#d94f4f}
+  .tc-res-body{margin:0;padding:7px 11px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;
+    white-space:pre-wrap;word-break:break-all;line-height:1.5;background:var(--panel2);max-height:340px;overflow-y:auto}
+  .tc-res-body.collapsed{display:none}
+  /* Task 卡片内的子代理实时动态(工具步数 chips) */
+  .tc-sub{border-top:1px dashed var(--line2);padding:6px 11px;display:flex;flex-wrap:wrap;gap:4px 10px;
+    font-size:12px;color:var(--dim);align-items:center}
+  .tc-sub:empty{display:none}
 
   /* 空状态 / 欢迎屏 */
   #empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -949,7 +963,10 @@ function ensureStream(){
   bubble.append(status,thinktog,think,toolbox,body);
   row.append(bubble); $("#wrap").append(row); updateEmpty();
   thinktog.onclick=()=>{ const on=think.classList.toggle("show"); tcv.classList.toggle("down", on); };
-  S.stream={row,bubble,status,think,thinktog,toolbox,body,tools:[]};
+  S.stream={row,bubble,status,think,thinktog,toolbox,body,tools:[],cards:{},subs:{},t0:Date.now()};
+  // 状态行的耗时计数每秒走字;流被任何路径丢弃(完成/切会话)都会自行停表,不泄漏
+  const tm=setInterval(()=>{ if(!S.stream||S.stream.timer!==tm){ clearInterval(tm); return; } renderStatus(); }, 1000);
+  S.stream.timer=tm;
   renderStatus();  // 初始即显示"💭 思考中…"动画
   scrollDown(); return S.stream;
 }
@@ -962,16 +979,22 @@ const DOTS='<span class="dots"><i></i><i></i><i></i></span>';
 function renderStatus(){
   if(!S.stream) return;
   const t=S.stream.tools, hasBody=!!S.stream.body.dataset.raw;
-  // 工具 chip:未完成的用动画点表示"进行中",完成的打 ✓/✗
-  const bits = t.map(x=>'<span class="chip">🔧 '+esc(x.name)+(x.done?(x.ok?" ✓":" ✗"):DOTS)+'</span>');
+  // 工具 chip:未完成的用动画点表示"进行中",完成的打 ✓/✗;Task 追加子代理步数
+  const bits = t.map(x=>'<span class="chip">'+(x.name==="Task"?"🤖 ":"🔧 ")+esc(x.name)
+    +(x.subN?(" · "+x.subN+"步"):"")+(x.done?(x.ok?" ✓":" ✗"):DOTS)+'</span>');
   // 持续的"输入中"指示:还没出正文→思考中;已在出正文→输入中(始终带动画,像 TG)
-  if(!hasBody && !t.some(x=>!x.done)) bits.push('<span class="chip live">💭 思考中'+DOTS+'</span>');
-  else if(hasBody) bits.push('<span class="chip live">✍️ 输入中'+DOTS+'</span>');
+  const secs=Math.max(0, Math.round((Date.now()-(S.stream.t0||Date.now()))/1000));
+  const tick=secs>=1?(" · "+(secs>=60?Math.floor(secs/60)+"m"+(secs%60)+"s":secs+"s")):"";
+  if(!hasBody && !t.some(x=>!x.done)) bits.push('<span class="chip live">💭 思考中'+DOTS+esc(tick)+'</span>');
+  else if(hasBody) bits.push('<span class="chip live">✍️ 输入中'+DOTS+esc(tick)+'</span>');
   S.stream.status.innerHTML = bits.join("");
 }
 function finalizeStream(finalText){
   if(!S.stream) return;
+  if(S.stream.timer) clearInterval(S.stream.timer);
   S.stream.status.remove(); S.stream.thinktog.remove(); S.stream.think.remove();
+  // 回合已结束:还没点的审批按钮全部失效(点了也只会收到"已过期")
+  S.stream.bubble.querySelectorAll(".choice button").forEach(b=>{ b.disabled=true; });
   S.stream.body.innerHTML = mdToHtml(finalText!==undefined?finalText:S.stream.body.dataset.raw);
   S.stream=null; scrollDown();
 }
@@ -986,9 +1009,21 @@ function handleEvent(e){
     case "start": ensureStream(); break;
     case "thinking": { const s=ensureStream(); s.thinktog.style.display="flex"; s.think.textContent=e.text; renderStatus(); break; }
     case "text": { const s=ensureStream(); s.body.dataset.raw=e.text; renderBody(); renderStatus(); break; }
-    case "tool_start": { const s=ensureStream(); s.tools.push({name:e.name,done:false,ok:true}); renderStatus(); break; }
-    case "tool_input": { const s=ensureStream(); const card=renderToolCard(e.name, e.input||{}); if(card){ s.toolbox.append(card); scrollDown(); } break; }
-    case "tool_end": { const s=ensureStream(); const it=s.tools.find(x=>x.name===e.name&&!x.done)||s.tools[s.tools.length-1]; if(it){it.done=true;it.ok=e.ok;} renderStatus(); break; }
+    case "tool_start": { const s=ensureStream();
+      if(e.parent){ subUpsert(s, e.parent, {name:e.name, id:e.tool_id, done:false, ok:true}); }
+      else s.tools.push({name:e.name, id:e.tool_id, done:false, ok:true, subN:0});
+      renderStatus(); break; }
+    case "tool_input": { const s=ensureStream();
+      if(e.parent) break;   // 子代理内部工具的入参不展大卡片(动态在 Task 卡里),避免刷屏
+      const card=renderToolCard(e.name, e.input||{});
+      if(card){ if(e.tool_id) s.cards[e.tool_id]=card; s.toolbox.append(card); scrollDown(); } break; }
+    case "tool_end": { const s=ensureStream();
+      if(e.parent){ subUpsert(s, e.parent, {name:e.name, id:e.tool_id, done:true, ok:e.ok}); renderStatus(); break; }
+      // 优先按 tool_id 配对(并行同名工具不会错标),回退按名字
+      const it=(e.tool_id&&s.tools.find(x=>x.id===e.tool_id&&!x.done))
+        ||s.tools.find(x=>x.name===e.name&&!x.done)||s.tools[s.tools.length-1];
+      if(it){it.done=true;it.ok=e.ok;}
+      attachResult(s, e); renderStatus(); break; }
     case "done": finalizeStream(e.text); setMeta(e); loadConvs(); break;
     case "message": // 命令回复 / 报错 / cron 推送
       if(S.stream && !S.stream.body.dataset.raw){ finalizeStream(e.text); }
@@ -998,11 +1033,21 @@ function handleEvent(e){
   }
 }
 function renderChoice(e){
-  if(S.stream && !S.stream.body.dataset.raw){ S.stream.row.remove(); }  // 清掉可能残留的空"思考中"气泡
-  S.stream=null;
-  const b=addBubble("ai", e.prompt);
   const box=el("div","choice");
   for(const [cmd,label] of e.options){ const btn=el("button"); btn.textContent=label; btn.onclick=()=>{ box.remove(); send(cmd, label); }; box.append(btn); }
+  if(S.stream){
+    // 回合进行中(审批闸/追问):嵌进当前流式气泡的过程区,绝不能删掉正在渲染的工具卡
+    const card=el("div","toolcard");
+    const head=el("div","tc-head"); head.textContent="🔐 需要你的确认";
+    const bodyw=el("div","tc-body");
+    const p=el("div"); p.innerHTML=mdToHtml(e.prompt);
+    bodyw.append(p, box);
+    card.append(head, bodyw);
+    S.stream.toolbox.append(card); scrollDown();
+    return;
+  }
+  // 无进行中的回合(如 /model 选择):独立气泡
+  const b=addBubble("ai", e.prompt);
   b.append(box); scrollDown();
 }
 
@@ -1023,8 +1068,61 @@ function diffEl(oldStr, newStr){
   if(newStr){ for(const l of newStr.split("\n")){ const s=el("span","ln add"); s.textContent=l; d.append(s); } }
   return d;
 }
+// ── 子代理(Task)动态:嵌进 Task 卡片的实时工具 chips ──────────────────────
+function subUpsert(s, pid, item){
+  const st = s.subs[pid] || (s.subs[pid]={list:[]});
+  let t = item.id ? st.list.find(x=>x.id===item.id) : null;
+  if(!t && item.done) t = [...st.list].reverse().find(x=>x.name===item.name && !x.done);
+  if(t){ Object.assign(t, item); }
+  else {
+    st.list.push(item);
+    const p=s.tools.find(x=>x.id===pid); if(p) p.subN=(p.subN||0)+1;  // Task chip 上的步数
+  }
+  renderSub(s, pid);
+}
+function renderSub(s, pid){
+  const card=s.cards[pid]; if(!card||!card._sub) return;
+  const list=(s.subs[pid]||{list:[]}).list;
+  const bits=['<span>⚡ '+list.length+' 步</span>'];
+  for(const x of list.slice(-8))
+    bits.push('<span>'+esc(x.name)+(x.done?(x.ok?" ✓":" ✗"):DOTS)+'</span>');
+  card._sub.innerHTML=bits.join("");
+}
+// ── 工具结果块(⎿ 折叠展开):挂在入参卡下方;没有卡的工具出错/有结果时补一张 ──
+function resultEl(e){
+  const w=el("div","tc-res"+(e.ok?"":" err"));
+  const head=el("div","tc-res-head");
+  const cv=el("span","chev");
+  head.append(cv, document.createTextNode(e.ok?"结果":"出错"));
+  if(e.preview){ const pv=el("span","tc-res-prev"); pv.textContent=e.preview; head.append(pv); }
+  const body=el("pre","tc-res-body collapsed");
+  body.textContent=(e.detail||"").trim()||"(无输出)";
+  head.onclick=()=>{ const c=body.classList.toggle("collapsed"); cv.classList.toggle("down", !c); };
+  w.append(head, body);
+  return w;
+}
+function attachResult(s, e){
+  const det=(e.detail||"").trim();
+  let card=e.tool_id ? s.cards[e.tool_id] : null;
+  if(!card){
+    if(e.ok && !det) return;              // 成功且无输出:chip 的 ✓ 已表达,不补卡
+    card=toolCardShell((e.ok?"🔧 ":"⚠️ ")+esc(e.name), "", el("div"), true);
+    if(e.tool_id) s.cards[e.tool_id]=card;
+    s.toolbox.append(card);
+  }
+  card.append(resultEl(e));
+  scrollDown();
+}
 function renderToolCard(name, inp){
   try{
+    if(name==="Task"){
+      // 子代理卡片:标题=描述,收起的正文=完整指令;动态区(_sub)实时滚动工具步
+      const meta=el("div","tc-code");
+      meta.textContent=(inp.subagent_type?("类型:"+inp.subagent_type+"\n\n"):"")+(inp.prompt||"");
+      const card=toolCardShell("🤖 子代理", inp.description||"", meta, true);
+      const sub=el("div","tc-sub"); card.append(sub); card._sub=sub;
+      return card;
+    }
     if(name==="TodoWrite"){
       const todos=inp.todos||[]; if(!todos.length) return null;
       const ul=el("ul","todo");

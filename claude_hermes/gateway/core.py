@@ -37,7 +37,7 @@ class Sink:
     def __init__(self) -> None:
         self.thinking_buf = ""
         self.answer = ""
-        # 每项 {name, done, ok, preview};done=False 即进行中
+        # 每项 {name, id, done, ok, preview, sub_calls};done=False 即进行中
         self.tools: list[dict] = []
 
     # --- 事件入口(子类一般不覆盖,只覆盖 render)---
@@ -49,31 +49,81 @@ class Sink:
         self.answer += text
         await self.render()
 
-    async def tool_started(self, name: str) -> None:
+    async def tool_started(
+        self, name: str, tool_id: str = "", parent_id: str | None = None
+    ) -> None:
+        if parent_id:
+            # 子代理内部的工具:计入所属 Task 项的步数,不单独占一行
+            for t in self.tools:
+                if t.get("id") == parent_id:
+                    t["sub_calls"] = t.get("sub_calls", 0) + 1
+                    break
+            await self.render()
+            return
         self.tools.append(
-            {"name": name, "done": False, "ok": True, "preview": "", "input": None}
+            {
+                "name": name,
+                "id": tool_id,
+                "done": False,
+                "ok": True,
+                "preview": "",
+                "input": None,
+                "sub_calls": 0,
+            }
         )
         await self.render()
 
-    async def tool_input(self, name: str, tool_id: str, tool_input: dict) -> None:
-        """收到某工具的完整入参 → 挂到最近一个同名、尚无入参的工具项上。
+    async def tool_input(
+        self,
+        name: str,
+        tool_id: str,
+        tool_input: dict,
+        parent_id: str | None = None,
+    ) -> None:
+        """收到某工具的完整入参 → 挂到对应工具项上(优先按 id 配对)。
 
         基类默认只做聚合(供 TUI/TG 复用状态);富渲染(diff/todo/计划卡)由
-        Web Sink 覆盖本方法自行推事件。
+        Web Sink 覆盖本方法自行推事件。子代理内部工具的入参不聚合。
         """
+        if parent_id:
+            return
         for t in reversed(self.tools):
-            if t["name"] == name and t.get("input") is None:
+            if (tool_id and t.get("id") == tool_id) or (
+                not tool_id and t["name"] == name and t.get("input") is None
+            ):
                 t["input"] = tool_input
                 break
         await self.render()
 
-    async def tool_finished(self, name: str, ok: bool, preview: str) -> None:
-        for t in self.tools:  # 标记最近一个同名未完成项
-            if t["name"] == name and not t["done"]:
-                t.update(done=True, ok=ok, preview=preview)
-                break
+    async def tool_finished(
+        self,
+        name: str,
+        ok: bool,
+        preview: str,
+        tool_id: str = "",
+        detail: str = "",
+        parent_id: str | None = None,
+    ) -> None:
+        if parent_id:  # 子代理内部工具完成:基类不逐项跟踪,只触发刷新
+            await self.render()
+            return
+        # 优先按 tool_id 配对(并行同名工具不会错标),找不到再回退按名字
+        target = None
+        if tool_id:
+            target = next(
+                (t for t in self.tools if t.get("id") == tool_id and not t["done"]),
+                None,
+            )
+        if target is None:
+            target = next(
+                (t for t in self.tools if t["name"] == name and not t["done"]), None
+            )
+        if target is not None:
+            target.update(done=True, ok=ok, preview=preview)
         else:
-            self.tools.append({"name": name, "done": True, "ok": ok, "preview": preview})
+            self.tools.append(
+                {"name": name, "id": tool_id, "done": True, "ok": ok, "preview": preview}
+            )
         await self.render()
 
     async def done(self, reply: AgentReply) -> None:
@@ -90,7 +140,9 @@ class Sink:
         bits = []
         for t in self.tools:
             key = "pending" if not t["done"] else ("ok" if t["ok"] else "err")
-            bits.append(f"{t['name']}{marks[key]}")
+            n = t.get("sub_calls") or 0
+            label = f"{t['name']}({n}步)" if n else t["name"]
+            bits.append(f"{label}{marks[key]}")
         return " · ".join(bits)
 
     def status_line(self) -> str:
@@ -125,11 +177,13 @@ async def converse(
             elif isinstance(ev, ThinkingDelta):
                 await sink.thinking(ev.text)
             elif isinstance(ev, ToolStarted):
-                await sink.tool_started(ev.name)
+                await sink.tool_started(ev.name, ev.tool_id, ev.parent_id)
             elif isinstance(ev, ToolInput):
-                await sink.tool_input(ev.name, ev.tool_id, ev.tool_input)
+                await sink.tool_input(ev.name, ev.tool_id, ev.tool_input, ev.parent_id)
             elif isinstance(ev, ToolFinished):
-                await sink.tool_finished(ev.name, ev.ok, ev.preview)
+                await sink.tool_finished(
+                    ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id
+                )
             elif isinstance(ev, Done):
                 reply = ev.reply
     finally:
