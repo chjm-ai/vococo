@@ -93,7 +93,8 @@ class GatewayRunner:
         try:
             with anyio.fail_after(config.AGENT_TURN_TIMEOUT):  # 单轮硬超时(含等 clarify)
                 await core.converse(
-                    key, inc.text, model, adapter.make_sink(inc.chat_id), images=inc.images
+                    key, inc.text, model, adapter.make_sink(inc.chat_id),
+                    images=inc.images, store_user=inc.store_text,
                 )
         except TimeoutError:
             await adapter.send(inc.chat_id, "⚠️ 处理超时了,请再试一次。")
@@ -134,7 +135,8 @@ class GatewayRunner:
         inc = Incoming(
             platform=task["platform"],
             chat_id=task["chat_id"],
-            text=selfops.build_resume_prompt(task, rolled_back),
+            text=selfops.build_resume_prompt(task, rolled_back),      # 给模型的完整指令
+            store_text=selfops.build_resume_store_text(task, rolled_back),  # 入库/显示的简短系统条
         )
         await self._dispatch(adapter, inc)
 

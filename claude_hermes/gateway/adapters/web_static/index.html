@@ -354,6 +354,9 @@
   .wrap{max-width:820px;margin:0 auto}
   .row{display:flex;margin:10px 0;animation:pop .32s cubic-bezier(.2,.7,.3,1)}
   .row.me{justify-content:flex-end}
+  .row.sys{justify-content:center}
+  .row.sys .sysnote{font-size:12px;color:var(--dim2);background:var(--card);
+    border:1px solid var(--line);border-radius:999px;padding:5px 14px;max-width:90%;text-align:center}
   .bubble{max-width:86%;padding:10px 14px;border-radius:var(--radius);white-space:normal;word-wrap:break-word;
     overflow-wrap:anywhere;box-shadow:var(--bubble-shadow)}
   .row.me .bubble{background:linear-gradient(135deg,var(--user1),var(--user2));color:var(--on-user);border-bottom-right-radius:6px}
@@ -1417,9 +1420,18 @@ async function delConv(conv){
 
 // ── 打开 / 切换会话 ──────────────────────────────────────────────────────
 // 把一组 turns 铺进消息区(切会话 / 缓存回填共用)
+const SYS_MARK="⚙️[系统]";   // 与后端 selfops.SYS_MARKER 一致:系统注入的轮渲染成居中系统条
+function addSysNote(text){
+  const row=el("div","row sys"); const b=el("div","sysnote"); b.textContent=text;
+  row.append(b); $("#wrap").append(row);
+}
 function renderTurns(turns){
   $("#wrap").innerHTML="";
-  for(const t of turns){ addBubble("me", t.user); const b=addBubble("ai",""); b.innerHTML=mdToHtml(t.assistant); }
+  for(const t of turns){
+    if(t.user && t.user.startsWith(SYS_MARK)) addSysNote(t.user.slice(SYS_MARK.length).trim());
+    else addBubble("me", t.user);
+    const b=addBubble("ai",""); b.innerHTML=mdToHtml(t.assistant);
+  }
   updateEmpty(); scrollDown();
 }
 async function openConv(conv){
@@ -1494,6 +1506,18 @@ function connect(){
   }catch(e){} };
   es.onerror = ()=>{ /* EventSource 自动重连;重连成功由 onopen 补历史 */ };
 }
+// 手机救命稻草:iOS 切后台/锁屏会挂起 SSE,回前台常【不触发 onopen】。这里在页面重新
+// 可见 / 重新联网 / 窗口聚焦时,主动重建已死的连接,并【直接走 HTTP 拉一次历史】(不依赖
+// SSE 是否重连成功)—— 服务端自我重启期间漏掉的消息就靠这条补上。8s 看门狗兜底彻底断开的连接。
+function reviveSSE(){
+  if(document.hidden) return;
+  if(!S.es || S.es.readyState===2){ S.stream=null; connect(); }  // 仅 CLOSED 才重建(丢弃失效残留流)
+  reloadHistory();                                               // HTTP 补历史,与 SSE 状态无关
+}
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) reviveSSE(); });
+window.addEventListener("online", reviveSSE);
+window.addEventListener("focus", reviveSSE);
+setInterval(()=>{ if(!document.hidden && S.es && S.es.readyState===2) connect(); }, 8000);
 function ensureStream(){
   // 为当前会话准备一个流式 assistant 气泡(含状态行/思考/正文)
   if(S.stream) return S.stream;

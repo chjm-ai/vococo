@@ -161,8 +161,14 @@ async def converse(
     model: str | None,
     sink: Sink,
     images: list[ImageAttachment] | None = None,
+    store_user: str | None = None,
 ) -> AgentReply | None:
-    """跑一轮:载入历史 → 流式 → 喂 sink → 落库。"""
+    """跑一轮:载入历史 → 流式 → 喂 sink → 落库。
+
+    store_user:入库用的替代 user 文本(默认与 user_text 相同)。系统注入的消息
+    (如自我重启后的还魂指令)用它把「给模型的长指令」与「存进历史给人看的简短
+    标记」分开 —— 否则长指令会被当成用户发的话显示、并污染后续上下文。
+    """
     from .. import config  # 懒加载,与本模块其余用法一致
 
     from ..tools import danger  # 懒加载,避免 config↔tools 循环
@@ -190,7 +196,9 @@ async def converse(
     finally:
         danger.reset_cwd(cwd_token)
     if reply is not None:
-        session_store.append(session_key, user_text, reply.text)
+        session_store.append(
+            session_key, store_user if store_user is not None else user_text, reply.text
+        )
         if reply.context_tokens or reply.turn_tokens:
             session_store.record_usage(
                 session_key,
