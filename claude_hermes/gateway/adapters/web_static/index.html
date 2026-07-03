@@ -433,6 +433,9 @@
     body.sb-collapsed #hamb{display:flex}
   }
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  .ic{width:14px;height:14px;vertical-align:-2.5px;flex-shrink:0}
+  #micBtn .ic{width:17px;height:17px;vertical-align:-4px}
+  .pmrow .ic{width:15px;height:15px;vertical-align:-3px;margin-right:2px;color:var(--dim)}
 </style>
 </head>
 <body>
@@ -512,7 +515,7 @@
           <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
           <div class="inbar">
             <button type="button" id="imgBtn">＋</button>
-            <button type="button" id="micBtn" title="语音输入">🎤</button>
+            <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
             <span class="spacer"></span>
             <div id="modelBox">
               <button type="button" id="modelBtn" title="切换模型">
@@ -559,6 +562,23 @@ const S = {
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
 const esc = s => s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// ── 线框图标(替代实体 emoji,统一 currentColor 描边风格)──────────────────
+const ICONS = {
+  mic:'<path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/>',
+  folder:'<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>',
+  trash:'<path d="M4 7h16"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+  bot:'<rect x="5" y="9" width="14" height="10" rx="2"/><path d="M12 5v4"/><circle cx="12" cy="4" r="1.1"/><circle cx="9" cy="14" r="1"/><circle cx="15" cy="14" r="1"/><path d="M3 13h2"/><path d="M19 13h2"/>',
+  wrench:'<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"/>',
+  warn:'<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  lock:'<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  clip:'<path d="M9 2h6a1 1 0 0 1 1 1v2H8V3a1 1 0 0 1 1-1z"/><rect x="5" y="4" width="14" height="18" rx="2"/><path d="M9 12h6"/><path d="M9 16h6"/>',
+  compass:'<circle cx="12" cy="12" r="9"/><polygon points="16 8 13.5 13.5 8 16 10.5 10.5 16 8"/>',
+  doc:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/>',
+  edit:'<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
+  zap:'<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+};
+function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 
 // ── 主题(深/浅)──────────────────────────────────────────────────────────
 function curTheme(){
@@ -836,7 +856,7 @@ async function browseTo(dir){
   S.browseDir=d.dir; $("#pmPath").value=d.dir;
   const box=$("#pmList"); box.innerHTML="";
   if(d.parent){ const up=el("div","pmrow pmup"); up.textContent="⬆ 上一级"; up.onclick=()=>browseTo(d.parent); box.append(up); }
-  for(const e of d.entries){ const row=el("div","pmrow"); row.textContent="📁 "+e.name; row.onclick=()=>browseTo(e.path); box.append(row); }
+  for(const e of d.entries){ const row=el("div","pmrow"); row.innerHTML=ic("folder")+" "+esc(e.name); row.onclick=()=>browseTo(e.path); box.append(row); }
   if(!d.entries.length){ const empty=el("div","pmrow pmup"); empty.textContent="(无子文件夹)"; box.append(empty); }
 }
 async function createProject(path){
@@ -864,7 +884,7 @@ function openConvMenu(btn, conv){
   closeConvMenu();
   convMenuBtn=btn; btn.classList.add("on");
   const m=el("div","convmenu"); m.style.visibility="hidden";
-  const del=el("button","cmitem danger"); del.textContent="🗑 删除";
+  const del=el("button","cmitem danger"); del.innerHTML=ic("trash")+" 删除";
   del.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); delConv(conv); };
   m.append(del); document.body.append(m); convMenuEl=m;
   // 右对齐按钮,默认显示在其下方;贴到视口底部时自动上翻
@@ -980,13 +1000,13 @@ function renderStatus(){
   if(!S.stream) return;
   const t=S.stream.tools, hasBody=!!S.stream.body.dataset.raw;
   // 工具 chip:未完成的用动画点表示"进行中",完成的打 ✓/✗;Task 追加子代理步数
-  const bits = t.map(x=>'<span class="chip">'+(x.name==="Task"?"🤖 ":"🔧 ")+esc(x.name)
+  const bits = t.map(x=>'<span class="chip">'+ic(x.name==="Task"?"bot":"wrench")+" "+esc(x.name)
     +(x.subN?(" · "+x.subN+"步"):"")+(x.done?(x.ok?" ✓":" ✗"):DOTS)+'</span>');
   // 持续的"输入中"指示:还没出正文→思考中;已在出正文→输入中(始终带动画,像 TG)
   const secs=Math.max(0, Math.round((Date.now()-(S.stream.t0||Date.now()))/1000));
   const tick=secs>=1?(" · "+(secs>=60?Math.floor(secs/60)+"m"+(secs%60)+"s":secs+"s")):"";
-  if(!hasBody && !t.some(x=>!x.done)) bits.push('<span class="chip live">💭 思考中'+DOTS+esc(tick)+'</span>');
-  else if(hasBody) bits.push('<span class="chip live">✍️ 输入中'+DOTS+esc(tick)+'</span>');
+  if(!hasBody && !t.some(x=>!x.done)) bits.push('<span class="chip live">思考中'+DOTS+esc(tick)+'</span>');
+  else if(hasBody) bits.push('<span class="chip live">输入中'+DOTS+esc(tick)+'</span>');
   S.stream.status.innerHTML = bits.join("");
 }
 function finalizeStream(finalText){
@@ -1038,7 +1058,7 @@ function renderChoice(e){
   if(S.stream){
     // 回合进行中(审批闸/追问):嵌进当前流式气泡的过程区,绝不能删掉正在渲染的工具卡
     const card=el("div","toolcard");
-    const head=el("div","tc-head"); head.textContent="🔐 需要你的确认";
+    const head=el("div","tc-head"); head.innerHTML=ic("lock")+" 需要你的确认";
     const bodyw=el("div","tc-body");
     const p=el("div"); p.innerHTML=mdToHtml(e.prompt);
     bodyw.append(p, box);
@@ -1083,7 +1103,7 @@ function subUpsert(s, pid, item){
 function renderSub(s, pid){
   const card=s.cards[pid]; if(!card||!card._sub) return;
   const list=(s.subs[pid]||{list:[]}).list;
-  const bits=['<span>⚡ '+list.length+' 步</span>'];
+  const bits=['<span>'+ic("zap")+" "+list.length+' 步</span>'];
   for(const x of list.slice(-8))
     bits.push('<span>'+esc(x.name)+(x.done?(x.ok?" ✓":" ✗"):DOTS)+'</span>');
   card._sub.innerHTML=bits.join("");
@@ -1106,7 +1126,7 @@ function attachResult(s, e){
   let card=e.tool_id ? s.cards[e.tool_id] : null;
   if(!card){
     if(e.ok && !det) return;              // 成功且无输出:chip 的 ✓ 已表达,不补卡
-    card=toolCardShell((e.ok?"🔧 ":"⚠️ ")+esc(e.name), "", el("div"), true);
+    card=toolCardShell(ic(e.ok?"wrench":"warn")+" "+esc(e.name), "", el("div"), true);
     if(e.tool_id) s.cards[e.tool_id]=card;
     s.toolbox.append(card);
   }
@@ -1119,7 +1139,7 @@ function renderToolCard(name, inp){
       // 子代理卡片:标题=描述,收起的正文=完整指令;动态区(_sub)实时滚动工具步
       const meta=el("div","tc-code");
       meta.textContent=(inp.subagent_type?("类型:"+inp.subagent_type+"\n\n"):"")+(inp.prompt||"");
-      const card=toolCardShell("🤖 子代理", inp.description||"", meta, true);
+      const card=toolCardShell(ic("bot")+" 子代理", inp.description||"", meta, true);
       const sub=el("div","tc-sub"); card.append(sub); card._sub=sub;
       return card;
     }
@@ -1133,18 +1153,18 @@ function renderToolCard(name, inp){
         li.innerHTML='<span>'+mark+'</span><span>'+esc(t.content||t.activeForm||"")+'</span>';
         ul.append(li);
       }
-      return toolCardShell("📋 待办清单","",ul,false);
+      return toolCardShell(ic("clip")+" 待办清单","",ul,false);
     }
     if(name==="ExitPlanMode"){
       const p=el("div","plan"); p.innerHTML=mdToHtml(inp.plan||"(空计划)");
-      return toolCardShell("🧭 执行计划","",p,false);
+      return toolCardShell(ic("compass")+" 执行计划","",p,false);
     }
-    if(name==="Write")     return toolCardShell("📝 写文件", inp.file_path||"", diffEl("", inp.content||""), true);
-    if(name==="Edit")      return toolCardShell("✏️ 编辑", inp.file_path||"", diffEl(inp.old_string||"", inp.new_string||""), false);
+    if(name==="Write")     return toolCardShell(ic("doc")+" 写文件", inp.file_path||"", diffEl("", inp.content||""), true);
+    if(name==="Edit")      return toolCardShell(ic("edit")+" 编辑", inp.file_path||"", diffEl(inp.old_string||"", inp.new_string||""), false);
     if(name==="MultiEdit"){
       const wrap=el("div");
       for(const ed of (inp.edits||[])) wrap.append(diffEl(ed.old_string||"", ed.new_string||""));
-      return toolCardShell("✏️ 多处编辑", inp.file_path||"", wrap, false);
+      return toolCardShell(ic("edit")+" 多处编辑", inp.file_path||"", wrap, false);
     }
     if(name==="Bash"){
       const c=el("div","tc-code"); c.textContent=inp.command||"";
@@ -1152,7 +1172,7 @@ function renderToolCard(name, inp){
     }
     // 其余工具:有明显目标参数才给个折叠预览,避免刷屏
     const hint=inp.file_path||inp.path||inp.pattern||inp.query||inp.url||"";
-    if(hint){ const c=el("div","tc-code"); c.textContent=hint; return toolCardShell("🔧 "+esc(name), "", c, true); }
+    if(hint){ const c=el("div","tc-code"); c.textContent=hint; return toolCardShell(ic("wrench")+" "+esc(name), "", c, true); }
     return null;
   }catch(e){ return null; }
 }
@@ -1234,26 +1254,31 @@ function setRecUI(){
   if(inrow) inrow.style.display = active ? "none" : "";
 }
 function recTick(){ const s=Math.max(0,Math.floor((Date.now()-REC.t0)/1000)); $("#recTime").textContent=(s/60|0)+":"+String(s%60).padStart(2,"0"); }
-// 滚动声波:节流到约每 75ms 推进一格(而非每帧),右侧最新、整体向左滚,像语音备忘录
+// 滚动声波:采样(取音量)节流到约每 75ms 一次,但渲染每帧都画——用采样间隔内的时间差
+// 算出平滑偏移量,让柱子连续向左滑而不是每 75ms 才跳一格(避免低帧率卡顿感)
 function drawWave(){
   if(REC.state!=="recording" || !REC.analyser){ return; }
   REC.raf=requestAnimationFrame(drawWave);
   const now=Date.now();
-  if(now - REC._lastPush < 75) return;   // 节流:控制滚动速度,不再每帧都推
-  REC._lastPush=now;
+  const PUSH_MS=75;
+  if(now - REC._lastPush >= PUSH_MS){   // 节流:只控制"多久取一次样",不影响绘制帧率
+    REC._lastPush=now;
+    REC.analyser.getByteTimeDomainData(REC.dataArr);
+    let sum=0; for(let i=0;i<REC.dataArr.length;i++){ const x=(REC.dataArr[i]-128)/128; sum+=x*x; }
+    REC.levels.push(Math.min(1, Math.sqrt(sum/REC.dataArr.length)*3.4));
+  }
   const cv=$("#recWave"); if(!cv) return;
-  REC.analyser.getByteTimeDomainData(REC.dataArr);
-  let sum=0; for(let i=0;i<REC.dataArr.length;i++){ const x=(REC.dataArr[i]-128)/128; sum+=x*x; }
-  REC.levels.push(Math.min(1, Math.sqrt(sum/REC.dataArr.length)*3.4));
   const dpr=window.devicePixelRatio||1, W=cv.clientWidth||1, H=cv.clientHeight||1;
   if(cv.width!==Math.round(W*dpr)||cv.height!==Math.round(H*dpr)){ cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr); }
   const ctx=cv.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,W,H);
-  const barW=3, step=5, maxBars=Math.max(1,Math.floor(W/step));
+  const barW=3, step=5, maxBars=Math.floor(W/step)+2;
   if(REC.levels.length>maxBars) REC.levels.splice(0, REC.levels.length-maxBars);
+  const offset=step*Math.min(1, (now-REC._lastPush)/PUSH_MS);   // 采样间隔内的连续滚动偏移
   ctx.fillStyle=REC.waveColor;
   const n=REC.levels.length;
   for(let i=0;i<n;i++){
-    const h=Math.max(3, REC.levels[i]*(H-4)), x=W-(n-i)*step, y=(H-h)/2;
+    const h=Math.max(3, REC.levels[i]*(H-4)), x=W-(n-i)*step-offset, y=(H-h)/2;
+    if(x+barW<0) continue;
     if(ctx.roundRect){ ctx.beginPath(); ctx.roundRect(x,y,barW,h,barW/2); ctx.fill(); }
     else ctx.fillRect(x,y,barW,h);
   }
