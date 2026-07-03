@@ -30,6 +30,7 @@ from ...memory import session_store
 from .. import settings_store
 from ..core import MODEL_CHOICES, Choice, Sink
 from .base import ImageAttachment, Incoming
+from .web_push import PUSH
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
 
@@ -131,6 +132,17 @@ class _WebSink(Sink):
                 "chosen_model": meta.get("chosen_model", ""),
             }
         )
+        # 场景①「回复完成」:人不在页面时弹系统通知(前台由 SW 自行抑制)
+        title = "主会话" if self.conv == "main" else (
+            session_store.get_title(key) or "Hermes"
+        )
+        self.a._push_notify(
+            title=title,
+            body=reply.text or "回复完成",
+            conv=self.conv,
+            kind="done",
+            enabled=config.PUSH_ON_DONE,
+        )
 
 
 class WebAdapter:
@@ -174,10 +186,42 @@ class WebAdapter:
             except asyncio.QueueFull:
                 pass
 
+    # ── Web Push 系统通知 ────────────────────────────────────────────────
+    def _push_notify(
+        self,
+        *,
+        title: str,
+        body: str,
+        conv: str,
+        kind: str,
+        enabled: bool,
+    ) -> None:
+        """按场景发一条系统推送(非阻塞:丢进后台任务,绝不拖慢 SSE)。
+
+        enabled 来自 config 里各场景开关;未配 VAPID 或没订阅设备则静默跳过。
+        """
+        if not enabled or not PUSH.is_configured():
+            return
+        try:
+            asyncio.get_event_loop().create_task(
+                PUSH.notify(title, body, conv=conv, kind=kind)
+            )
+        except RuntimeError:
+            pass  # 没有运行中的事件循环(理论上不会走到),放弃这条通知
+
     # ── Adapter 协议 ─────────────────────────────────────────────────────
     async def send(self, chat_id: int | str, text: str) -> None:
-        """一条完整消息(命令回复 / cron 主动推送)→ 作为一条 assistant 气泡推给前端。"""
+        """一条完整消息(命令回复 / cron 主动推送 / 报错)→ 作为一条 assistant 气泡推给前端。"""
         self._emit({"conv": str(chat_id), "type": "message", "text": text})
+        # 场景③「主动/cron」与 场景④「出错」共用这条出口,靠 ⚠️ 前缀区分
+        is_err = text.lstrip().startswith("⚠️")
+        self._push_notify(
+            title="⚠️ 出错了" if is_err else "Hermes",
+            body=text,
+            conv=str(chat_id),
+            kind="error" if is_err else "proactive",
+            enabled=config.PUSH_ON_ERROR if is_err else config.PUSH_ON_PROACTIVE,
+        )
 
     def make_sink(self, chat_id: int | str) -> Sink:
         return _WebSink(self, str(chat_id))
@@ -190,6 +234,14 @@ class WebAdapter:
                 "prompt": choice.prompt,
                 "options": [[cmd, label] for cmd, label in choice.options],
             }
+        )
+        # 场景②「需要审批/确认」:高优先级,SW 前台也会弹,确保不漏
+        self._push_notify(
+            title="需要你确认",
+            body=choice.prompt,
+            conv=str(chat_id),
+            kind="approval",
+            enabled=config.PUSH_ON_APPROVAL,
         )
 
     async def receive(self) -> AsyncIterator[Incoming]:
@@ -639,11 +691,78 @@ class WebAdapter:
             return web.json_response({"error": "写入失败"}, status=500)
         return web.json_response({"ok": True})
 
+    # ── PWA 静态资源 + 推送订阅 ──────────────────────────────────────────
+    def _static_file(
+        self, name: str, content_type: str, extra_headers: dict | None = None
+    ) -> web.Response:
+        """读 web_static 下的文件返回;缺失给 404。这些是公开资源(浏览器不带 token 取)。"""
+        try:
+            data = (_STATIC / name).read_bytes()
+        except OSError:
+            return web.Response(status=404, text="not found")
+        headers = {"Cache-Control": "no-cache"}
+        if extra_headers:
+            headers.update(extra_headers)
+        return web.Response(body=data, content_type=content_type, headers=headers)
+
+    async def _handle_manifest(self, request: web.Request) -> web.Response:
+        return self._static_file("manifest.json", "application/manifest+json")
+
+    async def _handle_sw(self, request: web.Request) -> web.Response:
+        # Service-Worker-Allowed: / 让 sw 能控整站;no-cache 保证改动能刷新
+        return self._static_file(
+            "sw.js", "text/javascript", {"Service-Worker-Allowed": "/"}
+        )
+
+    # 只放行这几个图标名,防目录穿越
+    _ICONS = {"icon-192", "icon-512", "icon-maskable-512", "apple-touch-icon"}
+
+    async def _handle_icon(self, request: web.Request) -> web.Response:
+        name = request.match_info.get("name", "")
+        if name not in self._ICONS:
+            return web.Response(status=404, text="not found")
+        return self._static_file(
+            f"{name}.png", "image/png", {"Cache-Control": "public, max-age=86400"}
+        )
+
+    async def _handle_push_config(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        return web.json_response(PUSH.public_config())
+
+    async def _handle_push_subscribe(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            sub = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        ok = PUSH.add(sub if isinstance(sub, dict) else {})
+        if not ok:
+            return web.json_response({"error": "invalid subscription"}, status=400)
+        return web.json_response({"ok": True})
+
+    async def _handle_push_unsubscribe(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        PUSH.remove((body or {}).get("endpoint", ""))
+        return web.json_response({"ok": True})
+
     async def _start_server(self) -> None:
         app = web.Application(client_max_size=32 * 1024 * 1024)  # 允许 32MB 图片上传
         app.add_routes(
             [
                 web.get("/", self._handle_index),
+                web.get("/manifest.json", self._handle_manifest),
+                web.get("/sw.js", self._handle_sw),
+                web.get(r"/{name}.png", self._handle_icon),
+                web.get("/push/config", self._handle_push_config),
+                web.post("/push/subscribe", self._handle_push_subscribe),
+                web.post("/push/unsubscribe", self._handle_push_unsubscribe),
                 web.get("/events", self._handle_events),
                 web.post("/send", self._handle_send),
                 web.get("/conversations", self._handle_conversations),

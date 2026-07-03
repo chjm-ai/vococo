@@ -7,6 +7,10 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#1f1e1d">
 <title>Hermes</title>
+<!-- PWA:装到主屏 + Web Push 系统通知 -->
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <!-- 防闪烁:渲染前先套用上次选择的主题 -->
 <script>(function(){try{var t=localStorage.getItem("hermes_theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
 <style>
@@ -350,6 +354,9 @@
   .wrap{max-width:820px;margin:0 auto}
   .row{display:flex;margin:10px 0;animation:pop .32s cubic-bezier(.2,.7,.3,1)}
   .row.me{justify-content:flex-end}
+  .row.sys{justify-content:center}
+  .row.sys .sysnote{font-size:12px;color:var(--dim2);background:var(--card);
+    border:1px solid var(--line);border-radius:999px;padding:5px 14px;max-width:90%;text-align:center}
   .bubble{max-width:86%;padding:10px 14px;border-radius:var(--radius);white-space:normal;word-wrap:break-word;
     overflow-wrap:anywhere;box-shadow:var(--bubble-shadow)}
   .row.me .bubble{background:linear-gradient(135deg,var(--user1),var(--user2));color:var(--on-user);border-bottom-right-radius:6px}
@@ -601,6 +608,7 @@
           <button class="settab" data-tab="skill">技能</button>
           <button class="settab" data-tab="memory">记忆</button>
           <button class="settab" data-tab="agents">人设</button>
+          <button class="settab" data-tab="notify">通知</button>
         </div>
         <div class="setpane" id="setPane"></div>
       </div>
@@ -697,6 +705,7 @@ const S = {
   models: {default:"", choices:[]},  // /models 拉到的可选模型
   model: "",            // 当前会话使用的模型(空=用默认)
   histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁
+  pendingChoice: {},    // conv → choice 事件:审批发给非当前会话时暂存,切回该会话再渲染
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -716,6 +725,7 @@ const ICONS = {
   doc:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/>',
   edit:'<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
   zap:'<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+  bell:'<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9z"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
   gear:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
   plug:'<path d="M9 2v6"/><path d="M15 2v6"/><path d="M7 8h10v3a5 5 0 0 1-10 0V8z"/><path d="M12 16v6"/>',
   book:'<path d="M4 4a2 2 0 0 1 2-2h13a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a2 2 0 0 1-2-2V4z"/><path d="M8 2v18"/>',
@@ -767,7 +777,7 @@ async function tryEnter(){
     if(r.status===401){ $("#loginErr").textContent="口令错误"; return; }
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
-    connect(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
+    connect(); initPush(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
     await loadProjects(); await loadConvs(); await loadModels();
     // 打开最近活跃的会话;openConv 内会同步活跃项目、展开其分组并重绘侧边栏
     await openConv(S.convs[0] ? S.convs[0].conv : "main");
@@ -1055,6 +1065,100 @@ function renderSetTab(){
   else if(SET.tab==="skill") renderSkillPane();
   else if(SET.tab==="memory") renderFileList("memory");
   else if(SET.tab==="agents") renderFileList("agents");
+  else if(SET.tab==="notify") renderNotifyPane();
+}
+
+// ── 通知分区(Web Push 系统通知)──────────────────────────────────────────
+function isIOSNonStandalone(){
+  return /iP(hone|ad|od)/.test(navigator.userAgent) && !isStandalone();
+}
+function renderNotifyPane(){
+  let h = '<h3>'+ic("bell")+'系统通知</h3>'+
+    '<p class="shint">开启后,回复完成 / 需要审批 / 主动推送(cron)/ 出错 会推送手机系统通知——页面关了、锁屏也能收到。</p>';
+  if(!("serviceWorker" in navigator) || !("PushManager" in window)){
+    h += '<div class="setempty">当前浏览器不支持 Web Push。</div>';
+    $("#setPane").innerHTML=h; return;
+  }
+  if(!PUSH.enabled){
+    h += '<div class="setempty">服务端还没配推送密钥。<br>跑 <code>python -m claude_hermes.gateway.adapters.web_push --gen-keys</code> 生成 VAPID 填进 .env,重启后再来。</div>';
+    $("#setPane").innerHTML=h; return;
+  }
+  h += '<div class="srow"><div class="sinfo"><div class="sname">本设备通知</div>'+
+       '<div class="sdesc" id="notifyDesc">检查中…</div></div>'+
+       '<div class="sacts"><label class="sw"><input type="checkbox" id="notifyToggle"><span class="track"></span></label></div></div>';
+  h += '<div class="sechd">通知场景</div>'+
+       '<p class="shint">回复完成 · 需要审批确认 · 主动推送(cron)· 出错异常——默认全开,可在 .env 用 <code>PUSH_ON_*=0</code> 单独关某类。</p>';
+  $("#setPane").innerHTML=h;
+  bindNotifyPane();
+}
+async function bindNotifyPane(){
+  const tgl=$("#notifyToggle"), desc=$("#notifyDesc"); if(!tgl) return;
+  const denied = (typeof Notification!=="undefined" && Notification.permission==="denied");
+  const sub = denied ? null : await currentSub();
+  if(denied){ tgl.checked=false; tgl.disabled=true; desc.textContent="浏览器已拒绝通知,去系统/浏览器设置里放行后再试"; }
+  else {
+    tgl.checked=!!sub; tgl.disabled=false;
+    desc.textContent = sub ? "已开启,本设备会收到通知"
+      : (isIOSNonStandalone() ? "iPhone 需先把网页「加到主屏」,从主屏图标打开才能开" : "点右侧开关开启");
+  }
+  tgl.onchange = async ()=>{
+    tgl.disabled=true;
+    try{ tgl.checked ? await enableNotify() : await disableNotify(); }
+    catch(e){ alert("操作失败:"+(e&&e.message||e)); }
+    finally{ bindNotifyPane(); }
+  };
+}
+
+// ── Web Push 底座:注册 SW + 订阅 VAPID ────────────────────────────────────
+// 装了 Service Worker + 订阅公钥后,页面关了/锁屏也能收到系统通知。
+// 服务端未配 VAPID 时 /push/config 返回 enabled:false,通知 tab 显示未配置提示。
+const PUSH = { pubKey:"", enabled:false, ready:false };
+function b64ToU8(base64){
+  const pad="=".repeat((4-base64.length%4)%4);
+  const b=(base64+pad).replace(/-/g,"+").replace(/_/g,"/");
+  const raw=atob(b), arr=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++) arr[i]=raw.charCodeAt(i);
+  return arr;
+}
+function isStandalone(){
+  return (window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone===true;
+}
+async function initPush(){
+  if(!("serviceWorker" in navigator)) return;
+  try{ await navigator.serviceWorker.register("/sw.js"); }catch(e){ return; }
+  // 点系统通知 → SW 让页面切到对应会话
+  navigator.serviceWorker.addEventListener("message", ev=>{
+    const m=ev.data||{};
+    if(m.type==="open" && m.conv){ try{ openConv(m.conv); }catch(e){} }
+  });
+  try{
+    const cfg = await (await api("/push/config")).json();
+    PUSH.enabled=!!cfg.enabled; PUSH.pubKey=cfg.vapidPublicKey||"";
+  }catch(e){ return; }
+  PUSH.ready=true;
+}
+async function currentSub(){
+  if(!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+  const reg=await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+async function enableNotify(){
+  if(isIOSNonStandalone()){
+    alert("iPhone 需先把本页「添加到主屏幕」,再从主屏图标打开,才能开启系统通知。"); return;
+  }
+  let perm = (typeof Notification!=="undefined") ? Notification.permission : "denied";
+  if(perm==="default") perm=await Notification.requestPermission();
+  if(perm!=="granted") return;
+  const reg=await navigator.serviceWorker.ready;
+  const sub=await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:b64ToU8(PUSH.pubKey) });
+  await api("/push/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sub)});
+}
+async function disableNotify(){
+  const sub=await currentSub();
+  if(sub){
+    try{ await api("/push/unsubscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({endpoint:sub.endpoint})}); }catch(e){}
+    try{ await sub.unsubscribe(); }catch(e){}
+  }
 }
 
 // ── MCP 分区 ──────────────────────────────────────────────────────────────
@@ -1316,9 +1420,18 @@ async function delConv(conv){
 
 // ── 打开 / 切换会话 ──────────────────────────────────────────────────────
 // 把一组 turns 铺进消息区(切会话 / 缓存回填共用)
+const SYS_MARK="⚙️[系统]";   // 与后端 selfops.SYS_MARKER 一致:系统注入的轮渲染成居中系统条
+function addSysNote(text){
+  const row=el("div","row sys"); const b=el("div","sysnote"); b.textContent=text;
+  row.append(b); $("#wrap").append(row);
+}
 function renderTurns(turns){
   $("#wrap").innerHTML="";
-  for(const t of turns){ addBubble("me", t.user); const b=addBubble("ai",""); b.innerHTML=mdToHtml(t.assistant); }
+  for(const t of turns){
+    if(t.user && t.user.startsWith(SYS_MARK)) addSysNote(t.user.slice(SYS_MARK.length).trim());
+    else addBubble("me", t.user);
+    const b=addBubble("ai",""); b.innerHTML=mdToHtml(t.assistant);
+  }
   updateEmpty(); scrollDown();
 }
 async function openConv(conv){
@@ -1340,10 +1453,12 @@ async function openConv(conv){
       // 仅当与已渲染的缓存不一致才重绘,避免命中缓存时白闪一下
       if(!cached || JSON.stringify(cached)!==JSON.stringify(d.turns)) renderTurns(d.turns);
     }catch(e){}
+    if(S.conv===conv && S.pendingChoice[conv]) renderChoice(S.pendingChoice[conv]);  // 切回带待审批的会话 → 补出按钮
     return;
   }
   if(S.conv!==conv) return;
   updateEmpty(); scrollDown();
+  if(S.pendingChoice[conv]) renderChoice(S.pendingChoice[conv]);
 }
 
 // ── 重加载历史(SSE 连接恢复后)──────────────────────────────────────────
@@ -1391,6 +1506,18 @@ function connect(){
   }catch(e){} };
   es.onerror = ()=>{ /* EventSource 自动重连;重连成功由 onopen 补历史 */ };
 }
+// 手机救命稻草:iOS 切后台/锁屏会挂起 SSE,回前台常【不触发 onopen】。这里在页面重新
+// 可见 / 重新联网 / 窗口聚焦时,主动重建已死的连接,并【直接走 HTTP 拉一次历史】(不依赖
+// SSE 是否重连成功)—— 服务端自我重启期间漏掉的消息就靠这条补上。8s 看门狗兜底彻底断开的连接。
+function reviveSSE(){
+  if(document.hidden) return;
+  if(!S.es || S.es.readyState===2){ S.stream=null; connect(); }  // 仅 CLOSED 才重建(丢弃失效残留流)
+  reloadHistory();                                               // HTTP 补历史,与 SSE 状态无关
+}
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) reviveSSE(); });
+window.addEventListener("online", reviveSSE);
+window.addEventListener("focus", reviveSSE);
+setInterval(()=>{ if(!document.hidden && S.es && S.es.readyState===2) connect(); }, 8000);
 function ensureStream(){
   // 为当前会话准备一个流式 assistant 气泡(含状态行/思考/正文)
   if(S.stream) return S.stream;
@@ -1441,10 +1568,15 @@ function finalizeStream(finalText){
 function handleEvent(e){
   // 会话有新回合 → 历史已变,作废其缓存,下次打开会重新拉取
   if(e.type==="done"||e.type==="message") delete S.histCache[e.conv];
-  if(e.conv!==S.conv){ // 别的会话在后台完成 → 刷新侧边栏,不打断当前视图
-    if(e.type==="done"||e.type==="message") loadConvs();
+  if(e.conv!==S.conv){ // 别的会话在后台的事件 → 不打断当前视图
+    // 审批发给非当前会话:暂存,切回该会话时补渲染,别静默丢弃(否则那轮会一直卡到超时)
+    if(e.type==="choice"){ S.pendingChoice[e.conv]=e; loadConvs(); return; }
+    // 该会话这一轮结束了 → 之前暂存的审批已作废,清掉
+    if(e.type==="done"||e.type==="message"){ delete S.pendingChoice[e.conv]; loadConvs(); }
     return;
   }
+  // 当前会话本轮结束 → 清掉可能残留的暂存审批
+  if(e.type==="done"||e.type==="message") delete S.pendingChoice[e.conv];
   switch(e.type){
     case "start": ensureStream(); break;
     case "thinking": { const s=ensureStream(); s.thinktog.style.display="flex"; s.think.textContent=e.text; renderStatus(); break; }
@@ -1469,7 +1601,7 @@ function handleEvent(e){
       if(S.stream && !S.stream.body.dataset.raw){ finalizeStream(e.text); }
       else { S.stream=null; addBubble("ai", e.text); }
       loadConvs(); break;
-    case "choice": renderChoice(e); break;
+    case "choice": delete S.pendingChoice[e.conv]; renderChoice(e); break;
   }
 }
 function renderChoice(e){

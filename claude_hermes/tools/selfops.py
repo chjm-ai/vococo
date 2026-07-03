@@ -219,6 +219,19 @@ def consume_rollback_flag() -> bool:
     return False
 
 
+# 入库的可见「用户轮」文本前缀:前端据此把这条渲染成【居中系统条】而非用户气泡。
+# 给 agent 的完整指令(build_resume_prompt)只在当轮送入模型,不入库,避免长指令
+# 既污染上下文、又在刷新后被当成「用户发的话」显示。
+SYS_MARKER = "⚙️[系统]"
+
+
+def build_resume_store_text(task: dict, rolled_back: bool) -> str:
+    """这一轮存进会话库的简短 user 文本(带系统标记,前端渲染成系统条)。"""
+    if rolled_back:
+        return f"{SYS_MARKER} 自我重启后新代码启动失败,已自动回滚到旧版本。"
+    return f"{SYS_MARKER} 自我重启完成,已加载新代码并自动继续验证。"
+
+
 def build_resume_prompt(task: dict, rolled_back: bool) -> str:
     lines = [
         "[系统消息:自我重启完成]",

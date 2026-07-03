@@ -17,6 +17,8 @@ class Incoming:
     chat_id: int | str
     text: str
     images: list[ImageAttachment] = field(default_factory=list)
+    # 入库替代文本:系统注入的消息(如自我重启还魂)用它,让长指令不当用户话显示/存库
+    store_text: str | None = None
 
     @property
     def session_key(self) -> str:

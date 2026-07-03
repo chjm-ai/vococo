@@ -125,6 +125,22 @@ WEB_PORT: int = int(os.environ.get("WEB_PORT", "8848"))
 # 访问口令:非空则每次数据请求都要带上(浏览器首次输入后记住)。留空=不校验(仅本机调试用)。
 WEB_AUTH_TOKEN: str = os.environ.get("WEB_AUTH_TOKEN", "").strip()
 
+# === Web Push 系统通知(iOS 16.4+ 已装到主屏的 PWA / Android / 桌面)===
+# 页面关了、锁屏了也能弹系统通知(SSE 只在页面开着时能推)。
+# 生成密钥:python -m claude_hermes.gateway.adapters.web_push --gen-keys
+# 把打印出的两串填进 .env;留空则通知功能自动关闭,不影响其余功能。
+VAPID_PUBLIC_KEY: str = os.environ.get("VAPID_PUBLIC_KEY", "").strip()
+VAPID_PRIVATE_KEY: str = os.environ.get("VAPID_PRIVATE_KEY", "").strip()
+VAPID_SUBJECT: str = (
+    os.environ.get("VAPID_SUBJECT", "mailto:admin@example.com").strip()
+    or "mailto:admin@example.com"
+)
+# 四种通知场景各自开关(默认全开;某类嫌吵就在 .env 设 0 关掉)
+PUSH_ON_DONE: bool = _parse_bool(os.environ.get("PUSH_ON_DONE", ""), True)  # 回复完成
+PUSH_ON_APPROVAL: bool = _parse_bool(os.environ.get("PUSH_ON_APPROVAL", ""), True)  # 需审批
+PUSH_ON_PROACTIVE: bool = _parse_bool(os.environ.get("PUSH_ON_PROACTIVE", ""), True)  # 主动/cron
+PUSH_ON_ERROR: bool = _parse_bool(os.environ.get("PUSH_ON_ERROR", ""), True)  # 出错
+
 # === 语音输入(手机录音 → 转文字)===
 # Claude 不吃音频,故录音上传后端先转成文字再进对话。
 # 默认走 SiliconFlow 的 SenseVoice(OpenAI 兼容接口、中文准、国内直连、近免费)。
