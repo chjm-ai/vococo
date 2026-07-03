@@ -148,28 +148,25 @@
   .sfoot{padding:13px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px}
   .sfoot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
 
-  /* 项目切换条 */
-  #projBar{padding:2px 10px 8px;border-bottom:1px solid var(--line)}
-  #projCur{width:100%;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;
-    background:var(--panel2);color:var(--text);border:1px solid var(--line2);cursor:pointer;font-size:13.5px}
-  #projCur:hover{border-color:var(--accent)}
-  #projCur .picon{flex-shrink:0}
-  #projCur #projName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-weight:600}
-  #projCur .caret{flex-shrink:0;color:var(--dim2);font-size:11px}
-  .projmenu{position:fixed;z-index:40;min-width:220px;max-height:60vh;overflow-y:auto;
-    background:var(--panel);border:1px solid var(--line2);border-radius:12px;padding:6px;box-shadow:0 10px 40px rgba(0,0,0,.4)}
-  .pmenu-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:none;
-    color:var(--text);padding:9px 11px;border-radius:9px;cursor:pointer;font-size:13.5px}
-  .pmenu-item:hover{background:var(--panel2)}
-  .pmenu-item.on{background:var(--panel2)}
-  .pmenu-item .pmi-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .pmenu-item .pmi-rm{opacity:0;flex-shrink:0;background:none;border:none;color:var(--dim2);cursor:pointer;font-size:13px;padding:2px 5px;border-radius:6px}
-  .pmenu-item:hover .pmi-rm{opacity:.7}
-  .pmenu-item .pmi-rm:hover{opacity:1;color:var(--err);background:rgba(209,103,74,.12)}
-  .pmenu-add{color:var(--accent);border-top:1px solid var(--line);margin-top:4px;border-radius:0 0 9px 9px}
+  /* 项目分组(手风琴:所有项目 + 会话同时可见,点标题展开/折叠) */
+  .projgrp{display:flex;align-items:center;gap:6px;padding:8px 10px;margin-top:4px;border-radius:9px;
+    cursor:pointer;color:var(--dim);font-size:12.5px;font-weight:600;user-select:none}
+  .projgrp:hover{background:var(--panel2);color:var(--text)}
+  .projgrp .pgcaret{flex-shrink:0;width:12px;color:var(--dim2);font-size:10px}
+  .projgrp .pgname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .projgrp .pgcount{flex-shrink:0;color:var(--dim2);font-size:11px;font-weight:400}
+  .projgrp .pgadd,.projgrp .pgrm{flex-shrink:0;opacity:0;background:none;border:none;cursor:pointer;
+    color:var(--dim2);font-size:13px;padding:1px 5px;border-radius:6px;line-height:1}
+  .projgrp:hover .pgadd,.projgrp:hover .pgrm{opacity:.65}
+  .projgrp .pgadd:hover{opacity:1;color:var(--accent);background:var(--panel)}
+  .projgrp .pgrm:hover{opacity:1;color:var(--err);background:rgba(209,103,74,.12)}
+  .projgrp.projadd{color:var(--accent);justify-content:flex-start;font-weight:400;margin-top:8px;
+    border-top:1px solid var(--line);border-radius:0;padding-top:12px}
+  .conv.ingroup{margin-left:14px}   /* 分组下的会话缩进,体现层级 */
 
   /* 新建项目弹窗(服务端目录浏览器) */
   #projModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
+  #projModal[hidden]{display:none}   /* id+attr 优先级压过上面的 display:flex,hidden 才真生效 */
   #projModal .pmbox{width:min(560px,92vw);max-height:82vh;display:flex;flex-direction:column;
     background:var(--panel);border:1px solid var(--line2);border-radius:16px;overflow:hidden}
   #projModal .pmhead{padding:15px 18px;font-size:15px;font-weight:700;border-bottom:1px solid var(--line)}
@@ -404,11 +401,6 @@
       <button id="newBtn"><span>＋</span>新对话</button>
       <button id="collapseBtn" title="收起侧边栏">«</button>
     </div>
-    <div id="projBar">
-      <button id="projCur" title="切换 / 新建项目">
-        <span class="picon">📁</span><span id="projName">默认项目</span><span class="caret">▾</span>
-      </button>
-    </div>
     <div id="convList"></div>
     <div class="sfoot" id="sfoot">Hermes · Web</div>
   </aside>
@@ -472,7 +464,8 @@ const S = {
   conv: "main",
   convs: [],            // [{conv,title,turns,last_ts,pinned}]
   projects: [],         // [{hash,name,path,last_used}]
-  project: null,        // 当前项目 hash;null=默认项目(收纳老会话+主会话)
+  project: null,        // 「活跃」项目 hash(顶部 ＋新对话 建在此;随打开的会话联动);null=默认项目
+  expanded: new Set(),  // 已展开的分组:默认项目用 "__default__",项目用其 hash
   browseDir: "",        // 目录浏览器当前所在目录
   images: [],           // {data,media_type,url}
   stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
@@ -526,12 +519,10 @@ async function tryEnter(){
     if(r.status===401){ $("#loginErr").textContent="口令错误"; return; }
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
-    connect(); await loadProjects(); await loadConvs(); await loadModels();
-    // 默认打开最近活跃的会话(排序后的第一个),并把项目条同步到它所属项目
-    const first = S.convs[0] ? S.convs[0].conv : "main";
-    S.project = convProject(first);
-    renderProjectBar(); renderConvs();
-    await openConv(first);
+    connect(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
+    await loadProjects(); await loadConvs(); await loadModels();
+    // 打开最近活跃的会话;openConv 内会同步活跃项目、展开其分组并重绘侧边栏
+    await openConv(S.convs[0] ? S.convs[0].conv : "main");
   }catch(e){ $("#loginErr").textContent="连接失败"; }
 }
 $("#loginBtn").onclick = ()=>{ S.token = $("#pw").value.trim(); tryEnter(); };
@@ -678,20 +669,45 @@ function convProject(conv){
   const m = String(conv).replace(/^local-/,"").match(/^p([0-9a-f]+):/);
   return m ? m[1] : null;
 }
+// 分组的存储键:默认项目用固定串,项目用其 hash
+function grpKey(hash){ return hash===null ? "__default__" : hash; }
+function saveExpanded(){ try{ localStorage.setItem("hermes_expanded", JSON.stringify([...S.expanded])); }catch(e){} }
+function loadExpanded(){ try{ S.expanded=new Set(JSON.parse(localStorage.getItem("hermes_expanded")||"[]")); }catch(e){ S.expanded=new Set(); } }
+
+function convsInGroup(hash){
+  return S.convs.filter(c => c.pinned ? hash===null : convProject(c.conv)===hash);
+}
+// 手风琴:默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
-  for(const c of S.convs){
-    // 主会话(project-less)只在默认项目视图露出;其余按会话所属项目过滤
-    const belongs = c.pinned ? (S.project===null) : (convProject(c.conv)===S.project);
-    if(!belongs) continue;
-    const e=el("div","conv"+(c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
-    const ct=el("div","ct"); ct.textContent=c.title||"新对话";
-    const meta=el("div","cmeta"); meta.textContent=(c.turns?c.turns+"轮 ":"")+fmtTime(c.last_ts);
-    e.append(ct,meta);
-    if(!c.pinned){ const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; e.append(more); }
-    e.onclick=()=>openConv(c.conv);
-    box.append(e);
+  const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
+  for(const g of groups){
+    const convs=convsInGroup(g.hash);
+    const open=S.expanded.has(grpKey(g.hash));
+    const h=el("div","projgrp");
+    const caret=el("span","pgcaret"); caret.textContent=open?"▾":"▸"; h.append(caret);
+    const nm=el("span","pgname"); nm.textContent=g.name; h.append(nm);
+    const cnt=el("span","pgcount"); cnt.textContent=convs.length||""; h.append(cnt);
+    const add=el("button","pgadd"); add.textContent="＋"; add.title="在此项目下新建会话";
+    add.onclick=ev=>{ ev.stopPropagation(); newChatIn(g.hash); }; h.append(add);
+    if(g.hash!==null){
+      const rm=el("button","pgrm"); rm.textContent="✕"; rm.title="移除项目(不删文件夹,可再加回)";
+      rm.onclick=ev=>{ ev.stopPropagation(); removeProject(g.hash); }; h.append(rm);
+    }
+    h.onclick=()=>toggleGroup(g.hash);
+    box.append(h);
+    if(!open) continue;
+    for(const c of convs){
+      const e=el("div","conv ingroup"+(c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
+      const ct=el("div","ct"); ct.textContent=c.title||"新对话";
+      const meta=el("div","cmeta"); meta.textContent=(c.turns?c.turns+"轮 ":"")+fmtTime(c.last_ts);
+      e.append(ct,meta);
+      if(!c.pinned){ const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; e.append(more); }
+      e.onclick=()=>openConv(c.conv);
+      box.append(e);
+    }
   }
+  const addp=el("div","projgrp projadd"); addp.textContent="＋ 新建项目…"; addp.onclick=openProjModal; box.append(addp);
 }
 
 // ── 项目 ─────────────────────────────────────────────────────────────────
@@ -699,62 +715,29 @@ async function loadProjects(){
   try{ const r=await api("/projects"); S.projects=(await r.json()).projects||[]; }
   catch(e){ S.projects=[]; }
 }
-function projName(hash){
-  if(hash===null) return "默认项目";
-  const p=S.projects.find(x=>x.hash===hash);
-  return p ? p.name : "默认项目";
+function toggleGroup(hash){
+  const k=grpKey(hash);
+  if(S.expanded.has(k)) S.expanded.delete(k); else S.expanded.add(k);
+  saveExpanded(); renderConvs();
 }
-function renderProjectBar(){ $("#projName").textContent = projName(S.project); }
-
-// 新开一个会话(建在当前项目下:conv = local-[p<hash>:]<id>)
-function newChat(){
-  const id = Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-  const conv = "local-"+(S.project ? ("p"+S.project+":") : "")+id;
-  S.convs.unshift({conv, title:"新对话", turns:0, last_ts:null});
+// 在指定项目下开新会话(顶部 ＋新对话 用当前活跃项目;分组 ＋ 用该分组)
+function newChatIn(hash){
+  S.project=hash; S.expanded.add(grpKey(hash)); saveExpanded();
+  const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  const conv="local-"+(hash?("p"+hash+":"):"")+id;
+  S.convs.unshift({conv,title:"新对话",turns:0,last_ts:null});
   openConv(conv); $("#ta").focus();
 }
-
-// 切换到某项目(null=默认):打开其下最近会话,没有则开一个新会话
-function switchProject(hash){
-  S.project = hash;
-  renderProjectBar(); renderConvs();
-  const first = S.convs.find(c => c.pinned ? hash===null : convProject(c.conv)===hash);
-  if(first) openConv(first.conv); else newChat();
-}
-
-// 项目下拉菜单(切换 / 移除 / 新建)
-let projMenuEl=null;
-function closeProjMenu(){ if(projMenuEl){ projMenuEl.remove(); projMenuEl=null; } }
-function openProjMenu(){
-  if(projMenuEl){ closeProjMenu(); return; }
-  const m=el("div","projmenu"); m.style.visibility="hidden";
-  const mk=(name, hash)=>{
-    const row=el("button","pmenu-item"+(hash===S.project?" on":""));
-    const t=el("span","pmi-name"); t.textContent=name; row.append(t);
-    if(hash!==null){
-      const rm=el("button","pmi-rm"); rm.textContent="✕"; rm.title="从列表移除(不删文件夹,可再加回)";
-      rm.onclick=ev=>{ ev.stopPropagation(); closeProjMenu(); removeProject(hash); };
-      row.append(rm);
-    }
-    row.onclick=()=>{ closeProjMenu(); switchProject(hash); };
-    return row;
-  };
-  m.append(mk("默认项目", null));
-  for(const p of S.projects) m.append(mk(p.name, p.hash));
-  const add=el("button","pmenu-item pmenu-add"); add.textContent="＋ 新建项目…";
-  add.onclick=()=>{ closeProjMenu(); openProjModal(); }; m.append(add);
-  document.body.append(m); projMenuEl=m;
-  const r=$("#projCur").getBoundingClientRect();
-  m.style.top=(r.bottom+4)+"px"; m.style.left=r.left+"px"; m.style.minWidth=r.width+"px"; m.style.visibility="visible";
-}
-document.addEventListener("click", e=>{ if(projMenuEl && !projMenuEl.contains(e.target) && e.target!==$("#projCur") && !$("#projCur").contains(e.target)) closeProjMenu(); });
-$("#projCur").onclick = e=>{ e.stopPropagation(); openProjMenu(); };
+function newChat(){ newChatIn(S.project); }
 
 async function removeProject(hash){
   try{ await api("/projects/remove",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({hash})}); }
   catch(e){ alert("移除失败"); return; }
+  S.expanded.delete(hash); saveExpanded();
+  const activeGone = convProject(S.conv)===hash;   // 当前会话属于被移除项目 → 回落主会话
+  if(S.project===hash) S.project=null;
   await loadProjects();
-  if(S.project===hash) switchProject(null); else { renderProjectBar(); renderConvs(); }
+  if(activeGone){ openConv("main"); } else { renderConvs(); }
 }
 
 // 目录浏览器弹窗
@@ -776,7 +759,7 @@ async function createProject(path){
     const r=await api("/projects/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path})});
     const d=await r.json();
     if(d.error){ alert(d.error); return; }
-    closeProjModal(); await loadProjects(); switchProject(d.project.hash);
+    closeProjModal(); await loadProjects(); newChatIn(d.project.hash);  // 建好即在其下开一个新会话
   }catch(e){ alert("建项目失败"); }
 }
 $("#pmGo").onclick = ()=>browseTo($("#pmPath").value.trim());
@@ -834,6 +817,7 @@ function renderTurns(turns){
 }
 async function openConv(conv){
   S.conv=conv; S.stream=null;
+  S.project=convProject(conv); S.expanded.add(grpKey(S.project)); saveExpanded();  // 活跃项目随打开的会话联动,并确保其分组展开
   const c=S.convs.find(x=>x.conv===conv);
   $("#convTitle").textContent = c ? (c.title||"新对话") : "新对话";
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
