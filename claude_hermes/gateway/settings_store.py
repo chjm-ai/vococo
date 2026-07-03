@@ -1,0 +1,264 @@
+"""Web 端运行时设置：技能白名单 / MCP 开关(内置 + 外部) 的持久化与生效计算。
+
+落一个 JSON(data/web_settings.json)当"运行时覆盖层"。agent 每轮构建 options
+时读它来决定挂哪些 skill、挂哪些 MCP —— 所以在网页改完设置【下一轮就生效，
+不用重启进程】。文件不存在 = 全走 config 默认(和没这套东西时行为一致)。
+
+设计要点:
+- skills 有 default / custom 两态。default 完全跟随 config.SKILLS(通常是 None=全量),
+  不改今天的 token 行为;用户在设置页第一次动某个 skill 才"固化"成显式白名单(custom),
+  之后就按白名单挂。这样"不碰就零副作用,碰了才显式接管"。
+- 隐藏(hidden)只影响设置列表折叠,与是否加载无关。
+- MCP:内置 hermes 一个总开关;外部 server 存 stdio/sse/http 配置 + enabled 位,
+  开启的那些直接并进 ClaudeAgentOptions.mcp_servers(SDK 0.2.110 原生支持外部 server)。
+"""
+from __future__ import annotations
+
+import json
+import re
+import threading
+from pathlib import Path
+
+from .. import config
+
+_PATH: Path = config.DATA_DIR / "web_settings.json"
+_SKILLS_DIR: Path = Path.home() / ".claude" / "skills"
+_LOCK = threading.Lock()  # 网页多请求可能并发读改写,加锁保证 JSON 不被写花
+
+_DEFAULTS: dict = {
+    "skills_mode": "default",   # default=跟随 config.SKILLS;custom=用下面的白名单
+    "skills_enabled": [],       # custom 态生效的显式白名单
+    "skills_hidden": [],        # 仅设置列表折叠用
+    "hermes_mcp_enabled": True,
+    "external_mcp": {},         # name -> {type,command,args,env,url,headers,enabled}
+}
+
+
+# ── 读写 ────────────────────────────────────────────────────────────────
+def _load() -> dict:
+    try:
+        raw = json.loads(_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
+        raw = {}
+    data = {**_DEFAULTS, **(raw if isinstance(raw, dict) else {})}
+    # 保证子结构类型正确(手改坏了也不崩)
+    if not isinstance(data.get("skills_enabled"), list):
+        data["skills_enabled"] = []
+    if not isinstance(data.get("skills_hidden"), list):
+        data["skills_hidden"] = []
+    if not isinstance(data.get("external_mcp"), dict):
+        data["external_mcp"] = {}
+    return data
+
+
+def _save(data: dict) -> None:
+    _PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(_PATH)  # 原子替换,避免读到写一半的半截 JSON
+
+
+# ── 技能扫描 ────────────────────────────────────────────────────────────
+def _parse_front_matter(text: str) -> dict:
+    """从 SKILL.md 头部 --- YAML --- 里抠出 name / description(不引入 yaml 依赖)。
+
+    兼容 YAML 块标量:很多 skill 写成 `description: >-` 然后把正文放到后续缩进行,
+    此时得把缩进行拼起来,否则只会拿到 ">-" 这种指示符。
+    """
+    out: dict = {}
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return out
+    body = lines[1:]
+    i, n = 0, len(body)
+    while i < n:
+        ln = body[i]
+        if ln.strip() == "---":
+            break
+        m = re.match(r"^([A-Za-z_][\w-]*):(.*)$", ln)
+        if not m:
+            i += 1
+            continue
+        key, val = m.group(1).strip(), m.group(2).strip()
+        if val in (">", ">-", ">+", "|", "|-", "|+"):
+            # 块标量:收集后续缩进行,直到下一个顶格 key 或 ---
+            parts: list[str] = []
+            i += 1
+            while i < n:
+                nx = body[i]
+                if nx.strip() == "---" or (nx.strip() and not nx[0].isspace()):
+                    break
+                if nx.strip():
+                    parts.append(nx.strip())
+                i += 1
+            val = " ".join(parts)
+        else:
+            val = val.strip('"').strip("'")
+            i += 1
+        if key in ("name", "description"):
+            out[key] = val
+    return out
+
+
+def _scan_skills() -> list[dict]:
+    """扫 ~/.claude/skills/*/SKILL.md，返回 [{name, description}]（跟随符号链接）。"""
+    found: list[dict] = []
+    try:
+        entries = sorted(_SKILLS_DIR.iterdir(), key=lambda p: p.name.lower())
+    except (FileNotFoundError, OSError):
+        return found
+    for d in entries:
+        if d.name.startswith("."):
+            continue
+        skill_md = d / "SKILL.md"  # is_file() 会自动跟随符号链接
+        try:
+            if not skill_md.is_file():
+                continue
+            text = skill_md.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        fm = _parse_front_matter(text)
+        name = fm.get("name") or d.name
+        found.append({"name": name, "description": fm.get("description", "")})
+    # 同名去重(符号链接可能重复),保留首个
+    seen: set[str] = set()
+    uniq: list[dict] = []
+    for s in found:
+        if s["name"] in seen:
+            continue
+        seen.add(s["name"])
+        uniq.append(s)
+    return uniq
+
+
+def _available_names() -> set[str]:
+    return {s["name"] for s in _scan_skills()}
+
+
+def _base_enabled_set(available: set[str]) -> set[str]:
+    """config.SKILLS 语义下"当前启用集":None/'all'=全部可用;list=白名单。"""
+    base = config.SKILLS
+    if base is None or base == "all":
+        return set(available)
+    if isinstance(base, list):
+        return set(base)
+    return set(available)
+
+
+# ── 技能:对外查询 / 修改 ────────────────────────────────────────────────
+def list_skills() -> list[dict]:
+    """给设置页用:每个可用 skill 的 name/description/enabled/hidden。"""
+    d = _load()
+    skills = _scan_skills()
+    available = {s["name"] for s in skills}
+    hidden = set(d["skills_hidden"])
+    if d["skills_mode"] == "custom":
+        enabled = set(d["skills_enabled"])
+    else:
+        enabled = _base_enabled_set(available)
+    out = []
+    for s in skills:
+        out.append({
+            "name": s["name"],
+            "description": s["description"],
+            "enabled": s["name"] in enabled,
+            "hidden": s["name"] in hidden,
+        })
+    return out
+
+
+def skills_mode() -> str:
+    return _load()["skills_mode"]
+
+
+def set_skill(name: str, enabled: bool | None = None, hidden: bool | None = None) -> None:
+    with _LOCK:
+        d = _load()
+        if hidden is not None:
+            hs = set(d["skills_hidden"])
+            hs.add(name) if hidden else hs.discard(name)
+            d["skills_hidden"] = sorted(hs)
+        if enabled is not None:
+            if d["skills_mode"] != "custom":
+                # 第一次动 → 把当前(default 语义下的)启用集固化成显式白名单
+                d["skills_enabled"] = sorted(_base_enabled_set(_available_names()))
+                d["skills_mode"] = "custom"
+            es = set(d["skills_enabled"])
+            es.add(name) if enabled else es.discard(name)
+            d["skills_enabled"] = sorted(es)
+        _save(d)
+
+
+def reset_skills() -> None:
+    """技能回到"跟随默认(通常全量)",清掉显式白名单;隐藏保留。"""
+    with _LOCK:
+        d = _load()
+        d["skills_mode"] = "default"
+        d["skills_enabled"] = []
+        _save(d)
+
+
+def effective_skills() -> list[str] | str | None:
+    """传给 ClaudeAgentOptions.skills 的值。default 态原样返回 config.SKILLS。"""
+    d = _load()
+    if d["skills_mode"] == "custom":
+        return list(d["skills_enabled"])
+    return config.SKILLS
+
+
+# ── MCP:对外查询 / 修改 ─────────────────────────────────────────────────
+def hermes_enabled() -> bool:
+    return bool(_load()["hermes_mcp_enabled"])
+
+
+def set_hermes(enabled: bool) -> None:
+    with _LOCK:
+        d = _load()
+        d["hermes_mcp_enabled"] = bool(enabled)
+        _save(d)
+
+
+def list_external() -> list[dict]:
+    """外部 MCP 列表(给设置页;含 enabled 位)。"""
+    d = _load()
+    out = []
+    for name, cfg in d["external_mcp"].items():
+        out.append({"name": name, **cfg})
+    out.sort(key=lambda x: x["name"].lower())
+    return out
+
+
+def upsert_external(name: str, cfg: dict) -> None:
+    """新增/覆盖一个外部 MCP。cfg 已被 web 层清洗过(只保留合法字段)。"""
+    with _LOCK:
+        d = _load()
+        d["external_mcp"][name] = cfg
+        _save(d)
+
+
+def remove_external(name: str) -> None:
+    with _LOCK:
+        d = _load()
+        d["external_mcp"].pop(name, None)
+        _save(d)
+
+
+def set_external_enabled(name: str, enabled: bool) -> None:
+    with _LOCK:
+        d = _load()
+        if name in d["external_mcp"]:
+            d["external_mcp"][name]["enabled"] = bool(enabled)
+            _save(d)
+
+
+def effective_external_mcp() -> dict:
+    """开启的外部 server → {name: sdk_config}（剥掉内部用的 enabled 字段）。"""
+    d = _load()
+    servers: dict = {}
+    for name, cfg in d["external_mcp"].items():
+        if not cfg.get("enabled", True):
+            continue
+        c = {k: v for k, v in cfg.items() if k != "enabled" and v not in (None, "", [], {})}
+        c.setdefault("type", "stdio")
+        servers[name] = c
+    return servers
