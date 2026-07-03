@@ -150,9 +150,8 @@
   /* 项目分组(手风琴;行的内边距/圆角走上面的统一规范) */
   .projgrp{gap:6px;margin-top:2px;color:var(--dim);font-size:13px;font-weight:600;user-select:none}
   .projgrp:hover{color:var(--text)}
-  .projgrp .pgcaret{flex-shrink:0;width:10px;margin-right:auto;color:var(--dim2);font-size:10px}  /* 紧跟名称右侧,auto 外边距把计数/按钮推到最右 */
+  .projgrp .pgcaret{flex-shrink:0;margin:0 auto 0 7px;color:var(--dim2)}  /* chevron 紧跟名称右侧,auto 外边距把按钮推到最右 */
   .projgrp .pgname{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .projgrp .pgcount{flex-shrink:0;color:var(--dim2);font-size:11px;font-weight:400}
   .projgrp .pgadd,.projgrp .pgrm{flex-shrink:0;opacity:0;background:none;border:none;cursor:pointer;
     color:var(--dim2);font-size:13px;padding:1px 5px;border-radius:6px;line-height:1}
   .projgrp:hover .pgadd,.projgrp:hover .pgrm{opacity:.6}
@@ -339,7 +338,11 @@
   #modelBtn #modelName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #modelBtn:hover{color:var(--text);background:var(--panel2)}
   #modelBtn:active{transform:scale(.96)}
-  #modelBtn .caret{font-size:10px;opacity:.6;flex-shrink:0}
+  /* 折线箭头(chevron):border 描边 + 旋转,替代实心三角,略大;默认指向右,.down 转朝下 */
+  .chev{display:inline-block;width:8px;height:8px;border:solid currentColor;border-width:0 1.7px 1.7px 0;
+    transform:rotate(-45deg);transition:transform .15s;vertical-align:middle}
+  .chev.down{transform:rotate(45deg)}
+  #modelBtn .caret{opacity:.6;flex-shrink:0}
   #modelPop{position:absolute;bottom:calc(100% + 8px);right:0;min-width:236px;z-index:20;
     background:var(--card);border:1px solid var(--line2);border-radius:14px;padding:6px;
     box-shadow:var(--shadow);animation:pop .16s ease}
@@ -487,7 +490,7 @@
             <span class="spacer"></span>
             <div id="modelBox">
               <button type="button" id="modelBtn" title="切换模型">
-                <span id="modelName">模型</span><span class="caret">▾</span>
+                <span id="modelName">模型</span><span class="caret chev down"></span>
               </button>
               <div id="modelPop" hidden></div>
             </div>
@@ -736,8 +739,7 @@ function renderConvs(){
     const open=S.expanded.has(grpKey(g.hash));
     const h=el("div","projgrp");
     const nm=el("span","pgname"); nm.textContent=g.name; h.append(nm);
-    const caret=el("span","pgcaret"); caret.textContent=open?"▾":"▸"; h.append(caret);
-    const cnt=el("span","pgcount"); cnt.textContent=convs.length||""; h.append(cnt);
+    const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);   // 折线箭头,展开时旋转朝下
     const add=el("button","pgadd"); add.textContent="＋"; add.title="在此项目下新建会话";
     add.onclick=ev=>{ ev.stopPropagation(); newChatIn(g.hash); }; h.append(add);
     if(g.hash!==null){
@@ -918,13 +920,14 @@ function ensureStream(){
   const row=el("div","row ai");
   const bubble=el("div","bubble");
   const status=el("div","status");
-  const thinktog=el("div","thinktog"); thinktog.textContent="▸ 思考过程";
+  const thinktog=el("div","thinktog"); const tcv=el("span","chev");
+  thinktog.append(tcv, document.createTextNode(" 思考过程"));
   const think=el("div","think");
   const toolbox=el("div","toolbox");   // diff / todo / 计划卡 / 命令预览挂这里
   const body=el("div"); body.dataset.raw="";
   bubble.append(status,thinktog,think,toolbox,body);
   row.append(bubble); $("#wrap").append(row); updateEmpty();
-  thinktog.onclick=()=>{ think.classList.toggle("show"); };
+  thinktog.onclick=()=>{ const on=think.classList.toggle("show"); tcv.classList.toggle("down", on); };
   S.stream={row,bubble,status,think,thinktog,toolbox,body,tools:[]};
   renderStatus();  // 初始即显示"💭 思考中…"动画
   scrollDown(); return S.stream;
