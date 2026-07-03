@@ -355,7 +355,7 @@
   .row.me .bubble{background:linear-gradient(135deg,var(--user1),var(--user2));color:var(--on-user);border-bottom-right-radius:6px}
   .row.ai .bubble{background:var(--card);border:1px solid var(--line);border-bottom-left-radius:6px}
   .bubble.pending{color:var(--dim)}
-  .status{font-size:13px;color:var(--dim);margin:2px 0 8px;display:flex;flex-wrap:wrap;gap:4px 12px}
+  .status{font-size:13px;color:var(--dim);margin:6px 0 0;display:flex;flex-wrap:wrap;gap:4px 12px}
   .status .chip{display:inline-flex;align-items:center}
   .status .chip.live{color:var(--accent)}
   .dots{display:inline-flex;gap:3px;margin-left:5px;align-items:center}
@@ -1397,7 +1397,7 @@ function ensureStream(){
   const think=el("div","think");
   const toolbox=el("div","toolbox");   // diff / todo / 计划卡 / 命令预览挂这里
   const body=el("div"); body.dataset.raw="";
-  bubble.append(status,thinktog,think,toolbox,body);
+  bubble.append(thinktog,think,toolbox,body,status);  // 状态行(工作中…)放气泡底部,像 TG 的打字指示
   row.append(bubble); $("#wrap").append(row); updateEmpty();
   thinktog.onclick=()=>{ const on=think.classList.toggle("show"); tcv.classList.toggle("down", on); };
   S.stream={row,bubble,status,think,thinktog,toolbox,body,tools:[],cards:{},subs:{},t0:Date.now()};
@@ -1416,15 +1416,13 @@ const DOTS='<span class="dots"><i></i><i></i><i></i></span>';
 function renderStatus(){
   if(!S.stream) return;
   const t=S.stream.tools, hasBody=!!S.stream.body.dataset.raw;
-  // 工具 chip:未完成的用动画点表示"进行中",完成的打 ✓/✗;Task 追加子代理步数
-  const bits = t.map(x=>'<span class="chip">'+ic(x.name==="Task"?"bot":"wrench")+" "+esc(x.name)
-    +(x.subN?(" · "+x.subN+"步"):"")+(x.done?(x.ok?" ✓":" ✗"):DOTS)+'</span>');
-  // 持续的"输入中"指示:还没出正文→思考中;已在出正文→输入中(始终带动画,像 TG)
+  // 工具 chip 已下放到 toolbox 卡片,这里不再重复;只留一条持续的"工作中/思考中"指示
   const secs=Math.max(0, Math.round((Date.now()-(S.stream.t0||Date.now()))/1000));
   const tick=secs>=1?(" · "+(secs>=60?Math.floor(secs/60)+"m"+(secs%60)+"s":secs+"s")):"";
-  if(!hasBody && !t.some(x=>!x.done)) bits.push('<span class="chip live">思考中'+DOTS+esc(tick)+'</span>');
-  else if(hasBody) bits.push('<span class="chip live">输入中'+DOTS+esc(tick)+'</span>');
-  S.stream.status.innerHTML = bits.join("");
+  // 有正文 或 有工具在跑 → 工作中;纯思考(啥都没出)→ 思考中(始终带动画,像 TG)
+  const working = hasBody || t.some(x=>!x.done);
+  const label = working ? "工作中" : "思考中";
+  S.stream.status.innerHTML = '<span class="chip live">'+label+DOTS+esc(tick)+'</span>';
 }
 function finalizeStream(finalText){
   if(!S.stream) return;
