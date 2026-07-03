@@ -700,6 +700,7 @@ const S = {
   browseDir: "",        // 目录浏览器当前所在目录
   images: [],           // {data,media_type,url}
   stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
+  localSent: false,     // 本客户端刚发了消息,收到 "user" 事件时跳过(避免重复气泡)
   es: null,
   lastId: 0,            // 已处理的最大事件编号,用于断线重连后去重
   models: {default:"", choices:[]},  // /models 拉到的可选模型
@@ -1578,6 +1579,9 @@ function handleEvent(e){
   // 当前会话本轮结束 → 清掉可能残留的暂存审批
   if(e.type==="done"||e.type==="message") delete S.pendingChoice[e.conv];
   switch(e.type){
+    case "user":
+      if(S.localSent){ S.localSent=false; break; }  // 本客户端发的,气泡已在 send() 里加了
+      addBubble("me", e.text); break;
     case "start": ensureStream(); break;
     case "thinking": { const s=ensureStream(); s.thinktog.style.display="flex"; s.think.textContent=e.text; renderStatus(); break; }
     case "text": { const s=ensureStream(); s.body.dataset.raw=e.text; renderBody(); renderStatus(); break; }
@@ -1736,6 +1740,8 @@ async function send(text, display){
   // display:点按钮时传选项文字,气泡显示友好文字而非原始命令(如 /clarify id 0)
   const shown=(display!=null)?display:text;
   if(shown || imgs.length) addBubble("me", shown||"(图片)", imgs);
+  // 标记本轮由本客户端发出,避免收到 "user" 事件时渲染重复气泡
+  if(!text.startsWith("/")) S.localSent = true;
   // 非命令消息:立刻挂一个"💭 思考中…"气泡,不等服务器 start 事件,反馈更即时(像 TG 秒回 typing)
   if(!text.startsWith("/") && !S.stream){ ensureStream(); }
   const payload={conv:S.conv, text, images:S.images.map(x=>({data:x.data,media_type:x.media_type}))};

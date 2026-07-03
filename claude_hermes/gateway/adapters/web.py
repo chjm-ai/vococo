@@ -327,6 +327,9 @@ class WebAdapter:
         # 项目会话(conv = p<hash>:<convid>)→ 刷新项目最近使用时间,好让侧边栏排序
         if conv.startswith("p") and ":" in conv:
             session_store.touch_project(conv[1:].split(":", 1)[0])
+        # 广播用户消息让其他客户端(如桌面端)能实时渲染用户气泡
+        if not text.startswith("/"):
+            self._emit({"conv": conv, "type": "user", "text": text})
         self._inbox.put_nowait(Incoming(self.platform, conv, text, images=images))
         return web.json_response({"ok": True})
 
