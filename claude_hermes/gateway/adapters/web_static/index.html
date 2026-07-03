@@ -1348,13 +1348,15 @@ async function openConv(conv){
 
 // ── 重加载历史(SSE 连接恢复后)──────────────────────────────────────────
 async function reloadHistory(){
-  if(!S.conv || String(S.conv).startsWith("local-")) return;  // 只在非本地会话拉
+  const conv=S.conv;
+  if(!conv || String(conv).startsWith("local-")) return;  // 只在非本地会话拉
+  if(S.stream) return;  // 正在流式输出中 → 别用全量重绘冲掉流式气泡
   try{
-    const r=await api("/history?conv="+encodeURIComponent(S.conv));
+    const r=await api("/history?conv="+encodeURIComponent(conv));
     const d=await r.json();
-    if(S.conv!==S.conv) return;  // 拉取期间已切会话 → 丢弃
-    const cached=S.histCache[S.conv];
-    S.histCache[S.conv]=d.turns;
+    if(S.conv!==conv || S.stream) return;  // await 期间切了会话/开了流 → 丢弃
+    const cached=S.histCache[conv];
+    S.histCache[conv]=d.turns;
     if(!cached || JSON.stringify(cached)!==JSON.stringify(d.turns)) renderTurns(d.turns);
   }catch(e){}
 }
@@ -1374,17 +1376,20 @@ function scrollDown(){ const m=$("#messages"); requestAnimationFrame(()=>{ m.scr
 // ── SSE 流式接收 ─────────────────────────────────────────────────────────
 function connect(){
   if(S.es) S.es.close();
-  S.es = new EventSource("/events?token="+encodeURIComponent(S.token));
-  S.es.onmessage = ev=>{ try{
+  const es = S.es = new EventSource("/events?token="+encodeURIComponent(S.token));
+  let opened=false;   // 本连接是否已成功 open 过一次(区分首连 vs 自动重连)
+  es.onopen = ()=>{
+    // 首连:openConv 已拉过历史,跳过。之后每次自动重连成功都拉一次历史,
+    // 补回断连期间漏掉的消息 —— 尤其服务端【自我重启】后注入对话的系统消息。
+    if(opened) reloadHistory();
+    opened=true;
+  };
+  es.onmessage = ev=>{ try{
     const d=JSON.parse(ev.data);
     if(d.id){ if(d.id<=S.lastId) return; S.lastId=d.id; }  // 补发/重复的老事件直接丢弃
     handleEvent(d);
   }catch(e){} };
-  S.es.onerror = ()=>{
-    // EventSource 会自动重连,但重连后的历史消息可能丢失(缓冲转圈或服务端重启)
-    // 延迟一下,待连接稳定后拉一下历史,确保没漏消息(特别是重启后的系统消息)
-    setTimeout(()=>{ if(S.es&&S.es.readyState===1) reloadHistory(); }, 1500);
-  };
+  es.onerror = ()=>{ /* EventSource 自动重连;重连成功由 onopen 补历史 */ };
 }
 function ensureStream(){
   // 为当前会话准备一个流式 assistant 气泡(含状态行/思考/正文)
