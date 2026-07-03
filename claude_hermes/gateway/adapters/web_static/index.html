@@ -1490,35 +1490,92 @@ function addBubble(who, text, imgs){
 function scrollDown(){ const m=$("#messages"); requestAnimationFrame(()=>{ m.scrollTop=m.scrollHeight; }); }
 
 // ── SSE 流式接收 ─────────────────────────────────────────────────────────
+// 用 fetch 流式读 SSE,替代原生 EventSource。原因:iOS Safari 只要有活跃的 EventSource
+// 长连接,地址栏就【一直转圈】(把没结束的长连接当成"页面还在加载")。fetch 读流不占这个
+// "页面加载"语义,转圈消失;且重连完全握在自己手里(回前台立即重连、断线退避重连)。
+// 服务端仍是标准 SSE,无需改动。对外暴露与 EventSource 兼容的接口:readyState / close()。
+class FetchSSE {
+  constructor(url, token){
+    this.url=url; this.token=token;
+    this.readyState=0;        // 0=连接中 1=已连 2=已关闭
+    this.lastId=null;         // 最后收到的 SSE id,重连时带 Last-Event-ID 让服务端补发漏掉的
+    this.lastBeat=Date.now(); // 最后收到任何数据(含心跳)的时刻,看门狗据此判断假死
+    this.onopen=null; this.onmessage=null;
+    this._closed=false; this._ctrl=null; this._wake=null;
+    this._loop();
+  }
+  async _loop(){
+    let firstOpen=true;
+    while(!this._closed){
+      this.readyState=0; this._ctrl=new AbortController();
+      try{
+        const headers={"X-Auth-Token":this.token};
+        if(this.lastId!=null) headers["Last-Event-ID"]=String(this.lastId);
+        const resp=await fetch(this.url,{headers, signal:this._ctrl.signal, cache:"no-store"});
+        if(resp.status===401){ this.close(); showLogin(); return; }
+        if(!resp.ok || !resp.body) throw new Error("http "+resp.status);
+        this.readyState=1; this.lastBeat=Date.now();
+        if(this.onopen) this.onopen(firstOpen);   // 传首连标志:首连不补历史(openConv 已拉),重连才补
+        firstOpen=false;
+        const reader=resp.body.getReader(); const dec=new TextDecoder(); let buf="";
+        while(!this._closed){
+          const {value,done}=await reader.read();
+          if(done) break;                          // 服务端关流 → 跳出去重连
+          buf+=dec.decode(value,{stream:true});
+          let sep;
+          while((sep=buf.indexOf("\n\n"))>=0){ const block=buf.slice(0,sep); buf=buf.slice(sep+2); this._emit(block); }
+        }
+      }catch(e){ /* abort / 网络断,落到下面退避重连 */ }
+      if(this._closed) break;
+      this.readyState=0; await this._sleep(3000);  // 退避 3s(reconnectNow 可提前唤醒)
+    }
+    this.readyState=2;
+  }
+  _emit(block){
+    this.lastBeat=Date.now();                      // 收到任何块(含 ": ping")= 连接活着
+    let id=null,data=null;
+    for(const line of block.split("\n")){
+      if(line.startsWith(":")) continue;           // ": ping" / ": connected" 注释行,忽略
+      if(line.startsWith("id:")) id=line.slice(3).trim();
+      else if(line.startsWith("data:")) data=line.slice(5).trim();
+    }
+    if(id!=null) this.lastId=id;
+    if(data!=null && this.onmessage) this.onmessage({data});
+  }
+  _sleep(ms){ return new Promise(res=>{ const t=setTimeout(res,ms); this._wake=()=>{ clearTimeout(t); this._wake=null; res(); }; }); }
+  reconnectNow(){ if(this._closed) return; if(this._ctrl) try{this._ctrl.abort();}catch(e){} if(this._wake) this._wake(); } // 立刻断开重连(跳过退避)
+  close(){ this._closed=true; this.readyState=2; if(this._ctrl) try{this._ctrl.abort();}catch(e){} if(this._wake) this._wake(); }
+}
 function connect(){
   if(S.es) S.es.close();
-  const es = S.es = new EventSource("/events?token="+encodeURIComponent(S.token));
-  let opened=false;   // 本连接是否已成功 open 过一次(区分首连 vs 自动重连)
-  es.onopen = ()=>{
-    // 首连:openConv 已拉过历史,跳过。之后每次自动重连成功都拉一次历史,
-    // 补回断连期间漏掉的消息 —— 尤其服务端【自我重启】后注入对话的系统消息。
-    if(opened) reloadHistory();
-    opened=true;
+  const es = S.es = new FetchSSE("/events", S.token);
+  es.onopen = (firstOpen)=>{
+    // 首连:openConv 已拉过历史,跳过。重连成功都拉一次历史,补回断连期间漏掉的消息
+    // —— 尤其服务端【自我重启】后注入对话的系统消息。
+    if(!firstOpen) reloadHistory();
   };
   es.onmessage = ev=>{ try{
     const d=JSON.parse(ev.data);
     if(d.id){ if(d.id<=S.lastId) return; S.lastId=d.id; }  // 补发/重复的老事件直接丢弃
     handleEvent(d);
   }catch(e){} };
-  es.onerror = ()=>{ /* EventSource 自动重连;重连成功由 onopen 补历史 */ };
 }
-// 手机救命稻草:iOS 切后台/锁屏会挂起 SSE,回前台常【不触发 onopen】。这里在页面重新
-// 可见 / 重新联网 / 窗口聚焦时,主动重建已死的连接,并【直接走 HTTP 拉一次历史】(不依赖
-// SSE 是否重连成功)—— 服务端自我重启期间漏掉的消息就靠这条补上。8s 看门狗兜底彻底断开的连接。
+// 手机救命稻草:iOS 切后台/锁屏会挂起连接,回前台后连接多半已【假死】(既不报错也不来数据)。
+// 页面重新可见 / 重新联网 / 窗口聚焦时,主动 reconnectNow() 强制重连,并直接走 HTTP 拉一次历史
+// (不等 SSE 恢复)。8s 看门狗兜底:超过 20s 没收到任何数据(含心跳)就判定假死并强制重连。
 function reviveSSE(){
   if(document.hidden) return;
-  if(!S.es || S.es.readyState===2){ S.stream=null; connect(); }  // 仅 CLOSED 才重建(丢弃失效残留流)
-  reloadHistory();                                               // HTTP 补历史,与 SSE 状态无关
+  if(!S.es) connect(); else S.es.reconnectNow();
+  reloadHistory();                                 // HTTP 补历史,与 SSE 状态无关
 }
 document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) reviveSSE(); });
 window.addEventListener("online", reviveSSE);
 window.addEventListener("focus", reviveSSE);
-setInterval(()=>{ if(!document.hidden && S.es && S.es.readyState===2) connect(); }, 8000);
+setInterval(()=>{
+  if(document.hidden || !S.es) return;
+  if(S.es.readyState===2) connect();                                   // 被关掉了 → 重建
+  else if(Date.now()-(S.es.lastBeat||0) > 20000) S.es.reconnectNow();  // 20s 无心跳=假死 → 强制重连
+}, 8000);
 function ensureStream(){
   // 为当前会话准备一个流式 assistant 气泡(含状态行/思考/正文)
   if(S.stream) return S.stream;
