@@ -6,8 +6,11 @@
 """
 from __future__ import annotations
 
+import hashlib
+import os
 import sqlite3
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .. import config
@@ -29,6 +32,12 @@ CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_key, id);
 CREATE TABLE IF NOT EXISTS session_meta(
   session_key TEXT PRIMARY KEY,
   watermark_id INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS projects(
+  hash TEXT PRIMARY KEY,
+  path TEXT NOT NULL UNIQUE,
+  last_used REAL NOT NULL DEFAULT 0,
+  hidden INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -297,6 +306,74 @@ def delete_session(session_key: str) -> None:
     c = _conn()
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute("DELETE FROM session_meta WHERE session_key=?", (session_key,))
+    c.commit()
+
+
+# === 项目(Web 端)===
+# 项目 = 用户选的一个文件夹当 agent 的 cwd,身份即其规范化绝对路径。
+# 会话 key 里以路径短哈希编码(web:p<hash>:<conv>);这张表存 哈希→路径 供 UI 显示。
+# 「移除项目」是软移除(hidden=1):记录与其会话历史都留库,再加回同一文件夹即复活。
+
+
+def project_hash(path: str) -> str:
+    """规范化绝对路径 → 定长短哈希(同文件夹恒得同哈希,天然去重)。"""
+    norm = normalize_project_path(path)
+    return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:10]
+
+
+def normalize_project_path(path: str) -> str:
+    """展开 ~、转绝对路径并消解 .. ——「路径即身份」的规范化基准。"""
+    return str(Path(os.path.expanduser(path)).resolve())
+
+
+def upsert_project(path: str) -> dict:
+    """按文件夹路径建/复活项目;返回 {hash, path, name, last_used}。
+
+    同一文件夹已存在则复活(hidden=0)并刷新 last_used;不存在则新建。
+    """
+    norm = normalize_project_path(path)
+    h = project_hash(norm)
+    now = time.time()
+    c = _conn()
+    c.execute(
+        "INSERT INTO projects(hash, path, last_used, hidden) VALUES (?,?,?,0) "
+        "ON CONFLICT(hash) DO UPDATE SET last_used=excluded.last_used, hidden=0",
+        (h, norm, now),
+    )
+    c.commit()
+    return {"hash": h, "path": norm, "name": os.path.basename(norm) or norm, "last_used": now}
+
+
+def list_projects() -> list[dict]:
+    """未隐藏的项目,最近使用的排前面。名 = 文件夹名(basename)。"""
+    rows = _conn().execute(
+        "SELECT hash, path, last_used FROM projects WHERE hidden=0 ORDER BY last_used DESC"
+    ).fetchall()
+    return [
+        {"hash": h, "path": p, "name": os.path.basename(p) or p, "last_used": ts}
+        for h, p, ts in rows
+    ]
+
+
+def path_for_hash(h: str) -> str | None:
+    """按哈希反查文件夹路径(隐藏的也返回,好让在跑的会话仍有 cwd);找不到返回 None。"""
+    row = _conn().execute(
+        "SELECT path FROM projects WHERE hash=?", (h,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def hide_project(h: str) -> None:
+    """软移除:仅从列表隐藏,项目记录与其会话历史都保留(可复活)。"""
+    c = _conn()
+    c.execute("UPDATE projects SET hidden=1 WHERE hash=?", (h,))
+    c.commit()
+
+
+def touch_project(h: str) -> None:
+    """标记项目最近被使用(刷新侧边栏排序)。"""
+    c = _conn()
+    c.execute("UPDATE projects SET last_used=? WHERE hash=?", (time.time(), h))
     c.commit()
 
 

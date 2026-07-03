@@ -95,9 +95,12 @@ async def converse(
     images: list[ImageAttachment] | None = None,
 ) -> AgentReply | None:
     """跑一轮:载入历史 → 流式 → 喂 sink → 落库。"""
+    from .. import config  # 懒加载,与本模块其余用法一致
+
     history = session_store.load_recent(session_key)
+    cwd = config.project_cwd_for(session_key)  # 项目会话→该文件夹当 cwd;否则 None(进程默认目录)
     reply: AgentReply | None = None
-    async for ev in stream_turn(history, user_text, model=model, images=images):
+    async for ev in stream_turn(history, user_text, model=model, images=images, cwd=cwd):
         if isinstance(ev, TextDelta):
             await sink.text(ev.text)
         elif isinstance(ev, ThinkingDelta):

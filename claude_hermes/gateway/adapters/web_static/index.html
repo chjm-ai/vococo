@@ -144,6 +144,43 @@
   .sfoot{padding:13px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px}
   .sfoot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
 
+  /* 项目切换条 */
+  #projBar{padding:2px 10px 8px;border-bottom:1px solid var(--line)}
+  #projCur{width:100%;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;
+    background:var(--panel2);color:var(--text);border:1px solid var(--line2);cursor:pointer;font-size:13.5px}
+  #projCur:hover{border-color:var(--accent)}
+  #projCur .picon{flex-shrink:0}
+  #projCur #projName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-weight:600}
+  #projCur .caret{flex-shrink:0;color:var(--dim2);font-size:11px}
+  .projmenu{position:fixed;z-index:40;min-width:220px;max-height:60vh;overflow-y:auto;
+    background:var(--panel);border:1px solid var(--line2);border-radius:12px;padding:6px;box-shadow:0 10px 40px rgba(0,0,0,.4)}
+  .pmenu-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:none;
+    color:var(--text);padding:9px 11px;border-radius:9px;cursor:pointer;font-size:13.5px}
+  .pmenu-item:hover{background:var(--panel2)}
+  .pmenu-item.on{background:var(--panel2)}
+  .pmenu-item .pmi-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pmenu-item .pmi-rm{opacity:0;flex-shrink:0;background:none;border:none;color:var(--dim2);cursor:pointer;font-size:13px;padding:2px 5px;border-radius:6px}
+  .pmenu-item:hover .pmi-rm{opacity:.7}
+  .pmenu-item .pmi-rm:hover{opacity:1;color:var(--err);background:#f0603a1a}
+  .pmenu-add{color:var(--accent);border-top:1px solid var(--line);margin-top:4px;border-radius:0 0 9px 9px}
+
+  /* 新建项目弹窗(服务端目录浏览器) */
+  #projModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
+  #projModal .pmbox{width:min(560px,92vw);max-height:82vh;display:flex;flex-direction:column;
+    background:var(--panel);border:1px solid var(--line2);border-radius:16px;overflow:hidden}
+  #projModal .pmhead{padding:15px 18px;font-size:15px;font-weight:700;border-bottom:1px solid var(--line)}
+  #projModal .pmpathrow{display:flex;gap:8px;padding:12px 16px}
+  #pmPath{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line2);border-radius:9px;
+    color:var(--text);padding:8px 11px;font-size:13px}
+  #projModal .pmgo{background:var(--panel2);border:1px solid var(--line2);border-radius:9px;color:var(--text);padding:0 14px;cursor:pointer}
+  #pmList{flex:1;overflow-y:auto;padding:4px 10px;min-height:120px}
+  .pmrow{padding:8px 12px;border-radius:9px;cursor:pointer;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pmrow:hover{background:var(--panel2)}
+  .pmrow.pmup{color:var(--dim2)}
+  #projModal .pmfoot{display:flex;gap:10px;justify-content:flex-end;padding:13px 16px;border-top:1px solid var(--line)}
+  #projModal .pmfoot button{padding:9px 16px;border-radius:9px;cursor:pointer;font-size:13.5px;border:1px solid var(--line2);background:var(--panel2);color:var(--text)}
+  #projModal .pmfoot .pmok{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+
   /* 主区 */
   main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative;background:var(--bg2)}
   header.bar{padding:11px 16px;
@@ -342,11 +379,30 @@
 
 <div id="app" hidden>
   <div id="backdrop"></div>
+  <div id="projModal" hidden>
+    <div class="pmbox">
+      <div class="pmhead">新建项目 · 选一个文件夹当工作目录</div>
+      <div class="pmpathrow">
+        <input id="pmPath" placeholder="/Users/…(可点下方进入,也可直接粘贴路径)"/>
+        <button class="pmgo" id="pmGo">前往</button>
+      </div>
+      <div id="pmList"></div>
+      <div class="pmfoot">
+        <button id="pmCancel">取消</button>
+        <button class="pmok" id="pmCreate">✓ 选此目录为项目</button>
+      </div>
+    </div>
+  </div>
   <aside id="sidebar">
     <div class="shead">
       <div class="brand"><span class="dot">✦</span>会话</div>
       <button id="newBtn"><span>＋</span>新对话</button>
       <button id="collapseBtn" title="收起侧边栏">«</button>
+    </div>
+    <div id="projBar">
+      <button id="projCur" title="切换 / 新建项目">
+        <span class="picon">📁</span><span id="projName">默认项目</span><span class="caret">▾</span>
+      </button>
     </div>
     <div id="convList"></div>
     <div class="sfoot" id="sfoot">Hermes · Web</div>
@@ -410,6 +466,9 @@ const S = {
   token: localStorage.getItem("hermes_token") || "",
   conv: "main",
   convs: [],            // [{conv,title,turns,last_ts,pinned}]
+  projects: [],         // [{hash,name,path,last_used}]
+  project: null,        // 当前项目 hash;null=默认项目(收纳老会话+主会话)
+  browseDir: "",        // 目录浏览器当前所在目录
   images: [],           // {data,media_type,url}
   stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
   es: null,
@@ -462,9 +521,12 @@ async function tryEnter(){
     if(r.status===401){ $("#loginErr").textContent="口令错误"; return; }
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
-    connect(); await loadConvs(); await loadModels();
-    // 默认打开最近活跃的会话(排序后的第一个),而非固定的主会话
-    await openConv(S.convs[0] ? S.convs[0].conv : "main");
+    connect(); await loadProjects(); await loadConvs(); await loadModels();
+    // 默认打开最近活跃的会话(排序后的第一个),并把项目条同步到它所属项目
+    const first = S.convs[0] ? S.convs[0].conv : "main";
+    S.project = convProject(first);
+    renderProjectBar(); renderConvs();
+    await openConv(first);
   }catch(e){ $("#loginErr").textContent="连接失败"; }
 }
 $("#loginBtn").onclick = ()=>{ S.token = $("#pw").value.trim(); tryEnter(); };
@@ -606,9 +668,17 @@ async function loadConvs(){
   S.convs = [main, ...d.conversations].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
   renderConvs();
 }
+// 从 conv id 解析它属于哪个项目:p<hash>:<convid> → hash;否则 null(默认项目)
+function convProject(conv){
+  const m = String(conv).replace(/^local-/,"").match(/^p([0-9a-f]+):/);
+  return m ? m[1] : null;
+}
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
   for(const c of S.convs){
+    // 主会话(project-less)只在默认项目视图露出;其余按会话所属项目过滤
+    const belongs = c.pinned ? (S.project===null) : (convProject(c.conv)===S.project);
+    if(!belongs) continue;
     const e=el("div","conv"+(c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
     const ct=el("div","ct"); ct.textContent=c.title||"新对话";
     const meta=el("div","cmeta"); meta.textContent=(c.turns?c.turns+"轮 ":"")+fmtTime(c.last_ts);
@@ -618,6 +688,97 @@ function renderConvs(){
     box.append(e);
   }
 }
+
+// ── 项目 ─────────────────────────────────────────────────────────────────
+async function loadProjects(){
+  try{ const r=await api("/projects"); S.projects=(await r.json()).projects||[]; }
+  catch(e){ S.projects=[]; }
+}
+function projName(hash){
+  if(hash===null) return "默认项目";
+  const p=S.projects.find(x=>x.hash===hash);
+  return p ? p.name : "默认项目";
+}
+function renderProjectBar(){ $("#projName").textContent = projName(S.project); }
+
+// 新开一个会话(建在当前项目下:conv = local-[p<hash>:]<id>)
+function newChat(){
+  const id = Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  const conv = "local-"+(S.project ? ("p"+S.project+":") : "")+id;
+  S.convs.unshift({conv, title:"新对话", turns:0, last_ts:null});
+  openConv(conv); $("#ta").focus();
+}
+
+// 切换到某项目(null=默认):打开其下最近会话,没有则开一个新会话
+function switchProject(hash){
+  S.project = hash;
+  renderProjectBar(); renderConvs();
+  const first = S.convs.find(c => c.pinned ? hash===null : convProject(c.conv)===hash);
+  if(first) openConv(first.conv); else newChat();
+}
+
+// 项目下拉菜单(切换 / 移除 / 新建)
+let projMenuEl=null;
+function closeProjMenu(){ if(projMenuEl){ projMenuEl.remove(); projMenuEl=null; } }
+function openProjMenu(){
+  if(projMenuEl){ closeProjMenu(); return; }
+  const m=el("div","projmenu"); m.style.visibility="hidden";
+  const mk=(name, hash)=>{
+    const row=el("button","pmenu-item"+(hash===S.project?" on":""));
+    const t=el("span","pmi-name"); t.textContent=name; row.append(t);
+    if(hash!==null){
+      const rm=el("button","pmi-rm"); rm.textContent="✕"; rm.title="从列表移除(不删文件夹,可再加回)";
+      rm.onclick=ev=>{ ev.stopPropagation(); closeProjMenu(); removeProject(hash); };
+      row.append(rm);
+    }
+    row.onclick=()=>{ closeProjMenu(); switchProject(hash); };
+    return row;
+  };
+  m.append(mk("默认项目", null));
+  for(const p of S.projects) m.append(mk(p.name, p.hash));
+  const add=el("button","pmenu-item pmenu-add"); add.textContent="＋ 新建项目…";
+  add.onclick=()=>{ closeProjMenu(); openProjModal(); }; m.append(add);
+  document.body.append(m); projMenuEl=m;
+  const r=$("#projCur").getBoundingClientRect();
+  m.style.top=(r.bottom+4)+"px"; m.style.left=r.left+"px"; m.style.minWidth=r.width+"px"; m.style.visibility="visible";
+}
+document.addEventListener("click", e=>{ if(projMenuEl && !projMenuEl.contains(e.target) && e.target!==$("#projCur") && !$("#projCur").contains(e.target)) closeProjMenu(); });
+$("#projCur").onclick = e=>{ e.stopPropagation(); openProjMenu(); };
+
+async function removeProject(hash){
+  try{ await api("/projects/remove",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({hash})}); }
+  catch(e){ alert("移除失败"); return; }
+  await loadProjects();
+  if(S.project===hash) switchProject(null); else { renderProjectBar(); renderConvs(); }
+}
+
+// 目录浏览器弹窗
+async function openProjModal(){ $("#projModal").hidden=false; await browseTo(""); }
+function closeProjModal(){ $("#projModal").hidden=true; }
+async function browseTo(dir){
+  let d;
+  try{ const r=await api("/browse"+(dir?("?dir="+encodeURIComponent(dir)):"")); d=await r.json(); }
+  catch(e){ return; }
+  S.browseDir=d.dir; $("#pmPath").value=d.dir;
+  const box=$("#pmList"); box.innerHTML="";
+  if(d.parent){ const up=el("div","pmrow pmup"); up.textContent="⬆ 上一级"; up.onclick=()=>browseTo(d.parent); box.append(up); }
+  for(const e of d.entries){ const row=el("div","pmrow"); row.textContent="📁 "+e.name; row.onclick=()=>browseTo(e.path); box.append(row); }
+  if(!d.entries.length){ const empty=el("div","pmrow pmup"); empty.textContent="(无子文件夹)"; box.append(empty); }
+}
+async function createProject(path){
+  path=(path||"").trim(); if(!path){ alert("请先选或输入一个目录"); return; }
+  try{
+    const r=await api("/projects/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path})});
+    const d=await r.json();
+    if(d.error){ alert(d.error); return; }
+    closeProjModal(); await loadProjects(); switchProject(d.project.hash);
+  }catch(e){ alert("建项目失败"); }
+}
+$("#pmGo").onclick = ()=>browseTo($("#pmPath").value.trim());
+$("#pmPath").onkeydown = e=>{ if(e.key==="Enter") browseTo($("#pmPath").value.trim()); };
+$("#pmCancel").onclick = closeProjModal;
+$("#pmCreate").onclick = ()=>createProject($("#pmPath").value);
+$("#projModal").onclick = e=>{ if(e.target===$("#projModal")) closeProjModal(); };
 // 会话「更多」浮层菜单(单例):点 ⋯ 弹出,目前只放「删除」,点即执行(不再二次确认)
 let convMenuEl=null, convMenuBtn=null;
 function closeConvMenu(){
@@ -845,11 +1006,7 @@ function renderThumbs(){
 }
 
 // ── 新会话 / 侧边栏 / 主题 ───────────────────────────────────────────────
-$("#newBtn").onclick = ()=>{
-  const id = Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-  S.convs.unshift({conv:"local-"+id, title:"新对话", turns:0, last_ts:null});
-  openConv("local-"+id); $("#ta").focus();
-};
+$("#newBtn").onclick = newChat;
 $("#themeBtn").onclick = toggleTheme;
 // 顶栏 ☰:桌面(收起态)= 展开侧边栏;移动端 = 抽屉式打开
 $("#hamb").onclick = ()=>{
