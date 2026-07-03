@@ -22,6 +22,7 @@ from claude_agent_sdk import (
 )
 
 from .. import config, providers
+from ..gateway import settings_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
 from .prompt import build_system_prompt
@@ -234,15 +235,20 @@ async def stream_turn(
     # cc-switch 集成:按会话选定模型(或 cc-switch 当前激活的供应商)算出实际模型和
     # 要注入的 env。第三方(DeepSeek/Kimi)→注入 base_url+key;官方→env 为空走订阅。
     resolved_model, provider_env = providers.resolve(model, config.MODEL)
+    # MCP / skill 从运行时设置(网页设置页可改)计算,不再写死;改完下一轮即生效。
+    mcp_servers: dict = {}
+    if settings_store.hermes_enabled():
+        mcp_servers.update(build_mcp_servers())  # 内置 hermes(记忆/定时/发消息等)
+    mcp_servers.update(settings_store.effective_external_mcp())  # 用户加的外部 server
     options = ClaudeAgentOptions(
         model=resolved_model,
         system_prompt=build_system_prompt(),
         max_turns=config.MAX_TURNS,
         permission_mode=config.PERMISSION_MODE,
         include_partial_messages=True,
-        mcp_servers=build_mcp_servers(),
+        mcp_servers=mcp_servers,
         hooks=build_hooks(),  # PreToolUse:灾难拦截 + 危险操作审批闸
-        skills=config.SKILLS,  # None=全量;白名单则只挂这些(瘦身 tool schema)
+        skills=settings_store.effective_skills(),  # None=全量;白名单则只挂这些(瘦身 tool schema)
         cwd=cwd,  # 项目会话→该文件夹当工作根(自动加载其 CLAUDE.md/.claude);None=进程默认目录
         env=provider_env,  # cc-switch 激活第三方时注入 base_url+key;官方为空
     )

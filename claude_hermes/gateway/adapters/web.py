@@ -27,6 +27,7 @@ from aiohttp import web
 from ... import config
 from ...core.agent import AgentReply
 from ...memory import session_store
+from .. import settings_store
 from ..core import MODEL_CHOICES, Choice, Sink
 from .base import ImageAttachment, Incoming
 
@@ -453,6 +454,188 @@ class WebAdapter:
             session_store.delete_session(config.resolve_session_key("web", conv))
         return web.json_response({"ok": True})
 
+    # ── 设置:技能 / MCP ─────────────────────────────────────────────────
+    async def _handle_settings(self, request: web.Request) -> web.Response:
+        """设置页初始快照:技能清单 + MCP(内置 hermes + 外部)+ 记忆/AGENTS 文件列表。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        return web.json_response(
+            {
+                "skills": {
+                    "mode": settings_store.skills_mode(),
+                    "items": settings_store.list_skills(),
+                },
+                "mcp": {
+                    "hermes_enabled": settings_store.hermes_enabled(),
+                    "external": settings_store.list_external(),
+                },
+                "files": self._list_brain_files(),
+                "brain_dir": str(config.AI_BRAIN_DIR),
+            }
+        )
+
+    async def _handle_settings_skill(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        name = (body.get("name") or "").strip()
+        if not name:
+            return web.json_response({"error": "缺少 name"}, status=400)
+        settings_store.set_skill(
+            name,
+            enabled=body.get("enabled") if "enabled" in body else None,
+            hidden=body.get("hidden") if "hidden" in body else None,
+        )
+        return web.json_response({"ok": True, "mode": settings_store.skills_mode()})
+
+    async def _handle_settings_skills_reset(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        settings_store.reset_skills()
+        return web.json_response({"ok": True})
+
+    async def _handle_settings_mcp_hermes(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        settings_store.set_hermes(bool(body.get("enabled")))
+        return web.json_response({"ok": True})
+
+    async def _handle_settings_mcp_external(self, request: web.Request) -> web.Response:
+        """增删改 / 开关外部 MCP server。action: add|update|remove|toggle。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        action = (body.get("action") or "").strip()
+        name = (body.get("name") or "").strip()
+        if not name:
+            return web.json_response({"error": "缺少 name"}, status=400)
+        if action == "remove":
+            settings_store.remove_external(name)
+            return web.json_response({"ok": True})
+        if action == "toggle":
+            settings_store.set_external_enabled(name, bool(body.get("enabled")))
+            return web.json_response({"ok": True})
+        # add / update:清洗成合法 SDK 配置
+        cfg, err = self._clean_mcp_config(body)
+        if err:
+            return web.json_response({"error": err}, status=400)
+        settings_store.upsert_external(name, cfg)
+        return web.json_response({"ok": True})
+
+    @staticmethod
+    def _clean_mcp_config(body: dict) -> tuple[dict, str | None]:
+        """把前端提交的字段清洗成 stdio/sse/http 配置;返回 (cfg, 错误)。"""
+        typ = (body.get("type") or "stdio").strip().lower()
+        enabled = bool(body.get("enabled", True))
+        if typ == "stdio":
+            command = (body.get("command") or "").strip()
+            if not command:
+                return {}, "stdio 类型需要 command"
+            raw_args = body.get("args")
+            if isinstance(raw_args, str):
+                args = raw_args.split()
+            elif isinstance(raw_args, list):
+                args = [str(a) for a in raw_args]
+            else:
+                args = []
+            env = body.get("env") if isinstance(body.get("env"), dict) else {}
+            env = {str(k): str(v) for k, v in env.items()}
+            return (
+                {"type": "stdio", "command": command, "args": args,
+                 "env": env, "enabled": enabled},
+                None,
+            )
+        if typ in ("sse", "http"):
+            url = (body.get("url") or "").strip()
+            if not url:
+                return {}, f"{typ} 类型需要 url"
+            headers = body.get("headers") if isinstance(body.get("headers"), dict) else {}
+            headers = {str(k): str(v) for k, v in headers.items()}
+            return (
+                {"type": typ, "url": url, "headers": headers, "enabled": enabled},
+                None,
+            )
+        return {}, f"不支持的类型:{typ}"
+
+    # ── 设置:记忆 / AGENTS.md 文件读写(限定在 AI_BRAIN 内)──────────────
+    def _list_brain_files(self) -> list[dict]:
+        """列出可编辑的长期记忆 / 人设文件(全部在 AI_BRAIN 下)。"""
+        root = config.AI_BRAIN_DIR
+        out: list[dict] = []
+        # 固定文件:AGENTS.md(人设) + MEMORY.md(索引) + USER.md(画像)
+        out.append({"rel": "AGENTS.md", "group": "agents"})
+        out.append({"rel": "MEMORY.md", "group": "memory"})
+        out.append({"rel": "USER.md", "group": "memory"})
+        mem_dir = root / "memory"
+        try:
+            for p in sorted(mem_dir.glob("*.md"), key=lambda x: x.name.lower()):
+                out.append({"rel": f"memory/{p.name}", "group": "memory"})
+        except OSError:
+            pass
+        for f in out:
+            f["exists"] = (root / f["rel"]).is_file()
+        return out
+
+    def _safe_brain_path(self, rel: str) -> Path | None:
+        """把前端传的相对路径解析到 AI_BRAIN 内,越界 / 非 .md 一律拒绝。"""
+        rel = (rel or "").strip().lstrip("/")
+        if not rel or not rel.endswith(".md"):
+            return None
+        root = config.AI_BRAIN_DIR.resolve()
+        try:
+            target = (root / rel).resolve()
+        except (OSError, ValueError):
+            return None
+        if target != root and root not in target.parents:
+            return None  # 目录穿越,拒
+        return target
+
+    async def _handle_file_read(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        target = self._safe_brain_path(request.query.get("rel", ""))
+        if target is None:
+            return web.json_response({"error": "非法路径"}, status=400)
+        try:
+            content = target.read_text(encoding="utf-8") if target.is_file() else ""
+        except OSError:
+            return web.json_response({"error": "读取失败"}, status=500)
+        return web.json_response({"rel": request.query.get("rel", ""), "content": content})
+
+    async def _handle_file_save(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        rel = (body.get("rel") or "").strip()
+        target = self._safe_brain_path(rel)
+        if target is None:
+            return web.json_response({"error": "非法路径"}, status=400)
+        # 只允许改已存在文件,或在 memory/ 下新建;别的地方不给凭空造文件
+        if not target.is_file() and not rel.lstrip("/").startswith("memory/"):
+            return web.json_response({"error": "只能新建 memory/ 下的文件"}, status=400)
+        content = body.get("content")
+        if not isinstance(content, str):
+            return web.json_response({"error": "content 必须是字符串"}, status=400)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        except OSError:
+            return web.json_response({"error": "写入失败"}, status=500)
+        return web.json_response({"ok": True})
+
     async def _start_server(self) -> None:
         app = web.Application(client_max_size=32 * 1024 * 1024)  # 允许 32MB 图片上传
         app.add_routes(
@@ -470,6 +653,14 @@ class WebAdapter:
                 web.post("/transcribe", self._handle_transcribe),
                 web.post("/conv/rename", self._handle_rename),
                 web.post("/conv/delete", self._handle_delete),
+                # 设置页
+                web.get("/settings", self._handle_settings),
+                web.post("/settings/skill", self._handle_settings_skill),
+                web.post("/settings/skills/reset", self._handle_settings_skills_reset),
+                web.post("/settings/mcp/hermes", self._handle_settings_mcp_hermes),
+                web.post("/settings/mcp/external", self._handle_settings_mcp_external),
+                web.get("/file/read", self._handle_file_read),
+                web.post("/file/save", self._handle_file_save),
             ]
         )
         self._runner = web.AppRunner(app, access_log=None)

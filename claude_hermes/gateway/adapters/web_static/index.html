@@ -98,7 +98,7 @@
 
   /* 布局 */
   #app{display:flex;overflow:hidden;
-    position:fixed;top:var(--app-top,0);left:0;right:0;height:var(--app-h,100%)}
+    position:fixed;top:var(--app-top,0);left:0;right:0;bottom:0;height:var(--app-h,auto)}
   #sidebar{width:280px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);
     display:flex;flex-direction:column;
     transition:transform .25s cubic-bezier(.4,0,.2,1),width .25s cubic-bezier(.4,0,.2,1);z-index:30}
@@ -145,8 +145,15 @@
   .convmenu .cmitem:hover{background:var(--panel2)}
   .convmenu .cmitem.danger{color:var(--err)}
   .convmenu .cmitem.danger:hover{background:rgba(209,103,74,.12)}
-  .sfoot{padding:13px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px}
-  .sfoot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
+  .sfoot{padding:9px 12px 9px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px}
+  .sfoot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok);flex-shrink:0}
+  .sfoot .sfoottxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* 设置入口:状态栏最右一个齿轮图标 */
+  .sfoicon{width:30px;height:30px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+    color:var(--dim);transition:background .16s,color .16s}
+  .sfoicon:hover{background:var(--panel2);color:var(--text)}
+  .sfoicon:active{transform:scale(.9)}
+  .sfoicon .ic{width:17px;height:17px;vertical-align:0}
 
   /* 项目分组(手风琴;行的内边距/圆角走上面的统一规范) */
   .projgrp{gap:6px;margin-top:2px;color:var(--dim);font-size:13px;font-weight:600;user-select:none}
@@ -178,6 +185,119 @@
   #projModal .pmfoot{display:flex;gap:10px;justify-content:flex-end;padding:13px 16px;border-top:1px solid var(--line)}
   #projModal .pmfoot button{padding:9px 16px;border-radius:9px;cursor:pointer;font-size:13.5px;border:1px solid var(--line2);background:var(--panel2);color:var(--text)}
   #projModal .pmfoot .pmok{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+
+  /* 设置弹窗 */
+  #setModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
+  #setModal[hidden]{display:none}
+  .setbox{width:min(820px,94vw);height:min(660px,88vh);display:flex;flex-direction:column;
+    background:var(--panel);border:1px solid var(--line2);border-radius:16px;overflow:hidden}
+  .sethead{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line)}
+  .sethead .settitle{flex:1;font-size:16px;font-weight:700}
+  .setclose{width:32px;height:32px;border-radius:9px;color:var(--dim);font-size:16px;
+    display:flex;align-items:center;justify-content:center;transition:background .16s,color .16s}
+  .setclose:hover{background:var(--panel2);color:var(--text)}
+  .setbody{flex:1;display:flex;min-height:0}
+  .settabs{flex-shrink:0;width:132px;padding:12px 10px;border-right:1px solid var(--line);
+    display:flex;flex-direction:column;gap:3px;overflow-y:auto}
+  .settab{text-align:left;padding:9px 12px;border-radius:9px;font-size:14px;color:var(--dim);
+    transition:background .15s,color .15s}
+  .settab:hover{background:var(--panel2);color:var(--text)}
+  .settab.active{background:var(--panel2);color:var(--text);font-weight:600}
+  .setpane{flex:1;overflow-y:auto;padding:18px 20px;min-width:0}
+
+  /* 分区标题 + 说明 */
+  .setpane h3{margin:0 0 4px;font-size:14.5px;font-weight:700;display:flex;align-items:center;gap:7px}
+  .setpane h3 .ic{width:16px;height:16px;color:var(--accent)}
+  .setpane .shint{margin:0 0 14px;font-size:12.5px;color:var(--dim);line-height:1.55}
+  .setpane .sechd{margin:20px 0 8px;font-size:12px;font-weight:700;color:var(--dim2);
+    text-transform:uppercase;letter-spacing:.5px}
+
+  /* 开关(switch) */
+  .sw{position:relative;display:inline-block;width:38px;height:22px;flex-shrink:0}
+  .sw input{opacity:0;width:0;height:0;position:absolute}
+  .sw .track{position:absolute;inset:0;background:var(--line2);border-radius:22px;transition:background .2s;cursor:pointer}
+  .sw .track::before{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;
+    background:#fff;border-radius:50%;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+  .sw input:checked + .track{background:var(--accent)}
+  .sw input:checked + .track::before{transform:translateX(16px)}
+
+  /* 行:一条设置项(左内容 + 右开关) */
+  .srow{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
+  .srow:last-child{border-bottom:none}
+  .srow .sinfo{flex:1;min-width:0}
+  .srow .sname{font-size:14px;font-weight:600;color:var(--text);word-break:break-word}
+  .srow .sdesc{font-size:12px;color:var(--dim);margin-top:2px;line-height:1.5;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .srow .sacts{display:flex;align-items:center;gap:12px;flex-shrink:0}
+  .srow .miniact{font-size:12px;color:var(--dim);padding:3px 7px;border-radius:7px;transition:background .15s,color .15s;white-space:nowrap}
+  .srow .miniact:hover{background:var(--panel2);color:var(--text)}
+  .srow .miniact.on{color:var(--accent)}
+  .srow .miniact.danger:hover{color:var(--err);background:rgba(209,103,74,.12)}
+  .srow.off .sname{color:var(--dim)}
+
+  /* 技能搜索框 + 计数 */
+  .skbar{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  .sksearch{flex:1;display:flex;align-items:center;gap:7px;background:var(--panel2);
+    border:1px solid var(--line2);border-radius:9px;padding:7px 11px}
+  .sksearch .ic{width:15px;height:15px;color:var(--dim2)}
+  .sksearch input{flex:1;min-width:0;background:none;border:none;outline:none;color:var(--text);font-size:13.5px}
+  .skcount{font-size:12px;color:var(--dim2);white-space:nowrap}
+
+  /* 通用按钮 */
+  .btn{padding:8px 14px;border-radius:9px;font-size:13.5px;border:1px solid var(--line2);
+    background:var(--panel2);color:var(--text);cursor:pointer;transition:background .15s,border-color .15s}
+  .btn:hover{background:var(--card)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .btn.primary:hover{background:var(--accent2)}
+  .btn.ghost{background:none;border-color:var(--line2)}
+  .btn.sm{padding:5px 10px;font-size:12.5px}
+  .setrowbtns{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}
+
+  /* 外部 MCP 添加表单 */
+  .mcpform{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:8px}
+  .mcpform .fld{margin-bottom:10px}
+  .mcpform .fld:last-child{margin-bottom:0}
+  .mcpform label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+  .mcpform input,.mcpform textarea,.mcpform select{width:100%;background:var(--panel2);
+    border:1px solid var(--line2);border-radius:8px;color:var(--text);padding:8px 11px;font-size:13.5px;
+    font-family:inherit}
+  .mcpform textarea{resize:vertical;min-height:52px;font-family:ui-monospace,Menlo,monospace;font-size:12.5px}
+  .mcpform input:focus,.mcpform textarea:focus,.mcpform select:focus{outline:none;border-color:var(--accent)}
+  .mcperr{color:var(--err);font-size:12.5px;margin-top:8px;min-height:16px}
+  .mcptag{display:inline-block;font-size:11px;color:var(--dim2);border:1px solid var(--line2);
+    border-radius:6px;padding:1px 6px;margin-left:8px;font-family:ui-monospace,Menlo,monospace}
+
+  /* 文件列表 + 编辑器(记忆 / 人设) */
+  .frow{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line);cursor:pointer;transition:opacity .15s}
+  .frow:hover .fname{color:var(--accent)}
+  .frow .ic{width:16px;height:16px;color:var(--dim);flex-shrink:0}
+  .frow .fname{flex:1;font-size:13.5px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Menlo,monospace}
+  .frow .fmiss{font-size:11px;color:var(--dim2)}
+  .frow .fchev{color:var(--dim2);font-size:15px}
+  .feditor{display:flex;flex-direction:column;height:100%}
+  .feditor .fetop{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .feditor .feback{font-size:13px;color:var(--dim);padding:5px 9px;border-radius:8px;transition:background .15s,color .15s}
+  .feditor .feback:hover{background:var(--panel2);color:var(--text)}
+  .feditor .fepath{flex:1;font-size:13px;font-weight:600;font-family:ui-monospace,Menlo,monospace;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .feditor textarea{flex:1;width:100%;background:var(--code-bg);color:var(--code-fg);
+    border:1px solid var(--line2);border-radius:12px;padding:14px;font-size:13px;line-height:1.6;
+    font-family:ui-monospace,Menlo,monospace;resize:none;outline:none}
+  .feditor textarea:focus{border-color:var(--accent)}
+  .fesave{display:flex;align-items:center;gap:10px;margin-top:12px}
+  .fesave .festat{font-size:12.5px;color:var(--dim);flex:1}
+  .fesave .festat.ok{color:var(--ok)}
+  .setempty{text-align:center;color:var(--dim2);font-size:13px;padding:30px 10px}
+  .setload{text-align:center;color:var(--dim2);font-size:13px;padding:24px}
+
+  @media(max-width:640px){
+    .setbox{width:100vw;height:100%;max-height:100%;border-radius:0;border:none}
+    .setbody{flex-direction:column}
+    .settabs{width:auto;flex-direction:row;border-right:none;border-bottom:1px solid var(--line);
+      padding:8px 10px;gap:6px;overflow-x:auto}
+    .settab{white-space:nowrap;flex-shrink:0}
+    .setpane{padding:16px}
+  }
 
   /* 主区 */
   main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative;background:var(--bg2)}
@@ -235,7 +355,7 @@
   .row.me .bubble{background:linear-gradient(135deg,var(--user1),var(--user2));color:var(--on-user);border-bottom-right-radius:6px}
   .row.ai .bubble{background:var(--card);border:1px solid var(--line);border-bottom-left-radius:6px}
   .bubble.pending{color:var(--dim)}
-  .status{font-size:13px;color:var(--dim);margin:2px 0 8px;display:flex;flex-wrap:wrap;gap:4px 12px}
+  .status{font-size:13px;color:var(--dim);margin:6px 0 0;display:flex;flex-wrap:wrap;gap:4px 12px}
   .status .chip{display:inline-flex;align-items:center}
   .status .chip.live{color:var(--accent)}
   .dots{display:inline-flex;gap:3px;margin-left:5px;align-items:center}
@@ -419,8 +539,8 @@
   #backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:25;backdrop-filter:blur(2px)}
 
   @media(max-width:760px){
-    #sidebar{position:fixed;inset:0 auto 0 0;transform:translateX(-100%);box-shadow:2px 0 30px rgba(0,0,0,.5)}
-    #sidebar.open{transform:translateX(0)}
+    #sidebar{position:fixed;inset:0 auto 0 0;transform:translateX(-100%)}
+    #sidebar.open{transform:translateX(0);box-shadow:2px 0 30px rgba(0,0,0,.5)}
     #hamb{display:flex}
     #backdrop.show{display:block}
   }
@@ -433,6 +553,9 @@
     body.sb-collapsed #hamb{display:flex}
   }
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  .ic{width:14px;height:14px;vertical-align:-2.5px;flex-shrink:0}
+  #micBtn .ic{width:17px;height:17px;vertical-align:-4px}
+  .pmrow .ic{width:15px;height:15px;vertical-align:-3px;margin-right:2px;color:var(--dim)}
 </style>
 </head>
 <body>
@@ -464,6 +587,25 @@
       </div>
     </div>
   </div>
+
+  <!-- 设置弹窗:MCP / 技能 / 记忆 / 人设 -->
+  <div id="setModal" hidden>
+    <div class="setbox">
+      <div class="sethead">
+        <span class="settitle">设置</span>
+        <button class="setclose" id="setClose" title="关闭">✕</button>
+      </div>
+      <div class="setbody">
+        <div class="settabs" id="setTabs">
+          <button class="settab active" data-tab="mcp">MCP</button>
+          <button class="settab" data-tab="skill">技能</button>
+          <button class="settab" data-tab="memory">记忆</button>
+          <button class="settab" data-tab="agents">人设</button>
+        </div>
+        <div class="setpane" id="setPane"></div>
+      </div>
+    </div>
+  </div>
   <aside id="sidebar">
     <div class="shead">
       <div class="brand"><span class="dot">✻</span>会话</div>
@@ -471,7 +613,7 @@
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
     <div id="convList"></div>
-    <div class="sfoot" id="sfoot">Hermes · Web</div>
+    <div class="sfoot" id="sfoot"><span class="sfoottxt">Hermes · Web</span><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
   </aside>
   <main>
     <header class="bar">
@@ -512,7 +654,7 @@
           <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
           <div class="inbar">
             <button type="button" id="imgBtn">＋</button>
-            <button type="button" id="micBtn" title="语音输入">🎤</button>
+            <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
             <span class="spacer"></span>
             <div id="modelBox">
               <button type="button" id="modelBtn" title="切换模型">
@@ -559,6 +701,31 @@ const S = {
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
 const esc = s => s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// ── 线框图标(替代实体 emoji,统一 currentColor 描边风格)──────────────────
+const ICONS = {
+  mic:'<path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/>',
+  folder:'<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>',
+  trash:'<path d="M4 7h16"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+  bot:'<rect x="5" y="9" width="14" height="10" rx="2"/><path d="M12 5v4"/><circle cx="12" cy="4" r="1.1"/><circle cx="9" cy="14" r="1"/><circle cx="15" cy="14" r="1"/><path d="M3 13h2"/><path d="M19 13h2"/>',
+  wrench:'<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"/>',
+  warn:'<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  lock:'<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  clip:'<path d="M9 2h6a1 1 0 0 1 1 1v2H8V3a1 1 0 0 1 1-1z"/><rect x="5" y="4" width="14" height="18" rx="2"/><path d="M9 12h6"/><path d="M9 16h6"/>',
+  compass:'<circle cx="12" cy="12" r="9"/><polygon points="16 8 13.5 13.5 8 16 10.5 10.5 16 8"/>',
+  doc:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/>',
+  edit:'<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
+  zap:'<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+  gear:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  plug:'<path d="M9 2v6"/><path d="M15 2v6"/><path d="M7 8h10v3a5 5 0 0 1-10 0V8z"/><path d="M12 16v6"/>',
+  book:'<path d="M4 4a2 2 0 0 1 2-2h13a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a2 2 0 0 1-2-2V4z"/><path d="M8 2v18"/>',
+  person:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  search:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
+  save:'<path d="M20 6L9 17l-5-5"/>',
+  plus:'<path d="M12 5v14"/><path d="M5 12h14"/>',
+  close:'<path d="M18 6L6 18"/><path d="M6 6l12 12"/>',
+};
+function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 
 // ── 主题(深/浅)──────────────────────────────────────────────────────────
 function curTheme(){
@@ -836,7 +1003,7 @@ async function browseTo(dir){
   S.browseDir=d.dir; $("#pmPath").value=d.dir;
   const box=$("#pmList"); box.innerHTML="";
   if(d.parent){ const up=el("div","pmrow pmup"); up.textContent="⬆ 上一级"; up.onclick=()=>browseTo(d.parent); box.append(up); }
-  for(const e of d.entries){ const row=el("div","pmrow"); row.textContent="📁 "+e.name; row.onclick=()=>browseTo(e.path); box.append(row); }
+  for(const e of d.entries){ const row=el("div","pmrow"); row.innerHTML=ic("folder")+" "+esc(e.name); row.onclick=()=>browseTo(e.path); box.append(row); }
   if(!d.entries.length){ const empty=el("div","pmrow pmup"); empty.textContent="(无子文件夹)"; box.append(empty); }
 }
 async function createProject(path){
@@ -853,6 +1020,259 @@ $("#pmPath").onkeydown = e=>{ if(e.key==="Enter") browseTo($("#pmPath").value.tr
 $("#pmCancel").onclick = closeProjModal;
 $("#pmCreate").onclick = ()=>createProject($("#pmPath").value);
 $("#projModal").onclick = e=>{ if(e.target===$("#projModal")) closeProjModal(); };
+
+// ── 设置(MCP / 技能 / 记忆 / 人设)────────────────────────────────────────
+const SET = { data:null, tab:"mcp", skq:"", mcpFormOpen:false };
+$("#settingsBtn").innerHTML = ic("gear");
+
+async function openSettings(){
+  $("#setModal").hidden=false;
+  closeSidebar();                   // 手机上顺手收起侧栏
+  $("#setPane").innerHTML = '<div class="setload">加载中…</div>';
+  try{
+    const r = await api("/settings");
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    SET.data = await r.json();
+  }catch(e){
+    $("#setPane").innerHTML = '<div class="setempty">加载失败:'+esc(String(e&&e.message||e))+
+      '<br><button class="btn ghost sm" style="margin-top:12px" onclick="openSettings()">重试</button></div>';
+    return;
+  }
+  renderSetTab();
+}
+function closeSettings(){ $("#setModal").hidden=true; }
+$("#settingsBtn").onclick = openSettings;
+$("#setClose").onclick = closeSettings;
+$("#setModal").onclick = e=>{ if(e.target===$("#setModal")) closeSettings(); };
+$("#setTabs").onclick = e=>{
+  const b=e.target.closest(".settab"); if(!b) return;
+  SET.tab=b.dataset.tab;
+  document.querySelectorAll(".settab").forEach(t=>t.classList.toggle("active", t.dataset.tab===SET.tab));
+  renderSetTab();
+};
+function renderSetTab(){
+  if(SET.tab==="mcp") renderMcpPane();
+  else if(SET.tab==="skill") renderSkillPane();
+  else if(SET.tab==="memory") renderFileList("memory");
+  else if(SET.tab==="agents") renderFileList("agents");
+}
+
+// ── MCP 分区 ──────────────────────────────────────────────────────────────
+function renderMcpPane(){
+  const m = SET.data.mcp;
+  let h = '<h3>'+ic("plug")+'MCP 工具服务</h3>'+
+    '<p class="shint">MCP(Model Context Protocol)给 Hermes 接入额外工具。改动下一轮对话即生效。</p>';
+  h += '<div class="sechd">内置</div>';
+  h += mcpRow("hermes", "Hermes 内置工具", "记忆检索 / 保存、定时任务、发消息、自我重启等——关掉后这些能力会消失,谨慎。", m.hermes_enabled, "hermes");
+  h += '<div class="sechd">外部 Server</div>';
+  if(!m.external.length){
+    h += '<p class="shint" style="margin:2px 0 6px">还没有外部 MCP。可添加如 filesystem、fetch 等社区 server。</p>';
+  } else {
+    m.external.forEach(x=>{
+      const sub = x.type==="stdio" ? esc((x.command||"")+" "+((x.args||[]).join(" "))) : esc(x.url||"");
+      h += mcpRow(x.name, esc(x.name)+'<span class="mctag">'+esc(x.type||"stdio")+'</span>', sub, x.enabled!==false, "ext:"+x.name, true);
+    });
+  }
+  h += '<div class="setrowbtns"><button class="btn ghost sm" id="mcpAddBtn">'+ic("plus")+' 添加外部 MCP</button></div>';
+  if(SET.mcpFormOpen) h += mcpFormHtml();
+  $("#setPane").innerHTML = h;
+  bindMcpPane();
+}
+function mcpRow(id, nameHtml, descHtml, on, key, canDelete){
+  return '<div class="srow'+(on?"":" off")+'" data-mrow="'+esc(key)+'">'+
+    '<div class="sinfo"><div class="sname">'+nameHtml+'</div>'+
+    (descHtml?'<div class="sdesc">'+descHtml+'</div>':'')+'</div>'+
+    '<div class="sacts">'+
+    (canDelete?'<button class="miniact danger" data-mdel="'+esc(id)+'">删除</button>':'')+
+    '<label class="sw"><input type="checkbox" data-mtgl="'+esc(key)+'"'+(on?" checked":"")+'><span class="track"></span></label>'+
+    '</div></div>';
+}
+function mcpFormHtml(){
+  return '<div class="mcpform" id="mcpForm">'+
+    '<div class="fld"><label>名称(唯一标识)</label><input id="mfName" placeholder="filesystem"></div>'+
+    '<div class="fld"><label>类型</label><select id="mfType"><option value="stdio">stdio(本地命令)</option><option value="sse">sse(远程)</option><option value="http">http(远程)</option></select></div>'+
+    '<div id="mfStdio">'+
+      '<div class="fld"><label>命令 command</label><input id="mfCmd" placeholder="npx"></div>'+
+      '<div class="fld"><label>参数 args(空格分隔)</label><input id="mfArgs" placeholder="-y @modelcontextprotocol/server-filesystem /Users/wesley"></div>'+
+      '<div class="fld"><label>环境变量 env(每行 KEY=VALUE,可空)</label><textarea id="mfEnv" placeholder="API_KEY=xxx"></textarea></div>'+
+    '</div>'+
+    '<div id="mfRemote" hidden>'+
+      '<div class="fld"><label>URL</label><input id="mfUrl" placeholder="https://example.com/mcp"></div>'+
+      '<div class="fld"><label>请求头 headers(每行 KEY=VALUE,可空)</label><textarea id="mfHeaders" placeholder="Authorization=Bearer xxx"></textarea></div>'+
+    '</div>'+
+    '<div class="mcperr" id="mfErr"></div>'+
+    '<div class="setrowbtns"><button class="btn primary sm" id="mfSave">保存</button><button class="btn ghost sm" id="mfCancel">取消</button></div>'+
+  '</div>';
+}
+function bindMcpPane(){
+  $("#setPane").querySelectorAll("[data-mtgl]").forEach(inp=>{
+    inp.onchange = async()=>{
+      const key=inp.dataset.mtgl, on=inp.checked;
+      inp.closest(".srow").classList.toggle("off", !on);
+      if(key==="hermes"){ await api("/settings/mcp/hermes",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})}); SET.data.mcp.hermes_enabled=on; }
+      else if(key.startsWith("ext:")){ const name=key.slice(4); await api("/settings/mcp/external",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"toggle",name,enabled:on})}); const x=SET.data.mcp.external.find(e=>e.name===name); if(x)x.enabled=on; }
+    };
+  });
+  $("#setPane").querySelectorAll("[data-mdel]").forEach(b=>{
+    b.onclick = async()=>{
+      const name=b.dataset.mdel;
+      if(!confirm("删除外部 MCP「"+name+"」?")) return;
+      await api("/settings/mcp/external",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"remove",name})});
+      SET.data.mcp.external = SET.data.mcp.external.filter(e=>e.name!==name);
+      renderMcpPane();
+    };
+  });
+  const addBtn=$("#mcpAddBtn"); if(addBtn) addBtn.onclick=()=>{ SET.mcpFormOpen=true; renderMcpPane(); };
+  const typeSel=$("#mfType");
+  if(typeSel){
+    const sync=()=>{ const t=typeSel.value; $("#mfStdio").hidden=(t!=="stdio"); $("#mfRemote").hidden=(t==="stdio"); };
+    typeSel.onchange=sync; sync();
+    $("#mfCancel").onclick=()=>{ SET.mcpFormOpen=false; renderMcpPane(); };
+    $("#mfSave").onclick=saveMcpForm;
+  }
+}
+function parseKV(text){ const o={}; (text||"").split("\n").forEach(l=>{ l=l.trim(); if(!l) return; const i=l.indexOf("="); if(i>0) o[l.slice(0,i).trim()]=l.slice(i+1).trim(); }); return o; }
+async function saveMcpForm(){
+  const err=$("#mfErr"); err.textContent="";
+  const name=$("#mfName").value.trim();
+  if(!name){ err.textContent="请填名称"; return; }
+  const type=$("#mfType").value;
+  const body={action:"add", name, type, enabled:true};
+  if(type==="stdio"){
+    if(!$("#mfCmd").value.trim()){ err.textContent="stdio 需要 command"; return; }
+    body.command=$("#mfCmd").value.trim();
+    body.args=$("#mfArgs").value.trim().split(/\s+/).filter(Boolean);
+    body.env=parseKV($("#mfEnv").value);
+  } else {
+    if(!$("#mfUrl").value.trim()){ err.textContent=type+" 需要 URL"; return; }
+    body.url=$("#mfUrl").value.trim();
+    body.headers=parseKV($("#mfHeaders").value);
+  }
+  const r=await api("/settings/mcp/external",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(d.error){ err.textContent=d.error; return; }
+  SET.mcpFormOpen=false;
+  const rr=await api("/settings"); SET.data=await rr.json();  // 拉回最新列表
+  renderMcpPane();
+}
+
+// ── 技能分区 ──────────────────────────────────────────────────────────────
+function renderSkillPane(){
+  const sk=SET.data.skills;
+  const q=SET.skq.toLowerCase();
+  let items=sk.items.slice();
+  if(q) items=items.filter(x=>x.name.toLowerCase().includes(q)||(x.description||"").toLowerCase().includes(q));
+  // 未隐藏在前,隐藏的沉底
+  items.sort((a,b)=>(a.hidden?1:0)-(b.hidden?1:0));
+  const onCount=sk.items.filter(x=>x.enabled).length;
+  let h='<h3>'+ic("zap")+'技能 Skills</h3>'+
+    '<p class="shint">关闭 = 不挂给 AI(省 token、不会被调用);隐藏 = 仅在此列表折叠。共 '+sk.items.length+' 个,已开启 '+onCount+' 个。'+
+    (sk.mode==="custom"?'<b>(自定义名单)</b>':'<b>(跟随默认)</b>')+'</p>';
+  h+='<div class="skbar"><div class="sksearch">'+ic("search")+'<input id="skSearch" placeholder="搜索技能…" value="'+esc(SET.skq)+'"></div>'+
+     '<button class="btn ghost sm" id="skReset">恢复默认名单</button></div>';
+  if(!items.length){ h+='<div class="setempty">没有匹配的技能</div>'; }
+  items.forEach(x=>{
+    h+='<div class="srow'+(x.enabled?"":" off")+(x.hidden?" off":"")+'" data-sk="'+esc(x.name)+'">'+
+      '<div class="sinfo"><div class="sname">'+esc(x.name)+'</div>'+
+      (x.description?'<div class="sdesc">'+esc(x.description)+'</div>':'')+'</div>'+
+      '<div class="sacts">'+
+      '<button class="miniact'+(x.hidden?" on":"")+'" data-skhide="'+esc(x.name)+'">'+(x.hidden?"显示":"隐藏")+'</button>'+
+      '<label class="sw"><input type="checkbox" data-sken="'+esc(x.name)+'"'+(x.enabled?" checked":"")+'><span class="track"></span></label>'+
+      '</div></div>';
+  });
+  $("#setPane").innerHTML=h;
+  bindSkillPane();
+}
+function bindSkillPane(){
+  const s=$("#skSearch");
+  if(s){ s.oninput=()=>{ SET.skq=s.value; const pos=s.selectionStart; renderSkillPane(); const n=$("#skSearch"); if(n){ n.focus(); n.setSelectionRange(pos,pos); } }; }
+  $("#skReset").onclick=async()=>{
+    await api("/settings/skills/reset",{method:"POST"});
+    const r=await api("/settings"); SET.data=await r.json(); renderSkillPane();
+  };
+  $("#setPane").querySelectorAll("[data-sken]").forEach(inp=>{
+    inp.onchange=async()=>{
+      const name=inp.dataset.sken, on=inp.checked;
+      const r=await api("/settings/skill",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,enabled:on})});
+      const d=await r.json(); SET.data.skills.mode=d.mode||SET.data.skills.mode;
+      const it=SET.data.skills.items.find(x=>x.name===name); if(it)it.enabled=on;
+      renderSkillPane();
+    };
+  });
+  $("#setPane").querySelectorAll("[data-skhide]").forEach(b=>{
+    b.onclick=async()=>{
+      const name=b.dataset.skhide;
+      const it=SET.data.skills.items.find(x=>x.name===name); const nv=!(it&&it.hidden);
+      await api("/settings/skill",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,hidden:nv})});
+      if(it)it.hidden=nv; renderSkillPane();
+    };
+  });
+}
+
+// ── 记忆 / 人设 文件 ───────────────────────────────────────────────────────
+function renderFileList(group){
+  const files=(SET.data.files||[]).filter(f=>f.group===group);
+  if(group==="agents"){
+    // 人设只有一个文件,直接进编辑器
+    const f=files[0]; if(f){ openFileEditor(f.rel, "agents"); return; }
+  }
+  let h;
+  if(group==="memory"){
+    h='<h3>'+ic("book")+'长期记忆</h3>'+
+      '<p class="shint">这些文件会注入 AI 的系统提示(索引 + 画像),点开可查看/编辑。改完保存,下一轮生效。</p>';
+    h+='<div class="setrowbtns" style="margin:0 0 6px"><button class="btn ghost sm" id="memNew">'+ic("plus")+' 新建记忆</button></div>';
+  } else {
+    h='<h3>'+ic("person")+'人设 AGENTS.md</h3>';
+  }
+  files.forEach(f=>{
+    h+='<div class="frow" data-frel="'+esc(f.rel)+'">'+ic("doc")+
+       '<span class="fname">'+esc(f.rel)+'</span>'+
+       (f.exists?'':'<span class="fmiss">未创建</span>')+
+       '<span class="fchev">›</span></div>';
+  });
+  $("#setPane").innerHTML=h;
+  $("#setPane").querySelectorAll("[data-frel]").forEach(row=>{
+    row.onclick=()=>openFileEditor(row.dataset.frel, group);
+  });
+  const mn=$("#memNew");
+  if(mn) mn.onclick=()=>{
+    let name=prompt("新记忆文件名(会存到 memory/ 下,自动加 .md):");
+    if(!name) return;
+    name=name.trim().replace(/\.md$/i,"").replace(/[^\w一-龥-]/g,"-");
+    if(!name) return;
+    openFileEditor("memory/"+name+".md", "memory", true);
+  };
+}
+async function openFileEditor(rel, group, isNew){
+  $("#setPane").innerHTML='<div class="setload">加载中…</div>';
+  let content="";
+  if(!isNew){
+    try{ const r=await api("/file/read?rel="+encodeURIComponent(rel)); content=(await r.json()).content||""; }
+    catch(e){ $("#setPane").innerHTML='<div class="setempty">读取失败</div>'; return; }
+  }
+  const backable = group==="memory";
+  $("#setPane").innerHTML=
+    '<div class="feditor">'+
+      '<div class="fetop">'+
+        (backable?'<button class="feback" id="feBack">‹ 返回</button>':'')+
+        '<span class="fepath">'+esc(rel)+'</span>'+
+      '</div>'+
+      '<textarea id="feText" spellcheck="false"></textarea>'+
+      '<div class="fesave"><span class="festat" id="feStat"></span>'+
+        '<button class="btn primary sm" id="feSave">'+ic("save")+' 保存</button></div>'+
+    '</div>';
+  $("#feText").value=content;
+  const back=$("#feBack"); if(back) back.onclick=()=>renderFileList(group);
+  $("#feSave").onclick=async()=>{
+    const stat=$("#feStat"); stat.className="festat"; stat.textContent="保存中…";
+    const r=await api("/file/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rel, content:$("#feText").value})});
+    const d=await r.json();
+    if(d.error){ stat.textContent="失败:"+d.error; return; }
+    stat.className="festat ok"; stat.textContent="已保存 ✓";
+    // 刷新文件列表(新建的文件要标记为已存在)
+    try{ const rr=await api("/settings"); SET.data=await rr.json(); }catch(e){}
+  };
+}
 // 会话「更多」浮层菜单(单例):点 ⋯ 弹出,目前只放「删除」,点即执行(不再二次确认)
 let convMenuEl=null, convMenuBtn=null;
 function closeConvMenu(){
@@ -864,7 +1284,7 @@ function openConvMenu(btn, conv){
   closeConvMenu();
   convMenuBtn=btn; btn.classList.add("on");
   const m=el("div","convmenu"); m.style.visibility="hidden";
-  const del=el("button","cmitem danger"); del.textContent="🗑 删除";
+  const del=el("button","cmitem danger"); del.innerHTML=ic("trash")+" 删除";
   del.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); delConv(conv); };
   m.append(del); document.body.append(m); convMenuEl=m;
   // 右对齐按钮,默认显示在其下方;贴到视口底部时自动上翻
@@ -926,6 +1346,21 @@ async function openConv(conv){
   updateEmpty(); scrollDown();
 }
 
+// ── 重加载历史(SSE 连接恢复后)──────────────────────────────────────────
+async function reloadHistory(){
+  const conv=S.conv;
+  if(!conv || String(conv).startsWith("local-")) return;  // 只在非本地会话拉
+  if(S.stream) return;  // 正在流式输出中 → 别用全量重绘冲掉流式气泡
+  try{
+    const r=await api("/history?conv="+encodeURIComponent(conv));
+    const d=await r.json();
+    if(S.conv!==conv || S.stream) return;  // await 期间切了会话/开了流 → 丢弃
+    const cached=S.histCache[conv];
+    S.histCache[conv]=d.turns;
+    if(!cached || JSON.stringify(cached)!==JSON.stringify(d.turns)) renderTurns(d.turns);
+  }catch(e){}
+}
+
 // ── 消息气泡 ─────────────────────────────────────────────────────────────
 function addBubble(who, text, imgs){
   const row=el("div","row "+(who==="me"?"me":"ai"));
@@ -941,13 +1376,20 @@ function scrollDown(){ const m=$("#messages"); requestAnimationFrame(()=>{ m.scr
 // ── SSE 流式接收 ─────────────────────────────────────────────────────────
 function connect(){
   if(S.es) S.es.close();
-  S.es = new EventSource("/events?token="+encodeURIComponent(S.token));
-  S.es.onmessage = ev=>{ try{
+  const es = S.es = new EventSource("/events?token="+encodeURIComponent(S.token));
+  let opened=false;   // 本连接是否已成功 open 过一次(区分首连 vs 自动重连)
+  es.onopen = ()=>{
+    // 首连:openConv 已拉过历史,跳过。之后每次自动重连成功都拉一次历史,
+    // 补回断连期间漏掉的消息 —— 尤其服务端【自我重启】后注入对话的系统消息。
+    if(opened) reloadHistory();
+    opened=true;
+  };
+  es.onmessage = ev=>{ try{
     const d=JSON.parse(ev.data);
     if(d.id){ if(d.id<=S.lastId) return; S.lastId=d.id; }  // 补发/重复的老事件直接丢弃
     handleEvent(d);
   }catch(e){} };
-  S.es.onerror = ()=>{ /* EventSource 会自动重连,并带上 Last-Event-ID */ };
+  es.onerror = ()=>{ /* EventSource 自动重连;重连成功由 onopen 补历史 */ };
 }
 function ensureStream(){
   // 为当前会话准备一个流式 assistant 气泡(含状态行/思考/正文)
@@ -960,7 +1402,7 @@ function ensureStream(){
   const think=el("div","think");
   const toolbox=el("div","toolbox");   // diff / todo / 计划卡 / 命令预览挂这里
   const body=el("div"); body.dataset.raw="";
-  bubble.append(status,thinktog,think,toolbox,body);
+  bubble.append(thinktog,think,toolbox,body,status);  // 状态行(工作中…)放气泡底部,像 TG 的打字指示
   row.append(bubble); $("#wrap").append(row); updateEmpty();
   thinktog.onclick=()=>{ const on=think.classList.toggle("show"); tcv.classList.toggle("down", on); };
   S.stream={row,bubble,status,think,thinktog,toolbox,body,tools:[],cards:{},subs:{},t0:Date.now()};
@@ -979,15 +1421,13 @@ const DOTS='<span class="dots"><i></i><i></i><i></i></span>';
 function renderStatus(){
   if(!S.stream) return;
   const t=S.stream.tools, hasBody=!!S.stream.body.dataset.raw;
-  // 工具 chip:未完成的用动画点表示"进行中",完成的打 ✓/✗;Task 追加子代理步数
-  const bits = t.map(x=>'<span class="chip">'+(x.name==="Task"?"🤖 ":"🔧 ")+esc(x.name)
-    +(x.subN?(" · "+x.subN+"步"):"")+(x.done?(x.ok?" ✓":" ✗"):DOTS)+'</span>');
-  // 持续的"输入中"指示:还没出正文→思考中;已在出正文→输入中(始终带动画,像 TG)
+  // 工具 chip 已下放到 toolbox 卡片,这里不再重复;只留一条持续的"工作中/思考中"指示
   const secs=Math.max(0, Math.round((Date.now()-(S.stream.t0||Date.now()))/1000));
   const tick=secs>=1?(" · "+(secs>=60?Math.floor(secs/60)+"m"+(secs%60)+"s":secs+"s")):"";
-  if(!hasBody && !t.some(x=>!x.done)) bits.push('<span class="chip live">💭 思考中'+DOTS+esc(tick)+'</span>');
-  else if(hasBody) bits.push('<span class="chip live">✍️ 输入中'+DOTS+esc(tick)+'</span>');
-  S.stream.status.innerHTML = bits.join("");
+  // 有正文 或 有工具在跑 → 工作中;纯思考(啥都没出)→ 思考中(始终带动画,像 TG)
+  const working = hasBody || t.some(x=>!x.done);
+  const label = working ? "工作中" : "思考中";
+  S.stream.status.innerHTML = '<span class="chip live">'+label+DOTS+esc(tick)+'</span>';
 }
 function finalizeStream(finalText){
   if(!S.stream) return;
@@ -1038,7 +1478,7 @@ function renderChoice(e){
   if(S.stream){
     // 回合进行中(审批闸/追问):嵌进当前流式气泡的过程区,绝不能删掉正在渲染的工具卡
     const card=el("div","toolcard");
-    const head=el("div","tc-head"); head.textContent="🔐 需要你的确认";
+    const head=el("div","tc-head"); head.innerHTML=ic("lock")+" 需要你的确认";
     const bodyw=el("div","tc-body");
     const p=el("div"); p.innerHTML=mdToHtml(e.prompt);
     bodyw.append(p, box);
@@ -1083,7 +1523,7 @@ function subUpsert(s, pid, item){
 function renderSub(s, pid){
   const card=s.cards[pid]; if(!card||!card._sub) return;
   const list=(s.subs[pid]||{list:[]}).list;
-  const bits=['<span>⚡ '+list.length+' 步</span>'];
+  const bits=['<span>'+ic("zap")+" "+list.length+' 步</span>'];
   for(const x of list.slice(-8))
     bits.push('<span>'+esc(x.name)+(x.done?(x.ok?" ✓":" ✗"):DOTS)+'</span>');
   card._sub.innerHTML=bits.join("");
@@ -1106,7 +1546,7 @@ function attachResult(s, e){
   let card=e.tool_id ? s.cards[e.tool_id] : null;
   if(!card){
     if(e.ok && !det) return;              // 成功且无输出:chip 的 ✓ 已表达,不补卡
-    card=toolCardShell((e.ok?"🔧 ":"⚠️ ")+esc(e.name), "", el("div"), true);
+    card=toolCardShell(ic(e.ok?"wrench":"warn")+" "+esc(e.name), "", el("div"), true);
     if(e.tool_id) s.cards[e.tool_id]=card;
     s.toolbox.append(card);
   }
@@ -1119,7 +1559,7 @@ function renderToolCard(name, inp){
       // 子代理卡片:标题=描述,收起的正文=完整指令;动态区(_sub)实时滚动工具步
       const meta=el("div","tc-code");
       meta.textContent=(inp.subagent_type?("类型:"+inp.subagent_type+"\n\n"):"")+(inp.prompt||"");
-      const card=toolCardShell("🤖 子代理", inp.description||"", meta, true);
+      const card=toolCardShell(ic("bot")+" 子代理", inp.description||"", meta, true);
       const sub=el("div","tc-sub"); card.append(sub); card._sub=sub;
       return card;
     }
@@ -1133,18 +1573,18 @@ function renderToolCard(name, inp){
         li.innerHTML='<span>'+mark+'</span><span>'+esc(t.content||t.activeForm||"")+'</span>';
         ul.append(li);
       }
-      return toolCardShell("📋 待办清单","",ul,false);
+      return toolCardShell(ic("clip")+" 待办清单","",ul,false);
     }
     if(name==="ExitPlanMode"){
       const p=el("div","plan"); p.innerHTML=mdToHtml(inp.plan||"(空计划)");
-      return toolCardShell("🧭 执行计划","",p,false);
+      return toolCardShell(ic("compass")+" 执行计划","",p,false);
     }
-    if(name==="Write")     return toolCardShell("📝 写文件", inp.file_path||"", diffEl("", inp.content||""), true);
-    if(name==="Edit")      return toolCardShell("✏️ 编辑", inp.file_path||"", diffEl(inp.old_string||"", inp.new_string||""), false);
+    if(name==="Write")     return toolCardShell(ic("doc")+" 写文件", inp.file_path||"", diffEl("", inp.content||""), true);
+    if(name==="Edit")      return toolCardShell(ic("edit")+" 编辑", inp.file_path||"", diffEl(inp.old_string||"", inp.new_string||""), false);
     if(name==="MultiEdit"){
       const wrap=el("div");
       for(const ed of (inp.edits||[])) wrap.append(diffEl(ed.old_string||"", ed.new_string||""));
-      return toolCardShell("✏️ 多处编辑", inp.file_path||"", wrap, false);
+      return toolCardShell(ic("edit")+" 多处编辑", inp.file_path||"", wrap, false);
     }
     if(name==="Bash"){
       const c=el("div","tc-code"); c.textContent=inp.command||"";
@@ -1152,7 +1592,7 @@ function renderToolCard(name, inp){
     }
     // 其余工具:有明显目标参数才给个折叠预览,避免刷屏
     const hint=inp.file_path||inp.path||inp.pattern||inp.query||inp.url||"";
-    if(hint){ const c=el("div","tc-code"); c.textContent=hint; return toolCardShell("🔧 "+esc(name), "", c, true); }
+    if(hint){ const c=el("div","tc-code"); c.textContent=hint; return toolCardShell(ic("wrench")+" "+esc(name), "", c, true); }
     return null;
   }catch(e){ return null; }
 }
@@ -1234,26 +1674,31 @@ function setRecUI(){
   if(inrow) inrow.style.display = active ? "none" : "";
 }
 function recTick(){ const s=Math.max(0,Math.floor((Date.now()-REC.t0)/1000)); $("#recTime").textContent=(s/60|0)+":"+String(s%60).padStart(2,"0"); }
-// 滚动声波:节流到约每 75ms 推进一格(而非每帧),右侧最新、整体向左滚,像语音备忘录
+// 滚动声波:采样(取音量)节流到约每 75ms 一次,但渲染每帧都画——用采样间隔内的时间差
+// 算出平滑偏移量,让柱子连续向左滑而不是每 75ms 才跳一格(避免低帧率卡顿感)
 function drawWave(){
   if(REC.state!=="recording" || !REC.analyser){ return; }
   REC.raf=requestAnimationFrame(drawWave);
   const now=Date.now();
-  if(now - REC._lastPush < 75) return;   // 节流:控制滚动速度,不再每帧都推
-  REC._lastPush=now;
+  const PUSH_MS=75;
+  if(now - REC._lastPush >= PUSH_MS){   // 节流:只控制"多久取一次样",不影响绘制帧率
+    REC._lastPush=now;
+    REC.analyser.getByteTimeDomainData(REC.dataArr);
+    let sum=0; for(let i=0;i<REC.dataArr.length;i++){ const x=(REC.dataArr[i]-128)/128; sum+=x*x; }
+    REC.levels.push(Math.min(1, Math.sqrt(sum/REC.dataArr.length)*3.4));
+  }
   const cv=$("#recWave"); if(!cv) return;
-  REC.analyser.getByteTimeDomainData(REC.dataArr);
-  let sum=0; for(let i=0;i<REC.dataArr.length;i++){ const x=(REC.dataArr[i]-128)/128; sum+=x*x; }
-  REC.levels.push(Math.min(1, Math.sqrt(sum/REC.dataArr.length)*3.4));
   const dpr=window.devicePixelRatio||1, W=cv.clientWidth||1, H=cv.clientHeight||1;
   if(cv.width!==Math.round(W*dpr)||cv.height!==Math.round(H*dpr)){ cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr); }
   const ctx=cv.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,W,H);
-  const barW=3, step=5, maxBars=Math.max(1,Math.floor(W/step));
+  const barW=3, step=5, maxBars=Math.floor(W/step)+2;
   if(REC.levels.length>maxBars) REC.levels.splice(0, REC.levels.length-maxBars);
+  const offset=step*Math.min(1, (now-REC._lastPush)/PUSH_MS);   // 采样间隔内的连续滚动偏移
   ctx.fillStyle=REC.waveColor;
   const n=REC.levels.length;
   for(let i=0;i<n;i++){
-    const h=Math.max(3, REC.levels[i]*(H-4)), x=W-(n-i)*step, y=(H-h)/2;
+    const h=Math.max(3, REC.levels[i]*(H-4)), x=W-(n-i)*step-offset, y=(H-h)/2;
+    if(x+barW<0) continue;
     if(ctx.roundRect){ ctx.beginPath(); ctx.roundRect(x,y,barW,h,barW/2); ctx.fill(); }
     else ctx.fillRect(x,y,barW,h);
   }
@@ -1356,11 +1801,18 @@ $("#scrollBtn").onclick = scrollDown;
 function fitViewport(){
   const vv = window.visualViewport; if(!vv) return;
   const st = document.documentElement.style;
-  st.setProperty("--app-h", vv.height + "px");
-  st.setProperty("--app-top", vv.offsetTop + "px");
   const kbOpen = (window.innerHeight - vv.height) > 120;  // 视口缩水超阈值 → 判定键盘弹出
   document.body.classList.toggle("kb", kbOpen);
-  if(kbOpen) scrollDown();
+  if(kbOpen){
+    st.setProperty("--app-h", vv.height + "px");
+    st.setProperty("--app-top", vv.offsetTop + "px");
+    scrollDown();
+  }else{
+    // 键盘收起时交还布局视口(100%):iOS 独立 PWA 下 visualViewport 高度
+    // 常偏小且不再触发 resize,固定绑定会在底部留一条空白
+    st.removeProperty("--app-h");
+    st.removeProperty("--app-top");
+  }
 }
 if(window.visualViewport){
   window.visualViewport.addEventListener("resize", fitViewport);
