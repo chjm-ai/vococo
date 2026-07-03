@@ -52,7 +52,8 @@ class GatewayRunner:
                     pass
         # 自我重启安排在【本轮完整结束、历史已落库】之后:不杀半条消息,
         # 也不自己 spawn 新进程 —— 退出即可,拉起交给 run.sh 守护循环(单实例)
-        if selfops.restart_pending():
+        # 消费 pop 以确保只退出一次(即使有多条后续消息进来也不重复)
+        if selfops.pop_restart_pending(inc.session_key) is not None:
             await selfops.exit_for_restart(adapter, inc.chat_id)
 
     async def _try_clarify(self, adapter: Adapter, inc: Incoming) -> bool:
