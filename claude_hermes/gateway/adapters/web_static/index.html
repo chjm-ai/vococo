@@ -1224,7 +1224,7 @@ function renderThumbs(){
 // ── 语音输入(录音 → 后端 SenseVoice 转写 → 填进输入框)────────────────────
 // Claude 不吃音频,故先在后端转成文字。点一下开录(实时声波动效)、再点结束,转好的文字并入输入框可编辑再发。
 const REC = { state:"idle", mr:null, chunks:[], stream:null, mime:"", t0:0, timer:null, cancel:false,
-  actx:null, analyser:null, dataArr:null, raf:null, levels:[], waveColor:"#ef4444" };
+  actx:null, analyser:null, dataArr:null, raf:null, levels:[], waveColor:"#ef4444", _lastPush:0 };
 function setRecUI(){
   // 录音/转写时:整个输入框(.inrow)收起,换成整行录音条(#recRow)
   const rec=REC.state==="recording", busy=REC.state==="transcribing", active=rec||busy;
@@ -1234,10 +1234,13 @@ function setRecUI(){
   if(inrow) inrow.style.display = active ? "none" : "";
 }
 function recTick(){ const s=Math.max(0,Math.floor((Date.now()-REC.t0)/1000)); $("#recTime").textContent=(s/60|0)+":"+String(s%60).padStart(2,"0"); }
-// 滚动声波:每帧取麦克风音量(RMS)推进队列,右侧最新、整体向左滚,像语音备忘录
+// 滚动声波:节流到约每 75ms 推进一格(而非每帧),右侧最新、整体向左滚,像语音备忘录
 function drawWave(){
   if(REC.state!=="recording" || !REC.analyser){ return; }
   REC.raf=requestAnimationFrame(drawWave);
+  const now=Date.now();
+  if(now - REC._lastPush < 75) return;   // 节流:控制滚动速度,不再每帧都推
+  REC._lastPush=now;
   const cv=$("#recWave"); if(!cv) return;
   REC.analyser.getByteTimeDomainData(REC.dataArr);
   let sum=0; for(let i=0;i<REC.dataArr.length;i++){ const x=(REC.dataArr[i]-128)/128; sum+=x*x; }
@@ -1261,12 +1264,19 @@ function cleanupAudio(){
   REC.actx=null; REC.analyser=null; REC.levels=[];
   const cv=$("#recWave"); if(cv){ const c=cv.getContext("2d"); if(c) c.clearRect(0,0,cv.width,cv.height); }
 }
+// 复用同一个麦克风流:首次授权后就一直留着,避免每次录音都重新 getUserMedia 触发系统弹窗(尤其 iOS)
+async function getMic(){
+  if(REC.stream && REC.stream.getAudioTracks().some(t=>t.readyState==="live")) return REC.stream;
+  REC.stream = await navigator.mediaDevices.getUserMedia({audio:true});
+  return REC.stream;
+}
+function releaseMic(){ if(REC.stream){ REC.stream.getTracks().forEach(t=>t.stop()); REC.stream=null; } }
 async function startRec(){
   if(REC.state!=="idle") return;
   if(!navigator.mediaDevices || !window.MediaRecorder){ alert("此浏览器不支持录音"); return; }
-  try{ REC.stream = await navigator.mediaDevices.getUserMedia({audio:true}); }
+  try{ await getMic(); }
   catch(e){ alert("麦克风权限被拒绝或不可用"); return; }
-  REC.chunks=[]; REC.cancel=false; REC.mr=new MediaRecorder(REC.stream);
+  REC.chunks=[]; REC.cancel=false; REC._lastPush=0; REC.mr=new MediaRecorder(REC.stream);
   REC.mime = REC.mr.mimeType || "audio/webm";
   REC.mr.ondataavailable=e=>{ if(e.data && e.data.size) REC.chunks.push(e.data); };
   REC.mr.onstop=onRecStop;
@@ -1288,10 +1298,9 @@ function stopRec(cancel){
   try{ REC.mr.stop(); }catch(e){}
 }
 async function onRecStop(){
-  cleanupAudio();
-  (REC.stream ? REC.stream.getTracks() : []).forEach(t=>t.stop());
+  cleanupAudio();   // 只停声波分析,保留麦克风流(REC.stream)供下次复用,不再反复请求权限
   const blob=new Blob(REC.chunks,{type:REC.mime}); const mime=REC.mime;
-  REC.mr=null; REC.stream=null;
+  REC.mr=null;
   if(REC.cancel || blob.size<1200){ REC.state="idle"; setRecUI(); return; }
   REC.state="transcribing"; setRecUI();
   try{
@@ -1313,6 +1322,8 @@ $("#micBtn").onclick = ()=>{ if(REC.state==="idle") startRec(); };          // �
 $("#recRow").onclick = ()=>{ if(REC.state==="recording") stopRec(false); }; // 整行任意处:完成
 $("#recRow").addEventListener("keydown", e=>{ if((e.key==="Enter"||e.key===" ")&&REC.state==="recording"){ e.preventDefault(); stopRec(false); } });
 $("#recCancel").onclick = e=>{ e.stopPropagation(); stopRec(true); };        // 左侧 ✕:取消(不触发整行完成)
+// 切后台/关页面时释放麦克风(空闲时才放,避免录音中被掐);回来再录会重新拿(通常已授权,不再弹窗)
+document.addEventListener("visibilitychange", ()=>{ if(document.hidden && REC.state==="idle") releaseMic(); });
 
 // ── 新会话 / 侧边栏 / 主题 ───────────────────────────────────────────────
 $("#newBtn").onclick = newChat;
