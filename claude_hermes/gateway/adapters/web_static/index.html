@@ -304,11 +304,12 @@
   }
 
   /* 主区 */
-  main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative;background:var(--bg2)}
+  main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative;background:var(--bg2);overflow:hidden}
   header.bar{padding:11px 16px;
     padding-top:calc(11px + env(safe-area-inset-top));
     background:var(--bar-bg);backdrop-filter:blur(14px);
-    -webkit-backdrop-filter:blur(14px);position:sticky;top:0;z-index:10}
+    -webkit-backdrop-filter:blur(14px);position:sticky;top:0;z-index:10;
+    transition:transform .35s cubic-bezier(.4,0,.2,1)}
   header.bar .barwrap{max-width:820px;margin:0 auto;display:flex;align-items:center;gap:8px}
   .icon{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;
     font-size:19px;color:var(--dim);flex-shrink:0;transition:background .16s,color .16s}
@@ -360,7 +361,7 @@
   .bubble{max-width:86%;padding:10px 14px;border-radius:var(--radius);white-space:normal;word-wrap:break-word;
     overflow-wrap:anywhere;box-shadow:var(--bubble-shadow)}
   .row.me .bubble{background:linear-gradient(135deg,var(--user1),var(--user2));color:var(--on-user);border-bottom-right-radius:6px}
-  .row.ai .bubble{background:var(--card);border:1px solid var(--line);border-bottom-left-radius:6px}
+  .row.ai .bubble{background:var(--card);border-bottom-left-radius:6px}
   .bubble.pending{color:var(--dim)}
   .status{font-size:13px;color:var(--dim);margin:6px 0 0;display:flex;flex-wrap:wrap;gap:4px 12px}
   .status .chip{display:inline-flex;align-items:center}
@@ -457,16 +458,13 @@
   #empty .sug:hover{border-color:var(--accent)}
   #empty .sug:active{transform:scale(.96)}
 
-  /* 回到底部 */
-  #scrollBtn{position:absolute;right:18px;bottom:16px;width:40px;height:40px;border-radius:50%;
-    background:var(--card);border:1px solid var(--line2);color:var(--text);font-size:19px;
-    display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow);z-index:8;
-    opacity:0;transform:translateY(10px) scale(.9);pointer-events:none;transition:opacity .2s,transform .2s}
-  #scrollBtn.show{opacity:1;transform:none;pointer-events:auto}
-
   /* 输入区 */
-  #composer{background:var(--bg2);padding:8px 12px;
-    padding-bottom:env(safe-area-inset-bottom)}
+  #composer{background:var(--bg2);padding:6px 12px 0;
+    padding-bottom:env(safe-area-inset-bottom);
+    transition:transform .35s cubic-bezier(.4,0,.2,1)}
+  /* 滚动时收起顶栏/输入框,停滚后恢复 */
+  body.scrolling header.bar{transform:translateY(-110%)}
+  body.scrolling #composer{transform:translateY(110%)}
   #composer .cwrap{max-width:820px;margin:0 auto}
   /* 键盘弹出时:此刻已无 home indicator 留白,去掉安全区、缩小底部间距,让输入框贴近键盘 */
   body.kb #composer{padding-bottom:6px;padding-top:8px}
@@ -653,7 +651,6 @@
           <button class="sug" data-s="看看今天的安排">看看今天的安排</button>
         </div>
       </div>
-      <button id="scrollBtn" title="回到底部">↓</button>
     </div>
     <form id="composer" autocomplete="off">
       <div class="cwrap">
@@ -1982,13 +1979,19 @@ function setSidebarCollapsed(v){
   try{ localStorage.setItem("hermes_sb", v?"1":"0"); }catch(e){}
 }
 
-// ── 回到底部按钮 ─────────────────────────────────────────────────────────
+// ── 滚动时隐藏顶栏/输入框,停止后立即恢复(rAF 轮询,避免 iOS setTimeout 被挂起) ──
+let _scrollRaf=null, _lastScrollTop=0;
 $("#messages").addEventListener("scroll", ()=>{
-  const m=$("#messages");
-  const nearBottom = m.scrollHeight - m.scrollTop - m.clientHeight < 120;
-  $("#scrollBtn").classList.toggle("show", !nearBottom);
-});
-$("#scrollBtn").onclick = scrollDown;
+  document.body.classList.add("scrolling");
+  _lastScrollTop=$("#messages").scrollTop;
+  if(_scrollRaf) cancelAnimationFrame(_scrollRaf);
+  _scrollRaf=requestAnimationFrame(checkScrollStop);
+}, {passive:true});
+function checkScrollStop(){
+  const st=$("#messages").scrollTop;
+  if(st===_lastScrollTop){ document.body.classList.remove("scrolling"); _scrollRaf=null; }
+  else{ _lastScrollTop=st; _scrollRaf=requestAnimationFrame(checkScrollStop); }
+}
 
 // ── 键盘/视口自适应 ──────────────────────────────────────────────────────
 // 把 #app 高度绑定到「可视视口」而非布局视口:键盘弹出时整体缩短,
