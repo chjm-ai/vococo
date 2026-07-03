@@ -75,11 +75,31 @@ def _cmd_doctor() -> None:
     except Exception as e:  # noqa: BLE001 —— 配置问题原样报给用户
         print(f"❌ 配置加载失败:{e}")
         sys.exit(1)
-    oks.append("CLAUDE_CODE_OAUTH_TOKEN 已配置(走订阅)")
+    from . import providers
+
+    active = providers.load_active()
+    if config.OAUTH_TOKEN:
+        oks.append("CLAUDE_CODE_OAUTH_TOKEN 已配置(走订阅)")
+    elif active and not active.is_official:
+        oks.append(f"无订阅 token,但 cc-switch 已激活第三方供应商 {active.name}(可用)")
+    else:
+        warns.append("无 CLAUDE_CODE_OAUTH_TOKEN 且未激活第三方供应商 —— 官方模型将不可用")
     if os.environ.get("ANTHROPIC_API_KEY"):
         warns.append("ANTHROPIC_API_KEY 仍在环境里 —— 会走 API 按量计费,应移除")
     else:
         oks.append("无 ANTHROPIC_API_KEY 干扰(不会误走按量计费)")
+
+    # 1b) cc-switch 集成:检测 ~/.hermes/config.yaml 与当前激活供应商
+    cfg_path = providers.hermes_config_path()
+    if cfg_path.exists():
+        if active and not active.is_official:
+            oks.append(f"cc-switch 配置已检测:当前激活 {active.name} · 模型 {active.model}")
+        elif active:
+            oks.append(f"cc-switch 配置已检测:当前为官方订阅 · 模型 {active.model}")
+        else:
+            warns.append(f"cc-switch 配置存在但解析不出激活供应商:{cfg_path}")
+    else:
+        oks.append(f"未检测到 cc-switch 配置({cfg_path})—— 走 .env 的 AGENT_MODEL + 订阅")
 
     # 2) 数据目录可写 + 会话库
     try:

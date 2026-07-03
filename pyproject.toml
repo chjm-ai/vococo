@@ -13,6 +13,7 @@ dependencies = [
     "croniter>=2.0.0",
     "aiohttp>=3.9",
     "socksio>=1.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

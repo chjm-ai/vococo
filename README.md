@@ -38,6 +38,29 @@ claude-hermes cron       # 列出定时任务
 
 `/new` 开新会话(旧史保留) · `/clear` 清屏+开新 · `/model [名]` 切模型 · `/history` 看历史 · `/status` 会话信息 · `/help`
 
+## 多供应商切换(cc-switch 集成)
+
+想用 **DeepSeek / Kimi** 或任意第三方 Anthropic 兼容中转:配置写在 **`~/.claude-hermes/config.yaml`**(cc-switch 格式,**刻意独立于原版 Hermes 的 `~/.hermes`**,两者不共用、互不干扰)。
+
+- claude-hermes **每轮自动读**这个文件,用上当前激活的供应商(base_url + key + model),无需重启。
+- 会话里 `/model <模型名>` 可临时覆盖(优先级高于全局激活);`/status` 显示当前供应商;`claude-hermes doctor` 会报告检测到的配置与激活供应商。
+- 只用第三方时,`.env` 里的订阅 token 可留空。模型名 / key / base_url 全由配置文件管理,claude-hermes 不硬编码任何供应商。
+
+配置示例(`~/.claude-hermes/config.yaml`):
+
+```yaml
+model:
+  provider: deepseek
+  base_url: https://api.deepseek.com/anthropic
+  default: deepseek-v4-flash
+custom_providers:
+  - {name: deepseek,     base_url: https://api.deepseek.com/anthropic, api_key: sk-..., model: deepseek-v4-flash}
+  - {name: deepseek-pro, base_url: https://api.deepseek.com/anthropic, api_key: sk-..., model: deepseek-v4-pro}
+  - {name: kimi,         base_url: https://api.moonshot.cn/anthropic,  api_key: sk-..., model: kimi-k2.7-code}
+```
+
+想用桌面版 [cc-switch](https://github.com/farion1231/cc-switch) 图形化管理:在它里面把该 Hermes profile 的 `hermes_config_dir` 指到 `~/.claude-hermes` 即可。
+
 ## 常驻
 
 ```bash
