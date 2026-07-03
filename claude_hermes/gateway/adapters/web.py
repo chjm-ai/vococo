@@ -21,6 +21,7 @@ from collections import deque
 from pathlib import Path
 from typing import AsyncIterator
 
+import aiohttp
 from aiohttp import web
 
 from ... import config
@@ -339,6 +340,61 @@ class WebAdapter:
             }
         )
 
+    # ── 语音转文字 ───────────────────────────────────────────────────────
+    async def _handle_transcribe(self, request: web.Request) -> web.Response:
+        """收手机录音 → 调 SenseVoice 转成文字回给前端(填进输入框)。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        if not config.STT_API_KEY:
+            return web.json_response(
+                {"error": "未配置语音转写:请在 .env 设 SILICONFLOW_API_KEY"},
+                status=503,
+            )
+        audio, filename, ctype = await self._read_audio(request)
+        if not audio:
+            return web.json_response({"error": "没收到音频"}, status=400)
+        return await self._transcribe(audio, filename, ctype)
+
+    async def _read_audio(
+        self, request: web.Request
+    ) -> tuple[bytes | None, str, str]:
+        """从 multipart 里取出 audio 字段(字节、文件名、类型)。"""
+        try:
+            reader = await request.multipart()
+        except (ValueError, AssertionError):
+            return None, "", ""
+        async for part in reader:
+            if part.name == "audio":
+                data = await part.read(decode=False)
+                ctype = part.headers.get("Content-Type", "application/octet-stream")
+                return data, (part.filename or "voice.webm"), ctype
+        return None, "", ""
+
+    async def _transcribe(
+        self, audio: bytes, filename: str, ctype: str
+    ) -> web.Response:
+        """把音频转发给 SenseVoice(OpenAI 兼容 /audio/transcriptions),返回 {text}。"""
+        form = aiohttp.FormData()
+        form.add_field("model", config.STT_MODEL)
+        form.add_field("file", audio, filename=filename, content_type=ctype)
+        url = f"{config.STT_BASE_URL}/audio/transcriptions"
+        headers = {"Authorization": f"Bearer {config.STT_API_KEY}"}
+        timeout = aiohttp.ClientTimeout(total=60)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as sess:
+                async with sess.post(url, data=form, headers=headers) as resp:
+                    body = await resp.text()
+            if resp.status != 200:
+                return web.json_response(
+                    {"error": f"转写服务返回 {resp.status}"}, status=502
+                )
+            text = (json.loads(body).get("text") or "").strip()
+            return web.json_response({"text": text})
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return web.json_response({"error": "转写服务连接失败"}, status=502)
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "转写返回解析失败"}, status=502)
+
     async def _handle_history(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
@@ -382,6 +438,7 @@ class WebAdapter:
                 web.post("/projects/remove", self._handle_project_remove),
                 web.get("/models", self._handle_models),
                 web.get("/history", self._handle_history),
+                web.post("/transcribe", self._handle_transcribe),
                 web.post("/conv/rename", self._handle_rename),
                 web.post("/conv/delete", self._handle_delete),
             ]

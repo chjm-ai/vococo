@@ -364,6 +364,17 @@
   #imgBtn{color:var(--dim);font-size:22px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
     display:flex;align-items:center;justify-content:center;transition:color .16s,background .16s}
   #imgBtn:hover{color:var(--text);background:var(--panel2)}
+  #micBtn{color:var(--dim);font-size:18px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
+    display:flex;align-items:center;justify-content:center;transition:color .16s,background .16s}
+  #micBtn:hover{color:var(--text);background:var(--panel2)}
+  #micBtn.rec{color:#fff;background:var(--err)}
+  #micBtn.busy{color:var(--accent)}
+  #recBar{display:none;align-items:center;gap:8px;font-size:13px;color:var(--err);
+    padding:2px 6px 6px;font-variant-numeric:tabular-nums}
+  #recBar.show{display:flex}
+  #recBar .rdot{width:8px;height:8px;border-radius:50%;background:var(--err);animation:blink 1s infinite;flex-shrink:0}
+  #recBar .rhint{color:var(--dim)}
+  #recBar button{margin-left:auto;color:var(--dim);font-size:12px;padding:3px 10px;border-radius:8px;background:var(--panel2)}
   #sendBtn{background:linear-gradient(135deg,var(--user1),var(--user2));color:#fff;border-radius:50%;
     width:34px;height:34px;font-size:17px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
     transition:transform .12s,opacity .2s,box-shadow .2s;box-shadow:0 2px 10px var(--glow2)}
@@ -463,10 +474,16 @@
     <form id="composer" autocomplete="off">
       <div class="cwrap">
         <div id="thumbs"></div>
+        <div id="recBar">
+          <span class="rdot"></span><span id="recTime">0:00</span>
+          <span class="rhint">录音中…点麦克风结束</span>
+          <button type="button" id="recCancel">取消</button>
+        </div>
         <div class="inrow">
           <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
           <div class="inbar">
             <button type="button" id="imgBtn">＋</button>
+            <button type="button" id="micBtn" title="语音输入">🎤</button>
             <span class="spacer"></span>
             <div id="modelBox">
               <button type="button" id="modelBtn" title="切换模型">
@@ -1081,6 +1098,58 @@ function renderThumbs(){
   const box=$("#thumbs"); box.innerHTML="";
   S.images.forEach((im,idx)=>{ const w=el("div","t"); const g=el("img"); g.src=im.url; const x=el("button","x"); x.textContent="×"; x.onclick=()=>{S.images.splice(idx,1);renderThumbs();}; w.append(g,x); box.append(w); });
 }
+
+// ── 语音输入(录音 → 后端 SenseVoice 转写 → 填进输入框)────────────────────
+// Claude 不吃音频,故先在后端转成文字。点一下开录、再点结束,转好的文字并入输入框可编辑再发。
+const REC = { state:"idle", mr:null, chunks:[], stream:null, mime:"", t0:0, timer:null, cancel:false };
+function setRecUI(){
+  const btn=$("#micBtn");
+  btn.classList.toggle("rec", REC.state==="recording");
+  btn.classList.toggle("busy", REC.state==="transcribing");
+  btn.textContent = REC.state==="transcribing" ? "⏳" : "🎤";
+  $("#recBar").classList.toggle("show", REC.state==="recording");
+}
+function recTick(){ const s=Math.max(0,Math.floor((Date.now()-REC.t0)/1000)); $("#recTime").textContent=(s/60|0)+":"+String(s%60).padStart(2,"0"); }
+async function startRec(){
+  if(REC.state!=="idle") return;
+  if(!navigator.mediaDevices || !window.MediaRecorder){ alert("此浏览器不支持录音"); return; }
+  try{ REC.stream = await navigator.mediaDevices.getUserMedia({audio:true}); }
+  catch(e){ alert("麦克风权限被拒绝或不可用"); return; }
+  REC.chunks=[]; REC.cancel=false; REC.mr=new MediaRecorder(REC.stream);
+  REC.mime = REC.mr.mimeType || "audio/webm";
+  REC.mr.ondataavailable=e=>{ if(e.data && e.data.size) REC.chunks.push(e.data); };
+  REC.mr.onstop=onRecStop;
+  REC.mr.start(); REC.state="recording"; REC.t0=Date.now(); recTick();
+  REC.timer=setInterval(recTick,500); setRecUI();
+}
+function stopRec(cancel){
+  if(REC.state!=="recording") return;
+  REC.cancel=!!cancel; clearInterval(REC.timer); REC.timer=null;
+  try{ REC.mr.stop(); }catch(e){}
+}
+async function onRecStop(){
+  (REC.stream ? REC.stream.getTracks() : []).forEach(t=>t.stop());
+  const blob=new Blob(REC.chunks,{type:REC.mime}); const mime=REC.mime;
+  REC.mr=null; REC.stream=null;
+  if(REC.cancel || blob.size<1200){ REC.state="idle"; setRecUI(); return; }
+  REC.state="transcribing"; setRecUI();
+  try{
+    const ext = mime.includes("mp4")||mime.includes("mpeg")?"mp4":mime.includes("ogg")?"ogg":mime.includes("wav")?"wav":"webm";
+    const fd=new FormData(); fd.append("audio", blob, "voice."+ext);
+    const r=await api("/transcribe",{method:"POST",body:fd});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok && d.text) insertToInput(d.text);
+    else alert(d.error||"没识别到内容,再说一次试试");
+  }catch(e){ alert("转写失败:"+e.message); }
+  REC.state="idle"; setRecUI();
+}
+function insertToInput(t){
+  const ta=$("#ta");
+  ta.value = ta.value.trim() ? (ta.value.replace(/\s+$/,"")+" "+t) : t;
+  autoGrow(); ta.focus();
+}
+$("#micBtn").onclick = ()=>{ if(REC.state==="recording") stopRec(false); else if(REC.state==="idle") startRec(); };
+$("#recCancel").onclick = ()=>stopRec(true);
 
 // ── 新会话 / 侧边栏 / 主题 ───────────────────────────────────────────────
 $("#newBtn").onclick = newChat;

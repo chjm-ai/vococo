@@ -106,6 +106,20 @@ WEB_PORT: int = int(os.environ.get("WEB_PORT", "8848"))
 # 访问口令:非空则每次数据请求都要带上(浏览器首次输入后记住)。留空=不校验(仅本机调试用)。
 WEB_AUTH_TOKEN: str = os.environ.get("WEB_AUTH_TOKEN", "").strip()
 
+# === 语音输入(手机录音 → 转文字)===
+# Claude 不吃音频,故录音上传后端先转成文字再进对话。
+# 默认走 SiliconFlow 的 SenseVoice(OpenAI 兼容接口、中文准、国内直连、近免费)。
+# 去 siliconflow.cn 注册拿免费 key,填到 .env 的 SILICONFLOW_API_KEY。留空则语音按钮报错提示未配置。
+STT_API_KEY: str = os.environ.get("SILICONFLOW_API_KEY", "").strip()
+STT_BASE_URL: str = (
+    os.environ.get("STT_BASE_URL", "https://api.siliconflow.cn/v1").strip()
+    or "https://api.siliconflow.cn/v1"
+)
+STT_MODEL: str = (
+    os.environ.get("STT_MODEL", "FunAudioLLM/SenseVoiceSmall").strip()
+    or "FunAudioLLM/SenseVoiceSmall"
+)
+
 # === 会话统一(跨入口连续)===
 # 开启时:CLI / TUI / Telegram / 飞书 都归到同一会话 SESSION_KEY,
 # "飞书问一半切 CLI 接着聊" 成立(单用户自用的默认)。关闭则按 平台:chat 隔离。
