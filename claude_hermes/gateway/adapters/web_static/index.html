@@ -106,7 +106,7 @@
   #sidebar{width:280px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);
     display:flex;flex-direction:column;
     transition:transform .25s cubic-bezier(.4,0,.2,1),width .25s cubic-bezier(.4,0,.2,1);z-index:30}
-  #sidebar .shead{padding:16px 18px 8px;display:flex;align-items:center;gap:10px}
+  #sidebar .shead{padding:16px 18px 8px;padding-top:calc(16px + env(safe-area-inset-top));display:flex;align-items:center;gap:10px}
   #sidebar .shead .brand{flex:1;display:flex;align-items:center;gap:9px;font-size:15.5px;font-weight:700}
   #sidebar .shead .brand .dot{width:26px;height:26px;border-radius:8px;
     background:linear-gradient(135deg,var(--accent),var(--user2));display:flex;align-items:center;justify-content:center;
@@ -151,6 +151,16 @@
   .convmenu .cmitem:hover{background:var(--panel2)}
   .convmenu .cmitem.danger{color:var(--err)}
   .convmenu .cmitem.danger:hover{background:rgba(209,103,74,.12)}
+  /* 侧栏顶部会话筛选下拉 */
+  #convFilterBox{position:relative}
+  #convFilterPop{position:absolute;top:calc(100% + 4px);right:0;min-width:120px;z-index:40;
+    background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:5px;
+    box-shadow:var(--shadow);animation:pop .14s ease}
+  #convFilterPop[hidden]{display:none}
+  #convFilterPop .fmi{display:flex;align-items:center;gap:8px;width:100%;text-align:left;
+    padding:9px 11px;border-radius:8px;font-size:13.5px;color:var(--text);transition:background .14s}
+  #convFilterPop .fmi:hover{background:var(--panel2)}
+  #convFilterPop .fmi.on{color:var(--accent);font-weight:600}
   .sfoot{padding:9px 12px 9px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px}
   .sfoot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok);flex-shrink:0}
   .sfoot .sfoottxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -351,7 +361,7 @@
   #ctxPop .pr.sep{border-top:1px solid var(--line);margin-top:4px;padding-top:8px}
   #ctxPop .pr .mdl{font-size:11px;color:var(--dim);font-family:ui-monospace,Menlo,monospace}
   #themeBtn{font-size:17px}
-  #hamb{display:none}
+  #hamb{display:none;width:42px;height:42px;font-size:21px;border-radius:13px}
 
   #messages{flex:1;overflow-y:auto;padding:18px 16px 8px;
     padding-top:calc(18px + var(--header-h, 62px));
@@ -361,13 +371,14 @@
   .wrap{max-width:820px;margin:0 auto}
   .row{display:flex;margin:10px 0;animation:pop .32s cubic-bezier(.2,.7,.3,1)}
   .row.me{justify-content:flex-end}
+  .row.ai{display:block;margin:0}
   .row.sys{justify-content:center}
   .row.sys .sysnote{font-size:12px;color:var(--dim2);background:var(--card);
     border:1px solid var(--line);border-radius:999px;padding:5px 14px;max-width:90%;text-align:center}
   .bubble{max-width:86%;padding:10px 14px;border-radius:var(--radius);white-space:normal;word-wrap:break-word;
     overflow-wrap:anywhere;box-shadow:var(--bubble-shadow)}
   .row.me .bubble{background:linear-gradient(135deg,var(--user1),var(--user2));color:var(--on-user);border-bottom-right-radius:6px}
-  .row.ai .bubble{background:var(--card);border-bottom-left-radius:6px}
+  .row.ai .bubble{background:var(--card);border-radius:var(--radius);max-width:100%;margin:4px 0 10px;display:block}
   .bubble.pending{color:var(--dim)}
   .status{font-size:13px;color:var(--dim);margin:6px 0 0;display:flex;flex-wrap:wrap;gap:4px 12px}
   .status .chip{display:inline-flex;align-items:center}
@@ -618,6 +629,10 @@
   <aside id="sidebar">
     <div class="shead">
       <div class="brand"><span class="dot">✻</span>会话</div>
+      <div id="convFilterBox">
+        <button id="convFilterBtn" class="sfoicon" title="筛选会话"></button>
+        <div id="convFilterPop" hidden></div>
+      </div>
       <button id="collapseBtn" title="收起侧边栏">«</button>
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
@@ -708,6 +723,8 @@ const S = {
   histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁
   pendingChoice: {},    // conv → choice 事件:审批发给非当前会话时暂存,切回该会话再渲染
   live: {},             // conv → 进行中回合的事件缓冲:任意会话(含后台)都记录,切回时重放重建流式气泡
+  convFilter: localStorage.getItem("hermes_conv_filter") || "all",
+  archived: (()=>{ try{ return new Set(JSON.parse(localStorage.getItem("hermes_archived")||"[]")); } catch(e){ return new Set(); } })(),
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -736,6 +753,7 @@ const ICONS = {
   save:'<path d="M20 6L9 17l-5-5"/>',
   plus:'<path d="M12 5v14"/><path d="M5 12h14"/>',
   close:'<path d="M18 6L6 18"/><path d="M6 6l12 12"/>',
+  filter:'<path d="M22 3H2l8 9.46V19l4 2V12.46L22 3z"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 
@@ -780,7 +798,7 @@ async function tryEnter(){
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
-    await loadProjects(); await loadConvs(); await loadModels();
+    await loadProjects(); await loadConvs(); await loadModels(); updateFilterBtn();
     // 打开最近活跃的会话;openConv 内会同步活跃项目、展开其分组并重绘侧边栏
     await openConv(S.convs[0] ? S.convs[0].conv : "main");
   }catch(e){ $("#loginErr").textContent="连接失败"; }
@@ -963,6 +981,7 @@ function renderConvs(){
     box.append(h);
     if(!open) continue;
     for(const c of convs){
+      if(!c.pinned){const arch=S.archived.has(c.conv);if(S.convFilter==="archived"&&!arch)continue;if(S.convFilter==="active"&&arch)continue;}
       const e=el("div","conv ingroup"+(c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
       if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; e.append(dot); }   // 该会话正在流式 → 闪烁圆点
       const ct=el("div","ct"); ct.textContent=c.title||"新对话"; e.append(ct);
@@ -1391,6 +1410,10 @@ function openConvMenu(btn, conv){
   closeConvMenu();
   convMenuBtn=btn; btn.classList.add("on");
   const m=el("div","convmenu"); m.style.visibility="hidden";
+  const isArch=S.archived.has(conv);
+  const arch=el("button","cmitem"); arch.innerHTML=ic("folder")+" "+(isArch?"取消归档":"归档");
+  arch.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); toggleArchive(conv); };
+  m.append(arch);
   const del=el("button","cmitem danger"); del.innerHTML=ic("trash")+" 删除";
   del.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); delConv(conv); };
   m.append(del); document.body.append(m); convMenuEl=m;
@@ -1420,6 +1443,30 @@ async function delConv(conv){
     alert("删除失败,已恢复该会话");
   }
 }
+
+// ── 归档 + 会话筛选 ──────────────────────────────────────────────────────
+function saveArchived(){ try{ localStorage.setItem("hermes_archived", JSON.stringify([...S.archived])); }catch(e){} }
+function toggleArchive(conv){
+  if(S.archived.has(conv)) S.archived.delete(conv); else S.archived.add(conv);
+  saveArchived(); renderConvs();
+}
+function renderConvFilterPop(){
+  const opts=[["all","全部"],["active","工作中"],["archived","归档"]];
+  const pop=$("#convFilterPop");
+  pop.innerHTML=opts.map(([v,l])=>'<button class="fmi'+(S.convFilter===v?" on":"")+'" data-fv="'+v+'">'+l+'</button>').join("");
+  pop.querySelectorAll(".fmi").forEach(b=>{
+    b.onclick=e=>{ e.stopPropagation(); S.convFilter=b.dataset.fv; try{localStorage.setItem("hermes_conv_filter",S.convFilter);}catch(e){} pop.hidden=true; updateFilterBtn(); renderConvs(); };
+  });
+}
+function updateFilterBtn(){
+  const labels={"all":"","active":"工作中","archived":"归档"};
+  const btn=$("#convFilterBtn"); if(!btn) return;
+  const lbl=S.convFilter!=="all"?'<span style="font-size:10px;margin-left:2px;color:var(--accent)">'+labels[S.convFilter]+'</span>':"";
+  btn.innerHTML=ic("filter")+lbl;
+  btn.style.color=S.convFilter!=="all"?"var(--accent)":"";
+}
+$("#convFilterBtn").onclick=e=>{ e.stopPropagation(); const pop=$("#convFilterPop"); if(pop.hidden){ renderConvFilterPop(); pop.hidden=false; } else pop.hidden=true; };
+document.addEventListener("click", e=>{ const b=$("#convFilterBox"); if(b&&!b.contains(e.target)){ const pop=$("#convFilterPop"); if(pop) pop.hidden=true; } });
 
 // ── 打开 / 切换会话 ──────────────────────────────────────────────────────
 // 把一组 turns 铺进消息区(切会话 / 缓存回填共用)

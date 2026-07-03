@@ -97,7 +97,7 @@ class GatewayRunner:
                     images=inc.images, store_user=inc.store_text,
                 )
         except TimeoutError:
-            await adapter.send(inc.chat_id, "⚠️ 处理超时了,请再试一次。")
+            pass  # 超时静默处理,不向用户发送错误消息
         finally:
             clarify.reset_current(token)
             clarify.clear_session(key)  # 轮结束,取消任何还挂着的 clarify
