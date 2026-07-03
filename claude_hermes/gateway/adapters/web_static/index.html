@@ -1602,8 +1602,14 @@ async function openConv(conv){
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
   renderConvs(); closeSidebar();
   const cached = S.histCache[conv];
+  const isLocal = String(conv).startsWith("local-");
+  const hasMsgs = c && c.turns > 0;             // 侧栏记录里该会话有历史消息
   if(cached){ renderTurns(cached); }            // 命中缓存:立即渲染,消除"先闪空屏再出内容"
-  else { $("#wrap").innerHTML=""; $("#empty").style.display="none"; $("#convLoading").classList.add("on"); }
+  else if(!isLocal && hasMsgs){                 // 只在「换到一个有历史、还没拉过的真实会话」时才铺骨架屏
+    $("#wrap").innerHTML=""; $("#empty").style.display="none"; $("#convLoading").classList.add("on");
+  }else{                                        // 新建会话 / 空会话:不闪骨架,清空后交给 updateEmpty 出欢迎屏
+    $("#wrap").innerHTML=""; $("#convLoading").classList.remove("on");
+  }
   if(conv && !String(conv).startsWith("local-")){
     try{
       const r=await api("/history?conv="+encodeURIComponent(conv)); const d=await r.json();
