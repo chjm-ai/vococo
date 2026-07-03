@@ -14,6 +14,7 @@ dependencies = [
     "aiohttp>=3.9",
     "socksio>=1.0",
     "pywebpush>=1.14",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

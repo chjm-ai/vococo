@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -15,18 +16,21 @@ class ConfigError(RuntimeError):
     """配置缺失或冲突。"""
 
 
-def _ensure_subscription_auth() -> str:
+def _ensure_subscription_auth(require: bool = True) -> str:
     """确保走订阅而非 API 按量计费。
 
-    - 必须有 CLAUDE_CODE_OAUTH_TOKEN
-    - 主动移除 ANTHROPIC_API_KEY(只要它在,SDK 就走 API 计费)
+    - require=True 时必须有 CLAUDE_CODE_OAUTH_TOKEN(只用 Claude 官方订阅的默认场景)
+    - require=False(已配了第三方 provider 的 key)时 OAUTH 可缺,返回空串
+    - 无论如何都移除 ANTHROPIC_API_KEY(只要它在,走 claude 模型时就会误按量计费;
+      第三方 provider 的鉴权在每轮 options.env 里单独注入,不依赖它)
     """
     token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
-    if not token:
+    if not token and require:
         raise ConfigError(
             "缺少 CLAUDE_CODE_OAUTH_TOKEN。\n"
             "  解决:本机跑 `claude setup-token`(需 Claude Pro/Max 订阅),\n"
-            "  把生成的 sk-ant-oat01-... 写进项目根目录的 .env。"
+            "  把生成的 sk-ant-oat01-... 写进项目根目录的 .env。\n"
+            "  (若只用 DeepSeek/Kimi 等第三方端点,配好对应 API key 即可免此项。)"
         )
     if os.environ.pop("ANTHROPIC_API_KEY", None):
         # 移除以保证走订阅,而非按量计费
@@ -62,7 +66,22 @@ def _parse_skills(raw: str) -> list[str] | str | None:
     return [t.strip() for t in s.replace(",", " ").split() if t.strip()]
 
 
-OAUTH_TOKEN: str = _ensure_subscription_auth()
+def _oauth_required() -> bool:
+    """订阅 token 是否必需。
+
+    仅当 cc-switch 当前激活的是一个可用的第三方供应商(DeepSeek/Kimi 等,带 key)
+    时可免——那种场景下这一轮走第三方端点,不需要 Claude 订阅。其余情况(激活官方、
+    未装 cc-switch、读取异常)一律要求订阅 token,保持原有行为。
+    """
+    try:
+        from . import providers
+
+        return not providers.has_active_third_party()
+    except Exception:  # noqa: BLE001 —— 读取出问题时保守要求订阅
+        return True
+
+
+OAUTH_TOKEN: str = _ensure_subscription_auth(require=_oauth_required())
 MODEL: str = os.environ.get("AGENT_MODEL", "claude-opus-4-8").strip()
 MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "40"))
 # 工具权限模式:bypassPermissions=自动执行工具(shell/读写等),个人本机助理用
