@@ -123,11 +123,9 @@
     color:var(--dim);position:relative;cursor:pointer;transition:background .16s,color .16s}
   .conv:hover{background:var(--panel2);color:var(--text)}
   .conv.active{background:var(--panel2);color:var(--text)}
-  .conv.active::before{content:"";position:absolute;left:-10px;top:50%;transform:translateY(-50%);
-    width:3px;height:18px;border-radius:3px;background:linear-gradient(var(--accent),var(--user2))}
   .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
   .conv .cmeta{font-size:11px;color:var(--dim2);flex-shrink:0;transition:opacity .16s}
-  .conv.pinned .ct::before{content:"★ ";color:var(--accent)}
+  .conv.pinned .cmeta::after{content:" ★";color:var(--dim2)}   /* 主会话:弱化星标,置于右侧元信息后 */
   /* 「⋯」更多键绝对定位:不占布局宽度,hover 时浮现并让时间淡出,列表更紧凑 */
   .conv .more{position:absolute;right:9px;top:50%;transform:translateY(-50%);opacity:0;pointer-events:none;
     font-size:16px;line-height:1;color:var(--dim2);padding:2px 6px;border-radius:7px;transition:opacity .16s,color .16s,background .16s}
@@ -152,8 +150,8 @@
   .projgrp{display:flex;align-items:center;gap:6px;padding:8px 10px;margin-top:4px;border-radius:9px;
     cursor:pointer;color:var(--dim);font-size:12.5px;font-weight:600;user-select:none}
   .projgrp:hover{background:var(--panel2);color:var(--text)}
-  .projgrp .pgcaret{flex-shrink:0;width:12px;color:var(--dim2);font-size:10px}
-  .projgrp .pgname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .projgrp .pgcaret{flex-shrink:0;width:10px;margin-right:auto;color:var(--dim2);font-size:10px}  /* 紧跟名称右侧,auto 外边距把计数/按钮推到最右 */
+  .projgrp .pgname{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .projgrp .pgcount{flex-shrink:0;color:var(--dim2);font-size:11px;font-weight:400}
   .projgrp .pgadd,.projgrp .pgrm{flex-shrink:0;opacity:0;background:none;border:none;cursor:pointer;
     color:var(--dim2);font-size:13px;padding:1px 5px;border-radius:6px;line-height:1}
@@ -685,8 +683,8 @@ function renderConvs(){
     const convs=convsInGroup(g.hash);
     const open=S.expanded.has(grpKey(g.hash));
     const h=el("div","projgrp");
-    const caret=el("span","pgcaret"); caret.textContent=open?"▾":"▸"; h.append(caret);
     const nm=el("span","pgname"); nm.textContent=g.name; h.append(nm);
+    const caret=el("span","pgcaret"); caret.textContent=open?"▾":"▸"; h.append(caret);
     const cnt=el("span","pgcount"); cnt.textContent=convs.length||""; h.append(cnt);
     const add=el("button","pgadd"); add.textContent="＋"; add.title="在此项目下新建会话";
     add.onclick=ev=>{ ev.stopPropagation(); newChatIn(g.hash); }; h.append(add);
