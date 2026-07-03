@@ -368,17 +368,26 @@
   #imgBtn{color:var(--dim);font-size:22px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
     display:flex;align-items:center;justify-content:center;transition:color .16s,background .16s}
   #imgBtn:hover{color:var(--text);background:var(--panel2)}
-  #micBtn{color:var(--dim);font-size:18px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
-    display:flex;align-items:center;justify-content:center;transition:color .16s,background .16s}
+  #micBtn{position:relative;color:var(--dim);font-size:18px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
+    display:flex;align-items:center;justify-content:center;transition:color .16s,background .16s,transform .12s}
   #micBtn:hover{color:var(--text);background:var(--panel2)}
-  #micBtn.rec{color:#fff;background:var(--err)}
-  #micBtn.busy{color:var(--accent)}
-  #recBar{display:none;align-items:center;gap:8px;font-size:13px;color:var(--err);
-    padding:2px 6px 6px;font-variant-numeric:tabular-nums}
+  #micBtn:active{transform:scale(.9)}
+  #micBtn.rec{color:#fff;background:var(--err);animation:micPulse 1.5s ease-out infinite}
+  @keyframes micPulse{0%{box-shadow:0 0 0 0 rgba(239,68,68,.5)}70%{box-shadow:0 0 0 11px rgba(239,68,68,0)}100%{box-shadow:0 0 0 0 rgba(239,68,68,0)}}
+  #micBtn.busy{color:transparent;background:var(--panel2)}
+  #micBtn.busy::after{content:"";position:absolute;width:16px;height:16px;border-radius:50%;
+    border:2px solid var(--line2);border-top-color:var(--accent);animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  /* 录音条:红点 + 计时 + 实时声波 + 取消(参考语音备忘录)*/
+  #recBar{display:none;align-items:center;gap:10px;padding:4px 6px 8px;animation:recIn .2s ease}
   #recBar.show{display:flex}
-  #recBar .rdot{width:8px;height:8px;border-radius:50%;background:var(--err);animation:blink 1s infinite;flex-shrink:0}
-  #recBar .rhint{color:var(--dim)}
-  #recBar button{margin-left:auto;color:var(--dim);font-size:12px;padding:3px 10px;border-radius:8px;background:var(--panel2)}
+  @keyframes recIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+  #recBar .rdot{width:9px;height:9px;border-radius:50%;background:var(--err);animation:blink 1s infinite;flex-shrink:0}
+  #recBar #recTime{font-size:13px;color:var(--err);font-variant-numeric:tabular-nums;flex-shrink:0;min-width:32px}
+  #recBar #recWave{flex:1;height:30px;min-width:0}
+  #recBar #recCancel{flex-shrink:0;color:var(--dim);font-size:12px;padding:4px 12px;border-radius:9px;
+    background:var(--panel2);transition:color .16s}
+  #recBar #recCancel:hover{color:var(--text)}
   #sendBtn{background:linear-gradient(135deg,var(--user1),var(--user2));color:#fff;border-radius:50%;
     width:34px;height:34px;font-size:17px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
     transition:transform .12s,opacity .2s,box-shadow .2s;box-shadow:0 2px 10px var(--glow2)}
@@ -480,8 +489,8 @@
         <div id="thumbs"></div>
         <div id="recBar">
           <span class="rdot"></span><span id="recTime">0:00</span>
-          <span class="rhint">录音中…点麦克风结束</span>
-          <button type="button" id="recCancel">取消</button>
+          <canvas id="recWave"></canvas>
+          <button type="button" id="recCancel" title="取消录音">取消</button>
         </div>
         <div class="inrow">
           <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
@@ -1105,16 +1114,44 @@ function renderThumbs(){
 }
 
 // ── 语音输入(录音 → 后端 SenseVoice 转写 → 填进输入框)────────────────────
-// Claude 不吃音频,故先在后端转成文字。点一下开录、再点结束,转好的文字并入输入框可编辑再发。
-const REC = { state:"idle", mr:null, chunks:[], stream:null, mime:"", t0:0, timer:null, cancel:false };
+// Claude 不吃音频,故先在后端转成文字。点一下开录(实时声波动效)、再点结束,转好的文字并入输入框可编辑再发。
+const REC = { state:"idle", mr:null, chunks:[], stream:null, mime:"", t0:0, timer:null, cancel:false,
+  actx:null, analyser:null, dataArr:null, raf:null, levels:[], waveColor:"#ef4444" };
 function setRecUI(){
   const btn=$("#micBtn");
   btn.classList.toggle("rec", REC.state==="recording");
   btn.classList.toggle("busy", REC.state==="transcribing");
-  btn.textContent = REC.state==="transcribing" ? "⏳" : "🎤";
+  btn.textContent = REC.state==="transcribing" ? "" : "🎤";   // 转写中:文字清空,由 ::after 转圈
   $("#recBar").classList.toggle("show", REC.state==="recording");
 }
 function recTick(){ const s=Math.max(0,Math.floor((Date.now()-REC.t0)/1000)); $("#recTime").textContent=(s/60|0)+":"+String(s%60).padStart(2,"0"); }
+// 滚动声波:每帧取麦克风音量(RMS)推进队列,右侧最新、整体向左滚,像语音备忘录
+function drawWave(){
+  if(REC.state!=="recording" || !REC.analyser){ return; }
+  REC.raf=requestAnimationFrame(drawWave);
+  const cv=$("#recWave"); if(!cv) return;
+  REC.analyser.getByteTimeDomainData(REC.dataArr);
+  let sum=0; for(let i=0;i<REC.dataArr.length;i++){ const x=(REC.dataArr[i]-128)/128; sum+=x*x; }
+  REC.levels.push(Math.min(1, Math.sqrt(sum/REC.dataArr.length)*3.4));
+  const dpr=window.devicePixelRatio||1, W=cv.clientWidth||1, H=cv.clientHeight||1;
+  if(cv.width!==Math.round(W*dpr)||cv.height!==Math.round(H*dpr)){ cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr); }
+  const ctx=cv.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,W,H);
+  const barW=3, step=5, maxBars=Math.max(1,Math.floor(W/step));
+  if(REC.levels.length>maxBars) REC.levels.splice(0, REC.levels.length-maxBars);
+  ctx.fillStyle=REC.waveColor;
+  const n=REC.levels.length;
+  for(let i=0;i<n;i++){
+    const h=Math.max(3, REC.levels[i]*(H-4)), x=W-(n-i)*step, y=(H-h)/2;
+    if(ctx.roundRect){ ctx.beginPath(); ctx.roundRect(x,y,barW,h,barW/2); ctx.fill(); }
+    else ctx.fillRect(x,y,barW,h);
+  }
+}
+function cleanupAudio(){
+  if(REC.raf){ cancelAnimationFrame(REC.raf); REC.raf=null; }
+  try{ if(REC.actx && REC.actx.state!=="closed") REC.actx.close(); }catch(e){}
+  REC.actx=null; REC.analyser=null; REC.levels=[];
+  const cv=$("#recWave"); if(cv){ const c=cv.getContext("2d"); if(c) c.clearRect(0,0,cv.width,cv.height); }
+}
 async function startRec(){
   if(REC.state!=="idle") return;
   if(!navigator.mediaDevices || !window.MediaRecorder){ alert("此浏览器不支持录音"); return; }
@@ -1124,8 +1161,17 @@ async function startRec(){
   REC.mime = REC.mr.mimeType || "audio/webm";
   REC.mr.ondataavailable=e=>{ if(e.data && e.data.size) REC.chunks.push(e.data); };
   REC.mr.onstop=onRecStop;
+  try{   // 实时声波(失败不影响录音本身)
+    const AC=window.AudioContext||window.webkitAudioContext;
+    REC.actx=new AC(); if(REC.actx.state==="suspended") await REC.actx.resume();
+    REC.analyser=REC.actx.createAnalyser(); REC.analyser.fftSize=512;
+    REC.actx.createMediaStreamSource(REC.stream).connect(REC.analyser);
+    REC.dataArr=new Uint8Array(REC.analyser.fftSize); REC.levels=[];
+    REC.waveColor=(getComputedStyle(document.documentElement).getPropertyValue("--err").trim())||"#ef4444";
+  }catch(e){ REC.analyser=null; }
   REC.mr.start(); REC.state="recording"; REC.t0=Date.now(); recTick();
   REC.timer=setInterval(recTick,500); setRecUI();
+  if(REC.analyser) drawWave();
 }
 function stopRec(cancel){
   if(REC.state!=="recording") return;
@@ -1133,6 +1179,7 @@ function stopRec(cancel){
   try{ REC.mr.stop(); }catch(e){}
 }
 async function onRecStop(){
+  cleanupAudio();
   (REC.stream ? REC.stream.getTracks() : []).forEach(t=>t.stop());
   const blob=new Blob(REC.chunks,{type:REC.mime}); const mime=REC.mime;
   REC.mr=null; REC.stream=null;
