@@ -5,58 +5,61 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#0a0c10">
+<meta name="theme-color" content="#1f1e1d">
 <title>Hermes</title>
 <!-- 防闪烁:渲染前先套用上次选择的主题 -->
 <script>(function(){try{var t=localStorage.getItem("hermes_theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
 <style>
-  /* ── 深色(默认)──────────────────────────────────────────────────────── */
+  /* ── 深色(默认)· Claude Code 暖炭灰 + 赤陶橙 ────────────────────────── */
   :root{
-    --bg:#0a0c10; --bg2:#0e1117; --panel:#12161e; --panel2:#1b212c; --card:#161b24;
-    --line:#232a36; --line2:#2f3846;
-    --text:#e8ebf0; --dim:#9aa4b3; --dim2:#69737f;
-    --accent:#5b9dff; --accent2:#4285f0;
-    --user1:#3b82f6; --user2:#2563eb; --on-user:#fff;
-    --ok:#3fb950; --err:#f0603a; --radius:18px;
-    --bar-bg:rgba(10,12,16,.72);
-    --login-bg:radial-gradient(120% 90% at 50% -10%,#161d2b 0%,#0a0c10 60%);
-    --code-bg:#0b0f16; --code-fg:#c9d3df; --code-inline:rgba(140,150,165,.18);
-    --scroll:#2f3846; --scroll-h:#3c4757;
+    --bg:#1f1e1d; --bg2:#262624; --panel:#1a1918; --panel2:#302f2c; --card:#2b2a27;
+    --line:#3a3934; --line2:#4a4941;
+    --text:#ecebe3; --dim:#a5a094; --dim2:#716d61;
+    --accent:#d97757; --accent2:#c8613f;
+    --user1:#d97757; --user2:#c25f3c; --on-user:#fff;
+    --ok:#5aa469; --err:#d1674a; --radius:16px;
+    --bar-bg:rgba(31,30,29,.72);
+    --login-bg:radial-gradient(120% 90% at 50% -10%,#2c2925 0%,#1f1e1d 60%);
+    --code-bg:#1a1917; --code-fg:#d4d0c4; --code-inline:rgba(180,170,150,.15);
+    --scroll:#3a3934; --scroll-h:#4a4941;
     --bubble-shadow:0 1px 2px rgba(0,0,0,.24);
-    --shadow:0 10px 34px rgba(0,0,0,.4);
-    --focus-ring:rgba(91,157,255,.16);
+    --shadow:0 10px 34px rgba(0,0,0,.45);
+    --focus-ring:rgba(217,119,87,.2);
+    --glow1:rgba(217,119,87,.4); --glow2:rgba(194,95,60,.4);
   }
-  /* ── 浅色:系统偏好浅色且用户未手动固定时 ─────────────────────────────── */
+  /* ── 浅色:系统偏好浅色且用户未手动固定时 · Claude Code 暖米色 ────────── */
   @media(prefers-color-scheme:light){
     :root:not([data-theme]){
-      --bg:#eef1f7; --bg2:#f7f9fc; --panel:#eaeef5; --panel2:#dfe5ef; --card:#ffffff;
-      --line:#e1e6ef; --line2:#d2d9e5;
-      --text:#1a2230; --dim:#586274; --dim2:#8b95a5;
-      --accent:#2563eb; --accent2:#1d4ed8;
-      --user1:#3b82f6; --user2:#2563eb; --on-user:#fff;
-      --bar-bg:rgba(247,249,252,.78);
-      --login-bg:radial-gradient(120% 90% at 50% -10%,#e6edfb 0%,#eef1f7 60%);
-      --code-bg:#eef1f7; --code-fg:#2b3440; --code-inline:rgba(70,90,120,.1);
-      --scroll:#cbd3e0; --scroll-h:#b3bece;
-      --bubble-shadow:0 1px 2px rgba(30,50,90,.07);
-      --shadow:0 10px 34px rgba(40,60,100,.15);
-      --focus-ring:rgba(37,99,235,.16);
+      --bg:#f5f4ee; --bg2:#faf9f5; --panel:#efece3; --panel2:#e6e2d6; --card:#ffffff;
+      --line:#e7e3d8; --line2:#dad5c7;
+      --text:#29261f; --dim:#6d6757; --dim2:#9a9482;
+      --accent:#bd5d3a; --accent2:#a84e2f;
+      --user1:#d97757; --user2:#c25f3c; --on-user:#fff;
+      --bar-bg:rgba(250,249,245,.8);
+      --login-bg:radial-gradient(120% 90% at 50% -10%,#f3ece2 0%,#f5f4ee 60%);
+      --code-bg:#f3f1e9; --code-fg:#3a362c; --code-inline:rgba(120,100,70,.1);
+      --scroll:#d8d3c5; --scroll-h:#c4bdab;
+      --bubble-shadow:0 1px 2px rgba(60,50,30,.06);
+      --shadow:0 10px 34px rgba(80,60,30,.14);
+      --focus-ring:rgba(189,93,58,.16);
+      --glow1:rgba(217,119,87,.3); --glow2:rgba(189,93,58,.28);
     }
   }
   /* ── 手动固定浅色 ────────────────────────────────────────────────────── */
   :root[data-theme="light"]{
-    --bg:#eef1f7; --bg2:#f7f9fc; --panel:#eaeef5; --panel2:#dfe5ef; --card:#ffffff;
-    --line:#e1e6ef; --line2:#d2d9e5;
-    --text:#1a2230; --dim:#586274; --dim2:#8b95a5;
-    --accent:#2563eb; --accent2:#1d4ed8;
-    --user1:#3b82f6; --user2:#2563eb; --on-user:#fff;
-    --bar-bg:rgba(247,249,252,.78);
-    --login-bg:radial-gradient(120% 90% at 50% -10%,#e6edfb 0%,#eef1f7 60%);
-    --code-bg:#eef1f7; --code-fg:#2b3440; --code-inline:rgba(70,90,120,.1);
-    --scroll:#cbd3e0; --scroll-h:#b3bece;
-    --bubble-shadow:0 1px 2px rgba(30,50,90,.07);
-    --shadow:0 10px 34px rgba(40,60,100,.15);
-    --focus-ring:rgba(37,99,235,.16);
+    --bg:#f5f4ee; --bg2:#faf9f5; --panel:#efece3; --panel2:#e6e2d6; --card:#ffffff;
+    --line:#e7e3d8; --line2:#dad5c7;
+    --text:#29261f; --dim:#6d6757; --dim2:#9a9482;
+    --accent:#bd5d3a; --accent2:#a84e2f;
+    --user1:#d97757; --user2:#c25f3c; --on-user:#fff;
+    --bar-bg:rgba(250,249,245,.8);
+    --login-bg:radial-gradient(120% 90% at 50% -10%,#f3ece2 0%,#f5f4ee 60%);
+    --code-bg:#f3f1e9; --code-fg:#3a362c; --code-inline:rgba(120,100,70,.1);
+    --scroll:#d8d3c5; --scroll-h:#c4bdab;
+    --bubble-shadow:0 1px 2px rgba(60,50,30,.06);
+    --shadow:0 10px 34px rgba(80,60,30,.14);
+    --focus-ring:rgba(189,93,58,.16);
+    --glow1:rgba(217,119,87,.3); --glow2:rgba(189,93,58,.28);
   }
   /* data-theme="dark" 用根默认值即可,无需重复 */
 
@@ -80,15 +83,16 @@
   #login .card{width:100%;max-width:340px;text-align:center;animation:pop .4s ease}
   #login .logo{width:64px;height:64px;margin:0 auto 18px;border-radius:20px;
     background:linear-gradient(135deg,var(--accent),var(--user2));display:flex;align-items:center;justify-content:center;
-    font-size:32px;color:#fff;box-shadow:0 8px 30px rgba(66,133,240,.45)}
-  #login h1{font-size:27px;margin:0 0 6px;letter-spacing:.5px;font-weight:700}
+    font-size:32px;color:#fff;box-shadow:0 8px 30px var(--glow1)}
+  #login h1{font-size:28px;margin:0 0 6px;letter-spacing:.2px;font-weight:600;
+    font-family:ui-serif,Georgia,"Times New Roman","Songti SC",serif}
   #login p{color:var(--dim);margin:0 0 26px;font-size:14px}
   #login input{width:100%;padding:15px 16px;border-radius:14px;border:1px solid var(--line2);
     background:var(--card);color:var(--text);font-size:16px;margin-bottom:12px;transition:border-color .2s,box-shadow .2s}
   #login input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--focus-ring)}
   #login button{width:100%;padding:15px;border-radius:14px;
     background:linear-gradient(135deg,var(--user1),var(--user2));color:#fff;font-weight:600;font-size:16px;
-    transition:transform .12s,box-shadow .2s;box-shadow:0 4px 16px rgba(37,99,235,.35)}
+    transition:transform .12s,box-shadow .2s;box-shadow:0 4px 16px var(--glow2)}
   #login button:active{transform:scale(.97)}
   #login .err{color:var(--err);font-size:13px;height:18px;margin-top:10px}
 
@@ -102,7 +106,7 @@
   #sidebar .shead .brand{flex:1;display:flex;align-items:center;gap:9px;font-size:16px;font-weight:700}
   #sidebar .shead .brand .dot{width:26px;height:26px;border-radius:8px;
     background:linear-gradient(135deg,var(--accent),var(--user2));display:flex;align-items:center;justify-content:center;
-    font-size:15px;color:#fff;box-shadow:0 2px 10px rgba(66,133,240,.4)}
+    font-size:15px;color:#fff;box-shadow:0 2px 10px var(--glow1)}
   #newBtn{background:var(--panel2);color:var(--text);border:1px solid var(--line2);border-radius:11px;
     padding:8px 13px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:5px;
     transition:background .18s,border-color .18s,transform .12s}
@@ -140,7 +144,7 @@
     padding:9px 11px;border-radius:8px;font-size:13.5px;color:var(--text);transition:background .14s}
   .convmenu .cmitem:hover{background:var(--panel2)}
   .convmenu .cmitem.danger{color:var(--err)}
-  .convmenu .cmitem.danger:hover{background:#f0603a1a}
+  .convmenu .cmitem.danger:hover{background:rgba(209,103,74,.12)}
   .sfoot{padding:13px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px}
   .sfoot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
 
@@ -161,7 +165,7 @@
   .pmenu-item .pmi-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .pmenu-item .pmi-rm{opacity:0;flex-shrink:0;background:none;border:none;color:var(--dim2);cursor:pointer;font-size:13px;padding:2px 5px;border-radius:6px}
   .pmenu-item:hover .pmi-rm{opacity:.7}
-  .pmenu-item .pmi-rm:hover{opacity:1;color:var(--err);background:#f0603a1a}
+  .pmenu-item .pmi-rm:hover{opacity:1;color:var(--err);background:rgba(209,103,74,.12)}
   .pmenu-add{color:var(--accent);border-top:1px solid var(--line);margin-top:4px;border-radius:0 0 9px 9px}
 
   /* 新建项目弹窗(服务端目录浏览器) */
@@ -281,8 +285,9 @@
     text-align:center;padding:24px;pointer-events:none}
   #empty .elogo{width:72px;height:72px;border-radius:22px;margin-bottom:20px;
     background:linear-gradient(135deg,var(--accent),var(--user2));display:flex;align-items:center;justify-content:center;
-    font-size:36px;color:#fff;box-shadow:0 10px 36px rgba(66,133,240,.4);animation:pop .5s ease}
-  #empty h2{margin:0 0 6px;font-size:22px;font-weight:700}
+    font-size:36px;color:#fff;box-shadow:0 10px 36px var(--glow1);animation:pop .5s ease}
+  #empty h2{margin:0 0 6px;font-size:24px;font-weight:600;
+    font-family:ui-serif,Georgia,"Times New Roman","Songti SC",serif}
   #empty p{margin:0 0 24px;color:var(--dim);font-size:14px}
   #empty .sugs{display:flex;flex-wrap:wrap;gap:9px;justify-content:center;max-width:440px;pointer-events:auto}
   #empty .sug{background:var(--card);border:1px solid var(--line2);border-radius:14px;padding:10px 16px;font-size:14px;
@@ -340,8 +345,8 @@
   #imgBtn:hover{color:var(--text);background:var(--panel2)}
   #sendBtn{background:linear-gradient(135deg,var(--user1),var(--user2));color:#fff;border-radius:50%;
     width:34px;height:34px;font-size:17px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
-    transition:transform .12s,opacity .2s,box-shadow .2s;box-shadow:0 2px 10px rgba(37,99,235,.4)}
-  #sendBtn:hover{box-shadow:0 4px 16px rgba(37,99,235,.55)}
+    transition:transform .12s,opacity .2s,box-shadow .2s;box-shadow:0 2px 10px var(--glow2)}
+  #sendBtn:hover{box-shadow:0 4px 16px var(--glow1)}
   #sendBtn:active{transform:scale(.9)}
   #sendBtn:disabled{opacity:.4;box-shadow:none}
 
@@ -368,7 +373,7 @@
 
 <div id="login">
   <div class="card">
-    <div class="logo">✦</div>
+    <div class="logo">✻</div>
     <h1>Hermes</h1>
     <p>输入访问口令</p>
     <input id="pw" type="password" placeholder="口令" autocomplete="current-password">
@@ -395,7 +400,7 @@
   </div>
   <aside id="sidebar">
     <div class="shead">
-      <div class="brand"><span class="dot">✦</span>会话</div>
+      <div class="brand"><span class="dot">✻</span>会话</div>
       <button id="newBtn"><span>＋</span>新对话</button>
       <button id="collapseBtn" title="收起侧边栏">«</button>
     </div>
@@ -425,7 +430,7 @@
     <div id="messages">
       <div class="wrap" id="wrap"></div>
       <div id="empty">
-        <div class="elogo">✦</div>
+        <div class="elogo">✻</div>
         <h2>你好，我是 Hermes</h2>
         <p>你的私人 AI 助理 · 有什么需要直接说</p>
         <div class="sugs">
