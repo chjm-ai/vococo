@@ -88,7 +88,7 @@ MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "40"))
 # 想更保守可设 acceptEdits(只自动接受文件编辑)。
 PERMISSION_MODE: str = os.environ.get("AGENT_PERMISSION_MODE", "bypassPermissions").strip()
 # 单轮硬超时(秒):卡死也能恢复。clarify 等用户回复会占用本轮,故放宽到 10 分钟。
-AGENT_TURN_TIMEOUT: int = int(os.environ.get("AGENT_TURN_TIMEOUT", "600"))
+AGENT_TURN_TIMEOUT: int = int(os.environ.get("AGENT_TURN_TIMEOUT", "3600"))
 # ask_user 等用户回复的超时(秒),须 < AGENT_TURN_TIMEOUT,好让 clarify 先返回、本轮别被硬砍。
 CLARIFY_TIMEOUT: int = int(os.environ.get("CLARIFY_TIMEOUT", "300"))
 # 危险命令拦截(PreToolUse hook):默认开,只拦灾难级命令(删根/格式化/强推等)。
