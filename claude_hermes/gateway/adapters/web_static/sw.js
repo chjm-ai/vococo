@@ -1,4 +1,4 @@
-/* Hermes Service Worker —— 只为 Web Push 通知服务(不做离线缓存,页面始终实时读盘)。
+/* Wazir Service Worker —— 只为 Web Push 通知服务(不做离线缓存,页面始终实时读盘)。
    iOS 16.4+ 已装到主屏的 PWA 才会收到推送;后端用 VAPID 密钥把消息发到浏览器推送网关,
    浏览器唤醒本 worker 触发下面的 'push' 事件。 */
 
@@ -9,7 +9,7 @@ self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener("push", (event) => {
   let d = {};
   try { d = event.data ? event.data.json() : {}; } catch (_) { d = {}; }
-  const title = d.title || "Hermes";
+  const title = d.title || "Wazir";
   const kind = d.kind || "";
   const options = {
     body: d.body || "",
