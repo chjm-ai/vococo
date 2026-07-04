@@ -67,7 +67,12 @@ class ActiveProvider:
             return True
         if not self.base_url:
             return True
-        return any(h in self.base_url for h in _OFFICIAL_HOSTS)
+        # 解析出 host 后【精确匹配】,而非子串包含——否则
+        # https://api.anthropic.com.attacker.example/ 会因含子串被误判为官方(审计 M-1 / 2-6)。
+        from urllib.parse import urlsplit
+
+        host = urlsplit(self.base_url).hostname or ""
+        return host.lower() in _OFFICIAL_HOSTS
 
 
 def _load_yaml() -> dict | None:
@@ -148,6 +153,14 @@ def load_active() -> ActiveProvider | None:
 def _env_for(provider: ActiveProvider) -> dict[str, str]:
     """把第三方供应商注入 SDK options.env;官方订阅返回 {}(用进程默认认证)。"""
     if provider.is_official or not provider.api_key:
+        return {}
+    # base_url 会带着 key 打过去,注入前校验 scheme:非 http(s)(如 file:// / 缺 scheme)
+    # 一律不注入,免得把 key 发到诡异端点(审计 M-1 / 2-6)。
+    from urllib.parse import urlsplit
+
+    scheme = urlsplit(provider.base_url).scheme.lower()
+    if scheme not in ("http", "https"):
+        print(f"⚠️ 供应商 {provider.name} 的 base_url 非 http(s),已拒绝注入:{provider.base_url}")
         return {}
     return {
         "ANTHROPIC_BASE_URL": provider.base_url,

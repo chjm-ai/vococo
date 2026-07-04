@@ -28,14 +28,32 @@ except Exception:  # pragma: no cover
 # 灾难目标:整个根 / 整个家目录 / 根通配(而非某个子目录)
 _CATASTROPHIC_TARGET = re.compile(r"(^|\s)(/|/\*|~|~/|\$HOME|\$HOME/|\*)(\s|$)")
 
-# 其余灾难级模式(literal)
+# 其余灾难级模式(literal)。注:黑名单是「减速带」不是「安全边界」——枚举永远不完整,
+# 真正的防线是边界 fail-closed + 缩小注入爆炸半径(见 安全策略优化方案.md)。这里只补
+# 「一眼灾难、日常绝不会误伤」的少数模式,提高门槛而已。
 _PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bmkfs(\.\w+)?\b"), "格式化文件系统"),
     (re.compile(r"\bdd\b[^\n]*\bof=/dev/(disk|sd|nvme|rdisk)"), "dd 写裸磁盘"),
     (re.compile(r">\s*/dev/(sd|nvme|disk|rdisk)"), "覆写裸磁盘"),
     (re.compile(r":\s*\(\s*\)\s*\{.*[|&].*\}\s*;"), "fork 炸弹"),
     (re.compile(r"\bchmod\s+-R\s+0*777\s+/(\s|$)"), "chmod -R 777 根目录"),
+    # 解释器内置删根/家目录:python -c "import shutil; shutil.rmtree('/')" 之类
+    (re.compile(r"\b(shutil\.rmtree|os\.removedirs)\s*\(\s*['\"](/|~|\$HOME)['\"/]"),
+     "解释器删根/家目录"),
 ]
+
+# find 删整树:必须同时 ①是 find ②带 -delete ③目标是灾难级(根/家目录/根通配),复用
+# 已验证的 _CATASTROPHIC_TARGET,避免 "find /tmp -delete"、"find ./x -delete" 被误伤。
+_FIND_DELETE = re.compile(r"\bfind\b")
+_HAS_DELETE = re.compile(r"\s-delete\b")
+
+
+def _find_is_catastrophic(cmd: str) -> bool:
+    return bool(
+        _FIND_DELETE.search(cmd)
+        and _HAS_DELETE.search(cmd)
+        and _CATASTROPHIC_TARGET.search(cmd)
+    )
 
 
 def _rm_is_catastrophic(cmd: str) -> bool:
@@ -53,6 +71,8 @@ def is_dangerous(command: str) -> str | None:
         return None
     if _rm_is_catastrophic(c):
         return "rm -r 删整个根/家目录"
+    if _find_is_catastrophic(c):
+        return "find 删整树(根/家目录)"
     for rx, why in _PATTERNS:
         if rx.search(c):
             return why
@@ -84,18 +104,23 @@ async def pretool_danger_hook(input_data, tool_use_id, context):
 
 # ── 审批闸:5 类「危险但非灾难」操作 → 有交互通道时请用户批准 ──────────────────
 # 都是命令级(Bash)的模式;「写工作目录外文件」是文件级,单独在 classify 里判。
-_ESCALATE_BASH: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"\bgit\s+push\b"), "git push(推送到远端,对外)"),
-    (re.compile(r"\bgit\s+reset\b[^\n]*--hard\b"), "git reset --hard(丢弃改动,不可逆)"),
-    (re.compile(r"\brm\s+-\S*[rR]"), "rm -rf(递归删除)"),
+# 第三个元素 restrict_noninteractive:非交互通道(cron/eval,无人可点审批)是否直接拒绝。
+# 只对「对外/供应链/改环境」这三类置 True(push/装包/curl|sh)——它们在自动化里被注入
+# 后果最重;rm -rf / reset 是本地操作,自动化里放行(避免卡住日常定时任务)。
+_ESCALATE_BASH: list[tuple[re.Pattern, str, bool]] = [
+    (re.compile(r"\bgit\s+push\b"), "git push(推送到远端,对外)", True),
+    (re.compile(r"\bgit\s+reset\b[^\n]*--hard\b"), "git reset --hard(丢弃改动,不可逆)", False),
+    (re.compile(r"\brm\s+-\S*[rR]"), "rm -rf(递归删除)", False),
     (
         re.compile(
             r"\b(pip3?|pipx|uv|npm|pnpm|yarn|brew|apt|apt-get|gem|cargo|go)\s+"
             r"(install|add|get|i)\b"
         ),
         "包安装(改动环境)",
+        True,
     ),
-    (re.compile(r"\b(curl|wget)\b[^\n]*\|\s*(sudo\s+)?(sh|bash|zsh)\b"), "curl|sh(下载执行,供应链风险)"),
+    (re.compile(r"\b(curl|wget)\b[^\n]*\|\s*(sudo\s+)?(sh|bash|zsh)\b"),
+     "curl|sh(下载执行,供应链风险)", True),
 ]
 
 # 会改写文件系统的工具 → 检查目标是否落在工作目录外
@@ -133,28 +158,34 @@ def _outside_cwd(path: str, cwd: str | None) -> bool:
         return False
 
 
-def classify(tool_name: str, tool_input: dict, cwd: str | None = None) -> tuple[str, str]:
-    """把一次工具调用分成 allow / escalate / block,附一句原因。
+def classify(
+    tool_name: str, tool_input: dict, cwd: str | None = None
+) -> tuple[str, str, bool]:
+    """把一次工具调用分成 allow / escalate / block,附(原因, 非交互是否拒绝)。
 
     - block:灾难级(删根/格式化…),直接拦。
     - escalate:5 类危险操作,请用户批准。
     - allow:其余,放行。
+
+    第三个返回值 restrict_noninteractive:该 escalate 操作在无交互通道(cron/eval)时
+    是否应默认拒绝(fail-closed)。allow/block 场景恒为 False(无意义)。
     """
     ti = tool_input or {}
     if tool_name == "Bash":
         cmd = ti.get("command", "") or ""
         why = is_dangerous(cmd)
         if why:
-            return ("block", why)
-        for rx, reason in _ESCALATE_BASH:
+            return ("block", why, False)
+        for rx, reason, restrict in _ESCALATE_BASH:
             if rx.search(cmd):
-                return ("escalate", reason)
-        return ("allow", "")
+                return ("escalate", reason, restrict)
+        return ("allow", "", False)
     if tool_name in _WRITE_TOOLS:
         path = ti.get("file_path") or ti.get("notebook_path") or ""
         if _outside_cwd(path, cwd):
-            return ("escalate", f"写工作目录外的文件({path})")
-    return ("allow", "")
+            # 写工作目录外:自动化通道也拒绝(可能被注入用来落地后门/改配置)
+            return ("escalate", f"写工作目录外的文件({path})", True)
+    return ("allow", "", False)
 
 
 def _deny(reason: str) -> dict:
@@ -216,25 +247,35 @@ def _describe(tool_name: str, tool_input: dict) -> str:
     return tool_name
 
 
-async def _ask_approval(tool_name: str, reason: str, tool_input: dict) -> bool:
-    """有交互通道 → 弹「允许一次 / 拒绝」按钮并阻塞等;无通道 → 放行(信任该通道)。
+def _is_group_session(session_key: str) -> bool:
+    """群聊会话(TG 群 chat_id 为负 → key 形如 tg:-123)。群里危险操作不许自批。"""
+    return bool(session_key) and session_key.startswith("tg:")
 
-    复用 ask_user 同款 clarify 机制:回复经网关「拿锁前 resolve」解除,不会死锁。
-    超时 / 发送失败 → 视为拒绝(危险操作宁可不做)。
+
+async def _approve(reason: str, detail: str, restrict_noninteractive: bool) -> bool:
+    """审批底座:有交互通道 → 弹「允许一次 / 拒绝」按钮并阻塞等。
+
+    - 群聊会话:一律拒绝(批准权不能落在群成员/被拉进群的陌生人手里,见审计 #4)。
+    - 无交互通道(cron/eval):按 restrict_noninteractive 决定——「对外/装包/持久化」类
+      默认拒绝(fail-closed,"无人可问"≠"同意"),本地操作放行。
+    - 复用 ask_user 同款 clarify 机制:回复经网关「拿锁前 resolve」解除,不会死锁。
+      超时 / 发送失败 → 视为拒绝(危险操作宁可不做)。
     """
     from ..gateway import clarify
     from ..gateway.core import Choice
 
     ctx = clarify.current()
     if ctx is None:
-        return True  # 非交互(CLI/eval/cron):无人可问,放行
+        return not restrict_noninteractive
+    if _is_group_session(ctx.session_key):
+        return False
     p = clarify.register(ctx.session_key, ["允许一次", "拒绝"])
     try:
         opts = [
             (f"/clarify {p.clarify_id} 0", "✅ 允许一次"),
             (f"/clarify {p.clarify_id} 1", "🛑 拒绝"),
         ]
-        prompt = f"⚠️ 需要批准:{reason}\n{_describe(tool_name, tool_input)}"
+        prompt = f"⚠️ 需要批准:{reason}\n{detail}"
         await ctx.adapter.present_choice(ctx.chat_id, Choice(prompt=prompt, options=opts))
     except Exception:
         clarify.resolve(p.clarify_id, "拒绝")
@@ -243,33 +284,54 @@ async def _ask_approval(tool_name: str, reason: str, tool_input: dict) -> bool:
     return answer == "允许一次"
 
 
+async def _ask_approval(
+    tool_name: str, reason: str, tool_input: dict, restrict_noninteractive: bool = False
+) -> bool:
+    """PreToolUse 审批闸调用的入口:把工具入参渲染成一行说明后走 _approve。"""
+    return await _approve(reason, _describe(tool_name, tool_input), restrict_noninteractive)
+
+
+async def require_approval(
+    reason: str, detail: str, *, restrict_noninteractive: bool = True
+) -> bool:
+    """供 MCP 工具(如 cron 启用/删除)复用的审批。默认非交互通道拒绝(持久化类操作
+    不该在 cron 上下文里被 agent 静默改动)。"""
+    return await _approve(reason, detail, restrict_noninteractive)
+
+
 async def pretool_guard_hook(input_data, tool_use_id, context):
     """PreToolUse hook:灾难级 → 拦;危险级 → 请批准;其余放行。
 
     这是接进 SDK 的那个 hook(build_hooks)。旧的 pretool_danger_hook 只做灾难拦截,
     保留供既有测试;新逻辑在此,由 DANGER_GUARD / APPROVAL_GATE 两开关分别控制。
     """
+    tool_name = input_data.get("tool_name", "") or ""
+    tool_input = input_data.get("tool_input") or {}
     try:
-        tool_name = input_data.get("tool_name", "") or ""
-        tool_input = input_data.get("tool_input") or {}
         bg = _wants_background(tool_name, tool_input)
         _hook_debug(f"[hook] tool={tool_name} run_in_background={bg}")
         # 后台任务:直接 deny 引导前台重试(见 _wants_background 上方说明),优先于其余判定
         if bg:
             _hook_debug(f"[hook] DENY background -> {tool_name}")
             return _deny_background(tool_name)
-        verdict, reason = classify(tool_name, tool_input, cwd=current_cwd())
-        if verdict == "block" and config.DANGER_GUARD:
-            return _deny(
-                f"⛔ 危险命令被 Hermes 拦截({reason})。如确需执行,请你手动在终端运行。"
-            )
-        if verdict == "escalate" and config.APPROVAL_GATE:
-            if not await _ask_approval(tool_name, reason, tool_input):
-                return _deny(
-                    f"🛑 你未批准此操作({reason})。已跳过;如需执行请手动运行或改用更安全方式。"
-                )
+        verdict, reason, restrict = classify(tool_name, tool_input, cwd=current_cwd())
     except Exception:
-        pass  # hook 出错绝不阻断正常流程(宁可放行也别把 agent 卡死)
+        # 背景判定/classify 出错时无从判定 → 放行,不阻断正常流程(这些都不是安全判定本身)
+        return {}
+    if verdict == "block" and config.DANGER_GUARD:
+        return _deny(
+            f"⛔ 危险命令被 Hermes 拦截({reason})。如确需执行,请你手动在终端运行。"
+        )
+    if verdict == "escalate" and config.APPROVAL_GATE:
+        try:
+            approved = await _ask_approval(tool_name, reason, tool_input, restrict)
+        except Exception:
+            # 审批过程本身异常(而非模型正常操作)→ fail-closed:疑似危险操作宁可拒绝
+            return _deny(f"🛑 审批过程异常,已保守拒绝此操作({reason})。请手动执行或重试。")
+        if not approved:
+            return _deny(
+                f"🛑 你未批准此操作({reason})。已跳过;如需执行请手动运行或改用更安全方式。"
+            )
     return {}
 
 
