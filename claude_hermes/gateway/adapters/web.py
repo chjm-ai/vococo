@@ -648,6 +648,13 @@ class WebAdapter:
                     behind = int(m.group(1))
             elif line:
                 files.append({"x": line[:2], "path": line[3:]})  # XY 状态码 + 路径
+        added, removed = 0, 0
+        _, stat_out, _ = await self._run_git(cwd, "diff", "HEAD", "--shortstat")
+        if stat_out.strip():
+            if m := re.search(r"(\d+) insertion", stat_out):
+                added = int(m.group(1))
+            if m := re.search(r"(\d+) deletion", stat_out):
+                removed = int(m.group(1))
         return {
             "is_repo": True,
             "branch": branch or "(游离 HEAD)",
@@ -655,6 +662,8 @@ class WebAdapter:
             "behind": behind,
             "dirty": len(files),
             "files": files[:60],  # 改动太多只回前 60 条,够看
+            "added": added,
+            "removed": removed,
         }
 
     async def _handle_conv_git(self, request: web.Request) -> web.Response:
