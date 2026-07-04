@@ -65,6 +65,39 @@ def context_window(model: str) -> int:
     return 200_000
 
 
+def _usage_tokens(u) -> int:
+    """从一条 model_usage 明细里取总吞吐(dict 或对象都兼容),用来比大小。"""
+    get = u.get if isinstance(u, dict) else (lambda k, d=0: getattr(u, k, d))
+    return sum(
+        int(get(k, 0) or 0)
+        for k in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        )
+    )
+
+
+def _main_model(model_usage: dict, resolved_model: str, fallback: str) -> str:
+    """从 model_usage(一轮里主 agent+各子代理各占一个 key)里挑出【主 agent】的模型。
+
+    优先认准用户为主 agent 选定的 resolved_model(子代理常跑更省的 Haiku,不能让它
+    顶掉面板显示);匹配不上再回落到吞吐最大的 key。旧写法 next(iter) 取字典第一个,
+    有子代理时会随缘取到子代理模型,导致顶栏显示的模型和用户所选对不上。
+    """
+    if not model_usage:
+        return fallback
+    keys = list(model_usage)
+    base = (resolved_model or "").lower()
+    if base:
+        for k in keys:
+            kl = k.lower()
+            if kl.startswith(base) or base.startswith(kl):
+                return k
+    return max(keys, key=lambda k: _usage_tokens(model_usage[k]))
+
+
 @dataclass
 class AgentReply:
     text: str
@@ -397,10 +430,11 @@ async def stream_turn(
                 turn_tokens = input_fresh + out_t  # 本轮新鲜吞吐,累计即消耗(不含缓存复读)
                 # 上下文占用先用累计值兜底,下面 get_context_usage 成功则覆盖为真实值
                 context_tokens = input_fresh + cache_read
-                # 实际模型优先取 model_usage 的 key(SDK 报告的真实模型)
+                # 实际模型取 model_usage 里【主 agent】那一档(SDK 报告的真实模型)。
+                # 有子代理时 model_usage 是多 key 字典,不能随缘取第一个。
                 mu = getattr(msg, "model_usage", None) or {}
                 if mu:
-                    used_model = next(iter(mu), used_model)
+                    used_model = _main_model(mu, resolved_model, used_model)
                 result_seen = True
                 # 真正收工:主轮 ResultMessage 到手,且没有还在跑的子代理/后台任务。
                 # 若子代理还在跑,先不收工,继续 drain——等它结果喂回主 agent、主 agent
