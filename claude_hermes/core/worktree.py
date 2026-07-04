@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
+import sys
 
 from .. import config
 from ..memory import session_store
@@ -42,10 +44,38 @@ async def _is_git_repo(path: str) -> bool:
     return code == 0 and out.strip() == "true"
 
 
+async def _current_branch(root: str) -> str:
+    """root 当前检出的分支名;游离/异常返回标记。"""
+    code, out, _ = await _git(root, "symbolic-ref", "--short", "-q", "HEAD")
+    return out.strip() if code == 0 else "(detached)"
+
+
 def _slug(conv: str) -> str:
     """conv id → 安全的分支/目录名片段(只留字母数字和 .-_)。"""
     s = re.sub(r"[^A-Za-z0-9._-]", "-", conv).strip("-._")
     return s or "session"
+
+
+async def _try_add(root: str, wt_dir: str, branch: str) -> tuple[bool, str]:
+    """在 wt_dir 建 worktree 绑到 branch;分支已存在则复用,否则新建。返回 (是否成功, 错误)。
+
+    add 前先自愈两类最常见的失败源:①失效的 worktree 登记(目录被手删但 git 还记着)
+    → git worktree prune;②同名残留目录(上次 add 半途失败/没清干净)→ 先正规 remove,
+    仍在则强删。清干净再 add,把「建失败静默回退 main」的触发概率压到极低。
+    """
+    await _git(root, "worktree", "prune")
+    if os.path.exists(wt_dir):
+        await _git(root, "worktree", "remove", "--force", wt_dir)
+        if os.path.exists(wt_dir):
+            shutil.rmtree(wt_dir, ignore_errors=True)
+    exists, _, _ = await _git(
+        root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"
+    )
+    add_args = ("worktree", "add", wt_dir, branch) if exists == 0 else (
+        "worktree", "add", wt_dir, "-b", branch
+    )
+    code, _, err = await _git(root, *add_args)
+    return code == 0, err
 
 
 async def ensure_worktree(session_key: str) -> str | None:
@@ -68,23 +98,32 @@ async def ensure_worktree(session_key: str) -> str | None:
         return None
 
     slug = _slug(session_key.split(":")[-1])
-    branch = f"hermes/{slug}"
     # 项目哈希取自 key 的第二段 p<hash>(project_root_for 已保证 key 是三段项目会话)
     phash = session_key.split(":")[1][1:]
-    wt_dir = str(_WT_BASE / phash / slug)
-    os.makedirs(os.path.dirname(wt_dir), exist_ok=True)
+    base_dir = _WT_BASE / phash
+    os.makedirs(base_dir, exist_ok=True)
 
-    # 分支可能已存在(会话删了又建同名) → 复用,不加 -b
-    code, _, _ = await _git(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
-    if code == 0:
-        code, _, _err = await _git(root, "worktree", "add", wt_dir, branch)
-    else:
-        code, _, _err = await _git(root, "worktree", "add", wt_dir, "-b", branch)
-    if code != 0:
-        return None  # 磁盘/权限/冲突等 → 回退项目根,不炸对话
+    # 主名失败(分支/目录被别处占用等)则换一次带后缀的别名再试,进一步降低回退概率
+    last_err = ""
+    for suffix in ("", "-2"):
+        branch = f"hermes/{slug}{suffix}"
+        wt_dir = str(base_dir / f"{slug}{suffix}")
+        ok, last_err = await _try_add(root, wt_dir, branch)
+        if ok:
+            session_store.set_worktree(session_key, wt_dir)
+            return wt_dir
 
-    session_store.set_worktree(session_key, wt_dir)
-    return wt_dir
+    # 全都失败 —— 绝不静默回退 main:响亮报警到日志(含当前分支,方便你立刻发现处理)。
+    # 仍返回 None(本轮回退项目根,不炸对话),但这回你在 hermes.out.log 里看得见。
+    cur = await _current_branch(root)
+    print(
+        f"[worktree] ⚠️ 会话 {session_key} 建 worktree 失败,本轮将回退到项目根 "
+        f"{root}(当前分支 {cur});若该分支是 main 则本轮改动会落到主分支! "
+        f"末次错误: {last_err.strip()[:200]}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return None
 
 
 async def remove_worktree(session_key: str) -> None:
