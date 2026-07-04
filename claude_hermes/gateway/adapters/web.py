@@ -596,14 +596,19 @@ class WebAdapter:
         }
 
     async def _handle_conv_git(self, request: web.Request) -> web.Response:
-        """会话对应项目的 git 状态;非项目会话返回 {is_project: false}。"""
+        """会话对应项目的 git 状态;非项目会话回退到 serve 进程 cwd。"""
         if (g := self._guard(request)) is not None:
             return g
-        cwd = self._conv_cwd(request.query.get("conv", ""))
+        key = config.resolve_session_key("web", request.query.get("conv", ""))
+        cwd = config.project_cwd_for(key)
+        bound = cwd is not None
         if not cwd:
-            return web.json_response({"is_project": False})
+            cwd = os.getcwd()
         info = await self._git_status(cwd)
-        info.update(is_project=True, path=cwd, name=os.path.basename(cwd) or cwd)
+        # 只有绑定项目的会话才强制显示;非项目会话仅在 cwd 真是 git 仓库时才暴露
+        if not bound and not info.get("is_repo"):
+            return web.json_response({"is_project": False})
+        info.update(is_project=True, bound_project=bound, path=cwd, name=os.path.basename(cwd) or cwd)
         return web.json_response(info)
 
     async def _handle_conv_git_branch(self, request: web.Request) -> web.Response:
