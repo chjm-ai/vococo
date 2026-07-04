@@ -23,6 +23,15 @@ nohup zsh -lc "
   cd '$ROOT'
   fastfail=0
   while [ ! -f data/.stop ]; do
+    # 保证线上始终跑 main:每轮(重)启动前若不在 main 就切回(切不动只警告,不阻塞启动)
+    cur=\$(git symbolic-ref --short -q HEAD || echo '')
+    if [ \"\$cur\" != 'main' ]; then
+      if git checkout main 2>/dev/null; then
+        echo \"[run.sh] 已切回 main(原:\$cur) \$(date '+%F %T')\"
+      else
+        echo \"[run.sh] 警告:当前在 \$cur 且切 main 失败(工作区可能有改动),本轮先用当前分支 \$(date '+%F %T')\"
+      fi
+    fi
     t0=\$(date +%s)
     PYTHONUNBUFFERED=1 .venv/bin/claude-hermes serve
     ec=\$?
