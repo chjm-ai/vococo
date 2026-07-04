@@ -161,6 +161,11 @@ class GatewayRunner:
         await self._dispatch(adapter, inc)
 
     async def run(self) -> None:
+        from ..core import worktree  # 懒加载
+
+        n = await worktree.prune_orphans()  # 启动兜底:回收无会话绑定的孤儿 worktree/悬空分支
+        if n:
+            print(f"🧹 启动清理:回收 {n} 个孤儿 worktree/悬空分支")
         clarify.register_push(self.push)  # 让 send_message 等工具能主动发消息
         # 注册取消回调到所有支持的 adapter(如 WebAdapter)
         for adapter in self.adapters.values():

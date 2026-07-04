@@ -384,6 +384,15 @@ def get_worktree(session_key: str) -> str | None:
     return (row[0] if row else None) or None
 
 
+def all_worktree_paths() -> list[str]:
+    """DB 里当前所有会话绑定的 worktree 目录 —— 启动清孤儿时的「活会话」白名单。"""
+    rows = _conn().execute(
+        "SELECT worktree_path FROM session_meta "
+        "WHERE worktree_path IS NOT NULL AND worktree_path != ''"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
 def set_worktree(session_key: str, path: str) -> None:
     """记住某会话的 worktree 目录(upsert,不动其余字段)。"""
     c = _conn()

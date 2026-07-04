@@ -78,6 +78,60 @@ async def _try_add(root: str, wt_dir: str, branch: str) -> tuple[bool, str]:
     return code == 0, err
 
 
+async def _default_branch(root: str) -> str:
+    """root 的默认主分支名(main 优先,其次 master),用于判断某分支是否「没干活」。"""
+    for b in ("main", "master"):
+        code, _, _ = await _git(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{b}")
+        if code == 0:
+            return b
+    return "main"
+
+
+async def _branch_of_worktree(root: str, path: str) -> str:
+    """查 path 这个 worktree 当前绑定的分支名(删 worktree 前用,删完就查不到了)。"""
+    _, out, _ = await _git(root, "worktree", "list", "--porcelain")
+    cur = None
+    rp = os.path.realpath(path)
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            cur = line[len("worktree "):]
+        elif line.startswith("branch ") and cur and os.path.realpath(cur) == rp:
+            return line[len("branch "):].removeprefix("refs/heads/")
+    return ""
+
+
+async def _delete_branch_if_empty(root: str, branch: str) -> bool:
+    """分支没超前默认主分支(=空分支、没干活)就删掉,返回是否删了;有独立提交则保留。"""
+    base = await _default_branch(root)
+    code, out, _ = await _git(root, "rev-list", "--count", f"{base}..{branch}")
+    if code == 0 and out.strip() == "0":
+        await _git(root, "branch", "-D", branch)  # 空分支,安全删,不攒悬空
+        return True
+    return False
+
+
+async def _prune_dangling_branches(root: str) -> int:
+    """删 root 里悬空的 hermes/* 空分支:没被任何 worktree 检出、且没超前主分支。返回删除数。
+
+    覆盖两类残留:①手动「新建分支」按钮建了但没 worktree 的(如 hermes/MMDD-HHmm);
+    ②删会话时漏删的空分支。有独立提交的分支一律保留,绝不误删工作成果。
+    """
+    _, out, _ = await _git(root, "worktree", "list", "--porcelain")
+    checked = {
+        line[len("branch "):].removeprefix("refs/heads/")
+        for line in out.splitlines() if line.startswith("branch ")
+    }
+    _, bout, _ = await _git(
+        root, "for-each-ref", "--format=%(refname:short)", "refs/heads/hermes/"
+    )
+    n = 0
+    for br in bout.splitlines():
+        br = br.strip()
+        if br and br not in checked and await _delete_branch_if_empty(root, br):
+            n += 1
+    return n
+
+
 async def ensure_worktree(session_key: str) -> str | None:
     """确保项目会话有独立 worktree;返回其路径,否则 None(回退项目根)。
 
@@ -127,11 +181,50 @@ async def ensure_worktree(session_key: str) -> str | None:
 
 
 async def remove_worktree(session_key: str) -> None:
-    """会话删除时清理 worktree(强制,连未提交改动一起删)。分支保留,避免误删工作成果。"""
+    """会话删除时把它的 worktree 清干净:删目录 + 删空分支 + prune 失效登记。
+
+    删目录后,若它绑的 hermes/* 分支没干活(没超前主分支)就一并删掉,不攒悬空分支;
+    有独立提交的分支保留,避免误删工作成果。
+    """
     path = session_store.get_worktree(session_key)
     if not path:
         return
     root = config.project_root_for(session_key)
     session_store.clear_worktree(session_key)
-    if root and os.path.isdir(root):
-        await _git(root, "worktree", "remove", "--force", path)
+    if not (root and os.path.isdir(root)):
+        return
+    branch = await _branch_of_worktree(root, path)  # 删前先拿到分支名
+    await _git(root, "worktree", "remove", "--force", path)
+    await _git(root, "worktree", "prune")
+    if branch.startswith("hermes/"):
+        await _delete_branch_if_empty(root, branch)
+
+
+async def prune_orphans() -> int:
+    """启动兜底:回收「真孤儿」—— data/worktrees 下 DB 已无会话绑定的 worktree,
+    以及悬空的 hermes/* 空分支。返回清理总数。
+
+    只碰 hermes 自己那套(data/worktrees + hermes/* 分支),绝不动 Claude Code 的
+    .claude/worktrees。活会话(DB 仍绑定)一律跳过。
+    """
+    if not _WT_BASE.exists():
+        return 0
+    bound = {os.path.realpath(p) for p in session_store.all_worktree_paths()}
+    cleaned = 0
+    for phash_dir in _WT_BASE.iterdir():
+        if not phash_dir.is_dir():
+            continue
+        root = session_store.path_for_hash(phash_dir.name)
+        if not root or not os.path.isdir(root) or not await _is_git_repo(root):
+            continue
+        for wt in phash_dir.iterdir():
+            if not wt.is_dir() or os.path.realpath(str(wt)) in bound:
+                continue  # 活会话绑着 → 跳过
+            branch = await _branch_of_worktree(root, str(wt))
+            await _git(root, "worktree", "remove", "--force", str(wt))
+            if branch.startswith("hermes/"):
+                await _delete_branch_if_empty(root, branch)
+            cleaned += 1
+        await _git(root, "worktree", "prune")
+        cleaned += await _prune_dangling_branches(root)  # 顺手清该 repo 的悬空空分支
+    return cleaned
