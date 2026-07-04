@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS projects(
   last_used REAL NOT NULL DEFAULT 0,
   hidden INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS user_prefs(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 """
 
 
@@ -74,6 +78,8 @@ def _conn() -> sqlite3.Connection:
         # chosen_model=用户为该会话选定、下一轮要用的模型(与 model「实际跑过的带日期 id」分开)
         if "chosen_model" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN chosen_model TEXT")
+        if "archived" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN archived INTEGER DEFAULT 0")
         _DB.commit()
     return _DB
 
@@ -264,7 +270,7 @@ def list_sessions(prefix: str) -> list[dict]:
         "  COALESCE(MAX(m.ctx_tokens),0), COALESCE(MAX(m.total_tokens),0), "
         "  COALESCE(MAX(m.ctx_window),0), COALESCE(MAX(m.last_in),0), "
         "  COALESCE(MAX(m.last_cache),0), COALESCE(MAX(m.last_out),0), MAX(m.model), "
-        "  MAX(m.chosen_model) "
+        "  MAX(m.chosen_model), COALESCE(MAX(m.archived),0) "
         "FROM keys k "
         "LEFT JOIN session_meta m ON k.session_key = m.session_key "
         "LEFT JOIN turns t ON t.session_key = k.session_key "
@@ -276,7 +282,8 @@ def list_sessions(prefix: str) -> list[dict]:
     for row in rows:
         key, turns, last_ts = row[0], row[1], row[2]
         item = {"key": key, "title": get_title(key) or "新对话", "turns": turns, "last_ts": last_ts}
-        item.update(_usage_fields(row[3:]))
+        item.update(_usage_fields(row[3:11]))
+        item["archived"] = bool(row[11])
         out.append(item)
     return out
 
@@ -439,3 +446,32 @@ def search(text: str, limit: int = 10) -> list[tuple[str, str, str]]:
         f"WHERE {where} ORDER BY ({score}) DESC, id DESC LIMIT ?",
         (*where_params, *score_params, limit),
     ).fetchall()
+
+
+def set_conv_archived(session_key: str, archived: bool) -> None:
+    """设置会话归档状态;若 session_meta 行不存在则先插入。"""
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta(session_key, watermark_id, archived) VALUES(?,0,?) "
+        "ON CONFLICT(session_key) DO UPDATE SET archived=excluded.archived",
+        (session_key, 1 if archived else 0),
+    )
+    c.commit()
+
+
+def get_prefs() -> dict:
+    """返回全部用户偏好(key→value 字符串字典)。"""
+    rows = _conn().execute("SELECT key, value FROM user_prefs").fetchall()
+    return {k: v for k, v in rows}
+
+
+def set_prefs(updates: dict) -> None:
+    """批量写入用户偏好;未传的 key 保持不变。"""
+    c = _conn()
+    for k, v in updates.items():
+        c.execute(
+            "INSERT INTO user_prefs(key, value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(k), str(v)),
+        )
+    c.commit()
