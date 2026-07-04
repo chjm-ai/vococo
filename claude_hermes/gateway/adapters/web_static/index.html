@@ -333,8 +333,6 @@
   .icon:active{transform:scale(.92)}
   header.bar .title{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;line-height:1.25}
   header.bar .title #convTitle{font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  header.bar .title .tdate{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  header.bar .title .tdate:empty{display:none}
   header.bar .title .tsub{display:flex;align-items:center;gap:8px;min-width:0}
   #gitBox{position:relative;flex-shrink:0}
   .tgit{font-size:10.5px;color:var(--dim);font-weight:500;font-variant-numeric:tabular-nums;
@@ -373,10 +371,11 @@
     font-weight:500;font-variant-numeric:tabular-nums;padding:5px 9px;border-radius:9px;transition:background .16s}
   #barMeta:hover{background:var(--panel2)}
   #barMeta[hidden]{display:none}
-  #barMeta .ctxbar{width:46px;height:5px;border-radius:4px;background:var(--panel2);overflow:hidden}
-  #barMeta .ctxbar i{display:block;height:100%;width:0;border-radius:4px;
-    background:linear-gradient(90deg,var(--accent),var(--user2));transition:width .45s ease,background .3s}
-  #barMeta.warn .ctxbar i{background:var(--err)}
+  #barMeta .ctxring{width:20px;height:20px;flex-shrink:0}
+  #barMeta .ctxring .track{fill:none;stroke:var(--panel2);stroke-width:2.5}
+  #barMeta .ctxring .fill{fill:none;stroke:var(--accent);stroke-width:2.5;stroke-linecap:round;
+    transform:rotate(-90deg);transform-origin:center;transition:stroke-dashoffset .45s ease,stroke .3s}
+  #barMeta.warn .ctxring .fill{stroke:var(--err)}
   #barMeta.warn #ctxPct{color:var(--err)}
   /* 上下文明细弹层(默认收起,点进度条展开)*/
   #ctxPop{position:absolute;top:calc(100% + 8px);right:0;width:248px;z-index:20;
@@ -709,7 +708,6 @@
         <div class="title">
           <span id="convTitle">主会话</span>
           <span class="tsub">
-            <span class="tdate" id="convDate"></span>
             <span id="gitBox">
               <button class="tgit" id="convGit" type="button" title="项目 Git 状态" hidden></button>
               <div id="gitPop" hidden></div>
@@ -718,7 +716,7 @@
         </div>
         <div id="ctxBox">
           <button id="barMeta" type="button" title="上下文占用 · 点击看明细" hidden>
-            <span class="ctxbar"><i id="ctxFill"></i></span>
+            <svg class="ctxring" viewBox="0 0 20 20"><circle class="track" cx="10" cy="10" r="8"/><circle class="fill" id="ctxRing" cx="10" cy="10" r="8"/></svg>
             <span id="ctxPct">0%</span>
           </button>
           <div id="ctxPop" hidden></div>
@@ -991,7 +989,7 @@ function renderMeta(){
   if(!m || (!m.ctx && !m.total)){ bar.hidden=true; pop.hidden=true; return; }  // 全新会话不显示
   bar.hidden=false;
   const win=m.win||CTX_WINDOW, pct=Math.min(100, Math.round(m.ctx/win*100)), warn=pct>=80;
-  $("#ctxFill").style.width=pct+"%"; $("#ctxPct").textContent=pct+"%";
+  $("#ctxRing").style.strokeDasharray="50.27"; $("#ctxRing").style.strokeDashoffset=String(50.27*(1-pct/100)); $("#ctxPct").textContent=pct+"%";
   bar.classList.toggle("warn", warn); pop.classList.toggle("warn", warn);
   const free=Math.max(0,win-m.ctx), fpct=Math.max(0,100-pct);
   pop.innerHTML =
@@ -1066,12 +1064,6 @@ document.addEventListener("click", e=>{ const b=$("#gitBox"); if(b && !b.contain
 function fmtTime(ts){ if(!ts) return ""; const d=new Date(ts*1000), n=new Date();
   const sameDay=d.toDateString()===n.toDateString();
   return sameDay ? d.toTimeString().slice(0,5) : (d.getMonth()+1)+"/"+d.getDate(); }
-// 详情标题下显示的日期(今天只显时间,同年显月日,跨年带年份)
-function fmtDate(ts){ if(!ts) return ""; const d=new Date(ts*1000), n=new Date(); const t=d.toTimeString().slice(0,5);
-  if(d.toDateString()===n.toDateString()) return "今天 "+t;
-  const md=(d.getMonth()+1)+"月"+d.getDate()+"日";
-  return (d.getFullYear()===n.getFullYear()?"":d.getFullYear()+"年")+md+" "+t; }
-function updateHeaderDate(){ const c=S.convs.find(x=>x.conv===S.conv); $("#convDate").textContent = c ? fmtDate(c.last_ts) : ""; }
 async function loadPrefs(){
   try{
     const r = await api("/prefs"); const p = await r.json();
@@ -1088,7 +1080,7 @@ async function loadConvs(){
   const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
   // 全部会话(含主会话)按最近活跃排序,最新的排最前面
   S.convs = [main, ...d.conversations].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
-  renderConvs(); updateHeaderDate();   // 会话刷新后同步标题栏日期(如刚落一轮 last_ts 变了)
+  renderConvs();   // 会话刷新后同步标题栏
 }
 // 从 conv id 解析它属于哪个项目:p<hash>:<convid> → hash;否则 null(默认项目)
 function convProject(conv){
@@ -1633,7 +1625,6 @@ async function openConv(conv){
   S.project=convProject(conv); S.expanded.add(grpKey(S.project)); saveExpanded();  // 活跃项目随打开的会话联动,并确保其分组展开
   const c=S.convs.find(x=>x.conv===conv);
   $("#convTitle").textContent = c ? (c.title||"新对话") : "新对话";
-  updateHeaderDate();                            // 标题下显示该会话日期
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
