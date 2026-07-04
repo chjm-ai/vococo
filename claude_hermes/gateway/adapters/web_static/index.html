@@ -465,22 +465,25 @@
   .choice button:disabled{opacity:.45;pointer-events:none}
 
   /* 工具卡片:diff / todo 清单 / 计划卡 / 命令预览(复刻 Claude Code 的结构化过程) */
-  .toolbox{display:flex;flex-direction:column;gap:8px;margin:6px 0}
-  .toolcard{border:1px solid var(--line2);border-radius:10px;overflow:hidden;font-size:13px}
-  .tc-head{padding:6px 11px;background:var(--panel2);font-weight:600;display:flex;gap:7px;align-items:center;
-    cursor:pointer;user-select:none}
-  .tc-head .tc-path{font-weight:400;color:var(--dim);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .toolbox{display:flex;flex-direction:column;gap:4px;margin:6px 0}
+  .toolcard{border:1px solid var(--line2);border-radius:8px;overflow:hidden;font-size:13px}
+  .tc-head{padding:5px 10px;background:transparent;font-weight:400;font-size:12px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--dim);
+    display:flex;gap:7px;align-items:center;cursor:pointer;user-select:none;transition:background .12s}
+  .tc-head:hover{background:var(--panel2)}
+  .tc-head.tc-warn{background:var(--panel2);color:var(--text);cursor:default}
+  .tc-head .tc-path{color:var(--dim2);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
   .tc-body{padding:8px 11px}
   .tc-body.collapsed{display:none}
   .tc-code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;
-    background:var(--panel2);padding:7px 9px;border-radius:7px;line-height:1.5}
+    background:var(--code-bg);color:var(--code-fg);padding:7px 9px;border-radius:7px;line-height:1.5}
   .diff{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;line-height:1.55;
     border-radius:7px;overflow:hidden}
   .diff .ln{display:block;padding:0 8px}
-  .diff .del{background:rgba(220,70,70,.15)}
-  .diff .add{background:rgba(70,180,100,.17)}
-  .diff .del::before{content:"− ";opacity:.7}
-  .diff .add::before{content:"+ ";opacity:.7}
+  .diff .del{background:rgba(248,81,73,.12)}
+  .diff .add{background:rgba(63,185,80,.13)}
+  .diff .del::before{content:"− ";opacity:.8;color:#f85149}
+  .diff .add::before{content:"+ ";opacity:.8;color:#3fb950}
   .todo{list-style:none;margin:0;padding:0;font-size:13px}
   .todo li{padding:3px 0;display:flex;gap:8px;align-items:flex-start;line-height:1.45}
   .todo li.done{opacity:.5;text-decoration:line-through}
@@ -1008,7 +1011,14 @@ document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contain
 
 // ── 项目 Git 状态 ─────────────────────────────────────────────────────────
 // 顶栏那颗 ⎇ 按钮:仅项目会话显示;点开弹层看改动 + 一键建分支
-function gitBtnLabel(d){ return "⎇ "+d.branch+(d.dirty?" •"+d.dirty:""); }
+function gitBtnLabel(d){
+  let s='⎇ '+esc(d.branch)+(d.dirty?' •'+d.dirty:'');
+  if(d.added||d.removed){
+    s+=' <span style="color:#3fb950">+'+d.added+'</span>'
+      +' <span style="color:#f85149">-'+d.removed+'</span>';
+  }
+  return s;
+}
 async function refreshGit(conv){
   const btn=$("#convGit"); $("#gitPop").hidden=true;
   btn.hidden=false; btn.classList.remove("dirty"); btn.textContent="⎇ …";
@@ -1018,7 +1028,7 @@ async function refreshGit(conv){
     S.git=d;
     if(!d.is_project){ btn.hidden=true; return; }
     if(!d.is_repo){ btn.textContent="⎇ 非 git 仓库"; return; }
-    btn.textContent=gitBtnLabel(d); btn.classList.toggle("dirty", d.dirty>0);
+    btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", d.dirty>0);
   }catch(e){ btn.hidden=true; }
 }
 // 默认分支名:hermes/月日-时分,方便一次会话开一条隔离分支
@@ -1053,7 +1063,7 @@ async function createGitBranch(){
     const d=await r.json();
     if(!r.ok){ err.textContent=d.error||"创建失败"; err.hidden=false; btn.disabled=false; btn.textContent="新建并切换"; return; }
     S.git=d; renderGitPop();                                       // 重绘:分支名已切到新分支
-    const b=$("#convGit"); b.textContent=gitBtnLabel(d); b.classList.toggle("dirty", d.dirty>0);
+    const b=$("#convGit"); b.innerHTML=gitBtnLabel(d); b.classList.toggle("dirty", d.dirty>0);
   }catch(e){ err.textContent="网络错误"; err.hidden=false; btn.disabled=false; btn.textContent="新建并切换"; }
 }
 $("#convGit").onclick=e=>{ e.stopPropagation(); const p=$("#gitPop");
@@ -1904,7 +1914,7 @@ function renderChoice(e){
   if(S.stream){
     // 回合进行中(审批闸/追问):嵌进当前流式气泡的过程区,绝不能删掉正在渲染的工具卡
     const card=el("div","toolcard");
-    const head=el("div","tc-head"); head.innerHTML=ic("lock")+" 需要你的确认";
+    const head=el("div","tc-head tc-warn"); head.innerHTML=ic("lock")+" 需要你的确认";
     const bodyw=el("div","tc-body");
     const p=el("div"); p.innerHTML=mdToHtml(e.prompt);
     bodyw.append(p, box);
@@ -1921,10 +1931,13 @@ function renderChoice(e){
 function toolCardShell(title, pathText, bodyEl, collapsed){
   const card=el("div","toolcard");
   const head=el("div","tc-head");
-  head.innerHTML='<span>'+title+'</span>'+(pathText?'<span class="tc-path">'+esc(pathText)+'</span>':'');
+  const chev=el("span","chev"); if(!collapsed) chev.classList.add("down");
+  const titleEl=el("span"); titleEl.innerHTML=title;
+  head.append(chev, titleEl);
+  if(pathText){ const p=el("span","tc-path"); p.textContent=pathText; head.append(p); }
   const bodyWrap=el("div","tc-body"+(collapsed?" collapsed":""));
   bodyWrap.append(bodyEl);
-  head.onclick=()=>bodyWrap.classList.toggle("collapsed");
+  head.onclick=()=>{ const c=bodyWrap.classList.toggle("collapsed"); chev.classList.toggle("down",!c); };
   card.append(head,bodyWrap);
   return card;
 }
