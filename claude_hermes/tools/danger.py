@@ -167,37 +167,43 @@ def _deny(reason: str) -> dict:
     }
 
 
-# ── 强制前台执行:把 run_in_background 改写成 false ─────────────────────────────
+# ── 强制前台执行:拦下 run_in_background,引导模型改前台重试 ────────────────────
 # 本 harness 每轮用一个 ClaudeSDKClient,收到【本轮 ResultMessage】就退出 receive_response
 # 并关闭子进程。而 run_in_background 的子代理/命令是「立即返回、真正干活排到 ResultMessage
 # 之后以 task_* 系统消息陆续上报」—— 届时子进程已被关掉,任务被腰斩:模型嘴上说「已在后台
-# 发起」,实际一步没跑,也没有任何结果/显示。故在此把后台标志改写成前台,让它们【在本轮内
-# 同步跑完】,既真执行、又能靠既有的子代理卡片实时显示。
+# 发起」,实际一步没跑,也没有任何结果/显示。
+# 修法:PreToolUse hook 检测到 run_in_background=true 就 deny,并在原因里明确要求【去掉该
+# 参数、以前台(同步)方式重新调用】。deny 是 hook 的硬拦截(危险命令拦截同款,bypassPermissions
+# 下也生效);相比 updatedInput 改写入参(疑似在 bypass 模式被 CLI 忽略),deny 更可靠。
+# 模型重试为前台后,子代理会在本轮内跑完并靠既有子代理卡片实时显示。
 # 子代理工具新版叫 Agent、老版叫 Task,两者都收;Bash 也有 run_in_background。
 _BACKGROUNDABLE = {"Agent", "Task", "Bash"}
 
 
-def _force_foreground(tool_name: str, tool_input: dict) -> dict | None:
-    """请求了后台执行 → 返回改写成前台的入参副本;否则 None(不改动)。"""
+def _wants_background(tool_name: str, tool_input: dict) -> bool:
+    """该工具调用是否请求了后台执行(run_in_background=true)。"""
     if tool_name not in _BACKGROUNDABLE:
-        return None
-    ti = tool_input or {}
-    if not ti.get("run_in_background"):
-        return None
-    patched = dict(ti)
-    patched["run_in_background"] = False
-    return patched
+        return False
+    return bool((tool_input or {}).get("run_in_background"))
 
 
-def _allow_with_input(updated_input: dict) -> dict:
-    """放行并改写入参(PreToolUse hook 的 updatedInput 机制)。"""
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "updatedInput": updated_input,
-        }
-    }
+def _deny_background(tool_name: str) -> dict:
+    return _deny(
+        f"🚫 本 harness【不支持后台任务】(run_in_background):后台任务会在本轮结束时被中断、"
+        f"永远跑不完,也没有任何结果。请【去掉 run_in_background 参数】,以【前台(同步)】方式"
+        f"重新调用 {tool_name}——前台子代理会在本轮内跑完并实时显示进度。"
+    )
+
+
+def _hook_debug(msg: str) -> None:
+    """临时诊断:把 hook 的关键决策落到独立文件,便于排查「改动是否生效」。确认后可删。"""
+    try:
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                         "data", "logs", "hook_debug.log")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
 
 
 def _describe(tool_name: str, tool_input: dict) -> str:
@@ -246,6 +252,12 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
     try:
         tool_name = input_data.get("tool_name", "") or ""
         tool_input = input_data.get("tool_input") or {}
+        bg = _wants_background(tool_name, tool_input)
+        _hook_debug(f"[hook] tool={tool_name} run_in_background={bg}")
+        # 后台任务:直接 deny 引导前台重试(见 _wants_background 上方说明),优先于其余判定
+        if bg:
+            _hook_debug(f"[hook] DENY background -> {tool_name}")
+            return _deny_background(tool_name)
         verdict, reason = classify(tool_name, tool_input, cwd=current_cwd())
         if verdict == "block" and config.DANGER_GUARD:
             return _deny(
@@ -256,10 +268,6 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
                 return _deny(
                     f"🛑 你未批准此操作({reason})。已跳过;如需执行请手动运行或改用更安全方式。"
                 )
-        # 放行:若请求了后台执行,改写成前台(见 _force_foreground 说明),否则默认放行
-        patched = _force_foreground(tool_name, tool_input)
-        if patched is not None:
-            return _allow_with_input(patched)
     except Exception:
         pass  # hook 出错绝不阻断正常流程(宁可放行也别把 agent 卡死)
     return {}
@@ -269,8 +277,8 @@ def build_hooks() -> dict | None:
     """返回挂给 ClaudeAgentOptions.hooks 的结构;SDK 不支持则 None。
 
     始终挂 PreToolUse:除危险拦截/审批闸(各由 DANGER_GUARD/APPROVAL_GATE 开关控制)外,
-    还负责把 run_in_background 改写成前台执行——这是纠正「后台任务被腰斩」的正确性修复,
-    与两个安全开关无关,故即便两开关都关也要挂上。
+    还负责拦下 run_in_background、引导模型改前台重试——这是纠正「后台任务被腰斩」的正确性
+    修复,与两个安全开关无关,故即便两开关都关也要挂上。
     """
     if HookMatcher is None:
         return None
