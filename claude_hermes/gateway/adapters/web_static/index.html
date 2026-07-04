@@ -468,18 +468,21 @@
 
   /* 工具卡片:diff / todo 清单 / 计划卡 / 命令预览(复刻 Claude Code 的结构化过程) */
   /* flow:一轮回复的过程区 —— 文字段与工具卡按真实顺序交错排列(像 Claude Code) */
-  .flow{display:flex;flex-direction:column;gap:4px}
+  .flow{display:flex;flex-direction:column;gap:2px}
   .flow>.seg{margin:2px 0}
-  .toolbox{display:flex;flex-direction:column;gap:4px;margin:6px 0}
-  .toolcard{border:1px solid var(--line2);border-radius:8px;overflow:hidden;font-size:13px}
-  .tc-head{padding:5px 10px;background:transparent;font-weight:400;font-size:12px;
+  .toolbox{display:flex;flex-direction:column;gap:2px;margin:4px 0}
+  /* 工具卡:无边框,默认收起成 1 行,点头部展开(复刻 Claude Code 的简洁风) */
+  .toolcard{font-size:13px}
+  .tc-head{padding:3px 6px;border-radius:6px;font-weight:400;font-size:12.5px;
     font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--dim);
-    display:flex;gap:7px;align-items:center;cursor:pointer;user-select:none;transition:background .12s}
+    display:flex;gap:7px;align-items:center;cursor:pointer;user-select:none;transition:background .12s,color .12s}
   .tc-head:hover{background:var(--panel2)}
-  .tc-head.tc-warn{background:var(--panel2);color:var(--text);cursor:default}
+  .tc-head.tc-warn{color:var(--text);cursor:default;background:var(--panel2);font-weight:600}
+  .tc-head.err{color:#d94f4f}                                               /* 工具出错:整行标红 */
   .tc-head .tc-path{color:var(--dim2);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
-  .tc-body{padding:8px 11px}
+  .tc-body{padding:5px 6px 7px 24px}                                        /* 展开区:左缩进对齐标题文字 */
   .tc-body.collapsed{display:none}
+  .tc-sep{height:1px;background:var(--line2);opacity:.5;margin:7px 0}        /* 展开区内:入参与结果的分隔线 */
   .tc-code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;
     background:var(--code-bg);color:var(--code-fg);padding:7px 9px;border-radius:7px;line-height:1.5}
   .diff{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;line-height:1.55;
@@ -495,18 +498,13 @@
   .todo li.doing{font-weight:600;color:var(--accent)}
   .plan{font-size:13.5px;line-height:1.6}
   .plan h1,.plan h2,.plan h3{font-size:14.5px;margin:.5em 0 .3em}
-  /* 工具结果块(⎿ 折叠展开,复刻 Claude Code 的结果预览) */
-  .tc-res{border-top:1px solid var(--line2)}
-  .tc-res-head{padding:5px 11px;font-size:12px;color:var(--dim);display:flex;gap:6px;align-items:center;
-    cursor:pointer;user-select:none}
-  .tc-res-head .tc-res-prev{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
-  .tc-res.err .tc-res-head{color:#d94f4f}
-  .tc-res-body{margin:0;padding:7px 11px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;
-    white-space:pre-wrap;word-break:break-all;line-height:1.5;background:var(--panel2);max-height:340px;overflow-y:auto}
-  .tc-res-body.collapsed{display:none}
-  /* Task 卡片内的子代理实时动态(工具步数 chips) */
-  .tc-sub{border-top:1px dashed var(--line2);padding:6px 11px;display:flex;flex-wrap:wrap;gap:4px 10px;
-    font-size:12px;color:var(--dim);align-items:center}
+  /* 工具结果:折进展开区里的输出块(不再单独占一行) */
+  .tc-res-body{margin:0;padding:7px 9px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;
+    white-space:pre-wrap;word-break:break-all;line-height:1.5;background:var(--code-bg);color:var(--code-fg);
+    border-radius:6px;max-height:340px;overflow-y:auto}
+  /* Task 卡片内的子代理实时动态(工具步数 chips):始终可见,随标题缩进 */
+  .tc-sub{padding:2px 6px 2px 24px;display:flex;flex-wrap:wrap;gap:4px 10px;
+    font-size:11.5px;color:var(--dim2);align-items:center}
   .tc-sub:empty{display:none}
 
   /* 切会话 loading 骨架屏 */
@@ -1670,7 +1668,7 @@ function renderEventsFlow(events){
       for(const x of list.slice(-8)) bits.push('<span>'+esc(x.name)+(x.ok===false?" ✗":" ✓")+'</span>');
       card._sub.innerHTML=bits.join("");
     }
-    if(finished) card.append(resultEl({ok:!failed, preview:blk.preview||"", detail:blk.detail||""}));
+    if(finished) applyResult(card, {ok:!failed, preview:blk.preview||"", detail:blk.detail||""});
     flow.append(card);
   }
   return flow;
@@ -2005,11 +2003,12 @@ function toolCardShell(title, pathText, bodyEl, collapsed){
   const chev=el("span","chev"); if(!collapsed) chev.classList.add("down");
   const titleEl=el("span"); titleEl.innerHTML=title;
   head.append(chev, titleEl);
-  if(pathText){ const p=el("span","tc-path"); p.textContent=pathText; head.append(p); }
+  const p=el("span","tc-path"); if(pathText) p.textContent=pathText; head.append(p);  // 始终留位,结果预览可后补
   const bodyWrap=el("div","tc-body"+(collapsed?" collapsed":""));
-  bodyWrap.append(bodyEl);
+  if(bodyEl) bodyWrap.append(bodyEl);
   head.onclick=()=>{ const c=bodyWrap.classList.toggle("collapsed"); chev.classList.toggle("down",!c); };
   card.append(head,bodyWrap);
+  card._head=head; card._chev=chev; card._body=bodyWrap; card._path=p;
   return card;
 }
 function diffEl(oldStr, newStr){
@@ -2038,29 +2037,27 @@ function renderSub(s, pid){
     bits.push('<span>'+esc(x.name)+(x.done?(x.ok?" ✓":" ✗"):DOTS)+'</span>');
   card._sub.innerHTML=bits.join("");
 }
-// ── 工具结果块(⎿ 折叠展开):挂在入参卡下方;没有卡的工具出错/有结果时补一张 ──
-function resultEl(e){
-  const w=el("div","tc-res"+(e.ok?"":" err"));
-  const head=el("div","tc-res-head");
-  const cv=el("span","chev");
-  head.append(cv, document.createTextNode(e.ok?"结果":"出错"));
-  if(e.preview){ const pv=el("span","tc-res-prev"); pv.textContent=e.preview; head.append(pv); }
-  const body=el("pre","tc-res-body collapsed");
-  body.textContent=(e.detail||"").trim()||"(无输出)";
-  head.onclick=()=>{ const c=body.classList.toggle("collapsed"); cv.classList.toggle("down", !c); };
-  w.append(head, body);
-  return w;
+// ── 工具结果:折进入参卡的展开区(同一张卡,不再单独占一行)──────────────────
+// 没有入参卡的工具(出错/有输出)才补一张最小卡
+function applyResult(card, e){
+  const det=(e.detail||"").trim();
+  if(!e.ok) card._head.classList.add("err");                 // 出错:整行标红
+  if(e.preview && card._path && !card._path.textContent) card._path.textContent=e.preview;  // 头部无路径时补结果预览
+  if(det){
+    if(card._body.childNodes.length) card._body.append(el("div","tc-sep"));  // 已有入参 → 加分隔线
+    const body=el("pre","tc-res-body"); body.textContent=det; card._body.append(body);
+  }
 }
 function attachResult(s, e){
   const det=(e.detail||"").trim();
   let card=e.tool_id ? s.cards[e.tool_id] : null;
   if(!card){
     if(e.ok && !det) return;              // 成功且无输出:chip 的 ✓ 已表达,不补卡
-    card=toolCardShell(ic(e.ok?"wrench":"warn")+" "+esc(e.name), "", el("div"), true);
+    card=toolCardShell(ic(e.ok?"wrench":"warn")+" "+esc(e.name), "", null, true);
     if(e.tool_id) s.cards[e.tool_id]=card;
     s.flow.append(card);
   }
-  card.append(resultEl(e));
+  applyResult(card, e);
   scrollDown();
 }
 function renderToolCard(name, inp){
@@ -2090,15 +2087,15 @@ function renderToolCard(name, inp){
       return toolCardShell(ic("compass")+" 执行计划","",p,false);
     }
     if(name==="Write")     return toolCardShell(ic("doc")+" 写文件", inp.file_path||"", diffEl("", inp.content||""), true);
-    if(name==="Edit")      return toolCardShell(ic("edit")+" 编辑", inp.file_path||"", diffEl(inp.old_string||"", inp.new_string||""), false);
+    if(name==="Edit")      return toolCardShell(ic("edit")+" 编辑", inp.file_path||"", diffEl(inp.old_string||"", inp.new_string||""), true);
     if(name==="MultiEdit"){
       const wrap=el("div");
       for(const ed of (inp.edits||[])) wrap.append(diffEl(ed.old_string||"", ed.new_string||""));
-      return toolCardShell(ic("edit")+" 多处编辑", inp.file_path||"", wrap, false);
+      return toolCardShell(ic("edit")+" 多处编辑", inp.file_path||"", wrap, true);
     }
     if(name==="Bash"){
       const c=el("div","tc-code"); c.textContent=inp.command||"";
-      return toolCardShell("⌘ 命令", inp.description||"", c, false);
+      return toolCardShell("⌘ 命令", inp.description||"", c, true);
     }
     // 其余工具:有明显目标参数才给个折叠预览,避免刷屏
     const hint=inp.file_path||inp.path||inp.pattern||inp.query||inp.url||"";
