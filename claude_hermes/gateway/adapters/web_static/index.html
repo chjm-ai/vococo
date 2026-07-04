@@ -373,10 +373,12 @@
     font-weight:500;font-variant-numeric:tabular-nums;padding:5px 9px;border-radius:9px;transition:background .16s}
   #barMeta:hover{background:var(--panel2)}
   #barMeta[hidden]{display:none}
-  #barMeta .ctxbar{width:46px;height:5px;border-radius:4px;background:var(--panel2);overflow:hidden}
-  #barMeta .ctxbar i{display:block;height:100%;width:0;border-radius:4px;
-    background:linear-gradient(90deg,var(--accent),var(--user2));transition:width .45s ease,background .3s}
-  #barMeta.warn .ctxbar i{background:var(--err)}
+  #barMeta .ctxring{flex-shrink:0;transform:rotate(-90deg)}
+  #barMeta .ctxring circle{fill:none;stroke-width:4}
+  #barMeta .ctxring .rbg{stroke:var(--panel2)}
+  #barMeta .ctxring .rfg{stroke:var(--accent);stroke-linecap:round;
+    stroke-dasharray:97.389;stroke-dashoffset:97.389;transition:stroke-dashoffset .45s ease,stroke .3s}
+  #barMeta.warn .ctxring .rfg{stroke:var(--err)}
   #barMeta.warn #ctxPct{color:var(--err)}
   /* 上下文明细弹层(默认收起,点进度条展开)*/
   #ctxPop{position:absolute;top:calc(100% + 8px);right:0;width:248px;z-index:20;
@@ -521,11 +523,13 @@
   #empty .sug:hover{border-color:var(--accent)}
   #empty .sug:active{transform:scale(.96)}
 
-  /* 输入区:全透明,仅保留底部安全区 */
+  /* 输入区:全透明,底部只留必要间距(收紧 home 条安全区,无安全区设备给小基线) */
   #composer{background:transparent;padding:0 12px;
-    padding-bottom:env(safe-area-inset-bottom);
+    padding-bottom:0;
     position:absolute;bottom:0;left:0;right:0;z-index:10;
     transition:transform .35s cubic-bezier(.4,0,.2,1)}
+  /* PWA 自带强制安全区,这里不再额外留白 */
+  body.kb #composer{padding-bottom:0}
   /* 顶栏始终可见,输入框不随滚动隐藏 */
   #composer .cwrap{max-width:820px;margin:0 auto}
 /* 输入框底部工具条:左=上传,右=模型 + 发送 */
@@ -690,7 +694,6 @@
         <div class="title">
           <span id="convTitle">主会话</span>
           <span class="tsub">
-            <span class="tdate" id="convDate"></span>
             <span id="gitBox">
               <button class="tgit" id="convGit" type="button" title="项目 Git 状态" hidden></button>
               <div id="gitPop" hidden></div>
@@ -699,7 +702,10 @@
         </div>
         <div id="ctxBox">
           <button id="barMeta" type="button" title="上下文占用 · 点击看明细" hidden>
-            <span class="ctxbar"><i id="ctxFill"></i></span>
+            <svg class="ctxring" viewBox="0 0 36 36" width="20" height="20" aria-hidden="true">
+              <circle class="rbg" cx="18" cy="18" r="15.5"></circle>
+              <circle class="rfg" id="ctxFill" cx="18" cy="18" r="15.5"></circle>
+            </svg>
             <span id="ctxPct">0%</span>
           </button>
           <div id="ctxPop" hidden></div>
@@ -969,7 +975,7 @@ function renderMeta(){
   if(!m || (!m.ctx && !m.total)){ bar.hidden=true; pop.hidden=true; return; }  // 全新会话不显示
   bar.hidden=false;
   const win=m.win||CTX_WINDOW, pct=Math.min(100, Math.round(m.ctx/win*100)), warn=pct>=80;
-  $("#ctxFill").style.width=pct+"%"; $("#ctxPct").textContent=pct+"%";
+  $("#ctxFill").style.strokeDashoffset=(97.389*(1-pct/100)).toFixed(2); $("#ctxPct").textContent=pct+"%";
   bar.classList.toggle("warn", warn); pop.classList.toggle("warn", warn);
   const free=Math.max(0,win-m.ctx), fpct=Math.max(0,100-pct);
   pop.innerHTML =
@@ -988,7 +994,7 @@ document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contain
 
 // ── 项目 Git 状态 ─────────────────────────────────────────────────────────
 // 顶栏那颗 ⎇ 按钮:仅项目会话显示;点开弹层看改动 + 一键建分支
-function gitBtnLabel(d){ return "⎇ "+d.branch+(d.dirty?" •"+d.dirty:""); }
+function gitBtnLabel(d){ return "⎇ "+d.branch+(d.dirty?" · "+d.dirty+" 改动":""); }
 async function refreshGit(conv){
   const btn=$("#convGit"); $("#gitPop").hidden=true;
   if(!convProject(conv)){ btn.hidden=true; S.git=null; return; }   // 非项目会话:无 git
@@ -1004,7 +1010,7 @@ async function refreshGit(conv){
 }
 // 默认分支名:hermes/月日-时分,方便一次会话开一条隔离分支
 function defaultBranchName(){ const d=new Date(), p=n=>String(n).padStart(2,"0");
-  return "hermes/"+p(d.getMonth()+1)+p(d.getDate())+"-"+p(d.getHours())+p(d.getMinutes()); }
+  return "hermes/"+p(d.getMonth()+1)+p(d.getDate())+"-"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
 function renderGitPop(){
   const d=S.git, pop=$("#gitPop");
   if(!d || !d.is_project){ pop.hidden=true; return; }
@@ -1050,7 +1056,7 @@ function fmtDate(ts){ if(!ts) return ""; const d=new Date(ts*1000), n=new Date()
   if(d.toDateString()===n.toDateString()) return "今天 "+t;
   const md=(d.getMonth()+1)+"月"+d.getDate()+"日";
   return (d.getFullYear()===n.getFullYear()?"":d.getFullYear()+"年")+md+" "+t; }
-function updateHeaderDate(){ const c=S.convs.find(x=>x.conv===S.conv); $("#convDate").textContent = c ? fmtDate(c.last_ts) : ""; }
+function updateHeaderDate(){}  // 时间已从标题下方移除,改由 git 分支行(refreshGit)常驻显示
 async function loadConvs(){
   const r = await api("/conversations"); const d = await r.json();
   const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
@@ -1122,6 +1128,19 @@ function newChatIn(hash){
   const conv="local-"+(hash?("p"+hash+":"):"")+id;
   S.convs.unshift({conv,title:"新对话",turns:0,last_ts:null});
   openConv(conv); $("#ta").focus();
+  if(hash) autoBranch(conv);   // 项目会话:自动开一条时间戳隔离分支
+}
+// 新建项目会话时自动 checkout -b hermes/时间戳;失败静默(非 git 仓库 / 撞名等)
+async function autoBranch(conv){
+  try{
+    const r=await api("/conv/git/branch",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({conv, name:defaultBranchName()})});
+    if(!r.ok) return;
+    const d=await r.json();
+    if(S.conv!==conv) return;                                    // 期间切走了,丢弃
+    S.git=d;
+    const b=$("#convGit"); b.hidden=false; b.textContent=gitBtnLabel(d); b.classList.toggle("dirty", d.dirty>0);
+  }catch(e){}
 }
 function newChat(){ newChatIn(S.project); }
 
