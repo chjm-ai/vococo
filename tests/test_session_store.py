@@ -15,8 +15,8 @@ def test_append_and_load_recent(isolated):
 def test_sessions_isolated_by_key(isolated):
     from claude_hermes.memory import session_store
 
-    session_store.append("cli", "给 cli 的", "")
-    session_store.append("tg:1", "给 tg 的", "")
+    session_store.append("cli", "给 cli 的", "回 cli")
+    session_store.append("tg:1", "给 tg 的", "回 tg")
     assert len(session_store.load_recent("cli")) == 1
     assert len(session_store.load_recent("tg:1")) == 1
 

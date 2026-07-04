@@ -42,13 +42,18 @@ class _WebSink(Sink):
 
     像 Telegram 一样发【全文快照】而非增量:每个 thinking/text 事件都带当前累积
     的完整内容。这样断线补发时任何一帧都能把画面修正确,丢几帧也不会缺字。
+
+    正文按【段】发:顶层工具一启动就切新段(seg 自增),text 帧带 seg 序号和
+    该段的全文快照。前端按段建独立文字块,与工具卡按到达顺序交错排列 ——
+    这才是 Claude Code 那种"说一句、跑个工具、接着说"的画面。
     """
 
     def __init__(self, adapter: "WebAdapter", conv: str):
         super().__init__()
         self.a = adapter
         self.conv = conv
-        self._text = ""  # 累积正文,每次发全文
+        self._seg = 0  # 当前文字段序号
+        self._text = ""  # 当前段累积正文,每次发该段全文
         self._think = ""  # 累积思考
         self.a._emit({"conv": conv, "type": "start"})
 
@@ -58,11 +63,17 @@ class _WebSink(Sink):
 
     async def text(self, text: str) -> None:
         self._text += text
-        self.a._emit({"conv": self.conv, "type": "text", "text": self._text})
+        self.a._emit(
+            {"conv": self.conv, "type": "text", "seg": self._seg, "text": self._text}
+        )
 
     async def tool_started(
         self, name: str, tool_id: str = "", parent_id: str | None = None
     ) -> None:
+        # 顶层工具启动且当前段已有文字 → 切段,之后的正文进新文字块(交错排布)
+        if not parent_id and self._text:
+            self._seg += 1
+            self._text = ""
         # parent 非空 = 子代理(Task)内部的工具,前端嵌进对应 Task 卡片
         self.a._emit(
             {
@@ -220,7 +231,13 @@ class WebAdapter:
             return  # 没有进行中的回合,零散帧忽略
         if t in ("thinking", "text"):
             st["phase"] = "回复中" if t == "text" else "思考中"
-            st["frames"] = [(s, p) for s, p in st["frames"] if p.get("type") != t]
+            # text 是分段全文快照:同段只留最新一帧(不同段各留各的,保住交错顺序);
+            # thinking 全局只留最新一帧。
+            seg = payload.get("seg")
+            st["frames"] = [
+                (s, p) for s, p in st["frames"]
+                if p.get("type") != t or (t == "text" and p.get("seg") != seg)
+            ]
             st["frames"].append((seq, payload))
         elif t in ("tool_start", "tool_input", "tool_end"):
             st["phase"] = f"执行 {payload.get('name') or '工具'}"

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 import time
@@ -84,6 +85,11 @@ def _conn() -> sqlite3.Connection:
         # NULL=没有独立 worktree,回退项目根/进程默认目录。
         if "worktree_path" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN worktree_path TEXT")
+        # 迁移:turns 增 events 列 —— 该轮的过程时间线(文字段+工具调用)JSON,
+        # 供前端刷新后完整重建"工具卡与文字交错"的画面;老行为 NULL(只有纯文本)。
+        tcols = {r[1] for r in _DB.execute("PRAGMA table_info(turns)")}
+        if "events" not in tcols:
+            _DB.execute("ALTER TABLE turns ADD COLUMN events TEXT")
         _DB.commit()
     return _DB
 
@@ -110,18 +116,22 @@ def load_recent(session_key: str, limit: int = 40) -> list[Turn]:
 
 
 def load_history(session_key: str, limit: int = 40) -> list[dict]:
-    """历史展示用:含进行中 turn,pending=True 标注。"""
+    """历史展示用:含进行中 turn,pending=True 标注;events 是该轮过程时间线。"""
     c = _conn()
     wm = _watermark(c, session_key)
     rows = c.execute(
-        "SELECT user_text, assistant_text FROM turns "
+        "SELECT user_text, assistant_text, events FROM turns "
         "WHERE session_key=? AND id>? ORDER BY id DESC LIMIT ?",
         (session_key, wm, limit),
     ).fetchall()
-    return [
-        {"user": u, "assistant": a, "pending": a == ""}
-        for u, a in reversed(rows)
-    ]
+    out: list[dict] = []
+    for u, a, ev in reversed(rows):
+        try:
+            events = json.loads(ev) if ev else []
+        except (json.JSONDecodeError, ValueError):
+            events = []
+        out.append({"user": u, "assistant": a, "pending": a == "", "events": events})
+    return out
 
 
 def new_session(session_key: str) -> None:
@@ -193,10 +203,19 @@ def start_turn(session_key: str, user_text: str) -> int:
     return cur.lastrowid  # type: ignore[return-value]
 
 
-def finish_turn(turn_id: int, assistant_text: str) -> None:
-    """用 AI 回复填完 start_turn 占的坑。"""
+def finish_turn(turn_id: int, assistant_text: str, events: list | None = None) -> None:
+    """用 AI 回复填完 start_turn 占的坑;events=该轮过程时间线(可选)。"""
     c = _conn()
-    c.execute("UPDATE turns SET assistant_text=? WHERE id=?", (assistant_text, turn_id))
+    ev_json = None
+    if events:
+        try:
+            ev_json = json.dumps(events, ensure_ascii=False)
+        except (TypeError, ValueError):
+            ev_json = None  # 时间线序列化失败不影响正文落库
+    c.execute(
+        "UPDATE turns SET assistant_text=?, events=? WHERE id=?",
+        (assistant_text, ev_json, turn_id),
+    )
     c.commit()
 
 

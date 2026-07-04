@@ -155,6 +155,71 @@ class Sink:
         return ""
 
 
+class _Timeline:
+    """把一轮事件流录成可落库的时间线:文字段与工具调用按真实顺序交错。
+
+    结构(JSON 可序列化):
+    [{"type":"text","text":...},
+     {"type":"tool","name":...,"id":...,"input":{...},"ok":...,"preview":...,
+      "detail":...,"subs":[{"name","ok"},...]}]
+    刷新页面时 /history 带回这份时间线,前端据此原样重建工具卡与文字的交错画面。
+    """
+
+    MAX_BLOCKS = 400  # 极端长轮次的保险丝:超出只记数,不再膨胀
+
+    def __init__(self) -> None:
+        self.blocks: list[dict] = []
+        self._by_id: dict[str, dict] = {}  # 顶层工具 id → block(配对 input/结果)
+
+    def text(self, t: str) -> None:
+        if self.blocks and self.blocks[-1]["type"] == "text":
+            self.blocks[-1]["text"] += t
+        elif len(self.blocks) < self.MAX_BLOCKS:
+            self.blocks.append({"type": "text", "text": t})
+
+    def tool_started(self, name: str, tool_id: str, parent_id: str | None) -> None:
+        if parent_id:  # 子代理内部工具:挂进所属 Task 块的 subs,不占顶层块
+            parent = self._by_id.get(parent_id)
+            if parent is not None:
+                parent.setdefault("subs", []).append({"name": name, "ok": True})
+            return
+        if len(self.blocks) >= self.MAX_BLOCKS:
+            return
+        block = {"type": "tool", "name": name, "id": tool_id, "ok": True}
+        self.blocks.append(block)
+        if tool_id:
+            self._by_id[tool_id] = block
+
+    def tool_input(self, tool_id: str, tool_input: dict, parent_id: str | None) -> None:
+        if parent_id:
+            return
+        block = self._by_id.get(tool_id)
+        if block is not None:
+            block["input"] = tool_input
+
+    def tool_finished(
+        self, name: str, ok: bool, preview: str, tool_id: str,
+        detail: str, parent_id: str | None,
+    ) -> None:
+        if parent_id:
+            parent = self._by_id.get(parent_id)
+            if parent is not None:  # 子步只标最后一个未完成的同名项
+                for sub in reversed(parent.get("subs", [])):
+                    if sub["name"] == name and "done" not in sub:
+                        sub.update(done=True, ok=ok)
+                        break
+            return
+        block = self._by_id.get(tool_id)
+        if block is None:  # 没配上 id(如 hook 拦截):回退找最后一个同名未完成块
+            block = next(
+                (b for b in reversed(self.blocks)
+                 if b["type"] == "tool" and b["name"] == name and "preview" not in b),
+                None,
+            )
+        if block is not None:
+            block.update(ok=ok, preview=preview, detail=detail)
+
+
 async def converse(
     session_key: str,
     user_text: str,
@@ -183,17 +248,24 @@ async def converse(
     stored_user = store_user if store_user is not None else user_text
     turn_id = session_store.start_turn(session_key, stored_user)
     reply: AgentReply | None = None
+    timeline = _Timeline()  # 录过程时间线,轮末随正文落库(刷新可重建工具卡)
     try:
         async for ev in stream_turn(history, user_text, model=model, images=images, cwd=cwd):
             if isinstance(ev, TextDelta):
+                timeline.text(ev.text)
                 await sink.text(ev.text)
             elif isinstance(ev, ThinkingDelta):
                 await sink.thinking(ev.text)
             elif isinstance(ev, ToolStarted):
+                timeline.tool_started(ev.name, ev.tool_id, ev.parent_id)
                 await sink.tool_started(ev.name, ev.tool_id, ev.parent_id)
             elif isinstance(ev, ToolInput):
+                timeline.tool_input(ev.tool_id, ev.tool_input, ev.parent_id)
                 await sink.tool_input(ev.name, ev.tool_id, ev.tool_input, ev.parent_id)
             elif isinstance(ev, ToolFinished):
+                timeline.tool_finished(
+                    ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id
+                )
                 await sink.tool_finished(
                     ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id
                 )
@@ -202,7 +274,7 @@ async def converse(
     finally:
         danger.reset_cwd(cwd_token)
     if reply is not None:
-        session_store.finish_turn(turn_id, reply.text)
+        session_store.finish_turn(turn_id, reply.text, events=timeline.blocks)
         if reply.context_tokens or reply.turn_tokens:
             session_store.record_usage(
                 session_key,
