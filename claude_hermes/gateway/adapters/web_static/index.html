@@ -1139,6 +1139,9 @@ function renderConvs(){
     }
   }
   const addp=el("div","projgrp projadd"); addp.textContent="＋ 新建项目…"; addp.onclick=openProjModal; box.append(addp);
+  // 同步标题栏:loadConvs 刷新 S.convs 后调 renderConvs,标题可能已更新
+  const activeConv=S.convs.find(c=>c.conv===S.conv);
+  if(activeConv) $("#convTitle").textContent=activeConv.title||"新对话";
 }
 
 // ── 项目 ─────────────────────────────────────────────────────────────────
