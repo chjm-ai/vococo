@@ -997,7 +997,6 @@ document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contain
 function gitBtnLabel(d){ return "⎇ "+d.branch+(d.dirty?" · "+d.dirty+" 改动":""); }
 async function refreshGit(conv){
   const btn=$("#convGit"); $("#gitPop").hidden=true;
-  if(!convProject(conv)){ btn.hidden=true; S.git=null; return; }   // 非项目会话:无 git
   btn.hidden=false; btn.classList.remove("dirty"); btn.textContent="⎇ …";
   try{
     const r=await api("/conv/git?conv="+encodeURIComponent(String(conv).replace(/^local-/,""))); const d=await r.json();

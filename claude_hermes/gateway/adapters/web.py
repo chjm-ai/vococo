@@ -156,6 +156,10 @@ class WebAdapter:
         self._clients: set[asyncio.Queue[tuple[int, str]]] = set()
         self._seq = 0  # 全局单调递增的事件编号
         self._buffer: deque[tuple[int, str]] = deque(maxlen=512)  # 断线补发用的环形缓冲
+        # 每会话「进行中那一轮」的活状态快照:conv -> {started, phase, frames:[(seq,payload)]}。
+        # 刷新/首连时据此「状态先行、内容随后」地恢复——先秒推一条状态帧让用户知道
+        # 「这轮还在跑、到哪一步」(避免空窗误发),再慢慢补回思考/正文/工具帧。
+        self._live: dict[str, dict] = {}
         self._runner: web.AppRunner | None = None
         self._cancel_callback: Callable[[str], bool] | None = None
 
@@ -186,11 +190,41 @@ class WebAdapter:
         payload = {**payload, "id": seq}
         data = json.dumps(payload, ensure_ascii=False)
         self._buffer.append((seq, data))
+        self._track_live(payload, seq)  # 维护「进行中那一轮」快照,供刷新恢复
         for q in list(self._clients):
             try:
                 q.put_nowait((seq, data))
             except asyncio.QueueFull:
                 pass
+
+    def _track_live(self, payload: dict, seq: int) -> None:
+        """把每帧折进 conv 的「进行中回合」快照;start 开一轮,done/message 收一轮。
+
+        text/thinking 是全文快照,同类型只留最新一帧(防长回复撑爆);工具帧按序累积。
+        这样首连时只需重放这一小撮帧,就能把画面恢复到当前进度,而非翻遍全局缓冲。
+        """
+        conv = payload.get("conv")
+        if not conv:
+            return
+        t = payload.get("type")
+        if t == "start":
+            self._live[conv] = {
+                "started": time.time(), "phase": "思考中", "frames": [(seq, payload)]
+            }
+            return
+        if t in ("done", "message"):
+            self._live.pop(conv, None)  # 一轮结束(choice 是审批暂停,不收轮)
+            return
+        st = self._live.get(conv)
+        if st is None:
+            return  # 没有进行中的回合,零散帧忽略
+        if t in ("thinking", "text"):
+            st["phase"] = "回复中" if t == "text" else "思考中"
+            st["frames"] = [(s, p) for s, p in st["frames"] if p.get("type") != t]
+            st["frames"].append((seq, payload))
+        elif t in ("tool_start", "tool_input", "tool_end"):
+            st["phase"] = f"执行 {payload.get('name') or '工具'}"
+            st["frames"].append((seq, payload))
 
     # ── Web Push 系统通知 ────────────────────────────────────────────────
     def _push_notify(
@@ -290,7 +324,31 @@ class WebAdapter:
         self._clients.add(q)  # 先挂上队列,再补发,漏网的靠前端按 id 去重
         try:
             await resp.write(b": connected\n\n")
-            # 补发断线期间漏掉的事件(全文快照,直接重放即还原画面)
+            # 首连(刷新/新开)不带 Last-Event-ID:两阶段恢复「进行中那一轮」——
+            # 先秒推状态帧(几十字节,让用户立刻看到"还在跑、到哪步",不会误发),
+            # 内容帧随后慢补。旧历史仍走 /history 拉,不在此重放。
+            if not raw_last and self._live:
+                now = time.time()
+                for conv, st in list(self._live.items()):  # 阶段①:状态帧先行
+                    status = json.dumps(
+                        {
+                            "conv": conv, "type": "live_status",
+                            "phase": st.get("phase", ""),
+                            "elapsed": max(0, int(now - st.get("started", now))),
+                        },
+                        ensure_ascii=False,
+                    )
+                    # 不带 SSE id:纯状态提示,不去重、不污染重连游标
+                    await resp.write(f"data: {status}\n\n".encode("utf-8"))
+                for conv, st in list(self._live.items()):  # 阶段②:内容帧随后
+                    # 按 seq 升序补发,保证前端按 id 去重时单调不丢帧
+                    for seq, payload in sorted(st["frames"], key=lambda x: x[0]):
+                        if payload.get("type") == "start":  # start 带真实已跑秒数
+                            payload = {**payload,
+                                       "elapsed": max(0, int(now - st.get("started", now)))}
+                        data = json.dumps(payload, ensure_ascii=False)
+                        await resp.write(f"id: {seq}\ndata: {data}\n\n".encode("utf-8"))
+            # 重连:补发断线期间漏掉的事件(全文快照,直接重放即还原画面)
             for seq, data in list(self._buffer):
                 if seq > last_id:
                     await resp.write(f"id: {seq}\ndata: {data}\n\n".encode("utf-8"))
@@ -596,14 +654,19 @@ class WebAdapter:
         }
 
     async def _handle_conv_git(self, request: web.Request) -> web.Response:
-        """会话对应项目的 git 状态;非项目会话返回 {is_project: false}。"""
+        """会话对应项目的 git 状态;非项目会话回退到 serve 进程 cwd。"""
         if (g := self._guard(request)) is not None:
             return g
-        cwd = self._conv_cwd(request.query.get("conv", ""))
+        key = config.resolve_session_key("web", request.query.get("conv", ""))
+        cwd = config.project_cwd_for(key)
+        bound = cwd is not None
         if not cwd:
-            return web.json_response({"is_project": False})
+            cwd = os.getcwd()
         info = await self._git_status(cwd)
-        info.update(is_project=True, path=cwd, name=os.path.basename(cwd) or cwd)
+        # 只有绑定项目的会话才强制显示;非项目会话仅在 cwd 真是 git 仓库时才暴露
+        if not bound and not info.get("is_repo"):
+            return web.json_response({"is_project": False})
+        info.update(is_project=True, bound_project=bound, path=cwd, name=os.path.basename(cwd) or cwd)
         return web.json_response(info)
 
     async def _handle_conv_git_branch(self, request: web.Request) -> web.Response:
