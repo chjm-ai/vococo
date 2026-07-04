@@ -173,8 +173,12 @@ async def converse(
 
     from ..tools import danger  # 懒加载,避免 config↔tools 循环
 
+    from ..core import worktree  # 懒加载
+
     history = session_store.load_recent(session_key)
-    cwd = config.project_cwd_for(session_key)  # 项目会话→该文件夹当 cwd;否则 None(进程默认目录)
+    # 项目会话首次干活时懒创建独立 worktree(每会话一分支,物理隔离);非项目会话直接跳过
+    await worktree.ensure_worktree(session_key)
+    cwd = config.project_cwd_for(session_key)  # 有 worktree→用它;否则项目根;再否则 None(进程默认)
     cwd_token = danger.set_cwd(cwd)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
     stored_user = store_user if store_user is not None else user_text
     turn_id = session_store.start_turn(session_key, stored_user)

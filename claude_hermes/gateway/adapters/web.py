@@ -595,7 +595,11 @@ class WebAdapter:
         body = await request.json()
         conv = str(body.get("conv") or "")
         if conv and conv != "main":
-            session_store.delete_session(config.resolve_session_key("web", conv))
+            from ...core import worktree  # 懒加载
+
+            key = config.resolve_session_key("web", conv)
+            await worktree.remove_worktree(key)  # 先清 worktree(删库会抹掉绑定字段)
+            session_store.delete_session(key)
         return web.json_response({"ok": True})
 
     # ── 项目 Git 状态 ────────────────────────────────────────────────────
@@ -678,6 +682,11 @@ class WebAdapter:
         except (json.JSONDecodeError, ValueError):
             return web.json_response({"error": "bad json"}, status=400)
         name = (body.get("name") or "").strip()
+        from ...core import worktree  # 懒加载
+
+        # 先确保该会话有独立 worktree,再在它自己的目录里建分支 —— 只影响本会话,不动别人
+        key = config.resolve_session_key("web", str(body.get("conv") or ""))
+        await worktree.ensure_worktree(key)
         cwd = self._conv_cwd(str(body.get("conv") or ""))
         if not cwd:
             return web.json_response({"error": "该会话不是项目会话"}, status=400)

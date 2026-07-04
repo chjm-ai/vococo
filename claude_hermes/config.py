@@ -177,8 +177,8 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     return SESSION_KEY if UNIFY_SESSIONS else f"{platform}:{chat_id}"
 
 
-def project_cwd_for(session_key: str) -> str | None:
-    """项目会话的工作目录(cwd);非项目会话返回 None(用进程默认目录)。
+def project_root_for(session_key: str) -> str | None:
+    """项目会话绑定的仓库根目录(不含 worktree);非项目会话返回 None。
 
     项目会话 key 形如 web:p<hash>:<conv>(三段);其余(main/默认项目的老
     web:<conv>/TG/CLI)都不带项目哈希,返回 None。反查走 session_store 的
@@ -190,6 +190,22 @@ def project_cwd_for(session_key: str) -> str | None:
 
         return session_store.path_for_hash(parts[1][1:])
     return None
+
+
+def project_cwd_for(session_key: str) -> str | None:
+    """会话实际工作目录(cwd):优先该会话独占的 worktree,否则回退项目根。
+
+    每会话一 worktree(见 core.worktree)后,同一项目下不同会话各在各的物理目录、
+    各在各的分支 —— cwd 从「按项目」升级为「按会话」,这是隔离的关键一步。
+    worktree 还没建(会话没发过消息)或已被清理 → 回退项目根,行为同旧版。
+    """
+    root = project_root_for(session_key)
+    if root is None:
+        return None
+    from .memory import session_store
+
+    wt = session_store.get_worktree(session_key)
+    return wt if wt and os.path.isdir(wt) else root
 
 
 # === Skill 加载范围 ===
