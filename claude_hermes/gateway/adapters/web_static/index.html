@@ -526,11 +526,13 @@
   #empty .sug:hover{border-color:var(--accent)}
   #empty .sug:active{transform:scale(.96)}
 
-  /* 输入区:全透明,仅保留底部安全区 */
+  /* 输入区:全透明,桌面端底部留间距 */
   #composer{background:transparent;padding:0 12px;
-    padding-bottom:env(safe-area-inset-bottom);
     position:absolute;bottom:0;left:0;right:0;z-index:10;
     transition:transform .35s cubic-bezier(.4,0,.2,1)}
+  @media(min-width:641px){
+    #composer{padding-bottom:12px}
+  }
   /* 顶栏始终可见,输入框不随滚动隐藏 */
   #composer .cwrap{max-width:820px;margin:0 auto}
 /* 输入框底部工具条:左=上传,右=模型 + 发送 */
