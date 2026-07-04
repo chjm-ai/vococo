@@ -373,12 +373,10 @@
     font-weight:500;font-variant-numeric:tabular-nums;padding:5px 9px;border-radius:9px;transition:background .16s}
   #barMeta:hover{background:var(--panel2)}
   #barMeta[hidden]{display:none}
-  #barMeta .ctxring{flex-shrink:0;transform:rotate(-90deg)}
-  #barMeta .ctxring circle{fill:none;stroke-width:4}
-  #barMeta .ctxring .rbg{stroke:var(--panel2)}
-  #barMeta .ctxring .rfg{stroke:var(--accent);stroke-linecap:round;
-    stroke-dasharray:97.389;stroke-dashoffset:97.389;transition:stroke-dashoffset .45s ease,stroke .3s}
-  #barMeta.warn .ctxring .rfg{stroke:var(--err)}
+  #barMeta .ctxbar{width:46px;height:5px;border-radius:4px;background:var(--panel2);overflow:hidden}
+  #barMeta .ctxbar i{display:block;height:100%;width:0;border-radius:4px;
+    background:linear-gradient(90deg,var(--accent),var(--user2));transition:width .45s ease,background .3s}
+  #barMeta.warn .ctxbar i{background:var(--err)}
   #barMeta.warn #ctxPct{color:var(--err)}
   /* 上下文明细弹层(默认收起,点进度条展开)*/
   #ctxPop{position:absolute;top:calc(100% + 8px);right:0;width:248px;z-index:20;
@@ -422,6 +420,11 @@
   .status{font-size:13px;color:var(--dim);margin:6px 0 0;display:flex;flex-wrap:wrap;gap:4px 12px}
   .status .chip{display:inline-flex;align-items:center}
   .status .chip.live{color:var(--accent)}
+  .status .statusstop{margin-left:auto;flex-shrink:0;width:24px;height:24px;border-radius:50%;
+    background:var(--err);color:#fff;font-size:11px;line-height:1;display:inline-flex;
+    align-items:center;justify-content:center;cursor:pointer;border:none}
+  .status .statusstop:hover{filter:brightness(1.1)}
+  .status .statusstop:active{transform:scale(.9)}
   .dots{display:inline-flex;gap:3px;margin-left:5px;align-items:center}
   .dots i{width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.28;animation:blink 1.2s infinite}
   .dots i:nth-child(2){animation-delay:.2s} .dots i:nth-child(3){animation-delay:.4s}
@@ -523,13 +526,11 @@
   #empty .sug:hover{border-color:var(--accent)}
   #empty .sug:active{transform:scale(.96)}
 
-  /* 输入区:全透明,底部只留必要间距(收紧 home 条安全区,无安全区设备给小基线) */
+  /* 输入区:全透明,仅保留底部安全区 */
   #composer{background:transparent;padding:0 12px;
-    padding-bottom:0;
+    padding-bottom:env(safe-area-inset-bottom);
     position:absolute;bottom:0;left:0;right:0;z-index:10;
     transition:transform .35s cubic-bezier(.4,0,.2,1)}
-  /* PWA 自带强制安全区,这里不再额外留白 */
-  body.kb #composer{padding-bottom:0}
   /* 顶栏始终可见,输入框不随滚动隐藏 */
   #composer .cwrap{max-width:820px;margin:0 auto}
 /* 输入框底部工具条:左=上传,右=模型 + 发送 */
@@ -556,6 +557,18 @@
   #modelPop .mi:hover{background:var(--panel2)}
   #modelPop .mi.on{color:var(--accent)}
   #modelPop .mi .mk{color:var(--accent);font-size:12px;flex-shrink:0}
+  #pending{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
+  #pending:empty{display:none}
+  #pending.shake{animation:shake .3s}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}
+  #pending .pi{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:10px;
+    background:var(--card);border:1px solid var(--line2);font-size:13px;color:var(--dim)}
+  #pending .pi .clock{flex-shrink:0}
+  #pending .pi .ptext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #pending .pi .pdel{flex-shrink:0;width:20px;height:20px;border-radius:50%;border:none;cursor:pointer;
+    background:transparent;color:var(--dim);font-size:15px;line-height:1;display:inline-flex;
+    align-items:center;justify-content:center}
+  #pending .pi .pdel:hover{background:var(--err);color:#fff}
   #thumbs{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
   #thumbs .t{position:relative}
   #thumbs img{width:56px;height:56px;object-fit:cover;border-radius:10px;border:1px solid var(--line2)}
@@ -694,6 +707,7 @@
         <div class="title">
           <span id="convTitle">主会话</span>
           <span class="tsub">
+            <span class="tdate" id="convDate"></span>
             <span id="gitBox">
               <button class="tgit" id="convGit" type="button" title="项目 Git 状态" hidden></button>
               <div id="gitPop" hidden></div>
@@ -702,10 +716,7 @@
         </div>
         <div id="ctxBox">
           <button id="barMeta" type="button" title="上下文占用 · 点击看明细" hidden>
-            <svg class="ctxring" viewBox="0 0 36 36" width="20" height="20" aria-hidden="true">
-              <circle class="rbg" cx="18" cy="18" r="15.5"></circle>
-              <circle class="rfg" id="ctxFill" cx="18" cy="18" r="15.5"></circle>
-            </svg>
+            <span class="ctxbar"><i id="ctxFill"></i></span>
             <span id="ctxPct">0%</span>
           </button>
           <div id="ctxPop" hidden></div>
@@ -732,6 +743,7 @@
     </div>
     <form id="composer" autocomplete="off">
       <div class="cwrap">
+        <div id="pending"></div>
         <div id="thumbs"></div>
         <div class="inrow">
           <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
@@ -783,6 +795,8 @@ const S = {
   histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁
   pendingChoice: {},    // conv → choice 事件:审批发给非当前会话时暂存,切回该会话再渲染
   live: {},             // conv → 进行中回合的事件缓冲:任意会话(含后台)都记录,切回时重放重建流式气泡
+  pending: {},          // conv → 待发送队列 [{id,text,images}]:上一个任务没结束时点发送,暂存,任务完成自动发
+  pendId: 0,            // 待发送项自增 id,供删除定位
   convFilter: localStorage.getItem("hermes_conv_filter") || "all",
   archived: (()=>{ try{ return new Set(JSON.parse(localStorage.getItem("hermes_archived")||"[]")); } catch(e){ return new Set(); } })(),
 };
@@ -975,7 +989,7 @@ function renderMeta(){
   if(!m || (!m.ctx && !m.total)){ bar.hidden=true; pop.hidden=true; return; }  // 全新会话不显示
   bar.hidden=false;
   const win=m.win||CTX_WINDOW, pct=Math.min(100, Math.round(m.ctx/win*100)), warn=pct>=80;
-  $("#ctxFill").style.strokeDashoffset=(97.389*(1-pct/100)).toFixed(2); $("#ctxPct").textContent=pct+"%";
+  $("#ctxFill").style.width=pct+"%"; $("#ctxPct").textContent=pct+"%";
   bar.classList.toggle("warn", warn); pop.classList.toggle("warn", warn);
   const free=Math.max(0,win-m.ctx), fpct=Math.max(0,100-pct);
   pop.innerHTML =
@@ -994,12 +1008,12 @@ document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contain
 
 // ── 项目 Git 状态 ─────────────────────────────────────────────────────────
 // 顶栏那颗 ⎇ 按钮:仅项目会话显示;点开弹层看改动 + 一键建分支
-function gitBtnLabel(d){ return "⎇ "+d.branch+(d.dirty?" · "+d.dirty+" 改动":""); }
+function gitBtnLabel(d){ return "⎇ "+d.branch+(d.dirty?" •"+d.dirty:""); }
 async function refreshGit(conv){
   const btn=$("#convGit"); $("#gitPop").hidden=true;
   btn.hidden=false; btn.classList.remove("dirty"); btn.textContent="⎇ …";
   try{
-    const r=await api("/conv/git?conv="+encodeURIComponent(String(conv).replace(/^local-/,""))); const d=await r.json();
+    const r=await api("/conv/git?conv="+encodeURIComponent(conv)); const d=await r.json();
     if(S.conv!==conv) return;                                      // 期间切走了,丢弃结果
     S.git=d;
     if(!d.is_project){ btn.hidden=true; return; }
@@ -1009,7 +1023,7 @@ async function refreshGit(conv){
 }
 // 默认分支名:hermes/月日-时分,方便一次会话开一条隔离分支
 function defaultBranchName(){ const d=new Date(), p=n=>String(n).padStart(2,"0");
-  return "hermes/"+p(d.getMonth()+1)+p(d.getDate())+"-"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
+  return "hermes/"+p(d.getMonth()+1)+p(d.getDate())+"-"+p(d.getHours())+p(d.getMinutes()); }
 function renderGitPop(){
   const d=S.git, pop=$("#gitPop");
   if(!d || !d.is_project){ pop.hidden=true; return; }
@@ -1055,7 +1069,7 @@ function fmtDate(ts){ if(!ts) return ""; const d=new Date(ts*1000), n=new Date()
   if(d.toDateString()===n.toDateString()) return "今天 "+t;
   const md=(d.getMonth()+1)+"月"+d.getDate()+"日";
   return (d.getFullYear()===n.getFullYear()?"":d.getFullYear()+"年")+md+" "+t; }
-function updateHeaderDate(){}  // 时间已从标题下方移除,改由 git 分支行(refreshGit)常驻显示
+function updateHeaderDate(){ const c=S.convs.find(x=>x.conv===S.conv); $("#convDate").textContent = c ? fmtDate(c.last_ts) : ""; }
 async function loadConvs(){
   const r = await api("/conversations"); const d = await r.json();
   const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
@@ -1127,24 +1141,6 @@ function newChatIn(hash){
   const conv="local-"+(hash?("p"+hash+":"):"")+id;
   S.convs.unshift({conv,title:"新对话",turns:0,last_ts:null});
   openConv(conv); $("#ta").focus();
-  if(hash) autoBranch(conv);   // 项目会话:自动开一条时间戳隔离分支
-}
-// 新建项目会话时:仅当项目目录确实是 git 仓库,才自动 checkout -b hermes/时间戳;失败静默
-async function autoBranch(conv){
-  const real=String(conv).replace(/^local-/,"");   // 后端按 p<hash>:<id> 解析目录,本地前缀要去掉
-  try{
-    const sr=await api("/conv/git?conv="+encodeURIComponent(real));   // 判定条件:是不是 git 仓库
-    if(!sr.ok) return;
-    const st=await sr.json();
-    if(!st.is_project || !st.is_repo) return;                    // 非项目 / 非 git 仓库 → 不建分支
-    const r=await api("/conv/git/branch",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({conv:real, name:defaultBranchName()})});
-    if(!r.ok) return;
-    const d=await r.json();
-    if(S.conv!==conv) return;                                    // 期间切走了,丢弃
-    S.git=d;
-    const b=$("#convGit"); b.hidden=false; b.textContent=gitBtnLabel(d); b.classList.toggle("dirty", d.dirty>0);
-  }catch(e){}
 }
 function newChat(){ newChatIn(S.project); }
 
@@ -1579,16 +1575,7 @@ async function delConv(conv){
 
 // ── 归档 + 会话筛选 ──────────────────────────────────────────────────────
 function saveArchived(){ try{ localStorage.setItem("hermes_archived", JSON.stringify([...S.archived])); }catch(e){} }
-async function toggleArchive(conv){
-  const archiving=!S.archived.has(conv);
-  if(archiving && convProject(conv)){                            // 归档项目会话:有未提交改动才拦一下
-    try{
-      const r=await api("/conv/git?conv="+encodeURIComponent(String(conv).replace(/^local-/,"")));
-      if(r.ok){ const d=await r.json();
-        if(d.is_repo && d.dirty>0 && !confirm("该分支「"+d.branch+"」还有 "+d.dirty+" 处未提交改动,确定归档吗?")) return;
-      }
-    }catch(e){}                                                  // git 查不到就不拦,静默归档
-  }
+function toggleArchive(conv){
   if(S.archived.has(conv)) S.archived.delete(conv); else S.archived.add(conv);
   saveArchived(); renderConvs();
 }
@@ -1632,7 +1619,7 @@ async function openConv(conv){
   updateHeaderDate();                            // 标题下显示该会话日期
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
-  renderConvs(); closeSidebar();
+  renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
   const cached = S.histCache[conv];
   const isLocal = String(conv).startsWith("local-");
   const hasMsgs = c && c.turns > 0;             // 侧栏记录里该会话有历史消息
@@ -1812,7 +1799,8 @@ function renderStatus(){
   // 有正文 或 有工具在跑 → 工作中;纯思考(啥都没出)→ 思考中(始终带动画,像 TG)
   const working = hasBody || t.some(x=>!x.done);
   const label = working ? "工作中" : "思考中";
-  S.stream.status.innerHTML = '<span class="chip live">'+label+DOTS+esc(tick)+'</span>';
+  S.stream.status.innerHTML = '<span class="chip live">'+label+DOTS+esc(tick)+'</span>'
+    + '<button type="button" class="statusstop" title="停止回复" aria-label="停止回复">■</button>';
 }
 function finalizeStream(finalText){
   if(!S.stream) return;
@@ -1854,17 +1842,18 @@ function handleEvent(e){
     if(e.type==="choice"){ S.pendingChoice[e.conv]=e; loadConvs(); return; }
     // 该会话这一轮结束了 → 之前暂存的审批已作废,清掉
     if(e.type==="done"||e.type==="message"){ delete S.pendingChoice[e.conv]; loadConvs(); }
+    if(e.type==="done") flushPending(e.conv);  // 后台会话任务完成 → 补发其待发送队列
     return;
   }
   // 当前会话本轮结束 → 清掉可能残留的暂存审批
   if(e.type==="done"||e.type==="message") delete S.pendingChoice[e.conv];
   if(STREAMY.indexOf(e.type)>=0){ applyStreamEvent(e); return; }
   switch(e.type){
-    case "done": finalizeStream(e.text); setMeta(e); loadConvs(); break;
+    case "done": finalizeStream(e.text); setMeta(e); loadConvs(); flushPending(e.conv); break;
     case "message": // 命令回复 / 报错 / cron 推送
       if(S.stream && !S.stream.body.dataset.raw){ finalizeStream(e.text); }
       else { S.stream=null; addBubble("ai", e.text); }
-      loadConvs(); break;
+      loadConvs(); flushPending(e.conv); break;
     case "choice": delete S.pendingChoice[e.conv]; renderChoice(e); break;
   }
 }
@@ -1903,7 +1892,7 @@ function maybeReplayStream(conv){
 }
 function renderChoice(e){
   const box=el("div","choice");
-  for(const [cmd,label] of e.options){ const btn=el("button"); btn.textContent=label; btn.onclick=()=>{ box.remove(); send(cmd, label); }; box.append(btn); }
+  for(const [cmd,label] of e.options){ const btn=el("button"); btn.textContent=label; btn.onclick=()=>{ box.remove(); send(cmd, label, {forceSend:true}); }; box.append(btn); }
   if(S.stream){
     // 回合进行中(审批闸/追问):嵌进当前流式气泡的过程区,绝不能删掉正在渲染的工具卡
     const card=el("div","toolcard");
@@ -2030,6 +2019,8 @@ function renderToolCard(name, inp){
 async function send(text, display, opts){
   opts=opts||{};
   text=(text||"").trim(); if(!text && !S.images.length) return;
+  // 上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发(审批/语音走 forceSend 立即发)
+  if(S.stream && !opts.forceSend){ if(queuePending(text, S.images.slice())){ S.images=[]; renderThumbs(); $("#ta").value=""; autoGrow(); } return; }
   const imgs=S.images.map(x=>x.url);
   // display:点按钮时传选项文字,气泡显示友好文字而非原始命令(如 /clarify id 0)
   const shown=(display!=null)?display:text;
@@ -2059,10 +2050,10 @@ async function sendCmd(cmd){
     if(wasLocal) setTimeout(loadConvs, 400);
   }catch(err){ addBubble("ai","⚠️ 发送失败:"+err.message); }
 }
+// 输入框按钮恒为「发送」;停止改由"工作中"状态行右侧的按钮承担
 function updateSendBtn(){
   const btn=$("#sendBtn"); if(!btn) return;
-  if(S.stream){ btn.textContent="■"; btn.classList.add("stop-mode"); }
-  else { btn.textContent="↑"; btn.classList.remove("stop-mode"); }
+  btn.textContent="↑"; btn.classList.remove("stop-mode");
 }
 async function stopReply(){
   if(!S.stream) return;
@@ -2071,12 +2062,59 @@ async function stopReply(){
   try{ await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})}); }
   catch(e){ /* 网络异常忽略,前端已处理 */ }
 }
-$("#composer").onsubmit = e=>{ e.preventDefault(); if(S.stream) stopReply(); else send($("#ta").value); };
+// ── 待发送队列 ────────────────────────────────────────────────────────────
+function queuePending(text, images){
+  if(!text && !(images||[]).length) return;
+  const q = S.pending[S.conv] || (S.pending[S.conv]=[]);
+  if(q.length>=3){ pendFull(); return false; }  // 满 3 条不再排队,抖一下提示
+  q.push({id:++S.pendId, text, images:images||[]});
+  drawPending();
+  return true;
+}
+// 队列已满:让待发送区抖一下,给个"到上限了"的即时反馈
+function pendFull(){
+  const box=$("#pending"); if(!box) return;
+  box.classList.remove("shake"); void box.offsetWidth; box.classList.add("shake");
+}
+function drawPending(){
+  const box=$("#pending"); if(!box) return;
+  box.innerHTML="";
+  for(const it of (S.pending[S.conv]||[])){
+    const row=el("div","pi");
+    const clk=el("span","clock"); clk.textContent="⏳";
+    const tx=el("span","ptext"); tx.textContent=it.text||"(图片)";
+    const del=el("button","pdel"); del.type="button"; del.title="删除"; del.textContent="×";
+    del.onclick=()=>removePending(it.id);
+    row.append(clk,tx,del); box.append(row);
+  }
+}
+function removePending(id){
+  const q=S.pending[S.conv]; if(!q) return;
+  const i=q.findIndex(x=>x.id===id); if(i<0) return;
+  q.splice(i,1); if(!q.length) delete S.pending[S.conv]; drawPending();
+}
+// 任务完成 → 发出该会话待发送队列的第一条(逐条发:发一条,等它 done 再发下一条)
+function flushPending(conv){
+  const q=S.pending[conv]; if(!q || !q.length) return;
+  const item=q.shift(); if(!q.length) delete S.pending[conv];
+  if(conv===S.conv){
+    drawPending();
+    S.images=(item.images||[]).slice(); renderThumbs();
+    send(item.text, null, {forceSend:true});
+    return;
+  }
+  // 后台会话:直接发,不渲染,靠 SSE 缓冲在切回时重建
+  const payload={conv, text:item.text, images:(item.images||[]).map(x=>({data:x.data,media_type:x.media_type}))};
+  api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(loadConvs).catch(()=>{});
+}
+$("#composer").onsubmit = e=>{ e.preventDefault(); send($("#ta").value); };
 $("#ta").addEventListener("keydown", e=>{
   // 输入法组合中(中文/日文等候选未上屏)的回车只上屏,不发送
   if(e.isComposing || e.keyCode===229) return;
-  if(e.key==="Enter" && !e.shiftKey && window.innerWidth>760){ e.preventDefault(); if(S.stream) stopReply(); else send($("#ta").value); }
+  if(e.key==="Enter" && !e.shiftKey && window.innerWidth>760){ e.preventDefault(); send($("#ta").value); }
 });
+// "工作中"状态行右侧的停止按钮(状态行每秒重绘,用事件委托一次绑定)
+document.addEventListener("click", e=>{ if(e.target.closest(".statusstop")){ e.preventDefault(); stopReply(); } });
 function autoGrow(){ const t=$("#ta"); t.style.height="auto"; t.style.height=Math.min(t.scrollHeight,160)+"px"; }
 $("#ta").addEventListener("input", autoGrow);
 // 欢迎屏快捷入口:点击直接发送
@@ -2205,7 +2243,7 @@ async function onRecStop(){
       // 转写成功:文字回填占位气泡,再复用它自动发给 Claude(不重复冒泡)
       b.classList.remove("voicebub"); b.textContent=d.text;
       REC.state="idle";
-      await send(d.text, null, {reuseBubble:true});
+      await send(d.text, null, {reuseBubble:true, forceSend:true});
     } else { voiceFail(b, d.error); REC.state="idle"; }
   }catch(e){ voiceFail(b, "转写失败:"+e.message); REC.state="idle"; }
   setRecUI();
