@@ -226,17 +226,6 @@ def _deny_background(tool_name: str) -> dict:
     )
 
 
-def _hook_debug(msg: str) -> None:
-    """临时诊断:把 hook 的关键决策落到独立文件,便于排查「改动是否生效」。确认后可删。"""
-    try:
-        p = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                         "data", "logs", "hook_debug.log")
-        with open(p, "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
-    except Exception:
-        pass
-
-
 def _describe(tool_name: str, tool_input: dict) -> str:
     """给审批弹窗一行「具体要干什么」。"""
     ti = tool_input or {}
@@ -308,11 +297,8 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
     tool_name = input_data.get("tool_name", "") or ""
     tool_input = input_data.get("tool_input") or {}
     try:
-        bg = _wants_background(tool_name, tool_input)
-        _hook_debug(f"[hook] tool={tool_name} run_in_background={bg}")
         # 后台任务:直接 deny 引导前台重试(见 _wants_background 上方说明),优先于其余判定
-        if bg:
-            _hook_debug(f"[hook] DENY background -> {tool_name}")
+        if _wants_background(tool_name, tool_input):
             return _deny_background(tool_name)
         verdict, reason, restrict = classify(tool_name, tool_input, cwd=current_cwd())
     except Exception:
