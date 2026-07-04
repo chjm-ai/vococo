@@ -1000,7 +1000,7 @@ async function refreshGit(conv){
   if(!convProject(conv)){ btn.hidden=true; S.git=null; return; }   // 非项目会话:无 git
   btn.hidden=false; btn.classList.remove("dirty"); btn.textContent="⎇ …";
   try{
-    const r=await api("/conv/git?conv="+encodeURIComponent(conv)); const d=await r.json();
+    const r=await api("/conv/git?conv="+encodeURIComponent(String(conv).replace(/^local-/,""))); const d=await r.json();
     if(S.conv!==conv) return;                                      // 期间切走了,丢弃结果
     S.git=d;
     if(!d.is_project){ btn.hidden=true; return; }
@@ -1130,11 +1130,16 @@ function newChatIn(hash){
   openConv(conv); $("#ta").focus();
   if(hash) autoBranch(conv);   // 项目会话:自动开一条时间戳隔离分支
 }
-// 新建项目会话时自动 checkout -b hermes/时间戳;失败静默(非 git 仓库 / 撞名等)
+// 新建项目会话时:仅当项目目录确实是 git 仓库,才自动 checkout -b hermes/时间戳;失败静默
 async function autoBranch(conv){
+  const real=String(conv).replace(/^local-/,"");   // 后端按 p<hash>:<id> 解析目录,本地前缀要去掉
   try{
+    const sr=await api("/conv/git?conv="+encodeURIComponent(real));   // 判定条件:是不是 git 仓库
+    if(!sr.ok) return;
+    const st=await sr.json();
+    if(!st.is_project || !st.is_repo) return;                    // 非项目 / 非 git 仓库 → 不建分支
     const r=await api("/conv/git/branch",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({conv, name:defaultBranchName()})});
+      body:JSON.stringify({conv:real, name:defaultBranchName()})});
     if(!r.ok) return;
     const d=await r.json();
     if(S.conv!==conv) return;                                    // 期间切走了,丢弃
@@ -1575,7 +1580,16 @@ async function delConv(conv){
 
 // ── 归档 + 会话筛选 ──────────────────────────────────────────────────────
 function saveArchived(){ try{ localStorage.setItem("hermes_archived", JSON.stringify([...S.archived])); }catch(e){} }
-function toggleArchive(conv){
+async function toggleArchive(conv){
+  const archiving=!S.archived.has(conv);
+  if(archiving && convProject(conv)){                            // 归档项目会话:有未提交改动才拦一下
+    try{
+      const r=await api("/conv/git?conv="+encodeURIComponent(String(conv).replace(/^local-/,"")));
+      if(r.ok){ const d=await r.json();
+        if(d.is_repo && d.dirty>0 && !confirm("该分支「"+d.branch+"」还有 "+d.dirty+" 处未提交改动,确定归档吗?")) return;
+      }
+    }catch(e){}                                                  // git 查不到就不拦,静默归档
+  }
   if(S.archived.has(conv)) S.archived.delete(conv); else S.archived.add(conv);
   saveArchived(); renderConvs();
 }
