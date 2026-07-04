@@ -1889,9 +1889,12 @@ function applyStreamEvent(e){
       else s.tools.push({name:e.name, id:e.tool_id, done:false, ok:true, subN:0});
       renderStatus(); break; }
     case "tool_input": { const s=ensureStream();
-      if(e.parent) break;   // 子代理内部工具的入参不展大卡片(动态在 Task 卡里),避免刷屏
+      if(e.parent) break;   // 子代理内部工具的入参不展大卡片(动态在子代理卡里),避免刷屏
       const card=renderToolCard(e.name, e.input||{});
-      if(card){ if(e.tool_id) s.cards[e.tool_id]=card; s.toolbox.append(card); scrollDown(); } break; }
+      if(card){ if(e.tool_id) s.cards[e.tool_id]=card; s.toolbox.append(card); scrollDown();
+        // 子代理卡片刚建好:若它的内部工具事件已先到(存在 s.subs),补渲染一次动态区
+        if(card._sub && e.tool_id && s.subs[e.tool_id]) renderSub(s, e.tool_id);
+      } break; }
     case "tool_end": { const s=ensureStream();
       if(e.parent){ subUpsert(s, e.parent, {name:e.name, id:e.tool_id, done:true, ok:e.ok}); renderStatus(); break; }
       // 优先按 tool_id 配对(并行同名工具不会错标),回退按名字
@@ -1994,7 +1997,7 @@ function attachResult(s, e){
 }
 function renderToolCard(name, inp){
   try{
-    if(name==="Task"){
+    if(name==="Task"||name==="Agent"){   // 子代理:新版工具名 Agent,老版 Task,两者都收
       // 子代理卡片:标题=描述,收起的正文=完整指令;动态区(_sub)实时滚动工具步
       const meta=el("div","tc-code");
       meta.textContent=(inp.subagent_type?("类型:"+inp.subagent_type+"\n\n"):"")+(inp.prompt||"");

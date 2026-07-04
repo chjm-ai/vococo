@@ -167,6 +167,39 @@ def _deny(reason: str) -> dict:
     }
 
 
+# ── 强制前台执行:把 run_in_background 改写成 false ─────────────────────────────
+# 本 harness 每轮用一个 ClaudeSDKClient,收到【本轮 ResultMessage】就退出 receive_response
+# 并关闭子进程。而 run_in_background 的子代理/命令是「立即返回、真正干活排到 ResultMessage
+# 之后以 task_* 系统消息陆续上报」—— 届时子进程已被关掉,任务被腰斩:模型嘴上说「已在后台
+# 发起」,实际一步没跑,也没有任何结果/显示。故在此把后台标志改写成前台,让它们【在本轮内
+# 同步跑完】,既真执行、又能靠既有的子代理卡片实时显示。
+# 子代理工具新版叫 Agent、老版叫 Task,两者都收;Bash 也有 run_in_background。
+_BACKGROUNDABLE = {"Agent", "Task", "Bash"}
+
+
+def _force_foreground(tool_name: str, tool_input: dict) -> dict | None:
+    """请求了后台执行 → 返回改写成前台的入参副本;否则 None(不改动)。"""
+    if tool_name not in _BACKGROUNDABLE:
+        return None
+    ti = tool_input or {}
+    if not ti.get("run_in_background"):
+        return None
+    patched = dict(ti)
+    patched["run_in_background"] = False
+    return patched
+
+
+def _allow_with_input(updated_input: dict) -> dict:
+    """放行并改写入参(PreToolUse hook 的 updatedInput 机制)。"""
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": updated_input,
+        }
+    }
+
+
 def _describe(tool_name: str, tool_input: dict) -> str:
     """给审批弹窗一行「具体要干什么」。"""
     ti = tool_input or {}
@@ -223,13 +256,22 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
                 return _deny(
                     f"🛑 你未批准此操作({reason})。已跳过;如需执行请手动运行或改用更安全方式。"
                 )
+        # 放行:若请求了后台执行,改写成前台(见 _force_foreground 说明),否则默认放行
+        patched = _force_foreground(tool_name, tool_input)
+        if patched is not None:
+            return _allow_with_input(patched)
     except Exception:
         pass  # hook 出错绝不阻断正常流程(宁可放行也别把 agent 卡死)
     return {}
 
 
 def build_hooks() -> dict | None:
-    """返回挂给 ClaudeAgentOptions.hooks 的结构;两开关全关或 SDK 不支持则 None。"""
-    if not (config.DANGER_GUARD or config.APPROVAL_GATE) or HookMatcher is None:
+    """返回挂给 ClaudeAgentOptions.hooks 的结构;SDK 不支持则 None。
+
+    始终挂 PreToolUse:除危险拦截/审批闸(各由 DANGER_GUARD/APPROVAL_GATE 开关控制)外,
+    还负责把 run_in_background 改写成前台执行——这是纠正「后台任务被腰斩」的正确性修复,
+    与两个安全开关无关,故即便两开关都关也要挂上。
+    """
+    if HookMatcher is None:
         return None
     return {"PreToolUse": [HookMatcher(matcher=None, hooks=[pretool_guard_hook])]}
