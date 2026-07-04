@@ -127,14 +127,37 @@ def test_guard_hook_denies_catastrophic():
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_guard_hook_escalate_no_channel_allows():
-    # 无交互通道(clarify.current()==None)→ 放行,不阻断(适配 CLI/eval/cron)
+def test_guard_hook_escalate_no_channel_restricted_denies():
+    # 无交互通道(cron/eval)+ 受限类操作(git push/装包/curl|sh)→ fail-closed 拒绝
     out = anyio.run(
         lambda: pretool_guard_hook(
             {"tool_name": "Bash", "tool_input": {"command": "git push"}}, None, {}
         )
     )
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_guard_hook_escalate_no_channel_nonrestricted_allows():
+    # 无交互通道 + 非受限类(rm -rf 子目录 / reset)→ 仍放行,不卡日常自动化
+    out = anyio.run(
+        lambda: pretool_guard_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "rm -rf ./build"}}, None, {}
+        )
+    )
     assert out == {}
+
+
+def test_classify_returns_restrict_flag():
+    assert classify("Bash", {"command": "git push"}) == ("escalate", classify(
+        "Bash", {"command": "git push"})[1], True)
+    assert classify("Bash", {"command": "rm -rf ./x"})[2] is False
+
+
+def test_find_delete_root_blocked():
+    assert is_dangerous("find / -delete") is not None
+    assert is_dangerous("find ~ -name '*.log' -delete") is not None
+    # 子目录 find -delete 不该误伤
+    assert is_dangerous("find ./build -name '*.tmp' -delete") is None
 
 
 class _FakeAdapter:

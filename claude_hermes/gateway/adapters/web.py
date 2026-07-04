@@ -15,6 +15,7 @@ Web 端不改写 Markdown 表格(浏览器能原生渲染),这正是"样式更�
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
 import re
@@ -35,6 +36,43 @@ from .base import ImageAttachment, Incoming
 from .web_push import PUSH
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
+
+# 纵深防御(审计 web#5/#9 · 2-9)。CSP 里 script/style 仍留 'unsafe-inline'——前端是单文件
+# 内联脚本,去掉会整页崩;但收紧 connect/img、禁 frame 嵌入/base/object/表单外发,给「未来
+# 新增 innerHTML 分支忘了转义」兜底。frame-ancestors 'none' 顺带防点击劫持。
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "connect-src 'self'; "
+    "base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'"
+)
+
+
+def _same_origin(origin: str, host: str) -> bool:
+    """Origin 的 host:port 是否与请求的 Host 一致(同源)。用于挡跨站写 / DNS rebinding。"""
+    from urllib.parse import urlsplit
+
+    return bool(host) and urlsplit(origin).netloc.lower() == host.strip().lower()
+
+
+@web.middleware
+async def _security_mw(request: web.Request, handler):
+    """① 状态变更请求带跨源 Origin → 拒绝(挡 DNS rebinding / 跨站 POST);
+    ② 给非流式响应补 CSP / nosniff / DENY 等安全头。"""
+    if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        origin = request.headers.get("Origin")
+        if origin and not _same_origin(origin, request.headers.get("Host", "")):
+            return web.json_response({"error": "cross-origin forbidden"}, status=403)
+    resp = await handler(request)
+    # SSE 等已 prepare 的流式响应不能再改头,跳过
+    if not getattr(resp, "prepared", False):
+        resp.headers.setdefault("Content-Security-Policy", _CSP)
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    return resp
 
 
 class _WebSink(Sink):
@@ -180,9 +218,12 @@ class WebAdapter:
     # ── 认证 ────────────────────────────────────────────────────────────
     def _ok_token(self, request: web.Request) -> bool:
         if not config.WEB_AUTH_TOKEN:
-            return True  # 未设口令 = 不校验(仅本机调试)
-        tok = request.headers.get("X-Auth-Token") or request.query.get("token") or ""
-        return tok == config.WEB_AUTH_TOKEN
+            return True  # 未设口令 = 不校验(仅本机调试;非本机绑定时启动已 fail-closed)
+        # 只认请求头,不再收 ?token= query:query 会进 cloudflared 访问日志 / 浏览器历史 /
+        # Referer,一旦泄露等于交出控制权。前端(含 SSE 的 FetchSSE)本就走 X-Auth-Token 头。
+        # 用 hmac.compare_digest 常量时间比较,堵住按字节时序爆破口令(审计 #3 / 2-3)。
+        tok = request.headers.get("X-Auth-Token") or ""
+        return hmac.compare_digest(tok, config.WEB_AUTH_TOKEN)
 
     def _guard(self, request: web.Request) -> web.Response | None:
         if not self._ok_token(request):
@@ -446,22 +487,48 @@ class WebAdapter:
             return g
         return web.json_response({"projects": session_store.list_projects()})
 
+    @staticmethod
+    def _browse_roots() -> list[Path]:
+        """可浏览的根:用户主目录 + 已登记的项目目录。只在这些子树内列目录。"""
+        roots: list[Path] = []
+        try:
+            roots.append(Path.home().resolve())
+        except (OSError, ValueError):
+            pass
+        for proj in session_store.list_projects():
+            raw = proj.get("path") or proj.get("root") if isinstance(proj, dict) else None
+            if raw:
+                try:
+                    roots.append(Path(raw).resolve())
+                except (OSError, ValueError):
+                    pass
+        return roots
+
+    def _browse_allowed(self, target: Path, roots: list[Path]) -> bool:
+        """target 必须落在某个根的子树内(含根自身)。不允许其祖先(否则 / 又全盘可枚举)。"""
+        for r in roots:
+            if target == r or r in target.parents:
+                return True
+        return False
+
     async def _handle_browse(self, request: web.Request) -> web.Response:
         """服务端目录浏览器:列出某目录下的子文件夹(默认从用户主目录起)。
 
-        只列目录、跳过隐藏(. 开头)项;返回可上翻的 parent。服务跑在本机,
-        且本接口同样过 _ok_token —— 但一旦开了公网隧道又没设口令,等于把整块
-        硬盘目录结构暴露出去,故务必设 WEB_AUTH_TOKEN。
+        只列目录、跳过隐藏(. 开头)项;返回可上翻的 parent。**范围被限制在
+        主目录 + 已登记项目目录的子树内**(审计 web#2 / 2-4):越界的 ?dir=/、
+        ?dir=/etc 会被夹回主目录,避免把整块硬盘目录结构暴露出去。
         """
         if (g := self._guard(request)) is not None:
             return g
-        raw = request.query.get("dir") or str(Path.home())
+        roots = self._browse_roots()
+        home = roots[0] if roots else Path.home()
+        raw = request.query.get("dir") or str(home)
         try:
             base = Path(os.path.expanduser(raw)).resolve()
         except (OSError, ValueError):
-            base = Path.home()
-        if not base.is_dir():
-            base = Path.home()
+            base = home
+        if not base.is_dir() or not self._browse_allowed(base, roots):
+            base = home
         entries: list[dict] = []
         try:
             for name in sorted(os.listdir(base), key=str.lower):
@@ -475,7 +542,10 @@ class WebAdapter:
                     continue
         except (PermissionError, OSError):
             pass
-        parent = str(base.parent) if base.parent != base else None
+        # 只在 parent 仍落在允许根内时才给「上翻」链接,免得上翻按钮把人带出沙箱
+        parent = None
+        if base.parent != base and self._browse_allowed(base.parent, roots):
+            parent = str(base.parent)
         return web.json_response({"dir": str(base), "parent": parent, "entries": entries})
 
     async def _handle_project_create(self, request: web.Request) -> web.Response:
@@ -848,6 +918,12 @@ class WebAdapter:
         typ = (body.get("type") or "stdio").strip().lower()
         enabled = bool(body.get("enabled", True))
         if typ == "stdio":
+            # 远程注册 stdio MCP = 让服务端拉起任意子进程,等同远程 RCE(审计 web#6 / 2-5)。
+            # 默认拒绝,除非显式 WEB_ALLOW_STDIO_MCP=1。sse/http 型不受此限。
+            if not config.WEB_ALLOW_STDIO_MCP:
+                return {}, ("出于安全,已禁止从 Web 注册本地 stdio MCP(可执行任意命令)。"
+                            "如确需,请在 .env 设 WEB_ALLOW_STDIO_MCP=1 后重启;"
+                            "或改用 sse/http 型 MCP。")
             command = (body.get("command") or "").strip()
             if not command:
                 return {}, "stdio 类型需要 command"
@@ -969,6 +1045,11 @@ class WebAdapter:
             "sw.js", "text/javascript", {"Service-Worker-Allowed": "/"}
         )
 
+    async def _handle_favicon(self, request: web.Request) -> web.Response:
+        return self._static_file(
+            "favicon.ico", "image/x-icon", {"Cache-Control": "public, max-age=86400"}
+        )
+
     # 只放行这几个图标名,防目录穿越
     _ICONS = {"icon-192", "icon-512", "icon-maskable-512", "apple-touch-icon"}
 
@@ -1007,13 +1088,37 @@ class WebAdapter:
         PUSH.remove((body or {}).get("endpoint", ""))
         return web.json_response({"ok": True})
 
+    @staticmethod
+    def _is_local_host(host: str) -> bool:
+        """仅本机回环才算「本地」。绑到其它地址(0.0.0.0 / LAN IP)= 对外暴露。"""
+        return host.strip().lower() in {"127.0.0.1", "localhost", "::1", ""}
+
+    def _preflight(self) -> None:
+        """启动前的 fail-closed 检查:绑非本机却没设口令 = 拒绝启动(审计 web#1 / 0-2)。
+
+        127.0.0.1 本机调试不受影响;一旦 WEB_HOST 绑到 0.0.0.0/LAN(或经隧道对外),
+        缺 WEB_AUTH_TOKEN 直接抛错,而不是打印一行警告后照样把「能执行任意代码的 agent」
+        挂上公网。"""
+        if not self._is_local_host(config.WEB_HOST) and not config.WEB_AUTH_TOKEN:
+            raise config.ConfigError(
+                f"拒绝启动 Web:绑定了非本机地址 WEB_HOST={config.WEB_HOST} 却没设 "
+                "WEB_AUTH_TOKEN。这等于把能执行任意代码的 Claude 挂到公网裸奔。\n"
+                "  解决:在 .env 设一个强口令 WEB_AUTH_TOKEN=...;"
+                "或仅本机用就把 WEB_HOST 改回 127.0.0.1(隧道由 cloudflared/Tailscale 转发)。"
+            )
+
     async def _start_server(self) -> None:
-        app = web.Application(client_max_size=32 * 1024 * 1024)  # 允许 32MB 图片上传
+        self._preflight()
+        app = web.Application(
+            client_max_size=32 * 1024 * 1024,  # 允许 32MB 图片上传
+            middlewares=[_security_mw],  # 跨源写拦截 + 安全响应头(2-9)
+        )
         app.add_routes(
             [
                 web.get("/", self._handle_index),
                 web.get("/manifest.json", self._handle_manifest),
                 web.get("/sw.js", self._handle_sw),
+                web.get("/favicon.ico", self._handle_favicon),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.get("/push/config", self._handle_push_config),
                 web.post("/push/subscribe", self._handle_push_subscribe),

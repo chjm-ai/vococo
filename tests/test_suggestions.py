@@ -151,24 +151,76 @@ def test_suggest_command_lists_and_accepts(sugg_env):
 
 
 # === cron 管理工具 ===
-def test_cron_admin_list_toggle_delete(sugg_env):
+class _FakeAdapter:
+    """自动点「允许一次」的假适配器,用于跑需要审批的 cron 管理工具。"""
+
+    def __init__(self):
+        self.choice = None
+
+    async def present_choice(self, chat_id, choice):
+        self.choice = choice
+
+    async def send(self, *a, **k):
+        pass
+
+
+def _run_approved(coro_factory):
+    """在一个交互通道上下文里跑工具,并自动批准弹出的审批。返回工具结果。"""
+    import anyio
+
+    from claude_hermes.gateway import clarify
+
+    async def scenario():
+        adapter = _FakeAdapter()
+        token = clarify.set_current("sess-cron", adapter, "chat")
+        out = {}
+        try:
+            async with anyio.create_task_group() as tg:
+
+                async def run():
+                    out["v"] = await coro_factory()
+
+                tg.start_soon(run)
+                for _ in range(200):
+                    if adapter.choice is not None:
+                        break
+                    await anyio.sleep(0.005)
+                cid = adapter.choice.options[0][0].split()[1]
+                clarify.resolve_button(cid, "0")  # 点「允许一次」
+        finally:
+            clarify.reset_current(token)
+            clarify.clear_session("sess-cron")
+        return out["v"]
+
+    return anyio.run(scenario)
+
+
+def test_cron_admin_toggle_delete_needs_approval(sugg_env):
+    """启用/删除定时任务:有交互通道→批准后生效;无通道(cron/eval)→ fail-closed 拒绝。"""
     from claude_hermes.cron import scheduler, suggestions
     from claude_hermes.tools import builtin
 
-    # 先接受一条建议造出一个任务
     suggestions.add_suggestion(
         title="晨报", description="", source="catalog", job_spec=_spec(), dedup_key="c"
     )
     sid = suggestions.list_pending()[0]["id"]
     suggestions.accept_suggestion(sid, origin={"platform": "telegram", "chat_id": 1})
 
+    # 读列表不需审批
     assert "晨报" in _text(asyncio.run(builtin.list_cron_jobs.handler({})))
 
+    # 无交互通道 → 拒绝(fail-closed)
     out = _text(asyncio.run(builtin.set_cron_job_enabled.handler({"ref": "晨报", "enabled": False})))
+    assert "未批准" in out
+    assert scheduler.load_jobs()[0]["enabled"] is True  # 没被改动
+
+    # 有通道 + 批准 → 生效
+    out = _text(_run_approved(lambda: builtin.set_cron_job_enabled.handler(
+        {"ref": "晨报", "enabled": False})))
     assert "已停用" in out
     assert scheduler.load_jobs()[0]["enabled"] is False
 
-    out = _text(asyncio.run(builtin.delete_cron_job.handler({"ref": "1"})))  # 按序号
+    out = _text(_run_approved(lambda: builtin.delete_cron_job.handler({"ref": "1"})))
     assert "已删除" in out
     assert scheduler.load_jobs() == []
 

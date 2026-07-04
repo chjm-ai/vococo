@@ -115,6 +115,9 @@ TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_ALLOWED_CHAT_IDS: set[int] = _parse_chat_ids(
     os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
 )
+# 白名单为空时的姿态:默认 fail-closed(拒收一切,防陌生人搜到 bot 就能驱动 Claude)。
+# 真要「谁都能聊」必须显式设 TELEGRAM_ALLOW_ALL=1,让危险选项需要主动打开。
+TELEGRAM_ALLOW_ALL: bool = _parse_bool(os.environ.get("TELEGRAM_ALLOW_ALL", ""), False)
 
 # === Web 渠道(手机浏览器访问,自建 UI)===
 # 一个进程内起 aiohttp:SSE 流式 + 会话侧边栏。默认只监听 127.0.0.1,
@@ -124,6 +127,9 @@ WEB_HOST: str = os.environ.get("WEB_HOST", "127.0.0.1").strip() or "127.0.0.1"
 WEB_PORT: int = int(os.environ.get("WEB_PORT", "8848"))
 # 访问口令:非空则每次数据请求都要带上(浏览器首次输入后记住)。留空=不校验(仅本机调试用)。
 WEB_AUTH_TOKEN: str = os.environ.get("WEB_AUTH_TOKEN", "").strip()
+# 是否允许从 Web 设置页注册「本地 stdio MCP」(command+args 会被当子进程拉起 = 远程 RCE 的
+# 第二条路)。默认 fail-closed 关闭;真要用就显式设 WEB_ALLOW_STDIO_MCP=1。sse/http 型不受限。
+WEB_ALLOW_STDIO_MCP: bool = _parse_bool(os.environ.get("WEB_ALLOW_STDIO_MCP", ""), False)
 
 # === Web Push 系统通知(iOS 16.4+ 已装到主屏的 PWA / Android / 桌面)===
 # 页面关了、锁屏了也能弹系统通知(SSE 只在页面开着时能推)。
