@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#1f1e1d">
-<title>Hermes</title>
+<title>Wazir</title>
 <!-- PWA:装到主屏 + Web Push 系统通知 -->
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -650,7 +650,7 @@
 <div id="login">
   <div class="card">
     <div class="logo">✻</div>
-    <h1>Hermes</h1>
+    <h1>Wazir</h1>
     <p>输入访问口令</p>
     <input id="pw" type="password" placeholder="口令" autocomplete="current-password">
     <button id="loginBtn">进入</button>
@@ -705,7 +705,7 @@
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
     <div id="convList"></div>
-    <div class="sfoot" id="sfoot"><span class="sfoottxt">Hermes · Web</span><button id="themeBtn" class="sfoicon" title="切换深浅色">☾</button><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
+    <div class="sfoot" id="sfoot"><span class="sfoottxt">Wazir · Web</span><button id="themeBtn" class="sfoicon" title="切换深浅色">☾</button><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
   </aside>
   <main>
     <header class="bar">
@@ -738,7 +738,7 @@
       </div>
       <div id="empty">
         <div class="elogo">✻</div>
-        <h2>你好，我是 Hermes</h2>
+        <h2>你好，我是 Wazir</h2>
         <p>你的私人 AI 助理 · 有什么需要直接说</p>
         <div class="sugs">
           <button class="sug" data-s="你能做什么">你能做什么</button>
@@ -1337,9 +1337,9 @@ async function disableNotify(){
 function renderMcpPane(){
   const m = SET.data.mcp;
   let h = '<h3>'+ic("plug")+'MCP 工具服务</h3>'+
-    '<p class="shint">MCP(Model Context Protocol)给 Hermes 接入额外工具。改动下一轮对话即生效。</p>';
+    '<p class="shint">MCP(Model Context Protocol)给 Wazir 接入额外工具。改动下一轮对话即生效。</p>';
   h += '<div class="sechd">内置</div>';
-  h += mcpRow("hermes", "Hermes 内置工具", "记忆检索 / 保存、定时任务、发消息、自我重启等——关掉后这些能力会消失,谨慎。", m.hermes_enabled, "hermes");
+  h += mcpRow("hermes", "Wazir 内置工具", "记忆检索 / 保存、定时任务、发消息、自我重启等——关掉后这些能力会消失,谨慎。", m.hermes_enabled, "hermes");
   h += '<div class="sechd">外部 Server</div>';
   if(!m.external.length){
     h += '<p class="shint" style="margin:2px 0 6px">还没有外部 MCP。可添加如 filesystem、fetch 等社区 server。</p>';
