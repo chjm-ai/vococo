@@ -1028,6 +1028,11 @@ class WebAdapter:
             "sw.js", "text/javascript", {"Service-Worker-Allowed": "/"}
         )
 
+    async def _handle_favicon(self, request: web.Request) -> web.Response:
+        return self._static_file(
+            "favicon.ico", "image/x-icon", {"Cache-Control": "public, max-age=86400"}
+        )
+
     # 只放行这几个图标名,防目录穿越
     _ICONS = {"icon-192", "icon-512", "icon-maskable-512", "apple-touch-icon"}
 
@@ -1096,6 +1101,7 @@ class WebAdapter:
                 web.get("/", self._handle_index),
                 web.get("/manifest.json", self._handle_manifest),
                 web.get("/sw.js", self._handle_sw),
+                web.get("/favicon.ico", self._handle_favicon),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.get("/push/config", self._handle_push_config),
                 web.post("/push/subscribe", self._handle_push_subscribe),
