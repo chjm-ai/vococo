@@ -8,7 +8,9 @@ run_turn() 是其上的便捷封装(累积成最终回复),给纯文本 chat 用
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
 
@@ -17,6 +19,10 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     ResultMessage,
     StreamEvent,
+    SystemMessage,
+    TaskNotificationMessage,
+    TaskStartedMessage,
+    TaskUpdatedMessage,
     ToolResultBlock,
     UserMessage,
 )
@@ -136,6 +142,26 @@ class Done:
 
 
 Event = Union[TextDelta, ThinkingDelta, ToolStarted, ToolInput, ToolFinished, Done]
+
+
+# 子代理/后台任务的终态:见到即认为该任务结束,可从「活跃集」移除。
+_TERMINAL_TASK = frozenset({"completed", "failed", "stopped", "killed"})
+
+# 判定「是子代理启动」的工具名(新版 Agent / 老版 Task)。
+_SUBAGENT_TOOLS = frozenset({"Agent", "Task"})
+
+
+def _turn_debug(msg: str) -> None:
+    """临时诊断:把一轮里 SDK 消息序列落到独立文件,排查「子代理为何被腰斩」。确认后可删。"""
+    try:
+        p = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "data", "logs", "turn_debug.log",
+        )
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
 
 
 def assemble_tool_input(raw: str) -> dict:
@@ -269,11 +295,37 @@ async def stream_turn(
     used_model = resolved_model
     ctx_window_val = context_window(used_model)
 
+    # 子代理相对主轮是【异步】的:主 agent 调 Agent 工具后可能先出一个 ResultMessage,
+    # 子代理还在后面用 parent_tool_use_id 流式跑它的工具。若在【第一个 ResultMessage】就
+    # 收工关掉 client(旧写法 receive_response 就是这样),子代理会被腰斩(日志见成片
+    # "Stream closed"),主 agent 也拿不到子代理结果去综合 → 用户只看到"已发起稍等"。
+    # 改法:用 receive_messages 一直读,直到【某个 ResultMessage 到来时,没有在跑的子代理/
+    # 后台任务】才真正收工;子代理跑完会把结果喂回主 agent,主 agent 续写的综合正文也能被收进来。
     async with ClaudeSDKClient(options=options) as client:
         await client.query(_build_prompt(history, user_text, images or []))
-        async for msg in client.receive_response():
+        pending_subagents: set[str] = set()  # Agent/Task 调用 id,未拿到结果 = 子代理还在跑
+        active_tasks: set[str] = set()  # 后台任务 task_id,未见终态 = 还在跑
+        result_seen = False
+        msgs = client.receive_messages()
+        _turn_debug(f"=== turn start · model={resolved_model} ===")
+        while True:
+            try:
+                # 主轮 ResultMessage 到来前不设超时(模型可能长思考);之后进入 drain,
+                # 给 idle 超时兜底,防子代理异常时永远读不到收尾而挂死。
+                if result_seen:
+                    msg = await asyncio.wait_for(msgs.__anext__(), timeout=300)
+                else:
+                    msg = await msgs.__anext__()
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                _turn_debug(
+                    f"[drain] idle-timeout pending={pending_subagents} tasks={active_tasks} 收工"
+                )
+                break
+
             if isinstance(msg, StreamEvent):
-                # 子代理(Task)的流式事件带 parent_tool_use_id=所属 Task 调用的 id
+                # 子代理的流式事件带 parent_tool_use_id=所属 Agent 调用的 id
                 pid = getattr(msg, "parent_tool_use_id", None)
                 ev = msg.event if isinstance(msg.event, dict) else {}
                 etype = ev.get("type")
@@ -313,6 +365,10 @@ async def stream_turn(
                             tool_json.setdefault(key, "")
                         if not pid:
                             tool_calls.append(name)
+                            # 主 agent 起了个子代理 → 记进「在跑」集,收工要等它结束
+                            if name in _SUBAGENT_TOOLS and tid:
+                                pending_subagents.add(tid)
+                                _turn_debug(f"[subagent-start] {name} id={tid}")
                         yield ToolStarted(name, tool_id=tid, parent_id=pid)
                 elif etype == "content_block_stop":
                     # 该工具块的入参已流完 → 解析并发出 ToolInput(喂 diff/todo/审批)
@@ -329,6 +385,13 @@ async def stream_turn(
                 for b in msg.content:
                     if isinstance(b, ToolResultBlock):
                         name = tool_name_by_id.get(b.tool_use_id, "工具")
+                        # 子代理的结果回来了 → 从「在跑」集移除(它的 tool_id 就是 Agent 调用 id)
+                        if b.tool_use_id in pending_subagents:
+                            pending_subagents.discard(b.tool_use_id)
+                            _turn_debug(
+                                f"[subagent-done] {name} id={b.tool_use_id} "
+                                f"ok={not bool(b.is_error)}"
+                            )
                         yield ToolFinished(
                             name=name,
                             ok=not bool(b.is_error),
@@ -337,6 +400,16 @@ async def stream_turn(
                             detail=_detail(b.content),
                             parent_id=pid,
                         )
+            elif isinstance(msg, TaskStartedMessage):
+                tid = getattr(msg, "task_id", "") or ""
+                active_tasks.add(tid)
+                _turn_debug(f"[task-start] id={tid} desc={getattr(msg, 'description', '')}")
+            elif isinstance(msg, (TaskNotificationMessage, TaskUpdatedMessage)):
+                tid = getattr(msg, "task_id", "") or ""
+                st = getattr(msg, "status", None)
+                _turn_debug(f"[task-update] id={tid} status={st}")
+                if st in _TERMINAL_TASK:
+                    active_tasks.discard(tid)
             elif isinstance(msg, ResultMessage):
                 cost_usd = getattr(msg, "total_cost_usd", None)
                 is_error = bool(getattr(msg, "is_error", False))
@@ -356,8 +429,20 @@ async def stream_turn(
                 mu = getattr(msg, "model_usage", None) or {}
                 if mu:
                     used_model = next(iter(mu), used_model)
+                result_seen = True
+                _turn_debug(
+                    f"[result] subtype={getattr(msg, 'subtype', '')} is_error={is_error} "
+                    f"pending={pending_subagents} tasks={active_tasks}"
+                )
+                # 真正收工:主轮 ResultMessage 到手,且没有还在跑的子代理/后台任务。
+                # 若子代理还在跑,先不收工,继续 drain——等它结果喂回主 agent、主 agent
+                # 续写综合正文,直到下一个「无 pending 的 ResultMessage」。
+                if not pending_subagents and not active_tasks:
+                    break
+            elif isinstance(msg, SystemMessage):
+                _turn_debug(f"[system] subtype={getattr(msg, 'subtype', '')}")
 
-        # ResultMessage 已到、会话尚未断开 —— 此刻问 SDK 当前窗口的真实占用
+        # 收工、会话尚未断开 —— 此刻问 SDK 当前窗口的真实占用
         # (等价 CLI /context)。失败(旧 CLI 不支持等)则静默保留上面的兜底值。
         try:
             cu = await client.get_context_usage()
