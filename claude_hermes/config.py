@@ -225,3 +225,34 @@ REFLECT_ENABLED: bool = _parse_bool(os.environ.get("REFLECT_ENABLED", ""), False
 REFLECT_CRON: str = os.environ.get("REFLECT_CRON", "0 23 * * *").strip()
 # 反思结果推送目标 "platform:chat_id"(可选;不配则只写日志)
 REFLECT_TARGET: str = os.environ.get("REFLECT_TARGET", "").strip()
+
+
+# === 收敛 secret 暴露面 ===
+def _scrub_env_secrets() -> None:
+    """把 hermes 自用的 secret 从 os.environ 移除。
+
+    背景:SDK 用 os.environ 当 Claude Code CLI 子进程的基底 env,而 load_dotenv 已把整个
+    .env 灌进了 os.environ —— 于是订阅 token / bot token / STT key / VAPID 私钥 / Web 口令
+    全都躺在 Bash 工具能 `echo $VAR` 读到的环境里,一次 prompt injection 即可外带。
+    (实测:pop 前子进程 echo 得到 108/46/24 位;pop 后全为 0。)
+
+    这些值上面都已读进本模块常量,运行时全走 config.X 而非 os.environ,故从环境移除是安全的:
+    - 订阅 token:实测 CLI 用自己存的凭据(claude setup-token)鉴权,移除后请求照常成功。
+    - 第三方 provider key【不在此列】:它来自 ~/.claude-hermes/config.yaml、每轮经 options.env
+      注入,CLI 必须拿它调第三方端点,无法移除 —— 那条只能靠 danger.py 定向拦截 + 沙箱根治。
+    注:这是收窄「被动 env 泄露」,不是硬边界(同用户 Bash 仍可 `cat .env`);根治需 Tier3 沙箱。
+    设 HERMES_KEEP_ENV_SECRETS=1 可跳过本清理(排障用)。
+    """
+    if _parse_bool(os.environ.get("HERMES_KEEP_ENV_SECRETS", ""), False):
+        return
+    for _k in (
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "TELEGRAM_BOT_TOKEN",
+        "SILICONFLOW_API_KEY",
+        "VAPID_PRIVATE_KEY",
+        "WEB_AUTH_TOKEN",
+    ):
+        os.environ.pop(_k, None)
+
+
+_scrub_env_secrets()

