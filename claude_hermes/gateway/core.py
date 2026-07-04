@@ -364,6 +364,11 @@ def _handle_suggest(arg: str, session_key: str) -> CommandOutcome:
     opts: list[tuple[str, str]] = []
     for i, s in enumerate(pending, 1):
         lines.append(f"{i}. {s['title']} — {s.get('description', '')}")
+        # 展示【到点会真正跑的完整 prompt】,让「接受」是知情同意,而不是只看一个好听的标题——
+        # 否则被劫持的 agent 能用人畜无害的 title 藏一条外传后门 prompt(审计口子 A / 2-2)。
+        job_prompt = ((s.get("job_spec") or {}).get("prompt") or "").strip()
+        if job_prompt:
+            lines.append(f"   ↳ 到点会执行:{job_prompt}")
         opts.append((f"/suggest accept {s['id']}", f"✅ 接受: {s['title']}"))
         opts.append((f"/suggest dismiss {s['id']}", f"🗑 忽略: {s['title']}"))
     return CommandOutcome(choice=Choice(prompt="\n".join(lines), options=opts))
