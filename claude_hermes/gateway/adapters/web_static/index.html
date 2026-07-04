@@ -420,6 +420,11 @@
   .status{font-size:13px;color:var(--dim);margin:6px 0 0;display:flex;flex-wrap:wrap;gap:4px 12px}
   .status .chip{display:inline-flex;align-items:center}
   .status .chip.live{color:var(--accent)}
+  .status .statusstop{margin-left:auto;flex-shrink:0;width:24px;height:24px;border-radius:50%;
+    background:var(--err);color:#fff;font-size:11px;line-height:1;display:inline-flex;
+    align-items:center;justify-content:center;cursor:pointer;border:none}
+  .status .statusstop:hover{filter:brightness(1.1)}
+  .status .statusstop:active{transform:scale(.9)}
   .dots{display:inline-flex;gap:3px;margin-left:5px;align-items:center}
   .dots i{width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.28;animation:blink 1.2s infinite}
   .dots i:nth-child(2){animation-delay:.2s} .dots i:nth-child(3){animation-delay:.4s}
@@ -552,6 +557,18 @@
   #modelPop .mi:hover{background:var(--panel2)}
   #modelPop .mi.on{color:var(--accent)}
   #modelPop .mi .mk{color:var(--accent);font-size:12px;flex-shrink:0}
+  #pending{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
+  #pending:empty{display:none}
+  #pending.shake{animation:shake .3s}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}
+  #pending .pi{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:10px;
+    background:var(--card);border:1px solid var(--line2);font-size:13px;color:var(--dim)}
+  #pending .pi .clock{flex-shrink:0}
+  #pending .pi .ptext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #pending .pi .pdel{flex-shrink:0;width:20px;height:20px;border-radius:50%;border:none;cursor:pointer;
+    background:transparent;color:var(--dim);font-size:15px;line-height:1;display:inline-flex;
+    align-items:center;justify-content:center}
+  #pending .pi .pdel:hover{background:var(--err);color:#fff}
   #thumbs{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
   #thumbs .t{position:relative}
   #thumbs img{width:56px;height:56px;object-fit:cover;border-radius:10px;border:1px solid var(--line2)}
@@ -726,6 +743,7 @@
     </div>
     <form id="composer" autocomplete="off">
       <div class="cwrap">
+        <div id="pending"></div>
         <div id="thumbs"></div>
         <div class="inrow">
           <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
@@ -2002,7 +2020,7 @@ async function send(text, display, opts){
   opts=opts||{};
   text=(text||"").trim(); if(!text && !S.images.length) return;
   // 上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发(审批/语音走 forceSend 立即发)
-  if(S.stream && !opts.forceSend){ queuePending(text, S.images.slice()); S.images=[]; renderThumbs(); $("#ta").value=""; autoGrow(); return; }
+  if(S.stream && !opts.forceSend){ if(queuePending(text, S.images.slice())){ S.images=[]; renderThumbs(); $("#ta").value=""; autoGrow(); } return; }
   const imgs=S.images.map(x=>x.url);
   // display:点按钮时传选项文字,气泡显示友好文字而非原始命令(如 /clarify id 0)
   const shown=(display!=null)?display:text;
@@ -2047,8 +2065,16 @@ async function stopReply(){
 // ── 待发送队列 ────────────────────────────────────────────────────────────
 function queuePending(text, images){
   if(!text && !(images||[]).length) return;
-  (S.pending[S.conv] || (S.pending[S.conv]=[])).push({id:++S.pendId, text, images:images||[]});
+  const q = S.pending[S.conv] || (S.pending[S.conv]=[]);
+  if(q.length>=3){ pendFull(); return false; }  // 满 3 条不再排队,抖一下提示
+  q.push({id:++S.pendId, text, images:images||[]});
   drawPending();
+  return true;
+}
+// 队列已满:让待发送区抖一下,给个"到上限了"的即时反馈
+function pendFull(){
+  const box=$("#pending"); if(!box) return;
+  box.classList.remove("shake"); void box.offsetWidth; box.classList.add("shake");
 }
 function drawPending(){
   const box=$("#pending"); if(!box) return;
