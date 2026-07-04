@@ -797,8 +797,7 @@ const S = {
   live: {},             // conv → 进行中回合的事件缓冲:任意会话(含后台)都记录,切回时重放重建流式气泡
   pending: {},          // conv → 待发送队列 [{id,text,images}]:上一个任务没结束时点发送,暂存,任务完成自动发
   pendId: 0,            // 待发送项自增 id,供删除定位
-  convFilter: localStorage.getItem("hermes_conv_filter") || "all",
-  archived: (()=>{ try{ return new Set(JSON.parse(localStorage.getItem("hermes_archived")||"[]")); } catch(e){ return new Set(); } })(),
+  convFilter: "all",
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -848,6 +847,7 @@ function toggleTheme(){
   document.documentElement.setAttribute("data-theme", next);
   try{ localStorage.setItem("hermes_theme", next); }catch(e){}
   syncTheme();
+  api("/prefs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({theme:next})}).catch(()=>{});
 }
 if(window.matchMedia){
   window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", ()=>{
@@ -872,7 +872,7 @@ async function tryEnter(){
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
-    await loadProjects(); await loadConvs(); await loadModels(); updateFilterBtn();
+    await loadPrefs(); await loadProjects(); await loadConvs(); await loadModels(); updateFilterBtn();
     // 打开最近活跃的会话;openConv 内会同步活跃项目、展开其分组并重绘侧边栏
     await openConv(S.convs[0] ? S.convs[0].conv : "main");
   }catch(e){ $("#loginErr").textContent="连接失败"; }
@@ -1070,6 +1070,17 @@ function fmtDate(ts){ if(!ts) return ""; const d=new Date(ts*1000), n=new Date()
   const md=(d.getMonth()+1)+"月"+d.getDate()+"日";
   return (d.getFullYear()===n.getFullYear()?"":d.getFullYear()+"年")+md+" "+t; }
 function updateHeaderDate(){ const c=S.convs.find(x=>x.conv===S.conv); $("#convDate").textContent = c ? fmtDate(c.last_ts) : ""; }
+async function loadPrefs(){
+  try{
+    const r = await api("/prefs"); const p = await r.json();
+    if(p.theme && p.theme !== localStorage.getItem("hermes_theme")){
+      document.documentElement.setAttribute("data-theme", p.theme);
+      try{ localStorage.setItem("hermes_theme", p.theme); }catch(e){}
+      syncTheme();
+    }
+    if(p.conv_filter) S.convFilter = p.conv_filter;
+  }catch(e){}
+}
 async function loadConvs(){
   const r = await api("/conversations"); const d = await r.json();
   const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
@@ -1110,7 +1121,7 @@ function renderConvs(){
     box.append(h);
     if(!open) continue;
     for(const c of convs){
-      if(!c.pinned){const arch=S.archived.has(c.conv);if(S.convFilter==="archived"&&!arch)continue;if(S.convFilter==="active"&&arch)continue;}
+      if(!c.pinned){const arch=!!c.archived;if(S.convFilter==="archived"&&!arch)continue;if(S.convFilter==="active"&&arch)continue;}
       const e=el("div","conv ingroup"+(c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
       if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; e.append(dot); }   // 该会话正在流式 → 闪烁圆点
       const ct=el("div","ct"); ct.textContent=c.title||"新对话"; e.append(ct);
@@ -1539,7 +1550,8 @@ function openConvMenu(btn, conv){
   closeConvMenu();
   convMenuBtn=btn; btn.classList.add("on");
   const m=el("div","convmenu"); m.style.visibility="hidden";
-  const isArch=S.archived.has(conv);
+  const convObj=S.convs.find(x=>x.conv===conv);
+  const isArch=!!(convObj&&convObj.archived);
   const arch=el("button","cmitem"); arch.innerHTML=ic("folder")+" "+(isArch?"取消归档":"归档");
   arch.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); toggleArchive(conv); };
   m.append(arch);
@@ -1574,17 +1586,20 @@ async function delConv(conv){
 }
 
 // ── 归档 + 会话筛选 ──────────────────────────────────────────────────────
-function saveArchived(){ try{ localStorage.setItem("hermes_archived", JSON.stringify([...S.archived])); }catch(e){} }
 function toggleArchive(conv){
-  if(S.archived.has(conv)) S.archived.delete(conv); else S.archived.add(conv);
-  saveArchived(); renderConvs();
+  const c=S.convs.find(x=>x.conv===conv); if(!c) return;
+  const next=!c.archived;
+  c.archived=next; renderConvs();  // 乐观更新
+  api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({conv,archived:next})}).catch(()=>{ c.archived=!next; renderConvs(); });
 }
 function renderConvFilterPop(){
   const opts=[["all","全部"],["active","工作中"],["archived","归档"]];
   const pop=$("#convFilterPop");
   pop.innerHTML=opts.map(([v,l])=>'<button class="fmi'+(S.convFilter===v?" on":"")+'" data-fv="'+v+'">'+l+'</button>').join("");
   pop.querySelectorAll(".fmi").forEach(b=>{
-    b.onclick=e=>{ e.stopPropagation(); S.convFilter=b.dataset.fv; try{localStorage.setItem("hermes_conv_filter",S.convFilter);}catch(e){} pop.hidden=true; updateFilterBtn(); renderConvs(); };
+    b.onclick=e=>{ e.stopPropagation(); S.convFilter=b.dataset.fv; pop.hidden=true; updateFilterBtn(); renderConvs();
+      api("/prefs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv_filter:S.convFilter})}).catch(()=>{}); };
   });
 }
 function updateFilterBtn(){

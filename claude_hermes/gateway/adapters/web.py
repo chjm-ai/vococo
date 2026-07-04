@@ -695,6 +695,41 @@ class WebAdapter:
         return web.json_response(info)
 
     # ── 设置:技能 / MCP ─────────────────────────────────────────────────
+    async def _handle_conv_archive(self, request: web.Request) -> web.Response:
+        """POST /conv/archive  {conv, archived: bool}  设置会话归档状态。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        conv = (body.get("conv") or "").strip()
+        if not conv:
+            return web.json_response({"error": "缺少 conv"}, status=400)
+        archived = bool(body.get("archived", True))
+        session_key = config.resolve_session_key("web", conv)
+        session_store.set_conv_archived(session_key, archived)
+        return web.json_response({"ok": True})
+
+    async def _handle_prefs_get(self, request: web.Request) -> web.Response:
+        """GET /prefs  返回用户偏好 JSON。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        return web.json_response(session_store.get_prefs())
+
+    async def _handle_prefs_set(self, request: web.Request) -> web.Response:
+        """POST /prefs  {key: value, ...}  批量写入用户偏好。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "body must be object"}, status=400)
+        session_store.set_prefs(body)
+        return web.json_response({"ok": True})
+
     async def _handle_settings(self, request: web.Request) -> web.Response:
         """设置页初始快照:技能清单 + MCP(内置 hermes + 外部)+ 记忆/AGENTS 文件列表。"""
         if (g := self._guard(request)) is not None:
@@ -961,8 +996,12 @@ class WebAdapter:
                 web.post("/transcribe", self._handle_transcribe),
                 web.post("/conv/rename", self._handle_rename),
                 web.post("/conv/delete", self._handle_delete),
+                web.post("/conv/archive", self._handle_conv_archive),
                 web.get("/conv/git", self._handle_conv_git),
                 web.post("/conv/git/branch", self._handle_conv_git_branch),
+                # 用户偏好
+                web.get("/prefs", self._handle_prefs_get),
+                web.post("/prefs", self._handle_prefs_set),
                 # 设置页
                 web.get("/settings", self._handle_settings),
                 web.post("/settings/skill", self._handle_settings_skill),
