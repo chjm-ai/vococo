@@ -166,9 +166,27 @@
     padding:9px 11px;border-radius:8px;font-size:13.5px;color:var(--text);transition:background .14s}
   #convFilterPop .fmi:hover{background:var(--panel2)}
   #convFilterPop .fmi.on{color:var(--accent);font-weight:600}
-  .sfoot{padding:9px 12px 9px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px}
-  .sfoot::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok);flex-shrink:0}
+  .sfoot{padding:9px 12px 9px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px;cursor:pointer;transition:background .16s}
+  .sfoot:hover{background:var(--panel2)}
+  .sfoot .sdot{width:7px;height:7px;border-radius:50%;flex-shrink:0;transition:background .3s,box-shadow .3s}
+  .sfoot .sdot.ok{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+  .sfoot .sdot.warn{background:#d9a43a;box-shadow:0 0 6px #d9a43a}
+  .sfoot .sdot.err{background:var(--err);box-shadow:0 0 6px var(--err)}
   .sfoot .sfoottxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* 限额状态弹层 */
+  #ratePop{position:fixed;z-index:45;min-width:260px;max-width:320px;
+    background:var(--card);border:1px solid var(--line2);border-radius:14px;padding:14px;
+    box-shadow:var(--shadow);animation:pop .18s ease}
+  #ratePop[hidden]{display:none}
+  #ratePop .rphead{display:flex;align-items:center;gap:7px;margin-bottom:10px;font-size:14px;font-weight:600}
+  #ratePop .rphead .rpd{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  #ratePop .rphead .rpd.ok{background:var(--ok)}
+  #ratePop .rphead .rpd.warn{background:#d9a43a}
+  #ratePop .rphead .rpd.err{background:var(--err)}
+  #ratePop .rpbody{font-size:13px;color:var(--dim);line-height:1.55}
+  #ratePop .rpbody .rptime{font-size:11.5px;color:var(--dim2);margin-top:6px}
+  /* 出错气泡:红色左边框 */
+  .bubble.err{border-left:3px solid var(--err);padding-left:11px}
   /* 设置入口:状态栏最右一个齿轮图标 */
   .sfoicon{width:30px;height:30px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
     color:var(--dim);transition:background .16s,color .16s}
@@ -725,7 +743,7 @@
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
     <div id="convList"></div>
-    <div class="sfoot" id="sfoot"><span class="sfoottxt">Wazir · Web</span><button id="themeBtn" class="sfoicon" title="切换深浅色">☾</button><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
+    <div class="sfoot" id="sfoot"><span class="sdot ok" id="sdot"></span><span class="sfoottxt" id="sfoottxt">Wazir · Web</span><button id="themeBtn" class="sfoicon" title="切换深浅色">☾</button><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
   </aside>
   <main>
     <header class="bar">
@@ -746,6 +764,7 @@
             <span id="ctxPct">0%</span>
           </button>
           <div id="ctxPop" hidden></div>
+          <div id="ratePop" hidden></div>
         </div>
       </div>
     </header>
@@ -825,6 +844,7 @@ const S = {
   pending: {},          // conv → 待发送队列 [{id,text,images}]:上一个任务没结束时点发送,暂存,任务完成自动发
   pendId: 0,            // 待发送项自增 id,供删除定位
   convFilter: "all",
+  rateStatus: {level:"ok", msg:"", lastErr:"", ts:0},  // ok|warn|err, 更新侧栏底部状态点
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -960,6 +980,39 @@ function mdToHtml(src){
 
 // ── 空状态欢迎屏 ─────────────────────────────────────────────────────────
 function updateEmpty(){ $("#empty").style.display = $("#wrap").children.length ? "none" : "flex"; }
+
+// ── 侧栏底部:限额 / 错误状态 ────────────────────────────────────────────
+function setRateStatus(level, msg, err){
+  S.rateStatus={level:level||"ok", msg:msg||"", lastErr:err||"", ts:Date.now()};
+  updateSfoot();
+}
+function updateSfoot(){
+  const rs=S.rateStatus, dot=$("#sdot"), txt=$("#sfoottxt");
+  dot.className="sdot "+rs.level;
+  const labels={ok:"Wazir · 就绪", warn:"Wazir · 注意限额", err:"Wazir · 出错"};
+  txt.textContent=labels[rs.level]||labels.ok;
+}
+$("#sfoot").onclick=function(e){
+  e.stopPropagation();
+  const p=$("#ratePop");
+  if(!p.hidden){ p.hidden=true; return; }
+  const rs=S.rateStatus, labels={ok:"正常",warn:"最近遇到限额/过载",err:"最近遇到错误"};
+  const times={ok:"",warn:"建议稍等片刻再试",err:"点击侧栏底部可随时查看"};
+  const when=rs.ts?(" · "+new Date(rs.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})):"";
+  let body=labels[rs.level]||labels.ok;
+  if(rs.msg) body+='<br>'+esc(rs.msg);
+  if(rs.level!=="ok"&&rs.lastErr) body+='<br><br><span style="font-size:12px;color:var(--dim2)">详情:'+esc(rs.lastErr)+'</span>';
+  body+='<div class="rptime">'+(rs.level==="ok"?"上次检查":"最近一次")+when+'</div>';
+  p.innerHTML='<div class="rphead"><span class="rpd '+rs.level+'"></span>'+labels[rs.level]+'</div>'+
+    '<div class="rpbody">'+body+'</div>';
+  // 定位在侧栏底部上方
+  const r=$("#sfoot").getBoundingClientRect();
+  p.style.bottom=(window.innerHeight-r.top+8)+"px"; p.style.left=Math.max(6,r.left)+"px";
+  p.hidden=false;
+};
+document.addEventListener("click",function(e){
+  const p=$("#ratePop"); if(p && !p.hidden && !e.target.closest("#sfoot") && !e.target.closest("#ratePop")) p.hidden=true;
+});
 
 // ── 顶栏:上下文进度(默认)+ 点击展开 token 明细 ─────────────────────────
 const CTX_WINDOW = 200000;  // 兜底窗口;实际以后端按模型回传的 ctx_window 为准
@@ -1976,10 +2029,26 @@ function handleEvent(e){
   if(e.type==="done"||e.type==="message") delete S.pendingChoice[e.conv];
   if(STREAMY.indexOf(e.type)>=0){ applyStreamEvent(e); return; }
   switch(e.type){
-    case "done": finalizeStream(e.text); setMeta(e); loadConvs(); flushPending(e.conv); break;
+    case "done": {
+      const errBubble = S.stream ? S.stream.bubble : null;
+      finalizeStream(e.text);
+      if(e.is_error){
+        if(errBubble) errBubble.classList.add("err");
+        // 检测限额/过载关键字,更新侧栏状态
+        const el=(e.error||"").toLowerCase();
+        if(/rate|429|quota|limit|overloaded/i.test(el)) setRateStatus("warn", "最近遇到限额/过载", e.error);
+        else setRateStatus("err", "", e.error);
+      }else{ setRateStatus("ok","",""); }
+      setMeta(e); loadConvs(); flushPending(e.conv); break; }
     case "message": // 命令回复 / 报错 / cron 推送
       if(S.stream && !streamText(S.stream)){ finalizeStream(e.text); }
       else { S.stream=null; addBubble("ai", e.text); }
+      // 后端推送的报错也更新侧栏状态
+      if(e.text&&e.text.includes("⚠️")){
+        const el2=e.text.toLowerCase();
+        if(/rate|429|quota|limit|overloaded/i.test(el2)) setRateStatus("warn", "最近遇到限额/过载", e.text);
+        else setRateStatus("err", "", e.text);
+      }
       loadConvs(); flushPending(e.conv); break;
     case "choice": delete S.pendingChoice[e.conv]; renderChoice(e); break;
   }

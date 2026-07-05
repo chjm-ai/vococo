@@ -257,6 +257,7 @@ async def converse(
     # 流式进行中:节流把当前全文写进 turns.draft_text,供前端刷新后兜底恢复
     _draft_full = ""       # 当前轮已输出的所有正文(每段全文覆盖)
     _draft_last_ts = 0.0   # 上次 flush 的时刻(0=还没写过)
+    _err_msg = ""           # 流式期间抛出的异常消息
     try:
         async for ev in stream_turn(
             history, user_text, model=model, images=images, cwd=cwd, resume=resume_sid
@@ -287,8 +288,23 @@ async def converse(
                 )
             elif isinstance(ev, Done):
                 reply = ev.reply
+    except Exception as exc:
+        _err_msg = str(exc)
     finally:
         danger.reset_cwd(cwd_token)
+    # 流式异常 → 构造一条错误回复,确保 sink.done() 始终能发(前端不会空泡)
+    if reply is None and _err_msg:
+        from ..core.agent import AgentReply as _AR  # 懒加载,避免循环引用
+
+        err_lower = _err_msg.lower()
+        if any(kw in err_lower for kw in ("rate", "429", "quota", "limit", "overloaded")):
+            hint = "⚠️ Claude 限额/过载,稍等片刻再试"
+        else:
+            hint = "⚠️ 出了点问题,请重试"
+        reply = _AR(
+            text=hint, tool_calls=[], cost_usd=None, is_error=True,
+            error=_err_msg,
+        )
     if reply is not None:
         # 最后一刷:确保 refresh 前最后 0.7s 内输出的内容也进 draft
         if _draft_full:

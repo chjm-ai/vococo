@@ -104,6 +104,7 @@ class AgentReply:
     tool_calls: list[str]
     cost_usd: float | None
     is_error: bool
+    error: str = ""  # 错误详情(如 rate limit / overload),空=无错误
     context_tokens: int = 0  # 当前上下文占用(input+cache),≈ 塞进窗口的总量
     turn_tokens: int = 0  # 本轮新增吞吐(input+output),累计即"消耗"
     context_window: int = 200_000  # 该模型的上下文窗口
