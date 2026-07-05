@@ -402,7 +402,9 @@
   #hamb{display:none;width:42px;height:42px;font-size:21px;border-radius:13px}
 
   #messages{flex:1;overflow-y:auto;padding:18px 16px 8px;
-    padding-top:calc(18px + var(--header-h, 62px));
+    /* JS 实测到就用精确顶栏高;没测到(或时机太早)时兜底也要含顶部安全区,
+       否则刘海机上第一条消息会钻进半透明顶栏。max 取两者较大者,双保险。 */
+    padding-top:calc(18px + max(var(--header-h, 0px), 62px + env(safe-area-inset-top)));
     padding-bottom:calc(8px + var(--composer-h, 104px));
     -webkit-overflow-scrolling:touch;position:relative;
     transition:padding .35s cubic-bezier(.4,0,.2,1)}
@@ -426,6 +428,7 @@
     align-items:center;justify-content:center;cursor:pointer;border:none}
   .status .statusstop:hover{filter:brightness(1.1)}
   .status .statusstop:active{transform:scale(.9)}
+  .status .statusstop .sq{width:9px;height:9px;border-radius:2px;background:#fff}
   .dots{display:inline-flex;gap:3px;margin-left:5px;align-items:center}
   .dots i{width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.28;animation:blink 1.2s infinite}
   .dots i:nth-child(2){animation-delay:.2s} .dots i:nth-child(3){animation-delay:.4s}
@@ -1885,7 +1888,7 @@ function renderStatus(){
   const working = hasBody || t.some(x=>!x.done);
   const label = working ? "工作中" : "思考中";
   S.stream.status.innerHTML = '<span class="chip live">'+label+DOTS+esc(tick)+'</span>'
-    + '<button type="button" class="statusstop" title="停止回复" aria-label="停止回复">■</button>';
+    + '<button type="button" class="statusstop" title="停止回复" aria-label="停止回复"><span class="sq"></span></button>';
 }
 function finalizeStream(finalText){
   if(!S.stream) return;
@@ -2408,6 +2411,14 @@ function _updateChromePad(){
 _updateChromePad();
 new ResizeObserver(_updateChromePad).observe(document.querySelector('header.bar'));
 new ResizeObserver(_updateChromePad).observe(document.getElementById('composer'));
+// iOS 独立 PWA 首屏:safe-area 与字体都晚一拍才稳定,顶栏实测高会偏小,
+// 第一条消息会钻进半透明顶栏下被盖住。多触发点重测让 --header-h 追上真实高度。
+// (ResizeObserver 在 standalone 下有时不触发重排,故显式补齐。)
+addEventListener("load", _updateChromePad);
+if(document.fonts&&document.fonts.ready) document.fonts.ready.then(_updateChromePad);
+addEventListener("orientationchange", ()=>{ _updateChromePad(); setTimeout(_updateChromePad,300); });
+requestAnimationFrame(()=>requestAnimationFrame(_updateChromePad));  // 双帧:等首次布局落定
+[120,400,800].forEach(t=>setTimeout(_updateChromePad,t));            // 延迟兜底:等 safe-area 稳定
 
 // ── 键盘/视口自适应 ──────────────────────────────────────────────────────
 // 把 #app 高度绑定到「可视视口」而非布局视口:键盘弹出时整体缩短,
@@ -2426,6 +2437,11 @@ function fitViewport(){
     // 常偏小且不再触发 resize,固定绑定会在底部留一条空白
     st.removeProperty("--app-h");
     st.removeProperty("--app-top");
+    // 视口回正后输入框会重新布局:重测其高度让 messages 底部让位量跟上,
+    // 并把最后一条消息重新滚进可视区,避免收起后内容被输入框盖住。
+    // iOS 独立 PWA 收起后布局晚一拍才稳定,再延迟兜底一次。
+    _updateChromePad(); scrollDown();
+    setTimeout(()=>{ _updateChromePad(); scrollDown(); }, 80);
   }
 }
 if(window.visualViewport){
