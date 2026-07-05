@@ -276,6 +276,48 @@ def test_guard_hook_write_outside_cwd_denied(tmp_path):
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
+def test_guard_hook_denies_write_outside_worktree(tmp_path):
+    # worktree 会话(cwd=worktree,主仓库=repo)写 worktree 外的主仓库文件 → 硬 deny;
+    # 写 worktree 内文件 → 放行。验证会话隔离防线。
+    from claude_hermes.tools import danger
+
+    repo = tmp_path / "repo"
+    wt = repo / "data" / "worktrees" / "h" / "sess"  # worktree 恰嵌在主仓库 data/ 下
+    wt.mkdir(parents=True)
+    tok = danger.set_cwd(str(wt), project_root=str(repo))
+    try:
+        out = anyio.run(lambda: pretool_guard_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(repo / "core.py")}},
+            None, {},
+        ))
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "worktree" in out["hookSpecificOutput"]["permissionDecisionReason"]
+        out2 = anyio.run(lambda: pretool_guard_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(wt / "a.py")}},
+            None, {},
+        ))
+        assert out2 == {}
+    finally:
+        danger.reset_cwd(tok)
+
+
+def test_guard_hook_fallback_session_can_write_repo(tmp_path):
+    # 回退会话:worktree 建失败 → cwd==主仓库根,写项目文件不该被 worktree 防线误伤
+    from claude_hermes.tools import danger
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tok = danger.set_cwd(str(repo), project_root=str(repo))
+    try:
+        out = anyio.run(lambda: pretool_guard_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(repo / "core.py")}},
+            None, {},
+        ))
+        assert out == {}
+    finally:
+        danger.reset_cwd(tok)
+
+
 def test_setcwd_roundtrip():
     from claude_hermes.tools import danger
 
