@@ -408,6 +408,13 @@
     padding-bottom:calc(8px + var(--composer-h, 104px));
     -webkit-overflow-scrolling:touch;position:relative;
     transition:padding .35s cubic-bezier(.4,0,.2,1)}
+  #scrollDownBtn{position:absolute;bottom:16px;right:24px;z-index:50;
+    width:40px;height:40px;border-radius:50%;background:var(--bg2);border:1px solid var(--line);
+    color:var(--dim);font-size:18px;display:flex;align-items:center;justify-content:center;
+    cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.2);transition:opacity .2s,transform .2s;
+    opacity:0;transform:translateY(8px);pointer-events:none}
+  #scrollDownBtn.show{opacity:1;transform:translateY(0);pointer-events:auto}
+  #scrollDownBtn:hover{background:var(--hover);color:var(--text)}
   .wrap{max-width:820px;margin:0 auto}
   .row{display:flex;margin:10px 0;animation:pop .32s cubic-bezier(.2,.7,.3,1)}
   .row.me{justify-content:flex-end}
@@ -744,6 +751,7 @@
     </header>
     <div id="messages">
       <div class="wrap" id="wrap"></div>
+      <button id="scrollDownBtn" aria-label="滚到底部" title="滚到底部" onclick="scrollDown(true)">↓</button>
       <div id="convLoading">
         <div class="skel ai"></div>
         <div class="skel me"></div>
@@ -1590,6 +1598,7 @@ function openConvMenu(btn, conv){
 }
 document.addEventListener("click", closeConvMenu);       // 点空白处关闭
 $("#convList").addEventListener("scroll", closeConvMenu); // 列表滚动时关闭,避免菜单错位
+$("#messages").addEventListener("scroll", ()=>{ updateScrollBtn(); }, {passive:true}); // 流式时用户上翻→显示↓按钮
 
 async function delConv(conv){
   const idx=S.convs.findIndex(x=>x.conv===conv);
@@ -1664,7 +1673,7 @@ function renderTurns(turns){
       const st=el("div","status"); st.textContent="回复中…"; b.append(st);
     }
   }
-  updateEmpty(); scrollDown();
+  updateEmpty(); scrollDown(true);
 }
 // 用落库的过程时间线重建一轮回复:文字段与工具卡按当时的真实顺序交错复现
 function renderEventsFlow(events){
@@ -1724,7 +1733,7 @@ async function openConv(conv){
     return;
   }
   if(S.conv!==conv) return;
-  updateEmpty(); scrollDown();
+  updateEmpty(); scrollDown(true);
   maybeReplayStream(conv);
   if(S.pendingChoice[conv]) renderChoice(S.pendingChoice[conv]);
 }
@@ -1751,10 +1760,24 @@ function addBubble(who, text, imgs){
   if(who==="me"){ b.textContent=text; } else { b.innerHTML = text?mdToHtml(text):""; }
   row.append(b);
   if(imgs&&imgs.length){ const g=el("div","imgs"); for(const u of imgs){ const im=el("img"); im.src=u; g.append(im);} b.append(g); }
-  $("#wrap").append(row); updateEmpty(); scrollDown();
+  $("#wrap").append(row); updateEmpty(); scrollDown(true);
   return b;
 }
-function scrollDown(){ const m=$("#messages"); requestAnimationFrame(()=>{ m.scrollTop=m.scrollHeight; }); }
+function scrollDown(force){
+  const m=$("#messages");
+  requestAnimationFrame(()=>{
+    if(force){ m.scrollTop=m.scrollHeight; updateScrollBtn(); return; }
+    const dist=m.scrollHeight - m.scrollTop - m.clientHeight;
+    if(dist < 80) m.scrollTop = m.scrollHeight;  // 距底<80px 才跟滚,否则用户在阅读历史
+    updateScrollBtn();
+  });
+}
+function updateScrollBtn(){
+  const btn=$("#scrollDownBtn"); if(!btn) return;
+  const m=$("#messages");
+  const dist=m.scrollHeight - m.scrollTop - m.clientHeight;
+  btn.classList.toggle("show", dist >= 80);
+}
 
 // ── SSE 流式接收 ─────────────────────────────────────────────────────────
 // 用 fetch 流式读 SSE,替代原生 EventSource。原因:iOS Safari 只要有活跃的 EventSource
@@ -1863,7 +1886,7 @@ function ensureStream(t0){
   S.stream.timer=tm;
   renderStatus();  // 初始即显示"💭 思考中…"动画
   updateSendBtn();
-  scrollDown(); return S.stream;
+  scrollDown(true); return S.stream;
 }
 // 取/建某文字段的 div(按首次出现顺序挂进 flow,与工具卡自然交错)
 function segDiv(s, seg){
@@ -2446,7 +2469,7 @@ function fitViewport(){
   if(kbOpen){
     st.setProperty("--app-h", vv.height + "px");
     st.setProperty("--app-top", vv.offsetTop + "px");
-    scrollDown();
+    scrollDown(true);
   }else{
     // 键盘收起时交还布局视口(100%):iOS 独立 PWA 下 visualViewport 高度
     // 常偏小且不再触发 resize,固定绑定会在底部留一条空白
@@ -2455,8 +2478,8 @@ function fitViewport(){
     // 视口回正后输入框会重新布局:重测其高度让 messages 底部让位量跟上,
     // 并把最后一条消息重新滚进可视区,避免收起后内容被输入框盖住。
     // iOS 独立 PWA 收起后布局晚一拍才稳定,再延迟兜底一次。
-    _updateChromePad(); scrollDown();
-    setTimeout(()=>{ _updateChromePad(); scrollDown(); }, 80);
+    _updateChromePad(); scrollDown(true);
+    setTimeout(()=>{ _updateChromePad(); scrollDown(true); }, 80);
   }
 }
 if(window.visualViewport){
