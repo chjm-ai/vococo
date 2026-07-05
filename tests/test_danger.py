@@ -153,6 +153,53 @@ def test_classify_returns_restrict_flag():
     assert classify("Bash", {"command": "rm -rf ./x"})[2] is False
 
 
+def test_guard_hook_denies_new_memory_file(tmp_path, monkeypatch):
+    # 在 Claude Code 项目记忆目录新建实体文件 → deny 引导写 AI_BRAIN 主库
+    from claude_hermes.tools import danger
+
+    projects = tmp_path / "projects"
+    memdir = projects / "-Users-x-proj" / "memory"
+    memdir.mkdir(parents=True)
+    monkeypatch.setattr(danger, "_CLAUDE_PROJECTS_DIR", str(projects))
+
+    out = anyio.run(
+        lambda: pretool_guard_hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(memdir / "new.md")}},
+            None, {},
+        )
+    )
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "AI_BRAIN" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_guard_hook_allows_existing_memory_file(tmp_path, monkeypatch):
+    # 已有文件(软链写穿 / MEMORY.md 索引)与记忆目录之外的新文件都放行
+    from claude_hermes.tools import danger
+
+    projects = tmp_path / "projects"
+    memdir = projects / "-Users-x-proj" / "memory"
+    memdir.mkdir(parents=True)
+    (memdir / "MEMORY.md").write_text("# index")
+    monkeypatch.setattr(danger, "_CLAUDE_PROJECTS_DIR", str(projects))
+
+    out = anyio.run(
+        lambda: pretool_guard_hook(
+            {"tool_name": "Write",
+             "tool_input": {"file_path": str(memdir / "MEMORY.md")}},
+            None, {},
+        )
+    )
+    assert out == {}
+    out = anyio.run(
+        lambda: pretool_guard_hook(
+            {"tool_name": "Write",
+             "tool_input": {"file_path": str(tmp_path / "elsewhere.md")}},
+            None, {},
+        )
+    )
+    assert out == {}
+
+
 def test_find_delete_root_blocked():
     assert is_dangerous("find / -delete") is not None
     assert is_dangerous("find ~ -name '*.log' -delete") is not None

@@ -270,6 +270,46 @@ def _deny_background(tool_name: str) -> dict:
     )
 
 
+# ── 记忆孤本防线:禁止在 ~/.claude/projects/*/memory/ 新建实体文件 ─────────────────
+# 记忆唯一主库在 ~/AI_BRAIN/memory(见 AI_BRAIN 的 memory-source-unified 记忆):Claude Code
+# 项目记忆目录里只放指向主库的软链。agent 直接在该目录 Write 新文件会重新制造两边分叉的
+# 孤本,故一律 deny 并引导「先写 AI_BRAIN 再 ln -s」。写已有文件不拦——软链写穿主库、
+# MEMORY.md 索引更新都属正常操作。与 run_in_background 拦截同为常开的正确性防线,
+# 不受 DANGER_GUARD / APPROVAL_GATE 开关控制。
+_CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+
+
+def _creates_orphan_memory_file(tool_name: str, tool_input: dict) -> str | None:
+    """若本次调用会在 Claude Code 项目记忆目录里新建实体文件,返回目标路径;否则 None。"""
+    if tool_name not in _WRITE_TOOLS:
+        return None
+    ti = tool_input or {}
+    path = ti.get("file_path") or ti.get("notebook_path") or ""
+    if not path:
+        return None
+    try:
+        target = os.path.abspath(os.path.expanduser(path))
+        rel = os.path.relpath(target, _CLAUDE_PROJECTS_DIR)
+        parts = rel.split(os.sep)
+        # 形如 <项目槽>/memory/<file> 才算记忆目录;越出 projects 根(..开头)不算
+        if rel.startswith("..") or len(parts) < 3 or parts[1] != "memory":
+            return None
+        if os.path.lexists(target):
+            return None  # 已有文件/软链:写穿主库,放行
+        return target
+    except (ValueError, OSError):
+        return None
+
+
+def _deny_orphan_memory(target: str) -> dict:
+    return _deny(
+        f"🚫 记忆唯一主库在 ~/AI_BRAIN/memory/,Claude Code 项目记忆目录只放软链,"
+        f"禁止在其中新建实体文件({target})。请改为:1) 把内容 Write 到"
+        f" ~/AI_BRAIN/memory/<同名>.md;2) `ln -s` 该文件到项目记忆目录;"
+        f"3) 更新该目录的 MEMORY.md 索引(索引是已有文件,可直接改)。"
+    )
+
+
 def _describe(tool_name: str, tool_input: dict) -> str:
     """给审批弹窗一行「具体要干什么」。"""
     ti = tool_input or {}
@@ -347,6 +387,10 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
         # 后台任务:直接 deny 引导前台重试(见 _wants_background 上方说明),优先于其余判定
         if _wants_background(tool_name, tool_input):
             return _deny_background(tool_name)
+        # 记忆孤本:在 Claude Code 项目记忆目录新建实体文件 → deny 引导写 AI_BRAIN 主库
+        orphan = _creates_orphan_memory_file(tool_name, tool_input)
+        if orphan:
+            return _deny_orphan_memory(orphan)
         verdict, reason, restrict = classify(tool_name, tool_input, cwd=current_cwd())
     except Exception:
         # 背景判定/classify 出错时无从判定 → 放行,不阻断正常流程(这些都不是安全判定本身)
