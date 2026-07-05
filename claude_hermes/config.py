@@ -103,6 +103,8 @@ AI_BRAIN_DIR: Path = Path(
 
 # 运行时数据目录(prompt_toolkit 历史等)
 DATA_DIR: Path = _ROOT / "data"
+# 用户发的图片落盘目录(Web 端消息里的图片,持久化后刷新页面仍可见)
+IMAGES_DIR: Path = DATA_DIR / "images"
 
 # === 调度 / 心跳 ===
 CRON_JOBS_PATH: Path = DATA_DIR / "cron_jobs.json"

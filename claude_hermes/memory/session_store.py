@@ -6,9 +6,12 @@
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -101,6 +104,10 @@ def _conn() -> sqlite3.Connection:
         # 轮末 finish_turn 把 assistant_text 写全并清空 draft(最终版都在 assistant_text)。
         if "draft_text" not in tcols:
             _DB.execute("ALTER TABLE turns ADD COLUMN draft_text TEXT NOT NULL DEFAULT ''")
+        # images: 该轮用户发的图片文件名 JSON 列表(图片本体落盘在 config.IMAGES_DIR,
+        # 这里只存文件名)。刷新后 /history 带出文件名 → 前端用 /image?name= 取回显示。
+        if "images" not in tcols:
+            _DB.execute("ALTER TABLE turns ADD COLUMN images TEXT")
         _DB.commit()
     return _DB
 
@@ -135,12 +142,12 @@ def load_history(session_key: str, limit: int = 40) -> list[dict]:
     c = _conn()
     wm = _watermark(c, session_key)
     rows = c.execute(
-        "SELECT user_text, assistant_text, events, draft_text FROM turns "
+        "SELECT user_text, assistant_text, events, draft_text, images FROM turns "
         "WHERE session_key=? AND id>? ORDER BY id DESC LIMIT ?",
         (session_key, wm, limit),
     ).fetchall()
     out: list[dict] = []
-    for u, a, ev, draft in reversed(rows):
+    for u, a, ev, draft, imgs in reversed(rows):
         try:
             events = json.loads(ev) if ev else []
         except (json.JSONDecodeError, ValueError):
@@ -148,6 +155,13 @@ def load_history(session_key: str, limit: int = 40) -> list[dict]:
         entry: dict = {"user": u, "assistant": a, "pending": a == "", "events": events}
         if a == "" and draft:
             entry["draft"] = draft
+        # 图片:库里存文件名,给前端换成取图 URL(前端 <img src> 直接用)
+        try:
+            names = json.loads(imgs) if imgs else []
+        except (json.JSONDecodeError, ValueError):
+            names = []
+        if names:
+            entry["images"] = ["/image?name=" + n for n in names]
         out.append(entry)
     return out
 
@@ -221,6 +235,75 @@ def start_turn(session_key: str, user_text: str) -> int:
     return cur.lastrowid  # type: ignore[return-value]
 
 
+# === 用户图片落盘(Web 消息)===
+# 图片本体写进 config.IMAGES_DIR,文件名记进 turns.images(JSON 列表);
+# 只有当轮喂模型的 in-memory base64 会被清掉,落盘的这份让刷新后仍能显示。
+
+_IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")  # 文件名白名单,挡路径穿越
+
+
+def _img_ext(media_type: str) -> str:
+    """从 media_type(如 image/png)取一个安全的扩展名;取不到回落 png。"""
+    ext = (media_type or "").split("/")[-1].split(";")[0].strip().lower()
+    ext = re.sub(r"[^a-z0-9]", "", ext)
+    return ext or "png"
+
+
+def save_turn_images(turn_id: int, images: list) -> list[str]:
+    """把某轮用户图片写盘并把文件名记进 turns.images;返回文件名列表。
+
+    images 元素需有 .data(base64 字符串)和 .media_type;解码失败的单张跳过,
+    不影响其余图片与正文落库。
+    """
+    if not images:
+        return []
+    config.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    names: list[str] = []
+    for idx, im in enumerate(images):
+        data = getattr(im, "data", None)
+        if not data:
+            continue
+        try:
+            raw = base64.b64decode(data)
+        except (binascii.Error, ValueError):
+            continue  # 坏 base64:跳过这张
+        name = f"{turn_id}_{idx}.{_img_ext(getattr(im, 'media_type', ''))}"
+        (config.IMAGES_DIR / name).write_bytes(raw)
+        names.append(name)
+    if names:
+        c = _conn()
+        c.execute(
+            "UPDATE turns SET images=? WHERE id=?",
+            (json.dumps(names, ensure_ascii=False), turn_id),
+        )
+        c.commit()
+    return names
+
+
+def image_path(name: str):
+    """按文件名返回图片的磁盘路径(Path);非法名/不存在返回 None —— 供 HTTP 取图时校验。"""
+    if not name or not _IMG_NAME_RE.match(name):
+        return None  # 挡 ../ 等路径穿越
+    p = config.IMAGES_DIR / name
+    return p if p.is_file() else None
+
+
+def _purge_session_images(c: sqlite3.Connection, session_key: str) -> None:
+    """删会话前把它名下所有图片文件从磁盘清掉,避免孤儿文件堆积。"""
+    rows = c.execute(
+        "SELECT images FROM turns WHERE session_key=? AND images IS NOT NULL",
+        (session_key,),
+    ).fetchall()
+    for (imgs,) in rows:
+        try:
+            names = json.loads(imgs) if imgs else []
+        except (json.JSONDecodeError, ValueError):
+            continue
+        for n in names:
+            if _IMG_NAME_RE.match(n or ""):
+                (config.IMAGES_DIR / n).unlink(missing_ok=True)
+
+
 def finish_turn(turn_id: int, assistant_text: str, events: list | None = None) -> None:
     """用 AI 回复填完 start_turn 占的坑;events=该轮过程时间线(可选)。"""
     c = _conn()
@@ -253,6 +336,7 @@ def flush_draft(turn_id: int, text: str) -> None:
 
 def clear(session_key: str) -> None:
     c = _conn()
+    _purge_session_images(c, session_key)  # 先清图片文件,再删轮次
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute(
         "UPDATE session_meta SET ctx_tokens=0, total_tokens=0, "
@@ -458,8 +542,9 @@ def clear_worktree(session_key: str) -> None:
 
 
 def delete_session(session_key: str) -> None:
-    """彻底删掉一个会话(所有轮次 + 元数据)。"""
+    """彻底删掉一个会话(所有轮次 + 元数据 + 图片文件)。"""
     c = _conn()
+    _purge_session_images(c, session_key)  # 先清图片文件,再删轮次
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute("DELETE FROM session_meta WHERE session_key=?", (session_key,))
     c.commit()

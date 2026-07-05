@@ -668,6 +668,16 @@ class WebAdapter:
         turns = session_store.load_history(key, limit=40)
         return web.json_response({"turns": turns})
 
+    async def _handle_image(self, request: web.Request) -> web.StreamResponse:
+        """回显某轮用户发的图片(落盘在 config.IMAGES_DIR);name 经白名单校验挡路径穿越。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        p = session_store.image_path(request.query.get("name", ""))
+        if p is None:
+            return web.json_response({"error": "not found"}, status=404)
+        # 图片按内容寻址(文件名带 turn_id,内容不变)→ 长缓存,刷新不重复拉
+        return web.FileResponse(p, headers={"Cache-Control": "max-age=31536000, immutable"})
+
     async def _handle_rename(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
@@ -1135,6 +1145,7 @@ class WebAdapter:
                 web.post("/projects/remove", self._handle_project_remove),
                 web.get("/models", self._handle_models),
                 web.get("/history", self._handle_history),
+                web.get("/image", self._handle_image),
                 web.post("/transcribe", self._handle_transcribe),
                 web.post("/conv/rename", self._handle_rename),
                 web.post("/conv/delete", self._handle_delete),
