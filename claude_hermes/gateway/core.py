@@ -22,6 +22,8 @@ from ..core.agent import (
     ToolStarted,
     stream_turn,
 )
+import time
+
 from ..memory import session_store
 from .. import providers
 
@@ -251,6 +253,9 @@ async def converse(
     resume_sid = session_store.get_sdk_session_id(session_key)
     reply: AgentReply | None = None
     timeline = _Timeline()  # 录过程时间线,轮末随正文落库(刷新可重建工具卡)
+    # 流式进行中:节流把当前全文写进 turns.draft_text,供前端刷新后兜底恢复
+    _draft_full = ""       # 当前轮已输出的所有正文(每段全文覆盖)
+    _draft_last_ts = 0.0   # 上次 flush 的时刻(0=还没写过)
     try:
         async for ev in stream_turn(
             history, user_text, model=model, images=images, cwd=cwd, resume=resume_sid
@@ -258,6 +263,12 @@ async def converse(
             if isinstance(ev, TextDelta):
                 timeline.text(ev.text)
                 await sink.text(ev.text)
+                # 节流:每 ~0.7s 把当前全文刷进 draft_text,供刷新兜底
+                _draft_full = ev.text
+                now = time.monotonic()
+                if now - _draft_last_ts > 0.7:
+                    session_store.flush_draft(turn_id, _draft_full)
+                    _draft_last_ts = now
             elif isinstance(ev, ThinkingDelta):
                 await sink.thinking(ev.text)
             elif isinstance(ev, ToolStarted):
@@ -278,6 +289,9 @@ async def converse(
     finally:
         danger.reset_cwd(cwd_token)
     if reply is not None:
+        # 最后一刷:确保 refresh 前最后 0.7s 内输出的内容也进 draft
+        if _draft_full:
+            session_store.flush_draft(turn_id, _draft_full)
         session_store.finish_turn(turn_id, reply.text, events=timeline.blocks)
         # 存回本轮 SDK 会话 id,下一轮 resume 它接上真·多轮历史(每轮覆盖,链不断)
         if reply.sdk_session_id:

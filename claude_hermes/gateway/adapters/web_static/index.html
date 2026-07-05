@@ -1655,6 +1655,12 @@ function renderTurns(turns){
         }
         b.append(flow);
       }else b.innerHTML=mdToHtml(t.assistant);   // 老数据没存时间线:只有最终正文
+    }else if(t.draft){
+      // 进行中但后端正流式写 draft:用部分内容起底兜底,避免刷新后空白;
+      // SSE 恢复后 maybeReplayStream 会用同 seg 全文覆盖无缝续上
+      const b=addBubble("ai","");
+      b.innerHTML=mdToHtml(t.draft);
+      const st=el("div","status"); st.textContent="回复中…"; b.append(st);
     }
   }
   updateEmpty(); scrollDown();
@@ -1810,9 +1816,9 @@ function connect(){
   if(S.es) S.es.close();
   const es = S.es = new FetchSSE("/events", S.token);
   es.onopen = (firstOpen)=>{
-    // 首连:openConv 已拉过历史,跳过。重连成功都拉一次历史,补回断连期间漏掉的消息
-    // —— 尤其服务端【自我重启】后注入对话的系统消息。
-    if(!firstOpen) reloadHistory();
+    // 首连/重连都拉一次历史:首连补回上次刷新前进行中轮的部分内容(draft_text);
+    // 重连补回断连期间漏掉的消息(尤其服务端自我重启后注入的系统消息)。
+    reloadHistory();
   };
   es.onmessage = ev=>{ try{
     const d=JSON.parse(ev.data);
@@ -1987,6 +1993,14 @@ function applyStreamEvent(e){
 function maybeReplayStream(conv){
   if(S.conv!==conv) return;
   const buf=S.live[conv]; if(!buf||!buf.length) return;
+  // renderTurns 可能已用 draft 渲染了部分内容;SSE 恢复后流式气泡会覆盖它,
+  // 先清掉避免出现两个 AI 气泡(草稿+流式)
+  const rows=$("#wrap").children;
+  for(let i=rows.length-1;i>=0;i--){
+    if(rows[i].classList.contains("ai") && rows[i].querySelector(".status")){
+      rows[i].remove(); break;
+    }
+  }
   S.stream=null;
   for(const e of buf) applyStreamEvent(e);
 }

@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS turns(
   session_key TEXT NOT NULL,
   ts REAL NOT NULL,
   user_text TEXT NOT NULL,
-  assistant_text TEXT NOT NULL
+  assistant_text TEXT NOT NULL,
+  draft_text TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_key, id);
 CREATE TABLE IF NOT EXISTS session_meta(
@@ -95,6 +96,11 @@ def _conn() -> sqlite3.Connection:
         tcols = {r[1] for r in _DB.execute("PRAGMA table_info(turns)")}
         if "events" not in tcols:
             _DB.execute("ALTER TABLE turns ADD COLUMN events TEXT")
+        # draft_text: 流式进行中把"当前已输出的正文"节流写进该列;
+        # 前端刷新后 /history 能拿到部分内容兜底,避免"刷新时进行中的回复一片空白"。
+        # 轮末 finish_turn 把 assistant_text 写全并清空 draft(最终版都在 assistant_text)。
+        if "draft_text" not in tcols:
+            _DB.execute("ALTER TABLE turns ADD COLUMN draft_text TEXT NOT NULL DEFAULT ''")
         _DB.commit()
     return _DB
 
@@ -121,21 +127,28 @@ def load_recent(session_key: str, limit: int = 40) -> list[Turn]:
 
 
 def load_history(session_key: str, limit: int = 40) -> list[dict]:
-    """历史展示用:含进行中 turn,pending=True 标注;events 是该轮过程时间线。"""
+    """历史展示用:含进行中 turn,pending=True 标注;events 是该轮过程时间线。
+
+    pending 轮有 draft_text 时一并返回 —— 前端刷新后可用部分内容起底重建气泡,
+    避免「刷新时进行中的回复一片空白」;SSE 恢复后同 seg 全文覆盖无缝续上。
+    """
     c = _conn()
     wm = _watermark(c, session_key)
     rows = c.execute(
-        "SELECT user_text, assistant_text, events FROM turns "
+        "SELECT user_text, assistant_text, events, draft_text FROM turns "
         "WHERE session_key=? AND id>? ORDER BY id DESC LIMIT ?",
         (session_key, wm, limit),
     ).fetchall()
     out: list[dict] = []
-    for u, a, ev in reversed(rows):
+    for u, a, ev, draft in reversed(rows):
         try:
             events = json.loads(ev) if ev else []
         except (json.JSONDecodeError, ValueError):
             events = []
-        out.append({"user": u, "assistant": a, "pending": a == "", "events": events})
+        entry: dict = {"user": u, "assistant": a, "pending": a == "", "events": events}
+        if a == "" and draft:
+            entry["draft"] = draft
+        out.append(entry)
     return out
 
 
@@ -218,7 +231,7 @@ def finish_turn(turn_id: int, assistant_text: str, events: list | None = None) -
         except (TypeError, ValueError):
             ev_json = None  # 时间线序列化失败不影响正文落库
     c.execute(
-        "UPDATE turns SET assistant_text=?, events=? WHERE id=?",
+        "UPDATE turns SET assistant_text=?, events=?, draft_text='' WHERE id=?",
         (assistant_text, ev_json, turn_id),
     )
     c.commit()
@@ -228,6 +241,13 @@ def cancel_turn(turn_id: int) -> None:
     """AI 回复出错/取消时删掉进行中的 turn,避免孤儿 pending 行残留。"""
     c = _conn()
     c.execute("DELETE FROM turns WHERE id=? AND assistant_text=''", (turn_id,))
+    c.commit()
+
+
+def flush_draft(turn_id: int, text: str) -> None:
+    """流式进行中:把当前已输出的正文节流写进 draft_text 列,供刷新后兜底。"""
+    c = _conn()
+    c.execute("UPDATE turns SET draft_text=? WHERE id=?", (text, turn_id))
     c.commit()
 
 
