@@ -341,7 +341,7 @@
 
   /* 主区 */
   main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative;background:var(--bg2);overflow:hidden}
-  header.bar{padding:11px 16px;
+  header.bar{padding:11px 32px;
     padding-top:calc(11px + env(safe-area-inset-top));
     background:var(--bar-bg);backdrop-filter:blur(14px);
     -webkit-backdrop-filter:blur(14px);position:absolute;top:0;left:0;right:0;z-index:10;
@@ -570,7 +570,7 @@
   #empty .sug:active{transform:scale(.96)}
 
   /* 输入区:全透明,桌面端底部留间距 */
-  #composer{background:transparent;padding:0 12px;
+  #composer{background:transparent;padding:0 32px;
     position:absolute;bottom:0;left:0;right:0;z-index:10;
     transition:transform .35s cubic-bezier(.4,0,.2,1)}
   @media(min-width:641px){
