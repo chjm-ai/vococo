@@ -107,38 +107,38 @@
   #sidebar{width:280px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);
     display:flex;flex-direction:column;
     transition:transform .25s cubic-bezier(.4,0,.2,1),width .25s cubic-bezier(.4,0,.2,1);z-index:30}
-  #sidebar .shead{padding:16px 18px 8px;padding-top:calc(16px + env(safe-area-inset-top));display:flex;align-items:center;gap:10px}
-  #sidebar .shead .brand{flex:1;display:flex;align-items:center;gap:9px;font-size:15.5px;font-weight:700}
-  #sidebar .shead .brand .dot{width:26px;height:26px;border-radius:8px;
+  #sidebar .shead{padding:12px 14px 6px;padding-top:calc(12px + env(safe-area-inset-top));display:flex;align-items:center;gap:8px}
+  #sidebar .shead .brand{flex:1;display:flex;align-items:center;gap:7px;font-size:14px;font-weight:700}
+  #sidebar .shead .brand .dot{width:22px;height:22px;border-radius:7px;
     background:linear-gradient(135deg,var(--accent),var(--user2));display:flex;align-items:center;justify-content:center;
-    font-size:15px;color:#fff;box-shadow:0 2px 10px var(--glow1)}
+    font-size:13px;color:#fff;box-shadow:0 2px 10px var(--glow1)}
   /* 列表行统一规范:所有可点行(＋新对话 / 分组头 / 会话)共用同一内边距 + 圆角,
      hover 的灰底矩形尺寸与圆角完全一致 */
-  #convList{flex:1;overflow-y:auto;padding:4px 12px 12px}
-  .projgrp,.conv{padding:9px 12px;border-radius:9px;display:flex;align-items:center;
+  #convList{flex:1;overflow-y:auto;padding:2px 8px 8px}
+  .projgrp,.conv{padding:7px 10px;border-radius:7px;display:flex;align-items:center;
     cursor:pointer;transition:background .15s,color .15s}
   .projgrp:hover,.conv:hover,.conv.active{background:var(--panel2)}
   /* ＋新对话:填充按钮、宽度撑满(左右与列表内边距对齐) */
   #newBtn{display:flex;align-items:center;justify-content:center;gap:8px;
-    width:calc(100% - 24px);margin:2px 12px 6px;padding:10px 12px;border-radius:10px;
-    background:var(--panel2);color:var(--text);font-size:14px;font-weight:600;
+    width:calc(100% - 16px);margin:2px 8px 4px;padding:8px 10px;border-radius:9px;
+    background:var(--panel2);color:var(--text);font-size:13px;font-weight:600;
     cursor:pointer;transition:background .15s,transform .12s}
-  #newBtn .np{font-size:16px;line-height:1}
+  #newBtn .np{font-size:14px;line-height:1}
   #newBtn:hover{background:var(--card)}
   #newBtn:active{transform:scale(.98)}
   /* 侧边栏收起按钮(仅桌面显示)*/
-  #collapseBtn{display:none;width:30px;height:30px;border-radius:9px;flex-shrink:0;
-    align-items:center;justify-content:center;font-size:18px;color:var(--dim);
+  #collapseBtn{display:none;width:26px;height:26px;border-radius:7px;flex-shrink:0;
+    align-items:center;justify-content:center;font-size:16px;color:var(--dim);
     transition:background .16s,color .16s,transform .12s}
   #collapseBtn:hover{background:var(--panel2);color:var(--text)}
   #collapseBtn:active{transform:scale(.9)}
   .conv{margin-bottom:1px;gap:8px;color:var(--dim);position:relative}
   .conv:hover,.conv.active{color:var(--text)}
-  .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+  .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
   .conv .livedot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}   /* AI 正在回复:闪烁圆点 */
   @keyframes livepulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
-  .conv .ctime{flex-shrink:0;color:var(--dim2);font-size:11px;font-variant-numeric:tabular-nums;transition:opacity .16s}  /* 会话时刻:名称右侧 */
-  .conv .star{flex-shrink:0;color:var(--dim2);font-size:11px;transition:opacity .16s}   /* 主会话:弱化星标 */
+  .conv .ctime{flex-shrink:0;color:var(--dim2);font-size:10px;font-variant-numeric:tabular-nums;transition:opacity .16s}  /* 会话时刻:名称右侧 */
+  .conv .star{flex-shrink:0;color:var(--dim2);font-size:10px;transition:opacity .16s}   /* 主会话:弱化星标 */
   /* 「⋯」更多键绝对定位:不占布局宽度,hover 时浮现 */
   .conv .more{position:absolute;right:8px;top:50%;transform:translateY(-50%);opacity:0;pointer-events:none;
     font-size:16px;line-height:1;color:var(--dim2);padding:2px 6px;border-radius:7px;transition:opacity .16s,color .16s,background .16s}
@@ -445,7 +445,7 @@
   .row.me .bubble{background:linear-gradient(135deg,var(--user1),var(--user2));color:var(--on-user);border-bottom-right-radius:6px}
   .row.ai .bubble{background:var(--card);border-radius:var(--radius);max-width:100%;margin:4px 0 10px;display:block}
   .bubble.pending{color:var(--dim)}
-  .status{font-size:13px;color:var(--dim);margin:6px 0 0;display:flex;flex-wrap:wrap;gap:4px 12px}
+  .status{font-size:12px;color:var(--dim);margin:0;display:flex;flex-wrap:wrap;gap:4px 12px}
   .status .chip{display:inline-flex;align-items:center}
   .status .chip.live{color:var(--accent)}
   .status .statusstop{margin-left:auto;flex-shrink:0;width:24px;height:24px;border-radius:50%;
