@@ -767,7 +767,7 @@
         </div>
       </div>
     </div>
-    <button id="scrollDownBtn" aria-label="滚到底部" title="滚到底部" onclick="scrollDown(true)">↓</button>
+    <button id="scrollDownBtn" aria-label="滚到底部" title="滚到底部" onclick="scrollDownSmooth()">↓</button>
     <form id="composer" autocomplete="off">
       <div class="cwrap">
         <div id="pending"></div>
@@ -1776,6 +1776,11 @@ function updateScrollBtn(){
   const m=$("#messages");
   const dist=m.scrollHeight - m.scrollTop - m.clientHeight;
   btn.classList.toggle("show", dist >= 80);
+}
+// 点↓按钮:平滑滚到底(流式跟滚仍用瞬时,否则追不上不断增长的内容)
+function scrollDownSmooth(){
+  const m=$("#messages");
+  m.scrollTo({top:m.scrollHeight, behavior:"smooth"});
 }
 
 // ── SSE 流式接收 ─────────────────────────────────────────────────────────
