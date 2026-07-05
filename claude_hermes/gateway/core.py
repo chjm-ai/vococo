@@ -135,6 +135,10 @@ class Sink:
             self.answer = reply.text
         await self.render()
 
+    async def cancelled(self) -> None:
+        """用户手动取消当前轮。子类可覆盖以清理状态/通知前端。"""
+        await self.render()
+
     # --- 渲染(子类实现:把当前聚合状态显示出去)---
     async def render(self) -> None: ...
 
@@ -307,6 +311,8 @@ async def converse(
         # 万一已拿到就存回,让下一轮仍能 resume 接上真·多轮历史。
         if reply is not None and reply.sdk_session_id:
             session_store.set_sdk_session_id(session_key, reply.sdk_session_id)
+        # 通知渲染层本轮已被人为取消(Web 端可据此清理进行中快照,防止刷新后重放旧内容)
+        await sink.cancelled()
         raise  # 原样抛出;cwd 由 finally 统一 reset
     except Exception as exc:
         _err_msg = str(exc)

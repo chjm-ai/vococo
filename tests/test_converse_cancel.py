@@ -7,6 +7,7 @@ assistant_text='' 被 load_recent 跳过,用户提问凭空消失,下一轮彻�
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -58,6 +59,67 @@ async def test_cancel_preserves_question_for_next_turn(isolated, monkeypatch):
 
     assert seen["history_len"] == 1
     assert seen["first_user"] == "对比我们的系统和 claude code"
+
+
+@pytest.mark.anyio
+async def test_cancel_interrupts_sdk_client(monkeypatch):
+    """手动取消时应调用 client.interrupt() 通知 CLI 子进程停止生成。"""
+    from claude_agent_sdk import StreamEvent
+
+    from claude_hermes.core import agent
+
+    interrupt_mock = AsyncMock()
+
+    # 模拟一个先吐一个字再永久挂起的 SSE 流
+    async def slow_stream():
+        yield StreamEvent(
+            uuid="1",
+            session_id="s",
+            event={
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "一段"},
+            },
+        )
+        await asyncio.Event().wait()
+
+    class FakeClient:
+        def __init__(self, options=None):
+            self.options = options
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def query(self, *args, **kwargs):
+            return None
+
+        def receive_messages(self):
+            return slow_stream()
+
+        interrupt = interrupt_mock
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", FakeClient)
+    monkeypatch.setattr(agent.providers, "resolve", lambda *args: ("claude-sonnet-4", {}))
+    monkeypatch.setattr(agent.settings_store, "hermes_enabled", lambda: False)
+    monkeypatch.setattr(agent.settings_store, "effective_external_mcp", lambda: {})
+    monkeypatch.setattr(agent.settings_store, "effective_skills", lambda: None)
+    monkeypatch.setattr(agent, "build_system_prompt", lambda: "")
+    monkeypatch.setattr(agent, "build_mcp_servers", lambda: {})
+    monkeypatch.setattr(agent, "build_hooks", lambda: {})
+
+    async def consume():
+        async for _ev in agent.stream_turn([], "hi"):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.1)  # 让 stream_turn 进入 slow_stream 的挂起点
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    interrupt_mock.assert_awaited_once()
 
 
 @pytest.fixture

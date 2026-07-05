@@ -164,6 +164,11 @@ class _WebSink(Sink):
             }
         )
 
+    async def cancelled(self) -> None:
+        # 用户手动取消:清理「进行中」快照,避免刷新页面后重放旧内容。
+        self.a._live.pop(self.conv, None)
+        self.a._emit({"conv": self.conv, "type": "cancelled"})
+
     async def done(self, reply: AgentReply) -> None:
         # converse() 已在此之前写好 token 计量,读回最新明细推给前端(实时刷新顶栏)
         key = config.resolve_session_key("web", self.conv)
@@ -266,7 +271,7 @@ class WebAdapter:
                 "started": time.time(), "phase": "思考中", "frames": [(seq, payload)]
             }
             return
-        if t in ("done", "message"):
+        if t in ("done", "message", "cancelled"):
             self._live.pop(conv, None)  # 一轮结束(choice 是审批暂停,不收轮)
             return
         st = self._live.get(conv)

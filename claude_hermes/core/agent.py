@@ -13,6 +13,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
 
+import anyio
+
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
@@ -342,128 +344,140 @@ async def stream_turn(
         # 改法:用 receive_messages 一直读,直到【某个 ResultMessage 到来时,没有在跑的子代理/
         # 后台任务】才真正收工;子代理跑完会把结果喂回主 agent,主 agent 续写的综合正文也能被收进来。
         async with ClaudeSDKClient(options=options) as client:
-            await client.query(_build_prompt(prompt_history, user_text, images or []))
-            pending_subagents: set[str] = set()  # Agent/Task 调用 id,未拿到结果 = 子代理还在跑
-            active_tasks: set[str] = set()  # 后台任务 task_id,未见终态 = 还在跑
-            result_seen = False
-            msgs = client.receive_messages()
-            while True:
-                try:
-                    # 主轮 ResultMessage 到来前不设超时(模型可能长思考);之后进入 drain,
-                    # 给 idle 超时兜底,防子代理异常时永远读不到收尾而挂死。
-                    if result_seen:
-                        msg = await asyncio.wait_for(msgs.__anext__(), timeout=300)
-                    else:
-                        msg = await msgs.__anext__()
-                except StopAsyncIteration:
-                    break
-                except asyncio.TimeoutError:
-                    break
-
-                if isinstance(msg, StreamEvent):
-                    # 子代理的流式事件带 parent_tool_use_id=所属 Agent 调用的 id
-                    pid = getattr(msg, "parent_tool_use_id", None)
-                    ev = msg.event if isinstance(msg.event, dict) else {}
-                    etype = ev.get("type")
-                    if etype == "content_block_delta":
-                        delta = ev.get("delta", {})
-                        dt = delta.get("type")
-                        if dt == "text_delta":
-                            t = delta.get("text", "")
-                            # 子代理的正文/思考不进主消息流(否则会把主回复搅浑);
-                            # 它的动态靠下面的工具事件(带 parent_id)体现。
-                            if t and not pid:
-                                text_parts.append(t)
-                                yield TextDelta(t)
-                        elif dt == "thinking_delta":
-                            t = delta.get("thinking", "")
-                            if t and not pid:
-                                yield ThinkingDelta(t)
-                        elif dt == "input_json_delta":
-                            # 工具入参是流式的 partial_json,按 (parent,块索引) 累积,块结束时解析
-                            idx = ev.get("index")
-                            if isinstance(idx, int):
-                                key = (pid or "", idx)
-                                tool_json[key] = tool_json.get(key, "") + (
-                                    delta.get("partial_json", "") or ""
-                                )
-                    elif etype == "content_block_start":
-                        cb = ev.get("content_block", {})
-                        if cb.get("type") == "tool_use":
-                            name = cb.get("name", "?")
-                            tid = cb.get("id", "")
-                            if tid:
-                                tool_name_by_id[tid] = name
-                            idx = ev.get("index")
-                            if isinstance(idx, int):
-                                key = (pid or "", idx)
-                                tool_meta[key] = (tid, name)
-                                tool_json.setdefault(key, "")
-                            if not pid:
-                                tool_calls.append(name)
-                                # 主 agent 起了个子代理 → 记进「在跑」集,收工要等它结束
-                                if name in _SUBAGENT_TOOLS and tid:
-                                    pending_subagents.add(tid)
-                            yield ToolStarted(name, tool_id=tid, parent_id=pid)
-                    elif etype == "content_block_stop":
-                        # 该工具块的入参已流完 → 解析并发出 ToolInput(喂 diff/todo/审批)
-                        idx = ev.get("index")
-                        key = (pid or "", idx) if isinstance(idx, int) else None
-                        if key is not None and key in tool_meta:
-                            tid, name = tool_meta.pop(key)
-                            parsed = assemble_tool_input(tool_json.pop(key, ""))
-                            yield ToolInput(
-                                name=name, tool_id=tid, tool_input=parsed, parent_id=pid
-                            )
-                elif isinstance(msg, UserMessage):
-                    pid = getattr(msg, "parent_tool_use_id", None)
-                    for b in msg.content:
-                        if isinstance(b, ToolResultBlock):
-                            name = tool_name_by_id.get(b.tool_use_id, "工具")
-                            # 子代理的结果回来了 → 从「在跑」集移除(它的 tool_id 就是 Agent 调用 id)
-                            if b.tool_use_id in pending_subagents:
-                                pending_subagents.discard(b.tool_use_id)
-                            yield ToolFinished(
-                                name=name,
-                                ok=not bool(b.is_error),
-                                preview=_preview(b.content),
-                                tool_id=b.tool_use_id,
-                                detail=_detail(b.content),
-                                parent_id=pid,
-                            )
-                elif isinstance(msg, TaskStartedMessage):
-                    # 后台任务(run_in_background)启动 → 记进「在跑」集,收工要等它终态
-                    active_tasks.add(getattr(msg, "task_id", "") or "")
-                elif isinstance(msg, (TaskNotificationMessage, TaskUpdatedMessage)):
-                    if getattr(msg, "status", None) in _TERMINAL_TASK:
-                        active_tasks.discard(getattr(msg, "task_id", "") or "")
-                elif isinstance(msg, ResultMessage):
-                    cost_usd = getattr(msg, "total_cost_usd", None)
-                    is_error = bool(getattr(msg, "is_error", False))
-                    sess_id = getattr(msg, "session_id", None) or sess_id
-                    u = getattr(msg, "usage", None) or {}
-                    in_t = int(u.get("input_tokens", 0) or 0)
-                    out_t = int(u.get("output_tokens", 0) or 0)
-                    cache_r = int(u.get("cache_read_input_tokens", 0) or 0)
-                    cache_c = int(u.get("cache_creation_input_tokens", 0) or 0)
-                    # input_tokens 不含缓存;这些明细是本轮累计吞吐(展示/落库用)
-                    input_fresh = in_t + cache_c  # 本轮真正处理的输入(含新写入缓存的部分)
-                    cache_read = cache_r  # 缓存命中(便宜的复读)
-                    output_tokens = out_t
-                    turn_tokens = input_fresh + out_t  # 本轮新鲜吞吐,累计即消耗(不含缓存复读)
-                    # 上下文占用先用累计值兜底,下面 get_context_usage 成功则覆盖为真实值
-                    context_tokens = input_fresh + cache_read
-                    # 实际模型取 model_usage 里【主 agent】那一档(SDK 报告的真实模型)。
-                    # 有子代理时 model_usage 是多 key 字典,不能随缘取第一个。
-                    mu = getattr(msg, "model_usage", None) or {}
-                    if mu:
-                        used_model = _main_model(mu, resolved_model, used_model)
-                    result_seen = True
-                    # 真正收工:主轮 ResultMessage 到手,且没有还在跑的子代理/后台任务。
-                    # 若子代理还在跑,先不收工,继续 drain——等它结果喂回主 agent、主 agent
-                    # 续写综合正文,直到下一个「无 pending 的 ResultMessage」。
-                    if not pending_subagents and not active_tasks:
+            try:
+                await client.query(_build_prompt(prompt_history, user_text, images or []))
+                pending_subagents: set[str] = set()  # Agent/Task 调用 id,未拿到结果 = 子代理还在跑
+                active_tasks: set[str] = set()  # 后台任务 task_id,未见终态 = 还在跑
+                result_seen = False
+                msgs = client.receive_messages()
+                while True:
+                    try:
+                        # 主轮 ResultMessage 到来前不设超时(模型可能长思考);之后进入 drain,
+                        # 给 idle 超时兜底,防子代理异常时永远读不到收尾而挂死。
+                        if result_seen:
+                            msg = await asyncio.wait_for(msgs.__anext__(), timeout=300)
+                        else:
+                            msg = await msgs.__anext__()
+                    except StopAsyncIteration:
                         break
+                    except asyncio.TimeoutError:
+                        break
+
+                    if isinstance(msg, StreamEvent):
+                        # 子代理的流式事件带 parent_tool_use_id=所属 Agent 调用的 id
+                        pid = getattr(msg, "parent_tool_use_id", None)
+                        ev = msg.event if isinstance(msg.event, dict) else {}
+                        etype = ev.get("type")
+                        if etype == "content_block_delta":
+                            delta = ev.get("delta", {})
+                            dt = delta.get("type")
+                            if dt == "text_delta":
+                                t = delta.get("text", "")
+                                # 子代理的正文/思考不进主消息流(否则会把主回复搅浑);
+                                # 它的动态靠下面的工具事件(带 parent_id)体现。
+                                if t and not pid:
+                                    text_parts.append(t)
+                                    yield TextDelta(t)
+                            elif dt == "thinking_delta":
+                                t = delta.get("thinking", "")
+                                if t and not pid:
+                                    yield ThinkingDelta(t)
+                            elif dt == "input_json_delta":
+                                # 工具入参是流式的 partial_json,按 (parent,块索引) 累积,块结束时解析
+                                idx = ev.get("index")
+                                if isinstance(idx, int):
+                                    key = (pid or "", idx)
+                                    tool_json[key] = tool_json.get(key, "") + (
+                                        delta.get("partial_json", "") or ""
+                                    )
+                        elif etype == "content_block_start":
+                            cb = ev.get("content_block", {})
+                            if cb.get("type") == "tool_use":
+                                name = cb.get("name", "?")
+                                tid = cb.get("id", "")
+                                if tid:
+                                    tool_name_by_id[tid] = name
+                                idx = ev.get("index")
+                                if isinstance(idx, int):
+                                    key = (pid or "", idx)
+                                    tool_meta[key] = (tid, name)
+                                    tool_json.setdefault(key, "")
+                                if not pid:
+                                    tool_calls.append(name)
+                                    # 主 agent 起了个子代理 → 记进「在跑」集,收工要等它结束
+                                    if name in _SUBAGENT_TOOLS and tid:
+                                        pending_subagents.add(tid)
+                                yield ToolStarted(name, tool_id=tid, parent_id=pid)
+                        elif etype == "content_block_stop":
+                            # 该工具块的入参已流完 → 解析并发出 ToolInput(喂 diff/todo/审批)
+                            idx = ev.get("index")
+                            key = (pid or "", idx) if isinstance(idx, int) else None
+                            if key is not None and key in tool_meta:
+                                tid, name = tool_meta.pop(key)
+                                parsed = assemble_tool_input(tool_json.pop(key, ""))
+                                yield ToolInput(
+                                    name=name, tool_id=tid, tool_input=parsed, parent_id=pid
+                                )
+                    elif isinstance(msg, UserMessage):
+                        pid = getattr(msg, "parent_tool_use_id", None)
+                        for b in msg.content:
+                            if isinstance(b, ToolResultBlock):
+                                name = tool_name_by_id.get(b.tool_use_id, "工具")
+                                # 子代理的结果回来了 → 从「在跑」集移除(它的 tool_id 就是 Agent 调用 id)
+                                if b.tool_use_id in pending_subagents:
+                                    pending_subagents.discard(b.tool_use_id)
+                                yield ToolFinished(
+                                    name=name,
+                                    ok=not bool(b.is_error),
+                                    preview=_preview(b.content),
+                                    tool_id=b.tool_use_id,
+                                    detail=_detail(b.content),
+                                    parent_id=pid,
+                                )
+                    elif isinstance(msg, TaskStartedMessage):
+                        # 后台任务(run_in_background)启动 → 记进「在跑」集,收工要等它终态
+                        active_tasks.add(getattr(msg, "task_id", "") or "")
+                    elif isinstance(msg, (TaskNotificationMessage, TaskUpdatedMessage)):
+                        if getattr(msg, "status", None) in _TERMINAL_TASK:
+                            active_tasks.discard(getattr(msg, "task_id", "") or "")
+                    elif isinstance(msg, ResultMessage):
+                        cost_usd = getattr(msg, "total_cost_usd", None)
+                        is_error = bool(getattr(msg, "is_error", False))
+                        sess_id = getattr(msg, "session_id", None) or sess_id
+                        u = getattr(msg, "usage", None) or {}
+                        in_t = int(u.get("input_tokens", 0) or 0)
+                        out_t = int(u.get("output_tokens", 0) or 0)
+                        cache_r = int(u.get("cache_read_input_tokens", 0) or 0)
+                        cache_c = int(u.get("cache_creation_input_tokens", 0) or 0)
+                        # input_tokens 不含缓存;这些明细是本轮累计吞吐(展示/落库用)
+                        input_fresh = in_t + cache_c  # 本轮真正处理的输入(含新写入缓存的部分)
+                        cache_read = cache_r  # 缓存命中(便宜的复读)
+                        output_tokens = out_t
+                        turn_tokens = input_fresh + out_t  # 本轮新鲜吞吐,累计即消耗(不含缓存复读)
+                        # 上下文占用先用累计值兜底,下面 get_context_usage 成功则覆盖为真实值
+                        context_tokens = input_fresh + cache_read
+                        # 实际模型取 model_usage 里【主 agent】那一档(SDK 报告的真实模型)。
+                        # 有子代理时 model_usage 是多 key 字典,不能随缘取第一个。
+                        mu = getattr(msg, "model_usage", None) or {}
+                        if mu:
+                            used_model = _main_model(mu, resolved_model, used_model)
+                        result_seen = True
+                        # 真正收工:主轮 ResultMessage 到手,且没有还在跑的子代理/后台任务。
+                        # 若子代理还在跑,先不收工,继续 drain——等它结果喂回主 agent、主 agent
+                        # 续写综合正文,直到下一个「无 pending 的 ResultMessage」。
+                        if not pending_subagents and not active_tasks:
+                            break
+            except asyncio.CancelledError:
+                # 用户手动取消(/abort):先通知 CLI 子进程立刻停止生成,再原样抛出。
+                # 单纯 anyio.CancelScope.cancel() 只能取消当前协程,无法中断 CLI 内部的
+                # SSE 流,导致模型继续输出、刷新页面后仍能看到新内容。
+                with anyio.CancelScope(shield=True):
+                    try:
+                        with anyio.move_on_after(5):
+                            await client.interrupt()
+                    except Exception:
+                        pass
+                raise
 
             # 收工、会话尚未断开 —— 此刻问 SDK 当前窗口的真实占用
             # (等价 CLI /context)。失败(旧 CLI 不支持等)则静默保留上面的兜底值。
