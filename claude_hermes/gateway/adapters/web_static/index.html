@@ -1742,7 +1742,7 @@ function renderTurns(turns){
   $("#wrap").innerHTML="";
   for(const t of turns){
     if(t.user && t.user.startsWith(SYS_MARK)) addSysNote(t.user.slice(SYS_MARK.length).trim());
-    else addBubble("me", t.user);
+    else addBubble("me", t.user, t.images);
     if(!t.pending){
       const b=addBubble("ai","");
       if(t.events && t.events.length){
@@ -1847,9 +1847,21 @@ function addBubble(who, text, imgs){
   const b=el("div","bubble");
   if(who==="me"){ b.textContent=text; } else { b.innerHTML = text?mdToHtml(text):""; }
   row.append(b);
-  if(imgs&&imgs.length){ const g=el("div","imgs"); for(const u of imgs){ const im=el("img"); im.src=u; g.append(im);} b.append(g); }
+  if(imgs&&imgs.length){ const g=el("div","imgs"); for(const u of imgs){ const im=el("img");
+    // 历史图走 /image?name=(需鉴权头,浏览器 <img> 不带) → 用 api() 取 blob;
+    // 实时发的是 data:/blob: URL,直接塞 src。
+    if(typeof u==="string" && u.startsWith("/")) loadAuthedImg(im,u); else im.src=u;
+    g.append(im);} b.append(g); }
   $("#wrap").append(row); updateEmpty(); scrollDown(true);
   return b;
+}
+// 带鉴权头拉图并显示;token 只在头里传,不进 URL(不泄露到日志/历史/Referer)
+async function loadAuthedImg(im, url){
+  try{
+    const r=await api(url); if(!r.ok) return;
+    const b=await r.blob(); const o=URL.createObjectURL(b);
+    im.onload=()=>URL.revokeObjectURL(o); im.src=o;
+  }catch(e){}
 }
 function scrollDown(force){
   const m=$("#messages");

@@ -250,6 +250,9 @@ async def converse(
     cwd_token = danger.set_cwd(cwd, project_root=root)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
     stored_user = store_user if store_user is not None else user_text
     turn_id = session_store.start_turn(session_key, stored_user)
+    # 图片落盘 + 文件名入库:让刷新页面后历史里仍能显示这些图(仅落盘,不影响喂模型的 in-memory 版本)
+    if images:
+        session_store.save_turn_images(turn_id, images)
     # 上一轮的 SDK 会话 id:非空则本轮用 resume 让 SDK 重放真·多轮历史,不再拼历史大文本
     resume_sid = session_store.get_sdk_session_id(session_key)
     reply: AgentReply | None = None
