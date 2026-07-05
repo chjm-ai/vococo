@@ -764,7 +764,6 @@
             <span id="ctxPct">0%</span>
           </button>
           <div id="ctxPop" hidden></div>
-          <div id="ratePop" hidden></div>
         </div>
       </div>
     </header>
@@ -818,6 +817,8 @@
     </form>
   </main>
 </div>
+
+<div id="ratePop" hidden></div>
 
 <script>
 "use strict";
@@ -997,7 +998,6 @@ $("#sfoot").onclick=function(e){
   const p=$("#ratePop");
   if(!p.hidden){ p.hidden=true; return; }
   const rs=S.rateStatus, labels={ok:"正常",warn:"最近遇到限额/过载",err:"最近遇到错误"};
-  const times={ok:"",warn:"建议稍等片刻再试",err:"点击侧栏底部可随时查看"};
   const when=rs.ts?(" · "+new Date(rs.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})):"";
   let body=labels[rs.level]||labels.ok;
   if(rs.msg) body+='<br>'+esc(rs.msg);
@@ -1005,9 +1005,13 @@ $("#sfoot").onclick=function(e){
   body+='<div class="rptime">'+(rs.level==="ok"?"上次检查":"最近一次")+when+'</div>';
   p.innerHTML='<div class="rphead"><span class="rpd '+rs.level+'"></span>'+labels[rs.level]+'</div>'+
     '<div class="rpbody">'+body+'</div>';
-  // 定位在侧栏底部上方
+  // 定位:弹层底部贴在 #sfoot 上方 4px,左边对齐侧栏
   const r=$("#sfoot").getBoundingClientRect();
-  p.style.bottom=(window.innerHeight-r.top+8)+"px"; p.style.left=Math.max(6,r.left)+"px";
+  p.style.top="auto"; p.style.right="auto";
+  p.style.bottom=(window.innerHeight-r.top+4)+"px";
+  p.style.left=Math.max(6, r.left)+"px";
+  p.style.maxHeight=Math.max(80, r.top-16)+"px";
+  p.style.overflowY="auto";
   p.hidden=false;
 };
 document.addEventListener("click",function(e){
