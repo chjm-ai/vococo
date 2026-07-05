@@ -199,6 +199,18 @@ def _outside_cwd(path: str, cwd: str | None) -> bool:
         return False
 
 
+def _inside_ai_brain(path: str, cwd: str | None) -> bool:
+    """目标文件是否落在 AI_BRAIN_DIR 内(含符号链接解析)。"""
+    if not path:
+        return False
+    try:
+        target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
+        brain_base = os.path.realpath(config.AI_BRAIN_DIR)
+        return os.path.commonpath([target, brain_base]) == brain_base
+    except (ValueError, OSError):
+        return False
+
+
 def classify(
     tool_name: str, tool_input: dict, cwd: str | None = None
 ) -> tuple[str, str, bool]:
@@ -226,6 +238,9 @@ def classify(
         return ("allow", "", False)
     if tool_name in _WRITE_TOOLS:
         path = ti.get("file_path") or ti.get("notebook_path") or ""
+        # AI_BRAIN 是 hermes 正常记忆目录,虽在项目根外,但不应每次弹审批
+        if path and _inside_ai_brain(path, cwd):
+            return ("allow", "", False)
         if _outside_cwd(path, cwd):
             # 写工作目录外:自动化通道也拒绝(可能被注入用来落地后门/改配置)
             return ("escalate", f"写工作目录外的文件({path})", True)
