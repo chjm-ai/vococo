@@ -6,6 +6,8 @@ Wazir 人格 + AI_BRAIN/USER.md 画像。
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from .. import config
 
 PERSONA = """
@@ -105,12 +107,39 @@ def _load_memory_index() -> str:
     )
 
 
-def build_system_prompt() -> dict:
-    """返回 SDK 的 preset system prompt(claude_code 默认 + append 人格/画像/记忆索引)。"""
+def _load_project_agents(cwd: str | None) -> str:
+    """注入项目根的 AGENTS.md(Wesley 跨工具约定的项目指南)。
+
+    为什么需要:Claude Code 原生只认 CLAUDE.md,不读 AGENTS.md 这个文件名。SDK 已自动
+    加载 cwd 的 CLAUDE.md,所以【只在没有 CLAUDE.md 时】才补读 AGENTS.md——避免两者并存
+    (如软链 CLAUDE.md→AGENTS.md)时重复注入。cwd 为 None(默认项目/TG/CLI)则跳过。
+
+    项目 AGENTS.md 等同项目 CLAUDE.md,是用户亲手写的权威指令,故不套记忆数据围栏;
+    仅保留体积截断保险丝。
+    """
+    if not cwd:
+        return ""
+    root = Path(cwd)
+    if (root / "CLAUDE.md").exists():  # SDK 已加载它,别重复
+        return ""
+    text = _read_clipped(root / "AGENTS.md", f"{cwd}/AGENTS.md")
+    if not text:
+        return ""
+    return (
+        "\n\n=== 本项目指南(来自项目根 AGENTS.md)===\n"
+        f"<project_guide>\n{text}\n</project_guide>"
+    )
+
+
+def build_system_prompt(cwd: str | None = None) -> dict:
+    """返回 SDK 的 preset system prompt(claude_code 默认 + append 人格/画像/记忆索引)。
+
+    cwd:项目会话的工作根;非空时补注入该目录的 AGENTS.md(见 _load_project_agents)。
+    """
     data_blocks = _load_user_profile() + _load_memory_index()
     fence = f"\n\n=== 参考数据围栏 ===\n{_MEMORY_FENCE}" if data_blocks else ""
     return {
         "type": "preset",
         "preset": "claude_code",
-        "append": PERSONA + fence + data_blocks,
+        "append": PERSONA + fence + data_blocks + _load_project_agents(cwd),
     }

@@ -302,7 +302,7 @@ async def stream_turn(
     def _make_options(use_resume: str | None) -> ClaudeAgentOptions:
         return ClaudeAgentOptions(
             model=resolved_model,
-            system_prompt=build_system_prompt(),
+            system_prompt=build_system_prompt(cwd),  # 项目会话补注入其 AGENTS.md
             max_turns=config.MAX_TURNS,
             permission_mode=config.PERMISSION_MODE,
             include_partial_messages=True,
