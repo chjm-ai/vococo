@@ -144,16 +144,33 @@ _WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
 # 当前轮的工作目录(工作目录功能会在开轮时 set_cwd;未设则 None → 越界检查休眠)
 _cwd_var: contextvars.ContextVar = contextvars.ContextVar("hermes_agent_cwd", default=None)
+# 项目根目录(主仓库):worktree 会话的 cwd 在子目录,但主仓库也是"自己项目",不该弹审批
+_project_root_var: contextvars.ContextVar = contextvars.ContextVar(
+    "hermes_project_root", default=None
+)
 
 
-def set_cwd(path: str | None) -> contextvars.Token:
-    """开轮时登记本轮工作目录(供越界写检测)。converse 每轮调用,随 contextvar 传进 hook。"""
-    return _cwd_var.set(path or None)
+def set_cwd(path: str | None, project_root: str | None = None) -> tuple:
+    """开轮时登记本轮工作目录 + 项目根(供越界写检测)。converse 每轮调用。
+
+    project_root: worktree 会话的主仓库路径,让审批闸把仓库文件也视为「项目内」。
+    返回 (cwd_token, proot_token) 元组,用完传回 reset_cwd 清理。
+    """
+    return (
+        _cwd_var.set(path or None),
+        _project_root_var.set(project_root or None),
+    )
 
 
-def reset_cwd(token: contextvars.Token) -> None:
+def reset_cwd(tokens: tuple) -> None:
+    """还原 set_cwd 设置的两个 contextvar。"""
+    cwd_tok, proot_tok = tokens
     try:
-        _cwd_var.reset(token)
+        _cwd_var.reset(cwd_tok)
+    except (ValueError, LookupError):
+        pass
+    try:
+        _project_root_var.reset(proot_tok)
     except (ValueError, LookupError):
         pass
 
@@ -169,7 +186,15 @@ def _outside_cwd(path: str, cwd: str | None) -> bool:
     try:
         target = os.path.realpath(os.path.join(cwd, os.path.expanduser(path)))
         base = os.path.realpath(cwd)
-        return os.path.commonpath([target, base]) != base
+        if os.path.commonpath([target, base]) == base:
+            return False  # 在 cwd 内
+        # worktree 会话:cwd 是子目录,也认项目根(主仓库)为"内部"
+        proot = _project_root_var.get()
+        if proot:
+            pbase = os.path.realpath(proot)
+            if os.path.commonpath([target, pbase]) == pbase:
+                return False  # 在主仓库内
+        return True
     except (ValueError, OSError):
         return False
 
@@ -269,8 +294,11 @@ async def _approve(reason: str, detail: str, restrict_noninteractive: bool) -> b
     - 复用 ask_user 同款 clarify 机制:回复经网关「拿锁前 resolve」解除,不会死锁。
       超时 / 发送失败 → 视为拒绝(危险操作宁可不做)。
     """
-    from ..gateway import clarify
-    from ..gateway.core import Choice
+    try:
+        from ..gateway import clarify
+        from ..gateway.core import Choice
+    except ImportError:
+        return not restrict_noninteractive  # 无网关 → 非交互模式兜底
 
     ctx = clarify.current()
     if ctx is None:

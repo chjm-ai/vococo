@@ -246,7 +246,8 @@ async def converse(
     # 项目会话首次干活时懒创建独立 worktree(每会话一分支,物理隔离);非项目会话直接跳过
     await worktree.ensure_worktree(session_key)
     cwd = config.project_cwd_for(session_key)  # 有 worktree→用它;否则项目根;再否则 None(进程默认)
-    cwd_token = danger.set_cwd(cwd)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
+    root = config.project_root_for(session_key)  # 主仓库路径,供审批闸认项目文件为"内部"
+    cwd_token = danger.set_cwd(cwd, project_root=root)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
     stored_user = store_user if store_user is not None else user_text
     turn_id = session_store.start_turn(session_key, stored_user)
     # 上一轮的 SDK 会话 id:非空则本轮用 resume 让 SDK 重放真·多轮历史,不再拼历史大文本
