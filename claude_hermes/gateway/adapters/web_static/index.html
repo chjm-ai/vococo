@@ -1989,6 +1989,8 @@ function applyStreamEvent(e){
   switch(e.type){
     case "user":
       if(S.localSent){ S.localSent=false; break; }  // 本客户端发的,气泡已在 send() 里加了
+      // 无活跃流式气泡 = 不是本轮发送 → 历史已渲染过该消息,跳过避免重复
+      if(!S.stream) break;
       addBubble("me", e.text); break;
     case "start": ensureStream(e._t0); break;
     case "thinking": { const s=ensureStream(); s.thinktog.style.display="flex"; s.think.textContent=e.text; renderStatus(); break; }
@@ -2026,7 +2028,10 @@ function maybeReplayStream(conv){
     }
   }
   S.stream=null;
-  for(const e of buf) applyStreamEvent(e);
+  for(const e of buf){
+    if(e.type==="user") continue;   // 用户消息已由历史渲染,重放跳过避免重复气泡
+    applyStreamEvent(e);
+  }
 }
 function renderChoice(e){
   const box=el("div","choice");
