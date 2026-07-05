@@ -458,13 +458,23 @@
   .imgs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
   .imgs img{width:120px;height:120px;object-fit:cover;border-radius:10px}
 
-  /* 选项按钮(如 /model) */
-  .choice{display:flex;flex-direction:column;gap:8px;margin:8px 0}
-  .choice button{text-align:left;background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:11px 14px;
-    transition:background .16s,border-color .16s,transform .12s}
-  .choice button:hover{border-color:var(--accent)}
-  .choice button:active{transform:scale(.98)}
-  .choice button:disabled{opacity:.45;pointer-events:none}
+  /* 选择/审批面板:复刻 Claude Code TUI —— 选项竖排带编号,选中项左侧 ❯ + 整行高亮条,其余置灰。
+     外框由所在的工具卡(审批)或气泡(/model)提供,这里只负责排选项 */
+  .choice{margin:6px 0 2px}
+  .choice .opts{display:flex;flex-direction:column}
+  .choice button{appearance:none;border:0;background:transparent;color:var(--fg);width:100%;
+    display:flex;align-items:baseline;gap:7px;padding:10px 12px;font-size:14px;line-height:1.45;
+    border-radius:8px;text-align:left;cursor:pointer;transition:background .12s,color .12s,opacity .12s}
+  .choice button .arw{flex:0 0 10px;color:var(--accent);opacity:0;font-weight:700}
+  .choice button .num{flex:0 0 auto;color:var(--muted);font-variant-numeric:tabular-nums}
+  .choice button .lbl{flex:1;min-width:0}
+  .choice button:hover:not(:disabled){background:color-mix(in srgb,var(--accent) 8%,transparent)}
+  .choice button:active:not(:disabled){background:color-mix(in srgb,var(--accent) 14%,transparent)}
+  .choice button.selected{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);font-weight:600}
+  .choice button.selected .arw{opacity:1}
+  .choice button.selected .num{color:var(--accent)}
+  .choice button.dimmed{opacity:.4}
+  .choice button:disabled{pointer-events:none}
 
   /* 工具卡片:diff / todo 清单 / 计划卡 / 命令预览(复刻 Claude Code 的结构化过程) */
   /* flow:一轮回复的过程区 —— 文字段与工具卡按真实顺序交错排列(像 Claude Code) */
@@ -1979,7 +1989,20 @@ function maybeReplayStream(conv){
 }
 function renderChoice(e){
   const box=el("div","choice");
-  for(const [cmd,label] of e.options){ const btn=el("button"); btn.textContent=label; btn.onclick=()=>{ box.remove(); send(cmd, label, {forceSend:true}); }; box.append(btn); }
+  const opts=el("div","opts"); box.append(opts);
+  const btns=[];
+  e.options.forEach(([cmd,label],i)=>{
+    const btn=el("button");
+    const arw=el("span","arw"); arw.textContent="❯";
+    const num=el("span","num"); num.textContent=(i+1)+".";
+    const lbl=el("span","lbl"); lbl.textContent=label;
+    btn.append(arw,num,lbl);
+    btn.onclick=()=>{
+      btns.forEach(b=>{ b.disabled=true; if(b!==btn) b.classList.add("dimmed"); });
+      btn.classList.add("selected"); sendCmd(cmd);
+    };
+    opts.append(btn); btns.push(btn);
+  });
   if(S.stream){
     // 回合进行中(审批闸/追问):嵌进当前流式气泡的过程区,绝不能删掉正在渲染的工具卡
     const card=el("div","toolcard");
