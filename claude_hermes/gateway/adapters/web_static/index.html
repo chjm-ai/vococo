@@ -983,15 +983,40 @@ function mdToHtml(src){
 function updateEmpty(){ $("#empty").style.display = $("#wrap").children.length ? "none" : "flex"; }
 
 // ── 侧栏底部:限额 / 错误状态 ────────────────────────────────────────────
+// 从限额报错串里抠出「额度恢复时间」→ 毫秒时间戳,拿不到返回 0。
+// 订阅版限额报错常见格式:"Claude AI usage limit reached|1720000000"(竖线后是 unix 秒)。
+// 兜底再认 retry-after / "try again in Ns" 这类相对秒数。
+function parseRateReset(err){
+  if(!err) return 0;
+  const s=String(err);
+  let m=s.match(/usage limit reached\s*\|\s*(\d{10,13})/i) || s.match(/\|\s*(\d{10,13})\b/);
+  if(m){ let n=+m[1]; if(n<1e12) n*=1000; return n; }  // 10 位是秒 → 补成毫秒
+  m=s.match(/retry[-\s]?after["'\s:=]+(\d+)/i) || s.match(/try again in\s+(\d+)\s*s/i);
+  if(m) return Date.now()+(+m[1])*1000;
+  return 0;
+}
+// 把恢复时间戳格式化成「预计 14:30 恢复(还剩 46 分钟)」
+function fmtReset(ts){
+  if(!ts||ts<=Date.now()) return "";
+  const hhmm=new Date(ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"});
+  const mins=Math.max(1, Math.round((ts-Date.now())/60000));
+  const left=mins>=60 ? (Math.floor(mins/60)+" 小时 "+(mins%60)+" 分") : (mins+" 分钟");
+  return "预计 "+hhmm+" 恢复(还剩 "+left+")";
+}
 function setRateStatus(level, msg, err){
-  S.rateStatus={level:level||"ok", msg:msg||"", lastErr:err||"", ts:Date.now()};
+  const reset = level==="warn" ? parseRateReset(err) : 0;
+  S.rateStatus={level:level||"ok", msg:msg||"", lastErr:err||"", ts:Date.now(), resetTs:reset};
   updateSfoot();
 }
 function updateSfoot(){
   const rs=S.rateStatus, dot=$("#sdot"), txt=$("#sfoottxt");
   dot.className="sdot "+rs.level;
   const labels={ok:"Wazir · 就绪", warn:"Wazir · 注意限额", err:"Wazir · 出错"};
-  txt.textContent=labels[rs.level]||labels.ok;
+  let t=labels[rs.level]||labels.ok;
+  // 撞限额且拿到恢复时间 → 底部直接显示到几点,一眼可见
+  if(rs.level==="warn" && rs.resetTs>Date.now())
+    t="Wazir · 限额至 "+new Date(rs.resetTs).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"});
+  txt.textContent=t;
 }
 $("#sfoot").onclick=function(e){
   // 点的是设置/主题按钮 → 不弹 ratePop,交给按钮自己的 handler
@@ -1003,6 +1028,8 @@ $("#sfoot").onclick=function(e){
   const when=rs.ts?(" · "+new Date(rs.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})):"";
   let body=labels[rs.level]||labels.ok;
   if(rs.msg) body+='<br>'+esc(rs.msg);
+  const resetTxt=fmtReset(rs.resetTs);
+  if(resetTxt) body+='<div style="margin-top:8px;font-weight:600;color:#d9a43a">⏳ '+esc(resetTxt)+'</div>';
   if(rs.level!=="ok"&&rs.lastErr) body+='<br><br><span style="font-size:12px;color:var(--dim2)">详情:'+esc(rs.lastErr)+'</span>';
   body+='<div class="rptime">'+(rs.level==="ok"?"上次检查":"最近一次")+when+'</div>';
   p.innerHTML='<div class="rphead"><span class="rpd '+rs.level+'"></span>'+labels[rs.level]+'</div>'+
