@@ -247,10 +247,14 @@ async def converse(
     cwd_token = danger.set_cwd(cwd)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
     stored_user = store_user if store_user is not None else user_text
     turn_id = session_store.start_turn(session_key, stored_user)
+    # 上一轮的 SDK 会话 id:非空则本轮用 resume 让 SDK 重放真·多轮历史,不再拼历史大文本
+    resume_sid = session_store.get_sdk_session_id(session_key)
     reply: AgentReply | None = None
     timeline = _Timeline()  # 录过程时间线,轮末随正文落库(刷新可重建工具卡)
     try:
-        async for ev in stream_turn(history, user_text, model=model, images=images, cwd=cwd):
+        async for ev in stream_turn(
+            history, user_text, model=model, images=images, cwd=cwd, resume=resume_sid
+        ):
             if isinstance(ev, TextDelta):
                 timeline.text(ev.text)
                 await sink.text(ev.text)
@@ -275,6 +279,9 @@ async def converse(
         danger.reset_cwd(cwd_token)
     if reply is not None:
         session_store.finish_turn(turn_id, reply.text, events=timeline.blocks)
+        # 存回本轮 SDK 会话 id,下一轮 resume 它接上真·多轮历史(每轮覆盖,链不断)
+        if reply.sdk_session_id:
+            session_store.set_sdk_session_id(session_key, reply.sdk_session_id)
         if reply.context_tokens or reply.turn_tokens:
             session_store.record_usage(
                 session_key,

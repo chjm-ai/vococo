@@ -79,6 +79,11 @@ def _conn() -> sqlite3.Connection:
         # chosen_model=用户为该会话选定、下一轮要用的模型(与 model「实际跑过的带日期 id」分开)
         if "chosen_model" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN chosen_model TEXT")
+        # sdk_session_id=SDK(claude CLI)自己维护的会话 id。存下它,下一轮用 resume=<id>
+        # 让 SDK 从它自己的 transcript 重放【真·多轮历史】,而不是我们把历史拼成一坨文本喂进去
+        # (后者会让模型误判自己"记不住/被压缩")。NULL=还没有,起新会话。
+        if "sdk_session_id" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN sdk_session_id TEXT")
         if "archived" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN archived INTEGER DEFAULT 0")
         # worktree_path=该会话独占的 git worktree 目录(每会话一分支的物理隔离);
@@ -146,7 +151,7 @@ def new_session(session_key: str) -> None:
         "VALUES (?,?,0,0) "
         "ON CONFLICT(session_key) DO UPDATE SET "
         "watermark_id=excluded.watermark_id, ctx_tokens=0, total_tokens=0, "
-        "last_in=0, last_cache=0, last_out=0",
+        "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL",
         (session_key, row[0]),
     )
     c.commit()
@@ -231,7 +236,7 @@ def clear(session_key: str) -> None:
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute(
         "UPDATE session_meta SET ctx_tokens=0, total_tokens=0, "
-        "last_in=0, last_cache=0, last_out=0 WHERE session_key=?",
+        "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL WHERE session_key=?",
         (session_key,),
     )
     c.commit()
@@ -369,6 +374,25 @@ def get_chosen_model(session_key: str) -> str:
         "SELECT chosen_model FROM session_meta WHERE session_key=?", (session_key,)
     ).fetchone()
     return (row[0] if row else "") or ""
+
+
+def get_sdk_session_id(session_key: str) -> str | None:
+    """该会话上一轮拿到的 SDK 会话 id;下一轮用它 resume 真·多轮历史。无则 None(起新会话)。"""
+    row = _conn().execute(
+        "SELECT sdk_session_id FROM session_meta WHERE session_key=?", (session_key,)
+    ).fetchone()
+    return (row[0] if row else None) or None
+
+
+def set_sdk_session_id(session_key: str, sid: str) -> None:
+    """记住本轮 SDK 会话 id(每轮结束用最新值覆盖,链就不会断);upsert,不动其余字段。"""
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta(session_key, watermark_id, sdk_session_id) VALUES (?,0,?) "
+        "ON CONFLICT(session_key) DO UPDATE SET sdk_session_id=excluded.sdk_session_id",
+        (session_key, sid),
+    )
+    c.commit()
 
 
 # === 每会话独立 worktree(借鉴 Claude Code)===
