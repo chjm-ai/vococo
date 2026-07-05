@@ -994,6 +994,8 @@ function updateSfoot(){
   txt.textContent=labels[rs.level]||labels.ok;
 }
 $("#sfoot").onclick=function(e){
+  // 点的是设置/主题按钮 → 不弹 ratePop,交给按钮自己的 handler
+  if(e.target.closest("#themeBtn,#settingsBtn")) return;
   e.stopPropagation();
   const p=$("#ratePop");
   if(!p.hidden){ p.hidden=true; return; }
@@ -1012,6 +1014,8 @@ $("#sfoot").onclick=function(e){
   p.style.left=Math.max(6, r.left)+"px";
   p.style.maxHeight=Math.max(80, r.top-16)+"px";
   p.style.overflowY="auto";
+  p.style.display="";  // 确保覆盖 [hidden] 的 display:none
+  p.removeAttribute("hidden");
   p.hidden=false;
 };
 document.addEventListener("click",function(e){
