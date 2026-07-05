@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#1f1e1d">
+<meta name="theme-color" content="#181716">
 <title>Wazir</title>
 <!-- PWA:装到主屏 + Web Push 系统通知 -->
 <link rel="manifest" href="/manifest.json">
@@ -17,15 +17,15 @@
 <style>
   /* ── 深色(默认)· Claude Code 暖炭灰 + 赤陶橙 ────────────────────────── */
   :root{
-    --bg:#1f1e1d; --bg2:#262624; --panel:#1a1918; --panel2:#302f2c; --card:#2b2a27;
+    --bg:#181716; --bg2:#1c1b19; --panel:#252320; --panel2:#302f2c; --card:#2b2a27;
     --line:#3a3934; --line2:#4a4941;
     --text:#ecebe3; --dim:#a5a094; --dim2:#716d61;
     --accent:#d97757; --accent2:#c8613f;
     --user1:#d97757; --user2:#c25f3c; --on-user:#fff;
     --ok:#5aa469; --err:#d1674a; --radius:16px;
-    --bar-bg:rgba(31,30,29,.72);
-    --login-bg:radial-gradient(120% 90% at 50% -10%,#2c2925 0%,#1f1e1d 60%);
-    --code-bg:#1a1917; --code-fg:#d4d0c4; --code-inline:rgba(180,170,150,.15);
+    --bar-bg:rgba(28,27,25,.72);
+    --login-bg:radial-gradient(120% 90% at 50% -10%,#252320 0%,#1c1b19 60%);
+    --code-bg:#22211e; --code-fg:#d4d0c4; --code-inline:rgba(180,170,150,.15);
     --scroll:#3a3934; --scroll-h:#4a4941;
     --bubble-shadow:0 1px 2px rgba(0,0,0,.24);
     --shadow:0 10px 34px rgba(0,0,0,.45);
@@ -35,34 +35,34 @@
   /* ── 浅色:系统偏好浅色且用户未手动固定时 · Claude Code 暖米色 ────────── */
   @media(prefers-color-scheme:light){
     :root:not([data-theme]){
-      --bg:#f5f4ee; --bg2:#faf9f5; --panel:#efece3; --panel2:#e6e2d6; --card:#ffffff;
-      --line:#e7e3d8; --line2:#dad5c7;
+      --bg:#ffffff; --bg2:#ffffff; --panel:#f7f7f7; --panel2:#eeeeee; --card:#ffffff;
+      --line:#e5e5e5; --line2:#d8d8d8;
       --text:#29261f; --dim:#6d6757; --dim2:#9a9482;
       --accent:#bd5d3a; --accent2:#a84e2f;
       --user1:#d97757; --user2:#c25f3c; --on-user:#fff;
-      --bar-bg:rgba(250,249,245,.8);
-      --login-bg:radial-gradient(120% 90% at 50% -10%,#f3ece2 0%,#f5f4ee 60%);
-      --code-bg:#f3f1e9; --code-fg:#3a362c; --code-inline:rgba(120,100,70,.1);
-      --scroll:#d8d3c5; --scroll-h:#c4bdab;
-      --bubble-shadow:0 1px 2px rgba(60,50,30,.06);
-      --shadow:0 10px 34px rgba(80,60,30,.14);
+      --bar-bg:rgba(255,255,255,.8);
+      --login-bg:radial-gradient(120% 90% at 50% -10%,#f5f5f5 0%,#ffffff 60%);
+      --code-bg:#f5f5f5; --code-fg:#3a362c; --code-inline:rgba(0,0,0,.06);
+      --scroll:#d8d8d8; --scroll-h:#c4c4c4;
+      --bubble-shadow:0 1px 2px rgba(0,0,0,.05);
+      --shadow:0 10px 34px rgba(0,0,0,.08);
       --focus-ring:rgba(189,93,58,.16);
       --glow1:rgba(217,119,87,.3); --glow2:rgba(189,93,58,.28);
     }
   }
   /* ── 手动固定浅色 ────────────────────────────────────────────────────── */
   :root[data-theme="light"]{
-    --bg:#f5f4ee; --bg2:#faf9f5; --panel:#efece3; --panel2:#e6e2d6; --card:#ffffff;
-    --line:#e7e3d8; --line2:#dad5c7;
+    --bg:#ffffff; --bg2:#ffffff; --panel:#f7f7f7; --panel2:#eeeeee; --card:#ffffff;
+    --line:#e5e5e5; --line2:#d8d8d8;
     --text:#29261f; --dim:#6d6757; --dim2:#9a9482;
     --accent:#bd5d3a; --accent2:#a84e2f;
     --user1:#d97757; --user2:#c25f3c; --on-user:#fff;
-    --bar-bg:rgba(250,249,245,.8);
-    --login-bg:radial-gradient(120% 90% at 50% -10%,#f3ece2 0%,#f5f4ee 60%);
-    --code-bg:#f3f1e9; --code-fg:#3a362c; --code-inline:rgba(120,100,70,.1);
-    --scroll:#d8d3c5; --scroll-h:#c4bdab;
-    --bubble-shadow:0 1px 2px rgba(60,50,30,.06);
-    --shadow:0 10px 34px rgba(80,60,30,.14);
+    --bar-bg:rgba(255,255,255,.8);
+    --login-bg:radial-gradient(120% 90% at 50% -10%,#f5f5f5 0%,#ffffff 60%);
+    --code-bg:#f5f5f5; --code-fg:#3a362c; --code-inline:rgba(0,0,0,.06);
+    --scroll:#d8d8d8; --scroll-h:#c4c4c4;
+    --bubble-shadow:0 1px 2px rgba(0,0,0,.05);
+    --shadow:0 10px 34px rgba(0,0,0,.08);
     --focus-ring:rgba(189,93,58,.16);
     --glow1:rgba(217,119,87,.3); --glow2:rgba(189,93,58,.28);
   }
@@ -443,7 +443,7 @@
   .bubble{max-width:86%;padding:10px 14px;border-radius:var(--radius);white-space:normal;word-wrap:break-word;
     overflow-wrap:anywhere;box-shadow:var(--bubble-shadow)}
   .row.me .bubble{background:linear-gradient(135deg,var(--user1),var(--user2));color:var(--on-user);border-bottom-right-radius:6px}
-  .row.ai .bubble{background:var(--card);border-radius:var(--radius);max-width:100%;margin:4px 0 10px;display:block}
+  .row.ai .bubble{background:transparent;border-radius:var(--radius);max-width:100%;margin:4px 0 10px;display:block;box-shadow:none}
   .bubble.pending{color:var(--dim)}
   .status{font-size:12px;color:var(--dim);margin:0;display:flex;flex-wrap:wrap;gap:4px 12px}
   .status .chip{display:inline-flex;align-items:center}
