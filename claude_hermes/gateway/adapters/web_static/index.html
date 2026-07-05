@@ -668,6 +668,10 @@
     #sidebar.open{transform:translateX(0);box-shadow:2px 0 30px rgba(0,0,0,.5)}
     #hamb{display:flex}
     #backdrop.show{display:block}
+    /* 移动端左右留白收窄:桌面 32px 在窄屏太挤,回到 16px */
+    #messages,#convLoading{padding-left:16px;padding-right:16px}
+    header.bar{padding-left:16px;padding-right:16px}
+    #composer{padding-left:16px;padding-right:16px}
   }
   /* 桌面宽屏:基础字号调小(手机保持 16px 不变,避免 iOS 聚焦缩放) */
   @media(min-width:761px){
