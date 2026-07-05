@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from ..core.agent import (
@@ -268,8 +269,9 @@ async def converse(
             if isinstance(ev, TextDelta):
                 timeline.text(ev.text)
                 await sink.text(ev.text)
-                # 节流:每 ~0.7s 把当前全文刷进 draft_text,供刷新兜底
-                _draft_full = ev.text
+                # 节流:每 ~0.7s 把【当前累计全文】刷进 draft_text,供刷新兜底。
+                # ev.text 是 token 增量 → 必须累加;直接覆盖会让 draft 只剩最后一个 token。
+                _draft_full += ev.text
                 now = time.monotonic()
                 if now - _draft_last_ts > 0.7:
                     session_store.flush_draft(turn_id, _draft_full)
@@ -291,6 +293,21 @@ async def converse(
                 )
             elif isinstance(ev, Done):
                 reply = ev.reply
+    except asyncio.CancelledError:
+        # 用户手动取消(/abort → scope.cancel())。CancelledError 继承 BaseException,
+        # 上面的 except Exception 抓不到,若不在此拦下,后面的落库逻辑一行都不会跑 →
+        # 这一轮的 turn 行永远停在 assistant_text='',被 load_recent 跳过,用户的提问
+        # 凭空消失,下一轮完全没上下文(第一轮被取消时=彻底失忆)。
+        # 这里把「提问 + 已产出的部分回复」补落库,再原样抛出让 CancelScope 正常收尾。
+        partial = (_draft_full or "").strip()
+        session_store.finish_turn(
+            turn_id, partial or "(上一条回复已被取消)", events=timeline.blocks
+        )
+        # 通常取消发生在拿到 ResultMessage 前(reply 为 None、无 sdk_session_id);
+        # 万一已拿到就存回,让下一轮仍能 resume 接上真·多轮历史。
+        if reply is not None and reply.sdk_session_id:
+            session_store.set_sdk_session_id(session_key, reply.sdk_session_id)
+        raise  # 原样抛出;cwd 由 finally 统一 reset
     except Exception as exc:
         _err_msg = str(exc)
     finally:
