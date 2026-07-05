@@ -408,7 +408,7 @@
     padding-bottom:calc(8px + var(--composer-h, 104px));
     -webkit-overflow-scrolling:touch;position:relative;
     transition:padding .35s cubic-bezier(.4,0,.2,1)}
-  #scrollDownBtn{position:absolute;bottom:16px;right:24px;z-index:50;
+  #scrollDownBtn{position:fixed;bottom:calc(16px + var(--composer-h, 104px));right:24px;z-index:50;
     width:40px;height:40px;border-radius:50%;background:var(--bg2);border:1px solid var(--line);
     color:var(--dim);font-size:18px;display:flex;align-items:center;justify-content:center;
     cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.2);transition:opacity .2s,transform .2s;
@@ -751,7 +751,6 @@
     </header>
     <div id="messages">
       <div class="wrap" id="wrap"></div>
-      <button id="scrollDownBtn" aria-label="滚到底部" title="滚到底部" onclick="scrollDown(true)">↓</button>
       <div id="convLoading">
         <div class="skel ai"></div>
         <div class="skel me"></div>
@@ -768,6 +767,7 @@
         </div>
       </div>
     </div>
+    <button id="scrollDownBtn" aria-label="滚到底部" title="滚到底部" onclick="scrollDown(true)">↓</button>
     <form id="composer" autocomplete="off">
       <div class="cwrap">
         <div id="pending"></div>
