@@ -2306,7 +2306,7 @@ function cleanupAudio(){
   REC.actx=null; REC.analyser=null; REC.levels=[];
   const cv=$("#recWave"); if(cv){ const c=cv.getContext("2d"); if(c) c.clearRect(0,0,cv.width,cv.height); }
 }
-// 复用同一个麦克风流:首次授权后就一直留着,避免每次录音都重新 getUserMedia 触发系统弹窗(尤其 iOS)
+// 每次录音结束即释放麦克风流(见 onRecStop),这里负责按需重新获取;权限按站点记住,不会反复弹框
 async function getMic(){
   if(REC.stream && REC.stream.getAudioTracks().some(t=>t.readyState==="live")) return REC.stream;
   REC.stream = await navigator.mediaDevices.getUserMedia({audio:true});
@@ -2340,7 +2340,8 @@ function stopRec(cancel){
   try{ REC.mr.stop(); }catch(e){}
 }
 async function onRecStop(){
-  cleanupAudio();   // 只停声波分析,保留麦克风流(REC.stream)供下次复用,不再反复请求权限
+  cleanupAudio();   // 停声波分析
+  releaseMic();     // 立刻停掉麦克风流,灭掉 iOS 状态栏录音指示灯(权限已按站点记住,下次不再弹框)
   const blob=new Blob(REC.chunks,{type:REC.mime}); const mime=REC.mime;
   REC.mr=null;
   if(REC.cancel || blob.size<1200){ REC.state="idle"; setRecUI(); return; }
@@ -2379,8 +2380,7 @@ function insertToInput(t){
 $("#micBtn").onclick = ()=>{ if(REC.state==="idle") startRec(); };          // 麦克风:开录
 $("#recSend").onclick = e=>{ e.stopPropagation(); if(REC.state==="recording") stopRec(false); }; // 右侧 ↑:完成并发送
 $("#recCancel").onclick = e=>{ e.stopPropagation(); stopRec(true); };        // 左侧 ✕:取消
-// 麦克风流只在真正关页时释放,切后台(visibilitychange)不放 —— 减少 iOS PWA 回到前台又要重新授权的弹窗
-// (代价:切后台期间麦克风流仍占用,系统状态栏指示灯可能多亮一会;冷启动那次授权仍无法消除,属 iOS 硬限制)
+// 兜底:关页/切后台也释放一次,防止极端情况下(录音中直接切走)残留占用
 window.addEventListener("pagehide", releaseMic);
 
 // ── 新会话 / 侧边栏 / 主题 ───────────────────────────────────────────────
