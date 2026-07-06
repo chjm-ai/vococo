@@ -188,6 +188,12 @@ async def exit_for_restart(adapter: object, chat_id: object) -> None:
     except Exception:
         pass
     await anyio.sleep(1.5)  # 让 SSE/TG 把上面这条送出去
+    try:
+        from ..core import client_pool  # 懒加载,避免 import 环
+
+        await client_pool.close_all()  # 收掉保温的 CLI 子进程再退,不留孤儿
+    except Exception:
+        pass
     os._exit(_EXIT_CODE)
 
 

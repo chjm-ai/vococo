@@ -161,7 +161,7 @@ class GatewayRunner:
         await self._dispatch(adapter, inc)
 
     async def run(self) -> None:
-        from ..core import worktree  # 懒加载
+        from ..core import client_pool, worktree  # 懒加载
 
         n = await worktree.prune_orphans()  # 启动兜底:回收无会话绑定的孤儿 worktree/悬空分支
         if n:
@@ -171,12 +171,18 @@ class GatewayRunner:
         for adapter in self.adapters.values():
             if hasattr(adapter, "set_cancel_callback"):
                 adapter.set_cancel_callback(self.cancel_turn)
-        async with anyio.create_task_group() as tg:
-            self._tg = tg
-            for adapter in self.adapters.values():
-                tg.start_soon(self._serve, adapter)
-            tg.start_soon(run_scheduler, self.push)
-            tg.start_soon(self._resume_after_restart)
+        try:
+            async with anyio.create_task_group() as tg:
+                self._tg = tg
+                for adapter in self.adapters.values():
+                    tg.start_soon(self._serve, adapter)
+                tg.start_soon(run_scheduler, self.push)
+                tg.start_soon(self._resume_after_restart)
+                tg.start_soon(client_pool.sweep_loop)  # 定期回收空闲超时的保温 client
+        finally:
+            # serve 停止(Ctrl-C/异常):收掉全部保温的 CLI 子进程,不留孤儿
+            with anyio.CancelScope(shield=True):
+                await client_pool.close_all()
 
 
 async def run_serve() -> None:

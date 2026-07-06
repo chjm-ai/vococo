@@ -268,7 +268,8 @@ async def converse(
     _err_msg = ""           # 流式期间抛出的异常消息
     try:
         async for ev in stream_turn(
-            history, user_text, model=model, images=images, cwd=cwd, resume=resume_sid
+            history, user_text, model=model, images=images, cwd=cwd, resume=resume_sid,
+            session_key=session_key,  # 传给保温池:同会话下一轮复用活 client,零冷启动
         ):
             if isinstance(ev, TextDelta):
                 timeline.text(ev.text)
