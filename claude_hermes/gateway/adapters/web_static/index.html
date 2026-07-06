@@ -86,10 +86,10 @@
   #login{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
     background:var(--login-bg);z-index:50;padding:24px}
   #login .card{width:100%;max-width:340px;text-align:center;animation:pop .4s ease}
-  #login .logo{width:64px;height:64px;margin:0 auto 18px;border-radius:20px;
-    background:linear-gradient(135deg,var(--accent),var(--user2));display:flex;align-items:center;justify-content:center;
-    font-size:32px;color:#fff;box-shadow:0 8px 30px var(--glow1)}
-  #login h1{font-size:28px;margin:0 0 6px;letter-spacing:.2px;font-weight:600;
+  #login .logo{width:68px;height:68px;margin:0 auto 16px;
+    display:flex;align-items:center;justify-content:center}
+  #login .logo svg{width:100%;height:100%}
+  #login h1{font-size:30px;margin:0 0 6px;letter-spacing:1px;font-weight:600;
     font-family:ui-serif,Georgia,"Times New Roman","Songti SC",serif}
   #login p{color:var(--dim);margin:0 0 26px;font-size:14px}
   #login input{width:100%;padding:15px 16px;border-radius:14px;border:1px solid var(--line2);
@@ -111,10 +111,8 @@
     display:flex;flex-direction:column;overflow:hidden;
     transition:transform .25s cubic-bezier(.4,0,.2,1),width .25s cubic-bezier(.4,0,.2,1),margin .25s cubic-bezier(.4,0,.2,1),box-shadow .25s;z-index:30}
   #sidebar .shead{padding:12px 14px 6px;padding-top:calc(12px + env(safe-area-inset-top));display:flex;align-items:center;gap:8px}
-  #sidebar .shead .brand{flex:1;display:flex;align-items:center;gap:7px;font-size:14px;font-weight:700}
-  #sidebar .shead .brand .dot{width:22px;height:22px;border-radius:7px;
-    background:linear-gradient(135deg,var(--accent),var(--user2));display:flex;align-items:center;justify-content:center;
-    font-size:13px;color:#fff;box-shadow:0 2px 10px var(--glow1)}
+  #sidebar .shead .brand{flex:1;font-family:ui-serif,Georgia,"Times New Roman","Songti SC",serif;
+    font-size:19px;font-weight:600;letter-spacing:1.5px;color:var(--text)}
   /* 列表行统一规范:所有可点行(＋新对话 / 分组头 / 会话)共用同一内边距 + 圆角,
      hover 的灰底矩形尺寸与圆角完全一致 */
   #convList{flex:1;overflow-y:auto;padding:2px 8px 8px}
@@ -565,9 +563,9 @@
   /* 空状态 / 欢迎屏 */
   #empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
     text-align:center;padding:24px;pointer-events:none}
-  #empty .elogo{width:72px;height:72px;border-radius:22px;margin-bottom:20px;
-    background:linear-gradient(135deg,var(--accent),var(--user2));display:flex;align-items:center;justify-content:center;
-    font-size:36px;color:#fff;box-shadow:0 10px 36px var(--glow1);animation:pop .5s ease}
+  #empty .elogo{width:76px;height:76px;margin-bottom:18px;
+    display:flex;align-items:center;justify-content:center;animation:pop .5s ease}
+  #empty .elogo svg{width:100%;height:100%}
   #empty h2{margin:0 0 6px;font-size:24px;font-weight:600;
     font-family:ui-serif,Georgia,"Times New Roman","Songti SC",serif}
   #empty p{margin:0 0 24px;color:var(--dim);font-size:14px}
@@ -700,7 +698,20 @@
 
 <div id="login">
   <div class="card">
-    <div class="logo">✻</div>
+    <div class="logo">
+      <svg viewBox="150 20 100 220" xmlns="http://www.w3.org/2000/svg">
+        <g fill="#1a1a2e" transform="translate(0,-10)">
+          <path d="M150 232 q0 -11 14 -13 q22 -3 36 -3 q14 0 36 3 q14 2 14 13 q0 9 -14 11 q-22 3 -36 3 q-14 0 -36 -3 q-14 -2 -14 -11 z"/>
+          <path d="M170 214 q-3 -6 0 -12 q10 -3 30 -3 q20 0 30 3 q3 6 0 12 q-30 5 -30 5 q0 0 -30 -5 z"/>
+          <path d="M200 108 C 218 108 230 120 230 138 C 230 156 220 168 214 182 C 209 194 207 202 208 210 L 192 210 C 193 202 191 194 186 182 C 180 168 170 156 170 138 C 170 120 182 108 200 108 Z"/>
+          <ellipse cx="200" cy="108" rx="30" ry="7.5"/>
+          <ellipse cx="200" cy="98" rx="21" ry="5"/>
+          <path d="M170 94 C 165 87 165 77 168 70 C 173 78 181 82 188 81 C 189 70 193 61 200 54 C 207 61 211 70 212 81 C 219 82 227 78 232 70 C 235 77 235 87 230 94 C 220 89 210 87 200 87 C 190 87 180 89 170 94 Z"/>
+          <circle cx="200" cy="46" r="7.5"/>
+          <circle cx="200" cy="74" r="4" fill="#c9a227"/>
+        </g>
+      </svg>
+    </div>
     <h1>Wazir</h1>
     <p>输入访问口令</p>
     <input id="pw" type="password" placeholder="口令" autocomplete="current-password">
@@ -748,7 +759,7 @@
   </div>
   <aside id="sidebar">
     <div class="shead">
-      <div class="brand"><span class="dot">✻</span>Wazir</div>
+      <div class="brand">Wazir</div>
       <div id="convFilterBox">
         <button id="convFilterBtn" class="sfoicon" title="筛选会话"></button>
         <div id="convFilterPop" hidden></div>
@@ -789,7 +800,20 @@
         <div class="skel ai2"></div>
       </div>
       <div id="empty">
-        <div class="elogo">✻</div>
+        <div class="elogo">
+          <svg viewBox="150 20 100 220" xmlns="http://www.w3.org/2000/svg">
+            <g fill="#1a1a2e" transform="translate(0,-10)">
+              <path d="M150 232 q0 -11 14 -13 q22 -3 36 -3 q14 0 36 3 q14 2 14 13 q0 9 -14 11 q-22 3 -36 3 q-14 0 -36 -3 q-14 -2 -14 -11 z"/>
+              <path d="M170 214 q-3 -6 0 -12 q10 -3 30 -3 q20 0 30 3 q3 6 0 12 q-30 5 -30 5 q0 0 -30 -5 z"/>
+              <path d="M200 108 C 218 108 230 120 230 138 C 230 156 220 168 214 182 C 209 194 207 202 208 210 L 192 210 C 193 202 191 194 186 182 C 180 168 170 156 170 138 C 170 120 182 108 200 108 Z"/>
+              <ellipse cx="200" cy="108" rx="30" ry="7.5"/>
+              <ellipse cx="200" cy="98" rx="21" ry="5"/>
+              <path d="M170 94 C 165 87 165 77 168 70 C 173 78 181 82 188 81 C 189 70 193 61 200 54 C 207 61 211 70 212 81 C 219 82 227 78 232 70 C 235 77 235 87 230 94 C 220 89 210 87 200 87 C 190 87 180 89 170 94 Z"/>
+              <circle cx="200" cy="46" r="7.5"/>
+              <circle cx="200" cy="74" r="4" fill="#c9a227"/>
+            </g>
+          </svg>
+        </div>
         <h2>你好，我是 Wazir</h2>
         <p>你的私人 AI 助理 · 有什么需要直接说</p>
         <div class="sugs">
