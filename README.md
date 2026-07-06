@@ -61,7 +61,10 @@ custom_providers:
 
 想用桌面版 [cc-switch](https://github.com/farion1231/cc-switch) 图形化管理:在它里面把该 Hermes profile 的 `hermes_config_dir` 指到 `~/.claude-hermes` 即可。
 
-## 常驻
+## 常驻(macOS)
+
+> `deploy/*.sh` 目前假设 macOS + zsh。Linux 用户请照 `deploy/run.sh` 的思路自行写
+> systemd unit;核心就是把 `uv run claude-hermes serve` 跑成常驻进程。
 
 ```bash
 bash deploy/run.sh     # 后台启动(登录 shell,推荐)
@@ -82,20 +85,39 @@ agent 派生的 `claude` 子进程会同步阻塞冻住事件循环。所以用 
 编辑 `data/cron_jobs.json`(模板见 `deploy/cron_jobs.sample.json`),把任务 `enabled` 设 true,
 `serve` 进程每 30s 检查到期任务,跑 agent 后推到 Telegram。支持 `cron` / `interval` / `once` 三种调度。
 
-## 快速开始(M0)
+## 快速开始
+
+**前置**:Python ≥ 3.11、[uv](https://docs.astral.sh/uv/)、一份 Claude Pro/Max 订阅
+(或任意 Anthropic 兼容的第三方端点,见「多供应商切换」)。平台:macOS / Linux
+已验证;Windows 未测(常驻脚本走 zsh + launchd,仅 macOS)。
 
 ```bash
-# 1) 装依赖
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e .
+# 1) 装依赖(uv 推荐;也可 python -m venv + pip install -e .)
+uv sync --extra dev
 
 # 2) 配认证(需 Claude Pro/Max 订阅)
 claude setup-token            # 生成 sk-ant-oat01-... 令牌
 cp .env.example .env          # 把令牌填进 .env 的 CLAUDE_CODE_OAUTH_TOKEN
 
-# 3) 开聊
-python -m claude_hermes chat
+# 3) 自检 + 开聊
+uv run claude-hermes doctor   # 检查配置 / 激活供应商
+uv run claude-hermes chat
 ```
+
+## 配置
+
+全部配置走项目根的 `.env`(从 `.env.example` 复制,已 gitignore)。最常用的几项:
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `CLAUDE_CODE_OAUTH_TOKEN` | 是* | `claude setup-token` 生成的订阅令牌(*只用第三方供应商时可空) |
+| `HERMES_USER_NAME` | 否 | 助理如何称呼你,默认「主人」 |
+| `AI_BRAIN_DIR` | 否 | 长期记忆目录,默认 `~/AI_BRAIN`;不存在则记忆功能自动跳过 |
+| `AGENT_MODEL` | 否 | 默认 `claude-opus-4-8` |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_ALLOWED_CHAT_IDS` | 否 | 启用 Telegram 入口时填(@BotFather 拿 token) |
+| `WEB_ENABLED` / `WEB_AUTH_TOKEN` | 否 | 启用手机浏览器 Web 入口;走公网必设口令 |
+
+其余变量(安全闸、语音、Web Push、多供应商…)在 `.env.example` 里逐条有注释。
 
 ## 设计要点
 
@@ -104,3 +126,8 @@ python -m claude_hermes chat
 - **不重造记忆**:接已有的 `~/AI_BRAIN`(USER.md 画像 + memory/ 知识)。
 
 > ⚠️ 订阅令牌只配个人自用;商用/对外必须改回 API key 按量计费。
+
+## 许可
+
+[MIT](LICENSE)。这是个人自用助理框架,fork 后请生成属于自己的凭据
+(Claude / Telegram / VAPID),别把 `.env`、`data/` 提交进仓库(默认已 gitignore)。

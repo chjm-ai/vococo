@@ -92,7 +92,7 @@ async def pretool_danger_hook(input_data, tool_use_id, context):
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
                     "permissionDecisionReason": (
-                        f"⛔ 危险命令被 Hermes 拦截({why})。如确需执行,请你手动在终端运行,"
+                        f"⛔ 危险命令被 Wazir 拦截({why})。如确需执行,请你手动在终端运行,"
                         "或改用更安全的方式。"
                     ),
                 }
@@ -180,21 +180,18 @@ def current_cwd() -> str | None:
 
 
 def _outside_cwd(path: str, cwd: str | None) -> bool:
-    """目标文件是否落在 cwd 之外(含符号链接解析)。cwd 为空则不判(休眠)。"""
+    """目标文件是否落在 cwd 之外(含符号链接解析)。cwd 为空则不判(休眠)。
+
+    注:worktree 会话写「主仓库内、worktree 外」的越界不在这里放行,改由
+    _writes_outside_worktree 单独【硬拦】(常开正确性防线)。这里只判「是否在 cwd 外」,
+    彻底在项目之外的写入交 escalate 请批准。
+    """
     if not cwd or not path:
         return False
     try:
         target = os.path.realpath(os.path.join(cwd, os.path.expanduser(path)))
         base = os.path.realpath(cwd)
-        if os.path.commonpath([target, base]) == base:
-            return False  # 在 cwd 内
-        # worktree 会话:cwd 是子目录,也认项目根(主仓库)为"内部"
-        proot = _project_root_var.get()
-        if proot:
-            pbase = os.path.realpath(proot)
-            if os.path.commonpath([target, pbase]) == pbase:
-                return False  # 在主仓库内
-        return True
+        return os.path.commonpath([target, base]) != base
     except (ValueError, OSError):
         return False
 
@@ -325,6 +322,49 @@ def _deny_orphan_memory(target: str) -> dict:
     )
 
 
+# ── worktree 越界防线:禁止 worktree 会话写到 worktree 外的共享主仓库 ──────────────
+# worktree 会话的 cwd 是独立 worktree(≠ 主仓库根),改动本该留在自己 worktree 里、
+# 提交后合回 main。若直接写主仓库工作区(worktree 外),会撕破会话隔离——落到别的会话
+# 共享的主仓库/main,且绕过分支与提交。故一律 deny(与 run_in_background、记忆孤本同为
+# 常开正确性防线,不受 DANGER_GUARD/APPROVAL_GATE 开关控制)。回退会话 cwd==主仓库根,
+# 天然不触发;AI_BRAIN 记忆目录豁免。worktree 恰好嵌在主仓库 data/ 下,故「主仓库内且
+# worktree 内」的正常写不会命中。
+def _writes_outside_worktree(
+    tool_name: str, tool_input: dict, cwd: str | None
+) -> tuple[str, str] | None:
+    """worktree 会话写 worktree 外、主仓库内 → 返回 (目标绝对路径, worktree 根);否则 None。"""
+    if tool_name not in _WRITE_TOOLS or not cwd:
+        return None
+    proot = _project_root_var.get()
+    if not proot:
+        return None
+    ti = tool_input or {}
+    path = ti.get("file_path") or ti.get("notebook_path") or ""
+    if not path or _inside_ai_brain(path, cwd):
+        return None
+    try:
+        base = os.path.realpath(cwd)
+        pbase = os.path.realpath(proot)
+        if base == pbase:
+            return None  # 非 worktree / 回退会话:cwd 就是主仓库根,不由本防线管
+        target = os.path.realpath(os.path.join(cwd, os.path.expanduser(path)))
+        in_wt = os.path.commonpath([target, base]) == base
+        in_repo = os.path.commonpath([target, pbase]) == pbase
+        if in_repo and not in_wt:
+            return (target, base)
+    except (ValueError, OSError):
+        return None
+    return None
+
+
+def _deny_outside_worktree(target: str, wt: str) -> dict:
+    return _deny(
+        f"🚫 该路径在会话 worktree 外(共享主仓库),拒绝写入({target})。worktree 会话的"
+        f"改动必须留在自己的 worktree 里、提交后再合回 main——请改写 worktree 内的对应文件"
+        f"(worktree 根:{wt})。"
+    )
+
+
 def _describe(tool_name: str, tool_input: dict) -> str:
     """给审批弹窗一行「具体要干什么」。"""
     ti = tool_input or {}
@@ -340,12 +380,42 @@ def _is_group_session(session_key: str) -> bool:
     return bool(session_key) and session_key.startswith("tg:")
 
 
+# ── 「本次会话都允许」记忆:选了这项的会话,后续同类 escalate 免批直接放行 ─────────
+# 按 session_key 隔离(群聊会话不参与——群里从不弹审批,见 _approve 群聊直接拒);
+# 进程内存,会话删除时由 clear_session_approvals 清掉。
+# category 用 reason 归一化后的稳定标签:越界写的 reason 带具体路径,须剥成类别,
+# 否则换个文件就得重批;其余 escalate 的 reason 本身固定,直接拿来当键。
+_session_approvals: dict[str, set[str]] = {}
+
+
+def _category(reason: str) -> str:
+    """把审批原因归一成稳定类别键(供「本次会话都允许」按类记忆)。"""
+    if reason.startswith("写工作目录外的文件"):
+        return "write_outside_cwd"
+    return reason
+
+
+def _is_session_approved(session_key: str | None, category: str) -> bool:
+    return bool(session_key) and category in _session_approvals.get(session_key, set())
+
+
+def _mark_session_approved(session_key: str, category: str) -> None:
+    _session_approvals.setdefault(session_key, set()).add(category)
+
+
+def clear_session_approvals(session_key: str) -> None:
+    """会话删除时清掉它的「本次会话都允许」记忆(会话生命周期结束才清,不是每轮)。"""
+    _session_approvals.pop(session_key, None)
+
+
 async def _approve(reason: str, detail: str, restrict_noninteractive: bool) -> bool:
-    """审批底座:有交互通道 → 弹「允许一次 / 拒绝」按钮并阻塞等。
+    """审批底座:有交互通道 → 弹「允许一次 / 本次会话都允许 / 拒绝」按钮并阻塞等。
 
     - 群聊会话:一律拒绝(批准权不能落在群成员/被拉进群的陌生人手里,见审计 #4)。
     - 无交互通道(cron/eval):按 restrict_noninteractive 决定——「对外/装包/持久化」类
       默认拒绝(fail-closed,"无人可问"≠"同意"),本地操作放行。
+    - 「本次会话都允许」:选中后把该类操作记进 _session_approvals,本会话后续同类
+      escalate 直接放行、不再弹窗(按 category 归类,见上)。
     - 复用 ask_user 同款 clarify 机制:回复经网关「拿锁前 resolve」解除,不会死锁。
       超时 / 发送失败 → 视为拒绝(危险操作宁可不做)。
     """
@@ -360,11 +430,15 @@ async def _approve(reason: str, detail: str, restrict_noninteractive: bool) -> b
         return not restrict_noninteractive
     if _is_group_session(ctx.session_key):
         return False
-    p = clarify.register(ctx.session_key, ["允许一次", "拒绝"])
+    cat = _category(reason)
+    if _is_session_approved(ctx.session_key, cat):
+        return True  # 本会话已选「都允许」此类操作 → 免批直接放行
+    p = clarify.register(ctx.session_key, ["允许一次", "本次会话都允许", "拒绝"])
     try:
         opts = [
             (f"/clarify {p.clarify_id} 0", "✅ 允许一次"),
-            (f"/clarify {p.clarify_id} 1", "🛑 拒绝"),
+            (f"/clarify {p.clarify_id} 1", "♾️ 本次会话都允许"),
+            (f"/clarify {p.clarify_id} 2", "🛑 拒绝"),
         ]
         prompt = f"⚠️ 需要批准:{reason}\n{detail}"
         await ctx.adapter.present_choice(ctx.chat_id, Choice(prompt=prompt, options=opts))
@@ -372,6 +446,9 @@ async def _approve(reason: str, detail: str, restrict_noninteractive: bool) -> b
         clarify.resolve(p.clarify_id, "拒绝")
         return False
     answer = await clarify.wait(p.clarify_id, config.CLARIFY_TIMEOUT)
+    if answer == "本次会话都允许":
+        _mark_session_approved(ctx.session_key, cat)
+        return True
     return answer == "允许一次"
 
 
@@ -406,13 +483,17 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
         orphan = _creates_orphan_memory_file(tool_name, tool_input)
         if orphan:
             return _deny_orphan_memory(orphan)
+        # worktree 越界:worktree 会话写 worktree 外的共享主仓库 → 硬拦(引导写 worktree 内)
+        outside = _writes_outside_worktree(tool_name, tool_input, current_cwd())
+        if outside:
+            return _deny_outside_worktree(*outside)
         verdict, reason, restrict = classify(tool_name, tool_input, cwd=current_cwd())
     except Exception:
         # 背景判定/classify 出错时无从判定 → 放行,不阻断正常流程(这些都不是安全判定本身)
         return {}
     if verdict == "block" and config.DANGER_GUARD:
         return _deny(
-            f"⛔ 危险命令被 Hermes 拦截({reason})。如确需执行,请你手动在终端运行。"
+            f"⛔ 危险命令被 Wazir 拦截({reason})。如确需执行,请你手动在终端运行。"
         )
     if verdict == "escalate" and config.APPROVAL_GATE:
         try:

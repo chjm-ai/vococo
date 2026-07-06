@@ -325,9 +325,9 @@ async def stream_turn(
     def _make_options(use_resume: str | None) -> ClaudeAgentOptions:
         return ClaudeAgentOptions(
             model=resolved_model,
-            # cache_key=会话 id:同一 SDK 会话内冻结 append 快照,防中途 save_memory
-            # 改动 MEMORY.md 打爆整条对话的 prompt cache(见 prompt.py 注释)
-            system_prompt=build_system_prompt(cache_key=use_resume),
+            # cwd=项目会话补注入其 AGENTS.md;cache_key=会话 id:同一 SDK 会话内冻结
+            # append 快照,防中途 save_memory 改 MEMORY.md 打爆整条对话的 prompt cache
+            system_prompt=build_system_prompt(cwd, cache_key=use_resume),
             max_turns=config.MAX_TURNS,
             permission_mode=config.PERMISSION_MODE,
             include_partial_messages=True,

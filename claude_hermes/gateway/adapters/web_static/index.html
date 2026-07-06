@@ -9,9 +9,10 @@
 <title>Wazir</title>
 <!-- PWA:装到主屏 + Web Push 系统通知 -->
 <link rel="manifest" href="/manifest.json">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<link rel="icon" href="/favicon.ico" sizes="any">
-<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
+<link rel="icon" type="image/svg+xml" href="/wazir-mark.svg?v=2">
+<link rel="icon" href="/favicon.ico?v=2" sizes="any">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png?v=2">
 <!-- 防闪烁:渲染前先套用上次选择的主题 -->
 <script>(function(){try{var t=localStorage.getItem("hermes_theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
 <style>
@@ -86,10 +87,10 @@
   #login{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
     background:var(--login-bg);z-index:50;padding:24px}
   #login .card{width:100%;max-width:340px;text-align:center;animation:pop .4s ease}
-  #login .logo{width:64px;height:64px;margin:0 auto 18px;border-radius:20px;
-    background:linear-gradient(135deg,var(--accent),var(--user2));display:flex;align-items:center;justify-content:center;
-    font-size:32px;color:#fff;box-shadow:0 8px 30px var(--glow1)}
-  #login h1{font-size:28px;margin:0 0 6px;letter-spacing:.2px;font-weight:600;
+  #login .logo{width:68px;height:68px;margin:0 auto 16px;color:var(--text);
+    display:flex;align-items:center;justify-content:center}
+  #login .logo svg{width:100%;height:100%}
+  #login h1{font-size:30px;margin:0 0 6px;letter-spacing:1px;font-weight:600;
     font-family:ui-serif,Georgia,"Times New Roman","Songti SC",serif}
   #login p{color:var(--dim);margin:0 0 26px;font-size:14px}
   #login input{width:100%;padding:15px 16px;border-radius:14px;border:1px solid var(--line2);
@@ -104,14 +105,15 @@
   /* 布局 */
   #app{display:flex;overflow:hidden;
     position:fixed;top:var(--app-top,0);left:0;right:0;bottom:0;height:var(--app-h,auto)}
-  #sidebar{width:280px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);
-    display:flex;flex-direction:column;
-    transition:transform .25s cubic-bezier(.4,0,.2,1),width .25s cubic-bezier(.4,0,.2,1);z-index:30}
+  #sidebar{width:280px;flex-shrink:0;background:var(--bg2);
+    border:1px solid var(--line);border-radius:16px;
+    margin:8px 0 8px 8px;
+    box-shadow:0 2px 12px rgba(0,0,0,.08);
+    display:flex;flex-direction:column;overflow:hidden;
+    transition:transform .25s cubic-bezier(.4,0,.2,1),width .25s cubic-bezier(.4,0,.2,1),margin .25s cubic-bezier(.4,0,.2,1),box-shadow .25s;z-index:30}
   #sidebar .shead{padding:12px 14px 6px;padding-top:calc(12px + env(safe-area-inset-top));display:flex;align-items:center;gap:8px}
-  #sidebar .shead .brand{flex:1;display:flex;align-items:center;gap:7px;font-size:14px;font-weight:700}
-  #sidebar .shead .brand .dot{width:22px;height:22px;border-radius:7px;
-    background:linear-gradient(135deg,var(--accent),var(--user2));display:flex;align-items:center;justify-content:center;
-    font-size:13px;color:#fff;box-shadow:0 2px 10px var(--glow1)}
+  #sidebar .shead .brand{flex:1;font-family:ui-serif,Georgia,"Times New Roman","Songti SC",serif;
+    font-size:16px;font-weight:400;color:var(--text)}
   /* 列表行统一规范:所有可点行(＋新对话 / 分组头 / 会话)共用同一内边距 + 圆角,
      hover 的灰底矩形尺寸与圆角完全一致 */
   #convList{flex:1;overflow-y:auto;padding:2px 8px 8px}
@@ -166,13 +168,12 @@
     padding:9px 11px;border-radius:8px;font-size:13.5px;color:var(--text);transition:background .14s}
   #convFilterPop .fmi:hover{background:var(--panel2)}
   #convFilterPop .fmi.on{color:var(--accent);font-weight:600}
-  .sfoot{padding:9px 12px 9px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px;cursor:pointer;transition:background .16s}
-  .sfoot:hover{background:var(--panel2)}
-  .sfoot .sdot{width:7px;height:7px;border-radius:50%;flex-shrink:0;transition:background .3s,box-shadow .3s}
-  .sfoot .sdot.ok{background:var(--ok);box-shadow:0 0 6px var(--ok)}
-  .sfoot .sdot.warn{background:#d9a43a;box-shadow:0 0 6px #d9a43a}
-  .sfoot .sdot.err{background:var(--err);box-shadow:0 0 6px var(--err)}
-  .sfoot .sfoottxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sfoot{padding:9px 12px 9px 14px;border-top:1px solid var(--line);font-size:13px;color:var(--text);display:flex;align-items:center;gap:9px}
+  .sfoot .savatar{width:26px;height:26px;border-radius:50%;flex-shrink:0;
+    background:linear-gradient(135deg,var(--accent),var(--user2));
+    display:flex;align-items:center;justify-content:center;
+    color:#fff;font-size:11px;font-weight:700;letter-spacing:0}
+  .sfoot .sfoottxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
   /* 限额状态弹层 */
   #ratePop{position:fixed;z-index:45;min-width:260px;max-width:320px;
     background:var(--card);border:1px solid var(--line2);border-radius:14px;padding:14px;
@@ -329,6 +330,13 @@
   .setempty{text-align:center;color:var(--dim2);font-size:13px;padding:30px 10px}
   .setload{text-align:center;color:var(--dim2);font-size:13px;padding:24px}
 
+  /* 外观:主题分段选择器 */
+  .theme-seg{display:flex;border:1px solid var(--line2);border-radius:10px;overflow:hidden;width:fit-content;margin-top:4px}
+  .theme-seg .tsopt{padding:9px 20px;font-size:13.5px;color:var(--dim);transition:background .15s,color .15s;border-right:1px solid var(--line2)}
+  .theme-seg .tsopt:last-child{border-right:none}
+  .theme-seg .tsopt:not(.active):hover{background:var(--panel2);color:var(--text)}
+  .theme-seg .tsopt.active{background:var(--accent);color:#fff;font-weight:600;cursor:default}
+
   @media(max-width:640px){
     .setbox{width:100vw;height:100%;max-height:100%;border-radius:0;border:none}
     .sethead{padding-top:calc(14px + env(safe-area-inset-top))}
@@ -416,7 +424,12 @@
   #ctxPop .pr.sub .k{padding-left:12px;color:var(--dim2);font-size:12px}
   #ctxPop .pr.sep{border-top:1px solid var(--line);margin-top:4px;padding-top:8px}
   #ctxPop .pr .mdl{font-size:11px;color:var(--dim);font-family:ui-monospace,Menlo,monospace}
-  #themeBtn{font-size:17px}
+  /* 上下文明细弹层里的会话 ID */
+  #ctxPop .convid{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 0 8px;border-bottom:1px solid var(--line);margin-bottom:8px}
+  #ctxPop .convid .k{color:var(--dim);flex-shrink:0}
+  #ctxPop .convid .idv{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Menlo,monospace;color:var(--text)}
+  #ctxPop .convid .cpy{width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--dim2);transition:background .15s,color .15s;flex-shrink:0}
+  #ctxPop .convid .cpy:hover{background:var(--panel2);color:var(--text)}
   #hamb{display:none;width:42px;height:42px;font-size:21px;border-radius:13px}
 
   #messages{flex:1;overflow-y:auto;padding:18px 32px 8px;
@@ -522,7 +535,7 @@
   .tc-head .tc-path{color:var(--dim2);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
   .tc-body{padding:5px 6px 7px 24px}                                        /* 展开区:左缩进对齐标题文字 */
   .tc-body.collapsed{display:none}
-  .tc-sep{height:1px;background:var(--line2);opacity:.5;margin:7px 0}        /* 展开区内:入参与结果的分隔线 */
+  .tc-sep{height:7px;margin:0}                                               /* 展开区内:入参与结果之间的间距，无线 */
   .tc-code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;
     background:var(--code-bg);color:var(--code-fg);padding:7px 9px;border-radius:7px;line-height:1.5}
   .diff{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;line-height:1.55;
@@ -559,9 +572,9 @@
   /* 空状态 / 欢迎屏 */
   #empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
     text-align:center;padding:24px;pointer-events:none}
-  #empty .elogo{width:72px;height:72px;border-radius:22px;margin-bottom:20px;
-    background:linear-gradient(135deg,var(--accent),var(--user2));display:flex;align-items:center;justify-content:center;
-    font-size:36px;color:#fff;box-shadow:0 10px 36px var(--glow1);animation:pop .5s ease}
+  #empty .elogo{width:76px;height:76px;margin-bottom:18px;color:var(--text);
+    display:flex;align-items:center;justify-content:center;animation:pop .5s ease}
+  #empty .elogo svg{width:100%;height:100%}
   #empty h2{margin:0 0 6px;font-size:24px;font-weight:600;
     font-family:ui-serif,Georgia,"Times New Roman","Songti SC",serif}
   #empty p{margin:0 0 24px;color:var(--dim);font-size:14px}
@@ -666,17 +679,22 @@
   #backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:25;backdrop-filter:blur(2px)}
 
   @media(max-width:760px){
-    #sidebar{position:fixed;inset:0 auto 0 0;transform:translateX(-100%)}
-    #sidebar.open{transform:translateX(0);box-shadow:2px 0 30px rgba(0,0,0,.5)}
+    #sidebar{position:fixed;inset:8px auto 8px 8px;margin:0;
+      transform:translateX(calc(-100% - 16px))}
+    #sidebar.open{transform:translateX(0);box-shadow:0 4px 16px rgba(0,0,0,.22)}
     #hamb{display:flex}
     #backdrop.show{display:block}
+    /* 移动端左右留白收窄:桌面 32px 在窄屏太挤,回到 16px */
+    #messages,#convLoading{padding-left:16px;padding-right:16px}
+    header.bar{padding-left:16px;padding-right:16px}
+    #composer{padding-left:16px;padding-right:16px}
   }
   /* 桌面宽屏:基础字号调小(手机保持 16px 不变,避免 iOS 聚焦缩放) */
   @media(min-width:761px){
     html,body{font-size:14px;line-height:1.55}
     #collapseBtn{display:flex}
     /* 收起:侧边栏宽度归零,顶栏 ☰ 变身为"展开"入口 */
-    body.sb-collapsed #sidebar{width:0;border-right-color:transparent;overflow:hidden}
+    body.sb-collapsed #sidebar{width:0;margin-left:0;border-color:transparent;box-shadow:none;overflow:hidden}
     body.sb-collapsed #hamb{display:flex}
   }
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -689,7 +707,20 @@
 
 <div id="login">
   <div class="card">
-    <div class="logo">✻</div>
+    <div class="logo">
+      <svg viewBox="150 20 100 220" xmlns="http://www.w3.org/2000/svg">
+        <g fill="currentColor" transform="translate(0,-10)">
+          <path d="M150 232 q0 -11 14 -13 q22 -3 36 -3 q14 0 36 3 q14 2 14 13 q0 9 -14 11 q-22 3 -36 3 q-14 0 -36 -3 q-14 -2 -14 -11 z"/>
+          <path d="M170 214 q-3 -6 0 -12 q10 -3 30 -3 q20 0 30 3 q3 6 0 12 q-30 5 -30 5 q0 0 -30 -5 z"/>
+          <path d="M200 108 C 218 108 230 120 230 138 C 230 156 220 168 214 182 C 209 194 207 202 208 210 L 192 210 C 193 202 191 194 186 182 C 180 168 170 156 170 138 C 170 120 182 108 200 108 Z"/>
+          <ellipse cx="200" cy="108" rx="30" ry="7.5"/>
+          <ellipse cx="200" cy="98" rx="21" ry="5"/>
+          <path d="M170 94 C 165 87 165 77 168 70 C 173 78 181 82 188 81 C 189 70 193 61 200 54 C 207 61 211 70 212 81 C 219 82 227 78 232 70 C 235 77 235 87 230 94 C 220 89 210 87 200 87 C 190 87 180 89 170 94 Z"/>
+          <circle cx="200" cy="46" r="7.5"/>
+          <circle cx="200" cy="74" r="4" fill="#c9a227"/>
+        </g>
+      </svg>
+    </div>
     <h1>Wazir</h1>
     <p>输入访问口令</p>
     <input id="pw" type="password" placeholder="口令" autocomplete="current-password">
@@ -729,6 +760,7 @@
           <button class="settab" data-tab="memory">记忆</button>
           <button class="settab" data-tab="agents">人设</button>
           <button class="settab" data-tab="notify">通知</button>
+          <button class="settab" data-tab="appearance">外观</button>
         </div>
         <div class="setpane" id="setPane"></div>
       </div>
@@ -736,7 +768,7 @@
   </div>
   <aside id="sidebar">
     <div class="shead">
-      <div class="brand"><span class="dot">✻</span>会话</div>
+      <div class="brand">Wazir</div>
       <div id="convFilterBox">
         <button id="convFilterBtn" class="sfoicon" title="筛选会话"></button>
         <div id="convFilterPop" hidden></div>
@@ -745,7 +777,7 @@
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
     <div id="convList"></div>
-    <div class="sfoot" id="sfoot"><span class="sdot ok" id="sdot"></span><span class="sfoottxt" id="sfoottxt">Wazir · Web</span><button id="themeBtn" class="sfoicon" title="切换深浅色">☾</button><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
+    <div class="sfoot" id="sfoot"><span class="savatar">U</span><span class="sfoottxt" id="sfoottxt">User</span><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
   </aside>
   <main>
     <header class="bar">
@@ -777,7 +809,20 @@
         <div class="skel ai2"></div>
       </div>
       <div id="empty">
-        <div class="elogo">✻</div>
+        <div class="elogo">
+          <svg viewBox="150 20 100 220" xmlns="http://www.w3.org/2000/svg">
+            <g fill="currentColor" transform="translate(0,-10)">
+              <path d="M150 232 q0 -11 14 -13 q22 -3 36 -3 q14 0 36 3 q14 2 14 13 q0 9 -14 11 q-22 3 -36 3 q-14 0 -36 -3 q-14 -2 -14 -11 z"/>
+              <path d="M170 214 q-3 -6 0 -12 q10 -3 30 -3 q20 0 30 3 q3 6 0 12 q-30 5 -30 5 q0 0 -30 -5 z"/>
+              <path d="M200 108 C 218 108 230 120 230 138 C 230 156 220 168 214 182 C 209 194 207 202 208 210 L 192 210 C 193 202 191 194 186 182 C 180 168 170 156 170 138 C 170 120 182 108 200 108 Z"/>
+              <ellipse cx="200" cy="108" rx="30" ry="7.5"/>
+              <ellipse cx="200" cy="98" rx="21" ry="5"/>
+              <path d="M170 94 C 165 87 165 77 168 70 C 173 78 181 82 188 81 C 189 70 193 61 200 54 C 207 61 211 70 212 81 C 219 82 227 78 232 70 C 235 77 235 87 230 94 C 220 89 210 87 200 87 C 190 87 180 89 170 94 Z"/>
+              <circle cx="200" cy="46" r="7.5"/>
+              <circle cx="200" cy="74" r="4" fill="#c9a227"/>
+            </g>
+          </svg>
+        </div>
         <h2>你好，我是 Wazir</h2>
         <p>你的私人 AI 助理 · 有什么需要直接说</p>
         <div class="sugs">
@@ -877,28 +922,31 @@ const ICONS = {
   plus:'<path d="M12 5v14"/><path d="M5 12h14"/>',
   close:'<path d="M18 6L6 18"/><path d="M6 6l12 12"/>',
   filter:'<path d="M22 3H2l8 9.46V19l4 2V12.46L22 3z"/>',
+  copy:'<rect x="8" y="8" width="8" height="12" rx="1"/><path d="M16 10h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2v-2"/>',
   command:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 11l3 3-3 3"/><path d="M12 17h5"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 
-// ── 主题(深/浅)──────────────────────────────────────────────────────────
-function curTheme(){
-  const t=document.documentElement.getAttribute("data-theme");
-  if(t) return t;
-  return (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+// ── 主题(深/浅/跟随系统)───────────────────────────────────────────────
+// curThemeMode(): 返回存储的偏好 "auto"|"light"|"dark"
+function curThemeMode(){
+  return document.documentElement.getAttribute("data-theme") || "auto";
 }
 function syncTheme(){
-  const dark = curTheme()==="dark";
-  $("#themeBtn").textContent = dark ? "☀" : "☾";   // 显示"点击后切到的"目标
   const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg2").trim();
   const m = document.querySelector('meta[name="theme-color"]'); if(m && bg) m.setAttribute("content", bg);
 }
-function toggleTheme(){
-  const next = curTheme()==="dark" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
-  try{ localStorage.setItem("hermes_theme", next); }catch(e){}
+function setTheme(mode){
+  if(mode==="auto"){
+    document.documentElement.removeAttribute("data-theme");
+    try{ localStorage.removeItem("hermes_theme"); }catch(e){}
+  } else {
+    document.documentElement.setAttribute("data-theme", mode);
+    try{ localStorage.setItem("hermes_theme", mode); }catch(e){}
+  }
   syncTheme();
-  api("/prefs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({theme:next})}).catch(()=>{});
+  api("/prefs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({theme: mode==="auto" ? null : mode})}).catch(()=>{});
+  if(typeof SET!=="undefined" && SET.tab==="appearance") renderAppearancePane();
 }
 if(window.matchMedia){
   window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", ()=>{
@@ -1010,46 +1058,7 @@ function setRateStatus(level, msg, err){
   S.rateStatus={level:level||"ok", msg:msg||"", lastErr:err||"", ts:Date.now(), resetTs:reset};
   updateSfoot();
 }
-function updateSfoot(){
-  const rs=S.rateStatus, dot=$("#sdot"), txt=$("#sfoottxt");
-  dot.className="sdot "+rs.level;
-  const labels={ok:"Wazir · 就绪", warn:"Wazir · 注意限额", err:"Wazir · 出错"};
-  let t=labels[rs.level]||labels.ok;
-  // 撞限额且拿到恢复时间 → 底部直接显示到几点,一眼可见
-  if(rs.level==="warn" && rs.resetTs>Date.now())
-    t="Wazir · 限额至 "+new Date(rs.resetTs).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"});
-  txt.textContent=t;
-}
-$("#sfoot").onclick=function(e){
-  // 点的是设置/主题按钮 → 不弹 ratePop,交给按钮自己的 handler
-  if(e.target.closest("#themeBtn,#settingsBtn")) return;
-  e.stopPropagation();
-  const p=$("#ratePop");
-  if(!p.hidden){ p.hidden=true; return; }
-  const rs=S.rateStatus, labels={ok:"正常",warn:"最近遇到限额/过载",err:"最近遇到错误"};
-  const when=rs.ts?(" · "+new Date(rs.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})):"";
-  let body=labels[rs.level]||labels.ok;
-  if(rs.msg) body+='<br>'+esc(rs.msg);
-  const resetTxt=fmtReset(rs.resetTs);
-  if(resetTxt) body+='<div style="margin-top:8px;font-weight:600;color:#d9a43a">⏳ '+esc(resetTxt)+'</div>';
-  if(rs.level!=="ok"&&rs.lastErr) body+='<br><br><span style="font-size:12px;color:var(--dim2)">详情:'+esc(rs.lastErr)+'</span>';
-  body+='<div class="rptime">'+(rs.level==="ok"?"上次检查":"最近一次")+when+'</div>';
-  p.innerHTML='<div class="rphead"><span class="rpd '+rs.level+'"></span>'+labels[rs.level]+'</div>'+
-    '<div class="rpbody">'+body+'</div>';
-  // 定位:弹层底部贴在 #sfoot 上方 4px,左边对齐侧栏
-  const r=$("#sfoot").getBoundingClientRect();
-  p.style.top="auto"; p.style.right="auto";
-  p.style.bottom=(window.innerHeight-r.top+4)+"px";
-  p.style.left=Math.max(6, r.left)+"px";
-  p.style.maxHeight=Math.max(80, r.top-16)+"px";
-  p.style.overflowY="auto";
-  p.style.display="";  // 确保覆盖 [hidden] 的 display:none
-  p.removeAttribute("hidden");
-  p.hidden=false;
-};
-document.addEventListener("click",function(e){
-  const p=$("#ratePop"); if(p && !p.hidden && !e.target.closest("#sfoot") && !e.target.closest("#ratePop")) p.hidden=true;
-});
+function updateSfoot(){}
 
 // ── 顶栏:上下文进度(默认)+ 点击展开 token 明细 ─────────────────────────
 const CTX_WINDOW = 200000;  // 兜底窗口;实际以后端按模型回传的 ctx_window 为准
@@ -1110,7 +1119,9 @@ function renderMeta(){
   $("#ctxRing").style.strokeDasharray="50.27"; $("#ctxRing").style.strokeDashoffset=String(50.27*(1-pct/100)); $("#ctxPct").textContent=pct+"%";
   bar.classList.toggle("warn", warn); pop.classList.toggle("warn", warn);
   const free=Math.max(0,win-m.ctx), fpct=Math.max(0,100-pct);
+  const cid = S.conv || "";
   pop.innerHTML =
+    '<div class="convid"><span class="k">会话 ID</span><span class="idv" title="'+esc(cid)+'">'+esc(cid)+'</span><button class="cpy" id="ctxCopyBtn" title="复制 ID">'+ic("copy")+'</button></div>'+
     '<div class="ph"><span class="t">上下文窗口</span><span class="m">'+fmtTok(m.ctx)+' / '+fmtTok(win)+' <b>'+pct+'%</b></span></div>'+
     '<div class="pbar"><i style="width:'+pct+'%"></i></div>'+
     metaRow("已用上下文", fmtTok(m.ctx), pct+"%")+
@@ -1120,6 +1131,16 @@ function renderMeta(){
     metaRow("本轮输出", fmtTok(m.lout), "")+
     metaRow("累计消耗", fmtTok(m.total), "")+
     (m.model ? '<div class="pr sep"><span class="k">模型</span><span class="mdl">'+esc(m.model)+'</span></div>' : "");
+  $("#ctxCopyBtn").onclick = e => { e.stopPropagation(); copyConvId(); };
+}
+function copyConvId(){
+  const id = S.conv || "";
+  if(!id || !navigator.clipboard) return;
+  navigator.clipboard.writeText(id).then(()=>{
+    const btn = $("#ctxCopyBtn"); if(!btn) return;
+    const old = btn.innerHTML; btn.innerHTML = ic("save");
+    setTimeout(()=> btn.innerHTML = old, 1200);
+  }).catch(()=>{});
 }
 $("#barMeta").onclick = e=>{ e.stopPropagation(); const p=$("#ctxPop"); p.hidden=!p.hidden; };
 document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contains(e.target)) $("#ctxPop").hidden=true; });
@@ -1192,7 +1213,8 @@ function fmtTime(ts){ if(!ts) return ""; const d=new Date(ts*1000), n=new Date()
 async function loadPrefs(){
   try{
     const r = await api("/prefs"); const p = await r.json();
-    if(p.theme && p.theme !== localStorage.getItem("hermes_theme")){
+    // 服务端有明确值才覆盖本地;null = 不动(本地 localStorage 是当前设备的主)
+    if(p.theme && ["light","dark"].includes(p.theme) && p.theme !== localStorage.getItem("hermes_theme")){
       document.documentElement.setAttribute("data-theme", p.theme);
       try{ localStorage.setItem("hermes_theme", p.theme); }catch(e){}
       syncTheme();
@@ -1350,6 +1372,18 @@ function renderSetTab(){
   else if(SET.tab==="memory") renderFileList("memory");
   else if(SET.tab==="agents") renderFileList("agents");
   else if(SET.tab==="notify") renderNotifyPane();
+  else if(SET.tab==="appearance") renderAppearancePane();
+}
+
+// ── 外观分区(主题选择)──────────────────────────────────────────────────
+function renderAppearancePane(){
+  const mode = curThemeMode();
+  const opts = [{v:"auto",label:"跟随系统"},{v:"light",label:"浅色"},{v:"dark",label:"深色"}];
+  let h = '<h3>外观</h3><p class="shint">选择界面颜色模式。「跟随系统」会自动跟随操作系统的深色/浅色设置。</p>';
+  h += '<div class="theme-seg">';
+  opts.forEach(o=>{ h += `<button class="tsopt${mode===o.v?" active":""}" onclick="setTheme('${o.v}')">${o.label}</button>`; });
+  h += '</div>';
+  $("#setPane").innerHTML = h;
 }
 
 // ── 通知分区(Web Push 系统通知)──────────────────────────────────────────
@@ -1370,6 +1404,9 @@ function renderNotifyPane(){
   h += '<div class="srow"><div class="sinfo"><div class="sname">本设备通知</div>'+
        '<div class="sdesc" id="notifyDesc">检查中…</div></div>'+
        '<div class="sacts"><label class="sw"><input type="checkbox" id="notifyToggle"><span class="track"></span></label></div></div>';
+  h += '<div class="srow"><div class="sinfo"><div class="sname">发送测试通知</div>'+
+       '<div class="sdesc">开启后点这里,手机应立刻弹一条系统通知——验证链路是否真的通。</div></div>'+
+       '<div class="sacts"><button class="btn ghost sm" id="notifyTest" disabled>测试</button></div></div>';
   h += '<div class="sechd">通知场景</div>'+
        '<p class="shint">回复完成 · 需要审批确认 · 主动推送(cron)· 出错异常——默认全开,可在 .env 用 <code>PUSH_ON_*=0</code> 单独关某类。</p>';
   $("#setPane").innerHTML=h;
@@ -1384,6 +1421,20 @@ async function bindNotifyPane(){
     tgl.checked=!!sub; tgl.disabled=false;
     desc.textContent = sub ? "已开启,本设备会收到通知"
       : (isIOSNonStandalone() ? "iPhone 需先把网页「加到主屏」,从主屏图标打开才能开" : "点右侧开关开启");
+  }
+  const testBtn=$("#notifyTest");
+  if(testBtn){
+    testBtn.disabled = !sub;
+    testBtn.onclick = async ()=>{
+      testBtn.disabled=true; const t=testBtn.textContent; testBtn.textContent="发送中…";
+      try{
+        const j = await (await api("/push/test",{method:"POST"})).json();
+        alert(j.sent>0
+          ? "已发往 "+j.sent+" 台设备。看手机系统通知(锁屏/通知中心)。"
+          : "服务端订阅列表为空(sent=0)——开关没真正订阅成功,请重开一次并留意报错。");
+      }catch(e){ alert("测试失败:"+(e&&e.message||e)); }
+      finally{ testBtn.textContent=t; testBtn.disabled=!sub; }
+    };
   }
   tgl.onchange = async ()=>{
     tgl.disabled=true;
@@ -1427,15 +1478,29 @@ async function currentSub(){
   return reg.pushManager.getSubscription();
 }
 async function enableNotify(){
-  if(isIOSNonStandalone()){
-    alert("iPhone 需先把本页「添加到主屏幕」,再从主屏图标打开,才能开启系统通知。"); return;
-  }
-  let perm = (typeof Notification!=="undefined") ? Notification.permission : "denied";
+  // 每一步失败都抛带原因的错误,交给 onchange 的 catch 弹出来——别再静默失败让人盲猜。
+  if(isIOSNonStandalone())
+    throw new Error("现在不是主屏模式。iPhone 需先把本页「添加到主屏幕」,再从主屏图标打开才能开启。");
+  if(typeof Notification==="undefined")
+    throw new Error("此浏览器不支持通知 API(Notification 未定义)。");
+  let perm = Notification.permission;
   if(perm==="default") perm=await Notification.requestPermission();
-  if(perm!=="granted") return;
+  if(perm==="denied")
+    throw new Error("通知权限被拒。iOS 需删掉主屏图标 + 清掉网站数据后,重新加主屏再试。");
+  if(perm!=="granted")
+    throw new Error("未获得通知权限(perm="+perm+")。");
+  if(!PUSH.pubKey)
+    throw new Error("服务端没返回 VAPID 公钥,推送未配置。");
   const reg=await navigator.serviceWorker.ready;
-  const sub=await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:b64ToU8(PUSH.pubKey) });
-  await api("/push/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sub)});
+  let sub;
+  try{
+    sub=await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:b64ToU8(PUSH.pubKey) });
+  }catch(e){
+    throw new Error("订阅失败(pushManager.subscribe):"+(e&&e.message||e));
+  }
+  const r=await api("/push/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sub)});
+  if(!r.ok)
+    throw new Error("订阅已建立但保存到服务端失败(HTTP "+r.status+")。");
 }
 async function disableNotify(){
   const sub=await currentSub();
@@ -1481,7 +1546,7 @@ function mcpFormHtml(){
     '<div class="fld"><label>类型</label><select id="mfType"><option value="stdio">stdio(本地命令)</option><option value="sse">sse(远程)</option><option value="http">http(远程)</option></select></div>'+
     '<div id="mfStdio">'+
       '<div class="fld"><label>命令 command</label><input id="mfCmd" placeholder="npx"></div>'+
-      '<div class="fld"><label>参数 args(空格分隔)</label><input id="mfArgs" placeholder="-y @modelcontextprotocol/server-filesystem /Users/wesley"></div>'+
+      '<div class="fld"><label>参数 args(空格分隔)</label><input id="mfArgs" placeholder="-y @modelcontextprotocol/server-filesystem /path/to/dir"></div>'+
       '<div class="fld"><label>环境变量 env(每行 KEY=VALUE,可空)</label><textarea id="mfEnv" placeholder="API_KEY=xxx"></textarea></div>'+
     '</div>'+
     '<div id="mfRemote" hidden>'+
@@ -2556,9 +2621,8 @@ $("#recCancel").onclick = e=>{ e.stopPropagation(); stopRec(true); };        // 
 // 兜底:关页/切后台也释放一次,防止极端情况下(录音中直接切走)残留占用
 window.addEventListener("pagehide", releaseMic);
 
-// ── 新会话 / 侧边栏 / 主题 ───────────────────────────────────────────────
+// ── 新会话 / 侧边栏 ─────────────────────────────────────────────────────
 $("#newBtn").onclick = newChat;
-$("#themeBtn").onclick = toggleTheme;
 // 顶栏 ☰:桌面(收起态)= 展开侧边栏;移动端 = 抽屉式打开
 $("#hamb").onclick = ()=>{
   if(window.innerWidth>760){ setSidebarCollapsed(false); }

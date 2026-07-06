@@ -264,16 +264,104 @@ def test_guard_hook_escalate_approved_allows():
 
 
 def test_guard_hook_escalate_denied_blocks():
-    out = _run_approval("1")  # 点「拒绝」→ deny
+    out = _run_approval("2")  # 点「拒绝」(index 2)→ deny
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_guard_hook_write_outside_cwd_denied(tmp_path):
     # cwd 设定后,写 cwd 外的文件 → 升级审批;点拒绝 → deny(验证 set_cwd 经 hook 生效)
     out = _run_approval(
-        "1", tool_name="Write", tool_input={"file_path": "/etc/evil"}, cwd=str(tmp_path)
+        "2", tool_name="Write", tool_input={"file_path": "/etc/evil"}, cwd=str(tmp_path)
     )
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_guard_hook_session_allow_all_skips_second_prompt():
+    """点「本次会话都允许」(index 1)后,同会话同类操作免批、不再弹窗。"""
+    from claude_hermes.gateway import clarify
+    from claude_hermes.tools import danger
+
+    ti = {"command": "git push"}
+    key = "sess-allow-all"
+
+    async def scenario():
+        adapter = _FakeAdapter()
+        token = clarify.set_current(key, adapter, "chat")
+        cwd_token = danger.set_cwd(None)
+        try:
+            first: dict = {}
+            async with anyio.create_task_group() as tg:
+
+                async def run1():
+                    first["v"] = await pretool_guard_hook(
+                        {"tool_name": "Bash", "tool_input": ti}, None, {}
+                    )
+
+                tg.start_soon(run1)
+                for _ in range(200):  # 等第一次审批弹窗
+                    if adapter.choice is not None:
+                        break
+                    await anyio.sleep(0.005)
+                cid = adapter.choice.options[0][0].split()[1]
+                clarify.resolve_button(cid, "1")  # 点「本次会话都允许」
+            assert first["v"] == {}  # 放行
+
+            # 第二次:同会话同类操作,应免批、不再弹审批窗
+            adapter.choice = None
+            second = await pretool_guard_hook(
+                {"tool_name": "Bash", "tool_input": ti}, None, {}
+            )
+            assert second == {}
+            assert adapter.choice is None  # 没有再弹审批
+        finally:
+            danger.reset_cwd(cwd_token)
+            clarify.reset_current(token)
+            clarify.clear_session(key)
+            danger.clear_session_approvals(key)
+
+    anyio.run(scenario)
+
+
+def test_guard_hook_denies_write_outside_worktree(tmp_path):
+    # worktree 会话(cwd=worktree,主仓库=repo)写 worktree 外的主仓库文件 → 硬 deny;
+    # 写 worktree 内文件 → 放行。验证会话隔离防线。
+    from claude_hermes.tools import danger
+
+    repo = tmp_path / "repo"
+    wt = repo / "data" / "worktrees" / "h" / "sess"  # worktree 恰嵌在主仓库 data/ 下
+    wt.mkdir(parents=True)
+    tok = danger.set_cwd(str(wt), project_root=str(repo))
+    try:
+        out = anyio.run(lambda: pretool_guard_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(repo / "core.py")}},
+            None, {},
+        ))
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "worktree" in out["hookSpecificOutput"]["permissionDecisionReason"]
+        out2 = anyio.run(lambda: pretool_guard_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(wt / "a.py")}},
+            None, {},
+        ))
+        assert out2 == {}
+    finally:
+        danger.reset_cwd(tok)
+
+
+def test_guard_hook_fallback_session_can_write_repo(tmp_path):
+    # 回退会话:worktree 建失败 → cwd==主仓库根,写项目文件不该被 worktree 防线误伤
+    from claude_hermes.tools import danger
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tok = danger.set_cwd(str(repo), project_root=str(repo))
+    try:
+        out = anyio.run(lambda: pretool_guard_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(repo / "core.py")}},
+            None, {},
+        ))
+        assert out == {}
+    finally:
+        danger.reset_cwd(tok)
 
 
 def test_setcwd_roundtrip():

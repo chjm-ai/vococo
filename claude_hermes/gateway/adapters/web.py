@@ -199,7 +199,7 @@ class _WebSink(Sink):
         )
         # 场景①「回复完成」:人不在页面时弹系统通知(前台由 SW 自行抑制)
         title = "主会话" if self.conv == "main" else (
-            session_store.get_title(key) or "Hermes"
+            session_store.get_title(key) or "Wazir"
         )
         self.a._push_notify(
             title=title,
@@ -330,7 +330,7 @@ class WebAdapter:
         # 场景③「主动/cron」与 场景④「出错」共用这条出口,靠 ⚠️ 前缀区分
         is_err = text.lstrip().startswith("⚠️")
         self._push_notify(
-            title="⚠️ 出错了" if is_err else "Hermes",
+            title="⚠️ 出错了" if is_err else "Wazir",
             body=text,
             conv=str(chat_id),
             kind="error" if is_err else "proactive",
@@ -713,6 +713,9 @@ class WebAdapter:
             key = config.resolve_session_key("web", conv)
             await worktree.remove_worktree(key)  # 先清 worktree(删库会抹掉绑定字段)
             session_store.delete_session(key)
+            from ...tools import danger  # 懒加载:清「本次会话都允许」记忆
+
+            danger.clear_session_approvals(key)
         return web.json_response({"ok": True})
 
     # ── 项目 Git 状态 ────────────────────────────────────────────────────
@@ -1072,9 +1075,21 @@ class WebAdapter:
         )
 
     async def _handle_favicon(self, request: web.Request) -> web.Response:
+        # favicon 换标后要立即可见:禁用浏览器/隧道缓存(实际内容寻址靠文件本身)
         return self._static_file(
-            "favicon.ico", "image/x-icon", {"Cache-Control": "public, max-age=86400"}
+            "favicon.ico", "image/x-icon", {"Cache-Control": "no-cache, no-store, must-revalidate"}
         )
+
+    async def _handle_mark(self, request: web.Request) -> web.Response:
+        # 自适应深浅的 SVG favicon(内嵌 prefers-color-scheme);现代浏览器优先用它,旧的回退 PNG
+        return self._static_file(
+            "wazir-mark.svg", "image/svg+xml", {"Cache-Control": "public, max-age=86400"}
+        )
+
+    async def _handle_logos(self, request: web.Request) -> web.Response:
+        # Wazir logo 概念预览页:自包含 HTML(内联 SVG),公开可取;改文件刷新即生效不用重启
+        # 注:content_type 不能带 charset(aiohttp 会抛 ValueError);HTML 内有 <meta charset> 兜底
+        return self._static_file("wazir-logos.html", "text/html")
 
     # 只放行这几个图标名,防目录穿越
     _ICONS = {"icon-192", "icon-512", "icon-maskable-512", "apple-touch-icon"}
@@ -1084,7 +1099,7 @@ class WebAdapter:
         if name not in self._ICONS:
             return web.Response(status=404, text="not found")
         return self._static_file(
-            f"{name}.png", "image/png", {"Cache-Control": "public, max-age=86400"}
+            f"{name}.png", "image/png", {"Cache-Control": "no-cache, no-store, must-revalidate"}
         )
 
     async def _handle_push_config(self, request: web.Request) -> web.Response:
@@ -1113,6 +1128,19 @@ class WebAdapter:
             body = {}
         PUSH.remove((body or {}).get("endpoint", ""))
         return web.json_response({"ok": True})
+
+    async def _handle_push_test(self, request: web.Request) -> web.Response:
+        """自测端点:给所有已登记订阅发一条测试通知,返回送出设备数。
+        kind=approval → 前台聚焦时 SW 也弹,测试时页面正开着也能看到。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        sent = await PUSH.notify(
+            "🔔 测试通知",
+            "看到这条 = 推送链路通了。",
+            conv="main",
+            kind="approval",
+        )
+        return web.json_response({"ok": True, "sent": sent})
 
     @staticmethod
     def _is_local_host(host: str) -> bool:
@@ -1145,10 +1173,13 @@ class WebAdapter:
                 web.get("/manifest.json", self._handle_manifest),
                 web.get("/sw.js", self._handle_sw),
                 web.get("/favicon.ico", self._handle_favicon),
+                web.get("/wazir-mark.svg", self._handle_mark),
+                web.get("/wazir-logos", self._handle_logos),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.get("/push/config", self._handle_push_config),
                 web.post("/push/subscribe", self._handle_push_subscribe),
                 web.post("/push/unsubscribe", self._handle_push_unsubscribe),
+                web.post("/push/test", self._handle_push_test),
                 web.get("/events", self._handle_events),
                 web.post("/send", self._handle_send),
                 web.post("/abort", self._handle_abort),
