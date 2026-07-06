@@ -105,6 +105,7 @@ class GatewayRunner:
             return
         # 设置本轮路由上下文(供 ask_user 工具反问时找到该发给谁),随 contextvar 传入工具
         token = clarify.set_current(key, adapter, inc.chat_id)
+        clarify.mark_active(key)  # 全局登记"我在跑了",供 restart_self 等查"还有谁没结束"
         scope = anyio.CancelScope()
         self._cancel_scopes[key] = scope
         try:
@@ -119,6 +120,7 @@ class GatewayRunner:
                     pass  # 超时静默处理,不向用户发送错误消息
         finally:
             self._cancel_scopes.pop(key, None)
+            clarify.mark_inactive(key)
             clarify.reset_current(token)
             clarify.clear_session(key)  # 轮结束,取消任何还挂着的 clarify
 

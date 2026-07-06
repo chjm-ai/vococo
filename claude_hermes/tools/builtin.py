@@ -404,6 +404,36 @@ async def send_message(args: dict) -> dict:
         "required": ["reason", "verify_plan"],
     },
 )
+async def _confirm_force_restart(ctx, others: list[str]) -> bool:
+    """有其他会话轮次还没结束时,弹按钮问当前用户是否仍要强制重启。
+
+    restart_self 最终是 os._exit(见 selfops.exit_for_restart)——硬杀整个进程,
+    不给其他会话的正常收尾(落库/取消处理)任何机会,它们的回复会被硬生生打断、
+    历史留空且用户毫无提示(2026-07-06 踩过:另一会话连续自我重启 4 次,连坐了
+    两个无关会话的消息)。故重启前先问一句;超时/无法弹窗 → 默认不重启
+    (fail-closed,重启是破坏性操作,宁可不做)。
+    """
+    from ..gateway import clarify
+    from ..gateway.core import Choice
+
+    p = clarify.register(ctx.session_key, ["强制重启", "取消"])
+    try:
+        opts = [
+            (f"/clarify {p.clarify_id} 0", "⚠️ 强制重启(会打断其他会话)"),
+            (f"/clarify {p.clarify_id} 1", "🛑 取消,等它们结束"),
+        ]
+        prompt = (
+            f"⚠️ 还有 {len(others)} 个其他会话正在进行中,现在重启会把它们当前的回复"
+            "硬生生打断(历史留空,用户不会看到任何提示)。是否仍要强制重启?"
+        )
+        await ctx.adapter.present_choice(ctx.chat_id, Choice(prompt=prompt, options=opts))
+    except Exception:
+        clarify.resolve(p.clarify_id, "取消")
+        return False
+    answer = await clarify.wait(p.clarify_id, config.CLARIFY_TIMEOUT)
+    return answer == "强制重启"
+
+
 async def restart_self(args: dict) -> dict:
     from ..gateway import clarify
     from . import selfops
@@ -418,6 +448,17 @@ async def restart_self(args: dict) -> dict:
     platform = getattr(ctx.adapter, "platform", "")
     if not platform:
         return _ok("(拿不到当前入口平台,无法安排重启后还魂,已取消。)")
+
+    others = clarify.other_active_sessions(ctx.session_key)
+    if others:
+        approved = await _confirm_force_restart(ctx, others)
+        if not approved:
+            return _ok(
+                f"⛔ 已取消重启:当前还有 {len(others)} 个其他会话正在进行中,强制重启会把"
+                "它们的回复硬生生打断(历史留空、无任何提示)。请等它们结束后再试,或先如实"
+                "告知用户这个风险、由用户拍板后再调用本工具。"
+            )
+
     # 预检含 compileall/git 子进程,扔线程池免得卡住事件循环里别的会话
     msg = await anyio.to_thread.run_sync(
         functools.partial(

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import contextvars
+import json
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
@@ -65,6 +66,40 @@ def reset_current(token: contextvars.Token) -> None:
 
 def current() -> Optional[_Ctx]:
     return _current.get()
+
+
+# ── 全局在跑会话登记 —— 供"重启会不会连坐其他会话"这类检查用 ──────────────────
+# 与上面的 _current(contextvar,只有当前任务自己可见)不同,这里是【进程内全局可见】
+# 的登记表:任何会话开轮/收工都在此登记/注销,别处(如 restart_self)才能查到
+# "除我之外还有谁的轮次正在跑"。同时落一份到磁盘,供 deploy/restart.sh 这类
+# 进程外的脚本读取(尽力而为,写失败不影响主流程)。
+_active_sessions: set[str] = set()
+
+
+def mark_active(session_key: str) -> None:
+    _active_sessions.add(session_key)
+    _dump_active_sessions()
+
+
+def mark_inactive(session_key: str) -> None:
+    _active_sessions.discard(session_key)
+    _dump_active_sessions()
+
+
+def other_active_sessions(exclude_key: str) -> list[str]:
+    """除 exclude_key 外,当前仍有轮次在跑的会话 key(重启前的连坐风险提示用)。"""
+    return sorted(k for k in _active_sessions if k != exclude_key)
+
+
+def _dump_active_sessions() -> None:
+    try:
+        from .. import config
+
+        path = config.DATA_DIR / "active_sessions.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(sorted(_active_sessions)), encoding="utf-8")
+    except Exception:
+        pass
 
 
 # ── 主动推送桥(让进程内工具能发消息到任意 platform:chat)──
