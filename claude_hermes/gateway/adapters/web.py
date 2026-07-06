@@ -1069,7 +1069,8 @@ class WebAdapter:
 
     async def _handle_logos(self, request: web.Request) -> web.Response:
         # Wazir logo 概念预览页:自包含 HTML(内联 SVG),公开可取;改文件刷新即生效不用重启
-        return self._static_file("wazir-logos.html", "text/html; charset=utf-8")
+        # 注:content_type 不能带 charset(aiohttp 会抛 ValueError);HTML 内有 <meta charset> 兜底
+        return self._static_file("wazir-logos.html", "text/html")
 
     # 只放行这几个图标名,防目录穿越
     _ICONS = {"icon-192", "icon-512", "icon-maskable-512", "apple-touch-icon"}
