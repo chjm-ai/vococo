@@ -593,6 +593,20 @@ class WebAdapter:
             session_store.hide_project(h)
         return web.json_response({"ok": True})
 
+    async def _handle_project_reorder(self, request: web.Request) -> web.Response:
+        """侧边栏拖拽排序落库:body={"order": [hash, ...]},按新顺序整体覆盖。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        order = body.get("order")
+        if not isinstance(order, list):
+            return web.json_response({"error": "order 必须是数组"}, status=400)
+        session_store.reorder_projects([str(h) for h in order])
+        return web.json_response({"ok": True})
+
     async def _handle_models(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
@@ -1188,6 +1202,7 @@ class WebAdapter:
                 web.get("/browse", self._handle_browse),
                 web.post("/projects/create", self._handle_project_create),
                 web.post("/projects/remove", self._handle_project_remove),
+                web.post("/projects/reorder", self._handle_project_reorder),
                 web.get("/models", self._handle_models),
                 web.get("/history", self._handle_history),
                 web.get("/image", self._handle_image),

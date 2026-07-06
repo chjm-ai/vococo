@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS projects(
   hash TEXT PRIMARY KEY,
   path TEXT NOT NULL UNIQUE,
   last_used REAL NOT NULL DEFAULT 0,
-  hidden INTEGER NOT NULL DEFAULT 0
+  hidden INTEGER NOT NULL DEFAULT 0,
+  sort_order REAL
 );
 CREATE TABLE IF NOT EXISTS user_prefs(
   key TEXT PRIMARY KEY,
@@ -108,6 +109,12 @@ def _conn() -> sqlite3.Connection:
         # 这里只存文件名)。刷新后 /history 带出文件名 → 前端用 /image?name= 取回显示。
         if "images" not in tcols:
             _DB.execute("ALTER TABLE turns ADD COLUMN images TEXT")
+        # sort_order: 侧边栏项目分组的手动拖拽顺序(升序);老库里全是 NULL,
+        # 用 -last_used 补一次初值,让升级后的默认顺序等价于原来的"最近使用在前"。
+        pcols = {r[1] for r in _DB.execute("PRAGMA table_info(projects)")}
+        if "sort_order" not in pcols:
+            _DB.execute("ALTER TABLE projects ADD COLUMN sort_order REAL")
+            _DB.execute("UPDATE projects SET sort_order = -last_used WHERE sort_order IS NULL")
         _DB.commit()
     return _DB
 
@@ -571,29 +578,40 @@ def upsert_project(path: str) -> dict:
     """按文件夹路径建/复活项目;返回 {hash, path, name, last_used}。
 
     同一文件夹已存在则复活(hidden=0)并刷新 last_used;不存在则新建。
+    新建/复活都把 sort_order 顶到最前(-now),侧边栏习惯是"新项目出现在最上面"。
     """
     norm = normalize_project_path(path)
     h = project_hash(norm)
     now = time.time()
     c = _conn()
     c.execute(
-        "INSERT INTO projects(hash, path, last_used, hidden) VALUES (?,?,?,0) "
-        "ON CONFLICT(hash) DO UPDATE SET last_used=excluded.last_used, hidden=0",
-        (h, norm, now),
+        "INSERT INTO projects(hash, path, last_used, hidden, sort_order) VALUES (?,?,?,0,?) "
+        "ON CONFLICT(hash) DO UPDATE SET last_used=excluded.last_used, hidden=0, sort_order=excluded.sort_order",
+        (h, norm, now, -now),
     )
     c.commit()
     return {"hash": h, "path": norm, "name": os.path.basename(norm) or norm, "last_used": now}
 
 
 def list_projects() -> list[dict]:
-    """未隐藏的项目,最近使用的排前面。名 = 文件夹名(basename)。"""
+    """未隐藏的项目,按 sort_order 升序(拖拽排序落库的顺序)。名 = 文件夹名(basename)。"""
     rows = _conn().execute(
-        "SELECT hash, path, last_used FROM projects WHERE hidden=0 ORDER BY last_used DESC"
+        "SELECT hash, path, last_used FROM projects WHERE hidden=0 ORDER BY sort_order ASC, last_used DESC"
     ).fetchall()
     return [
         {"hash": h, "path": p, "name": os.path.basename(p) or p, "last_used": ts}
         for h, p, ts in rows
     ]
+
+
+def reorder_projects(order: list[str]) -> None:
+    """侧边栏拖拽落地后整体覆盖排序:sort_order = 数组下标。"""
+    c = _conn()
+    c.executemany(
+        "UPDATE projects SET sort_order=? WHERE hash=?",
+        [(i, h) for i, h in enumerate(order)],
+    )
+    c.commit()
 
 
 def path_for_hash(h: str) -> str | None:
