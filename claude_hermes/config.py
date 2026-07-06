@@ -82,6 +82,9 @@ def _oauth_required() -> bool:
 
 
 OAUTH_TOKEN: str = _ensure_subscription_auth(require=_oauth_required())
+# 助理主人的称呼:注入 PERSONA / 工具描述,让助理知道在为谁服务。
+# 开源默认「主人」,在 .env 设 HERMES_USER_NAME=你的名字 即个性化。
+USER_NAME: str = os.environ.get("HERMES_USER_NAME", "主人").strip() or "主人"
 MODEL: str = os.environ.get("AGENT_MODEL", "claude-opus-4-8").strip()
 MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "40"))
 # 工具权限模式:bypassPermissions=自动执行工具(shell/读写等),个人本机助理用

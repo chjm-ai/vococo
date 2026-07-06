@@ -1,5 +1,7 @@
 # 环境/密钥
 .env
+.env.*
+!.env.example
 .oat
 *.token
 

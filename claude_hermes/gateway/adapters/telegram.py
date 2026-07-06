@@ -351,7 +351,7 @@ class TelegramAdapter:
                 photos = msg.get("photo") or []
                 text = (msg.get("text") or msg.get("caption") or "").strip()
                 # 转发来的内容 = 第三方文本,可能藏注入指令(威胁模型 T2)。标注为不可信数据,
-                # 让 Claude 别把其中的「忽略以上/现在执行…」当成 Wesley 的命令。
+                # 让 Claude 别把其中的「忽略以上/现在执行…」当成用户的命令。
                 is_forwarded = bool(
                     msg.get("forward_origin") or msg.get("forward_date")
                     or msg.get("forward_from") or msg.get("forward_from_chat")
