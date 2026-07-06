@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wazir Logo 方案</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#0f172a; --sub:#64748b; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;
+         background:var(--bg); color:var(--ink); margin:0; padding:28px 16px calc(48px + env(safe-area-inset-bottom)); }
+  header { text-align:center; margin-bottom:28px; }
+  header h1 { font-size:26px; margin:0 0 6px; letter-spacing:1px; }
+  header p { color:var(--sub); font-size:14px; margin:0; }
+  .grid { display:grid; grid-template-columns:1fr; gap:18px; max-width:920px; margin:0 auto; }
+  @media(min-width:720px){ .grid{ grid-template-columns:1fr 1fr; } }
+  .card { background:var(--card); border-radius:18px; padding:22px; box-shadow:0 1px 3px rgba(15,23,42,.08); }
+  .art { border-radius:12px; overflow:hidden; }
+  .art svg { display:block; width:100%; height:auto; }
+  .meta { margin-top:14px; }
+  .meta .no { font-size:12px; color:var(--sub); letter-spacing:2px; }
+  .meta .name { font-size:17px; font-weight:700; margin:2px 0 6px; }
+  .meta .desc { font-size:13px; color:#475569; line-height:1.6; margin:0; }
+  footer { text-align:center; color:var(--sub); font-size:12px; margin-top:32px; line-height:1.7; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Wazir · Logo 概念方案</h1>
+  <p>4 种风格 · 挑一个我再深化（配色 / 横版 / 图标单独出）</p>
+</header>
+
+<div class="grid">
+
+  <!-- 01 极简几何 -->
+  <div class="card">
+    <div class="art">
+      <svg viewBox="0 0 400 260" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f172a"/><stop offset="1" stop-color="#334155"/></linearGradient></defs>
+        <rect width="400" height="260" fill="#fff"/>
+        <circle cx="200" cy="105" r="64" fill="none" stroke="#e2e8f0" stroke-width="1.5"/>
+        <path d="M162,73 L182,140 L200,100 L218,140 L238,73" fill="none" stroke="url(#g1)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="200" y="210" font-family="-apple-system,sans-serif" font-size="34" font-weight="700" fill="#0f172a" text-anchor="middle" letter-spacing="6">WAZIR</text>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="no">01 / GEOMETRIC</div>
+      <div class="name">极简现代几何风</div>
+      <p class="desc">利落的 W 单笔画 + 细圆框。克制、专业，工具 / SaaS 感强，缩到 favicon 也清晰。</p>
+    </div>
+  </div>
+
+  <!-- 02 东方水墨 -->
+  <div class="card">
+    <div class="art">
+      <svg viewBox="0 0 400 260" xmlns="http://www.w3.org/2000/svg">
+        <rect width="400" height="260" fill="#faf8f5"/>
+        <circle cx="200" cy="102" r="60" fill="none" stroke="#1c1917" stroke-width="3" stroke-linecap="round" opacity="0.85" stroke-dasharray="330 46" transform="rotate(-90 200 102)"/>
+        <path d="M170,88 Q185,124 200,102 Q215,124 230,88" fill="none" stroke="#1c1917" stroke-width="5" stroke-linecap="round"/>
+        <path d="M200,102 L200,138" fill="none" stroke="#1c1917" stroke-width="5" stroke-linecap="round"/>
+        <circle cx="243" cy="60" r="3.5" fill="#1c1917" opacity="0.65"/>
+        <text x="200" y="208" font-family="'Songti SC','Noto Serif SC',serif" font-size="32" font-weight="600" fill="#1c1917" text-anchor="middle" letter-spacing="8">Wazir</text>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="no">02 / INK · ZEN</div>
+      <div class="name">东方水墨意境风</div>
+      <p class="desc">枯笔圆环托一个手写感 W，一点朱砂收尾。内敛有智感，中文语境亲和。</p>
+    </div>
+  </div>
+
+  <!-- 03 科技 AI -->
+  <div class="card">
+    <div class="art">
+      <svg viewBox="0 0 400 260" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="g3" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#06b6d4"/><stop offset="1" stop-color="#3b82f6"/></linearGradient></defs>
+        <rect width="400" height="260" fill="#0b1120"/>
+        <polygon points="200,44 252,74 252,134 200,164 148,134 148,74" fill="none" stroke="url(#g3)" stroke-width="2"/>
+        <g stroke="url(#g3)" stroke-width="2">
+          <line x1="200" y1="104" x2="200" y2="70"/><line x1="200" y1="104" x2="200" y2="138"/>
+          <line x1="200" y1="104" x2="170" y2="87"/><line x1="200" y1="104" x2="230" y2="87"/>
+          <line x1="200" y1="104" x2="170" y2="121"/><line x1="200" y1="104" x2="230" y2="121"/>
+        </g>
+        <circle cx="200" cy="104" r="8" fill="url(#g3)"/>
+        <g fill="#22d3ee">
+          <circle cx="200" cy="70" r="4"/><circle cx="200" cy="138" r="4"/>
+          <circle cx="170" cy="87" r="4"/><circle cx="230" cy="87" r="4"/>
+          <circle cx="170" cy="121" r="4"/><circle cx="230" cy="121" r="4"/>
+        </g>
+        <text x="200" y="212" font-family="'SF Mono',ui-monospace,monospace" font-size="32" font-weight="600" fill="#e0f2fe" text-anchor="middle" letter-spacing="6">WAZIR</text>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="no">03 / AI · TECH</div>
+      <div class="name">科技未来 AI 风</div>
+      <p class="desc">六边形里的神经节点网络，冷青蓝渐变。未来感、极客味，深色底最出彩。</p>
+    </div>
+  </div>
+
+  <!-- 04 温暖手写 -->
+  <div class="card">
+    <div class="art">
+      <svg viewBox="0 0 400 260" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="g4" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f59e0b"/><stop offset="1" stop-color="#ea580c"/></linearGradient></defs>
+        <rect width="400" height="260" fill="#fff7ed"/>
+        <ellipse cx="200" cy="100" rx="66" ry="58" fill="url(#g4)" opacity="0.12"/>
+        <path d="M158,88 C158,60 186,52 200,68 C214,52 242,60 242,88 C242,120 214,142 200,150 C186,142 158,120 158,88 Z" fill="none" stroke="url(#g4)" stroke-width="4" stroke-linecap="round"/>
+        <path d="M176,86 Q188,116 200,98 Q212,116 224,86" fill="none" stroke="#9a3412" stroke-width="5" stroke-linecap="round"/>
+        <path d="M200,98 L200,124" fill="none" stroke="#9a3412" stroke-width="5" stroke-linecap="round"/>
+        <text x="200" y="212" font-family="'Bradley Hand','Segoe Script',cursive,sans-serif" font-size="38" font-weight="700" fill="#9a3412" text-anchor="middle">Wazir</text>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="no">04 / WARM · HUMAN</div>
+      <div class="name">温暖人文手写风</div>
+      <p class="desc">心形徽章里藏一个 W，暖橙手写字。亲切、有人情味，适合「私人助理」定位。</p>
+    </div>
+  </div>
+
+</div>
+
+<footer>
+  这些是矢量草稿 · 定方向后可交付 SVG / PNG / ICO 全套<br>
+  Wazir — Wesley 的私人 AI 助理
+</footer>
+</body>
+</html>

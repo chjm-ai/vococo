@@ -1067,6 +1067,10 @@ class WebAdapter:
             "favicon.ico", "image/x-icon", {"Cache-Control": "public, max-age=86400"}
         )
 
+    async def _handle_logos(self, request: web.Request) -> web.Response:
+        # Wazir logo 概念预览页:自包含 HTML(内联 SVG),公开可取;改文件刷新即生效不用重启
+        return self._static_file("wazir-logos.html", "text/html; charset=utf-8")
+
     # 只放行这几个图标名,防目录穿越
     _ICONS = {"icon-192", "icon-512", "icon-maskable-512", "apple-touch-icon"}
 
@@ -1149,6 +1153,7 @@ class WebAdapter:
                 web.get("/manifest.json", self._handle_manifest),
                 web.get("/sw.js", self._handle_sw),
                 web.get("/favicon.ico", self._handle_favicon),
+                web.get("/wazir-logos", self._handle_logos),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.get("/push/config", self._handle_push_config),
                 web.post("/push/subscribe", self._handle_push_subscribe),
