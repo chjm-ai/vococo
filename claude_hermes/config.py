@@ -172,6 +172,16 @@ STT_MODEL: str = (
     or "FunAudioLLM/SenseVoiceSmall"
 )
 
+# 转写完的逐字稿常带口癖(呃/然后/就是)、同音字错误、被音译错的中英混说专名
+# (实测 SenseVoice 把"OpenAI Codex"听成"open air codes"),转写后再过一遍 LLM 清洗。
+# 复用 STT_API_KEY/STT_BASE_URL(同一个 SiliconFlow 账号),换成 chat/completions。
+# 实测 7B 小模型修不对这类音译错误,72B 才能稳定纠出"OpenAI Codex"——故不用免费小模型。
+STT_CLEANUP_ENABLED: bool = _parse_bool(os.environ.get("STT_CLEANUP_ENABLED", ""), True)
+STT_CLEANUP_MODEL: str = (
+    os.environ.get("STT_CLEANUP_MODEL", "Qwen/Qwen2.5-72B-Instruct").strip()
+    or "Qwen/Qwen2.5-72B-Instruct"
+)
+
 # === 会话统一(跨入口连续)===
 # 开启时:CLI / TUI / Telegram / 飞书 都归到同一会话 SESSION_KEY,
 # "飞书问一半切 CLI 接着聊" 成立(单用户自用的默认)。关闭则按 平台:chat 隔离。

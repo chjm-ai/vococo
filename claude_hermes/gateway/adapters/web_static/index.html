@@ -2620,7 +2620,8 @@ async function startRec(){
   if(!navigator.mediaDevices || !window.MediaRecorder){ alert("此浏览器不支持录音"); return; }
   try{ await getMic(); }
   catch(e){ alert("麦克风权限被拒绝或不可用"); return; }
-  REC.chunks=[]; REC.cancel=false; REC._lastPush=0; REC.mr=new MediaRecorder(REC.stream);
+  // 限码率:识别不需要高音质,压低码率能大幅缩短手机上传耗时(实测上传经常比转写本身还慢)
+  REC.chunks=[]; REC.cancel=false; REC._lastPush=0; REC.mr=new MediaRecorder(REC.stream,{audioBitsPerSecond:24000});
   REC.mime = REC.mr.mimeType || "audio/webm";
   REC.mr.ondataavailable=e=>{ if(e.data && e.data.size) REC.chunks.push(e.data); };
   REC.mr.onstop=onRecStop;
