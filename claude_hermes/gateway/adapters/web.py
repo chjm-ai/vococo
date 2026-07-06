@@ -1066,8 +1066,9 @@ class WebAdapter:
         )
 
     async def _handle_favicon(self, request: web.Request) -> web.Response:
+        # favicon 换标后要立即可见:禁用浏览器/隧道缓存(实际内容寻址靠文件本身)
         return self._static_file(
-            "favicon.ico", "image/x-icon", {"Cache-Control": "public, max-age=86400"}
+            "favicon.ico", "image/x-icon", {"Cache-Control": "no-cache, no-store, must-revalidate"}
         )
 
     async def _handle_mark(self, request: web.Request) -> web.Response:
