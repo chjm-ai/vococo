@@ -1,0 +1,35 @@
+<svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg">
+  <rect width="400" height="300" fill="#fafafa"/>
+
+  <!-- 斜置的局部棋盘：留白克制，棋子落在交叉点 -->
+  <g transform="translate(200,116) rotate(-15)">
+    <!-- 网格：近实远淡，纵深感 -->
+    <g fill="none" stroke-linecap="round">
+      <!-- 横线 -->
+      <line x1="-82" y1="-54" x2="82" y2="-54" stroke="#111827" stroke-width="1"   opacity="0.3"/>
+      <line x1="-82" y1="-16" x2="82" y2="-16" stroke="#111827" stroke-width="1.2" opacity="0.5"/>
+      <line x1="-82" y1="22"  x2="82" y2="22"  stroke="#111827" stroke-width="1.4" opacity="0.72"/>
+      <line x1="-82" y1="60"  x2="82" y2="60"  stroke="#111827" stroke-width="1.7" opacity="0.92"/>
+      <!-- 竖线 -->
+      <line x1="-82" y1="-54" x2="-82" y2="60" stroke="#111827" stroke-width="1.1" opacity="0.5"/>
+      <line x1="-41" y1="-54" x2="-41" y2="60" stroke="#111827" stroke-width="1.1" opacity="0.5"/>
+      <line x1="0"   y1="-54" x2="0"   y2="60" stroke="#111827" stroke-width="1.1" opacity="0.5"/>
+      <line x1="41"  y1="-54" x2="41"  y2="60" stroke="#111827" stroke-width="1.1" opacity="0.5"/>
+      <line x1="82"  y1="-54" x2="82"  y2="60" stroke="#111827" stroke-width="1.1" opacity="0.5"/>
+    </g>
+
+    <!-- 已布之局：三子，谋定的局面 -->
+    <circle cx="-41" cy="22"  r="8.5" fill="#e5e7eb" stroke="#111827" stroke-width="1"/>
+    <circle cx="41"  cy="-16" r="8.5" fill="#e5e7eb" stroke="#111827" stroke-width="1"/>
+    <circle cx="-41" cy="-16" r="9"   fill="#111827"/>
+
+    <!-- 关键落子：朱砂红，双环强调“定局的一手” -->
+    <circle cx="0" cy="22" r="17"   fill="none" stroke="#dc2626" stroke-width="1" opacity="0.28"/>
+    <circle cx="0" cy="22" r="11.5" fill="#dc2626"/>
+  </g>
+
+  <!-- 字组 -->
+  <text x="200" y="256" text-anchor="middle"
+        font-family="Georgia, 'Times New Roman', serif"
+        font-size="38" letter-spacing="12" fill="#111827">Wazir</text>
+</svg>
