@@ -363,7 +363,7 @@ COMMAND_LIST: list[tuple[str, str]] = [
     ("model", "查看或切换模型,如 /model claude-opus-4-8"),
     ("history", "看最近历史"),
     ("status", "会话信息"),
-    ("suggest", "看/接受 Hermes 提的自动化建议"),
+    ("suggest", "看/接受 Wazir 提的自动化建议"),
     ("help", "显示帮助"),
 ]
 HELP_TEXT = "可用命令:\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_LIST)

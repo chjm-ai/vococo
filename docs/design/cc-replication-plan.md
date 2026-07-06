@@ -42,7 +42,7 @@ Hermes 底座 = `claude-agent-sdk` = Claude Code 内核。**编码能力一轮�
   `stream_turn(cwd=)`;`converse` 每轮 `danger.set_cwd(cwd)`,**「写 cwd 外文件」规则已生效**
   (5 类全齐)。非项目会话 cwd=None,该条自然休眠。
 - **Phase 3 原生 session(跨轮连续性 + 省缓存):暂缓**。与「工作目录」改同一块 session 模型,现在动必冲突;
-  且收益只在多轮编码对话体现。等工作目录落地、session 稳定后再评估。见 [ADR 0002](adr/0002-coding-experience-sequencing.md)。
+  且收益只在多轮编码对话体现。等工作目录落地、session 稳定后再评估。见 [ADR 0002](../adr/0002-coding-experience-sequencing.md)。
 
 ## 需要真机验证的点(订阅令牌 + 真流式)
 

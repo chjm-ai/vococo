@@ -45,7 +45,7 @@ def _cmd_chat() -> None:
             history = session_store.load_recent(key)
             reply = await run_turn(history, user_text)
             tag = f"  [工具:{', '.join(reply.tool_calls)}]" if reply.tool_calls else ""
-            print(f"\nHermes > {reply.text}{tag}\n")
+            print(f"\nWazir > {reply.text}{tag}\n")
             session_store.append(key, user_text, reply.text)
 
     anyio.run(loop)
