@@ -200,12 +200,12 @@
   .projgrp{gap:6px;margin-top:2px;color:var(--dim);font-size:13px;font-weight:600;user-select:none}
   .projgrp:hover{color:var(--text)}
   .projgrp .pgcaret{margin-right:auto;color:var(--dim2)}  /* chevron 紧跟名称(间距走 projgrp 的 gap:6px),auto 外边距把按钮推到最右 */
-  .projgrp .pgname{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .projgrp .pgadd,.projgrp .pgrm{flex-shrink:0;opacity:0;background:none;border:none;cursor:pointer;
+  .projgrp .pgname{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2)}
+  .projgrp .pgadd,.projgrp .pgmore{flex-shrink:0;opacity:0;background:none;border:none;cursor:pointer;
     color:var(--dim2);font-size:13px;padding:1px 5px;border-radius:6px;line-height:1}
-  .projgrp:hover .pgadd,.projgrp:hover .pgrm{opacity:.6}
+  .projgrp:hover .pgadd,.projgrp:hover .pgmore{opacity:.6}
   .projgrp .pgadd:hover{opacity:1;color:var(--text);background:var(--card)}
-  .projgrp .pgrm:hover{opacity:1;color:var(--err);background:rgba(209,103,74,.12)}
+  .projgrp .pgmore:hover,.projgrp .pgmore.on{opacity:1;color:var(--text);background:var(--card)}
   .projgrp.projadd{color:var(--dim);font-weight:600;margin-top:4px}   /* 黑灰、无分割线、与分组同款行 */
   /* 项目拖拽排序:可拖起手型,拖起半透明,悬停目标高亮上边框示意插入位置 */
   .projgrp[draggable="true"]{cursor:grab}
@@ -1263,11 +1263,13 @@ function renderConvs(){
     const h=el("div","projgrp");
     const nm=el("span","pgname"); nm.textContent=g.name; h.append(nm);
     const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);   // 折线箭头,展开时旋转朝下
+    if(g.hash!==null){
+      const more=el("button","pgmore"); more.textContent="⋯"; more.title="更多";
+      more.onclick=ev=>{ ev.stopPropagation(); openProjMenu(more, g.hash); }; h.append(more);
+    }
     const add=el("button","pgadd"); add.textContent="＋"; add.title="在此项目下新建会话";
     add.onclick=ev=>{ ev.stopPropagation(); newChatIn(g.hash); }; h.append(add);
     if(g.hash!==null){
-      const rm=el("button","pgrm"); rm.textContent="✕"; rm.title="移除项目(不删文件夹,可再加回)";
-      rm.onclick=ev=>{ ev.stopPropagation(); removeProject(g.hash); }; h.append(rm);
       bindProjDrag(h, g.hash);   // 默认项目/末尾「新建项目」不可拖,仅真实项目分组可排序
     }
     h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } toggleGroup(g.hash); };  // 拖拽落地那一下别顺带触发展开/收起
@@ -1300,7 +1302,7 @@ async function loadProjects(){
 function bindProjDrag(h, hash){
   h.draggable = true;
   h.ondragstart = ev=>{
-    if(ev.target.closest(".pgadd,.pgrm")){ ev.preventDefault(); return; }   // 加号/删除按钮不触发拖拽
+    if(ev.target.closest(".pgadd,.pgmore")){ ev.preventDefault(); return; }   // 加号/更多按钮不触发拖拽
     ev.dataTransfer.effectAllowed = "move";
     ev.dataTransfer.setData("text/plain", hash);
     S.dragSrc = hash;
@@ -1794,6 +1796,29 @@ function openConvMenu(btn, conv){
 }
 document.addEventListener("click", closeConvMenu);       // 点空白处关闭
 $("#convList").addEventListener("scroll", closeConvMenu); // 列表滚动时关闭,避免菜单错位
+
+// 项目分组「更多」浮层菜单(单例):点 ⋯ 弹出,目前只放「删除项目」
+let projMenuEl=null, projMenuBtn=null;
+function closeProjMenu(){
+  if(projMenuBtn){ projMenuBtn.classList.remove("on"); projMenuBtn=null; }
+  if(projMenuEl){ projMenuEl.remove(); projMenuEl=null; }
+}
+function openProjMenu(btn, hash){
+  if(projMenuBtn===btn){ closeProjMenu(); return; }   // 再点一次同一个 → 收起
+  closeProjMenu();
+  projMenuBtn=btn; btn.classList.add("on");
+  const m=el("div","convmenu"); m.style.visibility="hidden";
+  const del=el("button","cmitem danger"); del.innerHTML=ic("trash")+" 删除项目";
+  del.title="移除项目(不删文件夹,可再加回)";
+  del.onclick=ev=>{ ev.stopPropagation(); closeProjMenu(); removeProject(hash); };
+  m.append(del); document.body.append(m); projMenuEl=m;
+  const r=btn.getBoundingClientRect();
+  let top=r.bottom+4, left=r.right-m.offsetWidth;
+  if(top+m.offsetHeight>window.innerHeight) top=r.top-4-m.offsetHeight;
+  m.style.top=Math.max(6,top)+"px"; m.style.left=Math.max(6,left)+"px"; m.style.visibility="visible";
+}
+document.addEventListener("click", closeProjMenu);
+$("#convList").addEventListener("scroll", closeProjMenu);
 $("#messages").addEventListener("scroll", ()=>{ updateScrollBtn(); }, {passive:true}); // 流式时用户上翻→显示↓按钮
 
 async function delConv(conv){
