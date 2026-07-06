@@ -384,26 +384,6 @@ async def send_message(args: dict) -> dict:
     return _ok(f"已发送到 {to}。" if ok else "发送失败(网关未就绪或平台不存在)。")
 
 
-@tool(
-    "restart_self",
-    "修改完 claude-hermes【自身代码】后,重启进程加载新代码,重启完自动回到当前对话"
-    "继续执行你的验证计划(对话历史在 SQLite 里,不会丢)。调用前必须:"
-    "1)已把代码改动 git commit(该 commit 即回滚锚点,工作区脏会被拒);"
-    "2)想好 verify_plan —— 重启后你会收到一条系统消息,照着它验证并把结果告诉用户。"
-    "重启发生在【本轮回复完整结束之后】,所以调用本工具后直接在正文告诉用户改了什么即可,"
-    "不要等待。预检失败/15分钟内重启超过3次会被拒绝(进程不会退出)。\n"
-    "reason:为什么改代码(一句话);verify_plan:重启后的验证步骤(具体到命令/接口);"
-    "allow_dirty:true 才允许带未提交改动重启(回滚会不可靠,慎用)。",
-    {
-        "type": "object",
-        "properties": {
-            "reason": {"type": "string"},
-            "verify_plan": {"type": "string"},
-            "allow_dirty": {"type": "boolean"},
-        },
-        "required": ["reason", "verify_plan"],
-    },
-)
 async def _confirm_force_restart(ctx, others: list[str]) -> bool:
     """有其他会话轮次还没结束时,弹按钮问当前用户是否仍要强制重启。
 
@@ -434,6 +414,26 @@ async def _confirm_force_restart(ctx, others: list[str]) -> bool:
     return answer == "强制重启"
 
 
+@tool(
+    "restart_self",
+    "修改完 claude-hermes【自身代码】后,重启进程加载新代码,重启完自动回到当前对话"
+    "继续执行你的验证计划(对话历史在 SQLite 里,不会丢)。调用前必须:"
+    "1)已把代码改动 git commit(该 commit 即回滚锚点,工作区脏会被拒);"
+    "2)想好 verify_plan —— 重启后你会收到一条系统消息,照着它验证并把结果告诉用户。"
+    "重启发生在【本轮回复完整结束之后】,所以调用本工具后直接在正文告诉用户改了什么即可,"
+    "不要等待。预检失败/15分钟内重启超过3次会被拒绝(进程不会退出)。\n"
+    "reason:为什么改代码(一句话);verify_plan:重启后的验证步骤(具体到命令/接口);"
+    "allow_dirty:true 才允许带未提交改动重启(回滚会不可靠,慎用)。",
+    {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string"},
+            "verify_plan": {"type": "string"},
+            "allow_dirty": {"type": "boolean"},
+        },
+        "required": ["reason", "verify_plan"],
+    },
+)
 async def restart_self(args: dict) -> dict:
     from ..gateway import clarify
     from . import selfops
