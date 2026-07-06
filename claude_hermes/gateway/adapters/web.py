@@ -1070,6 +1070,12 @@ class WebAdapter:
             "favicon.ico", "image/x-icon", {"Cache-Control": "public, max-age=86400"}
         )
 
+    async def _handle_mark(self, request: web.Request) -> web.Response:
+        # 自适应深浅的 SVG favicon(内嵌 prefers-color-scheme);现代浏览器优先用它,旧的回退 PNG
+        return self._static_file(
+            "wazir-mark.svg", "image/svg+xml", {"Cache-Control": "public, max-age=86400"}
+        )
+
     async def _handle_logos(self, request: web.Request) -> web.Response:
         # Wazir logo 概念预览页:自包含 HTML(内联 SVG),公开可取;改文件刷新即生效不用重启
         # 注:content_type 不能带 charset(aiohttp 会抛 ValueError);HTML 内有 <meta charset> 兜底
@@ -1157,6 +1163,7 @@ class WebAdapter:
                 web.get("/manifest.json", self._handle_manifest),
                 web.get("/sw.js", self._handle_sw),
                 web.get("/favicon.ico", self._handle_favicon),
+                web.get("/wazir-mark.svg", self._handle_mark),
                 web.get("/wazir-logos", self._handle_logos),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.get("/push/config", self._handle_push_config),
