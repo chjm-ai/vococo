@@ -5,7 +5,7 @@
 harness 能力 —— 编码任务(多步 + 工具 + 真改代码)正好能考出来。
 
 公平性三保证:
-  1. 同模型(默认 claude-opus-4-8,两边都走它)。
+  1. 同模型(默认 claude-sonnet-5,两边都走它)。
   2. 同起点:每次 run 前 `git reset --hard <baseline>` + `git clean -fd`,两边从同一状态出发。
   3. 同 prompt。
 
@@ -131,7 +131,7 @@ def run_one(task: dict, tool: str, model: str, timeout: int, dry: bool) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tasks", default=str(Path(__file__).parent / "coding_tasks.json"))
-    ap.add_argument("--model", default="claude-opus-4-8")
+    ap.add_argument("--model", default="claude-sonnet-5")
     ap.add_argument("--tools", default="hermes,claude_code", help="逗号分隔:hermes,claude_code")
     ap.add_argument("--only", default="", help="只跑某个 task id")
     ap.add_argument("--timeout", type=int, default=900, help="单次运行墙钟上限(秒)")

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # 兜底默认模型(cc-switch 未配置 / 文件缺失时);与 config.MODEL 的默认保持一致。
-_FALLBACK_MODEL = "claude-opus-4-8"
+_FALLBACK_MODEL = "claude-sonnet-5"
 
 # 官方 Anthropic 端点特征:命中即视为"走订阅",不注入第三方鉴权。
 _OFFICIAL_HOSTS = ("api.anthropic.com",)

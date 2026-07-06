@@ -53,11 +53,14 @@ class ImageAttachment:
 
 
 # 各模型上下文窗口(token)。前缀匹配,未知默认 200k。
-# 注:Sonnet 支持 1M context 需专门开 beta header,本项目未开,故按 200k。
+# Claude 4.6+/5 官方已标配 1M input;Haiku 4.5 为 200k。
 _CONTEXT_WINDOWS: dict[str, int] = {
-    "claude-opus-4": 200_000,
-    "claude-sonnet-4": 200_000,
-    "claude-haiku-4": 200_000,
+    "claude-opus-4-8": 1_000_000,
+    "claude-opus-4-7": 1_000_000,
+    "claude-opus-4-6": 1_000_000,
+    "claude-sonnet-5": 1_000_000,
+    "claude-sonnet-4-6": 1_000_000,
+    "claude-haiku-4-5": 200_000,
 }
 
 

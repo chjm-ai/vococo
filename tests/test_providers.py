@@ -49,7 +49,7 @@ def test_active_third_party(tmp_path, monkeypatch):
 
 def test_resolve_active_injects_env(tmp_path, monkeypatch):
     _point_to(monkeypatch, _write_config(tmp_path, DEEPSEEK_CONFIG))
-    model, env = providers.resolve(None, "claude-opus-4-8")
+    model, env = providers.resolve(None, "claude-sonnet-5")
     assert model == "deepseek-chat"
     assert env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-deepseek-xxx"
@@ -59,7 +59,7 @@ def test_resolve_active_injects_env(tmp_path, monkeypatch):
 def test_resolve_session_override_to_kimi(tmp_path, monkeypatch):
     # 全局激活 deepseek,但会话 /model 选了 kimi 的模型 → 应切到 kimi 的端点
     _point_to(monkeypatch, _write_config(tmp_path, DEEPSEEK_CONFIG))
-    model, env = providers.resolve("kimi-k2-0711-preview", "claude-opus-4-8")
+    model, env = providers.resolve("kimi-k2-0711-preview", "claude-sonnet-5")
     assert model == "kimi-k2-0711-preview"
     assert env["ANTHROPIC_BASE_URL"] == "https://api.moonshot.cn/anthropic"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-kimi-yyy"
@@ -68,7 +68,7 @@ def test_resolve_session_override_to_kimi(tmp_path, monkeypatch):
 def test_resolve_session_override_to_official(tmp_path, monkeypatch):
     # 会话选官方 claude 模型 → 不注入第三方 env(走订阅),即使全局激活第三方
     _point_to(monkeypatch, _write_config(tmp_path, DEEPSEEK_CONFIG))
-    model, env = providers.resolve("claude-opus-4-8", "claude-sonnet-4-6")
+    model, env = providers.resolve("claude-opus-4-8", "claude-sonnet-5")
     assert model == "claude-opus-4-8"
     assert env == {}
 
@@ -84,7 +84,7 @@ def test_official_active_no_env(tmp_path, monkeypatch):
     assert active is not None
     assert active.is_official is True
     assert providers.has_active_third_party() is False
-    model, env = providers.resolve(None, "claude-sonnet-4-6")
+    model, env = providers.resolve(None, "claude-sonnet-5")
     assert model == "claude-opus-4-8"
     assert env == {}
 
@@ -93,8 +93,8 @@ def test_missing_file_falls_back(tmp_path, monkeypatch):
     _point_to(monkeypatch, tmp_path / "does-not-exist.yaml")
     assert providers.load_active() is None
     assert providers.has_active_third_party() is False
-    model, env = providers.resolve(None, "claude-opus-4-8")
-    assert model == "claude-opus-4-8"
+    model, env = providers.resolve(None, "claude-sonnet-5")
+    assert model == "claude-sonnet-5"
     assert env == {}
 
 
@@ -107,10 +107,10 @@ def test_empty_and_malformed_yaml(tmp_path, monkeypatch):
 
 def test_available_models_lists_configured(tmp_path, monkeypatch):
     _point_to(monkeypatch, _write_config(tmp_path, DEEPSEEK_CONFIG))
-    defaults = [("claude-opus-4-8", "Opus"), ("claude-sonnet-4-6", "Sonnet")]
+    defaults = [("claude-opus-4-8", "Opus"), ("claude-sonnet-5", "Sonnet")]
     out = providers.available_models(defaults)
     ids = [mid for mid, _ in out]
-    assert ids[:2] == ["claude-opus-4-8", "claude-sonnet-4-6"]  # 官方档在前
+    assert ids[:2] == ["claude-opus-4-8", "claude-sonnet-5"]  # 官方档在前
     assert "deepseek-chat" in ids
     assert "kimi-k2-0711-preview" in ids
 
@@ -127,7 +127,7 @@ def test_legacy_camelcase_fields(tmp_path, monkeypatch):
             apiKey: sk-relay-zzz
             model: some-model
     """))
-    model, env = providers.resolve(None, "claude-opus-4-8")
+    model, env = providers.resolve(None, "claude-sonnet-5")
     assert model == "some-model"
     assert env["ANTHROPIC_BASE_URL"] == "https://relay.example.com/anthropic"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-relay-zzz"
