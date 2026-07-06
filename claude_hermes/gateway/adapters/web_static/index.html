@@ -104,10 +104,10 @@
   /* 布局 */
   #app{display:flex;overflow:hidden;
     position:fixed;top:var(--app-top,0);left:0;right:0;bottom:0;height:var(--app-h,auto)}
-  #sidebar{width:280px;flex-shrink:0;background:var(--panel);
-    border:1px solid var(--line2);border-radius:16px;
+  #sidebar{width:280px;flex-shrink:0;background:var(--bg2);
+    border:1px solid var(--line);border-radius:16px;
     margin:8px 0 8px 8px;
-    box-shadow:0 2px 8px rgba(0,0,0,.08);
+    box-shadow:0 2px 12px rgba(0,0,0,.08);
     display:flex;flex-direction:column;overflow:hidden;
     transition:transform .25s cubic-bezier(.4,0,.2,1),width .25s cubic-bezier(.4,0,.2,1),margin .25s cubic-bezier(.4,0,.2,1),box-shadow .25s;z-index:30}
   #sidebar .shead{padding:12px 14px 6px;padding-top:calc(12px + env(safe-area-inset-top));display:flex;align-items:center;gap:8px}
@@ -169,13 +169,13 @@
     padding:9px 11px;border-radius:8px;font-size:13.5px;color:var(--text);transition:background .14s}
   #convFilterPop .fmi:hover{background:var(--panel2)}
   #convFilterPop .fmi.on{color:var(--accent);font-weight:600}
-  .sfoot{padding:9px 12px 9px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--dim2);display:flex;align-items:center;gap:6px;cursor:pointer;transition:background .16s}
+  .sfoot{padding:9px 12px 9px 14px;border-top:1px solid var(--line);font-size:13px;color:var(--text);display:flex;align-items:center;gap:9px;cursor:pointer;transition:background .16s}
   .sfoot:hover{background:var(--panel2)}
-  .sfoot .sdot{width:7px;height:7px;border-radius:50%;flex-shrink:0;transition:background .3s,box-shadow .3s}
-  .sfoot .sdot.ok{background:var(--ok);box-shadow:0 0 6px var(--ok)}
-  .sfoot .sdot.warn{background:#d9a43a;box-shadow:0 0 6px #d9a43a}
-  .sfoot .sdot.err{background:var(--err);box-shadow:0 0 6px var(--err)}
-  .sfoot .sfoottxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sfoot .savatar{width:26px;height:26px;border-radius:50%;flex-shrink:0;
+    background:linear-gradient(135deg,var(--accent),var(--user2));
+    display:flex;align-items:center;justify-content:center;
+    color:#fff;font-size:11px;font-weight:700;letter-spacing:0}
+  .sfoot .sfoottxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
   /* 限额状态弹层 */
   #ratePop{position:fixed;z-index:45;min-width:260px;max-width:320px;
     background:var(--card);border:1px solid var(--line2);border-radius:14px;padding:14px;
@@ -749,7 +749,7 @@
   </div>
   <aside id="sidebar">
     <div class="shead">
-      <div class="brand"><span class="dot">✻</span>会话</div>
+      <div class="brand"><span class="dot">✻</span>Wazir</div>
       <div id="convFilterBox">
         <button id="convFilterBtn" class="sfoicon" title="筛选会话"></button>
         <div id="convFilterPop" hidden></div>
@@ -758,7 +758,7 @@
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
     <div id="convList"></div>
-    <div class="sfoot" id="sfoot"><span class="sdot ok" id="sdot"></span><span class="sfoottxt" id="sfoottxt">Wazir · Web</span><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
+    <div class="sfoot" id="sfoot"><span class="savatar">W</span><span class="sfoottxt" id="sfoottxt">Wesley</span><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
   </aside>
   <main>
     <header class="bar">
@@ -1025,16 +1025,7 @@ function setRateStatus(level, msg, err){
   S.rateStatus={level:level||"ok", msg:msg||"", lastErr:err||"", ts:Date.now(), resetTs:reset};
   updateSfoot();
 }
-function updateSfoot(){
-  const rs=S.rateStatus, dot=$("#sdot"), txt=$("#sfoottxt");
-  dot.className="sdot "+rs.level;
-  const labels={ok:"Wazir · 就绪", warn:"Wazir · 注意限额", err:"Wazir · 出错"};
-  let t=labels[rs.level]||labels.ok;
-  // 撞限额且拿到恢复时间 → 底部直接显示到几点,一眼可见
-  if(rs.level==="warn" && rs.resetTs>Date.now())
-    t="Wazir · 限额至 "+new Date(rs.resetTs).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"});
-  txt.textContent=t;
-}
+function updateSfoot(){}
 $("#sfoot").onclick=function(e){
   // 点的是设置/主题按钮 → 不弹 ratePop,交给按钮自己的 handler
   if(e.target.closest("#settingsBtn")) return;
