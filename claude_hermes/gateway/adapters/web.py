@@ -1087,7 +1087,7 @@ class WebAdapter:
         if name not in self._ICONS:
             return web.Response(status=404, text="not found")
         return self._static_file(
-            f"{name}.png", "image/png", {"Cache-Control": "public, max-age=86400"}
+            f"{name}.png", "image/png", {"Cache-Control": "no-cache, no-store, must-revalidate"}
         )
 
     async def _handle_push_config(self, request: web.Request) -> web.Response:
