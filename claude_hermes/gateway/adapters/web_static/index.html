@@ -1168,7 +1168,7 @@ async function loadPrefs(){
   try{
     const r = await api("/prefs"); const p = await r.json();
     // 服务端有明确值才覆盖本地;null = 不动(本地 localStorage 是当前设备的主)
-    if(p.theme && p.theme !== localStorage.getItem("hermes_theme")){
+    if(p.theme && ["light","dark"].includes(p.theme) && p.theme !== localStorage.getItem("hermes_theme")){
       document.documentElement.setAttribute("data-theme", p.theme);
       try{ localStorage.setItem("hermes_theme", p.theme); }catch(e){}
       syncTheme();
