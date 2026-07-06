@@ -425,6 +425,12 @@
   #ctxPop .pr.sub .k{padding-left:12px;color:var(--dim2);font-size:12px}
   #ctxPop .pr.sep{border-top:1px solid var(--line);margin-top:4px;padding-top:8px}
   #ctxPop .pr .mdl{font-size:11px;color:var(--dim);font-family:ui-monospace,Menlo,monospace}
+  /* 上下文明细弹层里的会话 ID */
+  #ctxPop .convid{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 0 8px;border-bottom:1px solid var(--line);margin-bottom:8px}
+  #ctxPop .convid .k{color:var(--dim);flex-shrink:0}
+  #ctxPop .convid .idv{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Menlo,monospace;color:var(--text)}
+  #ctxPop .convid .cpy{width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--dim2);transition:background .15s,color .15s;flex-shrink:0}
+  #ctxPop .convid .cpy:hover{background:var(--panel2);color:var(--text)}
   #hamb{display:none;width:42px;height:42px;font-size:21px;border-radius:13px}
 
   #messages{flex:1;overflow-y:auto;padding:18px 32px 8px;
@@ -889,6 +895,7 @@ const ICONS = {
   plus:'<path d="M12 5v14"/><path d="M5 12h14"/>',
   close:'<path d="M18 6L6 18"/><path d="M6 6l12 12"/>',
   filter:'<path d="M22 3H2l8 9.46V19l4 2V12.46L22 3z"/>',
+  copy:'<rect x="8" y="8" width="8" height="12" rx="1"/><path d="M16 10h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2v-2"/>',
   command:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 11l3 3-3 3"/><path d="M12 17h5"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
@@ -1085,7 +1092,9 @@ function renderMeta(){
   $("#ctxRing").style.strokeDasharray="50.27"; $("#ctxRing").style.strokeDashoffset=String(50.27*(1-pct/100)); $("#ctxPct").textContent=pct+"%";
   bar.classList.toggle("warn", warn); pop.classList.toggle("warn", warn);
   const free=Math.max(0,win-m.ctx), fpct=Math.max(0,100-pct);
+  const cid = S.conv || "";
   pop.innerHTML =
+    '<div class="convid"><span class="k">会话 ID</span><span class="idv" title="'+esc(cid)+'">'+esc(cid)+'</span><button class="cpy" id="ctxCopyBtn" title="复制 ID">'+ic("copy")+'</button></div>'+
     '<div class="ph"><span class="t">上下文窗口</span><span class="m">'+fmtTok(m.ctx)+' / '+fmtTok(win)+' <b>'+pct+'%</b></span></div>'+
     '<div class="pbar"><i style="width:'+pct+'%"></i></div>'+
     metaRow("已用上下文", fmtTok(m.ctx), pct+"%")+
@@ -1095,6 +1104,16 @@ function renderMeta(){
     metaRow("本轮输出", fmtTok(m.lout), "")+
     metaRow("累计消耗", fmtTok(m.total), "")+
     (m.model ? '<div class="pr sep"><span class="k">模型</span><span class="mdl">'+esc(m.model)+'</span></div>' : "");
+  $("#ctxCopyBtn").onclick = e => { e.stopPropagation(); copyConvId(); };
+}
+function copyConvId(){
+  const id = S.conv || "";
+  if(!id || !navigator.clipboard) return;
+  navigator.clipboard.writeText(id).then(()=>{
+    const btn = $("#ctxCopyBtn"); if(!btn) return;
+    const old = btn.innerHTML; btn.innerHTML = ic("save");
+    setTimeout(()=> btn.innerHTML = old, 1200);
+  }).catch(()=>{});
 }
 $("#barMeta").onclick = e=>{ e.stopPropagation(); const p=$("#ctxPop"); p.hidden=!p.hidden; };
 document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contains(e.target)) $("#ctxPop").hidden=true; });
