@@ -130,10 +130,11 @@
   #newBtn:active{transform:scale(.98)}
   /* 侧边栏收起按钮(仅桌面显示)*/
   #collapseBtn{display:none;width:26px;height:26px;border-radius:7px;flex-shrink:0;
-    align-items:center;justify-content:center;font-size:16px;color:var(--dim);
+    align-items:center;justify-content:center;color:var(--dim);
     transition:background .16s,color .16s,transform .12s}
   #collapseBtn:hover{background:var(--panel2);color:var(--text)}
   #collapseBtn:active{transform:scale(.9)}
+  #collapseBtn .ic{width:16px;height:16px}
   .conv{margin-bottom:1px;gap:8px;color:var(--dim);position:relative}
   .conv:hover,.conv.active{color:var(--text)}
   .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
@@ -158,9 +159,9 @@
   .convmenu .cmitem:hover{background:var(--panel2)}
   .convmenu .cmitem.danger{color:var(--err)}
   .convmenu .cmitem.danger:hover{background:rgba(209,103,74,.12)}
-  /* 侧栏顶部会话筛选下拉 */
+  /* 侧栏底部会话筛选下拉(挂在状态栏「设置」左侧,弹层朝上开) */
   #convFilterBox{position:relative}
-  #convFilterPop{position:absolute;top:calc(100% + 4px);right:0;min-width:120px;z-index:40;
+  #convFilterPop{position:absolute;bottom:calc(100% + 4px);right:0;min-width:120px;z-index:40;
     background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:5px;
     box-shadow:var(--shadow);animation:pop .14s ease}
   #convFilterPop[hidden]{display:none}
@@ -206,6 +207,10 @@
   .projgrp .pgadd:hover{opacity:1;color:var(--text);background:var(--card)}
   .projgrp .pgrm:hover{opacity:1;color:var(--err);background:rgba(209,103,74,.12)}
   .projgrp.projadd{color:var(--dim);font-weight:600;margin-top:4px}   /* 黑灰、无分割线、与分组同款行 */
+  /* 项目拖拽排序:可拖起手型,拖起半透明,悬停目标高亮上边框示意插入位置 */
+  .projgrp[draggable="true"]{cursor:grab}
+  .projgrp.dragging{opacity:.4}
+  .projgrp.dragover{box-shadow:inset 0 2px 0 var(--accent)}
   .conv.ingroup{margin-left:12px}   /* 分组下的会话缩进,体现层级 */
 
   /* 新建项目弹窗(服务端目录浏览器) */
@@ -431,6 +436,7 @@
   #ctxPop .convid .cpy{width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--dim2);transition:background .15s,color .15s;flex-shrink:0}
   #ctxPop .convid .cpy:hover{background:var(--panel2);color:var(--text)}
   #hamb{display:none;width:42px;height:42px;font-size:21px;border-radius:13px}
+  #hamb .ic{width:19px;height:19px}
 
   #messages{flex:1;overflow-y:auto;padding:18px 32px 8px;
     /* JS 实测到就用精确顶栏高;没测到(或时机太早)时兜底也要含顶部安全区,
@@ -769,20 +775,22 @@
   <aside id="sidebar">
     <div class="shead">
       <div class="brand">Wazir</div>
+      <button id="collapseBtn" title="收起侧边栏"></button>
+    </div>
+    <button id="newBtn"><span class="np">＋</span>新对话</button>
+    <div id="convList"></div>
+    <div class="sfoot" id="sfoot"><span class="savatar">U</span><span class="sfoottxt" id="sfoottxt">User</span>
       <div id="convFilterBox">
         <button id="convFilterBtn" class="sfoicon" title="筛选会话"></button>
         <div id="convFilterPop" hidden></div>
       </div>
-      <button id="collapseBtn" title="收起侧边栏">«</button>
+      <button id="settingsBtn" class="sfoicon" title="设置"></button>
     </div>
-    <button id="newBtn"><span class="np">＋</span>新对话</button>
-    <div id="convList"></div>
-    <div class="sfoot" id="sfoot"><span class="savatar">U</span><span class="sfoottxt" id="sfoottxt">User</span><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
   </aside>
   <main>
     <header class="bar">
       <div class="barwrap">
-        <button class="icon" id="hamb">☰</button>
+        <button class="icon" id="hamb"></button>
         <div class="title">
           <span id="convTitle">主会话</span>
           <span class="tsub">
@@ -893,6 +901,8 @@ const S = {
   pendId: 0,            // 待发送项自增 id,供删除定位
   convFilter: "all",
   rateStatus: {level:"ok", msg:"", lastErr:"", ts:0},  // ok|warn|err, 更新侧栏底部状态点
+  dragSrc: null,        // 项目拖拽排序:正在被拖起的项目 hash
+  dragMoved: false,     // 刚发生过一次拖拽落地,下一次 click 吞掉(不触发分组展开/收起)
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -924,6 +934,7 @@ const ICONS = {
   filter:'<path d="M22 3H2l8 9.46V19l4 2V12.46L22 3z"/>',
   copy:'<rect x="8" y="8" width="8" height="12" rx="1"/><path d="M16 10h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2v-2"/>',
   command:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 11l3 3-3 3"/><path d="M12 17h5"/>',
+  panel:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 
@@ -1257,8 +1268,9 @@ function renderConvs(){
     if(g.hash!==null){
       const rm=el("button","pgrm"); rm.textContent="✕"; rm.title="移除项目(不删文件夹,可再加回)";
       rm.onclick=ev=>{ ev.stopPropagation(); removeProject(g.hash); }; h.append(rm);
+      bindProjDrag(h, g.hash);   // 默认项目/末尾「新建项目」不可拖,仅真实项目分组可排序
     }
-    h.onclick=()=>toggleGroup(g.hash);
+    h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } toggleGroup(g.hash); };  // 拖拽落地那一下别顺带触发展开/收起
     box.append(h);
     if(!open) continue;
     for(const c of convs){
@@ -1283,6 +1295,35 @@ function renderConvs(){
 async function loadProjects(){
   try{ const r=await api("/projects"); S.projects=(await r.json()).projects||[]; }
   catch(e){ S.projects=[]; }
+}
+// 项目分组拖拽排序(原生 HTML5 DnD:桌面拖起手感好,鼠标移动量够才触发,不影响原有点击展开)
+function bindProjDrag(h, hash){
+  h.draggable = true;
+  h.ondragstart = ev=>{
+    if(ev.target.closest(".pgadd,.pgrm")){ ev.preventDefault(); return; }   // 加号/删除按钮不触发拖拽
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData("text/plain", hash);
+    S.dragSrc = hash;
+    setTimeout(()=>h.classList.add("dragging"), 0);   // 下一 tick 加,免得拖拽预览图也变半透明
+  };
+  h.ondragend = ()=>{ h.classList.remove("dragging"); S.dragSrc=null; };
+  h.ondragover = ev=>{ if(!S.dragSrc || S.dragSrc===hash) return; ev.preventDefault(); ev.dataTransfer.dropEffect="move"; h.classList.add("dragover"); };
+  h.ondragleave = ()=> h.classList.remove("dragover");
+  h.ondrop = ev=>{
+    ev.preventDefault(); h.classList.remove("dragover");
+    const src = ev.dataTransfer.getData("text/plain");
+    S.dragMoved = true;   // 拖拽落地这一下,别顺带触发 h.onclick 里的展开/收起
+    if(src && src!==hash) reorderProject(src, hash);
+  };
+}
+function reorderProject(srcHash, targetHash){
+  const arr=S.projects;
+  const si=arr.findIndex(p=>p.hash===srcHash), ti=arr.findIndex(p=>p.hash===targetHash);
+  if(si<0 || ti<0) return;
+  const [item]=arr.splice(si,1); arr.splice(ti,0,item);
+  renderConvs();
+  api("/projects/reorder",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({order:arr.map(p=>p.hash)})}).catch(()=>{});
 }
 function toggleGroup(hash){
   const k=grpKey(hash);
@@ -2628,7 +2669,9 @@ $("#hamb").onclick = ()=>{
   if(window.innerWidth>760){ setSidebarCollapsed(false); }
   else { $("#sidebar").classList.add("open"); $("#backdrop").classList.add("show"); }
 };
-$("#collapseBtn").onclick = ()=> setSidebarCollapsed(true);   // 侧边栏内「«」:收起
+$("#collapseBtn").innerHTML = ic("panel");
+$("#hamb").innerHTML = ic("panel");
+$("#collapseBtn").onclick = ()=> setSidebarCollapsed(true);   // 侧边栏内:收起
 $("#backdrop").onclick = closeSidebar;
 function closeSidebar(){ $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("show"); }
 // 桌面侧边栏折叠态(记忆到 localStorage)
