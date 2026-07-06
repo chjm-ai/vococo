@@ -209,7 +209,7 @@ def _main() -> None:
         print("# 把下面两行填进项目根目录的 .env(VAPID_SUBJECT 可选,建议填你的邮箱):")
         print(f"VAPID_PUBLIC_KEY={pub}")
         print(f"VAPID_PRIVATE_KEY={priv}")
-        print("VAPID_SUBJECT=mailto:wesleylwz@gmail.com")
+        print("VAPID_SUBJECT=mailto:you@example.com")
     else:
         print("用法: python -m claude_hermes.gateway.adapters.web_push --gen-keys")
 
