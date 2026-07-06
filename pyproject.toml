@@ -33,9 +33,9 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [project.urls]
-Homepage = "https://github.com/your-org/claude-hermes"
-Repository = "https://github.com/your-org/claude-hermes"
-Issues = "https://github.com/your-org/claude-hermes/issues"
+Homepage = "https://github.com/chjm-ai/Wazir"
+Repository = "https://github.com/chjm-ai/Wazir"
+Issues = "https://github.com/chjm-ai/Wazir/issues"
 
 [project.scripts]
 claude-hermes = "claude_hermes.__main__:main"
