@@ -1372,6 +1372,9 @@ function renderNotifyPane(){
   h += '<div class="srow"><div class="sinfo"><div class="sname">本设备通知</div>'+
        '<div class="sdesc" id="notifyDesc">检查中…</div></div>'+
        '<div class="sacts"><label class="sw"><input type="checkbox" id="notifyToggle"><span class="track"></span></label></div></div>';
+  h += '<div class="srow"><div class="sinfo"><div class="sname">发送测试通知</div>'+
+       '<div class="sdesc">开启后点这里,手机应立刻弹一条系统通知——验证链路是否真的通。</div></div>'+
+       '<div class="sacts"><button class="btn ghost sm" id="notifyTest" disabled>测试</button></div></div>';
   h += '<div class="sechd">通知场景</div>'+
        '<p class="shint">回复完成 · 需要审批确认 · 主动推送(cron)· 出错异常——默认全开,可在 .env 用 <code>PUSH_ON_*=0</code> 单独关某类。</p>';
   $("#setPane").innerHTML=h;
@@ -1386,6 +1389,20 @@ async function bindNotifyPane(){
     tgl.checked=!!sub; tgl.disabled=false;
     desc.textContent = sub ? "已开启,本设备会收到通知"
       : (isIOSNonStandalone() ? "iPhone 需先把网页「加到主屏」,从主屏图标打开才能开" : "点右侧开关开启");
+  }
+  const testBtn=$("#notifyTest");
+  if(testBtn){
+    testBtn.disabled = !sub;
+    testBtn.onclick = async ()=>{
+      testBtn.disabled=true; const t=testBtn.textContent; testBtn.textContent="发送中…";
+      try{
+        const j = await (await api("/push/test",{method:"POST"})).json();
+        alert(j.sent>0
+          ? "已发往 "+j.sent+" 台设备。看手机系统通知(锁屏/通知中心)。"
+          : "服务端订阅列表为空(sent=0)——开关没真正订阅成功,请重开一次并留意报错。");
+      }catch(e){ alert("测试失败:"+(e&&e.message||e)); }
+      finally{ testBtn.textContent=t; testBtn.disabled=!sub; }
+    };
   }
   tgl.onchange = async ()=>{
     tgl.disabled=true;
@@ -1429,15 +1446,29 @@ async function currentSub(){
   return reg.pushManager.getSubscription();
 }
 async function enableNotify(){
-  if(isIOSNonStandalone()){
-    alert("iPhone 需先把本页「添加到主屏幕」,再从主屏图标打开,才能开启系统通知。"); return;
-  }
-  let perm = (typeof Notification!=="undefined") ? Notification.permission : "denied";
+  // 每一步失败都抛带原因的错误,交给 onchange 的 catch 弹出来——别再静默失败让人盲猜。
+  if(isIOSNonStandalone())
+    throw new Error("现在不是主屏模式。iPhone 需先把本页「添加到主屏幕」,再从主屏图标打开才能开启。");
+  if(typeof Notification==="undefined")
+    throw new Error("此浏览器不支持通知 API(Notification 未定义)。");
+  let perm = Notification.permission;
   if(perm==="default") perm=await Notification.requestPermission();
-  if(perm!=="granted") return;
+  if(perm==="denied")
+    throw new Error("通知权限被拒。iOS 需删掉主屏图标 + 清掉网站数据后,重新加主屏再试。");
+  if(perm!=="granted")
+    throw new Error("未获得通知权限(perm="+perm+")。");
+  if(!PUSH.pubKey)
+    throw new Error("服务端没返回 VAPID 公钥,推送未配置。");
   const reg=await navigator.serviceWorker.ready;
-  const sub=await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:b64ToU8(PUSH.pubKey) });
-  await api("/push/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sub)});
+  let sub;
+  try{
+    sub=await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:b64ToU8(PUSH.pubKey) });
+  }catch(e){
+    throw new Error("订阅失败(pushManager.subscribe):"+(e&&e.message||e));
+  }
+  const r=await api("/push/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sub)});
+  if(!r.ok)
+    throw new Error("订阅已建立但保存到服务端失败(HTTP "+r.status+")。");
 }
 async function disableNotify(){
   const sub=await currentSub();

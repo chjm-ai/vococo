@@ -1105,6 +1105,19 @@ class WebAdapter:
         PUSH.remove((body or {}).get("endpoint", ""))
         return web.json_response({"ok": True})
 
+    async def _handle_push_test(self, request: web.Request) -> web.Response:
+        """自测端点:给所有已登记订阅发一条测试通知,返回送出设备数。
+        kind=approval → 前台聚焦时 SW 也弹,测试时页面正开着也能看到。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        sent = await PUSH.notify(
+            "🔔 测试通知",
+            "看到这条 = 推送链路通了。",
+            conv="main",
+            kind="approval",
+        )
+        return web.json_response({"ok": True, "sent": sent})
+
     @staticmethod
     def _is_local_host(host: str) -> bool:
         """仅本机回环才算「本地」。绑到其它地址(0.0.0.0 / LAN IP)= 对外暴露。"""
@@ -1140,6 +1153,7 @@ class WebAdapter:
                 web.get("/push/config", self._handle_push_config),
                 web.post("/push/subscribe", self._handle_push_subscribe),
                 web.post("/push/unsubscribe", self._handle_push_unsubscribe),
+                web.post("/push/test", self._handle_push_test),
                 web.get("/events", self._handle_events),
                 web.post("/send", self._handle_send),
                 web.post("/abort", self._handle_abort),
