@@ -169,8 +169,7 @@
     padding:9px 11px;border-radius:8px;font-size:13.5px;color:var(--text);transition:background .14s}
   #convFilterPop .fmi:hover{background:var(--panel2)}
   #convFilterPop .fmi.on{color:var(--accent);font-weight:600}
-  .sfoot{padding:9px 12px 9px 14px;border-top:1px solid var(--line);font-size:13px;color:var(--text);display:flex;align-items:center;gap:9px;cursor:pointer;transition:background .16s}
-  .sfoot:hover{background:var(--panel2)}
+  .sfoot{padding:9px 12px 9px 14px;border-top:1px solid var(--line);font-size:13px;color:var(--text);display:flex;align-items:center;gap:9px}
   .sfoot .savatar{width:26px;height:26px;border-radius:50%;flex-shrink:0;
     background:linear-gradient(135deg,var(--accent),var(--user2));
     display:flex;align-items:center;justify-content:center;
@@ -1026,36 +1025,6 @@ function setRateStatus(level, msg, err){
   updateSfoot();
 }
 function updateSfoot(){}
-$("#sfoot").onclick=function(e){
-  // 点的是设置/主题按钮 → 不弹 ratePop,交给按钮自己的 handler
-  if(e.target.closest("#settingsBtn")) return;
-  e.stopPropagation();
-  const p=$("#ratePop");
-  if(!p.hidden){ p.hidden=true; return; }
-  const rs=S.rateStatus, labels={ok:"正常",warn:"最近遇到限额/过载",err:"最近遇到错误"};
-  const when=rs.ts?(" · "+new Date(rs.ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})):"";
-  let body=labels[rs.level]||labels.ok;
-  if(rs.msg) body+='<br>'+esc(rs.msg);
-  const resetTxt=fmtReset(rs.resetTs);
-  if(resetTxt) body+='<div style="margin-top:8px;font-weight:600;color:#d9a43a">⏳ '+esc(resetTxt)+'</div>';
-  if(rs.level!=="ok"&&rs.lastErr) body+='<br><br><span style="font-size:12px;color:var(--dim2)">详情:'+esc(rs.lastErr)+'</span>';
-  body+='<div class="rptime">'+(rs.level==="ok"?"上次检查":"最近一次")+when+'</div>';
-  p.innerHTML='<div class="rphead"><span class="rpd '+rs.level+'"></span>'+labels[rs.level]+'</div>'+
-    '<div class="rpbody">'+body+'</div>';
-  // 定位:弹层底部贴在 #sfoot 上方 4px,左边对齐侧栏
-  const r=$("#sfoot").getBoundingClientRect();
-  p.style.top="auto"; p.style.right="auto";
-  p.style.bottom=(window.innerHeight-r.top+4)+"px";
-  p.style.left=Math.max(6, r.left)+"px";
-  p.style.maxHeight=Math.max(80, r.top-16)+"px";
-  p.style.overflowY="auto";
-  p.style.display="";  // 确保覆盖 [hidden] 的 display:none
-  p.removeAttribute("hidden");
-  p.hidden=false;
-};
-document.addEventListener("click",function(e){
-  const p=$("#ratePop"); if(p && !p.hidden && !e.target.closest("#sfoot") && !e.target.closest("#ratePop")) p.hidden=true;
-});
 
 // ── 顶栏:上下文进度(默认)+ 点击展开 token 明细 ─────────────────────────
 const CTX_WINDOW = 200000;  // 兜底窗口;实际以后端按模型回传的 ctx_window 为准
