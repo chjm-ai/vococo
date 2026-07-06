@@ -115,19 +115,18 @@ def _load_memory_index() -> str:
 def _load_project_agents(cwd: str | None) -> str:
     """注入项目根的 AGENTS.md(用户跨工具约定的项目指南)。
 
-    为什么需要:Claude Code 原生只认 CLAUDE.md,不读 AGENTS.md 这个文件名。SDK 已自动
-    加载 cwd 的 CLAUDE.md,所以【只在没有 CLAUDE.md 时】才补读 AGENTS.md——避免两者并存
-    (如软链 CLAUDE.md→AGENTS.md)时重复注入。cwd 为 None(默认项目/TG/CLI)则跳过。
+    为什么需要:Claude Code 原生只认 CLAUDE.md,不读 AGENTS.md 这个文件名,也不跟
+    CLAUDE.md 里的 markdown 链接。本仓约定 CLAUDE.md 只放一句"规则见 AGENTS.md"的指路桩,
+    真正的项目规则全在 AGENTS.md。所以【只要有 AGENTS.md 就注入】,不因 CLAUDE.md 存在而跳过
+    ——否则会出现"SDK 只读到指路桩、Agent 又没被喂 AGENTS.md"的两头落空(曾致模型认错项目)。
+    两份都不会写太长,即便偶有重叠也不浪费上下文。cwd 为 None(默认项目/TG/CLI)则跳过。
 
     项目 AGENTS.md 等同项目 CLAUDE.md,是用户亲手写的权威指令,故不套记忆数据围栏;
     仅保留体积截断保险丝。
     """
     if not cwd:
         return ""
-    root = Path(cwd)
-    if (root / "CLAUDE.md").exists():  # SDK 已加载它,别重复
-        return ""
-    text = _read_clipped(root / "AGENTS.md", f"{cwd}/AGENTS.md")
+    text = _read_clipped(Path(cwd) / "AGENTS.md", f"{cwd}/AGENTS.md")
     if not text:
         return ""
     return (

@@ -11,11 +11,15 @@ def test_agents_only_injected(tmp_path: Path):
     assert "PROJECT_RULE_ALPHA" in out and "本项目指南" in out
 
 
-def test_claude_md_present_skips(tmp_path: Path):
-    """AGENTS.md + CLAUDE.md 并存 → 跳过(SDK 已加载 CLAUDE.md,避免重复注入)。"""
-    (tmp_path / "AGENTS.md").write_text("X", encoding="utf-8")
-    (tmp_path / "CLAUDE.md").write_text("Y", encoding="utf-8")
-    assert _load_project_agents(str(tmp_path)) == ""
+def test_agents_injected_even_with_claude_md(tmp_path: Path):
+    """AGENTS.md + CLAUDE.md 并存 → 仍注入 AGENTS.md。
+
+    本仓约定 CLAUDE.md 只放一句指向 AGENTS.md 的指路桩,SDK 读桩、Agent 读 AGENTS.md,
+    不因 CLAUDE.md 存在而跳过——否则真规则两头落空(曾致模型认错项目)。
+    """
+    (tmp_path / "AGENTS.md").write_text("PROJECT_RULE_ALPHA", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("规则见 AGENTS.md", encoding="utf-8")
+    assert "PROJECT_RULE_ALPHA" in _load_project_agents(str(tmp_path))
 
 
 def test_none_and_missing_skip(tmp_path: Path):
