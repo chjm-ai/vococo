@@ -37,6 +37,18 @@ from .web_push import PUSH
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
 
+# 语音转写完的逐字稿常带口癖(呃/然后/就是)、同音字错误、被音译错的中英混说专名
+# (实测 SenseVoice 把"OpenAI Codex"听成"open air codes")。转写后过一遍 LLM 清洗掉。
+_STT_CLEANUP_PROMPT = (
+    "你是语音转文字校对员。下面是一段语音识别生成的逐字稿,请只做这几件事:"
+    "删掉「呃、啊、嗯、然后、就是、那个」这类无意义口头禅;"
+    "修正同音字/错别字;修正被听写成中文谐音的英文专有名词"
+    "(常见于科技/AI 话题,比如把 OpenAI、Codex、Anthropic、Claude Code 这类词听成谐音汉字或走音英文,"
+    "要按读音猜回正确的英文原词,保留其标准大小写拼写);补全必要标点。"
+    "禁止:不要改写句子结构,不要删减或添加信息,不要翻译。"
+    "只输出清洗后的文本,不要加引号,不要任何解释。"
+)
+
 # 纵深防御(审计 web#5/#9 · 2-9)。CSP 里 script/style 仍留 'unsafe-inline'——前端是单文件
 # 内联脚本,去掉会整页崩;但收紧 connect/img、禁 frame 嵌入/base/object/表单外发,给「未来
 # 新增 innerHTML 分支忘了转义」兜底。frame-ancestors 'none' 顺带防点击劫持。
@@ -640,10 +652,12 @@ class WebAdapter:
         t1 = time.monotonic()
         resp = await self._transcribe(audio, filename, ctype)
         t2 = time.monotonic()
-        # 诊断"转写慢"到底慢在哪:recv=接收上传耗时, stt=SenseVoice 往返耗时
+        resp = await self._cleanup_response(resp)
+        t3 = time.monotonic()
+        # 诊断"转写慢"到底慢在哪:recv=接收上传耗时, stt=SenseVoice 往返耗时, clean=清洗口癖耗时
         print(
             f"[transcribe] size={len(audio) / 1024:.1f}KB "
-            f"recv={t1 - t0:.2f}s stt={t2 - t1:.2f}s total={t2 - t0:.2f}s",
+            f"recv={t1 - t0:.2f}s stt={t2 - t1:.2f}s clean={t3 - t2:.2f}s total={t3 - t0:.2f}s",
             flush=True,
         )
         return resp
@@ -687,6 +701,50 @@ class WebAdapter:
             return web.json_response({"error": "转写服务连接失败"}, status=502)
         except (json.JSONDecodeError, ValueError):
             return web.json_response({"error": "转写返回解析失败"}, status=502)
+
+    async def _cleanup_response(self, resp: web.Response) -> web.Response:
+        """转写成功的话再清一遍口癖/同音字;清洗失败或未开启就原样吐回去,不阻塞主流程。"""
+        if not config.STT_CLEANUP_ENABLED or not config.STT_API_KEY:
+            return resp
+        if resp.status != 200:
+            return resp
+        try:
+            text = (json.loads(resp.text or "{}").get("text") or "").strip()
+        except (json.JSONDecodeError, ValueError):
+            return resp
+        if not text:
+            return resp
+        cleaned = await self._cleanup_text(text)
+        if not cleaned or cleaned == text:
+            return resp
+        return web.json_response({"text": cleaned})
+
+    async def _cleanup_text(self, text: str) -> str | None:
+        """把逐字稿丢给免费小模型清洗;任何失败都返回 None,调用方原样用未清洗的文本。"""
+        url = f"{config.STT_BASE_URL}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {config.STT_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": config.STT_CLEANUP_MODEL,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": _STT_CLEANUP_PROMPT},
+                {"role": "user", "content": text},
+            ],
+        }
+        timeout = aiohttp.ClientTimeout(total=15)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as sess:
+                async with sess.post(url, json=payload, headers=headers) as resp:
+                    body = await resp.text()
+            if resp.status != 200:
+                return None
+            content = json.loads(body)["choices"][0]["message"]["content"]
+            return content.strip() or None
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, KeyError, IndexError, ValueError):
+            return None
 
     async def _handle_history(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
