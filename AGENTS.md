@@ -58,7 +58,7 @@ claude_hermes/
 | `escalate` | 写项目 cwd 外的文件、`git push`、`git reset --hard`、`rm -rf`、装包、`curl\|sh` | 有交互通道时请用户批准 |
 | `allow` | 其余 | 放行 |
 
-判定逻辑在 [core/danger.py](claude_hermes/core/danger.py),经 PreToolUse hook 生效。
+判定逻辑在 [tools/danger.py](claude_hermes/tools/danger.py),经 PreToolUse hook 生效。
 
 ## 运维坑(踩过的,别重犯)
 

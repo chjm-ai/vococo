@@ -72,11 +72,11 @@ class RichSink(core.Sink):
                 )
         if self.answer:
             parts.append(
-                Panel(Markdown(self.answer), title="Hermes", border_style="green",
+                Panel(Markdown(self.answer), title="Wazir", border_style="green",
                       title_align="left")
             )
         elif not parts:
-            parts.append(Text("Hermes 思考中…", style="cyan"))
+            parts.append(Text("Wazir 思考中…", style="cyan"))
         return Group(*parts)
 
     async def render(self) -> None:

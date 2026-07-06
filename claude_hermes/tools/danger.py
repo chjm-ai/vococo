@@ -92,7 +92,7 @@ async def pretool_danger_hook(input_data, tool_use_id, context):
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
                     "permissionDecisionReason": (
-                        f"⛔ 危险命令被 Hermes 拦截({why})。如确需执行,请你手动在终端运行,"
+                        f"⛔ 危险命令被 Wazir 拦截({why})。如确需执行,请你手动在终端运行,"
                         "或改用更安全的方式。"
                     ),
                 }
@@ -493,7 +493,7 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
         return {}
     if verdict == "block" and config.DANGER_GUARD:
         return _deny(
-            f"⛔ 危险命令被 Hermes 拦截({reason})。如确需执行,请你手动在终端运行。"
+            f"⛔ 危险命令被 Wazir 拦截({reason})。如确需执行,请你手动在终端运行。"
         )
     if verdict == "escalate" and config.APPROVAL_GATE:
         try:

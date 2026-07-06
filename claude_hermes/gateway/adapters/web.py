@@ -192,7 +192,7 @@ class _WebSink(Sink):
         )
         # 场景①「回复完成」:人不在页面时弹系统通知(前台由 SW 自行抑制)
         title = "主会话" if self.conv == "main" else (
-            session_store.get_title(key) or "Hermes"
+            session_store.get_title(key) or "Wazir"
         )
         self.a._push_notify(
             title=title,
@@ -321,7 +321,7 @@ class WebAdapter:
         # 场景③「主动/cron」与 场景④「出错」共用这条出口,靠 ⚠️ 前缀区分
         is_err = text.lstrip().startswith("⚠️")
         self._push_notify(
-            title="⚠️ 出错了" if is_err else "Hermes",
+            title="⚠️ 出错了" if is_err else "Wazir",
             body=text,
             conv=str(chat_id),
             kind="error" if is_err else "proactive",
