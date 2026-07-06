@@ -704,6 +704,9 @@ class WebAdapter:
             key = config.resolve_session_key("web", conv)
             await worktree.remove_worktree(key)  # 先清 worktree(删库会抹掉绑定字段)
             session_store.delete_session(key)
+            from ...tools import danger  # 懒加载:清「本次会话都允许」记忆
+
+            danger.clear_session_approvals(key)
         return web.json_response({"ok": True})
 
     # ── 项目 Git 状态 ────────────────────────────────────────────────────
