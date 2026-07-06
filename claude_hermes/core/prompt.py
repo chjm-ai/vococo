@@ -6,6 +6,7 @@ Wazir 人格 + AI_BRAIN/USER.md 画像。
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 
 from .. import config
@@ -112,6 +113,15 @@ def _load_memory_index() -> str:
     )
 
 
+# 会话内 append 快照:按 SDK 会话 id 缓存组装好的 append 文本。
+# 为什么:system prompt 在上下文最前面,会话中途 save_memory 改了 MEMORY.md 会让
+# 下一轮的前缀变化 → 整条对话的 prompt cache 全部作废(长会话一次全价重读,隐性大税)。
+# 同一 SDK 会话内冻结快照(画像/索引/项目 AGENTS.md 统一),前缀稳定缓存必命中;
+# 刚存的记忆本就在对话里,不靠索引想起。/new 后 resume 换新 id → 自然拿到最新内容。
+_APPEND_CACHE: OrderedDict[str, str] = OrderedDict()
+_APPEND_CACHE_MAX = 64  # 有界:活跃会话数远小于此,超出挤掉最旧
+
+
 def _load_project_agents(cwd: str | None) -> str:
     """注入项目根的 AGENTS.md(用户跨工具约定的项目指南)。
 
@@ -135,15 +145,21 @@ def _load_project_agents(cwd: str | None) -> str:
     )
 
 
-def build_system_prompt(cwd: str | None = None) -> dict:
+def build_system_prompt(cwd: str | None = None, cache_key: str | None = None) -> dict:
     """返回 SDK 的 preset system prompt(claude_code 默认 + append 人格/画像/记忆索引)。
 
     cwd:项目会话的工作根;非空时补注入该目录的 AGENTS.md(见 _load_project_agents)。
+    cache_key 非空(= 本轮 resume 的 SDK 会话 id)时,append 在该会话内冻结复用;
+    为空(首轮/降级)每次现读文件。同一 SDK 会话 cwd 固定,故快照无需按 cwd 分键。
     """
+    if cache_key and cache_key in _APPEND_CACHE:
+        _APPEND_CACHE.move_to_end(cache_key)
+        return {"type": "preset", "preset": "claude_code", "append": _APPEND_CACHE[cache_key]}
     data_blocks = _load_user_profile() + _load_memory_index()
     fence = f"\n\n=== 参考数据围栏 ===\n{_MEMORY_FENCE}" if data_blocks else ""
-    return {
-        "type": "preset",
-        "preset": "claude_code",
-        "append": PERSONA + fence + data_blocks + _load_project_agents(cwd),
-    }
+    append = PERSONA + fence + data_blocks + _load_project_agents(cwd)
+    if cache_key:
+        _APPEND_CACHE[cache_key] = append
+        while len(_APPEND_CACHE) > _APPEND_CACHE_MAX:
+            _APPEND_CACHE.popitem(last=False)
+    return {"type": "preset", "preset": "claude_code", "append": append}

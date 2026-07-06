@@ -105,7 +105,9 @@ async def test_cancel_interrupts_sdk_client(monkeypatch):
     monkeypatch.setattr(agent.settings_store, "hermes_enabled", lambda: False)
     monkeypatch.setattr(agent.settings_store, "effective_external_mcp", lambda: {})
     monkeypatch.setattr(agent.settings_store, "effective_skills", lambda: None)
-    monkeypatch.setattr(agent, "build_system_prompt", lambda cwd=None: "")
+    monkeypatch.setattr(
+        agent, "build_system_prompt", lambda cwd=None, cache_key=None: ""
+    )
     monkeypatch.setattr(agent, "build_mcp_servers", lambda: {})
     monkeypatch.setattr(agent, "build_hooks", lambda: {})
 
