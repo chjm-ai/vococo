@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from ..core.agent import (
     AgentReply,
+    Compacted,
     Done,
     ImageAttachment,
     TextDelta,
@@ -130,6 +131,10 @@ class Sink:
             )
         await self.render()
 
+    async def compacted(self, trigger: str = "") -> None:
+        """CLI 自动压缩了上下文。基类只刷新;Web 子类覆盖以推专门事件。"""
+        await self.render()
+
     async def done(self, reply: AgentReply) -> None:
         if reply.text:
             self.answer = reply.text
@@ -203,6 +208,11 @@ class _Timeline:
         block = self._by_id.get(tool_id)
         if block is not None:
             block["input"] = tool_input
+
+    def compacted(self, trigger: str) -> None:
+        """记一个压缩标记块;前端历史重放据此显示「上下文已自动压缩」系统条。"""
+        if len(self.blocks) < self.MAX_BLOCKS:
+            self.blocks.append({"type": "compact", "trigger": trigger})
 
     def tool_finished(
         self, name: str, ok: bool, preview: str, tool_id: str,
@@ -296,6 +306,9 @@ async def converse(
                 await sink.tool_finished(
                     ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id
                 )
+            elif isinstance(ev, Compacted):
+                timeline.compacted(ev.trigger)
+                await sink.compacted(ev.trigger)
             elif isinstance(ev, Done):
                 reply = ev.reply
     except asyncio.CancelledError:

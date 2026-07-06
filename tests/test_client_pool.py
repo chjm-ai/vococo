@@ -109,7 +109,9 @@ def clients(monkeypatch):
     monkeypatch.setattr(agent.settings_store, "hermes_enabled", lambda: False)
     monkeypatch.setattr(agent.settings_store, "effective_external_mcp", lambda: {})
     monkeypatch.setattr(agent.settings_store, "effective_skills", lambda: None)
-    monkeypatch.setattr(agent, "build_system_prompt", lambda cwd=None: {"append": "p"})
+    monkeypatch.setattr(
+        agent, "build_system_prompt", lambda cwd=None, cache_key=None: {"append": "p"}
+    )
     monkeypatch.setattr(agent, "build_mcp_servers", lambda: {})
     monkeypatch.setattr(agent, "build_hooks", lambda: {})
     return made

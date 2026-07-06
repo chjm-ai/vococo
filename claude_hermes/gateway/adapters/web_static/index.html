@@ -521,6 +521,8 @@
   /* flow:一轮回复的过程区 —— 文字段与工具卡按真实顺序交错排列(像 Claude Code) */
   .flow{display:flex;flex-direction:column;gap:2px}
   .flow>.seg{margin:2px 0}
+  .compactline{font-size:12px;color:var(--dim);margin:6px 0;display:flex;align-items:center;gap:8px}
+  .compactline::before,.compactline::after{content:"";flex:1;border-top:1px dashed var(--dim);opacity:.4}
   .toolbox{display:flex;flex-direction:column;gap:2px;margin:4px 0}
   /* 工具卡:无边框,默认收起成 1 行,点头部展开(复刻 Claude Code 的简洁风) */
   .toolcard{font-size:13px}
@@ -1836,6 +1838,10 @@ function renderEventsFlow(events){
       if(!blk.text) continue;
       const d=el("div","seg"); d.innerHTML=mdToHtml(blk.text); flow.append(d); continue;
     }
+    if(blk.type==="compact"){
+      const d=el("div","compactline"); d.textContent="上下文已自动压缩,对话继续";
+      flow.append(d); continue;
+    }
     if(blk.type!=="tool") continue;
     const finished=("preview" in blk), failed=blk.ok===false;
     const det=(blk.detail||"").trim();
@@ -2105,7 +2111,7 @@ function finalizeStream(finalText){
   S.stream=null; updateSendBtn(); scrollDown();
 }
 // 构成一个"进行中回合"的流式事件类型(可重放以重建气泡)。done/message/choice 不在此列。
-const STREAMY = ["user","start","thinking","text","tool_start","tool_input","tool_end"];
+const STREAMY = ["user","start","thinking","text","tool_start","tool_input","tool_end","compact"];
 // 每会话缓冲进行中回合的事件;text/thinking 是全量快照:thinking 全局只留最后一条,
 // text 按段(seg)各留最后一条 —— 段的先后顺序就是与工具卡交错的顺序,不能压掉。
 function bufPush(conv, e){
@@ -2199,6 +2205,9 @@ function applyStreamEvent(e){
         ||s.tools.find(x=>x.name===e.name&&!x.done)||s.tools[s.tools.length-1];
       if(it){it.done=true;it.ok=e.ok;}
       attachResult(s, e); renderStatus(); break; }
+    case "compact": { const s=ensureStream();
+      const d=el("div","compactline"); d.textContent="上下文已自动压缩,对话继续";
+      s.flow.append(d); scrollDown(); break; }
   }
 }
 // 切回某会话:若它有进行中的缓冲,重放事件在历史下方重建流式气泡
