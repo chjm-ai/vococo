@@ -104,9 +104,12 @@
   /* 布局 */
   #app{display:flex;overflow:hidden;
     position:fixed;top:var(--app-top,0);left:0;right:0;bottom:0;height:var(--app-h,auto)}
-  #sidebar{width:280px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);
-    display:flex;flex-direction:column;
-    transition:transform .25s cubic-bezier(.4,0,.2,1),width .25s cubic-bezier(.4,0,.2,1);z-index:30}
+  #sidebar{width:280px;flex-shrink:0;background:var(--panel);
+    border:1px solid var(--line2);border-radius:16px;
+    margin:8px 0 8px 8px;
+    box-shadow:0 4px 24px rgba(0,0,0,.18);
+    display:flex;flex-direction:column;overflow:hidden;
+    transition:transform .25s cubic-bezier(.4,0,.2,1),width .25s cubic-bezier(.4,0,.2,1),margin .25s cubic-bezier(.4,0,.2,1),box-shadow .25s;z-index:30}
   #sidebar .shead{padding:12px 14px 6px;padding-top:calc(12px + env(safe-area-inset-top));display:flex;align-items:center;gap:8px}
   #sidebar .shead .brand{flex:1;display:flex;align-items:center;gap:7px;font-size:14px;font-weight:700}
   #sidebar .shead .brand .dot{width:22px;height:22px;border-radius:7px;
@@ -329,6 +332,13 @@
   .setempty{text-align:center;color:var(--dim2);font-size:13px;padding:30px 10px}
   .setload{text-align:center;color:var(--dim2);font-size:13px;padding:24px}
 
+  /* 外观:主题分段选择器 */
+  .theme-seg{display:flex;border:1px solid var(--line2);border-radius:10px;overflow:hidden;width:fit-content;margin-top:4px}
+  .theme-seg .tsopt{padding:9px 20px;font-size:13.5px;color:var(--dim);transition:background .15s,color .15s;border-right:1px solid var(--line2)}
+  .theme-seg .tsopt:last-child{border-right:none}
+  .theme-seg .tsopt:not(.active):hover{background:var(--panel2);color:var(--text)}
+  .theme-seg .tsopt.active{background:var(--accent);color:#fff;font-weight:600;cursor:default}
+
   @media(max-width:640px){
     .setbox{width:100vw;height:100%;max-height:100%;border-radius:0;border:none}
     .sethead{padding-top:calc(14px + env(safe-area-inset-top))}
@@ -416,7 +426,6 @@
   #ctxPop .pr.sub .k{padding-left:12px;color:var(--dim2);font-size:12px}
   #ctxPop .pr.sep{border-top:1px solid var(--line);margin-top:4px;padding-top:8px}
   #ctxPop .pr .mdl{font-size:11px;color:var(--dim);font-family:ui-monospace,Menlo,monospace}
-  #themeBtn{font-size:17px}
   #hamb{display:none;width:42px;height:42px;font-size:21px;border-radius:13px}
 
   #messages{flex:1;overflow-y:auto;padding:18px 32px 8px;
@@ -664,8 +673,9 @@
   #backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:25;backdrop-filter:blur(2px)}
 
   @media(max-width:760px){
-    #sidebar{position:fixed;inset:0 auto 0 0;transform:translateX(-100%)}
-    #sidebar.open{transform:translateX(0);box-shadow:2px 0 30px rgba(0,0,0,.5)}
+    #sidebar{position:fixed;inset:8px auto 8px 8px;margin:0;
+      transform:translateX(calc(-100% - 16px))}
+    #sidebar.open{transform:translateX(0);box-shadow:0 8px 40px rgba(0,0,0,.45)}
     #hamb{display:flex}
     #backdrop.show{display:block}
     /* 移动端左右留白收窄:桌面 32px 在窄屏太挤,回到 16px */
@@ -678,7 +688,7 @@
     html,body{font-size:14px;line-height:1.55}
     #collapseBtn{display:flex}
     /* 收起:侧边栏宽度归零,顶栏 ☰ 变身为"展开"入口 */
-    body.sb-collapsed #sidebar{width:0;border-right-color:transparent;overflow:hidden}
+    body.sb-collapsed #sidebar{width:0;margin-left:0;border-color:transparent;box-shadow:none;overflow:hidden}
     body.sb-collapsed #hamb{display:flex}
   }
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -731,6 +741,7 @@
           <button class="settab" data-tab="memory">记忆</button>
           <button class="settab" data-tab="agents">人设</button>
           <button class="settab" data-tab="notify">通知</button>
+          <button class="settab" data-tab="appearance">外观</button>
         </div>
         <div class="setpane" id="setPane"></div>
       </div>
@@ -747,7 +758,7 @@
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
     <div id="convList"></div>
-    <div class="sfoot" id="sfoot"><span class="sdot ok" id="sdot"></span><span class="sfoottxt" id="sfoottxt">Wazir · Web</span><button id="themeBtn" class="sfoicon" title="切换深浅色">☾</button><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
+    <div class="sfoot" id="sfoot"><span class="sdot ok" id="sdot"></span><span class="sfoottxt" id="sfoottxt">Wazir · Web</span><button id="settingsBtn" class="sfoicon" title="设置"></button></div>
   </aside>
   <main>
     <header class="bar">
@@ -883,24 +894,26 @@ const ICONS = {
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 
-// ── 主题(深/浅)──────────────────────────────────────────────────────────
-function curTheme(){
-  const t=document.documentElement.getAttribute("data-theme");
-  if(t) return t;
-  return (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+// ── 主题(深/浅/跟随系统)───────────────────────────────────────────────
+// curThemeMode(): 返回存储的偏好 "auto"|"light"|"dark"
+function curThemeMode(){
+  return document.documentElement.getAttribute("data-theme") || "auto";
 }
 function syncTheme(){
-  const dark = curTheme()==="dark";
-  $("#themeBtn").textContent = dark ? "☀" : "☾";   // 显示"点击后切到的"目标
   const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg2").trim();
   const m = document.querySelector('meta[name="theme-color"]'); if(m && bg) m.setAttribute("content", bg);
 }
-function toggleTheme(){
-  const next = curTheme()==="dark" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
-  try{ localStorage.setItem("hermes_theme", next); }catch(e){}
+function setTheme(mode){
+  if(mode==="auto"){
+    document.documentElement.removeAttribute("data-theme");
+    try{ localStorage.removeItem("hermes_theme"); }catch(e){}
+  } else {
+    document.documentElement.setAttribute("data-theme", mode);
+    try{ localStorage.setItem("hermes_theme", mode); }catch(e){}
+  }
   syncTheme();
-  api("/prefs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({theme:next})}).catch(()=>{});
+  api("/prefs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({theme: mode==="auto" ? null : mode})}).catch(()=>{});
+  if(typeof SET!=="undefined" && SET.tab==="appearance") renderAppearancePane();
 }
 if(window.matchMedia){
   window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", ()=>{
@@ -1024,7 +1037,7 @@ function updateSfoot(){
 }
 $("#sfoot").onclick=function(e){
   // 点的是设置/主题按钮 → 不弹 ratePop,交给按钮自己的 handler
-  if(e.target.closest("#themeBtn,#settingsBtn")) return;
+  if(e.target.closest("#settingsBtn")) return;
   e.stopPropagation();
   const p=$("#ratePop");
   if(!p.hidden){ p.hidden=true; return; }
@@ -1194,9 +1207,16 @@ function fmtTime(ts){ if(!ts) return ""; const d=new Date(ts*1000), n=new Date()
 async function loadPrefs(){
   try{
     const r = await api("/prefs"); const p = await r.json();
-    if(p.theme && p.theme !== localStorage.getItem("hermes_theme")){
-      document.documentElement.setAttribute("data-theme", p.theme);
-      try{ localStorage.setItem("hermes_theme", p.theme); }catch(e){}
+    const serverTheme = p.theme || "auto";
+    const localTheme = localStorage.getItem("hermes_theme") || "auto";
+    if(serverTheme !== localTheme){
+      if(serverTheme==="auto"){
+        document.documentElement.removeAttribute("data-theme");
+        try{ localStorage.removeItem("hermes_theme"); }catch(e){}
+      } else {
+        document.documentElement.setAttribute("data-theme", serverTheme);
+        try{ localStorage.setItem("hermes_theme", serverTheme); }catch(e){}
+      }
       syncTheme();
     }
     if(p.conv_filter) S.convFilter = p.conv_filter;
@@ -1352,6 +1372,18 @@ function renderSetTab(){
   else if(SET.tab==="memory") renderFileList("memory");
   else if(SET.tab==="agents") renderFileList("agents");
   else if(SET.tab==="notify") renderNotifyPane();
+  else if(SET.tab==="appearance") renderAppearancePane();
+}
+
+// ── 外观分区(主题选择)──────────────────────────────────────────────────
+function renderAppearancePane(){
+  const mode = curThemeMode();
+  const opts = [{v:"auto",label:"跟随系统"},{v:"light",label:"浅色"},{v:"dark",label:"深色"}];
+  let h = '<h3>外观</h3><p class="shint">选择界面颜色模式。「跟随系统」会自动跟随操作系统的深色/浅色设置。</p>';
+  h += '<div class="theme-seg">';
+  opts.forEach(o=>{ h += `<button class="tsopt${mode===o.v?" active":""}" onclick="setTheme('${o.v}')">${o.label}</button>`; });
+  h += '</div>';
+  $("#setPane").innerHTML = h;
 }
 
 // ── 通知分区(Web Push 系统通知)──────────────────────────────────────────
@@ -2582,9 +2614,8 @@ $("#recCancel").onclick = e=>{ e.stopPropagation(); stopRec(true); };        // 
 // 兜底:关页/切后台也释放一次,防止极端情况下(录音中直接切走)残留占用
 window.addEventListener("pagehide", releaseMic);
 
-// ── 新会话 / 侧边栏 / 主题 ───────────────────────────────────────────────
+// ── 新会话 / 侧边栏 ─────────────────────────────────────────────────────
 $("#newBtn").onclick = newChat;
-$("#themeBtn").onclick = toggleTheme;
 // 顶栏 ☰:桌面(收起态)= 展开侧边栏;移动端 = 抽屉式打开
 $("#hamb").onclick = ()=>{
   if(window.innerWidth>760){ setSidebarCollapsed(false); }
