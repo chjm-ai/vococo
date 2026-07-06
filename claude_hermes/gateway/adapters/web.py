@@ -164,6 +164,13 @@ class _WebSink(Sink):
             }
         )
 
+    async def compacted(self, trigger: str = "") -> None:
+        # CLI 自动压缩了上下文:压缩点之后正文进新段(旧段已定格),前端插系统条
+        if self._text:
+            self._seg += 1
+            self._text = ""
+        self.a._emit({"conv": self.conv, "type": "compact", "trigger": trigger})
+
     async def cancelled(self) -> None:
         # 用户手动取消:清理「进行中」快照,避免刷新页面后重放旧内容。
         self.a._live.pop(self.conv, None)
@@ -289,6 +296,8 @@ class WebAdapter:
             st["frames"].append((seq, payload))
         elif t in ("tool_start", "tool_input", "tool_end"):
             st["phase"] = f"执行 {payload.get('name') or '工具'}"
+            st["frames"].append((seq, payload))
+        elif t == "compact":  # 压缩标记按序保留,刷新重放时系统条不丢
             st["frames"].append((seq, payload))
 
     # ── Web Push 系统通知 ────────────────────────────────────────────────
