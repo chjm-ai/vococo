@@ -17,9 +17,16 @@ import anyio
 
 
 def _cmd_tui() -> None:
+    from .core import client_pool
     from .tui.app import run_tui
 
-    anyio.run(run_tui)
+    async def _run() -> None:
+        try:
+            await run_tui()
+        finally:
+            await client_pool.close_all()  # 退出时收掉保温的 CLI 子进程,不留孤儿
+
+    anyio.run(_run)
 
 
 def _cmd_chat() -> None:

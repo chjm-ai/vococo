@@ -29,9 +29,10 @@ from claude_agent_sdk import (
 )
 
 from .. import config, providers
-from ..gateway import settings_store
+from ..gateway import clarify, settings_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
+from . import client_pool
 from .prompt import build_system_prompt
 
 
@@ -289,6 +290,42 @@ def _build_prompt(
     return _image_prompt_stream(content)
 
 
+def _compat_base_key(
+    resolved_model: str,
+    provider_env: dict[str, str],
+    sys_prompt: dict,
+    skills,
+    cwd: str | None,
+    hermes_on: bool,
+    external_mcp: dict,
+) -> str:
+    """保温 client 的兼容性哈希(不含 SDK 会话 id,那个在池里单独比)。
+
+    覆盖所有「connect 时定死、语义上每轮该重读」的输入:模型 / 供应商 env(cc-switch
+    改完下轮生效)/ 系统提示(记忆索引变了要重建)/ skills / MCP 配置 / cwd;外加
+    clarify 路由身份 —— SDK 内部任务在 connect 时快照了 contextvar(danger 的 cwd /
+    clarify 路由),复用的前提是快照值与当前轮完全一致:统一会话从 TG 切到 Web,
+    路由一变就必须重建,否则审批弹窗会发回旧入口。
+    """
+    ctx = clarify.current()
+    route = (
+        (ctx.session_key, getattr(ctx.adapter, "platform", ""), str(ctx.chat_id))
+        if ctx is not None
+        else None
+    )
+    payload = {
+        "model": resolved_model,
+        "env": sorted(provider_env.items()),
+        "prompt": sys_prompt,
+        "skills": skills,
+        "cwd": cwd or "",
+        "hermes_mcp": hermes_on,
+        "external_mcp": external_mcp,
+        "route": route,
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+
+
 async def stream_turn(
     history: list[Turn],
     user_text: str,
@@ -296,10 +333,13 @@ async def stream_turn(
     images: list[ImageAttachment] | None = None,
     cwd: str | None = None,
     resume: str | None = None,
+    session_key: str | None = None,
 ) -> AsyncIterator[Event]:
     """流式跑一轮,逐个 yield 事件,最后 yield Done。
 
-    历史怎么喂给模型:
+    历史怎么喂给模型(三级链,前一级失败自动落到下一级):
+    - session_key 非空且保温池命中(见 core/client_pool.py)→ 直接在活 client 上
+      query 只发新消息,零冷启动,历史就在 CLI 侧的活会话里。
     - resume 非空 → 传 resume=<sdk_session_id>,SDK 从它自己的 transcript 重放
       【真·多轮历史】,本轮只发新消息。这样模型有真实的对话结构,不会误判自己
       "记不住前面/被压缩"(旧的做法是把历史拼成一坨转录稿文本塞进单条 user
@@ -307,6 +347,7 @@ async def stream_turn(
     - resume 为空(首轮/老会话过渡/降级)→ 回退老做法:把历史拼进 prompt。
     若 resume 的 transcript 丢失/损坏(~/.claude 被清、worktree 删了)导致起会话就
     失败,且尚未产出任何可见内容 → 自动降级用历史 blob 重跑这一轮,对话不中断。
+    冷启动收工后 client 不关,回池保温,供该会话下一轮复用。
 
     上下文占用(context_tokens)取 SDK 的 get_context_usage() —— 即 CLI /context
     的真实窗口占用。不再用 ResultMessage.usage 现算:后者是本轮跨多次工具调用的
@@ -316,34 +357,50 @@ async def stream_turn(
     # cc-switch 集成:按会话选定模型(或 cc-switch 当前激活的供应商)算出实际模型和
     # 要注入的 env。第三方(DeepSeek/Kimi)→注入 base_url+key;官方→env 为空走订阅。
     resolved_model, provider_env = providers.resolve(model, config.MODEL)
-    # MCP / skill 从运行时设置(网页设置页可改)计算,不再写死;改完下一轮即生效。
+    # MCP / skill 从运行时设置(网页设置页可改)计算,不再写死;改完下一轮即生效
+    # (保温 client 的这些参数在 connect 时定死,靠兼容性哈希「一变就重建」保住该语义)。
+    hermes_on = settings_store.hermes_enabled()
+    external_mcp = settings_store.effective_external_mcp()  # 用户加的外部 server
     mcp_servers: dict = {}
-    if settings_store.hermes_enabled():
+    if hermes_on:
         mcp_servers.update(build_mcp_servers())  # 内置 hermes(记忆/定时/发消息等)
-    mcp_servers.update(settings_store.effective_external_mcp())  # 用户加的外部 server
+    mcp_servers.update(external_mcp)
+    skills = settings_store.effective_skills()  # None=全量;白名单则只挂这些(瘦身 tool schema)
+    # cwd=项目会话补注入其 AGENTS.md;cache_key=会话 id:同一 SDK 会话内冻结 append 快照,
+    # 防中途 save_memory 改 MEMORY.md 打爆整条对话的 prompt cache —— 也让保温池的兼容性
+    # 哈希在会话内保持稳定(中途存记忆不至于误杀保温 client)。/new 换 sid → 自然读到最新。
+    sys_prompt = build_system_prompt(cwd, cache_key=resume)
+
+    pooling = bool(session_key) and client_pool.enabled()
+    base_key = (
+        _compat_base_key(
+            resolved_model, provider_env, sys_prompt, skills, cwd, hermes_on, external_mcp
+        )
+        if pooling
+        else ""
+    )
 
     def _make_options(use_resume: str | None) -> ClaudeAgentOptions:
         return ClaudeAgentOptions(
             model=resolved_model,
-            # cwd=项目会话补注入其 AGENTS.md;cache_key=会话 id:同一 SDK 会话内冻结
-            # append 快照,防中途 save_memory 改 MEMORY.md 打爆整条对话的 prompt cache
-            system_prompt=build_system_prompt(cwd, cache_key=use_resume),
+            system_prompt=sys_prompt,
             max_turns=config.MAX_TURNS,
             permission_mode=config.PERMISSION_MODE,
             include_partial_messages=True,
             mcp_servers=mcp_servers,
             hooks=build_hooks(),  # PreToolUse:灾难拦截 + 危险操作审批闸
-            skills=settings_store.effective_skills(),  # None=全量;白名单则只挂这些(瘦身 tool schema)
+            skills=skills,
             cwd=cwd,  # 项目会话→该文件夹当工作根(自动加载其 CLAUDE.md/.claude);None=进程默认目录
             env=provider_env,  # cc-switch 激活第三方时注入 base_url+key;官方为空
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
         )
 
-    async def _stream_once(use_resume: str | None) -> AsyncIterator[Event]:
-        options = _make_options(use_resume)
-        # resume 模式历史由 SDK transcript 重放,本轮只发新消息(history 传空);
-        # 非 resume 才把历史拼进 prompt。
-        prompt_history = [] if use_resume else history
+    async def _stream_once(
+        use_resume: str | None, warm: ClaudeSDKClient | None = None
+    ) -> AsyncIterator[Event]:
+        # 保温命中:历史就在活 client 的会话里;resume 模式历史由 SDK transcript
+        # 重放 —— 两者本轮都只发新消息(history 传空);非 resume 才把历史拼进 prompt。
+        prompt_history = [] if (warm is not None or use_resume) else history
 
         text_parts: list[str] = []
         tool_calls: list[str] = []
@@ -368,7 +425,13 @@ async def stream_turn(
         # "Stream closed"),主 agent 也拿不到子代理结果去综合 → 用户只看到"已发起稍等"。
         # 改法:用 receive_messages 一直读,直到【某个 ResultMessage 到来时,没有在跑的子代理/
         # 后台任务】才真正收工;子代理跑完会把结果喂回主 agent,主 agent 续写的综合正文也能被收进来。
-        async with ClaudeSDKClient(options=options) as client:
+        client = warm
+        if client is None:
+            client = ClaudeSDKClient(options=_make_options(use_resume))
+            await client.connect()  # 冷启动:起 CLI 子进程(resume 则先重放 transcript)
+        clean_finish = False  # 干净收工(见到无 pending 的 ResultMessage)才允许回池
+        pooled = False
+        try:
             try:
                 await client.query(_build_prompt(prompt_history, user_text, images or []))
                 pending_subagents: set[str] = set()  # Agent/Task 调用 id,未拿到结果 = 子代理还在跑
@@ -499,11 +562,13 @@ async def stream_turn(
                         # 若子代理还在跑,先不收工,继续 drain——等它结果喂回主 agent、主 agent
                         # 续写综合正文,直到下一个「无 pending 的 ResultMessage」。
                         if not pending_subagents and not active_tasks:
+                            clean_finish = True  # 流已读到头,无残留消息,可回池
                             break
             except asyncio.CancelledError:
                 # 用户手动取消(/abort):先通知 CLI 子进程立刻停止生成,再原样抛出。
                 # 单纯 anyio.CancelScope.cancel() 只能取消当前协程,无法中断 CLI 内部的
                 # SSE 流,导致模型继续输出、刷新页面后仍能看到新内容。
+                # 被打断的 client 流里可能残留半截消息,不回池(finally 统一收尸)。
                 with anyio.CancelScope(shield=True):
                     try:
                         with anyio.move_on_after(5):
@@ -525,6 +590,17 @@ async def stream_turn(
             except Exception:
                 ctx_window_val = context_window(used_model)  # 兜底:按模型名估窗口
 
+            # 干净收工 → 回池保温,同会话下一轮零冷启动(哈希/sid 对不上会被池拒收)
+            if pooling and clean_finish and sess_id:
+                await client_pool.checkin(session_key, client, base_key, sess_id)
+                pooled = True
+        finally:
+            if not pooled:
+                # 未回池(池未启用/取消/异常/收工不干净):关掉 client,防残留的半截
+                # 消息流污染下一轮。shield:取消退栈时普通 await 会被立刻再取消。
+                with anyio.CancelScope(shield=True):
+                    await client_pool.discard(client)
+
         yield Done(
             AgentReply(
                 text="".join(text_parts).strip(),
@@ -542,6 +618,21 @@ async def stream_turn(
             )
         )
 
+    # 三级链:保温命中 → resume 冷启动 → 历史 blob。保温 client 半途坏死(进程被杀/
+    # 管道断)且尚未吐出可见内容 → 自动降级冷启动;已吐出内容则原样抛(重跑会重复渲染)。
+    if pooling:
+        warm = await client_pool.checkout(session_key, base_key, resume)
+        if warm is not None:
+            emitted = False
+            try:
+                async for ev in _stream_once(resume, warm=warm):
+                    if not isinstance(ev, Done):
+                        emitted = True
+                    yield ev
+                return
+            except Exception:
+                if emitted:
+                    raise
     # resume 优先;transcript 丢失导致起会话就失败、且还没吐出任何可见内容 → 降级 blob 重跑。
     if resume:
         emitted = False

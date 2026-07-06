@@ -94,6 +94,12 @@ PERMISSION_MODE: str = os.environ.get("AGENT_PERMISSION_MODE", "bypassPermission
 AGENT_TURN_TIMEOUT: int = int(os.environ.get("AGENT_TURN_TIMEOUT", "3600"))
 # ask_user 等用户回复的超时(秒),须 < AGENT_TURN_TIMEOUT,好让 clarify 先返回、本轮别被硬砍。
 CLARIFY_TIMEOUT: int = int(os.environ.get("CLARIFY_TIMEOUT", "300"))
+# === 保温池(会话级常驻 ClaudeSDKClient,见 core/client_pool.py)===
+# 空闲超过该秒数回收 CLI 子进程;300s 对齐 prompt cache 的 5 分钟 TTL。设 0 禁用保温池
+# (回到每轮冷启动 + resume 的老路径,排障用)。
+CLIENT_POOL_IDLE_TTL: int = int(os.environ.get("CLIENT_POOL_IDLE_TTL", "300"))
+# 池容量上限:每个保温 client 是一个常驻 CLI 子进程(内存不小),超出踢最久未用的。
+CLIENT_POOL_MAX: int = int(os.environ.get("CLIENT_POOL_MAX", "4"))
 # 危险命令拦截(PreToolUse hook):默认开,只拦灾难级命令(删根/格式化/强推等)。
 DANGER_GUARD: bool = _parse_bool(os.environ.get("DANGER_GUARD", ""), True)
 # 审批闸(PreToolUse hook):默认开。对「危险但非灾难」的操作(写工作目录外、

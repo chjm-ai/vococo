@@ -86,10 +86,10 @@ async def test_cancel_interrupts_sdk_client(monkeypatch):
         def __init__(self, options=None):
             self.options = options
 
-        async def __aenter__(self):
-            return self
+        async def connect(self):
+            return None
 
-        async def __aexit__(self, *args):
+        async def disconnect(self):
             return None
 
         async def query(self, *args, **kwargs):
