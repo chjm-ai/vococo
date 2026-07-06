@@ -148,8 +148,8 @@
   .conv:hover .star,.conv:hover .ctime{opacity:0}
   .conv:hover .more{opacity:.6;pointer-events:auto}
   .conv .more:hover,.conv .more.on{color:var(--text);background:var(--card);opacity:1}
-  /* 触屏无 hover:常驻显示「⋯」,否则点不到 */
-  @media(hover:none){ .conv .more{opacity:.55;pointer-events:auto} }
+  /* 触屏无 hover:常驻显示「⋯」,否则点不到;同时常驻隐藏时间,避免两者在同一位置重叠 */
+  @media(hover:none){ .conv .more{opacity:.55;pointer-events:auto} .conv .ctime{opacity:0} }
   /* 会话「更多」浮层菜单(挂在 body 上,避开侧栏 overflow 裁剪) */
   .convmenu{position:fixed;z-index:40;min-width:130px;
     background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:5px;
