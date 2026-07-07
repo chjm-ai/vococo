@@ -119,7 +119,10 @@
   #convList{flex:1;overflow-y:auto;padding:2px 8px 8px}
   .projgrp,.conv{padding:7px 10px;border-radius:7px;display:flex;align-items:center;
     cursor:pointer;transition:background .15s,color .15s}
-  .projgrp:hover,.conv:hover,.conv.active{background:var(--panel2)}
+  .conv.active{background:var(--panel2)}
+  /* :hover 只在真有 hover 能力的设备生效——触屏上元素自身样式随 :hover 变化,
+     会撞上 iOS 经典坑:第一下点击只用来"结算" hover 态,第二下才真正触发 click */
+  @media(hover:hover){ .projgrp:hover,.conv:hover{background:var(--panel2)} }
   /* ＋新对话:填充按钮、宽度撑满(左右与列表内边距对齐) */
   #newBtn{display:flex;align-items:center;justify-content:center;gap:8px;
     width:calc(100% - 16px);margin:2px 8px 4px;padding:8px 10px;border-radius:9px;
@@ -136,7 +139,8 @@
   #collapseBtn:active{transform:scale(.9)}
   #collapseBtn .ic{width:16px;height:16px}
   .conv{margin-bottom:1px;gap:8px;color:var(--dim);position:relative}
-  .conv:hover,.conv.active{color:var(--text)}
+  .conv.active{color:var(--text)}
+  @media(hover:hover){ .conv:hover{color:var(--text)} }
   .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
   .conv .livedot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}   /* AI 正在回复:闪烁圆点 */
   @keyframes livepulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
@@ -145,11 +149,10 @@
   /* 「⋯」更多键绝对定位:不占布局宽度,hover 时浮现 */
   .conv .more{position:absolute;right:8px;top:50%;transform:translateY(-50%);opacity:0;pointer-events:none;
     font-size:16px;line-height:1;color:var(--dim2);padding:2px 6px;border-radius:7px;transition:opacity .16s,color .16s,background .16s}
-  .conv:hover .star,.conv:hover .ctime{opacity:0}
-  .conv:hover .more{opacity:.6;pointer-events:auto}
   .conv .more:hover,.conv .more.on{color:var(--text);background:var(--card);opacity:1}
-  /* 触屏无 hover:默认只显示时间、「⋯」彻底隐藏且不拦点(pointer-events:none),
-     保证单击整行=一次切换会话;弹菜单改由「长按整行」触发(见 bindLongPress) */
+  /* 桌面 hover:显示 ⋯、隐藏时间/星标;触屏彻底不挂 .conv:hover(即便只改子元素样式,
+     iOS 也会判定该元素"随 hover 变化"而要求点两下),改用长按整行弹菜单 */
+  @media(hover:hover){ .conv:hover .star,.conv:hover .ctime{opacity:0} .conv:hover .more{opacity:.6;pointer-events:auto} }
   @media(hover:none){ .conv .more{opacity:0;pointer-events:none} }
   /* 会话「更多」浮层菜单(挂在 body 上,避开侧栏 overflow 裁剪) */
   .convmenu{position:fixed;z-index:40;min-width:130px;
