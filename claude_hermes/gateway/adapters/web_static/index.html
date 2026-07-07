@@ -148,10 +148,9 @@
   .conv:hover .star,.conv:hover .ctime{opacity:0}
   .conv:hover .more{opacity:.6;pointer-events:auto}
   .conv .more:hover,.conv .more.on{color:var(--text);background:var(--card);opacity:1}
-  /* 触屏无 hover:默认只显示时间、「⋯」不可见(保持行整洁);
-     但「⋯」区域仍可点(pointer-events:auto)弹菜单——用 opacity 而非 :active,
-     不改变按下时的外观,故不会吞掉首次点击(点两下才切换的经典坑) */
-  @media(hover:none){ .conv .more{opacity:0;pointer-events:auto} }
+  /* 触屏无 hover:默认只显示时间、「⋯」彻底隐藏且不拦点(pointer-events:none),
+     保证单击整行=一次切换会话;弹菜单改由「长按整行」触发(见 bindLongPress) */
+  @media(hover:none){ .conv .more{opacity:0;pointer-events:none} }
   /* 会话「更多」浮层菜单(挂在 body 上,避开侧栏 overflow 裁剪) */
   .convmenu{position:fixed;z-index:40;min-width:130px;
     background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:5px;
@@ -1284,8 +1283,9 @@ function renderConvs(){
       const ct=el("div","ct"); ct.textContent=c.title||"新对话"; e.append(ct);
       const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; e.append(tmEl); }   // 会话时刻:名称右侧
       if(c.pinned){ const star=el("span","star"); star.textContent="★"; e.append(star); }   // 主会话:右侧弱化星标
-      else { const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; e.append(more); }
-      e.onclick=()=>openConv(c.conv);
+      else { const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; e.append(more);
+        bindLongPress(e, more, c.conv); }   // 触屏:⋯ 隐藏不拦点,改用长按整行弹菜单
+      e.onclick=()=>{ if(e._lpFired){ e._lpFired=false; return; } openConv(c.conv); };   // 长按刚弹过菜单 → 吞掉这次 click,不切换
       box.append(e);
     }
   }
@@ -1776,6 +1776,16 @@ let convMenuEl=null, convMenuBtn=null;
 function closeConvMenu(){
   if(convMenuBtn){ convMenuBtn.classList.remove("on"); convMenuBtn=null; }
   if(convMenuEl){ convMenuEl.remove(); convMenuEl=null; }
+}
+// 触屏长按整行弹「更多」菜单:⋯ 在触屏下隐藏且不拦点,单击=切换会话,长按≈500ms=弹菜单
+function bindLongPress(row, anchor, conv){
+  let timer=null;
+  const start=()=>{ clearTimeout(timer); timer=setTimeout(()=>{ row._lpFired=true; openConvMenu(anchor,conv); }, 500); };
+  const cancel=()=>{ clearTimeout(timer); };
+  row.addEventListener("touchstart", start, {passive:true});
+  row.addEventListener("touchmove", cancel, {passive:true});   // 手指滑动(滚动列表)→ 取消,不误触
+  row.addEventListener("touchend", cancel);
+  row.addEventListener("touchcancel", cancel);
 }
 function openConvMenu(btn, conv){
   if(convMenuBtn===btn){ closeConvMenu(); return; }   // 再点一次同一个 → 收起
