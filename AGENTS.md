@@ -68,3 +68,18 @@ claude_hermes/
 - **别误杀原版 hermes**:本项目配置在 `~/.claude-hermes/`,**刻意独立于**原版 Hermes 的 `~/.hermes`,两者互不干扰。重启只动 claude-hermes 自己的进程。
 - **记忆唯一主库**:记忆实体文件只存在 AI_BRAIN 主库,`.claude` 项目侧全是软链;**禁止**在 Claude Code 项目记忆目录新建实体文件(会成孤本)。
 - **editable 安装 + worktree**:`pip install -e` 会让 worktree 里的改动被主仓库的已安装包屏蔽,调试时用 `uv run` 从当前目录跑。
+
+## 排障:查会话
+
+会话数据在 `data/state.db`(SQLite,`turns`/`session_meta`/`projects` 三张表,见 [session_store.py](claude_hermes/memory/session_store.py))。别再手写 SQL 或翻 `~/.claude/projects/`——用 [scripts/inspect_sessions.py](scripts/inspect_sessions.py):
+
+```bash
+python3 scripts/inspect_sessions.py list                        # 列出所有会话(key/标题/轮数/最后活跃/模型/是否有worktree)
+python3 scripts/inspect_sessions.py list --platform web --project <关键词>
+python3 scripts/inspect_sessions.py show <session_key> -n 20     # 看某会话最近 N 轮(--all-history 含 /new 前的历史,--events 带工具调用时间线)
+python3 scripts/inspect_sessions.py search "关键词1 关键词2"       # 跨会话关键词检索
+python3 scripts/inspect_sessions.py projects                     # 项目 hash → 路径
+python3 scripts/inspect_sessions.py sdk <session_key>            # 解析该会话对应的 claude CLI transcript(~/.claude/projects/.../*.jsonl)路径
+```
+
+⚠️ 在某个项目会话的 worktree 里跑本脚本,默认路径解出的是**这个 worktree 自己的空库**,不是真实数据——真实库在跑 `serve` 的那个主仓库下,用 `--db ~/Repos/claude-hermes/data/state.db` 显式指定(或你实际部署的路径)。
