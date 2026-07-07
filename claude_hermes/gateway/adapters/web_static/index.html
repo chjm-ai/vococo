@@ -153,7 +153,7 @@
   .conv .cvact button{flex:1;border:none;display:flex;align-items:center;justify-content:center;color:#fff;cursor:pointer}
   .conv .cvact button .ic{width:16px;height:16px}
   .conv .cvact .cvarch{background:var(--dim2)}
-  .conv .cvact .cvdel{background:var(--err)}
+  .conv .cvact .cvdel{background:var(--err);border-radius:0 7px 7px 0}   /* 贴行右边缘,配行本身的圆角,避免被 overflow 裁出直角缺口 */
   .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
   .conv .livedot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}   /* AI 正在回复:闪烁圆点 */
   @keyframes livepulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
