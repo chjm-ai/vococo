@@ -32,6 +32,7 @@
     --shadow:0 10px 34px rgba(0,0,0,.45);
     --focus-ring:rgba(217,119,87,.2);
     --glow1:rgba(217,119,87,.4); --glow2:rgba(194,95,60,.4);
+    --sbw:9px;   /* 滚动条宽度,和下面 ::-webkit-scrollbar 保持一致,供顶栏/输入框补偿对齐用 */
   }
   /* ── 浅色:系统偏好浅色且用户未手动固定时 · Claude Code 暖米色 ────────── */
   @media(prefers-color-scheme:light){
@@ -78,7 +79,7 @@
   a{color:var(--accent)}
 
   /* 美化滚动条 */
-  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar{width:var(--sbw);height:9px}
   ::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:10px;border:2px solid transparent;background-clip:padding-box}
   ::-webkit-scrollbar-thumb:hover{background:var(--scroll-h);background-clip:padding-box}
   ::-webkit-scrollbar-track{background:transparent}
@@ -167,6 +168,13 @@
      iOS 也会判定该元素"随 hover 变化"而要求点两下),改用左滑弹归档/删除 */
   @media(hover:hover){ .conv:hover .star,.conv:hover .ctime{opacity:0} .conv:hover .more{opacity:.6;pointer-events:auto} }
   @media(hover:none){ .conv .more{opacity:0;pointer-events:none} }
+  /* #messages 有鼠标滚轮的桌面端会常驻预留滚动条槽位(见下方 scrollbar-gutter:stable),
+     顶栏/输入框不滚动、没有这个槽位,原先两边内容居中基准不一致,滚动条一出现标题和正文就错位。
+     触屏是覆盖式滚动条、不占布局宽度,不需要这个补偿,只在 hover:hover(桌面鼠标)下生效。 */
+  @media(hover:hover){
+    header.bar{padding-right:calc(32px + var(--sbw))}
+    #composer{padding-right:calc(32px + var(--sbw))}
+  }
   /* 会话「更多」浮层菜单(挂在 body 上,避开侧栏 overflow 裁剪) */
   .convmenu{position:fixed;z-index:40;min-width:130px;
     background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:5px;
@@ -455,7 +463,7 @@
   #hamb{display:none;width:42px;height:42px;font-size:21px;border-radius:13px}
   #hamb .ic{width:19px;height:19px}
 
-  #messages{flex:1;overflow-y:auto;padding:18px 32px 8px;
+  #messages{flex:1;overflow-y:auto;scrollbar-gutter:stable;padding:18px 32px 8px;
     /* JS 实测到就用精确顶栏高;没测到(或时机太早)时兜底也要含顶部安全区,
        否则刘海机上第一条消息会钻进半透明顶栏。max 取两者较大者,双保险。 */
     padding-top:calc(18px + max(var(--header-h, 0px), 62px + env(safe-area-inset-top)));
