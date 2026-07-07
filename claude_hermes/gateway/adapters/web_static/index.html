@@ -827,6 +827,7 @@
             </span>
           </span>
         </div>
+        <button class="icon" id="voiceEntryBtn" type="button" title="语音伴聊" hidden onclick="location.href='/voice'">🎙️</button>
         <div id="ctxBox">
           <button id="barMeta" type="button" title="上下文占用 · 点击看明细" hidden>
             <svg class="ctxring" viewBox="0 0 20 20"><circle class="track" cx="10" cy="10" r="8"/><circle class="fill" id="ctxRing" cx="10" cy="10" r="8"/></svg>
@@ -1001,6 +1002,10 @@ async function api(path, opts={}){
   if(r.status===401){ showLogin(); throw new Error("401"); }
   return r;
 }
+// 语音伴聊入口按钮显隐(VOICE_ENABLED=0 时后端不注册该路由,探测到即隐藏)
+fetch("/voice/config").then(r=>r.json()).then(d=>{
+  if(d && d.enabled) $("#voiceEntryBtn").hidden = false;
+}).catch(()=>{});
 
 // ── 登录 ────────────────────────────────────────────────────────────────
 function showLogin(){ $("#login").style.display="flex"; $("#app").hidden=true; if(S.es){S.es.close();S.es=null;} }

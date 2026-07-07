@@ -1283,6 +1283,10 @@ class WebAdapter:
                 web.post("/file/save", self._handle_file_save),
             ]
         )
+        if config.VOICE_ENABLED:  # 实验性语音伴聊模式,见 claude_hermes/voice/
+            from ...voice import register_routes as _voice_register_routes
+
+            _voice_register_routes(app)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, config.WEB_HOST, config.WEB_PORT)

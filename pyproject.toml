@@ -27,6 +27,7 @@ dependencies = [
     "socksio>=1.0",
     "pywebpush>=1.14",
     "pyyaml>=6.0",
+    "edge-tts>=6.1.0",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +52,7 @@ build-backend = "setuptools.build_meta"
 include = ["claude_hermes*"]
 
 [tool.setuptools.package-data]
+"claude_hermes.voice" = ["static/*.html"]
 "claude_hermes.gateway.adapters" = [
     "web_static/*.html",
     "web_static/*.json",

@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#181716">
+<title>语音伴聊 · Wazir</title>
+<style>
+  :root{
+    --bg:#181716; --panel:#252320; --card:#2b2a27; --line:#3a3934;
+    --text:#ecebe3; --dim:#a5a094; --dim2:#716d61;
+    --accent:#d97757; --accent2:#c8613f; --err:#d1674a; --ok:#5aa469;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    overscroll-behavior:none;-webkit-font-smoothing:antialiased}
+  body{display:flex;flex-direction:column;min-height:100dvh}
+  header{display:flex;align-items:center;gap:12px;padding:14px 16px;
+    padding-top:calc(14px + env(safe-area-inset-top));border-bottom:1px solid var(--line)}
+  header a{color:var(--dim);text-decoration:none;font-size:20px;line-height:1;padding:4px}
+  header .title{font-weight:600;flex:1}
+  #status{font-size:13px;color:var(--dim);padding:4px 10px;border-radius:20px;background:var(--panel)}
+  #status.listening{color:var(--err)}
+  #status.thinking,#status.playing{color:var(--accent)}
+  main{flex:1;overflow-y:auto;padding:16px}
+  #transcript{display:flex;flex-direction:column;gap:12px;max-width:680px;margin:0 auto}
+  .msg{max-width:88%;padding:10px 14px;border-radius:14px;white-space:pre-wrap;word-break:break-word}
+  .msg.me{align-self:flex-end;background:var(--accent);color:#fff}
+  .msg.ai{align-self:flex-start;background:var(--card);border:1px solid var(--line)}
+  .msg.error{background:transparent;border:1px solid var(--err);color:var(--err)}
+  .msg.filler{background:transparent;border:none;color:var(--dim2);font-size:14px;
+    font-style:italic;padding:0 14px;max-width:100%}
+  .hint{text-align:center;color:var(--dim2);font-size:14px;padding:40px 20px}
+  footer{padding:20px 16px calc(20px + env(safe-area-inset-bottom));display:flex;
+    flex-direction:column;align-items:center;gap:14px}
+  #stopBtn{border:1px solid var(--err);color:var(--err);background:none;border-radius:20px;
+    padding:8px 20px;font-size:14px}
+  #talkBtn{width:120px;height:120px;border-radius:50%;background:var(--accent);color:#fff;
+    border:none;font-size:16px;font-weight:600;box-shadow:0 8px 24px rgba(217,119,87,.35);
+    transition:transform .15s ease, background .15s ease;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:none}
+  #talkBtn.recording{background:var(--err);transform:scale(1.08)}
+  #talkBtn:disabled{opacity:.5}
+</style>
+</head>
+<body>
+<header>
+  <a href="/" title="返回主界面">←</a>
+  <span class="title">语音伴聊</span>
+  <span id="status">空闲</span>
+</header>
+<main>
+  <div id="transcript">
+    <div class="hint">按住下面的圆钮说话,松手发送</div>
+  </div>
+</main>
+<footer>
+  <button id="stopBtn" hidden>■ 停</button>
+  <button id="talkBtn">按住说话</button>
+</footer>
+<script>
+"use strict";
+const TOKEN = localStorage.getItem("hermes_token") || "";
+const $ = s => document.querySelector(s);
+const transcriptEl = $("#transcript"), statusEl = $("#status"), talkBtn = $("#talkBtn"),
+      stopBtn = $("#stopBtn");
+
+let stream = null, recorder = null, chunks = [], pressTs = 0;
+let busy = false;
+let playQueue = [], playing = false;
+
+// ── 播放:Web Audio API,不用 <audio> 标签 ──────────────────────────────
+// <audio>.play() 在 iOS Safari 上"解锁"状态并不总是跨越"改 src 后再异步 play()"
+// 这种用法可靠地延续下去;AudioContext 只要在一次用户手势里 resume() 过一次,
+// 之后任意时刻 start() 一个新的 buffer source 都不再需要新的手势,更稳。
+let audioCtx = null, currentSource = null;
+
+function setStatus(text, cls){ statusEl.textContent = text; statusEl.className = cls || ""; }
+function clearHint(){ const h = transcriptEl.querySelector(".hint"); if(h) h.remove(); }
+function addMsg(kind, text){
+  clearHint();
+  const el = document.createElement("div");
+  el.className = "msg " + kind;
+  el.textContent = text;
+  transcriptEl.appendChild(el);
+  el.scrollIntoView({block:"end"});
+  return el;
+}
+
+// ── 音频解锁:首次按下时(用户手势内)真的起播一次静音 buffer 解锁 context ──────
+function unlockAudio(){
+  if(audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const buf = audioCtx.createBuffer(1, 1, 22050);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(audioCtx.destination);
+  src.start(0);
+}
+
+// ── 录音(整页生命周期复用同一个 stream,避免第二次 getUserMedia 把旧 track 静音)──
+async function ensureStream(){
+  if(!stream) stream = await navigator.mediaDevices.getUserMedia({audio:true});
+  return stream;
+}
+
+async function startRecording(){
+  if(busy) return;
+  unlockAudio();
+  try{ await ensureStream(); }
+  catch(e){ addMsg("ai error", "麦克风权限被拒绝,请到系统设置里允许"); return; }
+  chunks = [];
+  recorder = new MediaRecorder(stream);
+  recorder.ondataavailable = e=>{ if(e.data && e.data.size>0) chunks.push(e.data); };
+  pressTs = Date.now();
+  recorder.start();
+  talkBtn.classList.add("recording");
+  setStatus("聆听中…", "listening");
+}
+
+function stopRecording(){
+  if(!recorder || recorder.state === "inactive") return;
+  talkBtn.classList.remove("recording");
+  const dur = Date.now() - pressTs;
+  const rec = recorder;
+  recorder = null;
+  rec.onstop = ()=>{
+    if(dur < 500){ setStatus("空闲"); return; }  // 误触:太短就丢弃
+    const blob = new Blob(chunks, {type: rec.mimeType || "audio/webm"});
+    handleTurn(blob);
+  };
+  rec.stop();
+}
+
+talkBtn.addEventListener("pointerdown", e=>{ e.preventDefault(); startRecording(); });
+talkBtn.addEventListener("pointerup", stopRecording);
+talkBtn.addEventListener("pointercancel", stopRecording);
+talkBtn.addEventListener("pointerleave", e=>{ if(recorder && recorder.state==="recording") stopRecording(); });
+
+// ── 一整轮:录音直接以 multipart 传给 /voice/send,服务端转写完接着续跑同一条
+// SSE 流(先吐 event:transcript 回显文字,再是 text/sentence/done)——比"先
+// /voice/stt 拿文字、再单独发一次 /voice/send"省一整趟网络往返,手机上更明显。
+async function handleTurn(blob){
+  const fd = new FormData();
+  fd.append("audio", blob, "voice.webm");
+  await sendTurn(fd);
+}
+
+async function sendTurn(body){
+  busy = true; talkBtn.disabled = true; stopBtn.hidden = false;
+  setStatus("识别中…", "thinking");
+  const headers = {"X-Auth-Token": TOKEN};
+  const init = {method: "POST", headers};
+  if(body instanceof FormData) init.body = body;
+  else { headers["Content-Type"] = "application/json"; init.body = JSON.stringify(body); }
+
+  const finish = ()=>{ busy = false; talkBtn.disabled = false; stopBtn.hidden = true; setStatus("空闲"); };
+
+  let resp;
+  try{ resp = await fetch("/voice/send", init); }
+  catch(e){ addMsg("ai error", "连不上服务"); finish(); return; }
+  if(resp.status === 401){ authError(); finish(); return; }
+  if(!resp.ok || !resp.body){
+    addMsg("ai error", resp.status === 409 ? "上一轮还没说完" : "出错了");
+    finish(); return;
+  }
+
+  let aiEl = null, full = "";
+  const reader = resp.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  try{
+    while(true){
+      const {value, done} = await reader.read();
+      if(done) break;
+      buf += dec.decode(value, {stream:true});
+      let sep;
+      while((sep = buf.indexOf("\n\n")) >= 0){
+        const block = buf.slice(0, sep); buf = buf.slice(sep+2);
+        const ev = parseSseBlock(block);
+        if(!ev) continue;
+        if(ev.event === "transcript"){
+          addMsg("me", ev.data.text || "");
+          setStatus("思考中…", "thinking");
+        } else if(ev.event === "filler"){
+          addMsg("ai filler", ev.data.text || "");
+          playQueue.push(ev.data);
+          pumpPlayback();
+        } else if(ev.event === "text"){
+          if(!aiEl) aiEl = addMsg("ai", "");
+          full += ev.data.text || "";
+          renderAi(aiEl, full);
+        } else if(ev.event === "sentence"){
+          playQueue.push(ev.data);
+          pumpPlayback();
+        } else if(ev.event === "done"){
+          if(!aiEl) aiEl = addMsg("ai", "");
+          if(ev.data.full_text){ full = ev.data.full_text; renderAi(aiEl, full); }
+          if(ev.data.error){ aiEl.classList.add("error"); if(!full) aiEl.textContent = "⚠️ " + ev.data.error; }
+        }
+      }
+    }
+  }catch(e){ /* 流中断:下面统一收尾,不额外报错打扰用户 */ }
+  finish();
+}
+
+function parseSseBlock(block){
+  let event = "message", data = null;
+  for(const line of block.split("\n")){
+    if(line.startsWith("event:")) event = line.slice(6).trim();
+    else if(line.startsWith("data:")) data = line.slice(5).trim();
+  }
+  if(data == null) return null;
+  try{ return {event, data: JSON.parse(data)}; }catch(e){ return null; }
+}
+
+function renderAi(el, full){
+  // 屏幕文字就是纯粹的"念了什么就显示什么"的回显——模型输出的一切都会被朗读,
+  // 没有"只写不读"的屏幕专属内容(2026-07-07 去掉了那套机制)。
+  el.textContent = full;
+  el.scrollIntoView({block:"end"});
+}
+
+// ── 播放队列:顺序播完再放下一句;stop 会清空队列 ──────────────────────────
+function base64ToArrayBuffer(b64){
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+
+async function pumpPlayback(){
+  if(playing || playQueue.length === 0) return;
+  const item = playQueue.shift();
+  if(!item.audio_b64){ pumpPlayback(); return; }
+  playing = true;
+  setStatus("播放中…", "playing");
+  try{
+    if(audioCtx.state === "suspended") await audioCtx.resume();
+    const audioBuffer = await audioCtx.decodeAudioData(base64ToArrayBuffer(item.audio_b64));
+    await new Promise((resolve, reject)=>{
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioCtx.destination);
+      currentSource = source;
+      source.onended = resolve;
+      try{ source.start(0); }catch(e){ reject(e); }
+    });
+  }catch(e){ /* 解码/播放失败就跳过这句,不卡住队列 */ }
+  currentSource = null;
+  playing = false;
+  pumpPlayback();
+}
+
+stopBtn.addEventListener("click", ()=>{
+  playQueue = [];
+  if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
+  playing = false;
+  fetch("/voice/stop", {method:"POST", headers:{"X-Auth-Token":TOKEN}}).catch(()=>{});
+});
+
+function authError(){
+  addMsg("ai error", "口令失效,请回主界面重新登录");
+}
+</script>
+</body>
+</html>

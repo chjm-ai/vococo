@@ -182,6 +182,14 @@ STT_CLEANUP_MODEL: str = (
     or "Qwen/Qwen2.5-72B-Instruct"
 )
 
+# === 语音伴聊模式(实验性,见 docs/design/voice-companion/)===
+# 手机上像打电话一样跟 AI 说话。默认开;体验不好会整体移除,故独立成 VOICE_ 前缀。
+VOICE_ENABLED: bool = _parse_bool(os.environ.get("VOICE_ENABLED", ""), True)
+VOICE_TTS_VOICE: str = (
+    os.environ.get("VOICE_TTS_VOICE", "zh-CN-XiaoxiaoNeural").strip()
+    or "zh-CN-XiaoxiaoNeural"
+)
+
 # === 会话统一(跨入口连续)===
 # 开启时:CLI / TUI / Telegram / 飞书 都归到同一会话 SESSION_KEY,
 # "飞书问一半切 CLI 接着聊" 成立(单用户自用的默认)。关闭则按 平台:chat 隔离。
