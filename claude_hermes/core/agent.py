@@ -329,6 +329,21 @@ def _compat_base_key(
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
 
 
+# 强制 Agent 子代理走前台同步:claude-agent-sdk 的 CLI 默认把 Agent 工具异步化成后台任务
+# (立即返回 "Async agent launched",真正干活排到本轮 ResultMessage 之后以 task_* 消息上报)。
+# 而 hermes 每轮收到 ResultMessage 就关 client → 后台任务被腰斩、完成通知也没人消费,
+# 表现为「派完子代理就停,得用户再问一次」。这个官方开关让 CLI 把 Agent 改成同步
+# awaitCompletion:子代理在本轮内阻塞,结果喂回主 agent 当场续写综合正文。
+# 注:danger.py 拦 run_in_background=true 拦不住这个默认异步——CLI 默认异步时模型入参里
+# 根本没这个字段,那道 deny 只是模型显式请求后台时的双保险。
+_FORCE_FOREGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
+
+
+def _turn_env(provider_env: dict) -> dict:
+    """本轮传给 CLI 子进程的 env:cc-switch 供应商 env(base_url+key)叠加恒定的强制前台开关。"""
+    return {**provider_env, **_FORCE_FOREGROUND_ENV}
+
+
 async def stream_turn(
     history: list[Turn],
     user_text: str,
@@ -394,7 +409,7 @@ async def stream_turn(
             hooks=build_hooks(),  # PreToolUse:灾难拦截 + 危险操作审批闸
             skills=skills,
             cwd=cwd,  # 项目会话→该文件夹当工作根(自动加载其 CLAUDE.md/.claude);None=进程默认目录
-            env=provider_env,  # cc-switch 激活第三方时注入 base_url+key;官方为空
+            env=_turn_env(provider_env),  # cc-switch base_url+key + 恒定强制前台开关(见 _turn_env)
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
         )
 
