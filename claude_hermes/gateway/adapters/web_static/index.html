@@ -929,6 +929,7 @@ const S = {
   live: {},             // conv → 进行中回合的事件缓冲:任意会话(含后台)都记录,切回时重放重建流式气泡
   pending: {},          // conv → 待发送队列 [{id,text,images}]:上一个任务没结束时点发送,暂存,任务完成自动发
   pendId: 0,            // 待发送项自增 id,供删除定位
+  voiceRec: {},         // conv → {bubble}:语音转写中的占位气泡,按录音发起时所属会话记录,切走再切回能补出来
   convFilter: "all",
   rateStatus: {level:"ok", msg:"", lastErr:"", ts:0},  // ok|warn|err, 更新侧栏底部状态点
   dragSrc: null,        // 项目拖拽排序:正在被拖起的项目 hash
@@ -1266,8 +1267,11 @@ async function loadPrefs(){
 async function loadConvs(){
   const r = await api("/conversations"); const d = await r.json();
   const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
+  // 新建但还没发出第一条消息的本地会话(conv=local-xxx)后端还不认识,不在返回列表里;
+  // 合并时保留它,否则录音/转写等待期间只要有别的会话触发这次刷新,这条新会话就会被冲没
+  const locals = S.convs.filter(c=>String(c.conv).startsWith("local-"));
   // 全部会话(含主会话)按最近活跃排序,最新的排最前面
-  S.convs = [main, ...d.conversations].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
+  S.convs = [main, ...d.conversations, ...locals].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
   renderConvs();   // 会话刷新后同步标题栏
 }
 // 从 conv id 解析它属于哪个项目:p<hash>:<convid> → hash;否则 null(默认项目)
@@ -2027,6 +2031,7 @@ async function openConv(conv){
   }else{                                        // 新建会话 / 空会话:不闪骨架,清空后交给 updateEmpty 出欢迎屏
     $("#wrap").innerHTML=""; $("#convLoading").classList.remove("on");
   }
+  if(S.voiceRec[conv]) renderVoicePending(conv);  // 切回时该会话仍在转写 → 补出占位气泡,不然像是丢了
   if(conv && !String(conv).startsWith("local-")){
     try{
       const r=await api("/history?conv="+encodeURIComponent(conv)); const d=await r.json();
@@ -2734,30 +2739,53 @@ function stopRec(cancel){
   REC.cancel=!!cancel; clearInterval(REC.timer); REC.timer=null;
   try{ REC.mr.stop(); }catch(e){}
 }
+// 转写中占位气泡:按"录音发起时所属会话"存进 S.voiceRec,切走再切回能补出来(否则像是丢了)
+function renderVoicePending(conv){
+  const st=S.voiceRec[conv]; if(!st) return;
+  const b=addBubble("me","");
+  b.classList.add("voicebub");
+  b.innerHTML='<span class="vwait"><span class="sp"></span>转写中…</span>';
+  st.bubble=b;
+}
 async function onRecStop(){
   cleanupAudio();   // 停声波分析
   releaseMic();     // 立刻停掉麦克风流,灭掉 iOS 状态栏录音指示灯(权限已按站点记住,下次不再弹框)
   const blob=new Blob(REC.chunks,{type:REC.mime}); const mime=REC.mime;
   REC.mr=null;
   if(REC.cancel || blob.size<1200){ REC.state="idle"; setRecUI(); return; }
+  // 记住录音发起时所在的会话:转写这段时间用户可能已切到别的会话,完成后要发到这个会话而非当前会话
+  const conv=S.conv;
   // 点发送:立即收起录音条,在聊天区冒一个"我"的占位气泡(转写中…),不等结果
   REC.state="transcribing"; setRecUI();
-  const b=addBubble("me","");
-  b.classList.add("voicebub");
-  b.innerHTML='<span class="vwait"><span class="sp"></span>🎤 转写中…</span>';
+  S.voiceRec[conv]={};
+  renderVoicePending(conv);
   try{
     const ext = mime.includes("mp4")||mime.includes("mpeg")?"mp4":mime.includes("ogg")?"ogg":mime.includes("wav")?"wav":"webm";
     const fd=new FormData(); fd.append("audio", blob, "voice."+ext);
     const r=await api("/transcribe",{method:"POST",body:fd});
     const d=await r.json().catch(()=>({}));
+    const st=S.voiceRec[conv]; delete S.voiceRec[conv];
+    const here=S.conv===conv;   // 转写完成时是否还停留在发起录音的那个会话
     if(r.ok && d.text){
-      // 转写成功:文字回填占位气泡,再复用它自动发给 Claude(不重复冒泡)
-      b.classList.remove("voicebub"); b.textContent=d.text;
-      REC.state="idle";
-      await send(d.text, null, {reuseBubble:true, forceSend:true});
-    } else { voiceFail(b, d.error); REC.state="idle"; }
-  }catch(e){ voiceFail(b, "转写失败:"+e.message); REC.state="idle"; }
-  setRecUI();
+      if(here && st && st.bubble){
+        // 还在原会话:文字回填占位气泡,再复用它自动发给 Claude(不重复冒泡)
+        st.bubble.classList.remove("voicebub"); st.bubble.textContent=d.text;
+        await send(d.text, null, {reuseBubble:true, forceSend:true});
+      }else{
+        // 已切到别的会话:占位气泡早被清空,直接发到后台会话,靠历史/SSE 缓冲在切回时补出来;
+        // 若该会话还是未转正的本地新会话(local-xxx),后端不认识这个前缀,得先去掉
+        const realConv = String(conv).replace(/^local-/,"");
+        const payload={conv:realConv, text:d.text, images:[]};
+        await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+        if(realConv!==conv){ const c=S.convs.find(x=>x.conv===conv); if(c) c.conv=realConv; }
+        loadConvs();
+      }
+    } else if(here && st && st.bubble){ voiceFail(st.bubble, d.error); }
+  }catch(e){
+    const st=S.voiceRec[conv]; delete S.voiceRec[conv];
+    if(S.conv===conv && st && st.bubble) voiceFail(st.bubble, "转写失败:"+e.message);
+  }
+  REC.state="idle"; setRecUI();
 }
 // 转写没识别到内容:占位气泡改成"没听清"+重录按钮,绝不把空内容误发给 Claude
 function voiceFail(b, msg){
