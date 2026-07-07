@@ -32,7 +32,7 @@
     --shadow:0 10px 34px rgba(0,0,0,.45);
     --focus-ring:rgba(217,119,87,.2);
     --glow1:rgba(217,119,87,.4); --glow2:rgba(194,95,60,.4);
-    --sbw:9px;   /* 滚动条宽度,和下面 ::-webkit-scrollbar 保持一致,供顶栏/输入框补偿对齐用 */
+    --sbw:9px;   /* 滚动条宽度,和下面 ::-webkit-scrollbar 保持一致 */
   }
   /* ── 浅色:系统偏好浅色且用户未手动固定时 · Claude Code 暖米色 ────────── */
   @media(prefers-color-scheme:light){
@@ -168,13 +168,6 @@
      iOS 也会判定该元素"随 hover 变化"而要求点两下),改用左滑弹归档/删除 */
   @media(hover:hover){ .conv:hover .star,.conv:hover .ctime{opacity:0} .conv:hover .more{opacity:.6;pointer-events:auto} }
   @media(hover:none){ .conv .more{opacity:0;pointer-events:none} }
-  /* #messages 有鼠标滚轮的桌面端会常驻预留滚动条槽位(见下方 scrollbar-gutter:stable),
-     顶栏/输入框不滚动、没有这个槽位,原先两边内容居中基准不一致,滚动条一出现标题和正文就错位。
-     触屏是覆盖式滚动条、不占布局宽度,不需要这个补偿,只在 hover:hover(桌面鼠标)下生效。 */
-  @media(hover:hover){
-    header.bar{padding-right:calc(32px + var(--sbw))}
-    #composer{padding-right:calc(32px + var(--sbw))}
-  }
   /* 会话「更多」浮层菜单(挂在 body 上,避开侧栏 overflow 裁剪) */
   .convmenu{position:fixed;z-index:40;min-width:130px;
     background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:5px;
@@ -465,7 +458,7 @@
 
   #messages{flex:1;overflow-y:auto;scrollbar-gutter:stable;padding:18px 32px 8px;
     /* JS 实测到就用精确顶栏高;没测到(或时机太早)时兜底也要含顶部安全区,
-       否则刘海机上第一条消息会钻进半透明顶栏。max 取两者较大者,双保险。 */
+       否则刘海机上第一条消息会被不透明顶栏盖住看不见。max 取两者较大者,双保险。 */
     padding-top:calc(18px + max(var(--header-h, 0px), 62px + env(safe-area-inset-top)));
     padding-bottom:calc(8px + var(--composer-h, 104px));
     -webkit-overflow-scrolling:touch;position:relative;
@@ -615,12 +608,21 @@
   #empty .sug:hover{border-color:var(--accent)}
   #empty .sug:active{transform:scale(.96)}
 
-  /* 输入区:全透明,桌面端底部留间距 */
-  #composer{background:transparent;padding:0 32px;
-    position:absolute;bottom:0;left:0;right:0;z-index:10;
+  /* #composer 只做「悬浮 + 滑动隐藏」的壳,不带背景/内边距——背景和内边距挪到
+     .combg 这层实心遮罩上;::before 是遮罩上方一小截模糊渐隐条,让滚上来的消息
+     不是硬切进纯色背景,而是先模糊、再淡出。 */
+  #composer{position:absolute;bottom:0;left:0;right:0;z-index:10;
     transition:transform .35s cubic-bezier(.4,0,.2,1)}
+  #composer::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:28px;
+    backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+    mask-image:linear-gradient(to top,#000,transparent);
+    -webkit-mask-image:linear-gradient(to top,#000,transparent);
+    pointer-events:none}
+  /* .combg 宽度撑满整行,填充和页面一致的不透明背景色,盖住 #messages 滚动上来的文字。
+     padding 只留左右和下(贴近底部安全区的一侧),上=0(贴 #messages 那一侧不留缝)。 */
+  #composer .combg{width:100%;background:var(--bg2);padding:0 32px}
   @media(min-width:641px){
-    #composer{padding-bottom:12px}
+    #composer .combg{padding-bottom:12px}
   }
   /* 顶栏始终可见,输入框不随滚动隐藏 */
   #composer .cwrap{max-width:820px;margin:0 auto}
@@ -715,10 +717,10 @@
     #sidebar.open{transform:translateX(0);box-shadow:0 4px 16px rgba(0,0,0,.22)}
     #hamb{display:flex}
     #backdrop.show{display:block}
-    /* 移动端左右留白收窄:桌面 32px 在窄屏太挤,回到 16px */
+    /* 移动端左右留白收窄:桌面 32px 在窄屏太挤,回到 16px;上下不额外加(见 .combg 基础规则) */
     #messages,#convLoading{padding-left:16px;padding-right:16px}
     header.bar{padding-left:16px;padding-right:16px}
-    #composer{padding-left:16px;padding-right:16px}
+    #composer .combg{padding-left:16px;padding-right:16px}
   }
   /* 桌面宽屏:基础字号调小(手机保持 16px 不变,避免 iOS 聚焦缩放) */
   @media(min-width:761px){
@@ -867,30 +869,32 @@
     </div>
     <button id="scrollDownBtn" aria-label="滚到底部" title="滚到底部" onclick="scrollDownSmooth()">↓</button>
     <form id="composer" autocomplete="off">
-      <div class="cwrap">
-        <div id="pending"></div>
-        <div id="thumbs"></div>
-        <div class="inrow">
-          <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
-          <div class="inbar">
-            <button type="button" id="imgBtn">＋</button>
-            <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
-            <span class="spacer"></span>
-            <div id="modelBox">
-              <button type="button" id="modelBtn" title="切换模型">
-                <span id="modelName">模型</span><span class="caret chev down"></span>
-              </button>
-              <div id="modelPop" hidden></div>
+      <div class="combg">
+        <div class="cwrap">
+          <div id="pending"></div>
+          <div id="thumbs"></div>
+          <div class="inrow">
+            <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
+            <div class="inbar">
+              <button type="button" id="imgBtn">＋</button>
+              <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
+              <span class="spacer"></span>
+              <div id="modelBox">
+                <button type="button" id="modelBtn" title="切换模型">
+                  <span id="modelName">模型</span><span class="caret chev down"></span>
+                </button>
+                <div id="modelPop" hidden></div>
+              </div>
+              <button type="submit" id="sendBtn">↑</button>
             </div>
-            <button type="submit" id="sendBtn">↑</button>
           </div>
-        </div>
-        <div id="recRow" aria-label="录音中,点右侧发送或点左侧叉取消">
-          <button type="button" id="recCancel" title="取消">✕</button>
-          <span class="rdot"></span>
-          <canvas id="recWave"></canvas>
-          <span id="recTime">0:00</span>
-          <button type="button" id="recSend" title="发送">↑</button>
+          <div id="recRow" aria-label="录音中,点右侧发送或点左侧叉取消">
+            <button type="button" id="recCancel" title="取消">✕</button>
+            <span class="rdot"></span>
+            <canvas id="recWave"></canvas>
+            <span id="recTime">0:00</span>
+            <button type="button" id="recSend" title="发送">↑</button>
+          </div>
         </div>
       </div>
       <input type="file" id="file" accept="image/*" multiple hidden>
