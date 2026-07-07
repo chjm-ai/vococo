@@ -29,5 +29,6 @@ config.py 路径/常量;providers.py 多供应商切换
 细节见 CONTEXT.md「危险分级/审批闸」。
 
 ## 运维 / 排障
-worktree 里禁止切回 main 分支(必报错);重启只用 restart_self 工具或 deploy/restart.sh,禁手搓进程查杀。
+合并 worktree 改动回 main:`zsh deploy/merge-main.sh`(可加 `--restart` 顺带重启);worktree 里禁止切回 main 分支(必报错)。
+重启只用 restart_self 工具或 deploy/restart.sh,禁手搓进程查杀。
 完整坑清单 + 查会话脚本用法 → 见 OPERATIONS.md。
