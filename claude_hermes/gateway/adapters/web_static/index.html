@@ -2306,10 +2306,17 @@ function handleEvent(e){
       finalizeStream(e.text);
       if(e.is_error){
         if(errBubble) errBubble.classList.add("err");
-        // 检测限额/过载关键字,更新侧栏状态
-        const el=(e.error||"").toLowerCase();
-        if(/rate|429|quota|limit|overloaded/i.test(el)) setRateStatus("warn", "最近遇到限额/过载", e.error);
-        else setRateStatus("err", "", e.error);
+        // 有 api_error_status(429/529/5xx等)= 后端已确认是模型服务商那边的错,
+        // 直接按状态码分类;没有才退回关键词猜测(网络/进程异常等)
+        const st=e.api_error_status;
+        if(st===429) setRateStatus("warn", "最近遇到限额/过载", e.error);
+        else if(st===529) setRateStatus("warn", "Claude 服务过载", e.error);
+        else if(st) setRateStatus("err", `Claude 服务出错(${st})`, e.error);
+        else {
+          const el=(e.error||"").toLowerCase();
+          if(/rate|429|quota|limit|overloaded/i.test(el)) setRateStatus("warn", "最近遇到限额/过载", e.error);
+          else setRateStatus("err", "", e.error);
+        }
       }else{ setRateStatus("ok","",""); }
       setMeta(e); loadConvs(); flushPending(e.conv); break; }
     case "message": // 命令回复 / 报错 / cron 推送
