@@ -148,9 +148,9 @@
   .conv:hover .star,.conv:hover .ctime{opacity:0}
   .conv:hover .more{opacity:.6;pointer-events:auto}
   .conv .more:hover,.conv .more.on{color:var(--text);background:var(--card);opacity:1}
-  /* 触屏无 hover:「:active」会让首次点击被吞(需点两下才生效的经典坑),
-     改为常驻显示「⋯」+ 常驻隐藏时间,两者都是静态状态,不受点击时机影响 */
-  @media(hover:none){ .conv .more{opacity:.55;pointer-events:auto} .conv .ctime{opacity:0} }
+  /* 触屏无 hover:「:active」会吞首次点击(需点两下的经典坑),故用静态方案——
+     常驻显示「⋯」,并给行右侧留出空位,让时间与「⋯」错开、都可见不重叠 */
+  @media(hover:none){ .conv{padding-right:34px} .conv .more{opacity:.55;pointer-events:auto} }
   /* 会话「更多」浮层菜单(挂在 body 上,避开侧栏 overflow 裁剪) */
   .convmenu{position:fixed;z-index:40;min-width:130px;
     background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:5px;
