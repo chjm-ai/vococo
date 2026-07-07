@@ -660,8 +660,9 @@
     background:transparent;color:var(--dim);font-size:15px;line-height:1;display:inline-flex;
     align-items:center;justify-content:center}
   #pending .pi .pdel:hover{background:var(--err);color:#fff}
+  /* 没图片时也保留这 3px:输入框 focus 态的外发光阴影要靠这点余量,
+     不然贴着上边界会被裁掉一截 */
   #thumbs{display:flex;gap:8px;margin-bottom:3px;flex-wrap:wrap}
-  #thumbs:empty{display:none}
   #thumbs .t{position:relative}
   #thumbs img{width:56px;height:56px;object-fit:cover;border-radius:10px;border:1px solid var(--line2)}
   #thumbs .x{position:absolute;top:-6px;right:-6px;background:var(--err);color:#fff;border-radius:50%;
