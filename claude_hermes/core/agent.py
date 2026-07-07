@@ -428,6 +428,7 @@ async def stream_turn(
         tool_meta: dict[tuple[str, int], tuple[str, str]] = {}  # -> (tool_id, name)
         cost_usd: float | None = None
         is_error = False
+        compact_seen = False  # 本轮 CLI 是否已自己压缩过(见下面 Compacted 分支)
         context_tokens = 0
         turn_tokens = 0
         input_fresh = 0
@@ -544,6 +545,7 @@ async def stream_turn(
                         # CLI 压缩了上下文(autocompact 阈值≈窗口 83%,或手动):
                         # 透传标记,让各端显示「已自动压缩」而非无感丢细节。
                         if getattr(msg, "subtype", "") == "compact_boundary":
+                            compact_seen = True
                             meta = (getattr(msg, "data", None) or {}).get(
                                 "compact_metadata"
                             ) or {}
@@ -597,6 +599,8 @@ async def stream_turn(
 
             # 收工、会话尚未断开 —— 此刻问 SDK 当前窗口的真实占用
             # (等价 CLI /context)。失败(旧 CLI 不支持等)则静默保留上面的兜底值。
+            cu: dict | None = None
+            total = 0
             try:
                 cu = await client.get_context_usage()
                 total = int(cu.get("totalTokens", 0) or 0)
@@ -607,6 +611,58 @@ async def stream_turn(
                     ctx_window_val = raw_max
             except Exception:
                 ctx_window_val = context_window(used_model)  # 兜底:按模型名估窗口
+
+            # 安全网:CLI 自带的 autocompact 有时不触发(实测:崩溃重启后靠 resume
+            # 冷启动重放 transcript,内部记账没跟上,某会话真实用量能滚到 109% 窗口
+            # 都没压过一次)。这里用刚问到的真实用量兜底判断,该压没压就替它压一次,
+            # 防止越滚越大、下一轮直接拖过整个窗口拖到回复不连贯。
+            #
+            # MCP 工具调用更要紧盯:claude-agent-sdk-python#531 报过一个未修的坑——
+            # CLI 内建的逐次压缩检查只覆盖内置工具(Bash/Read/Edit等)的顺序调用,
+            # 自建 MCP 工具(hermes 的记忆/定时/发消息等全是 MCP)和并行工具批次会
+            # 绕开这层检查。本轮只要用了 MCP 工具,阈值收紧到 65%,不再等到 83%。
+            if (
+                cu
+                and clean_finish
+                and not compact_seen
+                and cu.get("isAutoCompactEnabled", True)
+            ):
+                mcp_tool_calls = sum(1 for n in tool_calls if n.startswith("mcp__"))
+                fallback_ratio = 0.65 if mcp_tool_calls else 0.83
+                candidates = [int(ctx_window_val * fallback_ratio)]
+                official_threshold = int(cu.get("autoCompactThreshold") or 0)
+                if official_threshold:
+                    candidates.append(official_threshold)
+                threshold = min(candidates)  # 两个来源取更紧的那个,MCP 场景下不轻信官方阈值
+                if total and threshold and total >= threshold:
+                    try:
+                        await client.query("/compact")
+                        with anyio.move_on_after(120):
+                            async for msg in msgs:
+                                if (
+                                    isinstance(msg, SystemMessage)
+                                    and getattr(msg, "subtype", "") == "compact_boundary"
+                                ):
+                                    compact_seen = True
+                                    meta = (getattr(msg, "data", None) or {}).get(
+                                        "compact_metadata"
+                                    ) or {}
+                                    yield Compacted(
+                                        trigger=str(meta.get("trigger", "") or "safety-net")
+                                    )
+                                    break
+                                if isinstance(msg, ResultMessage):
+                                    break
+                        # 压完再问一次,把这轮落库的用量换成压缩后的真实值
+                        try:
+                            cu2 = await client.get_context_usage()
+                            t2 = int(cu2.get("totalTokens", 0) or 0)
+                            if t2:
+                                context_tokens = t2
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
 
             # 干净收工 → 回池保温,同会话下一轮零冷启动(哈希/sid 对不上会被池拒收)
             if pooling and clean_finish and sess_id:
