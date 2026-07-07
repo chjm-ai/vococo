@@ -199,6 +199,7 @@ class _WebSink(Sink):
                 "text": reply.text or ("⚠️ 出了点问题,请重试" if reply.is_error else "(空回复)"),
                 "is_error": reply.is_error,
                 "error": reply.error or "",
+                "api_error_status": reply.api_error_status,
                 "ctx_tokens": meta.get("ctx_tokens", 0),
                 "total_tokens": meta.get("total_tokens", 0),
                 "ctx_window": meta.get("ctx_window", 0),

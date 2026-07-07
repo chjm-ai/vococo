@@ -332,19 +332,22 @@ async def converse(
         _err_msg = str(exc)
     finally:
         danger.reset_cwd(cwd_token)
-    # 流式异常 → 构造一条错误回复,确保 sink.done() 始终能发(前端不会空泡)
+    # 流式异常(SDK/进程层面,连 ResultMessage 都没拿到)→ 构造一条错误回复,
+    # 确保 sink.done() 始终能发(前端不会空泡)
     if reply is None and _err_msg:
         from ..core.agent import AgentReply as _AR  # 懒加载,避免循环引用
+        from ..core.agent import describe_llm_error
 
-        err_lower = _err_msg.lower()
-        if any(kw in err_lower for kw in ("rate", "429", "quota", "limit", "overloaded")):
-            hint = "⚠️ Claude 限额/过载,稍等片刻再试"
-        else:
-            hint = "⚠️ 出了点问题,请重试"
         reply = _AR(
-            text=hint, tool_calls=[], cost_usd=None, is_error=True,
-            error=_err_msg,
+            text=describe_llm_error(None, _err_msg), tool_calls=[], cost_usd=None,
+            is_error=True, error=_err_msg,
         )
+    elif reply is not None and reply.is_error and not reply.text.strip():
+        # 流正常收尾,但 ResultMessage 报了模型层报错(如 429/529)且没吐出任何正文
+        # —— 不补提示的话前端只会显示"(空回复)",用户会误以为是咱们服务器坏了。
+        from ..core.agent import describe_llm_error
+
+        reply.text = describe_llm_error(reply.api_error_status, reply.error)
     if reply is not None:
         # 最后一刷:确保 refresh 前最后 0.7s 内输出的内容也进 draft
         if _draft_full:

@@ -112,6 +112,7 @@ class AgentReply:
     cost_usd: float | None
     is_error: bool
     error: str = ""  # 错误详情(如 rate limit / overload),空=无错误
+    api_error_status: int | None = None  # 模型 API 失败请求的 HTTP 状态码,非空=确定是模型层报错
     context_tokens: int = 0  # 当前上下文占用(input+cache),≈ 塞进窗口的总量
     turn_tokens: int = 0  # 本轮新增吞吐(input+output),累计即"消耗"
     context_window: int = 200_000  # 该模型的上下文窗口
@@ -120,6 +121,33 @@ class AgentReply:
     output_tokens: int = 0  # 本轮输出
     model: str = ""  # 实际使用的模型
     sdk_session_id: str = ""  # 本轮 SDK 会话 id,存回后下一轮 resume 它(真·多轮历史)
+
+
+def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
+    """把一轮报错翻译成用户能看懂的提示,并标明是不是模型服务商那边的问题。
+
+    api_error_status 有值 = CLI 明确报了失败请求的 HTTP 状态码,能确定是 Claude
+    官方 API 那边出的错,不是咱们服务器坏了;没有则退回关键词猜测(网络/进程异常等,
+    真假参半,措辞留有余地)。
+    """
+    if api_error_status == 429:
+        return "⚠️ Claude 触发限流(429),不是咱们服务器的问题,稍等片刻再试"
+    if api_error_status == 529:
+        return "⚠️ Claude 官方服务过载(529),对方那边负载高,不是咱们服务器的问题,稍等再试"
+    if api_error_status in (500, 502, 503):
+        return f"⚠️ Claude 官方服务出错(状态码 {api_error_status}),不是咱们这边的问题,稍等再试"
+    if api_error_status in (401, 403):
+        return f"⚠️ 调用被拒绝(状态码 {api_error_status}),八成是密钥/权限配置问题,请联系维护者"
+    if api_error_status == 400:
+        return "⚠️ 请求被 Claude 拒绝(400),可能是发送内容有问题,换个问法或联系维护者"
+    if api_error_status:
+        return f"⚠️ Claude API 返回错误(状态码 {api_error_status}),不是咱们服务器的问题,稍等再试"
+    dl = detail.lower()
+    if any(kw in dl for kw in ("rate", "429", "quota", "limit", "overloaded", "529")):
+        return "⚠️ Claude 限额/过载,稍等片刻再试"
+    if detail:
+        return f"⚠️ 出了点问题:{detail[:120]}"
+    return "⚠️ 出了点问题,请重试"
 
 
 # === 流式事件类型 ===
@@ -428,6 +456,8 @@ async def stream_turn(
         tool_meta: dict[tuple[str, int], tuple[str, str]] = {}  # -> (tool_id, name)
         cost_usd: float | None = None
         is_error = False
+        err_detail = ""  # 模型层报错详情(ResultMessage.result/errors),空=无
+        api_error_status: int | None = None  # 失败请求的 HTTP 状态码(429/529等),None=非模型层报错
         compact_seen = False  # 本轮 CLI 是否已自己压缩过(见下面 Compacted 分支)
         context_tokens = 0
         turn_tokens = 0
@@ -559,6 +589,17 @@ async def stream_turn(
                     elif isinstance(msg, ResultMessage):
                         cost_usd = getattr(msg, "total_cost_usd", None)
                         is_error = bool(getattr(msg, "is_error", False))
+                        if is_error:
+                            # api_error_status:CLI 报的失败请求 HTTP 状态码(429/529/5xx等),
+                            # 有它就能确定是模型服务商那边出的错,不是咱们服务器的问题。
+                            api_error_status = getattr(msg, "api_error_status", None)
+                            errs = getattr(msg, "errors", None) or []
+                            result_txt = (getattr(msg, "result", None) or "").strip()
+                            err_detail = (
+                                result_txt
+                                or "; ".join(str(x) for x in errs)
+                                or (getattr(msg, "subtype", "") or "")
+                            )
                         sess_id = getattr(msg, "session_id", None) or sess_id
                         u = getattr(msg, "usage", None) or {}
                         in_t = int(u.get("input_tokens", 0) or 0)
@@ -681,6 +722,8 @@ async def stream_turn(
                 tool_calls=tool_calls,
                 cost_usd=cost_usd,
                 is_error=is_error,
+                error=err_detail,
+                api_error_status=api_error_status,
                 context_tokens=context_tokens,
                 turn_tokens=turn_tokens,
                 context_window=ctx_window_val,
