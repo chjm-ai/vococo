@@ -609,14 +609,12 @@
   #empty .sug:active{transform:scale(.96)}
 
   /* #composer 只做「悬浮 + 滑动隐藏」的壳,不带背景/内边距——背景和内边距挪到
-     .combg 这层实心遮罩上;::before 是遮罩上方一小截模糊渐隐条,让滚上来的消息
-     不是硬切进纯色背景,而是先模糊、再淡出。 */
+     .combg 这层实心遮罩上;::before 是遮罩上方一小截渐隐条(纯色实心 → 同色半透明,
+     不用模糊),让滚上来的消息不是硬切进纯色背景,而是柔和淡出。 */
   #composer{position:absolute;bottom:0;left:0;right:0;z-index:10;
     transition:transform .35s cubic-bezier(.4,0,.2,1)}
   #composer::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:28px;
-    backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
-    mask-image:linear-gradient(to top,#000,transparent);
-    -webkit-mask-image:linear-gradient(to top,#000,transparent);
+    background:linear-gradient(to top, var(--bg2), color-mix(in srgb, var(--bg2) 40%, transparent));
     pointer-events:none}
   /* .combg 宽度撑满整行,填充和页面一致的不透明背景色,盖住 #messages 滚动上来的文字。
      padding 只留左右和下(贴近底部安全区的一侧),上=0(贴 #messages 那一侧不留缝)。 */
@@ -663,6 +661,7 @@
     align-items:center;justify-content:center}
   #pending .pi .pdel:hover{background:var(--err);color:#fff}
   #thumbs{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  #thumbs:empty{display:none}
   #thumbs .t{position:relative}
   #thumbs img{width:56px;height:56px;object-fit:cover;border-radius:10px;border:1px solid var(--line2)}
   #thumbs .x{position:absolute;top:-6px;right:-6px;background:var(--err);color:#fff;border-radius:50%;
