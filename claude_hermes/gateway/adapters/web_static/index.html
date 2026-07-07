@@ -138,9 +138,22 @@
   #collapseBtn:hover{background:var(--panel2);color:var(--text)}
   #collapseBtn:active{transform:scale(.9)}
   #collapseBtn .ic{width:16px;height:16px}
-  .conv{margin-bottom:1px;gap:8px;color:var(--dim);position:relative}
+  .conv{margin-bottom:1px;gap:8px;color:var(--dim);position:relative;overflow:hidden}
   .conv.active{color:var(--text)}
   @media(hover:hover){ .conv:hover{color:var(--text)} }
+  /* 左滑露出归档/删除(cvact 默认平移到行外,靠 overflow:hidden 裁掉;
+     滑动时 cvbody 与 cvact 反向同步平移,互换着露出/藏起) */
+  .conv .cvbody{display:flex;align-items:center;gap:8px;width:100%;transition:transform .22s ease}
+  .conv.swiping .cvbody{transition:none}
+  .conv.swiped .cvbody{transform:translateX(-72px)}
+  .conv .cvact{position:absolute;top:-7px;right:-10px;bottom:-7px;width:72px;display:flex;
+    transform:translateX(100%);transition:transform .22s ease}
+  .conv.swiping .cvact{transition:none}
+  .conv.swiped .cvact{transform:translateX(0)}
+  .conv .cvact button{flex:1;border:none;display:flex;align-items:center;justify-content:center;color:#fff;cursor:pointer}
+  .conv .cvact button .ic{width:16px;height:16px}
+  .conv .cvact .cvarch{background:var(--dim2)}
+  .conv .cvact .cvdel{background:var(--err)}
   .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
   .conv .livedot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}   /* AI 正在回复:闪烁圆点 */
   @keyframes livepulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
@@ -151,7 +164,7 @@
     font-size:16px;line-height:1;color:var(--dim2);padding:2px 6px;border-radius:7px;transition:opacity .16s,color .16s,background .16s}
   .conv .more:hover,.conv .more.on{color:var(--text);background:var(--card);opacity:1}
   /* 桌面 hover:显示 ⋯、隐藏时间/星标;触屏彻底不挂 .conv:hover(即便只改子元素样式,
-     iOS 也会判定该元素"随 hover 变化"而要求点两下),改用长按整行弹菜单 */
+     iOS 也会判定该元素"随 hover 变化"而要求点两下),改用左滑弹归档/删除 */
   @media(hover:hover){ .conv:hover .star,.conv:hover .ctime{opacity:0} .conv:hover .more{opacity:.6;pointer-events:auto} }
   @media(hover:none){ .conv .more{opacity:0;pointer-events:none} }
   /* 会话「更多」浮层菜单(挂在 body 上,避开侧栏 overflow 裁剪) */
@@ -1282,13 +1295,27 @@ function renderConvs(){
     for(const c of convs){
       if(!c.pinned){const arch=!!c.archived;if(S.convFilter==="archived"&&!arch)continue;if(S.convFilter==="active"&&arch)continue;}
       const e=el("div","conv ingroup"+(c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
-      if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; e.append(dot); }   // 该会话正在流式 → 闪烁圆点
-      const ct=el("div","ct"); ct.textContent=c.title||"新对话"; e.append(ct);
-      const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; e.append(tmEl); }   // 会话时刻:名称右侧
-      if(c.pinned){ const star=el("span","star"); star.textContent="★"; e.append(star); }   // 主会话:右侧弱化星标
-      else { const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; e.append(more);
-        bindLongPress(e, more, c.conv); }   // 触屏:⋯ 隐藏不拦点,改用长按整行弹菜单
-      e.onclick=()=>{ if(e._lpFired){ e._lpFired=false; return; } openConv(c.conv); };   // 长按刚弹过菜单 → 吞掉这次 click,不切换
+      const body=el("div","cvbody");
+      if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }   // 该会话正在流式 → 闪烁圆点
+      const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
+      const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }   // 会话时刻:名称右侧
+      if(c.pinned){ const star=el("span","star"); star.textContent="★"; body.append(star); }   // 主会话:右侧弱化星标
+      else { const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
+      e.append(body);
+      if(!c.pinned){
+        const act=el("div","cvact");
+        const arch=el("button","cvarch"); arch.innerHTML=ic("folder"); arch.title=c.archived?"取消归档":"归档";
+        arch.onclick=ev=>{ ev.stopPropagation(); closeSwipe(e); toggleArchive(c.conv); };
+        const del=el("button","cvdel"); del.innerHTML=ic("trash"); del.title="删除";
+        del.onclick=ev=>{ ev.stopPropagation(); closeSwipe(e); delConv(c.conv); };
+        act.append(arch,del); e.append(act);
+        bindSwipe(e, body, act);   // 触屏:左滑露出归档/删除,不用长按(iOS 用户少用长按)
+      }
+      e.onclick=()=>{
+        if(e._justSwiped){ e._justSwiped=false; return; }   // 刚滑动完的这次 click 不触发切换
+        if(e.classList.contains("swiped")){ closeSwipe(e); return; }   // 已展开:点一下先收起
+        openConv(c.conv);
+      };
       box.append(e);
     }
   }
@@ -1780,16 +1807,43 @@ function closeConvMenu(){
   if(convMenuBtn){ convMenuBtn.classList.remove("on"); convMenuBtn=null; }
   if(convMenuEl){ convMenuEl.remove(); convMenuEl=null; }
 }
-// 触屏长按整行弹「更多」菜单:⋯ 在触屏下隐藏且不拦点,单击=切换会话,长按≈500ms=弹菜单
-function bindLongPress(row, anchor, conv){
-  let timer=null;
-  const start=()=>{ clearTimeout(timer); timer=setTimeout(()=>{ row._lpFired=true; openConvMenu(anchor,conv); }, 500); };
-  const cancel=()=>{ clearTimeout(timer); };
-  row.addEventListener("touchstart", start, {passive:true});
-  row.addEventListener("touchmove", cancel, {passive:true});   // 手指滑动(滚动列表)→ 取消,不误触
-  row.addEventListener("touchend", cancel);
-  row.addEventListener("touchcancel", cancel);
+// 触屏左滑会话行露出归档/删除(iOS 邮件同款手势,比长按更符合触屏习惯)
+const SWIPE_W=72;   // 需与 CSS .cvact 宽度一致
+function closeSwipe(row){ row.classList.remove("swiped"); }
+function closeAllSwipes(except){
+  $("#convList").querySelectorAll(".conv.swiped").forEach(r=>{ if(r!==except) closeSwipe(r); });
 }
+function bindSwipe(row, body, act){
+  let startX=0, startY=0, dx=0, lock=null, dragging=false;
+  row.addEventListener("touchstart", ev=>{
+    if(ev.touches.length!==1) return;
+    startX=ev.touches[0].clientX; startY=ev.touches[0].clientY;
+    dx=0; lock=null; dragging=false;
+    row.classList.add("swiping");
+  }, {passive:true});
+  row.addEventListener("touchmove", ev=>{
+    if(ev.touches.length!==1) return;
+    const x=ev.touches[0].clientX, y=ev.touches[0].clientY, ddx=x-startX, ddy=y-startY;
+    if(lock===null) lock = Math.abs(ddx)>Math.abs(ddy)+4 ? "x" : (Math.abs(ddy)>Math.abs(ddx)+4 ? "y" : null);
+    if(lock!=="x") return;   // 竖向滑动交给列表滚动,不拦截
+    dragging=true;
+    const base = row.classList.contains("swiped") ? -SWIPE_W : 0;
+    dx = Math.max(-SWIPE_W, Math.min(0, base+ddx));
+    body.style.transform="translateX("+dx+"px)"; act.style.transform="translateX("+(SWIPE_W+dx)+"px)";
+  }, {passive:true});
+  const end=()=>{
+    row.classList.remove("swiping");
+    body.style.transform=""; act.style.transform="";
+    if(dragging){
+      row._justSwiped=true;
+      if(dx<=-SWIPE_W/2){ closeAllSwipes(row); row.classList.add("swiped"); } else closeSwipe(row);
+    }
+    dragging=false;
+  };
+  row.addEventListener("touchend", end);
+  row.addEventListener("touchcancel", end);
+}
+$("#convList").addEventListener("scroll", ()=>closeAllSwipes());
 function openConvMenu(btn, conv){
   if(convMenuBtn===btn){ closeConvMenu(); return; }   // 再点一次同一个 → 收起
   closeConvMenu();
@@ -1811,6 +1865,7 @@ function openConvMenu(btn, conv){
 }
 document.addEventListener("click", closeConvMenu);       // 点空白处关闭
 $("#convList").addEventListener("scroll", closeConvMenu); // 列表滚动时关闭,避免菜单错位
+document.addEventListener("click", e=>{ if(!e.target.closest(".conv")) closeAllSwipes(); });  // 点空白处收起滑开的行
 
 // 项目分组「更多」浮层菜单(单例):点 ⋯ 弹出,目前只放「删除项目」
 let projMenuEl=null, projMenuBtn=null;
