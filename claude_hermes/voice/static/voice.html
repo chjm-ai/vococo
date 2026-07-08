@@ -99,7 +99,7 @@
 </head>
 <body>
 <header>
-  <a href="/" title="返回主界面" id="backLink"></a>
+  <a href="/" title="展开侧栏" id="backLink"></a>
   <span class="title">语音伴聊</span>
   <span id="status">空闲</span>
   <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
@@ -146,7 +146,7 @@ const transcriptEl = $("#transcript"), statusEl = $("#status"), talkBtn = $("#ta
 // ── 线框图标(替代实体 emoji,统一 currentColor 描边风格)。跟 index.html 的
 // ICONS/ic() 是同一套约定(纯数据,两处各放一份,20 来行没必要单独抽模块)。
 const ICONS = {
-  back:'<polyline points="15 18 9 12 15 6"/>',
+  panel:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18"/>',
   tasks:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
   mic:'<path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/>',
   mute:'<path d="M1 1l22 22"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><path d="M15 9.34V6a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2"/><path d="M19 10v2a7 7 0 0 1-.11 1.23"/><path d="M12 19v3"/><path d="M8 22h8"/>',
@@ -156,7 +156,14 @@ const ICONS = {
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 function setIcon(el, name){ el.innerHTML = ic(name); }
-setIcon($("#backLink"), "back");
+setIcon($("#backLink"), "panel");
+// 优先 history.back():走 bfcache 秒回上一屏(带回侧边栏),不打一次新请求；
+// 只有直接从外部/PWA 图标进来、没有可回退历史时,才退化成真正的整页跳转。
+$("#backLink").onclick = e=>{
+  e.preventDefault();
+  if (history.length > 1) history.back();
+  else location.href = "/";
+};
 setIcon($("#tasksIcon"), "tasks");
 setIcon($("#stopIcon"), "stop");
 setIcon($("#startIcon"), "mic");
