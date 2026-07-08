@@ -221,13 +221,17 @@ VOICE_FALSE_POSITIVE_TIMEOUT_MS: int = int(
 # 调了两轮,真机反馈仍然偏灵敏,大幅提到 0.7(逼近上限 1.0)/1000ms——用户
 # 明确要求两个都"大幅提升"。副作用:开口打断的响应会更慢、对轻声/尾音的
 # 识别可能变迟钝,真机测试若矫枉过正需要往回收,见
-# docs/design/voice-companion/03-phase2-实现记录.md。
+# docs/design/voice-companion/03-phase2-实现记录.md。threshold 加上声纹识别
+# (见 voiceprint.py)配合下来真机反馈已经不错(环境噪音基本不再被误识别成
+# 语气词了),threshold 不用再调;silence_duration_ms 继续从 1000→1500,
+# 减少"一段完整的话中间停顿稍长就被切成好几句"的情况——代价同上,停顿判定
+# 更久意味着说完到系统反应过来的间隔更长一点。
 DASHSCOPE_REALTIME_MODEL: str = (
     os.environ.get("DASHSCOPE_REALTIME_MODEL", "qwen3-asr-flash-realtime").strip()
     or "qwen3-asr-flash-realtime"
 )
 VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
-VOICE_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_VAD_SILENCE_MS", "1000"))
+VOICE_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_VAD_SILENCE_MS", "1500"))
 # 回声兜底:AI 自己的声音从手机扬声器漏回麦克风,DashScope 会把它当成真实
 # 用户开口识别出来,导致 AI 打断自己形成死循环——echoCancellation 只是缓解不是
 # 根治(见 03-phase2-实现记录.md)。打断转写出来的内容如果跟 AI 刚说的话高度
@@ -243,6 +247,24 @@ VOICE_SELF_ECHO_THRESHOLD: float = float(os.environ.get("VOICE_SELF_ECHO_THRESHO
 # 播放延迟就够;调太大会有把用户真提的、恰好和上一轮用词很像的追问也误伤的风险。
 VOICE_POST_DONE_ECHO_GUARD_MS: int = int(
     os.environ.get("VOICE_POST_DONE_ECHO_GUARD_MS", "1500")
+)
+
+# 2026-07-08:声纹识别——分清"这是本人在说话"还是"背景里别人在说话"。
+# 免提场景背景有人说话时,普通降噪分不出"哪个人声是你",这块专门加了目标
+# 说话人识别(见 voice/voiceprint.py)。异步、不卡对话速度(见实现文档"方案
+# B")——转写完立刻正常起一轮,声纹比对在后台并行跑,判定"不像是你"再把这
+# 一轮撤回。默认开启,体验不好可以关掉退回没有声纹这层的行为。
+VOICE_VOICEPRINT_ENABLED: bool = _parse_bool(os.environ.get("VOICE_VOICEPRINT_ENABLED", ""), True)
+# 余弦相似度阈值:新样本跟声纹参照质心的相似度低于这个值,判定"不是本人"。
+# 凭经验给的起点,没有真实用户音频做过校准,真机用下来大概率需要重新调
+# (太低会漏过背景说话人,太高会把本人的正常语气变化也误判成"不是你")。
+VOICE_VOICEPRINT_MATCH_THRESHOLD: float = float(
+    os.environ.get("VOICE_VOICEPRINT_MATCH_THRESHOLD", "0.75")
+)
+# 声纹参照样本数少于这个值时,只用来建立参照、不做拦截判定(冷启动阶段,
+# 参照本身还不可信,不能拿来筛掉任何人)。
+VOICE_VOICEPRINT_MIN_SAMPLES: int = int(
+    os.environ.get("VOICE_VOICEPRINT_MIN_SAMPLES", "3")
 )
 
 # === 会话统一(跨入口连续)===

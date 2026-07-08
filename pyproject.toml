@@ -28,6 +28,10 @@ dependencies = [
     "pywebpush>=1.14",
     "pyyaml>=6.0",
     "edge-tts>=6.1.0",
+    "onnxruntime==1.23.2",
+    "librosa>=0.11.0",
+    "numba==0.62.1",
+    "setuptools>=83.0.0",
 ]
 
 [project.optional-dependencies]
@@ -55,6 +59,7 @@ include = ["claude_hermes*"]
 "claude_hermes.voice" = [
     "static/*.html",
     "static/*.js",
+    "models/*.onnx",
 ]
 "claude_hermes.gateway.adapters" = [
     "web_static/*.html",

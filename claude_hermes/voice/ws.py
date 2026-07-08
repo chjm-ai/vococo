@@ -29,6 +29,12 @@ qwen3-asr-flash-realtime 实时语音 WS(见 _connect_upstream)——真机实�
 真打断确认(commit=True)都把那句话原文记进 `self._carried_text`,下一次
 `_start_turn` 会把它拼在新说的话前面一起问模型,一次性给出结合了这几句的
 回复——见 `_carried_text` 上的注释。
+
+2026-07-08 声纹识别(见 voiceprint.py、03-phase2-实现记录.md"声纹识别"一节):
+免提场景背景有人说话时,降噪分不出"哪个人声是你",这里加了目标说话人识别
+——异步、不卡对话速度(方案 B):转写完立刻正常起一轮回复,声纹比对
+(`_voiceprint_gate`)在后台并行跑,判定"不像是本人"就把这一轮撤回。第一次
+用没有声纹参照,前几句只建立参照不拦截;参照跨会话持久化,不用每次重新学。
 """
 from __future__ import annotations
 
@@ -45,7 +51,7 @@ from aiohttp import web
 
 from .. import config
 from ..core.agent import Done, TextDelta, ToolStarted
-from . import prompts, session, task_tools, tts
+from . import prompts, session, task_tools, tts, voiceprint
 
 _STATE_IDLE = "idle"
 _STATE_CAPTURING = "capturing"
@@ -189,6 +195,13 @@ class VoiceWsSession:
         # 让回声判断在"刚说完话的一小段时间内"也能生效,不用非得在打断场景才查。
         self._recent_emitted_sentences: list[str] = []
         self._recent_emitted_at = 0.0
+        # 声纹识别(见 voiceprint.py):区分"这是本人在说话"还是"背景里别人在
+        # 说话"。参照跨会话持久化(load_profile 读磁盘上次存的),这里只是
+        # 每条连接各自持有一份内存副本,更新后立刻存盘。
+        self._voice_profile = voiceprint.load_profile()
+        # 当前这一句正在被识别的原始 PCM——从进入 capturing 状态开始攒,
+        # completed 事件到来时读出来做声纹提取,见 _set_state/on_audio_frame。
+        self._capturing_pcm = bytearray()
 
         self._upstream_sess: aiohttp.ClientSession | None = None
         self._upstream_ws: aiohttp.ClientWebSocketResponse | None = None
@@ -206,6 +219,7 @@ class VoiceWsSession:
         await self._send("state", state=state)
         if state == _STATE_CAPTURING:
             self._arm_capturing_watchdog()
+            self._capturing_pcm = bytearray()  # 新一句开始,清空上一句攒的音频
         else:
             self._clear_capturing_watchdog()
 
@@ -237,6 +251,8 @@ class VoiceWsSession:
         self._upstream_consumer = asyncio.ensure_future(self._consume_upstream())
 
     async def on_audio_frame(self, data: bytes) -> None:
+        if self.state == _STATE_CAPTURING:
+            self._capturing_pcm.extend(data)  # 供声纹提取用,见 _voiceprint_gate
         if self._upstream_ws is None or self._upstream_ws.closed:
             return
         try:
@@ -311,7 +327,16 @@ class VoiceWsSession:
             # pending 还没超时就等到了新的有效转写 → 确认打断,提交截断
             await self._resolve_pending(commit=True, played_count=self._last_played_progress)
             await self._send("transcript", text=text)
+            # 声纹核验要用的原始音频,得在 _start_turn 把状态切走(_capturing_pcm
+            # 会在下一次进 capturing 时被清空)之前先取一份快照。
+            pcm_snapshot = bytes(self._capturing_pcm)
             await self._start_turn(text)
+            # 方案 B(见 03-phase2-实现记录.md"声纹识别"一节):不卡这一轮的
+            # 起步速度,正常立刻开始回复,声纹比对在后台并行跑,判定"不是
+            # 本人"再把这一轮撤回——比对本身只要几十毫秒,但改成同步等待
+            # 没必要,能异步就异步。
+            if config.VOICE_VOICEPRINT_ENABLED and self._current_turn is not None:
+                asyncio.ensure_future(self._voiceprint_gate(pcm_snapshot, self._current_turn))
         # speech_stopped/session.created/session.updated/增量 .text/
         # conversation.item.created/input_audio_buffer.committed/session.finished
         # 都只是过程性事件,不是决策点,忽略。
@@ -391,6 +416,37 @@ class VoiceWsSession:
             await self._send("resumed")
             reason = "超时" if timed_out else "转写为空"
             print(f"[voice/ws] 打断回滚({reason}) elapsed={elapsed_ms:.0f}ms", flush=True)
+
+    # ── 声纹核验(异步,不卡对话速度,见 03-phase2-实现记录.md"声纹识别"一节)──
+    async def _voiceprint_gate(self, pcm: bytes, turn: "TurnContext") -> None:
+        """判断刚才那句话是不是本人说的;判定不是就把这一轮撤回。
+
+        turn 是发起这次核验时的那个 TurnContext——比对跑完的时候这一轮可能
+        已经被别的事情替换掉了(比如正常说完了、或者被真实的开口打断了),
+        必须确认 self._current_turn 还是同一个对象才动手撤回,不然会误杀
+        一轮完全不相关的、后来的对话。
+        """
+        loop = asyncio.get_event_loop()
+        embedding = await loop.run_in_executor(None, voiceprint.extract_embedding, pcm)
+        if embedding is None:
+            return  # 音频太短提不出可靠声纹,不拦截也不纳入声纹参照
+        profile = self._voice_profile
+        score = voiceprint.match_score(embedding, profile)
+        # 参照样本还不够(冷启动阶段)时不做拦截判定,只用来建立参照——第一次
+        # 用这个功能时没有任何参照可比,不能拿一个空/单薄的参照去筛掉任何人。
+        is_cold_start = score is None or len(profile) < config.VOICE_VOICEPRINT_MIN_SAMPLES
+        if not is_cold_start and score < config.VOICE_VOICEPRINT_MATCH_THRESHOLD:
+            if self._current_turn is turn:
+                self._current_turn = None
+                turn.task.cancel()
+                asyncio.ensure_future(_swallow_cancelled(turn.task))
+                await self._set_state(_STATE_IDLE)
+                print(f"[voice/ws] 声纹不匹配,撤回这一轮 score={score:.2f}", flush=True)
+            return  # 不管撤没撤回,不匹配的样本都不该纳入声纹参照
+        self._voice_profile = voiceprint.update_profile(
+            profile, embedding, config.VOICE_VOICEPRINT_MATCH_THRESHOLD
+        )
+        voiceprint.save_profile(self._voice_profile)
 
     # ── 正常一轮:与 routes.py 的 _handle_send 同构,只是搬到 WS 上 ─────
     async def _start_turn(self, user_text: str) -> None:

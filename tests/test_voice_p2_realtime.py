@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import aiohttp
@@ -24,9 +25,11 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+import numpy as np
+
 from claude_hermes import config
 from claude_hermes.core.agent import AgentReply, Done, TextDelta
-from claude_hermes.voice import executor, routes, session, tasks, tts, ws
+from claude_hermes.voice import executor, routes, session, tasks, tts, voiceprint, ws
 
 
 @pytest.fixture
@@ -40,6 +43,10 @@ def voice_db(isolated, monkeypatch):
     monkeypatch.setattr(session, "_DB", None)
     monkeypatch.setattr(tasks, "_DB", None)
     monkeypatch.setattr(ws, "_active_ws", None)
+    # 默认关掉声纹核验:这批测试没有真实音频(FakeUpstreamWs 只推事件、不走
+    # on_audio_frame),不该让每轮都额外起一个声纹后台任务——声纹自己的行为
+    # 由下面专门的 test_voiceprint_gate_* 用例覆盖,开着单独测。
+    monkeypatch.setattr(config, "VOICE_VOICEPRINT_ENABLED", False)
     executor._running.clear()
     yield
     if session._DB is not None:
@@ -848,3 +855,214 @@ async def test_ws_turn_blocks_concurrent_voice_send(voice_db, monkeypatch):
             assert resp.status == 409
 
             gate.set()
+
+
+# ── 声纹核验(方案 B:异步、不卡对话速度,见 03-phase2-实现记录.md)────────────
+async def _send_audio_and_wait_forwarded(wsc, fake_ws) -> None:
+    """发一段够长的假 PCM(够 extract_embedding 不因为太短被跳过),轮询确认
+    服务端已经处理过这一帧(fake_ws.sent 出现新记录)——_capturing_pcm 的
+    append 发生在转发之前,看到转发说明缓冲区也已经更新过了。
+    """
+    await wsc.send_bytes(b"\x01\x02" * 4000)
+    for _ in range(50):
+        if fake_ws.sent:
+            return
+        await asyncio.sleep(0.02)
+
+
+@pytest.mark.anyio
+async def test_voiceprint_gate_rejects_mismatched_speaker_and_cancels_turn(voice_db, monkeypatch):
+    """真机场景:免提对话进行到一半,背景有人插了一句话——声纹核验发现这段
+    音频跟已经建立的声纹参照方向对不上,应该悄悄把这一轮撤回,不落库、不让
+    AI 真的接着回答陌生人的话。
+    """
+    monkeypatch.setattr(config, "VOICE_VOICEPRINT_ENABLED", True)
+    # 预先建立一份声纹参照(样本数超过 MIN_SAMPLES,不再是冷启动)。
+    voiceprint.save_profile(
+        voiceprint.VoiceProfile(embeddings=[np.array([1.0, 0.0], dtype=np.float32)] * 5)
+    )
+
+    def fake_extract(pcm):
+        time.sleep(0.02)  # 模拟真实提取的耗时,让 _run_turn 先跑起来,行为更贴近真机
+        return np.array([0.0, 1.0], dtype=np.float32)  # 跟参照方向正交 → 判定不是本人
+
+    monkeypatch.setattr(voiceprint, "extract_embedding", fake_extract)
+
+    fake_ws = FakeUpstreamWs()
+    connected = asyncio.Event()
+    _patch_upstream(monkeypatch, fake_ws, connected)
+
+    run_turn_calls = []
+    never_done = asyncio.Event()
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        run_turn_calls.append(prompt_text)
+        yield TextDelta("不该被听到的回答。")
+        await never_done.wait()  # 声纹核验应该会在这之前就把这一轮撤回
+        yield Done(AgentReply(text="不该跑到这", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+    monkeypatch.setattr(tts, "synthesize", lambda text, voice: _none_coro())
+
+    async with TestClient(TestServer(_app())) as client:
+        async with client.ws_connect("/voice/ws") as wsc:
+            await _hello_and_wait_connected(wsc, connected)
+
+            fake_ws.push_event("input_audio_buffer.speech_started")
+            await wsc.receive_json()  # state: capturing
+            await _send_audio_and_wait_forwarded(wsc, fake_ws)
+
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed",
+                transcript="背景那个人说的话",
+            )
+
+            # 声纹核验是异步的,轮询等它把状态收回 idle(这轮不会有 done 消息)。
+            state = None
+            for _ in range(100):
+                try:
+                    msg = await asyncio.wait_for(wsc.receive_json(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
+                if msg["type"] == "state":
+                    state = msg["state"]
+                    if state == "idle" and run_turn_calls:
+                        break
+
+            never_done.set()  # 收尾:放开被取消前挂起的协程,避免测试留下悬空 task
+
+    assert len(run_turn_calls) == 1  # 起了一轮(方案 B:先起再纠正)
+    assert "背景那个人说的话" in run_turn_calls[0]
+    assert state == "idle"  # 但被声纹核验撤回了
+    history = session.load_history()
+    assert not any(h.user == "背景那个人说的话" for h in history)  # 没落库
+
+
+@pytest.mark.anyio
+async def test_voiceprint_gate_cold_start_does_not_reject(voice_db, monkeypatch):
+    """第一次用这个功能,还没有声纹参照——不管这次识别出的方向是什么,都不该
+    被拦截,只用来建立参照(冷启动阶段参照本身还不可信,不能拿来筛人)。
+    """
+    monkeypatch.setattr(config, "VOICE_VOICEPRINT_ENABLED", True)
+    monkeypatch.setattr(
+        voiceprint, "extract_embedding", lambda pcm: np.array([0.3, 0.7], dtype=np.float32)
+    )
+
+    fake_ws = FakeUpstreamWs()
+    connected = asyncio.Event()
+    _patch_upstream(monkeypatch, fake_ws, connected)
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        yield Done(AgentReply(text="正常回复", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+    monkeypatch.setattr(tts, "synthesize", lambda text, voice: _none_coro())
+
+    async with TestClient(TestServer(_app())) as client:
+        async with client.ws_connect("/voice/ws") as wsc:
+            await _hello_and_wait_connected(wsc, connected)
+            fake_ws.push_event("input_audio_buffer.speech_started")
+            await wsc.receive_json()
+            await _send_audio_and_wait_forwarded(wsc, fake_ws)
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed", transcript="第一次说的话"
+            )
+            done = None
+            while done is None:
+                msg = await wsc.receive_json()
+                if msg["type"] == "done":
+                    done = msg
+
+    assert done["full_text"] == "正常回复"  # 冷启动阶段不会被拦
+
+    for _ in range(50):
+        if len(voiceprint.load_profile()) >= 1:
+            break
+        await asyncio.sleep(0.02)
+    assert len(voiceprint.load_profile()) == 1  # 这句话被采纳进了声纹参照
+
+
+@pytest.mark.anyio
+async def test_voiceprint_gate_accepts_matching_speaker_and_grows_profile(voice_db, monkeypatch):
+    """声纹方向跟已有参照一致 → 正常放行、profile 继续增长。"""
+    monkeypatch.setattr(config, "VOICE_VOICEPRINT_ENABLED", True)
+    voiceprint.save_profile(
+        voiceprint.VoiceProfile(embeddings=[np.array([1.0, 0.0], dtype=np.float32)] * 5)
+    )
+    monkeypatch.setattr(
+        voiceprint, "extract_embedding", lambda pcm: np.array([1.0, 0.0], dtype=np.float32)
+    )
+
+    fake_ws = FakeUpstreamWs()
+    connected = asyncio.Event()
+    _patch_upstream(monkeypatch, fake_ws, connected)
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        yield Done(AgentReply(text="正常回复", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+    monkeypatch.setattr(tts, "synthesize", lambda text, voice: _none_coro())
+
+    async with TestClient(TestServer(_app())) as client:
+        async with client.ws_connect("/voice/ws") as wsc:
+            await _hello_and_wait_connected(wsc, connected)
+            fake_ws.push_event("input_audio_buffer.speech_started")
+            await wsc.receive_json()
+            await _send_audio_and_wait_forwarded(wsc, fake_ws)
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed", transcript="本人说的话"
+            )
+            done = None
+            while done is None:
+                msg = await wsc.receive_json()
+                if msg["type"] == "done":
+                    done = msg
+
+    assert done["full_text"] == "正常回复"
+
+    for _ in range(50):
+        if len(voiceprint.load_profile()) >= 6:
+            break
+        await asyncio.sleep(0.02)
+    assert len(voiceprint.load_profile()) == 6  # 原来 5 条 + 这次新增 1 条
+
+
+@pytest.mark.anyio
+async def test_voiceprint_disabled_skips_gate_entirely(voice_db, monkeypatch):
+    """总开关关掉时,不应该起任何声纹后台任务——即便参照和转写内容明显对不上,
+    也照常放行,行为等价于没有这个功能。"""
+    voiceprint.save_profile(
+        voiceprint.VoiceProfile(embeddings=[np.array([1.0, 0.0], dtype=np.float32)] * 5)
+    )
+    monkeypatch.setattr(
+        voiceprint, "extract_embedding", lambda pcm: np.array([0.0, 1.0], dtype=np.float32)
+    )
+    # VOICE_VOICEPRINT_ENABLED 保持 voice_db 夹具里的 False,不覆盖。
+
+    fake_ws = FakeUpstreamWs()
+    connected = asyncio.Event()
+    _patch_upstream(monkeypatch, fake_ws, connected)
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        yield Done(AgentReply(text="正常回复", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+    monkeypatch.setattr(tts, "synthesize", lambda text, voice: _none_coro())
+
+    async with TestClient(TestServer(_app())) as client:
+        async with client.ws_connect("/voice/ws") as wsc:
+            await _hello_and_wait_connected(wsc, connected)
+            fake_ws.push_event("input_audio_buffer.speech_started")
+            await wsc.receive_json()
+            await _send_audio_and_wait_forwarded(wsc, fake_ws)
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed", transcript="随便谁说的话"
+            )
+            done = None
+            while done is None:
+                msg = await wsc.receive_json()
+                if msg["type"] == "done":
+                    done = msg
+
+    assert done["full_text"] == "正常回复"  # 关掉总开关就完全不拦
+    assert len(voiceprint.load_profile()) == 5  # 参照也不会被这次改动
