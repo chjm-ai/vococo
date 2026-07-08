@@ -94,15 +94,18 @@ class GatewayRunner:
         model = model or config.MODEL
         if core.is_command(inc.text):
             outcome = core.handle_command(inc.text, key, model)
-            if outcome.new_model:
-                self.models[key] = outcome.new_model
-                if inc.platform == "web":
-                    settings_store.set_web_default_model(outcome.new_model)
-            if outcome.choice is not None:
-                await adapter.present_choice(inc.chat_id, outcome.choice)
-            elif outcome.reply:
-                await adapter.send(inc.chat_id, outcome.reply)
-            return
+            # handled=False 且没回复 = 不是系统命令(比如 "/skill名"),原样当成
+            # 普通消息往下走交给 agent;真正的未知命令仍带 reply,走下面短路分支。
+            if outcome.handled or outcome.reply:
+                if outcome.new_model:
+                    self.models[key] = outcome.new_model
+                    if inc.platform == "web":
+                        settings_store.set_web_default_model(outcome.new_model)
+                if outcome.choice is not None:
+                    await adapter.present_choice(inc.chat_id, outcome.choice)
+                elif outcome.reply:
+                    await adapter.send(inc.chat_id, outcome.reply)
+                return
         # 设置本轮路由上下文(供 ask_user 工具反问时找到该发给谁),随 contextvar 传入工具
         token = clarify.set_current(key, adapter, inc.chat_id)
         clarify.mark_active(key)  # 全局登记"我在跑了",供 restart_self 等查"还有谁没结束"
