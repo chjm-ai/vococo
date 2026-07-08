@@ -31,7 +31,7 @@ from ... import config, providers
 from ...core.agent import AgentReply
 from ...memory import session_store
 from .. import settings_store
-from ..core import MODEL_CHOICES, Choice, Sink
+from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
 from .base import ImageAttachment, Incoming
 from .web_push import PUSH
 
@@ -634,6 +634,15 @@ class WebAdapter:
                 "default": active_model,
                 "choices": [[v, v] for v, _ in choices],
             }
+        )
+
+    async def _handle_commands(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        # 斜杠命令清单 = COMMAND_LIST(单一来源,和 TG /help、setMyCommands 共用),
+        # 供输入框 "/" 触发的快捷菜单渲染 + 前缀过滤。
+        return web.json_response(
+            {"commands": [{"name": n, "desc": d} for n, d in COMMAND_LIST]}
         )
 
     # ── 语音转文字 ───────────────────────────────────────────────────────
@@ -1263,6 +1272,7 @@ class WebAdapter:
                 web.post("/projects/remove", self._handle_project_remove),
                 web.post("/projects/reorder", self._handle_project_reorder),
                 web.get("/models", self._handle_models),
+                web.get("/commands", self._handle_commands),
                 web.get("/history", self._handle_history),
                 web.get("/image", self._handle_image),
                 web.post("/transcribe", self._handle_transcribe),
