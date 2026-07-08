@@ -1,8 +1,8 @@
-"""语音模式的 aiohttp 路由:独立页面 + stt + 对话 SSE + 停止。
+"""语音模式的 aiohttp 路由:stt + 对话 SSE + 停止 + 任务板。
 
 鉴权:web.py 的 _security_mw 只管跨源拦截和安全头,真正校验 WEB_AUTH_TOKEN 的是各
-handler 自己(见 web.py 的 _ok_token/_guard)。这里复刻同一形态,voice.html 复用主
-界面登录后存在 localStorage 的同一枚 token(同源共享),不必再单独登录一次。
+handler 自己(见 web.py 的 _ok_token/_guard)。这里复刻同一形态,主界面里的通话视图
+复用登录后存在 localStorage 的同一枚 token(同源共享),不必再单独登录一次。
 """
 from __future__ import annotations
 
@@ -40,12 +40,11 @@ def _guard(request: web.Request) -> web.Response | None:
     return None
 
 
-async def _handle_page(request: web.Request) -> web.Response:
-    try:
-        html = (_STATIC / "voice.html").read_text(encoding="utf-8")
-    except OSError:
-        html = "<h1>voice.html 缺失</h1>"
-    return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
+async def _handle_page_gone(request: web.Request) -> web.Response:
+    # 独立 /voice 页已退休(2026-07-09 起语音通话并入主 SPA 的通话视图,见
+    # gateway/adapters/web_static/index.html 的 #callView);旧书签/主屏快捷方式
+    # 一律回落主界面。
+    raise web.HTTPFound("/")
 
 
 async def _handle_config(request: web.Request) -> web.Response:
@@ -245,7 +244,7 @@ def register_routes(app: web.Application) -> None:
     """挂载语音模式全部路由。仅当 config.VOICE_ENABLED 时,web.py 才会调用本函数。"""
     app.add_routes(
         [
-            web.get("/voice", _handle_page),
+            web.get("/voice", _handle_page_gone),
             web.get("/voice/config", _handle_config),
             web.post("/voice/stt", _handle_stt),
             web.post("/voice/send", _handle_send),
