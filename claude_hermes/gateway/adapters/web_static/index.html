@@ -388,6 +388,11 @@
 
   /* 主区 */
   main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative;background:var(--bg2);overflow:hidden}
+  /* #chatMain 和 #callView 都是 main 标签,上面这条 main{display:flex} 是作者样式,
+     会盖掉浏览器默认的 [hidden]{display:none}(UA 样式在层叠里天然让位于作者样式,
+     跟选择器优先级无关)——两边互斥显隐都得补一条这样的覆盖,不然 openCallView()
+     切 hidden 属性没用,#app 的 flex 布局会把两个 main 各分一半宽度摆成左右分屏。 */
+  #chatMain[hidden]{display:none}
   header.bar{padding:11px 32px;
     padding-top:calc(11px + env(safe-area-inset-top));
     background:var(--bar-bg);backdrop-filter:blur(14px);
