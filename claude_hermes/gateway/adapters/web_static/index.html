@@ -683,6 +683,7 @@
   #cmdPop .ci .cd{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim);font-size:12.5px}
   #cmdPop .ci:hover,#cmdPop .ci.active{background:var(--panel2)}
   #cmdPop .empty{padding:9px 11px;font-size:12.5px;color:var(--dim2)}
+  #cmdPop .cmdsep{height:1px;margin:5px 7px;background:var(--line2)}
   #ta{width:100%;background:none;border:none;color:var(--text);resize:none;font:inherit;
     min-height:46px;max-height:180px;padding:2px 4px;outline:none;line-height:1.5}
   #ta::placeholder{color:var(--dim2)}
@@ -935,7 +936,8 @@ const S = {
   lastId: 0,            // 已处理的最大事件编号,用于断线重连后去重
   models: {default:"", choices:[]},  // /models 拉到的可选模型
   model: "",            // 当前会话使用的模型(空=用默认)
-  commands: [],          // /commands 拉到的斜杠命令清单 [{name,desc}]
+  commands: [],          // /commands 拉到的系统斜杠命令清单 [{name,desc}]
+  skills: [],            // /commands 拉到的已启用 skill 清单 [{name,desc}]
   cmd: {open:false, items:[], active:0},  // 斜杠命令菜单当前状态
   git: null,            // 当前项目会话的 git 状态(/conv/git 返回);非项目会话为 null
   histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁
@@ -1135,20 +1137,29 @@ async function loadModels(){
   try{ const r=await api("/models"); S.models=await r.json(); renderModelChip(); }catch(e){}
 }
 
-// ── 斜杠命令菜单 ──────────────────────────────────────────────────────────
+// ── 斜杠命令菜单(系统命令 + skill,两段中间一条分隔线)────────────────────
 async function loadCommands(){
-  try{ const r=await api("/commands"); const d=await r.json(); S.commands=d.commands||[]; }catch(e){}
+  try{
+    const r=await api("/commands"); const d=await r.json();
+    S.commands=d.commands||[]; S.skills=d.skills||[];
+  }catch(e){}
 }
 function cmdMatches(prefix){
   const p=prefix.toLowerCase();
-  return S.commands.filter(c=>c.name.toLowerCase().startsWith(p));
+  const cmds=S.commands.filter(c=>c.name.toLowerCase().startsWith(p)).map(c=>Object.assign({kind:"cmd"},c));
+  const skills=S.skills.filter(c=>c.name.toLowerCase().startsWith(p)).map(c=>Object.assign({kind:"skill"},c));
+  return cmds.concat(skills);
 }
 function renderCmdPop(){
   const pop=$("#cmdPop");
   if(!S.cmd.items.length){ pop.innerHTML='<div class="empty">没有匹配的命令</div>'; return; }
-  pop.innerHTML=S.cmd.items.map((c,i)=>
-    '<button type="button" class="ci'+(i===S.cmd.active?" active":"")+'" data-i="'+i+'">'+
-      '<span class="cn">/'+esc(c.name)+'</span><span class="cd">'+esc(c.desc)+'</span></button>').join("");
+  let html="", sepDone=false;
+  S.cmd.items.forEach((c,i)=>{
+    if(c.kind==="skill" && !sepDone){ html+='<div class="cmdsep"></div>'; sepDone=true; }
+    html+='<button type="button" class="ci'+(i===S.cmd.active?" active":"")+'" data-i="'+i+'">'+
+      '<span class="cn">/'+esc(c.name)+'</span><span class="cd">'+esc(c.desc)+'</span></button>';
+  });
+  pop.innerHTML=html;
   pop.querySelectorAll(".ci").forEach(b=>{ b.onclick=()=>pickCmd(+b.dataset.i); });
 }
 function openCmdMenu(prefix){
@@ -1167,8 +1178,8 @@ function pickCmd(i){
 // 只在"整条消息就是斜杠命令前缀,还没打空格"时弹出;打了空格说明已在填参数,收起菜单
 function checkCmdMenu(){
   const v=$("#ta").value;
-  const m=/^\/([a-zA-Z一-龥]*)$/.exec(v);
-  if(m && S.commands.length) openCmdMenu(m[1]); else closeCmdMenu();
+  const m=/^\/([a-zA-Z0-9_一-龥-]*)$/.exec(v);
+  if(m && (S.commands.length||S.skills.length)) openCmdMenu(m[1]); else closeCmdMenu();
 }
 function modelShort(id){
   if(!id) return "模型";

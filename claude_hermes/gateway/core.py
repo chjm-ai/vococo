@@ -467,7 +467,19 @@ def handle_command(text: str, session_key: str, current_model: str) -> CommandOu
         )
     if cmd in ("/suggest", "/建议"):
         return _handle_suggest(arg, session_key)
+    if cmd[1:] in _enabled_skill_names():
+        # 不是系统命令,是「/skill 名」调用:不拦截、不回复,原样交给 agent。
+        # SDK 的 claude_code 原生 system prompt 自带"看到 /xxx 就当 skill 调用"的指令,
+        # 交给 agent 后它会自己识别并调 Skill 工具。
+        return CommandOutcome(handled=False)
     return CommandOutcome(handled=False, reply=f"未知命令 {cmd} · /help 看命令")
+
+
+def _enabled_skill_names() -> set[str]:
+    """当前对 agent 可见(已启用)的 skill 名集合,小写。用于放行 "/skill名" 穿透到 agent。"""
+    from . import settings_store
+
+    return {s["name"].lower() for s in settings_store.list_skills() if s["enabled"]}
 
 
 def _origin_from_session_key(session_key: str) -> dict | None:
