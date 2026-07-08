@@ -509,6 +509,29 @@ class WebAdapter:
         main["conv"] = "main"
         return web.json_response({"main": main, "conversations": convs})
 
+    async def _handle_voice_sidebar(self, request: web.Request) -> web.Response:
+        """侧边栏"语音任务"固定分组:主语音会话 + 各后台任务会话。
+
+        跟 _handle_conversations 一个模板,只是数据源换成 voice-chat:/voice-task: 前缀
+        （见 03-phase2-实现记录.md 存储统一改动一节)。任务行的 conv 字段用完整 key
+        (不剥前缀)——resolve_session_key 的透传分支要吃完整字符串。
+        """
+        if (g := self._guard(request)) is not None:
+            return g
+        from ...voice import tasks as voice_tasks  # 懒加载,避免非语音场景也引入这个包
+
+        main = session_store.session_summary("voice-chat:main")
+        main.update(key="voice-chat:main", conv="voice-chat:main", title="语音对话", pinned=True)
+        task_convs = session_store.list_sessions("voice-task:")
+        for c in task_convs:
+            c["conv"] = c["key"]
+            task_id = c["key"].split(":", 1)[1] if ":" in c["key"] else c["key"]
+            row = voice_tasks.get(task_id)
+            if row is not None:
+                c["task_status"] = row["status"]
+                c["title"] = row["title"]
+        return web.json_response({"main": main, "tasks": task_convs})
+
     # ── 项目 ─────────────────────────────────────────────────────────────
     async def _handle_projects(self, request: web.Request) -> web.Response:
         """项目列表(侧边栏按项目分组用)。"""
@@ -1190,6 +1213,13 @@ class WebAdapter:
             f"{name}.png", "image/png", {"Cache-Control": "no-cache, no-store, must-revalidate"}
         )
 
+    async def _handle_shared_css(self, request: web.Request) -> web.Response:
+        # index.html 的 CSS 变量 + 消息气泡样式抽出来的公共样式表,voice.html 也引它,
+        # 免得语音页面重新发明一套视觉语言(见 03-phase2-实现记录.md)。
+        return self._static_file(
+            "shared.css", "text/css", {"Cache-Control": "public, max-age=3600"}
+        )
+
     async def _handle_push_config(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
@@ -1263,6 +1293,7 @@ class WebAdapter:
                 web.get("/favicon.ico", self._handle_favicon),
                 web.get("/wazir-mark.svg", self._handle_mark),
                 web.get("/wazir-logos", self._handle_logos),
+                web.get("/shared.css", self._handle_shared_css),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.get("/push/config", self._handle_push_config),
                 web.post("/push/subscribe", self._handle_push_subscribe),
@@ -1272,6 +1303,7 @@ class WebAdapter:
                 web.post("/send", self._handle_send),
                 web.post("/abort", self._handle_abort),
                 web.get("/conversations", self._handle_conversations),
+                web.get("/voice/sidebar", self._handle_voice_sidebar),
                 web.get("/projects", self._handle_projects),
                 web.get("/browse", self._handle_browse),
                 web.post("/projects/create", self._handle_project_create),
@@ -1300,6 +1332,10 @@ class WebAdapter:
                 web.post("/file/save", self._handle_file_save),
             ]
         )
+        if config.VOICE_ENABLED:  # 实验性语音伴聊模式,见 claude_hermes/voice/
+            from ...voice import register_routes as _voice_register_routes
+
+            _voice_register_routes(app)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, config.WEB_HOST, config.WEB_PORT)

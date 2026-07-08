@@ -160,26 +160,111 @@ PUSH_ON_ERROR: bool = _parse_bool(os.environ.get("PUSH_ON_ERROR", ""), True)  # 
 
 # === 语音输入(手机录音 → 转文字)===
 # Claude 不吃音频,故录音上传后端先转成文字再进对话。
-# 默认走 SiliconFlow 的 SenseVoice(OpenAI 兼容接口、中文准、国内直连、近免费)。
-# 去 siliconflow.cn 注册拿免费 key,填到 .env 的 SILICONFLOW_API_KEY。留空则语音按钮报错提示未配置。
+# 识别本体:阿里 DashScope 的 qwen3-asr-flash(2026-07-08 从 SiliconFlow 的
+# SenseVoiceSmall 切过来——真机实测识别环节要 8~17 秒,隔离测试证实是 SenseVoice
+# 接口本身慢、不是我们代码的问题;qwen3-asr-flash 同等准确度下只要 0.5~1 秒,
+# 见 docs/design/voice-companion/03-phase2-实现记录.md)。去 bailian.console.aliyun.com
+# 开通拿 key,填到 .env 的 DASHSCOPE_API_KEY。留空则语音按钮报错提示未配置。
+DASHSCOPE_API_KEY: str = os.environ.get("DASHSCOPE_API_KEY", "").strip()
+DASHSCOPE_STT_MODEL: str = (
+    os.environ.get("DASHSCOPE_STT_MODEL", "qwen3-asr-flash").strip() or "qwen3-asr-flash"
+)
+
+# 清洗步骤仍走 SiliconFlow(跟识别本体是两个不同服务商,互不影响)。
+# 去 siliconflow.cn 注册拿免费 key,填到 .env 的 SILICONFLOW_API_KEY。
 STT_API_KEY: str = os.environ.get("SILICONFLOW_API_KEY", "").strip()
 STT_BASE_URL: str = (
     os.environ.get("STT_BASE_URL", "https://api.siliconflow.cn/v1").strip()
     or "https://api.siliconflow.cn/v1"
 )
-STT_MODEL: str = (
-    os.environ.get("STT_MODEL", "FunAudioLLM/SenseVoiceSmall").strip()
-    or "FunAudioLLM/SenseVoiceSmall"
-)
 
-# 转写完的逐字稿常带口癖(呃/然后/就是)、同音字错误、被音译错的中英混说专名
-# (实测 SenseVoice 把"OpenAI Codex"听成"open air codes"),转写后再过一遍 LLM 清洗。
-# 复用 STT_API_KEY/STT_BASE_URL(同一个 SiliconFlow 账号),换成 chat/completions。
-# 实测 7B 小模型修不对这类音译错误,72B 才能稳定纠出"OpenAI Codex"——故不用免费小模型。
+# 转写完的逐字稿常带口癖(呃/然后/就是)、同音字错误、被音译错的中英混说专名,
+# 转写后再过一遍 LLM 清洗。复用 STT_API_KEY/STT_BASE_URL(同一个 SiliconFlow 账号),
+# 换成 chat/completions。实测 7B 小模型修不对这类音译错误,72B 才能稳定纠出
+# "OpenAI Codex"这类词——故不用免费小模型。
 STT_CLEANUP_ENABLED: bool = _parse_bool(os.environ.get("STT_CLEANUP_ENABLED", ""), True)
 STT_CLEANUP_MODEL: str = (
     os.environ.get("STT_CLEANUP_MODEL", "Qwen/Qwen2.5-72B-Instruct").strip()
     or "Qwen/Qwen2.5-72B-Instruct"
+)
+
+# === 语音伴聊模式(实验性,见 docs/design/voice-companion/)===
+# 手机上像打电话一样跟 AI 说话。默认开;体验不好会整体移除,故独立成 VOICE_ 前缀。
+VOICE_ENABLED: bool = _parse_bool(os.environ.get("VOICE_ENABLED", ""), True)
+VOICE_TTS_VOICE: str = (
+    os.environ.get("VOICE_TTS_VOICE", "zh-CN-XiaoxiaoNeural").strip()
+    or "zh-CN-XiaoxiaoNeural"
+)
+# P1 任务板:后台任务并发上限 / 单任务超时(分钟)/ 完成播报档位(idle=等空闲插播,silent=只更新卡片)
+VOICE_TASK_MAX_CONCURRENCY: int = int(os.environ.get("VOICE_TASK_MAX_CONCURRENCY", "3"))
+VOICE_TASK_TIMEOUT_MIN: int = int(os.environ.get("VOICE_TASK_TIMEOUT_MIN", "30"))
+VOICE_ANNOUNCE: str = os.environ.get("VOICE_ANNOUNCE", "idle").strip().lower() or "idle"
+
+# P2 全双工:/voice/ws 免提连续对话开关(独立开关,方便单独回退到按住说话)。
+VOICE_WS_ENABLED: bool = _parse_bool(os.environ.get("VOICE_WS_ENABLED", ""), True)
+# 假打断回滚超时:打断触发后这么久还没等到有效转写,就当误触发,撤销截断、恢复播放。
+# 2026-07-08 从 1500 调到 8000:改成 DashScope 实时 WS 之后,这个窗口要覆盖的
+# 不再是"客户端本地 VAD 已经判完、只等一个网络包"那么短的时间,而是"用户真的
+# 把这句话说完 + DashScope 转写出结果"的完整耗时——真机测试中一句 4-5 秒的话
+# 配合上游网络往返,1.5 秒经常等不到 completed 就被误判成假打断、白白撤销了
+# 一次正常的追问,见 03-phase2-实现记录.md。
+VOICE_FALSE_POSITIVE_TIMEOUT_MS: int = int(
+    os.environ.get("VOICE_FALSE_POSITIVE_TIMEOUT_MS", "8000")
+)
+# 2026-07-08:免提识别改用 DashScope 实时语音 WS(server_vad),替换掉真机实测
+# 不可靠的客户端 ML VAD——服务端专业断句判断,不用客户端自己猜"说完了没"。
+# threshold/silence_duration_ms 是 DashScope 那边 server_vad 的调优参数。
+# threshold 越低越灵敏——最早为了验证协议图省事调成了 0.0(比 DashScope 自己
+# 的默认值 0.2 还灵敏),真机在有环境噪音的房间里实测明显太敏感:呼吸声/环境
+# 杂音被当成开口,还被识别模型强行转写成"嗯/哦/是的"这类语气词(模型倾向于
+# 给含糊音频编一个说得过去的短词,而不是老实返回空)。0.0→0.3→0.5/500→600ms
+# 调了两轮,真机反馈仍然偏灵敏,大幅提到 0.7(逼近上限 1.0)/1000ms——用户
+# 明确要求两个都"大幅提升"。副作用:开口打断的响应会更慢、对轻声/尾音的
+# 识别可能变迟钝,真机测试若矫枉过正需要往回收,见
+# docs/design/voice-companion/03-phase2-实现记录.md。threshold 加上声纹识别
+# (见 voiceprint.py)配合下来真机反馈已经不错(环境噪音基本不再被误识别成
+# 语气词了),threshold 不用再调;silence_duration_ms 继续从 1000→1500,
+# 减少"一段完整的话中间停顿稍长就被切成好几句"的情况——代价同上,停顿判定
+# 更久意味着说完到系统反应过来的间隔更长一点。
+DASHSCOPE_REALTIME_MODEL: str = (
+    os.environ.get("DASHSCOPE_REALTIME_MODEL", "qwen3-asr-flash-realtime").strip()
+    or "qwen3-asr-flash-realtime"
+)
+VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
+VOICE_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_VAD_SILENCE_MS", "1500"))
+# 回声兜底:AI 自己的声音从手机扬声器漏回麦克风,DashScope 会把它当成真实
+# 用户开口识别出来,导致 AI 打断自己形成死循环——echoCancellation 只是缓解不是
+# 根治(见 03-phase2-实现记录.md)。打断转写出来的内容如果跟 AI 刚说的话高度
+# 重合(containment ratio,见 voice/ws.py 的 looks_like_self_echo),就当是回声、
+# 不当真打断处理。阈值凭经验给的默认值,真机环境不同需要重新调。
+VOICE_SELF_ECHO_THRESHOLD: float = float(os.environ.get("VOICE_SELF_ECHO_THRESHOLD", "0.6"))
+# 2026-07-08:上面这条回声兜底原来只在"正在打断一个还没说完的回答"时生效——
+# 真机反馈偶发录到 AI 自己的尾音,根因是 AI 说完最后一句、服务端状态已经翻回
+# idle 后,客户端音箱可能还在把最后一两句播完,这段尾音漏回麦克风时早就不在
+# "打断"场景里了,原来的回声判断整个被跳过。这里加一个"刚说完话之后的宽限期"
+# (毫秒),这段时间内即便状态已经是 idle,新转写内容如果跟"刚刚这一轮说的话"
+# 高度重合,也当回声处理、不当真开新一轮。默认给一个短窗口,覆盖典型的尾部
+# 播放延迟就够;调太大会有把用户真提的、恰好和上一轮用词很像的追问也误伤的风险。
+VOICE_POST_DONE_ECHO_GUARD_MS: int = int(
+    os.environ.get("VOICE_POST_DONE_ECHO_GUARD_MS", "1500")
+)
+
+# 2026-07-08:声纹识别——分清"这是本人在说话"还是"背景里别人在说话"。
+# 免提场景背景有人说话时,普通降噪分不出"哪个人声是你",这块专门加了目标
+# 说话人识别(见 voice/voiceprint.py)。异步、不卡对话速度(见实现文档"方案
+# B")——转写完立刻正常起一轮,声纹比对在后台并行跑,判定"不像是你"再把这
+# 一轮撤回。默认开启,体验不好可以关掉退回没有声纹这层的行为。
+VOICE_VOICEPRINT_ENABLED: bool = _parse_bool(os.environ.get("VOICE_VOICEPRINT_ENABLED", ""), True)
+# 余弦相似度阈值:新样本跟声纹参照质心的相似度低于这个值,判定"不是本人"。
+# 凭经验给的起点,没有真实用户音频做过校准,真机用下来大概率需要重新调
+# (太低会漏过背景说话人,太高会把本人的正常语气变化也误判成"不是你")。
+VOICE_VOICEPRINT_MATCH_THRESHOLD: float = float(
+    os.environ.get("VOICE_VOICEPRINT_MATCH_THRESHOLD", "0.75")
+)
+# 声纹参照样本数少于这个值时,只用来建立参照、不做拦截判定(冷启动阶段,
+# 参照本身还不可信,不能拿来筛掉任何人)。
+VOICE_VOICEPRINT_MIN_SAMPLES: int = int(
+    os.environ.get("VOICE_VOICEPRINT_MIN_SAMPLES", "3")
 )
 
 # === 会话统一(跨入口连续)===
@@ -196,11 +281,23 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     Web 端自带多会话管理:每个对话独立成 web:<conv_id>,不受 UNIFY 影响;
     但特殊 conv_id "main" 汇入统一主会话(从网页也能接着 TG/CLI 那条线聊);
     私聊则按 UNIFY_SESSIONS:开统一则共享主会话,否则按平台隔离。
+
+    `voice-chat:`/`voice-task:` 是语音模块保留的前缀(主语音通话、后台任务各一个
+    固定/派生键),已经是完整 key,原样透传不再套 "web:" 前缀——这样侧边栏"语音
+    任务"分组里的会话可以直接用 index.html 现成的 openConv()/发消息面板打开,
+    不用给语音专门另写一套路由逻辑。这两个前缀是新引入的保留字,不会跟现有项目
+    哈希形态的 conv_id 冲突。
     """
     if platform == "telegram" and isinstance(chat_id, int) and chat_id < 0:
         return f"tg:{chat_id}"
     if platform == "web":
-        return SESSION_KEY if chat_id == "main" else f"web:{chat_id}"
+        if chat_id == "main":
+            return SESSION_KEY
+        if isinstance(chat_id, str) and (
+            chat_id.startswith("voice-chat:") or chat_id.startswith("voice-task:")
+        ):
+            return chat_id
+        return f"web:{chat_id}"
     return SESSION_KEY if UNIFY_SESSIONS else f"{platform}:{chat_id}"
 
 

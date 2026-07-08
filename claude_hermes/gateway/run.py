@@ -106,6 +106,16 @@ class GatewayRunner:
                 elif outcome.reply:
                     await adapter.send(inc.chat_id, outcome.reply)
                 return
+        # 语音后台任务续聊(session_key=voice-task:{id})要延续任务派发时的工作目录——
+        # converse() 按 session_key 推导 cwd 那套认不出这种非项目 key,查 voice.tasks
+        # 里存的原始 cwd 显式传进去(见 03-phase2-实现记录.md 存储统一改动一节)。
+        cwd_override = None
+        if key.startswith("voice-task:"):
+            from ..voice import tasks as voice_tasks  # 懒加载,避免非语音场景也引入这个模块
+
+            row = voice_tasks.get(key.split(":", 1)[1])
+            if row is not None:
+                cwd_override = row["cwd"]
         # 设置本轮路由上下文(供 ask_user 工具反问时找到该发给谁),随 contextvar 传入工具
         token = clarify.set_current(key, adapter, inc.chat_id)
         clarify.mark_active(key)  # 全局登记"我在跑了",供 restart_self 等查"还有谁没结束"
@@ -118,6 +128,7 @@ class GatewayRunner:
                         await core.converse(
                             key, inc.text, model, adapter.make_sink(inc.chat_id),
                             images=inc.images, store_user=inc.store_text,
+                            cwd_override=cwd_override,
                         )
                 except TimeoutError:
                     pass  # 超时静默处理,不向用户发送错误消息
