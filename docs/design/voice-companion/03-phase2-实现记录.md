@@ -585,3 +585,94 @@ JS 状态确认 `echoLoopbackReady:true`、两条 `RTCPeerConnection` 都是
 被误识别成语气词了(声纹核验 + VAD 阈值 0.7 两层叠加的效果)。同时反馈
 停顿判定还可以再放宽一点,避免一段完整的话中间停顿稍长就被切成好几句——
 `VOICE_VAD_SILENCE_MS` 从 1000→1500ms,threshold 不用再动了。
+
+## 交互/UI 大改:侧边栏入口 + 语音任务分组 + 复用普通会话 UI + 识别动效音效
+
+功能层面跑通之后,补一轮交互打磨。核心改动是把语音相关的会话组织方式跟普通
+文字对话打通,而不是继续让语音模块自成一套孤岛。
+
+### 存储统一(这次改动的关键前提)
+
+主语音会话原来是完全隔离的 `voice.db`(固定键 `voice:main`,专门写了一份
+"不碰 data/state.db"的注释,当初图的是"删 voice/ 目录即彻底移除"的干净边界)。
+但这个隔离恰恰是"侧边栏没法显示语音会话"的根子——侧边栏的列表/历史加载/
+消息渲染全都是围着 `session_store` 转的一整套代码,语音会话不进这个库就只能
+另起一套跨库拼接逻辑。
+
+权衡下来选择打破隔离:`voice/session.py` 改成委托 `memory/session_store.py`,
+固定键换成 `voice-chat:main`(跟后台任务的 `voice-task:{id}` 是平行的前缀
+族)。对外的 `load_history/append/get_resume/set_resume/run_turn` 签名完全不变,
+`ws.py`/`routes.py` 的调用点一行都不用改——迁移风险集中在"内部实现换血,
+外部契约保持"这一点上,靠现有测试全绿 + 新增的存储迁移专项测试兜底。
+
+### 后台任务:从"一次性摘要"变成"可持续对话"
+
+以前 `executor.py` 直接单次调 `stream_turn`,只把最终回复存进 `voice.db` 的
+`result_full` 字段当摘要用,中间的完整对话根本没有落库,任务跑完就没法再
+追问。现在派发时手动补上 `session_store.start_turn/finish_turn/
+set_sdk_session_id` 记账(`session_key=f"voice-task:{task_id}"`),让完整对话
+也进 `session_store`。
+
+续聊(用户在任务完成后继续发文字)完全不碰 `tasks.py` 的状态机——任务的
+`queued/running/done/...` 只管"后台执行槽位是否有活的 asyncio task",跟"能不能
+对这个 session_key 继续对话"是两件事。续聊直接走 Web 端现成的发消息路径
+(`_handle_send` → `converse()`),`converse()` 加了个 `cwd_override` 可选参数
+(它原来的 `project_cwd_for(session_key)` 认不出 `voice-task:` 这种非项目 key),
+续聊时从 `voice.tasks` 查出任务原始 cwd 传进去,保持工作目录跟派发时一致。
+
+### 会话键透传:`resolve_session_key` 认得 `voice-*` 前缀
+
+Web 端所有 conv id 原来一律套 `web:{chat_id}` 前缀。`voice-chat:main`/
+`voice-task:{id}` 已经是完整 key,加一个透传分支直接原样返回——这样
+`_handle_history`/`_handle_send` 这些 Web 通用接口不用为语音专门分叉,前端
+`openConv()`/发消息 composer 也零改动直接复用。
+
+### 侧边栏:固定"语音任务"分组
+
+新增 `GET /voice/sidebar`(照抄 `_handle_conversations` 的写法),返回
+`{main, tasks}`——`main` 永远是主语音会话(固定 `voice-chat:main`),`tasks`
+是 `list_sessions("voice-task:")` 的结果,顺带拼上任务状态/标题。前端在
+`renderConvs()` 里加一段固定分组渲染(不参与项目分组的手风琴折叠、不参与
+时间排序),主会话行点击直达 `/voice`,任务行点击走普通聊天面板
+(`openConv()`)——由于键透传已经打通,任务对话的加载/渲染/发消息跟任何
+一个普通项目会话没有区别。
+
+侧边栏入口本身也从顶栏搬到了"＋新对话"下面的独立按钮,不再是一个容易被
+忽略的孤立图标。
+
+### 视觉统一:SVG 图标 + 共享样式表
+
+`voice.html` 原来是完全独立的一份 HTML/CSS/JS,视觉上相近但 markup 不共享,
+还有一堆 emoji 当图标(📋🎙️🔇✕■⚠️)。把 `index.html` 的 CSS 变量块 + `.row`/
+`.bubble` 气泡样式抽成 `web_static/shared.css`,`voice.html` 引用它;图标改成
+跟 `index.html` 同款的线框 SVG(`ICONS`/`ic()` 这套约定,20 来行纯数据,两处
+各放一份,没必要为此抽公共 JS 模块)。消息气泡 markup 也换成 `.row`/`.bubble`
+两层结构,跟普通聊天视觉上完全一致,只有"实时通话"这一块(状态球、麦克风
+控制)保留独立设计,因为它天然是语音专属的交互形态。
+
+主语音会话页面加载时改成 `fetch('/history?conv=voice-chat:main')`,复用普通
+聊天的历史接口,能回看之前的通话记录(存储统一之后这条路径自然打通)。
+
+### 识别动效 + 音效
+
+"聆听中"原来只有一个纯 CSS keyframe 呼吸圆点,现在换成 `<canvas>` 叠加,接
+现成的麦克风 `MediaStreamSource` 挂一个 `AnalyserNode`,画一圈随音量实时起伏
+的光环——只在 capturing 状态下画,不额外接线。
+
+配了三处合成音效(`OscillatorNode+GainNode` 包络,没有引入任何音频素材
+文件,单用户小项目没有素材管线,用代码合成够用且好维护):开始聆听(880Hz
+正弦短音)、AI 要开口(660→990Hz 双音上扬)、被打断(220Hz 三角波,音色刻意
+调低调粗,跟前两个区分开)。
+
+### 验证
+
+- 全量 `pytest` 272 个用例全绿,新增覆盖:存储迁移(`test_voice_p0.py`)、
+  任务持久化 + 续聊不受状态机限制(`test_voice_p1.py`)、`resolve_session_key`
+  透传分支(`test_config.py`)、`/voice/sidebar` + `/shared.css`
+  (`test_web_voice_sidebar.py`,新文件)。
+- 隔离测试服务器 + 真实请求验证:`/shared.css` 返回正确内容、`voice.html`
+  里 grep 不到任何残留 emoji、`index.html` 侧边栏按钮/固定分组渲染正常、
+  `/voice/sidebar`/`/history?conv=voice-chat:main` 鉴权 + 数据格式都对。
+- 浏览器可视化验证受限:这次的沙箱环境里 Chrome 扩展连不上本机
+  `127.0.0.1`(能正常打开外网页面,唯独连不上本地测试端口),没能截图肉眼
+  确认布局/动效的实际观感,这一层留给用户在生产环境上手验收。

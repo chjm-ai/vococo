@@ -11,6 +11,8 @@ import pytest
 
 from claude_hermes import config
 from claude_hermes.core.agent import AgentReply, Done, ToolInput
+from claude_hermes.gateway import core as gateway_core
+from claude_hermes.memory import session_store
 from claude_hermes.voice import executor, notify, session, task_tools, tasks, tts
 
 
@@ -21,16 +23,15 @@ def anyio_backend():
 
 @pytest.fixture
 def voice_db(isolated, monkeypatch):
-    """同 test_voice_p0.py 的 voice_db:独立 db + 清空鉴权 + 重置模块级单例。"""
+    """同 test_voice_p0.py 的 voice_db:独立 db + 清空鉴权 + 重置模块级单例。
+
+    session 模块委托 session_store 存储,重置由 `isolated` fixture 代劳。
+    """
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
-    monkeypatch.setattr(session, "_DB", None)
     monkeypatch.setattr(tasks, "_DB", None)
     executor._running.clear()
     notify._subscribers.clear()
     yield
-    if session._DB is not None:
-        session._DB.close()
-        session._DB = None
     if tasks._DB is not None:
         tasks._DB.close()
         tasks._DB = None
@@ -128,6 +129,80 @@ async def test_dispatch_runs_immediately_and_writes_done(voice_db, monkeypatch):
     assert row["status"] == "done"
     assert row["result_full"] == "任务的结果"
     assert notified == [task["id"]]
+
+
+@pytest.mark.anyio
+async def test_dispatch_persists_full_conversation_to_shared_session_store(
+    voice_db, monkeypatch
+):
+    """任务的完整对话(不只是 result_full 摘要)要落进跟普通对话共用的
+    session_store,session_key=voice-task:{id}——这样侧边栏"语音任务"分组才能
+    像回看普通对话一样回看它。"""
+
+    async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
+        yield Done(
+            AgentReply(
+                text="任务的结果", tool_calls=[], cost_usd=None, is_error=False,
+                sdk_session_id="sdk-abc",
+            )
+        )
+
+    monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+
+    task = executor.dispatch("标题", "帮我查一下天气")
+    await executor._running[task["id"]]
+
+    session_key = f"voice-task:{task['id']}"
+    history = session_store.load_recent(session_key)
+    assert len(history) == 1
+    assert history[0].user == "帮我查一下天气"
+    assert history[0].assistant == "任务的结果"
+    assert session_store.get_sdk_session_id(session_key) == "sdk-abc"
+
+
+@pytest.mark.anyio
+async def test_task_session_stays_conversable_after_terminal_status(voice_db, monkeypatch):
+    """任务跑完(终态)之后,用户还应该能对着同一个 session_key 继续发文字追问——
+    续聊完全不碰 tasks.py 的状态机,只是走跟普通聊天一样的 converse()。"""
+
+    async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
+        yield Done(
+            AgentReply(
+                text="今天晴天", tool_calls=[], cost_usd=None, is_error=False,
+                sdk_session_id="sdk-1",
+            )
+        )
+
+    monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+
+    task = executor.dispatch("标题", "查天气")
+    await executor._running[task["id"]]
+    assert tasks.get(task["id"])["status"] == "done"  # 已是终态
+
+    session_key = f"voice-task:{task['id']}"
+
+    async def fake_stream_turn_followup(history, user_text, **kw):
+        assert len(history) == 1  # 续聊能读到派发那一轮的历史
+        yield Done(
+            AgentReply(
+                text="明天也是晴天", tool_calls=[], cost_usd=None, is_error=False,
+                sdk_session_id="sdk-2",
+            )
+        )
+
+    monkeypatch.setattr(gateway_core, "stream_turn", fake_stream_turn_followup)
+    reply = await gateway_core.converse(session_key, "那明天呢", None, gateway_core.Sink())
+
+    assert reply is not None
+    assert reply.text == "明天也是晴天"
+    # 终态没被续聊碰过——状态机跟对话能力是两回事
+    assert tasks.get(task["id"])["status"] == "done"
+    history = session_store.load_recent(session_key)
+    assert len(history) == 2
+    assert history[-1].user == "那明天呢"
+    assert history[-1].assistant == "明天也是晴天"
 
 
 @pytest.mark.anyio

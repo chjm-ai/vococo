@@ -1,76 +1,37 @@
-"""语音会话:独立历史(data/voice/voice.db)+ 调 core.agent.stream_turn。
+"""语音会话:主会话历史落进跟普通文字对话共用的 memory/session_store(data/state.db),
+固定键 `voice-chat:main` —— 这样侧边栏「语音任务」分组、`/history` 接口、消息渲染都能
+直接复用普通会话那一套现成代码,不用为语音再单独拼一套跨库读取逻辑(见
+03-phase2-实现记录.md 存储统一改动一节)。
 
-不碰 data/state.db、不 import memory/session_store.py 的存储实现——自己一份小 sqlite,
-换取「删 voice/ 目录即彻底移除」的隔离约束(见 00-overview.md §2.4)。
+历史上这里曾经是完全独立的一份 sqlite(data/voice/voice.db),2026-07-08 起改为委托
+session_store,对外的 load_history/append/get_resume/set_resume/run_turn 签名不变,
+ws.py/routes.py 的调用点不用跟着改。
 """
 from __future__ import annotations
 
-import sqlite3
-import time
-from pathlib import Path
 from typing import AsyncIterator
 
-from .. import config
-from ..core.agent import Event, Turn, stream_turn
+from ..core.agent import Event, stream_turn
+from ..memory import session_store
 
-SESSION_KEY = "voice:main"
+SESSION_KEY = "voice-chat:main"
 HISTORY_LIMIT = 20
 
-_DB: sqlite3.Connection | None = None
 
-
-def _db_path() -> Path:
-    return config.DATA_DIR / "voice" / "voice.db"
-
-
-def _conn() -> sqlite3.Connection:
-    global _DB
-    if _DB is None:
-        path = _db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _DB = sqlite3.connect(path, check_same_thread=False)
-        _DB.execute(
-            "CREATE TABLE IF NOT EXISTS turns("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "ts REAL NOT NULL,"
-            "user_text TEXT NOT NULL,"
-            "assistant_text TEXT NOT NULL)"
-        )
-        _DB.execute("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)")
-        _DB.commit()
-    return _DB
-
-
-def load_history(limit: int = HISTORY_LIMIT) -> list[Turn]:
-    c = _conn()
-    rows = c.execute(
-        "SELECT user_text, assistant_text FROM turns ORDER BY id DESC LIMIT ?", (limit,)
-    ).fetchall()
-    return [Turn(user=u, assistant=a) for u, a in reversed(rows)]
+def load_history(limit: int = HISTORY_LIMIT) -> list:
+    return session_store.load_recent(SESSION_KEY, limit=limit)
 
 
 def append(user_text: str, assistant_text: str) -> None:
-    c = _conn()
-    c.execute(
-        "INSERT INTO turns(ts, user_text, assistant_text) VALUES (?,?,?)",
-        (time.time(), user_text, assistant_text),
-    )
-    c.commit()
+    session_store.append(SESSION_KEY, user_text, assistant_text)
 
 
 def get_resume() -> str | None:
-    row = _conn().execute("SELECT v FROM meta WHERE k='sdk_session_id'").fetchone()
-    return row[0] if row else None
+    return session_store.get_sdk_session_id(SESSION_KEY)
 
 
 def set_resume(sid: str) -> None:
-    c = _conn()
-    c.execute(
-        "INSERT INTO meta(k, v) VALUES ('sdk_session_id', ?) "
-        "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-        (sid,),
-    )
-    c.commit()
+    session_store.set_sdk_session_id(SESSION_KEY, sid)
 
 
 def run_turn(prompt_text: str, extra_mcp_servers: dict | None = None) -> AsyncIterator[Event]:

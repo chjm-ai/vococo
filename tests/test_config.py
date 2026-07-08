@@ -44,6 +44,17 @@ def test_resolve_session_key_isolated(monkeypatch):
     assert config.resolve_session_key("cli", "local") == "cli:local"
 
 
+def test_resolve_session_key_passes_through_voice_prefixes():
+    from claude_hermes import config
+
+    # voice-chat:/voice-task: 已经是完整 key,web 端不该再套一层 "web:" 前缀,
+    # 否则语音主会话/任务会话没法跟 index.html 现成的 openConv() 对上号。
+    assert config.resolve_session_key("web", "voice-chat:main") == "voice-chat:main"
+    assert config.resolve_session_key("web", "voice-task:abc123") == "voice-task:abc123"
+    # 普通项目哈希形态的 conv_id 不受影响
+    assert config.resolve_session_key("web", "p1234:5") == "web:p1234:5"
+
+
 def test_project_cwd_for(isolated, tmp_path):
     from claude_hermes import config
     from claude_hermes.memory import session_store

@@ -244,12 +244,18 @@ async def converse(
     sink: Sink,
     images: list[ImageAttachment] | None = None,
     store_user: str | None = None,
+    cwd_override: str | None = None,
 ) -> AgentReply | None:
     """跑一轮:载入历史 → 流式 → 喂 sink → 落库。
 
     store_user:入库用的替代 user 文本(默认与 user_text 相同)。系统注入的消息
     (如自我重启后的还魂指令)用它把「给模型的长指令」与「存进历史给人看的简短
     标记」分开 —— 否则长指令会被当成用户发的话显示、并污染后续上下文。
+
+    cwd_override:显式指定这一轮的工作目录,跳过按 session_key 推导 worktree/项目根
+    那一套(`project_cwd_for` 认不出非项目 session_key,如语音后台任务的
+    `voice-task:{id}`)。语音任务续聊要延续任务派发时的 cwd,由调用方(web.py)从
+    `voice.tasks` 查出来传进来。
     """
     from .. import config  # 懒加载,与本模块其余用法一致
 
@@ -258,10 +264,13 @@ async def converse(
     from ..core import worktree  # 懒加载
 
     history = session_store.load_recent(session_key)
-    # 项目会话首次干活时懒创建独立 worktree(每会话一分支,物理隔离);非项目会话直接跳过
-    await worktree.ensure_worktree(session_key)
-    cwd = config.project_cwd_for(session_key)  # 有 worktree→用它;否则项目根;再否则 None(进程默认)
     root = config.project_root_for(session_key)  # 主仓库路径,供审批闸认项目文件为"内部"
+    if cwd_override is not None:
+        cwd = cwd_override
+    else:
+        # 项目会话首次干活时懒创建独立 worktree(每会话一分支,物理隔离);非项目会话直接跳过
+        await worktree.ensure_worktree(session_key)
+        cwd = config.project_cwd_for(session_key)  # 有 worktree→用它;否则项目根;再否则 None(进程默认)
     cwd_token = danger.set_cwd(cwd, project_root=root)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
     stored_user = store_user if store_user is not None else user_text
     turn_id = session_store.start_turn(session_key, stored_user)

@@ -14,6 +14,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from claude_hermes import config
 from claude_hermes.core.agent import AgentReply, Done, TextDelta, ToolStarted
+from claude_hermes.memory import session_store
 from claude_hermes.voice import executor, prompts, routes, session, stt, tasks, tts
 
 
@@ -31,15 +32,13 @@ def voice_db(isolated, monkeypatch):
 
     P1 起 register_routes() 会顺带触发 executor.heal_after_restart()(F11),它会摸
     tasks._DB——同样要重置连接单例,否则会复用上一个用例已被 tmp_path 清理的旧连接。
+    session 模块自 2026-07-08 起委托 session_store 存储,不再有自己的 _DB——`isolated`
+    fixture 已经重置了 session_store._DB,这里不用再管。
     """
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
-    monkeypatch.setattr(session, "_DB", None)
     monkeypatch.setattr(tasks, "_DB", None)
     executor._running.clear()
     yield
-    if session._DB is not None:
-        session._DB.close()
-        session._DB = None
     if tasks._DB is not None:
         tasks._DB.close()
         tasks._DB = None
@@ -113,6 +112,25 @@ def test_build_prompt_requires_confirming_self_designed_breakdown_before_dispatc
     out = prompts.build_prompt("帮我分析一下梅西的职业生涯")
     assert "这个拆解方案" in out
     assert "不是用户说的" in out
+
+
+# ── 存储迁移:主语音会话落进共享 session_store,不再有独立 voice.db ────────────
+def test_voice_session_key_is_shared_store_prefix():
+    assert session.SESSION_KEY == "voice-chat:main"
+
+
+def test_voice_session_append_and_history_use_shared_session_store(voice_db):
+    session.append("你好", "你好呀")
+    assert session.load_history() == session_store.load_recent("voice-chat:main")
+    assert session.load_history()[-1].user == "你好"
+    assert session.load_history()[-1].assistant == "你好呀"
+
+
+def test_voice_session_resume_id_round_trips_through_session_store(voice_db):
+    assert session.get_resume() is None
+    session.set_resume("sdk-sess-123")
+    assert session.get_resume() == "sdk-sess-123"
+    assert session_store.get_sdk_session_id("voice-chat:main") == "sdk-sess-123"
 
 
 # ── /voice/config 开关 ───────────────────────────────────────────────────

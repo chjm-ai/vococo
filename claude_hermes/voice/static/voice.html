@@ -7,34 +7,29 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#181716">
 <title>语音伴聊 · Wazir</title>
+<!-- CSS 变量(主题)+ 消息气泡样式跟普通聊天界面共用一份,保证视觉语言一致
+     (见 03-phase2-实现记录.md 存储统一改动一节)。下面 <style> 只留语音页
+     特有的部分(状态球、任务抽屉、免提控件)。 -->
+<link rel="stylesheet" href="/shared.css">
 <style>
-  :root{
-    --bg:#181716; --panel:#252320; --card:#2b2a27; --line:#3a3934;
-    --text:#ecebe3; --dim:#a5a094; --dim2:#716d61;
-    --accent:#d97757; --accent2:#c8613f; --err:#d1674a; --ok:#5aa469;
-  }
-  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
-    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
-    overscroll-behavior:none;-webkit-font-smoothing:antialiased}
-  body{display:flex;flex-direction:column;min-height:100dvh}
   header{display:flex;align-items:center;gap:12px;padding:14px 16px;
     padding-top:calc(14px + env(safe-area-inset-top));border-bottom:1px solid var(--line)}
-  header a{color:var(--dim);text-decoration:none;font-size:20px;line-height:1;padding:4px}
+  header a{color:var(--dim);text-decoration:none;line-height:1;padding:4px;display:inline-flex}
+  header a .ic{width:20px;height:20px}
   header .title{font-weight:600;flex:1}
   #status{font-size:13px;color:var(--dim);padding:4px 10px;border-radius:20px;background:var(--panel)}
   #status.listening{color:var(--err)}
   #status.thinking,#status.playing{color:var(--accent)}
+  body{display:flex;flex-direction:column;min-height:100dvh}
   main{flex:1;overflow-y:auto;padding:16px}
   #transcript{display:flex;flex-direction:column;gap:12px;max-width:680px;margin:0 auto}
-  .msg{max-width:88%;padding:10px 14px;border-radius:14px;white-space:pre-wrap;word-break:break-word}
-  .msg.me{align-self:flex-end;background:var(--accent);color:#fff}
-  .msg.ai{align-self:flex-start;background:var(--card);border:1px solid var(--line)}
-  .msg.error{background:transparent;border:1px solid var(--err);color:var(--err)}
-  .msg.filler{background:transparent;border:none;color:var(--dim2);font-size:14px;
-    font-style:italic;padding:0 14px;max-width:100%}
+  .bubble.filler{background:transparent;border:none;color:var(--dim2);font-size:14px;
+    font-style:italic;padding:0 14px;max-width:100%;box-shadow:none}
+  .msgicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
+  .msgicon .ic{width:15px;height:15px}
   .hint{text-align:center;color:var(--dim2);font-size:14px;padding:40px 20px}
-  #tasksBtn{position:relative;background:none;border:none;color:var(--dim);font-size:20px;padding:4px}
+  #tasksBtn{position:relative;background:none;border:none;color:var(--dim);padding:4px;display:inline-flex}
+  #tasksBtn .ic{width:20px;height:20px}
   #tasksBadge{position:absolute;top:0;right:0;width:8px;height:8px;border-radius:50%;
     background:var(--accent);display:none}
   #tasksBadge.on{display:block}
@@ -45,7 +40,7 @@
     padding-bottom:calc(16px + env(safe-area-inset-bottom))}
   #tasksSheet h3{margin:0 0 12px;font-size:15px;color:var(--dim)}
   .task{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px}
-  .task .row{display:flex;align-items:center;gap:8px}
+  .task .row{display:flex;align-items:center;gap:8px;margin:0;animation:none}
   .task .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
   .task .dot.queued{background:var(--dim2)}
   .task .dot.running{background:var(--accent)}
@@ -60,8 +55,10 @@
   .task-empty{color:var(--dim2);text-align:center;padding:20px}
   footer{padding:20px 16px calc(20px + env(safe-area-inset-bottom));display:flex;
     flex-direction:column;align-items:center;gap:14px}
+  .btnicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
+  .btnicon .ic{width:16px;height:16px}
   #stopBtn{border:1px solid var(--err);color:var(--err);background:none;border-radius:20px;
-    padding:8px 20px;font-size:14px}
+    padding:8px 20px;font-size:14px;display:inline-flex;align-items:center}
   #talkBtn{width:120px;height:120px;border-radius:50%;background:var(--accent);color:#fff;
     border:none;font-size:16px;font-weight:600;box-shadow:0 8px 24px rgba(217,119,87,.35);
     transition:transform .15s ease, background .15s ease;
@@ -74,6 +71,7 @@
   #startHandsFreeBtn{display:flex;align-items:center;gap:8px;padding:14px 28px;
     border-radius:28px;background:var(--accent);color:#fff;border:none;
     font-size:15px;font-weight:600;box-shadow:0 8px 24px rgba(217,119,87,.35)}
+  #startHandsFreeBtn .btnicon{margin-right:0}
   #startHandsFreeBtn:disabled{opacity:.5}
   /* #id 选择器的 display:flex 比浏览器默认的 [hidden]{display:none} 优先级高,
      不加这条 hidden 会被直接盖掉——加 hidden 属性也压不住,界面上就是"明明设了
@@ -81,29 +79,30 @@
   #startHandsFreeBtn[hidden]{display:none}
   #handsFreeUi{display:flex;flex-direction:column;align-items:center;gap:18px}
   #handsFreeUi[hidden]{display:none}
+  #orbWrap{position:relative;width:120px;height:120px}
   #orb{width:120px;height:120px;border-radius:50%;background:var(--panel);
     border:2px solid var(--line);transition:background .3s ease,box-shadow .3s ease}
-  #orb.capturing{background:var(--err);box-shadow:0 0 32px rgba(209,103,74,.55);
-    animation:orb-pulse 1.1s ease-in-out infinite}
-  #orb.transcribing,#orb.thinking{background:var(--accent);
-    box-shadow:0 0 24px rgba(217,119,87,.45);animation:orb-breathe 1.4s ease-in-out infinite}
+  #orb.capturing{background:var(--err);box-shadow:0 0 32px rgba(209,103,74,.55)}
+  #orb.transcribing,#orb.thinking{background:var(--accent);box-shadow:0 0 24px rgba(217,119,87,.45);
+    animation:orb-breathe 1.4s ease-in-out infinite}
   #orb.speaking{background:var(--accent2);box-shadow:0 0 32px rgba(200,97,63,.55);
     animation:orb-pulse .9s ease-in-out infinite}
+  #orbCanvas{position:absolute;inset:0;width:120px;height:120px;pointer-events:none}
   @keyframes orb-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
   @keyframes orb-breathe{0%,100%{opacity:.7}50%{opacity:1}}
   .hf-row{display:flex;gap:12px}
   .hf-row button{border:1px solid var(--line);color:var(--dim);background:var(--panel);
-    border-radius:20px;padding:8px 18px;font-size:14px}
+    border-radius:20px;padding:8px 18px;font-size:14px;display:inline-flex;align-items:center}
   .hf-row button.muted{color:var(--err);border-color:var(--err)}
   #endHandsFreeBtn{color:var(--err);border-color:var(--err)}
 </style>
 </head>
 <body>
 <header>
-  <a href="/" title="返回主界面">←</a>
+  <a href="/" title="返回主界面" id="backLink"></a>
   <span class="title">语音伴聊</span>
   <span id="status">空闲</span>
-  <button id="tasksBtn" title="任务">📋<span id="tasksBadge"></span></button>
+  <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
 </header>
 <main>
   <div id="transcript">
@@ -111,17 +110,20 @@
   </div>
 </main>
 <footer>
-  <button id="stopBtn" hidden>■ 停</button>
+  <button id="stopBtn" hidden><span class="btnicon" id="stopIcon"></span>停</button>
   <!-- 半双工兜底:只有免提初始化失败/浏览器不支持时才出现,见 initUiMode() -->
   <button id="talkBtn" hidden>按住说话</button>
   <!-- 免提入口:支持免提的设备默认显示这个,不是"按住说话" -->
-  <button id="startHandsFreeBtn" hidden>🎙️ 开始语音对话</button>
+  <button id="startHandsFreeBtn" hidden><span class="btnicon" id="startIcon"></span><span class="btntext">开始语音对话</span></button>
   <!-- 免提激活后:按钮消失,换成状态球 + 静音/结束 -->
   <div id="handsFreeUi" hidden>
-    <div id="orb" class="idle" title="点一下可以打断 AI 说话"></div>
+    <div id="orbWrap">
+      <div id="orb" class="idle" title="点一下可以打断 AI 说话"></div>
+      <canvas id="orbCanvas" width="120" height="120"></canvas>
+    </div>
     <div class="hf-row">
-      <button id="muteToggleBtn">🔇 静音</button>
-      <button id="endHandsFreeBtn">✕ 结束</button>
+      <button id="muteToggleBtn"><span class="btnicon" id="muteIcon"></span><span class="btntext">静音</span></button>
+      <button id="endHandsFreeBtn"><span class="btnicon" id="endIcon"></span><span class="btntext">结束</span></button>
     </div>
   </div>
 </footer>
@@ -140,6 +142,26 @@ const transcriptEl = $("#transcript"), statusEl = $("#status"), talkBtn = $("#ta
       tasksDrawer = $("#tasksDrawer"), tasksList = $("#tasksList"),
       startHandsFreeBtn = $("#startHandsFreeBtn"), handsFreeUi = $("#handsFreeUi"),
       orb = $("#orb"), muteToggleBtn = $("#muteToggleBtn"), endHandsFreeBtn = $("#endHandsFreeBtn");
+
+// ── 线框图标(替代实体 emoji,统一 currentColor 描边风格)。跟 index.html 的
+// ICONS/ic() 是同一套约定(纯数据,两处各放一份,20 来行没必要单独抽模块)。
+const ICONS = {
+  back:'<polyline points="15 18 9 12 15 6"/>',
+  tasks:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+  mic:'<path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/>',
+  mute:'<path d="M1 1l22 22"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><path d="M15 9.34V6a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2"/><path d="M19 10v2a7 7 0 0 1-.11 1.23"/><path d="M12 19v3"/><path d="M8 22h8"/>',
+  close:'<path d="M18 6L6 18"/><path d="M6 6l12 12"/>',
+  stop:'<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
+  warn:'<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+};
+function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
+function setIcon(el, name){ el.innerHTML = ic(name); }
+setIcon($("#backLink"), "back");
+setIcon($("#tasksIcon"), "tasks");
+setIcon($("#stopIcon"), "stop");
+setIcon($("#startIcon"), "mic");
+setIcon($("#endIcon"), "close");
+setIcon($("#muteIcon"), "mute");
 
 let stream = null, recorder = null, chunks = [], pressTs = 0;
 let busy = false;
@@ -211,14 +233,44 @@ async function setupEchoLoopback(){
 
 function setStatus(text, cls){ statusEl.textContent = text; statusEl.className = cls || ""; }
 function clearHint(){ const h = transcriptEl.querySelector(".hint"); if(h) h.remove(); }
+
+// ── 消息气泡:跟普通聊天界面共用 .row/.bubble markup(见 shared.css),只是
+// 转写文本目前是纯文本、不走 markdown。返回 bubble 元素(不是外层 row)——
+// renderAi() 等调用方要在轮次进行中持续更新内容,只有 bubble 内层结构固定
+// 才好定位到 .msgtext。
 function addMsg(kind, text){
   clearHint();
-  const el = document.createElement("div");
-  el.className = "msg " + kind;
-  el.textContent = text;
-  transcriptEl.appendChild(el);
-  el.scrollIntoView({block:"end"});
-  return el;
+  const parts = kind.split(" ");
+  const who = parts[0];
+  const isError = parts.includes("error");
+  const isFiller = parts.includes("filler");
+  const row = document.createElement("div");
+  row.className = "row " + (who === "me" ? "me" : "ai");
+  const b = document.createElement("div");
+  b.className = "bubble" + (isError ? " err" : "") + (isFiller ? " filler" : "");
+  if(isError){
+    const icon = document.createElement("span");
+    icon.className = "msgicon";
+    icon.innerHTML = ic("warn");
+    b.append(icon);
+  }
+  const span = document.createElement("span");
+  span.className = "msgtext";
+  span.textContent = text;
+  b.append(span);
+  row.append(b);
+  transcriptEl.appendChild(row);
+  row.scrollIntoView({block:"end"});
+  return b;
+}
+function markBubbleError(b){
+  b.classList.add("err");
+  if(!b.querySelector(".msgicon")){
+    const icon = document.createElement("span");
+    icon.className = "msgicon";
+    icon.innerHTML = ic("warn");
+    b.prepend(icon);
+  }
 }
 
 // ── 音频解锁:首次按下时(用户手势内)真的起播一次静音 buffer 解锁 context ──────
@@ -342,7 +394,7 @@ async function sendTurn(body){
         } else if(ev.event === "done"){
           if(!aiEl) aiEl = addMsg("ai", "");
           if(ev.data.full_text){ full = ev.data.full_text; renderAi(aiEl, full); }
-          if(ev.data.error){ aiEl.classList.add("error"); if(!full) aiEl.textContent = "⚠️ " + ev.data.error; }
+          if(ev.data.error){ markBubbleError(aiEl); if(!full) renderAi(aiEl, ev.data.error); }
         }
       }
     }
@@ -363,7 +415,7 @@ function parseSseBlock(block){
 function renderAi(el, full){
   // 屏幕文字就是纯粹的"念了什么就显示什么"的回显——模型输出的一切都会被朗读,
   // 没有"只写不读"的屏幕专属内容(2026-07-07 去掉了那套机制)。
-  el.textContent = full;
+  el.querySelector(".msgtext").textContent = full;
   el.scrollIntoView({block:"end"});
 }
 
@@ -491,6 +543,66 @@ function vadCapable(){
   return typeof AudioWorkletNode !== "undefined";
 }
 
+// ── 识别动效:音频驱动的画布波形(替代原来纯 CSS 呼吸圆点)──────────────────
+// 接现成的麦克风 MediaStreamSource 挂一个 AnalyserNode,capturing 状态下画一圈
+// 随音量起伏的光环;跟音频图的连接只搭一次(analyserSource 复用同一路 stream),
+// 状态切换只是换要不要画、不重新接线。
+let analyser = null, analyserSource = null, orbCanvasCtx = null, orbAnimHandle = null;
+
+function ensureAnalyser(){
+  if(analyser || !audioCtx || !stream) return;
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 64;
+  analyserSource = audioCtx.createMediaStreamSource(stream);
+  analyserSource.connect(analyser);
+}
+
+function drawOrbWaveform(){
+  orbAnimHandle = requestAnimationFrame(drawOrbWaveform);
+  const canvas = $("#orbCanvas");
+  if(!orbCanvasCtx) orbCanvasCtx = canvas.getContext("2d");
+  const ctx = orbCanvasCtx;
+  const w = canvas.width, h = canvas.height, cx = w/2, cy = h/2;
+  ctx.clearRect(0, 0, w, h);
+  if(wsState !== "capturing" || !analyser){ return; }
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(data);
+  const bars = 24, baseR = 44;
+  ctx.strokeStyle = "rgba(255,255,255,.85)";
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = "round";
+  for(let i=0;i<bars;i++){
+    const v = data[i % data.length] / 255;
+    const len = 4 + v * 14;
+    const angle = (i / bars) * Math.PI * 2;
+    const x1 = cx + Math.cos(angle) * baseR, y1 = cy + Math.sin(angle) * baseR;
+    const x2 = cx + Math.cos(angle) * (baseR + len), y2 = cy + Math.sin(angle) * (baseR + len);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+}
+
+// ── 识别音效:合成短音,不引入音频素材文件(单用户小项目没有素材管线,
+// OscillatorNode+GainNode 包络够用)。三处提示音刻意做出音高区分:
+// 开始聆听(上扬确认音)/AI 要开口(双音提示)/被打断(低沉短促,区别于前两者)。
+function playTone(freq, durMs, shape){
+  if(!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = shape || "sine";
+  osc.frequency.value = freq;
+  const now = audioCtx.currentTime;
+  const dur = durMs / 1000;
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(0.15, now + Math.min(0.005, dur/4));
+  gain.gain.linearRampToValueAtTime(0, now + dur);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + dur + 0.02);
+}
+function playCapturingTone(){ playTone(880, 80, "sine"); }
+function playSpeakingTone(){ playTone(660, 60, "sine"); setTimeout(()=>playTone(990, 60, "sine"), 65); }
+function playInterruptedTone(){ playTone(220, 50, "triangle"); }
+
 // 只做一次性的资源搭建(AudioWorklet + WS 连接),不碰 handsFreeActive——
 // 「搭好了」和「正在用」是两件事,拆开才能支持"结束"后再"开始"不用重搭一遍。
 // 返回是否搭建成功。
@@ -500,6 +612,8 @@ async function initHandsFree(){
   try{
     unlockAudio();
     await ensureStream();
+    ensureAnalyser();
+    if(!orbAnimHandle) drawOrbWaveform();
     await audioCtx.audioWorklet.addModule("/voice/static/pcm-forwarder-worklet.js");
     const source = audioCtx.createMediaStreamSource(stream);
     pcmWorkletNode = new AudioWorkletNode(audioCtx, "pcm-forwarder");
@@ -529,7 +643,7 @@ async function initHandsFree(){
 // 切到"状态球"界面。
 async function startHandsFree(){
   startHandsFreeBtn.disabled = true;
-  startHandsFreeBtn.textContent = "准备中…";
+  startHandsFreeBtn.querySelector(".btntext").textContent = "准备中…";
   const ok = await initHandsFree();
   if(!ok){
     // 免提搭不起来(不支持/权限被拒):回退成老的按住说话,不能让用户对着
@@ -559,7 +673,7 @@ async function endHandsFree(){
   handsFreeUi.hidden = true;
   startHandsFreeBtn.hidden = false;
   startHandsFreeBtn.disabled = false;
-  startHandsFreeBtn.textContent = "🎙️ 开始语音对话";
+  startHandsFreeBtn.querySelector(".btntext").textContent = "开始语音对话";
   setStatus("空闲");
 }
 
@@ -603,7 +717,10 @@ function handleWsMessage(msg){
       pausedForInterrupt = true;
       if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
       playing = false;
+      playInterruptedTone();
     }
+    if(msg.state === "capturing" && prevState !== "capturing") playCapturingTone();
+    if(msg.state === "speaking" && prevState !== "speaking") playSpeakingTone();
     if(msg.state === "thinking") lastFullyPlayedSeq = -1;  // 新一轮句子编号从0开始
     setStatus(STATE_WORD[msg.state] || msg.state, STATE_CLASS[msg.state]);
     if(handsFreeActive) orb.className = msg.state;
@@ -633,7 +750,7 @@ function handleWsMessage(msg){
     pausedForInterrupt = false;
     pumpPlayback();
   } else if(msg.type === "error"){
-    addMsg("ai error", "⚠️ " + (msg.message || "出错了"));
+    addMsg("ai error", msg.message || "出错了");
     currentTurnAiEl = null; currentTurnFull = "";
   }
 }
@@ -650,12 +767,32 @@ function connectTaskStream(){
 }
 connectTaskStream();
 
+// ── 主会话历史:主语音会话统一存进 session_store(session_key=voice-chat:main,
+// 见 03-phase2-实现记录.md),复用普通聊天的 /history 接口,回看之前的通话记录。
+async function loadMainHistory(){
+  try{
+    const resp = await fetch("/history?conv=" + encodeURIComponent("voice-chat:main"), {
+      headers: {"X-Auth-Token": TOKEN},
+    });
+    if(!resp.ok) return;
+    const d = await resp.json();
+    if(!d.turns || !d.turns.length) return;
+    clearHint();
+    for(const t of d.turns){
+      if(t.user) addMsg("me", t.user);
+      if(t.assistant) addMsg("ai", t.assistant);
+    }
+  }catch(e){ /* 历史加载失败不阻塞进入通话,当作空历史处理 */ }
+}
+loadMainHistory();
+
 startHandsFreeBtn.addEventListener("click", startHandsFree);
 endHandsFreeBtn.addEventListener("click", endHandsFree);
 muteToggleBtn.addEventListener("click", ()=>{
   micMuted = !micMuted;
   if(stream) stream.getAudioTracks().forEach(t=>{ t.enabled = !micMuted; });
-  muteToggleBtn.textContent = micMuted ? "🔈 取消静音" : "🔇 静音";
+  setIcon(muteToggleBtn.querySelector(".btnicon"), micMuted ? "mic" : "mute");
+  muteToggleBtn.querySelector(".btntext").textContent = micMuted ? "取消静音" : "静音";
   muteToggleBtn.classList.toggle("muted", micMuted);
 });
 orb.addEventListener("click", ()=>{

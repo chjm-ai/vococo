@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .. import config
 from ..core.agent import Done, ToolInput, run_turn, stream_turn
+from ..memory import session_store
 from ..tools import danger
 from . import notify, tasks
 
@@ -76,6 +77,12 @@ async def _run(task_id: str) -> None:
     row = tasks.get(task_id)
     if row is None:
         return
+    # 派发的这一轮对话也落进跟普通文字对话共用的 session_store(不只是 voice.db 里的
+    # result_full 摘要)——这样任务完成后用户能在侧边栏"语音任务"分组里看到完整对话,
+    # 并且能继续用文字追问(续聊直接走 web 发消息路径的 converse(),见 web.py)。
+    session_key = f"voice-task:{task_id}"
+    turn_id = session_store.start_turn(session_key, row["prompt"])
+    sdk_session_id: str | None = None
     cwd_token = danger.set_cwd(row["cwd"], project_root=None)
     last_progress_ts = 0.0
     result_text = ""
@@ -83,9 +90,10 @@ async def _run(task_id: str) -> None:
     error_note = ""
 
     async def _drive() -> None:
-        nonlocal result_text, last_progress_ts, error_note
+        nonlocal result_text, last_progress_ts, error_note, sdk_session_id
+        resume_sid = session_store.get_sdk_session_id(session_key)
         async for ev in stream_turn(
-            [], row["prompt"], cwd=row["cwd"], session_key=f"voice-task:{task_id}"
+            [], row["prompt"], cwd=row["cwd"], session_key=session_key, resume=resume_sid
         ):
             if isinstance(ev, ToolInput) and ev.parent_id is None:
                 now = time.monotonic()
@@ -94,6 +102,7 @@ async def _run(task_id: str) -> None:
                     tasks.set_progress(task_id, _progress_text(ev.name, ev.tool_input))
             elif isinstance(ev, Done):
                 result_text = ev.reply.text
+                sdk_session_id = ev.reply.sdk_session_id
                 if ev.reply.is_error:
                     error_note = ev.reply.error or "模型返回了错误"
 
@@ -111,10 +120,17 @@ async def _run(task_id: str) -> None:
         _running.pop(task_id, None)
 
     if status == "cancelled":
+        session_store.finish_turn(turn_id, "(任务已取消)")
         tasks.set_status(task_id, "cancelled", progress_note="已取消")
     elif status == "done":
+        session_store.finish_turn(turn_id, result_text)
+        if sdk_session_id:
+            session_store.set_sdk_session_id(session_key, sdk_session_id)
         tasks.finish(task_id, "done", result_text, await _summarize(result_text))
     else:
+        session_store.finish_turn(turn_id, result_text or f"(执行失败:{error_note})")
+        if sdk_session_id:
+            session_store.set_sdk_session_id(session_key, sdk_session_id)
         tasks.finish(task_id, "failed", result_text, error_note or "执行失败")
 
     await notify.on_task_terminal(task_id)

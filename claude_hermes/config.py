@@ -281,11 +281,23 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     Web 端自带多会话管理:每个对话独立成 web:<conv_id>,不受 UNIFY 影响;
     但特殊 conv_id "main" 汇入统一主会话(从网页也能接着 TG/CLI 那条线聊);
     私聊则按 UNIFY_SESSIONS:开统一则共享主会话,否则按平台隔离。
+
+    `voice-chat:`/`voice-task:` 是语音模块保留的前缀(主语音通话、后台任务各一个
+    固定/派生键),已经是完整 key,原样透传不再套 "web:" 前缀——这样侧边栏"语音
+    任务"分组里的会话可以直接用 index.html 现成的 openConv()/发消息面板打开,
+    不用给语音专门另写一套路由逻辑。这两个前缀是新引入的保留字,不会跟现有项目
+    哈希形态的 conv_id 冲突。
     """
     if platform == "telegram" and isinstance(chat_id, int) and chat_id < 0:
         return f"tg:{chat_id}"
     if platform == "web":
-        return SESSION_KEY if chat_id == "main" else f"web:{chat_id}"
+        if chat_id == "main":
+            return SESSION_KEY
+        if isinstance(chat_id, str) and (
+            chat_id.startswith("voice-chat:") or chat_id.startswith("voice-task:")
+        ):
+            return chat_id
+        return f"web:{chat_id}"
     return SESSION_KEY if UNIFY_SESSIONS else f"{platform}:{chat_id}"
 
 

@@ -1,0 +1,89 @@
+/* 共享样式:CSS 变量(主题)+ 消息气泡,index.html 和 voice/static/voice.html 都引它,
+   保证语音相关界面跟普通聊天界面视觉语言一致(见 03-phase2-实现记录.md 存储统一改动一节)。
+   这份文件是从 index.html 内联 <style> 里原样摘出来的一个子集,改动请两边保持同步。 */
+
+/* ── 深色(默认)· Claude Code 暖炭灰 + 赤陶橙 ────────────────────────── */
+:root{
+  --bg:#181716; --bg2:#1c1b19; --panel:#252320; --panel2:#302f2c; --card:#2b2a27;
+  --line:#3a3934; --line2:#4a4941;
+  --text:#ecebe3; --dim:#a5a094; --dim2:#716d61;
+  --accent:#d97757; --accent2:#c8613f;
+  --user1:#d97757; --user2:#c25f3c; --on-user:#fff;
+  --ok:#5aa469; --err:#d1674a; --radius:16px;
+  --bar-bg:rgba(28,27,25,.72);
+  --code-bg:#22211e; --code-fg:#d4d0c4; --code-inline:rgba(180,170,150,.15);
+  --scroll:#3a3934; --scroll-h:#4a4941;
+  --bubble-shadow:0 1px 2px rgba(0,0,0,.24);
+  --shadow:0 10px 34px rgba(0,0,0,.45);
+  --focus-ring:rgba(217,119,87,.2);
+  --glow1:rgba(217,119,87,.4); --glow2:rgba(194,95,60,.4);
+  --sbw:9px;
+}
+/* ── 浅色:系统偏好浅色且用户未手动固定时 ─────────────────────────────── */
+@media(prefers-color-scheme:light){
+  :root:not([data-theme]){
+    --bg:#ffffff; --bg2:#ffffff; --panel:#f7f7f7; --panel2:#eeeeee; --card:#ffffff;
+    --line:#e5e5e5; --line2:#d8d8d8;
+    --text:#29261f; --dim:#6d6757; --dim2:#9a9482;
+    --accent:#bd5d3a; --accent2:#a84e2f;
+    --user1:#d97757; --user2:#c25f3c; --on-user:#fff;
+    --bar-bg:rgba(255,255,255,.8);
+    --code-bg:#f5f5f5; --code-fg:#3a362c; --code-inline:rgba(0,0,0,.06);
+    --scroll:#d8d8d8; --scroll-h:#c4c4c4;
+    --bubble-shadow:0 1px 2px rgba(0,0,0,.05);
+    --shadow:0 10px 34px rgba(0,0,0,.08);
+    --focus-ring:rgba(189,93,58,.16);
+    --glow1:rgba(217,119,87,.3); --glow2:rgba(189,93,58,.28);
+  }
+}
+/* ── 手动固定浅色 ────────────────────────────────────────────────────── */
+:root[data-theme="light"]{
+  --bg:#ffffff; --bg2:#ffffff; --panel:#f7f7f7; --panel2:#eeeeee; --card:#ffffff;
+  --line:#e5e5e5; --line2:#d8d8d8;
+  --text:#29261f; --dim:#6d6757; --dim2:#9a9482;
+  --accent:#bd5d3a; --accent2:#a84e2f;
+  --user1:#d97757; --user2:#c25f3c; --on-user:#fff;
+  --bar-bg:rgba(255,255,255,.8);
+  --code-bg:#f5f5f5; --code-fg:#3a362c; --code-inline:rgba(0,0,0,.06);
+  --scroll:#d8d8d8; --scroll-h:#c4c4c4;
+  --bubble-shadow:0 1px 2px rgba(0,0,0,.05);
+  --shadow:0 10px 34px rgba(0,0,0,.08);
+  --focus-ring:rgba(189,93,58,.16);
+  --glow1:rgba(217,119,87,.3); --glow2:rgba(189,93,58,.28);
+}
+
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg2);color:var(--text);
+  font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+  overscroll-behavior:none;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+  transition:background-color .3s ease,color .3s ease}
+button{font:inherit;cursor:pointer;border:none;background:none;color:inherit}
+a{color:var(--accent)}
+
+::-webkit-scrollbar{width:var(--sbw);height:9px}
+::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:10px;border:2px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background:var(--scroll-h);background-clip:padding-box}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ── 消息气泡(普通聊天/语音转写共用)───────────────────────────────── */
+.row{display:flex;margin:10px 0;animation:pop .32s cubic-bezier(.2,.7,.3,1)}
+.row.me{justify-content:flex-end}
+.row.ai{display:block;margin:0}
+.row.sys{justify-content:center}
+.row.sys .sysnote{font-size:12px;color:var(--dim2);background:var(--card);
+  border:1px solid var(--line);border-radius:999px;padding:5px 14px;max-width:90%;text-align:center}
+.bubble{max-width:86%;padding:10px 14px;border-radius:var(--radius);white-space:normal;word-wrap:break-word;
+  overflow-wrap:anywhere;box-shadow:var(--bubble-shadow)}
+.row.me .bubble{background:linear-gradient(135deg,var(--user1),var(--user2));color:var(--on-user);border-bottom-right-radius:6px}
+.row.ai .bubble{background:transparent;border-radius:var(--radius);max-width:100%;margin:4px 0 10px;display:block;box-shadow:none;padding:0}
+.bubble.pending{color:var(--dim)}
+.bubble.err{border-left:3px solid var(--err);padding-left:11px}
+@keyframes pop{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+/* markdown(轻量子集,语音转写目前是纯文本,但共享一份免得以后分叉) */
+.bubble p{margin:.5em 0}
+.bubble p:first-child{margin-top:0}.bubble p:last-child{margin-bottom:0}
+.bubble code{background:var(--code-inline);padding:.12em .4em;border-radius:6px;font-size:.9em;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.row.me code{background:rgba(255,255,255,.2)}
+.bubble img{max-width:100%;border-radius:10px}

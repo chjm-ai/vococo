@@ -132,6 +132,21 @@
   #newBtn .np{font-size:14px;line-height:1}
   #newBtn:hover{background:var(--card)}
   #newBtn:active{transform:scale(.98)}
+  /* 语音对话:入口按钮样式跟＋新对话一致,弱化一档(边框而非填充),二者视觉分层 */
+  #voiceChatBtn{display:flex;align-items:center;justify-content:center;gap:8px;
+    width:calc(100% - 16px);margin:0 8px 8px;padding:8px 10px;border-radius:9px;
+    border:1px solid var(--line);color:var(--dim);font-size:13px;font-weight:600;
+    cursor:pointer;transition:background .15s,transform .12s}
+  #voiceChatBtn .ic{width:15px;height:15px}
+  #voiceChatBtn:hover{background:var(--panel2);color:var(--text)}
+  #voiceChatBtn:active{transform:scale(.98)}
+  #voiceChatBtn[hidden]{display:none}
+  /* 语音任务:固定分组,行样式复用 .conv/.cvbody,状态点颜色跟任务状态走 */
+  .vtaskdot{flex-shrink:0;width:7px;height:7px;border-radius:50%}
+  .vtaskdot.queued,.vtaskdot.running{background:var(--accent)}
+  .vtaskdot.running{animation:livepulse 1.2s infinite}
+  .vtaskdot.done{background:var(--ok)}
+  .vtaskdot.failed,.vtaskdot.cancelled{background:var(--err)}
   /* 侧边栏收起按钮(仅桌面显示)*/
   #collapseBtn{display:none;width:26px;height:26px;border-radius:7px;flex-shrink:0;
     align-items:center;justify-content:center;color:var(--dim);
@@ -805,6 +820,7 @@
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
+    <button id="voiceChatBtn" hidden onclick="location.href='/voice'"></button>
     <div id="convList"></div>
     <div class="sfoot" id="sfoot"><span class="savatar">U</span><span class="sfoottxt" id="sfoottxt">User</span>
       <div id="convFilterBox">
@@ -827,7 +843,6 @@
             </span>
           </span>
         </div>
-        <button class="icon" id="voiceEntryBtn" type="button" title="语音伴聊" hidden onclick="location.href='/voice'">🎙️</button>
         <div id="ctxBox">
           <button id="barMeta" type="button" title="上下文占用 · 点击看明细" hidden>
             <svg class="ctxring" viewBox="0 0 20 20"><circle class="track" cx="10" cy="10" r="8"/><circle class="fill" id="ctxRing" cx="10" cy="10" r="8"/></svg>
@@ -933,6 +948,7 @@ const S = {
   rateStatus: {level:"ok", msg:"", lastErr:"", ts:0},  // ok|warn|err, 更新侧栏底部状态点
   dragSrc: null,        // 项目拖拽排序:正在被拖起的项目 hash
   dragMoved: false,     // 刚发生过一次拖拽落地,下一次 click 吞掉(不触发分组展开/收起)
+  voiceSidebar: {main:null, tasks:[]},  // /voice/sidebar 拉到的"语音任务"固定分组数据
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -1002,9 +1018,11 @@ async function api(path, opts={}){
   if(r.status===401){ showLogin(); throw new Error("401"); }
   return r;
 }
-// 语音伴聊入口按钮显隐(VOICE_ENABLED=0 时后端不注册该路由,探测到即隐藏)
+// 语音对话入口按钮(侧边栏,"＋新对话"下面):VOICE_ENABLED=0 时后端不注册该路由,
+// 探测到即隐藏。
+$("#voiceChatBtn").innerHTML = ic("mic") + "语音对话";
 fetch("/voice/config").then(r=>r.json()).then(d=>{
-  if(d && d.enabled) $("#voiceEntryBtn").hidden = false;
+  if(d && d.enabled) $("#voiceChatBtn").hidden = false;
 }).catch(()=>{});
 
 // ── 登录 ────────────────────────────────────────────────────────────────
@@ -1017,6 +1035,7 @@ async function tryEnter(){
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
     await loadPrefs(); await loadProjects(); await loadConvs(); await loadModels(); updateFilterBtn();
+    loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
     // 打开最近活跃的会话;openConv 内会同步活跃项目、展开其分组并重绘侧边栏
     await openConv(S.convs[0] ? S.convs[0].conv : "main");
   }catch(e){ $("#loginErr").textContent="连接失败"; }
@@ -1287,9 +1306,37 @@ function loadExpanded(){ try{ S.expanded=new Set(JSON.parse(localStorage.getItem
 function convsInGroup(hash){
   return S.convs.filter(c => c.pinned ? hash===null : convProject(c.conv)===hash);
 }
+// 语音任务:固定置顶分组,不参与时间排序、不可折叠——主会话(语音通话)固定第一行,
+// 后台任务会话按下面接口返回的顺序排在其后(见 web.py _handle_voice_sidebar)。
+function renderVoiceTaskGroup(box){
+  const vs = S.voiceSidebar;
+  if(!vs || !vs.main) return;  // 还没拉到数据(如刚登录那一瞬)先不渲染,避免空分组闪一下
+  const h=el("div","projgrp");
+  const nm=el("span","pgname"); nm.textContent="语音任务"; h.append(nm);
+  box.append(h);
+  const mainRow=el("div","conv ingroup"+(vs.main.conv===S.conv?" active":""));
+  const mainBody=el("div","cvbody");
+  mainBody.innerHTML=ic("mic");
+  const mainCt=el("div","ct"); mainCt.textContent=vs.main.title||"语音对话"; mainBody.append(mainCt);
+  mainRow.append(mainBody);
+  mainRow.onclick=()=>{ location.href="/voice"; };
+  box.append(mainRow);
+  for(const t of vs.tasks){
+    const row=el("div","conv ingroup"+(t.conv===S.conv?" active":""));
+    const body=el("div","cvbody");
+    const dot=el("span","vtaskdot "+(t.task_status||"")); dot.title=TASK_STATUS_WORD[t.task_status]||"";
+    body.append(dot);
+    const ct=el("div","ct"); ct.textContent=t.title||"新对话"; body.append(ct);
+    const tm=fmtTime(t.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }
+    row.append(body);
+    row.onclick=()=>{ openConv(t.conv); };
+    box.append(row);
+  }
+}
 // 手风琴:默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
+  renderVoiceTaskGroup(box);
   const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
   for(const g of groups){
     const convs=convsInGroup(g.hash);
@@ -1347,6 +1394,14 @@ async function loadProjects(){
   try{ const r=await api("/projects"); S.projects=(await r.json()).projects||[]; }
   catch(e){ S.projects=[]; }
 }
+
+// ── 语音任务:侧边栏固定分组(主语音会话 + 各后台任务会话)────────────────────
+async function loadVoiceSidebar(){
+  try{ const r=await api("/voice/sidebar"); S.voiceSidebar=await r.json(); }
+  catch(e){ S.voiceSidebar={main:null, tasks:[]}; }
+  renderConvs();
+}
+const TASK_STATUS_WORD = {queued:"排队中", running:"进行中", done:"已完成", failed:"失败", cancelled:"已取消"};
 // 项目分组拖拽排序(原生 HTML5 DnD:桌面拖起手感好,鼠标移动量够才触发,不影响原有点击展开)
 function bindProjDrag(h, hash){
   h.draggable = true;
@@ -2017,7 +2072,8 @@ function renderEventsFlow(events){
 async function openConv(conv){
   S.conv=conv; S.stream=null;
   S.project=convProject(conv); S.expanded.add(grpKey(S.project)); saveExpanded();  // 活跃项目随打开的会话联动,并确保其分组展开
-  const c=S.convs.find(x=>x.conv===conv);
+  // 语音任务会话不在 S.convs 里(那是 /conversations 拉的),标题去 /voice/sidebar 的缓存里找
+  const c=S.convs.find(x=>x.conv===conv) || S.voiceSidebar.tasks.find(x=>x.conv===conv);
   $("#convTitle").textContent = c ? (c.title||"新对话") : "新对话";
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮

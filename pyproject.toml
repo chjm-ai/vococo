@@ -65,5 +65,6 @@ include = ["claude_hermes*"]
     "web_static/*.html",
     "web_static/*.json",
     "web_static/*.js",
+    "web_static/*.css",
     "web_static/*.png",
 ]

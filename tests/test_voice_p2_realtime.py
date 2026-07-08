@@ -39,8 +39,8 @@ def anyio_backend():
 
 @pytest.fixture
 def voice_db(isolated, monkeypatch):
+    # session 模块委托 session_store 存储,重置由 `isolated` fixture 代劳。
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
-    monkeypatch.setattr(session, "_DB", None)
     monkeypatch.setattr(tasks, "_DB", None)
     monkeypatch.setattr(ws, "_active_ws", None)
     # 默认关掉声纹核验:这批测试没有真实音频(FakeUpstreamWs 只推事件、不走
@@ -49,9 +49,6 @@ def voice_db(isolated, monkeypatch):
     monkeypatch.setattr(config, "VOICE_VOICEPRINT_ENABLED", False)
     executor._running.clear()
     yield
-    if session._DB is not None:
-        session._DB.close()
-        session._DB = None
     if tasks._DB is not None:
         tasks._DB.close()
         tasks._DB = None
