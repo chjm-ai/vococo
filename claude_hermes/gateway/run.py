@@ -94,15 +94,18 @@ class GatewayRunner:
         model = model or config.MODEL
         if core.is_command(inc.text):
             outcome = core.handle_command(inc.text, key, model)
-            if outcome.new_model:
-                self.models[key] = outcome.new_model
-                if inc.platform == "web":
-                    settings_store.set_web_default_model(outcome.new_model)
-            if outcome.choice is not None:
-                await adapter.present_choice(inc.chat_id, outcome.choice)
-            elif outcome.reply:
-                await adapter.send(inc.chat_id, outcome.reply)
-            return
+            # handled=False 且没回复 = 不是系统命令(比如 "/skill名"),原样当成
+            # 普通消息往下走交给 agent;真正的未知命令仍带 reply,走下面短路分支。
+            if outcome.handled or outcome.reply:
+                if outcome.new_model:
+                    self.models[key] = outcome.new_model
+                    if inc.platform == "web":
+                        settings_store.set_web_default_model(outcome.new_model)
+                if outcome.choice is not None:
+                    await adapter.present_choice(inc.chat_id, outcome.choice)
+                elif outcome.reply:
+                    await adapter.send(inc.chat_id, outcome.reply)
+                return
         # 语音后台任务续聊(session_key=voice-task:{id})要延续任务派发时的工作目录——
         # converse() 按 session_key 推导 cwd 那套认不出这种非项目 key,查 voice.tasks
         # 里存的原始 cwd 显式传进去(见 03-phase2-实现记录.md 存储统一改动一节)。

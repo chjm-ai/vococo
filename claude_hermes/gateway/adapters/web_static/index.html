@@ -74,6 +74,7 @@
   html,body{margin:0;height:100%;background:var(--bg2);color:var(--text);
     font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
     overscroll-behavior:none;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+    -webkit-text-size-adjust:100%;text-size-adjust:100%;
     transition:background-color .3s ease,color .3s ease}
   button{font:inherit;cursor:pointer;border:none;background:none;color:inherit}
   a{color:var(--accent)}
@@ -624,14 +625,12 @@
   #empty .sug:active{transform:scale(.96)}
 
   /* #composer 只做「悬浮 + 滑动隐藏」的壳,不带背景/内边距——背景和内边距挪到
-     .combg 这层实心遮罩上;::before 是遮罩上方一小截模糊渐隐条,让滚上来的消息
-     不是硬切进纯色背景,而是先模糊、再淡出。 */
+     .combg 这层实心遮罩上;::before 是遮罩上方一小截渐隐条(纯色实心 → 全透明,
+     不用模糊),让滚上来的消息不是硬切进纯色背景,而是柔和淡出。 */
   #composer{position:absolute;bottom:0;left:0;right:0;z-index:10;
     transition:transform .35s cubic-bezier(.4,0,.2,1)}
-  #composer::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:28px;
-    backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
-    mask-image:linear-gradient(to top,#000,transparent);
-    -webkit-mask-image:linear-gradient(to top,#000,transparent);
+  #composer::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:20px;
+    background:linear-gradient(to top, var(--bg2), color-mix(in srgb, var(--bg2) 0%, transparent));
     pointer-events:none}
   /* .combg 宽度撑满整行,填充和页面一致的不透明背景色,盖住 #messages 滚动上来的文字。
      padding 只留左右和下(贴近底部安全区的一侧),上=0(贴 #messages 那一侧不留缝)。 */
@@ -677,15 +676,29 @@
     background:transparent;color:var(--dim);font-size:15px;line-height:1;display:inline-flex;
     align-items:center;justify-content:center}
   #pending .pi .pdel:hover{background:var(--err);color:#fff}
-  #thumbs{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  /* 没图片时也保留这 3px:输入框 focus 态的外发光阴影要靠这点余量,
+     不然贴着上边界会被裁掉一截 */
+  #thumbs{display:flex;gap:8px;margin-bottom:3px;flex-wrap:wrap}
   #thumbs .t{position:relative}
   #thumbs img{width:56px;height:56px;object-fit:cover;border-radius:10px;border:1px solid var(--line2)}
   #thumbs .x{position:absolute;top:-6px;right:-6px;background:var(--err);color:#fff;border-radius:50%;
     width:20px;height:20px;font-size:13px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.4)}
   /* 竖排输入框:文本区在上(默认约 2 行),工具条在下 */
-  .inrow{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line2);
+  .inrow{position:relative;display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line2);
     border-radius:20px;padding:8px 10px 6px;transition:border-color .18s,box-shadow .18s}
   .inrow:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--focus-ring)}
+  /* 斜杠命令菜单:输入 "/" 时弹出,悬浮在整个输入框上方,随前缀过滤;结构复用 #modelPop 样式 */
+  #cmdPop{position:absolute;left:0;right:0;bottom:calc(100% + 8px);z-index:20;max-height:260px;overflow-y:auto;
+    background:var(--card);border:1px solid var(--line2);border-radius:14px;padding:6px;
+    box-shadow:var(--shadow);animation:pop .16s ease}
+  #cmdPop[hidden]{display:none}
+  #cmdPop .ci{display:flex;align-items:baseline;gap:10px;width:100%;text-align:left;
+    padding:9px 11px;border-radius:10px;font-size:13px;color:var(--text);transition:background .14s}
+  #cmdPop .ci .cn{color:var(--accent);font-weight:600;flex-shrink:0}
+  #cmdPop .ci .cd{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim);font-size:12.5px}
+  #cmdPop .ci:hover,#cmdPop .ci.active{background:var(--panel2)}
+  #cmdPop .empty{padding:9px 11px;font-size:12.5px;color:var(--dim2)}
+  #cmdPop .cmdsep{height:1px;margin:5px 7px;background:var(--line2)}
   #ta{width:100%;background:none;border:none;color:var(--text);resize:none;font:inherit;
     min-height:46px;max-height:180px;padding:2px 4px;outline:none;line-height:1.5}
   #ta::placeholder{color:var(--dim2)}
@@ -890,6 +903,7 @@
           <div id="pending"></div>
           <div id="thumbs"></div>
           <div class="inrow">
+            <div id="cmdPop" hidden></div>
             <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
             <div class="inbar">
               <button type="button" id="imgBtn">＋</button>
@@ -938,12 +952,16 @@ const S = {
   lastId: 0,            // 已处理的最大事件编号,用于断线重连后去重
   models: {default:"", choices:[]},  // /models 拉到的可选模型
   model: "",            // 当前会话使用的模型(空=用默认)
+  commands: [],          // /commands 拉到的系统斜杠命令清单 [{name,desc}]
+  skills: [],            // /commands 拉到的已启用 skill 清单 [{name,desc}]
+  cmd: {open:false, items:[], active:0},  // 斜杠命令菜单当前状态
   git: null,            // 当前项目会话的 git 状态(/conv/git 返回);非项目会话为 null
   histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁
   pendingChoice: {},    // conv → choice 事件:审批发给非当前会话时暂存,切回该会话再渲染
   live: {},             // conv → 进行中回合的事件缓冲:任意会话(含后台)都记录,切回时重放重建流式气泡
   pending: {},          // conv → 待发送队列 [{id,text,images}]:上一个任务没结束时点发送,暂存,任务完成自动发
   pendId: 0,            // 待发送项自增 id,供删除定位
+  voiceRec: {},         // conv → {bubble}:语音转写中的占位气泡,按录音发起时所属会话记录,切走再切回能补出来
   convFilter: "all",
   rateStatus: {level:"ok", msg:"", lastErr:"", ts:0},  // ok|warn|err, 更新侧栏底部状态点
   dragSrc: null,        // 项目拖拽排序:正在被拖起的项目 hash
@@ -1034,7 +1052,7 @@ async function tryEnter(){
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
-    await loadPrefs(); await loadProjects(); await loadConvs(); await loadModels(); updateFilterBtn();
+    await loadPrefs(); await loadProjects(); await loadConvs(); await loadModels(); await loadCommands(); updateFilterBtn();
     loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
     // 打开最近活跃的会话;openConv 内会同步活跃项目、展开其分组并重绘侧边栏
     await openConv(S.convs[0] ? S.convs[0].conv : "main");
@@ -1141,6 +1159,51 @@ function setMeta(d){
 // ── 模型选择器 ────────────────────────────────────────────────────────────
 async function loadModels(){
   try{ const r=await api("/models"); S.models=await r.json(); renderModelChip(); }catch(e){}
+}
+
+// ── 斜杠命令菜单(系统命令 + skill,两段中间一条分隔线)────────────────────
+async function loadCommands(){
+  try{
+    const r=await api("/commands"); const d=await r.json();
+    S.commands=d.commands||[]; S.skills=d.skills||[];
+  }catch(e){}
+}
+function cmdMatches(prefix){
+  const p=prefix.toLowerCase();
+  const cmds=S.commands.filter(c=>c.name.toLowerCase().startsWith(p)).map(c=>Object.assign({kind:"cmd"},c));
+  const skills=S.skills.filter(c=>c.name.toLowerCase().startsWith(p)).map(c=>Object.assign({kind:"skill"},c));
+  return cmds.concat(skills);
+}
+function renderCmdPop(){
+  const pop=$("#cmdPop");
+  if(!S.cmd.items.length){ pop.innerHTML='<div class="empty">没有匹配的命令</div>'; return; }
+  let html="", sepDone=false;
+  S.cmd.items.forEach((c,i)=>{
+    if(c.kind==="skill" && !sepDone){ html+='<div class="cmdsep"></div>'; sepDone=true; }
+    html+='<button type="button" class="ci'+(i===S.cmd.active?" active":"")+'" data-i="'+i+'">'+
+      '<span class="cn">/'+esc(c.name)+'</span><span class="cd">'+esc(c.desc)+'</span></button>';
+  });
+  pop.innerHTML=html;
+  pop.querySelectorAll(".ci").forEach(b=>{ b.onclick=()=>pickCmd(+b.dataset.i); });
+}
+function openCmdMenu(prefix){
+  S.cmd.items=cmdMatches(prefix); S.cmd.active=0; S.cmd.open=true;
+  renderCmdPop(); $("#cmdPop").hidden=false;
+}
+function closeCmdMenu(){
+  if(!S.cmd.open) return;
+  S.cmd.open=false; S.cmd.items=[]; $("#cmdPop").hidden=true;
+}
+function pickCmd(i){
+  const c=S.cmd.items[i]; if(!c) return;
+  const ta=$("#ta"); ta.value="/"+c.name+" "; closeCmdMenu(); autoGrow(); ta.focus();
+  const p=ta.value.length; ta.setSelectionRange(p,p);
+}
+// 只在"整条消息就是斜杠命令前缀,还没打空格"时弹出;打了空格说明已在填参数,收起菜单
+function checkCmdMenu(){
+  const v=$("#ta").value;
+  const m=/^\/([a-zA-Z0-9_一-龥-]*)$/.exec(v);
+  if(m && (S.commands.length||S.skills.length)) openCmdMenu(m[1]); else closeCmdMenu();
 }
 function modelShort(id){
   if(!id) return "模型";
@@ -1289,8 +1352,11 @@ async function loadPrefs(){
 async function loadConvs(){
   const r = await api("/conversations"); const d = await r.json();
   const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
+  // 新建但还没发出第一条消息的本地会话(conv=local-xxx)后端还不认识,不在返回列表里;
+  // 合并时保留它,否则录音/转写等待期间只要有别的会话触发这次刷新,这条新会话就会被冲没
+  const locals = S.convs.filter(c=>String(c.conv).startsWith("local-"));
   // 全部会话(含主会话)按最近活跃排序,最新的排最前面
-  S.convs = [main, ...d.conversations].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
+  S.convs = [main, ...d.conversations, ...locals].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
   renderConvs();   // 会话刷新后同步标题栏
 }
 // 从 conv id 解析它属于哪个项目:p<hash>:<convid> → hash;否则 null(默认项目)
@@ -2070,6 +2136,7 @@ function renderEventsFlow(events){
   return flow;
 }
 async function openConv(conv){
+  closeCmdMenu();
   S.conv=conv; S.stream=null;
   S.project=convProject(conv); S.expanded.add(grpKey(S.project)); saveExpanded();  // 活跃项目随打开的会话联动,并确保其分组展开
   // 语音任务会话不在 S.convs 里(那是 /conversations 拉的),标题去 /voice/sidebar 的缓存里找
@@ -2087,6 +2154,7 @@ async function openConv(conv){
   }else{                                        // 新建会话 / 空会话:不闪骨架,清空后交给 updateEmpty 出欢迎屏
     $("#wrap").innerHTML=""; $("#convLoading").classList.remove("on");
   }
+  if(S.voiceRec[conv]) renderVoicePending(conv);  // 切回时该会话仍在转写 → 补出占位气泡,不然像是丢了
   if(conv && !String(conv).startsWith("local-")){
     try{
       const r=await api("/history?conv="+encodeURIComponent(conv)); const d=await r.json();
@@ -2366,10 +2434,17 @@ function handleEvent(e){
       finalizeStream(e.text);
       if(e.is_error){
         if(errBubble) errBubble.classList.add("err");
-        // 检测限额/过载关键字,更新侧栏状态
-        const el=(e.error||"").toLowerCase();
-        if(/rate|429|quota|limit|overloaded/i.test(el)) setRateStatus("warn", "最近遇到限额/过载", e.error);
-        else setRateStatus("err", "", e.error);
+        // 有 api_error_status(429/529/5xx等)= 后端已确认是模型服务商那边的错,
+        // 直接按状态码分类;没有才退回关键词猜测(网络/进程异常等)
+        const st=e.api_error_status;
+        if(st===429) setRateStatus("warn", "最近遇到限额/过载", e.error);
+        else if(st===529) setRateStatus("warn", "Claude 服务过载", e.error);
+        else if(st) setRateStatus("err", `Claude 服务出错(${st})`, e.error);
+        else {
+          const el=(e.error||"").toLowerCase();
+          if(/rate|429|quota|limit|overloaded/i.test(el)) setRateStatus("warn", "最近遇到限额/过载", e.error);
+          else setRateStatus("err", "", e.error);
+        }
       }else{ setRateStatus("ok","",""); }
       setMeta(e); loadConvs(); flushPending(e.conv); break; }
     case "message": // 命令回复 / 报错 / cron 推送
@@ -2580,6 +2655,7 @@ function renderToolCard(name, inp){
 // ── 发送 ────────────────────────────────────────────────────────────────
 async function send(text, display, opts){
   opts=opts||{};
+  closeCmdMenu();
   text=(text||"").trim(); if(!text && !S.images.length) return;
   // 上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发(审批/语音走 forceSend 立即发)
   if(S.stream && !opts.forceSend){ if(queuePending(text, S.images.slice())){ S.images=[]; renderThumbs(); $("#ta").value=""; autoGrow(); } return; }
@@ -2673,12 +2749,20 @@ $("#composer").onsubmit = e=>{ e.preventDefault(); send($("#ta").value); };
 $("#ta").addEventListener("keydown", e=>{
   // 输入法组合中(中文/日文等候选未上屏)的回车只上屏,不发送
   if(e.isComposing || e.keyCode===229) return;
+  if(S.cmd.open){
+    if(e.key==="ArrowDown"){ e.preventDefault(); if(S.cmd.items.length){ S.cmd.active=(S.cmd.active+1)%S.cmd.items.length; renderCmdPop(); } return; }
+    if(e.key==="ArrowUp"){ e.preventDefault(); if(S.cmd.items.length){ S.cmd.active=(S.cmd.active-1+S.cmd.items.length)%S.cmd.items.length; renderCmdPop(); } return; }
+    if((e.key==="Enter"||e.key==="Tab") && S.cmd.items.length){ e.preventDefault(); pickCmd(S.cmd.active); return; }
+    if(e.key==="Escape"){ e.preventDefault(); closeCmdMenu(); return; }
+  }
   if(e.key==="Enter" && !e.shiftKey && window.innerWidth>760){ e.preventDefault(); send($("#ta").value); }
 });
 // "工作中"状态行右侧的停止按钮(状态行每秒重绘,用事件委托一次绑定)
 document.addEventListener("click", e=>{ if(e.target.closest(".statusstop")){ e.preventDefault(); stopReply(); } });
+document.addEventListener("click", e=>{ if(S.cmd.open && !e.target.closest("#cmdPop") && e.target!==$("#ta")) closeCmdMenu(); });
 function autoGrow(){ const t=$("#ta"); t.style.height="auto"; t.style.height=Math.min(t.scrollHeight,160)+"px"; }
 $("#ta").addEventListener("input", autoGrow);
+$("#ta").addEventListener("input", checkCmdMenu);
 // 欢迎屏快捷入口:点击直接发送
 document.querySelectorAll("#empty .sug").forEach(b=>{ b.onclick=()=>send(b.dataset.s); });
 
@@ -2787,30 +2871,53 @@ function stopRec(cancel){
   REC.cancel=!!cancel; clearInterval(REC.timer); REC.timer=null;
   try{ REC.mr.stop(); }catch(e){}
 }
+// 转写中占位气泡:按"录音发起时所属会话"存进 S.voiceRec,切走再切回能补出来(否则像是丢了)
+function renderVoicePending(conv){
+  const st=S.voiceRec[conv]; if(!st) return;
+  const b=addBubble("me","");
+  b.classList.add("voicebub");
+  b.innerHTML='<span class="vwait"><span class="sp"></span>转写中…</span>';
+  st.bubble=b;
+}
 async function onRecStop(){
   cleanupAudio();   // 停声波分析
   releaseMic();     // 立刻停掉麦克风流,灭掉 iOS 状态栏录音指示灯(权限已按站点记住,下次不再弹框)
   const blob=new Blob(REC.chunks,{type:REC.mime}); const mime=REC.mime;
   REC.mr=null;
   if(REC.cancel || blob.size<1200){ REC.state="idle"; setRecUI(); return; }
+  // 记住录音发起时所在的会话:转写这段时间用户可能已切到别的会话,完成后要发到这个会话而非当前会话
+  const conv=S.conv;
   // 点发送:立即收起录音条,在聊天区冒一个"我"的占位气泡(转写中…),不等结果
   REC.state="transcribing"; setRecUI();
-  const b=addBubble("me","");
-  b.classList.add("voicebub");
-  b.innerHTML='<span class="vwait"><span class="sp"></span>🎤 转写中…</span>';
+  S.voiceRec[conv]={};
+  renderVoicePending(conv);
   try{
     const ext = mime.includes("mp4")||mime.includes("mpeg")?"mp4":mime.includes("ogg")?"ogg":mime.includes("wav")?"wav":"webm";
     const fd=new FormData(); fd.append("audio", blob, "voice."+ext);
     const r=await api("/transcribe",{method:"POST",body:fd});
     const d=await r.json().catch(()=>({}));
+    const st=S.voiceRec[conv]; delete S.voiceRec[conv];
+    const here=S.conv===conv;   // 转写完成时是否还停留在发起录音的那个会话
     if(r.ok && d.text){
-      // 转写成功:文字回填占位气泡,再复用它自动发给 Claude(不重复冒泡)
-      b.classList.remove("voicebub"); b.textContent=d.text;
-      REC.state="idle";
-      await send(d.text, null, {reuseBubble:true, forceSend:true});
-    } else { voiceFail(b, d.error); REC.state="idle"; }
-  }catch(e){ voiceFail(b, "转写失败:"+e.message); REC.state="idle"; }
-  setRecUI();
+      if(here && st && st.bubble){
+        // 还在原会话:文字回填占位气泡,再复用它自动发给 Claude(不重复冒泡)
+        st.bubble.classList.remove("voicebub"); st.bubble.textContent=d.text;
+        await send(d.text, null, {reuseBubble:true, forceSend:true});
+      }else{
+        // 已切到别的会话:占位气泡早被清空,直接发到后台会话,靠历史/SSE 缓冲在切回时补出来;
+        // 若该会话还是未转正的本地新会话(local-xxx),后端不认识这个前缀,得先去掉
+        const realConv = String(conv).replace(/^local-/,"");
+        const payload={conv:realConv, text:d.text, images:[]};
+        await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+        if(realConv!==conv){ const c=S.convs.find(x=>x.conv===conv); if(c) c.conv=realConv; }
+        loadConvs();
+      }
+    } else if(here && st && st.bubble){ voiceFail(st.bubble, d.error); }
+  }catch(e){
+    const st=S.voiceRec[conv]; delete S.voiceRec[conv];
+    if(S.conv===conv && st && st.bubble) voiceFail(st.bubble, "转写失败:"+e.message);
+  }
+  REC.state="idle"; setRecUI();
 }
 // 转写没识别到内容:占位气泡改成"没听清"+重录按钮,绝不把空内容误发给 Claude
 function voiceFail(b, msg){

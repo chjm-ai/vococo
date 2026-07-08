@@ -53,13 +53,13 @@ class ImageAttachment:
 
 
 # 各模型上下文窗口(token)。前缀匹配,未知默认 200k。
-# Claude 4.6+/5 官方已标配 1M input;Haiku 4.5 为 200k。
+# Opus 4.x/Sonnet 5 官方已标配 1M input;Sonnet 4.6/Haiku 4.5 仍为 200k。
 _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-opus-4-6": 1_000_000,
     "claude-sonnet-5": 1_000_000,
-    "claude-sonnet-4-6": 1_000_000,
+    "claude-sonnet-4-6": 200_000,
     "claude-haiku-4-5": 200_000,
 }
 
@@ -112,6 +112,7 @@ class AgentReply:
     cost_usd: float | None
     is_error: bool
     error: str = ""  # 错误详情(如 rate limit / overload),空=无错误
+    api_error_status: int | None = None  # 模型 API 失败请求的 HTTP 状态码,非空=确定是模型层报错
     context_tokens: int = 0  # 当前上下文占用(input+cache),≈ 塞进窗口的总量
     turn_tokens: int = 0  # 本轮新增吞吐(input+output),累计即"消耗"
     context_window: int = 200_000  # 该模型的上下文窗口
@@ -120,6 +121,33 @@ class AgentReply:
     output_tokens: int = 0  # 本轮输出
     model: str = ""  # 实际使用的模型
     sdk_session_id: str = ""  # 本轮 SDK 会话 id,存回后下一轮 resume 它(真·多轮历史)
+
+
+def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
+    """把一轮报错翻译成用户能看懂的提示,并标明是不是模型服务商那边的问题。
+
+    api_error_status 有值 = CLI 明确报了失败请求的 HTTP 状态码,能确定是 Claude
+    官方 API 那边出的错,不是咱们服务器坏了;没有则退回关键词猜测(网络/进程异常等,
+    真假参半,措辞留有余地)。
+    """
+    if api_error_status == 429:
+        return "⚠️ Claude 触发限流(429),不是咱们服务器的问题,稍等片刻再试"
+    if api_error_status == 529:
+        return "⚠️ Claude 官方服务过载(529),对方那边负载高,不是咱们服务器的问题,稍等再试"
+    if api_error_status in (500, 502, 503):
+        return f"⚠️ Claude 官方服务出错(状态码 {api_error_status}),不是咱们这边的问题,稍等再试"
+    if api_error_status in (401, 403):
+        return f"⚠️ 调用被拒绝(状态码 {api_error_status}),八成是密钥/权限配置问题,请联系维护者"
+    if api_error_status == 400:
+        return "⚠️ 请求被 Claude 拒绝(400),可能是发送内容有问题,换个问法或联系维护者"
+    if api_error_status:
+        return f"⚠️ Claude API 返回错误(状态码 {api_error_status}),不是咱们服务器的问题,稍等再试"
+    dl = detail.lower()
+    if any(kw in dl for kw in ("rate", "429", "quota", "limit", "overloaded", "529")):
+        return "⚠️ Claude 限额/过载,稍等片刻再试"
+    if detail:
+        return f"⚠️ 出了点问题:{detail[:120]}"
+    return "⚠️ 出了点问题,请重试"
 
 
 # === 流式事件类型 ===
@@ -434,6 +462,9 @@ async def stream_turn(
         tool_meta: dict[tuple[str, int], tuple[str, str]] = {}  # -> (tool_id, name)
         cost_usd: float | None = None
         is_error = False
+        err_detail = ""  # 模型层报错详情(ResultMessage.result/errors),空=无
+        api_error_status: int | None = None  # 失败请求的 HTTP 状态码(429/529等),None=非模型层报错
+        compact_seen = False  # 本轮 CLI 是否已自己压缩过(见下面 Compacted 分支)
         context_tokens = 0
         turn_tokens = 0
         input_fresh = 0
@@ -550,6 +581,7 @@ async def stream_turn(
                         # CLI 压缩了上下文(autocompact 阈值≈窗口 83%,或手动):
                         # 透传标记,让各端显示「已自动压缩」而非无感丢细节。
                         if getattr(msg, "subtype", "") == "compact_boundary":
+                            compact_seen = True
                             meta = (getattr(msg, "data", None) or {}).get(
                                 "compact_metadata"
                             ) or {}
@@ -563,6 +595,17 @@ async def stream_turn(
                     elif isinstance(msg, ResultMessage):
                         cost_usd = getattr(msg, "total_cost_usd", None)
                         is_error = bool(getattr(msg, "is_error", False))
+                        if is_error:
+                            # api_error_status:CLI 报的失败请求 HTTP 状态码(429/529/5xx等),
+                            # 有它就能确定是模型服务商那边出的错,不是咱们服务器的问题。
+                            api_error_status = getattr(msg, "api_error_status", None)
+                            errs = getattr(msg, "errors", None) or []
+                            result_txt = (getattr(msg, "result", None) or "").strip()
+                            err_detail = (
+                                result_txt
+                                or "; ".join(str(x) for x in errs)
+                                or (getattr(msg, "subtype", "") or "")
+                            )
                         sess_id = getattr(msg, "session_id", None) or sess_id
                         u = getattr(msg, "usage", None) or {}
                         in_t = int(u.get("input_tokens", 0) or 0)
@@ -603,16 +646,73 @@ async def stream_turn(
 
             # 收工、会话尚未断开 —— 此刻问 SDK 当前窗口的真实占用
             # (等价 CLI /context)。失败(旧 CLI 不支持等)则静默保留上面的兜底值。
+            cu: dict | None = None
+            total = 0
             try:
                 cu = await client.get_context_usage()
                 total = int(cu.get("totalTokens", 0) or 0)
                 raw_max = int(cu.get("rawMaxTokens") or cu.get("maxTokens") or 0)
                 if total:
                     context_tokens = total
-                if raw_max:
-                    ctx_window_val = raw_max
+                # CLI 自带的模型注册表可能没跟上新模型扩容后的窗口(仍按旧值上报
+                # rawMaxTokens,比如新模型标配 1M/2M 但 CLI 还认成 200k)。我们表里
+                # 是按官方文档手动维护的,不能被 CLI 的旧认知往下砍 —— 取两者较大值。
+                known_window = context_window(used_model)
+                ctx_window_val = max(raw_max, known_window) if raw_max else known_window
             except Exception:
                 ctx_window_val = context_window(used_model)  # 兜底:按模型名估窗口
+
+            # 安全网:CLI 自带的 autocompact 有时不触发(实测:崩溃重启后靠 resume
+            # 冷启动重放 transcript,内部记账没跟上,某会话真实用量能滚到 109% 窗口
+            # 都没压过一次)。这里用刚问到的真实用量兜底判断,该压没压就替它压一次,
+            # 防止越滚越大、下一轮直接拖过整个窗口拖到回复不连贯。
+            #
+            # MCP 工具调用更要紧盯:claude-agent-sdk-python#531 报过一个未修的坑——
+            # CLI 内建的逐次压缩检查只覆盖内置工具(Bash/Read/Edit等)的顺序调用,
+            # 自建 MCP 工具(hermes 的记忆/定时/发消息等全是 MCP)和并行工具批次会
+            # 绕开这层检查。本轮只要用了 MCP 工具,阈值收紧到 65%,不再等到 83%。
+            if (
+                cu
+                and clean_finish
+                and not compact_seen
+                and cu.get("isAutoCompactEnabled", True)
+            ):
+                mcp_tool_calls = sum(1 for n in tool_calls if n.startswith("mcp__"))
+                fallback_ratio = 0.65 if mcp_tool_calls else 0.83
+                candidates = [int(ctx_window_val * fallback_ratio)]
+                official_threshold = int(cu.get("autoCompactThreshold") or 0)
+                if official_threshold:
+                    candidates.append(official_threshold)
+                threshold = min(candidates)  # 两个来源取更紧的那个,MCP 场景下不轻信官方阈值
+                if total and threshold and total >= threshold:
+                    try:
+                        await client.query("/compact")
+                        with anyio.move_on_after(120):
+                            async for msg in msgs:
+                                if (
+                                    isinstance(msg, SystemMessage)
+                                    and getattr(msg, "subtype", "") == "compact_boundary"
+                                ):
+                                    compact_seen = True
+                                    meta = (getattr(msg, "data", None) or {}).get(
+                                        "compact_metadata"
+                                    ) or {}
+                                    yield Compacted(
+                                        trigger=str(meta.get("trigger", "") or "safety-net")
+                                    )
+                                    break
+                                if isinstance(msg, ResultMessage):
+                                    break
+                        # 压完再问一次,把这轮落库的用量换成压缩后的真实值
+                        try:
+                            cu2 = await client.get_context_usage()
+                            t2 = int(cu2.get("totalTokens", 0) or 0)
+                            if t2:
+                                context_tokens = t2
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
 
             # 干净收工 → 回池保温,同会话下一轮零冷启动(哈希/sid 对不上会被池拒收)
             if pooling and clean_finish and sess_id:
@@ -631,6 +731,8 @@ async def stream_turn(
                 tool_calls=tool_calls,
                 cost_usd=cost_usd,
                 is_error=is_error,
+                error=err_detail,
+                api_error_status=api_error_status,
                 context_tokens=context_tokens,
                 turn_tokens=turn_tokens,
                 context_window=ctx_window_val,

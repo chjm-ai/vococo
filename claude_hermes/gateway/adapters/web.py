@@ -31,7 +31,7 @@ from ... import config, providers
 from ...core.agent import AgentReply
 from ...memory import session_store
 from .. import settings_store
-from ..core import MODEL_CHOICES, Choice, Sink
+from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
 from .base import ImageAttachment, Incoming
 from .web_push import PUSH
 
@@ -199,6 +199,7 @@ class _WebSink(Sink):
                 "text": reply.text or ("⚠️ 出了点问题,请重试" if reply.is_error else "(空回复)"),
                 "is_error": reply.is_error,
                 "error": reply.error or "",
+                "api_error_status": reply.api_error_status,
                 "ctx_tokens": meta.get("ctx_tokens", 0),
                 "total_tokens": meta.get("total_tokens", 0),
                 "ctx_window": meta.get("ctx_window", 0),
@@ -655,6 +656,21 @@ class WebAdapter:
             {
                 "default": active_model,
                 "choices": [[v, v] for v, _ in choices],
+            }
+        )
+
+    async def _handle_commands(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        # 斜杠命令清单 = COMMAND_LIST(单一来源,和 TG /help、setMyCommands 共用),
+        # 供输入框 "/" 触发的快捷菜单渲染 + 前缀过滤。
+        # skills 另开一段(带分隔线):只列当前已启用、对 agent 可见的,和
+        # gateway/core.py 里放行 "/skill名" 穿透给 agent 的判定(_enabled_skill_names)同一口径。
+        skills = [s for s in settings_store.list_skills() if s["enabled"]]
+        return web.json_response(
+            {
+                "commands": [{"name": n, "desc": d} for n, d in COMMAND_LIST],
+                "skills": [{"name": s["name"], "desc": s["description"]} for s in skills],
             }
         )
 
@@ -1294,6 +1310,7 @@ class WebAdapter:
                 web.post("/projects/remove", self._handle_project_remove),
                 web.post("/projects/reorder", self._handle_project_reorder),
                 web.get("/models", self._handle_models),
+                web.get("/commands", self._handle_commands),
                 web.get("/history", self._handle_history),
                 web.get("/image", self._handle_image),
                 web.post("/transcribe", self._handle_transcribe),
