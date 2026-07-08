@@ -52,7 +52,10 @@ build-backend = "setuptools.build_meta"
 include = ["claude_hermes*"]
 
 [tool.setuptools.package-data]
-"claude_hermes.voice" = ["static/*.html"]
+"claude_hermes.voice" = [
+    "static/*.html",
+    "static/*.js",
+]
 "claude_hermes.gateway.adapters" = [
     "web_static/*.html",
     "web_static/*.json",

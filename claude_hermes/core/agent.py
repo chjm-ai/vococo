@@ -301,6 +301,7 @@ def _compat_base_key(
     cwd: str | None,
     hermes_on: bool,
     external_mcp: dict,
+    extra_tools: tuple = (),
 ) -> str:
     """保温 client 的兼容性哈希(不含 SDK 会话 id,那个在池里单独比)。
 
@@ -324,6 +325,7 @@ def _compat_base_key(
         "cwd": cwd or "",
         "hermes_mcp": hermes_on,
         "external_mcp": external_mcp,
+        "extra_tools": extra_tools,
         "route": route,
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
@@ -352,6 +354,7 @@ async def stream_turn(
     cwd: str | None = None,
     resume: str | None = None,
     session_key: str | None = None,
+    extra_mcp_servers: dict | None = None,
 ) -> AsyncIterator[Event]:
     """流式跑一轮,逐个 yield 事件,最后 yield Done。
 
@@ -383,6 +386,8 @@ async def stream_turn(
     if hermes_on:
         mcp_servers.update(build_mcp_servers())  # 内置 hermes(记忆/定时/发消息等)
     mcp_servers.update(external_mcp)
+    if extra_mcp_servers:  # P1 语音任务板注入的三个工具,默认 None 对现有调用零影响
+        mcp_servers.update(extra_mcp_servers)
     skills = settings_store.effective_skills()  # None=全量;白名单则只挂这些(瘦身 tool schema)
     # cwd=项目会话补注入其 AGENTS.md;cache_key=会话 id:同一 SDK 会话内冻结 append 快照,
     # 防中途 save_memory 改 MEMORY.md 打爆整条对话的 prompt cache —— 也让保温池的兼容性
@@ -392,7 +397,8 @@ async def stream_turn(
     pooling = bool(session_key) and client_pool.enabled()
     base_key = (
         _compat_base_key(
-            resolved_model, provider_env, sys_prompt, skills, cwd, hermes_on, external_mcp
+            resolved_model, provider_env, sys_prompt, skills, cwd, hermes_on, external_mcp,
+            tuple(sorted((extra_mcp_servers or {}).keys())),
         )
         if pooling
         else ""

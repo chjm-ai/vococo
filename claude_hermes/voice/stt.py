@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import time
 
@@ -12,6 +13,8 @@ import aiohttp
 from aiohttp import web
 
 from .. import config
+
+_DASHSCOPE_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
 
 # 与 web.py 的 _STT_CLEANUP_PROMPT 同一份措辞,清洗逐字稿口癖/同音字/音译错的专名,
 # 额外加了 Obsidian 这个语音场景实测识别率差的例子(笔记软件,常被听成不相关的中文谐音)
@@ -43,24 +46,42 @@ async def read_audio(request: web.Request) -> tuple[bytes | None, str, str]:
 
 
 async def transcribe(audio: bytes, filename: str, ctype: str) -> tuple[str | None, str]:
-    """转写音频,返回 (text, error)。text 为 None 表示失败,error 是给用户看的提示。"""
-    if not config.STT_API_KEY:
-        return None, "未配置语音转写:请在 .env 设 SILICONFLOW_API_KEY"
-    form = aiohttp.FormData()
-    form.add_field("model", config.STT_MODEL)
-    form.add_field("file", audio, filename=filename, content_type=ctype)
-    url = f"{config.STT_BASE_URL}/audio/transcriptions"
-    headers = {"Authorization": f"Bearer {config.STT_API_KEY}"}
-    timeout = aiohttp.ClientTimeout(total=60)
+    """转写音频,返回 (text, error)。text 为 None 表示失败,error 是给用户看的提示。
+
+    识别本体是阿里 DashScope 的 qwen3-asr-flash(2026-07-08 从 SiliconFlow 的
+    SenseVoiceSmall 切过来,真机实测 SenseVoice 单次识别要 8~17 秒,隔离测试
+    确认是那个接口本身慢、不是我们代码的问题;qwen3-asr-flash 同等准确度下
+    只要 0.5~1 秒,见 03-phase2-实现记录.md)。协议跟 SiliconFlow 完全不同——
+    这边是 JSON + base64 音频(data URI),不是 multipart 文件上传。
+    """
+    if not config.DASHSCOPE_API_KEY:
+        return None, "未配置语音转写:请在 .env 设 DASHSCOPE_API_KEY"
+    mime = (ctype or "audio/wav").split(";")[0].strip() or "audio/wav"
+    b64 = base64.b64encode(audio).decode("ascii")
+    payload = {
+        "model": config.DASHSCOPE_STT_MODEL,
+        "input": {
+            "messages": [
+                {"role": "user", "content": [{"audio": f"data:{mime};base64,{b64}"}]}
+            ]
+        },
+    }
+    headers = {
+        "Authorization": f"Bearer {config.DASHSCOPE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=30)
     t0 = time.monotonic()
     try:
         async with aiohttp.ClientSession(timeout=timeout) as sess:
-            async with sess.post(url, data=form, headers=headers) as resp:
+            async with sess.post(_DASHSCOPE_URL, json=payload, headers=headers) as resp:
                 body = await resp.text()
         t1 = time.monotonic()
         if resp.status != 200:
             return None, f"转写服务返回 {resp.status}"
-        text = (json.loads(body).get("text") or "").strip()
+        choices = json.loads(body).get("output", {}).get("choices") or []
+        parts = choices[0]["message"]["content"] if choices else []
+        text = "".join(p.get("text", "") for p in parts if "text" in p).strip()
         cleaned = await _cleanup(text)
         t2 = time.monotonic()
         print(
@@ -72,7 +93,7 @@ async def transcribe(audio: bytes, filename: str, ctype: str) -> tuple[str | Non
         return cleaned, ""
     except (aiohttp.ClientError, TimeoutError):
         return None, "转写服务连接失败"
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, KeyError, IndexError):
         return None, "转写返回解析失败"
 
 

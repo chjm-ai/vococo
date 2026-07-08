@@ -14,7 +14,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from claude_hermes import config
 from claude_hermes.core.agent import AgentReply, Done, TextDelta, ToolStarted
-from claude_hermes.voice import prompts, routes, session, stt, tts
+from claude_hermes.voice import executor, prompts, routes, session, stt, tasks, tts
 
 
 @pytest.fixture
@@ -28,13 +28,21 @@ def voice_db(isolated, monkeypatch):
 
     显式清空 WEB_AUTH_TOKEN:测试不该依赖"本机是否恰好有 .env 配了口令"这种环境状态,
     否则本地开发机一旦配了真口令,_guard() 就会把测试请求当成未授权拦掉。
+
+    P1 起 register_routes() 会顺带触发 executor.heal_after_restart()(F11),它会摸
+    tasks._DB——同样要重置连接单例,否则会复用上一个用例已被 tmp_path 清理的旧连接。
     """
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
     monkeypatch.setattr(session, "_DB", None)
+    monkeypatch.setattr(tasks, "_DB", None)
+    executor._running.clear()
     yield
     if session._DB is not None:
         session._DB.close()
         session._DB = None
+    if tasks._DB is not None:
+        tasks._DB.close()
+        tasks._DB = None
 
 
 # ── 句子切分器 ────────────────────────────────────────────────────────────
@@ -75,9 +83,43 @@ def test_build_prompt_wraps_instruction_block():
     assert out.strip().endswith("用户说:明天天气怎么样")
 
 
+def test_build_prompt_covers_delayed_reminders_within_timeout(monkeypatch):
+    """2026-07-07 真机踩坑:AI 对"2分钟后提醒我"这类请求嘴上答应却没真调工具。
+    修法是教它延时提醒也走 voice_dispatch_task(sleep 后回复即可,任务终态会
+    自动触发通知),并写清楚仅限任务超时时长以内。"""
+    from claude_hermes import config
+
+    monkeypatch.setattr(config, "VOICE_TASK_TIMEOUT_MIN", 30)
+    out = prompts.build_prompt("过2分钟提醒我")
+    assert "延时提醒" in out
+    assert "30 分钟以内" in out
+
+
+def test_build_prompt_forbids_claiming_success_without_tool_call():
+    out = prompts.build_prompt("随便说点什么")
+    assert "没有真的调用 voice_dispatch_task" in out
+
+
+def test_build_prompt_requires_clarifying_ambiguous_task_before_dispatch():
+    """2026-07-07 用户反馈:派活前该先把笼统的需求问清楚,不能自己脑补一个大任务就派出去。"""
+    out = prompts.build_prompt("帮我查一下世界杯赛程")
+    assert "都跟用户对齐" in out
+    assert "脑补一个" in out
+
+
+def test_build_prompt_requires_confirming_self_designed_breakdown_before_dispatch():
+    """2026-07-07 用户反馈第二层:方向明确但模型自己设计了拆解方案(比如把"分析梅西"
+    拆成俱乐部/国家队/荣誉等好几块)时,也要先说方案、等确认,不能连怎么拆都替用户定了。"""
+    out = prompts.build_prompt("帮我分析一下梅西的职业生涯")
+    assert "这个拆解方案" in out
+    assert "不是用户说的" in out
+
+
 # ── /voice/config 开关 ───────────────────────────────────────────────────
 @pytest.mark.anyio
-async def test_voice_config_reports_enabled():
+async def test_voice_config_reports_enabled(voice_db):
+    # P1 起 register_routes() 会顺带摸 tasks._DB(F11 重启自愈),故也要 voice_db 隔离,
+    # 否则会碰真实的 config.DATA_DIR。
     app = web.Application()
     routes.register_routes(app)
     async with TestClient(TestServer(app)) as client:
@@ -96,7 +138,7 @@ async def test_voice_send_streams_text_sentence_done_and_strips_instruction_on_s
 
     captured_prompt = {}
 
-    async def fake_run_turn(prompt_text):
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
         captured_prompt["text"] = prompt_text
         yield TextDelta("好的,")
         yield TextDelta("明天多云二十八度。")
@@ -148,7 +190,7 @@ async def test_voice_send_plays_filler_once_on_first_top_level_tool(voice_db, mo
     """本轮第一次顶层工具调用要垫一句"稍等";子代理内部的工具(parent_id 非空)
     和同一轮里后续的工具调用都不应该再触发第二次。"""
 
-    async def fake_run_turn(prompt_text):
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
         yield ToolStarted("Read", tool_id="t0", parent_id="agent-1")  # 子代理内部,不算
         yield ToolStarted("Bash", tool_id="t1", parent_id=None)  # 第一次顶层,触发垫话
         yield ToolStarted("Read", tool_id="t2", parent_id=None)  # 第二次顶层,不应重复垫话
@@ -200,7 +242,7 @@ async def test_voice_send_accepts_audio_and_emits_transcript_first(voice_db, mon
 
     monkeypatch.setattr(stt, "transcribe", fake_transcribe)
 
-    async def fake_run_turn(prompt_text):
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
         assert "识别出来的话" in prompt_text
         yield TextDelta("收到。")
         yield Done(AgentReply(text="收到。", tool_calls=[], cost_usd=None, is_error=False))
@@ -227,7 +269,7 @@ async def test_voice_send_accepts_audio_and_emits_transcript_first(voice_db, mon
 
 @pytest.mark.anyio
 async def test_voice_send_rejects_concurrent_turn(voice_db, monkeypatch):
-    async def fake_run_turn(prompt_text):
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
         yield Done(
             AgentReply(text="ok", tool_calls=[], cost_usd=None, is_error=False)
         )

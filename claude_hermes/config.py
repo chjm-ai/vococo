@@ -160,22 +160,28 @@ PUSH_ON_ERROR: bool = _parse_bool(os.environ.get("PUSH_ON_ERROR", ""), True)  # 
 
 # === 语音输入(手机录音 → 转文字)===
 # Claude 不吃音频,故录音上传后端先转成文字再进对话。
-# 默认走 SiliconFlow 的 SenseVoice(OpenAI 兼容接口、中文准、国内直连、近免费)。
-# 去 siliconflow.cn 注册拿免费 key,填到 .env 的 SILICONFLOW_API_KEY。留空则语音按钮报错提示未配置。
+# 识别本体:阿里 DashScope 的 qwen3-asr-flash(2026-07-08 从 SiliconFlow 的
+# SenseVoiceSmall 切过来——真机实测识别环节要 8~17 秒,隔离测试证实是 SenseVoice
+# 接口本身慢、不是我们代码的问题;qwen3-asr-flash 同等准确度下只要 0.5~1 秒,
+# 见 docs/design/voice-companion/03-phase2-实现记录.md)。去 bailian.console.aliyun.com
+# 开通拿 key,填到 .env 的 DASHSCOPE_API_KEY。留空则语音按钮报错提示未配置。
+DASHSCOPE_API_KEY: str = os.environ.get("DASHSCOPE_API_KEY", "").strip()
+DASHSCOPE_STT_MODEL: str = (
+    os.environ.get("DASHSCOPE_STT_MODEL", "qwen3-asr-flash").strip() or "qwen3-asr-flash"
+)
+
+# 清洗步骤仍走 SiliconFlow(跟识别本体是两个不同服务商,互不影响)。
+# 去 siliconflow.cn 注册拿免费 key,填到 .env 的 SILICONFLOW_API_KEY。
 STT_API_KEY: str = os.environ.get("SILICONFLOW_API_KEY", "").strip()
 STT_BASE_URL: str = (
     os.environ.get("STT_BASE_URL", "https://api.siliconflow.cn/v1").strip()
     or "https://api.siliconflow.cn/v1"
 )
-STT_MODEL: str = (
-    os.environ.get("STT_MODEL", "FunAudioLLM/SenseVoiceSmall").strip()
-    or "FunAudioLLM/SenseVoiceSmall"
-)
 
-# 转写完的逐字稿常带口癖(呃/然后/就是)、同音字错误、被音译错的中英混说专名
-# (实测 SenseVoice 把"OpenAI Codex"听成"open air codes"),转写后再过一遍 LLM 清洗。
-# 复用 STT_API_KEY/STT_BASE_URL(同一个 SiliconFlow 账号),换成 chat/completions。
-# 实测 7B 小模型修不对这类音译错误,72B 才能稳定纠出"OpenAI Codex"——故不用免费小模型。
+# 转写完的逐字稿常带口癖(呃/然后/就是)、同音字错误、被音译错的中英混说专名,
+# 转写后再过一遍 LLM 清洗。复用 STT_API_KEY/STT_BASE_URL(同一个 SiliconFlow 账号),
+# 换成 chat/completions。实测 7B 小模型修不对这类音译错误,72B 才能稳定纠出
+# "OpenAI Codex"这类词——故不用免费小模型。
 STT_CLEANUP_ENABLED: bool = _parse_bool(os.environ.get("STT_CLEANUP_ENABLED", ""), True)
 STT_CLEANUP_MODEL: str = (
     os.environ.get("STT_CLEANUP_MODEL", "Qwen/Qwen2.5-72B-Instruct").strip()
@@ -188,6 +194,55 @@ VOICE_ENABLED: bool = _parse_bool(os.environ.get("VOICE_ENABLED", ""), True)
 VOICE_TTS_VOICE: str = (
     os.environ.get("VOICE_TTS_VOICE", "zh-CN-XiaoxiaoNeural").strip()
     or "zh-CN-XiaoxiaoNeural"
+)
+# P1 任务板:后台任务并发上限 / 单任务超时(分钟)/ 完成播报档位(idle=等空闲插播,silent=只更新卡片)
+VOICE_TASK_MAX_CONCURRENCY: int = int(os.environ.get("VOICE_TASK_MAX_CONCURRENCY", "3"))
+VOICE_TASK_TIMEOUT_MIN: int = int(os.environ.get("VOICE_TASK_TIMEOUT_MIN", "30"))
+VOICE_ANNOUNCE: str = os.environ.get("VOICE_ANNOUNCE", "idle").strip().lower() or "idle"
+
+# P2 全双工:/voice/ws 免提连续对话开关(独立开关,方便单独回退到按住说话)。
+VOICE_WS_ENABLED: bool = _parse_bool(os.environ.get("VOICE_WS_ENABLED", ""), True)
+# 假打断回滚超时:打断触发后这么久还没等到有效转写,就当误触发,撤销截断、恢复播放。
+# 2026-07-08 从 1500 调到 8000:改成 DashScope 实时 WS 之后,这个窗口要覆盖的
+# 不再是"客户端本地 VAD 已经判完、只等一个网络包"那么短的时间,而是"用户真的
+# 把这句话说完 + DashScope 转写出结果"的完整耗时——真机测试中一句 4-5 秒的话
+# 配合上游网络往返,1.5 秒经常等不到 completed 就被误判成假打断、白白撤销了
+# 一次正常的追问,见 03-phase2-实现记录.md。
+VOICE_FALSE_POSITIVE_TIMEOUT_MS: int = int(
+    os.environ.get("VOICE_FALSE_POSITIVE_TIMEOUT_MS", "8000")
+)
+# 2026-07-08:免提识别改用 DashScope 实时语音 WS(server_vad),替换掉真机实测
+# 不可靠的客户端 ML VAD——服务端专业断句判断,不用客户端自己猜"说完了没"。
+# threshold/silence_duration_ms 是 DashScope 那边 server_vad 的调优参数。
+# threshold 越低越灵敏——最早为了验证协议图省事调成了 0.0(比 DashScope 自己
+# 的默认值 0.2 还灵敏),真机在有环境噪音的房间里实测明显太敏感:呼吸声/环境
+# 杂音被当成开口,还被识别模型强行转写成"嗯/哦/是的"这类语气词(模型倾向于
+# 给含糊音频编一个说得过去的短词,而不是老实返回空)。0.0→0.3→0.5/500→600ms
+# 调了两轮,真机反馈仍然偏灵敏,大幅提到 0.7(逼近上限 1.0)/1000ms——用户
+# 明确要求两个都"大幅提升"。副作用:开口打断的响应会更慢、对轻声/尾音的
+# 识别可能变迟钝,真机测试若矫枉过正需要往回收,见
+# docs/design/voice-companion/03-phase2-实现记录.md。
+DASHSCOPE_REALTIME_MODEL: str = (
+    os.environ.get("DASHSCOPE_REALTIME_MODEL", "qwen3-asr-flash-realtime").strip()
+    or "qwen3-asr-flash-realtime"
+)
+VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
+VOICE_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_VAD_SILENCE_MS", "1000"))
+# 回声兜底:AI 自己的声音从手机扬声器漏回麦克风,DashScope 会把它当成真实
+# 用户开口识别出来,导致 AI 打断自己形成死循环——echoCancellation 只是缓解不是
+# 根治(见 03-phase2-实现记录.md)。打断转写出来的内容如果跟 AI 刚说的话高度
+# 重合(containment ratio,见 voice/ws.py 的 looks_like_self_echo),就当是回声、
+# 不当真打断处理。阈值凭经验给的默认值,真机环境不同需要重新调。
+VOICE_SELF_ECHO_THRESHOLD: float = float(os.environ.get("VOICE_SELF_ECHO_THRESHOLD", "0.6"))
+# 2026-07-08:上面这条回声兜底原来只在"正在打断一个还没说完的回答"时生效——
+# 真机反馈偶发录到 AI 自己的尾音,根因是 AI 说完最后一句、服务端状态已经翻回
+# idle 后,客户端音箱可能还在把最后一两句播完,这段尾音漏回麦克风时早就不在
+# "打断"场景里了,原来的回声判断整个被跳过。这里加一个"刚说完话之后的宽限期"
+# (毫秒),这段时间内即便状态已经是 idle,新转写内容如果跟"刚刚这一轮说的话"
+# 高度重合,也当回声处理、不当真开新一轮。默认给一个短窗口,覆盖典型的尾部
+# 播放延迟就够;调太大会有把用户真提的、恰好和上一轮用词很像的追问也误伤的风险。
+VOICE_POST_DONE_ECHO_GUARD_MS: int = int(
+    os.environ.get("VOICE_POST_DONE_ECHO_GUARD_MS", "1500")
 )
 
 # === 会话统一(跨入口连续)===

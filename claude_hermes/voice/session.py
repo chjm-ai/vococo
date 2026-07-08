@@ -73,15 +73,19 @@ def set_resume(sid: str) -> None:
     c.commit()
 
 
-def run_turn(prompt_text: str) -> AsyncIterator[Event]:
+def run_turn(prompt_text: str, extra_mcp_servers: dict | None = None) -> AsyncIterator[Event]:
     """载入历史、调 stream_turn,把事件流原样透传给调用方消费。
 
     调用方负责:收到 Done 后把 (原始 user_text, reply.text) 落库(见 append)、
     存回 reply.sdk_session_id(见 set_resume)——本函数只管跑一轮,不做落库,
     因为落库要存的是剥离指令块后的原文,这层信息只有调用方(routes.py)知道。
+
+    extra_mcp_servers:P1 任务板的三个工具(见 task_tools.build_server()),只有
+    语音前台会话传它;后台任务会话(executor.py)直接调 stream_turn,不经过这里。
     """
     history = load_history()
     resume_sid = get_resume()
     return stream_turn(
         history, prompt_text, resume=resume_sid, session_key=SESSION_KEY,
+        extra_mcp_servers=extra_mcp_servers,
     )

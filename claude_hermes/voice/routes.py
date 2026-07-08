@@ -17,7 +17,7 @@ from aiohttp import web
 
 from .. import config
 from ..core.agent import Done, TextDelta, ToolStarted
-from . import prompts, session, stt, tts
+from . import executor, notify, prompts, session, stt, task_tools, tasks, tts, ws
 
 _STATIC = Path(__file__).resolve().parent / "static"
 
@@ -29,7 +29,8 @@ _stop_event: asyncio.Event | None = None
 def _ok_token(request: web.Request) -> bool:
     if not config.WEB_AUTH_TOKEN:
         return True
-    tok = request.headers.get("X-Auth-Token") or ""
+    # /voice/tasks/stream 用浏览器原生 EventSource,不能带自定义 header,只能走 query 参数。
+    tok = request.headers.get("X-Auth-Token") or request.query.get("token") or ""
     return hmac.compare_digest(tok, config.WEB_AUTH_TOKEN)
 
 
@@ -121,7 +122,8 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                     return resp
                 user_text = text
                 await _sse(resp, "transcript", {"text": user_text})
-            async for ev in session.run_turn(prompts.build_prompt(user_text)):
+            prompt_text = prompts.build_prompt(user_text)
+            async for ev in session.run_turn(prompt_text, extra_mcp_servers=task_tools.build_server()):
                 if isinstance(ev, ToolStarted):
                     # 干活垫话(F10):本轮第一次顶层工具调用时插一句"稍等",不等模型自己开口;
                     # parent_id 非空是子代理内部的工具,不算——只在最外层触发一次。
@@ -187,6 +189,58 @@ async def _handle_stop(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+# ── P1 任务板:列表/详情/停止/在线播报的常驻 SSE(F8/F10) ─────────────────────
+async def _handle_tasks_list(request: web.Request) -> web.Response:
+    if (g := _guard(request)) is not None:
+        return g
+    return web.json_response(tasks.list_recent())
+
+
+async def _handle_task_detail(request: web.Request) -> web.Response:
+    if (g := _guard(request)) is not None:
+        return g
+    task = tasks.get(request.match_info["task_id"])
+    if task is None:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response(task)
+
+
+async def _handle_task_stop(request: web.Request) -> web.Response:
+    if (g := _guard(request)) is not None:
+        return g
+    ok = executor.cancel(request.match_info["task_id"])
+    return web.json_response({"ok": ok})
+
+
+async def _handle_tasks_stream(request: web.Request) -> web.StreamResponse:
+    """常驻 SSE:/voice 页面开着就订阅它,后台任务终态时收到 event:task_done(F8)。"""
+    if (g := _guard(request)) is not None:
+        return g
+    resp = web.StreamResponse(
+        headers={
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+    await resp.prepare(request)
+    q = notify.subscribe()
+    try:
+        while True:
+            try:
+                event, payload = await asyncio.wait_for(q.get(), timeout=25)
+            except asyncio.TimeoutError:
+                await resp.write(b": keep-alive\n\n")  # 防中间代理/隧道空闲断连
+                continue
+            await _sse(resp, event, payload)
+    except (asyncio.CancelledError, ConnectionResetError):
+        pass
+    finally:
+        notify.unsubscribe(q)
+    return resp
+
+
 def register_routes(app: web.Application) -> None:
     """挂载语音模式全部路由。仅当 config.VOICE_ENABLED 时,web.py 才会调用本函数。"""
     app.add_routes(
@@ -196,5 +250,18 @@ def register_routes(app: web.Application) -> None:
             web.post("/voice/stt", _handle_stt),
             web.post("/voice/send", _handle_send),
             web.post("/voice/stop", _handle_stop),
+            web.get("/voice/tasks", _handle_tasks_list),
+            web.get("/voice/tasks/stream", _handle_tasks_stream),
+            web.get("/voice/tasks/{task_id}", _handle_task_detail),
+            web.post("/voice/tasks/{task_id}/stop", _handle_task_stop),
         ]
     )
+    if config.VOICE_WS_ENABLED:
+        app.add_routes([web.get("/voice/ws", ws.handle)])
+        # VAD 库文件(vad-web + onnxruntime-web + 手写的 pcm-forwarder-worklet.js)
+        # 是公开静态资源(不含用户数据),不用 token 校验;用 aiohttp 自带的目录
+        # 静态服务而不是逐个手写路由——量大(vad/ 下好几个大文件)且天然支持
+        # Range 请求,10MB 的 wasm 在手机弱网下能续传。aiohttp 自带 ETag/
+        # Last-Modified 协商缓存,这批文件版本固定不太会变,够用。
+        app.router.add_static("/voice/static/", _STATIC, show_index=False)
+    asyncio.ensure_future(executor.heal_after_restart())  # F11:重启自愈,一次性

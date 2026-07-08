@@ -34,6 +34,30 @@
   .msg.filler{background:transparent;border:none;color:var(--dim2);font-size:14px;
     font-style:italic;padding:0 14px;max-width:100%}
   .hint{text-align:center;color:var(--dim2);font-size:14px;padding:40px 20px}
+  #tasksBtn{position:relative;background:none;border:none;color:var(--dim);font-size:20px;padding:4px}
+  #tasksBadge{position:absolute;top:0;right:0;width:8px;height:8px;border-radius:50%;
+    background:var(--accent);display:none}
+  #tasksBadge.on{display:block}
+  #tasksDrawer{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10;display:none}
+  #tasksDrawer.open{display:block}
+  #tasksSheet{position:absolute;left:0;right:0;bottom:0;max-height:70vh;overflow-y:auto;
+    background:var(--panel);border-radius:16px 16px 0 0;padding:16px;
+    padding-bottom:calc(16px + env(safe-area-inset-bottom))}
+  #tasksSheet h3{margin:0 0 12px;font-size:15px;color:var(--dim)}
+  .task{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+  .task .row{display:flex;align-items:center;gap:8px}
+  .task .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .task .dot.queued{background:var(--dim2)}
+  .task .dot.running{background:var(--accent)}
+  .task .dot.done{background:var(--ok)}
+  .task .dot.failed,.task .dot.cancelled{background:var(--err)}
+  .task .title{flex:1;font-weight:600}
+  .task .note{color:var(--dim);font-size:13px;margin-top:4px}
+  .task .full{color:var(--text);font-size:13px;margin-top:8px;white-space:pre-wrap;display:none}
+  .task .full.open{display:block}
+  .task .stop{border:1px solid var(--err);color:var(--err);background:none;border-radius:14px;
+    padding:2px 10px;font-size:12px}
+  .task-empty{color:var(--dim2);text-align:center;padding:20px}
   footer{padding:20px 16px calc(20px + env(safe-area-inset-bottom));display:flex;
     flex-direction:column;align-items:center;gap:14px}
   #stopBtn{border:1px solid var(--err);color:var(--err);background:none;border-radius:20px;
@@ -44,6 +68,34 @@
     -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:none}
   #talkBtn.recording{background:var(--err);transform:scale(1.08)}
   #talkBtn:disabled{opacity:.5}
+
+  /* P2 全双工:免提模式的入口按钮 + 状态指示球(替代"按住说话"这套只适合
+     半双工的交互——免提场景没有"按下/松开"这个动作,只有"开始/结束") */
+  #startHandsFreeBtn{display:flex;align-items:center;gap:8px;padding:14px 28px;
+    border-radius:28px;background:var(--accent);color:#fff;border:none;
+    font-size:15px;font-weight:600;box-shadow:0 8px 24px rgba(217,119,87,.35)}
+  #startHandsFreeBtn:disabled{opacity:.5}
+  /* #id 选择器的 display:flex 比浏览器默认的 [hidden]{display:none} 优先级高,
+     不加这条 hidden 会被直接盖掉——加 hidden 属性也压不住,界面上就是"明明设了
+     hidden 却还是显示"。 */
+  #startHandsFreeBtn[hidden]{display:none}
+  #handsFreeUi{display:flex;flex-direction:column;align-items:center;gap:18px}
+  #handsFreeUi[hidden]{display:none}
+  #orb{width:120px;height:120px;border-radius:50%;background:var(--panel);
+    border:2px solid var(--line);transition:background .3s ease,box-shadow .3s ease}
+  #orb.capturing{background:var(--err);box-shadow:0 0 32px rgba(209,103,74,.55);
+    animation:orb-pulse 1.1s ease-in-out infinite}
+  #orb.transcribing,#orb.thinking{background:var(--accent);
+    box-shadow:0 0 24px rgba(217,119,87,.45);animation:orb-breathe 1.4s ease-in-out infinite}
+  #orb.speaking{background:var(--accent2);box-shadow:0 0 32px rgba(200,97,63,.55);
+    animation:orb-pulse .9s ease-in-out infinite}
+  @keyframes orb-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
+  @keyframes orb-breathe{0%,100%{opacity:.7}50%{opacity:1}}
+  .hf-row{display:flex;gap:12px}
+  .hf-row button{border:1px solid var(--line);color:var(--dim);background:var(--panel);
+    border-radius:20px;padding:8px 18px;font-size:14px}
+  .hf-row button.muted{color:var(--err);border-color:var(--err)}
+  #endHandsFreeBtn{color:var(--err);border-color:var(--err)}
 </style>
 </head>
 <body>
@@ -51,6 +103,7 @@
   <a href="/" title="返回主界面">←</a>
   <span class="title">语音伴聊</span>
   <span id="status">空闲</span>
+  <button id="tasksBtn" title="任务">📋<span id="tasksBadge"></span></button>
 </header>
 <main>
   <div id="transcript">
@@ -59,24 +112,102 @@
 </main>
 <footer>
   <button id="stopBtn" hidden>■ 停</button>
-  <button id="talkBtn">按住说话</button>
+  <!-- 半双工兜底:只有免提初始化失败/浏览器不支持时才出现,见 initUiMode() -->
+  <button id="talkBtn" hidden>按住说话</button>
+  <!-- 免提入口:支持免提的设备默认显示这个,不是"按住说话" -->
+  <button id="startHandsFreeBtn" hidden>🎙️ 开始语音对话</button>
+  <!-- 免提激活后:按钮消失,换成状态球 + 静音/结束 -->
+  <div id="handsFreeUi" hidden>
+    <div id="orb" class="idle" title="点一下可以打断 AI 说话"></div>
+    <div class="hf-row">
+      <button id="muteToggleBtn">🔇 静音</button>
+      <button id="endHandsFreeBtn">✕ 结束</button>
+    </div>
+  </div>
 </footer>
+<div id="tasksDrawer">
+  <div id="tasksSheet">
+    <h3>后台任务</h3>
+    <div id="tasksList"></div>
+  </div>
+</div>
 <script>
 "use strict";
 const TOKEN = localStorage.getItem("hermes_token") || "";
 const $ = s => document.querySelector(s);
 const transcriptEl = $("#transcript"), statusEl = $("#status"), talkBtn = $("#talkBtn"),
-      stopBtn = $("#stopBtn");
+      stopBtn = $("#stopBtn"), tasksBtn = $("#tasksBtn"), tasksBadge = $("#tasksBadge"),
+      tasksDrawer = $("#tasksDrawer"), tasksList = $("#tasksList"),
+      startHandsFreeBtn = $("#startHandsFreeBtn"), handsFreeUi = $("#handsFreeUi"),
+      orb = $("#orb"), muteToggleBtn = $("#muteToggleBtn"), endHandsFreeBtn = $("#endHandsFreeBtn");
 
 let stream = null, recorder = null, chunks = [], pressTs = 0;
 let busy = false;
 let playQueue = [], playing = false;
+let pendingAnnouncements = [];  // task_done 到达时用户正忙(说话/播放/录音)→ 先攒着,空闲了再播
+
+// ── P2 全双工:免提连续对话(见下方 initHandsFree 一段)──────────────────────
+let handsFreeActive = false, micMuted = false;
+let wsConn = null, wsState = "idle";
+let pcmWorkletNode = null;
+let lastFullyPlayedSeq = -1, pausedForInterrupt = false;
+let currentTurnAiEl = null, currentTurnFull = "";
 
 // ── 播放:Web Audio API,不用 <audio> 标签 ──────────────────────────────
 // <audio>.play() 在 iOS Safari 上"解锁"状态并不总是跨越"改 src 后再异步 play()"
 // 这种用法可靠地延续下去;AudioContext 只要在一次用户手势里 resume() 过一次,
 // 之后任意时刻 start() 一个新的 buffer source 都不再需要新的手势,更稳。
 let audioCtx = null, currentSource = null;
+
+// ── 回声消除 loopback:让浏览器把 AI 自己的语音当成"需要消除的参考信号" ──────
+// 背景:getUserMedia 的 echoCancellation:true 只对"通过 WebRTC 收到的音频"生效,
+// 对 Web Audio API 直接 connect(audioCtx.destination) 播放的本地音频不生效——
+// 浏览器压根不知道这段声音被放出来了,自然没法从麦克风里减掉它,这也是即使
+// 开了 echoCancellation,偶发还是会录到 AI 尾音的根本原因(排查见
+// 03-phase2-实现记录.md)。业内的绕过办法:本地开两个 RTCPeerConnection 互相
+// 连起来(不出本机、不连真实服务器),把 TTS 音频接到 pc1 发送、pc2 收到后
+// 用真正的 <audio> 元素播放出来——这下浏览器的回声消除引擎会把它当成一次
+// 正常的"通话音频",从而真正参与 AEC 的参考信号计算。搭建失败(旧浏览器不
+// 支持 RTCPeerConnection、协商出错等)静默回退到直连 audioCtx.destination,
+// 不影响播放功能本身,只是回声兜底少一层。
+// pc1/pc2/echoLoopbackAudioEl 必须挂在模块级变量上长期持有引用——只在函数体内
+// 用局部变量的话,协商完、函数返回之后就没人再引用它们了,有被 GC 提前回收、
+// 播放中途断掉的风险(尤其 <audio> 元素没挂进 DOM,更依赖 JS 侧的引用存活)。
+let echoLoopbackDest = null, echoLoopbackReady = false, echoLoopbackSetupStarted = false;
+let echoLoopbackPc1 = null, echoLoopbackPc2 = null, echoLoopbackAudioEl = null;
+
+async function setupEchoLoopback(){
+  if(echoLoopbackSetupStarted || !window.RTCPeerConnection) return;
+  echoLoopbackSetupStarted = true;
+  try{
+    const dest = audioCtx.createMediaStreamDestination();
+    const pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.onicecandidate = e => { if(e.candidate) pc2.addIceCandidate(e.candidate).catch(()=>{}); };
+    pc2.onicecandidate = e => { if(e.candidate) pc1.addIceCandidate(e.candidate).catch(()=>{}); };
+    const remoteStreamPromise = new Promise(resolve => { pc2.ontrack = e => resolve(e.streams[0]); });
+    dest.stream.getAudioTracks().forEach(t => pc1.addTrack(t, dest.stream));
+    const offer = await pc1.createOffer();
+    await pc1.setLocalDescription(offer);
+    await pc2.setRemoteDescription(offer);
+    const answer = await pc2.createAnswer();
+    await pc2.setLocalDescription(answer);
+    await pc1.setRemoteDescription(answer);
+    const remoteStream = await remoteStreamPromise;
+    const el = new Audio();
+    el.autoplay = true;
+    el.srcObject = remoteStream;
+    await el.play();
+    echoLoopbackDest = dest;
+    echoLoopbackPc1 = pc1;
+    echoLoopbackPc2 = pc2;
+    echoLoopbackAudioEl = el;
+    echoLoopbackReady = true;
+  }catch(e){
+    // 搭建失败就当没这回事,pumpPlayback 会退回直连 audioCtx.destination。
+    echoLoopbackDest = null;
+    echoLoopbackReady = false;
+  }
+}
 
 function setStatus(text, cls){ statusEl.textContent = text; statusEl.className = cls || ""; }
 function clearHint(){ const h = transcriptEl.querySelector(".hint"); if(h) h.remove(); }
@@ -99,11 +230,18 @@ function unlockAudio(){
   src.buffer = buf;
   src.connect(audioCtx.destination);
   src.start(0);
+  setupEchoLoopback();  // 不等它,搭建期间照常先用直连播放,好了自动切过去
 }
 
 // ── 录音(整页生命周期复用同一个 stream,避免第二次 getUserMedia 把旧 track 静音)──
+// echoCancellation/noiseSuppression/autoGainControl 全开:免提模式下扬声器
+// 放的 AI 声音会漏进麦克风,这几个约束是免费的缓解(不是根治,见 P2 设计文档)。
 async function ensureStream(){
-  if(!stream) stream = await navigator.mediaDevices.getUserMedia({audio:true});
+  if(!stream) {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {echoCancellation:true, noiseSuppression:true, autoGainControl:true}
+    });
+  }
   return stream;
 }
 
@@ -128,13 +266,16 @@ function stopRecording(){
   const rec = recorder;
   recorder = null;
   rec.onstop = ()=>{
-    if(dur < 500){ setStatus("空闲"); return; }  // 误触:太短就丢弃
+    if(dur < 500){ setStatus("空闲"); flushAnnouncements(); return; }  // 误触:太短就丢弃
     const blob = new Blob(chunks, {type: rec.mimeType || "audio/webm"});
     handleTurn(blob);
   };
   rec.stop();
 }
 
+// talkBtn 现在只在"这台设备/浏览器用不了免提"时才会显示(见 initUiMode()),
+// 就是纯粹的老式按住说话,不再兼两种模式——两种模式该显示哪个按钮由
+// initUiMode() 在页面加载时一次性决定,不靠同一个按钮身兼两职。
 talkBtn.addEventListener("pointerdown", e=>{ e.preventDefault(); startRecording(); });
 talkBtn.addEventListener("pointerup", stopRecording);
 talkBtn.addEventListener("pointercancel", stopRecording);
@@ -157,7 +298,10 @@ async function sendTurn(body){
   if(body instanceof FormData) init.body = body;
   else { headers["Content-Type"] = "application/json"; init.body = JSON.stringify(body); }
 
-  const finish = ()=>{ busy = false; talkBtn.disabled = false; stopBtn.hidden = true; setStatus("空闲"); };
+  const finish = ()=>{
+    busy = false; talkBtn.disabled = false; stopBtn.hidden = true; setStatus("空闲");
+    flushAnnouncements();
+  };
 
   let resp;
   try{ resp = await fetch("/voice/send", init); }
@@ -231,10 +375,25 @@ function base64ToArrayBuffer(b64){
   return bytes.buffer;
 }
 
+// item.seq >= 0 表示这是某一轮对话里的正式句子(打断截断要用它对齐已播完的
+// 句数);filler/任务播报这类不属于某一轮的音频用 seq=-1,不计入统计。
+// pausedForInterrupt 时不主动拉下一条——免提模式打断后,队列先原样留着,
+// 等服务端确认 interrupted(清空)或 resumed(接着播)再决定,见下方 P2 段落。
+// 播完一句就上报进度给服务端(打断截断要用"客户端实际听到几句"来对齐,见
+// voice/ws.py 的 on_played_progress)——免提没激活/WS 没连上时这条消息发不出去
+// 也无所谓,老的按住说话流程压根不需要这个。
+function markPlayed(seq){
+  if(seq < 0) return;
+  lastFullyPlayedSeq = seq;
+  if(wsConn && wsConn.readyState === WebSocket.OPEN){
+    wsConn.send(JSON.stringify({type:"played_progress", played_sentences: seq + 1}));
+  }
+}
+
 async function pumpPlayback(){
-  if(playing || playQueue.length === 0) return;
+  if(playing || playQueue.length === 0 || pausedForInterrupt) return;
   const item = playQueue.shift();
-  if(!item.audio_b64){ pumpPlayback(); return; }
+  if(!item.audio_b64){ markPlayed(item.seq); pumpPlayback(); return; }
   playing = true;
   setStatus("播放中…", "playing");
   try{
@@ -243,9 +402,11 @@ async function pumpPlayback(){
     await new Promise((resolve, reject)=>{
       const source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
-      source.connect(audioCtx.destination);
+      // loopback 搭好了就走它(让浏览器的回声消除能拿到参考信号),没搭好/
+      // 搭失败就直连,不影响播放本身。
+      source.connect(echoLoopbackReady ? echoLoopbackDest : audioCtx.destination);
       currentSource = source;
-      source.onended = resolve;
+      source.onended = ()=>{ markPlayed(item.seq); resolve(); };
       try{ source.start(0); }catch(e){ reject(e); }
     });
   }catch(e){ /* 解码/播放失败就跳过这句,不卡住队列 */ }
@@ -264,6 +425,256 @@ stopBtn.addEventListener("click", ()=>{
 function authError(){
   addMsg("ai error", "口令失效,请回主界面重新登录");
 }
+
+// ── P1 任务板:抽屉列表 + 完成播报(WHEN_IDLE:等空闲/不在录音才插播,F8/F10) ──────
+const STATUS_WORD = {queued:"排队中", running:"进行中", done:"已完成", failed:"失败", cancelled:"已取消"};
+function escapeHtml(s){ const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+
+async function loadTasks(){
+  try{
+    const resp = await fetch("/voice/tasks", {headers:{"X-Auth-Token":TOKEN}});
+    if(resp.ok) renderTasks(await resp.json());
+  }catch(e){}
+}
+
+function renderTasks(rows){
+  tasksList.innerHTML = "";
+  if(!rows.length){ tasksList.innerHTML = '<div class="task-empty">还没有任务</div>'; return; }
+  for(const t of rows){
+    const active = t.status === "queued" || t.status === "running";
+    const el = document.createElement("div");
+    el.className = "task";
+    el.innerHTML =
+      `<div class="row"><span class="dot ${t.status}"></span>` +
+      `<span class="title">${escapeHtml(t.title)}</span><span>${STATUS_WORD[t.status] || t.status}</span>` +
+      (active ? '<button class="stop">停止</button>' : "") + `</div>` +
+      `<div class="note">${escapeHtml(t.status === "running" ? t.progress_note : (t.result_summary || ""))}</div>` +
+      `<div class="full">${escapeHtml(t.result_full || "")}</div>`;
+    el.querySelector(".row").addEventListener("click", (e)=>{
+      if(e.target.closest(".stop")) return;
+      el.querySelector(".full").classList.toggle("open");
+    });
+    const stopEl = el.querySelector(".stop");
+    if(stopEl) stopEl.addEventListener("click", async (e)=>{
+      e.stopPropagation();
+      await fetch(`/voice/tasks/${t.id}/stop`, {method:"POST", headers:{"X-Auth-Token":TOKEN}});
+      loadTasks();
+    });
+    tasksList.appendChild(el);
+  }
+}
+
+tasksBtn.addEventListener("click", ()=>{ tasksDrawer.classList.add("open"); loadTasks(); });
+tasksDrawer.addEventListener("click", e=>{ if(e.target === tasksDrawer) tasksDrawer.classList.remove("open"); });
+
+function flushAnnouncements(){
+  // 正忙/正在录音/免提模式下这一轮还没闲下来:先不打断。
+  if(busy || (recorder && recorder.state === "recording") || (handsFreeActive && wsState !== "idle")) return;
+  while(pendingAnnouncements.length){
+    const data = pendingAnnouncements.shift();
+    addMsg("ai", data.announce_text);
+    if(audioCtx && data.audio_b64){ playQueue.push({seq:-1, audio_b64: data.audio_b64}); pumpPlayback(); }
+  }
+}
+
+// ── P2 全双工:WS 免提连续对话 ────────────────────────────────────────
+// 2026-07-08:识别/断句判断整体交给服务端中继的 DashScope 实时语音 WS(见
+// voice/ws.py)——真机实测客户端那套 ML VAD(@ricky0123/vad-web)经常判断不出
+// "说完了",卡在"聆听中"不动。现在前端只管把 PCM 持续转发给我们自己的
+// /voice/ws,不再自己判断"是不是在说话",状态完全跟着服务端广播的 state 走。
+// 不支持 AudioWorklet 的浏览器(极旧的 iOS Safari 等)直接跳过,继续用上面
+// 那套按住说话的老流程,handsFreeActive 永远是 false。
+const STATE_WORD = {idle:"空闲", capturing:"聆听中…", thinking:"思考中…", speaking:"播放中…"};
+const STATE_CLASS = {capturing:"listening", thinking:"thinking", speaking:"playing"};
+
+function vadCapable(){
+  return typeof AudioWorkletNode !== "undefined";
+}
+
+// 只做一次性的资源搭建(AudioWorklet + WS 连接),不碰 handsFreeActive——
+// 「搭好了」和「正在用」是两件事,拆开才能支持"结束"后再"开始"不用重搭一遍。
+// 返回是否搭建成功。
+async function initHandsFree(){
+  if(pcmWorkletNode) return true;
+  if(!vadCapable()) return false;
+  try{
+    unlockAudio();
+    await ensureStream();
+    await audioCtx.audioWorklet.addModule("/voice/static/pcm-forwarder-worklet.js");
+    const source = audioCtx.createMediaStreamSource(stream);
+    pcmWorkletNode = new AudioWorkletNode(audioCtx, "pcm-forwarder");
+    pcmWorkletNode.port.onmessage = e=>{
+      if(handsFreeActive && !micMuted && wsConn && wsConn.readyState === WebSocket.OPEN){
+        wsConn.send(e.data.pcm.buffer);
+      }
+    };
+    source.connect(pcmWorkletNode);
+    // 关键:pcmWorkletNode 自己不输出到任何地方的话,浏览器可能把它当成
+    // "没人要它的结果"而整个跳过不处理(AudioWorklet 是拉取式的音频图,不在
+    // 通往 destination 的路径上就可能不会真的跑 process())——之前免提模式
+    // "状态变了但服务端一直收不到音频"就是栽在这,接一个零增益的 GainNode
+    // 到 destination,既能让它真正运行,又不会让这段没意义的输出真的出声。
+    const silentGain = audioCtx.createGain();
+    silentGain.gain.value = 0;
+    pcmWorkletNode.connect(silentGain);
+    silentGain.connect(audioCtx.destination);
+    return true;
+  }catch(e){
+    pcmWorkletNode = null;
+    return false;
+  }
+}
+
+// 入口按钮点击后调这个:资源没搭过就先搭(只有第一次真的耗时),然后连 WS、
+// 切到"状态球"界面。
+async function startHandsFree(){
+  startHandsFreeBtn.disabled = true;
+  startHandsFreeBtn.textContent = "准备中…";
+  const ok = await initHandsFree();
+  if(!ok){
+    // 免提搭不起来(不支持/权限被拒):回退成老的按住说话,不能让用户对着
+    // 一个点了没反应的按钮干等。
+    startHandsFreeBtn.hidden = true;
+    talkBtn.hidden = false;
+    addMsg("ai error", "免提模式没能启动,已切换到按住说话模式");
+    return;
+  }
+  connectHandsFreeWs();
+  handsFreeActive = true;
+  startHandsFreeBtn.hidden = true;
+  handsFreeUi.hidden = false;
+  orb.className = "idle";
+  clearHint();
+  setStatus("免提聆听中…", "listening");
+}
+
+// 结束免提:回到"开始语音对话"入口按钮,AudioWorklet 不销毁(下次点开始能
+// 直接复用,不用重新搭一遍);WS 连接会一起关掉,服务端那条到 DashScope 的
+// 上游连接也会跟着释放。
+async function endHandsFree(){
+  handsFreeActive = false;
+  if(wsConn){ wsConn.onclose = null; try{ wsConn.close(); }catch(e){} wsConn = null; }
+  if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
+  playQueue = []; playing = false; pausedForInterrupt = false;
+  handsFreeUi.hidden = true;
+  startHandsFreeBtn.hidden = false;
+  startHandsFreeBtn.disabled = false;
+  startHandsFreeBtn.textContent = "🎙️ 开始语音对话";
+  setStatus("空闲");
+}
+
+// 手动打断:点一下状态球,等价于"让 AI 立刻闭嘴"——跟开口打断走的是同一条
+// 真取消链路,只是不需要真的说话就能触发。
+function manualInterrupt(){
+  if(wsConn && wsConn.readyState === WebSocket.OPEN) wsConn.send(JSON.stringify({type:"mute"}));
+  if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
+  playQueue = [];
+  playing = false;
+  pausedForInterrupt = false;
+}
+
+function connectHandsFreeWs(){
+  const proto = location.protocol === "https:" ? "wss://" : "ws://";
+  wsConn = new WebSocket(proto + location.host + "/voice/ws?token=" + encodeURIComponent(TOKEN));
+  wsConn.binaryType = "arraybuffer";
+  wsConn.onopen = ()=>{
+    // 握手:服务端拿到真实采样率才知道怎么配置上游 DashScope 连接。
+    wsConn.send(JSON.stringify({type:"hello", sample_rate: audioCtx.sampleRate}));
+  };
+  wsConn.onmessage = e=>{
+    if(typeof e.data === "string") handleWsMessage(JSON.parse(e.data));
+  };
+  wsConn.onclose = ()=>{
+    // 原生 WebSocket 没有自动重连(不像 EventSource),断线一律当这一轮已经
+    // 被打断处理(见 P2 设计文档的取舍),自己退避重连,不尝试跨断线续播。
+    if(handsFreeActive) setTimeout(connectHandsFreeWs, 1500);
+  };
+}
+
+function handleWsMessage(msg){
+  if(msg.type === "state"){
+    const prevState = wsState;
+    wsState = msg.state;
+    if(msg.state === "capturing" && (prevState === "thinking" || prevState === "speaking")){
+      // 服务端确认打断了(上游 DashScope 检测到用户开口):本地立刻暂停播放
+      // (不清空队列,等 interrupted/resumed 消息再决定真扔还是接着播)——
+      // 这一步现在要走一趟网络往返(服务端广播回来),不像本地 VAD 时代那样
+      // 零延迟,是这次架构改动接受的取舍,见 03-phase2-实现记录.md。
+      pausedForInterrupt = true;
+      if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
+      playing = false;
+    }
+    if(msg.state === "thinking") lastFullyPlayedSeq = -1;  // 新一轮句子编号从0开始
+    setStatus(STATE_WORD[msg.state] || msg.state, STATE_CLASS[msg.state]);
+    if(handsFreeActive) orb.className = msg.state;
+  } else if(msg.type === "transcript"){
+    addMsg("me", msg.text || "");
+  } else if(msg.type === "filler"){
+    addMsg("ai filler", msg.text || "");
+    if(msg.audio_b64){ playQueue.push({seq:-1, audio_b64: msg.audio_b64}); pumpPlayback(); }
+  } else if(msg.type === "text_delta"){
+    if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
+    currentTurnFull += msg.text || "";
+    renderAi(currentTurnAiEl, currentTurnFull);
+  } else if(msg.type === "sentence"){
+    playQueue.push({seq: msg.seq, audio_b64: msg.audio_b64});
+    pumpPlayback();
+  } else if(msg.type === "done"){
+    if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
+    if(msg.full_text){ currentTurnFull = msg.full_text; renderAi(currentTurnAiEl, currentTurnFull); }
+    currentTurnAiEl = null; currentTurnFull = "";
+  } else if(msg.type === "interrupted"){
+    // 打断被确认了:上一轮没播完的音频彻底扔掉,下一轮的句子从空队列开始。
+    playQueue = [];
+    pausedForInterrupt = false;
+    currentTurnAiEl = null; currentTurnFull = "";
+  } else if(msg.type === "resumed"){
+    // 误触发:队列原样保留,接着播。
+    pausedForInterrupt = false;
+    pumpPlayback();
+  } else if(msg.type === "error"){
+    addMsg("ai error", "⚠️ " + (msg.message || "出错了"));
+    currentTurnAiEl = null; currentTurnFull = "";
+  }
+}
+
+function connectTaskStream(){
+  const es = new EventSource("/voice/tasks/stream?token=" + encodeURIComponent(TOKEN));
+  es.addEventListener("task_done", e=>{
+    tasksBadge.classList.add("on");
+    loadTasks();
+    pendingAnnouncements.push(JSON.parse(e.data));
+    flushAnnouncements();
+  });
+  // EventSource 断线会自动重连,不用手动处理 onerror。
+}
+connectTaskStream();
+
+startHandsFreeBtn.addEventListener("click", startHandsFree);
+endHandsFreeBtn.addEventListener("click", endHandsFree);
+muteToggleBtn.addEventListener("click", ()=>{
+  micMuted = !micMuted;
+  if(stream) stream.getAudioTracks().forEach(t=>{ t.enabled = !micMuted; });
+  muteToggleBtn.textContent = micMuted ? "🔈 取消静音" : "🔇 静音";
+  muteToggleBtn.classList.toggle("muted", micMuted);
+});
+orb.addEventListener("click", ()=>{
+  if(wsState === "thinking" || wsState === "speaking") manualInterrupt();
+});
+
+// 页面一加载就决定显示哪一种入口——支持免提的设备显示"开始语音对话",
+// 不支持的(极旧浏览器/没有 AudioWorklet+WASM)直接显示老的按住说话,
+// 不要用同一个按钮身兼两职再靠运行时状态硬切,那是之前踩过的坑。
+function initUiMode(){
+  const hint = transcriptEl.querySelector(".hint");
+  if(vadCapable()){
+    startHandsFreeBtn.hidden = false;
+    if(hint) hint.textContent = "点击下面的按钮开始语音对话,之后直接说话就行,AI 说话时开口就能打断";
+  } else {
+    talkBtn.hidden = false;
+  }
+}
+initUiMode();
 </script>
 </body>
 </html>

@@ -1,0 +1,93 @@
+"""P1 任务板的三个 MCP 工具:voice_dispatch_task / voice_query_task / voice_list_tasks。
+
+只注入进语音前台会话(routes.py 调 session.run_turn 那次 stream_turn),后台任务
+会话本身不挂这组工具——防止任务里的模型再派任务、无限套娃(见 00-overview.md §4.2)。
+"""
+from __future__ import annotations
+
+from claude_agent_sdk import create_sdk_mcp_server, tool
+
+from . import executor, tasks
+
+_STATUS_WORD = {
+    "queued": "排队中",
+    "running": "进行中",
+    "done": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+}
+
+
+def _ok(text: str) -> dict:
+    return {"content": [{"type": "text", "text": text}]}
+
+
+def _describe(task: dict) -> str:
+    parts = [f"任务「{task['title']}」(id={task['id']}):{_STATUS_WORD.get(task['status'], task['status'])}"]
+    if task["status"] == "running" and task["progress_note"]:
+        parts.append(f"当前进展:{task['progress_note']}")
+    if task["status"] in tasks.TERMINAL_STATUSES and task["result_summary"]:
+        parts.append(f"结果:{task['result_summary']}")
+    return "。".join(parts)
+
+
+@tool(
+    "voice_dispatch_task",
+    "把一件预计要花较长时间(超过 30 秒才能干完,比如写代码、跑分析、查很多资料)的事"
+    "派给后台独立会话去干,立即返回不等它跑完;你应该同时口头告诉用户「好,我去办,好了叫你」"
+    "这类话。title:6 字以内短名(会出现在播报/任务卡片里);prompt:完整任务描述(后台会话"
+    "看不到当前对话上下文,必须把要做的事说完整);cwd:可选,任务需要在某个项目目录下跑时指定。",
+    {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "prompt": {"type": "string"},
+            "cwd": {"type": "string"},
+        },
+        "required": ["title", "prompt"],
+    },
+)
+async def voice_dispatch_task(args: dict) -> dict:
+    title = (args.get("title") or "").strip()
+    prompt = (args.get("prompt") or "").strip()
+    cwd = (args.get("cwd") or "").strip() or None
+    if not (title and prompt):
+        return _ok("voice_dispatch_task 需要 title 和 prompt 都非空。")
+    task = executor.dispatch(title=title, prompt=prompt, cwd=cwd)
+    return _ok(f"已派发,task_id={task['id']},标题「{title}」,状态:{_STATUS_WORD[task['status']]}。")
+
+
+@tool(
+    "voice_query_task",
+    "查一个后台任务当前进展。task_id 省略则查最近一次派发的那个。"
+    "返回的是原始字段拼的一句话,你要把它压成更口语的转述再讲给用户,不要念「状态/进展」这类字段名。",
+    {"type": "object", "properties": {"task_id": {"type": "string"}}},
+)
+async def voice_query_task(args: dict) -> dict:
+    task_id = (args.get("task_id") or "").strip()
+    task = tasks.get(task_id) if task_id else tasks.get_latest()
+    if task is None:
+        return _ok("没有找到任务(task_id 不对,或者还从没派发过任务)。")
+    return _ok(_describe(task))
+
+
+@tool(
+    "voice_list_tasks",
+    "列出最近的后台任务,看有哪些任务、各自什么状态。",
+    {"type": "object", "properties": {}},
+)
+async def voice_list_tasks(args: dict) -> dict:
+    rows = tasks.list_recent(limit=10)
+    if not rows:
+        return _ok("当前没有任何任务。")
+    return _ok("\n".join(_describe(t) for t in rows))
+
+
+def build_server() -> dict:
+    """返回可直接塞进 stream_turn(extra_mcp_servers=...) 的 server 表。"""
+    return {
+        "voice_tasks": create_sdk_mcp_server(
+            "voice_tasks",
+            tools=[voice_dispatch_task, voice_query_task, voice_list_tasks],
+        )
+    }
