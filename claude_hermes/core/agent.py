@@ -53,13 +53,13 @@ class ImageAttachment:
 
 
 # 各模型上下文窗口(token)。前缀匹配,未知默认 200k。
-# Claude 4.6+/5 官方已标配 1M input;Haiku 4.5 为 200k。
+# Opus 4.x/Sonnet 5 官方已标配 1M input;Sonnet 4.6/Haiku 4.5 仍为 200k。
 _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-opus-4-6": 1_000_000,
     "claude-sonnet-5": 1_000_000,
-    "claude-sonnet-4-6": 1_000_000,
+    "claude-sonnet-4-6": 200_000,
     "claude-haiku-4-5": 200_000,
 }
 
@@ -648,8 +648,11 @@ async def stream_turn(
                 raw_max = int(cu.get("rawMaxTokens") or cu.get("maxTokens") or 0)
                 if total:
                     context_tokens = total
-                if raw_max:
-                    ctx_window_val = raw_max
+                # CLI 自带的模型注册表可能没跟上新模型扩容后的窗口(仍按旧值上报
+                # rawMaxTokens,比如新模型标配 1M/2M 但 CLI 还认成 200k)。我们表里
+                # 是按官方文档手动维护的,不能被 CLI 的旧认知往下砍 —— 取两者较大值。
+                known_window = context_window(used_model)
+                ctx_window_val = max(raw_max, known_window) if raw_max else known_window
             except Exception:
                 ctx_window_val = context_window(used_model)  # 兜底:按模型名估窗口
 
