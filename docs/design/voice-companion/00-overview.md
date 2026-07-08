@@ -27,6 +27,15 @@
 
 ## 2. ⚠️ 隔离约束(最高优先级,每期都必须遵守)
 
+> **2026-07-09 修订**:前端不再隔离。独立 `/voice` 页已退休(路由重定向到 `/`),
+> 语音通话改成主 SPA(`gateway/adapters/web_static/index.html`)里的一个原地叠加
+> 视图(`#callView`),跟聊天视图共用侧栏/主题/登录态,不再走整页跳转——用户明确
+> 要求"原地叠加、通话不退出",这跟"改一处 index.html ≤15 行"的预算天然冲突,
+> 权衡后放弃前端隔离,换取更好的通话体验。**后端仍然隔离**:`claude_hermes/voice/`
+> 包、`data/voice/` 独立数据库、`web.py`/`routes.py` 的挂载点没变,2.4 节的移除
+> 清单里"1/3/4 步"依然成立;第 2 步里 index.html 的"≤15 行"预算作废,移除时改成
+> 手动摘掉 `#callView` 相关标签/样式/脚本(已不是一个可孤立 diff 的小改动)。
+
 **本功能是实验性的:如果体验不好,会被整体移除。** 因此代码必须做到"删干净不留疤":
 
 ### 2.1 代码归宿
@@ -41,7 +50,7 @@
 | 现有文件 | 允许改动 | 内容 |
 |---|---|---|
 | `gateway/adapters/web.py` | ≤ 5 行 | `import` + `VOICE_ENABLED` 判断 + 调 `voice.register_routes(app)` 一次(路由列表在 `_start_server()`,约 L1242) |
-| `gateway/adapters/web_static/index.html` | ≤ 15 行 | 主界面一个入口按钮(见 P0 文档) |
+| `gateway/adapters/web_static/index.html` | ~~≤ 15 行~~ 已作废(2026-07-09) | 见上方修订说明:通话视图 `#callView` 整体并入此文件 |
 | `config.py` | ≤ 10 行 | `VOICE_ENABLED` 等 voice 前缀的配置常量 |
 | `core/agent.py` | ≤ 10 行,仅 P1 允许 | 给 `stream_turn()` 加一个**可选**参数注入额外工具,默认 `None` 时行为与现在完全一致(见 P1 文档) |
 | **其余一切现有文件** | **0 行** | 尤其 `core/prompt.py`、`gateway/core.py`、`gateway/run.py`、`cron/`、`tools/`、`memory/` 一律不碰 |

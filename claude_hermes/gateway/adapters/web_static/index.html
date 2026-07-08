@@ -762,6 +762,96 @@
   .ic{width:14px;height:14px;vertical-align:-2.5px;flex-shrink:0}
   #micBtn .ic{width:17px;height:17px;vertical-align:-4px}
   .pmrow .ic{width:15px;height:15px;vertical-align:-3px;margin-right:2px;color:var(--dim)}
+
+  /* ── 通话视图(#callView,原独立 /voice 页):跟 #chatMain 同级互斥显隐,
+     结构照抄原页面,只把裸标签选择器(header/footer/main/body)换成 id 作用域,
+     避免污染 #chatMain 那一套同名标签的样式。──────────────────────────────── */
+  #callView{flex:1;display:flex;flex-direction:column;min-width:0;position:relative;
+    background:var(--bg2);overflow:hidden}
+  #callView[hidden]{display:none}
+  #callHead{display:flex;align-items:center;gap:12px;padding:14px 16px;
+    padding-top:calc(14px + env(safe-area-inset-top));border-bottom:1px solid var(--line)}
+  #callHead #backLink{color:var(--dim);line-height:1;padding:4px;display:inline-flex}
+  #callHead #backLink .ic{width:20px;height:20px}
+  #callHead .title{font-weight:600;flex:1}
+  #status{font-size:13px;color:var(--dim);padding:4px 10px;border-radius:20px;background:var(--panel)}
+  #status.listening{color:var(--err)}
+  #status.thinking,#status.playing{color:var(--accent)}
+  #callBody{flex:1;overflow-y:auto;padding:16px}
+  #transcript{display:flex;flex-direction:column;gap:12px;max-width:680px;margin:0 auto}
+  #callView .bubble.filler{background:transparent;border:none;color:var(--dim2);font-size:14px;
+    font-style:italic;padding:0 14px;max-width:100%;box-shadow:none}
+  .msgicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
+  .msgicon .ic{width:15px;height:15px}
+  #callView .hint{text-align:center;color:var(--dim2);font-size:14px;padding:40px 20px}
+  #tasksBtn{position:relative;background:none;border:none;color:var(--dim);padding:4px;display:inline-flex}
+  #tasksBtn .ic{width:20px;height:20px}
+  #tasksBadge{position:absolute;top:0;right:0;width:8px;height:8px;border-radius:50%;
+    background:var(--accent);display:none}
+  #tasksBadge.on{display:block}
+  #tasksDrawer{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10;display:none}
+  #tasksDrawer.open{display:block}
+  #tasksSheet{position:absolute;left:0;right:0;bottom:0;max-height:70vh;overflow-y:auto;
+    background:var(--panel);border-radius:16px 16px 0 0;padding:16px;
+    padding-bottom:calc(16px + env(safe-area-inset-bottom))}
+  #tasksSheet h3{margin:0 0 12px;font-size:15px;color:var(--dim)}
+  .task{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+  .task .row{display:flex;align-items:center;gap:8px;margin:0;animation:none}
+  .task .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .task .dot.queued{background:var(--dim2)}
+  .task .dot.running{background:var(--accent)}
+  .task .dot.done{background:var(--ok)}
+  .task .dot.failed,.task .dot.cancelled{background:var(--err)}
+  .task .title{flex:1;font-weight:600}
+  .task .note{color:var(--dim);font-size:13px;margin-top:4px}
+  .task .full{color:var(--text);font-size:13px;margin-top:8px;white-space:pre-wrap;display:none}
+  .task .full.open{display:block}
+  .task .stop{border:1px solid var(--err);color:var(--err);background:none;border-radius:14px;
+    padding:2px 10px;font-size:12px}
+  .task-empty{color:var(--dim2);text-align:center;padding:20px}
+  #callFoot{padding:20px 16px calc(20px + env(safe-area-inset-bottom));display:flex;
+    flex-direction:column;align-items:center;gap:14px}
+  .btnicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
+  .btnicon .ic{width:16px;height:16px}
+  #stopBtn{border:1px solid var(--err);color:var(--err);background:none;border-radius:20px;
+    padding:8px 20px;font-size:14px;display:inline-flex;align-items:center}
+  #talkBtn{width:120px;height:120px;border-radius:50%;background:var(--accent);color:#fff;
+    border:none;font-size:16px;font-weight:600;box-shadow:0 8px 24px rgba(217,119,87,.35);
+    transition:transform .15s ease, background .15s ease;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:none}
+  #talkBtn.recording{background:var(--err);transform:scale(1.08)}
+  #talkBtn:disabled{opacity:.5}
+  #talkBtn[hidden],#stopBtn[hidden]{display:none}
+
+  /* P2 全双工:免提模式的入口按钮 + 状态指示球(替代"按住说话"这套只适合
+     半双工的交互——免提场景没有"按下/松开"这个动作,只有"开始/结束") */
+  #startHandsFreeBtn{display:flex;align-items:center;gap:8px;padding:14px 28px;
+    border-radius:28px;background:var(--accent);color:#fff;border:none;
+    font-size:15px;font-weight:600;box-shadow:0 8px 24px rgba(217,119,87,.35)}
+  #startHandsFreeBtn .btnicon{margin-right:0}
+  #startHandsFreeBtn:disabled{opacity:.5}
+  /* #id 选择器的 display:flex 比浏览器默认的 [hidden]{display:none} 优先级高,
+     不加这条 hidden 会被直接盖掉——加 hidden 属性也压不住,界面上就是"明明设了
+     hidden 却还是显示"。 */
+  #startHandsFreeBtn[hidden]{display:none}
+  #handsFreeUi{display:flex;flex-direction:column;align-items:center;gap:18px}
+  #handsFreeUi[hidden]{display:none}
+  #orbWrap{position:relative;width:120px;height:120px}
+  #orb{width:120px;height:120px;border-radius:50%;background:var(--panel);
+    border:2px solid var(--line);transition:background .3s ease,box-shadow .3s ease}
+  #orb.capturing{background:var(--err);box-shadow:0 0 32px rgba(209,103,74,.55)}
+  #orb.transcribing,#orb.thinking{background:var(--accent);box-shadow:0 0 24px rgba(217,119,87,.45);
+    animation:orb-breathe 1.4s ease-in-out infinite}
+  #orb.speaking{background:var(--accent2);box-shadow:0 0 32px rgba(200,97,63,.55);
+    animation:orb-pulse .9s ease-in-out infinite}
+  #orbCanvas{position:absolute;inset:0;width:120px;height:120px;pointer-events:none}
+  @keyframes orb-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
+  @keyframes orb-breathe{0%,100%{opacity:.7}50%{opacity:1}}
+  .hf-row{display:flex;gap:12px}
+  .hf-row button{border:1px solid var(--line);color:var(--dim);background:var(--panel);
+    border-radius:20px;padding:8px 18px;font-size:14px;display:inline-flex;align-items:center}
+  .hf-row button.muted{color:var(--err);border-color:var(--err)}
+  #endHandsFreeBtn{color:var(--err);border-color:var(--err)}
 </style>
 </head>
 <body>
@@ -833,7 +923,7 @@
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
-    <button id="voiceChatBtn" hidden onclick="location.href='/voice'"></button>
+    <button id="voiceChatBtn" hidden onclick="openCallView()"></button>
     <div id="convList"></div>
     <div class="sfoot" id="sfoot"><span class="savatar">U</span><span class="sfoottxt" id="sfoottxt">User</span>
       <div id="convFilterBox">
@@ -843,7 +933,7 @@
       <button id="settingsBtn" class="sfoicon" title="设置"></button>
     </div>
   </aside>
-  <main>
+  <main id="chatMain">
     <header class="bar">
       <div class="barwrap">
         <button class="icon" id="hamb"></button>
@@ -930,6 +1020,46 @@
       <input type="file" id="file" accept="image/*" multiple hidden>
     </form>
   </main>
+  <!-- 通话视图:语音伴聊(原独立 /voice 页,2026-07-09 并入主 SPA,见 00-overview.md
+       §2 隔离约束的修订说明)。跟 #chatMain 互斥显隐,左上角复用同一套侧栏展开逻辑,
+       原地叠加不打断通话——这正是要合并的原因。 -->
+  <main id="callView" hidden>
+    <header id="callHead">
+      <button id="backLink" title="展开侧栏"></button>
+      <span class="title">语音伴聊</span>
+      <span id="status">空闲</span>
+      <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
+    </header>
+    <div id="callBody">
+      <div id="transcript">
+        <div class="hint">按住下面的圆钮说话,松手发送</div>
+      </div>
+    </div>
+    <footer id="callFoot">
+      <button id="stopBtn" hidden><span class="btnicon" id="stopIcon"></span>停</button>
+      <!-- 半双工兜底:只有免提初始化失败/浏览器不支持时才出现,见 initUiMode() -->
+      <button id="talkBtn" hidden>按住说话</button>
+      <!-- 免提入口:支持免提的设备默认显示这个,不是"按住说话" -->
+      <button id="startHandsFreeBtn" hidden><span class="btnicon" id="startIcon"></span><span class="btntext">开始语音对话</span></button>
+      <!-- 免提激活后:按钮消失,换成状态球 + 静音/结束 -->
+      <div id="handsFreeUi" hidden>
+        <div id="orbWrap">
+          <div id="orb" class="idle" title="点一下可以打断 AI 说话"></div>
+          <canvas id="orbCanvas" width="120" height="120"></canvas>
+        </div>
+        <div class="hf-row">
+          <button id="muteToggleBtn"><span class="btnicon" id="muteIcon"></span><span class="btntext">静音</span></button>
+          <button id="endHandsFreeBtn"><span class="btnicon" id="endIcon"></span><span class="btntext">结束</span></button>
+        </div>
+      </div>
+    </footer>
+    <div id="tasksDrawer">
+      <div id="tasksSheet">
+        <h3>后台任务</h3>
+        <div id="tasksList"></div>
+      </div>
+    </div>
+  </main>
 </div>
 
 <div id="ratePop" hidden></div>
@@ -999,8 +1129,652 @@ const ICONS = {
   copy:'<rect x="8" y="8" width="8" height="12" rx="1"/><path d="M16 10h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2v-2"/>',
   command:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 11l3 3-3 3"/><path d="M12 17h5"/>',
   panel:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18"/>',
+  mute:'<path d="M1 1l22 22"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><path d="M15 9.34V6a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2"/><path d="M19 10v2a7 7 0 0 1-.11 1.23"/><path d="M12 19v3"/><path d="M8 22h8"/>',
+  stop:'<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
+  tasks:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
+function setIcon(el, name){ el.innerHTML = ic(name); }
+
+// ── 通话视图:语音伴聊(原独立 /voice 页,2026-07-09 并入主 SPA,见 00-overview.md
+// §2 隔离约束的修订说明)。整段包一个 IIFE——不是为了模块化好看,是原 voice.html
+// 里 ensureStream/analyser 这些名字跟上面聊天逻辑的同名符号会真的撞车,函数作用域
+// 一裹就都是局部变量,不用逐个改名。对外只留 openCallView()/closeCallView() 两个
+// 挂在 window 上的入口,供侧边栏「语音任务」行和 #voiceChatBtn 调用(见下方接线)。
+(function(){
+  const transcriptEl=$("#transcript"), statusEl=$("#status"), talkBtn=$("#talkBtn"),
+    stopBtn=$("#stopBtn"), tasksBtn=$("#tasksBtn"), tasksBadge=$("#tasksBadge"),
+    tasksDrawer=$("#tasksDrawer"), tasksList=$("#tasksList"),
+    startHandsFreeBtn=$("#startHandsFreeBtn"), handsFreeUi=$("#handsFreeUi"),
+    orb=$("#orb"), muteToggleBtn=$("#muteToggleBtn"), endHandsFreeBtn=$("#endHandsFreeBtn"),
+    backLink=$("#callHead #backLink");
+
+  setIcon(backLink, "panel");
+  setIcon($("#tasksIcon"), "tasks");
+  setIcon($("#stopIcon"), "stop");
+  setIcon($("#startIcon"), "mic");
+  setIcon($("#endIcon"), "close");
+  setIcon($("#muteIcon"), "mute");
+  // 原页面靠浏览器整页导航自然回收麦克风/WS——现在是原地叠加,退出改叫
+  // closeCallView(),由它接 teardownCallResources() 收资源(见文件末尾)。
+  backLink.onclick = e=>{ e.preventDefault(); closeCallView(); };
+
+  let stream=null, recorder=null, chunks=[], pressTs=0;
+  let busy=false;
+  let playQueue=[], playing=false;
+  let pendingAnnouncements=[];  // task_done 到达时用户正忙(说话/播放/录音)→ 先攒着,空闲了再播
+
+  // ── P2 全双工:免提连续对话(见下方 initHandsFree 一段)──────────────────
+  let handsFreeActive=false, micMuted=false;
+  let wsConn=null, wsState="idle";
+  let pcmWorkletNode=null;
+  let lastFullyPlayedSeq=-1, pausedForInterrupt=false;
+  let currentTurnAiEl=null, currentTurnFull="";
+
+  // ── 播放:Web Audio API,不用 <audio> 标签 ──────────────────────────────
+  let audioCtx=null, currentSource=null;
+
+  // ── 回声消除 loopback:让浏览器把 AI 自己的语音当成"需要消除的参考信号" ──────
+  // 本地开两个 RTCPeerConnection 互相连起来(不出本机、不连真实服务器),
+  // 把 TTS 音频接到 pc1 发送、pc2 收到后用真正的 <audio> 元素播放出来——这下
+  // 浏览器的回声消除引擎会把它当成一次正常的"通话音频",从而真正参与 AEC
+  // 的参考信号计算。搭建失败静默回退到直连 audioCtx.destination。
+  let echoLoopbackDest=null, echoLoopbackReady=false, echoLoopbackSetupStarted=false;
+  let echoLoopbackPc1=null, echoLoopbackPc2=null, echoLoopbackAudioEl=null;
+
+  async function setupEchoLoopback(){
+    if(echoLoopbackSetupStarted || !window.RTCPeerConnection) return;
+    echoLoopbackSetupStarted = true;
+    try{
+      const dest = audioCtx.createMediaStreamDestination();
+      const pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+      pc1.onicecandidate = e => { if(e.candidate) pc2.addIceCandidate(e.candidate).catch(()=>{}); };
+      pc2.onicecandidate = e => { if(e.candidate) pc1.addIceCandidate(e.candidate).catch(()=>{}); };
+      const remoteStreamPromise = new Promise(resolve => { pc2.ontrack = e => resolve(e.streams[0]); });
+      dest.stream.getAudioTracks().forEach(t => pc1.addTrack(t, dest.stream));
+      const offer = await pc1.createOffer();
+      await pc1.setLocalDescription(offer);
+      await pc2.setRemoteDescription(offer);
+      const answer = await pc2.createAnswer();
+      await pc2.setLocalDescription(answer);
+      await pc1.setRemoteDescription(answer);
+      const remoteStream = await remoteStreamPromise;
+      const audioEl = new Audio();
+      audioEl.autoplay = true;
+      audioEl.srcObject = remoteStream;
+      await audioEl.play();
+      echoLoopbackDest = dest;
+      echoLoopbackPc1 = pc1;
+      echoLoopbackPc2 = pc2;
+      echoLoopbackAudioEl = audioEl;
+      echoLoopbackReady = true;
+    }catch(e){
+      echoLoopbackDest = null;
+      echoLoopbackReady = false;
+    }
+  }
+
+  function setStatus(text, cls){ statusEl.textContent = text; statusEl.className = cls || ""; }
+  function clearHint(){ const h = transcriptEl.querySelector(".hint"); if(h) h.remove(); }
+
+  function addMsg(kind, text){
+    clearHint();
+    const parts = kind.split(" ");
+    const who = parts[0];
+    const isError = parts.includes("error");
+    const isFiller = parts.includes("filler");
+    const row = document.createElement("div");
+    row.className = "row " + (who === "me" ? "me" : "ai");
+    const b = document.createElement("div");
+    b.className = "bubble" + (isError ? " err" : "") + (isFiller ? " filler" : "");
+    if(isError){
+      const icon = document.createElement("span");
+      icon.className = "msgicon";
+      icon.innerHTML = ic("warn");
+      b.append(icon);
+    }
+    const span = document.createElement("span");
+    span.className = "msgtext";
+    span.textContent = text;
+    b.append(span);
+    row.append(b);
+    transcriptEl.appendChild(row);
+    row.scrollIntoView({block:"end"});
+    return b;
+  }
+  function markBubbleError(b){
+    b.classList.add("err");
+    if(!b.querySelector(".msgicon")){
+      const icon = document.createElement("span");
+      icon.className = "msgicon";
+      icon.innerHTML = ic("warn");
+      b.prepend(icon);
+    }
+  }
+
+  function unlockAudio(){
+    if(audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const buf = audioCtx.createBuffer(1, 1, 22050);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start(0);
+    setupEchoLoopback();
+  }
+
+  async function ensureMicStream(){
+    if(!stream) {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {echoCancellation:true, noiseSuppression:true, autoGainControl:true}
+      });
+    }
+    return stream;
+  }
+
+  async function startRecording(){
+    if(busy) return;
+    unlockAudio();
+    try{ await ensureMicStream(); }
+    catch(e){ addMsg("ai error", "麦克风权限被拒绝,请到系统设置里允许"); return; }
+    chunks = [];
+    recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = e=>{ if(e.data && e.data.size>0) chunks.push(e.data); };
+    pressTs = Date.now();
+    recorder.start();
+    talkBtn.classList.add("recording");
+    setStatus("聆听中…", "listening");
+  }
+
+  function stopRecording(){
+    if(!recorder || recorder.state === "inactive") return;
+    talkBtn.classList.remove("recording");
+    const dur = Date.now() - pressTs;
+    const rec = recorder;
+    recorder = null;
+    rec.onstop = ()=>{
+      if(dur < 500){ setStatus("空闲"); flushAnnouncements(); return; }
+      const blob = new Blob(chunks, {type: rec.mimeType || "audio/webm"});
+      handleTurn(blob);
+    };
+    rec.stop();
+  }
+
+  talkBtn.addEventListener("pointerdown", e=>{ e.preventDefault(); startRecording(); });
+  talkBtn.addEventListener("pointerup", stopRecording);
+  talkBtn.addEventListener("pointercancel", stopRecording);
+  talkBtn.addEventListener("pointerleave", e=>{ if(recorder && recorder.state==="recording") stopRecording(); });
+
+  async function handleTurn(blob){
+    const fd = new FormData();
+    fd.append("audio", blob, "voice.webm");
+    await sendTurn(fd);
+  }
+
+  async function sendTurn(body){
+    busy = true; talkBtn.disabled = true; stopBtn.hidden = false;
+    setStatus("识别中…", "thinking");
+    const headers = {"X-Auth-Token": S.token};
+    const init = {method: "POST", headers};
+    if(body instanceof FormData) init.body = body;
+    else { headers["Content-Type"] = "application/json"; init.body = JSON.stringify(body); }
+
+    const finish = ()=>{
+      busy = false; talkBtn.disabled = false; stopBtn.hidden = true; setStatus("空闲");
+      flushAnnouncements();
+    };
+
+    let resp;
+    try{ resp = await fetch("/voice/send", init); }
+    catch(e){ addMsg("ai error", "连不上服务"); finish(); return; }
+    if(resp.status === 401){ authError(); finish(); return; }
+    if(!resp.ok || !resp.body){
+      addMsg("ai error", resp.status === 409 ? "上一轮还没说完" : "出错了");
+      finish(); return;
+    }
+
+    let aiEl = null, full = "";
+    const reader = resp.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    try{
+      while(true){
+        const {value, done} = await reader.read();
+        if(done) break;
+        buf += dec.decode(value, {stream:true});
+        let sep;
+        while((sep = buf.indexOf("\n\n")) >= 0){
+          const block = buf.slice(0, sep); buf = buf.slice(sep+2);
+          const ev = parseSseBlock(block);
+          if(!ev) continue;
+          if(ev.event === "transcript"){
+            addMsg("me", ev.data.text || "");
+            setStatus("思考中…", "thinking");
+          } else if(ev.event === "filler"){
+            addMsg("ai filler", ev.data.text || "");
+            playQueue.push(ev.data);
+            pumpPlayback();
+          } else if(ev.event === "text"){
+            if(!aiEl) aiEl = addMsg("ai", "");
+            full += ev.data.text || "";
+            renderAi(aiEl, full);
+          } else if(ev.event === "sentence"){
+            playQueue.push(ev.data);
+            pumpPlayback();
+          } else if(ev.event === "done"){
+            if(!aiEl) aiEl = addMsg("ai", "");
+            if(ev.data.full_text){ full = ev.data.full_text; renderAi(aiEl, full); }
+            if(ev.data.error){ markBubbleError(aiEl); if(!full) renderAi(aiEl, ev.data.error); }
+          }
+        }
+      }
+    }catch(e){ /* 流中断:下面统一收尾,不额外报错打扰用户 */ }
+    finish();
+  }
+
+  function parseSseBlock(block){
+    let event = "message", data = null;
+    for(const line of block.split("\n")){
+      if(line.startsWith("event:")) event = line.slice(6).trim();
+      else if(line.startsWith("data:")) data = line.slice(5).trim();
+    }
+    if(data == null) return null;
+    try{ return {event, data: JSON.parse(data)}; }catch(e){ return null; }
+  }
+
+  function renderAi(elm, full){
+    elm.querySelector(".msgtext").textContent = full;
+    elm.scrollIntoView({block:"end"});
+  }
+
+  function base64ToArrayBuffer(b64){
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+    return bytes.buffer;
+  }
+
+  function markPlayed(seq){
+    if(seq < 0) return;
+    lastFullyPlayedSeq = seq;
+    if(wsConn && wsConn.readyState === WebSocket.OPEN){
+      wsConn.send(JSON.stringify({type:"played_progress", played_sentences: seq + 1}));
+    }
+  }
+
+  async function pumpPlayback(){
+    if(playing || playQueue.length === 0 || pausedForInterrupt) return;
+    const item = playQueue.shift();
+    if(!item.audio_b64){ markPlayed(item.seq); pumpPlayback(); return; }
+    playing = true;
+    setStatus("播放中…", "playing");
+    try{
+      if(audioCtx.state === "suspended") await audioCtx.resume();
+      const audioBuffer = await audioCtx.decodeAudioData(base64ToArrayBuffer(item.audio_b64));
+      await new Promise((resolve, reject)=>{
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(echoLoopbackReady ? echoLoopbackDest : audioCtx.destination);
+        currentSource = source;
+        source.onended = ()=>{ markPlayed(item.seq); resolve(); };
+        try{ source.start(0); }catch(e){ reject(e); }
+      });
+    }catch(e){ /* 解码/播放失败就跳过这句,不卡住队列 */ }
+    currentSource = null;
+    playing = false;
+    pumpPlayback();
+  }
+
+  stopBtn.addEventListener("click", ()=>{
+    playQueue = [];
+    if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
+    playing = false;
+    fetch("/voice/stop", {method:"POST", headers:{"X-Auth-Token":S.token}}).catch(()=>{});
+  });
+
+  function authError(){
+    addMsg("ai error", "口令失效,请回主界面重新登录");
+    showLogin();
+  }
+
+  // ── P1 任务板:抽屉列表 + 完成播报(WHEN_IDLE:等空闲/不在录音才插播,F8/F10) ──────
+  const STATUS_WORD = {queued:"排队中", running:"进行中", done:"已完成", failed:"失败", cancelled:"已取消"};
+
+  async function loadTasks(){
+    try{
+      const resp = await fetch("/voice/tasks", {headers:{"X-Auth-Token":S.token}});
+      if(resp.ok) renderTasks(await resp.json());
+    }catch(e){}
+  }
+
+  function renderTasks(rows){
+    tasksList.innerHTML = "";
+    if(!rows.length){ tasksList.innerHTML = '<div class="task-empty">还没有任务</div>'; return; }
+    for(const t of rows){
+      const active = t.status === "queued" || t.status === "running";
+      const rowEl = document.createElement("div");
+      rowEl.className = "task";
+      rowEl.innerHTML =
+        `<div class="row"><span class="dot ${t.status}"></span>` +
+        `<span class="title">${esc(t.title)}</span><span>${STATUS_WORD[t.status] || t.status}</span>` +
+        (active ? '<button class="stop">停止</button>' : "") + `</div>` +
+        `<div class="note">${esc(t.status === "running" ? t.progress_note : (t.result_summary || ""))}</div>` +
+        `<div class="full">${esc(t.result_full || "")}</div>`;
+      rowEl.querySelector(".row").addEventListener("click", (e)=>{
+        if(e.target.closest(".stop")) return;
+        rowEl.querySelector(".full").classList.toggle("open");
+      });
+      const stopEl = rowEl.querySelector(".stop");
+      if(stopEl) stopEl.addEventListener("click", async (e)=>{
+        e.stopPropagation();
+        await fetch(`/voice/tasks/${t.id}/stop`, {method:"POST", headers:{"X-Auth-Token":S.token}});
+        loadTasks();
+      });
+      tasksList.appendChild(rowEl);
+    }
+  }
+
+  tasksBtn.addEventListener("click", ()=>{ tasksDrawer.classList.add("open"); loadTasks(); });
+  tasksDrawer.addEventListener("click", e=>{ if(e.target === tasksDrawer) tasksDrawer.classList.remove("open"); });
+
+  function flushAnnouncements(){
+    if(busy || (recorder && recorder.state === "recording") || (handsFreeActive && wsState !== "idle")) return;
+    while(pendingAnnouncements.length){
+      const data = pendingAnnouncements.shift();
+      addMsg("ai", data.announce_text);
+      if(audioCtx && data.audio_b64){ playQueue.push({seq:-1, audio_b64: data.audio_b64}); pumpPlayback(); }
+    }
+  }
+
+  // ── P2 全双工:WS 免提连续对话 ────────────────────────────────────────
+  const STATE_WORD = {idle:"空闲", capturing:"聆听中…", thinking:"思考中…", speaking:"播放中…"};
+  const STATE_CLASS = {capturing:"listening", thinking:"thinking", speaking:"playing"};
+
+  function vadCapable(){
+    return typeof AudioWorkletNode !== "undefined";
+  }
+
+  let analyser=null, analyserSource=null, orbCanvasCtx=null, orbAnimHandle=null;
+
+  function ensureAnalyser(){
+    if(analyser || !audioCtx || !stream) return;
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 64;
+    analyserSource = audioCtx.createMediaStreamSource(stream);
+    analyserSource.connect(analyser);
+  }
+
+  function drawOrbWaveform(){
+    orbAnimHandle = requestAnimationFrame(drawOrbWaveform);
+    const canvas = $("#orbCanvas");
+    if(!orbCanvasCtx) orbCanvasCtx = canvas.getContext("2d");
+    const ctx = orbCanvasCtx;
+    const w = canvas.width, h = canvas.height, cx = w/2, cy = h/2;
+    ctx.clearRect(0, 0, w, h);
+    if(wsState !== "capturing" || !analyser){ return; }
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(data);
+    const bars = 24, baseR = 44;
+    ctx.strokeStyle = "rgba(255,255,255,.85)";
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    for(let i=0;i<bars;i++){
+      const v = data[i % data.length] / 255;
+      const len = 4 + v * 14;
+      const angle = (i / bars) * Math.PI * 2;
+      const x1 = cx + Math.cos(angle) * baseR, y1 = cy + Math.sin(angle) * baseR;
+      const x2 = cx + Math.cos(angle) * (baseR + len), y2 = cy + Math.sin(angle) * (baseR + len);
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    }
+  }
+
+  function playTone(freq, durMs, shape){
+    if(!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = shape || "sine";
+    osc.frequency.value = freq;
+    const now = audioCtx.currentTime;
+    const dur = durMs / 1000;
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.15, now + Math.min(0.005, dur/4));
+    gain.gain.linearRampToValueAtTime(0, now + dur);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + dur + 0.02);
+  }
+  function playCapturingTone(){ playTone(880, 80, "sine"); }
+  function playSpeakingTone(){ playTone(660, 60, "sine"); setTimeout(()=>playTone(990, 60, "sine"), 65); }
+  function playInterruptedTone(){ playTone(220, 50, "triangle"); }
+
+  async function initHandsFree(){
+    if(pcmWorkletNode) return true;
+    if(!vadCapable()) return false;
+    try{
+      unlockAudio();
+      await ensureMicStream();
+      ensureAnalyser();
+      if(!orbAnimHandle) drawOrbWaveform();
+      await audioCtx.audioWorklet.addModule("/voice/static/pcm-forwarder-worklet.js");
+      const source = audioCtx.createMediaStreamSource(stream);
+      pcmWorkletNode = new AudioWorkletNode(audioCtx, "pcm-forwarder");
+      pcmWorkletNode.port.onmessage = e=>{
+        if(handsFreeActive && !micMuted && wsConn && wsConn.readyState === WebSocket.OPEN){
+          wsConn.send(e.data.pcm.buffer);
+        }
+      };
+      source.connect(pcmWorkletNode);
+      const silentGain = audioCtx.createGain();
+      silentGain.gain.value = 0;
+      pcmWorkletNode.connect(silentGain);
+      silentGain.connect(audioCtx.destination);
+      return true;
+    }catch(e){
+      pcmWorkletNode = null;
+      return false;
+    }
+  }
+
+  async function startHandsFree(){
+    startHandsFreeBtn.disabled = true;
+    startHandsFreeBtn.querySelector(".btntext").textContent = "准备中…";
+    const ok = await initHandsFree();
+    if(!ok){
+      startHandsFreeBtn.hidden = true;
+      talkBtn.hidden = false;
+      addMsg("ai error", "免提模式没能启动,已切换到按住说话模式");
+      return;
+    }
+    connectHandsFreeWs();
+    handsFreeActive = true;
+    startHandsFreeBtn.hidden = true;
+    handsFreeUi.hidden = false;
+    orb.className = "idle";
+    clearHint();
+    setStatus("免提聆听中…", "listening");
+  }
+
+  async function endHandsFree(){
+    handsFreeActive = false;
+    if(wsConn){ wsConn.onclose = null; try{ wsConn.close(); }catch(e){} wsConn = null; }
+    if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
+    playQueue = []; playing = false; pausedForInterrupt = false;
+    handsFreeUi.hidden = true;
+    startHandsFreeBtn.hidden = false;
+    startHandsFreeBtn.disabled = false;
+    startHandsFreeBtn.querySelector(".btntext").textContent = "开始语音对话";
+    setStatus("空闲");
+  }
+
+  function manualInterrupt(){
+    if(wsConn && wsConn.readyState === WebSocket.OPEN) wsConn.send(JSON.stringify({type:"mute"}));
+    if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
+    playQueue = [];
+    playing = false;
+    pausedForInterrupt = false;
+  }
+
+  function connectHandsFreeWs(){
+    const proto = location.protocol === "https:" ? "wss://" : "ws://";
+    wsConn = new WebSocket(proto + location.host + "/voice/ws?token=" + encodeURIComponent(S.token));
+    wsConn.binaryType = "arraybuffer";
+    wsConn.onopen = ()=>{
+      wsConn.send(JSON.stringify({type:"hello", sample_rate: audioCtx.sampleRate}));
+    };
+    wsConn.onmessage = e=>{
+      if(typeof e.data === "string") handleWsMessage(JSON.parse(e.data));
+    };
+    wsConn.onclose = ()=>{
+      if(handsFreeActive) setTimeout(connectHandsFreeWs, 1500);
+    };
+  }
+
+  function handleWsMessage(msg){
+    if(msg.type === "state"){
+      const prevState = wsState;
+      wsState = msg.state;
+      if(msg.state === "capturing" && (prevState === "thinking" || prevState === "speaking")){
+        pausedForInterrupt = true;
+        if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
+        playing = false;
+        playInterruptedTone();
+      }
+      if(msg.state === "capturing" && prevState !== "capturing") playCapturingTone();
+      if(msg.state === "speaking" && prevState !== "speaking") playSpeakingTone();
+      if(msg.state === "thinking") lastFullyPlayedSeq = -1;
+      setStatus(STATE_WORD[msg.state] || msg.state, STATE_CLASS[msg.state]);
+      if(handsFreeActive) orb.className = msg.state;
+    } else if(msg.type === "transcript"){
+      addMsg("me", msg.text || "");
+    } else if(msg.type === "filler"){
+      addMsg("ai filler", msg.text || "");
+      if(msg.audio_b64){ playQueue.push({seq:-1, audio_b64: msg.audio_b64}); pumpPlayback(); }
+    } else if(msg.type === "text_delta"){
+      if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
+      currentTurnFull += msg.text || "";
+      renderAi(currentTurnAiEl, currentTurnFull);
+    } else if(msg.type === "sentence"){
+      playQueue.push({seq: msg.seq, audio_b64: msg.audio_b64});
+      pumpPlayback();
+    } else if(msg.type === "done"){
+      if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
+      if(msg.full_text){ currentTurnFull = msg.full_text; renderAi(currentTurnAiEl, currentTurnFull); }
+      currentTurnAiEl = null; currentTurnFull = "";
+    } else if(msg.type === "interrupted"){
+      playQueue = [];
+      pausedForInterrupt = false;
+      currentTurnAiEl = null; currentTurnFull = "";
+    } else if(msg.type === "resumed"){
+      pausedForInterrupt = false;
+      pumpPlayback();
+    } else if(msg.type === "error"){
+      addMsg("ai error", msg.message || "出错了");
+      currentTurnAiEl = null; currentTurnFull = "";
+    }
+  }
+
+  function connectTaskStream(){
+    const es = new EventSource("/voice/tasks/stream?token=" + encodeURIComponent(S.token));
+    es.addEventListener("task_done", e=>{
+      tasksBadge.classList.add("on");
+      loadTasks();
+      pendingAnnouncements.push(JSON.parse(e.data));
+      flushAnnouncements();
+    });
+  }
+
+  async function loadMainHistory(){
+    try{
+      const resp = await fetch("/history?conv=" + encodeURIComponent("voice-chat:main"), {
+        headers: {"X-Auth-Token": S.token},
+      });
+      if(!resp.ok) return;
+      const d = await resp.json();
+      if(!d.turns || !d.turns.length) return;
+      clearHint();
+      for(const t of d.turns){
+        if(t.user) addMsg("me", t.user);
+        if(t.assistant) addMsg("ai", t.assistant);
+      }
+    }catch(e){ /* 历史加载失败不阻塞进入通话,当作空历史处理 */ }
+  }
+
+  startHandsFreeBtn.addEventListener("click", startHandsFree);
+  endHandsFreeBtn.addEventListener("click", endHandsFree);
+  muteToggleBtn.addEventListener("click", ()=>{
+    micMuted = !micMuted;
+    if(stream) stream.getAudioTracks().forEach(t=>{ t.enabled = !micMuted; });
+    setIcon(muteToggleBtn.querySelector(".btnicon"), micMuted ? "mic" : "mute");
+    muteToggleBtn.querySelector(".btntext").textContent = micMuted ? "取消静音" : "静音";
+    muteToggleBtn.classList.toggle("muted", micMuted);
+  });
+  orb.addEventListener("click", ()=>{
+    if(wsState === "thinking" || wsState === "speaking") manualInterrupt();
+  });
+
+  function initUiMode(){
+    const hint = transcriptEl.querySelector(".hint");
+    if(vadCapable()){
+      startHandsFreeBtn.hidden = false;
+      if(hint) hint.textContent = "点击下面的按钮开始语音对话,之后直接说话就行,AI 说话时开口就能打断";
+    } else {
+      talkBtn.hidden = false;
+    }
+  }
+
+  // ── 视图切换入口(供侧边栏"语音任务"主行 + #voiceChatBtn 调用,见下方接线)──────
+  // initOnce:原页面这些初始化(常驻任务播报订阅/拉历史/挑一次交互模式)靠整页
+  // 加载天然只跑一次;现在同一个 DOM 可以反复进出通话视图,得自己拿个标记位挡住
+  // 重复跑——尤其 connectTaskStream() 重跑会攒出好几条重复的 EventSource。
+  let initialized = false;
+  function initOnce(){
+    if(initialized) return;
+    initialized = true;
+    connectTaskStream();
+    loadMainHistory();
+    initUiMode();
+  }
+
+  // teardownCallResources:退出通话视图时收麦克风/播放/WS——原页面靠浏览器整页
+  // 导航卸载页面顺带回收这些资源,现在视图常驻 DOM 不会自动卸载,不手动收就是
+  // 麦克风一直"热着"、WS 一直连着,电量和隐私都不划算。
+  function teardownCallResources(){
+    if(wsConn){ wsConn.onclose = null; try{ wsConn.close(); }catch(e){} wsConn = null; }
+    if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
+    playQueue = []; playing = false; pausedForInterrupt = false;
+    if(recorder && recorder.state === "recording"){ try{ recorder.stop(); }catch(e){} }
+    recorder = null;
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
+    if(orbAnimHandle){ cancelAnimationFrame(orbAnimHandle); orbAnimHandle = null; }
+    orbCanvasCtx = null; analyser = null; analyserSource = null;
+    if(pcmWorkletNode){ try{ pcmWorkletNode.disconnect(); }catch(e){} pcmWorkletNode = null; }
+    if(audioCtx){ try{ audioCtx.close(); }catch(e){} audioCtx = null; }
+    if(echoLoopbackAudioEl){ try{ echoLoopbackAudioEl.pause(); }catch(e){} echoLoopbackAudioEl = null; }
+    if(echoLoopbackPc1){ try{ echoLoopbackPc1.close(); }catch(e){} echoLoopbackPc1 = null; }
+    if(echoLoopbackPc2){ try{ echoLoopbackPc2.close(); }catch(e){} echoLoopbackPc2 = null; }
+    echoLoopbackDest = null; echoLoopbackReady = false; echoLoopbackSetupStarted = false;
+    handsFreeActive = false; micMuted = false; wsState = "idle";
+    busy = false; talkBtn.disabled = false; talkBtn.classList.remove("recording");
+    stopBtn.hidden = true;
+    handsFreeUi.hidden = true;
+    startHandsFreeBtn.hidden = false; startHandsFreeBtn.disabled = false;
+    startHandsFreeBtn.querySelector(".btntext").textContent = "开始语音对话";
+    tasksDrawer.classList.remove("open");
+    setStatus("空闲");
+  }
+
+  window.openCallView = function(){
+    closeSidebar();
+    $("#chatMain").hidden = true;
+    $("#callView").hidden = false;
+    initOnce();
+  };
+  window.closeCallView = function(){
+    if($("#callView").hidden) return;  // 没在通话视图里,啥也不用做(openConv 收口时无条件调用)
+    $("#callView").hidden = true;
+    $("#chatMain").hidden = false;
+    teardownCallResources();
+  };
+})();
 
 // ── 主题(深/浅/跟随系统)───────────────────────────────────────────────
 // curThemeMode(): 返回存储的偏好 "auto"|"light"|"dark"
@@ -1380,15 +2154,18 @@ function renderVoiceTaskGroup(box){
   const h=el("div","projgrp");
   const nm=el("span","pgname"); nm.textContent="语音任务"; h.append(nm);
   box.append(h);
-  const mainRow=el("div","conv ingroup"+(vs.main.conv===S.conv?" active":""));
+  // 通话视图开着时不看 S.conv(那还停在离开前的聊天会话上没变)——直接看
+  // #callView 是否显示,让"语音对话"这一行高亮成"你现在就在这儿"。
+  const inCall = !$("#callView").hidden;
+  const mainRow=el("div","conv ingroup"+(inCall?" active":""));
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");
   const mainCt=el("div","ct"); mainCt.textContent=vs.main.title||"语音对话"; mainBody.append(mainCt);
   mainRow.append(mainBody);
-  mainRow.onclick=()=>{ location.href="/voice"; };
+  mainRow.onclick=()=>{ openCallView(); };
   box.append(mainRow);
   for(const t of vs.tasks){
-    const row=el("div","conv ingroup"+(t.conv===S.conv?" active":""));
+    const row=el("div","conv ingroup"+(!inCall && t.conv===S.conv?" active":""));
     const body=el("div","cvbody");
     const dot=el("span","vtaskdot "+(t.task_status||"")); dot.title=TASK_STATUS_WORD[t.task_status]||"";
     body.append(dot);
@@ -1403,6 +2180,7 @@ function renderVoiceTaskGroup(box){
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
   renderVoiceTaskGroup(box);
+  const inCall = !$("#callView").hidden;  // 通话中:普通会话行都不高亮,高亮权让给上面的"语音对话"行
   const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
   for(const g of groups){
     const convs=convsInGroup(g.hash);
@@ -1424,7 +2202,7 @@ function renderConvs(){
     if(!open) continue;
     for(const c of convs){
       if(!c.pinned){const arch=!!c.archived;if(S.convFilter==="archived"&&!arch)continue;if(S.convFilter==="active"&&arch)continue;}
-      const e=el("div","conv ingroup"+(c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
+      const e=el("div","conv ingroup"+(!inCall && c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
       const body=el("div","cvbody");
       if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }   // 该会话正在流式 → 闪烁圆点
       const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
@@ -2136,6 +2914,7 @@ function renderEventsFlow(events){
   return flow;
 }
 async function openConv(conv){
+  closeCallView();  // 切到别的会话就等于离开通话;没在通话视图里时这行是空操作
   closeCmdMenu();
   S.conv=conv; S.stream=null;
   S.project=convProject(conv); S.expanded.add(grpKey(S.project)); saveExpanded();  // 活跃项目随打开的会话联动,并确保其分组展开

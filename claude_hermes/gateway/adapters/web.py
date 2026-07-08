@@ -1213,13 +1213,6 @@ class WebAdapter:
             f"{name}.png", "image/png", {"Cache-Control": "no-cache, no-store, must-revalidate"}
         )
 
-    async def _handle_shared_css(self, request: web.Request) -> web.Response:
-        # index.html 的 CSS 变量 + 消息气泡样式抽出来的公共样式表,voice.html 也引它,
-        # 免得语音页面重新发明一套视觉语言(见 03-phase2-实现记录.md)。
-        return self._static_file(
-            "shared.css", "text/css", {"Cache-Control": "public, max-age=3600"}
-        )
-
     async def _handle_push_config(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
@@ -1293,7 +1286,6 @@ class WebAdapter:
                 web.get("/favicon.ico", self._handle_favicon),
                 web.get("/wazir-mark.svg", self._handle_mark),
                 web.get("/wazir-logos", self._handle_logos),
-                web.get("/shared.css", self._handle_shared_css),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.get("/push/config", self._handle_push_config),
                 web.post("/push/subscribe", self._handle_push_subscribe),

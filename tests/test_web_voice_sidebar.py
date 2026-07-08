@@ -1,6 +1,5 @@
 """侧边栏"语音任务"分组数据接口 /voice/sidebar 的测试(见 03-phase2-实现记录.md
-存储统一改动一节)。只测这一个新接口 + /shared.css 静态路由,不重复测已有的
-/conversations(那是抄它的模板)。
+存储统一改动一节)。只测这一个新接口,不重复测已有的 /conversations(那是抄它的模板)。
 """
 from __future__ import annotations
 
@@ -28,7 +27,6 @@ def web_app(isolated, monkeypatch):
     app.add_routes(
         [
             web.get("/voice/sidebar", adapter._handle_voice_sidebar),
-            web.get("/shared.css", adapter._handle_shared_css),
         ]
     )
     return app
@@ -68,13 +66,3 @@ async def test_voice_sidebar_task_row_survives_missing_task_row(web_app):
     assert len(data["tasks"]) == 1
     assert data["tasks"][0]["conv"] == "voice-task:ghost123"
     assert "task_status" not in data["tasks"][0]
-
-
-@pytest.mark.anyio
-async def test_shared_css_served_with_content(web_app):
-    async with TestClient(TestServer(web_app)) as client:
-        resp = await client.get("/shared.css")
-        assert resp.status == 200
-        text = await resp.text()
-        assert "--accent" in text
-        assert ".bubble" in text
