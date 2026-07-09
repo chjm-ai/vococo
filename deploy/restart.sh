@@ -8,6 +8,9 @@
 # 打断、历史留空、用户毫无提示(2026-07-06 踩过连坐事故)。故杀之前先查
 # data/active_sessions.json(gateway/clarify.py 维护的"在跑会话"登记表),
 # 非空则提示确认;--force 跳过此提示(用于自动化场景)。
+# --self=<session_key>:排除发起重启的会话自己(它必然在跑,不算"连坐"——
+# 它自己重启完会靠 restart_self 的"遗书"机制自动还魂续聊,merge-main.sh --restart
+# 会自动算出并传入)。排除后若已无其他人在跑,直接重启,不再询问。
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -17,16 +20,22 @@ if [ -f data/.stop ]; then
 fi
 
 FORCE=0
+SELF_KEY=""
 for arg in "$@"; do
-  [ "$arg" = "--force" ] && FORCE=1
+  case "$arg" in
+    --force) FORCE=1 ;;
+    --self=*) SELF_KEY="${arg#--self=}" ;;
+  esac
 done
 
 ACTIVE_FILE="data/active_sessions.json"
 if [ -f "$ACTIVE_FILE" ]; then
-  active=$(python3 -c "
-import json
+  active=$(SELF_KEY="$SELF_KEY" python3 -c "
+import json, os
 try:
     xs = json.load(open('$ACTIVE_FILE'))
+    self_key = os.environ.get('SELF_KEY', '')
+    xs = [x for x in xs if x != self_key]
     print('\n'.join(xs))
 except Exception:
     pass

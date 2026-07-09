@@ -1192,6 +1192,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let pcmWorkletNode=null;
   let lastFullyPlayedSeq=-1, pausedForInterrupt=false;
   let currentTurnAiEl=null, currentTurnFull="";
+  let playbackStallTicks=0, lastPlayQueueLen=-1, playbackWatchdog=null;
 
   // ── 播放:Web Audio API,不用 <audio> 标签 ──────────────────────────────
   let audioCtx=null, currentSource=null;
@@ -1596,6 +1597,28 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }
   }
 
+  // 播放看门狗:pausedForInterrupt/playing 卡死的成因不止一种(重连时序、
+  // audioCtx 被系统挂起后 resume() 迟迟不 resolve 等),与其一个个堵漏洞,
+  // 不如照抄服务端 _capturing_stall_guard 的思路——播放队列有内容但连续几轮
+  // 都没有缩短,直接强制复位重放,兜底所有未知成因(2026-07-09)。
+  function playbackStallCheck(){
+    if(!handsFreeActive){ playbackStallTicks = 0; lastPlayQueueLen = -1; return; }
+    if(playQueue.length > 0 && playQueue.length === lastPlayQueueLen){
+      playbackStallTicks++;
+      if(playbackStallTicks >= 3){  // 约 6s 无进展
+        console.warn("[voice] 播放卡死,强制复位重放", {playQueue: playQueue.length, playing, pausedForInterrupt});
+        pausedForInterrupt = false;
+        playing = false;
+        if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
+        playbackStallTicks = 0;
+        pumpPlayback();
+      }
+    } else {
+      playbackStallTicks = 0;
+    }
+    lastPlayQueueLen = playQueue.length;
+  }
+
   async function startHandsFree(){
     startHandsFreeBtn.disabled = true;
     startHandsFreeBtn.querySelector(".btntext").textContent = "准备中…";
@@ -1613,10 +1636,14 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     orb.className = "idle";
     clearHint();
     setStatus("免提聆听中…", "listening");
+    playbackStallTicks = 0; lastPlayQueueLen = -1;
+    if(playbackWatchdog) clearInterval(playbackWatchdog);
+    playbackWatchdog = setInterval(playbackStallCheck, 2000);
   }
 
   async function endHandsFree(){
     handsFreeActive = false;
+    if(playbackWatchdog){ clearInterval(playbackWatchdog); playbackWatchdog = null; }
     if(wsConn){ wsConn.onclose = null; try{ wsConn.close(); }catch(e){} wsConn = null; }
     if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
     playQueue = []; playing = false; pausedForInterrupt = false;
@@ -1762,6 +1789,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 导航卸载页面顺带回收这些资源,现在视图常驻 DOM 不会自动卸载,不手动收就是
   // 麦克风一直"热着"、WS 一直连着,电量和隐私都不划算。
   function teardownCallResources(){
+    if(playbackWatchdog){ clearInterval(playbackWatchdog); playbackWatchdog = null; }
     if(wsConn){ wsConn.onclose = null; try{ wsConn.close(); }catch(e){} wsConn = null; }
     if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
     playQueue = []; playing = false; pausedForInterrupt = false;

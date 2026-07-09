@@ -46,5 +46,21 @@ else
 fi
 
 if [ "${1:-}" = "--restart" ]; then
-  exec zsh "$MAIN/deploy/restart.sh"
+  # worktree 路径是 data/worktrees/<项目哈希>/<会话slug>,对应 web 会话键
+  # web:p<哈希>:<slug>(见 gateway/adapters/web.py:479)——推给 restart.sh 自我排除,
+  # 这样"我自己"不会被当成"别的在跑会话"拦下来,只有真有别的会话在跑才会提示确认。
+  WT="$(pwd)"
+  SELF_KEY=""
+  case "$WT" in
+    */data/worktrees/*/*)
+      SLUG="$(basename "$WT")"
+      HASH="$(basename "$(dirname "$WT")")"
+      SELF_KEY="web:p${HASH}:${SLUG}"
+      ;;
+  esac
+  if [ -n "$SELF_KEY" ]; then
+    exec zsh "$MAIN/deploy/restart.sh" "--self=$SELF_KEY"
+  else
+    exec zsh "$MAIN/deploy/restart.sh"
+  fi
 fi
