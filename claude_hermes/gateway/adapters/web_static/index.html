@@ -748,9 +748,10 @@
   #backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:25;backdrop-filter:blur(2px)}
 
   @media(max-width:760px){
-    #sidebar{position:fixed;inset:8px auto 8px 8px;margin:0;border-radius:26px;
+    #sidebar{position:fixed;inset:8px auto 8px 8px;margin:0;border-radius:32px;
       transform:translateX(calc(-100% - 16px))}
-    #sidebar.open{transform:translateX(0);box-shadow:0 4px 16px rgba(0,0,0,.22)}
+    /* 圆角变大后投影会跟着往里收,底部安全区夹角容易露出平背景;加深加大投影把这块阴影感补回来 */
+    #sidebar.open{transform:translateX(0);box-shadow:0 10px 32px rgba(0,0,0,.34)}
     #hamb{display:flex}
     #backdrop.show{display:block}
     /* 移动端左右留白收窄:桌面 32px 在窄屏太挤,回到 16px;上下不额外加(见 .combg 基础规则) */
