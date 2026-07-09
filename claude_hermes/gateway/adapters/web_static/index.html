@@ -1432,6 +1432,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   function noticeTtsFailure(){
     // audio_b64 为空 = 这句话确实要读但合成失败(见 voice/tts.py),不是"本来就没有音频"——
     // 静默跳过会让用户以为卡住了,提示一次让用户知道去看文字。
+    // 2026-07-09 补:免提通话时用户根本不看屏幕,光加文字提示等于没提示——
+    // 真实事故复盘过一次(intertrade-bot 任务派发确认那句被 TTS 429 限流吞掉,
+    // 用户体感像 AI 中途掉线),这里加一声可听见的提示音兜底。
+    playTtsFailTone();
     if(ttsFailureNoticedThisTurn) return;
     ttsFailureNoticedThisTurn = true;
     addMsg("ai", "⚠ 有一句没能读出来,内容已经显示在文字里了");
@@ -1644,6 +1648,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   function playCapturingTone(){ playTone(880, 80, "sine"); }
   function playSpeakingTone(){ playTone(660, 90, "sine"); }  // 单音节,原来的双音(660→990)高音太刺耳
   function playInterruptedTone(){ playTone(220, 50, "triangle"); }
+  function playTtsFailTone(){ playTone(300, 140, "square"); }  // 免提通话听不到文字提示,得有声音信号
 
   async function initHandsFree(){
     if(pcmWorkletNode) return true;

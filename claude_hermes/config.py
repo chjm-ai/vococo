@@ -207,6 +207,13 @@ VOICE_TTS_VOICE: str = (
 VOICE_TASK_MAX_CONCURRENCY: int = int(os.environ.get("VOICE_TASK_MAX_CONCURRENCY", "3"))
 VOICE_TASK_TIMEOUT_MIN: int = int(os.environ.get("VOICE_TASK_TIMEOUT_MIN", "30"))
 VOICE_ANNOUNCE: str = os.environ.get("VOICE_ANNOUNCE", "idle").strip().lower() or "idle"
+# 派活判断目前完全靠模型自己读【派活规则】临场判断,没有代码兜底——真机复盘过
+# 一次长任务(7步骤的复杂指令)险些没被当成后台任务处理(见 2026-07-09 事故复盘)。
+# 这里加一道低成本兜底:识别文本超过这个字数,就在 prompt 里额外加一句强提示,
+# 而不是代码直接绕过模型硬派——派活前还要判断方向是否需要先跟用户确认(见
+# prompts.py【派活规则】第1条),这一步不能被代码抢走。日常聊天/问答基本都在
+# 20字以内,超过这个阈值大概率是交代复杂事情,而不是随口一句话。
+VOICE_LONG_TASK_CHARS: int = int(os.environ.get("VOICE_LONG_TASK_CHARS", "50"))
 
 # P2 全双工:/voice/ws 免提连续对话开关(独立开关,方便单独回退到按住说话)。
 VOICE_WS_ENABLED: bool = _parse_bool(os.environ.get("VOICE_WS_ENABLED", ""), True)

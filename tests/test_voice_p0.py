@@ -124,6 +124,20 @@ def test_build_prompt_requires_confirming_self_designed_breakdown_before_dispatc
     assert "不是用户说的" in out
 
 
+def test_build_prompt_adds_hint_for_long_transcripts(monkeypatch):
+    """2026-07-09 事故复盘:派活规则第2条完全靠模型临场判断,没有代码兜底——一次
+    7步骤的复杂任务险些没被当成后台任务处理。加一道低成本信号:识别文本超过字数
+    阈值就多塞一句强提示,短句(日常聊天/问答)不受影响。"""
+    from claude_hermes import config
+
+    monkeypatch.setattr(config, "VOICE_LONG_TASK_CHARS", 10)
+    short = prompts.build_prompt("今天天气怎么样")
+    long = prompts.build_prompt("帮我查一下这个项目的代码然后总结一下最近的开发进度")
+    assert "【输入较长提示】" not in short
+    assert "【输入较长提示】" in long
+    assert "voice_dispatch_task 就不要因为想" in long
+
+
 # ── 存储迁移:主语音会话落进共享 session_store,不再有独立 voice.db ────────────
 def test_voice_session_key_is_shared_store_prefix():
     assert session.SESSION_KEY == "voice-chat:main"
