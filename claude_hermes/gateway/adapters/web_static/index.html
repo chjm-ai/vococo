@@ -794,9 +794,6 @@
   #callHead #backLink{color:var(--dim);line-height:1;padding:4px;display:inline-flex}
   #callHead #backLink .ic{width:20px;height:20px}
   #callHead .title{font-weight:600;flex:1}
-  #status{font-size:13px;color:var(--dim);padding:4px 10px;border-radius:20px;background:var(--panel)}
-  #status.listening{color:var(--err)}
-  #status.thinking,#status.playing{color:var(--accent)}
   #callBody{flex:1;overflow-y:auto;padding:16px}
   #transcript{display:flex;flex-direction:column;gap:12px;max-width:680px;margin:0 auto}
   .msgicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
@@ -827,8 +824,8 @@
   .task .stop{border:1px solid var(--err);color:var(--err);background:none;border-radius:14px;
     padding:2px 10px;font-size:12px}
   .task-empty{color:var(--dim2);text-align:center;padding:20px}
-  #callFoot{padding:20px 16px calc(20px + env(safe-area-inset-bottom));display:flex;
-    flex-direction:column;align-items:center;gap:14px}
+  #callFoot{padding:28px 16px calc(28px + env(safe-area-inset-bottom));display:flex;
+    flex-direction:column;align-items:center;gap:16px}
   .btnicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
   .btnicon .ic{width:16px;height:16px}
   #stopBtn{border:1px solid var(--err);color:var(--err);background:none;border-radius:20px;
@@ -841,35 +838,55 @@
   #talkBtn:disabled{opacity:.5}
   #talkBtn[hidden],#stopBtn[hidden]{display:none}
 
-  /* P2 全双工:免提模式的入口按钮 + 状态指示球(替代"按住说话"这套只适合
-     半双工的交互——免提场景没有"按下/松开"这个动作,只有"开始/结束") */
-  #startHandsFreeBtn{display:flex;align-items:center;gap:8px;padding:14px 28px;
-    border-radius:28px;background:var(--accent);color:#fff;border:none;
-    font-size:15px;font-weight:600;box-shadow:0 8px 24px rgba(217,119,87,.35)}
-  #startHandsFreeBtn .btnicon{margin-right:0}
-  #startHandsFreeBtn:disabled{opacity:.5}
-  /* #id 选择器的 display:flex 比浏览器默认的 [hidden]{display:none} 优先级高,
-     不加这条 hidden 会被直接盖掉——加 hidden 属性也压不住,界面上就是"明明设了
-     hidden 却还是显示"。 */
-  #startHandsFreeBtn[hidden]{display:none}
-  #handsFreeUi{display:flex;flex-direction:column;align-items:center;gap:18px}
+  /* P2 全双工:进call view即自动开始,不再需要"开始语音对话"这次二次点击——
+     唯一的常驻视觉就是声纹球,状态文字贴在球正下方,挂断是球下方一个小图标按钮。 */
+  #handsFreeUi{display:flex;flex-direction:column;align-items:center;gap:14px}
   #handsFreeUi[hidden]{display:none}
-  #orbWrap{position:relative;width:120px;height:120px}
-  #orb{width:120px;height:120px;border-radius:50%;background:var(--panel);
-    border:2px solid var(--line);transition:background .3s ease,box-shadow .3s ease}
-  #orb.capturing{background:var(--err);box-shadow:0 0 32px rgba(209,103,74,.55)}
-  #orb.transcribing,#orb.thinking{background:var(--accent);box-shadow:0 0 24px rgba(217,119,87,.45);
-    animation:orb-breathe 1.4s ease-in-out infinite}
-  #orb.speaking{background:var(--accent2);box-shadow:0 0 32px rgba(200,97,63,.55);
-    animation:orb-pulse .9s ease-in-out infinite}
-  #orbCanvas{position:absolute;inset:0;width:120px;height:120px;pointer-events:none}
-  @keyframes orb-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
-  @keyframes orb-breathe{0%,100%{opacity:.7}50%{opacity:1}}
-  .hf-row{display:flex;gap:12px}
-  .hf-row button{border:1px solid var(--line);color:var(--dim);background:var(--panel);
-    border-radius:20px;padding:8px 18px;font-size:14px;display:inline-flex;align-items:center}
-  .hf-row button.muted{color:var(--err);border-color:var(--err)}
-  #endHandsFreeBtn{color:var(--err);border-color:var(--err)}
+  #orbWrap{position:relative;width:160px;height:160px;display:flex;align-items:center;justify-content:center}
+  #orbGlow{position:absolute;inset:0;border-radius:50%;pointer-events:none;
+    background:radial-gradient(circle, rgba(150,150,150,.28), rgba(150,150,150,0) 70%);
+    filter:blur(10px);animation:orb-glow-idle 4s ease-in-out infinite}
+  #orb{position:relative;z-index:1;width:108px;height:108px;border-radius:50%;cursor:pointer;
+    background:radial-gradient(circle at 33% 26%, rgba(255,255,255,.4), rgba(255,255,255,0) 45%),
+      radial-gradient(circle, var(--panel), var(--panel));
+    border:1px solid var(--line);
+    box-shadow:inset 0 2px 14px rgba(0,0,0,.18), 0 6px 22px rgba(0,0,0,.1);
+    transition:background .6s ease, box-shadow .6s ease}
+  #orbCanvas{position:absolute;inset:0;width:160px;height:160px;pointer-events:none;z-index:2}
+
+  #orbWrap.capturing #orbGlow{background:radial-gradient(circle, rgba(209,103,74,.42), rgba(209,103,74,0) 70%);
+    opacity:.8;animation:orb-glow-active 1.6s ease-in-out infinite}
+  #orbWrap.capturing #orb{background:radial-gradient(circle at 33% 26%, rgba(255,255,255,.45), rgba(255,255,255,0) 45%),
+      radial-gradient(circle, var(--err), #a8442d);
+    box-shadow:inset 0 2px 14px rgba(0,0,0,.22), 0 0 36px rgba(209,103,74,.5)}
+
+  #orbWrap.thinking #orbGlow{background:radial-gradient(circle, rgba(217,119,87,.4), rgba(217,119,87,0) 70%);
+    opacity:.75;animation:orb-glow-active 2.2s ease-in-out infinite}
+  #orbWrap.thinking #orb{background:radial-gradient(circle at 33% 26%, rgba(255,255,255,.4), rgba(255,255,255,0) 45%),
+      radial-gradient(circle, var(--accent), #a8532e);
+    box-shadow:inset 0 2px 14px rgba(0,0,0,.2), 0 0 30px rgba(217,119,87,.4);
+    animation:orb-breathe 2s ease-in-out infinite}
+
+  #orbWrap.speaking #orbGlow{background:radial-gradient(circle, rgba(200,97,63,.46), rgba(200,97,63,0) 70%);
+    opacity:.85;animation:orb-glow-active 1s ease-in-out infinite}
+  #orbWrap.speaking #orb{background:radial-gradient(circle at 33% 26%, rgba(255,255,255,.45), rgba(255,255,255,0) 45%),
+      radial-gradient(circle, var(--accent2), #8f3f22);
+    box-shadow:inset 0 2px 14px rgba(0,0,0,.22), 0 0 40px rgba(200,97,63,.5)}
+
+  @keyframes orb-glow-idle{0%,100%{transform:scale(1);opacity:.35}50%{transform:scale(1.08);opacity:.55}}
+  @keyframes orb-glow-active{0%,100%{transform:scale(1)}50%{transform:scale(1.14)}}
+  @keyframes orb-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.035)}}
+
+  #status{font-size:14px;color:var(--dim);text-align:center;min-height:20px;transition:color .3s ease}
+  #status.listening{color:var(--err)}
+  #status.thinking,#status.playing{color:var(--accent)}
+
+  #endHandsFreeBtn{width:38px;height:38px;border-radius:50%;border:1px solid var(--line);
+    background:var(--panel);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;
+    padding:0;transition:background .15s ease,color .15s ease,border-color .15s ease}
+  #endHandsFreeBtn .btnicon{margin-right:0}
+  #endHandsFreeBtn .ic{width:16px;height:16px}
+  #endHandsFreeBtn:hover,#endHandsFreeBtn:active{background:var(--err);border-color:var(--err);color:#fff}
 </style>
 </head>
 <body>
@@ -1056,30 +1073,25 @@ try{
     <header id="callHead">
       <button id="backLink" title="展开侧栏"></button>
       <span class="title">语音伴聊</span>
-      <span id="status">空闲</span>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
     <div id="callBody">
-      <div id="transcript">
-        <div class="hint">按住下面的圆钮说话,松手发送</div>
-      </div>
+      <div id="transcript"></div>
     </div>
     <footer id="callFoot">
       <button id="stopBtn" hidden><span class="btnicon" id="stopIcon"></span>停</button>
       <!-- 半双工兜底:只有免提初始化失败/浏览器不支持时才出现,见 initUiMode() -->
       <button id="talkBtn" hidden>按住说话</button>
-      <!-- 免提入口:支持免提的设备默认显示这个,不是"按住说话" -->
-      <button id="startHandsFreeBtn" hidden><span class="btnicon" id="startIcon"></span><span class="btntext">开始语音对话</span></button>
-      <!-- 免提激活后:按钮消失,换成状态球 + 静音/结束 -->
-      <div id="handsFreeUi" hidden>
-        <div id="orbWrap">
-          <div id="orb" class="idle" title="点一下可以打断 AI 说话"></div>
-          <canvas id="orbCanvas" width="120" height="120"></canvas>
+      <!-- 免提是唯一路径:进入通话视图就自动开始,不需要再点一次按钮——
+           声纹球常驻可见,状态文字紧贴在球下面,挂断只留一个小图标按钮。 -->
+      <div id="handsFreeUi">
+        <div id="orbWrap" class="idle">
+          <div id="orbGlow"></div>
+          <div id="orb" title="点一下可以打断 AI 说话"></div>
+          <canvas id="orbCanvas" width="160" height="160"></canvas>
         </div>
-        <div class="hf-row">
-          <button id="muteToggleBtn"><span class="btnicon" id="muteIcon"></span><span class="btntext">静音</span></button>
-          <button id="endHandsFreeBtn"><span class="btnicon" id="endIcon"></span><span class="btntext">结束</span></button>
-        </div>
+        <div id="status">连接中…</div>
+        <button id="endHandsFreeBtn" title="结束通话" aria-label="结束通话"><span class="btnicon" id="endIcon"></span></button>
       </div>
     </footer>
     <div id="tasksDrawer">
@@ -1176,16 +1188,14 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   const transcriptEl=$("#transcript"), statusEl=$("#status"), talkBtn=$("#talkBtn"),
     stopBtn=$("#stopBtn"), tasksBtn=$("#tasksBtn"), tasksBadge=$("#tasksBadge"),
     tasksDrawer=$("#tasksDrawer"), tasksList=$("#tasksList"),
-    startHandsFreeBtn=$("#startHandsFreeBtn"), handsFreeUi=$("#handsFreeUi"),
-    orb=$("#orb"), muteToggleBtn=$("#muteToggleBtn"), endHandsFreeBtn=$("#endHandsFreeBtn"),
+    handsFreeUi=$("#handsFreeUi"), orbWrap=$("#orbWrap"),
+    orb=$("#orb"), endHandsFreeBtn=$("#endHandsFreeBtn"),
     backLink=$("#callHead #backLink");
 
   setIcon(backLink, "panel");
   setIcon($("#tasksIcon"), "tasks");
   setIcon($("#stopIcon"), "stop");
-  setIcon($("#startIcon"), "mic");
   setIcon($("#endIcon"), "close");
-  setIcon($("#muteIcon"), "mute");
   // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
   // 收起侧栏后还在原来的通话画面。真正挂断走下面的"结束"/"停"按钮;
   // 侧栏里切到别的会话才会触发 closeCallView()(见 openConv 收口处)。
@@ -1197,7 +1207,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let pendingAnnouncements=[];  // task_done 到达时用户正忙(说话/播放/录音)→ 先攒着,空闲了再播
 
   // ── P2 全双工:免提连续对话(见下方 initHandsFree 一段)──────────────────
-  let handsFreeActive=false, micMuted=false;
+  let handsFreeActive=false;
   let wsConn=null, wsState="idle";
   let pcmWorkletNode=null;
   let lastFullyPlayedSeq=-1, pausedForInterrupt=false;
@@ -1456,6 +1466,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         const source = audioCtx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(echoLoopbackReady ? echoLoopbackDest : audioCtx.destination);
+        if(outputAnalyser) source.connect(outputAnalyser);
         currentSource = source;
         source.onended = ()=>{ markPlayed(item.seq); resolve(); };
         try{ source.start(0); }catch(e){ reject(e); }
@@ -1535,7 +1546,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     return typeof AudioWorkletNode !== "undefined";
   }
 
-  let analyser=null, analyserSource=null, orbCanvasCtx=null, orbAnimHandle=null;
+  let analyser=null, analyserSource=null, outputAnalyser=null, orbCanvasCtx=null, orbAnimHandle=null;
+  let orbLevels=null;  // 各柱子的平滑幅度,跨帧保留做指数平滑,消除原始频谱数据的跳变感
 
   function ensureAnalyser(){
     if(analyser || !audioCtx || !stream) return;
@@ -1545,6 +1557,17 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     analyserSource.connect(analyser);
   }
 
+  // 输出侧(TTS 播放)也接一个 analyser,这样"speaking"状态的声纹是真实跟着
+  // AI 语音波动的,不是瞎动的假动画——不需要再往下连到 destination,
+  // AnalyserNode 只要接了输入就会处理,这点跟上面 ensureAnalyser() 的麦克风分支一致。
+  function ensureOutputAnalyser(){
+    if(outputAnalyser || !audioCtx) return;
+    outputAnalyser = audioCtx.createAnalyser();
+    outputAnalyser.fftSize = 64;
+  }
+
+  const ORB_BARS = 32, ORB_BASE_R = 55;  // 贴着 108px 直径的球面(半径54)往外长,别探进画布(160/2=80)外边
+
   function drawOrbWaveform(){
     orbAnimHandle = requestAnimationFrame(drawOrbWaveform);
     const canvas = $("#orbCanvas");
@@ -1552,19 +1575,36 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     const ctx = orbCanvasCtx;
     const w = canvas.width, h = canvas.height, cx = w/2, cy = h/2;
     ctx.clearRect(0, 0, w, h);
-    if(wsState !== "capturing" || !analyser){ return; }
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteFrequencyData(data);
-    const bars = 24, baseR = 44;
-    ctx.strokeStyle = "rgba(255,255,255,.85)";
-    ctx.lineWidth = 2.5;
+    if(!orbLevels) orbLevels = new Float32Array(ORB_BARS);
+
+    let src = null;
+    if(wsState === "capturing") src = analyser;
+    else if(wsState === "speaking") src = outputAnalyser;
+    let data = null;
+    if(src){ data = new Uint8Array(src.frequencyBinCount); src.getByteFrequencyData(data); }
+
+    const t = performance.now() / 1000;
+    const grad = ctx.createLinearGradient(0, 0, w, h);
+    grad.addColorStop(0, "rgba(255,255,255,.95)");
+    grad.addColorStop(1, "rgba(255,255,255,.5)");
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 3;
     ctx.lineCap = "round";
-    for(let i=0;i<bars;i++){
-      const v = data[i % data.length] / 255;
-      const len = 4 + v * 14;
-      const angle = (i / bars) * Math.PI * 2;
-      const x1 = cx + Math.cos(angle) * baseR, y1 = cy + Math.sin(angle) * baseR;
-      const x2 = cx + Math.cos(angle) * (baseR + len), y2 = cy + Math.sin(angle) * (baseR + len);
+    for(let i=0;i<ORB_BARS;i++){
+      let target;
+      if(data){
+        target = data[Math.floor(i / ORB_BARS * data.length)] / 255;
+      } else if(wsState === "thinking"){
+        // 没有真实音频数据时(思考中),给一道柔和的正弦波浪代替死板的呼吸块
+        target = 0.28 + 0.22 * Math.sin(t * 2.3 + i * 0.5);
+      } else {
+        target = 0.1 + 0.05 * Math.sin(t * 1.1 + i * 0.35);  // idle 时的微呼吸,别让球看起来是死的
+      }
+      orbLevels[i] += (target - orbLevels[i]) * 0.25;  // 指数平滑,吃掉原始数据的跳变
+      const len = 3 + orbLevels[i] * 22;
+      const angle = (i / ORB_BARS) * Math.PI * 2 - Math.PI / 2;
+      const x1 = cx + Math.cos(angle) * ORB_BASE_R, y1 = cy + Math.sin(angle) * ORB_BASE_R;
+      const x2 = cx + Math.cos(angle) * (ORB_BASE_R + len), y2 = cy + Math.sin(angle) * (ORB_BASE_R + len);
       ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
     }
   }
@@ -1595,12 +1635,13 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       unlockAudio();
       await ensureMicStream();
       ensureAnalyser();
+      ensureOutputAnalyser();
       if(!orbAnimHandle) drawOrbWaveform();
       await audioCtx.audioWorklet.addModule("/voice/static/pcm-forwarder-worklet.js");
       const source = audioCtx.createMediaStreamSource(stream);
       pcmWorkletNode = new AudioWorkletNode(audioCtx, "pcm-forwarder");
       pcmWorkletNode.port.onmessage = e=>{
-        if(handsFreeActive && !micMuted && wsConn && wsConn.readyState === WebSocket.OPEN){
+        if(handsFreeActive && wsConn && wsConn.readyState === WebSocket.OPEN){
           wsConn.send(e.data.pcm.buffer);
         }
       };
@@ -1639,38 +1680,22 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   }
 
   async function startHandsFree(){
-    startHandsFreeBtn.disabled = true;
-    startHandsFreeBtn.querySelector(".btntext").textContent = "准备中…";
+    setStatus("连接中…", "");
     const ok = await initHandsFree();
     if(!ok){
-      startHandsFreeBtn.hidden = true;
+      handsFreeUi.hidden = true;
       talkBtn.hidden = false;
       addMsg("ai error", "免提模式没能启动,已切换到按住说话模式");
       return;
     }
     connectHandsFreeWs();
     handsFreeActive = true;
-    startHandsFreeBtn.hidden = true;
-    handsFreeUi.hidden = false;
-    orb.className = "idle";
+    orbWrap.className = "idle";
     clearHint();
-    setStatus("免提聆听中…", "listening");
+    setStatus("聆听中…", "listening");
     playbackStallTicks = 0; lastPlayQueueLen = -1;
     if(playbackWatchdog) clearInterval(playbackWatchdog);
     playbackWatchdog = setInterval(playbackStallCheck, 2000);
-  }
-
-  async function endHandsFree(){
-    handsFreeActive = false;
-    if(playbackWatchdog){ clearInterval(playbackWatchdog); playbackWatchdog = null; }
-    if(wsConn){ wsConn.onclose = null; try{ wsConn.close(); }catch(e){} wsConn = null; }
-    if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
-    playQueue = []; playing = false; pausedForInterrupt = false;
-    handsFreeUi.hidden = true;
-    startHandsFreeBtn.hidden = false;
-    startHandsFreeBtn.disabled = false;
-    startHandsFreeBtn.querySelector(".btntext").textContent = "开始语音对话";
-    setStatus("空闲");
   }
 
   function manualInterrupt(){
@@ -1712,7 +1737,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       if(msg.state === "speaking" && prevState !== "speaking") playSpeakingTone();
       if(msg.state === "thinking"){ lastFullyPlayedSeq = -1; ttsFailureNoticedThisTurn = false; }
       setStatus(STATE_WORD[msg.state] || msg.state, STATE_CLASS[msg.state]);
-      if(handsFreeActive) orb.className = msg.state;
+      if(handsFreeActive) orbWrap.className = msg.state;
     } else if(msg.type === "transcript"){
       addMsg("me", msg.text || "");
     } else if(msg.type === "filler"){
@@ -1768,26 +1793,20 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }catch(e){ /* 历史加载失败不阻塞进入通话,当作空历史处理 */ }
   }
 
-  startHandsFreeBtn.addEventListener("click", startHandsFree);
-  endHandsFreeBtn.addEventListener("click", endHandsFree);
-  muteToggleBtn.addEventListener("click", ()=>{
-    micMuted = !micMuted;
-    if(stream) stream.getAudioTracks().forEach(t=>{ t.enabled = !micMuted; });
-    setIcon(muteToggleBtn.querySelector(".btnicon"), micMuted ? "mic" : "mute");
-    muteToggleBtn.querySelector(".btntext").textContent = micMuted ? "取消静音" : "静音";
-    muteToggleBtn.classList.toggle("muted", micMuted);
-  });
+  // 挂断=直接退出通话视图,回到聊天界面(电话挂断的直觉),不是留在这里等重新开始
+  endHandsFreeBtn.addEventListener("click", ()=>{ window.closeCallView(); });
   orb.addEventListener("click", ()=>{
     if(wsState === "thinking" || wsState === "speaking") manualInterrupt();
   });
 
   function initUiMode(){
-    const hint = transcriptEl.querySelector(".hint");
-    if(vadCapable()){
-      startHandsFreeBtn.hidden = false;
-      if(hint) hint.textContent = "点击下面的按钮开始语音对话,之后直接说话就行,AI 说话时开口就能打断";
-    } else {
+    if(!vadCapable()){
+      handsFreeUi.hidden = true;
       talkBtn.hidden = false;
+      const hint = document.createElement("div");
+      hint.className = "hint";
+      hint.textContent = "按住下面的圆钮说话,松手发送";
+      transcriptEl.appendChild(hint);
     }
   }
 
@@ -1816,19 +1835,17 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     recorder = null;
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
     if(orbAnimHandle){ cancelAnimationFrame(orbAnimHandle); orbAnimHandle = null; }
-    orbCanvasCtx = null; analyser = null; analyserSource = null;
+    orbCanvasCtx = null; analyser = null; analyserSource = null; outputAnalyser = null; orbLevels = null;
     if(pcmWorkletNode){ try{ pcmWorkletNode.disconnect(); }catch(e){} pcmWorkletNode = null; }
     if(audioCtx){ try{ audioCtx.close(); }catch(e){} audioCtx = null; }
     if(echoLoopbackAudioEl){ try{ echoLoopbackAudioEl.pause(); }catch(e){} echoLoopbackAudioEl = null; }
     if(echoLoopbackPc1){ try{ echoLoopbackPc1.close(); }catch(e){} echoLoopbackPc1 = null; }
     if(echoLoopbackPc2){ try{ echoLoopbackPc2.close(); }catch(e){} echoLoopbackPc2 = null; }
     echoLoopbackDest = null; echoLoopbackReady = false; echoLoopbackSetupStarted = false;
-    handsFreeActive = false; micMuted = false; wsState = "idle";
+    handsFreeActive = false; wsState = "idle";
     busy = false; talkBtn.disabled = false; talkBtn.classList.remove("recording");
     stopBtn.hidden = true;
-    handsFreeUi.hidden = true;
-    startHandsFreeBtn.hidden = false; startHandsFreeBtn.disabled = false;
-    startHandsFreeBtn.querySelector(".btntext").textContent = "开始语音对话";
+    orbWrap.className = "idle";
     tasksDrawer.classList.remove("open");
     setStatus("空闲");
   }
@@ -1838,6 +1855,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     $("#chatMain").hidden = true;
     $("#callView").hidden = false;
     initOnce();
+    // 免提是唯一路径:一进通话视图就自动开始,不用户再点一次"开始"——
+    // vadCapable() 为 false 时 initUiMode() 已经把 handsFreeUi 换成 talkBtn 兜底,这里跳过。
+    if(vadCapable() && !handsFreeActive) startHandsFree();
   };
   window.closeCallView = function(){
     if($("#callView").hidden) return;  // 没在通话视图里,啥也不用做(openConv 收口时无条件调用)
