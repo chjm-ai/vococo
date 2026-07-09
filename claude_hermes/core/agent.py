@@ -72,6 +72,25 @@ def context_window(model: str) -> int:
     return 200_000
 
 
+def _compact_threshold(
+    ctx_window_val: int,
+    fallback_ratio: float,
+    official_threshold: int,
+    cli_window_stale: bool,
+) -> int:
+    """算这轮安全网该在多少 token 触发压缩。
+
+    official_threshold 和 cli_window_stale 同源,都是按 CLI 自己认的窗口算出来的——
+    CLI 注册表没跟上大窗口模型(如 sonnet-5 的 1M 仍按旧 200k 认)时,官方阈值也会
+    跟着按小窗口给,不能再当"更保守的备份"用,否则大窗口模型真实窗口两成不到就被砍。
+    此时只信我们按权威表算出的 ctx_window_val * fallback_ratio。
+    """
+    candidates = [int(ctx_window_val * fallback_ratio)]
+    if official_threshold and not cli_window_stale:
+        candidates.append(official_threshold)
+    return min(candidates)
+
+
 def _usage_tokens(u) -> int:
     """从一条 model_usage 明细里取总吞吐(dict 或对象都兼容),用来比大小。"""
     get = u.get if isinstance(u, dict) else (lambda k, d=0: getattr(u, k, d))
@@ -664,6 +683,7 @@ async def stream_turn(
             # (等价 CLI /context)。失败(旧 CLI 不支持等)则静默保留上面的兜底值。
             cu: dict | None = None
             total = 0
+            cli_window_stale = False  # CLI 自己认的窗口是否明显小于我们权威表(见下)
             try:
                 cu = await client.get_context_usage()
                 total = int(cu.get("totalTokens", 0) or 0)
@@ -675,6 +695,7 @@ async def stream_turn(
                 # 是按官方文档手动维护的,不能被 CLI 的旧认知往下砍 —— 取两者较大值。
                 known_window = context_window(used_model)
                 ctx_window_val = max(raw_max, known_window) if raw_max else known_window
+                cli_window_stale = bool(raw_max) and raw_max < known_window
             except Exception:
                 ctx_window_val = context_window(used_model)  # 兜底:按模型名估窗口
 
@@ -695,11 +716,10 @@ async def stream_turn(
             ):
                 mcp_tool_calls = sum(1 for n in tool_calls if n.startswith("mcp__"))
                 fallback_ratio = 0.65 if mcp_tool_calls else 0.83
-                candidates = [int(ctx_window_val * fallback_ratio)]
                 official_threshold = int(cu.get("autoCompactThreshold") or 0)
-                if official_threshold:
-                    candidates.append(official_threshold)
-                threshold = min(candidates)  # 两个来源取更紧的那个,MCP 场景下不轻信官方阈值
+                threshold = _compact_threshold(
+                    ctx_window_val, fallback_ratio, official_threshold, cli_window_stale
+                )
                 if total and threshold and total >= threshold:
                     try:
                         await client.query("/compact")
