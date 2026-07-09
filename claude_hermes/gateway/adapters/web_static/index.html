@@ -155,13 +155,9 @@
   #collapseBtn:hover{background:var(--panel2);color:var(--text)}
   #collapseBtn:active{transform:scale(.9)}
   #collapseBtn .ic{width:16px;height:16px}
-  /* 清理上下文:菜单顶部常驻小图标,清空当前会话上下文(等同 /clear,历史保留) */
-  #clearCtxBtn{display:flex;width:26px;height:26px;border-radius:7px;flex-shrink:0;
-    align-items:center;justify-content:center;color:var(--dim);
-    transition:background .16s,color .16s,transform .12s}
-  #clearCtxBtn:hover{background:var(--panel2);color:var(--text)}
-  #clearCtxBtn:active{transform:scale(.9)}
-  #clearCtxBtn .ic{width:16px;height:16px}
+  /* 清理上下文:顶栏「上下文占用%」环左边的常驻图标,点一下清空当前会话上下文
+     (等同 /clear,历史保留);放这里跟 ctx 语义相邻,比塞侧栏角落好找 */
+  #clearCtxBtn .ic{width:19px;height:19px}
   /* touch-action:pan-y——纵向滚动交给浏览器原生处理,横向不让浏览器插手,
      全交给 bindSwipe() 的 JS 手势;否则原生纵向抖动会触发 #convList 的 scroll
      监听把刚滑出来的菜单强制收起(表现为"菜单停不住、点不到按钮") */
@@ -871,12 +867,12 @@
   #status.listening{color:var(--err)}
   #status.thinking,#status.playing{color:var(--accent)}
 
-  /* 挂断=深灰圆角方块,方块本身就是"停止"的通用符号,不再放图标文字 */
-  #endHandsFreeBtn{width:44px;height:44px;border-radius:13px;border:none;
-    background:var(--panel2);color:transparent;display:inline-flex;align-items:center;justify-content:center;
-    padding:0;transition:background .15s ease,transform .12s ease}
-  #endHandsFreeBtn .btnicon{display:none}
-  #endHandsFreeBtn:hover{background:var(--line2)}
+  /* 挂断=一个叉(×),圆形浅底衬托,hover 变红强调"结束" */
+  #endHandsFreeBtn{width:46px;height:46px;border-radius:50%;border:none;
+    background:var(--panel2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;
+    padding:0;transition:background .15s ease,color .15s ease,transform .12s ease}
+  #endHandsFreeBtn .ic{width:22px;height:22px}
+  #endHandsFreeBtn:hover{background:var(--err);color:#fff}
   #endHandsFreeBtn:active{transform:scale(.92)}
 </style>
 </head>
@@ -957,7 +953,6 @@ try{
   <aside id="sidebar">
     <div class="shead">
       <div class="brand">Wazir</div>
-      <button id="clearCtxBtn" title="清理上下文(清空当前会话上下文,历史保留)"></button>
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
@@ -984,6 +979,7 @@ try{
             </span>
           </span>
         </div>
+        <button class="icon" id="clearCtxBtn" title="清理上下文(清空当前会话上下文,历史保留)"></button>
         <div id="ctxBox">
           <button id="barMeta" type="button" title="上下文占用 · 点击看明细" hidden>
             <svg class="ctxring" viewBox="0 0 20 20"><circle class="track" cx="10" cy="10" r="8"/><circle class="fill" id="ctxRing" cx="10" cy="10" r="8"/></svg>
@@ -1186,6 +1182,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   setIcon(backLink, "panel");
   setIcon($("#tasksIcon"), "tasks");
   setIcon($("#stopIcon"), "stop");
+  setIcon(endHandsFreeBtn, "close");  // 挂断按钮里放一个叉(×)
   // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
   // 收起侧栏后还在原来的通话画面。真正挂断走下面的"结束"/"停"按钮;
   // 侧栏里切到别的会话才会触发 closeCallView()(见 openConv 收口处)。
