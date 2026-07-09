@@ -629,12 +629,16 @@
      不用模糊),让滚上来的消息不是硬切进纯色背景,而是柔和淡出。 */
   #composer{position:absolute;bottom:0;left:0;right:0;z-index:10;
     transition:transform .35s cubic-bezier(.4,0,.2,1)}
-  #composer::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:20px;
-    background:linear-gradient(to top, var(--bg2), color-mix(in srgb, var(--bg2) 0%, transparent));
+  #composer::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:24px;
+    background:linear-gradient(to top, color-mix(in srgb, var(--bg2) 88%, transparent) 30%, transparent);
     pointer-events:none}
-  /* .combg 宽度撑满整行,填充和页面一致的不透明背景色,盖住 #messages 滚动上来的文字。
-     padding 只留左右和下(贴近底部安全区的一侧),上=0(贴 #messages 那一侧不留缝)。 */
-  #composer .combg{width:100%;background:var(--bg2);padding:0 32px}
+  /* .combg 宽度撑满整行。半透明毛玻璃渐变背景盖住 #messages 滚动上来的文字,
+     同时透出底层壁纸感;padding 只留左右和下(贴近底部安全区的一侧),上=0。 */
+  #composer .combg{width:100%;
+    background:linear-gradient(155deg, color-mix(in srgb, var(--bg2) 94%, transparent) 0%,
+      color-mix(in srgb, var(--bg2) 72%, transparent) 100%);
+    backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+    padding:0 32px}
   @media(min-width:641px){
     #composer .combg{padding-bottom:12px}
   }
