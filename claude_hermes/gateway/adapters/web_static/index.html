@@ -133,16 +133,6 @@
   #newBtn .np{font-size:14px;line-height:1}
   #newBtn:hover{background:var(--card)}
   #newBtn:active{transform:scale(.98)}
-  /* 语音通话入口:悬浮在聊天输入框右上方的圆形按钮。composer 是 absolute 贴底,
-     故按钮用 bottom:100% 浮在输入框正上方,不随输入框高度变化而错位。 */
-  #voiceChatBtn{position:absolute;bottom:100%;right:18px;margin-bottom:14px;z-index:11;
-    width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-    background:var(--accent);color:#fff;border:none;box-shadow:0 4px 16px rgba(0,0,0,.28);
-    cursor:pointer;transition:transform .12s,box-shadow .16s}
-  #voiceChatBtn .ic{width:21px;height:21px}
-  #voiceChatBtn:hover{transform:scale(1.06);box-shadow:0 6px 20px rgba(0,0,0,.34)}
-  #voiceChatBtn:active{transform:scale(.95)}
-  #voiceChatBtn[hidden]{display:none}
   /* 语音任务:固定分组,行样式复用 .conv/.cvbody,状态点颜色跟任务状态走 */
   .vtaskdot{flex-shrink:0;width:7px;height:7px;border-radius:50%}
   .vtaskdot.queued,.vtaskdot.running{background:var(--accent)}
@@ -1021,7 +1011,6 @@ try{
     </div>
     <button id="scrollDownBtn" aria-label="滚到底部" title="滚到底部" onclick="scrollDownSmooth()">↓</button>
     <form id="composer" autocomplete="off">
-      <button type="button" id="voiceChatBtn" hidden onclick="openCallView()" title="语音通话"></button>
       <div class="combg">
         <div class="cwrap">
           <div id="pending"></div>
@@ -1937,12 +1926,8 @@ async function api(path, opts={}){
   if(r.status===401){ showLogin(); throw new Error("401"); }
   return r;
 }
-// 语音通话悬浮入口(聊天输入框右上方):VOICE_ENABLED=0 时后端不注册 /voice/config,
-// 探测失败就保持隐藏,避免没配语音时露一个死按钮。
-$("#voiceChatBtn").innerHTML = ic("mic");
-fetch("/voice/config").then(r=>r.json()).then(d=>{
-  if(d && d.enabled) $("#voiceChatBtn").hidden = false;
-}).catch(()=>{});
+// 语音通话入口只保留侧边栏「默认项目」里的「语音对话」行(见 renderVoiceRows),
+// 不再在聊天输入框上方浮一个圆球——那个入口跟侧栏那行重复,已按用户要求去掉。
 
 // ── 登录 ────────────────────────────────────────────────────────────────
 function showLogin(){
