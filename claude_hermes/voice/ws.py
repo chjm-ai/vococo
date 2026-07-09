@@ -35,6 +35,11 @@ qwen3-asr-flash-realtime 实时语音 WS(见 _connect_upstream)——真机实�
 ——异步、不卡对话速度(方案 B):转写完立刻正常起一轮回复,声纹比对
 (`_voiceprint_gate`)在后台并行跑,判定"不像是本人"就把这一轮撤回。第一次
 用没有声纹参照,前几句只建立参照不拦截;参照跨会话持久化,不用每次重新学。
+
+2026-07-09 thinking/speaking 兜底看门狗:capturing 状态一直有 30 秒兜底
+(_capturing_stall_guard),但 thinking/speaking 完全没有——真机复现过一次
+session.run_turn() 卡住不吐事件,界面永远停在"思考中"转圈,没有报错也不会
+自己恢复。现在对称地加了 _turn_stall_guard,原理见 _TURN_STALL_MS 的注释。
 """
 from __future__ import annotations
 
@@ -63,6 +68,14 @@ _DASHSCOPE_REALTIME_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
 # speech_started,万一它自己卡住/连接异常导致什么事件都不来,不能让界面
 # 永远停在"聆听中"——这是当初客户端 VAD 不可靠踩过的坑,现在挪到服务端也要防一次。
 _CAPTURING_STALL_MS = 30_000
+
+# thinking/speaking 状态的兜底超时(对称于上面 capturing 那个):session.run_turn()
+# 的 async for 一旦卡住不吐任何事件(模型调用挂住/工具调用卡死/未知异常被吞掉
+# 却没抛出),之前完全没有保护,界面会永远停在"思考中"转圈,谁也叫不醒——2026-07-09
+# 语音伴聊真机复现过一次。用"距离上一次收到任何事件已经过了多久"判断,而不是
+# 给整轮对话设硬上限,因为工具调用(读代码/搜索)本身可能要花点时间,只要还在
+# 吐事件就不算卡死。
+_TURN_STALL_MS = 45_000
 
 # 同一时刻只服务一个 WS 连接(单用户场景),新连接顶替旧的。
 _active_ws: web.WebSocketResponse | None = None
@@ -211,6 +224,10 @@ class VoiceWsSession:
         self._speaking_announced = False
         self._last_played_progress = 0
         self._capturing_watchdog: "asyncio.Task | None" = None
+        # thinking/speaking 兜底看门狗(见 _TURN_STALL_MS 的注释)+ 最近一次
+        # 收到上游事件的时刻,_turn_stall_guard 用它判断"是不是真卡住了"。
+        self._turn_watchdog: "asyncio.Task | None" = None
+        self._turn_progress_at = 0.0
         # 回声兜底本来只在"正在打断一个还没说完的回答"(self._pending 非空)
         # 时生效——但 AI 说完最后一句、服务端状态已经翻回 idle 之后,客户端
         # 音箱可能还在播放最后一两句的尾音,这段声音漏回麦克风时 self._pending
@@ -268,6 +285,35 @@ class VoiceWsSession:
             await self._resolve_pending(commit=False)
             await self._set_state(_STATE_IDLE)
             await self._send("error", message="识别一直没有响应,已重置")
+
+    def _arm_turn_watchdog(self) -> None:
+        self._clear_turn_watchdog()
+        self._turn_progress_at = time.monotonic()
+        self._turn_watchdog = asyncio.ensure_future(self._turn_stall_guard())
+
+    def _clear_turn_watchdog(self) -> None:
+        if self._turn_watchdog is not None:
+            self._turn_watchdog.cancel()
+            self._turn_watchdog = None
+
+    def _kick_turn_watchdog(self) -> None:
+        """收到上游任意事件就算"还活着",见 _TURN_STALL_MS 的注释。"""
+        self._turn_progress_at = time.monotonic()
+
+    async def _turn_stall_guard(self) -> None:
+        while True:
+            remaining = _TURN_STALL_MS / 1000 - (time.monotonic() - self._turn_progress_at)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+                continue
+            break
+        turn = self._current_turn
+        self._current_turn = None
+        if turn is not None:
+            turn.task.cancel()
+            asyncio.ensure_future(_swallow_cancelled(turn.task))
+        await self._set_state(_STATE_IDLE)
+        await self._send("error", message="思考/回复一直没有进展,已重置")
 
     # ── 客户端→服务端事件入口 ─────────────────────────────────────────
     async def on_hello(self, sample_rate: int | None) -> None:
@@ -420,6 +466,7 @@ class VoiceWsSession:
         if turn is None:
             return
         self._current_turn = None
+        self._clear_turn_watchdog()  # 真人开口打断,不算"卡死",别让看门狗跟着凑热闹
         # 只发起取消、不在这里 await 它收尾——core/agent.py 的取消链路里
         # client.interrupt() 最多兜底等 5 秒,真 await 会把 WS 主收环卡住那么久,
         # 打断到静音的体验就废了。收尾丢给后台任务,不阻塞后续消息处理。
@@ -505,6 +552,7 @@ class VoiceWsSession:
         await self._set_state(_STATE_THINKING)
         turn = TurnContext(task=asyncio.ensure_future(self._run_turn(user_text)))
         self._current_turn = turn
+        self._arm_turn_watchdog()
 
     async def _run_turn(self, user_text: str) -> None:
         # 延迟 import:routes.py 顶层已经 import 了本模块(挂路由用),这里反向
@@ -523,6 +571,7 @@ class VoiceWsSession:
                 async for ev in session.run_turn(
                     prompt_text, extra_mcp_servers=task_tools.build_server()
                 ):
+                    self._kick_turn_watchdog()  # 只要还在吐事件就不算卡死,见 _TURN_STALL_MS
                     if isinstance(ev, ToolStarted):
                         if not filler_sent and ev.parent_id is None:
                             filler_sent = True
@@ -548,6 +597,7 @@ class VoiceWsSession:
                         if reply.sdk_session_id:
                             session.set_resume(reply.sdk_session_id)
                         self._current_turn = None
+                        self._clear_turn_watchdog()
                         # 供"尾音回声"兜底用(见 __init__ 里 _recent_emitted_sentences
                         # 的注释):这一轮刚说完的话记下来,配合时间窗让 idle 之后
                         # 短时间内的回声也能被拦下来。
@@ -561,6 +611,7 @@ class VoiceWsSession:
             raise
         except Exception as exc:  # noqa: BLE001 —— 兜底:出错也要给前端一个 done
             self._current_turn = None
+            self._clear_turn_watchdog()
             await self._set_state(_STATE_IDLE)
             await self._send("error", message=str(exc))
 
@@ -572,6 +623,7 @@ class VoiceWsSession:
     async def close(self) -> None:
         """WS 连接收尾:关掉上游、取消看门狗,不留后台任务。"""
         self._clear_capturing_watchdog()
+        self._clear_turn_watchdog()
         if self._upstream_consumer is not None:
             self._upstream_consumer.cancel()
         await self._close_upstream()

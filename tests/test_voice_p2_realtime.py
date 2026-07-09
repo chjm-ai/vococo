@@ -921,6 +921,41 @@ async def test_capturing_stall_watchdog_resets_to_idle(voice_db, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_turn_stall_watchdog_resets_to_idle(voice_db, monkeypatch):
+    """thinking 状态下 session.run_turn() 卡住不吐任何事件(真机复现过一次):
+    对称于 capturing 看门狗,thinking/speaking 也要有兜底,不能永远停在"思考中"。
+    """
+    monkeypatch.setattr(ws, "_TURN_STALL_MS", 50)
+    fake_ws = FakeUpstreamWs()
+    connected = asyncio.Event()
+    _patch_upstream(monkeypatch, fake_ws, connected)
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        await asyncio.Event().wait()  # 永远不会被 set,模拟卡死、什么事件都不吐
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+
+    async with TestClient(TestServer(_app())) as client:
+        async with client.ws_connect("/voice/ws") as wsc:
+            await _hello_and_wait_connected(wsc, connected)
+
+            fake_ws.push_event("input_audio_buffer.speech_started")
+            await wsc.receive_json()  # state: capturing
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed",
+                transcript="帮我看看这段代码",
+            )
+            assert (await wsc.receive_json())["type"] == "transcript"
+            assert (await wsc.receive_json()) == {"type": "state", "state": "thinking"}
+
+            msg = await wsc.receive_json()  # 看门狗超时后应主动复位
+            assert msg == {"type": "state", "state": "idle"}
+            msg = await wsc.receive_json()
+            assert msg["type"] == "error"
+
+
+@pytest.mark.anyio
 async def test_upstream_connect_failure_reports_error(voice_db, monkeypatch):
     async def fake_connect_upstream(sample_rate):
         raise RuntimeError("boom")
