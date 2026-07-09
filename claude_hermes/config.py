@@ -253,6 +253,11 @@ VOICE_OMNI_REALTIME_MODEL: str = (
     os.environ.get("VOICE_OMNI_REALTIME_MODEL", "qwen3.5-omni-flash-realtime").strip()
     or "qwen3.5-omni-flash-realtime"
 )
+# 阶段二(前端 WebRTC)专用:WebRTC 的 SDP 信令交换端点跟上面 WS 用的全局域名不是
+# 一回事,必须是"{WorkspaceId}.cn-beijing.maas.aliyuncs.com"这种工作区专属域名
+# (2026-07-10 真机连线验证过,全局域名对这个路径直接 404)。去百炼控制台右上角
+# 用户图标弹窗里复制"业务空间ID"填这里,不是什么敏感凭证但仍按环境变量走,别写死。
+VOICE_OMNI_WORKSPACE_ID: str = os.environ.get("VOICE_OMNI_WORKSPACE_ID", "").strip()
 VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
 VOICE_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_VAD_SILENCE_MS", "1500"))
 # 回声兜底:AI 自己的声音从手机扬声器漏回麦克风,DashScope 会把它当成真实

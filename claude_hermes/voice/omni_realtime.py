@@ -32,6 +32,10 @@ from .. import config
 from . import prompts, task_tools
 
 _DASHSCOPE_REALTIME_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+# WebRTC 的 SDP 信令交换端点(阶段二用)——注意这不是上面那个全局域名,必须是
+# "{WorkspaceId}.cn-beijing.maas.aliyuncs.com"这种工作区专属域名,2026-07-10
+# 真机连线验证过全局域名对这个路径直接 404。
+_WEBRTC_URL_TMPL = "https://{workspace}.cn-beijing.maas.aliyuncs.com/api/v1/webrtc/realtime"
 
 # 复用 task_tools.py 里已经在真机反复调过、行为稳定的三个工具——claude_agent_sdk
 # 的 @tool 装饰器把 name/description/input_schema/handler 都挂在函数对象上,这里
@@ -193,6 +197,41 @@ class OmniRealtimeSession:
                 yield OmniTurnDone()
             elif t == "error":
                 yield OmniError((data.get("error") or {}).get("message", "未知错误"))
+
+
+async def exchange_webrtc_sdp(offer_sdp: str) -> str:
+    """把浏览器生成的 SDP offer 转发给 Qwen-Omni-Realtime,换回 SDP answer。
+
+    必须由后端代理这一步,浏览器自己发不了:一是跨域限制(阿里云文档原话是
+    "浏览器无法直接向服务端发起建立连接的请求"),二是这一步要带真实
+    DASHSCOPE_API_KEY,不能下发到前端。信令换完之后,实际的音频/DataChannel
+    流量是浏览器跟阿里云服务器直连(WebRTC 走 P2P/UDP),不再经过我们的服务器。
+
+    2026-07-10 用 aiortc 模拟浏览器连线验证过:ICE/DTLS 能完整握手到
+    connected,服务端会推一个 label="txt" 的 DataChannel 并主动发
+    session.created,音频 m-line 也正确协商——这一步(信令代理本身)是可靠的。
+    真实浏览器的 WebRTC/SCTP 实现比 aiortc 成熟,真机测的重点是"数据通道
+    收发事件+音频轨道播放"这一层,不是这个代理。
+    """
+    if not config.VOICE_OMNI_WORKSPACE_ID:
+        raise RuntimeError("未配置 VOICE_OMNI_WORKSPACE_ID(去百炼控制台复制业务空间ID)")
+    url = (
+        _WEBRTC_URL_TMPL.format(workspace=config.VOICE_OMNI_WORKSPACE_ID)
+        + f"?model={config.VOICE_OMNI_REALTIME_MODEL}"
+    )
+    async with aiohttp.ClientSession() as sess:
+        async with sess.post(
+            url, data=offer_sdp,
+            headers={
+                "Authorization": f"Bearer {config.DASHSCOPE_API_KEY}",
+                "Content-Type": "application/sdp",
+            },
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            body = await resp.text()
+            if resp.status != 200:
+                raise RuntimeError(f"WebRTC 信令交换失败 status={resp.status} body={body[:300]!r}")
+            return body
 
 
 async def handle_function_call(call: OmniFunctionCall) -> str:
