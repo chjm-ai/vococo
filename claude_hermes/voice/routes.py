@@ -17,7 +17,7 @@ from aiohttp import web
 
 from .. import config
 from ..core.agent import Done, TextDelta, ToolStarted
-from . import executor, notify, prompts, session, stt, task_tools, tasks, tts, ws
+from . import executor, notify, omni_realtime, prompts, session, stt, task_tools, tasks, tts, ws
 
 _STATIC = Path(__file__).resolve().parent / "static"
 
@@ -197,6 +197,22 @@ async def _handle_clear(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+# ── P3 阶段二:Qwen-Omni-Realtime 的 WebRTC 信令代理 ──────────────────────────
+async def _handle_omni_webrtc(request: web.Request) -> web.Response:
+    """代理浏览器的 SDP offer 换 answer(见 omni_realtime.exchange_webrtc_sdp
+    顶部注释——浏览器自己既过不了跨域,也不能拿到真实 API key,必须后端代理)。"""
+    if (g := _guard(request)) is not None:
+        return g
+    offer_sdp = await request.text()
+    if not offer_sdp.strip():
+        return web.json_response({"error": "缺少 SDP offer"}, status=400)
+    try:
+        answer_sdp = await omni_realtime.exchange_webrtc_sdp(offer_sdp)
+    except RuntimeError as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+    return web.Response(text=answer_sdp, content_type="application/sdp")
+
+
 # ── P1 任务板:列表/详情/停止/在线播报的常驻 SSE(F8/F10) ─────────────────────
 async def _handle_tasks_list(request: web.Request) -> web.Response:
     if (g := _guard(request)) is not None:
@@ -263,6 +279,7 @@ def register_routes(app: web.Application) -> None:
             web.get("/voice/tasks/stream", _handle_tasks_stream),
             web.get("/voice/tasks/{task_id}", _handle_task_detail),
             web.post("/voice/tasks/{task_id}/stop", _handle_task_stop),
+            web.post("/voice/omni/webrtc", _handle_omni_webrtc),
         ]
     )
     if config.VOICE_WS_ENABLED:

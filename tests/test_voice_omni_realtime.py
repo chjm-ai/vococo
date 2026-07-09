@@ -10,13 +10,22 @@ from types import SimpleNamespace
 
 import aiohttp
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
-from claude_hermes.voice import executor, notify, omni_realtime as om, task_tools, tasks
+from claude_hermes import config
+from claude_hermes.voice import executor, notify, omni_realtime as om, routes, task_tools, tasks
 
 
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+def _app() -> web.Application:
+    app = web.Application()
+    routes.register_routes(app)
+    return app
 
 
 @pytest.fixture
@@ -124,3 +133,65 @@ async def test_handle_function_call_unknown_tool_returns_error_text_not_exceptio
 
 async def _noop():
     return None
+
+
+@pytest.mark.anyio
+async def test_exchange_webrtc_sdp_requires_workspace_id(monkeypatch):
+    monkeypatch.setattr(config, "VOICE_OMNI_WORKSPACE_ID", "")
+    with pytest.raises(RuntimeError, match="VOICE_OMNI_WORKSPACE_ID"):
+        await om.exchange_webrtc_sdp("v=0\r\n...")
+
+
+@pytest.mark.anyio
+async def test_webrtc_route_proxies_offer_and_returns_sdp_answer(monkeypatch):
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+    seen_offers = []
+
+    async def fake_exchange(offer_sdp):
+        seen_offers.append(offer_sdp)
+        return "v=0\r\ns=-\r\n...answer..."
+
+    monkeypatch.setattr(routes.omni_realtime, "exchange_webrtc_sdp", fake_exchange)
+
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post(
+            "/voice/omni/webrtc", data="v=0\r\ns=-\r\n...offer...",
+            headers={"Content-Type": "application/sdp"},
+        )
+        assert resp.status == 200
+        assert resp.content_type == "application/sdp"
+        body = await resp.text()
+        assert body == "v=0\r\ns=-\r\n...answer..."
+    assert seen_offers == ["v=0\r\ns=-\r\n...offer..."]
+
+
+@pytest.mark.anyio
+async def test_webrtc_route_rejects_empty_body(monkeypatch):
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post("/voice/omni/webrtc", data="")
+        assert resp.status == 400
+
+
+@pytest.mark.anyio
+async def test_webrtc_route_surfaces_upstream_error_as_502(monkeypatch):
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+
+    async def fake_exchange(offer_sdp):
+        raise RuntimeError("WebRTC 信令交换失败 status=404")
+
+    monkeypatch.setattr(routes.omni_realtime, "exchange_webrtc_sdp", fake_exchange)
+
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post("/voice/omni/webrtc", data="v=0\r\n...")
+        assert resp.status == 502
+        body = await resp.json()
+        assert "404" in body["error"]
+
+
+@pytest.mark.anyio
+async def test_webrtc_route_requires_auth_token(monkeypatch):
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "secret-token")
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post("/voice/omni/webrtc", data="v=0\r\n...")
+        assert resp.status == 401
