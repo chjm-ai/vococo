@@ -1201,6 +1201,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let wsConn=null, wsState="idle";
   let pcmWorkletNode=null;
   let lastFullyPlayedSeq=-1, pausedForInterrupt=false;
+  let ttsFailureNoticedThisTurn=false;  // 每轮最多提示一次,避免连续几句都合成失败时刷屏
   let currentTurnAiEl=null, currentTurnFull="";
   let playbackStallTicks=0, lastPlayQueueLen=-1, playbackWatchdog=null;
 
@@ -1345,6 +1346,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   async function sendTurn(body){
     busy = true; talkBtn.disabled = true; stopBtn.hidden = false;
+    ttsFailureNoticedThisTurn = false;
     setStatus("识别中…", "thinking");
     const headers = {"X-Auth-Token": S.token};
     const init = {method: "POST", headers};
@@ -1433,10 +1435,18 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }
   }
 
+  function noticeTtsFailure(){
+    // audio_b64 为空 = 这句话确实要读但合成失败(见 voice/tts.py),不是"本来就没有音频"——
+    // 静默跳过会让用户以为卡住了,提示一次让用户知道去看文字。
+    if(ttsFailureNoticedThisTurn) return;
+    ttsFailureNoticedThisTurn = true;
+    addMsg("ai", "⚠ 有一句没能读出来,内容已经显示在文字里了");
+  }
+
   async function pumpPlayback(){
     if(playing || playQueue.length === 0 || pausedForInterrupt) return;
     const item = playQueue.shift();
-    if(!item.audio_b64){ markPlayed(item.seq); pumpPlayback(); return; }
+    if(!item.audio_b64){ noticeTtsFailure(); markPlayed(item.seq); pumpPlayback(); return; }
     playing = true;
     setStatus("播放中…", "playing");
     try{
@@ -1700,7 +1710,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       }
       if(msg.state === "capturing" && prevState !== "capturing") playCapturingTone();
       if(msg.state === "speaking" && prevState !== "speaking") playSpeakingTone();
-      if(msg.state === "thinking") lastFullyPlayedSeq = -1;
+      if(msg.state === "thinking"){ lastFullyPlayedSeq = -1; ttsFailureNoticedThisTurn = false; }
       setStatus(STATE_WORD[msg.state] || msg.state, STATE_CLASS[msg.state]);
       if(handsFreeActive) orb.className = msg.state;
     } else if(msg.type === "transcript"){

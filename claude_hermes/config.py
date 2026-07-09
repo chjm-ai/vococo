@@ -169,6 +169,13 @@ DASHSCOPE_API_KEY: str = os.environ.get("DASHSCOPE_API_KEY", "").strip()
 DASHSCOPE_STT_MODEL: str = (
     os.environ.get("DASHSCOPE_STT_MODEL", "qwen3-asr-flash").strip() or "qwen3-asr-flash"
 )
+# 语音合成(TTS)本体:同样是阿里 DashScope,复用同一个 DASHSCOPE_API_KEY(2026-07-09
+# 从 edge-tts 切过来——那是扒微软 Edge 浏览器内部接口的非官方库,没有 SLA,合成失败
+# /超时正是"语音伴聊没声音"投诉的主因;qwen3-tts-flash 走跟 STT 完全一样的
+# multimodal-generation/generation 端点和鉴权,官方产品线,稳定性有保障)。
+DASHSCOPE_TTS_MODEL: str = (
+    os.environ.get("DASHSCOPE_TTS_MODEL", "qwen3-tts-flash").strip() or "qwen3-tts-flash"
+)
 
 # 清洗步骤仍走 SiliconFlow(跟识别本体是两个不同服务商,互不影响)。
 # 去 siliconflow.cn 注册拿免费 key,填到 .env 的 SILICONFLOW_API_KEY。
@@ -191,9 +198,10 @@ STT_CLEANUP_MODEL: str = (
 # === 语音伴聊模式(实验性,见 docs/design/voice-companion/)===
 # 手机上像打电话一样跟 AI 说话。默认开;体验不好会整体移除,故独立成 VOICE_ 前缀。
 VOICE_ENABLED: bool = _parse_bool(os.environ.get("VOICE_ENABLED", ""), True)
+# 音色:qwen3-tts-flash 的音色名(如 Cherry/Ethan/Serena),不是 edge-tts 的
+# "zh-CN-XiaoxiaoNeural" 这种命名法,见 https://help.aliyun.com/zh/model-studio/qwen-tts-voice-list
 VOICE_TTS_VOICE: str = (
-    os.environ.get("VOICE_TTS_VOICE", "zh-CN-XiaoxiaoNeural").strip()
-    or "zh-CN-XiaoxiaoNeural"
+    os.environ.get("VOICE_TTS_VOICE", "Cherry").strip() or "Cherry"
 )
 # P1 任务板:后台任务并发上限 / 单任务超时(分钟)/ 完成播报档位(idle=等空闲插播,silent=只更新卡片)
 VOICE_TASK_MAX_CONCURRENCY: int = int(os.environ.get("VOICE_TASK_MAX_CONCURRENCY", "3"))
