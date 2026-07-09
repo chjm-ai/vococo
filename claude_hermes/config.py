@@ -245,6 +245,14 @@ DASHSCOPE_REALTIME_MODEL: str = (
     os.environ.get("DASHSCOPE_REALTIME_MODEL", "qwen3-asr-flash-realtime").strip()
     or "qwen3-asr-flash-realtime"
 )
+# 2026-07-10 P3 阶段一:端到端语音进语音出模型(用来替换"自己识别+自己合成+自己
+# 拼播放队列"这条今天连炸三次故障的自建链路,见 voice/omni_realtime.py),跟上面
+# DASHSCOPE_REALTIME_MODEL(纯识别,ws.py 在用)是两个不同用途的模型,不要混用。
+# 已用真实账号连线验证过 session.update/function calling 全流程可用。
+VOICE_OMNI_REALTIME_MODEL: str = (
+    os.environ.get("VOICE_OMNI_REALTIME_MODEL", "qwen3.5-omni-flash-realtime").strip()
+    or "qwen3.5-omni-flash-realtime"
+)
 VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
 VOICE_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_VAD_SILENCE_MS", "1500"))
 # 回声兜底:AI 自己的声音从手机扬声器漏回麦克风,DashScope 会把它当成真实
