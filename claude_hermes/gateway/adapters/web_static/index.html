@@ -1465,7 +1465,13 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       await new Promise((resolve, reject)=>{
         const source = audioCtx.createBufferSource();
         source.buffer = audioBuffer;
-        source.connect(echoLoopbackReady ? echoLoopbackDest : audioCtx.destination);
+        // 2026-07-09:曾经"only echoLoopbackDest"——loopback 那条 WebRTC 链路
+        // 一旦在某些设备上播不出声(比如 <audio>.play() 判定成功但实际没输出),
+        // AI 说话就会整个哑掉,而本地 oscillator 音效因为直连 destination 完全不受影响,
+        // 正是用户反馈的"音效正常、AI 不读文字"。改成始终接真实输出保底,
+        // ready 时再【多接一路】到 loopback 供 AEC 参考,两条互不排斥。
+        source.connect(audioCtx.destination);
+        if(echoLoopbackReady) source.connect(echoLoopbackDest);
         if(outputAnalyser) source.connect(outputAnalyser);
         currentSource = source;
         source.onended = ()=>{ markPlayed(item.seq); resolve(); };

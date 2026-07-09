@@ -198,14 +198,19 @@ def test_looks_like_filler_only_false_for_real_content(transcript):
 
 
 # ── estimate_speech_too_short:纯函数,时长兜底(不看文字看物理时长) ───────────
+# 2026-07-09 真机复现修正:原先假设 raw_span 里一定含有完整的 silence_ms 静音尾巴、
+# 减掉才是真实说话时长——但真机实测 raw_span 经常比配置的 silence_ms 还短
+# (DashScope 实际判"说完了"用的时长跟配置对不上),减法算出负数会把"你好呀"
+# "什么？"这类正常短句全部误杀。已改成直接用 raw_span 判断,不再做减法,
+# silence_ms 形参保留(签名不变)但不参与计算,下面用例同步更新。
 def test_estimate_speech_too_short_true_for_brief_burst():
-    # 50ms 就结束,远不足以解释"1500ms 静音尾巴"之外还有一个字的说话时长。
+    # 50ms 就结束,典型的瞬时噪声(呼吸声/麦克风杂音)。
     assert ws.estimate_speech_too_short(0.0, 0.05, silence_ms=1500, min_speech_ms=250) is True
 
 
 def test_estimate_speech_too_short_false_for_normal_speech():
-    # 1500ms 静音尾巴 + 400ms 真实说话时长,减掉尾巴后够长,不该被当噪声丢掉。
-    assert ws.estimate_speech_too_short(0.0, 1.9, silence_ms=1500, min_speech_ms=250) is False
+    # 985ms 的原始跨度(真机实测过的真实短句"什么？"),不该被当噪声丢掉。
+    assert ws.estimate_speech_too_short(0.0, 0.985, silence_ms=1500, min_speech_ms=250) is False
 
 
 def test_estimate_speech_too_short_false_when_speech_stopped_never_arrived():
@@ -214,9 +219,9 @@ def test_estimate_speech_too_short_false_when_speech_stopped_never_arrived():
 
 
 def test_estimate_speech_too_short_respects_min_speech_ms():
-    # 估算说话时长正好 200ms,验证真的在用 min_speech_ms 而不是写死的常量。
-    assert ws.estimate_speech_too_short(0.0, 1.7, silence_ms=1500, min_speech_ms=150) is False
-    assert ws.estimate_speech_too_short(0.0, 1.7, silence_ms=1500, min_speech_ms=250) is True
+    # 200ms 的原始跨度,验证真的在用 min_speech_ms 而不是写死的常量。
+    assert ws.estimate_speech_too_short(0.0, 0.2, silence_ms=1500, min_speech_ms=150) is False
+    assert ws.estimate_speech_too_short(0.0, 0.2, silence_ms=1500, min_speech_ms=250) is True
 
 
 # ── WS 状态机:正常一轮 ───────────────────────────────────────────────────
@@ -412,10 +417,11 @@ async def test_empty_completed_transcript_resets_to_idle_without_starting_turn(
 async def test_idle_noise_burst_too_short_is_discarded_without_starting_turn(
     voice_db, monkeypatch
 ):
-    """真机反馈:呼吸声/环境杂音被识别模型硬编成语气词("哦"),以前这类词只在
-    "正在打断一个已经在跑的回答"这个场景被 is_filler 过滤——空闲状态下照样
-    当一句真话发给 Claude。这条时长兜底不看文字看物理时长,任何状态都生效,
-    见 config.VOICE_MIN_SPEECH_MS 的说明。
+    """真机反馈:呼吸声/环境杂音偶尔被识别模型硬编成一个说得过去的短语——
+    这条时长兜底不看文字看物理时长,任何状态都生效,见 config.VOICE_MIN_SPEECH_MS
+    的说明。用非语气词("什么")隔离出"纯时长太短"这一条路径,跟下面
+    test_idle_filler_word_normal_duration_is_discarded_silently(纯语气词、
+    时长正常)对照,两条兜底各管各的场景。
     """
     fake_ws = FakeUpstreamWs()
     connected = asyncio.Event()
@@ -444,12 +450,55 @@ async def test_idle_noise_burst_too_short_is_discarded_without_starting_turn(
             clock["t"] = 0.05  # 50ms 后就停了,远不足以解释"1500ms 静音尾巴"之外还说了话
             fake_ws.push_event("input_audio_buffer.speech_stopped")
             fake_ws.push_event(
-                "conversation.item.input_audio_transcription.completed", transcript="哦"
+                "conversation.item.input_audio_transcription.completed", transcript="什么"
             )
             # 2026-07-09:确实检测到一段声音但被时长兜底吃掉时,补一个提示——不然
             # 用户真开口了却毫无反应,体感上跟卡死一样(见 ws.py 对应改动的注释)。
             err_msg = await wsc.receive_json()
             assert err_msg == {"type": "error", "message": "没听清,请再说一次"}
+            msg = await wsc.receive_json()
+            assert msg == {"type": "state", "state": "idle"}
+
+    assert called["n"] == 0
+
+
+@pytest.mark.anyio
+async def test_idle_filler_word_normal_duration_is_discarded_silently(voice_db, monkeypatch):
+    """用户反馈:免提场景经常识别到语气词/无意义短语,被当一整轮真话发给
+    Claude。2026-07-09 起 is_filler 判定不再要求"正在打断一个回答"这个前提,
+    空闲状态下的纯语气词(即便说话时长正常、不触发时长兜底)也直接悄悄丢回
+    idle,不弹"没听清"提示(语气词不算"有意义的内容",催用户重说一遍语气词
+    没有意义)、更不能起一轮不该有的对话。
+    """
+    fake_ws = FakeUpstreamWs()
+    connected = asyncio.Event()
+    _patch_upstream(monkeypatch, fake_ws, connected)
+    monkeypatch.setattr(config, "VOICE_VAD_SILENCE_MS", 1500)
+    monkeypatch.setattr(config, "VOICE_MIN_SPEECH_MS", 250)
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(ws.time, "monotonic", lambda: clock["t"])
+
+    called = {"n": 0}
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        called["n"] += 1
+        yield Done(AgentReply(text="不该被调用", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+
+    async with TestClient(TestServer(_app())) as client:
+        async with client.ws_connect("/voice/ws") as wsc:
+            await _hello_and_wait_connected(wsc, connected)
+
+            fake_ws.push_event("input_audio_buffer.speech_started")
+            assert (await wsc.receive_json()) == {"type": "state", "state": "capturing"}
+
+            clock["t"] = 1.9  # 1900ms,远超 min_speech_ms,不该被时长兜底误伤
+            fake_ws.push_event("input_audio_buffer.speech_stopped")
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed", transcript="嗯"
+            )
             msg = await wsc.receive_json()
             assert msg == {"type": "state", "state": "idle"}
 
@@ -484,7 +533,7 @@ async def test_normal_duration_speech_with_stopped_event_still_starts_turn(
             fake_ws.push_event("input_audio_buffer.speech_started")
             assert (await wsc.receive_json()) == {"type": "state", "state": "capturing"}
 
-            clock["t"] = 1.9  # 1500ms 静音尾巴 + 400ms 真实说话时长
+            clock["t"] = 1.9  # 1900ms 原始跨度,远超 min_speech_ms(250ms),不该被误伤
             fake_ws.push_event("input_audio_buffer.speech_stopped")
             fake_ws.push_event(
                 "conversation.item.input_audio_transcription.completed",
@@ -732,6 +781,77 @@ async def test_false_positive_interrupt_rolls_back_without_appending(voice_db, m
     assert not any("被用户打断" in h.assistant for h in history)
 
     gate.set()
+
+
+@pytest.mark.anyio
+async def test_false_positive_interrupt_does_not_truncate_ongoing_answer(voice_db, monkeypatch):
+    """2026-07-09 核心修复:真机连续测试打断 4 次里有 2 次是背景噪音/回声触发
+    的假警报——旧设计 speech_started 立刻 cancel 掉正在跑的 turn,"回滚"只能
+    告诉客户端接着播缓存的部分,后半段答案永远要不回来了。现在改成先观察,
+    判定是假警报后 turn 应该完全不受影响、正常说完、完整落库。
+    """
+    fake_ws = FakeUpstreamWs()
+    connected = asyncio.Event()
+    _patch_upstream(monkeypatch, fake_ws, connected)
+
+    started = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        yield TextDelta("完整回答的第一句。")
+        started.set()
+        await gate.wait()  # 模拟"疑似打断"到"判定假警报"之间的这段等待时间
+        yield TextDelta("完整回答的第二句。")
+        yield Done(AgentReply(
+            text="完整回答的第一句。完整回答的第二句。",
+            tool_calls=[], cost_usd=None, is_error=False,
+        ))
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+    monkeypatch.setattr(tts, "synthesize", lambda text, voice: _none_coro())
+
+    async with TestClient(TestServer(_app())) as client:
+        async with client.ws_connect("/voice/ws") as wsc:
+            await _hello_and_wait_connected(wsc, connected)
+
+            fake_ws.push_event("input_audio_buffer.speech_started")
+            await wsc.receive_json()  # state: capturing
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed",
+                transcript="完整回答的第一句",
+            )
+            await _drain_until_sentence(wsc)
+            await started.wait()
+
+            fake_ws.push_event("input_audio_buffer.speech_started")  # 疑似打断(背景噪音)
+            msg = await wsc.receive_json()
+            assert msg == {"type": "state", "state": "capturing"}
+
+            # 转写为空 → 判定误触发,回滚
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed", transcript=""
+            )
+            resumed = await wsc.receive_json()
+            assert resumed == {"type": "resumed"}
+
+            # 放开被卡住的那句话——关键断言:turn 此刻应该还活着、能继续往下跑,
+            # 不该早在"疑似打断"那一刻就已经被 cancel 掉了。
+            gate.set()
+
+            events = []
+            done = None
+            while done is None:
+                msg = await wsc.receive_json()
+                events.append(msg)
+                if msg["type"] == "done":
+                    done = msg
+
+            assert done["full_text"] == "完整回答的第一句。完整回答的第二句。"
+
+    history = session.load_history()
+    turn = next(h for h in history if h.user == "完整回答的第一句")
+    # 完整答案正常落库,不是被腰斩的"...(此处被用户打断)"
+    assert turn.assistant == "完整回答的第一句。完整回答的第二句。"
 
 
 @pytest.mark.anyio

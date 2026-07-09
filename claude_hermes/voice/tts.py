@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import struct
 from pathlib import Path
 
 import aiohttp
@@ -73,6 +74,23 @@ def _split_complete(text: str) -> tuple[list[str], str]:
     return sentences, text[start:]
 
 
+def _fix_wav_header(data: bytes) -> bytes:
+    """DashScope 吐的 wav 头 RIFF/data 两个 size 字段是流式占位哑值(实测
+    ~0x7fffffbf,跟真实字节数对不上),真机验证发现 iOS Safari 的
+    decodeAudioData 会因此直接拒解——前端播放失败又是静默 catch,查起来
+    毫无线索("文字都对、音效正常,就是不出声")。这里按下载到的真实字节数
+    把两个 size 字段改写成真值,桌面 Chrome 本来就容忍所以不受影响。
+    """
+    if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return data
+    patched = bytearray(data)
+    patched[4:8] = struct.pack("<I", len(data) - 8)
+    data_idx = data.find(b"data", 12, 128)
+    if data_idx != -1:
+        patched[data_idx + 4:data_idx + 8] = struct.pack("<I", len(data) - (data_idx + 8))
+    return bytes(patched)
+
+
 def _extract_audio_url(data: dict) -> str | None:
     """DashScope 响应里挖音频 url;字段路径没有逐字对照过官方 schema,
     多试几个常见形状兜底,而不是只认一种就直接判失败。"""
@@ -114,7 +132,7 @@ async def _synthesize_once(sess: aiohttp.ClientSession, text: str, voice: str) -
         if audio_resp.status != 200:
             print(f"[voice/tts] 下载音频失败 status={audio_resp.status} text={text[:20]!r}", flush=True)
             return None
-        return await audio_resp.read()
+        return _fix_wav_header(await audio_resp.read())
 
 
 async def synthesize(text: str, voice: str) -> bytes | None:

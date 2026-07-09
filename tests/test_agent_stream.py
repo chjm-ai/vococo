@@ -5,7 +5,12 @@ assemble_tool_input 把累积的 input_json_delta 片段解析成 dict;
 """
 from __future__ import annotations
 
-from claude_hermes.core.agent import ToolInput, _turn_env, assemble_tool_input
+from claude_hermes.core.agent import (
+    ToolInput,
+    _compact_threshold,
+    _turn_env,
+    assemble_tool_input,
+)
 
 
 def test_assemble_full_json():
@@ -60,3 +65,39 @@ def test_turn_env_does_not_mutate_input():
     provider = {"ANTHROPIC_BASE_URL": "https://x"}
     _turn_env(provider)
     assert "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" not in provider
+
+
+# === _compact_threshold:大窗口模型不能被 CLI 的旧窗口认知提前压缩 ===
+
+
+def test_compact_threshold_ignores_stale_official_threshold():
+    # sonnet-5 真实窗口 100万,但 CLI 注册表还认成 20万 → 官方阈值(16.7万)是按小窗口
+    # 算出来的假象,不能再当"更保守的备份"采信,否则真实窗口两成不到就被砍。
+    threshold = _compact_threshold(
+        ctx_window_val=1_000_000,
+        fallback_ratio=0.65,
+        official_threshold=167_000,
+        cli_window_stale=True,
+    )
+    assert threshold == 650_000
+
+
+def test_compact_threshold_trusts_fresh_official_threshold():
+    # CLI 认的窗口没有比我们权威表小(未过期)→ 官方阈值仍然是合法的更紧备份,照旧取更小值
+    threshold = _compact_threshold(
+        ctx_window_val=1_000_000,
+        fallback_ratio=0.83,
+        official_threshold=600_000,
+        cli_window_stale=False,
+    )
+    assert threshold == 600_000
+
+
+def test_compact_threshold_falls_back_to_ratio_when_no_official_value():
+    threshold = _compact_threshold(
+        ctx_window_val=200_000,
+        fallback_ratio=0.83,
+        official_threshold=0,
+        cli_window_stale=False,
+    )
+    assert threshold == 166_000
