@@ -410,8 +410,25 @@ class VoiceWsSession:
             )
             if not text or is_echo or is_filler or too_short:
                 if too_short and not (is_echo or is_filler):
-                    print(f"[voice/ws] 丢弃疑似噪声(时长不足) text={text!r}", flush=True)
+                    raw_span_ms = (
+                        (self._speech_stopped_at - self._speech_started_at) * 1000
+                        if self._speech_stopped_at is not None
+                        else -1
+                    )
+                    print(
+                        f"[voice/ws] 丢弃疑似噪声(时长不足) text={text!r} "
+                        f"raw_span={raw_span_ms:.0f}ms silence_ms={config.VOICE_VAD_SILENCE_MS} "
+                        f"min={config.VOICE_MIN_SPEECH_MS}",
+                        flush=True,
+                    )
                 await self._resolve_pending(commit=False)
+                if too_short and not is_echo and not interrupting:
+                    # 只在"确实检测到一段声音、但时长兜底判定太短"这个具体场景补提示——
+                    # 空转写(真的什么都没说)、自我回声(AI 尾音漏回麦克风)本来就该
+                    # 悄无声息地过滤掉,不是用户体验问题;唯独这一种,用户是真开口了,
+                    # 状态却从 capturing 悄悄退回 idle,体感上跟"卡死没反应"没区别
+                    # (2026-07-09 真机复现:说"你好呀"被当噪声吃掉,界面毫无反应)。
+                    await self._send("error", message="没听清,请再说一次")
                 await self._set_state(_STATE_IDLE)
                 return
             # pending 还没超时就等到了新的有效转写 → 确认打断,提交截断

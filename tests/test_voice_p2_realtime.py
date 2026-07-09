@@ -446,6 +446,10 @@ async def test_idle_noise_burst_too_short_is_discarded_without_starting_turn(
             fake_ws.push_event(
                 "conversation.item.input_audio_transcription.completed", transcript="哦"
             )
+            # 2026-07-09:确实检测到一段声音但被时长兜底吃掉时,补一个提示——不然
+            # 用户真开口了却毫无反应,体感上跟卡死一样(见 ws.py 对应改动的注释)。
+            err_msg = await wsc.receive_json()
+            assert err_msg == {"type": "error", "message": "没听清,请再说一次"}
             msg = await wsc.receive_json()
             assert msg == {"type": "state", "state": "idle"}
 
