@@ -124,16 +124,21 @@ def estimate_speech_too_short(
     识别模型硬编成语气词也该丢掉,所以在空闲状态也生效(不像 looks_like_filler_only
     只在打断场景生效)。
 
-    speech_started→speech_stopped 的时间差里含有 silence_ms 这段判定静音用的
-    尾巴(DashScope server_vad 要连续静音够这么久才认定"说完了"),减掉才是
-    真正说话时长的估算值。speech_stopped 还没来(比如被下一次打断打断)时不
-    误伤,直接放行。
+    2026-07-09 真机复现修正:原先假设 speech_started→speech_stopped 这段时间差
+    里一定含有完整的 silence_ms(session.update 里配置的静音判停时长),减掉才是
+    真正说话时长——但真机实测过好几次都是 raw_span < silence_ms(例如
+    raw_span=985ms < silence_ms=1500ms),说明 DashScope 实际判"说完了"用的静音
+    时长跟我们配置的对不上,减法算出来永远是负数,导致"你好呀""什么？"这类
+    正常短句全部被误杀成噪声,免提模式变成几乎打不出一轮对话。改成直接用
+    raw_span_ms(不做减法)判断——只挡真正瞬时的噪声(几十毫秒级别),
+    宁可放过一些语气词误触发,也不能连正常说话都拦掉。silence_ms 形参保留
+    但不再参与判断(签名不改,调用方不用跟着改;只是不再依赖这个不可靠的假设)。
+    speech_stopped 还没来(比如被下一次打断打断)时不误伤,直接放行。
     """
     if speech_stopped_at is None:
         return False
     raw_span_ms = (speech_stopped_at - speech_started_at) * 1000
-    est_speech_ms = raw_span_ms - silence_ms
-    return est_speech_ms < min_speech_ms
+    return raw_span_ms < min_speech_ms
 
 
 def looks_like_self_echo(

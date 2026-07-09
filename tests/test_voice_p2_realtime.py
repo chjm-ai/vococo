@@ -198,14 +198,19 @@ def test_looks_like_filler_only_false_for_real_content(transcript):
 
 
 # ── estimate_speech_too_short:纯函数,时长兜底(不看文字看物理时长) ───────────
+# 2026-07-09 真机复现修正:原先假设 raw_span 里一定含有完整的 silence_ms 静音尾巴、
+# 减掉才是真实说话时长——但真机实测 raw_span 经常比配置的 silence_ms 还短
+# (DashScope 实际判"说完了"用的时长跟配置对不上),减法算出负数会把"你好呀"
+# "什么？"这类正常短句全部误杀。已改成直接用 raw_span 判断,不再做减法,
+# silence_ms 形参保留(签名不变)但不参与计算,下面用例同步更新。
 def test_estimate_speech_too_short_true_for_brief_burst():
-    # 50ms 就结束,远不足以解释"1500ms 静音尾巴"之外还有一个字的说话时长。
+    # 50ms 就结束,典型的瞬时噪声(呼吸声/麦克风杂音)。
     assert ws.estimate_speech_too_short(0.0, 0.05, silence_ms=1500, min_speech_ms=250) is True
 
 
 def test_estimate_speech_too_short_false_for_normal_speech():
-    # 1500ms 静音尾巴 + 400ms 真实说话时长,减掉尾巴后够长,不该被当噪声丢掉。
-    assert ws.estimate_speech_too_short(0.0, 1.9, silence_ms=1500, min_speech_ms=250) is False
+    # 985ms 的原始跨度(真机实测过的真实短句"什么？"),不该被当噪声丢掉。
+    assert ws.estimate_speech_too_short(0.0, 0.985, silence_ms=1500, min_speech_ms=250) is False
 
 
 def test_estimate_speech_too_short_false_when_speech_stopped_never_arrived():
@@ -214,9 +219,9 @@ def test_estimate_speech_too_short_false_when_speech_stopped_never_arrived():
 
 
 def test_estimate_speech_too_short_respects_min_speech_ms():
-    # 估算说话时长正好 200ms,验证真的在用 min_speech_ms 而不是写死的常量。
-    assert ws.estimate_speech_too_short(0.0, 1.7, silence_ms=1500, min_speech_ms=150) is False
-    assert ws.estimate_speech_too_short(0.0, 1.7, silence_ms=1500, min_speech_ms=250) is True
+    # 200ms 的原始跨度,验证真的在用 min_speech_ms 而不是写死的常量。
+    assert ws.estimate_speech_too_short(0.0, 0.2, silence_ms=1500, min_speech_ms=150) is False
+    assert ws.estimate_speech_too_short(0.0, 0.2, silence_ms=1500, min_speech_ms=250) is True
 
 
 # ── WS 状态机:正常一轮 ───────────────────────────────────────────────────
@@ -484,7 +489,7 @@ async def test_normal_duration_speech_with_stopped_event_still_starts_turn(
             fake_ws.push_event("input_audio_buffer.speech_started")
             assert (await wsc.receive_json()) == {"type": "state", "state": "capturing"}
 
-            clock["t"] = 1.9  # 1500ms 静音尾巴 + 400ms 真实说话时长
+            clock["t"] = 1.9  # 1900ms 原始跨度,远超 min_speech_ms(250ms),不该被误伤
             fake_ws.push_event("input_audio_buffer.speech_stopped")
             fake_ws.push_event(
                 "conversation.item.input_audio_transcription.completed",
