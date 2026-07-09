@@ -662,8 +662,11 @@ class VoiceWsSession:
                     if isinstance(ev, ToolStarted):
                         if not filler_sent and ev.parent_id is None:
                             filler_sent = True
-                            audio_bytes = await tts.filler_audio()
-                            await self._send("filler", audio_b64=_b64(audio_bytes))
+                            audio_bytes = await tts.filler_audio(config.VOICE_TTS_VOICE)
+                            await self._send(
+                                "filler", text=tts.FILLER_PHRASE,
+                                audio_b64=_b64(audio_bytes),
+                            )
                     elif isinstance(ev, TextDelta):
                         if not self._speaking_announced:
                             self._speaking_announced = True

@@ -155,6 +155,13 @@
   #collapseBtn:hover{background:var(--panel2);color:var(--text)}
   #collapseBtn:active{transform:scale(.9)}
   #collapseBtn .ic{width:16px;height:16px}
+  /* 清理上下文:菜单顶部常驻小图标,清空当前会话上下文(等同 /clear,历史保留) */
+  #clearCtxBtn{display:flex;width:26px;height:26px;border-radius:7px;flex-shrink:0;
+    align-items:center;justify-content:center;color:var(--dim);
+    transition:background .16s,color .16s,transform .12s}
+  #clearCtxBtn:hover{background:var(--panel2);color:var(--text)}
+  #clearCtxBtn:active{transform:scale(.9)}
+  #clearCtxBtn .ic{width:16px;height:16px}
   /* touch-action:pan-y——纵向滚动交给浏览器原生处理,横向不让浏览器插手,
      全交给 bindSwipe() 的 JS 手势;否则原生纵向抖动会触发 #convList 的 scroll
      监听把刚滑出来的菜单强制收起(表现为"菜单停不住、点不到按钮") */
@@ -796,6 +803,8 @@
   #callHead .title{font-weight:600;flex:1}
   #callBody{flex:1;overflow-y:auto;padding:16px}
   #transcript{display:flex;flex-direction:column;gap:12px;max-width:680px;margin:0 auto}
+  #callView .bubble.filler{background:transparent;border:none;color:var(--dim2);font-size:14px;
+    font-style:italic;padding:0 14px;max-width:100%;box-shadow:none}
   .msgicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
   .msgicon .ic{width:15px;height:15px}
   #callView .hint{text-align:center;color:var(--dim2);font-size:14px;padding:40px 20px}
@@ -838,55 +847,37 @@
   #talkBtn:disabled{opacity:.5}
   #talkBtn[hidden],#stopBtn[hidden]{display:none}
 
-  /* P2 全双工:进call view即自动开始,不再需要"开始语音对话"这次二次点击——
-     唯一的常驻视觉就是声纹球,状态文字贴在球正下方,挂断是球下方一个小图标按钮。 */
-  #handsFreeUi{display:flex;flex-direction:column;align-items:center;gap:14px}
+  /* P2 全双工:进 call view 即自动开始,唯一常驻视觉是一条声波动效(不再是圆球),
+     状态文字贴在波形正下方,挂断是波形下方一个深灰圆角方块(停止语义)。
+     波形本身用 canvas 画(见 drawOrbWaveform),这里只管容器与光晕氛围。 */
+  #handsFreeUi{display:flex;flex-direction:column;align-items:center;gap:20px}
   #handsFreeUi[hidden]{display:none}
-  #orbWrap{position:relative;width:160px;height:160px;display:flex;align-items:center;justify-content:center}
-  #orbGlow{position:absolute;inset:0;border-radius:50%;pointer-events:none;
-    background:radial-gradient(circle, rgba(150,150,150,.28), rgba(150,150,150,0) 70%);
-    filter:blur(10px);animation:orb-glow-idle 4s ease-in-out infinite}
-  #orb{position:relative;z-index:1;width:108px;height:108px;border-radius:50%;cursor:pointer;
-    background:radial-gradient(circle at 33% 26%, rgba(255,255,255,.4), rgba(255,255,255,0) 45%),
-      radial-gradient(circle, var(--panel), var(--panel));
-    border:1px solid var(--line);
-    box-shadow:inset 0 2px 14px rgba(0,0,0,.18), 0 6px 22px rgba(0,0,0,.1);
-    transition:background .6s ease, box-shadow .6s ease}
-  #orbCanvas{position:absolute;inset:0;width:160px;height:160px;pointer-events:none;z-index:2}
+  #orbWrap{position:relative;width:280px;height:100px;display:flex;align-items:center;
+    justify-content:center;cursor:pointer;transition:filter .5s ease}
+  /* 波形背后一层柔和的横向光晕,给"高大上"的氛围底;颜色随状态在 JS 里不动,
+     用 mix-blend 让它跟波形融合,而不是硬叠一块色 */
+  #orbWrap::before{content:"";position:absolute;left:50%;top:50%;width:220px;height:64px;
+    transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;filter:blur(26px);
+    background:radial-gradient(ellipse, rgba(150,150,150,.22), rgba(150,150,150,0) 72%);
+    transition:background .6s ease, opacity .6s ease;opacity:.6}
+  #orbCanvas{position:relative;z-index:1;width:280px;height:100px;pointer-events:none}
 
-  #orbWrap.capturing #orbGlow{background:radial-gradient(circle, rgba(209,103,74,.42), rgba(209,103,74,0) 70%);
-    opacity:.8;animation:orb-glow-active 1.6s ease-in-out infinite}
-  #orbWrap.capturing #orb{background:radial-gradient(circle at 33% 26%, rgba(255,255,255,.45), rgba(255,255,255,0) 45%),
-      radial-gradient(circle, var(--err), #a8442d);
-    box-shadow:inset 0 2px 14px rgba(0,0,0,.22), 0 0 36px rgba(209,103,74,.5)}
+  #orbWrap.capturing::before{background:radial-gradient(ellipse, rgba(209,103,74,.4), rgba(209,103,74,0) 72%);opacity:.9}
+  #orbWrap.thinking::before{background:radial-gradient(ellipse, rgba(217,119,87,.34), rgba(217,119,87,0) 72%);opacity:.8}
+  #orbWrap.speaking::before{background:radial-gradient(ellipse, rgba(200,97,63,.42), rgba(200,97,63,0) 72%);opacity:1}
 
-  #orbWrap.thinking #orbGlow{background:radial-gradient(circle, rgba(217,119,87,.4), rgba(217,119,87,0) 70%);
-    opacity:.75;animation:orb-glow-active 2.2s ease-in-out infinite}
-  #orbWrap.thinking #orb{background:radial-gradient(circle at 33% 26%, rgba(255,255,255,.4), rgba(255,255,255,0) 45%),
-      radial-gradient(circle, var(--accent), #a8532e);
-    box-shadow:inset 0 2px 14px rgba(0,0,0,.2), 0 0 30px rgba(217,119,87,.4);
-    animation:orb-breathe 2s ease-in-out infinite}
-
-  #orbWrap.speaking #orbGlow{background:radial-gradient(circle, rgba(200,97,63,.46), rgba(200,97,63,0) 70%);
-    opacity:.85;animation:orb-glow-active 1s ease-in-out infinite}
-  #orbWrap.speaking #orb{background:radial-gradient(circle at 33% 26%, rgba(255,255,255,.45), rgba(255,255,255,0) 45%),
-      radial-gradient(circle, var(--accent2), #8f3f22);
-    box-shadow:inset 0 2px 14px rgba(0,0,0,.22), 0 0 40px rgba(200,97,63,.5)}
-
-  @keyframes orb-glow-idle{0%,100%{transform:scale(1);opacity:.35}50%{transform:scale(1.08);opacity:.55}}
-  @keyframes orb-glow-active{0%,100%{transform:scale(1)}50%{transform:scale(1.14)}}
-  @keyframes orb-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.035)}}
-
-  #status{font-size:14px;color:var(--dim);text-align:center;min-height:20px;transition:color .3s ease}
+  #status{font-size:14px;color:var(--dim);text-align:center;min-height:20px;transition:color .3s ease;
+    letter-spacing:.02em}
   #status.listening{color:var(--err)}
   #status.thinking,#status.playing{color:var(--accent)}
 
-  #endHandsFreeBtn{width:38px;height:38px;border-radius:50%;border:1px solid var(--line);
-    background:var(--panel);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;
-    padding:0;transition:background .15s ease,color .15s ease,border-color .15s ease}
-  #endHandsFreeBtn .btnicon{margin-right:0}
-  #endHandsFreeBtn .ic{width:16px;height:16px}
-  #endHandsFreeBtn:hover,#endHandsFreeBtn:active{background:var(--err);border-color:var(--err);color:#fff}
+  /* 挂断=深灰圆角方块,方块本身就是"停止"的通用符号,不再放图标文字 */
+  #endHandsFreeBtn{width:44px;height:44px;border-radius:13px;border:none;
+    background:var(--panel2);color:transparent;display:inline-flex;align-items:center;justify-content:center;
+    padding:0;transition:background .15s ease,transform .12s ease}
+  #endHandsFreeBtn .btnicon{display:none}
+  #endHandsFreeBtn:hover{background:var(--line2)}
+  #endHandsFreeBtn:active{transform:scale(.92)}
 </style>
 </head>
 <body>
@@ -966,6 +957,7 @@ try{
   <aside id="sidebar">
     <div class="shead">
       <div class="brand">Wazir</div>
+      <button id="clearCtxBtn" title="清理上下文(清空当前会话上下文,历史保留)"></button>
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
@@ -1085,13 +1077,11 @@ try{
       <!-- 免提是唯一路径:进入通话视图就自动开始,不需要再点一次按钮——
            声纹球常驻可见,状态文字紧贴在球下面,挂断只留一个小图标按钮。 -->
       <div id="handsFreeUi">
-        <div id="orbWrap" class="idle">
-          <div id="orbGlow"></div>
-          <div id="orb" title="点一下可以打断 AI 说话"></div>
-          <canvas id="orbCanvas" width="160" height="160"></canvas>
+        <div id="orbWrap" class="idle" title="点一下可以打断 AI 说话">
+          <canvas id="orbCanvas" width="640" height="200"></canvas>
         </div>
         <div id="status">连接中…</div>
-        <button id="endHandsFreeBtn" title="结束通话" aria-label="结束通话"><span class="btnicon" id="endIcon"></span></button>
+        <button id="endHandsFreeBtn" title="结束通话" aria-label="结束通话"></button>
       </div>
     </footer>
     <div id="tasksDrawer">
@@ -1175,6 +1165,7 @@ const ICONS = {
   mute:'<path d="M1 1l22 22"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><path d="M15 9.34V6a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2"/><path d="M19 10v2a7 7 0 0 1-.11 1.23"/><path d="M12 19v3"/><path d="M8 22h8"/>',
   stop:'<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
   tasks:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+  eraser:'<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 function setIcon(el, name){ el.innerHTML = ic(name); }
@@ -1189,13 +1180,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     stopBtn=$("#stopBtn"), tasksBtn=$("#tasksBtn"), tasksBadge=$("#tasksBadge"),
     tasksDrawer=$("#tasksDrawer"), tasksList=$("#tasksList"),
     handsFreeUi=$("#handsFreeUi"), orbWrap=$("#orbWrap"),
-    orb=$("#orb"), endHandsFreeBtn=$("#endHandsFreeBtn"),
+    endHandsFreeBtn=$("#endHandsFreeBtn"),
     backLink=$("#callHead #backLink");
 
   setIcon(backLink, "panel");
   setIcon($("#tasksIcon"), "tasks");
   setIcon($("#stopIcon"), "stop");
-  setIcon($("#endIcon"), "close");
   // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
   // 收起侧栏后还在原来的通话画面。真正挂断走下面的"结束"/"停"按钮;
   // 侧栏里切到别的会话才会触发 closeCallView()(见 openConv 收口处)。
@@ -1266,10 +1256,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     const parts = kind.split(" ");
     const who = parts[0];
     const isError = parts.includes("error");
+    const isFiller = parts.includes("filler");
     const row = document.createElement("div");
     row.className = "row " + (who === "me" ? "me" : "ai");
     const b = document.createElement("div");
-    b.className = "bubble" + (isError ? " err" : "");
+    b.className = "bubble" + (isError ? " err" : "") + (isFiller ? " filler" : "");
     if(isError){
       const icon = document.createElement("span");
       icon.className = "msgicon";
@@ -1394,7 +1385,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             addMsg("me", ev.data.text || "");
             setStatus("思考中…", "thinking");
           } else if(ev.event === "filler"){
-            // 垫话已改成纯音效(暗示"正在处理"),不再念白,所以不进聊天记录,只入播放队列
+            addMsg("ai filler", ev.data.text || "");
             playQueue.push(ev.data);
             pumpPlayback();
           } else if(ev.event === "text"){
@@ -1572,16 +1563,35 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     outputAnalyser.fftSize = 64;
   }
 
-  const ORB_BARS = 32, ORB_BASE_R = 55;  // 贴着 108px 直径的球面(半径54)往外长,别探进画布(160/2=80)外边
+  const WAVE_BARS = 56;  // 一排竖条,绕水平中线上下镜像成一条声波
+
+  // 波形配色跟随主题(从 :root 读 accent 系列),缓存起来、每隔若干帧刷新一次,
+  // 这样切换浅/深色主题时颜色也会跟上,又不必每帧都 getComputedStyle。
+  let waveColors=null, waveColorTick=0;
+  function waveColorFor(state){
+    if(!waveColors || (waveColorTick++ % 30)===0){
+      const cs=getComputedStyle(document.documentElement);
+      waveColors={
+        accent:cs.getPropertyValue("--accent").trim(),
+        accent2:cs.getPropertyValue("--accent2").trim(),
+        err:cs.getPropertyValue("--err").trim(),
+        dim:cs.getPropertyValue("--dim2").trim(),
+      };
+    }
+    if(state==="capturing") return [waveColors.err, waveColors.accent];
+    if(state==="speaking")  return [waveColors.accent2, waveColors.accent];
+    if(state==="thinking")  return [waveColors.accent, waveColors.accent2];
+    return [waveColors.dim, waveColors.dim];  // idle
+  }
 
   function drawOrbWaveform(){
     orbAnimHandle = requestAnimationFrame(drawOrbWaveform);
     const canvas = $("#orbCanvas");
     if(!orbCanvasCtx) orbCanvasCtx = canvas.getContext("2d");
     const ctx = orbCanvasCtx;
-    const w = canvas.width, h = canvas.height, cx = w/2, cy = h/2;
+    const w = canvas.width, h = canvas.height, cy = h/2;
     ctx.clearRect(0, 0, w, h);
-    if(!orbLevels) orbLevels = new Float32Array(ORB_BARS);
+    if(!orbLevels) orbLevels = new Float32Array(WAVE_BARS);
 
     let src = null;
     if(wsState === "capturing") src = analyser;
@@ -1590,28 +1600,36 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     if(src){ data = new Uint8Array(src.frequencyBinCount); src.getByteFrequencyData(data); }
 
     const t = performance.now() / 1000;
-    const grad = ctx.createLinearGradient(0, 0, w, h);
-    grad.addColorStop(0, "rgba(255,255,255,.95)");
-    grad.addColorStop(1, "rgba(255,255,255,.5)");
+    const [c1, c2] = waveColorFor(wsState);
+    const grad = ctx.createLinearGradient(0, 0, w, 0);
+    grad.addColorStop(0, c1); grad.addColorStop(0.5, c2); grad.addColorStop(1, c1);
     ctx.strokeStyle = grad;
-    ctx.lineWidth = 3;
     ctx.lineCap = "round";
-    for(let i=0;i<ORB_BARS;i++){
+
+    const gap = w / WAVE_BARS;
+    const barW = Math.max(3, gap * 0.42);
+    ctx.lineWidth = barW;
+    const maxH = h * 0.42;
+    for(let i=0;i<WAVE_BARS;i++){
+      // 钟形包络:中间高、两头收,让整条波像真实声纹而不是齐平的方块阵
+      const env = Math.sin((i / (WAVE_BARS - 1)) * Math.PI);
       let target;
       if(data){
-        target = data[Math.floor(i / ORB_BARS * data.length)] / 255;
+        target = data[Math.floor(i / WAVE_BARS * data.length)] / 255;
       } else if(wsState === "thinking"){
-        // 没有真实音频数据时(思考中),给一道柔和的正弦波浪代替死板的呼吸块
-        target = 0.28 + 0.22 * Math.sin(t * 2.3 + i * 0.5);
+        // 没有真实音频时(思考中),一道从右向左行进的柔波,替代死板的呼吸块
+        target = 0.30 + 0.20 * Math.sin(t * 3 - i * 0.35);
       } else {
-        target = 0.1 + 0.05 * Math.sin(t * 1.1 + i * 0.35);  // idle 时的微呼吸,别让球看起来是死的
+        target = 0.06 + 0.05 * Math.sin(t * 1.4 + i * 0.5);  // idle 微起伏,别让波形看起来是死的
       }
-      orbLevels[i] += (target - orbLevels[i]) * 0.25;  // 指数平滑,吃掉原始数据的跳变
-      const len = 3 + orbLevels[i] * 22;
-      const angle = (i / ORB_BARS) * Math.PI * 2 - Math.PI / 2;
-      const x1 = cx + Math.cos(angle) * ORB_BASE_R, y1 = cy + Math.sin(angle) * ORB_BASE_R;
-      const x2 = cx + Math.cos(angle) * (ORB_BASE_R + len), y2 = cy + Math.sin(angle) * (ORB_BASE_R + len);
-      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      orbLevels[i] += (target - orbLevels[i]) * 0.28;  // 指数平滑,吃掉原始数据的跳变
+      const amp = orbLevels[i] * env;
+      const half = Math.max(barW * 0.5, amp * maxH);  // 下限=一个圆点,幅度为 0 时也不消失
+      const x = gap * (i + 0.5);
+      ctx.beginPath();
+      ctx.moveTo(x, cy - half + barW * 0.5);
+      ctx.lineTo(x, cy + half - barW * 0.5);
+      ctx.stroke();
     }
   }
 
@@ -1747,7 +1765,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     } else if(msg.type === "transcript"){
       addMsg("me", msg.text || "");
     } else if(msg.type === "filler"){
-      // 垫话已改成纯音效(暗示"正在处理"),不再念白,所以不进聊天记录,只入播放队列
+      addMsg("ai filler", msg.text || "");
       if(msg.audio_b64){ playQueue.push({seq:-1, audio_b64: msg.audio_b64}); pumpPlayback(); }
     } else if(msg.type === "text_delta"){
       if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
@@ -1801,7 +1819,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   // 挂断=直接退出通话视图,回到聊天界面(电话挂断的直觉),不是留在这里等重新开始
   endHandsFreeBtn.addEventListener("click", ()=>{ window.closeCallView(); });
-  orb.addEventListener("click", ()=>{
+  orbWrap.addEventListener("click", ()=>{
     if(wsState === "thinking" || wsState === "speaking") manualInterrupt();
   });
 
@@ -3845,6 +3863,10 @@ $("#hamb").onclick = expandSidebarResponsive;
 $("#collapseBtn").innerHTML = ic("panel");
 $("#hamb").innerHTML = ic("panel");
 $("#collapseBtn").onclick = ()=> setSidebarCollapsed(true);   // 侧边栏内:收起
+$("#clearCtxBtn").innerHTML = ic("eraser");
+$("#clearCtxBtn").onclick = ()=>{                            // 清理上下文=对当前会话发 /clear
+  if(confirm("清空当前会话的上下文?(历史记录保留,AI 会从头开始)")) sendCmd("/clear");
+};
 $("#backdrop").onclick = closeSidebar;
 function closeSidebar(){ $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("show"); }
 // 桌面侧边栏折叠态(记忆到 localStorage)
