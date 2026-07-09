@@ -748,7 +748,7 @@
   #backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:25;backdrop-filter:blur(2px)}
 
   @media(max-width:760px){
-    #sidebar{position:fixed;inset:8px auto 8px 8px;margin:0;
+    #sidebar{position:fixed;inset:8px auto 8px 8px;margin:0;border-radius:26px;
       transform:translateX(calc(-100% - 16px))}
     #sidebar.open{transform:translateX(0);box-shadow:0 4px 16px rgba(0,0,0,.22)}
     #hamb{display:flex}
@@ -757,6 +757,16 @@
     #messages,#convLoading{padding-left:16px;padding-right:16px}
     header.bar{padding-left:16px;padding-right:16px}
     #composer .combg{padding-left:16px;padding-right:16px}
+    /* 移动端侧栏:菜单行加大触控尺寸、字号整体 +1px,圆角贴近 iOS 大圆角风格 */
+    #sidebar .shead .brand{font-size:21px}
+    #newBtn,#voiceChatBtn{padding:10px 10px;font-size:14px}
+    .projgrp,.conv{padding:9px 10px}
+    .projgrp{font-size:14px}
+    .conv .ct{font-size:15px}
+    .conv .ctime,.conv .star{font-size:11px}
+    .sfoot{font-size:14px;padding:11px 12px 11px 14px}
+    .convmenu .cmitem{font-size:14.5px}
+    #convFilterPop .fmi{font-size:14.5px}
   }
   /* 桌面宽屏:基础字号调小(手机保持 16px 不变,避免 iOS 聚焦缩放) */
   @media(min-width:761px){
