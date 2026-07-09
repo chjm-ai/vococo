@@ -1,7 +1,7 @@
-"""语音转文字:复刻 gateway/adapters/web.py 的 /transcribe 实现。
-
-那份实现绑在 WebAdapter 实例方法上(耦合 self._read_audio 等),没法直接 import 复用,
-按 00-overview.md §4 的约定在这里复制一份小实现,换取 voice 包对 web.py 零耦合。
+"""语音转文字:主界面语音输入(gateway/adapters/web.py 的 /transcribe)和
+语音伴聊模式共用同一套阿里 DashScope 转写实现,避免两边各写一份、切供应商时忘了同步
+(2026-07-08 切阿里云时就出过这个问题:web.py 曾经留着一份没跟着切的旧 SenseVoice
+实现,属性名对不上导致每次转写都报错)。
 """
 from __future__ import annotations
 
