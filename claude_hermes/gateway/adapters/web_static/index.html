@@ -1105,6 +1105,8 @@ const S = {
   dragSrc: null,        // 项目拖拽排序:正在被拖起的项目 hash
   dragMoved: false,     // 刚发生过一次拖拽落地,下一次 click 吞掉(不触发分组展开/收起)
   voiceSidebar: {main:null, tasks:[]},  // /voice/sidebar 拉到的"语音任务"固定分组数据
+  swipedConv: null,     // 当前左滑展开的会话 id;renderConvs 重建 DOM 时靠它补回 swiped 状态,
+                         // 否则任意会话(含后台)一完成回合就会触发 loadConvs→renderConvs 把菜单冲掉
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -2212,6 +2214,7 @@ function renderConvs(){
     for(const c of convs){
       if(!c.pinned){const arch=!!c.archived;if(S.convFilter==="archived"&&!arch)continue;if(S.convFilter==="active"&&arch)continue;}
       const e=el("div","conv ingroup"+(!inCall && c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
+      e.dataset.conv=c.conv;
       const body=el("div","cvbody");
       if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }   // 该会话正在流式 → 闪烁圆点
       const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
@@ -2227,6 +2230,7 @@ function renderConvs(){
         del.onclick=ev=>{ ev.stopPropagation(); closeSwipe(e); delConv(c.conv); };
         act.append(arch,del); e.append(act);
         bindSwipe(e, body, act);   // 触屏:左滑露出归档/删除,不用长按(iOS 用户少用长按)
+        if(c.conv===S.swipedConv) e.classList.add("swiped");   // 重建 DOM 后补回展开状态,别被后台事件触发的重渲染冲掉
       }
       e.onclick=()=>{
         if(e._justSwiped){ e._justSwiped=false; return; }   // 刚滑动完的这次 click 不触发切换
@@ -2734,7 +2738,7 @@ function closeConvMenu(){
 }
 // 触屏左滑会话行露出归档/删除(iOS 邮件同款手势,比长按更符合触屏习惯)
 const SWIPE_W=72;   // 需与 CSS .cvact 宽度一致
-function closeSwipe(row){ row.classList.remove("swiped"); }
+function closeSwipe(row){ row.classList.remove("swiped"); if(S.swipedConv===row.dataset.conv) S.swipedConv=null; }
 function closeAllSwipes(except){
   $("#convList").querySelectorAll(".conv.swiped").forEach(r=>{ if(r!==except) closeSwipe(r); });
 }
@@ -2761,7 +2765,7 @@ function bindSwipe(row, body, act){
     body.style.transform=""; act.style.transform="";
     if(dragging){
       row._justSwiped=true;
-      if(dx<=-SWIPE_W/2){ closeAllSwipes(row); row.classList.add("swiped"); } else closeSwipe(row);
+      if(dx<=-SWIPE_W/2){ closeAllSwipes(row); row.classList.add("swiped"); S.swipedConv=row.dataset.conv; } else closeSwipe(row);
     }
     dragging=false;
   };
