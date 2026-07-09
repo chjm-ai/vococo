@@ -107,8 +107,10 @@ def build_truncated_text(emitted_sentences: list[str], played_count: int) -> str
 
 # 真机实测(见 03-phase2-实现记录.md"连环打断"一节):VAD 灵敏度再怎么调,
 # 环境噪音/呼吸声偶尔还是会被识别模型强行编成一个说得过去的短语气词,而不是
-# 老实返回空——这类词本身从空闲状态触发没什么危害(AI 就回一句"在呢,你说"),
-# 但如果拿去打断一个已经在跑的回答,会造成连环打断,真正的问题反而被吃掉。
+# 老实返回空。2026-07-09 起改成任何状态下都直接丢弃——原先认为空闲状态触发
+# 语气词无害("用户确实可能就是说了句'嗯'"),但真机免提使用发现噪音触发
+# 语气词的频率远高于用户真用单字回应,放行反而让免提场景经常无缘无故起一轮
+# 不该有的对话,见用户反馈"还是会识别到一些语气词或者无意义的短语"。
 _FILLER_WORDS = frozenset({
     "嗯", "呃", "啊", "哦", "噢", "诶", "欸", "唉", "哈", "呀",
     "是的", "知道", "好的", "好", "对", "对的", "行", "行吧", "稍等", "等等",
@@ -118,8 +120,7 @@ _PUNCT_RE = re.compile(r"[，。！？,.!?、\s]+")
 
 def looks_like_filler_only(transcript: str) -> bool:
     """转写内容整段就是一个语气词/口头禅(去掉标点后跟已知词表精确匹配),
-    大概率是噪音被硬凑出来的假触发——不用来判断"这是不是用户真开口",只用
-    在"要不要让它打断一个已经在跑的回答"这个更谨慎的判断上,见调用处。
+    大概率是噪音被硬凑出来的假触发——任何状态下都用来悄悄丢弃,见调用处。
     """
     stripped = _PUNCT_RE.sub("", transcript)
     return not stripped or stripped in _FILLER_WORDS
@@ -192,8 +193,16 @@ class PendingTruncation:
 
 @dataclass
 class TurnContext:
-    task: "asyncio.Task"
+    """2026-07-09 起句子的 TTS 合成从内联 await 改成后台并行(见 _emit_sentence
+    顶部注释)——sentence_queue/sender_task/pending_synth_tasks 是这套并行
+    流水线自己的状态,不再是"读文字流"这单一协程的局部变量。
+    """
+
+    task: "asyncio.Task | None" = None
     emitted_sentences: list[str] = field(default_factory=list)
+    sentence_queue: "asyncio.Queue" = field(default_factory=asyncio.Queue)
+    sender_task: "asyncio.Task | None" = None
+    pending_synth_tasks: list = field(default_factory=list)
 
 
 async def _connect_upstream(sample_rate: int) -> tuple[aiohttp.ClientSession, aiohttp.ClientWebSocketResponse]:
@@ -334,10 +343,24 @@ class VoiceWsSession:
         turn = self._current_turn
         self._current_turn = None
         if turn is not None:
-            turn.task.cancel()
-            asyncio.ensure_future(_swallow_cancelled(turn.task))
+            self._cancel_turn(turn)
         await self._set_state(_STATE_IDLE)
         await self._send("error", message="思考/回复一直没有进展,已重置")
+
+    def _cancel_turn(self, turn: "TurnContext") -> None:
+        """统一入口:取消一轮的主任务、句子发送协程和所有还没合成完的 TTS
+        任务——2026-07-09 句子合成从内联 await 改成后台并行(见 _emit_sentence),
+        这些任务不再是 turn.task 的子协程,只 cancel 主任务不会级联砍掉它们,
+        漏了会导致真打断确认之后底下还在悄悄合成、白花 TTS 算力,更糟的是
+        sender_task 会一直挂在空队列上等不到东西,永远不退出。
+        """
+        if turn.task is not None:
+            turn.task.cancel()
+            asyncio.ensure_future(_swallow_cancelled(turn.task))
+        if turn.sender_task is not None:
+            turn.sender_task.cancel()
+        for t in turn.pending_synth_tasks:
+            t.cancel()
 
     # ── 客户端→服务端事件入口 ─────────────────────────────────────────
     async def on_hello(self, sample_rate: int | None) -> None:
@@ -420,10 +443,9 @@ class VoiceWsSession:
                 self._pending.emitted_sentences if interrupting else self._recent_emitted_sentences,
                 config.VOICE_SELF_ECHO_THRESHOLD,
             )
-            # 噪音兜底:只在"正要打断一个已经在跑的回答"这个场景生效——从空闲
-            # 状态触发的语气词照常当一句真话处理(用户确实可能就是说了句"嗯"),
-            # 危害只在"拿它去打断"这一步,见 looks_like_filler_only 的注释。
-            is_filler = interrupting and looks_like_filler_only(text)
+            # 噪音兜底:2026-07-09 起任何状态下都生效(不再要求 interrupting),
+            # 见 looks_like_filler_only 的注释。
+            is_filler = looks_like_filler_only(text)
             # 时长兜底:不看文字看物理时长,任何状态下都生效(见 estimate_speech_too_short
             # 的说明)——跟上面 is_filler 是互补关系,不是互相替代。
             too_short = estimate_speech_too_short(
@@ -446,12 +468,14 @@ class VoiceWsSession:
                         flush=True,
                     )
                 await self._resolve_pending(commit=False)
-                if too_short and not is_echo and not interrupting:
+                if too_short and not is_echo and not is_filler and not interrupting:
                     # 只在"确实检测到一段声音、但时长兜底判定太短"这个具体场景补提示——
-                    # 空转写(真的什么都没说)、自我回声(AI 尾音漏回麦克风)本来就该
-                    # 悄无声息地过滤掉,不是用户体验问题;唯独这一种,用户是真开口了,
-                    # 状态却从 capturing 悄悄退回 idle,体感上跟"卡死没反应"没区别
-                    # (2026-07-09 真机复现:说"你好呀"被当噪声吃掉,界面毫无反应)。
+                    # 空转写(真的什么都没说)、自我回声(AI 尾音漏回麦克风)、语气词
+                    # 本来就该悄无声息地过滤掉,不是用户体验问题;唯独这一种,用户是真
+                    # 开口说了有意义的内容,状态却从 capturing 悄悄退回 idle,体感上
+                    # 跟"卡死没反应"没区别(2026-07-09 真机复现:说"你好呀"被当噪声
+                    # 吃掉,界面毫无反应)。语气词不算"有意义的内容",不该弹提示催用户
+                    # 重说一遍语气词。
                     await self._send("error", message="没听清,请再说一次")
                 await self._set_state(_STATE_IDLE)
                 return
@@ -516,8 +540,7 @@ class VoiceWsSession:
             # 只发起取消、不在这里 await 它收尾——core/agent.py 的取消链路里
             # client.interrupt() 最多兜底等 5 秒,真 await 会把 WS 主收环卡住那么久,
             # 打断到静音的体验就废了。收尾丢给后台任务,不阻塞后续消息处理。
-            turn.task.cancel()
-            asyncio.ensure_future(_swallow_cancelled(turn.task))
+            self._cancel_turn(turn)
         pending = PendingTruncation(
             user_text=self._pending_user_text or "",
             emitted_sentences=turn.emitted_sentences,
@@ -553,8 +576,7 @@ class VoiceWsSession:
             if pending.turn is not None and self._current_turn is pending.turn:
                 self._current_turn = None
                 self._clear_turn_watchdog()
-                pending.turn.task.cancel()
-                asyncio.ensure_future(_swallow_cancelled(pending.turn.task))
+                self._cancel_turn(pending.turn)
             truncated = build_truncated_text(pending.emitted_sentences, played_count or 0)
             session.append(pending.user_text, truncated)
             # 这句话被真的打断了、没问完整/没答完,留给下一轮 _start_turn 拼接,
@@ -592,8 +614,7 @@ class VoiceWsSession:
         if not is_cold_start and score < config.VOICE_VOICEPRINT_MATCH_THRESHOLD:
             if self._current_turn is turn:
                 self._current_turn = None
-                turn.task.cancel()
-                asyncio.ensure_future(_swallow_cancelled(turn.task))
+                self._cancel_turn(turn)
                 await self._set_state(_STATE_IDLE)
                 await self._send("error", message="没听清像是你的声音,请再说一次")
                 print(f"[voice/ws] 声纹不匹配,撤回这一轮 score={score:.2f}", flush=True)
@@ -613,11 +634,15 @@ class VoiceWsSession:
         self._pending_user_text = user_text
         self._speaking_announced = False
         await self._set_state(_STATE_THINKING)
-        turn = TurnContext(task=asyncio.ensure_future(self._run_turn(user_text)))
+        turn = TurnContext()
+        # 先起 sender、再起主任务:_run_turn 一开始吐 TextDelta 就可能立刻
+        # 调 _emit_sentence 往 turn.sentence_queue 塞东西,sender 得先能收。
+        turn.sender_task = asyncio.ensure_future(self._sentence_sender(turn))
+        turn.task = asyncio.ensure_future(self._run_turn(user_text, turn))
         self._current_turn = turn
         self._arm_turn_watchdog()
 
-    async def _run_turn(self, user_text: str) -> None:
+    async def _run_turn(self, user_text: str, turn: TurnContext) -> None:
         # 延迟 import:routes.py 顶层已经 import 了本模块(挂路由用),这里反向
         # import routes 会形成循环——放函数体内、只在真正跑的时候才解析,两边都
         # 早已初始化完毕,不会有问题。复用同一把锁只是为了让 /voice/send(文字
@@ -625,7 +650,6 @@ class VoiceWsSession:
         from . import routes
 
         splitter = tts.SentenceSplitter()
-        turn = self._current_turn
         seq = 0
         filler_sent = False
         try:
@@ -646,8 +670,7 @@ class VoiceWsSession:
                             await self._set_state(_STATE_SPEAKING)
                         await self._send("text_delta", text=ev.text)
                         for sentence in splitter.feed(ev.text):
-                            await self._emit_sentence(turn, seq, sentence)
-                            seq += 1
+                            seq = self._emit_sentence(turn, seq, sentence)
                     elif isinstance(ev, Done):
                         if self._pending is not None and self._pending.turn is turn:
                             # 罕见竞态(见模块顶部"误触发不可逆的教训"):待定打断
@@ -656,8 +679,10 @@ class VoiceWsSession:
                             # Done 流程再跟"打断确认"分支重复给这句话落两次库。
                             await self._resolve_pending(commit=False)
                         for sentence in splitter.flush():
-                            await self._emit_sentence(turn, seq, sentence)
-                            seq += 1
+                            seq = self._emit_sentence(turn, seq, sentence)
+                        # 等 sender 把队列里剩下的句子(可能还在后台合成中)按
+                        # seq 顺序发完,再继续走 done 流程——见 _drain_sentence_queue。
+                        await self._drain_sentence_queue(turn)
                         reply = ev.reply
                         session.append(user_text, reply.text)
                         if reply.sdk_session_id:
@@ -678,13 +703,54 @@ class VoiceWsSession:
         except Exception as exc:  # noqa: BLE001 —— 兜底:出错也要给前端一个 done
             self._current_turn = None
             self._clear_turn_watchdog()
+            if turn.sender_task is not None:
+                turn.sender_task.cancel()
+            for t in turn.pending_synth_tasks:
+                t.cancel()
             await self._set_state(_STATE_IDLE)
             await self._send("error", message=str(exc))
 
-    async def _emit_sentence(self, turn: TurnContext, seq: int, sentence: str) -> None:
+    def _emit_sentence(self, turn: TurnContext, seq: int, sentence: str) -> int:
+        """把这句话的 TTS 合成丢到后台并发跑,不阻塞正在读的 Claude 文字流。
+
+        2026-07-09 之前是内联 `await tts.synthesize(...)`——合成一句要几百
+        毫秒到一秒多,这段时间完全没在继续消费 session.run_turn() 吐出来的
+        下一段 TextDelta,句子越多累积延迟越明显(用户反馈"优化整个语音对话
+        的速度")。现在合成和"继续读模型输出"并行:发给客户端的顺序仍然靠
+        turn.sentence_queue 保证是 seq 递增(_sentence_sender 按顺序 await,
+        不是谁先合成完谁先发)。
+        """
         turn.emitted_sentences.append(sentence)
-        audio = await tts.synthesize(sentence, config.VOICE_TTS_VOICE)
-        await self._send("sentence", seq=seq, text=sentence, audio_b64=_b64(audio))
+        synth_task = asyncio.ensure_future(tts.synthesize(sentence, config.VOICE_TTS_VOICE))
+        turn.pending_synth_tasks.append(synth_task)
+        turn.sentence_queue.put_nowait((seq, sentence, synth_task))
+        return seq + 1
+
+    async def _sentence_sender(self, turn: TurnContext) -> None:
+        """按 seq 顺序把后台并行合成好的 TTS 音频依次发给客户端,见
+        _emit_sentence 顶部注释——这是"合成并行、发送顺序仍然线性"的落地点。
+        """
+        while True:
+            item = await turn.sentence_queue.get()
+            if item is None:
+                return
+            seq, sentence, synth_task = item
+            try:
+                audio = await synth_task
+            except asyncio.CancelledError:
+                return
+            except Exception:  # noqa: BLE001 —— 单句合成失败不该拖垮整轮,跳过继续发下一句
+                audio = None
+            await self._send("sentence", seq=seq, text=sentence, audio_b64=_b64(audio))
+
+    async def _drain_sentence_queue(self, turn: TurnContext) -> None:
+        """一轮正常说完:告诉 sender 协程"没有下一句了",等它把队列里剩下
+        还没发出去的句子按顺序发完,再继续走 done 流程——不然客户端可能先
+        收到 done、后面才姗姗来迟几句 sentence,顺序就乱了。
+        """
+        turn.sentence_queue.put_nowait(None)
+        if turn.sender_task is not None:
+            await turn.sender_task
 
     async def close(self) -> None:
         """WS 连接收尾:关掉上游、取消看门狗,不留后台任务。"""

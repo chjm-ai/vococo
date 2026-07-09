@@ -417,10 +417,11 @@ async def test_empty_completed_transcript_resets_to_idle_without_starting_turn(
 async def test_idle_noise_burst_too_short_is_discarded_without_starting_turn(
     voice_db, monkeypatch
 ):
-    """真机反馈:呼吸声/环境杂音被识别模型硬编成语气词("哦"),以前这类词只在
-    "正在打断一个已经在跑的回答"这个场景被 is_filler 过滤——空闲状态下照样
-    当一句真话发给 Claude。这条时长兜底不看文字看物理时长,任何状态都生效,
-    见 config.VOICE_MIN_SPEECH_MS 的说明。
+    """真机反馈:呼吸声/环境杂音偶尔被识别模型硬编成一个说得过去的短语——
+    这条时长兜底不看文字看物理时长,任何状态都生效,见 config.VOICE_MIN_SPEECH_MS
+    的说明。用非语气词("什么")隔离出"纯时长太短"这一条路径,跟下面
+    test_idle_filler_word_normal_duration_is_discarded_silently(纯语气词、
+    时长正常)对照,两条兜底各管各的场景。
     """
     fake_ws = FakeUpstreamWs()
     connected = asyncio.Event()
@@ -449,12 +450,55 @@ async def test_idle_noise_burst_too_short_is_discarded_without_starting_turn(
             clock["t"] = 0.05  # 50ms 后就停了,远不足以解释"1500ms 静音尾巴"之外还说了话
             fake_ws.push_event("input_audio_buffer.speech_stopped")
             fake_ws.push_event(
-                "conversation.item.input_audio_transcription.completed", transcript="哦"
+                "conversation.item.input_audio_transcription.completed", transcript="什么"
             )
             # 2026-07-09:确实检测到一段声音但被时长兜底吃掉时,补一个提示——不然
             # 用户真开口了却毫无反应,体感上跟卡死一样(见 ws.py 对应改动的注释)。
             err_msg = await wsc.receive_json()
             assert err_msg == {"type": "error", "message": "没听清,请再说一次"}
+            msg = await wsc.receive_json()
+            assert msg == {"type": "state", "state": "idle"}
+
+    assert called["n"] == 0
+
+
+@pytest.mark.anyio
+async def test_idle_filler_word_normal_duration_is_discarded_silently(voice_db, monkeypatch):
+    """用户反馈:免提场景经常识别到语气词/无意义短语,被当一整轮真话发给
+    Claude。2026-07-09 起 is_filler 判定不再要求"正在打断一个回答"这个前提,
+    空闲状态下的纯语气词(即便说话时长正常、不触发时长兜底)也直接悄悄丢回
+    idle,不弹"没听清"提示(语气词不算"有意义的内容",催用户重说一遍语气词
+    没有意义)、更不能起一轮不该有的对话。
+    """
+    fake_ws = FakeUpstreamWs()
+    connected = asyncio.Event()
+    _patch_upstream(monkeypatch, fake_ws, connected)
+    monkeypatch.setattr(config, "VOICE_VAD_SILENCE_MS", 1500)
+    monkeypatch.setattr(config, "VOICE_MIN_SPEECH_MS", 250)
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(ws.time, "monotonic", lambda: clock["t"])
+
+    called = {"n": 0}
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        called["n"] += 1
+        yield Done(AgentReply(text="不该被调用", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+
+    async with TestClient(TestServer(_app())) as client:
+        async with client.ws_connect("/voice/ws") as wsc:
+            await _hello_and_wait_connected(wsc, connected)
+
+            fake_ws.push_event("input_audio_buffer.speech_started")
+            assert (await wsc.receive_json()) == {"type": "state", "state": "capturing"}
+
+            clock["t"] = 1.9  # 1900ms,远超 min_speech_ms,不该被时长兜底误伤
+            fake_ws.push_event("input_audio_buffer.speech_stopped")
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed", transcript="嗯"
+            )
             msg = await wsc.receive_json()
             assert msg == {"type": "state", "state": "idle"}
 
