@@ -1160,9 +1160,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   setIcon($("#startIcon"), "mic");
   setIcon($("#endIcon"), "close");
   setIcon($("#muteIcon"), "mute");
-  // 原页面靠浏览器整页导航自然回收麦克风/WS——现在是原地叠加,退出改叫
-  // closeCallView(),由它接 teardownCallResources() 收资源(见文件末尾)。
-  backLink.onclick = e=>{ e.preventDefault(); closeCallView(); expandSidebarResponsive(); };
+  // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
+  // 收起侧栏后还在原来的通话画面。真正挂断走下面的"结束"/"停"按钮;
+  // 侧栏里切到别的会话才会触发 closeCallView()(见 openConv 收口处)。
+  backLink.onclick = e=>{ e.preventDefault(); expandSidebarResponsive(); };
 
   let stream=null, recorder=null, chunks=[], pressTs=0;
   let busy=false;
