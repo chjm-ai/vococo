@@ -133,14 +133,15 @@
   #newBtn .np{font-size:14px;line-height:1}
   #newBtn:hover{background:var(--card)}
   #newBtn:active{transform:scale(.98)}
-  /* 语音对话:入口按钮样式跟＋新对话一致,弱化一档(边框而非填充),二者视觉分层 */
-  #voiceChatBtn{display:flex;align-items:center;justify-content:center;gap:8px;
-    width:calc(100% - 16px);margin:0 8px 8px;padding:8px 10px;border-radius:9px;
-    border:1px solid var(--line);color:var(--dim);font-size:13px;font-weight:600;
-    cursor:pointer;transition:background .15s,transform .12s}
-  #voiceChatBtn .ic{width:15px;height:15px}
-  #voiceChatBtn:hover{background:var(--panel2);color:var(--text)}
-  #voiceChatBtn:active{transform:scale(.98)}
+  /* 语音通话入口:悬浮在聊天输入框右上方的圆形按钮。composer 是 absolute 贴底,
+     故按钮用 bottom:100% 浮在输入框正上方,不随输入框高度变化而错位。 */
+  #voiceChatBtn{position:absolute;bottom:100%;right:18px;margin-bottom:14px;z-index:11;
+    width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    background:var(--accent);color:#fff;border:none;box-shadow:0 4px 16px rgba(0,0,0,.28);
+    cursor:pointer;transition:transform .12s,box-shadow .16s}
+  #voiceChatBtn .ic{width:21px;height:21px}
+  #voiceChatBtn:hover{transform:scale(1.06);box-shadow:0 6px 20px rgba(0,0,0,.34)}
+  #voiceChatBtn:active{transform:scale(.95)}
   #voiceChatBtn[hidden]{display:none}
   /* 语音任务:固定分组,行样式复用 .conv/.cvbody,状态点颜色跟任务状态走 */
   .vtaskdot{flex-shrink:0;width:7px;height:7px;border-radius:50%}
@@ -761,7 +762,7 @@
     #composer .combg{padding-left:16px;padding-right:16px}
     /* 移动端侧栏:菜单行加大触控尺寸、字号整体 +1px,圆角贴近 iOS 大圆角风格 */
     #sidebar .shead .brand{font-size:21px}
-    #newBtn,#voiceChatBtn{padding:10px 10px;font-size:14px}
+    #newBtn{padding:10px 10px;font-size:14px}
     .projgrp,.conv{padding:9px 10px}
     .projgrp{font-size:14px}
     .conv .ct{font-size:15px}
@@ -961,7 +962,6 @@ try{
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
-    <button id="voiceChatBtn" hidden onclick="openCallView()"></button>
     <div id="convList"></div>
     <div class="sfoot" id="sfoot"><span class="savatar">U</span><span class="sfoottxt" id="sfoottxt">User</span>
       <div id="convFilterBox">
@@ -1026,6 +1026,7 @@ try{
     </div>
     <button id="scrollDownBtn" aria-label="滚到底部" title="滚到底部" onclick="scrollDownSmooth()">↓</button>
     <form id="composer" autocomplete="off">
+      <button type="button" id="voiceChatBtn" hidden onclick="openCallView()" title="语音通话"></button>
       <div class="combg">
         <div class="cwrap">
           <div id="pending"></div>
@@ -1799,6 +1800,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     es.addEventListener("task_done", e=>{
       tasksBadge.classList.add("on");
       loadTasks();
+      loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
       pendingAnnouncements.push(JSON.parse(e.data));
       flushAnnouncements();
     });
@@ -1941,9 +1943,9 @@ async function api(path, opts={}){
   if(r.status===401){ showLogin(); throw new Error("401"); }
   return r;
 }
-// 语音对话入口按钮(侧边栏,"＋新对话"下面):VOICE_ENABLED=0 时后端不注册该路由,
-// 探测到即隐藏。
-$("#voiceChatBtn").innerHTML = ic("mic") + "语音对话";
+// 语音通话悬浮入口(聊天输入框右上方):VOICE_ENABLED=0 时后端不注册 /voice/config,
+// 探测失败就保持隐藏,避免没配语音时露一个死按钮。
+$("#voiceChatBtn").innerHTML = ic("mic");
 fetch("/voice/config").then(r=>r.json()).then(d=>{
   if(d && d.enabled) $("#voiceChatBtn").hidden = false;
 }).catch(()=>{});
@@ -2295,17 +2297,13 @@ function loadExpanded(){ try{ S.expanded=new Set(JSON.parse(localStorage.getItem
 function convsInGroup(hash){
   return S.convs.filter(c => c.pinned ? hash===null : convProject(c.conv)===hash);
 }
-// 语音任务:固定置顶分组,不参与时间排序、不可折叠——主会话(语音通话)固定第一行,
-// 后台任务会话按下面接口返回的顺序排在其后(见 web.py _handle_voice_sidebar)。
-function renderVoiceTaskGroup(box){
+// 语音对话主会话 + 语音后台任务,并入「默认项目」分组置顶显示(数据来自 /voice/sidebar):
+// 主会话(语音通话)第一行,后台任务按接口返回顺序排其后;后台任务可点进去看进度/追问。
+// 通话视图开着时不看 S.conv(那还停在离开前的聊天会话上没变),由调用方传进来的 inCall
+// (= #callView 是否显示)决定「语音对话」这一行是否高亮成"你现在就在这儿"。
+function renderVoiceRows(box, inCall){
   const vs = S.voiceSidebar;
-  if(!vs || !vs.main) return;  // 还没拉到数据(如刚登录那一瞬)先不渲染,避免空分组闪一下
-  const h=el("div","projgrp");
-  const nm=el("span","pgname"); nm.textContent="语音任务"; h.append(nm);
-  box.append(h);
-  // 通话视图开着时不看 S.conv(那还停在离开前的聊天会话上没变)——直接看
-  // #callView 是否显示,让"语音对话"这一行高亮成"你现在就在这儿"。
-  const inCall = !$("#callView").hidden;
+  if(!vs || !vs.main) return;  // 还没拉到数据(如刚登录那一瞬)先不渲染,避免空行闪一下
   const mainRow=el("div","conv ingroup"+(inCall?" active":""));
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");
@@ -2328,8 +2326,7 @@ function renderVoiceTaskGroup(box){
 // 手风琴:默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
-  renderVoiceTaskGroup(box);
-  const inCall = !$("#callView").hidden;  // 通话中:普通会话行都不高亮,高亮权让给上面的"语音对话"行
+  const inCall = !$("#callView").hidden;  // 通话中:普通会话行都不高亮,高亮权让给「语音对话」那一行
   const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
   for(const g of groups){
     const convs=convsInGroup(g.hash);
@@ -2349,6 +2346,7 @@ function renderConvs(){
     h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } toggleGroup(g.hash); };  // 拖拽落地那一下别顺带触发展开/收起
     box.append(h);
     if(!open) continue;
+    if(g.hash===null) renderVoiceRows(box, inCall);  // 语音对话 + 语音后台任务并入默认项目,置于最前
     for(const c of convs){
       if(!c.pinned){const arch=!!c.archived;if(S.convFilter==="archived"&&!arch)continue;if(S.convFilter==="active"&&arch)continue;}
       const e=el("div","conv ingroup"+(!inCall && c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
@@ -3874,6 +3872,7 @@ $("#newBtn").onclick = newChat;
 function expandSidebarResponsive(){
   if(window.innerWidth>760){ setSidebarCollapsed(false); }
   else { $("#sidebar").classList.add("open"); $("#backdrop").classList.add("show"); }
+  loadVoiceSidebar();  // 打开侧边栏时刷新语音后台任务(新派发的运行中任务也能及时出现在默认项目)
 }
 $("#hamb").onclick = expandSidebarResponsive;
 $("#collapseBtn").innerHTML = ic("panel");
