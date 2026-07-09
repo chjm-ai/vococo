@@ -867,13 +867,17 @@
   #status.listening{color:var(--err)}
   #status.thinking,#status.playing{color:var(--accent)}
 
-  /* 挂断=一个叉(×),圆形浅底衬托,hover 变红强调"结束" */
-  #endHandsFreeBtn{width:46px;height:46px;border-radius:50%;border:none;
+  /* 静音/挂断同一行,两个圆形图标按钮并排 */
+  #callActions{display:flex;align-items:center;gap:16px}
+  #endHandsFreeBtn,#muteToggleBtn{width:46px;height:46px;border-radius:50%;border:none;
     background:var(--panel2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;
     padding:0;transition:background .15s ease,color .15s ease,transform .12s ease}
-  #endHandsFreeBtn .ic{width:22px;height:22px}
+  #endHandsFreeBtn .ic,#muteToggleBtn .ic{width:22px;height:22px}
   #endHandsFreeBtn:hover{background:var(--err);color:#fff}
-  #endHandsFreeBtn:active{transform:scale(.92)}
+  #endHandsFreeBtn:active,#muteToggleBtn:active{transform:scale(.92)}
+  /* 静音=一个小图标切换态,开启后常驻标红提醒"麦克风关着",不需要文字 */
+  #muteToggleBtn:hover{background:var(--panel);color:var(--text)}
+  #muteToggleBtn.muted{background:var(--err);color:#fff}
 </style>
 </head>
 <body>
@@ -1070,13 +1074,16 @@ try{
       <!-- 半双工兜底:只有免提初始化失败/浏览器不支持时才出现,见 initUiMode() -->
       <button id="talkBtn" hidden>按住说话</button>
       <!-- 免提是唯一路径:进入通话视图就自动开始,不需要再点一次按钮——
-           声纹球常驻可见,状态文字紧贴在球下面,挂断只留一个小图标按钮。 -->
+           声纹球常驻可见,状态文字紧贴在球下面,静音/挂断这两个小图标按钮同一行。 -->
       <div id="handsFreeUi">
         <div id="orbWrap" class="idle" title="点一下可以打断 AI 说话">
           <canvas id="orbCanvas" width="640" height="200"></canvas>
         </div>
         <div id="status">连接中…</div>
-        <button id="endHandsFreeBtn" title="结束通话" aria-label="结束通话"></button>
+        <div id="callActions">
+          <button id="muteToggleBtn" title="静音麦克风" aria-label="静音麦克风"></button>
+          <button id="endHandsFreeBtn" title="结束通话" aria-label="结束通话"></button>
+        </div>
       </div>
     </footer>
     <div id="tasksDrawer">
@@ -1175,13 +1182,14 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     stopBtn=$("#stopBtn"), tasksBtn=$("#tasksBtn"), tasksBadge=$("#tasksBadge"),
     tasksDrawer=$("#tasksDrawer"), tasksList=$("#tasksList"),
     handsFreeUi=$("#handsFreeUi"), orbWrap=$("#orbWrap"),
-    endHandsFreeBtn=$("#endHandsFreeBtn"),
+    endHandsFreeBtn=$("#endHandsFreeBtn"), muteToggleBtn=$("#muteToggleBtn"),
     backLink=$("#callHead #backLink");
 
   setIcon(backLink, "panel");
   setIcon($("#tasksIcon"), "tasks");
   setIcon($("#stopIcon"), "stop");
   setIcon(endHandsFreeBtn, "close");  // 挂断按钮里放一个叉(×)
+  setIcon(muteToggleBtn, "mic");  // 静音按钮:默认图标是"麦克风开着",点了切成"mute"
   setIcon($("#clearVoiceCtxBtn"), "eraser");  // 顶栏:清空语音会话上下文
   // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
   // 收起侧栏后还在原来的通话画面。真正挂断走下面的"结束"/"停"按钮;
@@ -1194,7 +1202,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let pendingAnnouncements=[];  // task_done 到达时用户正忙(说话/播放/录音)→ 先攒着,空闲了再播
 
   // ── P2 全双工:免提连续对话(见下方 initHandsFree 一段)──────────────────
-  let handsFreeActive=false;
+  let handsFreeActive=false, micMuted=false;
   let wsConn=null, wsState="idle";
   let pcmWorkletNode=null;
   let lastFullyPlayedSeq=-1, pausedForInterrupt=false;
@@ -1667,7 +1675,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       const source = audioCtx.createMediaStreamSource(stream);
       pcmWorkletNode = new AudioWorkletNode(audioCtx, "pcm-forwarder");
       pcmWorkletNode.port.onmessage = e=>{
-        if(handsFreeActive && wsConn && wsConn.readyState === WebSocket.OPEN){
+        if(handsFreeActive && !micMuted && wsConn && wsConn.readyState === WebSocket.OPEN){
           wsConn.send(e.data.pcm.buffer);
         }
       };
@@ -1826,6 +1834,16 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     if(wsState === "thinking" || wsState === "speaking") manualInterrupt();
   });
 
+  // 静音麦克风:只在客户端拦,不发消息给后端(跟"打断 AI 说话"那个 mute WS 消息
+  // 是两回事)——关掉音轨 + 停发 PCM 双保险,图标切换成"已静音"提醒状态。
+  muteToggleBtn.addEventListener("click", ()=>{
+    micMuted = !micMuted;
+    if(stream) stream.getAudioTracks().forEach(t=>{ t.enabled = !micMuted; });
+    muteToggleBtn.classList.toggle("muted", micMuted);
+    muteToggleBtn.title = micMuted ? "取消静音" : "静音麦克风";
+    setIcon(muteToggleBtn, micMuted ? "mute" : "mic");
+  });
+
   // 清空语音会话上下文:清的是 voice-chat:main(见后端 /voice/clear),下一轮从零开始;
   // 同时抹掉本地已显示的对话与半截的流式态,视觉上也回到干净起点。
   $("#clearVoiceCtxBtn").addEventListener("click", async ()=>{
@@ -1882,10 +1900,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     if(echoLoopbackPc1){ try{ echoLoopbackPc1.close(); }catch(e){} echoLoopbackPc1 = null; }
     if(echoLoopbackPc2){ try{ echoLoopbackPc2.close(); }catch(e){} echoLoopbackPc2 = null; }
     echoLoopbackDest = null; echoLoopbackReady = false; echoLoopbackSetupStarted = false;
-    handsFreeActive = false; wsState = "idle";
+    handsFreeActive = false; micMuted = false; wsState = "idle";
     busy = false; talkBtn.disabled = false; talkBtn.classList.remove("recording");
     stopBtn.hidden = true;
     orbWrap.className = "idle";
+    muteToggleBtn.classList.remove("muted"); muteToggleBtn.title = "静音麦克风";
+    setIcon(muteToggleBtn, "mic");
     tasksDrawer.classList.remove("open");
     setStatus("空闲");
   }
