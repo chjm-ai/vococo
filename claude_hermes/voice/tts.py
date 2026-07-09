@@ -28,6 +28,14 @@ _SYNTHESIZE_TIMEOUT_SEC = 10
 _RETRY_DELAY_SEC = 0.3
 
 
+def _has_content(text: str) -> bool:
+    """判断这句话有没有实质内容(至少一个字母/数字/汉字),纯标点(如打断后残留的
+    单个"。")不算——edge-tts 对这种输入会悄悄容忍,DashScope 会明确 400 拒绝
+    (2026-07-09 真机实测捕获:text='。' → InvalidParameter),源头过滤掉更干净,
+    没内容也就没必要走一趟 TTS 网络请求。"""
+    return any(ch.isalnum() for ch in text)
+
+
 class SentenceSplitter:
     """喂入文字增量,吐出切好的完整句子。"""
 
@@ -43,13 +51,13 @@ class SentenceSplitter:
         if len(self._buf) > _MAX_BUFFER:
             sentences.append(self._buf.strip())
             self._buf = ""
-        return sentences
+        return [s for s in sentences if _has_content(s)]
 
     def flush(self) -> list[str]:
         """轮结束时把残留的尾巴也当一句吐出。"""
         tail = self._buf.strip()
         self._buf = ""
-        return [tail] if tail else []
+        return [tail] if tail and _has_content(tail) else []
 
 
 def _split_complete(text: str) -> tuple[list[str], str]:
