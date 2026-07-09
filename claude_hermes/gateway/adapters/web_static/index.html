@@ -1215,46 +1215,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // ── 播放:Web Audio API,不用 <audio> 标签 ──────────────────────────────
   let audioCtx=null, currentSource=null;
 
-  // ── 回声消除 loopback:让浏览器把 AI 自己的语音当成"需要消除的参考信号" ──────
-  // 本地开两个 RTCPeerConnection 互相连起来(不出本机、不连真实服务器),
-  // 把 TTS 音频接到 pc1 发送、pc2 收到后用真正的 <audio> 元素播放出来——这下
-  // 浏览器的回声消除引擎会把它当成一次正常的"通话音频",从而真正参与 AEC
-  // 的参考信号计算。搭建失败静默回退到直连 audioCtx.destination。
-  let echoLoopbackDest=null, echoLoopbackReady=false, echoLoopbackSetupStarted=false;
-  let echoLoopbackPc1=null, echoLoopbackPc2=null, echoLoopbackAudioEl=null;
-
-  async function setupEchoLoopback(){
-    if(echoLoopbackSetupStarted || !window.RTCPeerConnection) return;
-    echoLoopbackSetupStarted = true;
-    try{
-      const dest = audioCtx.createMediaStreamDestination();
-      const pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
-      pc1.onicecandidate = e => { if(e.candidate) pc2.addIceCandidate(e.candidate).catch(()=>{}); };
-      pc2.onicecandidate = e => { if(e.candidate) pc1.addIceCandidate(e.candidate).catch(()=>{}); };
-      const remoteStreamPromise = new Promise(resolve => { pc2.ontrack = e => resolve(e.streams[0]); });
-      dest.stream.getAudioTracks().forEach(t => pc1.addTrack(t, dest.stream));
-      const offer = await pc1.createOffer();
-      await pc1.setLocalDescription(offer);
-      await pc2.setRemoteDescription(offer);
-      const answer = await pc2.createAnswer();
-      await pc2.setLocalDescription(answer);
-      await pc1.setRemoteDescription(answer);
-      const remoteStream = await remoteStreamPromise;
-      const audioEl = new Audio();
-      audioEl.autoplay = true;
-      audioEl.muted = true; // 只当 AEC 参考流用,不能真实出声,否则跟 audioCtx.destination 重叠播放
-      audioEl.srcObject = remoteStream;
-      await audioEl.play();
-      echoLoopbackDest = dest;
-      echoLoopbackPc1 = pc1;
-      echoLoopbackPc2 = pc2;
-      echoLoopbackAudioEl = audioEl;
-      echoLoopbackReady = true;
-    }catch(e){
-      echoLoopbackDest = null;
-      echoLoopbackReady = false;
-    }
-  }
+  // 2026-07-09:曾经加过 WebRTC 环回 hack 想让浏览器原生 AEC 认出 TTS 音频当参考信号,
+  // 一天内连续炸出"哑巴→双音重叠→再哑巴"三个不同故障,iOS Safari 音频会话的怪癖猜不动,
+  // 拆掉换回最简单可靠的单路直连播放。回声消除这个需求单独另开工作评估。
 
   function setStatus(text, cls){ statusEl.textContent = text; statusEl.className = cls || ""; }
   function clearHint(){ const h = transcriptEl.querySelector(".hint"); if(h) h.remove(); }
@@ -1302,7 +1265,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     src.buffer = buf;
     src.connect(audioCtx.destination);
     src.start(0);
-    setupEchoLoopback();
   }
 
   async function ensureMicStream(){
@@ -1468,13 +1430,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       await new Promise((resolve, reject)=>{
         const source = audioCtx.createBufferSource();
         source.buffer = audioBuffer;
-        // 2026-07-09:曾经"only echoLoopbackDest"——loopback 那条 WebRTC 链路
-        // 一旦在某些设备上播不出声(比如 <audio>.play() 判定成功但实际没输出),
-        // AI 说话就会整个哑掉,而本地 oscillator 音效因为直连 destination 完全不受影响,
-        // 正是用户反馈的"音效正常、AI 不读文字"。改成始终接真实输出保底,
-        // ready 时再【多接一路】到 loopback 供 AEC 参考,两条互不排斥。
         source.connect(audioCtx.destination);
-        if(echoLoopbackReady) source.connect(echoLoopbackDest);
         if(outputAnalyser) source.connect(outputAnalyser);
         currentSource = source;
         source.onended = ()=>{ markPlayed(item.seq); resolve(); };
@@ -1899,10 +1855,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     orbCanvasCtx = null; analyser = null; analyserSource = null; outputAnalyser = null; orbLevels = null;
     if(pcmWorkletNode){ try{ pcmWorkletNode.disconnect(); }catch(e){} pcmWorkletNode = null; }
     if(audioCtx){ try{ audioCtx.close(); }catch(e){} audioCtx = null; }
-    if(echoLoopbackAudioEl){ try{ echoLoopbackAudioEl.pause(); }catch(e){} echoLoopbackAudioEl = null; }
-    if(echoLoopbackPc1){ try{ echoLoopbackPc1.close(); }catch(e){} echoLoopbackPc1 = null; }
-    if(echoLoopbackPc2){ try{ echoLoopbackPc2.close(); }catch(e){} echoLoopbackPc2 = null; }
-    echoLoopbackDest = null; echoLoopbackReady = false; echoLoopbackSetupStarted = false;
     handsFreeActive = false; micMuted = false; wsState = "idle";
     busy = false; talkBtn.disabled = false; talkBtn.classList.remove("recording");
     stopBtn.hidden = true;
