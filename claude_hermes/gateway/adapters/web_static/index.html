@@ -714,10 +714,6 @@
   #imgBtn{color:var(--dim);font-size:22px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
     display:flex;align-items:center;justify-content:center;transition:color .16s,background .16s}
   #imgBtn:hover{color:var(--text);background:var(--panel2)}
-  #micBtn{position:relative;color:var(--dim);font-size:18px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
-    display:flex;align-items:center;justify-content:center;transition:color .16s,background .16s,transform .12s}
-  #micBtn:hover{color:var(--text);background:var(--panel2)}
-  #micBtn:active{transform:scale(.9)}
   @keyframes spin{to{transform:rotate(360deg)}}
   @keyframes recIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
   /* 录音行:点 🎤 后整个输入框变成这一条,整行点按即完成(参考 iMessage) */
@@ -780,7 +776,6 @@
   }
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
   .ic{width:14px;height:14px;vertical-align:-2.5px;flex-shrink:0}
-  #micBtn .ic{width:17px;height:17px;vertical-align:-4px}
   .pmrow .ic{width:15px;height:15px;vertical-align:-3px;margin-right:2px;color:var(--dim)}
 
   /* ── 通话视图(#callView,原独立 /voice 页):跟 #chatMain 同级互斥显隐,
@@ -1035,7 +1030,6 @@ try{
             <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
             <div class="inbar">
               <button type="button" id="imgBtn">＋</button>
-              <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
               <span class="spacer"></span>
               <div id="modelBox">
                 <button type="button" id="modelBtn" title="切换模型">
@@ -3862,7 +3856,6 @@ function insertToInput(t){
   ta.value = ta.value.trim() ? (ta.value.replace(/\s+$/,"")+" "+t) : t;
   autoGrow(); ta.focus();
 }
-$("#micBtn").onclick = ()=>{ if(REC.state==="idle") startRec(); };          // 麦克风:开录
 $("#recSend").onclick = e=>{ e.stopPropagation(); if(REC.state==="recording") stopRec(false); }; // 右侧 ↑:完成并发送
 $("#recCancel").onclick = e=>{ e.stopPropagation(); stopRec(true); };        // 左侧 ✕:取消
 // 兜底:关页/切后台也释放一次,防止极端情况下(录音中直接切走)残留占用
