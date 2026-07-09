@@ -176,9 +176,40 @@ class GatewayRunner:
         )
         await self._dispatch(adapter, inc)
 
+    def _install_loop_exception_handler(self) -> None:
+        """全局兜底:抓"我们进程自己到底抛了什么异常"的真实证据。
+
+        2026-07-09:hook_0/"Stream closed" 崩溃循环(退出码 51)反复出现,但
+        hermes.out.log 里只有 CLI 子进程自己吐的 JS 噪音,从没见过我们 Python
+        侧的真实 traceback —— 说明异常大概率是在某个没被 await 的任务里丢出来的
+        (比如 SDK 内部的后台读循环 task,或 anyio TaskGroup 之外新建的裸 task),
+        走的是 loop 默认异常处理路径,而不是常规 try/except 能兜到的路径。
+        标准 asyncio 长驻服务的做法就是自己接管 loop.set_exception_handler,
+        这样下次真崩的时候能在日志里留一份完整证据,再据此对症下药 —— 纯增量、
+        不改变任何现有行为,不会影响 Telegram/网页对话。
+        """
+        import asyncio
+        import traceback
+
+        def _handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+            message = context.get("message", "")
+            exc = context.get("exception")
+            print(f"[asyncio-loop] 未捕获异常: {message}", flush=True)
+            if exc is not None:
+                print(
+                    "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                    flush=True,
+                )
+            extra = {k: v for k, v in context.items() if k not in ("message", "exception")}
+            if extra:
+                print(f"[asyncio-loop] 附加上下文: {extra}", flush=True)
+
+        asyncio.get_running_loop().set_exception_handler(_handler)
+
     async def run(self) -> None:
         from ..core import client_pool, worktree  # 懒加载
 
+        self._install_loop_exception_handler()
         n = await worktree.prune_orphans()  # 启动兜底:回收无会话绑定的孤儿 worktree/悬空分支
         if n:
             print(f"🧹 启动清理:回收 {n} 个孤儿 worktree/悬空分支")
