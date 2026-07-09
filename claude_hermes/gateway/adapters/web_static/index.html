@@ -799,8 +799,6 @@
   #status.thinking,#status.playing{color:var(--accent)}
   #callBody{flex:1;overflow-y:auto;padding:16px}
   #transcript{display:flex;flex-direction:column;gap:12px;max-width:680px;margin:0 auto}
-  #callView .bubble.filler{background:transparent;border:none;color:var(--dim2);font-size:14px;
-    font-style:italic;padding:0 14px;max-width:100%;box-shadow:none}
   .msgicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
   .msgicon .ic{width:15px;height:15px}
   #callView .hint{text-align:center;color:var(--dim2);font-size:14px;padding:40px 20px}
@@ -1257,11 +1255,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     const parts = kind.split(" ");
     const who = parts[0];
     const isError = parts.includes("error");
-    const isFiller = parts.includes("filler");
     const row = document.createElement("div");
     row.className = "row " + (who === "me" ? "me" : "ai");
     const b = document.createElement("div");
-    b.className = "bubble" + (isError ? " err" : "") + (isFiller ? " filler" : "");
+    b.className = "bubble" + (isError ? " err" : "");
     if(isError){
       const icon = document.createElement("span");
       icon.className = "msgicon";
@@ -1385,7 +1382,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             addMsg("me", ev.data.text || "");
             setStatus("思考中…", "thinking");
           } else if(ev.event === "filler"){
-            addMsg("ai filler", ev.data.text || "");
+            // 垫话已改成纯音效(暗示"正在处理"),不再念白,所以不进聊天记录,只入播放队列
             playQueue.push(ev.data);
             pumpPlayback();
           } else if(ev.event === "text"){
@@ -1709,7 +1706,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     } else if(msg.type === "transcript"){
       addMsg("me", msg.text || "");
     } else if(msg.type === "filler"){
-      addMsg("ai filler", msg.text || "");
+      // 垫话已改成纯音效(暗示"正在处理"),不再念白,所以不进聊天记录,只入播放队列
       if(msg.audio_b64){ playQueue.push({seq:-1, audio_b64: msg.audio_b64}); pumpPlayback(); }
     } else if(msg.type === "text_delta"){
       if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
