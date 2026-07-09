@@ -139,7 +139,7 @@ async def synthesize(text: str, voice: str) -> bytes | None:
     """把一句话合成音频字节(qwen3-tts-flash 固定吐 wav,前端 decodeAudioData 嗅探
     字节不认 MIME,直接能播);失败(网络/接口异常/空文本)重试一次,仍失败返回 None。"""
     text = text.strip()
-    if not text:
+    if not text or not _has_content(text):
         return None
     if not config.DASHSCOPE_API_KEY:
         print("[voice/tts] 未配置 DASHSCOPE_API_KEY,无法合成", flush=True)

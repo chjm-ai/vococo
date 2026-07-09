@@ -272,7 +272,13 @@ class VoiceWsSession:
         # 声纹识别(见 voiceprint.py):区分"这是本人在说话"还是"背景里别人在
         # 说话"。参照跨会话持久化(load_profile 读磁盘上次存的),这里只是
         # 每条连接各自持有一份内存副本,更新后立刻存盘。
-        self._voice_profile = voiceprint.load_profile()
+        # 2026-07-09:load_profile/os.environ 加 try/except——ONNX 模型文件丢失
+        # 或 numpy 加载失败时不应让整条 WS 连接初始化崩溃,降级为无声纹模式。
+        try:
+            self._voice_profile = voiceprint.load_profile()
+        except Exception:
+            self._voice_profile = voiceprint.VoiceProfile()
+            print("[voice/ws] 声纹参照加载失败,降级为无声纹模式", flush=True)
         # 当前这一句正在被识别的原始 PCM——从进入 capturing 状态开始攒,
         # completed 事件到来时读出来做声纹提取,见 _set_state/on_audio_frame。
         self._capturing_pcm = bytearray()
@@ -454,19 +460,28 @@ class VoiceWsSession:
                 silence_ms=config.VOICE_VAD_SILENCE_MS,
                 min_speech_ms=config.VOICE_MIN_SPEECH_MS,
             )
-            if not text or is_echo or is_filler or too_short:
-                if too_short and not (is_echo or is_filler):
-                    raw_span_ms = (
-                        (self._speech_stopped_at - self._speech_started_at) * 1000
-                        if self._speech_stopped_at is not None
-                        else -1
-                    )
-                    print(
-                        f"[voice/ws] 丢弃疑似噪声(时长不足) text={text!r} "
-                        f"raw_span={raw_span_ms:.0f}ms silence_ms={config.VOICE_VAD_SILENCE_MS} "
-                        f"min={config.VOICE_MIN_SPEECH_MS}",
-                        flush=True,
-                    )
+            drop_because = []
+            if not text:
+                drop_because.append("转写为空")
+            if is_echo:
+                drop_because.append("回声")
+            if is_filler:
+                drop_because.append("语气词")
+            if too_short:
+                drop_because.append("时长不足")
+            if drop_because:
+                reason = "|".join(drop_because)
+                raw_span_ms = (
+                    (self._speech_stopped_at - self._speech_started_at) * 1000
+                    if self._speech_stopped_at is not None
+                    else -1
+                )
+                print(
+                    f"[voice/ws] 丢弃语音({reason}) text={text!r} "
+                    f"raw_span={raw_span_ms:.0f}ms "
+                    f"min_speech={config.VOICE_MIN_SPEECH_MS}ms",
+                    flush=True,
+                )
                 await self._resolve_pending(commit=False)
                 if too_short and not is_echo and not is_filler and not interrupting:
                     # 只在"确实检测到一段声音、但时长兜底判定太短"这个具体场景补提示——
@@ -601,13 +616,29 @@ class VoiceWsSession:
         已经被别的事情替换掉了(比如正常说完了、或者被真实的开口打断了),
         必须确认 self._current_turn 还是同一个对象才动手撤回,不然会误杀
         一轮完全不相关的、后来的对话。
+
+        整个方法兜了 try/except:这是 ensure_future 跑的后台任务,任何未捕获
+        异常都会变成事件循环的未处理异常,导致进程退出码 51 崩溃循环
+        (2026-07-09 hook_0/"Stream closed" 排查:声纹 ONNX 模型加载失败、
+        librosa 异常等都是异步后台抛的,日志里找不到 Python traceback,因为
+        走的是 loop.set_exception_handler 默认路径)。兜底只打一行日志,
+        不影响对话本身。
         """
-        loop = asyncio.get_event_loop()
-        embedding = await loop.run_in_executor(None, voiceprint.extract_embedding, pcm)
-        if embedding is None:
-            return  # 音频太短提不出可靠声纹,不拦截也不纳入声纹参照
-        profile = self._voice_profile
-        score = voiceprint.match_score(embedding, profile)
+        try:
+            loop = asyncio.get_event_loop()
+            embedding = await loop.run_in_executor(
+                None, voiceprint.extract_embedding, pcm
+            )
+            if embedding is None:
+                return
+            profile = self._voice_profile
+            score = voiceprint.match_score(embedding, profile)
+        except Exception:
+            print(
+                "[voice/ws] 声纹提取异常(已吞,不影响对话)",
+                flush=True,
+            )
+            return
         # 参照样本还不够(冷启动阶段)时不做拦截判定,只用来建立参照——第一次
         # 用这个功能时没有任何参照可比,不能拿一个空/单薄的参照去筛掉任何人。
         is_cold_start = score is None or len(profile) < config.VOICE_VOICEPRINT_MIN_SAMPLES
@@ -724,6 +755,10 @@ class VoiceWsSession:
         synth_task = asyncio.ensure_future(tts.synthesize(sentence, config.VOICE_TTS_VOICE))
         turn.pending_synth_tasks.append(synth_task)
         turn.sentence_queue.put_nowait((seq, sentence, synth_task))
+        print(
+            f"[voice/ws] 入队TTS seq={seq} text={sentence[:40]!r}",
+            flush=True,
+        )
         return seq + 1
 
     async def _sentence_sender(self, turn: TurnContext) -> None:
