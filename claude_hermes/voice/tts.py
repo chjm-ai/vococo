@@ -7,6 +7,8 @@ edge-tts 是非官方接口,合成失败一律吞掉异常、返回 None——�
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 _SENT_END_CHARS = "。!?！？\n"
 _MAX_BUFFER = 60  # 超过这么多字还没遇到标点,强制切一句(兜底,防止长句迟迟不出声)
 
@@ -72,13 +74,18 @@ async def synthesize(text: str, voice: str) -> bytes | None:
 
 
 # 干活垫话(见 01-phase0-voice-entry.md F10):模型开始跑第一个顶层工具时,
-# 不等它自己开口,立即插播这句——同一句在进程生命周期内只合成一次,内存缓存复用,
-# 保证"稍等"这句话不会比它本该垫的等待时间还慢出来。
-FILLER_PHRASE = "稍等,我看看。"
-_filler_cache: dict[str, bytes | None] = {}
+# 不等它自己开口,立即插播一声科技感音效(暗示"正在处理"),不再合成"稍等"这句话念出来
+# ——音效不用等 TTS 网络往返,读一次盘就能复用,比任何一句念白都更贴合"垫时间"的本意。
+_FILLER_SOUND_PATH = Path(__file__).resolve().parent / "static" / "tech_chime.wav"
+_UNSET = object()
+_filler_sound_cache: bytes | None = _UNSET  # type: ignore[assignment]
 
 
-async def filler_audio(voice: str) -> bytes | None:
-    if voice not in _filler_cache:
-        _filler_cache[voice] = await synthesize(FILLER_PHRASE, voice)
-    return _filler_cache[voice]
+async def filler_audio() -> bytes | None:
+    global _filler_sound_cache
+    if _filler_sound_cache is _UNSET:
+        try:
+            _filler_sound_cache = _FILLER_SOUND_PATH.read_bytes()
+        except OSError:
+            _filler_sound_cache = None
+    return _filler_sound_cache
