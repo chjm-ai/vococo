@@ -1242,6 +1242,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       const remoteStream = await remoteStreamPromise;
       const audioEl = new Audio();
       audioEl.autoplay = true;
+      audioEl.muted = true; // 只当 AEC 参考流用,不能真实出声,否则跟 audioCtx.destination 重叠播放
       audioEl.srcObject = remoteStream;
       await audioEl.play();
       echoLoopbackDest = dest;
