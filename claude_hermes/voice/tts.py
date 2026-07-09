@@ -26,6 +26,10 @@ _MAX_BUFFER = 60  # 超过这么多字还没遇到标点,强制切一句(兜底,
 _DASHSCOPE_TTS_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
 _SYNTHESIZE_TIMEOUT_SEC = 10
 _RETRY_DELAY_SEC = 0.3
+# 429(限流)重试延迟:真机复现过一次——某句关键确认话撞上 429,0.3s 后重试
+# 大概率限流还没解除,两次都失败、这句话彻底没声音。限流通常一秒左右就恢复,
+# 等久一点比"重试等于白重试"划算。
+_RETRY_DELAY_429_SEC = 1.5
 
 
 def _has_content(text: str) -> bool:
@@ -108,7 +112,8 @@ def _extract_audio_url(data: dict) -> str | None:
     return None
 
 
-async def _synthesize_once(sess: aiohttp.ClientSession, text: str, voice: str) -> bytes | None:
+async def _synthesize_once(sess: aiohttp.ClientSession, text: str, voice: str) -> tuple[bytes | None, int | None]:
+    """返回 (音频字节或None, HTTP状态码或None);状态码供上层判断限流该等多久重试。"""
     payload = {
         "model": config.DASHSCOPE_TTS_MODEL,
         "input": {"text": text, "voice": voice, "language_type": "Chinese"},
@@ -121,22 +126,23 @@ async def _synthesize_once(sess: aiohttp.ClientSession, text: str, voice: str) -
         body = await resp.text()
     if resp.status != 200:
         print(f"[voice/tts] 合成失败 status={resp.status} text={text[:20]!r} body={body[:200]!r}", flush=True)
-        return None
+        return None, resp.status
     data = json.loads(body)
     audio_url = _extract_audio_url(data)
     if not audio_url:
         print(f"[voice/tts] 响应无音频url text={text[:20]!r} body={body[:200]!r}", flush=True)
-        return None
+        return None, resp.status
     async with sess.get(audio_url) as audio_resp:
         if audio_resp.status != 200:
             print(f"[voice/tts] 下载音频失败 status={audio_resp.status} text={text[:20]!r}", flush=True)
-            return None
-        return _fix_wav_header(await audio_resp.read())
+            return None, audio_resp.status
+        return _fix_wav_header(await audio_resp.read()), resp.status
 
 
 async def synthesize(text: str, voice: str) -> bytes | None:
     """把一句话合成音频字节(qwen3-tts-flash 固定吐 wav,前端 decodeAudioData 嗅探
-    字节不认 MIME,直接能播);失败(网络/接口异常/空文本)重试一次,仍失败返回 None。"""
+    字节不认 MIME,直接能播);失败(网络/接口异常/空文本)重试一次,仍失败返回 None。
+    429(限流)用更长的延迟重试(见 _RETRY_DELAY_429_SEC),其余失败按原来的短延迟。"""
     text = text.strip()
     if not text or not _has_content(text):
         return None
@@ -145,15 +151,16 @@ async def synthesize(text: str, voice: str) -> bytes | None:
         return None
     timeout = aiohttp.ClientTimeout(total=_SYNTHESIZE_TIMEOUT_SEC)
     for attempt in range(2):
+        status = None
         try:
             async with aiohttp.ClientSession(timeout=timeout) as sess:
-                audio = await _synthesize_once(sess, text, voice)
+                audio, status = await _synthesize_once(sess, text, voice)
             if audio:
                 return audio
         except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as e:
             print(f"[voice/tts] 合成异常(第{attempt + 1}次) text={text[:20]!r} err={e!r}", flush=True)
         if attempt == 0:
-            await asyncio.sleep(_RETRY_DELAY_SEC)
+            await asyncio.sleep(_RETRY_DELAY_429_SEC if status == 429 else _RETRY_DELAY_SEC)
     return None
 
 

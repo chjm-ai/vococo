@@ -100,12 +100,32 @@ prompt 里写清楚"先执行 sleep 对应秒数(或算好等到的时间点),�
 语音这边目前做不到,如实告诉用户暂不支持,不要编"设好了"这种话搪塞。
 6. 硬性规则:没有真的调用 voice_dispatch_task,就绝不能说"已经安排好了/设好了/
 派过去了"这类确认话——嘴上答应但没调工具,是绝对不允许的幻觉行为。
-
+{long_task_hint}
 用户说:{user_text}"""
+
+# 派活规则第2条完全靠模型临场判断"这事要不要拆后台",没有代码兜底——2026-07-09
+# 复盘过一次真实事故:用户口述一个7步骤的复杂任务,当时侥幸被正确识别派发,但
+# 这套判断本身没有任何保底。这里加一道低成本信号:识别文本超过字数阈值(见
+# config.VOICE_LONG_TASK_CHARS 的注释)就多塞一句强提示,逼模型认真过一遍
+# 【派活规则】,而不是代码直接绕过模型硬派任务——是否要先跟用户确认方向,仍然
+# 得模型自己判断(见规则第1条),代码不能替它做这个决定。
+_LONG_TASK_HINT = """【输入较长提示】这段话有 {char_count} 个字,比日常对话明显长很多,
+很可能是在交代一件复杂或多步骤的事,而不是随口一句话。认真对照上面【派活规则】
+判断:如果确实要花较长时间才能办完,该走 voice_dispatch_task 就不要因为想
+一次性简单答完而漏派;如果方向不明确或你打算自己拆成好几步,记得先跟用户
+确认过再派,不能因为这条提示就跳过确认直接派活。
+"""
 
 
 def build_prompt(user_text: str) -> str:
     """把用户原话包上语音模式指令块,喂给 stream_turn。落库时不存这层包装。"""
+    long_task_hint = (
+        _LONG_TASK_HINT.format(char_count=len(user_text))
+        if len(user_text) > config.VOICE_LONG_TASK_CHARS
+        else ""
+    )
     return _INSTRUCTION_BLOCK.format(
-        user_text=user_text, timeout_min=config.VOICE_TASK_TIMEOUT_MIN
+        user_text=user_text,
+        timeout_min=config.VOICE_TASK_TIMEOUT_MIN,
+        long_task_hint=long_task_hint,
     )
