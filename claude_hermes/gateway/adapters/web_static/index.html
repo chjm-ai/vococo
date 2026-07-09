@@ -1520,7 +1520,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }
   }
 
-  tasksBtn.addEventListener("click", ()=>{ tasksDrawer.classList.add("open"); loadTasks(); });
+  tasksBtn.addEventListener("click", ()=>{ tasksBadge.classList.remove("on"); tasksDrawer.classList.add("open"); loadTasks(); });
   tasksDrawer.addEventListener("click", e=>{ if(e.target === tasksDrawer) tasksDrawer.classList.remove("open"); });
 
   function flushAnnouncements(){
