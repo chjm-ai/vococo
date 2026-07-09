@@ -188,6 +188,15 @@ async def _handle_stop(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def _handle_clear(request: web.Request) -> web.Response:
+    """清空语音聊天上下文(通话界面顶部的橡皮擦按钮):清的是 voice-chat:main,
+    跟聊天页的 /clear 各管各的。"""
+    if (g := _guard(request)) is not None:
+        return g
+    session.clear()
+    return web.json_response({"ok": True})
+
+
 # ── P1 任务板:列表/详情/停止/在线播报的常驻 SSE(F8/F10) ─────────────────────
 async def _handle_tasks_list(request: web.Request) -> web.Response:
     if (g := _guard(request)) is not None:
@@ -249,6 +258,7 @@ def register_routes(app: web.Application) -> None:
             web.post("/voice/stt", _handle_stt),
             web.post("/voice/send", _handle_send),
             web.post("/voice/stop", _handle_stop),
+            web.post("/voice/clear", _handle_clear),
             web.get("/voice/tasks", _handle_tasks_list),
             web.get("/voice/tasks/stream", _handle_tasks_stream),
             web.get("/voice/tasks/{task_id}", _handle_task_detail),

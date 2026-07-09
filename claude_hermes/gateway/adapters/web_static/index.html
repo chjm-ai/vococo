@@ -155,9 +155,6 @@
   #collapseBtn:hover{background:var(--panel2);color:var(--text)}
   #collapseBtn:active{transform:scale(.9)}
   #collapseBtn .ic{width:16px;height:16px}
-  /* 清理上下文:顶栏「上下文占用%」环左边的常驻图标,点一下清空当前会话上下文
-     (等同 /clear,历史保留);放这里跟 ctx 语义相邻,比塞侧栏角落好找 */
-  #clearCtxBtn .ic{width:19px;height:19px}
   /* touch-action:pan-y——纵向滚动交给浏览器原生处理,横向不让浏览器插手,
      全交给 bindSwipe() 的 JS 手势;否则原生纵向抖动会触发 #convList 的 scroll
      监听把刚滑出来的菜单强制收起(表现为"菜单停不住、点不到按钮") */
@@ -806,6 +803,12 @@
   #callView .hint{text-align:center;color:var(--dim2);font-size:14px;padding:40px 20px}
   #tasksBtn{position:relative;background:none;border:none;color:var(--dim);padding:4px;display:inline-flex}
   #tasksBtn .ic{width:20px;height:20px}
+  /* 清空语音上下文:通话界面顶栏的橡皮擦,清的是 voice-chat:main(见 /voice/clear),
+     跟聊天页各清各的——放这里因为清的正是这块语音会话的上下文 */
+  #clearVoiceCtxBtn{background:none;border:none;color:var(--dim);padding:4px;display:inline-flex;
+    transition:color .15s ease}
+  #clearVoiceCtxBtn .ic{width:20px;height:20px}
+  #clearVoiceCtxBtn:hover,#clearVoiceCtxBtn:active{color:var(--err)}
   #tasksBadge{position:absolute;top:0;right:0;width:8px;height:8px;border-radius:50%;
     background:var(--accent);display:none}
   #tasksBadge.on{display:block}
@@ -981,7 +984,6 @@ try{
             </span>
           </span>
         </div>
-        <button class="icon" id="clearCtxBtn" title="清理上下文(清空当前会话上下文,历史保留)"></button>
         <div id="ctxBox">
           <button id="barMeta" type="button" title="上下文占用 · 点击看明细" hidden>
             <svg class="ctxring" viewBox="0 0 20 20"><circle class="track" cx="10" cy="10" r="8"/><circle class="fill" id="ctxRing" cx="10" cy="10" r="8"/></svg>
@@ -1063,6 +1065,7 @@ try{
     <header id="callHead">
       <button id="backLink" title="展开侧栏"></button>
       <span class="title">语音伴聊</span>
+      <button id="clearVoiceCtxBtn" title="清空语音聊天上下文(AI 从头开始,历史保留)"></button>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
     <div id="callBody">
@@ -1185,6 +1188,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   setIcon($("#tasksIcon"), "tasks");
   setIcon($("#stopIcon"), "stop");
   setIcon(endHandsFreeBtn, "close");  // 挂断按钮里放一个叉(×)
+  setIcon($("#clearVoiceCtxBtn"), "eraser");  // 顶栏:清空语音会话上下文
   // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
   // 收起侧栏后还在原来的通话画面。真正挂断走下面的"结束"/"停"按钮;
   // 侧栏里切到别的会话才会触发 closeCallView()(见 openConv 收口处)。
@@ -1820,6 +1824,19 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   endHandsFreeBtn.addEventListener("click", ()=>{ window.closeCallView(); });
   orbWrap.addEventListener("click", ()=>{
     if(wsState === "thinking" || wsState === "speaking") manualInterrupt();
+  });
+
+  // 清空语音会话上下文:清的是 voice-chat:main(见后端 /voice/clear),下一轮从零开始;
+  // 同时抹掉本地已显示的对话与半截的流式态,视觉上也回到干净起点。
+  $("#clearVoiceCtxBtn").addEventListener("click", async ()=>{
+    if(!confirm("清空语音聊天的上下文?(AI 会从头开始,历史记录仍保留)")) return;
+    try{
+      const resp = await fetch("/voice/clear", {method:"POST", headers:{"X-Auth-Token":S.token}});
+      if(!resp.ok) throw new Error("HTTP "+resp.status);
+      transcriptEl.innerHTML = "";
+      currentTurnAiEl = null; currentTurnFull = "";
+      addMsg("ai filler", "上下文已清空,我们重新开始吧。");
+    }catch(e){ addMsg("ai error", "清空失败:"+e.message); }
   });
 
   function initUiMode(){
@@ -3862,10 +3879,6 @@ $("#hamb").onclick = expandSidebarResponsive;
 $("#collapseBtn").innerHTML = ic("panel");
 $("#hamb").innerHTML = ic("panel");
 $("#collapseBtn").onclick = ()=> setSidebarCollapsed(true);   // 侧边栏内:收起
-$("#clearCtxBtn").innerHTML = ic("eraser");
-$("#clearCtxBtn").onclick = ()=>{                            // 清理上下文=对当前会话发 /clear
-  if(confirm("清空当前会话的上下文?(历史记录保留,AI 会从头开始)")) sendCmd("/clear");
-};
 $("#backdrop").onclick = closeSidebar;
 function closeSidebar(){ $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("show"); }
 // 桌面侧边栏折叠态(记忆到 localStorage)
