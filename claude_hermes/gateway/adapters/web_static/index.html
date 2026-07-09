@@ -617,8 +617,9 @@
   .skel.ai2{align-self:flex-start;height:80px;width:75%;background:var(--panel2)}
   @keyframes skelshine{0%,100%{opacity:.45}50%{opacity:.85}}
 
-  /* 空状态 / 欢迎屏 */
-  #empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  /* 空状态 / 欢迎屏:默认不显示,由 updateEmpty()/openConv() 按真实数据决定何时出现,
+     避免 #app 刚显示、数据还没到位时先闪一下欢迎屏 */
+  #empty{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
     text-align:center;padding:24px;pointer-events:none}
   #empty .elogo{width:76px;height:76px;margin-bottom:18px;color:var(--text);
     display:flex;align-items:center;justify-content:center;animation:pop .5s ease}
@@ -874,6 +875,17 @@
 </style>
 </head>
 <body>
+
+<script>
+// 已有缓存口令时,别让口令页先画出来再被 JS 摘掉(那一闪很难看)——
+// 在 #login/#app 解析之前就用 document.write 插一段样式,首帧直接是隐藏态。
+// 给它一个 id,万一口令其实已失效(401),tryEnter() 里会把这段样式摘掉、退回登录页。
+try{
+  if(localStorage.getItem("hermes_token")){
+    document.write('<style id="bootSkip">#login{display:none}#app{display:flex!important}</style>');
+  }
+}catch(e){}
+</script>
 
 <div id="login">
   <div class="card">
@@ -1870,18 +1882,31 @@ fetch("/voice/config").then(r=>r.json()).then(d=>{
 }).catch(()=>{});
 
 // ── 登录 ────────────────────────────────────────────────────────────────
-function showLogin(){ $("#login").style.display="flex"; $("#app").hidden=true; if(S.es){S.es.close();S.es=null;} }
+function showLogin(){
+  $("#login").style.display="flex"; $("#app").hidden=true;
+  const bs=$("#bootSkip"); if(bs) bs.remove();  // 摘掉早期"跳过闪烁"那段强制样式,否则 #app 会被 !important 钉在显示状态
+  if(S.es){S.es.close();S.es=null;}
+}
 async function tryEnter(){
+  // 有缓存口令时,首帧就已经靠 #bootSkip 样式把口令页藏起来、#app 显示出来了(见 </head> 后那段内联脚本)。
+  // 这里立刻把内容区铺成骨架屏,不要空等——避免"口令消失→空白/欢迎屏→数据陆续到位"的中间闪烁态。
+  $("#wrap").innerHTML=""; $("#empty").style.display="none"; $("#convLoading").classList.add("on");
   try{
     const r = await fetch("/conversations", {headers:{"X-Auth-Token":S.token}});
-    if(r.status===401){ $("#loginErr").textContent="口令错误"; return; }
+    if(r.status===401){ $("#loginErr").textContent="口令错误"; showLogin(); return; }
+    const d = await r.json();
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
-    await loadPrefs(); await loadProjects(); await loadConvs(); await loadModels(); await loadCommands(); updateFilterBtn();
-    loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
-    // 打开最近活跃的会话;openConv 内会同步活跃项目、展开其分组并重绘侧边栏
+    applyConvs(d);   // 这次 /conversations 顺便验证了口令,数据直接拿来用,不用再多打一次
+    // 优先把最近活跃的会话内容画出来;openConv 内会同步活跃项目、展开其分组并重绘侧边栏。
+    // 侧边栏用得到的次要数据(主题偏好/项目列表/模型/斜杠命令)并行去拉,不再堵在会话内容前面。
+    const secondary = Promise.all([loadPrefs(), loadProjects(), loadModels(), loadCommands()])
+      .then(updateFilterBtn).catch(()=>{});
     await openConv(S.convs[0] ? S.convs[0].conv : "main");
+    loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
+    await secondary;
+    renderConvs();  // 项目分组数据(loadProjects)到位后再补画一次侧栏分组
   }catch(e){ $("#loginErr").textContent="连接失败"; }
 }
 $("#loginBtn").onclick = ()=>{ S.token = $("#pw").value.trim(); tryEnter(); };
@@ -2175,8 +2200,9 @@ async function loadPrefs(){
     if(p.conv_filter) S.convFilter = p.conv_filter;
   }catch(e){}
 }
-async function loadConvs(){
-  const r = await api("/conversations"); const d = await r.json();
+// 用一份 /conversations 响应数据重建 S.convs(供 loadConvs() 与登录时的首次拉取共用,
+// 登录那次不用再多打一次 /conversations)。
+function applyConvs(d){
   const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
   // 新建但还没发出第一条消息的本地会话(conv=local-xxx)后端还不认识,不在返回列表里;
   // 合并时保留它,否则录音/转写等待期间只要有别的会话触发这次刷新,这条新会话就会被冲没
@@ -2184,6 +2210,10 @@ async function loadConvs(){
   // 全部会话(含主会话)按最近活跃排序,最新的排最前面
   S.convs = [main, ...d.conversations, ...locals].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
   renderConvs();   // 会话刷新后同步标题栏
+}
+async function loadConvs(){
+  const r = await api("/conversations"); const d = await r.json();
+  applyConvs(d);
 }
 // 从 conv id 解析它属于哪个项目:p<hash>:<convid> → hash;否则 null(默认项目)
 function convProject(conv){
