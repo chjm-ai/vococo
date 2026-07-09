@@ -1126,6 +1126,8 @@ const S = {
   dragSrc: null,        // 项目拖拽排序:正在被拖起的项目 hash
   dragMoved: false,     // 刚发生过一次拖拽落地,下一次 click 吞掉(不触发分组展开/收起)
   voiceSidebar: {main:null, tasks:[]},  // /voice/sidebar 拉到的"语音任务"固定分组数据
+  seenTasks: new Set(),  // 已点开过的语音后台任务 conv id:终态(done/failed/cancelled)的
+                         // 状态点点过一次就不用再提醒,持久化到 localStorage(见 loadSeenTasks)
   swipedConv: null,     // 当前左滑展开的会话 id;renderConvs 重建 DOM 时靠它补回 swiped 状态,
                          // 否则任意会话(含后台)一完成回合就会触发 loadConvs→renderConvs 把菜单冲掉
 };
@@ -1972,6 +1974,7 @@ async function tryEnter(){
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
+    loadSeenTasks();
     applyConvs(d);   // 这次 /conversations 顺便验证了口令,数据直接拿来用,不用再多打一次
     // 优先把最近活跃的会话内容画出来;openConv 内会同步活跃项目、展开其分组并重绘侧边栏。
     // 侧边栏用得到的次要数据(主题偏好/项目列表/模型/斜杠命令)并行去拉,不再堵在会话内容前面。
@@ -2298,6 +2301,8 @@ function convProject(conv){
 function grpKey(hash){ return hash===null ? "__default__" : hash; }
 function saveExpanded(){ try{ localStorage.setItem("hermes_expanded", JSON.stringify([...S.expanded])); }catch(e){} }
 function loadExpanded(){ try{ S.expanded=new Set(JSON.parse(localStorage.getItem("hermes_expanded")||"[]")); }catch(e){ S.expanded=new Set(); } }
+function saveSeenTasks(){ try{ localStorage.setItem("hermes_seen_tasks", JSON.stringify([...S.seenTasks])); }catch(e){} }
+function loadSeenTasks(){ try{ S.seenTasks=new Set(JSON.parse(localStorage.getItem("hermes_seen_tasks")||"[]")); }catch(e){ S.seenTasks=new Set(); } }
 
 function convsInGroup(hash){
   return S.convs.filter(c => c.pinned ? hash===null : convProject(c.conv)===hash);
@@ -2319,12 +2324,21 @@ function renderVoiceRows(box, inCall){
   for(const t of vs.tasks){
     const row=el("div","conv ingroup"+(!inCall && t.conv===S.conv?" active":""));
     const body=el("div","cvbody");
-    const dot=el("span","vtaskdot "+(t.task_status||"")); dot.title=TASK_STATUS_WORD[t.task_status]||"";
-    body.append(dot);
+    // 终态(done/failed/cancelled)的状态点是"有新结果"提醒,点开过一次就不用再一直挂着;
+    // queued/running 是任务仍在跑的实时状态,不受"点过"影响,一直显示到跑完为止。
+    const isTerminal = t.task_status==="done" || t.task_status==="failed" || t.task_status==="cancelled";
+    const seen = S.seenTasks.has(t.conv);
+    if(!isTerminal || !seen){
+      const dot=el("span","vtaskdot "+(t.task_status||"")); dot.title=TASK_STATUS_WORD[t.task_status]||"";
+      body.append(dot);
+    }
     const ct=el("div","ct"); ct.textContent=t.title||"新对话"; body.append(ct);
     const tm=fmtTime(t.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }
     row.append(body);
-    row.onclick=()=>{ openConv(t.conv); };
+    row.onclick=()=>{
+      if(isTerminal && !seen){ S.seenTasks.add(t.conv); saveSeenTasks(); renderConvs(); }
+      openConv(t.conv);
+    };
     box.append(row);
   }
 }
