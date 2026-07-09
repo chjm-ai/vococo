@@ -740,6 +740,77 @@ async def test_false_positive_interrupt_rolls_back_without_appending(voice_db, m
 
 
 @pytest.mark.anyio
+async def test_false_positive_interrupt_does_not_truncate_ongoing_answer(voice_db, monkeypatch):
+    """2026-07-09 核心修复:真机连续测试打断 4 次里有 2 次是背景噪音/回声触发
+    的假警报——旧设计 speech_started 立刻 cancel 掉正在跑的 turn,"回滚"只能
+    告诉客户端接着播缓存的部分,后半段答案永远要不回来了。现在改成先观察,
+    判定是假警报后 turn 应该完全不受影响、正常说完、完整落库。
+    """
+    fake_ws = FakeUpstreamWs()
+    connected = asyncio.Event()
+    _patch_upstream(monkeypatch, fake_ws, connected)
+
+    started = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        yield TextDelta("完整回答的第一句。")
+        started.set()
+        await gate.wait()  # 模拟"疑似打断"到"判定假警报"之间的这段等待时间
+        yield TextDelta("完整回答的第二句。")
+        yield Done(AgentReply(
+            text="完整回答的第一句。完整回答的第二句。",
+            tool_calls=[], cost_usd=None, is_error=False,
+        ))
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+    monkeypatch.setattr(tts, "synthesize", lambda text, voice: _none_coro())
+
+    async with TestClient(TestServer(_app())) as client:
+        async with client.ws_connect("/voice/ws") as wsc:
+            await _hello_and_wait_connected(wsc, connected)
+
+            fake_ws.push_event("input_audio_buffer.speech_started")
+            await wsc.receive_json()  # state: capturing
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed",
+                transcript="完整回答的第一句",
+            )
+            await _drain_until_sentence(wsc)
+            await started.wait()
+
+            fake_ws.push_event("input_audio_buffer.speech_started")  # 疑似打断(背景噪音)
+            msg = await wsc.receive_json()
+            assert msg == {"type": "state", "state": "capturing"}
+
+            # 转写为空 → 判定误触发,回滚
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed", transcript=""
+            )
+            resumed = await wsc.receive_json()
+            assert resumed == {"type": "resumed"}
+
+            # 放开被卡住的那句话——关键断言:turn 此刻应该还活着、能继续往下跑,
+            # 不该早在"疑似打断"那一刻就已经被 cancel 掉了。
+            gate.set()
+
+            events = []
+            done = None
+            while done is None:
+                msg = await wsc.receive_json()
+                events.append(msg)
+                if msg["type"] == "done":
+                    done = msg
+
+            assert done["full_text"] == "完整回答的第一句。完整回答的第二句。"
+
+    history = session.load_history()
+    turn = next(h for h in history if h.user == "完整回答的第一句")
+    # 完整答案正常落库,不是被腰斩的"...(此处被用户打断)"
+    assert turn.assistant == "完整回答的第一句。完整回答的第二句。"
+
+
+@pytest.mark.anyio
 async def test_self_echo_interrupt_rolls_back_without_starting_new_turn(voice_db, monkeypatch):
     """AI 自己的声音漏回麦克风,被 DashScope 当成用户开口识别出来——转写内容
     跟 AI 刚说的话高度重合,该判定成回声误触发,不能真拿这段话去问模型。
