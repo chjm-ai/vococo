@@ -155,7 +155,10 @@
   #collapseBtn:hover{background:var(--panel2);color:var(--text)}
   #collapseBtn:active{transform:scale(.9)}
   #collapseBtn .ic{width:16px;height:16px}
-  .conv{margin-bottom:1px;gap:8px;color:var(--dim);position:relative;overflow:hidden}
+  /* touch-action:pan-y——纵向滚动交给浏览器原生处理,横向不让浏览器插手,
+     全交给 bindSwipe() 的 JS 手势;否则原生纵向抖动会触发 #convList 的 scroll
+     监听把刚滑出来的菜单强制收起(表现为"菜单停不住、点不到按钮") */
+  .conv{margin-bottom:1px;gap:8px;color:var(--dim);position:relative;overflow:hidden;touch-action:pan-y}
   .conv.active{color:var(--text)}
   @media(hover:hover){ .conv:hover{color:var(--text)} }
   /* 左滑露出归档/删除(cvact 默认平移到行外,靠 overflow:hidden 裁掉;
