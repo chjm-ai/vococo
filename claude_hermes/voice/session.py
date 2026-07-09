@@ -34,6 +34,13 @@ def set_resume(sid: str) -> None:
     session_store.set_sdk_session_id(SESSION_KEY, sid)
 
 
+def clear() -> None:
+    """清空语音会话上下文:推进 watermark(旧轮次仍留库可 search)+ 抹掉 SDK resume。
+    run_turn 每轮现读 load_history()/get_resume(),所以下一轮语音立即从零开始,
+    通话进行中也生效(WS 层不缓存 resume 态)。"""
+    session_store.new_session(SESSION_KEY)
+
+
 def run_turn(prompt_text: str, extra_mcp_servers: dict | None = None) -> AsyncIterator[Event]:
     """载入历史、调 stream_turn,把事件流原样透传给调用方消费。
 
