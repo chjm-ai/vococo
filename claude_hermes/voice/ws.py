@@ -485,6 +485,7 @@ class VoiceWsSession:
                 turn.task.cancel()
                 asyncio.ensure_future(_swallow_cancelled(turn.task))
                 await self._set_state(_STATE_IDLE)
+                await self._send("error", message="没听清像是你的声音,请再说一次")
                 print(f"[voice/ws] 声纹不匹配,撤回这一轮 score={score:.2f}", flush=True)
             return  # 不管撤没撤回,不匹配的样本都不该纳入声纹参照
         self._voice_profile = voiceprint.update_profile(
