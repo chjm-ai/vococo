@@ -260,11 +260,12 @@ VOICE_POST_DONE_ECHO_GUARD_MS: int = int(
 # 2026-07-09:呼吸声/环境杂音时长太短,即便 DashScope 硬编出一个语气词,也不该
 # 当成一句真话——这一条不看转写文字,只看物理时长,所以在空闲状态也生效
 # (looks_like_filler_only 那条只在打断场景生效,见上面的说明)。
-# DashScope 上报的 speech_started→speech_stopped 时间差里含有 VOICE_VAD_SILENCE_MS
-# 这段判定静音用的尾巴(见 voice/ws.py 的 _handle_upstream_event),要减掉这段
-# 才是真正说话的时长估算值。默认给一个保守的下限,正常说一个字/短词都会明显
-# 超过它,呼吸声/麦克风杂音这类瞬时噪声通常到不了;真机环境不同需要重新调,
-# 调太大会把用户真说的很短的字(比如单独一个"对")也当噪声吃掉。
+# 判断依据是 speech_started→speech_stopped 的原始时间差(见 voice/ws.py 的
+# estimate_speech_too_short)——原计划减掉 VOICE_VAD_SILENCE_MS 判定静音尾巴,
+# 但真机实测发现这段原始时间差经常比配置的静音时长还短(DashScope 实际判"说完
+# 了"用的时长跟我们配置的对不上),减法会算出负数、把正常短句全部误杀,已改成
+# 直接用原始时间差判断,不再依赖那个不成立的假设。默认给一个保守的下限,只挡
+# 真正瞬时(几十毫秒级)的噪声;调太大会把用户真说的很短的字也当噪声吃掉。
 VOICE_MIN_SPEECH_MS: int = int(os.environ.get("VOICE_MIN_SPEECH_MS", "250"))
 
 # 2026-07-08:声纹识别——分清"这是本人在说话"还是"背景里别人在说话"。
