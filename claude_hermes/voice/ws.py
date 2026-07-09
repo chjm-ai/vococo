@@ -99,6 +99,30 @@ def looks_like_filler_only(transcript: str) -> bool:
     return not stripped or stripped in _FILLER_WORDS
 
 
+def estimate_speech_too_short(
+    speech_started_at: float,
+    speech_stopped_at: float | None,
+    *,
+    silence_ms: int,
+    min_speech_ms: int,
+) -> bool:
+    """时长兜底(见 config.VOICE_MIN_SPEECH_MS 的说明):不看转写文字,只看
+    物理时长——呼吸声/麦克风杂音这类瞬时噪声通常撑不到一个字的时长,即便被
+    识别模型硬编成语气词也该丢掉,所以在空闲状态也生效(不像 looks_like_filler_only
+    只在打断场景生效)。
+
+    speech_started→speech_stopped 的时间差里含有 silence_ms 这段判定静音用的
+    尾巴(DashScope server_vad 要连续静音够这么久才认定"说完了"),减掉才是
+    真正说话时长的估算值。speech_stopped 还没来(比如被下一次打断打断)时不
+    误伤,直接放行。
+    """
+    if speech_stopped_at is None:
+        return False
+    raw_span_ms = (speech_stopped_at - speech_started_at) * 1000
+    est_speech_ms = raw_span_ms - silence_ms
+    return est_speech_ms < min_speech_ms
+
+
 def looks_like_self_echo(
     transcript: str, emitted_sentences: list[str], threshold: float
 ) -> bool:
@@ -202,6 +226,12 @@ class VoiceWsSession:
         # 当前这一句正在被识别的原始 PCM——从进入 capturing 状态开始攒,
         # completed 事件到来时读出来做声纹提取,见 _set_state/on_audio_frame。
         self._capturing_pcm = bytearray()
+        # 时长兜底(见 config.VOICE_MIN_SPEECH_MS 的说明):记录本句
+        # speech_started/speech_stopped 的时刻,completed 到来时估算真正
+        # 说话时长有多短。speech_stopped 迟迟不来(极端情况)时保持 None,
+        # 时长检查直接跳过、不误伤。
+        self._speech_started_at = 0.0
+        self._speech_stopped_at: float | None = None
 
         self._upstream_sess: aiohttp.ClientSession | None = None
         self._upstream_ws: aiohttp.ClientWebSocketResponse | None = None
@@ -291,9 +321,13 @@ class VoiceWsSession:
     async def _handle_upstream_event(self, data: dict) -> None:
         type_ = data.get("type")
         if type_ == "input_audio_buffer.speech_started":
+            self._speech_started_at = time.monotonic()
+            self._speech_stopped_at = None
             if self.state in (_STATE_THINKING, _STATE_SPEAKING):
                 await self._interrupt_current_turn()
             await self._set_state(_STATE_CAPTURING)
+        elif type_ == "input_audio_buffer.speech_stopped":
+            self._speech_stopped_at = time.monotonic()
         elif type_ == "conversation.item.input_audio_transcription.completed":
             text = (data.get("transcript") or "").strip()
             interrupting = self._pending is not None
@@ -320,7 +354,17 @@ class VoiceWsSession:
             # 状态触发的语气词照常当一句真话处理(用户确实可能就是说了句"嗯"),
             # 危害只在"拿它去打断"这一步,见 looks_like_filler_only 的注释。
             is_filler = interrupting and looks_like_filler_only(text)
-            if not text or is_echo or is_filler:
+            # 时长兜底:不看文字看物理时长,任何状态下都生效(见 estimate_speech_too_short
+            # 的说明)——跟上面 is_filler 是互补关系,不是互相替代。
+            too_short = estimate_speech_too_short(
+                self._speech_started_at,
+                self._speech_stopped_at,
+                silence_ms=config.VOICE_VAD_SILENCE_MS,
+                min_speech_ms=config.VOICE_MIN_SPEECH_MS,
+            )
+            if not text or is_echo or is_filler or too_short:
+                if too_short and not (is_echo or is_filler):
+                    print(f"[voice/ws] 丢弃疑似噪声(时长不足) text={text!r}", flush=True)
                 await self._resolve_pending(commit=False)
                 await self._set_state(_STATE_IDLE)
                 return
@@ -337,9 +381,9 @@ class VoiceWsSession:
             # 没必要,能异步就异步。
             if config.VOICE_VOICEPRINT_ENABLED and self._current_turn is not None:
                 asyncio.ensure_future(self._voiceprint_gate(pcm_snapshot, self._current_turn))
-        # speech_stopped/session.created/session.updated/增量 .text/
-        # conversation.item.created/input_audio_buffer.committed/session.finished
-        # 都只是过程性事件,不是决策点,忽略。
+        # session.created/session.updated/增量 .text/conversation.item.created/
+        # input_audio_buffer.committed/session.finished 都只是过程性事件,
+        # 不是决策点,忽略(speech_stopped 现在只记时间戳,见上面的分支)。
 
     async def _on_upstream_lost(self) -> None:
         """上游连接意外断开(不是我们主动关的):重连一次,再不行就放弃。"""

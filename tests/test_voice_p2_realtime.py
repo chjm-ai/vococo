@@ -197,6 +197,28 @@ def test_looks_like_filler_only_false_for_real_content(transcript):
     assert ws.looks_like_filler_only(transcript) is False
 
 
+# ── estimate_speech_too_short:纯函数,时长兜底(不看文字看物理时长) ───────────
+def test_estimate_speech_too_short_true_for_brief_burst():
+    # 50ms 就结束,远不足以解释"1500ms 静音尾巴"之外还有一个字的说话时长。
+    assert ws.estimate_speech_too_short(0.0, 0.05, silence_ms=1500, min_speech_ms=250) is True
+
+
+def test_estimate_speech_too_short_false_for_normal_speech():
+    # 1500ms 静音尾巴 + 400ms 真实说话时长,减掉尾巴后够长,不该被当噪声丢掉。
+    assert ws.estimate_speech_too_short(0.0, 1.9, silence_ms=1500, min_speech_ms=250) is False
+
+
+def test_estimate_speech_too_short_false_when_speech_stopped_never_arrived():
+    # speech_stopped 迟迟不来(比如又被打断)不该误伤,直接放行。
+    assert ws.estimate_speech_too_short(0.0, None, silence_ms=1500, min_speech_ms=250) is False
+
+
+def test_estimate_speech_too_short_respects_min_speech_ms():
+    # 估算说话时长正好 200ms,验证真的在用 min_speech_ms 而不是写死的常量。
+    assert ws.estimate_speech_too_short(0.0, 1.7, silence_ms=1500, min_speech_ms=150) is False
+    assert ws.estimate_speech_too_short(0.0, 1.7, silence_ms=1500, min_speech_ms=250) is True
+
+
 # ── WS 状态机:正常一轮 ───────────────────────────────────────────────────
 @pytest.mark.anyio
 async def test_ws_normal_turn_flow_reaches_idle_and_appends_history(voice_db, monkeypatch):
@@ -384,6 +406,98 @@ async def test_empty_completed_transcript_resets_to_idle_without_starting_turn(
             assert msg == {"type": "state", "state": "idle"}
 
     assert called["n"] == 0
+
+
+@pytest.mark.anyio
+async def test_idle_noise_burst_too_short_is_discarded_without_starting_turn(
+    voice_db, monkeypatch
+):
+    """真机反馈:呼吸声/环境杂音被识别模型硬编成语气词("哦"),以前这类词只在
+    "正在打断一个已经在跑的回答"这个场景被 is_filler 过滤——空闲状态下照样
+    当一句真话发给 Claude。这条时长兜底不看文字看物理时长,任何状态都生效,
+    见 config.VOICE_MIN_SPEECH_MS 的说明。
+    """
+    fake_ws = FakeUpstreamWs()
+    connected = asyncio.Event()
+    _patch_upstream(monkeypatch, fake_ws, connected)
+    monkeypatch.setattr(config, "VOICE_VAD_SILENCE_MS", 1500)
+    monkeypatch.setattr(config, "VOICE_MIN_SPEECH_MS", 250)
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(ws.time, "monotonic", lambda: clock["t"])
+
+    called = {"n": 0}
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        called["n"] += 1
+        yield Done(AgentReply(text="不该被调用", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+
+    async with TestClient(TestServer(_app())) as client:
+        async with client.ws_connect("/voice/ws") as wsc:
+            await _hello_and_wait_connected(wsc, connected)
+
+            fake_ws.push_event("input_audio_buffer.speech_started")
+            assert (await wsc.receive_json()) == {"type": "state", "state": "capturing"}
+
+            clock["t"] = 0.05  # 50ms 后就停了,远不足以解释"1500ms 静音尾巴"之外还说了话
+            fake_ws.push_event("input_audio_buffer.speech_stopped")
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed", transcript="哦"
+            )
+            msg = await wsc.receive_json()
+            assert msg == {"type": "state", "state": "idle"}
+
+    assert called["n"] == 0
+
+
+@pytest.mark.anyio
+async def test_normal_duration_speech_with_stopped_event_still_starts_turn(
+    voice_db, monkeypatch
+):
+    """回归:speech_stopped 事件带来的时长信息不能误伤正常长度的说话——
+    跟上面的噪声用例对照,唯一变量是说话时长够不够。"""
+    fake_ws = FakeUpstreamWs()
+    connected = asyncio.Event()
+    _patch_upstream(monkeypatch, fake_ws, connected)
+    monkeypatch.setattr(config, "VOICE_VAD_SILENCE_MS", 1500)
+    monkeypatch.setattr(config, "VOICE_MIN_SPEECH_MS", 250)
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(ws.time, "monotonic", lambda: clock["t"])
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        yield Done(AgentReply(text="好的。", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+    monkeypatch.setattr(tts, "synthesize", lambda text, voice: _none_coro())
+
+    async with TestClient(TestServer(_app())) as client:
+        async with client.ws_connect("/voice/ws") as wsc:
+            await _hello_and_wait_connected(wsc, connected)
+
+            fake_ws.push_event("input_audio_buffer.speech_started")
+            assert (await wsc.receive_json()) == {"type": "state", "state": "capturing"}
+
+            clock["t"] = 1.9  # 1500ms 静音尾巴 + 400ms 真实说话时长
+            fake_ws.push_event("input_audio_buffer.speech_stopped")
+            fake_ws.push_event(
+                "conversation.item.input_audio_transcription.completed",
+                transcript="今天天气怎么样",
+            )
+
+            transcript = None
+            done = None
+            while done is None:
+                msg = await wsc.receive_json()
+                if msg["type"] == "transcript":
+                    transcript = msg["text"]
+                elif msg["type"] == "done":
+                    done = msg
+
+            assert transcript == "今天天气怎么样"
+            assert done["full_text"] == "好的。"
 
 
 @pytest.mark.anyio

@@ -249,6 +249,16 @@ VOICE_POST_DONE_ECHO_GUARD_MS: int = int(
     os.environ.get("VOICE_POST_DONE_ECHO_GUARD_MS", "1500")
 )
 
+# 2026-07-09:呼吸声/环境杂音时长太短,即便 DashScope 硬编出一个语气词,也不该
+# 当成一句真话——这一条不看转写文字,只看物理时长,所以在空闲状态也生效
+# (looks_like_filler_only 那条只在打断场景生效,见上面的说明)。
+# DashScope 上报的 speech_started→speech_stopped 时间差里含有 VOICE_VAD_SILENCE_MS
+# 这段判定静音用的尾巴(见 voice/ws.py 的 _handle_upstream_event),要减掉这段
+# 才是真正说话的时长估算值。默认给一个保守的下限,正常说一个字/短词都会明显
+# 超过它,呼吸声/麦克风杂音这类瞬时噪声通常到不了;真机环境不同需要重新调,
+# 调太大会把用户真说的很短的字(比如单独一个"对")也当噪声吃掉。
+VOICE_MIN_SPEECH_MS: int = int(os.environ.get("VOICE_MIN_SPEECH_MS", "250"))
+
 # 2026-07-08:声纹识别——分清"这是本人在说话"还是"背景里别人在说话"。
 # 免提场景背景有人说话时,普通降噪分不出"哪个人声是你",这块专门加了目标
 # 说话人识别(见 voice/voiceprint.py)。异步、不卡对话速度(见实现文档"方案
