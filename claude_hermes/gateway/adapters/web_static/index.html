@@ -1162,7 +1162,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   setIcon($("#muteIcon"), "mute");
   // 原页面靠浏览器整页导航自然回收麦克风/WS——现在是原地叠加,退出改叫
   // closeCallView(),由它接 teardownCallResources() 收资源(见文件末尾)。
-  backLink.onclick = e=>{ e.preventDefault(); closeCallView(); };
+  backLink.onclick = e=>{ e.preventDefault(); closeCallView(); expandSidebarResponsive(); };
 
   let stream=null, recorder=null, chunks=[], pressTs=0;
   let busy=false;
@@ -3725,10 +3725,11 @@ window.addEventListener("pagehide", releaseMic);
 // ── 新会话 / 侧边栏 ─────────────────────────────────────────────────────
 $("#newBtn").onclick = newChat;
 // 顶栏 ☰:桌面(收起态)= 展开侧边栏;移动端 = 抽屉式打开
-$("#hamb").onclick = ()=>{
+function expandSidebarResponsive(){
   if(window.innerWidth>760){ setSidebarCollapsed(false); }
   else { $("#sidebar").classList.add("open"); $("#backdrop").classList.add("show"); }
-};
+}
+$("#hamb").onclick = expandSidebarResponsive;
 $("#collapseBtn").innerHTML = ic("panel");
 $("#hamb").innerHTML = ic("panel");
 $("#collapseBtn").onclick = ()=> setSidebarCollapsed(true);   // 侧边栏内:收起
