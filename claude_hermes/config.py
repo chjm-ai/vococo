@@ -86,7 +86,7 @@ OAUTH_TOKEN: str = _ensure_subscription_auth(require=_oauth_required())
 # 开源默认「主人」,在 .env 设 HERMES_USER_NAME=你的名字 即个性化。
 USER_NAME: str = os.environ.get("HERMES_USER_NAME", "主人").strip() or "主人"
 MODEL: str = os.environ.get("AGENT_MODEL", "claude-sonnet-5").strip()
-MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "40"))
+MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "100"))
 # 工具权限模式:bypassPermissions=自动执行工具(shell/读写等),个人本机助理用
 # 想更保守可设 acceptEdits(只自动接受文件编辑)。
 PERMISSION_MODE: str = os.environ.get("AGENT_PERMISSION_MODE", "bypassPermissions").strip()
