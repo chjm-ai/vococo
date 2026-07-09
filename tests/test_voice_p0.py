@@ -66,6 +66,16 @@ def test_sentence_splitter_flush_emits_residual_tail():
     assert sp.flush() == []  # flush 后清空,再调不重复吐
 
 
+def test_sentence_splitter_drops_punctuation_only_fragments():
+    """2026-07-09 真机实测捕获:打断/衔接产生的残留 buffer 有时只剩一个"。",
+    DashScope 对这种纯标点输入明确 400(InvalidParameter),源头过滤掉。"""
+    sp = tts.SentenceSplitter()
+    assert sp.feed("。") == []
+    sp2 = tts.SentenceSplitter()
+    sp2.feed("   ")
+    assert sp2.flush() == []
+
+
 def test_sentence_splitter_has_no_screen_only_suppression():
     """2026-07-07 去掉了"【屏幕】后的内容不朗读"这条机制——真机实测发现模型一遇到
     "内容有点多"就靠它把实质内容全丢进屏幕,用户根本不看屏幕,等于没回答。
