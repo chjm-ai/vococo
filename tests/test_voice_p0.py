@@ -215,7 +215,7 @@ async def test_voice_send_streams_text_sentence_done_and_strips_instruction_on_s
 
 @pytest.mark.anyio
 async def test_voice_send_plays_filler_once_on_first_top_level_tool(voice_db, monkeypatch):
-    """本轮第一次顶层工具调用要垫一声科技感音效;子代理内部的工具(parent_id 非空)
+    """本轮第一次顶层工具调用要垫一句"稍等";子代理内部的工具(parent_id 非空)
     和同一轮里后续的工具调用都不应该再触发第二次。"""
 
     async def fake_run_turn(prompt_text, extra_mcp_servers=None):
@@ -229,8 +229,8 @@ async def test_voice_send_plays_filler_once_on_first_top_level_tool(voice_db, mo
 
     filler_calls = []
 
-    async def fake_filler_audio():
-        filler_calls.append(True)
+    async def fake_filler_audio(voice):
+        filler_calls.append(voice)
         return b"FILLER-BYTES"
 
     monkeypatch.setattr(tts, "filler_audio", fake_filler_audio)
@@ -246,10 +246,11 @@ async def test_voice_send_plays_filler_once_on_first_top_level_tool(voice_db, mo
     events = _parse_sse(body)
     filler_events = [d for e, d in events if e == "filler"]
     assert len(filler_events) == 1  # event:filler 是独立事件,和正式回复的 event:sentence 分开
+    assert filler_events[0]["text"] == tts.FILLER_PHRASE
     assert filler_events[0]["audio_b64"]
     sentence_events = [d for e, d in events if e == "sentence"]
     assert sentence_events == [{"text": "查完了,是这样的。", "audio_b64": "UkVQTFktQllURVM="}]
-    # filler 必须先于正式回复,前端才能先把音效放出来再接正文
+    # filler 必须先于正式回复,前端才能先把"稍等"念出来再接正文
     assert [e for e, _ in events].index("filler") < [e for e, _ in events].index("sentence")
 
 
