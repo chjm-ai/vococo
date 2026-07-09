@@ -829,7 +829,9 @@
   .task .stop{border:1px solid var(--err);color:var(--err);background:none;border-radius:14px;
     padding:2px 10px;font-size:12px}
   .task-empty{color:var(--dim2);text-align:center;padding:20px}
-  #callFoot{padding:28px 16px calc(28px + env(safe-area-inset-bottom));display:flex;
+  /* 底部整块(声波+状态+挂断)下沉到贴近安全区:底 padding 收到最小,
+     整个 footer 高度变矮→上方 flex:1 的 callBody 顶得更开→整块随之下移 */
+  #callFoot{padding:20px 16px calc(8px + env(safe-area-inset-bottom));display:flex;
     flex-direction:column;align-items:center;gap:16px}
   .btnicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
   .btnicon .ic{width:16px;height:16px}
@@ -1646,7 +1648,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     osc.stop(now + dur + 0.02);
   }
   function playCapturingTone(){ playTone(880, 80, "sine"); }
-  function playSpeakingTone(){ playTone(660, 60, "sine"); setTimeout(()=>playTone(990, 60, "sine"), 65); }
+  function playSpeakingTone(){ playTone(660, 90, "sine"); }  // 单音节,原来的双音(660→990)高音太刺耳
   function playInterruptedTone(){ playTone(220, 50, "triangle"); }
 
   async function initHandsFree(){
