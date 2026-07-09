@@ -121,6 +121,7 @@ class AgentReply:
     output_tokens: int = 0  # 本轮输出
     model: str = ""  # 实际使用的模型
     sdk_session_id: str = ""  # 本轮 SDK 会话 id,存回后下一轮 resume 它(真·多轮历史)
+    num_turns: int = 0  # 本轮消耗的 agentic turns(ResultMessage.num_turns),用于比对 MAX_TURNS
 
 
 def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
@@ -142,6 +143,11 @@ def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
         return "⚠️ 请求被 Claude 拒绝(400),可能是发送内容有问题,换个问法或联系维护者"
     if api_error_status:
         return f"⚠️ Claude API 返回错误(状态码 {api_error_status}),不是咱们服务器的问题,稍等再试"
+    if "error_max_turns" in detail:
+        return (
+            "⚠️ 这轮操作步骤太多,达到单轮工具调用上限被截断——不代表任务失败,"
+            "回一句「继续」就能接着往下跑"
+        )
     dl = detail.lower()
     if any(kw in dl for kw in ("rate", "429", "quota", "limit", "overloaded", "529")):
         return "⚠️ Claude 限额/过载,稍等片刻再试"
@@ -470,6 +476,7 @@ async def stream_turn(
         input_fresh = 0
         cache_read = 0
         output_tokens = 0
+        num_turns = 0
         used_model = resolved_model
         ctx_window_val = context_window(used_model)
         sess_id = use_resume or ""  # 每轮用最新 ResultMessage.session_id 覆盖,链不断
@@ -607,6 +614,7 @@ async def stream_turn(
                                 or (getattr(msg, "subtype", "") or "")
                             )
                         sess_id = getattr(msg, "session_id", None) or sess_id
+                        num_turns = int(getattr(msg, "num_turns", 0) or 0)
                         u = getattr(msg, "usage", None) or {}
                         in_t = int(u.get("input_tokens", 0) or 0)
                         out_t = int(u.get("output_tokens", 0) or 0)
@@ -624,6 +632,14 @@ async def stream_turn(
                         mu = getattr(msg, "model_usage", None) or {}
                         if mu:
                             used_model = _main_model(mu, resolved_model, used_model)
+                        # 只在快撞线(≥70% MAX_TURNS)时打一行日志——留痕方便日后判断
+                        # MAX_TURNS 该不该再调,平常轮数远低于上限就不刷屏了。
+                        if num_turns and num_turns >= config.MAX_TURNS * 0.7:
+                            print(
+                                f"[agent] 轮数告急 {num_turns}/{config.MAX_TURNS}"
+                                f"(session={session_key or '?'}, model={used_model},"
+                                f" subtype={getattr(msg, 'subtype', '') or '?'})"
+                            )
                         result_seen = True
                         # 真正收工:主轮 ResultMessage 到手,且没有还在跑的子代理/后台任务。
                         # 若子代理还在跑,先不收工,继续 drain——等它结果喂回主 agent、主 agent
@@ -741,6 +757,7 @@ async def stream_turn(
                 output_tokens=output_tokens,
                 model=used_model,
                 sdk_session_id=sess_id,
+                num_turns=num_turns,
             )
         )
 
