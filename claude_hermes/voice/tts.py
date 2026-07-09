@@ -63,8 +63,11 @@ async def synthesize(text: str, voice: str) -> bytes | None:
         async for chunk in communicate.stream():
             if chunk.get("type") == "audio":
                 chunks.extend(chunk["data"])
+        if not chunks:
+            print(f"[voice/tts] 合成返回空音频 text={text[:20]!r}", flush=True)
         return bytes(chunks) if chunks else None
-    except Exception:  # noqa: BLE001 —— 非官方接口,任何失败都降级为纯文字,不崩对话
+    except Exception as e:  # noqa: BLE001 —— 非官方接口,任何失败都降级为纯文字,不崩对话
+        print(f"[voice/tts] 合成失败 text={text[:20]!r} err={e!r}", flush=True)
         return None
 
 
