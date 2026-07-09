@@ -20,6 +20,8 @@
 - **worktree 会话**:Web 端每个项目会话跑在独立 git worktree + 分支,根治互相抢分支。改动提交后合回 main 生效。
 - **合回 main 用 `zsh deploy/merge-main.sh`**(可加 `--restart` 顺带重启)。worktree 里 `git checkout main` **永远**报 "main 已经被工作区使用"(exit 128,main 被主仓库工作区占用)——已有 7 个会话踩过,别再试;脚本自带预检(未提交/主仓库脏/不在 main)和冲突自动 abort。
 - **重启 serve 只有两条正路**:Wazir 会话内(改自身代码)用 `restart_self` 工具;外部会话/终端跑 `zsh deploy/restart.sh`。**禁止手搓 pgrep/kill 流程**——sandbox 里 pgrep 静默为空,曾诱发模型虚构"重启成功"(2026-07-06);汇报重启结果必须引用脚本/工具输出里真实出现的 PID。
+  - `merge-main.sh --restart` 内部会自动算出当前 worktree 对应的 web 会话 key(`web:p<项目哈希>:<会话slug>`)传给 `restart.sh --self=`,自我排除后不会再把"发起重启的这个会话自己"误判成"别的会话在跑"而弹确认——只有真有**别的**会话在跑才会拦(2026-07-09 修复,此前 `merge-main.sh --restart` 在非交互环境下必然因为自身被判定为"在跑"而卡死取消)。
+  - 但如果你就是当前会话本人、只是想改完代码重启验证,**优先直接调 `restart_self` 工具**而不是 `merge-main.sh --restart`——前者有"遗书+还魂"自动续聊验证闭环,后者只是干重启,重启完不会自动带你回来对话。
 - **别误杀原版 hermes**:本项目配置在 `~/.claude-hermes/`,**刻意独立于**原版 Hermes 的 `~/.hermes`,两者互不干扰。重启只动 claude-hermes 自己的进程。
 - **记忆唯一主库**:记忆实体文件只存在 AI_BRAIN 主库,`.claude` 项目侧全是软链;**禁止**在 Claude Code 项目记忆目录新建实体文件(会成孤本)。
 - **editable 安装 + worktree**:`pip install -e` 会让 worktree 里的改动被主仓库的已安装包屏蔽,调试时用 `uv run` 从当前目录跑。
