@@ -1627,6 +1627,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     wsConn = new WebSocket(proto + location.host + "/voice/ws?token=" + encodeURIComponent(S.token));
     wsConn.binaryType = "arraybuffer";
     wsConn.onopen = ()=>{
+      // 重连后旧的打断状态可能没等到 interrupted/resumed 确认就断线,永久卡死播放,这里强制复位
+      pausedForInterrupt = false;
       wsConn.send(JSON.stringify({type:"hello", sample_rate: audioCtx.sampleRate}));
     };
     wsConn.onmessage = e=>{
