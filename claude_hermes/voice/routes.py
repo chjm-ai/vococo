@@ -48,7 +48,14 @@ async def _handle_page_gone(request: web.Request) -> web.Response:
 
 
 async def _handle_config(request: web.Request) -> web.Response:
-    return web.json_response({"enabled": True, "omni_enabled": config.VOICE_OMNI_ENABLED})
+    return web.json_response({
+        "enabled": True,
+        "omni_enabled": config.VOICE_OMNI_ENABLED,
+        # Omni WebRTC 链路的 turn_detection 也要用这两个调优过的阈值,不能吃阿里云的默认值
+        # (默认更灵敏,会把一句话中间的停顿误判成说完,拆成多段触发"上一轮还没说完")。
+        "vad_threshold": config.VOICE_VAD_THRESHOLD,
+        "vad_silence_ms": config.VOICE_VAD_SILENCE_MS,
+    })
 
 
 async def _handle_stt(request: web.Request) -> web.Response:
