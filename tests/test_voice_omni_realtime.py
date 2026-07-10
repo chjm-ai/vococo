@@ -78,6 +78,22 @@ def test_build_instructions_has_no_leftover_placeholders():
     assert "voice_dispatch_task" in text
 
 
+def test_build_instructions_includes_user_profile_when_present(monkeypatch):
+    # 2026-07-10 真机反馈:Omni 不知道用户在哪个城市,根因是没喂 USER.md 画像
+    # (跟 Claude 那边 core/prompt.py build_system_prompt 不一样)。这里锁定:
+    # 画像有内容时必须真的拼进去,且带反注入围栏,不是"写了函数但没接上"。
+    monkeypatch.setattr(om.core_prompt, "_load_user_profile", lambda: "\n\n<user_profile>示例画像内容</user_profile>")
+    text = om._build_instructions()
+    assert "示例画像内容" in text
+    assert om.core_prompt._MEMORY_FENCE in text
+
+
+def test_build_instructions_skips_fence_when_profile_missing(monkeypatch):
+    monkeypatch.setattr(om.core_prompt, "_load_user_profile", lambda: "")
+    text = om._build_instructions()
+    assert "参考数据围栏" not in text
+
+
 @pytest.mark.anyio
 async def test_events_parses_audio_transcript_function_call_and_done():
     audio_b64 = base64.b64encode(b"\x01\x02\x03").decode("ascii")
