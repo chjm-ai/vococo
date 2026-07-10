@@ -1241,6 +1241,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 还有几个没收到 response.created",用来区分自动回复(要 cancel)和我们的朗读。
   let omniReadQueue=[], omniReadActive=false, omniReadPending=0, omniAutoActive=false, omniAutoSince=0, omniTurnDone=true;
   let omniReconnectTimer=null;
+  let omniReadSince=0, omniReadWatchdog=null;  // 朗读心跳时间戳 + 卡死看门狗(见 omniReadStallCheck)
   const omniAudioEl = $("#omniRemoteAudio");
 
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
@@ -1946,6 +1947,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     orbWrap.className = "idle";
     clearHint();
     setStatus("聆听中…", "listening");
+    if(omniReadWatchdog) clearInterval(omniReadWatchdog);
+    omniReadWatchdog = setInterval(omniReadStallCheck, 3000);
     return true;
   }
 
@@ -1989,6 +1992,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     channel.onmessage = ev => {
       let data;
       try{ data = JSON.parse(ev.data); }catch(e){ return; }
+      // 朗读心跳:任何 response.* 事件(含高频 audio delta)都说明 Omni 还活着——
+      // 看门狗只在"彻底没动静"时才出手,不会误杀正常的长句朗读。
+      if(data.type && data.type.startsWith("response.")) omniReadSince = Date.now();
       if(!OMNI_QUIET_EVENTS.has(data.type)){
         vdbg("dc:" + data.type, {
           rp: omniReadPending, ra: omniReadActive, aa: omniAutoActive,
@@ -2094,6 +2100,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       }));
       omniDc.send(JSON.stringify({type: "response.create"}));
       omniReadPending++;
+      omniReadSince = Date.now();
       vdbg("read.create", text.slice(0, 40));
     }catch(e){ vdbg("read.create.fail", String(e)); }
   }
@@ -2110,6 +2117,19 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     // 才会再触发 flush——正忙时来的播报就永远卡住不念(2026-07-10 真机:两个任务
     // 完成用户全程没听到)。回到空闲就是补播的正确时机。
     flushAnnouncements();
+  }
+
+  // Omni 朗读看门狗:read.create 已发/朗读进行中,但连续 12 秒没有任何 response.*
+  // 事件(2026-07-10 真机:朗读 response 已创建后 Omni 彻底哑火,队列里 2 句永远
+  // 没念,通话看起来"没回答")——主动 cancel 掉这个哑火的 response,放行队列。
+  function omniReadStallCheck(){
+    if(!omniDc || omniDc.readyState !== "open") return;
+    if(!(omniReadActive || omniReadPending > 0)) return;
+    if(Date.now() - omniReadSince <= 12000) return;
+    vdbg("read.stall-cleared", {ra: omniReadActive, rp: omniReadPending, q: omniReadQueue.length});
+    try{ omniDc.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
+    omniReadActive = false; omniReadPending = 0;
+    pumpOmniRead();
   }
 
   // 出错/拒答时让 Omni 把提示念出来——通话中用户不看屏幕,静默失败=「没反应」
@@ -2219,6 +2239,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     omniMicStream = null;  // 麦克风轨道本身随 stream 变量一起在 teardownCallResources 里停
     omniUserLiveEl = null;
     omniReadQueue = []; omniReadActive = false; omniReadPending = 0; omniAutoActive = false; omniTurnDone = true;
+    omniReadSince = 0;
+    if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
   }
 
