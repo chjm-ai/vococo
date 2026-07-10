@@ -162,17 +162,3 @@ async def synthesize(text: str, voice: str) -> bytes | None:
         if attempt == 0:
             await asyncio.sleep(_RETRY_DELAY_429_SEC if status == 429 else _RETRY_DELAY_SEC)
     return None
-
-
-# 干活垫话(见 01-phase0-voice-entry.md F10):模型开始跑第一个顶层工具时,
-# 不等它自己开口,立即插播这句念白——科技感音效实测太生硬,不如一句自然人声贴合
-# "垫时间"的本意。同一句在进程生命周期内只合成一次,内存缓存复用,保证"稍等"这句话
-# 不会比它本该垫的等待时间还慢出来。
-FILLER_PHRASE = "稍等,我看看。"
-_filler_cache: dict[str, bytes | None] = {}
-
-
-async def filler_audio(voice: str) -> bytes | None:
-    if voice not in _filler_cache:
-        _filler_cache[voice] = await synthesize(FILLER_PHRASE, voice)
-    return _filler_cache[voice]

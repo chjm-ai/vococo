@@ -13,7 +13,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from claude_hermes import config
-from claude_hermes.core.agent import AgentReply, Done, TextDelta, ToolStarted
+from claude_hermes.core.agent import AgentReply, Done, TextDelta
 from claude_hermes.memory import session_store
 from claude_hermes.voice import executor, prompts, routes, session, stt, tasks, tts
 
@@ -227,51 +227,6 @@ async def test_voice_send_streams_text_sentence_done_and_strips_instruction_on_s
     assert history[0].user == "明天天气怎么样"
     assert history[0].assistant == "好的,明天多云二十八度。"
     assert session.get_resume() == "sdk-123"
-
-
-@pytest.mark.anyio
-async def test_voice_send_plays_filler_once_on_first_top_level_tool(voice_db, monkeypatch):
-    """本轮第一次顶层工具调用要垫一句"稍等";子代理内部的工具(parent_id 非空)
-    和同一轮里后续的工具调用都不应该再触发第二次。"""
-
-    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
-        yield ToolStarted("Read", tool_id="t0", parent_id="agent-1")  # 子代理内部,不算
-        yield ToolStarted("Bash", tool_id="t1", parent_id=None)  # 第一次顶层,触发垫话
-        yield ToolStarted("Read", tool_id="t2", parent_id=None)  # 第二次顶层,不应重复垫话
-        yield TextDelta("查完了,是这样的。")
-        yield Done(AgentReply(text="查完了,是这样的。", tool_calls=[], cost_usd=None, is_error=False))
-
-    monkeypatch.setattr(session, "run_turn", fake_run_turn)
-
-    filler_calls = []
-
-    async def fake_filler_audio(voice):
-        filler_calls.append(voice)
-        return b"FILLER-BYTES"
-
-    monkeypatch.setattr(tts, "filler_audio", fake_filler_audio)
-    monkeypatch.setattr(tts, "synthesize", lambda text, voice: _bytes_coro(b"REPLY-BYTES"))
-
-    app = web.Application()
-    routes.register_routes(app)
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/voice/send", json={"text": "帮我查一下"})
-        body = (await resp.read()).decode("utf-8")
-
-    assert len(filler_calls) == 1  # 只垫一次
-    events = _parse_sse(body)
-    filler_events = [d for e, d in events if e == "filler"]
-    assert len(filler_events) == 1  # event:filler 是独立事件,和正式回复的 event:sentence 分开
-    assert filler_events[0]["text"] == tts.FILLER_PHRASE
-    assert filler_events[0]["audio_b64"]
-    sentence_events = [d for e, d in events if e == "sentence"]
-    assert sentence_events == [{"text": "查完了,是这样的。", "audio_b64": "UkVQTFktQllURVM="}]
-    # filler 必须先于正式回复,前端才能先把"稍等"念出来再接正文
-    assert [e for e, _ in events].index("filler") < [e for e, _ in events].index("sentence")
-
-
-async def _bytes_coro(b):
-    return b
 
 
 @pytest.mark.anyio

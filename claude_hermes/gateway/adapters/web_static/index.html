@@ -1225,7 +1225,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // S.omniEnabled(登录时预取,见 loadVoiceOmniConfig)开着就整条走 WebRTC 替代
   // 上面这套 ws.py + Web Audio API 播放队列,两条路径互斥、共用同一批 UI 元素
   // (orbWrap/statusEl/handsFreeUi 等),关着完全不影响原有路径。
-  let omniPc=null, omniDc=null, omniMicStream=null, omniAudioEl=null;
+  let omniPc=null, omniDc=null, omniMicStream=null, omniAudioEl=null, omniUserLiveEl=null;
 
   // ── 播放:Web Audio API,不用 <audio> 标签 ──────────────────────────────
   let audioCtx=null, currentSource=null;
@@ -1369,10 +1369,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           if(ev.event === "transcript"){
             addMsg("me", ev.data.text || "");
             setStatus("思考中…", "thinking");
-          } else if(ev.event === "filler"){
-            addMsg("ai filler", ev.data.text || "");
-            playQueue.push(ev.data);
-            pumpPlayback();
           } else if(ev.event === "text"){
             if(!aiEl) aiEl = addMsg("ai", "");
             full += ev.data.text || "";
@@ -1749,9 +1745,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       if(handsFreeActive) orbWrap.className = msg.state;
     } else if(msg.type === "transcript"){
       addMsg("me", msg.text || "");
-    } else if(msg.type === "filler"){
-      addMsg("ai filler", msg.text || "");
-      if(msg.audio_b64){ playQueue.push({seq:-1, audio_b64: msg.audio_b64}); pumpPlayback(); }
     } else if(msg.type === "text_delta"){
       if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
       currentTurnFull += msg.text || "";
@@ -1874,9 +1867,20 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           wsState = "capturing";
           setStatus(STATE_WORD.capturing, STATE_CLASS.capturing);
           if(handsFreeActive) orbWrap.className = "capturing";
+          omniUserLiveEl = null;  // 新一句开始,上一句的实时字幕气泡不再更新
+          break;
+        case "conversation.item.input_audio_transcription.delta":
+          // 实时字幕:text 是已确认的前缀,stash 是还没定论的尾巴,拼起来显示
+          // 让用户看到"正在识别"的感觉,句子说完由 .completed 用权威结果覆盖一次。
+          if(!omniUserLiveEl) omniUserLiveEl = addMsg("me", "");
+          renderAi(omniUserLiveEl, (data.text || "") + (data.stash || ""));
           break;
         case "conversation.item.input_audio_transcription.completed":
-          if(data.transcript) addMsg("me", data.transcript);
+          if(data.transcript){
+            if(omniUserLiveEl) renderAi(omniUserLiveEl, data.transcript);
+            else addMsg("me", data.transcript);
+          }
+          omniUserLiveEl = null;
           break;
         case "response.created":
           wsState = "thinking";
@@ -1930,6 +1934,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     if(omniPc){ try{ omniPc.close(); }catch(e){} omniPc = null; }
     if(omniAudioEl){ try{ omniAudioEl.pause(); }catch(e){} omniAudioEl = null; }
     omniMicStream = null;  // 麦克风轨道本身随 stream 变量一起在 teardownCallResources 里停
+    omniUserLiveEl = null;
   }
 
   async function loadMainHistory(){
