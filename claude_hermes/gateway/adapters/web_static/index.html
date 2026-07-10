@@ -1860,19 +1860,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     setStatus("聆听中…", "listening");
   }
 
-  // 2026-07-10:回声兜底——转写出来的这句话,是不是其实是 AI 自己刚说的话被麦克风
-  // 漏回去听到的(state.db 里 turn 872 实锤过:转写"我找了一。"跟 AI 那句"我找了一下
-  // 你的 AI_BRAIN…"一字不差是前缀关系)。不碰音频播放/输出图(上一次这么干把 iOS
-  // 麦克风搞哑了,见 memory/hermes-voice-omni-self-echo-rootcause.md),纯字符串
-  // containment 判断,无状态、无阈值调参、不依赖时序窗口——判错的唯一后果是这句话被
-  // 静默丢弃、用户得再说一遍,不会像旧版 ws.py 那套状态机一样引发连锁故障。
-  function looksLikeSelfEcho(transcript, aiText){
-    const norm = s => (s || "").replace(/[，。,.!！?？\s、~～]/g, "");
-    const t = norm(transcript), a = norm(aiText);
-    if(t.length < 3 || !a) return false;
-    return a.includes(t);
-  }
-
   function wireOmniDataChannel(channel){
     channel.onmessage = ev => {
       let data;
@@ -1902,12 +1889,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           break;
         case "conversation.item.input_audio_transcription.completed": {
           const transcript = (data.transcript || "").trim();
-          if(transcript && looksLikeSelfEcho(transcript, currentTurnFull)){
-            // 判定为回声:实时字幕气泡(如果已经冒出来过)直接撤掉,绝不发送这句话。
-            if(omniUserLiveEl){ const row = omniUserLiveEl.closest(".row"); if(row) row.remove(); }
-            omniUserLiveEl = null;
-            break;
-          }
           if(omniUserLiveEl) renderAi(omniUserLiveEl, transcript || "(没听清)");
           else if(transcript) addMsg("me", transcript);
           omniUserLiveEl = null;
