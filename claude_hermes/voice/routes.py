@@ -92,6 +92,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
         user_text = (body.get("text") or "").strip()
         if not user_text:
             return web.json_response({"error": "text 不能为空"}, status=400)
+        print(f"[voice/send] 收到文字直发: {user_text[:50]!r}", flush=True)
     if _lock.locked():
         return web.json_response({"error": "上一轮还没说完"}, status=409)
 
@@ -194,10 +195,13 @@ async def _handle_omni_webrtc(request: web.Request) -> web.Response:
     offer_sdp = await request.text()
     if not offer_sdp.strip():
         return web.json_response({"error": "缺少 SDP offer"}, status=400)
+    print(f"[voice/omni] 收到 SDP offer({len(offer_sdp)} 字节),转发给阿里云…", flush=True)
     try:
         answer_sdp = await omni_realtime.exchange_webrtc_sdp(offer_sdp)
     except RuntimeError as exc:
+        print(f"[voice/omni] 信令交换失败: {exc}", flush=True)
         return web.json_response({"error": str(exc)}, status=502)
+    print("[voice/omni] 信令交换成功,已把 answer 返回给浏览器", flush=True)
     return web.Response(text=answer_sdp, content_type="application/sdp")
 
 
