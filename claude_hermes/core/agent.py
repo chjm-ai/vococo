@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
 
@@ -356,6 +357,7 @@ def _compat_base_key(
     external_mcp: dict,
     extra_tools: tuple = (),
     disallowed_tools: tuple = (),
+    max_turns: int = 0,
 ) -> str:
     """保温 client 的兼容性哈希(不含 SDK 会话 id,那个在池里单独比)。
 
@@ -381,6 +383,7 @@ def _compat_base_key(
         "external_mcp": external_mcp,
         "extra_tools": extra_tools,
         "disallowed_tools": disallowed_tools,
+        "max_turns": max_turns,
         "route": route,
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
@@ -394,6 +397,24 @@ def _compat_base_key(
 # 注:danger.py 拦 run_in_background=true 拦不住这个默认异步——CLI 默认异步时模型入参里
 # 根本没这个字段,那道 deny 只是模型显式请求后台时的双保险。
 _FORCE_FOREGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
+
+
+# CLI 子进程的 stderr 噪音过滤(2026-07-10):hook 撞上已关闭的流(轮被取消/client
+# 已 discard 后 CLI 还想调 PreToolUse hook)时,Bun 会把 cli.js 压缩源码上下文整段
+# 吐到 stderr——一次好几 KB,3MB 日志一多半是它,真正有效信号只有一行 "Error in
+# hook callback hook_0"+"error: Stream closed"。注册 stderr 回调(SDK 转 PIPE 逐行
+# 回调)逐行过滤:丢源码行/堆栈行,其余打标截断转发,信号密度回来了,排障还看得见。
+_STDERR_NOISE_RE = re.compile(r"^\s*\d+\s*\|")  # Bun 源码上下文行,如 "32341 |   activate"
+_STDERR_STACK_RE = re.compile(r"^\s+at .*(cli\.js|native|<anonymous>|\(1:11\))")
+
+
+def _cli_stderr(line: str) -> None:
+    s = line.rstrip()
+    if not s or _STDERR_NOISE_RE.match(s) or _STDERR_STACK_RE.match(s):
+        return
+    if len(s) > 500:
+        s = s[:500] + "…(截断)"
+    print(f"[cli/stderr] {s}", flush=True)
 
 
 def _turn_env(provider_env: dict) -> dict:
@@ -411,12 +432,17 @@ async def stream_turn(
     session_key: str | None = None,
     extra_mcp_servers: dict | None = None,
     disallowed_tools: list[str] | None = None,
+    max_turns: int | None = None,
 ) -> AsyncIterator[Event]:
     """流式跑一轮,逐个 yield 事件,最后 yield Done。
 
     disallowed_tools:代码层硬拦一批工具名(如语音前台会话禁 Edit/Write,逼真正的
     改代码走 voice_dispatch_task 派后台任务),不同于 prompt 里"建议模型别用"——
     这里模型的调用请求根本不会被 SDK 放行,是稳定保证而非临场判断。
+
+    max_turns:单轮 agentic 轮数上限,None/0 用全局 config.MAX_TURNS(全局 0=不限,
+    SDK 侧不传上限,靠 AGENT_TURN_TIMEOUT 硬超时兜底)。2026-07-10 真机事故:
+    全局 40 轮让一个查日志任务白跑 8 分钟——轮数不是好的成本闸,超时才是。
 
     历史怎么喂给模型(三级链,前一级失败自动落到下一级):
     - session_key 非空且保温池命中(见 core/client_pool.py)→ 直接在活 client 上
@@ -454,12 +480,15 @@ async def stream_turn(
     # 哈希在会话内保持稳定(中途存记忆不至于误杀保温 client)。/new 换 sid → 自然读到最新。
     sys_prompt = build_system_prompt(cwd, cache_key=resume)
 
+    effective_max_turns = max_turns or config.MAX_TURNS
+
     pooling = bool(session_key) and client_pool.enabled()
     base_key = (
         _compat_base_key(
             resolved_model, provider_env, sys_prompt, skills, cwd, hermes_on, external_mcp,
             tuple(sorted((extra_mcp_servers or {}).keys())),
             tuple(sorted(disallowed_tools or ())),
+            effective_max_turns,
         )
         if pooling
         else ""
@@ -469,7 +498,7 @@ async def stream_turn(
         return ClaudeAgentOptions(
             model=resolved_model,
             system_prompt=sys_prompt,
-            max_turns=config.MAX_TURNS,
+            max_turns=effective_max_turns or None,  # 0=不限,SDK 不传上限
             permission_mode=config.PERMISSION_MODE,
             include_partial_messages=True,
             mcp_servers=mcp_servers,
@@ -479,6 +508,7 @@ async def stream_turn(
             env=_turn_env(provider_env),  # cc-switch base_url+key + 恒定强制前台开关(见 _turn_env)
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
             disallowed_tools=list(disallowed_tools or []),
+            stderr=_cli_stderr,  # 过滤 Bun 源码刷屏,见 _cli_stderr 顶部注释
         )
 
     async def _stream_once(
@@ -660,11 +690,11 @@ async def stream_turn(
                         mu = getattr(msg, "model_usage", None) or {}
                         if mu:
                             used_model = _main_model(mu, resolved_model, used_model)
-                        # 只在快撞线(≥70% MAX_TURNS)时打一行日志——留痕方便日后判断
-                        # MAX_TURNS 该不该再调,平常轮数远低于上限就不刷屏了。
-                        if num_turns and num_turns >= config.MAX_TURNS * 0.7:
+                        # 只在快撞线(≥70% 上限)时打一行日志——留痕方便日后判断
+                        # 上限该不该再调,平常轮数远低于上限就不刷屏了。0=不限,不告急。
+                        if effective_max_turns and num_turns and num_turns >= effective_max_turns * 0.7:
                             print(
-                                f"[agent] 轮数告急 {num_turns}/{config.MAX_TURNS}"
+                                f"[agent] 轮数告急 {num_turns}/{effective_max_turns}"
                                 f"(session={session_key or '?'}, model={used_model},"
                                 f" subtype={getattr(msg, 'subtype', '') or '?'})"
                             )

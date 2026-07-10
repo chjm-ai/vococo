@@ -57,8 +57,13 @@ async def on_task_terminal(task_id: str) -> None:
         "announce_text": announce_text,
     }
     if is_online():
-        # 顺手合成播报音频,前端拿到事件直接排进播放队列,不用再回头请求一次。
-        audio = await tts.synthesize(announce_text, config.VOICE_TTS_VOICE)
+        # Omni 出声模式:前端会把 announce_text 交给 Omni 念(跟对话同一把声音、
+        # 同一条 RTC 链路,阿里云的回声消除拿得到参考信号)——服务端不再用旧 TTS
+        # 合成。两套合成并存正是"播报和对话语气割裂"+自回声风险的来源(2026-07-10)。
+        # 旧链路(未开 Omni)保持原样:合成好随事件带过去,前端直接排播放队列。
+        audio = None
+        if not config.VOICE_OMNI_ENABLED:
+            audio = await tts.synthesize(announce_text, config.VOICE_TTS_VOICE)
         payload["audio_b64"] = base64.b64encode(audio).decode("ascii") if audio else None
         _broadcast("task_done", payload)
         return

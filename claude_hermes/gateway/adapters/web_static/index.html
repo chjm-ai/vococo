@@ -1538,11 +1538,19 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   function flushAnnouncements(){
     if(busy || (recorder && recorder.state === "recording") || (handsFreeActive && wsState !== "idle")) return;
+    let queuedForOmni = false;
     while(pendingAnnouncements.length){
       const data = pendingAnnouncements.shift();
       addMsg("ai", data.announce_text);
-      if(audioCtx && data.audio_b64){ playQueue.push({seq:-1, audio_b64: data.audio_b64}); pumpPlayback(); }
+      if(omniDc && omniDc.readyState === "open"){
+        // Omni 出声模式:播报交给 Omni 念——跟对话同一把声音、同一条 RTC 链路,
+        // 服务端回声消除拿得到参考信号;不再走旧 TTS 的 Web Audio 播放
+        // (两套声音并存=语气割裂+自回声风险,2026-07-10 定案)。
+        omniReadQueue.push(data.announce_text);
+        queuedForOmni = true;
+      } else if(audioCtx && data.audio_b64){ playQueue.push({seq:-1, audio_b64: data.audio_b64}); pumpPlayback(); }
     }
+    if(queuedForOmni) pumpOmniRead();
   }
 
   // ── P2 全双工:WS 免提连续对话 ────────────────────────────────────────
@@ -1666,6 +1674,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   function playCapturingTone(){ playTone(880, 80, "sine"); }
   function playSpeakingTone(){ playTone(660, 90, "sine"); }  // 单音节,原来的双音(660→990)高音太刺耳
   function playTtsFailTone(){ playTone(300, 140, "square"); }  // 免提通话听不到文字提示,得有声音信号
+  // 断线/重连提示音:通话静默重连过去用户毫无感知,只能靠"hello hello 能听到吗"
+  // 人肉探活(2026-07-10 真机一晚三次)。降调=掉线了,升调=接回来了。
+  function playDisconnectTone(){ playTone(520, 110, "sine"); setTimeout(()=>playTone(330, 150, "sine"), 120); }
+  function playReconnectTone(){ playTone(330, 110, "sine"); setTimeout(()=>playTone(660, 150, "sine"), 120); }
 
   async function initHandsFree(){
     if(pcmWorkletNode) return true;
@@ -1754,6 +1766,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }
   }
 
+  let wsReconnecting = false;  // 旧 WS 链路断线重连中(用来在重连成功时给一声提示)
   function connectHandsFreeWs(){
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     wsConn = new WebSocket(proto + location.host + "/voice/ws?token=" + encodeURIComponent(S.token));
@@ -1762,12 +1775,18 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       // 重连后旧的打断状态可能没等到 interrupted/resumed 确认就断线,永久卡死播放,这里强制复位
       pausedForInterrupt = false;
       wsConn.send(JSON.stringify({type:"hello", sample_rate: audioCtx.sampleRate}));
+      if(wsReconnecting){ wsReconnecting = false; playReconnectTone(); setStatus("聆听中…", "listening"); }
     };
     wsConn.onmessage = e=>{
       if(typeof e.data === "string") handleWsMessage(JSON.parse(e.data));
     };
     wsConn.onclose = ()=>{
-      if(handsFreeActive) setTimeout(connectHandsFreeWs, 1500);
+      if(handsFreeActive){
+        // 断线要让用户听得见,不是全程静默自愈(理由同 Omni 路径 scheduleOmniReconnect)
+        if(!wsReconnecting){ playDisconnectTone(); setStatus("重连中…", "thinking"); }
+        wsReconnecting = true;
+        setTimeout(connectHandsFreeWs, 1500);
+      }
     };
   }
 
@@ -1786,6 +1805,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       if(msg.state === "thinking"){ lastFullyPlayedSeq = -1; ttsFailureNoticedThisTurn = false; }
       setStatus(STATE_WORD[msg.state] || msg.state, STATE_CLASS[msg.state]);
       if(handsFreeActive) orbWrap.className = msg.state;
+      if(msg.state === "idle") flushAnnouncements();  // 正忙时攒下的任务播报,回空闲补播
     } else if(msg.type === "transcript"){
       addMsg("me", msg.text || "");
     } else if(msg.type === "text_delta"){
@@ -1945,12 +1965,16 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       }
       vdbg("reconnect.start", reason);
       setStatus("重连中…", "thinking");
+      playDisconnectTone();  // 让用户知道刚才断了,而不是全程静默自愈
       stopOmniHandsFree();
       let ok = false;
       try{ ok = await startOmniHandsFree(); }
       catch(e){ vdbg("reconnect.fail", String(e)); }
       // 信令失败是 return false 不是 throw,统一在这里兜住继续重试
-      if(!ok) scheduleOmniReconnect("retry", 5000);
+      if(!ok){ scheduleOmniReconnect("retry", 5000); return; }
+      playReconnectTone();
+      addMsg("ai", "(通话断开过一下,已经自动接回来了)");
+      vdbg("reconnect.ok", reason);
     }, delayMs || 1500);
   }
 
@@ -2082,6 +2106,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     wsState = "idle";
     setStatus(STATE_WORD.idle);
     if(handsFreeActive) orbWrap.className = "idle";
+    // 任务播报到达时若正忙会被攒进 pendingAnnouncements,以前只有下一条 task_done
+    // 才会再触发 flush——正忙时来的播报就永远卡住不念(2026-07-10 真机:两个任务
+    // 完成用户全程没听到)。回到空闲就是补播的正确时机。
+    flushAnnouncements();
   }
 
   function cancelOmniReading(reason){

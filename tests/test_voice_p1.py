@@ -94,6 +94,36 @@ def test_count_running_and_list_queued(voice_db):
     assert len(queued) == 1 and queued[0]["title"] == "B"
 
 
+def test_snapshot_for_prompt_empty_board(voice_db):
+    out = tasks.snapshot_for_prompt()
+    assert "任务板是空的" in out
+
+
+def test_snapshot_for_prompt_lists_active_and_recent_done(voice_db):
+    a = tasks.create("查日志", "p")
+    tasks.set_status(a["id"], "running", progress_note="正在读文件")
+    tasks.create("排队活", "p")
+    c = tasks.create("已完活", "p")
+    tasks.set_status(c["id"], "running")
+    tasks.finish(c["id"], "done", "完整结果", "一句话摘要")
+    out = tasks.snapshot_for_prompt()
+    assert "「查日志」进行中" in out and "正在读文件" in out
+    assert "「排队活」排队中" in out
+    assert "「已完活」已完成:一句话摘要" in out
+
+
+def test_build_prompt_injects_task_snapshot(voice_db):
+    from claude_hermes.voice import prompts
+
+    t = tasks.create("查资料", "p")
+    tasks.set_status(t["id"], "running", progress_note="正在查")
+    out = prompts.build_prompt("那个任务怎么样了")
+    assert "【任务板快照】" in out
+    assert "「查资料」进行中" in out
+    # 防虚构硬规则也要在场
+    assert "绝不能宣称" in out
+
+
 def test_mark_orphans_failed_covers_queued_and_running(voice_db):
     a = tasks.create("A", "p")
     tasks.set_status(a["id"], "running")
@@ -402,6 +432,7 @@ async def test_list_tool_lists_recent_tasks(voice_db):
 # ── notify.py:在线走 SSE 事件,离线走 web_push ──────────────────────────────
 @pytest.mark.anyio
 async def test_notify_broadcasts_sse_event_when_online(voice_db, monkeypatch):
+    monkeypatch.setattr(config, "VOICE_OMNI_ENABLED", False)
     t = tasks.create("标题", "p")
     tasks.set_status(t["id"], "running")
     tasks.finish(t["id"], "done", "完整结果", "一句话摘要")
@@ -418,6 +449,32 @@ async def test_notify_broadcasts_sse_event_when_online(voice_db, monkeypatch):
     assert payload["id"] == t["id"]
     assert payload["result_summary"] == "一句话摘要"
     assert payload["audio_b64"]
+
+
+@pytest.mark.anyio
+async def test_notify_skips_legacy_tts_when_omni_enabled(voice_db, monkeypatch):
+    """Omni 出声模式:播报由前端交给 Omni 念,服务端不该再合成旧 TTS(两套声音并存
+    =语气割裂+自回声风险);事件照发,announce_text 在,audio_b64 为空。"""
+    monkeypatch.setattr(config, "VOICE_OMNI_ENABLED", True)
+    t = tasks.create("标题", "p")
+    tasks.set_status(t["id"], "running")
+    tasks.finish(t["id"], "done", "完整结果", "一句话摘要")
+
+    def _must_not_call(text, voice):
+        raise AssertionError("Omni 模式不该调用旧 TTS 合成")
+
+    monkeypatch.setattr(tts, "synthesize", _must_not_call)
+
+    q = notify.subscribe()
+    try:
+        await notify.on_task_terminal(t["id"])
+        event, payload = q.get_nowait()
+    finally:
+        notify.unsubscribe(q)
+
+    assert event == "task_done"
+    assert payload["announce_text"]
+    assert payload["audio_b64"] is None
 
 
 @pytest.mark.anyio

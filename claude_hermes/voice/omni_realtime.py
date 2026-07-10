@@ -19,6 +19,12 @@
 本文件现在只剩 WebRTC 的 SDP 信令代理这一件事——浏览器自己发不了这个请求
 (阿里云文档原话:跨域限制),也不能拿到真实 DASHSCOPE_API_KEY,必须后端代理。
 信令换完之后,识别音频走浏览器跟阿里云直连(WebRTC P2P/UDP),不经过我们的服务器。
+
+热词(2026-07-10 查证,别再研究一遍):Omni-Realtime 的 session.update 和它的
+转写模型 qwen3-asr-flash-realtime 都【不支持】热词/自定义词表/上下文增强——
+阿里云文档明说热词仅 Fun-ASR/Paraformer 系列有,上下文增强仅 fun-asr-realtime。
+误听("子代理"→"纸袋")的纠错只能靠 Claude 这个大脑做,见 prompts.py 的
+【转写容错】规则;想上真热词得整条换 Fun-ASR 链路,不值得。
 """
 from __future__ import annotations
 
