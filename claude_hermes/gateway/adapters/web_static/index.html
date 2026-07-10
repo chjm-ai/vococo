@@ -804,6 +804,11 @@
     transition:color .15s ease}
   #clearVoiceCtxBtn .ic{width:20px;height:20px}
   #clearVoiceCtxBtn:hover,#clearVoiceCtxBtn:active{color:var(--err)}
+  /* P3 阶段二:Omni-Realtime WebRTC 连线测试的入口,开发/真机联调用,不是常驻功能 */
+  #omniTestLink{background:none;border:none;color:var(--dim);padding:4px;display:inline-flex;
+    text-decoration:none;transition:color .15s ease}
+  #omniTestLink .ic{width:20px;height:20px}
+  #omniTestLink:hover,#omniTestLink:active{color:var(--accent)}
   #tasksBadge{position:absolute;top:0;right:0;width:8px;height:8px;border-radius:50%;
     background:var(--accent);display:none}
   #tasksBadge.on{display:block}
@@ -1064,6 +1069,7 @@ try{
       <button id="backLink" title="展开侧栏"></button>
       <span class="title">语音伴聊</span>
       <button id="clearVoiceCtxBtn" title="清空语音聊天上下文(AI 从头开始,历史保留)"></button>
+      <a id="omniTestLink" href="/voice/static/omni_test.html" target="_blank" title="Omni-Realtime WebRTC 连线测试(开发用)"></a>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
     <div id="callBody">
@@ -1193,6 +1199,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   setIcon(endHandsFreeBtn, "close");  // 挂断按钮里放一个叉(×)
   setIcon(muteToggleBtn, "mic");  // 静音按钮:默认图标是"麦克风开着",点了切成"mute"
   setIcon($("#clearVoiceCtxBtn"), "eraser");  // 顶栏:清空语音会话上下文
+  setIcon($("#omniTestLink"), "wrench");  // 顶栏:P3 阶段二 WebRTC 连线测试页入口(开发用)
   // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
   // 收起侧栏后还在原来的通话画面。真正挂断走下面的"结束"/"停"按钮;
   // 侧栏里切到别的会话才会触发 closeCallView()(见 openConv 收口处)。
