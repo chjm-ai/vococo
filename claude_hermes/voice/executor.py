@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from .. import config
+from ..core import worktree
 from ..core.agent import Done, ToolInput, run_turn, stream_turn
 from ..memory import session_store
 from ..tools import danger
@@ -83,7 +84,14 @@ async def _run(task_id: str) -> None:
     session_key = f"voice-task:{task_id}"
     turn_id = session_store.start_turn(session_key, row["prompt"])
     sdk_session_id: str | None = None
-    cwd_token = danger.set_cwd(row["cwd"], project_root=None)
+    # 任务 cwd 指到一个 git 仓库就给这次任务开专属 worktree + 分支(hermes/<task_id>),
+    # 跟 Web/CLI「一会话一分支」看齐——语音这边真要动代码,必须走这条派后台任务的路径
+    # 才能拿到工具(前台会话已代码层禁掉 Edit/Write,见 voice/session.py),而这条路径
+    # 现在也不再直接在原 cwd 上改,落地的是隔离分支,不是主目录/主分支。非 git 仓库
+    # (或没给 cwd)拿到 None,原样回退到 row["cwd"],不阻塞非代码类任务(查资料等)。
+    worktree_dir = await worktree.ensure_worktree_for_task(row["cwd"], task_id)
+    effective_cwd = worktree_dir or row["cwd"]
+    cwd_token = danger.set_cwd(effective_cwd, project_root=row["cwd"] if worktree_dir else None)
     last_progress_ts = 0.0
     result_text = ""
     status = "failed"
@@ -93,7 +101,7 @@ async def _run(task_id: str) -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id
         resume_sid = session_store.get_sdk_session_id(session_key)
         async for ev in stream_turn(
-            [], row["prompt"], cwd=row["cwd"], session_key=session_key, resume=resume_sid
+            [], row["prompt"], cwd=effective_cwd, session_key=session_key, resume=resume_sid
         ):
             if isinstance(ev, ToolInput) and ev.parent_id is None:
                 now = time.monotonic()

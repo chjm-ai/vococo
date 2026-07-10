@@ -355,6 +355,7 @@ def _compat_base_key(
     hermes_on: bool,
     external_mcp: dict,
     extra_tools: tuple = (),
+    disallowed_tools: tuple = (),
 ) -> str:
     """保温 client 的兼容性哈希(不含 SDK 会话 id,那个在池里单独比)。
 
@@ -379,6 +380,7 @@ def _compat_base_key(
         "hermes_mcp": hermes_on,
         "external_mcp": external_mcp,
         "extra_tools": extra_tools,
+        "disallowed_tools": disallowed_tools,
         "route": route,
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
@@ -408,8 +410,13 @@ async def stream_turn(
     resume: str | None = None,
     session_key: str | None = None,
     extra_mcp_servers: dict | None = None,
+    disallowed_tools: list[str] | None = None,
 ) -> AsyncIterator[Event]:
     """流式跑一轮,逐个 yield 事件,最后 yield Done。
+
+    disallowed_tools:代码层硬拦一批工具名(如语音前台会话禁 Edit/Write,逼真正的
+    改代码走 voice_dispatch_task 派后台任务),不同于 prompt 里"建议模型别用"——
+    这里模型的调用请求根本不会被 SDK 放行,是稳定保证而非临场判断。
 
     历史怎么喂给模型(三级链,前一级失败自动落到下一级):
     - session_key 非空且保温池命中(见 core/client_pool.py)→ 直接在活 client 上
@@ -452,6 +459,7 @@ async def stream_turn(
         _compat_base_key(
             resolved_model, provider_env, sys_prompt, skills, cwd, hermes_on, external_mcp,
             tuple(sorted((extra_mcp_servers or {}).keys())),
+            tuple(sorted(disallowed_tools or ())),
         )
         if pooling
         else ""
@@ -470,6 +478,7 @@ async def stream_turn(
             cwd=cwd,  # 项目会话→该文件夹当工作根(自动加载其 CLAUDE.md/.claude);None=进程默认目录
             env=_turn_env(provider_env),  # cc-switch base_url+key + 恒定强制前台开关(见 _turn_env)
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
+            disallowed_tools=list(disallowed_tools or []),
         )
 
     async def _stream_once(

@@ -17,6 +17,14 @@ from ..memory import session_store
 SESSION_KEY = "voice-chat:main"
 HISTORY_LIMIT = 20
 
+# 语音前台会话代码层硬禁改代码的工具(2026-07-09):【派活规则】里"改代码要走
+# voice_dispatch_task"以前完全靠 prompt 临场判断,没有代码兜底,真机测出过嘴上
+# 答应却直接自己动手/漏派的情况。这里直接不给前台会话这几个工具,模型物理上叫不动
+# Edit/Write,真要改代码只能走 voice_dispatch_task 派后台任务——那条路径现在会自动
+# 给任务开独立 git worktree + 分支(见 core/worktree.ensure_worktree_for_task),
+# 跟 Web/CLI 新对话「一任务一分支」的规矩保持一致,而不是在语音上下文里直接改主目录。
+_DISALLOWED_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
+
 
 def load_history(limit: int = HISTORY_LIMIT) -> list:
     return session_store.load_recent(SESSION_KEY, limit=limit)
@@ -55,5 +63,5 @@ def run_turn(prompt_text: str, extra_mcp_servers: dict | None = None) -> AsyncIt
     resume_sid = get_resume()
     return stream_turn(
         history, prompt_text, resume=resume_sid, session_key=SESSION_KEY,
-        extra_mcp_servers=extra_mcp_servers,
+        extra_mcp_servers=extra_mcp_servers, disallowed_tools=_DISALLOWED_TOOLS,
     )
