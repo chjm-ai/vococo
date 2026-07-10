@@ -48,7 +48,7 @@ async def _handle_page_gone(request: web.Request) -> web.Response:
 
 
 async def _handle_config(request: web.Request) -> web.Response:
-    return web.json_response({"enabled": True})
+    return web.json_response({"enabled": True, "omni_enabled": config.VOICE_OMNI_ENABLED})
 
 
 async def _handle_stt(request: web.Request) -> web.Response:
@@ -213,6 +213,25 @@ async def _handle_omni_webrtc(request: web.Request) -> web.Response:
     return web.Response(text=answer_sdp, content_type="application/sdp")
 
 
+async def _handle_omni_function_call(request: web.Request) -> web.Response:
+    """浏览器收到 function_call 事件后调这个接口执行,拿到结果文本自己回传给阿里云
+    (WebRTC 的 DataChannel 是浏览器跟阿里云直连,我们的服务器看不见那条事件流,
+    所以浏览器必须主动来问一次——见 web_static/index.html 的 wireOmniDataChannel)。"""
+    if (g := _guard(request)) is not None:
+        return g
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "bad json"}, status=400)
+    name = (body.get("name") or "").strip()
+    arguments = body.get("arguments") or {}
+    if not name or not isinstance(arguments, dict):
+        return web.json_response({"error": "缺少 name 或 arguments 不是对象"}, status=400)
+    call = omni_realtime.OmniFunctionCall(call_id="", name=name, arguments=arguments)
+    output = await omni_realtime.handle_function_call(call)
+    return web.json_response({"output": output})
+
+
 # ── P1 任务板:列表/详情/停止/在线播报的常驻 SSE(F8/F10) ─────────────────────
 async def _handle_tasks_list(request: web.Request) -> web.Response:
     if (g := _guard(request)) is not None:
@@ -280,6 +299,7 @@ def register_routes(app: web.Application) -> None:
             web.get("/voice/tasks/{task_id}", _handle_task_detail),
             web.post("/voice/tasks/{task_id}/stop", _handle_task_stop),
             web.post("/voice/omni/webrtc", _handle_omni_webrtc),
+            web.post("/voice/omni/function_call", _handle_omni_function_call),
         ]
     )
     if config.VOICE_WS_ENABLED:
