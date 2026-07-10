@@ -1140,6 +1140,8 @@ const S = {
                          // 状态点点过一次就不用再提醒,持久化到 localStorage(见 loadSeenTasks)
   swipedConv: null,     // 当前左滑展开的会话 id;renderConvs 重建 DOM 时靠它补回 swiped 状态,
                          // 否则任意会话(含后台)一完成回合就会触发 loadConvs→renderConvs 把菜单冲掉
+  omniEnabled: false,   // /voice/config 的 omni_enabled,P3 阶段二开关,登录后预取好,
+                         // 避免每次进通话视图都要等一趟网络往返才知道走哪条路径
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -1218,6 +1220,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let ttsFailureNoticedThisTurn=false;  // 每轮最多提示一次,避免连续几句都合成失败时刷屏
   let currentTurnAiEl=null, currentTurnFull="";
   let playbackStallTicks=0, lastPlayQueueLen=-1, playbackWatchdog=null;
+
+  // ── P3 阶段二:Omni-Realtime WebRTC 通话(见 wireOmniDataChannel 一段)────────
+  // S.omniEnabled(登录时预取,见 loadVoiceOmniConfig)开着就整条走 WebRTC 替代
+  // 上面这套 ws.py + Web Audio API 播放队列,两条路径互斥、共用同一批 UI 元素
+  // (orbWrap/statusEl/handsFreeUi 等),关着完全不影响原有路径。
+  let omniPc=null, omniDc=null, omniMicStream=null, omniAudioEl=null;
 
   // ── 播放:Web Audio API,不用 <audio> 标签 ──────────────────────────────
   let audioCtx=null, currentSource=null;
@@ -1680,6 +1688,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   }
 
   async function startHandsFree(){
+    if(S.omniEnabled){ await startOmniHandsFree(); return; }
     setStatus("连接中…", "");
     const ok = await initHandsFree();
     if(!ok){
@@ -1778,6 +1787,151 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     });
   }
 
+  // ── P3 阶段二:Omni-Realtime WebRTC 通话 ─────────────────────────────────
+  // 跟上面 ws.py 那套的关键区别:识别/生成/合成/断句/打断全部在阿里云那一侧完成,
+  // 这边只管建连 + 把 function_call 事件转一趟后端执行 + 把结果送回去。音频走
+  // WebRTC 原生轨道(不经过 base64/JSON),回声消除也是阿里云那边内置的,不用
+  // 再自己维护 self-echo 检测那套。
+  async function startOmniHandsFree(){
+    setStatus("连接中…", "");
+    unlockAudio();
+    try{ omniMicStream = await ensureMicStream(); }
+    catch(e){
+      handsFreeUi.hidden = true; talkBtn.hidden = false;
+      addMsg("ai error", "麦克风权限被拒绝,请到系统设置里允许");
+      return;
+    }
+    ensureOutputAnalyser();
+    if(!orbAnimHandle) drawOrbWaveform();
+
+    omniPc = new RTCPeerConnection();
+    omniMicStream.getTracks().forEach(t => omniPc.addTrack(t, omniMicStream));
+
+    omniPc.ontrack = ev => {
+      const remoteStream = ev.streams[0];
+      try{
+        const src = audioCtx.createMediaStreamSource(remoteStream);
+        src.connect(outputAnalyser);
+      }catch(e){ /* 可视化挂不上不影响通话本体,吞掉 */ }
+      // WebRTC 的 remote track 要真出声,标准做法是塞给一个真实 <audio> 元素——
+      // 这条路径跟今天拆掉的那套"环回 hack"完全无关:那是给 Web Audio API 自己
+      // 播放的内容伪装成 WebRTC 音频用的取巧手段,这里音频本来就是走 WebRTC 来的,
+      // 直接播就是正规路径,没有"多一路"的问题。
+      omniAudioEl = new Audio();
+      omniAudioEl.autoplay = true;
+      omniAudioEl.srcObject = remoteStream;
+      omniAudioEl.play().catch(()=>{});
+    };
+
+    const dc = omniPc.createDataChannel("events");
+    omniDc = dc;
+    dc.onopen = () => {
+      dc.send(JSON.stringify({
+        event_id: "session-init", type: "session.update",
+        session: { modalities: ["text", "audio"], turn_detection: { type: "server_vad" } },
+      }));
+    };
+    wireOmniDataChannel(dc);
+    omniPc.ondatachannel = ev => wireOmniDataChannel(ev.channel);
+
+    const offer = await omniPc.createOffer();
+    await omniPc.setLocalDescription(offer);
+    await new Promise(resolve => {
+      if(omniPc.iceGatheringState === "complete") return resolve();
+      omniPc.onicegatheringstatechange = () => { if(omniPc.iceGatheringState === "complete") resolve(); };
+    });
+
+    let resp;
+    try{
+      resp = await fetch("/voice/omni/webrtc", {
+        method: "POST",
+        headers: {"Content-Type": "application/sdp", "X-Auth-Token": S.token},
+        body: omniPc.localDescription.sdp,
+      });
+    }catch(e){
+      addMsg("ai error", "WebRTC 信令请求失败(网络)"); return;
+    }
+    if(!resp.ok){
+      addMsg("ai error", "WebRTC 连接失败:" + resp.status);
+      return;
+    }
+    const answerSdp = await resp.text();
+    await omniPc.setRemoteDescription({type: "answer", sdp: answerSdp});
+
+    handsFreeActive = true;
+    orbWrap.className = "idle";
+    clearHint();
+    setStatus("聆听中…", "listening");
+  }
+
+  function wireOmniDataChannel(channel){
+    channel.onmessage = async ev => {
+      let data;
+      try{ data = JSON.parse(ev.data); }catch(e){ return; }
+      switch(data.type){
+        case "input_audio_buffer.speech_started":
+          if(wsState !== "capturing") playCapturingTone();
+          wsState = "capturing";
+          setStatus(STATE_WORD.capturing, STATE_CLASS.capturing);
+          if(handsFreeActive) orbWrap.className = "capturing";
+          break;
+        case "conversation.item.input_audio_transcription.completed":
+          if(data.transcript) addMsg("me", data.transcript);
+          break;
+        case "response.created":
+          wsState = "thinking";
+          setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
+          if(handsFreeActive) orbWrap.className = "thinking";
+          currentTurnAiEl = null; currentTurnFull = "";
+          break;
+        case "response.audio_transcript.delta":
+          if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
+          currentTurnFull += data.delta || "";
+          renderAi(currentTurnAiEl, currentTurnFull);
+          if(wsState !== "speaking") playSpeakingTone();
+          wsState = "speaking";
+          setStatus(STATE_WORD.speaking, STATE_CLASS.speaking);
+          if(handsFreeActive) orbWrap.className = "speaking";
+          break;
+        case "response.function_call_arguments.done": {
+          let args = {};
+          try{ args = JSON.parse(data.arguments || "{}"); }catch(e){}
+          let output = "(工具执行失败)";
+          try{
+            const r = await fetch("/voice/omni/function_call", {
+              method: "POST",
+              headers: {"Content-Type": "application/json", "X-Auth-Token": S.token},
+              body: JSON.stringify({name: data.name, arguments: args}),
+            });
+            if(r.ok) output = (await r.json()).output;
+          }catch(e){ /* 上面兜底文案已经够用 */ }
+          channel.send(JSON.stringify({
+            type: "conversation.item.create",
+            item: {type: "function_call_output", call_id: data.call_id, output},
+          }));
+          channel.send(JSON.stringify({type: "response.create"}));
+          break;
+        }
+        case "response.done":
+          currentTurnAiEl = null; currentTurnFull = "";
+          wsState = "idle";
+          setStatus(STATE_WORD.idle);
+          if(handsFreeActive) orbWrap.className = "idle";
+          break;
+        case "error":
+          addMsg("ai error", (data.error && data.error.message) || "出错了");
+          break;
+      }
+    };
+  }
+
+  function stopOmniHandsFree(){
+    if(omniDc){ try{ omniDc.close(); }catch(e){} omniDc = null; }
+    if(omniPc){ try{ omniPc.close(); }catch(e){} omniPc = null; }
+    if(omniAudioEl){ try{ omniAudioEl.pause(); }catch(e){} omniAudioEl = null; }
+    omniMicStream = null;  // 麦克风轨道本身随 stream 变量一起在 teardownCallResources 里停
+  }
+
   async function loadMainHistory(){
     try{
       const resp = await fetch("/history?conv=" + encodeURIComponent("voice-chat:main"), {
@@ -1851,6 +2005,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 导航卸载页面顺带回收这些资源,现在视图常驻 DOM 不会自动卸载,不手动收就是
   // 麦克风一直"热着"、WS 一直连着,电量和隐私都不划算。
   function teardownCallResources(){
+    stopOmniHandsFree();
     if(playbackWatchdog){ clearInterval(playbackWatchdog); playbackWatchdog = null; }
     if(wsConn){ wsConn.onclose = null; try{ wsConn.close(); }catch(e){} wsConn = null; }
     if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
@@ -1947,7 +2102,7 @@ async function tryEnter(){
     applyConvs(d);   // 这次 /conversations 顺便验证了口令,数据直接拿来用,不用再多打一次
     // 优先把最近活跃的会话内容画出来;openConv 内会同步活跃项目、展开其分组并重绘侧边栏。
     // 侧边栏用得到的次要数据(主题偏好/项目列表/模型/斜杠命令)并行去拉,不再堵在会话内容前面。
-    const secondary = Promise.all([loadPrefs(), loadProjects(), loadModels(), loadCommands()])
+    const secondary = Promise.all([loadPrefs(), loadProjects(), loadModels(), loadCommands(), loadVoiceOmniConfig()])
       .then(updateFilterBtn).catch(()=>{});
     await openConv(S.convs[0] ? S.convs[0].conv : "main");
     loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
@@ -2064,6 +2219,12 @@ async function loadCommands(){
     const r=await api("/commands"); const d=await r.json();
     S.commands=d.commands||[]; S.skills=d.skills||[];
   }catch(e){}
+}
+
+// P3 阶段二:通话视图走 ws.py 还是 Omni-Realtime WebRTC,登录后预取一次,
+// 避免每次进通话视图都要等一趟网络往返才知道走哪条路径。
+async function loadVoiceOmniConfig(){
+  try{ const r=await api("/voice/config"); const d=await r.json(); S.omniEnabled=!!d.omni_enabled; }catch(e){}
 }
 function cmdMatches(prefix){
   const p=prefix.toLowerCase();

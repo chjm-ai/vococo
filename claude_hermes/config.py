@@ -258,6 +258,11 @@ VOICE_OMNI_REALTIME_MODEL: str = (
 # (2026-07-10 真机连线验证过,全局域名对这个路径直接 404)。去百炼控制台右上角
 # 用户图标弹窗里复制"业务空间ID"填这里,不是什么敏感凭证但仍按环境变量走,别写死。
 VOICE_OMNI_WORKSPACE_ID: str = os.environ.get("VOICE_OMNI_WORKSPACE_ID", "").strip()
+# 阶段二真机联调开关:开了之后通话视图(#callView)用 Omni-Realtime 的 WebRTC 连线
+# 替换掉现有 ws.py 那条自建链路;关着就还是走原来的路径,互不影响,方便随时回退。
+# 2026-07-10 真机验证过信令代理 + DataChannel 双向事件都通,这个开关是接入正式
+# 通话界面的第一步。
+VOICE_OMNI_ENABLED: bool = _parse_bool(os.environ.get("VOICE_OMNI_ENABLED", ""), False)
 VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
 VOICE_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_VAD_SILENCE_MS", "1500"))
 # 回声兜底:AI 自己的声音从手机扬声器漏回麦克风,DashScope 会把它当成真实

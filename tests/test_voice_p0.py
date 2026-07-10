@@ -167,7 +167,9 @@ async def test_voice_config_reports_enabled(voice_db):
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/voice/config")
         assert resp.status == 200
-        assert (await resp.json()) == {"enabled": True}
+        # P3 阶段二加了 omni_enabled(见 test_voice_omni_realtime.py 的专门测试),
+        # 这里只确认默认关着,不测那个开关本身的行为。
+        assert (await resp.json()) == {"enabled": True, "omni_enabled": False}
 
 
 # ── /voice/send SSE 事件序列 ─────────────────────────────────────────────

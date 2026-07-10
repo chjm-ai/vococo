@@ -195,3 +195,51 @@ async def test_webrtc_route_requires_auth_token(monkeypatch):
     async with TestClient(TestServer(_app())) as client:
         resp = await client.post("/voice/omni/webrtc", data="v=0\r\n...")
         assert resp.status == 401
+
+
+@pytest.mark.anyio
+async def test_config_route_reports_omni_enabled_flag(monkeypatch):
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+    monkeypatch.setattr(config, "VOICE_OMNI_ENABLED", True)
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.get("/voice/config")
+        body = await resp.json()
+        assert body["omni_enabled"] is True
+
+
+@pytest.mark.anyio
+async def test_function_call_route_dispatches_task_via_existing_executor(voice_db, monkeypatch):
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+
+    async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
+        return
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", lambda *_a, **_k: _noop())
+
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post(
+            "/voice/omni/function_call",
+            json={"name": "voice_dispatch_task", "arguments": {"title": "翻译", "prompt": "翻译 README"}},
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        assert "task_id=" in body["output"]
+    assert tasks.get_latest() is not None
+
+
+@pytest.mark.anyio
+async def test_function_call_route_rejects_missing_name(monkeypatch):
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post("/voice/omni/function_call", json={"arguments": {}})
+        assert resp.status == 400
+
+
+@pytest.mark.anyio
+async def test_function_call_route_requires_auth_token(monkeypatch):
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "secret-token")
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.post("/voice/omni/function_call", json={"name": "x", "arguments": {}})
+        assert resp.status == 401
