@@ -113,6 +113,19 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
         splitter = tts.SentenceSplitter()
         full_text = ""
         t_first_text = t_first_audio = 0.0
+        # 2026-07-10:句子合成从内联 await 改成后台并行(同 ws.py 的 _emit_sentence/
+        # _sentence_sender 套路)——之前合成一句要几百毫秒到一秒多,这段时间完全没在
+        # 继续消费 session.run_turn() 吐出来的下一段 TextDelta,句子越多累积延迟越
+        # 明显(用户反馈"文字很快,语音播放慢")。现在合成和"继续读模型输出"并行,
+        # 发给客户端的顺序仍然靠 sentence_queue 保证是 seq 递增。
+        sentence_queue: "asyncio.Queue" = asyncio.Queue()
+        pending_synth_tasks: list = []
+        # first_audio_ts 是个一格的容器,给 _sentence_sender 回填"第一句音频真正
+        # 发出去"的时刻——不能在 _emit_sentence(入队时)记,那记的是排队时刻,并行
+        # 化之后基本等于文字时刻,measure 不出优化到底省了多少。
+        first_audio_ts: list = []
+        sender_task = asyncio.ensure_future(_sentence_sender(resp, sentence_queue, first_audio_ts))
+        seq = 0
         try:
             if is_audio:
                 text, err = await stt.transcribe(audio, filename, actype)
@@ -130,15 +143,17 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                     await _sse(resp, "text", {"text": ev.text})
                     if not stop_event.is_set():
                         for sentence in splitter.feed(ev.text):
-                            await _emit_sentence(resp, sentence)
-                            if not t_first_audio:
-                                t_first_audio = time.monotonic()
+                            seq = _emit_sentence(sentence_queue, pending_synth_tasks, seq, sentence)
                 elif isinstance(ev, Done):
                     if not stop_event.is_set():
                         for sentence in splitter.flush():
-                            await _emit_sentence(resp, sentence)
-                            if not t_first_audio:
-                                t_first_audio = time.monotonic()
+                            seq = _emit_sentence(sentence_queue, pending_synth_tasks, seq, sentence)
+                    # 告诉 sender 协程"没有下一句了",等它把队列里剩下还在后台合成中
+                    # 的句子按顺序发完,再继续走 done——不然客户端可能先收到 done、
+                    # 后面才姗姗来迟几句 sentence,顺序就乱了。
+                    sentence_queue.put_nowait(None)
+                    await sender_task
+                    t_first_audio = first_audio_ts[0] if first_audio_ts else 0.0
                     reply = ev.reply
                     session.append(user_text, reply.text)
                     if reply.sdk_session_id:
@@ -158,15 +173,40 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
             except (ConnectionResetError, RuntimeError):
                 pass
         finally:
+            if not sender_task.done():
+                sender_task.cancel()
+            for t in pending_synth_tasks:
+                t.cancel()
             if _stop_event is stop_event:
                 _stop_event = None
     return resp
 
 
-async def _emit_sentence(resp: web.StreamResponse, sentence: str) -> None:
-    audio = await tts.synthesize(sentence, config.VOICE_TTS_VOICE)
-    payload = {"text": sentence, "audio_b64": base64.b64encode(audio).decode("ascii") if audio else None}
-    await _sse(resp, "sentence", payload)
+def _emit_sentence(queue: "asyncio.Queue", pending: list, seq: int, sentence: str) -> int:
+    """把这句话的 TTS 合成丢到后台并发跑,不阻塞正在读的 Claude 文字流,见调用处注释。"""
+    synth_task = asyncio.ensure_future(tts.synthesize(sentence, config.VOICE_TTS_VOICE))
+    pending.append(synth_task)
+    queue.put_nowait((seq, sentence, synth_task))
+    return seq + 1
+
+
+async def _sentence_sender(resp: web.StreamResponse, queue: "asyncio.Queue", first_audio_ts: list) -> None:
+    """按 seq 顺序把后台并行合成好的 TTS 音频依次发给客户端——合成并行,发送顺序仍然线性。"""
+    while True:
+        item = await queue.get()
+        if item is None:
+            return
+        _seq, sentence, synth_task = item
+        try:
+            audio = await synth_task
+        except asyncio.CancelledError:
+            return
+        except Exception:  # noqa: BLE001 —— 单句合成失败不该拖垮整轮,跳过继续发下一句
+            audio = None
+        payload = {"text": sentence, "audio_b64": base64.b64encode(audio).decode("ascii") if audio else None}
+        await _sse(resp, "sentence", payload)
+        if not first_audio_ts:
+            first_audio_ts.append(time.monotonic())
 
 
 async def _handle_stop(request: web.Request) -> web.Response:
