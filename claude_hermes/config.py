@@ -265,6 +265,11 @@ VOICE_OMNI_WORKSPACE_ID: str = os.environ.get("VOICE_OMNI_WORKSPACE_ID", "").str
 VOICE_OMNI_ENABLED: bool = _parse_bool(os.environ.get("VOICE_OMNI_ENABLED", ""), False)
 VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
 VOICE_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_VAD_SILENCE_MS", "1500"))
+# Omni WebRTC 链路专用的静音判停时长,跟上面 VOICE_VAD_SILENCE_MS(旧 ws.py 链路用)
+# 分开配——2026-07-10 真机反馈 1500ms 对着有停顿思考习惯("呃"、组织语言)的说话
+# 方式还是太短,句子中间的正常停顿就被当成说完了。故意给更长的默认值,牺牲一点
+# 打断响应速度换连续说话不被截断。
+VOICE_OMNI_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_OMNI_VAD_SILENCE_MS", "3000"))
 # 回声兜底:AI 自己的声音从手机扬声器漏回麦克风,DashScope 会把它当成真实
 # 用户开口识别出来,导致 AI 打断自己形成死循环——echoCancellation 只是缓解不是
 # 根治(见 03-phase2-实现记录.md)。打断转写出来的内容如果跟 AI 刚说的话高度

@@ -51,10 +51,11 @@ async def _handle_config(request: web.Request) -> web.Response:
     return web.json_response({
         "enabled": True,
         "omni_enabled": config.VOICE_OMNI_ENABLED,
-        # Omni WebRTC 链路的 turn_detection 也要用这两个调优过的阈值,不能吃阿里云的默认值
-        # (默认更灵敏,会把一句话中间的停顿误判成说完,拆成多段触发"上一轮还没说完")。
+        # Omni WebRTC 链路的 turn_detection 用,不能吃阿里云的默认值(更灵敏,会把
+        # 一句话中间的停顿误判成说完)。silence_ms 用 Omni 专属的更长默认值(见
+        # config.VOICE_OMNI_VAD_SILENCE_MS 的注释),跟旧 ws.py 链路调优的值分开。
         "vad_threshold": config.VOICE_VAD_THRESHOLD,
-        "vad_silence_ms": config.VOICE_VAD_SILENCE_MS,
+        "vad_silence_ms": config.VOICE_OMNI_VAD_SILENCE_MS,
     })
 
 

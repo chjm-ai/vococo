@@ -1143,7 +1143,7 @@ const S = {
   omniEnabled: false,   // /voice/config 的 omni_enabled,P3 阶段二开关,登录后预取好,
                          // 避免每次进通话视图都要等一趟网络往返才知道走哪条路径
   vadThreshold: 0.7,    // /voice/config 的 vad_threshold/vad_silence_ms,兜底默认跟
-  vadSilenceMs: 1500,   // config.py 的默认值一致,拉取失败也不至于比调优前更灵敏
+  vadSilenceMs: 3000,   // config.py 的 VOICE_OMNI_VAD_SILENCE_MS 默认值一致,拉取失败也不至于比调优前更灵敏
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
