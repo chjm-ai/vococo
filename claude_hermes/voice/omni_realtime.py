@@ -29,6 +29,7 @@ from dataclasses import dataclass
 import aiohttp
 
 from .. import config
+from ..core import prompt as core_prompt
 from . import prompts, task_tools
 
 _DASHSCOPE_REALTIME_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
@@ -57,9 +58,21 @@ def _build_tools() -> list[dict]:
 def _build_instructions() -> str:
     """复用 prompts.py 里已经真机调了四轮的语音人设规则,砍掉这里用不到的
     {long_task_hint}/{user_text} 动态拼接段——Omni 会话里用户说的话走会话本身的
-    语音输入,不需要像 ws.py 那样手工拼一份 prompt 文本喂给 stream_turn。"""
+    语音输入,不需要像 ws.py 那样手工拼一份 prompt 文本喂给 stream_turn。
+
+    2026-07-10 真机反馈:Omni 是完全独立于 Claude 的模型会话,不会像
+    core/prompt.py build_system_prompt 那样自动拿到 PERSONA/USER.md/MEMORY.md——
+    表现为"不知道用户在哪个城市"这类基础画像缺失。这里只补 USER.md 画像(带
+    跟 Claude 那边同一套反注入围栏 _MEMORY_FENCE),PERSONA 里大部分是 Claude
+    Code 工具/子代理执行模型相关的规则,Qwen 没有那些工具,搬过来它也用不上;
+    MEMORY.md 索引同理(那是给 recall_past/save_memory 这两个 Qwen 没有的工具用的)。
+    """
     body = prompts._INSTRUCTION_BLOCK.split("{long_task_hint}")[0]
-    return body.format(timeout_min=config.VOICE_TASK_TIMEOUT_MIN)
+    voice_rules = body.format(timeout_min=config.VOICE_TASK_TIMEOUT_MIN)
+    profile = core_prompt._load_user_profile()
+    if not profile:
+        return voice_rules
+    return voice_rules + f"\n\n=== 参考数据围栏 ===\n{core_prompt._MEMORY_FENCE}" + profile
 
 
 @dataclass

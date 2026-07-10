@@ -159,9 +159,12 @@ def test_voice_session_resume_id_round_trips_through_session_store(voice_db):
 
 # ── /voice/config 开关 ───────────────────────────────────────────────────
 @pytest.mark.anyio
-async def test_voice_config_reports_enabled(voice_db):
+async def test_voice_config_reports_enabled(voice_db, monkeypatch):
     # P1 起 register_routes() 会顺带摸 tasks._DB(F11 重启自愈),故也要 voice_db 隔离,
     # 否则会碰真实的 config.DATA_DIR。
+    # VOICE_OMNI_ENABLED 显式钉死:这个测试只关心 /voice/config 的响应形状,不该
+    # 被跑测试这台机器上真实设了什么环境变量(比如线上开着这个开关)带偏。
+    monkeypatch.setattr(config, "VOICE_OMNI_ENABLED", False)
     app = web.Application()
     routes.register_routes(app)
     async with TestClient(TestServer(app)) as client:
