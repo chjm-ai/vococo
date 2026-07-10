@@ -155,6 +155,37 @@ def finish(task_id: str, status: str, result_full: str, result_summary: str) -> 
     return True
 
 
+def snapshot_for_prompt(done_limit: int = 5, done_window_sec: int = 1800) -> str:
+    """把任务板此刻的真实状态压成几行人话,每轮注入语音会话的指令块(见 prompts.py)。
+
+    2026-07-10 真机事故:任务 19:22:54 就完成了,19:23 模型还嘴硬"那个任务还在跑"
+    ——它没调 voice_query_task,纯靠印象猜。模型的临场判断靠不住,就把事实每轮
+    塞到它眼前:进行中/排队的全列,最近半小时内结束的带摘要列出来。
+    """
+    rows = list_recent(20)
+    now = time.time()
+    active = [r for r in rows if r["status"] in ("queued", "running")]
+    recent_done = [
+        r for r in rows
+        if r["status"] in TERMINAL_STATUSES and now - r["updated_at"] <= done_window_sec
+    ][:done_limit]
+    if not active and not recent_done:
+        return "(任务板是空的:没有在跑的任务,最近半小时也没有刚结束的任务)"
+    lines: list[str] = []
+    for r in active:
+        if r["status"] == "queued":
+            lines.append(f"-「{r['title']}」排队中,还没开始跑")
+        else:
+            mins = int((now - r["created_at"]) // 60)
+            note = r["progress_note"] or "刚启动"
+            lines.append(f"-「{r['title']}」进行中,已跑约 {mins} 分钟,最新动作:{note}")
+    word = {"done": "已完成", "failed": "失败了", "cancelled": "已取消"}
+    for r in recent_done:
+        summary = r["result_summary"] or r["progress_note"] or "(没有摘要)"
+        lines.append(f"-「{r['title']}」{word[r['status']]}:{summary}")
+    return "\n".join(lines)
+
+
 def mark_orphans_failed() -> list[dict]:
     """serve 重启后调用一次:把残留的 queued/running 任务标记失败(不续跑)。
 

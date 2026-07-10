@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from .. import config
+from . import tasks
 
 # 2026-07-07 P1:追加「派活规则」——voice_dispatch_task/voice_query_task/voice_list_tasks
 # 三个工具随 extra_mcp_servers 注入语音前台会话后,靠这段规则告诉模型什么时候该用它们
@@ -100,6 +101,17 @@ prompt 里写清楚"先执行 sleep 对应秒数(或算好等到的时间点),�
 语音这边目前做不到,如实告诉用户暂不支持,不要编"设好了"这种话搪塞。
 6. 硬性规则:没有真的调用 voice_dispatch_task,就绝不能说"已经安排好了/设好了/
 派过去了"这类确认话——嘴上答应但没调工具,是绝对不允许的幻觉行为。
+
+【任务板快照】下面是后台任务板"此时此刻"的真实状态,由代码直接从数据库生成,
+比你的记忆新、比你的猜测准:
+{task_snapshot}
+围绕任务进度的硬性规则:
+1. 回答"某任务怎么样了/查到了没"只能照这份快照说:快照说进行中就是进行中,
+   说已完成就把结果摘要转述给用户,说失败了就如实说失败原因——绝不允许跟快照矛盾。
+2. 用户问的细节快照里没有,就调 voice_query_task 拿到真实结果再答,不许凭印象补。
+3. 任务还没完成、或你根本没派过任务,就绝不能宣称"查到了/根因是XX"——调查类
+   问题在拿到真实结果之前,只能说"还在查/还没查",编一个听起来合理的结论是
+   最严重的违规行为,哪怕用户在追问也不行。
 {long_task_hint}
 用户说:{user_text}"""
 
@@ -124,8 +136,14 @@ def build_prompt(user_text: str) -> str:
         if len(user_text) > config.VOICE_LONG_TASK_CHARS
         else ""
     )
+    # 快照失败不拖垮整轮对话——宁可这一轮没有快照,也不能让语音直接哑掉。
+    try:
+        task_snapshot = tasks.snapshot_for_prompt()
+    except Exception:  # noqa: BLE001
+        task_snapshot = "(快照生成失败,这一轮请用 voice_query_task 查询真实状态)"
     return _INSTRUCTION_BLOCK.format(
         user_text=user_text,
         timeout_min=config.VOICE_TASK_TIMEOUT_MIN,
         long_task_hint=long_task_hint,
+        task_snapshot=task_snapshot,
     )

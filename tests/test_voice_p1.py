@@ -94,6 +94,36 @@ def test_count_running_and_list_queued(voice_db):
     assert len(queued) == 1 and queued[0]["title"] == "B"
 
 
+def test_snapshot_for_prompt_empty_board(voice_db):
+    out = tasks.snapshot_for_prompt()
+    assert "任务板是空的" in out
+
+
+def test_snapshot_for_prompt_lists_active_and_recent_done(voice_db):
+    a = tasks.create("查日志", "p")
+    tasks.set_status(a["id"], "running", progress_note="正在读文件")
+    tasks.create("排队活", "p")
+    c = tasks.create("已完活", "p")
+    tasks.set_status(c["id"], "running")
+    tasks.finish(c["id"], "done", "完整结果", "一句话摘要")
+    out = tasks.snapshot_for_prompt()
+    assert "「查日志」进行中" in out and "正在读文件" in out
+    assert "「排队活」排队中" in out
+    assert "「已完活」已完成:一句话摘要" in out
+
+
+def test_build_prompt_injects_task_snapshot(voice_db):
+    from claude_hermes.voice import prompts
+
+    t = tasks.create("查资料", "p")
+    tasks.set_status(t["id"], "running", progress_note="正在查")
+    out = prompts.build_prompt("那个任务怎么样了")
+    assert "【任务板快照】" in out
+    assert "「查资料」进行中" in out
+    # 防虚构硬规则也要在场
+    assert "绝不能宣称" in out
+
+
 def test_mark_orphans_failed_covers_queued_and_running(voice_db):
     a = tasks.create("A", "p")
     tasks.set_status(a["id"], "running")
