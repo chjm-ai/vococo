@@ -1225,7 +1225,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // S.omniEnabled(登录时预取,见 loadVoiceOmniConfig)开着就整条走 WebRTC 替代
   // 上面这套 ws.py + Web Audio API 播放队列,两条路径互斥、共用同一批 UI 元素
   // (orbWrap/statusEl/handsFreeUi 等),关着完全不影响原有路径。
-  let omniPc=null, omniDc=null, omniMicStream=null, omniAudioEl=null, omniUserLiveEl=null;
+  let omniPc=null, omniDc=null, omniMicStream=null, omniUserLiveEl=null;
 
   // ── 播放:Web Audio API,不用 <audio> 标签 ──────────────────────────────
   let audioCtx=null, currentSource=null;
@@ -1781,10 +1781,18 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   }
 
   // ── P3 阶段二:Omni-Realtime WebRTC 通话 ─────────────────────────────────
-  // 跟上面 ws.py 那套的关键区别:识别/生成/合成/断句/打断全部在阿里云那一侧完成,
-  // 这边只管建连 + 把 function_call 事件转一趟后端执行 + 把结果送回去。音频走
-  // WebRTC 原生轨道(不经过 base64/JSON),回声消除也是阿里云那边内置的,不用
-  // 再自己维护 self-echo 检测那套。
+  // 2026-07-10 架构调整(见跟 Wesley 的讨论):Omni 只当"耳朵"——WebRTC 连线
+  // 只用来做识别(ASR)+断句(VAD)+打断信号,session.update 的 modalities 只给
+  // ["text"],不给 "audio"。原因:①session.update 里 turn_detection.create_response
+  // 字段真连线测过不生效,关不掉 Omni 自己生成回复;②即便喂了画像/工具,Omni
+  // 终究是独立模型,没有 Read/Grep/项目 AGENTS.md/记忆这些工具,答不出真实业务
+  // 问题。不给 "audio" modality 就等于 Omni 自己生成的那份回复只有文字、没有
+  // 语音,不会被听到,直接晾着不处理即可。真正识别到一整句话后,转发给现有
+  // /voice/send(跟文字聊天同一套 Claude 全套工具/画像/记忆),回答由 Claude 生成,
+  // 音频合成/播放复用 sendOmniTurn 里的 playQueue/pumpPlayback(今天已经修好的
+  // 单路可靠播放,不需要处理 Omni 自己的音频轨道)。
+  let omniTurnGen = 0;  // 每次新一句开始/打断都 +1,过期的 /voice/send 流式结果据此判断该不该再应用
+
   async function startOmniHandsFree(){
     setStatus("连接中…", "");
     unlockAudio();
@@ -1794,34 +1802,20 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       addMsg("ai error", "麦克风权限被拒绝,请到系统设置里允许");
       return;
     }
-    ensureOutputAnalyser();
+    ensureAnalyser();        // 麦克风侧声纹(capturing 状态用)
+    ensureOutputAnalyser();  // Claude 回复的播放侧声纹(speaking 状态用,见 pumpPlayback)
     if(!orbAnimHandle) drawOrbWaveform();
 
     omniPc = new RTCPeerConnection();
     omniMicStream.getTracks().forEach(t => omniPc.addTrack(t, omniMicStream));
-
-    omniPc.ontrack = ev => {
-      const remoteStream = ev.streams[0];
-      try{
-        const src = audioCtx.createMediaStreamSource(remoteStream);
-        src.connect(outputAnalyser);
-      }catch(e){ /* 可视化挂不上不影响通话本体,吞掉 */ }
-      // WebRTC 的 remote track 要真出声,标准做法是塞给一个真实 <audio> 元素——
-      // 这条路径跟今天拆掉的那套"环回 hack"完全无关:那是给 Web Audio API 自己
-      // 播放的内容伪装成 WebRTC 音频用的取巧手段,这里音频本来就是走 WebRTC 来的,
-      // 直接播就是正规路径,没有"多一路"的问题。
-      omniAudioEl = new Audio();
-      omniAudioEl.autoplay = true;
-      omniAudioEl.srcObject = remoteStream;
-      omniAudioEl.play().catch(()=>{});
-    };
+    // 不需要 ontrack:modalities 只给了 "text",Omni 不会真的发音频轨道过来。
 
     const dc = omniPc.createDataChannel("events");
     omniDc = dc;
     dc.onopen = () => {
       dc.send(JSON.stringify({
         event_id: "session-init", type: "session.update",
-        session: { modalities: ["text", "audio"], turn_detection: { type: "server_vad" } },
+        session: { modalities: ["text"], turn_detection: { type: "server_vad" } },
       }));
     };
     wireOmniDataChannel(dc);
@@ -1858,11 +1852,19 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   }
 
   function wireOmniDataChannel(channel){
-    channel.onmessage = async ev => {
+    channel.onmessage = ev => {
       let data;
       try{ data = JSON.parse(ev.data); }catch(e){ return; }
       switch(data.type){
         case "input_audio_buffer.speech_started":
+          // 用户开口:如果上一轮还在思考/播放,当成打断处理——停掉播放队列,
+          // 让过期的 /voice/send 流式结果(见 sendOmniTurn 的 gen 判断)不再生效。
+          if(wsState === "thinking" || wsState === "speaking"){
+            omniTurnGen++;
+            if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
+            playQueue = []; playing = false; pausedForInterrupt = false;
+            playInterruptedTone();
+          }
           if(wsState !== "capturing") playCapturingTone();
           wsState = "capturing";
           setStatus(STATE_WORD.capturing, STATE_CLASS.capturing);
@@ -1875,64 +1877,98 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           if(!omniUserLiveEl) omniUserLiveEl = addMsg("me", "");
           renderAi(omniUserLiveEl, (data.text || "") + (data.stash || ""));
           break;
-        case "conversation.item.input_audio_transcription.completed":
-          if(data.transcript){
-            if(omniUserLiveEl) renderAi(omniUserLiveEl, data.transcript);
-            else addMsg("me", data.transcript);
-          }
+        case "conversation.item.input_audio_transcription.completed": {
+          const transcript = (data.transcript || "").trim();
+          if(omniUserLiveEl) renderAi(omniUserLiveEl, transcript || "(没听清)");
+          else if(transcript) addMsg("me", transcript);
           omniUserLiveEl = null;
-          break;
-        case "response.created":
-          wsState = "thinking";
-          setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
-          if(handsFreeActive) orbWrap.className = "thinking";
-          currentTurnAiEl = null; currentTurnFull = "";
-          break;
-        case "response.audio_transcript.delta":
-          if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
-          currentTurnFull += data.delta || "";
-          renderAi(currentTurnAiEl, currentTurnFull);
-          if(wsState !== "speaking") playSpeakingTone();
-          wsState = "speaking";
-          setStatus(STATE_WORD.speaking, STATE_CLASS.speaking);
-          if(handsFreeActive) orbWrap.className = "speaking";
-          break;
-        case "response.function_call_arguments.done": {
-          let args = {};
-          try{ args = JSON.parse(data.arguments || "{}"); }catch(e){}
-          let output = "(工具执行失败)";
-          try{
-            const r = await fetch("/voice/omni/function_call", {
-              method: "POST",
-              headers: {"Content-Type": "application/json", "X-Auth-Token": S.token},
-              body: JSON.stringify({name: data.name, arguments: args}),
-            });
-            if(r.ok) output = (await r.json()).output;
-          }catch(e){ /* 上面兜底文案已经够用 */ }
-          channel.send(JSON.stringify({
-            type: "conversation.item.create",
-            item: {type: "function_call_output", call_id: data.call_id, output},
-          }));
-          channel.send(JSON.stringify({type: "response.create"}));
+          if(transcript) sendOmniTurn(transcript);
           break;
         }
-        case "response.done":
-          currentTurnAiEl = null; currentTurnFull = "";
-          wsState = "idle";
-          setStatus(STATE_WORD.idle);
-          if(handsFreeActive) orbWrap.className = "idle";
-          break;
         case "error":
           addMsg("ai error", (data.error && data.error.message) || "出错了");
           break;
+        // 其余事件(比如 Omni 自己那份被晾着的文字回复 response.*)不处理,
+        // modalities 只给了 "text" 所以它不会真被听到,忽略即可。
       }
     };
   }
 
+  // 识别到一整句话后,转发给现有 /voice/send——跟文字聊天同一套 Claude 全套
+  // 工具/画像/记忆,回答由 Claude 生成,不是 Omni 自己瞎编。播放复用 playQueue/
+  // pumpPlayback(今天已经修好的单路可靠播放)。gen 机制:进来时记一个代号,
+  // 期间被打断(omniTurnGen 变了)就不再把迟到的流式结果应用到界面/播放队列上。
+  async function sendOmniTurn(text){
+    const gen = ++omniTurnGen;
+    wsState = "thinking";
+    setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
+    if(handsFreeActive) orbWrap.className = "thinking";
+    currentTurnAiEl = null; currentTurnFull = "";
+
+    const toIdle = () => {
+      wsState = "idle"; setStatus(STATE_WORD.idle);
+      if(handsFreeActive) orbWrap.className = "idle";
+    };
+
+    let resp;
+    try{
+      resp = await fetch("/voice/send", {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-Auth-Token": S.token},
+        body: JSON.stringify({text}),
+      });
+    }catch(e){
+      if(gen === omniTurnGen){ addMsg("ai error", "连不上服务"); toIdle(); }
+      return;
+    }
+    if(gen !== omniTurnGen) return;  // 已经被打断,后面的响应不用管了
+    if(!resp.ok || !resp.body){
+      addMsg("ai error", resp.status === 409 ? "上一轮还没说完" : "出错了");
+      toIdle();
+      return;
+    }
+
+    const reader = resp.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    try{
+      while(true){
+        const {value, done} = await reader.read();
+        if(gen !== omniTurnGen){ try{ reader.cancel(); }catch(e){} return; }
+        if(done) break;
+        buf += dec.decode(value, {stream:true});
+        let sep;
+        while((sep = buf.indexOf("\n\n")) >= 0){
+          const block = buf.slice(0, sep); buf = buf.slice(sep+2);
+          const ev = parseSseBlock(block);
+          if(!ev || gen !== omniTurnGen) continue;
+          if(ev.event === "text"){
+            if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
+            currentTurnFull += ev.data.text || "";
+            renderAi(currentTurnAiEl, currentTurnFull);
+            if(wsState !== "speaking") playSpeakingTone();
+            wsState = "speaking";
+            setStatus(STATE_WORD.speaking, STATE_CLASS.speaking);
+            if(handsFreeActive) orbWrap.className = "speaking";
+          } else if(ev.event === "sentence"){
+            playQueue.push(ev.data);
+            pumpPlayback();
+          } else if(ev.event === "done"){
+            if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
+            if(ev.data.full_text){ currentTurnFull = ev.data.full_text; renderAi(currentTurnAiEl, currentTurnFull); }
+            if(ev.data.error){ markBubbleError(currentTurnAiEl); if(!currentTurnFull) renderAi(currentTurnAiEl, ev.data.error); }
+          }
+        }
+      }
+    }catch(e){ /* 流中断,不额外报错 */ }
+    if(gen !== omniTurnGen) return;
+    currentTurnAiEl = null; currentTurnFull = "";
+    toIdle();
+  }
+
   function stopOmniHandsFree(){
+    omniTurnGen++;  // 让还在飞的 sendOmniTurn 流式结果失效
     if(omniDc){ try{ omniDc.close(); }catch(e){} omniDc = null; }
     if(omniPc){ try{ omniPc.close(); }catch(e){} omniPc = null; }
-    if(omniAudioEl){ try{ omniAudioEl.pause(); }catch(e){} omniAudioEl = null; }
     omniMicStream = null;  // 麦克风轨道本身随 stream 变量一起在 teardownCallResources 里停
     omniUserLiveEl = null;
   }
