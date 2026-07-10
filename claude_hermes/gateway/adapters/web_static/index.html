@@ -1538,11 +1538,19 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   function flushAnnouncements(){
     if(busy || (recorder && recorder.state === "recording") || (handsFreeActive && wsState !== "idle")) return;
+    let queuedForOmni = false;
     while(pendingAnnouncements.length){
       const data = pendingAnnouncements.shift();
       addMsg("ai", data.announce_text);
-      if(audioCtx && data.audio_b64){ playQueue.push({seq:-1, audio_b64: data.audio_b64}); pumpPlayback(); }
+      if(omniDc && omniDc.readyState === "open"){
+        // Omni 出声模式:播报交给 Omni 念——跟对话同一把声音、同一条 RTC 链路,
+        // 服务端回声消除拿得到参考信号;不再走旧 TTS 的 Web Audio 播放
+        // (两套声音并存=语气割裂+自回声风险,2026-07-10 定案)。
+        omniReadQueue.push(data.announce_text);
+        queuedForOmni = true;
+      } else if(audioCtx && data.audio_b64){ playQueue.push({seq:-1, audio_b64: data.audio_b64}); pumpPlayback(); }
     }
+    if(queuedForOmni) pumpOmniRead();
   }
 
   // ── P2 全双工:WS 免提连续对话 ────────────────────────────────────────
@@ -1786,6 +1794,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       if(msg.state === "thinking"){ lastFullyPlayedSeq = -1; ttsFailureNoticedThisTurn = false; }
       setStatus(STATE_WORD[msg.state] || msg.state, STATE_CLASS[msg.state]);
       if(handsFreeActive) orbWrap.className = msg.state;
+      if(msg.state === "idle") flushAnnouncements();  // 正忙时攒下的任务播报,回空闲补播
     } else if(msg.type === "transcript"){
       addMsg("me", msg.text || "");
     } else if(msg.type === "text_delta"){
@@ -2082,6 +2091,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     wsState = "idle";
     setStatus(STATE_WORD.idle);
     if(handsFreeActive) orbWrap.className = "idle";
+    // 任务播报到达时若正忙会被攒进 pendingAnnouncements,以前只有下一条 task_done
+    // 才会再触发 flush——正忙时来的播报就永远卡住不念(2026-07-10 真机:两个任务
+    // 完成用户全程没听到)。回到空闲就是补播的正确时机。
+    flushAnnouncements();
   }
 
   function cancelOmniReading(reason){
