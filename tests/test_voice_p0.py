@@ -180,7 +180,7 @@ async def test_voice_config_reports_enabled(voice_db, monkeypatch):
             "omni_enabled": False,
             "vad_threshold": config.VOICE_VAD_THRESHOLD,
             "vad_silence_ms": config.VOICE_OMNI_VAD_SILENCE_MS,
-            "tts_voice": config.VOICE_TTS_VOICE,
+            "omni_voice": config.VOICE_OMNI_VOICE,
         }
 
 
