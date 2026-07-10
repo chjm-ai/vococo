@@ -1075,6 +1075,11 @@ try{
     <div id="callBody">
       <div id="transcript"></div>
     </div>
+    <!-- Omni 出声模式:阿里云通过 WebRTC 远端轨道发回的 AI 语音从这里播——
+         这是标准电话链路(远端 RTC 轨道),iOS 的回声消除天然把它当参考信号,
+         跟 2026-07-10 炸过的"本地 Web Audio 转 <audio>"(a544051)不是一回事。
+         audio 不带 controls 不占版面,不用 hidden。 -->
+    <audio id="omniRemoteAudio" autoplay playsinline></audio>
     <footer id="callFoot">
       <button id="stopBtn" hidden><span class="btnicon" id="stopIcon"></span>停</button>
       <!-- 半双工兜底:只有免提初始化失败/浏览器不支持时才出现,见 initUiMode() -->
@@ -1144,6 +1149,7 @@ const S = {
                          // 避免每次进通话视图都要等一趟网络往返才知道走哪条路径
   vadThreshold: 0.7,    // /voice/config 的 vad_threshold/vad_silence_ms,兜底默认跟
   vadSilenceMs: 3000,   // config.py 的 VOICE_OMNI_VAD_SILENCE_MS 默认值一致,拉取失败也不至于比调优前更灵敏
+  ttsVoice: "Cherry",   // /voice/config 的 tts_voice,Omni 出声模式 session.update 的音色
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -1228,6 +1234,28 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 上面这套 ws.py + Web Audio API 播放队列,两条路径互斥、共用同一批 UI 元素
   // (orbWrap/statusEl/handsFreeUi 等),关着完全不影响原有路径。
   let omniPc=null, omniDc=null, omniMicStream=null, omniUserLiveEl=null;
+  // Omni 出声模式的朗读队列:Claude 的回答按句子进队,靠 conversation.item.create +
+  // response.create 让 Omni 逐句念出来(同一时刻只能有一个进行中的 response,
+  // 靠 omniReadActive 串行化);omniReadPending 记录"我们主动点的 response.create
+  // 还有几个没收到 response.created",用来区分自动回复(要 cancel)和我们的朗读。
+  let omniReadQueue=[], omniReadActive=false, omniReadPending=0, omniAutoActive=false, omniAutoSince=0, omniTurnDone=true;
+  let omniReconnectTimer=null;
+  const omniAudioEl = $("#omniRemoteAudio");
+
+  // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
+  // 修复都因为拿不到真机证据只能盲改后 revert。关键事件(session/response 生命周期、
+  // 连接状态、打断判定)全部悄悄 POST 回服务器日志,fire-and-forget 不影响主流程。
+  function vdbg(tag, extra){
+    try{
+      const payload = {t: new Date().toISOString().slice(11,23), tag, state: wsState};
+      if(extra !== undefined) payload.x = extra;
+      fetch("/voice/debug", {
+        method: "POST", keepalive: true,
+        headers: {"Content-Type": "application/json", "X-Auth-Token": S.token},
+        body: JSON.stringify(payload),
+      }).catch(()=>{});
+    }catch(e){}
+  }
 
   // ── 播放:Web Audio API,不用 <audio> 标签 ──────────────────────────────
   let audioCtx=null, currentSource=null;
@@ -1600,6 +1628,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       } else if(wsState === "thinking"){
         // 没有真实音频时(思考中),一道从右向左行进的柔波,替代死板的呼吸块
         target = 0.30 + 0.20 * Math.sin(t * 3 - i * 0.35);
+      } else if(wsState === "speaking"){
+        // Omni 出声模式:AI 语音走 WebRTC 远端轨道播放,没接本地 analyser
+        // (远端流进 Web Audio 在 iOS 上是已知雷区,宁可用合成动画),
+        // 给一条节奏快一点的合成波,别让球在说话时看着像死了。
+        target = 0.35 + 0.22 * Math.sin(t * 6 - i * 0.5) * Math.abs(Math.sin(t * 1.7 + i * 0.13));
       } else {
         target = 0.06 + 0.05 * Math.sin(t * 1.4 + i * 0.5);  // idle 微起伏,别让波形看起来是死的
       }
@@ -1710,6 +1743,14 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     playQueue = [];
     playing = false;
     pausedForInterrupt = false;
+    // Omni 出声模式:点声纹球打断=取消 Omni 正在念/排队要念的内容 + 作废在飞的 Claude 流
+    if(omniDc){
+      omniTurnGen++;
+      cancelOmniReading("manual");
+      omniTurnDone = true;
+      wsState = "idle"; setStatus(STATE_WORD.idle);
+      if(handsFreeActive) orbWrap.className = "idle";
+    }
   }
 
   function connectHandsFreeWs(){
@@ -1782,16 +1823,19 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   }
 
   // ── P3 阶段二:Omni-Realtime WebRTC 通话 ─────────────────────────────────
-  // 2026-07-10 架构调整(见跟 Wesley 的讨论):Omni 只当"耳朵"——WebRTC 连线
-  // 只用来做识别(ASR)+断句(VAD)+打断信号,session.update 的 modalities 只给
-  // ["text"],不给 "audio"。原因:①session.update 里 turn_detection.create_response
-  // 字段真连线测过不生效,关不掉 Omni 自己生成回复;②即便喂了画像/工具,Omni
-  // 终究是独立模型,没有 Read/Grep/项目 AGENTS.md/记忆这些工具,答不出真实业务
-  // 问题。不给 "audio" modality 就等于 Omni 自己生成的那份回复只有文字、没有
-  // 语音,不会被听到,直接晾着不处理即可。真正识别到一整句话后,转发给现有
-  // /voice/send(跟文字聊天同一套 Claude 全套工具/画像/记忆),回答由 Claude 生成,
-  // 音频合成/播放复用 sendOmniTurn 里的 playQueue/pumpPlayback(今天已经修好的
-  // 单路可靠播放,不需要处理 Omni 自己的音频轨道)。
+  // 2026-07-10 架构(第二版,Omni 出声):Omni 当"耳朵+嘴巴",大脑仍然是 Claude。
+  // - 耳朵:WebRTC 连线做识别(ASR)+断句(VAD)+打断信号,跟第一版相同。
+  // - 大脑:识别到一整句话后转发给 /voice/send(Claude 全套工具/画像/记忆),
+  //   这一步也不变;但 body 带 tts:false,服务端不再合成 TTS。
+  // - 嘴巴(本次新增):Claude 的回答按句子经 conversation.item.create(【朗读】前缀)
+  //   + response.create 交给 Omni 念,音频走 WebRTC 远端轨道(RTP)回来从
+  //   #omniRemoteAudio 播——这是阿里云文档的标准链路,服务端回声消除+语义防
+  //   误打断只有音频走 RTC 闭环才生效;之前"自己 TTS+Web Audio 播放"在这条
+  //   链路外,AEC 拿不到参考信号,才有"AI 录到自己说话"的假对话问题。
+  // - 已知约束:turn_detection.create_response 实测关不掉,用户每说一句 Omni
+  //   都会自作主张生成一份回复——靠 session.instructions 把它压成一个字 +
+  //   response.created 时对"不是我们点的"回复立即 response.cancel 双保险,
+  //   见 wireOmniDataChannel 的 response.created 分支。
   let omniTurnGen = 0;  // 每次新一句开始/打断都 +1,过期的 /voice/send 流式结果据此判断该不该再应用
 
   async function startOmniHandsFree(){
@@ -1804,20 +1848,42 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       return;
     }
     ensureAnalyser();        // 麦克风侧声纹(capturing 状态用)
-    ensureOutputAnalyser();  // Claude 回复的播放侧声纹(speaking 状态用,见 pumpPlayback)
     if(!orbAnimHandle) drawOrbWaveform();
 
     omniPc = new RTCPeerConnection();
     omniMicStream.getTracks().forEach(t => omniPc.addTrack(t, omniMicStream));
-    // 不需要 ontrack:modalities 只给了 "text",Omni 不会真的发音频轨道过来。
+    // Omni 出声:AI 语音从远端轨道回来,接到常驻的 <audio> 元素上播放。
+    omniPc.ontrack = ev => {
+      vdbg("pc.ontrack", {kind: ev.track && ev.track.kind});
+      const ms = (ev.streams && ev.streams[0]) || new MediaStream([ev.track]);
+      omniAudioEl.srcObject = ms;
+      omniAudioEl.play().then(
+        ()=>vdbg("audio.play.ok"),
+        err=>vdbg("audio.play.fail", String(err)));
+    };
+    omniPc.onconnectionstatechange = () => {
+      if(!omniPc) return;
+      const st = omniPc.connectionState;
+      vdbg("pc.state", st);
+      // 120 分钟会话上限/网络抖动都会走到这里;disconnected 可能自愈,多等一拍。
+      if(st === "failed" || st === "closed") scheduleOmniReconnect("pc:"+st, 1500);
+      else if(st === "disconnected") scheduleOmniReconnect("pc:disconnected", 4000);
+    };
 
     const dc = omniPc.createDataChannel("events");
     omniDc = dc;
     dc.onopen = () => {
+      vdbg("dc.open");
       dc.send(JSON.stringify({
         event_id: "session-init", type: "session.update",
         session: {
-          modalities: ["text"],
+          // 出声模式:session 级别就带 audio——阿里云的回声消除/语义打断只认
+          // 走自家 RTC 通道的音频。自动回复的音频靠 instructions+cancel 压制。
+          modalities: ["text", "audio"],
+          voice: S.ttsVoice,
+          instructions: "你是一个只负责朗读的语音引擎。收到以【朗读】开头的消息时," +
+            "自然流畅地读出【朗读】后面的全部内容,一字不差,不要添加、省略或改动任何内容," +
+            "也不要发表自己的看法。收到其他任何消息时,只回答一个字:嗯。",
           // 2026-07-10:改用 semantic_vad(阿里云文档明确给 qwen3.5-omni-realtime 系列
           // 推荐这个模式)——server_vad 纯按静音毫秒数判停,用户说话中间正常思考停顿
           // ("呃"、组织语言)会被硬切;semantic_vad 按语义完整性判断这句话说完没有,
@@ -1827,6 +1893,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         },
       }));
     };
+    dc.onclose = () => { vdbg("dc.close"); scheduleOmniReconnect("dc:close", 1500); };
     wireOmniDataChannel(dc);
     omniPc.ondatachannel = ev => wireOmniDataChannel(ev.channel);
 
@@ -1845,11 +1912,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         body: omniPc.localDescription.sdp,
       });
     }catch(e){
-      addMsg("ai error", "WebRTC 信令请求失败(网络)"); return;
+      addMsg("ai error", "WebRTC 信令请求失败(网络)"); return false;
     }
     if(!resp.ok){
       addMsg("ai error", "WebRTC 连接失败:" + resp.status);
-      return;
+      return false;
     }
     const answerSdp = await resp.text();
     await omniPc.setRemoteDescription({type: "answer", sdp: answerSdp});
@@ -1858,18 +1925,61 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     orbWrap.className = "idle";
     clearHint();
     setStatus("聆听中…", "listening");
+    return true;
   }
+
+  // 断连重连兜底:阿里云单会话最长 120 分钟到点会主动断,网络切换(WiFi↔蜂窝)
+  // 也会把 PC 打断。轻量策略:整个拆掉重建一条连线,间隔一拍防抖;handsFreeActive
+  // 为 false(用户已挂断)就什么都不做。
+  function scheduleOmniReconnect(reason, delayMs){
+    if(!handsFreeActive || omniReconnectTimer) return;
+    vdbg("reconnect.scheduled", reason);
+    omniReconnectTimer = setTimeout(async () => {
+      omniReconnectTimer = null;
+      if(!handsFreeActive) return;
+      // disconnected 可能已经自愈,重建前再看一眼当前状态
+      if(omniPc && (omniPc.connectionState === "connected" || omniPc.connectionState === "connecting")){
+        vdbg("reconnect.skipped", "pc recovered");
+        return;
+      }
+      vdbg("reconnect.start", reason);
+      setStatus("重连中…", "thinking");
+      stopOmniHandsFree();
+      let ok = false;
+      try{ ok = await startOmniHandsFree(); }
+      catch(e){ vdbg("reconnect.fail", String(e)); }
+      // 信令失败是 return false 不是 throw,统一在这里兜住继续重试
+      if(!ok) scheduleOmniReconnect("retry", 5000);
+    }, delayMs || 1500);
+  }
+
+  // 高频 delta 事件不上报调试日志(每秒几十条会刷爆),其余事件类型全量上报——
+  // 这是 2026-07-10 两次盲改教训换来的"仪表盘",别省。
+  const OMNI_QUIET_EVENTS = new Set([
+    "conversation.item.input_audio_transcription.delta",
+    "response.audio_transcript.delta", "response.text.delta", "response.audio.delta",
+  ]);
 
   function wireOmniDataChannel(channel){
     channel.onmessage = ev => {
       let data;
       try{ data = JSON.parse(ev.data); }catch(e){ return; }
+      if(!OMNI_QUIET_EVENTS.has(data.type)){
+        vdbg("dc:" + data.type, {
+          rp: omniReadPending, ra: omniReadActive, aa: omniAutoActive,
+          q: omniReadQueue.length,
+          err: data.error ? String(data.error.message || data.error.code || "") : undefined,
+        });
+      }
       switch(data.type){
         case "input_audio_buffer.speech_started":
-          // 用户开口:如果上一轮还在思考/播放,当成打断处理——停掉播放队列,
-          // 让过期的 /voice/send 流式结果(见 sendOmniTurn 的 gen 判断)不再生效。
+          // 用户开口:如果上一轮还在思考/播放,当成打断处理——取消进行中的朗读、
+          // 清空朗读队列,让过期的 /voice/send 流式结果(见 sendOmniTurn 的 gen
+          // 判断)不再生效。
           if(wsState === "thinking" || wsState === "speaking"){
             omniTurnGen++;
+            cancelOmniReading("barge-in");
+            // 任务完成播报(flushAnnouncements)仍走 Web Audio 播放,打断时一并停掉
             if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
             playQueue = []; playing = false; pausedForInterrupt = false;
             // 打断要的是干净的静音,不再叠一个确认音——那个音在切断的同一瞬间响起,
@@ -1895,25 +2005,106 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           if(transcript) sendOmniTurn(transcript);
           break;
         }
-        case "error":
-          addMsg("ai error", (data.error && data.error.message) || "出错了");
+        case "response.created":
+          // 分两种:我们主动点的朗读(omniReadPending>0)放行;其余是 Omni 对用户
+          // 话语自作主张的回复(create_response 关不掉,见顶部架构注释),立即取消,
+          // 不让它出声——即便 cancel 慢半拍,instructions 也把它压成了一个字。
+          if(omniReadPending > 0){
+            omniReadPending--;
+            omniReadActive = true;
+            if(wsState !== "speaking"){
+              playSpeakingTone();
+              wsState = "speaking";
+              setStatus(STATE_WORD.speaking, STATE_CLASS.speaking);
+              if(handsFreeActive) orbWrap.className = "speaking";
+            }
+          } else {
+            omniAutoActive = true; omniAutoSince = Date.now();
+            try{ channel.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
+            vdbg("auto-response.cancelled");
+          }
           break;
-        // 其余事件(比如 Omni 自己那份被晾着的文字回复 response.*)不处理,
-        // modalities 只给了 "text" 所以它不会真被听到,忽略即可。
+        case "response.done":
+          if(omniReadActive){
+            omniReadActive = false;
+            pumpOmniRead();
+          } else {
+            omniAutoActive = false;
+            pumpOmniRead();  // 自动回复清场了,轮到排队中的朗读
+          }
+          break;
+        case "error": {
+          const msg = (data.error && (data.error.message || data.error.code)) || "出错了";
+          // response.cancel 撞上"没有进行中的回复"这类时序噪音只记日志不弹红气泡,
+          // 用户看到也做不了什么;其余错误照旧可见。
+          if(/cancel|active response|no active/i.test(String(msg))) break;
+          addMsg("ai error", String(msg));
+          break;
+        }
+        // 其余事件:response.audio_transcript.delta 等是 Omni 朗读的字幕,Claude 的
+        // 原文已经在界面上了,不重复渲染;audio 本体走 RTP 轨道,不经过这里。
       }
     };
   }
 
+  // ── Omni 出声:朗读队列 ────────────────────────────────────────────────
+  // Claude 的回答按句子进队,一句一个 response(服务端同一时刻只允许一个进行中
+  // 的 response,靠 omniReadActive/omniAutoActive 串行);【朗读】前缀跟 session
+  // instructions 里的约定对上。
+  function pumpOmniRead(){
+    if(!omniDc || omniDc.readyState !== "open") return;
+    // 保险丝:自动回复的 response.done 万一丢了(cancel 撞 done 的时序缝),别让
+    // omniAutoActive 卡死整个朗读队列——超过 5 秒当它已经结束。
+    if(omniAutoActive && Date.now() - omniAutoSince > 5000){
+      omniAutoActive = false;
+      vdbg("auto-active.timeout-cleared");
+    }
+    if(omniReadActive || omniAutoActive || omniReadPending > 0) return;
+    if(omniReadQueue.length === 0){ maybeOmniIdle(); return; }
+    const text = omniReadQueue.shift();
+    try{
+      omniDc.send(JSON.stringify({
+        type: "conversation.item.create",
+        item: {type: "message", role: "user", content: [{type: "input_text", text: "【朗读】" + text}]},
+      }));
+      omniDc.send(JSON.stringify({type: "response.create"}));
+      omniReadPending++;
+      vdbg("read.create", text.slice(0, 40));
+    }catch(e){ vdbg("read.create.fail", String(e)); }
+  }
+
+  function maybeOmniIdle(){
+    // 整轮收尾:Claude 文字流结束 + 朗读队列清空 + 没有进行中的朗读才回 idle;
+    // 用户已经又开口(capturing)就不抢状态。
+    if(!omniTurnDone || omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0) return;
+    if(wsState === "capturing" || wsState === "idle") return;
+    wsState = "idle";
+    setStatus(STATE_WORD.idle);
+    if(handsFreeActive) orbWrap.className = "idle";
+  }
+
+  function cancelOmniReading(reason){
+    omniReadQueue = [];
+    if((omniReadActive || omniReadPending > 0 || omniAutoActive) && omniDc && omniDc.readyState === "open"){
+      try{ omniDc.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
+    }
+    omniReadActive = false; omniReadPending = 0;
+    vdbg("read.cancel", reason);
+  }
+
   // 识别到一整句话后,转发给现有 /voice/send——跟文字聊天同一套 Claude 全套
-  // 工具/画像/记忆,回答由 Claude 生成,不是 Omni 自己瞎编。播放复用 playQueue/
-  // pumpPlayback(今天已经修好的单路可靠播放)。gen 机制:进来时记一个代号,
-  // 期间被打断(omniTurnGen 变了)就不再把迟到的流式结果应用到界面/播放队列上。
+  // 工具/画像/记忆,回答由 Claude 生成,不是 Omni 自己瞎编。tts:false 让服务端
+  // 只发句子文本不合成音频,句子进 omniReadQueue 交给 Omni 念(见 pumpOmniRead)。
+  // gen 机制:进来时记一个代号,期间被打断(omniTurnGen 变了)就不再把迟到的
+  // 流式结果应用到界面/朗读队列上。
   async function sendOmniTurn(text){
     const gen = ++omniTurnGen;
     wsState = "thinking";
     setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
     if(handsFreeActive) orbWrap.className = "thinking";
     currentTurnAiEl = null; currentTurnFull = "";
+    omniReadQueue = []; omniTurnDone = false;
+    vdbg("turn.start", text.slice(0, 40));
 
     const toIdle = () => {
       wsState = "idle"; setStatus(STATE_WORD.idle);
@@ -1925,15 +2116,16 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       resp = await fetch("/voice/send", {
         method: "POST",
         headers: {"Content-Type": "application/json", "X-Auth-Token": S.token},
-        body: JSON.stringify({text}),
+        body: JSON.stringify({text, tts: false}),
       });
     }catch(e){
-      if(gen === omniTurnGen){ addMsg("ai error", "连不上服务"); toIdle(); }
+      if(gen === omniTurnGen){ addMsg("ai error", "连不上服务"); omniTurnDone = true; toIdle(); }
       return;
     }
     if(gen !== omniTurnGen) return;  // 已经被打断,后面的响应不用管了
     if(!resp.ok || !resp.body){
       addMsg("ai error", resp.status === 409 ? "上一轮还没说完" : "出错了");
+      omniTurnDone = true;
       toIdle();
       return;
     }
@@ -1955,13 +2147,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
             currentTurnFull += ev.data.text || "";
             renderAi(currentTurnAiEl, currentTurnFull);
-            if(wsState !== "speaking") playSpeakingTone();
-            wsState = "speaking";
-            setStatus(STATE_WORD.speaking, STATE_CLASS.speaking);
-            if(handsFreeActive) orbWrap.className = "speaking";
+            // 状态保持 thinking:真正的"播放中"由 Omni 朗读的 response.created
+            // 驱动(见 wireOmniDataChannel),文字流出来不等于已经在出声。
           } else if(ev.event === "sentence"){
-            playQueue.push(ev.data);
-            pumpPlayback();
+            if(ev.data.text){ omniReadQueue.push(ev.data.text); pumpOmniRead(); }
           } else if(ev.event === "done"){
             if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
             if(ev.data.full_text){ currentTurnFull = ev.data.full_text; renderAi(currentTurnAiEl, currentTurnFull); }
@@ -1972,15 +2161,23 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }catch(e){ /* 流中断,不额外报错 */ }
     if(gen !== omniTurnGen) return;
     currentTurnAiEl = null; currentTurnFull = "";
-    toIdle();
+    omniTurnDone = true;
+    vdbg("turn.stream-done", {q: omniReadQueue.length});
+    // 不直接回 idle:朗读队列可能还有没念完的,由 maybeOmniIdle 在念完后收尾。
+    maybeOmniIdle();
+    pumpOmniRead();
   }
 
   function stopOmniHandsFree(){
     omniTurnGen++;  // 让还在飞的 sendOmniTurn 流式结果失效
-    if(omniDc){ try{ omniDc.close(); }catch(e){} omniDc = null; }
-    if(omniPc){ try{ omniPc.close(); }catch(e){} omniPc = null; }
+    // 先摘 handler 再 close:close 本身会触发 dc.onclose/pc.onconnectionstatechange,
+    // 不摘的话主动关闭也会被当成"断线"排一次重连。
+    if(omniDc){ try{ omniDc.onclose = null; omniDc.close(); }catch(e){} omniDc = null; }
+    if(omniPc){ try{ omniPc.onconnectionstatechange = null; omniPc.ontrack = null; omniPc.close(); }catch(e){} omniPc = null; }
     omniMicStream = null;  // 麦克风轨道本身随 stream 变量一起在 teardownCallResources 里停
     omniUserLiveEl = null;
+    omniReadQueue = []; omniReadActive = false; omniReadPending = 0; omniAutoActive = false; omniTurnDone = true;
+    if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
   }
 
   async function loadMainHistory(){
@@ -2056,6 +2253,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 导航卸载页面顺带回收这些资源,现在视图常驻 DOM 不会自动卸载,不手动收就是
   // 麦克风一直"热着"、WS 一直连着,电量和隐私都不划算。
   function teardownCallResources(){
+    handsFreeActive = false;  // 先立 flag:让 scheduleOmniReconnect 的回调知道用户已挂断
+    if(omniReconnectTimer){ clearTimeout(omniReconnectTimer); omniReconnectTimer = null; }
     stopOmniHandsFree();
     if(playbackWatchdog){ clearInterval(playbackWatchdog); playbackWatchdog = null; }
     if(wsConn){ wsConn.onclose = null; try{ wsConn.close(); }catch(e){} wsConn = null; }
@@ -2280,6 +2479,7 @@ async function loadVoiceOmniConfig(){
     S.omniEnabled=!!d.omni_enabled;
     if(typeof d.vad_threshold==="number") S.vadThreshold=d.vad_threshold;
     if(typeof d.vad_silence_ms==="number") S.vadSilenceMs=d.vad_silence_ms;
+    if(d.tts_voice) S.ttsVoice=d.tts_voice;
   }catch(e){}
 }
 function cmdMatches(prefix){
