@@ -180,6 +180,7 @@ async def test_voice_config_reports_enabled(voice_db, monkeypatch):
             "omni_enabled": False,
             "vad_threshold": config.VOICE_VAD_THRESHOLD,
             "vad_silence_ms": config.VOICE_OMNI_VAD_SILENCE_MS,
+            "tts_voice": config.VOICE_TTS_VOICE,
         }
 
 
@@ -238,6 +239,51 @@ async def test_voice_send_streams_text_sentence_done_and_strips_instruction_on_s
     assert history[0].user == "明天天气怎么样"
     assert history[0].assistant == "好的,明天多云二十八度。"
     assert session.get_resume() == "sdk-123"
+
+
+@pytest.mark.anyio
+async def test_voice_send_tts_false_skips_synthesis_but_emits_sentences(voice_db, monkeypatch):
+    """Omni 出声模式:body 带 tts:false,服务端不调 TTS(合成被 mock 成必炸),
+    sentence 事件照发(前端拿文本做逐句朗读切分),只是 audio_b64 为空。"""
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        yield TextDelta("好的,收到。")
+        yield Done(
+            AgentReply(text="好的,收到。", tool_calls=[], cost_usd=None, is_error=False, sdk_session_id=None)
+        )
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+
+    def exploding_synthesize(text, voice):
+        raise AssertionError("tts:false 时不该走到合成")
+
+    monkeypatch.setattr(tts, "synthesize", exploding_synthesize)
+
+    app = web.Application()
+    routes.register_routes(app)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/voice/send", json={"text": "在吗", "tts": False})
+        assert resp.status == 200
+        body = (await resp.read()).decode("utf-8")
+
+    events = _parse_sse(body)
+    sentence_events = [d for e, d in events if e == "sentence"]
+    assert len(sentence_events) == 1
+    assert sentence_events[0]["text"] == "好的,收到。"
+    assert sentence_events[0]["audio_b64"] is None
+    assert [e for e, _ in events][-1] == "done"
+
+
+@pytest.mark.anyio
+async def test_voice_debug_logs_and_returns_ok(voice_db, capsys):
+    """前端调试信号上报:落服务器日志(stdout),响应 ok——见 routes._handle_debug。"""
+    app = web.Application()
+    routes.register_routes(app)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/voice/debug", json={"tag": "dc:session.created", "state": "idle"})
+        assert resp.status == 200
+        assert (await resp.json()) == {"ok": True}
+    assert "dc:session.created" in capsys.readouterr().out
 
 
 @pytest.mark.anyio

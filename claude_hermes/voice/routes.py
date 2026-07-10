@@ -56,7 +56,25 @@ async def _handle_config(request: web.Request) -> web.Response:
         # config.VOICE_OMNI_VAD_SILENCE_MS 的注释),跟旧 ws.py 链路调优的值分开。
         "vad_threshold": config.VOICE_VAD_THRESHOLD,
         "vad_silence_ms": config.VOICE_OMNI_VAD_SILENCE_MS,
+        # Omni 出声模式:session.update 的 voice 字段用,跟服务端 TTS 共用同一个音色名
+        # (Cherry 在 Qwen-TTS 和 Omni-Realtime 的音色表里都有)。
+        "tts_voice": config.VOICE_TTS_VOICE,
     })
+
+
+async def _handle_debug(request: web.Request) -> web.Response:
+    """前端语音调试信号上报(2026-07-10 教训:浏览器↔阿里云的 DataChannel 服务端
+    完全看不见,连续两次修复都因为拿不到真实证据只能盲改-测-revert。前端把关键
+    事件(session/response 生命周期、连接状态转折、打断判定)POST 过来落进服务器
+    日志,真机一测日志里就有完整时间线)。只打日志不存库,体积截断防刷爆。"""
+    if (g := _guard(request)) is not None:
+        return g
+    try:
+        raw = await request.text()
+    except Exception:  # noqa: BLE001
+        raw = ""
+    print(f"[voice/dbg] {raw[:2000]}", flush=True)
+    return web.json_response({"ok": True})
 
 
 async def _handle_stt(request: web.Request) -> web.Response:
@@ -88,6 +106,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     is_audio = (request.content_type or "").startswith("multipart/")
     audio = filename = actype = None
     user_text = ""
+    synth_tts = True
     if is_audio:
         audio, filename, actype = await stt.read_audio(request)
         if not audio:
@@ -100,7 +119,11 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
         user_text = (body.get("text") or "").strip()
         if not user_text:
             return web.json_response({"error": "text 不能为空"}, status=400)
-        print(f"[voice/send] 收到文字直发: {user_text[:50]!r}", flush=True)
+        # Omni 出声模式(前端把 Claude 的回答转给 Omni 朗读)不需要服务端再合成
+        # TTS——sentence 事件照发(前端拿它做逐句朗读的切分),只是不带音频,
+        # 省掉每句几百毫秒的合成耗时和 Qwen-TTS 的并发限流风险。
+        synth_tts = bool(body.get("tts", True))
+        print(f"[voice/send] 收到文字直发: {user_text[:50]!r} tts={synth_tts}", flush=True)
     if _lock.locked():
         return web.json_response({"error": "上一轮还没说完"}, status=409)
 
@@ -151,11 +174,11 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                     await _sse(resp, "text", {"text": ev.text})
                     if not stop_event.is_set():
                         for sentence in splitter.feed(ev.text):
-                            seq = _emit_sentence(sentence_queue, pending_synth_tasks, seq, sentence)
+                            seq = _emit_sentence(sentence_queue, pending_synth_tasks, seq, sentence, synth_tts)
                 elif isinstance(ev, Done):
                     if not stop_event.is_set():
                         for sentence in splitter.flush():
-                            seq = _emit_sentence(sentence_queue, pending_synth_tasks, seq, sentence)
+                            seq = _emit_sentence(sentence_queue, pending_synth_tasks, seq, sentence, synth_tts)
                     # 告诉 sender 协程"没有下一句了",等它把队列里剩下还在后台合成中
                     # 的句子按顺序发完,再继续走 done——不然客户端可能先收到 done、
                     # 后面才姗姗来迟几句 sentence,顺序就乱了。
@@ -190,10 +213,13 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     return resp
 
 
-def _emit_sentence(queue: "asyncio.Queue", pending: list, seq: int, sentence: str) -> int:
-    """把这句话的 TTS 合成丢到后台并发跑,不阻塞正在读的 Claude 文字流,见调用处注释。"""
-    synth_task = asyncio.ensure_future(tts.synthesize(sentence, config.VOICE_TTS_VOICE))
-    pending.append(synth_task)
+def _emit_sentence(queue: "asyncio.Queue", pending: list, seq: int, sentence: str, synth: bool = True) -> int:
+    """把这句话的 TTS 合成丢到后台并发跑,不阻塞正在读的 Claude 文字流,见调用处注释。
+    synth=False(Omni 出声模式)时只发句子文本不合成音频。"""
+    synth_task = None
+    if synth:
+        synth_task = asyncio.ensure_future(tts.synthesize(sentence, config.VOICE_TTS_VOICE))
+        pending.append(synth_task)
     queue.put_nowait((seq, sentence, synth_task))
     return seq + 1
 
@@ -205,12 +231,14 @@ async def _sentence_sender(resp: web.StreamResponse, queue: "asyncio.Queue", fir
         if item is None:
             return
         _seq, sentence, synth_task = item
-        try:
-            audio = await synth_task
-        except asyncio.CancelledError:
-            return
-        except Exception:  # noqa: BLE001 —— 单句合成失败不该拖垮整轮,跳过继续发下一句
-            audio = None
+        audio = None
+        if synth_task is not None:
+            try:
+                audio = await synth_task
+            except asyncio.CancelledError:
+                return
+            except Exception:  # noqa: BLE001 —— 单句合成失败不该拖垮整轮,跳过继续发下一句
+                audio = None
         payload = {"text": sentence, "audio_b64": base64.b64encode(audio).decode("ascii") if audio else None}
         await _sse(resp, "sentence", payload)
         if not first_audio_ts:
@@ -315,6 +343,7 @@ def register_routes(app: web.Application) -> None:
             web.post("/voice/send", _handle_send),
             web.post("/voice/stop", _handle_stop),
             web.post("/voice/clear", _handle_clear),
+            web.post("/voice/debug", _handle_debug),
             web.get("/voice/tasks", _handle_tasks_list),
             web.get("/voice/tasks/stream", _handle_tasks_stream),
             web.get("/voice/tasks/{task_id}", _handle_task_detail),
