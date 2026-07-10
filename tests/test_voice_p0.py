@@ -344,6 +344,48 @@ async def test_voice_send_rejects_concurrent_turn(voice_db, monkeypatch):
             routes._lock._locked = False
 
 
+@pytest.mark.anyio
+async def test_voice_send_preempts_running_http_turn(voice_db, monkeypatch):
+    """新一句到达时,持锁的上一轮 HTTP turn 该被抢占取消,而不是 409 拒答
+    (2026-07-10 真机:一轮长任务持锁,用户连问几句全被"上一轮还没处理完"弹回)。
+    被抢占的半轮要落库,用户说过的话不能凭空消失。"""
+    import asyncio
+
+    started = asyncio.Event()
+    calls: list[str] = []
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        calls.append(prompt_text)
+        if len(calls) == 1:
+            started.set()
+            await asyncio.sleep(3600)  # 第一轮:装作一直在跑,等着被抢占取消
+        yield Done(
+            AgentReply(text="第二句的回答", tool_calls=[], cost_usd=None, is_error=False)
+        )
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+    monkeypatch.setattr(tts, "synthesize", lambda text, voice: _none_coro())
+
+    app = web.Application()
+    routes.register_routes(app)
+    async with TestClient(TestServer(app)) as client:
+        task1 = asyncio.ensure_future(client.post("/voice/send", json={"text": "第一句"}))
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        resp2 = await client.post("/voice/send", json={"text": "第二句"})
+        assert resp2.status == 200
+        body = await resp2.text()
+        assert "第二句的回答" in body
+
+        r1 = await task1  # 旧请求 SSE 已 prepare(200),被服务端取消后正常收尾
+        assert r1.status == 200
+
+    history = session.load_history()
+    firsts = [t for t in history if t.user == "第一句"]
+    assert firsts and "打断" in firsts[0].assistant
+    assert any(t.user == "第二句" for t in history)
+
+
 async def _none_coro():
     return None
 

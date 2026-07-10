@@ -22,8 +22,13 @@ from . import executor, notify, omni_realtime, prompts, session, stt, task_tools
 _STATIC = Path(__file__).resolve().parent / "static"
 
 # 同一时刻只允许一轮语音对话在跑;stop 通过它通知正在跑的那一轮别再合成音频了。
+# _turn_task:正在持锁跑的那一轮 HTTP handler task——新一句话到达时用它抢占旧轮
+# (语音同一时刻只有一个人在说,新话为准),不再一律 409 拒之门外(2026-07-10 真机:
+# 一轮长任务持锁,用户连问几句全被"上一轮还没处理完"弹回)。旧 WS 链路持锁时
+# _turn_task 为 None,维持原 409 行为。
 _lock = asyncio.Lock()
 _stop_event: asyncio.Event | None = None
+_turn_task: asyncio.Task | None = None
 
 
 def _ok_token(request: web.Request) -> bool:
@@ -100,7 +105,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     这一趟完整的网络往返(手机 ⇄ 服务器隔着隧道,这一趟在真机上很有分量),
     服务端转写完直接续跑同一个 SSE 流,先吐一个 event:transcript 回显文字。
     """
-    global _stop_event
+    global _stop_event, _turn_task
     if (g := _guard(request)) is not None:
         return g
     is_audio = (request.content_type or "").startswith("multipart/")
@@ -125,7 +130,24 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
         synth_tts = bool(body.get("tts", True))
         print(f"[voice/send] 收到文字直发: {user_text[:50]!r} tts={synth_tts}", flush=True)
     if _lock.locked():
-        return web.json_response({"error": "上一轮还没说完"}, status=409)
+        t = _turn_task
+        if t is None or t.done():
+            # 持锁的不是可抢占的 HTTP 轮(旧 WS 链路在跑)——维持原 409。
+            return web.json_response({"error": "上一轮还没说完"}, status=409)
+        # 抢占:取消旧轮(它的 CancelledError 分支会把半截回复落库),等它释放锁。
+        # 15 秒等不到(stream_turn 的取消收尾最多含 5 秒 CLI interrupt)才放弃。
+        t.cancel()
+        print("[voice/send] 新一句抢占:已取消上一轮,等待锁释放…", flush=True)
+        try:
+            await asyncio.wait_for(_lock.acquire(), timeout=15)
+        except asyncio.TimeoutError:
+            return web.json_response({"error": "上一轮还没说完"}, status=409)
+    else:
+        try:
+            await asyncio.wait_for(_lock.acquire(), timeout=15)
+        except asyncio.TimeoutError:  # 极小概率:两句话同时到,锁被同行请求抢先
+            return web.json_response({"error": "上一轮还没说完"}, status=409)
+    _turn_task = asyncio.current_task()
 
     resp = web.StreamResponse(
         headers={
@@ -137,7 +159,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     )
     await resp.prepare(request)
 
-    async with _lock:
+    try:  # 锁已在上面拿到,这里 try/finally 保证释放(含 return/抢占取消的所有路径)
         stop_event = asyncio.Event()
         _stop_event = stop_event
         t0 = time.monotonic()
@@ -197,7 +219,19 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                         flush=True,
                     )
         except (asyncio.CancelledError, ConnectionResetError):
-            pass
+            # 被新一句抢占(_turn_task.cancel())或客户端断开:把这半轮落库——用户
+            # 说过的话不能凭空消失,新一轮的历史里也该看得到"上一句只答了一半"。
+            # Claude 侧的停止生成由 stream_turn 自己的取消分支负责(interrupt CLI)。
+            if user_text:
+                try:
+                    partial = (
+                        full_text + " …(话没说完,被下一句打断了)"
+                        if full_text.strip()
+                        else "(这句还没来得及回答,就被下一句打断了)"
+                    )
+                    session.append(user_text, partial)
+                except Exception:  # noqa: BLE001 —— 落库失败不该在取消路径上再抛
+                    pass
         except Exception as exc:  # noqa: BLE001 —— 兜底:出错也要给前端一个 done,不让它干等
             try:
                 await _sse(resp, "done", {"full_text": full_text, "error": str(exc)})
@@ -210,6 +244,10 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                 t.cancel()
             if _stop_event is stop_event:
                 _stop_event = None
+    finally:
+        if _turn_task is asyncio.current_task():
+            _turn_task = None
+        _lock.release()
     return resp
 
 
