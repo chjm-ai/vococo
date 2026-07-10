@@ -1818,9 +1818,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         event_id: "session-init", type: "session.update",
         session: {
           modalities: ["text"],
-          // 阈值/静音判停时长跟旧 ws.py 链路(voice/ws.py:233-234)对齐,来自 /voice/config
-          // 预取的 config.py 调优值,不吃阿里云偏灵敏的默认值,避免一句话被拆成多段。
-          turn_detection: { type: "server_vad", threshold: S.vadThreshold, silence_duration_ms: S.vadSilenceMs },
+          // 2026-07-10:改用 semantic_vad(阿里云文档明确给 qwen3.5-omni-realtime 系列
+          // 推荐这个模式)——server_vad 纯按静音毫秒数判停,用户说话中间正常思考停顿
+          // ("呃"、组织语言)会被硬切;semantic_vad 按语义完整性判断这句话说完没有,
+          // 才是治这个问题的根本方式,不是死调 silence_duration_ms 数值。threshold/
+          // silence_duration_ms 仍然传,作为语义判断之外的兜底(过长静音还是会强制切)。
+          turn_detection: { type: "semantic_vad", threshold: S.vadThreshold, silence_duration_ms: S.vadSilenceMs },
         },
       }));
     };
