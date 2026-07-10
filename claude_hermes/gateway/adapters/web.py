@@ -15,6 +15,7 @@ Web 端不改写 Markdown 表格(浏览器能原生渲染),这正是"样式更�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import os
@@ -365,14 +366,27 @@ class WebAdapter:
 
     # ── HTTP 路由 ────────────────────────────────────────────────────────
     async def _handle_index(self, request: web.Request) -> web.Response:
-        # 每次请求实时读盘:改了 UI 刷新浏览器即可,不用重启 serve;no-cache 让浏览器也别缓存
+        # 每次请求实时读盘:改了 UI 刷新浏览器即可,不用重启 serve。no-cache 的语义是
+        # "每次用之前先跟服务器核对",不是"不许缓存"——配合 ETag,内容没变就回 304
+        # 空包(2026-07-10:手机杀掉 PWA 重开,254KB 的 index.html 每次全量重传,走
+        # 隧道+跨境链路首屏能拖好几秒;改动后没变=304 秒开,变了=照常拿到新页面)。
         try:
-            html = (_STATIC / "index.html").read_text(encoding="utf-8")
+            html_bytes = (_STATIC / "index.html").read_bytes()
         except OSError:
-            html = "<h1>index.html 缺失</h1>"
-        return web.Response(
-            text=html, content_type="text/html", headers={"Cache-Control": "no-cache"}
+            html_bytes = "<h1>index.html 缺失</h1>".encode("utf-8")
+        etag = f'"{hashlib.md5(html_bytes).hexdigest()}"'
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(
+                status=304, headers={"Cache-Control": "no-cache", "ETag": etag}
+            )
+        resp = web.Response(
+            body=html_bytes,
+            content_type="text/html",
+            charset="utf-8",
+            headers={"Cache-Control": "no-cache", "ETag": etag},
         )
+        resp.enable_compression()  # 起源端 gzip:250KB 文本压到几十 KB,弱网首屏立省
+        return resp
 
     async def _handle_events(self, request: web.Request) -> web.StreamResponse:
         if not self._ok_token(request):
