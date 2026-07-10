@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
 
@@ -398,6 +399,24 @@ def _compat_base_key(
 _FORCE_FOREGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
 
 
+# CLI 子进程的 stderr 噪音过滤(2026-07-10):hook 撞上已关闭的流(轮被取消/client
+# 已 discard 后 CLI 还想调 PreToolUse hook)时,Bun 会把 cli.js 压缩源码上下文整段
+# 吐到 stderr——一次好几 KB,3MB 日志一多半是它,真正有效信号只有一行 "Error in
+# hook callback hook_0"+"error: Stream closed"。注册 stderr 回调(SDK 转 PIPE 逐行
+# 回调)逐行过滤:丢源码行/堆栈行,其余打标截断转发,信号密度回来了,排障还看得见。
+_STDERR_NOISE_RE = re.compile(r"^\s*\d+\s*\|")  # Bun 源码上下文行,如 "32341 |   activate"
+_STDERR_STACK_RE = re.compile(r"^\s+at .*(cli\.js|native|<anonymous>|\(1:11\))")
+
+
+def _cli_stderr(line: str) -> None:
+    s = line.rstrip()
+    if not s or _STDERR_NOISE_RE.match(s) or _STDERR_STACK_RE.match(s):
+        return
+    if len(s) > 500:
+        s = s[:500] + "…(截断)"
+    print(f"[cli/stderr] {s}", flush=True)
+
+
 def _turn_env(provider_env: dict) -> dict:
     """本轮传给 CLI 子进程的 env:cc-switch 供应商 env(base_url+key)叠加恒定的强制前台开关。"""
     return {**provider_env, **_FORCE_FOREGROUND_ENV}
@@ -489,6 +508,7 @@ async def stream_turn(
             env=_turn_env(provider_env),  # cc-switch base_url+key + 恒定强制前台开关(见 _turn_env)
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
             disallowed_tools=list(disallowed_tools or []),
+            stderr=_cli_stderr,  # 过滤 Bun 源码刷屏,见 _cli_stderr 顶部注释
         )
 
     async def _stream_once(
