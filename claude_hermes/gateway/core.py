@@ -351,12 +351,15 @@ async def converse(
             text=describe_llm_error(None, _err_msg), tool_calls=[], cost_usd=None,
             is_error=True, error=_err_msg,
         )
-    elif reply is not None and reply.is_error and not reply.text.strip():
-        # 流正常收尾,但 ResultMessage 报了模型层报错(如 429/529)且没吐出任何正文
-        # —— 不补提示的话前端只会显示"(空回复)",用户会误以为是咱们服务器坏了。
+    elif reply is not None and reply.is_error:
+        # ResultMessage 报了模型层报错(如 429/529/撞 max_turns)。之前只在 reply.text
+        # 完全空的时候才补提示——但撞 max_turns 时往往已经流出一大段正文,text 非空,
+        # 导致这段说明被跳过,用户看到的是"说到一半突然没了",既不知道发生了什么,
+        # 也看不到已经做到哪一步。改成:有正文就接在后面附加说明,而不是覆盖掉。
         from ..core.agent import describe_llm_error
 
-        reply.text = describe_llm_error(reply.api_error_status, reply.error)
+        note = describe_llm_error(reply.api_error_status, reply.error)
+        reply.text = f"{reply.text.rstrip()}\n\n{note}" if reply.text.strip() else note
     if reply is not None:
         # 最后一刷:确保 refresh 前最后 0.7s 内输出的内容也进 draft
         if _draft_full:
