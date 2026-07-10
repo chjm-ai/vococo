@@ -157,9 +157,8 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
             "X-Accel-Buffering": "no",
         }
     )
-    await resp.prepare(request)
-
-    try:  # 锁已在上面拿到,这里 try/finally 保证释放(含 return/抢占取消的所有路径)
+    try:  # 锁已在上面拿到,这里 try/finally 保证释放(含 prepare 失败/return/抢占取消的所有路径)
+        await resp.prepare(request)
         stop_event = asyncio.Event()
         _stop_event = stop_event
         t0 = time.monotonic()
@@ -218,10 +217,11 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                         f"total={time.monotonic() - t0:.2f}s",
                         flush=True,
                     )
-        except (asyncio.CancelledError, ConnectionResetError):
+        except (asyncio.CancelledError, ConnectionResetError) as exc:
             # 被新一句抢占(_turn_task.cancel())或客户端断开:把这半轮落库——用户
             # 说过的话不能凭空消失,新一轮的历史里也该看得到"上一句只答了一半"。
             # Claude 侧的停止生成由 stream_turn 自己的取消分支负责(interrupt CLI)。
+            print(f"[voice/send] 本轮中止({type(exc).__name__}),已生成 {len(full_text)} 字", flush=True)
             if user_text:
                 try:
                     partial = (
@@ -233,6 +233,10 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                 except Exception:  # noqa: BLE001 —— 落库失败不该在取消路径上再抛
                     pass
         except Exception as exc:  # noqa: BLE001 —— 兜底:出错也要给前端一个 done,不让它干等
+            # 2026-07-10 真机教训:这里以前只把错误发给前端就完了,服务端一行不留
+            # ——语音场景用户根本不看屏幕,表现就是"发了消息没反应",日志还查无此轮。
+            import traceback
+            print(f"[voice/send] 本轮异常: {exc!r}\n{traceback.format_exc()}", flush=True)
             try:
                 await _sse(resp, "done", {"full_text": full_text, "error": str(exc)})
             except (ConnectionResetError, RuntimeError):

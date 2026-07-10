@@ -2112,6 +2112,14 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     flushAnnouncements();
   }
 
+  // 出错/拒答时让 Omni 把提示念出来——通话中用户不看屏幕,静默失败=「没反应」
+  // (2026-07-10 真机:一轮起步就异常,前端只画了个红气泡,用户以为整个系统死了)。
+  function speakOmniNotice(text){
+    if(!omniDc || omniDc.readyState !== "open") return;
+    omniReadQueue.push(text);
+    pumpOmniRead();
+  }
+
   function cancelOmniReading(reason){
     omniReadQueue = [];
     if((omniReadActive || omniReadPending > 0 || omniAutoActive) && omniDc && omniDc.readyState === "open"){
@@ -2148,12 +2156,13 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         body: JSON.stringify({text, tts: false}),
       });
     }catch(e){
-      if(gen === omniTurnGen){ addMsg("ai error", "连不上服务"); omniTurnDone = true; toIdle(); }
+      if(gen === omniTurnGen){ addMsg("ai error", "连不上服务"); speakOmniNotice("现在连不上服务,稍等再说一次试试。"); omniTurnDone = true; toIdle(); }
       return;
     }
     if(gen !== omniTurnGen) return;  // 已经被打断,后面的响应不用管了
     if(!resp.ok || !resp.body){
       addMsg("ai error", resp.status === 409 ? "上一轮还没说完" : "出错了");
+      speakOmniNotice(resp.status === 409 ? "上一句还在处理,稍等一下。" : "刚才那句出错了,再说一遍试试。");
       omniTurnDone = true;
       toIdle();
       return;
@@ -2183,7 +2192,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           } else if(ev.event === "done"){
             if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
             if(ev.data.full_text){ currentTurnFull = ev.data.full_text; renderAi(currentTurnAiEl, currentTurnFull); }
-            if(ev.data.error){ markBubbleError(currentTurnAiEl); if(!currentTurnFull) renderAi(currentTurnAiEl, ev.data.error); }
+            if(ev.data.error){
+              markBubbleError(currentTurnAiEl); if(!currentTurnFull) renderAi(currentTurnAiEl, ev.data.error);
+              // 通话中用户不看屏幕,出错必须让他听得到,否则就是"发了消息没反应"
+              speakOmniNotice("刚才那句处理出错了,再说一遍试试。");
+            }
           }
         }
       }
