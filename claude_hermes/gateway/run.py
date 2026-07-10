@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import os
+
 import anyio
 
 from .. import config
@@ -107,15 +109,19 @@ class GatewayRunner:
                     await adapter.send(inc.chat_id, outcome.reply)
                 return
         # 语音后台任务续聊(session_key=voice-task:{id})要延续任务派发时的工作目录——
-        # converse() 按 session_key 推导 cwd 那套认不出这种非项目 key,查 voice.tasks
-        # 里存的原始 cwd 显式传进去(见 03-phase2-实现记录.md 存储统一改动一节)。
+        # converse() 按 session_key 推导 cwd 那套认不出这种非项目 key,显式传进去(见
+        # 03-phase2-实现记录.md 存储统一改动一节)。任务派发时若原始 cwd 是 git 仓库,
+        # executor._run 会给它开专属 worktree + 分支并绑定同一个 key(见
+        # core/worktree.ensure_worktree_for_task);续聊要接着在那条隔离分支上改,
+        # 不能退回原始项目根,否则前半段任务的改动在分支、续聊的改动在主目录,对不上。
         cwd_override = None
         if key.startswith("voice-task:"):
             from ..voice import tasks as voice_tasks  # 懒加载,避免非语音场景也引入这个模块
 
             row = voice_tasks.get(key.split(":", 1)[1])
             if row is not None:
-                cwd_override = row["cwd"]
+                wt = session_store.get_worktree(key)
+                cwd_override = wt if wt and os.path.isdir(wt) else row["cwd"]
         # 设置本轮路由上下文(供 ask_user 工具反问时找到该发给谁),随 contextvar 传入工具
         token = clarify.set_current(key, adapter, inc.chat_id)
         clarify.mark_active(key)  # 全局登记"我在跑了",供 restart_self 等查"还有谁没结束"

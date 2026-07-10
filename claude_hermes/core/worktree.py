@@ -141,7 +141,29 @@ async def ensure_worktree(session_key: str) -> str | None:
     root = config.project_root_for(session_key)
     if not root:  # 非项目会话(CLI/TG/main),秒退,零 DB 开销
         return None
+    # 项目哈希取自 key 的第二段 p<hash>(project_root_for 已保证 key 是三段项目会话)
+    phash = session_key.split(":")[1][1:]
+    slug = _slug(session_key.split(":")[-1])
+    return await _ensure_worktree_impl(session_key, root, phash, slug)
 
+
+async def ensure_worktree_for_task(root: str, task_id: str) -> str | None:
+    """语音后台任务(voice_dispatch_task 派发)专用:给这次任务开独立 worktree + 分支,
+    跟 Web/CLI「一会话一 worktree」是同一套机制,只是绑定 key 换成任务自己的
+    `voice-task:<id>`(该 key 本就是这个任务在 session_store 里的落库 key,一对一,
+    不会跟别的任务/对话抢)。root 不是 git 仓库(或干脆是 None)就直接 None,任务照常
+    在原 cwd 跑,不因为隔离失败而阻塞——语音场景要的是"改代码有分支兜底",不是
+    "非项目目录也必须建 worktree"。
+    """
+    if not root:
+        return None
+    session_key = f"voice-task:{task_id}"
+    phash = session_store.project_hash(root)
+    slug = _slug(task_id)
+    return await _ensure_worktree_impl(session_key, root, phash, slug)
+
+
+async def _ensure_worktree_impl(session_key: str, root: str, phash: str, slug: str) -> str | None:
     existing = session_store.get_worktree(session_key)
     if existing:
         if os.path.isdir(existing):
@@ -151,9 +173,6 @@ async def ensure_worktree(session_key: str) -> str | None:
     if not os.path.isdir(root) or not await _is_git_repo(root):
         return None
 
-    slug = _slug(session_key.split(":")[-1])
-    # 项目哈希取自 key 的第二段 p<hash>(project_root_for 已保证 key 是三段项目会话)
-    phash = session_key.split(":")[1][1:]
     base_dir = _WT_BASE / phash
     os.makedirs(base_dir, exist_ok=True)
 
