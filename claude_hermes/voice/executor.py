@@ -36,7 +36,7 @@ def _humanize_error(error_note: str) -> str:
     error_note 会被 notify 直接朗读/推送——先翻译成中文人话,翻不出来的保留原文截断。"""
     low = (error_note or "").lower()
     if "maximum number of turns" in low or "error_max_turns" in low:
-        return f"步骤太多,超过单次任务 {config.VOICE_TASK_MAX_TURNS} 轮的工具调用上限,没能跑完"
+        return "步骤太多,超过单次任务的工具调用轮数上限,没能跑完"
     if any(kw in low for kw in ("rate", "429", "quota", "overloaded", "529")):
         return "模型限流或过载了,过一会儿重新派一次就行"
     if any(kw in low for kw in ("timeout", "timed out")):

@@ -86,7 +86,9 @@ OAUTH_TOKEN: str = _ensure_subscription_auth(require=_oauth_required())
 # 开源默认「主人」,在 .env 设 HERMES_USER_NAME=你的名字 即个性化。
 USER_NAME: str = os.environ.get("HERMES_USER_NAME", "主人").strip() or "主人"
 MODEL: str = os.environ.get("AGENT_MODEL", "claude-sonnet-5").strip()
-MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "100"))
+# 单轮 agentic 轮数上限,0=不限(交给 AGENT_TURN_TIMEOUT 硬超时兜底)。2026-07-10 起
+# 默认放开:100 也照样截断过正经长任务,轮数不是好的成本闸,超时才是。
+MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "0"))
 # 工具权限模式:bypassPermissions=自动执行工具(shell/读写等),个人本机助理用
 # 想更保守可设 acceptEdits(只自动接受文件编辑)。
 PERMISSION_MODE: str = os.environ.get("AGENT_PERMISSION_MODE", "bypassPermissions").strip()
@@ -206,10 +208,10 @@ VOICE_TTS_VOICE: str = (
 # P1 任务板:后台任务并发上限 / 单任务超时(分钟)/ 完成播报档位(idle=等空闲插播,silent=只更新卡片)
 VOICE_TASK_MAX_CONCURRENCY: int = int(os.environ.get("VOICE_TASK_MAX_CONCURRENCY", "3"))
 VOICE_TASK_TIMEOUT_MIN: int = int(os.environ.get("VOICE_TASK_TIMEOUT_MIN", "30"))
-# 后台任务的单轮 agentic 轮数上限,独立于全局 AGENT_MAX_TURNS(.env 里为控交互
-# 会话成本压到 40)——查日志/翻代码这类任务动辄几十轮工具调用,2026-07-10 真机
-# 事故:一个查日志任务撞 40 轮上限白跑 8 分钟,用户全程等不到结果。
-VOICE_TASK_MAX_TURNS: int = int(os.environ.get("VOICE_TASK_MAX_TURNS", "100"))
+# 后台任务的单轮 agentic 轮数上限,0=跟随全局 MAX_TURNS(全局也是 0 即不限,
+# 由 VOICE_TASK_TIMEOUT_MIN 超时兜底)。保留独立开关是因为查日志/翻代码这类任务
+# 动辄几十轮,2026-07-10 真机事故:全局 40 轮让一个查日志任务白跑 8 分钟。
+VOICE_TASK_MAX_TURNS: int = int(os.environ.get("VOICE_TASK_MAX_TURNS", "0"))
 VOICE_ANNOUNCE: str = os.environ.get("VOICE_ANNOUNCE", "idle").strip().lower() or "idle"
 # 派活判断目前完全靠模型自己读【派活规则】临场判断,没有代码兜底——真机复盘过
 # 一次长任务(7步骤的复杂指令)险些没被当成后台任务处理(见 2026-07-09 事故复盘)。
