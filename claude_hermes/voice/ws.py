@@ -68,7 +68,7 @@ import aiohttp
 from aiohttp import web
 
 from .. import config
-from ..core.agent import Done, TextDelta, ToolStarted
+from ..core.agent import Done, TextDelta
 from . import prompts, session, task_tools, tts, voiceprint
 
 _STATE_IDLE = "idle"
@@ -682,7 +682,6 @@ class VoiceWsSession:
 
         splitter = tts.SentenceSplitter()
         seq = 0
-        filler_sent = False
         try:
             async with routes._lock:
                 prompt_text = prompts.build_prompt(user_text)
@@ -690,15 +689,7 @@ class VoiceWsSession:
                     prompt_text, extra_mcp_servers=task_tools.build_server()
                 ):
                     self._kick_turn_watchdog()  # 只要还在吐事件就不算卡死,见 _TURN_STALL_MS
-                    if isinstance(ev, ToolStarted):
-                        if not filler_sent and ev.parent_id is None:
-                            filler_sent = True
-                            audio_bytes = await tts.filler_audio(config.VOICE_TTS_VOICE)
-                            await self._send(
-                                "filler", text=tts.FILLER_PHRASE,
-                                audio_b64=_b64(audio_bytes),
-                            )
-                    elif isinstance(ev, TextDelta):
+                    if isinstance(ev, TextDelta):
                         if not self._speaking_announced:
                             self._speaking_announced = True
                             await self._set_state(_STATE_SPEAKING)

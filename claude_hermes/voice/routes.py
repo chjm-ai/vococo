@@ -16,7 +16,7 @@ from pathlib import Path
 from aiohttp import web
 
 from .. import config
-from ..core.agent import Done, TextDelta, ToolStarted
+from ..core.agent import Done, TextDelta
 from . import executor, notify, omni_realtime, prompts, session, stt, task_tools, tasks, tts, ws
 
 _STATIC = Path(__file__).resolve().parent / "static"
@@ -111,7 +111,6 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
         t0 = time.monotonic()
         splitter = tts.SentenceSplitter()
         full_text = ""
-        filler_sent = False
         t_first_text = t_first_audio = 0.0
         try:
             if is_audio:
@@ -123,18 +122,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                 await _sse(resp, "transcript", {"text": user_text})
             prompt_text = prompts.build_prompt(user_text)
             async for ev in session.run_turn(prompt_text, extra_mcp_servers=task_tools.build_server()):
-                if isinstance(ev, ToolStarted):
-                    # 干活垫话(F10):本轮第一次顶层工具调用时插一句"稍等",不等模型自己开口;
-                    # parent_id 非空是子代理内部的工具,不算——只在最外层触发一次。
-                    if not filler_sent and ev.parent_id is None and not stop_event.is_set():
-                        filler_sent = True
-                        audio_bytes = await tts.filler_audio(config.VOICE_TTS_VOICE)
-                        payload = {
-                            "text": tts.FILLER_PHRASE,
-                            "audio_b64": base64.b64encode(audio_bytes).decode("ascii") if audio_bytes else None,
-                        }
-                        await _sse(resp, "filler", payload)
-                elif isinstance(ev, TextDelta):
+                if isinstance(ev, TextDelta):
                     if not t_first_text:
                         t_first_text = time.monotonic()
                     full_text += ev.text
