@@ -30,6 +30,19 @@ _SUMMARY_PROMPT = (
 # 回复里常带 `代码` / **加粗** 这类符号——result_summary 最终要被朗读,先摘掉。
 _MD_STRIP_RE = re.compile(r"[`*_#]+")
 
+
+def _humanize_error(error_note: str) -> str:
+    """SDK 报错原文常是英文(如 "Reached maximum number of turns (40)"),而失败任务的
+    error_note 会被 notify 直接朗读/推送——先翻译成中文人话,翻不出来的保留原文截断。"""
+    low = (error_note or "").lower()
+    if "maximum number of turns" in low or "error_max_turns" in low:
+        return f"步骤太多,超过单次任务 {config.VOICE_TASK_MAX_TURNS} 轮的工具调用上限,没能跑完"
+    if any(kw in low for kw in ("rate", "429", "quota", "overloaded", "529")):
+        return "模型限流或过载了,过一会儿重新派一次就行"
+    if any(kw in low for kw in ("timeout", "timed out")):
+        return "执行超时了"
+    return error_note[:120]
+
 # task_id -> 对应的 asyncio task,供 cancel() 取消一个正在跑的任务
 _running: dict[str, asyncio.Task] = {}
 
@@ -101,7 +114,8 @@ async def _run(task_id: str) -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id
         resume_sid = session_store.get_sdk_session_id(session_key)
         async for ev in stream_turn(
-            [], row["prompt"], cwd=effective_cwd, session_key=session_key, resume=resume_sid
+            [], row["prompt"], cwd=effective_cwd, session_key=session_key, resume=resume_sid,
+            max_turns=config.VOICE_TASK_MAX_TURNS,
         ):
             if isinstance(ev, ToolInput) and ev.parent_id is None:
                 now = time.monotonic()
@@ -139,7 +153,7 @@ async def _run(task_id: str) -> None:
         session_store.finish_turn(turn_id, result_text or f"(执行失败:{error_note})")
         if sdk_session_id:
             session_store.set_sdk_session_id(session_key, sdk_session_id)
-        tasks.finish(task_id, "failed", result_text, error_note or "执行失败")
+        tasks.finish(task_id, "failed", result_text, _humanize_error(error_note) if error_note else "执行失败")
 
     await notify.on_task_terminal(task_id)
     _maybe_start_next()

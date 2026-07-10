@@ -206,6 +206,10 @@ VOICE_TTS_VOICE: str = (
 # P1 任务板:后台任务并发上限 / 单任务超时(分钟)/ 完成播报档位(idle=等空闲插播,silent=只更新卡片)
 VOICE_TASK_MAX_CONCURRENCY: int = int(os.environ.get("VOICE_TASK_MAX_CONCURRENCY", "3"))
 VOICE_TASK_TIMEOUT_MIN: int = int(os.environ.get("VOICE_TASK_TIMEOUT_MIN", "30"))
+# 后台任务的单轮 agentic 轮数上限,独立于全局 AGENT_MAX_TURNS(.env 里为控交互
+# 会话成本压到 40)——查日志/翻代码这类任务动辄几十轮工具调用,2026-07-10 真机
+# 事故:一个查日志任务撞 40 轮上限白跑 8 分钟,用户全程等不到结果。
+VOICE_TASK_MAX_TURNS: int = int(os.environ.get("VOICE_TASK_MAX_TURNS", "100"))
 VOICE_ANNOUNCE: str = os.environ.get("VOICE_ANNOUNCE", "idle").strip().lower() or "idle"
 # 派活判断目前完全靠模型自己读【派活规则】临场判断,没有代码兜底——真机复盘过
 # 一次长任务(7步骤的复杂指令)险些没被当成后台任务处理(见 2026-07-09 事故复盘)。

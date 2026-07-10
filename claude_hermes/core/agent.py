@@ -356,6 +356,7 @@ def _compat_base_key(
     external_mcp: dict,
     extra_tools: tuple = (),
     disallowed_tools: tuple = (),
+    max_turns: int = 0,
 ) -> str:
     """保温 client 的兼容性哈希(不含 SDK 会话 id,那个在池里单独比)。
 
@@ -381,6 +382,7 @@ def _compat_base_key(
         "external_mcp": external_mcp,
         "extra_tools": extra_tools,
         "disallowed_tools": disallowed_tools,
+        "max_turns": max_turns,
         "route": route,
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
@@ -411,12 +413,17 @@ async def stream_turn(
     session_key: str | None = None,
     extra_mcp_servers: dict | None = None,
     disallowed_tools: list[str] | None = None,
+    max_turns: int | None = None,
 ) -> AsyncIterator[Event]:
     """流式跑一轮,逐个 yield 事件,最后 yield Done。
 
     disallowed_tools:代码层硬拦一批工具名(如语音前台会话禁 Edit/Write,逼真正的
     改代码走 voice_dispatch_task 派后台任务),不同于 prompt 里"建议模型别用"——
     这里模型的调用请求根本不会被 SDK 放行,是稳定保证而非临场判断。
+
+    max_turns:单轮 agentic 轮数上限,None 用全局 config.MAX_TURNS。语音后台任务
+    (查日志这类要翻很多文件的活)传更高的 VOICE_TASK_MAX_TURNS,不吃交互会话为
+    控成本设的全局值——2026-07-10 真机事故:全局 40 轮让一个查日志任务白跑 8 分钟。
 
     历史怎么喂给模型(三级链,前一级失败自动落到下一级):
     - session_key 非空且保温池命中(见 core/client_pool.py)→ 直接在活 client 上
@@ -454,12 +461,15 @@ async def stream_turn(
     # 哈希在会话内保持稳定(中途存记忆不至于误杀保温 client)。/new 换 sid → 自然读到最新。
     sys_prompt = build_system_prompt(cwd, cache_key=resume)
 
+    effective_max_turns = max_turns or config.MAX_TURNS
+
     pooling = bool(session_key) and client_pool.enabled()
     base_key = (
         _compat_base_key(
             resolved_model, provider_env, sys_prompt, skills, cwd, hermes_on, external_mcp,
             tuple(sorted((extra_mcp_servers or {}).keys())),
             tuple(sorted(disallowed_tools or ())),
+            effective_max_turns,
         )
         if pooling
         else ""
@@ -469,7 +479,7 @@ async def stream_turn(
         return ClaudeAgentOptions(
             model=resolved_model,
             system_prompt=sys_prompt,
-            max_turns=config.MAX_TURNS,
+            max_turns=effective_max_turns,
             permission_mode=config.PERMISSION_MODE,
             include_partial_messages=True,
             mcp_servers=mcp_servers,
@@ -660,11 +670,11 @@ async def stream_turn(
                         mu = getattr(msg, "model_usage", None) or {}
                         if mu:
                             used_model = _main_model(mu, resolved_model, used_model)
-                        # 只在快撞线(≥70% MAX_TURNS)时打一行日志——留痕方便日后判断
-                        # MAX_TURNS 该不该再调,平常轮数远低于上限就不刷屏了。
-                        if num_turns and num_turns >= config.MAX_TURNS * 0.7:
+                        # 只在快撞线(≥70% 上限)时打一行日志——留痕方便日后判断
+                        # 上限该不该再调,平常轮数远低于上限就不刷屏了。
+                        if num_turns and num_turns >= effective_max_turns * 0.7:
                             print(
-                                f"[agent] 轮数告急 {num_turns}/{config.MAX_TURNS}"
+                                f"[agent] 轮数告急 {num_turns}/{effective_max_turns}"
                                 f"(session={session_key or '?'}, model={used_model},"
                                 f" subtype={getattr(msg, 'subtype', '') or '?'})"
                             )
