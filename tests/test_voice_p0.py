@@ -104,6 +104,13 @@ def test_build_prompt_covers_delayed_reminders_within_timeout(monkeypatch):
     assert "30 分钟以内" in out
 
 
+def test_build_prompt_includes_transcription_tolerance_rule():
+    """Omni-Realtime 不支持热词(2026-07-10 查证:仅 Fun-ASR/Paraformer 系列有),
+    误听纠错只能靠大脑——指令块必须带【转写容错】规则。"""
+    out = prompts.build_prompt("随便说点什么")
+    assert "【转写容错】" in out
+
+
 def test_build_prompt_forbids_claiming_success_without_tool_call():
     out = prompts.build_prompt("随便说点什么")
     assert "没有真的调用 voice_dispatch_task" in out
