@@ -1229,12 +1229,20 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // (orbWrap/statusEl/handsFreeUi 等),关着完全不影响原有路径。
   let omniPc=null, omniDc=null, omniMicStream=null, omniUserLiveEl=null;
 
-  // ── 播放:Web Audio API,不用 <audio> 标签 ──────────────────────────────
-  let audioCtx=null, currentSource=null;
+  // ── 播放:Web Audio API,经 MediaStreamDestination 转一道再进 <audio> 标签 ──
+  let audioCtx=null, currentSource=null, ttsOutputNode=null, ttsOutputEl=null;
 
-  // 2026-07-09:曾经加过 WebRTC 环回 hack 想让浏览器原生 AEC 认出 TTS 音频当参考信号,
-  // 一天内连续炸出"哑巴→双音重叠→再哑巴"三个不同故障,iOS Safari 音频会话的怪癖猜不动,
-  // 拆掉换回最简单可靠的单路直连播放。回声消除这个需求单独另开工作评估。
+  // 2026-07-09:曾经加过 WebRTC 环回 hack(建一个本地 RTCPeerConnection 环回,想让浏览器
+  // 的 WebRTC 专属 AEC 认出 TTS 音频当参考信号)一天内连续炸出"哑巴→双音重叠→再哑巴"三个
+  // 不同故障,iOS Safari 音频会话的怪癖猜不动,拆掉换回最简单可靠的单路直连播放。
+  // 2026-07-10:定位到"AI 把自己说的话录进麦克风触发假打断"的根因——直连
+  // audioCtx.destination 对 getUserMedia 的 echoCancellation 是"隐身"的,浏览器原生
+  // AEC 主要认 <audio>/<video> 标签播放的声音当参考信号,Web Audio 直出通常不算。
+  // 这次不重蹈 WebRTC 环回的覆辙(那是要建 RTCPeerConnection、有 SDP/ICE 状态机,复杂度
+  // 是故障根源),改用纯本地、无信令的 MediaStreamDestination:播放节点接到这个
+  // destination,产出的 MediaStream 喂给一个隐藏 <audio autoplay> 标签播放——声音真正
+  // 经过浏览器音频渲染管线,AEC 就能拿它当参考信号做消除,靠的是浏览器厂商已经打磨过的
+  // 声学层能力,不是我们自己写检测规则。
 
   function setStatus(text, cls){ statusEl.textContent = text; statusEl.className = cls || ""; }
   function clearHint(){ const h = transcriptEl.querySelector(".hint"); if(h) h.remove(); }
@@ -1277,10 +1285,15 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   function unlockAudio(){
     if(audioCtx) return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    ttsOutputNode = audioCtx.createMediaStreamDestination();
+    ttsOutputEl = document.createElement("audio");
+    ttsOutputEl.autoplay = true;
+    ttsOutputEl.srcObject = ttsOutputNode.stream;
+    ttsOutputEl.play().catch(()=>{});
     const buf = audioCtx.createBuffer(1, 1, 22050);
     const src = audioCtx.createBufferSource();
     src.buffer = buf;
-    src.connect(audioCtx.destination);
+    src.connect(ttsOutputNode);
     src.start(0);
   }
 
@@ -1443,7 +1456,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       await new Promise((resolve, reject)=>{
         const source = audioCtx.createBufferSource();
         source.buffer = audioBuffer;
-        source.connect(audioCtx.destination);
+        source.connect(ttsOutputNode);
         if(outputAnalyser) source.connect(outputAnalyser);
         currentSource = source;
         source.onended = ()=>{ markPlayed(item.seq); resolve(); };
@@ -2064,6 +2077,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     if(orbAnimHandle){ cancelAnimationFrame(orbAnimHandle); orbAnimHandle = null; }
     orbCanvasCtx = null; analyser = null; analyserSource = null; outputAnalyser = null; orbLevels = null;
     if(pcmWorkletNode){ try{ pcmWorkletNode.disconnect(); }catch(e){} pcmWorkletNode = null; }
+    if(ttsOutputEl){ try{ ttsOutputEl.pause(); ttsOutputEl.srcObject = null; }catch(e){} ttsOutputEl = null; }
+    ttsOutputNode = null;
     if(audioCtx){ try{ audioCtx.close(); }catch(e){} audioCtx = null; }
     handsFreeActive = false; micMuted = false; wsState = "idle";
     busy = false; talkBtn.disabled = false; talkBtn.classList.remove("recording");
