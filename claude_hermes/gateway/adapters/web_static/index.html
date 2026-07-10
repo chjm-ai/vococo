@@ -1149,7 +1149,8 @@ const S = {
                          // 避免每次进通话视图都要等一趟网络往返才知道走哪条路径
   vadThreshold: 0.7,    // /voice/config 的 vad_threshold/vad_silence_ms,兜底默认跟
   vadSilenceMs: 3000,   // config.py 的 VOICE_OMNI_VAD_SILENCE_MS 默认值一致,拉取失败也不至于比调优前更灵敏
-  ttsVoice: "Cherry",   // /voice/config 的 tts_voice,Omni 出声模式 session.update 的音色
+  omniVoice: "Serena",  // /voice/config 的 omni_voice,Omni 出声模式 session.update 的音色
+                         // (注意跟 Qwen-TTS 音色表不通用,Cherry 会 400,见 config.py)
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -1880,7 +1881,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           // 出声模式:session 级别就带 audio——阿里云的回声消除/语义打断只认
           // 走自家 RTC 通道的音频。自动回复的音频靠 instructions+cancel 压制。
           modalities: ["text", "audio"],
-          voice: S.ttsVoice,
+          voice: S.omniVoice,
           instructions: "你是一个只负责朗读的语音引擎。收到以【朗读】开头的消息时," +
             "自然流畅地读出【朗读】后面的全部内容,一字不差,不要添加、省略或改动任何内容," +
             "也不要发表自己的看法。收到其他任何消息时,只回答一个字:嗯。",
@@ -2479,7 +2480,7 @@ async function loadVoiceOmniConfig(){
     S.omniEnabled=!!d.omni_enabled;
     if(typeof d.vad_threshold==="number") S.vadThreshold=d.vad_threshold;
     if(typeof d.vad_silence_ms==="number") S.vadSilenceMs=d.vad_silence_ms;
-    if(d.tts_voice) S.ttsVoice=d.tts_voice;
+    if(d.omni_voice) S.omniVoice=d.omni_voice;
   }catch(e){}
 }
 function cmdMatches(prefix){

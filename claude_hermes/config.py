@@ -263,6 +263,11 @@ VOICE_OMNI_WORKSPACE_ID: str = os.environ.get("VOICE_OMNI_WORKSPACE_ID", "").str
 # 2026-07-10 真机验证过信令代理 + DataChannel 双向事件都通,这个开关是接入正式
 # 通话界面的第一步。
 VOICE_OMNI_ENABLED: bool = _parse_bool(os.environ.get("VOICE_OMNI_ENABLED", ""), False)
+# Omni 出声模式的音色——跟 VOICE_TTS_VOICE(Qwen-TTS 用)是两张不同的音色表,
+# 不能混用:2026-07-10 真机实锤 Cherry 在 qwen3.5-omni-flash-realtime 上直接
+# 400 InvalidParameter,每轮回复全灭。音色表见百炼文档 omni-voice-list,
+# Serena(苏瑶)是最接近 Cherry 的温柔女声。
+VOICE_OMNI_VOICE: str = os.environ.get("VOICE_OMNI_VOICE", "Serena").strip() or "Serena"
 VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
 VOICE_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_VAD_SILENCE_MS", "1500"))
 # Omni WebRTC 链路专用的静音判停时长,跟上面 VOICE_VAD_SILENCE_MS(旧 ws.py 链路用)
