@@ -218,7 +218,7 @@ class WebAdapter:
         # 每个浏览器 SSE 连接一个队列,元素是 (事件编号, JSON 串)
         self._clients: set[asyncio.Queue[tuple[int, str]]] = set()
         self._seq = 0  # 全局单调递增的事件编号
-        self._buffer: deque[tuple[int, str]] = deque(maxlen=512)  # 断线补发用的环形缓冲
+        self._buffer: deque[tuple[int, str]] = deque(maxlen=2000)  # 断线补发用的环形缓冲
         # 每会话「进行中那一轮」的活状态快照:conv -> {started, phase, frames:[(seq,payload)]}。
         # 刷新/首连时据此「状态先行、内容随后」地恢复——先秒推一条状态帧让用户知道
         # 「这轮还在跑、到哪一步」(避免空窗误发),再慢慢补回思考/正文/工具帧。
@@ -398,10 +398,12 @@ class WebAdapter:
         self._clients.add(q)  # 先挂上队列,再补发,漏网的靠前端按 id 去重
         try:
             await resp.write(b": connected\n\n")
-            # 首连(刷新/新开)不带 Last-Event-ID:两阶段恢复「进行中那一轮」——
-            # 先秒推状态帧(几十字节,让用户立刻看到"还在跑、到哪步",不会误发),
-            # 内容帧随后慢补。旧历史仍走 /history 拉,不在此重放。
-            if not raw_last and self._live:
+            # 首连/重连都两阶段恢复「进行中那一轮」——先秒推状态帧(几十字节,让用户立刻看到
+            # "还在跑、到哪步",不会误发),内容帧随后慢补。旧历史仍走 /history 拉,不在此重放。
+            # 重连也要走这条路:下面的环形缓冲只有 512 条,长时间断线或多会话同时飙事件很容易
+            # 把它撑爆,导致某个后台会话的 done 被挤出缓冲、前端永远等不到收尾(卡死在"思考中")。
+            # `_live` 按会话只留最新一帧,不受缓冲大小影响,补发它才能保证重连必定能追平现状。
+            if self._live:
                 now = time.time()
                 for conv, st in list(self._live.items()):  # 阶段①:状态帧先行
                     status = json.dumps(

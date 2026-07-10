@@ -3293,15 +3293,23 @@ async function openConv(conv){
 }
 
 // ── 重加载历史(SSE 连接恢复后)──────────────────────────────────────────
-async function reloadHistory(){
+// force=true:强制核对一次(用于"流式气泡疑似卡死"场景——例如重连时环形缓冲已把 done 事件
+// 挤出去,前端永远等不到收尾)。核对时只信服务端:该轮在 /history 里已落库完成才收气泡改用
+// 权威历史重绘;服务端也认为还在跑就绝不打断,只是重置一下卡住计时,过会再核对一次。
+async function reloadHistory(force){
   const conv=S.conv;
   if(!conv || String(conv).startsWith("local-")) return;  // 只在非本地会话拉
-  if(S.stream) return;  // 正在流式输出中 → 别用全量重绘冲掉流式气泡
+  if(S.stream && !force) return;  // 正在流式输出中 → 别用全量重绘冲掉流式气泡
   try{
     const r=await api("/history?conv="+encodeURIComponent(conv));
     const d=await r.json();
-    if(S.conv!==conv || S.stream) return;  // await 期间切了会话/开了流 → 丢弃
+    if(S.conv!==conv) return;  // await 期间切了会话 → 丢弃
     const cached=S.histCache[conv];
+    if(S.stream){
+      const last=d.turns[d.turns.length-1];
+      if(!last || last.pending){ S.stream.lastEvt=Date.now(); return; }  // 服务端也还在跑,别打断
+      finalizeStream();  // 服务端已收尾,前端漏接了 → 收掉卡住的流式气泡,改用下面的权威历史重绘
+    }
     S.histCache[conv]=d.turns;
     if(!cached || JSON.stringify(cached)!==JSON.stringify(d.turns)) renderTurns(d.turns);
   }catch(e){}
@@ -3412,8 +3420,9 @@ function connect(){
   const es = S.es = new FetchSSE("/events", S.token);
   es.onopen = (firstOpen)=>{
     // 首连/重连都拉一次历史:首连补回上次刷新前进行中轮的部分内容(draft_text);
-    // 重连补回断连期间漏掉的消息(尤其服务端自我重启后注入的系统消息)。
-    reloadHistory();
+    // 重连补回断连期间漏掉的消息(尤其服务端自我重启后注入的系统消息)。force:重连这一刻
+    // 恰是最容易出现"流式气泡卡死"的时候(断线期间 done 被环形缓冲挤掉),顺带核对一次。
+    reloadHistory(true);
   };
   es.onmessage = ev=>{ try{
     const d=JSON.parse(ev.data);
@@ -3427,7 +3436,7 @@ function connect(){
 function reviveSSE(){
   if(document.hidden) return;
   if(!S.es) connect(); else S.es.reconnectNow();
-  reloadHistory();                                 // HTTP 补历史,与 SSE 状态无关
+  reloadHistory(true);          // 强制核对:回前台/回网络时最可能出现"卡在思考中"的漏接
 }
 document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) reviveSSE(); });
 window.addEventListener("online", reviveSSE);
@@ -3436,6 +3445,9 @@ setInterval(()=>{
   if(document.hidden || !S.es) return;
   if(S.es.readyState===2) connect();                                   // 被关掉了 → 重建
   else if(Date.now()-(S.es.lastBeat||0) > 20000) S.es.reconnectNow();  // 20s 无心跳=假死 → 强制重连
+  // 连接活着,但当前会话的流式气泡超过 25s 没收到任何新事件 → 疑似卡住(如反复切换多个
+  // 正在streaming的会话期间发生过短暂重连,漏接了这条的某帧),强制核对一次历史自愈
+  else if(S.stream && Date.now()-(S.stream.lastEvt||S.stream.t0||0) > 25000) reloadHistory(true);
 }, 8000);
 function ensureStream(t0){
   // 为当前会话准备一个流式 assistant 气泡(含状态行/思考/过程区)
@@ -3451,7 +3463,7 @@ function ensureStream(t0){
   bubble.append(thinktog,think,flow,status);  // 状态行(工作中…)放气泡底部,像 TG 的打字指示
   row.append(bubble); $("#wrap").append(row); updateEmpty();
   thinktog.onclick=()=>{ const on=think.classList.toggle("show"); tcv.classList.toggle("down", on); };
-  S.stream={row,bubble,status,think,thinktog,flow,segs:{},tools:[],cards:{},subs:{},t0:t0||Date.now()};
+  S.stream={row,bubble,status,think,thinktog,flow,segs:{},tools:[],cards:{},subs:{},t0:t0||Date.now(),lastEvt:Date.now()};
   // 状态行的耗时计数每秒走字;流被任何路径丢弃(完成/切会话)都会自行停表,不泄漏
   const tm=setInterval(()=>{ if(!S.stream||S.stream.timer!==tm){ clearInterval(tm); return; } renderStatus(); }, 1000);
   S.stream.timer=tm;
@@ -3545,7 +3557,7 @@ function handleEvent(e){
   }
   // 当前会话本轮结束 → 清掉可能残留的暂存审批
   if(e.type==="done"||e.type==="message") delete S.pendingChoice[e.conv];
-  if(STREAMY.indexOf(e.type)>=0){ applyStreamEvent(e); return; }
+  if(STREAMY.indexOf(e.type)>=0){ applyStreamEvent(e); if(S.stream) S.stream.lastEvt=Date.now(); return; }
   switch(e.type){
     case "done": {
       const errBubble = S.stream ? S.stream.bubble : null;
@@ -3629,6 +3641,7 @@ function maybeReplayStream(conv){
     if(e.type==="user") continue;   // 用户消息已由历史渲染,重放跳过避免重复气泡
     applyStreamEvent(e);
   }
+  if(S.stream) S.stream.lastEvt=Date.now();  // 按当前时刻起算卡住检测,不用缓冲里事件的旧时间
 }
 function renderChoice(e){
   const box=el("div","choice");
