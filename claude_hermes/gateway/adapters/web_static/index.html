@@ -1142,6 +1142,8 @@ const S = {
                          // 否则任意会话(含后台)一完成回合就会触发 loadConvs→renderConvs 把菜单冲掉
   omniEnabled: false,   // /voice/config 的 omni_enabled,P3 阶段二开关,登录后预取好,
                          // 避免每次进通话视图都要等一趟网络往返才知道走哪条路径
+  vadThreshold: 0.7,    // /voice/config 的 vad_threshold/vad_silence_ms,兜底默认跟
+  vadSilenceMs: 1500,   // config.py 的默认值一致,拉取失败也不至于比调优前更灵敏
 };
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
@@ -1629,7 +1631,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   }
   function playCapturingTone(){ playTone(880, 80, "sine"); }
   function playSpeakingTone(){ playTone(660, 90, "sine"); }  // 单音节,原来的双音(660→990)高音太刺耳
-  function playInterruptedTone(){ playTone(220, 50, "triangle"); }
   function playTtsFailTone(){ playTone(300, 140, "square"); }  // 免提通话听不到文字提示,得有声音信号
 
   async function initHandsFree(){
@@ -1736,7 +1737,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         pausedForInterrupt = true;
         if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
         playing = false;
-        playInterruptedTone();
+        // 理由同 Omni 路径(见 wireOmniDataChannel):去掉确认音,打断即刻纯静音。
       }
       if(msg.state === "capturing" && prevState !== "capturing") playCapturingTone();
       if(msg.state === "speaking" && prevState !== "speaking") playSpeakingTone();
@@ -1815,7 +1816,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     dc.onopen = () => {
       dc.send(JSON.stringify({
         event_id: "session-init", type: "session.update",
-        session: { modalities: ["text"], turn_detection: { type: "server_vad" } },
+        session: {
+          modalities: ["text"],
+          // 阈值/静音判停时长跟旧 ws.py 链路(voice/ws.py:233-234)对齐,来自 /voice/config
+          // 预取的 config.py 调优值,不吃阿里云偏灵敏的默认值,避免一句话被拆成多段。
+          turn_detection: { type: "server_vad", threshold: S.vadThreshold, silence_duration_ms: S.vadSilenceMs },
+        },
       }));
     };
     wireOmniDataChannel(dc);
@@ -1863,7 +1869,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             omniTurnGen++;
             if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
             playQueue = []; playing = false; pausedForInterrupt = false;
-            playInterruptedTone();
+            // 打断要的是干净的静音,不再叠一个确认音——那个音在切断的同一瞬间响起,
+            // 听感上像"声音被调小"而不是"直接停",干脆去掉,靠下面的 capturingTone 提示就够。
           }
           if(wsState !== "capturing") playCapturingTone();
           wsState = "capturing";
@@ -2265,7 +2272,12 @@ async function loadCommands(){
 // P3 阶段二:通话视图走 ws.py 还是 Omni-Realtime WebRTC,登录后预取一次,
 // 避免每次进通话视图都要等一趟网络往返才知道走哪条路径。
 async function loadVoiceOmniConfig(){
-  try{ const r=await api("/voice/config"); const d=await r.json(); S.omniEnabled=!!d.omni_enabled; }catch(e){}
+  try{
+    const r=await api("/voice/config"); const d=await r.json();
+    S.omniEnabled=!!d.omni_enabled;
+    if(typeof d.vad_threshold==="number") S.vadThreshold=d.vad_threshold;
+    if(typeof d.vad_silence_ms==="number") S.vadSilenceMs=d.vad_silence_ms;
+  }catch(e){}
 }
 function cmdMatches(prefix){
   const p=prefix.toLowerCase();

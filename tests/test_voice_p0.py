@@ -172,7 +172,14 @@ async def test_voice_config_reports_enabled(voice_db, monkeypatch):
         assert resp.status == 200
         # P3 阶段二加了 omni_enabled(见 test_voice_omni_realtime.py 的专门测试),
         # 这里只确认默认关着,不测那个开关本身的行为。
-        assert (await resp.json()) == {"enabled": True, "omni_enabled": False}
+        # vad_threshold/vad_silence_ms:Omni WebRTC 链路的 turn_detection 用,跟
+        # config.py 默认值对齐(见 index.html 的 session-init)。
+        assert (await resp.json()) == {
+            "enabled": True,
+            "omni_enabled": False,
+            "vad_threshold": config.VOICE_VAD_THRESHOLD,
+            "vad_silence_ms": config.VOICE_VAD_SILENCE_MS,
+        }
 
 
 # ── /voice/send SSE 事件序列 ─────────────────────────────────────────────
