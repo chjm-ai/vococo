@@ -30,6 +30,13 @@ _RETRY_DELAY_SEC = 0.3
 # 大概率限流还没解除,两次都失败、这句话彻底没声音。限流通常一秒左右就恢复,
 # 等久一点比"重试等于白重试"划算。
 _RETRY_DELAY_429_SEC = 1.5
+# 2026-07-10 真机复现:一轮回复切出好几句时,_emit_sentence 把每句的合成都
+# 立刻 ensure_future 出去(见 routes.py/ws.py),句子一多就是好几个请求同时糊
+# 到 DashScope TTS 接口上,直接撞 429——限流恢复前打进来的后续请求跟着一起
+# 炸,一轮里连续两三句没声音,听感就是"AI 突然不说话了"。用信号量顶住并发数,
+# 保留大部分并行加速(不退回逐句 await 的老样子),但不再无限制地一次性打爆。
+_MAX_CONCURRENT_SYNTH = 2
+_synth_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_SYNTH)
 
 
 def _has_content(text: str) -> bool:
@@ -150,15 +157,16 @@ async def synthesize(text: str, voice: str) -> bytes | None:
         print("[voice/tts] 未配置 DASHSCOPE_API_KEY,无法合成", flush=True)
         return None
     timeout = aiohttp.ClientTimeout(total=_SYNTHESIZE_TIMEOUT_SEC)
-    for attempt in range(2):
-        status = None
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as sess:
-                audio, status = await _synthesize_once(sess, text, voice)
-            if audio:
-                return audio
-        except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as e:
-            print(f"[voice/tts] 合成异常(第{attempt + 1}次) text={text[:20]!r} err={e!r}", flush=True)
-        if attempt == 0:
-            await asyncio.sleep(_RETRY_DELAY_429_SEC if status == 429 else _RETRY_DELAY_SEC)
+    async with _synth_semaphore:
+        for attempt in range(2):
+            status = None
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as sess:
+                    audio, status = await _synthesize_once(sess, text, voice)
+                if audio:
+                    return audio
+            except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as e:
+                print(f"[voice/tts] 合成异常(第{attempt + 1}次) text={text[:20]!r} err={e!r}", flush=True)
+            if attempt == 0:
+                await asyncio.sleep(_RETRY_DELAY_429_SEC if status == 429 else _RETRY_DELAY_SEC)
     return None
