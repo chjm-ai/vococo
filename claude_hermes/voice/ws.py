@@ -68,7 +68,7 @@ import aiohttp
 from aiohttp import web
 
 from .. import config
-from ..core.agent import Done, TextDelta
+from ..core.agent import Done, TextDelta, ToolStarted
 from . import prompts, session, task_tools, tts, voiceprint
 
 _STATE_IDLE = "idle"
@@ -682,6 +682,7 @@ class VoiceWsSession:
 
         splitter = tts.SentenceSplitter()
         seq = 0
+        filler_sent = False
         try:
             async with routes._lock:
                 prompt_text = prompts.build_prompt(user_text)
@@ -689,7 +690,15 @@ class VoiceWsSession:
                     prompt_text, extra_mcp_servers=task_tools.build_server()
                 ):
                     self._kick_turn_watchdog()  # 只要还在吐事件就不算卡死,见 _TURN_STALL_MS
-                    if isinstance(ev, TextDelta):
+                    if (
+                        isinstance(ev, ToolStarted) and ev.parent_id is None
+                        and not filler_sent and not self._speaking_announced
+                    ):
+                        # 模型没说话就直接调工具 → 垫一句等待话术(理由同 routes.py
+                        # 的 _FILLER_PHRASES:prompt 里承诺过后端会垫,这里兑现)。
+                        filler_sent = True
+                        seq = self._emit_sentence(turn, seq, routes._next_filler())
+                    elif isinstance(ev, TextDelta):
                         if not self._speaking_announced:
                             self._speaking_announced = True
                             await self._set_state(_STATE_SPEAKING)

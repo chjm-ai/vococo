@@ -282,6 +282,65 @@ async def test_voice_send_tts_false_skips_synthesis_but_emits_sentences(voice_db
 
 
 @pytest.mark.anyio
+async def test_voice_send_emits_filler_when_model_starts_tools_silently(voice_db, monkeypatch):
+    """模型一个字没说就直接调工具 → 后端垫一句等待话术(sentence 事件,语音念但
+    不进气泡/不落库)——prompts 指令块承诺过\"后端会自动垫\",这里验证兑现;
+    模型先说了话(TextDelta 在前)则不垫。"""
+    from claude_hermes.core.agent import ToolStarted
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        yield ToolStarted("Grep", tool_id="t1")
+        yield TextDelta("查到了,答案是三。")
+        yield Done(
+            AgentReply(text="查到了,答案是三。", tool_calls=[], cost_usd=None, is_error=False, sdk_session_id=None)
+        )
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+
+    app = web.Application()
+    routes.register_routes(app)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/voice/send", json={"text": "帮我查个东西", "tts": False})
+        assert resp.status == 200
+        body = (await resp.read()).decode("utf-8")
+
+    events = _parse_sse(body)
+    sentences = [d["text"] for e, d in events if e == "sentence"]
+    assert len(sentences) == 2  # 垫场句 + 正文句
+    assert sentences[0] in routes._FILLER_PHRASES
+    assert sentences[1] == "查到了,答案是三。"
+    # 垫场句不属于 Claude 回答:text 事件与落库里都不该有它
+    text_stream = "".join(d["text"] for e, d in events if e == "text")
+    assert sentences[0] not in text_stream
+    history = session.load_history()
+    assert all(sentences[0] not in t.assistant for t in history)
+
+
+@pytest.mark.anyio
+async def test_voice_send_no_filler_when_model_speaks_before_tools(voice_db, monkeypatch):
+    from claude_hermes.core.agent import ToolStarted
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        yield TextDelta("好,我去查,稍等。")
+        yield ToolStarted("Grep", tool_id="t1")
+        yield TextDelta("查完了。")
+        yield Done(
+            AgentReply(text="好,我去查,稍等。查完了。", tool_calls=[], cost_usd=None, is_error=False, sdk_session_id=None)
+        )
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+
+    app = web.Application()
+    routes.register_routes(app)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/voice/send", json={"text": "帮我查个东西", "tts": False})
+        body = (await resp.read()).decode("utf-8")
+
+    sentences = [d["text"] for e, d in _parse_sse(body) if e == "sentence"]
+    assert all(s not in routes._FILLER_PHRASES for s in sentences)
+
+
+@pytest.mark.anyio
 async def test_voice_debug_logs_and_returns_ok(voice_db, capsys):
     """前端调试信号上报:落服务器日志(stdout),响应 ok——见 routes._handle_debug。"""
     app = web.Application()
