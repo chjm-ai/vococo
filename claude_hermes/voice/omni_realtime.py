@@ -32,9 +32,9 @@ import aiohttp
 
 from .. import config
 
-# WebRTC 的 SDP 信令交换端点——注意这不是 DASHSCOPE_REALTIME_MODEL(纯 WS 识别)
-# 用的全局域名,必须是"{WorkspaceId}.cn-beijing.maas.aliyuncs.com"这种工作区专属
-# 域名,2026-07-10 真机连线验证过全局域名对这个路径直接 404。
+# WebRTC 的 SDP 信令交换端点——注意这不是 DashScope 其他接口用的全局域名,
+# 必须是"{WorkspaceId}.cn-beijing.maas.aliyuncs.com"这种工作区专属域名,
+# 2026-07-10 真机连线验证过全局域名对这个路径直接 404。
 _WEBRTC_URL_TMPL = "https://{workspace}.cn-beijing.maas.aliyuncs.com/api/v1/webrtc/realtime"
 
 
