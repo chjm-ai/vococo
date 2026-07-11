@@ -812,6 +812,20 @@
   #tasksBadge{position:absolute;top:0;right:0;width:8px;height:8px;border-radius:50%;
     background:var(--accent);display:none}
   #tasksBadge.on{display:block}
+  /* 后台任务状态条:顶栏下方常驻横幅——派发瞬间出现,列出排队/进行中任务,
+     全部结束自动收起;点击打开任务抽屉看详情(数据来自 SSE task_update/task_done)。
+     PWA 拿不到 iOS 灵动岛(Live Activities 只开放给原生 App),这条是应用内的替代。 */
+  #taskBar{border-bottom:1px solid var(--line);padding:8px 16px;display:flex;
+    flex-direction:column;gap:6px;cursor:pointer;flex-shrink:0}
+  #taskBar[hidden]{display:none}
+  .taskbar-row{display:flex;align-items:center;gap:8px;font-size:13px;min-width:0}
+  .taskbar-row .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .taskbar-row .dot.queued{background:var(--dim2)}
+  .taskbar-row .dot.running{background:var(--accent);animation:taskbarPulse 1.2s ease-in-out infinite}
+  .taskbar-row .t{font-weight:600;flex-shrink:0;max-width:45%;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .taskbar-row .n{color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  @keyframes taskbarPulse{0%,100%{opacity:1}50%{opacity:.35}}
   #tasksDrawer{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10;display:none}
   #tasksDrawer.open{display:block}
   #tasksSheet{position:absolute;left:0;right:0;bottom:0;max-height:70vh;overflow-y:auto;
@@ -1072,6 +1086,8 @@ try{
       <a id="omniTestLink" href="/voice/static/omni_test.html" target="_blank" title="Omni-Realtime WebRTC 连线测试(开发用)"></a>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
+    <!-- 后台任务状态条:有排队/进行中任务才出现,见 renderTaskBar() -->
+    <div id="taskBar" hidden></div>
     <div id="callBody">
       <div id="transcript"></div>
     </div>
@@ -1199,7 +1215,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 (function(){
   const transcriptEl=$("#transcript"), statusEl=$("#status"), talkBtn=$("#talkBtn"),
     stopBtn=$("#stopBtn"), tasksBtn=$("#tasksBtn"), tasksBadge=$("#tasksBadge"),
-    tasksDrawer=$("#tasksDrawer"), tasksList=$("#tasksList"),
+    tasksDrawer=$("#tasksDrawer"), tasksList=$("#tasksList"), taskBar=$("#taskBar"),
     handsFreeUi=$("#handsFreeUi"), orbWrap=$("#orbWrap"),
     endHandsFreeBtn=$("#endHandsFreeBtn"), muteToggleBtn=$("#muteToggleBtn"),
     backLink=$("#callHead #backLink");
@@ -1503,9 +1519,37 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   async function loadTasks(){
     try{
       const resp = await fetch("/voice/tasks", {headers:{"X-Auth-Token":S.token}});
-      if(resp.ok) renderTasks(await resp.json());
+      if(!resp.ok) return;
+      const rows = await resp.json();
+      renderTasks(rows);
+      // 顺带全量校准状态条(SSE 断线漏事件时,打开抽屉/task_done 刷新都会走到这里兜底)
+      activeTasks.clear();
+      for(const t of rows) if(t.status === "queued" || t.status === "running") activeTasks.set(t.id, t);
+      renderTaskBar();
     }catch(e){}
   }
+
+  // ── 任务状态条:排队/进行中任务常驻顶栏下方,派发瞬间出现(SSE task_update),
+  //    全部结束自动收起;点击等同打开任务抽屉看详情 ─────────────────────────────
+  const activeTasks = new Map();  // id -> 任务行,只留 queued/running
+
+  function upsertTaskBar(t){
+    if(t.status === "queued" || t.status === "running") activeTasks.set(t.id, t);
+    else activeTasks.delete(t.id);
+    renderTaskBar();
+  }
+
+  function renderTaskBar(){
+    const rows = [...activeTasks.values()].sort((a,b)=>a.created_at - b.created_at);
+    taskBar.hidden = !rows.length;
+    taskBar.innerHTML = rows.map(t=>
+      `<div class="taskbar-row"><span class="dot ${t.status}"></span>` +
+      `<span class="t">${esc(t.title)}</span>` +
+      `<span class="n">${esc(t.status === "running" ? (t.progress_note || "进行中") : "排队中")}</span></div>`
+    ).join("");
+  }
+
+  taskBar.addEventListener("click", ()=>{ tasksDrawer.classList.add("open"); loadTasks(); });
 
   function renderTasks(rows){
     tasksList.innerHTML = "";
@@ -1835,11 +1879,16 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   function connectTaskStream(){
     const es = new EventSource("/voice/tasks/stream?token=" + encodeURIComponent(S.token));
+    es.addEventListener("task_update", e=>{
+      upsertTaskBar(JSON.parse(e.data));  // 派发/起跑/进度变化 → 状态条实时刷新
+    });
     es.addEventListener("task_done", e=>{
       tasksBadge.classList.add("on");
       loadTasks();
       loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
-      pendingAnnouncements.push(JSON.parse(e.data));
+      const data = JSON.parse(e.data);
+      upsertTaskBar(data);  // 终态 → 从状态条摘掉
+      pendingAnnouncements.push(data);
       flushAnnouncements();
     });
   }
@@ -2309,6 +2358,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     if(initialized) return;
     initialized = true;
     connectTaskStream();
+    loadTasks();  // 顺带初始化任务状态条:页面刷新前就在跑的任务也能立刻出现在条上
     loadMainHistory();
     initUiMode();
   }

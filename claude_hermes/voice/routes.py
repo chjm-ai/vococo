@@ -371,7 +371,8 @@ async def _handle_task_stop(request: web.Request) -> web.Response:
 
 
 async def _handle_tasks_stream(request: web.Request) -> web.StreamResponse:
-    """常驻 SSE:/voice 页面开着就订阅它,后台任务终态时收到 event:task_done(F8)。"""
+    """常驻 SSE:/voice 页面开着就订阅它。后台任务派发/起跑/进度变化收到
+    event:task_update(通话视图任务状态条实时刷新用),终态收到 event:task_done(F8)。"""
     if (g := _guard(request)) is not None:
         return g
     resp = web.StreamResponse(

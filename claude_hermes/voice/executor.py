@@ -47,6 +47,13 @@ def _humanize_error(error_note: str) -> str:
 _running: dict[str, asyncio.Task] = {}
 
 
+def _notify_activity(task_id: str) -> None:
+    """任务非终态变化后,把最新行广播给在线页面(通话视图任务状态条实时刷新)。"""
+    row = tasks.get(task_id)
+    if row is not None:
+        notify.on_task_activity(row)
+
+
 def _progress_text(name: str, tool_input: dict) -> str:
     """把一次顶层工具调用模板化成人话短句,不必额外调 LLM(见 F6)。"""
     ti = tool_input or {}
@@ -122,6 +129,7 @@ async def _run(task_id: str) -> None:
                 if now - last_progress_ts >= _PROGRESS_THROTTLE_SEC:
                     last_progress_ts = now
                     tasks.set_progress(task_id, _progress_text(ev.name, ev.tool_input))
+                    _notify_activity(task_id)
             elif isinstance(ev, Done):
                 result_text = ev.reply.text
                 sdk_session_id = ev.reply.sdk_session_id
@@ -168,6 +176,7 @@ def _maybe_start_next() -> None:
         nxt = queued[0]
         if not tasks.set_status(nxt["id"], "running"):
             continue  # 状态已被别处改了(如取消排队中的任务),跳过看下一个
+        _notify_activity(nxt["id"])
         _running[nxt["id"]] = asyncio.create_task(_run(nxt["id"]))
 
 
@@ -175,6 +184,9 @@ def dispatch(title: str, prompt: str, cwd: str | None = None) -> dict:
     """落库 + 尝试立即起跑(并发满则排队)。立即返回任务行,不等待执行。"""
     task = tasks.create(title=title, prompt=prompt, cwd=cwd)
     _maybe_start_next()
+    # 派发瞬间就推给在线页面(状态条立刻出现);重新 get 拿最新状态——
+    # 上一行可能已把它从 queued 拉成 running
+    _notify_activity(task["id"])
     return task
 
 
@@ -185,7 +197,12 @@ def cancel(task_id: str) -> bool:
     if row is None:
         return False
     if row["status"] == "queued":
-        return tasks.set_status(task_id, "cancelled", progress_note="已取消(未开始)")
+        # 排队中取消不会走 _run 的终态收尾(没有 on_task_terminal),
+        # 单独广播一次,让状态条把这条摘掉
+        ok = tasks.set_status(task_id, "cancelled", progress_note="已取消(未开始)")
+        if ok:
+            _notify_activity(task_id)
+        return ok
     if row["status"] == "running":
         t = _running.get(task_id)
         if t is not None:

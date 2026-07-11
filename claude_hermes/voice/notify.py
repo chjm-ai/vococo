@@ -35,6 +35,22 @@ def _broadcast(event: str, payload: dict) -> None:
         q.put_nowait((event, payload))
 
 
+def on_task_activity(task: dict) -> None:
+    """非终态变化(派发/起跑/进度更新/排队中取消)时调用:仅在线 SSE 推 task_update,
+    给通话视图的任务状态条实时刷新用;离线不推送——中间态没到打扰用户的程度,
+    回来打开页面拉一次 /voice/tasks 自然能看到。"""
+    _broadcast(
+        "task_update",
+        {
+            "id": task["id"],
+            "title": task["title"],
+            "status": task["status"],
+            "progress_note": task["progress_note"],
+            "created_at": task["created_at"],
+        },
+    )
+
+
 def _announce_text(task: dict) -> str:
     if task["status"] == "done":
         return f"对了,「{task['title']}」办完了,{task['result_summary'] or '结果已经出来了'}。"
