@@ -41,6 +41,7 @@
   let omniTurnGen = 0;  // 每次新一句开始/打断都 +1,过期的 /voice/send 流式结果据此判断该不该再应用
 
   async function startOmniHandsFree(){
+    vdbg("omni.start");
     setStatus("连接中…", "");
     unlockAudio();
     try{ omniMicStream = await ensureMicStream(); }
@@ -49,6 +50,7 @@
       addMsg("ai error", "麦克风权限被拒绝,请到系统设置里允许");
       return;
     }
+    vdbg("omni.mic.ok");
     ensureAnalyser();        // 麦克风侧声纹(capturing 状态用)
     if(!orbAnimHandle) drawOrbWaveform();
 
@@ -101,10 +103,17 @@
 
     const offer = await omniPc.createOffer();
     await omniPc.setLocalDescription(offer);
+    vdbg("omni.ice.wait");
+    // ICE 收集等待必须有超时:iOS 真机复现过 gathering 永远不到 complete,这里原本
+    // 无限 await → 通话永远卡在"连接中…"且无任何日志(2026-07-12)。8s 到就带着
+    // 已有候选继续——信令服务器接受部分候选,大不了连接失败走 pc.state 重连兜底。
     await new Promise(resolve => {
-      if(omniPc.iceGatheringState === "complete") return resolve();
-      omniPc.onicegatheringstatechange = () => { if(omniPc.iceGatheringState === "complete") resolve(); };
+      const timer = setTimeout(()=>{ vdbg("omni.ice.timeout"); resolve(); }, 8000);
+      const done = ()=>{ clearTimeout(timer); resolve(); };
+      if(omniPc.iceGatheringState === "complete") return done();
+      omniPc.onicegatheringstatechange = () => { if(omniPc.iceGatheringState === "complete") done(); };
     });
+    vdbg("omni.sdp.post");
 
     let resp;
     try{
@@ -529,3 +538,5 @@
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
   }
+
+vdbg("omni.js.loaded");  // 加载信标:本文件顶层全部执行完(声明就绪)才会打这条
