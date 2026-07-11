@@ -344,6 +344,32 @@ async def test_voice_send_no_filler_when_model_speaks_before_tools(voice_db, mon
 
 
 @pytest.mark.anyio
+async def test_voice_send_emits_activity_for_toplevel_tool_calls(voice_db, monkeypatch):
+    """前台轮次的工具动作(查记录/跑脚本)要以 activity 事件实时推给通话视图的动作行:
+    只推顶层调用(子代理内部的动作不刷屏),文案走 executor.progress_text 的人话模板。"""
+    from claude_hermes.core.agent import ToolInput
+
+    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+        yield ToolInput("Bash", tool_id="t1", tool_input={"command": "git log"})
+        yield ToolInput("Read", tool_id="t2", tool_input={"file_path": "/tmp/a.py"}, parent_id="t1")
+        yield TextDelta("看完了。")
+        yield Done(
+            AgentReply(text="看完了。", tool_calls=[], cost_usd=None, is_error=False, sdk_session_id=None)
+        )
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+
+    app = web.Application()
+    routes.register_routes(app)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/voice/send", json={"text": "帮我看下提交记录", "tts": False})
+        body = (await resp.read()).decode("utf-8")
+
+    activities = [d["text"] for e, d in _parse_sse(body) if e == "activity"]
+    assert activities == ["正在执行:git log"]  # 子代理内部那次 Read 不该出现
+
+
+@pytest.mark.anyio
 async def test_voice_debug_logs_and_returns_ok(voice_db, capsys):
     """前端调试信号上报:落服务器日志(stdout),响应 ok——见 routes._handle_debug。"""
     app = web.Application()

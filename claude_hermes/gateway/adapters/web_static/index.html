@@ -789,10 +789,17 @@
   #callHead #backLink{color:var(--dim);line-height:1;padding:4px;display:inline-flex}
   #callHead #backLink .ic{width:20px;height:20px}
   #callHead .title{font-weight:600;flex:1}
-  #callBody{flex:1;overflow-y:auto;padding:16px}
+  /* callFoot 改浮层后 callBody 一直铺到视图底,文字区因此变大;底 padding 留出
+     滚动余量,scroll-padding 让 scrollIntoView 的"到底"落点抬到遮罩实色区上方
+     ——否则最新气泡会贴到容器最底边,藏进按钮区后面 */
+  #callBody{flex:1;overflow-y:auto;padding:16px;
+    padding-bottom:calc(104px + env(safe-area-inset-bottom));
+    scroll-padding-bottom:calc(104px + env(safe-area-inset-bottom))}
   #transcript{display:flex;flex-direction:column;gap:12px;max-width:680px;margin:0 auto}
-  #callView .bubble.filler{background:transparent;border:none;color:var(--dim2);font-size:14px;
-    padding:0 14px;max-width:100%;box-shadow:none}
+  /* .activity 是前台工具动作行(查记录/跑脚本),跟垫话术共用一套"透明小字"外观;
+     区别只在数据来源:filler 是话术,activity 由 SSE activity 事件原地更新 */
+  #callView .bubble.filler,#callView .bubble.activity{background:transparent;border:none;
+    color:var(--dim2);font-size:14px;padding:0 14px;max-width:100%;box-shadow:none}
   .msgicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
   .msgicon .ic{width:15px;height:15px}
   #callView .hint{text-align:center;color:var(--dim2);font-size:14px;padding:40px 20px}
@@ -812,6 +819,20 @@
   #tasksBadge{position:absolute;top:0;right:0;width:8px;height:8px;border-radius:50%;
     background:var(--accent);display:none}
   #tasksBadge.on{display:block}
+  /* 后台任务状态条:顶栏下方常驻横幅——派发瞬间出现,列出排队/进行中任务,
+     全部结束自动收起;点击打开任务抽屉看详情(数据来自 SSE task_update/task_done)。
+     PWA 拿不到 iOS 灵动岛(Live Activities 只开放给原生 App),这条是应用内的替代。 */
+  #taskBar{border-bottom:1px solid var(--line);padding:8px 16px;display:flex;
+    flex-direction:column;gap:6px;cursor:pointer;flex-shrink:0}
+  #taskBar[hidden]{display:none}
+  .taskbar-row{display:flex;align-items:center;gap:8px;font-size:13px;min-width:0}
+  .taskbar-row .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .taskbar-row .dot.queued{background:var(--dim2)}
+  .taskbar-row .dot.running{background:var(--accent);animation:taskbarPulse 1.2s ease-in-out infinite}
+  .taskbar-row .t{font-weight:600;flex-shrink:0;max-width:45%;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .taskbar-row .n{color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  @keyframes taskbarPulse{0%,100%{opacity:1}50%{opacity:.35}}
   #tasksDrawer{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10;display:none}
   #tasksDrawer.open{display:block}
   #tasksSheet{position:absolute;left:0;right:0;bottom:0;max-height:70vh;overflow-y:auto;
@@ -832,10 +853,18 @@
   .task .stop{border:1px solid var(--err);color:var(--err);background:none;border-radius:14px;
     padding:2px 10px;font-size:12px}
   .task-empty{color:var(--dim2);text-align:center;padding:20px}
-  /* 底部整块(声波+状态+挂断)下沉到贴近安全区:底 padding 收到最小,
-     整个 footer 高度变矮→上方 flex:1 的 callBody 顶得更开→整块随之下移 */
-  #callFoot{padding:20px 16px calc(8px + env(safe-area-inset-bottom));display:flex;
-    flex-direction:column;align-items:center;gap:16px}
+  /* 底部整块(声波+状态+挂断)是叠在 callBody 上面的浮层,不占文档流——
+     遮罩从下往上渐变:按钮+状态文字那截(~96px+安全区)实色,声波区一路渐隐,
+     顶部全透明,转写文字能从声波后面透出来,显示范围更大。
+     pointer-events 只留给按钮和声波(点声波=打断),透明区的点击/滚动穿透给转写区。 */
+  #callFoot{position:absolute;left:0;right:0;bottom:0;pointer-events:none;
+    padding:20px 16px calc(8px + env(safe-area-inset-bottom));display:flex;
+    flex-direction:column;align-items:center;gap:16px;
+    background:linear-gradient(to top,
+      var(--bg2) 0,
+      var(--bg2) calc(env(safe-area-inset-bottom) + 96px),
+      transparent calc(env(safe-area-inset-bottom) + 212px))}
+  #callFoot button,#callFoot #orbWrap{pointer-events:auto}
   .btnicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
   .btnicon .ic{width:16px;height:16px}
   #stopBtn{border:1px solid var(--err);color:var(--err);background:none;border-radius:20px;
@@ -1072,6 +1101,8 @@ try{
       <a id="omniTestLink" href="/voice/static/omni_test.html" target="_blank" title="Omni-Realtime WebRTC 连线测试(开发用)"></a>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
+    <!-- 后台任务状态条:有排队/进行中任务才出现,见 renderTaskBar() -->
+    <div id="taskBar" hidden></div>
     <div id="callBody">
       <div id="transcript"></div>
     </div>
@@ -1199,7 +1230,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 (function(){
   const transcriptEl=$("#transcript"), statusEl=$("#status"), talkBtn=$("#talkBtn"),
     stopBtn=$("#stopBtn"), tasksBtn=$("#tasksBtn"), tasksBadge=$("#tasksBadge"),
-    tasksDrawer=$("#tasksDrawer"), tasksList=$("#tasksList"),
+    tasksDrawer=$("#tasksDrawer"), tasksList=$("#tasksList"), taskBar=$("#taskBar"),
     handsFreeUi=$("#handsFreeUi"), orbWrap=$("#orbWrap"),
     endHandsFreeBtn=$("#endHandsFreeBtn"), muteToggleBtn=$("#muteToggleBtn"),
     backLink=$("#callHead #backLink");
@@ -1288,10 +1319,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     const who = parts[0];
     const isError = parts.includes("error");
     const isFiller = parts.includes("filler");
+    const isActivity = parts.includes("activity");
     const row = document.createElement("div");
     row.className = "row " + (who === "me" ? "me" : "ai");
     const b = document.createElement("div");
-    b.className = "bubble" + (isError ? " err" : "") + (isFiller ? " filler" : "");
+    b.className = "bubble" + (isError ? " err" : "") + (isFiller ? " filler" : "") + (isActivity ? " activity" : "");
     if(isError){
       const icon = document.createElement("span");
       icon.className = "msgicon";
@@ -1386,6 +1418,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
     const finish = ()=>{
       busy = false; talkBtn.disabled = false; stopBtn.hidden = true; setStatus("空闲");
+      endActivity();  // 回合结束:动作行保留在气泡流里,只断开指针,下一轮另起一条
       flushAnnouncements();
     };
 
@@ -1418,6 +1451,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             if(!aiEl) aiEl = addMsg("ai", "");
             full += ev.data.text || "";
             renderAi(aiEl, full);
+          } else if(ev.event === "activity"){
+            showActivity(ev.data.text);
           } else if(ev.event === "sentence"){
             playQueue.push(ev.data);
             pumpPlayback();
@@ -1446,6 +1481,22 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     elm.querySelector(".msgtext").textContent = full;
     elm.scrollIntoView({block:"end"});
   }
+
+  // ── 前台动作行:AI 本轮查记录/跑脚本时,转写区一条小字实时显示在干什么
+  //    (SSE activity 事件驱动)。动作变了原地更新并挪到气泡流末尾;
+  //    回合结束只断开指针不删 DOM——留下最后一条当"这轮 AI 干了什么"的痕迹。
+  let activityLineEl = null;
+
+  function showActivity(text){
+    if(!text) return;
+    if(!activityLineEl){ activityLineEl = addMsg("ai activity", text); return; }
+    activityLineEl.querySelector(".msgtext").textContent = text;
+    const row = activityLineEl.parentElement;
+    transcriptEl.appendChild(row);
+    row.scrollIntoView({block:"end"});
+  }
+
+  function endActivity(){ activityLineEl = null; }
 
   function base64ToArrayBuffer(b64){
     const bin = atob(b64);
@@ -1508,9 +1559,37 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   async function loadTasks(){
     try{
       const resp = await fetch("/voice/tasks", {headers:{"X-Auth-Token":S.token}});
-      if(resp.ok) renderTasks(await resp.json());
+      if(!resp.ok) return;
+      const rows = await resp.json();
+      renderTasks(rows);
+      // 顺带全量校准状态条(SSE 断线漏事件时,打开抽屉/task_done 刷新都会走到这里兜底)
+      activeTasks.clear();
+      for(const t of rows) if(t.status === "queued" || t.status === "running") activeTasks.set(t.id, t);
+      renderTaskBar();
     }catch(e){}
   }
+
+  // ── 任务状态条:排队/进行中任务常驻顶栏下方,派发瞬间出现(SSE task_update),
+  //    全部结束自动收起;点击等同打开任务抽屉看详情 ─────────────────────────────
+  const activeTasks = new Map();  // id -> 任务行,只留 queued/running
+
+  function upsertTaskBar(t){
+    if(t.status === "queued" || t.status === "running") activeTasks.set(t.id, t);
+    else activeTasks.delete(t.id);
+    renderTaskBar();
+  }
+
+  function renderTaskBar(){
+    const rows = [...activeTasks.values()].sort((a,b)=>a.created_at - b.created_at);
+    taskBar.hidden = !rows.length;
+    taskBar.innerHTML = rows.map(t=>
+      `<div class="taskbar-row"><span class="dot ${t.status}"></span>` +
+      `<span class="t">${esc(t.title)}</span>` +
+      `<span class="n">${esc(t.status === "running" ? (t.progress_note || "进行中") : "排队中")}</span></div>`
+    ).join("");
+  }
+
+  taskBar.addEventListener("click", ()=>{ tasksDrawer.classList.add("open"); loadTasks(); });
 
   function renderTasks(rows){
     tasksList.innerHTML = "";
@@ -1714,11 +1793,16 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   function connectTaskStream(){
     const es = new EventSource("/voice/tasks/stream?token=" + encodeURIComponent(S.token));
+    es.addEventListener("task_update", e=>{
+      upsertTaskBar(JSON.parse(e.data));  // 派发/起跑/进度变化 → 状态条实时刷新
+    });
     es.addEventListener("task_done", e=>{
       tasksBadge.classList.add("on");
       loadTasks();
       loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
-      pendingAnnouncements.push(JSON.parse(e.data));
+      const data = JSON.parse(e.data);
+      upsertTaskBar(data);  // 终态 → 从状态条摘掉
+      pendingAnnouncements.push(data);
       flushAnnouncements();
     });
   }
@@ -2148,6 +2232,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
     if(handsFreeActive) orbWrap.className = "thinking";
     currentTurnAiEl = null; currentTurnFull = "";
+    endActivity();  // 新一轮开始:上一轮的动作行定格,别被这轮的动作原地改写
     omniReadQueue = []; omniTurnDone = false;
     vdbg("turn.start", text.slice(0, 40));
 
@@ -2195,6 +2280,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             renderAi(currentTurnAiEl, currentTurnFull);
             // 状态保持 thinking:真正的"播放中"由 Omni 朗读的 response.created
             // 驱动(见 wireOmniDataChannel),文字流出来不等于已经在出声。
+          } else if(ev.event === "activity"){
+            showActivity(ev.data.text);
           } else if(ev.event === "sentence"){
             if(ev.data.text){
               // 垫场话术(filler):念出来的同时也给一个半透明小气泡——用户反馈
@@ -2216,6 +2303,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }catch(e){ /* 流中断,不额外报错 */ }
     if(gen !== omniTurnGen) return;
     currentTurnAiEl = null; currentTurnFull = "";
+    endActivity();
     omniTurnDone = true;
     vdbg("turn.stream-done", {q: omniReadQueue.length});
     // 不直接回 idle:朗读队列可能还有没念完的,由 maybeOmniIdle 在念完后收尾。
@@ -2330,6 +2418,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     if(initialized) return;
     initialized = true;
     connectTaskStream();
+    loadTasks();  // 顺带初始化任务状态条:页面刷新前就在跑的任务也能立刻出现在条上
     loadMainHistory();
     initUiMode();
   }

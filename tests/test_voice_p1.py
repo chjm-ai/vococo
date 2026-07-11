@@ -478,6 +478,53 @@ async def test_notify_skips_legacy_tts_when_omni_enabled(voice_db, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_dispatch_broadcasts_task_update_to_online_subscribers(voice_db, monkeypatch):
+    """派发瞬间在线页面就该收到 task_update——通话视图的任务状态条靠它实时出现。"""
+    async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
+        yield Done(AgentReply(text="结果", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+
+    q = notify.subscribe()
+    try:
+        task = executor.dispatch("标题", "prompt")
+        await executor._running[task["id"]]
+        events = []
+        while not q.empty():
+            events.append(q.get_nowait())
+    finally:
+        notify.unsubscribe(q)
+
+    updates = [p for e, p in events if e == "task_update"]
+    assert updates and updates[-1]["id"] == task["id"]
+    assert updates[-1]["status"] == "running"  # 并发未满,广播时已起跑
+
+
+def test_progress_text_maps_task_tools_to_human_words():
+    """MCP 内部工具名(mcp__xxx__yyy)不能原样念给用户听,单独映射成人话。"""
+    assert executor.progress_text("mcp__voice_tasks__voice_dispatch_task", {}) == "正在安排后台任务"
+    assert executor.progress_text("mcp__voice_tasks__voice_query_task", {}) == "正在查任务进度"
+    assert executor.progress_text("mcp__other__thing", {}) == "正在使用工具"
+    assert executor.progress_text("Bash", {"command": "ls -la"}) == "正在执行:ls -la"
+
+
+def test_cancel_queued_broadcasts_task_update(voice_db):
+    """排队中取消不走 _run 的终态收尾(没有 task_done),得单独广播一次
+    让状态条把这条摘掉。"""
+    t = tasks.create("排队任务", "p")
+    q = notify.subscribe()
+    try:
+        assert executor.cancel(t["id"]) is True
+        event, payload = q.get_nowait()
+    finally:
+        notify.unsubscribe(q)
+    assert event == "task_update"
+    assert payload["id"] == t["id"]
+    assert payload["status"] == "cancelled"
+
+
+@pytest.mark.anyio
 async def test_notify_falls_back_to_web_push_when_offline(voice_db, monkeypatch):
     t = tasks.create("标题", "p")
     tasks.set_status(t["id"], "running")
