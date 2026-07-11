@@ -211,7 +211,9 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                     # 只发 sentence(语音念出来),不发 text——这句不是 Claude 的回答,
                     # 不该出现在聊天气泡里,也不落库。
                     filler_sent = True
-                    seq = _emit_sentence(sentence_queue, pending_synth_tasks, seq, _next_filler(), synth_tts)
+                    seq = _emit_sentence(
+                        sentence_queue, pending_synth_tasks, seq, _next_filler(), synth_tts, filler=True
+                    )
                 elif isinstance(ev, TextDelta):
                     if not t_first_text:
                         t_first_text = time.monotonic()
@@ -279,14 +281,19 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     return resp
 
 
-def _emit_sentence(queue: "asyncio.Queue", pending: list, seq: int, sentence: str, synth: bool = True) -> int:
+def _emit_sentence(
+    queue: "asyncio.Queue", pending: list, seq: int, sentence: str,
+    synth: bool = True, filler: bool = False,
+) -> int:
     """把这句话的 TTS 合成丢到后台并发跑,不阻塞正在读的 Claude 文字流,见调用处注释。
-    synth=False(Omni 出声模式)时只发句子文本不合成音频。"""
+    synth=False(Omni 出声模式)时只发句子文本不合成音频。
+    filler=True 标记这是后端垫的等待话术:前端据此渲染成半透明小气泡(用户反馈
+    "念了但文字里看不到"),但仍不算 Claude 回答正文、不落库。"""
     synth_task = None
     if synth:
         synth_task = asyncio.ensure_future(tts.synthesize(sentence, config.VOICE_TTS_VOICE))
         pending.append(synth_task)
-    queue.put_nowait((seq, sentence, synth_task))
+    queue.put_nowait((seq, sentence, synth_task, filler))
     return seq + 1
 
 
@@ -296,7 +303,7 @@ async def _sentence_sender(resp: web.StreamResponse, queue: "asyncio.Queue", fir
         item = await queue.get()
         if item is None:
             return
-        _seq, sentence, synth_task = item
+        _seq, sentence, synth_task, filler = item
         audio = None
         if synth_task is not None:
             try:
@@ -306,6 +313,8 @@ async def _sentence_sender(resp: web.StreamResponse, queue: "asyncio.Queue", fir
             except Exception:  # noqa: BLE001 —— 单句合成失败不该拖垮整轮,跳过继续发下一句
                 audio = None
         payload = {"text": sentence, "audio_b64": base64.b64encode(audio).decode("ascii") if audio else None}
+        if filler:
+            payload["filler"] = True
         await _sse(resp, "sentence", payload)
         if not first_audio_ts:
             first_audio_ts.append(time.monotonic())

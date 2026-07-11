@@ -1814,6 +1814,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       currentTurnFull += msg.text || "";
       renderAi(currentTurnAiEl, currentTurnFull);
     } else if(msg.type === "sentence"){
+      if(msg.filler && msg.text) addMsg("ai filler", msg.text);  // 垫场话术:同步给个半透明气泡
       playQueue.push({seq: msg.seq, audio_b64: msg.audio_b64});
       pumpPlayback();
     } else if(msg.type === "done"){
@@ -2208,7 +2209,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             // 状态保持 thinking:真正的"播放中"由 Omni 朗读的 response.created
             // 驱动(见 wireOmniDataChannel),文字流出来不等于已经在出声。
           } else if(ev.event === "sentence"){
-            if(ev.data.text){ omniReadQueue.push(ev.data.text); pumpOmniRead(); }
+            if(ev.data.text){
+              // 垫场话术(filler):念出来的同时也给一个半透明小气泡——用户反馈
+              // "听到了但文字里看不到";它不是 Claude 回答正文,不进 currentTurnFull。
+              if(ev.data.filler) addMsg("ai filler", ev.data.text);
+              omniReadQueue.push(ev.data.text); pumpOmniRead();
+            }
           } else if(ev.event === "done"){
             if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
             if(ev.data.full_text){ currentTurnFull = ev.data.full_text; renderAi(currentTurnAiEl, currentTurnFull); }

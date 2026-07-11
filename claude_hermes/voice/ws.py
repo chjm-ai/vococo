@@ -697,7 +697,7 @@ class VoiceWsSession:
                         # 模型没说话就直接调工具 → 垫一句等待话术(理由同 routes.py
                         # 的 _FILLER_PHRASES:prompt 里承诺过后端会垫,这里兑现)。
                         filler_sent = True
-                        seq = self._emit_sentence(turn, seq, routes._next_filler())
+                        seq = self._emit_sentence(turn, seq, routes._next_filler(), filler=True)
                     elif isinstance(ev, TextDelta):
                         if not self._speaking_announced:
                             self._speaking_announced = True
@@ -744,7 +744,7 @@ class VoiceWsSession:
             await self._set_state(_STATE_IDLE)
             await self._send("error", message=str(exc))
 
-    def _emit_sentence(self, turn: TurnContext, seq: int, sentence: str) -> int:
+    def _emit_sentence(self, turn: TurnContext, seq: int, sentence: str, filler: bool = False) -> int:
         """把这句话的 TTS 合成丢到后台并发跑,不阻塞正在读的 Claude 文字流。
 
         2026-07-09 之前是内联 `await tts.synthesize(...)`——合成一句要几百
@@ -757,7 +757,7 @@ class VoiceWsSession:
         turn.emitted_sentences.append(sentence)
         synth_task = asyncio.ensure_future(tts.synthesize(sentence, config.VOICE_TTS_VOICE))
         turn.pending_synth_tasks.append(synth_task)
-        turn.sentence_queue.put_nowait((seq, sentence, synth_task))
+        turn.sentence_queue.put_nowait((seq, sentence, synth_task, filler))
         print(
             f"[voice/ws] 入队TTS seq={seq} text={sentence[:40]!r}",
             flush=True,
@@ -772,14 +772,15 @@ class VoiceWsSession:
             item = await turn.sentence_queue.get()
             if item is None:
                 return
-            seq, sentence, synth_task = item
+            seq, sentence, synth_task, filler = item
             try:
                 audio = await synth_task
             except asyncio.CancelledError:
                 return
             except Exception:  # noqa: BLE001 —— 单句合成失败不该拖垮整轮,跳过继续发下一句
                 audio = None
-            await self._send("sentence", seq=seq, text=sentence, audio_b64=_b64(audio))
+            extra = {"filler": True} if filler else {}
+            await self._send("sentence", seq=seq, text=sentence, audio_b64=_b64(audio), **extra)
 
     async def _drain_sentence_queue(self, turn: TurnContext) -> None:
         """一轮正常说完:告诉 sender 协程"没有下一句了",等它把队列里剩下
