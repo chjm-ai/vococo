@@ -54,9 +54,19 @@ def _notify_activity(task_id: str) -> None:
         notify.on_task_activity(row)
 
 
-def _progress_text(name: str, tool_input: dict) -> str:
-    """把一次顶层工具调用模板化成人话短句,不必额外调 LLM(见 F6)。"""
+def progress_text(name: str, tool_input: dict) -> str:
+    """把一次顶层工具调用模板化成人话短句,不必额外调 LLM(见 F6)。
+
+    routes.py/ws.py 也用它生成前台轮次的 activity 事件(通话视图的动作行),
+    所以是公开函数;task_tools 的 MCP 工具名(mcp__xxx__yyy)单独映射,
+    别把内部命名念给用户听。"""
     ti = tool_input or {}
+    if "voice_dispatch_task" in name:
+        return "正在安排后台任务"
+    if "voice_query_task" in name or "voice_list_tasks" in name:
+        return "正在查任务进度"
+    if name.startswith("mcp__"):
+        return "正在使用工具"
     if name == "Bash":
         cmd = (ti.get("command") or "").strip()
         return f"正在执行:{cmd[:30]}" if cmd else "正在执行命令"
@@ -128,7 +138,7 @@ async def _run(task_id: str) -> None:
                 now = time.monotonic()
                 if now - last_progress_ts >= _PROGRESS_THROTTLE_SEC:
                     last_progress_ts = now
-                    tasks.set_progress(task_id, _progress_text(ev.name, ev.tool_input))
+                    tasks.set_progress(task_id, progress_text(ev.name, ev.tool_input))
                     _notify_activity(task_id)
             elif isinstance(ev, Done):
                 result_text = ev.reply.text

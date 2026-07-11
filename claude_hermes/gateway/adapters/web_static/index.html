@@ -791,8 +791,10 @@
   #callHead .title{font-weight:600;flex:1}
   #callBody{flex:1;overflow-y:auto;padding:16px}
   #transcript{display:flex;flex-direction:column;gap:12px;max-width:680px;margin:0 auto}
-  #callView .bubble.filler{background:transparent;border:none;color:var(--dim2);font-size:14px;
-    font-style:italic;padding:0 14px;max-width:100%;box-shadow:none}
+  /* .activity 是前台工具动作行(查记录/跑脚本),跟垫话术共用一套"透明斜体小字"外观;
+     区别只在数据来源:filler 是话术,activity 由 SSE activity 事件原地更新 */
+  #callView .bubble.filler,#callView .bubble.activity{background:transparent;border:none;
+    color:var(--dim2);font-size:14px;font-style:italic;padding:0 14px;max-width:100%;box-shadow:none}
   .msgicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
   .msgicon .ic{width:15px;height:15px}
   #callView .hint{text-align:center;color:var(--dim2);font-size:14px;padding:40px 20px}
@@ -1291,10 +1293,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     const who = parts[0];
     const isError = parts.includes("error");
     const isFiller = parts.includes("filler");
+    const isActivity = parts.includes("activity");
     const row = document.createElement("div");
     row.className = "row " + (who === "me" ? "me" : "ai");
     const b = document.createElement("div");
-    b.className = "bubble" + (isError ? " err" : "") + (isFiller ? " filler" : "");
+    b.className = "bubble" + (isError ? " err" : "") + (isFiller ? " filler" : "") + (isActivity ? " activity" : "");
     if(isError){
       const icon = document.createElement("span");
       icon.className = "msgicon";
@@ -1389,6 +1392,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
     const finish = ()=>{
       busy = false; talkBtn.disabled = false; stopBtn.hidden = true; setStatus("空闲");
+      endActivity();  // 回合结束:动作行保留在气泡流里,只断开指针,下一轮另起一条
       flushAnnouncements();
     };
 
@@ -1421,6 +1425,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             if(!aiEl) aiEl = addMsg("ai", "");
             full += ev.data.text || "";
             renderAi(aiEl, full);
+          } else if(ev.event === "activity"){
+            showActivity(ev.data.text);
           } else if(ev.event === "sentence"){
             playQueue.push(ev.data);
             pumpPlayback();
@@ -1449,6 +1455,22 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     elm.querySelector(".msgtext").textContent = full;
     elm.scrollIntoView({block:"end"});
   }
+
+  // ── 前台动作行:AI 本轮查记录/跑脚本时,转写区一条斜体小字实时显示在干什么
+  //    (SSE/WS 的 activity 事件驱动)。动作变了原地更新并挪到气泡流末尾;
+  //    回合结束只断开指针不删 DOM——留下最后一条当"这轮 AI 干了什么"的痕迹。
+  let activityLineEl = null;
+
+  function showActivity(text){
+    if(!text) return;
+    if(!activityLineEl){ activityLineEl = addMsg("ai activity", text); return; }
+    activityLineEl.querySelector(".msgtext").textContent = text;
+    const row = activityLineEl.parentElement;
+    transcriptEl.appendChild(row);
+    row.scrollIntoView({block:"end"});
+  }
+
+  function endActivity(){ activityLineEl = null; }
 
   function base64ToArrayBuffer(b64){
     const bin = atob(b64);
@@ -1864,16 +1886,21 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
       if(msg.full_text){ currentTurnFull = msg.full_text; renderAi(currentTurnAiEl, currentTurnFull); }
       currentTurnAiEl = null; currentTurnFull = "";
+      endActivity();
+    } else if(msg.type === "activity"){
+      showActivity(msg.text);
     } else if(msg.type === "interrupted"){
       playQueue = [];
       pausedForInterrupt = false;
       currentTurnAiEl = null; currentTurnFull = "";
+      endActivity();
     } else if(msg.type === "resumed"){
       pausedForInterrupt = false;
       pumpPlayback();
     } else if(msg.type === "error"){
       addMsg("ai error", msg.message || "出错了");
       currentTurnAiEl = null; currentTurnFull = "";
+      endActivity();
     }
   }
 
@@ -2209,6 +2236,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
     if(handsFreeActive) orbWrap.className = "thinking";
     currentTurnAiEl = null; currentTurnFull = "";
+    endActivity();  // 新一轮开始:上一轮的动作行定格,别被这轮的动作原地改写
     omniReadQueue = []; omniTurnDone = false;
     vdbg("turn.start", text.slice(0, 40));
 
@@ -2256,6 +2284,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             renderAi(currentTurnAiEl, currentTurnFull);
             // 状态保持 thinking:真正的"播放中"由 Omni 朗读的 response.created
             // 驱动(见 wireOmniDataChannel),文字流出来不等于已经在出声。
+          } else if(ev.event === "activity"){
+            showActivity(ev.data.text);
           } else if(ev.event === "sentence"){
             if(ev.data.text){ omniReadQueue.push(ev.data.text); pumpOmniRead(); }
           } else if(ev.event === "done"){
@@ -2272,6 +2302,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }catch(e){ /* 流中断,不额外报错 */ }
     if(gen !== omniTurnGen) return;
     currentTurnAiEl = null; currentTurnFull = "";
+    endActivity();
     omniTurnDone = true;
     vdbg("turn.stream-done", {q: omniReadQueue.length});
     // 不直接回 idle:朗读队列可能还有没念完的,由 maybeOmniIdle 在念完后收尾。

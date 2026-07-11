@@ -16,7 +16,7 @@ from pathlib import Path
 from aiohttp import web
 
 from .. import config
-from ..core.agent import Done, TextDelta, ToolStarted
+from ..core.agent import Done, TextDelta, ToolInput, ToolStarted
 from . import executor, notify, omni_realtime, prompts, session, stt, task_tools, tasks, tts, ws
 
 _STATIC = Path(__file__).resolve().parent / "static"
@@ -212,6 +212,11 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                     # 不该出现在聊天气泡里,也不落库。
                     filler_sent = True
                     seq = _emit_sentence(sentence_queue, pending_synth_tasks, seq, _next_filler(), synth_tts)
+                elif isinstance(ev, ToolInput) and ev.parent_id is None:
+                    # 前台轮次的工具动作(查记录/跑脚本)实时推给通话视图的动作行——
+                    # ToolInput 才带完整入参,能模板化出"正在执行:git log…"这种细节,
+                    # ToolStarted(上面垫话术用的那个)只有工具名。
+                    await _sse(resp, "activity", {"text": executor.progress_text(ev.name, ev.tool_input)})
                 elif isinstance(ev, TextDelta):
                     if not t_first_text:
                         t_first_text = time.monotonic()

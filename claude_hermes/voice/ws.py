@@ -68,8 +68,8 @@ import aiohttp
 from aiohttp import web
 
 from .. import config
-from ..core.agent import Done, TextDelta, ToolStarted
-from . import prompts, session, task_tools, tts, voiceprint
+from ..core.agent import Done, TextDelta, ToolInput, ToolStarted
+from . import executor, prompts, session, task_tools, tts, voiceprint
 
 _STATE_IDLE = "idle"
 _STATE_CAPTURING = "capturing"
@@ -698,6 +698,9 @@ class VoiceWsSession:
                         # 的 _FILLER_PHRASES:prompt 里承诺过后端会垫,这里兑现)。
                         filler_sent = True
                         seq = self._emit_sentence(turn, seq, routes._next_filler())
+                    elif isinstance(ev, ToolInput) and ev.parent_id is None:
+                        # 前台工具动作推给通话视图的动作行(同 routes.py 的 activity 事件)
+                        await self._send("activity", text=executor.progress_text(ev.name, ev.tool_input))
                     elif isinstance(ev, TextDelta):
                         if not self._speaking_announced:
                             self._speaking_announced = True

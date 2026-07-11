@@ -501,6 +501,14 @@ async def test_dispatch_broadcasts_task_update_to_online_subscribers(voice_db, m
     assert updates[-1]["status"] == "running"  # 并发未满,广播时已起跑
 
 
+def test_progress_text_maps_task_tools_to_human_words():
+    """MCP 内部工具名(mcp__xxx__yyy)不能原样念给用户听,单独映射成人话。"""
+    assert executor.progress_text("mcp__voice_tasks__voice_dispatch_task", {}) == "正在安排后台任务"
+    assert executor.progress_text("mcp__voice_tasks__voice_query_task", {}) == "正在查任务进度"
+    assert executor.progress_text("mcp__other__thing", {}) == "正在使用工具"
+    assert executor.progress_text("Bash", {"command": "ls -la"}) == "正在执行:ls -la"
+
+
 def test_cancel_queued_broadcasts_task_update(voice_db):
     """排队中取消不走 _run 的终态收尾(没有 task_done),得单独广播一次
     让状态条把这条摘掉。"""
