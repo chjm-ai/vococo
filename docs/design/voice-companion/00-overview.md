@@ -1,5 +1,18 @@
 # Voice Companion（语音伴聊模式）— 总纲
 
+> ⚠️ **2026-07-12 重大修订(读旧章节前必看)**:免提通话已收敛为 **Omni-Realtime
+> WebRTC 唯一管线**(见 [ADR 0004](../../adr/0004-voice-omni-only.md))。本目录里
+> 关于「级联 STT→Claude→TTS」与 P2 全双工(ws.py / DashScope 实时 WS / 声纹识别)
+> 的架构描述**均已成为历史**——那些代码已删除,判定纯函数留档在
+> `claude_hermes/voice/heuristics.py`。仍然有效的部分:P1 任务板全套(派活/进度/
+> 播报)、/voice/send 回复轮、按住说话兜底、§2 的后端隔离约束与 §5 验收哲学。
+> 现行移除清单 = `rm -rf claude_hermes/voice/ tests/test_voice_*` + 摘 index.html
+> 里 #callView 相关标签/样式与通话 IIFE 脚本段 + config.py 的 VOICE_ 常量 +
+> `rm -rf data/voice/`。注意:通话前端**必须留在 index.html 的 IIFE 里**——
+> 2026-07-12 曾把 Omni 段拆成独立 js 文件,因通话段与聊天逻辑靠 IIFE 隔离同名
+> 符号(vdbg/setStatus 等全是闭包内符号),外部文件看不到,真机全挂,已回滚;
+> 要拆必须先把共享状态收敛成显式对象再动。
+>
 > 本目录是「边聊天边干活」新功能的完整规划。实现按期拆分,每期一份自包含文档,
 > 可以交给**互不知情的不同 AI** 分别实现:
 > - [01-phase0-voice-entry.md](01-phase0-voice-entry.md) — P0:入口按钮 + 语音对话 MVP

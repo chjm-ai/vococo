@@ -221,40 +221,11 @@ VOICE_ANNOUNCE: str = os.environ.get("VOICE_ANNOUNCE", "idle").strip().lower() o
 # 20字以内,超过这个阈值大概率是交代复杂事情,而不是随口一句话。
 VOICE_LONG_TASK_CHARS: int = int(os.environ.get("VOICE_LONG_TASK_CHARS", "50"))
 
-# P2 全双工:/voice/ws 免提连续对话开关(独立开关,方便单独回退到按住说话)。
-VOICE_WS_ENABLED: bool = _parse_bool(os.environ.get("VOICE_WS_ENABLED", ""), True)
-# 假打断回滚超时:打断触发后这么久还没等到有效转写,就当误触发,撤销截断、恢复播放。
-# 2026-07-08 从 1500 调到 8000:改成 DashScope 实时 WS 之后,这个窗口要覆盖的
-# 不再是"客户端本地 VAD 已经判完、只等一个网络包"那么短的时间,而是"用户真的
-# 把这句话说完 + DashScope 转写出结果"的完整耗时——真机测试中一句 4-5 秒的话
-# 配合上游网络往返,1.5 秒经常等不到 completed 就被误判成假打断、白白撤销了
-# 一次正常的追问,见 03-phase2-实现记录.md。
-VOICE_FALSE_POSITIVE_TIMEOUT_MS: int = int(
-    os.environ.get("VOICE_FALSE_POSITIVE_TIMEOUT_MS", "8000")
-)
-# 2026-07-08:免提识别改用 DashScope 实时语音 WS(server_vad),替换掉真机实测
-# 不可靠的客户端 ML VAD——服务端专业断句判断,不用客户端自己猜"说完了没"。
-# threshold/silence_duration_ms 是 DashScope 那边 server_vad 的调优参数。
-# threshold 越低越灵敏——最早为了验证协议图省事调成了 0.0(比 DashScope 自己
-# 的默认值 0.2 还灵敏),真机在有环境噪音的房间里实测明显太敏感:呼吸声/环境
-# 杂音被当成开口,还被识别模型强行转写成"嗯/哦/是的"这类语气词(模型倾向于
-# 给含糊音频编一个说得过去的短词,而不是老实返回空)。0.0→0.3→0.5/500→600ms
-# 调了两轮,真机反馈仍然偏灵敏,大幅提到 0.7(逼近上限 1.0)/1000ms——用户
-# 明确要求两个都"大幅提升"。副作用:开口打断的响应会更慢、对轻声/尾音的
-# 识别可能变迟钝,真机测试若矫枉过正需要往回收,见
-# docs/design/voice-companion/03-phase2-实现记录.md。threshold 加上声纹识别
-# (见 voiceprint.py)配合下来真机反馈已经不错(环境噪音基本不再被误识别成
-# 语气词了),threshold 不用再调;silence_duration_ms 继续从 1000→1500,
-# 减少"一段完整的话中间停顿稍长就被切成好几句"的情况——代价同上,停顿判定
-# 更久意味着说完到系统反应过来的间隔更长一点。
-DASHSCOPE_REALTIME_MODEL: str = (
-    os.environ.get("DASHSCOPE_REALTIME_MODEL", "qwen3-asr-flash-realtime").strip()
-    or "qwen3-asr-flash-realtime"
-)
-# 2026-07-10 P3 阶段一:端到端语音进语音出模型(用来替换"自己识别+自己合成+自己
-# 拼播放队列"这条今天连炸三次故障的自建链路,见 voice/omni_realtime.py),跟上面
-# DASHSCOPE_REALTIME_MODEL(纯识别,ws.py 在用)是两个不同用途的模型,不要混用。
-# 已用真实账号连线验证过 session.update/function calling 全流程可用。
+# P3:端到端语音进语音出模型(见 voice/omni_realtime.py)。P2 自建全双工管线
+# (ws.py + DashScope 实时识别 WS)已于 2026-07-11 整体退休,见
+# docs/adr/0004-voice-omni-only.md;其判定纯函数与调优终值留档在
+# voice/heuristics.py。已用真实账号连线验证过 session.update/function calling
+# 全流程可用。
 VOICE_OMNI_REALTIME_MODEL: str = (
     os.environ.get("VOICE_OMNI_REALTIME_MODEL", "qwen3.5-omni-flash-realtime").strip()
     or "qwen3.5-omni-flash-realtime"
@@ -264,68 +235,23 @@ VOICE_OMNI_REALTIME_MODEL: str = (
 # (2026-07-10 真机连线验证过,全局域名对这个路径直接 404)。去百炼控制台右上角
 # 用户图标弹窗里复制"业务空间ID"填这里,不是什么敏感凭证但仍按环境变量走,别写死。
 VOICE_OMNI_WORKSPACE_ID: str = os.environ.get("VOICE_OMNI_WORKSPACE_ID", "").strip()
-# 阶段二真机联调开关:开了之后通话视图(#callView)用 Omni-Realtime 的 WebRTC 连线
-# 替换掉现有 ws.py 那条自建链路;关着就还是走原来的路径,互不影响,方便随时回退。
-# 2026-07-10 真机验证过信令代理 + DataChannel 双向事件都通,这个开关是接入正式
-# 通话界面的第一步。
+# 免提通话开关:开了之后通话视图(#callView)走 Omni-Realtime 的 WebRTC 连线。
+# 关着(或登录时 /voice/config 预取失败)则免提不可用,前端回落按住说话——
+# P2 自建 WS 链路已删,这个开关不再是"两条链路二选一",而是"免提有无"。
 VOICE_OMNI_ENABLED: bool = _parse_bool(os.environ.get("VOICE_OMNI_ENABLED", ""), False)
 # Omni 出声模式的音色——跟 VOICE_TTS_VOICE(Qwen-TTS 用)是两张不同的音色表,
 # 不能混用:2026-07-10 真机实锤 Cherry 在 qwen3.5-omni-flash-realtime 上直接
 # 400 InvalidParameter,每轮回复全灭。音色表见百炼文档 omni-voice-list,
 # Serena(苏瑶)是最接近 Cherry 的温柔女声。
 VOICE_OMNI_VOICE: str = os.environ.get("VOICE_OMNI_VOICE", "Serena").strip() or "Serena"
+# Omni WebRTC 链路 turn_detection 的灵敏度(0.0-1.0,越低越灵敏)。真机在有环境
+# 噪音的房间里 0.0→0.3→0.5→0.7 调了三轮(呼吸声/杂音被当成开口,还被识别模型
+# 硬编成"嗯/哦"这类语气词),0.7 是用户明确要求"大幅提升"后的终值,不用再调。
 VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
-VOICE_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_VAD_SILENCE_MS", "1500"))
-# Omni WebRTC 链路专用的静音判停时长,跟上面 VOICE_VAD_SILENCE_MS(旧 ws.py 链路用)
-# 分开配——2026-07-10 真机反馈 1500ms 对着有停顿思考习惯("呃"、组织语言)的说话
-# 方式还是太短,句子中间的正常停顿就被当成说完了。故意给更长的默认值,牺牲一点
-# 打断响应速度换连续说话不被截断。
+# Omni WebRTC 链路的静音判停时长——2026-07-10 真机反馈 1500ms 对有停顿思考习惯
+# ("呃"、组织语言)的说话方式太短,句子中间的正常停顿就被当成说完了。故意给
+# 更长的默认值,牺牲一点打断响应速度换连续说话不被截断。
 VOICE_OMNI_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_OMNI_VAD_SILENCE_MS", "3000"))
-# 回声兜底:AI 自己的声音从手机扬声器漏回麦克风,DashScope 会把它当成真实
-# 用户开口识别出来,导致 AI 打断自己形成死循环——echoCancellation 只是缓解不是
-# 根治(见 03-phase2-实现记录.md)。打断转写出来的内容如果跟 AI 刚说的话高度
-# 重合(containment ratio,见 voice/ws.py 的 looks_like_self_echo),就当是回声、
-# 不当真打断处理。阈值凭经验给的默认值,真机环境不同需要重新调。
-VOICE_SELF_ECHO_THRESHOLD: float = float(os.environ.get("VOICE_SELF_ECHO_THRESHOLD", "0.6"))
-# 2026-07-08:上面这条回声兜底原来只在"正在打断一个还没说完的回答"时生效——
-# 真机反馈偶发录到 AI 自己的尾音,根因是 AI 说完最后一句、服务端状态已经翻回
-# idle 后,客户端音箱可能还在把最后一两句播完,这段尾音漏回麦克风时早就不在
-# "打断"场景里了,原来的回声判断整个被跳过。这里加一个"刚说完话之后的宽限期"
-# (毫秒),这段时间内即便状态已经是 idle,新转写内容如果跟"刚刚这一轮说的话"
-# 高度重合,也当回声处理、不当真开新一轮。默认给一个短窗口,覆盖典型的尾部
-# 播放延迟就够;调太大会有把用户真提的、恰好和上一轮用词很像的追问也误伤的风险。
-VOICE_POST_DONE_ECHO_GUARD_MS: int = int(
-    os.environ.get("VOICE_POST_DONE_ECHO_GUARD_MS", "1500")
-)
-
-# 2026-07-09:呼吸声/环境杂音时长太短,即便 DashScope 硬编出一个语气词,也不该
-# 当成一句真话——这一条不看转写文字,只看物理时长,所以在空闲状态也生效
-# (looks_like_filler_only 那条只在打断场景生效,见上面的说明)。
-# 判断依据是 speech_started→speech_stopped 的原始时间差(见 voice/ws.py 的
-# estimate_speech_too_short)——原计划减掉 VOICE_VAD_SILENCE_MS 判定静音尾巴,
-# 但真机实测发现这段原始时间差经常比配置的静音时长还短(DashScope 实际判"说完
-# 了"用的时长跟我们配置的对不上),减法会算出负数、把正常短句全部误杀,已改成
-# 直接用原始时间差判断,不再依赖那个不成立的假设。默认给一个保守的下限,只挡
-# 真正瞬时(几十毫秒级)的噪声;调太大会把用户真说的很短的字也当噪声吃掉。
-VOICE_MIN_SPEECH_MS: int = int(os.environ.get("VOICE_MIN_SPEECH_MS", "250"))
-
-# 2026-07-08:声纹识别——分清"这是本人在说话"还是"背景里别人在说话"。
-# 免提场景背景有人说话时,普通降噪分不出"哪个人声是你",这块专门加了目标
-# 说话人识别(见 voice/voiceprint.py)。异步、不卡对话速度(见实现文档"方案
-# B")——转写完立刻正常起一轮,声纹比对在后台并行跑,判定"不像是你"再把这
-# 一轮撤回。默认开启,体验不好可以关掉退回没有声纹这层的行为。
-VOICE_VOICEPRINT_ENABLED: bool = _parse_bool(os.environ.get("VOICE_VOICEPRINT_ENABLED", ""), True)
-# 余弦相似度阈值:新样本跟声纹参照质心的相似度低于这个值,判定"不是本人"。
-# 凭经验给的起点,没有真实用户音频做过校准,真机用下来大概率需要重新调
-# (太低会漏过背景说话人,太高会把本人的正常语气变化也误判成"不是你")。
-VOICE_VOICEPRINT_MATCH_THRESHOLD: float = float(
-    os.environ.get("VOICE_VOICEPRINT_MATCH_THRESHOLD", "0.75")
-)
-# 声纹参照样本数少于这个值时,只用来建立参照、不做拦截判定(冷启动阶段,
-# 参照本身还不可信,不能拿来筛掉任何人)。
-VOICE_VOICEPRINT_MIN_SAMPLES: int = int(
-    os.environ.get("VOICE_VOICEPRINT_MIN_SAMPLES", "3")
-)
 
 # === 会话统一(跨入口连续)===
 # 开启时:CLI / TUI / Telegram / 飞书 都归到同一会话 SESSION_KEY,
