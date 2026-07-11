@@ -305,10 +305,13 @@ async def test_voice_send_emits_filler_when_model_starts_tools_silently(voice_db
         body = (await resp.read()).decode("utf-8")
 
     events = _parse_sse(body)
-    sentences = [d["text"] for e, d in events if e == "sentence"]
+    sentence_events = [d for e, d in events if e == "sentence"]
+    sentences = [d["text"] for d in sentence_events]
     assert len(sentences) == 2  # 垫场句 + 正文句
     assert sentences[0] in routes._FILLER_PHRASES
+    assert sentence_events[0].get("filler") is True  # 前端靠它渲染半透明小气泡
     assert sentences[1] == "查到了,答案是三。"
+    assert sentence_events[1].get("filler") is None  # 正文句不带 filler 标记
     # 垫场句不属于 Claude 回答:text 事件与落库里都不该有它
     text_stream = "".join(d["text"] for e, d in events if e == "text")
     assert sentences[0] not in text_stream
