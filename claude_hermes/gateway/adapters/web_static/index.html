@@ -1221,14 +1221,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let playQueue=[], playing=false;
   let pendingAnnouncements=[];  // task_done 到达时用户正忙(说话/播放/录音)→ 先攒着,空闲了再播
 
-  // ── P2 全双工:免提连续对话(见下方 initHandsFree 一段)──────────────────
+  // ── 通话视图共享状态(免提=Omni WebRTC;按住说话共用同一套播放队列/气泡)────
   let handsFreeActive=false, micMuted=false;
-  let wsConn=null, wsState="idle";
-  let pcmWorkletNode=null;
-  let lastFullyPlayedSeq=-1, pausedForInterrupt=false;
+  let wsState="idle";  // 通话状态机(idle/capturing/thinking/speaking):声波球/录音闸/调试上报都看它
+  let pausedForInterrupt=false;
   let ttsFailureNoticedThisTurn=false;  // 每轮最多提示一次,避免连续几句都合成失败时刷屏
   let currentTurnAiEl=null, currentTurnFull="";
-  let playbackStallTicks=0, lastPlayQueueLen=-1, playbackWatchdog=null;
 
   // ── P3 阶段二:Omni-Realtime WebRTC 通话(见 wireOmniDataChannel 一段)────────
   // S.omniEnabled(登录时预取,见 loadVoiceOmniConfig)开着就整条走 WebRTC 替代
@@ -1446,14 +1444,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     return bytes.buffer;
   }
 
-  function markPlayed(seq){
-    if(seq < 0) return;
-    lastFullyPlayedSeq = seq;
-    if(wsConn && wsConn.readyState === WebSocket.OPEN){
-      wsConn.send(JSON.stringify({type:"played_progress", played_sentences: seq + 1}));
-    }
-  }
-
   function noticeTtsFailure(){
     // audio_b64 为空 = 这句话确实要读但合成失败(见 voice/tts.py),不是"本来就没有音频"——
     // 静默跳过会让用户以为卡住了,提示一次让用户知道去看文字。
@@ -1469,7 +1459,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   async function pumpPlayback(){
     if(playing || playQueue.length === 0 || pausedForInterrupt) return;
     const item = playQueue.shift();
-    if(!item.audio_b64){ noticeTtsFailure(); markPlayed(item.seq); pumpPlayback(); return; }
+    if(!item.audio_b64){ noticeTtsFailure(); pumpPlayback(); return; }
     playing = true;
     setStatus("播放中…", "playing");
     try{
@@ -1481,7 +1471,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         source.connect(audioCtx.destination);
         if(outputAnalyser) source.connect(outputAnalyser);
         currentSource = source;
-        source.onended = ()=>{ markPlayed(item.seq); resolve(); };
+        source.onended = ()=>{ resolve(); };
         try{ source.start(0); }catch(e){ reject(e); }
       });
     }catch(e){ /* 解码/播放失败就跳过这句,不卡住队列 */ }
@@ -1559,7 +1549,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     if(queuedForOmni) pumpOmniRead();
   }
 
-  // ── P2 全双工:WS 免提连续对话 ────────────────────────────────────────
+  // ── 通话状态字/声波球/提示音(免提 Omni 与按住说话共用)─────────────────────
   const STATE_WORD = {idle:"空闲", capturing:"聆听中…", thinking:"思考中…", speaking:"播放中…"};
   const STATE_CLASS = {capturing:"listening", thinking:"thinking", speaking:"playing"};
 
@@ -1685,57 +1675,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   function playDisconnectTone(){ playTone(520, 110, "sine"); setTimeout(()=>playTone(330, 150, "sine"), 120); }
   function playReconnectTone(){ playTone(330, 110, "sine"); setTimeout(()=>playTone(660, 150, "sine"), 120); }
 
-  async function initHandsFree(){
-    if(pcmWorkletNode) return true;
-    if(!vadCapable()) return false;
-    try{
-      unlockAudio();
-      await ensureMicStream();
-      ensureAnalyser();
-      ensureOutputAnalyser();
-      if(!orbAnimHandle) drawOrbWaveform();
-      await audioCtx.audioWorklet.addModule("/voice/static/pcm-forwarder-worklet.js");
-      const source = audioCtx.createMediaStreamSource(stream);
-      pcmWorkletNode = new AudioWorkletNode(audioCtx, "pcm-forwarder");
-      pcmWorkletNode.port.onmessage = e=>{
-        if(handsFreeActive && !micMuted && wsConn && wsConn.readyState === WebSocket.OPEN){
-          wsConn.send(e.data.pcm.buffer);
-        }
-      };
-      source.connect(pcmWorkletNode);
-      const silentGain = audioCtx.createGain();
-      silentGain.gain.value = 0;
-      pcmWorkletNode.connect(silentGain);
-      silentGain.connect(audioCtx.destination);
-      return true;
-    }catch(e){
-      pcmWorkletNode = null;
-      return false;
-    }
-  }
-
-  // 播放看门狗:pausedForInterrupt/playing 卡死的成因不止一种(重连时序、
-  // audioCtx 被系统挂起后 resume() 迟迟不 resolve 等),与其一个个堵漏洞,
-  // 不如照抄服务端 _capturing_stall_guard 的思路——播放队列有内容但连续几轮
-  // 都没有缩短,直接强制复位重放,兜底所有未知成因(2026-07-09)。
-  function playbackStallCheck(){
-    if(!handsFreeActive){ playbackStallTicks = 0; lastPlayQueueLen = -1; return; }
-    if(playQueue.length > 0 && playQueue.length === lastPlayQueueLen){
-      playbackStallTicks++;
-      if(playbackStallTicks >= 3){  // 约 6s 无进展
-        console.warn("[voice] 播放卡死,强制复位重放", {playQueue: playQueue.length, playing, pausedForInterrupt});
-        pausedForInterrupt = false;
-        playing = false;
-        if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
-        playbackStallTicks = 0;
-        pumpPlayback();
-      }
-    } else {
-      playbackStallTicks = 0;
-    }
-    lastPlayQueueLen = playQueue.length;
-  }
-
   async function startHandsFree(){
     if(S.omniEnabled){ await startOmniHandsFree(); return; }
     // P2 WS 免提链路已下线(/voice/ws 路由已摘,见 docs/adr/0004):走到这里说明
@@ -1748,7 +1687,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   }
 
   function manualInterrupt(){
-    if(wsConn && wsConn.readyState === WebSocket.OPEN) wsConn.send(JSON.stringify({type:"mute"}));
     if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
     playQueue = [];
     playing = false;
@@ -1760,73 +1698,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       omniTurnDone = true;
       wsState = "idle"; setStatus(STATE_WORD.idle);
       if(handsFreeActive) orbWrap.className = "idle";
-    }
-  }
-
-  let wsReconnecting = false;  // 旧 WS 链路断线重连中(用来在重连成功时给一声提示)
-  function connectHandsFreeWs(){
-    const proto = location.protocol === "https:" ? "wss://" : "ws://";
-    wsConn = new WebSocket(proto + location.host + "/voice/ws?token=" + encodeURIComponent(S.token));
-    wsConn.binaryType = "arraybuffer";
-    wsConn.onopen = ()=>{
-      // 重连后旧的打断状态可能没等到 interrupted/resumed 确认就断线,永久卡死播放,这里强制复位
-      pausedForInterrupt = false;
-      wsConn.send(JSON.stringify({type:"hello", sample_rate: audioCtx.sampleRate}));
-      if(wsReconnecting){ wsReconnecting = false; playReconnectTone(); setStatus("聆听中…", "listening"); }
-    };
-    wsConn.onmessage = e=>{
-      if(typeof e.data === "string") handleWsMessage(JSON.parse(e.data));
-    };
-    wsConn.onclose = ()=>{
-      if(handsFreeActive){
-        // 断线要让用户听得见,不是全程静默自愈(理由同 Omni 路径 scheduleOmniReconnect)
-        if(!wsReconnecting){ playDisconnectTone(); setStatus("重连中…", "thinking"); }
-        wsReconnecting = true;
-        setTimeout(connectHandsFreeWs, 1500);
-      }
-    };
-  }
-
-  function handleWsMessage(msg){
-    if(msg.type === "state"){
-      const prevState = wsState;
-      wsState = msg.state;
-      if(msg.state === "capturing" && (prevState === "thinking" || prevState === "speaking")){
-        pausedForInterrupt = true;
-        if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
-        playing = false;
-        // 理由同 Omni 路径(见 wireOmniDataChannel):去掉确认音,打断即刻纯静音。
-      }
-      if(msg.state === "capturing" && prevState !== "capturing") playCapturingTone();
-      if(msg.state === "speaking" && prevState !== "speaking") playSpeakingTone();
-      if(msg.state === "thinking"){ lastFullyPlayedSeq = -1; ttsFailureNoticedThisTurn = false; }
-      setStatus(STATE_WORD[msg.state] || msg.state, STATE_CLASS[msg.state]);
-      if(handsFreeActive) orbWrap.className = msg.state;
-      if(msg.state === "idle") flushAnnouncements();  // 正忙时攒下的任务播报,回空闲补播
-    } else if(msg.type === "transcript"){
-      addMsg("me", msg.text || "");
-    } else if(msg.type === "text_delta"){
-      if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
-      currentTurnFull += msg.text || "";
-      renderAi(currentTurnAiEl, currentTurnFull);
-    } else if(msg.type === "sentence"){
-      if(msg.filler && msg.text) addMsg("ai filler", msg.text);  // 垫场话术:同步给个半透明气泡
-      playQueue.push({seq: msg.seq, audio_b64: msg.audio_b64});
-      pumpPlayback();
-    } else if(msg.type === "done"){
-      if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
-      if(msg.full_text){ currentTurnFull = msg.full_text; renderAi(currentTurnAiEl, currentTurnFull); }
-      currentTurnAiEl = null; currentTurnFull = "";
-    } else if(msg.type === "interrupted"){
-      playQueue = [];
-      pausedForInterrupt = false;
-      currentTurnAiEl = null; currentTurnFull = "";
-    } else if(msg.type === "resumed"){
-      pausedForInterrupt = false;
-      pumpPlayback();
-    } else if(msg.type === "error"){
-      addMsg("ai error", msg.message || "出错了");
-      currentTurnAiEl = null; currentTurnFull = "";
     }
   }
 
@@ -2451,8 +2322,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     handsFreeActive = false;  // 先立 flag:让 scheduleOmniReconnect 的回调知道用户已挂断
     if(omniReconnectTimer){ clearTimeout(omniReconnectTimer); omniReconnectTimer = null; }
     stopOmniHandsFree();
-    if(playbackWatchdog){ clearInterval(playbackWatchdog); playbackWatchdog = null; }
-    if(wsConn){ wsConn.onclose = null; try{ wsConn.close(); }catch(e){} wsConn = null; }
     if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
     playQueue = []; playing = false; pausedForInterrupt = false;
     if(recorder && recorder.state === "recording"){ try{ recorder.stop(); }catch(e){} }
@@ -2460,7 +2329,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
     if(orbAnimHandle){ cancelAnimationFrame(orbAnimHandle); orbAnimHandle = null; }
     orbCanvasCtx = null; analyser = null; analyserSource = null; outputAnalyser = null; orbLevels = null;
-    if(pcmWorkletNode){ try{ pcmWorkletNode.disconnect(); }catch(e){} pcmWorkletNode = null; }
     if(audioCtx){ try{ audioCtx.close(); }catch(e){} audioCtx = null; }
     handsFreeActive = false; micMuted = false; wsState = "idle";
     busy = false; talkBtn.disabled = false; talkBtn.classList.remove("recording");
