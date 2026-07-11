@@ -17,7 +17,7 @@ from aiohttp import web
 
 from .. import config
 from ..core.agent import Done, TextDelta, ToolStarted
-from . import executor, notify, omni_realtime, prompts, session, stt, task_tools, tasks, tts, ws
+from . import executor, notify, omni_realtime, prompts, session, stt, task_tools, tasks, tts
 
 _STATIC = Path(__file__).resolve().parent / "static"
 
@@ -426,12 +426,11 @@ def register_routes(app: web.Application) -> None:
             web.post("/voice/omni/webrtc", _handle_omni_webrtc),
         ]
     )
-    if config.VOICE_WS_ENABLED:
-        app.add_routes([web.get("/voice/ws", ws.handle)])
-        # VAD 库文件(vad-web + onnxruntime-web + 手写的 pcm-forwarder-worklet.js)
-        # 是公开静态资源(不含用户数据),不用 token 校验;用 aiohttp 自带的目录
-        # 静态服务而不是逐个手写路由——量大(vad/ 下好几个大文件)且天然支持
-        # Range 请求,10MB 的 wasm 在手机弱网下能续传。aiohttp 自带 ETag/
-        # Last-Modified 协商缓存,这批文件版本固定不太会变,够用。
-        app.router.add_static("/voice/static/", _STATIC, show_index=False)
+    # /voice/ws(P2 全双工)已下线:Omni WebRTC 是免提唯一路径,前端 !omniEnabled
+    # 时回落按住说话、不再连 WS(见 index.html startHandsFree)。实现本体 ws.py
+    # 的删除见 docs/adr/0004。
+    # 语音静态资源(omni_test.html 联调页、AudioWorklet 等)是公开静态资源
+    # (不含用户数据),不用 token 校验;aiohttp 自带 ETag/Last-Modified 协商
+    # 缓存与 Range 请求。
+    app.router.add_static("/voice/static/", _STATIC, show_index=False)
     asyncio.ensure_future(executor.heal_after_restart())  # F11:重启自愈,一次性

@@ -1738,22 +1738,13 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   async function startHandsFree(){
     if(S.omniEnabled){ await startOmniHandsFree(); return; }
-    setStatus("连接中…", "");
-    const ok = await initHandsFree();
-    if(!ok){
-      handsFreeUi.hidden = true;
-      talkBtn.hidden = false;
-      addMsg("ai error", "免提模式没能启动,已切换到按住说话模式");
-      return;
-    }
-    connectHandsFreeWs();
-    handsFreeActive = true;
-    orbWrap.className = "idle";
-    clearHint();
-    setStatus("聆听中…", "listening");
-    playbackStallTicks = 0; lastPlayQueueLen = -1;
-    if(playbackWatchdog) clearInterval(playbackWatchdog);
-    playbackWatchdog = setInterval(playbackStallCheck, 2000);
+    // P2 WS 免提链路已下线(/voice/ws 路由已摘,见 docs/adr/0004):走到这里说明
+    // Omni 配置没取到(登录预取失败)或 VOICE_OMNI_ENABLED=0——不能再连 WS
+    // (只会 404 →1.5s 重连死循环+断线音),直接回落按住说话,跟"免提启动失败"
+    // 同一姿态。
+    handsFreeUi.hidden = true;
+    talkBtn.hidden = false;
+    addMsg("ai error", "免提通话需要 Omni 模式(检查 VOICE_OMNI_ENABLED / 网络),已切换到按住说话");
   }
 
   function manualInterrupt(){
