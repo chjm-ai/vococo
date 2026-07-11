@@ -16,7 +16,7 @@ from pathlib import Path
 from aiohttp import web
 
 from .. import config
-from ..core.agent import Done, TextDelta
+from ..core.agent import Done, TextDelta, ToolStarted
 from . import executor, notify, omni_realtime, prompts, session, stt, task_tools, tasks, tts, ws
 
 _STATIC = Path(__file__).resolve().parent / "static"
@@ -29,6 +29,20 @@ _STATIC = Path(__file__).resolve().parent / "static"
 _lock = asyncio.Lock()
 _stop_event: asyncio.Event | None = None
 _turn_task: asyncio.Task | None = None
+
+
+# 「后端会自动垫一句等待话术」的真正实现(2026-07-10 前这句承诺只写在 prompts.py
+# 的指令块里,代码从没做过——模型被告知"不用自己说等待话术",后端又不垫,结果就是
+# 闷头跑工具、用户对着几十秒静音以为掉线)。模型一个字没吐就直接开始调工具时,
+# 立即垫一句短话术,让用户知道"听到了,在办"。轮换几句,不至于每次一模一样。
+_FILLER_PHRASES = ("我看一下,稍等。", "稍等,我去查查。", "好,这就去办,等我几秒。")
+_filler_idx = 0
+
+
+def _next_filler() -> str:
+    global _filler_idx
+    _filler_idx = (_filler_idx + 1) % len(_FILLER_PHRASES)
+    return _FILLER_PHRASES[_filler_idx]
 
 
 def _ok_token(request: web.Request) -> bool:
@@ -187,8 +201,18 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                 user_text = text
                 await _sse(resp, "transcript", {"text": user_text})
             prompt_text = prompts.build_prompt(user_text)
+            filler_sent = False
             async for ev in session.run_turn(prompt_text, extra_mcp_servers=task_tools.build_server()):
-                if isinstance(ev, TextDelta):
+                if (
+                    isinstance(ev, ToolStarted) and ev.parent_id is None
+                    and not filler_sent and not full_text and not stop_event.is_set()
+                ):
+                    # 模型没说话就直接动手调工具 → 垫场话术顶上,见 _FILLER_PHRASES。
+                    # 只发 sentence(语音念出来),不发 text——这句不是 Claude 的回答,
+                    # 不该出现在聊天气泡里,也不落库。
+                    filler_sent = True
+                    seq = _emit_sentence(sentence_queue, pending_synth_tasks, seq, _next_filler(), synth_tts)
+                elif isinstance(ev, TextDelta):
                     if not t_first_text:
                         t_first_text = time.monotonic()
                     full_text += ev.text
