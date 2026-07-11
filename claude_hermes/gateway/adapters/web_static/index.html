@@ -1243,6 +1243,14 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       }).catch(()=>{});
     }catch(e){}
   }
+  // 全局兜底:通话链路里任何未捕获异常/未处理 rejection 都上报——2026-07-12 拆分
+  // call-omni.js 后真机一次"卡在连接中"查因困难(静默死亡无痕迹),从此让它们留痕。
+  window.addEventListener("error", e=>{
+    vdbg("js.error", String(e.message).slice(0,180) + " @" + String(e.filename).split("/").pop() + ":" + e.lineno);
+  });
+  window.addEventListener("unhandledrejection", e=>{
+    vdbg("js.unhandledrejection", String(e.reason && (e.reason.stack || e.reason)).slice(0,220));
+  });
 
   // ── 播放:Web Audio API,不用 <audio> 标签 ──────────────────────────────
   let audioCtx=null, currentSource=null;
@@ -1658,6 +1666,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   function playReconnectTone(){ playTone(330, 110, "sine"); setTimeout(()=>playTone(660, 150, "sine"), 120); }
 
   async function startHandsFree(){
+    // fn 信标:call-omni.js 若没加载成功(缓存/网络/解析失败),这里会是 "undefined"
+    vdbg("handsfree.start", {omni: S.omniEnabled, fn: typeof startOmniHandsFree});
     if(S.omniEnabled){ await startOmniHandsFree(); return; }
     // P2 WS 免提链路已下线(/voice/ws 路由已摘,见 docs/adr/0004):走到这里说明
     // Omni 配置没取到(登录预取失败)或 VOICE_OMNI_ENABLED=0——不能再连 WS
