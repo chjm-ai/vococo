@@ -1249,7 +1249,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     vdbg("js.error", String(e.message).slice(0,180) + " @" + String(e.filename).split("/").pop() + ":" + e.lineno);
   });
   window.addEventListener("unhandledrejection", e=>{
-    vdbg("js.unhandledrejection", String(e.reason && (e.reason.stack || e.reason)).slice(0,220));
+    // Safari 的 Error.stack 不含 message,两个都要带上(2026-07-12 只记 stack 差点断案失败)
+    const msg = String(e.reason).slice(0,140);
+    const stk = String((e.reason && e.reason.stack) || "").slice(0,180);
+    vdbg("js.unhandledrejection", msg + " || " + stk);
   });
 
   // ── 播放:Web Audio API,不用 <audio> 标签 ──────────────────────────────
@@ -3911,6 +3914,8 @@ try{ if(localStorage.getItem("hermes_sb")==="1") document.body.classList.add("sb
 syncTheme();
 if(S.token){ tryEnter(); } else { $("#pw").focus(); }
 </script>
-  <script src="/voice/static/call-omni.js"></script>
+  <!-- ?v= 是缓存指纹:iOS PWA 对静态 js 缓存激进,call-omni.js 每次改动必须同步 +1,
+       否则手机可能跑旧脚本配新页面(2026-07-12 真机踩过:旧 js 报错卡"连接中") -->
+  <script src="/voice/static/call-omni.js?v=2"></script>
 </body>
 </html>
