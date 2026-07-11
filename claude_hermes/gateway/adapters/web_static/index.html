@@ -1242,6 +1242,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniReadQueue=[], omniReadActive=false, omniReadPending=0, omniAutoActive=false, omniAutoSince=0, omniTurnDone=true;
   let omniReconnectTimer=null;
   let omniReadSince=0, omniReadWatchdog=null;  // 朗读心跳时间戳 + 卡死看门狗(见 omniReadStallCheck)
+  // 回声过滤(2026-07-11):iOS AEC 在 AI 每句开口头 1~2 秒未收敛,残留回声会被
+  // 阿里云 VAD 当成用户说话,转写出来的是"刚念那句的开头几个字"(见 matchOmniEcho)。
+  let omniRecentReads=[];        // 最近念过的句子 [{text, ts}],转写结果跟它们比对
+  let omniReadCurrentText="";    // 正在念/刚点播还没念完的那句原文(恢复现场用)
+  let omniEchoRestore=null;      // barge-in 现场快照,事后判定是回声就恢复被砍的朗读
   const omniAudioEl = $("#omniRemoteAudio");
 
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
@@ -2009,7 +2014,17 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           // 清空朗读队列,让过期的 /voice/send 流式结果(见 sendOmniTurn 的 gen
           // 判断)不再生效。
           if(wsState === "thinking" || wsState === "speaking"){
+            // 先留现场再砍:几秒后转写出来若判定是回声(AI 自己的声音),要能把
+            // 这里砍掉的朗读恢复回去——否则回声不止造一轮假对话,还把真回答的
+            // 剩余句子全吞了(2026-07-11 实锤 q=6→0,用户没听到答案中段)。
+            omniEchoRestore = {
+              prevGen: omniTurnGen,
+              sentences: ((omniReadActive || omniReadPending > 0) && omniReadCurrentText
+                ? [omniReadCurrentText] : []).concat(omniReadQueue),
+              ts: Date.now(),
+            };
             omniTurnGen++;
+            omniEchoRestore.newGen = omniTurnGen;
             cancelOmniReading("barge-in");
             // 任务完成播报(flushAnnouncements)仍走 Web Audio 播放,打断时一并停掉
             if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
@@ -2031,6 +2046,50 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           break;
         case "conversation.item.input_audio_transcription.completed": {
           const transcript = (data.transcript || "").trim();
+          const restore = omniEchoRestore; omniEchoRestore = null;
+          const echoSrc = transcript ? matchOmniEcho(transcript) : null;
+          if(echoSrc){
+            // 是 AI 自己的回声:丢弃,不发 Claude、不算一轮对话,字幕气泡撤掉
+            vdbg("echo.discard", {heard: transcript.slice(0, 24), read: echoSrc.slice(0, 24)});
+            if(omniUserLiveEl){
+              const row = omniUserLiveEl.closest(".row");
+              if(row) row.remove();
+              omniUserLiveEl = null;
+            }
+            if(restore && omniTurnGen === restore.newGen && Date.now() - restore.ts < 15000){
+              // 恢复 barge-in 现场:回退 gen 让还在飞的 /voice/send 流(若没被砍到)
+              // 继续生效,被吞的句子塞回队列。不立刻 pump——阿里云对这条"用户语音"
+              // 还会自作主张生成一个 response(create_response 关不掉),马上 pump 会
+              // 跟它的 response.created 撞车导致 rp 计数错位;等它被 cancel 后的
+              // response.done 自然接力 pump,再留一个定时器兜底。
+              omniTurnGen = restore.prevGen;
+              if(restore.sentences.length) omniReadQueue = restore.sentences.concat(omniReadQueue);
+              vdbg("echo.restore", {q: omniReadQueue.length});
+              wsState = "thinking";
+              setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
+              if(handsFreeActive) orbWrap.className = "thinking";
+              const g = omniTurnGen;
+              setTimeout(() => { if(omniTurnGen === g){ pumpOmniRead(); maybeOmniIdle(); } }, 1200);
+              // 流已经被 gen 判定砍死的场景(reader.cancel 已执行),队列念完后
+              // omniTurnDone 永远等不来 true,状态会卡在"思考中"——超时强制收尾。
+              if(!omniTurnDone){
+                setTimeout(() => {
+                  if(omniTurnGen === g && wsState === "thinking" && !omniReadActive
+                     && omniReadPending === 0 && omniReadQueue.length === 0){
+                    omniTurnDone = true;
+                    vdbg("echo.restore.idle-fallback");
+                    maybeOmniIdle();
+                  }
+                }, 10000);
+              }
+            } else {
+              // 没有可恢复的现场(回声出现在整轮念完之后):回到待命即可
+              wsState = "thinking";  // 先离开 capturing,maybeOmniIdle 才肯接手收尾
+              maybeOmniIdle();
+              if(wsState !== "idle"){ wsState = "idle"; setStatus(STATE_WORD.idle); if(handsFreeActive) orbWrap.className = "idle"; }
+            }
+            break;
+          }
           if(omniUserLiveEl) renderAi(omniUserLiveEl, transcript || "(没听清)");
           else if(transcript) addMsg("me", transcript);
           omniUserLiveEl = null;
@@ -2059,6 +2118,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         case "response.done":
           if(omniReadActive){
             omniReadActive = false;
+            omniReadCurrentText = "";
             pumpOmniRead();
           } else {
             omniAutoActive = false;
@@ -2102,6 +2162,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       omniDc.send(JSON.stringify({type: "response.create"}));
       omniReadPending++;
       omniReadSince = Date.now();
+      omniReadCurrentText = text;
+      omniRecentReads.push({text, ts: Date.now()});
+      if(omniRecentReads.length > 8) omniRecentReads.shift();
       vdbg("read.create", text.slice(0, 40));
     }catch(e){ vdbg("read.create.fail", String(e)); }
   }
@@ -2147,7 +2210,49 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       try{ omniDc.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
     }
     omniReadActive = false; omniReadPending = 0;
+    omniReadCurrentText = "";
     vdbg("read.cancel", reason);
+  }
+
+  // ── 回声过滤(2026-07-11 实锤,详见 memory/hermes-voice-omni-self-echo-rootcause)──
+  // iOS 的回声消除是自适应滤波器,AI 每次开口后要 1~2 秒才收敛,这段"开口瞬间"
+  // 的残留回声会漏进上行;阿里云只在 response 生成期间压 VAD,而生成比播放快,
+  // 播放尾巴不设防——所以偶发"AI 开头几个字被当成用户说话"(还可能带误转写,
+  // 如"那个"→"一个")。文字层兜底:转写结果跟最近念过的句子做【容错前缀】匹配。
+  // 只认前缀不认中段/句尾:实锤两例都是句子开头(AEC 收敛特性决定),且用户复述
+  // AI 句尾来确认("帮我装一个试试")是真实场景,不能误杀——中段命中只记日志观察。
+  function normEchoText(s){
+    return (s || "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  }
+  function editDist(a, b){
+    const n = a.length, m = b.length;
+    let prev = Array.from({length: m + 1}, (_, j) => j);
+    for(let i = 1; i <= n; i++){
+      const cur = [i];
+      for(let j = 1; j <= m; j++){
+        cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+      }
+      prev = cur;
+    }
+    return prev[m];
+  }
+  function matchOmniEcho(transcript){
+    const t = normEchoText(transcript);
+    if(t.length < 3) return null;  // 太短没法可靠归因("嗯""好的"),放行
+    const now = Date.now();
+    omniRecentReads = omniRecentReads.filter(r => now - r.ts < 30000);
+    const tol = t.length < 5 ? 0 : (t.length < 10 ? 1 : 2);
+    for(const r of omniRecentReads){
+      const cand = normEchoText(r.text);
+      if(cand.length < t.length) continue;
+      // 容错前缀:转写长度上下浮动 2 字取最小编辑距离(误转写/多听漏听一个字)
+      for(let L = Math.max(3, t.length - 1); L <= Math.min(cand.length, t.length + 2); L++){
+        if(editDist(t, cand.slice(0, L)) <= tol) return r.text;
+      }
+      // 命中中段但不是前缀:按当前证据不算回声,只上报观察,攒数据再决定要不要收紧
+      if(cand.includes(t)) vdbg("echo.suspect", {heard: t.slice(0, 24), read: r.text.slice(0, 24)});
+    }
+    return null;
   }
 
   // 识别到一整句话后,转发给现有 /voice/send——跟文字聊天同一套 Claude 全套
@@ -2246,6 +2351,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     omniUserLiveEl = null;
     omniReadQueue = []; omniReadActive = false; omniReadPending = 0; omniAutoActive = false; omniTurnDone = true;
     omniReadSince = 0;
+    omniRecentReads = []; omniReadCurrentText = ""; omniEchoRestore = null;
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
   }
