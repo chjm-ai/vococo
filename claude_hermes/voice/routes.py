@@ -11,15 +11,12 @@ import base64
 import hmac
 import json
 import time
-from pathlib import Path
-
 from aiohttp import web
 
 from .. import config
 from ..core.agent import Done, TextDelta, ToolInput, ToolStarted
 from . import executor, notify, omni_realtime, prompts, session, stt, task_tools, tasks, tts
 
-_STATIC = Path(__file__).resolve().parent / "static"
 _VOICE_CONFIG_FILE = config.DATA_DIR / "voice_config.json"
 
 # 同一时刻只允许一轮语音对话在跑;stop 通过它通知正在跑的那一轮别再合成音频了。
@@ -490,9 +487,6 @@ def register_routes(app: web.Application) -> None:
     )
     # /voice/ws(P2 全双工)已下线:Omni WebRTC 是免提唯一路径,前端 !omniEnabled
     # 时回落按住说话、不再连 WS(见 index.html startHandsFree)。实现本体 ws.py
-    # 的删除见 docs/adr/0004。
-    # 语音静态资源(omni_test.html 联调页、AudioWorklet 等)是公开静态资源
-    # (不含用户数据),不用 token 校验;aiohttp 自带 ETag/Last-Modified 协商
-    # 缓存与 Range 请求。
-    app.router.add_static("/voice/static/", _STATIC, show_index=False)
+    # 的删除见 docs/adr/0004。/voice/static/(omni_test.html 联调页)也已随
+    # 顶栏扳手入口一起退休(2026-07-12)。
     asyncio.ensure_future(executor.heal_after_restart())  # F11:重启自愈,一次性
