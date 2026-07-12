@@ -896,6 +896,17 @@
   #status.listening{color:var(--err)}
   #status.thinking,#status.playing{color:var(--accent)}
 
+  /* 音色切换行:status 下方、callActions 上方,紧凑小字 */
+  #voiceRow{display:flex;align-items:center;gap:8px;pointer-events:auto;width:100%;max-width:260px}
+  #voiceRow label{font-size:12px;color:var(--dim2);white-space:nowrap;flex-shrink:0}
+  #voiceRow select{flex:1;background:var(--panel2);color:var(--text);border:1px solid var(--line);
+    border-radius:12px;padding:5px 10px;font-size:13px;outline:none;cursor:pointer;
+    -webkit-appearance:none;appearance:none;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6' fill='none' stroke='%23999' stroke-width='1.2'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 10px center;padding-right:28px}
+  #voiceRow select:hover{border-color:var(--dim)}
+  #voiceRow select:focus{border-color:var(--accent)}
+
   /* 静音/挂断同一行,两个圆形图标按钮并排 */
   #callActions{display:flex;align-items:center;gap:16px}
   #endHandsFreeBtn,#muteToggleBtn{width:46px;height:46px;border-radius:50%;border:none;
@@ -1117,6 +1128,10 @@ try{
           <canvas id="orbCanvas" width="640" height="200"></canvas>
         </div>
         <div id="status">连接中…</div>
+        <div id="voiceRow">
+          <label for="voiceSelect">音色</label>
+          <select id="voiceSelect"></select>
+        </div>
         <div id="callActions">
           <button id="muteToggleBtn" title="静音麦克风" aria-label="静音麦克风"></button>
           <button id="endHandsFreeBtn" title="结束通话" aria-label="结束通话"></button>
@@ -2577,6 +2592,7 @@ async function tryEnter(){
     await openConv(S.convs[0] ? S.convs[0].conv : "main");
     loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
     await secondary;
+    initVoiceSelect();
     renderConvs();  // 项目分组数据(loadProjects)到位后再补画一次侧栏分组
   }catch(e){ $("#loginErr").textContent="连接失败"; }
 }
@@ -2700,9 +2716,96 @@ async function loadVoiceOmniConfig(){
     if(typeof d.vad_threshold==="number") S.vadThreshold=d.vad_threshold;
     if(typeof d.vad_silence_ms==="number") S.vadSilenceMs=d.vad_silence_ms;
     if(d.omni_voice) S.omniVoice=d.omni_voice;
+    populateVoiceSelect();
   }catch(e){}
 }
-function cmdMatches(prefix){
+
+// Omni Realtime 音色列表(共59个),API value 是英文名,前端展示"英文(中文描述)"
+const VOICE_LIST = [
+  {v:"Tina",l:"Tina (甜甜 Tina - 默认)"},
+  {v:"Cindy",l:"Cindy (林欣宜 Cindy - 台湾嗲嗲)"},
+  {v:"Liora Mira",l:"Liora Mira (清欢)"},
+  {v:"Sunnybobi",l:"Sunnybobi (知芝)"},
+  {v:"Raymond",l:"Raymond (林川野)"},
+  {v:"Ethan",l:"Ethan (晨煦)"},
+  {v:"Theo Calm",l:"Theo Calm (予安)"},
+  {v:"Serena",l:"Serena (苏瑶)"},
+  {v:"Harvey",l:"Harvey (厚)"},
+  {v:"Maia",l:"Maia (四月)"},
+  {v:"Evan",l:"Evan (江晨)"},
+  {v:"Qiao",l:"Qiao (小乔妹)"},
+  {v:"Momo",l:"Momo (茉兔)"},
+  {v:"Wil",l:"Wil (伟伦)"},
+  {v:"Angel",l:"Angel (台普安琪)"},
+  {v:"Li Cassian",l:"Li Cassian (东厂李公公)"},
+  {v:"Mia",l:"Mia (舒然)"},
+  {v:"Joyner",l:"Joyner (阿逗)"},
+  {v:"Gold",l:"Gold (金爷)"},
+  {v:"Katerina",l:"Katerina (卡捷琳娜)"},
+  {v:"Ryan",l:"Ryan (甜茶)"},
+  {v:"Jennifer",l:"Jennifer (詹妮弗)"},
+  {v:"Aiden",l:"Aiden (艾登)"},
+  {v:"Mione",l:"Mione (敏儿)"},
+  {v:"Sunny",l:"Sunny (四川晴儿)"},
+  {v:"Dylan",l:"Dylan (北京晓东)"},
+  {v:"Eric",l:"Eric (四川程川)"},
+  {v:"Peter",l:"Peter (天津李彼得)"},
+  {v:"Joseph Chen",l:"Joseph Chen (阿樸伯)"},
+  {v:"Marcus",l:"Marcus (陕西秦川)"},
+  {v:"Li",l:"Li (南京老李)"},
+  {v:"Kiki",l:"Kiki (粤语阿清)"},
+  {v:"Rocky",l:"Rocky (粤语阿强)"},
+  {v:"Sohee",l:"Sohee (素熙)"},
+  {v:"Lenn",l:"Lenn (莱恩)"},
+  {v:"Ono Anna",l:"Ono Anna (小野杏)"},
+  {v:"Sonrisa",l:"Sonrisa (索尼莎)"},
+  {v:"Bodega",l:"Bodega (博德加)"},
+  {v:"Emilien",l:"Emilien (埃米尔安)"},
+  {v:"Andre",l:"Andre (安德雷)"},
+  {v:"Radio Gol",l:"Radio Gol (拉迪奥戈尔)"},
+  {v:"Alek",l:"Alek (阿列克)"},
+  {v:"Rizky",l:"Rizky (阿力)"},
+  {v:"Roya",l:"Roya (萝雅)"},
+  {v:"Arda",l:"Arda (阿尔达)"},
+  {v:"Hana",l:"Hana (阿幸)"},
+  {v:"Dolce",l:"Dolce (多尔切)"},
+  {v:"Jakub",l:"Jakub (雅克)"},
+  {v:"Griet",l:"Griet (海娜)"},
+  {v:"Eliška",l:"Eliška (艾莉卡)"},
+  {v:"Marina",l:"Marina (玛丽娜)"},
+  {v:"Siiri",l:"Siiri (西芮)"},
+  {v:"Ingrid",l:"Ingrid (林恩)"},
+  {v:"Sigga",l:"Sigga (海娜)"},
+  {v:"Bea",l:"Bea (雅娜)"},
+  {v:"Chloe",l:"Chloe (思怡)"},
+];
+function populateVoiceSelect(){
+  const sel = document.getElementById("voiceSelect");
+  if(!sel || sel.options.length) return;  // 已填充过
+  VOICE_LIST.forEach(item => {
+    const opt = document.createElement("option");
+    opt.value = item.v;
+    opt.textContent = item.l;
+    sel.appendChild(opt);
+  });
+  sel.value = S.omniVoice;
+}
+function initVoiceSelect(){
+  const sel = document.getElementById("voiceSelect");
+  if(!sel) return;
+  populateVoiceSelect();
+  sel.onchange = () => {
+    const v = sel.value;
+    if(v && v !== S.omniVoice){
+      S.omniVoice = v;  // 立即更新,不用等服务端确认
+      api("/voice/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({omni_voice: v})
+      }).catch(()=>{});
+    }
+  };
+}
   const p=prefix.toLowerCase();
   const cmds=S.commands.filter(c=>c.name.toLowerCase().startsWith(p)).map(c=>Object.assign({kind:"cmd"},c));
   const skills=S.skills.filter(c=>c.name.toLowerCase().startsWith(p)).map(c=>Object.assign({kind:"skill"},c));
