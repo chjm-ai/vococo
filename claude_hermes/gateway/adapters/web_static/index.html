@@ -1281,6 +1281,14 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniEchoRestore=null;      // barge-in 现场快照,事后判定是回声就恢复被砍的朗读
   let omniSpeechStartTs=0;       // 用户最近一次开口时刻(speech_started),回声归因用
   let omniEchoRestoreTimer=null; // 幽灵打断兜底:快照存下后转写迟迟不来就自动恢复(见 armOmniGhostTimer)
+  // 首回复静音(2026-07-12,Wesley 提议):每次 WebRTC 新建连接后,iOS AEC 从零
+  // 收敛,AI 第一段音频的回声漏得最凶——干脆在本连接第一次朗读期间把麦克风上行
+  // 直接静音(track.enabled=false 只发静音帧,不动音频图,不踩 iOS 音频会话的雷),
+  // 物理杜绝回声。代价:这几秒不能打断,用户确认可接受。第一段音频播完 AEC 也
+  // 收敛得差不多了,后续轮次交给 matchOmniEcho 文字层兜底。
+  let omniFirstReplyMuteUsed=false;  // 本连接的首回复静音是否已消耗
+  let omniMicMuted=false;
+  let omniMicMuteTimer=null;
   const omniAudioEl = $("#omniRemoteAudio");
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
   // 修复都因为拿不到真机证据只能盲改后 revert。关键事件(session/response 生命周期、
@@ -1888,6 +1896,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       return;
     }
     vdbg("omni.mic.ok");
+    // 新连接:重置首回复静音状态(ensureMicStream 可能复用旧流,轨道状态重算;
+    // 用户手动点的静音按钮 micMuted 不动,由 applyMicEnabled 统一仲裁)
+    omniFirstReplyMuteUsed = false; omniMicMuted = false;
+    if(omniMicMuteTimer){ clearTimeout(omniMicMuteTimer); omniMicMuteTimer = null; }
+    applyMicEnabled();
     ensureAnalyser();        // 麦克风侧声纹(capturing 状态用)
     if(!orbAnimHandle) drawOrbWaveform();
 
@@ -2191,7 +2204,34 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       omniRecentReads.push({text, ts: Date.now()});
       if(omniRecentReads.length > 8) omniRecentReads.shift();
       vdbg("read.create", text.slice(0, 40));
+      // 本连接第一次出声:静音麦克风上行,给 AEC 一个无干扰的收敛窗口。
+      // 15s 硬上限兜底——第一答太长时用户不能永远失去打断能力,超时后
+      // 剩余回声交文字层。正常恢复走 maybeOmniIdle 的播放尾巴估算。
+      if(!omniFirstReplyMuteUsed){
+        omniFirstReplyMuteUsed = true;
+        setOmniMicMuted(true, "first-reply");
+        if(omniMicMuteTimer) clearTimeout(omniMicMuteTimer);
+        omniMicMuteTimer = setTimeout(() => {
+          omniMicMuteTimer = null;
+          setOmniMicMuted(false, "first-reply-cap");
+        }, 15000);
+      }
     }catch(e){ vdbg("read.create.fail", String(e)); }
+  }
+
+  // 麦克风轨道开关的唯一仲裁点:手动静音按钮(micMuted)和首回复静音(omniMicMuted)
+  // 操作的是同一个 getUserMedia 流(ensureMicStream 复用),谁都不能直接写 enabled,
+  // 否则互相覆盖(比如用户手动静音了,首回复恢复逻辑把它强行打开)。
+  function applyMicEnabled(){
+    const on = !micMuted && !omniMicMuted;
+    const s = omniMicStream || stream;
+    if(s) s.getAudioTracks().forEach(t => { t.enabled = on; });
+  }
+  function setOmniMicMuted(muted, why){
+    if(omniMicMuted === muted) return;
+    omniMicMuted = muted;
+    applyMicEnabled();
+    vdbg(muted ? "mic.mute" : "mic.unmute", why);
   }
 
   function maybeOmniIdle(){
@@ -2202,6 +2242,22 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     wsState = "idle";
     setStatus(STATE_WORD.idle);
     if(handsFreeActive) orbWrap.className = "idle";
+    // 首回复静音期间整轮念完:等最后一句的估算播放尾巴过去再开麦
+    // (文字生成完音频还在播,立刻开麦等于把尾巴回声放进来,白静音一场)。
+    if(omniMicMuted){
+      const now = Date.now();
+      let tail = 1500;
+      for(const r of omniRecentReads){
+        const left = r.ts + normEchoText(r.text).length * 250 + 2000 - now;
+        if(left > tail) tail = left;
+      }
+      tail = Math.min(tail, 8000);
+      if(omniMicMuteTimer) clearTimeout(omniMicMuteTimer);
+      omniMicMuteTimer = setTimeout(() => {
+        omniMicMuteTimer = null;
+        setOmniMicMuted(false, "first-reply-tail");
+      }, tail);
+    }
     // 任务播报到达时若正忙会被攒进 pendingAnnouncements,以前只有下一条 task_done
     // 才会再触发 flush——正忙时来的播报就永远卡住不念(2026-07-10 真机:两个任务
     // 完成用户全程没听到)。回到空闲就是补播的正确时机。
@@ -2465,6 +2521,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     // 不摘的话主动关闭也会被当成"断线"排一次重连。
     if(omniDc){ try{ omniDc.onclose = null; omniDc.close(); }catch(e){} omniDc = null; }
     if(omniPc){ try{ omniPc.onconnectionstatechange = null; omniPc.ontrack = null; omniPc.close(); }catch(e){} omniPc = null; }
+    if(omniMicMuteTimer){ clearTimeout(omniMicMuteTimer); omniMicMuteTimer = null; }
+    omniMicMuted = false; omniFirstReplyMuteUsed = false;
+    applyMicEnabled();
     omniMicStream = null;  // 麦克风轨道本身随 stream 变量一起在 teardownCallResources 里停
     omniUserLiveEl = null;
     omniReadQueue = []; omniReadActive = false; omniReadPending = 0; omniAutoActive = false; omniTurnDone = true;
@@ -2501,7 +2560,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 是两回事)——关掉音轨 + 停发 PCM 双保险,图标切换成"已静音"提醒状态。
   muteToggleBtn.addEventListener("click", ()=>{
     micMuted = !micMuted;
-    if(stream) stream.getAudioTracks().forEach(t=>{ t.enabled = !micMuted; });
+    applyMicEnabled();
     muteToggleBtn.classList.toggle("muted", micMuted);
     muteToggleBtn.title = micMuted ? "取消静音" : "静音麦克风";
     setIcon(muteToggleBtn, micMuted ? "mute" : "mic");
