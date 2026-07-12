@@ -2257,16 +2257,20 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     wsState = "idle";
     setStatus(STATE_WORD.idle);
     if(handsFreeActive) orbWrap.className = "idle";
-    // 首回复静音期间整轮念完:等最后一句的估算播放尾巴过去再开麦
-    // (文字生成完音频还在播,立刻开麦等于把尾巴回声放进来,白静音一场)。
+    // 首回复静音期间整轮念完:等估算播放尾巴过去再开麦。用【顺序播放模型】——
+    // 音频从首句起连续播,逐句累加(230ms/字),句间有生成间隙才从该句自己的
+    // read.create 重新起算;缓冲只留 0.4s。之前每句独立加 2s 缓冲,两句连播时
+    // 重复叠加多静音了 ~2.6s,把用户听完就答的开头几个字吞掉转写成碎片
+    // (2026-07-12 真机实锤「记得。」)。宁可偏早:尾巴回声漏了有文字层兜底,
+    // 吞用户的话没有任何兜底。
     if(omniMicMuted){
       const now = Date.now();
-      let tail = 1500;
+      let end = 0;
       for(const r of omniRecentReads){
-        const left = r.ts + normEchoText(r.text).length * 250 + 2000 - now;
-        if(left > tail) tail = left;
+        const start = Math.max(end, r.ts + 700);
+        end = start + normEchoText(r.text).length * 220;
       }
-      tail = Math.min(tail, 8000);
+      const tail = Math.max(300, Math.min(end + 200 - now, 8000));
       if(omniMicMuteTimer) clearTimeout(omniMicMuteTimer);
       omniMicMuteTimer = setTimeout(() => {
         omniMicMuteTimer = null;
