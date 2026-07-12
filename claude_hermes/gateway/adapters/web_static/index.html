@@ -1279,6 +1279,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniRecentReads=[];        // 最近念过的句子 [{text, ts}],转写结果跟它们比对
   let omniReadCurrentText="";    // 正在念/刚点播还没念完的那句原文(恢复现场用)
   let omniEchoRestore=null;      // barge-in 现场快照,事后判定是回声就恢复被砍的朗读
+  let omniEchoRestoreTimer=null; // 幽灵打断兜底:快照存下后转写迟迟不来就自动恢复(见 armOmniGhostTimer)
   const omniAudioEl = $("#omniRemoteAudio");
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
   // 修复都因为拿不到真机证据只能盲改后 revert。关键事件(session/response 生命周期、
@@ -2063,6 +2064,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             omniTurnGen++;
             omniEchoRestore.newGen = omniTurnGen;
             cancelOmniReading("barge-in");
+            armOmniGhostTimer();
             // 任务完成播报(flushAnnouncements)仍走 Web Audio 播放,打断时一并停掉
             if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
             playQueue = []; playing = false; pausedForInterrupt = false;
@@ -2080,6 +2082,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           omniUserLiveEl = null;  // 新一句开始,上一句的实时字幕气泡不再更新
           break;
         case "conversation.item.input_audio_transcription.delta":
+          // 转写在正常推进,说明不是幽灵打断——兜底定时器往后顺延,别在用户
+          // 长句说到一半时误判超时、把砍掉的朗读恢复回来盖住真提问。
+          if(omniEchoRestore) armOmniGhostTimer();
           // 实时字幕:text 是已确认的前缀,stash 是还没定论的尾巴,拼起来显示
           // 让用户看到"正在识别"的感觉,句子说完由 .completed 用权威结果覆盖一次。
           if(!omniUserLiveEl) omniUserLiveEl = addMsg("me", "");
@@ -2088,6 +2093,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         case "conversation.item.input_audio_transcription.completed": {
           const transcript = (data.transcript || "").trim();
           const restore = omniEchoRestore; omniEchoRestore = null;
+          if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
           const echoSrc = transcript ? matchOmniEcho(transcript, !!restore) : null;
           if(echoSrc){
             // 是 AI 自己的回声:丢弃,不发 Claude、不算一轮对话,字幕气泡撤掉
@@ -2098,31 +2104,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
               omniUserLiveEl = null;
             }
             if(restore && omniTurnGen === restore.newGen && Date.now() - restore.ts < 15000){
-              // 恢复 barge-in 现场:回退 gen 让还在飞的 /voice/send 流(若没被砍到)
-              // 继续生效,被吞的句子塞回队列。不立刻 pump——阿里云对这条"用户语音"
-              // 还会自作主张生成一个 response(create_response 关不掉),马上 pump 会
-              // 跟它的 response.created 撞车导致 rp 计数错位;等它被 cancel 后的
-              // response.done 自然接力 pump,再留一个定时器兜底。
-              omniTurnGen = restore.prevGen;
-              if(restore.sentences.length) omniReadQueue = restore.sentences.concat(omniReadQueue);
-              vdbg("echo.restore", {q: omniReadQueue.length});
-              wsState = "thinking";
-              setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
-              if(handsFreeActive) orbWrap.className = "thinking";
-              const g = omniTurnGen;
-              setTimeout(() => { if(omniTurnGen === g){ pumpOmniRead(); maybeOmniIdle(); } }, 1200);
-              // 流已经被 gen 判定砍死的场景(reader.cancel 已执行),队列念完后
-              // omniTurnDone 永远等不来 true,状态会卡在"思考中"——超时强制收尾。
-              if(!omniTurnDone){
-                setTimeout(() => {
-                  if(omniTurnGen === g && wsState === "thinking" && !omniReadActive
-                     && omniReadPending === 0 && omniReadQueue.length === 0){
-                    omniTurnDone = true;
-                    vdbg("echo.restore.idle-fallback");
-                    maybeOmniIdle();
-                  }
-                }, 10000);
-              }
+              restoreOmniBargeIn(restore, "echo.restore");
             } else {
               // 没有可恢复的现场(回声出现在整轮念完之后):回到待命即可
               wsState = "thinking";  // 先离开 capturing,maybeOmniIdle 才肯接手收尾
@@ -2253,6 +2235,57 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     omniReadActive = false; omniReadPending = 0;
     omniReadCurrentText = "";
     vdbg("read.cancel", reason);
+  }
+
+  // 恢复 barge-in 现场(echo.discard 判回声后 / 幽灵打断兜底共用):回退 gen 让
+  // 还在飞的 /voice/send 流(若没被砍到)继续生效,被吞的句子塞回队列。不立刻
+  // pump——阿里云对这条"用户语音"还会自作主张生成一个 response(create_response
+  // 关不掉),马上 pump 会跟它的 response.created 撞车导致 rp 计数错位;等它被
+  // cancel 后的 response.done 自然接力 pump,再留一个定时器兜底。
+  function restoreOmniBargeIn(restore, tag){
+    omniTurnGen = restore.prevGen;
+    if(restore.sentences.length) omniReadQueue = restore.sentences.concat(omniReadQueue);
+    vdbg(tag, {q: omniReadQueue.length});
+    wsState = "thinking";
+    setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
+    if(handsFreeActive) orbWrap.className = "thinking";
+    const g = omniTurnGen;
+    setTimeout(() => { if(omniTurnGen === g){ pumpOmniRead(); maybeOmniIdle(); } }, 1200);
+    // 流已经被 gen 判定砍死的场景(reader.cancel 已执行),队列念完后
+    // omniTurnDone 永远等不来 true,状态会卡在"思考中"——超时强制收尾。
+    if(!omniTurnDone){
+      setTimeout(() => {
+        if(omniTurnGen === g && wsState === "thinking" && !omniReadActive
+           && omniReadPending === 0 && omniReadQueue.length === 0){
+          omniTurnDone = true;
+          vdbg(tag + ".idle-fallback");
+          maybeOmniIdle();
+        }
+      }, 10000);
+    }
+  }
+
+  // 幽灵打断兜底(2026-07-12 实锤 13:37:29:speech_started→barge-in 砍掉朗读,
+  // 之后只有 speech_stopped,transcription.completed 永远没来——大概率是无法
+  // 转写的回声/噪音):恢复逻辑只挂在 .completed 分支的话,被砍的剩余句子就永久
+  // 丢了,用户听不到回答后半段。快照存下 8 秒内没被任何转写结果消费,就视为
+  // 幽灵打断,自动恢复朗读现场;转写 delta 每次到达都重新武装,给真实长句让路。
+  function armOmniGhostTimer(){
+    if(omniEchoRestoreTimer) clearTimeout(omniEchoRestoreTimer);
+    const snap = omniEchoRestore;
+    if(!snap) return;
+    omniEchoRestoreTimer = setTimeout(() => {
+      omniEchoRestoreTimer = null;
+      if(omniEchoRestore !== snap || omniTurnGen !== snap.newGen) return;
+      omniEchoRestore = null;
+      // delta 到过但 completed 没来的半截字幕气泡一并撤掉
+      if(omniUserLiveEl){
+        const row = omniUserLiveEl.closest(".row");
+        if(row) row.remove();
+        omniUserLiveEl = null;
+      }
+      restoreOmniBargeIn(snap, "echo.ghost-restore");
+    }, 8000);
   }
 
   // ── 回声过滤(2026-07-11 实锤,详见 memory/hermes-voice-omni-self-echo-rootcause)──
@@ -2427,6 +2460,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     omniReadQueue = []; omniReadActive = false; omniReadPending = 0; omniAutoActive = false; omniTurnDone = true;
     omniReadSince = 0;
     omniRecentReads = []; omniReadCurrentText = ""; omniEchoRestore = null;
+    if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
   }
