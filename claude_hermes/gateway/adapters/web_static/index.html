@@ -1508,12 +1508,16 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   function startWorkSound(){
     if(workSound || !audioCtx) return;
-    if(audioCtx.state === "suspended"){ try{ audioCtx.resume(); }catch(e){} }
+    vdbg("worksound.start", audioCtx.state);  // 排障:state 不是 running 就是 iOS 把 ctx 挂起了
     const master = audioCtx.createGain();
-    master.gain.value = 0.05;
+    master.gain.value = 0.15;
     master.connect(audioCtx.destination);
     const blip = ()=>{
       if(!audioCtx) return;
+      // iOS 在 getUserMedia/通话音频会话切换时会把 AudioContext 挂起(state 变
+      // suspended/interrupted),挂起期间 currentTime 不走,此刻排的音全落在过去
+      // =无声——先 resume,这一轮跳过,下一轮 interval 再响。
+      if(audioCtx.state !== "running"){ try{ audioCtx.resume(); }catch(e){} return; }
       const t0 = audioCtx.currentTime;
       [1318.5, 1760].forEach((freq, i)=>{  // E6→A6 上行小滴答,间隔 180ms
         const osc = audioCtx.createOscillator();
@@ -1532,6 +1536,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   function stopWorkSound(){
     if(!workSound) return;
+    vdbg("worksound.stop");
     clearInterval(workSound.timer);
     try{ workSound.master.disconnect(); }catch(e){}
     workSound = null;
