@@ -489,4 +489,7 @@ def register_routes(app: web.Application) -> None:
     # 时回落按住说话、不再连 WS(见 index.html startHandsFree)。实现本体 ws.py
     # 的删除见 docs/adr/0004。/voice/static/(omni_test.html 联调页)也已随
     # 顶栏扳手入口一起退休(2026-07-12)。
-    asyncio.ensure_future(executor.heal_after_restart())  # F11:重启自愈,一次性
+    # F11 重启自愈(executor.heal_after_restart)不在这里触发,而在 web.py 的 serve
+    # 启动路径里——2026-07-12 事故:测试/脚本只要组建一次 app 就会触发孤儿回收,
+    # 把「别的进程里正在跑的任务」误标失败(后台任务收尾跑 pytest 时把自己标死)。
+    # register_routes 只做纯粹的路由挂载,不带副作用。

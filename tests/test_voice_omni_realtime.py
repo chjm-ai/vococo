@@ -10,12 +10,25 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from claude_hermes import config
-from claude_hermes.voice import omni_realtime as om, routes
+from claude_hermes.voice import omni_realtime as om, routes, tasks
 
 
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_voice_db(isolated, monkeypatch):
+    """强制隔离 DATA_DIR + tasks 连接单例——本文件 2026-07-12 前漏了这层,
+    register_routes() 当时还挂着孤儿回收副作用,跑一次测试就把真实 voice.db 里
+    正在跑的任务全标失败("假失败"事故根因)。副作用已移去 web.py,这里的隔离
+    保留当第二道防线:路由测试永远不许摸到真实数据目录。"""
+    monkeypatch.setattr(tasks, "_DB", None)
+    yield
+    if tasks._DB is not None:
+        tasks._DB.close()
+        tasks._DB = None
 
 
 def _app() -> web.Application:

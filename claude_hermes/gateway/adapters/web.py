@@ -1257,9 +1257,14 @@ class WebAdapter:
             ]
         )
         if config.VOICE_ENABLED:  # 实验性语音伴聊模式,见 claude_hermes/voice/
+            from ...voice import executor as _voice_executor
             from ...voice import register_routes as _voice_register_routes
 
             _voice_register_routes(app)
+            # F11 重启自愈只能挂在这里(serve 真正启动的唯一路径),不能挂在
+            # register_routes 里——否则测试/脚本组建 app 也会触发孤儿回收,
+            # 误杀别的进程里正在跑的任务(2026-07-12 "假失败"事故根因之一)。
+            asyncio.ensure_future(_voice_executor.heal_after_restart())
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, config.WEB_HOST, config.WEB_PORT)

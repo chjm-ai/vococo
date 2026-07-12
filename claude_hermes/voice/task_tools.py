@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
+from .. import config
 from . import executor, tasks
 
 _STATUS_WORD = {
@@ -36,7 +37,10 @@ def _describe(task: dict) -> str:
     "把一件重活派给后台独立会话去干:要写改代码/文件、要查多处资料、要拆成多步才能"
     "做完、或要跑命令/脚本的事都算(按工作量信号判断,不要靠猜耗时),立即返回不等它跑完;你应该同时口头告诉用户「好,我去办,好了叫你」"
     "这类话。title:6 字以内短名(会出现在播报/任务卡片里);prompt:完整任务描述(后台会话"
-    "看不到当前对话上下文,必须把要做的事说完整);cwd:可选,任务需要在某个项目目录下跑时指定。",
+    "看不到当前对话上下文,必须把要做的事说完整);cwd:任务要在哪个项目目录下干活——"
+    "涉及改代码/改仓库文件/查项目代码的任务【必须】传该项目根目录的绝对路径,"
+    "是 git 仓库会自动开独立 worktree+分支,绝不会动主目录;不传则默认落到"
+    "claude-hermes 自己的仓库(同样走 worktree 隔离)。",
     {
         "type": "object",
         "properties": {
@@ -50,7 +54,10 @@ def _describe(task: dict) -> str:
 async def voice_dispatch_task(args: dict) -> dict:
     title = (args.get("title") or "").strip()
     prompt = (args.get("prompt") or "").strip()
-    cwd = (args.get("cwd") or "").strip() or None
+    # 不传 cwd 就默认本项目根:2026-07-12 事故里模型从没传过 cwd,worktree 隔离
+    # 形同虚设,子代理直接在 serve 的主检出目录上改代码拉分支——代码层兜底,
+    # 让"忘了传"也走 worktree,而不是落到主目录。
+    cwd = (args.get("cwd") or "").strip() or str(config.ROOT_DIR)
     if not (title and prompt):
         return _ok("voice_dispatch_task 需要 title 和 prompt 都非空。")
     task = executor.dispatch(title=title, prompt=prompt, cwd=cwd)

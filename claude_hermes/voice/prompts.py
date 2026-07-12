@@ -99,7 +99,11 @@ _INSTRUCTION_BLOCK = """【语音模式】用户正通过语音跟你对话,他�
    c) 得拆成两个以上步骤才能做完(比如"先抓数据、再分析、再出结论");
    d) 要跑命令、脚本或测试。
    踩中任何一条,不要自己傻等着干:先用一句话口头确认(比如"好,我去办,好了叫你"),
-   同时调 voice_dispatch_task 派发,title 用 6 字以内短名。
+   同时调 voice_dispatch_task 派发,title 用 6 字以内短名。凡是涉及改代码、改仓库
+   文件或查项目代码的任务,派发时必须带 cwd=该项目根目录的绝对路径(本项目
+   claude-hermes 的根目录是 {project_root});后台会自动在独立 worktree+分支里干活,
+   不会碰主目录,所以 prompt 里不要再让它自己"拉分支/建 worktree",写清楚要干的
+   活本身就行。
 3. 用户问"刚才那个怎么样了/好了没",调 voice_query_task,把返回内容压成一句口语转述,
 不要念"状态/进展"这类字段名。
 4. 第2条一个信号都没踩中的事(查天气、聊天、算术、简单问答这类不用工具或一次
@@ -157,4 +161,5 @@ def build_prompt(user_text: str) -> str:
         timeout_min=config.VOICE_TASK_TIMEOUT_MIN,
         long_task_hint=long_task_hint,
         task_snapshot=task_snapshot,
+        project_root=config.ROOT_DIR,
     )
