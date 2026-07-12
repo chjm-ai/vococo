@@ -495,4 +495,7 @@ def register_routes(app: web.Application) -> None:
     # (不含用户数据),不用 token 校验;aiohttp 自带 ETag/Last-Modified 协商
     # 缓存与 Range 请求。
     app.router.add_static("/voice/static/", _STATIC, show_index=False)
-    asyncio.ensure_future(executor.heal_after_restart())  # F11:重启自愈,一次性
+    # F11 重启自愈(executor.heal_after_restart)不在这里触发,而在 web.py 的 serve
+    # 启动路径里——2026-07-12 事故:测试/脚本只要组建一次 app 就会触发孤儿回收,
+    # 把「别的进程里正在跑的任务」误标失败(后台任务收尾跑 pytest 时把自己标死)。
+    # register_routes 只做纯粹的路由挂载,不带副作用。

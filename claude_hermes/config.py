@@ -112,6 +112,9 @@ AI_BRAIN_DIR: Path = Path(
     os.path.expanduser(os.environ.get("AI_BRAIN_DIR", "~/AI_BRAIN"))
 )
 
+# 本项目(claude-hermes)仓库根目录——语音派后台任务时的默认 cwd(见 voice/task_tools.py):
+# 没显式指定项目就落到这里,由 worktree 机制隔离,绝不在主检出目录上直接干活
+ROOT_DIR: Path = _ROOT
 # 运行时数据目录(prompt_toolkit 历史等)
 DATA_DIR: Path = _ROOT / "data"
 # 用户发的图片落盘目录(Web 端消息里的图片,持久化后刷新页面仍可见)

@@ -30,8 +30,9 @@ def voice_db(isolated, monkeypatch):
     显式清空 WEB_AUTH_TOKEN:测试不该依赖"本机是否恰好有 .env 配了口令"这种环境状态,
     否则本地开发机一旦配了真口令,_guard() 就会把测试请求当成未授权拦掉。
 
-    P1 起 register_routes() 会顺带触发 executor.heal_after_restart()(F11),它会摸
-    tasks._DB——同样要重置连接单例,否则会复用上一个用例已被 tmp_path 清理的旧连接。
+    tasks._DB 连接单例也要重置,否则会复用上一个用例已被 tmp_path 清理的旧连接。
+    (F11 孤儿回收曾挂在 register_routes() 里,2026-07-12 起已移到 web.py 的 serve
+    启动路径——测试组建 app 不再有副作用,但隔离照旧保留。)
     session 模块自 2026-07-08 起委托 session_store 存储,不再有自己的 _DB——`isolated`
     fixture 已经重置了 session_store._DB,这里不用再管。
     """
@@ -167,8 +168,8 @@ def test_voice_session_resume_id_round_trips_through_session_store(voice_db):
 # ── /voice/config 开关 ───────────────────────────────────────────────────
 @pytest.mark.anyio
 async def test_voice_config_reports_enabled(voice_db, monkeypatch):
-    # P1 起 register_routes() 会顺带摸 tasks._DB(F11 重启自愈),故也要 voice_db 隔离,
-    # 否则会碰真实的 config.DATA_DIR。
+    # 路由测试一律带 voice_db 隔离,不许摸真实的 config.DATA_DIR(F11 孤儿回收
+    # 已从 register_routes 移去 web.py,但隔离作为第二道防线保留)。
     # VOICE_OMNI_ENABLED 显式钉死:这个测试只关心 /voice/config 的响应形状,不该
     # 被跑测试这台机器上真实设了什么环境变量(比如线上开着这个开关)带偏。
     monkeypatch.setattr(config, "VOICE_OMNI_ENABLED", False)

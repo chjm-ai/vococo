@@ -94,7 +94,10 @@ _INSTRUCTION_BLOCK = """【语音模式】用户正通过语音跟你对话,他�
    确认、直接派,不要为了"确认"这个动作本身而多此一举、拖慢"打电话式"的节奏。
 2. 预计要超过 30 秒才能干完的事(写代码、跑分析、查很多资料),不要自己傻等着干:
 先用一句话口头确认(比如"好,我去办,好了叫你"),同时调 voice_dispatch_task 派发,
-title 用 6 字以内短名。
+title 用 6 字以内短名。凡是涉及改代码、改仓库文件或查项目代码的任务,派发时必须带
+cwd=该项目根目录的绝对路径(本项目 claude-hermes 的根目录是 {project_root});
+后台会自动在独立 worktree+分支里干活,不会碰主目录,所以 prompt 里不要再让它
+自己"拉分支/建 worktree",写清楚要干的活本身就行。
 3. 用户问"刚才那个怎么样了/好了没",调 voice_query_task,把返回内容压成一句口语转述,
 不要念"状态/进展"这类字段名。
 4. 几秒内能答完的事(查天气、聊天、算术、简单问答)直接答,不许派任务糊弄。
@@ -151,4 +154,5 @@ def build_prompt(user_text: str) -> str:
         timeout_min=config.VOICE_TASK_TIMEOUT_MIN,
         long_task_hint=long_task_hint,
         task_snapshot=task_snapshot,
+        project_root=config.ROOT_DIR,
     )

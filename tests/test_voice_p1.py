@@ -137,6 +137,43 @@ def test_mark_orphans_failed_covers_queued_and_running(voice_db):
     assert tasks.mark_orphans_failed() == []
 
 
+def test_mark_orphans_failed_skips_excluded_ids(voice_db):
+    """exclude_ids 里的活任务绝不能标死(2026-07-12 假失败事故的防线)。"""
+    alive = tasks.create("活任务", "p")
+    tasks.set_status(alive["id"], "running")
+    dead = tasks.create("真孤儿", "p")
+    tasks.set_status(dead["id"], "running")
+    orphans = tasks.mark_orphans_failed(exclude_ids={alive["id"]})
+    assert {o["id"] for o in orphans} == {dead["id"]}
+    assert tasks.get(alive["id"])["status"] == "running"
+    assert tasks.get(dead["id"])["status"] == "failed"
+
+
+def test_finish_corrects_false_failed_back_to_done(voice_db):
+    """failed → done 纠错通道:任务被外部误标失败后,executor 如实收尾仍能写回真结局
+    (2026-07-12 事故:活干完了、代码提交了,任务板却永远停在"失败")。"""
+    t = tasks.create("被误标", "p")
+    tasks.set_status(t["id"], "running")
+    tasks.mark_orphans_failed()  # 模拟另一进程的孤儿回收误标
+    assert tasks.get(t["id"])["status"] == "failed"
+    assert tasks.finish(t["id"], "done", "完整成果", "一句话摘要") is True
+    row = tasks.get(t["id"])
+    assert row["status"] == "done"
+    assert row["result_summary"] == "一句话摘要"
+    # 纠错只开 failed→done 这一条:done 之后不许再翻回失败
+    assert tasks.finish(t["id"], "failed", "", "又失败") is False
+
+
+def test_set_progress_keeps_terminal_evidence(voice_db):
+    """终态任务的 progress_note 是失败原因/最后现场,迟到的进度更新不许覆盖。"""
+    t = tasks.create("已死任务", "p")
+    tasks.set_status(t["id"], "running")
+    tasks.mark_orphans_failed()
+    assert tasks.get(t["id"])["progress_note"] == "服务重启,任务中断"
+    tasks.set_progress(t["id"], "正在执行:git commit")  # 迟到的进度心跳
+    assert tasks.get(t["id"])["progress_note"] == "服务重启,任务中断"
+
+
 # ── executor.py:进度节流 / 终态 / 超时 / 取消 / 并发排队 ──────────────────
 @pytest.mark.anyio
 async def test_dispatch_runs_immediately_and_writes_done(voice_db, monkeypatch):
@@ -366,6 +403,27 @@ async def test_heal_after_restart_notifies_each_orphan(voice_db, monkeypatch):
     assert tasks.get(t["id"])["status"] == "failed"
 
 
+@pytest.mark.anyio
+async def test_heal_after_restart_spares_tasks_alive_in_this_process(voice_db, monkeypatch):
+    """heal 只回收没有执行器在管的孤儿;_running 里的活任务无论如何不能被标死。"""
+    t = tasks.create("活着呢", "p")
+    tasks.set_status(t["id"], "running")
+    executor._running[t["id"]] = object()  # 模拟本进程正跑着它
+    notified = []
+
+    async def fake_notify(task_id):
+        notified.append(task_id)
+
+    monkeypatch.setattr(notify, "on_task_terminal", fake_notify)
+    try:
+        await executor.heal_after_restart()
+    finally:
+        executor._running.pop(t["id"], None)
+
+    assert notified == []
+    assert tasks.get(t["id"])["status"] == "running"
+
+
 # ── task_tools.py:三个工具的 schema 与行为 ─────────────────────────────────
 def test_dispatch_tool_schema_requires_title_and_prompt():
     t = task_tools.voice_dispatch_task
@@ -400,11 +458,45 @@ async def test_dispatch_tool_dispatches_and_reports_task_id(voice_db, monkeypatc
 
     monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
     monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+    # 默认 cwd 落到本项目根后,_run 会真去建 worktree——测试里挡掉,不碰真实仓库
+    monkeypatch.setattr(executor.worktree, "ensure_worktree_for_task", _noop_coro)
 
     result = await task_tools.voice_dispatch_task.handler({"title": "标题", "prompt": "内容"})
     text = result["content"][0]["text"]
     assert "task_id=" in text and "标题" in text
     assert tasks.get_latest()["title"] == "标题"
+
+
+@pytest.mark.anyio
+async def test_dispatch_tool_defaults_cwd_to_project_root(voice_db, monkeypatch):
+    """不传 cwd 也必须有项目目录兜底(2026-07-12:模型从不传 cwd,worktree 隔离
+    形同虚设,子代理直接在主检出目录上改代码)。"""
+    async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
+        yield Done(AgentReply(text="ok", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+    wt_calls = []
+
+    async def fake_ensure(root, task_id):
+        wt_calls.append(root)
+        return None
+
+    monkeypatch.setattr(executor.worktree, "ensure_worktree_for_task", fake_ensure)
+
+    await task_tools.voice_dispatch_task.handler({"title": "标题", "prompt": "内容"})
+    row = tasks.get_latest()
+    assert row["cwd"] == str(config.ROOT_DIR)  # 落库的就是默认项目根
+    running = executor._running.get(row["id"])
+    if running is not None:
+        await running
+    assert wt_calls == [str(config.ROOT_DIR)]  # worktree 隔离确实被触发
+
+    # 显式传 cwd 则原样保留,不被默认值覆盖
+    await task_tools.voice_dispatch_task.handler(
+        {"title": "标题2", "prompt": "内容", "cwd": "/tmp/other-proj"}
+    )
+    assert tasks.get_latest()["cwd"] == "/tmp/other-proj"
 
 
 @pytest.mark.anyio
