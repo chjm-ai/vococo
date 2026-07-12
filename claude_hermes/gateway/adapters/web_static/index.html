@@ -2042,6 +2042,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             playQueue = []; playing = false; pausedForInterrupt = false;
             // 打断要的是干净的静音,不再叠一个确认音——那个音在切断的同一瞬间响起,
             // 听感上像"声音被调小"而不是"直接停",干脆去掉,靠下面的 capturingTone 提示就够。
+          } else {
+            // 非 barge-in 场景开口:清掉可能残留的旧快照(上一次幽灵打断没等到转写),
+            // 别让 matchOmniEcho 误以为这句话发生在 AI 说话期间。
+            omniEchoRestore = null;
           }
           if(wsState !== "capturing") playCapturingTone();
           wsState = "capturing";
@@ -2058,7 +2062,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         case "conversation.item.input_audio_transcription.completed": {
           const transcript = (data.transcript || "").trim();
           const restore = omniEchoRestore; omniEchoRestore = null;
-          const echoSrc = transcript ? matchOmniEcho(transcript) : null;
+          const echoSrc = transcript ? matchOmniEcho(transcript, !!restore) : null;
           if(echoSrc){
             // 是 AI 自己的回声:丢弃,不发 Claude、不算一轮对话,字幕气泡撤掉
             vdbg("echo.discard", {heard: transcript.slice(0, 24), read: echoSrc.slice(0, 24)});
@@ -2228,10 +2232,13 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // ── 回声过滤(2026-07-11 实锤,详见 memory/hermes-voice-omni-self-echo-rootcause)──
   // iOS 的回声消除是自适应滤波器,AI 每次开口后要 1~2 秒才收敛,这段"开口瞬间"
   // 的残留回声会漏进上行;阿里云只在 response 生成期间压 VAD,而生成比播放快,
-  // 播放尾巴不设防——所以偶发"AI 开头几个字被当成用户说话"(还可能带误转写,
-  // 如"那个"→"一个")。文字层兜底:转写结果跟最近念过的句子做【容错前缀】匹配。
-  // 只认前缀不认中段/句尾:实锤两例都是句子开头(AEC 收敛特性决定),且用户复述
-  // AI 句尾来确认("帮我装一个试试")是真实场景,不能误杀——中段命中只记日志观察。
+  // 播放尾巴不设防。每次重连(重启后尤甚)滤波器都从零收敛,第一轮回复漏得最凶,
+  // 且漏出的片段可以是句子【任意连续部位】,不只开头(2026-07-12 全日志 12 条
+  // 漏网实锤:"来叫你"=「好了叫你」句尾误转写、"做一个"=句尾、"去查"=中段)。
+  // 两层判据:① 容错前缀,不需要现场证据(保守,老逻辑);② 容错子串,仅当存在
+  // barge-in 现场(说话发生在 AI 正在说/在想时——12/12 实锤全满足)且句子刚念出
+  // (≤12s;2字词≤8s,实锤最大间隔 8.7s)才判——用户听完 AI 说完再复述句尾回答
+  // ("帮我装一个试试")没有 barge-in 现场,不会误杀。误吞由恢复朗读机制自愈。
   function normEchoText(s){
     return (s || "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
   }
@@ -2247,20 +2254,46 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }
     return prev[m];
   }
-  function matchOmniEcho(transcript){
+  // needle 相对 hay 任意连续片段的最小编辑距离(DP 首行置 0=起点任选):
+  // 抓"回声是句子中段/尾部"的场景,普通 editDist 只能比整串。
+  function fuzzySubstrDist(needle, hay){
+    const n = needle.length, m = hay.length;
+    let prev = new Array(m + 1).fill(0);
+    for(let i = 1; i <= n; i++){
+      const cur = [i];
+      for(let j = 1; j <= m; j++){
+        cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (needle[i-1] === hay[j-1] ? 0 : 1));
+      }
+      prev = cur;
+    }
+    return Math.min(...prev);
+  }
+  function matchOmniEcho(transcript, hasBargeIn){
     const t = normEchoText(transcript);
-    if(t.length < 3) return null;  // 太短没法可靠归因("嗯""好的"),放行
+    if(t.length < 2) return null;  // 单字没法归因("嗯"),放行
     const now = Date.now();
     omniRecentReads = omniRecentReads.filter(r => now - r.ts < 30000);
     const tol = t.length < 5 ? 0 : (t.length < 10 ? 1 : 2);
     for(const r of omniRecentReads){
       const cand = normEchoText(r.text);
       if(cand.length < t.length) continue;
-      // 容错前缀:转写长度上下浮动 2 字取最小编辑距离(误转写/多听漏听一个字)
-      for(let L = Math.max(3, t.length - 1); L <= Math.min(cand.length, t.length + 2); L++){
-        if(editDist(t, cand.slice(0, L)) <= tol) return r.text;
+      // 判据①容错前缀:转写长度上下浮动 2 字取最小编辑距离(误转写/多听漏听一个字)
+      if(t.length >= 3){
+        for(let L = Math.max(3, t.length - 1); L <= Math.min(cand.length, t.length + 2); L++){
+          if(editDist(t, cand.slice(0, L)) <= tol) return r.text;
+        }
       }
-      // 命中中段但不是前缀:按当前证据不算回声,只上报观察,攒数据再决定要不要收紧
+      // 判据②容错子串:必须有 barge-in 现场 + 句子刚念出,阈值按转写长度收紧
+      // (2 字词只认精确子串——编辑距离 1 会命中任何共享一个字的窗口,太松)
+      const age = now - r.ts;
+      if(hasBargeIn && age < (t.length < 3 ? 8000 : 12000)){
+        const subTol = t.length < 3 ? 0 : (t.length < 8 ? 1 : 2);
+        if(fuzzySubstrDist(t, cand) <= subTol){
+          vdbg("echo.substr-hit", {heard: t.slice(0, 24), age: Math.round(age / 100) / 10});
+          return r.text;
+        }
+      }
+      // 子串命中但没走到判据②(无现场/太久):不归因,只上报攒数据(idle 尾巴缺口)
       if(cand.includes(t)) vdbg("echo.suspect", {heard: t.slice(0, 24), read: r.text.slice(0, 24)});
     }
     return null;
