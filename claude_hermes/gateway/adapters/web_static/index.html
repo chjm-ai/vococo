@@ -2806,6 +2806,7 @@ function initVoiceSelect(){
     }
   };
 }
+function cmdMatches(prefix){
   const p=prefix.toLowerCase();
   const cmds=S.commands.filter(c=>c.name.toLowerCase().startsWith(p)).map(c=>Object.assign({kind:"cmd"},c));
   const skills=S.skills.filter(c=>c.name.toLowerCase().startsWith(p)).map(c=>Object.assign({kind:"skill"},c));
