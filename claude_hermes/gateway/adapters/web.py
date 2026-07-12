@@ -745,6 +745,12 @@ class WebAdapter:
         body = await request.json()
         conv = str(body.get("conv") or "")
         if conv and conv != "main":
+            if conv.startswith("voice-task:"):
+                from ...voice import executor as voice_executor  # 懒加载
+
+                # 任务还在排队/运行时先取消并等收尾写完,否则收尾 finish_turn
+                # 会把刚删掉的会话又写回来(侧边栏出现"复活"的空壳任务)
+                await voice_executor.cancel_and_wait(conv.split(":", 1)[1])
             from ...core import worktree  # 懒加载
 
             key = config.resolve_session_key("web", conv)

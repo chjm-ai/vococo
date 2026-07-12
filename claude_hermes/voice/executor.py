@@ -221,6 +221,19 @@ def cancel(task_id: str) -> bool:
     return False
 
 
+async def cancel_and_wait(task_id: str, timeout: float = 10.0) -> None:
+    """取消并等运行中的任务收尾完成。
+
+    删除任务会话前必须走这个而不是 cancel():cancel 只是发出取消请求,
+    _run 的收尾还会 finish_turn 写回会话——先删会话再等它写,会话就"复活"了。
+    asyncio.wait 超时不抛也不重复 cancel,超时就放弃等待(收尾极端卡住时删除照常进行)。
+    """
+    cancel(task_id)
+    t = _running.get(task_id)
+    if t is not None:
+        await asyncio.wait({t}, timeout=timeout)
+
+
 async def heal_after_restart() -> None:
     """serve 重启后调用一次(见 F11):把残留 queued/running 标失败,并按通知规则分发。"""
     for row in tasks.mark_orphans_failed():
