@@ -252,9 +252,10 @@ VOICE_OMNI_VOICE: str = os.environ.get("VOICE_OMNI_VOICE", "Serena").strip() or 
 # 硬编成"嗯/哦"这类语气词),0.7 是用户明确要求"大幅提升"后的终值,不用再调。
 VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
 # Omni WebRTC 链路的静音判停时长——2026-07-10 真机反馈 1500ms 对有停顿思考习惯
-# ("呃"、组织语言)的说话方式太短,句子中间的正常停顿就被当成说完了。故意给
-# 更长的默认值,牺牲一点打断响应速度换连续说话不被截断。
-VOICE_OMNI_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_OMNI_VAD_SILENCE_MS", "3000"))
+# ("呃"、组织语言)的说话方式太短,句子中间的正常停顿就被当成说完了,3000ms 后
+# 2026-07-12 真机仍反馈整句话被拆成好几个请求发给 Claude(semantic_vad 语义判停
+# 本身也会提前拍板),再拉长静音容忍窗口,继续牺牲打断响应速度换连续说话不被截断。
+VOICE_OMNI_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_OMNI_VAD_SILENCE_MS", "4500"))
 
 # === 会话统一(跨入口连续)===
 # 开启时:CLI / TUI / Telegram / 飞书 都归到同一会话 SESSION_KEY,

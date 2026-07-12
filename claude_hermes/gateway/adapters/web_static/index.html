@@ -1181,7 +1181,7 @@ const S = {
   omniEnabled: false,   // /voice/config 的 omni_enabled,P3 阶段二开关,登录后预取好,
                          // 避免每次进通话视图都要等一趟网络往返才知道走哪条路径
   vadThreshold: 0.7,    // /voice/config 的 vad_threshold/vad_silence_ms,兜底默认跟
-  vadSilenceMs: 3000,   // config.py 的 VOICE_OMNI_VAD_SILENCE_MS 默认值一致,拉取失败也不至于比调优前更灵敏
+  vadSilenceMs: 4500,   // config.py 的 VOICE_OMNI_VAD_SILENCE_MS 默认值一致,拉取失败也不至于比调优前更灵敏
   omniVoice: "Serena",  // /voice/config 的 omni_voice,Omni 出声模式 session.update 的音色
                          // (注意跟 Qwen-TTS 音色表不通用,Cherry 会 400,见 config.py)
 };
@@ -1281,6 +1281,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniEchoRestore=null;      // barge-in 现场快照,事后判定是回声就恢复被砍的朗读
   let omniSpeechStartTs=0;       // 用户最近一次开口时刻(speech_started),回声归因用
   let omniEchoRestoreTimer=null; // 幽灵打断兜底:快照存下后转写迟迟不来就自动恢复(见 armOmniGhostTimer)
+  // 拆句缓冲(2026-07-12,真机日志实锤 semantic_vad 语义判停会腰斩半句话就发给
+  // Claude,silence_duration_ms 管不了这种情况——它只是"静音多久强制切"的兜底,
+  // 不是"语义判完整"的开关。这里加一层客户端缓冲:转写完成后不立刻发,等一小段
+  // 时间看是否又开口;真又开口就拼到一起,超时才当一轮发出去。
+  let omniPendingText=null, omniPendingTimer=null;
+  const OMNI_PENDING_FLUSH_MS = 1300;
   // 首回复静音(2026-07-12,Wesley 提议):每次 WebRTC 新建连接后,iOS AEC 从零
   // 收敛,AI 第一段音频的回声漏得最凶——干脆在本连接第一次朗读期间把麦克风上行
   // 直接静音(track.enabled=false 只发静音帧,不动音频图,不踩 iOS 音频会话的雷),
@@ -2104,6 +2110,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             // 非 barge-in 场景开口:清掉可能残留的旧快照(上一次幽灵打断没等到转写),
             // 别让 matchOmniEcho 误以为这句话发生在 AI 说话期间。
             omniEchoRestore = null;
+            // 又开口了,说明上一段大概率没说完:把待发送缓冲的倒计时往后顺延,
+            // 别让它在这句话说到一半时就把前半句发出去(见 OMNI_PENDING_FLUSH_MS)。
+            // 就算这句话最终被判成回声丢弃,倒计时到点也会自愈式地把缓冲发出去,
+            // 不会卡死。
+            if(omniPendingTimer){ clearTimeout(omniPendingTimer); omniPendingTimer = setTimeout(flushOmniPending, OMNI_PENDING_FLUSH_MS); }
           }
           if(wsState !== "capturing") playCapturingTone();
           wsState = "capturing";
@@ -2146,7 +2157,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           if(omniUserLiveEl) renderAi(omniUserLiveEl, transcript || "(没听清)");
           else if(transcript) addMsg("me", transcript);
           omniUserLiveEl = null;
-          if(transcript) sendOmniTurn(transcript);
+          if(transcript) queueOmniTurn(transcript);
           break;
         }
         case "response.created":
@@ -2443,6 +2454,21 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     return null;
   }
 
+  // 拆句缓冲的入口:转写完成不立刻发,累进 omniPendingText,等 OMNI_PENDING_FLUSH_MS
+  // 静默期(其间没有再新开口/再来一段转写)才真正发给 Claude。直接拼接不加分隔符——
+  // 被腰斩的半句话拼上后半句本来就该无缝接上;真是两句独立话也顶多是语气上少个
+  // 停顿,不影响 Claude 理解。
+  function queueOmniTurn(text){
+    omniPendingText = omniPendingText ? (omniPendingText + text) : text;
+    if(omniPendingTimer) clearTimeout(omniPendingTimer);
+    omniPendingTimer = setTimeout(flushOmniPending, OMNI_PENDING_FLUSH_MS);
+  }
+  function flushOmniPending(){
+    omniPendingTimer = null;
+    const text = omniPendingText; omniPendingText = null;
+    if(text) sendOmniTurn(text);
+  }
+
   // 识别到一整句话后,转发给现有 /voice/send——跟文字聊天同一套 Claude 全套
   // 工具/画像/记忆,回答由 Claude 生成,不是 Omni 自己瞎编。tts:false 让服务端
   // 只发句子文本不合成音频,句子进 omniReadQueue 交给 Omni 念(见 pumpOmniRead)。
@@ -2549,6 +2575,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     omniReadSince = 0;
     omniRecentReads = []; omniReadCurrentText = ""; omniEchoRestore = null;
     if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
+    if(omniPendingTimer){ clearTimeout(omniPendingTimer); omniPendingTimer = null; }
+    omniPendingText = null;
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
   }
