@@ -28,6 +28,8 @@
 """
 from __future__ import annotations
 
+import re
+
 import aiohttp
 
 from .. import config
@@ -63,4 +65,12 @@ async def exchange_webrtc_sdp(offer_sdp: str) -> str:
             body = await resp.text()
             if resp.status != 200:
                 raise RuntimeError(f"WebRTC 信令交换失败 status={resp.status} body={body[:300]!r}")
+            # 媒体候选地址打进日志:ICE 连不上时(如 VPN 把 UDP 带偏,2026-07-12),
+            # 排障第一问就是"手机到底要直连哪个 IP"——answer 只经过这里,不留就没了。
+            cands = sorted(set(re.findall(
+                r"a=candidate:\S+ \d+ (?:udp|UDP) \d+ ([0-9a-fA-F.:]+) (\d+)", body
+            )))
+            if cands:
+                addrs = ", ".join(f"{ip}:{port}" for ip, port in cands)
+                print(f"[voice/omni] answer 媒体候选地址: {addrs}", flush=True)
             return body
