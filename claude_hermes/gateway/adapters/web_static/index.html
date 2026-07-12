@@ -1514,6 +1514,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     master.connect(audioCtx.destination);
     const blip = ()=>{
       if(!audioCtx) return;
+      // AI 正在出声(Omni 朗读=wsState speaking / 旧链路 TTS=playing)时这一响跳过,
+      // 说完自动恢复——工作音效只填"干活且没声音"的空白,别叠在 AI 语音上
+      // (2026-07-12 用户反馈)。
+      if(wsState === "speaking" || playing) return;
       // iOS 在 getUserMedia/通话音频会话切换时会把 AudioContext 挂起(state 变
       // suspended/interrupted),挂起期间 currentTime 不走,此刻排的音全落在过去
       // =无声——先 resume,这一轮跳过,下一轮 interval 再响。
