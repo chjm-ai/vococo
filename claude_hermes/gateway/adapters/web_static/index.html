@@ -134,11 +134,6 @@
   #newBtn:hover{background:var(--card)}
   #newBtn:active{transform:scale(.98)}
   /* 语音任务:固定分组,行样式复用 .conv/.cvbody,状态点颜色跟任务状态走 */
-  .vtaskdot{flex-shrink:0;width:7px;height:7px;border-radius:50%}
-  .vtaskdot.queued,.vtaskdot.running{background:var(--accent)}
-  .vtaskdot.running{animation:livepulse 1.2s infinite}
-  .vtaskdot.done{background:var(--ok)}
-  .vtaskdot.failed,.vtaskdot.cancelled{background:var(--err)}
   /* 侧边栏收起按钮(仅桌面显示)*/
   #collapseBtn{display:none;width:26px;height:26px;border-radius:7px;flex-shrink:0;
     align-items:center;justify-content:center;color:var(--dim);
@@ -1172,8 +1167,6 @@ const S = {
   dragSrc: null,        // 项目拖拽排序:正在被拖起的项目 hash
   dragMoved: false,     // 刚发生过一次拖拽落地,下一次 click 吞掉(不触发分组展开/收起)
   voiceSidebar: {main:null, tasks:[]},  // /voice/sidebar 拉到的"语音任务"固定分组数据
-  seenTasks: new Set(),  // 已点开过的语音后台任务 conv id:终态(done/failed/cancelled)的
-                         // 状态点点过一次就不用再提醒,持久化到 localStorage(见 loadSeenTasks)
   swipedConv: null,     // 当前左滑展开的会话 id;renderConvs 重建 DOM 时靠它补回 swiped 状态,
                          // 否则任意会话(含后台)一完成回合就会触发 loadConvs→renderConvs 把菜单冲掉
   omniEnabled: false,   // /voice/config 的 omni_enabled,P3 阶段二开关,登录后预取好,
@@ -2521,7 +2514,6 @@ async function tryEnter(){
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
-    loadSeenTasks();
     applyConvs(d);   // 这次 /conversations 顺便验证了口令,数据直接拿来用,不用再多打一次
     // 优先把最近活跃的会话内容画出来;openConv 内会同步活跃项目、展开其分组并重绘侧边栏。
     // 侧边栏用得到的次要数据(主题偏好/项目列表/模型/斜杠命令)并行去拉,不再堵在会话内容前面。
@@ -2860,8 +2852,6 @@ function convProject(conv){
 function grpKey(hash){ return hash===null ? "__default__" : hash; }
 function saveExpanded(){ try{ localStorage.setItem("hermes_expanded", JSON.stringify([...S.expanded])); }catch(e){} }
 function loadExpanded(){ try{ S.expanded=new Set(JSON.parse(localStorage.getItem("hermes_expanded")||"[]")); }catch(e){ S.expanded=new Set(); } }
-function saveSeenTasks(){ try{ localStorage.setItem("hermes_seen_tasks", JSON.stringify([...S.seenTasks])); }catch(e){} }
-function loadSeenTasks(){ try{ S.seenTasks=new Set(JSON.parse(localStorage.getItem("hermes_seen_tasks")||"[]")); }catch(e){ S.seenTasks=new Set(); } }
 
 function convsInGroup(hash){
   return S.convs.filter(c => c.pinned ? hash===null : convProject(c.conv)===hash);
@@ -2881,21 +2871,29 @@ function renderVoiceRows(box, inCall){
   mainRow.onclick=()=>{ openCallView(); };
   box.append(mainRow);
   for(const t of vs.tasks){
+    // 任务行跟普通会话行吃同一套归档筛选
+    const arch=!!t.archived;
+    if(S.convFilter==="archived"&&!arch)continue;
+    if(S.convFilter==="active"&&arch)continue;
     const row=el("div","conv ingroup"+(!inCall && t.conv===S.conv?" active":""));
+    row.dataset.conv=t.conv;
     const body=el("div","cvbody");
-    // 终态(done/failed/cancelled)的状态点是"有新结果"提醒,点开过一次就不用再一直挂着;
-    // queued/running 是任务仍在跑的实时状态,不受"点过"影响,一直显示到跑完为止。
-    const isTerminal = t.task_status==="done" || t.task_status==="failed" || t.task_status==="cancelled";
-    const seen = S.seenTasks.has(t.conv);
-    if(!isTerminal || !seen){
-      const dot=el("span","vtaskdot "+(t.task_status||"")); dot.title=TASK_STATUS_WORD[t.task_status]||"";
-      body.append(dot);
-    }
     const ct=el("div","ct"); ct.textContent=t.title||"新对话"; body.append(ct);
     const tm=fmtTime(t.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }
+    const more=el("button","more"); more.textContent="⋯"; more.title="更多";
+    more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,t.conv);}; body.append(more);
     row.append(body);
+    const act=el("div","cvact");
+    const archBtn=el("button","cvarch"); archBtn.innerHTML=ic("folder"); archBtn.title=arch?"取消归档":"归档";
+    archBtn.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); toggleArchive(t.conv); };
+    const del=el("button","cvdel"); del.innerHTML=ic("trash"); del.title="删除";
+    del.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); delConv(t.conv); };
+    act.append(archBtn,del); row.append(act);
+    bindSwipe(row, body, act);
+    if(t.conv===S.swipedConv) row.classList.add("swiped");
     row.onclick=()=>{
-      if(isTerminal && !seen){ S.seenTasks.add(t.conv); saveSeenTasks(); renderConvs(); }
+      if(row._justSwiped){ row._justSwiped=false; return; }
+      if(row.classList.contains("swiped")){ closeSwipe(row); return; }
       openConv(t.conv);
     };
     box.append(row);
@@ -2972,7 +2970,6 @@ async function loadVoiceSidebar(){
   catch(e){ S.voiceSidebar={main:null, tasks:[]}; }
   renderConvs();
 }
-const TASK_STATUS_WORD = {queued:"排队中", running:"进行中", done:"已完成", failed:"失败", cancelled:"已取消"};
 // 项目分组拖拽排序(原生 HTML5 DnD:桌面拖起手感好,鼠标移动量够才触发,不影响原有点击展开)
 function bindProjDrag(h, hash){
   h.draggable = true;
@@ -3492,7 +3489,7 @@ function openConvMenu(btn, conv){
   closeConvMenu();
   convMenuBtn=btn; btn.classList.add("on");
   const m=el("div","convmenu"); m.style.visibility="hidden";
-  const convObj=S.convs.find(x=>x.conv===conv);
+  const convObj=findConv(conv);
   const isArch=!!(convObj&&convObj.archived);
   const arch=el("button","cmitem"); arch.innerHTML=ic("folder")+" "+(isArch?"取消归档":"归档");
   arch.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); toggleArchive(conv); };
@@ -3534,12 +3531,18 @@ document.addEventListener("click", closeProjMenu);
 $("#convList").addEventListener("scroll", closeProjMenu);
 $("#messages").addEventListener("scroll", ()=>{ updateScrollBtn(); }, {passive:true}); // 流式时用户上翻→显示↓按钮
 
+// 按 conv id 找会话对象:普通会话在 S.convs,语音后台任务行在 S.voiceSidebar.tasks
+function findConv(conv){
+  return S.convs.find(x=>x.conv===conv) || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv);
+}
 async function delConv(conv){
-  const idx=S.convs.findIndex(x=>x.conv===conv);
-  if(idx<0) return;
-  const removed=S.convs[idx], wasActive=(S.conv===conv);
+  // 语音任务行不在 S.convs 里,从各自所在的列表里乐观移除
+  const list = S.convs.some(x=>x.conv===conv) ? S.convs : ((S.voiceSidebar.tasks||[]).some(x=>x.conv===conv) ? S.voiceSidebar.tasks : null);
+  if(!list) return;
+  const idx=list.findIndex(x=>x.conv===conv);
+  const removed=list[idx], wasActive=(S.conv===conv);
   // 乐观假删:先从列表移除并立即重绘,不等服务器
-  S.convs.splice(idx,1); delete S.histCache[conv]; delete S.live[conv]; markLive(); renderConvs();
+  list.splice(idx,1); delete S.histCache[conv]; delete S.live[conv]; markLive(); renderConvs();
   if(wasActive) openConv(S.convs[0]?S.convs[0].conv:"main");   // 删的是当前会话→切到最近一个
   // 纯本地会话(从未发过消息)服务端没有记录,删完即止
   if(String(conv).startsWith("local-")) return;
@@ -3547,14 +3550,14 @@ async function delConv(conv){
     await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
   }catch(err){
     // 删除失败:回滚列表并提示
-    S.convs.splice(idx,0,removed); renderConvs();
+    list.splice(idx,0,removed); renderConvs();
     alert("删除失败,已恢复该会话");
   }
 }
 
 // ── 归档 + 会话筛选 ──────────────────────────────────────────────────────
 function toggleArchive(conv){
-  const c=S.convs.find(x=>x.conv===conv); if(!c) return;
+  const c=findConv(conv); if(!c) return;
   const next=!c.archived;
   c.archived=next; renderConvs();  // 乐观更新
   api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
