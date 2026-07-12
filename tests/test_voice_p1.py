@@ -509,6 +509,14 @@ def test_progress_text_maps_task_tools_to_human_words():
     assert executor.progress_text("Bash", {"command": "ls -la"}) == "正在执行:ls -la"
 
 
+def test_progress_text_carries_tool_specifics():
+    """动作行要带具体信息("正在查资料"这种笼统话没信息量,2026-07-12 用户反馈)。"""
+    assert executor.progress_text("WebSearch", {"query": "上海 明天 天气"}) == "正在搜索:上海 明天 天气"
+    assert executor.progress_text("WebFetch", {"url": "https://webkit.org/blog/13878/x"}) == "正在读网页:webkit.org"
+    assert executor.progress_text("Agent", {"description": "梳理项目结构"}) == "正在派子任务:梳理项目结构"
+    assert executor.progress_text("WebSearch", {}) == "正在搜网页"
+
+
 def test_cancel_queued_broadcasts_task_update(voice_db):
     """排队中取消不走 _run 的终态收尾(没有 task_done),得单独广播一次
     让状态条把这条摘掉。"""

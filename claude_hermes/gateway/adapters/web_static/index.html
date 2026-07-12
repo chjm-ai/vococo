@@ -1441,6 +1441,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             addMsg("me", ev.data.text || "");
             setStatus("思考中…", "thinking");
           } else if(ev.event === "text"){
+            stopWorkSound();  // AI 开口了,工作音效退场
             if(!aiEl) aiEl = addMsg("ai", "");
             full += ev.data.text || "";
             renderAi(aiEl, full);
@@ -1482,6 +1483,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   function showActivity(text){
     if(!text) return;
+    startWorkSound();  // AI 在干活(还没开口)→ 起工作音效,首个 text/回合结束时停
     if(!activityLineEl){ activityLineEl = addMsg("ai activity", text); return; }
     activityLineEl.querySelector(".msgtext").textContent = text;
     const row = activityLineEl.parentElement;
@@ -1489,7 +1491,44 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     row.scrollIntoView({block:"end"});
   }
 
-  function endActivity(){ activityLineEl = null; }
+  function endActivity(){ activityLineEl = null; stopWorkSound(); }
+
+  // ── 工作音效:AI 调工具期间循环播一段很轻的"双音滴答"(Web Audio 合成,无素材)。
+  //    音量刻意压到 0.05 且是纯音不是语音——本地 Web Audio 出声在 RTC 回环之外,
+  //    麦克风可能录到(2026-07-10 自回声教训),纯音短滴答不会被 ASR 转出文字,
+  //    VAD 阈值 0.7 也不至于被这个音量触发;真机若误触发,直接把这两个函数体清空即可。
+  let workSound = null;
+
+  function startWorkSound(){
+    if(workSound || !audioCtx) return;
+    if(audioCtx.state === "suspended"){ try{ audioCtx.resume(); }catch(e){} }
+    const master = audioCtx.createGain();
+    master.gain.value = 0.05;
+    master.connect(audioCtx.destination);
+    const blip = ()=>{
+      if(!audioCtx) return;
+      const t0 = audioCtx.currentTime;
+      [1318.5, 1760].forEach((freq, i)=>{  // E6→A6 上行小滴答,间隔 180ms
+        const osc = audioCtx.createOscillator();
+        const env = audioCtx.createGain();
+        osc.type = "sine"; osc.frequency.value = freq;
+        env.gain.setValueAtTime(0, t0 + i*0.18);
+        env.gain.linearRampToValueAtTime(1, t0 + i*0.18 + 0.02);
+        env.gain.exponentialRampToValueAtTime(0.001, t0 + i*0.18 + 0.22);
+        osc.connect(env); env.connect(master);
+        osc.start(t0 + i*0.18); osc.stop(t0 + i*0.18 + 0.25);
+      });
+    };
+    blip();
+    workSound = {timer: setInterval(blip, 1600), master};
+  }
+
+  function stopWorkSound(){
+    if(!workSound) return;
+    clearInterval(workSound.timer);
+    try{ workSound.master.disconnect(); }catch(e){}
+    workSound = null;
+  }
 
   function base64ToArrayBuffer(b64){
     const bin = atob(b64);
@@ -2268,6 +2307,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           const ev = parseSseBlock(block);
           if(!ev || gen !== omniTurnGen) continue;
           if(ev.event === "text"){
+            stopWorkSound();  // AI 开口了,工作音效退场
             if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
             currentTurnFull += ev.data.text || "";
             renderAi(currentTurnAiEl, currentTurnFull);
@@ -2421,6 +2461,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 麦克风一直"热着"、WS 一直连着,电量和隐私都不划算。
   function teardownCallResources(){
     releaseWakeLock();  // 挂断就不需要屏幕常亮了,让系统恢复正常锁屏节能
+    stopWorkSound();    // 工作音效跟着通话走,挂断即停(audioCtx 也会在下面 close)
     handsFreeActive = false;  // 先立 flag:让 scheduleOmniReconnect 的回调知道用户已挂断
     if(omniReconnectTimer){ clearTimeout(omniReconnectTimer); omniReconnectTimer = null; }
     stopOmniHandsFree();
