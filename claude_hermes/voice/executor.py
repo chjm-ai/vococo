@@ -12,6 +12,7 @@ import asyncio
 import re
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .. import config
 from ..core import worktree
@@ -69,7 +70,7 @@ def progress_text(name: str, tool_input: dict) -> str:
         return "正在使用工具"
     if name == "Bash":
         cmd = (ti.get("command") or "").strip()
-        return f"正在执行:{cmd[:30]}" if cmd else "正在执行命令"
+        return f"正在执行:{cmd[:40]}" if cmd else "正在执行命令"
     if name == "Read":
         p = ti.get("file_path") or ""
         return f"正在读取 {Path(p).name}" if p else "正在读取文件"
@@ -79,10 +80,15 @@ def progress_text(name: str, tool_input: dict) -> str:
     if name in ("Grep", "Glob"):
         pat = ti.get("pattern") or ""
         return f"正在搜索「{pat[:20]}」" if pat else "正在搜索"
-    if name in ("WebSearch", "WebFetch"):
-        return "正在查资料"
+    if name == "WebSearch":
+        q = (ti.get("query") or "").strip()
+        return f"正在搜索:{q[:24]}" if q else "正在搜网页"
+    if name == "WebFetch":
+        host = urlparse(ti.get("url") or "").netloc
+        return f"正在读网页:{host}" if host else "正在读网页"
     if name in ("Agent", "Task"):
-        return "正在派子任务"
+        desc = (ti.get("description") or "").strip()
+        return f"正在派子任务:{desc[:20]}" if desc else "正在派子任务"
     return f"正在使用 {name}"
 
 
