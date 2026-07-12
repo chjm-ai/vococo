@@ -806,11 +806,6 @@
     transition:color .15s ease}
   #clearVoiceCtxBtn .ic{width:20px;height:20px}
   #clearVoiceCtxBtn:hover,#clearVoiceCtxBtn:active{color:var(--err)}
-  /* P3 阶段二:Omni-Realtime WebRTC 连线测试的入口,开发/真机联调用,不是常驻功能 */
-  #omniTestLink{background:none;border:none;color:var(--dim);padding:4px;display:inline-flex;
-    text-decoration:none;transition:color .15s ease}
-  #omniTestLink .ic{width:20px;height:20px}
-  #omniTestLink:hover,#omniTestLink:active{color:var(--accent)}
   #tasksBadge{position:absolute;top:0;right:0;width:8px;height:8px;border-radius:50%;
     background:var(--accent);display:none}
   #tasksBadge.on{display:block}
@@ -896,19 +891,19 @@
   #status.listening{color:var(--err)}
   #status.thinking,#status.playing{color:var(--accent)}
 
-  /* 音色切换行:status 下方、callActions 上方,紧凑小字 */
-  #voiceRow{display:flex;align-items:center;gap:8px;pointer-events:auto;width:100%;max-width:260px}
-  #voiceRow label{font-size:12px;color:var(--dim2);white-space:nowrap;flex-shrink:0}
-  #voiceRow select{flex:1;background:var(--panel2);color:var(--text);border:1px solid var(--line);
-    border-radius:12px;padding:5px 10px;font-size:13px;outline:none;cursor:pointer;
-    -webkit-appearance:none;appearance:none;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6' fill='none' stroke='%23999' stroke-width='1.2'/%3E%3C/svg%3E");
-    background-repeat:no-repeat;background-position:right 10px center;padding-right:28px}
-  #voiceRow select:hover{border-color:var(--dim)}
-  #voiceRow select:focus{border-color:var(--accent)}
-
-  /* 静音/挂断同一行,两个圆形图标按钮并排 */
+  /* 静音/音色/挂断同一行,三个圆形图标按钮并排 */
   #callActions{display:flex;align-items:center;gap:16px}
+  /* 音色切换:静音和挂断中间的小圆钮,里面叠一个全透明的原生 select——
+     点图标即弹系统选择器,不再占通话界面一整行 */
+  #voicePickBtn{position:relative;width:46px;height:46px;border-radius:50%;
+    background:var(--panel2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;
+    transition:background .15s ease,color .15s ease,transform .12s ease}
+  #voicePickBtn span{display:inline-flex}
+  #voicePickBtn .ic{width:22px;height:22px}
+  #voicePickBtn:hover{background:var(--panel);color:var(--text)}
+  #voicePickBtn:active{transform:scale(.92)}
+  #voicePickBtn select{position:absolute;inset:0;width:100%;height:100%;opacity:0;
+    -webkit-appearance:none;appearance:none;border:none;cursor:pointer}
   #endHandsFreeBtn,#muteToggleBtn{width:46px;height:46px;border-radius:50%;border:none;
     background:var(--panel2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;
     padding:0;transition:background .15s ease,color .15s ease,transform .12s ease}
@@ -1104,7 +1099,6 @@ try{
       <button id="backLink" title="展开侧栏"></button>
       <span class="title">语音伴聊</span>
       <button id="clearVoiceCtxBtn" title="清空语音聊天上下文(AI 从头开始,历史保留)"></button>
-      <a id="omniTestLink" href="/voice/static/omni_test.html" target="_blank" title="Omni-Realtime WebRTC 连线测试(开发用)"></a>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
     <!-- 后台任务状态条:有排队/进行中任务才出现,见 renderTaskBar() -->
@@ -1128,12 +1122,12 @@ try{
           <canvas id="orbCanvas" width="640" height="200"></canvas>
         </div>
         <div id="status">连接中…</div>
-        <div id="voiceRow">
-          <label for="voiceSelect">音色</label>
-          <select id="voiceSelect"></select>
-        </div>
         <div id="callActions">
           <button id="muteToggleBtn" title="静音麦克风" aria-label="静音麦克风"></button>
+          <div id="voicePickBtn" title="切换音色">
+            <span id="voiceIcon"></span>
+            <select id="voiceSelect" aria-label="切换音色"></select>
+          </div>
           <button id="endHandsFreeBtn" title="结束通话" aria-label="结束通话"></button>
         </div>
       </div>
@@ -1222,6 +1216,7 @@ const ICONS = {
   copy:'<rect x="8" y="8" width="8" height="12" rx="1"/><path d="M16 10h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2v-2"/>',
   command:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 11l3 3-3 3"/><path d="M12 17h5"/>',
   panel:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18"/>',
+  voice:'<path d="M3 10v4"/><path d="M7 7v10"/><path d="M11 4v16"/><path d="M15 7v10"/><path d="M19 10v4"/>',
   mute:'<path d="M1 1l22 22"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><path d="M15 9.34V6a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2"/><path d="M19 10v2a7 7 0 0 1-.11 1.23"/><path d="M12 19v3"/><path d="M8 22h8"/>',
   stop:'<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
   tasks:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
@@ -1248,8 +1243,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   setIcon($("#stopIcon"), "stop");
   setIcon(endHandsFreeBtn, "close");  // 挂断按钮里放一个叉(×)
   setIcon(muteToggleBtn, "mic");  // 静音按钮:默认图标是"麦克风开着",点了切成"mute"
+  setIcon($("#voiceIcon"), "voice");  // 音色切换:静音/挂断中间的圆钮,点开原生选择器
   setIcon($("#clearVoiceCtxBtn"), "eraser");  // 顶栏:清空语音会话上下文
-  setIcon($("#omniTestLink"), "wrench");  // 顶栏:P3 阶段二 WebRTC 连线测试页入口(开发用)
   // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
   // 收起侧栏后还在原来的通话画面。真正挂断走下面的"结束"/"停"按钮;
   // 侧栏里切到别的会话才会触发 closeCallView()(见 openConv 收口处)。
@@ -1284,6 +1279,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniRecentReads=[];        // 最近念过的句子 [{text, ts}],转写结果跟它们比对
   let omniReadCurrentText="";    // 正在念/刚点播还没念完的那句原文(恢复现场用)
   let omniEchoRestore=null;      // barge-in 现场快照,事后判定是回声就恢复被砍的朗读
+  let omniEchoRestoreTimer=null; // 幽灵打断兜底:快照存下后转写迟迟不来就自动恢复(见 armOmniGhostTimer)
   const omniAudioEl = $("#omniRemoteAudio");
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
   // 修复都因为拿不到真机证据只能盲改后 revert。关键事件(session/response 生命周期、
@@ -2014,6 +2010,21 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }, delayMs || 1500);
   }
 
+  // 音色切换实时生效:音色是建连时随 session-init 带上的,已经出过声的会话改不了
+  // voice 字段——通话进行中切音色,唯一可靠的路径是把整条 Omni 连线拆掉重建
+  // (新音色在 startOmniHandsFree 里自然读到)。不在通话中就什么都不用做。
+  // 挂在 window 上是因为下拉框的接线(initVoiceSelect)在 IIFE 外面。
+  window.omniApplyVoiceChange = async function(){
+    if(!handsFreeActive || !omniPc) return;
+    vdbg("voice.switch", S.omniVoice);
+    setStatus("切换音色中…", "thinking");
+    stopOmniHandsFree();
+    let ok = false;
+    try{ ok = await startOmniHandsFree(); }
+    catch(e){ vdbg("voice.switch.fail", String(e)); }
+    if(!ok) scheduleOmniReconnect("voice-switch", 1500);
+  };
+
   // 高频 delta 事件不上报调试日志(每秒几十条会刷爆),其余事件类型全量上报——
   // 这是 2026-07-10 两次盲改教训换来的"仪表盘",别省。
   const OMNI_QUIET_EVENTS = new Set([
@@ -2053,11 +2064,16 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             omniTurnGen++;
             omniEchoRestore.newGen = omniTurnGen;
             cancelOmniReading("barge-in");
+            armOmniGhostTimer();
             // 任务完成播报(flushAnnouncements)仍走 Web Audio 播放,打断时一并停掉
             if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
             playQueue = []; playing = false; pausedForInterrupt = false;
             // 打断要的是干净的静音,不再叠一个确认音——那个音在切断的同一瞬间响起,
             // 听感上像"声音被调小"而不是"直接停",干脆去掉,靠下面的 capturingTone 提示就够。
+          } else {
+            // 非 barge-in 场景开口:清掉可能残留的旧快照(上一次幽灵打断没等到转写),
+            // 别让 matchOmniEcho 误以为这句话发生在 AI 说话期间。
+            omniEchoRestore = null;
           }
           if(wsState !== "capturing") playCapturingTone();
           wsState = "capturing";
@@ -2066,6 +2082,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           omniUserLiveEl = null;  // 新一句开始,上一句的实时字幕气泡不再更新
           break;
         case "conversation.item.input_audio_transcription.delta":
+          // 转写在正常推进,说明不是幽灵打断——兜底定时器往后顺延,别在用户
+          // 长句说到一半时误判超时、把砍掉的朗读恢复回来盖住真提问。
+          if(omniEchoRestore) armOmniGhostTimer();
           // 实时字幕:text 是已确认的前缀,stash 是还没定论的尾巴,拼起来显示
           // 让用户看到"正在识别"的感觉,句子说完由 .completed 用权威结果覆盖一次。
           if(!omniUserLiveEl) omniUserLiveEl = addMsg("me", "");
@@ -2074,7 +2093,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         case "conversation.item.input_audio_transcription.completed": {
           const transcript = (data.transcript || "").trim();
           const restore = omniEchoRestore; omniEchoRestore = null;
-          const echoSrc = transcript ? matchOmniEcho(transcript) : null;
+          if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
+          const echoSrc = transcript ? matchOmniEcho(transcript, !!restore) : null;
           if(echoSrc){
             // 是 AI 自己的回声:丢弃,不发 Claude、不算一轮对话,字幕气泡撤掉
             vdbg("echo.discard", {heard: transcript.slice(0, 24), read: echoSrc.slice(0, 24)});
@@ -2084,31 +2104,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
               omniUserLiveEl = null;
             }
             if(restore && omniTurnGen === restore.newGen && Date.now() - restore.ts < 15000){
-              // 恢复 barge-in 现场:回退 gen 让还在飞的 /voice/send 流(若没被砍到)
-              // 继续生效,被吞的句子塞回队列。不立刻 pump——阿里云对这条"用户语音"
-              // 还会自作主张生成一个 response(create_response 关不掉),马上 pump 会
-              // 跟它的 response.created 撞车导致 rp 计数错位;等它被 cancel 后的
-              // response.done 自然接力 pump,再留一个定时器兜底。
-              omniTurnGen = restore.prevGen;
-              if(restore.sentences.length) omniReadQueue = restore.sentences.concat(omniReadQueue);
-              vdbg("echo.restore", {q: omniReadQueue.length});
-              wsState = "thinking";
-              setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
-              if(handsFreeActive) orbWrap.className = "thinking";
-              const g = omniTurnGen;
-              setTimeout(() => { if(omniTurnGen === g){ pumpOmniRead(); maybeOmniIdle(); } }, 1200);
-              // 流已经被 gen 判定砍死的场景(reader.cancel 已执行),队列念完后
-              // omniTurnDone 永远等不来 true,状态会卡在"思考中"——超时强制收尾。
-              if(!omniTurnDone){
-                setTimeout(() => {
-                  if(omniTurnGen === g && wsState === "thinking" && !omniReadActive
-                     && omniReadPending === 0 && omniReadQueue.length === 0){
-                    omniTurnDone = true;
-                    vdbg("echo.restore.idle-fallback");
-                    maybeOmniIdle();
-                  }
-                }, 10000);
-              }
+              restoreOmniBargeIn(restore, "echo.restore");
             } else {
               // 没有可恢复的现场(回声出现在整轮念完之后):回到待命即可
               wsState = "thinking";  // 先离开 capturing,maybeOmniIdle 才肯接手收尾
@@ -2241,13 +2237,67 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     vdbg("read.cancel", reason);
   }
 
+  // 恢复 barge-in 现场(echo.discard 判回声后 / 幽灵打断兜底共用):回退 gen 让
+  // 还在飞的 /voice/send 流(若没被砍到)继续生效,被吞的句子塞回队列。不立刻
+  // pump——阿里云对这条"用户语音"还会自作主张生成一个 response(create_response
+  // 关不掉),马上 pump 会跟它的 response.created 撞车导致 rp 计数错位;等它被
+  // cancel 后的 response.done 自然接力 pump,再留一个定时器兜底。
+  function restoreOmniBargeIn(restore, tag){
+    omniTurnGen = restore.prevGen;
+    if(restore.sentences.length) omniReadQueue = restore.sentences.concat(omniReadQueue);
+    vdbg(tag, {q: omniReadQueue.length});
+    wsState = "thinking";
+    setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
+    if(handsFreeActive) orbWrap.className = "thinking";
+    const g = omniTurnGen;
+    setTimeout(() => { if(omniTurnGen === g){ pumpOmniRead(); maybeOmniIdle(); } }, 1200);
+    // 流已经被 gen 判定砍死的场景(reader.cancel 已执行),队列念完后
+    // omniTurnDone 永远等不来 true,状态会卡在"思考中"——超时强制收尾。
+    if(!omniTurnDone){
+      setTimeout(() => {
+        if(omniTurnGen === g && wsState === "thinking" && !omniReadActive
+           && omniReadPending === 0 && omniReadQueue.length === 0){
+          omniTurnDone = true;
+          vdbg(tag + ".idle-fallback");
+          maybeOmniIdle();
+        }
+      }, 10000);
+    }
+  }
+
+  // 幽灵打断兜底(2026-07-12 实锤 13:37:29:speech_started→barge-in 砍掉朗读,
+  // 之后只有 speech_stopped,transcription.completed 永远没来——大概率是无法
+  // 转写的回声/噪音):恢复逻辑只挂在 .completed 分支的话,被砍的剩余句子就永久
+  // 丢了,用户听不到回答后半段。快照存下 8 秒内没被任何转写结果消费,就视为
+  // 幽灵打断,自动恢复朗读现场;转写 delta 每次到达都重新武装,给真实长句让路。
+  function armOmniGhostTimer(){
+    if(omniEchoRestoreTimer) clearTimeout(omniEchoRestoreTimer);
+    const snap = omniEchoRestore;
+    if(!snap) return;
+    omniEchoRestoreTimer = setTimeout(() => {
+      omniEchoRestoreTimer = null;
+      if(omniEchoRestore !== snap || omniTurnGen !== snap.newGen) return;
+      omniEchoRestore = null;
+      // delta 到过但 completed 没来的半截字幕气泡一并撤掉
+      if(omniUserLiveEl){
+        const row = omniUserLiveEl.closest(".row");
+        if(row) row.remove();
+        omniUserLiveEl = null;
+      }
+      restoreOmniBargeIn(snap, "echo.ghost-restore");
+    }, 8000);
+  }
+
   // ── 回声过滤(2026-07-11 实锤,详见 memory/hermes-voice-omni-self-echo-rootcause)──
   // iOS 的回声消除是自适应滤波器,AI 每次开口后要 1~2 秒才收敛,这段"开口瞬间"
   // 的残留回声会漏进上行;阿里云只在 response 生成期间压 VAD,而生成比播放快,
-  // 播放尾巴不设防——所以偶发"AI 开头几个字被当成用户说话"(还可能带误转写,
-  // 如"那个"→"一个")。文字层兜底:转写结果跟最近念过的句子做【容错前缀】匹配。
-  // 只认前缀不认中段/句尾:实锤两例都是句子开头(AEC 收敛特性决定),且用户复述
-  // AI 句尾来确认("帮我装一个试试")是真实场景,不能误杀——中段命中只记日志观察。
+  // 播放尾巴不设防。每次重连(重启后尤甚)滤波器都从零收敛,第一轮回复漏得最凶,
+  // 且漏出的片段可以是句子【任意连续部位】,不只开头(2026-07-12 全日志 12 条
+  // 漏网实锤:"来叫你"=「好了叫你」句尾误转写、"做一个"=句尾、"去查"=中段)。
+  // 两层判据:① 容错前缀,不需要现场证据(保守,老逻辑);② 容错子串,仅当存在
+  // barge-in 现场(说话发生在 AI 正在说/在想时——12/12 实锤全满足)且句子刚念出
+  // (≤12s;2字词≤8s,实锤最大间隔 8.7s)才判——用户听完 AI 说完再复述句尾回答
+  // ("帮我装一个试试")没有 barge-in 现场,不会误杀。误吞由恢复朗读机制自愈。
   function normEchoText(s){
     return (s || "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
   }
@@ -2263,20 +2313,46 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }
     return prev[m];
   }
-  function matchOmniEcho(transcript){
+  // needle 相对 hay 任意连续片段的最小编辑距离(DP 首行置 0=起点任选):
+  // 抓"回声是句子中段/尾部"的场景,普通 editDist 只能比整串。
+  function fuzzySubstrDist(needle, hay){
+    const n = needle.length, m = hay.length;
+    let prev = new Array(m + 1).fill(0);
+    for(let i = 1; i <= n; i++){
+      const cur = [i];
+      for(let j = 1; j <= m; j++){
+        cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (needle[i-1] === hay[j-1] ? 0 : 1));
+      }
+      prev = cur;
+    }
+    return Math.min(...prev);
+  }
+  function matchOmniEcho(transcript, hasBargeIn){
     const t = normEchoText(transcript);
-    if(t.length < 3) return null;  // 太短没法可靠归因("嗯""好的"),放行
+    if(t.length < 2) return null;  // 单字没法归因("嗯"),放行
     const now = Date.now();
     omniRecentReads = omniRecentReads.filter(r => now - r.ts < 30000);
     const tol = t.length < 5 ? 0 : (t.length < 10 ? 1 : 2);
     for(const r of omniRecentReads){
       const cand = normEchoText(r.text);
       if(cand.length < t.length) continue;
-      // 容错前缀:转写长度上下浮动 2 字取最小编辑距离(误转写/多听漏听一个字)
-      for(let L = Math.max(3, t.length - 1); L <= Math.min(cand.length, t.length + 2); L++){
-        if(editDist(t, cand.slice(0, L)) <= tol) return r.text;
+      // 判据①容错前缀:转写长度上下浮动 2 字取最小编辑距离(误转写/多听漏听一个字)
+      if(t.length >= 3){
+        for(let L = Math.max(3, t.length - 1); L <= Math.min(cand.length, t.length + 2); L++){
+          if(editDist(t, cand.slice(0, L)) <= tol) return r.text;
+        }
       }
-      // 命中中段但不是前缀:按当前证据不算回声,只上报观察,攒数据再决定要不要收紧
+      // 判据②容错子串:必须有 barge-in 现场 + 句子刚念出,阈值按转写长度收紧
+      // (2 字词只认精确子串——编辑距离 1 会命中任何共享一个字的窗口,太松)
+      const age = now - r.ts;
+      if(hasBargeIn && age < (t.length < 3 ? 8000 : 12000)){
+        const subTol = t.length < 3 ? 0 : (t.length < 8 ? 1 : 2);
+        if(fuzzySubstrDist(t, cand) <= subTol){
+          vdbg("echo.substr-hit", {heard: t.slice(0, 24), age: Math.round(age / 100) / 10});
+          return r.text;
+        }
+      }
+      // 子串命中但没走到判据②(无现场/太久):不归因,只上报攒数据(idle 尾巴缺口)
       if(cand.includes(t)) vdbg("echo.suspect", {heard: t.slice(0, 24), read: r.text.slice(0, 24)});
     }
     return null;
@@ -2384,6 +2460,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     omniReadQueue = []; omniReadActive = false; omniReadPending = 0; omniAutoActive = false; omniTurnDone = true;
     omniReadSince = 0;
     omniRecentReads = []; omniReadCurrentText = ""; omniEchoRestore = null;
+    if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
   }
@@ -2803,6 +2880,8 @@ function initVoiceSelect(){
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({omni_voice: v})
       }).catch(()=>{});
+      // 通话进行中立即生效:重建 Omni 连线让新音色随 session-init 带上
+      if(window.omniApplyVoiceChange) window.omniApplyVoiceChange();
     }
   };
 }
