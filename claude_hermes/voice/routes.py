@@ -11,15 +11,13 @@ import base64
 import hmac
 import json
 import time
-from pathlib import Path
-
 from aiohttp import web
 
 from .. import config
 from ..core.agent import Done, TextDelta, ToolInput, ToolStarted
 from . import executor, notify, omni_realtime, prompts, session, stt, task_tools, tasks, tts
 
-_STATIC = Path(__file__).resolve().parent / "static"
+_VOICE_CONFIG_FILE = config.DATA_DIR / "voice_config.json"
 
 # 同一时刻只允许一轮语音对话在跑;stop 通过它通知正在跑的那一轮别再合成音频了。
 # _turn_task:正在持锁跑的那一轮 HTTP handler task——新一句话到达时用它抢占旧轮
@@ -43,6 +41,36 @@ def _next_filler() -> str:
     global _filler_idx
     _filler_idx = (_filler_idx + 1) % len(_FILLER_PHRASES)
     return _FILLER_PHRASES[_filler_idx]
+
+
+def _load_voice_config() -> None:
+    """从 data/voice_config.json 恢复持久化的音色设置(覆盖 .env 默认值)。
+    文件不存在或格式不对则静默忽略,保留 .env 的默认音色。"""
+    try:
+        raw = _VOICE_CONFIG_FILE.read_text(encoding="utf-8")
+        d = json.loads(raw)
+        voice = (d.get("omni_voice") or "").strip()
+        if voice:
+            config.VOICE_OMNI_VOICE = voice
+            print(f"[voice/config] 已从 {_VOICE_CONFIG_FILE} 恢复音色: {voice}", flush=True)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
+
+def _save_voice_config() -> None:
+    """把当前音色写进 data/voice_config.json。"""
+    try:
+        config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _VOICE_CONFIG_FILE.write_text(
+            json.dumps({"omni_voice": config.VOICE_OMNI_VOICE}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(f"[voice/config] 持久化音色失败: {exc}", flush=True)
+
+
+# 模块导入时从磁盘恢复持久化音色
+_load_voice_config()
 
 
 def _ok_token(request: web.Request) -> bool:
@@ -77,6 +105,30 @@ async def _handle_config(request: web.Request) -> web.Response:
         "vad_silence_ms": config.VOICE_OMNI_VAD_SILENCE_MS,
         # Omni 出声模式:session.update 的 voice 字段用。注意跟 VOICE_TTS_VOICE 是
         # 两张音色表,Cherry 在 Omni-Realtime 上会 400(2026-07-10 真机实锤)。
+        "omni_voice": config.VOICE_OMNI_VOICE,
+    })
+
+
+async def _handle_config_post(request: web.Request) -> web.Response:
+    """修改语音配置(目前只支持 omni_voice)。运行时生效,持久化到
+    data/voice_config.json。"""
+    if (g := _guard(request)) is not None:
+        return g
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "bad json"}, status=400)
+    voice = (body.get("omni_voice") or "").strip()
+    if not voice:
+        return web.json_response({"error": "omni_voice 不能为空"}, status=400)
+    config.VOICE_OMNI_VOICE = voice
+    _save_voice_config()
+    print(f"[voice/config] 音色已切换为: {voice}", flush=True)
+    return web.json_response({
+        "enabled": True,
+        "omni_enabled": config.VOICE_OMNI_ENABLED,
+        "vad_threshold": config.VOICE_VAD_THRESHOLD,
+        "vad_silence_ms": config.VOICE_OMNI_VAD_SILENCE_MS,
         "omni_voice": config.VOICE_OMNI_VOICE,
     })
 
@@ -420,6 +472,7 @@ def register_routes(app: web.Application) -> None:
         [
             web.get("/voice", _handle_page_gone),
             web.get("/voice/config", _handle_config),
+            web.post("/voice/config", _handle_config_post),
             web.post("/voice/stt", _handle_stt),
             web.post("/voice/send", _handle_send),
             web.post("/voice/stop", _handle_stop),
@@ -434,9 +487,9 @@ def register_routes(app: web.Application) -> None:
     )
     # /voice/ws(P2 全双工)已下线:Omni WebRTC 是免提唯一路径,前端 !omniEnabled
     # 时回落按住说话、不再连 WS(见 index.html startHandsFree)。实现本体 ws.py
-    # 的删除见 docs/adr/0004。
-    # 语音静态资源(omni_test.html 联调页、AudioWorklet 等)是公开静态资源
-    # (不含用户数据),不用 token 校验;aiohttp 自带 ETag/Last-Modified 协商
-    # 缓存与 Range 请求。
-    app.router.add_static("/voice/static/", _STATIC, show_index=False)
-    asyncio.ensure_future(executor.heal_after_restart())  # F11:重启自愈,一次性
+    # 的删除见 docs/adr/0004。/voice/static/(omni_test.html 联调页)也已随
+    # 顶栏扳手入口一起退休(2026-07-12)。
+    # F11 重启自愈(executor.heal_after_restart)不在这里触发,而在 web.py 的 serve
+    # 启动路径里——2026-07-12 事故:测试/脚本只要组建一次 app 就会触发孤儿回收,
+    # 把「别的进程里正在跑的任务」误标失败(后台任务收尾跑 pytest 时把自己标死)。
+    # register_routes 只做纯粹的路由挂载,不带副作用。

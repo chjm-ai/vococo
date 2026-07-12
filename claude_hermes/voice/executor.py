@@ -167,17 +167,28 @@ async def _run(task_id: str) -> None:
 
     if status == "cancelled":
         session_store.finish_turn(turn_id, "(任务已取消)")
-        tasks.set_status(task_id, "cancelled", progress_note="已取消")
+        ok = tasks.set_status(task_id, "cancelled", progress_note="已取消")
     elif status == "done":
         session_store.finish_turn(turn_id, result_text)
         if sdk_session_id:
             session_store.set_sdk_session_id(session_key, sdk_session_id)
-        tasks.finish(task_id, "done", result_text, await _summarize(result_text))
+        ok = tasks.finish(task_id, "done", result_text, await _summarize(result_text))
     else:
         session_store.finish_turn(turn_id, result_text or f"(执行失败:{error_note})")
         if sdk_session_id:
             session_store.set_sdk_session_id(session_key, sdk_session_id)
-        tasks.finish(task_id, "failed", result_text, _humanize_error(error_note) if error_note else "执行失败")
+        ok = tasks.finish(task_id, "failed", result_text, _humanize_error(error_note) if error_note else "执行失败")
+    if not ok:
+        # 收尾写库被状态机拒绝 = 任务状态被别处改过(误标/竞态)。响亮记录,
+        # 绝不静默吞掉——2026-07-12 事故里 finish('done') 被拒后无声无息,
+        # 任务板停在假"失败",排障多绕了一大圈。
+        row_now = tasks.get(task_id)
+        print(
+            f"[voice/task] ⚠️ 任务 {task_id} 收尾写 {status} 被拒,"
+            f"库里当前状态是 {row_now['status'] if row_now else '(已不存在)'}"
+            f"——它的状态被别的进程/路径改过,任务板显示的可能不是真实结局",
+            flush=True,
+        )
 
     await notify.on_task_terminal(task_id)
     _maybe_start_next()
@@ -241,6 +252,11 @@ async def cancel_and_wait(task_id: str, timeout: float = 10.0) -> None:
 
 
 async def heal_after_restart() -> None:
-    """serve 重启后调用一次(见 F11):把残留 queued/running 标失败,并按通知规则分发。"""
-    for row in tasks.mark_orphans_failed():
+    """serve 重启后调用一次(见 F11):把残留 queued/running 标失败,并按通知规则分发。
+
+    只在 web.py 的 serve 启动路径调用(不要挂到 register_routes 之类会被测试/脚本
+    顺带执行的地方);并排除本进程 _running 里的活任务——刚启动时它本来就是空的,
+    这层排除是防线,保证本函数无论被谁在什么时机调用都杀不了活人。
+    """
+    for row in tasks.mark_orphans_failed(exclude_ids=set(_running)):
         await notify.on_task_terminal(row["id"])

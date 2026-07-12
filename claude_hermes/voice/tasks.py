@@ -3,7 +3,8 @@
 独立连接、独立表,不碰 session.py 的 turns/meta 表,同一 db 文件下互不干扰
 (见 00-overview.md §2.4 的隔离约束)。
 
-状态机:queued → running → {done, failed, cancelled};running → cancelled。
+状态机:queued → running → {done, failed, cancelled};running → cancelled;
+另有一条纠错通道 failed → done(见 _ALLOWED_TRANSITIONS 的注释)。
 不允许的迁移(如 done → running)一律拒绝,由 set_status() 返回 False 体现。
 """
 from __future__ import annotations
@@ -23,7 +24,11 @@ _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "queued": frozenset({"running", "cancelled"}),
     "running": frozenset({"done", "failed", "cancelled"}),
     "done": frozenset(),
-    "failed": frozenset(),
+    # failed → done 是纠错通道:任务可能被外部误标失败(如另一进程的孤儿回收),
+    # 而真正执行它的 executor 随后如实收尾——executor 是任务结局的唯一权威,
+    # 它说 done 就允许把误标改回来。2026-07-12 事故:任务干完活提交了代码,
+    # finish('done') 却被终态规则静默拒绝,任务板永远停在"失败"。
+    "failed": frozenset({"done"}),
     "cancelled": frozenset(),
 }
 
@@ -130,10 +135,13 @@ def set_status(task_id: str, status: str, progress_note: str | None = None) -> b
 
 
 def set_progress(task_id: str, note: str) -> None:
-    """只更新 progress_note(不涉及状态迁移,不做状态机校验)。"""
+    """只更新 progress_note(不涉及状态迁移)。终态任务跳过不写——已结束的任务
+    不该再有"进展",而且失败原因(如"服务重启,任务中断")就存在 progress_note 里,
+    被迟到的进度更新覆盖掉会销毁排障线索(2026-07-12 事故教训)。"""
     c = _conn()
     c.execute(
-        "UPDATE tasks SET progress_note=?, updated_at=? WHERE id=?",
+        "UPDATE tasks SET progress_note=?, updated_at=? WHERE id=? "
+        "AND status NOT IN ('done','failed','cancelled')",
         (note, time.time(), task_id),
     )
     c.commit()
@@ -186,18 +194,20 @@ def snapshot_for_prompt(done_limit: int = 5, done_window_sec: int = 1800) -> str
     return "\n".join(lines)
 
 
-def mark_orphans_failed() -> list[dict]:
+def mark_orphans_failed(exclude_ids: set[str] | frozenset[str] = frozenset()) -> list[dict]:
     """serve 重启后调用一次:把残留的 queued/running 任务标记失败(不续跑)。
 
     queued 一并处理,而不只是 running——本进程的执行器队列在内存里,重启后
     queued 任务永远不会被捡起,放着不管会变成"永远排队中"的僵尸记录。
+    exclude_ids:本进程正在跑的任务 id,一律跳过——"孤儿"的定义是没有执行器
+    在管的任务,活任务绝不能标死(2026-07-12 "假失败"事故的防线之一)。
     返回受影响的任务(供 executor 逐个走通知分发)。
     """
     c = _conn()
     rows = c.execute(
         "SELECT * FROM tasks WHERE status IN ('queued','running')"
     ).fetchall()
-    orphans = [_row(r) for r in rows]
+    orphans = [_row(r) for r in rows if r["id"] not in exclude_ids]
     if orphans:
         now = time.time()
         c.executemany(

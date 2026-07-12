@@ -806,11 +806,6 @@
     transition:color .15s ease}
   #clearVoiceCtxBtn .ic{width:20px;height:20px}
   #clearVoiceCtxBtn:hover,#clearVoiceCtxBtn:active{color:var(--err)}
-  /* P3 阶段二:Omni-Realtime WebRTC 连线测试的入口,开发/真机联调用,不是常驻功能 */
-  #omniTestLink{background:none;border:none;color:var(--dim);padding:4px;display:inline-flex;
-    text-decoration:none;transition:color .15s ease}
-  #omniTestLink .ic{width:20px;height:20px}
-  #omniTestLink:hover,#omniTestLink:active{color:var(--accent)}
   #tasksBadge{position:absolute;top:0;right:0;width:8px;height:8px;border-radius:50%;
     background:var(--accent);display:none}
   #tasksBadge.on{display:block}
@@ -859,7 +854,7 @@
       var(--bg2) 0,
       var(--bg2) calc(env(safe-area-inset-bottom) + 96px),
       transparent calc(env(safe-area-inset-bottom) + 212px))}
-  #callFoot button,#callFoot #orbWrap{pointer-events:auto}
+  #callFoot button,#callFoot #orbWrap,#callFoot #voicePickBtn{pointer-events:auto}
   .btnicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
   .btnicon .ic{width:16px;height:16px}
   #stopBtn{border:1px solid var(--err);color:var(--err);background:none;border-radius:20px;
@@ -896,8 +891,19 @@
   #status.listening{color:var(--err)}
   #status.thinking,#status.playing{color:var(--accent)}
 
-  /* 静音/挂断同一行,两个圆形图标按钮并排 */
+  /* 静音/音色/挂断同一行,三个圆形图标按钮并排 */
   #callActions{display:flex;align-items:center;gap:16px}
+  /* 音色切换:静音和挂断中间的小圆钮,里面叠一个全透明的原生 select——
+     点图标即弹系统选择器,不再占通话界面一整行 */
+  #voicePickBtn{position:relative;width:46px;height:46px;border-radius:50%;
+    background:var(--panel2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;
+    transition:background .15s ease,color .15s ease,transform .12s ease}
+  #voicePickBtn span{display:inline-flex}
+  #voicePickBtn .ic{width:22px;height:22px}
+  #voicePickBtn:hover{background:var(--panel);color:var(--text)}
+  #voicePickBtn:active{transform:scale(.92)}
+  #voicePickBtn select{position:absolute;inset:0;width:100%;height:100%;opacity:0;
+    -webkit-appearance:none;appearance:none;border:none;cursor:pointer}
   #endHandsFreeBtn,#muteToggleBtn{width:46px;height:46px;border-radius:50%;border:none;
     background:var(--panel2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;
     padding:0;transition:background .15s ease,color .15s ease,transform .12s ease}
@@ -1093,7 +1099,6 @@ try{
       <button id="backLink" title="展开侧栏"></button>
       <span class="title">语音伴聊</span>
       <button id="clearVoiceCtxBtn" title="清空语音聊天上下文(AI 从头开始,历史保留)"></button>
-      <a id="omniTestLink" href="/voice/static/omni_test.html" target="_blank" title="Omni-Realtime WebRTC 连线测试(开发用)"></a>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
     <!-- 后台任务状态条:有排队/进行中任务才出现,见 renderTaskBar() -->
@@ -1119,6 +1124,10 @@ try{
         <div id="status">连接中…</div>
         <div id="callActions">
           <button id="muteToggleBtn" title="静音麦克风" aria-label="静音麦克风"></button>
+          <div id="voicePickBtn" title="切换音色">
+            <span id="voiceIcon"></span>
+            <select id="voiceSelect" aria-label="切换音色"></select>
+          </div>
           <button id="endHandsFreeBtn" title="结束通话" aria-label="结束通话"></button>
         </div>
       </div>
@@ -1207,6 +1216,7 @@ const ICONS = {
   copy:'<rect x="8" y="8" width="8" height="12" rx="1"/><path d="M16 10h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2v-2"/>',
   command:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 11l3 3-3 3"/><path d="M12 17h5"/>',
   panel:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18"/>',
+  voice:'<path d="M3 10v4"/><path d="M7 7v10"/><path d="M11 4v16"/><path d="M15 7v10"/><path d="M19 10v4"/>',
   mute:'<path d="M1 1l22 22"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><path d="M15 9.34V6a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2"/><path d="M19 10v2a7 7 0 0 1-.11 1.23"/><path d="M12 19v3"/><path d="M8 22h8"/>',
   stop:'<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
   tasks:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
@@ -1233,8 +1243,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   setIcon($("#stopIcon"), "stop");
   setIcon(endHandsFreeBtn, "close");  // 挂断按钮里放一个叉(×)
   setIcon(muteToggleBtn, "mic");  // 静音按钮:默认图标是"麦克风开着",点了切成"mute"
+  setIcon($("#voiceIcon"), "voice");  // 音色切换:静音/挂断中间的圆钮,点开原生选择器
   setIcon($("#clearVoiceCtxBtn"), "eraser");  // 顶栏:清空语音会话上下文
-  setIcon($("#omniTestLink"), "wrench");  // 顶栏:P3 阶段二 WebRTC 连线测试页入口(开发用)
   // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
   // 收起侧栏后还在原来的通话画面。真正挂断走下面的"结束"/"停"按钮;
   // 侧栏里切到别的会话才会触发 closeCallView()(见 openConv 收口处)。
@@ -1270,6 +1280,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniReadCurrentText="";    // 正在念/刚点播还没念完的那句原文(恢复现场用)
   let omniEchoRestore=null;      // barge-in 现场快照,事后判定是回声就恢复被砍的朗读
   let omniSpeechStartTs=0;       // 用户最近一次开口时刻(speech_started),回声归因用
+  let omniEchoRestoreTimer=null; // 幽灵打断兜底:快照存下后转写迟迟不来就自动恢复(见 armOmniGhostTimer)
   const omniAudioEl = $("#omniRemoteAudio");
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
   // 修复都因为拿不到真机证据只能盲改后 revert。关键事件(session/response 生命周期、
@@ -1508,10 +1519,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     master.connect(audioCtx.destination);
     const blip = ()=>{
       if(!audioCtx) return;
-      // AI 正在出声(Omni 朗读=wsState speaking / 旧链路 TTS=playing)时这一响跳过,
-      // 说完自动恢复——工作音效只填"干活且没声音"的空白,别叠在 AI 语音上
-      // (2026-07-12 用户反馈)。
-      if(wsState === "speaking" || playing) return;
+      // AI 正在出声/即将出声(Omni 朗读 response 在飞或已排队、自动回复在放、
+      // 旧链路 TTS 在播)时这一响跳过,声音一停自动恢复。不能看 wsState:它念完
+      // 垫场话后在整轮结束前一直挂在 speaking,会把干活期间的滴答全挡掉
+      // (2026-07-12 真机:查任务进度时听不到音效,就是这个原因)。
+      if(omniReadActive || omniReadPending > 0 || omniAutoActive || playing) return;
       // iOS 在 getUserMedia/通话音频会话切换时会把 AudioContext 挂起(state 变
       // suspended/interrupted),挂起期间 currentTime 不走,此刻排的音全落在过去
       // =无声——先 resume,这一轮跳过,下一轮 interval 再响。
@@ -1999,6 +2011,21 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }, delayMs || 1500);
   }
 
+  // 音色切换实时生效:音色是建连时随 session-init 带上的,已经出过声的会话改不了
+  // voice 字段——通话进行中切音色,唯一可靠的路径是把整条 Omni 连线拆掉重建
+  // (新音色在 startOmniHandsFree 里自然读到)。不在通话中就什么都不用做。
+  // 挂在 window 上是因为下拉框的接线(initVoiceSelect)在 IIFE 外面。
+  window.omniApplyVoiceChange = async function(){
+    if(!handsFreeActive || !omniPc) return;
+    vdbg("voice.switch", S.omniVoice);
+    setStatus("切换音色中…", "thinking");
+    stopOmniHandsFree();
+    let ok = false;
+    try{ ok = await startOmniHandsFree(); }
+    catch(e){ vdbg("voice.switch.fail", String(e)); }
+    if(!ok) scheduleOmniReconnect("voice-switch", 1500);
+  };
+
   // 高频 delta 事件不上报调试日志(每秒几十条会刷爆),其余事件类型全量上报——
   // 这是 2026-07-10 两次盲改教训换来的"仪表盘",别省。
   const OMNI_QUIET_EVENTS = new Set([
@@ -2039,6 +2066,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             omniTurnGen++;
             omniEchoRestore.newGen = omniTurnGen;
             cancelOmniReading("barge-in");
+            armOmniGhostTimer();
             // 任务完成播报(flushAnnouncements)仍走 Web Audio 播放,打断时一并停掉
             if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
             playQueue = []; playing = false; pausedForInterrupt = false;
@@ -2056,6 +2084,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           omniUserLiveEl = null;  // 新一句开始,上一句的实时字幕气泡不再更新
           break;
         case "conversation.item.input_audio_transcription.delta":
+          // 转写在正常推进,说明不是幽灵打断——兜底定时器往后顺延,别在用户
+          // 长句说到一半时误判超时、把砍掉的朗读恢复回来盖住真提问。
+          if(omniEchoRestore) armOmniGhostTimer();
           // 实时字幕:text 是已确认的前缀,stash 是还没定论的尾巴,拼起来显示
           // 让用户看到"正在识别"的感觉,句子说完由 .completed 用权威结果覆盖一次。
           if(!omniUserLiveEl) omniUserLiveEl = addMsg("me", "");
@@ -2064,6 +2095,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         case "conversation.item.input_audio_transcription.completed": {
           const transcript = (data.transcript || "").trim();
           const restore = omniEchoRestore; omniEchoRestore = null;
+          if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
           const echoSrc = transcript ? matchOmniEcho(transcript, !!restore) : null;
           if(echoSrc){
             // 是 AI 自己的回声:丢弃,不发 Claude、不算一轮对话,字幕气泡撤掉
@@ -2074,31 +2106,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
               omniUserLiveEl = null;
             }
             if(restore && omniTurnGen === restore.newGen && Date.now() - restore.ts < 15000){
-              // 恢复 barge-in 现场:回退 gen 让还在飞的 /voice/send 流(若没被砍到)
-              // 继续生效,被吞的句子塞回队列。不立刻 pump——阿里云对这条"用户语音"
-              // 还会自作主张生成一个 response(create_response 关不掉),马上 pump 会
-              // 跟它的 response.created 撞车导致 rp 计数错位;等它被 cancel 后的
-              // response.done 自然接力 pump,再留一个定时器兜底。
-              omniTurnGen = restore.prevGen;
-              if(restore.sentences.length) omniReadQueue = restore.sentences.concat(omniReadQueue);
-              vdbg("echo.restore", {q: omniReadQueue.length});
-              wsState = "thinking";
-              setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
-              if(handsFreeActive) orbWrap.className = "thinking";
-              const g = omniTurnGen;
-              setTimeout(() => { if(omniTurnGen === g){ pumpOmniRead(); maybeOmniIdle(); } }, 1200);
-              // 流已经被 gen 判定砍死的场景(reader.cancel 已执行),队列念完后
-              // omniTurnDone 永远等不来 true,状态会卡在"思考中"——超时强制收尾。
-              if(!omniTurnDone){
-                setTimeout(() => {
-                  if(omniTurnGen === g && wsState === "thinking" && !omniReadActive
-                     && omniReadPending === 0 && omniReadQueue.length === 0){
-                    omniTurnDone = true;
-                    vdbg("echo.restore.idle-fallback");
-                    maybeOmniIdle();
-                  }
-                }, 10000);
-              }
+              restoreOmniBargeIn(restore, "echo.restore");
             } else {
               // 没有可恢复的现场(回声出现在整轮念完之后):回到待命即可
               wsState = "thinking";  // 先离开 capturing,maybeOmniIdle 才肯接手收尾
@@ -2229,6 +2237,57 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     omniReadActive = false; omniReadPending = 0;
     omniReadCurrentText = "";
     vdbg("read.cancel", reason);
+  }
+
+  // 恢复 barge-in 现场(echo.discard 判回声后 / 幽灵打断兜底共用):回退 gen 让
+  // 还在飞的 /voice/send 流(若没被砍到)继续生效,被吞的句子塞回队列。不立刻
+  // pump——阿里云对这条"用户语音"还会自作主张生成一个 response(create_response
+  // 关不掉),马上 pump 会跟它的 response.created 撞车导致 rp 计数错位;等它被
+  // cancel 后的 response.done 自然接力 pump,再留一个定时器兜底。
+  function restoreOmniBargeIn(restore, tag){
+    omniTurnGen = restore.prevGen;
+    if(restore.sentences.length) omniReadQueue = restore.sentences.concat(omniReadQueue);
+    vdbg(tag, {q: omniReadQueue.length});
+    wsState = "thinking";
+    setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
+    if(handsFreeActive) orbWrap.className = "thinking";
+    const g = omniTurnGen;
+    setTimeout(() => { if(omniTurnGen === g){ pumpOmniRead(); maybeOmniIdle(); } }, 1200);
+    // 流已经被 gen 判定砍死的场景(reader.cancel 已执行),队列念完后
+    // omniTurnDone 永远等不来 true,状态会卡在"思考中"——超时强制收尾。
+    if(!omniTurnDone){
+      setTimeout(() => {
+        if(omniTurnGen === g && wsState === "thinking" && !omniReadActive
+           && omniReadPending === 0 && omniReadQueue.length === 0){
+          omniTurnDone = true;
+          vdbg(tag + ".idle-fallback");
+          maybeOmniIdle();
+        }
+      }, 10000);
+    }
+  }
+
+  // 幽灵打断兜底(2026-07-12 实锤 13:37:29:speech_started→barge-in 砍掉朗读,
+  // 之后只有 speech_stopped,transcription.completed 永远没来——大概率是无法
+  // 转写的回声/噪音):恢复逻辑只挂在 .completed 分支的话,被砍的剩余句子就永久
+  // 丢了,用户听不到回答后半段。快照存下 8 秒内没被任何转写结果消费,就视为
+  // 幽灵打断,自动恢复朗读现场;转写 delta 每次到达都重新武装,给真实长句让路。
+  function armOmniGhostTimer(){
+    if(omniEchoRestoreTimer) clearTimeout(omniEchoRestoreTimer);
+    const snap = omniEchoRestore;
+    if(!snap) return;
+    omniEchoRestoreTimer = setTimeout(() => {
+      omniEchoRestoreTimer = null;
+      if(omniEchoRestore !== snap || omniTurnGen !== snap.newGen) return;
+      omniEchoRestore = null;
+      // delta 到过但 completed 没来的半截字幕气泡一并撤掉
+      if(omniUserLiveEl){
+        const row = omniUserLiveEl.closest(".row");
+        if(row) row.remove();
+        omniUserLiveEl = null;
+      }
+      restoreOmniBargeIn(snap, "echo.ghost-restore");
+    }, 8000);
   }
 
   // ── 回声过滤(2026-07-11 实锤,详见 memory/hermes-voice-omni-self-echo-rootcause)──
@@ -2411,6 +2470,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     omniReadQueue = []; omniReadActive = false; omniReadPending = 0; omniAutoActive = false; omniTurnDone = true;
     omniReadSince = 0;
     omniRecentReads = []; omniReadCurrentText = ""; omniEchoRestore = null;
+    if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
   }
@@ -2619,6 +2679,7 @@ async function tryEnter(){
     await openConv(S.convs[0] ? S.convs[0].conv : "main");
     loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
     await secondary;
+    initVoiceSelect();
     renderConvs();  // 项目分组数据(loadProjects)到位后再补画一次侧栏分组
   }catch(e){ $("#loginErr").textContent="连接失败"; }
 }
@@ -2742,7 +2803,97 @@ async function loadVoiceOmniConfig(){
     if(typeof d.vad_threshold==="number") S.vadThreshold=d.vad_threshold;
     if(typeof d.vad_silence_ms==="number") S.vadSilenceMs=d.vad_silence_ms;
     if(d.omni_voice) S.omniVoice=d.omni_voice;
+    populateVoiceSelect();
   }catch(e){}
+}
+
+// Omni Realtime 音色列表(共59个),API value 是英文名,前端展示"英文(中文描述)"
+const VOICE_LIST = [
+  {v:"Tina",l:"Tina (甜甜 Tina - 默认)"},
+  {v:"Cindy",l:"Cindy (林欣宜 Cindy - 台湾嗲嗲)"},
+  {v:"Liora Mira",l:"Liora Mira (清欢)"},
+  {v:"Sunnybobi",l:"Sunnybobi (知芝)"},
+  {v:"Raymond",l:"Raymond (林川野)"},
+  {v:"Ethan",l:"Ethan (晨煦)"},
+  {v:"Theo Calm",l:"Theo Calm (予安)"},
+  {v:"Serena",l:"Serena (苏瑶)"},
+  {v:"Harvey",l:"Harvey (厚)"},
+  {v:"Maia",l:"Maia (四月)"},
+  {v:"Evan",l:"Evan (江晨)"},
+  {v:"Qiao",l:"Qiao (小乔妹)"},
+  {v:"Momo",l:"Momo (茉兔)"},
+  {v:"Wil",l:"Wil (伟伦)"},
+  {v:"Angel",l:"Angel (台普安琪)"},
+  {v:"Li Cassian",l:"Li Cassian (东厂李公公)"},
+  {v:"Mia",l:"Mia (舒然)"},
+  {v:"Joyner",l:"Joyner (阿逗)"},
+  {v:"Gold",l:"Gold (金爷)"},
+  {v:"Katerina",l:"Katerina (卡捷琳娜)"},
+  {v:"Ryan",l:"Ryan (甜茶)"},
+  {v:"Jennifer",l:"Jennifer (詹妮弗)"},
+  {v:"Aiden",l:"Aiden (艾登)"},
+  {v:"Mione",l:"Mione (敏儿)"},
+  {v:"Sunny",l:"Sunny (四川晴儿)"},
+  {v:"Dylan",l:"Dylan (北京晓东)"},
+  {v:"Eric",l:"Eric (四川程川)"},
+  {v:"Peter",l:"Peter (天津李彼得)"},
+  {v:"Joseph Chen",l:"Joseph Chen (阿樸伯)"},
+  {v:"Marcus",l:"Marcus (陕西秦川)"},
+  {v:"Li",l:"Li (南京老李)"},
+  {v:"Kiki",l:"Kiki (粤语阿清)"},
+  {v:"Rocky",l:"Rocky (粤语阿强)"},
+  {v:"Sohee",l:"Sohee (素熙)"},
+  {v:"Lenn",l:"Lenn (莱恩)"},
+  {v:"Ono Anna",l:"Ono Anna (小野杏)"},
+  {v:"Sonrisa",l:"Sonrisa (索尼莎)"},
+  {v:"Bodega",l:"Bodega (博德加)"},
+  {v:"Emilien",l:"Emilien (埃米尔安)"},
+  {v:"Andre",l:"Andre (安德雷)"},
+  {v:"Radio Gol",l:"Radio Gol (拉迪奥戈尔)"},
+  {v:"Alek",l:"Alek (阿列克)"},
+  {v:"Rizky",l:"Rizky (阿力)"},
+  {v:"Roya",l:"Roya (萝雅)"},
+  {v:"Arda",l:"Arda (阿尔达)"},
+  {v:"Hana",l:"Hana (阿幸)"},
+  {v:"Dolce",l:"Dolce (多尔切)"},
+  {v:"Jakub",l:"Jakub (雅克)"},
+  {v:"Griet",l:"Griet (海娜)"},
+  {v:"Eliška",l:"Eliška (艾莉卡)"},
+  {v:"Marina",l:"Marina (玛丽娜)"},
+  {v:"Siiri",l:"Siiri (西芮)"},
+  {v:"Ingrid",l:"Ingrid (林恩)"},
+  {v:"Sigga",l:"Sigga (海娜)"},
+  {v:"Bea",l:"Bea (雅娜)"},
+  {v:"Chloe",l:"Chloe (思怡)"},
+];
+function populateVoiceSelect(){
+  const sel = document.getElementById("voiceSelect");
+  if(!sel || sel.options.length) return;  // 已填充过
+  VOICE_LIST.forEach(item => {
+    const opt = document.createElement("option");
+    opt.value = item.v;
+    opt.textContent = item.l;
+    sel.appendChild(opt);
+  });
+  sel.value = S.omniVoice;
+}
+function initVoiceSelect(){
+  const sel = document.getElementById("voiceSelect");
+  if(!sel) return;
+  populateVoiceSelect();
+  sel.onchange = () => {
+    const v = sel.value;
+    if(v && v !== S.omniVoice){
+      S.omniVoice = v;  // 立即更新,不用等服务端确认
+      api("/voice/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({omni_voice: v})
+      }).catch(()=>{});
+      // 通话进行中立即生效:重建 Omni 连线让新音色随 session-init 带上
+      if(window.omniApplyVoiceChange) window.omniApplyVoiceChange();
+    }
+  };
 }
 function cmdMatches(prefix){
   const p=prefix.toLowerCase();
