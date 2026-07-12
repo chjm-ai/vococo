@@ -1279,6 +1279,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniRecentReads=[];        // 最近念过的句子 [{text, ts}],转写结果跟它们比对
   let omniReadCurrentText="";    // 正在念/刚点播还没念完的那句原文(恢复现场用)
   let omniEchoRestore=null;      // barge-in 现场快照,事后判定是回声就恢复被砍的朗读
+  let omniSpeechStartTs=0;       // 用户最近一次开口时刻(speech_started),回声归因用
   let omniEchoRestoreTimer=null; // 幽灵打断兜底:快照存下后转写迟迟不来就自动恢复(见 armOmniGhostTimer)
   const omniAudioEl = $("#omniRemoteAudio");
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
@@ -2051,6 +2052,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           // 用户开口:如果上一轮还在思考/播放,当成打断处理——取消进行中的朗读、
           // 清空朗读队列,让过期的 /voice/send 流式结果(见 sendOmniTurn 的 gen
           // 判断)不再生效。
+          omniSpeechStartTs = Date.now();
           if(wsState === "thinking" || wsState === "speaking"){
             // 先留现场再砍:几秒后转写出来若判定是回声(AI 自己的声音),要能把
             // 这里砍掉的朗读恢复回去——否则回声不止造一轮假对话,还把真回答的
@@ -2294,10 +2296,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 播放尾巴不设防。每次重连(重启后尤甚)滤波器都从零收敛,第一轮回复漏得最凶,
   // 且漏出的片段可以是句子【任意连续部位】,不只开头(2026-07-12 全日志 12 条
   // 漏网实锤:"来叫你"=「好了叫你」句尾误转写、"做一个"=句尾、"去查"=中段)。
-  // 两层判据:① 容错前缀,不需要现场证据(保守,老逻辑);② 容错子串,仅当存在
-  // barge-in 现场(说话发生在 AI 正在说/在想时——12/12 实锤全满足)且句子刚念出
-  // (≤12s;2字词≤8s,实锤最大间隔 8.7s)才判——用户听完 AI 说完再复述句尾回答
-  // ("帮我装一个试试")没有 barge-in 现场,不会误杀。误吞由恢复朗读机制自愈。
+  // 两层判据:① 容错前缀,不需要现场证据(保守,老逻辑);② 容错子串,要求存在
+  // "回声上下文"——barge-in 现场,或开口时刻落在句子的估算播放期内(补状态机
+  // 已回 idle 但音频还在播的尾巴缺口)。用户听完 AI 说完再复述句尾回答
+  // ("帮我装一个试试")开口在播放期之后,不会误杀。误吞由恢复朗读机制自愈。
   function normEchoText(s){
     return (s || "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
   }
@@ -2342,13 +2344,21 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           if(editDist(t, cand.slice(0, L)) <= tol) return r.text;
         }
       }
-      // 判据②容错子串:必须有 barge-in 现场 + 句子刚念出,阈值按转写长度收紧
-      // (2 字词只认精确子串——编辑距离 1 会命中任何共享一个字的窗口,太松)
+      // 判据②容错子串:回声上下文 = 有 barge-in 现场,或用户【开口时刻】落在该句
+      // 的估算播放期内(念速约 4 字/秒 → 250ms/字,叠加出声延迟+队列积压给 3s 余量)。
+      // 后者补 idle 尾巴缺口——21:48 实锤「放笔记的任务」:长句文字已生成完、状态机
+      // 回了 idle、音频还在播,回声到达时无快照,只看快照就漏。用真实开口时刻
+      // (speech_started)而非转写完成时刻,能把"AI 音频未停就被录进的回声"和
+      // "用户听完后才复述句尾的真实回答"区分开(回放实锤:同一个"你好"字面,用户
+      // 真说的在播放期外放行,5 秒后的回声版在播放期内拦下)。
+      // 2 字词只认精确子串——编辑距离 1 会命中任何共享一个字的窗口,太松。
       const age = now - r.ts;
-      if(hasBargeIn && age < (t.length < 3 ? 8000 : 12000)){
-        const subTol = t.length < 3 ? 0 : (t.length < 8 ? 1 : 2);
+      const onset = omniSpeechStartTs || now;
+      const inTail = onset - r.ts < cand.length * 250 + 3000;
+      if((hasBargeIn || inTail) && age < (t.length < 3 ? 8000 : 20000)){
+        const subTol = t.length < 3 ? 0 : (t.length < 6 ? 1 : 2);
         if(fuzzySubstrDist(t, cand) <= subTol){
-          vdbg("echo.substr-hit", {heard: t.slice(0, 24), age: Math.round(age / 100) / 10});
+          vdbg("echo.substr-hit", {heard: t.slice(0, 24), age: Math.round(age / 100) / 10, tail: inTail, barge: hasBargeIn});
           return r.text;
         }
       }
