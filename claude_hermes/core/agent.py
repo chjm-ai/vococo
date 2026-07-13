@@ -60,8 +60,9 @@ class ImageAttachment:
 
 
 # 各模型上下文窗口(token)。前缀匹配,未知默认 200k。
-# Opus 4.x/Sonnet 5 官方已标配 1M input;Sonnet 4.6/Haiku 4.5 仍为 200k。
+# Opus 4.x/Sonnet 5/Fable 5 官方已标配 1M input;Sonnet 4.6/Haiku 4.5 仍为 200k。
 _CONTEXT_WINDOWS: dict[str, int] = {
+    "claude-fable-5": 1_000_000,
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-opus-4-6": 1_000_000,
