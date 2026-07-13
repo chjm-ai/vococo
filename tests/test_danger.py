@@ -402,3 +402,60 @@ def test_env_scrub_removes_secrets(monkeypatch):
     config._scrub_env_secrets()
     assert os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") is None
     assert os.environ.get("TELEGRAM_BOT_TOKEN") is None
+
+
+# ── 敏感读取标注(安全评估 P0-1) ─────────────────────────────────────────────
+from claude_hermes.tools.danger import _sensitive_read_target, redact_secrets  # noqa: E402
+
+
+def test_sensitive_read_flags_ssh_private_key():
+    assert _sensitive_read_target("Read", {"file_path": "/Users/x/.ssh/id_rsa"})
+    assert _sensitive_read_target("Read", {"file_path": "/Users/x/.ssh/id_ed25519"})
+    assert _sensitive_read_target(
+        "Bash", {"command": "cat ~/.aws/credentials"}
+    )
+
+
+def test_sensitive_read_no_false_positive_on_pubkey_or_unrelated():
+    assert _sensitive_read_target("Read", {"file_path": "/Users/x/.ssh/id_rsa.pub"}) is None
+    assert _sensitive_read_target("Read", {"file_path": "/Users/x/project/README.md"}) is None
+    assert _sensitive_read_target("Bash", {"command": "ls -la ~/.ssh"}) is None
+
+
+def test_guard_hook_flags_but_does_not_deny_sensitive_read(capsys):
+    out = anyio.run(
+        lambda: pretool_guard_hook(
+            {"tool_name": "Read", "tool_input": {"file_path": "/Users/x/.ssh/id_rsa"}},
+            None,
+            {},
+        )
+    )
+    assert out == {}  # 只标注不拦
+    assert "安全标注" in capsys.readouterr().out
+
+
+# ── 输出侧敏感内容过滤(安全评估 P0-2) ───────────────────────────────────────
+def test_redact_known_secret_value(monkeypatch):
+    from claude_hermes import config
+
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "supersecrettoken123")
+    text = redact_secrets("你的口令是 supersecrettoken123,别泄露")
+    assert "supersecrettoken123" not in text
+    assert "已拦截" in text
+
+
+def test_redact_secret_shape_patterns():
+    pem = (
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+        "b3BlbnNzaC1rZXkAAAAA\n"
+        "-----END OPENSSH PRIVATE KEY-----"
+    )
+    assert "BEGIN OPENSSH" not in redact_secrets(pem)
+    assert "AKIAIOSFODNN7EXAMPLE" not in redact_secrets("key=AKIAIOSFODNN7EXAMPLE")
+    assert "ghp_" not in redact_secrets("token: ghp_" + "a" * 36)
+    assert "sk-ant-" not in redact_secrets("sk-ant-" + "b" * 30)
+
+
+def test_redact_no_false_positive_on_normal_text():
+    text = "今天天气不错,我们去 https://api.github.com 查一下 issue 吧"
+    assert redact_secrets(text) == text
