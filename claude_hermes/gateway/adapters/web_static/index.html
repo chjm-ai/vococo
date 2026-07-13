@@ -1548,16 +1548,18 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   function endActivity(){ activityLineEl = null; stopWorkSound(); }
 
   // ── 工作音效:AI 调工具期间循环播一段很轻的"双音滴答"(Web Audio 合成,无素材)。
-  //    音量刻意压到 0.05 且是纯音不是语音——本地 Web Audio 出声在 RTC 回环之外,
+  //    音量刻意压低且是纯音不是语音——本地 Web Audio 出声在 RTC 回环之外,
   //    麦克风可能录到(2026-07-10 自回声教训),纯音短滴答不会被 ASR 转出文字,
   //    VAD 阈值 0.7 也不至于被这个音量触发;真机若误触发,直接把这两个函数体清空即可。
+  //    0.15 太响(e212137 调上去过):它是唯一会和 AI 语音贴身共存的音效,
+  //    盖住语音尾字还可能漏进麦克风,回落到 0.08。
   let workSound = null;
 
   function startWorkSound(){
     if(workSound || !audioCtx) return;
     vdbg("worksound.start", audioCtx.state);  // 排障:state 不是 running 就是 iOS 把 ctx 挂起了
     const master = audioCtx.createGain();
-    master.gain.value = 0.15;
+    master.gain.value = 0.08;
     master.connect(audioCtx.destination);
     const blip = ()=>{
       if(!audioCtx) return;
@@ -1565,7 +1567,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       // 旧链路 TTS 在播)时这一响跳过,声音一停自动恢复。不能看 wsState:它念完
       // 垫场话后在整轮结束前一直挂在 speaking,会把干活期间的滴答全挡掉
       // (2026-07-12 真机:查任务进度时听不到音效,就是这个原因)。
-      if(omniReadActive || omniReadPending > 0 || omniAutoActive || playing) return;
+      // omniReadTailTimer/队列非空也要压:response.done 后标志已清零但 WebRTC
+      // 缓冲还有 ~400ms 尾音在播,这个窗口里响一声正好砸在 AI 的最后几个字上
+      // (2026-07-13 真机:执行任务时音效吞尾字,就是这个窗口)。
+      if(omniReadActive || omniReadPending > 0 || omniAutoActive || playing
+         || omniReadTailTimer || omniReadQueue.length > 0) return;
       // iOS 在 getUserMedia/通话音频会话切换时会把 AudioContext 挂起(state 变
       // suspended/interrupted),挂起期间 currentTime 不走,此刻排的音全落在过去
       // =无声——先 resume,这一轮跳过,下一轮 interval 再响。
