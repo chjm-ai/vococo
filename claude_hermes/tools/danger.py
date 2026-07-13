@@ -244,6 +244,86 @@ def classify(
     return ("allow", "", False)
 
 
+# ── 敏感读取标注:读到明显的凭据类文件时只打日志,不拦(安全评估 P0-1) ──────────
+# 现状缺口:_WRITE_TOOLS 越界检查只管「写」,Read/Bash 的「读」完全没有边界——一次
+# prompt injection 就能让 agent 去读 ~/.ssh 私钥、云厂商凭据,而不会被拦下或留痕。
+# 这里先补一道最低成本的观测:命中就 print 一行,不拦截(这类文件在正常运维里也会
+# 被合法读到,拦截误伤面太大)。真正兜底靠下面的 redact_secrets(输出侧最后一道)。
+_SENSITIVE_READ_TARGET = re.compile(
+    r"/\.ssh/(?!.*\.pub$)(id_\w+|[\w.-]*_rsa|[\w.-]*_dsa|[\w.-]*_ed25519|[\w.-]*_ecdsa)\b"
+    r"|/\.aws/credentials\b"
+    r"|/\.config/gcloud/"
+    r"|/\.netrc\b"
+    r"|\.(pem|p12|pfx)\b"
+)
+
+
+def _sensitive_read_target(tool_name: str, tool_input: dict) -> str | None:
+    """本次调用是否在读取明显的凭据类文件(SSH 私钥/云凭据/证书);命中则返回目标。"""
+    ti = tool_input or {}
+    if tool_name == "Read":
+        path = ti.get("file_path") or ""
+        return path if path and _SENSITIVE_READ_TARGET.search(path) else None
+    if tool_name == "Bash":
+        cmd = ti.get("command", "") or ""
+        return cmd[:200] if _SENSITIVE_READ_TARGET.search(cmd) else None
+    return None
+
+
+# ── 输出侧敏感内容过滤:回复发出前的最后一道扫描(安全评估 P0-2) ─────────────────
+# 现状缺口:就算上面那道读取被标注了,agent 把读到的内容原样写进回复文本里,此前
+# 没有任何一层会检查"这条回复是不是带了私钥/token"。两层过滤:
+#  ① 精确匹配我们自己当前持有的 secret 字面值(来自 config/providers)——零误伤,
+#    100% 覆盖"自己的密钥被读出来又说出去"这条最直接的路径。
+#  ② 通用形状规则(SSH/PEM 私钥块、常见云厂商 token 前缀)——兜底覆盖用户机器上
+#    其他服务的凭据,这些我们没有字面值可比对。
+# 这仍是 trip wire 不是边界:流式分片可能把一个 token 切成两半从而漏过一次(接入点
+# 在 gateway/core.py converse() 里,对累积文本做扫描,而非逐个 delta,已尽量降低
+# 被切开的概率);真正兜底仍是上面那道"别让 agent 读到不该读的东西"。
+_SECRET_SHAPE_PATTERNS: list[re.Pattern] = [
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),  # AWS access key id
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),  # GitHub 各类 token
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),  # Slack token
+    re.compile(r"\bsk-ant-[A-Za-z0-9-]{20,}\b"),  # Anthropic key
+]
+
+_REDACTED = "[已拦截:疑似密钥]"
+
+
+def _known_secret_values() -> list[str]:
+    """当前持有的自用 secret 字面值(供精确匹配)。长度<8 的不参与,误伤面太大。"""
+    vals = [
+        config.OAUTH_TOKEN,
+        config.TELEGRAM_BOT_TOKEN,
+        config.STT_API_KEY,
+        config.VAPID_PRIVATE_KEY,
+        config.WEB_AUTH_TOKEN,
+    ]
+    try:
+        from .. import providers
+
+        active = providers.load_active()
+        if active and active.api_key:
+            vals.append(active.api_key)
+    except Exception:
+        pass
+    return [v for v in vals if v and len(v) >= 8]
+
+
+def redact_secrets(text: str) -> str:
+    """回复文本发出前的最后一道扫描:命中已知密钥字面值/常见密钥形状则打码。"""
+    if not text:
+        return text
+    out = text
+    for val in _known_secret_values():
+        if val in out:
+            out = out.replace(val, _REDACTED)
+    for rx in _SECRET_SHAPE_PATTERNS:
+        out = rx.sub(_REDACTED, out)
+    return out
+
+
 def _deny(reason: str) -> dict:
     return {
         "hookSpecificOutput": {
@@ -487,6 +567,10 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
         outside = _writes_outside_worktree(tool_name, tool_input, current_cwd())
         if outside:
             return _deny_outside_worktree(*outside)
+        # 敏感读取:只标注不拦(见上方 _sensitive_read_target 说明)
+        sensitive = _sensitive_read_target(tool_name, tool_input)
+        if sensitive:
+            print(f"⚠️ [安全标注] 本轮读取了疑似凭据文件/命令:{sensitive}")
         verdict, reason, restrict = classify(tool_name, tool_input, cwd=current_cwd())
     except Exception:
         # 背景判定/classify 出错时无从判定 → 放行,不阻断正常流程(这些都不是安全判定本身)

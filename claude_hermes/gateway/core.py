@@ -291,11 +291,17 @@ async def converse(
             session_key=session_key,  # 传给保温池:同会话下一轮复用活 client,零冷启动
         ):
             if isinstance(ev, TextDelta):
-                timeline.text(ev.text)
-                await sink.text(ev.text)
+                # 输出侧敏感内容过滤(安全评估 P0-2)第一层:对单个 delta 扫一遍。
+                # 已知密钥字面值通常是一个不含空格的连续 token,一次 delta 里出现
+                # 的概率很高,这一层基本能兜住"自己的密钥被读出来又说出去"。
+                # 多行的 PEM 私钥块大概率会被流式拆成好几个 delta、这里扫不全,
+                # 靠下面 reply.text 落库前的第二层兜底(那时全文已完整)。
+                delta_text = danger.redact_secrets(ev.text)
+                timeline.text(delta_text)
+                await sink.text(delta_text)
                 # 节流:每 ~0.7s 把【当前累计全文】刷进 draft_text,供刷新兜底。
                 # ev.text 是 token 增量 → 必须累加;直接覆盖会让 draft 只剩最后一个 token。
-                _draft_full += ev.text
+                _draft_full += delta_text
                 now = time.monotonic()
                 if now - _draft_last_ts > 0.7:
                     session_store.flush_draft(turn_id, _draft_full)
@@ -361,6 +367,11 @@ async def converse(
         note = describe_llm_error(reply.api_error_status, reply.error)
         reply.text = f"{reply.text.rstrip()}\n\n{note}" if reply.text.strip() else note
     if reply is not None:
+        # 输出侧敏感内容过滤(安全评估 P0-2)第二层:此时全文已经完整,能兜住
+        # 上面逐 delta 扫描漏掉的、跨多个 delta 拼出来的多行私钥块。落库/sink.done
+        # 用的都是这之后的 reply.text,保证「最终定格」的版本(历史记录 + TG 编辑
+        # 后的最终消息)是干净的,即便直播过程中曾有一瞬间的原始分片。
+        reply.text = danger.redact_secrets(reply.text)
         # 最后一刷:确保 refresh 前最后 0.7s 内输出的内容也进 draft
         if _draft_full:
             session_store.flush_draft(turn_id, _draft_full)
