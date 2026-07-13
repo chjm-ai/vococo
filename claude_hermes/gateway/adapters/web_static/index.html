@@ -2091,7 +2091,7 @@ void main(){
     }
   }
 
-  function playTone(freq, durMs, shape){
+  function playTone(freq, durMs, shape, vol){
     if(!audioCtx) return;
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
@@ -2855,8 +2855,10 @@ void main(){
     endActivity();  // 新一轮开始:上一轮的动作行定格,别被这轮的动作原地改写
     omniReadQueue = []; omniTurnDone = false;
     vdbg("turn.start", text.slice(0, 40));
-    playSendTone();
-    playThinkingTone();
+    // 音效是锦上添花,不是核心链路——2026-07-13 playTone 漏参数的 bug 曾经因为
+    // 这两行没包 try/catch,直接把整轮请求(下面的 fetch)炸没了,表现成"识别到
+    // 文字、思考动效转了,但永远没回复"。音效以后再出岔子也不能拖垮真正的回复。
+    try{ playSendTone(); playThinkingTone(); }catch(e){ vdbg("turn.tone-error", String(e)); }
 
     const toIdle = () => {
       wsState = "idle"; setStatus(STATE_WORD.idle);
