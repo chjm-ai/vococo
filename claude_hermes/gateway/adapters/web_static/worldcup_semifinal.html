@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>2026世界杯半决赛 · 终极对决</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0a0a1a;
+    color: #e0e0e0;
+    min-height: 100vh;
+    padding-bottom: 60px;
+    overflow-x: hidden;
+  }
+
+  /* ── hero ── */
+  .hero {
+    position: relative;
+    padding: 48px 20px 36px;
+    text-align: center;
+    background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: -50%; left: -50%;
+    width: 200%; height: 200%;
+    background: radial-gradient(circle at 30% 40%, rgba(255,215,0,.06) 0%, transparent 60%),
+                radial-gradient(circle at 70% 60%, rgba(0,150,255,.06) 0%, transparent 60%);
+    animation: heroGlow 10s ease-in-out infinite alternate;
+  }
+  @keyframes heroGlow {
+    0% { transform: translate(0,0) rotate(0deg); }
+    100% { transform: translate(-20px,20px) rotate(5deg); }
+  }
+  .hero h1 {
+    position: relative;
+    font-size: 28px;
+    font-weight: 800;
+    background: linear-gradient(135deg, #f5e97b, #f0c040);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: 2px;
+  }
+  .hero .sub {
+    position: relative;
+    margin-top: 8px;
+    font-size: 13px;
+    color: rgba(255,255,255,.5);
+    letter-spacing: 4px;
+  }
+  .hero .badge {
+    position: relative;
+    display: inline-block;
+    margin-top: 16px;
+    padding: 6px 18px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(255,215,0,.12);
+    color: #f5d742;
+    border: 1px solid rgba(255,215,0,.25);
+  }
+
+  /* ── section ── */
+  .section { padding: 24px 16px; }
+  .section-title {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-title .num {
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f5e97b, #f0c040);
+    color: #0a0a1a;
+    font-size: 14px;
+    font-weight: 800;
+  }
+
+  /* ── match card ── */
+  .match-card {
+    background: linear-gradient(145deg, #14142a, #1a1a35);
+    border-radius: 16px;
+    padding: 24px 20px;
+    margin-bottom: 20px;
+    border: 1px solid rgba(255,255,255,.06);
+    box-shadow: 0 8px 32px rgba(0,0,0,.4);
+  }
+  .match-card .meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    font-size: 12px;
+    color: rgba(255,255,255,.4);
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .match-card .meta span { white-space: nowrap; }
+  .match-card .meta .highlight { color: #f5d742; }
+
+  .matchup {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .matchup .team {
+    flex: 1;
+    text-align: center;
+  }
+  .matchup .team .flag { font-size: 44px; display: block; margin-bottom: 4px; }
+  .matchup .team .name {
+    font-size: 18px;
+    font-weight: 700;
+    display: block;
+  }
+  .matchup .team .name.france { color: #002395; }
+  .matchup .team .name.spain { color: #c60b1e; }
+  .matchup .team .name.england { color: #cf081f; }
+  .matchup .team .name.argentina { color: #75aadb; }
+  .matchup .vs {
+    font-size: 22px;
+    font-weight: 800;
+    color: rgba(255,255,255,.2);
+    letter-spacing: 2px;
+    min-width: 40px;
+    text-align: center;
+  }
+  .matchup .value-grid {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    margin-top: 8px;
+  }
+  .matchup .value-grid .val {
+    font-size: 13px;
+    color: rgba(255,255,255,.6);
+  }
+  .matchup .value-grid .val strong {
+    display: block;
+    font-size: 16px;
+    color: #fff;
+    margin-top: 2px;
+  }
+
+  /* ── total value bar ── */
+  .value-bar-wrap {
+    margin-top: 16px;
+    padding: 12px 0;
+  }
+  .value-bar {
+    display: flex;
+    height: 32px;
+    border-radius: 8px;
+    overflow: hidden;
+    position: relative;
+  }
+  .value-bar .left {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    transition: width .6s ease;
+  }
+  .value-bar .left.france { background: linear-gradient(135deg, #002395, #ed2939); }
+  .value-bar .left.spain { background: linear-gradient(135deg, #c60b1e, #ffc400); }
+  .value-bar .left.england { background: linear-gradient(135deg, #cf081f, #fff); color: #0a0a1a; }
+  .value-bar .left.argentina { background: linear-gradient(135deg, #75aadb, #fff); color: #0a0a1a; }
+  .value-bar .right {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+  }
+  .value-bar .right.spain { background: linear-gradient(135deg, #c60b1e, #ffc400); }
+  .value-bar .right.argentina { background: linear-gradient(135deg, #75aadb, #fff); color: #0a0a1a; }
+  .value-bar .right.england { background: linear-gradient(135deg, #cf081f, #fff); color: #0a0a1a; }
+  .value-bar .right.france { background: linear-gradient(135deg, #002395, #ed2939); }
+
+  .value-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 6px;
+    font-size: 12px;
+    color: rgba(255,255,255,.5);
+  }
+
+  /* ── formation ── */
+  .formation-wrap {
+    margin-top: 20px;
+  }
+  .formation-title {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 10px;
+    color: rgba(255,255,255,.7);
+  }
+  .formation-grid {
+    display: flex;
+    gap: 16px;
+  }
+  .formation-grid .col {
+    flex: 1;
+  }
+  .formation-grid .col h4 {
+    font-size: 14px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .player-list {
+    list-style: none;
+  }
+  .player-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 7px 10px;
+    border-radius: 8px;
+    margin-bottom: 4px;
+    font-size: 13px;
+    background: rgba(255,255,255,.04);
+    transition: background .2s;
+  }
+  .player-list li:last-child { margin-bottom: 0; }
+  .player-list li .pos {
+    display: inline-block;
+    width: 22px;
+    height: 22px;
+    line-height: 22px;
+    text-align: center;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    margin-right: 8px;
+    flex-shrink: 0;
+  }
+  .player-list li .pos.gk { background: #f0c040; color: #0a0a1a; }
+  .player-list li .pos.def { background: #4a90d9; color: #fff; }
+  .player-list li .pos.mid { background: #50c878; color: #0a0a1a; }
+  .player-list li .pos.fwd { background: #e74c3c; color: #fff; }
+  .player-list li .name-wrap { flex: 1; }
+  .player-list li .name-wrap .en { font-size: 11px; color: rgba(255,255,255,.35); display: block; }
+  .player-list li .price {
+    font-size: 11px;
+    color: #f5d742;
+    white-space: nowrap;
+  }
+  .player-list li .price .euro { font-size: 9px; }
+
+  /* split columns */
+  .split {
+    display: flex;
+    gap: 12px;
+  }
+  .split .col { flex: 1; min-width: 0; }
+
+  /* ── star comparison ── */
+  .star-compare {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .star-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .star-row .player-a, .star-row .player-b {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .star-row .player-b { flex-direction: row-reverse; text-align: right; }
+  .star-row .avatar {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center; justify-content: center;
+    font-size: 20px;
+    flex-shrink: 0;
+    background: rgba(255,255,255,.06);
+  }
+  .star-row .info .name { font-size: 14px; font-weight: 600; }
+  .star-row .info .en-name { font-size: 10px; color: rgba(255,255,255,.35); }
+  .star-row .info .val { font-size: 13px; color: #f5d742; font-weight: 600; }
+  .star-row .vs-badge {
+    width: 32px;
+    text-align: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: rgba(255,255,255,.2);
+    flex-shrink: 0;
+  }
+
+  /* ── position comparison bars ── */
+  .pos-compare { margin-top: 16px; }
+  .pos-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .pos-row .label {
+    width: 60px;
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .pos-row .bar-track {
+    flex: 1;
+    display: flex;
+    height: 20px;
+    border-radius: 6px;
+    overflow: hidden;
+    position: relative;
+  }
+  .pos-row .bar-track .left-bar, .pos-row .bar-track .right-bar {
+    display: flex;
+    align-items: center;
+    font-size: 10px;
+    font-weight: 600;
+    transition: width .6s ease;
+    padding: 0 6px;
+  }
+  .pos-row .bar-track .left-bar { justify-content: flex-start; }
+  .pos-row .bar-track .right-bar { justify-content: flex-end; }
+  .bar-def { background: #4a90d9; }
+  .bar-mid { background: #50c878; }
+  .bar-fwd { background: #e74c3c; }
+  .bar-gk { background: #f0c040; }
+  .bar-other { background: #888; }
+
+  /* ── billionaires table ── */
+  .billion-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .billion-table th {
+    text-align: left;
+    padding: 10px 8px;
+    font-size: 11px;
+    color: rgba(255,255,255,.4);
+    font-weight: 600;
+    border-bottom: 1px solid rgba(255,255,255,.08);
+  }
+  .billion-table td {
+    padding: 10px 8px;
+    border-bottom: 1px solid rgba(255,255,255,.04);
+  }
+  .billion-table tr:last-child td { border-bottom: none; }
+  .billion-table .flag-cell { font-size: 20px; }
+  .billion-table .rank-num {
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    font-size: 11px;
+    font-weight: 700;
+    background: rgba(255,215,0,.1);
+    color: #f5d742;
+  }
+  .billion-table .player-cell .en-p { font-size: 10px; color: rgba(255,255,255,.35); }
+  .billion-table .price-cell { font-weight: 700; color: #f5d742; }
+  .billion-table .team-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .team-tag.fra { background: rgba(0,35,149,.3); color: #4a7dff; }
+  .team-tag.esp { background: rgba(198,11,30,.3); color: #ff6b6b; }
+  .team-tag.eng { background: rgba(207,8,31,.3); color: #ff6b6b; }
+  .team-tag.arg { background: rgba(117,170,219,.3); color: #75aadb; }
+
+  /* ── info bar ── */
+  .info-bar {
+    margin-top: 16px;
+    padding: 12px 16px;
+    background: rgba(255,255,255,.04);
+    border-radius: 10px;
+    font-size: 12px;
+    color: rgba(255,255,255,.5);
+    line-height: 1.6;
+  }
+  .info-bar strong { color: rgba(255,255,255,.7); }
+
+  /* ── footer ── */
+  .footer {
+    text-align: center;
+    padding: 32px 16px;
+    font-size: 11px;
+    color: rgba(255,255,255,.25);
+    line-height: 1.8;
+  }
+  .footer a { color: rgba(255,215,0,.4); text-decoration: none; }
+
+  /* ── responsiveness ── */
+  @media (max-width: 420px) {
+    .hero h1 { font-size: 22px; }
+    .matchup .team .flag { font-size: 36px; }
+    .matchup .team .name { font-size: 15px; }
+    .matchup .vs { font-size: 18px; min-width: 32px; }
+    .formation-grid { flex-direction: column; }
+    .player-list li { font-size: 12px; padding: 6px 8px; }
+    .split { flex-direction: column; }
+    .star-row .avatar { width: 32px; height: 32px; font-size: 16px; }
+    .star-row .info .name { font-size: 12px; }
+    .pos-row .label { width: 44px; font-size: 10px; }
+    .pos-row .bar-track .left-bar, .pos-row .bar-track .right-bar { font-size: 9px; padding: 0 4px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══ HERO ═══ -->
+<div class="hero">
+  <h1>🏆 2026 世界杯 · 半决赛</h1>
+  <div class="sub">美加墨 · 终极四强</div>
+  <div class="badge">⚡ 四队总身价 €52.1 亿</div>
+</div>
+
+<!-- ═══ 半决赛 1: 法国 vs 西班牙 ═══ -->
+<div class="section">
+  <div class="section-title"><span class="num">1</span> 🇫🇷 法国 vs 西班牙 🇪🇸</div>
+  <div class="match-card">
+    <div class="meta">
+      <span>📅 <span class="highlight">7月15日</span> 03:00</span>
+      <span>📍 达拉斯 · AT&amp;T 体育场</span>
+      <span>💰 合计 <span class="highlight">€27.4 亿</span></span>
+    </div>
+    <div class="matchup">
+      <div class="team">
+        <span class="flag">🇫🇷</span>
+        <span class="name france">法国</span>
+        <div class="value-grid">
+          <div class="val">全队身价<strong>€15.2 亿</strong></div>
+        </div>
+      </div>
+      <div class="vs">VS</div>
+      <div class="team">
+        <span class="flag">🇪🇸</span>
+        <span class="name spain">西班牙</span>
+        <div class="value-grid">
+          <div class="val">全队身价<strong>€12.2 亿</strong></div>
+        </div>
+      </div>
+    </div>
+    <div class="value-bar-wrap">
+      <div class="value-bar">
+        <div class="left france" style="width:55.5%">€15.2B</div>
+        <div class="right spain" style="width:44.5%">€12.2B</div>
+      </div>
+      <div class="value-labels"><span>法国 +€3 亿</span><span>西班牙</span></div>
+    </div>
+
+    <!-- 预计首发 -->
+    <div class="formation-wrap">
+      <div class="formation-title">⚽ 预计首发阵容</div>
+      <div class="formation-grid">
+        <div class="col">
+          <h4>🇫🇷 法国 4-3-3</h4>
+          <ul class="player-list">
+            <li><span class="pos gk">GK</span><span class="name-wrap">迈尼昂 <span class="en">Maignan</span></span><span class="price">€20M</span></li>
+            <li><span class="pos def">RB</span><span class="name-wrap">孔德 <span class="en">Koundé</span></span><span class="price">€60M</span></li>
+            <li><span class="pos def">CB</span><span class="name-wrap">于帕梅卡诺 <span class="en">Upamecano</span></span><span class="price">€70M</span></li>
+            <li><span class="pos def">CB</span><span class="name-wrap">萨利巴 <span class="en">Saliba</span></span><span class="price">€100M</span></li>
+            <li><span class="pos def">LB</span><span class="name-wrap">迪涅 <span class="en">Digne</span></span><span class="price">€6M</span></li>
+            <li><span class="pos mid">CM</span><span class="name-wrap">科内 <span class="en">Koné</span></span><span class="price">€50M</span></li>
+            <li><span class="pos mid">CM</span><span class="name-wrap">楚阿梅尼 <span class="en">Tchouaméni</span></span><span class="price">€70M</span></li>
+            <li><span class="pos mid">CM</span><span class="name-wrap">拉比奥 <span class="en">Rabiot</span></span><span class="price">€18M</span></li>
+            <li><span class="pos fwd">RW</span><span class="name-wrap">登贝莱 <span class="en">Dembélé</span></span><span class="price">€100M</span></li>
+            <li><span class="pos fwd">CF</span><span class="name-wrap">姆巴佩 <span class="en">Mbappé</span> ⭐</span><span class="price">€180M</span></li>
+            <li><span class="pos fwd">LW</span><span class="name-wrap">奥利塞 <span class="en">Olise</span></span><span class="price">€150M</span></li>
+          </ul>
+        </div>
+        <div class="col">
+          <h4>🇪🇸 西班牙 4-2-3-1</h4>
+          <ul class="player-list">
+            <li><span class="pos gk">GK</span><span class="name-wrap">乌奈·西蒙 <span class="en">Unai Simón</span></span><span class="price">€22M</span></li>
+            <li><span class="pos def">RB</span><span class="name-wrap">波罗 <span class="en">Porro</span></span><span class="price">€35M</span></li>
+            <li><span class="pos def">CB</span><span class="name-wrap">库巴西 <span class="en">Cubarsí</span></span><span class="price">€80M</span></li>
+            <li><span class="pos def">CB</span><span class="name-wrap">拉波尔特 <span class="en">Laporte</span></span><span class="price">€8M</span></li>
+            <li><span class="pos def">LB</span><span class="name-wrap">库库雷利亚 <span class="en">Cucurella</span></span><span class="price">€50M</span></li>
+            <li><span class="pos mid">DM</span><span class="name-wrap">罗德里 <span class="en">Rodri</span> 🏅</span><span class="price">€50M</span></li>
+            <li><span class="pos mid">DM</span><span class="name-wrap">苏维门迪 <span class="en">Zubimendi</span></span><span class="price">€75M</span></li>
+            <li><span class="pos fwd">AM</span><span class="name-wrap">奥尔莫 <span class="en">Olmo</span></span><span class="price">€60M</span></li>
+            <li><span class="pos fwd">AM</span><span class="name-wrap">佩德里 <span class="en">Pedri</span> ⭐</span><span class="price">€150M</span></li>
+            <li><span class="pos fwd">RW</span><span class="name-wrap">亚马尔 <span class="en">Yamal</span> ⭐</span><span class="price">€200M</span></li>
+            <li><span class="pos fwd">CF</span><span class="name-wrap">奥亚萨瓦尔 <span class="en">Oyarzabal</span></span><span class="price">€25M</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- 身价对比 -->
+    <div class="pos-compare">
+      <div class="formation-title">📊 位置身价对比</div>
+      <div class="pos-row">
+        <div class="label">前锋</div>
+        <div class="bar-track">
+          <div class="left-bar bar-fwd" style="width:64%">€7.5 亿</div>
+          <div class="right-bar bar-fwd" style="width:36%">€4.2 亿</div>
+        </div>
+      </div>
+      <div class="pos-row">
+        <div class="label">中场</div>
+        <div class="bar-track">
+          <div class="left-bar bar-mid" style="width:43%">€3.1 亿</div>
+          <div class="right-bar bar-mid" style="width:57%">€4.2 亿</div>
+        </div>
+      </div>
+      <div class="pos-row">
+        <div class="label">后卫</div>
+        <div class="bar-track">
+          <div class="left-bar bar-def" style="width:58%">€4.0 亿</div>
+          <div class="right-bar bar-def" style="width:42%">€2.9 亿</div>
+        </div>
+      </div>
+      <div class="pos-row">
+        <div class="label">门将</div>
+        <div class="bar-track">
+          <div class="left-bar bar-gk" style="width:37%">€0.6 亿</div>
+          <div class="right-bar bar-gk" style="width:63%">€1.0 亿</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 核心对决 -->
+    <div class="formation-title" style="margin-top:20px">⚡ 核心球员对决</div>
+    <div class="star-compare">
+      <div class="star-row">
+        <div class="player-a">
+          <div class="avatar">🇫🇷</div>
+          <div class="info"><div class="name">姆巴佩 <span class="val">€1.8 亿</span></div><div class="en-name">Kylian Mbappé · 8球3助</div></div>
+        </div>
+        <div class="vs-badge">VS</div>
+        <div class="player-b">
+          <div class="avatar">🇪🇸</div>
+          <div class="info"><div class="name">亚马尔 <span class="val">€2 亿</span></div><div class="en-name">Lamine Yamal · 1球 过人王</div></div>
+        </div>
+      </div>
+      <div class="star-row">
+        <div class="player-a">
+          <div class="avatar">🇫🇷</div>
+          <div class="info"><div class="name">奥利塞 <span class="val">€1.5 亿</span></div><div class="en-name">Michael Olise · 5助攻</div></div>
+        </div>
+        <div class="vs-badge">VS</div>
+        <div class="player-b">
+          <div class="avatar">🇪🇸</div>
+          <div class="info"><div class="name">佩德里 <span class="val">€1.5 亿</span></div><div class="en-name">Pedri · 中场大脑</div></div>
+        </div>
+      </div>
+      <div class="star-row">
+        <div class="player-a">
+          <div class="avatar">🇫🇷</div>
+          <div class="info"><div class="name">登贝莱 <span class="val">€1 亿</span></div><div class="en-name">Dembélé · 5球 2025金球</div></div>
+        </div>
+        <div class="vs-badge">VS</div>
+        <div class="player-b">
+          <div class="avatar">🇪🇸</div>
+          <div class="info"><div class="name">罗德里 <span class="val">€5,000 万</span></div><div class="en-name">Rodri · 2024金球奖</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 半决赛 2: 英格兰 vs 阿根廷 ═══ -->
+<div class="section">
+  <div class="section-title"><span class="num">2</span> 🏴󠁧󠁢󠁥󠁮󠁧󠁿 英格兰 vs 阿根廷 🇦🇷</div>
+  <div class="match-card">
+    <div class="meta">
+      <span>📅 <span class="highlight">7月16日</span> 03:00</span>
+      <span>📍 亚特兰大 · 梅赛德斯-奔驰体育场</span>
+      <span>💰 合计 <span class="highlight">€21.7 亿</span></span>
+    </div>
+    <div class="matchup">
+      <div class="team">
+        <span class="flag">🏴󠁧󠁢󠁥󠁮󠁧󠁿</span>
+        <span class="name england">英格兰</span>
+        <div class="value-grid">
+          <div class="val">全队身价<strong>€13.6 亿</strong></div>
+        </div>
+      </div>
+      <div class="vs">VS</div>
+      <div class="team">
+        <span class="flag">🇦🇷</span>
+        <span class="name argentina">阿根廷</span>
+        <div class="value-grid">
+          <div class="val">全队身价<strong>€8.1 亿</strong></div>
+        </div>
+      </div>
+    </div>
+    <div class="value-bar-wrap">
+      <div class="value-bar">
+        <div class="left england" style="width:62.7%">€13.6B</div>
+        <div class="right argentina" style="width:37.3%">€8.1B</div>
+      </div>
+      <div class="value-labels"><span>英格兰 +€5.5 亿</span><span>阿根廷</span></div>
+    </div>
+
+    <!-- 预计首发 -->
+    <div class="formation-wrap">
+      <div class="formation-title">⚽ 预计首发阵容</div>
+      <div class="formation-grid">
+        <div class="col">
+          <h4>🏴󠁧󠁢󠁥󠁮󠁧󠁿 英格兰 4-3-3</h4>
+          <ul class="player-list">
+            <li><span class="pos gk">GK</span><span class="name-wrap">皮克福德 <span class="en">Pickford</span></span><span class="price">€13M</span></li>
+            <li><span class="pos def">RB</span><span class="name-wrap">沃克 <span class="en">Walker</span></span><span class="price">—</span></li>
+            <li><span class="pos def">CB</span><span class="name-wrap">斯通斯 <span class="en">Stones</span></span><span class="price">€12M</span></li>
+            <li><span class="pos def">CB</span><span class="name-wrap">格伊 <span class="en">Guéhi</span></span><span class="price">€70M</span></li>
+            <li><span class="pos def">LB</span><span class="name-wrap">卢克·肖 <span class="en">Shaw</span></span><span class="price">—</span></li>
+            <li><span class="pos mid">CM</span><span class="name-wrap">贝林厄姆 <span class="en">Bellingham</span> ⭐</span><span class="price">€130M</span></li>
+            <li><span class="pos mid">CM</span><span class="name-wrap">赖斯 <span class="en">Rice</span></span><span class="price">€120M</span></li>
+            <li><span class="pos mid">CM</span><span class="name-wrap">梅努 <span class="en">Mainoo</span></span><span class="price">€70M</span></li>
+            <li><span class="pos fwd">RW</span><span class="name-wrap">萨卡 <span class="en">Saka</span></span><span class="price">€110M</span></li>
+            <li><span class="pos fwd">CF</span><span class="name-wrap">凯恩 <span class="en">Kane</span> ⭐</span><span class="price">€60M</span></li>
+            <li><span class="pos fwd">LW</span><span class="name-wrap">戈登 <span class="en">Gordon</span></span><span class="price">€65M</span></li>
+          </ul>
+        </div>
+        <div class="col">
+          <h4>🇦🇷 阿根廷 4-3-3</h4>
+          <ul class="player-list">
+            <li><span class="pos gk">GK</span><span class="name-wrap">大马丁 <span class="en">Dibu Martínez</span></span><span class="price">€15M</span></li>
+            <li><span class="pos def">RB</span><span class="name-wrap">莫利纳 <span class="en">Molina</span></span><span class="price">€15M</span></li>
+            <li><span class="pos def">CB</span><span class="name-wrap">罗梅罗 <span class="en">Cuti Romero</span></span><span class="price">€48M</span></li>
+            <li><span class="pos def">CB</span><span class="name-wrap">奥塔门迪 <span class="en">Otamendi</span></span><span class="price">€1M</span></li>
+            <li><span class="pos def">LB</span><span class="name-wrap">塔利亚菲科 <span class="en">Tagliafico</span></span><span class="price">€5M</span></li>
+            <li><span class="pos mid">CM</span><span class="name-wrap">德保罗 <span class="en">De Paul</span></span><span class="price">€15M</span></li>
+            <li><span class="pos mid">CM</span><span class="name-wrap">恩佐 <span class="en">Enzo Fernández</span></span><span class="price">€90M</span></li>
+            <li><span class="pos mid">CM</span><span class="name-wrap">麦卡利斯特 <span class="en">Mac Allister</span></span><span class="price">€75M</span></li>
+            <li><span class="pos fwd">RW</span><span class="name-wrap">梅西 <span class="en">Messi</span> 🐐</span><span class="price">€15M</span></li>
+            <li><span class="pos fwd">CF</span><span class="name-wrap">阿尔瓦雷斯 <span class="en">Álvarez</span></span><span class="price">€100M</span></li>
+            <li><span class="pos fwd">LW</span><span class="name-wrap">劳塔罗 <span class="en">Lautaro</span></span><span class="price">€85M</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- 身价对比 -->
+    <div class="pos-compare">
+      <div class="formation-title">📊 位置身价对比</div>
+      <div class="pos-row">
+        <div class="label">前锋</div>
+        <div class="bar-track">
+          <div class="left-bar bar-fwd" style="width:56%">€4.5 亿</div>
+          <div class="right-bar bar-fwd" style="width:44%">€3.5 亿</div>
+        </div>
+      </div>
+      <div class="pos-row">
+        <div class="label">中场</div>
+        <div class="bar-track">
+          <div class="left-bar bar-mid" style="width:62%">€5.2 亿</div>
+          <div class="right-bar bar-mid" style="width:38%">€3.2 亿</div>
+        </div>
+      </div>
+      <div class="pos-row">
+        <div class="label">后卫</div>
+        <div class="bar-track">
+          <div class="left-bar bar-def" style="width:58%">€3.0 亿</div>
+          <div class="right-bar bar-def" style="width:42%">€2.2 亿</div>
+        </div>
+      </div>
+      <div class="pos-row">
+        <div class="label">门将</div>
+        <div class="bar-track">
+          <div class="left-bar bar-gk" style="width:50%">€0.7 亿</div>
+          <div class="right-bar bar-gk" style="width:50%">€0.7 亿</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 核心对决 -->
+    <div class="formation-title" style="margin-top:20px">⚡ 核心球员对决</div>
+    <div class="star-compare">
+      <div class="star-row">
+        <div class="player-a">
+          <div class="avatar">🏴󠁧󠁢󠁥󠁮󠁧󠁿</div>
+          <div class="info"><div class="name">贝林厄姆 <span class="val">€1.3 亿</span></div><div class="en-name">Bellingham · 4球1助</div></div>
+        </div>
+        <div class="vs-badge">VS</div>
+        <div class="player-b">
+          <div class="avatar">🇦🇷</div>
+          <div class="info"><div class="name">恩佐 <span class="val">€9,000 万</span></div><div class="en-name">Enzo Fernández · 中场节拍器</div></div>
+        </div>
+      </div>
+      <div class="star-row">
+        <div class="player-a">
+          <div class="avatar">🏴󠁧󠁢󠁥󠁮󠁧󠁿</div>
+          <div class="info"><div class="name">凯恩 <span class="val">€6,000 万</span></div><div class="en-name">Harry Kane · 6球</div></div>
+        </div>
+        <div class="vs-badge">VS</div>
+        <div class="player-b">
+          <div class="avatar">🇦🇷</div>
+          <div class="info"><div class="name">阿尔瓦雷斯 <span class="val">€1 亿</span></div><div class="en-name">Julián Álvarez · 1球</div></div>
+        </div>
+      </div>
+      <div class="star-row">
+        <div class="player-a">
+          <div class="avatar">🏴󠁧󠁢󠁥󠁮󠁧󠁿</div>
+          <div class="info"><div class="name">萨卡 <span class="val">€1.1 亿</span></div><div class="en-name">Bukayo Saka · 3助攻</div></div>
+        </div>
+        <div class="vs-badge">VS</div>
+        <div class="player-b">
+          <div class="avatar">🇦🇷</div>
+          <div class="info"><div class="name">梅西 <span class="val">€1,500 万</span></div><div class="en-name">Lionel Messi · 39岁传奇</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 亿元先生排行榜 ═══ -->
+<div class="section">
+  <div class="section-title"><span class="num">⭐</span> 半决赛「亿元先生」排行榜</div>
+  <div class="match-card" style="padding: 16px;">
+    <table class="billion-table">
+      <thead><tr><th>#</th><th></th><th>球员</th><th>球队</th><th>身价</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="rank-num">1</span></td>
+          <td class="flag-cell">🇪🇸</td>
+          <td class="player-cell">亚马尔 <span class="en-p">Lamine Yamal</span></td>
+          <td><span class="team-tag esp">西班牙</span></td>
+          <td class="price-cell">€2 亿</td>
+        </tr>
+        <tr>
+          <td><span class="rank-num">2</span></td>
+          <td class="flag-cell">🇫🇷</td>
+          <td class="player-cell">姆巴佩 <span class="en-p">Mbappé · 8球领跑金靴</span></td>
+          <td><span class="team-tag fra">法国</span></td>
+          <td class="price-cell">€1.8 亿</td>
+        </tr>
+        <tr>
+          <td><span class="rank-num">3</span></td>
+          <td class="flag-cell">🇫🇷</td>
+          <td class="player-cell">奥利塞 <span class="en-p">Olise · 5次助攻</span></td>
+          <td><span class="team-tag fra">法国</span></td>
+          <td class="price-cell">€1.5 亿</td>
+        </tr>
+        <tr>
+          <td><span class="rank-num">3</span></td>
+          <td class="flag-cell">🇪🇸</td>
+          <td class="player-cell">佩德里 <span class="en-p">Pedri · 中场核心</span></td>
+          <td><span class="team-tag esp">西班牙</span></td>
+          <td class="price-cell">€1.5 亿</td>
+        </tr>
+        <tr>
+          <td><span class="rank-num">5</span></td>
+          <td class="flag-cell">🏴󠁧󠁢󠁥󠁮󠁧󠁿</td>
+          <td class="player-cell">贝林厄姆 <span class="en-p">Bellingham · 4球1助</span></td>
+          <td><span class="team-tag eng">英格兰</span></td>
+          <td class="price-cell">€1.3 亿</td>
+        </tr>
+        <tr>
+          <td><span class="rank-num">6</span></td>
+          <td class="flag-cell">🏴󠁧󠁢󠁥󠁮󠁧󠁿</td>
+          <td class="player-cell">赖斯 <span class="en-p">Rice · 中场屏障</span></td>
+          <td><span class="team-tag eng">英格兰</span></td>
+          <td class="price-cell">€1.2 亿</td>
+        </tr>
+        <tr>
+          <td><span class="rank-num">6</span></td>
+          <td class="flag-cell">🇫🇷</td>
+          <td class="player-cell">杜埃 <span class="en-p">Désiré Doué</span></td>
+          <td><span class="team-tag fra">法国</span></td>
+          <td class="price-cell">€1.2 亿</td>
+        </tr>
+        <tr>
+          <td><span class="rank-num">8</span></td>
+          <td class="flag-cell">🏴󠁧󠁢󠁥󠁮󠁧󠁿</td>
+          <td class="player-cell">萨卡 <span class="en-p">Saka · 3次助攻</span></td>
+          <td><span class="team-tag eng">英格兰</span></td>
+          <td class="price-cell">€1.1 亿</td>
+        </tr>
+        <tr>
+          <td><span class="rank-num">9</span></td>
+          <td class="flag-cell">🇫🇷</td>
+          <td class="player-cell">登贝莱 <span class="en-p">Dembélé · 5球2助 金球先生</span></td>
+          <td><span class="team-tag fra">法国</span></td>
+          <td class="price-cell">€1 亿</td>
+        </tr>
+        <tr>
+          <td><span class="rank-num">9</span></td>
+          <td class="flag-cell">🇫🇷</td>
+          <td class="player-cell">萨利巴 <span class="en-p">Saliba · 后防铁闸</span></td>
+          <td><span class="team-tag fra">法国</span></td>
+          <td class="price-cell">€1 亿</td>
+        </tr>
+        <tr>
+          <td><span class="rank-num">9</span></td>
+          <td class="flag-cell">🇦🇷</td>
+          <td class="player-cell">阿尔瓦雷斯 <span class="en-p">Julián Álvarez</span></td>
+          <td><span class="team-tag arg">阿根廷</span></td>
+          <td class="price-cell">€1 亿</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="info-bar">
+    💡 四强中共有 <strong>11位亿元先生</strong>（法国5人、英格兰3人、西班牙2人、阿根廷1人）<br>
+    半决赛合计总身价超 €49 亿，史上含金量最高的四强阵容
+  </div>
+</div>
+
+<!-- ═══ 四强总览 ═══ -->
+<div class="section">
+  <div class="section-title"><span class="num">📊</span> 四强总身价排名</div>
+  <div class="match-card" style="padding: 16px;">
+    <table class="billion-table">
+      <thead><tr><th>排名</th><th></th><th>球队</th><th>身价</th><th>亿元先生</th><th>平均年龄</th></tr></thead>
+      <tbody>
+        <tr><td>🥇</td><td class="flag-cell">🇫🇷</td><td>法国</td><td class="price-cell">€15.2 亿</td><td>5 人</td><td>27.0 岁</td></tr>
+        <tr><td>🥈</td><td class="flag-cell">🏴󠁧󠁢󠁥󠁮󠁧󠁿</td><td>英格兰</td><td class="price-cell">€13.6 亿</td><td>3 人</td><td>27.4 岁</td></tr>
+        <tr><td>🥉</td><td class="flag-cell">🇪🇸</td><td>西班牙</td><td class="price-cell">€12.2 亿</td><td>2 人</td><td>26.5 岁</td></tr>
+        <tr><td>4</td><td class="flag-cell">🇦🇷</td><td>阿根廷</td><td class="price-cell">€8.1 亿</td><td>1 人</td><td>29.2 岁</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="info-bar">
+    📅 <strong>半决赛赛程</strong>（北京时间）<br>
+    · 7月15日 03:00 🇫🇷 法国 vs 西班牙 🇪🇸 — 达拉斯<br>
+    · 7月16日 03:00 🏴󠁧󠁢󠁥󠁮󠁧󠁿 英格兰 vs 阿根廷 🇦🇷 — 亚特兰大<br><br>
+    📺 CCTV5 全程直播
+  </div>
+</div>
+
+<div class="footer">
+  数据来源：Transfermarkt · 2026年7月<br>
+  阵容为预测首发，实际以赛前公布为准<br>
+  Powered by Wazir
+</div>
+
+</body>
+</html>
