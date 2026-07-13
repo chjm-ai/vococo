@@ -2115,19 +2115,19 @@ void main(){
   function playDisconnectTone(){ playTone(520, 110, "sine"); setTimeout(()=>playTone(330, 150, "sine"), 120); }
   function playReconnectTone(){ playTone(330, 110, "sine"); setTimeout(()=>playTone(660, 150, "sine"), 120); }
   // 发送音效:用户语音转写完成、提交给 Claude 时轻短"咻"一声(高音短促,低音量)
-  function playSendTone(){ playTone(1350, 70, "sine", 0.08); }
-  // AI 思考音效:提交后等待回复时循环"定定定"三声短促滴答
+  function playSendTone(){ playTone(1350, 70, "sine", 0.15); }
+  // AI 思考音效:提交后等待回复时循环"定定"两声短促滴答(放慢节奏)
   let thinkingToneTimer = null;
   function playThinkingTone(){
     stopThinkingTone();
     const beep = () => {
       if(!audioCtx) return;
-      for(let i = 0; i < 3; i++){
-        setTimeout(() => playTone(500, 50, "sine", 0.1), i * 200);
+      for(let i = 0; i < 2; i++){
+        setTimeout(() => playTone(500, 50, "sine", 0.1), i * 400);
       }
     };
     beep();
-    thinkingToneTimer = setInterval(beep, 750);
+    thinkingToneTimer = setInterval(beep, 1200);
   }
   function stopThinkingTone(){
     if(thinkingToneTimer){ clearInterval(thinkingToneTimer); thinkingToneTimer = null; }
