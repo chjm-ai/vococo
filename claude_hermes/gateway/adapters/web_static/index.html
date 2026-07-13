@@ -869,22 +869,13 @@
 
   /* P2 全双工:进 call view 即自动开始,唯一常驻视觉是一条声波动效(不再是圆球),
      状态文字贴在波形正下方,挂断是波形下方一个深灰圆角方块(停止语义)。
-     波形本身用 canvas 画(见 drawOrbWaveform),这里只管容器与光晕氛围。 */
+     波形本身用 canvas 画(见 drawOrbWaveform),这里只管容器;氛围光已由着色器
+     内建(柱后柔光),旧版 ::before 弥散光晕于动效 v3 时移除。 */
   #handsFreeUi{display:flex;flex-direction:column;align-items:center;gap:20px}
   #handsFreeUi[hidden]{display:none}
   #orbWrap{position:relative;width:280px;height:100px;display:flex;align-items:center;
-    justify-content:center;cursor:pointer;transition:filter .5s ease}
-  /* 波形背后一层柔和的横向光晕,给"高大上"的氛围底;颜色随状态在 JS 里不动,
-     用 mix-blend 让它跟波形融合,而不是硬叠一块色 */
-  #orbWrap::before{content:"";position:absolute;left:50%;top:50%;width:220px;height:64px;
-    transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;filter:blur(26px);
-    background:radial-gradient(ellipse, rgba(150,150,150,.22), rgba(150,150,150,0) 72%);
-    transition:background .6s ease, opacity .6s ease;opacity:.6}
+    justify-content:center;cursor:pointer}
   #orbCanvas{position:relative;z-index:1;width:280px;height:100px;pointer-events:none}
-
-  #orbWrap.capturing::before{background:radial-gradient(ellipse, rgba(209,103,74,.4), rgba(209,103,74,0) 72%);opacity:.9}
-  #orbWrap.thinking::before{background:radial-gradient(ellipse, rgba(217,119,87,.34), rgba(217,119,87,0) 72%);opacity:.8}
-  #orbWrap.speaking::before{background:radial-gradient(ellipse, rgba(200,97,63,.42), rgba(200,97,63,0) 72%);opacity:1}
 
   #status{font-size:14px;color:var(--dim);text-align:center;min-height:20px;transition:color .3s ease;
     letter-spacing:.02em}
