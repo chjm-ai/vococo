@@ -1401,10 +1401,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 重建 Omni 连线前必须换一条全新的麦克风流:把旧 RTCPeerConnection 里用过的
   // 音轨再 addTrack 进新 PC,音频能过阿里云 VAD(speech_started 正常),但输入转写
   // (input_audio_transcription.completed)再也不回事件——没有转写就永远不会发给
-  // Claude,表现为"切音色后 AI 不回复"(2026-07-12 真机日志实锤:新开通话必好、
-  // 切音色重建必哑,唯一差异就是新开通话走了 teardown 重新 getUserMedia)。
-  // 这里停掉旧流让 ensureMicStream 重新要一条;声纹 analyser 挂在旧流上,一并拆掉,
-  // startOmniHandsFree 里的 ensureAnalyser() 会用新流重建。
+  // Claude,表现为"AI 不回复"(2026-07-12 真机日志实锤:新开通话必好、重连/切音色
+  // 复用旧流必哑)。2026-07-13 复现:两次 handsfree.start 靠得很近但没走重连/切
+  // 音色那两条显式调用路径,同样哑掉——干脆挪进 startOmniHandsFree 自己开头无条件
+  // 调用,不用再看是谁触发的重开。这里停掉旧流让 ensureMicStream 重新要一条;
+  // 声纹 analyser 挂在旧流上,一并拆掉,startOmniHandsFree 里的 ensureAnalyser()
+  // 会用新流重建。
   function resetMicStream(){
     if(stream){ try{ stream.getTracks().forEach(t=>t.stop()); }catch(e){} stream = null; }
     if(analyserSource){ try{ analyserSource.disconnect(); }catch(e){} analyserSource = null; }
@@ -1921,6 +1923,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     vdbg("omni.start");
     setStatus("连接中…", "");
     unlockAudio();
+    resetMicStream();  // 每次开新连线都强制换新麦克风流,见 resetMicStream 注释
     try{ omniMicStream = await ensureMicStream(); }
     catch(e){
       handsFreeUi.hidden = true; talkBtn.hidden = false;
@@ -2046,7 +2049,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       setStatus("重连中…", "thinking");
       playDisconnectTone();  // 让用户知道刚才断了,而不是全程静默自愈
       stopOmniHandsFree();
-      resetMicStream();  // 旧音轨进新 PC 转写必哑,见 resetMicStream 注释
       let ok = false;
       try{ ok = await startOmniHandsFree(); }
       catch(e){ vdbg("reconnect.fail", String(e)); }
@@ -2067,7 +2069,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     vdbg("voice.switch", S.omniVoice);
     setStatus("切换音色中…", "thinking");
     stopOmniHandsFree();
-    resetMicStream();  // 旧音轨进新 PC 转写必哑,见 resetMicStream 注释
     let ok = false;
     try{ ok = await startOmniHandsFree(); }
     catch(e){ vdbg("voice.switch.fail", String(e)); }
