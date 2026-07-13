@@ -2099,7 +2099,8 @@ void main(){
     const now = audioCtx.currentTime;
     const dur = durMs / 1000;
     gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(0.15, now + Math.min(0.005, dur/4));
+    const v = vol != null ? vol : 0.15;
+    gain.gain.linearRampToValueAtTime(v, now + Math.min(0.005, dur/4));
     gain.gain.linearRampToValueAtTime(0, now + dur);
     osc.connect(gain).connect(audioCtx.destination);
     osc.start(now);
@@ -2112,6 +2113,24 @@ void main(){
   // 人肉探活(2026-07-10 真机一晚三次)。降调=掉线了,升调=接回来了。
   function playDisconnectTone(){ playTone(520, 110, "sine"); setTimeout(()=>playTone(330, 150, "sine"), 120); }
   function playReconnectTone(){ playTone(330, 110, "sine"); setTimeout(()=>playTone(660, 150, "sine"), 120); }
+  // 发送音效:用户语音转写完成、提交给 Claude 时轻短"咻"一声(高音短促,低音量)
+  function playSendTone(){ playTone(1350, 70, "sine", 0.08); }
+  // AI 思考音效:提交后等待回复时循环"定定定"三声短促滴答
+  let thinkingToneTimer = null;
+  function playThinkingTone(){
+    stopThinkingTone();
+    const beep = () => {
+      if(!audioCtx) return;
+      for(let i = 0; i < 3; i++){
+        setTimeout(() => playTone(500, 50, "sine", 0.1), i * 200);
+      }
+    };
+    beep();
+    thinkingToneTimer = setInterval(beep, 750);
+  }
+  function stopThinkingTone(){
+    if(thinkingToneTimer){ clearInterval(thinkingToneTimer); thinkingToneTimer = null; }
+  }
 
   async function startHandsFree(){
     vdbg("handsfree.start", {omni: S.omniEnabled, fn: typeof startOmniHandsFree});
@@ -2126,6 +2145,7 @@ void main(){
   }
 
   function manualInterrupt(){
+    stopThinkingTone();
     if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
     playQueue = [];
     playing = false;
@@ -2429,6 +2449,7 @@ void main(){
           break;
         }
         case "response.created":
+          stopThinkingTone();
           // 分两种:我们主动点的朗读(omniReadPending>0)放行;其余是 Omni 对用户
           // 话语自作主张的回复(create_response 关不掉,见顶部架构注释),立即取消,
           // 不让它出声——即便 cancel 慢半拍,instructions 也把它压成了一个字。
@@ -2816,6 +2837,8 @@ void main(){
     endActivity();  // 新一轮开始:上一轮的动作行定格,别被这轮的动作原地改写
     omniReadQueue = []; omniTurnDone = false;
     vdbg("turn.start", text.slice(0, 40));
+    playSendTone();
+    playThinkingTone();
 
     const toIdle = () => {
       wsState = "idle"; setStatus(STATE_WORD.idle);
@@ -2894,6 +2917,7 @@ void main(){
   }
 
   function stopOmniHandsFree(){
+    stopThinkingTone();
     omniTurnGen++;  // 让还在飞的 sendOmniTurn 流式结果失效
     // 先摘 handler 再 close:close 本身会触发 dc.onclose/pc.onconnectionstatechange,
     // 不摘的话主动关闭也会被当成"断线"排一次重连。
