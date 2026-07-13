@@ -1277,6 +1277,16 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 不是"语义判完整"的开关。这里加一层客户端缓冲:转写完成后不立刻发,等一小段
   // 时间看是否又开口;真又开口就拼到一起,超时才当一轮发出去。
   let omniPendingText=null, omniPendingTimer=null;
+  // 转写完成事件的 delta 兜底(2026-07-13,真机+aiortc 探针实锤):我们每轮发的
+  // response.cancel(砍 Omni 自作主张回复)会把服务端还没 finalize 的
+  // input_audio_transcription.completed 一起砍死——delta 照回(前端字幕正常),
+  // completed 永远不来,一个字都到不了 Claude。以前 completed 比 response.created
+  // 早 ~200ms 落地躲过了 cancel,2026-07-13 阿里云侧时序变了(response.created
+  // 几乎和 committed 同时到)就全灭。兜底:delta 全文一直缓存,committed 后
+  // 1.5s 内 completed 还没来,就拿 delta 文本顶上走同一条发送链路。
+  let omniDeltaFallback=null;        // {itemId, text} 最新一句的 delta 累积文本
+  let omniDeltaFallbackTimer=null;
+  let omniFallbackSentItem=null;     // 已被兜底发过的 item_id,completed 迟到时防重复
   // 2026-07-13 真机通话实锤(turn #1204"你刚才打断我思路了"):长句子天然停顿多,
   // 1.3s 缓冲期常常不够等到用户说完就先发了——发出去就收不回,继续说话会被
   // 误判成打断(barge-in)。拉长到 2.2s 换更低的腰斩概率,代价是打断响应慢一点。
@@ -2184,6 +2194,9 @@ void main(){
     if(omniMicMuteTimer){ clearTimeout(omniMicMuteTimer); omniMicMuteTimer = null; }
     applyMicEnabled();
     omniAudioMuted = true; omniAudioEl.muted = true;  // 新连接回默认静音态,别带上一条连接的开声现场
+    // 新连接:上一条连接没等到 completed 的兜底现场作废,别把旧句在新会话上重发
+    if(omniDeltaFallbackTimer){ clearTimeout(omniDeltaFallbackTimer); omniDeltaFallbackTimer = null; }
+    omniDeltaFallback = null; omniFallbackSentItem = null;
     ensureAnalyser();        // 麦克风侧声纹(capturing 状态用)
     if(!orbAnimHandle) drawOrbWaveform();
 
@@ -2385,42 +2398,34 @@ void main(){
           if(handsFreeActive) orbWrap.className = "capturing";
           omniUserLiveEl = null;  // 新一句开始,上一句的实时字幕气泡不再更新
           break;
+        case "input_audio_buffer.committed":
+          // 这句话已定型,completed 理应几百毫秒内跟到。到点没来就是被我们的
+          // response.cancel 连带砍死了(见 omniDeltaFallback 注释)——拿 delta
+          // 缓存顶上,别让用户的话烂在半路。
+          armOmniDeltaFallback();
+          break;
         case "conversation.item.input_audio_transcription.delta":
           // 转写在正常推进,说明不是幽灵打断——兜底定时器往后顺延,别在用户
           // 长句说到一半时误判超时、把砍掉的朗读恢复回来盖住真提问。
           if(omniEchoRestore) armOmniGhostTimer();
+          // delta 全文一直缓存:completed 被 cancel 砍死时靠它兜底发给 Claude
+          omniDeltaFallback = {itemId: data.item_id || null, text: ((data.text || "") + (data.stash || "")).trim()};
           // 实时字幕:text 是已确认的前缀,stash 是还没定论的尾巴,拼起来显示
           // 让用户看到"正在识别"的感觉,句子说完由 .completed 用权威结果覆盖一次。
           if(!omniUserLiveEl) omniUserLiveEl = addMsg("me", "");
           renderAi(omniUserLiveEl, (data.text || "") + (data.stash || ""));
           break;
         case "conversation.item.input_audio_transcription.completed": {
-          const transcript = (data.transcript || "").trim();
-          const restore = omniEchoRestore; omniEchoRestore = null;
-          if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
-          const echoSrc = transcript ? matchOmniEcho(transcript, !!restore) : null;
-          if(echoSrc){
-            // 是 AI 自己的回声:丢弃,不发 Claude、不算一轮对话,字幕气泡撤掉
-            vdbg("echo.discard", {heard: transcript.slice(0, 24), read: echoSrc.slice(0, 24)});
-            if(omniUserLiveEl){
-              const row = omniUserLiveEl.closest(".row");
-              if(row) row.remove();
-              omniUserLiveEl = null;
-            }
-            if(restore && omniTurnGen === restore.newGen && Date.now() - restore.ts < 15000){
-              restoreOmniBargeIn(restore, "echo.restore");
-            } else {
-              // 没有可恢复的现场(回声出现在整轮念完之后):回到待命即可
-              wsState = "thinking";  // 先离开 capturing,maybeOmniIdle 才肯接手收尾
-              maybeOmniIdle();
-              if(wsState !== "idle"){ wsState = "idle"; setStatus(STATE_WORD.idle); if(handsFreeActive) orbWrap.className = "idle"; }
-            }
+          if(omniDeltaFallbackTimer){ clearTimeout(omniDeltaFallbackTimer); omniDeltaFallbackTimer = null; }
+          omniDeltaFallback = null;
+          if(omniFallbackSentItem && data.item_id === omniFallbackSentItem){
+            // 这句已被 delta 兜底发过了,迟到的权威结果不再重复发
+            vdbg("transcript.late", {item: data.item_id});
+            omniFallbackSentItem = null;
             break;
           }
-          if(omniUserLiveEl) renderAi(omniUserLiveEl, transcript || "(没听清)");
-          else if(transcript) addMsg("me", transcript);
-          omniUserLiveEl = null;
-          if(transcript) queueOmniTurn(transcript);
+          omniFallbackSentItem = null;
+          handleUserTranscript((data.transcript || "").trim());
           break;
         }
         case "response.created":
@@ -2734,6 +2739,54 @@ void main(){
     return null;
   }
 
+  // 转写完成(或 delta 兜底顶上)后的统一入口:回声判定→字幕定稿→进拆句缓冲。
+  // 原本是 .completed 分支的内联逻辑,2026-07-13 抽出来让兜底路径走同一条链。
+  function handleUserTranscript(transcript){
+    const restore = omniEchoRestore; omniEchoRestore = null;
+    if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
+    const echoSrc = transcript ? matchOmniEcho(transcript, !!restore) : null;
+    if(echoSrc){
+      // 是 AI 自己的回声:丢弃,不发 Claude、不算一轮对话,字幕气泡撤掉
+      vdbg("echo.discard", {heard: transcript.slice(0, 24), read: echoSrc.slice(0, 24)});
+      if(omniUserLiveEl){
+        const row = omniUserLiveEl.closest(".row");
+        if(row) row.remove();
+        omniUserLiveEl = null;
+      }
+      if(restore && omniTurnGen === restore.newGen && Date.now() - restore.ts < 15000){
+        restoreOmniBargeIn(restore, "echo.restore");
+      } else {
+        // 没有可恢复的现场(回声出现在整轮念完之后):回到待命即可
+        wsState = "thinking";  // 先离开 capturing,maybeOmniIdle 才肯接手收尾
+        maybeOmniIdle();
+        if(wsState !== "idle"){ wsState = "idle"; setStatus(STATE_WORD.idle); if(handsFreeActive) orbWrap.className = "idle"; }
+      }
+      return;
+    }
+    if(omniUserLiveEl) renderAi(omniUserLiveEl, transcript || "(没听清)");
+    else if(transcript) addMsg("me", transcript);
+    omniUserLiveEl = null;
+    if(transcript) queueOmniTurn(transcript);
+  }
+
+  // committed 后 completed 迟迟不来的兜底(根因见 omniDeltaFallback 注释)。
+  // 定时器闭包里捕获当下这句的快照——1.5s 里就算用户又开口、delta 缓存被下一句
+  // 覆盖,到点发的仍是本句文本,不会串句。
+  const OMNI_TRANSCRIPT_DONE_TIMEOUT_MS = 1500;
+  function armOmniDeltaFallback(){
+    if(omniDeltaFallbackTimer) clearTimeout(omniDeltaFallbackTimer);
+    const snap = omniDeltaFallback;
+    omniDeltaFallbackTimer = setTimeout(() => {
+      omniDeltaFallbackTimer = null;
+      if(!snap || !snap.text) return;                    // 这句压根没出过 delta,没法兜
+      if(!handsFreeActive) return;                       // 通话已挂断,别往外发
+      omniFallbackSentItem = snap.itemId;                // completed 迟到时据此防重发
+      if(omniDeltaFallback && omniDeltaFallback.itemId === snap.itemId) omniDeltaFallback = null;
+      vdbg("transcript.fallback", snap.text.slice(0, 40));
+      handleUserTranscript(snap.text);
+    }, OMNI_TRANSCRIPT_DONE_TIMEOUT_MS);
+  }
+
   // 拆句缓冲的入口:转写完成不立刻发,累进 omniPendingText,等 OMNI_PENDING_FLUSH_MS
   // 静默期(其间没有再新开口/再来一段转写)才真正发给 Claude。直接拼接不加分隔符——
   // 被腰斩的半句话拼上后半句本来就该无缝接上;真是两句独立话也顶多是语气上少个
@@ -2855,6 +2908,8 @@ void main(){
     omniReadSince = 0;
     omniRecentReads = []; omniReadCurrentText = ""; omniEchoRestore = null;
     if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
+    if(omniDeltaFallbackTimer){ clearTimeout(omniDeltaFallbackTimer); omniDeltaFallbackTimer = null; }
+    omniDeltaFallback = null; omniFallbackSentItem = null;
     if(omniPendingTimer){ clearTimeout(omniPendingTimer); omniPendingTimer = null; }
     omniPendingText = null;
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
