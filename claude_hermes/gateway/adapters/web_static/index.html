@@ -1290,7 +1290,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 2026-07-13 真机通话实锤(turn #1204"你刚才打断我思路了"):长句子天然停顿多,
   // 1.3s 缓冲期常常不够等到用户说完就先发了——发出去就收不回,继续说话会被
   // 误判成打断(barge-in)。拉长到 2.2s 换更低的腰斩概率,代价是打断响应慢一点。
-  const OMNI_PENDING_FLUSH_MS = 2200;
+  const OMNI_PENDING_FLUSH_MS = 1500;
   // 首回复静音(2026-07-12,Wesley 提议):每次 WebRTC 新建连接后,iOS AEC 从零
   // 收敛,AI 第一段音频的回声漏得最凶——干脆在本连接第一次朗读期间把麦克风上行
   // 直接静音(track.enabled=false 只发静音帧,不动音频图,不踩 iOS 音频会话的雷),
