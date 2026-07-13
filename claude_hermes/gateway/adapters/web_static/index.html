@@ -2493,18 +2493,17 @@ void main(){
         case "response.done":
           if(omniReadActive){
             omniReadActive = false;
-            const tailText = omniReadCurrentText;
             omniReadCurrentText = "";
             // 不立刻静音:response.done 是 Omni 生成完毕的信号,但 RTP 是按实际
-            // 语速推流的,长句生成快于播放,done 时可能还有 1s+ 没播——固定
+            // 语速推流的,长句生成快于播放,done 时可能还欠好几秒没播——固定
             // 400ms 等待被 2026-07-13 真机打脸("查好了我叫你"只听到"查好了"),
-            // 改成看输出波形真正安静了才静音(见 armOmniReadTailWatch)。
+            // 改成波形安静+跨句模型下限双判据(见 armOmniReadTailWatch)。
             // 队列非空时泵下一句,其 setOmniAudioMuted(false) 会覆盖静音状态,
             // 尾音在生成间隙自然排空。
             if(omniReadQueue.length > 0){
               pumpOmniRead();
             } else {
-              armOmniReadTailWatch(tailText);
+              armOmniReadTailWatch();
             }
           } else {
             omniAutoActive = false;
@@ -2656,15 +2655,25 @@ void main(){
     return peak / 128;
   }
 
-  // response.done 后每 150ms 采一次输出波形:听到过声音、又连续 ~450ms 安静
-  // =尾音真播完了,这时才静音。450ms 也扛得住句中逗号停顿的误判。analyser
-  // 全程无信号(iOS 把 ctx 挂起/远端流进 WebAudio 的兼容问题)就退回字数模型:
-  // 从 read.create 起算 900ms 启动 + 每字 280ms,到点强制静音,最长 6 秒。
-  function armOmniReadTailWatch(text){
+  // response.done 后每 150ms 采一次输出波形:听到过声音、又连续 ~600ms 安静
+  // =尾音真播完了,这时才静音。
+  // 但"安静"单独不可信:背靠背泵句时,最后一句 response.done 到达的瞬间,音轨上
+  // 可能还欠着「前一句的尾巴 + 这一整句」——两个 response 之间有 ~0.5s 的天然
+  // 空档,会被当成"全部播完"(2026-07-13 真机:38 字整句播进了已静音的 <audio>,
+  // 用户一个字没听到)。所以再加一个跨句模型下限:把 omniRecentReads 里的句子
+  // 按顺序播放模型(启动 700ms + 每字 280ms,句间取 max 衔接,同 maybeOmniIdle)
+  // 估出总播放终点,模型说"不可能播完"之前,再安静也不静音。
+  // analyser 全程无信号(iOS 把 ctx 挂起/远端流进 WebAudio 的兼容问题)则由
+  // deadline 兜底:模型终点 + 3s 强制静音。
+  function armOmniReadTailWatch(){
     if(omniReadTailTimer) clearTimeout(omniReadTailTimer);
-    const chars = normEchoText(text || "").length;
-    const deadline = Math.max(Date.now() + 600,
-      Math.min(omniReadSince + 900 + chars * 280, Date.now() + 6000));
+    let end = 0;
+    for(const r of omniRecentReads){
+      const start = Math.max(end, r.ts + 700);
+      end = start + normEchoText(r.text).length * 280;
+    }
+    const minMute = end + 300;
+    const deadline = Math.max(Date.now() + 1000, end + 3000);
     let seen = false, quiet = 0;
     const check = () => {
       omniReadTailTimer = null;
@@ -2673,7 +2682,7 @@ void main(){
       const lvl = omniOutputLevel();
       if(lvl > 0.04){ seen = true; quiet = 0; }
       else if(seen) quiet++;
-      if((seen && quiet >= 3) || Date.now() >= deadline){
+      if((seen && quiet >= 4 && Date.now() >= minMute) || Date.now() >= deadline){
         setOmniAudioMuted(true, seen ? "read.tail-quiet" : "read.tail-cap");
         pumpOmniRead();  // 经 maybeOmniIdle 收尾
         return;
