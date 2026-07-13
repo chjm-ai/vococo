@@ -37,6 +37,12 @@ from . import client_pool
 from .prompt import build_system_prompt
 
 
+# Hermes 专属 skill 插件(config.HERMES_PLUGIN_DIR):每轮都挂,不受设置页 skill 白名单影响。
+# 插件里加新 skill 时,这里也加一行「plugin名:skill名」,否则用户在设置页切到白名单模式会把
+# 它连带隐藏(_scan_skills 只扫 ~/.claude/skills,看不到插件里的 skill,没法在设置页单独管)。
+_HERMES_PLUGIN_SKILLS = ["hermes-internal:hermes-web-publish"]
+
+
 @dataclass
 class Turn:
     """一轮对话。"""
@@ -475,6 +481,8 @@ async def stream_turn(
     if extra_mcp_servers:  # P1 语音任务板注入的三个工具,默认 None 对现有调用零影响
         mcp_servers.update(extra_mcp_servers)
     skills = settings_store.effective_skills()  # None=全量;白名单则只挂这些(瘦身 tool schema)
+    if isinstance(skills, list):  # 白名单模式漏不掉插件自带的 skill(见 _HERMES_PLUGIN_SKILLS)
+        skills = list(dict.fromkeys([*skills, *_HERMES_PLUGIN_SKILLS]))
     # cwd=项目会话补注入其 AGENTS.md;cache_key=会话 id:同一 SDK 会话内冻结 append 快照,
     # 防中途 save_memory 改 MEMORY.md 打爆整条对话的 prompt cache —— 也让保温池的兼容性
     # 哈希在会话内保持稳定(中途存记忆不至于误杀保温 client)。/new 换 sid → 自然读到最新。
@@ -504,6 +512,9 @@ async def stream_turn(
             mcp_servers=mcp_servers,
             hooks=build_hooks(),  # PreToolUse:灾难拦截 + 危险操作审批闸
             skills=skills,
+            # Hermes 专属 skill(本地插件,见 config.HERMES_PLUGIN_DIR):只在这里挂,
+            # 不进 ~/.claude/skills,Claude Code/Codex/OpenCode 等其它工具看不到。
+            plugins=[{"type": "local", "path": str(config.HERMES_PLUGIN_DIR)}],
             cwd=cwd,  # 项目会话→该文件夹当工作根(自动加载其 CLAUDE.md/.claude);None=进程默认目录
             env=_turn_env(provider_env),  # cc-switch base_url+key + 恒定强制前台开关(见 _turn_env)
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话

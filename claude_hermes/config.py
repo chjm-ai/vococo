@@ -122,6 +122,12 @@ IMAGES_DIR: Path = DATA_DIR / "images"
 # 发布的静态网页(丢文件进来就能公网访问,见 gateway/adapters/web.py 的 /pub 路由)
 PUBLISHED_DIR: Path = DATA_DIR / "published"
 
+# Hermes 专属内置 skill 插件(本地 SDK plugin,见 core/agent.py 的 ClaudeAgentOptions.plugins)。
+# 跟 ~/.claude/skills 那套跨工具共享的个人 skill 库分开:装在这里的 skill 只有 Hermes 自己的
+# 会话能看到,Claude Code / Codex / OpenCode 读不到,适合"离了 Hermes 这套服务就没意义"的
+# skill(比如 hermes-web-publish,依赖本仓库的 data/published/ + /pub 路由)。
+HERMES_PLUGIN_DIR: Path = Path(__file__).resolve().parent / "plugin"
+
 # === 调度 / 心跳 ===
 CRON_JOBS_PATH: Path = DATA_DIR / "cron_jobs.json"
 SUGGESTIONS_PATH: Path = DATA_DIR / "suggestions.json"  # 待用户接受的自动化建议
