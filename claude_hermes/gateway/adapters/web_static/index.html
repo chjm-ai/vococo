@@ -1286,7 +1286,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 不是"语义判完整"的开关。这里加一层客户端缓冲:转写完成后不立刻发,等一小段
   // 时间看是否又开口;真又开口就拼到一起,超时才当一轮发出去。
   let omniPendingText=null, omniPendingTimer=null;
-  const OMNI_PENDING_FLUSH_MS = 1300;
+  // 2026-07-13 真机通话实锤(turn #1204"你刚才打断我思路了"):长句子天然停顿多,
+  // 1.3s 缓冲期常常不够等到用户说完就先发了——发出去就收不回,继续说话会被
+  // 误判成打断(barge-in)。拉长到 2.2s 换更低的腰斩概率,代价是打断响应慢一点。
+  const OMNI_PENDING_FLUSH_MS = 2200;
   // 首回复静音(2026-07-12,Wesley 提议):每次 WebRTC 新建连接后,iOS AEC 从零
   // 收敛,AI 第一段音频的回声漏得最凶——干脆在本连接第一次朗读期间把麦克风上行
   // 直接静音(track.enabled=false 只发静音帧,不动音频图,不踩 iOS 音频会话的雷),
@@ -1296,6 +1299,14 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniMicMuted=false;
   let omniMicMuteTimer=null;
   const omniAudioEl = $("#omniRemoteAudio");
+  // 自作主张回复的音频泄漏(2026-07-13,真机实锤 turn #1204"你刚才打断我思路了"):
+  // create_response 关不掉,cancel 走 DataChannel 一来一回的网络延迟,"嗯"这种单字
+  // 回复常常生成得比 cancel 到达服务器还快,音频已经从 RTP 轨道漏出来了——跟 cancel
+  // 发得多快无关,是物理时间差。干脆默认把远端音频静音,只有确认是我们主动点的
+  // 朗读(pumpOmniRead 发出 response.create 那一刻,不等 response.created 回执)才
+  // 开声,从物理层杜绝泄漏,不再赌网络时序。
+  let omniAudioMuted=true;
+  omniAudioEl.muted = true;
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
   // 修复都因为拿不到真机证据只能盲改后 revert。关键事件(session/response 生命周期、
   // 连接状态、打断判定)全部悄悄 POST 回服务器日志,fire-and-forget 不影响主流程。
@@ -1901,7 +1912,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // - 已知约束:turn_detection.create_response 实测关不掉,用户每说一句 Omni
   //   都会自作主张生成一份回复——靠 session.instructions 把它压成一个字 +
   //   response.created 时对"不是我们点的"回复立即 response.cancel 双保险,
-  //   见 wireOmniDataChannel 的 response.created 分支。
+  //   见 wireOmniDataChannel 的 response.created 分支。2026-07-13 真机实锤这俩
+  //   保险仍会漏("嗯"字生成得比 cancel 网络往返还快),加第三层物理保险:
+  //   远端 <audio> 默认静音,只有确认是我们主动点的朗读才开声(见 omniAudioMuted)。
   let omniTurnGen = 0;  // 每次新一句开始/打断都 +1,过期的 /voice/send 流式结果据此判断该不该再应用
 
   async function startOmniHandsFree(){
@@ -1920,6 +1933,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     omniFirstReplyMuteUsed = false; omniMicMuted = false;
     if(omniMicMuteTimer){ clearTimeout(omniMicMuteTimer); omniMicMuteTimer = null; }
     applyMicEnabled();
+    omniAudioMuted = true; omniAudioEl.muted = true;  // 新连接回默认静音态,别带上一条连接的开声现场
     ensureAnalyser();        // 麦克风侧声纹(capturing 状态用)
     if(!orbAnimHandle) drawOrbWaveform();
 
@@ -2175,6 +2189,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
             }
           } else {
             omniAutoActive = true; omniAutoSince = Date.now();
+            // 双保险:cancel 赌网络时序赌不赢就靠这行兜底——静音本来就是默认态,
+            // 这里重申一次防止状态跟丢(见顶部 omniAudioMuted 架构注释)。
+            setOmniAudioMuted(true, "auto-response");
             try{ channel.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
             vdbg("auto-response.cancelled");
           }
@@ -2183,6 +2200,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
           if(omniReadActive){
             omniReadActive = false;
             omniReadCurrentText = "";
+            // 这句朗读念完了,先静音回默认态——下一句要么是 pumpOmniRead 马上
+            // 点开新朗读(会重新开声),要么是空档期,期间冒出来的自作主张回复
+            // 不能被听到。
+            setOmniAudioMuted(true, "read.done");
             pumpOmniRead();
           } else {
             omniAutoActive = false;
@@ -2227,6 +2248,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       omniReadPending++;
       omniReadSince = Date.now();
       omniReadCurrentText = text;
+      // 这是我们主动点的朗读,提前开声——不等 response.created 回执,省下那趟
+      // 网络往返,免得真回复的开头几个字也被静音吞掉。
+      setOmniAudioMuted(false, "read.create");
       omniRecentReads.push({text, ts: Date.now()});
       if(omniRecentReads.length > 8) omniRecentReads.shift();
       vdbg("read.create", text.slice(0, 40));
@@ -2258,6 +2282,13 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     omniMicMuted = muted;
     applyMicEnabled();
     vdbg(muted ? "mic.mute" : "mic.unmute", why);
+  }
+
+  function setOmniAudioMuted(muted, why){
+    if(omniAudioMuted === muted) return;
+    omniAudioMuted = muted;
+    omniAudioEl.muted = muted;
+    vdbg(muted ? "audio.mute" : "audio.unmute", why);
   }
 
   function maybeOmniIdle(){
