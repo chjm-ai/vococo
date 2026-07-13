@@ -1748,7 +1748,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     return typeof AudioWorkletNode !== "undefined";
   }
 
-  let analyser=null, analyserSource=null, outputAnalyser=null, orbCanvasCtx=null, orbAnimHandle=null;
+  let analyser=null, analyserSource=null, outputAnalyser=null, omniOutTap=null, orbCanvasCtx=null, orbAnimHandle=null;
   let orbLevels=null;  // 各柱子的平滑幅度,跨帧保留做指数平滑,消除原始频谱数据的跳变感
 
   function ensureAnalyser(){
@@ -2234,6 +2234,18 @@ void main(){
       vdbg("pc.ontrack", {kind: ev.track && ev.track.kind});
       const ms = (ev.streams && ev.streams[0]) || new MediaStream([ev.track]);
       omniAudioEl.srcObject = ms;
+      // 远端轨道 tap 进输出 analyser:尾音排空监听(armOmniReadTailWatch)靠它
+      // 感知 AI 是否真的还在出声。只做分析不改道,播放仍走上面的 <audio>——
+      // 别重走 2026-07-10 loopback 改道的老路。tap 失败只损失波形检测,
+      // 排空监听自动退回字数模型兜底。
+      ensureOutputAnalyser();
+      if(outputAnalyser){
+        try{
+          if(omniOutTap){ try{ omniOutTap.disconnect(); }catch(e){} }
+          omniOutTap = audioCtx.createMediaStreamSource(ms);
+          omniOutTap.connect(outputAnalyser);
+        }catch(e){ omniOutTap = null; vdbg("out-tap.fail", String(e)); }
+      }
       omniAudioEl.play().then(
         ()=>vdbg("audio.play.ok"),
         err=>vdbg("audio.play.fail", String(err)));
@@ -2481,26 +2493,18 @@ void main(){
         case "response.done":
           if(omniReadActive){
             omniReadActive = false;
+            const tailText = omniReadCurrentText;
             omniReadCurrentText = "";
-            // 不立刻静音:response.done 是 Omni 生成完毕的信号,但 WebRTC 音频
-            // 缓冲区还有 ~200ms 未播完,立即静音会吞掉最后几个字
-            // (2026-07-13 修复,见 omniReadTailTimer)。
-            // 让缓冲区自然排空:队列非空时泵下一句,其 setOmniAudioMuted(false)
-            // 会覆盖静音状态,尾音在生成间隙排空;队列已空则定时 400ms 后静音。
+            // 不立刻静音:response.done 是 Omni 生成完毕的信号,但 RTP 是按实际
+            // 语速推流的,长句生成快于播放,done 时可能还有 1s+ 没播——固定
+            // 400ms 等待被 2026-07-13 真机打脸("查好了我叫你"只听到"查好了"),
+            // 改成看输出波形真正安静了才静音(见 armOmniReadTailWatch)。
+            // 队列非空时泵下一句,其 setOmniAudioMuted(false) 会覆盖静音状态,
+            // 尾音在生成间隙自然排空。
             if(omniReadQueue.length > 0){
               pumpOmniRead();
             } else {
-              if(omniReadTailTimer) clearTimeout(omniReadTailTimer);
-              omniReadTailTimer = setTimeout(() => {
-                omniReadTailTimer = null;
-                // 定时器到期时若新的朗读已启动(泵了下一句或被新 SSE 填充),
-                // 不静音——新朗读自带的 setOmniAudioMuted(false) 已接管。
-                if(!omniReadActive && omniReadPending === 0
-                && omniReadQueue.length === 0){
-                  setOmniAudioMuted(true, "read.tail-drained");
-                  pumpOmniRead();  // 经 maybeOmniIdle 收尾
-                }
-              }, 400);
+              armOmniReadTailWatch(tailText);
             }
           } else {
             omniAutoActive = false;
@@ -2634,6 +2638,49 @@ void main(){
     try{ omniDc.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
     omniReadActive = false; omniReadPending = 0;
     pumpOmniRead();
+  }
+
+  // ── 尾音排空监听:等 AI 真的把最后几个字播完再静音 ─────────────────────
+  // 远端输出电平(0~1 峰值);analyser 没接上返回 -1(tap 失败/audioCtx 没起来)。
+  let omniOutLevelBuf = null;
+  function omniOutputLevel(){
+    if(!outputAnalyser || !omniOutTap) return -1;
+    if(!omniOutLevelBuf || omniOutLevelBuf.length !== outputAnalyser.fftSize)
+      omniOutLevelBuf = new Uint8Array(outputAnalyser.fftSize);
+    outputAnalyser.getByteTimeDomainData(omniOutLevelBuf);
+    let peak = 0;
+    for(let i = 0; i < omniOutLevelBuf.length; i++){
+      const d = Math.abs(omniOutLevelBuf[i] - 128);
+      if(d > peak) peak = d;
+    }
+    return peak / 128;
+  }
+
+  // response.done 后每 150ms 采一次输出波形:听到过声音、又连续 ~450ms 安静
+  // =尾音真播完了,这时才静音。450ms 也扛得住句中逗号停顿的误判。analyser
+  // 全程无信号(iOS 把 ctx 挂起/远端流进 WebAudio 的兼容问题)就退回字数模型:
+  // 从 read.create 起算 900ms 启动 + 每字 280ms,到点强制静音,最长 6 秒。
+  function armOmniReadTailWatch(text){
+    if(omniReadTailTimer) clearTimeout(omniReadTailTimer);
+    const chars = normEchoText(text || "").length;
+    const deadline = Math.max(Date.now() + 600,
+      Math.min(omniReadSince + 900 + chars * 280, Date.now() + 6000));
+    let seen = false, quiet = 0;
+    const check = () => {
+      omniReadTailTimer = null;
+      // 新朗读已接管(泵了下一句或新 SSE 填充),开声状态归它管,监听退场
+      if(omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0) return;
+      const lvl = omniOutputLevel();
+      if(lvl > 0.04){ seen = true; quiet = 0; }
+      else if(seen) quiet++;
+      if((seen && quiet >= 3) || Date.now() >= deadline){
+        setOmniAudioMuted(true, seen ? "read.tail-quiet" : "read.tail-cap");
+        pumpOmniRead();  // 经 maybeOmniIdle 收尾
+        return;
+      }
+      omniReadTailTimer = setTimeout(check, 150);
+    };
+    omniReadTailTimer = setTimeout(check, 150);
   }
 
   // 出错/拒答时让 Omni 把提示念出来——通话中用户不看屏幕,静默失败=「没反应」
@@ -3079,7 +3126,7 @@ void main(){
     recorder = null;
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
     if(orbAnimHandle){ cancelAnimationFrame(orbAnimHandle); orbAnimHandle = null; }
-    orbCanvasCtx = null; analyser = null; analyserSource = null; outputAnalyser = null; orbLevels = null;
+    orbCanvasCtx = null; analyser = null; analyserSource = null; outputAnalyser = null; omniOutTap = null; orbLevels = null;
     // 声波球回到干净的空闲态,下次通话不带上一通的残余权重(GL 上下文本身留着复用)
     orbConnecting = false; orbLevelAvg = 0;
     orbW.idle = 1; orbW.conn = orbW.listen = orbW.think = orbW.speak = 0;
