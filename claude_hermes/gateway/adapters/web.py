@@ -49,6 +49,12 @@ _CSP = (
     "base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'"
 )
 
+# 发布页(/pub/*)沙箱化 CSP:在站点默认策略上加 `sandbox`——强制把响应文档放进「不透明源」,
+# 读不到聊天主站的 localStorage/Cookie(哪怕发布的页面被投毒也偷不走 X-Auth-Token),状态
+# 变更请求 fetch 出来的 Origin 也会变成 "null",照样撞上 `_security_mw` 的同源校验被拦。
+# allow-scripts/allow-popups 留给自包含 demo 页正常跑 JS、点外链跳转。
+_PUBLISH_CSP = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; " + _CSP
+
 
 def _same_origin(origin: str, host: str) -> bool:
     """Origin 的 host:port 是否与请求的 Host 一致(同源)。用于挡跨站写 / DNS rebinding。"""
@@ -1134,6 +1140,39 @@ class WebAdapter:
         # 注:content_type 不能带 charset(aiohttp 会抛 ValueError);HTML 内有 <meta charset> 兜底
         return self._static_file("wazir-logos.html", "text/html")
 
+    # ── 发布页(公开可取,给 skill hermes-web-publish 用)────────────────────
+    def _safe_published_path(self, rel: str) -> Path | None:
+        """把 /pub/<rel> 解析到 config.PUBLISHED_DIR 内;越界 / 隐藏路径段一律拒绝。
+
+        目录请求(含空路径)补 index.html,方便发多文件的小站点。
+        """
+        rel = (rel or "").strip().lstrip("/")
+        if any(part.startswith(".") for part in rel.split("/") if part):
+            return None  # 挡隐藏文件(.env 之类误放进去也取不到)
+        root = config.PUBLISHED_DIR.resolve()
+        try:
+            target = (root / rel).resolve()
+        except (OSError, ValueError):
+            return None
+        if target != root and root not in target.parents:
+            return None  # 目录穿越,拒
+        if target.is_dir():
+            target = target / "index.html"
+        return target
+
+    async def _handle_publish(self, request: web.Request) -> web.StreamResponse:
+        """把 data/published/ 下的文件原样公开served;丢文件进去即生效,不用加路由、不用重启。
+
+        无口令、无 _guard——发布页本来就是要给没登录的人打开的链接。安全靠 _PUBLISH_CSP
+        的 sandbox 兜底(见其定义处注释),而非鉴权。"""
+        target = self._safe_published_path(request.match_info.get("path", ""))
+        if target is None or not target.is_file():
+            return web.Response(status=404, text="not found")
+        return web.FileResponse(
+            target,
+            headers={"Cache-Control": "no-cache", "Content-Security-Policy": _PUBLISH_CSP},
+        )
+
     # 只放行这几个图标名,防目录穿越
     _ICONS = {"icon-192", "icon-512", "icon-maskable-512", "apple-touch-icon"}
 
@@ -1218,6 +1257,7 @@ class WebAdapter:
                 web.get("/favicon.ico", self._handle_favicon),
                 web.get("/wazir-mark.svg", self._handle_mark),
                 web.get("/wazir-logos", self._handle_logos),
+                web.get("/pub/{path:.*}", self._handle_publish),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.get("/push/config", self._handle_push_config),
                 web.post("/push/subscribe", self._handle_push_subscribe),
