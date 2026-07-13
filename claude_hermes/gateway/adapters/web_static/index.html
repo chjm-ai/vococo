@@ -1264,6 +1264,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 还有几个没收到 response.created",用来区分自动回复(要 cancel)和我们的朗读。
   let omniReadQueue=[], omniReadActive=false, omniReadPending=0, omniAutoActive=false, omniAutoSince=0, omniTurnDone=true;
   let omniReconnectTimer=null;
+  let omniReadTailTimer=null;  // response.done 后等音频缓冲区排空的定时器(见 response.done 分支)
   let omniReadSince=0, omniReadWatchdog=null;  // 朗读心跳时间戳 + 卡死看门狗(见 omniReadStallCheck)
   // 回声过滤(2026-07-11):iOS AEC 在 AI 每句开口头 1~2 秒未收敛,残留回声会被
   // 阿里云 VAD 当成用户说话,转写出来的是"刚念那句的开头几个字"(见 matchOmniEcho)。
@@ -2454,11 +2455,26 @@ void main(){
           if(omniReadActive){
             omniReadActive = false;
             omniReadCurrentText = "";
-            // 这句朗读念完了,先静音回默认态——下一句要么是 pumpOmniRead 马上
-            // 点开新朗读(会重新开声),要么是空档期,期间冒出来的自作主张回复
-            // 不能被听到。
-            setOmniAudioMuted(true, "read.done");
-            pumpOmniRead();
+            // 不立刻静音:response.done 是 Omni 生成完毕的信号,但 WebRTC 音频
+            // 缓冲区还有 ~200ms 未播完,立即静音会吞掉最后几个字
+            // (2026-07-13 修复,见 omniReadTailTimer)。
+            // 让缓冲区自然排空:队列非空时泵下一句,其 setOmniAudioMuted(false)
+            // 会覆盖静音状态,尾音在生成间隙排空;队列已空则定时 400ms 后静音。
+            if(omniReadQueue.length > 0){
+              pumpOmniRead();
+            } else {
+              if(omniReadTailTimer) clearTimeout(omniReadTailTimer);
+              omniReadTailTimer = setTimeout(() => {
+                omniReadTailTimer = null;
+                // 定时器到期时若新的朗读已启动(泵了下一句或被新 SSE 填充),
+                // 不静音——新朗读自带的 setOmniAudioMuted(false) 已接管。
+                if(!omniReadActive && omniReadPending === 0
+                && omniReadQueue.length === 0){
+                  setOmniAudioMuted(true, "read.tail-drained");
+                  pumpOmniRead();  // 经 maybeOmniIdle 收尾
+                }
+              }, 400);
+            }
           } else {
             omniAutoActive = false;
             pumpOmniRead();  // 自动回复清场了,轮到排队中的朗读
@@ -2587,6 +2603,7 @@ void main(){
     if(!(omniReadActive || omniReadPending > 0)) return;
     if(Date.now() - omniReadSince <= 12000) return;
     vdbg("read.stall-cleared", {ra: omniReadActive, rp: omniReadPending, q: omniReadQueue.length});
+    if(omniReadTailTimer){ clearTimeout(omniReadTailTimer); omniReadTailTimer = null; }
     try{ omniDc.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
     omniReadActive = false; omniReadPending = 0;
     pumpOmniRead();
@@ -2601,6 +2618,7 @@ void main(){
   }
 
   function cancelOmniReading(reason){
+    if(omniReadTailTimer){ clearTimeout(omniReadTailTimer); omniReadTailTimer = null; }
     omniReadQueue = [];
     if((omniReadActive || omniReadPending > 0 || omniAutoActive) && omniDc && omniDc.readyState === "open"){
       try{ omniDc.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
@@ -2900,6 +2918,7 @@ void main(){
     if(omniDc){ try{ omniDc.onclose = null; omniDc.close(); }catch(e){} omniDc = null; }
     if(omniPc){ try{ omniPc.onconnectionstatechange = null; omniPc.ontrack = null; omniPc.close(); }catch(e){} omniPc = null; }
     if(omniMicMuteTimer){ clearTimeout(omniMicMuteTimer); omniMicMuteTimer = null; }
+    if(omniReadTailTimer){ clearTimeout(omniReadTailTimer); omniReadTailTimer = null; }
     omniMicMuted = false; omniFirstReplyMuteUsed = false;
     applyMicEnabled();
     omniMicStream = null;  // 麦克风轨道本身随 stream 变量一起在 teardownCallResources 里停
