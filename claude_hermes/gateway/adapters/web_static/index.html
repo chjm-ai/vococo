@@ -1147,7 +1147,7 @@ const S = {
   projects: [],         // [{hash,name,path,last_used}]
   project: null,        // 「活跃」项目 hash(顶部 ＋新对话 建在此;随打开的会话联动);null=默认项目
   expanded: new Set(),  // 已展开的分组:默认项目用 "__default__",项目用其 hash
-  moreShown: new Set(), // 点过「展开更多」的分组(键同 expanded):本次会话内记住,刷新页面回到默认 5 条
+  moreShown: new Set(), // 点过「展开更多」的分组(键同 expanded):折叠该组或刷新页面即清空,回到默认 5 条
   browseDir: "",        // 目录浏览器当前所在目录
   images: [],           // {data,media_type,url}
   stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
@@ -3835,7 +3835,8 @@ function reorderProject(srcHash, targetHash){
 }
 function toggleGroup(hash){
   const k=grpKey(hash);
-  if(S.expanded.has(k)) S.expanded.delete(k); else S.expanded.add(k);
+  if(S.expanded.has(k)){ S.expanded.delete(k); S.moreShown.delete(k); }  // 折叠时清掉「展开更多」态,下次打开回到默认 5 条
+  else S.expanded.add(k);
   saveExpanded(); renderConvs();
 }
 // 在指定项目下开新会话(顶部 ＋新对话 用当前活跃项目;分组 ＋ 用该分组)
