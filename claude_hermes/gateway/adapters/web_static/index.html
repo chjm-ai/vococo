@@ -2453,6 +2453,13 @@ void main(){
           omniUserLiveEl = null;  // 新一句开始,上一句的实时字幕气泡不再更新
           break;
         case "input_audio_buffer.committed":
+          // 第二道防护闸:speech_started 被 VAD 漏报时(如太短/太轻)也拉住泵朗读
+          // 的闸,不等 auto-reply 的 response.created 回执;auto-reply 完成后
+          // 的 response.done 会清掉它。第一道闸在 speech_started(见上)。
+          if(!omniAutoActive){
+            omniAutoActive = true;
+            omniAutoSince = Date.now();
+          }
           // 这句话已定型,completed 理应几百毫秒内跟到。到点没来就是被我们的
           // response.cancel 连带砍死了(见 omniDeltaFallback 注释)——拿 delta
           // 缓存顶上,别让用户的话烂在半路。
@@ -2585,6 +2592,9 @@ void main(){
           // 朗读还在进行(长回复 > 15 秒)时不开麦——等 maybeOmniIdle
           // 按播放尾巴估算完再静音恢复(2026-07-14 修复)。
           if(omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0) return;
+          // 尾音排空监听还在进行也不开麦:response.done 后音频可能没播完,
+          // armOmniReadTailWatch 在 150ms 轮询周期内,开麦就会漏回声。
+          if(omniReadTailTimer) return;
           setOmniMicMuted(false, "first-reply-cap");
         }, 15000);
       }
@@ -2938,7 +2948,18 @@ void main(){
     setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
     if(handsFreeActive) orbWrap.className = "thinking";
     currentTurnAiEl = null; currentTurnFull = "";
-    endActivity();  // 新一轮开始:上一轮的动作行定格,别被这轮的动作原地改写
+    endActivity();
+    // 新轮开始:清掉自动回复防护和上一轮残留的朗读状态(2026-07-14 修复)
+    // speech_started 被 VAD 漏报时(见 committed 的第二道闸),上一轮的老句子
+    // 可能还在泵朗读(omniReadPending > 0),auto-reply 的 response.created
+    // 会错吃计数器假扮成朗读并开声——cancel 砍掉残留读取,清防护闸让新轮朗读
+    // 不会被卡住。
+    if(omniDc && (omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0)){
+      try{ omniDc.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
+    }
+    omniAutoActive = false;
+    omniReadActive = false;
+    omniReadPending = 0;
     omniReadQueue = []; omniTurnDone = false;
     vdbg("turn.start", text.slice(0, 40));
     // 音效是锦上添花,不是核心链路——2026-07-13 playTone 漏参数的 bug 曾经因为
