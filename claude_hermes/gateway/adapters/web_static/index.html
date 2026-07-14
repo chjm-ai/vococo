@@ -2103,6 +2103,10 @@ void main(){
 
   function playTone(freq, durMs, shape, vol){
     if(!audioCtx) return;
+    // iOS 在通话(WebRTC)期间会把 AudioContext 挂起,挂起后 createOscillator
+    // 等 API 静默成功但不出声——先恢复再播放,如 resume 失败则跳过本次音效
+    // (2026-07-14 真机:所有音效全消失,根因在此)。
+    if(audioCtx.state !== "running"){ try{ audioCtx.resume(); }catch(e){} return; }
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.type = shape || "sine";
