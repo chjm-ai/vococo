@@ -1395,13 +1395,66 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     src.start(0);
   }
 
+  // 设备切换检测:track.onended/onmute + devicechange + visibilitychange 都往
+  // 这上面累积计数,连续超过门槛才触发重连——避免短暂中断(切回前台时的过渡期)
+  // 导致不必要的 WebRTC 重建。2026-07-14 真机:iOS 电话打断/蓝牙断开会令
+  // getUserMedia 轨道 mute 或 ended,但没有 devicechange 监听和健康检查时,
+  // ensureMicStream 会永远返回老化的流,用户无声无息变哑。
+  let micHealthSuspectCount = 0;
+  let micHealthSuspectTs = 0;
+  const MIC_HEALTH_WINDOW = 3500;
+  const MIC_HEALTH_THRESHOLD = 2;
+
+  function micStreamHealthy(){
+    if(!stream) return false;
+    const tracks = stream.getAudioTracks();
+    if(!tracks.length) return false;
+    return tracks.some(t => t.readyState === "live");
+  }
+
+  function suspectMicProblem(reason){
+    if(!handsFreeActive) return;
+    const now = Date.now();
+    if(now - micHealthSuspectTs > MIC_HEALTH_WINDOW){
+      micHealthSuspectCount = 0;
+      micHealthSuspectTs = now;
+    }
+    micHealthSuspectCount++;
+    vdbg("mic.suspect", {reason, count: micHealthSuspectCount,
+      ready: stream?.getAudioTracks().map(t=>t.readyState).join(",")});
+    if(micHealthSuspectCount >= MIC_HEALTH_THRESHOLD){
+      micHealthSuspectCount = 0;
+      if(!micStreamHealthy()) resetMicStream();
+      scheduleOmniReconnect("mic:"+reason, 500);
+    }
+  }
+
+  // 给麦克风流的每条音轨挂监听:iOS 电话打断/蓝牙断开时 track 会 mute/ended
+  function wireMicTrackListeners(ms){
+    if(!ms) return;
+    ms.getAudioTracks().forEach(t => {
+      try{ t.onended = null; }catch(e){}
+      try{ t.onmute = null; }catch(e){}
+      t.onended = () => suspectMicProblem("ended");
+      t.onmute = () => suspectMicProblem("muted");
+    });
+  }
+
   async function ensureMicStream(){
     if(!stream) {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {echoCancellation:true, noiseSuppression:true, autoGainControl:true}
       });
+      wireMicTrackListeners(stream);
     }
     return stream;
+  }
+
+  // 音频设备变化监听:iOS 蓝牙断开/耳机插拔触发 devicechange,此时现有流可能已废
+  if(navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === "function"){
+    navigator.mediaDevices.addEventListener("devicechange", () => {
+      if(handsFreeActive) suspectMicProblem("devicechange");
+    });
   }
 
   // 重建 Omni 连线前必须换一条全新的麦克风流:把旧 RTCPeerConnection 里用过的
@@ -2661,6 +2714,11 @@ void main(){
   // 事件(2026-07-10 真机:朗读 response 已创建后 Omni 彻底哑火,队列里 2 句永远
   // 没念,通话看起来"没回答")——主动 cancel 掉这个哑火的 response,放行队列。
   function omniReadStallCheck(){
+    // 3s 一次的周期性秒杀也检查麦克风健康——设备切换不一定触发 onended/mute,
+    // 比如 iOS 在后台杀音频会话后,轨道可能静默 ended 而不发事件。
+    if(handsFreeActive){
+      if(!micStreamHealthy()) suspectMicProblem("stale");
+    }
     if(!omniDc || omniDc.readyState !== "open") return;
     if(!(omniReadActive || omniReadPending > 0)) return;
     if(Date.now() - omniReadSince <= 12000) return;
@@ -3148,7 +3206,10 @@ void main(){
     wakeLockSentinel = null;
   }
   document.addEventListener("visibilitychange", ()=>{
-    if(!document.hidden && !$("#callView").hidden) acquireWakeLock();
+    if(document.hidden) return;
+    if(!$("#callView").hidden) acquireWakeLock();
+    // 切回前台时可能刚经历过电话打断/蓝牙断开:怀疑麦克风有问题
+    if(handsFreeActive) suspectMicProblem("vischange");
   });
 
   // ── 视图切换入口(供侧边栏"语音任务"主行 + #voiceChatBtn 调用,见下方接线)──────
