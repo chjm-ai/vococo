@@ -2410,6 +2410,13 @@ void main(){
           // 清空朗读队列,让过期的 /voice/send 流式结果(见 sendOmniTurn 的 gen
           // 判断)不再生效。
           omniSpeechStartTs = Date.now();
+          // 主动拉起自动回复防护——用户一开口 Omni 必定自动生成回复(create_response
+          // 关不掉),不等 response.created 回执就把泵朗读的闸拉住,防止 SSE 句子
+          // 先到、自动回复的 response.created 后到时的竞态(自动回复的 response.
+          // created 若晚于我们的 response.create 到达,会误吃 omniReadPending
+          // 计数器,假扮成我们点的朗读并开声)。
+          omniAutoActive = true;
+          omniAutoSince = Date.now();
           if(wsState === "thinking" || wsState === "speaking"){
             // 先留现场再砍:几秒后转写出来若判定是回声(AI 自己的声音),要能把
             // 这里砍掉的朗读恢复回去——否则回声不止造一轮假对话,还把真回答的
@@ -2483,6 +2490,8 @@ void main(){
           if(omniReadPending > 0){
             omniReadPending--;
             omniReadActive = true;
+            // 确认是我们主动点的朗读才开声(2026-07-14 修复),不让自动回复偷用。
+            setOmniAudioMuted(false, "read.created");
             if(wsState !== "speaking"){
               playSpeakingTone();
               wsState = "speaking";
@@ -2491,9 +2500,12 @@ void main(){
             }
           } else {
             omniAutoActive = true; omniAutoSince = Date.now();
-            // 双保险:cancel 赌网络时序赌不赢就靠这行兜底——静音本来就是默认态,
-            // 这里重申一次防止状态跟丢(见顶部 omniAudioMuted 架构注释)。
+            // 三道静音保险(2026-07-14):①函数级状态标志;②<audio> 元素直写
+            // 静音(绕过可能的标志位飘飞);③ response.cancel 砍掉后续音频数据。
+            // 之前只有①③,阿里云自动回复有时在 cancel 到达前就已经出声了,
+            // ③赶不上,①又被读取分支误消费——直写 <audio> 是最底层的防线。
             setOmniAudioMuted(true, "auto-response");
+            try{ omniAudioEl.muted = true; }catch(e){}
             try{ channel.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
             vdbg("auto-response.cancelled");
           }
@@ -2556,9 +2568,8 @@ void main(){
       omniReadPending++;
       omniReadSince = Date.now();
       omniReadCurrentText = text;
-      // 这是我们主动点的朗读,提前开声——不等 response.created 回执,省下那趟
-      // 网络往返,免得真回复的开头几个字也被静音吞掉。
-      setOmniAudioMuted(false, "read.create");
+      // 开声移到 response.created 确认是我们的朗读后再做(2026-07-14 修复:
+      // 提前开声会被自动回复的 response.created 偷走,造成 AI 回读用户字词)。
       omniRecentReads.push({text, ts: Date.now()});
       if(omniRecentReads.length > 8) omniRecentReads.shift();
       vdbg("read.create", text.slice(0, 40));
@@ -2571,6 +2582,9 @@ void main(){
         if(omniMicMuteTimer) clearTimeout(omniMicMuteTimer);
         omniMicMuteTimer = setTimeout(() => {
           omniMicMuteTimer = null;
+          // 朗读还在进行(长回复 > 15 秒)时不开麦——等 maybeOmniIdle
+          // 按播放尾巴估算完再静音恢复(2026-07-14 修复)。
+          if(omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0) return;
           setOmniMicMuted(false, "first-reply-cap");
         }, 15000);
       }
@@ -2725,6 +2739,7 @@ void main(){
   // 关不掉),马上 pump 会跟它的 response.created 撞车导致 rp 计数错位;等它被
   // cancel 后的 response.done 自然接力 pump,再留一个定时器兜底。
   function restoreOmniBargeIn(restore, tag){
+    omniAutoActive = false;  // 已判回声,清自动回复防护让朗读恢复(2026-07-14)
     omniTurnGen = restore.prevGen;
     if(restore.sentences.length) omniReadQueue = restore.sentences.concat(omniReadQueue);
     vdbg(tag, {q: omniReadQueue.length});
@@ -2855,6 +2870,7 @@ void main(){
     if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
     const echoSrc = transcript ? matchOmniEcho(transcript, !!restore) : null;
     if(echoSrc){
+      omniAutoActive = false;  // 回声不可能有真正的自动回复,清掉防护(2026-07-14)
       // 是 AI 自己的回声:丢弃,不发 Claude、不算一轮对话,字幕气泡撤掉
       vdbg("echo.discard", {heard: transcript.slice(0, 24), read: echoSrc.slice(0, 24)});
       if(omniUserLiveEl){
