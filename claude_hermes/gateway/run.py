@@ -220,6 +220,10 @@ class GatewayRunner:
         if n:
             print(f"🧹 启动清理:回收 {n} 个孤儿 worktree/悬空分支")
         clarify.register_push(self.push)  # 让 send_message 等工具能主动发消息
+        # 注册语音后台任务通知回推:任务完成后,通过派发者所在的平台/会话发一条消息通知
+        from ..voice import notify as voice_notify
+
+        voice_notify.register_platform_push(self.push)
         # 注册取消回调到所有支持的 adapter(如 WebAdapter)
         for adapter in self.adapters.values():
             if hasattr(adapter, "set_cancel_callback"):
