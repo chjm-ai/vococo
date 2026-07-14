@@ -235,6 +235,9 @@
   .projgrp.dragging{opacity:.4}
   .projgrp.dragover{box-shadow:inset 0 2px 0 var(--accent)}
   .conv.ingroup{margin-left:12px}   /* 分组下的会话缩进,体现层级 */
+  /* 「展开更多」:分组超过 5 条时的第 6 行,颜色比普通会话行淡一档 */
+  .conv.convmore{color:var(--dim2);font-size:13px}
+  @media(hover:hover){ .conv.convmore:hover{color:var(--dim)} }
 
   /* 新建项目弹窗(服务端目录浏览器) */
   #projModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
@@ -1144,6 +1147,7 @@ const S = {
   projects: [],         // [{hash,name,path,last_used}]
   project: null,        // 「活跃」项目 hash(顶部 ＋新对话 建在此;随打开的会话联动);null=默认项目
   expanded: new Set(),  // 已展开的分组:默认项目用 "__default__",项目用其 hash
+  moreShown: new Set(), // 点过「展开更多」的分组(键同 expanded):本次会话内记住,刷新页面回到默认 5 条
   browseDir: "",        // 目录浏览器当前所在目录
   images: [],           // {data,media_type,url}
   stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
@@ -3202,7 +3206,7 @@ async function api(path, opts={}){
   if(r.status===401){ showLogin(); throw new Error("401"); }
   return r;
 }
-// 语音通话入口只保留侧边栏「默认项目」里的「语音对话」行(见 renderVoiceRows),
+// 语音通话入口只保留侧边栏「默认项目」里的「语音对话」行(见 buildVoiceMainRow),
 // 不再在聊天输入框上方浮一个圆球——那个入口跟侧栏那行重复,已按用户要求去掉。
 
 // ── 登录 ────────────────────────────────────────────────────────────────
@@ -3655,20 +3659,26 @@ function loadExpanded(){ try{ S.expanded=new Set(JSON.parse(localStorage.getItem
 function convsInGroup(hash){
   return S.convs.filter(c => c.pinned ? hash===null : convProject(c.conv)===hash);
 }
-// 语音对话主会话 + 语音后台任务,并入「默认项目」分组置顶显示(数据来自 /voice/sidebar):
-// 主会话(语音通话)第一行,后台任务按接口返回顺序排其后;后台任务可点进去看进度/追问。
+// 语音对话主行(通话入口),与主会话一起置顶在「默认项目」分组最前(数据来自 /voice/sidebar)。
 // 通话视图开着时不看 S.conv(那还停在离开前的聊天会话上没变),由调用方传进来的 inCall
 // (= #callView 是否显示)决定「语音对话」这一行是否高亮成"你现在就在这儿"。
-function renderVoiceRows(box, inCall){
+function buildVoiceMainRow(inCall){
   const vs = S.voiceSidebar;
-  if(!vs || !vs.main) return;  // 还没拉到数据(如刚登录那一瞬)先不渲染,避免空行闪一下
+  if(!vs || !vs.main) return null;  // 还没拉到数据(如刚登录那一瞬)先不渲染,避免空行闪一下
   const mainRow=el("div","conv ingroup"+(inCall?" active":""));
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");
   const mainCt=el("div","ct"); mainCt.textContent=vs.main.title||"语音对话"; mainBody.append(mainCt);
   mainRow.append(mainBody);
   mainRow.onclick=()=>{ openCallView(); };
-  box.append(mainRow);
+  return mainRow;
+}
+// 语音后台任务行:按接口返回顺序排在普通会话前,可点进去看进度/追问;
+// 作为普通条目参与分组的「最多展示 5 条」限制。
+function buildVoiceTaskRows(inCall){
+  const vs = S.voiceSidebar;
+  if(!vs || !vs.main) return [];
+  const rows=[];
   for(const t of vs.tasks){
     // 任务行跟普通会话行吃同一套归档筛选
     const arch=!!t.archived;
@@ -3695,9 +3705,39 @@ function renderVoiceRows(box, inCall){
       if(row.classList.contains("swiped")){ closeSwipe(row); return; }
       openConv(t.conv);
     };
-    box.append(row);
+    rows.push(row);
   }
+  return rows;
 }
+// 单条会话行(置顶主会话与普通会话通用)
+function buildConvRow(c, inCall){
+  const e=el("div","conv ingroup"+(!inCall && c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
+  e.dataset.conv=c.conv;
+  const body=el("div","cvbody");
+  if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }   // 该会话正在流式 → 闪烁圆点
+  const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
+  const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }   // 会话时刻:名称右侧
+  if(c.pinned){ const star=el("span","star"); star.textContent="★"; body.append(star); }   // 主会话:右侧弱化星标
+  else { const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
+  e.append(body);
+  if(!c.pinned){
+    const act=el("div","cvact");
+    const arch=el("button","cvarch"); arch.innerHTML=ic("folder"); arch.title=c.archived?"取消归档":"归档";
+    arch.onclick=ev=>{ ev.stopPropagation(); closeSwipe(e); toggleArchive(c.conv); };
+    const del=el("button","cvdel"); del.innerHTML=ic("trash"); del.title="删除";
+    del.onclick=ev=>{ ev.stopPropagation(); closeSwipe(e); delConv(c.conv); };
+    act.append(arch,del); e.append(act);
+    bindSwipe(e, body, act);   // 触屏:左滑露出归档/删除,不用长按(iOS 用户少用长按)
+    if(c.conv===S.swipedConv) e.classList.add("swiped");   // 重建 DOM 后补回展开状态,别被后台事件触发的重渲染冲掉
+  }
+  e.onclick=()=>{
+    if(e._justSwiped){ e._justSwiped=false; return; }   // 刚滑动完的这次 click 不触发切换
+    if(e.classList.contains("swiped")){ closeSwipe(e); return; }   // 已展开:点一下先收起
+    openConv(c.conv);
+  };
+  return e;
+}
+const CONV_SHOW_MAX = 5;   // 每个分组默认最多展示的会话数(置顶行不计入),超出折进「展开更多」
 // 手风琴:默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
@@ -3721,34 +3761,29 @@ function renderConvs(){
     h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } toggleGroup(g.hash); };  // 拖拽落地那一下别顺带触发展开/收起
     box.append(h);
     if(!open) continue;
-    if(g.hash===null) renderVoiceRows(box, inCall);  // 语音对话 + 语音后台任务并入默认项目,置于最前
+    // 置顶区:主会话(对话) + 语音对话恒在默认分组最前,不参与时间排序,也不占「展开更多」的名额
+    const rows=[];
+    if(g.hash===null){
+      for(const c of convs) if(c.pinned) box.append(buildConvRow(c, inCall));
+      const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
+      rows.push(...buildVoiceTaskRows(inCall));   // 语音后台任务:普通条目,排在普通会话前
+    }
     for(const c of convs){
-      if(!c.pinned){const arch=!!c.archived;if(S.convFilter==="archived"&&!arch)continue;if(S.convFilter==="active"&&arch)continue;}
-      const e=el("div","conv ingroup"+(!inCall && c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
-      e.dataset.conv=c.conv;
-      const body=el("div","cvbody");
-      if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }   // 该会话正在流式 → 闪烁圆点
-      const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
-      const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }   // 会话时刻:名称右侧
-      if(c.pinned){ const star=el("span","star"); star.textContent="★"; body.append(star); }   // 主会话:右侧弱化星标
-      else { const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
-      e.append(body);
-      if(!c.pinned){
-        const act=el("div","cvact");
-        const arch=el("button","cvarch"); arch.innerHTML=ic("folder"); arch.title=c.archived?"取消归档":"归档";
-        arch.onclick=ev=>{ ev.stopPropagation(); closeSwipe(e); toggleArchive(c.conv); };
-        const del=el("button","cvdel"); del.innerHTML=ic("trash"); del.title="删除";
-        del.onclick=ev=>{ ev.stopPropagation(); closeSwipe(e); delConv(c.conv); };
-        act.append(arch,del); e.append(act);
-        bindSwipe(e, body, act);   // 触屏:左滑露出归档/删除,不用长按(iOS 用户少用长按)
-        if(c.conv===S.swipedConv) e.classList.add("swiped");   // 重建 DOM 后补回展开状态,别被后台事件触发的重渲染冲掉
-      }
-      e.onclick=()=>{
-        if(e._justSwiped){ e._justSwiped=false; return; }   // 刚滑动完的这次 click 不触发切换
-        if(e.classList.contains("swiped")){ closeSwipe(e); return; }   // 已展开:点一下先收起
-        openConv(c.conv);
-      };
-      box.append(e);
+      if(c.pinned) continue;
+      const arch=!!c.archived;
+      if(S.convFilter==="archived"&&!arch)continue;
+      if(S.convFilter==="active"&&arch)continue;
+      rows.push(buildConvRow(c, inCall));
+    }
+    // 每组默认最多展示 CONV_SHOW_MAX 条,余下折进「展开更多」(点开后本次会话内保持展开)
+    const shown = S.moreShown.has(grpKey(g.hash)) ? rows : rows.slice(0, CONV_SHOW_MAX);
+    for(const r of shown) box.append(r);
+    if(rows.length > shown.length){
+      const k=grpKey(g.hash);
+      const more=el("div","conv ingroup convmore");
+      const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
+      more.onclick=()=>{ S.moreShown.add(k); renderConvs(); };
+      box.append(more);
     }
   }
   const addp=el("div","projgrp projadd"); addp.textContent="＋ 新建项目…"; addp.onclick=openProjModal; box.append(addp);
