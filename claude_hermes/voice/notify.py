@@ -1,18 +1,29 @@
 """任务终态分发(F8/F9):/voice 页面在线 → SSE 推 task_done 事件;
-离线 → 走现有 gateway/adapters/web_push.py 发系统推送。
+离线 → 走现有 gateway/adapters/web_push.py 发系统推送(Web Push / VAPID)。
 
-"在线"简化判定:是否有活跃的 /voice/tasks/stream 订阅者(单用户场景下足够准确,
-不做更复杂的"该用户是否正看着这条任务"判断)。
+当 Web Push 不可配(无密钥)或用户持有平台订阅(TG/Web)时,走
+register_platform_push 注册的回调,由 GatewayRunner.push 把通知送到
+用户派发任务的那个入口。
+
+F10:排队中取消(CancelQueued)以前只推 SSE 不通知离线用户,2026-07-14
+改为也会走 on_task_terminal,接入全套离线通知。
 """
 from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Awaitable, Callable
 
 from .. import config
 from . import tasks, tts
 
 _subscribers: set[asyncio.Queue] = set()
+
+# 状态对应的 emoji 前缀,用于平台推送(Telegram / Web 文字消息)
+_status_emoji = {"done": "✅", "failed": "❌", "cancelled": "🚫"}
+
+# 注册的平台推送回调:async (platform, chat_id, text) -> None
+_platform_push: Callable[[str, str, str], Awaitable[None]] | None = None
 
 
 def subscribe() -> asyncio.Queue:
@@ -51,6 +62,19 @@ def on_task_activity(task: dict) -> None:
     )
 
 
+def register_platform_push(
+    fn: Callable[[str, str, str], Awaitable[None]] | None,
+) -> None:
+    """注册一个平台推送回调,在 Web Push 不可达时作为备用通路发给任务的派发者。
+
+    fn(platform, chat_id, text) — platform 和 chat_id 来自任务记录的
+    dispatch_platform/dispatch_chat_id 字段,由 task_tools.py 在派发时从
+    clarify.current() 捕获。不传 fn 或传 None = 清除(主要用于测试清理)。
+    """
+    global _platform_push
+    _platform_push = fn
+
+
 def _announce_text(task: dict) -> str:
     if task["status"] == "done":
         return f"对了,「{task['title']}」办完了,{task['result_summary'] or '结果已经出来了'}。"
@@ -59,8 +83,18 @@ def _announce_text(task: dict) -> str:
     return f"「{task['title']}」这个任务没办成:{task['result_summary'] or task['progress_note']}。"
 
 
+def _platform_text(task: dict) -> str:
+    """平台推送用的文字消息（含 emoji 状态标记）,比语音播报更紧凑。"""
+    emoji = _status_emoji.get(task["status"], "📋")
+    summary = task["result_summary"] or task["progress_note"] or ""
+    sep = " — " if summary else ""
+    return f"{emoji} 任务「{task['title']}」{task['status']}{sep}{summary}"
+
+
 async def on_task_terminal(task_id: str) -> None:
-    """任务进入终态时调用一次:在线走 SSE 事件,离线走 web_push。"""
+    """任务进入终态时调用一次:
+    1. 在线 → SSE 事件(语音播报);
+    2. 离线 → Web Push(VAPID) + 平台推送(如果有 dispatch 上下文)。"""
     task = tasks.get(task_id)
     if task is None:
         return
@@ -72,17 +106,16 @@ async def on_task_terminal(task_id: str) -> None:
         "result_summary": task["result_summary"],
         "announce_text": announce_text,
     }
+    # ── 在线:推 SSE(语音播报) ──────────────────────────────────────
     if is_online():
-        # Omni 出声模式:前端会把 announce_text 交给 Omni 念(跟对话同一把声音、
-        # 同一条 RTC 链路,阿里云的回声消除拿得到参考信号)——服务端不再用旧 TTS
-        # 合成。两套合成并存正是"播报和对话语气割裂"+自回声风险的来源(2026-07-10)。
-        # 旧链路(未开 Omni)保持原样:合成好随事件带过去,前端直接排播放队列。
         audio = None
         if not config.VOICE_OMNI_ENABLED:
             audio = await tts.synthesize(announce_text, config.VOICE_TTS_VOICE)
         payload["audio_b64"] = base64.b64encode(audio).decode("ascii") if audio else None
         _broadcast("task_done", payload)
         return
+
+    # ── 离线:Web Push(VAPID) 发给所有订阅设备 ──────────────────────
     from ..gateway.adapters.web_push import PUSH
 
     body = task["result_summary"] or task["progress_note"] or "任务已结束"
@@ -93,3 +126,14 @@ async def on_task_terminal(task_id: str) -> None:
         kind="done",
         tag=f"voice-task-{task['id']}",
     )
+
+    # ── 平台推送:发给任务的派发者(如果 Web Push 不可配或任务有 dispatch 上下文) ──
+    if _platform_push is not None and task.get("dispatch_platform") and task.get("dispatch_chat_id"):
+        try:
+            await _platform_push(
+                task["dispatch_platform"],
+                task["dispatch_chat_id"],
+                _platform_text(task),
+            )
+        except Exception:
+            pass  # 平台推送失败不影响主流程

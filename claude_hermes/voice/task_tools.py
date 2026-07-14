@@ -8,6 +8,7 @@ from __future__ import annotations
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from .. import config
+from ..gateway import clarify
 from . import executor, tasks
 
 _STATUS_WORD = {
@@ -60,7 +61,16 @@ async def voice_dispatch_task(args: dict) -> dict:
     cwd = (args.get("cwd") or "").strip() or str(config.ROOT_DIR)
     if not (title and prompt):
         return _ok("voice_dispatch_task 需要 title 和 prompt 都非空。")
-    task = executor.dispatch(title=title, prompt=prompt, cwd=cwd)
+    # 捕获派发时的平台上下文:任务完成后需要知道通知该发给谁(见 notify.py)。
+    # clarify.current() 由 run.py 在每轮对话开始前设置(含 adapter+chat_id);
+    # 不在网关上下文里(如测试)返回 None,不阻塞任务派发。
+    ctx = clarify.current()
+    dispatch_platform = ctx.adapter.platform if (ctx and ctx.adapter) else None
+    dispatch_chat_id = str(ctx.chat_id) if (ctx and ctx.chat_id is not None) else None
+    task = executor.dispatch(
+        title=title, prompt=prompt, cwd=cwd,
+        dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
+    )
     return _ok(f"已派发,task_id={task['id']},标题「{title}」,状态:{_STATUS_WORD[task['status']]}。")
 
 

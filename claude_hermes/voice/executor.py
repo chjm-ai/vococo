@@ -207,9 +207,20 @@ def _maybe_start_next() -> None:
         _running[nxt["id"]] = asyncio.create_task(_run(nxt["id"]))
 
 
-def dispatch(title: str, prompt: str, cwd: str | None = None) -> dict:
-    """落库 + 尝试立即起跑(并发满则排队)。立即返回任务行,不等待执行。"""
-    task = tasks.create(title=title, prompt=prompt, cwd=cwd)
+def dispatch(
+    title: str,
+    prompt: str,
+    cwd: str | None = None,
+    dispatch_platform: str | None = None,
+    dispatch_chat_id: str | None = None,
+) -> dict:
+    """落库 + 尝试立即起跑(并发满则排队)。立即返回任务行,不等待执行。
+
+    dispatch_platform/dispatch_chat_id: 任务是从哪个平台哪个会话派来的,
+    终态通知时靠它们回推该发给谁(见 notify.py)。"""
+    task = tasks.create(title=title, prompt=prompt, cwd=cwd,
+                        dispatch_platform=dispatch_platform,
+                        dispatch_chat_id=dispatch_chat_id)
     _maybe_start_next()
     # 派发瞬间就推给在线页面(状态条立刻出现);重新 get 拿最新状态——
     # 上一行可能已把它从 queued 拉成 running
@@ -225,10 +236,18 @@ def cancel(task_id: str) -> bool:
         return False
     if row["status"] == "queued":
         # 排队中取消不会走 _run 的终态收尾(没有 on_task_terminal),
-        # 单独广播一次,让状态条把这条摘掉
+        # 但已是一个终态——需要通知离线用户(Web Push / 平台推送),
+        # 不只是推 SSE 给在线页面。SSE 通知走 _notify_activity,
+        # Web Push/平台推送走 on_task_terminal(异步,create_task 不阻塞)。
         ok = tasks.set_status(task_id, "cancelled", progress_note="已取消(未开始)")
         if ok:
             _notify_activity(task_id)
+            try:
+                asyncio.get_running_loop()  # 只在有 event loop 时才发异步通知
+            except RuntimeError:
+                pass
+            else:
+                asyncio.create_task(notify.on_task_terminal(task_id))
         return ok
     if row["status"] == "running":
         t = _running.get(task_id)
