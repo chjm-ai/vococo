@@ -914,15 +914,15 @@
   #muteToggleBtn:hover{background:var(--panel);color:var(--text)}
   #muteToggleBtn.muted{background:var(--err);color:#fff}
 
-  /* ── 启动按钮模式:进入通话视图先显示"开始录音",点后进入免提交互 ────────── */
-  #startCallBtn{display:flex;flex-direction:column;align-items:center;gap:8px;
-    pointer-events:auto;cursor:pointer;border:none;background:none;color:var(--text);
-    transition:transform .15s ease,opacity .2s;outline:none}
-  #startCallBtn .start-icon{font-size:48px;line-height:1;filter:drop-shadow(0 4px 12px rgba(0,0,0,.2));
-    transition:transform .2s ease}
-  #startCallBtn .start-text{font-size:17px;font-weight:600;color:var(--accent)}
-  #startCallBtn:hover .start-icon{transform:scale(1.1)}
-  #startCallBtn:active .start-icon{transform:scale(.92)}
+  /* ── 启动按钮模式:待机时中央一个圆形麦克风图标钮(与静音钮同款形态,略大突出主操作),
+     点击进入录音;连接成功后此钮隐藏,由声波球界面接管 ────────── */
+  #startCallBtn{width:64px;height:64px;border-radius:50%;border:none;cursor:pointer;
+    pointer-events:auto;background:var(--panel2);color:var(--dim);padding:0;
+    display:inline-flex;align-items:center;justify-content:center;outline:none;
+    transition:background .15s ease,color .15s ease,transform .12s ease}
+  #startCallBtn .ic{width:26px;height:26px}
+  #startCallBtn:hover{background:var(--panel);color:var(--text)}
+  #startCallBtn:active{transform:scale(.92)}
   #startCallBtn:disabled{opacity:.5;pointer-events:none}
   #startCallBtn[hidden]{display:none}
 </style>
@@ -1145,10 +1145,7 @@ try{
       </div>
       <!-- 启动按钮模式:进入通话视图不自动开始录音,用户点这个按钮才启动。
            一轮交互结束后回到此按钮待机状态,再点再开始。 -->
-      <button id="startCallBtn" hidden>
-        <span class="start-icon">🎤</span>
-        <span class="start-text">开始录音</span>
-      </button>
+      <button id="startCallBtn" hidden title="开始录音" aria-label="开始录音"></button>
     </footer>
     <div id="tasksDrawer">
       <div id="tasksSheet">
@@ -1263,6 +1260,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   setIcon($("#stopIcon"), "stop");
   setIcon(endHandsFreeBtn, "close");  // 挂断按钮里放一个叉(×)
   setIcon(muteToggleBtn, "mic");  // 静音按钮:默认图标是"麦克风开着",点了切成"mute"
+  setIcon(startBtn, "mic");  // 开始录音按钮:与静音钮同款圆形图标钮,状态文字走 title/status
   setIcon($("#voiceIcon"), "voice");  // 音色切换:静音/挂断中间的圆钮,点开原生选择器
   setIcon($("#clearVoiceCtxBtn"), "eraser");  // 顶栏:清空语音会话上下文
   // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
@@ -2238,7 +2236,9 @@ void main(){
 
   async function startHandsFree(){
     vdbg("handsfree.start", {omni: S.omniEnabled, fn: typeof startOmniHandsFree});
-    if(S.omniEnabled){ await startOmniHandsFree(); return; }
+    // 返回值必须透传给按钮模式的点击处理器:吞掉返回值会让调用方永远拿到
+    // undefined,连接明明成功也被当失败处理(2026-07-15 踩坑)。
+    if(S.omniEnabled){ return await startOmniHandsFree(); }
     // P2 WS 免提链路已下线(/voice/ws 路由已摘,见 docs/adr/0004):走到这里说明
     // Omni 配置没取到(登录预取失败)或 VOICE_OMNI_ENABLED=0——不能再连 WS
     // (只会 404 →1.5s 重连死循环+断线音),直接回落按住说话,跟"免提启动失败"
@@ -2246,6 +2246,7 @@ void main(){
     handsFreeUi.hidden = true;
     talkBtn.hidden = false;
     addMsg("ai error", "免提通话需要 Omni 模式(检查 VOICE_OMNI_ENABLED / 网络),已切换到按住说话");
+    return false;
   }
 
   function manualInterrupt(){
@@ -2310,7 +2311,7 @@ void main(){
       orbConnecting = false;
       handsFreeUi.hidden = true; talkBtn.hidden = false;
       addMsg("ai error", "麦克风权限被拒绝,请到系统设置里允许");
-      return;
+      return false;
     }
     vdbg("omni.mic.ok");
     // 新连接(含重连/切音色的全新流):重置首回复静音状态;用户之前按的手动静音
@@ -3269,7 +3270,7 @@ void main(){
     handsFreeActive = false;
     handsFreeUi.hidden = true;
     startBtn.hidden = false;
-    startBtn.textContent = "继续录音";
+    startBtn.title = "继续录音"; startBtn.setAttribute("aria-label", "继续录音");
     startBtn.disabled = false;
     setOmniConnStatus("disconnected");
     setStatus("点击按钮继续录音", "");
@@ -3280,13 +3281,16 @@ void main(){
   startBtn.addEventListener("click", async () => {
     if(startBtn.disabled) return;
     startBtn.disabled = true;
-    startBtn.textContent = "连接中…";
-    startBtn.hidden = false;
+    startBtn.hidden = true;  // 连接期间收起按钮,由声波球的"连接中"形态+状态文字接管
     handsFreeUi.hidden = false;
     setStatus("连接中…", "");
     setOmniConnStatus("connecting");
     vdbg("button-mode.start");
-    const ok = await startHandsFree();
+    // startHandsFree 内部抛异常(createOffer/setRemoteDescription 等)也要落回
+    // 失败分支,否则按钮永远停在 disabled 态,整个通话视图卡死。
+    let ok = false;
+    try{ ok = await startHandsFree(); }
+    catch(e){ vdbg("button-mode.start.fail", String(e)); }
     startBtn.disabled = false;
     // 连接过程中用户可能已退出通话视图,此时不再继续
     if($("#callView").hidden){ return; }
@@ -3302,7 +3306,9 @@ void main(){
     } else {
       handsFreeUi.hidden = true;
       startBtn.hidden = false;
-      startBtn.textContent = "重试";
+      // 具体错误原因由 startHandsFree 各失败路径的 addMsg 错误气泡呈现,
+      // 按钮本身只留"可以再点一次"的语义
+      startBtn.title = "连接失败,点击重试"; startBtn.setAttribute("aria-label", "连接失败,点击重试");
       setOmniConnStatus("disconnected");
       setStatus("连接失败,点击重试", "");
     }
@@ -3453,7 +3459,7 @@ void main(){
     if(vadCapable()){
       handsFreeUi.hidden = true;
       startBtn.hidden = false;
-      startBtn.textContent = "开始录音";
+      startBtn.title = "开始录音"; startBtn.setAttribute("aria-label", "开始录音");
       startBtn.disabled = false;
       setStatus("点击按钮开始录音", "");
       orbWrap.className = "idle";
