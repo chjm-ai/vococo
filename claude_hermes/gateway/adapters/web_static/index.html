@@ -115,7 +115,9 @@
     transition:transform .25s cubic-bezier(.4,0,.2,1),width .25s cubic-bezier(.4,0,.2,1),margin .25s cubic-bezier(.4,0,.2,1),box-shadow .25s;z-index:30}
   #sidebar .shead{padding:12px 14px 6px;padding-top:calc(12px + env(safe-area-inset-top));display:flex;align-items:center;gap:8px}
   #sidebar .shead .brand{flex:1;font-family:Optima,"Times New Roman","Songti SC",serif;
-    font-size:20px;font-weight:700;color:var(--text)}
+    font-size:20px;font-weight:700;color:var(--text);cursor:pointer;
+    transition:color .15s}
+  #sidebar .shead .brand:hover{color:var(--accent)}
   /* 列表行统一规范:所有可点行(＋新对话 / 分组头 / 会话)共用同一内边距 + 圆角,
      hover 的灰底矩形尺寸与圆角完全一致 */
   #convList{flex:1;overflow-y:auto;padding:2px 8px 8px}
@@ -622,6 +624,47 @@
   #empty .sug:hover{border-color:var(--accent)}
   #empty .sug:active{transform:scale(.96)}
 
+  /* ── 首页(#homeView):APP 默认着陆页 ─────────────────────────────── */
+  #homeView{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden;background:var(--bg2)}
+  #homeView[hidden]{display:none}
+  #homeContent{flex:1;overflow-y:auto;padding:32px 40px 48px;max-width:720px;margin:0 auto;width:100%}
+  /* 欢迎区 */
+  .home-hero{padding:40px 0 32px;text-align:center}
+  .home-hero h1{font-size:28px;margin:0 0 8px;font-weight:700;font-family:Optima,"Times New Roman","Songti SC",serif}
+  .home-hero p{margin:0;color:var(--dim);font-size:15px}
+  /* 快捷卡片行 */
+  .home-quick{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:36px}
+  .home-card{display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:8px;padding:28px 16px;border-radius:16px;background:var(--panel);border:1px solid var(--line);
+    cursor:pointer;transition:background .16s,border-color .16s,transform .12s;
+    text-align:center;color:var(--text)}
+  .home-card:active{transform:scale(.97)}
+  .home-card:hover{border-color:var(--accent);background:var(--panel2)}
+  .home-card-icon{font-size:32px;line-height:1}
+  .home-card-title{font-weight:600;font-size:15px}
+  .home-card-desc{color:var(--dim2);font-size:12.5px;line-height:1.4}
+  /* 区域标题 */
+  .home-section{margin-bottom:28px}
+  .home-section-title{font-size:15px;font-weight:600;margin:0 0 12px;color:var(--dim2);
+    text-transform:uppercase;letter-spacing:.04em}
+  /* 最近会话列表 */
+  .home-recent{display:flex;flex-direction:column;gap:6px}
+  .home-item{display:flex;align-items:center;gap:12px;padding:10px 14px;
+    border-radius:12px;background:var(--panel);border:1px solid var(--line);
+    cursor:pointer;transition:background .16s,border-color .16s;color:var(--text)}
+  .home-item:active{background:var(--panel2)}
+  .home-item:hover{border-color:var(--accent);background:var(--panel2)}
+  .home-item-icon{width:34px;height:34px;border-radius:50%;flex-shrink:0;
+    display:flex;align-items:center;justify-content:center;
+    background:var(--panel2);font-size:16px}
+  .home-item-icon.voice{background:rgba(90,164,105,.15);color:var(--ok)}
+  .home-item-icon.chat{background:rgba(217,119,87,.12);color:var(--accent)}
+  .home-item-body{flex:1;min-width:0}
+  .home-item-title{font-size:14px;font-weight:500;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .home-item-time{font-size:11.5px;color:var(--dim2);margin-top:1px}
+  .home-empty{padding:32px;text-align:center;color:var(--dim2);font-size:14px}
+
   /* #composer 只做「悬浮 + 滑动隐藏」的壳,不带背景/内边距——背景和内边距挪到
      .combg 这层实心遮罩上;::before 是遮罩上方一小截渐隐条(纯色实心 → 全透明,
      不用模糊),让滚上来的消息不是硬切进纯色背景,而是柔和淡出。 */
@@ -904,12 +947,17 @@
   #voicePickBtn:active{transform:scale(.92)}
   #voicePickBtn select{position:absolute;inset:0;width:100%;height:100%;opacity:0;
     -webkit-appearance:none;appearance:none;border:none;cursor:pointer}
-  #endHandsFreeBtn,#muteToggleBtn{width:46px;height:46px;border-radius:50%;border:none;
+  #endHandsFreeBtn{width:46px;height:46px;border-radius:50%;border:none;
+    background:var(--err);color:#fff;display:inline-flex;align-items:center;justify-content:center;
+    padding:0;transition:background .15s ease,color .15s ease,transform .12s ease}
+  #endHandsFreeBtn .ic{width:22px;height:22px}
+  #endHandsFreeBtn:hover{background:#b85a3f}
+  #endHandsFreeBtn:active{transform:scale(.92)}
+  #muteToggleBtn{width:46px;height:46px;border-radius:50%;border:none;
     background:var(--panel2);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;
     padding:0;transition:background .15s ease,color .15s ease,transform .12s ease}
-  #endHandsFreeBtn .ic,#muteToggleBtn .ic{width:22px;height:22px}
-  #endHandsFreeBtn:hover{background:var(--err);color:#fff}
-  #endHandsFreeBtn:active,#muteToggleBtn:active{transform:scale(.92)}
+  #muteToggleBtn .ic{width:22px;height:22px}
+  #muteToggleBtn:active{transform:scale(.92)}
   /* 静音=一个小图标切换态,开启后常驻标红提醒"麦克风关着",不需要文字 */
   #muteToggleBtn:hover{background:var(--panel);color:var(--text)}
   #muteToggleBtn.muted{background:var(--err);color:#fff}
@@ -1016,7 +1064,17 @@ try{
       <button id="settingsBtn" class="sfoicon" title="设置"></button>
     </div>
   </aside>
-  <main id="chatMain">
+  <!-- 首页:进入 APP 后的默认视图,展示最近会话和快捷入口 -->
+  <main id="homeView" hidden>
+    <header class="bar">
+      <div class="barwrap">
+        <button class="icon" id="hamb"></button>
+        <div class="title"><span id="homeTitle">首页</span></div>
+      </div>
+    </header>
+    <div id="homeContent"></div>
+  </main>
+  <main id="chatMain" hidden>
     <header class="bar">
       <div class="barwrap">
         <button class="icon" id="hamb"></button>
@@ -1237,6 +1295,8 @@ const ICONS = {
   stop:'<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
   tasks:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
   eraser:'<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
+  phone:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
+  phoneOff:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.45 19.45 0 0 1-3.17-2.53"/><path d="M6 6l14 14"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 function setIcon(el, name){ el.innerHTML = ic(name); }
@@ -1258,9 +1318,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   setIcon(backLink, "panel");
   setIcon($("#tasksIcon"), "tasks");
   setIcon($("#stopIcon"), "stop");
-  setIcon(endHandsFreeBtn, "close");  // 挂断按钮里放一个叉(×)
+  setIcon(endHandsFreeBtn, "phoneOff");  // 挂断按钮:红色电话样式
   setIcon(muteToggleBtn, "mic");  // 静音按钮:默认图标是"麦克风开着",点了切成"mute"
-  setIcon(startBtn, "mic");  // 开始录音按钮:与静音钮同款圆形图标钮,状态文字走 title/status
+  setIcon(startBtn, "phone");  // 开始通话:电话图标
   setIcon($("#voiceIcon"), "voice");  // 音色切换:静音/挂断中间的圆钮,点开原生选择器
   setIcon($("#clearVoiceCtxBtn"), "eraser");  // 顶栏:清空语音会话上下文
   // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
@@ -3289,10 +3349,10 @@ void main(){
     handsFreeActive = false;
     handsFreeUi.hidden = true;
     startBtn.hidden = false;
-    startBtn.title = "继续录音"; startBtn.setAttribute("aria-label", "继续录音");
+    startBtn.title = "通话"; startBtn.setAttribute("aria-label", "通话");
     startBtn.disabled = false;
     setOmniConnStatus("disconnected");
-    setStatus("点击按钮继续录音", "");
+    setStatus("点击按钮通话", "");
     orbWrap.className = "idle";
   }
 
@@ -3350,7 +3410,7 @@ void main(){
   }
 
   // 挂断=直接退出通话视图,回到聊天界面(电话挂断的直觉),不是留在这里等重新开始
-  endHandsFreeBtn.addEventListener("click", ()=>{ window.closeCallView(); });
+  endHandsFreeBtn.addEventListener("click", ()=>{ returnToButtonState(); });  // 挂断但留在语音页面
   orbWrap.addEventListener("click", ()=>{
     if(wsState === "thinking" || wsState === "speaking") manualInterrupt();
   });
@@ -3468,6 +3528,7 @@ void main(){
   }
 
   window.openCallView = function(){
+    hideHome();       // 从首页进入通话
     closeSidebar();
     $("#chatMain").hidden = true;
     $("#callView").hidden = false;
@@ -3478,9 +3539,9 @@ void main(){
     if(vadCapable()){
       handsFreeUi.hidden = true;
       startBtn.hidden = false;
-      startBtn.title = "开始录音"; startBtn.setAttribute("aria-label", "开始录音");
+      startBtn.title = "通话"; startBtn.setAttribute("aria-label", "通话");
       startBtn.disabled = false;
-      setStatus("点击按钮开始录音", "");
+      setStatus("点击按钮通话", "");
       orbWrap.className = "idle";
     } else {
       // 不支持 VAD 时回退到按住说话兜底
@@ -3551,11 +3612,11 @@ async function tryEnter(){
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
     applyConvs(d);   // 这次 /conversations 顺便验证了口令,数据直接拿来用,不用再多打一次
-    // 优先把最近活跃的会话内容画出来;openConv 内会同步活跃项目、展开其分组并重绘侧边栏。
-    // 侧边栏用得到的次要数据(主题偏好/项目列表/模型/斜杠命令)并行去拉,不再堵在会话内容前面。
+    // 显示首页,不自动跳进最近会话
+    showHome();
+    // 侧边栏用得到的次要数据(主题偏好/项目列表/模型/斜杠命令)并行去拉,不再堵在首页前面。
     const secondary = Promise.all([loadPrefs(), loadProjects(), loadModels(), loadCommands(), loadVoiceOmniConfig()])
       .then(updateFilterBtn).catch(()=>{});
-    await openConv(S.convs[0] ? S.convs[0].conv : "main");
     loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
     await secondary;
     initVoiceSelect();
@@ -3617,6 +3678,83 @@ function mdToHtml(src){
 
 // ── 空状态欢迎屏 ─────────────────────────────────────────────────────────
 function updateEmpty(){ $("#empty").style.display = $("#wrap").children.length ? "none" : "flex"; }
+
+// ── 首页(默认着陆页) ────────────────────────────────────────────────────
+function showHome(){
+  closeCallView();
+  closeCmdMenu();
+  $("#homeView").hidden = false;
+  $("#chatMain").hidden = true;
+  $("#callView").hidden = true;
+  renderConvs(); closeSidebar();
+  renderHomeContent();
+}
+function hideHome(){
+  $("#homeView").hidden = true;
+}
+function renderHomeContent(){
+  const box = $("#homeContent");
+  // 构建欢迎区 + 快捷入口
+  box.innerHTML = '<div class="home-hero">' +
+    '<h1>👋 你好，我是 Wazir</h1>' +
+    '<p>你的私人 AI 助理 · 需要什么直接说</p></div>' +
+    '<div class="home-quick">' +
+    '<button class="home-card" onclick="openCallView()">' +
+    '<span class="home-card-icon">📞</span>' +
+    '<span class="home-card-title">语音通话</span>' +
+    '<span class="home-card-desc">像打电话一样和 AI 聊天</span></button>' +
+    '<button class="home-card" onclick="newChat()">' +
+    '<span class="home-card-icon">💬</span>' +
+    '<span class="home-card-title">新建会话</span>' +
+    '<span class="home-card-desc">开始一段文字对话</span></button></div>';
+  // 最近对话
+  const section = document.createElement("div");
+  section.className = "home-section";
+  section.innerHTML = '<h2 class="home-section-title">最近对话</h2><div class="home-recent" id="homeRecent"></div>';
+  box.append(section);
+  const recent = $("#homeRecent");
+  // 收集所有会话(含语音任务)
+  const items = [];
+  for(const c of S.convs){
+    if(c.pinned) continue;  // 主会话单独处理
+    const arch = !!c.archived;
+    if(S.convFilter==="archived" && !arch) continue;
+    if(S.convFilter==="active" && arch) continue;
+    items.push({conv:c.conv, title:c.title||"新对话", ts:c.last_ts, type:"chat"});
+  }
+  // 加入语音任务
+  const vs = S.voiceSidebar;
+  if(vs && vs.tasks){
+    for(const t of vs.tasks){
+      items.push({conv:t.conv, title:t.title||"语音任务", ts:t.last_ts, type:"voice"});
+    }
+  }
+  // 按时间降序,最多显示 15 条
+  items.sort((a,b)=>(b.ts||0)-(a.ts||0));
+  const show = items.slice(0, 15);
+  if(!show.length){
+    recent.innerHTML = '<div class="home-empty">暂无会话记录，新建一个开始吧</div>';
+  } else {
+    for(const it of show){
+      const row = document.createElement("div");
+      row.className = "home-item";
+      const iconType = it.type==="voice" ? "voice" : "chat";
+      const iconChar = it.type==="voice" ? "🎤" : "💬";
+      const timeStr = it.ts ? fmtTime(it.ts) : "";
+      row.innerHTML = '<div class="home-item-icon '+iconType+'">'+iconChar+'</div>' +
+        '<div class="home-item-body"><div class="home-item-title">'+esc(it.title)+'</div>' +
+        '<div class="home-item-time">'+esc(timeStr)+'</div></div>';
+      row.onclick = ()=>{
+        if(it.type==="voice" && (it.conv==="voice-chat:main" || !it.conv)){
+          openCallView();
+        } else if(it.conv){
+          openConv(it.conv);
+        }
+      };
+      recent.append(row);
+    }
+  }
+}
 
 // ── 侧栏底部:限额 / 错误状态 ────────────────────────────────────────────
 // 从限额报错串里抠出「额度恢复时间」→ 毫秒时间戳,拿不到返回 0。
@@ -4803,7 +4941,9 @@ function renderEventsFlow(events){
   return flow;
 }
 async function openConv(conv){
+  hideHome();      // 离开首页
   closeCallView();  // 切到别的会话就等于离开通话;没在通话视图里时这行是空操作
+  $("#chatMain").hidden = false;  // 确保聊天界面可见
   closeCmdMenu();
   S.conv=conv; S.stream=null;
   S.project=convProject(conv); S.expanded.add(grpKey(S.project)); saveExpanded();  // 活跃项目随打开的会话联动,并确保其分组展开
@@ -5632,6 +5772,7 @@ $("#collapseBtn").innerHTML = ic("panel");
 $("#hamb").innerHTML = ic("panel");
 $("#collapseBtn").onclick = ()=> setSidebarCollapsed(true);   // 侧边栏内:收起
 $("#backdrop").onclick = closeSidebar;
+$(".brand").onclick = ()=>{ closeSidebar(); showHome(); };  // 品牌名 → 回首页
 function closeSidebar(){ $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("show"); }
 // 桌面侧边栏折叠态(记忆到 localStorage)
 function setSidebarCollapsed(v){
