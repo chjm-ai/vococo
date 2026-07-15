@@ -2331,7 +2331,9 @@ void main(){
   function connectTaskStream(){
     const es = new EventSource("/voice/tasks/stream?token=" + encodeURIComponent(S.token));
     es.addEventListener("task_update", e=>{
-      upsertTaskBar(JSON.parse(e.data));  // 派发/起跑/进度变化 → 状态条实时刷新
+      const t=JSON.parse(e.data);
+      upsertTaskBar(t);  // 派发/起跑/进度变化 → 状态条实时刷新
+      syncSidebarTaskStatus(t);  // 侧边栏默认项目任务行的进行中圆点同步亮/灭
     });
     es.addEventListener("task_done", e=>{
       tasksBadge.classList.add("on");
@@ -4181,6 +4183,10 @@ function buildVoiceTaskRows(inCall){
     const row=el("div","conv ingroup"+(!inCall && t.conv===S.conv?" active":""));
     row.dataset.conv=t.conv;
     const body=el("div","cvbody");
+    // 任务还在跑(queued/running)→ 复用普通会话行的闪烁圆点;终态不挂点(ab77594 去掉已读提醒的决定不变)
+    if(t.task_status==="queued"||t.task_status==="running"){
+      const dot=el("span","livedot"); dot.title=t.task_status==="running"?"任务进行中":"排队中"; body.append(dot);
+    }
     const ct=el("div","ct"); ct.textContent=t.title||"新对话"; body.append(ct);
     const tm=fmtTime(t.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }
     const more=el("button","more"); more.textContent="⋯"; more.title="更多";
@@ -4297,6 +4303,14 @@ async function loadVoiceSidebar(){
   try{ const r=await api("/voice/sidebar"); S.voiceSidebar=await r.json(); }
   catch(e){ S.voiceSidebar={main:null, tasks:[]}; }
   renderConvs();
+}
+// SSE task_update → 同步侧边栏任务行的状态点:状态没变(纯进度文案)不重绘,
+// 新派发的任务侧栏还没有这行则整个重拉一次
+function syncSidebarTaskStatus(t){
+  const row=(S.voiceSidebar.tasks||[]).find(x=>x.conv==="voice-task:"+t.id);
+  if(!row){ loadVoiceSidebar(); return; }
+  if(row.task_status===t.status) return;
+  row.task_status=t.status; renderConvs();
 }
 // 项目分组拖拽排序(原生 HTML5 DnD:桌面拖起手感好,鼠标移动量够才触发,不影响原有点击展开)
 function bindProjDrag(h, hash){
