@@ -1331,6 +1331,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 朗读(pumpOmniRead 发出 response.create 那一刻,不等 response.created 回执)才
   // 开声,从物理层杜绝泄漏,不再赌网络时序。
   let omniAudioMuted=true;
+  // 自动回复音频阻断标志(2026-07-15):每当自动回复的 response.created
+  // 到来时置起,阻止自动回复产生的任何音频片段被误放行;我们的 pump 在
+  // response.created 确认是朗读后才会清除它,防止自动回复在 gap 期泄漏。
+  let omniAutoAudioBlocked=false;
+  // response.created 确认是朗读后才会清除它,防止自动回复在 gap 期泄漏。
+  let omniAutoAudioBlocked=false;
   omniAudioEl.muted = true;
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
   // 修复都因为拿不到真机证据只能盲改后 revert。关键事件(session/response 生命周期、
@@ -2425,6 +2431,14 @@ void main(){
         vdbg("reconnect.skipped", "pc recovered");
         return;
       }
+      // 朗读进行中时暂缓重连:停止当前播放再重建 WebRTC 会掐断用户正在听的
+      // 音频输出(最后几句永远听不到)。等朗读自然结束(或 8s 超时兜底)再重建。
+      if(omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0){
+        vdbg("reconnect.deferred", {ra:omniReadActive, rp:omniReadPending, q:omniReadQueue.length});
+        // 8s 后再试一次,如果朗读还没结束就强制重连(避免因朗读卡住导致永久不重连)
+        scheduleOmniReconnect(reason + "-deferred", 8000);
+        return;
+      }
       vdbg("reconnect.start", reason);
       setStatus("重连中…", "thinking");
       playDisconnectTone();  // 让用户知道刚才断了,而不是全程静默自愈
@@ -2570,6 +2584,7 @@ void main(){
             omniReadPending--;
             omniReadActive = true;
             // 确认是我们主动点的朗读才开声(2026-07-14 修复),不让自动回复偷用。
+            omniAutoAudioBlocked = false;  // 我们的朗读开始,清除自动回复阻断
             setOmniAudioMuted(false, "read.created");
             if(wsState !== "speaking"){
               playSpeakingTone();
@@ -2579,12 +2594,17 @@ void main(){
             }
           } else {
             omniAutoActive = true; omniAutoSince = Date.now();
-            // 三道静音保险(2026-07-14):①函数级状态标志;②<audio> 元素直写
-            // 静音(绕过可能的标志位飘飞);③ response.cancel 砍掉后续音频数据。
-            // 之前只有①③,阿里云自动回复有时在 cancel 到达前就已经出声了,
-            // ③赶不上,①又被读取分支误消费——直写 <audio> 是最底层的防线。
-            setOmniAudioMuted(true, "auto-response");
-            try{ omniAudioEl.muted = true; }catch(e){}
+            // 朗读期间不抢音频静音:自动回复的 response.created 可能在我们的
+            // reading 的 response.created 之后到达(网络时序逆转),此时
+            // omniReadActive 已为 true,朗读正在输出,不应静音抢走正在播的音频。
+            // 原因:只有 omniReadPending>0 才走 reading 分支,自动回复即便迟到
+            // 也会命中 else,原代码无条件 mute 会掐断当前朗读的输出。
+            // 自动回复音频阻断:置起标志阻止泄漏,同时防止竞态条件下误开声。
+            omniAutoAudioBlocked = true;
+            if(!omniReadActive){
+              setOmniAudioMuted(true, "auto-response");
+              try{ omniAudioEl.muted = true; }catch(e){}
+            }
             try{ channel.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
             vdbg("auto-response.cancelled");
           }
@@ -2690,6 +2710,13 @@ void main(){
 
   function setOmniAudioMuted(muted, why){
     if(omniAudioMuted === muted) return;
+    // 自动回复音频阻断:自动回复期间阻止任何 UNMUTE 操作,防止其音频片段泄漏。
+    // 自动回复的 cancel 走网络异步,即使 cancel 发出去,嗯的 RTP 包可能已经
+    // 在链路中——omniAutoAudioBlocked 确保即使时序逆转也不会误放行自动回复音频。
+    if(!muted && omniAutoAudioBlocked){
+      vdbg("audio.unmute-blocked", why);
+      return;
+    }
     omniAudioMuted = muted;
     omniAudioEl.muted = muted;
     vdbg(muted ? "audio.mute" : "audio.unmute", why);
@@ -2743,6 +2770,22 @@ void main(){
     if(handsFreeActive){
       if(!micStreamHealthy()) suspectMicProblem("stale");
     }
+    // 即使在聆听/空闲阶段也检查 WebRTC 连接健康——静默断连(如 120 分钟
+    // 会话上限到点)若不及时发现,用户说话永远没回复,表现像 AI 掉线。
+    // 原代码仅朗读中做 DC/PC 检查,聆听期静默断连无感知。
+    if(handsFreeActive && omniPc){
+      const pcSt = omniPc.connectionState;
+      if(pcSt === "failed" || pcSt === "closed"){
+        vdbg("watchdog.pc-down", pcSt);
+        scheduleOmniReconnect("watchdog:"+pcSt, 500);
+        return;
+      }
+      if(pcSt === "disconnected" && (!omniDc || omniDc.readyState !== "open")){
+        vdbg("watchdog.pc-disconnected");
+        scheduleOmniReconnect("watchdog:disconnected", 2000);
+        return;
+      }
+    }
     if(!omniDc || omniDc.readyState !== "open") return;
     if(!(omniReadActive || omniReadPending > 0)) return;
     if(Date.now() - omniReadSince <= 12000) return;
@@ -2786,8 +2829,11 @@ void main(){
       const start = Math.max(end, r.ts + 700);
       end = start + normEchoText(r.text).length * 280;
     }
-    const minMute = end + 300;
-    const deadline = Math.max(Date.now() + 1000, end + 3000);
+    // 安全余量从 300ms 放大到 2000ms,自然停顿(逗号/换气)约 500~800ms,
+    // 原 600ms(quiet>=4)易在最后一句播放中途误判静默结束。同时提高
+    // 静默连续检测门槛从 4→8,给正常语流停顿留空间。
+    const minMute = end + 2000;
+    const deadline = Math.max(Date.now() + 3000, end + 5000);
     let seen = false, quiet = 0;
     const check = () => {
       omniReadTailTimer = null;
@@ -2796,7 +2842,9 @@ void main(){
       const lvl = omniOutputLevel();
       if(lvl > 0.04){ seen = true; quiet = 0; }
       else if(seen) quiet++;
-      if((seen && quiet >= 4 && Date.now() >= minMute) || Date.now() >= deadline){
+      // quiet>=8 = 连续约 1200ms 无声(原 600ms 太短,长句中间自然停顿会误判),
+      // 配合拉大的 minMute 安全余量,确保最后几个字不会在自然停顿中被掐掉。
+      if((seen && quiet >= 8 && Date.now() >= minMute) || Date.now() >= deadline){
         setOmniAudioMuted(true, seen ? "read.tail-quiet" : "read.tail-cap");
         pumpOmniRead();  // 经 maybeOmniIdle 收尾
         return;
