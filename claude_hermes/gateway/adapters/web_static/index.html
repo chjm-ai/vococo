@@ -907,6 +907,18 @@
   /* 静音=一个小图标切换态,开启后常驻标红提醒"麦克风关着",不需要文字 */
   #muteToggleBtn:hover{background:var(--panel);color:var(--text)}
   #muteToggleBtn.muted{background:var(--err);color:#fff}
+
+  /* ── 启动按钮模式:进入通话视图先显示"开始录音",点后进入免提交互 ────────── */
+  #startCallBtn{display:flex;flex-direction:column;align-items:center;gap:8px;
+    pointer-events:auto;cursor:pointer;border:none;background:none;color:var(--text);
+    transition:transform .15s ease,opacity .2s;outline:none}
+  #startCallBtn .start-icon{font-size:48px;line-height:1;filter:drop-shadow(0 4px 12px rgba(0,0,0,.2));
+    transition:transform .2s ease}
+  #startCallBtn .start-text{font-size:17px;font-weight:600;color:var(--accent)}
+  #startCallBtn:hover .start-icon{transform:scale(1.1)}
+  #startCallBtn:active .start-icon{transform:scale(.92)}
+  #startCallBtn:disabled{opacity:.5;pointer-events:none}
+  #startCallBtn[hidden]{display:none}
 </style>
 </head>
 <body>
@@ -1125,6 +1137,12 @@ try{
           <button id="endHandsFreeBtn" title="结束通话" aria-label="结束通话"></button>
         </div>
       </div>
+      <!-- 启动按钮模式:进入通话视图不自动开始录音,用户点这个按钮才启动。
+           一轮交互结束后回到此按钮待机状态,再点再开始。 -->
+      <button id="startCallBtn" hidden>
+        <span class="start-icon">🎤</span>
+        <span class="start-text">开始录音</span>
+      </button>
     </footer>
     <div id="tasksDrawer">
       <div id="tasksSheet">
@@ -1231,7 +1249,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     tasksDrawer=$("#tasksDrawer"), tasksList=$("#tasksList"), taskBar=$("#taskBar"),
     handsFreeUi=$("#handsFreeUi"), orbWrap=$("#orbWrap"),
     endHandsFreeBtn=$("#endHandsFreeBtn"), muteToggleBtn=$("#muteToggleBtn"),
-    backLink=$("#callHead #backLink");
+    backLink=$("#callHead #backLink"), startBtn=$("#startCallBtn");
 
   setIcon(backLink, "panel");
   setIcon($("#tasksIcon"), "tasks");
@@ -1249,6 +1267,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let busy=false;
   let playQueue=[], playing=false;
   let pendingAnnouncements=[];  // task_done 到达时用户正忙(说话/播放/录音)→ 先攒着,空闲了再播
+  let buttonMode=false;  // 按钮模式:true=一轮交互结束后回到按钮待机状态,不自动继续收音
 
   // ── 通话视图共享状态(免提=Omni WebRTC;按住说话共用同一套播放队列/气泡)────
   let handsFreeActive=false, micMuted=false;
@@ -2708,6 +2727,11 @@ void main(){
     // 才会再触发 flush——正忙时来的播报就永远卡住不念(2026-07-10 真机:两个任务
     // 完成用户全程没听到)。回到空闲就是补播的正确时机。
     flushAnnouncements();
+    // 按钮模式:一轮交互完成后回到按钮待机状态,不自动继续收音
+    if(buttonMode && handsFreeActive){
+      returnToButtonState();
+      return;
+    }
   }
 
   // Omni 朗读看门狗:read.create 已发/朗读进行中,但连续 12 秒没有任何 response.*
@@ -3126,6 +3150,51 @@ void main(){
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
   }
 
+  // ── 按钮模式:一轮交互完成后回到按钮待机状态,等待用户再次点击 ──────────────
+  function returnToButtonState(){
+    vdbg("button-mode.return");
+    if(omniReconnectTimer){ clearTimeout(omniReconnectTimer); omniReconnectTimer = null; }
+    stopOmniHandsFree();
+    resetMicStream();  // 停掉麦克风,避免 LED 常亮
+    handsFreeActive = false;
+    handsFreeUi.hidden = true;
+    startBtn.hidden = false;
+    startBtn.textContent = "继续录音";
+    startBtn.disabled = false;
+    setStatus("点击按钮继续录音", "");
+    orbWrap.className = "idle";
+  }
+
+  // 开始/继续录音按钮:第一次建立 WebRTC 连线,后续轮次重新连接
+  startBtn.addEventListener("click", async () => {
+    if(startBtn.disabled) return;
+    startBtn.disabled = true;
+    startBtn.textContent = "连接中…";
+    startBtn.hidden = false;
+    handsFreeUi.hidden = false;
+    setStatus("连接中…", "");
+    vdbg("button-mode.start");
+    const ok = await startHandsFree();
+    startBtn.disabled = false;
+    // 连接过程中用户可能已退出通话视图,此时不再继续
+    if($("#callView").hidden){ return; }
+    // 已回退到按住说话模式(Omni 未启用),隐藏按钮让 talkBtn 接管
+    if(!talkBtn.hidden){
+      handsFreeUi.hidden = true;
+      startBtn.hidden = true;
+      return;
+    }
+    if(ok){
+      startBtn.hidden = true;
+      buttonMode = true;
+    } else {
+      handsFreeUi.hidden = true;
+      startBtn.hidden = false;
+      startBtn.textContent = "重试";
+      setStatus("连接失败,点击重试", "");
+    }
+  });
+
   async function loadMainHistory(){
     try{
       const resp = await fetch("/history?conv=" + encodeURIComponent("voice-chat:main"), {
@@ -3253,6 +3322,9 @@ void main(){
     muteToggleBtn.classList.remove("muted"); muteToggleBtn.title = "静音麦克风";
     setIcon(muteToggleBtn, "mic");
     tasksDrawer.classList.remove("open");
+    startBtn.hidden = true;
+    startBtn.disabled = false;
+    buttonMode = false;
     setStatus("空闲");
   }
 
@@ -3262,9 +3334,20 @@ void main(){
     $("#callView").hidden = false;
     acquireWakeLock();
     initOnce();
-    // 免提是唯一路径:一进通话视图就自动开始,不用户再点一次"开始"——
-    // vadCapable() 为 false 时 initUiMode() 已经把 handsFreeUi 换成 talkBtn 兜底,这里跳过。
-    if(vadCapable() && !handsFreeActive) startHandsFree();
+    // 按钮启动模式:不自动开始录音,显示"开始录音"按钮等待用户点击
+    buttonMode = true;
+    if(vadCapable()){
+      handsFreeUi.hidden = true;
+      startBtn.hidden = false;
+      startBtn.textContent = "开始录音";
+      startBtn.disabled = false;
+      setStatus("点击按钮开始录音", "");
+      orbWrap.className = "idle";
+    } else {
+      // 不支持 VAD 时回退到按住说话兜底
+      handsFreeUi.hidden = true;
+      talkBtn.hidden = false;
+    }
   };
   window.closeCallView = function(){
     if($("#callView").hidden) return;  // 没在通话视图里,啥也不用做(openConv 收口时无条件调用)
