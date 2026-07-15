@@ -1,4 +1,4 @@
-"""P1 任务板的三个 MCP 工具:voice_dispatch_task / voice_query_task / voice_list_tasks。
+"""P1 任务板的四个 MCP 工具:voice_dispatch_task / voice_append_task / voice_query_task / voice_list_tasks。
 
 只注入进语音前台会话(routes.py 调 session.run_turn 那次 stream_turn),后台任务
 会话本身不挂这组工具——防止任务里的模型再派任务、无限套娃(见 00-overview.md §4.2)。
@@ -75,6 +75,42 @@ async def voice_dispatch_task(args: dict) -> dict:
 
 
 @tool(
+    "voice_append_task",
+    "给一个已有的后台任务追加新的指令/需求。task_id:目标任务 id(必填,从 voice_list_tasks "
+    "或 voice_dispatch_task 返回里拿);instruction:追加的指令内容;"
+    "mode:等待模式'wait'(默认)或打断模式'interrupt'。"
+    "wait:等当前任务跑完了再拿合并的 prompt 派新任务继续跑,不中断当前工作;"
+    "interrupt:直接中断当前任务(如果还在跑),带上新旧需求重新跑。"
+    "本工具不等待任务完成,新任务 id 会通过返回消息告诉你,后续可以用 voice_query_task 查它的状态。",
+    {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string"},
+            "instruction": {"type": "string"},
+            "mode": {"type": "string", "enum": ["wait", "interrupt"]},
+        },
+        "required": ["task_id", "instruction"],
+    },
+)
+async def voice_append_task(args: dict) -> dict:
+    task_id = (args.get("task_id") or "").strip()
+    instruction = (args.get("instruction") or "").strip()
+    mode = (args.get("mode") or "wait").strip()
+    if not (task_id and instruction):
+        return _ok("voice_append_task 需要 task_id 和 instruction 都非空。")
+    if mode not in ("wait", "interrupt"):
+        return _ok(f"mode 应为 wait 或 interrupt,收到「{mode}」。")
+    result = executor.append(task_id, instruction, mode=mode)
+    if not result["ok"]:
+        return _ok(f"追加失败:{result['message']}")
+    parts = [f"✅ {result['message']}"]
+    if result.get("task"):
+        t = result["task"]
+        parts.append(f"新任务 id={t['id']},标题「{t['title']}」,状态:{_STATUS_WORD.get(t['status'], t['status'])}")
+    return _ok("。".join(parts))
+
+
+@tool(
     "voice_query_task",
     "查一个后台任务当前进展。task_id 省略则查最近一次派发的那个。"
     "返回的是原始字段拼的一句话,你要把它压成更口语的转述再讲给用户,不要念「状态/进展」这类字段名。",
@@ -105,6 +141,6 @@ def build_server() -> dict:
     return {
         "voice_tasks": create_sdk_mcp_server(
             "voice_tasks",
-            tools=[voice_dispatch_task, voice_query_task, voice_list_tasks],
+            tools=[voice_dispatch_task, voice_append_task, voice_query_task, voice_list_tasks],
         )
     }

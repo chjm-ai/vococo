@@ -3,7 +3,7 @@
 并发上限 VOICE_TASK_MAX_CONCURRENCY,超出的排队(queued);任务终态时触发
 notify.on_task_terminal 并顺手拉起下一个排队任务。
 
-后台任务会话【不注入】task_tools 的三个工具(不传 extra_mcp_servers)——防止
+后台任务会话【不注入】task_tools 的四个工具(不传 extra_mcp_servers)——防止
 任务里的模型再调 voice_dispatch_task 派生任务、无限套娃(见 00-overview §4.2)。
 """
 from __future__ import annotations
@@ -46,6 +46,19 @@ def _humanize_error(error_note: str) -> str:
 
 # task_id -> 对应的 asyncio task,供 cancel() 取消一个正在跑的任务
 _running: dict[str, asyncio.Task] = {}
+
+
+def _start_one(task: dict) -> None:
+    """内部:立刻起跑一条任务(跳过排队队列),用于 interrupt 打断模式 和 wait 链式追加。
+
+    不走 _maybe_start_next 的正常排队逻辑,直接设 running + create_task。
+    若 set_status 失败(状态已被别处改了),什么都不做。
+    """
+    task_id = task["id"]
+    if not tasks.set_status(task_id, "running"):
+        return
+    _notify_activity(task_id)
+    _running[task_id] = asyncio.create_task(_run(task_id))
 
 
 def _notify_activity(task_id: str) -> None:
@@ -191,13 +204,22 @@ async def _run(task_id: str) -> None:
         )
 
     await notify.on_task_terminal(task_id)
+
+    # 启动追加链上的子任务(wait 模式):父任务结束后,追加的任务优先于普通排队任务
+    for child in tasks.list_children(task_id, status='queued'):
+        _start_one(child)
+
     _maybe_start_next()
 
 
 def _maybe_start_next() -> None:
-    """并发有空位就从队首拉一个 queued 任务起跑;没有空位/没有排队任务则什么都不做。"""
+    """并发有空位就从队首拉一个 queued 任务起跑;没有空位/没有排队任务则什么都不做。
+
+    跳过 parent_task_id 非空的任务——它们是 voice_append_task wait 模式生成的链式
+    子任务,由父任务 _run 收尾时通过 _start_one 启动,不走普通排队。
+    """
     while tasks.count_running() < config.VOICE_TASK_MAX_CONCURRENCY:
-        queued = tasks.list_queued()
+        queued = [t for t in tasks.list_queued() if not t.get("parent_task_id")]
         if not queued:
             return
         nxt = queued[0]
@@ -226,6 +248,92 @@ def dispatch(
     # 上一行可能已把它从 queued 拉成 running
     _notify_activity(task["id"])
     return task
+
+
+def append(
+    task_id: str,
+    new_instruction: str,
+    mode: str = "wait",
+) -> dict:
+    """给一个已有后台任务追加指令。
+
+    mode='wait':      等当前任务跑完后(如果还在跑),用合并的 prompt 派新任务继续;
+                      如果已结束则立即派发。
+    mode='interrupt': 中断当前任务,带上新旧需求重新跑。
+
+    返回 {"ok": bool, "message": str, "task": dict|None, "parent_status": str}。
+    """
+    row = tasks.get(task_id)
+    if row is None:
+        return {"ok": False, "message": f"任务不存在(id={task_id})",
+                "task": None, "parent_status": ""}
+
+    combined_prompt = f"{row['prompt']}\n\n--- 追加指令 ---\n{new_instruction}"
+    parent_title = row["title"]
+
+    if mode == "interrupt":
+        had_resume = False
+        if row["status"] == "running":
+            cancel(task_id)  # 异步取消,等 _run finally 写终态
+            # 拿走旧任务的 SDK 会话 id,让新任务续上上下文
+            resume_sid = session_store.get_sdk_session_id(f"voice-task:{task_id}")
+            had_resume = bool(resume_sid)
+        elif row["status"] == "queued":
+            tasks.set_status(task_id, "cancelled", progress_note="已取消(因追加指令中断)")
+            resume_sid = None
+        else:
+            # 已结束的任务走 interrupt = 直接从 combined prompt 起新任务
+            resume_sid = None
+
+        new_task = tasks.create(
+            title=f"{parent_title}(续)",
+            prompt=combined_prompt,
+            cwd=row.get("cwd"),
+            dispatch_platform=row.get("dispatch_platform"),
+            dispatch_chat_id=row.get("dispatch_chat_id"),
+            parent_task_id=task_id,
+        )
+
+        if resume_sid:
+            session_store.set_sdk_session_id(f"voice-task:{new_task['id']}", resume_sid)
+
+        _start_one(new_task)
+
+        msg = f"已中断原任务,带追加指令重新开始(task_id={new_task['id']})"
+        if had_resume:
+            msg += ",续上了原任务的上下文"
+        return {"ok": True, "message": msg,
+                "task": new_task, "parent_status": row["status"]}
+
+    elif mode == "wait":
+        if row["status"] in ("queued", "running"):
+            new_task = tasks.create(
+                title=f"{parent_title}(续)",
+                prompt=combined_prompt,
+                cwd=row.get("cwd"),
+                dispatch_platform=row.get("dispatch_platform"),
+                dispatch_chat_id=row.get("dispatch_chat_id"),
+                parent_task_id=task_id,
+            )
+            return {"ok": True,
+                    "message": f"已排队:等任务「{parent_title}」完成后再执行追加指令(task_id={new_task['id']})",
+                    "task": new_task, "parent_status": row["status"]}
+        else:
+            new_task = tasks.create(
+                title=f"{parent_title}(续)",
+                prompt=combined_prompt,
+                cwd=row.get("cwd"),
+                dispatch_platform=row.get("dispatch_platform"),
+                dispatch_chat_id=row.get("dispatch_chat_id"),
+                parent_task_id=task_id,
+            )
+            _start_one(new_task)
+            return {"ok": True,
+                    "message": f"原任务已结束({row['status']}),已派发新任务继续(task_id={new_task['id']})",
+                    "task": new_task, "parent_status": row["status"]}
+
+    return {"ok": False, "message": f"未知模式:{mode}(应为 wait 或 interrupt)",
+            "task": None, "parent_status": row.get("status", "")}
 
 
 def cancel(task_id: str) -> bool:

@@ -56,11 +56,12 @@ def _conn() -> sqlite3.Connection:
             "result_full TEXT NOT NULL DEFAULT '',"
             "dispatch_platform TEXT,"
             "dispatch_chat_id TEXT,"
+            "parent_task_id TEXT,"
             "created_at REAL NOT NULL,"
             "updated_at REAL NOT NULL)"
         )
-        # 向后兼容:为旧表加 dispatch_platform/dispatch_chat_id(幂等,已存在就静默忽略)
-        for col in ("dispatch_platform", "dispatch_chat_id"):
+        # 向后兼容:为旧表加 dispatch_platform/dispatch_chat_id/parent_task_id(幂等)
+        for col in ("dispatch_platform", "dispatch_chat_id", "parent_task_id"):
             try:
                 _DB.execute(f"ALTER TABLE tasks ADD COLUMN {col} TEXT")
             except sqlite3.OperationalError:
@@ -79,19 +80,23 @@ def create(
     cwd: str | None = None,
     dispatch_platform: str | None = None,
     dispatch_chat_id: str | None = None,
+    parent_task_id: str | None = None,
 ) -> dict:
     """落库一条 queued 任务,返回完整行。id 是 8 位短随机串(碰撞概率可忽略)。
 
     dispatch_platform/dispatch_chat_id: 任务是从哪个平台(web/telegram)、
-    哪个会话派来的——终态通知时靠它们回推该发给谁(见 notify.py)。"""
+    哪个会话派来的——终态通知时靠它们回推该发给谁(见 notify.py)。
+    parent_task_id: 本任务是对某任务的追加(voice_append_task),存父任务 id。
+    """
     c = _conn()
     task_id = secrets.token_hex(4)
     now = time.time()
     c.execute(
         "INSERT INTO tasks(id,title,prompt,cwd,status,progress_note,result_summary,"
-        "result_full,dispatch_platform,dispatch_chat_id,created_at,updated_at) "
-        "VALUES (?,?,?,?,'queued','','','',?,?,?,?)",
-        (task_id, title, prompt, cwd, dispatch_platform, dispatch_chat_id, now, now),
+        "result_full,dispatch_platform,dispatch_chat_id,parent_task_id,created_at,updated_at) "
+        "VALUES (?,?,?,?,'queued','','','',?,?,?,?,?)",
+        (task_id, title, prompt, cwd, dispatch_platform, dispatch_chat_id,
+         parent_task_id, now, now),
     )
     c.commit()
     return get(task_id)
@@ -128,6 +133,21 @@ def count_running() -> int:
         "SELECT COUNT(*) AS n FROM tasks WHERE status='running'"
     ).fetchone()
     return int(row["n"])
+
+
+def list_children(parent_task_id: str, status: str | None = None) -> list[dict]:
+    """查某任务的所有子任务(追加链)。status 非空则进一步筛选(如 'queued')。"""
+    if status:
+        rows = _conn().execute(
+            "SELECT * FROM tasks WHERE parent_task_id=? AND status=? ORDER BY created_at ASC",
+            (parent_task_id, status),
+        ).fetchall()
+    else:
+        rows = _conn().execute(
+            "SELECT * FROM tasks WHERE parent_task_id=? ORDER BY created_at ASC",
+            (parent_task_id,),
+        ).fetchall()
+    return [_row(r) for r in rows]
 
 
 def set_status(task_id: str, status: str, progress_note: str | None = None) -> bool:
