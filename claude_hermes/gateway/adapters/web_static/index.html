@@ -3581,12 +3581,14 @@ void main(){
       handsFreeUi.hidden = true;
       talkBtn.hidden = false;
     }
+    renderConvs();   // 侧栏按通话状态重绘,让「语音对话」行高亮
   };
   window.closeCallView = function(){
     if($("#callView").hidden) return;  // 没在通话视图里,啥也不用做(openConv 收口时无条件调用)
     $("#callView").hidden = true;
     $("#chatMain").hidden = false;
     teardownCallResources();
+    renderConvs();   // 挂断后切回聊天侧栏,取消「语音对话」行高亮
   };
 })();
 
