@@ -2298,6 +2298,11 @@ void main(){
   //   保险仍会漏("嗯"字生成得比 cancel 网络往返还快),加第三层物理保险:
   //   远端 <audio> 永不静音,自动回复只靠 cancel 砍掉(2026-07-15:不静音输出通道)
   let omniTurnGen = 0;  // 每次新一句开始/打断都 +1,过期的 /voice/send 流式结果据此判断该不该再应用
+  // 按钮模式空闲收线(2026-07-15,Wesley 定的 B 方案):一轮答完不立刻挂断,保持
+  // 连接继续听,像真电话;但连续空闲满 5 分钟(不说/不想/不念)自动收线回按钮待机,
+  // 长时间不用不让麦克风一直热着。计时状态由 3s 看门狗 omniReadStallCheck 驱动。
+  const BUTTON_IDLE_HANG_MS = 5 * 60 * 1000;
+  let omniIdleSince = 0;  // 本段连续空闲的起点时间戳;0 = 当前没在空闲计时
 
   async function startOmniHandsFree(){
     vdbg("omni.start");
@@ -2434,6 +2439,7 @@ void main(){
     orbWrap.className = "idle";
     clearHint();
     setStatus("聆听中…", "listening");
+    omniIdleSince = 0;  // 新连接从零开始数空闲,别继承上一段连接的计时
     if(omniReadWatchdog) clearInterval(omniReadWatchdog);
     omniReadWatchdog = setInterval(omniReadStallCheck, 3000);
     return true;
@@ -2787,11 +2793,8 @@ void main(){
     // 才会再触发 flush——正忙时来的播报就永远卡住不念(2026-07-10 真机:两个任务
     // 完成用户全程没听到)。回到空闲就是补播的正确时机。
     flushAnnouncements();
-    // 按钮模式:一轮交互完成后回到按钮待机状态,不自动继续收音
-    if(buttonMode && handsFreeActive){
-      returnToButtonState();
-      return;
-    }
+    // 按钮模式:一轮答完不再立刻收线——保持连接继续听,空闲满 5 分钟才由
+    // omniReadStallCheck 里的空闲收线逻辑断开回按钮待机(B 方案,2026-07-15)。
   }
 
   // Omni 朗读看门狗:read.create 已发/朗读进行中,但连续 12 秒没有任何 response.*
@@ -2818,6 +2821,21 @@ void main(){
         scheduleOmniReconnect("watchdog:disconnected", 2000);
         return;
       }
+    }
+    // ── 按钮模式空闲收线:挂在这个 3s 看门狗上,正常收尾/出错回落/手动打断/
+    // 回声丢弃等所有回到 idle 的路径统一覆盖,不用逐处埋定时器。任何活动
+    // (说话/思考/朗读/队列未清)都把计时清零,从头再数 5 分钟。
+    if(buttonMode && handsFreeActive){
+      const busyNow = wsState !== "idle" || omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0;
+      if(busyNow){ omniIdleSince = 0; }
+      else if(!omniIdleSince){ omniIdleSince = Date.now(); }
+      else if(Date.now() - omniIdleSince >= BUTTON_IDLE_HANG_MS){
+        vdbg("button-mode.idle-hang", {idleMs: Date.now() - omniIdleSince});
+        returnToButtonState();
+        return;
+      }
+    } else {
+      omniIdleSince = 0;
     }
     if(!omniDc || omniDc.readyState !== "open") return;
     // 连接活跃心跳:如果超过心跳间隔没收到任何 DC 事件,主动发一个 cancel(无害的
@@ -3264,6 +3282,7 @@ void main(){
   // ── 按钮模式:一轮交互完成后回到按钮待机状态,等待用户再次点击 ──────────────
   function returnToButtonState(){
     vdbg("button-mode.return");
+    omniIdleSince = 0;
     if(omniReconnectTimer){ clearTimeout(omniReconnectTimer); omniReconnectTimer = null; }
     stopOmniHandsFree();
     resetMicStream();  // 停掉麦克风,避免 LED 常亮
