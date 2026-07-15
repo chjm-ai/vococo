@@ -1324,12 +1324,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniMicMuted=false;
   let omniMicMuteTimer=null;
   const omniAudioEl = $("#omniRemoteAudio");
-  // 自作主张回复的音频泄漏(2026-07-13,真机实锤 turn #1204"你刚才打断我思路了"):
-  // create_response 关不掉,cancel 走 DataChannel 一来一回的网络延迟,"嗯"这种单字
-  // 回复常常生成得比 cancel 到达服务器还快,音频已经从 RTP 轨道漏出来了——跟 cancel
-  // 发得多快无关,是物理时间差。干脆默认把远端音频静音,只有确认是我们主动点的
-  // 朗读(pumpOmniRead 发出 response.create 那一刻,不等 response.created 回执)才
-  // 开声,从物理层杜绝泄漏,不再赌网络时序。
+  // 【重要】音频输出通道永不静音:2026-07-15 修复前,远端 <audio> 的 muted 被
+  // 用于压制自动回复和朗读收尾的音频,这会导致 AI 自己的 TTS 语音输出被掐掉、
+  // 用户听不到完整回复。修复后:音频输出始终开放,自动回复只靠 response.cancel
+  // 砍掉,宁可短暂漏一个字也不能消掉完整回答。
   let omniAudioMuted=true;
   omniAudioEl.muted = true;
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
@@ -2278,7 +2276,7 @@ void main(){
   //   response.created 时对"不是我们点的"回复立即 response.cancel 双保险,
   //   见 wireOmniDataChannel 的 response.created 分支。2026-07-13 真机实锤这俩
   //   保险仍会漏("嗯"字生成得比 cancel 网络往返还快),加第三层物理保险:
-  //   远端 <audio> 默认静音,只有确认是我们主动点的朗读才开声(见 omniAudioMuted)。
+  //   远端 <audio> 永不静音,自动回复只靠 cancel 砍掉(2026-07-15:不静音输出通道)
   let omniTurnGen = 0;  // 每次新一句开始/打断都 +1,过期的 /voice/send 流式结果据此判断该不该再应用
 
   async function startOmniHandsFree(){
@@ -2300,7 +2298,7 @@ void main(){
     omniFirstReplyMuteUsed = false; omniMicMuted = false;
     if(omniMicMuteTimer){ clearTimeout(omniMicMuteTimer); omniMicMuteTimer = null; }
     applyMicEnabled();
-    omniAudioMuted = true; omniAudioEl.muted = true;  // 新连接回默认静音态,别带上一条连接的开声现场
+    setOmniAudioMuted(false, "conn-start");  // 音频输出始终开放,不静音输出通道;静音只作用于麦克风输入轨道(track.enabled)
     // 新连接:上一条连接没等到 completed 的兜底现场作废,别把旧句在新会话上重发
     if(omniDeltaFallbackTimer){ clearTimeout(omniDeltaFallbackTimer); omniDeltaFallbackTimer = null; }
     omniDeltaFallback = null; omniFallbackSentItem = null;
@@ -2579,12 +2577,9 @@ void main(){
             }
           } else {
             omniAutoActive = true; omniAutoSince = Date.now();
-            // 三道静音保险(2026-07-14):①函数级状态标志;②<audio> 元素直写
-            // 静音(绕过可能的标志位飘飞);③ response.cancel 砍掉后续音频数据。
-            // 之前只有①③,阿里云自动回复有时在 cancel 到达前就已经出声了,
-            // ③赶不上,①又被读取分支误消费——直写 <audio> 是最底层的防线。
-            setOmniAudioMuted(true, "auto-response");
-            try{ omniAudioEl.muted = true; }catch(e){}
+            // 自动回复只取消不静音:音频输出通道始终开放,不通过静音输出来压制自动
+            // 回复。自动回复的音频可能短暂漏出一两个字的片段("嗯"),但总比把 AI 自
+            // 己的完整 TTS 回答消掉好——cancel 到达后 Omni 会停发后续音频数据。
             try{ channel.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
             vdbg("auto-response.cancelled");
           }
@@ -2593,11 +2588,10 @@ void main(){
           if(omniReadActive){
             omniReadActive = false;
             omniReadCurrentText = "";
-            // 不立刻静音:response.done 是 Omni 生成完毕的信号,但 RTP 是按实际
-            // 语速推流的,长句生成快于播放,done 时可能还欠好几秒没播——固定
-            // 400ms 等待被 2026-07-13 真机打脸("查好了我叫你"只听到"查好了"),
-            // 改成波形安静+跨句模型下限双判据(见 armOmniReadTailWatch)。
-            // 队列非空时泵下一句,其 setOmniAudioMuted(false) 会覆盖静音状态,
+            // response.done 是 Omni 生成完毕的信号,但 RTP 是按实际语速推流的,
+            // 长句生成快于播放,done 时可能还欠好几秒没播——用 armOmniReadTailWatch
+            // 的波形安静+跨句模型下限双判据等音频真正播完再泵下一句。
+            // 音频输出通道永不静音(2026-07-15 修复),队列非空时直接泵下一句,
             // 尾音在生成间隙自然排空。
             if(omniReadQueue.length > 0){
               pumpOmniRead();
@@ -2797,8 +2791,7 @@ void main(){
       if(lvl > 0.04){ seen = true; quiet = 0; }
       else if(seen) quiet++;
       if((seen && quiet >= 4 && Date.now() >= minMute) || Date.now() >= deadline){
-        setOmniAudioMuted(true, seen ? "read.tail-quiet" : "read.tail-cap");
-        pumpOmniRead();  // 经 maybeOmniIdle 收尾
+        pumpOmniRead();  // 音频播完→泵下一句或 maybeOmniIdle 收尾;不静音输出通道
         return;
       }
       omniReadTailTimer = setTimeout(check, 150);
