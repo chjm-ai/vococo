@@ -880,7 +880,13 @@
     justify-content:center;cursor:pointer}
   #orbCanvas{position:relative;z-index:1;width:280px;height:100px;pointer-events:none}
 
-  #status{font-size:14px;color:var(--dim);text-align:center;min-height:20px;transition:color .3s ease;
+  #statusLine{display:flex;align-items:center;justify-content:center;gap:8px;min-height:20px}
+  #connDot{width:8px;height:8px;border-radius:50%;flex-shrink:0;transition:background .4s ease,box-shadow .4s ease}
+  #connDot.conn-connected{background:#5aa469;box-shadow:0 0 6px rgba(90,164,105,.5)}
+  #connDot.conn-connecting{background:#e8a84c;box-shadow:0 0 6px rgba(232,168,76,.5);animation:connPulse 1.2s ease-in-out infinite}
+  #connDot.conn-disconnected{background:#d1674a;box-shadow:0 0 6px rgba(209,103,74,.4)}
+  @keyframes connPulse{0%,100%{opacity:.5} 50%{opacity:1}}
+  #status{font-size:14px;color:var(--dim);text-align:center;transition:color .3s ease;
     letter-spacing:.02em}
   #status.listening{color:var(--err)}
   #status.thinking,#status.playing{color:var(--accent)}
@@ -1127,7 +1133,7 @@ try{
         <div id="orbWrap" class="idle" title="点一下可以打断 AI 说话">
           <canvas id="orbCanvas" width="640" height="200"></canvas>
         </div>
-        <div id="status">连接中…</div>
+        <div id="statusLine"><span id="connDot" class="conn-disconnected"></span><div id="status">连接中…</div></div>
         <div id="callActions">
           <button id="muteToggleBtn" title="静音麦克风" aria-label="静音麦克风"></button>
           <div id="voicePickBtn" title="切换音色">
@@ -1250,6 +1256,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     handsFreeUi=$("#handsFreeUi"), orbWrap=$("#orbWrap"),
     endHandsFreeBtn=$("#endHandsFreeBtn"), muteToggleBtn=$("#muteToggleBtn"),
     backLink=$("#callHead #backLink"), startBtn=$("#startCallBtn");
+    connDotEl=$("#connDot");
 
   setIcon(backLink, "panel");
   setIcon($("#tasksIcon"), "tasks");
@@ -1289,6 +1296,14 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniReconnectTimer=null;
   let omniReadTailTimer=null;  // response.done 后等音频缓冲区排空的定时器(见 response.done 分支)
   let omniReadSince=0, omniReadWatchdog=null;  // 朗读心跳时间戳 + 卡死看门狗(见 omniReadStallCheck)
+  // 连接状态追踪 + capturing 看门狗(2026-07-15 加):捕捉 capturing 卡死、连接状态指示器、指数退避
+  let omniConnStatus="disconnected"; // "connected"|"connecting"|"disconnected"
+  let omniReconnectAttempts=0;       // 当前连续重连次数(指数退避用)
+  let omniCapturingSince=0;          // 进入 capturing 状态的时间戳,看门狗判断卡住用
+  let omniLastDcEvent=0;             // 最近一次收到 DataChannel 事件的时间戳,看门狗判断活性用
+  let omniHeartbeatTimer=null;       // 连接心跳定时器
+  const OMNI_HEARTBEAT_MS = 15000;   // 心跳间隔
+  const OMNI_CAPTURING_STALL_MS = 30000;  // capturing 卡死阈值(30 秒无进展)
   // 回声过滤(2026-07-11):iOS AEC 在 AI 每句开口头 1~2 秒未收敛,残留回声会被
   // 阿里云 VAD 当成用户说话,转写出来的是"刚念那句的开头几个字"(见 matchOmniEcho)。
   let omniRecentReads=[];        // 最近念过的句子 [{text, ts}],转写结果跟它们比对
@@ -2288,6 +2303,7 @@ void main(){
   async function startOmniHandsFree(){
     vdbg("omni.start");
     setStatus("连接中…", "");
+    setOmniConnStatus("connecting");
     orbConnecting = true;  // 声波球切「连接中」形态(彗星扫动),SDP 应答落地后清掉
     unlockAudio();
     resetMicStream();  // 每次开新连线都强制换新麦克风流,见 resetMicStream 注释
@@ -2338,6 +2354,14 @@ void main(){
       if(!omniPc) return;
       const st = omniPc.connectionState;
       vdbg("pc.state", st);
+      if(st === "connected"){
+        setOmniConnStatus("connected");
+        omniReconnectAttempts = 0;  // 连上了就重置退避计数
+      } else if(st === "connecting"){
+        setOmniConnStatus("connecting");
+      } else {
+        setOmniConnStatus("disconnected");
+      }
       // 120 分钟会话上限/网络抖动都会走到这里;disconnected 可能自愈,多等一拍。
       if(st === "failed" || st === "closed") scheduleOmniReconnect("pc:"+st, 1500);
       else if(st === "disconnected") scheduleOmniReconnect("pc:disconnected", 4000);
@@ -2360,7 +2384,7 @@ void main(){
             "只朗读标记后面的正文。【朗读】这三个字连同方括号是机器标记,不是稿件内容," +
             "绝对禁止念出来——直接从正文第一个字开始读。正文要自然流畅、一字不差," +
             "不要添加、省略或改动任何内容,也不要发表自己的看法。" +
-            "收到其他任何消息时,只回答一个字:嗯。",
+            "收到其他任何消息时,如果非说不可就简短确认收到即可;尽可能保持沉默。",
           // 2026-07-10:改用 semantic_vad(阿里云文档明确给 qwen3.5-omni-realtime 系列
           // 推荐这个模式)——server_vad 纯按静音毫秒数判停,用户说话中间正常思考停顿
           // ("呃"、组织语言)会被硬切;semantic_vad 按语义完整性判断这句话说完没有,
@@ -2407,6 +2431,7 @@ void main(){
 
     handsFreeActive = true;
     orbConnecting = false;
+    setOmniConnStatus("connected");
     orbWrap.className = "idle";
     clearHint();
     setStatus("聆听中…", "listening");
@@ -2420,13 +2445,19 @@ void main(){
   // 为 false(用户已挂断)就什么都不做。
   function scheduleOmniReconnect(reason, delayMs){
     if(!handsFreeActive || omniReconnectTimer) return;
-    vdbg("reconnect.scheduled", reason);
+    vdbg("reconnect.scheduled", {reason, attempts: omniReconnectAttempts});
+    omniReconnectAttempts++;
+    setOmniConnStatus("disconnected");
+    // 指数退避:每次重连失败后翻倍,上限 60 秒;若入参 delayMs 比退避值大则用入参
+    const backoffMs = Math.min((delayMs || 1500) * Math.pow(2, omniReconnectAttempts - 1), 60000);
+    const actualDelay = Math.max(delayMs || 1500, backoffMs);
     omniReconnectTimer = setTimeout(async () => {
       omniReconnectTimer = null;
       if(!handsFreeActive) return;
       // disconnected 可能已经自愈,重建前再看一眼当前状态
       if(omniPc && (omniPc.connectionState === "connected" || omniPc.connectionState === "connecting")){
         vdbg("reconnect.skipped", "pc recovered");
+        setOmniConnStatus(omniPc.connectionState === "connected" ? "connected" : "connecting");
         return;
       }
       // 朗读进行中时暂缓重连:停止当前播放再重建 WebRTC 会掐断用户正在听的
@@ -2439,17 +2470,18 @@ void main(){
       }
       vdbg("reconnect.start", reason);
       setStatus("重连中…", "thinking");
+      setOmniConnStatus("connecting");
       playDisconnectTone();  // 让用户知道刚才断了,而不是全程静默自愈
       stopOmniHandsFree();
       let ok = false;
       try{ ok = await startOmniHandsFree(); }
       catch(e){ vdbg("reconnect.fail", String(e)); }
       // 信令失败是 return false 不是 throw,统一在这里兜住继续重试
-      if(!ok){ scheduleOmniReconnect("retry", 5000); return; }
+      if(!ok){ scheduleOmniReconnect("retry"); return; }
       playReconnectTone();
       addMsg("ai", "(通话断开过一下,已经自动接回来了)");
       vdbg("reconnect.ok", reason);
-    }, delayMs || 1500);
+    }, actualDelay);
   }
 
   // 音色切换实时生效:音色是建连时随 session-init 带上的,已经出过声的会话改不了
@@ -2478,6 +2510,8 @@ void main(){
     channel.onmessage = ev => {
       let data;
       try{ data = JSON.parse(ev.data); }catch(e){ return; }
+      // 全局 DC 事件时间戳:所有 DataChannel 事件都计入,看门狗据此判断连接是否还活着
+      omniLastDcEvent = Date.now();
       // 朗读心跳:任何 response.* 事件(含高频 audio delta)都说明 Omni 还活着——
       // 看门狗只在"彻底没动静"时才出手,不会误杀正常的长句朗读。
       if(data.type && data.type.startsWith("response.")) omniReadSince = Date.now();
@@ -2531,6 +2565,7 @@ void main(){
             if(omniPendingTimer){ clearTimeout(omniPendingTimer); omniPendingTimer = setTimeout(flushOmniPending, OMNI_PENDING_FLUSH_MS); }
           }
           if(wsState !== "capturing") playCapturingTone();
+          omniCapturingSince = Date.now();  // 看门狗:记录 capturing 开始时刻
           wsState = "capturing";
           setStatus(STATE_WORD.capturing, STATE_CLASS.capturing);
           if(handsFreeActive) orbWrap.className = "capturing";
@@ -2714,6 +2749,13 @@ void main(){
     vdbg(muted ? "audio.mute" : "audio.unmute", why);
   }
 
+  function setOmniConnStatus(status){
+    if(omniConnStatus === status) return;
+    omniConnStatus = status;
+    if(connDotEl) connDotEl.className = "conn-" + status;
+    vdbg("conn.status", status);
+  }
+
   function maybeOmniIdle(){
     // 整轮收尾:Claude 文字流结束 + 朗读队列清空 + 没有进行中的朗读才回 idle;
     // 用户已经又开口(capturing)就不抢状态。
@@ -2779,6 +2821,35 @@ void main(){
       }
     }
     if(!omniDc || omniDc.readyState !== "open") return;
+    // 连接活跃心跳:如果超过心跳间隔没收到任何 DC 事件,主动发一个 cancel(无害的
+    // 空操作)验证通道是否还活着——dc.send 静默失败就触发重连。
+    if(handsFreeActive && omniPc && omniPc.connectionState === "connected"
+       && Date.now() - omniLastDcEvent > OMNI_HEARTBEAT_MS * 2){
+      try{
+        omniDc.send(JSON.stringify({type: "response.cancel"}));
+        if(Date.now() - omniLastDcEvent > OMNI_HEARTBEAT_MS * 3){
+          vdbg("heartbeat.no-echo", {lastDc: Date.now() - omniLastDcEvent});
+          scheduleOmniReconnect("heartbeat:silent", 1500);
+        }
+      }catch(e){
+        vdbg("heartbeat.send-fail", String(e));
+        scheduleOmniReconnect("heartbeat:send-fail", 1500);
+      }
+    }
+    // ── capturing 卡死检测(2026-07-15 加):用户长录音时不设硬超时断录音,
+    // 但状态卡住(如 VAD 错误触发 speech_started 后永远不 committed)时自动重置。
+    // 判据:capturing 超过 30 秒 + 最后一条 DC 事件超过 20 秒前 = 卡死
+    if(wsState === "capturing" && omniCapturingSince > 0){
+      const now = Date.now();
+      if(now - omniCapturingSince > OMNI_CAPTURING_STALL_MS && now - omniLastDcEvent > 20000){
+        vdbg("capturing.stall-reset", {since: now - omniCapturingSince, lastDc: now - omniLastDcEvent});
+        wsState = "idle";
+        setStatus(STATE_WORD.idle);
+        if(handsFreeActive) orbWrap.className = "idle";
+        omniCapturingSince = 0;
+      }
+      return;
+    }
     if(!(omniReadActive || omniReadPending > 0)) return;
     if(Date.now() - omniReadSince <= 12000) return;
     vdbg("read.stall-cleared", {ra: omniReadActive, rp: omniReadPending, q: omniReadQueue.length});
@@ -2857,6 +2928,9 @@ void main(){
     if((omniReadActive || omniReadPending > 0 || omniAutoActive) && omniDc && omniDc.readyState === "open"){
       try{ omniDc.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
     }
+    // 立即静音:防止 Omni 自动生成"嗯"的音频在 cancel 到达前漏出(2026-07-15 修复)
+    setOmniAudioMuted(true, "cancel");
+    try{ omniAudioEl.muted = true; }catch(e){}
     omniReadActive = false; omniReadPending = 0;
     omniReadCurrentText = "";
     vdbg("read.cancel", reason);
@@ -3063,6 +3137,7 @@ void main(){
   // 流式结果应用到界面/朗读队列上。
   async function sendOmniTurn(text){
     const gen = ++omniTurnGen;
+    omniCapturingSince = 0;  // 离开 capturing 状态,看门狗不再盯
     wsState = "thinking";
     setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
     if(handsFreeActive) orbWrap.className = "thinking";
@@ -3198,6 +3273,7 @@ void main(){
     startBtn.hidden = false;
     startBtn.textContent = "继续录音";
     startBtn.disabled = false;
+    setOmniConnStatus("disconnected");
     setStatus("点击按钮继续录音", "");
     orbWrap.className = "idle";
   }
@@ -3210,6 +3286,7 @@ void main(){
     startBtn.hidden = false;
     handsFreeUi.hidden = false;
     setStatus("连接中…", "");
+    setOmniConnStatus("connecting");
     vdbg("button-mode.start");
     const ok = await startHandsFree();
     startBtn.disabled = false;
@@ -3228,6 +3305,7 @@ void main(){
       handsFreeUi.hidden = true;
       startBtn.hidden = false;
       startBtn.textContent = "重试";
+      setOmniConnStatus("disconnected");
       setStatus("连接失败,点击重试", "");
     }
   });
@@ -3336,6 +3414,7 @@ void main(){
   // 导航卸载页面顺带回收这些资源,现在视图常驻 DOM 不会自动卸载,不手动收就是
   // 麦克风一直"热着"、WS 一直连着,电量和隐私都不划算。
   function teardownCallResources(){
+    setOmniConnStatus("disconnected");
     releaseWakeLock();  // 挂断就不需要屏幕常亮了,让系统恢复正常锁屏节能
     stopWorkSound();    // 工作音效跟着通话走,挂断即停(audioCtx 也会在下面 close)
     handsFreeActive = false;  // 先立 flag:让 scheduleOmniReconnect 的回调知道用户已挂断
