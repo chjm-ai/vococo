@@ -950,7 +950,7 @@
   #endHandsFreeBtn{width:46px;height:46px;border-radius:50%;border:none;
     background:var(--err);color:#fff;display:inline-flex;align-items:center;justify-content:center;
     padding:0;transition:background .15s ease,color .15s ease,transform .12s ease}
-  #endHandsFreeBtn .ic{width:22px;height:22px}
+  #endHandsFreeBtn .ic{width:22px;height:22px;transform:rotate(135deg)}  /* 拨打图标转135°=挂断,复用同一套 path,不用另画丑图标 */
   #endHandsFreeBtn:hover{background:#b85a3f}
   #endHandsFreeBtn:active{transform:scale(.92)}
   #muteToggleBtn{width:46px;height:46px;border-radius:50%;border:none;
@@ -1296,7 +1296,6 @@ const ICONS = {
   tasks:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
   eraser:'<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
   phone:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
-  phoneOff:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.45 19.45 0 0 1-3.17-2.53"/><path d="M6 6l14 14"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 function setIcon(el, name){ el.innerHTML = ic(name); }
@@ -1318,7 +1317,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   setIcon(backLink, "panel");
   setIcon($("#tasksIcon"), "tasks");
   setIcon($("#stopIcon"), "stop");
-  setIcon(endHandsFreeBtn, "phoneOff");  // 挂断按钮:红色电话样式
+  setIcon(endHandsFreeBtn, "phone");  // 挂断按钮:红色圆底+拨打图标转135°(见上面 CSS)
   setIcon(muteToggleBtn, "mic");  // 静音按钮:默认图标是"麦克风开着",点了切成"mute"
   setIcon(startBtn, "phone");  // 开始通话:电话图标
   setIcon($("#voiceIcon"), "voice");  // 音色切换:静音/挂断中间的圆钮,点开原生选择器
