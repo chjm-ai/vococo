@@ -1777,7 +1777,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     const item = playQueue.shift();
     if(!item.audio_b64){ noticeTtsFailure(); pumpPlayback(); return; }
     playing = true;
-    setStatus("播放中…", "playing");
+    setStatus("工作中…", "playing");
     try{
       if(audioCtx.state === "suspended") await audioCtx.resume();
       const audioBuffer = await audioCtx.decodeAudioData(base64ToArrayBuffer(item.audio_b64));
@@ -1894,7 +1894,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   }
 
   // ── 通话状态字/声波球/提示音(免提 Omni 与按住说话共用)─────────────────────
-  const STATE_WORD = {idle:"空闲", capturing:"聆听中…", thinking:"思考中…", speaking:"播放中…"};
+  const STATE_WORD = {idle:"空闲", capturing:"聆听中…", thinking:"思考中…", speaking:"工作中…"};
   const STATE_CLASS = {capturing:"listening", thinking:"thinking", speaking:"playing"};
 
   function vadCapable(){
@@ -2283,16 +2283,12 @@ void main(){
   function playDialConnectedTone(){ playTone(880, 100, "sine", 0.13); }
   // 发送音效:用户语音转写完成、提交给 Claude 时轻短"咻"一声(高音短促,低音量)
   function playSendTone(){ playTone(1350, 70, "sine", 0.15); }
-  // AI 思考音效:提交后等待回复时循环"定定"两声短促滴答(放慢节奏)
+  // AI 思考音效:提交后等待回复时循环响,音色跟"工作中"(playSpeakingTone)统一,
+  // 用户听感上只分"在等/说完了"两种状态,不用再区分"思考"和"工作"两种音色。
   let thinkingToneTimer = null;
   function playThinkingTone(){
     stopThinkingTone();
-    const beep = () => {
-      if(!audioCtx) return;
-      for(let i = 0; i < 2; i++){
-        setTimeout(() => playTone(500, 50, "sine", 0.1), i * 400);
-      }
-    };
+    const beep = () => { if(!audioCtx) return; playSpeakingTone(); };
     beep();
     thinkingToneTimer = setInterval(beep, 1200);
   }
@@ -3318,7 +3314,7 @@ void main(){
             if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
             currentTurnFull += ev.data.text || "";
             renderAi(currentTurnAiEl, currentTurnFull);
-            // 状态保持 thinking:真正的"播放中"由 Omni 朗读的 response.created
+            // 状态保持 thinking:真正的"工作中"由 Omni 朗读的 response.created
             // 驱动(见 wireOmniDataChannel),文字流出来不等于已经在出声。
           } else if(ev.event === "activity"){
             showActivity(ev.data.text);
