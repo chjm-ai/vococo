@@ -608,41 +608,34 @@
   .skel.ai2{align-self:flex-start;height:80px;width:75%;background:var(--panel2)}
   @keyframes skelshine{0%,100%{opacity:.45}50%{opacity:.85}}
 
-  /* 空状态 / 欢迎屏:默认不显示,由 updateEmpty()/openConv() 按真实数据决定何时出现,
-     避免 #app 刚显示、数据还没到位时先闪一下欢迎屏 */
-  #empty{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
-    text-align:center;padding:24px;pointer-events:none}
-  #empty .elogo{width:76px;height:76px;margin-bottom:18px;color:var(--text);
+  /* 空状态 / 新对话欢迎屏:默认不显示,由 updateEmpty()/openConv() 按真实数据决定何时出现,
+     避免 #app 刚显示、数据还没到位时先闪一下欢迎屏。2026-07-15 起首页(#homeView)已下架,
+     语音通话入口 + 最近对话列表合并进这里,APP 启动后直接落地在一个新对话上。
+     不再用 position:absolute 铺满居中——内容变多(带最近对话列表)要能跟 #messages 一起滚动。 */
+  #empty{display:none;flex-direction:column;padding:8px 6px 24px;pointer-events:auto;
+    max-width:640px;margin:0 auto;width:100%}
+  #empty .elogo{width:64px;height:64px;margin:12px auto 14px;color:var(--text);
     display:flex;align-items:center;justify-content:center;animation:pop .5s ease}
   #empty .elogo svg{width:100%;height:100%}
-  #empty h2{margin:0 0 6px;font-size:24px;font-weight:600;
+  #empty h2{margin:0 0 6px;font-size:22px;font-weight:600;text-align:center;
     font-family:Optima,"Times New Roman","Songti SC",serif}
-  #empty p{margin:0 0 24px;color:var(--dim);font-size:14px}
-  #empty .sugs{display:flex;flex-wrap:wrap;gap:9px;justify-content:center;max-width:440px;pointer-events:auto}
+  #empty p{margin:0 0 20px;color:var(--dim);font-size:14px;text-align:center}
+  #empty .sugs{display:flex;flex-wrap:wrap;gap:9px;justify-content:center;margin:0 0 28px;pointer-events:auto}
   #empty .sug{background:var(--card);border:1px solid var(--line2);border-radius:14px;padding:10px 16px;font-size:14px;
     color:var(--text);transition:background .16s,border-color .16s,transform .12s}
   #empty .sug:hover{border-color:var(--accent)}
   #empty .sug:active{transform:scale(.96)}
-
-  /* ── 首页(#homeView):APP 默认着陆页 ─────────────────────────────── */
-  #homeView{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden;background:var(--bg2)}
-  #homeView[hidden]{display:none}
-  #homeContent{flex:1;overflow-y:auto;padding:32px 40px 48px;max-width:720px;margin:0 auto;width:100%}
-  /* 欢迎区 */
-  .home-hero{padding:40px 0 32px;text-align:center}
-  .home-hero h1{font-size:28px;margin:0 0 8px;font-weight:700;font-family:Optima,"Times New Roman","Songti SC",serif}
-  .home-hero p{margin:0;color:var(--dim);font-size:15px}
-  /* 快捷卡片行 */
-  .home-quick{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:36px}
-  .home-card{display:flex;flex-direction:column;align-items:center;justify-content:center;
-    gap:8px;padding:28px 16px;border-radius:16px;background:var(--panel);border:1px solid var(--line);
+  /* 语音通话快捷入口:原首页两张并排卡片里只留这一张,改成整行的 CTA */
+  .voice-cta{display:flex;align-items:center;gap:14px;width:100%;padding:16px 18px;
+    border-radius:16px;background:var(--panel);border:1px solid var(--line);
     cursor:pointer;transition:background .16s,border-color .16s,transform .12s;
-    text-align:center;color:var(--text)}
-  .home-card:active{transform:scale(.97)}
-  .home-card:hover{border-color:var(--accent);background:var(--panel2)}
-  .home-card-icon{font-size:32px;line-height:1}
-  .home-card-title{font-weight:600;font-size:15px}
-  .home-card-desc{color:var(--dim2);font-size:12.5px;line-height:1.4}
+    color:var(--text);text-align:left;margin-bottom:24px}
+  .voice-cta:active{transform:scale(.98)}
+  .voice-cta:hover{border-color:var(--accent);background:var(--panel2)}
+  .voice-cta .vc-icon{font-size:26px;line-height:1;flex-shrink:0}
+  .voice-cta .vc-body{flex:1;min-width:0}
+  .voice-cta .vc-title{font-weight:600;font-size:15px}
+  .voice-cta .vc-desc{color:var(--dim2);font-size:12.5px;margin-top:2px}
   /* 区域标题 */
   .home-section{margin-bottom:28px}
   .home-section-title{font-size:15px;font-weight:600;margin:0 0 12px;color:var(--dim2);
@@ -1064,16 +1057,6 @@ try{
       <button id="settingsBtn" class="sfoicon" title="设置"></button>
     </div>
   </aside>
-  <!-- 首页:进入 APP 后的默认视图,展示最近会话和快捷入口 -->
-  <main id="homeView" hidden>
-    <header class="bar">
-      <div class="barwrap">
-        <button class="icon" id="hamb"></button>
-        <div class="title"><span id="homeTitle">首页</span></div>
-      </div>
-    </header>
-    <div id="homeContent"></div>
-  </main>
   <main id="chatMain" hidden>
     <header class="bar">
       <div class="barwrap">
@@ -1120,10 +1103,21 @@ try{
         </div>
         <h2>你好，我是 Wazir</h2>
         <p>你的私人 AI 助理 · 有什么需要直接说</p>
+        <button type="button" class="voice-cta" onclick="openCallView()">
+          <span class="vc-icon">📞</span>
+          <span class="vc-body">
+            <span class="vc-title">语音通话</span>
+            <span class="vc-desc">像打电话一样和 AI 聊天</span>
+          </span>
+        </button>
         <div class="sugs">
           <button class="sug" data-s="你能做什么">你能做什么</button>
           <button class="sug" data-s="有哪些技能">有哪些技能</button>
           <button class="sug" data-s="看看今天的安排">看看今天的安排</button>
+        </div>
+        <div class="home-section">
+          <div class="home-section-title">最近对话</div>
+          <div class="home-recent" id="homeRecent"></div>
         </div>
       </div>
     </div>
@@ -3560,7 +3554,6 @@ void main(){
   }
 
   window.openCallView = function(){
-    hideHome();       // 从首页进入通话
     closeSidebar();
     $("#chatMain").hidden = true;
     $("#callView").hidden = false;
@@ -3644,9 +3637,10 @@ async function tryEnter(){
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush(); loadExpanded(); S.expanded.add("__default__");  // 默认项目默认展开
     applyConvs(d);   // 这次 /conversations 顺便验证了口令,数据直接拿来用,不用再多打一次
-    // 显示首页,不自动跳进最近会话
-    showHome();
-    // 侧边栏用得到的次要数据(主题偏好/项目列表/模型/斜杠命令)并行去拉,不再堵在首页前面。
+    // 落地到一个新对话(不自动跳进最近会话),欢迎屏里带语音通话入口 + 最近对话列表,
+    // 不弹键盘打扰用户(focus=false)——2026-07-15 起首页(#homeView)已下架,统一走这里。
+    newChatIn(null, false);
+    // 侧边栏用得到的次要数据(主题偏好/项目列表/模型/斜杠命令)并行去拉,不再堵在落地页前面。
     const secondary = Promise.all([loadPrefs(), loadProjects(), loadModels(), loadCommands(), loadVoiceOmniConfig()])
       .then(updateFilterBtn).catch(()=>{});
     loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
@@ -3708,47 +3702,22 @@ function mdToHtml(src){
   return out;
 }
 
-// ── 空状态欢迎屏 ─────────────────────────────────────────────────────────
-function updateEmpty(){ $("#empty").style.display = $("#wrap").children.length ? "none" : "flex"; }
-
-// ── 首页(默认着陆页) ────────────────────────────────────────────────────
-function showHome(){
-  closeCallView();
-  closeCmdMenu();
-  $("#homeView").hidden = false;
-  $("#chatMain").hidden = true;
-  $("#callView").hidden = true;
-  renderConvs(); closeSidebar();
-  renderHomeContent();
+// ── 空状态欢迎屏(新对话默认落地页,含最近对话列表)──────────────────────────
+// 2026-07-15:原独立首页(#homeView)已下架,语音通话入口 + 最近对话并入这个欢迎屏,
+// APP 启动后直接落在一个新对话上,不再有单独的"首页"中间态。
+function updateEmpty(){
+  const show = !$("#wrap").children.length;
+  $("#empty").style.display = show ? "flex" : "none";
+  if(show) renderEmptyRecent();
 }
-function hideHome(){
-  $("#homeView").hidden = true;
-}
-function renderHomeContent(){
-  const box = $("#homeContent");
-  // 构建欢迎区 + 快捷入口
-  box.innerHTML = '<div class="home-hero">' +
-    '<h1>👋 你好，我是 Wazir</h1>' +
-    '<p>你的私人 AI 助理 · 需要什么直接说</p></div>' +
-    '<div class="home-quick">' +
-    '<button class="home-card" onclick="openCallView()">' +
-    '<span class="home-card-icon">📞</span>' +
-    '<span class="home-card-title">语音通话</span>' +
-    '<span class="home-card-desc">像打电话一样和 AI 聊天</span></button>' +
-    '<button class="home-card" onclick="newChat()">' +
-    '<span class="home-card-icon">💬</span>' +
-    '<span class="home-card-title">新建会话</span>' +
-    '<span class="home-card-desc">开始一段文字对话</span></button></div>';
-  // 最近对话
-  const section = document.createElement("div");
-  section.className = "home-section";
-  section.innerHTML = '<h2 class="home-section-title">最近对话</h2><div class="home-recent" id="homeRecent"></div>';
-  box.append(section);
+function renderEmptyRecent(){
   const recent = $("#homeRecent");
-  // 收集所有会话(含语音任务)
+  if(!recent) return;
+  // 收集所有会话(含语音任务),排除当前正打开的这个(避免"最近对话"里出现指向自己的空新对话)
   const items = [];
   for(const c of S.convs){
     if(c.pinned) continue;  // 主会话单独处理
+    if(c.conv===S.conv) continue;
     const arch = !!c.archived;
     if(S.convFilter==="archived" && !arch) continue;
     if(S.convFilter==="active" && arch) continue;
@@ -3765,8 +3734,9 @@ function renderHomeContent(){
   items.sort((a,b)=>(b.ts||0)-(a.ts||0));
   const show = items.slice(0, 15);
   if(!show.length){
-    recent.innerHTML = '<div class="home-empty">暂无会话记录，新建一个开始吧</div>';
+    recent.innerHTML = '<div class="home-empty">暂无会话记录，随时开聊吧</div>';
   } else {
+    recent.innerHTML = "";
     for(const it of show){
       const row = document.createElement("div");
       row.className = "home-item";
@@ -4297,6 +4267,7 @@ async function loadVoiceSidebar(){
   try{ const r=await api("/voice/sidebar"); S.voiceSidebar=await r.json(); }
   catch(e){ S.voiceSidebar={main:null, tasks:[]}; }
   renderConvs();
+  if($("#empty").style.display==="flex") renderEmptyRecent();  // 欢迎屏正开着 → 语音任务到位后补一次最近对话
 }
 // 项目分组拖拽排序(原生 HTML5 DnD:桌面拖起手感好,鼠标移动量够才触发,不影响原有点击展开)
 function bindProjDrag(h, hash){
@@ -4333,13 +4304,15 @@ function toggleGroup(hash){
   else S.expanded.add(k);
   saveExpanded(); renderConvs();
 }
-// 在指定项目下开新会话(顶部 ＋新对话 用当前活跃项目;分组 ＋ 用该分组)
-function newChatIn(hash){
+// 在指定项目下开新会话(顶部 ＋新对话 用当前活跃项目;分组 ＋ 用该分组)。
+// focus=false 用于 APP 启动时静默落地到一个新对话——不弹键盘打扰用户。
+function newChatIn(hash, focus){
   S.project=hash; S.expanded.add(grpKey(hash)); saveExpanded();
   const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6);
   const conv="local-"+(hash?("p"+hash+":"):"")+id;
   S.convs.unshift({conv,title:"新对话",turns:0,last_ts:null});
-  openConv(conv); $("#ta").focus();
+  openConv(conv);
+  if(focus!==false) $("#ta").focus();
 }
 function newChat(){ newChatIn(S.project); }
 
@@ -4973,7 +4946,6 @@ function renderEventsFlow(events){
   return flow;
 }
 async function openConv(conv){
-  hideHome();      // 离开首页
   closeCallView();  // 切到别的会话就等于离开通话;没在通话视图里时这行是空操作
   $("#chatMain").hidden = false;  // 确保聊天界面可见
   closeCmdMenu();
@@ -5804,7 +5776,7 @@ $("#collapseBtn").innerHTML = ic("panel");
 $("#hamb").innerHTML = ic("panel");
 $("#collapseBtn").onclick = ()=> setSidebarCollapsed(true);   // 侧边栏内:收起
 $("#backdrop").onclick = closeSidebar;
-$(".brand").onclick = ()=>{ closeSidebar(); showHome(); };  // 品牌名 → 回首页
+$(".brand").onclick = ()=>{ closeSidebar(); newChat(); };  // 品牌名 → 开一个新对话
 function closeSidebar(){ $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("show"); }
 // 桌面侧边栏折叠态(记忆到 localStorage)
 function setSidebarCollapsed(v){
