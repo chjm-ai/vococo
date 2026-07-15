@@ -2271,6 +2271,10 @@ void main(){
   // 人肉探活(2026-07-10 真机一晚三次)。降调=掉线了,升调=接回来了。
   function playDisconnectTone(){ playTone(520, 110, "sine"); setTimeout(()=>playTone(330, 150, "sine"), 120); }
   function playReconnectTone(){ playTone(330, 110, "sine"); setTimeout(()=>playTone(660, 150, "sine"), 120); }
+  // 首次拨打提示音:点击通话按钮、进入"连接中…"那一刻响一声,让用户确认点击生效、
+  // 系统正在建连——跟下面的"接通音"用同一单音风格但音高不同,一耳朵能分辨两个阶段。
+  function playDialConnectingTone(){ playTone(600, 90, "sine", 0.13); }
+  function playDialConnectedTone(){ playTone(880, 100, "sine", 0.13); }
   // 发送音效:用户语音转写完成、提交给 Claude 时轻短"咻"一声(高音短促,低音量)
   function playSendTone(){ playTone(1350, 70, "sine", 0.15); }
   // AI 思考音效:提交后等待回复时循环"定定"两声短促滴答(放慢节奏)
@@ -3391,6 +3395,10 @@ void main(){
     handsFreeUi.hidden = false;
     setStatus("连接中…", "");
     setOmniConnStatus("connecting");
+    // 点击本身就是一次用户手势,这里先解锁 AudioContext 再响连接音——不解锁的话
+    // startOmniHandsFree 里的 unlockAudio() 还没跑到,playTone 会因 audioCtx 为空静默不响。
+    unlockAudio();
+    playDialConnectingTone();
     vdbg("button-mode.start");
     // startHandsFree 内部抛异常(createOffer/setRemoteDescription 等)也要落回
     // 失败分支,否则按钮永远停在 disabled 态,整个通话视图卡死。
@@ -3409,6 +3417,7 @@ void main(){
     if(ok){
       startBtn.hidden = true;
       buttonMode = true;
+      playDialConnectedTone();  // 接通瞬间响一声,音高比连接音更高,跟"连接中"区分开
     } else {
       handsFreeUi.hidden = true;
       startBtn.hidden = false;
