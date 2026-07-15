@@ -1348,8 +1348,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 到来时置起,阻止自动回复产生的任何音频片段被误放行;我们的 pump 在
   // response.created 确认是朗读后才会清除它,防止自动回复在 gap 期泄漏。
   let omniAutoAudioBlocked=false;
-  // response.created 确认是朗读后才会清除它,防止自动回复在 gap 期泄漏。
-  let omniAutoAudioBlocked=false;
   omniAudioEl.muted = true;
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
   // 修复都因为拿不到真机证据只能盲改后 revert。关键事件(session/response 生命周期、
