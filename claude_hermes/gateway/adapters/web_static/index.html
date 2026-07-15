@@ -2632,11 +2632,12 @@ void main(){
             }
           } else {
             omniAutoActive = true; omniAutoSince = Date.now();
-            // 自动回复只取消不静音:音频输出通道始终开放,不通过静音输出来压制自动
-            // 回复。朗读期间不抢音频静音:自动回复的 response.created 可能在我们的
-            // reading 的 response.created 之后到达(网络时序逆转),此时
-            // omniReadActive 已为 true,朗读正在输出,不应静音抢走正在播的音频。
-            // cancel 到达后 Omni 会停发后续音频数据。
+            // 立即静音+取消:Omni 自动回复的音频在 cancel 到达前已通过 RTP 推流,
+            // 不静音的话用户会听到模型对用户话语的回显(即"重复念用户说的话")。
+            // 只在不朗读自己内容时静音——网络时序逆转场景下 auto-reply 的
+            // response.created 可能在朗读启动后才到,此时 omniReadActive 为
+            // true,不应静音掐断正在播的朗读(2026-07-15 修复)。
+            if(!omniReadActive) setOmniAudioMuted(true, "auto-reply");
             omniAutoAudioBlocked = true;
             try{ channel.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
             vdbg("auto-response.cancelled");
