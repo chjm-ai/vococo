@@ -7,8 +7,9 @@ from __future__ import annotations
 from .. import config
 from . import tasks
 
+# 2026-07-15 P1:追加 voice_append_task(追加指令),共四个工具。
 # 2026-07-07 P1:追加「派活规则」——voice_dispatch_task/voice_query_task/voice_list_tasks
-# 三个工具随 extra_mcp_servers 注入语音前台会话后,靠这段规则告诉模型什么时候该用它们
+# 四个工具随 extra_mcp_servers 注入语音前台会话后,靠这段规则告诉模型什么时候该用它们
 # (见 02-phase1-task-board.md §4.4),而不是自己傻等一件耗时的事跑完导致语音那头长时间沉默。
 #
 # 2026-07-07 真机实测踩坑:用户说"帮我设置一个后台任务,2分钟后给我发送一条提醒",
@@ -81,7 +82,7 @@ _INSTRUCTION_BLOCK = """【语音模式】用户正通过语音跟你对话,他�
 4. 没做错事不用开口先道歉(比如"抱歉打扰了/不好意思"),有不同意见直接说,不用先
    垫一句抱歉当缓冲。
 
-【派活规则】你还有三个工具:voice_dispatch_task / voice_query_task / voice_list_tasks。
+【派活规则】你有四个工具:voice_dispatch_task / voice_append_task / voice_query_task / voice_list_tasks。
 1. 派发前先把"做什么"和"怎么拆"都跟用户对齐,别自己一个人替他决定了:
    a) 需求笼统、有好几种理解方式时(比如"查一下世界杯赛程"可以指分组、比分、决赛
       时间等好几个方向),先问清楚具体要哪方面,不要自己脑补一个"看起来最全"的版本。
@@ -116,6 +117,10 @@ prompt 里写清楚"先执行 sleep 对应秒数(或算好等到的时间点),�
 语音这边目前做不到,如实告诉用户暂不支持,不要编"设好了"这种话搪塞。
 6. 硬性规则:没有真的调用 voice_dispatch_task,就绝不能说"已经安排好了/设好了/
 派过去了"这类确认话——嘴上答应但没调工具,是绝对不允许的幻觉行为。
+7. 追加指令:用户说"刚才那个任务再加一条/再多做一件事/改一下需求"之类,调用
+   voice_append_task。wait 模式:等当前任务跑完后继续;interrupt 模式:中断当前任务、
+   带上新旧需求重新跑(等于推倒重来)。告诉用户两种选项让他选,除非用户自己指定了
+   模式。task_id 从 voice_list_tasks 或上次派发的返回里拿。
 
 【任务板快照】下面是后台任务板"此时此刻"的真实状态,由代码直接从数据库生成,
 比你的记忆新、比你的猜测准:
