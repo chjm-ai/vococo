@@ -10,12 +10,16 @@ import asyncio
 import base64
 import hmac
 import json
+import os
 import time
 from aiohttp import web
 
 from .. import config
 from ..core.agent import Done, TextDelta, ToolInput, ToolStarted
 from . import executor, notify, omni_realtime, prompts, session, stt, task_tools, tasks, tts
+from ..gateway import clarify
+from ..tools import selfops
+from .adapter import VoiceAdapter
 
 _VOICE_CONFIG_FILE = config.DATA_DIR / "voice_config.json"
 
@@ -223,8 +227,11 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
             "X-Accel-Buffering": "no",
         }
     )
+    clarify_token = None
     try:  # 锁已在上面拿到,这里 try/finally 保证释放(含 prepare 失败/return/抢占取消的所有路径)
         await resp.prepare(request)
+        voice_adapter = VoiceAdapter(resp)
+        clarify_token = clarify.set_current(session.SESSION_KEY, voice_adapter, "main")
         stop_event = asyncio.Event()
         _stop_event = stop_event
         t0 = time.monotonic()
@@ -252,7 +259,26 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                     return resp
                 user_text = text
                 await _sse(resp, "transcript", {"text": user_text})
-            prompt_text = prompts.build_prompt(user_text)
+            # 语音重启后还魂:优先从 GatewayRunner 桥取(见 selfops.save_voice_resume),
+            # 再退到文件(纯语音模式无 GatewayRunner)。
+            _stored_user: str | None = None
+            _voice_bridge = selfops.take_voice_resume()
+            if _voice_bridge is not None:
+                _resume_data = _voice_bridge["task"]
+                _resume_rolled = _voice_bridge["rolled_back"]
+            else:
+                _resume_data = selfops.consume_resume()
+                _resume_rolled = selfops.consume_rollback_flag()
+            if _resume_data is not None:
+                _resume_prompt = selfops.build_resume_prompt(_resume_data, _resume_rolled)
+                _stored_user = selfops.build_resume_store_text(_resume_data, _resume_rolled)
+                _has_user_text = bool(user_text and user_text.strip())
+                user_text_for_prompt = _resume_prompt
+                if _has_user_text:
+                    user_text_for_prompt += "\n\n---\n\n用户新消息:\n" + user_text
+            else:
+                user_text_for_prompt = user_text or ""
+            prompt_text = prompts.build_prompt(user_text_for_prompt)
             filler_sent = False
             async for ev in session.run_turn(prompt_text, extra_mcp_servers=task_tools.build_server()):
                 if (
@@ -290,7 +316,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                     await sender_task
                     t_first_audio = first_audio_ts[0] if first_audio_ts else 0.0
                     reply = ev.reply
-                    session.append(user_text, reply.text)
+                    session.append(_stored_user if _stored_user is not None else user_text, reply.text)
                     if reply.sdk_session_id:
                         session.set_resume(reply.sdk_session_id)
                     await _sse(resp, "done", {"full_text": reply.text or full_text})
@@ -332,9 +358,25 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
             if _stop_event is stop_event:
                 _stop_event = None
     finally:
+        if clarify_token is not None:
+            clarify.reset_current(clarify_token)
+            clarify.clear_session(session.SESSION_KEY)
         if _turn_task is asyncio.current_task():
             _turn_task = None
         _lock.release()
+
+    # 语音版重启退出:不经过 GatewayRunner._dispatch, 直接在这里检测退出
+    if selfops.restart_pending(session.SESSION_KEY):
+        selfops.pop_restart_pending(session.SESSION_KEY)
+        try:
+            await _sse(resp, "system_message", {
+                "text": "♻️ 正在重启进程加载新代码…约 10 秒后继续验证。", "restarting": True,
+            })
+            await asyncio.sleep(1.5)
+        except Exception:
+            pass
+        os._exit(selfops._EXIT_CODE)
+
     return resp
 
 

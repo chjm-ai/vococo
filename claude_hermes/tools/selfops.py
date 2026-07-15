@@ -41,6 +41,23 @@ _EXIT_CODE = 51  # 区别于崩溃的退出码,run.sh 日志里一眼认出"这�
 # 每会话的重启标志(按 session_key):一个会话最多一次,同一时刻只有被授权的会话能标记
 _restart_pending: dict[str, dict] = {}
 
+# 语音模式的还魂数据桥(由 _resume_after_restart 写入,_handle_send 消费):
+# GatewayRunner 启动时读到语音的遗书后,不 dispatch(没有 voice adapter),
+# 而是暂存到这里,让下次语音消息到来时由 _handle_send 注入验证计划。
+_voice_resume: dict | None = None
+
+
+def save_voice_resume(task: dict, rolled_back: bool) -> None:
+    global _voice_resume
+    _voice_resume = {"task": task, "rolled_back": rolled_back}
+
+
+def take_voice_resume() -> dict | None:
+    global _voice_resume
+    data = _voice_resume
+    _voice_resume = None
+    return data
+
 
 # ── git / 预检(均为阻塞调用,工具侧经 anyio.to_thread 执行)──
 def _git(*args: str) -> subprocess.CompletedProcess:

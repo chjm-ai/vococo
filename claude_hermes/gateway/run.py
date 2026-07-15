@@ -170,6 +170,13 @@ class GatewayRunner:
         if task is None:
             return
         await anyio.sleep(3)  # 等 adapter 起好(web 端口绑定 / TG 轮询就绪)
+
+        # 语音模式:GatewayRunner 没有 voice adapter, 暂存给 _handle_send 消费
+        if task.get("platform") == "voice":
+            print("[selfops] 语音还魂:跳过 gateway 派发,等待下次语音消息")
+            selfops.save_voice_resume(task, rolled_back)
+            return
+
         adapter = self.adapters.get(str(task.get("platform") or ""))
         if adapter is None:
             print(f"[selfops] 还魂失败:入口 {task.get('platform')} 未启用,验证计划已丢弃")
