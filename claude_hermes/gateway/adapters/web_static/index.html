@@ -1359,6 +1359,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniReconnectAttempts=0;       // 当前连续重连次数(指数退避用)
   let omniCapturingSince=0;          // 进入 capturing 状态的时间戳,看门狗判断卡住用
   let omniLastDcEvent=0;             // 最近一次收到 DataChannel 事件的时间戳,看门狗判断活性用
+  // dc:error 气泡去重:自建 DC 和服务端推来的 DC 都接了 wireOmniDataChannel,
+  // 同一个错误会到两份(相隔 ~10ms),不去重就弹两个一模一样的红气泡。
+  let omniLastErrMsg="", omniLastErrTs=0;
   let omniHeartbeatTimer=null;       // 连接心跳定时器
   const OMNI_HEARTBEAT_MS = 15000;   // 心跳间隔
   const OMNI_CAPTURING_STALL_MS = 30000;  // capturing 卡死阈值(30 秒无进展)
@@ -2508,7 +2511,10 @@ void main(){
   // 断连重连兜底:阿里云单会话最长 120 分钟到点会主动断,网络切换(WiFi↔蜂窝)
   // 也会把 PC 打断。轻量策略:整个拆掉重建一条连线,间隔一拍防抖;handsFreeActive
   // 为 false(用户已挂断)就什么都不做。
-  function scheduleOmniReconnect(reason, delayMs){
+  // force=true:服务端会话已确认死透(如 dc:error 推回 InternalError)时用——
+  // 跳过"pc 看着还 connected 就不重建"和"朗读中暂缓"两道闸。这种场景 pc 层
+  // 往往还要挂 5~10 秒才跳 disconnected,等它自己发现黄花菜都凉了。
+  function scheduleOmniReconnect(reason, delayMs, force){
     if(!handsFreeActive || omniReconnectTimer) return;
     vdbg("reconnect.scheduled", {reason, attempts: omniReconnectAttempts});
     omniReconnectAttempts++;
@@ -2520,14 +2526,20 @@ void main(){
       omniReconnectTimer = null;
       if(!handsFreeActive) return;
       // disconnected 可能已经自愈,重建前再看一眼当前状态
-      if(omniPc && (omniPc.connectionState === "connected" || omniPc.connectionState === "connecting")){
+      if(!force && omniPc && (omniPc.connectionState === "connected" || omniPc.connectionState === "connecting")){
         vdbg("reconnect.skipped", "pc recovered");
+        // 跳过 ≠ 重连失败:计数器必须清零。2026-07-15 事故——通话中心跳误报攒了
+        // 7 次"调度后发现 pc 还活着",计数器只增不减(原本只在 pc 状态跳变到
+        // connected 时清零,而 pc 一直 connected 就永不跳变),真断线那刻退避
+        // 直接顶到 60 秒,用户盯着"聆听中"干等一分钟。
+        omniReconnectAttempts = 0;
         setOmniConnStatus(omniPc.connectionState === "connected" ? "connected" : "connecting");
         return;
       }
       // 朗读进行中时暂缓重连:停止当前播放再重建 WebRTC 会掐断用户正在听的
       // 音频输出(最后几句永远听不到)。等朗读自然结束(或 8s 超时兜底)再重建。
-      if(omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0){
+      // force 时不暂缓——服务端会话已死,这个"朗读"永远不会结束。
+      if(!force && (omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0)){
         vdbg("reconnect.deferred", {ra:omniReadActive, rp:omniReadPending, q:omniReadQueue.length});
         // 8s 后再试一次,如果朗读还没结束就强制重连(避免因朗读卡住导致永久不重连)
         scheduleOmniReconnect(reason + "-deferred", 8000);
@@ -2723,11 +2735,25 @@ void main(){
           }
           break;
         case "error": {
-          const msg = (data.error && (data.error.message || data.error.code)) || "出错了";
+          const msg = String((data.error && (data.error.message || data.error.code)) || "出错了");
           // response.cancel 撞上"没有进行中的回复"这类时序噪音只记日志不弹红气泡,
           // 用户看到也做不了什么;其余错误照旧可见。
-          if(/cancel|active response|no active/i.test(String(msg))) break;
-          addMsg("ai error", String(msg));
+          if(/cancel|active response|no active/i.test(msg)) break;
+          // 双通道去重:同样的错误 3 秒内只处理一次(见 omniLastErrMsg 注释)。
+          const errNow = Date.now();
+          if(msg === omniLastErrMsg && errNow - omniLastErrTs < 3000) break;
+          omniLastErrMsg = msg; omniLastErrTs = errNow;
+          // 阿里云服务端内部错误(2026-07-15 两次真机复现:InternalError.Algo.
+          // InvalidParameter "provided URL not valid",我们发的消息里根本没有 URL,
+          // 是它内部管线抽风):这种错误之后服务端几秒内必掐断连接,原文用户看了
+          // 也做不了什么——转成人话,并立即强制重建,不等 pc 层自己发现断线。
+          if(/InternalError/i.test(msg)){
+            addMsg("ai", "(语音服务那边出了点问题,正在重新接回…)");
+            omniReconnectAttempts = 0;
+            scheduleOmniReconnect("dc:internal-error", 1500, true);
+          } else {
+            addMsg("ai error", msg);
+          }
           break;
         }
         // 其余事件:response.audio_transcript.delta 等是 Omni 朗读的字幕,Claude 的
@@ -2901,7 +2927,12 @@ void main(){
     if(!omniDc || omniDc.readyState !== "open") return;
     // 连接活跃心跳:如果超过心跳间隔没收到任何 DC 事件,主动发一个 cancel(无害的
     // 空操作)验证通道是否还活着——dc.send 静默失败就触发重连。
+    // 朗读/播音进行中不探测:①长句 RTP 还在播时 DC 本来就可能安静半分钟,不是断线
+    // (2026-07-15 真机:一通电话里误报 7 次 heartbeat:silent,把重连退避计数器灌满);
+    // ②cancel 探针会把正在进行的朗读 response 真的取消掉,不是"无害空操作"。
+    // 朗读中真断线由上面的 pc.state 检查和 12s 朗读哑火看门狗兜底。
     if(handsFreeActive && omniPc && omniPc.connectionState === "connected"
+       && !omniReadActive && omniReadPending === 0 && !omniAutoActive && wsState !== "speaking"
        && Date.now() - omniLastDcEvent > OMNI_HEARTBEAT_MS * 2){
       try{
         omniDc.send(JSON.stringify({type: "response.cancel"}));
