@@ -166,14 +166,13 @@
   .conv .livedot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}   /* AI 正在回复:闪烁圆点 */
   @keyframes livepulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
   .conv .ctime{flex-shrink:0;color:var(--dim2);font-size:10px;font-variant-numeric:tabular-nums;transition:opacity .16s}  /* 会话时刻:名称右侧 */
-  .conv .star{flex-shrink:0;color:var(--dim2);font-size:10px;transition:opacity .16s}   /* 主会话:弱化星标 */
   /* 「⋯」更多键绝对定位:不占布局宽度,hover 时浮现 */
   .conv .more{position:absolute;right:8px;top:50%;transform:translateY(-50%);opacity:0;pointer-events:none;
     font-size:16px;line-height:1;color:var(--dim2);padding:2px 6px;border-radius:7px;transition:opacity .16s,color .16s,background .16s}
   .conv .more:hover,.conv .more.on{color:var(--text);background:var(--card);opacity:1}
-  /* 桌面 hover:显示 ⋯、隐藏时间/星标;触屏彻底不挂 .conv:hover(即便只改子元素样式,
+  /* 桌面 hover:显示 ⋯、隐藏时间;触屏彻底不挂 .conv:hover(即便只改子元素样式,
      iOS 也会判定该元素"随 hover 变化"而要求点两下),改用左滑弹归档/删除 */
-  @media(hover:hover){ .conv:hover .star,.conv:hover .ctime{opacity:0} .conv:hover .more{opacity:.6;pointer-events:auto} }
+  @media(hover:hover){ .conv:hover .ctime{opacity:0} .conv:hover .more{opacity:.6;pointer-events:auto} }
   @media(hover:none){ .conv .more{opacity:0;pointer-events:none} }
   /* 会话「更多」浮层菜单(挂在 body 上,避开侧栏 overflow 裁剪) */
   .convmenu{position:fixed;z-index:40;min-width:130px;
@@ -786,7 +785,7 @@
     .projgrp,.conv{padding:9px 10px}
     .projgrp{font-size:14px}
     .conv .ct{font-size:15px}
-    .conv .ctime,.conv .star{font-size:11px}
+    .conv .ctime{font-size:11px}
     .sfoot{font-size:14px;padding:11px 12px 11px 14px}
     .convmenu .cmitem{font-size:14.5px}
     #convFilterPop .fmi{font-size:14.5px}
@@ -1276,6 +1275,7 @@ const ICONS = {
   tasks:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
   eraser:'<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
   phone:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
+  star:'<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 function setIcon(el, name){ el.innerHTML = ic(name); }
@@ -3608,7 +3608,7 @@ async function api(path, opts={}){
   if(r.status===401){ showLogin(); throw new Error("401"); }
   return r;
 }
-// 语音通话入口只保留侧边栏「默认项目」里的「语音对话」行(见 buildVoiceMainRow),
+// 语音通话入口只保留侧边栏根目录置顶的「语音对话」行(见 buildVoiceMainRow),
 // 不再在聊天输入框上方浮一个圆球——那个入口跟侧栏那行重复,已按用户要求去掉。
 
 // ── 登录 ────────────────────────────────────────────────────────────────
@@ -4130,16 +4130,17 @@ function loadExpanded(){ try{ S.expanded=new Set(JSON.parse(localStorage.getItem
 function convsInGroup(hash){
   return S.convs.filter(c => c.pinned ? hash===null : convProject(c.conv)===hash);
 }
-// 语音对话主行(通话入口),与主会话一起置顶在「默认项目」分组最前(数据来自 /voice/sidebar)。
+// 语音对话主行(通话入口),与主会话一起置顶在根目录最前(不属于任何分组,数据来自 /voice/sidebar)。
 // 通话视图开着时不看 S.conv(那还停在离开前的聊天会话上没变),由调用方传进来的 inCall
 // (= #callView 是否显示)决定「语音对话」这一行是否高亮成"你现在就在这儿"。
 function buildVoiceMainRow(inCall){
   const vs = S.voiceSidebar;
   if(!vs || !vs.main) return null;  // 还没拉到数据(如刚登录那一瞬)先不渲染,避免空行闪一下
-  const mainRow=el("div","conv ingroup"+(inCall?" active":""));
+  const mainRow=el("div","conv"+(inCall?" active":""));
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");
   const mainCt=el("div","ct"); mainCt.textContent=vs.main.title||"语音对话"; mainBody.append(mainCt);
+  const tm=fmtTime(vs.main.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; mainBody.append(tmEl); }   // 与其他会话行统一:右侧补上时刻
   mainRow.append(mainBody);
   mainRow.onclick=()=>{ openCallView(); };
   return mainRow;
@@ -4186,14 +4187,14 @@ function buildVoiceTaskRows(inCall){
 }
 // 单条会话行(置顶主会话与普通会话通用)
 function buildConvRow(c, inCall){
-  const e=el("div","conv ingroup"+(!inCall && c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
+  const e=el("div","conv"+(c.pinned?"":" ingroup")+(!inCall && c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
   e.dataset.conv=c.conv;
   const body=el("div","cvbody");
+  if(c.pinned) body.innerHTML=ic("star");   // 主会话:左侧线性星标图标,呼应语音对话左侧的麦克风图标
   if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }   // 该会话正在流式 → 闪烁圆点
   const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
   const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }   // 会话时刻:名称右侧
-  if(c.pinned){ const star=el("span","star"); star.textContent="★"; body.append(star); }   // 主会话:右侧弱化星标
-  else { const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
+  if(!c.pinned){ const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
   e.append(body);
   if(!c.pinned){
     const act=el("div","cvact");
@@ -4217,6 +4218,10 @@ const CONV_SHOW_MAX = 5;   // 每个分组默认最多展示的会话数(置顶�
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
   const inCall = !$("#callView").hidden;  // 通话中:普通会话行都不高亮,高亮权让给「语音对话」那一行
+  // 根目录置顶区:主会话 + 语音对话,恒排在最顶端(在「默认项目」分组头上面一层),
+  // 不属于任何分组、不受分组展开/折叠影响,也不参与时间排序或「展开更多」的名额。
+  for(const c of convsInGroup(null)) if(c.pinned) box.append(buildConvRow(c, inCall));
+  const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
   const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
   for(const g of groups){
     const convs=convsInGroup(g.hash);
@@ -4236,11 +4241,8 @@ function renderConvs(){
     h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } toggleGroup(g.hash); };  // 拖拽落地那一下别顺带触发展开/收起
     box.append(h);
     if(!open) continue;
-    // 置顶区:主会话(对话) + 语音对话恒在默认分组最前,不参与时间排序,也不占「展开更多」的名额
     const rows=[];
     if(g.hash===null){
-      for(const c of convs) if(c.pinned) box.append(buildConvRow(c, inCall));
-      const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
       rows.push(...buildVoiceTaskRows(inCall));   // 语音后台任务:普通条目,排在普通会话前
     }
     for(const c of convs){
