@@ -1140,10 +1140,6 @@ class WebAdapter:
         # 注:content_type 不能带 charset(aiohttp 会抛 ValueError);HTML 内有 <meta charset> 兜底
         return self._static_file("wazir-logos.html", "text/html")
 
-    async def _handle_worldcup(self, request: web.Request) -> web.Response:
-        # 2026世界杯半决赛对比页:法国vs西班牙 / 英格兰vs阿根廷,阵容与身价
-        return self._static_file("worldcup_semifinal.html", "text/html")
-
     # ── 发布页(公开可取,给 skill hermes-web-publish 用)────────────────────
     def _safe_published_path(self, rel: str) -> Path | None:
         """把 /pub/<rel> 解析到 config.PUBLISHED_DIR 内;越界 / 隐藏路径段一律拒绝。
@@ -1261,7 +1257,6 @@ class WebAdapter:
                 web.get("/favicon.ico", self._handle_favicon),
                 web.get("/wazir-mark.svg", self._handle_mark),
                 web.get("/wazir-logos", self._handle_logos),
-                web.get("/worldcup", self._handle_worldcup),
                 web.get("/pub/{path:.*}", self._handle_publish),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.get("/push/config", self._handle_push_config),
