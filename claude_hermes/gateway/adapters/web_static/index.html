@@ -625,38 +625,30 @@
     color:var(--text);transition:background .16s,border-color .16s,transform .12s}
   #empty .sug:hover{border-color:var(--accent)}
   #empty .sug:active{transform:scale(.96)}
-  /* 语音通话快捷入口:原首页两张并排卡片里只留这一张,改成整行的 CTA */
-  .voice-cta{display:flex;align-items:center;gap:14px;width:100%;padding:16px 18px;
-    border-radius:16px;background:var(--panel);border:1px solid var(--line);
-    cursor:pointer;transition:background .16s,border-color .16s,transform .12s;
-    color:var(--text);text-align:left;margin-bottom:24px}
-  .voice-cta:active{transform:scale(.98)}
-  .voice-cta:hover{border-color:var(--accent);background:var(--panel2)}
-  .voice-cta .vc-icon{font-size:26px;line-height:1;flex-shrink:0}
-  .voice-cta .vc-body{flex:1;min-width:0}
-  .voice-cta .vc-title{font-weight:600;font-size:15px}
-  .voice-cta .vc-desc{color:var(--dim2);font-size:12.5px;margin-top:2px}
   /* 区域标题 */
   .home-section{margin-bottom:28px}
-  .home-section-title{font-size:15px;font-weight:600;margin:0 0 12px;color:var(--dim2);
-    text-transform:uppercase;letter-spacing:.04em}
-  /* 最近会话列表 */
-  .home-recent{display:flex;flex-direction:column;gap:6px}
-  .home-item{display:flex;align-items:center;gap:12px;padding:10px 14px;
-    border-radius:12px;background:var(--panel);border:1px solid var(--line);
-    cursor:pointer;transition:background .16s,border-color .16s;color:var(--text)}
+  .home-section-title{font-size:15px;font-weight:600;margin:0 0 12px;color:var(--dim2)}
+  /* 最近会话列表:不带边框,轻量化——只靠背景色区分行,标题和时间同一行省纵向空间 */
+  .home-recent{display:flex;flex-direction:column;gap:4px}
+  .home-item{display:flex;align-items:center;gap:12px;padding:9px 12px;
+    border-radius:12px;background:var(--panel);
+    cursor:pointer;transition:background .16s;color:var(--text)}
   .home-item:active{background:var(--panel2)}
-  .home-item:hover{border-color:var(--accent);background:var(--panel2)}
-  .home-item-icon{width:34px;height:34px;border-radius:50%;flex-shrink:0;
+  .home-item:hover{background:var(--panel2)}
+  .home-item-icon{width:30px;height:30px;border-radius:50%;flex-shrink:0;
     display:flex;align-items:center;justify-content:center;
-    background:var(--panel2);font-size:16px}
+    background:var(--panel2);font-size:14px}
   .home-item-icon.voice{background:rgba(90,164,105,.15);color:var(--ok)}
   .home-item-icon.chat{background:rgba(217,119,87,.12);color:var(--accent)}
-  .home-item-body{flex:1;min-width:0}
-  .home-item-title{font-size:14px;font-weight:500;overflow:hidden;
+  .home-item-body{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px}
+  .home-item-title{flex:1;min-width:0;font-size:14px;font-weight:500;overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
-  .home-item-time{font-size:11.5px;color:var(--dim2);margin-top:1px}
+  .home-item-time{flex-shrink:0;font-size:11.5px;color:var(--dim2)}
   .home-empty{padding:32px;text-align:center;color:var(--dim2);font-size:14px}
+  /* 展开更多:默认只显示 5 条,避免欢迎屏信息量太大 */
+  .home-more{display:block;width:100%;margin-top:4px;padding:9px 0;background:none;border:none;
+    color:var(--dim2);font-size:12.5px;cursor:pointer;text-align:center}
+  .home-more:hover{color:var(--accent)}
 
   /* #composer 只做「悬浮 + 滑动隐藏」的壳,不带背景/内边距——背景和内边距挪到
      .combg 这层实心遮罩上;::before 是遮罩上方一小截渐隐条(纯色实心 → 全透明,
@@ -1103,14 +1095,8 @@ try{
         </div>
         <h2>你好，我是 Wazir</h2>
         <p>你的私人 AI 助理 · 有什么需要直接说</p>
-        <button type="button" class="voice-cta" onclick="openCallView()">
-          <span class="vc-icon">📞</span>
-          <span class="vc-body">
-            <span class="vc-title">语音通话</span>
-            <span class="vc-desc">像打电话一样和 AI 聊天</span>
-          </span>
-        </button>
         <div class="sugs">
+          <button type="button" class="sug" onclick="openCallView()">📞 语音通话</button>
           <button class="sug" data-s="你能做什么">你能做什么</button>
           <button class="sug" data-s="有哪些技能">有哪些技能</button>
           <button class="sug" data-s="看看今天的安排">看看今天的安排</button>
@@ -3715,10 +3701,16 @@ function mdToHtml(src){
 // ── 空状态欢迎屏(新对话默认落地页,含最近对话列表)──────────────────────────
 // 2026-07-15:原独立首页(#homeView)已下架,语音通话入口 + 最近对话并入这个欢迎屏,
 // APP 启动后直接落在一个新对话上,不再有单独的"首页"中间态。
+const HOME_RECENT_COLLAPSED = 5;   // 默认只显示这么多条,避免欢迎屏信息量太大
+let homeRecentExpanded = false;
 function updateEmpty(){
+  const wasShown = $("#empty").style.display === "flex";
   const show = !$("#wrap").children.length;
   $("#empty").style.display = show ? "flex" : "none";
-  if(show) renderEmptyRecent();
+  if(show){
+    if(!wasShown) homeRecentExpanded = false;   // 每次重新进入欢迎屏,最近对话收起回默认态
+    renderEmptyRecent();
+  }
 }
 function renderEmptyRecent(){
   const recent = $("#homeRecent");
@@ -3740,31 +3732,40 @@ function renderEmptyRecent(){
       items.push({conv:t.conv, title:t.title||"语音任务", ts:t.last_ts, type:"voice"});
     }
   }
-  // 按时间降序,最多显示 15 条
+  // 按时间降序,最多保留 15 条;默认只画前 5 条,点"展开更多"才画剩下的
   items.sort((a,b)=>(b.ts||0)-(a.ts||0));
-  const show = items.slice(0, 15);
-  if(!show.length){
+  const all = items.slice(0, 15);
+  if(!all.length){
     recent.innerHTML = '<div class="home-empty">暂无会话记录，随时开聊吧</div>';
-  } else {
-    recent.innerHTML = "";
-    for(const it of show){
-      const row = document.createElement("div");
-      row.className = "home-item";
-      const iconType = it.type==="voice" ? "voice" : "chat";
-      const iconChar = it.type==="voice" ? "🎤" : "💬";
-      const timeStr = it.ts ? fmtTime(it.ts) : "";
-      row.innerHTML = '<div class="home-item-icon '+iconType+'">'+iconChar+'</div>' +
-        '<div class="home-item-body"><div class="home-item-title">'+esc(it.title)+'</div>' +
-        '<div class="home-item-time">'+esc(timeStr)+'</div></div>';
-      row.onclick = ()=>{
-        if(it.type==="voice" && (it.conv==="voice-chat:main" || !it.conv)){
-          openCallView();
-        } else if(it.conv){
-          openConv(it.conv);
-        }
-      };
-      recent.append(row);
-    }
+    return;
+  }
+  recent.innerHTML = "";
+  const show = homeRecentExpanded ? all : all.slice(0, HOME_RECENT_COLLAPSED);
+  for(const it of show){
+    const row = document.createElement("div");
+    row.className = "home-item";
+    const iconType = it.type==="voice" ? "voice" : "chat";
+    const iconChar = it.type==="voice" ? "🎤" : "💬";
+    const timeStr = it.ts ? fmtTime(it.ts) : "";
+    row.innerHTML = '<div class="home-item-icon '+iconType+'">'+iconChar+'</div>' +
+      '<div class="home-item-body"><span class="home-item-title">'+esc(it.title)+'</span>' +
+      '<span class="home-item-time">'+esc(timeStr)+'</span></div>';
+    row.onclick = ()=>{
+      if(it.type==="voice" && (it.conv==="voice-chat:main" || !it.conv)){
+        openCallView();
+      } else if(it.conv){
+        openConv(it.conv);
+      }
+    };
+    recent.append(row);
+  }
+  if(all.length > HOME_RECENT_COLLAPSED){
+    const moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "home-more";
+    moreBtn.textContent = homeRecentExpanded ? "收起" : "展开更多 ("+(all.length-HOME_RECENT_COLLAPSED)+")";
+    moreBtn.onclick = ()=>{ homeRecentExpanded = !homeRecentExpanded; renderEmptyRecent(); };
+    recent.append(moreBtn);
   }
 }
 
@@ -5611,7 +5612,7 @@ function autoGrow(){ const t=$("#ta"); t.style.height="auto"; t.style.height=Mat
 $("#ta").addEventListener("input", autoGrow);
 $("#ta").addEventListener("input", checkCmdMenu);
 // 欢迎屏快捷入口:点击直接发送
-document.querySelectorAll("#empty .sug").forEach(b=>{ b.onclick=()=>send(b.dataset.s); });
+document.querySelectorAll("#empty .sug[data-s]").forEach(b=>{ b.onclick=()=>send(b.dataset.s); });
 
 // ── 图片 ────────────────────────────────────────────────────────────────
 // 读一个图片文件 → base64 并入待发送队列(选择/粘贴复用)
