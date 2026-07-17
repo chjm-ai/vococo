@@ -216,6 +216,8 @@ class _WebSink(Sink):
             kind="done",
             enabled=config.PUSH_ON_DONE,
         )
+        # 该会话已有新完成内容,标记为待查看(用户打开后会清零)。
+        session_store.set_pending_review(key, True)
 
 
 class WebAdapter:
@@ -335,6 +337,8 @@ class WebAdapter:
     async def send(self, chat_id: int | str, text: str) -> None:
         """一条完整消息(命令回复 / cron 主动推送 / 报错)→ 作为一条 assistant 气泡推给前端。"""
         self._emit({"conv": str(chat_id), "type": "message", "text": text})
+        # 该会话收到一条完整消息,标记为待查看。
+        session_store.set_pending_review(config.resolve_session_key("web", str(chat_id)), True)
         # 场景③「主动/cron」与 场景④「出错」共用这条出口,靠 ⚠️ 前缀区分
         is_err = text.lstrip().startswith("⚠️")
         self._push_notify(
@@ -920,6 +924,21 @@ class WebAdapter:
         session_store.set_conv_archived(session_key, archived)
         return web.json_response({"ok": True})
 
+    async def _handle_conv_read(self, request: web.Request) -> web.Response:
+        """POST /conv/read  {conv}  用户已打开该会话,清零 pending_review 标记。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        conv = (body.get("conv") or "").strip()
+        if not conv:
+            return web.json_response({"error": "缺少 conv"}, status=400)
+        session_key = config.resolve_session_key("web", conv)
+        session_store.set_pending_review(session_key, False)
+        return web.json_response({"ok": True})
+
     async def _handle_prefs_get(self, request: web.Request) -> web.Response:
         """GET /prefs  返回用户偏好 JSON。"""
         if (g := self._guard(request)) is not None:
@@ -1307,6 +1326,7 @@ class WebAdapter:
                 web.post("/conv/rename", self._handle_rename),
                 web.post("/conv/delete", self._handle_delete),
                 web.post("/conv/archive", self._handle_conv_archive),
+                web.post("/conv/read", self._handle_conv_read),
                 web.get("/conv/git", self._handle_conv_git),
                 web.post("/conv/git/branch", self._handle_conv_git_branch),
                 # 用户偏好

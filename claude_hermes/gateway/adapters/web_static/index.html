@@ -213,6 +213,27 @@
   #ratePop .rpbody .rptime{font-size:11.5px;color:var(--dim2);margin-top:6px}
   /* 出错气泡:红色左边框 */
   .bubble.err{border-left:3px solid var(--err);padding-left:11px}
+  /* 完成未读灰点:工作结束后保留,打开会话后消失 */
+  .conv .reviewdot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--dim2);margin-right:6px}
+  /* 跨会话审批/确认全屏弹窗 */
+  #choiceModal{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:18px}
+  #choiceModal[hidden]{display:none}
+  #choiceModal .cmbox{width:min(560px,100%);max-height:90vh;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line2);border-radius:18px;overflow:hidden;box-shadow:var(--shadow)}
+  #choiceModal .cmhead{padding:22px 24px 16px;border-bottom:1px solid var(--line)}
+  #choiceModal .cmbadge{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px}
+  #choiceModal .cmdot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}
+  #choiceModal .cmtitle{font-size:18px;font-weight:700;color:var(--text);line-height:1.3}
+  #choiceModal .cmbody{padding:20px 24px 24px;overflow-y:auto}
+  #choiceModal .cmprompt{font-size:15px;line-height:1.65;color:var(--text);margin-bottom:18px;word-break:break-word}
+  #choiceModal .cmprompt p{margin:0 0 .6em}
+  #choiceModal .cmprompt p:last-child{margin-bottom:0}
+  #choiceModal .cmopts{display:flex;flex-direction:column;gap:10px}
+  #choiceModal .cmopts button{width:100%;text-align:left;padding:13px 16px;border-radius:12px;border:1px solid var(--line2);background:var(--panel2);color:var(--text);font-size:14.5px;cursor:pointer;transition:background .14s,border-color .14s;position:relative}
+  #choiceModal .cmopts button:hover{background:var(--card);border-color:var(--accent)}
+  #choiceModal .cmopts button.selected{background:color-mix(in srgb,var(--accent) 15%,transparent);border-color:var(--accent);color:var(--accent);font-weight:600}
+  #choiceModal .cmopts button.dimmed{opacity:.45}
+  #choiceModal .cmopts button:disabled{pointer-events:none}
+  @media(max-width:640px){ #choiceModal{padding:0} #choiceModal .cmbox{max-height:100vh;border-radius:0;border:none} }
   /* 设置入口:状态栏最右一个齿轮图标 */
   .sfoicon{width:30px;height:30px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
     color:var(--dim);transition:background .16s,color .16s}
@@ -1013,6 +1034,20 @@ try{
     </div>
   </div>
 
+  <!-- 跨会话审批/确认全屏弹窗 -->
+  <div id="choiceModal" hidden>
+    <div class="cmbox">
+      <div class="cmhead">
+        <span class="cmbadge"><span class="cmdot"></span>需要你的确认</span>
+        <div class="cmtitle" id="choiceModalTitle">会话标题</div>
+      </div>
+      <div class="cmbody">
+        <div class="cmprompt" id="choiceModalPrompt"></div>
+        <div class="cmopts" id="choiceModalOpts"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- 设置弹窗:MCP / 技能 / 记忆 / 人设 -->
   <div id="setModal" hidden>
     <div class="setbox">
@@ -1221,6 +1256,7 @@ const S = {
   histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁
   pendingChoice: {},    // conv → choice 事件:审批发给非当前会话时暂存,切回该会话再渲染
   live: {},             // conv → 进行中回合的事件缓冲:任意会话(含后台)都记录,切回时重放重建流式气泡
+  pendingReview: {},    // conv → bool:本地缓存会话是否有未读完成内容(避免灰点闪烁)
   pending: {},          // conv → 待发送队列 [{id,text,images}]:上一个任务没结束时点发送,暂存,任务完成自动发
   pendId: 0,            // 待发送项自增 id,供删除定位
   voiceRec: {},         // conv → {bubble}:语音转写中的占位气泡,按录音发起时所属会话记录,切走再切回能补出来
@@ -4197,7 +4233,8 @@ function buildConvRow(c, inCall){
   e.dataset.conv=c.conv;
   const body=el("div","cvbody");
   if(c.pinned) body.innerHTML=ic("star");   // 主会话:左侧线性星标图标,呼应语音对话左侧的麦克风图标
-  if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }   // 该会话正在流式 → 闪烁圆点
+  if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
+  else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }   // 完成未读:灰色圆点
   const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
   const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }   // 会话时刻:名称右侧
   if(!c.pinned){ const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
@@ -4978,7 +5015,16 @@ async function openConv(conv, silentGroup){
   closeCallView();  // 切到别的会话就等于离开通话;没在通话视图里时这行是空操作
   $("#chatMain").hidden = false;  // 确保聊天界面可见
   closeCmdMenu();
+  // 切到目标会话时,若全局审批弹窗正开着则关闭(用户选择进去处理)
+  const cmodal=$("#choiceModal"); if(cmodal && !cmodal.hidden){ cmodal.hidden=true; }
   S.conv=conv; S.stream=null;
+  // 用户已打开该会话,清零未读标记;本地缓存也同步清,避免重绘闪烁。
+  if(!String(conv).startsWith("local-")){
+    S.pendingReview[conv]=false;
+    const citem=S.convs.find(x=>x.conv===conv);
+    if(citem) citem.pending_review=false;
+    api("/conv/read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv:conv})}).catch(()=>{});
+  }
   // 语音任务会话不在 S.convs 里(那是 /conversations 拉的),标题去 /voice/sidebar 的缓存里找
   const c=S.convs.find(x=>x.conv===conv) || S.voiceSidebar.tasks.find(x=>x.conv===conv);
   if(!(c && c.pinned)){   // 主会话等置顶行不属于任何分组,别联动展开/切换"默认项目"
@@ -5276,11 +5322,18 @@ function handleEvent(e){
   if(STREAMY.indexOf(e.type)>=0){ bufPush(e.conv, e); markLive(); }
   if(e.type==="done"||e.type==="message"){ delete S.live[e.conv]; markLive(); }
 
+  // 完成/消息事件更新未读标记:当前会话立即视为已读,后台会话标记为未读
+  if(e.type==="done"||e.type==="message"){
+    if(e.conv===S.conv){ S.pendingReview[e.conv]=false; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=false; }
+    else { S.pendingReview[e.conv]=true; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=true; }
+    loadConvs();
+  }
+
   if(e.conv!==S.conv){ // 别的会话在后台的事件 → 不打断当前视图(已缓冲,圆点已更新)
-    // 审批发给非当前会话:暂存,切回该会话时补渲染,别静默丢弃(否则那轮会一直卡到超时)
-    if(e.type==="choice"){ S.pendingChoice[e.conv]=e; loadConvs(); return; }
+    // 审批发给非当前会话:直接弹出全屏确认窗,不让用户漏掉
+    if(e.type==="choice"){ S.pendingChoice[e.conv]=e; openChoiceModal(e.conv, e); return; }
     // 该会话这一轮结束了 → 之前暂存的审批已作废,清掉
-    if(e.type==="done"||e.type==="message"){ delete S.pendingChoice[e.conv]; loadConvs(); }
+    if(e.type==="done"||e.type==="message"){ delete S.pendingChoice[e.conv]; }
     if(e.type==="done") flushPending(e.conv);  // 后台会话任务完成 → 补发其待发送队列
     return;
   }
@@ -5371,6 +5424,30 @@ function maybeReplayStream(conv){
     applyStreamEvent(e);
   }
   if(S.stream) S.stream.lastEvt=Date.now();  // 按当前时刻起算卡住检测,不用缓冲里事件的旧时间
+}
+// 跨会话审批/确认:弹出全屏 modal,显示会话标题、问题内容和可点选项
+function openChoiceModal(conv, e){
+  const modal=$("#choiceModal"); if(!modal) return;
+  const titleEl=$("#choiceModalTitle"); const promptEl=$("#choiceModalPrompt"); const optsEl=$("#choiceModalOpts");
+  const c = S.convs.find(x=>x.conv===conv);
+  titleEl.textContent = c ? (c.title || "新对话") : (conv==="main" ? "主会话" : "新对话");
+  promptEl.innerHTML = mdToHtml(e.prompt || "");
+  optsEl.innerHTML = "";
+  const btns=[];
+  (e.options || []).forEach(([cmd,label],i)=>{
+    const btn=el("button");
+    btn.innerHTML = '<span class="arw">❯</span> <span class="num">'+(i+1)+".</span> <span class=\"lbl\">"+esc(label)+"</span>";
+    btn.onclick=()=>{
+      btns.forEach(b=>{ b.disabled=true; if(b!==btn) b.classList.add("dimmed"); });
+      btn.classList.add("selected");
+      sendCmd(cmd, conv);
+      modal.hidden=true;
+      // 用户已响应,切回该会话时不再补出旧审批
+      delete S.pendingChoice[conv];
+    };
+    optsEl.append(btn); btns.push(btn);
+  });
+  modal.hidden=false;
 }
 function renderChoice(e){
   const box=el("div","choice");
@@ -5539,10 +5616,11 @@ async function send(text, display, opts){
   }catch(err){ addBubble("ai","⚠️ 发送失败:"+err.message); }
 }
 // 静默发命令(如 /model 切换):不渲染用户气泡,回执由服务端 message 事件带回
-async function sendCmd(cmd){
-  const payload={conv:S.conv, text:cmd, images:[]};
-  const wasLocal=String(S.conv).startsWith("local-");
-  if(wasLocal){ S.conv=S.conv.replace("local-",""); payload.conv=S.conv; }
+async function sendCmd(cmd, conv){
+  conv = conv || S.conv;
+  const payload={conv:conv, text:cmd, images:[]};
+  const wasLocal=String(conv).startsWith("local-");
+  if(wasLocal){ conv=conv.replace("local-",""); payload.conv=conv; }
   try{
     await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(wasLocal) setTimeout(loadConvs, 400);
