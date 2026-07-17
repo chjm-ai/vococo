@@ -211,6 +211,24 @@ def has_active_third_party() -> bool:
     return active is not None and not active.is_official and bool(active.api_key)
 
 
+# Kimi(Moonshot)同时有订阅制和按量 API 两种入口,靠 base_url host 区分——
+# 这俩域名是 Kimi 官方的固定入口,比在 config.yaml 塞自定义字段更抗 cc-switch 覆写。
+_KIMI_SUBSCRIPTION_HOSTS = ("api.kimi.com",)  # Kimi Coding 订阅套餐
+_KIMI_API_HOSTS = ("api.moonshot.cn", "api.moonshot.ai")  # 按 token 计费
+
+
+def _billing_kind(base_url: str) -> str | None:
+    """按 base_url 的 host 判断是订阅还是按量 API;非已知域名返回 None(不打标签)。"""
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(base_url).hostname or "").lower()
+    if host in _KIMI_SUBSCRIPTION_HOSTS:
+        return "订阅"
+    if host in _KIMI_API_HOSTS:
+        return "API"
+    return None
+
+
 def available_models(default_choices: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """/model 无参时的候选:官方默认档 + cc-switch 里配好的各供应商模型。
 
@@ -228,5 +246,8 @@ def available_models(default_choices: list[tuple[str, str]]) -> list[tuple[str, 
         if not model or model in seen or not _entry_field(entry, "api_key", "apiKey"):
             continue
         seen.add(model)
-        out.append((model, f"{model} · {name}(cc-switch)"))
+        base_url = _entry_field(entry, "base_url", "baseUrl")
+        kind = _billing_kind(base_url)
+        tag = f"{kind}·cc-switch" if kind else "cc-switch"
+        out.append((model, f"{model} · {name}({tag})"))
     return out
