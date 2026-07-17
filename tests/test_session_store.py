@@ -82,3 +82,25 @@ def test_project_soft_remove_and_revive(isolated, tmp_path):
     assert session_store.path_for_hash(h) == str(d.resolve())  # 但仍可反查(在跑会话不断链)
     session_store.upsert_project(str(d))                    # 再加回同一文件夹
     assert len(session_store.list_projects()) == 1          # 复活
+
+
+def test_ensure_title_returns_placeholder_once(isolated):
+    from claude_hermes.memory import session_store
+
+    # 首次:截 40 字设兜底标题,并把它返回(调用方据此起异步总结)
+    long_text = "这是一条很长的用户消息" * 8
+    placeholder = session_store.ensure_title("web:t1", long_text)
+    assert placeholder == long_text[:40]
+    assert session_store.get_title("web:t1") == placeholder
+    # 已有标题:不覆盖,返回 None(不再触发总结)
+    assert session_store.ensure_title("web:t1", "另一条消息") is None
+    assert session_store.get_title("web:t1") == placeholder
+
+
+def test_title_clean_strips_noise():
+    from claude_hermes.core import title
+
+    assert title._clean('「会话标题自动总结方案」。') == "会话标题自动总结方案"
+    assert title._clean("  首行标题\n第二行应被丢弃") == "首行标题"
+    assert title._clean("") == ""
+    assert len(title._clean("长" * 100)) == title.MAX_LEN

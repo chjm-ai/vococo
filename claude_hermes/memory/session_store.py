@@ -376,12 +376,17 @@ def get_title(session_key: str) -> str | None:
     return row[0] if row and row[0] else None
 
 
-def ensure_title(session_key: str, from_text: str, limit: int = 24) -> None:
-    """会话还没名字时,拿首句用户输入截断当标题。"""
+def ensure_title(session_key: str, from_text: str, limit: int = 40) -> str | None:
+    """会话还没名字时,拿首句用户输入截断当【兜底】标题。
+
+    limit 与 core/title.MAX_LEN 保持一致。返回这次新设的兜底标题;已有标题
+    返回 None——调用方(web 适配器)据此决定要不要异步起模型总结覆盖它。
+    """
     if get_title(session_key):
-        return
+        return None
     title = " ".join(from_text.split())[:limit].strip() or "新对话"
     set_title(session_key, title)
+    return title
 
 
 def list_sessions(prefix: str) -> list[dict]:
