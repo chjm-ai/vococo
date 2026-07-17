@@ -5325,10 +5325,19 @@ function handleEvent(e){
   if(e.type==="done"||e.type==="message"){
     // 未读标记要在 delete S.live 触发的这次重绘【之前】就位,否则会先渲一帧"没有点"
     // 再渲一帧"灰点冒出来",看着像跳动;这里把橙点摘掉和灰点挂上做成同一次渲染。
-    if(e.conv===S.conv){ S.pendingReview[e.conv]=false; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=false; }
-    else { S.pendingReview[e.conv]=true; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=true; }
-    delete S.live[e.conv]; markLive();
-    loadConvs();
+    if(e.conv===S.conv){
+      S.pendingReview[e.conv]=false; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=false;
+      delete S.live[e.conv]; markLive();
+      // 后端不知道"用户正盯着这个会话看",完成时统一先标为未读;这里既然正在看,
+      // 主动清一次服务端标记再拉 loadConvs——顺序不能反,否则 loadConvs 抢先拉到
+      // 服务端还没清的"未读",又把本地清零覆盖回去。
+      api("/conv/read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv:e.conv})})
+        .catch(()=>{}).then(loadConvs);
+    } else {
+      S.pendingReview[e.conv]=true; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=true;
+      delete S.live[e.conv]; markLive();
+      loadConvs();
+    }
   }
 
   if(e.conv!==S.conv){ // 别的会话在后台的事件 → 不打断当前视图(已缓冲,圆点已更新)
