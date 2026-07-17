@@ -95,6 +95,9 @@ def _conn() -> sqlite3.Connection:
         # NULL=没有独立 worktree,回退项目根/进程默认目录。
         if "worktree_path" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN worktree_path TEXT")
+        # pending_review=1 表示该会话已有新完成内容但用户还没打开看过;打开会话后清零。
+        if "pending_review" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN pending_review INTEGER DEFAULT 0")
         # 迁移:turns 增 events 列 —— 该轮的过程时间线(文字段+工具调用)JSON,
         # 供前端刷新后完整重建"工具卡与文字交错"的画面;老行为 NULL(只有纯文本)。
         tcols = {r[1] for r in _DB.execute("PRAGMA table_info(turns)")}
@@ -414,7 +417,8 @@ def list_sessions(prefix: str) -> list[dict]:
         "  COALESCE(MAX(m.ctx_tokens),0), COALESCE(MAX(m.total_tokens),0), "
         "  COALESCE(MAX(m.ctx_window),0), COALESCE(MAX(m.last_in),0), "
         "  COALESCE(MAX(m.last_cache),0), COALESCE(MAX(m.last_out),0), MAX(m.model), "
-        "  MAX(m.chosen_model), COALESCE(MAX(m.archived),0) "
+        "  MAX(m.chosen_model), COALESCE(MAX(m.archived),0), "
+        "  COALESCE(MAX(m.pending_review),0) "
         "FROM keys k "
         "LEFT JOIN session_meta m ON k.session_key = m.session_key "
         "LEFT JOIN turns t ON t.session_key = k.session_key "
@@ -428,6 +432,7 @@ def list_sessions(prefix: str) -> list[dict]:
         item = {"key": key, "title": get_title(key) or "新对话", "turns": turns, "last_ts": last_ts}
         item.update(_usage_fields(row[3:11]))
         item["archived"] = bool(row[11])
+        item["pending_review"] = bool(row[12])
         out.append(item)
     return out
 
@@ -471,6 +476,17 @@ def session_summary(session_key: str) -> dict:
     }
     out.update(_usage_fields(trow if trow else (0, 0, 0, 0, 0, 0, "", "")))
     return out
+
+
+def set_pending_review(session_key: str, pending: bool) -> None:
+    """标记会话是否有新完成内容待用户查看;打开会话后清零。"""
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta(session_key, watermark_id, pending_review) VALUES (?,0,?) "
+        "ON CONFLICT(session_key) DO UPDATE SET pending_review=excluded.pending_review",
+        (session_key, 1 if pending else 0),
+    )
+    c.commit()
 
 
 def set_chosen_model(session_key: str, model: str) -> None:
