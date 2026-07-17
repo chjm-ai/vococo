@@ -237,28 +237,25 @@ def has_active_third_party() -> bool:
     return active is not None and not active.is_official and bool(active.api_key)
 
 
-# Kimi(Moonshot)同时有订阅制和按量 API 两种入口,靠 base_url host 区分——
-# 这俩域名是 Kimi 官方的固定入口,比在 config.yaml 塞自定义字段更抗 cc-switch 覆写。
-_KIMI_SUBSCRIPTION_HOSTS = ("api.kimi.com",)  # Kimi Coding 订阅套餐
-_KIMI_API_HOSTS = ("api.moonshot.cn", "api.moonshot.ai")  # 按 token 计费
+# Kimi(Moonshot)的订阅套餐固定走这个域名,其余第三方供应商(DeepSeek/Kimi 的常规
+# API key 入口等)一律按量计费的 API 处理——这俩域名比在 config.yaml 塞自定义字段更抗
+# cc-switch 覆写。
+_SUBSCRIPTION_HOSTS = ("api.kimi.com",)  # Kimi Coding 订阅套餐
 
 
-def _billing_kind(base_url: str) -> str | None:
-    """按 base_url 的 host 判断是订阅还是按量 API;非已知域名返回 None(不打标签)。"""
+def _billing_kind(base_url: str) -> str:
+    """按 base_url 的 host 判断是订阅还是按量 API;非已知订阅域名默认按 API。"""
     from urllib.parse import urlsplit
 
     host = (urlsplit(base_url).hostname or "").lower()
-    if host in _KIMI_SUBSCRIPTION_HOSTS:
-        return "订阅"
-    if host in _KIMI_API_HOSTS:
-        return "API"
-    return None
+    return "订阅" if host in _SUBSCRIPTION_HOSTS else "API"
 
 
 def available_models(default_choices: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """/model 无参时的候选:官方默认档 + cc-switch 里配好的各供应商模型。
 
-    default_choices 是官方三档(claude-opus/sonnet/haiku),恒列在前。
+    default_choices 是官方三档(claude-opus/sonnet/haiku),恒列在前。标签只留
+    "模型名(订阅/API)",不带供应商名和 cc-switch 后缀,免得面板换行/信息过载。
     """
     out = list(default_choices)
     seen = {mid for mid, _ in out}
@@ -274,6 +271,5 @@ def available_models(default_choices: list[tuple[str, str]]) -> list[tuple[str, 
         seen.add(model)
         base_url = _entry_field(entry, "base_url", "baseUrl")
         kind = _billing_kind(base_url)
-        tag = f"{kind}·cc-switch" if kind else "cc-switch"
-        out.append((model, f"{model} · {name}({tag})"))
+        out.append((model, f"{model}({kind})"))
     return out
