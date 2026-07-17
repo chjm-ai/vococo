@@ -213,27 +213,29 @@
   #ratePop .rpbody .rptime{font-size:11.5px;color:var(--dim2);margin-top:6px}
   /* 出错气泡:红色左边框 */
   .bubble.err{border-left:3px solid var(--err);padding-left:11px}
-  /* 完成未读灰点:工作结束后保留,打开会话后消失 */
-  .conv .reviewdot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--dim2);margin-right:6px}
-  /* 跨会话审批/确认全屏弹窗 */
-  #choiceModal{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:18px}
+  /* 完成未读灰点:工作结束后保留,打开会话后消失。间距靠 .cvbody 的 gap:8px 统一,
+     不额外加 margin——否则和 .livedot 的间距对不齐。 */
+  .conv .reviewdot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--dim2);animation:dotpop .18s ease}
+  @keyframes dotpop{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
+  /* 跨会话审批/确认弹窗:半透明背景 + 居中紧凑卡片(不做成占满全屏的大块) */
+  #choiceModal{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);padding:18px}
   #choiceModal[hidden]{display:none}
-  #choiceModal .cmbox{width:min(560px,100%);max-height:90vh;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line2);border-radius:18px;overflow:hidden;box-shadow:var(--shadow)}
-  #choiceModal .cmhead{padding:22px 24px 16px;border-bottom:1px solid var(--line)}
-  #choiceModal .cmbadge{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px}
-  #choiceModal .cmdot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}
-  #choiceModal .cmtitle{font-size:18px;font-weight:700;color:var(--text);line-height:1.3}
-  #choiceModal .cmbody{padding:20px 24px 24px;overflow-y:auto}
-  #choiceModal .cmprompt{font-size:15px;line-height:1.65;color:var(--text);margin-bottom:18px;word-break:break-word}
+  #choiceModal .cmbox{width:min(360px,100%);max-height:80vh;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line2);border-radius:16px;overflow:hidden;box-shadow:var(--shadow)}
+  #choiceModal .cmhead{padding:16px 18px 12px;border-bottom:1px solid var(--line)}
+  #choiceModal .cmbadge{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.04em;margin-bottom:7px}
+  #choiceModal .cmdot{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}
+  #choiceModal .cmtitle{font-size:15.5px;font-weight:700;color:var(--text);line-height:1.3}
+  #choiceModal .cmbody{padding:14px 18px 18px;overflow-y:auto}
+  #choiceModal .cmprompt{font-size:13.5px;line-height:1.55;color:var(--text);margin-bottom:14px;word-break:break-word}
   #choiceModal .cmprompt p{margin:0 0 .6em}
   #choiceModal .cmprompt p:last-child{margin-bottom:0}
-  #choiceModal .cmopts{display:flex;flex-direction:column;gap:10px}
-  #choiceModal .cmopts button{width:100%;text-align:left;padding:13px 16px;border-radius:12px;border:1px solid var(--line2);background:var(--panel2);color:var(--text);font-size:14.5px;cursor:pointer;transition:background .14s,border-color .14s;position:relative}
+  #choiceModal .cmopts{display:flex;flex-direction:column;gap:8px}
+  #choiceModal .cmopts button{width:100%;text-align:left;padding:10px 13px;border-radius:10px;border:1px solid var(--line2);background:var(--panel2);color:var(--text);font-size:13.5px;cursor:pointer;transition:background .14s,border-color .14s;position:relative}
   #choiceModal .cmopts button:hover{background:var(--card);border-color:var(--accent)}
   #choiceModal .cmopts button.selected{background:color-mix(in srgb,var(--accent) 15%,transparent);border-color:var(--accent);color:var(--accent);font-weight:600}
   #choiceModal .cmopts button.dimmed{opacity:.45}
   #choiceModal .cmopts button:disabled{pointer-events:none}
-  @media(max-width:640px){ #choiceModal{padding:0} #choiceModal .cmbox{max-height:100vh;border-radius:0;border:none} }
+  @media(max-width:480px){ #choiceModal .cmbox{width:100%;max-height:70vh} }
   /* 设置入口:状态栏最右一个齿轮图标 */
   .sfoicon{width:30px;height:30px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
     color:var(--dim);transition:background .16s,color .16s}
@@ -5320,12 +5322,12 @@ function handleEvent(e){
   if(e.type==="done"||e.type==="message") delete S.histCache[e.conv];
   // 维护每会话"进行中"缓冲:无论前台/后台都记录,切回该会话时可完整重建流式气泡
   if(STREAMY.indexOf(e.type)>=0){ bufPush(e.conv, e); markLive(); }
-  if(e.type==="done"||e.type==="message"){ delete S.live[e.conv]; markLive(); }
-
-  // 完成/消息事件更新未读标记:当前会话立即视为已读,后台会话标记为未读
   if(e.type==="done"||e.type==="message"){
+    // 未读标记要在 delete S.live 触发的这次重绘【之前】就位,否则会先渲一帧"没有点"
+    // 再渲一帧"灰点冒出来",看着像跳动;这里把橙点摘掉和灰点挂上做成同一次渲染。
     if(e.conv===S.conv){ S.pendingReview[e.conv]=false; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=false; }
     else { S.pendingReview[e.conv]=true; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=true; }
+    delete S.live[e.conv]; markLive();
     loadConvs();
   }
 
@@ -5425,6 +5427,27 @@ function maybeReplayStream(conv){
   }
   if(S.stream) S.stream.lastEvt=Date.now();  // 按当前时刻起算卡住检测,不用缓冲里事件的旧时间
 }
+// 提示音:Web Audio 现生成两声轻响,不依赖外部音频文件;页面从没交互过(无 AudioContext
+// 授权)时 resume 会静默失败,吞掉即可——反正这类场景系统推送那条通知本身也会响。
+function playChime(){
+  try{
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if(!Ctx) return;
+    const ctx = new Ctx();
+    const beep = (t, freq) => {
+      const osc = ctx.createOscillator(), gain = ctx.createGain();
+      osc.type = "sine"; osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.18, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(t); osc.stop(t + 0.24);
+    };
+    const t0 = ctx.currentTime;
+    beep(t0, 880); beep(t0 + 0.14, 1175);
+    setTimeout(()=>ctx.close(), 500);
+  }catch(e){}
+}
 // 跨会话审批/确认:弹出全屏 modal,显示会话标题、问题内容和可点选项
 function openChoiceModal(conv, e){
   const modal=$("#choiceModal"); if(!modal) return;
@@ -5433,6 +5456,7 @@ function openChoiceModal(conv, e){
   titleEl.textContent = c ? (c.title || "新对话") : (conv==="main" ? "主会话" : "新对话");
   promptEl.innerHTML = mdToHtml(e.prompt || "");
   optsEl.innerHTML = "";
+  playChime();
   const btns=[];
   (e.options || []).forEach(([cmd,label],i)=>{
     const btn=el("button");
