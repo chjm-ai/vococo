@@ -656,7 +656,8 @@ class WebAdapter:
         if (g := self._guard(request)) is not None:
             return g
         # 模型清单 = 官方档 + cc-switch 里配好的 DeepSeek/Kimi 等(available_models);
-        # 只显示模型名(label=id,不带描述);default=当前激活的模型(跟随 cc-switch)。
+        # label 带描述(如订阅/API 标签),前端 renderModelPop 直接展示。
+        # default=当前激活的模型(跟随 cc-switch)。
         choices = providers.available_models(MODEL_CHOICES)
         # default = web 端上次选定的模型;没设过才回落到全局激活模型(cc-switch)
         active_model = settings_store.get_web_default_model() \
@@ -664,7 +665,7 @@ class WebAdapter:
         return web.json_response(
             {
                 "default": active_model,
-                "choices": [[v, v] for v, _ in choices],
+                "choices": [[v, label] for v, label in choices],
             }
         )
 
