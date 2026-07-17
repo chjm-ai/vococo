@@ -5268,6 +5268,8 @@ function markLive(){
   _liveSig=sig; renderConvs();
 }
 function handleEvent(e){
+  // 后台标题总结完成 → 刷新侧边栏/标题栏(loadConvs 会顺带同步顶栏标题),无论前后台会话
+  if(e.type==="title"){ loadConvs(); return; }
   // 会话有新回合 → 历史已变,作废其缓存,下次打开会重新拉取
   if(e.type==="done"||e.type==="message") delete S.histCache[e.conv];
   // 维护每会话"进行中"缓冲:无论前台/后台都记录,切回该会话时可完整重建流式气泡

@@ -28,6 +28,7 @@ from typing import AsyncIterator, Callable
 from aiohttp import web
 
 from ... import config, providers
+from ...core import title
 from ...core.agent import AgentReply
 from ...memory import session_store
 from .. import settings_store
@@ -481,9 +482,15 @@ class WebAdapter:
             return web.json_response({"error": "empty"}, status=400)
         if not text:
             text = "(图片,无文字说明,看看图里是什么)"
-        # 首条消息自动给会话起个名(命令 / 主会话除外)
+        # 首条消息自动给会话起个名(命令 / 主会话除外):先落一个截断兜底标题,
+        # 同时立刻异步起模型总结(不等 AI 首轮回复——那可能跑很久,侧边栏不能干等)
         if not text.startswith("/") and conv != "main":
-            session_store.ensure_title(config.resolve_session_key("web", conv), text)
+            session_key = config.resolve_session_key("web", conv)
+            placeholder = session_store.ensure_title(session_key, text)
+            if placeholder:
+                asyncio.create_task(
+                    self._summarize_title(conv, session_key, text, placeholder)
+                )
         # 项目会话(conv = p<hash>:<convid>)→ 刷新项目最近使用时间,好让侧边栏排序
         if conv.startswith("p") and ":" in conv:
             session_store.touch_project(conv[1:].split(":", 1)[0])
@@ -492,6 +499,24 @@ class WebAdapter:
             self._emit({"conv": conv, "type": "user", "text": text})
         self._inbox.put_nowait(Incoming(self.platform, conv, text, images=images))
         return web.json_response({"ok": True})
+
+    async def _summarize_title(
+        self, conv: str, session_key: str, text: str, placeholder: str
+    ) -> None:
+        """首条消息发出后异步总结标题(Haiku 订阅优先,DeepSeek 兜底,见 core/title)。
+
+        完成后仅当标题仍是截断兜底时才覆盖——期间用户手动改过名就尊重用户;
+        失败静默放弃,保留兜底标题,不打扰。
+        """
+        try:
+            new_title = await title.summarize(text)
+        except Exception:
+            return
+        if not new_title or session_store.get_title(session_key) != placeholder:
+            return
+        session_store.set_title(session_key, new_title)
+        # 广播让各客户端刷新侧边栏/标题栏(前端收到 type=title 只做 loadConvs)
+        self._emit({"conv": conv, "type": "title", "title": new_title})
 
     async def _handle_abort(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:

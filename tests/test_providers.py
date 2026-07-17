@@ -115,6 +115,35 @@ def test_available_models_lists_configured(tmp_path, monkeypatch):
     assert "kimi-k2-0711-preview" in ids
 
 
+def test_sidecar_env_finds_named_provider(tmp_path, monkeypatch):
+    # 标题总结兜底:按名取 deepseek 的 (model, env),大小写不敏感
+    _point_to(monkeypatch, _write_config(tmp_path, DEEPSEEK_CONFIG))
+    result = providers.sidecar_env("DeepSeek")
+    assert result is not None
+    model, env = result
+    assert model == "deepseek-chat"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-deepseek-xxx"
+    assert providers.sidecar_env("nonexistent") is None
+
+
+def test_sidecar_env_prefers_exact_name(tmp_path, monkeypatch):
+    # 同时配了 deepseek / deepseek-pro:按名找「deepseek」必须精确命中便宜档,不能撞到 pro
+    _point_to(monkeypatch, _write_config(tmp_path, """
+        custom_providers:
+          - name: deepseek-pro
+            base_url: https://api.deepseek.com/anthropic
+            api_key: sk-pro
+            model: deepseek-v4-pro
+          - name: deepseek
+            base_url: https://api.deepseek.com/anthropic
+            api_key: sk-flash
+            model: deepseek-v4-flash
+    """))
+    result = providers.sidecar_env("deepseek")
+    assert result is not None
+    assert result[0] == "deepseek-v4-flash"
+
+
 def test_legacy_camelcase_fields(tmp_path, monkeypatch):
     # 老版 DeepLink 导入会留下 baseUrl / apiKey,应能兼容读取
     _point_to(monkeypatch, _write_config(tmp_path, """

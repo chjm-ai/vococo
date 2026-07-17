@@ -205,6 +205,32 @@ def resolve(chosen_model: str | None, default_model: str) -> tuple[str, dict[str
     return model, _env_for(active)
 
 
+def sidecar_env(name: str) -> tuple[str, dict[str, str]] | None:
+    """按供应商名取 (model, 注入env),给标题总结这类轻量辅助调用做兜底。
+
+    名字不区分大小写、允许子串匹配(配置里叫 deepseek / DeepSeek 都能命中);
+    未配置 / 缺 key / 是官方端点(官方走订阅不用它兜底)→ None。
+    """
+    config = _load_yaml() or {}
+    want = name.lower()
+    entries = _provider_entries(config)
+    # 先精确后子串:防「deepseek」误命中「deepseek-pro」这种带后缀的贵档
+    ordered = sorted(entries.items(), key=lambda kv: kv[0].lower() != want)
+    for pname, entry in ordered:
+        if want not in pname.lower():
+            continue
+        provider = ActiveProvider(
+            name=pname,
+            base_url=_entry_field(entry, "base_url", "baseUrl"),
+            api_key=_entry_field(entry, "api_key", "apiKey"),
+            model=_entry_field(entry, "model"),
+        )
+        if provider.is_official or not provider.api_key or not provider.model:
+            continue
+        return provider.model, _env_for(provider)
+    return None
+
+
 def has_active_third_party() -> bool:
     """cc-switch 当前激活的是不是一个可用的第三方供应商(带 key)。"""
     active = load_active()
