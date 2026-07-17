@@ -235,6 +235,10 @@ class WebAdapter:
         self._live: dict[str, dict] = {}
         self._runner: web.AppRunner | None = None
         self._cancel_callback: Callable[[str], bool] | None = None
+        # 进程本次启动的标识:重启后这个值必变。前端拿它跟上次记住的值比对——
+        # 一旦不一样就说明断线期间进程重启过,上面的环形缓冲/_live 全被清空了,
+        # 断线补发这条路救不回来,前端得主动整体核对一次(侧栏 + 当前会话历史)。
+        self._boot_id = f"{int(time.time() * 1000)}-{os.getpid()}"
 
     def set_cancel_callback(self, cb: Callable[[str], bool]) -> None:
         self._cancel_callback = cb
@@ -423,6 +427,10 @@ class WebAdapter:
         self._clients.add(q)  # 先挂上队列,再补发,漏网的靠前端按 id 去重
         try:
             await resp.write(b": connected\n\n")
+            # 不带 SSE id(不占游标、不参与去重):告诉前端这次连的是哪个进程实例,
+            # 前端跟自己记的上一个值一比对,变了就知道服务端重启过、缓冲补不全了。
+            hello = json.dumps({"type": "hello", "boot_id": self._boot_id}, ensure_ascii=False)
+            await resp.write(f"data: {hello}\n\n".encode("utf-8"))
             # 首连/重连都两阶段恢复「进行中那一轮」——先秒推状态帧(几十字节,让用户立刻看到
             # "还在跑、到哪步",不会误发),内容帧随后慢补。旧历史仍走 /history 拉,不在此重放。
             # 重连也要走这条路:下面的环形缓冲只有 512 条,长时间断线或多会话同时飙事件很容易
