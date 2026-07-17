@@ -1259,6 +1259,8 @@ const S = {
   histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁
   pendingChoice: {},    // conv → choice 事件:审批发给非当前会话时暂存,切回该会话再渲染
   live: {},             // conv → 进行中回合的事件缓冲:任意会话(含后台)都记录,切回时重放重建流式气泡
+  streamSnap: {},       // conv → {state,asOf}:离开时摘下的流式气泡 DOM + 已处理到的事件下标,
+                         // 切回来同一进度直接接上,不用把 live 缓冲从头重放一遍(见 maybeReplayStream)
   pendingReview: {},    // conv → bool:本地缓存会话是否有未读完成内容(避免灰点闪烁)
   pending: {},          // conv → 待发送队列 [{id,text,images}]:上一个任务没结束时点发送,暂存,任务完成自动发
   pendId: 0,            // 待发送项自增 id,供删除定位
@@ -4974,7 +4976,7 @@ async function delConv(conv){
   const idx=list.findIndex(x=>x.conv===conv);
   const removed=list[idx], wasActive=(S.conv===conv);
   // 乐观假删:先从列表移除并立即重绘,不等服务器
-  list.splice(idx,1); delete S.histCache[conv]; idbDel("hist:"+conv); delete S.live[conv]; markLive(); renderConvs();
+  list.splice(idx,1); delete S.histCache[conv]; idbDel("hist:"+conv); delete S.live[conv]; delete S.streamSnap[conv]; markLive(); renderConvs();
   if(wasActive) openConv(S.convs[0]?S.convs[0].conv:"main");   // 删的是当前会话→切到最近一个
   // 纯本地会话(从未发过消息)服务端没有记录,删完即止
   if(String(conv).startsWith("local-")) return;
@@ -5079,6 +5081,13 @@ async function openConv(conv, silentGroup){
   closeCallView();  // 切到别的会话就等于离开通话;没在通话视图里时这行是空操作
   $("#chatMain").hidden = false;  // 确保聊天界面可见
   closeCmdMenu();
+  // 离开的会话仍在流式:别把已经建好的工具卡 DOM 扔掉重来,摘下来存好,回来时直接接回,
+  // 只补上离开期间新增的那几条事件(见 maybeReplayStream)
+  if(S.stream && S.conv && S.conv!==conv){
+    clearInterval(S.stream.timer);
+    S.stream.row.remove();
+    S.streamSnap[S.conv]={state:S.stream, asOf:(S.live[S.conv]||[]).length};
+  }
   // 切到目标会话时,若全局审批弹窗正开着则关闭(用户选择进去处理)
   const cmodal=$("#choiceModal"); if(cmodal && !cmodal.hidden){ cmodal.hidden=true; }
   S.conv=conv; S.stream=null;
@@ -5308,12 +5317,15 @@ function ensureStream(t0){
   row.append(bubble); $("#wrap").append(row); updateEmpty();
   thinktog.onclick=()=>{ const on=think.classList.toggle("show"); tcv.classList.toggle("down", on); };
   S.stream={row,bubble,status,think,thinktog,flow,segs:{},tools:[],cards:{},subs:{},t0:t0||Date.now(),lastEvt:Date.now()};
-  // 状态行的耗时计数每秒走字;流被任何路径丢弃(完成/切会话)都会自行停表,不泄漏
-  const tm=setInterval(()=>{ if(!S.stream||S.stream.timer!==tm){ clearInterval(tm); return; } renderStatus(); }, 1000);
-  S.stream.timer=tm;
+  resumeStreamTimer(S.stream);  // 状态行的耗时计数每秒走字;流被任何路径丢弃(完成/切会话)都会自行停表,不泄漏
   renderStatus();  // 初始即显示"💭 思考中…"动画
   updateSendBtn();
   scrollDown(true); return S.stream;
+}
+// 给流式状态对象挂一个走字计时器(新建/从快照接回来都用这个),旧表已在挂之前 clearInterval 过
+function resumeStreamTimer(s){
+  const tm=setInterval(()=>{ if(!S.stream||S.stream.timer!==tm){ clearInterval(tm); return; } renderStatus(); }, 1000);
+  s.timer=tm;
 }
 // 取/建某文字段的 div(按首次出现顺序挂进 flow,与工具卡自然交错)
 function segDiv(s, seg){
@@ -5403,7 +5415,7 @@ function handleEvent(e){
     // 再渲一帧"灰点冒出来",看着像跳动;这里把橙点摘掉和灰点挂上做成同一次渲染。
     if(e.conv===S.conv){ S.pendingReview[e.conv]=false; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=false; }
     else { S.pendingReview[e.conv]=true; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=true; }
-    delete S.live[e.conv]; markLive();
+    delete S.live[e.conv]; delete S.streamSnap[e.conv]; markLive();
     loadConvs();
   }
 
@@ -5484,22 +5496,36 @@ function applyStreamEvent(e){
       s.flow.append(d); scrollDown(); break; }
   }
 }
-// 切回某会话:若它有进行中的缓冲,重放事件在历史下方重建流式气泡
+// 切回某会话:若它有进行中的缓冲,重建流式气泡。命中快照(离开前摘下的 DOM)就直接接回来,
+// 只补上离开期间新增的那几条事件;没有快照(如页面刚刷新)才从头重放整段缓冲。
 function maybeReplayStream(conv){
   if(S.conv!==conv) return;
   const buf=S.live[conv]; if(!buf||!buf.length) return;
-  // renderTurns 可能已用 draft 渲染了部分内容;SSE 恢复后流式气泡会覆盖它,
-  // 先清掉避免出现两个 AI 气泡(草稿+流式)
+  // renderTurns 可能已用 draft 渲染了部分内容;不管接下来走哪条重建路径,都先清掉,
+  // 避免出现两个 AI 气泡(草稿+流式)
   const rows=$("#wrap").children;
   for(let i=rows.length-1;i>=0;i--){
     if(rows[i].classList.contains("ai") && rows[i].querySelector(".status")){
       rows[i].remove(); break;
     }
   }
-  S.stream=null;
-  for(const e of buf){
-    if(e.type==="user") continue;   // 用户消息已由历史渲染,重放跳过避免重复气泡
-    applyStreamEvent(e);
+  const snap=S.streamSnap[conv];
+  delete S.streamSnap[conv];
+  if(snap && snap.asOf<=buf.length){
+    S.stream=snap.state;
+    $("#wrap").append(S.stream.row);
+    resumeStreamTimer(S.stream);
+    for(let i=snap.asOf;i<buf.length;i++){         // 只补离开期间新增的事件,已建好的工具卡不重建
+      const e=buf[i]; if(e.type==="user") continue;
+      applyStreamEvent(e);
+    }
+    scrollDown(true);  // 接回来的内容跟在刚渲染完的历史后面,补一次滚到底
+  }else{
+    S.stream=null;
+    for(const e of buf){
+      if(e.type==="user") continue;   // 用户消息已由历史渲染,重放跳过避免重复气泡
+      applyStreamEvent(e);
+    }
   }
   if(S.stream) S.stream.lastEvt=Date.now();  // 按当前时刻起算卡住检测,不用缓冲里事件的旧时间
 }
