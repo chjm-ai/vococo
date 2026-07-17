@@ -1212,6 +1212,7 @@ const S = {
   localSent: false,     // 本客户端刚发了消息,收到 "user" 事件时跳过(避免重复气泡)
   es: null,
   lastId: 0,            // 已处理的最大事件编号,用于断线重连后去重
+  bootId: null,         // 服务端进程启动标识,变了说明重启过,断线补发这条路救不回来,得整体核对
   models: {default:"", choices:[]},  // /models 拉到的可选模型
   model: "",            // 当前会话使用的模型(空=用默认)
   commands: [],          // /commands 拉到的系统斜杠命令清单 [{name,desc}]
@@ -3603,6 +3604,63 @@ if(window.matchMedia){
   });
 }
 
+// ── 磁盘缓存(IndexedDB)──────────────────────────────────────────────────
+// 内存缓存(S.histCache/S.convs)刷新页面就没了,这层把它落盘,下次打开秒出内容。
+// 只是内存缓存的下一层:该发的网络请求(/history、/conversations)照发不误,回来数据
+// 不一致才重绘——磁盘不改变"网络为准"的核对逻辑,只是让"网络回来之前"那段空窗有内容可看。
+const IDB_NAME="hermes-cache", IDB_STORE="kv", HIST_CACHE_CAP=40;
+let _idbPromise=null;
+function idbOpen(){
+  if(_idbPromise) return _idbPromise;
+  _idbPromise=new Promise((resolve,reject)=>{
+    if(!window.indexedDB){ reject(new Error("no idb")); return; }
+    const req=indexedDB.open(IDB_NAME,1);
+    req.onupgradeneeded=()=>{ req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });
+  return _idbPromise;
+}
+async function idbGet(key){
+  try{
+    const db=await idbOpen();
+    return await new Promise((resolve,reject)=>{
+      const req=db.transaction(IDB_STORE,"readonly").objectStore(IDB_STORE).get(key);
+      req.onsuccess=()=>resolve(req.result); req.onerror=()=>reject(req.error);
+    });
+  }catch(e){ return undefined; }  // 隐私模式/不支持 IndexedDB → 静默降级,不影响正常功能
+}
+async function idbSet(key,val){
+  try{
+    const db=await idbOpen();
+    await new Promise((resolve,reject)=>{
+      const req=db.transaction(IDB_STORE,"readwrite").objectStore(IDB_STORE).put(val,key);
+      req.onsuccess=()=>resolve(); req.onerror=()=>reject(req.error);
+    });
+  }catch(e){}
+}
+async function idbDel(key){
+  try{
+    const db=await idbOpen();
+    await new Promise((resolve,reject)=>{
+      const req=db.transaction(IDB_STORE,"readwrite").objectStore(IDB_STORE).delete(key);
+      req.onsuccess=()=>resolve(); req.onerror=()=>reject(req.error);
+    });
+  }catch(e){}
+}
+// 会话历史落盘 + 简单 LRU 上限,避免长期使用后磁盘缓存无限增长
+async function idbSetHist(conv, turns){
+  idbSet("hist:"+conv, turns);
+  try{
+    const order=(await idbGet("hist:__order__"))||[];
+    const next=[conv, ...order.filter(c=>c!==conv)];
+    if(next.length>HIST_CACHE_CAP){
+      for(const c of next.splice(HIST_CACHE_CAP)) idbDel("hist:"+c);
+    }
+    idbSet("hist:__order__", next);
+  }catch(e){}
+}
+
 // ── API ─────────────────────────────────────────────────────────────────
 async function api(path, opts={}){
   opts.headers = Object.assign({"X-Auth-Token": S.token}, opts.headers||{});
@@ -3623,10 +3681,13 @@ async function tryEnter(){
   // 有缓存口令时,首帧就已经靠 #bootSkip 样式把口令页藏起来、#app 显示出来了(见 </head> 后那段内联脚本)。
   // 这里立刻把内容区铺成骨架屏,不要空等——避免"口令消失→空白/欢迎屏→数据陆续到位"的中间闪烁态。
   $("#wrap").innerHTML=""; $("#empty").style.display="none"; $("#convLoading").classList.add("on");
+  const cachedConvs = await idbGet("convs");
+  if(cachedConvs) applyConvs(cachedConvs);  // 磁盘缓存先画一版侧栏,消除刷新页面后的空白/闪烁
   try{
     const r = await fetch("/conversations", {headers:{"X-Auth-Token":S.token}});
     if(r.status===401){ $("#loginErr").textContent="口令错误"; showLogin(); return; }
     const d = await r.json();
+    idbSet("convs", d);   // 落盘,下次刷新页面秒出侧栏
     localStorage.setItem("hermes_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush();
@@ -4122,6 +4183,7 @@ function applyConvs(d){
 async function loadConvs(){
   const r = await api("/conversations"); const d = await r.json();
   applyConvs(d);
+  idbSet("convs", d);
 }
 // 从 conv id 解析它属于哪个项目:p<hash>:<convid> → hash;否则 null(默认项目)
 function convProject(conv){
@@ -4873,7 +4935,7 @@ async function delConv(conv){
   const idx=list.findIndex(x=>x.conv===conv);
   const removed=list[idx], wasActive=(S.conv===conv);
   // 乐观假删:先从列表移除并立即重绘,不等服务器
-  list.splice(idx,1); delete S.histCache[conv]; delete S.live[conv]; markLive(); renderConvs();
+  list.splice(idx,1); delete S.histCache[conv]; idbDel("hist:"+conv); delete S.live[conv]; markLive(); renderConvs();
   if(wasActive) openConv(S.convs[0]?S.convs[0].conv:"main");   // 删的是当前会话→切到最近一个
   // 纯本地会话(从未发过消息)服务端没有记录,删完即止
   if(String(conv).startsWith("local-")) return;
@@ -4990,8 +5052,13 @@ async function openConv(conv, silentGroup){
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
-  const cached = S.histCache[conv];
   const isLocal = String(conv).startsWith("local-");
+  let cached = S.histCache[conv];
+  if(!cached && !isLocal){
+    cached = await idbGet("hist:"+conv);        // 内存没有(刷新页面后的第一次打开)→ 试磁盘
+    if(S.conv!==conv) return;                    // 等磁盘的功夫用户切走了 → 丢弃,避免内容错乱
+    if(cached) S.histCache[conv]=cached;
+  }
   const hasMsgs = c && c.turns > 0;             // 侧栏记录里该会话有历史消息
   if(cached){ renderTurns(cached); }            // 命中缓存:立即渲染,消除"先闪空屏再出内容"
   else if(!isLocal && hasMsgs){                 // 只在「换到一个有历史、还没拉过的真实会话」时才铺骨架屏
@@ -5000,12 +5067,13 @@ async function openConv(conv, silentGroup){
     $("#wrap").innerHTML=""; $("#convLoading").classList.remove("on");
   }
   if(S.voiceRec[conv]) renderVoicePending(conv);  // 切回时该会话仍在转写 → 补出占位气泡,不然像是丢了
-  if(conv && !String(conv).startsWith("local-")){
+  if(conv && !isLocal){
     try{
       const r=await api("/history?conv="+encodeURIComponent(conv)); const d=await r.json();
       if(S.conv!==conv) return;   // 拉取期间已切到别的会话 → 丢弃过期结果,避免内容错乱
       $("#convLoading").classList.remove("on");
       S.histCache[conv]=d.turns;
+      idbSetHist(conv, d.turns);  // 落盘,下次刷新页面这个会话也能秒开
       // 仅当与已渲染的缓存不一致才重绘,避免命中缓存时白闪一下
       if(!cached || JSON.stringify(cached)!==JSON.stringify(d.turns)) renderTurns(d.turns);
     }catch(e){ $("#convLoading").classList.remove("on"); }
@@ -5038,6 +5106,7 @@ async function reloadHistory(force){
       finalizeStream();  // 服务端已收尾,前端漏接了 → 收掉卡住的流式气泡,改用下面的权威历史重绘
     }
     S.histCache[conv]=d.turns;
+    idbSetHist(conv, d.turns);
     if(!cached || JSON.stringify(cached)!==JSON.stringify(d.turns)) renderTurns(d.turns);
   }catch(e){}
 }
@@ -5268,10 +5337,17 @@ function markLive(){
   _liveSig=sig; renderConvs();
 }
 function handleEvent(e){
+  // 服务端进程重启标识:变了说明断线期间进程重启过,环形缓冲/_live 全清空了,
+  // 靠事件补发这条路救不回来 —— 主动整体核对一次(侧栏 + 当前会话历史),别等用户自己发现内容旧了
+  if(e.type==="hello"){
+    const prev=S.bootId; S.bootId=e.boot_id;
+    if(prev && prev!==e.boot_id){ loadConvs(); reloadHistory(true); }
+    return;
+  }
   // 后台标题总结完成 → 刷新侧边栏/标题栏(loadConvs 会顺带同步顶栏标题),无论前后台会话
   if(e.type==="title"){ loadConvs(); return; }
-  // 会话有新回合 → 历史已变,作废其缓存,下次打开会重新拉取
-  if(e.type==="done"||e.type==="message") delete S.histCache[e.conv];
+  // 会话有新回合 → 历史已变,作废其缓存(含磁盘),下次打开会重新拉取
+  if(e.type==="done"||e.type==="message"){ delete S.histCache[e.conv]; idbDel("hist:"+e.conv); }
   // 维护每会话"进行中"缓冲:无论前台/后台都记录,切回该会话时可完整重建流式气泡
   if(STREAMY.indexOf(e.type)>=0){ bufPush(e.conv, e); markLive(); }
   if(e.type==="done"||e.type==="message"){ delete S.live[e.conv]; markLive(); }
