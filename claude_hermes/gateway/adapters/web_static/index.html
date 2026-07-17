@@ -3969,7 +3969,7 @@ function modelShort(id){
   const ch=S.models.choices||[];
   // 精确命中,否则按前缀兜底(实跑 id 常带日期,如 claude-haiku-4-5-20251001)
   const c=ch.find(x=>x[0]===id) || ch.find(x=>id.indexOf(x[0])===0 || x[0].indexOf(id)===0);
-  if(c) return c[1].replace(/\([^)]*\)\s*$/,"").trim();   // 去掉末尾的 (订阅)/(API) 标注
+  if(c) return c[1].replace(/[(（][^)）]*[)）]\s*$/,"").trim();   // 去掉末尾的 （订阅）/（API）标注
   return id.replace(/^claude-/,"").replace(/-\d{6,}$/,"");  // 去 claude- 前缀与日期后缀
 }
 function curModel(){ return S.model || S.models.default || ""; }

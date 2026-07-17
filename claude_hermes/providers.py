@@ -229,7 +229,7 @@ def available_models(default_choices: list[tuple[str, str]]) -> list[tuple[str, 
     """/model 无参时的候选:官方默认档 + cc-switch 里配好的各供应商模型。
 
     default_choices 是官方三档(claude-opus/sonnet/haiku),恒列在前。标签只留
-    "模型名(订阅/API)",不带供应商名和 cc-switch 后缀,免得面板换行/信息过载。
+    "模型名（订阅/API）",不带供应商名和 cc-switch 后缀,免得面板换行/信息过载。
     """
     out = list(default_choices)
     seen = {mid for mid, _ in out}
@@ -245,5 +245,5 @@ def available_models(default_choices: list[tuple[str, str]]) -> list[tuple[str, 
         seen.add(model)
         base_url = _entry_field(entry, "base_url", "baseUrl")
         kind = _billing_kind(base_url)
-        out.append((model, f"{model}({kind})"))
+        out.append((model, f"{model}（{kind}）"))
     return out
