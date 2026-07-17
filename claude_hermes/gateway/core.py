@@ -412,6 +412,7 @@ HELP_TEXT = "可用命令:\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_LI
 MODEL_CHOICES: list[tuple[str, str]] = [
     ("claude-fable-5", "Fable 5 · 最新旗舰"),
     ("claude-opus-4-8", "Opus 4.8 · 最强(吃周限额)"),
+    ("claude-opus-4-6", "Opus 4.6 · 强而更省配额"),
     ("claude-sonnet-5", "Sonnet 5 · 更快更均衡"),
     ("claude-sonnet-4-6", "Sonnet 4.6 · 日常均衡"),
     ("claude-haiku-4-5", "Haiku 4.5 · 最快最省"),
