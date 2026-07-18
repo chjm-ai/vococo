@@ -135,6 +135,14 @@
   #newBtn .np{font-size:14px;line-height:1}
   #newBtn:hover{background:var(--card)}
   #newBtn:active{transform:scale(.98)}
+  /* ⏰定时任务入口:样式跟＋新对话一致,常驻显示(不管有没有任务) */
+  #cronEntryBtn{display:flex;align-items:center;justify-content:center;gap:8px;
+    width:calc(100% - 16px);margin:0 8px 4px;padding:8px 10px;border-radius:9px;
+    background:var(--panel2);color:var(--text);font-size:13px;font-weight:600;
+    cursor:pointer;transition:background .15s,transform .12s}
+  #cronEntryBtn .np{font-size:14px;line-height:1}
+  #cronEntryBtn:hover{background:var(--card)}
+  #cronEntryBtn:active{transform:scale(.98)}
   /* 语音任务:固定分组,行样式复用 .conv/.cvbody,状态点颜色跟任务状态走 */
   /* 侧边栏收起按钮(仅桌面显示)*/
   #collapseBtn{display:none;width:26px;height:26px;border-radius:7px;flex-shrink:0;
@@ -280,6 +288,37 @@
   #projModal .pmfoot{display:flex;gap:10px;justify-content:flex-end;padding:13px 16px;border-top:1px solid var(--line)}
   #projModal .pmfoot button{padding:9px 16px;border-radius:9px;cursor:pointer;font-size:13.5px;border:1px solid var(--line2);background:var(--panel2);color:var(--text)}
   #projModal .pmfoot .pmok{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+
+  /* 定时任务管理弹窗:抄新建项目弹窗同一套壳(pmbox/pmhead/pmfoot),内容换成任务列表+新建表单 */
+  #cronModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
+  #cronModal[hidden]{display:none}
+  #cronModal .pmbox{width:min(560px,92vw);max-height:82vh;display:flex;flex-direction:column;
+    background:var(--panel);border:1px solid var(--line2);border-radius:16px;overflow:hidden}
+  #cronModal .pmhead{display:flex;align-items:center;gap:8px;padding:15px 18px;font-size:15px;font-weight:700;border-bottom:1px solid var(--line)}
+  #cronModal .pmhead .spacer{flex:1}
+  #cronModal .pmhead .pmgo{background:var(--panel2);border:1px solid var(--line2);border-radius:9px;color:var(--text);padding:6px 12px;font-size:13px;cursor:pointer;font-weight:600}
+  #cronList{flex:1;overflow-y:auto;padding:4px 10px;min-height:80px}
+  #cronEmpty{padding:24px 16px;text-align:center;color:var(--dim2);font-size:13px}
+  .cronrow{display:flex;align-items:center;gap:8px;padding:9px 8px;border-radius:9px;font-size:13.5px}
+  .cronrow:hover{background:var(--panel2)}
+  .cronrow .crname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+  .cronrow .crsched{color:var(--dim2);font-size:12px;white-space:nowrap}
+  .cronrow .crtoggle{width:32px;height:18px;border-radius:9px;background:var(--line2);position:relative;cursor:pointer;flex-shrink:0;transition:background .15s}
+  .cronrow .crtoggle.on{background:var(--accent)}
+  .cronrow .crtoggle::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .15s}
+  .cronrow .crtoggle.on::after{transform:translateX(14px)}
+  .cronrow .crdel{color:var(--dim2);cursor:pointer;flex-shrink:0;padding:2px 4px}
+  .cronrow .crdel:hover{color:#e5484d}
+  #cronForm{padding:12px 16px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+  #cronForm input,#cronForm textarea,#cronForm select{background:var(--panel2);border:1px solid var(--line2);border-radius:9px;
+    color:var(--text);padding:8px 11px;font-size:13px;font-family:inherit}
+  #cronForm textarea{resize:vertical;min-height:56px}
+  #cronForm .cfrow{display:flex;gap:8px}
+  #cronForm .cfrow select{flex:1;min-width:0}
+  #cronForm .cfrow input{flex:1;min-width:0}
+  #cronModal .pmfoot{display:flex;gap:10px;justify-content:flex-end;padding:13px 16px;border-top:1px solid var(--line)}
+  #cronModal .pmfoot button{padding:9px 16px;border-radius:9px;cursor:pointer;font-size:13.5px;border:1px solid var(--line2);background:var(--panel2);color:var(--text)}
+  #cronModal .pmfoot .pmok{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
 
   /* 设置弹窗 */
   #setModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
@@ -1036,6 +1075,36 @@ try{
     </div>
   </div>
 
+  <!-- 定时任务管理弹窗:列表(启停/删除) + 新建表单 -->
+  <div id="cronModal" hidden>
+    <div class="pmbox">
+      <div class="pmhead">⏰ 定时任务<span class="spacer"></span><button class="pmgo" id="cronNewBtn">＋ 新建</button></div>
+      <div id="cronList"></div>
+      <div id="cronForm" hidden>
+        <input id="cfName" placeholder="任务名称,如「晨间简报」"/>
+        <textarea id="cfPrompt" placeholder="到点时要执行的指令,如「查一下今天的日历和待办,简短汇总」"></textarea>
+        <div class="cfrow">
+          <select id="cfPreset">
+            <option value="custom">自定义 cron 表达式…</option>
+            <option value="0 8 * * *">每天早 8 点</option>
+            <option value="0 12 * * *">每天中午 12 点</option>
+            <option value="0 21 * * *">每天晚 9 点</option>
+            <option value="0 9 * * 1">每周一早 9 点</option>
+            <option value="0 21 * * 0">每周日晚 9 点</option>
+            <option value="0 * * * *">每小时</option>
+          </select>
+          <input id="cfCron" placeholder="0 8 * * *"/>
+        </div>
+        <input id="cfTelegram" placeholder="可选:同时推送到 Telegram 的 chat_id"/>
+        <div class="pmfoot">
+          <button id="cfCancel">取消</button>
+          <button class="pmok" id="cfSave">✓ 创建</button>
+        </div>
+      </div>
+      <div class="pmfoot" id="cronFoot"><button id="cronCloseBtn">关闭</button></div>
+    </div>
+  </div>
+
   <!-- 跨会话审批/确认全屏弹窗 -->
   <div id="choiceModal" hidden>
     <div class="cmbox">
@@ -1076,6 +1145,7 @@ try{
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
+    <button id="cronEntryBtn"><span class="np">⏰</span>定时任务</button>
     <div id="convList"></div>
     <div class="sfoot" id="sfoot"><span class="savatar">U</span><span class="sfoottxt" id="sfoottxt">User</span>
       <div id="convFilterBox">
@@ -1268,6 +1338,7 @@ const S = {
   dragSrc: null,        // 项目拖拽排序:正在被拖起的项目 hash
   dragMoved: false,     // 刚发生过一次拖拽落地,下一次 click 吞掉(不触发分组展开/收起)
   voiceSidebar: {main:null, tasks:[]},  // /voice/sidebar 拉到的"语音任务"固定分组数据
+  cronJobs: [],         // /cron/sidebar 拉到的定时任务列表 [{conv,job_id,title,schedule_desc,enabled,last_status,...}]
   swipedConv: null,     // 当前左滑展开的会话 id;renderConvs 重建 DOM 时靠它补回 swiped 状态,
                          // 否则任意会话(含后台)一完成回合就会触发 loadConvs→renderConvs 把菜单冲掉
   omniEnabled: false,   // /voice/config 的 omni_enabled,P3 阶段二开关,登录后预取好,
@@ -3741,6 +3812,7 @@ async function tryEnter(){
     const secondary = Promise.all([loadPrefs(), loadProjects(), loadModels(), loadCommands(), loadVoiceOmniConfig()])
       .then(updateFilterBtn).catch(()=>{});
     loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
+    loadCronSidebar();   // 同上,定时任务分组
     await secondary;
     initVoiceSelect();
     renderConvs();  // 项目分组数据(loadProjects)到位后再补画一次侧栏分组
@@ -4370,6 +4442,29 @@ function renderConvs(){
       box.append(more);
     }
   }
+  // 定时任务分组:只有真有任务时才出现(见 renderConvs 上方数据源 S.cronJobs)
+  if(S.cronJobs.length){
+    const CRON_KEY="__cron__";
+    const open=S.expanded.has(CRON_KEY);
+    const h=el("div","projgrp");
+    const nm=el("span","pgname"); nm.textContent="定时任务"; h.append(nm);
+    const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);
+    const add=el("button","pgadd"); add.textContent="＋"; add.title="新建定时任务";
+    add.onclick=ev=>{ ev.stopPropagation(); openCronModal(true); }; h.append(add);
+    h.onclick=()=>toggleGroup(CRON_KEY);
+    box.append(h);
+    if(open){
+      const rows=S.cronJobs.map(buildCronJobRow);
+      const shown=S.moreShown.has(CRON_KEY)?rows:rows.slice(0,CONV_SHOW_MAX);
+      for(const r of shown) box.append(r);
+      if(rows.length>shown.length){
+        const more=el("div","conv ingroup convmore");
+        const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
+        more.onclick=()=>{ S.moreShown.add(CRON_KEY); renderConvs(); };
+        box.append(more);
+      }
+    }
+  }
   const addp=el("div","projgrp projadd"); addp.textContent="＋ 新建项目…"; addp.onclick=openProjModal; box.append(addp);
   // 同步标题栏:loadConvs 刷新 S.convs 后调 renderConvs,标题可能已更新
   const activeConv=S.convs.find(c=>c.conv===S.conv);
@@ -4396,6 +4491,26 @@ function syncSidebarTaskStatus(t){
   if(!row){ loadVoiceSidebar(); return; }
   if(row.task_status===t.status) return;
   row.task_status=t.status; renderConvs();
+}
+// ── 定时任务:侧边栏固定分组(每个任务一条专属会话)────────────────────────────
+async function loadCronSidebar(){
+  try{ const r=await api("/cron/sidebar"); S.cronJobs=(await r.json()).jobs||[]; }
+  catch(e){ S.cronJobs=[]; }
+  renderConvs();
+}
+// 单条定时任务行:点进去看该任务的历次运行记录(它就是一条普通会话)
+function buildCronJobRow(j){
+  const row=el("div","conv ingroup"+(j.conv===S.conv?" active":""));
+  row.dataset.conv=j.conv;
+  const body=el("div","cvbody");
+  if(j.pending_review || S.pendingReview[j.conv]) { const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }
+  const ct=el("div","ct"); ct.textContent=j.title||"定时任务";
+  if(!j.enabled) ct.style.opacity="0.5";
+  body.append(ct);
+  const sd=el("span","ctime"); sd.textContent=j.schedule_desc||""; body.append(sd);
+  row.append(body);
+  row.onclick=()=>openConv(j.conv);
+  return row;
 }
 // 项目分组拖拽排序(原生 HTML5 DnD:桌面拖起手感好,鼠标移动量够才触发,不影响原有点击展开)
 function bindProjDrag(h, hash){
@@ -4483,6 +4598,70 @@ $("#pmPath").onkeydown = e=>{ if(e.key==="Enter") browseTo($("#pmPath").value.tr
 $("#pmCancel").onclick = closeProjModal;
 $("#pmCreate").onclick = ()=>createProject($("#pmPath").value);
 $("#projModal").onclick = e=>{ if(e.target===$("#projModal")) closeProjModal(); };
+
+// ── 定时任务管理弹窗(列表 + 新建;点即生效,不走审批——见 cron/scheduler.py 注释)──
+async function openCronModal(showForm){
+  $("#cronModal").hidden=false;
+  await loadCronSidebar();
+  renderCronModalList();
+  if(showForm) showCronForm(); else hideCronForm();
+}
+function closeCronModal(){ $("#cronModal").hidden=true; }
+function renderCronModalList(){
+  const box=$("#cronList"); box.innerHTML="";
+  if(!S.cronJobs.length){ const empty=el("div",""); empty.id="cronEmpty"; empty.textContent="还没有定时任务,点右上角「＋ 新建」加一个"; box.append(empty); return; }
+  for(const j of S.cronJobs){
+    const row=el("div","cronrow");
+    const nm=el("div","crname"); nm.textContent=j.title||"定时任务";
+    nm.title="点开看历次运行记录"; nm.onclick=()=>{ closeCronModal(); openConv(j.conv); };
+    const sd=el("div","crsched"); sd.textContent=j.schedule_desc||"";
+    const tg=el("div","crtoggle"+(j.enabled?" on":"")); tg.title=j.enabled?"点击停用":"点击启用";
+    tg.onclick=()=>toggleCronJob(j.job_id, !j.enabled);
+    const del=el("div","crdel"); del.innerHTML=ic("trash"); del.title="删除";
+    del.onclick=()=>deleteCronJob(j.job_id, j.title);
+    row.append(nm, sd, tg, del);
+    box.append(row);
+  }
+}
+async function toggleCronJob(id, enabled){
+  try{ await api("/cron/jobs/enable",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,enabled})}); }
+  catch(e){ alert("操作失败"); return; }
+  await loadCronSidebar(); renderCronModalList();
+}
+async function deleteCronJob(id, title){
+  if(!confirm(`删除定时任务「${title||""}」?这条任务的历史记录也会一起删掉,不可恢复。`)) return;
+  try{ await api("/cron/jobs/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}); }
+  catch(e){ alert("删除失败"); return; }
+  await loadCronSidebar(); renderCronModalList();
+}
+function showCronForm(){
+  $("#cronForm").hidden=false; $("#cfName").value=""; $("#cfPrompt").value="";
+  $("#cfPreset").value="custom"; $("#cfCron").value=""; $("#cfTelegram").value="";
+  $("#cfName").focus();
+}
+function hideCronForm(){ $("#cronForm").hidden=true; }
+async function createCronJob(){
+  const name=$("#cfName").value.trim(), prompt=$("#cfPrompt").value.trim();
+  const cron=$("#cfCron").value.trim(), tgChat=$("#cfTelegram").value.trim();
+  if(!name || !prompt){ alert("任务名称和执行指令不能为空"); return; }
+  if(!cron){ alert("请选一个预设频率,或填自定义 cron 表达式"); return; }
+  const body={name, prompt, schedule:{kind:"cron", expr:cron}};
+  if(tgChat) body.target={platform:"telegram", chat_id:tgChat};
+  let d;
+  try{
+    const r=await api("/cron/jobs/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    d=await r.json();
+  }catch(e){ alert("创建失败"); return; }
+  if(d.error){ alert(d.error); return; }
+  hideCronForm(); await loadCronSidebar(); renderCronModalList();
+}
+$("#cronEntryBtn").onclick = ()=>openCronModal(false);
+$("#cronNewBtn").onclick = ()=>{ if($("#cronForm").hidden) showCronForm(); else hideCronForm(); };
+$("#cfPreset").onchange = ()=>{ const v=$("#cfPreset").value; if(v!=="custom") $("#cfCron").value=v; };
+$("#cfCancel").onclick = hideCronForm;
+$("#cfSave").onclick = createCronJob;
+$("#cronCloseBtn").onclick = closeCronModal;
+$("#cronModal").onclick = e=>{ if(e.target===$("#cronModal")) closeCronModal(); };
 
 // ── 设置(MCP / 技能 / 记忆 / 人设)────────────────────────────────────────
 const SET = { data:null, tab:"mcp", skq:"", mcpFormOpen:false };
@@ -5089,8 +5268,9 @@ async function openConv(conv, silentGroup){
     if(citem) citem.pending_review=false;
     api("/conv/read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv:conv})}).catch(()=>{});
   }
-  // 语音任务会话不在 S.convs 里(那是 /conversations 拉的),标题去 /voice/sidebar 的缓存里找
-  const c=S.convs.find(x=>x.conv===conv) || S.voiceSidebar.tasks.find(x=>x.conv===conv);
+  // 语音任务/定时任务会话不在 S.convs 里(那是 /conversations 拉的),标题去各自的侧栏缓存里找
+  const c=S.convs.find(x=>x.conv===conv) || S.voiceSidebar.tasks.find(x=>x.conv===conv)
+    || S.cronJobs.find(x=>x.conv===conv);
   if(!(c && c.pinned)){   // 主会话等置顶行不属于任何分组,别联动展开/切换"默认项目"
     S.project=convProject(conv);
     // silentGroup:APP 启动时静默落地到新对话用,别把用户上次手动折叠的分组重新展开
@@ -5405,6 +5585,9 @@ function handleEvent(e){
     else { S.pendingReview[e.conv]=true; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=true; }
     delete S.live[e.conv]; markLive();
     loadConvs();
+    // 定时任务跑完推来的消息:顺带刷新任务列表(last_status/enabled 这些字段不在
+    // /conversations 里,得单独拉 /cron/sidebar)
+    if(String(e.conv).startsWith("cron-task:")) loadCronSidebar();
   }
 
   if(e.conv!==S.conv){ // 别的会话在后台的事件 → 不打断当前视图(已缓冲,圆点已更新)

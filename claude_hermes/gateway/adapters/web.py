@@ -578,6 +578,106 @@ class WebAdapter:
                 c["title"] = row["title"]
         return web.json_response({"main": main, "tasks": task_convs})
 
+    # ── 定时任务 ─────────────────────────────────────────────────────────
+    async def _handle_cron_sidebar(self, request: web.Request) -> web.Response:
+        """侧边栏"定时任务"分组:每个任务一条专属会话(cron-task:<id>),跟"语音
+        任务"同一个模板。只在有任务时前端才渲染这个分组。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        from ...cron import scheduler
+
+        jobs = scheduler.load_jobs()
+        # session_summary() 不带 pending_review(那是 list_sessions 的字段),这里单独查一遍
+        # 补上,否则任务跑完了侧边栏也不会冒未读灰点。
+        pending_by_conv = {
+            s["key"]: s.get("pending_review", False)
+            for s in session_store.list_sessions("cron-task:")
+        }
+        rows = []
+        for j in jobs:
+            conv = j.get("conv") or f"cron-task:{j['id']}"
+            row = session_store.session_summary(conv)
+            row.update(
+                conv=conv,
+                job_id=j["id"],
+                title=j.get("name") or "定时任务",
+                schedule_desc=scheduler.describe_schedule(j.get("schedule", {})),
+                enabled=bool(j.get("enabled")),
+                pending_review=pending_by_conv.get(conv, False),
+                last_status=j.get("last_status"),
+            )
+            rows.append(row)
+        return web.json_response({"jobs": rows})
+
+    async def _handle_cron_create(self, request: web.Request) -> web.Response:
+        """管理界面直接新建定时任务(不经过建议/审批——用户在管理界面上的操作本身
+        就是明确的第一方意图)。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        from ...cron import scheduler
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        name = (body.get("name") or "").strip()
+        prompt = (body.get("prompt") or "").strip()
+        schedule = body.get("schedule")
+        if not name or not prompt:
+            return web.json_response({"error": "name / prompt 不能为空"}, status=400)
+        err = scheduler.validate_schedule(schedule or {})
+        if err:
+            return web.json_response({"error": err}, status=400)
+        target = body.get("target") or None
+        if target is not None and not (target.get("platform") and target.get("chat_id") is not None):
+            target = None
+        job = scheduler.create_job(
+            name=name, prompt=prompt, schedule=schedule, target=target
+        )
+        return web.json_response({"job": job})
+
+    async def _handle_cron_set_enabled(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        from ...cron import scheduler
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        job_id = (body.get("id") or "").strip()
+        enabled = bool(body.get("enabled"))
+        jobs = scheduler.load_jobs()
+        job = next((j for j in jobs if j.get("id") == job_id), None)
+        if job is None:
+            return web.json_response({"error": "任务不存在"}, status=404)
+        job["enabled"] = enabled
+        if not enabled:
+            job["next_run_at"] = None
+        scheduler.save_jobs(jobs)
+        return web.json_response({"ok": True, "job": job})
+
+    async def _handle_cron_delete(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        from ...cron import scheduler
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        job_id = (body.get("id") or "").strip()
+        jobs = scheduler.load_jobs()
+        job = next((j for j in jobs if j.get("id") == job_id), None)
+        if job is None:
+            return web.json_response({"error": "任务不存在"}, status=404)
+        jobs.remove(job)
+        scheduler.save_jobs(jobs)
+        conv = job.get("conv")
+        if conv:
+            session_store.delete_session(conv)
+        return web.json_response({"ok": True})
+
     # ── 项目 ─────────────────────────────────────────────────────────────
     async def _handle_projects(self, request: web.Request) -> web.Response:
         """项目列表(侧边栏按项目分组用)。"""
@@ -1321,6 +1421,10 @@ class WebAdapter:
                 web.post("/abort", self._handle_abort),
                 web.get("/conversations", self._handle_conversations),
                 web.get("/voice/sidebar", self._handle_voice_sidebar),
+                web.get("/cron/sidebar", self._handle_cron_sidebar),
+                web.post("/cron/jobs/create", self._handle_cron_create),
+                web.post("/cron/jobs/enable", self._handle_cron_set_enabled),
+                web.post("/cron/jobs/delete", self._handle_cron_delete),
                 web.get("/projects", self._handle_projects),
                 web.get("/browse", self._handle_browse),
                 web.post("/projects/create", self._handle_project_create),

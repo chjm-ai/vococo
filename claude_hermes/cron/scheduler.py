@@ -7,7 +7,8 @@ job 结构:
 {
   "id": "morning", "name": "晨间简报", "prompt": "...",
   "schedule": {"kind": "cron", "expr": "0 8 * * *"}        # 或 {"kind":"interval","minutes":60} / {"kind":"once","run_at": <epoch>}
-  "target": {"platform": "telegram", "chat_id": 123},
+  "conv": "cron-task:morning",   # 该任务专属会话,历次运行结果落在这里(侧栏可点开看)
+  "target": {"platform": "telegram", "chat_id": 123},  # 额外推送目标(可选,不填就只落会话+系统推送)
   "model": null, "enabled": true,
   "next_run_at": null, "last_run_at": null, "last_status": null
 }
@@ -32,9 +33,17 @@ PushFn = Callable[[str, object, str], Awaitable[None]]  # (platform, chat_id, te
 
 def load_jobs() -> list[dict]:
     try:
-        return json.loads(config.CRON_JOBS_PATH.read_text(encoding="utf-8"))
+        jobs = json.loads(config.CRON_JOBS_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+    changed = False
+    for job in jobs:
+        if not job.get("conv"):  # 老数据补一个专属会话 id(灰度迁移,见模块头 job 结构注释)
+            job["conv"] = f"cron-task:{job['id']}"
+            changed = True
+    if changed:
+        save_jobs(jobs)
+    return jobs
 
 
 def save_jobs(jobs: list[dict]) -> None:
@@ -48,13 +57,17 @@ def create_job(
     *, name: str, prompt: str, schedule: dict, target: dict | None = None,
     model: str | None = None,
 ) -> dict:
-    """新建一个 cron 任务并落盘,返回该任务。接受建议(accept_suggestion)时由此创建。"""
+    """新建一个 cron 任务并落盘,返回该任务。接受建议(accept_suggestion)或管理界面
+    直接新建都走这一个入口,不搞第二套引擎。每个任务自带一条专属会话(conv),
+    历次运行结果落在这条会话里;target 是可选的额外推送目标(如 telegram)。"""
     jobs = load_jobs()
+    job_id = uuid.uuid4().hex[:8]
     job = {
-        "id": uuid.uuid4().hex[:8],
+        "id": job_id,
         "name": name,
         "prompt": prompt,
         "schedule": schedule,
+        "conv": f"cron-task:{job_id}",
         "target": target,
         "model": model,
         "enabled": True,
@@ -65,6 +78,42 @@ def create_job(
     jobs.append(job)
     save_jobs(jobs)
     return job
+
+
+def describe_schedule(schedule: dict) -> str:
+    """人类可读的调度摘要,给 list_cron_jobs 工具和管理界面共用。"""
+    kind = schedule.get("kind")
+    if kind == "cron":
+        return schedule.get("expr", "?")
+    if kind == "interval":
+        return f"每{schedule.get('minutes', 60)}分钟"
+    if kind == "once":
+        return "一次性"
+    return kind or "?"
+
+
+def validate_schedule(schedule: dict) -> str | None:
+    """校验 schedule 字典,合法返回 None,不合法返回错误信息。"""
+    if not isinstance(schedule, dict):
+        return "schedule 必须是对象"
+    kind = schedule.get("kind")
+    if kind == "cron":
+        try:
+            croniter(schedule.get("expr", ""))
+        except Exception:
+            return f"cron 表达式「{schedule.get('expr')}」不合法(要 5 段,如 '0 8 * * *')"
+        return None
+    if kind == "interval":
+        minutes = schedule.get("minutes")
+        if not isinstance(minutes, (int, float)) or minutes <= 0:
+            return "interval 的 minutes 必须是正数"
+        return None
+    if kind == "once":
+        run_at = schedule.get("run_at")
+        if not isinstance(run_at, (int, float)):
+            return "once 的 run_at 必须是 unix 时间戳"
+        return None
+    return f"未知调度类型「{kind}」(只支持 cron/interval/once)"
 
 
 def _next_run(schedule: dict, after: float) -> float | None:
@@ -89,9 +138,16 @@ async def _run_job(job: dict, push: PushFn) -> None:
     reply = await run_turn([], job["prompt"], model=job.get("model"))
     job["last_run_at"] = int(time.time())
     job["last_status"] = "error" if reply.is_error else "success"
-    tgt = job.get("target") or {}
-    if reply.text and tgt.get("platform") and tgt.get("chat_id") is not None:
-        await push(tgt["platform"], tgt["chat_id"], f"⏰ {job.get('name','任务')}\n\n{reply.text}")
+    text = reply.text or "(无输出)"
+    conv = job.get("conv") or f"cron-task:{job['id']}"
+    session_store.append(conv, job["prompt"], text)  # 落进专属会话,侧栏"定时任务"分组可点开看历史
+    msg = f"⏰ {job.get('name','任务')}\n\n{text}"
+    # 默认目标就是这条专属会话本身(platform=web):走 send() 会同时触发系统推送
+    # (场景③"主动/cron",已覆盖 Mac/iPhone 等一切订阅了 Web Push 的设备)。
+    await push("web", conv, msg)
+    tgt = job.get("target") or {}  # 额外目标(如 telegram),可选,不填就只有上面这条
+    if tgt.get("platform") and tgt.get("chat_id") is not None:
+        await push(tgt["platform"], tgt["chat_id"], msg)
 
 
 async def _tick(push: PushFn) -> None:
