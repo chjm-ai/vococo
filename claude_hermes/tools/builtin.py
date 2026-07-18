@@ -202,16 +202,12 @@ async def suggest_automation(args: dict) -> dict:
     return _ok(f"✅ 已提建议「{title}」。用 /建议 查看并一键接受(接受后才会真正定时跑)。")
 
 
-# === cron 任务管理(查看/停用/删除;创建仍走建议 consent-first)===
+# === cron 任务管理(聊天里查看/停用/删除;新建可走建议 consent-first,也可在
+# 管理界面直接建——两条路都汇到 scheduler.create_job,不重复造轮子)===
 def _sched_desc(sch: dict) -> str:
-    kind = sch.get("kind")
-    if kind == "cron":
-        return sch.get("expr", "?")
-    if kind == "interval":
-        return f"每{sch.get('minutes', 60)}分钟"
-    if kind == "once":
-        return "一次性"
-    return kind or "?"
+    from ..cron.scheduler import describe_schedule
+
+    return describe_schedule(sch)
 
 
 def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:

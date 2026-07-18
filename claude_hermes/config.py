@@ -283,8 +283,9 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     `voice-chat:`/`voice-task:` 是语音模块保留的前缀(主语音通话、后台任务各一个
     固定/派生键),已经是完整 key,原样透传不再套 "web:" 前缀——这样侧边栏"语音
     任务"分组里的会话可以直接用 index.html 现成的 openConv()/发消息面板打开,
-    不用给语音专门另写一套路由逻辑。这两个前缀是新引入的保留字,不会跟现有项目
-    哈希形态的 conv_id 冲突。
+    不用给语音专门另写一套路由逻辑。`cron-task:` 是定时任务模块照搬同一套模式
+    (每个定时任务一个专属会话,历次运行结果落在这条会话里)。这些前缀是新引入
+    的保留字,不会跟现有项目哈希形态的 conv_id 冲突。
     """
     if platform == "telegram" and isinstance(chat_id, int) and chat_id < 0:
         return f"tg:{chat_id}"
@@ -292,7 +293,9 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
         if chat_id == "main":
             return SESSION_KEY
         if isinstance(chat_id, str) and (
-            chat_id.startswith("voice-chat:") or chat_id.startswith("voice-task:")
+            chat_id.startswith("voice-chat:")
+            or chat_id.startswith("voice-task:")
+            or chat_id.startswith("cron-task:")
         ):
             return chat_id
         return f"web:{chat_id}"
