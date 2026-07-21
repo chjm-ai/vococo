@@ -597,7 +597,21 @@
   .bubble a{word-break:break-all}
   .bubble img{max-width:100%;border-radius:10px}
   .imgs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-  .imgs img{width:120px;height:120px;object-fit:cover;border-radius:10px}
+  .imgs img{width:120px;height:120px;object-fit:cover;border-radius:10px;cursor:zoom-in}
+
+  /* 图片大图查看器:点聊天里的图放大,支持上/下一张与关闭 */
+  #imgViewer{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.88)}
+  #imgViewer[hidden]{display:none}
+  #imgViewer img{max-width:92vw;max-height:88vh;object-fit:contain;border-radius:8px;user-select:none;-webkit-user-select:none}
+  #imgViewer .ivbtn{position:absolute;display:flex;align-items:center;justify-content:center;width:40px;height:40px;
+    border:none;border-radius:50%;background:rgba(255,255,255,.14);color:#fff;font-size:22px;line-height:1;
+    cursor:pointer;transition:background .14s;z-index:1}
+  #imgViewer .ivbtn:hover{background:rgba(255,255,255,.28)}
+  #imgViewer .ivclose{top:calc(14px + env(safe-area-inset-top,0px));right:14px;font-size:17px}
+  #imgViewer .ivprev{left:12px;top:50%;transform:translateY(-50%)}
+  #imgViewer .ivnext{right:12px;top:50%;transform:translateY(-50%)}
+  #imgViewer .ivcount{position:absolute;bottom:calc(16px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);
+    font-size:12.5px;color:rgba(255,255,255,.85);background:rgba(0,0,0,.45);padding:4px 12px;border-radius:999px}
 
   /* 选择/审批面板:复刻 Claude Code TUI —— 选项竖排带编号,选中项左侧 ❯ + 整行高亮条,其余置灰。
      外框由所在的工具卡(审批)或气泡(/model)提供,这里只负责排选项 */
@@ -1103,6 +1117,15 @@ try{
       </div>
       <div class="pmfoot" id="cronFoot"><button id="cronCloseBtn">关闭</button></div>
     </div>
+  </div>
+
+  <!-- 图片大图查看器 -->
+  <div id="imgViewer" hidden>
+    <button class="ivbtn ivclose" id="ivClose" title="关闭">✕</button>
+    <button class="ivbtn ivprev" id="ivPrev" title="上一张">‹</button>
+    <img id="ivImg" alt="">
+    <button class="ivbtn ivnext" id="ivNext" title="下一张">›</button>
+    <div class="ivcount" id="ivCount"></div>
   </div>
 
   <!-- 跨会话审批/确认全屏弹窗 -->
@@ -5358,6 +5381,7 @@ function addBubble(who, text, imgs){
     // 历史图走 /image?name=(需鉴权头,浏览器 <img> 不带) → 用 api() 取 blob;
     // 实时发的是 data:/blob: URL,直接塞 src。
     if(typeof u==="string" && u.startsWith("/")) loadAuthedImg(im,u); else im.src=u;
+    im.onclick=()=>openImgViewer(im);
     g.append(im);} b.append(g); }
   $("#wrap").append(row); updateEmpty(); scrollDown(true);
   return b;
@@ -6024,13 +6048,37 @@ $("#ta").addEventListener("input", checkCmdMenu);
 document.querySelectorAll("#empty .sug[data-s]").forEach(b=>{ b.onclick=()=>send(b.dataset.s); });
 
 // ── 图片 ────────────────────────────────────────────────────────────────
-// 读一个图片文件 → base64 并入待发送队列(选择/粘贴复用)
+// 读一个图片文件 → 必要时前端先压缩 → base64 并入待发送队列(选择/粘贴复用)。
+// 压缩策略:长边超 1568px(Claude 视觉输入的有效上限)或体积超 300KB 时,
+// 缩到 1568px 内并重编码 JPEG(q=0.85);GIF 保动画不压;压完更大则退回原图。
+const IMG_MAX_EDGE=1568, IMG_KEEP_BYTES=300*1024;
 function addImageFile(f){
   if(!f || !(f.type||"").startsWith("image/")) return;
-  const rd=new FileReader();
-  rd.onload=()=>{ const url=rd.result; S.images.push({data:url.split(",")[1],media_type:f.type||"image/png",url}); renderThumbs(); };
-  rd.readAsDataURL(f);
+  compressImage(f).then(im=>{ S.images.push(im); renderThumbs(); });
 }
+async function compressImage(f){
+  const raw=await new Promise((res,rej)=>{ const rd=new FileReader(); rd.onload=()=>res(rd.result); rd.onerror=rej; rd.readAsDataURL(f); });
+  const orig={data:raw.split(",")[1], media_type:f.type||"image/png", url:raw};
+  if(f.type==="image/gif") return orig;
+  if(f.size<=IMG_KEEP_BYTES){
+    // 小文件只在尺寸也不超时才免压(有些截图体积小但像素巨大)
+    try{ const im=await loadImgEl(raw); if(Math.max(im.naturalWidth,im.naturalHeight)<=IMG_MAX_EDGE) return orig; }catch(e){ return orig; }
+  }
+  try{
+    const im=await loadImgEl(raw);
+    const long=Math.max(im.naturalWidth,im.naturalHeight)||1;
+    const scale=Math.min(1, IMG_MAX_EDGE/long);
+    const w=Math.max(1,Math.round(im.naturalWidth*scale)), h=Math.max(1,Math.round(im.naturalHeight*scale));
+    const cv=document.createElement("canvas"); cv.width=w; cv.height=h;
+    const ctx=cv.getContext("2d");
+    ctx.fillStyle="#fff"; ctx.fillRect(0,0,w,h);   // JPEG 无透明通道,垫白底
+    ctx.drawImage(im,0,0,w,h);
+    const out=cv.toDataURL("image/jpeg",0.85);
+    if(out.length>=raw.length) return orig;
+    return {data:out.split(",")[1], media_type:"image/jpeg", url:out};
+  }catch(e){ return orig; }   // 解码失败(如 heic 某些浏览器不认)兜底发原图
+}
+function loadImgEl(src){ return new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=src; }); }
 $("#imgBtn").onclick = ()=>$("#file").click();
 $("#file").onchange = e=>{ for(const f of e.target.files) addImageFile(f); e.target.value=""; };
 // 粘贴:聊天框内 Ctrl/⌘+V 粘贴剪贴板里的图片(可多张),并入队列;纯文本粘贴不受影响
@@ -6046,6 +6094,45 @@ function renderThumbs(){
   const box=$("#thumbs"); box.innerHTML="";
   S.images.forEach((im,idx)=>{ const w=el("div","t"); const g=el("img"); g.src=im.url; const x=el("button","x"); x.textContent="×"; x.onclick=()=>{S.images.splice(idx,1);renderThumbs();}; w.append(g,x); box.append(w); });
 }
+
+// ── 图片大图查看器:点聊天里的图放大,←/→ 或按钮切换,Esc/✕/点背景关闭 ─────
+const IV={list:[], idx:0};
+// 历史图的 blob: URL 在 loadAuthedImg 显示后已被 revoke,不能直接复制 src;
+// 从仍持有解码数据的 <img> 经 canvas 重新导出,并缓存在元素上避免重复导出。
+function ivSrc(im){
+  if(!im.src.startsWith("blob:")) return im.src;
+  if(im._ivurl) return im._ivurl;
+  try{
+    const cv=document.createElement("canvas"); cv.width=im.naturalWidth; cv.height=im.naturalHeight;
+    cv.getContext("2d").drawImage(im,0,0);
+    im._ivurl=cv.toDataURL("image/png"); return im._ivurl;
+  }catch(e){ return im.src; }
+}
+function openImgViewer(img){
+  IV.list=Array.from(document.querySelectorAll("#wrap .imgs img")).filter(g=>g.src && g.naturalWidth);
+  if(!IV.list.length) return;
+  IV.idx=Math.max(0, IV.list.indexOf(img));
+  renderImgViewer();
+  $("#imgViewer").hidden=false;
+}
+function renderImgViewer(){
+  const n=IV.list.length;
+  IV.idx=(IV.idx+n)%n;
+  $("#ivImg").src=ivSrc(IV.list[IV.idx]);
+  $("#ivCount").textContent=(IV.idx+1)+" / "+n;
+  $("#ivPrev").style.display=$("#ivNext").style.display=$("#ivCount").style.display = n>1?"":"none";
+}
+function closeImgViewer(){ $("#imgViewer").hidden=true; $("#ivImg").removeAttribute("src"); IV.list=[]; }
+$("#ivClose").onclick=closeImgViewer;
+$("#ivPrev").onclick=e=>{ e.stopPropagation(); IV.idx--; renderImgViewer(); };
+$("#ivNext").onclick=e=>{ e.stopPropagation(); IV.idx++; renderImgViewer(); };
+$("#imgViewer").onclick=e=>{ if(e.target.id==="imgViewer") closeImgViewer(); };  // 点图片本身不关
+document.addEventListener("keydown", e=>{
+  if($("#imgViewer").hidden) return;
+  if(e.key==="Escape") closeImgViewer();
+  else if(e.key==="ArrowLeft"){ IV.idx--; renderImgViewer(); }
+  else if(e.key==="ArrowRight"){ IV.idx++; renderImgViewer(); }
+});
 
 // ── 语音输入(录音 → 后端 SenseVoice 转写 → 填进输入框)────────────────────
 // Claude 不吃音频,故先在后端转成文字。点一下开录(实时声波动效)、再点结束,转好的文字并入输入框可编辑再发。
