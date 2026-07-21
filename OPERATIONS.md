@@ -25,6 +25,7 @@
 - **别误杀原版 hermes**:本项目配置在 `~/.claude-hermes/`,**刻意独立于**原版 Hermes 的 `~/.hermes`,两者互不干扰。重启只动 claude-hermes 自己的进程。
 - **记忆唯一主库**:记忆实体文件只存在 AI_BRAIN 主库,`.claude` 项目侧全是软链;**禁止**在 Claude Code 项目记忆目录新建实体文件(会成孤本)。
 - **editable 安装 + worktree**:`pip install -e` 会让 worktree 里的改动被主仓库的已安装包屏蔽,调试时用 `uv run` 从当前目录跑。
+- **假死看门狗**([gateway/watchdog.py](claude_hermes/gateway/watchdog.py)):run.sh 只兜"进程退出",兜不住"活着但事件循环卡死"(2026-07-21 假死 70 分钟,全靠系统超时运气恢复)。现在循环无响应 30s → 全线程堆栈写入 `data/logs/watchdog.log`(排查卡点看这里),180s → 自杀退出码 70 交 run.sh 拉起。阈值可用环境变量 `WATCHDOG_DUMP_SEC`/`WATCHDOG_EXIT_SEC` 调。
 
 ## 排障:查会话
 
