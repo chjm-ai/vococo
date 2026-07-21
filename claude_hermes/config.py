@@ -134,6 +134,14 @@ SUGGESTIONS_PATH: Path = DATA_DIR / "suggestions.json"  # 待用户接受的自�
 HEARTBEAT_PATH: Path = DATA_DIR / "heartbeat"
 SCHEDULER_TICK_SEC: int = int(os.environ.get("SCHEDULER_TICK_SEC", "30"))
 
+# === 假死看门狗(gateway/watchdog.py)===
+# 事件循环无响应超过 DUMP 秒 → 把全线程堆栈写进 watchdog.log 留证据;
+# 超过 EXIT 秒 → 自杀退出,由 run.sh 守护循环拉起。EXIT 留 3 分钟余量,
+# 避免误杀偶发的长同步操作(如首次加载大模型权重)。
+WATCHDOG_DUMP_SEC: int = int(os.environ.get("WATCHDOG_DUMP_SEC", "30"))
+WATCHDOG_EXIT_SEC: int = int(os.environ.get("WATCHDOG_EXIT_SEC", "180"))
+WATCHDOG_LOG_PATH: Path = DATA_DIR / "logs" / "watchdog.log"
+
 # === Telegram ===
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_ALLOWED_CHAT_IDS: set[int] = _parse_chat_ids(

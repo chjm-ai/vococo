@@ -235,6 +235,9 @@ class GatewayRunner:
         for adapter in self.adapters.values():
             if hasattr(adapter, "set_cancel_callback"):
                 adapter.set_cancel_callback(self.cancel_turn)
+        from . import watchdog
+
+        watchdog.start_thread()  # 假死看门狗:循环卡死 → dump 堆栈 → 自杀交 run.sh 拉起
         try:
             async with anyio.create_task_group() as tg:
                 self._tg = tg
@@ -243,6 +246,7 @@ class GatewayRunner:
                 tg.start_soon(run_scheduler, self.push)
                 tg.start_soon(self._resume_after_restart)
                 tg.start_soon(client_pool.sweep_loop)  # 定期回收空闲超时的保温 client
+                tg.start_soon(watchdog.beat_loop)  # 在循环里刷心跳,供看门狗线程判卡死
         finally:
             # serve 停止(Ctrl-C/异常):收掉全部保温的 CLI 子进程,不留孤儿
             with anyio.CancelScope(shield=True):
