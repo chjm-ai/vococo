@@ -1268,7 +1268,10 @@ class WebAdapter:
         return web.Response(body=data, content_type=content_type, headers=headers)
 
     async def _handle_manifest(self, request: web.Request) -> web.Response:
-        return self._static_file("manifest.json", "application/manifest+json")
+        # 几乎不改,允许 CDN 边缘缓存 1 小时,省一趟跨境回源(2026-07-21)
+        return self._static_file(
+            "manifest.json", "application/manifest+json", {"Cache-Control": "public, max-age=3600"}
+        )
 
     async def _handle_sw(self, request: web.Request) -> web.Response:
         # Service-Worker-Allowed: / 让 sw 能控整站;no-cache 保证改动能刷新
@@ -1277,9 +1280,10 @@ class WebAdapter:
         )
 
     async def _handle_favicon(self, request: web.Request) -> web.Response:
-        # favicon 换标后要立即可见:禁用浏览器/隧道缓存(实际内容寻址靠文件本身)
+        # 跟 wazir-mark.svg 同口径:允许 CDN 边缘缓存 1 天,省跨境回源;
+        # 换标后最多 1 天内生效,可接受(2026-07-21,此前是 no-cache 强制每次回源)
         return self._static_file(
-            "favicon.ico", "image/x-icon", {"Cache-Control": "no-cache, no-store, must-revalidate"}
+            "favicon.ico", "image/x-icon", {"Cache-Control": "public, max-age=86400"}
         )
 
     async def _handle_mark(self, request: web.Request) -> web.Response:
@@ -1333,8 +1337,9 @@ class WebAdapter:
         name = request.match_info.get("name", "")
         if name not in self._ICONS:
             return web.Response(status=404, text="not found")
+        # 同 favicon:换标 1 天内生效换取免跨境回源(2026-07-21)
         return self._static_file(
-            f"{name}.png", "image/png", {"Cache-Control": "no-cache, no-store, must-revalidate"}
+            f"{name}.png", "image/png", {"Cache-Control": "public, max-age=86400"}
         )
 
     async def _handle_push_config(self, request: web.Request) -> web.Response:
