@@ -633,6 +633,10 @@ class WebAdapter:
                 enabled=bool(j.get("enabled")),
                 pending_review=pending_by_conv.get(conv, False),
                 last_status=j.get("last_status"),
+                # 下面三个字段是给管理界面「编辑」表单回填用的原始数据
+                prompt=j.get("prompt"),
+                schedule=j.get("schedule"),
+                target=j.get("target"),
             )
             rows.append(row)
         return web.json_response({"jobs": rows})
@@ -662,6 +666,35 @@ class WebAdapter:
         job = scheduler.create_job(
             name=name, prompt=prompt, schedule=schedule, target=target
         )
+        return web.json_response({"job": job})
+
+    async def _handle_cron_update(self, request: web.Request) -> web.Response:
+        """管理界面编辑已有定时任务(名称/指令/调度/推送目标),同样不经过审批。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        from ...cron import scheduler
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "bad json"}, status=400)
+        job_id = (body.get("id") or "").strip()
+        name = (body.get("name") or "").strip()
+        prompt = (body.get("prompt") or "").strip()
+        schedule = body.get("schedule")
+        if not job_id or not name or not prompt:
+            return web.json_response({"error": "name / prompt 不能为空"}, status=400)
+        err = scheduler.validate_schedule(schedule or {})
+        if err:
+            return web.json_response({"error": err}, status=400)
+        target = body.get("target") or None
+        if target is not None and not (target.get("platform") and target.get("chat_id") is not None):
+            target = None
+        job = scheduler.update_job(
+            job_id, name=name, prompt=prompt, schedule=schedule, target=target
+        )
+        if job is None:
+            return web.json_response({"error": "任务不存在"}, status=404)
         return web.json_response({"job": job})
 
     async def _handle_cron_set_enabled(self, request: web.Request) -> web.Response:
@@ -1457,6 +1490,7 @@ class WebAdapter:
                 web.get("/voice/sidebar", self._handle_voice_sidebar),
                 web.get("/cron/sidebar", self._handle_cron_sidebar),
                 web.post("/cron/jobs/create", self._handle_cron_create),
+                web.post("/cron/jobs/update", self._handle_cron_update),
                 web.post("/cron/jobs/enable", self._handle_cron_set_enabled),
                 web.post("/cron/jobs/delete", self._handle_cron_delete),
                 web.get("/projects", self._handle_projects),

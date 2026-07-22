@@ -327,6 +327,8 @@
   .cronrow .crtoggle.on{background:var(--accent)}
   .cronrow .crtoggle::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .15s}
   .cronrow .crtoggle.on::after{transform:translateX(14px)}
+  .cronrow .credit{color:var(--dim2);cursor:pointer;flex-shrink:0;padding:2px 4px}
+  .cronrow .credit:hover{color:var(--accent)}
   .cronrow .crdel{color:var(--dim2);cursor:pointer;flex-shrink:0;padding:2px 4px}
   .cronrow .crdel:hover{color:#e5484d}
   #cronForm{padding:12px 16px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
@@ -1214,6 +1216,7 @@ try{
         <div class="title">
           <span id="convTitle">主会话</span>
           <span class="tsub">
+            <button class="tgit" id="convCronEdit" type="button" title="编辑这个定时任务" hidden>✎ 编辑任务</button>
             <span id="gitBox">
               <button class="tgit" id="convGit" type="button" title="项目 Git 状态" hidden></button>
               <div id="gitPop" hidden></div>
@@ -1393,6 +1396,7 @@ const S = {
   dragMoved: false,     // 刚发生过一次拖拽落地,下一次 click 吞掉(不触发分组展开/收起)
   voiceSidebar: {main:null, tasks:[]},  // /voice/sidebar 拉到的"语音任务"固定分组数据
   cronJobs: [],         // /cron/sidebar 拉到的定时任务列表 [{conv,job_id,title,schedule_desc,enabled,last_status,...}]
+  cronEditId: null,     // 定时任务表单当前在编辑哪个 job_id;null=新建模式
   swipedConv: null,     // 当前左滑展开的会话 id;renderConvs 重建 DOM 时靠它补回 swiped 状态,
                          // 否则任意会话(含后台)一完成回合就会触发 loadConvs→renderConvs 把菜单冲掉
   omniEnabled: false,   // /voice/config 的 omni_enabled,P3 阶段二开关,登录后预取好,
@@ -4689,9 +4693,11 @@ function renderCronModalList(){
     const sd=el("div","crsched"); sd.textContent=j.schedule_desc||"";
     const tg=el("div","crtoggle"+(j.enabled?" on":"")); tg.title=j.enabled?"点击停用":"点击启用";
     tg.onclick=()=>toggleCronJob(j.job_id, !j.enabled);
+    const edt=el("div","credit"); edt.innerHTML=ic("edit"); edt.title="编辑";
+    edt.onclick=()=>showCronForm(j);
     const del=el("div","crdel"); del.innerHTML=ic("trash"); del.title="删除";
     del.onclick=()=>deleteCronJob(j.job_id, j.title);
-    row.append(nm, sd, tg, del);
+    row.append(nm, sd, tg, edt, del);
     box.append(row);
   }
 }
@@ -4706,24 +4712,38 @@ async function deleteCronJob(id, title){
   catch(e){ alert("删除失败"); return; }
   await loadCronSidebar(); renderCronModalList();
 }
-function showCronForm(){
-  $("#cronForm").hidden=false; $("#cfName").value=""; $("#cfPrompt").value="";
-  $("#cfPreset").value="custom"; $("#cfCron").value=""; $("#cfTelegram").value="";
-  $("#cfName").focus();
+// job 不传 = 新建模式;传了 = 编辑模式(表单回填该任务的字段,保存时打 update 接口)
+function showCronForm(job){
+  $("#cronForm").hidden=false;
+  S.cronEditId = job ? job.job_id : null;
+  $("#cfSave").textContent = job ? "✓ 保存" : "✓ 创建";
+  $("#cfName").value = job ? (job.name || job.title || "") : "";
+  $("#cfPrompt").value = job ? (job.prompt || "") : "";
+  // 编辑表单只支持 cron 表达式调度(跟新建一致);任务若是 interval/once 调度(只能靠
+  // 工具/建议创建),这里留空,保存时必须重新选一个频率,不会静默把调度类型改掉。
+  const expr = (job && job.schedule && job.schedule.kind==="cron") ? (job.schedule.expr||"") : "";
+  const presetOpts=[...$("#cfPreset").options].map(o=>o.value);
+  $("#cfPreset").value = expr && presetOpts.includes(expr) ? expr : "custom";
+  $("#cfCron").value = expr;
+  $("#cfTelegram").value = (job && job.target && job.target.platform==="telegram") ? (job.target.chat_id ?? "") : "";
+  if(!job) $("#cfName").focus();
 }
-function hideCronForm(){ $("#cronForm").hidden=true; }
-async function createCronJob(){
+function hideCronForm(){ $("#cronForm").hidden=true; S.cronEditId=null; }
+async function saveCronJob(){
   const name=$("#cfName").value.trim(), prompt=$("#cfPrompt").value.trim();
   const cron=$("#cfCron").value.trim(), tgChat=$("#cfTelegram").value.trim();
   if(!name || !prompt){ alert("任务名称和执行指令不能为空"); return; }
   if(!cron){ alert("请选一个预设频率,或填自定义 cron 表达式"); return; }
+  const editId=S.cronEditId;
   const body={name, prompt, schedule:{kind:"cron", expr:cron}};
+  if(editId) body.id=editId;
   if(tgChat) body.target={platform:"telegram", chat_id:tgChat};
   let d;
   try{
-    const r=await api("/cron/jobs/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const r=await api(editId?"/cron/jobs/update":"/cron/jobs/create",
+      {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     d=await r.json();
-  }catch(e){ alert("创建失败"); return; }
+  }catch(e){ alert(editId?"保存失败":"创建失败"); return; }
   if(d.error){ alert(d.error); return; }
   hideCronForm(); await loadCronSidebar(); renderCronModalList();
 }
@@ -4731,7 +4751,13 @@ $("#cronEntryBtn").onclick = ()=>openCronModal(false);
 $("#cronNewBtn").onclick = ()=>{ if($("#cronForm").hidden) showCronForm(); else hideCronForm(); };
 $("#cfPreset").onchange = ()=>{ const v=$("#cfPreset").value; if(v!=="custom") $("#cfCron").value=v; };
 $("#cfCancel").onclick = hideCronForm;
-$("#cfSave").onclick = createCronJob;
+$("#cfSave").onclick = saveCronJob;
+// 任务会话标题栏右侧的「编辑任务」入口(打开这条 cron-task 会话时才显示,见 openConv)
+$("#convCronEdit").onclick = async ()=>{
+  await openCronModal(false);
+  const j=S.cronJobs.find(x=>x.conv===S.conv);
+  if(j) showCronForm(j); else alert("没找到这个任务(可能刚被删除)");
+};
 $("#cronCloseBtn").onclick = closeCronModal;
 $("#cronModal").onclick = e=>{ if(e.target===$("#cronModal")) closeCronModal(); };
 
@@ -5356,6 +5382,7 @@ async function openConv(conv, silentGroup){
     if(!silentGroup){ S.expanded.add(grpKey(S.project)); saveExpanded(); }
   }
   $("#convTitle").textContent = c ? (c.title||"新对话") : "新对话";
+  $("#convCronEdit").hidden = !String(conv).startsWith("cron-task:");
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘

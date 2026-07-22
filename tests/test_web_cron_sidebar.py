@@ -1,4 +1,4 @@
-"""定时任务管理界面的接口:/cron/sidebar、/cron/jobs/create|enable|delete。
+"""定时任务管理界面的接口:/cron/sidebar、/cron/jobs/create|update|enable|delete。
 
 只测新接口本身(数据模型见 claude_hermes/cron/scheduler.py 的 job 结构注释:
 每个任务一条专属会话 conv=cron-task:<id>,创建/启停/删除都不经过 danger 审批——
@@ -32,6 +32,7 @@ def cron_web_app(isolated, monkeypatch):
         [
             web.get("/cron/sidebar", adapter._handle_cron_sidebar),
             web.post("/cron/jobs/create", adapter._handle_cron_create),
+            web.post("/cron/jobs/update", adapter._handle_cron_update),
             web.post("/cron/jobs/enable", adapter._handle_cron_set_enabled),
             web.post("/cron/jobs/delete", adapter._handle_cron_delete),
         ]
@@ -137,4 +138,65 @@ async def test_enable_unknown_id_404(cron_web_app):
         resp = await client.post("/cron/jobs/enable", json={"id": "ghost", "enabled": True})
         assert resp.status == 404
         resp = await client.post("/cron/jobs/delete", json={"id": "ghost"})
+        assert resp.status == 404
+
+
+@pytest.mark.anyio
+async def test_update_edits_fields_and_sidebar_reflects_it(cron_web_app):
+    async with TestClient(TestServer(cron_web_app)) as client:
+        resp = await client.post(
+            "/cron/jobs/create",
+            json={
+                "name": "晨间简报",
+                "prompt": "汇总今天的安排",
+                "schedule": {"kind": "cron", "expr": "0 8 * * *"},
+            },
+        )
+        job = (await resp.json())["job"]
+
+        resp = await client.post(
+            "/cron/jobs/update",
+            json={
+                "id": job["id"],
+                "name": "晚间简报",
+                "prompt": "汇总今天完成了什么",
+                "schedule": {"kind": "cron", "expr": "0 21 * * *"},
+                "target": {"platform": "telegram", "chat_id": "123"},
+            },
+        )
+        assert resp.status == 200
+        updated = (await resp.json())["job"]
+        assert updated["name"] == "晚间简报"
+        assert updated["prompt"] == "汇总今天完成了什么"
+        assert updated["schedule"] == {"kind": "cron", "expr": "0 21 * * *"}
+        assert updated["target"] == {"platform": "telegram", "chat_id": "123"}
+        assert updated["id"] == job["id"]
+        assert updated["conv"] == job["conv"]  # 编辑不改 id/conv
+
+        resp = await client.get("/cron/sidebar")
+        row = (await resp.json())["jobs"][0]
+        assert row["title"] == "晚间简报"
+        assert row["schedule_desc"] == "0 21 * * *"
+        assert row["prompt"] == "汇总今天完成了什么"
+
+
+@pytest.mark.anyio
+async def test_update_rejects_bad_cron_and_unknown_id(cron_web_app):
+    async with TestClient(TestServer(cron_web_app)) as client:
+        resp = await client.post(
+            "/cron/jobs/create",
+            json={"name": "任务", "prompt": "x", "schedule": {"kind": "cron", "expr": "0 8 * * *"}},
+        )
+        job = (await resp.json())["job"]
+
+        resp = await client.post(
+            "/cron/jobs/update",
+            json={"id": job["id"], "name": "任务", "prompt": "x", "schedule": {"kind": "cron", "expr": "bad"}},
+        )
+        assert resp.status == 400
+
+        resp = await client.post(
+            "/cron/jobs/update",
+            json={"id": "ghost", "name": "a", "prompt": "b", "schedule": {"kind": "cron", "expr": "0 8 * * *"}},
+        )
         assert resp.status == 404

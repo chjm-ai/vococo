@@ -80,6 +80,25 @@ def create_job(
     return job
 
 
+def update_job(
+    job_id: str, *, name: str, prompt: str, schedule: dict, target: dict | None = None,
+) -> dict | None:
+    """编辑已有任务的名称/指令/调度/推送目标(管理界面的「编辑」用);不改 id/conv/
+    enabled/统计字段。调度变了就把 next_run_at 清掉,让下一跳按新调度重算。
+    找不到该任务返回 None。"""
+    jobs = load_jobs()
+    job = next((j for j in jobs if j.get("id") == job_id), None)
+    if job is None:
+        return None
+    job["name"] = name
+    job["prompt"] = prompt
+    job["schedule"] = schedule
+    job["target"] = target
+    job["next_run_at"] = None
+    save_jobs(jobs)
+    return job
+
+
 def describe_schedule(schedule: dict) -> str:
     """人类可读的调度摘要,给 list_cron_jobs 工具和管理界面共用。"""
     kind = schedule.get("kind")
