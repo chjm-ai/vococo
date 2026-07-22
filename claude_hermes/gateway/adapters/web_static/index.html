@@ -695,6 +695,11 @@
   .tc-sub{padding:2px 6px 2px 24px;display:flex;flex-wrap:wrap;gap:4px 10px;
     font-size:11.5px;color:var(--dim2);align-items:center}
   .tc-sub:empty{display:none}
+  /* 指令隐藏态(被更新的指令覆盖,或正文输出后清除) */
+  .tc-hidden{display:none}
+  /* 当前活跃(最新)指令闪烁 */
+  @keyframes tc-blink{0%,100%{opacity:1}50%{opacity:.4}}
+  .tc-active .tc-head{animation:tc-blink 1.2s ease-in-out infinite}
 
   /* 切会话 loading 骨架屏 */
   #convLoading{display:none;padding:20px 32px;flex-direction:column;gap:14px}
@@ -5976,7 +5981,7 @@ function ensureStream(t0){
   bubble.append(thinktog,think,flow,status);  // 状态行(工作中…)放气泡底部,像 TG 的打字指示
   row.append(bubble); $("#wrap").append(row); updateEmpty();
   thinktog.onclick=()=>{ const on=think.classList.toggle("show"); tcv.classList.toggle("down", on); };
-  S.stream={row,bubble,status,think,thinktog,flow,segs:{},tools:[],cards:{},subs:{},t0:t0||Date.now(),lastEvt:Date.now()};
+  S.stream={row,bubble,status,think,thinktog,flow,segs:{},tools:[],cards:{},subs:{},activeCard:null,t0:t0||Date.now(),lastEvt:Date.now()};
   resumeStreamTimer(S.stream);  // 状态行的耗时计数每秒走字;流被任何路径丢弃(完成/切会话)都会自行停表,不泄漏
   renderStatus();  // 初始即显示"💭 思考中…"动画
   updateSendBtn();
@@ -6170,7 +6175,7 @@ function applyStreamEvent(e){
       addBubble("me", e.text); break;
     case "start": ensureStream(e._t0); break;
     case "thinking": { const s=ensureStream(); s.thinktog.style.display="flex"; s.think.textContent=e.text; renderStatus(); break; }
-    case "text": { const s=ensureStream(); const d=segDiv(s, e.seg); d.dataset.raw=e.text; renderSeg(d); renderStatus(); break; }
+    case "text": { const s=ensureStream(); const d=segDiv(s, e.seg); d.dataset.raw=e.text; renderSeg(d); if(s.activeCard){ s.activeCard.classList.add("tc-hidden"); s.activeCard.classList.remove("tc-active"); s.activeCard=null; } renderStatus(); break; }
     case "tool_start": { const s=ensureStream();
       if(e.parent){ subUpsert(s, e.parent, {name:e.name, id:e.tool_id, done:false, ok:true}); }
       else s.tools.push({name:e.name, id:e.tool_id, done:false, ok:true, subN:0});
@@ -6178,7 +6183,12 @@ function applyStreamEvent(e){
     case "tool_input": { const s=ensureStream();
       if(e.parent) break;   // 子代理内部工具的入参不展大卡片(动态在子代理卡里),避免刷屏
       const card=renderToolCard(e.name, e.input||{});
-      if(card){ if(e.tool_id) s.cards[e.tool_id]=card; s.flow.append(card); scrollDown();
+      if(card){
+        if(e.tool_id) s.cards[e.tool_id]=card;
+        // 隐藏上一条活跃指令,只展示最新的(带闪烁动效)
+        if(s.activeCard && s.activeCard!==card){ s.activeCard.classList.add("tc-hidden"); s.activeCard.classList.remove("tc-active"); }
+        s.activeCard=card; card.classList.add("tc-active");
+        s.flow.append(card); scrollDown();
         // 子代理卡片刚建好:若它的内部工具事件已先到(存在 s.subs),补渲染一次动态区
         if(card._sub && e.tool_id && s.subs[e.tool_id]) renderSub(s, e.tool_id);
       } break; }
@@ -6188,7 +6198,13 @@ function applyStreamEvent(e){
       const it=(e.tool_id&&s.tools.find(x=>x.id===e.tool_id&&!x.done))
         ||s.tools.find(x=>x.name===e.name&&!x.done)||s.tools[s.tools.length-1];
       if(it){it.done=true;it.ok=e.ok;}
-      attachResult(s, e); renderStatus(); break; }
+      attachResult(s, e);
+      // 完成的卡片停止闪烁(但仍可见,直到被下条指令或正文覆盖)
+      if(s.activeCard){
+        const endCard=e.tool_id?s.cards[e.tool_id]:null;
+        if(endCard && endCard===s.activeCard){ s.activeCard.classList.remove("tc-active"); }
+      }
+      renderStatus(); break; }
     case "compact": { const s=ensureStream();
       const d=el("div","compactline"); d.textContent="上下文已自动压缩,对话继续";
       s.flow.append(d); scrollDown(); break; }
