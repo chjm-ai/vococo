@@ -1464,7 +1464,8 @@ const S = {
   omniEnabled: false,   // /voice/config 的 omni_enabled,P3 阶段二开关,登录后预取好,
                          // 避免每次进通话视图都要等一趟网络往返才知道走哪条路径
   vadThreshold: 0.7,    // /voice/config 的 vad_threshold/vad_silence_ms,兜底默认跟
-  vadSilenceMs: 800,    // config.py 的 VOICE_OMNI_VAD_SILENCE_MS 默认值一致;2026-07-22 从 4500→800,用户反馈等太久
+  vadSilenceMs: 2500,   // config.py 的 VOICE_OMNI_VAD_SILENCE_MS 默认值一致;2026-07-22 800 触发对话
+                         // 全面错位(正常语流停顿就判停,腰斩链路高频触发),回调到 2500 折中
   omniVoice: "Serena",  // /voice/config 的 omni_voice,Omni 出声模式 session.update 的音色
                          // (注意跟 Qwen-TTS 音色表不通用,Cherry 会 400,见 config.py)
 };
@@ -1586,6 +1587,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 不是"语义判完整"的开关。这里加一层客户端缓冲:转写完成后不立刻发,等一小段
   // 时间看是否又开口;真又开口就拼到一起,超时才当一轮发出去。
   let omniPendingText=null, omniPendingTimer=null;
+  // 2026-07-22 状态错乱事故的修复:flush 时机改由「说话中/转写在途」两个状态决定,
+  // 不再让 speech_started/committed 把 30s 安全网覆盖成 1~1.5s 的短定时器——
+  // 短定时器会在下一段转写(completed)到达前把前半句发出去,后半句成孤儿,
+  // 表现为"消息被吞、要说两遍才有反应、回答的是上一句"。
+  let omniSpeechActive=false;   // speech_started→true / speech_stopped→false
+  let omniInflightSegs=0;       // committed 过、转写(completed/delta兜底)还没回来的段数
   // 转写完成事件的 delta 兜底(2026-07-13,真机+aiortc 探针实锤):我们每轮发的
   // response.cancel(砍 Omni 自作主张回复)会把服务端还没 finalize 的
   // input_audio_transcription.completed 一起砍死——delta 照回(前端字幕正常),
@@ -1596,10 +1603,13 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniDeltaFallback=null;        // {itemId, text} 最新一句的 delta 累积文本
   let omniDeltaFallbackTimer=null;
   let omniFallbackSentItem=null;     // 已被兜底发过的 item_id,completed 迟到时防重复
-  // 2026-07-13 真机通话实锤(turn #1204"你刚才打断我思路了"):长句子天然停顿多,
-  // 1.3s 缓冲期常常不够等到用户说完就先发了——发出去就收不回,继续说话会被
-  // 误判成打断(barge-in)。拉长到 2.2s 换更低的腰斩概率,代价是打断响应慢一点。
-  const OMNI_PENDING_FLUSH_MS = 1500;
+  // OMNI_PENDING_FLUSH_MS:确认「用户没在说话、也没有转写在途」之后,再等这么久
+  // 就把缓冲发出去——它只在万事俱备时生效,所以可以很短;等待"下一段会不会来"的
+  // 职责已经完全交给 omniSpeechActive/omniInflightSegs 两个状态(见 scheduleOmniFlush)。
+  // OMNI_PENDING_SAFETY_MS:安全网。VAD 不报 speech_stopped/转写永远不回来时,
+  // 缓冲最多压这么久必发,不至于卡死。
+  const OMNI_PENDING_FLUSH_MS = 600;
+  const OMNI_PENDING_SAFETY_MS = 30000;
   // 首回复静音(2026-07-12,Wesley 提议):每次 WebRTC 新建连接后,iOS AEC 从零
   // 收敛,AI 第一段音频的回声漏得最凶——干脆在本连接第一次朗读期间把麦克风上行
   // 直接静音(track.enabled=false 只发静音帧,不动音频图,不踩 iOS 音频会话的雷),
@@ -2816,6 +2826,7 @@ void main(){
           // 清空朗读队列,让过期的 /voice/send 流式结果(见 sendOmniTurn 的 gen
           // 判断)不再生效。
           omniSpeechStartTs = Date.now();
+          omniSpeechActive = true;
           // 主动拉起自动回复防护——用户一开口 Omni 必定自动生成回复(create_response
           // 关不掉),不等 response.created 回执就把泵朗读的闸拉住,防止 SSE 句子
           // 先到、自动回复的 response.created 后到时的竞态(自动回复的 response.
@@ -2846,11 +2857,12 @@ void main(){
             // 非 barge-in 场景开口:清掉可能残留的旧快照(上一次幽灵打断没等到转写),
             // 别让 matchOmniEcho 误以为这句话发生在 AI 说话期间。
             omniEchoRestore = null;
-            // 又开口了,说明上一段大概率没说完:把待发送缓冲的倒计时往后顺延,
-            // 别让它在这句话说到一半时就把前半句发出去(见 OMNI_PENDING_FLUSH_MS)。
-            // 就算这句话最终被判成回声丢弃,倒计时到点也会自愈式地把缓冲发出去,
-            // 不会卡死。
-            if(omniPendingTimer){ clearTimeout(omniPendingTimer); omniPendingTimer = setTimeout(flushOmniPending, OMNI_PENDING_FLUSH_MS); }
+            // 又开口了,说明上一段大概率没说完:把待发送缓冲的倒计时顺延成安全网,
+            // 等这句话的转写到齐再一起发。【2026-07-22 事故根因】这里以前把 30s
+            // 安全网覆盖成 1.5s 短定时器——短定时器在新一段转写回来之前到点,把
+            // 前半句先发了出去,后半句成孤儿,整个对话从此错位。就算这句话最终被
+            // 判成回声丢弃,安全网到点也会自愈式地把缓冲发出去,不会卡死。
+            scheduleOmniFlush("speech_started");
           }
           if(wsState !== "capturing") playCapturingTone();
           omniCapturingSince = Date.now();  // 看门狗:记录 capturing 开始时刻
@@ -2871,19 +2883,18 @@ void main(){
           // response.cancel 连带砍死了(见 omniDeltaFallback 注释)——拿 delta
           // 缓存顶上,别让用户的话烂在半路。
           armOmniDeltaFallback();
-          // 连续说话时的新一段 VAD 切片:延长等待让后续片段到达后一起发出,
-          // 避免独立 flush 被后端的抢占锁(t.cancel())吞掉。
-          if(omniPendingText){
-            if(omniPendingTimer) clearTimeout(omniPendingTimer);
-            omniPendingTimer = setTimeout(flushOmniPending, OMNI_PENDING_FLUSH_MS);
-          }
+          // 这一段的转写正式进入在途状态:completed(或 delta 兜底)回来之前,
+          // 缓冲绝不能 flush——转写消费时在 handleUserTranscript 顶部递减。
+          omniInflightSegs++;
+          // 有积压时把倒计时重排成安全网,等这段转写到齐一起发(以前这里设 1.5s
+          // 短定时器,是 2026-07-22 对话错位事故的帮凶之一,见 scheduleOmniFlush)。
+          scheduleOmniFlush("committed");
           break;
         case "input_audio_buffer.speech_stopped":
-          // 用户说完了:短等待让最后一段转写到达,然后立即 flush。
-          if(omniPendingText){
-            if(omniPendingTimer) clearTimeout(omniPendingTimer);
-            omniPendingTimer = setTimeout(flushOmniPending, 1000);
-          }
+          // 用户说完了。若最后一段转写还在途(inflight>0),flush 由转写到达驱动;
+          // 都到齐了才短等待后发出(以前这里无条件 1s flush,在途转写直接被甩下)。
+          omniSpeechActive = false;
+          scheduleOmniFlush("speech_stopped");
           break;
         case "conversation.item.input_audio_transcription.delta":
           // 转写在正常推进,说明不是幽灵打断——兜底定时器往后顺延,别在用户
@@ -3404,6 +3415,9 @@ void main(){
   // 转写完成(或 delta 兜底顶上)后的统一入口:回声判定→字幕定稿→进拆句缓冲。
   // 原本是 .completed 分支的内联逻辑,2026-07-13 抽出来让兜底路径走同一条链。
   function handleUserTranscript(transcript){
+    // 一段在途转写被消费(completed 或 delta 兜底都汇到这里),计数递减——
+    // 归零且用户没在说话时,scheduleOmniFlush 才允许真正 flush。
+    if(omniInflightSegs > 0) omniInflightSegs--;
     const restore = omniEchoRestore; omniEchoRestore = null;
     if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
     const echoSrc = transcript ? matchOmniEcho(transcript, !!restore) : null;
@@ -3424,12 +3438,15 @@ void main(){
         maybeOmniIdle();
         if(wsState !== "idle"){ wsState = "idle"; setStatus(STATE_WORD.idle); if(handsFreeActive) orbWrap.className = "idle"; }
       }
+      // 这段被判回声丢弃,但缓冲里可能还压着真话——按当前状态重排倒计时,别让它烂在安全网里
+      scheduleOmniFlush("echo-discard");
       return;
     }
     if(omniUserLiveEl) renderAi(omniUserLiveEl, transcript || "(没听清)");
     else if(transcript) addMsg("me", transcript);
     omniUserLiveEl = null;
     if(transcript) queueOmniTurn(transcript);
+    else scheduleOmniFlush("empty-transcript");
   }
 
   // committed 后 completed 迟迟不来的兜底(根因见 omniDeltaFallback 注释)。
@@ -3451,18 +3468,29 @@ void main(){
   }
 
   // 拆句缓冲的入口:转写完成不立刻发,累进 omniPendingText,直接拼接不加分隔符。
-  // 不设短定时器:长语音各段可能间隔 >10s(Omni 服务端 force-commit 最大音频缓冲
-  // 区),设了短定时器会在后续分段到达前误发→独立/voice/send 被后端抢占锁取消。
-  // flush 由 committed handler(有积压时设 1500ms 延长等待)或 speech_stopped
-  // (用户说完后 1s 宽容期)驱动。安全网:30s 防 VAD 不报 speech_stopped 卡死。
+  // flush 时机统一由 scheduleOmniFlush 按状态决定(2026-07-22 重构,事故根因见
+  // omniSpeechActive 声明处注释):
+  //   · 用户还在说话(omniSpeechActive)或有转写在途(omniInflightSegs>0)
+  //     → 只挂 30s 安全网,绝不短定时器误发前半句;
+  //   · 都到齐了 → OMNI_PENDING_FLUSH_MS(600ms)短等待后发出。
+  // 长语音各段可能间隔 >10s(Omni 服务端 force-commit 最大音频缓冲区),
+  // 中间态一律走安全网,由下一段的转写到达来推进。
   function queueOmniTurn(text){
     omniPendingText = (omniPendingText || "") + text;
-    if(!omniPendingTimer){
-      omniPendingTimer = setTimeout(flushOmniPending, 30000);
-    }
+    scheduleOmniFlush("queue");
+  }
+  function scheduleOmniFlush(why){
+    if(!omniPendingText) return;
+    if(omniPendingTimer) clearTimeout(omniPendingTimer);
+    const waiting = omniSpeechActive || omniInflightSegs > 0;
+    omniPendingTimer = setTimeout(flushOmniPending, waiting ? OMNI_PENDING_SAFETY_MS : OMNI_PENDING_FLUSH_MS);
+    vdbg("pending.arm", {why, wait: waiting ? "safety" : "flush", inflight: omniInflightSegs, speaking: omniSpeechActive});
   }
   function flushOmniPending(){
     omniPendingTimer = null;
+    // 安全网到点强发(转写丢了/VAD 没报 stopped):在途计数一并清零自愈,
+    // 防止计数泄漏后所有后续缓冲永远只挂安全网。
+    omniInflightSegs = 0;
     const text = omniPendingText; omniPendingText = null;
     if(text) sendOmniTurn(text);
   }
@@ -3595,6 +3623,7 @@ void main(){
     omniDeltaFallback = null; omniFallbackSentItem = null;
     if(omniPendingTimer){ clearTimeout(omniPendingTimer); omniPendingTimer = null; }
     omniPendingText = null;
+    omniSpeechActive = false; omniInflightSegs = 0;
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
   }
