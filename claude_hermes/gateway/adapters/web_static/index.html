@@ -1464,7 +1464,7 @@ const S = {
   omniEnabled: false,   // /voice/config 的 omni_enabled,P3 阶段二开关,登录后预取好,
                          // 避免每次进通话视图都要等一趟网络往返才知道走哪条路径
   vadThreshold: 0.7,    // /voice/config 的 vad_threshold/vad_silence_ms,兜底默认跟
-  vadSilenceMs: 4500,   // config.py 的 VOICE_OMNI_VAD_SILENCE_MS 默认值一致,拉取失败也不至于比调优前更灵敏
+  vadSilenceMs: 800,    // config.py 的 VOICE_OMNI_VAD_SILENCE_MS 默认值一致;2026-07-22 从 4500→800,用户反馈等太久
   omniVoice: "Serena",  // /voice/config 的 omni_voice,Omni 出声模式 session.update 的音色
                          // (注意跟 Qwen-TTS 音色表不通用,Cherry 会 400,见 config.py)
 };
