@@ -239,6 +239,10 @@ class WebAdapter:
         # 一旦不一样就说明断线期间进程重启过,上面的环形缓冲/_live 全被清空了,
         # 断线补发这条路救不回来,前端得主动整体核对一次(侧栏 + 当前会话历史)。
         self._boot_id = f"{int(time.time() * 1000)}-{os.getpid()}"
+        # 注册语音任务桥接:voice-task 状态变化经主 SSE 推给前端,让侧栏小红点闪烁。
+        # 懒加载避免非语音场景循环依赖;bridge 本身只要 _emit,不依赖 voice 包的其他模块。
+        from ...voice import notify as _voice_notify
+        _voice_notify.register_main_event_bridge(self._emit)
 
     def set_cancel_callback(self, cb: Callable[[str], bool]) -> None:
         self._cancel_callback = cb

@@ -25,6 +25,29 @@ _status_emoji = {"done": "✅", "failed": "❌", "cancelled": "🚫"}
 # 注册的平台推送回调:async (platform, chat_id, text) -> None
 _platform_push: Callable[[str, str, str], Awaitable[None]] | None = None
 
+# ── 主 SSE 桥接(voice-task 侧栏小红点) ──────────────────────────────────
+_main_event_bridge: Callable[[dict], None] | None = None
+# 已发 start 的任务 id 集合,防止进度更新重复发(仅首次起跑发一次)。
+_started_tasks: set[str] = set()
+
+
+def register_main_event_bridge(fn: Callable[[dict], None] | None) -> None:
+    """注册/注销主 SSE 桥接回调,把语音任务状态变化(起跑/终态)以 start/done
+    事件推给主 SSE 通道,让 voice-task 侧栏行的小红点能像普通会话行一样闪烁。
+
+    由 WebAdapter 在初始化时注册,传入 self._emit。
+    传入 None 可注销(主要用于测试清理)。"""
+    global _main_event_bridge
+    _main_event_bridge = fn
+
+
+def _bridge_event(payload: dict) -> None:
+    if _main_event_bridge is not None:
+        try:
+            _main_event_bridge(payload)
+        except Exception:
+            pass
+
 
 def subscribe() -> asyncio.Queue:
     """/voice/tasks/stream 建连时调用,返回一个只属于该连接的事件队列。"""
@@ -60,6 +83,11 @@ def on_task_activity(task: dict) -> None:
             "created_at": task["created_at"],
         },
     )
+    # 桥接到主 SSE:任务起跑 → 前端侧栏显示小红点。_started_tasks 防重复:
+    # 进度更新(工具调用等)也走本函数,但只有首次起跑的 running 才需要发 start。
+    if task["status"] == "running" and task["id"] not in _started_tasks:
+        _started_tasks.add(task["id"])
+        _bridge_event({"conv": f"voice-task:{task['id']}", "type": "start"})
 
 
 def register_platform_push(
@@ -106,6 +134,11 @@ async def on_task_terminal(task_id: str) -> None:
         "result_summary": task["result_summary"],
         "announce_text": announce_text,
     }
+    # 先桥接 done 事件到主 SSE:让侧栏小红点熄灭(在 SSE 播报和离线推送之前推,
+    # 别让侧栏一直亮在已结束的任务上,也别卡住后面的异步推送路径)。
+    _started_tasks.discard(task_id)  # 清状态锁,支持后续 append 续跑重新亮 dot
+    _bridge_event({"conv": f"voice-task:{task_id}", "type": "done"})
+
     # ── 在线:推 SSE(语音播报) ──────────────────────────────────────
     if is_online():
         audio = None
