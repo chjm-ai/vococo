@@ -89,11 +89,16 @@ class GatewayRunner:
     async def _handle(self, adapter: Adapter, inc: Incoming) -> None:
         key = inc.session_key
         # 优先内存里本次会话的切换,其次库里持久化的选定(重启后仍在);
-        # web 端新会话没显式选过 → 回落"这个端上次用的模型",最后才是全局默认
+        # 全新会话(两者都没有)才回落"这个端上次用的默认模型"/全局默认,并【立即锁定】
+        # 为本会话的 chosen_model —— 否则后面别的会话再切换默认模型,会把这个已经用过
+        # 模型的老会话也带跑(缓存/上下文都对不上了)。锁定后,默认模型的变化只影响
+        # 真正还没用过模型的全新会话。
         model = self.models.get(key) or session_store.get_chosen_model(key)
-        if not model and inc.platform == "web":
-            model = settings_store.get_web_default_model()
-        model = model or config.MODEL
+        if not model:
+            model = settings_store.get_web_default_model() if inc.platform == "web" else ""
+            model = model or config.MODEL
+            session_store.set_chosen_model(key, model)
+        self.models[key] = model
         if core.is_command(inc.text):
             outcome = core.handle_command(inc.text, key, model)
             # handled=False 且没回复 = 不是系统命令(比如 "/skill名"),原样当成
@@ -102,6 +107,9 @@ class GatewayRunner:
                 if outcome.new_model:
                     self.models[key] = outcome.new_model
                     if inc.platform == "web":
+                        # 先冻结所有老会话已经在用的模型,再改全局默认——顺序不能反,
+                        # 否则中间有窗口期:老会话下一轮读到的已经是改完的新默认。
+                        session_store.backfill_chosen_models()
                         settings_store.set_web_default_model(outcome.new_model)
                 if outcome.choice is not None:
                     await adapter.present_choice(inc.chat_id, outcome.choice)
