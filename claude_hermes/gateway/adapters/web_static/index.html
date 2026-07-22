@@ -2737,6 +2737,15 @@ void main(){
   // 往往还要挂 5~10 秒才跳 disconnected,等它自己发现黄花菜都凉了。
   function scheduleOmniReconnect(reason, delayMs, force){
     if(!handsFreeActive || omniReconnectTimer) return;
+    // 连接要重建了:缓冲里已定稿的用户话先发出去——它走 HTTP /voice/send,不依赖
+    // 这条 WebRTC;不发的话重建的 teardown 会把 omniPendingText 清掉,用户的问题
+    // 就人间蒸发了(2026-07-22 真机 13:03:29 实锤:提问压在安全网里等 flush,
+    // 20 秒后连接断开触发重连,缓冲被清,一直"思考中"没有任何回复)。
+    if(omniPendingText){
+      vdbg("pending.flush-before-reconnect", {len: omniPendingText.length});
+      if(omniPendingTimer){ clearTimeout(omniPendingTimer); }
+      flushOmniPending();
+    }
     vdbg("reconnect.scheduled", {reason, attempts: omniReconnectAttempts});
     omniReconnectAttempts++;
     setOmniConnStatus("disconnected");
@@ -3458,7 +3467,19 @@ void main(){
     const snap = omniDeltaFallback;
     omniDeltaFallbackTimer = setTimeout(() => {
       omniDeltaFallbackTimer = null;
-      if(!snap || !snap.text) return;                    // 这句压根没出过 delta,没法兜
+      if(!snap || !snap.text){
+        // 幽灵段(2026-07-22 真机 13:03 实锤):回声/噪音触发了 committed,但连
+        // delta 都转写不出——completed 永远不来,handleUserTranscript 不会被调,
+        // omniInflightSegs 就地泄漏。泄漏 1 之后,后面每句真话都误判"转写在途"
+        // 走 30s 安全网,期间连接一断缓冲被清,用户的问题人间蒸发。这里把死段
+        // 核销掉,并按当前状态重排 flush。
+        if(omniInflightSegs > 0){
+          omniInflightSegs--;
+          vdbg("inflight.dead-segment", {inflight: omniInflightSegs});
+          scheduleOmniFlush("dead-segment");
+        }
+        return;
+      }
       if(!handsFreeActive) return;                       // 通话已挂断,别往外发
       omniFallbackSentItem = snap.itemId;                // completed 迟到时据此防重发
       if(omniDeltaFallback && omniDeltaFallback.itemId === snap.itemId) omniDeltaFallback = null;
