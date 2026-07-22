@@ -4365,45 +4365,38 @@ function buildVoiceMainRow(inCall){
   mainRow.onclick=()=>{ openCallView(); };
   return mainRow;
 }
-// 语音后台任务行:按接口返回顺序排在普通会话前,可点进去看进度/追问;
-// 作为普通条目参与分组的「最多展示 5 条」限制。
-function buildVoiceTaskRows(inCall){
-  const vs = S.voiceSidebar;
-  if(!vs || !vs.main) return [];
-  const rows=[];
-  for(const t of vs.tasks){
-    // 任务行跟普通会话行吃同一套归档筛选
-    const arch=!!t.archived;
-    if(S.convFilter==="archived"&&!arch)continue;
-    if(S.convFilter==="active"&&arch)continue;
-    const row=el("div","conv ingroup"+(!inCall && t.conv===S.conv?" active":""));
-    row.dataset.conv=t.conv;
-    const body=el("div","cvbody");
-    // 任务还在跑(queued/running)→ 复用普通会话行的闪烁圆点;终态不挂点(ab77594 去掉已读提醒的决定不变)
-    if(t.task_status==="queued"||t.task_status==="running"){
-      const dot=el("span","livedot"); dot.title=t.task_status==="running"?"任务进行中":"排队中"; body.append(dot);
-    }
-    const ct=el("div","ct"); ct.textContent=t.title||"新对话"; body.append(ct);
-    const tm=fmtTime(t.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }
-    const more=el("button","more"); more.textContent="⋯"; more.title="更多";
-    more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,t.conv);}; body.append(more);
-    row.append(body);
-    const act=el("div","cvact");
-    const archBtn=el("button","cvarch"); archBtn.innerHTML=ic("folder"); archBtn.title=arch?"取消归档":"归档";
-    archBtn.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); toggleArchive(t.conv); };
-    const del=el("button","cvdel"); del.innerHTML=ic("trash"); del.title="删除";
-    del.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); delConv(t.conv); };
-    act.append(archBtn,del); row.append(act);
-    bindSwipe(row, body, act);
-    if(t.conv===S.swipedConv) row.classList.add("swiped");
-    row.onclick=()=>{
-      if(row._justSwiped){ row._justSwiped=false; return; }
-      if(row.classList.contains("swiped")){ closeSwipe(row); return; }
-      openConv(t.conv);
-    };
-    rows.push(row);
+// 语音后台任务的单条行(与普通会话行同构);archived 筛选不通过时返回 null。
+// 拆成单条构建是为了跟普通会话按时间混排(见 renderConvs 里默认项目分组的合并排序)。
+function buildVoiceTaskRow(t, inCall){
+  const arch=!!t.archived;
+  if(S.convFilter==="archived"&&!arch) return null;
+  if(S.convFilter==="active"&&arch) return null;
+  const row=el("div","conv ingroup"+(!inCall && t.conv===S.conv?" active":""));
+  row.dataset.conv=t.conv;
+  const body=el("div","cvbody");
+  // 任务还在跑(queued/running)→ 复用普通会话行的闪烁圆点;终态不挂点(ab77594 去掉已读提醒的决定不变)
+  if(t.task_status==="queued"||t.task_status==="running"){
+    const dot=el("span","livedot"); dot.title=t.task_status==="running"?"任务进行中":"排队中"; body.append(dot);
   }
-  return rows;
+  const ct=el("div","ct"); ct.textContent=t.title||"新对话"; body.append(ct);
+  const tm=fmtTime(t.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }
+  const more=el("button","more"); more.textContent="⋯"; more.title="更多";
+  more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,t.conv);}; body.append(more);
+  row.append(body);
+  const act=el("div","cvact");
+  const archBtn=el("button","cvarch"); archBtn.innerHTML=ic("folder"); archBtn.title=arch?"取消归档":"归档";
+  archBtn.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); toggleArchive(t.conv); };
+  const del=el("button","cvdel"); del.innerHTML=ic("trash"); del.title="删除";
+  del.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); delConv(t.conv); };
+  act.append(archBtn,del); row.append(act);
+  bindSwipe(row, body, act);
+  if(t.conv===S.swipedConv) row.classList.add("swiped");
+  row.onclick=()=>{
+    if(row._justSwiped){ row._justSwiped=false; return; }
+    if(row.classList.contains("swiped")){ closeSwipe(row); return; }
+    openConv(t.conv);
+  };
+  return row;
 }
 // 单条会话行(置顶主会话与普通会话通用)
 function buildConvRow(c, inCall){
@@ -4462,16 +4455,24 @@ function renderConvs(){
     h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } toggleGroup(g.hash); };  // 拖拽落地那一下别顺带触发展开/收起
     box.append(h);
     if(!open) continue;
-    const rows=[];
+    let rows;
     if(g.hash===null){
-      rows.push(...buildVoiceTaskRows(inCall));   // 语音后台任务:普通条目,排在普通会话前
-    }
-    for(const c of convs){
-      if(c.pinned) continue;
-      const arch=!!c.archived;
-      if(S.convFilter==="archived"&&!arch)continue;
-      if(S.convFilter==="active"&&arch)continue;
-      rows.push(buildConvRow(c, inCall));
+      // 默认项目:语音后台任务不区分项目,统一落这里,跟普通会话按最后活跃时间混排
+      // 再截前 CONV_SHOW_MAX 条——避免"语音任务永远排最前"把新会话挤出首屏
+      // (2026-07-22 反馈:几十条老语音任务霸占默认项目前 5 条,当天新会话反而看不见)。
+      const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
+      const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
+      const convItems = convs.filter(c=>!c.pinned && passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
+      rows = [...taskItems, ...convItems].sort((a,b)=>b.ts-a.ts).map(it=>it.build()).filter(Boolean);
+    } else {
+      rows=[];
+      for(const c of convs){
+        if(c.pinned) continue;
+        const arch=!!c.archived;
+        if(S.convFilter==="archived"&&!arch)continue;
+        if(S.convFilter==="active"&&arch)continue;
+        rows.push(buildConvRow(c, inCall));
+      }
     }
     // 每组默认最多展示 CONV_SHOW_MAX 条,余下折进「展开更多」(点开后本次会话内保持展开)
     const shown = S.moreShown.has(grpKey(g.hash)) ? rows : rows.slice(0, CONV_SHOW_MAX);
