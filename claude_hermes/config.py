@@ -271,9 +271,11 @@ VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
 # ("呃"、组织语言)的说话方式太短,句子中间的正常停顿就被当成说完了,3000ms 后
 # 2026-07-12 真机仍反馈整句话被拆成好几个请求发给 Claude(semantic_vad 语义判停
 # 本身也会提前拍板),拉长到 4500ms 牺牲了打断响应速度。
-# 2026-07-22 用户反馈反过来了——4500ms 等太久,说话后系统一直等到说第二句才提交
-# 第一句;semantic_vad 按语义判停其实不需要这么长的静音窗口来防止截断,回到 800ms。
-VOICE_OMNI_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_OMNI_VAD_SILENCE_MS", "800"))
+# 2026-07-22 上午改成 800ms(用户反馈 4500ms 等太久),当晚真机对话全面错位:800ms
+# 让正常语流停顿(500~1500ms)都触发判停,一句话被高频腰斩成多段,叠加前端缓冲
+# 定时器被 speech 事件误覆盖的 bug,表现为消息被吞/答非所问。回调到 2500ms 折中:
+# semantic_vad 语义判停为主,2500ms 静音兜底,比 4500ms 快很多又不至于句中误切。
+VOICE_OMNI_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_OMNI_VAD_SILENCE_MS", "2500"))
 
 # === 会话统一(跨入口连续)===
 # 开启时:CLI / TUI / Telegram / 飞书 都归到同一会话 SESSION_KEY,

@@ -210,18 +210,19 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
         # 省掉每句几百毫秒的合成耗时和 Qwen-TTS 的并发限流风险。
         synth_tts = bool(body.get("tts", True))
         print(f"[voice/send] 收到文字直发: {user_text[:50]!r} tts={synth_tts}", flush=True)
+    # 文本累积:两段文字直发(VAD 腰斩)在 3 秒窗口内连续到达时,后段拼回前段再送
+    # Claude。2026-07-22 晚修正:合并不再限定"锁还被占着"——前段那轮如果收尾特别
+    # 快,锁已释放,后段就会作为全新一轮独立发出,Claude 缺前文,答非所问。窗口从
+    # 前段请求"启动时刻"起算,真人两句独立的话极难挤进 3 秒,误拼风险可忽略;
+    # 音频请求(带完整整句)不参与合并;干净收尾的轮次会清掉 _prev_text(见 Done 分支)。
+    if not is_audio and _prev_text and (time.monotonic() - _prev_ts) < _TEXT_MERGE_WINDOW:
+        print(f"[voice/send] 文本累积合并: prev={_prev_text[-30:]!r} + {user_text[:30]!r}", flush=True)
+        user_text = _prev_text + user_text
     if _lock.locked():
         t = _turn_task
         if t is None or t.done():
             # 持锁的不是可抢占的 HTTP 轮(旧 WS 链路在跑)——维持原 409。
             return web.json_response({"error": "上一轮还没说完"}, status=409)
-        # 文本累积:当两段文字直发(VAD 腰斩)在短时间内连续到达时,先合并再取消—
-        # 否则旧轮一取消,前一段的话就丢了,Claude 只拿到后一段,出现复读用户最后
-        # 几个字的观感(2026-07-22)。合并只在文字直发且刚启动不久(<3s)时触发,
-        # 音频请求和较旧轮次不受影响。
-        if not is_audio and _prev_text and (time.monotonic() - _prev_ts) < _TEXT_MERGE_WINDOW:
-            user_text = _prev_text + user_text
-            print(f"[voice/send] 文本累积合并: prev={_prev_text[-30:]!r} + {user_text[-30:]!r}", flush=True)
         # 抢占:取消旧轮(它的 CancelledError 分支会把半截回复落库),等它释放锁。
         # 15 秒等不到(stream_turn 的取消收尾最多含 5 秒 CLI interrupt)才放弃。
         t.cancel()
@@ -340,6 +341,9 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                     t_first_audio = first_audio_ts[0] if first_audio_ts else 0.0
                     reply = ev.reply
                     session.append(_stored_user if _stored_user is not None else user_text, reply.text)
+                    # 这轮干净收尾了,累积器清零——之后到的文字是新话,不是本句的断片,
+                    # 别把它拼在已经答完的问题后面。
+                    _prev_text = ""
                     if reply.sdk_session_id:
                         session.set_resume(reply.sdk_session_id)
                     await _sse(resp, "done", {"full_text": reply.text or full_text})
