@@ -848,13 +848,13 @@
   #ta{width:100%;background:none;border:none;color:var(--text);resize:none;font:inherit;
     min-height:46px;max-height:180px;padding:2px 4px;outline:none;line-height:1.5}
   #ta::placeholder{color:var(--dim2)}
-  /* ══ 订阅配额环(挨着模型切换按钮左边)══ */
+  /* ══ 订阅配额环(挨着模型切换按钮左边)══ 始终可见:无数据时是浅灰占位圈,
+     hover/点击都有对应提示,方便确认这块 UI 确实装对了位置、链路没断。 */
   #quotaRing{flex-shrink:0;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;
     cursor:pointer;position:relative;transition:background .16s}
   #quotaRing:hover{background:var(--panel2)}
-  #quotaRing[hidden]{display:none}
   .qr{width:18px;height:18px;display:block;color:var(--dim)}
-  .qa{transition:stroke-dashoffset .5s ease;stroke:var(--accent)}
+  .qa{transition:stroke-dashoffset .5s ease,stroke .3s ease;stroke:var(--dim2)}
   .qt{stroke:currentColor}
   /* 配额详情弹窗 */
   .qpop{position:absolute;left:50%;bottom:calc(100% + 6px);transform:translateX(-50%);min-width:170px;
@@ -863,6 +863,7 @@
   .qpop[hidden]{display:none}
   .qpop-row{display:flex;justify-content:space-between;align-items:center;gap:14px;font-size:12px;padding:2px 0;color:var(--text)}
   .qpop-pct{font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)}
+  .qpop-msg{color:var(--dim);font-size:12px;white-space:normal;max-width:180px;line-height:1.5}
   .qpop-prov{font-size:11px;font-weight:600;color:var(--dim2);padding-bottom:4px;border-bottom:1px solid var(--line);margin-bottom:2px}
   .qpop-reset{font-size:11px;color:var(--dim2);padding-top:4px;border-top:1px solid var(--line);margin-top:4px}
   #imgBtn{color:var(--dim);font-size:22px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
@@ -1326,7 +1327,7 @@ try{
               <button type="button" id="imgBtn">＋</button>
               <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
               <span class="spacer"></span>
-              <div id="quotaRing" hidden title="订阅额度">
+              <div id="quotaRing" data-state="loading" title="额度加载中…">
                 <svg class="qr" viewBox="0 0 36 36">
                   <circle class="qt" cx="18" cy="18" r="15.5" fill="none" stroke="currentColor" stroke-width="3" opacity="0.15"/>
                   <circle class="qa" cx="18" cy="18" r="15.5" fill="none" stroke-width="3" stroke-linecap="round"
@@ -1334,9 +1335,12 @@ try{
                 </svg>
                 <div id="quotaPop" class="qpop" hidden>
                   <div class="qpop-row qpop-prov"><span id="quotaProv"></span></div>
-                  <div class="qpop-row"><span>5h 窗口</span><span class="qpop-pct" id="qp5h">--</span></div>
-                  <div class="qpop-row"><span>7天窗口</span><span class="qpop-pct" id="qp7d">--</span></div>
-                  <div class="qpop-row qpop-reset" id="qpReset" hidden><span>重置</span><span id="qpResetTime"></span></div>
+                  <div id="qpDetail">
+                    <div class="qpop-row"><span>5h 窗口</span><span class="qpop-pct" id="qp5h">--</span></div>
+                    <div class="qpop-row"><span>7天窗口</span><span class="qpop-pct" id="qp7d">--</span></div>
+                    <div class="qpop-row qpop-reset" id="qpReset" hidden><span>重置</span><span id="qpResetTime"></span></div>
+                  </div>
+                  <div class="qpop-row qpop-msg" id="qpMsg" hidden></div>
                 </div>
               </div>
               <div id="modelBox">
@@ -4300,56 +4304,88 @@ $("#modelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#modelPop");
 document.addEventListener("click", e=>{ const b=$("#modelBox"); if(b && !b.contains(e.target)) $("#modelPop").hidden=true; });
 
 // ── 订阅配额环:5h 额度环形进度 ──────────────────────────────────────────
-var quotaData = null;  // 缓存最新 /api/usage 返回
+// 环始终可见(不再靠 hidden 整体隐藏):loading/na/error 都是浅灰占位态,
+// 只有拿到真实数据(ok)才上色。这样即便当前模型没有额度可查/请求失败,
+// 用户也能看到这块 UI 装对了位置、hover/点击都有对应提示,而不是"完全消失"。
+var quotaData = null;  // 缓存最新 /api/usage 返回(仅 ok 态有值)
 var quotaFetchTimer = null;
+var QUOTA_ARC = 97.39;  // 2*PI*15.5,环形周长
 
+function setQuotaState(state, five){
+  var ring = $("#quotaRing");
+  if(!ring) return;
+  ring.dataset.state = state;
+  var arc = ring.querySelector(".qa");
+  if(state === "ok" && five){
+    var pct = five.utilization != null ? Math.round(five.utilization * 100) : 0;
+    if(arc){
+      arc.setAttribute("stroke-dashoffset", String(QUOTA_ARC * (1 - pct/100)));
+      var color = "var(--ok)";
+      if(pct >= 90) color = "var(--err)";
+      else if(pct >= 70) color = "#d9a43a";
+      arc.style.stroke = color;
+    }
+    ring.title = "订阅额度 5h 已用 " + pct + "%(点击查看详情)";
+    return;
+  }
+  // loading/na/error:浅灰满圈占位,不画进度弧
+  if(arc){ arc.setAttribute("stroke-dashoffset", "0"); arc.style.stroke = "var(--dim2)"; }
+  if(state === "na") ring.title = "该模型按量计费,无订阅额度可查";
+  else if(state === "error") ring.title = "额度查询失败,点击重试";
+  else ring.title = "额度加载中…";
+}
 function initQuotaRing(){
   var ring=$("#quotaRing"), pop=$("#quotaPop");
   if(!ring) return;
-  ring.addEventListener("mouseenter", function(e){ if(quotaData) renderQuotaPop(quotaData); });
+  ring.addEventListener("mouseenter", function(e){ renderQuotaPop(); });
   ring.addEventListener("mouseleave", function(e){ pop.hidden=true; });
-  ring.addEventListener("click", function(e){ e.stopPropagation(); pop.hidden=!pop.hidden; });
+  ring.addEventListener("click", function(e){
+    e.stopPropagation();
+    if(ring.dataset.state==="error"){ fetchUsage(curModel()); }  // 点击失败态顺带重试
+    pop.hidden=!pop.hidden;
+    if(!pop.hidden) renderQuotaPop();
+  });
   document.addEventListener("click", function(e){ if(!ring.contains(e.target)) pop.hidden=true; });
   fetchUsage(curModel());
   quotaFetchTimer = setInterval(function(){ fetchUsage(curModel()); }, 60000);
 }
 function fetchUsage(model){
   if(!model) model = curModel();
-  if(!model) return;
+  if(!model){ setQuotaState("loading"); return; }
   var isClaude = model.indexOf("claude-")===0;
   var isKimi = model.indexOf("kimi")>=0;
-  if(!isClaude && !isKimi){ quotaData=null; $("#quotaRing").hidden=true; return; }
+  if(!isClaude && !isKimi){ quotaData=null; setQuotaState("na"); return; }
+  setQuotaState("loading");
   fetch("/api/usage?model="+encodeURIComponent(model))
     .then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
     .then(function(data){
       quotaData=data;
-      updateQuotaRing(data);
+      if(!data || data.type==="api" || data.error){
+        setQuotaState(data && data.error ? "error" : "na");
+        return;
+      }
+      var five = data.limits && data.limits.five_hour;
+      if(!five){ setQuotaState("na"); return; }
+      setQuotaState("ok", five);
     })
-    .catch(function(){ /* 静默 */ });
+    .catch(function(){ quotaData=null; setQuotaState("error"); });
 }
-function updateQuotaRing(data){
-  var ring=$("#quotaRing");
-  if(!ring) return;
-  if(!data || data.type==="api" || data.error){ ring.hidden=true; return; }
-  ring.hidden=false;
-  var five = null;
-  if(data.limits && data.limits.five_hour) five = data.limits.five_hour;
-  if(!five){ ring.hidden=true; return; }
-  var pct = five.utilization != null ? Math.round(five.utilization * 100) : 0;
-  var arc = ring.querySelector(".qa");
-  if(arc){
-    var dash = 97.39;
-    arc.setAttribute("stroke-dashoffset", String(dash * (1 - pct/100)));
+function renderQuotaPop(){
+  var pop = $("#quotaPop"), ring = $("#quotaRing"), detail = $("#qpDetail"), msg = $("#qpMsg");
+  if(!pop || !ring) return;
+  var state = ring.dataset.state || "loading";
+  if(state !== "ok" || !quotaData){
+    detail.hidden = true;
+    msg.hidden = false;
+    $("#quotaProv").textContent = "";
+    msg.textContent = state==="na" ? "该模型按量计费,无订阅额度可查"
+      : state==="error" ? "额度查询失败,点击环重试"
+      : "额度加载中…";
+    return;
   }
-  var color = "var(--ok)";
-  if(pct >= 90) color = "var(--err)";
-  else if(pct >= 70) color = "#d9a43a";
-  if(arc) arc.style.stroke = color;
-}
-function renderQuotaPop(data){
-  var pop = $("#quotaPop");
-  if(!pop || !data) return;
-  pop.hidden = false;
+  var data = quotaData;
+  detail.hidden = false;
+  msg.hidden = true;
   $("#quotaProv").textContent = data.provider === "kimi" ? "Kimi 订阅" : "Claude 订阅";
   var five = data.limits && data.limits.five_hour;
   if(five){
