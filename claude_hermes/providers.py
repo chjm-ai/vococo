@@ -273,3 +273,21 @@ def available_models(default_choices: list[tuple[str, str]]) -> list[tuple[str, 
         kind = _billing_kind(base_url)
         out.append((model, f"{model}（{kind}）"))
     return out
+
+
+def lookup_provider_by_model(model: str) -> dict | None:
+    """按模型名查 cc-switch 供应商配置条目;未配置(官方模型)返回 None。"""
+    config = _load_yaml()
+    if not config:
+        return None
+    for name, entry in _provider_entries(config).items():
+        if _entry_field(entry, "model") == model:
+            return dict(entry)
+    return None
+
+
+def is_subscription_host(base_url: str) -> bool:
+    """base_url 的 host 是否属于已知订阅套餐供应商(如 Kimi Coding)。"""
+    from urllib.parse import urlsplit
+    host = (urlsplit(base_url).hostname or "").lower()
+    return host in _SUBSCRIPTION_HOSTS

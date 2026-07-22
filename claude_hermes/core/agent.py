@@ -19,6 +19,8 @@ import anyio
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    RateLimitEvent,
+    RateLimitInfo,
     ResultMessage,
     StreamEvent,
     SystemMessage,
@@ -41,6 +43,29 @@ from .prompt import build_system_prompt
 # 插件里加新 skill 时,这里也加一行「plugin名:skill名」,否则用户在设置页切到白名单模式会把
 # 它连带隐藏(_scan_skills 只扫 ~/.claude/skills,看不到插件里的 skill,没法在设置页单独管)。
 _HERMES_PLUGIN_SKILLS = ["hermes-internal:hermes-web-publish"]
+
+# ── 速率额度缓存 ──────────────────────────────────────────────────────────
+# SDK 在流式回复中会发出 RateLimitEvent(含 5h/7d 利用率+重置时间),
+# 这里缓存最新值供 /api/usage 等外部查询,无需额外 API 调用。
+# 结构:{rate_limit_type: {status, resets_at, utilization, overage_status}}
+_rate_limits: dict[str, dict] = {}
+
+
+def get_rate_limits() -> dict[str, dict]:
+    """返回当前缓存的速率额度快照(浅拷贝,外部修改不影响缓存)。"""
+    return {k: dict(v) for k, v in _rate_limits.items()}
+
+
+def _update_rate_limits(info: RateLimitInfo) -> None:
+    """用 RateLimitEvent 中的数据更新缓存。"""
+    key = info.rate_limit_type or "unknown"
+    _rate_limits[key] = {
+        "status": info.status,
+        "resets_at": info.resets_at,
+        "utilization": info.utilization,
+        "overage_status": info.overage_status,
+        "overage_resets_at": info.overage_resets_at,
+    }
 
 
 @dataclass
@@ -687,6 +712,10 @@ async def stream_turn(
                             if sid and sid != sess_id:
                                 sess_id = sid
                                 yield SessionStarted(session_id=sess_id)
+                    elif isinstance(msg, RateLimitEvent):
+                        # 速率额度事件:订阅版 5h/7d 利用率(0.0~1.0)+重置时间,
+                        # 缓存供 /api/usage 查询,不做阻塞(不 yield 事件给前端)。
+                        _update_rate_limits(msg.rate_limit_info)
                     elif isinstance(msg, TaskStartedMessage):
                         # 后台任务(run_in_background)启动 → 记进「在跑」集,收工要等它终态
                         active_tasks.add(getattr(msg, "task_id", "") or "")

@@ -845,9 +845,25 @@
   #cmdPop .ci:hover,#cmdPop .ci.active{background:var(--panel2)}
   #cmdPop .empty{padding:9px 11px;font-size:12.5px;color:var(--dim2)}
   #cmdPop .cmdsep{height:1px;margin:5px 7px;background:var(--line2)}
-  #ta{width:100%;background:none;border:none;color:var(--text);resize:none;font:inherit;
+  #ta{width:100%;flex:1;min-width:0;background:none;border:none;color:var(--text);resize:none;font:inherit;
     min-height:46px;max-height:180px;padding:2px 4px;outline:none;line-height:1.5}
   #ta::placeholder{color:var(--dim2)}
+  /* ══ 订阅配额环(输入框左侧环形进度) ══ */
+  .tarow{display:flex;align-items:stretch;width:100%;min-height:46px}
+  #quotaRing{flex-shrink:0;width:28px;display:flex;align-items:flex-start;justify-content:center;padding-top:12px;cursor:pointer;position:relative;z-index:5}
+  #quotaRing[hidden]{display:none}
+  .qr{width:16px;height:16px;display:block;color:var(--dim)}
+  .qa{transition:stroke-dashoffset .5s ease;stroke:var(--accent)}
+  .qt{stroke:currentColor}
+  /* 配额详情弹窗 */
+  .qpop{position:absolute;left:50%;bottom:calc(100% + 6px);transform:translateX(-50%);min-width:170px;
+    background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:10px 13px;
+    box-shadow:var(--shadow);animation:pop .15s ease;z-index:60;white-space:nowrap}
+  .qpop[hidden]{display:none}
+  .qpop-row{display:flex;justify-content:space-between;align-items:center;gap:14px;font-size:12px;padding:2px 0;color:var(--text)}
+  .qpop-pct{font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)}
+  .qpop-prov{font-size:11px;font-weight:600;color:var(--dim2);padding-bottom:4px;border-bottom:1px solid var(--line);margin-bottom:2px}
+  .qpop-reset{font-size:11px;color:var(--dim2);padding-top:4px;border-top:1px solid var(--line);margin-top:4px}
   #imgBtn{color:var(--dim);font-size:22px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
     display:flex;align-items:center;justify-content:center;transition:color .16s,background .16s}
   #imgBtn:hover{color:var(--text);background:var(--panel2)}
@@ -1304,7 +1320,22 @@ try{
               <div id="projSelPop" hidden></div>
             </div>
             <div id="cmdPop" hidden></div>
-            <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
+            <div class="tarow">
+              <div id="quotaRing" hidden>
+                <svg class="qr" viewBox="0 0 36 36">
+                  <circle class="qt" cx="18" cy="18" r="15.5" fill="none" stroke="currentColor" stroke-width="3" opacity="0.15"/>
+                  <circle class="qa" cx="18" cy="18" r="15.5" fill="none" stroke-width="3" stroke-linecap="round"
+                    stroke-dasharray="97.39" stroke-dashoffset="97.39" transform="rotate(-90 18 18)"/>
+                </svg>
+                <div id="quotaPop" class="qpop" hidden>
+                  <div class="qpop-row qpop-prov"><span id="quotaProv"></span></div>
+                  <div class="qpop-row"><span>5h 窗口</span><span class="qpop-pct" id="qp5h">--</span></div>
+                  <div class="qpop-row"><span>7天窗口</span><span class="qpop-pct" id="qp7d">--</span></div>
+                  <div class="qpop-row qpop-reset" id="qpReset" hidden><span>重置</span><span id="qpResetTime"></span></div>
+                </div>
+              </div>
+              <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
+            </div>
             <div class="inbar">
               <button type="button" id="imgBtn">＋</button>
               <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
@@ -3917,6 +3948,7 @@ async function tryEnter(){
     loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
     loadCronSidebar();   // 同上,定时任务分组
     await secondary;
+    initQuotaRing();
     initVoiceSelect();
     renderConvs();  // 项目分组数据(loadProjects)到位后再补画一次侧栏分组
   }catch(e){ $("#loginErr").textContent="连接失败"; }
@@ -4267,6 +4299,98 @@ function pickModel(id){
 $("#modelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#modelPop");
   if(p.hidden){ renderModelPop(); p.hidden=false; } else p.hidden=true; };
 document.addEventListener("click", e=>{ const b=$("#modelBox"); if(b && !b.contains(e.target)) $("#modelPop").hidden=true; });
+
+// ── 订阅配额环:5h 额度环形进度 ──────────────────────────────────────────
+var quotaData = null;  // 缓存最新 /api/usage 返回
+var quotaFetchTimer = null;
+
+function initQuotaRing(){
+  var ring=$("#quotaRing"), pop=$("#quotaPop");
+  if(!ring) return;
+  ring.addEventListener("mouseenter", function(e){ if(quotaData) renderQuotaPop(quotaData); });
+  ring.addEventListener("mouseleave", function(e){ pop.hidden=true; });
+  ring.addEventListener("click", function(e){ e.stopPropagation(); pop.hidden=!pop.hidden; });
+  document.addEventListener("click", function(e){ if(!ring.contains(e.target)) pop.hidden=true; });
+  fetchUsage(curModel());
+  quotaFetchTimer = setInterval(function(){ fetchUsage(curModel()); }, 60000);
+}
+function fetchUsage(model){
+  if(!model) model = curModel();
+  if(!model) return;
+  var isClaude = model.indexOf("claude-")===0;
+  var isKimi = model.indexOf("kimi")>=0;
+  if(!isClaude && !isKimi){ quotaData=null; $("#quotaRing").hidden=true; return; }
+  fetch("/api/usage?model="+encodeURIComponent(model))
+    .then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+    .then(function(data){
+      quotaData=data;
+      updateQuotaRing(data);
+    })
+    .catch(function(){ /* 静默 */ });
+}
+function updateQuotaRing(data){
+  var ring=$("#quotaRing");
+  if(!ring) return;
+  if(!data || data.type==="api" || data.error){ ring.hidden=true; return; }
+  ring.hidden=false;
+  var five = null;
+  if(data.limits && data.limits.five_hour) five = data.limits.five_hour;
+  if(!five){ ring.hidden=true; return; }
+  var pct = five.utilization != null ? Math.round(five.utilization * 100) : 0;
+  var arc = ring.querySelector(".qa");
+  if(arc){
+    var dash = 97.39;
+    arc.setAttribute("stroke-dashoffset", String(dash * (1 - pct/100)));
+  }
+  var color = "var(--ok)";
+  if(pct >= 90) color = "var(--err)";
+  else if(pct >= 70) color = "#d9a43a";
+  if(arc) arc.style.stroke = color;
+}
+function renderQuotaPop(data){
+  var pop = $("#quotaPop");
+  if(!pop || !data) return;
+  pop.hidden = false;
+  $("#quotaProv").textContent = data.provider === "kimi" ? "Kimi 订阅" : "Claude 订阅";
+  var five = data.limits && data.limits.five_hour;
+  if(five){
+    var pct = five.utilization != null ? Math.round(five.utilization * 100) : 0;
+    var remain = five.remaining != null && five.limit ? five.remaining + "/" + five.limit : "";
+    $("#qp5h").textContent = pct + "%" + (remain ? " ("+remain+")" : "");
+  } else {
+    $("#qp5h").textContent = "--";
+  }
+  var seven = data.limits && data.limits.seven_day;
+  if(seven){
+    var pct7 = seven.utilization != null ? Math.round(seven.utilization * 100) : 0;
+    $("#qp7d").textContent = pct7 + "%";
+  } else if(data.provider === "kimi") {
+    $("#qp7d").textContent = "N/A (仅 5h)";
+  } else {
+    $("#qp7d").textContent = "--";
+  }
+  var rstEl = $("#qpReset"), rstTime = $("#qpResetTime");
+  if(five && five.resets_at){
+    var ts = typeof five.resets_at === "number" ? five.resets_at : new Date(five.resets_at).getTime();
+    if(ts > Date.now()){
+      var hhmm = new Date(ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"});
+      var mins = Math.max(1, Math.round((ts-Date.now())/60000));
+      rstTime.textContent = hhmm + " (" + mins + "分钟后)";
+      rstEl.hidden = false;
+    } else {
+      rstEl.hidden = true;
+    }
+  } else {
+    rstEl.hidden = true;
+  }
+}
+// 模型切换时刷新配额环
+var _origPickModel = pickModel;
+pickModel = function(id){
+  _origPickModel(id);
+  fetchUsage(id);
+};
+
 function metaRow(k, v, pp, cls){
   return '<div class="pr'+(cls?" "+cls:"")+'"><span class="k">'+k+'</span>'+
     '<span class="v">'+v+(pp?'<span class="pp">'+pp+'</span>':'')+'</span></div>';

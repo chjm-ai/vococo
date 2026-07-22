@@ -29,7 +29,7 @@ from aiohttp import web
 
 from ... import config, providers
 from ...core import title
-from ...core.agent import AgentReply
+from ...core.agent import AgentReply, get_rate_limits
 from ...memory import session_store
 from .. import settings_store
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
@@ -882,6 +882,91 @@ class WebAdapter:
             }
         )
 
+    # ── 订阅配额查询 ───────────────────────────────────────────────────────
+    async def _handle_api_usage(self, request: web.Request) -> web.Response:
+        """GET /api/usage — 查询当前模型的订阅配额(5h/7d 利用率+重置时间)。
+
+        Claude 订阅:数据来自 SDK 流式回复中的 RateLimitEvent(已缓存)。
+        Kimi 订阅:主动调 api.kimi.com/coding/v1/usages。
+        API 按量计费(DeepSeek 等):返回 {type:"api"}。
+        """
+        if (g := self._guard(request)) is not None:
+            return g
+
+        model = (request.query.get("model") or "").strip()
+        if not model:
+            model = providers.resolve(None, config.MODEL)[0]
+
+        # 查 cc-switch 判断供应商类型
+        p_entry = providers.lookup_provider_by_model(model)
+
+        # Kimi 订阅(api.kimi.com)
+        if p_entry:
+            base_url = providers._entry_field(p_entry, "base_url", "baseUrl")
+            if base_url and providers.is_subscription_host(base_url):
+                api_key = providers._entry_field(p_entry, "api_key", "apiKey")
+                if api_key:
+                    try:
+                        data = await self._fetch_kimi_usage(api_key)
+                        return web.json_response(data)
+                    except Exception as ex:
+                        return web.json_response(
+                            {"provider": "kimi", "error": str(ex)}, status=502
+                        )
+                return web.json_response({"provider": "kimi", "type": "api"})
+
+        # Claude 官方订阅:返回缓存中的速率限额
+        if not p_entry or p_entry.get("name", "").lower() in ("claude", "official", "anthropic"):
+            limits = get_rate_limits()
+            return web.json_response({
+                "provider": "claude",
+                "limits": limits,
+            })
+
+        # 其他(DeepSeek/Moonshot API 等):按量计费,无配额
+        return web.json_response({"provider": "api", "type": "api"})
+
+    async def _fetch_kimi_usage(self, api_key: str) -> dict:
+        """调 Kimi Code 订阅的用量查询 API。"""
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.kimi.com/coding/v1/usages",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    txt = await resp.text()
+                    return {"provider": "kimi", "error": f"HTTP {resp.status}: {txt[:200]}"}
+                data = await resp.json()
+
+        usage = data.get("usage", {})
+        # Kimi 返回:usage 是本月累计,limits 是各窗口明细(含 5h)
+        five_hour = {}
+        limits_raw = data.get("limits", [])
+        for lim in limits_raw:
+            if lim.get("window", {}).get("duration") == 300:
+                detail = lim.get("detail", {})
+                limit = int(detail.get("limit", 0) or 0)
+                used = int(detail.get("used", 0) or 0)
+                remaining = max(0, limit - used)
+                pct = 0.0
+                if limit > 0:
+                    pct = min(1.0, used / limit)
+                five_hour = {
+                    "status": "rejected" if remaining <= 0 else "allowed_warning" if pct >= 0.8 else "allowed",
+                    "utilization": pct,
+                    "resets_at": detail.get("resetTime", ""),
+                    "limit": limit,
+                    "remaining": remaining,
+                }
+                break
+
+        return {
+            "provider": "kimi",
+            "limits": {"five_hour": five_hour},
+        }
+
     # ── 语音转文字 ───────────────────────────────────────────────────────
     async def _handle_transcribe(self, request: web.Request) -> web.Response:
         """收手机录音 → 调阿里 DashScope 转成文字回给前端(填进输入框)。
@@ -1499,6 +1584,7 @@ class WebAdapter:
                 web.post("/projects/remove", self._handle_project_remove),
                 web.post("/projects/reorder", self._handle_project_reorder),
                 web.get("/models", self._handle_models),
+                web.get("/api/usage", self._handle_api_usage),
                 web.get("/commands", self._handle_commands),
                 web.get("/history", self._handle_history),
                 web.get("/image", self._handle_image),
