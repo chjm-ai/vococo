@@ -863,7 +863,7 @@
   /* ══ 订阅配额环(挨着模型切换按钮左边)══ 始终可见:无数据时是浅灰占位圈,
      hover/点击都有对应提示,方便确认这块 UI 确实装对了位置、链路没断。
      尺寸/粗细与顶部上下文环(#barMeta .ctxring)保持一致:20x20,stroke 2.5,半径 8。 */
-  #quotaRing{flex-shrink:0;width:20px;height:20px;display:flex;align-items:center;justify-content:center;
+  #quotaRing{position:relative;flex-shrink:0;width:20px;height:20px;display:flex;align-items:center;justify-content:center;
     cursor:pointer;transition:opacity .16s}
   #quotaRing:hover{opacity:.7}
   .qr{width:20px;height:20px;display:block;color:var(--dim)}
