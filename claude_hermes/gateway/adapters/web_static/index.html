@@ -289,6 +289,26 @@
   #projModal .pmfoot button{padding:9px 16px;border-radius:9px;cursor:pointer;font-size:13.5px;border:1px solid var(--line2);background:var(--panel2);color:var(--text)}
   #projModal .pmfoot .pmok{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
 
+  /* 会话搜索弹窗(⌘F / 侧栏放大镜):顶部搜索框 + 结果列表,标题命中排前正文其次 */
+  #searchModal{position:fixed;inset:0;z-index:60;display:flex;align-items:flex-start;justify-content:center;
+    background:rgba(0,0,0,.5);padding-top:min(14vh,120px)}
+  #searchModal[hidden]{display:none}
+  #searchModal .smbox{width:min(560px,92vw);max-height:min(62vh,520px);display:flex;flex-direction:column;
+    background:var(--panel);border:1px solid var(--line2);border-radius:16px;overflow:hidden}
+  #searchModal .smhead{display:flex;align-items:center;gap:9px;padding:13px 16px;border-bottom:1px solid var(--line)}
+  #searchModal .smhead .ic{width:17px;height:17px;color:var(--dim2);flex-shrink:0}
+  #smInput{flex:1;min-width:0;background:none;border:none;outline:none;color:var(--text);font-size:15px}
+  #smList{flex:1;overflow-y:auto;padding:6px 8px}
+  .smrow{padding:8px 12px;border-radius:9px;cursor:pointer}
+  .smrow:hover,.smrow.sel{background:var(--panel2)}
+  .smrow .smtitle{display:flex;align-items:center;gap:7px;font-size:13.5px;min-width:0}
+  .smrow .smtitle .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .smrow .smtime{color:var(--dim2);font-size:11.5px;flex-shrink:0}
+  .smrow .smtag{flex-shrink:0;font-size:10.5px;color:var(--dim2);border:1px solid var(--line2);border-radius:5px;padding:1px 5px}
+  .smrow .smsnip{margin-top:2px;font-size:12px;color:var(--dim2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .smrow b{color:var(--accent);font-weight:600}
+  .smempty{padding:22px 0;text-align:center;color:var(--dim2);font-size:13px}
+
   /* 定时任务管理弹窗:抄新建项目弹窗同一套壳(pmbox/pmhead/pmfoot),内容换成任务列表+新建表单 */
   #cronModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
   #cronModal[hidden]{display:none}
@@ -1119,6 +1139,14 @@ try{
     </div>
   </div>
 
+  <!-- 会话搜索弹窗(⌘F / 侧栏放大镜):标题优先+正文,含归档;删除的会话已物理删除搜不到 -->
+  <div id="searchModal" hidden>
+    <div class="smbox">
+      <div class="smhead" id="smHead"><input id="smInput" placeholder="搜索会话标题与内容…"></div>
+      <div id="smList"></div>
+    </div>
+  </div>
+
   <!-- 图片大图查看器 -->
   <div id="imgViewer" hidden>
     <button class="ivbtn ivclose" id="ivClose" title="关闭">✕</button>
@@ -1165,6 +1193,7 @@ try{
   <aside id="sidebar">
     <div class="shead">
       <div class="brand">Wazir</div>
+      <button id="searchBtn" class="sfoicon" title="搜索会话 (⌘F)"></button>
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
@@ -6320,6 +6349,78 @@ function setSidebarCollapsed(v){
   document.body.classList.toggle("sb-collapsed", v);
   try{ localStorage.setItem("hermes_sb", v?"1":"0"); }catch(e){}
 }
+
+// ── 会话搜索(⌘F / 侧栏放大镜)─────────────────────────────────────────
+// 标题命中排前、正文其次,含归档会话;删除的会话已物理删除,天然搜不到。
+// 输入 200ms 防抖走 /conv/search(个人规模 LIKE 全表扫描毫秒级,见 session_store)。
+const SM = { seq:0, timer:null, results:[], sel:-1 };
+const SM_HINT = '<div class="smempty">输入关键词,搜索所有会话的标题与内容(含已归档)</div>';
+function openSearchModal(){
+  $("#searchModal").hidden = false;
+  const inp = $("#smInput");
+  inp.value = ""; SM.results = []; SM.sel = -1;
+  $("#smList").innerHTML = SM_HINT;
+  inp.focus();
+}
+function closeSearchModal(){ $("#searchModal").hidden = true; }
+// 手动拼 HTML:先转义再把命中段包 <b>,避免把会话内容当 HTML 注入
+function smHl(text, q){
+  const i = text.toLowerCase().indexOf(q.toLowerCase());
+  if(i < 0) return esc(text);
+  return esc(text.slice(0,i)) + "<b>" + esc(text.slice(i, i+q.length)) + "</b>" + esc(text.slice(i+q.length));
+}
+function renderSearchResults(q){
+  const box = $("#smList"); box.innerHTML = "";
+  if(!SM.results.length){ box.innerHTML = '<div class="smempty">没有匹配的会话</div>'; return; }
+  SM.results.forEach((r, i)=>{
+    const row = el("div","smrow" + (i===SM.sel?" sel":""));
+    const t = el("div","smtitle");
+    const name = el("span","t"); name.innerHTML = smHl(r.title||"新对话", q); t.append(name);
+    if(r.archived){ const tag=el("span","smtag"); tag.textContent="已归档"; t.append(tag); }
+    const tm = fmtTime(r.last_ts); if(tm){ const te=el("span","smtime"); te.textContent=tm; t.append(te); }
+    row.append(t);
+    if(r.snippet){ const sn=el("div","smsnip"); sn.innerHTML = smHl(r.snippet, q); row.append(sn); }
+    row.onclick = ()=>{ closeSearchModal(); openConv(r.conv); };
+    box.append(row);
+  });
+}
+async function runConvSearch(){
+  const q = $("#smInput").value.trim();
+  const seq = ++SM.seq;   // 迟到的旧响应按序号丢弃,避免快速输入时结果错乱
+  if(!q){ SM.results=[]; SM.sel=-1; $("#smList").innerHTML = SM_HINT; return; }
+  try{
+    const r = await api("/conv/search?q="+encodeURIComponent(q));
+    const d = await r.json();
+    if(seq !== SM.seq) return;
+    SM.results = d.results||[]; SM.sel = SM.results.length ? 0 : -1;
+    renderSearchResults(q);
+  }catch(e){}
+}
+$("#smInput").oninput = ()=>{ clearTimeout(SM.timer); SM.timer = setTimeout(runConvSearch, 200); };
+$("#smInput").onkeydown = e=>{
+  if(e.key==="ArrowDown" || e.key==="ArrowUp"){
+    e.preventDefault();
+    if(!SM.results.length) return;
+    SM.sel = (SM.sel + (e.key==="ArrowDown"?1:-1) + SM.results.length) % SM.results.length;
+    renderSearchResults($("#smInput").value.trim());
+    const selEl = $("#smList").children[SM.sel];
+    if(selEl) selEl.scrollIntoView({block:"nearest"});
+  } else if(e.key==="Enter"){
+    e.preventDefault();
+    const r = SM.results[SM.sel]; if(r){ closeSearchModal(); openConv(r.conv); }
+  } else if(e.key==="Escape"){ closeSearchModal(); }
+};
+$("#searchModal").onclick = e=>{ if(e.target.id==="searchModal") closeSearchModal(); };
+$("#smHead").insertAdjacentHTML("afterbegin", ic("search"));
+$("#searchBtn").innerHTML = ic("search");
+$("#searchBtn").onclick = ()=>{ closeSidebar(); openSearchModal(); };
+document.addEventListener("keydown", e=>{
+  // ⌘F/Ctrl+F 接管浏览器页内查找:登录页不响应
+  if((e.metaKey||e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key==="f"||e.key==="F")){
+    if($("#app").hidden) return;
+    e.preventDefault(); openSearchModal();
+  } else if(e.key==="Escape" && !$("#searchModal").hidden){ closeSearchModal(); }
+});
 
 
 // ── 消息区 padding 自适应顶栏/输入框高度(两者 absolute 脱离流,需 padding 避开) ──

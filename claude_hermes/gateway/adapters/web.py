@@ -555,6 +555,34 @@ class WebAdapter:
         main["conv"] = "main"
         return web.json_response({"main": main, "conversations": convs})
 
+    async def _handle_conv_search(self, request: web.Request) -> web.Response:
+        """侧边栏全局搜索(⌘F):标题优先、正文其次,含归档会话;被删除的
+        会话已物理删除,天然不在结果里。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        q = (request.query.get("q") or "").strip()
+        if not q:
+            return web.json_response({"results": []})
+        from ...voice import tasks as voice_tasks  # 懒加载,同 _handle_voice_sidebar
+
+        items = session_store.search_sessions(q, limit=50)
+        for it in items:
+            key = it["key"]
+            # conv id 规则与各侧栏接口一致:web: 剥前缀、语音/定时任务用完整 key、
+            # 主会话(SESSION_KEY)固定叫 "main"
+            if key == config.SESSION_KEY:
+                it["conv"] = "main"
+                it["title"] = "主会话"
+            elif key.startswith("web:"):
+                it["conv"] = key.split(":", 1)[1]
+            else:
+                it["conv"] = key
+            if key.startswith("voice-task:"):
+                row = voice_tasks.get(key.split(":", 1)[1])
+                if row is not None:
+                    it["title"] = row["title"]
+        return web.json_response({"results": items})
+
     async def _handle_voice_sidebar(self, request: web.Request) -> web.Response:
         """侧边栏"语音任务"固定分组:主语音会话 + 各后台任务会话。
 
@@ -1425,6 +1453,7 @@ class WebAdapter:
                 web.post("/send", self._handle_send),
                 web.post("/abort", self._handle_abort),
                 web.get("/conversations", self._handle_conversations),
+                web.get("/conv/search", self._handle_conv_search),
                 web.get("/voice/sidebar", self._handle_voice_sidebar),
                 web.get("/cron/sidebar", self._handle_cron_sidebar),
                 web.post("/cron/jobs/create", self._handle_cron_create),
