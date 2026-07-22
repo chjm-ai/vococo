@@ -3591,7 +3591,12 @@ void main(){
     // 可能还在泵朗读(omniReadPending > 0),auto-reply 的 response.created
     // 会错吃计数器假扮成朗读并开声——cancel 砍掉残留读取,清防护闸让新轮朗读
     // 不会被卡住。
-    if(omniDc && (omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0)){
+    // 2026-07-23 补:omniAutoActive 也要进 cancel 条件——只清客户端标志
+    // 不 cancel 服务端的话,auto-reply 的 response 在第一句朗读替换后会在
+    // response.done 后复活(它的 conversation item 还在队列里),跟第二句的
+    // response.create 竞争,服务端报"already has an active response"拒掉,
+    // 导致多句回复只念第一句。见 data/logs/hermes.out.log 14:17:49.
+    if(omniDc && (omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0 || omniAutoActive)){
       try{ omniDc.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
     }
     omniAutoActive = false;
