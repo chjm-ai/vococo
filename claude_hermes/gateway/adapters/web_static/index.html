@@ -1593,6 +1593,13 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 表现为"消息被吞、要说两遍才有反应、回答的是上一句"。
   let omniSpeechActive=false;   // speech_started→true / speech_stopped→false
   let omniInflightSegs=0;       // committed 过、转写(completed/delta兜底)还没回来的段数
+  // 用户气泡归并(2026-07-23 截图反馈):semantic_vad 把"今年。"这类语义上像说完
+  // 的前缀切成独立段,文字层面前端缓冲/后端 _prev_text 都会把段拼回一句,但气泡
+  // 是每段各画一个,界面上看着就是"半句+整句"两个气泡。这里跟踪当前逻辑上还在
+  // 续写的那个用户气泡:后续段的转写并进它,不再另起气泡。
+  let omniUserBubble=null;      // 当前可续写的用户气泡元素
+  let omniUserBubbleText="";    // 该气泡已显示的全文
+  let omniUserSentTs=0;         // 该气泡内容最近一次 flush 给后端的时刻(0=还没发)
   // 转写完成事件的 delta 兜底(2026-07-13,真机+aiortc 探针实锤):我们每轮发的
   // response.cancel(砍 Omni 自作主张回复)会把服务端还没 finalize 的
   // input_audio_transcription.completed 一起砍死——delta 照回(前端字幕正常),
@@ -3451,11 +3458,33 @@ void main(){
       scheduleOmniFlush("echo-discard");
       return;
     }
-    if(omniUserLiveEl) renderAi(omniUserLiveEl, transcript || "(没听清)");
-    else if(transcript) addMsg("me", transcript);
+    if(!transcript){
+      if(omniUserLiveEl) renderAi(omniUserLiveEl, "(没听清)");
+      omniUserLiveEl = null;
+      scheduleOmniFlush("empty-transcript");
+      return;
+    }
+    // 气泡归并:本段若是上一段的续写(缓冲里还有没发的,或刚发出去且那轮还没答完
+    // ——后端 _prev_text 的 3s 合并窗口内),并进原气泡,不另起一个。
+    const mergeable = omniUserBubble && omniUserBubble.isConnected
+      && (omniPendingText || (!omniTurnDone && omniUserSentTs && Date.now() - omniUserSentTs < 3000));
+    if(mergeable){
+      if(omniUserLiveEl){
+        const row = omniUserLiveEl.closest(".row");
+        if(row) row.remove();
+        omniUserLiveEl = null;
+      }
+      omniUserBubbleText += transcript;
+      renderAi(omniUserBubble, omniUserBubbleText);
+      vdbg("bubble.merge", {len: omniUserBubbleText.length});
+    } else {
+      if(omniUserLiveEl){ renderAi(omniUserLiveEl, transcript); omniUserBubble = omniUserLiveEl; }
+      else omniUserBubble = addMsg("me", transcript);
+      omniUserBubbleText = transcript;
+      omniUserSentTs = 0;
+    }
     omniUserLiveEl = null;
-    if(transcript) queueOmniTurn(transcript);
-    else scheduleOmniFlush("empty-transcript");
+    queueOmniTurn(transcript);
   }
 
   // committed 后 completed 迟迟不来的兜底(根因见 omniDeltaFallback 注释)。
@@ -3513,7 +3542,10 @@ void main(){
     // 防止计数泄漏后所有后续缓冲永远只挂安全网。
     omniInflightSegs = 0;
     const text = omniPendingText; omniPendingText = null;
-    if(text) sendOmniTurn(text);
+    if(text){
+      omniUserSentTs = Date.now();  // 气泡归并的后端合并窗口从发出时刻起算
+      sendOmniTurn(text);
+    }
   }
 
   // 识别到一整句话后,转发给现有 /voice/send——跟文字聊天同一套 Claude 全套
@@ -3527,6 +3559,11 @@ void main(){
     wsState = "thinking";
     setStatus(STATE_WORD.thinking, STATE_CLASS.thinking);
     if(handsFreeActive) orbWrap.className = "thinking";
+    // 上一轮的回答被这轮抢占、话说到一半:气泡补个被打断标记,跟落库文案对齐
+    // ——否则界面上回答戛然而止,看着像系统坏了(2026-07-23 截图反馈)。
+    if(currentTurnAiEl && currentTurnFull && !omniTurnDone){
+      renderAi(currentTurnAiEl, currentTurnFull + " …(被打断)");
+    }
     currentTurnAiEl = null; currentTurnFull = "";
     endActivity();
     // 新轮开始:清掉自动回复防护和上一轮残留的朗读状态(2026-07-14 修复)
@@ -3645,6 +3682,7 @@ void main(){
     if(omniPendingTimer){ clearTimeout(omniPendingTimer); omniPendingTimer = null; }
     omniPendingText = null;
     omniSpeechActive = false; omniInflightSegs = 0;
+    omniUserBubble = null; omniUserBubbleText = ""; omniUserSentTs = 0;
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
   }
