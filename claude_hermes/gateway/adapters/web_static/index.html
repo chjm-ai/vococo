@@ -791,6 +791,24 @@
   #modelPop .mi:hover{background:var(--panel2)}
   #modelPop .mi.on{color:var(--accent)}
   #modelPop .mi .mk{color:var(--accent);font-size:12px;flex-shrink:0}
+  /* 新会话项目选择器:悬浮在 .inrow 左上角(position:absolute 脱离文档流,不挤占输入框布局) */
+  #projSel{position:absolute;left:0;bottom:calc(100% + 8px);z-index:15}
+  #projSel[hidden]{display:none}
+  #projSelBtn{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--dim);font-weight:500;
+    padding:6px 10px;border-radius:9px;max-width:200px;background:var(--card);border:1px solid var(--line2);
+    box-shadow:var(--shadow);transition:color .16s,background .16s,transform .12s}
+  #projSelBtn span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #projSelBtn:hover{color:var(--text);background:var(--panel2)}
+  #projSelBtn:active{transform:scale(.96)}
+  #projSelPop{position:absolute;top:calc(100% + 6px);left:0;min-width:200px;z-index:20;
+    background:var(--card);border:1px solid var(--line2);border-radius:14px;padding:6px;
+    box-shadow:var(--shadow);animation:pop .16s ease}
+  #projSelPop[hidden]{display:none}
+  #projSelPop .mi{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;
+    text-align:left;padding:9px 11px;border-radius:10px;font-size:13px;color:var(--text);transition:background .14s}
+  #projSelPop .mi:hover{background:var(--panel2)}
+  #projSelPop .mi.on{color:var(--accent)}
+  #projSelPop .mi .mk{color:var(--accent);font-size:12px;flex-shrink:0}
   #pending{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
   #pending:empty{display:none}
   #pending.shake{animation:shake .3s}
@@ -1275,6 +1293,14 @@ try{
           <div id="pending"></div>
           <div id="thumbs"></div>
           <div class="inrow">
+            <!-- 新会话项目选择:悬浮在输入框左上角;仅草稿态(local- 会话)显示,
+                 发出第一条消息后转正就隐藏——见 renderProjSelChip() -->
+            <div id="projSel" hidden>
+              <button type="button" id="projSelBtn" title="切换项目">
+                <span id="projSelName">默认项目</span><span class="caret chev down"></span>
+              </button>
+              <div id="projSelPop" hidden></div>
+            </div>
             <div id="cmdPop" hidden></div>
             <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
             <div class="inbar">
@@ -4380,6 +4406,45 @@ function grpKey(hash){ return hash===null ? "__default__" : hash; }
 function saveExpanded(){ try{ localStorage.setItem("hermes_expanded", JSON.stringify([...S.expanded])); }catch(e){} }
 function loadExpanded(){ try{ S.expanded=new Set(JSON.parse(localStorage.getItem("hermes_expanded")||"[]")); }catch(e){ S.expanded=new Set(); } }
 
+function projName(hash){
+  if(!hash) return "默认项目";
+  const p=(S.projects||[]).find(x=>x.hash===hash);
+  return p ? p.name : "默认项目";
+}
+// 项目选择胶囊只在草稿态(local- 会话,还没发过消息)出现:发出第一条后这会话已归属到
+// 侧栏对应项目分组,不再需要重复标记(见 send()/sendCmd() 里转正后的 renderProjSelChip 调用)
+function renderProjSelChip(){
+  const box=$("#projSel"); if(!box) return;
+  const show = String(S.conv||"").startsWith("local-");
+  box.hidden = !show;
+  if(show) $("#projSelName").textContent = projName(S.project);
+}
+function renderProjSelPop(){
+  const pop=$("#projSelPop"), cur=S.project;
+  const items=[{hash:null,name:"默认项目"}, ...(S.projects||[])];
+  pop.innerHTML=items.map(p=>
+    '<button type="button" class="mi'+(p.hash===cur?" on":"")+'" data-h="'+esc(p.hash||"")+'">'+
+    '<span class="ml">'+esc(p.name)+'</span>'+(p.hash===cur?'<span class="mk">✓</span>':'')+'</button>'
+  ).join("");
+  pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickDraftProject(b.dataset.h||null); });
+}
+// 切换草稿会话归属的项目:conv id 里的 p<hash>: 前缀重新拼一遍,内容(时间戳+随机串)不变
+function pickDraftProject(hash){
+  $("#projSelPop").hidden=true;
+  if(!String(S.conv||"").startsWith("local-")) return;  // 安全兜底:已转正的会话不可切项目
+  if(hash===S.project) return;
+  const idPart = S.conv.replace(/^local-(?:p[0-9a-f]+:)?/, "");
+  const newConv = "local-"+(hash?("p"+hash+":"):"")+idPart;
+  const idx = S.convs.findIndex(x=>x.conv===S.conv);
+  if(idx>=0) S.convs[idx]={...S.convs[idx], conv:newConv};
+  S.project=hash; S.conv=newConv;
+  S.expanded.add(grpKey(hash)); saveExpanded();
+  renderConvs(); renderProjSelChip();
+}
+$("#projSelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#projSelPop");
+  if(p.hidden){ renderProjSelPop(); p.hidden=false; } else p.hidden=true; };
+document.addEventListener("click", e=>{ const b=$("#projSel"); if(b && !b.contains(e.target)) $("#projSelPop").hidden=true; });
+
 function convsInGroup(hash){
   return S.convs.filter(c => c.pinned ? hash===null : convProject(c.conv)===hash);
 }
@@ -5381,6 +5446,7 @@ async function openConv(conv, silentGroup){
     // silentGroup:APP 启动时静默落地到新对话用,别把用户上次手动折叠的分组重新展开
     if(!silentGroup){ S.expanded.add(grpKey(S.project)); saveExpanded(); }
   }
+  renderProjSelChip();
   $("#convTitle").textContent = c ? (c.title||"新对话") : "新对话";
   $("#convCronEdit").hidden = !String(conv).startsWith("cron-task:");
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
@@ -6025,7 +6091,7 @@ async function send(text, display, opts){
   const payload={conv:S.conv, text, images:S.images.map(x=>({data:x.data,media_type:x.media_type}))};
   // 新会话:发出第一条后,把本地临时会话转正
   const wasLocal=String(S.conv).startsWith("local-");
-  if(wasLocal){ S.conv=S.conv.replace("local-",""); payload.conv=S.conv; }
+  if(wasLocal){ S.conv=S.conv.replace("local-",""); payload.conv=S.conv; renderProjSelChip(); }
   S.images=[]; renderThumbs(); $("#ta").value=""; autoGrow();
   try{
     await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
@@ -6035,9 +6101,10 @@ async function send(text, display, opts){
 // 静默发命令(如 /model 切换):不渲染用户气泡,回执由服务端 message 事件带回
 async function sendCmd(cmd, conv){
   conv = conv || S.conv;
+  const isCurrent = conv===S.conv;
   const payload={conv:conv, text:cmd, images:[]};
   const wasLocal=String(conv).startsWith("local-");
-  if(wasLocal){ conv=conv.replace("local-",""); payload.conv=conv; }
+  if(wasLocal){ conv=conv.replace("local-",""); payload.conv=conv; if(isCurrent){ S.conv=conv; renderProjSelChip(); } }
   try{
     await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(wasLocal) setTimeout(loadConvs, 400);
