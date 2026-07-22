@@ -1507,9 +1507,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 2026-07-22 再拉长到 2500ms:semantic_vad 语义判停可能在没有 speech_started
   // 事件的情况下把一段长语音腰斩成两段转写,两段到达间隔有时超过 1.5s,
   // 导致第一段独立发出去→Claude 只收到后半句→回复复读用户最后几个字。
-  // 对已有待发文本的切分场景再用更长的 3000ms 二次缓冲,普通短句子仍用 2500ms。
-  const OMNI_PENDING_FLUSH_MS = 2500;
-  const OMNI_PENDING_FLUSH_MS_LONG = 3000;
+  // 2026-07-22 从 2500/3000ms 提升到 4000/5000ms:真机实锤 semantic_vad 腰斩后
+  // 两段转写到达间隔有时超过 3 秒(VAD silence_duration_ms=4500ms 加上转写排队延迟),
+  // 原 2500ms 在第一段 flush 后还没等到第二段到达,导致 /voice/send 抢占丢段+复读。
+  const OMNI_PENDING_FLUSH_MS = 4000;
+  const OMNI_PENDING_FLUSH_MS_LONG = 5000;
   // 首回复静音(2026-07-12,Wesley 提议):每次 WebRTC 新建连接后,iOS AEC 从零
   // 收敛,AI 第一段音频的回声漏得最凶——干脆在本连接第一次朗读期间把麦克风上行
   // 直接静音(track.enabled=false 只发静音帧,不动音频图,不踩 iOS 音频会话的雷),
@@ -2781,6 +2783,16 @@ void main(){
           // response.cancel 连带砍死了(见 omniDeltaFallback 注释)——拿 delta
           // 缓存顶上,别让用户的话烂在半路。
           armOmniDeltaFallback();
+          // 2026-07-22:committed 之后必然紧跟 transcription.completed,表示连续
+          // 录音的下一段 VAD 切片。pending 定时器还在跑(说明上一段刚 completed
+          // 但还没 flush)时,延长等待时间让下一段转写结果到达再合并发出,避免
+          // 两段间隔稍长就独立 flush 导致 /voice/send 抢占丢段。speech_started
+          // 分支已有同类延长逻辑,但连续说话时 VAD 不重复报 speech_started,
+          // 只有 committed 会触发,所以这里也得补上。
+          if(omniPendingTimer && omniPendingText){
+            clearTimeout(omniPendingTimer);
+            omniPendingTimer = setTimeout(flushOmniPending, OMNI_PENDING_FLUSH_MS_LONG);
+          }
           break;
         case "conversation.item.input_audio_transcription.delta":
           // 转写在正常推进,说明不是幽灵打断——兜底定时器往后顺延,别在用户

@@ -32,6 +32,14 @@ _lock = asyncio.Lock()
 _stop_event: asyncio.Event | None = None
 _turn_task: asyncio.Task | None = None
 
+# 文本累积器(2026-07-22):当 Omni VAD 将一段长语音腰斩成多段、前端缓冲没及时合并
+# 时,后端在抢占路径里合并相邻文本再送 Claude。_prev_text 存上一轮的请求文本,
+# _prev_ts 存上一轮启动时刻。两段文字直发请求在 _TEXT_MERGE_WINDOW 秒内到达
+# 且锁还被占着时,合并后取消旧轮重新跑,避免丢段+复读。
+_prev_text: str = ""
+_prev_ts: float = 0.0
+_TEXT_MERGE_WINDOW: float = 3.0
+
 
 # 「后端会自动垫一句等待话术」的真正实现(2026-07-10 前这句承诺只写在 prompts.py
 # 的指令块里,代码从没做过——模型被告知"不用自己说等待话术",后端又不垫,结果就是
@@ -204,6 +212,13 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
         if t is None or t.done():
             # 持锁的不是可抢占的 HTTP 轮(旧 WS 链路在跑)——维持原 409。
             return web.json_response({"error": "上一轮还没说完"}, status=409)
+        # 文本累积:当两段文字直发(VAD 腰斩)在短时间内连续到达时,先合并再取消—
+        # 否则旧轮一取消,前一段的话就丢了,Claude 只拿到后一段,出现复读用户最后
+        # 几个字的观感(2026-07-22)。合并只在文字直发且刚启动不久(<3s)时触发,
+        # 音频请求和较旧轮次不受影响。
+        if not is_audio and _prev_text and (time.monotonic() - _prev_ts) < _TEXT_MERGE_WINDOW:
+            user_text = _prev_text + user_text
+            print(f"[voice/send] 文本累积合并: prev={_prev_text[-30:]!r} + {user_text[-30:]!r}", flush=True)
         # 抢占:取消旧轮(它的 CancelledError 分支会把半截回复落库),等它释放锁。
         # 15 秒等不到(stream_turn 的取消收尾最多含 5 秒 CLI interrupt)才放弃。
         t.cancel()
@@ -218,6 +233,11 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
         except asyncio.TimeoutError:  # 极小概率:两句话同时到,锁被同行请求抢先
             return web.json_response({"error": "上一轮还没说完"}, status=409)
     _turn_task = asyncio.current_task()
+
+    # 为下一轮可能的文本累积记录当前请求的文本和时间戳
+    if not is_audio:
+        _prev_text = user_text
+        _prev_ts = time.monotonic()
 
     resp = web.StreamResponse(
         headers={
