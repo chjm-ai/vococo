@@ -1504,7 +1504,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 2026-07-13 真机通话实锤(turn #1204"你刚才打断我思路了"):长句子天然停顿多,
   // 1.3s 缓冲期常常不够等到用户说完就先发了——发出去就收不回,继续说话会被
   // 误判成打断(barge-in)。拉长到 2.2s 换更低的腰斩概率,代价是打断响应慢一点。
-  const OMNI_PENDING_FLUSH_MS = 1500;
+  // 2026-07-22 再拉长到 2500ms:semantic_vad 语义判停可能在没有 speech_started
+  // 事件的情况下把一段长语音腰斩成两段转写,两段到达间隔有时超过 1.5s,
+  // 导致第一段独立发出去→Claude 只收到后半句→回复复读用户最后几个字。
+  // 对已有待发文本的切分场景再用更长的 3000ms 二次缓冲,普通短句子仍用 2500ms。
+  const OMNI_PENDING_FLUSH_MS = 2500;
+  const OMNI_PENDING_FLUSH_MS_LONG = 3000;
   // 首回复静音(2026-07-12,Wesley 提议):每次 WebRTC 新建连接后,iOS AEC 从零
   // 收敛,AI 第一段音频的回声漏得最凶——干脆在本连接第一次朗读期间把麦克风上行
   // 直接静音(track.enabled=false 只发静音帧,不动音频图,不踩 iOS 音频会话的雷),
@@ -3340,14 +3345,18 @@ void main(){
     }, OMNI_TRANSCRIPT_DONE_TIMEOUT_MS);
   }
 
-  // 拆句缓冲的入口:转写完成不立刻发,累进 omniPendingText,等 OMNI_PENDING_FLUSH_MS
-  // 静默期(其间没有再新开口/再来一段转写)才真正发给 Claude。直接拼接不加分隔符——
-  // 被腰斩的半句话拼上后半句本来就该无缝接上;真是两句独立话也顶多是语气上少个
-  // 停顿,不影响 Claude 理解。
+  // 拆句缓冲的入口:转写完成不立刻发,累进 omniPendingText,等
+  // OMNI_PENDING_FLUSH_MS/OMNI_PENDING_FLUSH_MS_LONG 静默期(其间没有再新开口/再来一
+  // 段转写)才真正发给 Claude。直接拼接不加分隔符——被腰斩的半句话拼上后半句本来就该
+  // 无缝接上;真是两句独立话也顶多是语气上少个停顿,不影响 Claude 理解。
+  // 2026-07-22:当 omniPendingText 已非空(说明 VAD 已把一段话切分),用更长缓冲
+  // OMNI_PENDING_FLUSH_MS_LONG(3000ms),给后半段更多时间到达;普通单句仍用
+  // 2500ms,兼顾响应速度。
   function queueOmniTurn(text){
+    const isSplit = !!omniPendingText;  // 已有待发文本=被切分了,用更长缓冲
     omniPendingText = omniPendingText ? (omniPendingText + text) : text;
     if(omniPendingTimer) clearTimeout(omniPendingTimer);
-    omniPendingTimer = setTimeout(flushOmniPending, OMNI_PENDING_FLUSH_MS);
+    omniPendingTimer = setTimeout(flushOmniPending, isSplit ? OMNI_PENDING_FLUSH_MS_LONG : OMNI_PENDING_FLUSH_MS);
   }
   function flushOmniPending(){
     omniPendingTimer = null;
