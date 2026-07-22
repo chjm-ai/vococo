@@ -845,14 +845,15 @@
   #cmdPop .ci:hover,#cmdPop .ci.active{background:var(--panel2)}
   #cmdPop .empty{padding:9px 11px;font-size:12.5px;color:var(--dim2)}
   #cmdPop .cmdsep{height:1px;margin:5px 7px;background:var(--line2)}
-  #ta{width:100%;flex:1;min-width:0;background:none;border:none;color:var(--text);resize:none;font:inherit;
+  #ta{width:100%;background:none;border:none;color:var(--text);resize:none;font:inherit;
     min-height:46px;max-height:180px;padding:2px 4px;outline:none;line-height:1.5}
   #ta::placeholder{color:var(--dim2)}
-  /* ══ 订阅配额环(输入框左侧环形进度) ══ */
-  .tarow{display:flex;align-items:stretch;width:100%;min-height:46px}
-  #quotaRing{flex-shrink:0;width:28px;display:flex;align-items:flex-start;justify-content:center;padding-top:12px;cursor:pointer;position:relative;z-index:5}
+  /* ══ 订阅配额环(挨着模型切换按钮左边)══ */
+  #quotaRing{flex-shrink:0;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    cursor:pointer;position:relative;transition:background .16s}
+  #quotaRing:hover{background:var(--panel2)}
   #quotaRing[hidden]{display:none}
-  .qr{width:16px;height:16px;display:block;color:var(--dim)}
+  .qr{width:18px;height:18px;display:block;color:var(--dim)}
   .qa{transition:stroke-dashoffset .5s ease;stroke:var(--accent)}
   .qt{stroke:currentColor}
   /* 配额详情弹窗 */
@@ -1320,8 +1321,12 @@ try{
               <div id="projSelPop" hidden></div>
             </div>
             <div id="cmdPop" hidden></div>
-            <div class="tarow">
-              <div id="quotaRing" hidden>
+            <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
+            <div class="inbar">
+              <button type="button" id="imgBtn">＋</button>
+              <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
+              <span class="spacer"></span>
+              <div id="quotaRing" hidden title="订阅额度">
                 <svg class="qr" viewBox="0 0 36 36">
                   <circle class="qt" cx="18" cy="18" r="15.5" fill="none" stroke="currentColor" stroke-width="3" opacity="0.15"/>
                   <circle class="qa" cx="18" cy="18" r="15.5" fill="none" stroke-width="3" stroke-linecap="round"
@@ -1334,12 +1339,6 @@ try{
                   <div class="qpop-row qpop-reset" id="qpReset" hidden><span>重置</span><span id="qpResetTime"></span></div>
                 </div>
               </div>
-              <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
-            </div>
-            <div class="inbar">
-              <button type="button" id="imgBtn">＋</button>
-              <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
-              <span class="spacer"></span>
               <div id="modelBox">
                 <button type="button" id="modelBtn" title="切换模型">
                   <span id="modelName">模型</span><span class="caret chev down"></span>
