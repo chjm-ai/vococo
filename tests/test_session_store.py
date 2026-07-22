@@ -58,6 +58,42 @@ def test_clear(isolated):
     assert session_store.load_recent("cli") == []
 
 
+def test_search_sessions_title_first_includes_archived(isolated):
+    """标题命中排前、正文其次;归档会话照常返回并带 archived 标记。"""
+    from claude_hermes.memory import session_store
+
+    session_store.set_title("web:a", "名古屋出差计划")
+    session_store.append("web:a", "订机票", "好的")
+    session_store.set_title("web:b", "随便聊聊")
+    session_store.append("web:b", "去名古屋玩几天", "推荐三日游")
+    session_store.set_conv_archived("web:b", True)
+    res = session_store.search_sessions("名古屋")
+    assert [r["key"] for r in res] == ["web:a", "web:b"]
+    assert res[0]["match"] == "title" and res[1]["match"] == "content"
+    assert res[1]["archived"] and "名古屋" in res[1]["snippet"]
+
+
+def test_search_sessions_excludes_deleted_and_foreign_keys(isolated):
+    """删除的会话物理消失搜不到;非侧边栏前缀(tg:/cli)不进结果。"""
+    from claude_hermes.memory import session_store
+
+    session_store.set_title("web:x", "要删的名古屋会话")
+    session_store.append("web:x", "名古屋", "好")
+    session_store.append("tg:1", "名古屋", "好")   # TG 会话不属于 Web 侧边栏
+    session_store.delete_session("web:x")
+    assert session_store.search_sessions("名古屋") == []
+
+
+def test_search_sessions_like_escape(isolated):
+    """用户输入里的 % _ 按字面匹配,不当 LIKE 通配符。"""
+    from claude_hermes.memory import session_store
+
+    session_store.set_title("web:a", "进度 100% 完成")
+    session_store.set_title("web:b", "进度还差一点")
+    res = session_store.search_sessions("100%")
+    assert [r["key"] for r in res] == ["web:a"]
+
+
 def test_project_upsert_dedup_and_hash(isolated, tmp_path):
     from claude_hermes.memory import session_store
 
