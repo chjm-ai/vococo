@@ -76,18 +76,17 @@ async def voice_dispatch_task(args: dict) -> dict:
 
 @tool(
     "voice_append_task",
-    "给一个已有的后台任务追加新的指令/需求。task_id:目标任务 id(必填,从 voice_list_tasks "
-    "或 voice_dispatch_task 返回里拿);instruction:追加的指令内容;"
-    "mode:等待模式'wait'(默认)或打断模式'interrupt'。"
-    "wait:等当前任务跑完了再拿合并的 prompt 派新任务继续跑,不中断当前工作;"
-    "interrupt:直接中断当前任务(如果还在跑),带上新旧需求重新跑。"
-    "本工具不等待任务完成,新任务 id 会通过返回消息告诉你,后续可以用 voice_query_task 查它的状态。",
+    "给一个已有的后台任务追加新的指令/需求——原地续在同一个任务上,自始至终只有"
+    "一条会话,绝不会产生新任务。task_id:目标任务 id(必填,从 voice_list_tasks "
+    "或 voice_dispatch_task 返回里拿);instruction:追加的指令内容。"
+    "系统会自动判断怎么接:任务已经跑完了就直接把这句话当下一轮继续说;"
+    "还在跑就自动打断当前这轮、带着已完成的进度接上新指令重新跑。"
+    "本工具不等待新一轮跑完,可以用 voice_query_task 查后续状态。",
     {
         "type": "object",
         "properties": {
             "task_id": {"type": "string"},
             "instruction": {"type": "string"},
-            "mode": {"type": "string", "enum": ["wait", "interrupt"]},
         },
         "required": ["task_id", "instruction"],
     },
@@ -95,18 +94,15 @@ async def voice_dispatch_task(args: dict) -> dict:
 async def voice_append_task(args: dict) -> dict:
     task_id = (args.get("task_id") or "").strip()
     instruction = (args.get("instruction") or "").strip()
-    mode = (args.get("mode") or "wait").strip()
     if not (task_id and instruction):
         return _ok("voice_append_task 需要 task_id 和 instruction 都非空。")
-    if mode not in ("wait", "interrupt"):
-        return _ok(f"mode 应为 wait 或 interrupt,收到「{mode}」。")
-    result = executor.append(task_id, instruction, mode=mode)
+    result = await executor.append(task_id, instruction)
     if not result["ok"]:
         return _ok(f"追加失败:{result['message']}")
     parts = [f"✅ {result['message']}"]
     if result.get("task"):
         t = result["task"]
-        parts.append(f"新任务 id={t['id']},标题「{t['title']}」,状态:{_STATUS_WORD.get(t['status'], t['status'])}")
+        parts.append(f"task_id={t['id']},标题「{t['title']}」,状态:{_STATUS_WORD.get(t['status'], t['status'])}")
     return _ok("。".join(parts))
 
 

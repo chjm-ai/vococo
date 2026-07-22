@@ -10,7 +10,7 @@ import asyncio
 import pytest
 
 from claude_hermes import config
-from claude_hermes.core.agent import AgentReply, Done, ToolInput
+from claude_hermes.core.agent import AgentReply, Done, SessionStarted, ToolInput
 from claude_hermes.gateway import core as gateway_core
 from claude_hermes.memory import session_store
 from claude_hermes.voice import executor, notify, session, task_tools, tasks, tts
@@ -71,12 +71,17 @@ def test_set_status_rejects_illegal_transition(voice_db):
     assert tasks.get(t["id"])["status"] == "queued"
 
 
-def test_set_status_rejects_transition_out_of_terminal_state(voice_db):
+def test_set_status_allows_reopen_from_terminal_state(voice_db):
+    """终态 → running 是追问重开通道(见 executor.append),但状态机仍然不许瞎跳
+    (如 queued 直接到 done,跳过 running)。"""
     t = tasks.create("A", "p")
     tasks.set_status(t["id"], "running")
     tasks.finish(t["id"], "done", "结果", "摘要")
-    assert tasks.set_status(t["id"], "running") is False
-    assert tasks.get(t["id"])["status"] == "done"
+    assert tasks.set_status(t["id"], "running") is True
+    assert tasks.get(t["id"])["status"] == "running"
+
+    t2 = tasks.create("B", "p")
+    assert tasks.set_status(t2["id"], "done") is False
 
 
 def test_finish_rejects_non_terminal_status(voice_db):
@@ -334,6 +339,99 @@ def test_cancel_queued_task_directly(voice_db):
     t = tasks.create("A", "p")
     assert executor.cancel(t["id"]) is True
     assert tasks.get(t["id"])["status"] == "cancelled"
+
+
+# ── voice_append_task:原地续在同一个任务上,不产生新任务 ────────────────────
+
+
+@pytest.mark.anyio
+async def test_append_on_terminal_task_resumes_same_task_no_new_row(voice_db, monkeypatch):
+    """追问撞上已经跑完的任务:原地续聊,resume 回同一条 SDK 会话,只发这一轮的话
+    (不重新拼全部历史),且自始至终只有一条任务行。"""
+    seen = []
+
+    async def fake_first(history, prompt, cwd=None, session_key=None, **kw):
+        seen.append({"prompt": prompt, "resume": kw.get("resume")})
+        yield Done(AgentReply(text="结果", tool_calls=[], cost_usd=None, is_error=False,
+                               sdk_session_id="sdk-first"))
+
+    monkeypatch.setattr(executor, "stream_turn", fake_first)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+
+    task = executor.dispatch("标题", "先做 A")
+    await executor._running[task["id"]]
+    assert tasks.get(task["id"])["status"] == "done"
+
+    async def fake_followup(history, prompt, cwd=None, session_key=None, **kw):
+        seen.append({"prompt": prompt, "resume": kw.get("resume")})
+        yield Done(AgentReply(text="结果2", tool_calls=[], cost_usd=None, is_error=False,
+                               sdk_session_id="sdk-second"))
+
+    monkeypatch.setattr(executor, "stream_turn", fake_followup)
+    result = await executor.append(task["id"], "再做 B")
+    assert result["ok"] is True
+    assert result["task"]["id"] == task["id"]  # 同一个 task_id,没派生新任务
+    await executor._running[task["id"]]
+
+    assert tasks.get(task["id"])["status"] == "done"
+    assert len(tasks.list_recent(10)) == 1
+    assert seen[1]["prompt"] == "再做 B"  # 这一轮只发追加指令本身
+    assert seen[1]["resume"] == "sdk-first"  # resume 回第一轮的 SDK 会话
+
+
+@pytest.mark.anyio
+async def test_append_on_running_task_interrupts_and_resumes_same_session(voice_db, monkeypatch):
+    """追问撞上还在跑的任务:打断当前这轮,重开时 resume 回同一条 SDK 会话——
+    session_id 在 SessionStarted 阶段就已提前存回 session_store(不用等 Done),
+    所以哪怕这一轮被打断,下一轮依然接得上,不会丢上下文重开对话。"""
+    started = asyncio.Event()
+
+    async def fake_hangs(history, prompt, cwd=None, session_key=None, **kw):
+        yield SessionStarted(session_id="sdk-mid-flight")
+        started.set()
+        await asyncio.sleep(10)
+        yield Done(AgentReply(text="不会跑到这", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(executor, "stream_turn", fake_hangs)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+
+    task = executor.dispatch("标题", "先做 A")
+    await started.wait()
+
+    session_key = f"voice-task:{task['id']}"
+    assert session_store.get_sdk_session_id(session_key) == "sdk-mid-flight"
+
+    seen_resume = []
+
+    async def fake_followup(history, prompt, cwd=None, session_key=None, **kw):
+        seen_resume.append(kw.get("resume"))
+        yield Done(AgentReply(text="接上了", tool_calls=[], cost_usd=None, is_error=False,
+                               sdk_session_id="sdk-mid-flight"))
+
+    monkeypatch.setattr(executor, "stream_turn", fake_followup)
+    result = await executor.append(task["id"], "改成 B")
+    assert result["ok"] is True
+    assert result["task"]["id"] == task["id"]
+    await executor._running[task["id"]]
+
+    assert tasks.get(task["id"])["status"] == "done"
+    assert len(tasks.list_recent(10)) == 1  # 打断没有产生新任务
+    assert seen_resume == ["sdk-mid-flight"]
+
+
+@pytest.mark.anyio
+async def test_append_on_queued_task_merges_prompt(voice_db):
+    """追问撞上还没轮到的排队任务:还没起跑,直接把新指令并进待执行 prompt。"""
+    t = tasks.create("A", "先做 A")
+    assert tasks.get(t["id"])["status"] == "queued"
+
+    result = await executor.append(t["id"], "再做 B")
+    assert result["ok"] is True
+    assert result["task"]["id"] == t["id"]
+    row = tasks.get(t["id"])
+    assert row["status"] == "queued"
+    assert "先做 A" in row["prompt"] and "再做 B" in row["prompt"]
+    assert len(tasks.list_recent(10)) == 1
 
 
 @pytest.mark.anyio
