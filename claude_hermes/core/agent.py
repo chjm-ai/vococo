@@ -776,6 +776,13 @@ async def stream_turn(
                 if total and threshold and total >= threshold:
                     try:
                         await client.query("/compact")
+                        # 必须把 /compact 这条命令的流读到【它自己的 ResultMessage】为止,
+                        # 不能见到 compact_boundary 就 break——2026-07-22 事故:boundary 先到、
+                        # Result 后到,break 早了会把残留的 ResultMessage 连同 client 一起回池,
+                        # 下一轮 query 后第一条就读到这条旧 Result → 0 文本瞬间收工,而它真正的
+                        # 回复又留在流里被再下一轮吃掉,形成自我延续的「每轮回的都是上一轮的
+                        # 答案」错位(语音会话连续错了 5 轮才碰巧对齐)。
+                        compact_result_seen = False
                         with anyio.move_on_after(120):
                             async for msg in msgs:
                                 if (
@@ -789,9 +796,11 @@ async def stream_turn(
                                     yield Compacted(
                                         trigger=str(meta.get("trigger", "") or "safety-net")
                                     )
+                                elif isinstance(msg, ResultMessage):
+                                    compact_result_seen = True
                                     break
-                                if isinstance(msg, ResultMessage):
-                                    break
+                        if not compact_result_seen:
+                            clean_finish = False  # 流没读干净,禁止回池,防污染下一轮
                         # 压完再问一次,把这轮落库的用量换成压缩后的真实值
                         try:
                             cu2 = await client.get_context_usage()
@@ -801,7 +810,7 @@ async def stream_turn(
                         except Exception:
                             pass
                     except Exception:
-                        pass
+                        clean_finish = False  # /compact 半途出错,流状态不明,同样禁止回池
 
             # 干净收工 → 回池保温,同会话下一轮零冷启动(哈希/sid 对不上会被池拒收)
             if pooling and clean_finish and sess_id:

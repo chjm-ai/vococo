@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 
-from claude_agent_sdk import ResultMessage, StreamEvent
+from claude_agent_sdk import ResultMessage, StreamEvent, SystemMessage
 
 from claude_hermes import config
 from claude_hermes.core import agent, client_pool
@@ -255,3 +255,71 @@ async def test_pool_disabled_by_ttl_zero(clients, monkeypatch):
     assert clients[0].disconnected  # 轮末即关
     await _turn(resume="sid-1")
     assert len(clients) == 2  # 每轮新建
+
+
+class CompactFakeClient(FakeClient):
+    """安全网 /compact 场景:主轮收工后上下文超阈值 → stream_turn 追发 query("/compact");
+    真机顺序(2026-07-22 事故)是 compact_boundary 先到、/compact 自己的 ResultMessage
+    后到。用队列驱动消息流,query 时才入队,跟真 CLI 的行为轮廓一致。"""
+
+    def __init__(self, options=None, *, registry: list):
+        super().__init__(options, registry=registry)
+        self.pending = asyncio.Queue()
+        self.main_queries = 0
+
+    async def query(self, prompt=None, *args, **kwargs):
+        self.queries += 1
+        if isinstance(prompt, str) and prompt.strip() == "/compact":
+            self.pending.put_nowait(
+                SystemMessage(subtype="compact_boundary", data={"compact_metadata": {"trigger": "auto"}})
+            )
+            self.pending.put_nowait(_result_msg(self.sid))
+            return
+        self.main_queries += 1
+        self.pending.put_nowait(
+            StreamEvent(
+                uuid=str(self.main_queries),
+                session_id=self.sid,
+                event={
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": f"回复{self.main_queries}"},
+                },
+            )
+        )
+        self.pending.put_nowait(_result_msg(self.sid))
+
+    def receive_messages(self):
+        async def gen():
+            while True:
+                yield await self.pending.get()
+
+        return gen()
+
+    async def get_context_usage(self):
+        # 190k/200k ≈ 95%,必超 83% 阈值 → 每轮都触发安全网 /compact
+        return {"totalTokens": 190_000, "rawMaxTokens": 200_000}
+
+
+@pytest.mark.anyio
+async def test_safety_net_compact_drains_result_before_checkin(clients, monkeypatch):
+    """回归 2026-07-22 语音「每轮回的都是上一轮的答案」事故:安全网 /compact 的
+    drain 见到 compact_boundary 就 break,把 /compact 自己的 ResultMessage 留在流里
+    回池 → 下一轮 query 后第一条读到旧 Result,0 文本瞬间收工,回复从此错一位。
+    修复后必须把 /compact 读到它的 ResultMessage 为止再回池。"""
+    made: list[FakeClient] = []
+    monkeypatch.setattr(
+        agent, "ClaudeSDKClient", lambda options=None: CompactFakeClient(options, registry=made)
+    )
+
+    r1 = await _turn()
+    assert r1.text == "回复1"
+    fake = made[0]
+    # 修复的核心断言:回池前流必须读干净,不能留下 /compact 的 ResultMessage
+    assert fake.pending.qsize() == 0
+    assert "web:pool-test" in client_pool._pool
+
+    # 第二轮命中保温池:拿到的必须是本轮的回答,不是空文本/上一轮残留
+    r2 = await _turn(resume="sid-1")
+    assert len(made) == 1
+    assert r2.text == "回复2"
+    assert fake.pending.qsize() == 0

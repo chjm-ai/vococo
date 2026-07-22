@@ -444,9 +444,12 @@ async def test_voice_send_rejects_concurrent_turn(voice_db, monkeypatch):
 async def test_voice_send_preempts_running_http_turn(voice_db, monkeypatch):
     """新一句到达时,持锁的上一轮 HTTP turn 该被抢占取消,而不是 409 拒答
     (2026-07-10 真机:一轮长任务持锁,用户连问几句全被"上一轮还没处理完"弹回)。
-    被抢占的半轮要落库,用户说过的话不能凭空消失。"""
+    被抢占的半轮要落库,用户说过的话不能凭空消失。
+    2026-07-22 起抢占叠加文本累积:上一轮启动 <3s 内到达的文字直发会把前一段文本
+    合并进新一轮(VAD 腰斩救回前段),所以新一轮的用户文本是「第一句第二句」。"""
     import asyncio
 
+    routes._prev_text, routes._prev_ts = "", 0.0  # 隔离模块级累积态,防跨测试串味
     started = asyncio.Event()
     calls: list[str] = []
 
@@ -479,7 +482,9 @@ async def test_voice_send_preempts_running_http_turn(voice_db, monkeypatch):
     history = session.load_history()
     firsts = [t for t in history if t.user == "第一句"]
     assert firsts and "打断" in firsts[0].assistant
-    assert any(t.user == "第二句" for t in history)
+    # 文本累积:第二轮带着被打断那段的前文一起送,落库也是合并后的全文
+    assert any(t.user == "第一句第二句" for t in history)
+    assert "第一句第二句" in calls[1]
 
 
 async def _none_coro():

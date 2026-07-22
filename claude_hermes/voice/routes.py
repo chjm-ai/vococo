@@ -183,7 +183,10 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     这一趟完整的网络往返(手机 ⇄ 服务器隔着隧道,这一趟在真机上很有分量),
     服务端转写完直接续跑同一个 SSE 流,先吐一个 event:transcript 回显文字。
     """
-    global _stop_event, _turn_task
+    # _prev_text/_prev_ts 缺 global 声明曾是定时炸弹(2026-07-22):函数里对它们有
+    # 赋值,Python 会把整个函数内的引用都当局部变量,抢占路径一读就 UnboundLocalError
+    # → 新一句直接 500,旧轮也没被取消。
+    global _stop_event, _turn_task, _prev_text, _prev_ts
     if (g := _guard(request)) is not None:
         return g
     is_audio = (request.content_type or "").startswith("multipart/")
