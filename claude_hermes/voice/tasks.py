@@ -4,8 +4,9 @@
 (见 00-overview.md §2.4 的隔离约束)。
 
 状态机:queued → running → {done, failed, cancelled};running → cancelled;
-另有一条纠错通道 failed → done(见 _ALLOWED_TRANSITIONS 的注释)。
-不允许的迁移(如 done → running)一律拒绝,由 set_status() 返回 False 体现。
+另有两条纠错/续接通道:failed → done、{done,failed,cancelled} → running
+(追问在原任务上原地重开一轮,见 executor.append,不再产生新任务行)。
+不允许的迁移一律拒绝,由 set_status() 返回 False 体现。
 """
 from __future__ import annotations
 
@@ -23,13 +24,16 @@ TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled"})
 _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "queued": frozenset({"running", "cancelled"}),
     "running": frozenset({"done", "failed", "cancelled"}),
-    "done": frozenset(),
+    # done/cancelled → running:「追问」重开通道——在同一个任务上原地续接一轮
+    # (resume 同一条 SDK 会话、复用同一个 worktree),不产生新任务行。
+    "done": frozenset({"running"}),
     # failed → done 是纠错通道:任务可能被外部误标失败(如另一进程的孤儿回收),
     # 而真正执行它的 executor 随后如实收尾——executor 是任务结局的唯一权威,
     # 它说 done 就允许把误标改回来。2026-07-12 事故:任务干完活提交了代码,
     # finish('done') 却被终态规则静默拒绝,任务板永远停在"失败"。
-    "failed": frozenset({"done"}),
-    "cancelled": frozenset(),
+    # failed → running 同样是追问重开通道。
+    "failed": frozenset({"done", "running"}),
+    "cancelled": frozenset({"running"}),
 }
 
 
@@ -80,26 +84,34 @@ def create(
     cwd: str | None = None,
     dispatch_platform: str | None = None,
     dispatch_chat_id: str | None = None,
-    parent_task_id: str | None = None,
 ) -> dict:
     """落库一条 queued 任务,返回完整行。id 是 8 位短随机串(碰撞概率可忽略)。
 
     dispatch_platform/dispatch_chat_id: 任务是从哪个平台(web/telegram)、
     哪个会话派来的——终态通知时靠它们回推该发给谁(见 notify.py)。
-    parent_task_id: 本任务是对某任务的追加(voice_append_task),存父任务 id。
     """
     c = _conn()
     task_id = secrets.token_hex(4)
     now = time.time()
     c.execute(
         "INSERT INTO tasks(id,title,prompt,cwd,status,progress_note,result_summary,"
-        "result_full,dispatch_platform,dispatch_chat_id,parent_task_id,created_at,updated_at) "
-        "VALUES (?,?,?,?,'queued','','','',?,?,?,?,?)",
-        (task_id, title, prompt, cwd, dispatch_platform, dispatch_chat_id,
-         parent_task_id, now, now),
+        "result_full,dispatch_platform,dispatch_chat_id,created_at,updated_at) "
+        "VALUES (?,?,?,?,'queued','','','',?,?,?,?)",
+        (task_id, title, prompt, cwd, dispatch_platform, dispatch_chat_id, now, now),
     )
     c.commit()
     return get(task_id)
+
+
+def update_prompt(task_id: str, new_prompt: str) -> None:
+    """只在任务还没起跑(queued)时用:追问撞上还在排队的任务,把新指令并进
+    待执行的 prompt——还没开始跑,不涉及 resume,直接改内容最简单。"""
+    c = _conn()
+    c.execute(
+        "UPDATE tasks SET prompt=?, updated_at=? WHERE id=? AND status='queued'",
+        (new_prompt, time.time(), task_id),
+    )
+    c.commit()
 
 
 def get(task_id: str) -> dict | None:
@@ -133,21 +145,6 @@ def count_running() -> int:
         "SELECT COUNT(*) AS n FROM tasks WHERE status='running'"
     ).fetchone()
     return int(row["n"])
-
-
-def list_children(parent_task_id: str, status: str | None = None) -> list[dict]:
-    """查某任务的所有子任务(追加链)。status 非空则进一步筛选(如 'queued')。"""
-    if status:
-        rows = _conn().execute(
-            "SELECT * FROM tasks WHERE parent_task_id=? AND status=? ORDER BY created_at ASC",
-            (parent_task_id, status),
-        ).fetchall()
-    else:
-        rows = _conn().execute(
-            "SELECT * FROM tasks WHERE parent_task_id=? ORDER BY created_at ASC",
-            (parent_task_id,),
-        ).fetchall()
-    return [_row(r) for r in rows]
 
 
 def set_status(task_id: str, status: str, progress_note: str | None = None) -> bool:

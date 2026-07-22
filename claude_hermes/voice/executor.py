@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 from .. import config
 from ..core import worktree
-from ..core.agent import Done, ToolInput, run_turn, stream_turn
+from ..core.agent import Done, SessionStarted, ToolInput, run_turn, stream_turn
 from ..memory import session_store
 from ..tools import danger
 from . import notify, tasks
@@ -48,17 +48,20 @@ def _humanize_error(error_note: str) -> str:
 _running: dict[str, asyncio.Task] = {}
 
 
-def _start_one(task: dict) -> None:
-    """内部:立刻起跑一条任务(跳过排队队列),用于 interrupt 打断模式 和 wait 链式追加。
+def _start_one(task: dict, turn_text: str | None = None) -> bool:
+    """内部:立刻起跑一条任务(跳过排队队列),用于首次派发之外的重开场景
+    (追问打断续接 / 追问原地续聊)。turn_text 非空时作为这一轮实际发给模型的
+    文本(而不是 row['prompt']),配合 resume 续同一条 SDK 会话。
 
     不走 _maybe_start_next 的正常排队逻辑,直接设 running + create_task。
-    若 set_status 失败(状态已被别处改了),什么都不做。
+    若 set_status 失败(状态已被别处改了),什么都不做,返回 False。
     """
     task_id = task["id"]
     if not tasks.set_status(task_id, "running"):
-        return
+        return False
     _notify_activity(task_id)
-    _running[task_id] = asyncio.create_task(_run(task_id))
+    _running[task_id] = asyncio.create_task(_run(task_id, turn_text))
+    return True
 
 
 def _notify_activity(task_id: str) -> None:
@@ -123,15 +126,19 @@ async def _summarize(result_text: str) -> str:
     return text[: _SUMMARY_MAX - 1] + "…"
 
 
-async def _run(task_id: str) -> None:
+async def _run(task_id: str, turn_text: str | None = None) -> None:
+    """跑一个任务的一轮对话。turn_text 为 None(首次派发)用 row['prompt'];
+    非 None(追问重开)则是这一轮实际发给模型的文本——历史靠 resume 接,
+    不用每次都把全部历史重新拼进 prompt(见 append())。"""
     row = tasks.get(task_id)
     if row is None:
         return
+    prompt_text = turn_text if turn_text is not None else row["prompt"]
     # 派发的这一轮对话也落进跟普通文字对话共用的 session_store(不只是 voice.db 里的
     # result_full 摘要)——这样任务完成后用户能在侧边栏"语音任务"分组里看到完整对话,
     # 并且能继续用文字追问(续聊直接走 web 发消息路径的 converse(),见 web.py)。
     session_key = f"voice-task:{task_id}"
-    turn_id = session_store.start_turn(session_key, row["prompt"])
+    turn_id = session_store.start_turn(session_key, prompt_text)
     sdk_session_id: str | None = None
     # 任务 cwd 指到一个 git 仓库就给这次任务开专属 worktree + 分支(hermes/<task_id>),
     # 跟 Web/CLI「一会话一分支」看齐——语音这边真要动代码,必须走这条派后台任务的路径
@@ -150,10 +157,16 @@ async def _run(task_id: str) -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id
         resume_sid = session_store.get_sdk_session_id(session_key)
         async for ev in stream_turn(
-            [], row["prompt"], cwd=effective_cwd, session_key=session_key, resume=resume_sid,
+            [], prompt_text, cwd=effective_cwd, session_key=session_key, resume=resume_sid,
             max_turns=config.VOICE_TASK_MAX_TURNS,
         ):
-            if isinstance(ev, ToolInput) and ev.parent_id is None:
+            if isinstance(ev, SessionStarted):
+                # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮
+                # 之后被 voice_append_task 打断(CancelledError,永远走不到 Done),
+                # 下一轮追问依然能 resume 回同一条 SDK 会话,不会丢上下文重开对话。
+                sdk_session_id = ev.session_id
+                session_store.set_sdk_session_id(session_key, sdk_session_id)
+            elif isinstance(ev, ToolInput) and ev.parent_id is None:
                 now = time.monotonic()
                 if now - last_progress_ts >= _PROGRESS_THROTTLE_SEC:
                     last_progress_ts = now
@@ -205,21 +218,13 @@ async def _run(task_id: str) -> None:
 
     await notify.on_task_terminal(task_id)
 
-    # 启动追加链上的子任务(wait 模式):父任务结束后,追加的任务优先于普通排队任务
-    for child in tasks.list_children(task_id, status='queued'):
-        _start_one(child)
-
     _maybe_start_next()
 
 
 def _maybe_start_next() -> None:
-    """并发有空位就从队首拉一个 queued 任务起跑;没有空位/没有排队任务则什么都不做。
-
-    跳过 parent_task_id 非空的任务——它们是 voice_append_task wait 模式生成的链式
-    子任务,由父任务 _run 收尾时通过 _start_one 启动,不走普通排队。
-    """
+    """并发有空位就从队首拉一个 queued 任务起跑;没有空位/没有排队任务则什么都不做。"""
     while tasks.count_running() < config.VOICE_TASK_MAX_CONCURRENCY:
-        queued = [t for t in tasks.list_queued() if not t.get("parent_task_id")]
+        queued = tasks.list_queued()
         if not queued:
             return
         nxt = queued[0]
@@ -250,90 +255,46 @@ def dispatch(
     return task
 
 
-def append(
-    task_id: str,
-    new_instruction: str,
-    mode: str = "wait",
-) -> dict:
-    """给一个已有后台任务追加指令。
+async def append(task_id: str, instruction: str) -> dict:
+    """给一个已有后台任务追加一轮指令——原地续在同一个 task_id 上,自始至终只有
+    一条任务/一条 SDK 会话/一个 worktree,不再派生新任务:
 
-    mode='wait':      等当前任务跑完后(如果还在跑),用合并的 prompt 派新任务继续;
-                      如果已结束则立即派发。
-    mode='interrupt': 中断当前任务,带上新旧需求重新跑。
+    - queued(还没轮到):新指令直接并进待执行的 prompt。
+    - running(正在跑):打断当前这轮,resume 回打断前已经存好的 SDK 会话 id
+      (见 _run 里 SessionStarted 的早捕获),带着已经做的工作接上新指令重跑。
+    - 终态(done/failed/cancelled):直接把 instruction 当这一轮的话,resume 回
+      同一条 SDK 会话继续聊,不用重新交代前情。
 
-    返回 {"ok": bool, "message": str, "task": dict|None, "parent_status": str}。
+    返回 {"ok": bool, "message": str, "task": dict|None}。
     """
     row = tasks.get(task_id)
     if row is None:
-        return {"ok": False, "message": f"任务不存在(id={task_id})",
-                "task": None, "parent_status": ""}
+        return {"ok": False, "message": f"任务不存在(id={task_id})", "task": None}
 
-    combined_prompt = f"{row['prompt']}\n\n--- 追加指令 ---\n{new_instruction}"
-    parent_title = row["title"]
+    if row["status"] == "queued":
+        merged = f"{row['prompt']}\n\n--- 追加指令 ---\n{instruction}"
+        tasks.update_prompt(task_id, merged)
+        return {"ok": True,
+                "message": "还没开始跑,新指令已并入待执行内容(仍是原任务)",
+                "task": tasks.get(task_id)}
 
-    if mode == "interrupt":
-        had_resume = False
-        if row["status"] == "running":
-            cancel(task_id)  # 异步取消,等 _run finally 写终态
-            # 拿走旧任务的 SDK 会话 id,让新任务续上上下文
-            resume_sid = session_store.get_sdk_session_id(f"voice-task:{task_id}")
-            had_resume = bool(resume_sid)
-        elif row["status"] == "queued":
-            tasks.set_status(task_id, "cancelled", progress_note="已取消(因追加指令中断)")
-            resume_sid = None
-        else:
-            # 已结束的任务走 interrupt = 直接从 combined prompt 起新任务
-            resume_sid = None
+    if row["status"] == "running":
+        await cancel_and_wait(task_id)  # 等 _run 真正收尾(sdk_session_id 已提前存好)
+        started = _start_one(tasks.get(task_id), turn_text=instruction)
+        if not started:
+            return {"ok": False, "message": "任务状态被别处改过,追加失败",
+                    "task": tasks.get(task_id)}
+        return {"ok": True,
+                "message": "已打断原任务,带着已完成的进度接上新指令继续跑",
+                "task": tasks.get(task_id)}
 
-        new_task = tasks.create(
-            title=f"{parent_title}(续)",
-            prompt=combined_prompt,
-            cwd=row.get("cwd"),
-            dispatch_platform=row.get("dispatch_platform"),
-            dispatch_chat_id=row.get("dispatch_chat_id"),
-            parent_task_id=task_id,
-        )
-
-        if resume_sid:
-            session_store.set_sdk_session_id(f"voice-task:{new_task['id']}", resume_sid)
-
-        _start_one(new_task)
-
-        msg = f"已中断原任务,带追加指令重新开始(task_id={new_task['id']})"
-        if had_resume:
-            msg += ",续上了原任务的上下文"
-        return {"ok": True, "message": msg,
-                "task": new_task, "parent_status": row["status"]}
-
-    elif mode == "wait":
-        if row["status"] in ("queued", "running"):
-            new_task = tasks.create(
-                title=f"{parent_title}(续)",
-                prompt=combined_prompt,
-                cwd=row.get("cwd"),
-                dispatch_platform=row.get("dispatch_platform"),
-                dispatch_chat_id=row.get("dispatch_chat_id"),
-                parent_task_id=task_id,
-            )
-            return {"ok": True,
-                    "message": f"已排队:等任务「{parent_title}」完成后再执行追加指令(task_id={new_task['id']})",
-                    "task": new_task, "parent_status": row["status"]}
-        else:
-            new_task = tasks.create(
-                title=f"{parent_title}(续)",
-                prompt=combined_prompt,
-                cwd=row.get("cwd"),
-                dispatch_platform=row.get("dispatch_platform"),
-                dispatch_chat_id=row.get("dispatch_chat_id"),
-                parent_task_id=task_id,
-            )
-            _start_one(new_task)
-            return {"ok": True,
-                    "message": f"原任务已结束({row['status']}),已派发新任务继续(task_id={new_task['id']})",
-                    "task": new_task, "parent_status": row["status"]}
-
-    return {"ok": False, "message": f"未知模式:{mode}(应为 wait 或 interrupt)",
-            "task": None, "parent_status": row.get("status", "")}
+    # 终态:done / failed / cancelled —— 原地续聊
+    started = _start_one(row, turn_text=instruction)
+    if not started:
+        return {"ok": False, "message": "任务状态被别处改过,追加失败",
+                "task": tasks.get(task_id)}
+    return {"ok": True, "message": "原任务已结束,已在原任务上继续跑新指令",
+            "task": tasks.get(task_id)}
 
 
 def cancel(task_id: str) -> bool:

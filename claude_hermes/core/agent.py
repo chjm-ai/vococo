@@ -255,8 +255,22 @@ class Done:
     reply: AgentReply
 
 
+@dataclass
+class SessionStarted:
+    """本轮 SDK 会话 id 已确定(取自开局的 init 系统消息,早于任何正文/工具调用)。
+
+    这个 id 跟最终 ResultMessage.session_id 是同一个,但不用等整轮跑完就能拿到——
+    调用方可以在收到它的第一时间存回 session_store,这样哪怕本轮之后被取消
+    (CancelledError 会打断 async for,永远走不到 Done),下一轮 resume 依然能接上
+    同一条 SDK 会话,而不是一取消就丢失上下文重开对话。
+    """
+
+    session_id: str
+
+
 Event = Union[
-    TextDelta, ThinkingDelta, ToolStarted, ToolInput, ToolFinished, Compacted, Done
+    TextDelta, ThinkingDelta, ToolStarted, ToolInput, ToolFinished, Compacted,
+    SessionStarted, Done,
 ]
 
 
@@ -665,6 +679,14 @@ async def stream_turn(
                                 "compact_metadata"
                             ) or {}
                             yield Compacted(trigger=str(meta.get("trigger", "") or ""))
+                        elif getattr(msg, "subtype", "") == "init":
+                            # 开局的 init 消息里就带了本轮 session_id(实测早于任何
+                            # AssistantMessage/ResultMessage),提前更新 sess_id 并
+                            # 广播出去,而不是死等 ResultMessage——见 SessionStarted。
+                            sid = (getattr(msg, "data", None) or {}).get("session_id")
+                            if sid and sid != sess_id:
+                                sess_id = sid
+                                yield SessionStarted(session_id=sess_id)
                     elif isinstance(msg, TaskStartedMessage):
                         # 后台任务(run_in_background)启动 → 记进「在跑」集,收工要等它终态
                         active_tasks.add(getattr(msg, "task_id", "") or "")
