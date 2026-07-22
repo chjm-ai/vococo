@@ -148,6 +148,9 @@ class PushManager:
                 # 每次新建 claims:pywebpush 会往里塞 exp,复用同一 dict 会串味
                 vapid_claims={"sub": c.VAPID_SUBJECT},
                 ttl=600,
+                # 不设超时的话,一台设备的推送网关卡住会拖住整个群发(含 /push/test 这种
+                # 同步等结果的请求),客户端最终看到"Load failed"——限时让它快速失败,别的设备照常收到。
+                timeout=10,
             )
             return None
         except WebPushException as e:  # type: ignore
