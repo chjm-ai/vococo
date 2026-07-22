@@ -5699,10 +5699,25 @@ function streamText(s){
   return Object.keys(s.segs).sort((a,b)=>a-b).map(k=>s.segs[k].dataset.raw).join("");
 }
 let renderPending=false; const dirtySegs=new Set();
+function userSelecting(){
+  const s=window.getSelection();
+  return s && s.rangeCount>0 && !s.isCollapsed;
+}
+// 用户松手时触发:清理卡住的 renderPending,让积压的 dirtySegs 能渲出来
+document.addEventListener("selectionchange", ()=>{
+  if(!userSelecting() && renderPending && dirtySegs.size){
+    renderPending=false;
+    const first=dirtySegs.values().next().value;
+    if(first) renderSeg(first);
+  }
+});
 function renderSeg(d){
   dirtySegs.add(d);
   if(renderPending) return; renderPending=true;
   requestAnimationFrame(()=>{ renderPending=false;
+    // 用户在选文字时不替换 innerHTML(会销毁选中 DOM,使 iOS 选择菜单闪退),
+    // dirtySegs 不清,下次收到 text 事件会继续尝试。
+    if(userSelecting()){ renderPending=true; return; }
     for(const x of dirtySegs) x.innerHTML=mdToHtml(x.dataset.raw);
     dirtySegs.clear(); scrollDown(); });
 }
