@@ -508,6 +508,19 @@ def get_chosen_model(session_key: str) -> str:
     return (row[0] if row else "") or ""
 
 
+def backfill_chosen_models() -> None:
+    """把"已经聊过、但从没显式 /model 选过"的老会话,按它们最后一轮实际用的模型
+    (model 列)冻结成 chosen_model —— 在全局默认模型即将改变的那一刻调用,防止这些
+    老会话在下一轮读到新默认、被悄悄带跑(缓存/上下文错位)。"""
+    c = _conn()
+    c.execute(
+        "UPDATE session_meta SET chosen_model = model "
+        "WHERE (chosen_model IS NULL OR chosen_model = '') "
+        "AND model IS NOT NULL AND model != ''"
+    )
+    c.commit()
+
+
 def get_sdk_session_id(session_key: str) -> str | None:
     """该会话上一轮拿到的 SDK 会话 id;下一轮用它 resume 真·多轮历史。无则 None(起新会话)。"""
     row = _conn().execute(
