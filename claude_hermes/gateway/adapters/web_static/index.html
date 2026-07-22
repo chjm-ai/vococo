@@ -4444,7 +4444,7 @@ function fetchUsage(model){
   var isKimi = model.indexOf("kimi")>=0;
   if(!isClaude && !isKimi){ quotaData=null; setQuotaState("na"); return; }
   setQuotaState("loading");
-  fetch("/api/usage?model="+encodeURIComponent(model))
+  api("/api/usage?model="+encodeURIComponent(model))
     .then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
     .then(function(data){
       quotaData=data;
