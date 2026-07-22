@@ -4440,9 +4440,10 @@ function setQuotaState(state, five){
   }
   // loading/na/error:浅灰满圈占位,不画进度弧
   if(arc){ arc.setAttribute("stroke-dashoffset", "0"); arc.style.stroke = "var(--dim2)"; }
+  var m = curModel() || "(空)";
   if(state === "na") ring.title = "该模型按量计费,无订阅额度可查";
-  else if(state === "error") ring.title = "额度查询失败,点击重试";
-  else ring.title = "额度加载中…";
+  else if(state === "error") ring.title = "额度查询失败,点击重试(上次:"+m+")";
+  else ring.title = "额度加载中…(模型:"+m+")";
 }
 function initQuotaRing(){
   var ring=$("#quotaRing"), pop=$("#quotaPop");
@@ -4462,12 +4463,14 @@ function initQuotaRing(){
 function fetchUsage(model){
   if(!model) model = curModel();
   if(!model){ setQuotaState("loading"); return; }
-  var isClaude = model.indexOf("claude-")===0;
-  var isKimi = model.indexOf("kimi")>=0;
+  var isClaude = model.toLowerCase().indexOf("claude-")===0;
+  var isKimi = model.toLowerCase().indexOf("kimi")>=0 || /^k\d/i.test(model);
   if(!isClaude && !isKimi){ quotaData=null; setQuotaState("na"); return; }
   setQuotaState("loading");
-  api("/api/usage?model="+encodeURIComponent(model))
-    .then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+  var ctrl = new AbortController();
+  var timeout = setTimeout(function(){ ctrl.abort(); }, 10000);
+  api("/api/usage?model="+encodeURIComponent(model), {signal: ctrl.signal})
+    .then(function(r){ clearTimeout(timeout); if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
     .then(function(data){
       quotaData=data;
       if(!data || data.type==="api" || data.error){
@@ -4478,7 +4481,7 @@ function fetchUsage(model){
       if(!five){ setQuotaState("na"); return; }
       setQuotaState("ok", five);
     })
-    .catch(function(){ quotaData=null; setQuotaState("error"); });
+    .catch(function(){ clearTimeout(timeout); quotaData=null; setQuotaState("error"); });
 }
 function renderQuotaPop(){
   var pop = $("#quotaPop"), ring = $("#quotaRing"), detail = $("#qpDetail"), msg = $("#qpMsg");
