@@ -697,9 +697,9 @@
   .tc-sub:empty{display:none}
   /* 指令隐藏态(被更新的指令覆盖,或正文输出后清除) */
   .tc-hidden{display:none}
-  /* 当前活跃(最新)指令闪烁 */
-  @keyframes tc-blink{0%,100%{opacity:1}50%{opacity:.4}}
-  .tc-active .tc-head{animation:tc-blink 1.2s ease-in-out infinite}
+  /* 当前活跃(最新)指令呼吸灯 */
+  @keyframes tc-breathe{0%,100%{opacity:1}50%{opacity:.45}}
+  .tc-active .tc-head{animation:tc-breathe 2.4s ease-in-out infinite}
 
   /* 切会话 loading 骨架屏 */
   #convLoading{display:none;padding:20px 32px;flex-direction:column;gap:14px}
