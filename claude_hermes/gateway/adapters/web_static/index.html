@@ -1625,6 +1625,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniFirstReplyMuteUsed=false;  // 本连接的首回复静音是否已消耗
   let omniMicMuted=false;
   let omniMicMuteTimer=null;
+  let omniMicEpoch=0;   // 见下注释:旧现场的开麦定时器到点后用它证伪
   const omniAudioEl = $("#omniRemoteAudio");
   // 【重要】音频输出通道永不静音:2026-07-15 修复前,远端 <audio> 的 muted 被
   // 用于压制自动回复和朗读收尾的音频,这会导致 AI 自己的 TTS 语音输出被掐掉、
@@ -2971,6 +2972,15 @@ void main(){
         case "response.done":
           if(omniReadActive){
             omniReadActive = false;
+            // 【2026-07-23 实锤 13:14】这句"生成完了"是回声过滤的重要时刻:把这句在
+            // 近期朗读窗口里的时间戳更新为 done 时刻,播放期估算(inTail)从"真正开始
+            // 播这句"起算。否则生成比播放快(队列还压着前句在念),一句 20s 后才开口
+            // 的句子按 read.create 起算,窗口在 AI 念到一半就关闭——这句的回声漏进
+            // 麦克风转写成"用户的话"被发出去(世界杯"他们在二零二二年世界杯决赛中"
+            // 就是这么来的一轮假对话)。如果连播,queue.shift 的下一句马上会把自己的
+            // ts 登记成它的 read.create,时长接力正确。
+            const r = omniRecentReads.findLast(x => x.text === omniReadCurrentText);
+            if(r) r.ts = Date.now();
             omniReadCurrentText = "";
             // response.done 是 Omni 生成完毕的信号,但 RTP 是按实际语速推流的,
             // 长句生成快于播放,done 时可能还欠好几秒没播——用 armOmniReadTailWatch
@@ -3051,8 +3061,10 @@ void main(){
         omniFirstReplyMuteUsed = true;
         setOmniMicMuted(true, "first-reply");
         if(omniMicMuteTimer) clearTimeout(omniMicMuteTimer);
+        const micEpoch = omniMicEpoch;  // 快照:sendOmniTurn 新轮开场会自增,到点过期自动放弃
         omniMicMuteTimer = setTimeout(() => {
           omniMicMuteTimer = null;
+          if(micEpoch !== omniMicEpoch) return;  // 现场已换新,别把新状态覆写回去
           // 朗读还在进行(长回复 > 15 秒)时不开麦——等 maybeOmniIdle
           // 按播放尾巴估算完再静音恢复(2026-07-14 修复)。
           if(omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0) return;
@@ -3124,8 +3136,10 @@ void main(){
       }
       const tail = Math.max(300, Math.min(end + 200 - now, 8000));
       if(omniMicMuteTimer) clearTimeout(omniMicMuteTimer);
+      const micEpoch = omniMicEpoch;  // 快照:新轮开场自增后,这个旧现场的开麦安排作废
       omniMicMuteTimer = setTimeout(() => {
         omniMicMuteTimer = null;
+        if(micEpoch !== omniMicEpoch) return;
         setOmniMicMuted(false, "first-reply-tail");
       }, tail);
     }
@@ -3393,7 +3407,7 @@ void main(){
     const t = normEchoText(transcript);
     if(t.length < 2) return null;  // 单字没法归因("嗯"),放行
     const now = Date.now();
-    omniRecentReads = omniRecentReads.filter(r => now - r.ts < 30000);
+    omniRecentReads = omniRecentReads.filter(r => now - r.ts < 45000);  // 窗口含「生成→播完」全链路,别再按 read.create 砍断(2026-07-23)
     const tol = t.length < 5 ? 0 : (t.length < 10 ? 1 : 2);
     for(const r of omniRecentReads){
       const cand = normEchoText(r.text);
@@ -3578,6 +3592,14 @@ void main(){
     omniReadActive = false;
     omniReadPending = 0;
     omniReadQueue = []; omniTurnDone = false;
+    // 【2026-07-23 实锤 13:14】新轮开场必须明确"干净状态":上一轮未播放完的句子
+    // 已被丢弃,但它们还在 omniRecentReads 的 30s 窗口里占着数——回声过滤的播放期
+    // 估算(inTail)按这句的 read.create 起算,会把未来好几分钟都算成"播放期",
+    // 期间用户说的任何话只要撞上句面就被误杀。这些句子今生不会有 RTP,必须赶出
+    // 窗口,让剩余句子的时长估算回归真实。
+    omniRecentReads = omniRecentReads.filter(r => r.ts + 8000 >= Date.now());
+    omniMicEpoch++;  // 朗读现场换新,旧现场注册的开麦定时器一律作废(见 applyMicEnabled)
+    applyMicEnabled();  // 若麦克风还关着(首回复静音未消耗),上一轮的静音估算不再适用,立即开麦
     vdbg("turn.start", text.slice(0, 40));
     // 音效是锦上添花,不是核心链路——2026-07-13 playTone 漏参数的 bug 曾经因为
     // 这两行没包 try/catch,直接把整轮请求(下面的 fetch)炸没了,表现成"识别到
