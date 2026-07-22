@@ -5715,9 +5715,12 @@ function renderTurns(turns){
 // 用落库的过程时间线重建一轮回复:文字段与工具卡按当时的真实顺序交错复现
 function renderEventsFlow(events){
   const flow=el("div","flow");
+  let lastCard=null;
   for(const blk of events){
     if(blk.type==="text"){
       if(!blk.text) continue;
+      // 正文出现→隐藏当前指令卡
+      if(lastCard){ lastCard.classList.add("tc-hidden"); lastCard=null; }
       const d=el("div","seg"); d.innerHTML=mdToHtml(blk.text); flow.append(d); continue;
     }
     if(blk.type==="compact"){
@@ -5739,6 +5742,9 @@ function renderEventsFlow(events){
       card._sub.innerHTML=bits.join("");
     }
     if(finished) applyResult(card, {ok:!failed, preview:blk.preview||"", detail:blk.detail||""});
+    // 隐藏上一条指令,只展示最新的
+    if(lastCard) lastCard.classList.add("tc-hidden");
+    lastCard=card;
     flow.append(card);
   }
   return flow;
