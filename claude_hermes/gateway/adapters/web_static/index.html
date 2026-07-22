@@ -695,9 +695,16 @@
   .tc-sub{padding:2px 6px 2px 24px;display:flex;flex-wrap:wrap;gap:4px 10px;
     font-size:11.5px;color:var(--dim2);align-items:center}
   .tc-sub:empty{display:none}
-  /* 指令隐藏态(被更新的指令覆盖,或正文输出后清除) */
-  .tc-hidden{display:none}
-  /* 当前活跃(最新)指令呼吸灯:背景色脉冲,比纯透明度变化更显眼 */
+  /* 指令折叠组:已完成的指令收进可展开的折叠区,只显示计数 */
+  .tgroup{margin:4px 0}
+  .tg-head{padding:3px 6px;font-size:12.5px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:6px;
+    user-select:none;border-radius:6px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .tg-head:hover{color:var(--text)}
+  .tg-body{padding-left:14px;display:flex;flex-direction:column;gap:2px}
+  .tg-body.collapsed{display:none}
+  .tg-head .chev{font-size:10px;display:inline-block;transition:transform .15s}
+  .tg-head .chev.down{transform:rotate(90deg)}
+  /* 当前活跃(最新)指令呼吸灯:背景色脉冲 */
   @keyframes tc-breathe{0%,100%{background:transparent}50%{background:var(--panel2)}}
   .tc-active .tc-head{animation:tc-breathe 2.4s ease-in-out infinite;border-radius:6px}
 
@@ -5715,12 +5722,10 @@ function renderTurns(turns){
 // 用落库的过程时间线重建一轮回复:文字段与工具卡按当时的真实顺序交错复现
 function renderEventsFlow(events){
   const flow=el("div","flow");
-  let lastCard=null;
+  const toolCards=[];
   for(const blk of events){
     if(blk.type==="text"){
       if(!blk.text) continue;
-      // 正文出现→隐藏当前指令卡
-      if(lastCard){ lastCard.classList.add("tc-hidden"); lastCard=null; }
       const d=el("div","seg"); d.innerHTML=mdToHtml(blk.text); flow.append(d); continue;
     }
     if(blk.type==="compact"){
@@ -5742,10 +5747,21 @@ function renderEventsFlow(events){
       card._sub.innerHTML=bits.join("");
     }
     if(finished) applyResult(card, {ok:!failed, preview:blk.preview||"", detail:blk.detail||""});
-    // 隐藏上一条指令,只展示最新的
-    if(lastCard) lastCard.classList.add("tc-hidden");
-    lastCard=card;
-    flow.append(card);
+    toolCards.push(card);
+  }
+  // 所有指令卡收进可展开折叠组(已完成的轮次默认折叠)
+  if(toolCards.length){
+    const grp=el("div","tgroup");
+    const head=el("div","tg-head");
+    const chev=el("span","chev");
+    const label=el("span","tg-label");
+    label.textContent="已执行 "+toolCards.length+" 条命令";
+    head.append(chev, label);
+    const body=el("div","tg-body collapsed");
+    for(const c of toolCards) body.append(c);
+    grp.append(head, body);
+    head.onclick=()=>{ const c=body.classList.toggle("collapsed"); chev.classList.toggle("down", !c); };
+    flow.append(grp);
   }
   return flow;
 }
@@ -5992,7 +6008,7 @@ function ensureStream(t0){
   bubble.append(thinktog,think,flow,status);  // 状态行(工作中…)放气泡底部,像 TG 的打字指示
   row.append(bubble); $("#wrap").append(row); updateEmpty();
   thinktog.onclick=()=>{ const on=think.classList.toggle("show"); tcv.classList.toggle("down", on); };
-  S.stream={row,bubble,status,think,thinktog,flow,segs:{},tools:[],cards:{},subs:{},activeCard:null,t0:t0||Date.now(),lastEvt:Date.now()};
+  S.stream={row,bubble,status,think,thinktog,flow,segs:{},tools:[],cards:{},subs:{},activeCard:null,tgroup:null,toolCount:0,t0:t0||Date.now(),lastEvt:Date.now()};
   resumeStreamTimer(S.stream);  // 状态行的耗时计数每秒走字;流被任何路径丢弃(完成/切会话)都会自行停表,不泄漏
   renderStatus();  // 初始即显示"💭 思考中…"动画
   updateSendBtn();
@@ -6176,6 +6192,40 @@ function handleEvent(e){
     case "choice": delete S.pendingChoice[e.conv]; renderChoice(e); break;
   }
 }
+// 把已完成的指令卡片折叠进"已执行 N 条命令"可展开组
+function foldToGroup(s, card){
+  let grp = s.tgroup;
+  if(!grp){
+    grp = el("div", "tgroup");
+    const head = el("div", "tg-head");
+    const chev = el("span", "chev");
+    const label = el("span", "tg-label");
+    label.textContent = "已执行 0 条命令";
+    head.append(chev, label);
+    const body = el("div", "tg-body collapsed");
+    grp.append(head, body);
+    grp._head = head; grp._body = body; grp._label = label; grp._chev = chev;
+    head.onclick = () => {
+      const c = body.classList.toggle("collapsed");
+      chev.classList.toggle("down", !c);
+    };
+    s.tgroup = grp;
+  }
+  if(card){
+    card.classList.remove("tc-active");
+    grp._body.append(card);
+    s.toolCount = (s.toolCount || 0) + 1;
+    grp._label.textContent = "已执行 " + s.toolCount + " 条命令";
+    // 默认折叠;如果组还没插入 flow,插到当前活跃卡之前
+    if(!grp.parentNode){
+      if(s.activeCard && s.activeCard.parentNode === s.flow){
+        s.flow.insertBefore(grp, s.activeCard);
+      } else {
+        s.flow.append(grp);
+      }
+    }
+  }
+}
 // 把单个流式事件落到 DOM(供前台实时渲染 + 切回会话时按缓冲重放两用)
 function applyStreamEvent(e){
   switch(e.type){
@@ -6186,7 +6236,7 @@ function applyStreamEvent(e){
       addBubble("me", e.text); break;
     case "start": ensureStream(e._t0); break;
     case "thinking": { const s=ensureStream(); s.thinktog.style.display="flex"; s.think.textContent=e.text; renderStatus(); break; }
-    case "text": { const s=ensureStream(); const d=segDiv(s, e.seg); d.dataset.raw=e.text; renderSeg(d); if(s.activeCard){ s.activeCard.classList.add("tc-hidden"); s.activeCard.classList.remove("tc-active"); s.activeCard=null; } renderStatus(); break; }
+    case "text": { const s=ensureStream(); const d=segDiv(s, e.seg); d.dataset.raw=e.text; renderSeg(d); if(s.activeCard){ foldToGroup(s, s.activeCard); s.activeCard=null; } renderStatus(); break; }
     case "tool_start": { const s=ensureStream();
       if(e.parent){ subUpsert(s, e.parent, {name:e.name, id:e.tool_id, done:false, ok:true}); }
       else s.tools.push({name:e.name, id:e.tool_id, done:false, ok:true, subN:0});
@@ -6196,8 +6246,8 @@ function applyStreamEvent(e){
       const card=renderToolCard(e.name, e.input||{});
       if(card){
         if(e.tool_id) s.cards[e.tool_id]=card;
-        // 隐藏上一条活跃指令,只展示最新的(带闪烁动效)
-        if(s.activeCard && s.activeCard!==card){ s.activeCard.classList.add("tc-hidden"); s.activeCard.classList.remove("tc-active"); }
+        // 上一条活跃指令折叠进组,新指令置为活跃(呼吸灯)
+        if(s.activeCard && s.activeCard!==card){ foldToGroup(s, s.activeCard); }
         s.activeCard=card; card.classList.add("tc-active");
         s.flow.append(card); scrollDown();
         // 子代理卡片刚建好:若它的内部工具事件已先到(存在 s.subs),补渲染一次动态区
