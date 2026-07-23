@@ -526,6 +526,23 @@ class WebAdapter:
         self._inbox.put_nowait(Incoming(self.platform, conv, text, images=images))
         return web.json_response({"ok": True})
 
+    async def _handle_model_switch(self, request: web.Request) -> web.Response:
+        """静默切模型：不走命令管道、不触发任何 SSE/推送通知。直接落库。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
+        conv = str(body.get("conv") or "main")
+        model = (body.get("model") or "").strip()
+        if not model:
+            return web.json_response({"error": "empty model"}, status=400)
+        session_key = config.resolve_session_key("web", conv)
+        session_store.backfill_chosen_models()  # 冻结老会话
+        session_store.set_chosen_model(session_key, model)
+        settings_store.set_web_default_model(model)
+        return web.json_response({"ok": True})
+
     async def _summarize_title(
         self, conv: str, session_key: str, text: str, placeholder: str
     ) -> None:
@@ -1442,6 +1459,7 @@ class WebAdapter:
                 web.post("/push/test", self._handle_push_test),
                 web.get("/events", self._handle_events),
                 web.post("/send", self._handle_send),
+                web.post("/model", self._handle_model_switch),
                 web.post("/abort", self._handle_abort),
                 web.get("/conversations", self._handle_conversations),
                 web.get("/conv/search", self._handle_conv_search),
