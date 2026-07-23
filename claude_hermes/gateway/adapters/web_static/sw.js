@@ -20,18 +20,19 @@ self.addEventListener("push", (event) => {
     badge: "/icon-192.png",
   };
 
-  // 前台正在看:若已有窗口聚焦,就不弹系统通知(避免打扰),交给页面内提示
+  // iOS 有条不成文规则:SW 收到 push 却不调 showNotification() 攒够几次,系统会
+  // 直接把订阅作废(https://dev.to/progressier/how-to-fix-ios-push-subscriptions-being-terminated-after-3-notifications-39a7)。
+  // 之前"前台就不弹"的静默分支正好天天踩这条坑——每次你开着页面收到 done 通知都被吞掉,
+  // 攒够几次订阅就没了。所以不管前台/后台都必须真弹;前台"别吵"的诉求靠 tag 覆盖 +
+  // renotify:false 做静默替换(同 tag 不出声/不震动),而不是干脆不弹。
   event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
-      const focused = cs.some((c) => c.focused || c.visibilityState === "visible");
-      // 审批/出错这类高优先级,即使前台也弹一下,确保不漏
-      if (focused && kind !== "approval" && kind !== "error") {
-        // 顺带通知页面刷新一下(可选),不弹 OS 通知
-        cs.forEach((c) => c.postMessage({ type: "push", data: options.data, foreground: true }));
-        return;
-      }
-      return self.registration.showNotification(title, options);
-    })
+    Promise.all([
+      self.registration.showNotification(title, options),
+      self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
+        const focused = cs.some((c) => c.focused || c.visibilityState === "visible");
+        if (focused) cs.forEach((c) => c.postMessage({ type: "push", data: options.data, foreground: true }));
+      }),
+    ])
   );
 });
 
