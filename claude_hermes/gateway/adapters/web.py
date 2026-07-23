@@ -412,13 +412,31 @@ class WebAdapter:
             yield await self._inbox.get()
 
     # ── HTTP 路由 ────────────────────────────────────────────────────────
+    @staticmethod
+    def _inject_asset_versions(html_bytes: bytes) -> bytes:
+        """把 HTML 里的 /styles.css、/tool-card.js 引用改写成带内容哈希的 ?v= URL。
+
+        URL 即版本:文件一变哈希就变,配合 _versioned_static 的 immutable 头,
+        CF 边缘/浏览器长缓存直接命中;文件没变则 URL 稳定,缓存持续有效。
+        文件读不到就原样返回(引用裸路径也能工作,只是回到协商缓存)。
+        """
+        for name in ("styles.css", "tool-card.js"):
+            try:
+                digest = hashlib.md5((_STATIC / name).read_bytes()).hexdigest()[:12]
+            except OSError:
+                continue
+            html_bytes = html_bytes.replace(
+                f'"/{name}"'.encode(), f'"/{name}?v={digest}"'.encode()
+            )
+        return html_bytes
+
     async def _handle_index(self, request: web.Request) -> web.Response:
         # 每次请求实时读盘:改了 UI 刷新浏览器即可,不用重启 serve。no-cache 的语义是
         # "每次用之前先跟服务器核对",不是"不许缓存"——配合 ETag,内容没变就回 304
         # 空包(2026-07-10:手机杀掉 PWA 重开,254KB 的 index.html 每次全量重传,走
         # 隧道+跨境链路首屏能拖好几秒;改动后没变=304 秒开,变了=照常拿到新页面)。
         try:
-            html_bytes = (_STATIC / "index.html").read_bytes()
+            html_bytes = self._inject_asset_versions((_STATIC / "index.html").read_bytes())
         except OSError:
             html_bytes = "<h1>index.html 缺失</h1>".encode("utf-8")
         etag = f'"{hashlib.md5(html_bytes).hexdigest()}"'
@@ -1293,9 +1311,19 @@ class WebAdapter:
 
     # ── PWA 静态资源 + 推送订阅 ──────────────────────────────────────────
     def _static_file(
-        self, name: str, content_type: str, extra_headers: dict | None = None
+        self,
+        name: str,
+        content_type: str,
+        extra_headers: dict | None = None,
+        request: web.Request | None = None,
+        compress: bool = False,
     ) -> web.Response:
-        """读 web_static 下的文件返回;缺失给 404。这些是公开资源(浏览器不带 token 取)。"""
+        """读 web_static 下的文件返回;缺失给 404。这些是公开资源(浏览器不带 token 取)。
+
+        传入 request 时带 ETag/304 协商:内容没变回 304 空包,省一趟跨境正文传输
+        (走隧道实测带宽只有 ~50KB/s,78KB 的 CSS 整传要 1.5s+)。文本类资源再开
+        compress=True 让源站 gzip——隧道「源站→CF 边缘」这一段也压缩着走。
+        """
         try:
             data = (_STATIC / name).read_bytes()
         except OSError:
@@ -1303,39 +1331,78 @@ class WebAdapter:
         headers = {"Cache-Control": "no-cache"}
         if extra_headers:
             headers.update(extra_headers)
-        return web.Response(body=data, content_type=content_type, headers=headers)
+        if request is not None:
+            etag = f'"{hashlib.md5(data).hexdigest()}"'
+            headers["ETag"] = etag
+            if request.headers.get("If-None-Match") == etag:
+                return web.Response(status=304, headers=headers)
+        resp = web.Response(body=data, content_type=content_type, headers=headers)
+        if compress:
+            resp.enable_compression()
+        return resp
 
     async def _handle_manifest(self, request: web.Request) -> web.Response:
         # 几乎不改,允许 CDN 边缘缓存 1 小时,省一趟跨境回源(2026-07-21)
         return self._static_file(
-            "manifest.json", "application/manifest+json", {"Cache-Control": "public, max-age=3600"}
+            "manifest.json",
+            "application/manifest+json",
+            {"Cache-Control": "public, max-age=3600"},
+            request=request,
+            compress=True,
         )
 
     async def _handle_sw(self, request: web.Request) -> web.Response:
         # Service-Worker-Allowed: / 让 sw 能控整站;no-cache 保证改动能刷新
         return self._static_file(
-            "sw.js", "text/javascript", {"Service-Worker-Allowed": "/"}
+            "sw.js", "text/javascript", {"Service-Worker-Allowed": "/"},
+            request=request, compress=True,
+        )
+
+    def _versioned_static(
+        self, request: web.Request, name: str, content_type: str
+    ) -> web.Response:
+        """CSS/JS 双轨缓存策略(2026-07-23 提速):
+
+        - index.html 里的引用被 _handle_index 改写成 /xxx?v=<内容哈希>,带 v 的请求
+          返回 immutable 一年——URL 即版本,内容一变 URL 就变,CF 边缘和浏览器都能
+          长缓存直接命中,不再跨境回源(此前 CF 对 css/js 套默认 4h TTL,既可能改了
+          4 小时不生效,过期后又整文件重传)。
+        - 不带 v 的裸请求(直接开 URL 调试等)维持 no-cache+ETag 协商。
+        """
+        immutable = bool(request.query.get("v"))
+        headers = (
+            {"Cache-Control": "public, max-age=31536000, immutable"} if immutable else None
+        )
+        return self._static_file(
+            name, content_type, headers, request=request, compress=True
         )
 
     async def _handle_styles(self, request: web.Request) -> web.Response:
-        # 2026-07-23 从 index.html 内联 <style> 拆出;no-cache 保证改动能刷新,跟 index.html 同口径
-        return self._static_file("styles.css", "text/css")
+        # 2026-07-23 从 index.html 内联 <style> 拆出
+        return self._versioned_static(request, "styles.css", "text/css")
 
     async def _handle_tool_card_js(self, request: web.Request) -> web.Response:
         # 2026-07-23 从 index.html 内联 <script> 拆出(工具卡片渲染那一段)
-        return self._static_file("tool-card.js", "text/javascript")
+        return self._versioned_static(request, "tool-card.js", "text/javascript")
 
     async def _handle_favicon(self, request: web.Request) -> web.Response:
         # 跟 wazir-mark.svg 同口径:允许 CDN 边缘缓存 1 天,省跨境回源;
         # 换标后最多 1 天内生效,可接受(2026-07-21,此前是 no-cache 强制每次回源)
         return self._static_file(
-            "favicon.ico", "image/x-icon", {"Cache-Control": "public, max-age=86400"}
+            "favicon.ico",
+            "image/x-icon",
+            {"Cache-Control": "public, max-age=86400"},
+            request=request,
         )
 
     async def _handle_mark(self, request: web.Request) -> web.Response:
         # 自适应深浅的 SVG favicon(内嵌 prefers-color-scheme);现代浏览器优先用它,旧的回退 PNG
         return self._static_file(
-            "wazir-mark.svg", "image/svg+xml", {"Cache-Control": "public, max-age=86400"}
+            "wazir-mark.svg",
+            "image/svg+xml",
+            {"Cache-Control": "public, max-age=86400"},
+            request=request,
+            compress=True,
         )
 
     async def _handle_logos(self, request: web.Request) -> web.Response:
@@ -1385,7 +1452,10 @@ class WebAdapter:
             return web.Response(status=404, text="not found")
         # 同 favicon:换标 1 天内生效换取免跨境回源(2026-07-21)
         return self._static_file(
-            f"{name}.png", "image/png", {"Cache-Control": "public, max-age=86400"}
+            f"{name}.png",
+            "image/png",
+            {"Cache-Control": "public, max-age=86400"},
+            request=request,
         )
 
     async def _handle_push_config(self, request: web.Request) -> web.Response:

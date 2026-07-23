@@ -4157,6 +4157,19 @@ function getDeviceId(){
     return id;
   }catch(e){ return ""; }
 }
+// SW 外壳缓存让页面秒开(可能是旧版);后台发现新版后弹这个提示条,点了才刷新——
+// 不自动 reload,免得把正在输入的草稿冲掉
+function showShellUpdated(){
+  if(document.getElementById("shellUpd")) return;
+  const b=document.createElement("div");
+  b.id="shellUpd";
+  b.textContent="界面已更新 · 点击刷新";
+  b.style.cssText="position:fixed;left:50%;transform:translateX(-50%);bottom:76px;z-index:9999;"+
+    "padding:8px 14px;border-radius:18px;font-size:13px;cursor:pointer;"+
+    "background:var(--accent,#d97757);color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.25)";
+  b.onclick=()=>location.reload();
+  document.body.appendChild(b);
+}
 var pushMsgListenerInited = false;  // 防重入:挡重登录时监听器重复叠加
 async function initPush(){
   if(!("serviceWorker" in navigator)) return;
@@ -4167,6 +4180,7 @@ async function initPush(){
     navigator.serviceWorker.addEventListener("message", ev=>{
       const m=ev.data||{};
       if(m.type==="open" && m.conv){ try{ openConv(m.conv); }catch(e){} }
+      if(m.type==="shell-updated"){ try{ showShellUpdated(); }catch(e){} }
     });
   }
   try{
