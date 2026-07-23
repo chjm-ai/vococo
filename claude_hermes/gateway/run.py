@@ -113,8 +113,12 @@ class GatewayRunner:
                         settings_store.set_web_default_model(outcome.new_model)
                 if outcome.choice is not None:
                     await adapter.present_choice(inc.chat_id, outcome.choice)
+                    # 持久化选择文本,刷新页面不丢(仅 SSE 推的一次性事件,不进 DB 就会空白)
+                    session_store.append(key, inc.text, outcome.choice.prompt)
                 elif outcome.reply:
                     await adapter.send(inc.chat_id, outcome.reply)
+                    # 持久化命令回复,刷新页面不丢
+                    session_store.append(key, inc.text, outcome.reply)
                 return
         # 语音后台任务续聊(session_key=voice-task:{id})要延续任务派发时的工作目录——
         # converse() 按 session_key 推导 cwd 那套认不出这种非项目 key,显式传进去(见
