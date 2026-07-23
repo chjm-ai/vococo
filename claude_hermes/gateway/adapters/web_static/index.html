@@ -5218,8 +5218,46 @@ function renderNotifyPane(){
        '<div class="sacts"><button class="btn ghost sm" id="notifyTest" disabled>测试</button></div></div>';
   h += '<div class="sechd">通知场景</div>'+
        '<p class="shint">回复完成 · 需要审批确认 · 主动推送(cron)· 出错异常——默认全开,可在 .env 用 <code>PUSH_ON_*=0</code> 单独关某类。</p>';
+  h += '<div class="sechd">已订阅设备</div>'+
+       '<p class="shint">列出服务端还记着要推送的设备;不用/删掉的旧会话点右边"移除"就不会再收到通知。</p>'+
+       '<div id="notifyDevices" class="setempty">加载中…</div>';
   $("#setPane").innerHTML=h;
   bindNotifyPane();
+  loadNotifyDevices();
+}
+function uaLabel(ua){
+  if(!ua) return "未知设备";
+  if(/iPhone/.test(ua)) return "iPhone";
+  if(/iPad/.test(ua)) return "iPad";
+  if(/Macintosh/.test(ua)) return "Mac";
+  if(/Android/.test(ua)) return "Android";
+  return "其他设备";
+}
+async function loadNotifyDevices(){
+  const box=$("#notifyDevices"); if(!box) return;
+  let subs;
+  try{ subs=(await (await api("/push/subs")).json()).subs||[]; }
+  catch(e){ box.innerHTML='<div class="setempty">加载失败:'+esc(e&&e.message||e)+'</div>'; return; }
+  if(!subs.length){ box.innerHTML='<div class="setempty">还没有设备订阅。</div>'; return; }
+  const mySub = await currentSub().catch(()=>null);
+  box.innerHTML = subs.map(s=>{
+    const mine = mySub && mySub.endpoint===s.endpoint;
+    return '<div class="srow"><div class="sinfo"><div class="sname">'+esc(uaLabel(s.ua))+(mine?' · 本设备':'')+'</div>'+
+      '<div class="sdesc">'+esc(fmtTime(s.subscribedAt))+' 订阅</div></div>'+
+      '<div class="sacts"><button class="btn ghost sm" data-ep="'+esc(s.endpoint)+'">移除</button></div></div>';
+  }).join("");
+  box.querySelectorAll("button[data-ep]").forEach(btn=>{
+    btn.onclick = async ()=>{
+      btn.disabled=true;
+      try{
+        await api("/push/unsubscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({endpoint:btn.dataset.ep})});
+        const mySub = await currentSub().catch(()=>null);
+        if(mySub && mySub.endpoint===btn.dataset.ep){ try{ await mySub.unsubscribe(); }catch(e){} }
+        await loadNotifyDevices();
+        bindNotifyPane();
+      }catch(e){ alert("移除失败:"+(e&&e.message||e)); btn.disabled=false; }
+    };
+  });
 }
 async function bindNotifyPane(){
   const tgl=$("#notifyToggle"), desc=$("#notifyDesc"); if(!tgl) return;
@@ -5267,6 +5305,15 @@ function b64ToU8(base64){
 function isStandalone(){
   return (window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone===true;
 }
+// 固定设备号:iOS 订阅失效后重新 subscribe() 会拿到全新 endpoint,单靠 endpoint 去重会让
+// 同一台设备在服务端越攒越多。存一个不变的 deviceId 让服务端"认设备"而不是"认 endpoint"。
+function getDeviceId(){
+  try{
+    let id=localStorage.getItem("hermes_device_id");
+    if(!id){ id=(crypto.randomUUID?crypto.randomUUID():(Date.now()+"-"+Math.random().toString(36).slice(2))); localStorage.setItem("hermes_device_id", id); }
+    return id;
+  }catch(e){ return ""; }
+}
 var pushMsgListenerInited = false;  // 防重入:同 quotaRingInited,挡重登录时监听器重复叠加
 async function initPush(){
   if(!("serviceWorker" in navigator)) return;
@@ -5311,7 +5358,8 @@ async function enableNotify(){
   }catch(e){
     throw new Error("订阅失败(pushManager.subscribe):"+(e&&e.message||e));
   }
-  const r=await api("/push/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sub)});
+  const payload=Object.assign(sub.toJSON?sub.toJSON():JSON.parse(JSON.stringify(sub)), {ua:navigator.userAgent, deviceId:getDeviceId()});
+  const r=await api("/push/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
   if(!r.ok)
     throw new Error("订阅已建立但保存到服务端失败(HTTP "+r.status+")。");
 }

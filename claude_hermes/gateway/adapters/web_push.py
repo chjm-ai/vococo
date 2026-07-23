@@ -18,6 +18,7 @@ import asyncio
 import base64
 import json
 import threading
+import time
 from pathlib import Path
 
 
@@ -108,14 +109,35 @@ class PushManager:
 
     # ── 订阅增删 ─────────────────────────────────────────────────────────
     def add(self, sub: dict) -> bool:
-        """存一个订阅(按 endpoint 去重覆盖)。返回是否新增。"""
+        """存一个订阅。优先按 deviceId 去重覆盖,没带 deviceId 才退回按 endpoint。
+
+        iOS 每次订阅失效后重新 subscribe() 会拿到全新 endpoint,单靠 endpoint 去重
+        会导致同一台设备在列表里越攒越多(旧的永远躺尸,只有真送达时收到 404/410
+        才会被清)。前端固定用 localStorage 存的 deviceId 标识"这是同一台设备",
+        新订阅进来就顶替旧的,从源头掐掉重复。
+        """
         ep = sub.get("endpoint")
         if not ep or not isinstance(sub.get("keys"), dict):
             return False
+        device_id = sub.get("deviceId") or None
+        ua = str(sub.get("ua") or "")[:200]
         self._ensure()
         with self._lock:
-            self._subs = [s for s in self._subs if s.get("endpoint") != ep]
-            self._subs.append({"endpoint": ep, "keys": sub["keys"]})
+            def _stale(s: dict) -> bool:
+                if device_id and s.get("deviceId") == device_id:
+                    return True
+                return s.get("endpoint") == ep
+
+            self._subs = [s for s in self._subs if not _stale(s)]
+            self._subs.append(
+                {
+                    "endpoint": ep,
+                    "keys": sub["keys"],
+                    "deviceId": device_id,
+                    "ua": ua,
+                    "subscribedAt": time.time(),
+                }
+            )
             self._save()
         return True
 
@@ -128,6 +150,18 @@ class PushManager:
             self._subs = [s for s in self._subs if s.get("endpoint") != endpoint]
             if len(self._subs) != before:
                 self._save()
+
+    def list_public(self) -> list[dict]:
+        """给设置页「已订阅设备」列表用:只吐能识别设备的元信息,不带订阅密钥。"""
+        self._ensure()
+        return [
+            {
+                "endpoint": s.get("endpoint", ""),
+                "ua": s.get("ua", ""),
+                "subscribedAt": s.get("subscribedAt"),
+            }
+            for s in (self._subs or [])
+        ]
 
     def _prune(self, dead: set[str]) -> None:
         if not dead:
