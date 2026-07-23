@@ -2964,6 +2964,7 @@ async function tryEnter(){
     loadExpanded();
     if(!hasSavedExpanded) S.expanded.add("__default__");  // 从没手动折叠过 → 默认项目首次展开
     applyConvs(d);   // 这次 /conversations 顺便验证了口令,数据直接拿来用,不用再多打一次
+    prefetchHistories();   // 后台预热最近会话历史(有 2.5s 延迟,不抢首屏带宽)
     // 落地到一个新对话(不自动跳进最近会话),欢迎屏里带语音通话入口 + 最近对话列表,
     // 不弹键盘打扰用户(focus=false)——2026-07-15 起首页(#homeView)已下架,统一走这里。
     // expand=false:别因为静默落地又把用户上次折叠的「默认项目」分组重新展开。
@@ -3565,6 +3566,28 @@ async function loadConvs(){
   const r = await api("/conversations"); const d = await r.json();
   applyConvs(d);
   idbSet("convs", d);
+  prefetchHistories();
+}
+// ── 后台预热最近会话的历史 ────────────────────────────────────────────────
+// 刷新/新开页面后,IndexedDB 里可能没有(或已过期)最近会话的历史,第一次点开要等一趟
+// 跨境网络(重会话 gzip 后 70~145KB,实测 4s+)。这里在首屏安顿好之后,悄悄把最近几个
+// 会话的 /history 拉进缓存——配合服务端 ETag/304,已缓存且没变的只花一个空包,成本很低。
+// 每次页面加载只跑一轮;串行拉,别跟当前会话/SSE 抢那 ~50KB/s 的隧道带宽。
+var _prefetchedHist = false;
+async function prefetchHistories(){
+  if(_prefetchedHist) return;
+  _prefetchedHist = true;
+  await new Promise(r=>setTimeout(r, 2500));   // 让当前会话历史 + SSE 先就位
+  const tops = S.convs.filter(c=>c.turns>0 && !String(c.conv).startsWith("local-")).slice(0,5);
+  for(const c of tops){
+    if(S.conv===c.conv) continue;              // 正开着的会话 openConv 自己拉过了
+    try{
+      const r=await api("/history?conv="+encodeURIComponent(c.conv));
+      const d=await r.json();
+      S.histCache[c.conv]=d.turns;
+      idbSetHist(c.conv, d.turns);
+    }catch(e){ break; }                        // 网络不给力就收手,下次刷新再预热
+  }
 }
 // 从 conv id 解析它属于哪个项目:p<hash>:<convid> → hash;否则 null(默认项目)
 function convProject(conv){
