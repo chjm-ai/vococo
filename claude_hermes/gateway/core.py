@@ -471,7 +471,7 @@ def handle_command(text: str, session_key: str, current_model: str) -> CommandOu
         choices = providers.available_models(MODEL_CHOICES)
         opts = [
             (f"/model {v}", f"{label}{' ✓ 当前' if v == current_model else ''}")
-            for v, label in choices
+            for v, label, _group in choices
         ]
         return CommandOutcome(choice=Choice(prompt="选择模型:", options=opts))
     if cmd == "/history":
