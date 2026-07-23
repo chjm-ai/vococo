@@ -4576,7 +4576,8 @@ function renderQuotaPop(){
   }
   var rstEl = $("#qpReset"), rstTime = $("#qpResetTime");
   if(five && five.resets_at){
-    var ts = typeof five.resets_at === "number" ? five.resets_at : new Date(five.resets_at).getTime();
+    // Claude 给的是秒级 unix 时间戳,Kimi 给的是 ISO 字符串——统一转成毫秒
+    var ts = typeof five.resets_at === "number" ? five.resets_at * 1000 : new Date(five.resets_at).getTime();
     if(ts > Date.now()){
       var hhmm = new Date(ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"});
       var mins = Math.max(1, Math.round((ts-Date.now())/60000));
