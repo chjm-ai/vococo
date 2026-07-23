@@ -867,7 +867,7 @@ class WebAdapter:
         return web.json_response(
             {
                 "default": active_model,
-                "choices": [[v, label] for v, label in choices],
+                "choices": [[v, label, group] for v, label, group in choices],
             }
         )
 
