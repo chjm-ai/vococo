@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 from aiohttp import web
@@ -91,6 +92,29 @@ async def test_sw_etag_304_roundtrip(static_app):
     assert headers["Cache-Control"] == "no-cache"
     status, _, _ = await _get(static_app, "/sw.js", {"If-None-Match": headers["ETag"]})
     assert status == 304
+
+
+@pytest.mark.anyio
+async def test_history_etag_304_roundtrip(monkeypatch):
+    """/history:重会话 JSON 一包几百 KB,内容没变时必须走 304 空包(切会话大多是回看)。"""
+    from claude_hermes.memory import session_store
+
+    adapter = WebAdapter()
+    adapter._guard = lambda request: None  # 测缓存协商,鉴权不在本测试范围
+    monkeypatch.setattr(
+        session_store, "load_history", lambda key, limit=40: [{"user": "hi", "assistant": "yo"}]
+    )
+    app = web.Application()
+    app.add_routes([web.get("/history", adapter._handle_history)])
+
+    status, body, headers = await _get(app, "/history?conv=main")
+    assert status == 200
+    assert json.loads(body)["turns"][0]["user"] == "hi"
+    etag = headers["ETag"]
+
+    status, body, _ = await _get(app, "/history?conv=main", {"If-None-Match": etag})
+    assert status == 304
+    assert body == b""
 
 
 @pytest.mark.anyio

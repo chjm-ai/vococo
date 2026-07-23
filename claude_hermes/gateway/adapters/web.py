@@ -1022,7 +1022,17 @@ class WebAdapter:
         conv = request.query.get("conv", "main")
         key = config.resolve_session_key("web", conv)
         turns = session_store.load_history(key, limit=40)
-        return web.json_response({"turns": turns})
+        # 重会话一包 JSON 有 300~500KB(gzip 后 70~145KB),跨境隧道 ~50KB/s 一趟要好几秒;
+        # 而切会话大多是"回看",内容根本没变——加 ETag/304 协商,没变只回空包。
+        # 前端零改动:fetch 走浏览器 HTTP 缓存,自动带 If-None-Match、304 时透明取缓存正文。
+        body = json.dumps({"turns": turns}, ensure_ascii=False).encode("utf-8")
+        etag = f'"{hashlib.md5(body).hexdigest()}"'
+        headers = {"Cache-Control": "no-cache", "ETag": etag}
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers=headers)
+        resp = web.Response(body=body, content_type="application/json", headers=headers)
+        resp.enable_compression()  # 源站→CF 边缘这段也压缩着走,别指望 CF 兜底
+        return resp
 
     async def _handle_image(self, request: web.Request) -> web.StreamResponse:
         """回显某轮用户发的图片(落盘在 config.IMAGES_DIR);name 经白名单校验挡路径穿越。"""
