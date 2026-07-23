@@ -466,7 +466,7 @@ def handle_command(text: str, session_key: str, current_model: str) -> CommandOu
     if cmd == "/model":
         if arg:
             session_store.set_chosen_model(session_key, arg)  # 持久化,刷新/重启不丢
-            return CommandOutcome(reply=f"已切换模型 → {arg}", new_model=arg)
+            return CommandOutcome(new_model=arg)
         # 候选 = 官方默认档 + cc-switch 里配好的 DeepSeek/Kimi 等供应商模型
         choices = providers.available_models(MODEL_CHOICES)
         opts = [
