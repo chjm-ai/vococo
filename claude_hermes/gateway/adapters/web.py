@@ -100,14 +100,26 @@ class _WebSink(Sink):
         self._seg = 0  # 当前文字段序号
         self._text = ""  # 当前段累积正文,每次发该段全文
         self._think = ""  # 累积思考
+        # SSE 限流:150ms 内 text/thinking 合并为一次发出,大幅减少跨境小包数
+        self._last_think_ts = 0.0
+        self._last_text_ts: dict[int, float] = {}
         self.a._emit({"conv": conv, "type": "start"})
 
     async def thinking(self, text: str) -> None:
         self._think += text
+        now = time.time()
+        if now - self._last_think_ts < 0.15:
+            return
+        self._last_think_ts = now
         self.a._emit({"conv": self.conv, "type": "thinking", "text": self._think})
 
     async def text(self, text: str) -> None:
         self._text += text
+        now = time.time()
+        last = self._last_text_ts.get(self._seg, 0.0)
+        if now - last < 0.15:
+            return
+        self._last_text_ts[self._seg] = now
         self.a._emit(
             {"conv": self.conv, "type": "text", "seg": self._seg, "text": self._text}
         )
@@ -184,6 +196,11 @@ class _WebSink(Sink):
         self.a._emit({"conv": self.conv, "type": "cancelled"})
 
     async def done(self, reply: AgentReply) -> None:
+        # 发 done 前先输出最终全文快照,补全限流可能漏掉的尾巴,确保重连缓冲里有完整版
+        if self._think:
+            self.a._emit({"conv": self.conv, "type": "thinking", "text": self._think})
+        if self._text:
+            self.a._emit({"conv": self.conv, "type": "text", "seg": self._seg, "text": self._text})
         # converse() 已在此之前写好 token 计量,读回最新明细推给前端(实时刷新顶栏)
         key = config.resolve_session_key("web", self.conv)
         meta = session_store.session_summary(key)
