@@ -4423,9 +4423,11 @@ function renderModelPop(){
 function pickModel(id){
   $("#modelPop").hidden=true;
   if(!id || id===curModel()) return;
-  setModel(id);            // 乐观更新胶囊,下一轮 done 事件会与服务端对齐
+  setModel(id);            // 乐观更新胶囊
   S.models.default=id;     // 同步"本端默认":之后新开会话也默认用这个模型
-  sendCmd("/model "+id);   // 复用后端 /model 命令,按会话切换
+  // POST /model 静默切换：不走命令管道、不触发 SSE/推送通知
+  api("/model", {method:"POST", headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({conv:S.conv, model:id})}).catch(()=>{});
 }
 $("#modelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#modelPop");
   if(p.hidden){ renderModelPop(); p.hidden=false; } else p.hidden=true; };
