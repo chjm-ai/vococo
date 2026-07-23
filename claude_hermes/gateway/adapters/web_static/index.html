@@ -4438,6 +4438,10 @@ document.addEventListener("click", e=>{ const b=$("#modelBox"); if(b && !b.conta
 //   - 无缓存/过期:正常走 loading→fetch
 var quotaCache = {};    // 按模型名缓存 {data, ts}
 var quotaFetchTimer = null;
+// initQuotaRing 防重入:每次 401 重登录都会重跑 tryEnter()→initQuotaRing(),原先没挡
+// 会导致监听器和 60s 定时器无限叠加(旧 quotaFetchTimer 引用被直接覆盖、永不 clearInterval),
+// 是前端"用得越久越占内存,最终被浏览器强制重载"的主因之一——跟 initOnce(见上方注释)同类问题。
+var quotaRingInited = false;
 var QUOTA_ARC = 50.27;  // 2*PI*8,与 ctxRing 同值
 
 function curQuotaData(){
@@ -4472,6 +4476,8 @@ function setQuotaState(state, five){
 function initQuotaRing(){
   var ring=$("#quotaRing"), pop=$("#quotaPop");
   if(!ring) return;
+  if(quotaRingInited){ fetchUsage(curModel()); return; }  // 监听器/定时器已挂过,只补拉一次数据
+  quotaRingInited = true;
   ring.addEventListener("mouseenter", function(e){ renderQuotaPop(); });
   ring.addEventListener("mouseleave", function(e){ pop.hidden=true; });
   ring.addEventListener("click", function(e){
@@ -5261,14 +5267,18 @@ function b64ToU8(base64){
 function isStandalone(){
   return (window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone===true;
 }
+var pushMsgListenerInited = false;  // 防重入:同 quotaRingInited,挡重登录时监听器重复叠加
 async function initPush(){
   if(!("serviceWorker" in navigator)) return;
   try{ await navigator.serviceWorker.register("/sw.js"); }catch(e){ return; }
-  // 点系统通知 → SW 让页面切到对应会话
-  navigator.serviceWorker.addEventListener("message", ev=>{
-    const m=ev.data||{};
-    if(m.type==="open" && m.conv){ try{ openConv(m.conv); }catch(e){} }
-  });
+  if(!pushMsgListenerInited){
+    pushMsgListenerInited = true;
+    // 点系统通知 → SW 让页面切到对应会话
+    navigator.serviceWorker.addEventListener("message", ev=>{
+      const m=ev.data||{};
+      if(m.type==="open" && m.conv){ try{ openConv(m.conv); }catch(e){} }
+    });
+  }
   try{
     const cfg = await (await api("/push/config")).json();
     PUSH.enabled=!!cfg.enabled; PUSH.pubKey=cfg.vapidPublicKey||"";
