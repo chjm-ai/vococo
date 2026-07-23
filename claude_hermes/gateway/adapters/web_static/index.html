@@ -4482,15 +4482,15 @@ function initQuotaRing(){
   if(!ring) return;
   if(quotaRingInited){ fetchUsage(curModel()); return; }  // 监听器/定时器已挂过,只补拉一次数据
   quotaRingInited = true;
-  ring.addEventListener("mouseenter", function(e){ renderQuotaPop(); });
-  ring.addEventListener("mouseleave", function(e){ pop.hidden=true; });
   ring.addEventListener("click", function(e){
     e.stopPropagation();
     if(ring.dataset.state==="error"){ fetchUsage(curModel()); }
     pop.hidden=!pop.hidden;
     if(!pop.hidden) renderQuotaPop();
   });
-  document.addEventListener("click", function(e){ if(!ring.contains(e.target)) pop.hidden=true; });
+  document.addEventListener("click", function(e){
+    if(!ring.contains(e.target) && !pop.contains(e.target)) pop.hidden=true;
+  });
   fetchUsage(curModel());
   quotaFetchTimer = setInterval(function(){ fetchUsage(curModel()); }, 60000);
 }
