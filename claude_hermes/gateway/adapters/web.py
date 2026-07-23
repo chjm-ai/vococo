@@ -1283,6 +1283,14 @@ class WebAdapter:
             "sw.js", "text/javascript", {"Service-Worker-Allowed": "/"}
         )
 
+    async def _handle_styles(self, request: web.Request) -> web.Response:
+        # 2026-07-23 从 index.html 内联 <style> 拆出;no-cache 保证改动能刷新,跟 index.html 同口径
+        return self._static_file("styles.css", "text/css")
+
+    async def _handle_tool_card_js(self, request: web.Request) -> web.Response:
+        # 2026-07-23 从 index.html 内联 <script> 拆出(工具卡片渲染那一段)
+        return self._static_file("tool-card.js", "text/javascript")
+
     async def _handle_favicon(self, request: web.Request) -> web.Response:
         # 跟 wazir-mark.svg 同口径:允许 CDN 边缘缓存 1 天,省跨境回源;
         # 换标后最多 1 天内生效,可接受(2026-07-21,此前是 no-cache 强制每次回源)
@@ -1420,6 +1428,8 @@ class WebAdapter:
                 web.get("/", self._handle_index),
                 web.get("/manifest.json", self._handle_manifest),
                 web.get("/sw.js", self._handle_sw),
+                web.get("/styles.css", self._handle_styles),
+                web.get("/tool-card.js", self._handle_tool_card_js),
                 web.get("/favicon.ico", self._handle_favicon),
                 web.get("/wazir-mark.svg", self._handle_mark),
                 web.get("/wazir-logos", self._handle_logos),
