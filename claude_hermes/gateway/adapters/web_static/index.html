@@ -609,9 +609,16 @@
   .bubble code{background:var(--code-inline);padding:.12em .4em;border-radius:6px;font-size:.9em;
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   .row.me code{background:rgba(255,255,255,.2)}
+  .codeblock{position:relative;margin:.6em 0}
+  .codeblock .codecopy{position:absolute;top:8px;right:8px;width:26px;height:26px;display:flex;align-items:center;
+    justify-content:center;border:1px solid var(--line);border-radius:6px;background:var(--panel2);color:var(--dim);
+    cursor:pointer;opacity:.7}
+  .codeblock .codecopy:hover{opacity:1}
+  .codeblock .codecopy .ic{width:14px;height:14px}
   .bubble pre.code{background:var(--code-bg);border:1px solid var(--line);border-radius:12px;padding:12px 14px;
-    overflow-x:auto;margin:.6em 0}
-  .bubble pre.code code{background:none;padding:0;font-size:.86em;line-height:1.5;color:var(--code-fg)}
+    padding-right:40px;overflow-x:auto;margin:0}
+  .bubble pre.code code{background:none;padding:0;font-size:.86em;line-height:1.5;color:var(--code-fg);
+    white-space:pre-wrap;word-break:break-word}
   .bubble blockquote{margin:.5em 0;padding:.2em .9em;border-left:3px solid var(--accent2);color:var(--dim)}
   .bubble table{border-collapse:collapse;margin:.6em 0;width:100%;font-size:.92em;display:block;overflow-x:auto}
   .bubble th,.bubble td{border:1px solid var(--line);padding:7px 11px;text-align:left}
@@ -4079,7 +4086,8 @@ function mdToHtml(src){
   src = (src||"").replace(/\r\n/g,"\n");
   const codes=[];
   src = src.replace(/```(\w*)\n?([\s\S]*?)```/g,(m,lang,code)=>{
-    codes.push('<pre class="code"><code>'+esc(code.replace(/\n$/,""))+"</code></pre>");
+    codes.push('<div class="codeblock"><button class="codecopy" onclick="copyCodeBlock(this)" title="复制代码">'+ic("copy")+
+      '</button><pre class="code"><code>'+esc(code.replace(/\n$/,""))+"</code></pre></div>");
     return " C"+(codes.length-1)+" ";
   });
   const L = src.split("\n"); let out=""; let i=0; let para=[];
@@ -4546,6 +4554,14 @@ function copyConvId(){
   if(!id || !navigator.clipboard) return;
   navigator.clipboard.writeText(id).then(()=>{
     const btn = $("#ctxCopyBtn"); if(!btn) return;
+    const old = btn.innerHTML; btn.innerHTML = ic("save");
+    setTimeout(()=> btn.innerHTML = old, 1200);
+  }).catch(()=>{});
+}
+function copyCodeBlock(btn){
+  const code = btn.parentElement && btn.parentElement.querySelector("pre.code code");
+  if(!code || !navigator.clipboard) return;
+  navigator.clipboard.writeText(code.textContent).then(()=>{
     const old = btn.innerHTML; btn.innerHTML = ic("save");
     setTimeout(()=> btn.innerHTML = old, 1200);
   }).catch(()=>{});
