@@ -31,7 +31,7 @@ from ... import config, providers
 from ...core import title
 from ...core.agent import AgentReply, get_rate_limits
 from ...memory import session_store
-from .. import settings_store
+from .. import git_status, settings_store
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
 from .base import ImageAttachment, Incoming
 from .web_push import PUSH
@@ -262,6 +262,17 @@ class WebAdapter:
             return web.json_response({"error": "unauthorized"}, status=401)
         return None
 
+    @staticmethod
+    async def _read_json(request: web.Request) -> tuple[dict, web.Response | None]:
+        """解析 POST body 成 dict;跟 _guard 同一个用法 —— 非 None 就直接 return。
+
+        以前这四行 try/except 在本文件里原样重复了近 20 次,收口成这一个 helper。
+        """
+        try:
+            return await request.json(), None
+        except (json.JSONDecodeError, ValueError):
+            return {}, web.json_response({"error": "bad json"}, status=400)
+
     # ── SSE 广播 ─────────────────────────────────────────────────────────
     def _emit(self, payload: dict) -> None:
         """给事件编号、进环形缓冲,再塞进所有在线浏览器的 SSE 队列。
@@ -481,10 +492,9 @@ class WebAdapter:
     async def _handle_send(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         conv = str(body.get("conv") or "main")
         text = (body.get("text") or "").strip()
         images = [
@@ -537,10 +547,9 @@ class WebAdapter:
     async def _handle_abort(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         conv = str(body.get("conv") or "main")
         session_key = config.resolve_session_key("web", conv)
         stopped = bool(self._cancel_callback and self._cancel_callback(session_key))
@@ -581,8 +590,9 @@ class WebAdapter:
                 it["conv"] = key.split(":", 1)[1]
             else:
                 it["conv"] = key
-            if key.startswith("voice-task:"):
-                row = voice_tasks.get(key.split(":", 1)[1])
+            task_id = voice_tasks.task_id_from_session_key(key)
+            if task_id is not None:
+                row = voice_tasks.get(task_id)
                 if row is not None:
                     it["title"] = row["title"]
         return web.json_response({"results": items})
@@ -600,10 +610,10 @@ class WebAdapter:
 
         main = session_store.session_summary("voice-chat:main")
         main.update(key="voice-chat:main", conv="voice-chat:main", title="语音对话", pinned=True)
-        task_convs = session_store.list_sessions("voice-task:")
+        task_convs = session_store.list_sessions(voice_tasks.SESSION_KEY_PREFIX)
         for c in task_convs:
             c["conv"] = c["key"]
-            task_id = c["key"].split(":", 1)[1] if ":" in c["key"] else c["key"]
+            task_id = voice_tasks.task_id_from_session_key(c["key"]) or c["key"]
             row = voice_tasks.get(task_id)
             if row is not None:
                 c["task_status"] = row["status"]
@@ -652,10 +662,9 @@ class WebAdapter:
             return g
         from ...cron import scheduler
 
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         name = (body.get("name") or "").strip()
         prompt = (body.get("prompt") or "").strip()
         schedule = body.get("schedule")
@@ -678,10 +687,9 @@ class WebAdapter:
             return g
         from ...cron import scheduler
 
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         job_id = (body.get("id") or "").strip()
         name = (body.get("name") or "").strip()
         prompt = (body.get("prompt") or "").strip()
@@ -706,10 +714,9 @@ class WebAdapter:
             return g
         from ...cron import scheduler
 
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         job_id = (body.get("id") or "").strip()
         enabled = bool(body.get("enabled"))
         jobs = scheduler.load_jobs()
@@ -727,10 +734,9 @@ class WebAdapter:
             return g
         from ...cron import scheduler
 
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         job_id = (body.get("id") or "").strip()
         jobs = scheduler.load_jobs()
         job = next((j for j in jobs if j.get("id") == job_id), None)
@@ -815,10 +821,9 @@ class WebAdapter:
         """新建/复活项目:校验路径是真实目录 → 入库,返回项目信息。"""
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         path = (body.get("path") or "").strip()
         if not path:
             return web.json_response({"error": "路径不能为空"}, status=400)
@@ -831,10 +836,9 @@ class WebAdapter:
         """软移除项目:仅从列表隐藏,文件夹与会话历史都不动。"""
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         h = (body.get("hash") or "").strip()
         if h:
             session_store.hide_project(h)
@@ -844,10 +848,9 @@ class WebAdapter:
         """侧边栏拖拽排序落库:body={"order": [hash, ...]},按新顺序整体覆盖。"""
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         order = body.get("order")
         if not isinstance(order, list):
             return web.json_response({"error": "order 必须是数组"}, status=400)
@@ -901,25 +904,22 @@ class WebAdapter:
         if not model:
             model = providers.resolve(None, config.MODEL)[0]
 
-        # 查 cc-switch 判断供应商类型
-        p_entry = providers.lookup_provider_by_model(model)
-
-        # Kimi 订阅(api.kimi.com)
-        if p_entry:
-            base_url = providers._entry_field(p_entry, "base_url", "baseUrl")
-            if base_url and providers.is_subscription_host(base_url):
-                api_key = providers._entry_field(p_entry, "api_key", "apiKey")
-                if api_key:
-                    try:
-                        data = await self._fetch_kimi_usage(api_key)
-                        return web.json_response(data)
-                    except Exception as ex:
-                        return web.json_response(
-                            {"provider": "kimi", "error": str(ex)}, status=502
-                        )
-                return web.json_response({"provider": "kimi", "type": "api"})
+        # Kimi 订阅(api.kimi.com);providers 模块内部处理 cc-switch 字段的
+        # snake_case/camelCase 归一化,这里只拿到规整好的 api_key。
+        api_key = providers.subscription_api_key_for_model(model)
+        if api_key is not None:
+            if api_key:
+                try:
+                    data = await providers.kimi_usage(api_key)
+                    return web.json_response(data)
+                except Exception as ex:
+                    return web.json_response(
+                        {"provider": "kimi", "error": str(ex)}, status=502
+                    )
+            return web.json_response({"provider": "kimi", "type": "api"})
 
         # Claude 官方订阅:返回缓存中的速率限额
+        p_entry = providers.lookup_provider_by_model(model)
         if not p_entry or p_entry.get("name", "").lower() in ("claude", "official", "anthropic"):
             limits = get_rate_limits()
             return web.json_response({
@@ -929,47 +929,6 @@ class WebAdapter:
 
         # 其他(DeepSeek/Moonshot API 等):按量计费,无配额
         return web.json_response({"provider": "api", "type": "api"})
-
-    async def _fetch_kimi_usage(self, api_key: str) -> dict:
-        """调 Kimi Code 订阅的用量查询 API。"""
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://api.kimi.com/coding/v1/usages",
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status != 200:
-                    txt = await resp.text()
-                    return {"provider": "kimi", "error": f"HTTP {resp.status}: {txt[:200]}"}
-                data = await resp.json()
-
-        usage = data.get("usage", {})
-        # Kimi 返回:usage 是本月累计,limits 是各窗口明细(含 5h)
-        five_hour = {}
-        limits_raw = data.get("limits", [])
-        for lim in limits_raw:
-            if lim.get("window", {}).get("duration") == 300:
-                detail = lim.get("detail", {})
-                limit = int(detail.get("limit", 0) or 0)
-                used = int(detail.get("used", 0) or 0)
-                remaining = max(0, limit - used)
-                pct = 0.0
-                if limit > 0:
-                    pct = min(1.0, used / limit)
-                five_hour = {
-                    "status": "rejected" if remaining <= 0 else "allowed_warning" if pct >= 0.8 else "allowed",
-                    "utilization": pct,
-                    "resets_at": detail.get("resetTime", ""),
-                    "limit": limit,
-                    "remaining": remaining,
-                }
-                break
-
-        return {
-            "provider": "kimi",
-            "limits": {"five_hour": five_hour},
-        }
 
     # ── 语音转文字 ───────────────────────────────────────────────────────
     async def _handle_transcribe(self, request: web.Request) -> web.Response:
@@ -1039,12 +998,15 @@ class WebAdapter:
         body = await request.json()
         conv = str(body.get("conv") or "")
         if conv and conv != "main":
-            if conv.startswith("voice-task:"):
+            from ...voice import tasks as voice_tasks  # 懒加载
+
+            task_id = voice_tasks.task_id_from_session_key(conv)
+            if task_id is not None:
                 from ...voice import executor as voice_executor  # 懒加载
 
                 # 任务还在排队/运行时先取消并等收尾写完,否则收尾 finish_turn
                 # 会把刚删掉的会话又写回来(侧边栏出现"复活"的空壳任务)
-                await voice_executor.cancel_and_wait(conv.split(":", 1)[1])
+                await voice_executor.cancel_and_wait(task_id)
             from ...core import worktree  # 懒加载
 
             key = config.resolve_session_key("web", conv)
@@ -1061,64 +1023,6 @@ class WebAdapter:
         key = config.resolve_session_key("web", conv)
         return config.project_cwd_for(key)
 
-    async def _run_git(self, cwd: str, *args: str) -> tuple[int, str, str]:
-        """在 cwd 里跑一条 git 命令,返回 (returncode, stdout, stderr)。"""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "git", *args, cwd=cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            out, err = await proc.communicate()
-        except (OSError, ValueError) as e:
-            return 127, "", str(e)
-        return (
-            proc.returncode or 0,
-            out.decode("utf-8", "replace"),
-            err.decode("utf-8", "replace"),
-        )
-
-    async def _git_status(self, cwd: str) -> dict:
-        """收集一份 git 状态:分支、领先/落后、改动文件清单。"""
-        code, out, _ = await self._run_git(cwd, "rev-parse", "--is-inside-work-tree")
-        if code != 0 or out.strip() != "true":
-            return {"is_repo": False}
-        _, raw, _ = await self._run_git(cwd, "status", "--porcelain=v1", "--branch")
-        branch, ahead, behind = "", 0, 0
-        files: list[dict] = []
-        for line in raw.splitlines():
-            if line.startswith("## "):
-                # 形如 "main...origin/main [ahead 1, behind 2]" / "HEAD (no branch)"
-                # / "No commits yet on main"
-                head = line[3:]
-                if head.startswith("No commits yet on "):
-                    branch = head[len("No commits yet on "):].strip()
-                    continue
-                branch = head.split(" ", 1)[0].split("...", 1)[0]
-                if m := re.search(r"ahead (\d+)", head):
-                    ahead = int(m.group(1))
-                if m := re.search(r"behind (\d+)", head):
-                    behind = int(m.group(1))
-            elif line:
-                files.append({"x": line[:2], "path": line[3:]})  # XY 状态码 + 路径
-        added, removed = 0, 0
-        _, stat_out, _ = await self._run_git(cwd, "diff", "HEAD", "--shortstat")
-        if stat_out.strip():
-            if m := re.search(r"(\d+) insertion", stat_out):
-                added = int(m.group(1))
-            if m := re.search(r"(\d+) deletion", stat_out):
-                removed = int(m.group(1))
-        return {
-            "is_repo": True,
-            "branch": branch or "(游离 HEAD)",
-            "ahead": ahead,
-            "behind": behind,
-            "dirty": len(files),
-            "files": files[:60],  # 改动太多只回前 60 条,够看
-            "added": added,
-            "removed": removed,
-        }
-
     async def _handle_conv_git(self, request: web.Request) -> web.Response:
         """会话对应项目的 git 状态;非项目会话回退到 serve 进程 cwd。"""
         if (g := self._guard(request)) is not None:
@@ -1128,7 +1032,7 @@ class WebAdapter:
         bound = cwd is not None
         if not cwd:
             cwd = os.getcwd()
-        info = await self._git_status(cwd)
+        info = await git_status.git_status(cwd)
         # 只有绑定项目的会话才强制显示;非项目会话仅在 cwd 真是 git 仓库时才暴露
         if not bound and not info.get("is_repo"):
             return web.json_response({"is_project": False})
@@ -1139,10 +1043,9 @@ class WebAdapter:
         """在项目工作目录建并切到新分支(当前改动随之带过去)。"""
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         name = (body.get("name") or "").strip()
         from ...core import worktree  # 懒加载
 
@@ -1155,13 +1058,13 @@ class WebAdapter:
         if not name or " " in name or name.startswith("-"):
             return web.json_response({"error": "分支名非法"}, status=400)
         # 交给 git 兜底校验(拒绝 .. / ~ / 控制字符 / 已占用等)
-        code, _, _ = await self._run_git(cwd, "check-ref-format", "--branch", name)
+        code, _, _ = await git_status.run_git(cwd, "check-ref-format", "--branch", name)
         if code != 0:
             return web.json_response({"error": f"分支名非法:{name}"}, status=400)
-        code, _, err = await self._run_git(cwd, "checkout", "-b", name)
+        code, _, err = await git_status.run_git(cwd, "checkout", "-b", name)
         if code != 0:
             return web.json_response({"error": err.strip() or "创建分支失败"}, status=400)
-        info = await self._git_status(cwd)
+        info = await git_status.git_status(cwd)
         info.update(is_project=True, path=cwd, name=os.path.basename(cwd) or cwd)
         return web.json_response(info)
 
@@ -1170,10 +1073,9 @@ class WebAdapter:
         """POST /conv/archive  {conv, archived: bool}  设置会话归档状态。"""
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         conv = (body.get("conv") or "").strip()
         if not conv:
             return web.json_response({"error": "缺少 conv"}, status=400)
@@ -1186,10 +1088,9 @@ class WebAdapter:
         """POST /conv/read  {conv}  用户已打开该会话,清零 pending_review 标记。"""
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         conv = (body.get("conv") or "").strip()
         if not conv:
             return web.json_response({"error": "缺少 conv"}, status=400)
@@ -1207,10 +1108,9 @@ class WebAdapter:
         """POST /prefs  {key: value, ...}  批量写入用户偏好。"""
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         if not isinstance(body, dict):
             return web.json_response({"error": "body must be object"}, status=400)
         session_store.set_prefs(body)
@@ -1238,10 +1138,9 @@ class WebAdapter:
     async def _handle_settings_skill(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         name = (body.get("name") or "").strip()
         if not name:
             return web.json_response({"error": "缺少 name"}, status=400)
@@ -1261,10 +1160,9 @@ class WebAdapter:
     async def _handle_settings_mcp_hermes(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         settings_store.set_hermes(bool(body.get("enabled")))
         return web.json_response({"ok": True})
 
@@ -1272,10 +1170,9 @@ class WebAdapter:
         """增删改 / 开关外部 MCP server。action: add|update|remove|toggle。"""
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         action = (body.get("action") or "").strip()
         name = (body.get("name") or "").strip()
         if not name:
@@ -1286,53 +1183,11 @@ class WebAdapter:
         if action == "toggle":
             settings_store.set_external_enabled(name, bool(body.get("enabled")))
             return web.json_response({"ok": True})
-        # add / update:清洗成合法 SDK 配置
-        cfg, err = self._clean_mcp_config(body)
+        # add / update:清洗校验收在 settings_store.upsert_external 内部
+        err = settings_store.upsert_external(name, body)
         if err:
             return web.json_response({"error": err}, status=400)
-        settings_store.upsert_external(name, cfg)
         return web.json_response({"ok": True})
-
-    @staticmethod
-    def _clean_mcp_config(body: dict) -> tuple[dict, str | None]:
-        """把前端提交的字段清洗成 stdio/sse/http 配置;返回 (cfg, 错误)。"""
-        typ = (body.get("type") or "stdio").strip().lower()
-        enabled = bool(body.get("enabled", True))
-        if typ == "stdio":
-            # 远程注册 stdio MCP = 让服务端拉起任意子进程,等同远程 RCE(审计 web#6 / 2-5)。
-            # 默认拒绝,除非显式 WEB_ALLOW_STDIO_MCP=1。sse/http 型不受此限。
-            if not config.WEB_ALLOW_STDIO_MCP:
-                return {}, ("出于安全,已禁止从 Web 注册本地 stdio MCP(可执行任意命令)。"
-                            "如确需,请在 .env 设 WEB_ALLOW_STDIO_MCP=1 后重启;"
-                            "或改用 sse/http 型 MCP。")
-            command = (body.get("command") or "").strip()
-            if not command:
-                return {}, "stdio 类型需要 command"
-            raw_args = body.get("args")
-            if isinstance(raw_args, str):
-                args = raw_args.split()
-            elif isinstance(raw_args, list):
-                args = [str(a) for a in raw_args]
-            else:
-                args = []
-            env = body.get("env") if isinstance(body.get("env"), dict) else {}
-            env = {str(k): str(v) for k, v in env.items()}
-            return (
-                {"type": "stdio", "command": command, "args": args,
-                 "env": env, "enabled": enabled},
-                None,
-            )
-        if typ in ("sse", "http"):
-            url = (body.get("url") or "").strip()
-            if not url:
-                return {}, f"{typ} 类型需要 url"
-            headers = body.get("headers") if isinstance(body.get("headers"), dict) else {}
-            headers = {str(k): str(v) for k, v in headers.items()}
-            return (
-                {"type": typ, "url": url, "headers": headers, "enabled": enabled},
-                None,
-            )
-        return {}, f"不支持的类型:{typ}"
 
     # ── 设置:记忆 / AGENTS.md 文件读写(限定在 AI_BRAIN 内)──────────────
     def _list_brain_files(self) -> list[dict]:
@@ -1382,10 +1237,9 @@ class WebAdapter:
     async def _handle_file_save(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
         rel = (body.get("rel") or "").strip()
         target = self._safe_brain_path(rel)
         if target is None:
@@ -1500,10 +1354,9 @@ class WebAdapter:
     async def _handle_push_subscribe(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
-        try:
-            sub = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response({"error": "bad json"}, status=400)
+        sub, err = await self._read_json(request)
+        if err is not None:
+            return err
         ok = PUSH.add(sub if isinstance(sub, dict) else {})
         if not ok:
             return web.json_response({"error": "invalid subscription"}, status=400)

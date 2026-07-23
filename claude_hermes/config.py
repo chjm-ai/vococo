@@ -231,7 +231,6 @@ VOICE_TASK_TIMEOUT_MIN: int = int(os.environ.get("VOICE_TASK_TIMEOUT_MIN", "30")
 # 由 VOICE_TASK_TIMEOUT_MIN 超时兜底)。保留独立开关是因为查日志/翻代码这类任务
 # 动辄几十轮,2026-07-10 真机事故:全局 40 轮让一个查日志任务白跑 8 分钟。
 VOICE_TASK_MAX_TURNS: int = int(os.environ.get("VOICE_TASK_MAX_TURNS", "0"))
-VOICE_ANNOUNCE: str = os.environ.get("VOICE_ANNOUNCE", "idle").strip().lower() or "idle"
 # 派活判断目前完全靠模型自己读【派活规则】临场判断,没有代码兜底——真机复盘过
 # 一次长任务(7步骤的复杂指令)险些没被当成后台任务处理(见 2026-07-09 事故复盘)。
 # 这里加一道低成本兜底:识别文本超过这个字数,就在 prompt 里额外加一句强提示,
@@ -242,9 +241,10 @@ VOICE_LONG_TASK_CHARS: int = int(os.environ.get("VOICE_LONG_TASK_CHARS", "50"))
 
 # P3:端到端语音进语音出模型(见 voice/omni_realtime.py)。P2 自建全双工管线
 # (ws.py + DashScope 实时识别 WS)已于 2026-07-11 整体退休,见
-# docs/adr/0004-voice-omni-only.md;其判定纯函数与调优终值留档在
-# voice/heuristics.py。已用真实账号连线验证过 session.update/function calling
-# 全流程可用。
+# docs/adr/0004-voice-omni-only.md;其判定纯函数与调优终值存档在
+# docs/design/voice-companion/04-echo-heuristics-archive.md(2026-07-23 从活代码
+# 降级为文档——原 voice/heuristics.py 零调用方)。已用真实账号连线验证过
+# session.update/function calling 全流程可用。
 VOICE_OMNI_REALTIME_MODEL: str = (
     os.environ.get("VOICE_OMNI_REALTIME_MODEL", "qwen3.5-omni-flash-realtime").strip()
     or "qwen3.5-omni-flash-realtime"

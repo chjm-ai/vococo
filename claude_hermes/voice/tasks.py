@@ -16,10 +16,29 @@ import time
 from pathlib import Path
 
 from .. import config
+from .task_words import status_word
 
 _DB: sqlite3.Connection | None = None
 
 TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled"})
+
+# 后台任务的 session_key 就是这个前缀 + 任务 id(见 core/worktree.py、voice/executor.py、
+# voice/notify.py 的构造侧,gateway/run.py、gateway/adapters/web.py 的解析侧)——统一经
+# session_key()/task_id_from_session_key() 两个函数读写,不再各处手写字符串拼接/split,
+# 避免约定改了却漏改某个调用点(2026-07-23 架构复盘)。
+SESSION_KEY_PREFIX = "voice-task:"
+
+
+def session_key(task_id: str) -> str:
+    """任务 id → 该任务对应的会话 key。"""
+    return f"{SESSION_KEY_PREFIX}{task_id}"
+
+
+def task_id_from_session_key(key: str) -> str | None:
+    """会话 key → 任务 id;不是本模块的 session_key() 前缀则返回 None。"""
+    if not key or not key.startswith(SESSION_KEY_PREFIX):
+        return None
+    return key[len(SESSION_KEY_PREFIX):]
 
 _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "queued": frozenset({"running", "cancelled"}),
@@ -222,10 +241,9 @@ def snapshot_for_prompt(done_limit: int = 5, done_window_sec: int = 1800) -> str
             mins = int((now - r["created_at"]) // 60)
             note = r["progress_note"] or "刚启动"
             lines.append(f"-「{r['title']}」进行中,已跑约 {mins} 分钟,最新动作:{note}")
-    word = {"done": "已完成", "failed": "失败了", "cancelled": "已取消"}
     for r in recent_done:
         summary = r["result_summary"] or r["progress_note"] or "(没有摘要)"
-        lines.append(f"-「{r['title']}」{word[r['status']]}:{summary}")
+        lines.append(f"-「{r['title']}」{status_word(r['status'])}:{summary}")
     return "\n".join(lines)
 
 

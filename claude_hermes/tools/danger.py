@@ -445,8 +445,37 @@ def _deny_outside_worktree(target: str, wt: str) -> dict:
     )
 
 
+def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | None:
+    """常开正确性防线:后台任务腰斩 / 记忆孤本 / worktree 越界。命中则返回 deny 结果。
+
+    这是跟下面 classify() 的 allow/escalate/block 三档【并列的另一套机制】,不是它的
+    第四档:这三项修的是正确性 bug(不这么做程序行为就是错的),不是「操作有多危险」,
+    所以永远生效、不受 DANGER_GUARD / APPROVAL_GATE 开关影响——关掉安全开关图的是
+    「我知道风险,别再问我」,不该连带关掉这几条「关了程序就会错」的防线。
+    CONTEXT.md「危险分级(Risk Tier)」条目描述的三档模型专指 classify() 的输出。
+    """
+    if _wants_background(tool_name, tool_input):
+        return _deny_background(tool_name)
+    orphan = _creates_orphan_memory_file(tool_name, tool_input)
+    if orphan:
+        return _deny_orphan_memory(orphan)
+    outside = _writes_outside_worktree(tool_name, tool_input, cwd)
+    if outside:
+        return _deny_outside_worktree(*outside)
+    return None
+
+
 def _describe(tool_name: str, tool_input: dict) -> str:
-    """给审批弹窗一行「具体要干什么」。"""
+    """给审批弹窗一行「具体要干什么」。
+
+    只覆盖 Bash 和 _WRITE_TOOLS 两种——classify() 目前只对这两类工具返回
+    escalate/block(见上方 classify() 实现),其余工具永远 allow、走不到审批,
+    所以下面的兜底分支目前不可达。这不是覆盖不全,是跟 classify() 的判定范围
+    严格对齐;哪天 classify() 扩到其他工具类型也要 escalate,记得回来加对应分支
+    ——tests/test_danger.py::test_describe_covers_every_escalatable_tool 会在
+    那种情况下失败提醒(2026-07-23 架构复盘:此前误以为这是「审批弹窗渲染比
+    实时 Tool Card 弱」的覆盖缺口,实际两者服务不同目的,详见该测试的说明)。
+    """
     ti = tool_input or {}
     if tool_name == "Bash":
         return f"`{(ti.get('command') or '').strip()[:200]}`"
@@ -548,25 +577,18 @@ async def require_approval(
 
 
 async def pretool_guard_hook(input_data, tool_use_id, context):
-    """PreToolUse hook:灾难级 → 拦;危险级 → 请批准;其余放行。
+    """PreToolUse hook:先过常开正确性防线(_hard_guard),再走三档风险模型(classify)。
 
     这是接进 SDK 的那个 hook(build_hooks)。旧的 pretool_danger_hook 只做灾难拦截,
-    保留供既有测试;新逻辑在此,由 DANGER_GUARD / APPROVAL_GATE 两开关分别控制。
+    保留供既有测试;新逻辑在此。_hard_guard 三项永远生效;classify 的 escalate/block
+    分别由 APPROVAL_GATE / DANGER_GUARD 开关控制,allow 不受影响。
     """
     tool_name = input_data.get("tool_name", "") or ""
     tool_input = input_data.get("tool_input") or {}
     try:
-        # 后台任务:直接 deny 引导前台重试(见 _wants_background 上方说明),优先于其余判定
-        if _wants_background(tool_name, tool_input):
-            return _deny_background(tool_name)
-        # 记忆孤本:在 Claude Code 项目记忆目录新建实体文件 → deny 引导写 AI_BRAIN 主库
-        orphan = _creates_orphan_memory_file(tool_name, tool_input)
-        if orphan:
-            return _deny_orphan_memory(orphan)
-        # worktree 越界:worktree 会话写 worktree 外的共享主仓库 → 硬拦(引导写 worktree 内)
-        outside = _writes_outside_worktree(tool_name, tool_input, current_cwd())
-        if outside:
-            return _deny_outside_worktree(*outside)
+        hard = _hard_guard(tool_name, tool_input, current_cwd())
+        if hard:
+            return hard
         # 敏感读取:只标注不拦(见上方 _sensitive_read_target 说明)
         sensitive = _sensitive_read_target(tool_name, tool_input)
         if sensitive:

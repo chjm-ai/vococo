@@ -31,10 +31,13 @@
 - 删 P2 专属配置(`VOICE_WS_ENABLED`/`VOICE_FALSE_POSITIVE_TIMEOUT_MS`/
   `DASHSCOPE_REALTIME_MODEL`/`VOICE_VAD_SILENCE_MS`/`VOICE_SELF_ECHO_THRESHOLD`/
   `VOICE_POST_DONE_ECHO_GUARD_MS`/`VOICE_MIN_SPEECH_MS`/`VOICE_VOICEPRINT_*`);
-- **判定纯函数留档** `voice/heuristics.py`(打断截断/语气词/物理时长/回声
-  containment,连同真机调优终值),测试在 `tests/test_voice_heuristics.py`——
+- **判定纯函数留档** 原保留为活代码 `voice/heuristics.py`(打断截断/语气词/物理时长/
+  回声 containment,连同真机调优终值),配套测试 `tests/test_voice_heuristics.py`。
+  2026-07-23 架构复盘确认零调用方(Omni 模式下服务端拿不到 PCM,没有任何可能的调用点)
+  ——带一整套测试跑无人调用的代码成本高于"留档"应有的成本,故从生产代码删除,原样存档于
+  [docs/design/voice-companion/04-echo-heuristics-archive.md](../design/voice-companion/04-echo-heuristics-archive.md)。
   Omni 链路的回声问题未根治,当前活的兜底是前端 matchOmniEcho(前缀+编辑距离),
-  与留档的 containment 算法互补,将来加服务端第二道兜底可直接复用。
+  与存档的 containment 算法互补,将来加服务端第二道兜底可从存档原样迁回。
 
 ## 代价 / 已知取舍
 

@@ -10,14 +10,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 from .. import config
 from ..gateway import clarify
 from . import executor, tasks
-
-_STATUS_WORD = {
-    "queued": "排队中",
-    "running": "进行中",
-    "done": "已完成",
-    "failed": "失败",
-    "cancelled": "已取消",
-}
+from .task_words import status_word
 
 
 def _ok(text: str) -> dict:
@@ -25,7 +18,7 @@ def _ok(text: str) -> dict:
 
 
 def _describe(task: dict) -> str:
-    parts = [f"任务「{task['title']}」(id={task['id']}):{_STATUS_WORD.get(task['status'], task['status'])}"]
+    parts = [f"任务「{task['title']}」(id={task['id']}):{status_word(task['status'])}"]
     if task["status"] == "running" and task["progress_note"]:
         parts.append(f"当前进展:{task['progress_note']}")
     if task["status"] in tasks.TERMINAL_STATUSES and task["result_summary"]:
@@ -71,7 +64,7 @@ async def voice_dispatch_task(args: dict) -> dict:
         title=title, prompt=prompt, cwd=cwd,
         dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
     )
-    return _ok(f"已派发,task_id={task['id']},标题「{title}」,状态:{_STATUS_WORD[task['status']]}。")
+    return _ok(f"已派发,task_id={task['id']},标题「{title}」,状态:{status_word(task['status'])}。")
 
 
 @tool(
@@ -102,7 +95,7 @@ async def voice_append_task(args: dict) -> dict:
     parts = [f"✅ {result['message']}"]
     if result.get("task"):
         t = result["task"]
-        parts.append(f"task_id={t['id']},标题「{t['title']}」,状态:{_STATUS_WORD.get(t['status'], t['status'])}")
+        parts.append(f"task_id={t['id']},标题「{t['title']}」,状态:{status_word(t['status'])}")
     return _ok("。".join(parts))
 
 
