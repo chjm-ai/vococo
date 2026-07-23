@@ -470,6 +470,106 @@ async def restart_self(args: dict) -> dict:
     return _ok(msg)
 
 
+
+# ── MCP 管理（让 AI 自己能增删查外部 MCP server）─────────────────────
+@tool(
+    "list_mcp_servers",
+    "列出所有已注册的外部 MCP server（名称/类型/是否启用）。不涉及内置 hermes server 的开关。",
+    {"type": "object", "properties": {}},
+)
+async def list_mcp_servers(args: dict) -> dict:
+    from ..gateway.settings_store import list_external
+
+    items = list_external()
+    if not items:
+        return _ok("当前没有注册外部 MCP server。")
+    lines = []
+    for s in items:
+        name = s["name"]
+        typ = s.get("type", "?")
+        cmd_part = s.get("command", "")
+        args_part = " ".join(s.get("args", []))
+        detail = s.get("url") or f"{cmd_part} {args_part}"
+        state = "✅ 启用" if s.get("enabled") else "⏸ 停用"
+        lines.append(f"- {name} ({typ}) \u2014 {state} \u2014 {detail}")
+    return _ok("外部 MCP server:\n" + "\n".join(lines))
+
+
+@tool(
+    "add_mcp_server",
+    "注册一个新的外部 MCP server。"
+    "支持三种类型:stdio(本地命令)、http/sse(远程 URL)。\n"
+    "stdio 型需要 command 和可选的 args/env;"
+    "http/sse 型需要 url 和可选的 headers。\n"
+    "新增后下一轮对话即生效(无需重启进程)。",
+    {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "唯一名称(英文短横线 slug,如 lemlist)"},
+            "type": {"type": "string", "enum": ["stdio", "http", "sse"],
+                      "description": "MCP 传输类型"},
+            "command": {"type": "string", "description": "stdio 型:可执行命令(npx/pipx 等)"},
+            "args": {"description": "stdio 型:命令参数列表(如 ['-y','dataforseo-mcp-server'])"},
+            "url": {"type": "string", "description": "http/sse 型:服务器 URL"},
+            "headers": {"type": "object", "description": "http/sse 型:请求头(如 Authorization)"},
+            "env": {"type": "object", "description": "stdio 型:环境变量"},
+        },
+        "required": ["name", "type"],
+    },
+)
+async def add_mcp_server(args: dict) -> dict:
+    from ..gateway.settings_store import upsert_external
+
+    name = (args.get("name") or "").strip()
+    typ = (args.get("type") or "").strip().lower()
+    if not name:
+        return _ok("name 不能为空。")
+    if typ not in ("stdio", "http", "sse"):
+        return _ok("type 必须是 stdio / http / sse 之一。")
+
+    body = {"type": typ, "enabled": True}
+    if typ == "stdio":
+        cmd = (args.get("command") or "").strip()
+        if not cmd:
+            return _ok("stdio 类型需要 command 参数。")
+        body["command"] = cmd
+        body["args"] = args.get("args") or []
+        body["env"] = args.get("env") or {}
+    else:
+        url = (args.get("url") or "").strip()
+        if not url:
+            return _ok(f"{typ} 类型需要 url 参数。")
+        body["url"] = url
+        body["headers"] = args.get("headers") or {}
+
+    err = upsert_external(name, body)
+    if err:
+        return _ok(f"添加失败: {err}")
+    return _ok(f"\u2705 已注册外部 MCP「{name}」({typ})\uff0c下一轮对话即生效。")
+
+
+@tool(
+    "remove_mcp_server",
+    "删除一个已注册的外部 MCP server。不可恢复，删前向用户确认。",
+    {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+)
+async def remove_mcp_server(args: dict) -> dict:
+    from ..gateway.settings_store import list_external, remove_external
+    from . import danger
+
+    name = (args.get("name") or "").strip()
+    if not name:
+        return _ok("name 不能为空。")
+    all_items = list_external()
+    found = next((s for s in all_items if s["name"] == name), None)
+    if not found:
+        return _ok(f"未找到外部 MCP「{name}」。用 list_mcp_servers 查看列表。")
+    if not await danger.require_approval("删除 MCP server", f"「{name}」(不可恢复)"):
+        return _ok(f"\U0001f6d1 未批准删除「{name}」\uff0c已跳过。")
+    remove_external(name)
+    return _ok(f"\U0001f5d1 已删除外部 MCP「{name}」。")
+
+
 def build_mcp_servers() -> dict:
     """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
     return {
@@ -485,6 +585,9 @@ def build_mcp_servers() -> dict:
                 ask_user,
                 send_message,
                 restart_self,
+                list_mcp_servers,
+                add_mcp_server,
+                remove_mcp_server,
             ],
         )
     }
