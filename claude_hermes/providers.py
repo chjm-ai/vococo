@@ -251,14 +251,18 @@ def _billing_kind(base_url: str) -> str:
     return "订阅" if host in _SUBSCRIPTION_HOSTS else "API"
 
 
-def available_models(default_choices: list[tuple[str, str]]) -> list[tuple[str, str]]:
+def available_models(
+    default_choices: list[tuple[str, str]],
+) -> list[tuple[str, str, str]]:
     """/model 无参时的候选:官方默认档 + cc-switch 里配好的各供应商模型。
 
     default_choices 是官方三档(claude-opus/sonnet/haiku),恒列在前。标签只留
     "模型名（订阅/API）",不带供应商名和 cc-switch 后缀,免得面板换行/信息过载。
+    第三个元素是分组:anthropic(官方订阅) / kimi(Kimi 订阅) / api(按量计费),
+    供 WebUI 模型面板分组展示 + 决定要不要查订阅额度。
     """
-    out = list(default_choices)
-    seen = {mid for mid, _ in out}
+    out: list[tuple[str, str, str]] = [(mid, label, "anthropic") for mid, label in default_choices]
+    seen = {mid for mid, _, _ in out}
     config = _load_yaml()
     if not config:
         return out
@@ -271,7 +275,8 @@ def available_models(default_choices: list[tuple[str, str]]) -> list[tuple[str, 
         seen.add(model)
         base_url = _entry_field(entry, "base_url", "baseUrl")
         kind = _billing_kind(base_url)
-        out.append((model, f"{model}（{kind}）"))
+        group = "kimi" if kind == "订阅" else "api"
+        out.append((model, f"{model}（{kind}）", group))
     return out
 
 

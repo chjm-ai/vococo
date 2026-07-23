@@ -109,10 +109,13 @@ def test_available_models_lists_configured(tmp_path, monkeypatch):
     _point_to(monkeypatch, _write_config(tmp_path, DEEPSEEK_CONFIG))
     defaults = [("claude-opus-4-8", "Opus"), ("claude-sonnet-5", "Sonnet")]
     out = providers.available_models(defaults)
-    ids = [mid for mid, _ in out]
+    by_id = {mid: (label, group) for mid, label, group in out}
+    ids = list(by_id)
     assert ids[:2] == ["claude-opus-4-8", "claude-sonnet-5"]  # 官方档在前
-    assert "deepseek-chat" in ids
-    assert "kimi-k2-0711-preview" in ids
+    assert by_id["claude-opus-4-8"][1] == "anthropic"
+    assert by_id["deepseek-chat"][1] == "api"
+    # kimi 走 api.moonshot.cn(按量 API key),不是 api.kimi.com 订阅套餐 → 分组是 api 不是 kimi
+    assert by_id["kimi-k2-0711-preview"][1] == "api"
 
 
 def test_sidecar_env_finds_named_provider(tmp_path, monkeypatch):

@@ -870,7 +870,7 @@ class WebAdapter:
         return web.json_response(
             {
                 "default": active_model,
-                "choices": [[v, label] for v, label in choices],
+                "choices": [[v, label, group] for v, label, group in choices],
             }
         )
 
@@ -1351,6 +1351,11 @@ class WebAdapter:
             return g
         return web.json_response(PUSH.public_config())
 
+    async def _handle_push_subs(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        return web.json_response({"subs": PUSH.list_public()})
+
     async def _handle_push_subscribe(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
@@ -1421,6 +1426,7 @@ class WebAdapter:
                 web.get("/pub/{path:.*}", self._handle_publish),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.get("/push/config", self._handle_push_config),
+                web.get("/push/subs", self._handle_push_subs),
                 web.post("/push/subscribe", self._handle_push_subscribe),
                 web.post("/push/unsubscribe", self._handle_push_unsubscribe),
                 web.post("/push/test", self._handle_push_test),

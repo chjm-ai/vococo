@@ -9,6 +9,7 @@ run_turn() 是其上的便捷封装(累积成最终回复),给纯文本 chat 用
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import re
 from dataclasses import dataclass, field
@@ -555,7 +556,13 @@ async def stream_turn(
     # cwd=项目会话补注入其 AGENTS.md;cache_key=会话 id:同一 SDK 会话内冻结 append 快照,
     # 防中途 save_memory 改 MEMORY.md 打爆整条对话的 prompt cache —— 也让保温池的兼容性
     # 哈希在会话内保持稳定(中途存记忆不至于误杀保温 client)。/new 换 sid → 自然读到最新。
-    sys_prompt = build_system_prompt(cwd, cache_key=resume)
+    # 扔线程池:未命中会话内缓存时会现读 AI_BRAIN 画像文件(~/AI_BRAIN 是 iCloud 同步
+    # 软链,偶发"文件被驱逐到云端、访问要现拉"卡住同步 read_text 数秒到数分钟——若直接
+    # 跑在事件循环里,这一次卡顿会冻结【所有】会话(2026-07-21/07-23 两次假死均系于此,
+    # 见 gateway/watchdog.py 事故记录)。cache_key 命中时函数本身秒返回,进线程池的开销可忽略。
+    sys_prompt = await anyio.to_thread.run_sync(
+        functools.partial(build_system_prompt, cwd, cache_key=resume)
+    )
 
     effective_max_turns = max_turns or config.MAX_TURNS
 
