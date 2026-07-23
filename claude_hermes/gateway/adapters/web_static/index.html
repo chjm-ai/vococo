@@ -4426,6 +4426,7 @@ function pickModel(id){
   setModel(id);            // 乐观更新胶囊,下一轮 done 事件会与服务端对齐
   S.models.default=id;     // 同步"本端默认":之后新开会话也默认用这个模型
   sendCmd("/model "+id);   // 复用后端 /model 命令,按会话切换
+  fetchUsage(id);          // 切模型立即刷新额度环,不然要等最多60s定时器才会对上新模型
 }
 $("#modelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#modelPop");
   if(p.hidden){ renderModelPop(); p.hidden=false; } else p.hidden=true; };
@@ -4454,8 +4455,10 @@ function setQuotaState(state, five){
   if(!ring) return;
   ring.dataset.state = state;
   var arc = ring.querySelector(".qa");
-  if(state === "ok" && five){
-    var pct = five.utilization != null ? Math.round(five.utilization * 100) : 0;
+  // CLI 有时不给具体百分比(utilization=null,常见于订阅账号)——这种情况不能当0%画,
+  // 否则"没数据"和"真的用了0%"分不清,是在骗用户。
+  if(state === "ok" && five && five.utilization != null){
+    var pct = Math.round(five.utilization * 100);
     if(arc){
       arc.setAttribute("stroke-dashoffset", String(QUOTA_ARC * (1 - pct/100)));
       var color = "var(--ok)";
@@ -4466,10 +4469,11 @@ function setQuotaState(state, five){
     ring.title = "订阅额度 5h 已用 " + pct + "%(点击查看详情)";
     return;
   }
-  // loading/na/error:浅灰满圈占位,不画进度弧
+  // loading/na/error/ok-但无具体百分比:浅灰满圈占位,不画进度弧
   if(arc){ arc.setAttribute("stroke-dashoffset", "0"); arc.style.stroke = "var(--dim2)"; }
   var m = curModel() || "(空)";
-  if(state === "na") ring.title = "该模型按量计费,无订阅额度可查";
+  if(state === "ok") ring.title = "订阅额度可用(暂无具体百分比,点击查看详情)";
+  else if(state === "na") ring.title = "该模型按量计费,无订阅额度可查";
   else if(state === "error") ring.title = "额度查询失败,点击重试(模型:"+m+")";
   else ring.title = "额度加载中…(模型:"+m+")";
 }
@@ -4550,17 +4554,21 @@ function renderQuotaPop(){
   msg.hidden = true;
   $("#quotaProv").textContent = data.provider === "kimi" ? "Kimi 订阅" : "Claude 订阅";
   var five = data.limits && data.limits.five_hour;
-  if(five){
-    var pct = five.utilization != null ? Math.round(five.utilization * 100) : 0;
+  if(five && five.utilization != null){
+    var pct = Math.round(five.utilization * 100);
     var remain = five.remaining != null && five.limit ? five.remaining + "/" + five.limit : "";
     $("#qp5h").textContent = pct + "%" + (remain ? " ("+remain+")" : "");
+  } else if(five){
+    $("#qp5h").textContent = "订阅可用(暂无具体%)";
   } else {
     $("#qp5h").textContent = "--";
   }
   var seven = data.limits && data.limits.seven_day;
-  if(seven){
-    var pct7 = seven.utilization != null ? Math.round(seven.utilization * 100) : 0;
+  if(seven && seven.utilization != null){
+    var pct7 = Math.round(seven.utilization * 100);
     $("#qp7d").textContent = pct7 + "%";
+  } else if(seven){
+    $("#qp7d").textContent = "订阅可用(暂无具体%)";
   } else if(data.provider === "kimi") {
     $("#qp7d").textContent = "N/A (仅 5h)";
   } else {
@@ -4581,13 +4589,6 @@ function renderQuotaPop(){
     rstEl.hidden = true;
   }
 }
-// 模型切换时刷新配额环
-var _origPickModel = pickModel;
-pickModel = function(id){
-  _origPickModel(id);
-  fetchUsage(id);
-};
-
 function metaRow(k, v, pp, cls){
   return '<div class="pr'+(cls?" "+cls:"")+'"><span class="k">'+k+'</span>'+
     '<span class="v">'+v+(pp?'<span class="pp">'+pp+'</span>':'')+'</span></div>';
