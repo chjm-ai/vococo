@@ -5,9 +5,12 @@ assemble_tool_input 把累积的 input_json_delta 片段解析成 dict;
 """
 from __future__ import annotations
 
+import anyio
+
 from claude_hermes.core.agent import (
     ToolInput,
     _compact_threshold,
+    _query_context_usage,
     _turn_env,
     assemble_tool_input,
 )
@@ -101,3 +104,52 @@ def test_compact_threshold_falls_back_to_ratio_when_no_official_value():
         cli_window_stale=False,
     )
     assert threshold == 166_000
+
+
+# === _query_context_usage:2026-07-23 从 stream_turn 内联代码拆出的独立 seam ===
+# 拆出来之前,这段逻辑只能靠手搓完整 receive_messages 消息序列的 FakeClient 间接测到;
+# 现在只需一个只实现 get_context_usage 的最小假对象就能直接验证。
+
+
+class _StubClient:
+    def __init__(self, usage: dict | None = None, *, raises: bool = False):
+        self._usage = usage or {}
+        self._raises = raises
+
+    async def get_context_usage(self):
+        if self._raises:
+            raise RuntimeError("旧 CLI 不支持 /context")
+        return self._usage
+
+
+def test_query_context_usage_prefers_raw_max_when_larger():
+    # CLI 认的窗口(rawMaxTokens)比我们权威表(sonnet-5=100万)大 → 采信 CLI 的更大值
+    client = _StubClient({"totalTokens": 500, "rawMaxTokens": 2_000_000})
+    cu, total, ctx_window_val, stale = anyio.run(
+        _query_context_usage, client, "claude-sonnet-5"
+    )
+    assert total == 500
+    assert ctx_window_val == 2_000_000
+    assert stale is False
+
+
+def test_query_context_usage_detects_stale_cli_window():
+    # CLI 认的窗口(20万)明显小于权威表(sonnet-5=100万)→ 采信权威表,并标记 stale
+    client = _StubClient({"totalTokens": 900_000, "rawMaxTokens": 200_000})
+    cu, total, ctx_window_val, stale = anyio.run(
+        _query_context_usage, client, "claude-sonnet-5"
+    )
+    assert ctx_window_val == 1_000_000
+    assert stale is True
+
+
+def test_query_context_usage_falls_back_on_error():
+    # 旧 CLI 不支持 get_context_usage → 静默降级,按模型名估窗口,不抛异常
+    client = _StubClient(raises=True)
+    cu, total, ctx_window_val, stale = anyio.run(
+        _query_context_usage, client, "claude-haiku-4-5"
+    )
+    assert cu is None
+    assert total == 0
+    assert ctx_window_val == 200_000
+    assert stale is False

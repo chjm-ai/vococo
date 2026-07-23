@@ -296,3 +296,62 @@ def is_subscription_host(base_url: str) -> bool:
     from urllib.parse import urlsplit
     host = (urlsplit(base_url).hostname or "").lower()
     return host in _SUBSCRIPTION_HOSTS
+
+
+def subscription_api_key_for_model(model: str) -> str | None:
+    """model 对应的供应商若是已知订阅套餐(如 Kimi Coding)主机,返回其 api_key
+    (可能是空串,表示配置了但没填 key);不是订阅供应商(未配置/按量计费 API)返回 None。
+
+    只暴露这一个规整过的 seam,调用方不用像 `_entry_field(entry, "base_url", "baseUrl")`
+    那样知道 cc-switch 条目的 snake_case/camelCase 双写细节(2026-07-23 架构复盘:
+    web.py 曾直接越权调用这个下划线开头的私有 helper)。
+    """
+    config = _load_yaml()
+    if not config:
+        return None
+    provider = _find_by_model(config, model)
+    if provider is None or not provider.base_url or not is_subscription_host(provider.base_url):
+        return None
+    return provider.api_key
+
+
+async def kimi_usage(api_key: str) -> dict:
+    """调 Kimi Code 订阅的用量查询 API,返回 {"provider":"kimi","limits":{"five_hour":{...}}}。"""
+    import aiohttp
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            "https://api.kimi.com/coding/v1/usages",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
+                txt = await resp.text()
+                return {"provider": "kimi", "error": f"HTTP {resp.status}: {txt[:200]}"}
+            data = await resp.json()
+
+    # Kimi 返回:usage 是本月累计(前端用量面板暂不展示),limits 是各窗口明细(含 5h)
+    five_hour = {}
+    limits_raw = data.get("limits", [])
+    for lim in limits_raw:
+        if lim.get("window", {}).get("duration") == 300:
+            detail = lim.get("detail", {})
+            limit = int(detail.get("limit", 0) or 0)
+            used = int(detail.get("used", 0) or 0)
+            remaining = max(0, limit - used)
+            pct = 0.0
+            if limit > 0:
+                pct = min(1.0, used / limit)
+            five_hour = {
+                "status": "rejected" if remaining <= 0 else "allowed_warning" if pct >= 0.8 else "allowed",
+                "utilization": pct,
+                "resets_at": detail.get("resetTime", ""),
+                "limit": limit,
+                "remaining": remaining,
+            }
+            break
+
+    return {
+        "provider": "kimi",
+        "limits": {"five_hour": five_hour},
+    }

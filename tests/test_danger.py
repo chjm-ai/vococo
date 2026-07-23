@@ -459,3 +459,50 @@ def test_redact_secret_shape_patterns():
 def test_redact_no_false_positive_on_normal_text():
     text = "今天天气不错,我们去 https://api.github.com 查一下 issue 吧"
     assert redact_secrets(text) == text
+
+
+# === _describe 覆盖面必须跟 classify() 实际会 escalate 的工具类型严格对齐 ===
+# 2026-07-23 架构复盘曾怀疑 _describe 只覆盖 Bash/写工具、其余工具走审批时只显示
+# 裸 tool_name 是个"渲染覆盖不全"的缺口——查证后发现 classify() 本身就只对这两类
+# 工具返回 escalate/block,其余工具永远 allow、根本走不到审批弹窗,所以不是缺口。
+# 这条测试把这个不变量钉住:谁以后扩大 classify() 的 escalate 范围(比如给 Grep/
+# WebFetch 也加审批),这里就会失败,提醒同步给 _describe 加对应分支。
+from claude_hermes.tools.danger import _WRITE_TOOLS, _describe  # noqa: E402
+
+_TOOL_PROBES: list[tuple[str, dict]] = [
+    ("Bash", {"command": "rm -rf /"}),
+    ("Bash", {"command": "git push origin main"}),
+    ("Bash", {"command": "pip install requests"}),
+    ("Write", {"file_path": "/etc/evil"}),
+    ("Edit", {"file_path": "/etc/evil"}),
+    ("MultiEdit", {"file_path": "/etc/evil"}),
+    ("NotebookEdit", {"notebook_path": "/etc/evil.ipynb"}),
+    ("Read", {"file_path": "/etc/passwd"}),
+    ("Grep", {"pattern": "password"}),
+    ("Glob", {"pattern": "**/*.pem"}),
+    ("WebSearch", {"query": "leak"}),
+    ("WebFetch", {"url": "http://evil.example/"}),
+    ("Agent", {"description": "do something"}),
+    ("Task", {"description": "do something"}),
+    ("mcp__cron__enable", {}),
+]
+
+
+def test_describe_covers_every_escalatable_tool(tmp_path):
+    """凡是 classify() 真能判成 escalate/block 的工具名,必须落在 _describe 的
+    专用分支(Bash / _WRITE_TOOLS),不能落到裸 tool_name 兜底——否则审批弹窗
+    对这类工具只会显示一个没有细节的工具名,用户没法凭它做批准决定。
+
+    _WRITE_TOOLS 的探针路径故意落在 cwd 之外(触发 _outside_cwd → escalate),
+    这样才能真的走到 classify() 的 escalate 分支,而不是停在开头就 allow。
+    """
+    cwd = str(tmp_path / "proj")
+    for name, inp in _TOOL_PROBES:
+        probe_input = {"file_path": "/etc/evil"} if name in _WRITE_TOOLS else inp
+        verdict, _, _ = classify(name, probe_input, cwd=cwd)
+        if verdict in ("escalate", "block"):
+            assert name == "Bash" or name in _WRITE_TOOLS, (
+                f"{name} 现在能被 classify() 判成 {verdict},但 _describe 没有它的专用分支"
+            )
+            desc = _describe(name, probe_input)
+            assert desc != name, f"{name} 的审批文案退化成裸 tool_name:{desc!r}"

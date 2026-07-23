@@ -16,11 +16,9 @@ from collections.abc import Awaitable, Callable
 
 from .. import config
 from . import tasks, tts
+from .task_words import status_emoji
 
 _subscribers: set[asyncio.Queue] = set()
-
-# 状态对应的 emoji 前缀,用于平台推送(Telegram / Web 文字消息)
-_status_emoji = {"done": "✅", "failed": "❌", "cancelled": "🚫"}
 
 # 注册的平台推送回调:async (platform, chat_id, text) -> None
 _platform_push: Callable[[str, str, str], Awaitable[None]] | None = None
@@ -87,7 +85,7 @@ def on_task_activity(task: dict) -> None:
     # 进度更新(工具调用等)也走本函数,但只有首次起跑的 running 才需要发 start。
     if task["status"] == "running" and task["id"] not in _started_tasks:
         _started_tasks.add(task["id"])
-        _bridge_event({"conv": f"voice-task:{task['id']}", "type": "start"})
+        _bridge_event({"conv": tasks.session_key(task["id"]), "type": "start"})
 
 
 def register_platform_push(
@@ -113,7 +111,7 @@ def _announce_text(task: dict) -> str:
 
 def _platform_text(task: dict) -> str:
     """平台推送用的文字消息（含 emoji 状态标记）,比语音播报更紧凑。"""
-    emoji = _status_emoji.get(task["status"], "📋")
+    emoji = status_emoji(task["status"])
     summary = task["result_summary"] or task["progress_note"] or ""
     sep = " — " if summary else ""
     return f"{emoji} 任务「{task['title']}」{task['status']}{sep}{summary}"
@@ -137,7 +135,7 @@ async def on_task_terminal(task_id: str) -> None:
     # 先桥接 done 事件到主 SSE:让侧栏小红点熄灭(在 SSE 播报和离线推送之前推,
     # 别让侧栏一直亮在已结束的任务上,也别卡住后面的异步推送路径)。
     _started_tasks.discard(task_id)  # 清状态锁,支持后续 append 续跑重新亮 dot
-    _bridge_event({"conv": f"voice-task:{task_id}", "type": "done"})
+    _bridge_event({"conv": tasks.session_key(task_id), "type": "done"})
 
     # ── 在线:推 SSE(语音播报) ──────────────────────────────────────
     if is_online():

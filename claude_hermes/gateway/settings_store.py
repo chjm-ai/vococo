@@ -243,12 +243,64 @@ def list_external() -> list[dict]:
     return out
 
 
-def upsert_external(name: str, cfg: dict) -> None:
-    """新增/覆盖一个外部 MCP。cfg 已被 web 层清洗过(只保留合法字段)。"""
+def clean_external_config(body: dict) -> tuple[dict, str | None]:
+    """把外部(如 Web 设置页)提交的字段清洗成合法的 stdio/sse/http MCP 配置;
+    返回 (cfg, 错误)——错误非空时 cfg 为 {}。"""
+    typ = (body.get("type") or "stdio").strip().lower()
+    enabled = bool(body.get("enabled", True))
+    if typ == "stdio":
+        # 远程注册 stdio MCP = 让服务端拉起任意子进程,等同远程 RCE(审计 web#6 / 2-5)。
+        # 默认拒绝,除非显式 WEB_ALLOW_STDIO_MCP=1。sse/http 型不受此限。
+        if not config.WEB_ALLOW_STDIO_MCP:
+            return {}, ("出于安全,已禁止从 Web 注册本地 stdio MCP(可执行任意命令)。"
+                        "如确需,请在 .env 设 WEB_ALLOW_STDIO_MCP=1 后重启;"
+                        "或改用 sse/http 型 MCP。")
+        command = (body.get("command") or "").strip()
+        if not command:
+            return {}, "stdio 类型需要 command"
+        raw_args = body.get("args")
+        if isinstance(raw_args, str):
+            args = raw_args.split()
+        elif isinstance(raw_args, list):
+            args = [str(a) for a in raw_args]
+        else:
+            args = []
+        env = body.get("env") if isinstance(body.get("env"), dict) else {}
+        env = {str(k): str(v) for k, v in env.items()}
+        return (
+            {"type": "stdio", "command": command, "args": args,
+             "env": env, "enabled": enabled},
+            None,
+        )
+    if typ in ("sse", "http"):
+        url = (body.get("url") or "").strip()
+        if not url:
+            return {}, f"{typ} 类型需要 url"
+        headers = body.get("headers") if isinstance(body.get("headers"), dict) else {}
+        headers = {str(k): str(v) for k, v in headers.items()}
+        return (
+            {"type": typ, "url": url, "headers": headers, "enabled": enabled},
+            None,
+        )
+    return {}, f"不支持的类型:{typ}"
+
+
+def upsert_external(name: str, body: dict) -> str | None:
+    """新增/覆盖一个外部 MCP:先清洗校验 body,合法才落库。返回 None=成功,
+    否则返回错误说明(调用方原样透传给用户,半成品配置不会落库)。
+
+    校验以前只在 web.py 的 handler 里做(先调 _clean_mcp_config 再传清洗结果进来);
+    直接调这个函数会绕过校验。2026-07-23 把校验收口进本函数,保证这条不变量
+    不管谁调用都成立——本模块自己的数据自己保证合法,而不是指望调用方记得先清洗。
+    """
+    cfg, err = clean_external_config(body)
+    if err:
+        return err
     with _LOCK:
         d = _load()
         d["external_mcp"][name] = cfg
         _save(d)
+    return None
 
 
 def remove_external(name: str) -> None:

@@ -1,26 +1,39 @@
-"""语音判定纯函数留档——P2 全双工管线(ws.py)退休时的幸存者。
+# 语音判定纯函数存档(P2 退休后从活代码降级为文档)
 
-出身:这些函数原在 voice/ws.py(随 P2 管线整体删除,见
-docs/adr/0004-voice-omni-only.md),是 2026-07-08~07-10 三天真机免提
-迭代里用事故换来的判定逻辑。P2 删除后暂时没有后端调用方(Omni 模式下
-VAD/打断发生在浏览器↔阿里云侧),留档原因:
+来源:原 `claude_hermes/voice/heuristics.py`,P2 全双工管线(`ws.py`)退休时
+(见 [ADR 0004](../../adr/0004-voice-omni-only.md))被当作"判定纯函数留档"保留为活代码,
+但截至 2026-07-23 架构复盘,grep 全仓库确认零调用方——Omni 模式下 VAD/打断发生在
+浏览器↔阿里云侧,服务端拿不到 PCM,这些函数没有任何可能的调用点。带着一整套
+测试(`tests/test_voice_heuristics.py`)跑在 CI 里测无人调用的代码,比"留档"应有的
+成本更高,故从生产代码删除,原样存档于此。
+
+**这些函数原在 `voice/ws.py`,是 2026-07-08~07-10 三天真机免提迭代里用事故换来的
+判定逻辑。** 留档原因:
 
 - 回声/假触发问题在 Omni 链路上并未根治。当前活的兜底是**前端**的
-  matchOmniEcho(index.html,2026-07-11 加,容错前缀匹配+编辑距离,
-  只认句子开头)——跟这里的 looks_like_self_echo(containment,全文
+  `matchOmniEcho`(`index.html`,2026-07-11 加,容错前缀匹配+编辑距离,
+  只认句子开头)——跟这里的 `looks_like_self_echo`(containment,全文
   片段重合率)是两种互补算法:前缀匹配抓"AEC 未收敛漏进的句头回声",
   containment 抓"播放中途被打断漏回的任意片段"。若前端版真机命中率
-  不足,或将来要在 /voice/send 文字入口加服务端第二道兜底,这里可直接用;
+  不足,或将来要在 `/voice/send` 文字入口加服务端第二道兜底,可从这里
+  原样迁回 `voice/` 下的新文件;
 - 注释里的调优值和"为什么不这么做"是真机换来的,重写一遍必然复踩。
 
 当年配套的 config 常量已随 P2 删除,真机调优终值抄录如下:
-- VOICE_SELF_ECHO_THRESHOLD = 0.6(containment 阈值)
-- VOICE_POST_DONE_ECHO_GUARD_MS = 1500(说完后的尾音回声宽限期——
+
+- `VOICE_SELF_ECHO_THRESHOLD = 0.6`(containment 阈值)
+- `VOICE_POST_DONE_ECHO_GUARD_MS = 1500`(说完后的尾音回声宽限期——
   服务端状态翻回 idle 后音箱还在播尾音,这段时间的转写也要过回声判定)
-- VOICE_MIN_SPEECH_MS = 250(物理时长下限)
-- VOICE_FALSE_POSITIVE_TIMEOUT_MS = 8000(假打断回滚超时,要覆盖
+- `VOICE_MIN_SPEECH_MS = 250`(物理时长下限)
+- `VOICE_FALSE_POSITIVE_TIMEOUT_MS = 8000`(假打断回滚超时,要覆盖
   "用户把话说完+上游转写完"的完整耗时,1500 会误杀正常追问)
-"""
+
+更完整的真机调试过程(连环打断、灵敏度调整历史)见
+[03-phase2-实现记录.md「连环打断」一节](03-phase2-实现记录.md)。
+
+## 存档代码
+
+```python
 from __future__ import annotations
 
 import difflib
@@ -105,3 +118,4 @@ def looks_like_self_echo(
     matched_chars = sum(block.size for block in matcher.get_matching_blocks())
     containment = matched_chars / len(transcript)
     return containment >= threshold
+```

@@ -157,7 +157,9 @@ async def ensure_worktree_for_task(root: str, task_id: str) -> str | None:
     """
     if not root:
         return None
-    session_key = f"voice-task:{task_id}"
+    from ..voice import tasks as voice_tasks  # 懒加载,避免非语音场景也引入 voice 包
+
+    session_key = voice_tasks.session_key(task_id)
     phash = session_store.project_hash(root)
     slug = _slug(task_id)
     return await _ensure_worktree_impl(session_key, root, phash, slug)

@@ -126,7 +126,7 @@ class GatewayRunner:
         if key.startswith("voice-task:"):
             from ..voice import tasks as voice_tasks  # 懒加载,避免非语音场景也引入这个模块
 
-            row = voice_tasks.get(key.split(":", 1)[1])
+            row = voice_tasks.get(voice_tasks.task_id_from_session_key(key))
             if row is not None:
                 wt = session_store.get_worktree(key)
                 cwd_override = wt if wt and os.path.isdir(wt) else row["cwd"]

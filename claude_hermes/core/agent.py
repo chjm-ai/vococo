@@ -471,6 +471,33 @@ def _turn_env(provider_env: dict) -> dict:
     return {**provider_env, **_FORCE_FOREGROUND_ENV}
 
 
+async def _query_context_usage(
+    client: ClaudeSDKClient, used_model: str
+) -> tuple[dict | None, int, int, bool]:
+    """问 SDK 当前窗口的真实占用(等价 CLI /context);失败则静默降级用模型名估窗口。
+
+    返回 (cu, total_tokens, ctx_window_val, cli_window_stale)。cli_window_stale=
+    CLI 自己认的窗口是否明显小于我们权威表(见下方注释)——调用方据此决定安全网阈值
+    还能不能信官方阈值(_compact_threshold 的 cli_window_stale 形参)。
+    2026-07-23 从 stream_turn 内部拆出:这段是纯粹的"问一次 SDK、兜底一次"查询,
+    跟它前后的事件循环/回池逻辑没有状态纠缠,拆出来后能脱离整条 receive_messages
+    循环单独测(只需 mock client.get_context_usage,不用手搓完整消息序列)。
+    """
+    try:
+        cu = await client.get_context_usage()
+        total = int(cu.get("totalTokens", 0) or 0)
+        raw_max = int(cu.get("rawMaxTokens") or cu.get("maxTokens") or 0)
+        # CLI 自带的模型注册表可能没跟上新模型扩容后的窗口(仍按旧值上报
+        # rawMaxTokens,比如新模型标配 1M/2M 但 CLI 还认成 200k)。我们表里
+        # 是按官方文档手动维护的,不能被 CLI 的旧认知往下砍 —— 取两者较大值。
+        known_window = context_window(used_model)
+        ctx_window_val = max(raw_max, known_window) if raw_max else known_window
+        cli_window_stale = bool(raw_max) and raw_max < known_window
+        return cu, total, ctx_window_val, cli_window_stale
+    except Exception:
+        return None, 0, context_window(used_model), False  # 兜底:按模型名估窗口
+
+
 async def stream_turn(
     history: list[Turn],
     user_text: str,
@@ -791,24 +818,12 @@ async def stream_turn(
                 raise
 
             # 收工、会话尚未断开 —— 此刻问 SDK 当前窗口的真实占用
-            # (等价 CLI /context)。失败(旧 CLI 不支持等)则静默保留上面的兜底值。
-            cu: dict | None = None
-            total = 0
-            cli_window_stale = False  # CLI 自己认的窗口是否明显小于我们权威表(见下)
-            try:
-                cu = await client.get_context_usage()
-                total = int(cu.get("totalTokens", 0) or 0)
-                raw_max = int(cu.get("rawMaxTokens") or cu.get("maxTokens") or 0)
-                if total:
-                    context_tokens = total
-                # CLI 自带的模型注册表可能没跟上新模型扩容后的窗口(仍按旧值上报
-                # rawMaxTokens,比如新模型标配 1M/2M 但 CLI 还认成 200k)。我们表里
-                # 是按官方文档手动维护的,不能被 CLI 的旧认知往下砍 —— 取两者较大值。
-                known_window = context_window(used_model)
-                ctx_window_val = max(raw_max, known_window) if raw_max else known_window
-                cli_window_stale = bool(raw_max) and raw_max < known_window
-            except Exception:
-                ctx_window_val = context_window(used_model)  # 兜底:按模型名估窗口
+            # (等价 CLI /context)。失败(旧 CLI 不支持等)则静默保留兜底值。
+            cu, total, ctx_window_val, cli_window_stale = await _query_context_usage(
+                client, used_model
+            )
+            if total:
+                context_tokens = total
 
             # 安全网:CLI 自带的 autocompact 有时不触发(实测:崩溃重启后靠 resume
             # 冷启动重放 transcript,内部记账没跟上,某会话真实用量能滚到 109% 窗口

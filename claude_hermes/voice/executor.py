@@ -137,7 +137,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     # 派发的这一轮对话也落进跟普通文字对话共用的 session_store(不只是 voice.db 里的
     # result_full 摘要)——这样任务完成后用户能在侧边栏"语音任务"分组里看到完整对话,
     # 并且能继续用文字追问(续聊直接走 web 发消息路径的 converse(),见 web.py)。
-    session_key = f"voice-task:{task_id}"
+    session_key = tasks.session_key(task_id)
     turn_id = session_store.start_turn(session_key, prompt_text)
     sdk_session_id: str | None = None
     # 任务 cwd 指到一个 git 仓库就给这次任务开专属 worktree + 分支(hermes/<task_id>),

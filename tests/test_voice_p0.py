@@ -34,7 +34,7 @@ def voice_db(isolated, monkeypatch):
     (F11 孤儿回收曾挂在 register_routes() 里,2026-07-12 起已移到 web.py 的 serve
     启动路径——测试组建 app 不再有副作用,但隔离照旧保留。)
     session 模块自 2026-07-08 起委托 session_store 存储,不再有自己的 _DB——`isolated`
-    fixture 已经重置了 session_store._DB,这里不用再管。
+    fixture 已经重置了 memory/_db.py 的连接单例,这里不用再管。
     """
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
     monkeypatch.setattr(tasks, "_DB", None)
