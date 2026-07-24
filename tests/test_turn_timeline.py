@@ -57,7 +57,18 @@ def test_finish_turn_persists_events_and_history_returns_them(isolated):
     turns = session_store.load_history("web:x")
     assert len(turns) == 1
     assert turns[0]["assistant"] == "先说说完"
-    assert turns[0]["events"] == events
+    assert turns[0]["id"] == tid
+    # 默认懒加载:tool 块的 input/preview/detail 被砍掉只留空壳(见 _strip_tool_block)
+    tool = turns[0]["events"][1]
+    assert tool["name"] == "Bash" and tool["ok"] is True and tool["done"] is True
+    assert "input" not in tool and "preview" not in tool and "detail" not in tool
+    # full_events=True(懒加载点开时用)拿回完整版
+    full_turns = session_store.load_history("web:x", full_events=True)
+    assert full_turns[0]["events"] == events
+    # /turn_events 路由背后的单轮查询,同样拿完整版
+    assert session_store.load_turn_events("web:x", tid) == events
+    assert session_store.load_turn_events("web:x", tid + 999) is None
+    assert session_store.load_turn_events("web:other", tid) is None  # 越权查不到
 
 
 def test_history_without_events_still_works(isolated):
