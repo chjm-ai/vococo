@@ -400,7 +400,7 @@ async def converse(
 COMMAND_LIST: list[tuple[str, str]] = [
     ("new", "开新会话(旧历史保留)"),
     ("clear", "清屏并开新会话"),
-    ("model", "查看或切换模型,如 /model claude-opus-4-8"),
+    ("model", "查看或切换模型,如 /model claude-opus-5"),
     ("history", "看最近历史"),
     ("status", "会话信息"),
     ("suggest", "看/接受 Wazir 提的自动化建议"),
@@ -412,7 +412,7 @@ HELP_TEXT = "可用命令:\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_LI
 # 不加营销文案(如"最强/更均衡"),免得干扰用户判断。
 MODEL_CHOICES: list[tuple[str, str]] = [
     ("claude-fable-5", "Fable 5（订阅）"),
-    ("claude-opus-4-8", "Opus 4.8（订阅）"),
+    ("claude-opus-5", "Opus 5（订阅）"),
     ("claude-opus-4-6", "Opus 4.6（订阅）"),
     ("claude-sonnet-5", "Sonnet 5（订阅）"),
     ("claude-sonnet-4-6", "Sonnet 4.6（订阅）"),
