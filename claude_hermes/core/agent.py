@@ -90,7 +90,7 @@ class ImageAttachment:
 # kimi-k3(2026-07-16 发布)官方标称 1M context,故一并登记;其余第三方供应商模型走默认 200k。
 _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-fable-5": 1_000_000,
-    "claude-opus-4-8": 1_000_000,
+    "claude-opus-5": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-opus-4-6": 1_000_000,
     "claude-sonnet-5": 1_000_000,

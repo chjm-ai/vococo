@@ -123,7 +123,7 @@ Agent loop(core/agent.py):载入上下文 → claude-agent-sdk.query()
 | 语言 | Python ≥ 3.11 | — |
 | Agent 内核 | `claude-agent-sdk`(pin 版本) | 已验证可跑订阅;原生支持 skill/MCP |
 | 认证 | `CLAUDE_CODE_OAUTH_TOKEN` + 删 `ANTHROPIC_API_KEY` | 订阅唯一正路 |
-| 默认模型 | `claude-sonnet-5`(可配) | 日常速度+智能平衡;Opus 4.8 留给重活 |
+| 默认模型 | `claude-sonnet-5`(可配) | 日常速度+智能平衡;Opus 5 留给重活 |
 | 会话存储 | SQLite(LIKE 子串检索) | 本地、零依赖;中文场景 LIKE 已够,不上 FTS5 |
 | 平台接入 | 自写轻量 adapter | Web 自建 UI;TG 用官方 bot API |
 
