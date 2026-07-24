@@ -4637,14 +4637,14 @@ function buildSysNote(text){
 }
 function addSysNote(text){ $("#wrap").append(buildSysNote(text)); }
 // 每轮渲染成一块 <div class="turn-block" data-tid data-sig>,供 renderTurns 按轮 diff 复用 DOM
-function buildTurnBlock(t){
+function buildTurnBlock(t, conv){
   const wrap=el("div","turn-block");
   if(t.user && t.user.startsWith(SYS_MARK)) wrap.append(buildSysNote(t.user.slice(SYS_MARK.length).trim()));
   else wrap.append(buildBubble("me", t.user, t.images).row);
   if(!t.pending){
     const {row,b}=buildBubble("ai","");
     if(t.events && t.events.length){
-      const flow=renderEventsFlow(t.events, {conv:S.conv, tid:t.id});
+      const flow=renderEventsFlow(t.events, {conv, tid:t.id});
       // 时间线里一个字都没有(如被截断)→ 末尾补一段最终正文兜底
       if(!t.events.some(x=>x.type==="text") && t.assistant){
         const d=el("div","seg"); d.innerHTML=mdToHtml(t.assistant); flow.append(d);
@@ -4665,17 +4665,25 @@ function buildTurnBlock(t){
 // 切会话/历史刷新的铺屏:按 turn id 逐条 diff,内容没变的轮直接复用旧 DOM——
 // 否则「进行中那一轮的草稿文字每 0.7s 变一次」会拖着前面几十轮历史一起全量重建
 // (mdToHtml 解析 + 工具卡片重建),这是切换到长对话时最直接的卡顿来源。
-function renderTurns(turns){
+// conv 必传:diff 只在同一会话内的连续两次渲染之间才有意义——换了会话哪怕
+// turns[].id 偶然对不上也不该指望复用旧 DOM,这里强制先清空再铺,避免旧会话
+// 内容残留(2026-07-24 曾因跳过这层 conv 判断,导致切会话瞬间看到上一个会话的
+// 正文残留在新会话下方——本该在 conv 变化时硬清空却漏了)。
+let _wrapConv=null;
+function renderTurns(turns, conv){
   const wrap=$("#wrap");
+  if(conv!==_wrapConv){ wrap.innerHTML=""; _wrapConv=conv; }
   const existing=new Map();
   for(const node of wrap.children){ if(node.dataset && node.dataset.tid) existing.set(node.dataset.tid, node); }
   let anchor=null;
-  for(const t of turns){
-    const tid=String(t.id);
+  turns.forEach((t,idx)=>{
+    // id 理论上都有(turns 表主键);兜底给个按位置区分的 key,防止万一没有时
+    // 多轮全撞在同一个 key 上、互相顶掉导致陈旧节点删不干净。
+    const tid=t.id!=null?String(t.id):("i"+idx);
     const sig=JSON.stringify(t);
     let node=existing.get(tid);
     if(!node || node.dataset.sig!==sig){
-      const fresh=buildTurnBlock(t);
+      const fresh=buildTurnBlock(t, conv);
       fresh.dataset.tid=tid; fresh.dataset.sig=sig;
       if(node) node.replaceWith(fresh); else wrap.insertBefore(fresh, anchor?anchor.nextSibling:wrap.firstChild);
       node=fresh;
@@ -4684,7 +4692,7 @@ function renderTurns(turns){
     }
     existing.delete(tid);
     anchor=node;
-  }
+  });
   for(const node of existing.values()) node.remove();  // 剩下的是不在新列表里的旧轮(如清空会话)
   updateEmpty(); scrollDown(true);
 }
@@ -4830,7 +4838,7 @@ async function openConv(conv, silentGroup){
     if(cached) S.histCache[conv]=cached;
   }
   const hasMsgs = c && c.turns > 0;             // 侧栏记录里该会话有历史消息
-  if(cached){ renderTurns(cached); }            // 命中缓存:立即渲染,消除"先闪空屏再出内容"
+  if(cached){ renderTurns(cached, conv); }      // 命中缓存:立即渲染,消除"先闪空屏再出内容"
   else if(!isLocal && hasMsgs){                 // 只在「换到一个有历史、还没拉过的真实会话」时才铺骨架屏
     $("#wrap").innerHTML=""; $("#empty").style.display="none"; $("#convLoading").classList.add("on");
   }else{                                        // 新建会话 / 空会话:不闪骨架,清空后交给 updateEmpty 出欢迎屏
@@ -4845,7 +4853,7 @@ async function openConv(conv, silentGroup){
       S.histCache[conv]=d.turns;
       idbSetHist(conv, d.turns);  // 落盘,下次刷新页面这个会话也能秒开
       // renderTurns 内部按轮 diff,没变的轮直接跳过——不用再在这里整包比对一次
-      renderTurns(d.turns);
+      renderTurns(d.turns, conv);
     }catch(e){ $("#convLoading").classList.remove("on"); }
     maybeReplayStream(conv);   // 该会话仍在流式 → 用缓冲在历史下方重建流式气泡(切换不中断)
     if(S.conv===conv && S.pendingChoice[conv]) renderChoice(S.pendingChoice[conv]);  // 切回带待审批的会话 → 补出按钮
@@ -4876,7 +4884,7 @@ async function reloadHistory(force){
     }
     S.histCache[conv]=d.turns;
     idbSetHist(conv, d.turns);
-    renderTurns(d.turns);  // 内部按轮 diff,没变的轮直接跳过
+    renderTurns(d.turns, conv);  // 内部按轮 diff,没变的轮直接跳过
   }catch(e){}
 }
 
