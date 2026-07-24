@@ -352,6 +352,7 @@ const S = {
   cmd: {open:false, items:[], active:0},  // 斜杠命令菜单当前状态
   git: null,            // 当前项目会话的 git 状态(/conv/git 返回);非项目会话为 null
   histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁
+  turnEventsCache: {},  // turn_id → 完整 events[]:工具卡片懒加载,点开某轮任意卡片后整轮缓存复用
   pendingChoice: {},    // conv → choice 事件:审批发给非当前会话时暂存,切回该会话再渲染
   live: {},             // conv → 进行中回合的事件缓冲:任意会话(含后台)都记录,切回时重放重建流式气泡
   streamSnap: {},       // conv → {state,asOf}:离开时摘下的流式气泡 DOM + 已处理到的事件下标,
@@ -4630,37 +4631,114 @@ document.addEventListener("click", e=>{ const b=$("#convFilterBox"); if(b&&!b.co
 // ── 打开 / 切换会话 ──────────────────────────────────────────────────────
 // 把一组 turns 铺进消息区(切会话 / 缓存回填共用)
 const SYS_MARK="⚙️[系统]";   // 与后端 selfops.SYS_MARKER 一致:系统注入的轮渲染成居中系统条
-function addSysNote(text){
+function buildSysNote(text){
   const row=el("div","row sys"); const b=el("div","sysnote"); b.textContent=text;
-  row.append(b); $("#wrap").append(row);
+  row.append(b); return row;
 }
-function renderTurns(turns){
-  $("#wrap").innerHTML="";
-  for(const t of turns){
-    if(t.user && t.user.startsWith(SYS_MARK)) addSysNote(t.user.slice(SYS_MARK.length).trim());
-    else addBubble("me", t.user, t.images);
-    if(!t.pending){
-      const b=addBubble("ai","");
-      if(t.events && t.events.length){
-        const flow=renderEventsFlow(t.events);
-        // 时间线里一个字都没有(如被截断)→ 末尾补一段最终正文兜底
-        if(!t.events.some(x=>x.type==="text") && t.assistant){
-          const d=el("div","seg"); d.innerHTML=mdToHtml(t.assistant); flow.append(d);
-        }
-        b.append(flow);
-      }else b.innerHTML=mdToHtml(t.assistant);   // 老数据没存时间线:只有最终正文
-    }else if(t.draft){
-      // 进行中但后端正流式写 draft:用部分内容起底兜底,避免刷新后空白;
-      // SSE 恢复后 maybeReplayStream 会用同 seg 全文覆盖无缝续上
-      const b=addBubble("ai","");
-      b.innerHTML=mdToHtml(t.draft);
-      const st=el("div","status"); st.textContent="回复中…"; b.append(st);
-    }
+function addSysNote(text){ $("#wrap").append(buildSysNote(text)); }
+// 每轮渲染成一块 <div class="turn-block" data-tid data-sig>,供 renderTurns 按轮 diff 复用 DOM
+function buildTurnBlock(t){
+  const wrap=el("div","turn-block");
+  if(t.user && t.user.startsWith(SYS_MARK)) wrap.append(buildSysNote(t.user.slice(SYS_MARK.length).trim()));
+  else wrap.append(buildBubble("me", t.user, t.images).row);
+  if(!t.pending){
+    const {row,b}=buildBubble("ai","");
+    if(t.events && t.events.length){
+      const flow=renderEventsFlow(t.events, {conv:S.conv, tid:t.id});
+      // 时间线里一个字都没有(如被截断)→ 末尾补一段最终正文兜底
+      if(!t.events.some(x=>x.type==="text") && t.assistant){
+        const d=el("div","seg"); d.innerHTML=mdToHtml(t.assistant); flow.append(d);
+      }
+      b.append(flow);
+    }else b.innerHTML=mdToHtml(t.assistant);   // 老数据没存时间线:只有最终正文
+    wrap.append(row);
+  }else if(t.draft){
+    // 进行中但后端正流式写 draft:用部分内容起底兜底,避免刷新后空白;
+    // SSE 恢复后 maybeReplayStream 会用同 seg 全文覆盖无缝续上
+    const {row,b}=buildBubble("ai","");
+    b.innerHTML=mdToHtml(t.draft);
+    const st=el("div","status"); st.textContent="回复中…"; b.append(st);
+    wrap.append(row);
   }
+  return wrap;
+}
+// 切会话/历史刷新的铺屏:按 turn id 逐条 diff,内容没变的轮直接复用旧 DOM——
+// 否则「进行中那一轮的草稿文字每 0.7s 变一次」会拖着前面几十轮历史一起全量重建
+// (mdToHtml 解析 + 工具卡片重建),这是切换到长对话时最直接的卡顿来源。
+function renderTurns(turns){
+  const wrap=$("#wrap");
+  const existing=new Map();
+  for(const node of wrap.children){ if(node.dataset && node.dataset.tid) existing.set(node.dataset.tid, node); }
+  let anchor=null;
+  for(const t of turns){
+    const tid=String(t.id);
+    const sig=JSON.stringify(t);
+    let node=existing.get(tid);
+    if(!node || node.dataset.sig!==sig){
+      const fresh=buildTurnBlock(t);
+      fresh.dataset.tid=tid; fresh.dataset.sig=sig;
+      if(node) node.replaceWith(fresh); else wrap.insertBefore(fresh, anchor?anchor.nextSibling:wrap.firstChild);
+      node=fresh;
+    }else if(anchor ? anchor.nextSibling!==node : wrap.firstChild!==node){
+      wrap.insertBefore(node, anchor?anchor.nextSibling:wrap.firstChild);  // 顺序变了(罕见)才挪
+    }
+    existing.delete(tid);
+    anchor=node;
+  }
+  for(const node of existing.values()) node.remove();  // 剩下的是不在新列表里的旧轮(如清空会话)
   updateEmpty(); scrollDown(true);
 }
-// 用落库的过程时间线重建一轮回复:文字段与工具卡按当时的真实顺序交错复现
-function renderEventsFlow(events){
+// 工具卡片懒加载:整轮 events 只在用户点开这一轮里任意一张卡片时才拉一次(见 wireLazyToolCard)
+async function lazyFetchTurnEvents(ctx){
+  if(!ctx || ctx.tid==null) return null;
+  if(S.turnEventsCache[ctx.tid]) return S.turnEventsCache[ctx.tid];
+  if(S._turnEventsPending && S._turnEventsPending[ctx.tid]) return S._turnEventsPending[ctx.tid];
+  const pending=(async()=>{
+    try{
+      const r=await api("/turn_events?conv="+encodeURIComponent(ctx.conv)+"&id="+encodeURIComponent(ctx.tid));
+      const d=await r.json();
+      S.turnEventsCache[ctx.tid]=d.events||[];
+      return S.turnEventsCache[ctx.tid];
+    }catch(e){ return null; }
+  })();
+  (S._turnEventsPending||(S._turnEventsPending={}))[ctx.tid]=pending;
+  const result=await pending;
+  delete S._turnEventsPending[ctx.tid];
+  return result;
+}
+// 子代理动态区 chips 渲染,历史重放(有 subs)与懒加载补全共用
+function fillSubChips(card, subs){
+  const list=subs||[]; if(!card._sub || !list.length) return;
+  const bits=['<span>'+ic("zap")+" "+list.length+' 步</span>'];
+  for(const x of list.slice(-8)) bits.push('<span>'+esc(x.name)+(x.ok===false?" ✗":" ✓")+'</span>');
+  card._sub.innerHTML=bits.join("");
+}
+// 空壳工具卡首次点开:去拉整轮完整 events,按 tool_id 配对后原地换成真正渲染的卡片
+function wireLazyToolCard(card, ctx, blk){
+  let loaded=false;
+  card._head.onclick=async ()=>{
+    const c=card._body.classList.toggle("collapsed"); card._chev.classList.toggle("down",!c);
+    if(loaded) return;
+    loaded=true;
+    const full=await lazyFetchTurnEvents(ctx);
+    const fullBlk=full && blk.id!=null ? full.find(x=>x.type==="tool"&&x.id===blk.id) : null;
+    if(!fullBlk) return;  // 拉取失败/对不上:保留空壳,不报错刷屏
+    const failed=fullBlk.ok===false;
+    let real=renderToolCard(fullBlk.name, fullBlk.input||{});
+    if(!real){
+      if(!failed && !(fullBlk.detail||"").trim()) return;  // 与非懒加载路径一致:无卡且成功无输出就不补
+      real=toolCardShell(ic(failed?"warn":"wrench")+" "+esc(fullBlk.name), "", el("div"), true);
+    }
+    fillSubChips(real, fullBlk.subs);
+    if("preview" in fullBlk) applyResult(real, {ok:!failed, preview:fullBlk.preview||"", detail:fullBlk.detail||""});
+    real._body.classList.remove("collapsed"); real._chev.classList.add("down");  // 保持刚点开的展开态
+    card.replaceWith(real);
+  };
+}
+// 用落库的过程时间线重建一轮回复:文字段与工具卡按当时的真实顺序交错复现。
+// ctx({conv,tid})非空时,tool 块若是懒加载空壳(无 input 字段)则渲染占位卡,
+// 点开时才去 /turn_events 拉这一轮的完整版——历史 /history 默认只带空壳,省掉大头体积。
+function renderEventsFlow(events, ctx){
   const flow=el("div","flow");
   let toolCards=[];
   function flushTools(){
@@ -4680,20 +4758,29 @@ function renderEventsFlow(events){
       flow.append(d); continue;
     }
     if(blk.type!=="tool") continue;
-    const finished=("preview" in blk), failed=blk.ok===false;
-    const det=(blk.detail||"").trim();
-    let card=renderToolCard(blk.name, blk.input||{});
-    if(!card){
-      if(!failed && !det) continue;        // 无入参卡且成功无输出:与流式一致,不补卡
-      card=toolCardShell(ic(failed?"warn":"wrench")+" "+esc(blk.name), "", el("div"), true);
+    const failed=blk.ok===false;
+    const light=!("input" in blk);  // 懒加载空壳:没有 input 字段(/history 默认剥掉了)
+    let card;
+    if(light){
+      // hasCard 由后端算好(session_store._strip_tool_block),跟全量路径的
+      // 「renderToolCard 有卡 || 失败 || 有输出」判断保持一致,没卡就跳过不占位
+      if(!blk.hasCard) continue;
+      const finished=!!blk.done;
+      card=toolCardShell(ic(failed?"warn":"wrench")+" "+esc(blk.name), blk.hint||"", null, true);
+      fillSubChips(card, blk.subs);
+      wireLazyToolCard(card, ctx, blk);
+      if(!finished) card._path.textContent="…";  // 还没结束的空壳给个占位,别看着像卡死
+    }else{
+      const finished=("preview" in blk);
+      const det=(blk.detail||"").trim();
+      card=renderToolCard(blk.name, blk.input||{});
+      if(!card){
+        if(!failed && !det) continue;        // 无入参卡且成功无输出:与流式一致,不补卡
+        card=toolCardShell(ic(failed?"warn":"wrench")+" "+esc(blk.name), "", el("div"), true);
+      }
+      fillSubChips(card, blk.subs);
+      if(finished) applyResult(card, {ok:!failed, preview:blk.preview||"", detail:blk.detail||""});
     }
-    if(card._sub && (blk.subs||[]).length){ // 子代理卡:恢复内部工具步 chips
-      const list=blk.subs;
-      const bits=['<span>'+ic("zap")+" "+list.length+' 步</span>'];
-      for(const x of list.slice(-8)) bits.push('<span>'+esc(x.name)+(x.ok===false?" ✗":" ✓")+'</span>');
-      card._sub.innerHTML=bits.join("");
-    }
-    if(finished) applyResult(card, {ok:!failed, preview:blk.preview||"", detail:blk.detail||""});
     toolCards.push(card);
   }
   flushTools();  // 末尾剩余的指令卡也收组
@@ -4757,8 +4844,8 @@ async function openConv(conv, silentGroup){
       $("#convLoading").classList.remove("on");
       S.histCache[conv]=d.turns;
       idbSetHist(conv, d.turns);  // 落盘,下次刷新页面这个会话也能秒开
-      // 仅当与已渲染的缓存不一致才重绘,避免命中缓存时白闪一下
-      if(!cached || JSON.stringify(cached)!==JSON.stringify(d.turns)) renderTurns(d.turns);
+      // renderTurns 内部按轮 diff,没变的轮直接跳过——不用再在这里整包比对一次
+      renderTurns(d.turns);
     }catch(e){ $("#convLoading").classList.remove("on"); }
     maybeReplayStream(conv);   // 该会话仍在流式 → 用缓冲在历史下方重建流式气泡(切换不中断)
     if(S.conv===conv && S.pendingChoice[conv]) renderChoice(S.pendingChoice[conv]);  // 切回带待审批的会话 → 补出按钮
@@ -4782,7 +4869,6 @@ async function reloadHistory(force){
     const r=await api("/history?conv="+encodeURIComponent(conv));
     const d=await r.json();
     if(S.conv!==conv) return;  // await 期间切了会话 → 丢弃
-    const cached=S.histCache[conv];
     if(S.stream){
       const last=d.turns[d.turns.length-1];
       if(!last || last.pending){ S.stream.lastEvt=Date.now(); return; }  // 服务端也还在跑,别打断
@@ -4790,12 +4876,12 @@ async function reloadHistory(force){
     }
     S.histCache[conv]=d.turns;
     idbSetHist(conv, d.turns);
-    if(!cached || JSON.stringify(cached)!==JSON.stringify(d.turns)) renderTurns(d.turns);
+    renderTurns(d.turns);  // 内部按轮 diff,没变的轮直接跳过
   }catch(e){}
 }
 
 // ── 消息气泡 ─────────────────────────────────────────────────────────────
-function addBubble(who, text, imgs){
+function buildBubble(who, text, imgs){
   const row=el("div","row "+(who==="me"?"me":"ai"));
   const b=el("div","bubble");
   if(who==="me"){ b.textContent=text; } else { b.innerHTML = text?mdToHtml(text):""; }
@@ -4806,6 +4892,10 @@ function addBubble(who, text, imgs){
     if(typeof u==="string" && u.startsWith("/")) loadAuthedImg(im,u); else im.src=u;
     im.onclick=()=>openImgViewer(im);
     g.append(im);} b.append(g); }
+  return {row, b};
+}
+function addBubble(who, text, imgs){
+  const {row,b}=buildBubble(who, text, imgs);
   $("#wrap").append(row); updateEmpty(); scrollDown(true);
   return b;
 }
@@ -5218,11 +5308,10 @@ function maybeReplayStream(conv){
   const buf=S.live[conv]; if(!buf||!buf.length) return;
   // renderTurns 可能已用 draft 渲染了部分内容;不管接下来走哪条重建路径,都先清掉,
   // 避免出现两个 AI 气泡(草稿+流式)
-  const rows=$("#wrap").children;
+  // rows 现在可能套在 turn-block 容器里(见 renderTurns),不能再假定是 #wrap 的直接子节点
+  const rows=$("#wrap").querySelectorAll(".row.ai");
   for(let i=rows.length-1;i>=0;i--){
-    if(rows[i].classList.contains("ai") && rows[i].querySelector(".status")){
-      rows[i].remove(); break;
-    }
+    if(rows[i].querySelector(".status")){ rows[i].remove(); break; }
   }
   const snap=S.streamSnap[conv];
   delete S.streamSnap[conv];

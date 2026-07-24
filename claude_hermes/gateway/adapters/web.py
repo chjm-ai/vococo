@@ -1034,6 +1034,19 @@ class WebAdapter:
         resp.enable_compression()  # 源站→CF 边缘这段也压缩着走,别指望 CF 兜底
         return resp
 
+    async def _handle_turn_events(self, request: web.Request) -> web.Response:
+        """按 turn id 单独取某一轮的完整过程时间线(工具卡片懒加载:点开才拉)。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        conv = request.query.get("conv", "main")
+        try:
+            turn_id = int(request.query.get("id", ""))
+        except ValueError:
+            return web.json_response({"error": "bad id"}, status=400)
+        key = config.resolve_session_key("web", conv)
+        events = session_store.load_turn_events(key, turn_id)
+        return web.json_response({"events": events if events is not None else []})
+
     async def _handle_image(self, request: web.Request) -> web.StreamResponse:
         """回显某轮用户发的图片(落盘在 config.IMAGES_DIR);name 经白名单校验挡路径穿越。"""
         if (g := self._guard(request)) is not None:
@@ -1575,6 +1588,7 @@ class WebAdapter:
                 web.get("/api/usage", self._handle_api_usage),
                 web.get("/commands", self._handle_commands),
                 web.get("/history", self._handle_history),
+                web.get("/turn_events", self._handle_turn_events),
                 web.get("/image", self._handle_image),
                 web.post("/transcribe", self._handle_transcribe),
                 web.post("/conv/rename", self._handle_rename),

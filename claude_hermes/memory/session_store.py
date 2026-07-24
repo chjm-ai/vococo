@@ -67,26 +67,71 @@ def load_recent(session_key: str, limit: int = 40) -> list[Turn]:
     return [Turn(user=u, assistant=a) for u, a in reversed(rows)]
 
 
-def load_history(session_key: str, limit: int = 40) -> list[dict]:
+# 与前端 tool-card.js 的 renderToolCard() 决策保持一致:这几个工具名不看 input 内容,
+# 一定会渲出卡片;其余工具只有 input 里带 file_path/path/pattern/query/url 这类"提示字段"
+# 才会渲卡。瘦身时算出 hasCard(该不该占位)+ hint(提示字段本身,通常很短),
+# 这样空壳阶段就能还原出「这一条要不要显示卡片」,不必等点开才知道。
+_ALWAYS_CARD_TOOLS = {"Task", "Agent", "ExitPlanMode", "Write", "Edit", "MultiEdit", "Bash"}
+_HINT_KEYS = ("file_path", "path", "pattern", "query", "url")
+
+
+def _strip_tool_block(blk: dict) -> dict:
+    """工具块瘦身成"空壳":砍掉 input/preview/detail(单个工具调用输出可能几KB到几十KB),
+    只留渲染占位卡够用的字段。前端点开卡片时靠 load_turn_events 单独按需补全。"""
+    name = blk.get("name")
+    inp = blk.get("input") or {}
+    failed = blk.get("ok", True) is False
+    detail = (blk.get("detail") or "").strip()
+    hint = ""
+    if name == "TodoWrite":
+        produced = bool(inp.get("todos"))
+    elif name in _ALWAYS_CARD_TOOLS:
+        produced = True
+    else:
+        hint = next((inp.get(k) for k in _HINT_KEYS if inp.get(k)), "")
+        produced = bool(hint)
+    light: dict = {
+        "type": "tool", "name": name, "id": blk.get("id"),
+        "ok": blk.get("ok", True), "done": "preview" in blk,
+        "hasCard": produced or failed or bool(detail),
+    }
+    if hint:
+        light["hint"] = hint
+    if blk.get("subs"):
+        light["subs"] = blk["subs"]  # 子代理步骤本就轻(仅 name/ok),原样带上
+    return light
+
+
+def _strip_events(events: list) -> list:
+    return [_strip_tool_block(b) if b.get("type") == "tool" else b for b in events]
+
+
+def load_history(session_key: str, limit: int = 40, *, full_events: bool = False) -> list[dict]:
     """历史展示用:含进行中 turn,pending=True 标注;events 是该轮过程时间线。
 
     pending 轮有 draft_text 时一并返回 —— 前端刷新后可用部分内容起底重建气泡,
     避免「刷新时进行中的回复一片空白」;SSE 恢复后同 seg 全文覆盖无缝续上。
+
+    full_events=False(默认)时,tool 块的 input/preview/detail 会被砍掉只留空壳
+    ——这几个字段是单轮体积的大头(工具调用多的一轮能到几十KB),前端只在用户
+    点开某个工具卡片时才用 load_turn_events(turn_id) 单独按需取那一轮的完整版。
     """
     c = _conn()
     wm = _watermark(c, session_key)
     rows = c.execute(
-        "SELECT user_text, assistant_text, events, draft_text, images FROM turns "
+        "SELECT id, user_text, assistant_text, events, draft_text, images FROM turns "
         "WHERE session_key=? AND id>? ORDER BY id DESC LIMIT ?",
         (session_key, wm, limit),
     ).fetchall()
     out: list[dict] = []
-    for u, a, ev, draft, imgs in reversed(rows):
+    for tid, u, a, ev, draft, imgs in reversed(rows):
         try:
             events = json.loads(ev) if ev else []
         except (json.JSONDecodeError, ValueError):
             events = []
-        entry: dict = {"user": u, "assistant": a, "pending": a == "", "events": events}
+        if events and not full_events:
+            events = _strip_events(events)
+        entry: dict = {"id": tid, "user": u, "assistant": a, "pending": a == "", "events": events}
         if a == "" and draft:
             entry["draft"] = draft
         # 图片:库里存文件名,给前端换成取图 URL(前端 <img src> 直接用)
@@ -98,6 +143,22 @@ def load_history(session_key: str, limit: int = 40) -> list[dict]:
             entry["images"] = ["/image?name=" + n for n in names]
         out.append(entry)
     return out
+
+
+def load_turn_events(session_key: str, turn_id: int) -> list | None:
+    """按 id 精确取某一轮的完整过程时间线(懒加载工具卡详情用)。
+
+    带 session_key 一起查,防止越权拿到别的会话的轮次;查不到/对不上返回 None。
+    """
+    row = _conn().execute(
+        "SELECT events FROM turns WHERE id=? AND session_key=?", (turn_id, session_key)
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        return json.loads(row[0])
+    except (json.JSONDecodeError, ValueError):
+        return None
 
 
 def new_session(session_key: str) -> None:
