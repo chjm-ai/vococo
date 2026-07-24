@@ -138,8 +138,14 @@ def validate_schedule(schedule: dict) -> str | None:
 def _next_run(schedule: dict, after: float) -> float | None:
     kind = schedule.get("kind")
     if kind == "cron":
+        # croniter.get_next(float) 把匹配到的日期当 UTC 折成 epoch,和这里传入的
+        # 本地 naive datetime 对不上,会导致 cron 表达式实际按 UTC 解析(和本机时区
+        # 差 8 小时)。改用 get_next(datetime) 拿回本地 naive 时间,再用 time.mktime
+        # 按本机时区折成 epoch——这样 cron 表达式写的就是本机时区(北京时间)的
+        # 时分,不用再手动换算 UTC。
         base = datetime.datetime.fromtimestamp(after)
-        return croniter(schedule["expr"], base).get_next(float)
+        nxt = croniter(schedule["expr"], base).get_next(datetime.datetime)
+        return time.mktime(nxt.timetuple())
     if kind == "interval":
         return after + float(schedule.get("minutes", 60)) * 60
     if kind == "once":
@@ -232,7 +238,9 @@ async def _reflect(push: PushFn) -> None:
 
 
 def _schedule_after(expr: str, after: float) -> float:
-    return croniter(expr, datetime.datetime.fromtimestamp(after)).get_next(float)
+    # 同 _next_run 的时区修法(见其注释),避免反思 cron 也按 UTC 解析。
+    nxt = croniter(expr, datetime.datetime.fromtimestamp(after)).get_next(datetime.datetime)
+    return time.mktime(nxt.timetuple())
 
 
 async def run_scheduler(push: PushFn) -> None:
