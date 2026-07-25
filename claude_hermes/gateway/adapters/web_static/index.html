@@ -2963,7 +2963,7 @@ async function tryEnter(){
     connect(); initPush();
     const hasSavedExpanded = localStorage.getItem("hermes_expanded") !== null;
     loadExpanded();
-    if(!hasSavedExpanded) S.expanded.add("__default__");  // 从没手动折叠过 → 默认项目首次展开
+    if(!hasSavedExpanded){ S.expanded.add("__default__"); S.expanded.add(RECENT_KEY); }  // 从没手动折叠过 → 默认项目/最近会话首次展开
     applyConvs(d);   // 这次 /conversations 顺便验证了口令,数据直接拿来用,不用再多打一次
     prefetchHistories();   // 后台预热最近会话历史(有 2.5s 延迟,不抢首屏带宽)
     // 落地到一个新对话(不自动跳进最近会话),欢迎屏里带语音通话入口 + 最近对话列表,
@@ -3721,6 +3721,8 @@ function buildConvRow(c, inCall){
   return e;
 }
 const CONV_SHOW_MAX = 5;   // 每个分组默认最多展示的会话数(置顶行不计入),超出折进「展开更多」
+const RECENT_KEY = "__recent__";
+const RECENT_SHOW_MAX = 10;   // 「最近会话」分组:展开更多≠显示全部,这里封顶 10 条(纯快捷入口,不是完整列表)
 // 手风琴:默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
@@ -3729,6 +3731,30 @@ function renderConvs(){
   // 不属于任何分组、不受分组展开/折叠影响,也不参与时间排序或「展开更多」的名额。
   for(const c of convsInGroup(null)) if(c.pinned) box.append(buildConvRow(c, inCall));
   const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
+  // 「最近会话」分组:汇总所有项目分组(含语音任务)的会话,按最后活跃时间混排,不看归属项目。
+  // 默认 5 条,展开最多 10 条——纯快捷入口,不是"展开更多=显示全部"的完整列表。
+  {
+    const open=S.expanded.has(RECENT_KEY);
+    const h=el("div","projgrp");
+    const nm=el("span","pgname"); nm.textContent="最近会话"; h.append(nm);
+    const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);
+    h.onclick=()=>toggleGroup(RECENT_KEY);
+    box.append(h);
+    if(open){
+      const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
+      const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
+      const convItems = S.convs.filter(c=>!c.pinned && passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
+      const rows = [...taskItems, ...convItems].sort((a,b)=>b.ts-a.ts).slice(0, RECENT_SHOW_MAX).map(it=>it.build()).filter(Boolean);
+      const shown = S.moreShown.has(RECENT_KEY) ? rows : rows.slice(0, CONV_SHOW_MAX);
+      for(const r of shown) box.append(r);
+      if(rows.length > shown.length){
+        const more=el("div","conv ingroup convmore");
+        const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
+        more.onclick=()=>{ S.moreShown.add(RECENT_KEY); renderConvs(); };
+        box.append(more);
+      }
+    }
+  }
   const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
   for(const g of groups){
     const convs=convsInGroup(g.hash);
