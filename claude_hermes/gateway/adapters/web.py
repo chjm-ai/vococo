@@ -1205,6 +1205,10 @@ class WebAdapter:
                     "hermes_enabled": settings_store.hermes_enabled(),
                     "external": settings_store.list_external(),
                 },
+                "models": {
+                    "custom": settings_store.list_web_extra_models(),
+                    "providers": settings_store.list_web_providers(),
+                },
                 "files": self._list_brain_files(),
                 "brain_dir": str(config.AI_BRAIN_DIR),
             }
@@ -1260,6 +1264,52 @@ class WebAdapter:
             return web.json_response({"ok": True})
         # add / update:清洗校验收在 settings_store.upsert_external 内部
         err = settings_store.upsert_external(name, body)
+        if err:
+            return web.json_response({"error": err}, status=400)
+        return web.json_response({"ok": True})
+
+    async def _handle_settings_model(self, request: web.Request) -> web.Response:
+        """新增/删除设置页手动加的官方模型档位。action: add|remove。
+
+        用来填"新模型发布了但代码还没跟上"的空窗——不用改代码、不用重启,
+        下一次拉 /models(即刷新页面/切模型面板)就带上。
+        """
+        if (g := self._guard(request)) is not None:
+            return g
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
+        action = (body.get("action") or "add").strip()
+        model_id = (body.get("id") or "").strip()
+        if not model_id:
+            return web.json_response({"error": "缺少 id"}, status=400)
+        if action == "remove":
+            settings_store.remove_web_extra_model(model_id)
+            return web.json_response({"ok": True})
+        err = settings_store.add_web_extra_model(model_id, body.get("label") or "")
+        if err:
+            return web.json_response({"error": err}, status=400)
+        return web.json_response({"ok": True})
+
+    async def _handle_settings_provider(self, request: web.Request) -> web.Response:
+        """新增/删除设置页手动加的第三方服务商。action: add|remove。
+
+        独立于 cc-switch 的 ~/.claude-hermes/config.yaml,直接落 web_settings.json,
+        同样不用重启——providers.py 每次都现读现并。
+        """
+        if (g := self._guard(request)) is not None:
+            return g
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
+        action = (body.get("action") or "add").strip()
+        name = (body.get("name") or "").strip()
+        if not name:
+            return web.json_response({"error": "缺少服务商名称"}, status=400)
+        if action == "remove":
+            settings_store.remove_web_provider(name)
+            return web.json_response({"ok": True})
+        err = settings_store.upsert_web_provider(name, body)
         if err:
             return web.json_response({"error": err}, status=400)
         return web.json_response({"ok": True})
@@ -1606,6 +1656,8 @@ class WebAdapter:
                 web.post("/settings/skills/reset", self._handle_settings_skills_reset),
                 web.post("/settings/mcp/hermes", self._handle_settings_mcp_hermes),
                 web.post("/settings/mcp/external", self._handle_settings_mcp_external),
+                web.post("/settings/model", self._handle_settings_model),
+                web.post("/settings/provider", self._handle_settings_provider),
                 web.get("/file/read", self._handle_file_read),
                 web.post("/file/save", self._handle_file_save),
             ]

@@ -1,4 +1,4 @@
-"""Web 端运行时设置：技能白名单 / MCP 开关(内置 + 外部) 的持久化与生效计算。
+"""Web 端运行时设置：技能白名单 / MCP 开关(内置 + 外部) / 模型&供应商 的持久化与生效计算。
 
 落一个 JSON(data/web_settings.json)当"运行时覆盖层"。agent 每轮构建 options
 时读它来决定挂哪些 skill、挂哪些 MCP —— 所以在网页改完设置【下一轮就生效，
@@ -11,6 +11,10 @@
 - 隐藏(hidden)只影响设置列表折叠,与是否加载无关。
 - MCP:内置 hermes 一个总开关;外部 server 存 stdio/sse/http 配置 + enabled 位,
   开启的那些直接并进 ClaudeAgentOptions.mcp_servers(SDK 0.2.110 原生支持外部 server)。
+- 模型/供应商:web_extra_models 是官方新模型档位还没进代码前的手动补录(id+label,
+  按订阅走,不需要 key);web_providers 是第三方端点(base_url+api_key+model),独立于
+  cc-switch 的 ~/.claude-hermes/config.yaml,避免两边互相覆写。providers.py 每次都
+  现读现并,同样【改完下一轮就生效】。
 """
 from __future__ import annotations
 
@@ -32,6 +36,9 @@ _DEFAULTS: dict = {
     "hermes_mcp_enabled": True,
     "external_mcp": {},         # name -> {type,command,args,env,url,headers,enabled}
     "web_default_model": "",    # web 端上次选定的模型;新会话没显式选就用它(空=回落 config.MODEL)
+    "web_extra_models": [],     # 设置页手动加的官方模型档位:[{id,label}](新模型发布,代码没跟上时用)
+    "web_providers": {},        # 设置页手动加的第三方服务商:name -> {base_url,api_key,model,label}
+                                 # (独立于 cc-switch 的 ~/.claude-hermes/config.yaml,避免互相覆写)
 }
 
 
@@ -42,13 +49,13 @@ def _load() -> dict:
     except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
         raw = {}
     data = {**_DEFAULTS, **(raw if isinstance(raw, dict) else {})}
-    # 保证子结构类型正确(手改坏了也不崩)
-    if not isinstance(data.get("skills_enabled"), list):
-        data["skills_enabled"] = []
-    if not isinstance(data.get("skills_hidden"), list):
-        data["skills_hidden"] = []
-    if not isinstance(data.get("external_mcp"), dict):
-        data["external_mcp"] = {}
+    # 保证子结构类型正确(手改坏了也不崩)——同时必须复制出新对象,不能直接拿 _DEFAULTS
+    # 里的 list/dict 引用:文件不存在时 data[key] 会等于 _DEFAULTS[key] 本身,调用方一
+    # mutate(如 list.append/dict[k]=v)就把模块级默认值永久污染了。
+    for key in ("skills_enabled", "skills_hidden", "web_extra_models"):
+        data[key] = list(data[key]) if isinstance(data.get(key), list) else []
+    for key in ("external_mcp", "web_providers"):
+        data[key] = dict(data[key]) if isinstance(data.get(key), dict) else {}
     return data
 
 
@@ -211,6 +218,90 @@ def set_web_default_model(model: str) -> None:
         d = _load()
         d["web_default_model"] = model or ""
         _save(d)
+
+
+# ── 设置页手动加的官方模型档位 ────────────────────────────────────────────
+def list_web_extra_models() -> list[dict]:
+    """给设置页/available_models 用:[{id,label}]。"""
+    return list(_load()["web_extra_models"])
+
+
+def add_web_extra_model(model_id: str, label: str) -> str | None:
+    """新增一个官方模型档位;返回错误说明(None=成功)。"""
+    model_id = (model_id or "").strip()
+    if not model_id:
+        return "缺少模型 id"
+    label = (label or "").strip() or model_id
+    with _LOCK:
+        d = _load()
+        models = d["web_extra_models"]
+        if any(m.get("id") == model_id for m in models):
+            return f"模型 {model_id} 已存在"
+        models.append({"id": model_id, "label": label})
+        d["web_extra_models"] = models
+        _save(d)
+    return None
+
+
+def remove_web_extra_model(model_id: str) -> None:
+    with _LOCK:
+        d = _load()
+        d["web_extra_models"] = [m for m in d["web_extra_models"] if m.get("id") != model_id]
+        _save(d)
+
+
+# ── 设置页手动加的第三方服务商 ────────────────────────────────────────────
+def list_web_providers() -> list[dict]:
+    """给设置页用:每个供应商的 name + 配置(含 api_key 明文,和 cc-switch 现状一致)。"""
+    d = _load()
+    out = [{"name": name, **cfg} for name, cfg in d["web_providers"].items()]
+    out.sort(key=lambda x: x["name"].lower())
+    return out
+
+
+def clean_web_provider(body: dict) -> tuple[dict, str | None]:
+    """校验设置页提交的供应商字段;返回 (cfg, 错误)——错误非空时 cfg 为 {}。"""
+    base_url = (body.get("base_url") or "").strip()
+    model = (body.get("model") or "").strip()
+    if not base_url:
+        return {}, "缺少 base_url"
+    if not model:
+        return {}, "缺少 model"
+    from urllib.parse import urlsplit
+
+    scheme = urlsplit(base_url).scheme.lower()
+    if scheme not in ("http", "https"):
+        return {}, "base_url 必须是 http(s) 协议"
+    api_key = (body.get("api_key") or "").strip()
+    label = (body.get("label") or "").strip()
+    return {"base_url": base_url, "api_key": api_key, "model": model, "label": label}, None
+
+
+def upsert_web_provider(name: str, body: dict) -> str | None:
+    """新增/覆盖一个设置页供应商;返回错误说明(None=成功)。"""
+    name = (name or "").strip()
+    if not name:
+        return "缺少服务商名称"
+    cfg, err = clean_web_provider(body)
+    if err:
+        return err
+    with _LOCK:
+        d = _load()
+        d["web_providers"][name] = cfg
+        _save(d)
+    return None
+
+
+def remove_web_provider(name: str) -> None:
+    with _LOCK:
+        d = _load()
+        d["web_providers"].pop(name, None)
+        _save(d)
+
+
+def web_providers_raw() -> dict[str, dict]:
+    """给 providers.py 合并用:原始 name→entry 字典(字段名和 cc-switch 条目同形状)。"""
+    return dict(_load()["web_providers"])
 
 
 def effective_skills() -> list[str] | str | None:

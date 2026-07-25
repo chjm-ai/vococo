@@ -8,6 +8,7 @@ import textwrap
 from pathlib import Path
 
 from claude_hermes import providers
+from claude_hermes.gateway import settings_store
 
 
 def _write_config(tmp_path: Path, content: str) -> Path:
@@ -18,6 +19,11 @@ def _write_config(tmp_path: Path, content: str) -> Path:
 
 def _point_to(monkeypatch, path: Path) -> None:
     monkeypatch.setattr(providers, "hermes_config_path", lambda: path)
+
+
+def _point_settings_to(monkeypatch, tmp_path: Path) -> None:
+    """把设置页存储(web_extra_models/web_providers)也指向临时文件,不碰真实数据。"""
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
 
 
 DEEPSEEK_CONFIG = """
@@ -116,6 +122,62 @@ def test_available_models_lists_configured(tmp_path, monkeypatch):
     assert by_id["deepseek-chat"][1] == "api"
     # kimi 走 api.moonshot.cn(按量 API key),不是 api.kimi.com 订阅套餐 → 分组是 api 不是 kimi
     assert by_id["kimi-k2-0711-preview"][1] == "api"
+
+
+# ── 设置页手动加的模型/服务商:合并进 providers.py 的既有逻辑 ──────────────
+def test_available_models_includes_web_extra_model(tmp_path, monkeypatch):
+    _point_to(monkeypatch, tmp_path / "does-not-exist.yaml")  # 没装 cc-switch
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.add_web_extra_model("claude-opus-5", "Opus 5（订阅）")
+    defaults = [("claude-sonnet-5", "Sonnet 5（订阅）")]
+    out = providers.available_models(defaults)
+    by_id = {mid: (label, group) for mid, label, group in out}
+    assert by_id["claude-opus-5"] == ("Opus 5（订阅）", "anthropic")
+
+
+def test_available_models_dedups_web_extra_model_against_defaults(tmp_path, monkeypatch):
+    _point_to(monkeypatch, tmp_path / "does-not-exist.yaml")
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.add_web_extra_model("claude-sonnet-5", "重复")
+    defaults = [("claude-sonnet-5", "Sonnet 5（订阅）")]
+    out = providers.available_models(defaults)
+    assert [mid for mid, _, _ in out].count("claude-sonnet-5") == 1
+
+
+def test_available_models_includes_web_provider_without_cc_switch_config(tmp_path, monkeypatch):
+    """回归:之前 config.yaml 缺失时 available_models 会提前 return,把 web_providers 漏掉。"""
+    _point_to(monkeypatch, tmp_path / "does-not-exist.yaml")
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "mine", {"base_url": "https://api.example.com", "model": "my-model", "api_key": "sk-yyy"}
+    )
+    out = providers.available_models([])
+    by_id = {mid: (label, group) for mid, label, group in out}
+    assert by_id["my-model"] == ("my-model（API）", "api")
+
+
+def test_resolve_picks_up_web_provider_via_explicit_model(tmp_path, monkeypatch):
+    _point_to(monkeypatch, tmp_path / "does-not-exist.yaml")
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "mine", {"base_url": "https://api.example.com", "model": "my-model", "api_key": "sk-yyy"}
+    )
+    model, env = providers.resolve("my-model", "claude-sonnet-5")
+    assert model == "my-model"
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.example.com"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-yyy"
+
+
+def test_web_provider_overrides_cc_switch_entry_with_same_name(tmp_path, monkeypatch):
+    _point_to(monkeypatch, _write_config(tmp_path, DEEPSEEK_CONFIG))
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "deepseek", {"base_url": "https://web-override.example.com", "model": "deepseek-chat", "api_key": "sk-web"}
+    )
+    model, env = providers.resolve("deepseek-chat", "claude-sonnet-5")
+    assert model == "deepseek-chat"
+    assert env["ANTHROPIC_BASE_URL"] == "https://web-override.example.com"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-web"
 
 
 def test_sidecar_env_finds_named_provider(tmp_path, monkeypatch):

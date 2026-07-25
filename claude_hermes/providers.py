@@ -101,7 +101,9 @@ def _provider_entries(config: dict) -> dict[str, dict]:
     """汇总所有供应商定义,键=name。
 
     cc-switch 写 `custom_providers:`(列表),原版 hermes 用 `providers:`(字典)。
-    两者取并集,custom_providers 优先(与 cc-switch 的 dedup 顺序一致)。
+    两者取并集,custom_providers 优先(与 cc-switch 的 dedup 顺序一致);web 设置页
+    加的 web_providers(独立存在 data/web_settings.json,见 gateway.settings_store)
+    优先级最高——它是用户在本会话里最新显式添加的,同名时应覆盖 cc-switch 那份。
     """
     out: dict[str, dict] = {}
     providers_dict = config.get("providers")
@@ -114,6 +116,10 @@ def _provider_entries(config: dict) -> dict[str, dict]:
         for entry in custom:
             if isinstance(entry, dict) and entry.get("name"):
                 out[str(entry["name"])] = entry  # 列表覆盖字典
+    from .gateway import settings_store
+
+    for name, entry in settings_store.web_providers_raw().items():
+        out[str(name)] = entry
     return out
 
 
@@ -254,18 +260,32 @@ def _billing_kind(base_url: str) -> str:
 def available_models(
     default_choices: list[tuple[str, str]],
 ) -> list[tuple[str, str, str]]:
-    """/model 无参时的候选:官方默认档 + cc-switch 里配好的各供应商模型。
+    """/model 无参时的候选:官方默认档 + 设置页手动加的档位 + cc-switch 里配好的各供应商模型。
 
-    default_choices 是官方三档(claude-opus/sonnet/haiku),恒列在前。标签只留
-    "模型名（订阅/API）",不带供应商名和 cc-switch 后缀,免得面板换行/信息过载。
+    default_choices 是代码里写死的官方档(claude-opus/sonnet/haiku),恒列在前。
+    web_extra_models(设置页手动补录,见 gateway.settings_store)紧随其后——同样按
+    "官方订阅"处理,不需要 key,用来填新模型发布但代码还没来得及加的空窗期。
+    标签只留"模型名（订阅/API）",不带供应商名和 cc-switch 后缀,免得面板换行/信息过载。
     第三个元素是分组:anthropic(官方订阅) / kimi(Kimi 订阅) / api(按量计费),
     供 WebUI 模型面板分组展示 + 决定要不要查订阅额度。
     """
+    from .gateway import settings_store
+
+    extra = [
+        (m["id"], m.get("label") or m["id"])
+        for m in settings_store.list_web_extra_models()
+        if m.get("id")
+    ]
     out: list[tuple[str, str, str]] = [(mid, label, "anthropic") for mid, label in default_choices]
     seen = {mid for mid, _, _ in out}
-    config = _load_yaml()
-    if not config:
-        return out
+    for mid, label in extra:
+        if mid in seen:
+            continue
+        seen.add(mid)
+        out.append((mid, label, "anthropic"))
+    # 注意:不能在 config.yaml 缺失时提前 return——web_providers(设置页手动加的
+    # 供应商)独立于这个文件,即使用户没装 cc-switch 也得走 _provider_entries 合并。
+    config = _load_yaml() or {}
     for name, entry in _provider_entries(config).items():
         if name.lower() in _OFFICIAL_NAMES:
             continue
@@ -281,10 +301,8 @@ def available_models(
 
 
 def lookup_provider_by_model(model: str) -> dict | None:
-    """按模型名查 cc-switch 供应商配置条目;未配置(官方模型)返回 None。"""
-    config = _load_yaml()
-    if not config:
-        return None
+    """按模型名查供应商配置条目(cc-switch 或设置页手动加的);未配置(官方模型)返回 None。"""
+    config = _load_yaml() or {}
     for name, entry in _provider_entries(config).items():
         if _entry_field(entry, "model") == model:
             return dict(entry)
@@ -306,9 +324,7 @@ def subscription_api_key_for_model(model: str) -> str | None:
     那样知道 cc-switch 条目的 snake_case/camelCase 双写细节(2026-07-23 架构复盘:
     web.py 曾直接越权调用这个下划线开头的私有 helper)。
     """
-    config = _load_yaml()
-    if not config:
-        return None
+    config = _load_yaml() or {}
     provider = _find_by_model(config, model)
     if provider is None or not provider.base_url or not is_subscription_host(provider.base_url):
         return None
