@@ -141,6 +141,7 @@ try{
       <div class="setbody">
         <div class="settabs" id="setTabs">
           <button class="settab active" data-tab="mcp">MCP</button>
+          <button class="settab" data-tab="models">模型</button>
           <button class="settab" data-tab="skill">技能</button>
           <button class="settab" data-tab="memory">记忆</button>
           <button class="settab" data-tab="agents">人设</button>
@@ -4043,7 +4044,7 @@ $("#convCronEditBtn").onclick = ()=>{ const j=S.cronJobs.find(x=>x.conv===S.conv
 $("#convCronMore").onclick = ev=>{ ev.stopPropagation(); openConvMenu($("#convCronMore"), S.conv, true); };
 
 // ── 设置(MCP / 技能 / 记忆 / 人设)────────────────────────────────────────
-const SET = { data:null, tab:"mcp", skq:"", mcpFormOpen:false };
+const SET = { data:null, tab:"mcp", skq:"", mcpFormOpen:false, modelFormOpen:false, providerFormOpen:false };
 $("#settingsBtn").innerHTML = ic("gear");
 
 async function openSettings(){
@@ -4073,6 +4074,7 @@ $("#setTabs").onclick = e=>{
 };
 function renderSetTab(){
   if(SET.tab==="mcp") renderMcpPane();
+  else if(SET.tab==="models") renderModelsPane();
   else if(SET.tab==="skill") renderSkillPane();
   else if(SET.tab==="memory") renderFileList("memory");
   else if(SET.tab==="agents") renderFileList("agents");
@@ -4381,6 +4383,111 @@ async function saveMcpForm(){
   SET.mcpFormOpen=false;
   const rr=await api("/settings"); SET.data=await rr.json();  // 拉回最新列表
   renderMcpPane();
+}
+
+// ── 模型分区(设置页手动加官方档位 / 第三方服务商,改完下一轮/刷新即生效,不用重启)──
+function renderModelsPane(){
+  const md = SET.data.models || {custom:[], providers:[]};
+  let h = '<h3>'+ic("bot")+'模型 & 服务商</h3>'+
+    '<p class="shint">新模型发布但代码还没跟上时,先在这里手动补一档;第三方服务商(DeepSeek/中转等)'+
+    '也可以直接在这加,不用装 cc-switch。保存后刷新模型面板即生效,不用重启。</p>';
+  h += '<div class="sechd">官方模型档位(手动补录)</div>';
+  if(!md.custom.length){
+    h += '<p class="shint" style="margin:2px 0 6px">还没有手动加的档位,当前用代码内置的官方清单。</p>';
+  } else {
+    md.custom.forEach(m=>{
+      const acts = '<button class="miniact danger" data-mddel="'+esc(m.id)+'">删除</button>';
+      h += settingsRow("data-mdrow", m.id, esc(m.label||m.id)+' <span class="mctag">'+esc(m.id)+'</span>', "", false, acts);
+    });
+  }
+  h += '<div class="setrowbtns"><button class="btn ghost sm" id="mdAddBtn">'+ic("plus")+' 添加模型档位</button></div>';
+  if(SET.modelFormOpen) h += modelFormHtml();
+  h += '<div class="sechd">第三方服务商</div>';
+  if(!md.providers.length){
+    h += '<p class="shint" style="margin:2px 0 6px">还没有手动加的服务商;cc-switch 配置的会另外自动出现在模型面板。</p>';
+  } else {
+    md.providers.forEach(p=>{
+      const sub = esc(p.model||"")+' · '+esc(p.base_url||"")+(p.api_key?' · 已设 key':' · 未设 key');
+      const acts = '<button class="miniact danger" data-pvdel="'+esc(p.name)+'">删除</button>';
+      h += settingsRow("data-pvrow", p.name, esc(p.label||p.name), sub, false, acts);
+    });
+  }
+  h += '<div class="setrowbtns"><button class="btn ghost sm" id="pvAddBtn">'+ic("plus")+' 添加服务商</button></div>';
+  if(SET.providerFormOpen) h += providerFormHtml();
+  $("#setPane").innerHTML = h;
+  bindModelsPane();
+}
+function modelFormHtml(){
+  return '<div class="mcpform" id="mdForm">'+
+    '<div class="fld"><label>模型 id(填 API 认的那个模型名)</label><input id="mdId" placeholder="claude-opus-5"></div>'+
+    '<div class="fld"><label>显示名(可空,默认用 id)</label><input id="mdLabel" placeholder="Opus 5（订阅）"></div>'+
+    '<div class="mcperr" id="mdErr"></div>'+
+    '<div class="setrowbtns"><button class="btn primary sm" id="mdSave">保存</button><button class="btn ghost sm" id="mdCancel">取消</button></div>'+
+  '</div>';
+}
+function providerFormHtml(){
+  return '<div class="mcpform" id="pvForm">'+
+    '<div class="fld"><label>名称(唯一标识)</label><input id="pvName" placeholder="deepseek"></div>'+
+    '<div class="fld"><label>base_url</label><input id="pvUrl" placeholder="https://api.deepseek.com/anthropic"></div>'+
+    '<div class="fld"><label>model</label><input id="pvModel" placeholder="deepseek-chat"></div>'+
+    '<div class="fld"><label>api_key</label><input id="pvKey" type="password" placeholder="sk-..."></div>'+
+    '<div class="fld"><label>显示名(可空)</label><input id="pvLabel" placeholder=""></div>'+
+    '<div class="mcperr" id="pvErr"></div>'+
+    '<div class="setrowbtns"><button class="btn primary sm" id="pvSave">保存</button><button class="btn ghost sm" id="pvCancel">取消</button></div>'+
+  '</div>';
+}
+function bindModelsPane(){
+  $("#setPane").querySelectorAll("[data-mddel]").forEach(b=>{
+    b.onclick = async()=>{
+      const id=b.dataset.mddel;
+      if(!confirm("删除模型档位「"+id+"」?")) return;
+      await api("/settings/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"remove", id})});
+      SET.data.models.custom = SET.data.models.custom.filter(m=>m.id!==id);
+      renderModelsPane();
+    };
+  });
+  $("#setPane").querySelectorAll("[data-pvdel]").forEach(b=>{
+    b.onclick = async()=>{
+      const name=b.dataset.pvdel;
+      if(!confirm("删除服务商「"+name+"」?")) return;
+      await api("/settings/provider",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"remove", name})});
+      SET.data.models.providers = SET.data.models.providers.filter(p=>p.name!==name);
+      renderModelsPane();
+    };
+  });
+  const mdAdd=$("#mdAddBtn"); if(mdAdd) mdAdd.onclick=()=>{ SET.modelFormOpen=true; renderModelsPane(); };
+  const mdCancel=$("#mdCancel"); if(mdCancel) mdCancel.onclick=()=>{ SET.modelFormOpen=false; renderModelsPane(); };
+  const mdSave=$("#mdSave"); if(mdSave) mdSave.onclick=saveModelForm;
+  const pvAdd=$("#pvAddBtn"); if(pvAdd) pvAdd.onclick=()=>{ SET.providerFormOpen=true; renderModelsPane(); };
+  const pvCancel=$("#pvCancel"); if(pvCancel) pvCancel.onclick=()=>{ SET.providerFormOpen=false; renderModelsPane(); };
+  const pvSave=$("#pvSave"); if(pvSave) pvSave.onclick=saveProviderForm;
+}
+async function saveModelForm(){
+  const err=$("#mdErr"); err.textContent="";
+  const id=$("#mdId").value.trim();
+  if(!id){ err.textContent="请填模型 id"; return; }
+  const label=$("#mdLabel").value.trim();
+  const r=await api("/settings/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"add", id, label})});
+  const d=await r.json();
+  if(d.error){ err.textContent=d.error; return; }
+  SET.modelFormOpen=false;
+  const rr=await api("/settings"); SET.data=await rr.json();
+  renderModelsPane();
+}
+async function saveProviderForm(){
+  const err=$("#pvErr"); err.textContent="";
+  const name=$("#pvName").value.trim();
+  if(!name){ err.textContent="请填名称"; return; }
+  const base_url=$("#pvUrl").value.trim();
+  const model=$("#pvModel").value.trim();
+  if(!base_url||!model){ err.textContent="base_url 和 model 都要填"; return; }
+  const body={action:"add", name, base_url, model, api_key:$("#pvKey").value.trim(), label:$("#pvLabel").value.trim()};
+  const r=await api("/settings/provider",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(d.error){ err.textContent=d.error; return; }
+  SET.providerFormOpen=false;
+  const rr=await api("/settings"); SET.data=await rr.json();
+  renderModelsPane();
 }
 
 // ── 技能分区 ──────────────────────────────────────────────────────────────

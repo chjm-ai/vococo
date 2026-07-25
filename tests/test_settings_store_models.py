@@ -1,0 +1,92 @@
+"""设置页手动加模型档位 / 第三方服务商的存储层:CRUD + 校验。
+
+用 monkeypatch 把 settings_store._PATH 指向临时文件,不碰真实 data/web_settings.json。
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from claude_hermes.gateway import settings_store
+
+
+def _point_to(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
+
+
+def test_add_and_list_extra_model(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    err = settings_store.add_web_extra_model("claude-opus-5", "Opus 5（订阅）")
+    assert err is None
+    models = settings_store.list_web_extra_models()
+    assert models == [{"id": "claude-opus-5", "label": "Opus 5（订阅）"}]
+
+
+def test_add_extra_model_no_label_falls_back_to_id(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store.add_web_extra_model("claude-opus-5", "")
+    assert settings_store.list_web_extra_models()[0]["label"] == "claude-opus-5"
+
+
+def test_add_extra_model_missing_id_errors(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    assert settings_store.add_web_extra_model("", "label") == "缺少模型 id"
+
+
+def test_add_extra_model_duplicate_errors(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store.add_web_extra_model("claude-opus-5", "Opus 5")
+    err = settings_store.add_web_extra_model("claude-opus-5", "重复")
+    assert err == "模型 claude-opus-5 已存在"
+
+
+def test_remove_extra_model(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store.add_web_extra_model("claude-opus-5", "Opus 5")
+    settings_store.remove_web_extra_model("claude-opus-5")
+    assert settings_store.list_web_extra_models() == []
+
+
+def test_upsert_and_list_provider(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    err = settings_store.upsert_web_provider(
+        "deepseek",
+        {"base_url": "https://api.deepseek.com/anthropic", "model": "deepseek-chat",
+         "api_key": "sk-xxx", "label": ""},
+    )
+    assert err is None
+    out = settings_store.list_web_providers()
+    assert out == [{
+        "name": "deepseek", "base_url": "https://api.deepseek.com/anthropic",
+        "api_key": "sk-xxx", "model": "deepseek-chat", "label": "",
+    }]
+
+
+def test_upsert_provider_missing_fields_errors(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    assert settings_store.upsert_web_provider("x", {"model": "m"}) == "缺少 base_url"
+    assert settings_store.upsert_web_provider("x", {"base_url": "https://a.com"}) == "缺少 model"
+    assert settings_store.upsert_web_provider("", {"base_url": "https://a.com", "model": "m"}) == "缺少服务商名称"
+
+
+def test_upsert_provider_rejects_non_http_scheme(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    err = settings_store.upsert_web_provider("x", {"base_url": "file:///etc/passwd", "model": "m"})
+    assert err == "base_url 必须是 http(s) 协议"
+
+
+def test_remove_provider(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider("deepseek", {"base_url": "https://api.deepseek.com", "model": "deepseek-chat"})
+    settings_store.remove_web_provider("deepseek")
+    assert settings_store.list_web_providers() == []
+
+
+def test_web_providers_raw_shape_matches_cc_switch_entry(monkeypatch, tmp_path):
+    """providers.py 的 _provider_entries 直接拿这个字典当 cc-switch 条目用,字段名必须一致。"""
+    _point_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "mine", {"base_url": "https://api.example.com", "model": "my-model", "api_key": "sk-yyy"}
+    )
+    raw = settings_store.web_providers_raw()
+    assert raw == {"mine": {"base_url": "https://api.example.com", "api_key": "sk-yyy",
+                             "model": "my-model", "label": ""}}
