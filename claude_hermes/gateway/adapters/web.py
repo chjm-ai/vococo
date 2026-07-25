@@ -1195,6 +1195,10 @@ class WebAdapter:
         """设置页初始快照:技能清单 + MCP(内置 hermes + 外部)+ 记忆/AGENTS 文件列表。"""
         if (g := self._guard(request)) is not None:
             return g
+        # active = 当前实际在用的模型,算法跟 _handle_models 的 default 保持一致
+        active_model = settings_store.get_web_default_model() \
+            or providers.resolve(None, config.MODEL)[0]
+        disabled = set(settings_store.list_disabled_builtin_models())
         return web.json_response(
             {
                 "skills": {
@@ -1206,6 +1210,11 @@ class WebAdapter:
                     "external": settings_store.list_external(),
                 },
                 "models": {
+                    "active": active_model,
+                    "builtin": [
+                        {"id": mid, "label": label, "disabled": mid in disabled}
+                        for mid, label in MODEL_CHOICES
+                    ],
                     "custom": settings_store.list_web_extra_models(),
                     "providers": settings_store.list_web_providers(),
                 },
@@ -1269,10 +1278,12 @@ class WebAdapter:
         return web.json_response({"ok": True})
 
     async def _handle_settings_model(self, request: web.Request) -> web.Response:
-        """新增/删除设置页手动加的官方模型档位。action: add|remove。
+        """增/改/删设置页手动加的官方模型档位,或隐藏/恢复代码内置档位。
+        action: add(新增/编辑,id 相同即覆盖 label)|remove|toggle_builtin。
 
-        用来填"新模型发布了但代码还没跟上"的空窗——不用改代码、不用重启,
-        下一次拉 /models(即刷新页面/切模型面板)就带上。
+        add/remove 用来填"新模型发布了但代码还没跟上"的空窗;toggle_builtin 是
+        MODEL_CHOICES 里代码写死的档位摘出/放回选择器(不改代码,可随时恢复)。
+        不用改代码、不用重启,下一次拉 /models(即刷新页面/切模型面板)就带上。
         """
         if (g := self._guard(request)) is not None:
             return g
@@ -1283,10 +1294,13 @@ class WebAdapter:
         model_id = (body.get("id") or "").strip()
         if not model_id:
             return web.json_response({"error": "缺少 id"}, status=400)
+        if action == "toggle_builtin":
+            settings_store.set_builtin_model_disabled(model_id, bool(body.get("disabled")))
+            return web.json_response({"ok": True})
         if action == "remove":
             settings_store.remove_web_extra_model(model_id)
             return web.json_response({"ok": True})
-        err = settings_store.add_web_extra_model(model_id, body.get("label") or "")
+        err = settings_store.upsert_web_extra_model(model_id, body.get("label") or "")
         if err:
             return web.json_response({"error": err}, status=400)
         return web.json_response({"ok": True})

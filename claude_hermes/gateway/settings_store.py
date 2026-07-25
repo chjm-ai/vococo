@@ -12,9 +12,11 @@
 - MCP:内置 hermes 一个总开关;外部 server 存 stdio/sse/http 配置 + enabled 位,
   开启的那些直接并进 ClaudeAgentOptions.mcp_servers(SDK 0.2.110 原生支持外部 server)。
 - 模型/供应商:web_extra_models 是官方新模型档位还没进代码前的手动补录(id+label,
-  按订阅走,不需要 key);web_providers 是第三方端点(base_url+api_key+model),独立于
-  cc-switch 的 ~/.claude-hermes/config.yaml,避免两边互相覆写。providers.py 每次都
-  现读现并,同样【改完下一轮就生效】。
+  按订阅走,不需要 key,id 是键、重复 id 直接覆盖 label=编辑);web_providers 是第三方
+  端点(base_url+api_key+model),独立于 cc-switch 的 ~/.claude-hermes/config.yaml,
+  避免两边互相覆写。disabled_builtin_models 是代码里 MODEL_CHOICES 硬编码档位的隐藏
+  名单(不能真删常量,只能摘出选择器,可随时恢复)。providers.py 每次都现读现并,
+  同样【改完下一轮就生效】。
 """
 from __future__ import annotations
 
@@ -39,6 +41,8 @@ _DEFAULTS: dict = {
     "web_extra_models": [],     # 设置页手动加的官方模型档位:[{id,label}](新模型发布,代码没跟上时用)
     "web_providers": {},        # 设置页手动加的第三方服务商:name -> {base_url,api_key,model,label}
                                  # (独立于 cc-switch 的 ~/.claude-hermes/config.yaml,避免互相覆写)
+    "disabled_builtin_models": [],  # 代码里硬编码的官方档位(MODEL_CHOICES),用户在设置页
+                                     # 手动隐藏掉的那些 id——不能真删代码常量,只能从选择器里摘掉
 }
 
 
@@ -52,7 +56,7 @@ def _load() -> dict:
     # 保证子结构类型正确(手改坏了也不崩)——同时必须复制出新对象,不能直接拿 _DEFAULTS
     # 里的 list/dict 引用:文件不存在时 data[key] 会等于 _DEFAULTS[key] 本身,调用方一
     # mutate(如 list.append/dict[k]=v)就把模块级默认值永久污染了。
-    for key in ("skills_enabled", "skills_hidden", "web_extra_models"):
+    for key in ("skills_enabled", "skills_hidden", "web_extra_models", "disabled_builtin_models"):
         data[key] = list(data[key]) if isinstance(data.get(key), list) else []
     for key in ("external_mcp", "web_providers"):
         data[key] = dict(data[key]) if isinstance(data.get(key), dict) else {}
@@ -226,8 +230,8 @@ def list_web_extra_models() -> list[dict]:
     return list(_load()["web_extra_models"])
 
 
-def add_web_extra_model(model_id: str, label: str) -> str | None:
-    """新增一个官方模型档位;返回错误说明(None=成功)。"""
+def upsert_web_extra_model(model_id: str, label: str) -> str | None:
+    """新增/编辑一个官方模型档位(id 是键,重复 id 直接覆盖 label);返回错误说明(None=成功)。"""
     model_id = (model_id or "").strip()
     if not model_id:
         return "缺少模型 id"
@@ -235,9 +239,12 @@ def add_web_extra_model(model_id: str, label: str) -> str | None:
     with _LOCK:
         d = _load()
         models = d["web_extra_models"]
-        if any(m.get("id") == model_id for m in models):
-            return f"模型 {model_id} 已存在"
-        models.append({"id": model_id, "label": label})
+        for m in models:
+            if m.get("id") == model_id:
+                m["label"] = label
+                break
+        else:
+            models.append({"id": model_id, "label": label})
         d["web_extra_models"] = models
         _save(d)
     return None
@@ -247,6 +254,20 @@ def remove_web_extra_model(model_id: str) -> None:
     with _LOCK:
         d = _load()
         d["web_extra_models"] = [m for m in d["web_extra_models"] if m.get("id") != model_id]
+        _save(d)
+
+
+# ── 设置页手动隐藏的内置模型档位(MODEL_CHOICES 里代码写死的那些) ──────────
+def list_disabled_builtin_models() -> list[str]:
+    return list(_load()["disabled_builtin_models"])
+
+
+def set_builtin_model_disabled(model_id: str, disabled: bool) -> None:
+    with _LOCK:
+        d = _load()
+        s = set(d["disabled_builtin_models"])
+        s.add(model_id) if disabled else s.discard(model_id)
+        d["disabled_builtin_models"] = sorted(s)
         _save(d)
 
 
