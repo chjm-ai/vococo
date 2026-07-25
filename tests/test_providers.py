@@ -128,7 +128,7 @@ def test_available_models_lists_configured(tmp_path, monkeypatch):
 def test_available_models_includes_web_extra_model(tmp_path, monkeypatch):
     _point_to(monkeypatch, tmp_path / "does-not-exist.yaml")  # 没装 cc-switch
     _point_settings_to(monkeypatch, tmp_path)
-    settings_store.add_web_extra_model("claude-opus-5", "Opus 5（订阅）")
+    settings_store.upsert_web_extra_model("claude-opus-5", "Opus 5（订阅）")
     defaults = [("claude-sonnet-5", "Sonnet 5（订阅）")]
     out = providers.available_models(defaults)
     by_id = {mid: (label, group) for mid, label, group in out}
@@ -138,10 +138,31 @@ def test_available_models_includes_web_extra_model(tmp_path, monkeypatch):
 def test_available_models_dedups_web_extra_model_against_defaults(tmp_path, monkeypatch):
     _point_to(monkeypatch, tmp_path / "does-not-exist.yaml")
     _point_settings_to(monkeypatch, tmp_path)
-    settings_store.add_web_extra_model("claude-sonnet-5", "重复")
+    settings_store.upsert_web_extra_model("claude-sonnet-5", "重复")
     defaults = [("claude-sonnet-5", "Sonnet 5（订阅）")]
     out = providers.available_models(defaults)
     assert [mid for mid, _, _ in out].count("claude-sonnet-5") == 1
+
+
+def test_available_models_hides_disabled_builtin(tmp_path, monkeypatch):
+    _point_to(monkeypatch, tmp_path / "does-not-exist.yaml")
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.set_builtin_model_disabled("claude-opus-4-6", True)
+    defaults = [("claude-opus-4-6", "Opus 4.6（订阅）"), ("claude-sonnet-5", "Sonnet 5（订阅）")]
+    out = providers.available_models(defaults)
+    ids = [mid for mid, _, _ in out]
+    assert "claude-opus-4-6" not in ids
+    assert "claude-sonnet-5" in ids
+
+
+def test_available_models_reenabled_builtin_comes_back(tmp_path, monkeypatch):
+    _point_to(monkeypatch, tmp_path / "does-not-exist.yaml")
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.set_builtin_model_disabled("claude-opus-4-6", True)
+    settings_store.set_builtin_model_disabled("claude-opus-4-6", False)
+    defaults = [("claude-opus-4-6", "Opus 4.6（订阅）")]
+    out = providers.available_models(defaults)
+    assert [mid for mid, _, _ in out] == ["claude-opus-4-6"]
 
 
 def test_available_models_includes_web_provider_without_cc_switch_config(tmp_path, monkeypatch):

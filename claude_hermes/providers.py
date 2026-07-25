@@ -262,7 +262,8 @@ def available_models(
 ) -> list[tuple[str, str, str]]:
     """/model 无参时的候选:官方默认档 + 设置页手动加的档位 + cc-switch 里配好的各供应商模型。
 
-    default_choices 是代码里写死的官方档(claude-opus/sonnet/haiku),恒列在前。
+    default_choices 是代码里写死的官方档(claude-opus/sonnet/haiku),恒列在前;设置页
+    可以把其中某几档隐藏掉(disabled_builtin_models,不动代码常量,只摘出选择器)。
     web_extra_models(设置页手动补录,见 gateway.settings_store)紧随其后——同样按
     "官方订阅"处理,不需要 key,用来填新模型发布但代码还没来得及加的空窗期。
     标签只留"模型名（订阅/API）",不带供应商名和 cc-switch 后缀,免得面板换行/信息过载。
@@ -271,12 +272,15 @@ def available_models(
     """
     from .gateway import settings_store
 
+    disabled = set(settings_store.list_disabled_builtin_models())
     extra = [
         (m["id"], m.get("label") or m["id"])
         for m in settings_store.list_web_extra_models()
         if m.get("id")
     ]
-    out: list[tuple[str, str, str]] = [(mid, label, "anthropic") for mid, label in default_choices]
+    out: list[tuple[str, str, str]] = [
+        (mid, label, "anthropic") for mid, label in default_choices if mid not in disabled
+    ]
     seen = {mid for mid, _, _ in out}
     for mid, label in extra:
         if mid in seen:

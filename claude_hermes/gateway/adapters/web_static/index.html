@@ -4359,31 +4359,45 @@ async function saveMcpForm(){
   renderMcpPane();
 }
 
-// ── 模型分区(设置页手动加官方档位 / 第三方服务商,改完下一轮/刷新即生效,不用重启)──
+// ── 模型分区(内置档位可隐藏/恢复,自定义模型/服务商可增改删,改完下一轮/刷新即生效)──
 function renderModelsPane(){
-  const md = SET.data.models || {custom:[], providers:[]};
+  const md = SET.data.models || {active:"", builtin:[], custom:[], providers:[]};
+  const curTag = ' <span class="mctag cur">当前</span>';
   let h = '<h3>'+ic("bot")+'模型 & 服务商</h3>'+
-    '<p class="shint">新模型发布但代码还没跟上时,先在这里手动补一档;第三方服务商(DeepSeek/中转等)'+
-    '也可以直接在这加,不用装 cc-switch。保存后刷新模型面板即生效,不用重启。</p>';
-  h += '<div class="sechd">官方模型档位(手动补录)</div>';
+    '<p class="shint">"当前"标的是这个会话正在用的模型。新模型发布但代码还没跟上时,先在下面手动补一档;'+
+    '第三方服务商(DeepSeek/中转等)也可以直接在这加,不用装 cc-switch。保存后刷新模型面板即生效,不用重启。</p>';
+
+  h += '<div class="sechd">内置模型档位</div>';
+  (md.builtin||[]).forEach(m=>{
+    const cur = m.id===md.active ? curTag : '';
+    const acts = '<label class="sw"><input type="checkbox" data-bitgl="'+esc(m.id)+'"'+(m.disabled?'':' checked')+'><span class="track"></span></label>';
+    h += settingsRow("data-birow", m.id, esc(m.label)+cur, esc(m.id), !!m.disabled, acts);
+  });
+
+  h += '<div class="sechd">自定义模型档位</div>';
   if(!md.custom.length){
-    h += '<p class="shint" style="margin:2px 0 6px">还没有手动加的档位,当前用代码内置的官方清单。</p>';
+    h += '<p class="shint" style="margin:2px 0 6px">还没有手动加的档位。</p>';
   } else {
     md.custom.forEach(m=>{
-      const acts = '<button class="miniact danger" data-mddel="'+esc(m.id)+'">删除</button>';
-      h += settingsRow("data-mdrow", m.id, esc(m.label||m.id)+' <span class="mctag">'+esc(m.id)+'</span>', "", false, acts);
+      const cur = m.id===md.active ? curTag : '';
+      const acts = '<button class="miniact" data-mdedit="'+esc(m.id)+'">编辑</button>'+
+        '<button class="miniact danger" data-mddel="'+esc(m.id)+'">删除</button>';
+      h += settingsRow("data-mdrow", m.id, esc(m.label||m.id)+cur, esc(m.id), false, acts);
     });
   }
   h += '<div class="setrowbtns"><button class="btn ghost sm" id="mdAddBtn">'+ic("plus")+' 添加模型档位</button></div>';
   if(SET.modelFormOpen) h += modelFormHtml();
+
   h += '<div class="sechd">第三方服务商</div>';
   if(!md.providers.length){
     h += '<p class="shint" style="margin:2px 0 6px">还没有手动加的服务商;cc-switch 配置的会另外自动出现在模型面板。</p>';
   } else {
     md.providers.forEach(p=>{
+      const cur = p.model===md.active ? curTag : '';
       const sub = esc(p.model||"")+' · '+esc(p.base_url||"")+(p.api_key?' · 已设 key':' · 未设 key');
-      const acts = '<button class="miniact danger" data-pvdel="'+esc(p.name)+'">删除</button>';
-      h += settingsRow("data-pvrow", p.name, esc(p.label||p.name), sub, false, acts);
+      const acts = '<button class="miniact" data-pvedit="'+esc(p.name)+'">编辑</button>'+
+        '<button class="miniact danger" data-pvdel="'+esc(p.name)+'">删除</button>';
+      h += settingsRow("data-pvrow", p.name, esc(p.label||p.name)+cur, sub, false, acts);
     });
   }
   h += '<div class="setrowbtns"><button class="btn ghost sm" id="pvAddBtn">'+ic("plus")+' 添加服务商</button></div>';
@@ -4392,25 +4406,41 @@ function renderModelsPane(){
   bindModelsPane();
 }
 function modelFormHtml(){
+  const editing = SET.modelEditing;
+  const cur = editing ? (SET.data.models.custom.find(m=>m.id===editing)||{}) : {};
   return '<div class="mcpform" id="mdForm">'+
-    '<div class="fld"><label>模型 id(填 API 认的那个模型名)</label><input id="mdId" placeholder="claude-opus-5"></div>'+
-    '<div class="fld"><label>显示名(可空,默认用 id)</label><input id="mdLabel" placeholder="Opus 5（订阅）"></div>'+
+    '<div class="fld"><label>模型 id(填 API 认的那个模型名)</label>'+
+      '<input id="mdId" placeholder="claude-opus-5" value="'+esc(cur.id||"")+'"'+(editing?' readonly':'')+'></div>'+
+    '<div class="fld"><label>显示名(可空,默认用 id)</label><input id="mdLabel" placeholder="Opus 5（订阅）" value="'+esc(cur.label||"")+'"></div>'+
     '<div class="mcperr" id="mdErr"></div>'+
     '<div class="setrowbtns"><button class="btn primary sm" id="mdSave">保存</button><button class="btn ghost sm" id="mdCancel">取消</button></div>'+
   '</div>';
 }
 function providerFormHtml(){
+  const editing = SET.providerEditing;
+  const cur = editing ? (SET.data.models.providers.find(p=>p.name===editing)||{}) : {};
   return '<div class="mcpform" id="pvForm">'+
-    '<div class="fld"><label>名称(唯一标识)</label><input id="pvName" placeholder="deepseek"></div>'+
-    '<div class="fld"><label>base_url</label><input id="pvUrl" placeholder="https://api.deepseek.com/anthropic"></div>'+
-    '<div class="fld"><label>model</label><input id="pvModel" placeholder="deepseek-chat"></div>'+
-    '<div class="fld"><label>api_key</label><input id="pvKey" type="password" placeholder="sk-..."></div>'+
-    '<div class="fld"><label>显示名(可空)</label><input id="pvLabel" placeholder=""></div>'+
+    '<div class="fld"><label>名称(唯一标识)</label><input id="pvName" placeholder="deepseek" value="'+esc(cur.name||"")+'"'+(editing?' readonly':'')+'></div>'+
+    '<div class="fld"><label>base_url</label><input id="pvUrl" placeholder="https://api.deepseek.com/anthropic" value="'+esc(cur.base_url||"")+'"></div>'+
+    '<div class="fld"><label>model</label><input id="pvModel" placeholder="deepseek-chat" value="'+esc(cur.model||"")+'"></div>'+
+    '<div class="fld"><label>api_key</label><input id="pvKey" type="password" placeholder="sk-..." value="'+esc(cur.api_key||"")+'"></div>'+
+    '<div class="fld"><label>显示名(可空)</label><input id="pvLabel" placeholder="" value="'+esc(cur.label||"")+'"></div>'+
     '<div class="mcperr" id="pvErr"></div>'+
     '<div class="setrowbtns"><button class="btn primary sm" id="pvSave">保存</button><button class="btn ghost sm" id="pvCancel">取消</button></div>'+
   '</div>';
 }
 function bindModelsPane(){
+  $("#setPane").querySelectorAll("[data-bitgl]").forEach(inp=>{
+    inp.onchange = async()=>{
+      const id=inp.dataset.bitgl, disabled=!inp.checked;
+      inp.closest(".srow").classList.toggle("off", disabled);
+      await api("/settings/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"toggle_builtin", id, disabled})});
+      const m=SET.data.models.builtin.find(x=>x.id===id); if(m) m.disabled=disabled;
+    };
+  });
+  $("#setPane").querySelectorAll("[data-mdedit]").forEach(b=>{
+    b.onclick = ()=>{ SET.modelEditing=b.dataset.mdedit; SET.modelFormOpen=true; renderModelsPane(); };
+  });
   $("#setPane").querySelectorAll("[data-mddel]").forEach(b=>{
     b.onclick = async()=>{
       const id=b.dataset.mddel;
@@ -4419,6 +4449,9 @@ function bindModelsPane(){
       SET.data.models.custom = SET.data.models.custom.filter(m=>m.id!==id);
       renderModelsPane();
     };
+  });
+  $("#setPane").querySelectorAll("[data-pvedit]").forEach(b=>{
+    b.onclick = ()=>{ SET.providerEditing=b.dataset.pvedit; SET.providerFormOpen=true; renderModelsPane(); };
   });
   $("#setPane").querySelectorAll("[data-pvdel]").forEach(b=>{
     b.onclick = async()=>{
@@ -4429,11 +4462,11 @@ function bindModelsPane(){
       renderModelsPane();
     };
   });
-  const mdAdd=$("#mdAddBtn"); if(mdAdd) mdAdd.onclick=()=>{ SET.modelFormOpen=true; renderModelsPane(); };
-  const mdCancel=$("#mdCancel"); if(mdCancel) mdCancel.onclick=()=>{ SET.modelFormOpen=false; renderModelsPane(); };
+  const mdAdd=$("#mdAddBtn"); if(mdAdd) mdAdd.onclick=()=>{ SET.modelEditing=null; SET.modelFormOpen=true; renderModelsPane(); };
+  const mdCancel=$("#mdCancel"); if(mdCancel) mdCancel.onclick=()=>{ SET.modelFormOpen=false; SET.modelEditing=null; renderModelsPane(); };
   const mdSave=$("#mdSave"); if(mdSave) mdSave.onclick=saveModelForm;
-  const pvAdd=$("#pvAddBtn"); if(pvAdd) pvAdd.onclick=()=>{ SET.providerFormOpen=true; renderModelsPane(); };
-  const pvCancel=$("#pvCancel"); if(pvCancel) pvCancel.onclick=()=>{ SET.providerFormOpen=false; renderModelsPane(); };
+  const pvAdd=$("#pvAddBtn"); if(pvAdd) pvAdd.onclick=()=>{ SET.providerEditing=null; SET.providerFormOpen=true; renderModelsPane(); };
+  const pvCancel=$("#pvCancel"); if(pvCancel) pvCancel.onclick=()=>{ SET.providerFormOpen=false; SET.providerEditing=null; renderModelsPane(); };
   const pvSave=$("#pvSave"); if(pvSave) pvSave.onclick=saveProviderForm;
 }
 async function saveModelForm(){
@@ -4444,7 +4477,7 @@ async function saveModelForm(){
   const r=await api("/settings/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"add", id, label})});
   const d=await r.json();
   if(d.error){ err.textContent=d.error; return; }
-  SET.modelFormOpen=false;
+  SET.modelFormOpen=false; SET.modelEditing=null;
   const rr=await api("/settings"); SET.data=await rr.json();
   renderModelsPane();
 }
@@ -4459,7 +4492,7 @@ async function saveProviderForm(){
   const r=await api("/settings/provider",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   const d=await r.json();
   if(d.error){ err.textContent=d.error; return; }
-  SET.providerFormOpen=false;
+  SET.providerFormOpen=false; SET.providerEditing=null;
   const rr=await api("/settings"); SET.data=await rr.json();
   renderModelsPane();
 }

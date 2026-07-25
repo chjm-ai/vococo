@@ -377,6 +377,7 @@
   .mcperr{color:var(--err);font-size:12.5px;margin-top:8px;min-height:16px}
   .mctag{display:inline-block;font-size:11px;color:var(--dim2);border:1px solid var(--line2);
     border-radius:6px;padding:1px 6px;margin-left:8px;font-family:ui-monospace,Menlo,monospace}
+  .mctag.cur{color:var(--accent);border-color:var(--accent);font-family:inherit;font-weight:600}
 
   /* 文件列表 + 编辑器(记忆 / 人设) */
   .frow{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line);cursor:pointer;transition:opacity .15s}

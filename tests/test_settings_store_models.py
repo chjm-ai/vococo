@@ -15,7 +15,7 @@ def _point_to(monkeypatch, tmp_path: Path) -> None:
 
 def test_add_and_list_extra_model(monkeypatch, tmp_path):
     _point_to(monkeypatch, tmp_path)
-    err = settings_store.add_web_extra_model("claude-opus-5", "Opus 5（订阅）")
+    err = settings_store.upsert_web_extra_model("claude-opus-5", "Opus 5（订阅）")
     assert err is None
     models = settings_store.list_web_extra_models()
     assert models == [{"id": "claude-opus-5", "label": "Opus 5（订阅）"}]
@@ -23,25 +23,27 @@ def test_add_and_list_extra_model(monkeypatch, tmp_path):
 
 def test_add_extra_model_no_label_falls_back_to_id(monkeypatch, tmp_path):
     _point_to(monkeypatch, tmp_path)
-    settings_store.add_web_extra_model("claude-opus-5", "")
+    settings_store.upsert_web_extra_model("claude-opus-5", "")
     assert settings_store.list_web_extra_models()[0]["label"] == "claude-opus-5"
 
 
 def test_add_extra_model_missing_id_errors(monkeypatch, tmp_path):
     _point_to(monkeypatch, tmp_path)
-    assert settings_store.add_web_extra_model("", "label") == "缺少模型 id"
+    assert settings_store.upsert_web_extra_model("", "label") == "缺少模型 id"
 
 
-def test_add_extra_model_duplicate_errors(monkeypatch, tmp_path):
+def test_upsert_extra_model_same_id_overwrites_label(monkeypatch, tmp_path):
+    """id 是键;第二次传同一个 id = 编辑(覆盖 label),不是报错。"""
     _point_to(monkeypatch, tmp_path)
-    settings_store.add_web_extra_model("claude-opus-5", "Opus 5")
-    err = settings_store.add_web_extra_model("claude-opus-5", "重复")
-    assert err == "模型 claude-opus-5 已存在"
+    settings_store.upsert_web_extra_model("claude-opus-5", "Opus 5")
+    err = settings_store.upsert_web_extra_model("claude-opus-5", "改过的名字")
+    assert err is None
+    assert settings_store.list_web_extra_models() == [{"id": "claude-opus-5", "label": "改过的名字"}]
 
 
 def test_remove_extra_model(monkeypatch, tmp_path):
     _point_to(monkeypatch, tmp_path)
-    settings_store.add_web_extra_model("claude-opus-5", "Opus 5")
+    settings_store.upsert_web_extra_model("claude-opus-5", "Opus 5")
     settings_store.remove_web_extra_model("claude-opus-5")
     assert settings_store.list_web_extra_models() == []
 
@@ -90,3 +92,25 @@ def test_web_providers_raw_shape_matches_cc_switch_entry(monkeypatch, tmp_path):
     raw = settings_store.web_providers_raw()
     assert raw == {"mine": {"base_url": "https://api.example.com", "api_key": "sk-yyy",
                              "model": "my-model", "label": ""}}
+
+
+# ── 设置页手动隐藏的内置模型档位 ──────────────────────────────────────────
+def test_disable_and_list_builtin_model(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    assert settings_store.list_disabled_builtin_models() == []
+    settings_store.set_builtin_model_disabled("claude-opus-4-6", True)
+    assert settings_store.list_disabled_builtin_models() == ["claude-opus-4-6"]
+
+
+def test_reenable_builtin_model(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store.set_builtin_model_disabled("claude-opus-4-6", True)
+    settings_store.set_builtin_model_disabled("claude-opus-4-6", False)
+    assert settings_store.list_disabled_builtin_models() == []
+
+
+def test_disable_builtin_model_is_idempotent(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store.set_builtin_model_disabled("claude-opus-4-6", True)
+    settings_store.set_builtin_model_disabled("claude-opus-4-6", True)
+    assert settings_store.list_disabled_builtin_models() == ["claude-opus-4-6"]
