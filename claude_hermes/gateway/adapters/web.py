@@ -1217,6 +1217,7 @@ class WebAdapter:
                     ],
                     "custom": settings_store.list_web_extra_models(),
                     "providers": settings_store.list_web_providers(),
+                    "cc_switch": providers.list_cc_switch_providers(),
                 },
                 "files": self._list_brain_files(),
                 "brain_dir": str(config.AI_BRAIN_DIR),

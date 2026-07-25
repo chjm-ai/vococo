@@ -177,6 +177,35 @@ def test_available_models_includes_web_provider_without_cc_switch_config(tmp_pat
     assert by_id["my-model"] == ("my-model（API）", "api")
 
 
+# ── list_cc_switch_providers:设置页只读展示 cc-switch 配置的供应商 ──────────
+def test_list_cc_switch_providers_returns_deepseek_and_kimi(tmp_path, monkeypatch):
+    _point_to(monkeypatch, _write_config(tmp_path, DEEPSEEK_CONFIG))
+    out = providers.list_cc_switch_providers()
+    by_name = {p["name"]: p for p in out}
+    assert by_name["deepseek"] == {
+        "name": "deepseek", "base_url": "https://api.deepseek.com/anthropic",
+        "model": "deepseek-chat", "has_key": True,
+    }
+    assert by_name["kimi"]["model"] == "kimi-k2-0711-preview"
+
+
+def test_list_cc_switch_providers_excludes_web_providers(tmp_path, monkeypatch):
+    """web_providers 已经在设置页另有一节展示,cc-switch 只读列表不该重复列出。"""
+    _point_to(monkeypatch, _write_config(tmp_path, DEEPSEEK_CONFIG))
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "mine", {"base_url": "https://api.example.com", "model": "my-model", "api_key": "sk-yyy"}
+    )
+    out = providers.list_cc_switch_providers()
+    assert "mine" not in {p["name"] for p in out}
+    assert "deepseek" in {p["name"] for p in out}  # cc-switch 自己的那些还在
+
+
+def test_list_cc_switch_providers_empty_when_no_config(tmp_path, monkeypatch):
+    _point_to(monkeypatch, tmp_path / "does-not-exist.yaml")
+    assert providers.list_cc_switch_providers() == []
+
+
 def test_resolve_picks_up_web_provider_via_explicit_model(tmp_path, monkeypatch):
     _point_to(monkeypatch, tmp_path / "does-not-exist.yaml")
     _point_settings_to(monkeypatch, tmp_path)
