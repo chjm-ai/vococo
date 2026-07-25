@@ -4361,7 +4361,7 @@ async function saveMcpForm(){
 
 // ── 模型分区(内置档位可隐藏/恢复,自定义模型/服务商可增改删,改完下一轮/刷新即生效)──
 function renderModelsPane(){
-  const md = SET.data.models || {active:"", builtin:[], custom:[], providers:[]};
+  const md = SET.data.models || {active:"", builtin:[], custom:[], providers:[], cc_switch:[]};
   const curTag = ' <span class="mctag cur">当前</span>';
   let h = '<h3>'+ic("bot")+'模型 & 服务商</h3>'+
     '<p class="shint">"当前"标的是这个会话正在用的模型。新模型发布但代码还没跟上时,先在下面手动补一档;'+
@@ -4388,9 +4388,9 @@ function renderModelsPane(){
   h += '<div class="setrowbtns"><button class="btn ghost sm" id="mdAddBtn">'+ic("plus")+' 添加模型档位</button></div>';
   if(SET.modelFormOpen) h += modelFormHtml();
 
-  h += '<div class="sechd">第三方服务商</div>';
+  h += '<div class="sechd">第三方服务商(设置页手动加)</div>';
   if(!md.providers.length){
-    h += '<p class="shint" style="margin:2px 0 6px">还没有手动加的服务商;cc-switch 配置的会另外自动出现在模型面板。</p>';
+    h += '<p class="shint" style="margin:2px 0 6px">还没有手动加的服务商。</p>';
   } else {
     md.providers.forEach(p=>{
       const cur = p.model===md.active ? curTag : '';
@@ -4402,6 +4402,19 @@ function renderModelsPane(){
   }
   h += '<div class="setrowbtns"><button class="btn ghost sm" id="pvAddBtn">'+ic("plus")+' 添加服务商</button></div>';
   if(SET.providerFormOpen) h += providerFormHtml();
+
+  h += '<div class="sechd">cc-switch 配置的服务商(只读)</div>';
+  if(!md.cc_switch || !md.cc_switch.length){
+    h += '<p class="shint" style="margin:2px 0 6px">没检测到 cc-switch 配置(~/.claude-hermes/config.yaml)。</p>';
+  } else {
+    h += '<p class="shint" style="margin:2px 0 6px">这些来自 cc-switch 桌面 App 管理的配置文件,改动请去那边操作——'+
+      '在这加编辑/删除,下次 cc-switch 一同步又会被它覆盖回去。</p>';
+    md.cc_switch.forEach(p=>{
+      const cur = p.model===md.active ? curTag : '';
+      const sub = esc(p.model||"")+' · '+esc(p.base_url||"")+(p.has_key?' · 已设 key':' · 未设 key');
+      h += settingsRow("", "", esc(p.name)+cur, sub, false, '<span class="mctag">cc-switch</span>');
+    });
+  }
   $("#setPane").innerHTML = h;
   bindModelsPane();
 }

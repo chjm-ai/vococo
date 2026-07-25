@@ -97,13 +97,15 @@ def _load_yaml() -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _provider_entries(config: dict) -> dict[str, dict]:
+def _provider_entries(config: dict, include_web: bool = True) -> dict[str, dict]:
     """汇总所有供应商定义,键=name。
 
     cc-switch 写 `custom_providers:`(列表),原版 hermes 用 `providers:`(字典)。
-    两者取并集,custom_providers 优先(与 cc-switch 的 dedup 顺序一致);web 设置页
-    加的 web_providers(独立存在 data/web_settings.json,见 gateway.settings_store)
-    优先级最高——它是用户在本会话里最新显式添加的,同名时应覆盖 cc-switch 那份。
+    两者取并集,custom_providers 优先(与 cc-switch 的 dedup 顺序一致);include_web=True 时
+    再叠一层 web 设置页加的 web_providers(独立存在 data/web_settings.json,见
+    gateway.settings_store),优先级最高——它是用户在本会话里最新显式添加的,同名时应
+    覆盖 cc-switch 那份。include_web=False 供 list_cc_switch_providers() 单独展示
+    cc-switch 那部分用,不想跟 web_providers 混在一起(那部分已经在设置页另有一节)。
     """
     out: dict[str, dict] = {}
     providers_dict = config.get("providers")
@@ -116,10 +118,33 @@ def _provider_entries(config: dict) -> dict[str, dict]:
         for entry in custom:
             if isinstance(entry, dict) and entry.get("name"):
                 out[str(entry["name"])] = entry  # 列表覆盖字典
-    from .gateway import settings_store
+    if include_web:
+        from .gateway import settings_store
 
-    for name, entry in settings_store.web_providers_raw().items():
-        out[str(name)] = entry
+        for name, entry in settings_store.web_providers_raw().items():
+            out[str(name)] = entry
+    return out
+
+
+def list_cc_switch_providers() -> list[dict]:
+    """cc-switch(~/.claude-hermes/config.yaml)配置的第三方供应商,给设置页只读展示用。
+
+    只读是故意的:这个文件是 cc-switch 桌面 App 管的,我们这边写了下次它一同步就可能被
+    覆盖回去——想改 DeepSeek/Kimi 这些,去 cc-switch 改;设置页里手动加的服务商
+    (web_providers)走的是完全独立的存储,那部分才支持增删改。
+    """
+    config = _load_yaml() or {}
+    out = []
+    for name, entry in _provider_entries(config, include_web=False).items():
+        if name.lower() in _OFFICIAL_NAMES:
+            continue
+        out.append({
+            "name": name,
+            "base_url": _entry_field(entry, "base_url", "baseUrl"),
+            "model": _entry_field(entry, "model"),
+            "has_key": bool(_entry_field(entry, "api_key", "apiKey")),
+        })
+    out.sort(key=lambda x: x["name"].lower())
     return out
 
 
