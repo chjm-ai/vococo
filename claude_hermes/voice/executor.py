@@ -156,9 +156,13 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     async def _drive() -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id
         resume_sid = session_store.get_sdk_session_id(session_key)
+        # 会话选定的模型——语音派发/追问时(voice_dispatch_task 的 model 参数)已经
+        # 提前写进 session_meta(见 dispatch()),这里读出来传给 stream_turn;
+        # 没设过就是空串,stream_turn 内部 providers.resolve(None,...) 自动落到全局默认。
+        model = session_store.get_chosen_model(session_key) or None
         async for ev in stream_turn(
-            [], prompt_text, cwd=effective_cwd, session_key=session_key, resume=resume_sid,
-            max_turns=config.VOICE_TASK_MAX_TURNS,
+            [], prompt_text, model=model, cwd=effective_cwd, session_key=session_key,
+            resume=resume_sid, max_turns=config.VOICE_TASK_MAX_TURNS,
         ):
             if isinstance(ev, SessionStarted):
                 # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮
@@ -177,6 +181,20 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                 sdk_session_id = ev.reply.sdk_session_id
                 if ev.reply.is_error:
                     error_note = ev.reply.error or "模型返回了错误"
+                # 跟普通文字对话(gateway/core.py converse())对齐:记一笔 token 用量,
+                # 否则 session_meta 的 ctx_tokens/total_tokens 永远是 0,Web UI 右上角
+                # 的上下文用量图标会把这条会话误判成"全新会话"而一直不显示。
+                if ev.reply.context_tokens or ev.reply.turn_tokens:
+                    session_store.record_usage(
+                        session_key,
+                        ev.reply.context_tokens,
+                        ev.reply.turn_tokens,
+                        window=ev.reply.context_window,
+                        last_in=ev.reply.input_fresh,
+                        last_cache=ev.reply.cache_read,
+                        last_out=ev.reply.output_tokens,
+                        model=ev.reply.model,
+                    )
 
     try:
         await asyncio.wait_for(_drive(), timeout=config.VOICE_TASK_TIMEOUT_MIN * 60)
@@ -240,14 +258,20 @@ def dispatch(
     cwd: str | None = None,
     dispatch_platform: str | None = None,
     dispatch_chat_id: str | None = None,
+    model: str | None = None,
 ) -> dict:
     """落库 + 尝试立即起跑(并发满则排队)。立即返回任务行,不等待执行。
 
     dispatch_platform/dispatch_chat_id: 任务是从哪个平台哪个会话派来的,
-    终态通知时靠它们回推该发给谁(见 notify.py)。"""
+    终态通知时靠它们回推该发给谁(见 notify.py)。
+    model:语音派发时指定要用的模型(如 claude-opus-5),不传就用当前全局默认——
+    必须在 _maybe_start_next() 真正起跑前写进 session_meta.chosen_model,
+    _run()/_drive() 才能读到(见 executor._drive 里的 get_chosen_model)。"""
     task = tasks.create(title=title, prompt=prompt, cwd=cwd,
                         dispatch_platform=dispatch_platform,
                         dispatch_chat_id=dispatch_chat_id)
+    if model:
+        session_store.set_chosen_model(tasks.session_key(task["id"]), model)
     _maybe_start_next()
     # 派发瞬间就推给在线页面(状态条立刻出现);重新 get 拿最新状态——
     # 上一行可能已把它从 queued 拉成 running
