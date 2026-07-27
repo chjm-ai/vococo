@@ -5278,7 +5278,7 @@ function renderStatus(){
   S.stream.status.innerHTML = '<span class="chip live">'+label+DOTS+esc(tick)+'</span>'
     + '<button type="button" class="statusstop" title="停止回复" aria-label="停止回复"><span class="sq"></span></button>';
 }
-function finalizeStream(finalText){
+function finalizeStream(finalText, imgs){
   if(!S.stream) return;
   if(S.stream.timer) clearInterval(S.stream.timer);
   S.stream.status.remove(); S.stream.thinktog.remove(); S.stream.think.remove();
@@ -5290,6 +5290,9 @@ function finalizeStream(finalText){
   }else{
     for(const k in S.stream.segs){ const d=S.stream.segs[k]; d.innerHTML=mdToHtml(d.dataset.raw); }
   }
+  if(imgs&&imgs.length){ const g=el("div","imgs"); for(const u of imgs){ const im=el("img");
+    if(typeof u==="string" && u.startsWith("/")) loadAuthedImg(im,u); else im.src=u;
+    im.onclick=()=>openImgViewer(im); g.append(im);} S.stream.bubble.append(g); }
   S.stream=null; updateSendBtn(); scrollDown();
 }
 // 构成一个"进行中回合"的流式事件类型(可重放以重建气泡)。done/message/choice 不在此列。
@@ -5391,9 +5394,9 @@ function handleEvent(e){
         }
       }else{ setRateStatus("ok","",""); }
       setMeta(e); loadConvs(); flushPending(e.conv); break; }
-    case "message": // 命令回复 / 报错 / cron 推送
-      if(S.stream && !streamText(S.stream)){ finalizeStream(e.text); }
-      else { S.stream=null; addBubble("ai", e.text); }
+    case "message": // 命令回复 / 报错 / cron 推送 / AI 主动发图
+      if(S.stream && !streamText(S.stream)){ finalizeStream(e.text, e.images); }
+      else { S.stream=null; addBubble("ai", e.text, e.images); }
       // 后端推送的报错也更新侧栏状态
       if(e.text&&e.text.includes("⚠️")){
         const el2=e.text.toLowerCase();
