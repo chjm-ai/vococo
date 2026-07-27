@@ -13,7 +13,7 @@
   开启的那些直接并进 ClaudeAgentOptions.mcp_servers(SDK 0.2.110 原生支持外部 server)。
 - 模型/供应商:web_extra_models 是官方新模型档位还没进代码前的手动补录(id+label,
   按订阅走,不需要 key,id 是键、重复 id 直接覆盖 label=编辑);web_providers 是第三方
-  端点(base_url+api_key+model),独立于 cc-switch 的 ~/.claude-hermes/config.yaml,
+  端点(base_url+api_key+model),直接落 data/web_settings.json。
   避免两边互相覆写。disabled_builtin_models 是代码里 MODEL_CHOICES 硬编码档位的隐藏
   名单(不能真删常量,只能摘出选择器,可随时恢复)。providers.py 每次都现读现并,
   同样【改完下一轮就生效】。
@@ -40,7 +40,6 @@ _DEFAULTS: dict = {
     "web_default_model": "",    # web 端上次选定的模型;新会话没显式选就用它(空=回落 config.MODEL)
     "web_extra_models": [],     # 设置页手动加的官方模型档位:[{id,label}](新模型发布,代码没跟上时用)
     "web_providers": {},        # 设置页手动加的第三方服务商:name -> {base_url,api_key,model,label}
-                                 # (独立于 cc-switch 的 ~/.claude-hermes/config.yaml,避免互相覆写)
     "disabled_builtin_models": [],  # 代码里硬编码的官方档位(MODEL_CHOICES),用户在设置页
                                      # 手动隐藏掉的那些 id——不能真删代码常量,只能从选择器里摘掉
 }
@@ -273,7 +272,7 @@ def set_builtin_model_disabled(model_id: str, disabled: bool) -> None:
 
 # ── 设置页手动加的第三方服务商 ────────────────────────────────────────────
 def list_web_providers() -> list[dict]:
-    """给设置页用:每个供应商的 name + 配置(含 api_key 明文,和 cc-switch 现状一致)。"""
+    """给设置页用:每个供应商的 name + 配置(含 api_key 明文)。"""
     d = _load()
     out = [{"name": name, **cfg} for name, cfg in d["web_providers"].items()]
     out.sort(key=lambda x: x["name"].lower())
@@ -321,7 +320,7 @@ def remove_web_provider(name: str) -> None:
 
 
 def web_providers_raw() -> dict[str, dict]:
-    """给 providers.py 合并用:原始 name→entry 字典(字段名和 cc-switch 条目同形状)。"""
+    """给 providers.py 用:原始 name→entry 字典(字段名和旧 cc-switch 条目同形状,便于迁移)。"""
     return dict(_load()["web_providers"])
 
 

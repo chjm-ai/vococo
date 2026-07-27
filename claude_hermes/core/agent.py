@@ -410,7 +410,7 @@ def _compat_base_key(
 ) -> str:
     """保温 client 的兼容性哈希(不含 SDK 会话 id,那个在池里单独比)。
 
-    覆盖所有「connect 时定死、语义上每轮该重读」的输入:模型 / 供应商 env(cc-switch
+    覆盖所有「connect 时定死、语义上每轮该重读」的输入:模型 / 供应商 env(设置页
     改完下轮生效)/ 系统提示(记忆索引变了要重建)/ skills / MCP 配置 / cwd;外加
     clarify 路由身份 —— SDK 内部任务在 connect 时快照了 contextvar(danger 的 cwd /
     clarify 路由),复用的前提是快照值与当前轮完全一致:统一会话从 TG 切到 Web,
@@ -467,7 +467,7 @@ def _cli_stderr(line: str) -> None:
 
 
 def _turn_env(provider_env: dict) -> dict:
-    """本轮传给 CLI 子进程的 env:cc-switch 供应商 env(base_url+key)叠加恒定的强制前台开关。"""
+    """本轮传给 CLI 子进程的 env:设置页供应商 env(base_url+key)叠加恒定的强制前台开关。"""
     return {**provider_env, **_FORCE_FOREGROUND_ENV}
 
 
@@ -537,7 +537,7 @@ async def stream_turn(
     累计值,cache_read 会被反复累加,导致数字虚高("看着超了实际没超")。
     turn_tokens / 成本 / 明细仍取 ResultMessage.usage —— 那本就是本轮累计消耗,语义正确。
     """
-    # cc-switch 集成:按会话选定模型(或 cc-switch 当前激活的供应商)算出实际模型和
+    # 供应商集成:按会话选定模型(或设置页里配置的第三方供应商)算出实际模型和
     # 要注入的 env。第三方(DeepSeek/Kimi)→注入 base_url+key;官方→env 为空走订阅。
     resolved_model, provider_env = providers.resolve(model, config.MODEL)
     # MCP / skill 从运行时设置(网页设置页可改)计算,不再写死;改完下一轮即生效
@@ -592,7 +592,7 @@ async def stream_turn(
             # 不进 ~/.claude/skills,Claude Code/Codex/OpenCode 等其它工具看不到。
             plugins=[{"type": "local", "path": str(config.HERMES_PLUGIN_DIR)}],
             cwd=cwd,  # 项目会话→该文件夹当工作根(自动加载其 CLAUDE.md/.claude);None=进程默认目录
-            env=_turn_env(provider_env),  # cc-switch base_url+key + 恒定强制前台开关(见 _turn_env)
+            env=_turn_env(provider_env),  # 设置页供应商 base_url+key + 恒定强制前台开关(见 _turn_env)
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
             disallowed_tools=list(disallowed_tools or []),
             stderr=_cli_stderr,  # 过滤 Bun 源码刷屏,见 _cli_stderr 顶部注释

@@ -938,11 +938,11 @@ class WebAdapter:
     async def _handle_models(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
-        # 模型清单 = 官方档 + cc-switch 里配好的 DeepSeek/Kimi 等(available_models);
+        # 模型清单 = 官方档 + 设置页里配好的 DeepSeek/Kimi 等(available_models);
         # label 带描述(如订阅/API 标签),前端 renderModelPop 直接展示。
-        # default=当前激活的模型(跟随 cc-switch)。
+        # default=当前激活的模型(跟随设置页默认或 config.MODEL)。
         choices = providers.available_models(MODEL_CHOICES)
-        # default = web 端上次选定的模型;没设过才回落到全局激活模型(cc-switch)
+        # default = web 端上次选定的模型;没设过才回落到 config.MODEL
         active_model = settings_store.get_web_default_model() \
             or providers.resolve(None, config.MODEL)[0]
         return web.json_response(
@@ -982,7 +982,7 @@ class WebAdapter:
         if not model:
             model = providers.resolve(None, config.MODEL)[0]
 
-        # Kimi 订阅(api.kimi.com);providers 模块内部处理 cc-switch 字段的
+        # Kimi 订阅(api.kimi.com);providers 模块内部处理 web_providers 条目的
         # snake_case/camelCase 归一化,这里只拿到规整好的 api_key。
         api_key = providers.subscription_api_key_for_model(model)
         if api_key is not None:
@@ -1243,7 +1243,6 @@ class WebAdapter:
                     ],
                     "custom": settings_store.list_web_extra_models(),
                     "providers": settings_store.list_web_providers(),
-                    "cc_switch": providers.list_cc_switch_providers(),
                 },
                 "files": self._list_brain_files(),
                 "brain_dir": str(config.AI_BRAIN_DIR),
@@ -1335,8 +1334,7 @@ class WebAdapter:
     async def _handle_settings_provider(self, request: web.Request) -> web.Response:
         """新增/删除设置页手动加的第三方服务商。action: add|remove。
 
-        独立于 cc-switch 的 ~/.claude-hermes/config.yaml,直接落 web_settings.json,
-        同样不用重启——providers.py 每次都现读现并。
+        直接落 web_settings.json,同样不用重启——providers.py 每次都现读现并。
         """
         if (g := self._guard(request)) is not None:
             return g

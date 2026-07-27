@@ -5,7 +5,7 @@
 
 模型两级:
   1. 首选 Haiku —— 走 Claude 订阅(SDK 一次性 query,不烧 API 钱);
-  2. 失败(撞限额/网络)→ 回落 cc-switch 里名为 deepseek 的供应商
+  2. 失败(撞限额/网络)→ 回落设置页里名为 deepseek 的第三方供应商
      (当前配置 = deepseek-v4-flash,按量但极便宜);
   3. 都失败 → 返回 None,调用方保留截断兜底,静默放弃。
 """
@@ -20,7 +20,7 @@ from .. import providers
 MAX_LEN = 40
 
 _PRIMARY_MODEL = "claude-haiku-4-5"  # 走订阅
-_FALLBACK_PROVIDER = "deepseek"  # cc-switch 供应商名(按名查,不写死模型)
+_FALLBACK_PROVIDER = "deepseek"  # 设置页里的第三方供应商名(按名查,不写死模型)
 _TIMEOUT = 45  # 单次尝试秒数;标题不急,但别无限挂着
 
 _PROMPT = (

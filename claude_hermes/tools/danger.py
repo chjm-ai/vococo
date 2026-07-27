@@ -301,11 +301,12 @@ def _known_secret_values() -> list[str]:
         config.WEB_AUTH_TOKEN,
     ]
     try:
-        from .. import providers
+        from ..gateway import settings_store
 
-        active = providers.load_active()
-        if active and active.api_key:
-            vals.append(active.api_key)
+        for p in settings_store.list_web_providers():
+            key = p.get("api_key")
+            if isinstance(key, str) and len(key) >= 8:
+                vals.append(key)
     except Exception:
         pass
     return [v for v in vals if v and len(v) >= 8]

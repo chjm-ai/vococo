@@ -1,26 +1,10 @@
-"""cc-switch 供应商集成:读取 ~/.hermes/config.yaml,把当前激活的供应商
-(base_url + api_key + model)注入 SDK,实现 DeepSeek / Kimi / 官方订阅 / 任意
-第三方中转之间的热切换。
+"""设置页管理的供应商集成:从 gateway.settings_store 读取 DeepSeek/Kimi/任意第三方中转
+的配置,注入 SDK options.env,实现与官方订阅之间的热切换。
 
-背景:cc-switch(https://github.com/farion1231/cc-switch)是个桌面 App,内建对
-Hermes 的支持——它把供应商配置写进 `~/.hermes/config.yaml`。本模块负责读这个文件,
-claude-hermes 不硬编码任何供应商:模型名 / api_key / base_url 全由 cc-switch 管理。
-
-cc-switch 写入的格式(节选):
-
-    model:
-      provider: "deepseek"        # 当前激活的供应商名
-      base_url: "https://api.deepseek.com/anthropic"
-      default: "deepseek-chat"    # 当前模型
-    custom_providers:
-      - name: deepseek
-        base_url: https://api.deepseek.com/anthropic
-        api_key: sk-...
-        model: deepseek-chat
-      - name: kimi
-        base_url: https://api.moonshot.cn/anthropic
-        api_key: sk-...
-        model: kimi-k2-0711-preview
+说明:此模块过去依赖 cc-switch 桌面 App 写入的 ~/.claude-hermes/config.yaml。
+现在已经有了自己的设置页"模型"管理界面和独立存储(data/web_settings.json),所以
+把核心语义改成从 settings_store 读取。cc-switch 配置文件不再被运行时读取,仅作为
+一次性迁移脚本的数据来源(见 deploy/migrate-from-cc-switch.py)。
 """
 from __future__ import annotations
 
@@ -28,24 +12,23 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-# 兜底默认模型(cc-switch 未配置 / 文件缺失时);与 config.MODEL 的默认保持一致。
+# 兜底默认模型;与 config.MODEL 的默认保持一致。
 _FALLBACK_MODEL = "claude-sonnet-5"
 
 # 官方 Anthropic 端点特征:命中即视为"走订阅",不注入第三方鉴权。
 _OFFICIAL_HOSTS = ("api.anthropic.com",)
-# cc-switch / 原版 hermes 里代表官方订阅的供应商名。
+# 代表官方订阅的供应商名(旧配置里或用户手填都可能出现,兼容保留)。
 _OFFICIAL_NAMES = ("claude", "official", "anthropic", "claude-official")
+
+# Kimi(Moonshot)的订阅套餐固定走这个域名,其余第三方供应商(DeepSeek/Kimi 的常规
+# API key 入口等)一律按量计费的 API 处理。
+_SUBSCRIPTION_HOSTS = ("api.kimi.com",)  # Kimi Coding 订阅套餐
 
 
 def hermes_config_path() -> Path:
-    """claude-hermes 的供应商配置路径(cc-switch 格式)。
+    """旧 cc-switch 配置文件路径。
 
-    刻意独立于原版 Hermes 的 `~/.hermes`(那是另一个产品的活配置,不能共用):
-      1. CLAUDE_HERMES_HOME 环境变量(非空)→ <该目录>/config.yaml
-      2. 默认 ~/.claude-hermes/config.yaml
-
-    想用 cc-switch 管理它:在 cc-switch 里把该 Hermes profile 的 hermes_config_dir
-    指到 ~/.claude-hermes 即可(cc-switch 会直接写这个目录,不碰原版 ~/.hermes)。
+    保留这个函数是给一次性迁移脚本用;运行时不再读取该文件。
     """
     raw = os.environ.get("CLAUDE_HERMES_HOME", "").strip()
     base = Path(os.path.expanduser(raw)) if raw else Path.home() / ".claude-hermes"
@@ -75,79 +58,6 @@ class ActiveProvider:
         return host.lower() in _OFFICIAL_HOSTS
 
 
-def _load_yaml() -> dict | None:
-    """读并解析 config.yaml;文件缺失/为空/解析失败/无 pyyaml 都返回 None(容错)。"""
-    path = hermes_config_path()
-    if not path.exists():
-        return None
-    try:
-        import yaml  # 延迟 import:未装 pyyaml 时不至于拖垮整个进程
-    except ImportError:
-        return None
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    if not text.strip():
-        return None
-    try:
-        data = yaml.safe_load(text)
-    except yaml.YAMLError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _provider_entries(config: dict, include_web: bool = True) -> dict[str, dict]:
-    """汇总所有供应商定义,键=name。
-
-    cc-switch 写 `custom_providers:`(列表),原版 hermes 用 `providers:`(字典)。
-    两者取并集,custom_providers 优先(与 cc-switch 的 dedup 顺序一致);include_web=True 时
-    再叠一层 web 设置页加的 web_providers(独立存在 data/web_settings.json,见
-    gateway.settings_store),优先级最高——它是用户在本会话里最新显式添加的,同名时应
-    覆盖 cc-switch 那份。include_web=False 供 list_cc_switch_providers() 单独展示
-    cc-switch 那部分用,不想跟 web_providers 混在一起(那部分已经在设置页另有一节)。
-    """
-    out: dict[str, dict] = {}
-    providers_dict = config.get("providers")
-    if isinstance(providers_dict, dict):
-        for name, entry in providers_dict.items():
-            if isinstance(entry, dict):
-                out[str(name)] = entry
-    custom = config.get("custom_providers")
-    if isinstance(custom, list):
-        for entry in custom:
-            if isinstance(entry, dict) and entry.get("name"):
-                out[str(entry["name"])] = entry  # 列表覆盖字典
-    if include_web:
-        from .gateway import settings_store
-
-        for name, entry in settings_store.web_providers_raw().items():
-            out[str(name)] = entry
-    return out
-
-
-def list_cc_switch_providers() -> list[dict]:
-    """cc-switch(~/.claude-hermes/config.yaml)配置的第三方供应商,给设置页只读展示用。
-
-    只读是故意的:这个文件是 cc-switch 桌面 App 管的,我们这边写了下次它一同步就可能被
-    覆盖回去——想改 DeepSeek/Kimi 这些,去 cc-switch 改;设置页里手动加的服务商
-    (web_providers)走的是完全独立的存储,那部分才支持增删改。
-    """
-    config = _load_yaml() or {}
-    out = []
-    for name, entry in _provider_entries(config, include_web=False).items():
-        if name.lower() in _OFFICIAL_NAMES:
-            continue
-        out.append({
-            "name": name,
-            "base_url": _entry_field(entry, "base_url", "baseUrl"),
-            "model": _entry_field(entry, "model"),
-            "has_key": bool(_entry_field(entry, "api_key", "apiKey")),
-        })
-    out.sort(key=lambda x: x["name"].lower())
-    return out
-
-
 def _entry_field(entry: dict, *keys: str) -> str:
     """从供应商条目取字段,兼容 snake_case 与遗留 camelCase(baseUrl/apiKey)。"""
     for k in keys:
@@ -157,28 +67,11 @@ def _entry_field(entry: dict, *keys: str) -> str:
     return ""
 
 
-def load_active() -> ActiveProvider | None:
-    """当前激活的供应商;cc-switch 未配置 / 文件缺失 → None(调用方回落订阅)。"""
-    config = _load_yaml()
-    if not config:
-        return None
-    model_section = config.get("model")
-    model_section = model_section if isinstance(model_section, dict) else {}
-    active_name = _entry_field(model_section, "provider")
-    entries = _provider_entries(config)
-    entry = entries.get(active_name, {}) if active_name else {}
+def _all_web_providers() -> dict[str, dict]:
+    """从 settings_store 取所有第三方服务商条目,键=name。"""
+    from .gateway import settings_store
 
-    base_url = _entry_field(model_section, "base_url") or _entry_field(
-        entry, "base_url", "baseUrl"
-    )
-    api_key = _entry_field(entry, "api_key", "apiKey")
-    model = (
-        _entry_field(model_section, "default")
-        or _entry_field(entry, "model")
-        or _FALLBACK_MODEL
-    )
-    name = active_name or entry.get("name") or "claude"
-    return ActiveProvider(name=str(name), base_url=base_url, api_key=api_key, model=model)
+    return settings_store.web_providers_raw()
 
 
 def _env_for(provider: ActiveProvider) -> dict[str, str]:
@@ -201,9 +94,9 @@ def _env_for(provider: ActiveProvider) -> dict[str, str]:
     }
 
 
-def _find_by_model(config: dict, model: str) -> ActiveProvider | None:
-    """按模型名反查它属于 cc-switch 里的哪个供应商(供 /model 会话覆盖用)。"""
-    for name, entry in _provider_entries(config).items():
+def _provider_for_model(model: str) -> ActiveProvider | None:
+    """按模型名反查它属于 web_providers 里的哪个供应商(供 /model 会话覆盖用)。"""
+    for name, entry in _all_web_providers().items():
         if _entry_field(entry, "model") == model:
             return ActiveProvider(
                 name=name,
@@ -218,22 +111,19 @@ def resolve(chosen_model: str | None, default_model: str) -> tuple[str, dict[str
     """算出这一轮实际用的 (模型, 要注入的 env)。
 
     优先级:
-      1. 会话用 /model 显式选了某模型 → 用它;若该模型属于 cc-switch 的第三方
-         供应商,连带注入其 base_url + key,否则按官方(走订阅)。
-      2. 没显式选 → 跟随 cc-switch 当前激活的供应商。
-      3. 都没有 → default_model(= config.MODEL) + 订阅。
+      1. 会话用 /model 显式选了某模型 → 用它;若该模型属于设置页里的第三方供应商,
+         连带注入其 base_url + key,否则按官方(走订阅)。
+      2. 没显式选 → default_model(= config.MODEL) + 订阅。
+
+    注意:不再支持 cc-switch 的"默认激活供应商"概念。当前只用 Claude 为主、第三方
+    靠 /model 显式切;若以后需要"默认走第三方",得在 settings_store 里加 active_provider。
     """
-    config = _load_yaml() or {}
     if chosen_model:
-        found = _find_by_model(config, chosen_model)
+        found = _provider_for_model(chosen_model)
         if found and not found.is_official:
             return chosen_model, _env_for(found)
         return chosen_model, {}
-    active = load_active()
-    if active is None:
-        return default_model, {}
-    model = active.model or default_model
-    return model, _env_for(active)
+    return default_model, {}
 
 
 def sidecar_env(name: str) -> tuple[str, dict[str, str]] | None:
@@ -242,9 +132,8 @@ def sidecar_env(name: str) -> tuple[str, dict[str, str]] | None:
     名字不区分大小写、允许子串匹配(配置里叫 deepseek / DeepSeek 都能命中);
     未配置 / 缺 key / 是官方端点(官方走订阅不用它兜底)→ None。
     """
-    config = _load_yaml() or {}
     want = name.lower()
-    entries = _provider_entries(config)
+    entries = _all_web_providers()
     # 先精确后子串:防「deepseek」误命中「deepseek-pro」这种带后缀的贵档
     ordered = sorted(entries.items(), key=lambda kv: kv[0].lower() != want)
     for pname, entry in ordered:
@@ -263,15 +152,38 @@ def sidecar_env(name: str) -> tuple[str, dict[str, str]] | None:
 
 
 def has_active_third_party() -> bool:
-    """cc-switch 当前激活的是不是一个可用的第三方供应商(带 key)。"""
-    active = load_active()
-    return active is not None and not active.is_official and bool(active.api_key)
+    """当前是否配置了可用的第三方供应商(带 key)。
+
+    决定 config.py 启动时是否允许不填 CLAUDE_CODE_OAUTH_TOKEN(只有第三方可用时
+    才免,否则缺订阅 token 直接起不来)。
+    """
+    for entry in _all_web_providers().values():
+        if _entry_field(entry, "api_key"):
+            provider = ActiveProvider(
+                name="x",
+                base_url=_entry_field(entry, "base_url", "baseUrl"),
+                api_key=_entry_field(entry, "api_key", "apiKey"),
+                model=_entry_field(entry, "model"),
+            )
+            if not provider.is_official:
+                return True
+    return False
 
 
-# Kimi(Moonshot)的订阅套餐固定走这个域名,其余第三方供应商(DeepSeek/Kimi 的常规
-# API key 入口等)一律按量计费的 API 处理——这俩域名比在 config.yaml 塞自定义字段更抗
-# cc-switch 覆写。
-_SUBSCRIPTION_HOSTS = ("api.kimi.com",)  # Kimi Coding 订阅套餐
+def load_active() -> ActiveProvider | None:
+    """返回第一个可用的第三方供应商(历史兼容函数,保留给少数老调用点用)。
+
+    旧语义是"cc-switch 当前激活的供应商";现在没有激活位的概念,改成返回任意一个
+    可用的第三方供应商(展示/打码用,不影响实际模型选择)。
+    """
+    for name, entry in _all_web_providers().items():
+        api_key = _entry_field(entry, "api_key", "apiKey")
+        base_url = _entry_field(entry, "base_url", "baseUrl")
+        model = _entry_field(entry, "model")
+        provider = ActiveProvider(name=name, base_url=base_url, api_key=api_key, model=model)
+        if not provider.is_official and api_key:
+            return provider
+    return None
 
 
 def _billing_kind(base_url: str) -> str:
@@ -285,13 +197,13 @@ def _billing_kind(base_url: str) -> str:
 def available_models(
     default_choices: list[tuple[str, str]],
 ) -> list[tuple[str, str, str]]:
-    """/model 无参时的候选:官方默认档 + 设置页手动加的档位 + cc-switch 里配好的各供应商模型。
+    """/model 无参时的候选:官方默认档 + 设置页手动加的档位 + 设置页里的各供应商模型。
 
     default_choices 是代码里写死的官方档(claude-opus/sonnet/haiku),恒列在前;设置页
     可以把其中某几档隐藏掉(disabled_builtin_models,不动代码常量,只摘出选择器)。
     web_extra_models(设置页手动补录,见 gateway.settings_store)紧随其后——同样按
     "官方订阅"处理,不需要 key,用来填新模型发布但代码还没来得及加的空窗期。
-    标签只留"模型名（订阅/API）",不带供应商名和 cc-switch 后缀,免得面板换行/信息过载。
+    标签只留"模型名（订阅/API）",不带供应商名,免得面板换行/信息过载。
     第三个元素是分组:anthropic(官方订阅) / kimi(Kimi 订阅) / api(按量计费),
     供 WebUI 模型面板分组展示 + 决定要不要查订阅额度。
     """
@@ -312,10 +224,7 @@ def available_models(
             continue
         seen.add(mid)
         out.append((mid, label, "anthropic"))
-    # 注意:不能在 config.yaml 缺失时提前 return——web_providers(设置页手动加的
-    # 供应商)独立于这个文件,即使用户没装 cc-switch 也得走 _provider_entries 合并。
-    config = _load_yaml() or {}
-    for name, entry in _provider_entries(config).items():
+    for name, entry in _all_web_providers().items():
         if name.lower() in _OFFICIAL_NAMES:
             continue
         model = _entry_field(entry, "model")
@@ -330,9 +239,8 @@ def available_models(
 
 
 def lookup_provider_by_model(model: str) -> dict | None:
-    """按模型名查供应商配置条目(cc-switch 或设置页手动加的);未配置(官方模型)返回 None。"""
-    config = _load_yaml() or {}
-    for name, entry in _provider_entries(config).items():
+    """按模型名查设置页里的供应商配置条目;未配置(官方模型)返回 None。"""
+    for entry in _all_web_providers().values():
         if _entry_field(entry, "model") == model:
             return dict(entry)
     return None
@@ -341,6 +249,7 @@ def lookup_provider_by_model(model: str) -> dict | None:
 def is_subscription_host(base_url: str) -> bool:
     """base_url 的 host 是否属于已知订阅套餐供应商(如 Kimi Coding)。"""
     from urllib.parse import urlsplit
+
     host = (urlsplit(base_url).hostname or "").lower()
     return host in _SUBSCRIPTION_HOSTS
 
@@ -348,16 +257,14 @@ def is_subscription_host(base_url: str) -> bool:
 def subscription_api_key_for_model(model: str) -> str | None:
     """model 对应的供应商若是已知订阅套餐(如 Kimi Coding)主机,返回其 api_key
     (可能是空串,表示配置了但没填 key);不是订阅供应商(未配置/按量计费 API)返回 None。
-
-    只暴露这一个规整过的 seam,调用方不用像 `_entry_field(entry, "base_url", "baseUrl")`
-    那样知道 cc-switch 条目的 snake_case/camelCase 双写细节(2026-07-23 架构复盘:
-    web.py 曾直接越权调用这个下划线开头的私有 helper)。
     """
-    config = _load_yaml() or {}
-    provider = _find_by_model(config, model)
-    if provider is None or not provider.base_url or not is_subscription_host(provider.base_url):
+    entry = lookup_provider_by_model(model)
+    if entry is None:
         return None
-    return provider.api_key
+    base_url = _entry_field(entry, "base_url", "baseUrl")
+    if not base_url or not is_subscription_host(base_url):
+        return None
+    return _entry_field(entry, "api_key", "apiKey")
 
 
 async def kimi_usage(api_key: str) -> dict:

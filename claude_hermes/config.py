@@ -69,9 +69,9 @@ def _parse_skills(raw: str) -> list[str] | str | None:
 def _oauth_required() -> bool:
     """订阅 token 是否必需。
 
-    仅当 cc-switch 当前激活的是一个可用的第三方供应商(DeepSeek/Kimi 等,带 key)
-    时可免——那种场景下这一轮走第三方端点,不需要 Claude 订阅。其余情况(激活官方、
-    未装 cc-switch、读取异常)一律要求订阅 token,保持原有行为。
+    仅当设置页里配置了可用的第三方供应商(DeepSeek/Kimi 等,带 key)时可免——那种
+    场景下走第三方端点,不需要 Claude 订阅。其余情况(激活官方、未配置第三方、读取
+    异常)一律要求订阅 token,保持原有行为。
     """
     try:
         from . import providers
@@ -369,7 +369,7 @@ def _scrub_env_secrets() -> None:
 
     这些值上面都已读进本模块常量,运行时全走 config.X 而非 os.environ,故从环境移除是安全的:
     - 订阅 token:实测 CLI 用自己存的凭据(claude setup-token)鉴权,移除后请求照常成功。
-    - 第三方 provider key【不在此列】:它来自 ~/.claude-hermes/config.yaml、每轮经 options.env
+    - 第三方 provider key【不在此列】:它来自设置页手动配置的 web_providers、每轮经 options.env
       注入,CLI 必须拿它调第三方端点,无法移除 —— 那条只能靠 danger.py 定向拦截 + 沙箱根治。
     注:这是收窄「被动 env 泄露」,不是硬边界(同用户 Bash 仍可 `cat .env`);根治需 Tier3 沙箱。
     设 HERMES_KEEP_ENV_SECRETS=1 可跳过本清理(排障用)。
