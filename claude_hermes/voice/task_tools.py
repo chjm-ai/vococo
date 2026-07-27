@@ -9,8 +9,11 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from .. import config
 from ..gateway import clarify
+from ..gateway.core import MODEL_CHOICES
 from . import executor, tasks
 from .task_words import status_word
+
+_MODEL_EXAMPLES = "、".join(m for m, _ in MODEL_CHOICES)
 
 
 def _ok(text: str) -> dict:
@@ -34,13 +37,16 @@ def _describe(task: dict) -> str:
     "看不到当前对话上下文,必须把要做的事说完整);cwd:任务要在哪个项目目录下干活——"
     "涉及改代码/改仓库文件/查项目代码的任务【必须】传该项目根目录的绝对路径,"
     "是 git 仓库会自动开独立 worktree+分支,绝不会动主目录;不传则默认落到"
-    "claude-hermes 自己的仓库(同样走 worktree 隔离)。",
+    "claude-hermes 自己的仓库(同样走 worktree 隔离)。model:用户明确指定要用哪个"
+    f"模型跑这个任务时才传(如「用 opus 跑」),可选值:{_MODEL_EXAMPLES};"
+    "没听到用户点名要哪个模型就不要传,默认跟当前对话同一个模型。",
     {
         "type": "object",
         "properties": {
             "title": {"type": "string"},
             "prompt": {"type": "string"},
             "cwd": {"type": "string"},
+            "model": {"type": "string"},
         },
         "required": ["title", "prompt"],
     },
@@ -52,6 +58,7 @@ async def voice_dispatch_task(args: dict) -> dict:
     # 形同虚设,子代理直接在 serve 的主检出目录上改代码拉分支——代码层兜底,
     # 让"忘了传"也走 worktree,而不是落到主目录。
     cwd = (args.get("cwd") or "").strip() or str(config.ROOT_DIR)
+    model = (args.get("model") or "").strip()
     if not (title and prompt):
         return _ok("voice_dispatch_task 需要 title 和 prompt 都非空。")
     # 捕获派发时的平台上下文:任务完成后需要知道通知该发给谁(见 notify.py)。
@@ -61,10 +68,11 @@ async def voice_dispatch_task(args: dict) -> dict:
     dispatch_platform = ctx.adapter.platform if (ctx and ctx.adapter) else None
     dispatch_chat_id = str(ctx.chat_id) if (ctx and ctx.chat_id is not None) else None
     task = executor.dispatch(
-        title=title, prompt=prompt, cwd=cwd,
+        title=title, prompt=prompt, cwd=cwd, model=model or None,
         dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
     )
-    return _ok(f"已派发,task_id={task['id']},标题「{title}」,状态:{status_word(task['status'])}。")
+    model_note = f",模型:{model}" if model else ""
+    return _ok(f"已派发,task_id={task['id']},标题「{title}」{model_note},状态:{status_word(task['status'])}。")
 
 
 @tool(
