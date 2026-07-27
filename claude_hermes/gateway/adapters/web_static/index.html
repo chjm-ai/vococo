@@ -627,6 +627,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     src.buffer = buf;
     src.connect(audioCtx.destination);
     src.start(0);
+    wireAudioContextInterruptionHandler();
   }
 
   // 设备切换检测:track.onended/onmute + devicechange + visibilitychange 都往
@@ -638,12 +639,34 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let micHealthSuspectTs = 0;
   const MIC_HEALTH_WINDOW = 3500;
   const MIC_HEALTH_THRESHOLD = 2;
+  let _resettingMic = 0;  // resetMicStream 重入守卫:阻止 onended→suspect→reconnect 自循环
+  let _micSilentCount = 0;
+  let _micSilentTs = 0;
 
   function micStreamHealthy(){
     if(!stream) return false;
     const tracks = stream.getAudioTracks();
     if(!tracks.length) return false;
-    return tracks.some(t => t.readyState === "live");
+    if(!tracks.some(t => t.readyState === "live")) return false;
+    // 音频活动检测:analyser 就绪时读取电平,排除 readyState=live 但不出声的僵尸流
+    if(analyser && audioCtx && audioCtx.state === "running"){
+      const buf = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteTimeDomainData(buf);
+      const diff = Math.max(...buf) - Math.min(...buf);
+      if(diff < 2){
+        const now = Date.now();
+        if(now - _micSilentTs > 4000){ _micSilentCount = 0; _micSilentTs = now; }
+        _micSilentCount++;
+        if(_micSilentCount >= 5){
+          _micSilentCount = 0;
+          vdbg("mic.zombie", {diff});
+          return false;
+        }
+      } else {
+        _micSilentCount = 0;
+      }
+    }
+    return true;
   }
 
   function suspectMicProblem(reason){
@@ -659,8 +682,51 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     if(micHealthSuspectCount >= MIC_HEALTH_THRESHOLD){
       micHealthSuspectCount = 0;
       if(!micStreamHealthy()) resetMicStream();
+      // _resettingMic>0 说明我们正在 resetMicStream 的 onended 回调里——
+      // 重连已经在 startOmniHandsFree/scheduleOmniReconnect 的路上,不额外调度。
+      if(_resettingMic > 0) return;
       scheduleOmniReconnect("mic:"+reason, 500);
     }
+  }
+
+
+  // 麦克风流音频活动检测:读取 analyser 电平,在 watchdog 中周期性调用。
+  // diff<2 说明接近纯静音——可能不是用户没说话,而是流已僵尸(iOS 中断后)。
+  function checkMicAudioActivity(){
+    if(!analyser || !audioCtx) return;
+    if(audioCtx.state !== "running") return;  // 被挂起时 analyser 不产生数据
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteTimeDomainData(buf);
+    const diff = Math.max(...buf) - Math.min(...buf);
+    if(diff < 2){
+      const now = Date.now();
+      if(now - _micSilentTs > 4000){ _micSilentCount = 0; _micSilentTs = now; }
+      _micSilentCount++;
+      if(_micSilentCount >= 5){
+        _micSilentCount = 0;
+        vdbg("mic.zombie", {diff});
+        suspectMicProblem("zombie");
+      }
+    } else {
+      _micSilentCount = 0;
+    }
+  }
+
+  // AudioContext 中断恢复监听:iOS 在电话/闹钟/控制中心音频打断时会
+  // 把 AudioContext 从 running→suspended,恢复时→running。此时麦克风流
+  // 可能已变僵尸(readyState=live 但不出声)。只监不治——状态变化触发健康
+  // 检查,真有问题由 suspectMicProblem 发起重连。
+  function wireAudioContextInterruptionHandler(){
+    if(!audioCtx) return;
+    try{ audioCtx.onstatechange = null; }catch(e){}
+    audioCtx.onstatechange = () => {
+      vdbg("audioctx.state", audioCtx.state);
+      if(audioCtx.state === "running" && handsFreeActive){
+        setTimeout(() => {
+          if(!micStreamHealthy()) suspectMicProblem("audioctx-resume");
+        }, 300);
+      }
+    };
   }
 
   // 给麦克风流的每条音轨挂监听:iOS 电话打断/蓝牙断开时 track 会 mute/ended
@@ -675,6 +741,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   }
 
   async function ensureMicStream(){
+    // 流存在但不健康(僵尸)时强制换新——iOS 中断后流可 report live 但不出数据
+    if(stream && !micStreamHealthy()){
+      vdbg("mic.ensure-refresh", "existing stream unhealthy");
+      resetMicStream();
+    }
     if(!stream) {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {echoCancellation:true, noiseSuppression:true, autoGainControl:true}
@@ -691,7 +762,18 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     });
   }
 
-  // 重建 Omni 连线前必须换一条全新的麦克风流:把旧 RTCPeerConnection 里用过的
+  // iOS 中断恢复检测:页面由后台切回前台时检查麦克风健康。
+  // iOS 在电话/闹钟/控制中心音频打断结束后可能留下僵尸流。
+  document.addEventListener("visibilitychange", () => {
+    if(!document.hidden && handsFreeActive){
+      setTimeout(() => {
+        if(!micStreamHealthy()) suspectMicProblem("visibility");
+      }, 300);
+    }
+  });
+
+  // iOS 中断恢复检测:页面由后台切回前台时检查麦克风健康。
+  // iOS 在电话/闹钟/控制中心音频打断结束后可能留下僵尸流。
   // 音轨再 addTrack 进新 PC,音频能过阿里云 VAD(speech_started 正常),但输入转写
   // (input_audio_transcription.completed)再也不回事件——没有转写就永远不会发给
   // Claude,表现为"AI 不回复"(2026-07-12 真机日志实锤:新开通话必好、重连/切音色
@@ -701,9 +783,24 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 声纹 analyser 挂在旧流上,一并拆掉,startOmniHandsFree 里的 ensureAnalyser()
   // 会用新流重建。
   function resetMicStream(){
-    if(stream){ try{ stream.getTracks().forEach(t=>t.stop()); }catch(e){} stream = null; }
-    if(analyserSource){ try{ analyserSource.disconnect(); }catch(e){} analyserSource = null; }
-    analyser = null;
+    _resettingMic++;
+    try{
+      if(stream){
+        // 【关键】先摘 handler 再停轨:避免 onended→suspectMicProblem→scheduleOmniReconnect
+        // 自循环(停轨触发 onended 时仍在 startOmniHandsFree 的重连路径中,新 reconnect
+        // 会拆掉刚建好的连线,永续循环)。
+        stream.getAudioTracks().forEach(t => {
+          try{ t.onended = null; }catch(e){}
+          try{ t.onmute = null; }catch(e){}
+        });
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
+      if(analyserSource){ try{ analyserSource.disconnect(); }catch(e){} analyserSource = null; }
+      analyser = null;
+    }finally{
+      _resettingMic--;
+    }
   }
 
   async function startRecording(){
@@ -2069,6 +2166,7 @@ void main(){
     // 比如 iOS 在后台杀音频会话后,轨道可能静默 ended 而不发事件。
     if(handsFreeActive){
       if(!micStreamHealthy()) suspectMicProblem("stale");
+      checkMicAudioActivity();
     }
     // 即使在聆听/空闲阶段也检查 WebRTC 连接健康——静默断连(如 120 分钟
     // 会话上限到点)若不及时发现,用户说话永远没回复,表现像 AI 掉线。
