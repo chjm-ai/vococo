@@ -467,7 +467,7 @@ def handle_command(text: str, session_key: str, current_model: str) -> CommandOu
         if arg:
             session_store.set_chosen_model(session_key, arg)  # 持久化,刷新/重启不丢
             return CommandOutcome(new_model=arg)
-        # 候选 = 官方默认档 + cc-switch 里配好的 DeepSeek/Kimi 等供应商模型
+        # 候选 = 官方默认档 + 设置页里配好的 DeepSeek/Kimi 等供应商模型
         choices = providers.available_models(MODEL_CHOICES)
         opts = [
             (f"/model {v}", f"{label}{' ✓ 当前' if v == current_model else ''}")
@@ -486,7 +486,7 @@ def handle_command(text: str, session_key: str, current_model: str) -> CommandOu
         n = len(session_store.load_recent(session_key))
         active = providers.load_active()
         prov_line = (
-            f"\n供应商:{active.name}(cc-switch)" if active and not active.is_official else ""
+            f"\n供应商:{active.name}(设置页)" if active and not active.is_official else ""
         )
         return CommandOutcome(
             reply=f"会话:{session_key}\n模型:{current_model}{prov_line}\n本会话轮数:{n}"

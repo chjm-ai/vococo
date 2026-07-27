@@ -6,7 +6,7 @@
 
 池结构:{session_key: _Entry(client, base_key, live_sid, last_used)}
 - base_key:兼容性哈希(模型/供应商 env/skills/MCP 配置/cwd/系统提示/clarify 路由)。
-  任一变化 → 不命中 → 关旧 client 重建,保住 cc-switch「每轮读配置、改完下轮生效」
+  任一变化 → 不命中 → 关旧 client 重建,保住「设置页改了供应商、改完下轮生效」
   的语义;也保证 SDK 内部任务在 connect 时快照的 contextvar(danger cwd / clarify
   路由)与当前轮一致(快照值不变才允许复用)。
 - live_sid:该 client 当前活跃的 SDK 会话 id。命中还要求「本轮想 resume 的 sid」与
