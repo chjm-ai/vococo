@@ -503,6 +503,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 表现为"消息被吞、要说两遍才有反应、回答的是上一句"。
   let omniSpeechActive=false;   // speech_started→true / speech_stopped→false
   let omniInflightSegs=0;       // committed 过、转写(completed/delta兜底)还没回来的段数
+  let omniSpeechStoppedTs=0;    // 最近一次 speech_stopped 的时刻,用于 scheduleOmniFlush 的冷却期判断
   // 用户气泡归并(2026-07-23 截图反馈):semantic_vad 把"今年。"这类语义上像说完
   // 的前缀切成独立段,文字层面前端缓冲/后端 _prev_text 都会把段拼回一句,但气泡
   // 是每段各画一个,界面上看着就是"半句+整句"两个气泡。这里跟踪当前逻辑上还在
@@ -527,6 +528,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 缓冲最多压这么久必发,不至于卡死。
   const OMNI_PENDING_FLUSH_MS = 600;
   const OMNI_PENDING_SAFETY_MS = 30000;
+  // 语音结束冷却期:speech_stopped 后这段时间内不启用 600ms 短定时器,改用
+  // 2000ms 中位定时器,给阿里云 semantic_vad 重新检测继续说话留出时间窗口。
+  // 修复要点:连续长语音时 speech_stopped→下一次 speech_started 之间的间隔
+  // 可能超过 600ms(阿里云内部处理+网络延时),短定时器会把前半段先发出去。
+  const OMNI_PENDING_POST_SPEECH_MS = 2000;
   // 首回复静音(2026-07-12,Wesley 提议):每次 WebRTC 新建连接后,iOS AEC 从零
   // 收敛,AI 第一段音频的回声漏得最凶——干脆在本连接第一次朗读期间把麦克风上行
   // 直接静音(track.enabled=false 只发静音帧,不动音频图,不踩 iOS 音频会话的雷),
@@ -1821,6 +1827,7 @@ void main(){
           // 用户说完了。若最后一段转写还在途(inflight>0),flush 由转写到达驱动;
           // 都到齐了才短等待后发出(以前这里无条件 1s flush,在途转写直接被甩下)。
           omniSpeechActive = false;
+          omniSpeechStoppedTs = Date.now();
           scheduleOmniFlush("speech_stopped");
           break;
         case "conversation.item.input_audio_transcription.delta":
@@ -2457,8 +2464,14 @@ void main(){
     if(!omniPendingText) return;
     if(omniPendingTimer) clearTimeout(omniPendingTimer);
     const waiting = omniSpeechActive || omniInflightSegs > 0;
-    omniPendingTimer = setTimeout(flushOmniPending, waiting ? OMNI_PENDING_SAFETY_MS : OMNI_PENDING_FLUSH_MS);
-    vdbg("pending.arm", {why, wait: waiting ? "safety" : "flush", inflight: omniInflightSegs, speaking: omniSpeechActive});
+    // 冷却期:刚 speech_stopped 不久,用户可能还在继续说(阿里云 semantic_vad 正在
+    // 重新检测下一段的边界)。这时不启用 600ms 短定时器——下段 speech_started 收到
+    // 前,给足时间窗口让缓冲继续累积,避免连续长语音被提早腰斩成多段发出去。
+    // 冷却期内用中位定时器(2000ms),过了冷却期才切短定时器(600ms)。
+    const cooldown = !waiting && omniSpeechStoppedTs && Date.now() - omniSpeechStoppedTs < OMNI_PENDING_POST_SPEECH_MS;
+    const delay = waiting ? OMNI_PENDING_SAFETY_MS : cooldown ? OMNI_PENDING_POST_SPEECH_MS : OMNI_PENDING_FLUSH_MS;
+    omniPendingTimer = setTimeout(flushOmniPending, delay);
+    vdbg("pending.arm", {why, delay, cooldown, inflight: omniInflightSegs, speaking: omniSpeechActive});
   }
   function flushOmniPending(){
     omniPendingTimer = null;
@@ -2618,7 +2631,7 @@ void main(){
     omniDeltaFallback = null; omniFallbackSentItem = null;
     if(omniPendingTimer){ clearTimeout(omniPendingTimer); omniPendingTimer = null; }
     omniPendingText = null;
-    omniSpeechActive = false; omniInflightSegs = 0;
+    omniSpeechActive = false; omniInflightSegs = 0; omniSpeechStoppedTs = 0;
     omniUserBubble = null; omniUserBubbleText = ""; omniUserSentTs = 0;
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
