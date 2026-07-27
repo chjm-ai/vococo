@@ -1133,6 +1133,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     }
     if(queuedForOmni) pumpOmniRead();
   }
+  // P0 修复(2026-07-27):flushAnnouncements 只在忙碌状态转换的具体事件里被叫到,
+  // 如果 task_done 到达时你正忙(比如同一个语音会话里还在问别的),播报会一直攒着,
+  // 只能等下次交互才被想起来——加个定时兜底,别指望状态转换事件一定会来。
+  setInterval(()=>{ if(pendingAnnouncements.length) flushAnnouncements(); }, 8000);
 
   // ── 通话状态字/声波球/提示音(免提 Omni 与按住说话共用)─────────────────────
   const STATE_WORD = {idle:"空闲", capturing:"聆听中…", thinking:"思考中…", speaking:"工作中…"};
@@ -2885,6 +2889,9 @@ void main(){
     if(!$("#callView").hidden) acquireWakeLock();
     // 切回前台时可能刚经历过电话打断/蓝牙断开:怀疑麦克风有问题
     if(handsFreeActive) suspectMicProblem("vischange");
+    // P0 修复(2026-07-27):切后台/锁屏期间 SSE 事件可能已经到了但没被处理,
+    // 回到前台立刻补播,别等下次交互才想起来。
+    flushAnnouncements();
   });
 
   // ── 视图切换入口(供侧边栏"语音任务"主行 + #voiceChatBtn 调用,见下方接线)──────
