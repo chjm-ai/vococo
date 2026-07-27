@@ -443,7 +443,11 @@ class CommandOutcome:
 
 
 def is_command(text: str) -> bool:
-    return text.startswith("/")
+    if not text.startswith("/"):
+        return False
+    # /Users/wesley/... 这类文件路径不是命令——首词含多个 / 即判定为路径
+    first_word = text.split(None, 1)[0]
+    return first_word.count("/") == 1
 
 
 def handle_command(text: str, session_key: str, current_model: str) -> CommandOutcome:
