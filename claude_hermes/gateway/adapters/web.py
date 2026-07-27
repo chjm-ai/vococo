@@ -21,6 +21,7 @@ import json
 import os
 import re
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import AsyncIterator, Callable
@@ -384,6 +385,31 @@ class WebAdapter:
             kind="error" if is_err else "proactive",
             enabled=config.PUSH_ON_ERROR if is_err else config.PUSH_ON_PROACTIVE,
         )
+
+    async def send_image(self, chat_id: int | str, src_path: Path, caption: str = "") -> str | None:
+        """把本地图片文件复制进 IMAGES_DIR 并作为一条 assistant 气泡推给前端;返回错误信息(None=成功)。
+
+        供 send_image 工具用 —— 模型生图/截图后主动把本地文件发出去,复用 send() 的
+        已读标记/推送逻辑,只是多带一份 images 字段。
+        """
+        if not src_path.is_file():
+            return f"文件不存在:{src_path}"
+        ext = src_path.suffix.lower().lstrip(".")
+        if ext not in {"png", "jpg", "jpeg", "gif", "webp"}:
+            return f"不支持的图片格式:{ext or '(无后缀)'}"
+        config.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        name = f"ai_{uuid.uuid4().hex}.{ext}"
+        (config.IMAGES_DIR / name).write_bytes(src_path.read_bytes())
+        self._emit({
+            "conv": str(chat_id), "type": "message", "text": caption,
+            "images": [f"/image?name={name}"],
+        })
+        session_store.set_pending_review(config.resolve_session_key("web", str(chat_id)), True)
+        self._push_notify(
+            title="Wazir", body=caption or "[图片]", conv=str(chat_id),
+            kind="proactive", enabled=config.PUSH_ON_PROACTIVE,
+        )
+        return None
 
     def make_sink(self, chat_id: int | str) -> Sink:
         return _WebSink(self, str(chat_id))

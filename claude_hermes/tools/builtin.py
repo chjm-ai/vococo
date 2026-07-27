@@ -380,6 +380,37 @@ async def send_message(args: dict) -> dict:
     return _ok(f"已发送到 {to}。" if ok else "发送失败(网关未就绪或平台不存在)。")
 
 
+@tool(
+    "send_image",
+    "把一张本地图片文件(截图/生图产出)发送到当前 Web 聊天里显示。仅 Web 端支持,"
+    "其他渠道会提示不支持。path:本地图片文件的绝对路径(png/jpg/jpeg/gif/webp);"
+    "caption:可选,作为图片说明文字一并显示。",
+    {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "caption": {"type": "string"},
+        },
+        "required": ["path"],
+    },
+)
+async def send_image(args: dict) -> dict:
+    from pathlib import Path
+
+    from ..gateway import clarify
+    from ..gateway.adapters.web import WebAdapter
+
+    path = (args.get("path") or "").strip()
+    caption = (args.get("caption") or "").strip()
+    if not path:
+        return _ok("send_image 需要非空 path。")
+    ctx = clarify.current()
+    if ctx is None or not isinstance(ctx.adapter, WebAdapter):
+        return _ok("当前渠道不支持发送图片(仅 Web 端支持)。")
+    err = await ctx.adapter.send_image(ctx.chat_id, Path(path), caption)
+    return _ok(err or "已发送到当前聊天。")
+
+
 async def _confirm_force_restart(ctx, others: list[str]) -> bool:
     """有其他会话轮次还没结束时,弹按钮问当前用户是否仍要强制重启。
 
@@ -584,6 +615,7 @@ def build_mcp_servers() -> dict:
                 delete_cron_job,
                 ask_user,
                 send_message,
+                send_image,
                 restart_self,
                 list_mcp_servers,
                 add_mcp_server,
