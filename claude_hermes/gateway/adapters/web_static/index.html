@@ -1776,8 +1776,15 @@ void main(){
     omniReconnectTimer = setTimeout(async () => {
       omniReconnectTimer = null;
       if(!handsFreeActive) return;
-      // disconnected 可能已经自愈,重建前再看一眼当前状态
-      if(!force && omniPc && (omniPc.connectionState === "connected" || omniPc.connectionState === "connecting")){
+      // disconnected 可能已经自愈,重建前再看一眼当前状态。
+      // 但 mic:开头的原因(devicechange/ended/stale)是麦克风轨道本身的问题,
+      // 跟 WebRTC 网络层连接状态无关——pc 显示 connected 不代表麦克风还活着。
+      // 2026-07-27 真机实锤:蓝牙切手机麦克风时 pc 全程 connected,导致这条
+      // "pc 还连着就跳过"的短路把 mic:devicechange/mic:stale 重连全部拦下,
+      // 麦克风轨道 ended 后再也没被真正 reset+reacquire,通话表面"已接回"实际
+      // 永久失聪。mic 类原因必须无视 pc 状态,老老实实走一遍真重连。
+      const isMicReason = reason.startsWith("mic:");
+      if(!force && !isMicReason && omniPc && (omniPc.connectionState === "connected" || omniPc.connectionState === "connecting")){
         vdbg("reconnect.skipped", "pc recovered");
         // 跳过 ≠ 重连失败:计数器必须清零。2026-07-15 事故——通话中心跳误报攒了
         // 7 次"调度后发现 pc 还活着",计数器只增不减(原本只在 pc 状态跳变到
