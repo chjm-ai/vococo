@@ -18,6 +18,22 @@ _cache: dict[str, Any] | None = None
 _cache_at = 0.0
 _lock = asyncio.Lock()
 
+# claude-monitor 默认用 --plan custom 时,5h token 上限是拿本机历史所有项目的
+# 5h 窗口 token 用量做 P90 估出来的"猜测值"——跟 Anthropic 真实配额毫无关系,
+# 且不同模型单价差几十倍(Haiku vs Opus),裸 token 数完全没法当用量指标用
+# (2026-07-28 实测:同一账号 4 次真实撞 429 限额时的裸 token 消耗从 37 万到
+# 2006 万,变异系数 1.44,没有规律)。
+#
+# 改用美元花费(claude-monitor 的 local.cost_usd,已经按每条调用各自的模型
+# 分别定价、缓存读取按官方折扣价计入)做分子,变异系数降到 0.31——这 4 次撞限额
+# 的美元花费落在 $36~93,其中最低的一次 $36.17 与 claude-monitor 社区维护的
+# Max5 固定表 cost_limit=$35 几乎精确对上,故取 $35 做锚定分母。
+# 这不是官方精确值,只有 1/4 个真实样本精确命中,其余 3 次偏高(大概率是
+# Anthropic 真实窗口按固定时钟对齐重置、不是纯滑动窗口导致的算法偏差)——
+# 但比裸 token 数或 P90 猜测的上限都更接近真实情况。
+# 订阅档位从 Max5 换成别的要跟着改这个值。
+_FIVE_HOUR_COST_LIMIT_USD = 35.0
+
 
 def _parse_ts(value: Any) -> int | None:
     """把 ISO 字符串或秒级时间戳统一转成秒级 int,失败返回 None。"""
@@ -59,11 +75,16 @@ def _run_monitor_sync() -> dict[str, Any]:
         timeout=120,
         check=False,
     )
-    if proc.returncode != 0:
+    # 退出码不代表失败:claude-monitor 把"额度状态"编码进退出码里返回
+    # (0=ok,10=near_limit,11=limit_hit,20=indeterminate,见 output/snapshots.py
+    # 的 _status()),这些都是合法数据、stdout 仍是完整 JSON——之前只要非 0
+    # 就当失败,导致真撞到估算上限时(最需要看到数据的时候)反而直接丢弃了整份数据。
+    # 只有 stdout 本身不是合法 JSON 才算真失败。
+    try:
+        data = json.loads(proc.stdout)
+    except Exception as ex:
         err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
-        raise RuntimeError(f"claude-monitor 失败: {err[:300]}")
-
-    data = json.loads(proc.stdout)
+        raise RuntimeError(f"claude-monitor 输出不是合法 JSON: {err[:300]}") from ex
     if not isinstance(data, dict):
         raise RuntimeError("claude-monitor 返回非对象 JSON")
     return data
@@ -144,12 +165,21 @@ async def get_local_claude_usage() -> dict[str, Any] | None:
     limits_raw = raw.get("limits") or {}
     five = _make_limit(limits_raw.get("five_hour"))
     seven = _make_limit(limits_raw.get("seven_day"), fallback_reset=five.get("resets_at"))
+    details = _extract_details(raw)
+
+    # 5h 已用百分比改用美元花费口径(见上面 _FIVE_HOUR_COST_LIMIT_USD 的注释),
+    # token 数只留着给 hover 卡片当参考明细,不再拿它算百分比。
+    cost_usd = details["local"].get("cost_usd")
+    if isinstance(cost_usd, (int, float)):
+        five["utilization"] = max(0.0, cost_usd / _FIVE_HOUR_COST_LIMIT_USD)
+        five["cost_usd"] = cost_usd
+        five["cost_limit_usd"] = _FIVE_HOUR_COST_LIMIT_USD
 
     result = {
         "provider": "claude",
         "source": "local_estimate",
         "limits": {"five_hour": five, "seven_day": seven},
-        **_extract_details(raw),
+        **details,
     }
 
     async with _lock:

@@ -3553,7 +3553,11 @@ function renderQuotaTooltip(data){
   if(data.provider === "claude"){
     html += '<div class="mqh">Claude 订阅额度'+(data.source==="local_estimate"?' <span class="mqtag">本地估算</span>':"")+'</div>';
     html += '<div class="mqrow"><span>5h 已用</span><b>'+fmtPct(five.utilization)+'</b></div>';
-    if(five.limit) html += '<div class="mqrow mqsub">'+fmtNum(five.remaining)+' / '+fmtNum(five.limit)+' tokens</div>';
+    // 分母是美元花费(缓存已按官方折扣价折算,见后端 usage_local.py 的
+    // _FIVE_HOUR_COST_LIMIT_USD 注释),不是裸 token 数——不同模型单价差几十倍,
+    // token 数没法直接当用量看,这里跟着换成美元子行。
+    if(five.cost_limit_usd) html += '<div class="mqrow mqsub">'+fmtUSD(five.cost_usd)+' / '+fmtUSD(five.cost_limit_usd)+'</div>';
+    else if(five.limit) html += '<div class="mqrow mqsub">'+fmtNum(five.remaining)+' / '+fmtNum(five.limit)+' tokens</div>';
     if(seven.utilization != null){
       html += '<div class="mqrow"><span>7d 已用</span><b>'+fmtPct(seven.utilization)+'</b></div>';
       if(seven.limit) html += '<div class="mqrow mqsub">'+fmtNum(seven.remaining)+' / '+fmtNum(seven.limit)+' tokens</div>';
@@ -3605,10 +3609,11 @@ function applyUsageRow(id, data){
     if(arc){ arc.setAttribute("stroke-dashoffset","0"); arc.style.stroke="var(--dim2)"; }
     return;
   }
-  var pct = Math.round(five.utilization * 100);
+  var pct = Math.round(five.utilization * 100);   // 真实值,超 100% 也如实显示(美元口径下是可能的)
   if(tip) tip.innerHTML = renderQuotaTooltip(data);
   if(arc){
-    arc.setAttribute("stroke-dashoffset", String(QUOTA_ARC * (1 - pct/100)));
+    var fillPct = Math.min(100, pct);   // 圆环视觉上封顶,不然 dashoffset 变负会画歪
+    arc.setAttribute("stroke-dashoffset", String(QUOTA_ARC * (1 - fillPct/100)));
     var color = "var(--ok)";
     if(pct >= 90) color = "var(--err)"; else if(pct >= 70) color = "#d9a43a";
     arc.style.stroke = color;
