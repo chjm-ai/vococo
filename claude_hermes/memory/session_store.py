@@ -27,7 +27,6 @@ from .projects import (  # noqa: F401 (re-export)
     path_for_hash,
     project_hash,
     reorder_projects,
-    set_project_pinned,
     touch_project,
     upsert_project,
 )
@@ -335,7 +334,7 @@ def list_sessions(prefix: str) -> list[dict]:
         "  COALESCE(MAX(m.ctx_window),0), COALESCE(MAX(m.last_in),0), "
         "  COALESCE(MAX(m.last_cache),0), COALESCE(MAX(m.last_out),0), MAX(m.model), "
         "  MAX(m.chosen_model), COALESCE(MAX(m.archived),0), "
-        "  COALESCE(MAX(m.pending_review),0) "
+        "  COALESCE(MAX(m.pending_review),0), COALESCE(MAX(m.pinned),0) "
         "FROM keys k "
         "LEFT JOIN session_meta m ON k.session_key = m.session_key "
         "LEFT JOIN turns t ON t.session_key = k.session_key "
@@ -350,6 +349,7 @@ def list_sessions(prefix: str) -> list[dict]:
         item.update(_usage_fields(row[3:11]))
         item["archived"] = bool(row[11])
         item["pending_review"] = bool(row[12])
+        item["pinned"] = bool(row[13])
         out.append(item)
     return out
 
@@ -402,6 +402,17 @@ def set_pending_review(session_key: str, pending: bool) -> None:
         "INSERT INTO session_meta(session_key, watermark_id, pending_review) VALUES (?,0,?) "
         "ON CONFLICT(session_key) DO UPDATE SET pending_review=excluded.pending_review",
         (session_key, 1 if pending else 0),
+    )
+    c.commit()
+
+
+def set_conv_pinned(session_key: str, pinned: bool) -> None:
+    """置顶/取消置顶:侧边栏顶部\"置顶\"分组的开关。"""
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta(session_key, watermark_id, pinned) VALUES (?,0,?) "
+        "ON CONFLICT(session_key) DO UPDATE SET pinned=excluded.pinned",
+        (session_key, 1 if pinned else 0),
     )
     c.commit()
 

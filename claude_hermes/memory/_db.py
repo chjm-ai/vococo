@@ -89,6 +89,9 @@ def conn() -> sqlite3.Connection:
         # pending_review=1 表示该会话已有新完成内容但用户还没打开看过;打开会话后清零。
         if "pending_review" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN pending_review INTEGER DEFAULT 0")
+        # pinned: 侧边栏「置顶」分组标记(0=不置顶,1=置顶);老库默认 0。
+        if "pinned" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN pinned INTEGER DEFAULT 0")
         # 迁移:turns 增 events 列 —— 该轮的过程时间线(文字段+工具调用)JSON,
         # 供前端刷新后完整重建"工具卡与文字交错"的画面;老行为 NULL(只有纯文本)。
         tcols = {r[1] for r in _DB.execute("PRAGMA table_info(turns)")}
