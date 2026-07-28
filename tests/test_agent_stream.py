@@ -70,6 +70,14 @@ def test_turn_env_does_not_mutate_input():
     assert "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" not in provider
 
 
+def test_turn_env_does_not_clear_oauth_token():
+    # 官方模型场景绝不能把 CLAUDE_CODE_OAUTH_TOKEN 覆盖成空串——SDK 传给 CLI 子进程的
+    # env 是父进程 env 叠加这个 dict、同名键覆盖,清成 "" 会盖掉父进程里的真订阅令牌,
+    # 导致官方模型每轮报 "Not logged in"(2026-07-28 回归,见 _turn_env 文档字符串)。
+    env = _turn_env({})
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
 # === _compact_threshold:大窗口模型不能被 CLI 的旧窗口认知提前压缩 ===
 
 

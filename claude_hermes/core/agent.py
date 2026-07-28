@@ -471,13 +471,17 @@ def _turn_env(provider_env: dict) -> dict:
 
     切换到官方模型时(provider_env 为空),显式清掉第三方环境变量——否则 CLI 子进程
     会继承父进程的 ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY,误以为在用第三方端点,
-    导致报 "Not logged in"。"""
+    导致报 "Not logged in"。
+
+    注意:这里绝不能连 CLAUDE_CODE_OAUTH_TOKEN 一起清空——SDK 把这个 dict 叠加在父进程
+    env 之上、同名键会覆盖(subprocess_cli.py:{**inherited_env, **options.env}),父进程
+    os.environ 里的 OAuth token 是 config.py 启动时校验过的真令牌,本该原样透传给子进程。
+    清成空串会导致官方模型每轮 "Not logged in"(2026-07-28 复现,c0ae08d 曾误清过一次)。"""
     env = {**provider_env, **_FORCE_FOREGROUND_ENV}
     if not provider_env:
-        # 官方模型:覆盖掉可能残留的第三方环境变量
+        # 官方模型:只清第三方端点相关的两个变量,OAuth token 留给父进程 env 原样透传
         env["ANTHROPIC_BASE_URL"] = ""
         env["ANTHROPIC_API_KEY"] = ""
-        env["CLAUDE_CODE_OAUTH_TOKEN"] = ""  # 清掉,让 CLI 用默认订阅认证
     return env
 
 
