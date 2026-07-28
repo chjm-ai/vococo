@@ -467,8 +467,18 @@ def _cli_stderr(line: str) -> None:
 
 
 def _turn_env(provider_env: dict) -> dict:
-    """本轮传给 CLI 子进程的 env:设置页供应商 env(base_url+key)叠加恒定的强制前台开关。"""
-    return {**provider_env, **_FORCE_FOREGROUND_ENV}
+    """本轮传给 CLI 子进程的 env:设置页供应商 env(base_url+key)叠加恒定的强制前台开关。
+
+    切换到官方模型时(provider_env 为空),显式清掉第三方环境变量——否则 CLI 子进程
+    会继承父进程的 ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY,误以为在用第三方端点,
+    导致报 "Not logged in"。"""
+    env = {**provider_env, **_FORCE_FOREGROUND_ENV}
+    if not provider_env:
+        # 官方模型:覆盖掉可能残留的第三方环境变量
+        env["ANTHROPIC_BASE_URL"] = ""
+        env["ANTHROPIC_API_KEY"] = ""
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = ""  # 清掉,让 CLI 用默认订阅认证
+    return env
 
 
 async def _query_context_usage(
