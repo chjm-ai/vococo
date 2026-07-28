@@ -79,6 +79,7 @@ def on_task_activity(task: dict) -> None:
             "status": task["status"],
             "progress_note": task["progress_note"],
             "created_at": task["created_at"],
+            "updated_at": task["updated_at"],
         },
     )
     # 桥接到主 SSE:任务起跑 → 前端侧栏显示小红点。_started_tasks 防重复:
@@ -131,6 +132,7 @@ async def on_task_terminal(task_id: str) -> None:
         "status": task["status"],
         "result_summary": task["result_summary"],
         "announce_text": announce_text,
+        "updated_at": task["updated_at"],
     }
     # 先桥接 done 事件到主 SSE:让侧栏小红点熄灭(在 SSE 播报和离线推送之前推,
     # 别让侧栏一直亮在已结束的任务上,也别卡住后面的异步推送路径)。
