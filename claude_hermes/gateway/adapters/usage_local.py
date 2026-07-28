@@ -48,8 +48,12 @@ def _run_monitor_sync() -> dict[str, Any]:
     if not exe:
         raise RuntimeError("未安装 claude-monitor(请 uv sync 或 pipx install claude-monitor)")
 
+    # 显式传 --view realtime:claude-monitor 会把上次用过的视图持久化到
+    # ~/.claude-monitor/last_used.json,不传就可能读到被别的调用(如手动调试时
+    # 用过 --view daily/sessions)带偏的状态,拿到跟 limits/local/forecast 结构
+    # 完全不同的 JSON(sessions 视图返回的是 sessions:[] 那套,没有 limits 字段)。
     proc = subprocess.run(
-        [exe, "--once", "--output", "json"],
+        [exe, "--once", "--view", "realtime", "--output", "json"],
         capture_output=True,
         text=True,
         timeout=120,

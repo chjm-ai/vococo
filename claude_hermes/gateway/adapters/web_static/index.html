@@ -3491,16 +3491,17 @@ function renderModelPop(){
     if(!items.length) return;
     if(groupsShown) html += '<div class="mdivider"></div>';
     groupsShown++;
-    html += '<div class="mgrouplabel">'+esc(gname)+'</div>';
+    // 额度是账号级、组内所有模型共用(实测过,同组各模型接口返回完全一样)——
+    // 圆环+重置时间挂在分组标题上查一次,不再每行重复挂一份。
+    const showMeta = gkey==="anthropic" || gkey==="kimi";
+    const meta = showMeta ? '<span class="mgmeta">'+ringSvg(gkey)+'<span class="mreset" data-m="'+esc(gkey)+'"></span></span>' : "";
+    html += '<div class="mgrouplabel"><span>'+esc(gname)+'</span>'+meta+'</div>';
     html += items.map(function(c){
       const id=c[0], label=c[1];
       const shortLabel = label.replace(/[(（][^)）]*[)）]\s*$/,"").trim();
-      const showMeta = gkey==="anthropic" || gkey==="kimi";
-      const ring = showMeta ? ringSvg(id) : "";
-      const reset = showMeta ? '<span class="mreset" data-m="'+esc(id)+'"></span>' : "";
       return '<button type="button" class="mi'+(id===cur?" on":"")+'" data-m="'+esc(id)+'">'+
         '<span class="ml">'+esc(shortLabel)+'</span>'+
-        '<span class="mmeta">'+ring+reset+(id===cur?'<span class="mk">✓</span>':'')+'</span>'+
+        (id===cur?'<span class="mk">✓</span>':'')+
         '</button>';
     }).join("");
   });
@@ -3654,17 +3655,12 @@ function applyUsageRow(id, data){
   }
 }
 function loadModelQuotas(choices){
-  var anthropicIds = choices.filter(function(c){ return c[2]==="anthropic"; }).map(function(c){ return c[0]; });
-  var kimiIds = choices.filter(function(c){ return c[2]==="kimi"; }).map(function(c){ return c[0]; });
-  // Anthropic 的 5h/7d 额度是账号级、不分模型(实测过,6 档官方模型接口返回完全一样)——
-  // 查一次就够了,套到该组所有行上,不用每个模型各打一次接口。
-  if(anthropicIds.length){
-    loadUsage(anthropicIds[0]).then(function(data){
-      anthropicIds.forEach(function(id){ applyUsageRow(id, data); });
-    });
-  }
-  kimiIds.forEach(function(id){
-    loadUsage(id).then(function(data){ applyUsageRow(id, data); });
+  // 额度是账号级、组内所有模型共用,圆环挂在分组标题上,每组只查一次接口
+  // (用组内第一个模型的 id 代表整组去查,结果套到分组标题的圆环上)。
+  ["anthropic","kimi"].forEach(function(gkey){
+    var rep = choices.find(function(c){ return c[2]===gkey; });
+    if(!rep) return;
+    loadUsage(rep[0]).then(function(data){ applyUsageRow(gkey, data); });
   });
 }
 function metaRow(k, v, pp, cls){
