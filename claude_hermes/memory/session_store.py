@@ -27,6 +27,7 @@ from .projects import (  # noqa: F401 (re-export)
     path_for_hash,
     project_hash,
     reorder_projects,
+    set_project_pinned,
     touch_project,
     upsert_project,
 )

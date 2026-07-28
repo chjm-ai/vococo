@@ -120,6 +120,24 @@ def test_project_soft_remove_and_revive(isolated, tmp_path):
     assert len(session_store.list_projects()) == 1          # 复活
 
 
+def test_project_pin_unpin_orders_first(isolated, tmp_path):
+    from claude_hermes.memory import session_store
+
+    d1, d2 = tmp_path / "a", tmp_path / "b"
+    d1.mkdir(); d2.mkdir()
+    h1 = session_store.upsert_project(str(d1))["hash"]
+    h2 = session_store.upsert_project(str(d2))["hash"]
+    assert [p["pinned"] for p in session_store.list_projects()] == [False, False]
+
+    session_store.set_project_pinned(h1, True)
+    projs = session_store.list_projects()
+    assert projs[0]["hash"] == h1 and projs[0]["pinned"] is True   # 置顶排最前
+    assert projs[1]["hash"] == h2 and projs[1]["pinned"] is False
+
+    session_store.set_project_pinned(h1, False)
+    assert all(not p["pinned"] for p in session_store.list_projects())
+
+
 def test_ensure_title_returns_placeholder_once(isolated):
     from claude_hermes.memory import session_store
 
