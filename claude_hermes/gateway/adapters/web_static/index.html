@@ -3959,6 +3959,7 @@ function buildConvRow(c, inCall){
   const e=el("div","conv"+(isMain?"":" ingroup")+(!inCall && c.conv===S.conv?" active":""));
   e.dataset.conv=c.conv;
   const body=el("div","cvbody");
+  if(isMain) body.innerHTML=ic("star");   // 主会话:左侧星标图标,跟紧邻的语音对话行(mic 图标)对齐
   if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
   else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }   // 完成未读:灰色圆点
   const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
