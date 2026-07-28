@@ -88,6 +88,11 @@ def conn() -> sqlite3.Connection:
         # pending_review=1 表示该会话已有新完成内容但用户还没打开看过;打开会话后清零。
         if "pending_review" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN pending_review INTEGER DEFAULT 0")
+        # last_error=1 表示该会话最近一轮以报错收尾(限流/超时/模型层错误等)。
+        # 语音端 voice_list_web_sessions 靠它筛出"卡住等续聊"的网页会话,不用去猜
+        # 最后一条回复文本是不是错误提示。
+        if "last_error" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN last_error INTEGER DEFAULT 0")
         # 迁移:turns 增 events 列 —— 该轮的过程时间线(文字段+工具调用)JSON,
         # 供前端刷新后完整重建"工具卡与文字交错"的画面;老行为 NULL(只有纯文本)。
         tcols = {r[1] for r in _DB.execute("PRAGMA table_info(turns)")}

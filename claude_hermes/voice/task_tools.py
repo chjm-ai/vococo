@@ -1,15 +1,24 @@
-"""P1 任务板的四个 MCP 工具:voice_dispatch_task / voice_append_task / voice_query_task / voice_list_tasks。
+"""P1 任务板 + 网页跨端续聊的 MCP 工具:voice_dispatch_task / voice_append_task /
+voice_query_task / voice_list_tasks / voice_continue_web / voice_list_web_sessions。
 
 只注入进语音前台会话(routes.py 调 session.run_turn 那次 stream_turn),后台任务
 会话本身不挂这组工具——防止任务里的模型再派任务、无限套娃(见 00-overview.md §4.2)。
+
+voice_continue_web / voice_list_web_sessions 是 2026-07-28 补的:voice_append_task
+只认 voice-task: 前缀(它绑定的是 executor.py 自己维护的常驻 asyncio.Task,web 会话
+没有这种东西),没法伸进网页端(web: 前缀)会话。网页端撞限流/出错后其实并不是
+"卡在跑",而是那一轮已经收尾、锁已释放、只是空闲等下一条消息——所以"续上"就是
+往那个会话里发一句话,走 gateway/web_bridge.py 桥到 WebAdapter,跟用户自己在
+浏览器里发消息完全等价,不需要重建 voice-task 那套 cancel+resume 机制。
 """
 from __future__ import annotations
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from .. import config
-from ..gateway import clarify
+from ..gateway import clarify, web_bridge
 from ..gateway.core import MODEL_CHOICES
+from ..memory import session_store
 from . import executor, tasks
 from .task_words import status_word
 
@@ -133,11 +142,71 @@ async def voice_list_tasks(args: dict) -> dict:
     return _ok("\n".join(_describe(t) for t in rows))
 
 
+def _web_conv(session_key: str) -> str:
+    """web: 前缀的 session_key → 纯 conv id(去掉前缀)。"""
+    prefix = "web:"
+    return session_key[len(prefix):] if session_key.startswith(prefix) else session_key
+
+
+@tool(
+    "voice_list_web_sessions",
+    "列出最近的网页端对话(浏览器打开的 Web UI 里的对话,不是 voice_dispatch_task 派的"
+    "后台任务——两者是完全不同的东西,id 格式也不一样)。用于找出用户说的「网页那个xx"
+    "对话/网页端卡住的对话」具体是哪一个,以及有没有对话因为限流/报错停在原地等续聊。"
+    "返回每个对话的 conv(给 voice_continue_web 用)、标题、是否最后一轮报错。",
+    {"type": "object", "properties": {}},
+)
+async def voice_list_web_sessions(args: dict) -> dict:
+    rows = session_store.list_sessions("web:")[:10]
+    if not rows:
+        return _ok("当前没有任何网页端对话。")
+    lines = []
+    for r in rows:
+        flag = "⚠️最后一轮报错/卡住,等续聊" if r.get("last_error") else "正常"
+        lines.append(f"conv={_web_conv(r['key'])},标题「{r['title']}」,{flag}")
+    return _ok("\n".join(lines))
+
+
+@tool(
+    "voice_continue_web",
+    "让网页端(浏览器打开的 Web UI)一个对话继续跑下一轮——用于那边因为限流/网络"
+    "错误等停在原地等续聊、或者你要替用户往网页对话里追加一句话的场景。"
+    "conv:网页对话 id(从 voice_list_web_sessions 拿,不是 voice_dispatch_task 那种"
+    "task_id,两套 id 不通用,别传错);instruction:要发给这个网页对话的下一句话。"
+    "系统会自动判断:该对话正在跑就先打断,再把这句话当下一轮发过去;空闲(撞限流后"
+    "通常是这种)就直接当下一轮发过去。本工具不等这一轮跑完,过一会儿可以用"
+    "voice_list_web_sessions 或 voice_query_task 类的方式确认是不是恢复正常了。",
+    {
+        "type": "object",
+        "properties": {
+            "conv": {"type": "string"},
+            "instruction": {"type": "string"},
+        },
+        "required": ["conv", "instruction"],
+    },
+)
+async def voice_continue_web(args: dict) -> dict:
+    conv = (args.get("conv") or "").strip()
+    instruction = (args.get("instruction") or "").strip()
+    if not (conv and instruction):
+        return _ok("voice_continue_web 需要 conv 和 instruction 都非空。")
+    if not web_bridge.available():
+        return _ok("当前不是常驻服务模式(没有开启网页入口),没法操作网页端对话。")
+    session_key = config.resolve_session_key("web", conv)
+    interrupted = web_bridge.cancel_if_running(session_key)
+    await web_bridge.continue_session(conv, instruction)
+    note = "(先打断了正在跑的那一轮)" if interrupted else "(原本是空闲的,直接续上)"
+    return _ok(f"已经把这句话发进网页对话 conv={conv}{note},它会自动接着跑。")
+
+
 def build_server() -> dict:
     """返回可直接塞进 stream_turn(extra_mcp_servers=...) 的 server 表。"""
     return {
         "voice_tasks": create_sdk_mcp_server(
             "voice_tasks",
-            tools=[voice_dispatch_task, voice_append_task, voice_query_task, voice_list_tasks],
+            tools=[
+                voice_dispatch_task, voice_append_task, voice_query_task, voice_list_tasks,
+                voice_continue_web, voice_list_web_sessions,
+            ],
         )
     }

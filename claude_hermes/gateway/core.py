@@ -376,6 +376,9 @@ async def converse(
         if _draft_full:
             session_store.flush_draft(turn_id, _draft_full)
         session_store.finish_turn(turn_id, reply.text, events=timeline.blocks)
+        # 记下这一轮是不是以报错收尾(限流/超时等)——语音端靠这个字段找出"卡住
+        # 等续聊"的网页会话,不用去猜最后一条回复文本是不是错误提示。
+        session_store.set_last_error(session_key, bool(reply.is_error))
         # 存回本轮 SDK 会话 id,下一轮 resume 它接上真·多轮历史(每轮覆盖,链不断)
         if reply.sdk_session_id:
             session_store.set_sdk_session_id(session_key, reply.sdk_session_id)
