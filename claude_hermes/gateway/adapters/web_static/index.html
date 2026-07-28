@@ -3760,6 +3760,19 @@ function convProject(conv){
   const m = String(conv).replace(/^local-/,"").match(/^p([0-9a-f]+):/);
   return m ? m[1] : null;
 }
+// 取所有置顶会话(含主会话),主会话永远排第一,其余按最近活跃倒序。
+function pinnedConvs(){
+  const arr=S.convs.filter(c=>c.pinned);
+  arr.sort((a,b)=>{
+    if(a.conv==="main") return -1;
+    if(b.conv==="main") return 1;
+    return (b.last_ts||0)-(a.last_ts||0);
+  });
+  return arr;
+}
+function convsInGroup(hash){
+  return S.convs.filter(c => !c.pinned && convProject(c.conv)===hash);
+}
 // 分组的存储键:默认项目用固定串,项目用其 hash
 function grpKey(hash){ return hash===null ? "__default__" : hash; }
 function saveExpanded(){ try{ localStorage.setItem("hermes_expanded", JSON.stringify([...S.expanded])); }catch(e){} }
@@ -3862,19 +3875,20 @@ function buildVoiceTaskRow(t, inCall){
   };
   return row;
 }
-// 单条会话行(置顶主会话与普通会话通用)
+// 单条会话行(置顶主会话与普通会话通用)。主会话永远置顶且不提供菜单/滑动手势。
 function buildConvRow(c, inCall){
+  const isMain=c.conv==="main";
   const e=el("div","conv"+(c.pinned?"":" ingroup")+(!inCall && c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
   e.dataset.conv=c.conv;
   const body=el("div","cvbody");
-  if(c.pinned) body.innerHTML=ic("star");   // 主会话:左侧线性星标图标,呼应语音对话左侧的麦克风图标
+  if(c.pinned) body.innerHTML=ic("star");   // 置顶会话:左侧星标图标
   if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
   else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }   // 完成未读:灰色圆点
   const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
   const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }   // 会话时刻:名称右侧
-  if(!c.pinned){ const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
+  if(!isMain){ const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
   e.append(body);
-  if(!c.pinned){
+  if(!isMain){
     bindRowSwipeActions(e, body, c.conv, c.archived);   // 触屏:左滑露出归档/删除,不用长按(iOS 用户少用长按)
     if(c.conv===S.swipedConv) e.classList.add("swiped");   // 重建 DOM 后补回展开状态,别被后台事件触发的重渲染冲掉
   }
@@ -3892,9 +3906,13 @@ const RECENT_SHOW_MAX = 10;   // 「最近会话」分组:展开更多≠显示�
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
   const inCall = !$("#callView").hidden;  // 通话中:普通会话行都不高亮,高亮权让给「语音对话」那一行
-  // 根目录置顶区:主会话 + 语音对话,恒排在最顶端(在「默认项目」分组头上面一层),
-  // 不属于任何分组、不受分组展开/折叠影响,也不参与时间排序或「展开更多」的名额。
-  for(const c of convsInGroup(null)) if(c.pinned) box.append(buildConvRow(c, inCall));
+  // 「置顶」分组:主会话永远置顶,用户也可把任意会话置顶;置顶的会话统一放这里。
+  const PINNED_KEY="__pinned__";
+  {
+    const pc=pinnedConvs();
+    const lbl=el("div","projgrp projsection"); lbl.textContent="置顶"; box.append(lbl);
+    for(const c of pc) box.append(buildConvRow(c, inCall));
+  }
   const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
   // 「最近会话」分组:汇总所有项目分组(含语音任务)的会话,按最后活跃时间混排,不看归属项目。
   // 默认 5 条,展开最多 10 条——纯快捷入口,不是"展开更多=显示全部"的完整列表。
@@ -3920,13 +3938,7 @@ function renderConvs(){
       }
     }
   }
-  // 「置顶」分组:置顶的项目单独一节,固定排在最前(不可拖拽排序,靠 pinned DESC 落库排序)
-  const pinnedProjects=S.projects.filter(p=>p.pinned);
-  if(pinnedProjects.length){
-    const lbl=el("div","projgrp projsection"); lbl.textContent="置顶"; box.append(lbl);
-    for(const g of pinnedProjects.map(p=>({hash:p.hash,name:p.name}))) renderProjGroup(box, g, inCall);
-  }
-  const groups=[{hash:null,name:"默认项目"}].concat(S.projects.filter(p=>!p.pinned).map(p=>({hash:p.hash,name:p.name})));
+  const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
   for(const g of groups) renderProjGroup(box, g, inCall);
   // 定时任务分组:只有真有任务时才出现(见 renderConvs 上方数据源 S.cronJobs)
   if(S.cronJobs.length){
@@ -4121,12 +4133,12 @@ async function removeProject(hash){
   if(activeGone){ openConv("main"); } else { renderConvs(); }
 }
 
-async function pinProject(hash, pinned){
-  const p=S.projects.find(p=>p.hash===hash); if(p) p.pinned=pinned;  // 乐观更新,立即重渲
+async function pinConv(conv, pinned){
+  const c=findConv(conv); if(c) c.pinned=pinned;  // 乐观更新,立即重渲
   renderConvs();
-  try{ await api("/projects/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({hash,pinned})}); }
-  catch(e){ /* 失败也不回滚,下次 loadProjects 会自然纠正 */ }
-  await loadProjects(); renderConvs();
+  try{ await api("/conv/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,pinned})}); }
+  catch(e){ /* 失败也不回滚,下次 loadConvs 会自然纠正 */ }
+  await loadConvs(); renderConvs();
 }
 
 // 目录浏览器弹窗
@@ -4883,6 +4895,13 @@ function openConvMenu(btn, conv, slim){
     m.append(del);
   }else{
     const convObj=findConv(conv);
+    const isMain=conv==="main";
+    const isPinned=!!(convObj&&convObj.pinned);
+    if(!isMain){
+      const pin=el("button","cmitem"); pin.innerHTML=ic("star")+(isPinned?" 取消置顶":" 置顶");
+      pin.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); pinConv(conv, !isPinned); };
+      m.append(pin);
+    }
     const isArch=!!(convObj&&convObj.archived);
     const arch=el("button","cmitem"); arch.innerHTML=ic("folder")+" "+(isArch?"取消归档":"归档");
     arch.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); toggleArchive(conv); };
@@ -4902,7 +4921,7 @@ document.addEventListener("click", closeConvMenu);       // 点空白处关闭
 $("#convList").addEventListener("scroll", closeConvMenu); // 列表滚动时关闭,避免菜单错位
 document.addEventListener("click", e=>{ if(!e.target.closest(".conv")) closeAllSwipes(); });  // 点空白处收起滑开的行
 
-// 项目分组「更多」浮层菜单(单例):点 ⋯ 弹出,「置顶/取消置顶」+「删除项目」
+// 项目分组「更多」浮层菜单(单例):点 ⋯ 弹出,「删除项目」
 let projMenuEl=null, projMenuBtn=null;
 function closeProjMenu(){
   if(projMenuBtn){ projMenuBtn.classList.remove("on"); projMenuBtn=null; }
@@ -4912,12 +4931,7 @@ function openProjMenu(btn, hash){
   if(projMenuBtn===btn){ closeProjMenu(); return; }   // 再点一次同一个 → 收起
   closeProjMenu();
   projMenuBtn=btn; btn.classList.add("on");
-  const proj=S.projects.find(p=>p.hash===hash);
-  const isPinned=!!(proj&&proj.pinned);
   const m=el("div","convmenu"); m.style.visibility="hidden";
-  const pin=el("button","cmitem"); pin.innerHTML=ic("star")+(isPinned?" 取消置顶":" 置顶");
-  pin.onclick=ev=>{ ev.stopPropagation(); closeProjMenu(); pinProject(hash, !isPinned); };
-  m.append(pin);
   const del=el("button","cmitem danger"); del.innerHTML=ic("trash")+" 删除项目";
   del.title="移除项目(不删文件夹,可再加回)";
   del.onclick=ev=>{ ev.stopPropagation(); closeProjMenu(); removeProject(hash); };

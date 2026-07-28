@@ -89,6 +89,9 @@ def conn() -> sqlite3.Connection:
         # pending_review=1 表示该会话已有新完成内容但用户还没打开看过;打开会话后清零。
         if "pending_review" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN pending_review INTEGER DEFAULT 0")
+        # pinned: 侧边栏「置顶」分组标记(0=不置顶,1=置顶);老库默认 0。
+        if "pinned" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN pinned INTEGER DEFAULT 0")
         # last_error=1 表示该会话最近一轮以报错收尾(限流/超时/模型层错误等)。
         # 语音端 voice_list_web_sessions 靠它筛出"卡住等续聊"的网页会话,不用去猜
         # 最后一条回复文本是不是错误提示。

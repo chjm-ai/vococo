@@ -120,22 +120,27 @@ def test_project_soft_remove_and_revive(isolated, tmp_path):
     assert len(session_store.list_projects()) == 1          # 复活
 
 
-def test_project_pin_unpin_orders_first(isolated, tmp_path):
+def test_conv_pin_unpin_in_list(isolated):
+    import time
     from claude_hermes.memory import session_store
 
-    d1, d2 = tmp_path / "a", tmp_path / "b"
-    d1.mkdir(); d2.mkdir()
-    h1 = session_store.upsert_project(str(d1))["hash"]
-    h2 = session_store.upsert_project(str(d2))["hash"]
-    assert [p["pinned"] for p in session_store.list_projects()] == [False, False]
+    session_store.set_title("web:a", "会话 A")
+    session_store.set_title("web:b", "会话 B")
+    session_store.append("web:b", "hello", "ok")  # b 更早,a 更晚,让 a 排前
+    time.sleep(0.05)
+    session_store.append("web:a", "hi", "ok")
+    convs = session_store.list_sessions("web:")
+    assert [c["pinned"] for c in convs] == [False, False]
 
-    session_store.set_project_pinned(h1, True)
-    projs = session_store.list_projects()
-    assert projs[0]["hash"] == h1 and projs[0]["pinned"] is True   # 置顶排最前
-    assert projs[1]["hash"] == h2 and projs[1]["pinned"] is False
+    session_store.set_conv_pinned("web:a", True)
+    convs = session_store.list_sessions("web:")
+    keys = [c["key"] for c in convs]
+    assert keys == ["web:a", "web:b"]
+    assert convs[0]["pinned"] is True
+    assert convs[1]["pinned"] is False
 
-    session_store.set_project_pinned(h1, False)
-    assert all(not p["pinned"] for p in session_store.list_projects())
+    session_store.set_conv_pinned("web:a", False)
+    assert all(not c["pinned"] for c in session_store.list_sessions("web:"))
 
 
 def test_ensure_title_returns_placeholder_once(isolated):
