@@ -375,7 +375,9 @@ async def test_append_on_terminal_task_resumes_same_task_no_new_row(voice_db, mo
 
     assert tasks.get(task["id"])["status"] == "done"
     assert len(tasks.list_recent(10)) == 1
-    assert seen[1]["prompt"] == "再做 B"  # 这一轮只发追加指令本身
+    # 这一轮只发追加指令本身(不重新拼全部历史),外加固定的摘要标记指令(见
+    # _SUMMARY_TAG_INSTRUCTION)——不是历史被重新拼进去了。
+    assert seen[1]["prompt"] == "再做 B" + executor._SUMMARY_TAG_INSTRUCTION
     assert seen[1]["resume"] == "sdk-first"  # resume 回第一轮的 SDK 会话
 
 
@@ -461,28 +463,36 @@ async def test_dispatch_queues_beyond_concurrency_limit(voice_db, monkeypatch):
     assert tasks.get(b["id"])["status"] == "done"
 
 
-@pytest.mark.anyio
-async def test_summarize_short_text_passthrough(voice_db):
-    assert await executor._summarize("短结果") == "短结果"
+def test_summarize_short_text_passthrough(voice_db):
+    assert executor._summarize("短结果") == "短结果"
 
 
-@pytest.mark.anyio
-async def test_summarize_strips_markdown_before_speaking(voice_db):
+def test_summarize_strips_markdown_before_speaking(voice_db):
     # 后台任务没有 P0 语音人设的"禁止 markdown"规则,模型常带 `代码`/**加粗**;
     # 这段文字最终要被朗读,得先摘掉这些没法读的符号(不止 50 字才走的截断路径也要摘)。
-    out = await executor._summarize("完成,共有 **31** 个 `.py` 文件。")
+    out = executor._summarize("完成,共有 **31** 个 `.py` 文件。")
     assert "*" not in out and "`" not in out
 
 
-@pytest.mark.anyio
-async def test_summarize_falls_back_to_truncation_on_llm_failure(voice_db, monkeypatch):
-    async def boom(history, user_text, model=None):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(executor, "run_turn", boom)
-    out = await executor._summarize("字" * 100)
+def test_summarize_truncates_long_text(voice_db):
+    # 摘要不再单开一次 LLM 会话压缩(见 _split_summary_tag),纯截断兜底。
+    out = executor._summarize("字" * 100)
     assert out.endswith("…")
     assert len(out) <= 50
+
+
+def test_split_summary_tag_extracts_and_strips(voice_db):
+    text = "这是正文内容。\n\n[[SUMMARY: 一句口语总结]]"
+    clean, summary = executor._split_summary_tag(text)
+    assert summary == "一句口语总结"
+    assert "[[SUMMARY" not in clean
+    assert clean.startswith("这是正文内容。")
+
+
+def test_split_summary_tag_missing_returns_none(voice_db):
+    clean, summary = executor._split_summary_tag("没有标记的正文")
+    assert summary is None
+    assert clean == "没有标记的正文"
 
 
 @pytest.mark.anyio
