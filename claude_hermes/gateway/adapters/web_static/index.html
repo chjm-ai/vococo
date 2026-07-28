@@ -5062,6 +5062,7 @@ function toggleArchive(conv){
   c.archived=next; renderConvs();  // 乐观更新
   api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({conv,archived:next})}).catch(()=>{ c.archived=!next; renderConvs(); });
+  if(next && c.pinned) pinConv(conv, false);   // 归档的会话不该再占着置顶分组,顺手取消置顶
 }
 function renderConvFilterPop(){
   const opts=[["all","全部"],["active","工作中"],["archived","归档"]];
