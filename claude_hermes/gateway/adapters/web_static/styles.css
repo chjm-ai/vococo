@@ -232,6 +232,8 @@
   .projgrp .pgadd:hover{opacity:1;color:var(--text);background:var(--card)}
   .projgrp .pgmore:hover,.projgrp .pgmore.on{opacity:1;color:var(--text);background:var(--card)}
   .projgrp.projadd{color:var(--dim2);font-weight:600;margin-top:4px}   /* 黑灰、无分割线、与分组同款行 */
+  .projgrp.projsection{cursor:default;font-size:11px;letter-spacing:.04em;color:var(--dim2);margin-top:8px;padding:2px 8px}  /* 「置顶」纯文字小节标题,不可点/不可展开 */
+  .projgrp.projsection:hover{background:none;color:var(--dim2)}
   /* 项目拖拽排序:可拖起手型,拖起半透明,悬停目标高亮上边框示意插入位置 */
   .projgrp[draggable="true"]{cursor:grab}
   .projgrp.dragging{opacity:.4}

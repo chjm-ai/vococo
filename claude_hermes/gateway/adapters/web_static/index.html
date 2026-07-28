@@ -3881,55 +3881,14 @@ function renderConvs(){
       }
     }
   }
-  const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
-  for(const g of groups){
-    const convs=convsInGroup(g.hash);
-    const open=S.expanded.has(grpKey(g.hash));
-    const h=el("div","projgrp");
-    const nm=el("span","pgname"); nm.textContent=g.name; h.append(nm);
-    const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);   // 折线箭头,展开时旋转朝下
-    if(g.hash!==null){
-      const more=el("button","pgmore"); more.textContent="⋯"; more.title="更多";
-      more.onclick=ev=>{ ev.stopPropagation(); openProjMenu(more, g.hash); }; h.append(more);
-    }
-    const add=el("button","pgadd"); add.textContent="＋"; add.title="在此项目下新建会话";
-    add.onclick=ev=>{ ev.stopPropagation(); newChatIn(g.hash); }; h.append(add);
-    if(g.hash!==null){
-      bindProjDrag(h, g.hash);   // 默认项目/末尾「新建项目」不可拖,仅真实项目分组可排序
-    }
-    h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } toggleGroup(g.hash); };  // 拖拽落地那一下别顺带触发展开/收起
-    box.append(h);
-    if(!open) continue;
-    let rows;
-    if(g.hash===null){
-      // 默认项目:语音后台任务不区分项目,统一落这里,跟普通会话按最后活跃时间混排
-      // 再截前 CONV_SHOW_MAX 条——避免"语音任务永远排最前"把新会话挤出首屏
-      // (2026-07-22 反馈:几十条老语音任务霸占默认项目前 5 条,当天新会话反而看不见)。
-      const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
-      const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
-      const convItems = convs.filter(c=>!c.pinned && passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
-      rows = [...taskItems, ...convItems].sort((a,b)=>b.ts-a.ts).map(it=>it.build()).filter(Boolean);
-    } else {
-      rows=[];
-      for(const c of convs){
-        if(c.pinned) continue;
-        const arch=!!c.archived;
-        if(S.convFilter==="archived"&&!arch)continue;
-        if(S.convFilter==="active"&&arch)continue;
-        rows.push(buildConvRow(c, inCall));
-      }
-    }
-    // 每组默认最多展示 CONV_SHOW_MAX 条,余下折进「展开更多」(点开后本次会话内保持展开)
-    const shown = S.moreShown.has(grpKey(g.hash)) ? rows : rows.slice(0, CONV_SHOW_MAX);
-    for(const r of shown) box.append(r);
-    if(rows.length > shown.length){
-      const k=grpKey(g.hash);
-      const more=el("div","conv ingroup convmore");
-      const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
-      more.onclick=()=>{ S.moreShown.add(k); renderConvs(); };
-      box.append(more);
-    }
+  // 「置顶」分组:置顶的项目单独一节,固定排在最前(不可拖拽排序,靠 pinned DESC 落库排序)
+  const pinnedProjects=S.projects.filter(p=>p.pinned);
+  if(pinnedProjects.length){
+    const lbl=el("div","projgrp projsection"); lbl.textContent="置顶"; box.append(lbl);
+    for(const g of pinnedProjects.map(p=>({hash:p.hash,name:p.name}))) renderProjGroup(box, g, inCall);
   }
+  const groups=[{hash:null,name:"默认项目"}].concat(S.projects.filter(p=>!p.pinned).map(p=>({hash:p.hash,name:p.name})));
+  for(const g of groups) renderProjGroup(box, g, inCall);
   // 定时任务分组:只有真有任务时才出现(见 renderConvs 上方数据源 S.cronJobs)
   if(S.cronJobs.length){
     const CRON_KEY="__cron__";
@@ -3957,6 +3916,56 @@ function renderConvs(){
   // 同步标题栏:loadConvs 刷新 S.convs 后调 renderConvs,标题可能已更新
   const activeConv=S.convs.find(c=>c.conv===S.conv);
   if(activeConv) $("#convTitle").textContent=activeConv.title||"新对话";
+}
+
+// 渲染单个项目分组(手风琴头 + 展开后的会话行);置顶节与常规节共用同一份逻辑。
+function renderProjGroup(box, g, inCall){
+  const convs=convsInGroup(g.hash);
+  const open=S.expanded.has(grpKey(g.hash));
+  const h=el("div","projgrp");
+  const nm=el("span","pgname"); nm.textContent=g.name; h.append(nm);
+  const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);   // 折线箭头,展开时旋转朝下
+  if(g.hash!==null){
+    const more=el("button","pgmore"); more.textContent="⋯"; more.title="更多";
+    more.onclick=ev=>{ ev.stopPropagation(); openProjMenu(more, g.hash); }; h.append(more);
+  }
+  const add=el("button","pgadd"); add.textContent="＋"; add.title="在此项目下新建会话";
+  add.onclick=ev=>{ ev.stopPropagation(); newChatIn(g.hash); }; h.append(add);
+  if(g.hash!==null){
+    bindProjDrag(h, g.hash);   // 默认项目/末尾「新建项目」不可拖,仅真实项目分组可排序
+  }
+  h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } toggleGroup(g.hash); };  // 拖拽落地那一下别顺带触发展开/收起
+  box.append(h);
+  if(!open) return;
+  let rows;
+  if(g.hash===null){
+    // 默认项目:语音后台任务不区分项目,统一落这里,跟普通会话按最后活跃时间混排
+    // 再截前 CONV_SHOW_MAX 条——避免"语音任务永远排最前"把新会话挤出首屏
+    // (2026-07-22 反馈:几十条老语音任务霸占默认项目前 5 条,当天新会话反而看不见)。
+    const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
+    const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
+    const convItems = convs.filter(c=>!c.pinned && passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
+    rows = [...taskItems, ...convItems].sort((a,b)=>b.ts-a.ts).map(it=>it.build()).filter(Boolean);
+  } else {
+    rows=[];
+    for(const c of convs){
+      if(c.pinned) continue;
+      const arch=!!c.archived;
+      if(S.convFilter==="archived"&&!arch)continue;
+      if(S.convFilter==="active"&&arch)continue;
+      rows.push(buildConvRow(c, inCall));
+    }
+  }
+  // 每组默认最多展示 CONV_SHOW_MAX 条,余下折进「展开更多」(点开后本次会话内保持展开)
+  const shown = S.moreShown.has(grpKey(g.hash)) ? rows : rows.slice(0, CONV_SHOW_MAX);
+  for(const r of shown) box.append(r);
+  if(rows.length > shown.length){
+    const k=grpKey(g.hash);
+    const more=el("div","conv ingroup convmore");
+    const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
+    more.onclick=()=>{ S.moreShown.add(k); renderConvs(); };
+    box.append(more);
+  }
 }
 
 // ── 项目 ─────────────────────────────────────────────────────────────────
@@ -4071,6 +4080,14 @@ async function removeProject(hash){
   if(S.project===hash) S.project=null;
   await loadProjects();
   if(activeGone){ openConv("main"); } else { renderConvs(); }
+}
+
+async function pinProject(hash, pinned){
+  const p=S.projects.find(p=>p.hash===hash); if(p) p.pinned=pinned;  // 乐观更新,立即重渲
+  renderConvs();
+  try{ await api("/projects/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({hash,pinned})}); }
+  catch(e){ /* 失败也不回滚,下次 loadProjects 会自然纠正 */ }
+  await loadProjects(); renderConvs();
 }
 
 // 目录浏览器弹窗
@@ -4846,7 +4863,7 @@ document.addEventListener("click", closeConvMenu);       // 点空白处关闭
 $("#convList").addEventListener("scroll", closeConvMenu); // 列表滚动时关闭,避免菜单错位
 document.addEventListener("click", e=>{ if(!e.target.closest(".conv")) closeAllSwipes(); });  // 点空白处收起滑开的行
 
-// 项目分组「更多」浮层菜单(单例):点 ⋯ 弹出,目前只放「删除项目」
+// 项目分组「更多」浮层菜单(单例):点 ⋯ 弹出,「置顶/取消置顶」+「删除项目」
 let projMenuEl=null, projMenuBtn=null;
 function closeProjMenu(){
   if(projMenuBtn){ projMenuBtn.classList.remove("on"); projMenuBtn=null; }
@@ -4856,7 +4873,12 @@ function openProjMenu(btn, hash){
   if(projMenuBtn===btn){ closeProjMenu(); return; }   // 再点一次同一个 → 收起
   closeProjMenu();
   projMenuBtn=btn; btn.classList.add("on");
+  const proj=S.projects.find(p=>p.hash===hash);
+  const isPinned=!!(proj&&proj.pinned);
   const m=el("div","convmenu"); m.style.visibility="hidden";
+  const pin=el("button","cmitem"); pin.innerHTML=ic("star")+(isPinned?" 取消置顶":" 置顶");
+  pin.onclick=ev=>{ ev.stopPropagation(); closeProjMenu(); pinProject(hash, !isPinned); };
+  m.append(pin);
   const del=el("button","cmitem danger"); del.innerHTML=ic("trash")+" 删除项目";
   del.title="移除项目(不删文件夹,可再加回)";
   del.onclick=ev=>{ ev.stopPropagation(); closeProjMenu(); removeProject(hash); };

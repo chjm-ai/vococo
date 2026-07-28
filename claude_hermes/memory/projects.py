@@ -46,13 +46,14 @@ def upsert_project(path: str) -> dict:
 
 
 def list_projects() -> list[dict]:
-    """未隐藏的项目,按 sort_order 升序(拖拽排序落库的顺序)。名 = 文件夹名(basename)。"""
+    """未隐藏的项目,置顶(pinned)优先,组内再按 sort_order 升序。名 = 文件夹名(basename)。"""
     rows = _db.conn().execute(
-        "SELECT hash, path, last_used FROM projects WHERE hidden=0 ORDER BY sort_order ASC, last_used DESC"
+        "SELECT hash, path, last_used, pinned FROM projects WHERE hidden=0 "
+        "ORDER BY pinned DESC, sort_order ASC, last_used DESC"
     ).fetchall()
     return [
-        {"hash": h, "path": p, "name": os.path.basename(p) or p, "last_used": ts}
-        for h, p, ts in rows
+        {"hash": h, "path": p, "name": os.path.basename(p) or p, "last_used": ts, "pinned": bool(pin)}
+        for h, p, ts, pin in rows
     ]
 
 
@@ -78,6 +79,13 @@ def hide_project(h: str) -> None:
     """软移除:仅从列表隐藏,项目记录与其会话历史都保留(可复活)。"""
     c = _db.conn()
     c.execute("UPDATE projects SET hidden=1 WHERE hash=?", (h,))
+    c.commit()
+
+
+def set_project_pinned(h: str, pinned: bool) -> None:
+    """置顶/取消置顶:侧边栏「置顶」分组的开关。"""
+    c = _db.conn()
+    c.execute("UPDATE projects SET pinned=? WHERE hash=?", (1 if pinned else 0, h))
     c.commit()
 
 

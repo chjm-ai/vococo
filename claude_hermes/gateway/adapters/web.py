@@ -935,6 +935,19 @@ class WebAdapter:
         session_store.reorder_projects([str(h) for h in order])
         return web.json_response({"ok": True})
 
+    async def _handle_project_pin(self, request: web.Request) -> web.Response:
+        """置顶/取消置顶:body={"hash": ..., "pinned": bool}。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
+        h = (body.get("hash") or "").strip()
+        if not h:
+            return web.json_response({"error": "hash 不能为空"}, status=400)
+        session_store.set_project_pinned(h, bool(body.get("pinned")))
+        return web.json_response({"ok": True})
+
     async def _handle_models(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
@@ -1673,6 +1686,7 @@ class WebAdapter:
                 web.post("/projects/create", self._handle_project_create),
                 web.post("/projects/remove", self._handle_project_remove),
                 web.post("/projects/reorder", self._handle_project_reorder),
+                web.post("/projects/pin", self._handle_project_pin),
                 web.get("/models", self._handle_models),
                 web.get("/api/usage", self._handle_api_usage),
                 web.get("/commands", self._handle_commands),

@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS projects(
   path TEXT NOT NULL UNIQUE,
   last_used REAL NOT NULL DEFAULT 0,
   hidden INTEGER NOT NULL DEFAULT 0,
-  sort_order REAL
+  sort_order REAL,
+  pinned INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS user_prefs(
   key TEXT PRIMARY KEY,
@@ -108,6 +109,9 @@ def conn() -> sqlite3.Connection:
         if "sort_order" not in pcols:
             _DB.execute("ALTER TABLE projects ADD COLUMN sort_order REAL")
             _DB.execute("UPDATE projects SET sort_order = -last_used WHERE sort_order IS NULL")
+        # pinned: 侧边栏「置顶」分组标记,老库默认 0(不置顶)。
+        if "pinned" not in pcols:
+            _DB.execute("ALTER TABLE projects ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
         _DB.commit()
     return _DB
 
