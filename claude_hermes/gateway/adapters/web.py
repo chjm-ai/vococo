@@ -569,6 +569,16 @@ class WebAdapter:
             return web.json_response({"error": "empty"}, status=400)
         if not text:
             text = "(图片,无文字说明,看看图里是什么)"
+        await self._ingest(conv, text, images=images)
+        return web.json_response({"ok": True})
+
+    async def _ingest(
+        self, conv: str, text: str, images: list[ImageAttachment] | None = None
+    ) -> None:
+        """把一条消息塞进指定会话的处理流水线——浏览器发送(_handle_send)和外部注入
+        (语音跨端续聊,见 inject()/gateway/web_bridge.py)共用同一份逻辑,保证标题
+        占位/项目 touch/用户气泡广播/入队 dispatch 完全一致的行为,不会两边走岔。"""
+        images = images or []
         # 首条消息自动给会话起个名(命令 / 主会话除外):先落一个截断兜底标题,
         # 同时立刻异步起模型总结(不等 AI 首轮回复——那可能跑很久,侧边栏不能干等)
         if not text.startswith("/") and conv != "main":
@@ -585,7 +595,11 @@ class WebAdapter:
         if not text.startswith("/"):
             self._emit({"conv": conv, "type": "user", "text": text})
         self._inbox.put_nowait(Incoming(self.platform, conv, text, images=images))
-        return web.json_response({"ok": True})
+
+    async def inject(self, conv: str, text: str) -> None:
+        """语音跨端续聊的公开入口:把一句话当成这个网页会话的下一轮发送——
+        跟用户自己在浏览器里发消息完全等价(见 gateway/web_bridge.py)。"""
+        await self._ingest(conv, text)
 
     async def _handle_model_switch(self, request: web.Request) -> web.Response:
         """静默切模型：不走命令管道、不触发任何 SSE/推送通知。直接落库。"""

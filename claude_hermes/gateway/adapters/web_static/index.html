@@ -1059,33 +1059,62 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       const rows = await resp.json();
       renderTasks(rows);
       // 顺带全量校准状态条(SSE 断线漏事件时,打开抽屉/task_done 刷新都会走到这里兜底)
-      activeTasks.clear();
-      for(const t of rows) if(t.status === "queued" || t.status === "running") activeTasks.set(t.id, t);
+      barTasks.clear();
+      for(const t of rows){
+        barTasks.set(t.id, t);
+        // 任务处于活跃态说明是刚起跑(含"追问重开"),撤销之前的手动关闭,让它重新露出
+        if(t.status === "queued" || t.status === "running") dismissedTaskIds.delete(t.id);
+      }
       renderTaskBar();
     }catch(e){}
   }
 
-  // ── 任务状态条:排队/进行中任务常驻顶栏下方,派发瞬间出现(SSE task_update),
-  //    全部结束自动收起;点击等同打开任务抽屉看详情 ─────────────────────────────
-  const activeTasks = new Map();  // id -> 任务行,只留 queued/running
+  // ── 任务状态条:顶栏下方常驻横幅,派发瞬间出现(SSE task_update)。
+  //    完成后不再自动消失,改成"已完成"标记留在条里,用户点叉才手动关闭;
+  //    最多展示最近5条(进行中+已完成统一排序计数),按 updated_at 倒序 ─────────
+  const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
+  const dismissedTaskIds = new Set();  // 用户点叉关闭过的任务id(仅前端隐藏,不动后端数据)
+  const TASKBAR_MAX = 5;
 
   function upsertTaskBar(t){
-    if(t.status === "queued" || t.status === "running") activeTasks.set(t.id, t);
-    else activeTasks.delete(t.id);
+    if(t.status === "queued" || t.status === "running") dismissedTaskIds.delete(t.id);
+    barTasks.set(t.id, t);
     renderTaskBar();
   }
 
-  function renderTaskBar(){
-    const rows = [...activeTasks.values()].sort((a,b)=>a.created_at - b.created_at);
-    taskBar.hidden = !rows.length;
-    taskBar.innerHTML = rows.map(t=>
-      `<div class="taskbar-row"><span class="dot ${t.status}"></span>` +
-      `<span class="t">${esc(t.title)}</span>` +
-      `<span class="n">${esc(t.status === "running" ? (t.progress_note || "进行中") : "排队中")}</span></div>`
-    ).join("");
+  function taskbarNote(t){
+    if(t.status === "running") return t.progress_note || "进行中";
+    if(t.status === "queued") return "排队中";
+    return t.result_summary || STATUS_WORD[t.status] || t.status;
   }
 
-  taskBar.addEventListener("click", ()=>{ tasksDrawer.classList.add("open"); loadTasks(); });
+  function renderTaskBar(){
+    const rows = [...barTasks.values()]
+      .filter(t=>!dismissedTaskIds.has(t.id))
+      .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at))
+      .slice(0, TASKBAR_MAX);
+    taskBar.hidden = !rows.length;
+    taskBar.innerHTML = rows.map(t=>{
+      const done = t.status !== "queued" && t.status !== "running";
+      return `<div class="taskbar-row${done ? " done" : ""}"><span class="dot ${t.status}"></span>` +
+        `<span class="t">${esc(t.title)}</span>` +
+        `<span class="n">${esc(taskbarNote(t))}</span>` +
+        (done ? `<button class="close" data-id="${t.id}" aria-label="关闭">✕</button>` : "") +
+        `</div>`;
+    }).join("");
+  }
+
+  taskBar.addEventListener("click", (e)=>{
+    const closeBtn = e.target.closest(".close");
+    if(closeBtn){
+      e.stopPropagation();
+      dismissedTaskIds.add(closeBtn.dataset.id);
+      renderTaskBar();
+      return;
+    }
+    tasksDrawer.classList.add("open");
+    loadTasks();
+  });
 
   function renderTasks(rows){
     tasksList.innerHTML = "";
@@ -1584,7 +1613,7 @@ void main(){
       loadTasks();
       loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
       const data = JSON.parse(e.data);
-      upsertTaskBar(data);  // 终态 → 从状态条摘掉
+      upsertTaskBar(data);  // 终态 → 状态条里标记"已完成",留在条里等用户手动点叉关闭
       pendingAnnouncements.push(data);
       flushAnnouncements();
     });
@@ -1916,10 +1945,20 @@ void main(){
           // 第二道防护闸:speech_started 被 VAD 漏报时(如太短/太轻)也拉住泵朗读
           // 的闸,不等 auto-reply 的 response.created 回执;auto-reply 完成后
           // 的 response.done 会清掉它。第一道闸在 speech_started(见上)。
-          if(!omniAutoActive){
-            omniAutoActive = true;
-            omniAutoSince = Date.now();
-          }
+          // omniAutoSince 这里必须无条件刷新到"此刻"(2026-07-28 实锤修复长指令
+          // 复述 bug):它是 pumpOmniRead 里 5 秒保险丝的计时锚点,以前只在
+          // omniAutoActive 还是 false 时才设,锚点停留在 speech_started(用户
+          // 刚开口那一刻)。用户话越长,说到这段真正 commit 时,保险丝早在说话
+          // 过程中就已经在计时——auto-reply 的 response.created 还没到,
+          // pumpOmniRead 就把 omniAutoActive 提前清成 false、放行真朗读抢先开
+          // 声;等姗姗来迟的 auto-reply(内容是 Omni 把用户刚说的长指令复述回来)
+          // 到达时 omniReadActive 已经是 true,response.created 分支「只在不朗读
+          // 自己内容时才静音」的判断被跳过,复述音频原样播了出来。短句因为总耗时
+          // 远小于 5 秒,踩不中这个窗口,只有长指令(voice_dispatch_task 常见场景)
+          // 会暴露。锚点挪到"这段语音刚 commit 完"这一刻,才是保险丝真正该起算
+          // 的时间点。
+          omniAutoActive = true;
+          omniAutoSince = Date.now();
           // 这句话已定型,completed 理应几百毫秒内跟到。到点没来就是被我们的
           // response.cancel 连带砍死了(见 omniDeltaFallback 注释)——拿 delta
           // 缓存顶上,别让用户的话烂在半路。

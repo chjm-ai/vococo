@@ -957,19 +957,26 @@
   #tasksBadge{position:absolute;top:0;right:0;width:8px;height:8px;border-radius:50%;
     background:var(--accent);display:none}
   #tasksBadge.on{display:block}
-  /* 后台任务状态条:顶栏下方常驻横幅——派发瞬间出现,列出排队/进行中任务,
-     全部结束自动收起;点击打开任务抽屉看详情(数据来自 SSE task_update/task_done)。
+  /* 后台任务状态条:顶栏下方常驻横幅——派发瞬间出现,最近5条(进行中+已完成统一排序
+     计数)按最后更新时间倒序;已完成的留在条里加"✕"手动关闭,不再自动消失。
+     点击空白处打开任务抽屉看详情(数据来自 SSE task_update/task_done)。
      PWA 拿不到 iOS 灵动岛(Live Activities 只开放给原生 App),这条是应用内的替代。 */
   #taskBar{border-bottom:1px solid var(--line);padding:8px 16px;display:flex;
     flex-direction:column;gap:6px;cursor:pointer;flex-shrink:0}
   #taskBar[hidden]{display:none}
   .taskbar-row{display:flex;align-items:center;gap:8px;font-size:13px;min-width:0}
+  .taskbar-row.done{opacity:.7}
   .taskbar-row .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
   .taskbar-row .dot.queued{background:var(--dim2)}
   .taskbar-row .dot.running{background:var(--accent);animation:taskbarPulse 1.2s ease-in-out infinite}
+  .taskbar-row .dot.done{background:var(--ok)}
+  .taskbar-row .dot.failed,.taskbar-row .dot.cancelled{background:var(--err)}
   .taskbar-row .t{font-weight:600;flex-shrink:0;max-width:45%;overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
   .taskbar-row .n{color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .taskbar-row .close{flex-shrink:0;border:none;background:none;color:var(--dim2);
+    font-size:14px;line-height:1;padding:2px 4px;cursor:pointer}
+  .taskbar-row .close:hover{color:var(--text)}
   @keyframes taskbarPulse{0%,100%{opacity:1}50%{opacity:.35}}
   #tasksDrawer{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10;display:none}
   #tasksDrawer.open{display:block}

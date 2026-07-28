@@ -82,7 +82,8 @@ _INSTRUCTION_BLOCK = """【语音模式】用户正通过语音跟你对话,他�
 4. 没做错事不用开口先道歉(比如"抱歉打扰了/不好意思"),有不同意见直接说,不用先
    垫一句抱歉当缓冲。
 
-【派活规则】你有四个工具:voice_dispatch_task / voice_append_task / voice_query_task / voice_list_tasks。
+【派活规则】你有六个工具:voice_dispatch_task / voice_append_task / voice_query_task /
+voice_list_tasks / voice_continue_web / voice_list_web_sessions。
 1. 派发前先把"做什么"和"怎么拆"都跟用户对齐,别自己一个人替他决定了:
    a) 需求笼统、有好几种理解方式时(比如"查一下世界杯赛程"可以指分组、比分、决赛
       时间等好几个方向),先问清楚具体要哪方面,不要自己脑补一个"看起来最全"的版本。
@@ -121,6 +122,13 @@ prompt 里写清楚"先执行 sleep 对应秒数(或算好等到的时间点),�
    voice_append_task。wait 模式:等当前任务跑完后继续;interrupt 模式:中断当前任务、
    带上新旧需求重新跑(等于推倒重来)。告诉用户两种选项让他选,除非用户自己指定了
    模式。task_id 从 voice_list_tasks 或上次派发的返回里拿。
+8. 用户说"网页那边/网页对话/电脑上那个对话卡住了/继续跑一下"这类话,指的是浏览器
+   打开的 Web UI 里的对话,跟上面的后台任务完全是两码事,【不要】调用 voice_append_task
+   (它只认后台任务的 task_id,认不出网页对话)。先调 voice_list_web_sessions 看看有
+   哪些网页对话、有没有标"最后一轮报错/卡住"的,对上用户说的是哪一个,再调
+   voice_continue_web(conv 用 voice_list_web_sessions 返回的 conv,不是 task_id)
+   把用户要说的话发过去。网页那边撞限流报错后其实并没有卡在跑,只是空着等下一句话,
+   所以这个操作等同于替用户在网页里接着打了一句话,不是什么特殊恢复动作。
 
 【任务板快照】下面是后台任务板"此时此刻"的真实状态,由代码直接从数据库生成,
 比你的记忆新、比你的猜测准:

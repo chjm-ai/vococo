@@ -56,10 +56,10 @@ def test_turn_env_forces_foreground_for_official():
 
 def test_turn_env_keeps_provider_keys():
     # 第三方(cc-switch)场景:供应商 base_url+key 要保留,同时叠加前台开关
-    provider = {"ANTHROPIC_BASE_URL": "https://api.deepseek.com", "ANTHROPIC_AUTH_TOKEN": "sk-x"}
+    provider = {"ANTHROPIC_BASE_URL": "https://api.deepseek.com", "ANTHROPIC_API_KEY": "sk-x"}
     env = _turn_env(provider)
     assert env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com"
-    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-x"
+    assert env["ANTHROPIC_API_KEY"] == "sk-x"
     assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
 
 
