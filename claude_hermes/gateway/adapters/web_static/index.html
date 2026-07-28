@@ -417,7 +417,7 @@ const ICONS = {
   eraser:'<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
   phone:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
   star:'<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
-  pin:'<path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7z"/><circle cx="12" cy="9" r="2"/>',
+  pin:'<line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 function setIcon(el, name){ el.innerHTML = ic(name); }
@@ -3880,13 +3880,13 @@ function buildVoiceTaskRow(t, inCall){
   };
   return row;
 }
-// 单条会话行(置顶主会话与普通会话通用)。主会话永远置顶且不提供菜单/滑动手势。
+// 单条会话行(主会话与普通会话/置顶会话通用)。主会话独立置顶且不提供菜单/滑动手势;
+// 置顶会话除了所在分组不同,长相(缩进、状态灯)跟普通分组内的会话行完全一样。
 function buildConvRow(c, inCall){
   const isMain=c.conv==="main";
-  const e=el("div","conv"+(c.pinned?"":" ingroup")+(!inCall && c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
+  const e=el("div","conv"+(isMain?"":" ingroup")+(!inCall && c.conv===S.conv?" active":""));
   e.dataset.conv=c.conv;
   const body=el("div","cvbody");
-  if(c.pinned) body.innerHTML=ic("star");   // 置顶会话:左侧星标图标
   if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
   else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }   // 完成未读:灰色圆点
   const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
@@ -3911,7 +3911,11 @@ const RECENT_SHOW_MAX = 10;   // 「最近会话」分组:展开更多≠显示�
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
   const inCall = !$("#callView").hidden;  // 通话中:普通会话行都不高亮,高亮权让给「语音对话」那一行
-  // 「置顶」分组:用户手动置顶的会话放这里;主会话和语音会话独立显示不进此分组。
+  // 根目录固定区:主会话 + 语音对话,恒排最前,不属于任何分组、也不进「置顶」。
+  const mainConv=S.convs.find(c=>c.conv==="main");
+  if(mainConv) box.append(buildConvRow(mainConv, inCall));
+  const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
+  // 「置顶」分组:用户手动置顶的会话放这里,和其他分组一样可折叠;缩进/状态灯与普通会话行一致。
   const PINNED_KEY="__pinned__";
   {
     const pc=pinnedConvs();
@@ -3923,7 +3927,6 @@ function renderConvs(){
     box.append(h);
     if(open) for(const c of pc) box.append(buildConvRow(c, inCall));
   }
-  const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
   // 「最近会话」分组:汇总所有项目分组(含语音任务)的会话,按最后活跃时间混排,不看归属项目。
   // 默认 5 条,展开最多 10 条——纯快捷入口,不是"展开更多=显示全部"的完整列表。
   {
@@ -4908,7 +4911,7 @@ function openConvMenu(btn, conv, slim){
     const isMain=conv==="main";
     const isPinned=!!(convObj&&convObj.pinned);
     if(!isMain){
-      const pin=el("button","cmitem"); pin.innerHTML=ic("star")+(isPinned?" 取消置顶":" 置顶");
+      const pin=el("button","cmitem"); pin.innerHTML=ic("pin")+(isPinned?" 取消置顶":" 置顶");
       pin.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); pinConv(conv, !isPinned); };
       m.append(pin);
     }
