@@ -417,6 +417,7 @@ const ICONS = {
   eraser:'<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
   phone:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
   star:'<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+  pin:'<path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7z"/><circle cx="12" cy="9" r="2"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 function setIcon(el, name){ el.innerHTML = ic(name); }
@@ -3801,15 +3802,9 @@ function convProject(conv){
   const m = String(conv).replace(/^local-/,"").match(/^p([0-9a-f]+):/);
   return m ? m[1] : null;
 }
-// 取所有置顶会话(含主会话),主会话永远排第一,其余按最近活跃倒序。
+// 取所有置顶会话(不含主会话——主会话独立渲染,不归置顶分组)。
 function pinnedConvs(){
-  const arr=S.convs.filter(c=>c.pinned);
-  arr.sort((a,b)=>{
-    if(a.conv==="main") return -1;
-    if(b.conv==="main") return 1;
-    return (b.last_ts||0)-(a.last_ts||0);
-  });
-  return arr;
+  return S.convs.filter(c=>c.pinned && c.conv!=="main").sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
 }
 function convsInGroup(hash){
   return S.convs.filter(c => !c.pinned && convProject(c.conv)===hash);
@@ -3886,7 +3881,17 @@ function bindRowSwipeActions(row, body, conv, archived){
   archBtn.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); toggleArchive(conv); };
   const del=el("button","cvdel"); del.innerHTML=ic("trash"); del.title="删除";
   del.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); delConv(conv); };
-  act.append(archBtn,del); row.append(act);
+  // 置顶/取消置顶按钮(语音任务不参与置顶分组)
+  if(!String(conv).startsWith("voice-task:")){
+    const convObj=findConv(conv);
+    const isPinned=!!(convObj&&convObj.pinned);
+    const pinBtn=el("button","cvpin"); pinBtn.innerHTML=ic("pin"); pinBtn.title=isPinned?"取消置顶":"置顶";
+    pinBtn.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); pinConv(conv, !isPinned); };
+    act.append(archBtn,pinBtn,del);
+  } else {
+    act.append(archBtn,del);
+  }
+  row.append(act);
   bindSwipe(row, body, act);
 }
 function buildVoiceTaskRow(t, inCall){
@@ -3947,12 +3952,17 @@ const RECENT_SHOW_MAX = 10;   // 「最近会话」分组:展开更多≠显示�
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
   const inCall = !$("#callView").hidden;  // 通话中:普通会话行都不高亮,高亮权让给「语音对话」那一行
-  // 「置顶」分组:主会话永远置顶,用户也可把任意会话置顶;置顶的会话统一放这里。
+  // 「置顶」分组:用户手动置顶的会话放这里;主会话和语音会话独立显示不进此分组。
   const PINNED_KEY="__pinned__";
   {
     const pc=pinnedConvs();
-    const lbl=el("div","projgrp projsection"); lbl.textContent="置顶"; box.append(lbl);
-    for(const c of pc) box.append(buildConvRow(c, inCall));
+    const open=S.expanded.has(PINNED_KEY);
+    const h=el("div","projgrp");
+    const nm=el("span","pgname"); nm.textContent="置顶"; h.append(nm);
+    const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);
+    h.onclick=()=>toggleGroup(PINNED_KEY);
+    box.append(h);
+    if(open) for(const c of pc) box.append(buildConvRow(c, inCall));
   }
   const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
   // 「最近会话」分组:汇总所有项目分组(含语音任务)的会话,按最后活跃时间混排,不看归属项目。
@@ -4877,7 +4887,7 @@ function closeConvMenu(){
   if(convMenuEl){ convMenuEl.remove(); convMenuEl=null; }
 }
 // 触屏左滑会话行露出归档/删除(iOS 邮件同款手势,比长按更符合触屏习惯)
-const SWIPE_W=72;   // 需与 CSS .cvact 宽度一致
+const SWIPE_W=108;   // 需与 CSS .cvact 宽度一致(归档+置顶+删除,3个按钮)
 function closeSwipe(row){ row.classList.remove("swiped"); if(S.swipedConv===row.dataset.conv) S.swipedConv=null; }
 function closeAllSwipes(except){
   $("#convList").querySelectorAll(".conv.swiped").forEach(r=>{ if(r!==except) closeSwipe(r); });
