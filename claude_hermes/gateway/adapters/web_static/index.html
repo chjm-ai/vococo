@@ -1916,10 +1916,20 @@ void main(){
           // 第二道防护闸:speech_started 被 VAD 漏报时(如太短/太轻)也拉住泵朗读
           // 的闸,不等 auto-reply 的 response.created 回执;auto-reply 完成后
           // 的 response.done 会清掉它。第一道闸在 speech_started(见上)。
-          if(!omniAutoActive){
-            omniAutoActive = true;
-            omniAutoSince = Date.now();
-          }
+          // omniAutoSince 这里必须无条件刷新到"此刻"(2026-07-28 实锤修复长指令
+          // 复述 bug):它是 pumpOmniRead 里 5 秒保险丝的计时锚点,以前只在
+          // omniAutoActive 还是 false 时才设,锚点停留在 speech_started(用户
+          // 刚开口那一刻)。用户话越长,说到这段真正 commit 时,保险丝早在说话
+          // 过程中就已经在计时——auto-reply 的 response.created 还没到,
+          // pumpOmniRead 就把 omniAutoActive 提前清成 false、放行真朗读抢先开
+          // 声;等姗姗来迟的 auto-reply(内容是 Omni 把用户刚说的长指令复述回来)
+          // 到达时 omniReadActive 已经是 true,response.created 分支「只在不朗读
+          // 自己内容时才静音」的判断被跳过,复述音频原样播了出来。短句因为总耗时
+          // 远小于 5 秒,踩不中这个窗口,只有长指令(voice_dispatch_task 常见场景)
+          // 会暴露。锚点挪到"这段语音刚 commit 完"这一刻,才是保险丝真正该起算
+          // 的时间点。
+          omniAutoActive = true;
+          omniAutoSince = Date.now();
           // 这句话已定型,completed 理应几百毫秒内跟到。到点没来就是被我们的
           // response.cancel 连带砍死了(见 omniDeltaFallback 注释)——拿 delta
           // 缓存顶上,别让用户的话烂在半路。
