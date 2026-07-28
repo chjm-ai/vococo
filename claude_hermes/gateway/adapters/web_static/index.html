@@ -1071,10 +1071,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   // ── 任务状态条:顶栏下方常驻横幅,派发瞬间出现(SSE task_update)。
   //    完成后不再自动消失,改成"已完成"标记留在条里,用户点叉才手动关闭;
-  //    最多展示最近5条(进行中+已完成统一排序计数),按 updated_at 倒序 ─────────
+  //    最多展示最近7条(进行中+已完成统一排序计数),按 updated_at 倒序 ─────────
   const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
   const dismissedTaskIds = new Set();  // 用户点叉关闭过的任务id(仅前端隐藏,不动后端数据)
-  const TASKBAR_MAX = 5;
+  const TASKBAR_MAX = 7;
 
   function upsertTaskBar(t){
     if(t.status === "queued" || t.status === "running") dismissedTaskIds.delete(t.id);
