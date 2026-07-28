@@ -191,6 +191,7 @@ try{
             <span id="ctxPct">0%</span>
           </button>
           <div id="ctxPop" hidden></div>
+          <button class="hmore" id="convMoreBtn" type="button" title="更多" hidden>⋯</button>
         </div>
       </div>
     </header>
@@ -4155,6 +4156,12 @@ function syncCronHeader(){
     $("#convCronToggle").title=job.enabled?"已启用 · 点击停用":"已停用 · 点击启用";
   }
 }
+// 标题栏最右侧的「⋯」:普通会话(非主会话、非定时任务——那个已有专属按钮)才显示,
+// 点开跟侧栏列表同一套 openConvMenu(置顶/归档/删除)
+function syncMoreHeader(){
+  const conv=String(S.conv||"");
+  $("#convMoreBtn").hidden = !conv || conv==="main" || conv.startsWith("cron-task:");
+}
 // 单条定时任务行:点进去看该任务的历次运行记录(它就是一条普通会话);「⋯」跟普通
 // 会话行同一套 openConvMenu,点开是编辑/启停/删除(见 openConvMenu 里的 isCron 分支)
 function buildCronJobRow(j){
@@ -4333,6 +4340,7 @@ $("#convCronEditBtn").innerHTML = ic("edit");
 $("#convCronToggle").onclick = ()=>{ const j=S.cronJobs.find(x=>x.conv===S.conv); if(j) toggleCronJob(j.job_id, !j.enabled); };
 $("#convCronEditBtn").onclick = ()=>{ const j=S.cronJobs.find(x=>x.conv===S.conv); if(j) openCronModal(j); };
 $("#convCronMore").onclick = ev=>{ ev.stopPropagation(); openConvMenu($("#convCronMore"), S.conv, true); };
+$("#convMoreBtn").onclick = ev=>{ ev.stopPropagation(); openConvMenu($("#convMoreBtn"), S.conv, false); };
 
 // ── 设置(MCP / 技能 / 记忆 / 人设)────────────────────────────────────────
 const SET = { data:null, tab:"mcp", skq:"", mcpFormOpen:false, modelFormOpen:false, providerFormOpen:false };
@@ -5292,6 +5300,7 @@ async function openConv(conv, silentGroup){
   renderProjSelChip();
   $("#convTitle").textContent = c ? (c.title||"新对话") : "新对话";
   syncCronHeader();   // 定时任务会话 → 标题栏亮出启停开关/编辑/「⋯」
+  syncMoreHeader();   // 普通会话 → 标题栏最右侧亮出「⋯」(置顶/归档/删除)
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
