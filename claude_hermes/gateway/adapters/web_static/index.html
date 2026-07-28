@@ -3466,10 +3466,41 @@ function renderModelPop(){
   });
   pop.innerHTML = html || '<div style="padding:9px 11px;color:var(--dim);font-size:13px">暂无可选模型</div>';
   pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickModel(b.dataset.m); });
+  // Hover 卡片改走 JS 悬浮定位(挂在 body 下),不再用 CSS :hover——
+  // #modelPop 为了让长列表能滚动设了 overflow-y:auto,浏览器会连带把 overflow-x
+  // 也强制裁成非 visible(CSS 规范:两轴一边非 visible,另一边就跟着裁),
+  // 卡片是绝对定位往圆环左侧展开的,会被裁没,看起来就是空白。
+  pop.querySelectorAll(".mring").forEach(ring=>{
+    ring.addEventListener("mouseenter", ()=>showUsageTip(ring));
+    ring.addEventListener("mouseleave", hideUsageTip);
+  });
   loadModelQuotas(choices);
 }
+var usageTipEl = null;
+function showUsageTip(ring){
+  var src = ring.querySelector(".mqtip");
+  if(!src || !src.innerHTML) return;
+  if(!usageTipEl){
+    usageTipEl = document.createElement("div");
+    usageTipEl.className = "mqfloat";
+    document.body.appendChild(usageTipEl);
+  }
+  usageTipEl.innerHTML = src.innerHTML;
+  usageTipEl.style.display = "block";
+  var rect = ring.getBoundingClientRect();
+  var tw = usageTipEl.offsetWidth, th = usageTipEl.offsetHeight;
+  var left = rect.left - tw - 10;
+  if(left < 8) left = rect.right + 10;               // 左边放不下就翻到右边
+  if(left + tw > window.innerWidth - 8) left = window.innerWidth - tw - 8;
+  var top = rect.top + rect.height/2 - th/2;
+  top = Math.max(8, Math.min(top, window.innerHeight - th - 8));
+  usageTipEl.style.left = left + "px";
+  usageTipEl.style.top = top + "px";
+}
+function hideUsageTip(){ if(usageTipEl) usageTipEl.style.display = "none"; }
 function pickModel(id){
   $("#modelPop").hidden=true;
+  hideUsageTip();
   if(!id || id===curModel()) return;
   setModel(id);            // 乐观更新胶囊
   S.models.default=id;     // 同步"本端默认":之后新开会话也默认用这个模型
@@ -3478,8 +3509,8 @@ function pickModel(id){
     body:JSON.stringify({conv:S.conv, model:id})}).catch(()=>{});
 }
 $("#modelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#modelPop");
-  if(p.hidden){ renderModelPop(); p.hidden=false; } else p.hidden=true; };
-document.addEventListener("click", e=>{ const b=$("#modelBox"); if(b && !b.contains(e.target)) $("#modelPop").hidden=true; });
+  if(p.hidden){ renderModelPop(); p.hidden=false; } else { p.hidden=true; hideUsageTip(); } };
+document.addEventListener("click", e=>{ const b=$("#modelBox"); if(b && !b.contains(e.target)){ $("#modelPop").hidden=true; hideUsageTip(); } });
 
 // 模型面板里的订阅额度(重置时间 + 圆环 + hover 详情)
 // loadUsage 只负责拿数据+缓存(60s 内复用),不碰 DOM;渲染交给调用方按行更新。
