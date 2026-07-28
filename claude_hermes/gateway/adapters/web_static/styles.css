@@ -143,14 +143,15 @@
      滑动时 cvbody 与 cvact 反向同步平移,互换着露出/藏起) */
   .conv .cvbody{display:flex;align-items:center;gap:8px;width:100%;transition:transform .22s ease}
   .conv.swiping .cvbody{transition:none}
-  .conv.swiped .cvbody{transform:translateX(-72px)}
-  .conv .cvact{position:absolute;top:0;right:0;bottom:0;width:72px;display:flex;
+  .conv.swiped .cvbody{transform:translateX(-108px)}
+  .conv .cvact{position:absolute;top:0;right:0;bottom:0;width:108px;display:flex;
     transform:translateX(100%);transition:transform .22s ease}
   .conv.swiping .cvact{transition:none}
   .conv.swiped .cvact{transform:translateX(0)}
   .conv .cvact button{flex:1;border:none;display:flex;align-items:center;justify-content:center;color:#fff;cursor:pointer}
   .conv .cvact button .ic{width:16px;height:16px}
   .conv .cvact .cvarch{background:var(--dim2)}
+  .conv .cvact .cvpin{background:var(--accent)}
   .conv .cvact .cvdel{background:var(--err);border-radius:0 7px 7px 0}   /* 贴行右边缘,配行本身的圆角,避免被 overflow 裁出直角缺口 */
   .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
   .conv .livedot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}   /* AI 正在回复:闪烁圆点 */
@@ -232,8 +233,6 @@
   .projgrp .pgadd:hover{opacity:1;color:var(--text);background:var(--card)}
   .projgrp .pgmore:hover,.projgrp .pgmore.on{opacity:1;color:var(--text);background:var(--card)}
   .projgrp.projadd{color:var(--dim2);font-weight:600;margin-top:4px}   /* 黑灰、无分割线、与分组同款行 */
-  .projgrp.projsection{cursor:default;font-size:11px;letter-spacing:.04em;color:var(--dim2);margin-top:8px;padding:2px 8px}  /* 「置顶」纯文字小节标题,不可点/不可展开 */
-  .projgrp.projsection:hover{background:none;color:var(--dim2)}
   /* 项目拖拽排序:可拖起手型,拖起半透明,悬停目标高亮上边框示意插入位置 */
   .projgrp[draggable="true"]{cursor:grab}
   .projgrp.dragging{opacity:.4}
