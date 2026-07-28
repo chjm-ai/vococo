@@ -334,7 +334,7 @@ def list_sessions(prefix: str) -> list[dict]:
         "  COALESCE(MAX(m.ctx_window),0), COALESCE(MAX(m.last_in),0), "
         "  COALESCE(MAX(m.last_cache),0), COALESCE(MAX(m.last_out),0), MAX(m.model), "
         "  MAX(m.chosen_model), COALESCE(MAX(m.archived),0), "
-        "  COALESCE(MAX(m.pending_review),0) "
+        "  COALESCE(MAX(m.pending_review),0), COALESCE(MAX(m.last_error),0) "
         "FROM keys k "
         "LEFT JOIN session_meta m ON k.session_key = m.session_key "
         "LEFT JOIN turns t ON t.session_key = k.session_key "
@@ -349,6 +349,7 @@ def list_sessions(prefix: str) -> list[dict]:
         item.update(_usage_fields(row[3:11]))
         item["archived"] = bool(row[11])
         item["pending_review"] = bool(row[12])
+        item["last_error"] = bool(row[13])
         out.append(item)
     return out
 
@@ -401,6 +402,19 @@ def set_pending_review(session_key: str, pending: bool) -> None:
         "INSERT INTO session_meta(session_key, watermark_id, pending_review) VALUES (?,0,?) "
         "ON CONFLICT(session_key) DO UPDATE SET pending_review=excluded.pending_review",
         (session_key, 1 if pending else 0),
+    )
+    c.commit()
+
+
+def set_last_error(session_key: str, is_error: bool) -> None:
+    """记下该会话最近一轮是否以报错收尾(限流/超时/模型层错误等)——语音端
+    voice_list_web_sessions 靠它筛出"卡住等续聊"的网页会话,不用去猜最后一条
+    回复文本是不是错误提示。"""
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta(session_key, watermark_id, last_error) VALUES (?,0,?) "
+        "ON CONFLICT(session_key) DO UPDATE SET last_error=excluded.last_error",
+        (session_key, 1 if is_error else 0),
     )
     c.commit()
 

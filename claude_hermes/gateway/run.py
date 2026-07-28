@@ -247,6 +247,13 @@ class GatewayRunner:
         for adapter in self.adapters.values():
             if hasattr(adapter, "set_cancel_callback"):
                 adapter.set_cancel_callback(self.cancel_turn)
+        # 注册语音→网页跨端续聊桥接:语音喊一声就能让某个 web: 会话继续跑
+        # (见 gateway/web_bridge.py、voice/task_tools.py 的 voice_continue_web)
+        web_adapter = self.adapters.get("web")
+        if web_adapter is not None:
+            from . import web_bridge
+
+            web_bridge.register(web_adapter.inject, self.cancel_turn)
         from . import watchdog
 
         watchdog.start_thread()  # 假死看门狗:循环卡死 → dump 堆栈 → 自杀交 run.sh 拉起
