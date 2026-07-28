@@ -5317,7 +5317,7 @@ async function openConv(conv, silentGroup){
 // ── 重加载历史(SSE 连接恢复后)──────────────────────────────────────────
 // force=true:强制核对一次(用于"流式气泡疑似卡死"场景——例如重连时环形缓冲已把 done 事件
 // 挤出去,前端永远等不到收尾)。核对时只信服务端:该轮在 /history 里已落库完成才收气泡改用
-// 权威历史重绘;服务端也认为还在跑就绝不打断,只是重置一下卡住计时,过会再核对一次。
+// 权威历史重绘;服务端也认为还在跑就不整包打断,但会用 draft_text 把落后的画面追平。
 async function reloadHistory(force){
   const conv=S.conv;
   if(!conv || String(conv).startsWith("local-")) return;  // 只在非本地会话拉
@@ -5328,7 +5328,23 @@ async function reloadHistory(force){
     if(S.conv!==conv) return;  // await 期间切了会话 → 丢弃
     if(S.stream){
       const last=d.turns[d.turns.length-1];
-      if(!last || last.pending){ S.stream.lastEvt=Date.now(); return; }  // 服务端也还在跑,别打断
+      if(!last || last.pending){
+        // 服务端也还在跑,别用整包重绘打断流式气泡;但若 draft_text 已经领先本地画面
+        // (本地这条 SSE 连接静默失活、没收到新 text 事件),把落后的尾巴追上来,不然
+        // 只重置计时器的话画面会一直卡在最后收到的那一帧,直到这轮结束才恢复。
+        if(last && last.draft){
+          const local=streamText(S.stream);
+          if(last.draft.length>local.length && last.draft.startsWith(local)){
+            const keys=Object.keys(S.stream.segs).map(Number);
+            const nextSeg=keys.length?Math.max(...keys)+1:0;
+            const seg=segDiv(S.stream, nextSeg);
+            seg.dataset.raw=last.draft.slice(local.length);
+            renderSeg(seg);
+          }
+        }
+        S.stream.lastEvt=Date.now();
+        return;
+      }
       finalizeStream();  // 服务端已收尾,前端漏接了 → 收掉卡住的流式气泡,改用下面的权威历史重绘
     }
     S.histCache[conv]=d.turns;
