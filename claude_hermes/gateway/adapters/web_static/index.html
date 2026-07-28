@@ -3471,12 +3471,13 @@ var quotaCache = {};   // 按模型名缓存 {data, ts},60s 内直接复用,不�
 var QUOTA_ARC = 50.27; // 2*PI*8,与 ctxRing 同值
 
 function ringSvg(id){
-  return '<span class="mring" data-m="'+esc(id)+'" data-state="loading" title="额度加载中…">'+
+  return '<span class="mring" data-m="'+esc(id)+'" data-state="loading">'+
     '<svg class="qr" viewBox="0 0 20 20">'+
     '<circle class="qt" cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2.5" opacity="0.15"/>'+
     '<circle class="qa" cx="10" cy="10" r="8" fill="none" stroke-width="2.5" stroke-linecap="round" '+
     'stroke-dasharray="50.27" stroke-dashoffset="50.27" transform="rotate(-90 10 10)"/>'+
-    '</svg></span>';
+    '</svg>'+
+    '<span class="mqtip"></span></span>';
 }
 function renderModelPop(){
   const pop=$("#modelPop"), cur=curModel();
@@ -3494,7 +3495,7 @@ function renderModelPop(){
       const id=c[0], label=c[1];
       const shortLabel = label.replace(/[(（][^)）]*[)）]\s*$/,"").trim();
       const showMeta = gkey==="anthropic" || gkey==="kimi";
-      const ring = gkey==="kimi" ? ringSvg(id) : "";
+      const ring = showMeta ? ringSvg(id) : "";
       const reset = showMeta ? '<span class="mreset" data-m="'+esc(id)+'"></span>' : "";
       return '<button type="button" class="mi'+(id===cur?" on":"")+'" data-m="'+esc(id)+'">'+
         '<span class="ml">'+esc(shortLabel)+'</span>'+
@@ -3519,7 +3520,7 @@ $("#modelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#modelPop");
   if(p.hidden){ renderModelPop(); p.hidden=false; } else p.hidden=true; };
 document.addEventListener("click", e=>{ const b=$("#modelBox"); if(b && !b.contains(e.target)) $("#modelPop").hidden=true; });
 
-// ── 模型面板里的订阅额度(重置时间 + Kimi 圆环)──────────────────────────
+// 模型面板里的订阅额度(重置时间 + 圆环 + hover 详情)
 // loadUsage 只负责拿数据+缓存(60s 内复用),不碰 DOM;渲染交给调用方按行更新。
 function loadUsage(model, force){
   var cached = quotaCache[model];
@@ -3547,28 +3548,72 @@ function findRowEls(id){
   $("#modelPop").querySelectorAll(".mreset").forEach(function(el){ if(el.dataset.m===id) reset=el; });
   return {ring: ring, reset: reset};
 }
-function applyKimiRow(id, data){
+function fmtUSD(n){ n=+n||0; return "$"+n.toFixed(2); }
+function fmtNum(n){ n=+n||0; return n.toLocaleString("en-US"); }
+function fmtPct(n){ if(n==null) return "-"; return (n*100).toFixed(1)+"%"; }
+
+function renderQuotaTooltip(data){
+  var five = data && data.limits && data.limits.five_hour || {};
+  var seven = data && data.limits && data.limits.seven_day || {};
+  var html = '<div class="mqt">';
+
+  if(data.provider === "claude"){
+    html += '<div class="mqh">Claude 订阅额度'+(data.source==="local_estimate"?' <span class="mqtag">本地估算</span>':"")+'</div>';
+    html += '<div class="mqrow"><span>5h 已用</span><b>'+fmtPct(five.utilization)+'</b></div>';
+    if(five.limit) html += '<div class="mqrow mqsub">'+fmtNum(five.remaining)+' / '+fmtNum(five.limit)+' tokens</div>';
+    if(seven.utilization != null){
+      html += '<div class="mqrow"><span>7d 已用</span><b>'+fmtPct(seven.utilization)+'</b></div>';
+      if(seven.limit) html += '<div class="mqrow mqsub">'+fmtNum(seven.remaining)+' / '+fmtNum(seven.limit)+' tokens</div>';
+    }
+    var local = data.local || {};
+    if(local.cost_usd != null) html += '<div class="mqrow"><span>当前窗口费用</span><b>'+fmtUSD(local.cost_usd)+'</b></div>';
+    if(local.sent_messages != null) html += '<div class="mqrow"><span>消息数</span><b>'+fmtNum(local.sent_messages)+'</b></div>';
+    if(local.burn_rate_tokens_per_minute != null) html += '<div class="mqrow"><span>燃烧速率</span><b>'+fmtNum(local.burn_rate_tokens_per_minute)+' t/min</b></div>';
+    if(local.burn_rate_cost_per_hour != null) html += '<div class="mqrow"><span>费用速率</span><b>'+fmtUSD(local.burn_rate_cost_per_hour)+'/h</b></div>';
+    var fc = data.forecast || {};
+    if(fc.display) html += '<div class="mqrow mqwarn"><span>预计耗尽</span><b>'+esc(fc.display)+'</b></div>';
+    var md = local.model_distribution || [];
+    if(md.length){
+      html += '<div class="mqsep"></div><div class="mqdist">';
+      md.forEach(function(m){ html += '<span>'+esc(m.family)+" "+m.percentage.toFixed(1)+"%</span>"; });
+      html += '</div>';
+    }
+  } else if(data.provider === "kimi"){
+    html += '<div class="mqh">Kimi 订阅额度</div>';
+    html += '<div class="mqrow"><span>5h 已用</span><b>'+fmtPct(five.utilization)+'</b></div>';
+    if(five.limit) html += '<div class="mqrow mqsub">'+fmtNum(five.remaining)+' / '+fmtNum(five.limit)+' tokens</div>';
+    if(five.status) html += '<div class="mqrow"><span>状态</span><b>'+esc(five.status)+'</b></div>';
+    var ts = typeof five.resets_at === "string" ? new Date(five.resets_at).getTime() : (five.resets_at||0)*1000;
+    if(ts > Date.now()) html += '<div class="mqrow"><span>重置时间</span><b>'+new Date(ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})+'</b></div>';
+  } else {
+    html += '<div class="mqh">额度信息</div><div class="mqrow"><span>暂无详细数据</span></div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+function applyUsageRow(id, data){
   var els = findRowEls(id);
   if(els.reset) els.reset.textContent = resetLabel(data);
   var ring = els.ring;
   if(!ring) return;
   var arc = ring.querySelector(".qa");
+  var tip = ring.querySelector(".mqtip");
   var five = data && data.limits && data.limits.five_hour;
   if(!data || data.error || !five){
     ring.dataset.state = "error";
-    ring.title = "额度查询失败";
+    if(tip) tip.innerHTML = '<div class="mqt">额度查询失败</div>';
     if(arc){ arc.setAttribute("stroke-dashoffset","0"); arc.style.stroke="var(--dim2)"; }
     return;
   }
   ring.dataset.state = "ok";
   if(five.utilization == null){
-    ring.title = "订阅可用(暂无具体%)";
+    if(tip) tip.innerHTML = '<div class="mqt"><div class="mqh">订阅可用</div><div class="mqrow"><span>暂无具体百分比</span></div></div>';
     if(arc){ arc.setAttribute("stroke-dashoffset","0"); arc.style.stroke="var(--dim2)"; }
     return;
   }
   var pct = Math.round(five.utilization * 100);
-  var remain = five.remaining != null && five.limit ? five.remaining+"/"+five.limit : "";
-  ring.title = "5h 已用 "+pct+"%"+(remain ? " ("+remain+")" : "");
+  if(tip) tip.innerHTML = renderQuotaTooltip(data);
   if(arc){
     arc.setAttribute("stroke-dashoffset", String(QUOTA_ARC * (1 - pct/100)));
     var color = "var(--ok)";
@@ -3583,15 +3628,11 @@ function loadModelQuotas(choices){
   // 查一次就够了,套到该组所有行上,不用每个模型各打一次接口。
   if(anthropicIds.length){
     loadUsage(anthropicIds[0]).then(function(data){
-      var txt = resetLabel(data);
-      anthropicIds.forEach(function(id){
-        var els = findRowEls(id);
-        if(els.reset) els.reset.textContent = txt;
-      });
+      anthropicIds.forEach(function(id){ applyUsageRow(id, data); });
     });
   }
   kimiIds.forEach(function(id){
-    loadUsage(id).then(function(data){ applyKimiRow(id, data); });
+    loadUsage(id).then(function(data){ applyUsageRow(id, data); });
   });
 }
 function metaRow(k, v, pp, cls){

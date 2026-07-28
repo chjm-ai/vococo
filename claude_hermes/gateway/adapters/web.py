@@ -35,6 +35,7 @@ from ...memory import session_store
 from .. import git_status, settings_store
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
 from .base import ImageAttachment, Incoming
+from .usage_local import get_local_claude_usage
 from .web_push import PUSH
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
@@ -1023,14 +1024,64 @@ class WebAdapter:
                     )
             return web.json_response({"provider": "kimi", "type": "api"})
 
-        # Claude 官方订阅:返回缓存中的速率限额
+        # Claude 官方订阅:优先用 SDK 缓存的 RateLimitEvent(官方精确值),
+        # 若 utilization 缺失则合并本地日志估算值作兜底,确保始终有具体百分比。
         p_entry = providers.lookup_provider_by_model(model)
         if not p_entry or p_entry.get("name", "").lower() in ("claude", "official", "anthropic"):
-            limits = get_rate_limits()
-            return web.json_response({
+            official = get_rate_limits()
+            local = await get_local_claude_usage()
+
+            five_off = (official.get("five_hour") or {}) if isinstance(official, dict) else {}
+            five_loc = (local.get("limits", {}).get("five_hour") or {}) if local else {}
+
+            # 官方有利用率就用官方的;否则退回本地估算,但要明确标注来源
+            source = "official"
+            if five_off.get("utilization") is not None:
+                merged = dict(five_off)
+            elif local:
+                merged = dict(five_loc)
+                source = "local_estimate"
+            else:
+                merged = dict(five_off)
+
+            # resets_at 两边可能都有,取官方优先
+            if not merged.get("resets_at") and five_off.get("resets_at"):
+                merged["resets_at"] = five_off["resets_at"]
+            if not merged.get("resets_at") and five_loc.get("resets_at"):
+                merged["resets_at"] = five_loc["resets_at"]
+
+            # 7d 窗口同样合并
+            seven_off = (official.get("seven_day") or {}) if isinstance(official, dict) else {}
+            seven_loc = (local.get("limits", {}).get("seven_day") or {}) if local else {}
+            if seven_off.get("utilization") is not None:
+                merged_seven = dict(seven_off)
+                seven_source = "official"
+            elif local:
+                merged_seven = dict(seven_loc)
+                seven_source = "local_estimate"
+            else:
+                merged_seven = dict(seven_off)
+                seven_source = None
+
+            payload: dict = {
                 "provider": "claude",
-                "limits": limits,
-            })
+                "source": source,
+                "limits": {"five_hour": merged, "seven_day": merged_seven},
+            }
+            if local:
+                # 本地估算详情给前端 hover 卡片用
+                payload["local"] = local.get("local")
+                payload["forecast"] = local.get("forecast")
+                payload["pace"] = local.get("pace")
+                payload["local_history"] = local.get("local_history")
+                payload["confidence"] = local.get("confidence")
+
+            # 标注 7d 数据来源(如果存在)
+            if merged_seven:
+                merged_seven["source"] = seven_source
+            merged["source"] = source
+
+            return web.json_response(payload)
 
         # 其他(DeepSeek/Moonshot API 等):按量计费,无配额
         return web.json_response({"provider": "api", "type": "api"})
