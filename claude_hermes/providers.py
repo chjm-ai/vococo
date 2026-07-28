@@ -88,7 +88,10 @@ def _env_for(provider: ActiveProvider) -> dict[str, str]:
         return {}
     return {
         "ANTHROPIC_BASE_URL": provider.base_url,
-        "ANTHROPIC_AUTH_TOKEN": provider.api_key,
+        # Claude Code CLI / claude-agent-sdk 只认 ANTHROPIC_API_KEY 作为第三方
+        # Anthropic-compatible 端点的鉴权,ANTHROPIC_AUTH_TOKEN 不被识别,会
+        # 导致 CLI 报 "Not logged in · Please run /login"。
+        "ANTHROPIC_API_KEY": provider.api_key,
         # 清掉订阅 token,免得 CLI 拿它去打第三方端点导致 401
         "CLAUDE_CODE_OAUTH_TOKEN": "",
     }
