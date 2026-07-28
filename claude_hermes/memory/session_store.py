@@ -420,8 +420,24 @@ def set_last_error(session_key: str, is_error: bool) -> None:
 
 
 def set_chosen_model(session_key: str, model: str) -> None:
-    """记住某会话用户选定的模型(下一轮要用哪个);/model 切换时写入,刷新/重启都不丢。"""
+    """记住某会话用户选定的模型(下一轮要用哪个);/model 切换时写入,刷新/重启都不丢。
+
+    如果模型确实发生变化,同时清掉 sdk_session_id —— 不同模型/供应商的 CLI
+    transcript 不兼容,resume 旧 session 会延续旧模型的调用身份,导致"切换了
+    模型仍然报旧模型的限额/429"。清掉后下一轮用历史 blob 起新会话,真正切到
+    新模型。
+    """
     c = _conn()
+    row = c.execute(
+        "SELECT chosen_model FROM session_meta WHERE session_key=? AND chosen_model IS NOT NULL",
+        (session_key,),
+    ).fetchone()
+    if row and row[0] and row[0] != model:
+        # 模型切换:旧 SDK 会话不能再 resume
+        c.execute(
+            "UPDATE session_meta SET sdk_session_id=NULL WHERE session_key=?",
+            (session_key,),
+        )
     c.execute(
         "INSERT INTO session_meta(session_key, watermark_id, chosen_model) VALUES (?,0,?) "
         "ON CONFLICT(session_key) DO UPDATE SET chosen_model=excluded.chosen_model",
