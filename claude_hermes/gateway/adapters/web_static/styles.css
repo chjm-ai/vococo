@@ -780,8 +780,6 @@
   #modelPop .mi.on{color:var(--accent)}
   #modelPop .mi .mk{color:var(--accent);font-size:12px;flex-shrink:0}
   #modelPop .mi .ml{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #modelPop .mi .mmeta{display:flex;align-items:center;gap:6px;flex-shrink:0}
-  #modelPop .mi .mreset{font-size:11px;color:var(--dim2);white-space:nowrap}
   #modelPop .mring{position:relative;width:16px;height:16px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
   #modelPop .mring .mqtip{display:none}   /* 纯数据容器,内容由 JS 拷进 .mqfloat 悬浮显示;自己永不直接可见 */
   /* Hover 卡片:挂在 body 下用 fixed 定位(见 showUsageTip),不能放在 #modelPop 内部——
@@ -796,7 +794,9 @@
   .mqt .mqsep{height:1px;background:var(--line2);margin:8px 0}
   .mqt .mqdist{display:flex;flex-wrap:wrap;gap:5px}
   .mqt .mqdist span{font-size:11px;color:var(--dim);background:var(--panel2);padding:2px 6px;border-radius:8px}
-  #modelPop .mgrouplabel{padding:7px 11px 4px;font-size:11px;font-weight:600;color:var(--dim2)}
+  #modelPop .mgrouplabel{padding:7px 11px 4px;font-size:11px;font-weight:600;color:var(--dim2);display:flex;align-items:center;justify-content:space-between;gap:8px}
+  #modelPop .mgrouplabel .mgmeta{display:flex;align-items:center;gap:6px;flex-shrink:0}
+  #modelPop .mgrouplabel .mreset{font-size:11px;color:var(--dim2);font-weight:400;white-space:nowrap}
   #modelPop .mdivider{height:1px;margin:5px 7px;background:var(--line2)}
   /* 新会话项目选择器:悬浮在 .inrow 左上角(position:absolute 脱离文档流,不挤占输入框布局) */
   #projSel{position:absolute;left:0;bottom:calc(100% + 8px);z-index:15}
