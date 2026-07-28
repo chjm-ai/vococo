@@ -254,6 +254,7 @@ class WebAdapter:
         self._live: dict[str, dict] = {}
         self._runner: web.AppRunner | None = None
         self._cancel_callback: Callable[[str], bool] | None = None
+        self._model_switch_callback: Callable[[str, str], None] | None = None
         # 进程本次启动的标识:重启后这个值必变。前端拿它跟上次记住的值比对——
         # 一旦不一样就说明断线期间进程重启过,上面的环形缓冲/_live 全被清空了,
         # 断线补发这条路救不回来,前端得主动整体核对一次(侧栏 + 当前会话历史)。
@@ -265,6 +266,10 @@ class WebAdapter:
 
     def set_cancel_callback(self, cb: Callable[[str], bool]) -> None:
         self._cancel_callback = cb
+
+    def set_model_switch_callback(self, cb: Callable[[str, str], None]) -> None:
+        """注册模型切换回调:UI 切模型时同步更新 GatewayRunner 的内存缓存。"""
+        self._model_switch_callback = cb
 
     # ── 认证 ────────────────────────────────────────────────────────────
     def _ok_token(self, request: web.Request) -> bool:
@@ -617,6 +622,9 @@ class WebAdapter:
         session_store.backfill_chosen_models()  # 冻结老会话
         session_store.set_chosen_model(session_key, model)
         settings_store.set_web_default_model(model)
+        # 同步更新 GatewayRunner 的内存缓存,否则下一条消息还会用旧模型
+        if self._model_switch_callback:
+            self._model_switch_callback(session_key, model)
         return web.json_response({"ok": True})
 
     async def _summarize_title(
