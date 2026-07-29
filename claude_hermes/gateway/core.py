@@ -253,9 +253,9 @@ async def converse(
     标记」分开 —— 否则长指令会被当成用户发的话显示、并污染后续上下文。
 
     cwd_override:显式指定这一轮的工作目录,跳过按 session_key 推导 worktree/项目根
-    那一套(`project_cwd_for` 认不出非项目 session_key,如语音后台任务的
-    `voice-task:{id}`)。语音任务续聊要延续任务派发时的 cwd,由调用方(web.py)从
-    `voice.tasks` 查出来传进来。
+    那一套(`project_cwd_for` 认不出非项目 session_key,如统一后台任务引擎的
+    `task:{id}`)。后台任务续聊要延续任务派发时的 cwd,由调用方(gateway/run.py)从
+    `core.tasks` 查出来传进来。
     """
     from .. import config  # 懒加载,与本模块其余用法一致
 

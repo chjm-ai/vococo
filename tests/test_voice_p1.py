@@ -10,10 +10,12 @@ import asyncio
 import pytest
 
 from claude_hermes import config
+from claude_hermes.core import task_runner as executor
+from claude_hermes.core import tasks
 from claude_hermes.core.agent import AgentReply, Done, SessionStarted, ToolInput
 from claude_hermes.gateway import core as gateway_core
 from claude_hermes.memory import session_store
-from claude_hermes.voice import executor, notify, session, task_tools, tasks, tts
+from claude_hermes.voice import notify, session, task_tools, tts
 
 
 @pytest.fixture
@@ -208,7 +210,7 @@ async def test_dispatch_persists_full_conversation_to_shared_session_store(
     voice_db, monkeypatch
 ):
     """任务的完整对话(不只是 result_full 摘要)要落进跟普通对话共用的
-    session_store,session_key=voice-task:{id}——这样侧边栏"语音任务"分组才能
+    session_store,session_key=task:{id}——这样侧边栏"语音任务"分组才能
     像回看普通对话一样回看它。"""
 
     async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
@@ -225,7 +227,7 @@ async def test_dispatch_persists_full_conversation_to_shared_session_store(
     task = executor.dispatch("标题", "帮我查一下天气")
     await executor._running[task["id"]]
 
-    session_key = f"voice-task:{task['id']}"
+    session_key = f"task:{task['id']}"
     history = session_store.load_recent(session_key)
     assert len(history) == 1
     assert history[0].user == "帮我查一下天气"
@@ -253,7 +255,7 @@ async def test_task_session_stays_conversable_after_terminal_status(voice_db, mo
     await executor._running[task["id"]]
     assert tasks.get(task["id"])["status"] == "done"  # 已是终态
 
-    session_key = f"voice-task:{task['id']}"
+    session_key = f"task:{task['id']}"
 
     async def fake_stream_turn_followup(history, user_text, **kw):
         assert len(history) == 1  # 续聊能读到派发那一轮的历史
@@ -298,7 +300,7 @@ async def test_progress_note_updates_from_tool_input_throttled(voice_db, monkeyp
 
 @pytest.mark.anyio
 async def test_task_timeout_marks_failed(voice_db, monkeypatch):
-    monkeypatch.setattr(config, "VOICE_TASK_TIMEOUT_MIN", 0.001)  # ≈0.06s,秒超时
+    monkeypatch.setattr(config, "TASK_TIMEOUT_MIN", 0.001)  # ≈0.06s,秒超时
 
     async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
         await asyncio.sleep(1)
@@ -398,7 +400,7 @@ async def test_append_on_running_task_interrupts_and_resumes_same_session(voice_
     task = executor.dispatch("标题", "先做 A")
     await started.wait()
 
-    session_key = f"voice-task:{task['id']}"
+    session_key = f"task:{task['id']}"
     assert session_store.get_sdk_session_id(session_key) == "sdk-mid-flight"
 
     seen_resume = []
@@ -436,7 +438,7 @@ async def test_append_on_queued_task_merges_prompt(voice_db):
 
 @pytest.mark.anyio
 async def test_dispatch_queues_beyond_concurrency_limit(voice_db, monkeypatch):
-    monkeypatch.setattr(config, "VOICE_TASK_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 1)
     gate = asyncio.Event()
 
     async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
@@ -522,7 +524,9 @@ async def test_heal_after_restart_spares_tasks_alive_in_this_process(voice_db, m
     assert tasks.get(t["id"])["status"] == "running"
 
 
-# ── task_tools.py:三个工具的 schema 与行为 ─────────────────────────────────
+# ── task_tools.py:工具的 schema 与行为(voice_query_task/voice_list_tasks 已于
+# 2026-07-29 合并进 voice_query_session/voice_list_sessions,同时服务后台任务和
+# 网页对话两种来源,见 test_voice_web_bridge.py 里网页对话分支的用例)──────────
 def test_dispatch_tool_schema_requires_title_and_prompt():
     t = task_tools.voice_dispatch_task
     assert t.name == "voice_dispatch_task"
@@ -530,17 +534,17 @@ def test_dispatch_tool_schema_requires_title_and_prompt():
     assert "cwd" in t.input_schema["properties"]
 
 
-def test_query_tool_schema_has_optional_task_id():
-    t = task_tools.voice_query_task
-    assert t.name == "voice_query_task"
-    assert "task_id" in t.input_schema["properties"]
+def test_query_tool_schema_has_optional_session_id():
+    t = task_tools.voice_query_session
+    assert t.name == "voice_query_session"
+    assert "session_id" in t.input_schema["properties"]
     assert not t.input_schema.get("required")
 
 
-def test_list_tool_schema_takes_no_params():
-    t = task_tools.voice_list_tasks
-    assert t.name == "voice_list_tasks"
-    assert t.input_schema["properties"] == {}
+def test_list_tool_schema_requires_origin():
+    t = task_tools.voice_list_sessions
+    assert t.name == "voice_list_sessions"
+    assert set(t.input_schema["required"]) == {"origin"}
 
 
 @pytest.mark.anyio
@@ -561,7 +565,7 @@ async def test_dispatch_tool_dispatches_and_reports_task_id(voice_db, monkeypatc
 
     result = await task_tools.voice_dispatch_task.handler({"title": "标题", "prompt": "内容"})
     text = result["content"][0]["text"]
-    assert "task_id=" in text and "标题" in text
+    assert "session_id=" in text and "标题" in text
     assert tasks.get_latest()["title"] == "标题"
 
 
@@ -600,13 +604,13 @@ async def test_dispatch_tool_defaults_cwd_to_project_root(voice_db, monkeypatch)
 @pytest.mark.anyio
 async def test_query_tool_reports_latest_when_id_omitted(voice_db):
     tasks.create("查询目标", "prompt")
-    result = await task_tools.voice_query_task.handler({})
+    result = await task_tools.voice_query_session.handler({})
     assert "查询目标" in result["content"][0]["text"]
 
 
 @pytest.mark.anyio
-async def test_query_tool_reports_missing_task(voice_db):
-    result = await task_tools.voice_query_task.handler({"task_id": "no-such-id"})
+async def test_query_tool_reports_missing_session(voice_db):
+    result = await task_tools.voice_query_session.handler({"session_id": "no-such-id"})
     assert "没有找到" in result["content"][0]["text"]
 
 
@@ -614,7 +618,7 @@ async def test_query_tool_reports_missing_task(voice_db):
 async def test_list_tool_lists_recent_tasks(voice_db):
     tasks.create("任务甲", "p1")
     tasks.create("任务乙", "p2")
-    result = await task_tools.voice_list_tasks.handler({})
+    result = await task_tools.voice_list_sessions.handler({"origin": "task"})
     text = result["content"][0]["text"]
     assert "任务甲" in text and "任务乙" in text
 
@@ -639,6 +643,29 @@ async def test_notify_broadcasts_sse_event_when_online(voice_db, monkeypatch):
     assert payload["id"] == t["id"]
     assert payload["result_summary"] == "一句话摘要"
     assert payload["audio_b64"]
+
+
+@pytest.mark.anyio
+async def test_notify_terminal_marks_pending_review_for_done_not_cancelled(voice_db, monkeypatch):
+    """2026-07-29:语音任务终态未读标记跟 web/cron-task 侧栏对齐——done/failed 才标,
+    用户主动取消的不标(跟 _WebSink.done() 只在真正出结果时才 set_pending_review
+    是同一套语义)。"""
+    monkeypatch.setattr(config, "VOICE_OMNI_ENABLED", True)  # 跳过 TTS 合成,不是本用例重点
+    done_task = tasks.create("done", "p")
+    session_store.append(tasks.session_key(done_task["id"]), "p", "结果")  # 真实任务必有 turn 行
+    tasks.set_status(done_task["id"], "running")
+    tasks.finish(done_task["id"], "done", "结果", "摘要")
+    await notify.on_task_terminal(done_task["id"])
+    rows = {r["key"]: r for r in session_store.list_sessions(tasks.SESSION_KEY_PREFIX)}
+    assert rows[tasks.session_key(done_task["id"])]["pending_review"] is True
+
+    cancelled_task = tasks.create("cancelled", "p")
+    session_store.append(tasks.session_key(cancelled_task["id"]), "p", "(任务已取消)")
+    tasks.set_status(cancelled_task["id"], "running")
+    tasks.finish(cancelled_task["id"], "cancelled", "", "已取消")
+    await notify.on_task_terminal(cancelled_task["id"])
+    rows = {r["key"]: r for r in session_store.list_sessions(tasks.SESSION_KEY_PREFIX)}
+    assert rows[tasks.session_key(cancelled_task["id"])]["pending_review"] is False
 
 
 @pytest.mark.anyio
@@ -694,7 +721,7 @@ async def test_dispatch_broadcasts_task_update_to_online_subscribers(voice_db, m
 def test_progress_text_maps_task_tools_to_human_words():
     """MCP 内部工具名(mcp__xxx__yyy)不能原样念给用户听,单独映射成人话。"""
     assert executor.progress_text("mcp__voice_tasks__voice_dispatch_task", {}) == "正在安排后台任务"
-    assert executor.progress_text("mcp__voice_tasks__voice_query_task", {}) == "正在查任务进度"
+    assert executor.progress_text("mcp__voice_tasks__voice_query_session", {}) == "正在查会话状态"
     assert executor.progress_text("mcp__other__thing", {}) == "正在使用工具"
     assert executor.progress_text("Bash", {"command": "ls -la"}) == "正在执行:ls -la"
 

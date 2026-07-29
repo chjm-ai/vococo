@@ -3803,11 +3803,15 @@ function buildVoiceTaskRow(t, inCall){
   const row=el("div","conv ingroup"+(!inCall && t.conv===S.conv?" active":""));
   row.dataset.conv=t.conv;
   const body=el("div","cvbody");
-  // 任务还在跑(queued/running)→ 复用普通会话行的闪烁圆点;终态不挂点(ab77594 去掉已读提醒的决定不变)
+  // 任务还在跑(queued/running)→ 复用普通会话行的闪烁圆点;终态未读 → 灰点,跟
+  // 普通会话/定时任务行同一套 pending_review 语义(2026-07-29:推翻 ab77594 当时
+  // "终态不挂点"的简化决定,统一三类侧栏行的完成态标记)。
   if(S.live[t.conv]){
     const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot);
   } else if(t.task_status==="queued"||t.task_status==="running"){
     const dot=el("span","livedot"); dot.title=t.task_status==="running"?"任务进行中":"排队中"; body.append(dot);
+  } else if(t.pending_review || S.pendingReview[t.conv]){
+    const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot);
   }
   const ct=el("div","ct"); ct.textContent=t.title||"新对话"; body.append(ct);
   const tm=fmtTime(t.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }
@@ -3975,7 +3979,7 @@ async function loadVoiceSidebar(){
 // SSE task_update → 同步侧边栏任务行的状态点:状态没变(纯进度文案)不重绘,
 // 新派发的任务侧栏还没有这行则整个重拉一次
 function syncSidebarTaskStatus(t){
-  const row=(S.voiceSidebar.tasks||[]).find(x=>x.conv==="voice-task:"+t.id);
+  const row=(S.voiceSidebar.tasks||[]).find(x=>x.conv==="task:"+t.id);
   if(!row){ loadVoiceSidebar(); return; }
   if(row.task_status===t.status) return;
   row.task_status=t.status; renderConvs();
@@ -3989,7 +3993,9 @@ async function loadCronSidebar(){
 }
 // 标题栏右侧的任务操作区(启停开关/编辑/「⋯」):只在 cron-task 会话显示,开关状态取自 S.cronJobs
 function syncCronHeader(){
-  const job=String(S.conv||"").startsWith("cron-task:") ? S.cronJobs.find(x=>x.conv===S.conv) : null;
+  // 直接按 conv 精确匹配 S.cronJobs(不再靠前缀字符串猜——2026-07-29 起 cron 任务
+  // 跟语音/chat 后台任务共用同一个 task: 前缀,前缀本身分不出是不是 cron 任务了)。
+  const job=(S.cronJobs||[]).find(x=>x.conv===S.conv) || null;
   const hide=!job;
   $("#convCronToggle").hidden=$("#convCronEditBtn").hidden=$("#convCronMore").hidden=hide;
   if(job){
@@ -4811,8 +4817,10 @@ function openConvMenu(btn, conv, slim){
   const m=el("div","convmenu"); m.style.visibility="hidden";
   // 定时任务会话:菜单换成编辑/启停/删除(归档对定时任务没意义,见 buildCronJobRow)。
   // slim=true(标题栏「⋯」):启停开关和编辑图标已在标题栏直出,菜单里只剩删除。
-  if(String(conv).startsWith("cron-task:")){
-    const job=S.cronJobs.find(x=>x.conv===conv);
+  // 直接按 conv 精确匹配 S.cronJobs(不再靠前缀字符串猜,理由同 syncCronHeader)。
+  const cronJob=(S.cronJobs||[]).find(x=>x.conv===conv);
+  if(cronJob){
+    const job=cronJob;
     if(!slim){
       const edit=el("button","cmitem"); edit.innerHTML=ic("edit")+" 编辑";
       edit.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); if(job) openCronModal(job); };
@@ -5444,10 +5452,10 @@ function handleEvent(e){
   if(e.type==="done"||e.type==="message"){ delete S.histCache[e.conv]; idbDel("hist:"+e.conv); }
   // 维护每会话"进行中"缓冲:无论前台/后台都记录,切回该会话时可完整重建流式气泡
   if(STREAMY.indexOf(e.type)>=0){ bufPush(e.conv, e); markLive();
-    // voice-task 起跑事件来自 notify 桥接(主 SSE) → 侧栏此行可能还不存在
+    // 后台任务起跑事件来自 notify 桥接(主 SSE) → 侧栏此行可能还不存在
     // (首次触发,loadVoiceSidebar 还没拉过最新数据),在这里拉一次确保渲染。
     // 不是每帧都拉:只 start 且行不在侧栏数据里时才触发。
-    if(e.type==="start" && String(e.conv).startsWith("voice-task:") &&
+    if(e.type==="start" && String(e.conv).startsWith("task:") &&
        !(S.voiceSidebar.tasks||[]).find(x=>x.conv===e.conv)){
       loadVoiceSidebar();
     }
@@ -5456,9 +5464,10 @@ function handleEvent(e){
     // 未读标记要在 delete S.live 触发的这次重绘【之前】就位,否则会先渲一帧"没有点"
     // 再渲一帧"灰点冒出来",看着像跳动;这里把橙点摘掉和灰点挂上做成同一次渲染。
     // 定时任务跑完推来的消息:顺带刷新任务列表(last_status/enabled 这些字段不在
-    // /conversations 里,得单独拉 /cron/sidebar)
-    const isCron = String(e.conv).startsWith("cron-task:");
-    const isVoiceTask = String(e.conv).startsWith("voice-task:");
+    // /conversations 里,得单独拉 /cron/sidebar)。task: 前缀现在是语音/cron/chat
+    // 三种后台任务共用的(2026-07-29 统一),前缀本身分不出是哪一种,索性都刷新一遍
+    // ——都是廉价的 GET,刷新一个用不上的列表没有实际代价。
+    const isTaskConv = String(e.conv).startsWith("task:");
     if(e.conv===S.conv){
       S.pendingReview[e.conv]=false; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=false;
       delete S.live[e.conv]; delete S.streamSnap[e.conv]; markLive();
@@ -5470,10 +5479,10 @@ function handleEvent(e){
     } else {
       S.pendingReview[e.conv]=true; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=true;
       delete S.live[e.conv]; delete S.streamSnap[e.conv]; markLive();
-      // voice-task 行来自 /voice/sidebar(非 /conversations),done 后刷新 task_status
-      if(isVoiceTask){ loadVoiceSidebar(); } else { loadConvs(); }
+      // 后台任务行来自 /voice/sidebar(非 /conversations),done 后刷新 task_status
+      if(isTaskConv){ loadVoiceSidebar(); } else { loadConvs(); }
     }
-    if(isCron) loadCronSidebar();
+    if(isTaskConv) loadCronSidebar();
   }
 
   if(e.conv!==S.conv){ // 别的会话在后台的事件 → 不打断当前视图(已缓冲,圆点已更新)

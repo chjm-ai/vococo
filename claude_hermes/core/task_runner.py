@@ -1,10 +1,17 @@
-"""P1 后台执行器:派发一个任务 = 一个 asyncio task,跑独立的 stream_turn。
+"""统一后台任务引擎:派发一个任务 = 一个 asyncio task,跑独立的 stream_turn。
 
-并发上限 VOICE_TASK_MAX_CONCURRENCY,超出的排队(queued);任务终态时触发
+并发上限 TASK_MAX_CONCURRENCY,超出的排队(queued);任务终态时触发
 notify.on_task_terminal 并顺手拉起下一个排队任务。
 
-后台任务会话【不注入】task_tools 的四个工具(不传 extra_mcp_servers)——防止
-任务里的模型再调 voice_dispatch_task 派生任务、无限套娃(见 00-overview §4.2)。
+2026-07-29 通用化(原 voice/executor.py):语音派发、cron 定时、普通会话发起
+"独立新会话"三种触发方式共用这一个引擎——都是"没人盯着、后台自己跑一轮"这同一
+件事,只是 dispatch()/append() 调用方不同(见 core.tasks.ORIGINS)。真正随触发方
+而变的只有很薄的一层:cron 复用 job_id 当 task_id 实现"到点就 append 一轮"(见
+cron/scheduler.py),语音/chat 每次 dispatch 随机生成新 task_id。执行、并发、
+worktree、resume、通知这些主体逻辑完全共用,不因触发方分叉。
+
+后台任务会话【不注入】voice/task_tools.py 的工具(不传 extra_mcp_servers)——防止
+任务里的模型再调 dispatch_session 之类的工具派生任务、无限套娃(见 00-overview §4.2)。
 """
 from __future__ import annotations
 
@@ -15,20 +22,19 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .. import config
-from ..core import worktree
-from ..core.agent import Done, SessionStarted, ToolInput, run_turn, stream_turn
 from ..memory import session_store
 from ..tools import danger
-from . import notify, tasks
+from . import tasks, worktree
+from .agent import Done, SessionStarted, ToolInput, run_turn, stream_turn
 
 _PROGRESS_THROTTLE_SEC = 5
 _SUMMARY_MAX = 50
 _SUMMARY_PROMPT = (
     "把下面这段内容压成一句不超过 {n} 字的中文口语摘要,直接给结果,不要加任何解释或前缀;"
-    "这句话会被语音朗读出来,禁止 markdown/代码块/星号/反引号这类没法读的符号:\n\n{text}"
+    "这句话可能会被语音朗读出来,禁止 markdown/代码块/星号/反引号这类没法读的符号:\n\n{text}"
 )
 # 后台任务跑的是原始 stream_turn(没有 P0 语音人设那套"禁止 markdown"规则),模型
-# 回复里常带 `代码` / **加粗** 这类符号——result_summary 最终要被朗读,先摘掉。
+# 回复里常带 `代码` / **加粗** 这类符号——result_summary 可能被朗读,先摘掉。
 _MD_STRIP_RE = re.compile(r"[`*_#]+")
 
 
@@ -50,8 +56,8 @@ _running: dict[str, asyncio.Task] = {}
 
 def _start_one(task: dict, turn_text: str | None = None) -> bool:
     """内部:立刻起跑一条任务(跳过排队队列),用于首次派发之外的重开场景
-    (追问打断续接 / 追问原地续聊)。turn_text 非空时作为这一轮实际发给模型的
-    文本(而不是 row['prompt']),配合 resume 续同一条 SDK 会话。
+    (追问/cron 再次触发打断续接 / 原地续聊)。turn_text 非空时作为这一轮实际发给
+    模型的文本(而不是 row['prompt']),配合 resume 续同一条 SDK 会话。
 
     不走 _maybe_start_next 的正常排队逻辑,直接设 running + create_task。
     若 set_status 失败(状态已被别处改了),什么都不做,返回 False。
@@ -66,6 +72,8 @@ def _start_one(task: dict, turn_text: str | None = None) -> bool:
 
 def _notify_activity(task_id: str) -> None:
     """任务非终态变化后,把最新行广播给在线页面(通话视图任务状态条实时刷新)。"""
+    from ..voice import notify  # 懒加载,避免非语音场景也引入 voice 包(见模块头说明)
+
     row = tasks.get(task_id)
     if row is not None:
         notify.on_task_activity(row)
@@ -78,10 +86,12 @@ def progress_text(name: str, tool_input: dict) -> str:
     所以是公开函数;task_tools 的 MCP 工具名(mcp__xxx__yyy)单独映射,
     别把内部命名念给用户听。"""
     ti = tool_input or {}
-    if "voice_dispatch_task" in name:
+    if "dispatch_session" in name or "voice_dispatch_task" in name:
         return "正在安排后台任务"
-    if "voice_query_task" in name or "voice_list_tasks" in name:
-        return "正在查任务进度"
+    if "continue_session" in name:
+        return "正在接续会话"
+    if "query_session" in name or "list_sessions" in name:
+        return "正在查会话状态"
     if name.startswith("mcp__"):
         return "正在使用工具"
     if name == "Bash":
@@ -128,22 +138,24 @@ async def _summarize(result_text: str) -> str:
 
 async def _run(task_id: str, turn_text: str | None = None) -> None:
     """跑一个任务的一轮对话。turn_text 为 None(首次派发)用 row['prompt'];
-    非 None(追问重开)则是这一轮实际发给模型的文本——历史靠 resume 接,
+    非 None(追问/cron 再次触发)则是这一轮实际发给模型的文本——历史靠 resume 接,
     不用每次都把全部历史重新拼进 prompt(见 append())。"""
+    from ..voice import notify  # 懒加载,避免非语音场景也引入 voice 包(见模块头说明)
+
     row = tasks.get(task_id)
     if row is None:
         return
     prompt_text = turn_text if turn_text is not None else row["prompt"]
     # 派发的这一轮对话也落进跟普通文字对话共用的 session_store(不只是 voice.db 里的
-    # result_full 摘要)——这样任务完成后用户能在侧边栏"语音任务"分组里看到完整对话,
+    # result_full 摘要)——这样任务完成后用户能在侧边栏"后台任务"分组里看到完整对话,
     # 并且能继续用文字追问(续聊直接走 web 发消息路径的 converse(),见 web.py)。
     session_key = tasks.session_key(task_id)
     turn_id = session_store.start_turn(session_key, prompt_text)
     sdk_session_id: str | None = None
     # 任务 cwd 指到一个 git 仓库就给这次任务开专属 worktree + 分支(hermes/<task_id>),
     # 跟 Web/CLI「一会话一分支」看齐——语音这边真要动代码,必须走这条派后台任务的路径
-    # 才能拿到工具(前台会话已代码层禁掉 Edit/Write,见 voice/session.py),而这条路径
-    # 现在也不再直接在原 cwd 上改,落地的是隔离分支,不是主目录/主分支。非 git 仓库
+    # 才能拿到工具(前台语音会话已代码层禁掉 Edit/Write,见 voice/session.py),而这条
+    # 路径现在也不再直接在原 cwd 上改,落地的是隔离分支,不是主目录/主分支。非 git 仓库
     # (或没给 cwd)拿到 None,原样回退到 row["cwd"],不阻塞非代码类任务(查资料等)。
     worktree_dir = await worktree.ensure_worktree_for_task(row["cwd"], task_id)
     effective_cwd = worktree_dir or row["cwd"]
@@ -156,18 +168,18 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     async def _drive() -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id
         resume_sid = session_store.get_sdk_session_id(session_key)
-        # 会话选定的模型——语音派发/追问时(voice_dispatch_task 的 model 参数)已经
-        # 提前写进 session_meta(见 dispatch()),这里读出来传给 stream_turn;
-        # 没设过就是空串,stream_turn 内部 providers.resolve(None,...) 自动落到全局默认。
+        # 会话选定的模型——派发/追问时(dispatch 的 model 参数)已经提前写进
+        # session_meta(见 dispatch()),这里读出来传给 stream_turn;没设过就是
+        # 空串,stream_turn 内部 providers.resolve(None,...) 自动落到全局默认。
         model = session_store.get_chosen_model(session_key) or None
         async for ev in stream_turn(
             [], prompt_text, model=model, cwd=effective_cwd, session_key=session_key,
-            resume=resume_sid, max_turns=config.VOICE_TASK_MAX_TURNS,
+            resume=resume_sid, max_turns=config.TASK_MAX_TURNS,
         ):
             if isinstance(ev, SessionStarted):
                 # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮
-                # 之后被 voice_append_task 打断(CancelledError,永远走不到 Done),
-                # 下一轮追问依然能 resume 回同一条 SDK 会话,不会丢上下文重开对话。
+                # 之后被 append 打断(CancelledError,永远走不到 Done),下一轮追问
+                # 依然能 resume 回同一条 SDK 会话,不会丢上下文重开对话。
                 sdk_session_id = ev.session_id
                 session_store.set_sdk_session_id(session_key, sdk_session_id)
             elif isinstance(ev, ToolInput) and ev.parent_id is None:
@@ -197,12 +209,12 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                     )
 
     try:
-        await asyncio.wait_for(_drive(), timeout=config.VOICE_TASK_TIMEOUT_MIN * 60)
+        await asyncio.wait_for(_drive(), timeout=config.TASK_TIMEOUT_MIN * 60)
         status = "failed" if error_note else "done"
     except asyncio.CancelledError:
         status = "cancelled"
     except asyncio.TimeoutError:
-        error_note = f"超时(超过 {config.VOICE_TASK_TIMEOUT_MIN} 分钟)"
+        error_note = f"超时(超过 {config.TASK_TIMEOUT_MIN} 分钟)"
     except Exception as exc:  # noqa: BLE001 —— 兜底:任何异常都要走到终态收尾,不留 running 僵尸
         error_note = f"执行出错:{exc}"
     finally:
@@ -228,7 +240,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         # 任务板停在假"失败",排障多绕了一大圈。
         row_now = tasks.get(task_id)
         print(
-            f"[voice/task] ⚠️ 任务 {task_id} 收尾写 {status} 被拒,"
+            f"[task_runner] ⚠️ 任务 {task_id} 收尾写 {status} 被拒,"
             f"库里当前状态是 {row_now['status'] if row_now else '(已不存在)'}"
             f"——它的状态被别的进程/路径改过,任务板显示的可能不是真实结局",
             flush=True,
@@ -241,7 +253,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
 
 def _maybe_start_next() -> None:
     """并发有空位就从队首拉一个 queued 任务起跑;没有空位/没有排队任务则什么都不做。"""
-    while tasks.count_running() < config.VOICE_TASK_MAX_CONCURRENCY:
+    while tasks.count_running() < config.TASK_MAX_CONCURRENCY:
         queued = tasks.list_queued()
         if not queued:
             return
@@ -259,17 +271,22 @@ def dispatch(
     dispatch_platform: str | None = None,
     dispatch_chat_id: str | None = None,
     model: str | None = None,
+    origin: str = "voice",
+    task_id: str | None = None,
 ) -> dict:
     """落库 + 尝试立即起跑(并发满则排队)。立即返回任务行,不等待执行。
 
     dispatch_platform/dispatch_chat_id: 任务是从哪个平台哪个会话派来的,
-    终态通知时靠它们回推该发给谁(见 notify.py)。
-    model:语音派发时指定要用的模型(如 claude-opus-5),不传就用当前全局默认——
+    终态通知时靠它们回推该发给谁(见 voice/notify.py)。
+    model:指定要用哪个模型跑这个任务(如 claude-opus-5),不传就用当前全局默认——
     必须在 _maybe_start_next() 真正起跑前写进 session_meta.chosen_model,
-    _run()/_drive() 才能读到(见 executor._drive 里的 get_chosen_model)。"""
+    _run()/_drive() 才能读到(见 _drive 里的 get_chosen_model)。
+    origin/task_id 透传给 tasks.create()(见其文档:cron 复用 job_id 当 task_id)。
+    """
     task = tasks.create(title=title, prompt=prompt, cwd=cwd,
                         dispatch_platform=dispatch_platform,
-                        dispatch_chat_id=dispatch_chat_id)
+                        dispatch_chat_id=dispatch_chat_id,
+                        origin=origin, task_id=task_id)
     if model:
         session_store.set_chosen_model(tasks.session_key(task["id"]), model)
     _maybe_start_next()
@@ -287,7 +304,8 @@ async def append(task_id: str, instruction: str) -> dict:
     - running(正在跑):打断当前这轮,resume 回打断前已经存好的 SDK 会话 id
       (见 _run 里 SessionStarted 的早捕获),带着已经做的工作接上新指令重跑。
     - 终态(done/failed/cancelled):直接把 instruction 当这一轮的话,resume 回
-      同一条 SDK 会话继续聊,不用重新交代前情。
+      同一条 SDK 会话继续聊,不用重新交代前情。cron 任务每次到点触发都走这条
+      分支(job_id 复用为 task_id,上次运行必是终态)。
 
     返回 {"ok": bool, "message": str, "task": dict|None}。
     """
@@ -324,6 +342,8 @@ async def append(task_id: str, instruction: str) -> dict:
 def cancel(task_id: str) -> bool:
     """取消一个任务:排队中直接置 cancelled;运行中 cancel 对应 asyncio task
     (由 _run 的 except CancelledError 分支落终态)。"""
+    from ..voice import notify  # 懒加载,避免非语音场景也引入 voice 包(见模块头说明)
+
     row = tasks.get(task_id)
     if row is None:
         return False
@@ -370,5 +390,7 @@ async def heal_after_restart() -> None:
     顺带执行的地方);并排除本进程 _running 里的活任务——刚启动时它本来就是空的,
     这层排除是防线,保证本函数无论被谁在什么时机调用都杀不了活人。
     """
+    from ..voice import notify  # 懒加载,避免非语音场景也引入 voice 包(见模块头说明)
+
     for row in tasks.mark_orphans_failed(exclude_ids=set(_running)):
         await notify.on_task_terminal(row["id"])

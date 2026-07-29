@@ -224,13 +224,16 @@ VOICE_ENABLED: bool = _parse_bool(os.environ.get("VOICE_ENABLED", ""), True)
 VOICE_TTS_VOICE: str = (
     os.environ.get("VOICE_TTS_VOICE", "Cherry").strip() or "Cherry"
 )
-# P1 任务板:后台任务并发上限 / 单任务超时(分钟)/ 完成播报档位(idle=等空闲插播,silent=只更新卡片)
-VOICE_TASK_MAX_CONCURRENCY: int = int(os.environ.get("VOICE_TASK_MAX_CONCURRENCY", "3"))
-VOICE_TASK_TIMEOUT_MIN: int = int(os.environ.get("VOICE_TASK_TIMEOUT_MIN", "30"))
-# 后台任务的单轮 agentic 轮数上限,0=跟随全局 MAX_TURNS(全局也是 0 即不限,
-# 由 VOICE_TASK_TIMEOUT_MIN 超时兜底)。保留独立开关是因为查日志/翻代码这类任务
-# 动辄几十轮,2026-07-10 真机事故:全局 40 轮让一个查日志任务白跑 8 分钟。
-VOICE_TASK_MAX_TURNS: int = int(os.environ.get("VOICE_TASK_MAX_TURNS", "0"))
+# === 后台任务引擎(core/task_runner.py,原 P1 语音任务板;2026-07-29 通用化:
+# 语音派发/cron 定时/普通会话发起「独立新会话」三种触发方式共用同一个引擎,
+# 不再是语音专属,故常量名去掉 VOICE_ 前缀)===
+# 并发上限 / 单任务超时(分钟)
+TASK_MAX_CONCURRENCY: int = int(os.environ.get("TASK_MAX_CONCURRENCY", "3"))
+TASK_TIMEOUT_MIN: int = int(os.environ.get("TASK_TIMEOUT_MIN", "30"))
+# 单轮 agentic 轮数上限,0=跟随全局 MAX_TURNS(全局也是 0 即不限,由 TASK_TIMEOUT_MIN
+# 超时兜底)。保留独立开关是因为查日志/翻代码这类任务动辄几十轮,2026-07-10 真机
+# 事故:全局 40 轮让一个查日志任务白跑 8 分钟。
+TASK_MAX_TURNS: int = int(os.environ.get("TASK_MAX_TURNS", "0"))
 # 派活判断目前完全靠模型自己读【派活规则】临场判断,没有代码兜底——真机复盘过
 # 一次长任务(7步骤的复杂指令)险些没被当成后台任务处理(见 2026-07-09 事故复盘)。
 # 这里加一道低成本兜底:识别文本超过这个字数,就在 prompt 里额外加一句强提示,
@@ -292,12 +295,14 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     但特殊 conv_id "main" 汇入统一主会话(从网页也能接着 TG/CLI 那条线聊);
     私聊则按 UNIFY_SESSIONS:开统一则共享主会话,否则按平台隔离。
 
-    `voice-chat:`/`voice-task:` 是语音模块保留的前缀(主语音通话、后台任务各一个
-    固定/派生键),已经是完整 key,原样透传不再套 "web:" 前缀——这样侧边栏"语音
-    任务"分组里的会话可以直接用 index.html 现成的 openConv()/发消息面板打开,
-    不用给语音专门另写一套路由逻辑。`cron-task:` 是定时任务模块照搬同一套模式
-    (每个定时任务一个专属会话,历次运行结果落在这条会话里)。这些前缀是新引入
-    的保留字,不会跟现有项目哈希形态的 conv_id 冲突。
+    `voice-chat:` 是语音模块保留前缀(主语音通话固定键)。`task:` 是统一后台任务
+    引擎(core/task_runner.py)的前缀——语音派发、cron 定时、普通会话发起"独立
+    新会话"三种触发方式共用同一套 task 表和 session_key 命名(2026-07-29 统一,
+    以前 voice-task:/cron-task: 是两个各自为政的前缀,现在合一,靠 tasks 表的
+    origin 字段区分谁触发的)。这些都已经是完整 key,原样透传不再套 "web:" 前缀
+    ——这样侧边栏"后台任务"分组里的会话可以直接用 index.html 现成的
+    openConv()/发消息面板打开,不用专门另写一套路由逻辑。这些前缀是保留字,
+    不会跟现有项目哈希形态的 conv_id 冲突。
     """
     if platform == "telegram" and isinstance(chat_id, int) and chat_id < 0:
         return f"tg:{chat_id}"
@@ -305,9 +310,7 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
         if chat_id == "main":
             return SESSION_KEY
         if isinstance(chat_id, str) and (
-            chat_id.startswith("voice-chat:")
-            or chat_id.startswith("voice-task:")
-            or chat_id.startswith("cron-task:")
+            chat_id.startswith("voice-chat:") or chat_id.startswith("task:")
         ):
             return chat_id
         return f"web:{chat_id}"

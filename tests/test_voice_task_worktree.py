@@ -57,7 +57,7 @@ async def test_ensure_worktree_for_task_creates_isolated_branch(isolated, monkey
     assert root_branch != "hermes/task123"
 
     # 落库绑定 + 幂等复用
-    assert session_store.get_worktree("voice-task:task123") == wt_dir
+    assert session_store.get_worktree("task:task123") == wt_dir
     wt_dir2 = await worktree.ensure_worktree_for_task(str(repo), "task123")
     assert wt_dir2 == wt_dir
 

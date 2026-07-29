@@ -1,10 +1,11 @@
-"""语音→网页跨端续聊桥接的测试(2026-07-28 补:voice_continue_web / voice_list_web_sessions /
-gateway/web_bridge.py / WebAdapter.inject / session_store.last_error)。
+"""语音→网页跨端续聊桥接的测试(2026-07-28 补,2026-07-29 随 voice_continue_web/
+voice_list_web_sessions 合并进 voice_continue_session/voice_list_sessions 改写)。
 
 覆盖:last_error 落库与 list_sessions 透出、web_bridge 注册前后的 available()/
 continue_session()/cancel_if_running()、WebAdapter.inject 与 _handle_send 走同一条
-_ingest 流水线、两个新 MCP 工具的 schema 与行为(含没注册 bridge 时的降级提示、
-conv/task_id 两套 id 不串)。
+_ingest 流水线、合并后 voice_continue_session/voice_list_sessions 对网页对话这条分支
+的 schema 与行为(含没注册 bridge 时的降级提示、找不到该 session_id 的提示、
+task_id/web conv 两套 id 不串)。
 """
 from __future__ import annotations
 
@@ -100,31 +101,45 @@ async def test_web_adapter_inject_enqueues_same_as_browser_send(web_db):
     assert broadcasts == [{"conv": "conv1", "type": "user", "text": "接着跑一下"}]
 
 
-# ── 两个新 MCP 工具 ──────────────────────────────────────────────────────────
+# ── voice_continue_session / voice_list_sessions(网页对话分支) ─────────────
 
 
-def test_voice_continue_web_schema():
-    assert task_tools.voice_continue_web.name == "voice_continue_web"
-    assert task_tools.voice_list_web_sessions.name == "voice_list_web_sessions"
+def test_merged_tools_schema():
+    assert task_tools.voice_continue_session.name == "voice_continue_session"
+    assert task_tools.voice_list_sessions.name == "voice_list_sessions"
+    assert set(task_tools.voice_list_sessions.input_schema["required"]) == {"origin"}
 
 
 @pytest.mark.anyio
-async def test_voice_continue_web_without_bridge_degrades_gracefully(web_db):
-    result = await task_tools.voice_continue_web.handler(
-        {"conv": "conv1", "instruction": "继续"}
+async def test_continue_session_without_bridge_degrades_gracefully(web_db):
+    session_store.append("web:conv1", "问", "答")
+    result = await task_tools.voice_continue_session.handler(
+        {"session_id": "conv1", "instruction": "继续"}
     )
     text = result["content"][0]["text"]
     assert "没有开启网页入口" in text
 
 
 @pytest.mark.anyio
-async def test_voice_continue_web_requires_both_fields(web_db):
-    result = await task_tools.voice_continue_web.handler({"conv": "", "instruction": "继续"})
+async def test_continue_session_requires_both_fields(web_db):
+    result = await task_tools.voice_continue_session.handler(
+        {"session_id": "", "instruction": "继续"}
+    )
     assert "都非空" in result["content"][0]["text"]
 
 
 @pytest.mark.anyio
-async def test_voice_continue_web_idle_session_dispatches_without_cancel(web_db):
+async def test_continue_session_unknown_id_reports_not_found(web_db):
+    web_bridge.register(lambda conv, text: None, lambda key: False)
+    result = await task_tools.voice_continue_session.handler(
+        {"session_id": "no-such-conv", "instruction": "继续"}
+    )
+    assert "没有找到" in result["content"][0]["text"]
+
+
+@pytest.mark.anyio
+async def test_continue_session_web_idle_dispatches_without_cancel(web_db):
+    session_store.append("web:conv1", "问", "答")
     calls = []
 
     async def fake_dispatch(conv: str, text: str) -> None:
@@ -135,17 +150,18 @@ async def test_voice_continue_web_idle_session_dispatches_without_cancel(web_db)
 
     web_bridge.register(fake_dispatch, fake_cancel)
 
-    result = await task_tools.voice_continue_web.handler(
-        {"conv": "conv1", "instruction": "接着查一下天气"}
+    result = await task_tools.voice_continue_session.handler(
+        {"session_id": "conv1", "instruction": "接着查一下天气"}
     )
     text = result["content"][0]["text"]
-    assert "conv=conv1" in text
+    assert "session_id=conv1" in text
     assert "空闲" in text
     assert calls == [("conv1", "接着查一下天气")]
 
 
 @pytest.mark.anyio
-async def test_voice_continue_web_running_session_interrupts_first(web_db):
+async def test_continue_session_web_running_interrupts_first(web_db):
+    session_store.append("web:conv1", "问", "答")
     calls = []
 
     async def fake_dispatch(conv: str, text: str) -> None:
@@ -159,8 +175,8 @@ async def test_voice_continue_web_running_session_interrupts_first(web_db):
 
     web_bridge.register(fake_dispatch, fake_cancel)
 
-    result = await task_tools.voice_continue_web.handler(
-        {"conv": "conv1", "instruction": "换个方向重新跑"}
+    result = await task_tools.voice_continue_session.handler(
+        {"session_id": "conv1", "instruction": "换个方向重新跑"}
     )
     text = result["content"][0]["text"]
     assert "打断" in text
@@ -170,19 +186,25 @@ async def test_voice_continue_web_running_session_interrupts_first(web_db):
 
 
 @pytest.mark.anyio
-async def test_voice_list_web_sessions_reports_error_flag(web_db):
+async def test_list_sessions_web_reports_error_flag(web_db):
     session_store.append("web:conv1", "问1", "答1")
     session_store.append("web:conv2", "问2", "答2")
     session_store.set_last_error("web:conv2", True)
 
-    result = await task_tools.voice_list_web_sessions.handler({})
+    result = await task_tools.voice_list_sessions.handler({"origin": "web"})
     text = result["content"][0]["text"]
-    assert "conv=conv1" in text
-    assert "conv=conv2" in text
+    assert "session_id=conv1" in text
+    assert "session_id=conv2" in text
     assert "⚠️" in text  # conv2 标了报错
 
 
 @pytest.mark.anyio
-async def test_voice_list_web_sessions_empty(web_db):
-    result = await task_tools.voice_list_web_sessions.handler({})
+async def test_list_sessions_web_empty(web_db):
+    result = await task_tools.voice_list_sessions.handler({"origin": "web"})
     assert "没有任何网页端对话" in result["content"][0]["text"]
+
+
+@pytest.mark.anyio
+async def test_list_sessions_rejects_bad_origin(web_db):
+    result = await task_tools.voice_list_sessions.handler({"origin": "bogus"})
+    assert "'task' 或 'web'" in result["content"][0]["text"]

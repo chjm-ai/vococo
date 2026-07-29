@@ -47,10 +47,10 @@ def test_resolve_session_key_isolated(monkeypatch):
 def test_resolve_session_key_passes_through_voice_prefixes():
     from claude_hermes import config
 
-    # voice-chat:/voice-task: 已经是完整 key,web 端不该再套一层 "web:" 前缀,
-    # 否则语音主会话/任务会话没法跟 index.html 现成的 openConv() 对上号。
+    # voice-chat:/task: 已经是完整 key,web 端不该再套一层 "web:" 前缀,否则语音
+    # 主会话/统一后台任务会话没法跟 index.html 现成的 openConv() 对上号。
     assert config.resolve_session_key("web", "voice-chat:main") == "voice-chat:main"
-    assert config.resolve_session_key("web", "voice-task:abc123") == "voice-task:abc123"
+    assert config.resolve_session_key("web", "task:abc123") == "task:abc123"
     # 普通项目哈希形态的 conv_id 不受影响
     assert config.resolve_session_key("web", "p1234:5") == "web:p1234:5"
 

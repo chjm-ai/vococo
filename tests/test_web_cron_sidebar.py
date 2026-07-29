@@ -1,7 +1,7 @@
 """定时任务管理界面的接口:/cron/sidebar、/cron/jobs/create|update|enable|delete。
 
 只测新接口本身(数据模型见 claude_hermes/cron/scheduler.py 的 job 结构注释:
-每个任务一条专属会话 conv=cron-task:<id>,创建/启停/删除都不经过 danger 审批——
+每个任务一条专属会话 conv=task:<id>(job_id 复用为 task_id),创建/启停/删除都不经过 danger 审批——
 这是用户在管理界面上的直接操作,不是 agent 代为执行,见与用户的设计讨论)。
 """
 from __future__ import annotations
@@ -56,7 +56,7 @@ async def test_sidebar_empty_then_create_shows_job(cron_web_app):
         )
         assert resp.status == 200
         job = (await resp.json())["job"]
-        assert job["conv"] == f"cron-task:{job['id']}"
+        assert job["conv"] == f"task:{job['id']}"
         assert job["enabled"] is True
 
         resp = await client.get("/cron/sidebar")

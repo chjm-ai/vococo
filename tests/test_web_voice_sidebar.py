@@ -8,9 +8,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from claude_hermes import config
+from claude_hermes.core import tasks
 from claude_hermes.gateway.adapters.web import WebAdapter
 from claude_hermes.memory import session_store
-from claude_hermes.voice import tasks
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def web_app(isolated, monkeypatch):
 async def test_voice_sidebar_returns_main_pinned_first_and_task_rows(web_app):
     session_store.append("voice-chat:main", "你好", "你好呀")
     task = tasks.create("查天气", "帮我查一下今天天气")
-    session_store.append(f"voice-task:{task['id']}", "帮我查一下今天天气", "晴天")
+    session_store.append(f"task:{task['id']}", "帮我查一下今天天气", "晴天")
 
     async with TestClient(TestServer(web_app)) as client:
         resp = await client.get("/voice/sidebar")
@@ -48,15 +48,30 @@ async def test_voice_sidebar_returns_main_pinned_first_and_task_rows(web_app):
     assert data["main"]["pinned"] is True
     assert len(data["tasks"]) == 1
     row = data["tasks"][0]
-    assert row["conv"] == f"voice-task:{task['id']}"
+    assert row["conv"] == f"task:{task['id']}"
     assert row["task_status"] == "queued"
     assert row["title"] == "查天气"
 
 
 @pytest.mark.anyio
+async def test_voice_sidebar_task_row_carries_pending_review(web_app):
+    """2026-07-29:语音任务行统一接上 pending_review(跟 web/cron-task 一样的完成态
+    未读标记),不再是 ab77594 当时"终态不挂点"的特例。"""
+    task = tasks.create("查天气", "帮我查一下今天天气")
+    session_store.append(f"task:{task['id']}", "帮我查一下今天天气", "晴天")
+    session_store.set_pending_review(f"task:{task['id']}", True)
+
+    async with TestClient(TestServer(web_app)) as client:
+        resp = await client.get("/voice/sidebar")
+        data = await resp.json()
+
+    assert data["tasks"][0]["pending_review"] is True
+
+
+@pytest.mark.anyio
 async def test_voice_sidebar_task_row_survives_missing_task_row(web_app):
     """任务元数据(voice.db)万一被清过而对话还在 session_store 里,不该 500。"""
-    session_store.append("voice-task:ghost123", "问", "答")
+    session_store.append("task:ghost123", "问", "答")
 
     async with TestClient(TestServer(web_app)) as client:
         resp = await client.get("/voice/sidebar")
@@ -64,5 +79,5 @@ async def test_voice_sidebar_task_row_survives_missing_task_row(web_app):
         data = await resp.json()
 
     assert len(data["tasks"]) == 1
-    assert data["tasks"][0]["conv"] == "voice-task:ghost123"
+    assert data["tasks"][0]["conv"] == "task:ghost123"
     assert "task_status" not in data["tasks"][0]

@@ -148,18 +148,18 @@ async def ensure_worktree(session_key: str) -> str | None:
 
 
 async def ensure_worktree_for_task(root: str, task_id: str) -> str | None:
-    """语音后台任务(voice_dispatch_task 派发)专用:给这次任务开独立 worktree + 分支,
+    """统一后台任务引擎(core/task_runner.py)专用:给这次任务开独立 worktree + 分支,
     跟 Web/CLI「一会话一 worktree」是同一套机制,只是绑定 key 换成任务自己的
-    `voice-task:<id>`(该 key 本就是这个任务在 session_store 里的落库 key,一对一,
+    `task:<id>`(该 key 本就是这个任务在 session_store 里的落库 key,一对一,
     不会跟别的任务/对话抢)。root 不是 git 仓库(或干脆是 None)就直接 None,任务照常
-    在原 cwd 跑,不因为隔离失败而阻塞——语音场景要的是"改代码有分支兜底",不是
+    在原 cwd 跑,不因为隔离失败而阻塞——后台任务要的是"改代码有分支兜底",不是
     "非项目目录也必须建 worktree"。
     """
     if not root:
         return None
-    from ..voice import tasks as voice_tasks  # 懒加载,避免非语音场景也引入 voice 包
+    from . import tasks as bg_tasks  # 懒加载,避免非任务场景也引入这块
 
-    session_key = voice_tasks.session_key(task_id)
+    session_key = bg_tasks.session_key(task_id)
     phash = session_store.project_hash(root)
     slug = _slug(task_id)
     return await _ensure_worktree_impl(session_key, root, phash, slug)

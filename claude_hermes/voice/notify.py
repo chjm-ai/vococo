@@ -15,15 +15,17 @@ import base64
 from collections.abc import Awaitable, Callable
 
 from .. import config
-from . import tasks, tts
-from .task_words import status_emoji
+from ..core import tasks
+from ..core.task_words import status_emoji
+from ..memory import session_store
+from . import tts
 
 _subscribers: set[asyncio.Queue] = set()
 
 # 注册的平台推送回调:async (platform, chat_id, text) -> None
 _platform_push: Callable[[str, str, str], Awaitable[None]] | None = None
 
-# ── 主 SSE 桥接(voice-task 侧栏小红点) ──────────────────────────────────
+# ── 主 SSE 桥接(后台任务侧栏小红点) ──────────────────────────────────
 _main_event_bridge: Callable[[dict], None] | None = None
 # 已发 start 的任务 id 集合,防止进度更新重复发(仅首次起跑发一次)。
 _started_tasks: set[str] = set()
@@ -31,7 +33,7 @@ _started_tasks: set[str] = set()
 
 def register_main_event_bridge(fn: Callable[[dict], None] | None) -> None:
     """注册/注销主 SSE 桥接回调,把语音任务状态变化(起跑/终态)以 start/done
-    事件推给主 SSE 通道,让 voice-task 侧栏行的小红点能像普通会话行一样闪烁。
+    事件推给主 SSE 通道,让后台任务侧栏行的小红点能像普通会话行一样闪烁。
 
     由 WebAdapter 在初始化时注册,传入 self._emit。
     传入 None 可注销(主要用于测试清理)。"""
@@ -101,6 +103,21 @@ def register_platform_push(
     _platform_push = fn
 
 
+# ── cron 来源任务的完成钩子 ──────────────────────────────────────────────────
+# cron 任务(origin="cron")的"如何通知"跟语音/chat 任务本质不同:必须无条件写回
+# 自己的专属会话 + 推给可选的额外目标(如 telegram),不能像语音任务那样"正好有人
+# 在通话里就只播报、不落别的推送"——cron 任务的结果落地跟"有没有人在通话"完全
+# 无关。所以单独开一个钩子,cron/scheduler.py 启动时注册,on_task_terminal 对
+# origin="cron" 的任务直接转发给它,不复用下面语音专属的 online/offline 分支。
+_cron_terminal_hook: Callable[[dict], Awaitable[None]] | None = None
+
+
+def register_cron_terminal_hook(fn: Callable[[dict], Awaitable[None]] | None) -> None:
+    """由 cron/scheduler.py 的 run_scheduler() 注册一次。传 None 可注销(测试用)。"""
+    global _cron_terminal_hook
+    _cron_terminal_hook = fn
+
+
 def _announce_text(task: dict) -> str:
     if task["status"] == "done":
         return f"对了,「{task['title']}」办完了,{task['result_summary'] or '结果已经出来了'}。"
@@ -118,12 +135,32 @@ def _platform_text(task: dict) -> str:
 
 
 async def on_task_terminal(task_id: str) -> None:
-    """任务进入终态时调用一次:
-    1. 在线 → SSE 事件(语音播报);
-    2. 离线 → Web Push(VAPID) + 平台推送(如果有 dispatch 上下文)。"""
+    """任务进入终态时调用一次(所有 origin 共用的入口):
+    1. cron 来源 → 转发给 register_cron_terminal_hook 注册的钩子,提前返回;
+    2. 语音来源 + 当前有人在通话 → SSE 事件(语音播报);
+    3. 其余(chat 来源,或语音来源但没人在通话)→ Web Push(VAPID) + 平台推送
+       (如果有 dispatch 上下文)。"""
     task = tasks.get(task_id)
     if task is None:
         return
+    # 完成态未读标记跟 web/cron-task 侧栏对齐(2026-07-29 统一):任务真正跑出
+    # 结果(done/failed)才标未读,用户主动 cancelled 的不标——跟 _WebSink.done()
+    # 只在真正产出内容时才 set_pending_review(而不是用户手动 /abort 时)是同一套
+    # 语义,不需要"哦这条被我自己取消的任务也弹了个未读点"这种噪音。
+    if task["status"] != "cancelled":
+        session_store.set_pending_review(tasks.session_key(task_id), True)
+    # 先桥接 done 事件到主 SSE:让侧栏小红点熄灭(在播报/推送之前推,别让侧栏
+    # 一直亮在已结束的任务上,也别卡住后面的异步推送路径)——这一步跟 origin
+    # 无关,任何来源的任务都要让侧栏及时刷新。
+    _started_tasks.discard(task_id)  # 清状态锁,支持后续续跑重新亮 dot
+    _bridge_event({"conv": tasks.session_key(task_id), "type": "done"})
+
+    origin = task.get("origin") or "voice"
+    if origin == "cron":
+        if _cron_terminal_hook is not None:
+            await _cron_terminal_hook(task)
+        return
+
     announce_text = _announce_text(task)
     payload = {
         "id": task["id"],
@@ -132,13 +169,10 @@ async def on_task_terminal(task_id: str) -> None:
         "result_summary": task["result_summary"],
         "announce_text": announce_text,
     }
-    # 先桥接 done 事件到主 SSE:让侧栏小红点熄灭(在 SSE 播报和离线推送之前推,
-    # 别让侧栏一直亮在已结束的任务上,也别卡住后面的异步推送路径)。
-    _started_tasks.discard(task_id)  # 清状态锁,支持后续 append 续跑重新亮 dot
-    _bridge_event({"conv": tasks.session_key(task_id), "type": "done"})
 
-    # ── 在线:推 SSE(语音播报) ──────────────────────────────────────
-    if is_online():
+    # ── 语音来源 + 在线:推 SSE(语音播报)。chat 来源哪怕这时刚好有人在通话,
+    # 也不该突然插播一句不相关任务的播报,径直走下面的推送路径。──────────────
+    if origin == "voice" and is_online():
         audio = None
         if not config.VOICE_OMNI_ENABLED:
             audio = await tts.synthesize(announce_text, config.VOICE_TTS_VOICE)
@@ -146,16 +180,17 @@ async def on_task_terminal(task_id: str) -> None:
         _broadcast("task_done", payload)
         return
 
-    # ── 离线:Web Push(VAPID) 发给所有订阅设备 ──────────────────────
+    # ── Web Push(VAPID) 发给所有订阅设备 ──────────────────────────────
     from ..gateway.adapters.web_push import PUSH
 
     body = task["result_summary"] or task["progress_note"] or "任务已结束"
+    session_key = tasks.session_key(task_id)
     await PUSH.notify(
         title=f"任务完成:{task['title']}",
         body=body,
-        conv="voice-task",
+        conv=session_key,  # 点开推送直接跳到这个任务自己的会话,而不是一个不存在的占位 conv
         kind="done",
-        tag=f"voice-task-{task['id']}",
+        tag=f"task-{task['id']}",
     )
 
     # ── 平台推送:发给任务的派发者(如果 Web Push 不可配或任务有 dispatch 上下文) ──

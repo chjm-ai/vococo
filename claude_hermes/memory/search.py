@@ -7,8 +7,9 @@ from __future__ import annotations
 from .. import config
 from . import _db
 
-# 侧边栏全局搜索(⌘F)覆盖的会话前缀:普通 Web 会话 + 语音任务 + 定时任务。
-_SEARCH_PREFIXES = ("web:", "voice-task:", "cron-task:")
+# 侧边栏全局搜索(⌘F)覆盖的会话前缀:普通 Web 会话 + 统一后台任务(语音/cron/chat
+# 三种触发方共用的 task: 前缀,2026-07-29 起 voice-task:/cron-task: 合并于此)。
+_SEARCH_PREFIXES = ("web:", "task:")
 
 
 def search(text: str, limit: int = 10) -> list[tuple[str, str, str]]:

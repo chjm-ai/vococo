@@ -1,20 +1,31 @@
 """定时调度 + 心跳(参考 Hermes 的 cron ticker)。
 
-- 每 SCHEDULER_TICK_SEC 秒一跳:写心跳时间戳 + 跑到期任务 → 主动推送到平台
+- 每 SCHEDULER_TICK_SEC 秒一跳:写心跳时间戳 + 触发到期任务
 - 任务存 data/cron_jobs.json,支持 cron / interval / once 三种调度
 
 job 结构:
 {
   "id": "morning", "name": "晨间简报", "prompt": "...",
   "schedule": {"kind": "cron", "expr": "0 8 * * *"}        # 或 {"kind":"interval","minutes":60} / {"kind":"once","run_at": <epoch>}
-  "conv": "cron-task:morning",   # 该任务专属会话,历次运行结果落在这里(侧栏可点开看)
+  "conv": "task:morning",   # 该任务专属会话,历次运行结果落在这里(侧栏可点开看)
   "target": {"platform": "telegram", "chat_id": 123},  # 额外推送目标(可选,不填就只落会话+系统推送)
   "model": null, "enabled": true,
   "next_run_at": null, "last_run_at": null, "last_status": null
 }
+
+2026-07-29 通用化:cron 触发的每一轮执行,不再自己起一个孤立的 run_turn(无历史、
+无 worktree、无并发上限),改走 core/task_runner.py 那套语音/cron/chat 三方共用的
+统一后台任务引擎——job_id 本身就复用作 task_id(见 core/tasks.py 的 origin 字段
+说明):第一次触发 dispatch,以后每次到点都是对同一个 task 再 append 一轮,天然
+获得 resume(job 记得上次跑过什么)/worktree(能安全改文件)/并发上限(慢任务不再
+卡住整个调度循环)。真正的「回填统计 + 推送」在任务跑完后异步触发(见
+_on_task_terminal,由 voice/notify.py 的 register_cron_terminal_hook 转发过来),
+不再像以前那样在 _run_job 里同步等它跑完再处理——_tick 触发完就该去处理下一个
+到期任务/写心跳,不能被一个慢任务拖住整个调度器。
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import time
@@ -25,6 +36,7 @@ import anyio
 from croniter import croniter
 
 from .. import config
+from ..core import task_runner, tasks as bg_tasks
 from ..core.agent import run_turn
 from ..memory import session_store
 
@@ -39,7 +51,13 @@ def load_jobs() -> list[dict]:
     changed = False
     for job in jobs:
         if not job.get("conv"):  # 老数据补一个专属会话 id(灰度迁移,见模块头 job 结构注释)
-            job["conv"] = f"cron-task:{job['id']}"
+            job["conv"] = f"task:{job['id']}"
+            changed = True
+        elif job["conv"].startswith("cron-task:"):
+            # 2026-07-29 前缀统一迁移:cron-task: → task:(见模块头说明)。会话历史本身
+            # 在 memory/_db.py 里跟着 session_key 一起搬,这里只是把 job 定义里记的
+            # conv 字段同步改过来,两边对不上号的话下次触发会写去一个"新"会话。
+            job["conv"] = f"task:{job['id']}"
             changed = True
     if changed:
         save_jobs(jobs)
@@ -67,7 +85,7 @@ def create_job(
         "name": name,
         "prompt": prompt,
         "schedule": schedule,
-        "conv": f"cron-task:{job_id}",
+        "conv": f"task:{job_id}",
         "target": target,
         "model": model,
         "enabled": True,
@@ -159,13 +177,38 @@ def _write_heartbeat() -> None:
     config.HEARTBEAT_PATH.write_text(str(int(time.time())), encoding="utf-8")
 
 
-async def _run_job(job: dict, push: PushFn) -> None:
-    reply = await run_turn([], job["prompt"], model=job.get("model"))
+def _run_job(job: dict) -> None:
+    """触发一次 job 执行,交给统一后台任务引擎异步跑,不等它跑完——job_id 本身
+    复用作 task_id(见模块头说明):首次触发 dispatch,以后每次到点都是对同一个
+    task 再 append 一轮。真正的回填统计(last_run_at/last_status)和推送在
+    _on_task_terminal 里,任务跑完后异步触发。"""
+    job_id = job["id"]
+    if bg_tasks.get(job_id) is None:
+        task_runner.dispatch(
+            title=job.get("name") or "定时任务", prompt=job["prompt"],
+            model=job.get("model"), origin="cron", task_id=job_id,
+        )
+    else:
+        # append() 是协程,但内部只有"打断正在跑的那一轮"才真正 await 点什么
+        # (cancel_and_wait);cron 是 fire-and-forget 触发,不等这一轮结果,
+        # 用 create_task 起个后台协程,不阻塞 _tick 继续处理其它到期任务。
+        asyncio.create_task(task_runner.append(job_id, job["prompt"]))
+
+
+async def _on_task_terminal(task: dict, push: PushFn) -> None:
+    """由 voice/notify.py 的 register_cron_terminal_hook 转发过来,任务(origin=cron)
+    跑完一轮后异步调用一次:回填 job 的 last_run_at/last_status,并推送结果——
+    跟以前 _run_job 尾部的推送格式/目标完全一致(专属会话 + 可选额外目标),只是
+    现在是异步触发,不再是 _tick 同步等出来的。"""
+    jobs = load_jobs()
+    job = next((j for j in jobs if j.get("id") == task["id"]), None)
+    if job is None:  # 任务定义已被删除,只是一次孤立的收尾,不用回填统计
+        return
     job["last_run_at"] = int(time.time())
-    job["last_status"] = "error" if reply.is_error else "success"
-    text = reply.text or "(无输出)"
-    conv = job.get("conv") or f"cron-task:{job['id']}"
-    session_store.append(conv, job["prompt"], text)  # 落进专属会话,侧栏"定时任务"分组可点开看历史
+    job["last_status"] = "error" if task["status"] == "failed" else "success"
+    save_jobs(jobs)
+    text = task.get("result_summary") or task.get("result_full") or "(无输出)"
+    conv = job.get("conv") or f"task:{job['id']}"
     msg = f"⏰ {job.get('name','任务')}\n\n{text}"
     # 默认目标就是这条专属会话本身(platform=web):走 send() 会同时触发系统推送
     # (场景③"主动/cron",已覆盖 Mac/iPhone 等一切订阅了 Web Push 的设备)。
@@ -175,7 +218,10 @@ async def _run_job(job: dict, push: PushFn) -> None:
         await push(tgt["platform"], tgt["chat_id"], msg)
 
 
-async def _tick(push: PushFn) -> None:
+def _tick() -> None:
+    """检查到期任务并触发——本身是同步/瞬时的(触发只是把任务丢给后台引擎,不等
+    它跑完),不会因为某个任务耗时长而拖住心跳/其它到期任务(2026-07-29 前这里
+    整段 await _run_job 到底,一个慢任务能卡住整个调度循环)。"""
     jobs = load_jobs()
     now = time.time()
     changed = False
@@ -187,7 +233,7 @@ async def _tick(push: PushFn) -> None:
             changed = True
             continue
         if job["next_run_at"] <= now:
-            # 先推进(at-most-once),再跑
+            # 先推进(at-most-once),再触发
             if job["schedule"].get("kind") == "once":
                 job["enabled"] = False
                 job["next_run_at"] = None
@@ -195,8 +241,8 @@ async def _tick(push: PushFn) -> None:
                 job["next_run_at"] = _next_run(job["schedule"], now)
             changed = True
             try:
-                await _run_job(job, push)
-            except Exception as e:  # 单个任务失败不拖垮调度
+                _run_job(job)
+            except Exception as e:  # 单个任务触发失败不拖垮调度
                 job["last_status"] = f"error: {e}"
     if changed:
         save_jobs(jobs)
@@ -245,6 +291,15 @@ def _schedule_after(expr: str, after: float) -> float:
 
 async def run_scheduler(push: PushFn) -> None:
     """常驻调度循环:心跳 + 到期任务 +(可选)定时反思。启动时播种起步建议目录。"""
+    from ..voice import notify as voice_notify
+
+    # cron 任务(origin="cron")跑完一轮后,统一后台任务引擎经这个钩子把结果转发
+    # 回来做回填统计 + 推送(见 _on_task_terminal、voice/notify.py 的
+    # register_cron_terminal_hook 说明)。
+    async def _hook(task: dict) -> None:
+        await _on_task_terminal(task, push)
+
+    voice_notify.register_cron_terminal_hook(_hook)
     try:
         from . import suggestion_catalog
         n = suggestion_catalog.seed()
@@ -258,7 +313,7 @@ async def run_scheduler(push: PushFn) -> None:
     while True:
         try:
             _write_heartbeat()
-            await _tick(push)
+            _tick()
             if config.REFLECT_ENABLED:
                 now = time.time()
                 if reflect_next is None:
