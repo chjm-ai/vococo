@@ -7,7 +7,7 @@
 之间形成模块级循环 import。
 
 纯语音模式(没有起 GatewayRunner/没开网页入口)时没人调 register(),available() 为 False,
-调用方(voice_continue_web)据此告诉用户"当前没有网页入口"而不是报一个费解的异常。
+调用方(voice_continue_session)据此告诉用户"当前没有网页入口"而不是报一个费解的异常。
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def available() -> bool:
 def cancel_if_running(session_key: str) -> bool:
     """该网页会话若正在跑,打断它;返回是否真的打断了(没在跑/没注册都是 False)。
 
-    web 会话没有 voice-task 那种常驻 asyncio.Task,"正在跑"只在一轮 converse()
+    web 会话没有后台任务那种常驻 asyncio.Task,"正在跑"只在一轮 converse()
     执行期间以 GatewayRunner._cancel_scopes[session_key] 的形式短暂存在——打断后
     per-session 锁会在当前这轮收尾后自然释放,继续 dispatch 的新一轮会自动排在
     它后面执行,不需要额外等待/重试(见 GatewayRunner._dispatch 的 lock 语义)。

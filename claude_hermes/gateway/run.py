@@ -11,6 +11,7 @@ import os
 import anyio
 
 from .. import config
+from ..core import tasks as bg_tasks
 from ..cron.scheduler import run_scheduler
 from ..memory import session_store
 from ..tools import selfops
@@ -124,17 +125,16 @@ class GatewayRunner:
                     # 持久化命令回复,刷新页面不丢
                     session_store.append(key, inc.text, outcome.reply)
                 return
-        # 语音后台任务续聊(session_key=voice-task:{id})要延续任务派发时的工作目录——
-        # converse() 按 session_key 推导 cwd 那套认不出这种非项目 key,显式传进去(见
+        # 后台任务续聊(session_key=task:{id},语音派发/cron/chat 三种触发方共用同
+        # 一套引擎,见 core/task_runner.py)要延续任务派发时的工作目录——converse()
+        # 按 session_key 推导 cwd 那套认不出这种非项目 key,显式传进去(见
         # 03-phase2-实现记录.md 存储统一改动一节)。任务派发时若原始 cwd 是 git 仓库,
-        # executor._run 会给它开专属 worktree + 分支并绑定同一个 key(见
+        # task_runner._run 会给它开专属 worktree + 分支并绑定同一个 key(见
         # core/worktree.ensure_worktree_for_task);续聊要接着在那条隔离分支上改,
         # 不能退回原始项目根,否则前半段任务的改动在分支、续聊的改动在主目录,对不上。
         cwd_override = None
-        if key.startswith("voice-task:"):
-            from ..voice import tasks as voice_tasks  # 懒加载,避免非语音场景也引入这个模块
-
-            row = voice_tasks.get(voice_tasks.task_id_from_session_key(key))
+        if key.startswith(bg_tasks.SESSION_KEY_PREFIX):
+            row = bg_tasks.get(bg_tasks.task_id_from_session_key(key))
             if row is not None:
                 wt = session_store.get_worktree(key)
                 cwd_override = wt if wt and os.path.isdir(wt) else row["cwd"]
@@ -251,7 +251,9 @@ class GatewayRunner:
         for adapter in self.adapters.values():
             if hasattr(adapter, "set_cancel_callback"):
                 adapter.set_cancel_callback(self.cancel_turn)
-        # 注册模型切换回调 + 语音跨端续聊桥接(WebAdapter 专属)
+        # 注册模型切换回调 + 语音→网页跨端续聊桥接(WebAdapter 专属):语音喊一声
+        # 就能让某个 web: 会话继续跑(见 gateway/web_bridge.py、
+        # voice/task_tools.py 的 voice_continue_session)
         web_adapter = self.adapters.get("web")
         if web_adapter is not None:
             if hasattr(web_adapter, "set_model_switch_callback"):

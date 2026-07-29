@@ -56,8 +56,9 @@ def run_turn(prompt_text: str, extra_mcp_servers: dict | None = None) -> AsyncIt
     存回 reply.sdk_session_id(见 set_resume)——本函数只管跑一轮,不做落库,
     因为落库要存的是剥离指令块后的原文,这层信息只有调用方(routes.py)知道。
 
-    extra_mcp_servers:P1 任务板的三个工具(见 task_tools.build_server()),只有
-    语音前台会话传它;后台任务会话(executor.py)直接调 stream_turn,不经过这里。
+    extra_mcp_servers:P1 任务板的工具(见 task_tools.build_server()),只有
+    语音前台会话传它;后台任务会话(core/task_runner.py)直接调 stream_turn,
+    不经过这里。
     """
     history = load_history()
     resume_sid = get_resume()

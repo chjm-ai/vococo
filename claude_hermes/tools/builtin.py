@@ -473,6 +473,58 @@ async def send_image(args: dict) -> dict:
     return _ok(err or "已发送到当前聊天。")
 
 
+@tool(
+    "dispatch_session",
+    "基于当前对话内容,派生一个【独立的新会话】去干一件事,立即返回、不等它跑完——"
+    "跟 Agent/Task 子代理不同:子代理跑完直接把结果吐回当前对话、结束就消失;"
+    "这个工具开的是一条完全独立、持久保存的新会话,有自己的历史,你可以在这条新"
+    "会话里继续追问它,用户也能在侧边栏找到它单独查看,不会占用/污染当前对话的"
+    "上下文。典型场景:用户说「基于这份报告再单独开一个调研」「拿这份纪要另起一个"
+    "会话深入分析」这类要求结果独立存在、不跟当前对话混在一起的需求。"
+    "title:6 字以内短名;prompt:完整任务描述(新会话看不到当前对话,必须把要做的事"
+    "和必要的背景信息都写进去,不能只写「继续上面的」这种当前会话里才懂的话);"
+    "cwd:要在哪个项目目录下干活,不传则跟随当前对话绑定的项目(不绑定项目就落到"
+    "claude-hermes 自己的仓库),同样走 worktree 隔离,不会碰主目录。",
+    {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "prompt": {"type": "string"},
+            "cwd": {"type": "string"},
+        },
+        "required": ["title", "prompt"],
+    },
+)
+async def dispatch_session(args: dict) -> dict:
+    from ..core import task_runner
+    from ..gateway import clarify
+
+    title = (args.get("title") or "").strip()
+    prompt = (args.get("prompt") or "").strip()
+    if not (title and prompt):
+        return _ok("dispatch_session 需要 title 和 prompt 都非空。")
+    ctx = clarify.current()
+    # 不传 cwd 默认跟随当前会话绑定的项目(没绑定项目就落 claude-hermes 自己的仓库,
+    # 同样走 worktree 隔离)——跟 voice_dispatch_task"忘了传就兜底到项目根"是同一个
+    # 理由(2026-07-12 事故:cwd 兜底缺失会导致隔离形同虚设)。
+    cwd = (args.get("cwd") or "").strip()
+    if not cwd:
+        root = config.project_root_for(ctx.session_key) if ctx else None
+        cwd = root or str(config.ROOT_DIR)
+    dispatch_platform = ctx.adapter.platform if (ctx and ctx.adapter) else None
+    dispatch_chat_id = str(ctx.chat_id) if (ctx and ctx.chat_id is not None) else None
+    task = task_runner.dispatch(
+        title=title, prompt=prompt, cwd=cwd,
+        dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
+        origin="chat",
+    )
+    return _ok(
+        f"已派发一条独立新会话,session_id={task['id']},标题「{title}」,"
+        f"状态:{task['status']}。跑完会推送通知;也可以直接告诉用户 conv=task:{task['id']}"
+        "这个新会话已经开始跑,用户可以在网页端搜索这个 id 找到它。"
+    )
+
+
 async def _confirm_force_restart(ctx, others: list[str]) -> bool:
     """有其他会话轮次还没结束时,弹按钮问当前用户是否仍要强制重启。
 
@@ -679,6 +731,7 @@ def build_mcp_servers() -> dict:
                 ask_user,
                 send_message,
                 send_image,
+                dispatch_session,
                 restart_self,
                 list_mcp_servers,
                 add_mcp_server,

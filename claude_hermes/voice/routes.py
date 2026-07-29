@@ -15,8 +15,9 @@ import time
 from aiohttp import web
 
 from .. import config
+from ..core import task_runner, tasks
 from ..core.agent import Done, TextDelta, ToolInput, ToolStarted
-from . import executor, notify, omni_realtime, prompts, session, stt, task_tools, tasks, tts
+from . import notify, omni_realtime, prompts, session, stt, task_tools, tts
 from ..gateway import clarify
 from ..tools import selfops
 from .adapter import VoiceAdapter
@@ -320,7 +321,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                     # 前台轮次的工具动作(查记录/跑脚本)实时推给通话视图的动作行——
                     # ToolInput 才带完整入参,能模板化出"正在执行:git log…"这种细节,
                     # ToolStarted(上面垫话术用的那个)只有工具名。
-                    await _sse(resp, "activity", {"text": executor.progress_text(ev.name, ev.tool_input)})
+                    await _sse(resp, "activity", {"text": task_runner.progress_text(ev.name, ev.tool_input)})
                 elif isinstance(ev, TextDelta):
                     if not t_first_text:
                         t_first_text = time.monotonic()
@@ -486,7 +487,9 @@ async def _handle_omni_webrtc(request: web.Request) -> web.Response:
 async def _handle_tasks_list(request: web.Request) -> web.Response:
     if (g := _guard(request)) is not None:
         return g
-    return web.json_response(tasks.list_recent())
+    # 通话视图的任务状态条只该看语音自己派发的任务(origin="voice")——cron/chat
+    # 触发的任务不该出现在这里,那不是语音喊出来的活。
+    return web.json_response(tasks.list_recent(origin="voice"))
 
 
 async def _handle_task_detail(request: web.Request) -> web.Response:
@@ -501,7 +504,7 @@ async def _handle_task_detail(request: web.Request) -> web.Response:
 async def _handle_task_stop(request: web.Request) -> web.Response:
     if (g := _guard(request)) is not None:
         return g
-    ok = executor.cancel(request.match_info["task_id"])
+    ok = task_runner.cancel(request.match_info["task_id"])
     return web.json_response({"ok": ok})
 
 
@@ -558,7 +561,7 @@ def register_routes(app: web.Application) -> None:
     # 时回落按住说话、不再连 WS(见 index.html startHandsFree)。实现本体 ws.py
     # 的删除见 docs/adr/0004。/voice/static/(omni_test.html 联调页)也已随
     # 顶栏扳手入口一起退休(2026-07-12)。
-    # F11 重启自愈(executor.heal_after_restart)不在这里触发,而在 web.py 的 serve
+    # F11 重启自愈(task_runner.heal_after_restart)不在这里触发,而在 web.py 的 serve
     # 启动路径里——2026-07-12 事故:测试/脚本只要组建一次 app 就会触发孤儿回收,
     # 把「别的进程里正在跑的任务」误标失败(后台任务收尾跑 pytest 时把自己标死)。
     # register_routes 只做纯粹的路由挂载,不带副作用。

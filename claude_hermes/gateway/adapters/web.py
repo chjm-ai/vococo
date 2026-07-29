@@ -239,6 +239,45 @@ class _WebSink(Sink):
         session_store.set_pending_review(key, True)
 
 
+def _conv_id_for_key(key: str) -> str:
+    """session_key → 前端认的 conv id(前端只认 conv,不认完整 session_key)。
+
+    规则统一收口在这一处:主会话(config.SESSION_KEY,与 TG/CLI 共享)固定叫
+    "main";web: 前缀剥掉前缀;其余(后台任务 task:xxx 等非项目 key)原样用完整
+    key——resolve_session_key 的透传分支要吃完整字符串。这条规则以前在
+    _handle_conversations/_handle_conv_search/_handle_voice_sidebar 三处分别
+    手写,新增一种前缀时容易漏改一处(2026-07-29 复盘)。
+    """
+    if key == config.SESSION_KEY:
+        return "main"
+    if key.startswith("web:"):
+        return key[len("web:"):]
+    return key
+
+
+def _rows_with_conv(prefix: str) -> list[dict]:
+    """session_store.list_sessions(prefix) 的结果统一装上 conv 字段。
+
+    普通会话/语音任务两个侧栏分组都从这里取数据——它们和 pending_review/
+    last_error/archived 这套"完成态信号"字段全部来自同一个 list_sessions()
+    调用,以后这套信号加新字段会自动对两个分组同时生效,不会有第三处忘了接
+    (cron-task 分组数据源是 scheduler.load_jobs() 而非 list_sessions() 直接
+    返回的行,结构不同,不套用本函数,但仍可用 list_sessions() 查同一份字段,
+    见 _handle_cron_sidebar 的 _pending_map 用法)。
+    """
+    rows = session_store.list_sessions(prefix)
+    for r in rows:
+        r["conv"] = _conv_id_for_key(r["key"])
+    return rows
+
+
+def _pending_map(prefix: str) -> dict[str, bool]:
+    """key → pending_review 的映射,给数据源不是 list_sessions() 直接返回行的
+    场景(如 cron-task,行来自 scheduler.load_jobs())按 key 单独查这个字段用。
+    """
+    return {r["key"]: r.get("pending_review", False) for r in session_store.list_sessions(prefix)}
+
+
 class WebAdapter:
     platform = "web"
 
@@ -259,7 +298,7 @@ class WebAdapter:
         # 一旦不一样就说明断线期间进程重启过,上面的环形缓冲/_live 全被清空了,
         # 断线补发这条路救不回来,前端得主动整体核对一次(侧栏 + 当前会话历史)。
         self._boot_id = f"{int(time.time() * 1000)}-{os.getpid()}"
-        # 注册语音任务桥接:voice-task 状态变化经主 SSE 推给前端,让侧栏小红点闪烁。
+        # 注册后台任务桥接:task: 状态变化经主 SSE 推给前端,让侧栏小红点闪烁。
         # 懒加载避免非语音场景循环依赖;bridge 本身只要 _emit,不依赖 voice 包的其他模块。
         from ...voice import notify as _voice_notify
         _voice_notify.register_main_event_bridge(self._emit)
@@ -659,14 +698,10 @@ class WebAdapter:
     async def _handle_conversations(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
-        convs = session_store.list_sessions("web:")
+        convs = _rows_with_conv("web:")
         # 主会话(与 TG/CLI 共享的统一会话)固定置顶,conv id 用 "main"
         main = session_store.session_summary(config.resolve_session_key("web", "main"))
-        main.update(key="main", title="主会话", pinned=True)
-        # list_sessions 的 key 是 "web:xxx",前端只认 conv id(去掉前缀)
-        for c in convs:
-            c["conv"] = c["key"].split(":", 1)[1] if ":" in c["key"] else c["key"]
-        main["conv"] = "main"
+        main.update(key="main", title="主会话", pinned=True, conv="main")
         return web.json_response({"main": main, "conversations": convs})
 
     async def _handle_conv_search(self, request: web.Request) -> web.Response:
@@ -677,68 +712,69 @@ class WebAdapter:
         q = (request.query.get("q") or "").strip()
         if not q:
             return web.json_response({"results": []})
-        from ...voice import tasks as voice_tasks  # 懒加载,同 _handle_voice_sidebar
+        from ...core import tasks as bg_tasks  # 懒加载,同 _handle_voice_sidebar
 
         items = session_store.search_sessions(q, limit=50)
         for it in items:
             key = it["key"]
-            # conv id 规则与各侧栏接口一致:web: 剥前缀、语音/定时任务用完整 key、
-            # 主会话(SESSION_KEY)固定叫 "main"
+            it["conv"] = _conv_id_for_key(key)
             if key == config.SESSION_KEY:
-                it["conv"] = "main"
                 it["title"] = "主会话"
-            elif key.startswith("web:"):
-                it["conv"] = key.split(":", 1)[1]
-            else:
-                it["conv"] = key
-            task_id = voice_tasks.task_id_from_session_key(key)
+            task_id = bg_tasks.task_id_from_session_key(key)
             if task_id is not None:
-                row = voice_tasks.get(task_id)
+                row = bg_tasks.get(task_id)
                 if row is not None:
                     it["title"] = row["title"]
         return web.json_response({"results": items})
 
     async def _handle_voice_sidebar(self, request: web.Request) -> web.Response:
-        """侧边栏"语音任务"固定分组:主语音会话 + 各后台任务会话。
+        """侧边栏"语音任务"固定分组:主语音会话 + 语音派发的各后台任务会话。
 
-        跟 _handle_conversations 一个模板,只是数据源换成 voice-chat:/voice-task: 前缀
+        跟 _handle_conversations 一个模板,只是数据源换成 voice-chat:/task: 前缀
         （见 03-phase2-实现记录.md 存储统一改动一节)。任务行的 conv 字段用完整 key
         (不剥前缀)——resolve_session_key 的透传分支要吃完整字符串。
+
+        2026-07-29 统一后 task: 前缀不再是语音专属(cron/chat 触发的任务也落在这个
+        前缀下),这里要按 origin="voice" 过滤,不然定时任务/网页发起的任务会混进
+        "语音任务"分组。任务元数据(voice.db)行万一缺失(row is None,见
+        test_voice_sidebar_task_row_survives_missing_task_row)时保留展示——判不出
+        origin,历史上这种情况本就只可能是语音任务的残留数据,不因为判不出就隐藏。
         """
         if (g := self._guard(request)) is not None:
             return g
-        from ...voice import tasks as voice_tasks  # 懒加载,避免非语音场景也引入这个包
+        from ...core import tasks as bg_tasks  # 懒加载,避免非任务场景也引入这块
 
         main = session_store.session_summary("voice-chat:main")
         main.update(key="voice-chat:main", conv="voice-chat:main", title="语音对话", pinned=True)
-        task_convs = session_store.list_sessions(voice_tasks.SESSION_KEY_PREFIX)
-        for c in task_convs:
-            c["conv"] = c["key"]
-            task_id = voice_tasks.task_id_from_session_key(c["key"]) or c["key"]
-            row = voice_tasks.get(task_id)
+        task_convs = []
+        for c in _rows_with_conv(bg_tasks.SESSION_KEY_PREFIX):
+            task_id = bg_tasks.task_id_from_session_key(c["key"]) or c["key"]
+            row = bg_tasks.get(task_id)
             if row is not None:
+                if row.get("origin", "voice") != "voice":
+                    continue
                 c["task_status"] = row["status"]
                 c["title"] = row["title"]
+            task_convs.append(c)
         return web.json_response({"main": main, "tasks": task_convs})
 
     # ── 定时任务 ─────────────────────────────────────────────────────────
     async def _handle_cron_sidebar(self, request: web.Request) -> web.Response:
-        """侧边栏"定时任务"分组:每个任务一条专属会话(cron-task:<id>),跟"语音
-        任务"同一个模板。只在有任务时前端才渲染这个分组。"""
+        """侧边栏"定时任务"分组:每个任务一条专属会话(task:<job_id>,job_id 本身
+        就复用作统一后台任务引擎的 task_id,见 core/tasks.py 的 origin 字段说明),
+        跟"语音任务"同一个模板。只在有任务时前端才渲染这个分组。"""
         if (g := self._guard(request)) is not None:
             return g
         from ...cron import scheduler
 
         jobs = scheduler.load_jobs()
         # session_summary() 不带 pending_review(那是 list_sessions 的字段),这里单独查一遍
-        # 补上,否则任务跑完了侧边栏也不会冒未读灰点。
-        pending_by_conv = {
-            s["key"]: s.get("pending_review", False)
-            for s in session_store.list_sessions("cron-task:")
-        }
+        # 补上,否则任务跑完了侧边栏也不会冒未读灰点(见 _pending_map 的说明)。task: 前缀
+        # 现在也装着语音/chat 触发的任务,但下面只按 jobs 自己的 conv 精确取值,不会串。
+        pending_by_conv = _pending_map("task:")
         rows = []
         for j in jobs:
-            conv = j.get("conv") or f"cron-task:{j['id']}"
+            conv = j.get("conv") or f"task:{j['id']}"
             row = session_store.session_summary(conv)
             row.update(
                 conv=conv,
@@ -1185,15 +1221,15 @@ class WebAdapter:
         body = await request.json()
         conv = str(body.get("conv") or "")
         if conv and conv != "main":
-            from ...voice import tasks as voice_tasks  # 懒加载
+            from ...core import tasks as bg_tasks  # 懒加载
 
-            task_id = voice_tasks.task_id_from_session_key(conv)
+            task_id = bg_tasks.task_id_from_session_key(conv)
             if task_id is not None:
-                from ...voice import executor as voice_executor  # 懒加载
+                from ...core import task_runner  # 懒加载
 
                 # 任务还在排队/运行时先取消并等收尾写完,否则收尾 finish_turn
                 # 会把刚删掉的会话又写回来(侧边栏出现"复活"的空壳任务)
-                await voice_executor.cancel_and_wait(task_id)
+                await task_runner.cancel_and_wait(task_id)
             from ...core import worktree  # 懒加载
 
             key = config.resolve_session_key("web", conv)
@@ -1789,14 +1825,18 @@ class WebAdapter:
             ]
         )
         if config.VOICE_ENABLED:  # 实验性语音伴聊模式,见 claude_hermes/voice/
-            from ...voice import executor as _voice_executor
             from ...voice import register_routes as _voice_register_routes
 
             _voice_register_routes(app)
-            # F11 重启自愈只能挂在这里(serve 真正启动的唯一路径),不能挂在
-            # register_routes 里——否则测试/脚本组建 app 也会触发孤儿回收,
-            # 误杀别的进程里正在跑的任务(2026-07-12 "假失败"事故根因之一)。
-            asyncio.ensure_future(_voice_executor.heal_after_restart())
+        # F11 重启自愈(统一后台任务引擎,原来叫「语音任务板」)只能挂在这里(serve
+        # 真正启动的唯一路径),不能挂在 register_routes 里——否则测试/脚本组建 app
+        # 也会触发孤儿回收,误杀别的进程里正在跑的任务(2026-07-12 "假失败"事故
+        # 根因之一)。2026-07-29 统一后不再挂在 VOICE_ENABLED 分支里——cron/chat
+        # 触发的任务跟 VOICE_ENABLED 完全无关,关了语音也不能让它们的孤儿任务
+        # 永远卡在 running/queued(会顶占并发上限,后续任务永远排不上队)。
+        from ...core import task_runner as _task_runner
+
+        asyncio.ensure_future(_task_runner.heal_after_restart())
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, config.WEB_HOST, config.WEB_PORT)

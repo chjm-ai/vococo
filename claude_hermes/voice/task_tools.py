@@ -1,26 +1,33 @@
-"""P1 任务板 + 网页跨端续聊的 MCP 工具:voice_dispatch_task / voice_append_task /
-voice_query_task / voice_list_tasks / voice_continue_web / voice_list_web_sessions。
+"""P1 任务板 + 网页跨端续聊的 MCP 工具:voice_dispatch_task / voice_list_sessions /
+voice_query_session / voice_continue_session。
 
 只注入进语音前台会话(routes.py 调 session.run_turn 那次 stream_turn),后台任务
 会话本身不挂这组工具——防止任务里的模型再派任务、无限套娃(见 00-overview.md §4.2)。
 
-voice_continue_web / voice_list_web_sessions 是 2026-07-28 补的:voice_append_task
-只认 voice-task: 前缀(它绑定的是 executor.py 自己维护的常驻 asyncio.Task,web 会话
-没有这种东西),没法伸进网页端(web: 前缀)会话。网页端撞限流/出错后其实并不是
-"卡在跑",而是那一轮已经收尾、锁已释放、只是空闲等下一条消息——所以"续上"就是
-往那个会话里发一句话,走 gateway/web_bridge.py 桥到 WebAdapter,跟用户自己在
-浏览器里发消息完全等价,不需要重建 voice-task 那套 cancel+resume 机制。
+2026-07-29:原来是六个工具(voice_append_task/voice_query_task/voice_list_tasks 管
+后台任务,voice_continue_web/voice_list_web_sessions 管网页对话),对模型而言是
+"同一件事(续聊/查状态/列会话)在两种来源上各实现一遍"——用户明确要求把这套
+读/续接接口收口:session_id 自动识别是后台任务 id 还是网页对话 conv,不用模型
+自己先判断"这是哪种东西该调哪个工具"。
+
+同一天进一步统一:后台任务本身也不再是语音专属——core/task_runner.py(原
+voice/executor.py)现在是语音派发/cron 定时/普通会话发起"独立新会话"三种触发
+方式共用的引擎(见 core/tasks.py 的 origin 字段)。voice_dispatch_task 派发时
+固定传 origin="voice";列表/默认查询也只看 origin="voice" 的任务,不然语音会话
+问"我那个任务怎么样了"时会被 cron 定时任务或网页发起的任务搅混——但显式给
+session_id 查/续接不限制 origin,用户明确点名哪个就查哪个,不因为它是网页/cron
+发起的就拒绝。
 """
 from __future__ import annotations
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from .. import config
+from ..core import task_runner, tasks
+from ..core.task_words import status_word
 from ..gateway import clarify, web_bridge
 from ..gateway.core import MODEL_CHOICES
 from ..memory import session_store
-from . import executor, tasks
-from .task_words import status_word
 
 _MODEL_EXAMPLES = "、".join(m for m, _ in MODEL_CHOICES)
 
@@ -29,13 +36,25 @@ def _ok(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}]}
 
 
-def _describe(task: dict) -> str:
-    parts = [f"任务「{task['title']}」(id={task['id']}):{status_word(task['status'])}"]
+def _describe_task(task: dict) -> str:
+    parts = [f"任务「{task['title']}」(session_id={task['id']}):{status_word(task['status'])}"]
     if task["status"] == "running" and task["progress_note"]:
         parts.append(f"当前进展:{task['progress_note']}")
     if task["status"] in tasks.TERMINAL_STATUSES and task["result_summary"]:
         parts.append(f"结果:{task['result_summary']}")
     return "。".join(parts)
+
+
+def _web_conv(session_key: str) -> str:
+    """web: 前缀的 session_key → 纯 conv id(去掉前缀)。"""
+    prefix = "web:"
+    return session_key[len(prefix):] if session_key.startswith(prefix) else session_key
+
+
+def _find_web_session(session_id: str) -> dict | None:
+    """按 conv id 在网页会话列表里找一条;找不到返回 None。"""
+    key = config.resolve_session_key("web", session_id)
+    return next((r for r in session_store.list_sessions("web:") if r["key"] == key), None)
 
 
 @tool(
@@ -76,127 +95,121 @@ async def voice_dispatch_task(args: dict) -> dict:
     ctx = clarify.current()
     dispatch_platform = ctx.adapter.platform if (ctx and ctx.adapter) else None
     dispatch_chat_id = str(ctx.chat_id) if (ctx and ctx.chat_id is not None) else None
-    task = executor.dispatch(
+    task = task_runner.dispatch(
         title=title, prompt=prompt, cwd=cwd, model=model or None,
         dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
+        origin="voice",
     )
     model_note = f",模型:{model}" if model else ""
-    return _ok(f"已派发,task_id={task['id']},标题「{title}」{model_note},状态:{status_word(task['status'])}。")
+    return _ok(f"已派发,session_id={task['id']},标题「{title}」{model_note},状态:{status_word(task['status'])}。")
 
 
 @tool(
-    "voice_append_task",
-    "给一个已有的后台任务追加新的指令/需求——原地续在同一个任务上,自始至终只有"
-    "一条会话,绝不会产生新任务。task_id:目标任务 id(必填,从 voice_list_tasks "
-    "或 voice_dispatch_task 返回里拿);instruction:追加的指令内容。"
-    "系统会自动判断怎么接:任务已经跑完了就直接把这句话当下一轮继续说;"
-    "还在跑就自动打断当前这轮、带着已完成的进度接上新指令重新跑。"
-    "本工具不等待新一轮跑完,可以用 voice_query_task 查后续状态。",
+    "voice_list_sessions",
+    "列出最近的会话——origin='task' 查后台任务(voice_dispatch_task 派的独立后台"
+    "活),origin='web' 查网页端对话(浏览器打开的 Web UI 里的对话)。两者是完全"
+    "不同的东西,用于先确认用户说的「刚才那个/网页那个」具体是哪一类里的哪一个,"
+    "拿到 session_id 后配合 voice_query_session/voice_continue_session 使用。",
+    {
+        "type": "object",
+        "properties": {"origin": {"type": "string", "enum": ["task", "web"]}},
+        "required": ["origin"],
+    },
+)
+async def voice_list_sessions(args: dict) -> dict:
+    origin = (args.get("origin") or "").strip()
+    if origin == "task":
+        # 只看语音自己派发的(origin="voice")——cron 定时任务/网页发起的任务
+        # 不该混进这份"我最近派了什么"的清单,会跟用户对不上号。要查某个具体的
+        # 非语音任务,用 voice_query_session 给明确的 session_id。
+        rows = tasks.list_recent(limit=10, origin="voice")
+        if not rows:
+            return _ok("当前没有任何后台任务。")
+        return _ok("\n".join(_describe_task(t) for t in rows))
+    if origin == "web":
+        rows = session_store.list_sessions("web:")[:10]
+        if not rows:
+            return _ok("当前没有任何网页端对话。")
+        lines = []
+        for r in rows:
+            flag = "⚠️最后一轮报错/卡住,等续聊" if r.get("last_error") else "正常"
+            lines.append(f"session_id={_web_conv(r['key'])},标题「{r['title']}」,{flag}")
+        return _ok("\n".join(lines))
+    return _ok("voice_list_sessions 的 origin 只能是 'task' 或 'web'。")
+
+
+@tool(
+    "voice_query_session",
+    "查一个会话(后台任务或网页端对话都可以,自动识别是哪一种,不用先判断)的"
+    "当前状态。session_id 从 voice_list_sessions 拿;留空则查最近一次派发的"
+    "后台任务。返回原始字段拼的一句话,你要把它压成更口语的转述再讲给用户,"
+    "不要念「状态/进展」这类字段名。",
+    {"type": "object", "properties": {"session_id": {"type": "string"}}},
+)
+async def voice_query_session(args: dict) -> dict:
+    session_id = (args.get("session_id") or "").strip()
+    if not session_id:
+        # 留空 = 查"我(语音)最近派发的那个",只看 origin="voice",理由同
+        # voice_list_sessions 的 origin='task' 分支。
+        latest = tasks.list_recent(limit=1, origin="voice")
+        if not latest:
+            return _ok("没有找到任务(还从没派发过任务)。")
+        return _ok(_describe_task(latest[0]))
+    task = tasks.get(session_id)
+    if task is not None:
+        return _ok(_describe_task(task))
+    web_row = _find_web_session(session_id)
+    if web_row is not None:
+        flag = "最后一轮报错/卡住,等续聊" if web_row.get("last_error") else "正常,空闲等下一句话"
+        return _ok(f"网页对话「{web_row['title']}」(session_id={session_id}):{flag}")
+    return _ok(f"没有找到 session_id={session_id} 对应的任务或网页对话。")
+
+
+@tool(
+    "voice_continue_session",
+    "给一个已有会话——后台任务或网页端对话都可以,自动识别是哪一种——续接一句"
+    "指令/追加需求,原地续在同一个会话上,绝不会产生新会话。session_id 从"
+    "voice_list_sessions 或 voice_query_session 拿(后台任务传它的 session_id,"
+    "网页对话传它的 conv,两者格式不同但本工具自动识别,不用你先判断)。"
+    "系统会自动判断怎么接:目标空闲(任务已跑完,或网页对话撞限流/报错后其实是"
+    "空闲等续聊)就直接把这句话当下一轮内容;目标还在跑就先打断当前这轮,带着"
+    "已完成的进度接上新指令重新跑。本工具不等新一轮跑完。",
     {
         "type": "object",
         "properties": {
-            "task_id": {"type": "string"},
+            "session_id": {"type": "string"},
             "instruction": {"type": "string"},
         },
-        "required": ["task_id", "instruction"],
+        "required": ["session_id", "instruction"],
     },
 )
-async def voice_append_task(args: dict) -> dict:
-    task_id = (args.get("task_id") or "").strip()
+async def voice_continue_session(args: dict) -> dict:
+    session_id = (args.get("session_id") or "").strip()
     instruction = (args.get("instruction") or "").strip()
-    if not (task_id and instruction):
-        return _ok("voice_append_task 需要 task_id 和 instruction 都非空。")
-    result = await executor.append(task_id, instruction)
-    if not result["ok"]:
-        return _ok(f"追加失败:{result['message']}")
-    parts = [f"✅ {result['message']}"]
-    if result.get("task"):
-        t = result["task"]
-        parts.append(f"task_id={t['id']},标题「{t['title']}」,状态:{status_word(t['status'])}")
-    return _ok("。".join(parts))
+    if not (session_id and instruction):
+        return _ok("voice_continue_session 需要 session_id 和 instruction 都非空。")
 
+    task = tasks.get(session_id)
+    if task is not None:
+        result = await task_runner.append(session_id, instruction)
+        if not result["ok"]:
+            return _ok(f"追加失败:{result['message']}")
+        parts = [f"✅ {result['message']}"]
+        if result.get("task"):
+            t = result["task"]
+            parts.append(f"session_id={t['id']},标题「{t['title']}」,状态:{status_word(t['status'])}")
+        return _ok("。".join(parts))
 
-@tool(
-    "voice_query_task",
-    "查一个后台任务当前进展。task_id 省略则查最近一次派发的那个。"
-    "返回的是原始字段拼的一句话,你要把它压成更口语的转述再讲给用户,不要念「状态/进展」这类字段名。",
-    {"type": "object", "properties": {"task_id": {"type": "string"}}},
-)
-async def voice_query_task(args: dict) -> dict:
-    task_id = (args.get("task_id") or "").strip()
-    task = tasks.get(task_id) if task_id else tasks.get_latest()
-    if task is None:
-        return _ok("没有找到任务(task_id 不对,或者还从没派发过任务)。")
-    return _ok(_describe(task))
-
-
-@tool(
-    "voice_list_tasks",
-    "列出最近的后台任务,看有哪些任务、各自什么状态。",
-    {"type": "object", "properties": {}},
-)
-async def voice_list_tasks(args: dict) -> dict:
-    rows = tasks.list_recent(limit=10)
-    if not rows:
-        return _ok("当前没有任何任务。")
-    return _ok("\n".join(_describe(t) for t in rows))
-
-
-def _web_conv(session_key: str) -> str:
-    """web: 前缀的 session_key → 纯 conv id(去掉前缀)。"""
-    prefix = "web:"
-    return session_key[len(prefix):] if session_key.startswith(prefix) else session_key
-
-
-@tool(
-    "voice_list_web_sessions",
-    "列出最近的网页端对话(浏览器打开的 Web UI 里的对话,不是 voice_dispatch_task 派的"
-    "后台任务——两者是完全不同的东西,id 格式也不一样)。用于找出用户说的「网页那个xx"
-    "对话/网页端卡住的对话」具体是哪一个,以及有没有对话因为限流/报错停在原地等续聊。"
-    "返回每个对话的 conv(给 voice_continue_web 用)、标题、是否最后一轮报错。",
-    {"type": "object", "properties": {}},
-)
-async def voice_list_web_sessions(args: dict) -> dict:
-    rows = session_store.list_sessions("web:")[:10]
-    if not rows:
-        return _ok("当前没有任何网页端对话。")
-    lines = []
-    for r in rows:
-        flag = "⚠️最后一轮报错/卡住,等续聊" if r.get("last_error") else "正常"
-        lines.append(f"conv={_web_conv(r['key'])},标题「{r['title']}」,{flag}")
-    return _ok("\n".join(lines))
-
-
-@tool(
-    "voice_continue_web",
-    "让网页端(浏览器打开的 Web UI)一个对话继续跑下一轮——用于那边因为限流/网络"
-    "错误等停在原地等续聊、或者你要替用户往网页对话里追加一句话的场景。"
-    "conv:网页对话 id(从 voice_list_web_sessions 拿,不是 voice_dispatch_task 那种"
-    "task_id,两套 id 不通用,别传错);instruction:要发给这个网页对话的下一句话。"
-    "系统会自动判断:该对话正在跑就先打断,再把这句话当下一轮发过去;空闲(撞限流后"
-    "通常是这种)就直接当下一轮发过去。本工具不等这一轮跑完,过一会儿可以用"
-    "voice_list_web_sessions 或 voice_query_task 类的方式确认是不是恢复正常了。",
-    {
-        "type": "object",
-        "properties": {
-            "conv": {"type": "string"},
-            "instruction": {"type": "string"},
-        },
-        "required": ["conv", "instruction"],
-    },
-)
-async def voice_continue_web(args: dict) -> dict:
-    conv = (args.get("conv") or "").strip()
-    instruction = (args.get("instruction") or "").strip()
-    if not (conv and instruction):
-        return _ok("voice_continue_web 需要 conv 和 instruction 都非空。")
+    # 不是后台任务的 session_id,当成网页对话 conv 处理。
     if not web_bridge.available():
         return _ok("当前不是常驻服务模式(没有开启网页入口),没法操作网页端对话。")
-    session_key = config.resolve_session_key("web", conv)
-    interrupted = web_bridge.cancel_if_running(session_key)
-    await web_bridge.continue_session(conv, instruction)
+    if _find_web_session(session_id) is None:
+        return _ok(f"没有找到 session_id={session_id} 对应的任务或网页对话。")
+    key = config.resolve_session_key("web", session_id)
+    interrupted = web_bridge.cancel_if_running(key)
+    await web_bridge.continue_session(session_id, instruction)
     note = "(先打断了正在跑的那一轮)" if interrupted else "(原本是空闲的,直接续上)"
-    return _ok(f"已经把这句话发进网页对话 conv={conv}{note},它会自动接着跑。")
+    return _ok(f"已经把这句话发进网页对话 session_id={session_id}{note},它会自动接着跑。")
 
 
 def build_server() -> dict:
@@ -205,8 +218,8 @@ def build_server() -> dict:
         "voice_tasks": create_sdk_mcp_server(
             "voice_tasks",
             tools=[
-                voice_dispatch_task, voice_append_task, voice_query_task, voice_list_tasks,
-                voice_continue_web, voice_list_web_sessions,
+                voice_dispatch_task, voice_list_sessions, voice_query_session,
+                voice_continue_session,
             ],
         )
     }

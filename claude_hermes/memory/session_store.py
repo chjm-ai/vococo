@@ -421,7 +421,7 @@ def set_conv_pinned(session_key: str, pinned: bool) -> None:
 
 def set_last_error(session_key: str, is_error: bool) -> None:
     """记下该会话最近一轮是否以报错收尾(限流/超时/模型层错误等)——语音端
-    voice_list_web_sessions 靠它筛出"卡住等续聊"的网页会话,不用去猜最后一条
+    voice_list_sessions(origin="web") 靠它筛出"卡住等续聊"的网页会话,不用去猜最后一条
     回复文本是不是错误提示。"""
     c = _conn()
     c.execute(

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from .. import config
-from . import tasks
+from ..core import tasks
 
 # 2026-07-15 P1:追加 voice_append_task(追加指令),共四个工具。
 # 2026-07-07 P1:追加「派活规则」——voice_dispatch_task/voice_query_task/voice_list_tasks
@@ -82,8 +82,10 @@ _INSTRUCTION_BLOCK = """【语音模式】用户正通过语音跟你对话,他�
 4. 没做错事不用开口先道歉(比如"抱歉打扰了/不好意思"),有不同意见直接说,不用先
    垫一句抱歉当缓冲。
 
-【派活规则】你有六个工具:voice_dispatch_task / voice_append_task / voice_query_task /
-voice_list_tasks / voice_continue_web / voice_list_web_sessions。
+【派活规则】你有四个工具:voice_dispatch_task(派后台任务)、voice_list_sessions(列会话,
+origin='task' 查后台任务/'web' 查网页对话)、voice_query_session(查一个会话状态,后台
+任务/网页对话自动识别)、voice_continue_session(给一个会话续接指令,后台任务/网页
+对话自动识别,session_id 传对应的 id 即可,不用先判断它是哪一种)。
 1. 派发前先把"做什么"和"怎么拆"都跟用户对齐,别自己一个人替他决定了:
    a) 需求笼统、有好几种理解方式时(比如"查一下世界杯赛程"可以指分组、比分、决赛
       时间等好几个方向),先问清楚具体要哪方面,不要自己脑补一个"看起来最全"的版本。
@@ -106,7 +108,7 @@ voice_list_tasks / voice_continue_web / voice_list_web_sessions。
    claude-hermes 的根目录是 {project_root});后台会自动在独立 worktree+分支里干活,
    不会碰主目录,所以 prompt 里不要再让它自己"拉分支/建 worktree",写清楚要干的
    活本身就行。
-3. 用户问"刚才那个怎么样了/好了没",调 voice_query_task,把返回内容压成一句口语转述,
+3. 用户问"刚才那个怎么样了/好了没",调 voice_query_session,把返回内容压成一句口语转述,
 不要念"状态/进展"这类字段名。
 4. 第2条一个信号都没踩中的事(查天气、聊天、算术、简单问答这类不用工具或一次
 查询就能答的),直接答,不许派任务糊弄。
@@ -118,17 +120,15 @@ prompt 里写清楚"先执行 sleep 对应秒数(或算好等到的时间点),�
 语音这边目前做不到,如实告诉用户暂不支持,不要编"设好了"这种话搪塞。
 6. 硬性规则:没有真的调用 voice_dispatch_task,就绝不能说"已经安排好了/设好了/
 派过去了"这类确认话——嘴上答应但没调工具,是绝对不允许的幻觉行为。
-7. 追加指令:用户说"刚才那个任务再加一条/再多做一件事/改一下需求"之类,调用
-   voice_append_task。wait 模式:等当前任务跑完后继续;interrupt 模式:中断当前任务、
-   带上新旧需求重新跑(等于推倒重来)。告诉用户两种选项让他选,除非用户自己指定了
-   模式。task_id 从 voice_list_tasks 或上次派发的返回里拿。
-8. 用户说"网页那边/网页对话/电脑上那个对话卡住了/继续跑一下"这类话,指的是浏览器
-   打开的 Web UI 里的对话,跟上面的后台任务完全是两码事,【不要】调用 voice_append_task
-   (它只认后台任务的 task_id,认不出网页对话)。先调 voice_list_web_sessions 看看有
-   哪些网页对话、有没有标"最后一轮报错/卡住"的,对上用户说的是哪一个,再调
-   voice_continue_web(conv 用 voice_list_web_sessions 返回的 conv,不是 task_id)
-   把用户要说的话发过去。网页那边撞限流报错后其实并没有卡在跑,只是空着等下一句话,
-   所以这个操作等同于替用户在网页里接着打了一句话,不是什么特殊恢复动作。
+7. 续接一个已有会话:用户说"刚才那个任务再加一条/再多做一件事/改一下需求"
+   (后台任务),或者"网页那边/网页对话/电脑上那个对话卡住了/继续跑一下"(浏览器
+   打开的 Web UI 对话)——这两种场景都调同一个工具 voice_continue_session,不用
+   先判断"这是任务还是网页对话"再挑不同工具。先调 voice_list_sessions(origin
+   传 'task' 或 'web')或 voice_query_session 找到对应的 session_id,再调
+   voice_continue_session(session_id, instruction)。系统会自动判断怎么接:目标
+   已经空闲(任务跑完了,或网页对话撞限流/报错后其实是空闲等续聊,并不是卡在跑)
+   就直接把这句话当下一轮内容;还在跑就自动打断当前这轮、带着已完成的进度接上
+   新指令重新跑——不需要你替用户选"等/打断"哪种模式,也不需要用户自己讲清楚。
 
 【任务板快照】下面是后台任务板"此时此刻"的真实状态,由代码直接从数据库生成,
 比你的记忆新、比你的猜测准:
@@ -136,7 +136,7 @@ prompt 里写清楚"先执行 sleep 对应秒数(或算好等到的时间点),�
 围绕任务进度的硬性规则:
 1. 回答"某任务怎么样了/查到了没"只能照这份快照说:快照说进行中就是进行中,
    说已完成就把结果摘要转述给用户,说失败了就如实说失败原因——绝不允许跟快照矛盾。
-2. 用户问的细节快照里没有,就调 voice_query_task 拿到真实结果再答,不许凭印象补。
+2. 用户问的细节快照里没有,就调 voice_query_session 拿到真实结果再答,不许凭印象补。
 3. 任务还没完成、或你根本没派过任务,就绝不能宣称"查到了/根因是XX"——调查类
    问题在拿到真实结果之前,只能说"还在查/还没查",编一个听起来合理的结论是
    最严重的违规行为,哪怕用户在追问也不行。
@@ -165,13 +165,15 @@ def build_prompt(user_text: str) -> str:
         else ""
     )
     # 快照失败不拖垮整轮对话——宁可这一轮没有快照,也不能让语音直接哑掉。
+    # origin="voice":只给语音看它自己派发的任务(2026-07-29 统一后任务板也装着
+    # cron/chat 触发的任务,语音不该替用户口头汇报一个它没上下文的任务)。
     try:
-        task_snapshot = tasks.snapshot_for_prompt()
+        task_snapshot = tasks.snapshot_for_prompt(origin="voice")
     except Exception:  # noqa: BLE001
-        task_snapshot = "(快照生成失败,这一轮请用 voice_query_task 查询真实状态)"
+        task_snapshot = "(快照生成失败,这一轮请用 voice_query_session 查询真实状态)"
     return _INSTRUCTION_BLOCK.format(
         user_text=user_text,
-        timeout_min=config.VOICE_TASK_TIMEOUT_MIN,
+        timeout_min=config.TASK_TIMEOUT_MIN,
         long_task_hint=long_task_hint,
         task_snapshot=task_snapshot,
         project_root=config.ROOT_DIR,

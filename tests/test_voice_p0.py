@@ -13,9 +13,11 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from claude_hermes import config
+from claude_hermes.core import task_runner as executor
+from claude_hermes.core import tasks
 from claude_hermes.core.agent import AgentReply, Done, TextDelta
 from claude_hermes.memory import session_store
-from claude_hermes.voice import executor, prompts, routes, session, stt, tasks, tts
+from claude_hermes.voice import prompts, routes, session, stt, tts
 
 
 @pytest.fixture
@@ -99,7 +101,7 @@ def test_build_prompt_covers_delayed_reminders_within_timeout(monkeypatch):
     自动触发通知),并写清楚仅限任务超时时长以内。"""
     from claude_hermes import config
 
-    monkeypatch.setattr(config, "VOICE_TASK_TIMEOUT_MIN", 30)
+    monkeypatch.setattr(config, "TASK_TIMEOUT_MIN", 30)
     out = prompts.build_prompt("过2分钟提醒我")
     assert "延时提醒" in out
     assert "30 分钟以内" in out
