@@ -18,6 +18,7 @@ import pytest
 
 from claude_hermes.core import task_runner
 from claude_hermes.core import tasks as bg_tasks
+from claude_hermes.core.task_runner import _SUMMARY_TAG_INSTRUCTION
 from claude_hermes.core.agent import AgentReply, Done
 from claude_hermes.cron import scheduler
 from claude_hermes.memory import session_store
@@ -95,7 +96,10 @@ async def test_run_job_second_trigger_appends_same_task_no_new_row(cron_env, mon
     await task_runner._running[job["id"]]
 
     assert len(bg_tasks.list_recent()) == 1  # 没有产生第二条任务行
-    assert calls == ["汇总今天安排", "汇总今天安排"]
+    # 实际发给模型的文本会带上摘要标记指令(见 task_runner._SUMMARY_TAG_INSTRUCTION),
+    # 落库的 turn 本身仍是干净的原文(见另一个用例的断言)。
+    expected = "汇总今天安排" + _SUMMARY_TAG_INSTRUCTION
+    assert calls == [expected, expected]
 
 
 # ── _on_task_terminal:回填统计 + 推送(不依赖真的跑一轮,直接构造终态 task) ──
