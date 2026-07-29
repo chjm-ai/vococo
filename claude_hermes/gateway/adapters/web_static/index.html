@@ -3925,16 +3925,13 @@ function bindRowSwipeActions(row, body, conv, archived){
   archBtn.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); toggleArchive(conv); };
   const del=el("button","cvdel"); del.innerHTML=ic("trash"); del.title="删除";
   del.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); delConv(conv); };
-  // 置顶/取消置顶按钮(语音任务不参与置顶分组)
-  if(!String(conv).startsWith("voice-task:")){
-    const convObj=findConv(conv);
-    const isPinned=!!(convObj&&convObj.pinned);
-    const pinBtn=el("button","cvpin"); pinBtn.innerHTML=ic("pin"); pinBtn.title=isPinned?"取消置顶":"置顶";
-    pinBtn.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); pinConv(conv, !isPinned); };
-    act.append(archBtn,pinBtn,del);
-  } else {
-    act.append(archBtn,del);
-  }
+  // 置顶按钮:语音任务改名 task: 前缀后不再靠字符串猜类型排除——2026-07-29 起语音任务
+  // 也支持置顶(后端 pinned 字段本就通用,之前只是前端没开放入口)
+  const convObj=findConv(conv);
+  const isPinned=!!(convObj&&convObj.pinned);
+  const pinBtn=el("button","cvpin"); pinBtn.innerHTML=ic("pin"); pinBtn.title=isPinned?"取消置顶":"置顶";
+  pinBtn.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); pinConv(conv, !isPinned); };
+  act.append(archBtn,pinBtn,del);
   row.append(act);
   bindSwipe(row, body, act);
 }
@@ -4172,10 +4169,12 @@ function syncCronHeader(){
   }
 }
 // 标题栏最右侧的「⋯」:普通会话(非主会话、非定时任务——那个已有专属按钮)才显示,
-// 点开跟侧栏列表同一套 openConvMenu(置顶/归档/删除)
+// 点开跟侧栏列表同一套 openConvMenu(置顶/归档/删除)。直接按 conv 精确匹配 S.cronJobs
+// (不再靠前缀字符串猜,理由同 syncCronHeader——task: 前缀统一后猜不出类型了)。
 function syncMoreHeader(){
   const conv=String(S.conv||"");
-  $("#convMoreBtn").hidden = !conv || conv==="main" || conv.startsWith("cron-task:");
+  const isCron=(S.cronJobs||[]).some(x=>x.conv===conv);
+  $("#convMoreBtn").hidden = !conv || conv==="main" || isCron;
 }
 // 单条定时任务行:点进去看该任务的历次运行记录(它就是一条普通会话);「⋯」跟普通
 // 会话行同一套 openConvMenu,点开是编辑/启停/删除(见 openConvMenu 里的 isCron 分支)
@@ -5068,13 +5067,18 @@ document.addEventListener("click", closeProjMenu);
 $("#convList").addEventListener("scroll", closeProjMenu);
 $("#messages").addEventListener("scroll", ()=>{ updateScrollBtn(); }, {passive:true}); // 流式时用户上翻→显示↓按钮
 
-// 按 conv id 找会话对象:普通会话在 S.convs,语音后台任务行在 S.voiceSidebar.tasks
+// 按 conv id 找会话对象:普通会话在 S.convs,后台任务(语音/cron)行分别在 S.voiceSidebar.tasks / S.cronJobs
+// (2026-07-29:定时任务漏查这里,导致打开定时任务会话时顶部上下文占用图标读不到数据而隐藏)
 function findConv(conv){
-  return S.convs.find(x=>x.conv===conv) || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv);
+  return S.convs.find(x=>x.conv===conv) || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv) || (S.cronJobs||[]).find(x=>x.conv===conv);
 }
 async function delConv(conv){
-  // 语音任务行不在 S.convs 里,从各自所在的列表里乐观移除
-  const list = S.convs.some(x=>x.conv===conv) ? S.convs : ((S.voiceSidebar.tasks||[]).some(x=>x.conv===conv) ? S.voiceSidebar.tasks : null);
+  // 语音/定时任务行不在 S.convs 里,从各自所在的列表里乐观移除(定时任务目前走 openConvMenu 的
+  // deleteCronJob 专用分支,不会真的调到这里,这里补上纯防御,免得以后加了滑动删除入口却漏改)
+  const list = S.convs.some(x=>x.conv===conv) ? S.convs
+    : (S.voiceSidebar.tasks||[]).some(x=>x.conv===conv) ? S.voiceSidebar.tasks
+    : (S.cronJobs||[]).some(x=>x.conv===conv) ? S.cronJobs
+    : null;
   if(!list) return;
   const idx=list.findIndex(x=>x.conv===conv);
   const removed=list[idx], wasActive=(S.conv===conv);
