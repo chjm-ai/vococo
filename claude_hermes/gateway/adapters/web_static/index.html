@@ -6242,12 +6242,18 @@ async function onRecStop(){
   if(REC.cancel || blob.size<1200){ REC.state="idle"; setRecUI(); return; }
   // 记住录音发起时所在的会话:转写这段时间用户可能已切到别的会话,完成后要发到这个会话而非当前会话
   const conv=S.conv;
+  const ext = mime.includes("mp4")||mime.includes("mpeg")?"mp4":mime.includes("ogg")?"ogg":mime.includes("wav")?"wav":"webm";
   // 点发送:立即收起录音条,在聊天区冒一个"我"的占位气泡(转写中…),不等结果
   REC.state="transcribing"; setRecUI();
   S.voiceRec[conv]={};
   renderVoicePending(conv);
+  await sendVoice(blob, ext, conv);
+  REC.state="idle"; setRecUI();
+}
+// 把一份录音 blob 发去转写;单独抽出来是因为失败后"重试"要能重发同一份 blob,
+// 不用再走一遍 startRec() 让用户重新开口(blob 本身没问题时,失败大多是网络/服务抖动)
+async function sendVoice(blob, ext, conv){
   try{
-    const ext = mime.includes("mp4")||mime.includes("mpeg")?"mp4":mime.includes("ogg")?"ogg":mime.includes("wav")?"wav":"webm";
     const fd=new FormData(); fd.append("audio", blob, "voice."+ext);
     const r=await api("/transcribe",{method:"POST",body:fd});
     const d=await r.json().catch(()=>({}));
@@ -6267,20 +6273,27 @@ async function onRecStop(){
         if(realConv!==conv){ const c=S.convs.find(x=>x.conv===conv); if(c) c.conv=realConv; }
         loadConvs();
       }
-    } else if(here && st && st.bubble){ voiceFail(st.bubble, d.error); }
+    } else if(here && st && st.bubble){ voiceFail(st.bubble, d.error, blob, ext, conv); }
   }catch(e){
     const st=S.voiceRec[conv]; delete S.voiceRec[conv];
-    if(S.conv===conv && st && st.bubble) voiceFail(st.bubble, "转写失败:"+e.message);
+    if(S.conv===conv && st && st.bubble) voiceFail(st.bubble, "转写失败:"+e.message, blob, ext, conv);
   }
-  REC.state="idle"; setRecUI();
 }
-// 转写没识别到内容:占位气泡改成"没听清"+重录按钮,绝不把空内容误发给 Claude
-function voiceFail(b, msg){
+// 转写没识别到内容/失败:占位气泡改成提示+按钮,绝不把空内容误发给 Claude。
+// 保留这次录到的 blob——"重试"直接重发同一份音频(网络/服务抖动场景不用再开口);
+// "重录"才是真正重新说一遍(比如确实啥也没录到)
+function voiceFail(b, msg, blob, ext, conv){
   b.classList.remove("voicebub"); b.innerHTML="";
   const t=el("span","vfailtxt"); t.textContent="🎤 "+(msg||"没识别到内容,再说一次");
+  const retryBtn=el("button"); retryBtn.type="button"; retryBtn.className="vretry"; retryBtn.textContent="重试";
+  retryBtn.onclick=()=>{
+    b.classList.add("voicebub"); b.innerHTML='<span class="vwait"><span class="sp"></span>转写中…</span>';
+    S.voiceRec[conv]={bubble:b};
+    sendVoice(blob, ext, conv);
+  };
   const rb=el("button"); rb.type="button"; rb.className="vretry"; rb.textContent="重录";
   rb.onclick=()=>{ const row=b.closest(".row"); if(row) row.remove(); startRec(); };
-  b.append(t, rb);
+  b.append(t, retryBtn, rb);
 }
 function insertToInput(t){
   const ta=$("#ta");
