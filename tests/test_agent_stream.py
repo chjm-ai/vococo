@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import anyio
 
+from claude_hermes import config
 from claude_hermes.core.agent import (
     ToolInput,
     _compact_threshold,
@@ -56,10 +57,10 @@ def test_turn_env_forces_foreground_for_official():
 
 def test_turn_env_keeps_provider_keys():
     # 第三方(cc-switch)场景:供应商 base_url+key 要保留,同时叠加前台开关
-    provider = {"ANTHROPIC_BASE_URL": "https://api.deepseek.com", "ANTHROPIC_AUTH_TOKEN": "sk-x"}
+    provider = {"ANTHROPIC_BASE_URL": "https://api.deepseek.com", "ANTHROPIC_API_KEY": "sk-x"}
     env = _turn_env(provider)
     assert env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com"
-    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-x"
+    assert env["ANTHROPIC_API_KEY"] == "sk-x"
     assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
 
 
@@ -68,6 +69,25 @@ def test_turn_env_does_not_mutate_input():
     provider = {"ANTHROPIC_BASE_URL": "https://x"}
     _turn_env(provider)
     assert "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" not in provider
+
+
+def test_turn_env_injects_oauth_token_for_official(monkeypatch):
+    # 官方模型必须显式带上 CLAUDE_CODE_OAUTH_TOKEN——config._scrub_env_secrets 启动时已把它从
+    # 父进程 os.environ 里 pop 掉,指望"父进程 env 原样透传"是错的(2026-07-28 回归:本地登录态
+    # 一旦掉线,父进程 env 和本地凭据都拿不到 token,官方模型每轮报 "Not logged in"),必须从
+    # config.OAUTH_TOKEN(.env 里配置的长效订阅令牌)显式塞回去。
+    monkeypatch.setattr(config, "OAUTH_TOKEN", "sk-ant-oat01-test")
+    env = _turn_env({})
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-test"
+
+
+def test_turn_env_third_party_does_not_get_oauth_injection():
+    # 第三方分支不该被官方分支的 OAuth 注入逻辑碰到——provider_env 已经是 providers.py
+    # 算好的完整第三方 env(它自己会把 CLAUDE_CODE_OAUTH_TOKEN 设空,防 CLI 拿订阅 token
+    # 打第三方端点),_turn_env 只应原样透传,不该额外注入官方 token。
+    provider = {"ANTHROPIC_BASE_URL": "https://api.deepseek.com", "ANTHROPIC_API_KEY": "sk-x"}
+    env = _turn_env(provider)
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
 
 # === _compact_threshold:大窗口模型不能被 CLI 的旧窗口认知提前压缩 ===

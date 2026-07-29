@@ -47,6 +47,10 @@ class GatewayRunner:
             return True
         return False
 
+    def update_model_cache(self, session_key: str, model: str) -> None:
+        """同步更新内存中的模型缓存;UI 切模型时由 WebAdapter 回调触发。"""
+        self.models[session_key] = model
+
     async def _dispatch(self, adapter: Adapter, inc: Incoming) -> None:
         # clarify 回复必须在【拿锁前】拦截:发起 ask_user 的那一轮还占着会话锁、
         # 阻塞等回答,若这里再去抢同一把锁就死锁。
@@ -247,10 +251,13 @@ class GatewayRunner:
         for adapter in self.adapters.values():
             if hasattr(adapter, "set_cancel_callback"):
                 adapter.set_cancel_callback(self.cancel_turn)
-        # 注册语音→网页跨端续聊桥接:语音喊一声就能让某个 web: 会话继续跑
-        # (见 gateway/web_bridge.py、voice/task_tools.py 的 voice_continue_session)
+        # 注册模型切换回调 + 语音→网页跨端续聊桥接(WebAdapter 专属):语音喊一声
+        # 就能让某个 web: 会话继续跑(见 gateway/web_bridge.py、
+        # voice/task_tools.py 的 voice_continue_session)
         web_adapter = self.adapters.get("web")
         if web_adapter is not None:
+            if hasattr(web_adapter, "set_model_switch_callback"):
+                web_adapter.set_model_switch_callback(self.update_model_cache)
             from . import web_bridge
 
             web_bridge.register(web_adapter.inject, self.cancel_turn)

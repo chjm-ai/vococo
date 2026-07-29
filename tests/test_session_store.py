@@ -120,6 +120,29 @@ def test_project_soft_remove_and_revive(isolated, tmp_path):
     assert len(session_store.list_projects()) == 1          # 复活
 
 
+def test_conv_pin_unpin_in_list(isolated):
+    import time
+    from claude_hermes.memory import session_store
+
+    session_store.set_title("web:a", "会话 A")
+    session_store.set_title("web:b", "会话 B")
+    session_store.append("web:b", "hello", "ok")  # b 更早,a 更晚,让 a 排前
+    time.sleep(0.05)
+    session_store.append("web:a", "hi", "ok")
+    convs = session_store.list_sessions("web:")
+    assert [c["pinned"] for c in convs] == [False, False]
+
+    session_store.set_conv_pinned("web:a", True)
+    convs = session_store.list_sessions("web:")
+    keys = [c["key"] for c in convs]
+    assert keys == ["web:a", "web:b"]
+    assert convs[0]["pinned"] is True
+    assert convs[1]["pinned"] is False
+
+    session_store.set_conv_pinned("web:a", False)
+    assert all(not c["pinned"] for c in session_store.list_sessions("web:"))
+
+
 def test_ensure_title_returns_placeholder_once(isolated):
     from claude_hermes.memory import session_store
 
@@ -140,3 +163,25 @@ def test_title_clean_strips_noise():
     assert title._clean("  首行标题\n第二行应被丢弃") == "首行标题"
     assert title._clean("") == ""
     assert len(title._clean("长" * 100)) == title.MAX_LEN
+
+
+def test_set_chosen_model_clears_sdk_session_id_on_change(isolated):
+    """切换模型时要把旧的 SDK session id 清掉,避免 resume 旧模型导致限额延续。"""
+    from claude_hermes.memory import session_store
+
+    session_store.set_chosen_model("web:test", "claude-sonnet-5")
+    session_store.set_sdk_session_id("web:test", "sess-123")
+    # 同模型不应当清
+    session_store.set_chosen_model("web:test", "claude-sonnet-5")
+    assert session_store.get_sdk_session_id("web:test") == "sess-123"
+    # 切到别的模型必须清
+    session_store.set_chosen_model("web:test", "deepseek-chat")
+    assert session_store.get_sdk_session_id("web:test") is None
+
+
+def test_set_chosen_model_first_time_does_not_fail(isolated):
+    """首次为会话设置模型(无旧 chosen_model)也能正常落库。"""
+    from claude_hermes.memory import session_store
+
+    session_store.set_chosen_model("web:new", "claude-opus-5")
+    assert session_store.get_chosen_model("web:new") == "claude-opus-5"

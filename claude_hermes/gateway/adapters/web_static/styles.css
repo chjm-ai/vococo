@@ -143,14 +143,15 @@
      滑动时 cvbody 与 cvact 反向同步平移,互换着露出/藏起) */
   .conv .cvbody{display:flex;align-items:center;gap:8px;width:100%;transition:transform .22s ease}
   .conv.swiping .cvbody{transition:none}
-  .conv.swiped .cvbody{transform:translateX(-72px)}
-  .conv .cvact{position:absolute;top:0;right:0;bottom:0;width:72px;display:flex;
+  .conv.swiped .cvbody{transform:translateX(-108px)}
+  .conv .cvact{position:absolute;top:0;right:0;bottom:0;width:108px;display:flex;
     transform:translateX(100%);transition:transform .22s ease}
   .conv.swiping .cvact{transition:none}
   .conv.swiped .cvact{transform:translateX(0)}
   .conv .cvact button{flex:1;border:none;display:flex;align-items:center;justify-content:center;color:#fff;cursor:pointer}
   .conv .cvact button .ic{width:16px;height:16px}
   .conv .cvact .cvarch{background:var(--dim2)}
+  .conv .cvact .cvpin{background:var(--accent)}
   .conv .cvact .cvdel{background:var(--err);border-radius:0 7px 7px 0}   /* 贴行右边缘,配行本身的圆角,避免被 overflow 裁出直角缺口 */
   .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
   .conv .livedot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}   /* AI 正在回复:闪烁圆点 */
@@ -780,10 +781,23 @@
   #modelPop .mi.on{color:var(--accent)}
   #modelPop .mi .mk{color:var(--accent);font-size:12px;flex-shrink:0}
   #modelPop .mi .ml{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #modelPop .mi .mmeta{display:flex;align-items:center;gap:6px;flex-shrink:0}
-  #modelPop .mi .mreset{font-size:11px;color:var(--dim2);white-space:nowrap}
-  #modelPop .mring{width:16px;height:16px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
-  #modelPop .mgrouplabel{padding:7px 11px 4px;font-size:11px;font-weight:600;color:var(--dim2)}
+  #modelPop .mring{position:relative;width:16px;height:16px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+  #modelPop .mring .mqtip{display:none}   /* 纯数据容器,内容由 JS 拷进 .mqfloat 悬浮显示;自己永不直接可见 */
+  /* Hover 卡片:挂在 body 下用 fixed 定位(见 showUsageTip),不能放在 #modelPop 内部——
+     #modelPop 设了 overflow-y:auto 让长列表能滚动,会连带把 overflow-x 强制裁成非 visible,
+     绝对定位的卡片一旦超出面板边界就被裁没,表现为 hover 出一片空白。 */
+  .mqfloat{display:none;position:fixed;z-index:9999;width:220px;padding:10px 12px;background:var(--card);border:1px solid var(--line2);border-radius:12px;box-shadow:var(--shadow);font-size:12px;color:var(--text);pointer-events:none}
+  .mqt .mqh{font-weight:600;margin-bottom:8px;font-size:13px;color:var(--text)}
+  .mqt .mqtag{font-size:10px;font-weight:500;color:var(--dim);background:var(--panel2);padding:1px 5px;border-radius:10px;vertical-align:middle}
+  .mqt .mqrow{display:flex;justify-content:space-between;align-items:center;margin:4px 0}
+  .mqt .mqsub{color:var(--dim);font-size:11px;justify-content:flex-end;margin-top:-2px}
+  .mqt .mqwarn b{color:var(--err)}
+  .mqt .mqsep{height:1px;background:var(--line2);margin:8px 0}
+  .mqt .mqdist{display:flex;flex-wrap:wrap;gap:5px}
+  .mqt .mqdist span{font-size:11px;color:var(--dim);background:var(--panel2);padding:2px 6px;border-radius:8px}
+  #modelPop .mgrouplabel{padding:7px 11px 4px;font-size:11px;font-weight:600;color:var(--dim2);display:flex;align-items:center;justify-content:space-between;gap:8px}
+  #modelPop .mgrouplabel .mgmeta{display:flex;align-items:center;gap:6px;flex-shrink:0}
+  #modelPop .mgrouplabel .mreset{font-size:11px;color:var(--dim2);font-weight:400;white-space:nowrap}
   #modelPop .mdivider{height:1px;margin:5px 7px;background:var(--line2)}
   /* 新会话项目选择器:悬浮在 .inrow 左上角(position:absolute 脱离文档流,不挤占输入框布局) */
   #projSel{position:absolute;left:0;bottom:calc(100% + 8px);z-index:15}
@@ -842,7 +856,7 @@
   #ta{width:100%;background:none;border:none;color:var(--text);resize:none;font:inherit;
     min-height:46px;max-height:180px;padding:2px 4px;outline:none;line-height:1.5}
   #ta::placeholder{color:var(--dim2)}
-  /* 订阅配额小圆环(Kimi 订阅专用,嵌在模型选择面板每行里,见 .mring):
+  /* 订阅配额小圆环(Anthropic/Kimi 订阅共用,嵌在模型选择面板每行里,见 .mring):
      20x20 viewBox,和顶部上下文环(#barMeta .ctxring)同规格,stroke 2.5,半径 8。 */
   .qr{width:20px;height:20px;display:block;color:var(--dim)}
   .qa{transition:stroke-dashoffset .5s ease,stroke .3s ease;stroke:var(--dim2);stroke-linecap:round}
@@ -955,19 +969,26 @@
   #tasksBadge{position:absolute;top:0;right:0;width:8px;height:8px;border-radius:50%;
     background:var(--accent);display:none}
   #tasksBadge.on{display:block}
-  /* 后台任务状态条:顶栏下方常驻横幅——派发瞬间出现,列出排队/进行中任务,
-     全部结束自动收起;点击打开任务抽屉看详情(数据来自 SSE task_update/task_done)。
+  /* 后台任务状态条:顶栏下方常驻横幅——派发瞬间出现,最近5条(进行中+已完成统一排序
+     计数)按最后更新时间倒序;已完成的留在条里加"✕"手动关闭,不再自动消失。
+     点击空白处打开任务抽屉看详情(数据来自 SSE task_update/task_done)。
      PWA 拿不到 iOS 灵动岛(Live Activities 只开放给原生 App),这条是应用内的替代。 */
   #taskBar{border-bottom:1px solid var(--line);padding:8px 16px;display:flex;
     flex-direction:column;gap:6px;cursor:pointer;flex-shrink:0}
   #taskBar[hidden]{display:none}
   .taskbar-row{display:flex;align-items:center;gap:8px;font-size:13px;min-width:0}
+  .taskbar-row.done{opacity:.7}
   .taskbar-row .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
   .taskbar-row .dot.queued{background:var(--dim2)}
   .taskbar-row .dot.running{background:var(--accent);animation:taskbarPulse 1.2s ease-in-out infinite}
+  .taskbar-row .dot.done{background:var(--ok)}
+  .taskbar-row .dot.failed,.taskbar-row .dot.cancelled{background:var(--err)}
   .taskbar-row .t{font-weight:600;flex-shrink:0;max-width:45%;overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
   .taskbar-row .n{color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .taskbar-row .close{flex-shrink:0;border:none;background:none;color:var(--dim2);
+    font-size:14px;line-height:1;padding:2px 4px;cursor:pointer}
+  .taskbar-row .close:hover{color:var(--text)}
   @keyframes taskbarPulse{0%,100%{opacity:1}50%{opacity:.35}}
   #tasksDrawer{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10;display:none}
   #tasksDrawer.open{display:block}

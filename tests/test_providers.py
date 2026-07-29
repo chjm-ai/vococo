@@ -42,7 +42,7 @@ def test_resolve_explicit_third_party_model_injects_env(tmp_path, monkeypatch):
     model, env = providers.resolve("deepseek-chat", "claude-sonnet-5")
     assert model == "deepseek-chat"
     assert env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
-    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-xxx"
+    assert env["ANTHROPIC_API_KEY"] == "sk-xxx"
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == ""
 
 
@@ -143,7 +143,7 @@ def test_sidecar_env_finds_named_provider(tmp_path, monkeypatch):
     assert result is not None
     model, env = result
     assert model == "deepseek-chat"
-    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-xxx"
+    assert env["ANTHROPIC_API_KEY"] == "sk-xxx"
     assert providers.sidecar_env("nonexistent") is None
 
 

@@ -467,8 +467,30 @@ def _cli_stderr(line: str) -> None:
 
 
 def _turn_env(provider_env: dict) -> dict:
-    """本轮传给 CLI 子进程的 env:设置页供应商 env(base_url+key)叠加恒定的强制前台开关。"""
-    return {**provider_env, **_FORCE_FOREGROUND_ENV}
+    """本轮传给 CLI 子进程的 env:设置页供应商 env(base_url+key)叠加恒定的强制前台开关。
+
+    切换到官方模型时(provider_env 为空),显式清掉第三方环境变量——否则 CLI 子进程
+    会继承父进程的 ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY,误以为在用第三方端点,
+    导致报 "Not logged in"。
+
+    官方模型还必须显式把 CLAUDE_CODE_OAUTH_TOKEN 带上(而不是指望父进程 env 里有它
+    "原样透传")——config._scrub_env_secrets 在启动时已经把这个 token 从父进程
+    os.environ 里 pop 掉了(收窄 secret 暴露面,见 config.py 顶部注释),父进程 env 根本
+    没有它。CLI 子进程认证只有两条路:这里传的 env,或它自己本地的登录态(interactive
+    /login 写的 ~/.claude 凭据/Keychain)。本地登录态会过期/掉线,一旦掉线且这里不兜底,
+    官方模型就整个瘫痪(2026-07-28 实测复现:本地登录态失效,server 每轮报 "Not logged
+    in",而直接用 CLAUDE_CODE_OAUTH_TOKEN 跑 CLI 验证请求正常)。config.OAUTH_TOKEN 是
+    .env 里配置的长效订阅令牌(claude setup-token 生成,专为无人值守场景设计),这里显式
+    带上,不依赖本机是否恰好登录着。danger.py 已有针对性拦截挡 curl/wget 等外带这个变量
+    名的命令,是这个必要暴露面的兜底防线。"""
+    env = {**provider_env, **_FORCE_FOREGROUND_ENV}
+    if not provider_env:
+        # 官方模型:清掉可能残留的第三方端点变量,同时显式带上订阅 token(见上方文档字符串)
+        env["ANTHROPIC_BASE_URL"] = ""
+        env["ANTHROPIC_API_KEY"] = ""
+        if config.OAUTH_TOKEN:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = config.OAUTH_TOKEN
+    return env
 
 
 async def _query_context_usage(

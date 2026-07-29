@@ -191,6 +191,7 @@ try{
             <span id="ctxPct">0%</span>
           </button>
           <div id="ctxPop" hidden></div>
+          <button class="hmore" id="convMoreBtn" type="button" title="更多" hidden>⋯</button>
         </div>
       </div>
     </header>
@@ -417,6 +418,7 @@ const ICONS = {
   eraser:'<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
   phone:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
   star:'<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+  pin:'<line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 function setIcon(el, name){ el.innerHTML = ic(name); }
@@ -1059,33 +1061,62 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       const rows = await resp.json();
       renderTasks(rows);
       // 顺带全量校准状态条(SSE 断线漏事件时,打开抽屉/task_done 刷新都会走到这里兜底)
-      activeTasks.clear();
-      for(const t of rows) if(t.status === "queued" || t.status === "running") activeTasks.set(t.id, t);
+      barTasks.clear();
+      for(const t of rows){
+        barTasks.set(t.id, t);
+        // 任务处于活跃态说明是刚起跑(含"追问重开"),撤销之前的手动关闭,让它重新露出
+        if(t.status === "queued" || t.status === "running") dismissedTaskIds.delete(t.id);
+      }
       renderTaskBar();
     }catch(e){}
   }
 
-  // ── 任务状态条:排队/进行中任务常驻顶栏下方,派发瞬间出现(SSE task_update),
-  //    全部结束自动收起;点击等同打开任务抽屉看详情 ─────────────────────────────
-  const activeTasks = new Map();  // id -> 任务行,只留 queued/running
+  // ── 任务状态条:顶栏下方常驻横幅,派发瞬间出现(SSE task_update)。
+  //    完成后不再自动消失,改成"已完成"标记留在条里,用户点叉才手动关闭;
+  //    最多展示最近7条(进行中+已完成统一排序计数),按 updated_at 倒序 ─────────
+  const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
+  const dismissedTaskIds = new Set();  // 用户点叉关闭过的任务id(仅前端隐藏,不动后端数据)
+  const TASKBAR_MAX = 7;
 
   function upsertTaskBar(t){
-    if(t.status === "queued" || t.status === "running") activeTasks.set(t.id, t);
-    else activeTasks.delete(t.id);
+    if(t.status === "queued" || t.status === "running") dismissedTaskIds.delete(t.id);
+    barTasks.set(t.id, t);
     renderTaskBar();
   }
 
-  function renderTaskBar(){
-    const rows = [...activeTasks.values()].sort((a,b)=>a.created_at - b.created_at);
-    taskBar.hidden = !rows.length;
-    taskBar.innerHTML = rows.map(t=>
-      `<div class="taskbar-row"><span class="dot ${t.status}"></span>` +
-      `<span class="t">${esc(t.title)}</span>` +
-      `<span class="n">${esc(t.status === "running" ? (t.progress_note || "进行中") : "排队中")}</span></div>`
-    ).join("");
+  function taskbarNote(t){
+    if(t.status === "running") return t.progress_note || "进行中";
+    if(t.status === "queued") return "排队中";
+    return t.result_summary || STATUS_WORD[t.status] || t.status;
   }
 
-  taskBar.addEventListener("click", ()=>{ tasksDrawer.classList.add("open"); loadTasks(); });
+  function renderTaskBar(){
+    const rows = [...barTasks.values()]
+      .filter(t=>!dismissedTaskIds.has(t.id))
+      .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at))
+      .slice(0, TASKBAR_MAX);
+    taskBar.hidden = !rows.length;
+    taskBar.innerHTML = rows.map(t=>{
+      const done = t.status !== "queued" && t.status !== "running";
+      return `<div class="taskbar-row${done ? " done" : ""}"><span class="dot ${t.status}"></span>` +
+        `<span class="t">${esc(t.title)}</span>` +
+        `<span class="n">${esc(taskbarNote(t))}</span>` +
+        (done ? `<button class="close" data-id="${t.id}" aria-label="关闭">✕</button>` : "") +
+        `</div>`;
+    }).join("");
+  }
+
+  taskBar.addEventListener("click", (e)=>{
+    const closeBtn = e.target.closest(".close");
+    if(closeBtn){
+      e.stopPropagation();
+      dismissedTaskIds.add(closeBtn.dataset.id);
+      renderTaskBar();
+      return;
+    }
+    tasksDrawer.classList.add("open");
+    loadTasks();
+  });
 
   function renderTasks(rows){
     tasksList.innerHTML = "";
@@ -1584,7 +1615,7 @@ void main(){
       loadTasks();
       loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
       const data = JSON.parse(e.data);
-      upsertTaskBar(data);  // 终态 → 从状态条摘掉
+      upsertTaskBar(data);  // 终态 → 状态条里标记"已完成",留在条里等用户手动点叉关闭
       pendingAnnouncements.push(data);
       flushAnnouncements();
     });
@@ -1595,8 +1626,9 @@ void main(){
   // - 耳朵:WebRTC 连线做识别(ASR)+断句(VAD)+打断信号,跟第一版相同。
   // - 大脑:识别到一整句话后转发给 /voice/send(Claude 全套工具/画像/记忆),
   //   这一步也不变;但 body 带 tts:false,服务端不再合成 TTS。
-  // - 嘴巴(本次新增):Claude 的回答按句子经 conversation.item.create(【朗读】前缀)
-  //   + response.create 交给 Omni 念,音频走 WebRTC 远端轨道(RTP)回来从
+  // - 嘴巴(本次新增):Claude 的回答按句子经 conversation.item.create(纯文字
+  //   input_text,不带字符串标记,见 pumpOmniRead)+ response.create 交给 Omni 念,
+  //   音频走 WebRTC 远端轨道(RTP)回来从
   //   #omniRemoteAudio 播——这是阿里云文档的标准链路,服务端回声消除+语义防
   //   误打断只有音频走 RTC 闭环才生效;之前"自己 TTS+Web Audio 播放"在这条
   //   链路外,AEC 拿不到参考信号,才有"AI 录到自己说话"的假对话问题。
@@ -1692,12 +1724,20 @@ void main(){
           modalities: ["text", "audio"],
           voice: S.omniVoice,
           // 2026-07-12 真机反馈:老指令只说"读出【朗读】后面的内容",没明确禁念标记,
-          // Omni 一句一个"朗读"地念出来——必须白纸黑字写死"标记本身绝对不念"。
-          instructions: "你是一个只负责朗读的语音引擎。收到以【朗读】开头的消息时," +
-            "只朗读标记后面的正文。【朗读】这三个字连同方括号是机器标记,不是稿件内容," +
-            "绝对禁止念出来——直接从正文第一个字开始读。正文要自然流畅、一字不差," +
-            "不要添加、省略或改动任何内容,也不要发表自己的看法。" +
-            "收到其他任何消息时,如果非说不可就简短确认收到即可;尽可能保持沉默。",
+          // Omni 一句一个"朗读"地念出来——加了"标记本身绝对不念"之后一度好转,
+          // 但 2026-07-28 长通话真机复现又冒出同一症状:标记字符串"【朗读】"本身
+          // 每句都会进 Omni 的上下文,通话越长、句子越多,这个词出现频次越高,
+          // "标记不要念"这条指令遵循就越容易松动,字面把"朗读"两个字念出来。
+          // 根治:不再靠"塞一个字符串标记 + 指令要求模型自觉不念"这种概率性
+          // 方案,改成让 Omni 按消息的内容类型区分——我们主动推给它朗读的都是
+          // 纯文字(input_text,见 pumpOmniRead),用户真实说话产生的是语音输入
+          // (input_audio),两者类型不同,不需要也不应该在文本正文里额外嵌一个
+          // 有被读出来风险的标记词。
+          instructions: "你是一个只负责朗读的语音引擎。收到纯文字消息(input_text)时," +
+            "把这段文字一字不差地朗读出来,自然流畅,不要添加、省略或改动任何内容," +
+            "也不要发表自己的看法,不要念出正文之外的任何说明。" +
+            "收到语音输入(用户开口说话)时,不要自动生成回复," +
+            "如果非说不可就简短确认收到即可;尽可能保持沉默。",
           // 2026-07-10:改用 semantic_vad(阿里云文档明确给 qwen3.5-omni-realtime 系列
           // 推荐这个模式)——server_vad 纯按静音毫秒数判停,用户说话中间正常思考停顿
           // ("呃"、组织语言)会被硬切;semantic_vad 按语义完整性判断这句话说完没有,
@@ -1916,10 +1956,20 @@ void main(){
           // 第二道防护闸:speech_started 被 VAD 漏报时(如太短/太轻)也拉住泵朗读
           // 的闸,不等 auto-reply 的 response.created 回执;auto-reply 完成后
           // 的 response.done 会清掉它。第一道闸在 speech_started(见上)。
-          if(!omniAutoActive){
-            omniAutoActive = true;
-            omniAutoSince = Date.now();
-          }
+          // omniAutoSince 这里必须无条件刷新到"此刻"(2026-07-28 实锤修复长指令
+          // 复述 bug):它是 pumpOmniRead 里 5 秒保险丝的计时锚点,以前只在
+          // omniAutoActive 还是 false 时才设,锚点停留在 speech_started(用户
+          // 刚开口那一刻)。用户话越长,说到这段真正 commit 时,保险丝早在说话
+          // 过程中就已经在计时——auto-reply 的 response.created 还没到,
+          // pumpOmniRead 就把 omniAutoActive 提前清成 false、放行真朗读抢先开
+          // 声;等姗姗来迟的 auto-reply(内容是 Omni 把用户刚说的长指令复述回来)
+          // 到达时 omniReadActive 已经是 true,response.created 分支「只在不朗读
+          // 自己内容时才静音」的判断被跳过,复述音频原样播了出来。短句因为总耗时
+          // 远小于 5 秒,踩不中这个窗口,只有长指令(voice_dispatch_task 常见场景)
+          // 会暴露。锚点挪到"这段语音刚 commit 完"这一刻,才是保险丝真正该起算
+          // 的时间点。
+          omniAutoActive = true;
+          omniAutoSince = Date.now();
           // 这句话已定型,completed 理应几百毫秒内跟到。到点没来就是被我们的
           // response.cancel 连带砍死了(见 omniDeltaFallback 注释)——拿 delta
           // 缓存顶上,别让用户的话烂在半路。
@@ -2052,8 +2102,10 @@ void main(){
 
   // ── Omni 出声:朗读队列 ────────────────────────────────────────────────
   // Claude 的回答按句子进队,一句一个 response(服务端同一时刻只允许一个进行中
-  // 的 response,靠 omniReadActive/omniAutoActive 串行);【朗读】前缀跟 session
-  // instructions 里的约定对上。
+  // 的 response,靠 omniReadActive/omniAutoActive 串行);发的是纯文字消息
+  // (input_text),不带任何字符串标记——跟 session instructions 里"纯文字消息
+  // 直接一字不差朗读"的约定对上(2026-07-28 起不再用【朗读】前缀,见那段
+  // instructions 定义处的注释)。
   function pumpOmniRead(){
     if(!omniDc || omniDc.readyState !== "open") return;
     // 保险丝:自动回复的 response.done 万一丢了(cancel 撞 done 的时序缝),别让
@@ -2068,7 +2120,7 @@ void main(){
     try{
       omniDc.send(JSON.stringify({
         type: "conversation.item.create",
-        item: {type: "message", role: "user", content: [{type: "input_text", text: "【朗读】" + text}]},
+        item: {type: "message", role: "user", content: [{type: "input_text", text}]},
       }));
       omniDc.send(JSON.stringify({type: "response.create"}));
       omniReadPending++;
@@ -3432,12 +3484,13 @@ var quotaCache = {};   // 按模型名缓存 {data, ts},60s 内直接复用,不�
 var QUOTA_ARC = 50.27; // 2*PI*8,与 ctxRing 同值
 
 function ringSvg(id){
-  return '<span class="mring" data-m="'+esc(id)+'" data-state="loading" title="额度加载中…">'+
+  return '<span class="mring" data-m="'+esc(id)+'" data-state="loading">'+
     '<svg class="qr" viewBox="0 0 20 20">'+
     '<circle class="qt" cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2.5" opacity="0.15"/>'+
     '<circle class="qa" cx="10" cy="10" r="8" fill="none" stroke-width="2.5" stroke-linecap="round" '+
     'stroke-dasharray="50.27" stroke-dashoffset="50.27" transform="rotate(-90 10 10)"/>'+
-    '</svg></span>';
+    '</svg>'+
+    '<span class="mqtip"></span></span>';
 }
 function renderModelPop(){
   const pop=$("#modelPop"), cur=curModel();
@@ -3450,25 +3503,57 @@ function renderModelPop(){
     if(!items.length) return;
     if(groupsShown) html += '<div class="mdivider"></div>';
     groupsShown++;
-    html += '<div class="mgrouplabel">'+esc(gname)+'</div>';
+    // 额度是账号级、组内所有模型共用(实测过,同组各模型接口返回完全一样)——
+    // 圆环+重置时间挂在分组标题上查一次,不再每行重复挂一份。
+    const showMeta = gkey==="anthropic" || gkey==="kimi";
+    const meta = showMeta ? '<span class="mgmeta">'+ringSvg(gkey)+'<span class="mreset" data-m="'+esc(gkey)+'"></span></span>' : "";
+    html += '<div class="mgrouplabel"><span>'+esc(gname)+'</span>'+meta+'</div>';
     html += items.map(function(c){
       const id=c[0], label=c[1];
       const shortLabel = label.replace(/[(（][^)）]*[)）]\s*$/,"").trim();
-      const showMeta = gkey==="anthropic" || gkey==="kimi";
-      const ring = gkey==="kimi" ? ringSvg(id) : "";
-      const reset = showMeta ? '<span class="mreset" data-m="'+esc(id)+'"></span>' : "";
       return '<button type="button" class="mi'+(id===cur?" on":"")+'" data-m="'+esc(id)+'">'+
         '<span class="ml">'+esc(shortLabel)+'</span>'+
-        '<span class="mmeta">'+ring+reset+(id===cur?'<span class="mk">✓</span>':'')+'</span>'+
+        (id===cur?'<span class="mk">✓</span>':'')+
         '</button>';
     }).join("");
   });
   pop.innerHTML = html || '<div style="padding:9px 11px;color:var(--dim);font-size:13px">暂无可选模型</div>';
   pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickModel(b.dataset.m); });
+  // Hover 卡片改走 JS 悬浮定位(挂在 body 下),不再用 CSS :hover——
+  // #modelPop 为了让长列表能滚动设了 overflow-y:auto,浏览器会连带把 overflow-x
+  // 也强制裁成非 visible(CSS 规范:两轴一边非 visible,另一边就跟着裁),
+  // 卡片是绝对定位往圆环左侧展开的,会被裁没,看起来就是空白。
+  pop.querySelectorAll(".mring").forEach(ring=>{
+    ring.addEventListener("mouseenter", ()=>showUsageTip(ring));
+    ring.addEventListener("mouseleave", hideUsageTip);
+  });
   loadModelQuotas(choices);
 }
+var usageTipEl = null;
+function showUsageTip(ring){
+  var src = ring.querySelector(".mqtip");
+  if(!src || !src.innerHTML) return;
+  if(!usageTipEl){
+    usageTipEl = document.createElement("div");
+    usageTipEl.className = "mqfloat";
+    document.body.appendChild(usageTipEl);
+  }
+  usageTipEl.innerHTML = src.innerHTML;
+  usageTipEl.style.display = "block";
+  var rect = ring.getBoundingClientRect();
+  var tw = usageTipEl.offsetWidth, th = usageTipEl.offsetHeight;
+  var left = rect.left - tw - 10;
+  if(left < 8) left = rect.right + 10;               // 左边放不下就翻到右边
+  if(left + tw > window.innerWidth - 8) left = window.innerWidth - tw - 8;
+  var top = rect.top + rect.height/2 - th/2;
+  top = Math.max(8, Math.min(top, window.innerHeight - th - 8));
+  usageTipEl.style.left = left + "px";
+  usageTipEl.style.top = top + "px";
+}
+function hideUsageTip(){ if(usageTipEl) usageTipEl.style.display = "none"; }
 function pickModel(id){
   $("#modelPop").hidden=true;
+  hideUsageTip();
   if(!id || id===curModel()) return;
   setModel(id);            // 乐观更新胶囊
   S.models.default=id;     // 同步"本端默认":之后新开会话也默认用这个模型
@@ -3477,10 +3562,10 @@ function pickModel(id){
     body:JSON.stringify({conv:S.conv, model:id})}).catch(()=>{});
 }
 $("#modelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#modelPop");
-  if(p.hidden){ renderModelPop(); p.hidden=false; } else p.hidden=true; };
-document.addEventListener("click", e=>{ const b=$("#modelBox"); if(b && !b.contains(e.target)) $("#modelPop").hidden=true; });
+  if(p.hidden){ renderModelPop(); p.hidden=false; } else { p.hidden=true; hideUsageTip(); } };
+document.addEventListener("click", e=>{ const b=$("#modelBox"); if(b && !b.contains(e.target)){ $("#modelPop").hidden=true; hideUsageTip(); } });
 
-// ── 模型面板里的订阅额度(重置时间 + Kimi 圆环)──────────────────────────
+// 模型面板里的订阅额度(重置时间 + 圆环 + hover 详情)
 // loadUsage 只负责拿数据+缓存(60s 内复用),不碰 DOM;渲染交给调用方按行更新。
 function loadUsage(model, force){
   var cached = quotaCache[model];
@@ -3508,51 +3593,91 @@ function findRowEls(id){
   $("#modelPop").querySelectorAll(".mreset").forEach(function(el){ if(el.dataset.m===id) reset=el; });
   return {ring: ring, reset: reset};
 }
-function applyKimiRow(id, data){
+function fmtUSD(n){ n=+n||0; return "$"+n.toFixed(2); }
+function fmtNum(n){ n=+n||0; return n.toLocaleString("en-US"); }
+function fmtPct(n){ if(n==null) return "-"; return (n*100).toFixed(1)+"%"; }
+
+function renderQuotaTooltip(data){
+  var five = data && data.limits && data.limits.five_hour || {};
+  var seven = data && data.limits && data.limits.seven_day || {};
+  var html = '<div class="mqt">';
+
+  if(data.provider === "claude"){
+    html += '<div class="mqh">Claude 订阅额度'+(data.source==="local_estimate"?' <span class="mqtag">本地估算</span>':"")+'</div>';
+    html += '<div class="mqrow"><span>5h 已用</span><b>'+fmtPct(five.utilization)+'</b></div>';
+    // 分母是美元花费(缓存已按官方折扣价折算,见后端 usage_local.py 的
+    // _FIVE_HOUR_COST_LIMIT_USD 注释),不是裸 token 数——不同模型单价差几十倍,
+    // token 数没法直接当用量看,这里跟着换成美元子行。
+    if(five.cost_limit_usd) html += '<div class="mqrow mqsub">'+fmtUSD(five.cost_usd)+' / '+fmtUSD(five.cost_limit_usd)+'</div>';
+    else if(five.limit) html += '<div class="mqrow mqsub">'+fmtNum(five.remaining)+' / '+fmtNum(five.limit)+' tokens</div>';
+    if(seven.utilization != null){
+      html += '<div class="mqrow"><span>7d 已用</span><b>'+fmtPct(seven.utilization)+'</b></div>';
+      if(seven.limit) html += '<div class="mqrow mqsub">'+fmtNum(seven.remaining)+' / '+fmtNum(seven.limit)+' tokens</div>';
+    }
+    var local = data.local || {};
+    if(local.cost_usd != null) html += '<div class="mqrow"><span>当前窗口费用</span><b>'+fmtUSD(local.cost_usd)+'</b></div>';
+    if(local.sent_messages != null) html += '<div class="mqrow"><span>消息数</span><b>'+fmtNum(local.sent_messages)+'</b></div>';
+    if(local.burn_rate_tokens_per_minute != null) html += '<div class="mqrow"><span>燃烧速率</span><b>'+fmtNum(local.burn_rate_tokens_per_minute)+' t/min</b></div>';
+    if(local.burn_rate_cost_per_hour != null) html += '<div class="mqrow"><span>费用速率</span><b>'+fmtUSD(local.burn_rate_cost_per_hour)+'/h</b></div>';
+    var fc = data.forecast || {};
+    if(fc.display) html += '<div class="mqrow mqwarn"><span>预计耗尽</span><b>'+esc(fc.display)+'</b></div>';
+    var md = local.model_distribution || [];
+    if(md.length){
+      html += '<div class="mqsep"></div><div class="mqdist">';
+      md.forEach(function(m){ html += '<span>'+esc(m.family)+" "+m.percentage.toFixed(1)+"%</span>"; });
+      html += '</div>';
+    }
+  } else if(data.provider === "kimi"){
+    html += '<div class="mqh">Kimi 订阅额度</div>';
+    html += '<div class="mqrow"><span>5h 已用</span><b>'+fmtPct(five.utilization)+'</b></div>';
+    if(five.limit) html += '<div class="mqrow mqsub">'+fmtNum(five.remaining)+' / '+fmtNum(five.limit)+' tokens</div>';
+    if(five.status) html += '<div class="mqrow"><span>状态</span><b>'+esc(five.status)+'</b></div>';
+    var ts = typeof five.resets_at === "string" ? new Date(five.resets_at).getTime() : (five.resets_at||0)*1000;
+    if(ts > Date.now()) html += '<div class="mqrow"><span>重置时间</span><b>'+new Date(ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})+'</b></div>';
+  } else {
+    html += '<div class="mqh">额度信息</div><div class="mqrow"><span>暂无详细数据</span></div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+function applyUsageRow(id, data){
   var els = findRowEls(id);
   if(els.reset) els.reset.textContent = resetLabel(data);
   var ring = els.ring;
   if(!ring) return;
   var arc = ring.querySelector(".qa");
+  var tip = ring.querySelector(".mqtip");
   var five = data && data.limits && data.limits.five_hour;
   if(!data || data.error || !five){
     ring.dataset.state = "error";
-    ring.title = "额度查询失败";
+    if(tip) tip.innerHTML = '<div class="mqt">额度查询失败</div>';
     if(arc){ arc.setAttribute("stroke-dashoffset","0"); arc.style.stroke="var(--dim2)"; }
     return;
   }
   ring.dataset.state = "ok";
   if(five.utilization == null){
-    ring.title = "订阅可用(暂无具体%)";
+    if(tip) tip.innerHTML = '<div class="mqt"><div class="mqh">订阅可用</div><div class="mqrow"><span>暂无具体百分比</span></div></div>';
     if(arc){ arc.setAttribute("stroke-dashoffset","0"); arc.style.stroke="var(--dim2)"; }
     return;
   }
-  var pct = Math.round(five.utilization * 100);
-  var remain = five.remaining != null && five.limit ? five.remaining+"/"+five.limit : "";
-  ring.title = "5h 已用 "+pct+"%"+(remain ? " ("+remain+")" : "");
+  var pct = Math.round(five.utilization * 100);   // 真实值,超 100% 也如实显示(美元口径下是可能的)
+  if(tip) tip.innerHTML = renderQuotaTooltip(data);
   if(arc){
-    arc.setAttribute("stroke-dashoffset", String(QUOTA_ARC * (1 - pct/100)));
+    var fillPct = Math.min(100, pct);   // 圆环视觉上封顶,不然 dashoffset 变负会画歪
+    arc.setAttribute("stroke-dashoffset", String(QUOTA_ARC * (1 - fillPct/100)));
     var color = "var(--ok)";
     if(pct >= 90) color = "var(--err)"; else if(pct >= 70) color = "#d9a43a";
     arc.style.stroke = color;
   }
 }
 function loadModelQuotas(choices){
-  var anthropicIds = choices.filter(function(c){ return c[2]==="anthropic"; }).map(function(c){ return c[0]; });
-  var kimiIds = choices.filter(function(c){ return c[2]==="kimi"; }).map(function(c){ return c[0]; });
-  // Anthropic 的 5h/7d 额度是账号级、不分模型(实测过,6 档官方模型接口返回完全一样)——
-  // 查一次就够了,套到该组所有行上,不用每个模型各打一次接口。
-  if(anthropicIds.length){
-    loadUsage(anthropicIds[0]).then(function(data){
-      var txt = resetLabel(data);
-      anthropicIds.forEach(function(id){
-        var els = findRowEls(id);
-        if(els.reset) els.reset.textContent = txt;
-      });
-    });
-  }
-  kimiIds.forEach(function(id){
-    loadUsage(id).then(function(data){ applyKimiRow(id, data); });
+  // 额度是账号级、组内所有模型共用,圆环挂在分组标题上,每组只查一次接口
+  // (用组内第一个模型的 id 代表整组去查,结果套到分组标题的圆环上)。
+  ["anthropic","kimi"].forEach(function(gkey){
+    var rep = choices.find(function(c){ return c[2]===gkey; });
+    if(!rep) return;
+    loadUsage(rep[0]).then(function(data){ applyUsageRow(gkey, data); });
   });
 }
 function metaRow(k, v, pp, cls){
@@ -3721,6 +3846,13 @@ function convProject(conv){
   const m = String(conv).replace(/^local-/,"").match(/^p([0-9a-f]+):/);
   return m ? m[1] : null;
 }
+// 取所有置顶会话(不含主会话——主会话独立渲染,不归置顶分组)。
+function pinnedConvs(){
+  return S.convs.filter(c=>c.pinned && c.conv!=="main").sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
+}
+function convsInGroup(hash){
+  return S.convs.filter(c => !c.pinned && convProject(c.conv)===hash);
+}
 // 分组的存储键:默认项目用固定串,项目用其 hash
 function grpKey(hash){ return hash===null ? "__default__" : hash; }
 function saveExpanded(){ try{ localStorage.setItem("hermes_expanded", JSON.stringify([...S.expanded])); }catch(e){} }
@@ -3793,7 +3925,17 @@ function bindRowSwipeActions(row, body, conv, archived){
   archBtn.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); toggleArchive(conv); };
   const del=el("button","cvdel"); del.innerHTML=ic("trash"); del.title="删除";
   del.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); delConv(conv); };
-  act.append(archBtn,del); row.append(act);
+  // 置顶/取消置顶按钮(语音任务不参与置顶分组)
+  if(!String(conv).startsWith("voice-task:")){
+    const convObj=findConv(conv);
+    const isPinned=!!(convObj&&convObj.pinned);
+    const pinBtn=el("button","cvpin"); pinBtn.innerHTML=ic("pin"); pinBtn.title=isPinned?"取消置顶":"置顶";
+    pinBtn.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); pinConv(conv, !isPinned); };
+    act.append(archBtn,pinBtn,del);
+  } else {
+    act.append(archBtn,del);
+  }
+  row.append(act);
   bindSwipe(row, body, act);
 }
 function buildVoiceTaskRow(t, inCall){
@@ -3827,19 +3969,21 @@ function buildVoiceTaskRow(t, inCall){
   };
   return row;
 }
-// 单条会话行(置顶主会话与普通会话通用)
+// 单条会话行(主会话与普通会话/置顶会话通用)。主会话独立置顶且不提供菜单/滑动手势;
+// 置顶会话除了所在分组不同,长相(缩进、状态灯)跟普通分组内的会话行完全一样。
 function buildConvRow(c, inCall){
-  const e=el("div","conv"+(c.pinned?"":" ingroup")+(!inCall && c.conv===S.conv?" active":"")+(c.pinned?" pinned":""));
+  const isMain=c.conv==="main";
+  const e=el("div","conv"+(isMain?"":" ingroup")+(!inCall && c.conv===S.conv?" active":""));
   e.dataset.conv=c.conv;
   const body=el("div","cvbody");
-  if(c.pinned) body.innerHTML=ic("star");   // 主会话:左侧线性星标图标,呼应语音对话左侧的麦克风图标
+  if(isMain) body.innerHTML=ic("star");   // 主会话:左侧星标图标,跟紧邻的语音对话行(mic 图标)对齐
   if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
   else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }   // 完成未读:灰色圆点
   const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
   const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }   // 会话时刻:名称右侧
-  if(!c.pinned){ const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
+  if(!isMain){ const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
   e.append(body);
-  if(!c.pinned){
+  if(!isMain){
     bindRowSwipeActions(e, body, c.conv, c.archived);   // 触屏:左滑露出归档/删除,不用长按(iOS 用户少用长按)
     if(c.conv===S.swipedConv) e.classList.add("swiped");   // 重建 DOM 后补回展开状态,别被后台事件触发的重渲染冲掉
   }
@@ -3857,10 +4001,31 @@ const RECENT_SHOW_MAX = 10;   // 「最近会话」分组:展开更多≠显示�
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
   const inCall = !$("#callView").hidden;  // 通话中:普通会话行都不高亮,高亮权让给「语音对话」那一行
-  // 根目录置顶区:主会话 + 语音对话,恒排在最顶端(在「默认项目」分组头上面一层),
-  // 不属于任何分组、不受分组展开/折叠影响,也不参与时间排序或「展开更多」的名额。
-  for(const c of convsInGroup(null)) if(c.pinned) box.append(buildConvRow(c, inCall));
+  // 根目录固定区:主会话 + 语音对话,恒排最前,不属于任何分组、也不进「置顶」。
+  const mainConv=S.convs.find(c=>c.conv==="main");
+  if(mainConv) box.append(buildConvRow(mainConv, inCall));
   const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
+  // 「置顶」分组:用户手动置顶的会话放这里,和其他分组一样可折叠;缩进/状态灯与普通会话行一致。
+  const PINNED_KEY="__pinned__";
+  {
+    const pc=pinnedConvs();
+    const open=S.expanded.has(PINNED_KEY);
+    const h=el("div","projgrp");
+    const nm=el("span","pgname"); nm.textContent="置顶"; h.append(nm);
+    const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);
+    h.onclick=()=>toggleGroup(PINNED_KEY);
+    box.append(h);
+    if(open){
+      const shown = S.moreShown.has(PINNED_KEY) ? pc : pc.slice(0, CONV_SHOW_MAX);
+      for(const c of shown) box.append(buildConvRow(c, inCall));
+      if(pc.length > shown.length){
+        const more=el("div","conv ingroup convmore");
+        const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
+        more.onclick=()=>{ S.moreShown.add(PINNED_KEY); renderConvs(); };
+        box.append(more);
+      }
+    }
+  }
   // 「最近会话」分组:汇总所有项目分组(含语音任务)的会话,按最后活跃时间混排,不看归属项目。
   // 默认 5 条,展开最多 10 条——纯快捷入口,不是"展开更多=显示全部"的完整列表。
   {
@@ -3886,54 +4051,7 @@ function renderConvs(){
     }
   }
   const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
-  for(const g of groups){
-    const convs=convsInGroup(g.hash);
-    const open=S.expanded.has(grpKey(g.hash));
-    const h=el("div","projgrp");
-    const nm=el("span","pgname"); nm.textContent=g.name; h.append(nm);
-    const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);   // 折线箭头,展开时旋转朝下
-    if(g.hash!==null){
-      const more=el("button","pgmore"); more.textContent="⋯"; more.title="更多";
-      more.onclick=ev=>{ ev.stopPropagation(); openProjMenu(more, g.hash); }; h.append(more);
-    }
-    const add=el("button","pgadd"); add.textContent="＋"; add.title="在此项目下新建会话";
-    add.onclick=ev=>{ ev.stopPropagation(); newChatIn(g.hash); }; h.append(add);
-    if(g.hash!==null){
-      bindProjDrag(h, g.hash);   // 默认项目/末尾「新建项目」不可拖,仅真实项目分组可排序
-    }
-    h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } toggleGroup(g.hash); };  // 拖拽落地那一下别顺带触发展开/收起
-    box.append(h);
-    if(!open) continue;
-    let rows;
-    if(g.hash===null){
-      // 默认项目:语音后台任务不区分项目,统一落这里,跟普通会话按最后活跃时间混排
-      // 再截前 CONV_SHOW_MAX 条——避免"语音任务永远排最前"把新会话挤出首屏
-      // (2026-07-22 反馈:几十条老语音任务霸占默认项目前 5 条,当天新会话反而看不见)。
-      const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
-      const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
-      const convItems = convs.filter(c=>!c.pinned && passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
-      rows = [...taskItems, ...convItems].sort((a,b)=>b.ts-a.ts).map(it=>it.build()).filter(Boolean);
-    } else {
-      rows=[];
-      for(const c of convs){
-        if(c.pinned) continue;
-        const arch=!!c.archived;
-        if(S.convFilter==="archived"&&!arch)continue;
-        if(S.convFilter==="active"&&arch)continue;
-        rows.push(buildConvRow(c, inCall));
-      }
-    }
-    // 每组默认最多展示 CONV_SHOW_MAX 条,余下折进「展开更多」(点开后本次会话内保持展开)
-    const shown = S.moreShown.has(grpKey(g.hash)) ? rows : rows.slice(0, CONV_SHOW_MAX);
-    for(const r of shown) box.append(r);
-    if(rows.length > shown.length){
-      const k=grpKey(g.hash);
-      const more=el("div","conv ingroup convmore");
-      const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
-      more.onclick=()=>{ S.moreShown.add(k); renderConvs(); };
-      box.append(more);
-    }
-  }
+  for(const g of groups) renderProjGroup(box, g, inCall);
   // 定时任务分组:只有真有任务时才出现(见 renderConvs 上方数据源 S.cronJobs)
   if(S.cronJobs.length){
     const CRON_KEY="__cron__";
@@ -3961,6 +4079,56 @@ function renderConvs(){
   // 同步标题栏:loadConvs 刷新 S.convs 后调 renderConvs,标题可能已更新
   const activeConv=S.convs.find(c=>c.conv===S.conv);
   if(activeConv) $("#convTitle").textContent=activeConv.title||"新对话";
+}
+
+// 渲染单个项目分组(手风琴头 + 展开后的会话行);置顶节与常规节共用同一份逻辑。
+function renderProjGroup(box, g, inCall){
+  const convs=convsInGroup(g.hash);
+  const open=S.expanded.has(grpKey(g.hash));
+  const h=el("div","projgrp");
+  const nm=el("span","pgname"); nm.textContent=g.name; h.append(nm);
+  const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);   // 折线箭头,展开时旋转朝下
+  if(g.hash!==null){
+    const more=el("button","pgmore"); more.textContent="⋯"; more.title="更多";
+    more.onclick=ev=>{ ev.stopPropagation(); openProjMenu(more, g.hash); }; h.append(more);
+  }
+  const add=el("button","pgadd"); add.textContent="＋"; add.title="在此项目下新建会话";
+  add.onclick=ev=>{ ev.stopPropagation(); newChatIn(g.hash); }; h.append(add);
+  if(g.hash!==null){
+    bindProjDrag(h, g.hash);   // 默认项目/末尾「新建项目」不可拖,仅真实项目分组可排序
+  }
+  h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } toggleGroup(g.hash); };  // 拖拽落地那一下别顺带触发展开/收起
+  box.append(h);
+  if(!open) return;
+  let rows;
+  if(g.hash===null){
+    // 默认项目:语音后台任务不区分项目,统一落这里,跟普通会话按最后活跃时间混排
+    // 再截前 CONV_SHOW_MAX 条——避免"语音任务永远排最前"把新会话挤出首屏
+    // (2026-07-22 反馈:几十条老语音任务霸占默认项目前 5 条,当天新会话反而看不见)。
+    const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
+    const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
+    const convItems = convs.filter(c=>!c.pinned && passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
+    rows = [...taskItems, ...convItems].sort((a,b)=>b.ts-a.ts).map(it=>it.build()).filter(Boolean);
+  } else {
+    rows=[];
+    for(const c of convs){
+      if(c.pinned) continue;
+      const arch=!!c.archived;
+      if(S.convFilter==="archived"&&!arch)continue;
+      if(S.convFilter==="active"&&arch)continue;
+      rows.push(buildConvRow(c, inCall));
+    }
+  }
+  // 每组默认最多展示 CONV_SHOW_MAX 条,余下折进「展开更多」(点开后本次会话内保持展开)
+  const shown = S.moreShown.has(grpKey(g.hash)) ? rows : rows.slice(0, CONV_SHOW_MAX);
+  for(const r of shown) box.append(r);
+  if(rows.length > shown.length){
+    const k=grpKey(g.hash);
+    const more=el("div","conv ingroup convmore");
+    const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
+    more.onclick=()=>{ S.moreShown.add(k); renderConvs(); };
+    box.append(more);
+  }
 }
 
 // ── 项目 ─────────────────────────────────────────────────────────────────
@@ -4002,6 +4170,12 @@ function syncCronHeader(){
     $("#convCronToggle").classList.toggle("on", !!job.enabled);
     $("#convCronToggle").title=job.enabled?"已启用 · 点击停用":"已停用 · 点击启用";
   }
+}
+// 标题栏最右侧的「⋯」:普通会话(非主会话、非定时任务——那个已有专属按钮)才显示,
+// 点开跟侧栏列表同一套 openConvMenu(置顶/归档/删除)
+function syncMoreHeader(){
+  const conv=String(S.conv||"");
+  $("#convMoreBtn").hidden = !conv || conv==="main" || conv.startsWith("cron-task:");
 }
 // 单条定时任务行:点进去看该任务的历次运行记录(它就是一条普通会话);「⋯」跟普通
 // 会话行同一套 openConvMenu,点开是编辑/启停/删除(见 openConvMenu 里的 isCron 分支)
@@ -4077,6 +4251,14 @@ async function removeProject(hash){
   if(S.project===hash) S.project=null;
   await loadProjects();
   if(activeGone){ openConv("main"); } else { renderConvs(); }
+}
+
+async function pinConv(conv, pinned){
+  const c=findConv(conv); if(c) c.pinned=pinned;  // 乐观更新,立即重渲
+  renderConvs();
+  try{ await api("/conv/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,pinned})}); }
+  catch(e){ /* 失败也不回滚,下次 loadConvs 会自然纠正 */ }
+  await loadConvs(); renderConvs();
 }
 
 // 目录浏览器弹窗
@@ -4173,6 +4355,7 @@ $("#convCronEditBtn").innerHTML = ic("edit");
 $("#convCronToggle").onclick = ()=>{ const j=S.cronJobs.find(x=>x.conv===S.conv); if(j) toggleCronJob(j.job_id, !j.enabled); };
 $("#convCronEditBtn").onclick = ()=>{ const j=S.cronJobs.find(x=>x.conv===S.conv); if(j) openCronModal(j); };
 $("#convCronMore").onclick = ev=>{ ev.stopPropagation(); openConvMenu($("#convCronMore"), S.conv, true); };
+$("#convMoreBtn").onclick = ev=>{ ev.stopPropagation(); openConvMenu($("#convMoreBtn"), S.conv, false); };
 
 // ── 设置(MCP / 技能 / 记忆 / 人设)────────────────────────────────────────
 const SET = { data:null, tab:"mcp", skq:"", mcpFormOpen:false, modelFormOpen:false, providerFormOpen:false };
@@ -4774,7 +4957,7 @@ function closeConvMenu(){
   if(convMenuEl){ convMenuEl.remove(); convMenuEl=null; }
 }
 // 触屏左滑会话行露出归档/删除(iOS 邮件同款手势,比长按更符合触屏习惯)
-const SWIPE_W=72;   // 需与 CSS .cvact 宽度一致
+const SWIPE_W=108;   // 需与 CSS .cvact 宽度一致(归档+置顶+删除,3个按钮)
 function closeSwipe(row){ row.classList.remove("swiped"); if(S.swipedConv===row.dataset.conv) S.swipedConv=null; }
 function closeAllSwipes(except){
   $("#convList").querySelectorAll(".conv.swiped").forEach(r=>{ if(r!==except) closeSwipe(r); });
@@ -4835,6 +5018,13 @@ function openConvMenu(btn, conv, slim){
     m.append(del);
   }else{
     const convObj=findConv(conv);
+    const isMain=conv==="main";
+    const isPinned=!!(convObj&&convObj.pinned);
+    if(!isMain){
+      const pin=el("button","cmitem"); pin.innerHTML=ic("pin")+(isPinned?" 取消置顶":" 置顶");
+      pin.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); pinConv(conv, !isPinned); };
+      m.append(pin);
+    }
     const isArch=!!(convObj&&convObj.archived);
     const arch=el("button","cmitem"); arch.innerHTML=ic("folder")+" "+(isArch?"取消归档":"归档");
     arch.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); toggleArchive(conv); };
@@ -4854,7 +5044,7 @@ document.addEventListener("click", closeConvMenu);       // 点空白处关闭
 $("#convList").addEventListener("scroll", closeConvMenu); // 列表滚动时关闭,避免菜单错位
 document.addEventListener("click", e=>{ if(!e.target.closest(".conv")) closeAllSwipes(); });  // 点空白处收起滑开的行
 
-// 项目分组「更多」浮层菜单(单例):点 ⋯ 弹出,目前只放「删除项目」
+// 项目分组「更多」浮层菜单(单例):点 ⋯ 弹出,「删除项目」
 let projMenuEl=null, projMenuBtn=null;
 function closeProjMenu(){
   if(projMenuBtn){ projMenuBtn.classList.remove("on"); projMenuBtn=null; }
@@ -4909,6 +5099,7 @@ function toggleArchive(conv){
   c.archived=next; renderConvs();  // 乐观更新
   api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({conv,archived:next})}).catch(()=>{ c.archived=!next; renderConvs(); });
+  if(next && c.pinned) pinConv(conv, false);   // 归档的会话不该再占着置顶分组,顺手取消置顶
 }
 function renderConvFilterPop(){
   const opts=[["all","全部"],["active","工作中"],["archived","归档"]];
@@ -5126,6 +5317,7 @@ async function openConv(conv, silentGroup){
   renderProjSelChip();
   $("#convTitle").textContent = c ? (c.title||"新对话") : "新对话";
   syncCronHeader();   // 定时任务会话 → 标题栏亮出启停开关/编辑/「⋯」
+  syncMoreHeader();   // 普通会话 → 标题栏最右侧亮出「⋯」(置顶/归档/删除)
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
@@ -5167,7 +5359,7 @@ async function openConv(conv, silentGroup){
 // ── 重加载历史(SSE 连接恢复后)──────────────────────────────────────────
 // force=true:强制核对一次(用于"流式气泡疑似卡死"场景——例如重连时环形缓冲已把 done 事件
 // 挤出去,前端永远等不到收尾)。核对时只信服务端:该轮在 /history 里已落库完成才收气泡改用
-// 权威历史重绘;服务端也认为还在跑就绝不打断,只是重置一下卡住计时,过会再核对一次。
+// 权威历史重绘;服务端也认为还在跑就不整包打断,但会用 draft_text 把落后的画面追平。
 async function reloadHistory(force){
   const conv=S.conv;
   if(!conv || String(conv).startsWith("local-")) return;  // 只在非本地会话拉
@@ -5178,7 +5370,23 @@ async function reloadHistory(force){
     if(S.conv!==conv) return;  // await 期间切了会话 → 丢弃
     if(S.stream){
       const last=d.turns[d.turns.length-1];
-      if(!last || last.pending){ S.stream.lastEvt=Date.now(); return; }  // 服务端也还在跑,别打断
+      if(!last || last.pending){
+        // 服务端也还在跑,别用整包重绘打断流式气泡;但若 draft_text 已经领先本地画面
+        // (本地这条 SSE 连接静默失活、没收到新 text 事件),把落后的尾巴追上来,不然
+        // 只重置计时器的话画面会一直卡在最后收到的那一帧,直到这轮结束才恢复。
+        if(last && last.draft){
+          const local=streamText(S.stream);
+          if(last.draft.length>local.length && last.draft.startsWith(local)){
+            const keys=Object.keys(S.stream.segs).map(Number);
+            const nextSeg=keys.length?Math.max(...keys)+1:0;
+            const seg=segDiv(S.stream, nextSeg);
+            seg.dataset.raw=last.draft.slice(local.length);
+            renderSeg(seg);
+          }
+        }
+        S.stream.lastEvt=Date.now();
+        return;
+      }
       finalizeStream();  // 服务端已收尾,前端漏接了 → 收掉卡住的流式气泡,改用下面的权威历史重绘
     }
     S.histCache[conv]=d.turns;

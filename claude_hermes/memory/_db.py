@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS projects(
   path TEXT NOT NULL UNIQUE,
   last_used REAL NOT NULL DEFAULT 0,
   hidden INTEGER NOT NULL DEFAULT 0,
-  sort_order REAL
+  sort_order REAL,
+  pinned INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS user_prefs(
   key TEXT PRIMARY KEY,
@@ -88,6 +89,9 @@ def conn() -> sqlite3.Connection:
         # pending_review=1 表示该会话已有新完成内容但用户还没打开看过;打开会话后清零。
         if "pending_review" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN pending_review INTEGER DEFAULT 0")
+        # pinned: 侧边栏「置顶」分组标记(0=不置顶,1=置顶);老库默认 0。
+        if "pinned" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN pinned INTEGER DEFAULT 0")
         # last_error=1 表示该会话最近一轮以报错收尾(限流/超时/模型层错误等)。
         # 语音端 voice_list_sessions(origin=web) 靠它筛出"卡住等续聊"的网页会话,不用去猜
         # 最后一条回复文本是不是错误提示。
@@ -113,6 +117,9 @@ def conn() -> sqlite3.Connection:
         if "sort_order" not in pcols:
             _DB.execute("ALTER TABLE projects ADD COLUMN sort_order REAL")
             _DB.execute("UPDATE projects SET sort_order = -last_used WHERE sort_order IS NULL")
+        # pinned: 侧边栏「置顶」分组标记,老库默认 0(不置顶)。
+        if "pinned" not in pcols:
+            _DB.execute("ALTER TABLE projects ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
         # 2026-07-29 统一后台任务引擎:voice-task:/cron-task: 两个各自为政的前缀合并
         # 成中性的 task:(见 core/tasks.py 模块头说明)。老库里这两个前缀的历史会话
         # 原地改名,不然改名上线那一刻这些会话就从所有查询里"消失"(代码只认新前缀)

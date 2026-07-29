@@ -35,6 +35,7 @@ from ...memory import session_store
 from .. import git_status, settings_store
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
 from .base import ImageAttachment, Incoming
+from .usage_local import get_local_claude_usage
 from .web_push import PUSH
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
@@ -292,6 +293,7 @@ class WebAdapter:
         self._live: dict[str, dict] = {}
         self._runner: web.AppRunner | None = None
         self._cancel_callback: Callable[[str], bool] | None = None
+        self._model_switch_callback: Callable[[str, str], None] | None = None
         # 进程本次启动的标识:重启后这个值必变。前端拿它跟上次记住的值比对——
         # 一旦不一样就说明断线期间进程重启过,上面的环形缓冲/_live 全被清空了,
         # 断线补发这条路救不回来,前端得主动整体核对一次(侧栏 + 当前会话历史)。
@@ -303,6 +305,10 @@ class WebAdapter:
 
     def set_cancel_callback(self, cb: Callable[[str], bool]) -> None:
         self._cancel_callback = cb
+
+    def set_model_switch_callback(self, cb: Callable[[str, str], None]) -> None:
+        """注册模型切换回调:UI 切模型时同步更新 GatewayRunner 的内存缓存。"""
+        self._model_switch_callback = cb
 
     # ── 认证 ────────────────────────────────────────────────────────────
     def _ok_token(self, request: web.Request) -> bool:
@@ -655,6 +661,9 @@ class WebAdapter:
         session_store.backfill_chosen_models()  # 冻结老会话
         session_store.set_chosen_model(session_key, model)
         settings_store.set_web_default_model(model)
+        # 同步更新 GatewayRunner 的内存缓存,否则下一条消息还会用旧模型
+        if self._model_switch_callback:
+            self._model_switch_callback(session_key, model)
         return web.json_response({"ok": True})
 
     async def _summarize_title(
@@ -985,6 +994,19 @@ class WebAdapter:
         session_store.reorder_projects([str(h) for h in order])
         return web.json_response({"ok": True})
 
+    async def _handle_conv_pin(self, request: web.Request) -> web.Response:
+        """置顶/取消置顶会话:body={"conv": ..., "pinned": bool}。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
+        conv = str(body.get("conv") or "")
+        if not conv:
+            return web.json_response({"error": "conv 不能为空"}, status=400)
+        session_store.set_conv_pinned(config.resolve_session_key("web", conv), bool(body.get("pinned")))
+        return web.json_response({"ok": True})
+
     async def _handle_models(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
@@ -1046,14 +1068,64 @@ class WebAdapter:
                     )
             return web.json_response({"provider": "kimi", "type": "api"})
 
-        # Claude 官方订阅:返回缓存中的速率限额
+        # Claude 官方订阅:优先用 SDK 缓存的 RateLimitEvent(官方精确值),
+        # 若 utilization 缺失则合并本地日志估算值作兜底,确保始终有具体百分比。
         p_entry = providers.lookup_provider_by_model(model)
         if not p_entry or p_entry.get("name", "").lower() in ("claude", "official", "anthropic"):
-            limits = get_rate_limits()
-            return web.json_response({
+            official = get_rate_limits()
+            local = await get_local_claude_usage()
+
+            five_off = (official.get("five_hour") or {}) if isinstance(official, dict) else {}
+            five_loc = (local.get("limits", {}).get("five_hour") or {}) if local else {}
+
+            # 官方有利用率就用官方的;否则退回本地估算,但要明确标注来源
+            source = "official"
+            if five_off.get("utilization") is not None:
+                merged = dict(five_off)
+            elif local:
+                merged = dict(five_loc)
+                source = "local_estimate"
+            else:
+                merged = dict(five_off)
+
+            # resets_at 两边可能都有,取官方优先
+            if not merged.get("resets_at") and five_off.get("resets_at"):
+                merged["resets_at"] = five_off["resets_at"]
+            if not merged.get("resets_at") and five_loc.get("resets_at"):
+                merged["resets_at"] = five_loc["resets_at"]
+
+            # 7d 窗口同样合并
+            seven_off = (official.get("seven_day") or {}) if isinstance(official, dict) else {}
+            seven_loc = (local.get("limits", {}).get("seven_day") or {}) if local else {}
+            if seven_off.get("utilization") is not None:
+                merged_seven = dict(seven_off)
+                seven_source = "official"
+            elif local:
+                merged_seven = dict(seven_loc)
+                seven_source = "local_estimate"
+            else:
+                merged_seven = dict(seven_off)
+                seven_source = None
+
+            payload: dict = {
                 "provider": "claude",
-                "limits": limits,
-            })
+                "source": source,
+                "limits": {"five_hour": merged, "seven_day": merged_seven},
+            }
+            if local:
+                # 本地估算详情给前端 hover 卡片用
+                payload["local"] = local.get("local")
+                payload["forecast"] = local.get("forecast")
+                payload["pace"] = local.get("pace")
+                payload["local_history"] = local.get("local_history")
+                payload["confidence"] = local.get("confidence")
+
+            # 标注 7d 数据来源(如果存在)
+            if merged_seven:
+                merged_seven["source"] = seven_source
+            merged["source"] = source
+
+            return web.json_response(payload)
 
         # 其他(DeepSeek/Moonshot API 等):按量计费,无配额
         return web.json_response({"provider": "api", "type": "api"})
@@ -1723,6 +1795,7 @@ class WebAdapter:
                 web.post("/projects/create", self._handle_project_create),
                 web.post("/projects/remove", self._handle_project_remove),
                 web.post("/projects/reorder", self._handle_project_reorder),
+                web.post("/conv/pin", self._handle_conv_pin),
                 web.get("/models", self._handle_models),
                 web.get("/api/usage", self._handle_api_usage),
                 web.get("/commands", self._handle_commands),

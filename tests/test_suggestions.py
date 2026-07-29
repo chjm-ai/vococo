@@ -230,3 +230,43 @@ def test_cron_admin_not_found(sugg_env):
 
     out = _text(asyncio.run(builtin.delete_cron_job.handler({"ref": "查无此任务"})))
     assert "没找到" in out
+
+
+def test_add_cron_job_needs_approval(sugg_env):
+    """add_cron_job:无交互通道→fail-closed 拒绝、不落盘;有通道+批准→真正创建。"""
+    from claude_hermes.cron import scheduler
+    from claude_hermes.tools import builtin
+
+    args = {"name": "一次性任务", "prompt": "do it", "run_in_minutes": 60}
+
+    # 无交互通道 → 拒绝(fail-closed),不创建任务
+    out = _text(asyncio.run(builtin.add_cron_job.handler(args)))
+    assert "未批准" in out
+    assert scheduler.load_jobs() == []
+
+    # 有通道 + 批准 → 真正创建,写盘为 once 调度
+    out = _text(_run_approved(lambda: builtin.add_cron_job.handler(args)))
+    assert "已创建" in out
+    jobs = scheduler.load_jobs()
+    assert len(jobs) == 1
+    assert jobs[0]["name"] == "一次性任务"
+    assert jobs[0]["schedule"]["kind"] == "once"
+    assert jobs[0]["enabled"] is True
+
+
+def test_add_cron_job_validation(sugg_env):
+    from claude_hermes.tools import builtin
+
+    # cron 和 run_in_minutes 都不填
+    out = _text(asyncio.run(builtin.add_cron_job.handler({"name": "x", "prompt": "y"})))
+    assert "二选一" in out
+
+    # cron 和 run_in_minutes 都填
+    out = _text(asyncio.run(builtin.add_cron_job.handler(
+        {"name": "x", "prompt": "y", "cron": "0 8 * * *", "run_in_minutes": 5})))
+    assert "二选一" in out
+
+    # 非法 cron 表达式:validate_schedule 先拦下,不会走到审批那一步
+    out = _text(asyncio.run(builtin.add_cron_job.handler(
+        {"name": "x", "prompt": "y", "cron": "not-a-cron"})))
+    assert "不合法" in out

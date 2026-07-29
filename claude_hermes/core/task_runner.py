@@ -25,14 +25,21 @@ from .. import config
 from ..memory import session_store
 from ..tools import danger
 from . import tasks, worktree
-from .agent import Done, SessionStarted, ToolInput, run_turn, stream_turn
+from .agent import Done, SessionStarted, ToolInput, stream_turn
 
 _PROGRESS_THROTTLE_SEC = 5
 _SUMMARY_MAX = 50
-_SUMMARY_PROMPT = (
-    "把下面这段内容压成一句不超过 {n} 字的中文口语摘要,直接给结果,不要加任何解释或前缀;"
-    "这句话可能会被语音朗读出来,禁止 markdown/代码块/星号/反引号这类没法读的符号:\n\n{text}"
+# 让任务在收尾时"顺手"吐出播报用的一句话摘要,不必为了压缩摘要另开一次完整
+# agent 会话(那样要重付一整套 skills/MCP 工具表的打包成本,见 2026-07-28 token
+# 审计:单次最高 8.8 万 fresh token,只为了输出一句 ≤50 字的话)。做法:在发给
+# 模型的任务文本后面追加这条指令,让它在同一次已经要花的对话里带出摘要;
+# 收尾时用 _SUMMARY_TAG_RE 从回复里抠出来,抠不到就退化成朴素截断(兜底路径
+# 本来就有,不是新增风险)。
+_SUMMARY_TAG_INSTRUCTION = (
+    "\n\n(完成后,在回复最后另起一行,格式:[[SUMMARY: 一句不超过50字的中文口语总结,"
+    "不要markdown/代码块/星号/反引号,这句话会被语音朗读和推送通知用]])"
 )
+_SUMMARY_TAG_RE = re.compile(r"\[\[SUMMARY:\s*(.*?)\s*\]\]", re.DOTALL)
 # 后台任务跑的是原始 stream_turn(没有 P0 语音人设那套"禁止 markdown"规则),模型
 # 回复里常带 `代码` / **加粗** 这类符号——result_summary 可能被朗读,先摘掉。
 _MD_STRIP_RE = re.compile(r"[`*_#]+")
@@ -118,21 +125,29 @@ def progress_text(name: str, tool_input: dict) -> str:
     return f"正在使用 {name}"
 
 
-async def _summarize(result_text: str) -> str:
-    """结果压成 ≤50 字一句话(F7):短结果直接用;长结果尝试一次轻量 LLM 压缩,
-    失败(异常/空/报错)一律降级为截断,不让摘要失败拖垮任务收尾。"""
+def _split_summary_tag(result_text: str) -> tuple[str, str | None]:
+    """从任务回复里拆出 [[SUMMARY: ...]] 标记(见 _SUMMARY_TAG_INSTRUCTION)。
+    返回 (去掉标记后的正文, 摘要或 None)——标记缺失时摘要为 None,由调用方
+    自己决定怎么兜底,不在这里悄悄降级。"""
+    text = result_text or ""
+    m = _SUMMARY_TAG_RE.search(text)
+    if not m:
+        return text, None
+    summary = _MD_STRIP_RE.sub("", m.group(1)).strip()
+    clean = (text[: m.start()] + text[m.end() :]).rstrip()
+    return clean, (summary[:_SUMMARY_MAX] if summary else None)
+
+
+def _summarize(result_text: str) -> str:
+    """结果压成 ≤50 字一句话(F7)的兜底:朴素截断,不再为了压摘要单独开一次
+    LLM 会话——那样每次都要重付一整套 skills/MCP 工具表的打包成本(2026-07-28
+    token 审计:单次最高 8.8 万 fresh token,只为了一句 ≤50 字的话)。正常路径
+    走 _split_summary_tag 拿模型顺手带出的标记,只有标记缺失才落到这里。"""
     text = _MD_STRIP_RE.sub("", (result_text or "").strip())
     if not text:
         return "(没有产出内容)"
     if len(text) <= _SUMMARY_MAX:
         return text
-    try:
-        reply = await run_turn([], _SUMMARY_PROMPT.format(n=_SUMMARY_MAX, text=text[:2000]))
-        summary = (reply.text or "").strip()
-        if summary and not reply.is_error:
-            return summary[:_SUMMARY_MAX]
-    except Exception:
-        pass
     return text[: _SUMMARY_MAX - 1] + "…"
 
 
@@ -172,9 +187,11 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         # session_meta(见 dispatch()),这里读出来传给 stream_turn;没设过就是
         # 空串,stream_turn 内部 providers.resolve(None,...) 自动落到全局默认。
         model = session_store.get_chosen_model(session_key) or None
+        # 追加的标记指令只喂给模型,不进 turns 表(session_key.start_turn 存的是
+        # 上面干净的 prompt_text)——收尾时从回复里抠出来,见 _split_summary_tag。
         async for ev in stream_turn(
-            [], prompt_text, model=model, cwd=effective_cwd, session_key=session_key,
-            resume=resume_sid, max_turns=config.TASK_MAX_TURNS,
+            [], prompt_text + _SUMMARY_TAG_INSTRUCTION, model=model, cwd=effective_cwd,
+            session_key=session_key, resume=resume_sid, max_turns=config.TASK_MAX_TURNS,
         ):
             if isinstance(ev, SessionStarted):
                 # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮
@@ -225,10 +242,11 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         session_store.finish_turn(turn_id, "(任务已取消)")
         ok = tasks.set_status(task_id, "cancelled", progress_note="已取消")
     elif status == "done":
-        session_store.finish_turn(turn_id, result_text)
+        clean_text, tag_summary = _split_summary_tag(result_text)
+        session_store.finish_turn(turn_id, clean_text)
         if sdk_session_id:
             session_store.set_sdk_session_id(session_key, sdk_session_id)
-        ok = tasks.finish(task_id, "done", result_text, await _summarize(result_text))
+        ok = tasks.finish(task_id, "done", clean_text, tag_summary or _summarize(clean_text))
     else:
         session_store.finish_turn(turn_id, result_text or f"(执行失败:{error_note})")
         if sdk_session_id:
