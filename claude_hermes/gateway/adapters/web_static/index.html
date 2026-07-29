@@ -3846,9 +3846,14 @@ function convProject(conv){
   const m = String(conv).replace(/^local-/,"").match(/^p([0-9a-f]+):/);
   return m ? m[1] : null;
 }
-// 取所有置顶会话(不含主会话——主会话独立渲染,不归置顶分组)。
-function pinnedConvs(){
-  return S.convs.filter(c=>c.pinned && c.conv!=="main").sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
+// 取所有置顶行(含普通会话与语音任务;不含主会话——主会话独立渲染,不归置顶分组)。
+// 返回 {ts,build} 而非会话对象本身,因为语音任务要用 buildVoiceTaskRow 渲染,跟
+// 普通会话的 buildConvRow 不是同一个函数(2026-07-29:语音任务开放置顶后补上,
+// 否则点了置顶按钮却不会真的挪进置顶区,是个死功能)。
+function pinnedConvs(inCall){
+  const convItems = S.convs.filter(c=>c.pinned && c.conv!=="main").map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
+  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
+  return [...convItems, ...taskItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
 }
 function convsInGroup(hash){
   return S.convs.filter(c => !c.pinned && convProject(c.conv)===hash);
@@ -4005,7 +4010,7 @@ function renderConvs(){
   // 「置顶」分组:用户手动置顶的会话放这里,和其他分组一样可折叠;缩进/状态灯与普通会话行一致。
   const PINNED_KEY="__pinned__";
   {
-    const pc=pinnedConvs();
+    const pc=pinnedConvs(inCall);
     const open=S.expanded.has(PINNED_KEY);
     const h=el("div","projgrp");
     const nm=el("span","pgname"); nm.textContent="置顶"; h.append(nm);
@@ -4014,7 +4019,7 @@ function renderConvs(){
     box.append(h);
     if(open){
       const shown = S.moreShown.has(PINNED_KEY) ? pc : pc.slice(0, CONV_SHOW_MAX);
-      for(const c of shown) box.append(buildConvRow(c, inCall));
+      for(const it of shown){ const r=it.build(); if(r) box.append(r); }
       if(pc.length > shown.length){
         const more=el("div","conv ingroup convmore");
         const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
@@ -4034,7 +4039,8 @@ function renderConvs(){
     box.append(h);
     if(open){
       const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
-      const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
+      // 已置顶的语音任务归"置顶"分组,这里要滤掉,不然置顶了还继续在这儿重复出现
+      const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
       const convItems = S.convs.filter(c=>!c.pinned && passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
       const rows = [...taskItems, ...convItems].sort((a,b)=>b.ts-a.ts).slice(0, RECENT_SHOW_MAX).map(it=>it.build()).filter(Boolean);
       const shown = S.moreShown.has(RECENT_KEY) ? rows : rows.slice(0, CONV_SHOW_MAX);
@@ -4103,7 +4109,8 @@ function renderProjGroup(box, g, inCall){
     // 再截前 CONV_SHOW_MAX 条——避免"语音任务永远排最前"把新会话挤出首屏
     // (2026-07-22 反馈:几十条老语音任务霸占默认项目前 5 条,当天新会话反而看不见)。
     const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
-    const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
+    // 已置顶的语音任务归"置顶"分组,这里要滤掉,不然置顶了还继续在默认项目里重复出现
+    const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
     const convItems = convs.filter(c=>!c.pinned && passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
     rows = [...taskItems, ...convItems].sort((a,b)=>b.ts-a.ts).map(it=>it.build()).filter(Boolean);
   } else {
