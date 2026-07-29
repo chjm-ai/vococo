@@ -202,8 +202,8 @@ async def suggest_automation(args: dict) -> dict:
     return _ok(f"✅ 已提建议「{title}」。用 /建议 查看并一键接受(接受后才会真正定时跑)。")
 
 
-# === cron 任务管理(聊天里查看/停用/删除;新建可走建议 consent-first,也可在
-# 管理界面直接建——两条路都汇到 scheduler.create_job,不重复造轮子)===
+# === cron 任务管理(聊天里查看/新建/停用/删除;新建也可走建议 consent-first,
+# 或在管理界面直接建——三条路都汇到 scheduler.create_job,不重复造轮子)===
 def _sched_desc(sch: dict) -> str:
     from ..cron.scheduler import describe_schedule
 
@@ -224,6 +224,68 @@ def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:
         if j.get("name", "").lower() == ref.lower():
             return j
     return None
+
+
+@tool(
+    "add_cron_job",
+    "创建一个新的定时任务(一次性或周期性)。创建本身需要用户当场批准,非交互上下文"
+    "(比如另一个 cron 任务触发的执行)里会被拒绝——防止被注入后偷偷种下持久化的后门任务。\n"
+    "name:任务名;prompt:到点后要执行的完整指令(自包含,执行时看不到当前这轮对话,"
+    "背景信息要写全);cron 和 run_in_minutes 二选一——cron:5段cron表达式(周期性,"
+    "如 '0 8 * * *' = 每天早8点);run_in_minutes:多少分钟后执行一次"
+    "(一次性,触发后自动停用);model:可选,指定用哪个模型跑。",
+    {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "prompt": {"type": "string"},
+            "cron": {"type": "string"},
+            "run_in_minutes": {"type": "number"},
+            "model": {"type": "string"},
+        },
+        "required": ["name", "prompt"],
+    },
+)
+async def add_cron_job(args: dict) -> dict:
+    import time as _time
+
+    from ..cron import scheduler
+    from . import danger
+
+    name = (args.get("name") or "").strip()
+    prompt = (args.get("prompt") or "").strip()
+    cron_expr = (args.get("cron") or "").strip()
+    run_in_minutes = args.get("run_in_minutes")
+    model = (args.get("model") or "").strip() or None
+
+    if not name or not prompt:
+        return _ok("add_cron_job 需要 name / prompt 都非空。")
+    if bool(cron_expr) == bool(run_in_minutes):
+        return _ok("cron 和 run_in_minutes 必须二选一(不能都填或都不填)。")
+
+    if cron_expr:
+        schedule = {"kind": "cron", "expr": cron_expr}
+    else:
+        try:
+            minutes = float(run_in_minutes)
+        except (TypeError, ValueError):
+            return _ok("run_in_minutes 必须是数字。")
+        if minutes <= 0:
+            return _ok("run_in_minutes 必须是正数。")
+        schedule = {"kind": "once", "run_at": _time.time() + minutes * 60}
+
+    err = scheduler.validate_schedule(schedule)
+    if err:
+        return _ok(err)
+
+    # 新建是持久化类操作(被注入后可偷偷种一个定时后门),要用户点头;
+    # cron/eval 上下文(无人可问)直接拒绝——复用 set_cron_job_enabled/delete_cron_job 同一套闸门。
+    detail = f"「{name}」— {_sched_desc(schedule)} — 指令:{prompt[:80]}"
+    if not await danger.require_approval("创建定时任务", detail):
+        return _ok(f"🛑 未批准创建任务「{name}」,已跳过。")
+
+    job = scheduler.create_job(name=name, prompt=prompt, schedule=schedule, model=model)
+    return _ok(f"✅ 已创建任务「{name}」({_sched_desc(job['schedule'])}),id={job['id']}。")
 
 
 @tool(
@@ -610,6 +672,7 @@ def build_mcp_servers() -> dict:
                 recall_past,
                 save_memory,
                 suggest_automation,
+                add_cron_job,
                 list_cron_jobs,
                 set_cron_job_enabled,
                 delete_cron_job,
