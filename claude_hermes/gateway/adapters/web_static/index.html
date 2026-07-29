@@ -3926,7 +3926,16 @@ function renderConvs(){
     const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);
     h.onclick=()=>toggleGroup(PINNED_KEY);
     box.append(h);
-    if(open) for(const c of pc) box.append(buildConvRow(c, inCall));
+    if(open){
+      const shown = S.moreShown.has(PINNED_KEY) ? pc : pc.slice(0, CONV_SHOW_MAX);
+      for(const c of shown) box.append(buildConvRow(c, inCall));
+      if(pc.length > shown.length){
+        const more=el("div","conv ingroup convmore");
+        const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
+        more.onclick=()=>{ S.moreShown.add(PINNED_KEY); renderConvs(); };
+        box.append(more);
+      }
+    }
   }
   // 「最近会话」分组:汇总所有项目分组(含语音任务)的会话,按最后活跃时间混排,不看归属项目。
   // 默认 5 条,展开最多 10 条——纯快捷入口,不是"展开更多=显示全部"的完整列表。
