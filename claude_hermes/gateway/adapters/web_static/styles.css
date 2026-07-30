@@ -450,7 +450,7 @@
   .tgit[hidden]{display:none}
   .tgit.tproj{max-width:140px}
   /* 项目路径弹层:点项目名 pill 弹出完整路径 */
-  #projPop{position:absolute;top:calc(100% + 8px);left:0;z-index:20;max-width:320px;
+  #projPop{position:absolute;top:calc(100% + 8px);left:0;z-index:20;width:288px;
     background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:10px 12px;
     box-shadow:var(--shadow);animation:pop .18s ease}
   #projPop[hidden]{display:none}
