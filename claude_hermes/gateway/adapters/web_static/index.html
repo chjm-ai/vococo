@@ -277,14 +277,14 @@ try{
       <input type="file" id="file" accept="image/*" multiple hidden>
     </form>
   </main>
-  <!-- 通话视图:语音伴聊(原独立 /voice 页,2026-07-09 并入主 SPA,见 00-overview.md
+  <!-- 通话视图:语音通话(原独立 /voice 页,2026-07-09 并入主 SPA,见 00-overview.md
        §2 隔离约束的修订说明)。跟 #chatMain 互斥显隐,左上角复用同一套侧栏展开逻辑,
        原地叠加不打断通话——这正是要合并的原因。 -->
   <main id="callView" hidden>
     <header id="callHead">
       <button id="backLink" title="展开侧栏"></button>
-      <span class="title">语音伴聊</span>
-      <button id="clearVoiceCtxBtn" title="清空语音聊天上下文(AI 从头开始,历史保留)"></button>
+      <span class="title">语音通话</span>
+      <button id="clearVoiceCtxBtn" title="清空语音通话上下文(AI 从头开始,历史保留)"></button>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
     <!-- 后台任务状态条:有排队/进行中任务才出现,见 renderTaskBar() -->
@@ -441,7 +441,7 @@ const ICONS = {
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 function setIcon(el, name){ el.innerHTML = ic(name); }
 
-// ── 通话视图:语音伴聊(原独立 /voice 页,2026-07-09 并入主 SPA,见 00-overview.md
+// ── 通话视图:语音通话(原独立 /voice 页,2026-07-09 并入主 SPA,见 00-overview.md
 // §2 隔离约束的修订说明)。整段包一个 IIFE——不是为了模块化好看,是原 voice.html
 // 里 ensureStream/analyser 这些名字跟上面聊天逻辑的同名符号会真的撞车,函数作用域
 // 一裹就都是局部变量,不用逐个改名。对外只留 openCallView()/closeCallView() 两个
@@ -462,7 +462,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   setIcon(muteToggleBtn, "mic");  // 静音按钮:默认图标是"麦克风开着",点了切成"mute"
   setIcon(startBtn, "phone");  // 开始通话:电话图标
   setIcon($("#voiceIcon"), "voice");  // 音色切换:静音/挂断中间的圆钮,点开原生选择器
-  setIcon($("#clearVoiceCtxBtn"), "eraser");  // 顶栏:清空语音会话上下文
+  setIcon($("#clearVoiceCtxBtn"), "eraser");  // 顶栏:清空语音通话上下文
   // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
   // 收起侧栏后还在原来的通话画面。真正挂断走下面的"结束"/"停"按钮;
   // 侧栏里切到别的会话才会触发 closeCallView()(见 openConv 收口处)。
@@ -1078,9 +1078,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       if(!resp.ok) return;
       const rows = await resp.json();
       renderTasks(rows);
-      // 顺带全量校准状态条(SSE 断线漏事件时,打开抽屉/task_done 刷新都会走到这里兜底)
+      // 顺带全量校准状态条(SSE 断线漏事件时,打开抽屉/task_done 刷新都会走到这里兜底)。
+      // 抽屉(renderTasks)看全量历史不受影响;状态条按 voiceTasksClearedAt 水位线把
+      // 清空上下文之前的旧任务筛掉,否则这次全量校准又会把刚清空的条目拉回来。
       barTasks.clear();
       for(const t of rows){
+        if(t.created_at && t.created_at < voiceTasksClearedAt) continue;
         barTasks.set(t.id, t);
         // 任务处于活跃态说明是刚起跑(含"追问重开"),撤销之前的手动关闭,让它重新露出
         if(t.status === "queued" || t.status === "running") dismissedTaskIds.delete(t.id);
@@ -1095,8 +1098,14 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
   const dismissedTaskIds = new Set();  // 用户点叉关闭过的任务id(仅前端隐藏,不动后端数据)
   const TASKBAR_MAX = 7;
+  // 状态条跟通话上下文绑定的水位线:早于这个时刻派发的任务不再回填/唤醒状态条
+  // (后端 /voice/tasks 按 origin=voice 返回全部历史,不认"上下文"这个概念,过滤只能
+  // 在前端做)。清空上下文时连同 barTasks 一起重置,见 #clearVoiceCtxBtn 的点击处理;
+  // 落 localStorage 是为了同一设备刷新页面后,刚清空掉的旧任务不会又被 loadTasks() 拉回来。
+  let voiceTasksClearedAt = Number(localStorage.getItem("hermes_voice_tasks_cleared_at") || 0);
 
   function upsertTaskBar(t){
+    if(t.created_at && t.created_at < voiceTasksClearedAt) return;  // 清空上下文之前派发的任务,后续状态更新也不再唤醒状态条
     if(t.status === "queued" || t.status === "running") dismissedTaskIds.delete(t.id);
     barTasks.set(t.id, t);
     renderTaskBar();
@@ -2092,6 +2101,24 @@ void main(){
           break;
         case "error": {
           const msg = String((data.error && (data.error.message || data.error.code)) || "出错了");
+          // 2026-07-30 根因修复:我们主动发起的朗读(pumpOmniRead 已 omniReadPending++)
+          // 撞上 Omni 自己"关不掉"的自动回复还没让出 response 槽位,服务端拒绝并报
+          // "already has an active response"(2026-07-23 事故日志 14:17:49 就是这个错误,
+          // 当时只在"新一轮开始"入口做了防护,见 sendOmniTurn 注释,句子与句子之间正常
+          // 轮转时命中同一个错误此前被下面这行原样吞掉——omniReadPending 没回滚、
+          // 这句话的原文也没塞回队列,该句朗读凭空消失。更糟的是计数器留着 >0,
+          // 下一个到达的 response.created(很可能是 Omni 自己那句自动回复)会被
+          // 误判成"我们的朗读"而放行出声——用户听到的就变成 Omni 自己编的话,
+          // 跟 Claude 的原文对不上。这里回滚状态、把没念成的原文塞回队列头部,
+          // 短延迟后重新泵一次,而不是让这句话默默消失。
+          if(/active response|no active/i.test(msg) && omniReadPending > 0){
+            omniReadPending--;
+            if(omniReadCurrentText) omniReadQueue.unshift(omniReadCurrentText);
+            omniReadCurrentText = "";
+            vdbg("read.create.rejected", msg);
+            setTimeout(() => pumpOmniRead(), 300);
+            break;
+          }
           // response.cancel 撞上"没有进行中的回复"这类时序噪音只记日志不弹红气泡,
           // 用户看到也做不了什么;其余错误照旧可见。
           if(/cancel|active response|no active/i.test(msg)) break;
@@ -2907,16 +2934,23 @@ void main(){
     setIcon(muteToggleBtn, micMuted ? "mute" : "mic");
   });
 
-  // 清空语音会话上下文:清的是 voice-chat:main(见后端 /voice/clear),下一轮从零开始;
+  // 清空语音通话上下文:清的是 voice-chat:main(见后端 /voice/clear),下一轮从零开始;
   // 同时抹掉本地已显示的对话与半截的流式态,视觉上也回到干净起点。
   $("#clearVoiceCtxBtn").addEventListener("click", async ()=>{
-    if(!confirm("清空语音聊天的上下文?(AI 会从头开始,历史记录仍保留)")) return;
+    if(!confirm("清空语音通话的上下文?(AI 会从头开始,历史记录仍保留)")) return;
     try{
       const resp = await fetch("/voice/clear", {method:"POST", headers:{"X-Auth-Token":S.token}});
       if(!resp.ok) throw new Error("HTTP "+resp.status);
       transcriptEl.innerHTML = "";
       currentTurnAiEl = null; currentTurnFull = "";
       addMsg("ai filler", "上下文已清空,我们重新开始吧。");
+      // 顶部任务状态条也跟着这次清空同步重置:旧对话遗留的任务不该继续挂在条上
+      // (见 voiceTasksClearedAt 声明处的说明)。
+      voiceTasksClearedAt = Date.now() / 1000;
+      localStorage.setItem("hermes_voice_tasks_cleared_at", String(voiceTasksClearedAt));
+      barTasks.clear();
+      dismissedTaskIds.clear();
+      renderTaskBar();
     }catch(e){ addMsg("ai error", "清空失败:"+e.message); }
   });
 
@@ -3032,14 +3066,14 @@ void main(){
       handsFreeUi.hidden = true;
       talkBtn.hidden = false;
     }
-    renderConvs();   // 侧栏按通话状态重绘,让「语音对话」行高亮
+    renderConvs();   // 侧栏按通话状态重绘,让「语音通话」行高亮
   };
   window.closeCallView = function(){
     if($("#callView").hidden) return;  // 没在通话视图里,啥也不用做(openConv 收口时无条件调用)
     $("#callView").hidden = true;
     $("#chatMain").hidden = false;
     teardownCallResources();
-    renderConvs();   // 挂断后切回聊天侧栏,取消「语音对话」行高亮
+    renderConvs();   // 挂断后切回聊天侧栏,取消「语音通话」行高亮
   };
 })();
 
@@ -3134,7 +3168,7 @@ async function api(path, opts={}){
   if(r.status===401){ showLogin(); throw new Error("401"); }
   return r;
 }
-// 语音通话入口只保留侧边栏根目录置顶的「语音对话」行(见 buildVoiceMainRow),
+// 语音通话入口只保留侧边栏根目录置顶的「语音通话」行(见 buildVoiceMainRow),
 // 不再在聊天输入框上方浮一个圆球——那个入口跟侧栏那行重复,已按用户要求去掉。
 
 // ── 登录 ────────────────────────────────────────────────────────────────
@@ -4059,16 +4093,16 @@ document.addEventListener("click", e=>{ const b=$("#projSel"); if(b && !b.contai
 function convsInGroup(hash){
   return S.convs.filter(c => c.pinned ? hash===null : convProject(c.conv)===hash);
 }
-// 语音对话主行(通话入口),与主会话一起置顶在根目录最前(不属于任何分组,数据来自 /voice/sidebar)。
+// 语音通话主行(通话入口),与主会话一起置顶在根目录最前(不属于任何分组,数据来自 /voice/sidebar)。
 // 通话视图开着时不看 S.conv(那还停在离开前的聊天会话上没变),由调用方传进来的 inCall
-// (= #callView 是否显示)决定「语音对话」这一行是否高亮成"你现在就在这儿"。
+// (= #callView 是否显示)决定「语音通话」这一行是否高亮成"你现在就在这儿"。
 function buildVoiceMainRow(inCall){
   const vs = S.voiceSidebar;
   if(!vs || !vs.main) return null;  // 还没拉到数据(如刚登录那一瞬)先不渲染,避免空行闪一下
   const mainRow=el("div","conv"+(inCall?" active":""));
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");
-  const mainCt=el("div","ct"); mainCt.textContent=vs.main.title||"语音对话"; mainBody.append(mainCt);
+  const mainCt=el("div","ct"); mainCt.textContent=vs.main.title||"语音通话"; mainBody.append(mainCt);
   const tm=fmtTime(vs.main.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; mainBody.append(tmEl); }   // 与其他会话行统一:右侧补上时刻
   mainRow.append(mainBody);
   mainRow.onclick=()=>{ openCallView(); };
@@ -4132,7 +4166,7 @@ function buildConvRow(c, inCall){
   const e=el("div","conv"+(isMain?"":" ingroup")+(!inCall && c.conv===S.conv?" active":""));
   e.dataset.conv=c.conv;
   const body=el("div","cvbody");
-  if(isMain) body.innerHTML=ic("star");   // 主会话:左侧星标图标,跟紧邻的语音对话行(mic 图标)对齐
+  if(isMain) body.innerHTML=ic("star");   // 主会话:左侧星标图标,跟紧邻的语音通话行(mic 图标)对齐
   if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
   else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }   // 完成未读:灰色圆点
   const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
@@ -4206,8 +4240,8 @@ function renderProjectsTab(box, inCall){
 }
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
-  const inCall = !$("#callView").hidden;  // 通话中:普通会话行都不高亮,高亮权让给「语音对话」那一行
-  // 根目录固定区:主会话 + 语音对话,恒排最前,不属于任何分组/Tab。
+  const inCall = !$("#callView").hidden;  // 通话中:普通会话行都不高亮,高亮权让给「语音通话」那一行
+  // 根目录固定区:主会话 + 语音通话,恒排最前,不属于任何分组/Tab。
   const mainConv=S.convs.find(c=>c.conv==="main");
   if(mainConv) box.append(buildConvRow(mainConv, inCall));
   const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
