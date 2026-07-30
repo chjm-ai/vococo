@@ -6214,6 +6214,7 @@ async function stopReply(){
   finalizeStream(); // 立即结束前端流式气泡,保留已有部分文字
   try{ await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})}); }
   catch(e){ /* 网络异常忽略,前端已处理 */ }
+  flushPending(conv); // 手动中止不会触发 done/message 事件,需主动补发排队中的下一条
 }
 // ── 待发送队列 ────────────────────────────────────────────────────────────
 function queuePending(text, images){
