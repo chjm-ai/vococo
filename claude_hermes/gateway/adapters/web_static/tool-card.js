@@ -4,13 +4,19 @@
 // (定义在 index.html 主脚本里,靠同页多个 <script> 共享同一全局作用域读取,
 // 不需要模块系统)。不碰语音通话 IIFE 的闭包状态。
 
-function toolCardShell(title, pathText, bodyEl, collapsed){
+function toolCardShell(title, pathText, bodyEl, collapsed, docPath){
   const card=el("div","toolcard");
   const head=el("div","tc-head");
   const chev=el("span","chev"); if(!collapsed) chev.classList.add("down");
   const titleEl=el("span"); titleEl.innerHTML=title;
   head.append(chev, titleEl);
   const p=el("span","tc-path"); if(pathText) p.textContent=pathText; head.append(p);  // 始终留位,结果预览可后补
+  // docPath:这张卡对应一个本地文件(Write/Edit 的 file_path)→ 路径本身变成可点,
+  // 右侧分屏预览,不用先展开 diff 再脑内脑补最终内容长什么样(见 index.html 的 openDocPreview)。
+  if(docPath){
+    p.classList.add("tc-path-doc"); p.title="点击预览文件";
+    p.onclick=(e)=>{ e.stopPropagation(); if(typeof openDocPreview==="function") openDocPreview({kind:"path", target:docPath, title:docPath.split("/").pop()||docPath}); };
+  }
   const bodyWrap=el("div","tc-body"+(collapsed?" collapsed":""));
   if(bodyEl) bodyWrap.append(bodyEl);
   head.onclick=()=>{ const c=bodyWrap.classList.toggle("collapsed"); chev.classList.toggle("down",!c); };
@@ -93,12 +99,12 @@ function renderToolCard(name, inp){
       const p=el("div","plan"); p.innerHTML=mdToHtml(inp.plan||"(空计划)");
       return toolCardShell(ic("compass")+" 执行计划","",p,false);
     }
-    if(name==="Write")     return toolCardShell(ic("doc")+" 写文件", inp.file_path||"", diffEl("", inp.content||""), true);
-    if(name==="Edit")      return toolCardShell(ic("edit")+" 编辑", inp.file_path||"", diffEl(inp.old_string||"", inp.new_string||""), true);
+    if(name==="Write")     return toolCardShell(ic("doc")+" 写文件", inp.file_path||"", diffEl("", inp.content||""), true, inp.file_path);
+    if(name==="Edit")      return toolCardShell(ic("edit")+" 编辑", inp.file_path||"", diffEl(inp.old_string||"", inp.new_string||""), true, inp.file_path);
     if(name==="MultiEdit"){
       const wrap=el("div");
       for(const ed of (inp.edits||[])) wrap.append(diffEl(ed.old_string||"", ed.new_string||""));
-      return toolCardShell(ic("edit")+" 多处编辑", inp.file_path||"", wrap, true);
+      return toolCardShell(ic("edit")+" 多处编辑", inp.file_path||"", wrap, true, inp.file_path);
     }
     if(name==="Bash"){
       const c=el("div","tc-code"); c.textContent=inp.command||"";
@@ -106,7 +112,7 @@ function renderToolCard(name, inp){
     }
     // 其余工具:有明显目标参数才给个折叠预览,避免刷屏
     const hint=inp.file_path||inp.path||inp.pattern||inp.query||inp.url||"";
-    if(hint){ const c=el("div","tc-code"); c.textContent=hint; return toolCardShell(ic("wrench")+" "+esc(name), "", c, true); }
+    if(hint){ const c=el("div","tc-code"); c.textContent=hint; return toolCardShell(ic("wrench")+" "+esc(name), "", c, true, inp.file_path); }
     return null;
   }catch(e){ return null; }
 }

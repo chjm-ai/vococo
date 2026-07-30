@@ -328,6 +328,16 @@ try{
       </div>
     </div>
   </main>
+  <!-- 文档预览分屏:点聊天里的文档链接/写文件工具卡右侧滑出,不离开当前对话 -->
+  <aside id="docPreview" hidden>
+    <header id="dpHead">
+      <span id="dpTitle">预览</span>
+      <button type="button" id="dpOpenBtn" title="在新标签页打开" hidden></button>
+      <button type="button" id="dpDlBtn" title="下载" hidden></button>
+      <button type="button" id="dpClose" title="关闭">✕</button>
+    </header>
+    <div id="dpBody"></div>
+  </aside>
 </div>
 
 <!-- 工具卡片渲染:纯函数声明,不在自己的顶层调用任何东西,放在主脚本前不影响执行顺序
@@ -423,6 +433,8 @@ const ICONS = {
   phone:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
   star:'<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
   pin:'<line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>',
+  external:'<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/>',
+  download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
 function setIcon(el, name){ el.innerHTML = ic(name); }
@@ -3166,15 +3178,39 @@ $("#loginBtn").onclick = ()=>{ S.token = $("#pw").value.trim(); tryEnter(); };
 $("#pw").onkeydown = e=>{ if(e.key==="Enter"){ S.token=$("#pw").value.trim(); tryEnter(); } };
 
 // ── Markdown 渲染(内置,不依赖 CDN)────────────────────────────────────────
+// 文档预览:识别"看起来是文档"的链接/本地路径,点击不跳新标签页,而是右侧分屏预览
+// (见 openDocPreview)。http(s) 链接后缀命中或落在 /pub/ 发布目录下才算文档;
+// 本地路径(无协议头,以 / . ~ 开头)只要后缀命中就算,不要求存在——服务端会校验。
+const DOC_EXT_RE = /\.(md|markdown|txt|html?|pdf|csv|json|log|ya?ml|py|jsx?|tsx?|sh|css|xml)(\?[^\s)]*)?$/i;
+function isDocUrl(url){
+  if(/^https?:\/\//i.test(url)) return DOC_EXT_RE.test(url) || /\/pub\//.test(url);
+  return DOC_EXT_RE.test(url);
+}
+function docLinkHtml(txt, target){
+  const isHttp = /^https?:\/\//i.test(target);
+  const attr = isHttp ? 'data-doc-url="'+target+'"' : 'data-doc-path="'+target+'"';
+  // href 留着当兜底:点击处理器(见 initDocPreview)正常都会 preventDefault 走站内预览,
+  // 万一 JS 没跑起来,http 链接至少还能退化成新标签页打开,本地路径没有可跳的地方就给 #。
+  return '<a href="'+(isHttp?target:"#")+'" class="doclink" '+attr+(isHttp?' target="_blank" rel="noopener"':"")+'>'+ic("doc")+" "+txt+"</a>";
+}
 function inlineMd(t){
   t = esc(t);
   const links=[];                                   // 先把 [文字](url) 抠出来占位,避免下面裸链接二次包裹
-  t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,(m,txt,url)=>{
-    links.push('<a href="'+url+'" target="_blank" rel="noopener">'+txt+'</a>'); return "L"+(links.length-1)+""; });
+  t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,(m,txt,url)=>{
+    let html;
+    if(/^https?:\/\//i.test(url)) html = isDocUrl(url) ? docLinkHtml(txt,url) : '<a href="'+url+'" target="_blank" rel="noopener">'+txt+'</a>';
+    else if(DOC_EXT_RE.test(url)) html = docLinkHtml(txt,url);   // 本地路径 + 文档后缀 → 预览
+    else html = txt;   // 本地路径但不是文档、也不是外链 → 没法点,退化成纯文字,别留死链接
+    links.push(html); return "L"+(links.length-1)+"";
+  });
   t = t.replace(/`([^`]+)`/g,(m,c)=>"<code>"+c+"</code>");
   t = t.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
   t = t.replace(/\*([^*\n]+)\*/g,"<em>$1</em>");
-  t = t.replace(/(https?:\/\/[^\s<]+[^\s<.,)])/g,'<a href="$1" target="_blank" rel="noopener">$1</a>');
+  t = t.replace(/(https?:\/\/[^\s<]+[^\s<.,)])/g,(m,url)=>isDocUrl(url)?docLinkHtml(url,url):'<a href="'+url+'" target="_blank" rel="noopener">'+url+'</a>');
+  // 裸本地路径,比如"文档已保存到 /Users/xx/report.md"——只认 / ./ ../ ~/ 开头,避免把随口提到的
+  // "看下 config.py" 这种没有路径前缀的文件名也当成链接,误伤太多。
+  t = t.replace(/(^|[\s(])((?:~|\.{1,2})?\/[^\s<>()`"'&]+\.(?:md|markdown|txt|html?|pdf|csv|json|log|ya?ml|py|jsx?|tsx?|sh|css|xml))/g,
+    (m,pre,p)=>pre+docLinkHtml(p,p));
   t = t.replace(/L(\d+)/g,(m,i)=>links[+i]);   // 还原 Markdown 链接
   return t;
 }
@@ -3215,6 +3251,102 @@ function mdToHtml(src){
   flush();
   return out;
 }
+
+// ── 文档预览分屏(右侧滑出)────────────────────────────────────────────────
+// 触发源有两处:1) 聊天正文里的 .doclink(见 inlineMd/docLinkHtml,事件委托在 #wrap 上)
+// 2) 工具卡片里可点的文件路径(见 tool-card.js 的 toolCardShell 第 5 个参数)。
+// 两种链接分两条取数路径:http(s) 链接直接拿 URL 打(同源 /pub/ 页面也走真实 URL,
+// 保证页内相对资源能正常加载);本地文件路径没有可直接访问的 URL(会挡在鉴权后面),
+// 走 /doc/preview 接口带 X-Auth-Token 头取 blob。
+const DP = {objUrl:null};
+function extOf(u){ const m=(u||"").match(/\.([a-z0-9]+)(?:\?.*)?$/i); return m ? m[1].toLowerCase() : ""; }
+function dpRevoke(){ if(DP.objUrl){ URL.revokeObjectURL(DP.objUrl); DP.objUrl=null; } }
+function closeDocPreview(){
+  $("#docPreview").hidden = true;
+  dpRevoke();
+  $("#dpBody").innerHTML = "";
+}
+async function openDocPreview({kind, target, title}){
+  dpRevoke();
+  $("#docPreview").hidden = false;
+  $("#dpTitle").textContent = title || target;
+  const body = $("#dpBody");
+  body.innerHTML = '<div class="dp-loading">'+DOTS+'</div>';
+  $("#dpOpenBtn").hidden = kind!=="url";
+  if(kind==="url") $("#dpOpenBtn").onclick = ()=>window.open(target, "_blank", "noopener");
+  $("#dpDlBtn").hidden = true;
+  if(kind==="url"){ renderDocUrl(target); return; }
+  try{
+    const resp = await api("/doc/preview?conv="+encodeURIComponent(S.conv||"")+"&path="+encodeURIComponent(target));
+    if(!resp.ok){
+      let msg = "预览失败("+resp.status+")";
+      try{ const j=await resp.json(); if(j.error) msg=j.error; }catch(e){}
+      body.innerHTML = '<div class="dp-err">'+esc(msg)+'</div>';
+      return;
+    }
+    renderDocBlob(await resp.blob(), target);
+  }catch(e){
+    body.innerHTML = '<div class="dp-err">加载失败,检查一下网络</div>';
+  }
+}
+// 外部 URL 的 iframe 是真实跨域内容(不像本地文件那样先读成 blob 隔离),给个宽松沙箱——
+// 挡"跳出 iframe 劫持整个页面"(不给 allow-top-navigation),别的照常放行,不影响正常浏览。
+const DP_URL_SANDBOX = 'sandbox="allow-scripts allow-same-origin allow-popups allow-forms"';
+function renderDocUrl(target){
+  const body=$("#dpBody"), ext=extOf(target);
+  if(ext==="md"||ext==="markdown"||ext==="txt"){
+    fetch(target).then(r=>r.text()).then(txt=>{
+      if(ext==="txt"){ body.innerHTML=""; const pre=el("pre","dp-text"); pre.textContent=txt; body.append(pre); }
+      else body.innerHTML='<div class="dp-md bubble">'+mdToHtml(txt)+'</div>';
+    }).catch(()=>{ body.innerHTML='<iframe class="dp-frame" '+DP_URL_SANDBOX+' src="'+esc(target)+'"></iframe>'; });
+    return;
+  }
+  if(/^(png|jpe?g|gif|webp|svg)$/.test(ext)){ body.innerHTML='<img class="dp-img" src="'+esc(target)+'">'; return; }
+  body.innerHTML='<iframe class="dp-frame" '+DP_URL_SANDBOX+' src="'+esc(target)+'"></iframe>';
+}
+function renderDocBlob(blob, target){
+  const body=$("#dpBody"), ctype=(blob.type||"").split(";")[0].trim(), ext=extOf(target);
+  $("#dpDlBtn").hidden=false;
+  $("#dpDlBtn").onclick=()=>{
+    const u=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=u; a.download=target.split("/").pop()||"download";
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(u), 4000);
+  };
+  const isMd = ext==="md"||ext==="markdown"||ctype==="text/markdown";
+  const textExts=["txt","json","log","py","js","jsx","ts","tsx","sh","yml","yaml","css","xml","csv","ini"];
+  if(isMd){
+    blob.text().then(txt=>{ body.innerHTML='<div class="dp-md bubble">'+mdToHtml(txt)+'</div>'; });
+  } else if(ctype.startsWith("text/")||textExts.includes(ext)){
+    blob.text().then(txt=>{ body.innerHTML=""; const pre=el("pre","dp-text"); pre.textContent=txt; body.append(pre); });
+  } else if(ctype.startsWith("image/")||/^(png|jpe?g|gif|webp|svg)$/.test(ext)){
+    DP.objUrl=URL.createObjectURL(blob); body.innerHTML='<img class="dp-img" src="'+DP.objUrl+'">';
+  } else if(ctype==="application/pdf"||ext==="pdf"){
+    DP.objUrl=URL.createObjectURL(blob); body.innerHTML='<iframe class="dp-frame" src="'+DP.objUrl+'"></iframe>';
+  } else if(ctype==="text/html"||ext==="html"||ext==="htm"){
+    // 沙箱只放行弹窗,不给 allow-scripts+allow-same-origin(会让 blob 里的脚本拿到跟主站同源的能力,
+    // 等于把鉴权 token 所在的页面上下文让给了一份 AI 写的、未经审查的 HTML)——预览允许有损,不允许有洞。
+    DP.objUrl=URL.createObjectURL(blob); body.innerHTML='<iframe class="dp-frame" sandbox="allow-popups" src="'+DP.objUrl+'"></iframe>';
+  } else {
+    body.innerHTML='<div class="dp-err">这种文件类型暂不支持预览,点右上角下载看</div>';
+  }
+}
+function initDocPreview(){
+  $("#dpOpenBtn").innerHTML=ic("external");
+  $("#dpDlBtn").innerHTML=ic("download");
+  $("#dpClose").innerHTML=ic("close");
+  $("#dpClose").onclick=closeDocPreview;
+  document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#docPreview").hidden) closeDocPreview(); });
+  $("#wrap").addEventListener("click", e=>{
+    const a=e.target.closest("a.doclink");
+    if(!a) return;
+    e.preventDefault();
+    const url=a.dataset.docUrl, path=a.dataset.docPath, title=a.textContent.trim();
+    if(url) openDocPreview({kind:"url", target:url, title});
+    else if(path) openDocPreview({kind:"path", target:path, title});
+  });
+}
+initDocPreview();
 
 // ── 空状态欢迎屏(新对话默认落地页,含最近对话列表)──────────────────────────
 // 2026-07-15:原独立首页(#homeView)已下架,语音通话入口 + 最近对话并入这个欢迎屏,

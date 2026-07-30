@@ -1101,4 +1101,37 @@
   #startCallBtn:hover{background:var(--panel);color:var(--text)}
   #startCallBtn:active{transform:scale(.92)}
   #startCallBtn:disabled{opacity:.5;pointer-events:none}
+
+  /* ── 文档预览分屏(点聊天里的文档链接/工具卡文件路径,右侧滑出)────────────── */
+  .doclink{display:inline-flex;align-items:center;gap:4px;padding:1px 8px 1px 6px;
+    background:var(--panel2);border:1px solid var(--line2);border-radius:7px;
+    color:var(--text);font-size:.93em;text-decoration:none;transition:border-color .15s,background .15s}
+  .doclink .ic{width:13px;height:13px;color:var(--accent)}
+  @media(hover:hover){ .doclink:hover{border-color:var(--accent);background:var(--panel)} }
+  .tc-path.tc-path-doc{cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px}
+  @media(hover:hover){ .tc-path.tc-path-doc:hover{color:var(--text)} }
+
+  #docPreview{width:min(46vw,640px);flex-shrink:0;display:flex;flex-direction:column;
+    background:var(--bg2);border-left:1px solid var(--line2);overflow:hidden}
+  #docPreview[hidden]{display:none}
+  #dpHead{display:flex;align-items:center;gap:6px;padding:10px 12px;
+    padding-top:calc(10px + env(safe-area-inset-top));border-bottom:1px solid var(--line2);
+    background:var(--bar-bg);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);flex-shrink:0}
+  #dpTitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-size:13.5px;font-weight:600}
+  #dpHead button{width:32px;height:32px;border-radius:9px;flex-shrink:0;color:var(--dim);
+    display:inline-flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
+  @media(hover:hover){ #dpHead button:hover{background:var(--panel2);color:var(--text)} }
+  #dpBody{flex:1;overflow:auto;position:relative}
+  .dp-loading{display:flex;align-items:center;justify-content:center;height:100%;color:var(--dim)}
+  .dp-err{padding:20px;color:var(--dim);font-size:13.5px;line-height:1.6}
+  .dp-md.bubble{padding:18px 22px;font-size:14.5px;line-height:1.65;max-width:720px}
+  .dp-text{margin:0;padding:16px 20px;font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:12.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+  .dp-frame{width:100%;height:100%;border:none;display:block}
+  .dp-img{max-width:100%;display:block;margin:0 auto}
+
+  @media(max-width:760px){
+    #docPreview{position:fixed;inset:0;width:100%;z-index:40;border-left:none}
+  }
   #startCallBtn[hidden]{display:none}

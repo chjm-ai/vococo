@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import mimetypes
 import os
 import re
 import time
@@ -39,15 +40,20 @@ from .usage_local import get_local_claude_usage
 from .web_push import PUSH
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
+_DOC_PREVIEW_MAX = 3 * 1024 * 1024  # 文档预览分屏读文件上限;超过就不读,前端提示下载/自己开
 
 # 纵深防御(审计 web#5/#9 · 2-9)。CSP 里 script/style 仍留 'unsafe-inline'——前端是单文件
 # 内联脚本,去掉会整页崩;但收紧 connect/img、禁 frame 嵌入/base/object/表单外发,给「未来
 # 新增 innerHTML 分支忘了转义」兜底。frame-ancestors 'none' 顺带防点击劫持。
+# frame-src/img-src 额外放 blob:/https: 是给文档预览分屏用(openDocPreview)——本地文件
+# 走 /doc/preview 读成 blob 再塞 iframe/img,外部文档链接(比如已发布页面)直接 iframe 真
+# URL。这条不影响 frame-ancestors 'none':那个管"别人能不能嵌我们",这个管"我们能不能嵌别人"。
 _CSP = (
     "default-src 'self'; "
     "script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data: blob:; "
+    "img-src 'self' data: blob: https:; "
+    "frame-src 'self' blob: https:; "
     "connect-src 'self'; "
     "base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'"
 )
@@ -1554,6 +1560,46 @@ class WebAdapter:
             return web.json_response({"error": "写入失败"}, status=500)
         return web.json_response({"ok": True})
 
+    # ── 文档预览分屏(右侧滑出,见 web_static/index.html 的 openDocPreview)──────
+    def _safe_doc_path(self, root: str, rel: str) -> Path | None:
+        """把前端传的路径(相对或绝对)解析到会话 cwd 内;越界一律拒绝。"""
+        rel = (rel or "").strip()
+        if not rel:
+            return None
+        root_p = Path(root).resolve()
+        try:
+            p = Path(rel)
+            target = p.resolve() if p.is_absolute() else (root_p / p).resolve()
+        except (OSError, ValueError):
+            return None
+        if target != root_p and root_p not in target.parents:
+            return None  # 目录穿越 / 落在会话 cwd 外,拒
+        return target
+
+    async def _handle_doc_preview(self, request: web.Request) -> web.Response:
+        if (g := self._guard(request)) is not None:
+            return g
+        root = self._conv_cwd(request.query.get("conv", "")) or os.getcwd()
+        target = self._safe_doc_path(root, request.query.get("path", ""))
+        if target is None or not target.is_file():
+            return web.json_response({"error": "文件不存在或路径越界"}, status=404)
+        try:
+            size = target.stat().st_size
+        except OSError:
+            return web.json_response({"error": "读取失败"}, status=500)
+        if size > _DOC_PREVIEW_MAX:
+            return web.json_response({"error": "文件太大(超过 3MB),暂不支持预览"}, status=413)
+        try:
+            data = target.read_bytes()
+        except OSError:
+            return web.json_response({"error": "读取失败"}, status=500)
+        ctype, _ = mimetypes.guess_type(target.name)
+        resp = web.Response(body=data, headers={"Cache-Control": "no-cache"})
+        resp.content_type = ctype or "text/plain"
+        if resp.content_type.startswith("text/") or resp.content_type == "application/json":
+            resp.charset = "utf-8"
+        return resp
+
     # ── PWA 静态资源 + 推送订阅 ──────────────────────────────────────────
     def _static_file(
         self,
@@ -1833,6 +1879,7 @@ class WebAdapter:
                 web.post("/settings/provider", self._handle_settings_provider),
                 web.get("/file/read", self._handle_file_read),
                 web.post("/file/save", self._handle_file_save),
+                web.get("/doc/preview", self._handle_doc_preview),
             ]
         )
         if config.VOICE_ENABLED:  # 实验性语音伴聊模式,见 claude_hermes/voice/
