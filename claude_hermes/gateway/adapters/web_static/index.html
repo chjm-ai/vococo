@@ -3207,9 +3207,14 @@ function inlineMd(t){
   t = t.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
   t = t.replace(/\*([^*\n]+)\*/g,"<em>$1</em>");
   t = t.replace(/(https?:\/\/[^\s<]+[^\s<.,)])/g,(m,url)=>isDocUrl(url)?docLinkHtml(url,url):'<a href="'+url+'" target="_blank" rel="noopener">'+url+'</a>');
-  // 裸本地路径,比如"文档已保存到 /Users/xx/report.md"——只认 / ./ ../ ~/ 开头,避免把随口提到的
-  // "看下 config.py" 这种没有路径前缀的文件名也当成链接,误伤太多。
-  t = t.replace(/(^|[\s(])((?:~|\.{1,2})?\/[^\s<>()`"'&]+\.(?:md|markdown|txt|html?|pdf|csv|json|log|ya?ml|py|jsx?|tsx?|sh|css|xml))/g,
+  // 裸本地路径:除了 /Users/xx/report.md 这种绝对路径,更常见的是 AI 直接写相对路径,
+  // 比如 "00-inbox/2026-07-30_xxx.md"(没有 ./ 前缀)。分两支:①有 / ~/ ./ ../ 显式前缀的,
+  // 后面随便接什么字符(文件名本身常带中文,比如用户这个案例);②没有显式前缀的裸相对路径,
+  // 目录段限定 ASCII(字母/数字/-_.)——限制住是为了不把"路径是~/x.md"这种中文紧贴着路径、
+  // 中间没空格的情况,把前面的中文字也一起吞进链接里(踩过一次,见此前 commit)。
+  // 两支共同要求：前面必须是行首/空白/左括号,且路径里至少有一段目录(不然"看下 config.py"
+  // 这种孤零零的文件名也会被当成链接,误伤太多)。
+  t = t.replace(/(^|[\s(])((?:~\/|\.{1,2}\/|\/)[^\s<>()`"'&]+\.(?:md|markdown|txt|html?|pdf|csv|json|log|ya?ml|py|jsx?|tsx?|sh|css|xml)|[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\/[^\s<>()`"'&]+\.(?:md|markdown|txt|html?|pdf|csv|json|log|ya?ml|py|jsx?|tsx?|sh|css|xml))/g,
     (m,pre,p)=>pre+docLinkHtml(p,p));
   t = t.replace(/L(\d+)/g,(m,i)=>links[+i]);   // 还原 Markdown 链接
   return t;

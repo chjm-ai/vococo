@@ -1579,9 +1579,20 @@ class WebAdapter:
     async def _handle_doc_preview(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
-        root = self._conv_cwd(request.query.get("conv", "")) or os.getcwd()
-        target = self._safe_doc_path(root, request.query.get("path", ""))
-        if target is None or not target.is_file():
+        rel = request.query.get("path", "")
+        # 候选根目录依次试:①会话 cwd(项目 worktree,非项目会话回退 serve 进程 cwd);
+        # ②AI_BRAIN——不是"公网访问不到本地文件"(HTTP 请求本来就是服务端执行,客户端在
+        # 内网还是公网没区别),是 AI 常把 00-inbox/ 这类笔记直接写进 Obsidian vault(AI_BRAIN),
+        # 那不在会话 cwd 范围内,原来只认①会导致越界拒绝、误报成"文件不存在"。
+        # 两个根目录互不包含时才需要都试一遍;命中哪个算哪个,不存在才换下一个。
+        roots = [self._conv_cwd(request.query.get("conv", "")) or os.getcwd(), str(config.AI_BRAIN_DIR)]
+        target = None
+        for root in dict.fromkeys(roots):  # 去重且保序
+            candidate = self._safe_doc_path(root, rel)
+            if candidate is not None and candidate.is_file():
+                target = candidate
+                break
+        if target is None:
             return web.json_response({"error": "文件不存在或路径越界"}, status=404)
         try:
             size = target.stat().st_size
