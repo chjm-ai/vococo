@@ -1259,7 +1259,14 @@ class WebAdapter:
         # 只有绑定项目的会话才强制显示;非项目会话仅在 cwd 真是 git 仓库时才暴露
         if not bound and not info.get("is_repo"):
             return web.json_response({"is_project": False})
-        info.update(is_project=True, bound_project=bound, path=cwd, name=os.path.basename(cwd) or cwd)
+        # 项目名取"仓库根目录"的文件夹名,而不是 cwd —— cwd 在有独立 worktree 的会话
+        # 里是 data/worktrees/<hash>/<slug>,basename 是会话 slug,长得跟分支名一样,
+        # 标题栏就会显示成"分支名"而不是真正的项目名。
+        proj_root = config.project_root_for(key) if bound else cwd
+        info.update(
+            is_project=True, bound_project=bound, path=cwd,
+            name=os.path.basename(proj_root) or proj_root, project_path=proj_root,
+        )
         return web.json_response(info)
 
     async def _handle_conv_git_branch(self, request: web.Request) -> web.Response:
@@ -1288,7 +1295,11 @@ class WebAdapter:
         if code != 0:
             return web.json_response({"error": err.strip() or "创建分支失败"}, status=400)
         info = await git_status.git_status(cwd)
-        info.update(is_project=True, path=cwd, name=os.path.basename(cwd) or cwd)
+        proj_root = config.project_root_for(key) or cwd
+        info.update(
+            is_project=True, path=cwd,
+            name=os.path.basename(proj_root) or proj_root, project_path=proj_root,
+        )
         return web.json_response(info)
 
     # ── 设置:技能 / MCP ─────────────────────────────────────────────────
