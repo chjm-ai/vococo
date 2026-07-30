@@ -456,7 +456,7 @@ async def _handle_stop(request: web.Request) -> web.Response:
 
 
 async def _handle_clear(request: web.Request) -> web.Response:
-    """清空语音聊天上下文(通话界面顶部的橡皮擦按钮):清的是 voice-chat:main,
+    """清空语音通话上下文(通话界面顶部的橡皮擦按钮):清的是 voice-chat:main,
     跟聊天页的 /clear 各管各的。"""
     if (g := _guard(request)) is not None:
         return g

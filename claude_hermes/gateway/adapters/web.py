@@ -751,7 +751,7 @@ class WebAdapter:
         from ...core import tasks as bg_tasks  # 懒加载,避免非任务场景也引入这块
 
         main = session_store.session_summary("voice-chat:main")
-        main.update(key="voice-chat:main", conv="voice-chat:main", title="语音对话", pinned=True)
+        main.update(key="voice-chat:main", conv="voice-chat:main", title="语音通话", pinned=True)
         task_convs = []
         for c in _rows_with_conv(bg_tasks.SESSION_KEY_PREFIX):
             task_id = bg_tasks.task_id_from_session_key(c["key"]) or c["key"]
