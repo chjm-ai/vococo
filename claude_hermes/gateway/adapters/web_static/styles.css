@@ -242,6 +242,14 @@
   .conv.convmore{color:var(--dim2);font-size:13px}
   @media(hover:hover){ .conv.convmore:hover{color:var(--dim)} }
 
+  /* 侧栏第二层 Tab(项目/置顶/最近),位于语音对话行下方、各分组内容上方 */
+  .sidetabs{display:flex;gap:4px;padding:2px 2px 8px;margin-bottom:2px;border-bottom:1px solid var(--line)}
+  .sidetab{flex:1;text-align:center;padding:6px 4px;border-radius:7px;font-size:13px;
+    color:var(--dim);cursor:pointer;user-select:none;transition:background .15s,color .15s}
+  @media(hover:hover){ .sidetab:hover{background:var(--panel2);color:var(--text)} }
+  .sidetab.active{background:var(--panel2);color:var(--text);font-weight:600}
+  .tabempty{padding:16px 10px;color:var(--dim2);font-size:13px;text-align:center}
+
   /* 新建项目弹窗(服务端目录浏览器) */
   #projModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
   #projModal[hidden]{display:none}   /* id+attr 优先级压过上面的 display:flex,hidden 才真生效 */
