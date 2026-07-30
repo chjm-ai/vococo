@@ -176,6 +176,7 @@ try{
         <div class="title">
           <span id="convTitle">主会话</span>
           <span class="tsub">
+            <span id="convProjName" class="tproj" hidden></span>
             <span id="gitBox">
               <button class="tgit" id="convGit" type="button" title="项目 Git 状态" hidden></button>
               <div id="gitPop" hidden></div>
@@ -3737,16 +3738,17 @@ function gitBtnLabel(d){
   return s;
 }
 async function refreshGit(conv){
-  const btn=$("#convGit"); $("#gitPop").hidden=true;
-  btn.hidden=false; btn.classList.remove("dirty"); btn.textContent="⎇ …";
+  const btn=$("#convGit"), pname=$("#convProjName"); $("#gitPop").hidden=true;
+  btn.hidden=false; btn.classList.remove("dirty"); btn.textContent="⎇ …"; pname.hidden=true;
   try{
     const r=await api("/conv/git?conv="+encodeURIComponent(conv)); const d=await r.json();
     if(S.conv!==conv) return;                                      // 期间切走了,丢弃结果
     S.git=d;
     if(!d.is_project){ btn.hidden=true; return; }
+    pname.textContent=d.name; pname.hidden=false;
     if(!d.is_repo){ btn.textContent="⎇ 非 git 仓库"; return; }
     btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", d.dirty>0);
-  }catch(e){ btn.hidden=true; }
+  }catch(e){ btn.hidden=true; pname.hidden=true; }
 }
 // 默认分支名:hermes/月日-时分,方便一次会话开一条隔离分支
 function defaultBranchName(){ const d=new Date(), p=n=>String(n).padStart(2,"0");
