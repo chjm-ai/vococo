@@ -354,6 +354,8 @@ const S = {
   project: null,        // 「活跃」项目 hash(顶部 ＋新对话 建在此;随打开的会话联动);null=默认项目
   expanded: new Set(),  // 已展开的分组:默认项目用 "__default__",项目用其 hash
   moreShown: new Set(), // 点过「展开更多」的分组(键同 expanded):折叠该组或刷新页面即清空,回到默认 5 条
+  sideTab: localStorage.getItem("hermes_sidetab") || "projects",  // 侧栏「项目/置顶/最近」Tab,记住上次选择
+  tabShown: {pinned: 20, recent: 20},  // 「置顶」「最近」两个 Tab 各自已展示的条数,点「更多」每次 +20
   browseDir: "",        // 目录浏览器当前所在目录
   images: [],           // {data,media_type,url}
   stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
@@ -3157,7 +3159,7 @@ async function tryEnter(){
     connect(); initPush();
     const hasSavedExpanded = localStorage.getItem("hermes_expanded") !== null;
     loadExpanded();
-    if(!hasSavedExpanded){ S.expanded.add("__default__"); S.expanded.add(RECENT_KEY); }  // 从没手动折叠过 → 默认项目/最近会话首次展开
+    if(!hasSavedExpanded){ S.expanded.add("__default__"); }  // 从没手动折叠过 → 默认项目首次展开
     applyConvs(d);   // 这次 /conversations 顺便验证了口令,数据直接拿来用,不用再多打一次
     prefetchHistories();   // 后台预热最近会话历史(有 2.5s 延迟,不抢首屏带宽)
     // 落地到一个新对话(不自动跳进最近会话),欢迎屏里带语音通话入口 + 最近对话列表,
@@ -4148,66 +4150,72 @@ function buildConvRow(c, inCall){
   };
   return e;
 }
-const CONV_SHOW_MAX = 5;   // 每个分组默认最多展示的会话数(置顶行不计入),超出折进「展开更多」
-const RECENT_KEY = "__recent__";
-const RECENT_SHOW_MAX = 10;   // 「最近会话」分组:展开更多≠显示全部,这里封顶 10 条(纯快捷入口,不是完整列表)
-// 手风琴:默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
+const CONV_SHOW_MAX = 5;   // 每个项目分组默认最多展示的会话数,超出折进「展开更多」
+const TAB_PAGE_SIZE = 20;   // 「置顶」「最近」Tab 分页粒度:默认 20 条,点「更多」每次再加 20 条
+const SIDE_TABS = [{key:"projects",label:"项目"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
+// 侧栏第二层 Tab:项目/置顶/最近,切 Tab 记住选择,不影响下方各分组自己的展开态
+function renderSideTabs(box){
+  const bar=el("div","sidetabs");
+  for(const t of SIDE_TABS){
+    const b=el("div","sidetab"+(S.sideTab===t.key?" active":"")); b.textContent=t.label;
+    b.onclick=()=>{
+      if(S.sideTab===t.key) return;
+      S.sideTab=t.key; try{ localStorage.setItem("hermes_sidetab", t.key); }catch(e){}
+      renderConvs();
+    };
+    bar.append(b);
+  }
+  box.append(bar);
+}
+function sideTabEmpty(text){ const e=el("div","tabempty"); e.textContent=text; return e; }
+// 「置顶」Tab:扁平列表(不再是可折叠分组,Tab 本身就是入口),默认 20 条,点「更多」每次 +20
+function renderPinnedTab(box, inCall){
+  const pc=pinnedConvs(inCall);
+  if(!pc.length){ box.append(sideTabEmpty("暂无置顶会话")); return; }
+  const shownN=Math.min(S.tabShown.pinned, pc.length);
+  for(const it of pc.slice(0, shownN)){ const r=it.build(); if(r) box.append(r); }
+  if(pc.length > shownN){
+    const more=el("div","conv ingroup convmore");
+    const mct=el("div","ct"); mct.textContent="更多"; more.append(mct);
+    more.onclick=()=>{ S.tabShown.pinned += TAB_PAGE_SIZE; renderConvs(); };
+    box.append(more);
+  }
+}
+// 「最近」Tab:汇总所有项目(含语音任务)的会话,按最后活跃时间混排,不看归属项目、数量不封顶,
+// 默认 20 条,点「更多」每次 +20(置顶与最近是正交维度,置顶项目若时间够新也会出现在这里)
+function renderRecentTab(box, inCall){
+  const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
+  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
+  const convItems = S.convs.filter(c=>passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
+  const rows = [...taskItems, ...convItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
+  if(!rows.length){ box.append(sideTabEmpty("暂无最近会话")); return; }
+  const shownN=Math.min(S.tabShown.recent, rows.length);
+  for(const it of rows.slice(0, shownN)){ const r=it.build(); if(r) box.append(r); }
+  if(rows.length > shownN){
+    const more=el("div","conv ingroup convmore");
+    const mct=el("div","ct"); mct.textContent="更多"; more.append(mct);
+    more.onclick=()=>{ S.tabShown.recent += TAB_PAGE_SIZE; renderConvs(); };
+    box.append(more);
+  }
+}
+// 「项目」Tab:手风琴——默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
+function renderProjectsTab(box, inCall){
+  const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
+  for(const g of groups) renderProjGroup(box, g, inCall);
+  const addp=el("div","projgrp projadd"); addp.textContent="＋ 新建项目…"; addp.onclick=openProjModal; box.append(addp);
+}
 function renderConvs(){
   const box=$("#convList"); box.innerHTML="";
   const inCall = !$("#callView").hidden;  // 通话中:普通会话行都不高亮,高亮权让给「语音对话」那一行
-  // 根目录固定区:主会话 + 语音对话,恒排最前,不属于任何分组、也不进「置顶」。
+  // 根目录固定区:主会话 + 语音对话,恒排最前,不属于任何分组/Tab。
   const mainConv=S.convs.find(c=>c.conv==="main");
   if(mainConv) box.append(buildConvRow(mainConv, inCall));
   const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
-  // 「置顶」分组:用户手动置顶的会话放这里,和其他分组一样可折叠;缩进/状态灯与普通会话行一致。
-  const PINNED_KEY="__pinned__";
-  {
-    const pc=pinnedConvs(inCall);
-    const open=S.expanded.has(PINNED_KEY);
-    const h=el("div","projgrp");
-    const nm=el("span","pgname"); nm.textContent="置顶"; h.append(nm);
-    const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);
-    h.onclick=()=>toggleGroup(PINNED_KEY);
-    box.append(h);
-    if(open){
-      const shown = S.moreShown.has(PINNED_KEY) ? pc : pc.slice(0, CONV_SHOW_MAX);
-      for(const it of shown){ const r=it.build(); if(r) box.append(r); }
-      if(pc.length > shown.length){
-        const more=el("div","conv ingroup convmore");
-        const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
-        more.onclick=()=>{ S.moreShown.add(PINNED_KEY); renderConvs(); };
-        box.append(more);
-      }
-    }
-  }
-  // 「最近会话」分组:汇总所有项目分组(含语音任务)的会话,按最后活跃时间混排,不看归属项目。
-  // 默认 5 条,展开最多 10 条——纯快捷入口,不是"展开更多=显示全部"的完整列表。
-  {
-    const open=S.expanded.has(RECENT_KEY);
-    const h=el("div","projgrp");
-    const nm=el("span","pgname"); nm.textContent="最近会话"; h.append(nm);
-    const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);
-    h.onclick=()=>toggleGroup(RECENT_KEY);
-    box.append(h);
-    if(open){
-      const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
-      // 置顶与"最近会话"是正交维度:置顶项目若时间够新,也应该出现在这里,不做互斥过滤
-      const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
-      const convItems = S.convs.filter(c=>passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
-      const rows = [...taskItems, ...convItems].sort((a,b)=>b.ts-a.ts).slice(0, RECENT_SHOW_MAX).map(it=>it.build()).filter(Boolean);
-      const shown = S.moreShown.has(RECENT_KEY) ? rows : rows.slice(0, CONV_SHOW_MAX);
-      for(const r of shown) box.append(r);
-      if(rows.length > shown.length){
-        const more=el("div","conv ingroup convmore");
-        const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
-        more.onclick=()=>{ S.moreShown.add(RECENT_KEY); renderConvs(); };
-        box.append(more);
-      }
-    }
-  }
-  const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
-  for(const g of groups) renderProjGroup(box, g, inCall);
-  // 定时任务分组:只有真有任务时才出现(见 renderConvs 上方数据源 S.cronJobs)
+  renderSideTabs(box);
+  if(S.sideTab==="pinned") renderPinnedTab(box, inCall);
+  else if(S.sideTab==="recent") renderRecentTab(box, inCall);
+  else renderProjectsTab(box, inCall);
+  // 定时任务分组:三个 Tab 之外,始终可见;只有真有任务时才出现(数据源 S.cronJobs)
   if(S.cronJobs.length){
     const CRON_KEY="__cron__";
     const open=S.expanded.has(CRON_KEY);
@@ -4230,7 +4238,6 @@ function renderConvs(){
       }
     }
   }
-  const addp=el("div","projgrp projadd"); addp.textContent="＋ 新建项目…"; addp.onclick=openProjModal; box.append(addp);
   // 同步标题栏:loadConvs 刷新 S.convs 后调 renderConvs,标题可能已更新
   const activeConv=S.convs.find(c=>c.conv===S.conv);
   if(activeConv) $("#convTitle").textContent=activeConv.title||"新对话";
