@@ -4054,9 +4054,9 @@ function renderConvs(){
     box.append(h);
     if(open){
       const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
-      // 已置顶的语音任务归"置顶"分组,这里要滤掉,不然置顶了还继续在这儿重复出现
-      const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
-      const convItems = S.convs.filter(c=>!c.pinned && passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
+      // 置顶与"最近会话"是正交维度:置顶项目若时间够新,也应该出现在这里,不做互斥过滤
+      const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
+      const convItems = S.convs.filter(c=>passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
       const rows = [...taskItems, ...convItems].sort((a,b)=>b.ts-a.ts).slice(0, RECENT_SHOW_MAX).map(it=>it.build()).filter(Boolean);
       const shown = S.moreShown.has(RECENT_KEY) ? rows : rows.slice(0, CONV_SHOW_MAX);
       for(const r of shown) box.append(r);
