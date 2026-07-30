@@ -384,6 +384,13 @@ class WebAdapter:
                 "started": time.time(), "phase": "思考中", "frames": [(seq, payload)]
             }
             return
+        # send_image 工具中途发的图(mid_turn=True):这一轮还没结束,只按普通帧追加,
+        # 不能当"message"收轮——否则重连的客户端拿不到这条之后还会继续的正文/工具帧。
+        if t == "message" and payload.get("mid_turn"):
+            st = self._live.get(conv)
+            if st is not None:
+                st["frames"].append((seq, payload))
+            return
         if t in ("done", "message", "cancelled"):
             self._live.pop(conv, None)  # 一轮结束(choice 是审批暂停,不收轮)
             return
@@ -449,7 +456,9 @@ class WebAdapter:
         """把本地图片文件复制进 IMAGES_DIR 并作为一条 assistant 气泡推给前端;返回错误信息(None=成功)。
 
         供 send_image 工具用 —— 模型生图/截图后主动把本地文件发出去,复用 send() 的
-        已读标记/推送逻辑,只是多带一份 images 字段。
+        已读标记/推送逻辑,只是多带一份 images 字段。带 mid_turn=True 标记:这是本轮
+        回复过程中途发的,不代表整轮结束,前端据此只把图片挂进当前流式气泡,不会当
+        "回合已完成"提前收尾(否则本轮后续还要继续输出的正文会被拆成第二个气泡)。
         """
         if not src_path.is_file():
             return f"文件不存在:{src_path}"
@@ -461,9 +470,13 @@ class WebAdapter:
         (config.IMAGES_DIR / name).write_bytes(src_path.read_bytes())
         self._emit({
             "conv": str(chat_id), "type": "message", "text": caption,
-            "images": [f"/image?name={name}"],
+            "images": [f"/image?name={name}"], "mid_turn": True,
         })
-        session_store.set_pending_review(config.resolve_session_key("web", str(chat_id)), True)
+        session_key = config.resolve_session_key("web", str(chat_id))
+        # 落库进当前轮次:只推 SSE 不落库的话,断线重连/刷新页面后这张图会永久消失
+        # (历史只认 turns.images 这一列),但工具调用卡片仍显示"已发送"造成错觉。
+        session_store.append_turn_image(session_key, name)
+        session_store.set_pending_review(session_key, True)
         self._push_notify(
             title="Wazir", body=caption or "[图片]", conv=str(chat_id),
             kind="proactive", enabled=config.PUSH_ON_PROACTIVE,

@@ -57,6 +57,34 @@ def save_turn_images(turn_id: int, images: list) -> list[str]:
     return names
 
 
+def append_turn_image(session_key: str, name: str) -> None:
+    """AI 主动发的一张图(send_image 工具)追加进当前(最新)一轮的 turns.images。
+
+    与 save_turn_images 不同:那是用户上传图片时【整轮一次性写入】;这里是模型在
+    轮次进行中途主动补发一张,要在已有列表基础上追加而不是覆盖,否则会连带把
+    这一轮用户上传的图片记录冲掉。找不到该会话的轮次(理论上不会,调用时轮次
+    必然已 start_turn)则静默跳过。
+    """
+    c = _db.conn()
+    row = c.execute(
+        "SELECT id, images FROM turns WHERE session_key=? ORDER BY id DESC LIMIT 1",
+        (session_key,),
+    ).fetchone()
+    if not row:
+        return
+    turn_id, imgs = row
+    try:
+        names = json.loads(imgs) if imgs else []
+    except (json.JSONDecodeError, ValueError):
+        names = []
+    names.append(name)
+    c.execute(
+        "UPDATE turns SET images=? WHERE id=?",
+        (json.dumps(names, ensure_ascii=False), turn_id),
+    )
+    c.commit()
+
+
 def image_path(name: str):
     """按文件名返回图片的磁盘路径(Path);非法名/不存在返回 None —— 供 HTTP 取图时校验。"""
     if not name or not _IMG_NAME_RE.match(name):

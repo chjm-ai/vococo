@@ -5890,6 +5890,14 @@ function handleEvent(e){
   }
   // 后台标题总结完成 → 刷新侧边栏/标题栏(loadConvs 会顺带同步顶栏标题),无论前后台会话
   if(e.type==="title"){ loadConvs(); return; }
+  // send_image 工具中途发的图(mid_turn):这一轮还没结束,后面还会有正文/工具事件。
+  // 按 STREAMY 事件一样只挂进气泡/回放缓冲,不能走下面"回合结束"那一套(未读标记/
+  // 清空回放缓冲/刷新侧栏),否则会把还没说完的这一轮拦腰截断成两条气泡。
+  if(e.type==="message" && e.mid_turn){
+    bufPush(e.conv, e); markLive();
+    if(e.conv===S.conv){ applyStreamEvent(e); if(S.stream) S.stream.lastEvt=Date.now(); }
+    return;
+  }
   // 会话有新回合 → 历史已变,作废其缓存(含磁盘),下次打开会重新拉取
   if(e.type==="done"||e.type==="message"){ delete S.histCache[e.conv]; idbDel("hist:"+e.conv); }
   // 维护每会话"进行中"缓冲:无论前台/后台都记录,切回该会话时可完整重建流式气泡
@@ -5957,7 +5965,7 @@ function handleEvent(e){
         }
       }else{ setRateStatus("ok","",""); }
       setMeta(e); loadConvs(); flushPending(e.conv); break; }
-    case "message": // 命令回复 / 报错 / cron 推送 / AI 主动发图
+    case "message": // 命令回复 / 报错 / cron 推送(AI 主动发图走 mid_turn 分支,不会到这里)
       if(S.stream && !streamText(S.stream)){ finalizeStream(e.text, e.images); }
       else { S.stream=null; addBubble("ai", e.text, e.images); }
       // 后端推送的报错也更新侧栏状态
@@ -6052,6 +6060,17 @@ function applyStreamEvent(e){
     case "compact": { const s=ensureStream();
       const d=el("div","compactline"); d.textContent="上下文已自动压缩,对话继续";
       s.flow.append(d); scrollDown(); break; }
+    case "message": { // mid_turn 图片消息(send_image 工具),只在本轮回复过程中途出现
+      const s=ensureStream();
+      if(e.text){ const d=el("div","seg"); d.innerHTML=mdToHtml(e.text); s.flow.append(d); }
+      if(e.images && e.images.length){
+        const g=el("div","imgs");
+        for(const u of e.images){ const im=el("img");
+          if(typeof u==="string" && u.startsWith("/")) loadAuthedImg(im,u); else im.src=u;
+          im.onclick=()=>openImgViewer(im); g.append(im); }
+        s.flow.append(g);
+      }
+      renderStatus(); scrollDown(); break; }
   }
 }
 // 切回某会话:若它有进行中的缓冲,重建流式气泡。命中快照(离开前摘下的 DOM)就直接接回来,

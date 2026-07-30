@@ -185,3 +185,34 @@ def test_set_chosen_model_first_time_does_not_fail(isolated):
 
     session_store.set_chosen_model("web:new", "claude-opus-5")
     assert session_store.get_chosen_model("web:new") == "claude-opus-5"
+
+
+def test_append_turn_image_persists_to_current_turn(isolated):
+    """send_image 工具追加的图片要落进当前轮次,刷新历史后仍能看到(而非只推 SSE 就丢)。"""
+    from claude_hermes.memory import session_store
+
+    turn_id = session_store.start_turn("web:1", "帮我画个图")
+    session_store.append_turn_image("web:1", "ai_abc123.png")
+    session_store.finish_turn(turn_id, "画好了,发给你")
+
+    history = session_store.load_history("web:1")
+    assert history[-1]["images"] == ["/image?name=ai_abc123.png"]
+
+
+def test_append_turn_image_merges_with_user_uploaded_images(isolated):
+    """同一轮里既有用户上传图又有 AI 主动发图时,追加不能把用户那张覆盖掉。"""
+    from claude_hermes.core.agent import ImageAttachment
+    from claude_hermes.memory import session_store
+
+    turn_id = session_store.start_turn("web:1", "这张图片里有什么?")
+    session_store.save_turn_images(
+        turn_id, [ImageAttachment(data="aGVsbG8=", media_type="image/png")]
+    )
+    session_store.append_turn_image("web:1", "ai_reply.png")
+    session_store.finish_turn(turn_id, "已看图并回发一张")
+
+    history = session_store.load_history("web:1")
+    assert history[-1]["images"] == [
+        f"/image?name={turn_id}_0.png",
+        "/image?name=ai_reply.png",
+    ]
