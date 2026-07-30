@@ -3231,15 +3231,31 @@ function docLinkHtml(txt, target){
 }
 function inlineMd(t){
   t = esc(t);
-  const links=[];                                   // 先把 [文字](url) 抠出来占位,避免下面裸链接二次包裹
+  // 占位机制:markdown 链接、反引号代码 两类都先抠出来存进 parts、原地留一个不会被后面
+  // 的正则误伤的占位符,等其余处理(粗体/斜体/裸链接/裸路径)跑完再统一还原。反引号也要
+  // 抠出来是因为:用户习惯把路径包一层反引号提高可读性(``/Users/xx/report.md``),但仍然
+  // 期待它可点——不占位的话反引号会先转成 <code>...</code>,后面裸路径正则要求的"前面是
+  // 空白/行首"边界会被 <code> 的 '>' 挡住,导致包了反引号的路径反而点不了(2026-07-30 踩过)。
+  // 占位符数字外面包一层 \u0000 转义序列(NUL),不能像原来"L"+数字那样直接拼数字——
+  // 中文行文里到处是"共 3 个文件"这种夹数字写法,朴素占位符会跟真实文本撞车。注意这里
+  // 必须写 \u0000 转义序列,不能敲字面 NUL 字节——HTML5 解析器会把源码里的字面 NUL
+  // 替换成 U+FFFD,写字面字节等于占位符在浏览器里直接失效(改这段踩过一次,直接编辑
+  // 工具似乎会把 \u0000 文本解释成真实 NUL 字节,这行改动是用脚本写的,不是用 Edit)。
+  const parts=[];
+  const hold = html => { parts.push(html); return "\u0000"+(parts.length-1)+"\u0000"; };
   t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,(m,txt,url)=>{
     let html;
     if(/^https?:\/\//i.test(url)) html = isDocUrl(url) ? docLinkHtml(txt,url) : '<a href="'+url+'" target="_blank" rel="noopener">'+txt+'</a>';
     else if(DOC_EXT_RE.test(url)) html = docLinkHtml(txt,url);   // 本地路径 + 文档后缀 → 预览
     else html = txt;   // 本地路径但不是文档、也不是外链 → 没法点,退化成纯文字,别留死链接
-    links.push(html); return "L"+(links.length-1)+"";
+    return hold(html);
   });
-  t = t.replace(/`([^`]+)`/g,(m,c)=>"<code>"+c+"</code>");
+  t = t.replace(/`([^`]+)`/g,(m,c)=>{
+    // 反引号里的内容本身就是个文档链接/路径 → 直接当文档链接处理,不再展示成灰底代码块
+    if(/^https?:\/\//i.test(c)) return hold(isDocUrl(c) ? docLinkHtml(c,c) : "<code>"+c+"</code>");
+    if(DOC_EXT_RE.test(c) && c.includes("/")) return hold(docLinkHtml(c,c));
+    return hold("<code>"+c+"</code>");
+  });
   t = t.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
   t = t.replace(/\*([^*\n]+)\*/g,"<em>$1</em>");
   t = t.replace(/(https?:\/\/[^\s<]+[^\s<.,)])/g,(m,url)=>isDocUrl(url)?docLinkHtml(url,url):'<a href="'+url+'" target="_blank" rel="noopener">'+url+'</a>');
@@ -3252,7 +3268,7 @@ function inlineMd(t){
   // 这种孤零零的文件名也会被当成链接,误伤太多)。
   t = t.replace(/(^|[\s(])((?:~\/|\.{1,2}\/|\/)[^\s<>()`"'&]+\.(?:md|markdown|txt|html?|pdf|csv|json|log|ya?ml|py|jsx?|tsx?|sh|css|xml)|[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\/[^\s<>()`"'&]+\.(?:md|markdown|txt|html?|pdf|csv|json|log|ya?ml|py|jsx?|tsx?|sh|css|xml))/g,
     (m,pre,p)=>pre+docLinkHtml(p,p));
-  t = t.replace(/L(\d+)/g,(m,i)=>links[+i]);   // 还原 Markdown 链接
+  t = t.replace(/\u0000(\d+)\u0000/g,(m,i)=>parts[+i]);   // 还原 markdown 链接 / 反引号代码
   return t;
 }
 function mdToHtml(src){
@@ -3335,15 +3351,29 @@ async function openDocPreview({kind, target, title}){
 const DP_URL_SANDBOX = 'sandbox="allow-scripts allow-same-origin allow-popups allow-forms"';
 function renderDocUrl(target){
   const body=$("#dpBody"), ext=extOf(target);
+  const sameOrigin = target.startsWith(location.origin+"/");
   if(ext==="md"||ext==="markdown"||ext==="txt"){
+    // 跨域 fetch 会被本站 CSP 的 connect-src 'self' 直接挡在浏览器这一层(压根发不出网络
+    // 请求),不是"对方不让读"——干等 fetch 失败再退化没意义,直接走"尝试内嵌+给出说明"。
+    if(!sameOrigin){ dpExternalFallback(target, "跨域文档:浏览器安全策略不允许本站直接读取外部内容,下面尝试直接显示原页面。"); return; }
     fetch(target).then(r=>r.text()).then(txt=>{
       if(ext==="txt"){ body.innerHTML=""; const pre=el("pre","dp-text"); pre.textContent=txt; body.append(pre); }
       else body.innerHTML='<div class="dp-md bubble">'+mdToHtml(txt)+'</div>';
-    }).catch(()=>{ body.innerHTML='<iframe class="dp-frame" '+DP_URL_SANDBOX+' src="'+esc(target)+'"></iframe>'; });
+    }).catch(()=>{ dpExternalFallback(target, "读取失败,下面尝试直接显示原页面。"); });
     return;
   }
   if(/^(png|jpe?g|gif|webp|svg)$/.test(ext)){ body.innerHTML='<img class="dp-img" src="'+esc(target)+'">'; return; }
+  if(!sameOrigin){ dpExternalFallback(target, "这是外部链接,能不能内嵌预览取决于对方网站自己的安全策略(比如 GitHub 就明确禁止被其他网站嵌入)。"); return; }
   body.innerHTML='<iframe class="dp-frame" '+DP_URL_SANDBOX+' src="'+esc(target)+'"></iframe>';
+}
+// 跨域内容常常连"能不能被嵌进 iframe"都由对方说了算(X-Frame-Options/CSP frame-ancestors),
+// 浏览器不给 JS 任何"被拒绝"的可探测信号——没法判断失败后自动切换,只能提前把话说清楚,
+// 同时仍然尝试 iframe(万一对方允许,直接就能看)。
+function dpExternalFallback(target, note){
+  const body=$("#dpBody");
+  body.innerHTML =
+    '<div class="dp-err">'+esc(note)+' 如果下面还是空白,点右上角"在新标签页打开"直接看原页面。</div>'+
+    '<iframe class="dp-frame" '+DP_URL_SANDBOX+' src="'+esc(target)+'"></iframe>';
 }
 function renderDocBlob(blob, target){
   const body=$("#dpBody"), ctype=(blob.type||"").split(";")[0].trim(), ext=extOf(target);
