@@ -18,7 +18,12 @@ import time
 from typing import TYPE_CHECKING
 
 from . import _db
-from .images import image_path, purge_session_images, save_turn_images  # noqa: F401 (re-export)
+from .images import (  # noqa: F401 (re-export)
+    append_turn_image,
+    image_path,
+    purge_session_images,
+    save_turn_images,
+)
 from .prefs import get_prefs, set_prefs  # noqa: F401 (re-export)
 from .projects import (  # noqa: F401 (re-export)
     hide_project,
