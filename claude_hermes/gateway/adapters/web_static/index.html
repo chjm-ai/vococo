@@ -2090,6 +2090,24 @@ void main(){
           break;
         case "error": {
           const msg = String((data.error && (data.error.message || data.error.code)) || "出错了");
+          // 2026-07-30 根因修复:我们主动发起的朗读(pumpOmniRead 已 omniReadPending++)
+          // 撞上 Omni 自己"关不掉"的自动回复还没让出 response 槽位,服务端拒绝并报
+          // "already has an active response"(2026-07-23 事故日志 14:17:49 就是这个错误,
+          // 当时只在"新一轮开始"入口做了防护,见 sendOmniTurn 注释,句子与句子之间正常
+          // 轮转时命中同一个错误此前被下面这行原样吞掉——omniReadPending 没回滚、
+          // 这句话的原文也没塞回队列,该句朗读凭空消失。更糟的是计数器留着 >0,
+          // 下一个到达的 response.created(很可能是 Omni 自己那句自动回复)会被
+          // 误判成"我们的朗读"而放行出声——用户听到的就变成 Omni 自己编的话,
+          // 跟 Claude 的原文对不上。这里回滚状态、把没念成的原文塞回队列头部,
+          // 短延迟后重新泵一次,而不是让这句话默默消失。
+          if(/active response|no active/i.test(msg) && omniReadPending > 0){
+            omniReadPending--;
+            if(omniReadCurrentText) omniReadQueue.unshift(omniReadCurrentText);
+            omniReadCurrentText = "";
+            vdbg("read.create.rejected", msg);
+            setTimeout(() => pumpOmniRead(), 300);
+            break;
+          }
           // response.cancel 撞上"没有进行中的回复"这类时序噪音只记日志不弹红气泡,
           // 用户看到也做不了什么;其余错误照旧可见。
           if(/cancel|active response|no active/i.test(msg)) break;
