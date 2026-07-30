@@ -125,3 +125,44 @@ async def test_requires_auth_token_when_configured(isolated, doc_root, monkeypat
     status, _body, _headers = await _get(app, "/doc/preview?conv=x&path=a.txt")
 
     assert status == 401
+
+
+# ── AI_BRAIN 兜底根目录:非项目会话下 AI 常把笔记直接写进 Obsidian vault(比如
+# "00-inbox/xxx.md" 这种收件箱惯例),不在会话 cwd 范围内——不是"公网访问不到本地
+# 文件"(HTTP 请求本来就是服务端执行,客户端在哪没区别),原来只认会话 cwd 会把这类
+# 合法文件误判成"越界"拒绝,见与用户的讨论。 ──────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_falls_back_to_ai_brain_when_not_in_conv_cwd(doc_app):
+    inbox = config.AI_BRAIN_DIR / "00-inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / "note.md").write_text("笔记正文", encoding="utf-8")
+
+    status, body, _headers = await _get(doc_app, "/doc/preview?conv=x&path=00-inbox/note.md")
+
+    assert status == 200
+    assert body.decode("utf-8") == "笔记正文"
+
+
+@pytest.mark.anyio
+async def test_conv_cwd_wins_over_ai_brain_on_name_collision(doc_app, doc_root):
+    (doc_root / "same.md").write_text("项目里的版本", encoding="utf-8")
+    (config.AI_BRAIN_DIR).mkdir(parents=True, exist_ok=True)
+    (config.AI_BRAIN_DIR / "same.md").write_text("AI_BRAIN 里的版本", encoding="utf-8")
+
+    status, body, _headers = await _get(doc_app, "/doc/preview?conv=x&path=same.md")
+
+    assert status == 200
+    assert body.decode("utf-8") == "项目里的版本"
+
+
+@pytest.mark.anyio
+async def test_ai_brain_fallback_still_rejects_traversal(doc_app):
+    secret = config.AI_BRAIN_DIR.parent / "secret.txt"
+    secret.write_text("do not leak", encoding="utf-8")
+    config.AI_BRAIN_DIR.mkdir(parents=True, exist_ok=True)
+
+    status, _body, _headers = await _get(doc_app, "/doc/preview?conv=x&path=../secret.txt")
+
+    assert status == 404
