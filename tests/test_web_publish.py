@@ -43,6 +43,11 @@ async def test_publish_serves_file(published_app):
     assert text == "<h1>hi</h1>"
     assert "text/html" in headers["Content-Type"]
     assert "sandbox" in headers["Content-Security-Policy"]
+    # 允许本站把发布页嵌进文档预览分屏的 iframe(见 openDocPreview);'self' 只放行本站
+    # 自己嵌自己,不影响防第三方站点盗嵌那条线——sandbox 没给 allow-same-origin 才是真正
+    # 挡"页面被投毒偷 token"的那道防护,这条改动动不到它(2026-07-30 与用户的讨论)。
+    assert "frame-ancestors 'self'" in headers["Content-Security-Policy"]
+    assert headers["X-Frame-Options"] == "SAMEORIGIN"
 
 
 @pytest.mark.anyio
