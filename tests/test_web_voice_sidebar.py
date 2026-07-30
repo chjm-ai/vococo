@@ -44,7 +44,7 @@ async def test_voice_sidebar_returns_main_pinned_first_and_task_rows(web_app):
         data = await resp.json()
 
     assert data["main"]["conv"] == "voice-chat:main"
-    assert data["main"]["title"] == "语音对话"
+    assert data["main"]["title"] == "语音通话"
     assert data["main"]["pinned"] is True
     assert len(data["tasks"]) == 1
     row = data["tasks"][0]
