@@ -45,7 +45,9 @@ async def read_audio(request: web.Request) -> tuple[bytes | None, str, str]:
     return None, "", ""
 
 
-async def transcribe(audio: bytes, filename: str, ctype: str) -> tuple[str | None, str]:
+async def transcribe(
+    audio: bytes, filename: str, ctype: str, *, timeout_sec: int = 30
+) -> tuple[str | None, str]:
     """转写音频,返回 (text, error)。text 为 None 表示失败,error 是给用户看的提示。
 
     识别本体是阿里 DashScope 的 qwen3-asr-flash(2026-07-08 从 SiliconFlow 的
@@ -53,6 +55,9 @@ async def transcribe(audio: bytes, filename: str, ctype: str) -> tuple[str | Non
     确认是那个接口本身慢、不是我们代码的问题;qwen3-asr-flash 同等准确度下
     只要 0.5~1 秒,见 03-phase2-实现记录.md)。协议跟 SiliconFlow 完全不同——
     这边是 JSON + base64 音频(data URI),不是 multipart 文件上传。
+
+    timeout_sec:语音输入(几秒到几十秒的口述)默认 30s 足够;聊天里上传的音频
+    附件可能长达数十分钟、上百 MB,调用方(web.py 的 /upload_audio)会传更大的值。
     """
     if not config.DASHSCOPE_API_KEY:
         return None, "未配置语音转写:请在 .env 设 DASHSCOPE_API_KEY"
@@ -70,7 +75,7 @@ async def transcribe(audio: bytes, filename: str, ctype: str) -> tuple[str | Non
         "Authorization": f"Bearer {config.DASHSCOPE_API_KEY}",
         "Content-Type": "application/json",
     }
-    timeout = aiohttp.ClientTimeout(total=30)
+    timeout = aiohttp.ClientTimeout(total=timeout_sec)
     t0 = time.monotonic()
     try:
         async with aiohttp.ClientSession(timeout=timeout) as sess:

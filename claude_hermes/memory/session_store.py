@@ -18,6 +18,11 @@ import time
 from typing import TYPE_CHECKING
 
 from . import _db
+from .audio import (  # noqa: F401 (re-export)
+    audio_path,
+    purge_session_audio,
+    save_turn_audio,
+)
 from .images import (  # noqa: F401 (re-export)
     AI_IMAGE_PREFIX,
     append_turn_image,
@@ -125,12 +130,12 @@ def load_history(session_key: str, limit: int = 40, *, full_events: bool = False
     c = _conn()
     wm = _watermark(c, session_key)
     rows = c.execute(
-        "SELECT id, user_text, assistant_text, events, draft_text, images FROM turns "
+        "SELECT id, user_text, assistant_text, events, draft_text, images, audios FROM turns "
         "WHERE session_key=? AND id>? ORDER BY id DESC LIMIT ?",
         (session_key, wm, limit),
     ).fetchall()
     out: list[dict] = []
-    for tid, u, a, ev, draft, imgs in reversed(rows):
+    for tid, u, a, ev, draft, imgs, auds in reversed(rows):
         try:
             events = json.loads(ev) if ev else []
         except (json.JSONDecodeError, ValueError):
@@ -154,6 +159,17 @@ def load_history(session_key: str, limit: int = 40, *, full_events: bool = False
             entry["images"] = ["/image?name=" + n for n in user_names]
         if ai_names:
             entry["ai_images"] = ["/image?name=" + n for n in ai_names]
+        # 音频:库里存 [{file,text}],给前端换成取音频 URL + 带上转写文字(气泡里展开可看)
+        try:
+            audio_entries = json.loads(auds) if auds else []
+        except (json.JSONDecodeError, ValueError):
+            audio_entries = []
+        if audio_entries:
+            entry["audios"] = [
+                {"url": "/audio?name=" + e.get("file", ""), "text": e.get("text", "")}
+                for e in audio_entries
+                if e.get("file")
+            ]
         out.append(entry)
     return out
 
@@ -280,6 +296,7 @@ def flush_draft(turn_id: int, text: str) -> None:
 def clear(session_key: str) -> None:
     c = _conn()
     purge_session_images(c, session_key)  # 先清图片文件,再删轮次
+    purge_session_audio(c, session_key)  # 音频同理
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute(
         "UPDATE session_meta SET ctx_tokens=0, total_tokens=0, "
@@ -520,6 +537,7 @@ def delete_session(session_key: str) -> None:
     """彻底删掉一个会话(所有轮次 + 元数据 + 图片文件)。"""
     c = _conn()
     purge_session_images(c, session_key)  # 先清图片文件,再删轮次
+    purge_session_audio(c, session_key)  # 音频同理
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute("DELETE FROM session_meta WHERE session_key=?", (session_key,))
     c.commit()

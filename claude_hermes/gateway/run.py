@@ -149,7 +149,7 @@ class GatewayRunner:
                     with anyio.fail_after(config.AGENT_TURN_TIMEOUT):  # 单轮硬超时(含等 clarify)
                         await core.converse(
                             key, inc.text, model, adapter.make_sink(inc.chat_id),
-                            images=inc.images, store_user=inc.store_text,
+                            images=inc.images, audios=inc.audios, store_user=inc.store_text,
                             cwd_override=cwd_override,
                         )
                 except TimeoutError:
