@@ -41,6 +41,14 @@ from .web_push import PUSH
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
 _DOC_PREVIEW_MAX = 3 * 1024 * 1024  # 文档预览分屏读文件上限;超过就不读,前端提示下载/自己开
+# 文档预览模糊兜底搜索用:直接拼接找不到时,按路径尾部扫一遍——AI 提到文件时经常掉了包名
+# 前缀(比如把 claude_hermes/memory/images.py 说成 memory/images.py)。跳过这些目录纯粹是
+# 图快、避免误判(里面几乎不会是用户真正想看的文档),不是安全边界(边界仍是越界即拒)。
+_DOC_SEARCH_SKIP_DIRS = {
+    ".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
+    ".next", ".cache", "target", ".pytest_cache", ".mypy_cache", ".obsidian",
+}
+_DOC_SEARCH_MAX_SCAN = 20000  # 扫描文件数上限,避免大仓库/大 vault 卡住请求
 
 # 纵深防御(审计 web#5/#9 · 2-9)。CSP 里 script/style 仍留 'unsafe-inline'——前端是单文件
 # 内联脚本,去掉会整页崩;但收紧 connect/img、禁 frame 嵌入/base/object/表单外发,给「未来
@@ -1586,10 +1594,36 @@ class WebAdapter:
                 out.append(b)
         return out
 
+    def _fuzzy_doc_path(self, base: Path, rel_parts: tuple[str, ...]) -> Path | None:
+        """直接拼接找不到时的兜底:在 base 下找"路径末尾几段跟 rel_parts 一样"的文件。
+        典型场景是 AI 提到项目文件时把包名前缀说漏了(比如把 claude_hermes/memory/images.py
+        说成 memory/images.py)——人一看就知道该是哪个文件,这里做同样的事。候选不止一个
+        时选路径最短(离 base 最近)的那个,只是个启发式,不保证猜对;猜不到才是真的
+        "文件不存在"。仍然是只读、只在 base 内部搜索,不改变安全边界。
+        """
+        n = len(rel_parts)
+        if n < 2:
+            return None  # 只有孤零零一个文件名(没有目录段可"丢")→ 太容易撞同名文件,不猜
+        scanned = 0
+        best: Path | None = None
+        best_depth = 10**9
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = [d for d in dirnames if d not in _DOC_SEARCH_SKIP_DIRS and not d.startswith(".")]
+            for name in filenames:
+                scanned += 1
+                if scanned > _DOC_SEARCH_MAX_SCAN:
+                    return best
+                parts = (Path(dirpath) / name).relative_to(base).parts
+                if len(parts) >= n and parts[-n:] == rel_parts and len(parts) < best_depth:
+                    best = Path(dirpath) / name
+                    best_depth = len(parts)
+        return best
+
     def _resolve_doc_path(self, conv_root: str, rel: str) -> Path | None:
         """把前端传的路径(相对或绝对)解析成真实文件路径,越界(见 _doc_preview_bounds)拒绝。
         相对路径依次按候选根目录展开,哪个真存在就用哪个——AI 给的相对路径可能是相对会话
-        cwd,也可能是相对 AI_BRAIN(比如 "00-inbox/x.md" 这种收件箱惯例)。
+        cwd,也可能是相对 AI_BRAIN(比如 "00-inbox/x.md" 这种收件箱惯例)。直接拼接全部落空
+        再退到 _fuzzy_doc_path 按路径尾部兜底搜一遍。
         """
         rel = (rel or "").strip()
         if not rel:
@@ -1611,13 +1645,20 @@ class WebAdapter:
                 continue  # rel 里带 ../.. 跳出了这个候选根,换下一个候选根试
             if target.is_file():
                 return target
+        for base in bounds:
+            found = self._fuzzy_doc_path(base, p.parts)
+            if found is not None:
+                return found
         return None
 
     async def _handle_doc_preview(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
         root = self._conv_cwd(request.query.get("conv", "")) or os.getcwd()
-        target = self._resolve_doc_path(root, request.query.get("path", ""))
+        # 模糊兜底可能要 os.walk 扫大几千个文件(_DOC_SEARCH_MAX_SCAN),丢进线程池——
+        # 这是单进程 server,同一个 event loop 还扛着其他会话的 SSE 长连接,同步扫盘会
+        # 把大伙都卡住(实测最坏情况 1.6s+,足够让人感觉到卡顿)。
+        target = await asyncio.to_thread(self._resolve_doc_path, root, request.query.get("path", ""))
         if target is None or not target.is_file():
             return web.json_response({"error": "文件不存在或路径越界"}, status=404)
         try:

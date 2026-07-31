@@ -208,3 +208,60 @@ async def test_rejects_absolute_path_outside_home(doc_app, isolated):
     status, _body, _headers = await _get(doc_app, "/doc/preview?conv=x&path=" + str(outside))
 
     assert status == 404
+
+
+# ── 模糊兜底搜索:AI 提到项目文件时经常把包名前缀说漏(比如把 claude_hermes/memory/
+# images.py 说成 memory/images.py),直接拼接找不到就该按路径尾部搜一遍,而不是让用户
+# 点开一堆"文件不存在"——见与用户的讨论(2026-07-31,原话"针对这个问题,我们有两种解决
+# 思路"，选的是让它尽量能正确识别,而不是不加超链接)。──────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_fuzzy_resolves_path_missing_package_prefix(doc_app, doc_root):
+    pkg = doc_root / "claude_hermes" / "memory"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "images.py").write_text("# real module", encoding="utf-8")
+
+    status, body, _headers = await _get(doc_app, "/doc/preview?conv=x&path=memory/images.py")
+
+    assert status == 200
+    assert body.decode("utf-8") == "# real module"
+
+
+@pytest.mark.anyio
+async def test_fuzzy_search_skips_heavy_dirs(doc_app, doc_root):
+    # .git/ 下藏一个同名文件,不该被模糊搜索捞出来(既慢又几乎不会是用户想看的东西)
+    trap = doc_root / ".git" / "memory"
+    trap.mkdir(parents=True, exist_ok=True)
+    (trap / "images.py").write_text("should not be found", encoding="utf-8")
+
+    status, _body, _headers = await _get(doc_app, "/doc/preview?conv=x&path=memory/images.py")
+
+    assert status == 404
+
+
+@pytest.mark.anyio
+async def test_fuzzy_search_requires_at_least_two_segments(doc_app, doc_root):
+    # 孤零零一个文件名(没有目录段可"丢")太容易撞同名文件,不猜——即使真的存在也不搜
+    nested = doc_root / "a" / "b" / "c"
+    nested.mkdir(parents=True, exist_ok=True)
+    (nested / "lonely.md").write_text("hi", encoding="utf-8")
+
+    status, _body, _headers = await _get(doc_app, "/doc/preview?conv=x&path=lonely.md")
+
+    assert status == 404
+
+
+@pytest.mark.anyio
+async def test_fuzzy_search_prefers_shallowest_match(doc_app, doc_root):
+    deep = doc_root / "a" / "b" / "notes" / "x.md"
+    deep.parent.mkdir(parents=True, exist_ok=True)
+    deep.write_text("deep", encoding="utf-8")
+    shallow = doc_root / "c" / "notes" / "x.md"
+    shallow.parent.mkdir(parents=True, exist_ok=True)
+    shallow.write_text("shallow", encoding="utf-8")
+
+    status, body, _headers = await _get(doc_app, "/doc/preview?conv=x&path=notes/x.md")
+
+    assert status == 200
+    assert body.decode("utf-8") == "shallow"
