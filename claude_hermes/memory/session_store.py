@@ -236,7 +236,11 @@ def start_turn(session_key: str, user_text: str) -> int:
 
 
 def finish_turn(turn_id: int, assistant_text: str, events: list | None = None) -> None:
-    """用 AI 回复填完 start_turn 占的坑;events=该轮过程时间线(可选)。"""
+    """用 AI 回复填完 start_turn 占的坑;events=该轮过程时间线(可选)。
+
+    顺手把 ts 刷到回复完成的时刻——侧边栏排序按 ts 取最新,这样"AI 回复完"
+    和"用户发消息"两个动作都会把会话顶到最前面,而不是停在用户发消息那一刻。
+    """
     c = _conn()
     ev_json = None
     if events:
@@ -245,8 +249,8 @@ def finish_turn(turn_id: int, assistant_text: str, events: list | None = None) -
         except (TypeError, ValueError):
             ev_json = None  # 时间线序列化失败不影响正文落库
     c.execute(
-        "UPDATE turns SET assistant_text=?, events=?, draft_text='' WHERE id=?",
-        (assistant_text, ev_json, turn_id),
+        "UPDATE turns SET assistant_text=?, events=?, draft_text='', ts=? WHERE id=?",
+        (assistant_text, ev_json, time.time(), turn_id),
     )
     c.commit()
 
