@@ -25,7 +25,16 @@ from .. import config
 from ..memory import session_store
 from ..tools import danger
 from . import tasks, worktree
-from .agent import Done, SessionStarted, ToolInput, stream_turn
+from .agent import (
+    Done,
+    SessionStarted,
+    TextDelta,
+    ToolFinished,
+    ToolInput,
+    ToolStarted,
+    stream_turn,
+)
+from .timeline import Timeline
 
 _PROGRESS_THROTTLE_SEC = 5
 _SUMMARY_MAX = 50
@@ -179,6 +188,9 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     result_text = ""
     status = "failed"
     error_note = ""
+    # 录过程时间线(工具调用 + 正文交错),跟普通文字对话(gateway/core.py converse())
+    # 对齐——否则任务跑完侧边栏只看得到最后一句摘要,回溯不了 AI 到底做了什么。
+    timeline = Timeline()
 
     async def _drive() -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id
@@ -199,12 +211,22 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                 # 依然能 resume 回同一条 SDK 会话,不会丢上下文重开对话。
                 sdk_session_id = ev.session_id
                 session_store.set_sdk_session_id(session_key, sdk_session_id)
-            elif isinstance(ev, ToolInput) and ev.parent_id is None:
-                now = time.monotonic()
-                if now - last_progress_ts >= _PROGRESS_THROTTLE_SEC:
-                    last_progress_ts = now
-                    tasks.set_progress(task_id, progress_text(ev.name, ev.tool_input))
-                    _notify_activity(task_id)
+            elif isinstance(ev, TextDelta):
+                timeline.text(danger.redact_secrets(ev.text))
+            elif isinstance(ev, ToolStarted):
+                timeline.tool_started(ev.name, ev.tool_id, ev.parent_id)
+            elif isinstance(ev, ToolFinished):
+                timeline.tool_finished(
+                    ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id
+                )
+            elif isinstance(ev, ToolInput):
+                timeline.tool_input(ev.tool_id, ev.tool_input, ev.parent_id)
+                if ev.parent_id is None:
+                    now = time.monotonic()
+                    if now - last_progress_ts >= _PROGRESS_THROTTLE_SEC:
+                        last_progress_ts = now
+                        tasks.set_progress(task_id, progress_text(ev.name, ev.tool_input))
+                        _notify_activity(task_id)
             elif isinstance(ev, Done):
                 result_text = ev.reply.text
                 sdk_session_id = ev.reply.sdk_session_id
@@ -239,16 +261,18 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         _running.pop(task_id, None)
 
     if status == "cancelled":
-        session_store.finish_turn(turn_id, "(任务已取消)")
+        session_store.finish_turn(turn_id, "(任务已取消)", events=timeline.blocks)
         ok = tasks.set_status(task_id, "cancelled", progress_note="已取消")
     elif status == "done":
         clean_text, tag_summary = _split_summary_tag(result_text)
-        session_store.finish_turn(turn_id, clean_text)
+        session_store.finish_turn(turn_id, clean_text, events=timeline.blocks)
         if sdk_session_id:
             session_store.set_sdk_session_id(session_key, sdk_session_id)
         ok = tasks.finish(task_id, "done", clean_text, tag_summary or _summarize(clean_text))
     else:
-        session_store.finish_turn(turn_id, result_text or f"(执行失败:{error_note})")
+        session_store.finish_turn(
+            turn_id, result_text or f"(执行失败:{error_note})", events=timeline.blocks
+        )
         if sdk_session_id:
             session_store.set_sdk_session_id(session_key, sdk_session_id)
         ok = tasks.finish(task_id, "failed", result_text, _humanize_error(error_note) if error_note else "执行失败")

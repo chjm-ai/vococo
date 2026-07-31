@@ -5462,10 +5462,16 @@ async function openConv(conv, silentGroup){
   // 切到目标会话时,若全局审批弹窗正开着则关闭(用户选择进去处理)
   const cmodal=$("#choiceModal"); if(cmodal && !cmodal.hidden){ cmodal.hidden=true; }
   S.conv=conv; S.stream=null;
-  // 用户已打开该会话,清零未读标记;本地缓存也同步清,避免重绘闪烁。
+  // 用户已打开该会话,清零未读标记;本地缓存也同步清,避免重绘闪烁。语音任务/定时
+  // 任务的行对象不在 S.convs 里(那是 /conversations 拉的),还得去各自的侧栏缓存
+  // 里找——否则只清了 S.pendingReview 这半份缓存,行对象自己的 pending_review 字段
+  // 仍是 true,渲染时 "t.pending_review || S.pendingReview[t.conv]" 这个 || 判断
+  // 依然为真,灰点点了不消失,得等下次 loadVoiceSidebar()/loadCronJobs() 重拉才会清。
   if(!String(conv).startsWith("local-")){
     S.pendingReview[conv]=false;
-    const citem=S.convs.find(x=>x.conv===conv);
+    const citem=S.convs.find(x=>x.conv===conv)
+      || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv)
+      || (S.cronJobs||[]).find(x=>x.conv===conv);
     if(citem) citem.pending_review=false;
     api("/conv/read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv:conv})}).catch(()=>{});
   }
