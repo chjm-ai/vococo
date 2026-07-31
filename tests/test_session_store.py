@@ -188,7 +188,11 @@ def test_set_chosen_model_first_time_does_not_fail(isolated):
 
 
 def test_append_turn_image_persists_to_current_turn(isolated):
-    """send_image 工具追加的图片要落进当前轮次,刷新历史后仍能看到(而非只推 SSE 就丢)。"""
+    """send_image 工具追加的图片要落进当前轮次,刷新历史后仍能看到(而非只推 SSE 就丢)。
+
+    落在 ai_images 而非 images —— images 专属用户上传图(贴回用户气泡),
+    ai_images 专属 AI 发的图(贴回 AI 气泡),见 buildTurnBlock。
+    """
     from claude_hermes.memory import session_store
 
     turn_id = session_store.start_turn("web:1", "帮我画个图")
@@ -196,11 +200,13 @@ def test_append_turn_image_persists_to_current_turn(isolated):
     session_store.finish_turn(turn_id, "画好了,发给你")
 
     history = session_store.load_history("web:1")
-    assert history[-1]["images"] == ["/image?name=ai_abc123.png"]
+    assert history[-1]["ai_images"] == ["/image?name=ai_abc123.png"]
+    assert "images" not in history[-1]
 
 
-def test_append_turn_image_merges_with_user_uploaded_images(isolated):
-    """同一轮里既有用户上传图又有 AI 主动发图时,追加不能把用户那张覆盖掉。"""
+def test_append_turn_image_does_not_touch_user_uploaded_images(isolated):
+    """同一轮里既有用户上传图又有 AI 主动发图时,两者要分别落进 images / ai_images,
+    不能混在一起(混了会导致 AI 发的图被误贴到用户自己发的那条气泡上)。"""
     from claude_hermes.core.agent import ImageAttachment
     from claude_hermes.memory import session_store
 
@@ -212,7 +218,5 @@ def test_append_turn_image_merges_with_user_uploaded_images(isolated):
     session_store.finish_turn(turn_id, "已看图并回发一张")
 
     history = session_store.load_history("web:1")
-    assert history[-1]["images"] == [
-        f"/image?name={turn_id}_0.png",
-        "/image?name=ai_reply.png",
-    ]
+    assert history[-1]["images"] == [f"/image?name={turn_id}_0.png"]
+    assert history[-1]["ai_images"] == ["/image?name=ai_reply.png"]

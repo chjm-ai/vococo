@@ -458,7 +458,9 @@ class WebAdapter:
         if ext not in {"png", "jpg", "jpeg", "gif", "webp"}:
             return f"不支持的图片格式:{ext or '(无后缀)'}"
         config.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-        name = f"ai_{uuid.uuid4().hex}.{ext}"
+        # "ai_"前缀是 session_store.load_history 从 turns.images 里拆分"AI发的图"
+        # 与"用户上传图"的唯一依据(见 memory/images.py 的 AI_IMAGE_PREFIX),不能改名。
+        name = f"{session_store.AI_IMAGE_PREFIX}{uuid.uuid4().hex}.{ext}"
         (config.IMAGES_DIR / name).write_bytes(src_path.read_bytes())
         self._emit({
             "conv": str(chat_id), "type": "message", "text": caption,
