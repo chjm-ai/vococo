@@ -1,4 +1,4 @@
-"""过程时间线:converse 录制(_Timeline)+ 落库(events 列)+ Web 分段推送。
+"""过程时间线:converse/task_runner 共用录制(core.timeline.Timeline)+ 落库(events 列)+ Web 分段推送。
 
 对应两条用户诉求:
 ① 工具卡与文字要按真实顺序交错(Web 端按 seg 分段推正文);
@@ -6,11 +6,11 @@
 """
 from __future__ import annotations
 
-from claude_hermes.gateway.core import _Timeline
+from claude_hermes.core.timeline import Timeline
 
 
 def test_timeline_interleaves_text_and_tools():
-    tl = _Timeline()
+    tl = Timeline()
     tl.text("先说")
     tl.text("一句。")
     tl.tool_started("Bash", "t1", None)
@@ -25,7 +25,7 @@ def test_timeline_interleaves_text_and_tools():
 
 
 def test_timeline_subagent_steps_nest_under_parent():
-    tl = _Timeline()
+    tl = Timeline()
     tl.tool_started("Agent", "task1", None)
     tl.tool_started("Read", "r1", "task1")   # 子代理内部工具
     tl.tool_finished("Read", True, "", "r1", "", "task1")
@@ -37,10 +37,10 @@ def test_timeline_subagent_steps_nest_under_parent():
 
 
 def test_timeline_caps_blocks():
-    tl = _Timeline()
-    for i in range(_Timeline.MAX_BLOCKS + 50):
+    tl = Timeline()
+    for i in range(Timeline.MAX_BLOCKS + 50):
         tl.tool_started("Read", f"t{i}", None)
-    assert len(tl.blocks) == _Timeline.MAX_BLOCKS
+    assert len(tl.blocks) == Timeline.MAX_BLOCKS
 
 
 def test_finish_turn_persists_events_and_history_returns_them(isolated):

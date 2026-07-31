@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 
 from claude_hermes.core.agent import Compacted, Turn, _compose_prompt
-from claude_hermes.gateway.core import Sink, _Timeline
+from claude_hermes.core.timeline import Timeline
+from claude_hermes.gateway.core import Sink
 
 
 # === Compacted 事件与时间线 ===
@@ -23,7 +24,7 @@ def test_compacted_event_shape():
 
 
 def test_timeline_compact_block():
-    tl = _Timeline()
+    tl = Timeline()
     tl.text("前半")
     tl.compacted("auto")
     tl.text("后半")
@@ -33,10 +34,10 @@ def test_timeline_compact_block():
 
 
 def test_timeline_compact_respects_max_blocks():
-    tl = _Timeline()
-    tl.blocks = [{"type": "text", "text": "x"}] * _Timeline.MAX_BLOCKS
+    tl = Timeline()
+    tl.blocks = [{"type": "text", "text": "x"}] * Timeline.MAX_BLOCKS
     tl.compacted("auto")
-    assert len(tl.blocks) == _Timeline.MAX_BLOCKS  # 保险丝:不再膨胀
+    assert len(tl.blocks) == Timeline.MAX_BLOCKS  # 保险丝:不再膨胀
 
 
 def test_sink_compacted_default_no_crash():
