@@ -569,6 +569,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 修复要点:连续长语音时 speech_stopped→下一次 speech_started 之间的间隔
   // 可能超过 600ms(阿里云内部处理+网络延时),短定时器会把前半段先发出去。
   const OMNI_PENDING_POST_SPEECH_MS = 2000;
+  // 这段话看着还没说完时用的加长冷却(见 scheduleOmniFlush 的 looksIncomplete)。
+  // 只对碎片/无句末标点的段生效,不拖慢正常问句的响应。
+  const OMNI_PENDING_LONG_COOLDOWN_MS = 3500;
   // 首回复静音(2026-07-12,Wesley 提议):每次 WebRTC 新建连接后,iOS AEC 从零
   // 收敛,AI 第一段音频的回声漏得最凶——干脆在本连接第一次朗读期间把麦克风上行
   // 直接静音(track.enabled=false 只发静音帧,不动音频图,不踩 iOS 音频会话的雷),
@@ -588,6 +591,18 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 到来时置起,阻止自动回复产生的任何音频片段被误放行;我们的 pump 在
   // response.created 确认是朗读后才会清除它,防止自动回复在 gap 期泄漏。
   let omniAutoAudioBlocked=false;
+  // 自动回复【物理隔离】(2026-07-31):session 级只给 text,Omni 对用户话语自作主张
+  // 生成的那份回复就【物理上不产生音频】。此前靠"收到 response.created 再静音"压制,
+  // 但 RTP 音频走的是独立通道、比 DataChannel 事件先到,头几个字必然漏出去——而
+  // Omni 自动回复的典型内容就是复述/确认用户刚说的话,用户听到的就是"AI 在复读我"。
+  // 2026-07-31 真机日志:6 次开口对应 6 次 auto-response.muted,100% 触发,只是漏出
+  // 的长短不一,所以时有时无。我们自己的朗读靠 response.create 的响应级 modalities
+  // 覆盖成 ["text","audio"] 出声(见 pumpOmniRead)。
+  // 【自愈】响应级覆盖是从 SDK 源码扒的未文档化用法,万一这个服务端版本静默忽略它,
+  // 朗读就会变成没声音(整通电话哑掉)。所以 response.created 分支会检查服务端回执里
+  // 的实际 modalities,发现我们的朗读不含 audio 就把 session 改回 ["text","audio"]
+  // 并重念这句——最坏只哑一句,不会哑一整通。
+  let omniSessionModalities=["text"];
   omniAudioEl.muted = true;
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
   // 修复都因为拿不到真机证据只能盲改后 revert。关键事件(session/response 生命周期、
@@ -1767,9 +1782,10 @@ void main(){
       dc.send(JSON.stringify({
         event_id: "session-init", type: "session.update",
         session: {
-          // 出声模式:session 级别就带 audio——阿里云的回声消除/语义打断只认
-          // 走自家 RTC 通道的音频。自动回复的音频靠 instructions+cancel 压制。
-          modalities: ["text", "audio"],
+          // 2026-07-31 改为默认只给 text:自动回复物理上不出声,详见
+          // omniSessionModalities 声明处。音频轨道本身照旧走 WebRTC(AEC 是
+          // WebRTC 接入自带的,不是靠 session modalities 开的),朗读靠响应级覆盖出声。
+          modalities: omniSessionModalities,
           voice: S.omniVoice,
           // 2026-07-12 真机反馈:老指令只说"读出【朗读】后面的内容",没明确禁念标记,
           // Omni 一句一个"朗读"地念出来——加了"标记本身绝对不念"之后一度好转,
@@ -1946,6 +1962,11 @@ void main(){
         vdbg("dc:" + data.type, {
           rp: omniReadPending, ra: omniReadActive, aa: omniAutoActive,
           q: omniReadQueue.length,
+          // response.* 事件带上这次 response 的实际 modalities:这是验证"自动回复
+          // 只出 text、我们的朗读出 audio"这套物理隔离到底生效没有的直接证据——
+          // 朗读的应为 text+audio,Omni 自动回复的应为 text。
+          mod: (data.response && data.response.modalities)
+            ? data.response.modalities.join("+") : undefined,
           err: data.error ? String(data.error.message || data.error.code || "") : undefined,
         });
       }
@@ -2084,6 +2105,27 @@ void main(){
             omniReadRespId = (data.response && data.response.id) || null;
             omniReadExpectText = omniReadCurrentText;
             omniSpokenBuf = ""; omniSpokenChecked = false;
+            // 自愈闸:服务端回执里这次 response 的实际 modalities 不含 audio,说明
+            // 响应级覆盖被静默忽略了(未文档化字段的风险,见 omniSessionModalities)。
+            // 此时 session 又只给了 text,这句会一个音都不出——立刻把 session 改回
+            // ["text","audio"],把这句塞回队头重念。服务端不回 modalities 字段时
+            // respMods 为 null,保守不触发。
+            const respMods = (data.response && data.response.modalities) || null;
+            if(respMods && !respMods.includes("audio") && !omniSessionModalities.includes("audio")){
+              omniSessionModalities = ["text", "audio"];
+              vdbg("modalities.fallback", {got: respMods});
+              try{
+                omniDc.send(JSON.stringify({
+                  event_id: "session-modalities-fallback", type: "session.update",
+                  session: {modalities: omniSessionModalities},
+                }));
+              }catch(e){}
+              if(omniReadCurrentText) omniReadQueue.unshift(omniReadCurrentText);
+              omniReadActive = false; omniReadCurrentText = "";
+              omniReadRespId = null; omniReadExpectText = ""; omniSpokenChecked = true;
+              setTimeout(() => pumpOmniRead(), 300);
+              break;
+            }
             // 确认是我们主动点的朗读才开声(2026-07-14 修复),不让自动回复偷用。
             omniAutoAudioBlocked = false;  // 我们的朗读开始,清除自动回复阻断
             setOmniAudioMuted(false, "read.created");
@@ -2784,10 +2826,20 @@ void main(){
     // 重新检测下一段的边界)。这时不启用 600ms 短定时器——下段 speech_started 收到
     // 前,给足时间窗口让缓冲继续累积,避免连续长语音被提早腰斩成多段发出去。
     // 冷却期内用中位定时器(2000ms),过了冷却期才切短定时器(600ms)。
-    const cooldown = !waiting && omniSpeechStoppedTs && Date.now() - omniSpeechStoppedTs < OMNI_PENDING_POST_SPEECH_MS;
-    const delay = waiting ? OMNI_PENDING_SAFETY_MS : cooldown ? OMNI_PENDING_POST_SPEECH_MS : OMNI_PENDING_FLUSH_MS;
+    // 动态冷却(2026-07-31):固定 2s 冷却对真人说长句时的换气/思考停顿太短,超过
+    // 就被切成两轮独立发给 Claude(后端 _prev_text 兜底指望不上——它的 3s 窗口从
+    // "前段启动时刻"起算、且轮次干净收尾会清空,历史累计触发 0 次)。但一刀切调长
+    // 会让"今天天气怎么样?"这种明显说完的短问句也白等一截。所以按刚攒下的这段
+    // 像不像话说完了来定:碎片(≤4 字,如 semantic_vad 切出来的"目前。")或者结尾
+    // 没有句末标点 → 多等 OMNI_PENDING_LONG_COOLDOWN_MS;像完整句子就维持原节奏。
+    const tail = (omniPendingText || "").trim();
+    const looksIncomplete = tail.length <= 4 || !/[。？?！!]$/.test(tail);
+    const cooldownMs = looksIncomplete ? OMNI_PENDING_LONG_COOLDOWN_MS : OMNI_PENDING_POST_SPEECH_MS;
+    const cooldown = !waiting && omniSpeechStoppedTs && Date.now() - omniSpeechStoppedTs < cooldownMs;
+    const delay = waiting ? OMNI_PENDING_SAFETY_MS : cooldown ? cooldownMs : OMNI_PENDING_FLUSH_MS;
     omniPendingTimer = setTimeout(flushOmniPending, delay);
-    vdbg("pending.arm", {why, delay, cooldown, inflight: omniInflightSegs, speaking: omniSpeechActive});
+    vdbg("pending.arm", {why, delay, cooldown, incomplete: looksIncomplete,
+      inflight: omniInflightSegs, speaking: omniSpeechActive});
   }
   function flushOmniPending(){
     omniPendingTimer = null;
