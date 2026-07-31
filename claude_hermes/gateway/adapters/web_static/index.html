@@ -509,6 +509,22 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 阿里云 VAD 当成用户说话,转写出来的是"刚念那句的开头几个字"(见 matchOmniEcho)。
   let omniRecentReads=[];        // 最近念过的句子 [{text, ts}],转写结果跟它们比对
   let omniReadCurrentText="";    // 正在念/刚点播还没念完的那句原文(恢复现场用)
+  // 朗读内容校验(2026-07-31 加):此前 Omni【实际念出来的内容】完全没有观测——
+  // response.audio_transcript.* 被当成高频噪音丢在 OMNI_QUIET_EVENTS 里直接扔掉,
+  // 导致"念出来的不是 Claude 原文"这类故障在日志里零指纹(查下来只能看到一切正常)。
+  // 两种成因都会落到这个症状上:①response.created 配对错位,把 Omni 自动回复
+  // 当成我们的朗读放行(有 read.create.rejected 之类指纹);②我们塞给 Omni 的是
+  // role:"user" 的 input_text,语义上等于"用户说了这句话",模型天然倾向【回应】
+  // 而不是【复述】,只靠 instructions 概率性压制——这条路径配对完全正确、所有
+  // 防护都通过,却照样吐出自编内容,现有日志一个字都看不见。
+  // 【只观测不拦截】:transcript 是 Thinker 层的合成源文本,且 audio_transcript.done
+  // 到达时音频早已按 RTP 推完;要在用户听到之前拦,必须先把整句音频缓冲下来校验
+  // 完再放,首字延迟不可接受。所以这里只负责把问题变得可测量。
+  let omniReadRespId=null;       // 当前朗读 response 的服务端 id(response.created 给)
+  let omniReadExpectText="";     // 该 response 期望念出的原文快照(独立于 omniReadCurrentText,
+                                 // 后者在 response.done 会被清空,而字幕可能晚于它到达)
+  let omniSpokenBuf="";          // 该 response 实际念出的字幕累积(delta 拼)
+  let omniSpokenChecked=false;   // 本次朗读是否已校验过,避免 done 事件重复上报
   let omniEchoRestore=null;      // barge-in 现场快照,事后判定是回声就恢复被砍的朗读
   let omniSpeechStartTs=0;       // 用户最近一次开口时刻(speech_started),回声归因用
   let omniEchoRestoreTimer=null; // 幽灵打断兜底:快照存下后转写迟迟不来就自动恢复(见 armOmniGhostTimer)
@@ -1690,6 +1706,11 @@ void main(){
     // 新连接(含重连/切音色的全新流):重置首回复静音状态;用户之前按的手动静音
     // (micMuted)要带到新流上——都交给 applyMicEnabled 统一仲裁重算。
     omniFirstReplyMuteUsed = false; omniMicMuted = false;
+    // 朗读校验现场跟着连接走,别把上一通电话的残留带进来
+    omniReadRespId = null; omniReadExpectText = ""; omniSpokenBuf = ""; omniSpokenChecked = false;
+    // 响应级参数的降级标志每条新连接重置:给它一次重试机会——万一上次是偶发错误
+    // 被误判成"服务端不认",不至于就此永久失去每句重申角色的加固。
+    omniReadCreateDegraded = false;
     if(omniMicMuteTimer){ clearTimeout(omniMicMuteTimer); omniMicMuteTimer = null; }
     applyMicEnabled();
     setOmniAudioMuted(false, "conn-start");  // 音频输出始终开放,不静音输出通道;静音只作用于麦克风输入轨道(track.enabled)
@@ -2039,6 +2060,15 @@ void main(){
           handleUserTranscript((data.transcript || "").trim());
           break;
         }
+        // Omni 正在念的字幕(高频,不打日志见 OMNI_QUIET_EVENTS,但事件本身要处理)。
+        // 只收属于当前朗读 response 的部分,自动回复的字幕不参与校验——见 isOwnReadEvent。
+        case "response.audio_transcript.delta":
+          if(isOwnReadEvent(data)) omniSpokenBuf += (data.delta || "");
+          break;
+        case "response.audio_transcript.done":
+          // done 带完整 transcript,比 delta 拼出来的权威,优先用它
+          if(isOwnReadEvent(data)) checkOmniSpoken(data.transcript || omniSpokenBuf, "transcript.done");
+          break;
         case "response.created":
           stopThinkingTone();
           // 分两种:我们主动点的朗读(omniReadPending>0)放行;其余是 Omni 对用户
@@ -2047,6 +2077,13 @@ void main(){
           if(omniReadPending > 0){
             omniReadPending--;
             omniReadActive = true;
+            // 记下服务端给这次朗读分配的 response.id:后续 audio_transcript.delta/done
+            // 都带 response_id,靠它把字幕准确归属到这次朗读(阿里云不支持 metadata
+            // 回显,response_id 是唯一能用的关联字段)。期望文本也在这里快照——
+            // omniReadCurrentText 在 response.done 就被清空,字幕可能比它晚到。
+            omniReadRespId = (data.response && data.response.id) || null;
+            omniReadExpectText = omniReadCurrentText;
+            omniSpokenBuf = ""; omniSpokenChecked = false;
             // 确认是我们主动点的朗读才开声(2026-07-14 修复),不让自动回复偷用。
             omniAutoAudioBlocked = false;  // 我们的朗读开始,清除自动回复阻断
             setOmniAudioMuted(false, "read.created");
@@ -2074,6 +2111,11 @@ void main(){
         case "response.done":
           if(omniReadActive){
             omniReadActive = false;
+            // 兜底校验:audio_transcript.done 没来过(被 cancel 砍掉/服务端没发)时,
+            // 拿 delta 累积的字幕补校验一次,然后清场。checkOmniSpoken 内部有
+            // omniSpokenChecked 去重,transcript.done 已经校验过的不会重复上报。
+            checkOmniSpoken(omniSpokenBuf, "response.done");
+            omniReadRespId = null; omniReadExpectText = ""; omniSpokenBuf = "";
             // 【2026-07-23 实锤 13:14】这句"生成完了"是回声过滤的重要时刻:把这句在
             // 近期朗读窗口里的时间戳更新为 done 时刻,播放期估算(inTail)从"真正开始
             // 播这句"起算。否则生成比播放快(队列还压着前句在念),一句 20s 后才开口
@@ -2111,6 +2153,22 @@ void main(){
           // 误判成"我们的朗读"而放行出声——用户听到的就变成 Omni 自己编的话,
           // 跟 Claude 的原文对不上。这里回滚状态、把没念成的原文塞回队列头部,
           // 短延迟后重新泵一次,而不是让这句话默默消失。
+          // 响应级参数被拒:response.create 带 response 对象(instructions/modalities)
+          // 是从官方 SDK 源码扒来的未文档化用法,万一这个服务端版本严格校验拒收,
+          // 就一次性降级成空 response.create 并把这句重新入队,别让整通电话的朗读
+          // 全废。排除 InternalError——那是服务端内部管线抽风(见下面的分支),
+          // 跟我们发的参数无关,不能误判成降级信号。
+          if(!omniReadCreateDegraded && omniReadPending > 0
+             && !/InternalError/i.test(msg)
+             && /invalid|unknown|unsupported|unrecogniz|param/i.test(msg)){
+            omniReadCreateDegraded = true;
+            omniReadPending--;
+            if(omniReadCurrentText) omniReadQueue.unshift(omniReadCurrentText);
+            omniReadCurrentText = "";
+            vdbg("read.create.degraded", msg);
+            setTimeout(() => pumpOmniRead(), 200);
+            break;
+          }
           if(/active response|no active/i.test(msg) && omniReadPending > 0){
             omniReadPending--;
             if(omniReadCurrentText) omniReadQueue.unshift(omniReadCurrentText);
@@ -2145,6 +2203,47 @@ void main(){
     };
   }
 
+  // 字幕事件是不是属于我们这次朗读:优先用服务端的 response_id 严格比对
+  // (阿里云不回显 metadata,response_id 是唯一可用的关联字段,值就是
+  // response.created 里的 response.id);拿不到 id 时退回"当前正在朗读"这个
+  // 较弱的判据——宁可漏判,也不要把自动回复的字幕算进校验。
+  function isOwnReadEvent(data){
+    if(omniReadRespId && data.response_id) return data.response_id === omniReadRespId;
+    return omniReadActive;
+  }
+
+  // 把 Omni 实际念出来的字幕跟我们期望它念的原文比对,对不上就上报。
+  // 【只上报不干预】原因见 omniReadRespId 定义处的注释:走到这一步音频已经播出去了。
+  function checkOmniSpoken(spoken, tag){
+    if(omniSpokenChecked) return;
+    const a = normEchoText(omniReadExpectText), b = normEchoText(spoken);
+    if(!a || !b) return;   // 有一边是空的判不了,留给后面的兜底调用
+    omniSpokenChecked = true;
+    if(a === b) return;    // 一字不差,正常
+    // 编辑距离算相似度:Omni 偶尔会微调数字/单位的念法(这类差异相似度仍在 0.9 以上),
+    // 但"自己另起一句发挥"整句都对不上,相似度会掉得很低。
+    const sim = 1 - editDist(a, b) / Math.max(a.length, b.length);
+    if(sim >= 0.9) return;
+    vdbg("read.mismatch", {
+      tag, sim: +sim.toFixed(2),
+      expect: omniReadExpectText.slice(0, 60),
+      spoken: String(spoken).slice(0, 60),
+    });
+  }
+
+  // 响应级朗读指令(2026-07-31):session 级 instructions 在长通话里会被不断堆积的
+  // 朗读文本稀释,"我只是个朗读引擎"的角色认知逐渐松动(2026-07-28 那次"【朗读】
+  // 两个字被念出来"是同一机制的另一种表现)。阿里云客户端事件文档没写 response.create
+  // 能带参数,但官方 dashscope SDK 源码(omni_realtime.py 的 create_response)实际
+  // 会把 instructions/modalities 放进 response 对象一起发——每次朗读都重申一遍角色,
+  // 直接对冲衰减,不用等长通话跑偏了才发现。
+  const OMNI_READ_INSTRUCTIONS =
+    "把用户这条纯文字消息一字不差地朗读出来,自然流畅。" +
+    "不要添加、省略或改动任何内容,不要回应或评论这段文字的内容,不要说正文之外的任何话。";
+  // 未文档化字段的降级开关:万一服务端严格校验、拒收带 response 对象的 response.create,
+  // error 分支会把它置起,之后退回发空 response.create,不至于让整通电话的朗读全废。
+  let omniReadCreateDegraded = false;
+
   // ── Omni 出声:朗读队列 ────────────────────────────────────────────────
   // Claude 的回答按句子进队,一句一个 response(服务端同一时刻只允许一个进行中
   // 的 response,靠 omniReadActive/omniAutoActive 串行);发的是纯文字消息
@@ -2167,7 +2266,15 @@ void main(){
         type: "conversation.item.create",
         item: {type: "message", role: "user", content: [{type: "input_text", text}]},
       }));
-      omniDc.send(JSON.stringify({type: "response.create"}));
+      // 带响应级 instructions 重申朗读角色(见 OMNI_READ_INSTRUCTIONS);modalities
+      // 显式带上,当前跟 session 一致,同时也把"session 只给 text、只有朗读才出声"
+      // 那套物理隔离方案的接口先留好。服务端不认这些字段就降级发空的。
+      omniDc.send(JSON.stringify(omniReadCreateDegraded
+        ? {type: "response.create"}
+        : {type: "response.create", response: {
+            modalities: ["text", "audio"],
+            instructions: OMNI_READ_INSTRUCTIONS,
+          }}));
       omniReadPending++;
       omniReadSince = Date.now();
       omniReadCurrentText = text;
@@ -2432,6 +2539,9 @@ void main(){
     try{ omniAudioEl.muted = true; }catch(e){}
     omniReadActive = false; omniReadPending = 0;
     omniReadCurrentText = "";
+    // 打断的朗读念了一半,拿它去比对必然对不上——直接清场,不留给 response.done
+    // 的兜底校验误报成"念错了"。
+    omniReadRespId = null; omniReadExpectText = ""; omniSpokenBuf = ""; omniSpokenChecked = true;
     vdbg("read.cancel", reason);
   }
 
