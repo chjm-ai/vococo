@@ -5538,6 +5538,9 @@ function buildTurnBlock(t, conv){
       }
       b.append(flow);
     }else b.innerHTML=mdToHtml(t.assistant);   // 老数据没存时间线:只有最终正文
+    // AI 主动发的图(send_image)不进 events 时间线,单独存在 t.ai_images——
+    // 不贴回来的话,历史/刷新后这张图就只剩折叠指令卡里的文件名文字,看不到图。
+    appendImgs(b, t.ai_images);
     wrap.append(row);
   }else if(t.draft){
     // 进行中但后端正流式写 draft:用部分内容起底兜底,避免刷新后空白;
@@ -5793,17 +5796,27 @@ async function reloadHistory(force){
 }
 
 // ── 消息气泡 ─────────────────────────────────────────────────────────────
+// 图片组渲染,气泡(buildBubble/finalizeStream/mid_turn 消息/历史 AI 发图)统一走这个,
+// 别各处各写一份 —— 已经因为漏了一处(buildTurnBlock 没传 imgs)导致 AI 发的图刷新后
+// 消失过一次。
+function appendImgs(container, imgs){
+  if(!imgs || !imgs.length) return;
+  const g=el("div","imgs");
+  for(const u of imgs){ const im=el("img");
+    // 历史图走 /image?name=(需鉴权头,浏览器 <img> 不带) → 用 api() 取 blob;
+    // 实时发的是 data:/blob: URL,直接塞 src。
+    if(typeof u==="string" && u.startsWith("/")) loadAuthedImg(im,u); else im.src=u;
+    im.onclick=()=>openImgViewer(im);
+    g.append(im);
+  }
+  container.append(g);
+}
 function buildBubble(who, text, imgs){
   const row=el("div","row "+(who==="me"?"me":"ai"));
   const b=el("div","bubble");
   if(who==="me"){ b.textContent=text; } else { b.innerHTML = text?mdToHtml(text):""; }
   row.append(b);
-  if(imgs&&imgs.length){ const g=el("div","imgs"); for(const u of imgs){ const im=el("img");
-    // 历史图走 /image?name=(需鉴权头,浏览器 <img> 不带) → 用 api() 取 blob;
-    // 实时发的是 data:/blob: URL,直接塞 src。
-    if(typeof u==="string" && u.startsWith("/")) loadAuthedImg(im,u); else im.src=u;
-    im.onclick=()=>openImgViewer(im);
-    g.append(im);} b.append(g); }
+  appendImgs(b, imgs);
   return {row, b};
 }
 function addBubble(who, text, imgs){
@@ -6016,9 +6029,7 @@ function finalizeStream(finalText, imgs){
   }else{
     for(const k in S.stream.segs){ const d=S.stream.segs[k]; d.innerHTML=mdToHtml(d.dataset.raw); }
   }
-  if(imgs&&imgs.length){ const g=el("div","imgs"); for(const u of imgs){ const im=el("img");
-    if(typeof u==="string" && u.startsWith("/")) loadAuthedImg(im,u); else im.src=u;
-    im.onclick=()=>openImgViewer(im); g.append(im);} S.stream.bubble.append(g); }
+  appendImgs(S.stream.bubble, imgs);
   S.stream=null; updateSendBtn(); scrollDown();
 }
 // 构成一个"进行中回合"的流式事件类型(可重放以重建气泡)。done/message/choice 不在此列。
@@ -6231,13 +6242,7 @@ function applyStreamEvent(e){
     case "message": { // mid_turn 图片消息(send_image 工具),只在本轮回复过程中途出现
       const s=ensureStream();
       if(e.text){ const d=el("div","seg"); d.innerHTML=mdToHtml(e.text); s.flow.append(d); }
-      if(e.images && e.images.length){
-        const g=el("div","imgs");
-        for(const u of e.images){ const im=el("img");
-          if(typeof u==="string" && u.startsWith("/")) loadAuthedImg(im,u); else im.src=u;
-          im.onclick=()=>openImgViewer(im); g.append(im); }
-        s.flow.append(g);
-      }
+      appendImgs(s.flow, e.images);
       renderStatus(); scrollDown(); break; }
   }
 }

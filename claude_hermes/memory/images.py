@@ -18,6 +18,11 @@ from . import _db
 
 _IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")  # 文件名白名单,挡路径穿越
 
+# AI 主动发的图(append_turn_image)统一用这个前缀命名,用户上传图是 "{turn_id}_{idx}.ext"
+# (数字开头)——两种命名互不相交,靠这个前缀就能从 turns.images 里把两类图拆开,
+# 分别贴回"用户"气泡和"AI"气泡(同一轮里可能两种都有,不能混在一起显示)。
+AI_IMAGE_PREFIX = "ai_"
+
 
 def _img_ext(media_type: str) -> str:
     """从 media_type(如 image/png)取一个安全的扩展名;取不到回落 png。"""

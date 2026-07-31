@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from . import _db
 from .images import (  # noqa: F401 (re-export)
+    AI_IMAGE_PREFIX,
     append_turn_image,
     image_path,
     purge_session_images,
@@ -144,8 +145,15 @@ def load_history(session_key: str, limit: int = 40, *, full_events: bool = False
             names = json.loads(imgs) if imgs else []
         except (json.JSONDecodeError, ValueError):
             names = []
-        if names:
-            entry["images"] = ["/image?name=" + n for n in names]
+        # AI 主动发的图("ai_"前缀)贴回 AI 气泡,用户上传图贴回用户气泡——
+        # 混在一条 images 里的话,前端要么两边都不认(见 buildTurnBlock 只读
+        # user 气泡的 images),要么误把 AI 发的图也画到用户自己发的那条气泡上。
+        user_names = [n for n in names if not n.startswith(AI_IMAGE_PREFIX)]
+        ai_names = [n for n in names if n.startswith(AI_IMAGE_PREFIX)]
+        if user_names:
+            entry["images"] = ["/image?name=" + n for n in user_names]
+        if ai_names:
+            entry["ai_images"] = ["/image?name=" + n for n in ai_names]
         out.append(entry)
     return out
 
