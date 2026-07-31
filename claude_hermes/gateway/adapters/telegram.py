@@ -194,6 +194,15 @@ class _TelegramSink(Sink):
             await self.a.send(self.chat_id, self.answer)
         else:
             await self._flush(force=True)
+        # Telegram 私聊默认跟网页「主会话」共用同一个 session_key(UNIFY_SESSIONS),
+        # 但这一整轮走的是本 Sink,从不经过 WebAdapter._emit,网页侧边栏/当前会话对
+        # 这次对话完全无感。补一条同步事件让浏览器去核对——不猜测内容、不镜像气泡
+        # (这边没有 start/thinking 过程,直接拼一条 AI 气泡会显得"凭空冒出回复,
+        # 却没有前面那句提问"),让它直接拉真实数据最省心也最不会出错。
+        if config.resolve_session_key("telegram", self.chat_id) == config.SESSION_KEY:
+            from .. import event_bridge
+
+            event_bridge.push({"conv": "main", "type": "sync"})
 
     async def _flush(self, force: bool) -> None:
         content = self._compose()
