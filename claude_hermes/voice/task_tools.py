@@ -23,7 +23,7 @@ from __future__ import annotations
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from .. import config
-from ..core import task_runner, tasks
+from ..core import task_runner, task_words, tasks
 from ..core.task_words import status_word
 from ..gateway import clarify, web_bridge
 from ..gateway.core import MODEL_CHOICES
@@ -39,8 +39,10 @@ def _ok(text: str) -> dict:
 def _describe_task(task: dict) -> str:
     parts = [f"任务「{task['title']}」(session_id={task['id']}):{status_word(task['status'])}"]
     if task["status"] == "running" and task["progress_note"]:
+        task_words.flag_if_reversed_direction(task["progress_note"], "task_tools._describe_task(running)")
         parts.append(f"当前进展:{task['progress_note']}")
     if task["status"] in tasks.TERMINAL_STATUSES and task["result_summary"]:
+        task_words.flag_if_reversed_direction(task["result_summary"], "task_tools._describe_task(terminal)")
         parts.append(f"结果:{task['result_summary']}")
     return "。".join(parts)
 

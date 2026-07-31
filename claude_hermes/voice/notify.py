@@ -15,7 +15,7 @@ import base64
 from collections.abc import Awaitable, Callable
 
 from .. import config
-from ..core import tasks
+from ..core import task_words, tasks
 from ..core.task_words import status_emoji
 from ..memory import session_store
 from . import tts
@@ -120,6 +120,7 @@ def register_cron_terminal_hook(fn: Callable[[dict], Awaitable[None]] | None) ->
 
 
 def _announce_text(task: dict) -> str:
+    task_words.flag_if_reversed_direction(task["result_summary"], "notify._announce_text")
     if task["status"] == "done":
         return f"对了,「{task['title']}」办完了,{task['result_summary'] or '结果已经出来了'}。"
     if task["status"] == "cancelled":
@@ -131,6 +132,7 @@ def _platform_text(task: dict) -> str:
     """平台推送用的文字消息（含 emoji 状态标记）,比语音播报更紧凑。"""
     emoji = status_emoji(task["status"])
     summary = task["result_summary"] or task["progress_note"] or ""
+    task_words.flag_if_reversed_direction(summary, "notify._platform_text")
     sep = " — " if summary else ""
     return f"{emoji} 任务「{task['title']}」{task['status']}{sep}{summary}"
 
