@@ -41,6 +41,14 @@ from .web_push import PUSH
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
 _DOC_PREVIEW_MAX = 3 * 1024 * 1024  # 文档预览分屏读文件上限;超过就不读,前端提示下载/自己开
+# 文档预览模糊兜底搜索用:直接拼接找不到时,按路径尾部扫一遍——AI 提到文件时经常掉了包名
+# 前缀(比如把 claude_hermes/memory/images.py 说成 memory/images.py)。跳过这些目录纯粹是
+# 图快、避免误判(里面几乎不会是用户真正想看的文档),不是安全边界(边界仍是越界即拒)。
+_DOC_SEARCH_SKIP_DIRS = {
+    ".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
+    ".next", ".cache", "target", ".pytest_cache", ".mypy_cache", ".obsidian",
+}
+_DOC_SEARCH_MAX_SCAN = 20000  # 扫描文件数上限,避免大仓库/大 vault 卡住请求
 
 # 纵深防御(审计 web#5/#9 · 2-9)。CSP 里 script/style 仍留 'unsafe-inline'——前端是单文件
 # 内联脚本,去掉会整页崩;但收紧 connect/img、禁 frame 嵌入/base/object/表单外发,给「未来
@@ -62,7 +70,15 @@ _CSP = (
 # 读不到聊天主站的 localStorage/Cookie(哪怕发布的页面被投毒也偷不走 X-Auth-Token),状态
 # 变更请求 fetch 出来的 Origin 也会变成 "null",照样撞上 `_security_mw` 的同源校验被拦。
 # allow-scripts/allow-popups 留给自包含 demo 页正常跑 JS、点外链跳转。
-_PUBLISH_CSP = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; " + _CSP
+# frame-ancestors 从 'none' 改成 'self':文档预览分屏要把 /pub/ 页面直接塞进本站的 iframe
+# 里(见 openDocPreview),继承 _CSP 原样的 'none' 会连自己都嵌不进去,导致预览面板一直空白
+# (2026-07-30 踩过)。放宽到 'self' 只是"允许本站嵌自己发布的页面",不影响"防第三方站点
+# 盗嵌"这条防线;真正防"页面被投毒偷 token"的是前面那句 sandbox 没给 allow-same-origin,
+# 跟 frame-ancestors 无关,放宽这条不削弱那道防护。
+_PUBLISH_CSP = (
+    "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; "
+    + _CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+)
 
 
 def _same_origin(origin: str, host: str) -> bool:
@@ -380,6 +396,13 @@ class WebAdapter:
                 "started": time.time(), "phase": "思考中", "frames": [(seq, payload)]
             }
             return
+        # send_image 工具中途发的图(mid_turn=True):这一轮还没结束,只按普通帧追加,
+        # 不能当"message"收轮——否则重连的客户端拿不到这条之后还会继续的正文/工具帧。
+        if t == "message" and payload.get("mid_turn"):
+            st = self._live.get(conv)
+            if st is not None:
+                st["frames"].append((seq, payload))
+            return
         if t in ("done", "message", "cancelled"):
             self._live.pop(conv, None)  # 一轮结束(choice 是审批暂停,不收轮)
             return
@@ -445,7 +468,9 @@ class WebAdapter:
         """把本地图片文件复制进 IMAGES_DIR 并作为一条 assistant 气泡推给前端;返回错误信息(None=成功)。
 
         供 send_image 工具用 —— 模型生图/截图后主动把本地文件发出去,复用 send() 的
-        已读标记/推送逻辑,只是多带一份 images 字段。
+        已读标记/推送逻辑,只是多带一份 images 字段。带 mid_turn=True 标记:这是本轮
+        回复过程中途发的,不代表整轮结束,前端据此只把图片挂进当前流式气泡,不会当
+        "回合已完成"提前收尾(否则本轮后续还要继续输出的正文会被拆成第二个气泡)。
         """
         if not src_path.is_file():
             return f"文件不存在:{src_path}"
@@ -457,9 +482,13 @@ class WebAdapter:
         (config.IMAGES_DIR / name).write_bytes(src_path.read_bytes())
         self._emit({
             "conv": str(chat_id), "type": "message", "text": caption,
-            "images": [f"/image?name={name}"],
+            "images": [f"/image?name={name}"], "mid_turn": True,
         })
-        session_store.set_pending_review(config.resolve_session_key("web", str(chat_id)), True)
+        session_key = config.resolve_session_key("web", str(chat_id))
+        # 落库进当前轮次:只推 SSE 不落库的话,断线重连/刷新页面后这张图会永久消失
+        # (历史只认 turns.images 这一列),但工具调用卡片仍显示"已发送"造成错觉。
+        session_store.append_turn_image(session_key, name)
+        session_store.set_pending_review(session_key, True)
         self._push_notify(
             title="Wazir", body=caption or "[图片]", conv=str(chat_id),
             kind="proactive", enabled=config.PUSH_ON_PROACTIVE,
@@ -1565,38 +1594,89 @@ class WebAdapter:
         return web.json_response({"ok": True})
 
     # ── 文档预览分屏(右侧滑出,见 web_static/index.html 的 openDocPreview)──────
-    def _safe_doc_path(self, root: str, rel: str) -> Path | None:
-        """把前端传的路径(相对或绝对)解析到会话 cwd 内;越界一律拒绝。"""
+    def _doc_preview_bounds(self, conv_root: str) -> list[Path]:
+        """/doc/preview 允许读取的边界目录:HOME 兜底,而不是死磕会话 cwd/AI_BRAIN 这种
+        短名单——这台机器是单用户私人助理,agent 本来就能用 Bash/Write 碰到 HOME 下任何
+        文件(Desktop/Documents/随便哪个项目),白名单卡太窄只会把大多数真实路径挡在外面,
+        误报成"文件不存在"(2026-07-30 用户反馈基本没有能预览成功的例子)。这里加一道
+        "不能越出 HOME"就是全部的额外防护,不是也没必要比 agent 自身权限更严。
+        AI_BRAIN 单独列进来是防它被配到 HOME 之外(.env 里 AI_BRAIN_DIR 覆盖成别处)。
+        """
+        bounds = [Path(conv_root).resolve(), Path.home().resolve(), config.AI_BRAIN_DIR.resolve()]
+        seen: set[Path] = set()
+        out: list[Path] = []
+        for b in bounds:
+            if b not in seen:
+                seen.add(b)
+                out.append(b)
+        return out
+
+    def _fuzzy_doc_path(self, base: Path, rel_parts: tuple[str, ...]) -> Path | None:
+        """直接拼接找不到时的兜底:在 base 下找"路径末尾几段跟 rel_parts 一样"的文件。
+        典型场景是 AI 提到项目文件时把包名前缀说漏了(比如把 claude_hermes/memory/images.py
+        说成 memory/images.py)——人一看就知道该是哪个文件,这里做同样的事。候选不止一个
+        时选路径最短(离 base 最近)的那个,只是个启发式,不保证猜对;猜不到才是真的
+        "文件不存在"。仍然是只读、只在 base 内部搜索,不改变安全边界。
+        """
+        n = len(rel_parts)
+        if n < 2:
+            return None  # 只有孤零零一个文件名(没有目录段可"丢")→ 太容易撞同名文件,不猜
+        scanned = 0
+        best: Path | None = None
+        best_depth = 10**9
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = [d for d in dirnames if d not in _DOC_SEARCH_SKIP_DIRS and not d.startswith(".")]
+            for name in filenames:
+                scanned += 1
+                if scanned > _DOC_SEARCH_MAX_SCAN:
+                    return best
+                parts = (Path(dirpath) / name).relative_to(base).parts
+                if len(parts) >= n and parts[-n:] == rel_parts and len(parts) < best_depth:
+                    best = Path(dirpath) / name
+                    best_depth = len(parts)
+        return best
+
+    def _resolve_doc_path(self, conv_root: str, rel: str) -> Path | None:
+        """把前端传的路径(相对或绝对)解析成真实文件路径,越界(见 _doc_preview_bounds)拒绝。
+        相对路径依次按候选根目录展开,哪个真存在就用哪个——AI 给的相对路径可能是相对会话
+        cwd,也可能是相对 AI_BRAIN(比如 "00-inbox/x.md" 这种收件箱惯例)。直接拼接全部落空
+        再退到 _fuzzy_doc_path 按路径尾部兜底搜一遍。
+        """
         rel = (rel or "").strip()
         if not rel:
             return None
-        root_p = Path(root).resolve()
-        try:
-            p = Path(rel)
-            target = p.resolve() if p.is_absolute() else (root_p / p).resolve()
-        except (OSError, ValueError):
-            return None
-        if target != root_p and root_p not in target.parents:
-            return None  # 目录穿越 / 落在会话 cwd 外,拒
-        return target
+        bounds = self._doc_preview_bounds(conv_root)
+        p = Path(rel)
+        if p.is_absolute():
+            try:
+                target = p.resolve()
+            except (OSError, ValueError):
+                return None
+            return target if any(target == b or b in target.parents for b in bounds) else None
+        for base in bounds:
+            try:
+                target = (base / p).resolve()
+            except (OSError, ValueError):
+                continue
+            if target != base and base not in target.parents:
+                continue  # rel 里带 ../.. 跳出了这个候选根,换下一个候选根试
+            if target.is_file():
+                return target
+        for base in bounds:
+            found = self._fuzzy_doc_path(base, p.parts)
+            if found is not None:
+                return found
+        return None
 
     async def _handle_doc_preview(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
-        rel = request.query.get("path", "")
-        # 候选根目录依次试:①会话 cwd(项目 worktree,非项目会话回退 serve 进程 cwd);
-        # ②AI_BRAIN——不是"公网访问不到本地文件"(HTTP 请求本来就是服务端执行,客户端在
-        # 内网还是公网没区别),是 AI 常把 00-inbox/ 这类笔记直接写进 Obsidian vault(AI_BRAIN),
-        # 那不在会话 cwd 范围内,原来只认①会导致越界拒绝、误报成"文件不存在"。
-        # 两个根目录互不包含时才需要都试一遍;命中哪个算哪个,不存在才换下一个。
-        roots = [self._conv_cwd(request.query.get("conv", "")) or os.getcwd(), str(config.AI_BRAIN_DIR)]
-        target = None
-        for root in dict.fromkeys(roots):  # 去重且保序
-            candidate = self._safe_doc_path(root, rel)
-            if candidate is not None and candidate.is_file():
-                target = candidate
-                break
-        if target is None:
+        root = self._conv_cwd(request.query.get("conv", "")) or os.getcwd()
+        # 模糊兜底可能要 os.walk 扫大几千个文件(_DOC_SEARCH_MAX_SCAN),丢进线程池——
+        # 这是单进程 server,同一个 event loop 还扛着其他会话的 SSE 长连接,同步扫盘会
+        # 把大伙都卡住(实测最坏情况 1.6s+,足够让人感觉到卡顿)。
+        target = await asyncio.to_thread(self._resolve_doc_path, root, request.query.get("path", ""))
+        if target is None or not target.is_file():
             return web.json_response({"error": "文件不存在或路径越界"}, status=404)
         try:
             size = target.stat().st_size
@@ -1746,7 +1826,13 @@ class WebAdapter:
             return web.Response(status=404, text="not found")
         return web.FileResponse(
             target,
-            headers={"Cache-Control": "no-cache", "Content-Security-Policy": _PUBLISH_CSP},
+            # X-Frame-Options 显式设成 SAMEORIGIN(不能不设——中间件 _security_mw 用 setdefault
+            # 补 DENY,不设就会跟上面放宽的 frame-ancestors 'self' 打架,预览面板照样空白)。
+            headers={
+                "Cache-Control": "no-cache",
+                "Content-Security-Policy": _PUBLISH_CSP,
+                "X-Frame-Options": "SAMEORIGIN",
+            },
         )
 
     # 只放行这几个图标名,防目录穿越
