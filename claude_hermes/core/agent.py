@@ -85,6 +85,23 @@ class ImageAttachment:
     media_type: str  # 如 image/jpeg
 
 
+@dataclass
+class AudioAttachment:
+    """一段用户上传的音频。
+
+    跟 ImageAttachment 不是一回事:Claude Messages 协议压根没有 audio 这种
+    content block 类型(不管走官方订阅还是 DeepSeek/Kimi,这层协议全体一致,
+    不存在"某些模型支持某些不支持"),没法像图片那样直接塞进多模态请求。
+    这里走的是"转写后当文字喂给模型"这条路——data/media_type/filename 只用于
+    落盘回放,真正喂给 AI"解读"的是上传时已经跑完 ASR 的 transcript。
+    """
+
+    data: bytes  # 原始字节(来自 multipart 上传,不是 base64——音频不再二次编码进网络传输)
+    media_type: str  # 如 audio/mpeg
+    filename: str
+    transcript: str  # 上传时已转写好的文字稿
+
+
 # 各模型上下文窗口(token)。前缀匹配,未知默认 200k。
 # Opus 4.x/Sonnet 5/Fable 5 官方已标配 1M input;Sonnet 4.6/Haiku 4.5 仍为 200k。
 # kimi-k3(2026-07-16 发布)官方标称 1M context,故一并登记;其余第三方供应商模型走默认 200k。

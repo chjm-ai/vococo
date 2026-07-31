@@ -35,7 +35,7 @@ from ...core.agent import AgentReply, get_rate_limits
 from ...memory import session_store
 from .. import git_status, settings_store
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
-from .base import ImageAttachment, Incoming
+from .base import AudioAttachment, ImageAttachment, Incoming
 from .usage_local import get_local_claude_usage
 from .web_push import PUSH
 
@@ -313,6 +313,12 @@ class WebAdapter:
         # 刷新/首连时据此「状态先行、内容随后」地恢复——先秒推一条状态帧让用户知道
         # 「这轮还在跑、到哪一步」(避免空窗误发),再慢慢补回思考/正文/工具帧。
         self._live: dict[str, dict] = {}
+        # 音频附件"先转写、后发送"两步走的中间态:选完文件立刻上传转写(见
+        # _handle_upload_audio),/send 时只带 id 引用,不用把音频原始字节再走一遍
+        # JSON+base64 塞进 /send 请求体(100MB 音频那样编码一遍代价太大)。
+        # id -> (bytes, filename, media_type, transcript, 存入时刻);
+        # 每次新增顺手清一遍超过 1 小时没被 /send 消费掉的(用户选了没发/半路放弃)。
+        self._pending_audio: dict[str, tuple[bytes, str, str, str, float]] = {}
         self._runner: web.AppRunner | None = None
         self._cancel_callback: Callable[[str], bool] | None = None
         self._model_switch_callback: Callable[[str, str], None] | None = None
@@ -651,20 +657,34 @@ class WebAdapter:
             for i in (body.get("images") or [])
             if i.get("data")
         ]
-        if not text and not images:
+        audios: list[AudioAttachment] = []
+        for a in body.get("audios") or []:
+            pending = self._pending_audio.pop(a.get("id") or "", None)
+            if pending is None:
+                continue  # id 不存在/已消费/已过期(见 _prune_pending_audio):静默跳过这条
+            data, filename, media_type, transcript, _ts = pending
+            audios.append(AudioAttachment(
+                data=data, media_type=media_type, filename=filename, transcript=transcript,
+            ))
+        if not text and not images and not audios:
             return web.json_response({"error": "empty"}, status=400)
         if not text:
-            text = "(图片,无文字说明,看看图里是什么)"
-        await self._ingest(conv, text, images=images)
+            text = "(语音/音频,无文字说明,请解读转写内容)" if audios else "(图片,无文字说明,看看图里是什么)"
+        await self._ingest(conv, text, images=images, audios=audios)
         return web.json_response({"ok": True})
 
     async def _ingest(
-        self, conv: str, text: str, images: list[ImageAttachment] | None = None
+        self,
+        conv: str,
+        text: str,
+        images: list[ImageAttachment] | None = None,
+        audios: list[AudioAttachment] | None = None,
     ) -> None:
         """把一条消息塞进指定会话的处理流水线——浏览器发送(_handle_send)和外部注入
         (语音跨端续聊,见 inject()/gateway/web_bridge.py)共用同一份逻辑,保证标题
         占位/项目 touch/用户气泡广播/入队 dispatch 完全一致的行为,不会两边走岔。"""
         images = images or []
+        audios = audios or []
         # 首条消息自动给会话起个名(命令 / 主会话除外):先落一个截断兜底标题,
         # 同时立刻异步起模型总结(不等 AI 首轮回复——那可能跑很久,侧边栏不能干等)
         if not text.startswith("/") and conv != "main":
@@ -680,7 +700,7 @@ class WebAdapter:
         # 广播用户消息让其他客户端(如桌面端)能实时渲染用户气泡
         if not text.startswith("/"):
             self._emit({"conv": conv, "type": "user", "text": text})
-        self._inbox.put_nowait(Incoming(self.platform, conv, text, images=images))
+        self._inbox.put_nowait(Incoming(self.platform, conv, text, images=images, audios=audios))
 
     async def inject(self, conv: str, text: str) -> None:
         """语音跨端续聊的公开入口:把一句话当成这个网页会话的下一轮发送——
@@ -1204,6 +1224,63 @@ class WebAdapter:
         if text is None:
             return web.json_response({"error": error}, status=502)
         return web.json_response({"text": text})
+
+    # ── 音频附件:上传即转写,AI 靠转写文字"解读" ────────────────────────────
+    def _prune_pending_audio(self) -> None:
+        """清掉超过 1 小时没被 /send 消费的挂起音频(选完文件但没发送/中途放弃)。"""
+        cutoff = time.monotonic() - 3600
+        stale = [k for k, v in self._pending_audio.items() if v[4] < cutoff]
+        for k in stale:
+            self._pending_audio.pop(k, None)
+
+    async def _handle_upload_audio(self, request: web.Request) -> web.Response:
+        """收音频文件 → 立刻转写,成功则把原始字节+转写文字暂存,返回一个 id 给前端;
+        /send 时凭 id 取用,不用把大文件再走一遍 JSON+base64。
+
+        转写失败(格式不支持/超时/服务出错)直接把错误原样返回给前端展示——协议层
+        没有"原生音频理解"这回事(见 core/agent.py AudioAttachment 的说明),转写
+        失败就是唯一会发生的"不支持",不区分模型。
+        """
+        from ...voice import stt as voice_stt  # 懒加载,同 _handle_transcribe
+
+        if (g := self._guard(request)) is not None:
+            return g
+        if not config.DASHSCOPE_API_KEY:
+            return web.json_response(
+                {"error": "未配置语音转写:请在 .env 设 DASHSCOPE_API_KEY"}, status=503
+            )
+        audio, filename, ctype = await voice_stt.read_audio(request)
+        if not audio:
+            return web.json_response({"error": "没收到音频"}, status=400)
+        if len(audio) > config.AUDIO_MAX_BYTES:
+            return web.json_response(
+                {"error": f"音频超过 {config.AUDIO_MAX_BYTES // 1024 // 1024}MB 上限"},
+                status=400,
+            )
+        t0 = time.monotonic()
+        # 大文件转写给足时间:上传+转写一大一小两段网络往返都可能不止 30s
+        text, error = await voice_stt.transcribe(audio, filename, ctype, timeout_sec=180)
+        print(
+            f"[upload_audio] size={len(audio) / 1024 / 1024:.1f}MB "
+            f"stt={time.monotonic() - t0:.2f}s ok={text is not None}",
+            flush=True,
+        )
+        if text is None:
+            return web.json_response({"error": error}, status=502)
+        self._prune_pending_audio()
+        aid = uuid.uuid4().hex
+        media_type = (ctype or "audio/mpeg").split(";")[0].strip() or "audio/mpeg"
+        self._pending_audio[aid] = (audio, filename, media_type, text, time.monotonic())
+        return web.json_response({"id": aid, "filename": filename, "text": text})
+
+    async def _handle_audio(self, request: web.Request) -> web.StreamResponse:
+        """回显某轮用户发的音频(落盘在 config.AUDIO_DIR);name 经白名单校验挡路径穿越。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        p = session_store.audio_path(request.query.get("name", ""))
+        if p is None:
+            return web.json_response({"error": "not found"}, status=404)
+        return web.FileResponse(p, headers={"Cache-Control": "max-age=31536000, immutable"})
 
     async def _handle_history(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
@@ -1918,7 +1995,9 @@ class WebAdapter:
     async def _start_server(self) -> None:
         self._preflight()
         app = web.Application(
-            client_max_size=32 * 1024 * 1024,  # 允许 32MB 图片上传
+            # 图片走 JSON+base64(32MB 够用);音频走独立的 multipart /upload_audio,
+            # 上限对齐 config.AUDIO_MAX_BYTES(100MB),外加 multipart 边界等开销留一点余量
+            client_max_size=config.AUDIO_MAX_BYTES + 8 * 1024 * 1024,
             middlewares=[_security_mw],  # 跨源写拦截 + 安全响应头(2-9)
         )
         app.add_routes(
@@ -1962,7 +2041,9 @@ class WebAdapter:
                 web.get("/history", self._handle_history),
                 web.get("/turn_events", self._handle_turn_events),
                 web.get("/image", self._handle_image),
+                web.get("/audio", self._handle_audio),
                 web.post("/transcribe", self._handle_transcribe),
+                web.post("/upload_audio", self._handle_upload_audio),
                 web.post("/conv/rename", self._handle_rename),
                 web.post("/conv/delete", self._handle_delete),
                 web.post("/conv/archive", self._handle_conv_archive),

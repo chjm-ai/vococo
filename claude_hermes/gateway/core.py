@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from ..core.agent import (
     AgentReply,
+    AudioAttachment,
     Compacted,
     Done,
     ImageAttachment,
@@ -243,6 +244,7 @@ async def converse(
     model: str | None,
     sink: Sink,
     images: list[ImageAttachment] | None = None,
+    audios: list[AudioAttachment] | None = None,
     store_user: str | None = None,
     cwd_override: str | None = None,
 ) -> AgentReply | None:
@@ -277,6 +279,13 @@ async def converse(
     # 图片落盘 + 文件名入库:让刷新页面后历史里仍能显示这些图(仅落盘,不影响喂模型的 in-memory 版本)
     if images:
         session_store.save_turn_images(turn_id, images)
+    # 音频落盘 + 转写文字入库(供回放/历史展示);喂给模型的文字另外拼,不进 stored_user——
+    # 道理跟图片一样:附件不该塞进"给人看的那句话"里,只是这次没有原生 block 能装,
+    # 只能退化成文字拼接(见 AudioAttachment 类注释)。
+    if audios:
+        session_store.save_turn_audio(turn_id, audios)
+        for au in audios:
+            user_text += f"\n\n[语音/音频附件:{au.filename}]\n转写文字稿:\n{au.transcript}"
     # 上一轮的 SDK 会话 id:非空则本轮用 resume 让 SDK 重放真·多轮历史,不再拼历史大文本
     resume_sid = session_store.get_sdk_session_id(session_key)
     reply: AgentReply | None = None

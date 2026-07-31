@@ -119,6 +119,10 @@ ROOT_DIR: Path = _ROOT
 DATA_DIR: Path = _ROOT / "data"
 # 用户发的图片落盘目录(Web 端消息里的图片,持久化后刷新页面仍可见)
 IMAGES_DIR: Path = DATA_DIR / "images"
+# 用户发的音频落盘目录(转写后仍保留原文件供回放,见 memory/audio.py)
+AUDIO_DIR: Path = DATA_DIR / "audio"
+# 单个音频附件大小上限(转写走 AI 解读,不是原生多模态,过大只会拖垮转写接口)
+AUDIO_MAX_BYTES: int = 100 * 1024 * 1024
 # 发布的静态网页(丢文件进来就能公网访问,见 gateway/adapters/web.py 的 /pub 路由)
 PUBLISHED_DIR: Path = DATA_DIR / "published"
 

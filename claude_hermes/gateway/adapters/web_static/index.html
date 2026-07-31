@@ -274,7 +274,7 @@ try{
           </div>
         </div>
       </div>
-      <input type="file" id="file" accept="image/*" multiple hidden>
+      <input type="file" id="file" accept="image/*,audio/*" multiple hidden>
     </form>
   </main>
   <!-- 通话视图:语音通话(原独立 /voice 页,2026-07-09 并入主 SPA,见 00-overview.md
@@ -358,6 +358,7 @@ const S = {
   tabShown: {pinned: 20, recent: 20},  // 「置顶」「最近」两个 Tab 各自已展示的条数,点「更多」每次 +20
   browseDir: "",        // 目录浏览器当前所在目录
   images: [],           // {data,media_type,url}
+  audios: [],           // {id,filename,text,mediaType,url,status}:status = uploading|done|error
   stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
   localSent: false,     // 本客户端刚发了消息,收到 "user" 事件时跳过(避免重复气泡)
   es: null,
@@ -5527,7 +5528,7 @@ function addSysNote(text){ $("#wrap").append(buildSysNote(text)); }
 function buildTurnBlock(t, conv){
   const wrap=el("div","turn-block");
   if(t.user && t.user.startsWith(SYS_MARK)) wrap.append(buildSysNote(t.user.slice(SYS_MARK.length).trim()));
-  else wrap.append(buildBubble("me", t.user, t.images).row);
+  else wrap.append(buildBubble("me", t.user, t.images, t.audios).row);
   if(!t.pending){
     const {row,b}=buildBubble("ai","");
     if(t.events && t.events.length){
@@ -5811,16 +5812,44 @@ function appendImgs(container, imgs){
   }
   container.append(g);
 }
-function buildBubble(who, text, imgs){
+// 音频组渲染:每条一个 <audio> 播放器 + 可展开的转写文字("AI 解读"靠的就是这段
+// 文字,展开出来是让用户能核对转写准不准,不是可选的装饰)。历史音频走 /audio?name=
+// (需鉴权头,跟历史图片同理);实时发的是 blob: URL,直接塞 src。
+function appendAuds(container, auds){
+  if(!auds || !auds.length) return;
+  const g=el("div","auds");
+  for(const a of auds){
+    const row=el("div","audiorow");
+    const player=el("audio"); player.controls=true; player.preload="none";
+    if(typeof a.url==="string" && a.url.startsWith("/")) loadAuthedAudio(player,a.url); else player.src=a.url;
+    row.append(player);
+    if(a.text){
+      const det=el("details","atranscript");
+      const sum=el("summary"); sum.textContent="转写文字"; det.append(sum);
+      const p=el("div"); p.textContent=a.text; det.append(p);
+      row.append(det);
+    }
+    g.append(row);
+  }
+  container.append(g);
+}
+async function loadAuthedAudio(player, url){
+  try{
+    const r=await api(url); if(!r.ok) return;
+    const b=await r.blob(); player.src=URL.createObjectURL(b);
+  }catch(e){}
+}
+function buildBubble(who, text, imgs, auds){
   const row=el("div","row "+(who==="me"?"me":"ai"));
   const b=el("div","bubble");
   if(who==="me"){ b.textContent=text; } else { b.innerHTML = text?mdToHtml(text):""; }
   row.append(b);
   appendImgs(b, imgs);
+  appendAuds(b, auds);
   return {row, b};
 }
-function addBubble(who, text, imgs){
-  const {row,b}=buildBubble(who, text, imgs);
+function addBubble(who, text, imgs, auds){
+  const {row,b}=buildBubble(who, text, imgs, auds);
   $("#wrap").append(row); updateEmpty(); scrollDown(true);
   return b;
 }
@@ -6361,23 +6390,38 @@ function renderChoice(e){
 async function send(text, display, opts){
   opts=opts||{};
   closeCmdMenu();
-  text=(text||"").trim(); if(!text && !S.images.length) return;
+  text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length) return;
+  // 音频还没转写完/转写失败:挡在这里,不让用户发出一条"AI 也读不懂"的消息
+  // (转写失败已经是"不支持解读就报错"这条要求本身,不是发送失败)
+  if(S.audios.some(a=>a.status==="uploading")){ addBubble("ai","⚠️ 音频还在转写中,请稍等再发送。"); return; }
+  if(S.audios.some(a=>a.status==="error")){ addBubble("ai","⚠️ 有音频转写失败,请先移除(点 ×)再发送。"); return; }
   // 上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发(审批/语音走 forceSend 立即发)
-  if(S.stream && !opts.forceSend){ if(queuePending(text, S.images.slice())){ S.images=[]; renderThumbs(); $("#ta").value=""; autoGrow(); } return; }
+  if(S.stream && !opts.forceSend){
+    if(queuePending(text, S.images.slice(), S.audios.slice())){
+      S.images=[]; S.audios=[]; renderThumbs(); $("#ta").value=""; autoGrow();
+    }
+    return;
+  }
   const imgs=S.images.map(x=>x.url);
+  const auds=S.audios.map(x=>({url:x.url, filename:x.filename, text:x.text}));
   // display:点按钮时传选项文字,气泡显示友好文字而非原始命令(如 /clarify id 0)
   const shown=(display!=null)?display:text;
   // opts.reuseBubble:语音已先冒了占位气泡并回填文字,这里不再重复冒泡
-  if(!opts.reuseBubble && (shown || imgs.length)) addBubble("me", shown||"(图片)", imgs);
+  if(!opts.reuseBubble && (shown || imgs.length || auds.length))
+    addBubble("me", shown||(auds.length?"(语音/音频)":"(图片)"), imgs, auds);
   // 标记本轮由本客户端发出,避免收到 "user" 事件时渲染重复气泡
   if(!text.startsWith("/")) S.localSent = true;
   // 非命令消息:立刻挂一个"💭 思考中…"气泡,不等服务器 start 事件,反馈更即时(像 TG 秒回 typing)
   if(!text.startsWith("/") && !S.stream){ ensureStream(); }
-  const payload={conv:S.conv, text, images:S.images.map(x=>({data:x.data,media_type:x.media_type}))};
+  const payload={
+    conv:S.conv, text,
+    images:S.images.map(x=>({data:x.data,media_type:x.media_type})),
+    audios:S.audios.map(x=>({id:x.id})),
+  };
   // 新会话:发出第一条后,把本地临时会话转正
   const wasLocal=String(S.conv).startsWith("local-");
   if(wasLocal){ S.conv=S.conv.replace("local-",""); payload.conv=S.conv; renderProjSelChip(); }
-  S.images=[]; renderThumbs(); $("#ta").value=""; autoGrow();
+  S.images=[]; S.audios=[]; renderThumbs(); $("#ta").value=""; autoGrow();
   try{
     await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(wasLocal) setTimeout(loadConvs, 400);
@@ -6409,11 +6453,11 @@ async function stopReply(){
   flushPending(conv); // 手动中止不会触发 done/message 事件,需主动补发排队中的下一条
 }
 // ── 待发送队列 ────────────────────────────────────────────────────────────
-function queuePending(text, images){
-  if(!text && !(images||[]).length) return;
+function queuePending(text, images, audios){
+  if(!text && !(images||[]).length && !(audios||[]).length) return;
   const q = S.pending[S.conv] || (S.pending[S.conv]=[]);
   if(q.length>=3){ pendFull(); return false; }  // 满 3 条不再排队,抖一下提示
-  q.push({id:++S.pendId, text, images:images||[]});
+  q.push({id:++S.pendId, text, images:images||[], audios:audios||[]});
   drawPending();
   return true;
 }
@@ -6428,7 +6472,7 @@ function drawPending(){
   for(const it of (S.pending[S.conv]||[])){
     const row=el("div","pi");
     const clk=el("span","clock"); clk.textContent="⏳";
-    const tx=el("span","ptext"); tx.textContent=it.text||"(图片)";
+    const tx=el("span","ptext"); tx.textContent=it.text||((it.audios||[]).length?"(语音/音频)":"(图片)");
     const del=el("button","pdel"); del.type="button"; del.title="删除"; del.textContent="×";
     del.onclick=()=>removePending(it.id);
     row.append(clk,tx,del); box.append(row);
@@ -6445,12 +6489,16 @@ function flushPending(conv){
   const item=q.shift(); if(!q.length) delete S.pending[conv];
   if(conv===S.conv){
     drawPending();
-    S.images=(item.images||[]).slice(); renderThumbs();
+    S.images=(item.images||[]).slice(); S.audios=(item.audios||[]).slice(); renderThumbs();
     send(item.text, null, {forceSend:true});
     return;
   }
   // 后台会话:直接发,不渲染,靠 SSE 缓冲在切回时重建
-  const payload={conv, text:item.text, images:(item.images||[]).map(x=>({data:x.data,media_type:x.media_type}))};
+  const payload={
+    conv, text:item.text,
+    images:(item.images||[]).map(x=>({data:x.data,media_type:x.media_type})),
+    audios:(item.audios||[]).map(x=>({id:x.id})),
+  };
   api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(loadConvs).catch(()=>{});
 }
 $("#composer").onsubmit = e=>{ e.preventDefault(); send($("#ta").value); };
@@ -6507,7 +6555,12 @@ async function compressImage(f){
 }
 function loadImgEl(src){ return new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=src; }); }
 $("#imgBtn").onclick = ()=>$("#file").click();
-$("#file").onchange = e=>{ for(const f of e.target.files) addImageFile(f); e.target.value=""; };
+$("#file").onchange = e=>{
+  for(const f of e.target.files){
+    if((f.type||"").startsWith("audio/")) addAudioFile(f); else addImageFile(f);
+  }
+  e.target.value="";
+};
 // 粘贴:聊天框内 Ctrl/⌘+V 粘贴剪贴板里的图片(可多张),并入队列;纯文本粘贴不受影响
 $("#ta").addEventListener("paste", e=>{
   const items = e.clipboardData && e.clipboardData.items; if(!items) return;
@@ -6520,6 +6573,42 @@ $("#ta").addEventListener("paste", e=>{
 function renderThumbs(){
   const box=$("#thumbs"); box.innerHTML="";
   S.images.forEach((im,idx)=>{ const w=el("div","t"); const g=el("img"); g.src=im.url; const x=el("button","x"); x.textContent="×"; x.onclick=()=>{S.images.splice(idx,1);renderThumbs();}; w.append(g,x); box.append(w); });
+  S.audios.forEach((au,idx)=>{
+    const w=el("div","t audiochip "+(au.status||"done"));
+    const label=el("span","alabel");
+    label.textContent = au.status==="uploading" ? `🎵 ${au.filename} · 转写中…`
+      : au.status==="error" ? `🎵 ${au.filename} · 转写失败`
+      : `🎵 ${au.filename}`;
+    if(au.status==="error" && au.error) label.title=au.error;
+    const x=el("button","x"); x.textContent="×";
+    x.onclick=()=>{ S.audios.splice(idx,1); renderThumbs(); };
+    w.append(label,x); box.append(w);
+  });
+}
+
+// ── 音频 ────────────────────────────────────────────────────────────────
+// 选完音频文件立刻上传转写(不等按发送):AI"解读"音频靠的是转写文字,不是原生
+// 多模态——协议层没有 audio 这种 content block(见后端 core/agent.py 的说明),
+// 所以在这一步就把转写做完,失败当场提示,不让用户发出一条模型也读不懂的消息。
+const AUDIO_MAX_BYTES = 100*1024*1024;
+function addAudioFile(f){
+  if(!f || !(f.type||"").startsWith("audio/")) return;
+  if(f.size > AUDIO_MAX_BYTES){ addBubble("ai", `⚠️ 音频"${f.name}"超过 100MB 上限,没有上传。`); return; }
+  const item = {id:null, filename:f.name||"audio", text:"", mediaType:f.type||"audio/mpeg", url:URL.createObjectURL(f), status:"uploading"};
+  S.audios.push(item); renderThumbs();
+  uploadAudio(f, item);
+}
+async function uploadAudio(f, item){
+  try{
+    const form = new FormData(); form.append("audio", f, item.filename);
+    const r = await api("/upload_audio", {method:"POST", body:form});
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ("HTTP "+r.status));
+    item.id=d.id; item.text=d.text; item.status="done";
+  }catch(e){
+    item.status="error"; item.error=e.message;
+  }
+  renderThumbs();
 }
 
 // ── 图片大图查看器:点聊天里的图放大,←/→ 或按钮切换,Esc/✕/点背景关闭 ─────

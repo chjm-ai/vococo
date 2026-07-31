@@ -615,6 +615,11 @@
   .bubble img{max-width:100%;border-radius:10px}
   .imgs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
   .imgs img{width:120px;height:120px;object-fit:cover;border-radius:10px;cursor:zoom-in}
+  .auds{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+  .audiorow audio{width:100%;max-width:320px;height:36px}
+  .audiorow .atranscript{margin-top:4px;font-size:12.5px;color:var(--dim)}
+  .audiorow .atranscript summary{cursor:pointer;color:var(--accent)}
+  .audiorow .atranscript div{margin-top:4px;white-space:pre-wrap;color:var(--text)}
 
   /* 图片大图查看器:点聊天里的图放大,支持上/下一张与关闭 */
   #imgViewer{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.88)}
@@ -854,6 +859,12 @@
   #thumbs img{width:56px;height:56px;object-fit:cover;border-radius:10px;border:1px solid var(--line2)}
   #thumbs .x{position:absolute;top:-6px;right:-6px;background:var(--err);color:#fff;border-radius:50%;
     width:20px;height:20px;font-size:13px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+  #thumbs .audiochip{display:flex;align-items:center;height:32px;padding:0 20px 0 10px;border-radius:16px;
+    background:var(--panel2);border:1px solid var(--line2);max-width:220px}
+  #thumbs .audiochip .alabel{font-size:12.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #thumbs .audiochip.error{border-color:var(--err)}
+  #thumbs .audiochip.error .alabel{color:var(--err)}
+  #thumbs .audiochip.uploading .alabel{color:var(--dim)}
   /* 竖排输入框:文本区在上(默认约 2 行),工具条在下 */
   .inrow{position:relative;display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line2);
     border-radius:20px;padding:8px 10px 6px;transition:border-color .18s,box-shadow .18s}
