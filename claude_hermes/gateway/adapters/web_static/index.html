@@ -4279,8 +4279,9 @@ function renderConvs(){
   if(S.sideTab==="pinned") renderPinnedTab(box, inCall);
   else if(S.sideTab==="recent") renderRecentTab(box, inCall);
   else renderProjectsTab(box, inCall);
-  // 定时任务分组:三个 Tab 之外,始终可见;只有真有任务时才出现(数据源 S.cronJobs)
-  if(S.cronJobs.length){
+  // 定时任务分组:只在「项目」Tab 下出现——置顶/最近是快捷入口,不需要跟着挂这个;
+  // 只有真有任务时才出现(数据源 S.cronJobs)
+  if(S.sideTab==="projects" && S.cronJobs.length){
     const CRON_KEY="__cron__";
     const open=S.expanded.has(CRON_KEY);
     const h=el("div","projgrp");
