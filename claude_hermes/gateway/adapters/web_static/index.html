@@ -5725,6 +5725,7 @@ function connect(){
 function reviveSSE(){
   if(document.hidden) return;
   if(!S.es) connect(); else S.es.reconnectNow();
+  loadConvs();                   // 断线期间侧栏本身(新会话/标题/置顶等)也可能变了,一并核对
   reloadHistory(true);          // 强制核对:回前台/回网络时最可能出现"卡在思考中"的漏接
 }
 document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) reviveSSE(); });
@@ -5860,6 +5861,10 @@ function handleEvent(e){
   }
   // 后台标题总结完成 → 刷新侧边栏/标题栏(loadConvs 会顺带同步顶栏标题),无论前后台会话
   if(e.type==="title"){ loadConvs(); return; }
+  // 非 web 入口(目前是 Telegram)驱动的会话有新动静,见 gateway/event_bridge.py:
+  // 那边没有 start/thinking 流式过程可镜像,直接拼气泡容易出现"回复凭空冒出来,
+  // 缺前面那句提问"的错位画面——干脆让浏览器去核对真实数据最省心。
+  if(e.type==="sync"){ loadConvs(); if(e.conv===S.conv) reloadHistory(true); return; }
   // 会话有新回合 → 历史已变,作废其缓存(含磁盘),下次打开会重新拉取
   if(e.type==="done"||e.type==="message"){ delete S.histCache[e.conv]; idbDel("hist:"+e.conv); }
   // 维护每会话"进行中"缓冲:无论前台/后台都记录,切回该会话时可完整重建流式气泡

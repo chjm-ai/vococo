@@ -242,12 +242,13 @@
   .conv.convmore{color:var(--dim2);font-size:13px}
   @media(hover:hover){ .conv.convmore:hover{color:var(--dim)} }
 
-  /* 侧栏第二层 Tab(项目/置顶/最近),位于语音对话行下方、各分组内容上方 */
-  .sidetabs{display:flex;gap:4px;padding:2px 2px 8px;margin-bottom:2px;border-bottom:1px solid var(--line)}
-  .sidetab{flex:1;text-align:center;padding:6px 4px;border-radius:7px;font-size:13px;
+  /* 侧栏第二层 Tab(项目/置顶/最近),位于语音对话行下方、各分组内容上方——分段控件样式:
+     整条淡底(panel)托着,选中项浮起一块更亮的 card 色块,不需要额外分割线 */
+  .sidetabs{display:flex;gap:2px;margin:2px 2px 10px;padding:3px;border-radius:10px;background:var(--panel)}
+  .sidetab{flex:1;text-align:center;padding:6px 4px;border-radius:8px;font-size:13px;
     color:var(--dim);cursor:pointer;user-select:none;transition:background .15s,color .15s}
-  @media(hover:hover){ .sidetab:hover{background:var(--panel2);color:var(--text)} }
-  .sidetab.active{background:var(--panel2);color:var(--text);font-weight:600}
+  @media(hover:hover){ .sidetab:hover{color:var(--text)} }
+  .sidetab.active{background:var(--card);color:var(--text);font-weight:600}
   .tabempty{padding:16px 10px;color:var(--dim2);font-size:13px;text-align:center}
 
   /* 新建项目弹窗(服务端目录浏览器) */
