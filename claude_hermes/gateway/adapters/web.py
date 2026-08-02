@@ -85,7 +85,7 @@ _PUBLISH_CSP = (
 # 对白名单页用宽松 CSP:去掉 sandbox(同源存储/请求恢复),connect-src 只放行白名单里
 # 写明的外部域,其余指令沿用站点默认 _CSP 的收紧。只按文件名精确匹配,其它 /pub 页面
 # 维持 _PUBLISH_CSP 沙箱不动——不要往这里加"页面内容不可信"的东西。
-_APP_PUBLISH_NAMES = {"food-log.html"}
+_APP_PUBLISH_NAMES = {"food-log.html", "workshop-checkin-20260802.html"}
 _APP_PUBLISH_CSP = (
     _CSP.replace(
         "connect-src 'self'",
@@ -1944,6 +1944,39 @@ class WebAdapter:
             },
         )
 
+    # ── 签到页同步 API(给 /pub 下的发布页用)────────────────────────────────
+    def _checkin_path(self, name: str) -> Path:
+        """把 API 名映射到 data/checkin/<name>.json;只允许字母数字_-。"""
+        safe = re.sub(r"[^a-zA-Z0-9_-]", "", name or "default")
+        if not safe:
+            safe = "default"
+        p = config.DATA_DIR / "checkin"
+        p.mkdir(parents=True, exist_ok=True)
+        return p / f"{safe}.json"
+
+    async def _handle_checkin_get(self, request: web.Request) -> web.Response:
+        """GET /api/checkin/{name}  返回当前签到状态。"""
+        path = self._checkin_path(request.match_info.get("name", ""))
+        if not path.is_file():
+            return web.json_response({"checked": {}})
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return web.json_response({"checked": {}})
+        return web.json_response(data)
+
+    async def _handle_checkin_post(self, request: web.Request) -> web.Response:
+        """POST /api/checkin/{name}  {checked: {"姓名": bool}} 保存签到状态。"""
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
+        path = self._checkin_path(request.match_info.get("name", ""))
+        try:
+            path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            return web.json_response({"error": "save failed"}, status=500)
+        return web.json_response({"ok": True})
+
     # 只放行这几个图标名,防目录穿越
     _ICONS = {"icon-192", "icon-512", "icon-maskable-512", "apple-touch-icon"}
 
@@ -2041,6 +2074,8 @@ class WebAdapter:
                 web.get("/wazir-mark.svg", self._handle_mark),
                 web.get("/wazir-logos", self._handle_logos),
                 web.get("/pub/{path:.*}", self._handle_publish),
+                web.get("/api/checkin/{name}", self._handle_checkin_get),
+                web.post("/api/checkin/{name}", self._handle_checkin_post),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.get("/push/config", self._handle_push_config),
                 web.get("/push/subs", self._handle_push_subs),
