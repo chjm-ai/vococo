@@ -256,6 +256,12 @@ try{
               <button type="button" id="imgBtn">＋</button>
               <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
               <span class="spacer"></span>
+              <div id="effortBox">
+                <button type="button" id="effortBtn" title="思考深度(DeepSeek:标准/深度)">
+                  <span id="effortName">标准</span><span class="caret chev down"></span>
+                </button>
+                <div id="effortPop" hidden></div>
+              </div>
               <div id="modelBox">
                 <button type="button" id="modelBtn" title="切换模型">
                   <span id="modelName">模型</span><span class="caret chev down"></span>
@@ -366,6 +372,7 @@ const S = {
   bootId: null,         // 服务端进程启动标识,变了说明重启过,断线补发这条路救不回来,得整体核对
   models: {default:"", choices:[]},  // /models 拉到的可选模型
   model: "",            // 当前会话使用的模型(空=用默认)
+  effort: "",           // 思考深度(high/max;空=未设,胶囊回落"标准")
   commands: [],          // /commands 拉到的系统斜杠命令清单 [{name,desc}]
   skills: [],            // /commands 拉到的已启用 skill 清单 [{name,desc}]
   cmd: {open:false, items:[], active:0},  // 斜杠命令菜单当前状态
@@ -3687,8 +3694,39 @@ function setMeta(d){
 
 // ── 模型选择器 ────────────────────────────────────────────────────────────
 async function loadModels(){
-  try{ const r=await api("/models"); S.models=await r.json(); renderModelChip(); }catch(e){}
+  try{ const r=await api("/models"); S.models=await r.json(); renderModelChip();
+       S.effort=(S.models.effort||""); renderEffortChip(); }catch(e){}
 }
+
+// ── 思考深度选择器 ────────────────────────────────────────────────────────
+var EFFORT_LEVELS = [
+  ["high", "标准"],
+  ["max",  "深度"],
+];
+function effortShort(id){ return (EFFORT_LEVELS.find(x=>x[0]===id)||[])[1] || (id?esc(id):"思考"); }
+function curEffort(){ return S.effort || "high"; }
+function renderEffortChip(){ $("#effortName").textContent=effortShort(curEffort()); }
+function renderEffortPop(){
+  const pop=$("#effortPop"), cur=curEffort();
+  pop.innerHTML = EFFORT_LEVELS.map(function(e){
+    const on = e[0]===cur;
+    return '<button type="button" class="mi'+(on?" on":"")+'" data-e="'+e[0]+'">'+
+      '<span class="ml">'+e[1]+'</span>'+(on?'<span class="mk">✓</span>':'')+'</button>';
+  }).join("");
+  pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickEffort(b.dataset.e); });
+}
+function pickEffort(id){
+  $("#effortPop").hidden=true;
+  if(!id || id===curEffort()) return;
+  S.effort=id;          // 乐观更新胶囊
+  renderEffortChip();
+  // POST /effort 静默切换：不走命令管道、不触发 SSE/推送;agent 下一条消息即生效
+  api("/effort", {method:"POST", headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({effort:id})}).catch(()=>{});
+}
+$("#effortBtn").onclick=e=>{ e.stopPropagation(); const p=$("#effortPop");
+  if(p.hidden){ renderEffortPop(); p.hidden=false; } else { p.hidden=true; } };
+document.addEventListener("click", e=>{ const b=$("#effortBox"); if(b && !b.contains(e.target)){ $("#effortPop").hidden=true; } });
 
 // ── 斜杠命令菜单(系统命令 + skill,两段中间一条分隔线)────────────────────
 async function loadCommands(){

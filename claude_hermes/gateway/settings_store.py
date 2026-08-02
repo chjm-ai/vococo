@@ -38,6 +38,7 @@ _DEFAULTS: dict = {
     "hermes_mcp_enabled": True,
     "external_mcp": {},         # name -> {type,command,args,env,url,headers,enabled}
     "web_default_model": "",    # web 端上次选定的模型;新会话没显式选就用它(空=回落 config.MODEL)
+    "web_effort": "",           # web 端思考深度(high/max,空=不传,交给供应商默认);见 get_web_effort
     "web_extra_models": [],     # 设置页手动加的官方模型档位:[{id,label}](新模型发布,代码没跟上时用)
     "web_providers": {},        # 设置页手动加的第三方服务商:name -> {base_url,api_key,model,label}
     "disabled_builtin_models": [],  # 代码里硬编码的官方档位(MODEL_CHOICES),用户在设置页
@@ -220,6 +221,21 @@ def set_web_default_model(model: str) -> None:
     with _LOCK:
         d = _load()
         d["web_default_model"] = model or ""
+        _save(d)
+
+
+# ── web 端思考深度(effort)─────────────────────────────────────────────
+def get_web_effort() -> str:
+    """web 端上次选定的思考深度(high/max);没设过返回空串(调用方回落:不传,交供应商默认)。"""
+    e = _load().get("web_effort") or ""
+    return e if e in ("high", "max") else ""
+
+
+def set_web_effort(effort: str) -> None:
+    """web 端切思考深度时记住它;非法值(非 high/max)视为清空。"""
+    with _LOCK:
+        d = _load()
+        d["web_effort"] = effort if effort in ("high", "max") else ""
         _save(d)
 
 

@@ -94,6 +94,27 @@ def test_web_providers_raw_shape_matches_cc_switch_entry(monkeypatch, tmp_path):
                              "model": "my-model", "label": ""}}
 
 
+# ── web 端思考深度(effort)──────────────────────────────────────────────
+def test_web_effort_default_empty(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    assert settings_store.get_web_effort() == ""
+
+
+def test_set_and_get_web_effort(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store.set_web_effort("max")
+    assert settings_store.get_web_effort() == "max"
+    settings_store.set_web_effort("high")
+    assert settings_store.get_web_effort() == "high"
+
+
+def test_web_effort_rejects_invalid_and_clears(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store.set_web_effort("max")
+    settings_store.set_web_effort("ultra")   # 非法值 → 清空,不落库
+    assert settings_store.get_web_effort() == ""
+
+
 # ── 设置页手动隐藏的内置模型档位 ──────────────────────────────────────────
 def test_disable_and_list_builtin_model(monkeypatch, tmp_path):
     _point_to(monkeypatch, tmp_path)
