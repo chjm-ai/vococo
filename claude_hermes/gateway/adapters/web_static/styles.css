@@ -821,6 +821,24 @@
   #modelPop .mgrouplabel .mgmeta{display:flex;align-items:center;gap:6px;flex-shrink:0}
   #modelPop .mgrouplabel .mreset{font-size:11px;color:var(--dim2);font-weight:400;white-space:nowrap}
   #modelPop .mdivider{height:1px;margin:5px 7px;background:var(--line2)}
+  /* 思考深度选择器(模型切换胶囊左侧,样式与模型胶囊一致) */
+  #effortBox{position:relative}
+  #effortBtn{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--dim);font-weight:500;
+    padding:6px 8px;border-radius:9px;transition:color .16s,background .16s,transform .12s}
+  #effortBtn #effortName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #effortBtn:hover{color:var(--text);background:var(--panel2)}
+  #effortBtn:active{transform:scale(.96)}
+  #effortBtn .caret{opacity:.6;flex-shrink:0}
+  #effortPop{position:absolute;bottom:calc(100% + 8px);right:0;min-width:132px;z-index:20;
+    background:var(--card);border:1px solid var(--line2);border-radius:14px;padding:6px;
+    box-shadow:var(--shadow);animation:pop .16s ease}
+  #effortPop[hidden]{display:none}
+  #effortPop .mi{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;
+    text-align:left;padding:9px 11px;border-radius:10px;font-size:13px;color:var(--text);transition:background .14s}
+  #effortPop .mi:hover{background:var(--panel2)}
+  #effortPop .mi.on{color:var(--accent)}
+  #effortPop .mi .mk{color:var(--accent);font-size:12px;flex-shrink:0}
+  #effortPop .mi .ml{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   /* 新会话项目选择器:悬浮在 .inrow 左上角(position:absolute 脱离文档流,不挤占输入框布局) */
   #projSel{position:absolute;left:0;bottom:calc(100% + 8px);z-index:15}
   #projSel[hidden]{display:none}

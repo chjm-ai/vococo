@@ -1081,9 +1081,24 @@ class WebAdapter:
         return web.json_response(
             {
                 "default": active_model,
+                "effort": settings_store.get_web_effort(),  # 思考深度(high/max,空=未设,前端回落默认)
                 "choices": [[v, label, group] for v, label, group in choices],
             }
         )
+
+    async def _handle_effort_switch(self, request: web.Request) -> web.Response:
+        """静默切思考深度(high/max):不走命令管道、不触发 SSE/推送。直接落库。
+        agent 每轮构建 options 时现读 settings_store,所以下一条消息即生效。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
+        effort = (body.get("effort") or "").strip()
+        if effort not in ("high", "max"):
+            return web.json_response({"error": "effort 仅支持 high/max"}, status=400)
+        settings_store.set_web_effort(effort)
+        return web.json_response({"ok": True, "effort": effort})
 
     async def _handle_commands(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
@@ -2036,6 +2051,7 @@ class WebAdapter:
                 web.post("/projects/reorder", self._handle_project_reorder),
                 web.post("/conv/pin", self._handle_conv_pin),
                 web.get("/models", self._handle_models),
+                web.post("/effort", self._handle_effort_switch),
                 web.get("/api/usage", self._handle_api_usage),
                 web.get("/commands", self._handle_commands),
                 web.get("/history", self._handle_history),

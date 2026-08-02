@@ -627,6 +627,7 @@ async def stream_turn(
             mcp_servers=mcp_servers,
             hooks=build_hooks(),  # PreToolUse:灾难拦截 + 危险操作审批闸
             skills=skills,
+            effort=settings_store.get_web_effort() or None,  # 思考深度(web 端设的高/深度);空=不传,交供应商默认
             # Hermes 专属 skill(本地插件,见 config.HERMES_PLUGIN_DIR):只在这里挂,
             # 不进 ~/.claude/skills,Claude Code/Codex/OpenCode 等其它工具看不到。
             plugins=[{"type": "local", "path": str(config.HERMES_PLUGIN_DIR)}],
