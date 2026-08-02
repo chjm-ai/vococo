@@ -80,6 +80,19 @@ _PUBLISH_CSP = (
     + _CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
 )
 
+# 应用型发布页白名单(精确文件名):这类页面需要浏览器直连外部 API(用户在前端自填 Key,
+# 服务端不保存不转发)和 localStorage/IndexedDB 持久化,sandbox 会同时杀掉这两者,所以
+# 对白名单页用宽松 CSP:去掉 sandbox(同源存储/请求恢复),connect-src 只放行白名单里
+# 写明的外部域,其余指令沿用站点默认 _CSP 的收紧。只按文件名精确匹配,其它 /pub 页面
+# 维持 _PUBLISH_CSP 沙箱不动——不要往这里加"页面内容不可信"的东西。
+_APP_PUBLISH_NAMES = {"food-log.html"}
+_APP_PUBLISH_CSP = (
+    _CSP.replace(
+        "connect-src 'self'",
+        "connect-src 'self' https://api.moonshot.cn https://api.moonshot.ai",
+    ).replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+)
+
 
 def _same_origin(origin: str, host: str) -> bool:
     """Origin 的 host:port 是否与请求的 Host 一致(同源)。用于挡跨站写 / DNS rebinding。"""
@@ -1924,7 +1937,9 @@ class WebAdapter:
             # 补 DENY,不设就会跟上面放宽的 frame-ancestors 'self' 打架,预览面板照样空白)。
             headers={
                 "Cache-Control": "no-cache",
-                "Content-Security-Policy": _PUBLISH_CSP,
+                "Content-Security-Policy": (
+                    _APP_PUBLISH_CSP if target.name in _APP_PUBLISH_NAMES else _PUBLISH_CSP
+                ),
                 "X-Frame-Options": "SAMEORIGIN",
             },
         )
