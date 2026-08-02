@@ -14,6 +14,7 @@ from claude_hermes.core.agent import (
     _query_context_usage,
     _turn_env,
     assemble_tool_input,
+    context_window,
 )
 
 
@@ -88,6 +89,24 @@ def test_turn_env_third_party_does_not_get_oauth_injection():
     provider = {"ANTHROPIC_BASE_URL": "https://api.deepseek.com", "ANTHROPIC_API_KEY": "sk-x"}
     env = _turn_env(provider)
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
+# === context_window:DeepSeek V4 全系 1M ===
+
+
+def test_context_window_deepseek_v4_is_1m():
+    assert context_window("deepseek-v4-flash") == 1_000_000
+    assert context_window("deepseek-v4-pro") == 1_000_000
+
+
+def test_context_window_deepseek_old_names_fall_back():
+    # 已停用的旧名(deepseek-chat/reasoner)不是 1M,走默认 200k 兜底
+    assert context_window("deepseek-chat") == 200_000
+    assert context_window("deepseek-reasoner") == 200_000
+
+
+def test_context_window_unknown_falls_back():
+    assert context_window("some-unknown-model") == 200_000
 
 
 # === _compact_threshold:大窗口模型不能被 CLI 的旧窗口认知提前压缩 ===
