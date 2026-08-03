@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
-from ..core.agent import Event, stream_turn
+from .. import config, providers
+from ..core.agent import AgentReply, Done, Event, describe_llm_error, stream_turn
 from ..memory import session_store
 
 SESSION_KEY = "voice-chat:main"
@@ -49,12 +50,71 @@ def clear() -> None:
     session_store.new_session(SESSION_KEY)
 
 
-def run_turn(prompt_text: str, extra_mcp_servers: dict | None = None) -> AsyncIterator[Event]:
+class _CandidateFailed(Exception):
+    """候选模型在尚未产出任何可见内容时就失败,允许外层换下一个候选。"""
+
+
+def _model_candidates(chosen_model: str | None) -> list[str]:
+    """按优先级构造候选模型列表:显式选择/全局默认 → 第三方兜底(仅当主选是官方时)。"""
+    primary = chosen_model or config.MODEL
+    candidates = [primary]
+    _, primary_env = providers.resolve(primary, config.MODEL)
+    if not primary_env:
+        active = providers.load_active()
+        if active and not active.is_official and active.model and active.model not in candidates:
+            candidates.append(active.model)
+    return candidates
+
+
+async def _candidate_stream(
+    history: list,
+    prompt_text: str,
+    model: str,
+    resume: str | None,
+    extra_mcp_servers: dict | None,
+) -> AsyncIterator[Event]:
+    """跑单个候选模型。若失败前没有任何非 Done 事件,不吐出 Done,由外层换候选重试。"""
+    emitted = False
+    buffer: list[Event] = []
+    try:
+        async for ev in stream_turn(
+            history, prompt_text, model=model, resume=resume, session_key=SESSION_KEY,
+            extra_mcp_servers=extra_mcp_servers, disallowed_tools=_DISALLOWED_TOOLS,
+        ):
+            if isinstance(ev, Done):
+                if ev.reply.is_error and not emitted:
+                    raise _CandidateFailed(ev.reply.error or f"模型 {model} 返回错误")
+                if buffer:
+                    for bev in buffer:
+                        yield bev
+                    buffer.clear()
+                yield ev
+                return
+            emitted = True
+            if buffer:
+                for bev in buffer:
+                    yield bev
+                buffer.clear()
+            yield ev
+    except Exception as exc:
+        if not emitted:
+            raise _CandidateFailed(str(exc)) from exc
+        raise
+
+
+async def run_turn(
+    prompt_text: str,
+    model: str | None = None,
+    extra_mcp_servers: dict | None = None,
+) -> AsyncIterator[Event]:
     """载入历史、调 stream_turn,把事件流原样透传给调用方消费。
 
     调用方负责:收到 Done 后把 (原始 user_text, reply.text) 落库(见 append)、
     存回 reply.sdk_session_id(见 set_resume)——本函数只管跑一轮,不做落库,
     因为落库要存的是剥离指令块后的原文,这层信息只有调用方(routes.py)知道。
+
+    model: 与文字聊天相同的模型选择逻辑;None 时回退到 config.MODEL,并自动尝试
+    已配置的第三方供应商兜底(仅当主模型是官方/订阅时)。
 
     extra_mcp_servers:P1 任务板的工具(见 task_tools.build_server()),只有
     语音前台会话传它;后台任务会话(core/task_runner.py)直接调 stream_turn,
@@ -62,7 +122,26 @@ def run_turn(prompt_text: str, extra_mcp_servers: dict | None = None) -> AsyncIt
     """
     history = load_history()
     resume_sid = get_resume()
-    return stream_turn(
-        history, prompt_text, resume=resume_sid, session_key=SESSION_KEY,
-        extra_mcp_servers=extra_mcp_servers, disallowed_tools=_DISALLOWED_TOOLS,
+    last_error = ""
+    for idx, cand in enumerate(_model_candidates(model)):
+        try:
+            async for ev in _candidate_stream(
+                history, prompt_text, cand,
+                resume=resume_sid if idx == 0 else None,
+                extra_mcp_servers=extra_mcp_servers,
+            ):
+                yield ev
+            return
+        except _CandidateFailed as exc:
+            last_error = str(exc)
+    yield Done(
+        AgentReply(
+            text=describe_llm_error(None, last_error)
+            if last_error
+            else "所有可用模型都失败,请检查供应商配置。",
+            tool_calls=[],
+            cost_usd=None,
+            is_error=True,
+            error=last_error,
+        )
     )

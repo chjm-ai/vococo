@@ -14,11 +14,12 @@ import os
 import time
 from aiohttp import web
 
-from .. import config
+from .. import config, providers
 from ..core import task_runner, tasks
 from ..core.agent import Done, TextDelta, ToolInput, ToolStarted
 from . import notify, omni_realtime, prompts, session, stt, task_tools, tts
-from ..gateway import clarify
+from ..gateway import clarify, settings_store
+from ..memory import session_store
 from ..tools import selfops
 from .adapter import VoiceAdapter
 
@@ -304,8 +305,15 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
             else:
                 user_text_for_prompt = user_text or ""
             prompt_text = prompts.build_prompt(user_text_for_prompt)
+            # 语音通话跟文字聊天走同一套模型选择:本会话已选 > 网页默认 > 全局默认。
+            # 语音长期不传 model 参数,导致永远锁死在 config.MODEL(Claude),设置页配了
+            # 第三方或文字聊天切过模型都不生效。
+            model = session_store.get_chosen_model(session.SESSION_KEY)
+            if not model:
+                model = settings_store.get_web_default_model() or config.MODEL
+                session_store.set_chosen_model(session.SESSION_KEY, model)
             filler_sent = False
-            async for ev in session.run_turn(prompt_text, extra_mcp_servers=task_tools.build_server()):
+            async for ev in session.run_turn(prompt_text, model=model, extra_mcp_servers=task_tools.build_server()):
                 if (
                     isinstance(ev, ToolStarted) and ev.parent_id is None
                     and not filler_sent and not full_text and not stop_event.is_set()
@@ -345,11 +353,16 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                     # 这轮干净收尾了,累积器清零——之后到的文字是新话,不是本句的断片,
                     # 别把它拼在已经答完的问题后面。
                     _prev_text = ""
+                    if reply.model and not reply.is_error:
+                        session_store.set_chosen_model(session.SESSION_KEY, reply.model)
                     if reply.sdk_session_id:
                         session.set_resume(reply.sdk_session_id)
-                    await _sse(resp, "done", {"full_text": reply.text or full_text})
+                    done_payload = {"full_text": reply.text or full_text}
+                    if reply.is_error:
+                        done_payload["error"] = reply.error or "模型调用失败"
+                    await _sse(resp, "done", done_payload)
                     print(
-                        f"[voice/send] first_text={t_first_text - t0:.2f}s "
+                        f"[voice/send] model={reply.model} first_text={t_first_text - t0:.2f}s "
                         f"first_audio={(t_first_audio - t0) if t_first_audio else -1:.2f}s "
                         f"total={time.monotonic() - t0:.2f}s",
                         flush=True,

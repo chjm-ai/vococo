@@ -12,7 +12,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from claude_hermes import config
+from claude_hermes import config, providers
 from claude_hermes.core import task_runner as executor
 from claude_hermes.core import tasks
 from claude_hermes.core.agent import AgentReply, Done, TextDelta
@@ -204,7 +204,7 @@ async def test_voice_send_streams_text_sentence_done_and_strips_instruction_on_s
 
     captured_prompt = {}
 
-    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+    async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
         captured_prompt["text"] = prompt_text
         yield TextDelta("好的,")
         yield TextDelta("明天多云二十八度。")
@@ -256,7 +256,7 @@ async def test_voice_send_tts_false_skips_synthesis_but_emits_sentences(voice_db
     """Omni 出声模式:body 带 tts:false,服务端不调 TTS(合成被 mock 成必炸),
     sentence 事件照发(前端拿文本做逐句朗读切分),只是 audio_b64 为空。"""
 
-    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+    async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
         yield TextDelta("好的,收到。")
         yield Done(
             AgentReply(text="好的,收到。", tool_calls=[], cost_usd=None, is_error=False, sdk_session_id=None)
@@ -291,7 +291,7 @@ async def test_voice_send_emits_filler_when_model_starts_tools_silently(voice_db
     模型先说了话(TextDelta 在前)则不垫。"""
     from claude_hermes.core.agent import ToolStarted
 
-    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+    async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
         yield ToolStarted("Grep", tool_id="t1")
         yield TextDelta("查到了,答案是三。")
         yield Done(
@@ -326,7 +326,7 @@ async def test_voice_send_emits_filler_when_model_starts_tools_silently(voice_db
 async def test_voice_send_no_filler_when_model_speaks_before_tools(voice_db, monkeypatch):
     from claude_hermes.core.agent import ToolStarted
 
-    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+    async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
         yield TextDelta("好,我去查,稍等。")
         yield ToolStarted("Grep", tool_id="t1")
         yield TextDelta("查完了。")
@@ -352,7 +352,7 @@ async def test_voice_send_emits_activity_for_toplevel_tool_calls(voice_db, monke
     只推顶层调用(子代理内部的动作不刷屏),文案走 executor.progress_text 的人话模板。"""
     from claude_hermes.core.agent import ToolInput
 
-    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+    async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
         yield ToolInput("Bash", tool_id="t1", tool_input={"command": "git log"})
         yield ToolInput("Read", tool_id="t2", tool_input={"file_path": "/tmp/a.py"}, parent_id="t1")
         yield TextDelta("看完了。")
@@ -396,7 +396,7 @@ async def test_voice_send_accepts_audio_and_emits_transcript_first(voice_db, mon
 
     monkeypatch.setattr(stt, "transcribe", fake_transcribe)
 
-    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+    async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
         assert "识别出来的话" in prompt_text
         yield TextDelta("收到。")
         yield Done(AgentReply(text="收到。", tool_calls=[], cost_usd=None, is_error=False))
@@ -423,7 +423,7 @@ async def test_voice_send_accepts_audio_and_emits_transcript_first(voice_db, mon
 
 @pytest.mark.anyio
 async def test_voice_send_rejects_concurrent_turn(voice_db, monkeypatch):
-    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+    async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
         yield Done(
             AgentReply(text="ok", tool_calls=[], cost_usd=None, is_error=False)
         )
@@ -455,7 +455,7 @@ async def test_voice_send_preempts_running_http_turn(voice_db, monkeypatch):
     started = asyncio.Event()
     calls: list[str] = []
 
-    async def fake_run_turn(prompt_text, extra_mcp_servers=None):
+    async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
         calls.append(prompt_text)
         if len(calls) == 1:
             started.set()
@@ -508,3 +508,112 @@ def _parse_sse(body: str) -> list[tuple[str, dict]]:
         if data is not None:
             out.append((event, json.loads(data)))
     return out
+
+
+@pytest.mark.anyio
+async def test_voice_session_fallback_when_official_blocked(voice_db, monkeypatch):
+    """Claude 官方模型在起点就失败时,语音通话应自动切到已配置的第三方供应商。"""
+    monkeypatch.setattr(config, "MODEL", "claude-sonnet-5")
+
+    def fake_resolve(chosen, default):
+        if chosen == "deepseek-chat":
+            return "deepseek-chat", {"ANTHROPIC_API_KEY": "fake-key"}
+        return (chosen or default), {}
+
+    monkeypatch.setattr(providers, "resolve", fake_resolve)
+    monkeypatch.setattr(
+        providers,
+        "load_active",
+        lambda: type(
+            "Provider",
+            (),
+            {
+                "name": "deepseek",
+                "is_official": False,
+                "model": "deepseek-chat",
+                "api_key": "fake-key",
+                "base_url": "https://fake.example/v1",
+            },
+        )(),
+    )
+
+    calls = []
+
+    async def fake_stream_turn(history, user_text, model=None, **kwargs):
+        calls.append(model)
+        if model == "claude-sonnet-5":
+            yield Done(
+                AgentReply(
+                    text="",
+                    tool_calls=[],
+                    cost_usd=None,
+                    is_error=True,
+                    error="account blocked",
+                )
+            )
+            return
+        yield TextDelta("兜底回复")
+        yield Done(
+            AgentReply(
+                text="兜底回复",
+                tool_calls=[],
+                cost_usd=None,
+                is_error=False,
+            )
+        )
+
+    monkeypatch.setattr(session, "stream_turn", fake_stream_turn)
+
+    events = [ev async for ev in session.run_turn("你好")]
+    assert calls == ["claude-sonnet-5", "deepseek-chat"]
+    assert any(isinstance(ev, TextDelta) and ev.text == "兜底回复" for ev in events)
+    final = events[-1]
+    assert isinstance(final, Done)
+    assert final.reply.text == "兜底回复"
+    assert not final.reply.is_error
+
+
+@pytest.mark.anyio
+async def test_voice_session_no_fallback_when_primary_succeeds(voice_db, monkeypatch):
+    """主模型正常时,不应再触发备用模型。"""
+    monkeypatch.setattr(config, "MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(providers, "load_active", lambda: None)
+
+    calls = []
+
+    async def fake_stream_turn(history, user_text, model=None, **kwargs):
+        calls.append(model)
+        yield TextDelta("正常回复")
+        yield Done(
+            AgentReply(
+                text="正常回复",
+                tool_calls=[],
+                cost_usd=None,
+                is_error=False,
+            )
+        )
+
+    monkeypatch.setattr(session, "stream_turn", fake_stream_turn)
+
+    events = [ev async for ev in session.run_turn("你好")]
+    assert calls == ["claude-sonnet-5"]
+    assert events[-1].reply.text == "正常回复"
+
+
+@pytest.mark.anyio
+async def test_voice_session_error_when_all_candidates_fail(voice_db, monkeypatch):
+    """所有候选模型都失败时,应返回一个 is_error=True 的 Done。"""
+    monkeypatch.setattr(config, "MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(providers, "load_active", lambda: None)
+
+    async def fake_stream_turn(history, user_text, model=None, **kwargs):
+        raise RuntimeError("network down")
+        yield  # noqa: PIE790 —— 让这是个异步生成器,异常在第一次迭代时抛出
+
+    monkeypatch.setattr(session, "stream_turn", fake_stream_turn)
+
+    events = [ev async for ev in session.run_turn("你好")]
+    final = events[-1]
+    assert isinstance(final, Done)
+    assert final.reply.is_error
+    assert "network down" in final.reply.error
