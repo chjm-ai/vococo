@@ -579,9 +579,22 @@ async def stream_turn(
     累计值,cache_read 会被反复累加,导致数字虚高("看着超了实际没超")。
     turn_tokens / 成本 / 明细仍取 ResultMessage.usage —— 那本就是本轮累计消耗,语义正确。
     """
+    from . import vision  # 懒加载:vision 依赖本模块的 ImageAttachment,顶部 import 会循环引用
+
     # 供应商集成:按会话选定模型(或设置页里配置的第三方供应商)算出实际模型和
     # 要注入的 env。第三方(DeepSeek/Kimi)→注入 base_url+key;官方→env 为空走订阅。
     resolved_model, provider_env = providers.resolve(model, config.MODEL)
+    # 图片旁路:第三方非视觉模型(如 DeepSeek)不收 image block,硬传直接报错 →
+    # 先用 qwen-vl 把图转成文字描述拼进 user_text,再以纯文本喂主模型
+    # (见 core/vision.py)。官方订阅直传原图,行为不变;转换失败抛错,由 converse
+    # 的错误回复兜底,绝不把图硬塞给不支持视觉的模型。懒加载:vision 依赖本模块
+    # 的 ImageAttachment,顶部 import 会循环引用。
+    if images and not vision.is_vision_capable(provider_env):
+        desc, err = await vision.convert_images(images)
+        if err:
+            raise RuntimeError(err)
+        user_text = f"{user_text}\n\n{desc}" if user_text.strip() else desc
+        images = None
     # MCP / skill 从运行时设置(网页设置页可改)计算,不再写死;改完下一轮即生效
     # (保温 client 的这些参数在 connect 时定死,靠兼容性哈希「一变就重建」保住该语义)。
     hermes_on = settings_store.hermes_enabled()

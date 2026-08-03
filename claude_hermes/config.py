@@ -201,6 +201,13 @@ DASHSCOPE_STT_MODEL: str = (
 DASHSCOPE_TTS_MODEL: str = (
     os.environ.get("DASHSCOPE_TTS_MODEL", "qwen3-tts-flash").strip() or "qwen3-tts-flash"
 )
+# 图片转文字(VL)本体:同样是阿里 DashScope,复用同一个 DASHSCOPE_API_KEY。
+# 用途:主模型不支持视觉时(如 DeepSeek),先用 qwen-vl 把图片读成文字描述再喂给
+# 主模型(见 core/vision.py)。qwen-vl-max 能力最强(复杂图表/截图小字),单图成本
+# 不到一分钱;嫌贵可改 qwen-vl-plus,只是复杂图表细节会丢一些。
+DASHSCOPE_VL_MODEL: str = (
+    os.environ.get("DASHSCOPE_VL_MODEL", "qwen-vl-max").strip() or "qwen-vl-max"
+)
 
 # 清洗步骤仍走 SiliconFlow(跟识别本体是两个不同服务商,互不影响)。
 # 去 siliconflow.cn 注册拿免费 key,填到 .env 的 SILICONFLOW_API_KEY。
