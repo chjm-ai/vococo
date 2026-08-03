@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .. import config
+from .. import config, providers
 from ..memory import session_store
 from ..tools import danger
 from . import tasks, worktree
@@ -202,6 +202,14 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         # session_meta(见 dispatch()),这里读出来传给 stream_turn;没设过就是
         # 空串,stream_turn 内部 providers.resolve(None,...) 自动落到全局默认。
         model = session_store.get_chosen_model(session_key) or None
+        # 没显式指定模型 → 默认回退到已配置的第三方供应商 DeepSeek,不再走官方
+        # 订阅:订阅 token 被封(401 OAuth access token has been revoked)时,没设
+        # model 的后台任务会一启动就失败。sidecar_env 按供应商名取 (model, env),
+        # 未配置/缺 key/是官方端点时返回 None → 保持原样落 config.MODEL 官方默认。
+        if model is None:
+            ds = providers.sidecar_env("deepseek")
+            if ds is not None:
+                model = ds[0]
         # 追加的标记指令只喂给模型,不进 turns 表(session_key.start_turn 存的是
         # 上面干净的 prompt_text)——收尾时从回复里抠出来,见 _split_summary_tag。
         async for ev in stream_turn(
