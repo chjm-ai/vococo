@@ -676,6 +676,17 @@ class WebAdapter:
             if pending is None:
                 continue  # id 不存在/已消费/已过期(见 _prune_pending_audio):静默跳过这条
             data, filename, media_type, transcript, _ts = pending
+            if not transcript:
+                # 上传时只存文件;转写在这里现场做,做完才进对话流(短音频 1~2s,
+                # 会议录音 ≥40 分钟走 paraformer 说话人分离,可能要几分钟)。
+                # 转写失败不丢消息:错误文本拼进 transcript,模型回复里自然说明。
+                from ...voice import stt as voice_stt
+
+                transcript, t_err = await voice_stt.transcribe_attachment(
+                    data, filename, media_type, host=request.host, timeout_sec=180
+                )
+                if transcript is None:
+                    transcript = f"(音频转写失败:{t_err},请重新上传)"
             audios.append(AudioAttachment(
                 data=data, media_type=media_type, filename=filename, transcript=transcript,
             ))
@@ -1262,21 +1273,16 @@ class WebAdapter:
             self._pending_audio.pop(k, None)
 
     async def _handle_upload_audio(self, request: web.Request) -> web.Response:
-        """收音频文件 → 立刻转写,成功则把原始字节+转写文字暂存,返回一个 id 给前端;
-        /send 时凭 id 取用,不用把大文件再走一遍 JSON+base64。
+        """收音频文件 → 秒存暂存(只存不转写),返回 id 给前端;/send 时再现场转写。
 
-        转写失败(格式不支持/超时/服务出错)直接把错误原样返回给前端展示——协议层
-        没有"原生音频理解"这回事(见 core/agent.py AudioAttachment 的说明),转写
-        失败就是唯一会发生的"不支持",不区分模型。
+        转写从上传挪到发送:上传只负责"文件到了",秒回不卡交互(转写失败也不会
+        让用户干等);发送后由 /send 现场 await 转写(短音频 1~2s,会议录音几分钟),
+        转写失败把错误文本拼进消息由模型回应——见 _handle_send。
         """
         from ...voice import stt as voice_stt  # 懒加载,同 _handle_transcribe
 
         if (g := self._guard(request)) is not None:
             return g
-        if not config.DASHSCOPE_API_KEY:
-            return web.json_response(
-                {"error": "未配置语音转写:请在 .env 设 DASHSCOPE_API_KEY"}, status=503
-            )
         audio, filename, ctype = await voice_stt.read_audio(request)
         if not audio:
             return web.json_response({"error": "没收到音频"}, status=400)
@@ -1285,24 +1291,12 @@ class WebAdapter:
                 {"error": f"音频超过 {config.AUDIO_MAX_BYTES // 1024 // 1024}MB 上限"},
                 status=400,
             )
-        t0 = time.monotonic()
-        # 大文件转写给足时间:上传+转写一大一小两段网络往返都可能不止 30s;
-        # 会议录音(≥ 40 分钟)由 stt 内部分流走 paraformer 说话人分离(自带超时预算)
-        text, error = await voice_stt.transcribe_attachment(
-            audio, filename, ctype, host=request.host, timeout_sec=180
-        )
-        print(
-            f"[upload_audio] size={len(audio) / 1024 / 1024:.1f}MB "
-            f"stt={time.monotonic() - t0:.2f}s ok={text is not None}",
-            flush=True,
-        )
-        if text is None:
-            return web.json_response({"error": error}, status=502)
         self._prune_pending_audio()
         aid = uuid.uuid4().hex
         media_type = (ctype or "audio/mpeg").split(";")[0].strip() or "audio/mpeg"
-        self._pending_audio[aid] = (audio, filename, media_type, text, time.monotonic())
-        return web.json_response({"id": aid, "filename": filename, "text": text})
+        # text 留空:真正的转写在 /send 消费时做,上传这里只保证文件已到
+        self._pending_audio[aid] = (audio, filename, media_type, "", time.monotonic())
+        return web.json_response({"id": aid, "filename": filename, "text": ""})
 
     async def _handle_audio(self, request: web.Request) -> web.StreamResponse:
         """回显某轮用户发的音频(落盘在 config.AUDIO_DIR);name 经白名单校验挡路径穿越。"""

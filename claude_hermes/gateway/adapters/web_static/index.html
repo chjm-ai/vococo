@@ -6282,7 +6282,9 @@ function applyStreamEvent(e){
       // 无活跃流式气泡 = 不是本轮发送 → 历史已渲染过该消息,跳过避免重复
       if(!S.stream) break;
       addBubble("me", e.text); break;
-    case "start": ensureStream(e._t0); break;
+    case "start":
+      if(S.transcribeWait){ S.transcribeWait.remove(); S.transcribeWait=null; }
+      ensureStream(e._t0); break;
     case "thinking": { const s=ensureStream(); s.thinktog.style.display="flex"; s.think.textContent=e.text; renderStatus(); break; }
     case "text": { const s=ensureStream(); const d=segDiv(s, e.seg); d.dataset.raw=e.text; renderSeg(d); if(s.activeCard){ foldToGroup(s, s.activeCard); s.activeCard=null; s.tgroup=null; s.toolCount=0; } renderStatus(); break; }
     case "tool_start": { const s=ensureStream();
@@ -6436,10 +6438,9 @@ async function send(text, display, opts){
   opts=opts||{};
   closeCmdMenu();
   text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length) return;
-  // 音频还没转写完/转写失败:挡在这里,不让用户发出一条"AI 也读不懂"的消息
-  // (转写失败已经是"不支持解读就报错"这条要求本身,不是发送失败)
-  if(S.audios.some(a=>a.status==="uploading")){ addBubble("ai","⚠️ 音频还在转写中,请稍等再发送。"); return; }
-  if(S.audios.some(a=>a.status==="error")){ addBubble("ai","⚠️ 有音频转写失败,请先移除(点 ×)再发送。"); return; }
+  // 上传失败的音频挡在这里(文件根本没到服务器,发了也白发);"转写中"不拦——
+  // 转写在发送后由服务端做,前端冒个占位气泡等回复流开始(见下方 pendingAudio 逻辑)
+  if(S.audios.some(a=>a.status==="error")){ addBubble("ai","⚠️ 有音频上传失败,请先移除(点 ×)再发送。"); return; }
   // 上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发(审批/语音走 forceSend 立即发)
   if(S.stream && !opts.forceSend){
     if(queuePending(text, S.images.slice(), S.audios.slice())){
@@ -6457,7 +6458,12 @@ async function send(text, display, opts){
   // 标记本轮由本客户端发出,避免收到 "user" 事件时渲染重复气泡
   if(!text.startsWith("/")) S.localSent = true;
   // 非命令消息:立刻挂一个"💭 思考中…"气泡,不等服务器 start 事件,反馈更即时(像 TG 秒回 typing)
-  if(!text.startsWith("/") && !S.stream){ ensureStream(); }
+  if(!text.startsWith("/") && !S.stream){
+    // 有音频还没转写:转写在发送后由服务端做(短音频 1~2s,会议录音几分钟),
+    // 先冒"转写中"占位,收到 start 事件(回复流开始)再换成正式回复气泡
+    if(S.audios.some(a=>!a.text)) S.transcribeWait = addBubble("ai","🎧 音频转写中,完成后开始回复…");
+    else ensureStream();
+  }
   const payload={
     conv:S.conv, text,
     images:S.images.map(x=>({data:x.data,media_type:x.media_type})),
@@ -6621,9 +6627,9 @@ function renderThumbs(){
   S.audios.forEach((au,idx)=>{
     const w=el("div","t audiochip "+(au.status||"done"));
     const label=el("span","alabel");
-    label.textContent = au.status==="uploading" ? `🎵 ${au.filename} · 转写中…`
-      : au.status==="error" ? `🎵 ${au.filename} · 转写失败`
-      : `🎵 ${au.filename}`;
+    label.textContent = au.status==="uploading" ? `🎵 ${au.filename} · 上传中…`
+      : au.status==="error" ? `🎵 ${au.filename} · 上传失败`
+      : au.text ? `🎵 ${au.filename}` : `🎵 ${au.filename} · 已上传`;
     if(au.status==="error" && au.error) label.title=au.error;
     const x=el("button","x"); x.textContent="×";
     x.onclick=()=>{ S.audios.splice(idx,1); renderThumbs(); };
@@ -6632,9 +6638,10 @@ function renderThumbs(){
 }
 
 // ── 音频 ────────────────────────────────────────────────────────────────
-// 选完音频文件立刻上传转写(不等按发送):AI"解读"音频靠的是转写文字,不是原生
-// 多模态——协议层没有 audio 这种 content block(见后端 core/agent.py 的说明),
-// 所以在这一步就把转写做完,失败当场提示,不让用户发出一条模型也读不懂的消息。
+// 选完音频立刻上传(只存文件秒回,不等转写):AI"解读"音频靠的是转写文字,不是
+// 原生多模态——协议层没有 audio 这种 content block(见后端 core/agent.py 的
+// 说明),转写在发送后由服务端做(send() 里会冒"转写中"占位气泡),失败文本
+// 由服务端拼进消息,模型回复里自然说明,不会卡住发送。
 const AUDIO_MAX_BYTES = 100*1024*1024;
 function addAudioFile(f){
   if(!f || !(f.type||"").startsWith("audio/")) return;
