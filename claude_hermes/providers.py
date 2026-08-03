@@ -37,12 +37,18 @@ def hermes_config_path() -> Path:
 
 @dataclass(frozen=True)
 class ActiveProvider:
-    """一个供应商的可用配置:名字 + 端点 + 鉴权 + 模型。"""
+    """一个供应商的可用配置:名字 + 端点 + 鉴权 + 模型。
+
+    vision=True 表示该供应商的端点支持直传图片(如 Codex OAuth 代理背后的
+    GPT 系模型),注入 env 时带上 ANTHROPIC_VISION_CAPABLE 标记,vision 判定
+    (core/vision.py)据此跳过 qwen-vl 转文字旁路。
+    """
 
     name: str
     base_url: str
     api_key: str
     model: str
+    vision: bool = False
 
     @property
     def is_official(self) -> bool:
@@ -65,6 +71,11 @@ def _entry_field(entry: dict, *keys: str) -> str:
         if isinstance(v, str) and v.strip():
             return v.strip()
     return ""
+
+
+def _entry_vision(entry: dict) -> bool:
+    """条目是否声明支持视觉直传(设置页勾选,存 "1"/"";兼容 true/yes/on)。"""
+    return _entry_field(entry, "vision").lower() in ("1", "true", "yes", "on")
 
 
 def _all_web_providers() -> dict[str, dict]:
@@ -94,6 +105,10 @@ def _env_for(provider: ActiveProvider) -> dict[str, str]:
         "ANTHROPIC_API_KEY": provider.api_key,
         # 清掉订阅 token,免得 CLI 拿它去打第三方端点导致 401
         "CLAUDE_CODE_OAUTH_TOKEN": "",
+        # 供应商声明支持视觉(设置页勾选,如 Codex OAuth 代理背后的 GPT 系) →
+        # 带标记让 core/vision.py 跳过 qwen-vl 转文字、直传原图。CLI 不认这个
+        # 自定义变量,原样透传无副作用(见 core/vision.py is_vision_capable)。
+        "ANTHROPIC_VISION_CAPABLE": "1" if provider.vision else "",
     }
 
 
@@ -106,6 +121,7 @@ def _provider_for_model(model: str) -> ActiveProvider | None:
                 base_url=_entry_field(entry, "base_url", "baseUrl"),
                 api_key=_entry_field(entry, "api_key", "apiKey"),
                 model=model,
+                vision=_entry_vision(entry),
             )
     return None
 
@@ -133,20 +149,24 @@ def sidecar_env(name: str) -> tuple[str, dict[str, str]] | None:
     """按供应商名取 (model, 注入env),给标题总结这类轻量辅助调用做兜底。
 
     名字不区分大小写、允许子串匹配(配置里叫 deepseek / DeepSeek 都能命中);
+    传空串 = 匹配任意第一个可用第三方(后台任务没配 DeepSeek、想兜到
+    Codex/GPT 代理这类供应商时用);
     未配置 / 缺 key / 是官方端点(官方走订阅不用它兜底)→ None。
     """
     want = name.lower()
     entries = _all_web_providers()
-    # 先精确后子串:防「deepseek」误命中「deepseek-pro」这种带后缀的贵档
+    # 先精确后子串:防「deepseek」误命中「deepseek-pro」这种带后缀的贵档;
+    # 空串时所有条目等权,取第一条可用
     ordered = sorted(entries.items(), key=lambda kv: kv[0].lower() != want)
     for pname, entry in ordered:
-        if want not in pname.lower():
+        if want and want not in pname.lower():
             continue
         provider = ActiveProvider(
             name=pname,
             base_url=_entry_field(entry, "base_url", "baseUrl"),
             api_key=_entry_field(entry, "api_key", "apiKey"),
             model=_entry_field(entry, "model"),
+            vision=_entry_vision(entry),
         )
         if provider.is_official or not provider.api_key or not provider.model:
             continue
@@ -167,6 +187,7 @@ def has_active_third_party() -> bool:
                 base_url=_entry_field(entry, "base_url", "baseUrl"),
                 api_key=_entry_field(entry, "api_key", "apiKey"),
                 model=_entry_field(entry, "model"),
+                vision=_entry_vision(entry),
             )
             if not provider.is_official:
                 return True
@@ -183,7 +204,10 @@ def load_active() -> ActiveProvider | None:
         api_key = _entry_field(entry, "api_key", "apiKey")
         base_url = _entry_field(entry, "base_url", "baseUrl")
         model = _entry_field(entry, "model")
-        provider = ActiveProvider(name=name, base_url=base_url, api_key=api_key, model=model)
+        provider = ActiveProvider(
+            name=name, base_url=base_url, api_key=api_key, model=model,
+            vision=_entry_vision(entry),
+        )
         if not provider.is_official and api_key:
             return provider
     return None

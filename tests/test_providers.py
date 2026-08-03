@@ -160,6 +160,48 @@ def test_sidecar_env_prefers_exact_name(tmp_path, monkeypatch):
     assert result[0] == "deepseek-v4-flash"
 
 
+def test_sidecar_env_empty_name_returns_any_third_party(tmp_path, monkeypatch):
+    """空串=任意第一个可用第三方(后台任务没配 DeepSeek 时兜到 Codex/GPT 代理)。"""
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "codex-gpt", {"base_url": "http://127.0.0.1:8317", "model": "gpt-5.6", "api_key": "sk-proxy"}
+    )
+    result = providers.sidecar_env("")
+    assert result is not None
+    model, env = result
+    assert model == "gpt-5.6"
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8317"
+
+
+def test_sidecar_env_empty_name_none_when_no_provider(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    assert providers.sidecar_env("") is None
+
+
+# ── vision 声明:Codex/GPT 代理直传图片 ───────────────────────────────
+def test_resolve_vision_provider_injects_capable_flag(tmp_path, monkeypatch):
+    """勾了「支持视觉直传」的供应商 → env 带 ANTHROPIC_VISION_CAPABLE=1。"""
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "codex-gpt", {"base_url": "http://127.0.0.1:8317", "model": "gpt-5.6", "api_key": "sk-proxy", "vision": "1"}
+    )
+    model, env = providers.resolve("gpt-5.6", "claude-sonnet-5")
+    assert model == "gpt-5.6"
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8317"
+    assert env["ANTHROPIC_API_KEY"] == "sk-proxy"
+    assert env["ANTHROPIC_VISION_CAPABLE"] == "1"
+
+
+def test_resolve_non_vision_provider_flag_empty(tmp_path, monkeypatch):
+    """没勾视觉的供应商(DeepSeek)→ 标记为空串,仍走转文字旁路。"""
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "deepseek", {"base_url": "https://api.deepseek.com/anthropic", "model": "deepseek-chat", "api_key": "sk-xxx"}
+    )
+    _, env = providers.resolve("deepseek-chat", "claude-sonnet-5")
+    assert env["ANTHROPIC_VISION_CAPABLE"] == ""
+
+
 # ── lookup_provider_by_model / subscription_api_key_for_model ────────
 def test_lookup_provider_by_model_returns_web_provider(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
