@@ -107,6 +107,36 @@ def test_build_prompt_covers_delayed_reminders_within_timeout(monkeypatch):
     assert "30 分钟以内" in out
 
 
+@pytest.mark.parametrize(
+    "detail_text",
+    [
+        "详细讲讲那篇笔记的内容",
+        "把报告全部念出来",
+        "完整内容是什么",
+        "展开讲一下梅西的职业生涯",
+        "细说昨天查到的结果",
+        "从头到尾读一遍那篇文章",
+    ],
+)
+def test_build_prompt_expands_reply_limit_for_detail_request(detail_text):
+    """2026-08-03:用户明确要求详细时放宽 100 字限制,不再只给短回复逼用户说"继续"。"""
+    out = prompts.build_prompt(detail_text)
+    assert "不受 100 字上限限制" in out
+    assert "把用户要的内容完整讲清楚" in out
+
+
+def test_build_prompt_keeps_short_reply_by_default():
+    out = prompts.build_prompt("明天天气怎么样")
+    assert "每次回复控制在 100 字以内" in out
+
+
+def test_build_prompt_negation_does_not_expand_reply():
+    """"不用详细/简单说"这类否定表达不能误触发放宽。"""
+    out = prompts.build_prompt("不用详细,简单说一下结果就行")
+    assert "每次回复控制在 100 字以内" in out
+    assert "不受 100 字上限限制" not in out
+
+
 def test_build_prompt_includes_transcription_tolerance_rule():
     """Omni-Realtime 不支持热词(2026-07-10 查证:仅 Fun-ASR/Paraformer 系列有),
     误听纠错只能靠大脑——指令块必须带【转写容错】规则。"""
