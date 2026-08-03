@@ -5196,6 +5196,7 @@ function providerFormHtml(){
     '<div class="fld"><label>model</label><input id="pvModel" placeholder="deepseek-chat" value="'+esc(cur.model||"")+'"></div>'+
     '<div class="fld"><label>api_key</label><input id="pvKey" type="password" placeholder="sk-..." value="'+esc(cur.api_key||"")+'"></div>'+
     '<div class="fld"><label>显示名(可空)</label><input id="pvLabel" placeholder="" value="'+esc(cur.label||"")+'"></div>'+
+    '<div class="fld"><label style="display:flex;align-items:center;gap:6px"><input id="pvVision" type="checkbox"'+(cur.vision==="1"?' checked':'')+'><span>支持视觉直传(Codex 代理/GPT 勾选,图片不转文字)</span></label></div>'+
     '<div class="mcperr" id="pvErr"></div>'+
     '<div class="setrowbtns"><button class="btn primary sm" id="pvSave">保存</button><button class="btn ghost sm" id="pvCancel">取消</button></div>'+
   '</div>';
@@ -5259,7 +5260,7 @@ async function saveProviderForm(){
   const base_url=$("#pvUrl").value.trim();
   const model=$("#pvModel").value.trim();
   if(!base_url||!model){ err.textContent="base_url 和 model 都要填"; return; }
-  const body={action:"add", name, base_url, model, api_key:$("#pvKey").value.trim(), label:$("#pvLabel").value.trim()};
+  const body={action:"add", name, base_url, model, api_key:$("#pvKey").value.trim(), label:$("#pvLabel").value.trim(), vision:($("#pvVision")&&$("#pvVision").checked)?"1":""};
   const r=await api("/settings/provider",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   const d=await r.json();
   if(d.error){ err.textContent=d.error; return; }

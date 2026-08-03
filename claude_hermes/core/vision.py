@@ -39,8 +39,17 @@ _VISION_BASE_URL_HINTS: frozenset[str] = frozenset()
 
 
 def is_vision_capable(provider_env: dict[str, str]) -> bool:
-    """当前供应商是否支持图片直传:官方订阅→是;第三方→看 host 是否命中视觉名单。"""
+    """当前供应商是否支持图片直传:官方订阅→是;第三方→看是否声明支持。
+
+    声明来源有两处,任一命中即直传:
+    1. providers._env_for 注入的 ANTHROPIC_VISION_CAPABLE=1(设置页供应商条目
+       勾了「支持视觉直传」,如 Codex OAuth 代理背后的 GPT 系——base_url 是
+       用户自填的本地代理地址,没法预写 host 名单,故走显式声明);
+    2. host 命中 _VISION_BASE_URL_HINTS 名单(历史机制,保留)。
+    """
     if not provider_env:
+        return True
+    if provider_env.get("ANTHROPIC_VISION_CAPABLE") == "1":
         return True
     host = (urlsplit(provider_env.get("ANTHROPIC_BASE_URL", "")).hostname or "").lower()
     return host in _VISION_BASE_URL_HINTS

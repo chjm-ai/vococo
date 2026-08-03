@@ -25,6 +25,15 @@ def test_is_vision_capable():
     assert vision.is_vision_capable({"ANTHROPIC_BASE_URL": "HTTPS://API.DEEPSEEK.COM/anthropic"}) is False
 
 
+def test_is_vision_capable_provider_declared_flag():
+    """供应商条目声明视觉(设置页勾选,Codex 代理/GPT)→ 直传,与 host 无关。"""
+    assert vision.is_vision_capable({"ANTHROPIC_BASE_URL": "http://127.0.0.1:8317",
+                                     "ANTHROPIC_VISION_CAPABLE": "1"}) is True
+    # 标记为空串 = 未声明 → 仍按 host 判定(转文字)
+    assert vision.is_vision_capable({"ANTHROPIC_BASE_URL": "http://127.0.0.1:8317",
+                                     "ANTHROPIC_VISION_CAPABLE": ""}) is False
+
+
 @pytest.mark.anyio
 async def test_convert_success(monkeypatch):
     """多张图并发成功 → 拼接文本带「图片 N」序号。"""

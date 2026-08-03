@@ -59,8 +59,24 @@ def test_upsert_and_list_provider(monkeypatch, tmp_path):
     out = settings_store.list_web_providers()
     assert out == [{
         "name": "deepseek", "base_url": "https://api.deepseek.com/anthropic",
-        "api_key": "sk-xxx", "model": "deepseek-chat", "label": "",
+        "api_key": "sk-xxx", "model": "deepseek-chat", "label": "", "vision": "",
     }]
+
+
+def test_upsert_provider_vision_flag(monkeypatch, tmp_path):
+    """vision 只接受 "1",其余落空串;存取往返。"""
+    _point_to(monkeypatch, tmp_path)
+    assert settings_store.upsert_web_provider(
+        "codex-gpt",
+        {"base_url": "http://127.0.0.1:8317", "model": "gpt-5.6",
+         "api_key": "sk-proxy", "vision": "1"},
+    ) is None
+    assert settings_store.list_web_providers()[0]["vision"] == "1"
+    # 非 "1" 的脏值一律落空串
+    assert settings_store.upsert_web_provider(
+        "x", {"base_url": "https://a.com", "model": "m", "vision": "on"}
+    ) is None
+    assert settings_store.list_web_providers()[1]["vision"] == ""
 
 
 def test_upsert_provider_missing_fields_errors(monkeypatch, tmp_path):
@@ -91,7 +107,7 @@ def test_web_providers_raw_shape_matches_cc_switch_entry(monkeypatch, tmp_path):
     )
     raw = settings_store.web_providers_raw()
     assert raw == {"mine": {"base_url": "https://api.example.com", "api_key": "sk-yyy",
-                             "model": "my-model", "label": ""}}
+                             "model": "my-model", "label": "", "vision": ""}}
 
 
 # ── web 端思考深度(effort)──────────────────────────────────────────────

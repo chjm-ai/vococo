@@ -202,12 +202,16 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         # session_meta(见 dispatch()),这里读出来传给 stream_turn;没设过就是
         # 空串,stream_turn 内部 providers.resolve(None,...) 自动落到全局默认。
         model = session_store.get_chosen_model(session_key) or None
-        # 没显式指定模型 → 默认回退到已配置的第三方供应商 DeepSeek,不再走官方
-        # 订阅:订阅 token 被封(401 OAuth access token has been revoked)时,没设
+        # 没显式指定模型 → 默认回退到已配置的第三方供应商,不再走官方订阅:
+        # 订阅 token 被封(401 OAuth access token has been revoked)时,没设
         # model 的后台任务会一启动就失败。sidecar_env 按供应商名取 (model, env),
         # 未配置/缺 key/是官方端点时返回 None → 保持原样落 config.MODEL 官方默认。
+        # 优先 DeepSeek(便宜且稳定);没配 DeepSeek 就兜任意已配置第三方
+        # (如 Codex OAuth 代理的 GPT 系),仍不落官方订阅。
         if model is None:
             ds = providers.sidecar_env("deepseek")
+            if ds is None:
+                ds = providers.sidecar_env("")
             if ds is not None:
                 model = ds[0]
         # 追加的标记指令只喂给模型,不进 turns 表(session_key.start_turn 存的是
