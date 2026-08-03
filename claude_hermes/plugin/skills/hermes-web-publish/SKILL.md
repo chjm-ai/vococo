@@ -1,91 +1,92 @@
 ---
 name: hermes-web-publish
 description: >-
-  把一个网页发布到 Cloud Hermes（Wazir）已经配置好的公网域名 wazir.example.com 下——只需要往
-  claude-hermes 主仓库的 data/published/ 目录丢一个文件，就能通过
-  https://wazir.example.com/pub/<文件名> 直接公网访问，不用新起服务、不用配置新域名、不用重启
-  进程。当用户说"把这个网页发布一下""这个页面能不能发个链接给我在手机上打开""挂到网上看
-  看""发布这个 HTML/demo"，且当前工作目录是 claude-hermes 主仓库（不是某个编码任务的
-  git worktree）时触发。不要用于：部署到别的服务器（那是 website-publisher，走 SSH/kimmy）、
-  发布到飞书妙搭（那是 lark-apps）、生成网页本身的设计（先用 frontend-design 把页面做出
-  来，做完再用本 skill 发布）。
+  把网页或带后端的应用发布到公网（当前默认 https://pub.example.com/，备案后切
+  https://<app>.example.cn/）。支持三种类型：静态页面（丢文件即发）、Node 后端
+  （npm 依赖+systemd+nginx 反代）、Python 后端（venv+gunicorn 同样）。当用户说
+  "把这个网页发布一下""这个页面发个链接给我""挂到网上看看""发布这个 HTML/demo"或
+  "把这个小应用部署上去"时触发。不要用于：生成网页本身的设计（先用 frontend-design/
+  web-design 把页面做出来，做完再用本 skill 发布）、发布到飞书妙搭（那是 lark-apps）。
 ---
 
-# Cloud Hermes 网页发布
+# 网页/应用发布（myserver 通道）
 
-Cloud Hermes（内部代号 Wazir）本身就是一个常驻公网的 Web 服务：cloudflared 隧道把
-`wazir.example.com` 转发到本机 `localhost:8848`（`~/.cloudflared/config.yml`）。这个服务
-已经开了一条公开静态路由 `GET /pub/{path}`，直接读 claude-hermes 仓库下的
-`data/published/` 目录——**发布=往那个目录写一个文件，不用碰代码、不用重启。**
+## 通道总览
 
-对应实现：`claude_hermes/gateway/adapters/web.py` 的 `_handle_publish` /
-`_safe_published_path`，路由表里的 `web.get("/pub/{path:.*}", ...)`；目录路径见
-`config.PUBLISHED_DIR`（= `data/published/`）。
+| 通道 | URL 形态 | 状态 | 用途 |
+|---|---|---|---|
+| **myserver**（当前默认） | `https://pub.example.com/<应用名>/` | ✅ 已验证 | 备案前/临时发布，CF 橙云 https，国内可访问 |
+| Panda | `https://<应用名>.example.cn/` | 备案通过后启用 | 正式环境（阿里云大陆） |
 
-本 skill 打包在 `claude_hermes/plugin/`（本地 SDK 插件 `hermes-internal`）里，只在
-claude-hermes 自己的 Hermes 会话中加载——Claude Code / Codex / OpenCode 等其它工具看
-不到它，不用管跨工具共享的顾虑。
+切换：改对应服务器的 `/opt/deploy/config`（DOMAIN/URL_MODE）+ 发布命令里的 host 别名。
+**备案通过前 myserver 是唯一可用通道**（example.cn 备案期间解析必须指阿里云，不能动）。
 
-## 前置检查（先做,别跳）
+## 发布步骤（三步）
 
-1. **确认自己不在 worktree 里。** `pwd` 应该是 `/Users/wesley/Repos/claude-hermes`
-   本身，而不是 `.../data/worktrees/<hash>/<slug>` 这种路径。日常聊天/任务对话本来就是
-   在主仓库根目录跑，天然满足；但如果这轮明显是一个"改代码"的编码任务（被派进了独立
-   worktree），**不要**在那里写 `data/published/`——worktree 里没有这份 `data/`
-   目录，各 worktree 会各自建一份互不相通的空目录，文件会安安静静地"发布成功"但外网
-   完全打不开（服务进程读的是主仓库那份 `data/`，不是 worktree 里新建的那份）。遇到这
-   种情况就告诉用户"这个要在正常对话里发，不是编码任务"，等编码任务收尾、回到主仓库
-   对话再发布。
-2. 确认服务确实开着(通常是的,常驻进程):`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8848/` 应该拿到 `200`。拿不到就不是本 skill 能处理的问题(找 [[hermes-serve-restart]] 类操作),先如实告诉用户。
+### 1. 命名 + 识别类型
+- 应用名：英文小写、短横线，如 `food-log`、`invoice-helper`。**别用中文/空格**。
+- 看项目根目录判断类型：
+  - 只有 html/css/js → `static`（零依赖，丢文件即发布）
+  - 有 `package.json` → `node`（默认启动文件 `server.js`，可指定其他）
+  - 有 `requirements.txt` / `pyproject.toml` → `python`（默认 gunicorn `app:app`）
 
-## 发布步骤
+### 2. 上传 + 部署（一行命令对）
+```bash
+# 上传（排除依赖目录，服务器现场安装）
+rsync -az --exclude node_modules --exclude .venv --exclude .git --exclude __pycache__ <本地目录>/ myserver:/opt/deploy/incoming/<应用名>/
+# 部署（静态不需要端口）
+ssh myserver '/opt/deploy/deploy.sh <应用名> static'
+ssh myserver '/opt/deploy/deploy.sh <应用名> node <端口> <启动文件>'
+ssh myserver '/opt/deploy/deploy.sh <应用名> python <端口> <模块:应用>'
+```
 
-1. 想好一个干净的文件名/路径,只用英文小写、数字、短横线,带上正确扩展名,例如
-   `demo.html`、`logo-preview.html`、`reports/q3.html`。**别用中文名/空格**——虽然
-   `curl`/服务器不会挂,但公网链接里带中文很容易被聊天软件/浏览器地址栏吞掉或转义得很难看。
-2. 用 Write 工具直接写到 `data/published/<你选的路径>`(相对主仓库根目录的相对路径即
-   可,不需要绝对路径,也不需要事先 `mkdir`——父目录不存在时用 Bash `mkdir -p` 建一下,
-   或者直接用 Write 工具,它自己会建父目录)。
-   - 单文件页面:`data/published/demo.html`——发布 HTML/内联 SVG/内联 `<style>` 都行,
-     跟 Artifact 工具同一个自包含原则:样式/脚本内联进这一个文件,**不要指望加载外部
-     CDN——CSP 挡了**(见下面"限制"),需要图片就转 data URI 内嵌。
-   - 多文件小站点:`data/published/mysite/index.html` + `data/published/mysite/style.css`
-     之类,访问 `.../pub/mysite/` 会自动回退到该目录下的 `index.html`,子文件按各自
-     文件名访问(`.../pub/mysite/style.css`)。
-3. 本地过一遍(不依赖外网/隧道,更快):
-   `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8848/pub/<路径>`
-   应该拿到 `200`。拿到 `404` 多半是路径打错或文件没落盘,回头检查。
-4. 把公网链接发给用户:`https://wazir.example.com/pub/<路径>`。到这一步就完事了——不用
-   `git add`/`commit`、不用碰 `merge-main.sh`、不用 `restart_self`。这些是"改代码"才
-   需要的流程,发布静态页面完全绕开它们。
+**端口分配**：myserver 用 3100-3199 段；Panda 用 3200-3299 段。发布前先查占用：
+`ssh myserver 'ss -tln | grep :31'`。后端端口从段内最小空闲起用。
+
+### 3. 验证 + 给链接
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://pub.example.com/<应用名>/
+# 200 → 回复：https://pub.example.com/<应用名>/
+```
+
+## 静态页快速发布（最常见场景）
+单文件/小目录不需要搞端口，就是两步：
+```bash
+mkdir -p /tmp/pub-<app> && cp 页面文件 /tmp/pub-<app>/index.html
+rsync -az /tmp/pub-<app>/ myserver:/opt/deploy/incoming/<app>/
+ssh myserver '/opt/deploy/deploy.sh <app> static'
+```
+多文件站点同理（index.html + 子文件一起 rsync，`<应用名>/` 会自动回退 index.html）。
 
 ## 撤下 / 更新
+- **更新**：重复上面"上传+部署"即可，nginx reload 零中断。
+- **撤下**：
+  ```bash
+  ssh myserver 'sudo systemctl disable --now <应用名> 2>/dev/null; sudo mv /etc/nginx/snippets/pub.example.com/<应用名>.conf /tmp/; sudo mv /var/www/<应用名> /tmp/ 2>/dev/null; sudo mv /opt/apps/<应用名> /tmp/ 2>/dev/null; sudo nginx -t && sudo systemctl reload nginx'
+  ```
 
-- 撤下:直接删掉 `data/published/` 下对应文件(`rm data/published/demo.html`),链接立刻
-  404,不用重启。
-- 更新内容:直接覆盖写同一个文件即可,响应带 `Cache-Control: no-cache`,浏览器/CDN 不
-  会缓存旧版本,刷新页面就看到新内容。
+## 域名 / DNS（已配好，一般不用动）
+- `pub.example.com` A 记录 → <SERVER_IP>（CF 橙云）已存在，**新应用不需要加 DNS**（path 分流，一个域名全包）。
+- 要加新域名时：CF API token 在 `~/.cloudflared/cf-token`（只读 DNS 权限，勿外泄），zone id `<ZONE_ID>`（example.com）。
+- 备案通过后切 Panda 时：Panda 需要域名解析 + 证书（Let's Encrypt），另走正式迁移流程。
 
-## 限制(设计上就是这样,不是 bug)
-
-- **无鉴权,谁有链接谁能看。** `/pub/*` 不走 `X-Auth-Token` 校验——这条路由的存在意义
-  就是给没登录的人一个能打开的公开链接。别把不想公开的内容(截图里带真实数据、内部文档)
-  发到这里;真要公开访问受限内容,先跟用户确认。
-- **CSP 沙箱隔离,不是不安全,反而是故意收紧的。** `/pub/*` 的响应比站点其它页面多一条
-  `sandbox` CSP 指令,把发布页强制放进浏览器的"不透明源":页面内联 `<script>` 照样能跑,
-  但读不到 Wazir 聊天主界面的 `localStorage`/登录态(即便发布页内容有问题也偷不走访问
-  口令),也没法用 `<form>`/`fetch` 悄悄往 `/send` 之类的接口发状态变更请求。日常发静态
-  demo/预览页完全不受影响,只有"想让发布页反过来操控聊天后台"这种用法会被挡,而这本来
-  就不该是发布页的职责。
-- **只能挂静态文件,不能跑后端逻辑。** 想要的是服务器渲染/接 API 后端,这条路由做不到,
-  该走别的方案(比如让用户明确要新起一个服务,那是另一件事,不在本 skill 范围)。
-- **不做目录穿越、不认隐藏文件。** 路径解析会拒绝 `..` 越界和任何以 `.` 开头的路径段,
-  正常发布不会撞到这个限制,只是别指望能拿它当通用文件浏览器用。
+## 注意事项（踩过的坑，别再来一次）
+1. **上传前先查目标目录有没有"本地没有的更新版本"**——2026-08-03 曾用本地旧版覆盖 Nova 上更新的 food-log 免 Key 版（见记忆 tools-proxy.md）。rsync 前先 `ssh <host> 'ls /opt/deploy/incoming/<app>/ /var/www/<app>/ 2>/dev/null'` 确认。
+2. **CF Full 模式回源走 443**：myserver 的 nginx 必须监听 443 + 配置 SSL_CERT（`/opt/deploy/config` 已配好，复用 speeedai 证书，**别删**）。只配 80 会外网 404。
+3. **后端要监听 127.0.0.1 或 0.0.0.0 均可**（nginx 反代走内网），但端口必须和 deploy.sh 参数一致。
+4. **Node 依赖装一次**：deploy.sh 现场 `npm install`，重复发布自动跳过已装依赖；代码更新只重传源码。
+5. **旧通道已废弃**：wazir.example.com/pub（本地 data/published/）已清空停用，别再把文件往那放。
 
 ## 例子
+用户说"帮我做个产品介绍页，发个链接我用手机看看"：
+1. frontend-design 生成自包含 `index.html`。
+2. `mkdir -p /tmp/pub-intro && cp index.html /tmp/pub-intro/`
+3. `rsync -az /tmp/pub-intro/ myserver:/opt/deploy/incoming/intro/ && ssh myserver '/opt/deploy/deploy.sh intro static'`
+4. `curl -s -o /dev/null -w '%{http_code}' https://pub.example.com/intro/` → 200
+5. 回复：「发布好了：https://pub.example.com/intro/」
 
-用户说"帮我做个简单的产品介绍页,发个链接我用手机看看":
-1. 用 frontend-design 把 `demo.html` 写出来(自包含单文件,内联 CSS)。
-2. Write 到 `data/published/product-intro.html`。
-3. `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8848/pub/product-intro.html` → `200`。
-4. 回复:「发布好了:https://wazir.example.com/pub/product-intro.html」
+用户说"这个小应用要带后端，帮我发一下"：
+1. 识别 `package.json` → node 类型。
+2. 端口查空：`ssh myserver 'ss -tln | grep :31'` → 3101 空闲。
+3. 上传 + `deploy.sh <app> node 3101 server.js`。
+4. 验证 200 → 给链接。
