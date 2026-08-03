@@ -20,6 +20,14 @@ def usage_app():
     return app
 
 
+@pytest.fixture(autouse=True)
+def _no_web_auth(monkeypatch):
+    """同 test_voice_p0.py:清空口令,测试不依赖本机 .env 是否配了 WEB_AUTH_TOKEN。"""
+    from claude_hermes import config
+
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+
+
 async def _get(client, path):
     resp = await client.get(path, headers={"X-Auth-Token": ""})
     return resp.status, await resp.json()

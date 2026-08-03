@@ -1286,8 +1286,11 @@ class WebAdapter:
                 status=400,
             )
         t0 = time.monotonic()
-        # 大文件转写给足时间:上传+转写一大一小两段网络往返都可能不止 30s
-        text, error = await voice_stt.transcribe(audio, filename, ctype, timeout_sec=180)
+        # 大文件转写给足时间:上传+转写一大一小两段网络往返都可能不止 30s;
+        # 会议录音(≥ 40 分钟)由 stt 内部分流走 paraformer 说话人分离(自带超时预算)
+        text, error = await voice_stt.transcribe_attachment(
+            audio, filename, ctype, host=request.host, timeout_sec=180
+        )
         print(
             f"[upload_audio] size={len(audio) / 1024 / 1024:.1f}MB "
             f"stt={time.monotonic() - t0:.2f}s ok={text is not None}",

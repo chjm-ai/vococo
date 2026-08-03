@@ -123,6 +123,13 @@ IMAGES_DIR: Path = DATA_DIR / "images"
 AUDIO_DIR: Path = DATA_DIR / "audio"
 # 单个音频附件大小上限(转写走 AI 解读,不是原生多模态,过大只会拖垮转写接口)
 AUDIO_MAX_BYTES: int = 100 * 1024 * 1024
+# 会议录音转写(voice/stt.py):附件时长 ≥ 40 分钟按会议处理——paraformer-v2 异步
+# 文件转写 + 说话人分离(diarization),个人短录音仍走 qwen3-asr-flash。paraformer
+# 只接受公网可下载 URL,临时文件放 PUBLISHED_DIR 走 /pub 路由,随机名+转写完即删。
+DASHSCOPE_MEETING_MODEL: str = (
+    os.environ.get("DASHSCOPE_MEETING_MODEL", "paraformer-v2").strip() or "paraformer-v2"
+)
+MEETING_ASR_MIN_SECONDS: int = 40 * 60
 # 发布的静态网页(丢文件进来就能公网访问,见 gateway/adapters/web.py 的 /pub 路由)
 PUBLISHED_DIR: Path = DATA_DIR / "published"
 
