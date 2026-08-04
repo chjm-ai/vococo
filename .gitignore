@@ -25,3 +25,4 @@ venv/
 *.egg-info/
 build/
 dist/
+relaunch.log
