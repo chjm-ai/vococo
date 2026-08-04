@@ -144,6 +144,16 @@ def _looks_like_secret_exfil(cmd: str) -> bool:
 # 会改写文件系统的工具 → 检查目标是否落在工作目录外
 _WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
+# 外部 MCP 写操作白名单:命中 → escalate 请批准(cron/无交互通道直接拒)。
+# 与 tools/lemlist_lite.py 的写工具一一对应,新增写工具时这里同步加。
+_MCP_WRITE_TOOLS = frozenset({
+    "mcp__lemlist_lite__send_email",
+    "mcp__lemlist_lite__add_campaign_lead",
+    "mcp__lemlist_lite__delete_campaign_lead",
+    "mcp__lemlist_lite__upsert_contact",
+    "mcp__lemlist_lite__delete_contact",
+})
+
 # 当前轮的工作目录(工作目录功能会在开轮时 set_cwd;未设则 None → 越界检查休眠)
 _cwd_var: contextvars.ContextVar = contextvars.ContextVar("vococo_agent_cwd", default=None)
 # 项目根目录(主仓库):worktree 会话的 cwd 在子目录,但主仓库也是"自己项目",不该弹审批
@@ -243,6 +253,10 @@ def classify(
         if _outside_cwd(path, cwd):
             # 写工作目录外:自动化通道也拒绝(可能被注入用来落地后门/改配置)
             return ("escalate", f"写工作目录外的文件({path})", True)
+    # 外部 MCP 的写操作(lemlist-lite 等):会实际发邮件/删改数据,默认请批准
+    # ——防止 agent 误调或 prompt injection 借它群发/删数据;cron 等无交互通道直接拒。
+    if tool_name in _MCP_WRITE_TOOLS:
+        return ("escalate", f"{tool_name} 是外部写操作(会实际发送/修改数据)", True)
     return ("allow", "", False)
 
 
