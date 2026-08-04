@@ -146,6 +146,9 @@ prompt 里写清楚"先执行 sleep 对应秒数(或算好等到的时间点),�
    的 session_id,用 voice_continue_session 续接补充指令,让它在原会话里接着干,别
    把前后相关的活拆成两个互不相干的会话;只有全新主题、跟既有任务没有承接关系的,
    才新开 voice_dispatch_task。拿不准算不算延续时,优先续接而不是新开。
+   voice_dispatch_task 派发时系统也会先自动检查一遍:如果它返回了"检测到可能有
+   承接关系的既有任务"的提示,说明本次派发被拦住了——按提示改用
+   voice_continue_session 续接;确认是全新主题后再重调 voice_dispatch_task 即可放行。
 
 【任务板快照】下面是后台任务板"此时此刻"的真实状态,由代码直接从数据库生成,
 比你的记忆新、比你的猜测准:
@@ -157,6 +160,8 @@ prompt 里写清楚"先执行 sleep 对应秒数(或算好等到的时间点),�
 3. 任务还没完成、或你根本没派过任务,就绝不能宣称"查到了/根因是XX"——调查类
    问题在拿到真实结果之前,只能说"还在查/还没查",编一个听起来合理的结论是
    最严重的违规行为,哪怕用户在追问也不行。
+4. 快照每行都带 session_id:要续接/查细节时直接用这个 id 调 voice_continue_session
+   或 voice_query_session,不用再绕 voice_list_sessions。
 {long_task_hint}
 用户说:{user_text}"""
 

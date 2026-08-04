@@ -33,6 +33,32 @@ from ..memory import session_store
 # 只拿裸 MODEL_CHOICES 会让模型以为只能选 6 个 Claude,看不到 kimi-k3 这类已配模型
 _MODEL_EXAMPLES = "、".join(m for m, _, _ in providers.available_models(MODEL_CHOICES))
 
+# 2026-08-04 续接优先:派发前强制关联检测的配套(见 voice_dispatch_task)。
+# _hinted_candidates 记"已提示过可续接候选"的任务 id——同一候选再次命中就放行,
+# 防"模型重调 dispatch 被同一候选永远拦死"的循环(用户确认新主题后重调即放行;
+# 进程内生命周期足够,重启后最多再提示一次,可接受)。
+_hinted_candidates: set[str] = set()
+
+
+def _title_ngrams(title: str) -> set[str]:
+    """标题切成 2 字滑动窗口(bigram)做关键词集:不依赖分词库,中文 2-4 字实词
+    (查资料/写报告/加功能)重叠即可捕捉;先剔除空白/标点,避免产生无意义窗口。"""
+    chars = [c for c in title if not c.isspace() and c not in "《》【】()（）,，。.、!?！？·—:：;；'\"“”‘’"]
+    return {"".join(chars[i:i + 2]) for i in range(len(chars) - 1)}
+
+
+def _find_related_candidate(title: str) -> dict | None:
+    """派发前查最近语音任务里标题与本次相关的那个(先续接不新开,见
+    voice/prompts.py 规则8)。只看 origin='voice'——cron/网页派的任务不在语音的
+    "可续接面"内(语音会话没有它们的上下文)。命中返回任务 dict,未命中返回 None。"""
+    ngrams = _title_ngrams(title)
+    for t in tasks.list_recent(10, origin="voice"):
+        if t["id"] in _hinted_candidates:
+            continue  # 同一候选已提示过,放行(防死循环)
+        if ngrams & _title_ngrams(t["title"]):
+            return t
+    return None
+
 
 def _ok(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}]}
@@ -64,7 +90,11 @@ def _find_web_session(session_id: str) -> dict | None:
 @tool(
     "voice_dispatch_task",
     "把一件重活派给后台独立会话去干:要写改代码/文件、要查多处资料、要拆成多步才能"
-    "做完、或要跑命令/脚本的事都算(按工作量信号判断,不要靠猜耗时),立即返回不等它跑完;你应该同时口头告诉用户「好,我去办,好了叫你」"
+    "做完、或要跑命令/脚本的事都算(按工作量信号判断,不要靠猜耗时),立即返回不等它跑完;"
+    "派发前系统会先检查最近派过的任务:如果发现标题与本次可能有承接关系的既有任务,"
+    "会返回候选提示让你改用 voice_continue_session 续接(先续接不新开,见【派活规则】8)"
+    "——是延续就改调 voice_continue_session,确实跟它没有承接关系、是全新主题时再重调"
+    "本工具派发;你应该同时口头告诉用户「好,我去办,好了叫你」"
     "这类话。title:6 字以内短名(会出现在播报/任务卡片里);prompt:完整任务描述(后台会话"
     "看不到当前对话上下文,必须把要做的事说完整);cwd:任务要在哪个项目目录下干活——"
     "涉及改代码/改仓库文件/查项目代码的任务【必须】传该项目根目录的绝对路径,"
@@ -93,6 +123,18 @@ async def voice_dispatch_task(args: dict) -> dict:
     model = (args.get("model") or "").strip()
     if not (title and prompt):
         return _ok("voice_dispatch_task 需要 title 和 prompt 都非空。")
+    # 2026-08-04 续接优先(见 voice/prompts.py 规则8):派发前先检测可能承接的
+    # 既有语音任务,命中返回候选提示、不派发——把"该不该续接"从模型自觉变成
+    # 系统强制过一遍,堵住"规则只是软建议、模型直接新开"的走样。
+    candidate = _find_related_candidate(title)
+    if candidate is not None:
+        _hinted_candidates.add(candidate["id"])
+        return _ok(
+            f"⚠️ 检测到可能有承接关系的既有任务:{_describe_task(candidate)}。"
+            "如果这次要干的是它的延续(补充/改需求/接着做),请改用 "
+            "voice_continue_session(session_id, instruction) 续接,不要新开;"
+            "确实是全新主题、与它没有承接关系,再调本工具派发。"
+        )
     # 捕获派发时的平台上下文:任务完成后需要知道通知该发给谁(见 notify.py)。
     # clarify.current() 由 run.py 在每轮对话开始前设置(含 adapter+chat_id);
     # 不在网关上下文里(如测试)返回 None,不阻塞任务派发。
