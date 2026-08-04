@@ -33,6 +33,7 @@ def voice_db(isolated, monkeypatch):
     monkeypatch.setattr(tasks, "_DB", None)
     executor._running.clear()
     notify._subscribers.clear()
+    task_tools._hinted_candidates.clear()
     yield
     if tasks._DB is not None:
         tasks._DB.close()
@@ -114,9 +115,9 @@ def test_snapshot_for_prompt_lists_active_and_recent_done(voice_db):
     tasks.set_status(c["id"], "running")
     tasks.finish(c["id"], "done", "完整结果", "一句话摘要")
     out = tasks.snapshot_for_prompt()
-    assert "「查日志」进行中" in out and "正在读文件" in out
-    assert "「排队活」排队中" in out
-    assert "「已完活」已完成:一句话摘要" in out
+    assert "「查日志」(session_id=" in out and "进行中" in out and "正在读文件" in out
+    assert "「排队活」(session_id=" in out and "排队中" in out
+    assert "「已完活」(session_id=" in out and "已完成:一句话摘要" in out
 
 
 def test_build_prompt_injects_task_snapshot(voice_db):
@@ -126,9 +127,72 @@ def test_build_prompt_injects_task_snapshot(voice_db):
     tasks.set_status(t["id"], "running", progress_note="正在查")
     out = prompts.build_prompt("那个任务怎么样了")
     assert "【任务板快照】" in out
-    assert "「查资料」进行中" in out
+    assert f"「查资料」(session_id={t['id']})进行中" in out
     # 防虚构硬规则也要在场
     assert "绝不能宣称" in out
+
+
+def test_snapshot_lines_include_session_id(voice_db):
+    """快照行带 session_id:续接决策(规则8)能直接拿 id 调 voice_continue_session,
+    不用再绕 voice_list_sessions。"""
+    a = tasks.create("查日志", "p")
+    tasks.set_status(a["id"], "running", progress_note="正在读文件")
+    out = tasks.snapshot_for_prompt()
+    assert f"「查日志」(session_id={a['id']})进行中" in out
+
+
+# ── 2026-08-04 派发前强制关联检测(先续接不新开,见 voice/prompts.py 规则8) ──
+async def _fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
+    from vococo.core.agent import AgentReply, Done
+
+    yield Done(AgentReply(text="任务的结果", tool_calls=[], cost_usd=None, is_error=False))
+
+
+@pytest.mark.anyio
+async def test_dispatch_related_title_blocked_with_candidate_hint(voice_db, monkeypatch):
+    """标题与既有任务重叠(查资料 vs 查完资料写报告)→ 不派发,返回候选提示。"""
+    monkeypatch.setattr(executor, "stream_turn", _fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+    old = tasks.create("查资料", "先查资料")
+    tasks.set_status(old["id"], "running")
+    out = await task_tools.voice_dispatch_task.handler({"title": "查完资料写报告", "prompt": "接着写"})
+    text = out["content"][0]["text"]
+    assert "检测到可能有承接关系的既有任务" in text
+    assert old["id"] in text
+    assert "voice_continue_session" in text
+    # 确实没派出去:任务板上还是只有那一条
+    assert [t["id"] for t in tasks.list_recent(20, origin="voice")] == [old["id"]]
+
+
+@pytest.mark.anyio
+async def test_dispatch_related_retry_passes_after_hint(voice_db, monkeypatch):
+    """同一候选已提示过一次后,重调放行——防"被同一候选永远拦死"的死循环
+    (用户确认是全新主题后重调即可正常派发)。"""
+    monkeypatch.setattr(executor, "stream_turn", _fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+    tasks.create("查资料", "p")
+    out1 = await task_tools.voice_dispatch_task.handler({"title": "查完资料写报告", "prompt": "接着写"})
+    assert "检测到可能有承接关系" in out1["content"][0]["text"]
+    out2 = await task_tools.voice_dispatch_task.handler({"title": "查完资料写报告", "prompt": "接着写"})
+    text2 = out2["content"][0]["text"]
+    assert "已派发" in text2
+    assert "检测到可能有承接关系" not in text2
+    # 等放行后真正派出的那个执行器跑完,别留后台任务
+    latest = tasks.list_recent(1, origin="voice")
+    assert latest[0]["id"] not in task_tools._hinted_candidates
+    await executor._running[latest[0]["id"]]
+
+
+@pytest.mark.anyio
+async def test_dispatch_unrelated_title_passes(voice_db, monkeypatch):
+    """标题与既有任务无关 → 直接放行派发,不误拦全新主题。"""
+    monkeypatch.setattr(executor, "stream_turn", _fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+    tasks.create("查天气", "p")
+    out = await task_tools.voice_dispatch_task.handler({"title": "修登录bug", "prompt": "修一下"})
+    assert "已派发" in out["content"][0]["text"]
+    latest = tasks.list_recent(1, origin="voice")
+    await executor._running[latest[0]["id"]]
 
 
 def test_mark_orphans_failed_covers_queued_and_running(voice_db):
@@ -604,9 +668,10 @@ async def test_dispatch_tool_defaults_cwd_to_project_root(voice_db, monkeypatch)
         await running
     assert wt_calls == [str(config.ROOT_DIR)]  # worktree 隔离确实被触发
 
-    # 显式传 cwd 则原样保留,不被默认值覆盖
+    # 显式传 cwd 则原样保留,不被默认值覆盖(标题避开与上面任务的 bigram 重叠,
+    # 免得触发派发前关联检测)
     await task_tools.voice_dispatch_task.handler(
-        {"title": "标题2", "prompt": "内容", "cwd": "/tmp/other-proj"}
+        {"title": "修登录bug", "prompt": "内容", "cwd": "/tmp/other-proj"}
     )
     assert tasks.get_latest()["cwd"] == "/tmp/other-proj"
 

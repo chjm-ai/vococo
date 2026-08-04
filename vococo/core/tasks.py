@@ -250,7 +250,7 @@ def finish(task_id: str, status: str, result_full: str, result_summary: str) -> 
     return True
 
 
-def snapshot_for_prompt(done_limit: int = 5, done_window_sec: int = 1800, origin: str | None = None) -> str:
+def snapshot_for_prompt(done_limit: int = 5, done_window_sec: int = 86400, origin: str | None = None) -> str:
     """把任务板此刻的真实状态压成几行人话,每轮注入语音会话的指令块(见 voice/prompts.py)。
 
     origin='voice' 时只给语音看它自己派发的任务(2026-07-29:任务板现在也装着
@@ -259,7 +259,11 @@ def snapshot_for_prompt(done_limit: int = 5, done_window_sec: int = 1800, origin
 
     2026-07-10 真机事故:任务 19:22:54 就完成了,19:23 模型还嘴硬"那个任务还在跑"
     ——它没调 voice_query_session,纯靠印象猜。模型的临场判断靠不住,就把事实每轮
-    塞到它眼前:进行中/排队的全列,最近半小时内结束的带摘要列出来。
+    塞到它眼前:进行中/排队的全列,24 小时内结束的带摘要列出来。
+
+    2026-08-04:done 窗口从 30 分钟放宽到 24h,且每行带 session_id——续接决策
+    (voice/prompts.py 规则8)需要"任务做完隔了一阵又说接着做"时快照里还能看到
+    原任务,并能直接拿 id 调 voice_continue_session,不用再绕 voice_list_sessions。
     """
     rows = list_recent(20, origin=origin)
     now = time.time()
@@ -273,14 +277,14 @@ def snapshot_for_prompt(done_limit: int = 5, done_window_sec: int = 1800, origin
     lines: list[str] = []
     for r in active:
         if r["status"] == "queued":
-            lines.append(f"-「{r['title']}」排队中,还没开始跑")
+            lines.append(f"-「{r['title']}」(session_id={r['id']})排队中,还没开始跑")
         else:
             mins = int((now - r["created_at"]) // 60)
             note = r["progress_note"] or "刚启动"
-            lines.append(f"-「{r['title']}」进行中,已跑约 {mins} 分钟,最新动作:{note}")
+            lines.append(f"-「{r['title']}」(session_id={r['id']})进行中,已跑约 {mins} 分钟,最新动作:{note}")
     for r in recent_done:
         summary = r["result_summary"] or r["progress_note"] or "(没有摘要)"
-        lines.append(f"-「{r['title']}」{status_word(r['status'])}:{summary}")
+        lines.append(f"-「{r['title']}」(session_id={r['id']}){status_word(r['status'])}:{summary}")
     return "\n".join(lines)
 
 
