@@ -3727,6 +3727,20 @@ function setMeta(d){
   renderMeta();
 }
 
+// 侧栏数据到位后补一次模型回填:打开会话时若对应行还没拉到(c 找不到),setMeta 只能
+// 回落全局默认;等 /voice/sidebar、/cron/sidebar 拉完再按真实 chosen_model 补一遍,
+// 不然模型胶囊会一直显示"另一个模型",直到用户手动切走再切回。只在行对象带
+// chosen_model 时写,不把 S.model 清回空。
+function refillCurrentMeta(){
+  const conv=S.conv;
+  if(!conv || String(conv).startsWith("local-")) return;
+  const c=S.convs.find(x=>x.conv===conv)
+    || (S.voiceSidebar.main && S.voiceSidebar.main.conv===conv ? S.voiceSidebar.main : null)
+    || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv)
+    || (S.cronJobs||[]).find(x=>x.conv===conv);
+  if(c && c.chosen_model) setModel(c.chosen_model);
+}
+
 // ── 模型选择器 ────────────────────────────────────────────────────────────
 async function loadModels(){
   try{ const r=await api("/models"); S.models=await r.json(); renderModelChip();
@@ -4674,6 +4688,7 @@ async function loadVoiceSidebar(){
   S.voiceSidebarLoaded=true;   // 拉完(成功/失败)都算到位,「语音通话」骨架行退场
   renderConvs();
   if($("#empty").style.display==="flex") renderEmptyRecent();  // 欢迎屏正开着 → 语音任务到位后补一次最近对话
+  refillCurrentMeta();   // 打开中的会话可能是语音主会话/任务:数据到位后补一次模型回填
 }
 // 侧边栏「语音任务」行上的停止按钮:调 /voice/tasks/cancel(跟语音喊停
 // voice_cancel_task 同一套 cancel 逻辑),排队中/运行中都能停,停完刷新侧栏状态点
@@ -4699,6 +4714,7 @@ async function loadCronSidebar(){
   catch(e){ S.cronJobs=[]; }
   renderConvs();
   syncCronHeader();   // 正开着某条任务会话时,启停开关的状态要跟上最新数据
+  refillCurrentMeta();   // 同 loadVoiceSidebar:数据到位后补一次模型回填
 }
 // 标题栏右侧的任务操作区(启停开关/编辑/「⋯」):只在 cron-task 会话显示,开关状态取自 S.cronJobs
 function syncCronHeader(){
@@ -5888,8 +5904,12 @@ async function openConv(conv, silentGroup){
     if(citem) citem.pending_review=false;
     api("/conv/read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv:conv})}).catch(()=>{});
   }
-  // 语音任务/定时任务会话不在 S.convs 里(那是 /conversations 拉的),标题去各自的侧栏缓存里找
-  const c=S.convs.find(x=>x.conv===conv) || S.voiceSidebar.tasks.find(x=>x.conv===conv)
+  // 语音任务/定时任务会话不在 S.convs 里(那是 /conversations 拉的),标题去各自的侧栏缓存里找。
+  // 语音主会话(voice-chat:main)单独存在 S.voiceSidebar.main,也要接上——否则打开它时
+  // c 永远找不到,chosen_model 回填不了,模型胶囊只能回落全局默认。
+  const c=S.convs.find(x=>x.conv===conv)
+    || (S.voiceSidebar.main && S.voiceSidebar.main.conv===conv ? S.voiceSidebar.main : null)
+    || S.voiceSidebar.tasks.find(x=>x.conv===conv)
     || S.cronJobs.find(x=>x.conv===conv);
   if(!(c && c.pinned)){   // 主会话等置顶行不属于任何分组,别联动展开/切换"默认项目"
     S.project=convProject(conv);
