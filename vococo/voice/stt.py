@@ -88,6 +88,9 @@ async def transcribe(
                 body = await resp.text()
         t1 = time.monotonic()
         if resp.status != 200:
+            # 400 细分:探测失败的超长音频兜底提示(正常路径已按时长分流,到不了这)
+            if resp.status == 400 and "too long" in body:
+                return None, "音频超过转写服务时长限制,暂不支持"
             return None, f"转写服务返回 {resp.status}"
         choices = json.loads(body).get("output", {}).get("choices") or []
         parts = choices[0]["message"]["content"] if choices else []
@@ -272,16 +275,23 @@ async def _format_meeting(transcripts: list[dict]) -> str:
 
 
 async def transcribe_meeting(
-    audio: bytes, filename: str, ctype: str, *, host: str, total_sec: int = 900
+    audio: bytes,
+    filename: str,
+    ctype: str,
+    *,
+    host: str,
+    diarize: bool = True,
+    total_sec: int = 900,
 ) -> tuple[str | None, str]:
-    """会议录音转写:阿里 paraformer-v2 异步文件转写 + 说话人分离。
+    """长音频转写:阿里 paraformer-v2 异步文件转写,可选说话人分离。
 
-    个人录音走 transcribe()(qwen3-asr-flash,快);会议录音(≥ 40 分钟,由
-    transcribe_attachment 分流)要区分说话人,换 paraformer 异步接口:临时把音频
-    放进 PUBLISHED_DIR 走 /pub 公网路由(paraformer 只收可下载 URL,不收 base64),
-    随机文件名+转写完即删。任一环节失败都降级回 transcribe()(放弃说话人区分,
-    至少出全文),不把失败当结果抛给用户。
+    qwen3-asr-flash 有 5 分钟时长上限(实测 400),更长的音频(由 transcribe_attachment
+    分流)走 paraformer 异步接口:临时把音频放进 PUBLISHED_DIR 走 /pub 公网路由
+    (paraformer 只收可下载 URL,不收 base64),随机文件名+转写完即删。任一环节
+    失败都降级回 transcribe()(至少出全文),不把失败当结果抛给用户。
 
+    diarize: 会议录音(≥ 40 分钟)要区分说话人,输出带 [说话人N] 分段;个人长
+    录音(4.5~40 分钟)关掉,避免转写文本被前缀污染。
     host: 本机服务的公网 Host(经 cloudflared 穿透),临时 URL 按它拼。
     total_sec: 提交+轮询的总预算,40 分钟以上音频转写+分离通常几分钟内完成。
     """
@@ -306,15 +316,17 @@ async def transcribe_meeting(
         src.rename(pub_file)
         url = f"https://{host}/pub/{pub_file.name}"
         # 3. 提交异步转写任务(说话人分离+去口癖+中英),再轮询到出结果
+        params: dict = {
+            "channel_id": [0],
+            "language_hints": ["zh", "en"],
+            "disfluency_removal_enabled": True,
+        }
+        if diarize:
+            params["diarization_enabled"] = True
         payload = {
             "model": config.DASHSCOPE_MEETING_MODEL,
             "input": {"file_urls": [url]},
-            "parameters": {
-                "channel_id": [0],
-                "language_hints": ["zh", "en"],
-                "disfluency_removal_enabled": True,
-                "diarization_enabled": True,
-            },
+            "parameters": params,
         }
         headers = {
             "Authorization": f"Bearer {config.DASHSCOPE_API_KEY}",
@@ -382,11 +394,15 @@ async def transcribe_meeting(
 async def transcribe_attachment(
     audio: bytes, filename: str, ctype: str, *, host: str, timeout_sec: int = 180
 ) -> tuple[str | None, str]:
-    """附件转写入口(web.py /upload_audio 用):ffprobe 探测时长分流——
-    ≥ 40 分钟走会议路径(paraformer 说话人分离),否则个人录音的 qwen3-asr-flash。
+    """附件转写入口(web.py /upload_audio 用):ffprobe 探测时长三档分流——
+    < 4.5 分钟 → qwen3-asr-flash(快,它有 5 分钟时长上限);
+    4.5~40 分钟 → paraformer 异步转写,不开说话人分离(个人长录音,如手机录音);
+    ≥ 40 分钟 → paraformer + 说话人分离(会议)。
     探测失败(无 ffmpeg/格式太怪)当短录音处理,不影响上传。"""
     if config.DASHSCOPE_API_KEY and audio:
         duration = await probe_duration(audio, filename)
         if duration is not None and duration >= config.MEETING_ASR_MIN_SECONDS:
-            return await transcribe_meeting(audio, filename, ctype, host=host)
+            return await transcribe_meeting(audio, filename, ctype, host=host, diarize=True)
+        if duration is not None and duration >= config.ASR_FLASH_MAX_SECONDS:
+            return await transcribe_meeting(audio, filename, ctype, host=host, diarize=False)
     return await transcribe(audio, filename, ctype, timeout_sec=timeout_sec)

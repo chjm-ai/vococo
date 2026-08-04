@@ -133,6 +133,9 @@ DASHSCOPE_MEETING_MODEL: str = (
     os.environ.get("DASHSCOPE_MEETING_MODEL", "paraformer-v2").strip() or "paraformer-v2"
 )
 MEETING_ASR_MIN_SECONDS: int = 40 * 60
+# qwen3-asr-flash 的音频时长上限:实测 5 分钟 400("audio is too long")、4.5 分钟 200,
+# 取 270s 留余量。超过走 paraformer(异步,见 transcribe_attachment 三分支)。
+ASR_FLASH_MAX_SECONDS: float = 4.5 * 60
 # 发布的静态网页(丢文件进来就能公网访问,见 gateway/adapters/web.py 的 /pub 路由)
 PUBLISHED_DIR: Path = DATA_DIR / "published"
 

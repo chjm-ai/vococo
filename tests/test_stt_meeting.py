@@ -54,19 +54,22 @@ async def test_format_meeting_no_speaker_uses_plain_text(monkeypatch):
 
 @pytest.mark.anyio
 async def test_attachment_routes_by_duration(isolated, monkeypatch):
-    """时长 ≥ 40 分钟走会议路径,否则走 qwen3-asr-flash;探测失败不阻塞。"""
+    """三档分流:≥40 分钟会议(带分离);4.5~40 分钟个人长录音(paraformer 不开分离);
+    <4.5 分钟走 qwen3-asr-flash;探测失败不阻塞。"""
     from vococo import config
 
     monkeypatch.setattr(config, "AUDIO_DIR", isolated / "audio")
     monkeypatch.setattr(config, "PUBLISHED_DIR", isolated / "published")
     monkeypatch.setattr(config, "DASHSCOPE_API_KEY", "k")
     durations = [3600.0]
+    seen_diarize = []
 
     async def fake_probe(audio, filename):
         return durations[0]
 
-    async def fake_meeting(audio, filename, ctype, *, host):
-        return ("[说话人1] 会议内容", "")
+    async def fake_meeting(audio, filename, ctype, *, host, diarize=True):
+        seen_diarize.append(diarize)
+        return ("[说话人1] 会议内容" if diarize else "个人长录音内容", "")
 
     async def fake_short(audio, filename, ctype, *, timeout_sec=180):
         return ("短录音", "")
@@ -75,17 +78,23 @@ async def test_attachment_routes_by_duration(isolated, monkeypatch):
     monkeypatch.setattr(stt, "transcribe_meeting", fake_meeting)
     monkeypatch.setattr(stt, "transcribe", fake_short)
 
-    durations[0] = 3600.0
+    durations[0] = 3600.0  # ≥40 分钟:会议,开分离
     text, _ = await stt.transcribe_attachment(b"x", "m.m4a", "audio/m4a", host="h")
     assert text == "[说话人1] 会议内容"
 
-    durations[0] = 60.0
+    durations[0] = 600.0  # 10 分钟:个人长录音,paraformer 不开分离
+    text, _ = await stt.transcribe_attachment(b"x", "m.m4a", "audio/m4a", host="h")
+    assert text == "个人长录音内容"
+
+    durations[0] = 60.0  # <4.5 分钟:qwen3-asr-flash
     text, _ = await stt.transcribe_attachment(b"x", "m.m4a", "audio/m4a", host="h")
     assert text == "短录音"
 
     durations[0] = None  # ffprobe 失败
     text, _ = await stt.transcribe_attachment(b"x", "m.m4a", "audio/m4a", host="h")
     assert text == "短录音"
+
+    assert seen_diarize == [True, False]  # 会议开分离、个人长录音关分离
 
 
 @pytest.mark.anyio
