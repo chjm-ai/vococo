@@ -6504,11 +6504,24 @@ async function send(text, display, opts){
   closeCmdMenu();
   text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length) return;
   // 先等所有音频上传完成(文件到服务器才发;上传秒回,最多等 90s 超时)——
-  // 否则上传中的音频 id 还是 null,发出去后端会静默跳过,音频白发还顶掉后续消息
-  if(S.audios.some(a=>!a.id)) await Promise.all(S.audios.map(a=>a.done||Promise.resolve()));
-  // 上传失败的音频挡在这里(文件根本没到服务器,发了也白发);"转写中"不拦——
-  // 转写在发送后由服务端做,前端冒个占位气泡等回复流开始(见下方 pendingAudio 逻辑)
-  if(S.audios.some(a=>a.status==="error")){ addBubble("ai","⚠️ 有音频上传失败,请先移除(点 ×)再发送。"); return; }
+  // 否则上传中的音频 id 还是 null,发出去后端会静默跳过,音频白发还顶掉后续消息。
+  // 等待期间发送按钮转 loading,别让用户觉得"点了没反应"(慢网下上传可能要好几十秒)。
+  if(S.audios.some(a=>!a.id)){
+    const wbtn=$("#sendBtn");
+    if(wbtn){ wbtn.disabled=true; wbtn.textContent="⋯"; wbtn.classList.add("uploading"); }
+    try{ await Promise.all(S.audios.map(a=>a.done||Promise.resolve())); }
+    finally{ if(wbtn){ wbtn.disabled=false; wbtn.classList.remove("uploading"); updateSendBtn(); } }
+  }
+  // 上传失败的音频:文件根本没到服务器,发了也白发。给"忽略并发送"降级选项,
+  // 不让一条音频把文字消息卡死(点按钮=丢掉失败音频、只发文字)。
+  if(S.audios.some(a=>a.status==="error")){
+    const fail = S.audios.find(a=>a.status==="error");
+    const b=addBubble("ai","⚠️ 音频「"+(fail?.filename||"")+"」上传失败"+(fail?.error?("："+fail.error):"")+"，可移除后重试；或忽略音频直接发送文字。");
+    const skip=el("button","bact skip"); skip.textContent="忽略并发送";
+    skip.onclick=()=>{ S.audios=S.audios.filter(a=>a.status!=="error"); b.remove(); send(text, display, opts); };
+    b.append(skip);
+    return;
+  }
   // 上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发(审批/语音走 forceSend 立即发)
   if(S.stream && !opts.forceSend){
     if(queuePending(text, S.images.slice(), S.audios.slice())){
