@@ -245,8 +245,9 @@ VOICE_TTS_VOICE: str = (
 # === 后台任务引擎(core/task_runner.py,原 P1 语音任务板;2026-07-29 通用化:
 # 语音派发/cron 定时/普通会话发起「独立新会话」三种触发方式共用同一个引擎,
 # 不再是语音专属,故常量名去掉 VOICE_ 前缀)===
-# 并发上限 / 单任务超时(分钟)
-TASK_MAX_CONCURRENCY: int = int(os.environ.get("TASK_MAX_CONCURRENCY", "3"))
+# 并发上限 / 单任务超时(分钟)。并发上限 2026-08-04 主人确认由 3 放开到 7
+# (原定 3 是为了防止并发任务打爆 API 额度,先跑一个月看看额度压力再定)
+TASK_MAX_CONCURRENCY: int = int(os.environ.get("TASK_MAX_CONCURRENCY", "7"))
 TASK_TIMEOUT_MIN: int = int(os.environ.get("TASK_TIMEOUT_MIN", "30"))
 # 单轮 agentic 轮数上限,0=跟随全局 MAX_TURNS(全局也是 0 即不限,由 TASK_TIMEOUT_MIN
 # 超时兜底)。保留独立开关是因为查日志/翻代码这类任务动辄几十轮,2026-07-10 真机
