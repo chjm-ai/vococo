@@ -29,6 +29,8 @@ config.py 路径/常量;providers.py 多供应商切换
 细节见 CONTEXT.md「危险分级/审批闸」。
 
 ## 运维 / 排障
-合并 worktree 改动回 main:`zsh deploy/merge-main.sh`(可加 `--restart` 顺带重启);worktree 里禁止切回 main 分支(必报错)。
-重启只用 restart_self 工具或 deploy/restart.sh,禁手搓进程查杀。
+合并 worktree 改动回 main:`zsh deploy/merge-main.sh`(只合并不重启);worktree 里禁止切回 main 分支(必报错)。
+合并后要重启验证:**先 merge-main.sh,再调 restart_self 工具**——它带"遗书+还魂",重启完自动回当前会话继续验证。
+deploy/restart.sh 是硬杀重启(无还魂,会打断正在生成的回复),仅供终端/外部场景,AI 会话内禁用。
+禁手搓进程查杀。
 完整坑清单 + 查会话脚本用法 → 见 OPERATIONS.md。

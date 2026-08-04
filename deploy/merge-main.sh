@@ -2,9 +2,20 @@
 # 把当前 worktree 分支合回 main(worktree 会话专用,在 worktree 里跑)。
 # 为什么不能 git checkout main:main 永远被主仓库工作区检出,worktree 里 checkout 必报
 # "fatal: 'main' 已经被工作区使用"(exit 128)——已有 7 个会话踩过,一律用本脚本。
-# 用法:zsh deploy/merge-main.sh [--restart]
-#   --restart:合并成功后接着跑 deploy/restart.sh 让 serve 加载新代码。
+# 用法:zsh deploy/merge-main.sh
+# 合并后要重启验证:先本脚本完成合并,再调 restart_self 工具(遗书+还魂,重启完
+# 自动回当前会话继续验证)。--restart 已移除——restart.sh 是硬杀重启无还魂,
+# 会打断发起会话正在生成的回复,不要再传。
 set -u
+
+# --restart 已移除(2026-08):restart.sh 硬杀重启无遗书还魂,会打断当前会话回复。
+# 合并后要重启验证,两步法:先本脚本合并,再调 restart_self 工具。
+if [ "${1:-}" = "--restart" ]; then
+  echo "❌ --restart 已移除:硬杀重启(restart.sh)无遗书还魂,会打断当前会话回复。改用两步法:
+  1) 先跑本脚本(不带 --restart)完成合并
+  2) 再调 restart_self 工具——遗书+还魂,重启完自动回当前会话继续验证" >&2
+  exit 1
+fi
 
 MAIN="$(cd "$(dirname "$(git rev-parse --git-common-dir)")" && pwd)"
 BRANCH="$(git branch --show-current)"
@@ -43,25 +54,4 @@ else
   git -C "$MAIN" merge --abort 2>/dev/null
   echo "已 abort,main 保持原样。建议:先在本 worktree 里 git merge main 解决冲突,再重跑本脚本。" >&2
   exit 1
-fi
-
-if [ "${1:-}" = "--restart" ]; then
-  # worktree 路径是 data/worktrees/<项目哈希>/<会话slug>,对应 web 会话键
-  # web:p<哈希>:<slug>(见 gateway/adapters/web.py:479)——推给 restart.sh 自我排除,
-  # 这样"我自己"不会被当成"别的在跑会话"拦下来,只有真有别的会话在跑才会提示确认。
-  # 注意:合并≠会话结束,worktree/分支不做回收,用户可能还在聊;会话归档/删除时才回收。
-  WT="$(pwd)"
-  SELF_KEY=""
-  case "$WT" in
-    */data/worktrees/*/*)
-      SLUG="$(basename "$WT")"
-      HASH="$(basename "$(dirname "$WT")")"
-      SELF_KEY="web:p${HASH}:${SLUG}"
-      ;;
-  esac
-  if [ -n "$SELF_KEY" ]; then
-    exec zsh "$MAIN/deploy/restart.sh" "--self=$SELF_KEY"
-  else
-    exec zsh "$MAIN/deploy/restart.sh"
-  fi
 fi

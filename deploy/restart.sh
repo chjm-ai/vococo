@@ -1,6 +1,9 @@
 #!/usr/bin/env zsh
 # 温和重启 vococo serve:只杀 serve 子进程,run.sh 守护循环 5s 后自动用 main 最新代码拉起。
 # 与 stop.sh 的区别:stop.sh 是彻底停机(touch data/.stop);本脚本用于「改完代码要生效」。
+# ⚠️ 本脚本是硬杀整个进程:不区分会话、无遗书/还魂机制,AI 会话内正在生成的回复会被
+# 硬生生打断、历史留空。AI 会话内改完代码重启一律用 restart_self 工具(有遗书+还魂),
+# 本脚本只服务终端/外部自动化场景。
 # AI 汇报重启结果时必须引用本脚本输出的 PID 证据,不许凭记忆口述(见记忆
 # hermes-injection-hallucination-rootcause:7/6 曾虚构重启成功)。
 #
@@ -8,9 +11,9 @@
 # 打断、历史留空、用户毫无提示(2026-07-06 踩过连坐事故)。故杀之前先查
 # data/active_sessions.json(gateway/clarify.py 维护的"在跑会话"登记表),
 # 非空则提示确认;--force 跳过此提示(用于自动化场景)。
-# --self=<session_key>:排除发起重启的会话自己(它必然在跑,不算"连坐"——
-# 它自己重启完会靠 restart_self 的"遗书"机制自动还魂续聊,merge-main.sh --restart
-# 会自动算出并传入)。排除后若已无其他人在跑,直接重启,不再询问。
+# --self=<session_key>:排除发起重启的会话自己(它必然在跑,不算"连坐")。
+# 注意:本脚本硬杀后没有还魂,发起会话不会被自动续聊——AI 会话内请走
+# restart_self 工具,不要用本脚本。排除后若已无其他人在跑,直接重启,不再询问。
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 

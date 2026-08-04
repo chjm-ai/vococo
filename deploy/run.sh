@@ -19,10 +19,22 @@ mkdir -p data/logs
 pkill -f "vococo serve" 2>/dev/null || true
 rm -f data/.stop          # 清除上次的停止标记,允许重启循环运行
 sleep 1
-# 包改名/入口变动后自愈:.venv/bin/vococo 不存在就重装 editable(uv sync 幂等,秒级)。
-# 2026-08 改名 claude-hermes→vococo 后合回 main 若无此步,serve 会因入口消失起不来。
+# 包改名/入口变动后自愈:入口缺失,或 shebang 指向的解释器已失效(改名后 venv 里
+# python 旧路径残留,文件在但解释器没了)就重装 editable(uv sync 幂等,秒级)。
+# 2026-08 改名 claude-hermes→vococo 后只查入口存在,漏掉了 bad interpreter,
+# 曾连续 127 死循环 3 分钟(服务全挂)才被人手修好——故这里连解释器一起查。
+_needs_venv=0
 if [ ! -x .venv/bin/vococo ]; then
-  echo "[run.sh] .venv/bin/vococo 不存在,先 uv sync 重装 entry point"
+  _needs_venv=1
+else
+  _py="$(head -1 .venv/bin/vococo | sed 's/^#!//; s/ .*//')"
+  # /usr/bin/env 形式的 shebang 视为有效(env 必在);绝对路径则要真实可执行
+  if [ -n "$_py" ] && [ "$_py" != "/usr/bin/env" ] && [ ! -x "$_py" ]; then
+    _needs_venv=1
+  fi
+fi
+if [ "$_needs_venv" = 1 ]; then
+  echo "[run.sh] .venv/bin/vococo 不可用(入口缺失或解释器失效),先 uv sync 重装 entry point"
   uv sync || { echo "❌ uv sync 失败" >&2; exit 1; }
 fi
 nohup zsh -lc "
