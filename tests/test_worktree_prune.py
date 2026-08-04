@@ -1,12 +1,13 @@
-"""core/worktree.prune_orphans 的启动回收逻辑。
+"""core/worktree 的 worktree 生命周期测试。
 
-2026-08-04 增强:DB 还绑着但会话已不活跃的 worktree 也回收(merge-main.sh 收尾后
-worktree 没存在意义,不该等「删会话」才清);回收前归档未提交改动、分支有独有
-提交一律保留;活跃列表解析失败时保守跳过全部绑定的。
+回收依据只有用户意图(2026-08-04 定案):
+- 归档会话 → recycle_empty_worktree(空壳才回收,有内容不动)
+- 删除会话 → remove_worktree(无条件回收)
+- 启动兜底 prune_orphans → 只回收「无主孤儿」(DB 无绑定),任何有绑定的 worktree
+  一律不动——哪怕会话早不活跃、代码干净,用户可能随时回来继续聊。
 """
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
 
@@ -40,7 +41,7 @@ def anyio_backend():
 
 
 def _setup(isolated, monkeypatch, tmp_path):
-    """建仓库 + worktree 基座,返回 (repo, wt_base, phash)。"""
+    """建仓库 + worktree 基座,返回 (repo, wt_base, phash, config)。"""
     from vococo import config
 
     repo = tmp_path / "proj"
@@ -53,9 +54,12 @@ def _setup(isolated, monkeypatch, tmp_path):
     return repo, wt_base, phash, config
 
 
+# ── prune_orphans:只清无主孤儿 ─────────────────────────────────────────────
+
+
 @pytest.mark.anyio
 async def test_prune_removes_unbound_orphan(isolated, monkeypatch, tmp_path):
-    """没绑定的孤儿 worktree:直接回收。"""
+    """没绑定的孤儿 worktree:回收(worktree+空分支)。"""
     repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
     wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
     assert wt.is_dir()
@@ -63,88 +67,41 @@ async def test_prune_removes_unbound_orphan(isolated, monkeypatch, tmp_path):
     n = await worktree.prune_orphans()
     assert n == 1
     assert not wt.exists()
-    # 空分支一并删掉
     out = subprocess.run(["git", "branch"], cwd=repo, capture_output=True, text=True).stdout
-    assert "vococo/s1" not in out
+    assert "vococo/s1" not in out  # 空分支一并删
 
 
 @pytest.mark.anyio
-async def test_prune_keeps_active_bound(isolated, monkeypatch, tmp_path):
-    """DB 绑定 + 活跃列表里 → 保留。"""
-    repo, wt_base, phash, config = _setup(isolated, monkeypatch, tmp_path)
-    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
-    key = f"web:p{phash}:s1"
-    session_store.set_worktree(key, str(wt))
-    (config.DATA_DIR / "active_sessions.json").write_text(json.dumps([key]))
+async def test_prune_keeps_bound_even_inactive(isolated, monkeypatch, tmp_path):
+    """绑定的 worktree 一律保留——不管活跃与否、干净与否(核心原则)。"""
+    repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
+    # ① 干净且不活跃
+    wt1 = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
+    session_store.set_worktree("web:pXXX:s1", str(wt1))
+    # ② 脏且不活跃(有未提交改动)
+    wt2 = _add_worktree(repo, wt_base, phash, "s2", "vococo/s2")
+    (wt2 / "README.md").write_text("改了没提交")
+    session_store.set_worktree("web:pXXX:s2", str(wt2))
 
     n = await worktree.prune_orphans()
     assert n == 0
-    assert wt.is_dir()
+    assert wt1.is_dir()
+    assert wt2.is_dir()
 
 
 @pytest.mark.anyio
-async def test_prune_recycles_inactive_bound_clean(isolated, monkeypatch, tmp_path):
-    """DB 绑定但会话不活跃 + worktree 干净 → 回收(核心增强点)。"""
-    repo, wt_base, phash, config = _setup(isolated, monkeypatch, tmp_path)
-    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
-    key = f"web:p{phash}:s1"
-    session_store.set_worktree(key, str(wt))
-    (config.DATA_DIR / "active_sessions.json").write_text(json.dumps(["web:pother:xxx"]))
-
-    n = await worktree.prune_orphans()
-    assert n == 1
-    assert not wt.exists()
-
-
-@pytest.mark.anyio
-async def test_prune_recycles_inactive_dirty_with_archive(isolated, monkeypatch, tmp_path):
-    """不活跃 + 有未提交改动 → 先归档 diff 再回收。"""
-    repo, wt_base, phash, config = _setup(isolated, monkeypatch, tmp_path)
-    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
-    key = f"web:p{phash}:s1"
-    session_store.set_worktree(key, str(wt))
-    (wt / "README.md").write_text("改过但没提交")
-    assert subprocess.run(
-        ["git", "status", "--porcelain"], cwd=wt, capture_output=True
-    ).stdout.strip()
-
-    n = await worktree.prune_orphans()
-    assert n == 1
-    assert not wt.exists()
-    archive = config.DATA_DIR / "worktree-archive" / "vococo_s1.diff"
-    assert archive.exists()
-    assert "README.md" in archive.read_text(encoding="utf-8")
-
-
-@pytest.mark.anyio
-async def test_prune_keeps_bound_when_active_json_corrupt(isolated, monkeypatch, tmp_path):
-    """active_sessions.json 解析失败 → 保守:绑定的 worktree 全部保留。"""
-    repo, wt_base, phash, config = _setup(isolated, monkeypatch, tmp_path)
-    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
-    session_store.set_worktree(f"web:p{phash}:s1", str(wt))
-    (config.DATA_DIR / "active_sessions.json").write_text("{ 坏 json !!")
-
-    n = await worktree.prune_orphans()
-    assert n == 0
-    assert wt.is_dir()
-
-
-@pytest.mark.anyio
-async def test_prune_keeps_branch_with_commits(isolated, monkeypatch, tmp_path):
-    """分支有独立提交 → worktree 回收但分支保留(不丢成果)。"""
-    repo, wt_base, phash, config = _setup(isolated, monkeypatch, tmp_path)
+async def test_prune_keeps_bound_with_commits(isolated, monkeypatch, tmp_path):
+    """绑定的 worktree,分支有独立提交 → 保留。"""
+    repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
     wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
     (wt / "work.txt").write_text("有价值的未合并工作")
     subprocess.run(["git", "add", "."], cwd=wt, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "work"], cwd=wt, check=True)
-    session_store.set_worktree(f"web:p{phash}:s1", str(wt))
-    (config.DATA_DIR / "active_sessions.json").write_text(json.dumps([]))
+    session_store.set_worktree("web:pXXX:s1", str(wt))
 
     n = await worktree.prune_orphans()
-    assert n == 1
-    assert not wt.exists()
-    out = subprocess.run(["git", "branch"], cwd=repo, capture_output=True, text=True).stdout
-    assert "vococo/s1" in out  # 分支还在,内容可找回
+    assert n == 0
+    assert wt.is_dir()
 
 
 # ── recycle_empty_worktree:归档时空壳回收 ──────────────────────────────────

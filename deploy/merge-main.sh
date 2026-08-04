@@ -45,40 +45,12 @@ else
   exit 1
 fi
 
-# ── 收尾清理:内容已进 main,worktree 和分支没有存在意义了,当场回收 ──
-# 预检已保证 tracked 无未提交改动;未跟踪文件(临时产物)先归档再删,不留无声丢失。
-# 跑本脚本 = 会话收尾的约定:清完 worktree,会话下轮对话会自动重建(见 worktree.py
-# ensure_worktree 的惰性创建),历史改动全在 main 里,无任何损失。
-WT="$(pwd)"
-case "$WT" in
-  */data/worktrees/*)
-    untracked="$(git ls-files --others --exclude-standard)"
-    if [ -n "$untracked" ]; then
-      archive_dir="$MAIN/data/worktree-archive"
-      mkdir -p "$archive_dir"
-      # 分支名含 / (hermes/xxx),归档文件名换成 _ 避免目录缺失
-      fname="$(echo "$BRANCH" | tr '/' '_').tgz"
-      if echo "$untracked" | tar -czf "$archive_dir/$fname" -T - 2>/dev/null; then
-        echo "📦 未跟踪文件已归档: $archive_dir/$fname"
-      else
-        echo "⚠️ 未跟踪文件归档失败,将随 worktree 一起删除:" >&2
-        echo "$untracked" >&2
-      fi
-    fi
-    cd "$MAIN"  # 先离开再删自己——进程 cwd 占着目录删不掉
-    if git worktree remove --force "$WT" && git branch -d "$BRANCH" && git worktree prune; then
-      echo "🧹 已回收会话 worktree+分支: $BRANCH"
-    else
-      echo "⚠️ worktree 回收失败(内容已进 main 不受影响,可手动清:git worktree remove $WT)" >&2
-    fi
-    ;;
-esac
-
 if [ "${1:-}" = "--restart" ]; then
   # worktree 路径是 data/worktrees/<项目哈希>/<会话slug>,对应 web 会话键
   # web:p<哈希>:<slug>(见 gateway/adapters/web.py:479)——推给 restart.sh 自我排除,
   # 这样"我自己"不会被当成"别的在跑会话"拦下来,只有真有别的会话在跑才会提示确认。
-  # WT 在上面已取好(此刻 cwd 已是主仓库),此处只解析,不再 pwd。
+  # 注意:合并≠会话结束,worktree/分支不做回收,用户可能还在聊;会话归档/删除时才回收。
+  WT="$(pwd)"
   SELF_KEY=""
   case "$WT" in
     */data/worktrees/*/*)

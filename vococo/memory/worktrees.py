@@ -19,20 +19,12 @@ def get_worktree(session_key: str) -> str | None:
 
 
 def all_worktree_paths() -> list[str]:
-    """DB 里当前所有会话绑定的 worktree 目录 —— 启动清孤儿时的「活会话」白名单。"""
+    """DB 里当前所有会话绑定的 worktree 目录 —— 启动清孤儿时的「有主」白名单。"""
     rows = _db.conn().execute(
         "SELECT worktree_path FROM session_meta "
         "WHERE worktree_path IS NOT NULL AND worktree_path != ''"
     ).fetchall()
     return [r[0] for r in rows]
-
-
-def session_key_for_worktree(path: str) -> str | None:
-    """由 worktree 目录反查绑定的会话 key(prune 时判断该会话活不活跃用)。"""
-    row = _db.conn().execute(
-        "SELECT session_key FROM session_meta WHERE worktree_path=?", (path,)
-    ).fetchone()
-    return row[0] if row else None
 
 
 def set_worktree(session_key: str, path: str) -> None:

@@ -10,7 +10,6 @@ data 目录下(不污染用户项目,免改 .gitignore),路径 data/worktrees/<�
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
 import shutil
@@ -258,47 +257,13 @@ async def remove_worktree(session_key: str) -> None:
         await _delete_branch_if_empty(root, branch)
 
 
-def _active_session_keys() -> set[str] | None:
-    """data/active_sessions.json 里的活跃会话 key 集合(进程内维护,落盘供重启读取)。
-
-    文件不存在(从未有过会话)返回空集;存在但解析失败返回 None —— 调用方必须按
-    「保守:不据此回收 DB 绑定的 worktree」处理,绝不因读到坏文件就误删。
-    """
-    path = config.DATA_DIR / "active_sessions.json"
-    if not path.exists():
-        return set()
-    try:
-        return set(json.loads(path.read_text(encoding="utf-8")))
-    except Exception:
-        return None
-
-
-async def _archive_uncommitted(path: str, branch: str) -> bool:
-    """把 worktree 的未提交改动(tracked,含暂存区)追加归档到 data/worktree-archive/,
-    供回收死会话 worktree 前备份;本来就干净返回 True,归档失败返回 False。"""
-    _, out, _ = await _git(path, "diff")
-    _, out2, _ = await _git(path, "diff", "--cached")
-    if not (out or out2):
-        return True
-    archive_dir = config.DATA_DIR / "worktree-archive"
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    fname = branch.replace("/", "_") + ".diff"
-    try:
-        with (archive_dir / fname).open("a", encoding="utf-8") as f:
-            f.write(f"=== {branch} 未提交改动 ===\n{out}\n{out2}\n")
-        return True
-    except Exception:
-        return False
-
-
 async def prune_orphans() -> int:
     """启动兜底:回收「真孤儿」—— data/worktrees 下 DB 已无会话绑定的 worktree,
     以及悬空的 vococo/* 空分支。返回清理总数。
 
-    增强(2026-08-04):DB 还绑着但会话已不在活跃列表的 worktree 也回收——会话收尾
-    (merge-main.sh 合并)后 worktree 没存在意义,不该等「删会话」才清。回收前先
-    归档未提交改动(归档失败则跳过),分支有独有提交的一律保留,绝不误丢工作成果。
-    活跃列表解析失败时保守跳过全部绑定的 worktree。
+    回收依据只有用户意图:归档(archived→recycle_empty_worktree)和删除会话
+    (remove_worktree)。系统不做推断回收——DB 还绑着的 worktree 一律不动,哪怕
+    会话早不活跃、代码干净,用户可能随时回来继续聊。
 
     只碰 vococo 自己那套(data/worktrees + vococo/* 及改名前存量 hermes/* 分支),
     绝不动 Claude Code 的 .claude/worktrees。
@@ -306,7 +271,6 @@ async def prune_orphans() -> int:
     if not _WT_BASE.exists():
         return 0
     bound = {os.path.realpath(p) for p in session_store.all_worktree_paths()}
-    active = _active_session_keys()
     cleaned = 0
     for phash_dir in _WT_BASE.iterdir():
         if not phash_dir.is_dir():
@@ -315,37 +279,12 @@ async def prune_orphans() -> int:
         if not root or not os.path.isdir(root) or not await _is_git_repo(root):
             continue
         for wt in phash_dir.iterdir():
-            if not wt.is_dir():
-                continue
-            rp = os.path.realpath(str(wt))
-            if rp in bound:
-                # DB 还绑着 → 只有死会话才回收;活跃列表解析失败 → 一律跳过
-                if active is None:
-                    continue
-                key = session_store.session_key_for_worktree(rp)
-                if key and key in active:
-                    continue  # 活会话,跳过
-                branch = await _branch_of_worktree(root, str(wt))
-                if not await _archive_uncommitted(str(wt), branch or wt.name):
-                    print(
-                        f"[worktree] ⚠️ 死会话 worktree 未提交改动归档失败,跳过回收: {wt}",
-                        file=sys.stderr, flush=True,
-                    )
-                    continue
-                _, uo, _ = await _git(str(wt), "ls-files", "--others", "--exclude-standard")
-                if uo.strip():
-                    print(
-                        f"[worktree] ℹ️ 死会话 worktree 有未跟踪文件将随回收删除: {wt}",
-                        file=sys.stderr, flush=True,
-                    )
+            if not wt.is_dir() or os.path.realpath(str(wt)) in bound:
+                continue  # 有主(DB 绑定)的 worktree → 一律跳过
             branch = await _branch_of_worktree(root, str(wt))
             await _git(root, "worktree", "remove", "--force", str(wt))
             if branch.startswith(("vococo/", "hermes/")):
-                if not await _delete_branch_if_empty(root, branch):
-                    print(
-                        f"[worktree] ℹ️ 分支 {branch} 有独立提交,已保留(内容在分支上)",
-                        file=sys.stderr, flush=True,
-                    )
+                await _delete_branch_if_empty(root, branch)
             cleaned += 1
         await _git(root, "worktree", "prune")
         cleaned += await _prune_dangling_branches(root)  # 顺手清该 repo 的悬空空分支
