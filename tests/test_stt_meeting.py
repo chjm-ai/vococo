@@ -162,7 +162,7 @@ async def test_meeting_success_cleans_public_file(isolated, monkeypatch):
 
     monkeypatch.setattr(stt.aiohttp, "ClientSession", _Sess)
     text, err = await stt.transcribe_meeting(
-        b"audio-bytes", "m.m4a", "audio/m4a", host="wazir.example.com"
+        b"audio-bytes", "m.m4a", "audio/m4a", host="vococo.example.com"
     )
     assert text == "[说话人1] 你好"
     assert list(config.PUBLISHED_DIR.iterdir()) == []  # 公网临时文件已删
@@ -211,7 +211,7 @@ async def test_meeting_falls_back_on_submit_error(isolated, monkeypatch):
 
     monkeypatch.setattr(stt.aiohttp, "ClientSession", _Sess)
     text, err = await stt.transcribe_meeting(
-        b"audio-bytes", "m.m4a", "audio/m4a", host="wazir.example.com"
+        b"audio-bytes", "m.m4a", "audio/m4a", host="vococo.example.com"
     )
     assert text == "降级文本"
     assert seen["timeout"] == 180
