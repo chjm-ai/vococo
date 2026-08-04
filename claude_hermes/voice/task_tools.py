@@ -22,14 +22,16 @@ from __future__ import annotations
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
-from .. import config
+from .. import config, providers
 from ..core import task_runner, task_words, tasks
 from ..core.task_words import status_word
 from ..gateway import clarify, web_bridge
 from ..gateway.core import MODEL_CHOICES
 from ..memory import session_store
 
-_MODEL_EXAMPLES = "、".join(m for m, _ in MODEL_CHOICES)
+# 可选模型走 available_models 合并官方档 + 设置页第三方供应商(DeepSeek/Kimi 等),
+# 只拿裸 MODEL_CHOICES 会让模型以为只能选 6 个 Claude,看不到 kimi-k3 这类已配模型
+_MODEL_EXAMPLES = "、".join(m for m, _, _ in providers.available_models(MODEL_CHOICES))
 
 
 def _ok(text: str) -> dict:
