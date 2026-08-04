@@ -159,7 +159,6 @@ try{
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
     <button id="newBtn"><span class="np">＋</span>新对话</button>
-    <button id="cronEntryBtn"><span class="np">⏰</span>定时任务</button>
     <div id="convList"></div>
     <div class="sfoot" id="sfoot"><span class="savatar">U</span><span class="sfoottxt" id="sfoottxt">User</span>
       <div id="convFilterBox">
@@ -4841,7 +4840,6 @@ async function deleteCronJob(id, title, conv){
   await loadCronSidebar();
   if(wasActive) openConv("main");   // 删的是当前正开着的任务会话 → 切回主会话
 }
-$("#cronEntryBtn").onclick = ()=>openCronModal(null);   // 侧栏固定入口,始终是「新建」
 $("#cfPreset").onchange = ()=>{ const v=$("#cfPreset").value; if(v!=="custom") $("#cfCron").value=v; };
 $("#cfCancel").onclick = closeCronModal;
 $("#cfSave").onclick = saveCronJob;
