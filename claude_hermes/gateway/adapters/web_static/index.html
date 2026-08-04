@@ -3616,10 +3616,11 @@ function renderEmptyRecent(){
     if(S.convFilter==="active" && arch) continue;
     items.push({conv:c.conv, title:c.title||"新对话", ts:c.last_ts, type:"chat"});
   }
-  // 加入语音任务
+  // 加入语音任务(终态满 10 分钟自动隐藏的规则在这里同样生效,见 voiceTaskHidden)
   const vs = S.voiceSidebar;
   if(vs && vs.tasks){
     for(const t of vs.tasks){
+      if(voiceTaskHidden(t)) continue;
       items.push({conv:t.conv, title:t.title||"语音任务", ts:t.last_ts, type:"voice"});
     }
   }
@@ -4422,7 +4423,9 @@ function buildConvRow(c, inCall){
   };
   return e;
 }
-const CONV_SHOW_MAX = 5;   // 每个项目分组默认最多展示的会话数,超出折进「展开更多」
+const CONV_SHOW_MAX = 7;   // 每个项目分组默认最多展示的会话数,超出折进「展开更多」
+                          // (2026-08-04 主人确认 5→7:并发上限放开到 7 后列表也该能展示 7 条;
+                          //  终态任务满 10 分钟自动隐藏见 voiceTaskHidden,老任务不再长期霸占位置)
 const TAB_PAGE_SIZE = 20;   // 「置顶」「最近」Tab 分页粒度:默认 20 条,点「更多」每次再加 20 条
 const SIDE_TABS = [{key:"projects",label:"项目"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
 // 侧栏第二层 Tab:项目/置顶/最近,切 Tab 记住选择,不影响下方各分组自己的展开态
@@ -4457,7 +4460,7 @@ function renderPinnedTab(box, inCall){
 // 默认 20 条,点「更多」每次 +20(置顶与最近是正交维度,置顶项目若时间够新也会出现在这里)
 function renderRecentTab(box, inCall){
   const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
-  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
+  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!voiceTaskHidden(t)).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
   const convItems = S.convs.filter(c=>passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
   const rows = [...taskItems, ...convItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
   if(!rows.length){ box.append(sideTabEmpty("暂无最近会话")); return; }
@@ -4542,7 +4545,7 @@ function renderProjGroup(box, g, inCall){
     // (2026-07-22 反馈:几十条老语音任务霸占默认项目前 5 条,当天新会话反而看不见)。
     const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
     // 已置顶的语音任务归"置顶"分组,这里要滤掉,不然置顶了还继续在默认项目里重复出现
-    const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
+    const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned && !voiceTaskHidden(t)).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
     const convItems = convs.filter(c=>!c.pinned && passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
     rows = [...taskItems, ...convItems].sort((a,b)=>b.ts-a.ts).map(it=>it.build()).filter(Boolean);
   } else {
@@ -4574,11 +4577,39 @@ async function loadProjects(){
 }
 
 // ── 语音任务:侧边栏固定分组(主语音会话 + 各后台任务会话)────────────────────
+// 终态任务(done/failed/cancelled)显示满 10 分钟自动隐藏,不再占侧栏位置
+// (隐藏≠删除,数据还在;task_updated_at 是后端透传的任务完成时间,秒级时间戳,
+// 终态落库时更新)。置顶任务不隐藏——用户显式置顶就是想长期保留。
+const DONE_HIDE_SEC = 600;
+function voiceTaskHidden(t){
+  if(!t.task_status || !t.task_updated_at) return false;  // 无状态/无时间戳(ghost 行)不隐藏
+  const done = t.task_status==="done" || t.task_status==="failed" || t.task_status==="cancelled";
+  if(!done) return false;
+  return (Date.now()/1000 - t.task_updated_at) > DONE_HIDE_SEC;
+}
+// 终态任务「满 10 分钟自动隐藏」的到点调度:算最近一个还没到期的终态任务还剩多久,
+// 到点拉一次 /voice/sidebar 重渲染(此时 voiceTaskHidden 已把它滤掉)。不依赖用户交互,
+// 页面挂后台也会在到点那刻触发;渲染过滤是主机制,这个定时器只是保证"到点真的消失"。
+let _doneHideTimer = null;
+function scheduleDoneHide(){
+  if(_doneHideTimer){ clearTimeout(_doneHideTimer); _doneHideTimer=null; }
+  const tasks=(S.voiceSidebar&&S.voiceSidebar.tasks)||[];
+  const now=Date.now()/1000;
+  const done = ["done","failed","cancelled"];
+  const soonest = tasks
+    .filter(t=>!t.pinned && t.task_updated_at && done.includes(t.task_status) && (now - t.task_updated_at) <= DONE_HIDE_SEC)
+    .map(t=>DONE_HIDE_SEC - (now - t.task_updated_at))
+    .sort((a,b)=>a-b)[0];
+  if(soonest!==undefined){
+    _doneHideTimer=setTimeout(()=>{ loadVoiceSidebar(); }, Math.max(1000, soonest*1000));
+  }
+}
 async function loadVoiceSidebar(){
   try{ const r=await api("/voice/sidebar"); S.voiceSidebar=await r.json(); }
   catch(e){ S.voiceSidebar={main:null, tasks:[]}; }
   renderConvs();
   if($("#empty").style.display==="flex") renderEmptyRecent();  // 欢迎屏正开着 → 语音任务到位后补一次最近对话
+  scheduleDoneHide();  // 算好下一个到期隐藏时刻
 }
 // 侧边栏「语音任务」行上的停止按钮:调 /voice/tasks/cancel(跟语音喊停
 // voice_cancel_task 同一套 cancel 逻辑),排队中/运行中都能停,停完刷新侧栏状态点

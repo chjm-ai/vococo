@@ -839,6 +839,7 @@ class WebAdapter:
                 if row.get("origin", "voice") != "voice":
                     continue
                 c["task_status"] = row["status"]
+                c["task_updated_at"] = row["updated_at"]
                 c["title"] = row["title"]
             task_convs.append(c)
         return web.json_response({"main": main, "tasks": task_convs})
