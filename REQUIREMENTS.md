@@ -1,6 +1,6 @@
 # vococo 需求文档
 
-> 一个**基于 Claude 订阅**的个人 AI 助理(personal Hermes),单用户自用。
+> 一个**基于 Claude 订阅**的个人 AI 助理,单用户自用。
 > 架构参考 [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent),但**锁定 Claude、单用户、精简**——只保留个人助理真正需要的部分。
 
 - 版本:v0.1
@@ -129,7 +129,7 @@ Agent loop(core/agent.py):载入上下文 → claude-agent-sdk.query()
 
 ### 5.2 与原版 Hermes 的差异(砍了什么)
 
-- ❌ 多 provider 适配器 → ✅ 只留 Claude(可选 cc-switch 挂第三方 Anthropic 兼容端点)
+- ❌ 多 provider 适配器 → ✅ 只留 Claude(设置页可挂第三方 Anthropic 兼容端点)
 - ❌ 29 个平台 → ✅ Web + TG + CLI 三个
 - ❌ 6 种终端后端(docker/ssh/modal…) → ✅ 本地直跑
 - ❌ 命令审批 UI 重造、RL 训练、credential pool → ✅ 不要
