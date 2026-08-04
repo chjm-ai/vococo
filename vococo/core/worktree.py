@@ -143,8 +143,10 @@ async def ensure_worktree(session_key: str) -> str | None:
     root = config.project_root_for(session_key)
     if not root:  # 非项目会话(CLI/TG/main),秒退,零 DB 开销
         return None
-    # 项目哈希取自 key 的第二段 p<hash>(project_root_for 已保证 key 是三段项目会话)
-    phash = session_key.split(":")[1][1:]
+    # 项目哈希从 key 统一解析(兼容 p<hash> 与草稿 local-p<hash> 两种形态)
+    phash = config.project_hash_from_key(session_key)
+    if not phash:
+        return None
     slug = _slug(session_key.split(":")[-1])
     return await _ensure_worktree_impl(session_key, root, phash, slug)
 

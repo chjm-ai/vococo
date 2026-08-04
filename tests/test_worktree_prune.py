@@ -54,6 +54,25 @@ def _setup(isolated, monkeypatch, tmp_path):
     return repo, wt_base, phash, config
 
 
+# ── ensure_worktree:草稿会话(local-)也自动建 worktree ─────────────────────
+
+
+@pytest.mark.anyio
+async def test_ensure_worktree_for_local_draft_key(isolated, monkeypatch, tmp_path):
+    """前端新建会话 key 是 web:local-p<hash>:<slug>,同样要自动建 worktree(2026-08-04 修复)。"""
+    repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
+    key = f"web:local-p{phash}:newsess"
+
+    wt_dir = await worktree.ensure_worktree(key)
+    assert wt_dir is not None
+    assert Path(wt_dir).is_dir()
+    branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=wt_dir, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert branch == "vococo/newsess"
+
+
 # ── prune_orphans:只清无主孤儿 ─────────────────────────────────────────────
 
 

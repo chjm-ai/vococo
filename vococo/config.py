@@ -339,19 +339,37 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     return SESSION_KEY if UNIFY_SESSIONS else f"{platform}:{chat_id}"
 
 
+def project_hash_from_key(session_key: str) -> str | None:
+    """从会话 key 里取项目哈希;非项目会话返回 None。
+
+    兼容两种形态:
+    - web:p<hash>:<slug> —— 正式项目会话(改名前的存量 key)
+    - web:local-p<hash>:<slug> —— 前端草稿会话(改名时引入 local- 前缀,
+      见 index.html newChatIn;发出首条消息后后端仍原样落库,key 不带去前缀)
+    其余(main/默认项目的老 web:<conv>/TG/CLI/task:)都不带项目哈希。
+    """
+    parts = session_key.split(":")
+    if len(parts) >= 3 and parts[0] == "web":
+        head = parts[1]
+        if head.startswith("p") and len(head) > 1:
+            return head[1:]
+        if head.startswith("local-p") and len(head) > len("local-p"):
+            return head[len("local-p"):]
+    return None
+
+
 def project_root_for(session_key: str) -> str | None:
     """项目会话绑定的仓库根目录(不含 worktree);非项目会话返回 None。
 
-    项目会话 key 形如 web:p<hash>:<conv>(三段);其余(main/默认项目的老
-    web:<conv>/TG/CLI)都不带项目哈希,返回 None。反查走 session_store 的
-    哈希→路径 映射表(延迟 import 打破 config↔store 循环依赖)。
+    反查走 session_store 的哈希→路径 映射表(延迟 import 打破 config↔store
+    循环依赖)。
     """
-    parts = session_key.split(":")
-    if len(parts) >= 3 and parts[0] == "web" and len(parts[1]) > 1 and parts[1][0] == "p":
-        from .memory import session_store
+    h = project_hash_from_key(session_key)
+    if h is None:
+        return None
+    from .memory import session_store
 
-        return session_store.path_for_hash(parts[1][1:])
-    return None
+    return session_store.path_for_hash(h)
 
 
 def project_cwd_for(session_key: str) -> str | None:
