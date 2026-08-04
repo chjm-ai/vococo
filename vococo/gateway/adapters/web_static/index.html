@@ -100,6 +100,20 @@ try{
     </div>
   </div>
 
+  <!-- 删除会话三选确认(worktree 有未提交改动/未合并提交时):归档保留 / 仍然删除 / 取消。
+       归档 = 只提醒不丢内容(代码留 worktree 等合并);删除 = worktree 内容一起丢,必须明示 -->
+  <div id="delModal" hidden>
+    <div class="pmbox">
+      <div class="pmhead">删除会话</div>
+      <div class="pmbody" id="delDirty"></div>
+      <div class="pmfoot">
+        <button id="delCancel">取消</button>
+        <button class="pmwarn" id="delForce">🗑 仍然删除</button>
+        <button class="pmok" id="delArchive">📁 归档保留</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 会话搜索弹窗(⌘F / 侧栏放大镜):标题优先+正文,含归档;删除的会话已物理删除搜不到 -->
   <div id="searchModal" hidden>
     <div class="smbox">
@@ -5654,24 +5668,44 @@ async function delConv(conv){
     const r=await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
     const j=await r.json().catch(()=>({}));
     if(j && j.need_confirm){
-      // 会话 worktree 里有未提交改动/未合并提交:先回滚乐观假删,弹确认,用户点头才真删
+      // 会话 worktree 里有未提交改动/未合并提交:先回滚乐观假删,弹三选——
+      // 归档保留(只提醒不丢内容)/ 仍然删除(force,worktree 内容一起丢) / 取消
       list.splice(idx,0,removed); renderConvs();
       const d=j.dirty||{};
       const bits=[];
       if(d.uncommitted) bits.push(d.uncommitted+" 个未提交改动");
       if(d.untracked) bits.push(d.untracked+" 个未跟踪文件");
       if(d.commits) bits.push(d.commits+" 个未合并提交");
-      if(confirm("该会话的代码还有"+(bits.join("、")||"未提交内容")+",删除会全部丢失。确定删除吗?")){
-        await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,force:true})});
-      } else {
-        return;  // 用户取消:列表已恢复
+      const choice=await delConfirmChoice(bits.join("、")||"未提交内容");
+      if(choice==="archive"){ toggleArchive(conv); return; }  // 归档保留:代码留 worktree,只提醒不回收
+      if(choice!=="delete") return;                            // 取消:列表已恢复
+      await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,force:true})});
+      // force 删除成功后行已被回滚恢复,需再移除一次(否则残留到刷新还看得到)
+      const f=list.findIndex(x=>x.conv===conv);
+      if(f>=0){
+        list.splice(f,1); delete S.histCache[conv]; idbDel("hist:"+conv); delete S.live[conv]; delete S.streamSnap[conv]; markLive(); renderConvs();
       }
     }
   }catch(err){
-    // 删除失败:回滚列表并提示
-    list.splice(idx,0,removed); renderConvs();
+    // 删除失败:回滚列表并提示(行可能已恢复,先确认不在再插,避免重复行)
+    if(!list.some(x=>x.conv===conv)) list.splice(idx,0,removed);
+    renderConvs();
     alert("删除失败,已恢复该会话");
   }
+}
+// 删除会话三选确认(worktree 有未提交改动时):归档保留 / 仍然删除 / 取消。
+// 返回 "archive" | "delete" | "cancel"。
+function delConfirmChoice(bits){
+  return new Promise(res=>{
+    const m=$("#delModal");
+    $("#delDirty").textContent="该会话的代码还有 "+bits+",直接删除会全部丢失。";
+    const done=v=>{ m.hidden=true; m.onclick=null; res(v); };
+    $("#delArchive").onclick=()=>done("archive");
+    $("#delForce").onclick=()=>done("delete");
+    $("#delCancel").onclick=()=>done("cancel");
+    m.onclick=e=>{ if(e.target===m) done("cancel"); };  // 点遮罩 = 取消
+    m.hidden=false;
+  });
 }
 async function duplicateConv(conv){
   try{
@@ -5697,7 +5731,7 @@ function toggleArchive(conv){
         if(d.uncommitted) bits.push(d.uncommitted+" 个未提交改动");
         if(d.untracked) bits.push(d.untracked+" 个未跟踪文件");
         if(d.commits) bits.push(d.commits+" 个未合并提交");
-        alert("已归档,但该会话的代码还有"+(bits.join("、")||"未提交内容")+"。\n\nworktree 暂未回收(内容不能丢)。合并或提交后再次归档即可回收。");
+        alert("已归档成功。该会话的代码还有"+(bits.join("、")||"未提交内容")+",worktree 暂未回收(内容不能丢)。\n\n合并或提交后再次归档即可回收。");
       }
     }).catch(()=>{ c.archived=!next; renderConvs(); });
   if(next && c.pinned) pinConv(conv, false);   // 归档的会话不该再占着置顶分组,顺手取消置顶

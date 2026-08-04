@@ -315,6 +315,19 @@
   #cronModal .pmfoot button{padding:9px 16px;border-radius:9px;cursor:pointer;font-size:13.5px;border:1px solid var(--line2);background:var(--panel2);color:var(--text)}
   #cronModal .pmfoot .pmok{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
 
+  /* 删除会话三选确认弹窗(worktree 有未提交改动时):抄 pmbox 壳;主操作「归档保留」高亮,
+     「仍然删除」用危险红——删除会连 worktree 内容一起丢,必须比普通操作更醒目 */
+  #delModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
+  #delModal[hidden]{display:none}
+  #delModal .pmbox{width:min(440px,92vw);display:flex;flex-direction:column;
+    background:var(--panel);border:1px solid var(--line2);border-radius:16px;overflow:hidden}
+  #delModal .pmhead{padding:15px 18px;font-size:15px;font-weight:700;border-bottom:1px solid var(--line)}
+  #delModal .pmbody{padding:14px 18px;font-size:13.5px;color:var(--dim);line-height:1.6}
+  #delModal .pmfoot{display:flex;gap:10px;justify-content:flex-end;padding:13px 16px;border-top:1px solid var(--line)}
+  #delModal .pmfoot button{padding:9px 16px;border-radius:9px;cursor:pointer;font-size:13.5px;border:1px solid var(--line2);background:var(--panel2);color:var(--text)}
+  #delModal .pmfoot .pmok{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  #delModal .pmfoot .pmwarn{background:transparent;border-color:var(--err);color:var(--err);font-weight:600}
+
   /* 设置弹窗 */
   #setModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
   #setModal[hidden]{display:none}
