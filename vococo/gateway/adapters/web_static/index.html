@@ -4414,7 +4414,7 @@ function buildVoiceTaskRow(t, inCall){
 // 置顶会话除了所在分组不同,长相(缩进、状态灯)跟普通分组内的会话行完全一样。
 function buildConvRow(c, inCall){
   const isMain=c.conv==="main";
-  const e=el("div","conv"+(isMain?" mainrow":" ingroup")+(!inCall && c.conv===S.conv?" active":""));
+  const e=el("div","conv"+(isMain?"":" ingroup")+(!inCall && c.conv===S.conv?" active":""));
   e.dataset.conv=c.conv;
   const body=el("div","cvbody");
   if(isMain) body.innerHTML=ic("star");   // 主会话:左侧星标图标,跟紧邻的语音通话行(mic 图标)对齐
