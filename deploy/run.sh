@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# 启动 claude-hermes serve(后台,崩溃自动重启)。
+# 启动 vococo serve(后台,崩溃自动重启)。
 #
 # 为什么不用 launchd 直接拉起:某些 Mac 上 launchd 的会话上下文不完整,
 # 会让 agent 派生的 `claude` 子进程同步卡死(冻住事件循环)。用登录 shell
@@ -16,9 +16,15 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 mkdir -p data/logs
-pkill -f "claude-hermes serve" 2>/dev/null || true
+pkill -f "vococo serve" 2>/dev/null || true
 rm -f data/.stop          # 清除上次的停止标记,允许重启循环运行
 sleep 1
+# 包改名/入口变动后自愈:.venv/bin/vococo 不存在就重装 editable(uv sync 幂等,秒级)。
+# 2026-08 改名 claude-hermes→vococo 后合回 main 若无此步,serve 会因入口消失起不来。
+if [ ! -x .venv/bin/vococo ]; then
+  echo "[run.sh] .venv/bin/vococo 不存在,先 uv sync 重装 entry point"
+  uv sync || { echo "❌ uv sync 失败" >&2; exit 1; }
+fi
 nohup zsh -lc "
   cd '$ROOT'
   fastfail=0
@@ -33,7 +39,7 @@ nohup zsh -lc "
       fi
     fi
     t0=\$(date +%s)
-    PYTHONUNBUFFERED=1 .venv/bin/claude-hermes serve
+    PYTHONUNBUFFERED=1 .venv/bin/vococo serve
     ec=\$?
     [ -f data/.stop ] && break
     if [ \$(( \$(date +%s) - t0 )) -lt 20 ]; then
@@ -52,11 +58,11 @@ nohup zsh -lc "
     echo \"[run.sh] serve 退出码 \$ec —— 5s 后重启 \$(date '+%F %T')\"
     sleep 5
   done
-" >> data/logs/hermes.out.log 2>&1 &
+" >> data/logs/vococo.out.log 2>&1 &
 disown
 sleep 3
-if pgrep -f "claude-hermes serve" >/dev/null; then
-  echo "✅ serve 已后台启动(崩溃自启;日志:data/logs/hermes.out.log)"
+if pgrep -f "vococo serve" >/dev/null; then
+  echo "✅ serve 已后台启动(崩溃自启;日志:data/logs/vococo.out.log)"
 else
-  echo "❌ 启动失败,看 data/logs/hermes.out.log"; exit 1
+  echo "❌ 启动失败,看 data/logs/vococo.out.log"; exit 1
 fi

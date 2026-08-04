@@ -9,13 +9,13 @@ import asyncio
 
 import pytest
 
-from claude_hermes import config
-from claude_hermes.core import task_runner as executor
-from claude_hermes.core import tasks
-from claude_hermes.core.agent import AgentReply, Done, SessionStarted, ToolInput
-from claude_hermes.gateway import core as gateway_core
-from claude_hermes.memory import session_store
-from claude_hermes.voice import notify, session, task_tools, tts
+from vococo import config
+from vococo.core import task_runner as executor
+from vococo.core import tasks
+from vococo.core.agent import AgentReply, Done, SessionStarted, ToolInput
+from vococo.gateway import core as gateway_core
+from vococo.memory import session_store
+from vococo.voice import notify, session, task_tools, tts
 
 
 @pytest.fixture
@@ -120,7 +120,7 @@ def test_snapshot_for_prompt_lists_active_and_recent_done(voice_db):
 
 
 def test_build_prompt_injects_task_snapshot(voice_db):
-    from claude_hermes.voice import prompts
+    from vococo.voice import prompts
 
     t = tasks.create("查资料", "p")
     tasks.set_status(t["id"], "running", progress_note="正在查")
@@ -831,7 +831,7 @@ async def test_notify_falls_back_to_web_push_when_offline(voice_db, monkeypatch)
     tasks.set_status(t["id"], "running")
     tasks.finish(t["id"], "failed", "", "出错了")
 
-    from claude_hermes.gateway.adapters import web_push
+    from vococo.gateway.adapters import web_push
 
     calls = []
 

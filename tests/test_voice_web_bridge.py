@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from claude_hermes import config
-from claude_hermes.gateway import web_bridge
-from claude_hermes.gateway.adapters.web import WebAdapter
-from claude_hermes.memory import session_store
-from claude_hermes.voice import task_tools
+from vococo import config
+from vococo.gateway import web_bridge
+from vococo.gateway.adapters.web import WebAdapter
+from vococo.memory import session_store
+from vococo.voice import task_tools
 
 
 @pytest.fixture

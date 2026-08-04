@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from claude_hermes.core.agent import AgentReply, AudioAttachment, Done, TextDelta
-from claude_hermes.gateway import core
-from claude_hermes.gateway.core import Sink
-from claude_hermes.memory import session_store
+from vococo.core.agent import AgentReply, AudioAttachment, Done, TextDelta
+from vococo.gateway import core
+from vococo.gateway.core import Sink
+from vococo.memory import session_store
 
 
 async def _noop_worktree(session_key):
@@ -21,8 +21,8 @@ async def _noop_worktree(session_key):
 
 @pytest.mark.anyio
 async def test_audio_transcript_injected_into_prompt_not_stored_text(isolated, monkeypatch):
-    from claude_hermes import config
-    from claude_hermes.core import worktree
+    from vococo import config
+    from vococo.core import worktree
 
     monkeypatch.setattr(worktree, "ensure_worktree", _noop_worktree)
     monkeypatch.setattr(config, "AUDIO_DIR", isolated / "data" / "audio")

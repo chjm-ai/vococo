@@ -4,7 +4,7 @@ from __future__ import annotations
 import anyio
 import pytest
 
-from claude_hermes.tools.danger import is_dangerous, pretool_danger_hook
+from vococo.tools.danger import is_dangerous, pretool_danger_hook
 
 DANGEROUS = [
     "rm -rf /",
@@ -71,7 +71,7 @@ def test_hook_ignores_non_bash():
 
 
 # === 审批闸:classify 5 类危险 + 放行 + 灾难拦截 ===
-from claude_hermes.tools.danger import classify, pretool_guard_hook  # noqa: E402
+from vococo.tools.danger import classify, pretool_guard_hook  # noqa: E402
 
 ESCALATE = [
     ("Bash", {"command": "git push origin main"}),
@@ -155,7 +155,7 @@ def test_classify_returns_restrict_flag():
 
 def test_guard_hook_denies_new_memory_file(tmp_path, monkeypatch):
     # 在 Claude Code 项目记忆目录新建实体文件 → deny 引导写 AI_BRAIN 主库
-    from claude_hermes.tools import danger
+    from vococo.tools import danger
 
     projects = tmp_path / "projects"
     memdir = projects / "-Users-x-proj" / "memory"
@@ -174,7 +174,7 @@ def test_guard_hook_denies_new_memory_file(tmp_path, monkeypatch):
 
 def test_guard_hook_allows_existing_memory_file(tmp_path, monkeypatch):
     # 已有文件(软链写穿 / MEMORY.md 索引)与记忆目录之外的新文件都放行
-    from claude_hermes.tools import danger
+    from vococo.tools import danger
 
     projects = tmp_path / "projects"
     memdir = projects / "-Users-x-proj" / "memory"
@@ -225,8 +225,8 @@ def _run_approval(
     cwd: str | None = None,
 ) -> dict:
     """开一轮审批,模拟用户点某个按钮(token='0' 允许 / '1' 拒绝),返回 hook 输出。"""
-    from claude_hermes.gateway import clarify
-    from claude_hermes.tools import danger
+    from vococo.gateway import clarify
+    from vococo.tools import danger
 
     ti = tool_input or {"command": "git push"}
 
@@ -278,8 +278,8 @@ def test_guard_hook_write_outside_cwd_denied(tmp_path):
 
 def test_guard_hook_session_allow_all_skips_second_prompt():
     """点「本次会话都允许」(index 1)后,同会话同类操作免批、不再弹窗。"""
-    from claude_hermes.gateway import clarify
-    from claude_hermes.tools import danger
+    from vococo.gateway import clarify
+    from vococo.tools import danger
 
     ti = {"command": "git push"}
     key = "sess-allow-all"
@@ -325,7 +325,7 @@ def test_guard_hook_session_allow_all_skips_second_prompt():
 def test_guard_hook_denies_write_outside_worktree(tmp_path):
     # worktree 会话(cwd=worktree,主仓库=repo)写 worktree 外的主仓库文件 → 硬 deny;
     # 写 worktree 内文件 → 放行。验证会话隔离防线。
-    from claude_hermes.tools import danger
+    from vococo.tools import danger
 
     repo = tmp_path / "repo"
     wt = repo / "data" / "worktrees" / "h" / "sess"  # worktree 恰嵌在主仓库 data/ 下
@@ -349,7 +349,7 @@ def test_guard_hook_denies_write_outside_worktree(tmp_path):
 
 def test_guard_hook_fallback_session_can_write_repo(tmp_path):
     # 回退会话:worktree 建失败 → cwd==主仓库根,写项目文件不该被 worktree 防线误伤
-    from claude_hermes.tools import danger
+    from vococo.tools import danger
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -365,7 +365,7 @@ def test_guard_hook_fallback_session_can_write_repo(tmp_path):
 
 
 def test_setcwd_roundtrip():
-    from claude_hermes.tools import danger
+    from vococo.tools import danger
 
     tok = danger.set_cwd("/tmp/proj")
     assert danger.current_cwd() == "/tmp/proj"
@@ -394,18 +394,18 @@ def test_secret_exfil_no_false_positive():
 def test_env_scrub_removes_secrets(monkeypatch):
     import os
 
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "x" * 20)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "y" * 20)
-    monkeypatch.delenv("HERMES_KEEP_ENV_SECRETS", raising=False)
+    monkeypatch.delenv("VOCOCO_KEEP_ENV_SECRETS", raising=False)
     config._scrub_env_secrets()
     assert os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") is None
     assert os.environ.get("TELEGRAM_BOT_TOKEN") is None
 
 
 # ── 敏感读取标注(安全评估 P0-1) ─────────────────────────────────────────────
-from claude_hermes.tools.danger import _sensitive_read_target, redact_secrets  # noqa: E402
+from vococo.tools.danger import _sensitive_read_target, redact_secrets  # noqa: E402
 
 
 def test_sensitive_read_flags_ssh_private_key():
@@ -436,7 +436,7 @@ def test_guard_hook_flags_but_does_not_deny_sensitive_read(capsys):
 
 # ── 输出侧敏感内容过滤(安全评估 P0-2) ───────────────────────────────────────
 def test_redact_known_secret_value(monkeypatch):
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "supersecrettoken123")
     text = redact_secrets("你的口令是 supersecrettoken123,别泄露")
@@ -467,7 +467,7 @@ def test_redact_no_false_positive_on_normal_text():
 # 工具返回 escalate/block,其余工具永远 allow、根本走不到审批弹窗,所以不是缺口。
 # 这条测试把这个不变量钉住:谁以后扩大 classify() 的 escalate 范围(比如给 Grep/
 # WebFetch 也加审批),这里就会失败,提醒同步给 _describe 加对应分支。
-from claude_hermes.tools.danger import _WRITE_TOOLS, _describe  # noqa: E402
+from vococo.tools.danger import _WRITE_TOOLS, _describe  # noqa: E402
 
 _TOOL_PROBES: list[tuple[str, dict]] = [
     ("Bash", {"command": "rm -rf /"}),

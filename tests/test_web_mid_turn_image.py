@@ -7,7 +7,7 @@ tool_start/text 一样只追加成一帧,不收轮。
 """
 from __future__ import annotations
 
-from claude_hermes.gateway.adapters.web import WebAdapter
+from vococo.gateway.adapters.web import WebAdapter
 
 
 def test_mid_turn_message_does_not_close_live_turn():

@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from claude_hermes import providers
-from claude_hermes.gateway import settings_store
+from vococo import providers
+from vococo.gateway import settings_store
 
 
 def _point_settings_to(monkeypatch, tmp_path: Path) -> None:
@@ -232,7 +232,7 @@ def test_subscription_api_key_for_model_deepseek_is_none(tmp_path, monkeypatch):
 # ── 兼容性与路径 ─────────────────────────────────────────────────────
 def test_legacy_camelcase_fields_in_migrate_script(tmp_path, monkeypatch):
     """老 cc-switch 配置会残留 baseUrl/apiKey,迁移脚本导入前应转成 snake_case。"""
-    from claude_hermes.gateway import migrate_cc_switch
+    from vococo.gateway import migrate_cc_switch
 
     _point_settings_to(monkeypatch, tmp_path)
     cfg = tmp_path / "config.yaml"
@@ -243,7 +243,7 @@ custom_providers:
     apiKey: sk-relay-zzz
     model: some-model
 """, encoding="utf-8")
-    monkeypatch.setattr(providers, "hermes_config_path", lambda: cfg)
+    monkeypatch.setattr(providers, "cc_switch_config_path", lambda: cfg)
 
     entries = migrate_cc_switch._extract_providers(migrate_cc_switch._load_yaml())
     assert entries["relay"]["base_url"] == "https://relay.example.com/anthropic"
@@ -253,14 +253,14 @@ custom_providers:
 
 def test_hermes_home_env_override(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_HERMES_HOME", str(tmp_path))
-    assert providers.hermes_config_path() == tmp_path / "config.yaml"
+    assert providers.cc_switch_config_path() == tmp_path / "config.yaml"
     monkeypatch.delenv("CLAUDE_HERMES_HOME", raising=False)
 
 
 def test_default_path_is_independent_of_real_hermes(monkeypatch):
     # 默认路径必须是 ~/.claude-hermes,绝不能落到原版 Hermes 的 ~/.hermes
     monkeypatch.delenv("CLAUDE_HERMES_HOME", raising=False)
-    p = providers.hermes_config_path()
+    p = providers.cc_switch_config_path()
     assert p.name == "config.yaml"
     assert p.parent.name == ".claude-hermes"
     assert ".hermes/config.yaml" not in str(p)
@@ -269,7 +269,7 @@ def test_default_path_is_independent_of_real_hermes(monkeypatch):
 # ── 旧 cc-switch 迁移脚本:只读展示 / 导入 ───────────────────────────
 def test_migrate_script_extracts_cc_switch_providers(tmp_path, monkeypatch):
     """迁移脚本能正确解析 cc-switch 的 providers 字典和 custom_providers 列表。"""
-    from claude_hermes.gateway import migrate_cc_switch
+    from vococo.gateway import migrate_cc_switch
 
     _point_settings_to(monkeypatch, tmp_path)
     cfg = tmp_path / "config.yaml"
@@ -288,7 +288,7 @@ providers:
     api_key: sk-kimi-yyy
     model: kimi-k2.7-code
 """, encoding="utf-8")
-    monkeypatch.setattr(providers, "hermes_config_path", lambda: cfg)
+    monkeypatch.setattr(providers, "cc_switch_config_path", lambda: cfg)
 
     entries = migrate_cc_switch._extract_providers(migrate_cc_switch._load_yaml())
     assert "deepseek" in entries
@@ -298,11 +298,11 @@ providers:
 
 
 def test_migrate_script_skips_official_names(tmp_path, monkeypatch):
-    from claude_hermes.gateway import migrate_cc_switch
+    from vococo.gateway import migrate_cc_switch
 
     _point_settings_to(monkeypatch, tmp_path)
     cfg = tmp_path / "config.yaml"
     cfg.write_text("custom_providers:\n  - name: claude\n    base_url: https://api.anthropic.com\n    api_key: x\n    model: claude-sonnet-5\n", encoding="utf-8")
-    monkeypatch.setattr(providers, "hermes_config_path", lambda: cfg)
+    monkeypatch.setattr(providers, "cc_switch_config_path", lambda: cfg)
     entries = migrate_cc_switch._extract_providers(migrate_cc_switch._load_yaml())
     assert "claude" not in entries

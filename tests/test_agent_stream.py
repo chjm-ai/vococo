@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import anyio
 
-from claude_hermes import config
-from claude_hermes.core.agent import (
+from vococo import config
+from vococo.core.agent import (
     ToolInput,
     _compact_threshold,
     _query_context_usage,

@@ -10,7 +10,7 @@ import subprocess
 
 import pytest
 
-from claude_hermes.voice import stt
+from vococo.voice import stt
 
 
 def _transcripts(sentences):
@@ -55,7 +55,7 @@ async def test_format_meeting_no_speaker_uses_plain_text(monkeypatch):
 @pytest.mark.anyio
 async def test_attachment_routes_by_duration(isolated, monkeypatch):
     """时长 ≥ 40 分钟走会议路径,否则走 qwen3-asr-flash;探测失败不阻塞。"""
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setattr(config, "AUDIO_DIR", isolated / "audio")
     monkeypatch.setattr(config, "PUBLISHED_DIR", isolated / "published")
@@ -93,7 +93,7 @@ async def test_meeting_success_cleans_public_file(isolated, monkeypatch):
     """成功路径:提交→轮询 SUCCEEDED→格式化返回,公网临时文件与本地残留都清掉。"""
     import aiohttp
 
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setattr(config, "AUDIO_DIR", isolated / "audio")
     monkeypatch.setattr(config, "PUBLISHED_DIR", isolated / "published")
@@ -176,7 +176,7 @@ async def test_meeting_falls_back_on_submit_error(isolated, monkeypatch):
     """提交任务网络失败 → 降级 qwen3-asr-flash,不把失败抛给用户,临时文件照删。"""
     import aiohttp
 
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setattr(config, "AUDIO_DIR", isolated / "audio")
     monkeypatch.setattr(config, "PUBLISHED_DIR", isolated / "published")
@@ -221,7 +221,7 @@ async def test_meeting_falls_back_on_submit_error(isolated, monkeypatch):
 @pytest.mark.anyio
 async def test_probe_duration_real_ffmpeg(isolated, monkeypatch):
     """真实 ffmpeg 造 2 秒音频,验证 ffprobe 探测链路(本机装有 ffmpeg)。"""
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setattr(config, "AUDIO_DIR", isolated / "audio")
     wav = isolated / "two_sec.wav"

@@ -2,7 +2,7 @@
 
 ## 威胁模型
 
-claude-hermes 是**单用户个人 AI 助理**,不是多租户 SaaS。默认 `bypassPermissions`(工具自动执行,不逐次问),换取手机端低摩擦的使用体验。这意味着:
+vococo 是**单用户个人 AI 助理**,不是多租户 SaaS。默认 `bypassPermissions`(工具自动执行,不逐次问),换取手机端低摩擦的使用体验。这意味着:
 
 - 能操作 agent 的人 = 拥有者本人,不存在"用户 A 不该看到用户 B 数据"这类多租户隔离需求。
 - **没有沙箱**:agent 以运行该进程的系统用户身份直接读写文件、执行命令,和你自己在终端里手动操作的权限完全一样。所有下面列的防护都是在这个前提上加的减速带,不是牢笼。
@@ -10,7 +10,7 @@ claude-hermes 是**单用户个人 AI 助理**,不是多租户 SaaS。默认 `by
 
 ## 已有的防护层
 
-代码里的判定逻辑见 [`claude_hermes/tools/danger.py`](claude_hermes/tools/danger.py),概念说明见 [CONTEXT.md](CONTEXT.md) 的「危险分级 / 审批闸」。简述:
+代码里的判定逻辑见 [`vococo/tools/danger.py`](vococo/tools/danger.py),概念说明见 [CONTEXT.md](CONTEXT.md) 的「危险分级 / 审批闸」。简述:
 
 | 层 | 做法 |
 |---|---|

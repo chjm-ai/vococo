@@ -1,6 +1,6 @@
 # 语音判定纯函数存档(P2 退休后从活代码降级为文档)
 
-来源:原 `claude_hermes/voice/heuristics.py`,P2 全双工管线(`ws.py`)退休时
+来源:原 `vococo/voice/heuristics.py`,P2 全双工管线(`ws.py`)退休时
 (见 [ADR 0004](../../adr/0004-voice-omni-only.md))被当作"判定纯函数留档"保留为活代码,
 但截至 2026-07-23 架构复盘,grep 全仓库确认零调用方——Omni 模式下 VAD/打断发生在
 浏览器↔阿里云侧,服务端拿不到 PCM,这些函数没有任何可能的调用点。带着一整套

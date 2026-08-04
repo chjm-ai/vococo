@@ -1,7 +1,7 @@
 """system prompt 组装:项目 AGENTS.md 注入规则。"""
 from pathlib import Path
 
-from claude_hermes.core.prompt import _load_project_agents, build_system_prompt
+from vococo.core.prompt import _load_project_agents, build_system_prompt
 
 
 def test_agents_only_injected(tmp_path: Path):

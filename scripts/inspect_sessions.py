@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""查会话 —— 排障用的只读命令行工具,直接读 data/state.db,不依赖 claude_hermes 包。
+"""查会话 —— 排障用的只读命令行工具,直接读 data/state.db,不依赖 vococo 包。
 
 背景:会话数据分散在三处 —— SQLite(turns/session_meta,本工具的数据源)、
 git worktree 物理目录(session_meta.worktree_path)、claude CLI 自己的
@@ -18,7 +18,7 @@ transcript jsonl(~/.claude/projects/<cwd编码>/<sdk_session_id>.jsonl)。
 注意(worktree 会话踩过的坑):在某个项目会话的 worktree 里跑本脚本,
 默认路径推出的是【这个 worktree 自己的】data/state.db(全新空库,不是真实数据)。
 真实库在"跑 serve 的那个主仓库"下的 data/state.db —— 不确定就用 --db 显式指定,
-例如 --db ~/Repos/claude-hermes/data/state.db。
+例如 --db ~/Repos/vococo/data/state.db。
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         sys.exit(
             f"❌ 找不到数据库:{db_path}\n"
             "   可能在 worktree 里跑了本脚本(真实库在主仓库),用 --db 指定真实路径,\n"
-            "   例如:--db ~/Repos/claude-hermes/data/state.db"
+            "   例如:--db ~/Repos/vococo/data/state.db"
         )
     # 只读 + WAL 兼容:不建表、不迁移,和正在跑的 serve 进程并发读也安全
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)

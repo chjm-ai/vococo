@@ -1,0 +1,4 @@
+{
+  "name": "vococo-internal",
+  "description": "vococo 专属内置技能合集,只在本项目的 vococo 会话里加载,Claude Code/Codex/OpenCode 等其它工具看不到。"
+}

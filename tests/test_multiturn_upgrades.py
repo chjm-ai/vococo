@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import asyncio
 
-from claude_hermes.core.agent import Compacted, Turn, _compose_prompt
-from claude_hermes.core.timeline import Timeline
-from claude_hermes.gateway.core import Sink
+from vococo.core.agent import Compacted, Turn, _compose_prompt
+from vococo.core.timeline import Timeline
+from vococo.gateway.core import Sink
 
 
 # === Compacted 事件与时间线 ===
@@ -75,10 +75,10 @@ def _write_brain(brain_dir, text: str) -> None:
 
 
 def test_prompt_snapshot_frozen_within_session(isolated, monkeypatch):
-    from claude_hermes.core import prompt
+    from vococo.core import prompt
 
     monkeypatch.setattr(prompt, "_APPEND_CACHE", type(prompt._APPEND_CACHE)())
-    from claude_hermes import config
+    from vococo import config
 
     _write_brain(config.AI_BRAIN_DIR, "画像V1")
     first = prompt.build_system_prompt(cache_key="sid-1")
@@ -94,10 +94,10 @@ def test_prompt_snapshot_frozen_within_session(isolated, monkeypatch):
 
 
 def test_prompt_snapshot_cache_bounded(isolated, monkeypatch):
-    from claude_hermes.core import prompt
+    from vococo.core import prompt
 
     monkeypatch.setattr(prompt, "_APPEND_CACHE", type(prompt._APPEND_CACHE)())
-    from claude_hermes import config
+    from vococo import config
 
     _write_brain(config.AI_BRAIN_DIR, "画像")
     for i in range(prompt._APPEND_CACHE_MAX + 8):

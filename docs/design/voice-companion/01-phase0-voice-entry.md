@@ -47,7 +47,7 @@
 ### 4.1 新增文件
 
 ```
-claude_hermes/voice/
+vococo/voice/
   __init__.py        # register_routes(app) 唯一对外入口
   routes.py          # aiohttp 路由:页面 + stt + 对话 SSE + tts
   session.py         # 语音会话:历史读写(data/voice/voice.db) + 调 stream_turn

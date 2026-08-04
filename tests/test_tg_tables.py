@@ -1,7 +1,7 @@
 """TG 竖线表格 → 分组列表:Telegram 无表格渲染,`format_tables` 把它改写成可读列表。"""
 from __future__ import annotations
 
-from claude_hermes.gateway.adapters.telegram import format_tables
+from vococo.gateway.adapters.telegram import format_tables
 
 
 def test_simple_table_becomes_groups():

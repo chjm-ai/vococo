@@ -8,7 +8,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _clean_clarify():
     """clarify 状态是模块级,用例间清干净。"""
-    from claude_hermes.gateway import clarify
+    from vococo.gateway import clarify
 
     clarify._pending.clear()
     clarify._by_session.clear()
@@ -22,7 +22,7 @@ def _text(result: dict) -> str:
 
 
 def test_resolve_then_wait_returns_answer():
-    from claude_hermes.gateway import clarify
+    from vococo.gateway import clarify
 
     async def go():
         p = clarify.register("s1", ["A", "B"])
@@ -33,7 +33,7 @@ def test_resolve_then_wait_returns_answer():
 
 
 def test_wait_timeout_returns_none():
-    from claude_hermes.gateway import clarify
+    from vococo.gateway import clarify
 
     async def go():
         p = clarify.register("s1", [])
@@ -43,7 +43,7 @@ def test_wait_timeout_returns_none():
 
 
 def test_button_index_maps_to_choice():
-    from claude_hermes.gateway import clarify
+    from vococo.gateway import clarify
 
     async def go():
         p = clarify.register("s1", ["苹果", "香蕉"])
@@ -54,7 +54,7 @@ def test_button_index_maps_to_choice():
 
 
 def test_text_reply_resolves_session():
-    from claude_hermes.gateway import clarify
+    from vococo.gateway import clarify
 
     async def go():
         p = clarify.register("s1", [])  # 开放式
@@ -65,7 +65,7 @@ def test_text_reply_resolves_session():
 
 
 def test_text_reply_coerces_number_to_choice():
-    from claude_hermes.gateway import clarify
+    from vococo.gateway import clarify
 
     async def go():
         p = clarify.register("s1", ["红", "绿", "蓝"])
@@ -76,7 +76,7 @@ def test_text_reply_coerces_number_to_choice():
 
 
 def test_clear_session_cancels():
-    from claude_hermes.gateway import clarify
+    from vococo.gateway import clarify
 
     async def go():
         p = clarify.register("s1", [])
@@ -96,7 +96,7 @@ def test_clear_session_cancels():
 
 
 def test_ask_user_no_context_graceful():
-    from claude_hermes.tools import builtin
+    from vococo.tools import builtin
 
     async def go():
         return await builtin.ask_user.handler({"question": "在吗?"})
@@ -106,8 +106,8 @@ def test_ask_user_no_context_graceful():
 
 def test_ask_user_full_roundtrip():
     """set_current → ask_user 弹按钮阻塞 → 模拟点按钮 → 工具拿到答案。"""
-    from claude_hermes.gateway import clarify
-    from claude_hermes.tools import builtin
+    from vococo.gateway import clarify
+    from vococo.tools import builtin
 
     sent = []
 
@@ -148,8 +148,8 @@ def test_ask_user_full_roundtrip():
 
 # === send_message ===
 def test_send_message_to_current_chat():
-    from claude_hermes.gateway import clarify
-    from claude_hermes.tools import builtin
+    from vococo.gateway import clarify
+    from vococo.tools import builtin
 
     sent = []
 
@@ -173,8 +173,8 @@ def test_send_message_to_current_chat():
 
 
 def test_send_message_to_target():
-    from claude_hermes.gateway import clarify
-    from claude_hermes.tools import builtin
+    from vococo.gateway import clarify
+    from vococo.tools import builtin
 
     pushed = []
 
@@ -191,7 +191,7 @@ def test_send_message_to_target():
 
 
 def test_send_message_no_context():
-    from claude_hermes.tools import builtin
+    from vococo.tools import builtin
 
     out = _text(anyio.run(lambda: builtin.send_message.handler({"text": "x"})))
     assert "无聊天上下文" in out

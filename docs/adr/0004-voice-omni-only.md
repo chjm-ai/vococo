@@ -49,7 +49,7 @@
 
 ## 恢复路径
 
-若将来要复活自建全双工:`git log --diff-filter=D -- claude_hermes/voice/ws.py`
+若将来要复活自建全双工:`git log --diff-filter=D -- vococo/voice/ws.py`
 找到删除提交,恢复 ws.py + 本 ADR 列出的配置常量 + `/voice/ws` 路由注册即可;
 但更可能的正确做法是基于 heuristics.py 留档重新设计(把轮次引擎与传输层分开,
 见当时架构评审的候选 2)。

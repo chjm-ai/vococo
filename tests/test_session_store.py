@@ -3,7 +3,7 @@ from __future__ import annotations
 
 
 def test_append_and_load_recent(isolated):
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     session_store.append("cli", "第一句", "回一")
     session_store.append("cli", "第二句", "回二")
@@ -13,7 +13,7 @@ def test_append_and_load_recent(isolated):
 
 
 def test_sessions_isolated_by_key(isolated):
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     session_store.append("cli", "给 cli 的", "回 cli")
     session_store.append("tg:1", "给 tg 的", "回 tg")
@@ -22,7 +22,7 @@ def test_sessions_isolated_by_key(isolated):
 
 
 def test_new_session_watermark(isolated):
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     session_store.append("cli", "旧轮内容名古屋", "好")
     session_store.new_session("cli")          # 推水位线:旧轮不再载入
@@ -34,7 +34,7 @@ def test_new_session_watermark(isolated):
 
 
 def test_search_multiterm_ranks_by_hits(isolated):
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     session_store.append("cli", "名古屋出差计划", "好")    # id 小,但含「名古屋」「出差」两词
     session_store.append("cli", "随便聊聊出差", "嗯")        # id 大,只含「出差」一词
@@ -44,14 +44,14 @@ def test_search_multiterm_ranks_by_hits(isolated):
 
 
 def test_search_miss(isolated):
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     session_store.append("cli", "你好", "你好呀")
     assert session_store.search("不存在的关键词xyz") == []
 
 
 def test_clear(isolated):
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     session_store.append("cli", "a", "b")
     session_store.clear("cli")
@@ -60,7 +60,7 @@ def test_clear(isolated):
 
 def test_search_sessions_title_first_includes_archived(isolated):
     """标题命中排前、正文其次;归档会话照常返回并带 archived 标记。"""
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     session_store.set_title("web:a", "名古屋出差计划")
     session_store.append("web:a", "订机票", "好的")
@@ -75,7 +75,7 @@ def test_search_sessions_title_first_includes_archived(isolated):
 
 def test_search_sessions_excludes_deleted_and_foreign_keys(isolated):
     """删除的会话物理消失搜不到;非侧边栏前缀(tg:/cli)不进结果。"""
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     session_store.set_title("web:x", "要删的名古屋会话")
     session_store.append("web:x", "名古屋", "好")
@@ -86,7 +86,7 @@ def test_search_sessions_excludes_deleted_and_foreign_keys(isolated):
 
 def test_search_sessions_like_escape(isolated):
     """用户输入里的 % _ 按字面匹配,不当 LIKE 通配符。"""
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     session_store.set_title("web:a", "进度 100% 完成")
     session_store.set_title("web:b", "进度还差一点")
@@ -95,7 +95,7 @@ def test_search_sessions_like_escape(isolated):
 
 
 def test_project_upsert_dedup_and_hash(isolated, tmp_path):
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     d = tmp_path / "repo"
     d.mkdir()
@@ -108,7 +108,7 @@ def test_project_upsert_dedup_and_hash(isolated, tmp_path):
 
 
 def test_project_soft_remove_and_revive(isolated, tmp_path):
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     d = tmp_path / "repo"
     d.mkdir()
@@ -122,7 +122,7 @@ def test_project_soft_remove_and_revive(isolated, tmp_path):
 
 def test_conv_pin_unpin_in_list(isolated):
     import time
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     session_store.set_title("web:a", "会话 A")
     session_store.set_title("web:b", "会话 B")
@@ -144,7 +144,7 @@ def test_conv_pin_unpin_in_list(isolated):
 
 
 def test_ensure_title_returns_placeholder_once(isolated):
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     # 首次:截 40 字设兜底标题,并把它返回(调用方据此起异步总结)
     long_text = "这是一条很长的用户消息" * 8
@@ -157,7 +157,7 @@ def test_ensure_title_returns_placeholder_once(isolated):
 
 
 def test_title_clean_strips_noise():
-    from claude_hermes.core import title
+    from vococo.core import title
 
     assert title._clean('「会话标题自动总结方案」。') == "会话标题自动总结方案"
     assert title._clean("  首行标题\n第二行应被丢弃") == "首行标题"
@@ -167,7 +167,7 @@ def test_title_clean_strips_noise():
 
 def test_set_chosen_model_clears_sdk_session_id_on_change(isolated):
     """切换模型时要把旧的 SDK session id 清掉,避免 resume 旧模型导致限额延续。"""
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     session_store.set_chosen_model("web:test", "claude-sonnet-5")
     session_store.set_sdk_session_id("web:test", "sess-123")
@@ -181,7 +181,7 @@ def test_set_chosen_model_clears_sdk_session_id_on_change(isolated):
 
 def test_set_chosen_model_first_time_does_not_fail(isolated):
     """首次为会话设置模型(无旧 chosen_model)也能正常落库。"""
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     session_store.set_chosen_model("web:new", "claude-opus-5")
     assert session_store.get_chosen_model("web:new") == "claude-opus-5"
@@ -193,7 +193,7 @@ def test_append_turn_image_persists_to_current_turn(isolated):
     落在 ai_images 而非 images —— images 专属用户上传图(贴回用户气泡),
     ai_images 专属 AI 发的图(贴回 AI 气泡),见 buildTurnBlock。
     """
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     turn_id = session_store.start_turn("web:1", "帮我画个图")
     session_store.append_turn_image("web:1", "ai_abc123.png")
@@ -207,8 +207,8 @@ def test_append_turn_image_persists_to_current_turn(isolated):
 def test_append_turn_image_does_not_touch_user_uploaded_images(isolated):
     """同一轮里既有用户上传图又有 AI 主动发图时,两者要分别落进 images / ai_images,
     不能混在一起(混了会导致 AI 发的图被误贴到用户自己发的那条气泡上)。"""
-    from claude_hermes.core.agent import ImageAttachment
-    from claude_hermes.memory import session_store
+    from vococo.core.agent import ImageAttachment
+    from vococo.memory import session_store
 
     turn_id = session_store.start_turn("web:1", "这张图片里有什么?")
     session_store.save_turn_images(
@@ -224,9 +224,9 @@ def test_append_turn_image_does_not_touch_user_uploaded_images(isolated):
 
 def test_save_turn_audio_persists_transcript_and_loads_history(isolated, monkeypatch):
     """音频落盘 + 转写文字一起记进 turns.audios;历史里能拿到回放 URL 和转写文字。"""
-    from claude_hermes import config
-    from claude_hermes.core.agent import AudioAttachment
-    from claude_hermes.memory import session_store
+    from vococo import config
+    from vococo.core.agent import AudioAttachment
+    from vococo.memory import session_store
 
     monkeypatch.setattr(config, "AUDIO_DIR", isolated / "data" / "audio")
 
@@ -251,9 +251,9 @@ def test_save_turn_audio_persists_transcript_and_loads_history(isolated, monkeyp
 
 def test_clear_purges_audio_files(isolated, monkeypatch):
     """清空会话要连带把落盘的音频文件删掉,不留孤儿文件。"""
-    from claude_hermes import config
-    from claude_hermes.core.agent import AudioAttachment
-    from claude_hermes.memory import session_store
+    from vococo import config
+    from vococo.core.agent import AudioAttachment
+    from vococo.memory import session_store
 
     monkeypatch.setattr(config, "AUDIO_DIR", isolated / "data" / "audio")
 

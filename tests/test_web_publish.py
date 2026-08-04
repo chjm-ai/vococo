@@ -1,12 +1,12 @@
-"""发布页路由 /pub/{path} 的测试(见 hermes-web-publish skill)。"""
+"""发布页路由 /pub/{path} 的测试(见 vococo-web-publish skill)。"""
 from __future__ import annotations
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from claude_hermes import config
-from claude_hermes.gateway.adapters.web import WebAdapter
+from vococo import config
+from vococo.gateway.adapters.web import WebAdapter
 
 
 @pytest.fixture
