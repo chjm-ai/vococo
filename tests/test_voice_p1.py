@@ -810,18 +810,17 @@ async def test_notify_terminal_marks_pending_review_for_done_not_cancelled(voice
 
 
 @pytest.mark.anyio
-async def test_notify_skips_legacy_tts_when_omni_enabled(voice_db, monkeypatch):
-    """Omni 出声模式:播报由前端交给 Omni 念,服务端不该再合成旧 TTS(两套声音并存
-    =语气割裂+自回声风险);事件照发,announce_text 在,audio_b64 为空。"""
+async def test_notify_synthesizes_tts_even_when_omni_enabled(voice_db, monkeypatch):
+    """2026-08-04 漏播修复:Omni 出声模式下服务端也合成 TTS、audio_b64 始终带上。
+    原设计(Omni 模式跳过合成、指望前端交给 Omni 念)在挂断通话后静默:EventSource
+    一直挂着(is_online 恒真)而 omniDc 已关,前端没有 Omni 也没有音频,播报只落
+    一个气泡没声音(真机反馈"不到一半的任务完成会播报")。现在 audio_b64 必带,
+    通话中前端仍优先 Omni 朗读,挂断后 Web Audio 兜底。"""
     monkeypatch.setattr(config, "VOICE_OMNI_ENABLED", True)
     t = tasks.create("标题", "p")
     tasks.set_status(t["id"], "running")
     tasks.finish(t["id"], "done", "完整结果", "一句话摘要")
-
-    def _must_not_call(text, voice):
-        raise AssertionError("Omni 模式不该调用旧 TTS 合成")
-
-    monkeypatch.setattr(tts, "synthesize", _must_not_call)
+    monkeypatch.setattr(tts, "synthesize", lambda text, voice: _bytes_coro(b"AUDIO"))
 
     q = notify.subscribe()
     try:
@@ -832,7 +831,45 @@ async def test_notify_skips_legacy_tts_when_omni_enabled(voice_db, monkeypatch):
 
     assert event == "task_done"
     assert payload["announce_text"]
-    assert payload["audio_b64"] is None
+    assert payload["audio_b64"]
+
+
+@pytest.mark.anyio
+async def test_notify_online_also_fires_web_push_fallback(voice_db, monkeypatch):
+    """2026-08-04 漏播修复:voice+在线的 SSE 播报不再 return——播报完继续走
+    Web Push 系统通知兜底。挂断通话后 SSE 虽在线但声音出不来,只有系统级推送
+    能把人叫回来;取消/失败的标题也要跟"任务完成"区分开。"""
+    monkeypatch.setattr(config, "VOICE_OMNI_ENABLED", True)
+    monkeypatch.setattr(tts, "synthesize", lambda text, voice: _bytes_coro(b"AUDIO"))
+    from vococo.gateway.adapters import web_push
+
+    calls = []
+
+    async def fake_push(**kwargs):
+        calls.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(web_push.PUSH, "notify", fake_push)
+
+    done_task = tasks.create("完成的活", "p")
+    tasks.set_status(done_task["id"], "running")
+    tasks.finish(done_task["id"], "done", "结果", "摘要")
+
+    q = notify.subscribe()
+    try:
+        await notify.on_task_terminal(done_task["id"])
+        event, _ = q.get_nowait()
+    finally:
+        notify.unsubscribe(q)
+
+    assert event == "task_done"  # SSE 播报照发
+    assert calls and calls[-1]["title"] == "任务完成:完成的活"  # 兜底推送也没被吞
+
+    cancelled_task = tasks.create("取消的活", "p")
+    tasks.set_status(cancelled_task["id"], "running")
+    tasks.finish(cancelled_task["id"], "cancelled", "", "已取消")
+    await notify.on_task_terminal(cancelled_task["id"])
+    assert calls[-1]["title"] == "任务取消:取消的活"
 
 
 @pytest.mark.anyio
@@ -910,5 +947,5 @@ async def test_notify_falls_back_to_web_push_when_offline(voice_db, monkeypatch)
     await notify.on_task_terminal(t["id"])
 
     assert len(calls) == 1
-    assert calls[0]["title"] == "任务完成:标题"
+    assert calls[0]["title"] == "任务失败:标题"
     assert calls[0]["body"] == "出错了"

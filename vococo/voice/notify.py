@@ -176,24 +176,36 @@ async def on_task_terminal(task_id: str) -> None:
 
     # ── 语音来源 + 在线:推 SSE(语音播报)。chat 来源哪怕这时刚好有人在通话,
     # 也不该突然插播一句不相关任务的播报,径直走下面的推送路径。──────────────
+    # 2026-08-04 漏播根因修复:SSE 分支【不 return】,播报完继续走 Web Push 兜底。
+    # "页面开着(is_online)"不等于"用户能听到":挂断通话后前端 EventSource 一直
+    # 挂着(teardownCallResources 不关它),而 Omni 断开时前端只能靠 audio_b64
+    # 播放——若没有系统级推送兜底,挂断后完成的任务会彻底静默(真机反馈"不到一半
+    # 的任务完成会播报")。Web Push 是系统通知,页面在前台也不碍事,双发不会吵。
     if origin == "voice" and is_online():
-        audio = None
-        if not config.VOICE_OMNI_ENABLED:
-            audio = await tts.synthesize(announce_text, config.VOICE_TTS_VOICE)
+        # 2026-08-04:Omni 出声模式下这里也合成 TTS。原来 Omni 模式跳过合成
+        # (audio_b64=None,指望前端交给 Omni 念)——但挂断通话后 omniDc 关闭、
+        # 不重连,前端没有 Omni 也没有 audio_b64,播报只落得一个气泡、无声。
+        # 现在始终带上音频:通话中前端仍优先 Omni 朗读(双声不并存,见前端
+        # flushAnnouncements 的 omniDc 分支),挂断后 Web Audio 也能念出来。
+        # 代价是每次终态多一次 TTS 合成(几百毫秒),换来"挂断后也能听到"。
+        audio = await tts.synthesize(announce_text, config.VOICE_TTS_VOICE)
         payload["audio_b64"] = base64.b64encode(audio).decode("ascii") if audio else None
         _broadcast("task_done", payload)
-        return
 
     # ── Web Push(VAPID) 发给所有订阅设备 ──────────────────────────────
     from ..gateway.adapters.web_push import PUSH
 
     body = task["result_summary"] or task["progress_note"] or "任务已结束"
     session_key = tasks.session_key(task_id)
+    # 标题按状态区分——以前一律"任务完成",失败/取消的任务推一条"任务完成"会误导。
+    title_prefix = {"done": "任务完成", "failed": "任务失败", "cancelled": "任务取消"}.get(
+        task["status"], "任务结束"
+    )
     await PUSH.notify(
-        title=f"任务完成:{task['title']}",
+        title=f"{title_prefix}:{task['title']}",
         body=body,
         conv=session_key,  # 点开推送直接跳到这个任务自己的会话,而不是一个不存在的占位 conv
-        kind="done",
+        kind="done" if task["status"] == "done" else ("error" if task["status"] == "failed" else "cancelled"),
         tag=f"task-{task['id']}",
     )
 
