@@ -145,6 +145,12 @@ def resolve(chosen_model: str | None, default_model: str) -> tuple[str, dict[str
         if found and not found.is_official:
             return chosen_model, _env_for(found)
         return chosen_model, {}
+    # 默认模型同样反查:若属于第三方供应商(如 .env 的 AGENT_MODEL 直接配
+    # deepseek-v4-flash),也注入其 base_url + key,否则按官方(走订阅)。
+    # 2026-08-04:Claude 官方订阅账号被封后,主服务默认模型切第三方必需此分支。
+    found = _provider_for_model(default_model)
+    if found and not found.is_official:
+        return default_model, _env_for(found)
     return default_model, {}
 
 
