@@ -46,6 +46,7 @@ from .worktrees import (  # noqa: F401 (re-export)
     all_worktree_paths,
     clear_worktree,
     get_worktree,
+    session_key_for_worktree,
     set_worktree,
 )
 
