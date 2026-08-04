@@ -117,14 +117,6 @@
   #newBtn .np{font-size:14px;line-height:1}
   #newBtn:hover{background:var(--card)}
   #newBtn:active{transform:scale(.98)}
-  /* ⏰定时任务入口:样式跟＋新对话一致,常驻显示(不管有没有任务) */
-  #cronEntryBtn{display:flex;align-items:center;justify-content:center;gap:8px;
-    width:calc(100% - 16px);margin:0 8px 4px;padding:8px 10px;border-radius:9px;
-    background:var(--panel2);color:var(--text);font-size:13px;font-weight:600;
-    cursor:pointer;transition:background .15s,transform .12s}
-  #cronEntryBtn .np{font-size:14px;line-height:1}
-  #cronEntryBtn:hover{background:var(--card)}
-  #cronEntryBtn:active{transform:scale(.98)}
   /* 语音任务:固定分组,行样式复用 .conv/.cvbody,状态点颜色跟任务状态走 */
   /* 侧边栏收起按钮(仅桌面显示)*/
   #collapseBtn{display:none;width:26px;height:26px;border-radius:7px;flex-shrink:0;
