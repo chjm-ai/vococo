@@ -263,9 +263,11 @@ def available_models(
         seen.add(model)
         base_url = _entry_field(entry, "base_url", "baseUrl")
         kind = _billing_kind(base_url)
-        # 配了 mgmt_key 的本地 Codex 代理 → 单独 codex 组(订阅额度可查,前端有圆环)
+        # 配了 mgmt_key 的本地 Codex 代理 → 单独 codex 组(订阅额度可查,前端有圆环),
+        # 标签按订阅展示——host 是 127.0.0.1 猜不出计费模式,但 mgmt_key 声明了是订阅上游
         if _entry_field(entry, "mgmt_key"):
             group = "codex"
+            kind = "订阅"
         else:
             group = "kimi" if kind == "订阅" else "api"
         out.append((model, f"{model}（{kind}）", group))
