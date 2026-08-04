@@ -109,13 +109,8 @@
   /* :hover 只在真有 hover 能力的设备生效——触屏上元素自身样式随 :hover 变化,
      会撞上 iOS 经典坑:第一下点击只用来"结算" hover 态,第二下才真正触发 click */
   @media(hover:hover){ .projgrp:hover,.conv:hover{background:var(--panel2)} }
-  /* ＋新对话:填充按钮、宽度撑满(左右与列表内边距对齐) */
-  #newBtn{display:flex;align-items:center;justify-content:center;gap:8px;
-    width:calc(100% - 16px);margin:2px 8px 4px;padding:8px 10px;border-radius:9px;
-    background:var(--panel2);color:var(--text);font-size:13px;font-weight:600;
-    cursor:pointer;transition:background .15s,transform .12s}
-  #newBtn .np{font-size:14px;line-height:1}
-  #newBtn:hover{background:var(--card)}
+  /* ＋新对话:与主会话行同构(.conv 行样式 + edit 图标),margin 对齐 #convList 内边距 */
+  #newBtn{margin:2px 8px 4px}
   #newBtn:active{transform:scale(.98)}
   /* 语音任务:固定分组,行样式复用 .conv/.cvbody,状态点颜色跟任务状态走 */
   /* 侧边栏收起按钮(仅桌面显示)*/
@@ -129,6 +124,8 @@
      全交给 bindSwipe() 的 JS 手势;否则原生纵向抖动会触发 #convList 的 scroll
      监听把刚滑出来的菜单强制收起(表现为"菜单停不住、点不到按钮") */
   .conv{margin-bottom:1px;gap:8px;color:var(--dim);position:relative;overflow:hidden;touch-action:pan-y}
+  .conv.mainrow{margin-bottom:4px}   /* 主会话入口行:与新对话/语音通话两个入口的间距统一为 4px */
+  .conv.voicemain{margin-bottom:10px}   /* 语音通话行:与下方 Tab 栏之间留出呼吸间距 */
   .conv.active{color:var(--text)}
   @media(hover:hover){ .conv:hover{color:var(--text)} }
   /* 左滑露出归档/删除(cvact 默认平移到行外,靠 overflow:hidden 裁掉;
@@ -966,7 +963,6 @@
     #composer .combg{padding-left:16px;padding-right:16px}
     /* 移动端侧栏:菜单行加大触控尺寸、字号整体 +1px,圆角贴近 iOS 大圆角风格 */
     #sidebar .shead .brand{font-size:21px}
-    #newBtn{padding:10px 10px;font-size:14px}
     .projgrp,.conv{padding:9px 10px}
     .projgrp{font-size:14px}
     .conv .ct{font-size:15px}

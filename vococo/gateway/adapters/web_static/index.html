@@ -158,7 +158,7 @@ try{
       <button id="searchBtn" class="sfoicon" title="搜索会话 (⌘F)"></button>
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
-    <button id="newBtn"><span class="np">＋</span>新对话</button>
+    <div id="newBtn" class="conv"></div>
     <div id="convList"></div>
     <div class="sfoot" id="sfoot"><span class="savatar">U</span><span class="sfoottxt" id="sfoottxt">User</span>
       <div id="convFilterBox">
@@ -4343,11 +4343,11 @@ function convsInGroup(hash){
 function buildVoiceMainRow(inCall){
   const vs = S.voiceSidebar;
   if(!vs || !vs.main) return null;  // 还没拉到数据(如刚登录那一瞬)先不渲染,避免空行闪一下
-  const mainRow=el("div","conv"+(inCall?" active":""));
+  const mainRow=el("div","conv voicemain"+(inCall?" active":""));
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");
   const mainCt=el("div","ct"); mainCt.textContent=vs.main.title||"语音通话"; mainBody.append(mainCt);
-  const tm=fmtTime(vs.main.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; mainBody.append(tmEl); }   // 与其他会话行统一:右侧补上时刻
+  // 主行不显示时刻(2026-08-04:与其他会话行区分,保持简洁)
   mainRow.append(mainBody);
   mainRow.onclick=()=>{ openCallView(); };
   return mainRow;
@@ -4414,14 +4414,14 @@ function buildVoiceTaskRow(t, inCall){
 // 置顶会话除了所在分组不同,长相(缩进、状态灯)跟普通分组内的会话行完全一样。
 function buildConvRow(c, inCall){
   const isMain=c.conv==="main";
-  const e=el("div","conv"+(isMain?"":" ingroup")+(!inCall && c.conv===S.conv?" active":""));
+  const e=el("div","conv"+(isMain?" mainrow":" ingroup")+(!inCall && c.conv===S.conv?" active":""));
   e.dataset.conv=c.conv;
   const body=el("div","cvbody");
   if(isMain) body.innerHTML=ic("star");   // 主会话:左侧星标图标,跟紧邻的语音通话行(mic 图标)对齐
   if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
   else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }   // 完成未读:灰色圆点
   const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
-  const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }   // 会话时刻:名称右侧
+  if(!isMain){ const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); } }   // 会话时刻:名称右侧(主会话不显示)
   if(!isMain){ const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
   e.append(body);
   if(!isMain){
@@ -6962,6 +6962,7 @@ $("#recCancel").onclick = e=>{ e.stopPropagation(); stopRec(true); };        // 
 window.addEventListener("pagehide", releaseMic);
 
 // ── 新会话 / 侧边栏 ─────────────────────────────────────────────────────
+$("#newBtn").innerHTML = '<div class="cvbody">'+ic("edit")+'<div class="ct">新对话</div></div>';   // 与主会话行同构:edit 图标 + 文字
 $("#newBtn").onclick = newChat;
 // 顶栏 ☰:桌面(收起态)= 展开侧边栏;移动端 = 抽屉式打开
 function expandSidebarResponsive(){
