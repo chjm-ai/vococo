@@ -1,4 +1,6 @@
 """system prompt 组装:项目 AGENTS.md 注入规则。"""
+import os
+import time
 from pathlib import Path
 
 from vococo.core.prompt import _load_project_agents, build_system_prompt
@@ -33,3 +35,22 @@ def test_build_system_prompt_threads_cwd(tmp_path: Path):
     (tmp_path / "AGENTS.md").write_text("PROJECT_RULE_ALPHA", encoding="utf-8")
     assert "PROJECT_RULE_ALPHA" in build_system_prompt(str(tmp_path))["append"]
     assert "本项目指南" not in build_system_prompt(None)["append"]
+
+
+def test_cache_invalidated_on_agents_mtime_change(tmp_path: Path):
+    """同一 cache_key 下 AGENTS.md 修改后,冻结快照自动失效重装。
+
+    规则修复必须对旧会话即时生效——否则旧会话按旧版跑,还把新脚本报错当 bug
+    (2026-08-04 踩过:--restart 已移除,旧会话仍按旧指引私改 restart.sh)。
+    """
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text("RULE_V1", encoding="utf-8")
+    key = "test-cache-key"
+    assert "RULE_V1" in build_system_prompt(str(tmp_path), cache_key=key)["append"]
+    # 第二次同 key:快照命中,仍是 V1
+    assert "RULE_V1" in build_system_prompt(str(tmp_path), cache_key=key)["append"]
+    # 改 AGENTS.md 且 mtime 前移(避免同秒粒度问题)→ 快照作废,重装出新版
+    agents.write_text("RULE_V2", encoding="utf-8")
+    os.utime(agents, (time.time() + 60, time.time() + 60))
+    out = build_system_prompt(str(tmp_path), cache_key=key)["append"]
+    assert "RULE_V2" in out and "RULE_V1" not in out

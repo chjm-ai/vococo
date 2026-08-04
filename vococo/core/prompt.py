@@ -115,8 +115,23 @@ def _load_memory_index() -> str:
 # 下一轮的前缀变化 → 整条对话的 prompt cache 全部作废(长会话一次全价重读,隐性大税)。
 # 同一 SDK 会话内冻结快照(画像/索引/项目 AGENTS.md 统一),前缀稳定缓存必命中;
 # 刚存的记忆本就在对话里,不靠索引想起。/new 后 resume 换新 id → 自然拿到最新内容。
-_APPEND_CACHE: OrderedDict[str, str] = OrderedDict()
+_APPEND_CACHE: OrderedDict[str, tuple[float | None, str]] = OrderedDict()
 _APPEND_CACHE_MAX = 64  # 有界:活跃会话数远小于此,超出挤掉最旧
+
+
+def _agents_mtime(cwd: str | None) -> float | None:
+    """项目 AGENTS.md 的 mtime;无项目/文件不在则 None。
+
+    缓存命中时对比它:变了就重装 append。否则规则修复要等 /new 换新会话 id 才
+    生效——2026-08 踩过:AGENTS.md 改了重启指引,旧会话仍按冻结的旧版跑了整晚,
+    还把「--restart 已移除」的新脚本报错当成 bug 去私改脚本。
+    """
+    if not cwd:
+        return None
+    try:
+        return (Path(cwd) / "AGENTS.md").stat().st_mtime
+    except OSError:
+        return None
 
 
 def _load_project_agents(cwd: str | None) -> str:
@@ -148,15 +163,19 @@ def build_system_prompt(cwd: str | None = None, cache_key: str | None = None) ->
     cwd:项目会话的工作根;非空时补注入该目录的 AGENTS.md(见 _load_project_agents)。
     cache_key 非空(= 本轮 resume 的 SDK 会话 id)时,append 在该会话内冻结复用;
     为空(首轮/降级)每次现读文件。同一 SDK 会话 cwd 固定,故快照无需按 cwd 分键。
+    冻结复用的例外:项目 AGENTS.md 的 mtime 变了 → 快照作废重新组装(见 _agents_mtime)。
     """
     if cache_key and cache_key in _APPEND_CACHE:
-        _APPEND_CACHE.move_to_end(cache_key)
-        return {"type": "preset", "preset": "claude_code", "append": _APPEND_CACHE[cache_key]}
+        mtime, text = _APPEND_CACHE[cache_key]
+        if mtime == _agents_mtime(cwd):  # AGENTS.md 没变,冻结快照照用
+            _APPEND_CACHE.move_to_end(cache_key)
+            return {"type": "preset", "preset": "claude_code", "append": text}
+        # AGENTS.md 变了 → 落到下方重新组装,并覆盖该 key 的快照
     data_blocks = _load_user_profile() + _load_memory_index()
     fence = f"\n\n=== 参考数据围栏 ===\n{_MEMORY_FENCE}" if data_blocks else ""
     append = PERSONA + fence + data_blocks + _load_project_agents(cwd)
     if cache_key:
-        _APPEND_CACHE[cache_key] = append
+        _APPEND_CACHE[cache_key] = (_agents_mtime(cwd), append)
         while len(_APPEND_CACHE) > _APPEND_CACHE_MAX:
             _APPEND_CACHE.popitem(last=False)
     return {"type": "preset", "preset": "claude_code", "append": append}
