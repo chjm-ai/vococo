@@ -1,10 +1,10 @@
-# AGENTS.md — claude-hermes 开发指南
+# AGENTS.md — vococo 开发指南
 
 索引:README(现状/命令)、CONTEXT(术语/危险分级)、REQUIREMENTS(需求)、OPERATIONS(运维坑+排障脚本)。
 
 ## 环境 / 命令
 uv sync --extra dev 装依赖;uv run pytest 跑测试。
-入口:claude-hermes tui|chat|serve|doctor(TUI/纯文本/常驻/自检)。
+入口:vococo tui|chat|serve|doctor(TUI/纯文本/常驻/自检)。
 Python ≥ 3.11,包管理 uv,依赖锁 uv.lock。
 
 ## 代码结构

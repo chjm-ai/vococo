@@ -1,6 +1,6 @@
 # Hermes 优化方案 —— 借鉴社区个人助理实践
 
-> 调研了 OpenClaw、原版 Hermes、mem0/Redis 记忆工程等实践,对照 claude-hermes 现状落地。
+> 调研了 OpenClaw、原版 Hermes、mem0/Redis 记忆工程等实践,对照 vococo 现状落地。
 > **主动性方向经对比后调整**:放弃 OpenClaw 式自主 heartbeat,改为**全面采用原版 Hermes 的
 > consent-first(人在环内)建议系统**——见「优化 2」。多模型路由、向量检索、技能市场不适合我们,见文末。
 

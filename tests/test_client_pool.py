@@ -16,9 +16,9 @@ import pytest
 
 from claude_agent_sdk import ResultMessage, StreamEvent, SystemMessage
 
-from claude_hermes import config
-from claude_hermes.core import agent, client_pool
-from claude_hermes.core.agent import Done
+from vococo import config
+from vococo.core import agent, client_pool
+from vococo.core.agent import Done
 
 
 def _result_msg(sid: str) -> ResultMessage:
@@ -106,7 +106,7 @@ def clients(monkeypatch):
         agent, "ClaudeSDKClient", lambda options=None: FakeClient(options, registry=made)
     )
     monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("claude-sonnet-4", {}))
-    monkeypatch.setattr(agent.settings_store, "hermes_enabled", lambda: False)
+    monkeypatch.setattr(agent.settings_store, "vococo_enabled", lambda: False)
     monkeypatch.setattr(agent.settings_store, "effective_external_mcp", lambda: {})
     monkeypatch.setattr(agent.settings_store, "effective_skills", lambda: None)
     monkeypatch.setattr(
@@ -205,7 +205,7 @@ async def test_route_change_rebuilds(clients):
     SDK 内部任务在 connect 时快照 contextvar,复用的前提是路由快照仍与当前轮
     一致 —— 否则审批弹窗会发回旧入口,故路由进兼容性哈希。
     """
-    from claude_hermes.gateway import clarify
+    from vococo.gateway import clarify
 
     class _A:
         platform = "telegram"

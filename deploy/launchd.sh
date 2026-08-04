@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# claude-hermes 常驻管理(macOS launchd)
+# vococo 常驻管理(macOS launchd)
 # 用法:bash deploy/launchd.sh {install|uninstall|restart|status|logs}
 # plist 在 install 时按本机路径自动生成,仓库不存硬编码路径。
 set -euo pipefail
 
-LABEL="com.claude-hermes"
+LABEL="com.vococo"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/.venv/bin/claude-hermes"
+BIN="$ROOT/.venv/bin/vococo"
 PLIST_DST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
 
@@ -32,8 +32,8 @@ _gen_plist() {
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardOutPath</key><string>$ROOT/data/logs/hermes.out.log</string>
-  <key>StandardErrorPath</key><string>$ROOT/data/logs/hermes.err.log</string>
+  <key>StandardOutPath</key><string>$ROOT/data/logs/vococo.out.log</string>
+  <key>StandardErrorPath</key><string>$ROOT/data/logs/vococo.err.log</string>
 </dict>
 </plist>
 PLIST
@@ -57,8 +57,8 @@ case "${1:-status}" in
   status)
     launchctl print "$DOMAIN/$LABEL" 2>/dev/null | grep -E "state =|pid =" || echo "未运行(先 install)" ;;
   logs)
-    echo "=== stdout ==="; tail -n 30 "$ROOT/data/logs/hermes.out.log" 2>/dev/null || echo "(无)"
-    echo "=== stderr ==="; tail -n 30 "$ROOT/data/logs/hermes.err.log" 2>/dev/null || echo "(无)" ;;
+    echo "=== stdout ==="; tail -n 30 "$ROOT/data/logs/vococo.out.log" 2>/dev/null || echo "(无)"
+    echo "=== stderr ==="; tail -n 30 "$ROOT/data/logs/vococo.err.log" 2>/dev/null || echo "(无)" ;;
   *)
     echo "用法:bash deploy/launchd.sh {install|uninstall|restart|status|logs}"; exit 1 ;;
 esac

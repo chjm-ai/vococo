@@ -44,7 +44,7 @@
 ### 4.1 新增文件(全部在 voice 包内)
 
 ```
-claude_hermes/voice/
+vococo/voice/
   tasks.py       # 任务表 CRUD(sqlite3,data/voice/voice.db 的 tasks 表)
   executor.py    # 后台执行器:spawn / 进度采集 / 终态处理 / 重启自愈
   task_tools.py  # 三个工具的 MCP server 定义(供注入语音会话)

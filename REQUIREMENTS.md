@@ -1,4 +1,4 @@
-# claude-hermes 需求文档
+# vococo 需求文档
 
 > 一个**基于 Claude 订阅**的个人 AI 助理(personal Hermes),单用户自用。
 > 架构参考 [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent),但**锁定 Claude、单用户、精简**——只保留个人助理真正需要的部分。
@@ -76,7 +76,7 @@
 | P0-1 | **Claude 订阅驱动 agent loop** | 设好 `CLAUDE_CODE_OAUTH_TOKEN`,能完成一轮带工具调用的对话 |
 | P0-2 | **长期记忆对话** | 重启后仍记得之前会话的关键信息;能跨会话检索(`recall_past`) |
 | P0-3 | **调用现有 skills** | 能加载并触发至少 1 个现有 skill 完成任务 |
-| P0-4 | **CLI 入口** | `claude-hermes chat` 可直接对话 |
+| P0-4 | **CLI 入口** | `vococo chat` 可直接对话 |
 | P0-5 | **接入 AI_BRAIN** | 启动时载入 `~/AI_BRAIN/USER.md`;能把新记忆按规范写回 `~/AI_BRAIN/memory/` |
 
 ### 4.2 P1

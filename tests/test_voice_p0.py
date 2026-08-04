@@ -12,12 +12,12 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from claude_hermes import config, providers
-from claude_hermes.core import task_runner as executor
-from claude_hermes.core import tasks
-from claude_hermes.core.agent import AgentReply, Done, TextDelta
-from claude_hermes.memory import session_store
-from claude_hermes.voice import prompts, routes, session, stt, tts
+from vococo import config, providers
+from vococo.core import task_runner as executor
+from vococo.core import tasks
+from vococo.core.agent import AgentReply, Done, TextDelta
+from vococo.memory import session_store
+from vococo.voice import prompts, routes, session, stt, tts
 
 
 @pytest.fixture
@@ -99,7 +99,7 @@ def test_build_prompt_covers_delayed_reminders_within_timeout(monkeypatch):
     """2026-07-07 真机踩坑:AI 对"2分钟后提醒我"这类请求嘴上答应却没真调工具。
     修法是教它延时提醒也走 voice_dispatch_task(sleep 后回复即可,任务终态会
     自动触发通知),并写清楚仅限任务超时时长以内。"""
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setattr(config, "TASK_TIMEOUT_MIN", 30)
     out = prompts.build_prompt("过2分钟提醒我")
@@ -168,7 +168,7 @@ def test_build_prompt_adds_hint_for_long_transcripts(monkeypatch):
     """2026-07-09 事故复盘:派活规则第2条完全靠模型临场判断,没有代码兜底——一次
     7步骤的复杂任务险些没被当成后台任务处理。加一道低成本信号:识别文本超过字数
     阈值就多塞一句强提示,短句(日常聊天/问答)不受影响。"""
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setattr(config, "VOICE_LONG_TASK_CHARS", 10)
     short = prompts.build_prompt("今天天气怎么样")
@@ -319,7 +319,7 @@ async def test_voice_send_emits_filler_when_model_starts_tools_silently(voice_db
     """模型一个字没说就直接调工具 → 后端垫一句等待话术(sentence 事件,语音念但
     不进气泡/不落库)——prompts 指令块承诺过\"后端会自动垫\",这里验证兑现;
     模型先说了话(TextDelta 在前)则不垫。"""
-    from claude_hermes.core.agent import ToolStarted
+    from vococo.core.agent import ToolStarted
 
     async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
         yield ToolStarted("Grep", tool_id="t1")
@@ -354,7 +354,7 @@ async def test_voice_send_emits_filler_when_model_starts_tools_silently(voice_db
 
 @pytest.mark.anyio
 async def test_voice_send_no_filler_when_model_speaks_before_tools(voice_db, monkeypatch):
-    from claude_hermes.core.agent import ToolStarted
+    from vococo.core.agent import ToolStarted
 
     async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
         yield TextDelta("好,我去查,稍等。")
@@ -380,7 +380,7 @@ async def test_voice_send_no_filler_when_model_speaks_before_tools(voice_db, mon
 async def test_voice_send_emits_activity_for_toplevel_tool_calls(voice_db, monkeypatch):
     """前台轮次的工具动作(查记录/跑脚本)要以 activity 事件实时推给通话视图的动作行:
     只推顶层调用(子代理内部的动作不刷屏),文案走 executor.progress_text 的人话模板。"""
-    from claude_hermes.core.agent import ToolInput
+    from vococo.core.agent import ToolInput
 
     async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
         yield ToolInput("Bash", tool_id="t1", tool_input={"command": "git log"})

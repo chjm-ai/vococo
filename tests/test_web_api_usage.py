@@ -9,7 +9,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from claude_hermes.gateway.adapters.web import WebAdapter
+from vococo.gateway.adapters.web import WebAdapter
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def usage_app():
 @pytest.fixture(autouse=True)
 def _no_web_auth(monkeypatch):
     """同 test_voice_p0.py:清空口令,测试不依赖本机 .env 是否配了 WEB_AUTH_TOKEN。"""
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
 
@@ -43,14 +43,14 @@ def _local_usage(data: dict):
 async def test_usage_uses_official_when_utilization_present(usage_app, monkeypatch):
     """官方有 utilization 时优先用官方,但仍附本地详情供 hover 卡片。"""
     monkeypatch.setattr(
-        "claude_hermes.gateway.adapters.web.get_rate_limits",
+        "vococo.gateway.adapters.web.get_rate_limits",
         lambda: {
             "five_hour": {"utilization": 0.5, "limit": 1000, "remaining": 500, "resets_at": 1234567890},
             "seven_day": {"utilization": 0.3, "limit": 7000, "remaining": 4900},
         },
     )
     monkeypatch.setattr(
-        "claude_hermes.gateway.adapters.web.get_local_claude_usage",
+        "vococo.gateway.adapters.web.get_local_claude_usage",
         _local_usage({
             "provider": "claude",
             "source": "local_estimate",
@@ -78,11 +78,11 @@ async def test_usage_uses_official_when_utilization_present(usage_app, monkeypat
 async def test_usage_falls_back_to_local_when_official_missing(usage_app, monkeypatch):
     """官方 utilization 缺失时退回本地估算,并标注来源。"""
     monkeypatch.setattr(
-        "claude_hermes.gateway.adapters.web.get_rate_limits",
+        "vococo.gateway.adapters.web.get_rate_limits",
         lambda: {"five_hour": {"resets_at": 1234567890}},
     )
     monkeypatch.setattr(
-        "claude_hermes.gateway.adapters.web.get_local_claude_usage",
+        "vococo.gateway.adapters.web.get_local_claude_usage",
         _local_usage({
             "provider": "claude",
             "source": "local_estimate",
@@ -112,7 +112,7 @@ async def test_usage_returns_api_for_non_subscription(usage_app, monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "claude_hermes.gateway.adapters.web.providers.lookup_provider_by_model",
+        "vococo.gateway.adapters.web.providers.lookup_provider_by_model",
         fake_lookup,
     )
 

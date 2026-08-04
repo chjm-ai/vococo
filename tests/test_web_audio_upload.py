@@ -10,7 +10,7 @@ import pytest
 from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 
-from claude_hermes.gateway.adapters.web import WebAdapter
+from vococo.gateway.adapters.web import WebAdapter
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def adapter():
 @pytest.fixture(autouse=True)
 def _no_web_auth(monkeypatch):
     """同 test_voice_p0.py:清空口令,测试不依赖本机 .env 是否配了 WEB_AUTH_TOKEN。"""
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
 
@@ -62,7 +62,7 @@ async def test_upload_audio_success_stashes_pending(upload_app, adapter):
 
 @pytest.mark.anyio
 async def test_upload_audio_over_size_limit_rejected(upload_app, adapter, monkeypatch):
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setattr(config, "AUDIO_MAX_BYTES", 4)  # 逼小上限,不用真造 100MB 载荷
 
@@ -90,7 +90,7 @@ async def test_send_transcribes_pending_audio_on_the_fly(upload_app, adapter, is
         seen["timeout"] = timeout_sec
         return "今天下午三点开会", ""
 
-    monkeypatch.setattr("claude_hermes.voice.stt.transcribe_attachment", _fake_transcribe)
+    monkeypatch.setattr("vococo.voice.stt.transcribe_attachment", _fake_transcribe)
 
     resp = await _send(upload_app, {"conv": "main", "text": "帮我听听", "audios": [{"id": aid}]})
     assert resp.status == 200
@@ -110,7 +110,7 @@ async def test_send_transcribe_failure_injected_into_transcript(upload_app, adap
     async def _fake_transcribe(audio, filename, ctype, *, host, timeout_sec=180):
         return None, "转写服务返回 415"
 
-    monkeypatch.setattr("claude_hermes.voice.stt.transcribe_attachment", _fake_transcribe)
+    monkeypatch.setattr("vococo.voice.stt.transcribe_attachment", _fake_transcribe)
 
     resp = await _send(upload_app, {"conv": "main", "text": "听听这个", "audios": [{"id": aid}]})
     assert resp.status == 200
@@ -132,7 +132,7 @@ async def test_send_consumes_pending_audio_by_id(upload_app, adapter, isolated, 
         called = True
         return "不该被调用", ""
 
-    monkeypatch.setattr("claude_hermes.voice.stt.transcribe_attachment", _fake_transcribe)
+    monkeypatch.setattr("vococo.voice.stt.transcribe_attachment", _fake_transcribe)
 
     resp = await _send(upload_app, {"conv": "main", "text": "帮我看看这段录音", "audios": [{"id": aid}]})
     assert resp.status == 200
@@ -156,7 +156,7 @@ async def test_send_audio_only_without_text_gets_fallback_caption(upload_app, ad
     async def _fake_transcribe(*a, **kw):
         return "不该被调用", ""
 
-    monkeypatch.setattr("claude_hermes.voice.stt.transcribe_attachment", _fake_transcribe)
+    monkeypatch.setattr("vococo.voice.stt.transcribe_attachment", _fake_transcribe)
 
     resp = await _send(upload_app, {"conv": "main", "text": "", "audios": [{"id": aid}]})
     assert resp.status == 200

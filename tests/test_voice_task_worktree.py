@@ -2,7 +2,7 @@
 
 背景:语音前台会话现在代码层禁掉了 Edit/Write(见 voice/session.py),真要改代码
 只能走 voice_dispatch_task 派后台任务;这里验证该任务一旦拿到 git 仓库的 cwd,
-就会自动开一个独立 worktree + `hermes/<task_id>` 分支,而不是直接在原目录/原
+就会自动开一个独立 worktree + `vococo/<task_id>` 分支,而不是直接在原目录/原
 分支上改——跟 Web/CLI「一会话一分支」看齐。
 """
 from __future__ import annotations
@@ -30,8 +30,8 @@ def anyio_backend():
 
 @pytest.mark.anyio
 async def test_ensure_worktree_for_task_creates_isolated_branch(isolated, monkeypatch, tmp_path):
-    from claude_hermes.core import worktree
-    from claude_hermes.memory import session_store
+    from vococo.core import worktree
+    from vococo.memory import session_store
 
     monkeypatch.setattr(worktree, "_WT_BASE", tmp_path / "wt-base")
 
@@ -47,14 +47,14 @@ async def test_ensure_worktree_for_task_creates_isolated_branch(isolated, monkey
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         cwd=wt_dir, capture_output=True, text=True, check=True,
     ).stdout.strip()
-    assert branch == "hermes/task123"
+    assert branch == "vococo/task123"
 
     # 原仓库分支不受影响(还在 main/master,任务没在原地改)
     root_branch = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         cwd=repo, capture_output=True, text=True, check=True,
     ).stdout.strip()
-    assert root_branch != "hermes/task123"
+    assert root_branch != "vococo/task123"
 
     # 落库绑定 + 幂等复用
     assert session_store.get_worktree("task:task123") == wt_dir
@@ -64,7 +64,7 @@ async def test_ensure_worktree_for_task_creates_isolated_branch(isolated, monkey
 
 @pytest.mark.anyio
 async def test_ensure_worktree_for_task_none_for_non_git_dir(isolated, monkeypatch, tmp_path):
-    from claude_hermes.core import worktree
+    from vococo.core import worktree
 
     monkeypatch.setattr(worktree, "_WT_BASE", tmp_path / "wt-base")
     plain = tmp_path / "plain"
@@ -75,7 +75,7 @@ async def test_ensure_worktree_for_task_none_for_non_git_dir(isolated, monkeypat
 
 @pytest.mark.anyio
 async def test_ensure_worktree_for_task_none_without_root(isolated):
-    from claude_hermes.core import worktree
+    from vococo.core import worktree
 
     assert await worktree.ensure_worktree_for_task(None, "taskY") is None
     assert await worktree.ensure_worktree_for_task("", "taskY") is None
@@ -83,7 +83,7 @@ async def test_ensure_worktree_for_task_none_without_root(isolated):
 
 @pytest.mark.anyio
 async def test_two_tasks_same_repo_get_distinct_branches(isolated, monkeypatch, tmp_path):
-    from claude_hermes.core import worktree
+    from vococo.core import worktree
 
     monkeypatch.setattr(worktree, "_WT_BASE", tmp_path / "wt-base")
     repo = tmp_path / "proj"

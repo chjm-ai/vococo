@@ -17,8 +17,8 @@ def _text(result: dict) -> str:
 
 # === recall_past ===
 def test_recall_hit(isolated):
-    from claude_hermes.memory import session_store
-    from claude_hermes.tools import builtin
+    from vococo.memory import session_store
+    from vococo.tools import builtin
 
     session_store.append("cli", "我要去名古屋出差", "记下了")
     out = _text(_run(builtin.recall_past.handler({"query": "名古屋"})))
@@ -27,14 +27,14 @@ def test_recall_hit(isolated):
 
 
 def test_recall_miss(isolated):
-    from claude_hermes.tools import builtin
+    from vococo.tools import builtin
 
     out = _text(_run(builtin.recall_past.handler({"query": "查无此词zzz"})))
     assert "没有找到" in out
 
 
 def test_recall_empty_query(isolated):
-    from claude_hermes.tools import builtin
+    from vococo.tools import builtin
 
     out = _text(_run(builtin.recall_past.handler({"query": "  "})))
     assert "非空" in out
@@ -42,8 +42,8 @@ def test_recall_empty_query(isolated):
 
 # === save_memory ===
 def test_save_new_writes_file_and_index(isolated):
-    from claude_hermes import config
-    from claude_hermes.tools import builtin
+    from vococo import config
+    from vococo.tools import builtin
 
     out = _text(_run(builtin.save_memory.handler(
         {"topic": "demo-srv", "title": "演示服务器", "summary": "一句话摘要", "body": "## 访问\n- ssh ..."}
@@ -60,8 +60,8 @@ def test_save_new_writes_file_and_index(isolated):
 
 
 def test_save_with_category_goes_to_section(isolated):
-    from claude_hermes import config
-    from claude_hermes.tools import builtin
+    from vococo import config
+    from vococo.tools import builtin
 
     # 预置一个带分节的索引
     (config.AI_BRAIN_DIR).mkdir(parents=True, exist_ok=True)
@@ -82,8 +82,8 @@ def test_save_with_category_goes_to_section(isolated):
 
 
 def test_save_existing_rejected(isolated):
-    from claude_hermes import config
-    from claude_hermes.tools import builtin
+    from vococo import config
+    from vococo.tools import builtin
 
     mem = config.AI_BRAIN_DIR / "memory"
     mem.mkdir(parents=True, exist_ok=True)
@@ -96,7 +96,7 @@ def test_save_existing_rejected(isolated):
 
 
 def test_save_illegal_topic_blocks_traversal(isolated):
-    from claude_hermes.tools import builtin
+    from vococo.tools import builtin
 
     out = _text(_run(builtin.save_memory.handler(
         {"topic": "../evil", "title": "x", "summary": "y", "body": "z"}
@@ -105,7 +105,7 @@ def test_save_illegal_topic_blocks_traversal(isolated):
 
 
 def test_save_missing_fields(isolated):
-    from claude_hermes.tools import builtin
+    from vococo.tools import builtin
 
     out = _text(_run(builtin.save_memory.handler(
         {"topic": "a", "title": "", "summary": "y", "body": "z"}
@@ -114,7 +114,7 @@ def test_save_missing_fields(isolated):
 
 
 def test_save_summary_too_long(isolated):
-    from claude_hermes.tools import builtin
+    from vococo.tools import builtin
 
     out = _text(_run(builtin.save_memory.handler(
         {"topic": "long", "title": "x", "summary": "字" * 200, "body": "z"}

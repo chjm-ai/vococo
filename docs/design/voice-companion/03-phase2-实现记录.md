@@ -16,7 +16,7 @@
 ## 新增文件
 
 ```
-claude_hermes/voice/
+vococo/voice/
   ws.py                          # /voice/ws 状态机、打断截断、假打断回滚、WAV 包装
   static/pcm-forwarder-worklet.js  # 手写的小 AudioWorkletProcessor,PCM16 转发
   static/vad/                    # vendored @ricky0123/vad-web + onnxruntime-web
@@ -456,7 +456,7 @@ AI 说"要不要去公园散步",用户马上说"去公园散步"表示同意,�
 **`getUserMedia` 的 `echoCancellation:true` 只对"通过 WebRTC 收到的音频"生效,
 对 Web Audio API 直接 `connect(audioCtx.destination)` 播放的本地音频不生效**
 (浏览器压根不知道这段声音被放出来了,没法拿它当参考信号去消除)。查了咱们
-播放 TTS 的代码([voice.html](../../../claude_hermes/voice/static/voice.html)
+播放 TTS 的代码([voice.html](../../../vococo/voice/static/voice.html)
 的 `pumpPlayback`),确认就是纯 Web Audio API 播放,不走 WebRTC——也就是说
 `ensureStream` 里开的那个 `echoCancellation:true` 很可能从一开始就没真正把
 AI 自己的声音当成待消除的参考信号,这也是为什么前面几轮内容层面的兜底
@@ -541,7 +541,7 @@ JS 状态确认 `echoLoopbackReady:true`、两条 `RTCPeerConnection` 都是
    影响不大。
 6. 最终生产依赖:`onnxruntime`、`librosa`、`numba`(见 pyproject.toml),
    **不含 torch/resemblyzer 包本身**——模型文件是转换产物
-   `claude_hermes/voice/models/voiceprint_encoder.onnx`(约 5.7MB,已提交
+   `vococo/voice/models/voiceprint_encoder.onnx`(约 5.7MB,已提交
    进仓库)。
 
 ### 实测延迟(真实 ONNX 模型 + 真实 librosa,不是占位模型)

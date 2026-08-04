@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# 温和重启 claude-hermes serve:只杀 serve 子进程,run.sh 守护循环 5s 后自动用 main 最新代码拉起。
+# 温和重启 vococo serve:只杀 serve 子进程,run.sh 守护循环 5s 后自动用 main 最新代码拉起。
 # 与 stop.sh 的区别:stop.sh 是彻底停机(touch data/.stop);本脚本用于「改完代码要生效」。
 # AI 汇报重启结果时必须引用本脚本输出的 PID 证据,不许凭记忆口述(见记忆
 # hermes-injection-hallucination-rootcause:7/6 曾虚构重启成功)。
@@ -56,7 +56,7 @@ except Exception:
 fi
 
 # 模式注意 python3:写成 "bin/python .*"(带空格)匹配不到,踩过。
-PAT="bin/python[0-9]* .*claude-hermes serve"
+PAT="bin/python[0-9]* .*vococo serve"
 n=$(pgrep -f "$PAT" | wc -l | tr -d ' ')
 old=$(pgrep -f "$PAT" | head -1)
 if [ -z "$old" ]; then
@@ -74,9 +74,9 @@ for i in {1..30}; do
   if [ -n "$new" ] && [ "$new" != "$old" ]; then
     echo "新 serve PID: $new(等了 ${i}s)"
     echo "HEAD: $(git log --oneline -1 | cat)"
-    echo "✅ 重启完成;验证:tail data/logs/hermes.out.log 应见「✅ Web/Telegram 已上线」"
+    echo "✅ 重启完成;验证:tail data/logs/vococo.out.log 应见「✅ Web/Telegram 已上线」"
     exit 0
   fi
 done
-echo "❌ 30s 没等到新进程 —— 查 data/logs/hermes.out.log" >&2
+echo "❌ 30s 没等到新进程 —— 查 data/logs/vococo.out.log" >&2
 exit 1

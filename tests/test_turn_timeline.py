@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from claude_hermes.core.timeline import Timeline
+from vococo.core.timeline import Timeline
 
 
 def test_timeline_interleaves_text_and_tools():
@@ -44,7 +44,7 @@ def test_timeline_caps_blocks():
 
 
 def test_finish_turn_persists_events_and_history_returns_them(isolated):
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     tid = session_store.start_turn("web:x", "问题")
     events = [
@@ -72,7 +72,7 @@ def test_finish_turn_persists_events_and_history_returns_them(isolated):
 
 
 def test_history_without_events_still_works(isolated):
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     tid = session_store.start_turn("web:x", "问题")
     session_store.finish_turn(tid, "纯文本回复")  # 不带 events(老路径)
@@ -83,7 +83,7 @@ def test_history_without_events_still_works(isolated):
 def test_websink_splits_text_segments_on_tool_start(isolated):
     import asyncio
 
-    from claude_hermes.gateway.adapters.web import _WebSink
+    from vococo.gateway.adapters.web import _WebSink
 
     class FakeAdapter:
         def __init__(self):

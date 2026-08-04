@@ -1,4 +1,4 @@
-# claude-hermes
+# vococo
 
 基于 **Claude 订阅** 的个人 AI 助理(personal Hermes),给自己用。
 架构参考 [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent),锁定 Claude、单用户、精简。
@@ -28,10 +28,10 @@ cron/scheduler.py  心跳 + cron/interval/once 定时任务 → 推送
 ## 入口
 
 ```bash
-claude-hermes            # 默认进 TUI
-claude-hermes chat       # 纯文本对话(调试 fallback)
-claude-hermes serve      # 常驻:Telegram 收发 + 调度器(heartbeat/主动推送)
-claude-hermes cron       # 列出定时任务
+vococo            # 默认进 TUI
+vococo chat       # 纯文本对话(调试 fallback)
+vococo serve      # 常驻:Telegram 收发 + 调度器(heartbeat/主动推送)
+vococo cron       # 列出定时任务
 ```
 
 ## 快捷命令(TUI/Telegram 通用)
@@ -40,13 +40,13 @@ claude-hermes cron       # 列出定时任务
 
 ## 多供应商切换(cc-switch 集成)
 
-想用 **DeepSeek / Kimi** 或任意第三方 Anthropic 兼容中转:配置写在 **`~/.claude-hermes/config.yaml`**(cc-switch 格式,**刻意独立于原版 Hermes 的 `~/.hermes`**,两者不共用、互不干扰)。
+想用 **DeepSeek / Kimi** 或任意第三方 Anthropic 兼容中转:配置写在 **`~/.vococo/config.yaml`**(cc-switch 格式,**刻意独立于原版 Hermes 的 `~/.hermes`**,两者不共用、互不干扰)。
 
-- claude-hermes **每轮自动读**这个文件,用上当前激活的供应商(base_url + key + model),无需重启。
-- 会话里 `/model <模型名>` 可临时覆盖(优先级高于全局激活);`/status` 显示当前供应商;`claude-hermes doctor` 会报告检测到的配置与激活供应商。
-- 只用第三方时,`.env` 里的订阅 token 可留空。模型名 / key / base_url 全由配置文件管理,claude-hermes 不硬编码任何供应商。
+- vococo **每轮自动读**这个文件,用上当前激活的供应商(base_url + key + model),无需重启。
+- 会话里 `/model <模型名>` 可临时覆盖(优先级高于全局激活);`/status` 显示当前供应商;`vococo doctor` 会报告检测到的配置与激活供应商。
+- 只用第三方时,`.env` 里的订阅 token 可留空。模型名 / key / base_url 全由配置文件管理,vococo 不硬编码任何供应商。
 
-配置示例(`~/.claude-hermes/config.yaml`):
+配置示例(`~/.vococo/config.yaml`):
 
 ```yaml
 model:
@@ -59,17 +59,17 @@ custom_providers:
   - {name: kimi,         base_url: https://api.moonshot.cn/anthropic,  api_key: sk-..., model: kimi-k2.7-code}
 ```
 
-想用桌面版 [cc-switch](https://github.com/farion1231/cc-switch) 图形化管理:在它里面把该 Hermes profile 的 `hermes_config_dir` 指到 `~/.claude-hermes` 即可。
+想用桌面版 [cc-switch](https://github.com/farion1231/cc-switch) 图形化管理:在它里面把该 Hermes profile 的 `hermes_config_dir` 指到 `~/.vococo` 即可。
 
 ## 常驻(macOS)
 
 > `deploy/*.sh` 目前假设 macOS + zsh。Linux 用户请照 `deploy/run.sh` 的思路自行写
-> systemd unit;核心就是把 `uv run claude-hermes serve` 跑成常驻进程。
+> systemd unit;核心就是把 `uv run vococo serve` 跑成常驻进程。
 
 ```bash
 bash deploy/run.sh     # 后台启动(登录 shell,推荐)
 bash deploy/stop.sh    # 停止
-tail -f data/logs/hermes.out.log   # 看日志
+tail -f data/logs/vococo.out.log   # 看日志
 ```
 
 ⚠️ **不要把项目放在 iCloud 同步的 `~/Desktop`/`~/Documents` 下**——常驻进程
@@ -100,8 +100,8 @@ claude setup-token            # 生成 sk-ant-oat01-... 令牌
 cp .env.example .env          # 把令牌填进 .env 的 CLAUDE_CODE_OAUTH_TOKEN
 
 # 3) 自检 + 开聊
-uv run claude-hermes doctor   # 检查配置 / 激活供应商
-uv run claude-hermes chat
+uv run vococo doctor   # 检查配置 / 激活供应商
+uv run vococo chat
 ```
 
 ## 配置
@@ -111,7 +111,8 @@ uv run claude-hermes chat
 | 变量 | 必填 | 说明 |
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | 是* | `claude setup-token` 生成的订阅令牌(*只用第三方供应商时可空) |
-| `HERMES_USER_NAME` | 否 | 助理如何称呼你,默认「主人」 |
+| `VOCOCO_USER_NAME` | 否 | 助理如何称呼你,默认「主人」 |
+| `VOCOCO_PERSONA_NAME` | 否 | 助理人格代号(UI/提示文案里露出),默认「Wazir」 |
 | `AI_BRAIN_DIR` | 否 | 长期记忆目录,默认 `~/AI_BRAIN`;不存在则记忆功能自动跳过 |
 | `AGENT_MODEL` | 否 | 默认 `claude-sonnet-5` |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_ALLOWED_CHAT_IDS` | 否 | 启用 Telegram 入口时填(@BotFather 拿 token) |

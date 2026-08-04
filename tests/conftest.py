@@ -1,6 +1,6 @@
 """测试夹具。
 
-- 兜底设一个假 OAUTH token:导入 claude_hermes.config 会校验订阅令牌,本机有 .env
+- 兜底设一个假 OAUTH token:导入 vococo.config 会校验订阅令牌,本机有 .env
   会覆盖成真值(测试不连网,值无所谓);CI 无 .env 时用这个假值也能 import。
 - isolated:把会话库与 AI_BRAIN 指到临时目录,并重置 memory/_db.py 的连接单例
   (session_store 及其兄弟模块 images/projects/worktrees/prefs/search 共用它),
@@ -17,8 +17,8 @@ import pytest
 
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
-    from claude_hermes import config
-    from claude_hermes.memory import _db
+    from vococo import config
+    from vococo.memory import _db
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "AI_BRAIN_DIR", tmp_path / "brain")

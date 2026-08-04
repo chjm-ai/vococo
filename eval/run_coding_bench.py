@@ -41,7 +41,7 @@ if not Path(PYTHON).exists():
 _HERMES_DRIVER = f"""
 import sys, asyncio
 sys.path.insert(0, {str(HERMES_ROOT)!r})
-from claude_hermes.core.agent import run_turn
+from vococo.core.agent import run_turn
 q = sys.stdin.read().strip()
 r = asyncio.run(run_turn([], q))
 print(r.text or "")

@@ -7,10 +7,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from claude_hermes import config
-from claude_hermes.core import tasks
-from claude_hermes.gateway.adapters.web import WebAdapter
-from claude_hermes.memory import session_store
+from vococo import config
+from vococo.core import tasks
+from vococo.gateway.adapters.web import WebAdapter
+from vococo.memory import session_store
 
 
 @pytest.fixture
