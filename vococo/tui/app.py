@@ -136,6 +136,13 @@ async def run_tui() -> None:
                 _header(console, current_model)
             if outcome.reply:
                 console.print(f"[dim]{outcome.reply}[/dim]")
+            if outcome.compact:
+                # 手动压缩:走一次「只压缩不对话」的轮次,压缩在当前会话的活
+                # client 上进行,后续对话自然落在压缩后的上下文里。
+                with RichSink(console) as sink:
+                    await core.converse(
+                        session_key, text, current_model, sink, compact=True
+                    )
             continue
 
         with RichSink(console) as sink:

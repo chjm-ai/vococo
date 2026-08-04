@@ -585,8 +585,15 @@ async def stream_turn(
     extra_mcp_servers: dict | None = None,
     disallowed_tools: list[str] | None = None,
     max_turns: int | None = None,
+    compact_only: bool = False,
 ) -> AsyncIterator[Event]:
     """流式跑一轮,逐个 yield 事件,最后 yield Done。
+
+    compact_only:只执行一次上下文压缩(/compact 命令),不进入模型对话。
+    拿到/复用与正常轮完全相同的 client(保温池逻辑不变),query 换成 CLI 的
+    /compact 命令,读完压缩边界与 ResultMessage 即收工;下一轮正常对话仍接
+    同一会话,落在压缩后的上下文上。
+
 
     disallowed_tools:代码层硬拦一批工具名(如语音前台会话禁 Edit/Write,逼真正的
     改代码走 voice_dispatch_task 派后台任务),不同于 prompt 里"建议模型别用"——
@@ -733,7 +740,12 @@ async def stream_turn(
         pooled = False
         try:
             try:
-                await client.query(_build_prompt(prompt_history, user_text, images or []))
+                if compact_only:
+                    # 手动压缩轮:不经过模型,直接让 CLI 压缩当前会话上下文。
+                    # 保温命中时压在活 client 上,下一轮正常对话自然落在压缩后。
+                    await client.query("/compact")
+                else:
+                    await client.query(_build_prompt(prompt_history, user_text, images or []))
                 pending_subagents: set[str] = set()  # Agent/Task 调用 id,未拿到结果 = 子代理还在跑
                 active_tasks: set[str] = set()  # 后台任务 task_id,未见终态 = 还在跑
                 result_seen = False
@@ -830,7 +842,12 @@ async def stream_turn(
                             meta = (getattr(msg, "data", None) or {}).get(
                                 "compact_metadata"
                             ) or {}
-                            yield Compacted(trigger=str(meta.get("trigger", "") or ""))
+                            trigger = (
+                                "manual"
+                                if compact_only
+                                else str(meta.get("trigger", "") or "")
+                            )
+                            yield Compacted(trigger=trigger)
                         elif getattr(msg, "subtype", "") == "init":
                             # 开局的 init 消息里就带了本轮 session_id(实测早于任何
                             # AssistantMessage/ResultMessage),提前更新 sess_id 并
@@ -989,9 +1006,13 @@ async def stream_turn(
                 with anyio.CancelScope(shield=True):
                     await client_pool.discard(client)
 
+        # 压缩轮没有模型对话,CLI /compact 本身也不产正文 → 空文本时给固定反馈
+        reply_text = "".join(text_parts).strip()
+        if compact_only and not reply_text:
+            reply_text = "🫙 已手动压缩上下文,旧对话已摘要,可以继续聊。"
         yield Done(
             AgentReply(
-                text="".join(text_parts).strip(),
+                text=reply_text,
                 tool_calls=tool_calls,
                 cost_usd=cost_usd,
                 is_error=is_error,

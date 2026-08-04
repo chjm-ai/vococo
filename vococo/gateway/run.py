@@ -104,8 +104,10 @@ class GatewayRunner:
             model = model or config.MODEL
             session_store.set_chosen_model(key, model)
         self.models[key] = model
+        compact_flag = False  # /compact 命令:不短路,走下方 converse 的压缩轮
         if core.is_command(inc.text):
             outcome = core.handle_command(inc.text, key, model)
+            compact_flag = outcome.compact
             # handled=False 且没回复 = 不是系统命令(比如 "/skill名"),原样当成
             # 普通消息往下走交给 agent;真正的未知命令仍带 reply,走下面短路分支。
             if outcome.handled or outcome.reply:
@@ -124,7 +126,8 @@ class GatewayRunner:
                     await adapter.send(inc.chat_id, outcome.reply)
                     # 持久化命令回复,刷新页面不丢
                     session_store.append(key, inc.text, outcome.reply)
-                return
+                if not compact_flag:
+                    return
         # 后台任务续聊(session_key=task:{id},语音派发/cron/chat 三种触发方共用同
         # 一套引擎,见 core/task_runner.py)要延续任务派发时的工作目录——converse()
         # 按 session_key 推导 cwd 那套认不出这种非项目 key,显式传进去(见
@@ -150,7 +153,7 @@ class GatewayRunner:
                         await core.converse(
                             key, inc.text, model, adapter.make_sink(inc.chat_id),
                             images=inc.images, audios=inc.audios, store_user=inc.store_text,
-                            cwd_override=cwd_override,
+                            cwd_override=cwd_override, compact=compact_flag,
                         )
                 except TimeoutError:
                     pass  # 超时静默处理,不向用户发送错误消息

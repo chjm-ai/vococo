@@ -178,8 +178,12 @@ async def converse(
     audios: list[AudioAttachment] | None = None,
     store_user: str | None = None,
     cwd_override: str | None = None,
+    compact: bool = False,
 ) -> AgentReply | None:
     """跑一轮:载入历史 → 流式 → 喂 sink → 落库。
+
+    compact:只压缩上下文不对话(/compact 命令)。同样走流式/落库/保温池全流程,
+    只是 stream_turn 内部 query 换成 CLI 的 /compact,不给模型发消息。
 
     store_user:入库用的替代 user 文本(默认与 user_text 相同)。系统注入的消息
     (如自我重启后的还魂指令)用它把「给模型的长指令」与「存进历史给人看的简短
@@ -229,6 +233,7 @@ async def converse(
         async for ev in stream_turn(
             history, user_text, model=model, images=images, cwd=cwd, resume=resume_sid,
             session_key=session_key,  # 传给保温池:同会话下一轮复用活 client,零冷启动
+            compact_only=compact,
         ):
             if isinstance(ev, TextDelta):
                 # 输出侧敏感内容过滤(安全评估 P0-2)第一层:对单个 delta 扫一遍。
@@ -345,6 +350,7 @@ COMMAND_LIST: list[tuple[str, str]] = [
     ("clear", "清屏并开新会话"),
     ("model", "查看或切换模型,如 /model claude-opus-5"),
     ("history", "看最近历史"),
+    ("compact", "手动压缩当前上下文"),
     ("status", "会话信息"),
     ("suggest", "看/接受助理提的自动化建议"),
     ("help", "显示帮助"),
@@ -383,6 +389,7 @@ class CommandOutcome:
     reset_history: bool = False
     new_model: str | None = None
     choice: Choice | None = None
+    compact: bool = False  # 仅压缩上下文,不走模型对话(见 converse compact 参数)
 
 
 def is_command(text: str) -> bool:
@@ -421,6 +428,10 @@ def handle_command(text: str, session_key: str, current_model: str) -> CommandOu
             for v, label, _group in choices
         ]
         return CommandOutcome(choice=Choice(prompt="选择模型:", options=opts))
+    if cmd == "/compact":
+        # 主动压缩:交给调用方走一次「只压缩不对话」的 converse(压缩发生在保温
+        # client 上,下一轮正常对话自然落在压缩后的上下文里)。reply 为空→走压缩轮
+        return CommandOutcome(compact=True)
     if cmd == "/history":
         h = session_store.load_recent(session_key, limit=10)
         if not h:
