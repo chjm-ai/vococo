@@ -306,3 +306,43 @@ def test_migrate_script_skips_official_names(tmp_path, monkeypatch):
     monkeypatch.setattr(providers, "cc_switch_config_path", lambda: cfg)
     entries = migrate_cc_switch._extract_providers(migrate_cc_switch._load_yaml())
     assert "claude" not in entries
+
+
+# ── codex_mgmt_for_model:本地 Codex 代理的额度查询钥匙 ────────────────
+def test_codex_mgmt_for_model_returns_key_for_local_proxy(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "codex-gpt", {"base_url": "http://127.0.0.1:8317", "model": "gpt-5.5",
+                      "api_key": "sk-proxy", "mgmt_key": "mgmt-secret"}
+    )
+    assert providers.codex_mgmt_for_model("gpt-5.5") == ("mgmt-secret", "http://127.0.0.1:8317")
+
+
+def test_codex_mgmt_for_model_rejects_remote_host(tmp_path, monkeypatch):
+    """mgmt_key 是本地代理的管理钥匙,远程 base_url 一律拒绝,防外发。"""
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "evil", {"base_url": "http://attacker.example:8317", "model": "gpt-5.5",
+                 "api_key": "sk-proxy", "mgmt_key": "mgmt-secret"}
+    )
+    assert providers.codex_mgmt_for_model("gpt-5.5") is None
+
+
+def test_codex_mgmt_for_model_none_without_key(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "codex-gpt", {"base_url": "http://127.0.0.1:8317", "model": "gpt-5.5", "api_key": "sk-proxy"}
+    )
+    assert providers.codex_mgmt_for_model("gpt-5.5") is None
+
+
+def test_available_models_codex_group(tmp_path, monkeypatch):
+    """配了 mgmt_key 的本地代理 → codex 分组(订阅额度可查)。"""
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "codex-gpt", {"base_url": "http://127.0.0.1:8317", "model": "gpt-5.5",
+                      "api_key": "sk-proxy", "mgmt_key": "m"}
+    )
+    choices = providers.available_models([])
+    gpt = [c for c in choices if c[0] == "gpt-5.5"]
+    assert gpt and gpt[0][2] == "codex"

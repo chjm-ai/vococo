@@ -59,7 +59,8 @@ def test_upsert_and_list_provider(monkeypatch, tmp_path):
     out = settings_store.list_web_providers()
     assert out == [{
         "name": "deepseek", "base_url": "https://api.deepseek.com/anthropic",
-        "api_key": "sk-xxx", "model": "deepseek-chat", "label": "", "vision": "",
+        "api_key": "sk-xxx", "model": "deepseek-chat", "label": "",
+        "vision": "", "mgmt_key": "",
     }]
 
 
@@ -107,7 +108,7 @@ def test_web_providers_raw_shape_matches_cc_switch_entry(monkeypatch, tmp_path):
     )
     raw = settings_store.web_providers_raw()
     assert raw == {"mine": {"base_url": "https://api.example.com", "api_key": "sk-yyy",
-                             "model": "my-model", "label": "", "vision": ""}}
+                             "model": "my-model", "label": "", "vision": "", "mgmt_key": ""}}
 
 
 # ── web 端思考深度(effort)──────────────────────────────────────────────
@@ -151,3 +152,17 @@ def test_disable_builtin_model_is_idempotent(monkeypatch, tmp_path):
     settings_store.set_builtin_model_disabled("claude-opus-4-6", True)
     settings_store.set_builtin_model_disabled("claude-opus-4-6", True)
     assert settings_store.list_disabled_builtin_models() == ["claude-opus-4-6"]
+
+
+def test_upsert_provider_mgmt_key(monkeypatch, tmp_path):
+    """mgmt_key 存取往返;不填落空串。"""
+    _point_to(monkeypatch, tmp_path)
+    assert settings_store.upsert_web_provider(
+        "codex-gpt", {"base_url": "http://127.0.0.1:8317", "model": "gpt-5.5",
+                      "api_key": "sk", "mgmt_key": "mgmt-secret"}
+    ) is None
+    assert settings_store.list_web_providers()[0]["mgmt_key"] == "mgmt-secret"
+    assert settings_store.upsert_web_provider(
+        "plain", {"base_url": "https://a.com", "model": "m"}
+    ) is None
+    assert settings_store.list_web_providers()[1]["mgmt_key"] == ""

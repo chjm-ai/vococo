@@ -313,7 +313,11 @@ def clean_web_provider(body: dict) -> tuple[dict, str | None]:
     # vision=是否支持直传图片(Codex OAuth 代理背后的 GPT 系勾选);只接受 "1",
     # 其余一律落空串,避免脏值进存储
     vision = "1" if str(body.get("vision", "")).strip() == "1" else ""
-    return {"base_url": base_url, "api_key": api_key, "model": model, "label": label, "vision": vision}, None
+    # mgmt_key=本地 Codex 代理的 Management API 钥匙(填了才有 GPT 订阅额度查询,
+    # 见 providers.codex_usage);空串=不查额度
+    mgmt_key = (body.get("mgmt_key") or "").strip()
+    return {"base_url": base_url, "api_key": api_key, "model": model, "label": label,
+            "vision": vision, "mgmt_key": mgmt_key}, None
 
 
 def upsert_web_provider(name: str, body: dict) -> str | None:

@@ -3889,7 +3889,7 @@ function setModel(id){ S.model=id||""; renderModelChip(); }
 function renderModelChip(){ $("#modelName").textContent=modelShort(curModel()); }
 // 模型面板分组:Anthropic 订阅(拿不到具体用量,只显示重置时间)/ Kimi 订阅(有具体用量,带小圆环)
 // / API(按量计费,不查额度)。分组顺序固定,组间只画一条分割线,不做折叠。
-var MODEL_GROUPS = [["anthropic","Anthropic 订阅"],["kimi","Kimi 订阅"],["api","API"]];
+var MODEL_GROUPS = [["anthropic","Anthropic 订阅"],["kimi","Kimi 订阅"],["codex","Codex 订阅"],["api","API"]];
 var quotaCache = {};   // 按模型名缓存 {data, ts},60s 内直接复用,不重复打接口
 var QUOTA_ARC = 50.27; // 2*PI*8,与 ctxRing 同值
 
@@ -3915,7 +3915,7 @@ function renderModelPop(){
     groupsShown++;
     // 额度是账号级、组内所有模型共用(实测过,同组各模型接口返回完全一样)——
     // 圆环+重置时间挂在分组标题上查一次,不再每行重复挂一份。
-    const showMeta = gkey==="anthropic" || gkey==="kimi";
+    const showMeta = gkey==="anthropic" || gkey==="kimi" || gkey==="codex";
     const meta = showMeta ? '<span class="mgmeta">'+ringSvg(gkey)+'<span class="mreset" data-m="'+esc(gkey)+'"></span></span>' : "";
     html += '<div class="mgrouplabel"><span>'+esc(gname)+'</span>'+meta+'</div>';
     html += items.map(function(c){
@@ -4037,6 +4037,14 @@ function renderQuotaTooltip(data){
       md.forEach(function(m){ html += '<span>'+esc(m.family)+" "+m.percentage.toFixed(1)+"%</span>"; });
       html += '</div>';
     }
+  } else if(data.provider === "codex"){
+    html += '<div class="mqh">Codex 订阅额度'+(data.plan_type?' <span class="mqtag">'+esc(data.plan_type)+'</span>':"")+'</div>';
+    html += '<div class="mqrow"><span>已用</span><b>'+fmtPct(five.utilization)+'</b></div>';
+    if(five.status) html += '<div class="mqrow"><span>状态</span><b>'+esc(five.status==="rejected"?"额度已耗尽":"可用")+'</b></div>';
+    var ts2 = typeof five.resets_at === "number" ? five.resets_at*1000 : 0;
+    if(ts2 > Date.now()) html += '<div class="mqrow"><span>重置时间</span><b>'+new Date(ts2).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"})+'</b></div>';
+    var cd = data.credits || {};
+    if(cd.has_credits) html += '<div class="mqrow"><span>Credits</span><b>'+esc(String(cd.balance!=null?cd.balance:(cd.approx_local_messages!=null?cd.approx_local_messages+" 条":"有")))+'</b></div>';
   } else if(data.provider === "kimi"){
     html += '<div class="mqh">Kimi 订阅额度</div>';
     html += '<div class="mqrow"><span>5h 已用</span><b>'+fmtPct(five.utilization)+'</b></div>';
@@ -5253,7 +5261,7 @@ function providerFormHtml(){
     '<div class="fld"><label>base_url</label><input id="pvUrl" placeholder="https://api.deepseek.com/anthropic" value="'+esc(cur.base_url||"")+'"></div>'+
     '<div class="fld"><label>model</label><input id="pvModel" placeholder="deepseek-chat" value="'+esc(cur.model||"")+'"></div>'+
     '<div class="fld"><label>api_key</label><input id="pvKey" type="password" placeholder="sk-..." value="'+esc(cur.api_key||"")+'"></div>'+
-    '<div class="fld"><label>显示名(可空)</label><input id="pvLabel" placeholder="" value="'+esc(cur.label||"")+'"></div>'+
+    '<div class="fld"><label>显示名(可空)</label><input id="pvLabel" placeholder="" value="'+esc(cur.label||"")+'"></div>'+'<div class="fld"><label>mgmt_key(Codex 代理的管理钥匙,填了才有额度查询;可空)</label><input id="pvMgmt" type="password" placeholder="" value="'+esc(cur.mgmt_key||"")+'"></div>'+
     '<div class="fld"><label style="display:flex;align-items:center;gap:6px"><input id="pvVision" type="checkbox"'+(cur.vision==="1"?' checked':'')+'><span>支持视觉直传(Codex 代理/GPT 勾选,图片不转文字)</span></label></div>'+
     '<div class="mcperr" id="pvErr"></div>'+
     '<div class="setrowbtns"><button class="btn primary sm" id="pvSave">保存</button><button class="btn ghost sm" id="pvCancel">取消</button></div>'+
@@ -5318,7 +5326,7 @@ async function saveProviderForm(){
   const base_url=$("#pvUrl").value.trim();
   const model=$("#pvModel").value.trim();
   if(!base_url||!model){ err.textContent="base_url 和 model 都要填"; return; }
-  const body={action:"add", name, base_url, model, api_key:$("#pvKey").value.trim(), label:$("#pvLabel").value.trim(), vision:($("#pvVision")&&$("#pvVision").checked)?"1":""};
+  const body={action:"add", name, base_url, model, api_key:$("#pvKey").value.trim(), label:$("#pvLabel").value.trim(), vision:($("#pvVision")&&$("#pvVision").checked)?"1":"", mgmt_key:$("#pvMgmt")?$("#pvMgmt").value.trim():""};
   const r=await api("/settings/provider",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   const d=await r.json();
   if(d.error){ err.textContent=d.error; return; }
