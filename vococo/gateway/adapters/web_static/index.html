@@ -5758,7 +5758,7 @@ function renderEventsFlow(events, ctx){
     }
     if(blk.type==="compact"){
       flushTools();
-      const d=el("div","compactline"); d.textContent="上下文已自动压缩,对话继续";
+      const d=el("div","compactline"); d.textContent=blk.trigger==="manual"?"已手动压缩上下文,对话继续":"上下文已自动压缩,对话继续";
       flow.append(d); continue;
     }
     if(blk.type!=="tool") continue;
@@ -6380,7 +6380,7 @@ function applyStreamEvent(e){
       // 呼吸灯不因工具结束而停——持续到下条指令或正文出现才移除
       renderStatus(); break; }
     case "compact": { const s=ensureStream();
-      const d=el("div","compactline"); d.textContent="上下文已自动压缩,对话继续";
+      const d=el("div","compactline"); d.textContent=e.trigger==="manual"?"已手动压缩上下文,对话继续":"上下文已自动压缩,对话继续";
       s.flow.append(d); scrollDown(); break; }
     case "message": { // mid_turn 图片消息(send_image 工具),只在本轮回复过程中途出现
       const s=ensureStream();
