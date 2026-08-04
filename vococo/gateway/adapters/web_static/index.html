@@ -1745,6 +1745,11 @@ void main(){
     omniFirstReplyMuteUsed = false; omniMicMuted = false;
     // 朗读校验现场跟着连接走,别把上一通电话的残留带进来
     omniReadRespId = null; omniReadExpectText = ""; omniSpokenBuf = ""; omniSpokenChecked = false;
+    // 物理隔离状态也跟着连接走(2026-08-04):omniSessionModalities 是页面级变量,
+    // 一旦被 modalities.fallback 翻成 ["text","audio"] 又不重置,之后每通电话的
+    // 自动回复都物理出声(回读漏音)。每通新电话恢复 text-only;万一响应级覆盖
+    // 真被服务端忽略,response.done 分支的自愈闸会重新 flip,降级语义不变。
+    omniSessionModalities = ["text"];
     // 响应级参数的降级标志每条新连接重置:给它一次重试机会——万一上次是偶发错误
     // 被误判成"服务端不认",不至于就此永久失去每句重申角色的加固。
     omniReadCreateDegraded = false;
@@ -2029,6 +2034,11 @@ void main(){
             // 非 barge-in 场景开口:清掉可能残留的旧快照(上一次幽灵打断没等到转写),
             // 别让 matchOmniEcho 误以为这句话发生在 AI 说话期间。
             omniEchoRestore = null;
+            // 纵深防御(2026-08-04):一开口就静音输出通道。自动回复的 RTP 音频比
+            // DataChannel 的 response.created 先到,等回执再静音必漏开头几百毫秒;
+            // 物理隔离万一被降级(session 带 audio),这层就是唯一防线。我们的朗读
+            // 会在 read.created 重新开声,提示音走 Web Audio 不受影响,无副作用。
+            setOmniAudioMuted(true, "speech_started");
             // 又开口了,说明上一段大概率没说完:把待发送缓冲的倒计时顺延成安全网,
             // 等这句话的转写到齐再一起发。【2026-07-22 事故根因】这里以前把 30s
             // 安全网覆盖成 1.5s 短定时器——短定时器在新一段转写回来之前到点,把
@@ -2127,27 +2137,11 @@ void main(){
             omniReadRespId = (data.response && data.response.id) || null;
             omniReadExpectText = omniReadCurrentText;
             omniSpokenBuf = ""; omniSpokenChecked = false;
-            // 自愈闸:服务端回执里这次 response 的实际 modalities 不含 audio,说明
-            // 响应级覆盖被静默忽略了(未文档化字段的风险,见 omniSessionModalities)。
-            // 此时 session 又只给了 text,这句会一个音都不出——立刻把 session 改回
-            // ["text","audio"],把这句塞回队头重念。服务端不回 modalities 字段时
-            // respMods 为 null,保守不触发。
-            const respMods = (data.response && data.response.modalities) || null;
-            if(respMods && !respMods.includes("audio") && !omniSessionModalities.includes("audio")){
-              omniSessionModalities = ["text", "audio"];
-              vdbg("modalities.fallback", {got: respMods});
-              try{
-                omniDc.send(JSON.stringify({
-                  event_id: "session-modalities-fallback", type: "session.update",
-                  session: {modalities: omniSessionModalities},
-                }));
-              }catch(e){}
-              if(omniReadCurrentText) omniReadQueue.unshift(omniReadCurrentText);
-              omniReadActive = false; omniReadCurrentText = "";
-              omniReadRespId = null; omniReadExpectText = ""; omniSpokenChecked = true;
-              setTimeout(() => pumpOmniRead(), 300);
-              break;
-            }
+            // 【2026-08-04 纠错】这里原来有自愈闸:拿 created 回执的 modalities 判
+            // "响应级覆盖被忽略"就 flip session——实测 created 回的是 session 级
+            // 快照(恒 ["text"]),100% 误报,把物理隔离误拆、自动回复物理出声,
+            // 用户听到"AI 复读我"(回读漏音根因,3/3 次实锤)。闸已挪到
+            // response.done 分支,done 里的 modalities 才是覆盖后的实际值。
             // 确认是我们主动点的朗读才开声(2026-07-14 修复),不让自动回复偷用。
             omniAutoAudioBlocked = false;  // 我们的朗读开始,清除自动回复阻断
             setOmniAudioMuted(false, "read.created");
@@ -2175,6 +2169,25 @@ void main(){
         case "response.done":
           if(omniReadActive){
             omniReadActive = false;
+            // 自愈闸(2026-08-04 从 response.created 挪来,字段纠错):判"响应级
+            // modalities 覆盖被服务端静默忽略"必须看 response.done——created 回执
+            // 里的 modalities 是 session 级快照(恒 ["text"]),done 里的才是覆盖
+            // 后的实际值。真缺 audio 说明这句一个音都没出:flip session 回
+            // ["text","audio"],塞回队头重念,保持"最坏哑一句"的原设计;服务端
+            // 不回 modalities 字段时 doneMods 为 null,保守不触发。
+            const doneMods = (data.response && data.response.modalities) || null;
+            if(doneMods && !doneMods.includes("audio") && !omniSessionModalities.includes("audio")){
+              omniSessionModalities = ["text", "audio"];
+              vdbg("modalities.fallback", {got: doneMods, via: "done"});
+              try{
+                omniDc.send(JSON.stringify({
+                  event_id: "session-modalities-fallback", type: "session.update",
+                  session: {modalities: omniSessionModalities},
+                }));
+              }catch(e){}
+              if(omniReadCurrentText) omniReadQueue.unshift(omniReadCurrentText);
+              omniSpokenChecked = true;  // 这句本来就哑,别误报 read.mismatch
+            }
             // 兜底校验:audio_transcript.done 没来过(被 cancel 砍掉/服务端没发)时,
             // 拿 delta 累积的字幕补校验一次,然后清场。checkOmniSpoken 内部有
             // omniSpokenChecked 去重,transcript.done 已经校验过的不会重复上报。
