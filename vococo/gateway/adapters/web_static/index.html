@@ -3597,7 +3597,11 @@ const HOME_RECENT_COLLAPSED = 5;   // 默认只显示这么多条,避免欢迎�
 let homeRecentExpanded = false;
 function updateEmpty(){
   const wasShown = $("#empty").style.display === "flex";
-  const show = !$("#wrap").children.length;
+  // 定时任务会话(新建后还没执行过,自然没有消息)不落欢迎屏:欢迎屏带 logo/建议/
+  // 最近对话列表,在任务界面里是噪音(2026-08-04 主人反馈"背景一堆会话很混乱")。
+  // 保持中间留白,标题栏操作区与输入框本来就在 #empty 之外,不受影响。
+  const isCron = (S.cronJobs||[]).some(x=>x.conv===S.conv);
+  const show = !isCron && !$("#wrap").children.length;
   $("#empty").style.display = show ? "flex" : "none";
   if(show){
     if(!wasShown) homeRecentExpanded = false;   // 每次重新进入欢迎屏,最近对话收起回默认态
@@ -4437,8 +4441,8 @@ const CONV_SHOW_MAX = 7;   // 每个项目分组默认最多展示的会话数,�
                           //  终态任务只在语音界面顶部状态条满 10 分钟自动隐藏(见 taskBarDoneHidden),
                           //  侧边栏/最近列表全量可见;老任务时间久了自然沉底,不霸占首屏)
 const TAB_PAGE_SIZE = 20;   // 「置顶」「最近」Tab 分页粒度:默认 20 条,点「更多」每次再加 20 条
-const SIDE_TABS = [{key:"projects",label:"项目"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
-// 侧栏第二层 Tab:项目/置顶/最近,切 Tab 记住选择,不影响下方各分组自己的展开态
+const SIDE_TABS = [{key:"projects",label:"项目"},{key:"cron",label:"定时"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
+// 侧栏第二层 Tab:项目/定时/置顶/最近,切 Tab 记住选择,不影响下方各分组自己的展开态
 function renderSideTabs(box){
   const bar=el("div","sidetabs");
   for(const t of SIDE_TABS){
@@ -4483,6 +4487,25 @@ function renderRecentTab(box, inCall){
     box.append(more);
   }
 }
+// 「定时」Tab:扁平列表——全部定时任务(2026-08-04 从「项目」Tab 分组独立成 Tab,
+// Tab 本身就是入口,不再可折叠),末尾一行「新建定时任务」;任务多时默认截前 CONV_SHOW_MAX 条
+function renderCronTab(box, inCall){
+  if(S.cronJobs.length){
+    const rows=S.cronJobs.map(buildCronJobRow);
+    const shown=S.moreShown.has("__cron__")?rows:rows.slice(0,CONV_SHOW_MAX);
+    for(const r of shown) box.append(r);
+    if(rows.length>shown.length){
+      const more=el("div","conv ingroup convmore");
+      const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
+      more.onclick=()=>{ S.moreShown.add("__cron__"); renderConvs(); };
+      box.append(more);
+    }
+  }else{
+    box.append(sideTabEmpty("暂无定时任务"));
+  }
+  const add=el("div","projgrp projadd"); add.textContent="＋ 新建定时任务…";
+  add.onclick=()=>openCronModal(null); box.append(add);
+}
 // 「项目」Tab:手风琴——默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
 function renderProjectsTab(box, inCall){
   const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
@@ -4497,33 +4520,10 @@ function renderConvs(){
   if(mainConv) box.append(buildConvRow(mainConv, inCall));
   const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
   renderSideTabs(box);
-  if(S.sideTab==="pinned") renderPinnedTab(box, inCall);
+  if(S.sideTab==="cron") renderCronTab(box, inCall);
+  else if(S.sideTab==="pinned") renderPinnedTab(box, inCall);
   else if(S.sideTab==="recent") renderRecentTab(box, inCall);
   else renderProjectsTab(box, inCall);
-  // 定时任务分组:只在「项目」Tab 下出现——置顶/最近是快捷入口,不需要跟着挂这个;
-  // 只有真有任务时才出现(数据源 S.cronJobs)
-  if(S.sideTab==="projects" && S.cronJobs.length){
-    const CRON_KEY="__cron__";
-    const open=S.expanded.has(CRON_KEY);
-    const h=el("div","projgrp");
-    const nm=el("span","pgname"); nm.textContent="定时任务"; h.append(nm);
-    const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);
-    const add=el("button","pgadd"); add.textContent="＋"; add.title="新建定时任务";
-    add.onclick=ev=>{ ev.stopPropagation(); openCronModal(null); }; h.append(add);
-    h.onclick=()=>toggleGroup(CRON_KEY);
-    box.append(h);
-    if(open){
-      const rows=S.cronJobs.map(buildCronJobRow);
-      const shown=S.moreShown.has(CRON_KEY)?rows:rows.slice(0,CONV_SHOW_MAX);
-      for(const r of shown) box.append(r);
-      if(rows.length>shown.length){
-        const more=el("div","conv ingroup convmore");
-        const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
-        more.onclick=()=>{ S.moreShown.add(CRON_KEY); renderConvs(); };
-        box.append(more);
-      }
-    }
-  }
   // 同步标题栏:loadConvs 刷新 S.convs 后调 renderConvs,标题可能已更新
   const activeConv=S.convs.find(c=>c.conv===S.conv);
   if(activeConv) $("#convTitle").textContent=activeConv.title||"新对话";
