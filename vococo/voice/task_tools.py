@@ -101,7 +101,9 @@ def _find_web_session(session_id: str) -> dict | None:
     "是 git 仓库会自动开独立 worktree+分支,绝不会动主目录;不传则默认落到"
     "vococo 自己的仓库(同样走 worktree 隔离)。model:用户明确指定要用哪个"
     f"模型跑这个任务时才传(如「用 opus 跑」),可选值:{_MODEL_EXAMPLES};"
-    "没听到用户点名要哪个模型就不要传,默认跟当前对话同一个模型。",
+    "没听到用户点名要哪个模型就不要传——任务【不会】继承当前对话的模型,"
+    "而是自动兜底到已配置的第三方供应商(优先 DeepSeek,"
+    "没有已配置的第三方才落 config.MODEL 官方默认)。",
     {
         "type": "object",
         "properties": {
