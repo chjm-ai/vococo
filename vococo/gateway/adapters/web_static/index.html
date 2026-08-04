@@ -5588,6 +5588,9 @@ function openConvMenu(btn, conv, slim){
     const arch=el("button","cmitem"); arch.innerHTML=ic("folder")+" "+(isArch?"取消归档":"归档");
     arch.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); toggleArchive(conv); };
     m.append(arch);
+    const cpy=el("button","cmitem"); cpy.innerHTML=ic("copy")+" 复制";
+    cpy.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); duplicateConv(conv); };
+    m.append(cpy);
     const del=el("button","cmitem danger"); del.innerHTML=ic("trash")+" 删除";
     del.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); delConv(conv); };
     m.append(del);
@@ -5669,6 +5672,15 @@ async function delConv(conv){
     list.splice(idx,0,removed); renderConvs();
     alert("删除失败,已恢复该会话");
   }
+}
+async function duplicateConv(conv){
+  try{
+    const r=await api("/conv/duplicate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
+    const j=await r.json().catch(()=>({}));
+    if(!j.conv){ alert("复制失败"); return; }
+    await loadConvs();  // 列表刷新出新副本(ts 已刷新,顶到最前)
+    openConv(j.conv);   // 直接打开副本,标题「原标题副本」立即可见
+  }catch(err){ alert("复制失败"); }
 }
 
 // ── 归档 + 会话筛选 ──────────────────────────────────────────────────────
