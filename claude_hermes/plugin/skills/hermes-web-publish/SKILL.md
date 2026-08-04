@@ -1,9 +1,9 @@
 ---
 name: hermes-web-publish
 description: >-
-  把一个网页发布到 Cloud Hermes（Wazir）已经配置好的公网域名 wazir.example.com 下——只需要往
+  把一个网页发布到 Cloud Hermes（Wazir）已经配置好的公网域名 wazir.chjm.cc 下——只需要往
   claude-hermes 主仓库的 data/published/ 目录丢一个文件，就能通过
-  https://wazir.example.com/pub/<文件名> 直接公网访问，不用新起服务、不用配置新域名、不用重启
+  https://wazir.chjm.cc/pub/<文件名> 直接公网访问，不用新起服务、不用配置新域名、不用重启
   进程。当用户说"把这个网页发布一下""这个页面能不能发个链接给我在手机上打开""挂到网上看
   看""发布这个 HTML/demo"，且当前工作目录是 claude-hermes 主仓库（不是某个编码任务的
   git worktree）时触发。不要用于：部署到别的服务器（那是 website-publisher，走 SSH/kimmy）、
@@ -14,7 +14,7 @@ description: >-
 # Cloud Hermes 网页发布
 
 Cloud Hermes（内部代号 Wazir）本身就是一个常驻公网的 Web 服务：cloudflared 隧道把
-`wazir.example.com` 转发到本机 `localhost:8848`（`~/.cloudflared/config.yml`）。这个服务
+`wazir.chjm.cc` 转发到本机 `localhost:8848`（`~/.cloudflared/config.yml`）。这个服务
 已经开了一条公开静态路由 `GET /pub/{path}`，直接读 claude-hermes 仓库下的
 `data/published/` 目录——**发布=往那个目录写一个文件，不用碰代码、不用重启。**
 
@@ -55,7 +55,7 @@ claude-hermes 自己的 Hermes 会话中加载——Claude Code / Codex / OpenCo
 3. 本地过一遍(不依赖外网/隧道,更快):
    `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8848/pub/<路径>`
    应该拿到 `200`。拿到 `404` 多半是路径打错或文件没落盘,回头检查。
-4. 把公网链接发给用户:`https://wazir.example.com/pub/<路径>`。到这一步就完事了——不用
+4. 把公网链接发给用户:`https://wazir.chjm.cc/pub/<路径>`。到这一步就完事了——不用
    `git add`/`commit`、不用碰 `merge-main.sh`、不用 `restart_self`。这些是"改代码"才
    需要的流程,发布静态页面完全绕开它们。
 
@@ -88,4 +88,4 @@ claude-hermes 自己的 Hermes 会话中加载——Claude Code / Codex / OpenCo
 1. 用 frontend-design 把 `demo.html` 写出来(自包含单文件,内联 CSS)。
 2. Write 到 `data/published/product-intro.html`。
 3. `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8848/pub/product-intro.html` → `200`。
-4. 回复:「发布好了:https://wazir.example.com/pub/product-intro.html」
+4. 回复:「发布好了:https://wazir.chjm.cc/pub/product-intro.html」

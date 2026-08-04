@@ -1157,6 +1157,19 @@ class WebAdapter:
                     )
             return web.json_response({"provider": "kimi", "type": "api"})
 
+        # Codex OAuth 代理(本地,GPT 订阅):经代理 management api-call 转发
+        # chatgpt.com/backend-api/wham/usage 查额度(见 providers.codex_usage)。
+        mgmt = providers.codex_mgmt_for_model(model)
+        if mgmt is not None:
+            mgmt_key, base_url = mgmt
+            try:
+                data = await providers.codex_usage(mgmt_key, base_url)
+                return web.json_response(data)
+            except Exception as ex:
+                return web.json_response(
+                    {"provider": "codex", "error": str(ex)}, status=502
+                )
+
         # Claude 官方订阅:优先用 SDK 缓存的 RateLimitEvent(官方精确值),
         # 若 utilization 缺失则合并本地日志估算值作兜底,确保始终有具体百分比。
         p_entry = providers.lookup_provider_by_model(model)

@@ -260,7 +260,11 @@ def available_models(
         seen.add(model)
         base_url = _entry_field(entry, "base_url", "baseUrl")
         kind = _billing_kind(base_url)
-        group = "kimi" if kind == "订阅" else "api"
+        # 配了 mgmt_key 的本地 Codex 代理 → 单独 codex 组(订阅额度可查,前端有圆环)
+        if _entry_field(entry, "mgmt_key"):
+            group = "codex"
+        else:
+            group = "kimi" if kind == "订阅" else "api"
         out.append((model, f"{model}（{kind}）", group))
     return out
 
@@ -292,6 +296,113 @@ def subscription_api_key_for_model(model: str) -> str | None:
     if not base_url or not is_subscription_host(base_url):
         return None
     return _entry_field(entry, "api_key", "apiKey")
+
+
+def codex_mgmt_for_model(model: str) -> tuple[str, str] | None:
+    """model 对应的供应商若是本地 Codex OAuth 代理(条目配了 mgmt_key),返回
+    (mgmt_key, base_url);否则 None。
+
+    只认 127.0.0.1/localhost 的 base_url——mgmt_key 是本地代理的管理钥匙,
+    绝不发给任意远程端点。
+    """
+    entry = lookup_provider_by_model(model)
+    if entry is None:
+        return None
+    base_url = _entry_field(entry, "base_url", "baseUrl")
+    mgmt_key = _entry_field(entry, "mgmt_key")
+    if not base_url or not mgmt_key:
+        return None
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(base_url).hostname or "").lower()
+    if host not in ("127.0.0.1", "localhost"):
+        return None
+    return mgmt_key, base_url.rstrip("/")
+
+
+async def codex_usage(mgmt_key: str, base_url: str) -> dict:
+    """查本地 Codex OAuth 代理背后的 GPT 订阅额度。
+
+    链路:代理 Management API 的 auth-files 拿账号(auth_index + chatgpt_account_id),
+    再经 api-call 把请求转发到 chatgpt.com/backend-api/wham/usage(代理持有的
+    登录会话自带 Cloudflare 通行能力,直接 curl 会被挑战页拦)。Authorization 头
+    用 $TOKEN$ 占位符,代理自动替换成账号的真实 token。
+
+    返回统一成现有 five_hour 结构(utilization 0-1 / resets_at 秒级 unix),
+    resetLabel/圆环前端零改动;plan_type/credits 放顶层给 tooltip 用。
+    """
+    import aiohttp
+
+    async with aiohttp.ClientSession() as session:
+        # 1) auth-files:拿第一个 oauth 账号的 auth_index + account_id
+        async with session.get(
+            f"{base_url}/v0/management/auth-files",
+            headers={"X-Management-Key": mgmt_key},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
+                txt = await resp.text()
+                return {"provider": "codex", "error": f"auth-files HTTP {resp.status}: {txt[:200]}"}
+            files = (await resp.json()).get("files", [])
+        auth_index = account_id = ""
+        for f in files:
+            if f.get("account_type") == "oauth" and f.get("auth_index"):
+                auth_index = f["auth_index"]
+                account_id = (f.get("id_token") or {}).get("chatgpt_account_id") or ""
+                break
+        if not auth_index:
+            return {"provider": "codex", "error": "代理里没有可用的 Codex oauth 账号"}
+        # 2) api-call 转发 wham/usage
+        header = {
+            "Authorization": "Bearer $TOKEN$",
+            "Content-Type": "application/json",
+            # 带完整浏览器 UA 才能过 Cloudflare 挑战
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+        }
+        if account_id:
+            header["Chatgpt-Account-Id"] = account_id
+        async with session.post(
+            f"{base_url}/v0/management/api-call",
+            headers={"X-Management-Key": mgmt_key},
+            json={
+                "authIndex": auth_index,
+                "method": "GET",
+                "url": "https://chatgpt.com/backend-api/wham/usage",
+                "header": header,
+            },
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            if resp.status != 200:
+                return {"provider": "codex", "error": f"api-call HTTP {resp.status}"}
+            data = await resp.json()
+        status = data.get("status_code")
+        if status != 200:
+            return {"provider": "codex", "error": f"wham/usage HTTP {status}"}
+        body = data.get("body") or {}
+        # api-call 的 body 有时是 JSON 字符串而非对象(aiohttp 与 curl 表现不同),统一转对象
+        if isinstance(body, str):
+            import json as _json
+
+            try:
+                body = _json.loads(body)
+            except Exception:
+                return {"provider": "codex", "error": f"wham/usage body 解析失败: {body[:200]}"}
+
+    rl = body.get("rate_limit") or {}
+    primary = rl.get("primary_window") or {}
+    used_pct = float(primary.get("used_percent") or 0)
+    reached = bool(rl.get("limit_reached"))
+    five_hour = {
+        "utilization": min(1.0, used_pct / 100),
+        "resets_at": primary.get("reset_at"),
+        "status": "rejected" if reached else "allowed",
+    }
+    return {
+        "provider": "codex",
+        "plan_type": body.get("plan_type"),
+        "credits": body.get("credits") or {},
+        "limits": {"five_hour": five_hour},
+    }
 
 
 async def kimi_usage(api_key: str) -> dict:

@@ -71,7 +71,7 @@ tests/test_voice_p1.py
 ## 手工验收(隔离测试服务器,真实模型,非 mock)
 
 用与 P0 相同的隔离测试服务器(`run_voice_test_server.py`,独立端口,不影响
-生产 `wazir.example.com`)跑通:
+生产 `wazir.chjm.cc`)跑通:
 
 - [x] 「帮我在后台跑...这个明确要用 voice_dispatch_task 派到后台」→ AI 秒回
       「好,我去办,好了叫你」,`GET /voice/tasks` 立即能看到该任务 `status=running`,
