@@ -1,6 +1,6 @@
 # vococo
 
-基于 **Claude 订阅** 的个人 AI 助理(personal Hermes),给自己用。
+基于 **Claude 订阅** 的个人 AI 助理,给自己用。
 架构参考 [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent),锁定 Claude、单用户、精简。
 
 > 完整需求见 [REQUIREMENTS.md](REQUIREMENTS.md)。
@@ -38,28 +38,16 @@ vococo cron       # 列出定时任务
 
 `/new` 开新会话(旧史保留) · `/clear` 清屏+开新 · `/model [名]` 切模型 · `/history` 看历史 · `/status` 会话信息 · `/help`
 
-## 多供应商切换(cc-switch 集成)
+## 多供应商切换
 
-想用 **DeepSeek / Kimi** 或任意第三方 Anthropic 兼容中转:配置写在 **`~/.vococo/config.yaml`**(cc-switch 格式,**刻意独立于原版 Hermes 的 `~/.hermes`**,两者不共用、互不干扰)。
+想用 **DeepSeek / Kimi** 或任意第三方 Anthropic 兼容中转:在 Web 设置页的「模型」
+管理界面直接添加(base_url + key + model),**每轮自动生效,无需重启**;会话里
+`/model <模型名>` 可临时覆盖。只用第三方时,`.env` 里的订阅 token 可留空。
+模型名 / key / base_url 全在设置页管理,vococo 不硬编码任何供应商。
 
-- vococo **每轮自动读**这个文件,用上当前激活的供应商(base_url + key + model),无需重启。
-- 会话里 `/model <模型名>` 可临时覆盖(优先级高于全局激活);`/status` 显示当前供应商;`vococo doctor` 会报告检测到的配置与激活供应商。
-- 只用第三方时,`.env` 里的订阅 token 可留空。模型名 / key / base_url 全由配置文件管理,vococo 不硬编码任何供应商。
-
-配置示例(`~/.vococo/config.yaml`):
-
-```yaml
-model:
-  provider: deepseek
-  base_url: https://api.deepseek.com/anthropic
-  default: deepseek-v4-flash
-custom_providers:
-  - {name: deepseek,     base_url: https://api.deepseek.com/anthropic, api_key: sk-..., model: deepseek-v4-flash}
-  - {name: deepseek-pro, base_url: https://api.deepseek.com/anthropic, api_key: sk-..., model: deepseek-v4-pro}
-  - {name: kimi,         base_url: https://api.moonshot.cn/anthropic,  api_key: sk-..., model: kimi-k2.7-code}
-```
-
-想用桌面版 [cc-switch](https://github.com/farion1231/cc-switch) 图形化管理:在它里面把该 Hermes profile 的 `hermes_config_dir` 指到 `~/.vococo` 即可。
+旧版 [cc-switch](https://github.com/farion1231/cc-switch) 桌面 App 的配置
+(`~/.claude-hermes/config.yaml`,历史遗留路径名)可用一次性脚本导入设置页:
+`python -m vococo.gateway.migrate_cc_switch`。
 
 ## 常驻(macOS)
 
