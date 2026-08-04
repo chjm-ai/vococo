@@ -145,3 +145,51 @@ async def test_prune_keeps_branch_with_commits(isolated, monkeypatch, tmp_path):
     assert not wt.exists()
     out = subprocess.run(["git", "branch"], cwd=repo, capture_output=True, text=True).stdout
     assert "vococo/s1" in out  # 分支还在,内容可找回
+
+
+# ── recycle_empty_worktree:归档时空壳回收 ──────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_recycle_empty_worktree_on_archive(isolated, monkeypatch, tmp_path):
+    """归档场景:没改过代码的空壳 worktree → 立即回收(worktree+分支+绑定全清)。"""
+    repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
+    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
+    session_store.set_worktree(f"web:p{phash}:s1", str(wt))
+    assert wt.is_dir()
+
+    recycled = await worktree.recycle_empty_worktree(f"web:p{phash}:s1")
+    assert recycled is True
+    assert not wt.exists()
+    assert session_store.get_worktree(f"web:p{phash}:s1") is None  # 绑定已解
+    out = subprocess.run(["git", "branch"], cwd=repo, capture_output=True, text=True).stdout
+    assert "vococo/s1" not in out  # 空分支一并删
+
+
+@pytest.mark.anyio
+async def test_recycle_keeps_worktree_with_commits(isolated, monkeypatch, tmp_path):
+    """归档场景:分支有独立提交(干过活) → 不动,留给合并流程。"""
+    repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
+    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
+    (wt / "work.txt").write_text("有价值的工作")
+    subprocess.run(["git", "add", "."], cwd=wt, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "work"], cwd=wt, check=True)
+    session_store.set_worktree(f"web:p{phash}:s1", str(wt))
+
+    recycled = await worktree.recycle_empty_worktree(f"web:p{phash}:s1")
+    assert recycled is False
+    assert wt.is_dir()
+    assert session_store.get_worktree(f"web:p{phash}:s1") == str(wt)
+
+
+@pytest.mark.anyio
+async def test_recycle_keeps_worktree_dirty(isolated, monkeypatch, tmp_path):
+    """归档场景:有未提交改动 → 不动,内容不能丢。"""
+    repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
+    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
+    (wt / "README.md").write_text("改了没提交")
+    session_store.set_worktree(f"web:p{phash}:s1", str(wt))
+
+    recycled = await worktree.recycle_empty_worktree(f"web:p{phash}:s1")
+    assert recycled is False
+    assert wt.is_dir()

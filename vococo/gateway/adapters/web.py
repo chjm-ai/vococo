@@ -1512,6 +1512,12 @@ class WebAdapter:
         archived = bool(body.get("archived", True))
         session_key = config.resolve_session_key("web", conv)
         session_store.set_conv_archived(session_key, archived)
+        if archived:
+            # 归档 = 会话收尾信号:没改过代码的空壳 worktree 当场回收,不留残留。
+            # 有独立提交/未提交改动的留着(内容不能丢),交给合并或删会话流程。
+            from ...core import worktree  # 懒加载
+
+            await worktree.recycle_empty_worktree(session_key)
         return web.json_response({"ok": True})
 
     async def _handle_conv_read(self, request: web.Request) -> web.Response:
