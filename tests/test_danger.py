@@ -118,6 +118,16 @@ def test_classify_write_outside_cwd(tmp_path):
     assert classify("Write", {"file_path": "/etc/evil"}, cwd=str(tmp_path))[0] == "escalate"
 
 
+def test_classify_external_mcp_write_escalates():
+    """外部 MCP 写操作(发邮件/删数据)必须请批准,读操作不拦。"""
+    assert classify("mcp__lemlist_lite__send_email", {"message": "hi"})[0] == "escalate"
+    assert classify("mcp__lemlist_lite__add_campaign_lead", {"email": "a@b.c"})[0] == "escalate"
+    assert classify("mcp__lemlist_lite__delete_contact", {"idOrEmail": "x"})[0] == "escalate"
+    # 读操作与普通工具不受影响
+    assert classify("mcp__lemlist_lite__list_campaigns", {})[0] == "allow"
+    assert classify("mcp__vococo__recall_past", {"query": "x"})[0] == "allow"
+
+
 def test_guard_hook_denies_catastrophic():
     out = anyio.run(
         lambda: pretool_guard_hook(

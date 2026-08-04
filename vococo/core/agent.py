@@ -45,6 +45,40 @@ from .prompt import build_system_prompt
 # 它连带隐藏(_scan_skills 只扫 ~/.claude/skills,看不到插件里的 skill,没法在设置页单独管)。
 _PLUGIN_SKILLS = ["vococo-internal:vococo-web-publish"]
 
+# ── 外贸 MCP 自动触发(B 方案)──────────────────────────────────────────────
+# 外部 MCP(lemlist/dataforseo/GA4)工具 schema 巨大(lemlist 120 个 ≈11 万
+# token/轮),默认全关省上下文。用户消息命中外贸关键词 → 自动全开并【持久化】
+# (开了就保持,不自动关):保温池哈希只在第一次触发那轮变一次,之后稳定,不会
+# 每轮抖动重建。用户也可随时说「关掉外贸工具」手动关(见 tools/builtin.set_external_mcp)。
+_TRADE_KEYWORDS = (
+    "lemlist", "拓客", "获客", "面料", "纺织", "外贸", "fabric", "textile",
+    "cold email", "coldemail", "邮件营销", "邮件序列", "潜在客户", "客户开发",
+    "leads", "campaign", "退订", "unsubscribe", "收件箱", "inbox",
+    "lemleads", "people database", "enrich", "邮箱验证", "找客户",
+    "backlink", "反链", "搜索量", "search volume", "seo", "google ads",
+    "ga4", "google analytics", "网站流量", "域名分析",
+)
+
+
+def _maybe_auto_enable_trade_mcp(user_text: str) -> None:
+    """消息命中外贸关键词 → 自动开启全部外部 MCP(持久化,本轮即生效)。
+
+    只写在「存在未启用 server」时;写一次后哈希稳定,保温 client 不反复重建。
+    静默执行不打扰;手动关仍走 set_external_mcp。
+    """
+    if not user_text:
+        return
+    t = user_text.lower()
+    if not any(k in t for k in _TRADE_KEYWORDS):
+        return
+    try:
+        for s in settings_store.list_external():
+            if not s.get("enabled", True):
+                settings_store.set_external_enabled(s["name"], True)
+    except Exception:
+        # 设置读写失败不打断对话:这轮不自动开,手动开关仍可用
+        pass
+
 # ── 速率额度缓存 ──────────────────────────────────────────────────────────
 # SDK 在流式回复中会发出 RateLimitEvent(含 5h/7d 利用率+重置时间),
 # 这里缓存最新值供 /api/usage 等外部查询,无需额外 API 调用。
@@ -595,6 +629,9 @@ async def stream_turn(
             raise RuntimeError(err)
         user_text = f"{user_text}\n\n{desc}" if user_text.strip() else desc
         images = None
+    # B 方案:命中外贸关键词自动挂外部 MCP(持久化开启,本轮即生效)。
+    # 放在读 effective_external_mcp 之前,保证命中那一轮就带上工具。
+    _maybe_auto_enable_trade_mcp(user_text)
     # MCP / skill 从运行时设置(网页设置页可改)计算,不再写死;改完下一轮即生效
     # (保温 client 的这些参数在 connect 时定死,靠兼容性哈希「一变就重建」保住该语义)。
     mcp_on = settings_store.vococo_enabled()

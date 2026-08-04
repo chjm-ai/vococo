@@ -715,6 +715,51 @@ async def remove_mcp_server(args: dict) -> dict:
     return _ok(f"\U0001f5d1 已删除外部 MCP「{name}」。")
 
 
+@tool(
+    "set_external_mcp",
+    "开关一个外部 MCP server 的挂载(开=挂进每轮上下文,关=不挂)。"
+    "改完【下一条消息即生效,无需新建会话】,对话历史不丢。"
+    "外部 MCP 工具体积很大(lemlist 120 个工具 ≈11 万 token/轮),"
+    "日常闲聊应保持关闭省上下文;做外贸拓客/SEO/GA 分析等任务前再开,用完记得关。"
+    "name:要开关的 server 名(用 list_mcp_servers 查看全部及其当前状态);"
+    "enabled:true=挂载 / false=停挂。也可以一次开全套外贸工具(lemlist+dataforseo+"
+    "analytics-mcp):name 传「外贸工具包」,enabled 按需。",
+    {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "enabled": {"type": "boolean"},
+        },
+        "required": ["name", "enabled"],
+    },
+)
+async def set_external_mcp(args: dict) -> dict:
+    from ..gateway.settings_store import list_external, set_external_enabled
+
+    name = (args.get("name") or "").strip()
+    enabled = bool(args.get("enabled"))
+    if not name:
+        return _ok("name 不能为空。")
+    all_items = list_external()
+    if name == "外贸工具包":
+        targets = [s["name"] for s in all_items if s["type"] in ("http", "stdio", "sse")]
+        if not targets:
+            return _ok("当前没有任何外部 MCP 可开关。")
+        for t in targets:
+            set_external_enabled(t, enabled)
+        act = "开启" if enabled else "关闭"
+        return _ok(
+            f"✅ 已{act}全部外部 MCP:{'、'.join(targets)}。"
+            "下一条消息即生效,无需新建会话,对话历史不丢。"
+        )
+    found = next((s for s in all_items if s["name"] == name), None)
+    if not found:
+        return _ok(f"未找到外部 MCP「{name}」。用 list_mcp_servers 查看列表。")
+    set_external_enabled(name, enabled)
+    act = "开启" if enabled else "关闭"
+    return _ok(f"✅ 已{act}外部 MCP「{name}」。下一条消息即生效,无需新建会话,对话历史不丢。")
+
+
 def build_mcp_servers() -> dict:
     """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
     return {
@@ -736,6 +781,7 @@ def build_mcp_servers() -> dict:
                 list_mcp_servers,
                 add_mcp_server,
                 remove_mcp_server,
+                set_external_mcp,
             ],
         )
     }

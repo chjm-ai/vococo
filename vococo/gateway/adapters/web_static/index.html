@@ -5095,7 +5095,7 @@ async function disableNotify(){
 function renderMcpPane(){
   const m = SET.data.mcp;
   let h = '<h3>'+ic("plug")+'MCP 工具服务</h3>'+
-    '<p class="shint">MCP(Model Context Protocol)给 vococo 接入额外工具。改动下一轮对话即生效。</p>';
+    '<p class="shint">MCP(Model Context Protocol)给 vococo 接入额外工具。开关改动下一条消息即生效,无需新建会话、历史不丢。外部工具 schema 很占上下文(如 lemlist 120 个工具 ≈11 万 token/轮),不用时建议关;也可以直接对 Wazir 说「开外贸工具 / 关掉 lemlist」。</p>';
   h += '<div class="sechd">内置</div>';
   h += mcpRow("vococo", "vococo 内置工具", "记忆检索 / 保存、定时任务、发消息、自我重启等——关掉后这些能力会消失,谨慎。", m.vococo_enabled, "vococo");
   h += '<div class="sechd">外部 Server</div>';
