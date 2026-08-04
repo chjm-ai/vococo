@@ -73,6 +73,38 @@ async def test_ensure_worktree_for_local_draft_key(isolated, monkeypatch, tmp_pa
     assert branch == "vococo/newsess"
 
 
+# ── worktree_dirty_summary:归档/删除前的未提交内容摘要 ────────────────────
+
+
+@pytest.mark.anyio
+async def test_dirty_summary_clean(isolated, monkeypatch, tmp_path):
+    """干净 worktree → None(无提示)。"""
+    repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
+    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
+    session_store.set_worktree(f"web:p{phash}:s1", str(wt))
+
+    assert await worktree.worktree_dirty_summary(f"web:p{phash}:s1") is None
+
+
+@pytest.mark.anyio
+async def test_dirty_summary_reports_uncommitted(isolated, monkeypatch, tmp_path):
+    """有未提交改动 + 未跟踪 + 独立提交 → 摘要齐全。"""
+    repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
+    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
+    (wt / "README.md").write_text("改了没提交")
+    (wt / "newfile.txt").write_text("未跟踪")
+    (wt / "work.txt").write_text("已提交")
+    subprocess.run(["git", "add", "work.txt"], cwd=wt, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "work"], cwd=wt, check=True)
+    session_store.set_worktree(f"web:p{phash}:s1", str(wt))
+
+    d = await worktree.worktree_dirty_summary(f"web:p{phash}:s1")
+    assert d is not None
+    assert d["uncommitted"] >= 1  # README.md
+    assert d["untracked"] >= 1    # newfile.txt
+    assert d["commits"] == 1      # work.txt 的提交
+
+
 # ── prune_orphans:只清无主孤儿 ─────────────────────────────────────────────
 
 

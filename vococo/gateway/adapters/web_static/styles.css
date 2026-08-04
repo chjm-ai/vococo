@@ -450,6 +450,7 @@
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:background .16s,color .16s}
   .tgit:hover{color:var(--text)}
   .tgit.dirty{color:var(--accent)}
+  .tgit .gahb{color:var(--accent);font-weight:700}   /* 标题栏未合并提交标记 ↑N */
   .tgit[hidden]{display:none}
   .tgit.tproj{max-width:140px}
   /* 项目路径弹层:点项目名 pill 弹出完整路径 */

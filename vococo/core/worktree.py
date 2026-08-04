@@ -239,6 +239,33 @@ async def recycle_empty_worktree(session_key: str) -> bool:
     return True
 
 
+async def worktree_dirty_summary(session_key: str) -> dict | None:
+    """会话 worktree 的未提交/未合并内容摘要;干净或没有 worktree 返回 None。
+
+    归档/删除前调用:有未提交改动(含未跟踪)或分支有独立提交时,删 worktree 会
+    丢这些内容,必须先告知用户。返回 {"uncommitted": n, "untracked": n, "commits": n}。
+    """
+    path = session_store.get_worktree(session_key)
+    if not path or not os.path.isdir(path):
+        return None
+    root = config.project_root_for(session_key)
+    if not (root and os.path.isdir(root)):
+        return None
+    _, st, _ = await _git(path, "status", "--porcelain")
+    # status 里 ?? 开头的是未跟踪,其余是已跟踪的改动
+    uncommitted = sum(1 for l in st.splitlines() if l.strip() and not l.startswith("??"))
+    untracked = sum(1 for l in st.splitlines() if l.startswith("??"))
+    branch = await _branch_of_worktree(root, path)
+    commits = 0
+    if branch:
+        base = await _default_branch(root)
+        code, out, _ = await _git(root, "rev-list", "--count", f"{base}..{branch}")
+        commits = int(out.strip()) if code == 0 and out.strip() else 0
+    if uncommitted == 0 and untracked == 0 and commits == 0:
+        return None
+    return {"uncommitted": uncommitted, "untracked": untracked, "commits": commits}
+
+
 async def remove_worktree(session_key: str) -> None:
     """会话删除时把它的 worktree 清干净:删目录 + 删空分支 + prune 失效登记。
 

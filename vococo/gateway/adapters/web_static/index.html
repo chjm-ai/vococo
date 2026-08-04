@@ -4150,7 +4150,9 @@ document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contain
 // ── 项目 Git 状态 ─────────────────────────────────────────────────────────
 // 顶栏那颗 ⎇ 按钮:仅项目会话显示;点开弹层看改动 + 一键建分支
 function gitBtnLabel(d){
-  let s='⎇ '+esc(d.branch)+(d.dirty?' •'+d.dirty:'');
+  let s='⎇ '+esc(d.branch);
+  if(d.ahead) s+=' <span class="gahb">↑'+d.ahead+'</span>';   // 未合并提交:标题栏直接可见
+  if(d.dirty) s+=' •'+d.dirty;
   if(d.added||d.removed){
     s+=' <span style="color:#3fb950">+'+d.added+'</span>'
       +' <span style="color:#f85149">-'+d.removed+'</span>';
@@ -4168,7 +4170,7 @@ async function refreshGit(conv){
     if(!d.is_project){ btn.hidden=true; return; }
     pbtn.textContent=d.name; pbtn.hidden=false;
     if(!d.is_repo){ btn.textContent="⎇ 非 git 仓库"; return; }
-    btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", d.dirty>0);
+    btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", (d.dirty>0)||(d.ahead>0));
   }catch(e){ btn.hidden=true; pbtn.hidden=true; }
 }
 // 项目名 pill:点开看完整路径(project_path 是仓库根,不是本会话的 worktree cwd)
@@ -4212,7 +4214,7 @@ async function createGitBranch(){
     const d=await r.json();
     if(!r.ok){ err.textContent=d.error||"创建失败"; err.hidden=false; btn.disabled=false; btn.textContent="新建并切换"; return; }
     S.git=d; renderGitPop();                                       // 重绘:分支名已切到新分支
-    const b=$("#convGit"); b.innerHTML=gitBtnLabel(d); b.classList.toggle("dirty", d.dirty>0);
+    const b=$("#convGit"); b.innerHTML=gitBtnLabel(d); b.classList.toggle("dirty", (d.dirty>0)||(d.ahead>0));
   }catch(e){ err.textContent="网络错误"; err.hidden=false; btn.disabled=false; btn.textContent="新建并切换"; }
 }
 $("#convGit").onclick=e=>{ e.stopPropagation(); const p=$("#gitPop");
@@ -5585,7 +5587,22 @@ async function delConv(conv){
   // 纯本地会话(从未发过消息)服务端没有记录,删完即止
   if(String(conv).startsWith("local-")) return;
   try{
-    await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
+    const r=await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
+    const j=await r.json().catch(()=>({}));
+    if(j && j.need_confirm){
+      // 会话 worktree 里有未提交改动/未合并提交:先回滚乐观假删,弹确认,用户点头才真删
+      list.splice(idx,0,removed); renderConvs();
+      const d=j.dirty||{};
+      const bits=[];
+      if(d.uncommitted) bits.push(d.uncommitted+" 个未提交改动");
+      if(d.untracked) bits.push(d.untracked+" 个未跟踪文件");
+      if(d.commits) bits.push(d.commits+" 个未合并提交");
+      if(confirm("该会话的代码还有"+(bits.join("、")||"未提交内容")+",删除会全部丢失。确定删除吗?")){
+        await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,force:true})});
+      } else {
+        return;  // 用户取消:列表已恢复
+      }
+    }
   }catch(err){
     // 删除失败:回滚列表并提示
     list.splice(idx,0,removed); renderConvs();
@@ -5599,7 +5616,17 @@ function toggleArchive(conv){
   const next=!c.archived;
   c.archived=next; renderConvs();  // 乐观更新
   api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({conv,archived:next})}).catch(()=>{ c.archived=!next; renderConvs(); });
+    body:JSON.stringify({conv,archived:next})}).then(r=>r.json().catch(()=>({}))).then(j=>{
+      if(j && j.warning){
+        // worktree 有未提交改动/未合并提交,归档了但没回收——告诉用户为什么
+        const d=j.dirty||{};
+        const bits=[];
+        if(d.uncommitted) bits.push(d.uncommitted+" 个未提交改动");
+        if(d.untracked) bits.push(d.untracked+" 个未跟踪文件");
+        if(d.commits) bits.push(d.commits+" 个未合并提交");
+        alert("已归档,但该会话的代码还有"+(bits.join("、")||"未提交内容")+"。\n\nworktree 暂未回收(内容不能丢)。合并或提交后再次归档即可回收。");
+      }
+    }).catch(()=>{ c.archived=!next; renderConvs(); });
   if(next && c.pinned) pinConv(conv, false);   // 归档的会话不该再占着置顶分组,顺手取消置顶
 }
 function renderConvFilterPop(){
