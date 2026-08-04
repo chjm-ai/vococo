@@ -6349,7 +6349,7 @@ function applyStreamEvent(e){
       if(!S.stream) break;
       addBubble("me", e.text); break;
     case "start":
-      if(S.transcribeWait){ S.transcribeWait.remove(); S.transcribeWait=null; }
+      if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }
       ensureStream(e._t0); break;
     case "thinking": { const s=ensureStream(); s.thinktog.style.display="flex"; s.think.textContent=e.text; renderStatus(); break; }
     case "text": { const s=ensureStream(); const d=segDiv(s, e.seg); d.dataset.raw=e.text; renderSeg(d); if(s.activeCard){ foldToGroup(s, s.activeCard); s.activeCard=null; s.tgroup=null; s.toolCount=0; } renderStatus(); break; }
@@ -6519,17 +6519,19 @@ async function send(text, display, opts){
   // display:点按钮时传选项文字,气泡显示友好文字而非原始命令(如 /clarify id 0)
   const shown=(display!=null)?display:text;
   // opts.reuseBubble:语音已先冒了占位气泡并回填文字,这里不再重复冒泡
-  if(!opts.reuseBubble && (shown || imgs.length || auds.length))
-    addBubble("me", shown||(auds.length?"(语音/音频)":"(图片)"), imgs, auds);
+  if(!opts.reuseBubble && (shown || imgs.length || auds.length)){
+    const b=addBubble("me", shown||(auds.length?"(语音/音频)":"(图片)"), imgs, auds);
+    // 有音频还没转写:气泡上加转圈 loading(转写在发送后由服务端做,短音频 1~2s,
+    // 会议录音几分钟),收到回复流 start 事件(开始回答)才停转
+    if(auds.some(a=>!a.text)){
+      S.audioLoading = el("span","aspin");
+      b.append(S.audioLoading);
+    }
+  }
   // 标记本轮由本客户端发出,避免收到 "user" 事件时渲染重复气泡
   if(!text.startsWith("/")) S.localSent = true;
   // 非命令消息:立刻挂一个"💭 思考中…"气泡,不等服务器 start 事件,反馈更即时(像 TG 秒回 typing)
-  if(!text.startsWith("/") && !S.stream){
-    // 有音频还没转写:转写在发送后由服务端做(短音频 1~2s,会议录音几分钟),
-    // 先冒"转写中"占位,收到 start 事件(回复流开始)再换成正式回复气泡
-    if(S.audios.some(a=>!a.text)) S.transcribeWait = addBubble("ai","🎧 音频转写中,完成后开始回复…");
-    else ensureStream();
-  }
+  if(!text.startsWith("/") && !S.stream){ ensureStream(); }
   const payload={
     conv:S.conv, text,
     images:S.images.map(x=>({data:x.data,media_type:x.media_type})),
@@ -6542,7 +6544,10 @@ async function send(text, display, opts){
   try{
     await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(wasLocal) setTimeout(loadConvs, 400);
-  }catch(err){ addBubble("ai","⚠️ 发送失败:"+err.message); }
+  }catch(err){
+    if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }  // 发送失败,停掉 loading
+    addBubble("ai","⚠️ 发送失败:"+err.message);
+  }
 }
 // 静默发命令(如 /model 切换):不渲染用户气泡,回执由服务端 message 事件带回
 async function sendCmd(cmd, conv){

@@ -942,6 +942,8 @@
   /* 语音占位气泡:转写中 spinner / 没听清可重录 */
   .bubble .vwait{display:inline-flex;align-items:center;gap:8px}
   .bubble .vwait .sp{width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,.42);border-top-color:#fff;animation:spin .7s linear infinite;flex-shrink:0}
+  /* 音频发送后的 loading 圈(在用户气泡里):currentColor 跟随气泡文字色,深浅背景都可见 */
+  .bubble .aspin{display:inline-block;vertical-align:middle;margin-left:8px;width:14px;height:14px;border-radius:50%;border:2px solid currentColor;border-top-color:transparent;opacity:.65;animation:spin .7s linear infinite;flex-shrink:0}
   .bubble .vretry{margin-left:9px;padding:2px 11px;border-radius:12px;background:rgba(255,255,255,.24);color:#fff;font-size:13px;cursor:pointer}
   .bubble .vretry:active{transform:scale(.94)}
   #sendBtn:disabled{opacity:.4;box-shadow:none}
