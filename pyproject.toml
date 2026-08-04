@@ -16,7 +16,7 @@ classifiers = [
     "Topic :: Communications :: Chat",
 ]
 dependencies = [
-    "claude-agent-sdk==0.2.110",
+    "claude-agent-sdk==0.2.129",
     "python-dotenv>=1.0.0",
     "anyio>=4.0.0",
     "rich>=13.0.0",
