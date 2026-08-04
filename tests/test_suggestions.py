@@ -9,7 +9,7 @@ import pytest
 @pytest.fixture
 def sugg_env(isolated, monkeypatch):
     # isolated 把 DATA_DIR 指到 tmp;但 SUGGESTIONS_PATH/CRON_JOBS_PATH 是导入期常量,单独 patch
-    from claude_hermes import config
+    from vococo import config
 
     data = isolated / "data"
     data.mkdir(parents=True, exist_ok=True)
@@ -27,7 +27,7 @@ def _text(result: dict) -> str:
 
 
 def test_add_and_list_pending(sugg_env):
-    from claude_hermes.cron import suggestions
+    from vococo.cron import suggestions
 
     rec = suggestions.add_suggestion(
         title="晨报", description="每天8点", source="catalog",
@@ -39,7 +39,7 @@ def test_add_and_list_pending(sugg_env):
 
 
 def test_dedup_pending_and_dismissed(sugg_env):
-    from claude_hermes.cron import suggestions
+    from vococo.cron import suggestions
 
     assert suggestions.add_suggestion(
         title="A", description="", source="usage", job_spec=_spec(), dedup_key="k1"
@@ -58,7 +58,7 @@ def test_dedup_pending_and_dismissed(sugg_env):
 
 
 def test_accept_creates_job(sugg_env):
-    from claude_hermes.cron import scheduler, suggestions
+    from vococo.cron import scheduler, suggestions
 
     suggestions.add_suggestion(
         title="晨报", description="", source="catalog",
@@ -78,13 +78,13 @@ def test_accept_creates_job(sugg_env):
 
 
 def test_accept_nonpending_returns_none(sugg_env):
-    from claude_hermes.cron import suggestions
+    from vococo.cron import suggestions
 
     assert suggestions.accept_suggestion("nope") is None
 
 
 def test_max_pending(sugg_env):
-    from claude_hermes.cron import suggestions
+    from vococo.cron import suggestions
 
     for i in range(suggestions.MAX_PENDING):
         assert suggestions.add_suggestion(
@@ -98,7 +98,7 @@ def test_max_pending(sugg_env):
 
 
 def test_get_by_index_and_title(sugg_env):
-    from claude_hermes.cron import suggestions
+    from vococo.cron import suggestions
 
     suggestions.add_suggestion(
         title="晨报", description="", source="catalog", job_spec=_spec(), dedup_key="d1"
@@ -108,7 +108,7 @@ def test_get_by_index_and_title(sugg_env):
 
 
 def test_catalog_seed_idempotent(sugg_env):
-    from claude_hermes.cron import suggestion_catalog, suggestions
+    from vococo.cron import suggestion_catalog, suggestions
 
     n1 = suggestion_catalog.seed()
     assert n1 >= 1
@@ -117,8 +117,8 @@ def test_catalog_seed_idempotent(sugg_env):
 
 
 def test_suggest_automation_tool_ok(sugg_env):
-    from claude_hermes.cron import suggestions
-    from claude_hermes.tools import builtin
+    from vococo.cron import suggestions
+    from vococo.tools import builtin
 
     out = _text(asyncio.run(builtin.suggest_automation.handler(
         {"title": "每日站会", "description": "每天9点", "cron": "0 9 * * *", "prompt": "站会"}
@@ -128,7 +128,7 @@ def test_suggest_automation_tool_ok(sugg_env):
 
 
 def test_suggest_automation_bad_cron(sugg_env):
-    from claude_hermes.tools import builtin
+    from vococo.tools import builtin
 
     out = _text(asyncio.run(builtin.suggest_automation.handler(
         {"title": "x", "description": "y", "cron": "乱写", "prompt": "z"}
@@ -137,8 +137,8 @@ def test_suggest_automation_bad_cron(sugg_env):
 
 
 def test_suggest_command_lists_and_accepts(sugg_env):
-    from claude_hermes.cron import suggestion_catalog
-    from claude_hermes.gateway import core
+    from vococo.cron import suggestion_catalog
+    from vococo.gateway import core
 
     suggestion_catalog.seed()
     # 无参 → 出 Choice(带接受/忽略按钮)
@@ -168,7 +168,7 @@ def _run_approved(coro_factory):
     """在一个交互通道上下文里跑工具,并自动批准弹出的审批。返回工具结果。"""
     import anyio
 
-    from claude_hermes.gateway import clarify
+    from vococo.gateway import clarify
 
     async def scenario():
         adapter = _FakeAdapter()
@@ -197,8 +197,8 @@ def _run_approved(coro_factory):
 
 def test_cron_admin_toggle_delete_needs_approval(sugg_env):
     """启用/删除定时任务:有交互通道→批准后生效;无通道(cron/eval)→ fail-closed 拒绝。"""
-    from claude_hermes.cron import scheduler, suggestions
-    from claude_hermes.tools import builtin
+    from vococo.cron import scheduler, suggestions
+    from vococo.tools import builtin
 
     suggestions.add_suggestion(
         title="晨报", description="", source="catalog", job_spec=_spec(), dedup_key="c"
@@ -226,7 +226,7 @@ def test_cron_admin_toggle_delete_needs_approval(sugg_env):
 
 
 def test_cron_admin_not_found(sugg_env):
-    from claude_hermes.tools import builtin
+    from vococo.tools import builtin
 
     out = _text(asyncio.run(builtin.delete_cron_job.handler({"ref": "查无此任务"})))
     assert "没找到" in out
@@ -234,8 +234,8 @@ def test_cron_admin_not_found(sugg_env):
 
 def test_add_cron_job_needs_approval(sugg_env):
     """add_cron_job:无交互通道→fail-closed 拒绝、不落盘;有通道+批准→真正创建。"""
-    from claude_hermes.cron import scheduler
-    from claude_hermes.tools import builtin
+    from vococo.cron import scheduler
+    from vococo.tools import builtin
 
     args = {"name": "一次性任务", "prompt": "do it", "run_in_minutes": 60}
 
@@ -255,7 +255,7 @@ def test_add_cron_job_needs_approval(sugg_env):
 
 
 def test_add_cron_job_validation(sugg_env):
-    from claude_hermes.tools import builtin
+    from vococo.tools import builtin
 
     # cron 和 run_in_minutes 都不填
     out = _text(asyncio.run(builtin.add_cron_job.handler({"name": "x", "prompt": "y"})))

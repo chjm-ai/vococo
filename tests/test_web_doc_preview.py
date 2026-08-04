@@ -14,8 +14,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from claude_hermes import config
-from claude_hermes.gateway.adapters.web import WebAdapter
+from vococo import config
+from vococo.gateway.adapters.web import WebAdapter
 
 
 @pytest.fixture
@@ -105,7 +105,7 @@ async def test_missing_file_404(doc_app):
 
 @pytest.mark.anyio
 async def test_oversized_file_413(doc_app, doc_root, monkeypatch):
-    from claude_hermes.gateway.adapters import web as web_module
+    from vococo.gateway.adapters import web as web_module
 
     monkeypatch.setattr(web_module, "_DOC_PREVIEW_MAX", 10)
     (doc_root / "big.txt").write_text("x" * 100, encoding="utf-8")
@@ -210,7 +210,7 @@ async def test_rejects_absolute_path_outside_home(doc_app, isolated):
     assert status == 404
 
 
-# ── 模糊兜底搜索:AI 提到项目文件时经常把包名前缀说漏(比如把 claude_hermes/memory/
+# ── 模糊兜底搜索:AI 提到项目文件时经常把包名前缀说漏(比如把 vococo/memory/
 # images.py 说成 memory/images.py),直接拼接找不到就该按路径尾部搜一遍,而不是让用户
 # 点开一堆"文件不存在"——见与用户的讨论(2026-07-31,原话"针对这个问题,我们有两种解决
 # 思路"，选的是让它尽量能正确识别,而不是不加超链接)。──────────────────────────────
@@ -218,7 +218,7 @@ async def test_rejects_absolute_path_outside_home(doc_app, isolated):
 
 @pytest.mark.anyio
 async def test_fuzzy_resolves_path_missing_package_prefix(doc_app, doc_root):
-    pkg = doc_root / "claude_hermes" / "memory"
+    pkg = doc_root / "vococo" / "memory"
     pkg.mkdir(parents=True, exist_ok=True)
     (pkg / "images.py").write_text("# real module", encoding="utf-8")
 

@@ -3,7 +3,7 @@
 ## 新增文件
 
 ```
-claude_hermes/voice/
+vococo/voice/
   tasks.py       # 任务表 CRUD + 状态机(data/voice/voice.db 的 tasks 表)
   executor.py    # 后台执行器:派发/并发排队/进度采集节流/终态/超时/取消/重启自愈
   task_tools.py  # 三个 MCP 工具:voice_dispatch_task / voice_query_task / voice_list_tasks
@@ -20,7 +20,7 @@ tests/test_voice_p1.py
 | `web.py` / `index.html` | 0 新增 | 0 | 未碰,P0 的挂载已覆盖 |
 | 其余现有文件 | 0 | 0(除下方"顺带改动"外)未碰 | — |
 
-全部在预算内。`git diff --stat -- claude_hermes/config.py claude_hermes/core/agent.py` 复核见下方「移除清单复核」。
+全部在预算内。`git diff --stat -- vococo/config.py vococo/core/agent.py` 复核见下方「移除清单复核」。
 
 ### voice 包内部的顺带改动(不占用上表预算,自己的模块随便改)
 
@@ -71,11 +71,11 @@ tests/test_voice_p1.py
 ## 手工验收(隔离测试服务器,真实模型,非 mock)
 
 用与 P0 相同的隔离测试服务器(`run_voice_test_server.py`,独立端口,不影响
-生产 `wazir.chjm.cc`)跑通:
+生产 `vococo.example.com`)跑通:
 
 - [x] 「帮我在后台跑...这个明确要用 voice_dispatch_task 派到后台」→ AI 秒回
       「好,我去办,好了叫你」,`GET /voice/tasks` 立即能看到该任务 `status=running`,
-      `progress_note` 随工具调用实时更新(如"正在执行:cd /Users/wesley/...");
+      `progress_note` 随工具调用实时更新(如"正在执行:cd /Users/you/...");
 - [x] 任务跑完后 `status=done`、`result_summary`/`result_full` 落库;
 - [x] 「刚才那个 hello 任务办得怎么样了?」→ AI 用 `voice_query_task` 查到并
       口语转述"已经跑完了,执行成功了,结果是 hello。",没有念字段名;
@@ -97,10 +97,10 @@ tests/test_voice_p1.py
 已做「移除演练」(`git stash` 式验证,未真删):
 
 ```bash
-git stash push -u -- claude_hermes/voice/tasks.py claude_hermes/voice/executor.py \
-  claude_hermes/voice/notify.py claude_hermes/voice/task_tools.py tests/test_voice_p1.py \
-  claude_hermes/voice/prompts.py claude_hermes/voice/routes.py claude_hermes/voice/session.py \
-  claude_hermes/voice/static/voice.html claude_hermes/config.py claude_hermes/core/agent.py \
+git stash push -u -- vococo/voice/tasks.py vococo/voice/executor.py \
+  vococo/voice/notify.py vococo/voice/task_tools.py tests/test_voice_p1.py \
+  vococo/voice/prompts.py vococo/voice/routes.py vococo/voice/session.py \
+  vococo/voice/static/voice.html vococo/config.py vococo/core/agent.py \
   tests/test_voice_p0.py
 uv run pytest -q   # 176 passed —— 精确回到 P0 完成时的基线,无残留依赖
 git stash pop      # 验证完毕,原样恢复,再次 204 passed
@@ -108,7 +108,7 @@ git stash pop      # 验证完毕,原样恢复,再次 204 passed
 
 真要彻底移除时(P0+P1 一起清):
 
-1. `rm -rf claude_hermes/voice/ tests/test_voice_p0.py tests/test_voice_p1.py docs/design/voice-companion/`
+1. `rm -rf vococo/voice/ tests/test_voice_p0.py tests/test_voice_p1.py docs/design/voice-companion/`
 2. 还原 `web.py` 那 4 行、`index.html` 那 5 行、`config.py` 那 12 行(P0 的 8 行 + P1 的 4 行)、
    `core/agent.py` 那 7 行(P1 新增,P0 未触碰)
 3. `rm -rf data/voice/`

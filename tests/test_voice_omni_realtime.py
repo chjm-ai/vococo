@@ -9,9 +9,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from claude_hermes import config
-from claude_hermes.core import tasks
-from claude_hermes.voice import omni_realtime as om, routes
+from vococo import config
+from vococo.core import tasks
+from vococo.voice import omni_realtime as om, routes
 
 
 @pytest.fixture

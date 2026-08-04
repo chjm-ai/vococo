@@ -11,10 +11,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from claude_hermes.core.agent import AgentReply, Done, TextDelta
-from claude_hermes.gateway import core
-from claude_hermes.gateway.core import Sink
-from claude_hermes.memory import session_store
+from vococo.core.agent import AgentReply, Done, TextDelta
+from vococo.gateway import core
+from vococo.gateway.core import Sink
+from vococo.memory import session_store
 
 
 async def _noop_worktree(session_key):  # ensure_worktree 的异步替身
@@ -23,7 +23,7 @@ async def _noop_worktree(session_key):  # ensure_worktree 的异步替身
 
 @pytest.mark.anyio
 async def test_cancel_preserves_question_for_next_turn(isolated, monkeypatch):
-    from claude_hermes.core import worktree
+    from vococo.core import worktree
 
     monkeypatch.setattr(worktree, "ensure_worktree", _noop_worktree)
 
@@ -66,7 +66,7 @@ async def test_cancel_interrupts_sdk_client(monkeypatch):
     """手动取消时应调用 client.interrupt() 通知 CLI 子进程停止生成。"""
     from claude_agent_sdk import StreamEvent
 
-    from claude_hermes.core import agent
+    from vococo.core import agent
 
     interrupt_mock = AsyncMock()
 
@@ -102,7 +102,7 @@ async def test_cancel_interrupts_sdk_client(monkeypatch):
 
     monkeypatch.setattr(agent, "ClaudeSDKClient", FakeClient)
     monkeypatch.setattr(agent.providers, "resolve", lambda *args: ("claude-sonnet-4", {}))
-    monkeypatch.setattr(agent.settings_store, "hermes_enabled", lambda: False)
+    monkeypatch.setattr(agent.settings_store, "vococo_enabled", lambda: False)
     monkeypatch.setattr(agent.settings_store, "effective_external_mcp", lambda: {})
     monkeypatch.setattr(agent.settings_store, "effective_skills", lambda: None)
     monkeypatch.setattr(

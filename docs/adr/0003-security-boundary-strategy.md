@@ -8,7 +8,7 @@
 
 ## 背景
 
-claude-hermes 是**单用户、自托管**的个人助理:默认 `bypassPermissions`(工具自动执行)、
+vococo 是**单用户、自托管**的个人助理:默认 `bypassPermissions`(工具自动执行)、
 无沙箱、Agent 拥有完整 Bash/Write,且这个 Agent 挂在网络通道(Telegram/Web)上。
 
 ## 决策:一个根因,四层策略

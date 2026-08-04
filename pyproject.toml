@@ -1,11 +1,11 @@
 [project]
-name = "claude-hermes"
+name = "vococo"
 version = "0.1.0"
-description = "A single-user personal AI assistant on your Claude subscription — always-on, multi-entry (Web / Telegram / CLI), shared session & memory."
+description = "A single-user personal AI assistant — always-on, multi-entry (Web / Telegram / CLI / Voice), shared session & memory."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "claude-hermes contributors" }]
+authors = [{ name = "vococo contributors" }]
 keywords = ["claude", "ai-agent", "personal-assistant", "claude-agent-sdk", "telegram-bot"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -34,12 +34,12 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [project.urls]
-Homepage = "https://github.com/chjm-ai/Wazir"
-Repository = "https://github.com/chjm-ai/Wazir"
-Issues = "https://github.com/chjm-ai/Wazir/issues"
+Homepage = "https://github.com/chjm-ai/vococo"
+Repository = "https://github.com/chjm-ai/vococo"
+Issues = "https://github.com/chjm-ai/vococo/issues"
 
 [project.scripts]
-claude-hermes = "claude_hermes.__main__:main"
+vococo = "vococo.__main__:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -49,14 +49,14 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["claude_hermes*"]
+include = ["vococo*"]
 
 [tool.setuptools.package-data]
-"claude_hermes.voice" = [
+"vococo.voice" = [
     "static/*.html",
     "static/*.js",
 ]
-"claude_hermes.gateway.adapters" = [
+"vococo.gateway.adapters" = [
     "web_static/*.html",
     "web_static/*.json",
     "web_static/*.js",

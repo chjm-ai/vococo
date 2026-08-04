@@ -7,10 +7,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from claude_hermes import config
-from claude_hermes.core import tasks
-from claude_hermes.gateway.adapters.web import WebAdapter
-from claude_hermes.memory import session_store
+from vococo import config
+from vococo.core import tasks
+from vococo.gateway.adapters.web import WebAdapter
+from vococo.memory import session_store
 
 
 @pytest.fixture
@@ -51,6 +51,26 @@ async def test_voice_sidebar_returns_main_pinned_first_and_task_rows(web_app):
     assert row["conv"] == f"task:{task['id']}"
     assert row["task_status"] == "queued"
     assert row["title"] == "查天气"
+    assert row["task_updated_at"] > 0
+
+
+@pytest.mark.anyio
+async def test_voice_sidebar_task_row_carries_done_timestamp(web_app):
+    """2026-08-04:任务行透传完成时间 task_updated_at(终态落库时更新),前端据此
+    做「终态任务显示满 10 分钟自动隐藏」(voiceTaskHidden)——新完成的 10 分钟内
+    要正常显示,满 10 分钟才不再出现,隐藏不是删除。"""
+    task = tasks.create("查天气", "帮我查一下今天天气")
+    session_store.append(f"task:{task['id']}", "帮我查一下今天天气", "晴天")
+    assert tasks.set_status(task["id"], "running")
+    assert tasks.finish(task["id"], "done", "晴天", "晴天")
+
+    async with TestClient(TestServer(web_app)) as client:
+        resp = await client.get("/voice/sidebar")
+        data = await resp.json()
+
+    row = data["tasks"][0]
+    assert row["task_status"] == "done"
+    assert row["task_updated_at"] >= tasks.get(task["id"])["updated_at"]
 
 
 @pytest.mark.anyio

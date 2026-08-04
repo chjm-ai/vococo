@@ -5,10 +5,10 @@
 > 关于「级联 STT→Claude→TTS」与 P2 全双工(ws.py / DashScope 实时 WS / 声纹识别)
 > 的架构描述**均已成为历史**——那些代码已删除,判定纯函数存档在
 > [04-echo-heuristics-archive.md](04-echo-heuristics-archive.md)(原
-> `claude_hermes/voice/heuristics.py`,2026-07-23 因零调用方从活代码降级为文档)。
+> `vococo/voice/heuristics.py`,2026-07-23 因零调用方从活代码降级为文档)。
 > 仍然有效的部分:P1 任务板全套(派活/进度/
 > 播报)、/voice/send 回复轮、按住说话兜底、§2 的后端隔离约束与 §5 验收哲学。
-> 现行移除清单 = `rm -rf claude_hermes/voice/ tests/test_voice_*` + 摘 index.html
+> 现行移除清单 = `rm -rf vococo/voice/ tests/test_voice_*` + 摘 index.html
 > 里 #callView 相关标签/样式与通话 IIFE 脚本段 + config.py 的 VOICE_ 常量 +
 > `rm -rf data/voice/`。注意:通话前端**必须留在 index.html 的 IIFE 里**——
 > 2026-07-12 曾把 Omni 段拆成独立 js 文件,因通话段与聊天逻辑靠 IIFE 隔离同名
@@ -25,7 +25,7 @@
 
 ## 1. 产品定位
 
-给 claude-hermes 增加一种语音聊天模式:用户在手机上像打电话一样跟 AI 说话,AI 用
+给 vococo 增加一种语音聊天模式:用户在手机上像打电话一样跟 AI 说话,AI 用
 1-2 句短话回答;需要干重活时,AI 把活儿派给后台独立会话去跑,用户继续聊,随时可问
 "刚才那个任务怎么样了",干完了 AI 会主动汇报(在线时口头说,离线时推送通知)。
 
@@ -46,7 +46,7 @@
 > 语音通话改成主 SPA(`gateway/adapters/web_static/index.html`)里的一个原地叠加
 > 视图(`#callView`),跟聊天视图共用侧栏/主题/登录态,不再走整页跳转——用户明确
 > 要求"原地叠加、通话不退出",这跟"改一处 index.html ≤15 行"的预算天然冲突,
-> 权衡后放弃前端隔离,换取更好的通话体验。**后端仍然隔离**:`claude_hermes/voice/`
+> 权衡后放弃前端隔离,换取更好的通话体验。**后端仍然隔离**:`vococo/voice/`
 > 包、`data/voice/` 独立数据库、`web.py`/`routes.py` 的挂载点没变,2.4 节的移除
 > 清单里"1/3/4 步"依然成立;第 2 步里 index.html 的"≤15 行"预算作废,移除时改成
 > 手动摘掉 `#callView` 相关标签/样式/脚本(已不是一个可孤立 diff 的小改动)。
@@ -55,8 +55,8 @@
 
 ### 2.1 代码归宿
 
-- 所有新后端代码放 **`claude_hermes/voice/`**(新建包),前端独立页面放
-  `claude_hermes/voice/static/`。
+- 所有新后端代码放 **`vococo/voice/`**(新建包),前端独立页面放
+  `vococo/voice/static/`。
 - 所有新数据文件放 **`data/voice/`** 目录(独立 SQLite,**不碰** `data/state.db`)。
 - 测试放 `tests/test_voice_*.py`。
 
@@ -72,7 +72,7 @@
 
 ### 2.3 依赖方向
 
-- `claude_hermes/voice/` **可以 import** 现有代码(`core.agent.stream_turn`、`config`、
+- `vococo/voice/` **可以 import** 现有代码(`core.agent.stream_turn`、`config`、
   `gateway.adapters.web_push` 等)——单向依赖。
 - 现有代码**永远不 import** voice 模块,唯一例外是 2.2 表中 web.py 那 ≤5 行挂载钩子。
 
@@ -80,7 +80,7 @@
 
 彻底移除本功能 = 以下四步,之后 `uv run pytest` 全绿、serve 正常跑:
 
-1. `rm -rf claude_hermes/voice/ tests/test_voice_* docs/design/voice-companion/`
+1. `rm -rf vococo/voice/ tests/test_voice_* docs/design/voice-companion/`
 2. 还原 web.py 的 ≤5 行、index.html 的 ≤15 行、config.py 的 ≤10 行、
    (P1 后)agent.py 的 ≤10 行
 3. `rm -rf data/voice/`
@@ -103,8 +103,8 @@
 
 ## 4. 全期共用的技术事实(实现前先核对,行号会漂移)
 
-- **repo 根**:`claude_hermes/` 包;命令 `uv sync --extra dev` / `uv run pytest` /
-  `uv run claude-hermes serve`。**必须用 `uv run` 从当前目录跑**(editable 安装会让
+- **repo 根**:`vococo/` 包;命令 `uv sync --extra dev` / `uv run pytest` /
+  `uv run vococo serve`。**必须用 `uv run` 从当前目录跑**(editable 安装会让
   worktree 改动被主仓库已安装包屏蔽)。
 - **agent 入口**:`core/agent.py` 的
   `stream_turn(history, user_text, model=None, images=None, cwd=None, resume=None, session_key=None)`

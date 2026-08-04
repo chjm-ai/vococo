@@ -16,13 +16,13 @@ import asyncio
 
 import pytest
 
-from claude_hermes.core import task_runner
-from claude_hermes.core import tasks as bg_tasks
-from claude_hermes.core.task_runner import _SUMMARY_TAG_INSTRUCTION
-from claude_hermes.core.agent import AgentReply, Done
-from claude_hermes.cron import scheduler
-from claude_hermes.memory import session_store
-from claude_hermes.voice import notify
+from vococo.core import task_runner
+from vococo.core import tasks as bg_tasks
+from vococo.core.task_runner import _SUMMARY_TAG_INSTRUCTION
+from vococo.core.agent import AgentReply, Done
+from vococo.cron import scheduler
+from vococo.memory import session_store
+from vococo.voice import notify
 
 
 @pytest.fixture

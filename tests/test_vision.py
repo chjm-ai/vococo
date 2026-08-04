@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from claude_hermes.core import vision
-from claude_hermes.core.agent import ImageAttachment
+from vococo.core import vision
+from vococo.core.agent import ImageAttachment
 
 
 def _img() -> ImageAttachment:

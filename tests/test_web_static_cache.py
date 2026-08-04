@@ -14,8 +14,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from claude_hermes.gateway.adapters import web as web_mod
-from claude_hermes.gateway.adapters.web import WebAdapter
+from vococo.gateway.adapters import web as web_mod
+from vococo.gateway.adapters.web import WebAdapter
 
 
 @pytest.fixture
@@ -97,7 +97,7 @@ async def test_sw_etag_304_roundtrip(static_app):
 @pytest.mark.anyio
 async def test_history_etag_304_roundtrip(monkeypatch):
     """/history:重会话 JSON 一包几百 KB,内容没变时必须走 304 空包(切会话大多是回看)。"""
-    from claude_hermes.memory import session_store
+    from vococo.memory import session_store
 
     adapter = WebAdapter()
     adapter._guard = lambda request: None  # 测缓存协商,鉴权不在本测试范围

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from claude_hermes.gateway import settings_store
+from vococo.gateway import settings_store
 
 
 def _point_to(monkeypatch, tmp_path: Path) -> None:

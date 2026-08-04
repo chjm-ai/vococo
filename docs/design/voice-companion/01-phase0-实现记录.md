@@ -3,7 +3,7 @@
 ## 新增文件
 
 ```
-claude_hermes/voice/
+vococo/voice/
   __init__.py        # register_routes(app) 唯一对外入口
   routes.py           # aiohttp 路由:页面 + stt + 对话 SSE + stop
   session.py          # 语音会话历史(data/voice/voice.db)+ 调 stream_turn
@@ -34,14 +34,14 @@ tests/test_voice_p0.py
   `_ok_token`/`_guard`(逐 handler 显式调用,不是中间件兜底)。voice/routes.py
   复刻了同一形态(`_ok_token`/`_guard`),`/voice`、`/voice/config` 不校验
   (前者是页面壳、后者只暴露一个布尔开关,均非敏感),其余三个 POST 路由校验。
-  voice.html 直接读 `localStorage.getItem("hermes_token")`(与主界面同源共享),
+  voice.html 直接读 `localStorage.getItem("vococo_token")`(与主界面同源共享),
   不需要再登录一次。
 - **SSE 传输**:音频走 base64 内嵌在 `event: sentence` 里,没有单独实现
   `GET /voice/tts?sid=`——doc §4.2 允许实现者二选一,内嵌更简单且状态更少。
 - **停止语义**:F8 只清空音频合成/播放,不打断 `stream_turn` 本身的文字生成
   (打断 SDK 流会牵扯保温池/resume 状态,且 P0 明确不做"打断检测",只做"停止
   按钮"——保留完整文字流入历史更安全,只是不再出声)。
-- **工具集**:voice 会话复用 `stream_turn` 默认加载的全量 hermes 工具/skills
+- **工具集**:voice 会话复用 `stream_turn` 默认加载的全量 vococo 工具/skills
   (与主 web 会话一致),P0 未额外收紧。风险:首轮系统提示较大,但走 prompt
   cache,和现有主会话的延迟特征一致,不算本期新增风险。
 
@@ -60,16 +60,16 @@ tests/test_voice_p0.py
 已做「移除演练」(见下方命令,`git stash` 式验证,未真删):
 
 ```bash
-git stash push -u -- claude_hermes/voice tests/test_voice_p0.py \
-  claude_hermes/gateway/adapters/web.py claude_hermes/gateway/adapters/web_static/index.html \
-  claude_hermes/config.py pyproject.toml uv.lock
+git stash push -u -- vococo/voice tests/test_voice_p0.py \
+  vococo/gateway/adapters/web.py vococo/gateway/adapters/web_static/index.html \
+  vococo/config.py pyproject.toml uv.lock
 uv run pytest -q   # 166 passed —— 回到语音功能之前的基线,无残留依赖
 git stash pop      # 验证完毕,原样恢复
 ```
 
 真要彻底移除时步骤不变:
 
-1. `rm -rf claude_hermes/voice/ tests/test_voice_p0.py docs/design/voice-companion/`
+1. `rm -rf vococo/voice/ tests/test_voice_p0.py docs/design/voice-companion/`
 2. 还原 `web.py` 那 4 行、`index.html` 那 5 行、`config.py` 那 8 行
 3. `rm -rf data/voice/`(本期尚未在真实环境跑过,大概率还不存在)
 4. `.env` 删掉 `VOICE_` 前缀变量(`VOICE_ENABLED`、`VOICE_TTS_VOICE`)

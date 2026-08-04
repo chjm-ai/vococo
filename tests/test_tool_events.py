@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
-from claude_hermes.core.agent import ToolFinished, ToolInput, ToolStarted, _detail, _preview
-from claude_hermes.gateway.core import Sink
+from vococo.core.agent import ToolFinished, ToolInput, ToolStarted, _detail, _preview
+from vococo.gateway.core import Sink
 
 
 # ── 结果文本处理 ──────────────────────────────────────────────────────────

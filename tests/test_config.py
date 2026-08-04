@@ -3,7 +3,7 @@ from __future__ import annotations
 
 
 def test_parse_skills():
-    from claude_hermes import config
+    from vococo import config
 
     assert config._parse_skills("") is None        # 留空 = 全量(向后兼容)
     assert config._parse_skills("   ") is None
@@ -14,7 +14,7 @@ def test_parse_skills():
 
 
 def test_parse_bool():
-    from claude_hermes import config
+    from vococo import config
 
     assert config._parse_bool("", True) is True       # 空用默认
     assert config._parse_bool("", False) is False
@@ -26,7 +26,7 @@ def test_parse_bool():
 
 
 def test_resolve_session_key_unified(monkeypatch):
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setattr(config, "UNIFY_SESSIONS", True)
     monkeypatch.setattr(config, "SESSION_KEY", "main")
@@ -37,7 +37,7 @@ def test_resolve_session_key_unified(monkeypatch):
 
 
 def test_resolve_session_key_isolated(monkeypatch):
-    from claude_hermes import config
+    from vococo import config
 
     monkeypatch.setattr(config, "UNIFY_SESSIONS", False)
     assert config.resolve_session_key("telegram", 123) == "telegram:123"
@@ -45,7 +45,7 @@ def test_resolve_session_key_isolated(monkeypatch):
 
 
 def test_resolve_session_key_passes_through_voice_prefixes():
-    from claude_hermes import config
+    from vococo import config
 
     # voice-chat:/task: 已经是完整 key,web 端不该再套一层 "web:" 前缀,否则语音
     # 主会话/统一后台任务会话没法跟 index.html 现成的 openConv() 对上号。
@@ -56,8 +56,8 @@ def test_resolve_session_key_passes_through_voice_prefixes():
 
 
 def test_project_cwd_for(isolated, tmp_path):
-    from claude_hermes import config
-    from claude_hermes.memory import session_store
+    from vococo import config
+    from vococo.memory import session_store
 
     d = tmp_path / "repo"
     d.mkdir()
