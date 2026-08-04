@@ -1411,6 +1411,31 @@ class WebAdapter:
             session_store.set_title(config.resolve_session_key("web", conv), title)
         return web.json_response({"ok": True})
 
+    async def _handle_conv_duplicate(self, request: web.Request) -> web.Response:
+        """POST /conv/duplicate  {conv}  复制会话:内容全量搬到新会话,标题加「副本」。
+
+        新 conv 只保留原会话的项目前缀(p<hash>:...),其余一律新生成纯 id ——
+        任务/语音会话(task:/voice-chat:)复制出来是独立普通 web 会话,不会撞 key。
+        返回 {conv: 新会话id, title: 新标题};前端据此刷新列表并打开副本。
+        """
+        if (g := self._guard(request)) is not None:
+            return g
+        body = await request.json()
+        conv = str(body.get("conv") or "")
+        if not conv:
+            return web.json_response({"error": "missing conv"}, status=400)
+        src_key = config.resolve_session_key("web", conv)
+        # 原 conv 形如 p<项目hash>:<id> 则副本留在同一项目下,否则纯 id
+        prefix = ""
+        if conv.startswith("p") and ":" in conv:
+            prefix = conv.split(":", 1)[0] + ":"
+        new_id = f"{int(time.time() * 1000):x}{uuid.uuid4().hex[:6]}"
+        new_conv = prefix + new_id
+        dst_key = config.resolve_session_key("web", new_conv)
+        title = session_store.get_title(src_key) or "新对话"
+        session_store.duplicate_session(src_key, dst_key, title + "副本")
+        return web.json_response({"conv": new_conv, "title": title + "副本"})
+
     async def _handle_delete(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
             return g
@@ -2178,6 +2203,7 @@ class WebAdapter:
                 web.post("/transcribe", self._handle_transcribe),
                 web.post("/upload_audio", self._handle_upload_audio),
                 web.post("/conv/rename", self._handle_rename),
+                web.post("/conv/duplicate", self._handle_conv_duplicate),
                 web.post("/conv/delete", self._handle_delete),
                 web.post("/conv/archive", self._handle_conv_archive),
                 web.post("/conv/read", self._handle_conv_read),

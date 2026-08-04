@@ -311,6 +311,30 @@ def clear(session_key: str) -> None:
 # 下面这几个 helper 让前端能列出/命名/删除会话,TG/CLI 不受影响。
 
 
+def duplicate_session(src_key: str, dst_key: str, title: str) -> None:
+    """复制会话:全部轮次(含 images/audios/events)搬到新 key,标题用新标题。
+
+    ts 统一刷新为当前时间 —— 侧边栏按 MAX(t.ts) 倒序,新副本要顶到列表最前
+    (保持原 ts 会沉到原会话旁边,用户复制完找不到)。
+    图片/音频本体已落盘在共享目录,turns 里只存文件名列表,无需复制文件。
+    不搬 watermark/token 计量(新会话从零开始,上下文窗口独立)、不搬置顶/
+    归档/项目绑定 —— 副本是干净的新会话,只继承对话内容。
+    """
+    c = _conn()
+    c.execute(
+        "INSERT INTO turns(session_key, ts, user_text, assistant_text, "
+        "draft_text, events, images, audios) "
+        "SELECT ?, ?, user_text, assistant_text, draft_text, events, images, audios "
+        "FROM turns WHERE session_key=?",
+        (dst_key, time.time(), src_key),
+    )
+    c.execute(
+        "INSERT INTO session_meta(session_key, watermark_id, title) VALUES (?,0,?)",
+        (dst_key, title),
+    )
+    c.commit()
+
+
 def set_title(session_key: str, title: str) -> None:
     """给会话起个显示名(upsert,不动 watermark)。"""
     c = _conn()

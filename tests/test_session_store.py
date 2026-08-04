@@ -21,6 +21,35 @@ def test_sessions_isolated_by_key(isolated):
     assert len(session_store.load_recent("tg:1")) == 1
 
 
+def test_duplicate_session_copies_turns_and_title(isolated):
+    from vococo.memory import session_store
+
+    session_store.append("web:a", "第一句", "回一")
+    session_store.append("web:a", "第二句", "回二")
+    session_store.set_title("web:a", "原标题")
+    session_store.duplicate_session("web:a", "web:b", "原标题副本")
+    # 轮次全量复制,顺序不变
+    history = session_store.load_recent("web:b")
+    assert [t.user for t in history] == ["第一句", "第二句"]
+    assert session_store.get_title("web:b") == "原标题副本"
+    # 副本是新会话:上下文窗口独立(水位线 0、无 token 计量),不影响原会话
+    assert session_store.list_sessions("web:b")[0]["turns"] == 2
+    # 副本 ts 刷新 → 排序时顶到原会话前面(侧边栏按 MAX(t.ts) 倒序)
+    a = session_store.list_sessions("web:a")[0]
+    b = session_store.list_sessions("web:b")[0]
+    assert b["last_ts"] >= a["last_ts"]
+
+
+def test_duplicate_session_empty_source_ok(isolated):
+    """复制没有轮次的会话(只有标题)也不报错,新会话带标题。"""
+    from vococo.memory import session_store
+
+    session_store.set_title("web:a", "只有标题")
+    session_store.duplicate_session("web:a", "web:c", "只有标题副本")
+    assert session_store.get_title("web:c") == "只有标题副本"
+    assert session_store.load_recent("web:c") == []
+
+
 def test_new_session_watermark(isolated):
     from vococo.memory import session_store
 
