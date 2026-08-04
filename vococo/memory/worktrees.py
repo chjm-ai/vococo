@@ -19,7 +19,7 @@ def get_worktree(session_key: str) -> str | None:
 
 
 def all_worktree_paths() -> list[str]:
-    """DB 里当前所有会话绑定的 worktree 目录 —— 启动清孤儿时的「活会话」白名单。"""
+    """DB 里当前所有会话绑定的 worktree 目录 —— 启动清孤儿时的「有主」白名单。"""
     rows = _db.conn().execute(
         "SELECT worktree_path FROM session_meta "
         "WHERE worktree_path IS NOT NULL AND worktree_path != ''"

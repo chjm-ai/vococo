@@ -25,6 +25,20 @@ def test_parse_bool():
     assert config._parse_bool("yes", False) is True
 
 
+def test_project_hash_from_key():
+    from vococo import config
+
+    # 正式项目会话(改名前的存量形态)
+    assert config.project_hash_from_key("web:pabc123def:s1") == "abc123def"
+    # 前端草稿会话(local- 前缀,改名后新建会话的形态——不识别会导致不建 worktree)
+    assert config.project_hash_from_key("web:local-pabc123def:s1") == "abc123def"
+    # 无项目的纯草稿 / 主会话 / TG / task 前缀:都不是项目会话
+    assert config.project_hash_from_key("web:local-abc123") is None
+    assert config.project_hash_from_key("web:main") is None
+    assert config.project_hash_from_key("tg:123") is None
+    assert config.project_hash_from_key("task:abc") is None
+
+
 def test_resolve_session_key_unified(monkeypatch):
     from vococo import config
 

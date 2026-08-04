@@ -143,8 +143,10 @@ async def ensure_worktree(session_key: str) -> str | None:
     root = config.project_root_for(session_key)
     if not root:  # 非项目会话(CLI/TG/main),秒退,零 DB 开销
         return None
-    # 项目哈希取自 key 的第二段 p<hash>(project_root_for 已保证 key 是三段项目会话)
-    phash = session_key.split(":")[1][1:]
+    # 项目哈希从 key 统一解析(兼容 p<hash> 与草稿 local-p<hash> 两种形态)
+    phash = config.project_hash_from_key(session_key)
+    if not phash:
+        return None
     slug = _slug(session_key.split(":")[-1])
     return await _ensure_worktree_impl(session_key, root, phash, slug)
 
@@ -203,6 +205,40 @@ async def _ensure_worktree_impl(session_key: str, root: str, phash: str, slug: s
     return None
 
 
+async def recycle_empty_worktree(session_key: str) -> bool:
+    """归档等「会话收尾」场景:worktree 是空壳就立即回收,有内容则不动。返回是否回收。
+
+    空壳判定 = 分支没超前主分支(从未提交过) 且 无未提交改动(未跟踪文件不算,
+    临时产物)。满足说明这个会话从没改过代码,worktree/分支都没有保留价值;
+    有独立提交或有未提交改动的留着,交给合并(merge-main.sh)或删会话
+    (remove_worktree)流程,绝不自动丢内容。
+    """
+    path = session_store.get_worktree(session_key)
+    if not path or not os.path.isdir(path):
+        return False
+    root = config.project_root_for(session_key)
+    if not (root and os.path.isdir(root)):
+        return False
+    branch = await _branch_of_worktree(root, path)
+    if not branch:
+        return False
+    # ① 分支没超前主分支(没干过活)
+    base = await _default_branch(root)
+    code, out, _ = await _git(root, "rev-list", "--count", f"{base}..{branch}")
+    if not (code == 0 and out.strip() == "0"):
+        return False
+    # ② 工作区干净
+    _, st, _ = await _git(path, "status", "--porcelain", "-uno")
+    if st.strip():
+        return False
+    # 空壳 → 回收
+    session_store.clear_worktree(session_key)
+    await _git(root, "worktree", "remove", "--force", path)
+    await _git(root, "worktree", "prune")
+    await _git(root, "branch", "-D", branch)
+    return True
+
+
 async def remove_worktree(session_key: str) -> None:
     """会话删除时把它的 worktree 清干净:删目录 + 删空分支 + prune 失效登记。
 
@@ -227,8 +263,12 @@ async def prune_orphans() -> int:
     """启动兜底:回收「真孤儿」—— data/worktrees 下 DB 已无会话绑定的 worktree,
     以及悬空的 vococo/* 空分支。返回清理总数。
 
+    回收依据只有用户意图:归档(archived→recycle_empty_worktree)和删除会话
+    (remove_worktree)。系统不做推断回收——DB 还绑着的 worktree 一律不动,哪怕
+    会话早不活跃、代码干净,用户可能随时回来继续聊。
+
     只碰 vococo 自己那套(data/worktrees + vococo/* 及改名前存量 hermes/* 分支),
-    绝不动 Claude Code 的 .claude/worktrees。活会话(DB 仍绑定)一律跳过。
+    绝不动 Claude Code 的 .claude/worktrees。
     """
     if not _WT_BASE.exists():
         return 0
@@ -242,7 +282,7 @@ async def prune_orphans() -> int:
             continue
         for wt in phash_dir.iterdir():
             if not wt.is_dir() or os.path.realpath(str(wt)) in bound:
-                continue  # 活会话绑着 → 跳过
+                continue  # 有主(DB 绑定)的 worktree → 一律跳过
             branch = await _branch_of_worktree(root, str(wt))
             await _git(root, "worktree", "remove", "--force", str(wt))
             if branch.startswith(("vococo/", "hermes/")):

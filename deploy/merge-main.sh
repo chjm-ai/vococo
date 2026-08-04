@@ -49,6 +49,7 @@ if [ "${1:-}" = "--restart" ]; then
   # worktree 路径是 data/worktrees/<项目哈希>/<会话slug>,对应 web 会话键
   # web:p<哈希>:<slug>(见 gateway/adapters/web.py:479)——推给 restart.sh 自我排除,
   # 这样"我自己"不会被当成"别的在跑会话"拦下来,只有真有别的会话在跑才会提示确认。
+  # 注意:合并≠会话结束,worktree/分支不做回收,用户可能还在聊;会话归档/删除时才回收。
   WT="$(pwd)"
   SELF_KEY=""
   case "$WT" in
