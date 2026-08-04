@@ -6153,7 +6153,7 @@ function renderStatus(){
   const tick=secs>=1?(" · "+(secs>=60?Math.floor(secs/60)+"m"+(secs%60)+"s":secs+"s")):"";
   // 有正文 或 有工具在跑 → 工作中;纯思考(啥都没出)→ 思考中(始终带动画,像 TG)
   const working = hasBody || t.some(x=>!x.done);
-  const label = working ? "工作中" : "思考中";
+  const label = S.stream.audioPending ? "音频转写中" : (working ? "工作中" : "思考中");
   S.stream.status.innerHTML = '<span class="chip live">'+label+DOTS+esc(tick)+'</span>'
     + '<button type="button" class="statusstop" title="停止回复" aria-label="停止回复"><span class="sq"></span></button>';
 }
@@ -6350,6 +6350,7 @@ function applyStreamEvent(e){
       addBubble("me", e.text); break;
     case "start":
       if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }
+      if(S.stream) S.stream.audioPending = false;  // 转写完成,状态行恢复正常文案
       ensureStream(e._t0); break;
     case "thinking": { const s=ensureStream(); s.thinktog.style.display="flex"; s.think.textContent=e.text; renderStatus(); break; }
     case "text": { const s=ensureStream(); const d=segDiv(s, e.seg); d.dataset.raw=e.text; renderSeg(d); if(s.activeCard){ foldToGroup(s, s.activeCard); s.activeCard=null; s.tgroup=null; s.toolCount=0; } renderStatus(); break; }
@@ -6504,6 +6505,9 @@ async function send(text, display, opts){
   opts=opts||{};
   closeCmdMenu();
   text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length) return;
+  // 先等所有音频上传完成(文件到服务器才发;上传秒回,最多等 90s 超时)——
+  // 否则上传中的音频 id 还是 null,发出去后端会静默跳过,音频白发还顶掉后续消息
+  if(S.audios.some(a=>!a.id)) await Promise.all(S.audios.map(a=>a.done||Promise.resolve()));
   // 上传失败的音频挡在这里(文件根本没到服务器,发了也白发);"转写中"不拦——
   // 转写在发送后由服务端做,前端冒个占位气泡等回复流开始(见下方 pendingAudio 逻辑)
   if(S.audios.some(a=>a.status==="error")){ addBubble("ai","⚠️ 有音频上传失败,请先移除(点 ×)再发送。"); return; }
@@ -6531,7 +6535,12 @@ async function send(text, display, opts){
   // 标记本轮由本客户端发出,避免收到 "user" 事件时渲染重复气泡
   if(!text.startsWith("/")) S.localSent = true;
   // 非命令消息:立刻挂一个"💭 思考中…"气泡,不等服务器 start 事件,反馈更即时(像 TG 秒回 typing)
-  if(!text.startsWith("/") && !S.stream){ ensureStream(); }
+  if(!text.startsWith("/") && !S.stream){
+    ensureStream();
+    // 有音频待转写:状态行标"音频转写中",让用户知道还在进行(短音频 1~2s,
+    // 会议录音几分钟),回复流 start 事件到达后切回正常"思考中/工作中"
+    if(auds.some(a=>!a.text)) S.stream.audioPending = true;
+  }
   const payload={
     conv:S.conv, text,
     images:S.images.map(x=>({data:x.data,media_type:x.media_type})),
@@ -6721,17 +6730,24 @@ function addAudioFile(f){
   S.audios.push(item); renderThumbs();
   uploadAudio(f, item);
 }
-async function uploadAudio(f, item){
-  try{
-    const form = new FormData(); form.append("audio", f, item.filename);
-    const r = await api("/upload_audio", {method:"POST", body:form});
-    const d = await r.json();
-    if(!r.ok || d.error) throw new Error(d.error || ("HTTP "+r.status));
-    item.id=d.id; item.text=d.text; item.status="done";
-  }catch(e){
-    item.status="error"; item.error=e.message;
-  }
-  renderThumbs();
+function uploadAudio(f, item){
+  // 暴露 item.done:send() 发送前会 await 它,保证"文件已到服务器"才发出消息,
+  // 不会出现音频还在上传(id 为 null)就被发送、后端静默跳过导致音频丢失的情况
+  item.done = (async()=>{
+    try{
+      const form = new FormData(); form.append("audio", f, item.filename);
+      const ac = new AbortController();
+      const timer = setTimeout(()=>ac.abort(), 90000);  // 上传卡住 90s 报超时,别无限挂
+      const r = await api("/upload_audio", {method:"POST", body:form, signal:ac.signal});
+      clearTimeout(timer);
+      const d = await r.json();
+      if(!r.ok || d.error) throw new Error(d.error || ("HTTP "+r.status));
+      item.id=d.id; item.text=d.text; item.status="done";
+    }catch(e){
+      item.status="error"; item.error = e.name==="AbortError" ? "上传超时,请重试" : e.message;
+    }
+    renderThumbs();
+  })();
 }
 
 // ── 图片大图查看器:点聊天里的图放大,←/→ 或按钮切换,Esc/✕/点背景关闭 ─────
