@@ -157,6 +157,12 @@
   .conv .livedot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}   /* AI 正在回复:闪烁圆点 */
   @keyframes livepulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
   .conv .ctime{flex-shrink:0;color:var(--dim2);font-size:10px;font-variant-numeric:tabular-nums;transition:opacity .16s}  /* 会话时刻:名称右侧 */
+  /* 任务行「停止」键(只出现在后台任务还在跑时):常显红方块,紧贴 ⋯ 左侧,触屏也能直接点 */
+  .conv .cvstop{position:absolute;right:30px;top:50%;transform:translateY(-50%);width:20px;height:20px;
+    display:flex;align-items:center;justify-content:center;padding:0;border:none;background:none;
+    color:var(--err);cursor:pointer;border-radius:7px;transition:background .16s}
+  .conv .cvstop .ic{width:13px;height:13px}
+  .conv .cvstop:hover{background:var(--card)}
   /* 「⋯」更多键绝对定位:不占布局宽度,hover 时浮现 */
   .conv .more{position:absolute;right:8px;top:50%;transform:translateY(-50%);opacity:0;pointer-events:none;
     font-size:16px;line-height:1;color:var(--dim2);padding:2px 6px;border-radius:7px;transition:opacity .16s,color .16s,background .16s}

@@ -843,6 +843,45 @@ class WebAdapter:
             task_convs.append(c)
         return web.json_response({"main": main, "tasks": task_convs})
 
+    async def _handle_voice_task_cancel(self, request: web.Request) -> web.Response:
+        """侧边栏「语音任务」行上的停止按钮:停一个后台任务(排队中直接置
+        cancelled;运行中打断当前这轮并等收尾落库)。跟 voice_cancel_task 走同一套
+        task_runner.cancel 逻辑,前端只传完整 conv(task:<id>),不猜字段。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        from ...core import task_runner as bg_task_runner  # 懒加载,同 _handle_voice_sidebar
+        from ...core import tasks as bg_tasks
+
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
+        conv = str(body.get("conv") or "")
+        task_id = bg_tasks.task_id_from_session_key(conv) or conv
+        row = bg_tasks.get(task_id)
+        if row is None:
+            return web.json_response({"ok": False, "reason": "not_found", "message": "任务不存在"})
+        if row["status"] in bg_tasks.TERMINAL_STATUSES:
+            return web.json_response({"ok": False, "reason": "already_done",
+                                      "message": f"任务已结束,不用再停"})
+        ok = bg_task_runner.cancel(task_id)
+        if not ok and row["status"] == "queued":
+            # 竞态:排队中被并发拉起成 running 了,cancel 的 queued 分支会失败——
+            # 重新取状态,若已在跑就走 running 分支再试一次。
+            cur = bg_tasks.get(task_id)
+            if cur and cur["status"] == "running":
+                ok = bg_task_runner.cancel(task_id)
+        if row["status"] == "running" and ok:
+            await bg_task_runner.cancel_and_wait(task_id)  # 等收尾,前端拿到的是准结果
+        if not ok:
+            cur = bg_tasks.get(task_id)
+            return web.json_response({"ok": False, "reason": "cancel_failed",
+                                      "message": f"取消失败,任务当前状态:"
+                                                 f"{cur['status'] if cur else '已不存在'}"})
+        cur = bg_tasks.get(task_id)
+        return web.json_response({"ok": True, "task_id": task_id,
+                                  "status": cur["status"] if cur else "cancelled",
+                                  "message": "已停止"})
+
     # ── 定时任务 ─────────────────────────────────────────────────────────
     async def _handle_cron_sidebar(self, request: web.Request) -> web.Response:
         """侧边栏"定时任务"分组:每个任务一条专属会话(task:<job_id>,job_id 本身
@@ -2086,6 +2125,7 @@ class WebAdapter:
                 web.get("/conversations", self._handle_conversations),
                 web.get("/conv/search", self._handle_conv_search),
                 web.get("/voice/sidebar", self._handle_voice_sidebar),
+                web.post("/voice/tasks/cancel", self._handle_voice_task_cancel),
                 web.get("/cron/sidebar", self._handle_cron_sidebar),
                 web.post("/cron/jobs/create", self._handle_cron_create),
                 web.post("/cron/jobs/update", self._handle_cron_update),

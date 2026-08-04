@@ -1,5 +1,5 @@
-"""P1 任务板 + 网页跨端续聊的 MCP 工具:voice_dispatch_task / voice_list_sessions /
-voice_query_session / voice_continue_session。
+"""P1 任务板 + 网页跨端续聊的 MCP 工具:voice_dispatch_task / voice_cancel_task /
+voice_list_sessions / voice_query_session / voice_continue_session。
 
 只注入进语音前台会话(routes.py 调 session.run_turn 那次 stream_turn),后台任务
 会话本身不挂这组工具——防止任务里的模型再派任务、无限套娃(见 00-overview.md §4.2)。
@@ -168,6 +168,48 @@ async def voice_query_session(args: dict) -> dict:
 
 
 @tool(
+    "voice_cancel_task",
+    "喊停一个后台任务:排队中直接取消;运行中会打断当前这轮并标记已取消(已做完的"
+    "部分不会丢,只是不再继续);已结束的任务不用停,会如实告诉你它已经结束了。"
+    "session_id 从 voice_list_sessions 或 voice_query_session 拿,留空则停最近派发的"
+    "那个后台任务。用户说「停掉/别跑了/取消那个任务」时用这个工具真正去停,并把"
+    "停没停掉、任务现在的状态转述给用户——不要只嘴上答应。",
+    {"type": "object", "properties": {"session_id": {"type": "string"}}},
+)
+async def voice_cancel_task(args: dict) -> dict:
+    session_id = (args.get("session_id") or "").strip()
+    if not session_id:
+        # 留空 = 停"我(语音)最近派发的那个",只看 origin="voice",理由同
+        # voice_list_sessions 的 origin='task' 分支。
+        latest = tasks.list_recent(limit=1, origin="voice")
+        if not latest:
+            return _ok("没有找到任务(还从没派发过任务)。")
+        session_id = latest[0]["id"]
+    task = tasks.get(session_id)
+    if task is None:
+        # 不是后台任务:可能是网页对话 conv,那边有自己的 abort 机制,不归这里管。
+        return _ok(f"没有找到 session_id={session_id} 对应的后台任务。")
+    if task["status"] in tasks.TERMINAL_STATUSES:
+        return _ok(f"任务「{task['title']}」已经结束了({status_word(task['status'])}),不用再停。")
+    if task["status"] == "running":
+        if not task_runner.cancel(session_id):
+            cur = tasks.get(session_id)
+            return _ok(f"任务「{task['title']}」显示运行中但没找到执行器,可能刚结束,"
+                       f"当前状态:{status_word(cur['status']) if cur else '已不存在'}。")
+        # 等 _run 的收尾落库(置 cancelled + 通知),结果才是准的,不会报"已停"结果还在跑
+        await task_runner.cancel_and_wait(session_id)
+        cur = tasks.get(session_id)
+        status = status_word(cur["status"]) if cur else "已结束"
+        return _ok(f"已停止正在运行的任务「{task['title']}」(session_id={session_id}),现在状态:{status}。")
+    # queued:还没轮到它跑,直接置 cancelled 就行(不用等,没有执行器在管)
+    if task_runner.cancel(session_id):
+        return _ok(f"已取消排队中的任务「{task['title']}」(session_id={session_id}),还没开始跑。")
+    cur = tasks.get(session_id)
+    return _ok(f"取消失败,任务「{task['title']}」当前状态:"
+               f"{status_word(cur['status']) if cur else '已不存在'}。")
+
+
+@tool(
     "voice_continue_session",
     "给一个已有会话——后台任务或网页端对话都可以,自动识别是哪一种——续接一句"
     "指令/追加需求,原地续在同一个会话上,绝不会产生新会话。session_id 从"
@@ -221,7 +263,7 @@ def build_server() -> dict:
             "voice_tasks",
             tools=[
                 voice_dispatch_task, voice_list_sessions, voice_query_session,
-                voice_continue_session,
+                voice_cancel_task, voice_continue_session,
             ],
         )
     }
