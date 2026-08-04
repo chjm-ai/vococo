@@ -5585,7 +5585,22 @@ async function delConv(conv){
   // 纯本地会话(从未发过消息)服务端没有记录,删完即止
   if(String(conv).startsWith("local-")) return;
   try{
-    await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
+    const r=await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
+    const j=await r.json().catch(()=>({}));
+    if(j && j.need_confirm){
+      // 会话 worktree 里有未提交改动/未合并提交:先回滚乐观假删,弹确认,用户点头才真删
+      list.splice(idx,0,removed); renderConvs();
+      const d=j.dirty||{};
+      const bits=[];
+      if(d.uncommitted) bits.push(d.uncommitted+" 个未提交改动");
+      if(d.untracked) bits.push(d.untracked+" 个未跟踪文件");
+      if(d.commits) bits.push(d.commits+" 个未合并提交");
+      if(confirm("该会话的代码还有"+(bits.join("、")||"未提交内容")+",删除会全部丢失。确定删除吗?")){
+        await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,force:true})});
+      } else {
+        return;  // 用户取消:列表已恢复
+      }
+    }
   }catch(err){
     // 删除失败:回滚列表并提示
     list.splice(idx,0,removed); renderConvs();
@@ -5599,7 +5614,17 @@ function toggleArchive(conv){
   const next=!c.archived;
   c.archived=next; renderConvs();  // 乐观更新
   api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({conv,archived:next})}).catch(()=>{ c.archived=!next; renderConvs(); });
+    body:JSON.stringify({conv,archived:next})}).then(r=>r.json().catch(()=>({}))).then(j=>{
+      if(j && j.warning){
+        // worktree 有未提交改动/未合并提交,归档了但没回收——告诉用户为什么
+        const d=j.dirty||{};
+        const bits=[];
+        if(d.uncommitted) bits.push(d.uncommitted+" 个未提交改动");
+        if(d.untracked) bits.push(d.untracked+" 个未跟踪文件");
+        if(d.commits) bits.push(d.commits+" 个未合并提交");
+        alert("已归档,但该会话的代码还有"+(bits.join("、")||"未提交内容")+"。\n\nworktree 暂未回收(内容不能丢)。合并或提交后再次归档即可回收。");
+      }
+    }).catch(()=>{ c.archived=!next; renderConvs(); });
   if(next && c.pinned) pinConv(conv, false);   // 归档的会话不该再占着置顶分组,顺手取消置顶
 }
 function renderConvFilterPop(){

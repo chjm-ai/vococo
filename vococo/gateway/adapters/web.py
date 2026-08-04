@@ -1416,6 +1416,7 @@ class WebAdapter:
             return g
         body = await request.json()
         conv = str(body.get("conv") or "")
+        force = bool(body.get("force", False))
         if conv and conv != "main":
             from ...core import tasks as bg_tasks  # 懒加载
 
@@ -1429,6 +1430,14 @@ class WebAdapter:
             from ...core import worktree  # 懒加载
 
             key = config.resolve_session_key("web", conv)
+            # 有未提交改动/独立提交:先提示,用户确认(force)后才真删——删 worktree
+            # 会把这些内容一起丢掉,不能无声进行
+            dirty = await worktree.worktree_dirty_summary(key)
+            if dirty and not force:
+                return web.json_response({
+                    "ok": False, "need_confirm": True, "dirty": dirty,
+                    "msg": "该会话的代码有未提交改动或未合并提交,删除会丢这些内容",
+                })
             await worktree.remove_worktree(key)  # 先清 worktree(删库会抹掉绑定字段)
             session_store.delete_session(key)
             from ...tools import danger  # 懒加载:清「本次会话都允许」记忆
@@ -1514,10 +1523,17 @@ class WebAdapter:
         session_store.set_conv_archived(session_key, archived)
         if archived:
             # 归档 = 会话收尾信号:没改过代码的空壳 worktree 当场回收,不留残留。
-            # 有独立提交/未提交改动的留着(内容不能丢),交给合并或删会话流程。
+            # 有独立提交/未提交改动的留着(内容不能丢),并提示用户未回收的原因。
             from ...core import worktree  # 懒加载
 
+            dirty = await worktree.worktree_dirty_summary(session_key)
             await worktree.recycle_empty_worktree(session_key)
+            if dirty:
+                return web.json_response({
+                    "ok": True, "warning": True, "dirty": dirty,
+                    "msg": "该会话有未提交改动或未合并提交,worktree 暂未回收(内容不能丢),"
+                           "合并或提交后再次归档即可回收",
+                })
         return web.json_response({"ok": True})
 
     async def _handle_conv_read(self, request: web.Request) -> web.Response:
