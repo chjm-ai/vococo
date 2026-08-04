@@ -166,12 +166,15 @@ try{
       </div>
     </div>
     <div id="convList">
-      <div class="skel skelconv"></div>
-      <div class="skel skelconv"></div>
-      <div class="skel skelconv"></div>
-      <div class="skel skelconv"></div>
-      <div class="skel skelconv"></div>
-      <div class="skel skelconv"></div>
+      <div id="sideTabs"></div>
+      <div id="convBody">
+        <div class="skel skelconv"></div>
+        <div class="skel skelconv"></div>
+        <div class="skel skelconv"></div>
+        <div class="skel skelconv"></div>
+        <div class="skel skelconv"></div>
+        <div class="skel skelconv"></div>
+      </div>
     </div>
     <div class="sfoot" id="sfoot"><span class="savatar">U</span><span class="sfoottxt" id="sfoottxt">User</span>
       <div id="convFilterBox">
@@ -4546,9 +4549,9 @@ function renderConvs(){
   const mainConv=S.convs.find(c=>c.conv==="main");
   if(mainConv) top.append(buildConvRow(mainConv, inCall));
   const vm=buildVoiceMainRow(inCall); if(vm) top.append(vm);
-  // 列表区(#convList):Tab + 分组;首次渲染会清掉骨架行
-  const box=$("#convList"); box.innerHTML="";
-  renderSideTabs(box);
+  // 列表区:Tab 栏固定(#sideTabs),只有分组内容(#convBody)滚动;首次渲染会清掉骨架行
+  const tabs=$("#sideTabs"); tabs.innerHTML=""; renderSideTabs(tabs);
+  const box=$("#convBody"); box.innerHTML="";
   if(S.sideTab==="cron") renderCronTab(box, inCall);
   else if(S.sideTab==="pinned") renderPinnedTab(box, inCall);
   else if(S.sideTab==="recent") renderRecentTab(box, inCall);
@@ -5487,7 +5490,7 @@ function closeConvMenu(){
 const SWIPE_W=108;   // 需与 CSS .cvact 宽度一致(归档+置顶+删除,3个按钮)
 function closeSwipe(row){ row.classList.remove("swiped"); if(S.swipedConv===row.dataset.conv) S.swipedConv=null; }
 function closeAllSwipes(except){
-  $("#convList").querySelectorAll(".conv.swiped").forEach(r=>{ if(r!==except) closeSwipe(r); });
+  $("#convBody").querySelectorAll(".conv.swiped").forEach(r=>{ if(r!==except) closeSwipe(r); });
 }
 function bindSwipe(row, body, act){
   let startX=0, startY=0, dx=0, lock=null, dragging=false;
@@ -5519,7 +5522,7 @@ function bindSwipe(row, body, act){
   row.addEventListener("touchend", end);
   row.addEventListener("touchcancel", end);
 }
-$("#convList").addEventListener("scroll", ()=>closeAllSwipes());
+$("#convBody").addEventListener("scroll", ()=>closeAllSwipes());
 function openConvMenu(btn, conv, slim){
   if(convMenuBtn===btn){ closeConvMenu(); return; }   // 再点一次同一个 → 收起
   closeConvMenu();
@@ -5568,7 +5571,7 @@ function openConvMenu(btn, conv, slim){
   m.style.top=Math.max(6,top)+"px"; m.style.left=Math.max(6,left)+"px"; m.style.visibility="visible";
 }
 document.addEventListener("click", closeConvMenu);       // 点空白处关闭
-$("#convList").addEventListener("scroll", closeConvMenu); // 列表滚动时关闭,避免菜单错位
+$("#convBody").addEventListener("scroll", closeConvMenu); // 列表滚动时关闭,避免菜单错位
 document.addEventListener("click", e=>{ if(!e.target.closest(".conv")) closeAllSwipes(); });  // 点空白处收起滑开的行
 
 // 项目分组「更多」浮层菜单(单例):点 ⋯ 弹出,「删除项目」
@@ -5592,7 +5595,7 @@ function openProjMenu(btn, hash){
   m.style.top=Math.max(6,top)+"px"; m.style.left=Math.max(6,left)+"px"; m.style.visibility="visible";
 }
 document.addEventListener("click", closeProjMenu);
-$("#convList").addEventListener("scroll", closeProjMenu);
+$("#convBody").addEventListener("scroll", closeProjMenu);
 $("#messages").addEventListener("scroll", ()=>{ updateScrollBtn(); }, {passive:true}); // 流式时用户上翻→显示↓按钮
 
 // 按 conv id 找会话对象:普通会话在 S.convs,后台任务(语音/cron)行分别在 S.voiceSidebar.tasks / S.cronJobs
