@@ -633,6 +633,72 @@ async def test_list_tool_lists_recent_tasks(voice_db):
     assert "任务甲" in text and "任务乙" in text
 
 
+# ── voice_cancel_task:排队中/运行中都能停,已结束/不存在如实说 ──────────────
+def test_cancel_tool_schema_has_optional_session_id():
+    t = task_tools.voice_cancel_task
+    assert t.name == "voice_cancel_task"
+    assert "session_id" in t.input_schema["properties"]
+    assert not t.input_schema.get("required")
+
+
+@pytest.mark.anyio
+async def test_cancel_tool_cancels_queued_task(voice_db, monkeypatch):
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+    t = tasks.create("排队活", "prompt")
+    result = await task_tools.voice_cancel_task.handler({"session_id": t["id"]})
+    text = result["content"][0]["text"]
+    assert "已取消" in text and "排队" in text
+    assert tasks.get(t["id"])["status"] == "cancelled"
+
+
+@pytest.mark.anyio
+async def test_cancel_tool_stops_running_task_and_waits(voice_db, monkeypatch):
+    started = asyncio.Event()
+
+    async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
+        started.set()
+        await asyncio.sleep(10)
+        yield Done(AgentReply(text="不会跑到这", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+    monkeypatch.setattr(executor.worktree, "ensure_worktree_for_task", _noop_coro)
+
+    task = executor.dispatch("在跑活", "prompt")
+    await started.wait()
+
+    result = await task_tools.voice_cancel_task.handler({"session_id": task["id"]})
+    text = result["content"][0]["text"]
+    assert "已停止" in text and "已取消" in text  # cancel_and_wait 等收尾后状态就是准的
+    assert tasks.get(task["id"])["status"] == "cancelled"
+
+
+@pytest.mark.anyio
+async def test_cancel_tool_says_already_ended(voice_db):
+    t = tasks.create("跑完活", "prompt")
+    tasks.set_status(t["id"], "running")  # queued→done 不在状态机允许迁移里,先置 running
+    tasks.finish(t["id"], "done", "结果", "摘要")
+    result = await task_tools.voice_cancel_task.handler({"session_id": t["id"]})
+    text = result["content"][0]["text"]
+    assert "已经结束" in text and "不用再停" in text
+
+
+@pytest.mark.anyio
+async def test_cancel_tool_reports_missing_task(voice_db):
+    result = await task_tools.voice_cancel_task.handler({"session_id": "no-such-id"})
+    assert "没有找到" in result["content"][0]["text"]
+
+
+@pytest.mark.anyio
+async def test_cancel_tool_omitted_id_targets_latest_voice_task(voice_db, monkeypatch):
+    """留空 session_id = 停最近派发的语音任务(与 voice_query_session 同语义)。"""
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+    t = tasks.create("最近的活", "prompt", origin="voice")
+    result = await task_tools.voice_cancel_task.handler({})
+    assert "已取消" in result["content"][0]["text"]
+    assert tasks.get(t["id"])["status"] == "cancelled"
+
+
 # ── notify.py:在线走 SSE 事件,离线走 web_push ──────────────────────────────
 @pytest.mark.anyio
 async def test_notify_broadcasts_sse_event_when_online(voice_db, monkeypatch):
