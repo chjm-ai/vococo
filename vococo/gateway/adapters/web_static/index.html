@@ -158,8 +158,21 @@ try{
       <button id="searchBtn" class="sfoicon" title="搜索会话 (⌘F)"></button>
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
-    <div id="newBtn" class="conv"></div>
-    <div id="convList"></div>
+    <div id="convTop">
+      <div id="newBtn" class="conv"><div class="cvbody"><div class="skel sbar"></div></div></div>
+      <div id="convTopRows">
+        <div class="conv skelrow"><div class="cvbody"><div class="skel sbar"></div></div></div>
+        <div class="conv voicemain skelrow"><div class="cvbody"><div class="skel sbar w45"></div></div></div>
+      </div>
+    </div>
+    <div id="convList">
+      <div class="skel skelconv"></div>
+      <div class="skel skelconv"></div>
+      <div class="skel skelconv"></div>
+      <div class="skel skelconv"></div>
+      <div class="skel skelconv"></div>
+      <div class="skel skelconv"></div>
+    </div>
     <div class="sfoot" id="sfoot"><span class="savatar">U</span><span class="sfoottxt" id="sfoottxt">User</span>
       <div id="convFilterBox">
         <button id="convFilterBtn" class="sfoicon" title="筛选会话"></button>
@@ -391,6 +404,7 @@ const S = {
   dragSrc: null,        // 项目拖拽排序:正在被拖起的项目 hash
   dragMoved: false,     // 刚发生过一次拖拽落地,下一次 click 吞掉(不触发分组展开/收起)
   voiceSidebar: {main:null, tasks:[]},  // /voice/sidebar 拉到的"语音任务"固定分组数据
+  voiceSidebarLoaded: false, // /voice/sidebar 是否已拉过(未拉时侧边栏「语音通话」行显示骨架占位,见 buildVoiceMainRow)
   cronJobs: [],         // /cron/sidebar 拉到的定时任务列表 [{conv,job_id,title,schedule_desc,enabled,last_status,...}]
   cronEditId: null,     // 定时任务表单当前在编辑哪个 job_id;null=新建模式
   swipedConv: null,     // 当前左滑展开的会话 id;renderConvs 重建 DOM 时靠它补回 swiped 状态,
@@ -4342,9 +4356,19 @@ function convsInGroup(hash){
 // 语音通话主行(通话入口),与主会话一起置顶在根目录最前(不属于任何分组,数据来自 /voice/sidebar)。
 // 通话视图开着时不看 S.conv(那还停在离开前的聊天会话上没变),由调用方传进来的 inCall
 // (= #callView 是否显示)决定「语音通话」这一行是否高亮成"你现在就在这儿"。
+// 侧边栏骨架行(数据未到时的占位,复用聊天区 skelshine 动画;真实行渲染时被替换)
+function skelRow(extraClass){
+  const row=el("div","conv skelrow"+(extraClass?" "+extraClass:""));
+  const body=el("div","cvbody"); body.append(el("div","skel sbar"));
+  row.append(body);
+  return row;
+}
 function buildVoiceMainRow(inCall){
   const vs = S.voiceSidebar;
-  if(!vs || !vs.main) return null;  // 还没拉到数据(如刚登录那一瞬)先不渲染,避免空行闪一下
+  // 数据还没拉过(刚登录那一瞬)→ 返回骨架占位行,位置先钉住,别让「语音通话」行凭空冒出来;
+  // 已拉过但确实没有主会话(正常状态)→ 不渲染。
+  if(!S.voiceSidebarLoaded) return skelRow("voicemain");
+  if(!vs || !vs.main) return null;
   const mainRow=el("div","conv voicemain"+(inCall?" active":""));
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");
@@ -4514,12 +4538,16 @@ function renderProjectsTab(box, inCall){
   const addp=el("div","projgrp projadd"); addp.textContent="＋ 新建项目…"; addp.onclick=openProjModal; box.append(addp);
 }
 function renderConvs(){
-  const box=$("#convList"); box.innerHTML="";
   const inCall = !$("#callView").hidden;  // 通话中:普通会话行都不高亮,高亮权让给「语音通话」那一行
-  // 根目录固定区:主会话 + 语音通话,恒排最前,不属于任何分组/Tab。
+  // 顶部固定区(#convTop,不随列表滚动):新对话按钮 + 主会话 + 语音通话三入口。
+  // HTML 里预置了骨架占位,这里用真实数据整体替换(新对话按钮内容不依赖数据,也在这里定型)。
+  $("#newBtn").innerHTML = '<div class="cvbody">'+ic("edit")+'<div class="ct">新对话</div></div>';
+  const top=$("#convTopRows"); top.innerHTML="";
   const mainConv=S.convs.find(c=>c.conv==="main");
-  if(mainConv) box.append(buildConvRow(mainConv, inCall));
-  const vm=buildVoiceMainRow(inCall); if(vm) box.append(vm);
+  if(mainConv) top.append(buildConvRow(mainConv, inCall));
+  const vm=buildVoiceMainRow(inCall); if(vm) top.append(vm);
+  // 列表区(#convList):Tab + 分组;首次渲染会清掉骨架行
+  const box=$("#convList"); box.innerHTML="";
   renderSideTabs(box);
   if(S.sideTab==="cron") renderCronTab(box, inCall);
   else if(S.sideTab==="pinned") renderPinnedTab(box, inCall);
@@ -4627,6 +4655,7 @@ function scheduleDoneHide(){
 async function loadVoiceSidebar(){
   try{ const r=await api("/voice/sidebar"); S.voiceSidebar=await r.json(); }
   catch(e){ S.voiceSidebar={main:null, tasks:[]}; }
+  S.voiceSidebarLoaded=true;   // 拉完(成功/失败)都算到位,「语音通话」骨架行退场
   renderConvs();
   if($("#empty").style.display==="flex") renderEmptyRecent();  // 欢迎屏正开着 → 语音任务到位后补一次最近对话
 }
@@ -6989,7 +7018,8 @@ $("#recCancel").onclick = e=>{ e.stopPropagation(); stopRec(true); };        // 
 window.addEventListener("pagehide", releaseMic);
 
 // ── 新会话 / 侧边栏 ─────────────────────────────────────────────────────
-$("#newBtn").innerHTML = '<div class="cvbody">'+ic("edit")+'<div class="ct">新对话</div></div>';   // 与主会话行同构:edit 图标 + 文字
+// #newBtn 内容(与主会话行同构:edit 图标 + 文字)在 renderConvs 里设置——
+// 数据到位前保持 HTML 预置的骨架,避免"先出按钮、列表后到"的分裂感。
 $("#newBtn").onclick = newChat;
 // 顶栏 ☰:桌面(收起态)= 展开侧边栏;移动端 = 抽屉式打开
 function expandSidebarResponsive(){
