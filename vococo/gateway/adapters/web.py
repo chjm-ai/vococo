@@ -1860,7 +1860,13 @@ font-size:15px;cursor:pointer}
         """新增/删除设置页手动加的第三方服务商。action: add|remove。
 
         直接落 web_settings.json,同样不用重启——providers.py 每次都现读现并。
+        server 模式禁用:供应商/key 收归平台(SERVER_PROVIDERS_JSON),租户配自己的
+        vendor 会绕开平台计费(他的 key 跑平台的活儿,账算不清)。
         """
+        if config.IS_SERVER:
+            return web.json_response(
+                {"error": "服务器版由平台统一配置模型供应商,租户不可改"}, status=403
+            )
         if (g := self._guard(request)) is not None:
             return g
         body, err = await self._read_json(request)

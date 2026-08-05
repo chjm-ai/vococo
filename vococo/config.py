@@ -460,8 +460,21 @@ if IS_SERVER:
         for m in os.environ.get("SERVER_ALLOWED_MODELS", "").replace(",", " ").split()
         if m.strip()
     ]
+    # 平台级第三方供应商(JSON 对象:name → {base_url,api_key,model,label,vision})。
+    # server 模式供应商/key 收归平台:租户设置页不再提供 vendor 配置(密钥不可见),
+    # providers 只从这里读;每个租户一份的 settings.json 里没有 vendor 一说。
+    SERVER_PROVIDERS: dict = {}
+    _sp_raw = os.environ.get("SERVER_PROVIDERS_JSON", "").strip()
+    if _sp_raw:
+        import json as _json
+
+        try:
+            SERVER_PROVIDERS = _json.loads(_sp_raw)
+        except ValueError:
+            raise ConfigError("SERVER_PROVIDERS_JSON 不是合法 JSON")
 else:
     SERVER_ALLOWED_MODELS: list[str] = []
+    SERVER_PROVIDERS: dict = {}
 
 
 # === 收敛 secret 暴露面 ===
@@ -488,6 +501,8 @@ def _scrub_env_secrets() -> None:
         "SILICONFLOW_API_KEY",
         "VAPID_PRIVATE_KEY",
         "WEB_AUTH_TOKEN",
+        # 平台级供应商 key 的集合(server 模式)——已经读进 SERVER_PROVIDERS 常量
+        "SERVER_PROVIDERS_JSON",
     ):
         os.environ.pop(_k, None)
 

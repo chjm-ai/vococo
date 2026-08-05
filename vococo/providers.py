@@ -84,7 +84,14 @@ def _entry_vision(entry: dict) -> bool:
 
 
 def _all_web_providers() -> dict[str, dict]:
-    """从 settings_store 取所有第三方服务商条目,键=name。"""
+    """所有第三方服务商条目,键=name。
+
+    personal=设置页持久化的 web_providers(tenant 自己的 settings.json);
+    server=只认平台环境变量 SERVER_PROVIDERS_JSON(key 收归平台,租户不可见不可改,
+    租户 settings.json 里的 vendor 条目直接忽略——防密钥经设置页 API 泄给客户)。
+    """
+    if config.IS_SERVER:
+        return dict(config.SERVER_PROVIDERS)
     from .gateway import settings_store
 
     return settings_store.web_providers_raw()
