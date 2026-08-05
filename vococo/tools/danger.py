@@ -209,12 +209,14 @@ def _outside_cwd(path: str, cwd: str | None) -> bool:
 
 
 def _inside_ai_brain(path: str, cwd: str | None) -> bool:
-    """目标文件是否落在 AI_BRAIN_DIR 内(含符号链接解析)。"""
+    """目标文件是否落在当前租户的长期记忆根内(含符号链接解析)。"""
     if not path:
         return False
     try:
+        from ..tenancy import paths as tenant_paths
+
         target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
-        brain_base = os.path.realpath(config.AI_BRAIN_DIR)
+        brain_base = os.path.realpath(tenant_paths.brain_dir())
         return os.path.commonpath([target, brain_base]) == brain_base
     except (ValueError, OSError):
         return False

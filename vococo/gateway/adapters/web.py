@@ -33,6 +33,7 @@ from ... import config, providers
 from ...core import title
 from ...core.agent import AgentReply, get_rate_limits
 from ...memory import session_store
+from ...tenancy import paths as tenant_paths
 from .. import git_status, settings_store
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
 from .base import AudioAttachment, ImageAttachment, Incoming
@@ -496,11 +497,12 @@ class WebAdapter:
         ext = src_path.suffix.lower().lstrip(".")
         if ext not in {"png", "jpg", "jpeg", "gif", "webp"}:
             return f"不支持的图片格式:{ext or '(无后缀)'}"
-        config.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        config_images = tenant_paths.images_dir()
+        config_images.mkdir(parents=True, exist_ok=True)
         # "ai_"前缀是 session_store.load_history 从 turns.images 里拆分"AI发的图"
         # 与"用户上传图"的唯一依据(见 memory/images.py 的 AI_IMAGE_PREFIX),不能改名。
         name = f"{session_store.AI_IMAGE_PREFIX}{uuid.uuid4().hex}.{ext}"
-        (config.IMAGES_DIR / name).write_bytes(src_path.read_bytes())
+        (config_images / name).write_bytes(src_path.read_bytes())
         self._emit({
             "conv": str(chat_id), "type": "message", "text": caption,
             "images": [f"/image?name={name}"], "mid_turn": True,
@@ -1621,7 +1623,7 @@ class WebAdapter:
                     "providers": settings_store.list_web_providers(),
                 },
                 "files": self._list_brain_files(),
-                "brain_dir": str(config.AI_BRAIN_DIR),
+                "brain_dir": str(tenant_paths.brain_dir()),
             }
         )
 
@@ -1729,10 +1731,10 @@ class WebAdapter:
             return web.json_response({"error": err}, status=400)
         return web.json_response({"ok": True})
 
-    # ── 设置:记忆 / AGENTS.md 文件读写(限定在 AI_BRAIN 内)──────────────
+    # ── 设置:记忆 / AGENTS.md 文件读写(限定在长期记忆根内)──────────────
     def _list_brain_files(self) -> list[dict]:
-        """列出可编辑的长期记忆 / 人设文件(全部在 AI_BRAIN 下)。"""
-        root = config.AI_BRAIN_DIR
+        """列出可编辑的长期记忆 / 人设文件(全部在当前租户 brain 根下)。"""
+        root = tenant_paths.brain_dir()
         out: list[dict] = []
         # 固定文件:AGENTS.md(人设) + MEMORY.md(索引) + USER.md(画像)
         out.append({"rel": "AGENTS.md", "group": "agents"})
@@ -1749,11 +1751,11 @@ class WebAdapter:
         return out
 
     def _safe_brain_path(self, rel: str) -> Path | None:
-        """把前端传的相对路径解析到 AI_BRAIN 内,越界 / 非 .md 一律拒绝。"""
+        """把前端传的相对路径解析到当前租户 brain 根内,越界 / 非 .md 一律拒绝。"""
         rel = (rel or "").strip().lstrip("/")
         if not rel or not rel.endswith(".md"):
             return None
-        root = config.AI_BRAIN_DIR.resolve()
+        root = tenant_paths.brain_dir().resolve()
         try:
             target = (root / rel).resolve()
         except (OSError, ValueError):
@@ -1805,8 +1807,17 @@ class WebAdapter:
         误报成"文件不存在"(2026-07-30 用户反馈基本没有能预览成功的例子)。这里加一道
         "不能越出 HOME"就是全部的额外防护,不是也没必要比 agent 自身权限更严。
         AI_BRAIN 单独列进来是防它被配到 HOME 之外(.env 里 AI_BRAIN_DIR 覆盖成别处)。
+        server 模式反过来:收紧到「租户沙箱 + 该租户记忆根」,HOME 绝不进边界——
+        进程级 HOME 是全部租户共享的,放进来 = 跨租户读文件。
         """
-        bounds = [Path(conv_root).resolve(), Path.home().resolve(), config.AI_BRAIN_DIR.resolve()]
+        if config.IS_SERVER:
+            bounds = [Path(conv_root).resolve(), tenant_paths.brain_dir().resolve()]
+        else:
+            bounds = [
+                Path(conv_root).resolve(),
+                Path.home().resolve(),
+                tenant_paths.brain_dir().resolve(),
+            ]
         seen: set[Path] = set()
         out: list[Path] = []
         for b in bounds:

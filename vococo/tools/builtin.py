@@ -22,6 +22,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 from .. import config
 from ..cron import suggestions
 from ..memory import session_store
+from ..tenancy import paths as tenant_paths
 
 _TOPIC_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 _DEFAULT_CATEGORY = "其他主题"
@@ -100,7 +101,7 @@ async def save_memory(args: dict) -> dict:
             f"(≤{_SUMMARY_MAX} 字),详细内容放进 body。"
         )
 
-    mem_dir = config.AI_BRAIN_DIR / "memory"
+    mem_dir = tenant_paths.brain_dir() / "memory"
     path = mem_dir / f"{topic}.md"
     if path.exists():
         return _ok(
@@ -123,7 +124,7 @@ def _append_index(topic: str, summary: str, category: str) -> None:
     分节存在 → 追加到该节最后一条之后;不存在 → 在文件末尾新建该分节;
     索引文件不存在 → 新建。
     """
-    index = config.AI_BRAIN_DIR / "MEMORY.md"
+    index = tenant_paths.brain_dir() / "MEMORY.md"
     header = f"## {category}"
     line = f"→ memory/{topic}.md — {summary}"
     try:

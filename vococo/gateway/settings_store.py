@@ -26,8 +26,18 @@ import threading
 from pathlib import Path
 
 from .. import config
+from ..tenancy import paths as tenant_paths
 
-_PATH: Path = config.DATA_DIR / "web_settings.json"
+
+def _path() -> Path:
+    """设置 JSON 落点:personal=全局 web_settings.json;server=当前租户一份。
+
+    每次读写现取(不在 import 时固化):server 模式下同进程服务多租户,路径必须
+    跟随当前请求的租户上下文(tenancy.context),模块级常量会写成共享文件。
+    """
+    return tenant_paths.settings_path()
+
+
 _SKILLS_DIR: Path = Path.home() / ".claude" / "skills"
 _LOCK = threading.Lock()  # 网页多请求可能并发读改写,加锁保证 JSON 不被写花
 
@@ -49,7 +59,7 @@ _DEFAULTS: dict = {
 # ── 读写 ────────────────────────────────────────────────────────────────
 def _load() -> dict:
     try:
-        raw = json.loads(_PATH.read_text(encoding="utf-8"))
+        raw = json.loads(_path().read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
         raw = {}
     data = {**_DEFAULTS, **(raw if isinstance(raw, dict) else {})}
@@ -64,10 +74,11 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    _PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _PATH.with_suffix(".json.tmp")
+    p = _path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(_PATH)  # 原子替换,避免读到写一半的半截 JSON
+    tmp.replace(p)  # 原子替换,避免读到写一半的半截 JSON
 
 
 # ── 技能扫描 ────────────────────────────────────────────────────────────

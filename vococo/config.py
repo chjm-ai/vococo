@@ -66,6 +66,14 @@ def _parse_skills(raw: str) -> list[str] | str | None:
     return [t.strip() for t in s.replace(",", " ").split() if t.strip()]
 
 
+# === 部署模式(2026-08 服务器版,见 docs/design/server-edition-tech-plan.md)===
+# personal=主人本机单用户(默认,行为与改造前完全一致);server=多租户对外服务。
+# 铁律:模式判断只允许出现在本文件、tenancy/ 包、各 store 的「后端选择」一处;
+# 业务代码一律读 tenancy 抽象,不得各自 if MODE —— 分支散落 = 变相双份维护。
+MODE: str = os.environ.get("VOCOCO_MODE", "personal").strip() or "personal"
+IS_SERVER: bool = MODE == "server"
+
+
 def _oauth_required() -> bool:
     """订阅 token 是否必需。
 
@@ -402,6 +410,21 @@ REFLECT_ENABLED: bool = _parse_bool(os.environ.get("REFLECT_ENABLED", ""), False
 REFLECT_CRON: str = os.environ.get("REFLECT_CRON", "0 23 * * *").strip()
 # 反思结果推送目标 "platform:chat_id"(可选;不配则只写日志)
 REFLECT_TARGET: str = os.environ.get("REFLECT_TARGET", "").strip()
+
+
+# === server 模式派生覆盖(放在所有常量定义之后,统一收口;personal 模式此块整体不生效)===
+# 原则:server 的默认值在这里一次改完,业务代码不各自判断。这些覆盖的是「多租户对外
+# 服务下不成立」的本地假设——语音(全局单份 key+高成本)、跨入口统一会话(没有「主人
+# 一个大脑」)、租户注册 stdio MCP(=远程 RCE 第二条路,永禁)。
+if IS_SERVER:
+    VOICE_ENABLED = False
+    UNIFY_SESSIONS = False
+    WEB_ALLOW_STDIO_MCP = False  # 忽略 env,强制 fail-closed
+    # 多租户抢保温池:缩短空闲回收(可在 .env 用 CLIENT_POOL_IDLE_TTL 显式覆盖回来)
+    if "CLIENT_POOL_IDLE_TTL" not in os.environ:
+        CLIENT_POOL_IDLE_TTL = 120
+    # 数据目录下按租户分根:data/tenants/<tid>/{state.db,brain/,workspace/,images/,audio/}
+    TENANTS_DIR: Path = DATA_DIR / "tenants"
 
 
 # === 收敛 secret 暴露面 ===
