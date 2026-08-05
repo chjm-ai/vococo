@@ -97,3 +97,58 @@ def test_settings_path_server_follows_tenant(server_mode):
         assert settings_store._path() == server_mode / "t_alice" / "settings.json"
     finally:
         context.reset(tok)
+
+
+# ── PR2:会话 key 租户前缀 + per-tenant 会话库 ────────────────────────────
+def test_session_key_server_prefixed(server_mode):
+    tok = context.set("t_alice")
+    try:
+        key = config.resolve_session_key("web", "c1")
+        assert key == "t:t_alice:web:c1"
+        # 剥前缀后回到原形态
+        assert config.strip_tenant_prefix(key) == "web:c1"
+        # 保留前缀透传分支也带租户前缀
+        assert config.resolve_session_key("web", "task:abc") == "t:t_alice:task:abc"
+    finally:
+        context.reset(tok)
+
+
+def test_session_key_personal_unprefixed():
+    assert config.resolve_session_key("web", "c1") == "web:c1"
+    assert config.strip_tenant_prefix("web:c1") == "web:c1"
+    # 非规范 t: 形态不误剥(单段 / 空 tid)
+    assert config.strip_tenant_prefix("t:") == "t:"
+    assert config.strip_tenant_prefix("t::x") == "t::x"
+
+
+def test_project_hash_server_disabled(server_mode):
+    tok = context.set("t_alice")
+    try:
+        assert config.project_hash_from_key("t:t_alice:web:p12345:c1") is None
+    finally:
+        context.reset(tok)
+
+
+def test_db_per_tenant_isolated(server_mode):
+    """两个租户的 state.db 是不同文件,数据互不可见(物理隔离的硬证据)。"""
+    from vococo.memory import _db, session_store
+
+    tok_a = context.set("t_alice")
+    session_store.append("web:c1", "你好", "你好呀")
+    context.reset(tok_a)
+    tok_b = context.set("t_bob")
+    try:
+        # bob 的库里没有 alice 的会话
+        assert session_store.load_recent("web:c1") == []
+        assert (server_mode / "t_bob" / "state.db").is_file()
+    finally:
+        context.reset(tok_b)
+    assert (server_mode / "t_alice" / "state.db").is_file()
+    # alice 的数据还在自己的库里
+    tok_a2 = context.set("t_alice")
+    try:
+        rows = session_store.load_recent("web:c1")
+        assert len(rows) == 1 and rows[0].user == "你好"
+    finally:
+        context.reset(tok_a2)
+    _db.reset()

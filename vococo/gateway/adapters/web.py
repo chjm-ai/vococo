@@ -283,7 +283,9 @@ def _conv_id_for_key(key: str) -> str:
     key——resolve_session_key 的透传分支要吃完整字符串。这条规则以前在
     _handle_conversations/_handle_conv_search/_handle_voice_sidebar 三处分别
     手写,新增一种前缀时容易漏改一处(2026-07-29 复盘)。
+    server 模式的 key 带 t:<tid>: 租户前缀(config.resolve_session_key),先剥再判。
     """
+    key = config.strip_tenant_prefix(key)
     if key == config.SESSION_KEY:
         return "main"
     if key.startswith("web:"):

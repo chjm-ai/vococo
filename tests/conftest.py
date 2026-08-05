@@ -22,6 +22,6 @@ def isolated(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "AI_BRAIN_DIR", tmp_path / "brain")
-    monkeypatch.setattr(_db, "_DB", None)
+    _db.reset()  # 2026-08 起为按租户连接池(_DBS),重置=全关全清
     yield tmp_path
     _db.reset()

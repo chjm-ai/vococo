@@ -468,6 +468,9 @@ def _enabled_skill_names() -> set[str]:
 
 def _origin_from_session_key(session_key: str) -> dict | None:
     """从会话键推导接受任务的推送目标(结果推回用户接受时所在的聊天)。"""
+    from .. import config  # 懒加载,与本模块其余用法一致
+
+    session_key = config.strip_tenant_prefix(session_key)  # server 模式剥 t:<tid>:
     if session_key.startswith("tg:"):
         try:
             return {"platform": "telegram", "chat_id": int(session_key[3:])}
@@ -480,8 +483,6 @@ def _origin_from_session_key(session_key: str) -> dict | None:
         except ValueError:
             return {"platform": platform, "chat_id": cid}
     # 统一主会话拿不到 chat_id → 回退到 REFLECT_TARGET
-    from .. import config
-
     if ":" in config.REFLECT_TARGET:
         platform, _, cid = config.REFLECT_TARGET.partition(":")
         try:

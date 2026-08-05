@@ -337,6 +337,18 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     openConv()/发消息面板打开,不用专门另写一套路由逻辑。这些前缀是保留字,
     不会跟现有项目哈希形态的 conv_id 冲突。
     """
+    key = _resolve_session_key_impl(platform, chat_id)
+    if IS_SERVER:
+        # server 模式所有会话 key 带租户前缀 t:<tid>: —— 物理隔离(per-tenant
+        # state.db)之上的第二道逻辑防线:即便某条路径误用了别租户的连接,key
+        # 前缀也对不上,查不到数据。tenancy 依赖本模块,只能函数内延迟 import。
+        from .tenancy import context as tenant_context
+
+        return f"t:{tenant_context.current()}:{key}"
+    return key
+
+
+def _resolve_session_key_impl(platform: str, chat_id: object) -> str:
     if platform == "telegram" and isinstance(chat_id, int) and chat_id < 0:
         return f"tg:{chat_id}"
     if platform == "web":
@@ -350,6 +362,19 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     return SESSION_KEY if UNIFY_SESSIONS else f"{platform}:{chat_id}"
 
 
+def strip_tenant_prefix(session_key: str) -> str:
+    """剥掉 server 模式 resolve_session_key 加的 't:<tid>:' 前缀;非该形态原样返回。
+
+    所有按 'web:'/'tg:'/'task:' 等前缀判断会话类型的代码,判断前先过这道
+    (personal 模式的 key 永远不带 t: 前缀,过它也是原样返回,零副作用)。
+    """
+    if session_key.startswith("t:"):
+        parts = session_key.split(":", 2)
+        if len(parts) == 3 and parts[1]:
+            return parts[2]
+    return session_key
+
+
 def project_hash_from_key(session_key: str) -> str | None:
     """从会话 key 里取项目哈希;非项目会话返回 None。
 
@@ -358,7 +383,10 @@ def project_hash_from_key(session_key: str) -> str | None:
     - web:local-p<hash>:<slug> —— 前端草稿会话(改名时引入 local- 前缀,
       见 index.html newChatIn;发出首条消息后后端仍原样落库,key 不带去前缀)
     其余(main/默认项目的老 web:<conv>/TG/CLI/task:)都不带项目哈希。
+    server 模式没有「绑本地仓库的项目」概念(客户会话跑在租户沙箱),直接 None。
     """
+    if IS_SERVER:
+        return None
     parts = session_key.split(":")
     if len(parts) >= 3 and parts[0] == "web":
         head = parts[1]

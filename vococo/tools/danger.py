@@ -505,7 +505,9 @@ def _describe(tool_name: str, tool_input: dict) -> str:
 
 def _is_group_session(session_key: str) -> bool:
     """群聊会话(TG 群 chat_id 为负 → key 形如 tg:-123)。群里危险操作不许自批。"""
-    return bool(session_key) and session_key.startswith("tg:")
+    if not session_key:
+        return False
+    return config.strip_tenant_prefix(session_key).startswith("tg:")
 
 
 # ── 「本次会话都允许」记忆:选了这项的会话,后续同类 escalate 免批直接放行 ─────────
