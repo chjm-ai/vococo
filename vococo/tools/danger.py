@@ -622,6 +622,13 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
         return _deny(
             f"⛔ 危险命令被 {config.PERSONA_NAME} 拦截({reason})。如确需执行,请你手动在终端运行。"
         )
+    # server 模式:escalate 档整体降为 block——客户不是审批人(弹审批给谁看?),
+    # 「危险但非灾难」的操作在对外服务里没有放行通道。cwd=租户沙箱,沙箱内的正常
+    # 读写/执行本来就是 allow,不受影响(见 tech-plan §8.1 策略表)。
+    if config.IS_SERVER and verdict == "escalate":
+        return _deny(
+            f"⛔ 该操作超出沙箱权限({reason}),已被拦截。如需此类能力请联系平台方。"
+        )
     if verdict == "escalate" and config.APPROVAL_GATE:
         try:
             approved = await _ask_approval(tool_name, reason, tool_input, restrict)

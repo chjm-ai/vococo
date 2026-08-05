@@ -1285,6 +1285,9 @@ font-size:15px;cursor:pointer}
         # label 带描述(如订阅/API 标签),前端 renderModelPop 直接展示。
         # default=当前激活的模型(跟随设置页默认或 config.MODEL)。
         choices = providers.available_models(MODEL_CHOICES)
+        if config.IS_SERVER and config.SERVER_ALLOWED_MODELS:
+            # 客户只看得见白名单内的模型(兜底防线在 providers.resolve)
+            choices = [c for c in choices if c[0] in config.SERVER_ALLOWED_MODELS]
         # default = web 端上次选定的模型;没设过才回落到 config.MODEL
         active_model = settings_store.get_web_default_model() \
             or providers.resolve(None, config.MODEL)[0]

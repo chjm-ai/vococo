@@ -202,8 +202,17 @@ async def _run_in_context(task_id: str, turn_text: str | None = None) -> None:
     # 才能拿到工具(前台语音会话已代码层禁掉 Edit/Write,见 voice/session.py),而这条
     # 路径现在也不再直接在原 cwd 上改,落地的是隔离分支,不是主目录/主分支。非 git 仓库
     # (或没给 cwd)拿到 None,原样回退到 row["cwd"],不阻塞非代码类任务(查资料等)。
-    worktree_dir = await worktree.ensure_worktree_for_task(row["cwd"], task_id)
-    effective_cwd = worktree_dir or row["cwd"]
+    # server 模式没有 worktree 体系:工作目录就是该租户的沙箱。
+    if config.IS_SERVER:
+        from ..tenancy import paths as tenant_paths
+
+        ws = tenant_paths.workspace_dir()
+        ws.mkdir(parents=True, exist_ok=True)
+        worktree_dir = None
+        effective_cwd = str(ws)
+    else:
+        worktree_dir = await worktree.ensure_worktree_for_task(row["cwd"], task_id)
+        effective_cwd = worktree_dir or row["cwd"]
     cwd_token = danger.set_cwd(effective_cwd, project_root=row["cwd"] if worktree_dir else None)
     last_progress_ts = 0.0
     result_text = ""

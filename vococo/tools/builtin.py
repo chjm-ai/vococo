@@ -762,27 +762,34 @@ async def set_external_mcp(args: dict) -> dict:
 
 
 def build_mcp_servers() -> dict:
-    """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
+    """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。
+
+    server 模式按租户安全边界摘工具(见 tech-plan §8.3):
+    - restart_self:自我运维(改自己代码后重启),服务器版由容器策略管,不给客户
+    - add/remove/set_external_mcp + list_mcp_servers:MCP 注册权收归平台
+      (manifest 统一声明),租户乱挂 server = 计费绕过 + 攻击面
+    """
+    tools = [
+        recall_past,
+        save_memory,
+        suggest_automation,
+        add_cron_job,
+        list_cron_jobs,
+        set_cron_job_enabled,
+        delete_cron_job,
+        ask_user,
+        send_message,
+        send_image,
+        dispatch_session,
+    ]
+    if not config.IS_SERVER:
+        tools += [
+            restart_self,
+            list_mcp_servers,
+            add_mcp_server,
+            remove_mcp_server,
+            set_external_mcp,
+        ]
     return {
-        "vococo": create_sdk_mcp_server(
-            "vococo",
-            tools=[
-                recall_past,
-                save_memory,
-                suggest_automation,
-                add_cron_job,
-                list_cron_jobs,
-                set_cron_job_enabled,
-                delete_cron_job,
-                ask_user,
-                send_message,
-                send_image,
-                dispatch_session,
-                restart_self,
-                list_mcp_servers,
-                add_mcp_server,
-                remove_mcp_server,
-                set_external_mcp,
-            ],
-        )
+        "vococo": create_sdk_mcp_server("vococo", tools=tools)
     }

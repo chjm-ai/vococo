@@ -38,7 +38,12 @@ def _path() -> Path:
     return tenant_paths.settings_path()
 
 
-_SKILLS_DIR: Path = Path.home() / ".claude" / "skills"
+def _skills_dir() -> Path:
+    """skill 目录:personal=主人个人的 ~/.claude/skills(跨工具共享库);
+    server=仓内 agents/skills/(平台发行、随镜像走,与服务器上任何用户的 home 无关)。"""
+    if config.IS_SERVER:
+        return config.ROOT_DIR / "agents" / "skills"
+    return Path.home() / ".claude" / "skills"
 _LOCK = threading.Lock()  # 网页多请求可能并发读改写,加锁保证 JSON 不被写花
 
 _DEFAULTS: dict = {
@@ -124,10 +129,10 @@ def _parse_front_matter(text: str) -> dict:
 
 
 def _scan_skills() -> list[dict]:
-    """扫 ~/.claude/skills/*/SKILL.md，返回 [{name, description}]（跟随符号链接）。"""
+    """扫 skill 目录(见 _skills_dir)下 */SKILL.md，返回 [{name, description}]（跟随符号链接）。"""
     found: list[dict] = []
     try:
-        entries = sorted(_SKILLS_DIR.iterdir(), key=lambda p: p.name.lower())
+        entries = sorted(_skills_dir().iterdir(), key=lambda p: p.name.lower())
     except (FileNotFoundError, OSError):
         return found
     for d in entries:

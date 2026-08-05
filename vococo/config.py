@@ -453,6 +453,15 @@ if IS_SERVER:
         CLIENT_POOL_IDLE_TTL = 120
     # 数据目录下按租户分根:data/tenants/<tid>/{state.db,brain/,workspace/,images/,audio/}
     TENANTS_DIR: Path = DATA_DIR / "tenants"
+    # 客户可选模型白名单(逗号/空格分隔):防客户切到贵模型打穿平台成本;
+    # 空 = 不限制(自检/内部试用阶段)。计费上线(P1)前必须配上。
+    SERVER_ALLOWED_MODELS: list[str] = [
+        m.strip()
+        for m in os.environ.get("SERVER_ALLOWED_MODELS", "").replace(",", " ").split()
+        if m.strip()
+    ]
+else:
+    SERVER_ALLOWED_MODELS: list[str] = []
 
 
 # === 收敛 secret 暴露面 ===

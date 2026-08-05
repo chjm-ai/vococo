@@ -198,7 +198,9 @@ class GatewayRunner:
         """
         task = selfops.consume_resume()
         rolled_back = selfops.consume_rollback_flag()  # 无遗书也消费,清掉陈旧标记
-        if task is None:
+        if task is None or config.IS_SERVER:
+            # server 模式不启用遗书还魂(那是「AI 改完自身代码安全重启」的自我运维,
+            # 服务器版由容器重启策略管,restart_self 工具也已从内置 MCP 摘除)
             return
         await anyio.sleep(3)  # 等 adapter 起好(web 端口绑定 / TG 轮询就绪)
 
@@ -254,7 +256,10 @@ class GatewayRunner:
         from ..core import client_pool, worktree  # 懒加载
 
         self._install_loop_exception_handler()
-        n = await worktree.prune_orphans()  # 启动兜底:回收无会话绑定的孤儿 worktree/悬空分支
+        if config.IS_SERVER:
+            n = 0  # server 模式无 worktree 体系(租户沙箱),跳过孤儿回收扫描
+        else:
+            n = await worktree.prune_orphans()  # 启动兜底:回收无会话绑定的孤儿 worktree/悬空分支
         if n:
             print(f"🧹 启动清理:回收 {n} 个孤儿 worktree/悬空分支")
         clarify.register_push(self.push)  # 让 send_message 等工具能主动发消息
@@ -295,11 +300,15 @@ class GatewayRunner:
 
 
 async def run_serve() -> None:
-    """组装并启动 gateway(Telegram + Web + 调度器,按配置挂载)。"""
+    """组装并启动 gateway(Telegram + Web + 调度器,按配置挂载)。
+
+    server 模式:v1 只挂 Web(对外唯一入口);Telegram 渠道留待按租户化后再开
+    (现在的 TG 配置是单 bot+单白名单,直接挂等于把所有客户揉进一个 bot)。
+    """
     from .adapters.telegram import TelegramAdapter
 
     adapters: list[Adapter] = []
-    if config.TELEGRAM_BOT_TOKEN:
+    if config.TELEGRAM_BOT_TOKEN and not config.IS_SERVER:
         adapters.append(TelegramAdapter())
     if config.WEB_ENABLED:
         from .adapters.web import WebAdapter

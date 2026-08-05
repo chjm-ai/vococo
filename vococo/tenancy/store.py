@@ -46,6 +46,11 @@ CREATE TABLE IF NOT EXISTS web_sessions(
   user_id TEXT NOT NULL REFERENCES users(user_id),
   expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS cron_jobs(
+  job_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  spec TEXT NOT NULL  -- 完整 job dict 的 JSON(与 personal 的 cron_jobs.json 同构)
+);
 """
 
 _PBKDF2_ITERATIONS = 600_000
@@ -207,3 +212,50 @@ def delete_session(token: str) -> None:
     c = _conn()
     c.execute("DELETE FROM web_sessions WHERE token=?", (token,))
     c.commit()
+
+
+# ── cron 任务(server 模式替代全局 cron_jobs.json;personal 不用这组)────────────
+def cron_jobs_all() -> list[dict]:
+    """全部租户的 cron 任务(调度器 tick 用);每个 job dict 附带 "_tenant" 键标明归属。"""
+    import json
+
+    rows = _conn().execute("SELECT tenant_id, spec FROM cron_jobs").fetchall()
+    out: list[dict] = []
+    for r in rows:
+        try:
+            job = json.loads(r["spec"])
+        except (json.JSONDecodeError, ValueError):
+            continue
+        job["_tenant"] = r["tenant_id"]
+        out.append(job)
+    return out
+
+
+def cron_jobs_for(tenant_id: str) -> list[dict]:
+    import json
+
+    rows = _conn().execute(
+        "SELECT spec FROM cron_jobs WHERE tenant_id=?", (tenant_id,)
+    ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        try:
+            out.append(json.loads(r["spec"]))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return out
+
+
+def cron_jobs_save(tenant_id: str, jobs: list[dict]) -> None:
+    """整组替换某租户的任务(事务内 DELETE+INSERT,与 personal 的整文件覆写同语义)。"""
+    import json
+
+    c = _conn()
+    with c:  # 连接上下文管理器 = 事务:异常自动 ROLLBACK,正常结束自动 COMMIT
+        c.execute("DELETE FROM cron_jobs WHERE tenant_id=?", (tenant_id,))
+        for job in jobs:
+            job = {k: v for k, v in job.items() if k != "_tenant"}  # 落库不带瞬态键
+            c.execute(
+                "INSERT INTO cron_jobs(job_id, tenant_id, spec) VALUES (?,?,?)",
+                (job["id"], tenant_id, json.dumps(job, ensure_ascii=False)),
+            )
