@@ -35,6 +35,18 @@ def current() -> str:
     return tid
 
 
+def safe_current() -> str | None:
+    """不抛错版本:personal 恒 LOCAL_TENANT;server 无上下文返回 None。
+
+    给「拿不到租户时正确做法是静默不投递/不执行,而不是炸掉事件循环」的调用点用
+    (如 SSE 广播 _emit:宁可这帧谁都不发,也不能跨租户发,更不能崩)。
+    """
+    tid = _current.get()
+    if config.IS_SERVER and tid == LOCAL_TENANT:
+        return None
+    return tid
+
+
 def set(tid: str) -> Token:  # noqa: A001 —— 与 reset() 成对,沿用 contextvars 命名习惯
     """注入当前租户,返回 Token 供 reset() 复原(请求/任务结束必须成对调用)。"""
     return _current.set(tid)

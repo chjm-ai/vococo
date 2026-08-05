@@ -25,3 +25,17 @@ def isolated(tmp_path, monkeypatch):
     _db.reset()  # 2026-08 起为按租户连接池(_DBS),重置=全关全清
     yield tmp_path
     _db.reset()
+
+
+@pytest.fixture
+def server_mode(tmp_path, monkeypatch):
+    """把 config 切到 server 模式(租户根指到临时目录),用完还原。
+
+    共享夹具:test_tenancy / test_tenant_auth 等凡涉多租户的用例都用它。
+    """
+    from vococo import config
+
+    monkeypatch.setattr(config, "IS_SERVER", True)
+    monkeypatch.setattr(config, "TENANTS_DIR", tmp_path / "tenants", raising=False)
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    return tmp_path / "tenants"

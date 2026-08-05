@@ -85,7 +85,9 @@ def _start_one(task: dict, turn_text: str | None = None) -> bool:
     if not tasks.set_status(task_id, "running"):
         return False
     _notify_activity(task_id)
-    _running[task_id] = asyncio.create_task(_run(task_id, turn_text))
+    _running[task_id] = asyncio.create_task(
+        _run(task_id, turn_text, tenant_id=task.get("tenant_id") or "local")
+    )
     return True
 
 
@@ -163,7 +165,23 @@ def _summarize(result_text: str) -> str:
     return text[: _SUMMARY_MAX - 1] + "…"
 
 
-async def _run(task_id: str, turn_text: str | None = None) -> None:
+async def _run(task_id: str, turn_text: str | None = None, tenant_id: str = "local") -> None:
+    """入口包装:先按任务行落库的 tenant_id 注入租户上下文,再进真正的执行体。
+
+    排队任务跨进程重启/跨任务完成后被拉起跑,调用方的 ContextVar 早不是派发时的
+    那个了——tenant_id 必须随任务行走(tasks.create 落库),不能靠调用方上下文。
+    personal 模式恒 "local",零副作用。
+    """
+    from ..tenancy import context as tenant_context
+
+    tok = tenant_context.set(tenant_id)
+    try:
+        await _run_in_context(task_id, turn_text)
+    finally:
+        tenant_context.reset(tok)
+
+
+async def _run_in_context(task_id: str, turn_text: str | None = None) -> None:
     """跑一个任务的一轮对话。turn_text 为 None(首次派发)用 row['prompt'];
     非 None(追问/cron 再次触发)则是这一轮实际发给模型的文本——历史靠 resume 接,
     不用每次都把全部历史重新拼进 prompt(见 append())。"""
@@ -309,7 +327,13 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
 
 
 def _maybe_start_next() -> None:
-    """并发有空位就从队首拉一个 queued 任务起跑;没有空位/没有排队任务则什么都不做。"""
+    """并发有空位就从队首拉一个 queued 任务起跑;没有空位/没有排队任务则什么都不做。
+
+    server 模式 v1 的已知取舍:并发计数(count_running)与队列(list_queued)都是
+    按当前租户各自的库算的,即每租户独立享有 TASK_MAX_CONCURRENCY 个槽位,全局
+    峰值 = 租户数 × 上限——服务器上要把 TASK_MAX_CONCURRENCY 调小兜全局负载。
+    跨租户统一调度(全局队列)留到计费阶段做。
+    """
     while tasks.count_running() < config.TASK_MAX_CONCURRENCY:
         queued = tasks.list_queued()
         if not queued:
@@ -318,7 +342,9 @@ def _maybe_start_next() -> None:
         if not tasks.set_status(nxt["id"], "running"):
             continue  # 状态已被别处改了(如取消排队中的任务),跳过看下一个
         _notify_activity(nxt["id"])
-        _running[nxt["id"]] = asyncio.create_task(_run(nxt["id"]))
+        _running[nxt["id"]] = asyncio.create_task(
+            _run(nxt["id"], tenant_id=nxt.get("tenant_id") or "local")
+        )
 
 
 def dispatch(
@@ -446,8 +472,23 @@ async def heal_after_restart() -> None:
     只在 web.py 的 serve 启动路径调用(不要挂到 register_routes 之类会被测试/脚本
     顺带执行的地方);并排除本进程 _running 里的活任务——刚启动时它本来就是空的,
     这层排除是防线,保证本函数无论被谁在什么时机调用都杀不了活人。
+
+    server 模式:任务表是 per-tenant 的,逐个租户注入上下文各清一遍。
     """
     from ..voice import notify  # 懒加载,避免非语音场景也引入 voice 包(见模块头说明)
 
-    for row in tasks.mark_orphans_failed(exclude_ids=set(_running)):
-        await notify.on_task_terminal(row["id"])
+    if not config.IS_SERVER:
+        for row in tasks.mark_orphans_failed(exclude_ids=set(_running)):
+            await notify.on_task_terminal(row["id"])
+        return
+
+    from ..tenancy import context as tenant_context
+    from ..tenancy import store as tenant_store
+
+    for tenant in tenant_store.list_tenants():
+        tok = tenant_context.set(tenant["tenant_id"])
+        try:
+            for row in tasks.mark_orphans_failed(exclude_ids=set(_running)):
+                await notify.on_task_terminal(row["id"])
+        finally:
+            tenant_context.reset(tok)

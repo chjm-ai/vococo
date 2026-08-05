@@ -11,14 +11,6 @@ from vococo import config
 from vococo.tenancy import context, paths
 
 
-@pytest.fixture
-def server_mode(tmp_path, monkeypatch):
-    """把 config 切到 server 模式(租户根指到临时目录),用完还原。"""
-    monkeypatch.setattr(config, "IS_SERVER", True)
-    monkeypatch.setattr(config, "TENANTS_DIR", tmp_path / "tenants", raising=False)
-    return tmp_path / "tenants"
-
-
 # ── context ──────────────────────────────────────────────────────────────
 def test_context_personal_default_local():
     assert context.current() == context.LOCAL_TENANT == "local"

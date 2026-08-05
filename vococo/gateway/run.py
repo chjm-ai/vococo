@@ -52,6 +52,18 @@ class GatewayRunner:
         self.models[session_key] = model
 
     async def _dispatch(self, adapter: Adapter, inc: Incoming) -> None:
+        # 租户上下文:消息经 adapter 队列跨 task 到达这里,ContextVar 不会跟过来,
+        # 必须用消息上盖的 tenant_id 重新注入(personal 模式恒 "local",零副作用)。
+        # inc.session_key 的解析(resolve_session_key 加租户前缀)也依赖这步,故在最顶。
+        from ..tenancy import context as tenant_context
+
+        tenant_tok = tenant_context.set(inc.tenant_id)
+        try:
+            await self._dispatch_in_context(adapter, inc)
+        finally:
+            tenant_context.reset(tenant_tok)
+
+    async def _dispatch_in_context(self, adapter: Adapter, inc: Incoming) -> None:
         # clarify 回复必须在【拿锁前】拦截:发起 ask_user 的那一轮还占着会话锁、
         # 阻塞等回答,若这里再去抢同一把锁就死锁。
         if await self._try_clarify(adapter, inc):
