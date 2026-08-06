@@ -83,6 +83,7 @@ def on_task_activity(task: dict) -> None:
             "created_at": task["created_at"],
             "updated_at": task["updated_at"],
             "dispatch_chat_id": task.get("dispatch_chat_id"),
+            "origin": task.get("origin"),  # 前端按 origin 分流:voice→通话条,chat→会话条,cron 不进
         },
     )
     # 桥接到主 SSE:任务起跑 → 前端侧栏显示小红点。_started_tasks 防重复:
