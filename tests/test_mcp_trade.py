@@ -1,6 +1,6 @@
 """外贸 MCP 按需加载:A(一句话开关 set_external_mcp)+ B(关键词自动触发)。
 
-monkeypatch config.DATA_DIR 指向临时目录(settings_path 跟随),不碰真实 data/web_settings.json。
+monkeypatch settings_store._PATH 指向临时文件,不碰真实 data/web_settings.json。
 """
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import json
 
 import pytest
 
-from vococo import config
 from vococo.core import agent
 from vococo.gateway import settings_store
 from vococo.tools import builtin
@@ -25,8 +24,8 @@ def _text(result: dict) -> str:
 
 @pytest.fixture
 def cfg(monkeypatch, tmp_path):
-    """把 settings_store 指到临时目录,并预置一个外部 MCP(默认关闭)。"""
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    """把 settings_store 指到临时文件,并预置一个外部 MCP(默认关闭)。"""
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
     err = settings_store.upsert_external("lemlist", {
         "type": "stdio", "command": "python3",
         "args": ["lemlist_lite.py"], "env": {"LEMLIST_API_KEY": "k"},
@@ -37,7 +36,7 @@ def cfg(monkeypatch, tmp_path):
 
 
 def _load() -> dict:
-    return json.loads(settings_store._path().read_text(encoding="utf-8"))
+    return json.loads(settings_store._PATH.read_text(encoding="utf-8"))
 
 
 # === A:set_external_mcp 一句话开关 ===

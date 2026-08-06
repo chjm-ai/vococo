@@ -66,14 +66,6 @@ def _parse_skills(raw: str) -> list[str] | str | None:
     return [t.strip() for t in s.replace(",", " ").split() if t.strip()]
 
 
-# === 部署模式(2026-08 服务器版,见 docs/design/server-edition-tech-plan.md)===
-# personal=主人本机单用户(默认,行为与改造前完全一致);server=多租户对外服务。
-# 铁律:模式判断只允许出现在本文件、tenancy/ 包、各 store 的「后端选择」一处;
-# 业务代码一律读 tenancy 抽象,不得各自 if MODE —— 分支散落 = 变相双份维护。
-MODE: str = os.environ.get("VOCOCO_MODE", "personal").strip() or "personal"
-IS_SERVER: bool = MODE == "server"
-
-
 def _oauth_required() -> bool:
     """订阅 token 是否必需。
 
@@ -337,18 +329,6 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     openConv()/发消息面板打开,不用专门另写一套路由逻辑。这些前缀是保留字,
     不会跟现有项目哈希形态的 conv_id 冲突。
     """
-    key = _resolve_session_key_impl(platform, chat_id)
-    if IS_SERVER:
-        # server 模式所有会话 key 带租户前缀 t:<tid>: —— 物理隔离(per-tenant
-        # state.db)之上的第二道逻辑防线:即便某条路径误用了别租户的连接,key
-        # 前缀也对不上,查不到数据。tenancy 依赖本模块,只能函数内延迟 import。
-        from .tenancy import context as tenant_context
-
-        return f"t:{tenant_context.current()}:{key}"
-    return key
-
-
-def _resolve_session_key_impl(platform: str, chat_id: object) -> str:
     if platform == "telegram" and isinstance(chat_id, int) and chat_id < 0:
         return f"tg:{chat_id}"
     if platform == "web":
@@ -362,19 +342,6 @@ def _resolve_session_key_impl(platform: str, chat_id: object) -> str:
     return SESSION_KEY if UNIFY_SESSIONS else f"{platform}:{chat_id}"
 
 
-def strip_tenant_prefix(session_key: str) -> str:
-    """剥掉 server 模式 resolve_session_key 加的 't:<tid>:' 前缀;非该形态原样返回。
-
-    所有按 'web:'/'tg:'/'task:' 等前缀判断会话类型的代码,判断前先过这道
-    (personal 模式的 key 永远不带 t: 前缀,过它也是原样返回,零副作用)。
-    """
-    if session_key.startswith("t:"):
-        parts = session_key.split(":", 2)
-        if len(parts) == 3 and parts[1]:
-            return parts[2]
-    return session_key
-
-
 def project_hash_from_key(session_key: str) -> str | None:
     """从会话 key 里取项目哈希;非项目会话返回 None。
 
@@ -383,10 +350,7 @@ def project_hash_from_key(session_key: str) -> str | None:
     - web:local-p<hash>:<slug> —— 前端草稿会话(改名时引入 local- 前缀,
       见 index.html newChatIn;发出首条消息后后端仍原样落库,key 不带去前缀)
     其余(main/默认项目的老 web:<conv>/TG/CLI/task:)都不带项目哈希。
-    server 模式没有「绑本地仓库的项目」概念(客户会话跑在租户沙箱),直接 None。
     """
-    if IS_SERVER:
-        return None
     parts = session_key.split(":")
     if len(parts) >= 3 and parts[0] == "web":
         head = parts[1]
@@ -440,43 +404,6 @@ REFLECT_CRON: str = os.environ.get("REFLECT_CRON", "0 23 * * *").strip()
 REFLECT_TARGET: str = os.environ.get("REFLECT_TARGET", "").strip()
 
 
-# === server 模式派生覆盖(放在所有常量定义之后,统一收口;personal 模式此块整体不生效)===
-# 原则:server 的默认值在这里一次改完,业务代码不各自判断。这些覆盖的是「多租户对外
-# 服务下不成立」的本地假设——语音(全局单份 key+高成本)、跨入口统一会话(没有「主人
-# 一个大脑」)、租户注册 stdio MCP(=远程 RCE 第二条路,永禁)。
-if IS_SERVER:
-    VOICE_ENABLED = False
-    UNIFY_SESSIONS = False
-    WEB_ALLOW_STDIO_MCP = False  # 忽略 env,强制 fail-closed
-    # 多租户抢保温池:缩短空闲回收(可在 .env 用 CLIENT_POOL_IDLE_TTL 显式覆盖回来)
-    if "CLIENT_POOL_IDLE_TTL" not in os.environ:
-        CLIENT_POOL_IDLE_TTL = 120
-    # 数据目录下按租户分根:data/tenants/<tid>/{state.db,brain/,workspace/,images/,audio/}
-    TENANTS_DIR: Path = DATA_DIR / "tenants"
-    # 客户可选模型白名单(逗号/空格分隔):防客户切到贵模型打穿平台成本;
-    # 空 = 不限制(自检/内部试用阶段)。计费上线(P1)前必须配上。
-    SERVER_ALLOWED_MODELS: list[str] = [
-        m.strip()
-        for m in os.environ.get("SERVER_ALLOWED_MODELS", "").replace(",", " ").split()
-        if m.strip()
-    ]
-    # 平台级第三方供应商(JSON 对象:name → {base_url,api_key,model,label,vision})。
-    # server 模式供应商/key 收归平台:租户设置页不再提供 vendor 配置(密钥不可见),
-    # providers 只从这里读;每个租户一份的 settings.json 里没有 vendor 一说。
-    SERVER_PROVIDERS: dict = {}
-    _sp_raw = os.environ.get("SERVER_PROVIDERS_JSON", "").strip()
-    if _sp_raw:
-        import json as _json
-
-        try:
-            SERVER_PROVIDERS = _json.loads(_sp_raw)
-        except ValueError:
-            raise ConfigError("SERVER_PROVIDERS_JSON 不是合法 JSON")
-else:
-    SERVER_ALLOWED_MODELS: list[str] = []
-    SERVER_PROVIDERS: dict = {}
-
-
 # === 收敛 secret 暴露面 ===
 def _scrub_env_secrets() -> None:
     """把 vococo 自用的 secret 从 os.environ 移除。
@@ -501,8 +428,6 @@ def _scrub_env_secrets() -> None:
         "SILICONFLOW_API_KEY",
         "VAPID_PRIVATE_KEY",
         "WEB_AUTH_TOKEN",
-        # 平台级供应商 key 的集合(server 模式)——已经读进 SERVER_PROVIDERS 常量
-        "SERVER_PROVIDERS_JSON",
     ):
         os.environ.pop(_k, None)
 

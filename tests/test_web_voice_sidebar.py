@@ -21,7 +21,7 @@ def anyio_backend():
 @pytest.fixture
 def web_app(isolated, monkeypatch):
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
-    tasks.reset()
+    monkeypatch.setattr(tasks, "_DB", None)
     adapter = WebAdapter()
     app = web.Application()
     app.add_routes(

@@ -7,16 +7,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vococo import config, providers
+from vococo import providers
 from vococo.gateway import settings_store
 
 
 def _point_settings_to(monkeypatch, tmp_path: Path) -> None:
-    """把设置页存储指向临时目录,不碰真实 data/web_settings.json。
-
-    personal 模式 settings_path() 跟随 config.DATA_DIR(2026-08 租户化后
-    不再有可 patch 的 _PATH 常量,统一走 config.DATA_DIR 这个 seam)。"""
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    """把设置页存储指向临时文件,不碰真实 data/web_settings.json。"""
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
 
 
 # ── 基础 resolve / load_active / has_active_third_party ──────────────

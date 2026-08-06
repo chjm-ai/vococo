@@ -1,6 +1,6 @@
 """用户音频落盘(Web 消息)。
 
-音频本体写进当前租户音频目录(tenancy.paths.audio_dir),连同转写文字一起记进 turns.audios(JSON 列表,
+音频本体写进 config.AUDIO_DIR,连同转写文字一起记进 turns.audios(JSON 列表,
 元素 {"file":文件名,"text":转写文字})。与 images.py 的不同之处:图片直接喂给
 模型的多模态 block,音频协议层压根没有对应的 block 类型(见 core/agent.py
 AudioAttachment 的说明),AI"解读"的其实是转写文字——所以这里连转写文字一起
@@ -12,7 +12,7 @@ import json
 import re
 import sqlite3
 
-from ..tenancy import paths as tenant_paths
+from .. import config
 from . import _db
 
 _AUDIO_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")  # 文件名白名单,挡路径穿越
@@ -33,14 +33,14 @@ def save_turn_audio(turn_id: int, audios: list) -> list[dict]:
     """
     if not audios:
         return []
-    tenant_paths.audio_dir().mkdir(parents=True, exist_ok=True)
+    config.AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     entries: list[dict] = []
     for idx, au in enumerate(audios):
         data = getattr(au, "data", None)
         if not data:
             continue
         name = f"{turn_id}_{idx}.{_audio_ext(getattr(au, 'media_type', ''))}"
-        (tenant_paths.audio_dir() / name).write_bytes(data)
+        (config.AUDIO_DIR / name).write_bytes(data)
         entries.append({"file": name, "text": getattr(au, "transcript", "") or ""})
     if entries:
         c = _db.conn()
@@ -56,7 +56,7 @@ def audio_path(name: str):
     """按文件名返回音频的磁盘路径(Path);非法名/不存在返回 None —— 供 HTTP 取音频时校验。"""
     if not name or not _AUDIO_NAME_RE.match(name):
         return None  # 挡 ../ 等路径穿越
-    p = tenant_paths.audio_dir() / name
+    p = config.AUDIO_DIR / name
     return p if p.is_file() else None
 
 
@@ -75,4 +75,4 @@ def purge_session_audio(c: sqlite3.Connection, session_key: str) -> None:
         for e in entries:
             name = e.get("file") or ""
             if _AUDIO_NAME_RE.match(name):
-                (tenant_paths.audio_dir() / name).unlink(missing_ok=True)
+                (config.AUDIO_DIR / name).unlink(missing_ok=True)

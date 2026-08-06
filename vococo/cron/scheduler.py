@@ -44,12 +44,6 @@ PushFn = Callable[[str, object, str], Awaitable[None]]  # (platform, chat_id, te
 
 
 def load_jobs() -> list[dict]:
-    """当前租户的 cron 任务。personal=全局 cron_jobs.json;server=platform.db 按租户过滤。"""
-    if config.IS_SERVER:
-        from ..tenancy import context as tenant_context
-        from ..tenancy import store as tenant_store
-
-        return tenant_store.cron_jobs_for(tenant_context.current())
     try:
         jobs = json.loads(config.CRON_JOBS_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -71,13 +65,6 @@ def load_jobs() -> list[dict]:
 
 
 def save_jobs(jobs: list[dict]) -> None:
-    """personal=整文件覆写;server=整组替换当前租户的行(同事务)。"""
-    if config.IS_SERVER:
-        from ..tenancy import context as tenant_context
-        from ..tenancy import store as tenant_store
-
-        tenant_store.cron_jobs_save(tenant_context.current(), jobs)
-        return
     config.CRON_JOBS_PATH.parent.mkdir(parents=True, exist_ok=True)
     config.CRON_JOBS_PATH.write_text(
         json.dumps(jobs, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -232,31 +219,10 @@ async def _on_task_terminal(task: dict, push: PushFn) -> None:
 
 
 def _tick() -> None:
-    """检查到期任务并触发。server 模式:任务表按租户分,逐租户注入上下文各跑一遍
-    (save_jobs 在上下文里自动落到对应租户);personal 模式单租户直跑。"""
-    if config.IS_SERVER:
-        from ..tenancy import context as tenant_context
-        from ..tenancy import store as tenant_store
-
-        by_tenant: dict[str, list[dict]] = {}
-        for job in tenant_store.cron_jobs_all():
-            by_tenant.setdefault(job.pop("_tenant", ""), []).append(job)
-        for tid, jobs in by_tenant.items():
-            if not tid:
-                continue
-            tok = tenant_context.set(tid)
-            try:
-                _tick_jobs(jobs)
-            finally:
-                tenant_context.reset(tok)
-        return
-    _tick_jobs(load_jobs())
-
-
-def _tick_jobs(jobs: list[dict]) -> None:
     """检查到期任务并触发——本身是同步/瞬时的(触发只是把任务丢给后台引擎,不等
     它跑完),不会因为某个任务耗时长而拖住心跳/其它到期任务(2026-07-29 前这里
     整段 await _run_job 到底,一个慢任务能卡住整个调度循环)。"""
+    jobs = load_jobs()
     now = time.time()
     changed = False
     for job in jobs:

@@ -30,12 +30,14 @@ def voice_db(isolated, monkeypatch):
     session 模块委托 session_store 存储,重置由 `isolated` fixture 代劳。
     """
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
-    tasks.reset()
+    monkeypatch.setattr(tasks, "_DB", None)
     executor._running.clear()
     notify._subscribers.clear()
     task_tools._hinted_candidates.clear()
     yield
-    tasks.reset()
+    if tasks._DB is not None:
+        tasks._DB.close()
+        tasks._DB = None
 
 
 async def _noop_coro(*_a, **_k) -> None:
