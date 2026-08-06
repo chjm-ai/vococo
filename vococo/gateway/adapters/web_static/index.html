@@ -3377,6 +3377,9 @@ void main(){
     teardownCallResources();
     renderConvs();   // 挂断后切回聊天侧栏,取消「语音通话」行高亮
   };
+  // 任务状态条:切会话时 openConv(IIFE 外)要按当前会话刷新任务,loadTasks 是
+  // 本 IIFE 的局部函数(严格模式不泄漏全局),照 openCallView 模式挂 window 出口。
+  window.refreshTaskStatus = loadTasks;
 })();
 
 // ── 主题(深/浅/跟随系统)───────────────────────────────────────────────
@@ -6046,7 +6049,7 @@ async function openConv(conv, silentGroup){
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
-  loadTasks();      // 切换会话后刷新当前会话的任务状态条
+  window.refreshTaskStatus && window.refreshTaskStatus();  // 刷新任务状态条(loadTasks 在通话视图 IIFE 内,经 window 出口调)
   const isLocal = String(conv).startsWith("local-");
   let cached = S.histCache[conv];
   if(!cached && !isLocal){
