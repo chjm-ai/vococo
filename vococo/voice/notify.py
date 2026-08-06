@@ -82,6 +82,7 @@ def on_task_activity(task: dict) -> None:
             "progress_note": task["progress_note"],
             "created_at": task["created_at"],
             "updated_at": task["updated_at"],
+            "dispatch_chat_id": task.get("dispatch_chat_id"),
         },
     )
     # 桥接到主 SSE:任务起跑 → 前端侧栏显示小红点。_started_tasks 防重复:
@@ -172,6 +173,7 @@ async def on_task_terminal(task_id: str) -> None:
         "result_summary": task["result_summary"],
         "announce_text": announce_text,
         "updated_at": task["updated_at"],
+        "dispatch_chat_id": task.get("dispatch_chat_id"),
     }
 
     # ── 语音来源 + 在线:推 SSE(语音播报)。chat 来源哪怕这时刚好有人在通话,

@@ -170,18 +170,27 @@ def get_latest() -> dict | None:
     return _row(row) if row else None
 
 
-def list_recent(limit: int = 20, origin: str | None = None) -> list[dict]:
-    """最近的任务,按 origin 可选过滤(如只看语音派发的,或只看 cron 触发的)。"""
+def list_recent(
+    limit: int = 20,
+    origin: str | None = None,
+    dispatch_chat_id: str | None = None,
+) -> list[dict]:
+    """最近的任务,按 origin/dispatch_chat_id 可选过滤。"""
     c = _conn()
+    params: list = []
+    where: list[str] = []
     if origin is not None:
-        rows = c.execute(
-            "SELECT * FROM tasks WHERE origin=? ORDER BY created_at DESC LIMIT ?",
-            (origin, limit),
-        ).fetchall()
-    else:
-        rows = c.execute(
-            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
-        ).fetchall()
+        where.append("origin=?")
+        params.append(origin)
+    if dispatch_chat_id is not None:
+        where.append("dispatch_chat_id=?")
+        params.append(dispatch_chat_id)
+    sql = "SELECT * FROM tasks"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    rows = c.execute(sql, params).fetchall()
     return [_row(r) for r in rows]
 
 

@@ -1131,7 +1131,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   async function loadTasks(){
     try{
-      const resp = await fetch("/voice/tasks", {headers:{"X-Auth-Token":S.token}});
+      const conv = S.conv === "voice-chat:main" ? null : S.conv;  // 通话视图保持原行为
+      const url = conv ? `/voice/tasks?conv=${encodeURIComponent(conv)}` : "/voice/tasks";
+      const resp = await fetch(url, {headers:{"X-Auth-Token":S.token}});
       if(!resp.ok) return;
       const rows = await resp.json();
       renderTasks(rows);
@@ -1159,8 +1161,18 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 落 localStorage 是为了同一设备刷新页面后,刚清空掉的旧任务不会又被 loadTasks() 拉回来。
   let voiceTasksClearedAt = Number(localStorage.getItem("vococo_voice_tasks_cleared_at") || 0);
 
+  function belongsToCurrentConv(t){
+    // 通话视图:看所有 voice 来源任务(兼容旧行为,dispatch_chat_id 可能为空)
+    if(S.conv === "voice-chat:main") return true;
+    // 聊天视图:只显示属于当前会话的任务
+    const tid = t.dispatch_chat_id;
+    if(!tid) return false;
+    return tid === S.conv;
+  }
+
   function upsertTaskBar(t){
-    if(t.created_at && t.created_at < voiceTasksClearedAt) return;  // 清空上下文之前派发的任务,后续状态更新也不再唤醒状态条
+    if(t.created_at && t.created_at < voiceTasksClearedAt) return;
+    if(!belongsToCurrentConv(t)) return;
     barTasks.set(t.id, t);
     renderTaskBar();
   }
@@ -1234,7 +1246,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     if(done.length){
       const expanded = chatTaskBar.dataset.doneExpanded === "1";
       html += '<div class="ctb-section ctb-done">' +
-        `<button type="button" class="ctb-toggle">${expanded ? "▼" : "▶"} 已完成 (${done.length})</button>`;
+        `<button type="button" class="ctb-toggle"><span class="ctb-chev${expanded ? " open" : ""}"></span>已完成 (${done.length})</button>`;
       if(expanded){
         for(const t of done) html += renderChatTaskRow(t);
       }
@@ -1762,14 +1774,16 @@ void main(){
     const es = new EventSource("/voice/tasks/stream?token=" + encodeURIComponent(S.token));
     es.addEventListener("task_update", e=>{
       const t=JSON.parse(e.data);
+      if(!belongsToCurrentConv(t)) return;
       upsertTaskBar(t);  // 派发/起跑/进度变化 → 状态条实时刷新
       syncSidebarTaskStatus(t);  // 侧边栏默认项目任务行的进行中圆点同步亮/灭
     });
     es.addEventListener("task_done", e=>{
+      const data = JSON.parse(e.data);
+      if(!belongsToCurrentConv(data)) return;
       tasksBadge.classList.add("on");
       loadTasks();
       loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
-      const data = JSON.parse(e.data);
       upsertTaskBar(data);  // 终态 → 状态条里标记"已完成",留在条里等用户手动点叉关闭
       pendingAnnouncements.push(data);
       flushAnnouncements();
@@ -6012,6 +6026,7 @@ async function openConv(conv, silentGroup){
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
+  loadTasks();      // 切换会话后刷新当前会话的任务状态条
   const isLocal = String(conv).startsWith("local-");
   let cached = S.histCache[conv];
   if(!cached && !isLocal){

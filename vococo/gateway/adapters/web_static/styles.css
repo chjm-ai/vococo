@@ -1043,10 +1043,11 @@
   #taskBar[hidden]{display:none}
   /* 聊天视图输入框顶部的任务状态条:套在带背景色的圆角矩形框内,悬浮在输入框顶部。
      活跃任务与已完成任务分区:已完成默认折叠;活跃任务默认最多 5 条,超出显示"显示更多"。 */
-  #chatTaskBar{padding:6px 2px 2px;display:flex;flex-direction:column;cursor:pointer}
+  #chatTaskBar{padding:0 0 6px;display:flex;flex-direction:column;cursor:pointer}
   #chatTaskBar[hidden]{display:none}
-  .chat-taskbar-box{background:var(--panel2);border:1px solid var(--line2);border-radius:14px;
-    padding:9px 11px;display:flex;flex-direction:column;gap:7px}
+  .chat-taskbar-box{background:color-mix(in srgb, var(--panel2) 55%, transparent);
+    border:1px solid color-mix(in srgb, var(--line2) 55%, transparent);border-radius:14px;
+    padding:8px 10px 6px;display:flex;flex-direction:column;gap:7px}
   .ctb-section{display:flex;flex-direction:column;gap:5px}
   .ctb-row{display:flex;align-items:center;gap:8px;font-size:12.5px;min-width:0}
   .ctb-row.done{opacity:.55;text-decoration:line-through}
@@ -1057,8 +1058,13 @@
     text-overflow:ellipsis;white-space:nowrap}
   .ctb-note{color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ctb-more,.ctb-toggle{border:none;background:none;color:var(--accent);font-size:12px;
-    cursor:pointer;text-align:left;padding:2px 0;width:fit-content}
+    cursor:pointer;text-align:left;padding:2px 0;width:fit-content;display:inline-flex;
+    align-items:center;gap:6px}
   .ctb-more:hover,.ctb-toggle:hover{text-decoration:underline}
+  .ctb-chev{display:inline-block;width:6px;height:6px;border:solid currentColor;
+    border-width:0 1.5px 1.5px 0;transform:translateY(-2px) rotate(-45deg);
+    transition:transform .15s;opacity:.65}
+  .ctb-chev.open{transform:translateY(0) rotate(45deg)}
   .taskbar-row{display:flex;align-items:center;gap:8px;font-size:13px;min-width:0}
   .taskbar-row.done{opacity:.55;text-decoration:line-through}
   .taskbar-row .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;background:var(--dim2)}
