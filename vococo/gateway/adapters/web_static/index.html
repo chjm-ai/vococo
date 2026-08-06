@@ -254,6 +254,8 @@ try{
     <form id="composer" autocomplete="off">
       <div class="combg">
         <div class="cwrap">
+          <!-- 聊天视图后台任务状态条:有排队/进行中任务时显示在输入框顶部,与通话视图的 #taskBar 共享数据 -->
+          <div id="chatTaskBar" hidden></div>
           <div id="pending"></div>
           <div id="thumbs"></div>
           <div class="inrow">
@@ -1177,8 +1179,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       .filter(t=>!dismissedTaskIds.has(t.id) && !taskBarDoneHidden(t))
       .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at))
       .slice(0, TASKBAR_MAX);
-    taskBar.hidden = !rows.length;
-    taskBar.innerHTML = rows.map(t=>{
+    const html = rows.map(t=>{
       const done = t.status !== "queued" && t.status !== "running";
       return `<div class="taskbar-row${done ? " done" : ""}"><span class="dot ${t.status}"></span>` +
         `<span class="t">${esc(t.title)}</span>` +
@@ -1186,10 +1187,28 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         (done ? `<button class="close" data-id="${t.id}" aria-label="关闭">✕</button>` : "") +
         `</div>`;
     }).join("");
+    taskBar.hidden = !rows.length;
+    taskBar.innerHTML = html;
+    const chatTaskBar = $("#chatTaskBar");
+    chatTaskBar.hidden = !rows.length;
+    chatTaskBar.innerHTML = html;
     scheduleDoneHide();  // 每次渲染后重算下一个「终态满 10 分钟」的自动隐藏时刻
   }
 
   taskBar.addEventListener("click", (e)=>{
+    const closeBtn = e.target.closest(".close");
+    if(closeBtn){
+      e.stopPropagation();
+      dismissedTaskIds.add(closeBtn.dataset.id);
+      renderTaskBar();
+      return;
+    }
+    tasksDrawer.classList.add("open");
+    loadTasks();
+  });
+
+  // 聊天视图输入框顶部的任务条:与通话视图 #taskBar 共享数据,点击同样打开任务抽屉
+  $("#chatTaskBar").addEventListener("click", (e)=>{
     const closeBtn = e.target.closest(".close");
     if(closeBtn){
       e.stopPropagation();
@@ -3201,16 +3220,23 @@ void main(){
   // ── 视图切换入口(供侧边栏"语音任务"主行 + #voiceChatBtn 调用,见下方接线)──────
   // initOnce:原页面这些初始化(常驻任务播报订阅/拉历史/挑一次交互模式)靠整页
   // 加载天然只跑一次;现在同一个 DOM 可以反复进出通话视图,得自己拿个标记位挡住
-  // 重复跑——尤其 connectTaskStream() 重跑会攒出好几条重复的 EventSource。
+  // 重复跑。
   let initialized = false;
   function initOnce(){
     if(initialized) return;
     initialized = true;
-    connectTaskStream();
-    loadTasks();  // 顺带初始化任务状态条:页面刷新前就在跑的任务也能立刻出现在条上
     loadMainHistory();
     initUiMode();
   }
+
+  // 任务 SSE 流与全量初始化:登录后即启动,不依赖是否进入通话视图——聊天输入框顶部
+  // 的任务状态条也需要实时更新。
+  window.connectTaskStreamOnce = function(){
+    if(window.__taskStreamConnected) return;
+    window.__taskStreamConnected = true;
+    connectTaskStream();
+    loadTasks();  // 顺带初始化任务状态条:页面刷新前就在跑的任务也能立刻出现在条上
+  };
 
   // teardownCallResources:退出通话视图时收麦克风/播放/WS——原页面靠浏览器整页
   // 导航卸载页面顺带回收这些资源,现在视图常驻 DOM 不会自动卸载,不手动收就是
@@ -3391,6 +3417,7 @@ async function tryEnter(){
     localStorage.setItem("vococo_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush();
+    connectTaskStreamOnce();  // 启动任务 SSE,让聊天输入框顶部状态条也能实时更新
     const hasSavedExpanded = localStorage.getItem("vococo_expanded") !== null;
     loadExpanded();
     if(!hasSavedExpanded){ S.expanded.add("__default__"); }  // 从没手动折叠过 → 默认项目首次展开
