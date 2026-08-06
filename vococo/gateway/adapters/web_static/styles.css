@@ -1040,6 +1040,10 @@
   #taskBar{border-bottom:1px solid var(--line);padding:8px 16px;display:flex;
     flex-direction:column;gap:6px;cursor:pointer;flex-shrink:0}
   #taskBar[hidden]{display:none}
+  /* 聊天视图输入框顶部的任务状态条:与 #taskBar 共用 .taskbar-row 样式,布局更紧凑,
+     嵌入 .cwrap 顶部,不额外占满通栏。 */
+  #chatTaskBar{padding:6px 2px 2px;display:flex;flex-direction:column;gap:6px;cursor:pointer}
+  #chatTaskBar[hidden]{display:none}
   .taskbar-row{display:flex;align-items:center;gap:8px;font-size:13px;min-width:0}
   .taskbar-row.done{opacity:.7}
   .taskbar-row .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
