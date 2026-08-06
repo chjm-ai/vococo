@@ -204,14 +204,6 @@ async def converse(
     root = config.project_root_for(session_key)  # 主仓库路径,供审批闸认项目文件为"内部"
     if cwd_override is not None:
         cwd = cwd_override
-    elif config.IS_SERVER:
-        # server 模式没有 worktree/项目体系:agent 的工作目录就是租户沙箱,
-        # 「写 cwd 外」的判定基准自动变成沙箱边界(danger.set_cwd 在下方)。
-        from ..tenancy import paths as tenant_paths
-
-        ws = tenant_paths.workspace_dir()
-        ws.mkdir(parents=True, exist_ok=True)
-        cwd = str(ws)
     else:
         # 项目会话首次干活时懒创建独立 worktree(每会话一分支,物理隔离);非项目会话直接跳过
         await worktree.ensure_worktree(session_key)
@@ -476,9 +468,6 @@ def _enabled_skill_names() -> set[str]:
 
 def _origin_from_session_key(session_key: str) -> dict | None:
     """从会话键推导接受任务的推送目标(结果推回用户接受时所在的聊天)。"""
-    from .. import config  # 懒加载,与本模块其余用法一致
-
-    session_key = config.strip_tenant_prefix(session_key)  # server 模式剥 t:<tid>:
     if session_key.startswith("tg:"):
         try:
             return {"platform": "telegram", "chat_id": int(session_key[3:])}
@@ -491,6 +480,8 @@ def _origin_from_session_key(session_key: str) -> dict | None:
         except ValueError:
             return {"platform": platform, "chat_id": cid}
     # 统一主会话拿不到 chat_id → 回退到 REFLECT_TARGET
+    from .. import config
+
     if ":" in config.REFLECT_TARGET:
         platform, _, cid = config.REFLECT_TARGET.partition(":")
         try:

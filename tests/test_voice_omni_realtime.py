@@ -25,9 +25,11 @@ def _isolated_voice_db(isolated, monkeypatch):
     register_routes() 当时还挂着孤儿回收副作用,跑一次测试就把真实 voice.db 里
     正在跑的任务全标失败("假失败"事故根因)。副作用已移去 web.py,这里的隔离
     保留当第二道防线:路由测试永远不许摸到真实数据目录。"""
-    tasks.reset()
+    monkeypatch.setattr(tasks, "_DB", None)
     yield
-    tasks.reset()
+    if tasks._DB is not None:
+        tasks._DB.close()
+        tasks._DB = None
 
 
 def _app() -> web.Application:

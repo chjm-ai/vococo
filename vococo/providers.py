@@ -12,8 +12,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config
-
 # 兜底默认模型;与 config.MODEL 的默认保持一致。
 _FALLBACK_MODEL = "claude-sonnet-5"
 
@@ -84,14 +82,7 @@ def _entry_vision(entry: dict) -> bool:
 
 
 def _all_web_providers() -> dict[str, dict]:
-    """所有第三方服务商条目,键=name。
-
-    personal=设置页持久化的 web_providers(tenant 自己的 settings.json);
-    server=只认平台环境变量 SERVER_PROVIDERS_JSON(key 收归平台,租户不可见不可改,
-    租户 settings.json 里的 vendor 条目直接忽略——防密钥经设置页 API 泄给客户)。
-    """
-    if config.IS_SERVER:
-        return dict(config.SERVER_PROVIDERS)
+    """从 settings_store 取所有第三方服务商条目,键=name。"""
     from .gateway import settings_store
 
     return settings_store.web_providers_raw()
@@ -148,17 +139,7 @@ def resolve(chosen_model: str | None, default_model: str) -> tuple[str, dict[str
 
     注意:不再支持 cc-switch 的"默认激活供应商"概念。当前只用 Claude 为主、第三方
     靠 /model 显式切;若以后需要"默认走第三方",得在 settings_store 里加 active_provider。
-
-    server 模式先做白名单收敛(SERVER_ALLOWED_MODELS):客户选的模型不在名单里
-    就当他没选(落默认),默认也不在名单里就落名单第一个——防切到贵模型打穿
-    平台成本(名单外的模型本就不该出现在客户 UI 上,这里是兜底防线)。
     """
-    if config.IS_SERVER and config.SERVER_ALLOWED_MODELS:
-        allowed = config.SERVER_ALLOWED_MODELS
-        if chosen_model and chosen_model not in allowed:
-            chosen_model = None
-        if default_model not in allowed:
-            default_model = allowed[0]
     if chosen_model:
         found = _provider_for_model(chosen_model)
         if found and not found.is_official:

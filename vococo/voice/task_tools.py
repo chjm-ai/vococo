@@ -31,13 +31,7 @@ from ..memory import session_store
 
 # 可选模型走 available_models 合并官方档 + 设置页第三方供应商(DeepSeek/Kimi 等),
 # 只拿裸 MODEL_CHOICES 会让模型以为只能选 6 个 Claude,看不到 kimi-k3 这类已配模型
-# 2026-08-06:加兜底——server 模式设置库按租户分,启动早期(无租户上下文)读到会抛
-# TenantContextError;模块级必须可 import,失败退回官方档示例(语音工具描述里的枚举,
-# 不影响实际模型解析,providers.resolve 每轮现读)。
-try:
-    _MODEL_EXAMPLES = "、".join(m for m, _, _ in providers.available_models(MODEL_CHOICES))
-except Exception:  # noqa: BLE001 —— import 期任何读库失败都不许炸掉 voice 包
-    _MODEL_EXAMPLES = "、".join(m for m, _ in MODEL_CHOICES)
+_MODEL_EXAMPLES = "、".join(m for m, _, _ in providers.available_models(MODEL_CHOICES))
 
 # 2026-08-04 续接优先:派发前强制关联检测的配套(见 voice_dispatch_task)。
 # _hinted_candidates 记"已提示过可续接候选"的任务 id——同一候选再次命中就放行,

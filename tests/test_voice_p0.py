@@ -39,10 +39,12 @@ def voice_db(isolated, monkeypatch):
     fixture 已经重置了 memory/_db.py 的连接单例,这里不用再管。
     """
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
-    tasks.reset()
+    monkeypatch.setattr(tasks, "_DB", None)
     executor._running.clear()
     yield
-    tasks.reset()
+    if tasks._DB is not None:
+        tasks._DB.close()
+        tasks._DB = None
 
 
 # ── 句子切分器 ────────────────────────────────────────────────────────────

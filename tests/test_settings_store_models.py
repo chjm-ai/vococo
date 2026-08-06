@@ -1,17 +1,16 @@
 """设置页手动加模型档位 / 第三方服务商的存储层:CRUD + 校验。
 
-用 monkeypatch 把 config.DATA_DIR 指向临时目录(settings_path 跟随),不碰真实 data/web_settings.json。
+用 monkeypatch 把 settings_store._PATH 指向临时文件,不碰真实 data/web_settings.json。
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from vococo import config
 from vococo.gateway import settings_store
 
 
 def _point_to(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
 
 
 def test_add_and_list_extra_model(monkeypatch, tmp_path):

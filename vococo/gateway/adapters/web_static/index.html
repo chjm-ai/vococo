@@ -23,10 +23,8 @@
 // 已有缓存口令时,别让口令页先画出来再被 JS 摘掉(那一闪很难看)——
 // 在 #login/#app 解析之前就用 document.write 插一段样式,首帧直接是隐藏态。
 // 给它一个 id,万一口令其实已失效(401),tryEnter() 里会把这段样式摘掉、退回登录页。
-// server 模式(服务端注入的 meta)走账号 cookie 鉴权,压根没有口令页这一步。
-const SERVER_MODE = (document.querySelector('meta[name="vococo-mode"]')||{}).content === "server";
 try{
-  if(SERVER_MODE || localStorage.getItem("vococo_token")){
+  if(localStorage.getItem("vococo_token")){
     document.write('<style id="bootSkip">#login{display:none}#app{display:flex!important}</style>');
   }
 }catch(e){}
@@ -3375,15 +3373,11 @@ async function api(path, opts={}){
 
 // ── 登录 ────────────────────────────────────────────────────────────────
 function showLogin(){
-  // server 模式:401 = cookie 会话过期,回账号登录页,不是口令错了
-  if(SERVER_MODE){ location.href = "/login"; return; }
   $("#login").style.display="flex"; $("#app").hidden=true;
   const bs=$("#bootSkip"); if(bs) bs.remove();  // 摘掉早期"跳过闪烁"那段强制样式,否则 #app 会被 !important 钉在显示状态
   if(S.es){S.es.close();S.es=null;}
 }
 async function tryEnter(){
-  // server 模式:鉴权在 cookie 里(登录页种下),直接进;S.token 恒为空串,
-  // 各请求带的空 X-Auth-Token 头会被服务端忽略(_auth_mw 只看 cookie)。
   // 有缓存口令时,首帧就已经靠 #bootSkip 样式把口令页藏起来、#app 显示出来了(见 </head> 后那段内联脚本)。
   // 这里立刻把内容区铺成骨架屏,不要空等——避免"口令消失→空白/欢迎屏→数据陆续到位"的中间闪烁态。
   $("#wrap").innerHTML=""; $("#empty").style.display="none"; $("#convLoading").classList.add("on");
@@ -3391,13 +3385,10 @@ async function tryEnter(){
   if(cachedConvs) applyConvs(cachedConvs);  // 磁盘缓存先画一版侧栏,消除刷新页面后的空白/闪烁
   try{
     const r = await fetch("/conversations", {headers:{"X-Auth-Token":S.token}});
-    if(r.status===401){
-      if(SERVER_MODE){ location.href="/login"; return; }  // cookie 失效 → 回账号登录页
-      $("#loginErr").textContent="口令错误"; showLogin(); return;
-    }
+    if(r.status===401){ $("#loginErr").textContent="口令错误"; showLogin(); return; }
     const d = await r.json();
     idbSet("convs", d);   // 落盘,下次刷新页面秒出侧栏
-    if(!SERVER_MODE) localStorage.setItem("vococo_token", S.token);
+    localStorage.setItem("vococo_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush();
     const hasSavedExpanded = localStorage.getItem("vococo_expanded") !== null;
@@ -7222,7 +7213,7 @@ if(window.visualViewport){
 // ── 启动 ────────────────────────────────────────────────────────────────
 try{ if(localStorage.getItem("vococo_sb")==="1") document.body.classList.add("sb-collapsed"); }catch(e){}
 syncTheme();
-if(SERVER_MODE || S.token){ tryEnter(); } else { $("#pw").focus(); }
+if(S.token){ tryEnter(); } else { $("#pw").focus(); }
 </script>
 </body>
 </html>

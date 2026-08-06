@@ -20,10 +20,6 @@ class Incoming:
     audios: list[AudioAttachment] = field(default_factory=list)
     # 入库替代文本:系统注入的消息(如自我重启还魂)用它,让长指令不当用户话显示/存库
     store_text: str | None = None
-    # server 模式:消息属于哪个租户。入站时(adapter 请求上下文里)盖章,
-    # GatewayRunner._dispatch 用它注入租户上下文——消息经队列跨 task 传递,
-    # ContextVar 不会自动跟过去,必须随消息本身走。personal 模式恒 "local"。
-    tenant_id: str = "local"
 
     @property
     def session_key(self) -> str:

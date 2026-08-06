@@ -30,10 +30,12 @@ def cron_env(isolated, monkeypatch):
     data = isolated / "data"
     data.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(scheduler.config, "CRON_JOBS_PATH", data / "cron_jobs.json")
-    bg_tasks.reset()
+    monkeypatch.setattr(bg_tasks, "_DB", None)
     task_runner._running.clear()
     yield data
-    bg_tasks.reset()
+    if bg_tasks._DB is not None:
+        bg_tasks._DB.close()
+        bg_tasks._DB = None
 
 
 async def _noop_coro(*_a, **_k) -> None:
