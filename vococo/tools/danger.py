@@ -637,7 +637,14 @@ def build_hooks() -> dict | None:
     始终挂 PreToolUse:除危险拦截/审批闸(各由 DANGER_GUARD/APPROVAL_GATE 开关控制)外,
     还负责拦下 run_in_background、引导模型改前台重试——这是纠正「后台任务被腰斩」的正确性
     修复,与两个安全开关无关,故即便两开关都关也要挂上。
+    另挂 PostToolUse:SDK 任务工具(TaskCreate/TaskUpdate)同步到 vococo 任务表,
+    让前端任务状态条能看到会话内建的任务清单(见 tools/task_hooks.py)。
     """
     if HookMatcher is None:
         return None
-    return {"PreToolUse": [HookMatcher(matcher=None, hooks=[pretool_guard_hook])]}
+    from .task_hooks import posttool_task_sync_hook
+
+    return {
+        "PreToolUse": [HookMatcher(matcher=None, hooks=[pretool_guard_hook])],
+        "PostToolUse": [HookMatcher(matcher=None, hooks=[posttool_task_sync_hook])],
+    }
