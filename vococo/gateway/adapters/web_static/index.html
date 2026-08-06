@@ -1144,7 +1144,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       // 清空上下文之前的旧任务筛掉,否则这次全量校准又会把刚清空的条目拉回来。
       barTasks.clear();
       for(const t of rows){
-        if(t.created_at && t.created_at < voiceTasksClearedAt) continue;
+        // 水位线只对 voice 任务生效(清空语音上下文只清语音任务);
+        // chat 任务有自己的会话隔离,不跟着语音上下文走
+        if(t.origin !== "chat" && t.created_at && t.created_at < voiceTasksClearedAt) continue;
         barTasks.set(t.id, t);
       }
       renderTaskBar();
@@ -1164,7 +1166,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let voiceTasksClearedAt = Number(localStorage.getItem("vococo_voice_tasks_cleared_at") || 0);
 
   function upsertTaskBar(t){
-    if(t.created_at && t.created_at < voiceTasksClearedAt) return;
+    // 水位线只对 voice 任务生效;chat 任务跟语音上下文无关(2026-08-06 对齐)
+    if(t.origin !== "chat" && t.created_at && t.created_at < voiceTasksClearedAt) return;
     // 两类任务分离(2026-08-06 对齐确认):
     // - cron 任务不进状态条(有自己专属界面)
     // - chat 任务按会话阻断:只在派发它的会话里显示
