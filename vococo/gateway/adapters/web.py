@@ -107,10 +107,16 @@ def _same_origin(origin: str, host: str) -> bool:
 @web.middleware
 async def _security_mw(request: web.Request, handler):
     """① 状态变更请求带跨源 Origin → 拒绝(挡 DNS rebinding / 跨站 POST);
-    ② 给非流式响应补 CSP / nosniff / DENY 等安全头。"""
+    ② 给非流式响应补 CSP / nosniff / DENY 等安全头。
+
+    "null" Origin 放行:隐私模式/沙箱 iframe/PWA 等场景浏览器会把同源 POST 的
+    Origin 打成 null,拦了会误伤正常登录(2026-08-06 部署首日实测);这不削弱
+    防护——server 模式会话 cookie 是 SameSite=Lax(跨站 POST 本来不带 cookie,
+    过不了鉴权),personal 模式的 X-Auth-Token 头跨站也伪造不了。真正跨站的
+    请求(带真实外站 Origin)照旧 403。"""
     if request.method in ("POST", "PUT", "DELETE", "PATCH"):
         origin = request.headers.get("Origin")
-        if origin and not _same_origin(origin, request.headers.get("Host", "")):
+        if origin and origin != "null" and not _same_origin(origin, request.headers.get("Host", "")):
             return web.json_response({"error": "cross-origin forbidden"}, status=403)
     resp = await handler(request)
     # SSE 等已 prepare 的流式响应不能再改头,跳过
