@@ -1131,9 +1131,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   async function loadTasks(){
     try{
-      const conv = S.conv === "voice-chat:main" ? null : S.conv;  // 通话视图保持原行为
-      const url = conv ? `/voice/tasks?conv=${encodeURIComponent(conv)}` : "/voice/tasks";
-      const resp = await fetch(url, {headers:{"X-Auth-Token":S.token}});
+      // 任务状态条是全局的(2026-08-06):所有后台任务在任何会话都能看到,不再按会话过滤。
+      const resp = await fetch("/voice/tasks", {headers:{"X-Auth-Token":S.token}});
       if(!resp.ok) return;
       const rows = await resp.json();
       renderTasks(rows);
@@ -1161,18 +1160,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 落 localStorage 是为了同一设备刷新页面后,刚清空掉的旧任务不会又被 loadTasks() 拉回来。
   let voiceTasksClearedAt = Number(localStorage.getItem("vococo_voice_tasks_cleared_at") || 0);
 
-  function belongsToCurrentConv(t){
-    // 通话视图:看所有 voice 来源任务(兼容旧行为,dispatch_chat_id 可能为空)
-    if(S.conv === "voice-chat:main") return true;
-    // 聊天视图:只显示属于当前会话的任务
-    const tid = t.dispatch_chat_id;
-    if(!tid) return false;
-    return tid === S.conv;
-  }
-
   function upsertTaskBar(t){
     if(t.created_at && t.created_at < voiceTasksClearedAt) return;
-    if(!belongsToCurrentConv(t)) return;
     barTasks.set(t.id, t);
     renderTaskBar();
   }
@@ -1774,20 +1763,24 @@ void main(){
     const es = new EventSource("/voice/tasks/stream?token=" + encodeURIComponent(S.token));
     es.addEventListener("task_update", e=>{
       const t=JSON.parse(e.data);
-      if(!belongsToCurrentConv(t)) return;
       upsertTaskBar(t);  // 派发/起跑/进度变化 → 状态条实时刷新
       syncSidebarTaskStatus(t);  // 侧边栏默认项目任务行的进行中圆点同步亮/灭
     });
     es.addEventListener("task_done", e=>{
       const data = JSON.parse(e.data);
-      if(!belongsToCurrentConv(data)) return;
       tasksBadge.classList.add("on");
       loadTasks();
       loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
       upsertTaskBar(data);  // 终态 → 状态条里标记"已完成",留在条里等用户手动点叉关闭
-      pendingAnnouncements.push(data);
-      flushAnnouncements();
+      // chat 来源的任务完成只静默更新状态条,不插播语音(2026-08-06:chat 任务
+      // 完成走 Web Push/平台推送,不该在语音通道突然念一句)
+      if(data.origin !== "chat"){
+        pendingAnnouncements.push(data);
+        flushAnnouncements();
+      }
     });
+    // SSE 断线重连成功后全量校准一次:重连期间错过的 task_done 靠这次拉全量补上
+    es.onopen = ()=>{ loadTasks(); };
   }
 
   // ── P3 阶段二:Omni-Realtime WebRTC 通话 ─────────────────────────────────
