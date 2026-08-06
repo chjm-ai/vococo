@@ -21,6 +21,14 @@ COPY vococo/ ./vococo/
 COPY agents/ ./agents/
 RUN uv sync --locked --no-dev
 
+# 非 root 运行:claude CLI 拒绝以 root 使用 --dangerously-skip-permissions
+# (2026-08-06 首次部署实测崩 root)。数据目录先 chown,docker 命名卷首次挂载
+# 会继承镜像里的属主。
+RUN useradd -m -u 10001 vococo \
+    && mkdir -p /app/data \
+    && chown -R vococo:vococo /app
+USER vococo
+
 # 运行时数据(平台库 + 租户目录)全部落 /app/data,挂卷持久化
 VOLUME ["/app/data"]
 
