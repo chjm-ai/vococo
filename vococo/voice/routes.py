@@ -500,10 +500,15 @@ async def _handle_omni_webrtc(request: web.Request) -> web.Response:
 async def _handle_tasks_list(request: web.Request) -> web.Response:
     if (g := _guard(request)) is not None:
         return g
-    # 任务状态条是全局的:所有后台任务在任何会话都能看到(2026-08-06 按用户反馈,
-    # 不再按会话隔离——用户期望切到其他会话也能看到正在跑的任务)。
-    # ?conv= 参数保留兼容,但不再用于过滤,前端也不再传。
-    return web.json_response(tasks.list_recent())
+    # 两类任务分离(2026-08-06 对齐确认):
+    # - 通话视图不传 conv → 只看语音派发的任务(origin="voice",原有行为)
+    # - 聊天视图传 conv → 只看该会话派的程序任务(origin="chat" + dispatch_chat_id=conv)
+    conv = request.query.get("conv")
+    if conv:
+        rows = tasks.list_recent(origin="chat", dispatch_chat_id=conv)
+    else:
+        rows = tasks.list_recent(origin="voice")
+    return web.json_response(rows)
 
 
 async def _handle_task_detail(request: web.Request) -> web.Response:

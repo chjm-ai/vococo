@@ -1131,8 +1131,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   async function loadTasks(){
     try{
-      // 任务状态条是全局的(2026-08-06):所有后台任务在任何会话都能看到,不再按会话过滤。
-      const resp = await fetch("/voice/tasks", {headers:{"X-Auth-Token":S.token}});
+      // 两类任务分离(2026-08-06 对齐):通话视图(voice-chat:main)拉语音任务,
+      // 聊天视图拉当前会话的 chat 任务——后端按 conv 区分(见 /voice/tasks)。
+      const conv = S.conv === "voice-chat:main" ? null : S.conv;
+      const url = conv ? `/voice/tasks?conv=${encodeURIComponent(conv)}` : "/voice/tasks";
+      const resp = await fetch(url, {headers:{"X-Auth-Token":S.token}});
       if(!resp.ok) return;
       const rows = await resp.json();
       renderTasks(rows);
@@ -1162,6 +1165,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   function upsertTaskBar(t){
     if(t.created_at && t.created_at < voiceTasksClearedAt) return;
+    // 两类任务分离(2026-08-06 对齐确认):
+    // - cron 任务不进状态条(有自己专属界面)
+    // - chat 任务按会话阻断:只在派发它的会话里显示
+    // - voice 任务直接收,归通话视图 #taskBar 用
+    if(t.origin === "cron") return;
+    if(t.origin === "chat" && t.dispatch_chat_id !== S.conv) return;
     barTasks.set(t.id, t);
     renderTaskBar();
   }
@@ -1197,14 +1206,19 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       .filter(t=>!taskBarDoneHidden(t))
       .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at));
 
-    // 1) 通话视图 #taskBar: 简单列表,最近 7 条
-    const callRows = rows.slice(0, TASKBAR_MAX);
+    // 两类任务分离(2026-08-06 对齐):#taskBar 只显示 voice 任务,#chatTaskBar 只显示 chat 任务。
+    // barTasks 是共享池(SSE 事件混着来),渲染时按 origin 分流,互不污染。
+    const voiceRows = rows.filter(t=>t.origin === "voice");
+    const chatRows = rows.filter(t=>t.origin === "chat");
+
+    // 1) 通话视图 #taskBar: voice 任务简单列表,最近 7 条
+    const callRows = voiceRows.slice(0, TASKBAR_MAX);
     taskBar.hidden = !callRows.length;
     taskBar.innerHTML = callRows.map(renderTaskBarRow).join("");
 
-    // 2) 聊天视图 #chatTaskBar: 活跃/已完成分组,默认折叠已完成,活跃最多默认 5 条
-    const active = rows.filter(t=>!isTaskDone(t));
-    const done = rows.filter(t=>isTaskDone(t));
+    // 2) 聊天视图 #chatTaskBar: chat 任务活跃/已完成分组,默认折叠已完成,活跃最多默认 5 条
+    const active = chatRows.filter(t=>!isTaskDone(t));
+    const done = chatRows.filter(t=>isTaskDone(t));
     renderChatTaskBar(active, done);
 
     scheduleDoneHide();  // 每次渲染后重算下一个「终态满 10 分钟」的自动隐藏时刻
