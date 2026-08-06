@@ -711,6 +711,13 @@ font-size:15px;cursor:pointer}
             html_bytes = self._inject_asset_versions((_STATIC / "index.html").read_bytes())
         except OSError:
             html_bytes = "<h1>index.html 缺失</h1>".encode("utf-8")
+        # 注入部署模式:前端据此决定走「口令闸」(personal)还是「账号登录页」(server,
+        # cookie 已鉴权,不再要 WEB_AUTH_TOKEN)。内容按进程恒定,不影响 ETag。
+        html_bytes = html_bytes.replace(
+            b"<head>",
+            b'<head>\n<meta name="vococo-mode" content="' + config.MODE.encode() + b'">',
+            1,
+        )
         etag = f'"{hashlib.md5(html_bytes).hexdigest()}"'
         if request.headers.get("If-None-Match") == etag:
             return web.Response(
