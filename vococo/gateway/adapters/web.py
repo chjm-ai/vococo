@@ -1385,7 +1385,19 @@ class WebAdapter:
             return web.json_response({"error": "bad id"}, status=400)
         key = config.resolve_session_key("web", conv)
         events = session_store.load_turn_events(key, turn_id)
-        return web.json_response({"events": events if events is not None else []})
+        # 一轮完整时间线(工具 input/preview/detail 全量)常达几十~几百 KB,是详情页
+        # 加载的大头——必须压缩 + ETag/304,否则跨境隧道(实测 ~50KB/s)一趟要好
+        # 几秒,表现为「点开工具卡转圈/加载不出来」(同 /history 的教训,2026-08-06)。
+        body = json.dumps(
+            {"events": events if events is not None else []}, ensure_ascii=False
+        ).encode("utf-8")
+        etag = f'"{hashlib.md5(body).hexdigest()}"'
+        headers = {"Cache-Control": "no-cache", "ETag": etag}
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers=headers)
+        resp = web.Response(body=body, content_type="application/json", headers=headers)
+        resp.enable_compression()
+        return resp
 
     async def _handle_image(self, request: web.Request) -> web.StreamResponse:
         """回显某轮用户发的图片(落盘在 config.IMAGES_DIR);name 经白名单校验挡路径穿越。"""
