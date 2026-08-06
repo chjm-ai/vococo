@@ -3943,6 +3943,7 @@ function pickCmd(i){
   const c=S.cmd.items[i]; if(!c) return;
   const ta=$("#ta"); ta.value="/"+c.name+" "; closeCmdMenu(); autoGrow(); ta.focus();
   const p=ta.value.length; ta.setSelectionRange(p,p);
+  saveDraft();   // 程序赋值不触发 input 事件,手动存一次草稿
 }
 // 只在"整条消息就是斜杠命令前缀,还没打空格"时弹出;打了空格说明已在填参数,收起菜单
 function checkCmdMenu(){
@@ -5938,6 +5939,7 @@ async function openConv(conv, silentGroup){
   // 切到目标会话时,若全局审批弹窗正开着则关闭(用户选择进去处理)
   const cmodal=$("#choiceModal"); if(cmodal && !cmodal.hidden){ cmodal.hidden=true; }
   S.conv=conv; S.stream=null;
+  restoreDraft(conv);   // 输入框草稿按会话独立:切走时已实时存好,这里恢复目标会话的草稿
   // 用户已打开该会话,清零未读标记;本地缓存也同步清,避免重绘闪烁。语音任务/定时
   // 任务的行对象不在 S.convs 里(那是 /conversations 拉的),还得去各自的侧栏缓存
   // 里找——否则只清了 S.pendingReview 这半份缓存,行对象自己的 pending_review 字段
@@ -6664,7 +6666,7 @@ async function send(text, display, opts){
   // 上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发(审批/语音走 forceSend 立即发)
   if(S.stream && !opts.forceSend){
     if(queuePending(text, S.images.slice(), S.audios.slice())){
-      S.images=[]; S.audios=[]; renderThumbs(); $("#ta").value=""; autoGrow();
+      S.images=[]; S.audios=[]; renderThumbs(); $("#ta").value=""; autoGrow(); clearDraft();
     }
     return;
   }
@@ -6698,6 +6700,7 @@ async function send(text, display, opts){
   };
   // 新会话:发出第一条后,把本地临时会话转正
   const wasLocal=String(S.conv).startsWith("local-");
+  clearDraft();   // 发送即清草稿:必须在转正前调用,否则 S.conv 已换成真实 id,local- 旧 key 清不掉
   if(wasLocal){ S.conv=S.conv.replace("local-",""); payload.conv=S.conv; renderProjSelChip(); }
   S.images=[]; S.audios=[]; renderThumbs(); $("#ta").value=""; autoGrow();
   try{
@@ -6800,6 +6803,27 @@ document.addEventListener("click", e=>{ if(S.cmd.open && !e.target.closest("#cmd
 function autoGrow(){ const t=$("#ta"); t.style.height="auto"; t.style.height=Math.min(t.scrollHeight,160)+"px"; }
 $("#ta").addEventListener("input", autoGrow);
 $("#ta").addEventListener("input", checkCmdMenu);
+// ── 会话级输入草稿(纯本地缓存,按会话 id 分 key)────────────────────────
+// 每个会话的输入框内容独立存 localStorage;切会话时恢复目标会话的草稿,
+// 发送/清空时删除,避免 A 会话打的字串到 B 会话。local- 前缀的未转正新会话
+// 同样按自己 id 存,互不干扰;发送转正时旧 key 一并清掉。
+function draftKey(conv){ return "vococo_draft:"+conv; }
+function saveDraft(){
+  try{
+    if(!S.conv) return;
+    const v=$("#ta").value;
+    if(v) localStorage.setItem(draftKey(S.conv), v);
+    else localStorage.removeItem(draftKey(S.conv));  // 清空了就删 key,不留空草稿
+  }catch(e){}
+}
+function restoreDraft(conv){
+  let v=""; try{ v=localStorage.getItem(draftKey(conv))||""; }catch(e){}
+  $("#ta").value=v; autoGrow();
+}
+function clearDraft(conv){
+  try{ localStorage.removeItem(draftKey(conv||S.conv)); }catch(e){}
+}
+$("#ta").addEventListener("input", saveDraft);
 // 欢迎屏快捷入口:点击直接发送
 document.querySelectorAll("#empty .sug[data-s]").forEach(b=>{ b.onclick=()=>send(b.dataset.s); });
 
@@ -7093,6 +7117,7 @@ function insertToInput(t){
   const ta=$("#ta");
   ta.value = ta.value.trim() ? (ta.value.replace(/\s+$/,"")+" "+t) : t;
   autoGrow(); ta.focus();
+  saveDraft();   // 程序赋值不触发 input 事件,手动存一次草稿
 }
 $("#micBtn").onclick = ()=>{ if(REC.state==="idle") startRec(); };          // 麦克风:开录
 $("#recSend").onclick = e=>{ e.stopPropagation(); if(REC.state==="recording") stopRec(false); }; // 右侧 ↑:完成并发送
