@@ -397,7 +397,7 @@ def _sync_sdk_task_started(msg, session_key: str | None) -> None:
     tid = getattr(msg, "task_id", "") or ""
     if not tid:
         return
-    existing = _task_get(tid)
+    existing = tasks.get(tid)
     if existing is None:
         task = tasks.create(
             title=(getattr(msg, "description", "") or "").strip() or f"任务 {tid[:8]}",
@@ -406,9 +406,13 @@ def _sync_sdk_task_started(msg, session_key: str | None) -> None:
             origin="task",
             task_id=tid,
         )
+        # create 落的是 queued;SDK 任务启动即运行,走状态机迁到 running
+        # (否则 queued 直接 finish('done') 会被状态机拒绝,终态永远写不进去)
+        tasks.set_status(tid, "running")
+        task = tasks.get(tid)
     else:
         tasks.set_status(tid, "running")
-        task = _task_get(tid)
+        task = tasks.get(tid)
     notify.on_task_activity(task)
 
 
@@ -428,14 +432,14 @@ def _sync_sdk_task_terminal(msg, session_key: str | None) -> None:
     else:
         patch = getattr(msg, "patch", None) or {}
         summary = str(patch.get("result") or patch.get("error") or "").strip()
-    if _task_get(tid) is None:  # 没收到 started 的防御:补一条终态记录
+    if tasks.get(tid) is None:  # 没收到 started 的防御:补一条终态记录
         tasks.create(
             title=f"任务 {tid[:8]}", prompt="",
             dispatch_chat_id=_chat_id_from_session_key(session_key),
             origin="task", task_id=tid,
         )
     tasks.finish(tid, vstatus, result_full="", result_summary=summary[:200])
-    notify.broadcast_task_done(_task_get(tid))
+    notify.broadcast_task_done(tasks.get(tid))
 
 
 def assemble_tool_input(raw: str) -> dict:
