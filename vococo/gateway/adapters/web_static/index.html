@@ -6509,6 +6509,15 @@ function foldToGroup(s, card){
 }
 // 把单个流式事件落到 DOM(供前台实时渲染 + 切回会话时按缓冲重放两用)
 function applyStreamEvent(e){
+  // 停止回复后的防重建短窗,见 stopReply 的注释:窗口内该会话的旧帧在流已收掉
+  // 时不重建气泡(避免「点了还出现,要点第二次」);到期或命中后自动解除。
+  const g = S.stopGuard;
+  if(g){
+    if(g.conv === e.conv){
+      if(Date.now() > g.until) S.stopGuard = null;  // 窗口到期,恢复正常
+      else if(!S.stream) return;                    // 窗口内、无流 → 在途旧帧,丢弃
+    }
+  }
   switch(e.type){
     case "user":
       if(S.localSent){ S.localSent=false; break; }  // 本客户端发的,气泡已在 send() 里加了
@@ -6763,6 +6772,18 @@ async function stopReply(){
   // 收尾含最多 5 秒 CLI interrupt + 写库,SSE 终态要晚几秒才到,干等会让
   // 用户以为没停住、反复点。SSE 终态到达后差量渲染覆盖成同一结果,无跳变。
   const optimistic = markTaskStopped(conv);
+  // 防重建(点两次的根因):取消指令发出前已在途的旧帧(取消瞬间 SDK 最后吐的
+  // 文本/工具事件)会在 finalizeStream 之后才到达,而 applyStreamEvent 对
+  // streamy 事件一律 ensureStream——不拦会把已收掉的气泡重新拉起来,让用户
+  // 以为没停住、要点第二次。短窗内该会话的 streamy 事件且当前无流时一律丢弃,
+  // 窗口过后自动解除;用户手动发的新消息必在窗口之后,不受影响。
+  S.stopGuard = {conv, until: Date.now() + 2000};
+  clearTimeout(S.stopGuardTimer);
+  S.stopGuardTimer = setTimeout(()=>{ if(S.stopGuard) S.stopGuard = null; }, 2500);
+  // 顺手清掉该会话的进行中缓冲:done 到达时本来也会清,提前清掉更稳——
+  // 避免切走再切回时 maybeReplayStream 把已停止回合的旧帧重放成新的流式气泡
+  // (侧栏「正在回复」橙点也随之熄灭,由 markLive 重绘)。
+  delete S.live[conv]; delete S.streamSnap[conv]; markLive();
   finalizeStream(); // 立即结束前端流式气泡,保留已有部分文字
   try{
     const r = await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
