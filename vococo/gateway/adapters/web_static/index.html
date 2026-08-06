@@ -1179,20 +1179,48 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       .filter(t=>!dismissedTaskIds.has(t.id) && !taskBarDoneHidden(t))
       .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at))
       .slice(0, TASKBAR_MAX);
-    const html = rows.map(t=>{
-      const done = t.status !== "queued" && t.status !== "running";
-      return `<div class="taskbar-row${done ? " done" : ""}"><span class="dot ${t.status}"></span>` +
-        `<span class="t">${esc(t.title)}</span>` +
-        `<span class="n">${esc(taskbarNote(t))}</span>` +
-        (done ? `<button class="close" data-id="${t.id}" aria-label="关闭">✕</button>` : "") +
-        `</div>`;
-    }).join("");
-    taskBar.hidden = !rows.length;
-    taskBar.innerHTML = html;
-    const chatTaskBar = $("#chatTaskBar");
-    chatTaskBar.hidden = !rows.length;
-    chatTaskBar.innerHTML = html;
+    renderBar($("#taskBar"), rows);
+    renderBar($("#chatTaskBar"), rows);
     scheduleDoneHide();  // 每次渲染后重算下一个「终态满 10 分钟」的自动隐藏时刻
+  }
+  // 差量渲染单个任务条(与 #taskBar 共用行结构):同 id 的行存在且状态/文案没变就
+  // 不重建 DOM —— 旧版每次 task_update 都整段 innerHTML 重写,running 圆点的
+  // taskbarPulse 动画随之反复重启,视觉上一直闪,像"还在持续输出"。
+  function renderBar(el, rows){
+    el.hidden = !rows.length;
+    for(const child of [...el.querySelectorAll(".taskbar-row")]){
+      if(!rows.some(t=>t.id===child.dataset.tid)) child.remove();
+    }
+    rows.forEach((t, i)=>{
+      let row = el.querySelector(`.taskbar-row[data-tid="${t.id}"]`);
+      if(!row){
+        row = document.createElement("div");
+        row.className = "taskbar-row";
+        row.dataset.tid = t.id;
+      }
+      if(el.children[i] !== row) el.insertBefore(row, el.children[i]);  // 按排序归位
+      const done = t.status !== "queued" && t.status !== "running";
+      row.classList.toggle("done", done);
+      let dot = row.querySelector(".dot");
+      if(!dot){ dot = document.createElement("span"); dot.className = "dot"; row.appendChild(dot); }
+      if(dot.className !== "dot " + t.status) dot.className = "dot " + t.status;  // 状态没变不动 class,动画不重启
+      let ttl = row.querySelector(".t");
+      if(!ttl){ ttl = document.createElement("span"); ttl.className = "t"; row.appendChild(ttl); }
+      if(ttl.textContent !== t.title) ttl.textContent = t.title;
+      const note = taskbarNote(t);
+      let nEl = row.querySelector(".n");
+      if(!nEl){ nEl = document.createElement("span"); nEl.className = "n"; row.appendChild(nEl); }
+      if(nEl.textContent !== note) nEl.textContent = note;
+      let closeBtn = row.querySelector(".close");
+      if(done && !closeBtn){
+        closeBtn = document.createElement("button");
+        closeBtn.className = "close"; closeBtn.dataset.id = t.id;
+        closeBtn.setAttribute("aria-label", "关闭"); closeBtn.textContent = "✕";
+        row.appendChild(closeBtn);
+      } else if(!done && closeBtn){
+        closeBtn.remove();  // 追问重开:终态行复活成运行中,✕ 收掉
+      }
+    });
   }
 
   taskBar.addEventListener("click", (e)=>{
@@ -6732,8 +6760,15 @@ async function stopReply(){
   if(!S.stream) return;
   const conv=S.conv;
   finalizeStream(); // 立即结束前端流式气泡,保留已有部分文字
-  try{ await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})}); }
-  catch(e){ /* 网络异常忽略,前端已处理 */ }
+  try{
+    const r = await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
+    if(r.ok){
+      const j = await r.json();
+      // 停不住 = 流的源头(轮次/任务)其实已经结束,比如 SSE 缓冲重放的历史流。
+      // 明说一句,免得用户以为按钮没反应、反复点。
+      if(!j.stopped) addMsg("ai", "已停止(当前没有正在运行的回复或任务)");
+    }
+  }catch(e){ /* 网络异常忽略,前端已处理 */ }
   flushPending(conv); // 手动中止不会触发 done/message 事件,需主动补发排队中的下一条
 }
 // ── 待发送队列 ────────────────────────────────────────────────────────────
