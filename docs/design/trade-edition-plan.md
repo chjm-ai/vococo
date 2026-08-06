@@ -55,11 +55,12 @@
 - [x] 设计文档标废弃:server-edition*.md 头部加「已废弃,仅存档」
 - [x] 验收:grep tenancy|IS_SERVER|VOCOCO_MODE 零命中(存档文档除外);uv run pytest 全绿;vococo doctor 通过
 
-### 第 1 步:建 VocoTrade 仓库
-- [ ] fork 当前 main(已无 server 代码,干净起点),仓库名 vocotrade
-- [ ] 注册 git remote upstream → vococo;README 写明同步区清单与规则
-- [ ] 删除个人专属;保留同步区六块
-- [ ] 产出:可跑的空壳服务端
+### 第 1 步:建 VocoTrade 仓库(已完成 2026-08-06)
+- [x] fork 当前 main(已无 server 代码,干净起点),仓库名 vocotrade(`~/Repos/vocotrade`)
+- [x] 注册 git remote upstream → vococo;README 写明同步区清单与规则
+- [x] 删除个人专属(voice/tui/selfops/worktree/deploy/eval/scripts);保留同步区
+- [x] 产出:可跑的空壳服务端(42 模块 import 全通;313 测试全绿;serve 冒烟可启动;
+      注意:本机端口 8848 与主仓 vococo serve 冲突,同时跑两个实例需换端口)
 
 ### 第 2 步:产品重构(数字员工矩阵)
 - [ ] agents_manifest.yaml + agents/<name>/ 员工模板(人设/技能包/工作台预设/数据源绑定)
