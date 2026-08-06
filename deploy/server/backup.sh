@@ -3,8 +3,9 @@
 # 用法(宿主机 cron,如每日 04:17):17 4 * * * /opt/vococo/deploy/server/backup.sh
 set -euo pipefail
 
-# 数据卷在宿主机上的落点(docker compose 命名卷;按实际改)
-DATA_DIR="${VOCOCO_DATA_DIR:-/var/lib/docker/volumes/vococo_vococo-data/_data}"
+# 数据卷在宿主机上的落点(docker compose 命名卷 = <目录名>_vococo-data;
+# 按 /srv/vococo/code 克隆的默认是 code_vococo-data,可用 VOCOCO_DATA_DIR 覆盖)
+DATA_DIR="${VOCOCO_DATA_DIR:-/var/lib/docker/volumes/code_vococo-data/_data}"
 BACKUP_ROOT="${VOCOCO_BACKUP_DIR:-/var/backups/vococo}"
 KEEP_DAYS="${VOCOCO_BACKUP_KEEP_DAYS:-14}"
 
