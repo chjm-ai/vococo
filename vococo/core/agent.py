@@ -36,7 +36,7 @@ from .. import config, providers
 from ..gateway import clarify, settings_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
-from . import client_pool, tasks
+from . import client_pool
 from .prompt import build_system_prompt
 
 
@@ -359,88 +359,6 @@ _TERMINAL_TASK = frozenset({"completed", "failed", "stopped", "killed"})
 
 # 判定「是子代理启动」的工具名(新版 Agent / 老版 Task)。
 _SUBAGENT_TOOLS = frozenset({"Agent", "Task"})
-
-# ── SDK 会话内任务(TaskCreate/Task 工具)同步到 vococo 任务表 ────────────
-# 2026-08-06:AI 在会话里调 SDK 内置的 TaskCreate 工具建任务清单,这些任务原来
-# 只存在于 SDK 内部(消息流里的 TaskStarted/TaskNotification/TaskUpdated 系列),
-# 前端任务状态条/任务列表看不到。这里把它们的生命周期同步进 vococo tasks 表
-# (新 origin="task"——「会话内 AI 自己建的小任务」),并推 SSE 事件,让聊天视图
-# 状态条按会话实时显示;语音通话链路完全不碰(见 voice/notify.broadcast_task_done)。
-# SDK 状态 → vococo 状态映射(SDK: pending/running/paused/completed/failed/killed/stopped)
-_SDK_STATUS_TO_VOCOCO = {
-    "pending": "queued",
-    "running": "running",
-    "paused": "running",
-    "completed": "done",
-    "failed": "failed",
-    "killed": "cancelled",
-    "stopped": "cancelled",
-}
-
-
-def _chat_id_from_session_key(key: str | None) -> str | None:
-    """session_key → 前端 conv/chat_id,口径与 dispatch_session 落库一致
-    (config.resolve_session_key 的逆映射:主会话→main,web: 剥前缀,其余透传)。"""
-    if not key:
-        return None
-    if key == config.SESSION_KEY:
-        return "main"
-    if key.startswith("web:"):
-        return key[len("web:"):]
-    return key  # voice-chat:/task: 等保留前缀原样透传
-
-
-def _sync_sdk_task_started(msg, session_key: str | None) -> None:
-    """SDK 任务启动(TaskStartedMessage)→ 落库(幂等)+ 推 SSE task_update。"""
-    from ..voice import notify  # 延迟导入,避免模块级循环依赖
-
-    tid = getattr(msg, "task_id", "") or ""
-    if not tid:
-        return
-    existing = tasks.get(tid)
-    if existing is None:
-        task = tasks.create(
-            title=(getattr(msg, "description", "") or "").strip() or f"任务 {tid[:8]}",
-            prompt="",  # SDK 小任务没有 prompt,占位
-            dispatch_chat_id=_chat_id_from_session_key(session_key),
-            origin="task",
-            task_id=tid,
-        )
-        # create 落的是 queued;SDK 任务启动即运行,走状态机迁到 running
-        # (否则 queued 直接 finish('done') 会被状态机拒绝,终态永远写不进去)
-        tasks.set_status(tid, "running")
-        task = tasks.get(tid)
-    else:
-        tasks.set_status(tid, "running")
-        task = tasks.get(tid)
-    notify.on_task_activity(task)
-
-
-def _sync_sdk_task_terminal(msg, session_key: str | None) -> None:
-    """SDK 任务终态(TaskNotificationMessage / TaskUpdatedMessage)→ 更新落库 + 推 SSE。"""
-    from ..voice import notify
-
-    tid = getattr(msg, "task_id", "") or ""
-    status = getattr(msg, "status", None)
-    vstatus = _SDK_STATUS_TO_VOCOCO.get(status or "")
-    if not tid or vstatus is None or vstatus in ("queued", "running"):
-        return  # 非终态,状态条由 task_update 流驱动
-    # 终态摘要:task_notification 有 summary;task_updated 走 patch 的 result/error
-    summary = ""
-    if isinstance(msg, TaskNotificationMessage):
-        summary = (getattr(msg, "summary", "") or "").strip()
-    else:
-        patch = getattr(msg, "patch", None) or {}
-        summary = str(patch.get("result") or patch.get("error") or "").strip()
-    if tasks.get(tid) is None:  # 没收到 started 的防御:补一条终态记录
-        tasks.create(
-            title=f"任务 {tid[:8]}", prompt="",
-            dispatch_chat_id=_chat_id_from_session_key(session_key),
-            origin="task", task_id=tid,
-        )
-    tasks.finish(tid, vstatus, result_full="", result_summary=summary[:200])
-    notify.broadcast_task_done(tasks.get(tid))
-
 
 def assemble_tool_input(raw: str) -> dict:
     """把累积的 input_json_delta 片段解析成 dict;空/坏 JSON 都安全退化成 {}。"""
@@ -942,14 +860,11 @@ async def stream_turn(
                         # 缓存供 /api/usage 查询,不做阻塞(不 yield 事件给前端)。
                         _update_rate_limits(msg.rate_limit_info)
                     elif isinstance(msg, TaskStartedMessage):
-                        # 任务启动(TaskCreate 工具 / run_in_background)→ 记进「在跑」集
-                        # 收工要等它终态;同时同步到 vococo 任务表,前端状态条实时可见
+                        # 任务启动 → 记进「在跑」集,收工要等它终态
                         active_tasks.add(getattr(msg, "task_id", "") or "")
-                        _sync_sdk_task_started(msg, session_key)
                     elif isinstance(msg, (TaskNotificationMessage, TaskUpdatedMessage)):
                         if getattr(msg, "status", None) in _TERMINAL_TASK:
                             active_tasks.discard(getattr(msg, "task_id", "") or "")
-                            _sync_sdk_task_terminal(msg, session_key)
                     elif isinstance(msg, ResultMessage):
                         cost_usd = getattr(msg, "total_cost_usd", None)
                         is_error = bool(getattr(msg, "is_error", False))
