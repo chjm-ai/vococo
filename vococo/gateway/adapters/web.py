@@ -350,8 +350,11 @@ class WebAdapter:
         self._boot_id = f"{int(time.time() * 1000)}-{os.getpid()}"
         # 注册后台任务桥接:task: 状态变化经主 SSE 推给前端,让侧栏小红点闪烁。
         # 懒加载避免非语音场景循环依赖;bridge 本身只要 _emit,不依赖 voice 包的其他模块。
-        from ...voice import notify as _voice_notify
-        _voice_notify.register_main_event_bridge(self._emit)
+        # 2026-08-06 修:VOICE_ENABLED=False(server 模式默认)时整个 voice 包都不 import——
+        # voice/task_tools 模块级会读 settings_store,server 模式无租户上下文必崩启动。
+        if config.VOICE_ENABLED:
+            from ...voice import notify as _voice_notify
+            _voice_notify.register_main_event_bridge(self._emit)
         # 注册跨入口事件桥接:Telegram 那边发生的会话更新(自己不经过 _emit)靠这条
         # 路推进来,见 gateway/event_bridge.py。
         from .. import event_bridge
