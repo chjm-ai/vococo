@@ -5715,6 +5715,14 @@ function toggleArchive(conv){
   const c=findConv(conv); if(!c) return;
   const next=!c.archived;
   c.archived=next; renderConvs();  // 乐观更新
+  if(next && conv===S.conv){
+    // 归档的是当前打开的会话:侧栏里它可能立刻消失(工作中/归档筛选下),聊天窗口
+    // 不能还停在被归档会话上——自动切到另一个最近活跃的会话。注意归档后它仍在
+    // S.convs 里,必须排除自己,否则「全部」筛选下 openConv 会切回它自己;
+    // 列表里只有它一个(如唯一会话)则原地不动,反正窗口本来就在显示它。
+    const target=S.convs.find(x=>x.conv!==conv);
+    if(target) openConv(target.conv);
+  }
   api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({conv,archived:next})}).then(r=>r.json().catch(()=>({}))).then(j=>{
       if(j && j.warning){
