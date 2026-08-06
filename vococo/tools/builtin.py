@@ -22,6 +22,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 from .. import config
 from ..cron import suggestions
 from ..memory import session_store
+from ..tenancy import paths as tenant_paths
 
 _TOPIC_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 _DEFAULT_CATEGORY = "其他主题"
@@ -100,7 +101,7 @@ async def save_memory(args: dict) -> dict:
             f"(≤{_SUMMARY_MAX} 字),详细内容放进 body。"
         )
 
-    mem_dir = config.AI_BRAIN_DIR / "memory"
+    mem_dir = tenant_paths.brain_dir() / "memory"
     path = mem_dir / f"{topic}.md"
     if path.exists():
         return _ok(
@@ -123,7 +124,7 @@ def _append_index(topic: str, summary: str, category: str) -> None:
     分节存在 → 追加到该节最后一条之后;不存在 → 在文件末尾新建该分节;
     索引文件不存在 → 新建。
     """
-    index = config.AI_BRAIN_DIR / "MEMORY.md"
+    index = tenant_paths.brain_dir() / "MEMORY.md"
     header = f"## {category}"
     line = f"→ memory/{topic}.md — {summary}"
     try:
@@ -761,27 +762,34 @@ async def set_external_mcp(args: dict) -> dict:
 
 
 def build_mcp_servers() -> dict:
-    """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
+    """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。
+
+    server 模式按租户安全边界摘工具(见 tech-plan §8.3):
+    - restart_self:自我运维(改自己代码后重启),服务器版由容器策略管,不给客户
+    - add/remove/set_external_mcp + list_mcp_servers:MCP 注册权收归平台
+      (manifest 统一声明),租户乱挂 server = 计费绕过 + 攻击面
+    """
+    tools = [
+        recall_past,
+        save_memory,
+        suggest_automation,
+        add_cron_job,
+        list_cron_jobs,
+        set_cron_job_enabled,
+        delete_cron_job,
+        ask_user,
+        send_message,
+        send_image,
+        dispatch_session,
+    ]
+    if not config.IS_SERVER:
+        tools += [
+            restart_self,
+            list_mcp_servers,
+            add_mcp_server,
+            remove_mcp_server,
+            set_external_mcp,
+        ]
     return {
-        "vococo": create_sdk_mcp_server(
-            "vococo",
-            tools=[
-                recall_past,
-                save_memory,
-                suggest_automation,
-                add_cron_job,
-                list_cron_jobs,
-                set_cron_job_enabled,
-                delete_cron_job,
-                ask_user,
-                send_message,
-                send_image,
-                dispatch_session,
-                restart_self,
-                list_mcp_servers,
-                add_mcp_server,
-                remove_mcp_server,
-                set_external_mcp,
-            ],
-        )
+        "vococo": create_sdk_mcp_server("vococo", tools=tools)
     }

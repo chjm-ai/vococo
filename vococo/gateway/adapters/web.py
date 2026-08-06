@@ -33,6 +33,9 @@ from ... import config, providers
 from ...core import title
 from ...core.agent import AgentReply, get_rate_limits
 from ...memory import session_store
+from ...tenancy import context as tenant_context
+from ...tenancy import paths as tenant_paths
+from ...tenancy import store as tenant_store
 from .. import git_status, settings_store
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
 from .base import AudioAttachment, ImageAttachment, Incoming
@@ -282,7 +285,9 @@ def _conv_id_for_key(key: str) -> str:
     key——resolve_session_key 的透传分支要吃完整字符串。这条规则以前在
     _handle_conversations/_handle_conv_search/_handle_voice_sidebar 三处分别
     手写,新增一种前缀时容易漏改一处(2026-07-29 复盘)。
+    server 模式的 key 带 t:<tid>: 租户前缀(config.resolve_session_key),先剥再判。
     """
+    key = config.strip_tenant_prefix(key)
     if key == config.SESSION_KEY:
         return "main"
     if key.startswith("web:"):
@@ -318,20 +323,24 @@ class WebAdapter:
 
     def __init__(self) -> None:
         self._inbox: asyncio.Queue[Incoming] = asyncio.Queue()
-        # 每个浏览器 SSE 连接一个队列,元素是 (事件编号, JSON 串)
-        self._clients: set[asyncio.Queue[tuple[int, str]]] = set()
+        # 每个浏览器 SSE 连接一个队列,元素是 (事件编号, JSON 串);
+        # 值是该连接的租户 id(2026-08 租户化:_emit 按租户定向投递,防跨租户串台;
+        # personal 模式全部连接都是 "local",行为与改造前一致)
+        self._clients: dict[asyncio.Queue[tuple[int, str]], str] = {}
         self._seq = 0  # 全局单调递增的事件编号
-        self._buffer: deque[tuple[int, str]] = deque(maxlen=2000)  # 断线补发用的环形缓冲
-        # 每会话「进行中那一轮」的活状态快照:conv -> {started, phase, frames:[(seq,payload)]}。
+        # 断线补发用的环形缓冲:(seq, 租户 id, JSON 串)——补发时按租户过滤
+        self._buffer: deque[tuple[int, str, str]] = deque(maxlen=2000)
+        # 每会话「进行中那一轮」的活状态快照:(租户 id, conv) -> {started, phase, frames:[(seq,payload)]}。
         # 刷新/首连时据此「状态先行、内容随后」地恢复——先秒推一条状态帧让用户知道
         # 「这轮还在跑、到哪一步」(避免空窗误发),再慢慢补回思考/正文/工具帧。
-        self._live: dict[str, dict] = {}
+        self._live: dict[tuple[str, str], dict] = {}
         # 音频附件"先转写、后发送"两步走的中间态:选完文件立刻上传转写(见
         # _handle_upload_audio),/send 时只带 id 引用,不用把音频原始字节再走一遍
         # JSON+base64 塞进 /send 请求体(100MB 音频那样编码一遍代价太大)。
         # id -> (bytes, filename, media_type, transcript, 存入时刻);
         # 每次新增顺手清一遍超过 1 小时没被 /send 消费掉的(用户选了没发/半路放弃)。
         self._pending_audio: dict[str, tuple[bytes, str, str, str, float]] = {}
+        self._login_attempts: dict[str, deque] = {}  # server 模式登录限频(IP → 尝试时刻)
         self._runner: web.AppRunner | None = None
         self._cancel_callback: Callable[[str], bool] | None = None
         self._model_switch_callback: Callable[[str, str], None] | None = None
@@ -366,6 +375,12 @@ class WebAdapter:
         return hmac.compare_digest(tok, config.WEB_AUTH_TOKEN)
 
     def _guard(self, request: web.Request) -> web.Response | None:
+        if config.IS_SERVER:
+            # server 模式由 _auth_mw 统一鉴权并注入 request["user"]/租户上下文;
+            # 走到这里还没有 = 漏网路由(比如新加路由忘了中间件会拦),按 401 兜底。
+            if request.get("user") is None:
+                return web.json_response({"error": "unauthorized"}, status=401)
+            return None
         if not self._ok_token(request):
             return web.json_response({"error": "unauthorized"}, status=401)
         return None
@@ -383,25 +398,35 @@ class WebAdapter:
 
     # ── SSE 广播 ─────────────────────────────────────────────────────────
     def _emit(self, payload: dict) -> None:
-        """给事件编号、进环形缓冲,再塞进所有在线浏览器的 SSE 队列。
+        """给事件编号、进环形缓冲,再塞进所有【同租户】在线浏览器的 SSE 队列。
 
         编号(id)让前端能去重、让重连时按 Last-Event-ID 补发漏掉的事件——
         这就是 web 版的"中间仓库",丢一帧断一线都能补回来。
+        租户取自调用方的租户上下文:converse 在 dispatch 注入的上下文里跑,
+        请求处理在 _auth_mw 注入的上下文里跑,天然都是正确租户;拿不到上下文的
+        路径(理论上不该有)safe_current() 返回 None → 这帧谁都不投(fail-closed,
+        宁可丢帧也不跨租户发)。
         """
+        tid = tenant_context.safe_current()
+        if tid is None:
+            print(f"[web] ⚠️ _emit 无租户上下文,事件不投递:{payload.get('type')}", flush=True)
+            return
         self._seq += 1
         seq = self._seq
         payload = {**payload, "id": seq}
         data = json.dumps(payload, ensure_ascii=False)
-        self._buffer.append((seq, data))
-        self._track_live(payload, seq)  # 维护「进行中那一轮」快照,供刷新恢复
-        for q in list(self._clients):
+        self._buffer.append((seq, tid, data))
+        self._track_live(payload, seq, tid)  # 维护「进行中那一轮」快照,供刷新恢复
+        for q, ctid in list(self._clients.items()):
+            if ctid != tid:
+                continue
             try:
                 q.put_nowait((seq, data))
             except asyncio.QueueFull:
                 pass
 
-    def _track_live(self, payload: dict, seq: int) -> None:
-        """把每帧折进 conv 的「进行中回合」快照;start 开一轮,done/message 收一轮。
+    def _track_live(self, payload: dict, seq: int, tid: str) -> None:
+        """把每帧折进 (租户, conv) 的「进行中回合」快照;start 开一轮,done/message 收一轮。
 
         text/thinking 是全文快照,同类型只留最新一帧(防长回复撑爆);工具帧按序累积。
         这样首连时只需重放这一小撮帧,就能把画面恢复到当前进度,而非翻遍全局缓冲。
@@ -409,23 +434,24 @@ class WebAdapter:
         conv = payload.get("conv")
         if not conv:
             return
+        key = (tid, conv)
         t = payload.get("type")
         if t == "start":
-            self._live[conv] = {
+            self._live[key] = {
                 "started": time.time(), "phase": "思考中", "frames": [(seq, payload)]
             }
             return
         # send_image 工具中途发的图(mid_turn=True):这一轮还没结束,只按普通帧追加,
         # 不能当"message"收轮——否则重连的客户端拿不到这条之后还会继续的正文/工具帧。
         if t == "message" and payload.get("mid_turn"):
-            st = self._live.get(conv)
+            st = self._live.get(key)
             if st is not None:
                 st["frames"].append((seq, payload))
             return
         if t in ("done", "message", "cancelled"):
-            self._live.pop(conv, None)  # 一轮结束(choice 是审批暂停,不收轮)
+            self._live.pop(key, None)  # 一轮结束(choice 是审批暂停,不收轮)
             return
-        st = self._live.get(conv)
+        st = self._live.get(key)
         if st is None:
             return  # 没有进行中的回合,零散帧忽略
         if t in ("thinking", "text"):
@@ -496,11 +522,12 @@ class WebAdapter:
         ext = src_path.suffix.lower().lstrip(".")
         if ext not in {"png", "jpg", "jpeg", "gif", "webp"}:
             return f"不支持的图片格式:{ext or '(无后缀)'}"
-        config.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        config_images = tenant_paths.images_dir()
+        config_images.mkdir(parents=True, exist_ok=True)
         # "ai_"前缀是 session_store.load_history 从 turns.images 里拆分"AI发的图"
         # 与"用户上传图"的唯一依据(见 memory/images.py 的 AI_IMAGE_PREFIX),不能改名。
         name = f"{session_store.AI_IMAGE_PREFIX}{uuid.uuid4().hex}.{ext}"
-        (config.IMAGES_DIR / name).write_bytes(src_path.read_bytes())
+        (config_images / name).write_bytes(src_path.read_bytes())
         self._emit({
             "conv": str(chat_id), "type": "message", "text": caption,
             "images": [f"/image?name={name}"], "mid_turn": True,
@@ -561,6 +588,111 @@ class WebAdapter:
             )
         return html_bytes
 
+    # ── server 模式:账号鉴权(邀请制,tenancy/store.py)─────────────────────
+    # 免登录白名单:登录页/登录接口/健康检查;其余一切请求先过 _auth_mw。
+    _SERVER_PUBLIC_PATHS = frozenset({"/login", "/auth/login", "/healthz"})
+    _SESSION_COOKIE = "vococo_session"
+
+    @web.middleware
+    async def _auth_mw(self, request: web.Request, handler):
+        """server 模式统一鉴权:cookie → web_sessions → 租户上下文注入。
+
+        每个请求一个 task,ContextVar 天然按请求隔离;converse 实际跑在 dispatch
+        的 task 里,租户身份经 Incoming.tenant_id 接力(见 _ingest)。
+        personal 模式不挂这个中间件(见 _start_server)。
+        """
+        if request.path in self._SERVER_PUBLIC_PATHS:
+            return await handler(request)
+        user_tenant = tenant_store.resolve_session(
+            request.cookies.get(self._SESSION_COOKIE, "")
+        )
+        if user_tenant is None:
+            accept = request.headers.get("Accept", "")
+            if request.path == "/" or "text/html" in accept:
+                raise web.HTTPFound("/login")
+            return web.json_response({"error": "unauthorized"}, status=401)
+        user, tenant = user_tenant
+        request["user"] = user
+        tok = tenant_context.set(tenant["tenant_id"])
+        try:
+            return await handler(request)
+        finally:
+            tenant_context.reset(tok)
+
+    _LOGIN_PAGE = """<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录</title><style>
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+background:#0f1115;color:#e6e8eb;font-family:-apple-system,"PingFang SC",sans-serif}
+.card{width:320px;padding:32px;background:#181b22;border-radius:12px;border:1px solid #262b36}
+h1{font-size:20px;margin:0 0 24px}
+input{width:100%;box-sizing:border-box;margin-bottom:12px;padding:10px 12px;border-radius:8px;
+border:1px solid #303644;background:#0f1115;color:#e6e8eb;font-size:14px}
+button{width:100%;padding:10px;border:0;border-radius:8px;background:#4f7cff;color:#fff;
+font-size:15px;cursor:pointer}
+.err{color:#ff6b6b;font-size:13px;min-height:18px;margin-bottom:8px}
+</style></head><body><form class="card" method="post" action="/auth/login">
+<h1>AI 助手登录</h1>
+<div class="err">__ERR__</div>
+<input name="email" type="email" placeholder="邮箱" required autocomplete="username">
+<input name="password" type="password" placeholder="密码" required autocomplete="current-password">
+<button type="submit">登 录</button>
+</form></body></html>"""
+
+    def _login_rate_limited(self, ip: str) -> bool:
+        """登录限频:每 IP 60 秒 5 次(内存滑窗;进程重启清零,够挡住脚本爆破)。"""
+        now = time.monotonic()
+        dq = self._login_attempts.setdefault(ip, deque())
+        while dq and now - dq[0] > 60:
+            dq.popleft()
+        if len(dq) >= 5:
+            return True
+        dq.append(now)
+        return False
+
+    async def _handle_login_page(self, request: web.Request) -> web.Response:
+        err = "账号或密码不对,或账号已停用" if request.query.get("err") else ""
+        html = self._LOGIN_PAGE.replace("__ERR__", err)
+        return web.Response(text=html, content_type="text/html", charset="utf-8")
+
+    async def _handle_auth_login(self, request: web.Request) -> web.Response:
+        if self._login_rate_limited(request.remote or "?"):
+            return web.json_response({"error": "尝试太频繁,请一分钟后再试"}, status=429)
+        form = await request.post()
+        user = tenant_store.authenticate(
+            str(form.get("email") or ""), str(form.get("password") or "")
+        )
+        if user is None:
+            raise web.HTTPFound("/login?err=1")
+        token = tenant_store.create_session(user["user_id"])
+        resp = web.HTTPFound("/")
+        secure = (
+            request.scheme == "https"
+            or request.headers.get("X-Forwarded-Proto") == "https"
+        )
+        resp.set_cookie(
+            self._SESSION_COOKIE, token, max_age=tenant_store.SESSION_TTL_SEC,
+            httponly=True, samesite="Lax", secure=secure, path="/",
+        )
+        raise resp
+
+    async def _handle_auth_logout(self, request: web.Request) -> web.Response:
+        tenant_store.delete_session(request.cookies.get(self._SESSION_COOKIE, ""))
+        resp = web.HTTPFound("/login")
+        resp.del_cookie(self._SESSION_COOKIE, path="/")
+        raise resp
+
+    async def _handle_healthz(self, request: web.Request) -> web.Response:
+        """健康检查(免登录):进程活着 + 平台库可连。供 Caddy/uptime 探活。"""
+        try:
+            if config.IS_SERVER:
+                tenant_store._conn().execute("SELECT 1").fetchone()
+            else:
+                session_store.search("", limit=1)
+            return web.json_response({"ok": True, "mode": config.MODE})
+        except Exception as e:  # noqa: BLE001 —— 探活要报出任何异常
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
+
     async def _handle_index(self, request: web.Request) -> web.Response:
         # 每次请求实时读盘:改了 UI 刷新浏览器即可,不用重启 serve。no-cache 的语义是
         # "每次用之前先跟服务器核对",不是"不许缓存"——配合 ETag,内容没变就回 304
@@ -585,8 +717,14 @@ class WebAdapter:
         return resp
 
     async def _handle_events(self, request: web.Request) -> web.StreamResponse:
-        if not self._ok_token(request):
+        if config.IS_SERVER:
+            if request.get("user") is None:  # _auth_mw 已拦,双保险
+                return web.Response(status=401, text="unauthorized")
+        elif not self._ok_token(request):
             return web.Response(status=401, text="unauthorized")
+        # 本条 SSE 连接的租户身份:server 模式中间件已注入;personal 恒 "local"。
+        # 之后 _emit 只把事件投给同租户的连接(跨租户串台是泄露,不是小毛病)。
+        sse_tid = tenant_context.current()
         resp = web.StreamResponse(
             headers={
                 "Content-Type": "text/event-stream; charset=utf-8",
@@ -605,7 +743,7 @@ class WebAdapter:
         except ValueError:
             last_id = self._seq
         q: asyncio.Queue[tuple[int, str]] = asyncio.Queue(maxsize=1000)
-        self._clients.add(q)  # 先挂上队列,再补发,漏网的靠前端按 id 去重
+        self._clients[q] = sse_tid  # 先挂上队列,再补发,漏网的靠前端按 id 去重
         try:
             await resp.write(b": connected\n\n")
             # 不带 SSE id(不占游标、不参与去重):告诉前端这次连的是哪个进程实例,
@@ -619,7 +757,11 @@ class WebAdapter:
             # `_live` 按会话只留最新一帧,不受缓冲大小影响,补发它才能保证重连必定能追平现状。
             if self._live:
                 now = time.time()
-                for conv, st in list(self._live.items()):  # 阶段①:状态帧先行
+                live_items = [
+                    (conv, st) for (ltid, conv), st in list(self._live.items())
+                    if ltid == sse_tid  # 只恢复本租户的进行中回合
+                ]
+                for conv, st in live_items:  # 阶段①:状态帧先行
                     status = json.dumps(
                         {
                             "conv": conv, "type": "live_status",
@@ -630,7 +772,7 @@ class WebAdapter:
                     )
                     # 不带 SSE id:纯状态提示,不去重、不污染重连游标
                     await resp.write(f"data: {status}\n\n".encode("utf-8"))
-                for conv, st in list(self._live.items()):  # 阶段②:内容帧随后
+                for conv, st in live_items:  # 阶段②:内容帧随后
                     # 按 seq 升序补发,保证前端按 id 去重时单调不丢帧
                     for seq, payload in sorted(st["frames"], key=lambda x: x[0]):
                         if payload.get("type") == "start":  # start 带真实已跑秒数
@@ -638,9 +780,10 @@ class WebAdapter:
                                        "elapsed": max(0, int(now - st.get("started", now)))}
                         data = json.dumps(payload, ensure_ascii=False)
                         await resp.write(f"id: {seq}\ndata: {data}\n\n".encode("utf-8"))
-            # 重连:补发断线期间漏掉的事件(全文快照,直接重放即还原画面)
-            for seq, data in list(self._buffer):
-                if seq > last_id:
+            # 重连:补发断线期间漏掉的事件(全文快照,直接重放即还原画面);
+            # 环形缓冲是全局的,逐条按租户过滤,别租户的事件绝不出现在这条连接上
+            for seq, etid, data in list(self._buffer):
+                if seq > last_id and etid == sse_tid:
                     await resp.write(f"id: {seq}\ndata: {data}\n\n".encode("utf-8"))
             while True:
                 try:
@@ -652,7 +795,7 @@ class WebAdapter:
         except (asyncio.CancelledError, ConnectionResetError, RuntimeError):
             pass
         finally:
-            self._clients.discard(q)
+            self._clients.pop(q, None)
         return resp
 
     async def _handle_send(self, request: web.Request) -> web.Response:
@@ -724,7 +867,10 @@ class WebAdapter:
         # 广播用户消息让其他客户端(如桌面端)能实时渲染用户气泡
         if not text.startswith("/"):
             self._emit({"conv": conv, "type": "user", "text": text})
-        self._inbox.put_nowait(Incoming(self.platform, conv, text, images=images, audios=audios))
+        self._inbox.put_nowait(Incoming(
+            self.platform, conv, text, images=images, audios=audios,
+            tenant_id=tenant_context.current(),  # 盖章:dispatch 跨 task 后靠它注入租户上下文
+        ))
 
     async def inject(self, conv: str, text: str) -> None:
         """语音跨端续聊的公开入口:把一句话当成这个网页会话的下一轮发送——
@@ -1139,6 +1285,9 @@ class WebAdapter:
         # label 带描述(如订阅/API 标签),前端 renderModelPop 直接展示。
         # default=当前激活的模型(跟随设置页默认或 config.MODEL)。
         choices = providers.available_models(MODEL_CHOICES)
+        if config.IS_SERVER and config.SERVER_ALLOWED_MODELS:
+            # 客户只看得见白名单内的模型(兜底防线在 providers.resolve)
+            choices = [c for c in choices if c[0] in config.SERVER_ALLOWED_MODELS]
         # default = web 端上次选定的模型;没设过才回落到 config.MODEL
         active_model = settings_store.get_web_default_model() \
             or providers.resolve(None, config.MODEL)[0]
@@ -1621,7 +1770,7 @@ class WebAdapter:
                     "providers": settings_store.list_web_providers(),
                 },
                 "files": self._list_brain_files(),
-                "brain_dir": str(config.AI_BRAIN_DIR),
+                "brain_dir": str(tenant_paths.brain_dir()),
             }
         )
 
@@ -1711,7 +1860,13 @@ class WebAdapter:
         """新增/删除设置页手动加的第三方服务商。action: add|remove。
 
         直接落 web_settings.json,同样不用重启——providers.py 每次都现读现并。
+        server 模式禁用:供应商/key 收归平台(SERVER_PROVIDERS_JSON),租户配自己的
+        vendor 会绕开平台计费(他的 key 跑平台的活儿,账算不清)。
         """
+        if config.IS_SERVER:
+            return web.json_response(
+                {"error": "服务器版由平台统一配置模型供应商,租户不可改"}, status=403
+            )
         if (g := self._guard(request)) is not None:
             return g
         body, err = await self._read_json(request)
@@ -1729,10 +1884,10 @@ class WebAdapter:
             return web.json_response({"error": err}, status=400)
         return web.json_response({"ok": True})
 
-    # ── 设置:记忆 / AGENTS.md 文件读写(限定在 AI_BRAIN 内)──────────────
+    # ── 设置:记忆 / AGENTS.md 文件读写(限定在长期记忆根内)──────────────
     def _list_brain_files(self) -> list[dict]:
-        """列出可编辑的长期记忆 / 人设文件(全部在 AI_BRAIN 下)。"""
-        root = config.AI_BRAIN_DIR
+        """列出可编辑的长期记忆 / 人设文件(全部在当前租户 brain 根下)。"""
+        root = tenant_paths.brain_dir()
         out: list[dict] = []
         # 固定文件:AGENTS.md(人设) + MEMORY.md(索引) + USER.md(画像)
         out.append({"rel": "AGENTS.md", "group": "agents"})
@@ -1749,11 +1904,11 @@ class WebAdapter:
         return out
 
     def _safe_brain_path(self, rel: str) -> Path | None:
-        """把前端传的相对路径解析到 AI_BRAIN 内,越界 / 非 .md 一律拒绝。"""
+        """把前端传的相对路径解析到当前租户 brain 根内,越界 / 非 .md 一律拒绝。"""
         rel = (rel or "").strip().lstrip("/")
         if not rel or not rel.endswith(".md"):
             return None
-        root = config.AI_BRAIN_DIR.resolve()
+        root = tenant_paths.brain_dir().resolve()
         try:
             target = (root / rel).resolve()
         except (OSError, ValueError):
@@ -1805,8 +1960,17 @@ class WebAdapter:
         误报成"文件不存在"(2026-07-30 用户反馈基本没有能预览成功的例子)。这里加一道
         "不能越出 HOME"就是全部的额外防护,不是也没必要比 agent 自身权限更严。
         AI_BRAIN 单独列进来是防它被配到 HOME 之外(.env 里 AI_BRAIN_DIR 覆盖成别处)。
+        server 模式反过来:收紧到「租户沙箱 + 该租户记忆根」,HOME 绝不进边界——
+        进程级 HOME 是全部租户共享的,放进来 = 跨租户读文件。
         """
-        bounds = [Path(conv_root).resolve(), Path.home().resolve(), config.AI_BRAIN_DIR.resolve()]
+        if config.IS_SERVER:
+            bounds = [Path(conv_root).resolve(), tenant_paths.brain_dir().resolve()]
+        else:
+            bounds = [
+                Path(conv_root).resolve(),
+                Path.home().resolve(),
+                tenant_paths.brain_dir().resolve(),
+            ]
         seen: set[Path] = set()
         out: list[Path] = []
         for b in bounds:
@@ -2138,7 +2302,16 @@ class WebAdapter:
 
         127.0.0.1 本机调试不受影响;一旦 WEB_HOST 绑到 0.0.0.0/LAN(或经隧道对外),
         缺 WEB_AUTH_TOKEN 直接抛错,而不是打印一行警告后照样把「能执行任意代码的 agent」
-        挂上公网。"""
+        挂上公网。server 模式豁免此项——它走账号体系(_auth_mw),不靠单份口令;
+        但要求至少存在一个租户账号,否则启动了也没人登得进去(配 `vococo tenant create`)。"""
+        if config.IS_SERVER:
+            if not tenant_store.list_tenants():
+                raise config.ConfigError(
+                    "server 模式拒绝启动:还没有任何租户账号,启动了也无人能登录。\n"
+                    "  解决:先跑 `vococo tenant create <租户id> --name <名> "
+                    "--email <邮箱> --password <密码>` 建第一个租户和 owner 账号。"
+                )
+            return
         if not self._is_local_host(config.WEB_HOST) and not config.WEB_AUTH_TOKEN:
             raise config.ConfigError(
                 f"拒绝启动 Web:绑定了非本机地址 WEB_HOST={config.WEB_HOST} 却没设 "
@@ -2149,15 +2322,24 @@ class WebAdapter:
 
     async def _start_server(self) -> None:
         self._preflight()
+        # 中间件链:_security_mw(跨源写拦截 + 安全响应头)→ server 模式再挂
+        # _auth_mw(cookie 鉴权 + 租户上下文注入);personal 模式维持 WEB_AUTH_TOKEN 那套。
+        middlewares = [_security_mw]
+        if config.IS_SERVER:
+            middlewares.append(self._auth_mw)
         app = web.Application(
             # 图片走 JSON+base64(32MB 够用);音频走独立的 multipart /upload_audio,
             # 上限对齐 config.AUDIO_MAX_BYTES(100MB),外加 multipart 边界等开销留一点余量
             client_max_size=config.AUDIO_MAX_BYTES + 8 * 1024 * 1024,
-            middlewares=[_security_mw],  # 跨源写拦截 + 安全响应头(2-9)
+            middlewares=middlewares,
         )
         app.add_routes(
             [
                 web.get("/", self._handle_index),
+                web.get("/login", self._handle_login_page),
+                web.post("/auth/login", self._handle_auth_login),
+                web.post("/auth/logout", self._handle_auth_logout),
+                web.get("/healthz", self._handle_healthz),
                 web.get("/manifest.json", self._handle_manifest),
                 web.get("/sw.js", self._handle_sw),
                 web.get("/styles.css", self._handle_styles),
@@ -2242,7 +2424,10 @@ class WebAdapter:
         await self._runner.setup()
         site = web.TCPSite(self._runner, config.WEB_HOST, config.WEB_PORT)
         await site.start()
-        lock = "🔒 已设访问口令" if config.WEB_AUTH_TOKEN else "⚠️ 未设口令(任何人可用)"
+        if config.IS_SERVER:
+            lock = f"🔐 账号体系({len(tenant_store.list_tenants())} 个租户)"
+        else:
+            lock = "🔒 已设访问口令" if config.WEB_AUTH_TOKEN else "⚠️ 未设口令(任何人可用)"
         print(
             f"✅ Web 已上线 http://{config.WEB_HOST}:{config.WEB_PORT} · "
             f"{lock} · 模型 {config.MODEL}"

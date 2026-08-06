@@ -183,6 +183,35 @@ def _cmd_cron() -> None:
         )
 
 
+def _cmd_tenant(args) -> None:
+    """server 模式租户管理(邀请制:P1 admin 后台之前的唯一开户通道)。"""
+    from .tenancy import store
+
+    if args.tenant_cmd == "create":
+        try:
+            tenant = store.create_tenant(args.tenant_id, args.name)
+            user = store.create_user(args.tenant_id, args.email, args.password)
+        except ValueError as e:
+            print(f"❌ {e}")
+            sys.exit(1)
+        print(
+            f"✅ 租户 {tenant['tenant_id']}({tenant['name']})已创建,"
+            f"owner 账号 {user['email']} 可登录"
+        )
+    elif args.tenant_cmd == "list":
+        rows = store.list_tenants()
+        if not rows:
+            print("(还没有租户;用 vococo tenant create 建第一个)")
+        for t in rows:
+            print(
+                f"{t['tenant_id']} · {t['name']} · {t['status']} · "
+                f"余额 ¥{t['wallet_cny_balance']:.2f}"
+            )
+    else:
+        print("用法:vococo tenant create <id> --name <名> --email <邮箱> --password <密码>\n"
+              "     vococo tenant list")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="vococo")
     sub = parser.add_subparsers(dest="cmd")
@@ -195,6 +224,14 @@ def main() -> None:
         ("doctor", "自检:配置/认证/DB/AI_BRAIN/进程"),
     ]:
         sub.add_parser(name, help=help_)
+    p_tenant = sub.add_parser("tenant", help="server 模式租户管理(create/list)")
+    tsub = p_tenant.add_subparsers(dest="tenant_cmd")
+    p_create = tsub.add_parser("create", help="创建租户 + owner 账号")
+    p_create.add_argument("tenant_id")
+    p_create.add_argument("--name", required=True)
+    p_create.add_argument("--email", required=True)
+    p_create.add_argument("--password", required=True)
+    tsub.add_parser("list", help="列出租户")
 
     args = parser.parse_args()
     cmd = args.cmd or "tui"
@@ -205,6 +242,7 @@ def main() -> None:
         "telegram": _cmd_serve,  # 别名
         "cron": _cmd_cron,
         "doctor": _cmd_doctor,
+        "tenant": lambda: _cmd_tenant(args),
     }
     if cmd not in handlers:
         parser.print_help()

@@ -1,0 +1,11 @@
+# vococo 服务器版反代:自动 HTTPS(Let's Encrypt),把域名反代到容器内 vococo
+# 域名改成你的;也可以整个搬到 Cloudflare 橙云后面(回源仍是这台的 443)
+app.example.com {
+	reverse_proxy vococo:8848
+
+	# SSE 长连接(/events)必须关缓冲、放长超时,否则流式回复被反代掐断
+	@sse path /events
+	reverse_proxy @sse vococo:8848 {
+		flush_interval -1
+	}
+}

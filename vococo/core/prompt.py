@@ -10,6 +10,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from .. import config
+from ..tenancy import paths as tenant_paths
 
 PERSONA = f"""
 
@@ -85,8 +86,8 @@ def _read_clipped(path, hint: str) -> str:
 
 
 def _load_user_profile() -> str:
-    """读 AI_BRAIN/USER.md 作为长期画像。缺失则跳过。"""
-    text = _read_clipped(config.AI_BRAIN_DIR / "USER.md", "AI_BRAIN/USER.md")
+    """读长期画像(brain 根下的 USER.md;server 模式=当前租户自己的画像)。缺失则跳过。"""
+    text = _read_clipped(tenant_paths.brain_dir() / "USER.md", "brain/USER.md")
     if not text:
         return ""
     return (
@@ -101,7 +102,7 @@ def _load_memory_index() -> str:
     只注索引不注全文——内容按需 recall_past / 读文件。不注入索引的话,存进 AI_BRAIN
     的记忆 agent 根本不知道存在,想不起来召回(社区点名的头号失败点:存了却没被读)。
     """
-    text = _read_clipped(config.AI_BRAIN_DIR / "MEMORY.md", "AI_BRAIN/MEMORY.md")
+    text = _read_clipped(tenant_paths.brain_dir() / "MEMORY.md", "brain/MEMORY.md")
     if not text:
         return ""
     return (

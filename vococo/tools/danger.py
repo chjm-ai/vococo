@@ -209,12 +209,14 @@ def _outside_cwd(path: str, cwd: str | None) -> bool:
 
 
 def _inside_ai_brain(path: str, cwd: str | None) -> bool:
-    """目标文件是否落在 AI_BRAIN_DIR 内(含符号链接解析)。"""
+    """目标文件是否落在当前租户的长期记忆根内(含符号链接解析)。"""
     if not path:
         return False
     try:
+        from ..tenancy import paths as tenant_paths
+
         target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
-        brain_base = os.path.realpath(config.AI_BRAIN_DIR)
+        brain_base = os.path.realpath(tenant_paths.brain_dir())
         return os.path.commonpath([target, brain_base]) == brain_base
     except (ValueError, OSError):
         return False
@@ -503,7 +505,9 @@ def _describe(tool_name: str, tool_input: dict) -> str:
 
 def _is_group_session(session_key: str) -> bool:
     """群聊会话(TG 群 chat_id 为负 → key 形如 tg:-123)。群里危险操作不许自批。"""
-    return bool(session_key) and session_key.startswith("tg:")
+    if not session_key:
+        return False
+    return config.strip_tenant_prefix(session_key).startswith("tg:")
 
 
 # ── 「本次会话都允许」记忆:选了这项的会话,后续同类 escalate 免批直接放行 ─────────
@@ -617,6 +621,13 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
     if verdict == "block" and config.DANGER_GUARD:
         return _deny(
             f"⛔ 危险命令被 {config.PERSONA_NAME} 拦截({reason})。如确需执行,请你手动在终端运行。"
+        )
+    # server 模式:escalate 档整体降为 block——客户不是审批人(弹审批给谁看?),
+    # 「危险但非灾难」的操作在对外服务里没有放行通道。cwd=租户沙箱,沙箱内的正常
+    # 读写/执行本来就是 allow,不受影响(见 tech-plan §8.1 策略表)。
+    if config.IS_SERVER and verdict == "escalate":
+        return _deny(
+            f"⛔ 该操作超出沙箱权限({reason}),已被拦截。如需此类能力请联系平台方。"
         )
     if verdict == "escalate" and config.APPROVAL_GATE:
         try:

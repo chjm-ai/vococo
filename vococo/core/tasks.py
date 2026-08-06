@@ -23,9 +23,11 @@ import time
 from pathlib import Path
 
 from .. import config
+from ..tenancy import context as tenant_context
+from ..tenancy import paths as tenant_paths
 from .task_words import status_word
 
-_DB: sqlite3.Connection | None = None
+_DBS: dict[str, sqlite3.Connection] = {}
 
 TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled"})
 
@@ -68,17 +70,20 @@ _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 
 
 def _db_path() -> Path:
-    return config.DATA_DIR / "voice" / "voice.db"
+    # personal:data/voice/voice.db(历史路径,不变);server:每租户一份(物理隔离)
+    return tenant_paths.data_dir() / "voice" / "voice.db"
 
 
 def _conn() -> sqlite3.Connection:
-    global _DB
-    if _DB is None:
+    """当前租户的任务库连接(2026-08 租户化:单例 → 按租户连接池,对齐 memory/_db)。"""
+    tid = tenant_context.current()
+    conn = _DBS.get(tid)
+    if conn is None:
         path = _db_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        _DB = sqlite3.connect(path, check_same_thread=False)
-        _DB.row_factory = sqlite3.Row
-        _DB.execute(
+        conn = sqlite3.connect(path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS tasks("
             "id TEXT PRIMARY KEY,"
             "title TEXT NOT NULL,"
@@ -101,13 +106,25 @@ def _conn() -> sqlite3.Connection:
             ("parent_task_id", "parent_task_id TEXT"),
             # 老数据(改名前落库的行)一律是语音派发的,默认值 'voice' 准确反映历史事实。
             ("origin", "origin TEXT NOT NULL DEFAULT 'voice'"),
+            # tenant_id:server 模式任务归属哪个租户(task_runner 起跑/孤儿回收时按它
+            # 注入租户上下文——排队任务跨进程重启后 ContextVar 早没了,必须落库)。
+            # per-tenant 库内其实冗余(库本身就是隔离),它是给「跨租户扫描」用的路标。
+            ("tenant_id", "tenant_id TEXT NOT NULL DEFAULT 'local'"),
         ):
             try:
-                _DB.execute(f"ALTER TABLE tasks ADD COLUMN {ddl}")
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {ddl}")
             except sqlite3.OperationalError:
                 pass
-        _DB.commit()
-    return _DB
+        conn.commit()
+        _DBS[tid] = conn
+    return conn
+
+
+def reset() -> None:
+    """测试专用:关闭并清空全部连接(对齐 memory/_db.reset)。"""
+    for c in _DBS.values():
+        c.close()
+    _DBS.clear()
 
 
 def _row(r: sqlite3.Row) -> dict:
@@ -139,9 +156,11 @@ def create(
     now = time.time()
     c.execute(
         "INSERT INTO tasks(id,title,prompt,cwd,status,progress_note,result_summary,"
-        "result_full,dispatch_platform,dispatch_chat_id,origin,created_at,updated_at) "
-        "VALUES (?,?,?,?,'queued','','','',?,?,?,?,?)",
-        (tid, title, prompt, cwd, dispatch_platform, dispatch_chat_id, origin, now, now),
+        "result_full,dispatch_platform,dispatch_chat_id,origin,created_at,updated_at,"
+        "tenant_id) "
+        "VALUES (?,?,?,?,'queued','','','',?,?,?,?,?,?)",
+        (tid, title, prompt, cwd, dispatch_platform, dispatch_chat_id, origin, now, now,
+         tenant_context.current()),
     )
     c.commit()
     return get(tid)
