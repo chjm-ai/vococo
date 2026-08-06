@@ -8,7 +8,7 @@ job 结构:
   "id": "morning", "name": "晨间简报", "prompt": "...",
   "schedule": {"kind": "cron", "expr": "0 8 * * *"}        # 或 {"kind":"interval","minutes":60} / {"kind":"once","run_at": <epoch>}
   "conv": "task:morning",   # 该任务专属会话,历次运行结果落在这里(侧栏可点开看)
-  "target": {"platform": "telegram", "chat_id": 123},  # 额外推送目标(可选,不填就只落会话+系统推送)
+  "target": {"platform": "web", "chat_id": "conv1"},  # 额外推送目标(可选,不填就只落会话+系统推送)
   "model": null, "enabled": true,
   "next_run_at": null, "last_run_at": null, "last_status": null
 }
@@ -77,7 +77,7 @@ def create_job(
 ) -> dict:
     """新建一个 cron 任务并落盘,返回该任务。接受建议(accept_suggestion)或管理界面
     直接新建都走这一个入口,不搞第二套引擎。每个任务自带一条专属会话(conv),
-    历次运行结果落在这条会话里;target 是可选的额外推送目标(如 telegram)。"""
+    历次运行结果落在这条会话里;target 是可选的额外推送目标(如 web)。"""
     jobs = load_jobs()
     job_id = uuid.uuid4().hex[:8]
     job = {
@@ -213,7 +213,7 @@ async def _on_task_terminal(task: dict, push: PushFn) -> None:
     # 默认目标就是这条专属会话本身(platform=web):走 send() 会同时触发系统推送
     # (场景③"主动/cron",已覆盖 Mac/iPhone 等一切订阅了 Web Push 的设备)。
     await push("web", conv, msg)
-    tgt = job.get("target") or {}  # 额外目标(如 telegram),可选,不填就只有上面这条
+    tgt = job.get("target") or {}  # 额外目标(如 web),可选,不填就只有上面这条
     if tgt.get("platform") and tgt.get("chat_id") is not None:
         await push(tgt["platform"], tgt["chat_id"], msg)
 

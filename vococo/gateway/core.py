@@ -1,6 +1,6 @@
 """Gateway 核心 —— 平台无关。
 
-所有入口(Telegram / 飞书 / TUI)共享:
+所有入口(Web / TUI)共享:
 - 命令注册表(handle_command):/new /clear /model /history /status /help …
 - converse():消费 agent 事件流,喂给平台各自的 Sink(渲染层)
 - 会话持久化
@@ -468,11 +468,6 @@ def _enabled_skill_names() -> set[str]:
 
 def _origin_from_session_key(session_key: str) -> dict | None:
     """从会话键推导接受任务的推送目标(结果推回用户接受时所在的聊天)。"""
-    if session_key.startswith("tg:"):
-        try:
-            return {"platform": "telegram", "chat_id": int(session_key[3:])}
-        except ValueError:
-            return None
     if ":" in session_key:  # 非统一模式 platform:chat_id
         platform, _, cid = session_key.partition(":")
         try:

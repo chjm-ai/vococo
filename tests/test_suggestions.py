@@ -65,7 +65,7 @@ def test_accept_creates_job(sugg_env):
         job_spec=_spec(), dedup_key="catalog:晨报",
     )
     sid = suggestions.list_pending()[0]["id"]
-    origin = {"platform": "telegram", "chat_id": 123}
+    origin = {"platform": "web", "chat_id": "conv1"}
     job = suggestions.accept_suggestion(sid, origin=origin)
     assert job is not None
     assert job["name"] == "晨报"
@@ -142,11 +142,11 @@ def test_suggest_command_lists_and_accepts(sugg_env):
 
     suggestion_catalog.seed()
     # 无参 → 出 Choice(带接受/忽略按钮)
-    out = core.handle_command("/suggest", "tg:-100", "m")
+    out = core.handle_command("/suggest", "web:c1", "m")
     assert out.choice is not None
     assert any("接受" in label for _, label in out.choice.options)
     # 接受第 1 条(用 1-based 序号)
-    out2 = core.handle_command("/suggest accept 1", "tg:-100", "m")
+    out2 = core.handle_command("/suggest accept 1", "web:c1", "m")
     assert "已接受" in out2.reply
 
 
@@ -204,7 +204,7 @@ def test_cron_admin_toggle_delete_needs_approval(sugg_env):
         title="晨报", description="", source="catalog", job_spec=_spec(), dedup_key="c"
     )
     sid = suggestions.list_pending()[0]["id"]
-    suggestions.accept_suggestion(sid, origin={"platform": "telegram", "chat_id": 1})
+    suggestions.accept_suggestion(sid, origin={"platform": "web", "chat_id": "conv1"})
 
     # 读列表不需审批
     assert "晨报" in _text(asyncio.run(builtin.list_cron_jobs.handler({})))

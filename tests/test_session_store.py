@@ -16,9 +16,9 @@ def test_sessions_isolated_by_key(isolated):
     from vococo.memory import session_store
 
     session_store.append("cli", "给 cli 的", "回 cli")
-    session_store.append("tg:1", "给 tg 的", "回 tg")
+    session_store.append("task:1", "给 task 的", "回 task")
     assert len(session_store.load_recent("cli")) == 1
-    assert len(session_store.load_recent("tg:1")) == 1
+    assert len(session_store.load_recent("task:1")) == 1
 
 
 def test_duplicate_session_copies_turns_and_title(isolated):
@@ -103,12 +103,12 @@ def test_search_sessions_title_first_includes_archived(isolated):
 
 
 def test_search_sessions_excludes_deleted_and_foreign_keys(isolated):
-    """删除的会话物理消失搜不到;非侧边栏前缀(tg:/cli)不进结果。"""
+    """删除的会话物理消失搜不到;非侧边栏前缀(cli)不进结果。"""
     from vococo.memory import session_store
 
     session_store.set_title("web:x", "要删的名古屋会话")
     session_store.append("web:x", "名古屋", "好")
-    session_store.append("tg:1", "名古屋", "好")   # TG 会话不属于 Web 侧边栏
+    session_store.append("cli", "名古屋", "好")   # CLI 会话不属于 Web 侧边栏
     session_store.delete_session("web:x")
     assert session_store.search_sessions("名古屋") == []
 

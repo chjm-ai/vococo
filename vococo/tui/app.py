@@ -1,7 +1,7 @@
 """rich + prompt_toolkit 流式 TUI。
 
 复用 gateway.core 的命令注册表 + converse;TUI 只提供 RichSink(rich.Live 渲染)
-和输入循环。和 Telegram/飞书共用同一套命令与会话逻辑。
+和输入循环。和 Web 共用同一套命令与会话逻辑。
 """
 from __future__ import annotations
 

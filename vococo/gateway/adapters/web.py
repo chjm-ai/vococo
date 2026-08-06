@@ -9,7 +9,7 @@
 - POST /conv/rename      重命名会话
 - POST /conv/delete      删除会话
 
-只负责 Web 的 I/O 和渲染;命令/会话/事件流都在 gateway.core，与 Telegram 共用内核。
+只负责 Web 的 I/O 和渲染;命令/会话/事件流都在 gateway.core。
 Web 端不改写 Markdown 表格(浏览器能原生渲染),这正是"样式更好"的地方。
 """
 from __future__ import annotations
@@ -122,8 +122,8 @@ async def _security_mw(request: web.Request, handler):
 class _WebSink(Sink):
     """把一轮事件流以 SSE 增量推给浏览器(按 conv 打标)。
 
-    像 Telegram 一样发【全文快照】而非增量:每个 thinking/text 事件都带当前累积
-    的完整内容。这样断线补发时任何一帧都能把画面修正确,丢几帧也不会缺字。
+    发【全文快照】而非增量:每个 thinking/text 事件都带当前累积的完整内容。
+    这样断线补发时任何一帧都能把画面修正确,丢几帧也不会缺字。
 
     正文按【段】发:顶层工具一启动就切新段(seg 自增),text 帧带 seg 序号和
     该段的全文快照。前端按段建独立文字块,与工具卡按到达顺序交错排列 ——
@@ -343,10 +343,6 @@ class WebAdapter:
         # 懒加载避免非语音场景循环依赖;bridge 本身只要 _emit,不依赖 voice 包的其他模块。
         from ...voice import notify as _voice_notify
         _voice_notify.register_main_event_bridge(self._emit)
-        # 注册跨入口事件桥接:Telegram 那边发生的会话更新(自己不经过 _emit)靠这条
-        # 路推进来,见 gateway/event_bridge.py。
-        from .. import event_bridge
-        event_bridge.register(self._emit)
 
     def set_cancel_callback(self, cb: Callable[[str], bool]) -> None:
         self._cancel_callback = cb

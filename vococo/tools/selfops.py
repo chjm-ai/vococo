@@ -87,7 +87,7 @@ def preflight() -> str | None:
     """新代码健康检查;返回 None=通过,否则错误摘要。
 
     compileall 抓全量语法错误;import 主链抓 import 期错误(含懒加载的
-    web/telegram adapter —— 自我修改最常动的就是它们)。
+    web adapter —— 自我修改最常动的就是它)。
     """
     checks = [
         (["-m", "compileall", "-q", "vococo"], "语法检查"),
@@ -95,8 +95,7 @@ def preflight() -> str | None:
             [
                 "-c",
                 "import vococo.gateway.run, "
-                "vococo.gateway.adapters.web, "
-                "vococo.gateway.adapters.telegram",
+                "vococo.gateway.adapters.web",
             ],
             "主链 import",
         ),

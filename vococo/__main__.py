@@ -3,8 +3,7 @@
   vococo            # 默认进 TUI
   vococo tui        # rich TUI
   vococo chat       # 纯文本对话(调试 fallback)
-  vococo serve      # 常驻:Telegram 收发 + 调度器(heartbeat/主动推送)
-  vococo telegram   # serve 的别名
+  vococo serve      # 常驻:Web 收发 + 调度器(heartbeat/主动推送)
   vococo cron       # 列出定时任务
   vococo doctor     # 自检:配置/认证/DB/AI_BRAIN/进程
 """
@@ -68,7 +67,7 @@ def _cmd_serve() -> None:
 
 
 def _cmd_doctor() -> None:
-    """自检:配置 / 认证 / DB / AI_BRAIN / 进程 / Telegram。有 ❌ 则退出码 1。"""
+    """自检:配置 / 认证 / DB / AI_BRAIN / 进程。有 ❌ 则退出码 1。"""
     import os
     import subprocess
 
@@ -146,17 +145,6 @@ def _cmd_doctor() -> None:
         "serve 常驻进程在跑" if running else "serve 未在跑(bash deploy/run.sh 启动)"
     )
 
-    # 5) Telegram
-    if config.TELEGRAM_BOT_TOKEN:
-        if config.TELEGRAM_ALLOWED_CHAT_IDS:
-            oks.append(
-                f"Telegram 已配置,白名单 {len(config.TELEGRAM_ALLOWED_CHAT_IDS)} 个 chat"
-            )
-        else:
-            warns.append("Telegram 已配置但白名单为空 —— 任何人都能用,建议设白名单")
-    else:
-        warns.append("Telegram 未配置(仅 CLI/TUI 可用)")
-
     for s in oks:
         print(f"✅ {s}")
     for s in warns:
@@ -189,8 +177,7 @@ def main() -> None:
     for name, help_ in [
         ("tui", "rich TUI(默认)"),
         ("chat", "纯文本对话(调试)"),
-        ("serve", "常驻:Telegram + 调度器"),
-        ("telegram", "serve 的别名"),
+        ("serve", "常驻:Web + 调度器"),
         ("cron", "列出定时任务"),
         ("doctor", "自检:配置/认证/DB/AI_BRAIN/进程"),
     ]:
@@ -202,7 +189,6 @@ def main() -> None:
         "tui": _cmd_tui,
         "chat": _cmd_chat,
         "serve": _cmd_serve,
-        "telegram": _cmd_serve,  # 别名
         "cron": _cmd_cron,
         "doctor": _cmd_doctor,
     }

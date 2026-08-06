@@ -413,7 +413,7 @@ async def ask_user(args: dict) -> dict:
 @tool(
     "send_message",
     "主动给用户发一条【独立消息】(不是本轮回复正文)。用于:单独发长内容、发进度提醒、"
-    "或从后台任务 ping 用户。to:'current'(默认,当前聊天)或 'platform:chat_id'(如 telegram:123)。",
+    "或从后台任务 ping 用户。to:'current'(默认,当前聊天)或 'platform:chat_id'(如 web:conv1)。",
     {
         "type": "object",
         "properties": {"text": {"type": "string"}, "to": {"type": "string"}},
@@ -434,7 +434,7 @@ async def send_message(args: dict) -> dict:
         await ctx.adapter.send(ctx.chat_id, text)
         return _ok("已发送到当前聊天。")
     if ":" not in to:
-        return _ok("to 应为 'current' 或 'platform:chat_id'(如 telegram:123)。")
+        return _ok("to 应为 'current' 或 'platform:chat_id'(如 web:conv1)。")
     platform, _, cid = to.partition(":")
     cid = cid.strip()
     target = int(cid) if cid.lstrip("-").isdigit() else cid

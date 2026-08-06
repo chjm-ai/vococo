@@ -208,7 +208,7 @@ async def test_route_change_rebuilds(clients):
     from vococo.gateway import clarify
 
     class _A:
-        platform = "telegram"
+        platform = "cli"
 
     class _B:
         platform = "web"

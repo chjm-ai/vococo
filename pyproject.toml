@@ -1,12 +1,12 @@
 [project]
 name = "vococo"
 version = "0.1.0"
-description = "A single-user personal AI assistant — always-on, multi-entry (Web / Telegram / CLI / Voice), shared session & memory."
+description = "A single-user personal AI assistant — always-on, multi-entry (Web / CLI / Voice), shared session & memory."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "vococo contributors" }]
-keywords = ["claude", "ai-agent", "personal-assistant", "claude-agent-sdk", "telegram-bot"]
+keywords = ["claude", "ai-agent", "personal-assistant", "claude-agent-sdk"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

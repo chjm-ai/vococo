@@ -218,7 +218,7 @@ class GatewayRunner:
         走的是 loop 默认异常处理路径,而不是常规 try/except 能兜到的路径。
         标准 asyncio 长驻服务的做法就是自己接管 loop.set_exception_handler,
         这样下次真崩的时候能在日志里留一份完整证据,再据此对症下药 —— 纯增量、
-        不改变任何现有行为,不会影响 Telegram/网页对话。
+        不改变任何现有行为,不会影响现有对话。
         """
         import asyncio
         import traceback
@@ -283,17 +283,13 @@ class GatewayRunner:
 
 
 async def run_serve() -> None:
-    """组装并启动 gateway(Telegram + Web + 调度器,按配置挂载)。"""
-    from .adapters.telegram import TelegramAdapter
-
+    """组装并启动 gateway(Web + 调度器,按配置挂载)。"""
     adapters: list[Adapter] = []
-    if config.TELEGRAM_BOT_TOKEN:
-        adapters.append(TelegramAdapter())
     if config.WEB_ENABLED:
         from .adapters.web import WebAdapter
 
         adapters.append(WebAdapter())
     if not adapters:
-        print("⚠️  没启用任何入口(Telegram/Web),本次只跑调度器。")
+        print("⚠️  没启用任何入口(Web),本次只跑调度器。")
 
     await GatewayRunner(adapters).run()

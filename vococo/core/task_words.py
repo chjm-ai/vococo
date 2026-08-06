@@ -16,7 +16,7 @@ STATUS_WORD: dict[str, str] = {
     "cancelled": "已取消",
 }
 
-# 平台推送(Telegram/Web 文字消息)专用的状态 emoji,只标终态;非终态没有推送场景。
+# 平台推送(Web 文字消息)专用的状态 emoji,只标终态;非终态没有推送场景。
 STATUS_EMOJI: dict[str, str] = {
     "done": "✅",
     "failed": "❌",

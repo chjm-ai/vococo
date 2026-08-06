@@ -133,7 +133,7 @@ async def test_on_task_terminal_persists_status_and_pushes_web(cron_env):
 async def test_on_task_terminal_also_pushes_extra_target(cron_env):
     job = scheduler.create_job(
         name="每周复盘", prompt="回顾这周", schedule={"kind": "cron", "expr": "0 21 * * 0"},
-        target={"platform": "telegram", "chat_id": 123},
+        target={"platform": "web", "chat_id": "conv1"},
     )
     pushes = []
 
@@ -143,7 +143,7 @@ async def test_on_task_terminal_also_pushes_extra_target(cron_env):
     task = {"id": job["id"], "status": "done", "result_summary": "本周进展良好", "result_full": "本周进展良好"}
     await scheduler._on_task_terminal(task, fake_push)
 
-    assert pushes == [("web", job["conv"]), ("telegram", 123)]
+    assert pushes == [("web", job["conv"]), ("web", "conv1")]
 
 
 @pytest.mark.anyio
