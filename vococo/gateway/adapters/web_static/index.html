@@ -6759,17 +6759,41 @@ function updateSendBtn(){
 async function stopReply(){
   if(!S.stream) return;
   const conv=S.conv;
+  // 乐观更新:任务会话先本地把任务行置「已停止」,不等后端收尾落库——
+  // 收尾含最多 5 秒 CLI interrupt + 写库,SSE 终态要晚几秒才到,干等会让
+  // 用户以为没停住、反复点。SSE 终态到达后差量渲染覆盖成同一结果,无跳变。
+  const optimistic = markTaskStopped(conv);
   finalizeStream(); // 立即结束前端流式气泡,保留已有部分文字
   try{
     const r = await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
     if(r.ok){
       const j = await r.json();
-      // 停不住 = 流的源头(轮次/任务)其实已经结束,比如 SSE 缓冲重放的历史流。
-      // 明说一句,免得用户以为按钮没反应、反复点。
-      if(!j.stopped) addMsg("ai", "已停止(当前没有正在运行的回复或任务)");
+      if(!j.stopped){
+        if(optimistic) restoreTaskStopped(conv, optimistic);  // 停失败,恢复原状态
+        // 停不住 = 流的源头(轮次/任务)其实已经结束,比如 SSE 缓冲重放的历史流。
+        // 明说一句,免得用户以为按钮没反应、反复点。
+        addMsg("ai", "已停止(当前没有正在运行的回复或任务)");
+      }
     }
   }catch(e){ /* 网络异常忽略,前端已处理 */ }
   flushPending(conv); // 手动中止不会触发 done/message 事件,需主动补发排队中的下一条
+}
+// 乐观停止:任务会话(task:<id>)点停止,本地先把任务行置「已取消」给即时反馈。
+// 返回原状态供停失败时恢复;非任务会话/任务已终态返回 null。
+function markTaskStopped(conv){
+  if(!conv.startsWith("task:")) return null;
+  const t = barTasks.get(conv.slice(5));
+  if(!t || (t.status !== "queued" && t.status !== "running")) return null;
+  const prev = {status: t.status, progress_note: t.progress_note};
+  t.status = "cancelled"; t.progress_note = "已停止";
+  renderTaskBar();
+  return prev;
+}
+function restoreTaskStopped(conv, prev){
+  const t = barTasks.get(conv.slice(5));
+  if(!t) return;
+  t.status = prev.status; t.progress_note = prev.progress_note;
+  renderTaskBar();
 }
 // ── 待发送队列 ────────────────────────────────────────────────────────────
 function queuePending(text, images, audios){
