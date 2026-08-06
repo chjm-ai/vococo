@@ -1,6 +1,6 @@
 """会话持久化 —— SQLite。
 
-- 按 session_key 隔离(CLI 用 "cli",Telegram 用 "tg:<chat_id>")
+- 按 session_key 隔离(CLI 用 "cli",Web 用 "web:<conv_id>")
 - load_recent 取最近 N 轮喂上下文 → 重启不失忆
 - search 用 LIKE 子串匹配(中文友好;FTS5 默认分词器切不开中文,个人规模 LIKE 足够)
 

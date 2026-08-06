@@ -132,7 +132,7 @@ _ESCALATE_BASH: list[tuple[re.Pattern, str, bool]] = [
 # 这不是边界:base64/写文件再传/间接引用都能绕;只抬高门槛。日常命令几乎不会命中,误伤极低。
 _SECRET_VAR_RE = re.compile(
     r"ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|"
-    r"TELEGRAM_BOT_TOKEN|SILICONFLOW_API_KEY|VAPID_PRIVATE_KEY|WEB_AUTH_TOKEN"
+    r"SILICONFLOW_API_KEY|VAPID_PRIVATE_KEY|WEB_AUTH_TOKEN"
 )
 _OUTBOUND_RE = re.compile(r"\b(curl|wget|nc|ncat|telnet|ssh|scp)\b|/dev/tcp/")
 
@@ -311,7 +311,6 @@ def _known_secret_values() -> list[str]:
     """当前持有的自用 secret 字面值(供精确匹配)。长度<8 的不参与,误伤面太大。"""
     vals = [
         config.OAUTH_TOKEN,
-        config.TELEGRAM_BOT_TOKEN,
         config.STT_API_KEY,
         config.VAPID_PRIVATE_KEY,
         config.WEB_AUTH_TOKEN,

@@ -66,7 +66,7 @@ if [ -z "$old" ]; then
   echo "❌ 没找到 serve 子进程。sandbox 里 pgrep 看不到进程 —— 换非沙箱终端跑本脚本" >&2
   exit 1
 fi
-[ "$n" -gt 1 ] && echo "⚠️ 发现 $n 个 serve 实例(孤儿进程会抢 TG 轮询),只杀最早的 $old,其余请手查"
+[ "$n" -gt 1 ] && echo "⚠️ 发现 $n 个 serve 实例(孤儿进程抢事件轮询),只杀最早的 $old,其余请手查"
 
 echo "旧 serve PID: $old"
 kill "$old"
@@ -77,7 +77,7 @@ for i in {1..30}; do
   if [ -n "$new" ] && [ "$new" != "$old" ]; then
     echo "新 serve PID: $new(等了 ${i}s)"
     echo "HEAD: $(git log --oneline -1 | cat)"
-    echo "✅ 重启完成;验证:tail data/logs/vococo.out.log 应见「✅ Web/Telegram 已上线」"
+    echo "✅ 重启完成;验证:tail data/logs/vococo.out.log 应见「✅ Web 已上线」"
     exit 0
   fi
 done

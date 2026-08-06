@@ -112,7 +112,7 @@ def test_ask_user_full_roundtrip():
     sent = []
 
     class FakeAdapter:
-        platform = "telegram"
+        platform = "web"
 
         async def present_choice(self, chat_id, choice):
             sent.append(choice)
@@ -154,7 +154,7 @@ def test_send_message_to_current_chat():
     sent = []
 
     class FA:
-        platform = "telegram"
+        platform = "web"
 
         async def send(self, c, t):
             sent.append((c, t))
@@ -183,11 +183,11 @@ def test_send_message_to_target():
 
     clarify.register_push(fake_push)
     try:
-        r = anyio.run(lambda: builtin.send_message.handler({"text": "hi", "to": "telegram:5"}))
+        r = anyio.run(lambda: builtin.send_message.handler({"text": "hi", "to": "web:5"}))
     finally:
         clarify.register_push(None)
-    assert "已发送到 telegram:5" in _text(r)
-    assert pushed == [("telegram", 5, "hi")]
+    assert "已发送到 web:5" in _text(r)
+    assert pushed == [("web", 5, "hi")]
 
 
 def test_send_message_no_context():

@@ -9,7 +9,7 @@ Python ≥ 3.11,包管理 uv,依赖锁 uv.lock。
 
 ## 代码结构
 core/ agent循环+prompt+会话存储+worktree+危险分级
-gateway/ core.py平台内核 + adapters(web/telegram) + run.py
+gateway/ core.py平台内核 + adapters(web) + run.py
 cron/ 定时调度;tools/ 内置MCP工具;tui/ 终端界面
 config.py 路径/常量;providers.py 多供应商切换
 

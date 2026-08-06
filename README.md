@@ -7,7 +7,7 @@
 
 ## 特性
 
-- **多渠道,一个会话**:TUI / CLI / Telegram / Web(自建 PWA,手机浏览器直达)任选;默认全端共享同一主会话,TG 上问一半切网页接着聊。
+- **多渠道,一个会话**:TUI / CLI / Web(自建 PWA,手机浏览器直达)任选;默认全端共享同一主会话,网页上问一半切 CLI 接着聊。
 - **Web 自建 UI**:多会话侧边栏、工具调用卡片(对齐 Claude Code 体验)、模型面板 + 订阅限额环、设置页(模型/供应商/skill/MCP/思考深度全可在线改)。
 - **语音优先**:按住说话 → STT 转文字进对话;TTS 朗读回复;Omni 实时免提通话(可打断、带回声过滤)。
 - **后台任务引擎**:语音派活 / cron 定时 / 普通会话里「开个独立新会话」三种触发共用一套引擎;每个任务跑在独立 git worktree + 分支,干完推送汇报,绝不碰主目录。
@@ -26,7 +26,6 @@ vococo/__main__.py     CLI 入口:tui / chat / serve / cron / doctor
 core/                  agent 循环(claude-agent-sdk)· client 保温池 · prompt 组装
                        · 每会话 git worktree 隔离 · 后台任务引擎(task_runner)
 gateway/               平台内核(命令注册表 / converse / 会话路由)
-  ├─ adapters/telegram   TG bot(流式 + 白名单)
   ├─ adapters/web        自建 PWA(SSE 流式 / 多会话 / 设置页)
   ├─ adapters/web_push   VAPID Web Push 系统通知
   └─ settings_store.py   设置页存储(供应商/模型/skill/MCP/effort)
@@ -45,7 +44,7 @@ deploy/                run.sh 守护循环(崩溃自启)/ stop / restart / launc
 ```bash
 vococo            # 默认进 TUI
 vococo chat       # 纯文本对话(调试 fallback)
-vococo serve      # 常驻:Web + Telegram + 调度器(heartbeat/主动推送)
+vococo serve      # 常驻:Web + 调度器(heartbeat/主动推送)
 vococo cron       # 列出定时任务
 vococo doctor     # 自检:配置/认证/DB/AI_BRAIN/进程
 ```
@@ -53,7 +52,7 @@ vococo doctor     # 自检:配置/认证/DB/AI_BRAIN/进程
 Web 入口:`serve` 时设 `WEB_ENABLED=1` 即在同进程起网页服务(默认只听 `127.0.0.1:8848`),
 配合 Cloudflare Tunnel / Tailscale 暴露到公网即得手机 PWA(走公网必设 `WEB_AUTH_TOKEN`)。
 
-## 快捷命令(TUI/Telegram 通用)
+## 快捷命令(TUI/Web 通用)
 
 `/new` 开新会话(旧史保留) · `/clear` 清屏+开新 · `/model [名]` 切模型 · `/history` 看历史 · `/status` 会话信息 · `/suggest` 看/接受自动化建议 · `/help`
 
@@ -90,7 +89,7 @@ agent 派生的 `claude` 子进程会同步阻塞冻住事件循环。所以用 
 ## 定时主动推送
 
 编辑 `data/cron_jobs.json`(模板见 `deploy/cron_jobs.sample.json`),把任务 `enabled` 设 true,
-`serve` 进程每 30s 检查到期任务,跑 agent 后推到 Telegram。支持 `cron` / `interval` / `once` 三种调度。
+`serve` 进程每 30s 检查到期任务,跑 agent 后推到 Web/系统推送。支持 `cron` / `interval` / `once` 三种调度。
 也可以直接对它说「每天早上 8 点给我发 XX」——它会用 `add_cron_job` 建好等你确认。
 
 ## 快速开始
@@ -123,7 +122,6 @@ uv run vococo chat
 | `VOCOCO_PERSONA_NAME` | 否 | 助理人格代号(UI/提示文案里露出),默认「Wazir」 |
 | `AI_BRAIN_DIR` | 否 | 长期记忆目录,默认 `~/AI_BRAIN`;不存在则记忆功能自动跳过 |
 | `AGENT_MODEL` | 否 | 默认 `claude-sonnet-5` |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_ALLOWED_CHAT_IDS` | 否 | 启用 Telegram 入口时填(@BotFather 拿 token) |
 | `WEB_ENABLED` / `WEB_AUTH_TOKEN` | 否 | 启用手机浏览器 Web 入口;走公网必设口令 |
 
 其余变量(安全闸、语音、Web Push、多供应商…)在 `.env.example` 里逐条有注释。
@@ -140,4 +138,4 @@ uv run vococo chat
 ## 许可
 
 [MIT](LICENSE)。这是个人自用助理框架,fork 后请生成属于自己的凭据
-(Claude / Telegram / VAPID),别把 `.env`、`data/` 提交进仓库(默认已 gitignore)。
+(Claude / VAPID),别把 `.env`、`data/` 提交进仓库(默认已 gitignore)。
