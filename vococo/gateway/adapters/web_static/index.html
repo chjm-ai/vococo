@@ -1186,24 +1186,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   function isTaskDone(t){ return t.status !== "queued" && t.status !== "running"; }
 
-  // 渲染一个任务行(通话视图 #taskBar 用)
-  function renderTaskBarRow(t){
-    const done = isTaskDone(t);
-    return `<div class="taskbar-row${done ? " done" : ""}"><span class="dot ${t.status === "running" ? "running" : "other"}"></span>` +
-      `<span class="t">${esc(t.title)}</span>` +
-      `<span class="n">${esc(taskbarNote(t))}</span>` +
-      `</div>`;
-  }
-
-  // 渲染聊天视图 #chatTaskBar 的单行
-  function renderChatTaskRow(t){
-    const done = isTaskDone(t);
-    return `<div class="ctb-row${done ? " done" : ""}"><span class="ctb-dot ${t.status === "running" ? "running" : "other"}"></span>` +
-      `<span class="ctb-title">${esc(t.title)}</span>` +
-      `<span class="ctb-note">${esc(taskbarNote(t))}</span>` +
-      `</div>`;
-  }
-
   function renderTaskBar(){
     const rows = [...barTasks.values()]
       .filter(t=>!taskBarDoneHidden(t))
@@ -1215,10 +1197,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     const voiceRows = rows.filter(t=>t.origin === "voice");
     const chatRows = rows.filter(t=>t.origin === "chat" || t.origin === "task");
 
-    // 1) 通话视图 #taskBar: voice 任务简单列表,最近 7 条
-    const callRows = voiceRows.slice(0, TASKBAR_MAX);
-    taskBar.hidden = !callRows.length;
-    taskBar.innerHTML = callRows.map(renderTaskBarRow).join("");
+    // 1) 通话视图 #taskBar: voice 任务简单列表,最近 7 条,差量渲染
+    renderBar($("#taskBar"), voiceRows.slice(0, TASKBAR_MAX));
 
     // 2) 聊天视图 #chatTaskBar: chat 任务活跃/已完成分组,默认折叠已完成,活跃最多默认 5 条
     const active = chatRows.filter(t=>!isTaskDone(t));
@@ -1227,41 +1207,117 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
     scheduleDoneHide();  // 每次渲染后重算下一个「终态满 10 分钟」的自动隐藏时刻
   }
+  // 差量渲染单个任务条(#taskBar 用):同 id 的行存在且状态/文案没变就不重建
+  // DOM —— 旧版每次 task_update 都整段 innerHTML 重写,running 圆点的脉冲动画
+  // 随之反复重启,视觉上一直闪,像"还在持续输出"。行结构同 renderTaskBarRow
+  // (dot 两态 running/other,无 ✕ 按钮)。
+  function renderBar(el, rows){
+    el.hidden = !rows.length;
+    for(const child of [...el.querySelectorAll(".taskbar-row")]){
+      if(!rows.some(t=>t.id===child.dataset.tid)) child.remove();
+    }
+    rows.forEach((t, i)=>{
+      let row = el.querySelector(`.taskbar-row[data-tid="${t.id}"]`);
+      if(!row){
+        row = document.createElement("div");
+        row.className = "taskbar-row";
+        row.dataset.tid = t.id;
+      }
+      if(el.children[i] !== row) el.insertBefore(row, el.children[i]);  // 按排序归位
+      row.classList.toggle("done", isTaskDone(t));
+      let dot = row.querySelector(".dot");
+      if(!dot){ dot = document.createElement("span"); dot.className = "dot"; row.appendChild(dot); }
+      const dotCls = "dot " + (t.status === "running" ? "running" : "other");
+      if(dot.className !== dotCls) dot.className = dotCls;  // 状态没变不动 class,动画不重启
+      let ttl = row.querySelector(".t");
+      if(!ttl){ ttl = document.createElement("span"); ttl.className = "t"; row.appendChild(ttl); }
+      if(ttl.textContent !== t.title) ttl.textContent = t.title;
+      const note = taskbarNote(t);
+      let nEl = row.querySelector(".n");
+      if(!nEl){ nEl = document.createElement("span"); nEl.className = "n"; row.appendChild(nEl); }
+      if(nEl.textContent !== note) nEl.textContent = note;
+    });
+  }
 
+  // 聊天视图任务条:活跃区行差量渲染(同 id 行存在且状态/文案没变不重建,
+  // 圆点动画不因整段重写反复重启——旧版 innerHTML 全量重写,任务高频更新时
+  // 一直闪,像"还在持续输出");分组/折叠按钮变化少,整段重建无感。
   function renderChatTaskBar(active, done){
     const chatTaskBar = $("#chatTaskBar");
     const any = active.length || done.length;
     chatTaskBar.hidden = !any;
     if(!any){ chatTaskBar.innerHTML = ""; return; }
 
-    let html = '<div class="chat-taskbar-box">';
+    const expanded = chatTaskBar.dataset.activeExpanded === "1";
+    const showActive = expanded ? active : active.slice(0, CHAT_TASK_ACTIVE_MAX);
+    const doneExpanded = chatTaskBar.dataset.doneExpanded === "1";
 
-    // 活跃任务区
-    if(active.length){
-      const expanded = chatTaskBar.dataset.activeExpanded === "1";
-      const show = expanded ? active : active.slice(0, CHAT_TASK_ACTIVE_MAX);
-      html += '<div class="ctb-section ctb-active">';
-      for(const t of show) html += renderChatTaskRow(t);
-      if(active.length > CHAT_TASK_ACTIVE_MAX){
-        const remain = active.length - CHAT_TASK_ACTIVE_MAX;
-        html += `<button type="button" class="ctb-more" data-type="active">${expanded ? "收起" : `显示更多 (${remain})`}</button>`;
+    // 容器/分组结构只建一次,行高频变化走差量
+    let box = chatTaskBar.querySelector(".chat-taskbar-box");
+    if(!box){
+      chatTaskBar.innerHTML = '<div class="chat-taskbar-box">' +
+        '<div class="ctb-section ctb-active"></div><div class="ctb-section ctb-done"></div></div>';
+      box = chatTaskBar.querySelector(".chat-taskbar-box");
+    }
+    const activeSec = box.querySelector(".ctb-active");
+    const doneSec = box.querySelector(".ctb-done");
+
+    // 活跃任务区:行差量 + 显示更多按钮(数量变化才增删,文案变了才改)
+    renderChatRows(activeSec, showActive);
+    let moreBtn = activeSec.querySelector(".ctb-more");
+    if(active.length > CHAT_TASK_ACTIVE_MAX){
+      const remain = active.length - CHAT_TASK_ACTIVE_MAX;
+      if(!moreBtn){
+        moreBtn = document.createElement("button");
+        moreBtn.type = "button"; moreBtn.className = "ctb-more"; moreBtn.dataset.type = "active";
+        activeSec.append(moreBtn);
       }
-      html += '</div>';
+      moreBtn.textContent = expanded ? "收起" : `显示更多 (${remain})`;
+    } else if(moreBtn){
+      moreBtn.remove();
     }
 
-    // 已完成任务区:默认折叠
+    // 已完成任务区:默认折叠,展开时才渲染行(低频,整段重建即可)
+    doneSec.innerHTML = "";
     if(done.length){
-      const expanded = chatTaskBar.dataset.doneExpanded === "1";
-      html += '<div class="ctb-section ctb-done">' +
-        `<button type="button" class="ctb-toggle"><span class="ctb-chev${expanded ? " open" : ""}"></span>已完成 (${done.length})</button>`;
-      if(expanded){
-        for(const t of done) html += renderChatTaskRow(t);
-      }
-      html += '</div>';
+      const toggle = document.createElement("button");
+      toggle.type = "button"; toggle.className = "ctb-toggle";
+      const chev = document.createElement("span");
+      chev.className = "ctb-chev" + (doneExpanded ? " open" : "");
+      toggle.append(chev, document.createTextNode(`已完成 (${done.length})`));
+      doneSec.append(toggle);
+      if(doneExpanded) renderChatRows(doneSec, done);
     }
+  }
 
-    html += '</div>';
-    chatTaskBar.innerHTML = html;
+  // 差量渲染一组 ctb 行:同 id 行存在且状态/文案没变不重建(dot 动画不重启)
+  function renderChatRows(section, rows){
+    for(const child of [...section.querySelectorAll(".ctb-row")]){
+      if(!rows.some(t=>t.id===child.dataset.tid)) child.remove();
+    }
+    rows.forEach((t, i)=>{
+      let row = section.querySelector(`.ctb-row[data-tid="${t.id}"]`);
+      if(!row){
+        row = document.createElement("div");
+        row.className = "ctb-row";
+        row.dataset.tid = t.id;
+        row.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
+        row.children[0].className = "ctb-dot";
+        row.children[1].className = "ctb-title";
+        row.children[2].className = "ctb-note";
+        section.append(row);
+      }
+      if(section.children[i] !== row) section.insertBefore(row, section.children[i]);  // 按排序归位
+      row.classList.toggle("done", isTaskDone(t));
+      const dot = row.children[0];
+      const dotCls = "ctb-dot " + (t.status === "running" ? "running" : "other");
+      if(dot.className !== dotCls) dot.className = dotCls;  // 状态没变不动 class,动画不重启
+      const ttl = row.children[1];
+      if(ttl.textContent !== t.title) ttl.textContent = t.title;
+      const note = taskbarNote(t);
+      const nEl = row.children[2];
+      if(nEl.textContent !== note) nEl.textContent = note;
+    });
   }
 
   taskBar.addEventListener("click", (e)=>{
@@ -6560,6 +6616,15 @@ function foldToGroup(s, card){
 }
 // 把单个流式事件落到 DOM(供前台实时渲染 + 切回会话时按缓冲重放两用)
 function applyStreamEvent(e){
+  // 停止回复后的防重建短窗,见 stopReply 的注释:窗口内该会话的旧帧在流已收掉
+  // 时不重建气泡(避免「点了还出现,要点第二次」);到期或命中后自动解除。
+  const g = S.stopGuard;
+  if(g){
+    if(g.conv === e.conv){
+      if(Date.now() > g.until) S.stopGuard = null;  // 窗口到期,恢复正常
+      else if(!S.stream) return;                    // 窗口内、无流 → 在途旧帧,丢弃
+    }
+  }
   switch(e.type){
     case "user":
       if(S.localSent){ S.localSent=false; break; }  // 本客户端发的,气泡已在 send() 里加了
@@ -6810,10 +6875,53 @@ function updateSendBtn(){
 async function stopReply(){
   if(!S.stream) return;
   const conv=S.conv;
+  // 乐观更新:任务会话先本地把任务行置「已停止」,不等后端收尾落库——
+  // 收尾含最多 5 秒 CLI interrupt + 写库,SSE 终态要晚几秒才到,干等会让
+  // 用户以为没停住、反复点。SSE 终态到达后差量渲染覆盖成同一结果,无跳变。
+  const optimistic = markTaskStopped(conv);
+  // 防重建(点两次的根因):取消指令发出前已在途的旧帧(取消瞬间 SDK 最后吐的
+  // 文本/工具事件)会在 finalizeStream 之后才到达,而 applyStreamEvent 对
+  // streamy 事件一律 ensureStream——不拦会把已收掉的气泡重新拉起来,让用户
+  // 以为没停住、要点第二次。短窗内该会话的 streamy 事件且当前无流时一律丢弃,
+  // 窗口过后自动解除;用户手动发的新消息必在窗口之后,不受影响。
+  S.stopGuard = {conv, until: Date.now() + 2000};
+  clearTimeout(S.stopGuardTimer);
+  S.stopGuardTimer = setTimeout(()=>{ if(S.stopGuard) S.stopGuard = null; }, 2500);
+  // 顺手清掉该会话的进行中缓冲:done 到达时本来也会清,提前清掉更稳——
+  // 避免切走再切回时 maybeReplayStream 把已停止回合的旧帧重放成新的流式气泡
+  // (侧栏「正在回复」橙点也随之熄灭,由 markLive 重绘)。
+  delete S.live[conv]; delete S.streamSnap[conv]; markLive();
   finalizeStream(); // 立即结束前端流式气泡,保留已有部分文字
-  try{ await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})}); }
-  catch(e){ /* 网络异常忽略,前端已处理 */ }
+  try{
+    const r = await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
+    if(r.ok){
+      const j = await r.json();
+      if(!j.stopped){
+        if(optimistic) restoreTaskStopped(conv, optimistic);  // 停失败,恢复原状态
+        // 停不住 = 流的源头(轮次/任务)其实已经结束,比如 SSE 缓冲重放的历史流。
+        // 明说一句,免得用户以为按钮没反应、反复点。
+        addMsg("ai", "已停止(当前没有正在运行的回复或任务)");
+      }
+    }
+  }catch(e){ /* 网络异常忽略,前端已处理 */ }
   flushPending(conv); // 手动中止不会触发 done/message 事件,需主动补发排队中的下一条
+}
+// 乐观停止:任务会话(task:<id>)点停止,本地先把任务行置「已取消」给即时反馈。
+// 返回原状态供停失败时恢复;非任务会话/任务已终态返回 null。
+function markTaskStopped(conv){
+  if(!conv.startsWith("task:")) return null;
+  const t = barTasks.get(conv.slice(5));
+  if(!t || (t.status !== "queued" && t.status !== "running")) return null;
+  const prev = {status: t.status, progress_note: t.progress_note};
+  t.status = "cancelled"; t.progress_note = "已停止";
+  renderTaskBar();
+  return prev;
+}
+function restoreTaskStopped(conv, prev){
+  const t = barTasks.get(conv.slice(5));
+  if(!t) return;
+  t.status = prev.status; t.progress_note = prev.progress_note;
+  renderTaskBar();
 }
 // ── 待发送队列 ────────────────────────────────────────────────────────────
 function queuePending(text, images, audios){

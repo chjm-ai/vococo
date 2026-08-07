@@ -774,6 +774,26 @@ class WebAdapter:
         conv = str(body.get("conv") or "main")
         session_key = config.resolve_session_key("web", conv)
         stopped = bool(self._cancel_callback and self._cancel_callback(session_key))
+        # 任务会话(task:<id>)的「停止回复」不能只停 GatewayRunner 的轮次——
+        # 任务本体跑在 task_runner 的独立循环里,不登记在 _cancel_scopes 中,
+        # cancel_turn 管不到它。这里对任务会话直接停任务本体:排队中置 cancelled,
+        # 运行中打断并等收尾落库(逻辑同 _handle_voice_task_cancel)。
+        from ...core import tasks as bg_tasks  # 懒加载,同 _handle_voice_sidebar
+        from ...core import task_runner as bg_task_runner
+
+        task_id = bg_tasks.task_id_from_session_key(session_key)
+        if task_id is not None:
+            row = bg_tasks.get(task_id)
+            if row is not None and row["status"] not in bg_tasks.TERMINAL_STATUSES:
+                ok = bg_task_runner.cancel(task_id)
+                if not ok and row["status"] == "queued":
+                    # 竞态:排队中被并发拉起成 running 了,cancel 的 queued 分支会失败
+                    cur = bg_tasks.get(task_id)
+                    if cur and cur["status"] == "running":
+                        ok = bg_task_runner.cancel(task_id)
+                if row["status"] == "running" and ok:
+                    await bg_task_runner.cancel_and_wait(task_id)  # 等收尾,前端拿到的是准结果
+                stopped = stopped or ok
         return web.json_response({"ok": True, "stopped": stopped})
 
     async def _handle_conversations(self, request: web.Request) -> web.Response:
