@@ -139,41 +139,146 @@ _OUTBOUND_RE = re.compile(r"\b(curl|wget|nc|ncat|telnet|ssh|scp)\b|/dev/tcp/")
 
 _PROCESS_CONTROL_COMMANDS = {"kill", "pkill", "killall"}
 _VOCOCO_PROCESS_TARGET = re.compile(r"\bvococo(?:\s+serve)?\b")
+_SHELLS = {"sh", "bash", "zsh"}
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SUDO_OPTIONS_WITH_VALUE = {
+    "-C", "-D", "-g", "-h", "-p", "-R", "-r", "-T", "-t", "-u",
+    "--chdir", "--close-from", "--group", "--host", "--other-user",
+    "--prompt", "--role", "--type", "--user",
+}
+_ENV_OPTIONS_WITH_VALUE = {"-C", "-S", "-u", "--chdir", "--split-string", "--unset"}
+_XARGS_OPTIONS_WITH_VALUE = {
+    "-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s",
+    "--arg-file", "--delimiter", "--eof", "--max-args", "--max-chars",
+    "--max-lines", "--max-procs", "--replace",
+}
+_SHELL_PUNCTUATION = "|;&\n()"
+_PIPE_OPERATORS = {"|", "|&"}
 
 
 def _shell_commands(command: str) -> list[list[str]]:
-    """把 shell 文本切成命令词组,保留引号内的管道符为普通文本。"""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars="|;&\n")
+    """按语句切分 shell 文本;保留管道,引号内分隔符仍是普通文本。"""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=_SHELL_PUNCTUATION)
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     lexer.commenters = ""
     commands: list[list[str]] = [[]]
     for token in lexer:
-        if token and all(char in "|;&\n" for char in token):
+        is_punctuation = token and all(char in _SHELL_PUNCTUATION for char in token)
+        if is_punctuation and token not in _PIPE_OPERATORS and token not in {"(", ")"}:
             commands.append([])
         else:
             commands[-1].append(token)
     return [words for words in commands if words]
 
 
-def _is_process_control(command: str) -> bool:
-    """是否在 shell 命令位置调用 kill/pkill/killall 或 xargs kill。"""
-    for words in _shell_commands(command):
-        index = 1 if words[0] == "sudo" else 0
-        if index >= len(words):
+def _pipeline_stages(words: list[str]) -> list[list[str]]:
+    stages: list[list[str]] = [[]]
+    for word in words:
+        if word in _PIPE_OPERATORS:
+            stages.append([])
+        else:
+            stages[-1].append(word)
+    return [stage for stage in stages if stage]
+
+
+def _skip_options(words: list[str], index: int, options_with_value: set[str]) -> int:
+    while index < len(words) and words[index].startswith("-"):
+        option = words[index].split("=", 1)[0]
+        index += 1
+        if option == "--":
+            break
+        if option in options_with_value and "=" not in words[index - 1]:
+            index += 1
+    return index
+
+
+def _unwrap_command(words: list[str]) -> list[str]:
+    index = 0
+    while index < len(words):
+        if words[index] in {"(", ")"}:
+            index += 1
             continue
         executable = os.path.basename(words[index])
-        if executable in _PROCESS_CONTROL_COMMANDS:
-            return True
-        if executable == "xargs" and any(
-            os.path.basename(word) == "kill" for word in words[index + 1:]
-        ):
-            return True
+        if executable == "sudo":
+            index = _skip_options(words, index + 1, _SUDO_OPTIONS_WITH_VALUE)
+        elif executable == "env":
+            index = _skip_options(words, index + 1, _ENV_OPTIONS_WITH_VALUE)
+            while index < len(words) and _ASSIGNMENT.match(words[index]):
+                index += 1
+        elif executable == "command":
+            index = _skip_options(words, index + 1, set())
+        else:
+            break
+    return words[index:]
+
+
+def _xargs_command(words: list[str]) -> list[str]:
+    index = _skip_options(words, 1, _XARGS_OPTIONS_WITH_VALUE)
+    return _unwrap_command(words[index:])
+
+
+def _shell_script(words: list[str]) -> str | None:
+    if not words or os.path.basename(words[0]) not in _SHELLS:
+        return None
+    for index, option in enumerate(words[1:], start=1):
+        has_command = option == "-c" or (
+            option.startswith("-") and not option.startswith("--") and "c" in option[1:]
+        )
+        if has_command and index + 1 < len(words):
+            return words[index + 1]
+        if not option.startswith("-"):
+            break
+    return None
+
+
+def _stage_directly_controls_process(stage: list[str]) -> bool:
+    words = _unwrap_command(stage)
+    if not words:
+        return False
+    executable = os.path.basename(words[0])
+    if executable in _PROCESS_CONTROL_COMMANDS:
+        return True
+    if executable == "xargs":
+        invoked = _xargs_command(words)
+        return bool(invoked) and os.path.basename(invoked[0]) in _PROCESS_CONTROL_COMMANDS
+    return False
+
+
+def _stage_shell_script(stage: list[str]) -> str | None:
+    words = _unwrap_command(stage)
+    if words and os.path.basename(words[0]) == "xargs":
+        words = _xargs_command(words)
+    return _shell_script(words)
+
+
+def _is_process_control(command: str) -> bool:
+    """是否实际调用 kill/pkill/killall 或让 xargs 执行它们。"""
+    for statement in _shell_commands(command):
+        for stage in _pipeline_stages(statement):
+            if _stage_directly_controls_process(stage):
+                return True
+            script = _stage_shell_script(stage)
+            if script and _is_process_control(script):
+                return True
     return False
 
 
 def _targets_vococo_process(command: str) -> bool:
-    return _is_process_control(command) and bool(_VOCOCO_PROCESS_TARGET.search(command))
+    for statement in _shell_commands(command):
+        stages = _pipeline_stages(statement)
+        for stage in stages:
+            if not _stage_directly_controls_process(stage):
+                continue
+            words = _unwrap_command(stage)
+            target_scope = statement if os.path.basename(words[0]) == "xargs" else stage
+            if _VOCOCO_PROCESS_TARGET.search(" ".join(target_scope)):
+                return True
+        for stage in stages:
+            script = _stage_shell_script(stage)
+            if script and _targets_vococo_process(script):
+                return True
+    return False
 
 
 def _looks_like_secret_exfil(cmd: str) -> bool:

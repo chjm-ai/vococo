@@ -171,6 +171,13 @@ def test_classify_returns_restrict_flag():
         "pkill -f worker.py",
         "killall python3",
         "ps aux | grep worker | awk '{print $2}' | xargs kill",
+        "command kill 1234",
+        "env MODE=test kill 1234",
+        "sudo -n kill -TERM 1234",
+        "sudo -u root pkill -f worker.py",
+        "(kill 1234)",
+        "sh -c 'kill 1234'",
+        "bash -lc 'pkill -f worker.py'",
     ],
 )
 def test_classify_process_control_escalates_and_restricts_noninteractive(command):
@@ -187,6 +194,7 @@ def test_classify_process_control_escalates_and_restricts_noninteractive(command
         "echo kill",
         "grep -R kill vococo",
         "python -c \"print('kill 1234')\"",
+        "printf '1234\\n' | xargs echo kill",
     ],
 )
 def test_classify_process_control_does_not_expand_to_unrelated_commands(command):
@@ -202,6 +210,7 @@ def test_classify_process_control_does_not_expand_to_unrelated_commands(command)
         ),
         "pkill -f 'vococo serve'",
         "killall vococo",
+        "sh -c \"pkill -f 'vococo serve'\"",
     ],
 )
 def test_guard_hook_always_denies_direct_vococo_process_control(command, monkeypatch):
@@ -219,6 +228,34 @@ def test_guard_hook_always_denies_direct_vococo_process_control(command, monkeyp
     assert "restart_self" in result["permissionDecisionReason"]
     assert "deploy/restart.sh" in result["permissionDecisionReason"]
     assert "deploy/stop.sh" in result["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo vococo; kill 1234",
+        "echo 'vococo serve'; pkill -f worker.py",
+        "echo vococo | pkill -f worker.py",
+        "sh -c 'echo vococo; kill 1234'",
+    ],
+)
+def test_guard_hook_does_not_bind_vococo_from_another_command_segment(
+    command, monkeypatch
+):
+    from vococo import config
+
+    verdict, _, restrict = classify("Bash", {"command": command})
+    assert verdict == "escalate"
+    assert restrict is True
+
+    monkeypatch.setattr(config, "DANGER_GUARD", False)
+    monkeypatch.setattr(config, "APPROVAL_GATE", False)
+    out = anyio.run(
+        lambda: pretool_guard_hook(
+            {"tool_name": "Bash", "tool_input": {"command": command}}, None, {}
+        )
+    )
+    assert out == {}
 
 
 def test_guard_hook_denies_generic_process_control_without_channel():
