@@ -201,3 +201,18 @@ async def test_recycle_keeps_worktree_dirty(isolated, monkeypatch, tmp_path):
     recycled = await worktree.recycle_empty_worktree(f"web:p{phash}:s1")
     assert recycled is False
     assert wt.is_dir()
+
+
+@pytest.mark.anyio
+async def test_recycle_keeps_worktree_untracked(isolated, monkeypatch, tmp_path):
+    """归档场景:只有未跟踪文件也要保留——新代码没 add 前就是未跟踪状态,不能当
+    临时产物无声丢掉;且 dirty_summary 会把它算进 dirty,回收判定必须同一语义。"""
+    repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
+    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
+    (wt / "newfile.txt").write_text("新写的还没 add")
+    session_store.set_worktree(f"web:p{phash}:s1", str(wt))
+
+    recycled = await worktree.recycle_empty_worktree(f"web:p{phash}:s1")
+    assert recycled is False
+    assert wt.is_dir()
+    assert (wt / "newfile.txt").exists()
