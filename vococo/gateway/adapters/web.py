@@ -1171,27 +1171,47 @@ class WebAdapter:
         # default = web 端上次选定的模型;没设过才回落到 config.MODEL
         active_model = settings_store.get_web_default_model() \
             or providers.resolve(None, config.MODEL)[0]
+        efforts = {}
+        for model, _, _ in choices:
+            levels = providers.effort_levels_for_model(model)
+            value = settings_store.get_web_effort(model)
+            efforts[model] = {
+                "levels": providers.effort_choices_for_model(model),
+                # 旧版可能留有此模型不支持的值；不回显为已选，运行时也不会传它。
+                "value": value if value in levels else "",
+            }
         return web.json_response(
             {
                 "default": active_model,
-                "effort": settings_store.get_web_effort(),  # 思考深度(high/max,空=未设,前端回落默认)
+                "effort": efforts.get(active_model, {}).get("value", ""),  # 兼容旧 Web 客户端
+                "efforts": efforts,
                 "choices": [[v, label, group] for v, label, group in choices],
             }
         )
 
     async def _handle_effort_switch(self, request: web.Request) -> web.Response:
-        """静默切思考深度(high/max):不走命令管道、不触发 SSE/推送。直接落库。
-        agent 每轮构建 options 时现读 settings_store,所以下一条消息即生效。"""
+        """静默切指定模型的思考深度；agent 下一条消息即按该模型的值生效。"""
         if (g := self._guard(request)) is not None:
             return g
         body, err = await self._read_json(request)
         if err is not None:
             return err
         effort = (body.get("effort") or "").strip()
-        if effort not in ("high", "max"):
-            return web.json_response({"error": "effort 仅支持 high/max"}, status=400)
-        settings_store.set_web_effort(effort)
-        return web.json_response({"ok": True, "effort": effort})
+        model = (body.get("model") or "").strip()
+        if not model:
+            # 兼容更新前缓存住的 Web 页面：旧客户端没传 model 时按当前默认模型落库。
+            model = settings_store.get_web_default_model() \
+                or providers.resolve(None, config.MODEL)[0]
+        available = {item[0] for item in providers.available_models(MODEL_CHOICES)}
+        if model not in available:
+            return web.json_response({"error": "模型不可用"}, status=400)
+        levels = providers.effort_levels_for_model(model)
+        if effort not in levels:
+            return web.json_response(
+                {"error": f"{model} 仅支持 {'/'.join(levels)}"}, status=400
+            )
+        settings_store.set_web_effort(effort, model=model)
+        return web.json_response({"ok": True, "model": model, "effort": effort})
 
     async def _handle_commands(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:

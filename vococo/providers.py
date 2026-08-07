@@ -362,6 +362,44 @@ def codex_mgmt_for_model(model: str) -> tuple[str, str] | None:
     return mgmt_key, base_url.rstrip("/")
 
 
+# Claude Code SDK 支持的完整档位。DeepSeek / Kimi 等 Anthropic-compatible 端点
+# 当前只确认兼容 high/max；不能因为本地 GPT 代理支持五档就盲目把未知参数传过去。
+_FULL_EFFORT_CHOICES: tuple[tuple[str, str], ...] = (
+    ("low", "低"),
+    ("medium", "标准"),
+    ("high", "高"),
+    ("xhigh", "极高"),
+    ("max", "最大"),
+)
+_COMPAT_EFFORT_CHOICES: tuple[tuple[str, str], ...] = (
+    ("high", "标准"),
+    ("max", "深度"),
+)
+
+
+def effort_choices_for_model(model: str) -> tuple[tuple[str, str], ...]:
+    """返回模型实际可在 Web 端选择的思考深度(id, 中文名)。
+
+    官方 Claude 与本地 Codex/GPT 代理走 Claude Code 的完整五档。普通第三方
+    Anthropic-compatible 端点则保守沿用已经验证的 high/max，避免 Kimi、DeepSeek
+    等服务商收到其未声明支持的 low/medium/xhigh 参数。
+    """
+    provider = _provider_for_model(model)
+    if (
+        provider is None
+        or provider.is_official
+        or model.lower().startswith("gpt-")
+        or codex_mgmt_for_model(model) is not None
+    ):
+        return _FULL_EFFORT_CHOICES
+    return _COMPAT_EFFORT_CHOICES
+
+
+def effort_levels_for_model(model: str) -> tuple[str, ...]:
+    """只返回可用档位 id，供运行时校验已持久化的选择。"""
+    return tuple(level for level, _ in effort_choices_for_model(model))
+
+
 async def codex_usage(mgmt_key: str, base_url: str) -> dict:
     """查本地 Codex OAuth 代理背后的 GPT 订阅额度。
 
