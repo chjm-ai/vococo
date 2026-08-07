@@ -42,7 +42,7 @@ _parent_pid() {
 _health_field() {
   local field="$1" payload
   command -v curl >/dev/null 2>&1 || return 1
-  payload="$(curl -fsS --max-time 3 "${VOCOCO_HEALTH_URL:-http://127.0.0.1:${WEB_PORT:-8848}/healthz}")" || return 1
+  payload="$(curl -fsS --max-time 3 "${VOCOCO_HEALTH_URL:-http://127.0.0.1:${WEB_PORT:-8848}/healthz}" 2>/dev/null)" || return 1
   HEALTH_PAYLOAD="$payload" HEALTH_FIELD="$field" python3 -c '
 import json, os
 data = json.loads(os.environ["HEALTH_PAYLOAD"])
