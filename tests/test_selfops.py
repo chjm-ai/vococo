@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -330,6 +331,33 @@ def test_git_dirty_includes_untracked_files(monkeypatch):
     assert calls == [("status", "--porcelain")]
 
 
+def test_git_dirty_fails_closed_when_status_returns_nonzero(monkeypatch):
+    monkeypatch.setattr(
+        selfops,
+        "_git",
+        lambda *_args: subprocess.CompletedProcess(
+            ["git", "status"], 128, stdout="", stderr="not a repository"
+        ),
+    )
+    monkeypatch.setattr(selfops, "git_dirty", _REAL_GIT_DIRTY)
+
+    assert selfops.git_dirty() is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    [OSError("git missing"), subprocess.TimeoutExpired(["git", "status"], 30)],
+)
+def test_git_dirty_fails_closed_when_status_cannot_run(monkeypatch, error):
+    def fail_git(*_args):
+        raise error
+
+    monkeypatch.setattr(selfops, "_git", fail_git)
+    monkeypatch.setattr(selfops, "git_dirty", _REAL_GIT_DIRTY)
+
+    assert selfops.git_dirty() is True
+
+
 def test_stable_window_promotes_running_revision_and_clears_transaction():
     _write_json(
         selfops.RESTART_TRANSACTION_PATH,
@@ -355,3 +383,19 @@ def test_stable_window_does_not_clear_a_different_candidate():
     anyio.run(selfops.mark_runtime_stable, 0)
 
     assert selfops.RESTART_TRANSACTION_PATH.exists()
+
+
+def test_stable_window_runs_git_head_outside_the_event_loop(monkeypatch):
+    selfops.write_running_revision("candidate-sha")
+    event_loop_thread = threading.get_ident()
+    git_threads = []
+
+    def observed_git_head():
+        git_threads.append(threading.get_ident())
+        return "candidate-sha"
+
+    monkeypatch.setattr(selfops, "git_head", observed_git_head)
+
+    assert anyio.run(selfops.mark_runtime_stable, 0) is True
+    assert git_threads
+    assert git_threads[0] != event_loop_thread

@@ -90,9 +90,11 @@ def git_dirty() -> bool:
     """工作区有未提交改动（包括未跟踪文件）?"""
     try:
         r = _git("status", "--porcelain")
+        if r.returncode != 0:
+            return True
         return bool(r.stdout.strip())
     except (OSError, subprocess.TimeoutExpired):
-        return False
+        return True
 
 
 def preflight() -> str | None:
@@ -363,7 +365,12 @@ async def mark_runtime_stable(delay_sec: float = _STABLE_WINDOW_SEC) -> bool:
     if not running or running.get("pid") != os.getpid():
         return False
     revision = running.get("revision")
-    if not isinstance(revision, str) or not revision or git_head() != revision:
+    current_revision = await anyio.to_thread.run_sync(git_head)
+    if (
+        not isinstance(revision, str)
+        or not revision
+        or current_revision != revision
+    ):
         return False
 
     transaction = _read_json(RESTART_TRANSACTION_PATH)
