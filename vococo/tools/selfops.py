@@ -290,7 +290,11 @@ def request_restart(
         "session_key": session_key,
         "requested_at": requested_at,
     }
-    if not _create_restart_transaction(transaction):
+    try:
+        transaction_created = _create_restart_transaction(transaction)
+    except OSError as exc:
+        return f"⛔ 创建全局重启事务失败，已取消重启：{exc}"
+    if not transaction_created:
         return "⛔ 已有一个全局重启事务在执行，当前请求未覆盖它。"
 
     task_data = {
@@ -307,10 +311,11 @@ def request_restart(
         _atomic_write_json(RESUME_PATH, task_data)
         _record_restart(recent)
     except OSError as exc:
-        try:
-            RESTART_TRANSACTION_PATH.unlink()
-        except OSError:
-            pass
+        for path in (RESUME_PATH, RESTART_TRANSACTION_PATH):
+            try:
+                path.unlink()
+            except OSError:
+                pass
         return f"⛔ 写入重启状态失败，已取消重启：{exc}"
     _restart_pending[session_key] = task_data  # 仅标记该会话
     return (

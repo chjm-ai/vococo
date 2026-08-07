@@ -126,6 +126,38 @@ def test_consuming_resume_keeps_restart_transaction_for_rollback():
     assert selfops.RESTART_TRANSACTION_PATH.exists()
 
 
+def test_failed_state_write_leaves_no_orphan_resume(monkeypatch):
+    _make_supervisor_alive()
+    _write_json(selfops.STABLE_REVISION_PATH, {"revision": "stable-sha"})
+
+    def fail_record(_recent):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(selfops, "_record_restart", fail_record)
+
+    result = _request()
+
+    assert result.startswith("⛔")
+    assert not selfops.RESUME_PATH.exists()
+    assert not selfops.RESTART_TRANSACTION_PATH.exists()
+
+
+def test_transaction_create_error_is_reported_without_crashing(monkeypatch):
+    _make_supervisor_alive()
+    _write_json(selfops.STABLE_REVISION_PATH, {"revision": "stable-sha"})
+    monkeypatch.setattr(
+        selfops,
+        "_create_restart_transaction",
+        lambda _data: (_ for _ in ()).throw(OSError("read only")),
+    )
+
+    result = _request()
+
+    assert result.startswith("⛔")
+    assert "重启事务" in result
+    assert not selfops.RESUME_PATH.exists()
+
+
 def test_git_dirty_includes_untracked_files(monkeypatch):
     calls = []
 
