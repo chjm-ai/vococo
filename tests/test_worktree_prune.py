@@ -50,7 +50,8 @@ def _setup(isolated, monkeypatch, tmp_path):
     phash = projects.project_hash(str(repo))
 
     wt_base = tmp_path / "wt-base"
-    monkeypatch.setattr(worktree, "_WT_BASE", wt_base)
+    # _WT_BASE 常量已改为 _wt_base(root) 函数:统一指向 tmp 基座,隔离真实目录
+    monkeypatch.setattr(worktree, "_wt_base", lambda root: wt_base)
     return repo, wt_base, phash, config
 
 

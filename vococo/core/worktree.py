@@ -4,8 +4,9 @@
 (以及所有会话看到的分支)一起拽走,于是「分支名全一样」「互相抢分支」。
 
 解法:给每个项目会话开一个物理独立的 git worktree(独立目录 + 独立分支)。同一仓库
-可挂 N 个 worktree,各干各的,git 层面根本碰不到对方。worktree 放在 Hermes 自己的
-data 目录下(不污染用户项目,免改 .gitignore),路径 data/worktrees/<项目哈希>/<会话slug>。
+可挂 N 个 worktree,各干各的,git 层面根本碰不到对方。worktree 放在各会话项目自己
+的 data 目录下(data/ 已在各项目 .gitignore 里,不污染源码树),路径
+<项目>/data/worktrees/<项目哈希>/<会话slug>。
 """
 from __future__ import annotations
 
@@ -14,11 +15,17 @@ import os
 import re
 import shutil
 import sys
+from pathlib import Path
 
 from .. import config
 from ..memory import session_store
 
-_WT_BASE = config.DATA_DIR / "worktrees"
+
+def _wt_base(root: str) -> Path:
+    """worktree 统一放「会话项目自己的 data/worktrees」下:
+    vococo 项目 = vococo/data/worktrees(位置不变),其他项目各归各的 data/。
+    data/ 已在各项目 .gitignore 里,不污染源码树。"""
+    return Path(root) / "data" / "worktrees"
 
 
 async def _git(cwd: str, *args: str) -> tuple[int, str, str]:
@@ -179,7 +186,7 @@ async def _ensure_worktree_impl(session_key: str, root: str, phash: str, slug: s
     if not os.path.isdir(root) or not await _is_git_repo(root):
         return None
 
-    base_dir = _WT_BASE / phash
+    base_dir = _wt_base(root) / phash
     os.makedirs(base_dir, exist_ok=True)
 
     # 主名失败(分支/目录被别处占用等)则换一次带后缀的别名再试,进一步降低回退概率
@@ -289,27 +296,27 @@ async def remove_worktree(session_key: str) -> None:
 
 
 async def prune_orphans() -> int:
-    """启动兜底:回收「真孤儿」—— data/worktrees 下 DB 已无会话绑定的 worktree,
-    以及悬空的 vococo/* 空分支。返回清理总数。
+    """启动兜底:回收「真孤儿」—— 各项目 data/worktrees 下 DB 已无会话绑定的
+    worktree,以及悬空的 vococo/* 空分支。返回清理总数。
 
     回收依据只有用户意图:归档(archived→recycle_empty_worktree)和删除会话
     (remove_worktree)。系统不做推断回收——DB 还绑着的 worktree 一律不动,哪怕
     会话早不活跃、代码干净,用户可能随时回来继续聊。
 
-    只碰 vococo 自己那套(data/worktrees + vococo/* 及改名前存量 hermes/* 分支),
-    绝不动 Claude Code 的 .claude/worktrees。
+    遍历全部项目(vococo 自己的 data/worktrees 位置不变 + 其他项目各归各的),
+    绝不动 Claude Code 的 .claude/worktrees。分支只认 vococo/* 及改名前存量
+    hermes/*。
     """
-    if not _WT_BASE.exists():
-        return 0
     bound = {os.path.realpath(p) for p in session_store.all_worktree_paths()}
     cleaned = 0
-    for phash_dir in _WT_BASE.iterdir():
-        if not phash_dir.is_dir():
+    for proj in session_store.list_projects():
+        root = proj["path"]
+        if not os.path.isdir(root) or not await _is_git_repo(root):
             continue
-        root = session_store.path_for_hash(phash_dir.name)
-        if not root or not os.path.isdir(root) or not await _is_git_repo(root):
+        base = _wt_base(root) / proj["hash"]
+        if not base.exists():
             continue
-        for wt in phash_dir.iterdir():
+        for wt in base.iterdir():
             if not wt.is_dir() or os.path.realpath(str(wt)) in bound:
                 continue  # 有主(DB 绑定)的 worktree → 一律跳过
             branch = await _branch_of_worktree(root, str(wt))

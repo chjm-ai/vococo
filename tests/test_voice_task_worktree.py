@@ -33,7 +33,8 @@ async def test_ensure_worktree_for_task_creates_isolated_branch(isolated, monkey
     from vococo.core import worktree
     from vococo.memory import session_store
 
-    monkeypatch.setattr(worktree, "_WT_BASE", tmp_path / "wt-base")
+    # _WT_BASE 常量已改为 _wt_base(root) 函数:统一指向 tmp 基座,隔离真实目录
+    monkeypatch.setattr(worktree, "_wt_base", lambda root: tmp_path / "wt-base")
 
     repo = tmp_path / "proj"
     _init_repo(repo)
@@ -66,7 +67,8 @@ async def test_ensure_worktree_for_task_creates_isolated_branch(isolated, monkey
 async def test_ensure_worktree_for_task_none_for_non_git_dir(isolated, monkeypatch, tmp_path):
     from vococo.core import worktree
 
-    monkeypatch.setattr(worktree, "_WT_BASE", tmp_path / "wt-base")
+    # _WT_BASE 常量已改为 _wt_base(root) 函数:统一指向 tmp 基座,隔离真实目录
+    monkeypatch.setattr(worktree, "_wt_base", lambda root: tmp_path / "wt-base")
     plain = tmp_path / "plain"
     plain.mkdir()
 
@@ -85,7 +87,8 @@ async def test_ensure_worktree_for_task_none_without_root(isolated):
 async def test_two_tasks_same_repo_get_distinct_branches(isolated, monkeypatch, tmp_path):
     from vococo.core import worktree
 
-    monkeypatch.setattr(worktree, "_WT_BASE", tmp_path / "wt-base")
+    # _WT_BASE 常量已改为 _wt_base(root) 函数:统一指向 tmp 基座,隔离真实目录
+    monkeypatch.setattr(worktree, "_wt_base", lambda root: tmp_path / "wt-base")
     repo = tmp_path / "proj"
     _init_repo(repo)
 
