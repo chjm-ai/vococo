@@ -142,10 +142,11 @@ _VOCOCO_PROCESS_TARGET = re.compile(r"\bvococo(?:\s+serve)?\b")
 _VOCOCO_SERVE_TARGET = re.compile(r"\bvococo\s+serve\b")
 _PROCESS_QUERY_COMMANDS = {"pgrep", "ps"}
 _SHELLS = {"sh", "bash", "zsh"}
-_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
 _QUERY_ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$$")
 _VARIABLE_REFERENCE = re.compile(
-    r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"
+    r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-+?=][^}]*)?\}|"
+    r"([A-Za-z_][A-Za-z0-9_]*))"
 )
 _SUDO_OPTIONS_WITH_VALUE = {
     "-C", "-D", "-g", "-h", "-p", "-R", "-r", "-T", "-t", "-u",
@@ -324,6 +325,14 @@ def _query_output_variables(statement: list[str]) -> set[str]:
     }
 
 
+def _assigned_variables(statement: list[str]) -> set[str]:
+    return {
+        match.group(1)
+        for word in statement
+        if (match := _ASSIGNMENT.match(word))
+    }
+
+
 def _referenced_variables(statement: list[str]) -> set[str]:
     references: set[str] = set()
     for word in statement:
@@ -356,6 +365,7 @@ def _is_process_control(command: str) -> bool:
 def _targets_vococo_process(command: str) -> bool:
     query_variables: set[str] = set()
     for statement in _shell_commands(command):
+        query_variables.difference_update(_assigned_variables(statement))
         query_variables.update(_query_output_variables(statement))
         uses_query_output = query_variables & _referenced_variables(statement)
         if uses_query_output and _statement_terminates_process(statement):
