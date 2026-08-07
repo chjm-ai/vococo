@@ -34,9 +34,9 @@ def model_settings(monkeypatch):
         ("deepseek-v4-flash", "DeepSeek V4 Flash（API）", "api"),
     ]
     levels = {
-        "gpt-5.6-terra": (("low", "低"), ("medium", "标准"), ("high", "高"),
-                            ("xhigh", "极高"), ("max", "最大")),
-        "deepseek-v4-flash": (("high", "标准"), ("max", "深度")),
+        "gpt-5.6-terra": (("low", "low"), ("medium", "medium"), ("high", "high"),
+                            ("xhigh", "xhigh"), ("max", "max")),
+        "deepseek-v4-flash": (("high", "high"), ("max", "max")),
     }
     saved = {"gpt-5.6-terra": "xhigh", "deepseek-v4-flash": "max"}
 
@@ -79,12 +79,12 @@ async def test_models_return_effort_levels_per_model(models_app, model_settings)
 
     assert data["effort"] == "xhigh"  # 保留给旧前端的当前默认模型字段
     assert data["efforts"]["gpt-5.6-terra"] == {
-        "levels": [["low", "低"], ["medium", "标准"], ["high", "高"],
-                   ["xhigh", "极高"], ["max", "最大"]],
+        "levels": [["low", "low"], ["medium", "medium"], ["high", "high"],
+                   ["xhigh", "xhigh"], ["max", "max"]],
         "value": "xhigh",
     }
     assert data["efforts"]["deepseek-v4-flash"] == {
-        "levels": [["high", "标准"], ["max", "深度"]],
+        "levels": [["high", "high"], ["max", "max"]],
         "value": "max",
     }
 
