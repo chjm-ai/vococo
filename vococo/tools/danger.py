@@ -143,6 +143,10 @@ _VOCOCO_SERVE_TARGET = re.compile(r"\bvococo\s+serve\b")
 _PROCESS_QUERY_COMMANDS = {"pgrep", "ps"}
 _SHELLS = {"sh", "bash", "zsh"}
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_QUERY_ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$$")
+_VARIABLE_REFERENCE = re.compile(
+    r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"
+)
 _SUDO_OPTIONS_WITH_VALUE = {
     "-C", "-D", "-g", "-h", "-p", "-R", "-r", "-T", "-t", "-u",
     "--chdir", "--close-from", "--group", "--host", "--other-user",
@@ -310,12 +314,29 @@ def _statement_queries_vococo(statement: list[str]) -> bool:
     return False
 
 
-def _statement_has_pid_kill(statement: list[str]) -> bool:
-    for stage in _pipeline_stages(statement):
-        words = _unwrap_command(stage)
-        if words and os.path.basename(words[0]) == "kill":
-            return _is_terminating_process_command(words)
-    return False
+def _query_output_variables(statement: list[str]) -> set[str]:
+    if not _statement_queries_vococo(statement):
+        return set()
+    return {
+        match.group(1)
+        for word in statement
+        if (match := _QUERY_ASSIGNMENT.match(word))
+    }
+
+
+def _referenced_variables(statement: list[str]) -> set[str]:
+    references: set[str] = set()
+    for word in statement:
+        for match in _VARIABLE_REFERENCE.finditer(word):
+            references.add(match.group(1) or match.group(2))
+    return references
+
+
+def _statement_terminates_process(statement: list[str]) -> bool:
+    return any(
+        _stage_directly_controls_process(stage)
+        for stage in _pipeline_stages(statement)
+    )
 
 
 def _is_process_control(command: str) -> bool:
@@ -333,12 +354,12 @@ def _is_process_control(command: str) -> bool:
 
 
 def _targets_vococo_process(command: str) -> bool:
-    queried_vococo = False
+    query_variables: set[str] = set()
     for statement in _shell_commands(command):
-        statement_queries = _statement_queries_vococo(statement)
-        if (queried_vococo or statement_queries) and _statement_has_pid_kill(statement):
+        query_variables.update(_query_output_variables(statement))
+        uses_query_output = query_variables & _referenced_variables(statement)
+        if uses_query_output and _statement_terminates_process(statement):
             return True
-        queried_vococo = queried_vococo or statement_queries
         if any(
             _targets_vococo_process(cmd) for cmd in _command_substitutions(statement)
         ):

@@ -220,6 +220,7 @@ def test_classify_process_control_does_not_expand_to_unrelated_commands(command)
         "echo $(killall vococo)",
         "printf 'vococo serve\\n' | xargs -J % pkill -f %",
         "pid=$(pgrep -f 'vococo serve'); kill \"$pid\"",
+        "pids=$(pgrep -f 'vococo serve'); printf '%s\\n' \"$pids\" | xargs kill",
     ],
 )
 def test_guard_hook_always_denies_direct_vococo_process_control(command, monkeypatch):
@@ -249,6 +250,7 @@ def test_guard_hook_always_denies_direct_vococo_process_control(command, monkeyp
         "pkill -f worker.py # vococo serve",
         "pkill -f worker.py > vococo.log",
         "echo $(kill 1234)",
+        "ps aux | grep 'vococo serve' >/tmp/vococo.txt; kill 1234",
     ],
 )
 def test_guard_hook_does_not_bind_vococo_from_another_command_segment(
