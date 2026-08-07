@@ -214,6 +214,8 @@ def test_classify_process_control_does_not_expand_to_unrelated_commands(command)
         "pkill -f 'vococo serve'",
         "killall vococo",
         "sh -c \"pkill -f 'vococo serve'\"",
+        "echo $(pkill -f 'vococo serve')",
+        "echo $(killall vococo)",
     ],
 )
 def test_guard_hook_always_denies_direct_vococo_process_control(command, monkeypatch):
@@ -242,6 +244,7 @@ def test_guard_hook_always_denies_direct_vococo_process_control(command, monkeyp
         "sh -c 'echo vococo; kill 1234'",
         "pkill -f worker.py # vococo serve",
         "pkill -f worker.py > vococo.log",
+        "echo $(kill 1234)",
     ],
 )
 def test_guard_hook_does_not_bind_vococo_from_another_command_segment(

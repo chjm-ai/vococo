@@ -259,7 +259,8 @@ def _stage_shell_script(stage: list[str]) -> str | None:
     return _shell_script(words)
 
 
-def _has_process_control_substitution(words: list[str]) -> bool:
+def _command_substitutions(words: list[str]) -> list[str]:
+    substitutions: list[str] = []
     for index in range(len(words) - 2):
         if words[index:index + 2] != ["$", "("]:
             continue
@@ -267,9 +268,8 @@ def _has_process_control_substitution(words: list[str]) -> bool:
             end = words.index(")", index + 2)
         except ValueError:
             continue
-        if _is_process_control(" ".join(words[index + 2:end])):
-            return True
-    return False
+        substitutions.append(" ".join(words[index + 2:end]))
+    return substitutions
 
 
 def _without_redirections(words: list[str]) -> list[str]:
@@ -290,7 +290,7 @@ def _without_redirections(words: list[str]) -> list[str]:
 def _is_process_control(command: str) -> bool:
     """是否实际调用 kill/pkill/killall 或让 xargs 执行它们。"""
     for statement in _shell_commands(command):
-        if _has_process_control_substitution(statement):
+        if any(_is_process_control(cmd) for cmd in _command_substitutions(statement)):
             return True
         for stage in _pipeline_stages(statement):
             if _stage_directly_controls_process(stage):
@@ -303,6 +303,10 @@ def _is_process_control(command: str) -> bool:
 
 def _targets_vococo_process(command: str) -> bool:
     for statement in _shell_commands(command):
+        if any(
+            _targets_vococo_process(cmd) for cmd in _command_substitutions(statement)
+        ):
+            return True
         stages = _pipeline_stages(statement)
         for stage in stages:
             if not _stage_directly_controls_process(stage):
