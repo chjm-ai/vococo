@@ -51,6 +51,21 @@ async def git_status(cwd: str) -> dict:
                 behind = int(m.group(1))
         elif line:
             files.append({"x": line[:2], "path": line[3:]})  # XY 状态码 + 路径
+    # 未合并提交:相对默认分支(main/master)的领先提交数——「这个分支干的活还没回到主
+    # 分支」。注意与上面的 ahead 是两回事:status --branch 的 ahead 相对【远程上游】,
+    # 本地开发分支(vococo/xxx)常不 push 远程、没有上游,ahead 恒为 0,标题栏只看 ahead
+    # 会以为没改动;这里用 rev-list 数 main..HEAD,与 worktree_dirty_summary 同一语义。
+    unmerged = 0
+    default_branch = ""
+    for b in ("main", "master"):
+        code, _, _ = await run_git(cwd, "rev-parse", "--verify", "--quiet", f"refs/heads/{b}")
+        if code == 0:
+            default_branch = b
+            break
+    if default_branch:
+        code, out, _ = await run_git(cwd, "rev-list", "--count", f"{default_branch}..HEAD")
+        if code == 0 and out.strip().isdigit():
+            unmerged = int(out.strip())
     added, removed = 0, 0
     _, stat_out, _ = await run_git(cwd, "diff", "HEAD", "--shortstat")
     if stat_out.strip():
@@ -63,6 +78,7 @@ async def git_status(cwd: str) -> dict:
         "branch": branch or "(游离 HEAD)",
         "ahead": ahead,
         "behind": behind,
+        "unmerged": unmerged,
         "dirty": len(files),
         "files": files[:60],  # 改动太多只回前 60 条,够看
         "added": added,

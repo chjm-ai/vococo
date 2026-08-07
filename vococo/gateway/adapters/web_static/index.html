@@ -100,6 +100,33 @@ try{
     </div>
   </div>
 
+  <!-- 删除会话三选确认(worktree 有未提交改动/未合并提交时):归档保留 / 仍然删除 / 取消。
+       归档 = 只提醒不丢内容(代码留 worktree 等合并);删除 = worktree 内容一起丢,必须明示 -->
+  <div id="delModal" hidden>
+    <div class="pmbox">
+      <div class="pmhead">删除会话</div>
+      <div class="pmbody" id="delDirty"></div>
+      <div class="pmfoot">
+        <button id="delCancel">取消</button>
+        <button class="pmwarn" id="delForce">🗑 仍然删除</button>
+        <button class="pmok" id="delArchive">📁 归档保留</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 归档确认(worktree 有未提交改动/未合并提交时):确定归档 / 放弃。归档本身不丢内容,
+       但 worktree 会保留待合并,先问一句再执行,免得用户点完才发现会话被归档了 -->
+  <div id="archModal" hidden>
+    <div class="pmbox">
+      <div class="pmhead">归档会话</div>
+      <div class="pmbody" id="archDirty"></div>
+      <div class="pmfoot">
+        <button id="archCancel">放弃</button>
+        <button class="pmok" id="archGo">📁 确定归档</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 会话搜索弹窗(⌘F / 侧栏放大镜):标题优先+正文,含归档;删除的会话已物理删除搜不到 -->
   <div id="searchModal" hidden>
     <div class="smbox">
@@ -4393,7 +4420,7 @@ document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contain
 // 顶栏那颗 ⎇ 按钮:仅项目会话显示;点开弹层看改动 + 一键建分支
 function gitBtnLabel(d){
   let s='⎇ '+esc(d.branch);
-  if(d.ahead) s+=' <span class="gahb">↑'+d.ahead+'</span>';   // 未合并提交:标题栏直接可见
+  if(d.unmerged) s+=' <span class="gahb">↑'+d.unmerged+'</span>';   // 未合并提交(相对 main):标题栏直接可见
   if(d.dirty) s+=' •'+d.dirty;
   if(d.added||d.removed){
     s+=' <span style="color:#3fb950">+'+d.added+'</span>'
@@ -4412,7 +4439,7 @@ async function refreshGit(conv){
     if(!d.is_project){ btn.hidden=true; return; }
     pbtn.textContent=d.name; pbtn.hidden=false;
     if(!d.is_repo){ btn.textContent="⎇ 非 git 仓库"; return; }
-    btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", (d.dirty>0)||(d.ahead>0));
+    btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0));
   }catch(e){ btn.hidden=true; pbtn.hidden=true; }
 }
 // 项目名 pill:点开看完整路径(project_path 是仓库根,不是本会话的 worktree cwd)
@@ -4456,7 +4483,7 @@ async function createGitBranch(){
     const d=await r.json();
     if(!r.ok){ err.textContent=d.error||"创建失败"; err.hidden=false; btn.disabled=false; btn.textContent="新建并切换"; return; }
     S.git=d; renderGitPop();                                       // 重绘:分支名已切到新分支
-    const b=$("#convGit"); b.innerHTML=gitBtnLabel(d); b.classList.toggle("dirty", (d.dirty>0)||(d.ahead>0));
+    const b=$("#convGit"); b.innerHTML=gitBtnLabel(d); b.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0));
   }catch(e){ err.textContent="网络错误"; err.hidden=false; btn.disabled=false; btn.textContent="新建并切换"; }
 }
 $("#convGit").onclick=e=>{ e.stopPropagation(); const p=$("#gitPop");
@@ -5850,24 +5877,39 @@ async function delConv(conv){
     const r=await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
     const j=await r.json().catch(()=>({}));
     if(j && j.need_confirm){
-      // 会话 worktree 里有未提交改动/未合并提交:先回滚乐观假删,弹确认,用户点头才真删
+      // 会话 worktree 里有未提交改动/未合并提交:先回滚乐观假删,弹三选——
+      // 归档保留(只提醒不丢内容)/ 仍然删除(force,worktree 内容一起丢) / 取消
       list.splice(idx,0,removed); renderConvs();
-      const d=j.dirty||{};
-      const bits=[];
-      if(d.uncommitted) bits.push(d.uncommitted+" 个未提交改动");
-      if(d.untracked) bits.push(d.untracked+" 个未跟踪文件");
-      if(d.commits) bits.push(d.commits+" 个未合并提交");
-      if(confirm("该会话的代码还有"+(bits.join("、")||"未提交内容")+",删除会全部丢失。确定删除吗?")){
-        await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,force:true})});
-      } else {
-        return;  // 用户取消:列表已恢复
+      const choice=await delConfirmChoice(dirtyBits(j.dirty||{}));
+      if(choice==="archive"){ toggleArchive(conv); return; }  // 归档保留:代码留 worktree,只提醒不回收
+      if(choice!=="delete") return;                            // 取消:列表已恢复
+      await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,force:true})});
+      // force 删除成功后行已被回滚恢复,需再移除一次(否则残留到刷新还看得到)
+      const f=list.findIndex(x=>x.conv===conv);
+      if(f>=0){
+        list.splice(f,1); delete S.histCache[conv]; idbDel("hist:"+conv); delete S.live[conv]; delete S.streamSnap[conv]; markLive(); renderConvs();
       }
     }
   }catch(err){
-    // 删除失败:回滚列表并提示
-    list.splice(idx,0,removed); renderConvs();
+    // 删除失败:回滚列表并提示(行可能已恢复,先确认不在再插,避免重复行)
+    if(!list.some(x=>x.conv===conv)) list.splice(idx,0,removed);
+    renderConvs();
     alert("删除失败,已恢复该会话");
   }
+}
+// 删除会话三选确认(worktree 有未提交改动时):归档保留 / 仍然删除 / 取消。
+// 返回 "archive" | "delete" | "cancel"。
+function delConfirmChoice(bits){
+  return new Promise(res=>{
+    const m=$("#delModal");
+    $("#delDirty").textContent="该会话的代码还有 "+bits+",直接删除会全部丢失。";
+    const done=v=>{ m.hidden=true; m.onclick=null; res(v); };
+    $("#delArchive").onclick=()=>done("archive");
+    $("#delForce").onclick=()=>done("delete");
+    $("#delCancel").onclick=()=>done("cancel");
+    m.onclick=e=>{ if(e.target===m) done("cancel"); };  // 点遮罩 = 取消
+    m.hidden=false;
+  });
 }
 async function duplicateConv(conv){
   try{
@@ -5880,7 +5922,9 @@ async function duplicateConv(conv){
 }
 
 // ── 归档 + 会话筛选 ──────────────────────────────────────────────────────
-function toggleArchive(conv){
+// 归档时 worktree 有未提交改动/未合并提交 → 后端先不归档,弹「确定归档/放弃」确认框,
+// 用户点头(force)才真归档——归档不丢内容,但会触发收尾回收信号,所以先问一句。
+async function toggleArchive(conv){
   const c=findConv(conv); if(!c) return;
   const next=!c.archived;
   c.archived=next; renderConvs();  // 乐观更新
@@ -5892,19 +5936,50 @@ function toggleArchive(conv){
     const target=S.convs.find(x=>x.conv!==conv);
     if(target) openConv(target.conv);
   }
-  api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({conv,archived:next})}).then(r=>r.json().catch(()=>({}))).then(j=>{
-      if(j && j.warning){
-        // worktree 有未提交改动/未合并提交,归档了但没回收——告诉用户为什么
-        const d=j.dirty||{};
-        const bits=[];
-        if(d.uncommitted) bits.push(d.uncommitted+" 个未提交改动");
-        if(d.untracked) bits.push(d.untracked+" 个未跟踪文件");
-        if(d.commits) bits.push(d.commits+" 个未合并提交");
-        alert("已归档,但该会话的代码还有"+(bits.join("、")||"未提交内容")+"。\n\nworktree 暂未回收(内容不能丢)。合并或提交后再次归档即可回收。");
+  try{
+    const r=await api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({conv,archived:next})});
+    const j=await r.json().catch(()=>({}));
+    if(j && j.need_confirm){
+      // 有未提交改动/未合并提交:回滚乐观更新,弹确认框,点头才真归档
+      c.archived=!next; renderConvs();
+      const choice=await archConfirmChoice(dirtyBits(j.dirty||{}));
+      if(choice!=="archive") return;   // 放弃:保持未归档
+      const r2=await api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({conv,archived:true,force:true})});
+      const j2=await r2.json().catch(()=>({}));
+      if(j2 && j2.warning){
+        alert("已归档成功。该会话的代码还有"+dirtyBits(j2.dirty||{})+",worktree 暂未回收(内容不能丢)。\n\n合并或提交后再次归档即可回收。");
       }
-    }).catch(()=>{ c.archived=!next; renderConvs(); });
+      if(next && c.pinned) pinConv(conv, false);
+      return;
+    }
+    if(j && j.warning){
+      // worktree 有未提交改动/未合并提交,归档了但没回收——告诉用户为什么
+      alert("已归档成功。该会话的代码还有"+dirtyBits(j.dirty||{})+",worktree 暂未回收(内容不能丢)。\n\n合并或提交后再次归档即可回收。");
+    }
+  }catch(err){ c.archived=!next; renderConvs(); }
   if(next && c.pinned) pinConv(conv, false);   // 归档的会话不该再占着置顶分组,顺手取消置顶
+}
+// worktree 未提交内容摘要文案:未提交改动/未跟踪文件/未合并提交,全空给兜底文案。
+function dirtyBits(d){
+  const bits=[];
+  if(d.uncommitted) bits.push(d.uncommitted+" 个未提交改动");
+  if(d.untracked) bits.push(d.untracked+" 个未跟踪文件");
+  if(d.commits) bits.push(d.commits+" 个未合并提交");
+  return bits.join("、")||"未提交内容";
+}
+// 归档确认(worktree 有未提交改动时):确定归档 / 放弃。返回 "archive" | "cancel"。
+function archConfirmChoice(bits){
+  return new Promise(res=>{
+    const m=$("#archModal");
+    $("#archDirty").textContent="该会话的代码还有 "+bits+",归档后 worktree 暂不回收(内容不能丢)。确定归档吗?";
+    const done=v=>{ m.hidden=true; m.onclick=null; res(v); };
+    $("#archGo").onclick=()=>done("archive");
+    $("#archCancel").onclick=()=>done("cancel");
+    m.onclick=e=>{ if(e.target===m) done("cancel"); };  // 点遮罩 = 放弃
+    m.hidden=false;
+  });
 }
 function renderConvFilterPop(){
   const opts=[["all","全部"],["active","工作中"],["archived","归档"]];
