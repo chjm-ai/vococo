@@ -139,6 +139,8 @@ _OUTBOUND_RE = re.compile(r"\b(curl|wget|nc|ncat|telnet|ssh|scp)\b|/dev/tcp/")
 
 _PROCESS_CONTROL_COMMANDS = {"kill", "pkill", "killall"}
 _VOCOCO_PROCESS_TARGET = re.compile(r"\bvococo(?:\s+serve)?\b")
+_VOCOCO_SERVE_TARGET = re.compile(r"\bvococo\s+serve\b")
+_PROCESS_QUERY_COMMANDS = {"pgrep", "ps"}
 _SHELLS = {"sh", "bash", "zsh"}
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _SUDO_OPTIONS_WITH_VALUE = {
@@ -149,7 +151,7 @@ _SUDO_OPTIONS_WITH_VALUE = {
 _ENV_OPTIONS_WITH_VALUE = {"-C", "-S", "-u", "--chdir", "--split-string", "--unset"}
 _EXEC_OPTIONS_WITH_VALUE = {"-a"}
 _XARGS_OPTIONS_WITH_VALUE = {
-    "-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s",
+    "-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-s",
     "--arg-file", "--delimiter", "--eof", "--max-args", "--max-chars",
     "--max-lines", "--max-procs", "--replace",
 }
@@ -243,13 +245,24 @@ def _stage_directly_controls_process(stage: list[str]) -> bool:
     words = _unwrap_command(stage)
     if not words:
         return False
-    executable = os.path.basename(words[0])
-    if executable in _PROCESS_CONTROL_COMMANDS:
-        return True
-    if executable == "xargs":
+    if os.path.basename(words[0]) == "xargs":
         invoked = _xargs_command(words)
-        return bool(invoked) and os.path.basename(invoked[0]) in _PROCESS_CONTROL_COMMANDS
-    return False
+        return _is_terminating_process_command(invoked)
+    return _is_terminating_process_command(words)
+
+
+def _is_terminating_process_command(words: list[str]) -> bool:
+    if not words:
+        return False
+    executable = os.path.basename(words[0])
+    if executable not in _PROCESS_CONTROL_COMMANDS:
+        return False
+    if executable != "kill":
+        return True
+    args = words[1:]
+    if args and args[0] in {"-0", "-l", "-L"}:
+        return False
+    return len(args) < 2 or args[:2] not in (["-s", "0"], ["--signal", "0"])
 
 
 def _stage_shell_script(stage: list[str]) -> str | None:
@@ -287,6 +300,24 @@ def _without_redirections(words: list[str]) -> list[str]:
     return result
 
 
+def _statement_queries_vococo(statement: list[str]) -> bool:
+    if not _VOCOCO_SERVE_TARGET.search(" ".join(_without_redirections(statement))):
+        return False
+    for stage in _pipeline_stages(statement):
+        words = _unwrap_command(stage)
+        if words and os.path.basename(words[0]) in _PROCESS_QUERY_COMMANDS:
+            return True
+    return False
+
+
+def _statement_has_pid_kill(statement: list[str]) -> bool:
+    for stage in _pipeline_stages(statement):
+        words = _unwrap_command(stage)
+        if words and os.path.basename(words[0]) == "kill":
+            return _is_terminating_process_command(words)
+    return False
+
+
 def _is_process_control(command: str) -> bool:
     """是否实际调用 kill/pkill/killall 或让 xargs 执行它们。"""
     for statement in _shell_commands(command):
@@ -302,7 +333,12 @@ def _is_process_control(command: str) -> bool:
 
 
 def _targets_vococo_process(command: str) -> bool:
+    queried_vococo = False
     for statement in _shell_commands(command):
+        statement_queries = _statement_queries_vococo(statement)
+        if (queried_vococo or statement_queries) and _statement_has_pid_kill(statement):
+            return True
+        queried_vococo = queried_vococo or statement_queries
         if any(
             _targets_vococo_process(cmd) for cmd in _command_substitutions(statement)
         ):

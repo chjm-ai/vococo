@@ -198,6 +198,8 @@ def test_classify_process_control_escalates_and_restricts_noninteractive(command
         "grep -R kill vococo",
         "python -c \"print('kill 1234')\"",
         "printf '1234\\n' | xargs echo kill",
+        "kill -0 1234",
+        "kill -l",
     ],
 )
 def test_classify_process_control_does_not_expand_to_unrelated_commands(command):
@@ -216,6 +218,8 @@ def test_classify_process_control_does_not_expand_to_unrelated_commands(command)
         "sh -c \"pkill -f 'vococo serve'\"",
         "echo $(pkill -f 'vococo serve')",
         "echo $(killall vococo)",
+        "printf 'vococo serve\\n' | xargs -J % pkill -f %",
+        "pid=$(pgrep -f 'vococo serve'); kill \"$pid\"",
     ],
 )
 def test_guard_hook_always_denies_direct_vococo_process_control(command, monkeypatch):
