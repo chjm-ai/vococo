@@ -208,10 +208,12 @@ async def _ensure_worktree_impl(session_key: str, root: str, phash: str, slug: s
 async def recycle_empty_worktree(session_key: str) -> bool:
     """归档等「会话收尾」场景:worktree 是空壳就立即回收,有内容则不动。返回是否回收。
 
-    空壳判定 = 分支没超前主分支(从未提交过) 且 无未提交改动(未跟踪文件不算,
-    临时产物)。满足说明这个会话从没改过代码,worktree/分支都没有保留价值;
-    有独立提交或有未提交改动的留着,交给合并(merge-main.sh)或删会话
-    (remove_worktree)流程,绝不自动丢内容。
+    空壳判定 = 分支没超前主分支(从未提交过) 且 工作区干净(含未跟踪文件——新代码
+    没 add 前就是未跟踪状态,不能当临时产物无声丢掉)。与 worktree_dirty_summary
+    同一语义:归档弹窗说有内容,回收就必须真保留,否则提示「未回收」实际却删了。
+    满足说明这个会话从没改过代码,worktree/分支都没有保留价值;有独立提交或有
+    未提交改动的留着,交给合并(merge-main.sh)或删会话(remove_worktree)流程,
+    绝不自动丢内容。
     """
     path = session_store.get_worktree(session_key)
     if not path or not os.path.isdir(path):
@@ -227,8 +229,8 @@ async def recycle_empty_worktree(session_key: str) -> bool:
     code, out, _ = await _git(root, "rev-list", "--count", f"{base}..{branch}")
     if not (code == 0 and out.strip() == "0"):
         return False
-    # ② 工作区干净
-    _, st, _ = await _git(path, "status", "--porcelain", "-uno")
+    # ② 工作区干净(完整 status:未跟踪文件也算内容,见函数文档)
+    _, st, _ = await _git(path, "status", "--porcelain")
     if st.strip():
         return False
     # 空壳 → 回收
