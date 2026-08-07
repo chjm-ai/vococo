@@ -20,8 +20,10 @@
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -36,6 +38,8 @@ RESUME_PATH = config.DATA_DIR / "resume_task.json"
 RESTART_STAMPS_PATH = config.DATA_DIR / "self_restarts.json"
 ROLLBACK_FLAG_PATH = config.DATA_DIR / ".rollback_done"
 RESTART_TRANSACTION_PATH = config.DATA_DIR / "restart_transaction.json"
+RESTART_TRANSACTION_LOCK_PATH = config.DATA_DIR / ".restart_transaction.lock"
+RESTART_FAILURE_PATH = config.DATA_DIR / "restart_failure.json"
 RUNNING_REVISION_PATH = config.DATA_DIR / "running_revision.json"
 STABLE_REVISION_PATH = config.DATA_DIR / "stable_revision.json"
 SUPERVISOR_PID_PATH = config.DATA_DIR / "supervisor.pid"
@@ -148,11 +152,13 @@ def _read_json(path: Path) -> dict | None:
 
 def _atomic_write_json(path: Path, data: object) -> None:
     """同目录临时文件 + replace，避免进程退出时留下半截 JSON。"""
+    # 先完整序列化，再创建临时文件；不可序列化的数据不会留下半截临时文件。
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
     try:
         with tmp.open("x", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write(payload)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
@@ -164,32 +170,56 @@ def _atomic_write_json(path: Path, data: object) -> None:
 
 
 def _create_restart_transaction(data: dict) -> bool:
-    """原子创建全局事务；已存在时绝不覆盖。"""
+    """完整写好临时文件后原子发布；进程崩溃不会留下半截事务。"""
     RESTART_TRANSACTION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    claim = RESTART_TRANSACTION_PATH.with_name(
+        f".{RESTART_TRANSACTION_PATH.name}.{os.getpid()}.{time.time_ns()}.claim"
+    )
     try:
-        fd = os.open(
-            RESTART_TRANSACTION_PATH,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-    except FileExistsError:
-        return False
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-    except Exception:
+        with RESTART_TRANSACTION_LOCK_PATH.open("a", encoding="utf-8") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+
+            existing = _read_json(RESTART_TRANSACTION_PATH)
+            if existing is not None and _valid_restart_transaction(existing):
+                return False
+            if RESTART_TRANSACTION_PATH.exists():
+                RESTART_TRANSACTION_PATH.unlink()
+
+            with claim.open("x", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                # hard link 是“不覆盖”的原子发布：目标要么不存在，要么已是完整 JSON。
+                os.link(claim, RESTART_TRANSACTION_PATH)
+            except FileExistsError:
+                return False
+            return True
+    finally:
         try:
-            RESTART_TRANSACTION_PATH.unlink()
-        except OSError:
+            claim.unlink()
+        except FileNotFoundError:
             pass
-        raise
-    return True
+
+
+def _valid_restart_transaction(data: dict) -> bool:
+    return (
+        isinstance(data.get("stable_revision"), str)
+        and bool(data["stable_revision"])
+        and isinstance(data.get("candidate_revision"), str)
+        and bool(data["candidate_revision"])
+        and isinstance(data.get("session_key"), str)
+        and bool(data["session_key"])
+        and isinstance(data.get("requested_at"), (int, float))
+    )
 
 
 def _supervisor_alive() -> bool:
-    """只允许由正式监督者接手的自重启，防止当前进程退出后永久离线。"""
+    """确认 PID 存活且命令确为本仓库的前台监督者，防止 PID 复用。"""
     try:
         pid = int(SUPERVISOR_PID_PATH.read_text(encoding="utf-8").strip())
         if pid <= 1:
@@ -197,7 +227,60 @@ def _supervisor_alive() -> bool:
         os.kill(pid, 0)
     except (FileNotFoundError, ValueError, OSError):
         return False
-    return True
+    try:
+        result = subprocess.run(
+            ["ps", "-ww", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return False
+        tokens = shlex.split(result.stdout.strip())
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+
+    expected_script = (_REPO_ROOT / "deploy" / "run.sh").resolve()
+    for index, token in enumerate(tokens[:-1]):
+        if token == "--foreground":
+            continue
+        try:
+            script = Path(token).expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
+        if script == expected_script and tokens[index + 1] == "--foreground":
+            return True
+    return False
+
+
+def _discard_restart_state(session_key: str, reason: str) -> None:
+    """监督者失联时撤销本会话事务并留下可诊断记录。"""
+    _restart_pending.pop(session_key, None)
+    for path in (RESUME_PATH, RESTART_TRANSACTION_PATH):
+        state = _read_json(path)
+        if state is None or state.get("session_key") == session_key:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    try:
+        _atomic_write_json(
+            RESTART_FAILURE_PATH,
+            {
+                "session_key": session_key,
+                "reason": reason,
+                "failed_at": int(time.time()),
+            },
+        )
+    except (OSError, TypeError, ValueError):
+        print(f"[selfops] 无法写入重启失败记录: {reason}", flush=True)
+
+
+def supervisor_ready_for_exit(session_key: str) -> bool:
+    if _supervisor_alive():
+        return True
+    _discard_restart_state(session_key, "正式监督者在退出前失联，已取消自我重启")
+    return False
 
 
 def stable_revision() -> str | None:
@@ -310,7 +393,7 @@ def request_restart(
     try:
         _atomic_write_json(RESUME_PATH, task_data)
         _record_restart(recent)
-    except OSError as exc:
+    except (OSError, TypeError, ValueError, OverflowError) as exc:
         for path in (RESUME_PATH, RESTART_TRANSACTION_PATH):
             try:
                 path.unlink()
@@ -336,19 +419,40 @@ def pop_restart_pending(session_key: str) -> dict | None:
     return _restart_pending.pop(session_key, None)
 
 
-async def exit_for_restart(adapter: object, chat_id: object) -> None:
+async def exit_for_restart(
+    adapter: object, chat_id: object, session_key: str
+) -> bool:
     """通知 → 缓冲送达 → 退出。拉起交给 run.sh,自己只负责干净地死。"""
+    if not supervisor_ready_for_exit(session_key):
+        try:
+            await adapter.send(chat_id, "⛔ 正式监督者已失联，本次重启已取消，当前服务继续运行。")
+        except Exception:
+            pass
+        return False
     try:
         await adapter.send(chat_id, "♻️ 正在重启进程加载新代码…约 10 秒后我会回到这条对话继续验证。")
     except Exception:
         pass
     await anyio.sleep(1.5)  # 让 SSE/TG 把上面这条送出去
+    if not supervisor_ready_for_exit(session_key):
+        try:
+            await adapter.send(chat_id, "⛔ 正式监督者已失联，本次重启已取消，当前服务继续运行。")
+        except Exception:
+            pass
+        return False
     try:
         from ..core import client_pool  # 懒加载,避免 import 环
 
         await client_pool.close_all()  # 收掉保温的 CLI 子进程再退,不留孤儿
     except Exception:
         pass
+    # close_all 期间也可能发生监督者崩溃；紧贴 os._exit 再核对一次。
+    if not supervisor_ready_for_exit(session_key):
+        try:
+            await adapter.send(chat_id, "⛔ 正式监督者已失联，本次重启已取消，当前服务继续运行。")
+        except Exception:
+            pass
+        return False
     os._exit(_EXIT_CODE)
 
 

@@ -70,7 +70,7 @@ class GatewayRunner:
         # 也不自己 spawn 新进程 —— 退出即可,拉起交给 run.sh 守护循环(单实例)
         # 消费 pop 以确保只退出一次(即使有多条后续消息进来也不重复)
         if selfops.pop_restart_pending(inc.session_key) is not None:
-            await selfops.exit_for_restart(adapter, inc.chat_id)
+            await selfops.exit_for_restart(adapter, inc.chat_id, inc.session_key)
 
     async def _try_clarify(self, adapter: Adapter, inc: Incoming) -> bool:
         """把入站消息当作对某个待答 clarify 的回答来消费;消费了返回 True。"""
