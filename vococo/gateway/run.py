@@ -70,7 +70,7 @@ class GatewayRunner:
         # 也不自己 spawn 新进程 —— 退出即可,拉起交给 run.sh 守护循环(单实例)
         # 消费 pop 以确保只退出一次(即使有多条后续消息进来也不重复)
         if selfops.pop_restart_pending(inc.session_key) is not None:
-            await selfops.exit_for_restart(adapter, inc.chat_id)
+            await selfops.exit_for_restart(adapter, inc.chat_id, inc.session_key)
 
     async def _try_clarify(self, adapter: Adapter, inc: Incoming) -> bool:
         """把入站消息当作对某个待答 clarify 的回答来消费;消费了返回 True。"""
@@ -242,6 +242,8 @@ class GatewayRunner:
         from ..core import client_pool, worktree  # 懒加载
 
         self._install_loop_exception_handler()
+        # 先记录本进程实际运行版本；只有存活满窗口才会晋升 stable 并结束重启事务。
+        selfops.write_running_revision()
         n = await worktree.prune_orphans()  # 启动兜底:回收无会话绑定的孤儿 worktree/悬空分支
         if n:
             print(f"🧹 启动清理:回收 {n} 个孤儿 worktree/悬空分支")
@@ -274,6 +276,7 @@ class GatewayRunner:
                     tg.start_soon(self._serve, adapter)
                 tg.start_soon(run_scheduler, self.push)
                 tg.start_soon(self._resume_after_restart)
+                tg.start_soon(selfops.mark_runtime_stable)
                 tg.start_soon(client_pool.sweep_loop)  # 定期回收空闲超时的保温 client
                 tg.start_soon(watchdog.beat_loop)  # 在循环里刷心跳,供看门狗线程判卡死
         finally:

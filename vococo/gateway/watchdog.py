@@ -71,12 +71,21 @@ def _watch() -> None:
             dumped = False
             continue
         if not dumped:
-            f = _log(f"事件循环无响应 {lag:.0f}s,全线程堆栈如下:")
-            faulthandler.dump_traceback(file=f)
-            f.close()
-            print(f"[watchdog] 事件循环无响应 {lag:.0f}s,堆栈已写 {config.WATCHDOG_LOG_PATH}", flush=True)
+            try:
+                f = _log(f"事件循环无响应 {lag:.0f}s,全线程堆栈如下:")
+                try:
+                    faulthandler.dump_traceback(file=f)
+                finally:
+                    f.close()
+                print(f"[watchdog] 事件循环无响应 {lag:.0f}s,堆栈已写 {config.WATCHDOG_LOG_PATH}", flush=True)
+            except OSError as exc:
+                # 诊断盘写满/权限变化不能让看门狗本身死亡；仍继续走受控退出。
+                print(f"[watchdog] 无法写入诊断日志: {exc}", flush=True)
             dumped = True
         if lag >= config.WATCHDOG_EXIT_SEC:
-            f = _log(f"无响应 {lag:.0f}s ≥ {config.WATCHDOG_EXIT_SEC}s,自杀退出交给 run.sh 拉起")
-            f.close()
+            try:
+                f = _log(f"无响应 {lag:.0f}s ≥ {config.WATCHDOG_EXIT_SEC}s,自杀退出交给 run.sh 拉起")
+                f.close()
+            except OSError as exc:
+                print(f"[watchdog] 无法写入退出日志: {exc}", flush=True)
             os._exit(70)

@@ -366,6 +366,19 @@ class WebAdapter:
             return web.json_response({"error": "unauthorized"}, status=401)
         return None
 
+    async def _handle_healthz(self, request: web.Request) -> web.Response:
+        """本机存活探针：不经过鉴权，且不泄露配置或会话数据。"""
+        from ...tools import selfops
+
+        return web.json_response(
+            {
+                "ok": True,
+                "boot_id": self._boot_id,
+                "pid": os.getpid(),
+                "revision": selfops.running_revision(),
+            }
+        )
+
     @staticmethod
     async def _read_json(request: web.Request) -> tuple[dict, web.Response | None]:
         """解析 POST body 成 dict;跟 _guard 同一个用法 —— 非 None 就直接 return。
@@ -2185,6 +2198,7 @@ class WebAdapter:
         )
         app.add_routes(
             [
+                web.get("/healthz", self._handle_healthz),
                 web.get("/", self._handle_index),
                 web.get("/manifest.json", self._handle_manifest),
                 web.get("/sw.js", self._handle_sw),

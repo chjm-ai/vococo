@@ -10,7 +10,6 @@ import asyncio
 import base64
 import hmac
 import json
-import os
 import time
 from aiohttp import web
 
@@ -409,14 +408,18 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     # 语音版重启退出:不经过 GatewayRunner._dispatch, 直接在这里检测退出
     if selfops.restart_pending(session.SESSION_KEY):
         selfops.pop_restart_pending(session.SESSION_KEY)
-        try:
-            await _sse(resp, "system_message", {
-                "text": "♻️ 正在重启进程加载新代码…约 10 秒后继续验证。", "restarting": True,
-            })
-            await asyncio.sleep(1.5)
-        except Exception:
-            pass
-        os._exit(selfops._EXIT_CODE)
+
+        class _RestartNotifier:
+            async def send(self, _chat_id, text: str) -> None:
+                await _sse(
+                    resp,
+                    "system_message",
+                    {"text": text, "restarting": text.startswith("♻️")},
+                )
+
+        await selfops.exit_for_restart(
+            _RestartNotifier(), "voice", session.SESSION_KEY
+        )
 
     return resp
 

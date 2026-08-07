@@ -134,12 +134,15 @@ def _cmd_doctor() -> None:
     else:
         warns.append(f"AI_BRAIN 目录不存在:{brain}")
 
-    # 4) serve 进程
+    # 4) serve 健康（不再以 pgrep 命中某段命令行为准）
     try:
-        running = subprocess.run(
-            ["pgrep", "-f", "vococo serve"], capture_output=True
-        ).returncode == 0
-    except Exception:  # noqa: BLE001
+        import json
+        from urllib.request import urlopen
+
+        with urlopen(f"http://{config.WEB_HOST}:{config.WEB_PORT}/healthz", timeout=3) as response:
+            health = json.loads(response.read())
+        running = response.status == 200 and health.get("ok") is True and bool(health.get("boot_id"))
+    except Exception:  # noqa: BLE001 — 服务不通仅作为提醒，不影响其它诊断
         running = False
     (oks if running else warns).append(
         "serve 常驻进程在跑" if running else "serve 未在跑(bash deploy/run.sh 启动)"
