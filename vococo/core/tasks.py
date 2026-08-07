@@ -315,13 +315,16 @@ def mark_orphans_failed(exclude_ids: set[str] | frozenset[str] = frozenset()) ->
 
     queued 一并处理,而不只是 running——本进程的执行器队列在内存里,重启后
     queued 任务永远不会被捡起,放着不管会变成"永远排队中"的僵尸记录。
+    排除 origin='task':SDK 任务清单不依赖 task_runner 执行(会话内模型负责),
+    重启后仍由会话维护,标失败会误伤(2026-08-07 事故:TaskCreate 建的任务
+    重启后全被标"服务重启,任务中断")。
     exclude_ids:本进程正在跑的任务 id,一律跳过——"孤儿"的定义是没有执行器
     在管的任务,活任务绝不能标死(2026-07-12 "假失败"事故的防线之一)。
     返回受影响的任务(供 task_runner 逐个走通知分发)。
     """
     c = _conn()
     rows = c.execute(
-        "SELECT * FROM tasks WHERE status IN ('queued','running')"
+        "SELECT * FROM tasks WHERE status IN ('queued','running') AND origin != 'task'"
     ).fetchall()
     orphans = [_row(r) for r in rows if r["id"] not in exclude_ids]
     if orphans:
