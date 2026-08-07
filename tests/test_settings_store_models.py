@@ -21,6 +21,17 @@ def test_add_and_list_extra_model(monkeypatch, tmp_path):
     assert models == [{"id": "claude-opus-5", "label": "Opus 5（订阅）"}]
 
 
+def test_extra_model_can_reuse_provider_and_preserves_metadata(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_extra_model(
+        "gpt-5.6-sol", "GPT-5.6 Sol（订阅）", group="codex", provider="codex-gpt"
+    )
+    settings_store.upsert_web_extra_model("gpt-5.6-sol", "GPT-5.6 Sol")
+    assert settings_store.list_web_extra_models() == [{
+        "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "group": "codex", "provider": "codex-gpt",
+    }]
+
+
 def test_add_extra_model_no_label_falls_back_to_id(monkeypatch, tmp_path):
     _point_to(monkeypatch, tmp_path)
     settings_store.upsert_web_extra_model("claude-opus-5", "")

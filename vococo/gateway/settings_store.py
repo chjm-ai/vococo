@@ -11,9 +11,10 @@
 - 隐藏(hidden)只影响设置列表折叠,与是否加载无关。
 - MCP:内置 vococo 一个总开关;外部 server 存 stdio/sse/http 配置 + enabled 位,
   开启的那些直接并进 ClaudeAgentOptions.mcp_servers(SDK 0.2.110 原生支持外部 server)。
-- 模型/供应商:web_extra_models 是官方新模型档位还没进代码前的手动补录(id+label,
-  按订阅走,不需要 key,id 是键、重复 id 直接覆盖 label=编辑);web_providers 是第三方
-  端点(base_url+api_key+model),直接落 data/web_settings.json。
+- 模型/供应商:web_extra_models 是新模型档位还没进代码前的手动补录(id+label,
+  可选 group/provider 指向已有第三方服务商;没指向时按官方订阅走)。id 是键、重复 id
+  直接覆盖 label=编辑;web_providers 是第三方端点(base_url+api_key+model),直接落
+  data/web_settings.json。
   避免两边互相覆写。disabled_builtin_models 是代码里 MODEL_CHOICES 硬编码档位的隐藏
   名单(不能真删常量,只能摘出选择器,可随时恢复)。providers.py 每次都现读现并,
   同样【改完下一轮就生效】。
@@ -39,7 +40,7 @@ _DEFAULTS: dict = {
     "external_mcp": {},         # name -> {type,command,args,env,url,headers,enabled}
     "web_default_model": "",    # web 端上次选定的模型;新会话没显式选就用它(空=回落 config.MODEL)
     "web_effort": "",           # web 端思考深度(high/max,空=不传,交给供应商默认);见 get_web_effort
-    "web_extra_models": [],     # 设置页手动加的官方模型档位:[{id,label}](新模型发布,代码没跟上时用)
+    "web_extra_models": [],     # 设置页手动加的模型档位:[{id,label,group?,provider?}]
     "web_providers": {},        # 设置页手动加的第三方服务商:name -> {base_url,api_key,model,label}
     "disabled_builtin_models": [],  # 代码里硬编码的官方档位(MODEL_CHOICES),用户在设置页
                                      # 手动隐藏掉的那些 id——不能真删代码常量,只能从选择器里摘掉
@@ -239,27 +240,41 @@ def set_web_effort(effort: str) -> None:
         _save(d)
 
 
-# ── 设置页手动加的官方模型档位 ────────────────────────────────────────────
+# ── 设置页手动加的模型档位 ────────────────────────────────────────────────
 def list_web_extra_models() -> list[dict]:
-    """给设置页/available_models 用:[{id,label}]。"""
+    """给设置页/available_models 用:[{id,label,group?,provider?}]。"""
     return list(_load()["web_extra_models"])
 
 
-def upsert_web_extra_model(model_id: str, label: str) -> str | None:
-    """新增/编辑一个官方模型档位(id 是键,重复 id 直接覆盖 label);返回错误说明(None=成功)。"""
+def upsert_web_extra_model(
+    model_id: str, label: str, *, group: str = "", provider: str = ""
+) -> str | None:
+    """新增/编辑模型档位;可选复用已有第三方服务商的连接配置。"""
     model_id = (model_id or "").strip()
     if not model_id:
         return "缺少模型 id"
     label = (label or "").strip() or model_id
+    group = (group or "").strip()
+    provider = (provider or "").strip()
     with _LOCK:
         d = _load()
         models = d["web_extra_models"]
         for m in models:
-            if m.get("id") == model_id:
-                m["label"] = label
-                break
+            if m.get("id") != model_id:
+                continue
+            m["label"] = label
+            if group:
+                m["group"] = group
+            if provider:
+                m["provider"] = provider
+            break
         else:
-            models.append({"id": model_id, "label": label})
+            extra = {"id": model_id, "label": label}
+            if group:
+                extra["group"] = group
+            if provider:
+                extra["provider"] = provider
+            models.append(extra)
         d["web_extra_models"] = models
         _save(d)
     return None
