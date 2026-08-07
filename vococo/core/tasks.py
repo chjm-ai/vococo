@@ -204,15 +204,19 @@ def list_recent(
 
 
 def list_queued() -> list[dict]:
+    # 排除 origin='task':SDK 任务清单(TaskCreate)是会话内 AI 自己执行的,
+    # 不是 task_runner 派发的后台任务——混进排队池会被拿空 prompt 误跑一轮,
+    # 模型收到空指令只会回一堆「没看到任务内容」(2026-08-07 实测事故)。
     rows = _conn().execute(
-        "SELECT * FROM tasks WHERE status='queued' ORDER BY created_at ASC"
+        "SELECT * FROM tasks WHERE status='queued' AND origin != 'task' "
+        "ORDER BY created_at ASC"
     ).fetchall()
     return [_row(r) for r in rows]
 
 
 def count_running() -> int:
     row = _conn().execute(
-        "SELECT COUNT(*) AS n FROM tasks WHERE status='running'"
+        "SELECT COUNT(*) AS n FROM tasks WHERE status='running' AND origin != 'task'"
     ).fetchone()
     return int(row["n"])
 
