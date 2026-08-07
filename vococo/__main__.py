@@ -3,8 +3,7 @@
   vococo            # 默认进 TUI
   vococo tui        # rich TUI
   vococo chat       # 纯文本对话(调试 fallback)
-  vococo serve      # 常驻:Telegram 收发 + 调度器(heartbeat/主动推送)
-  vococo telegram   # serve 的别名
+  vococo serve      # 常驻:Web 收发 + 调度器(heartbeat/主动推送)
   vococo cron       # 列出定时任务
   vococo doctor     # 自检:配置/认证/DB/AI_BRAIN/进程
 """
@@ -68,7 +67,7 @@ def _cmd_serve() -> None:
 
 
 def _cmd_doctor() -> None:
-    """自检:配置 / 认证 / DB / AI_BRAIN / 进程 / Telegram。有 ❌ 则退出码 1。"""
+    """自检:配置 / 认证 / DB / AI_BRAIN / 进程。有 ❌ 则退出码 1。"""
     import os
     import subprocess
 
@@ -135,27 +134,19 @@ def _cmd_doctor() -> None:
     else:
         warns.append(f"AI_BRAIN 目录不存在:{brain}")
 
-    # 4) serve 进程
+    # 4) serve 健康（不再以 pgrep 命中某段命令行为准）
     try:
-        running = subprocess.run(
-            ["pgrep", "-f", "vococo serve"], capture_output=True
-        ).returncode == 0
-    except Exception:  # noqa: BLE001
+        import json
+        from urllib.request import urlopen
+
+        with urlopen(f"http://{config.WEB_HOST}:{config.WEB_PORT}/healthz", timeout=3) as response:
+            health = json.loads(response.read())
+        running = response.status == 200 and health.get("ok") is True and bool(health.get("boot_id"))
+    except Exception:  # noqa: BLE001 — 服务不通仅作为提醒，不影响其它诊断
         running = False
     (oks if running else warns).append(
         "serve 常驻进程在跑" if running else "serve 未在跑(bash deploy/run.sh 启动)"
     )
-
-    # 5) Telegram
-    if config.TELEGRAM_BOT_TOKEN:
-        if config.TELEGRAM_ALLOWED_CHAT_IDS:
-            oks.append(
-                f"Telegram 已配置,白名单 {len(config.TELEGRAM_ALLOWED_CHAT_IDS)} 个 chat"
-            )
-        else:
-            warns.append("Telegram 已配置但白名单为空 —— 任何人都能用,建议设白名单")
-    else:
-        warns.append("Telegram 未配置(仅 CLI/TUI 可用)")
 
     for s in oks:
         print(f"✅ {s}")
@@ -189,8 +180,7 @@ def main() -> None:
     for name, help_ in [
         ("tui", "rich TUI(默认)"),
         ("chat", "纯文本对话(调试)"),
-        ("serve", "常驻:Telegram + 调度器"),
-        ("telegram", "serve 的别名"),
+        ("serve", "常驻:Web + 调度器"),
         ("cron", "列出定时任务"),
         ("doctor", "自检:配置/认证/DB/AI_BRAIN/进程"),
     ]:
@@ -202,7 +192,6 @@ def main() -> None:
         "tui": _cmd_tui,
         "chat": _cmd_chat,
         "serve": _cmd_serve,
-        "telegram": _cmd_serve,  # 别名
         "cron": _cmd_cron,
         "doctor": _cmd_doctor,
     }

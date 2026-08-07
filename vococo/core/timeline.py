@@ -30,6 +30,10 @@ class Timeline:
             self.blocks.append({"type": "text", "text": t})
 
     def tool_started(self, name: str, tool_id: str, parent_id: str | None) -> None:
+        from .tasks import is_sdk_task_tool
+
+        if is_sdk_task_tool(name):
+            return
         if parent_id:  # 子代理内部工具:挂进所属 Task 块的 subs,不占顶层块
             parent = self._by_id.get(parent_id)
             if parent is not None:

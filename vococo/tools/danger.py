@@ -8,8 +8,8 @@ fork 炸弹等),宁可漏放也别误伤日常操作——`rm -rf ./build` 这�
 想关掉:.env 里 DANGER_GUARD=0。
 
 除「灾难级 → 直接拦」外,这里还做一层【审批闸】(APPROVAL_GATE,默认开):对
-「危险但非灾难」的 5 类操作 —— 写工作目录外的文件、git push / reset --hard、rm -rf、
-包安装(pip/npm/brew…)、curl|sh —— 在【有交互通道时】弹按钮请用户批准,无通道则放行。
+「危险但非灾难」的操作 —— 写工作目录外的文件、git push / reset --hard、rm -rf、
+包安装(pip/npm/brew…)、curl|sh、进程终止 —— 在【有交互通道时】弹按钮请用户批准。
 这就是「远程编码:动手前对齐」的安全阀,复刻 Claude Code 的权限体验但适配手机低摩擦。
 """
 from __future__ import annotations
@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextvars
 import os
 import re
+import shlex
 
 from .. import config
 
@@ -102,7 +103,7 @@ async def pretool_danger_hook(input_data, tool_use_id, context):
     return {}
 
 
-# ── 审批闸:5 类「危险但非灾难」操作 → 有交互通道时请用户批准 ──────────────────
+# ── 审批闸:「危险但非灾难」操作 → 有交互通道时请用户批准 ───────────────────
 # 都是命令级(Bash)的模式;「写工作目录外文件」是文件级,单独在 classify 里判。
 # 第三个元素 restrict_noninteractive:非交互通道(cron/eval,无人可点审批)是否直接拒绝。
 # 只对「对外/供应链/改环境」这三类置 True(push/装包/curl|sh)——它们在自动化里被注入
@@ -132,9 +133,261 @@ _ESCALATE_BASH: list[tuple[re.Pattern, str, bool]] = [
 # 这不是边界:base64/写文件再传/间接引用都能绕;只抬高门槛。日常命令几乎不会命中,误伤极低。
 _SECRET_VAR_RE = re.compile(
     r"ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|"
-    r"TELEGRAM_BOT_TOKEN|SILICONFLOW_API_KEY|VAPID_PRIVATE_KEY|WEB_AUTH_TOKEN"
+    r"SILICONFLOW_API_KEY|VAPID_PRIVATE_KEY|WEB_AUTH_TOKEN"
 )
 _OUTBOUND_RE = re.compile(r"\b(curl|wget|nc|ncat|telnet|ssh|scp)\b|/dev/tcp/")
+
+_PROCESS_CONTROL_COMMANDS = {"kill", "pkill", "killall"}
+_VOCOCO_PROCESS_TARGET = re.compile(r"\bvococo(?:\s+serve)?\b")
+_VOCOCO_SERVE_TARGET = re.compile(r"\bvococo\s+serve\b")
+_PROCESS_QUERY_COMMANDS = {"pgrep", "ps"}
+_SHELLS = {"sh", "bash", "zsh"}
+_ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
+_QUERY_ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$$")
+_VARIABLE_REFERENCE = re.compile(
+    r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-+?=][^}]*)?\}|"
+    r"([A-Za-z_][A-Za-z0-9_]*))"
+)
+_SUDO_OPTIONS_WITH_VALUE = {
+    "-C", "-D", "-g", "-h", "-p", "-R", "-r", "-T", "-t", "-u",
+    "--chdir", "--close-from", "--group", "--host", "--other-user",
+    "--prompt", "--role", "--type", "--user",
+}
+_ENV_OPTIONS_WITH_VALUE = {"-C", "-S", "-u", "--chdir", "--split-string", "--unset"}
+_EXEC_OPTIONS_WITH_VALUE = {"-a"}
+_XARGS_OPTIONS_WITH_VALUE = {
+    "-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-s",
+    "--arg-file", "--delimiter", "--eof", "--max-args", "--max-chars",
+    "--max-lines", "--max-procs", "--replace",
+}
+_SHELL_PUNCTUATION = "|;&\n()"
+_PIPE_OPERATORS = {"|", "|&"}
+_REDIRECTION = re.compile(r"^\d*(?:>>?|<<?|<>|>&|<&)(.*)$")
+
+
+def _shell_commands(command: str) -> list[list[str]]:
+    """按语句切分 shell 文本;保留管道,引号内分隔符仍是普通文本。"""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=_SHELL_PUNCTUATION)
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    commands: list[list[str]] = [[]]
+    for token in lexer:
+        is_punctuation = token and all(char in _SHELL_PUNCTUATION for char in token)
+        if is_punctuation and token not in _PIPE_OPERATORS and token not in {"(", ")"}:
+            commands.append([])
+        else:
+            commands[-1].append(token)
+    return [words for words in commands if words]
+
+
+def _pipeline_stages(words: list[str]) -> list[list[str]]:
+    stages: list[list[str]] = [[]]
+    for word in words:
+        if word in _PIPE_OPERATORS:
+            stages.append([])
+        else:
+            stages[-1].append(word)
+    return [stage for stage in stages if stage]
+
+
+def _skip_options(words: list[str], index: int, options_with_value: set[str]) -> int:
+    while index < len(words) and words[index].startswith("-"):
+        option = words[index].split("=", 1)[0]
+        index += 1
+        if option == "--":
+            break
+        if option in options_with_value and "=" not in words[index - 1]:
+            index += 1
+    return index
+
+
+def _unwrap_command(words: list[str]) -> list[str]:
+    index = 0
+    while index < len(words):
+        if words[index] in {"(", ")"}:
+            index += 1
+            continue
+        if _ASSIGNMENT.match(words[index]):
+            index += 1
+            continue
+        executable = os.path.basename(words[index])
+        if executable == "sudo":
+            index = _skip_options(words, index + 1, _SUDO_OPTIONS_WITH_VALUE)
+        elif executable == "env":
+            index = _skip_options(words, index + 1, _ENV_OPTIONS_WITH_VALUE)
+            while index < len(words) and _ASSIGNMENT.match(words[index]):
+                index += 1
+        elif executable == "command":
+            index = _skip_options(words, index + 1, set())
+        elif executable == "exec":
+            index = _skip_options(words, index + 1, _EXEC_OPTIONS_WITH_VALUE)
+        else:
+            break
+    return words[index:]
+
+
+def _xargs_command(words: list[str]) -> list[str]:
+    index = _skip_options(words, 1, _XARGS_OPTIONS_WITH_VALUE)
+    return _unwrap_command(words[index:])
+
+
+def _shell_script(words: list[str]) -> str | None:
+    if not words or os.path.basename(words[0]) not in _SHELLS:
+        return None
+    for index, option in enumerate(words[1:], start=1):
+        has_command = option == "-c" or (
+            option.startswith("-") and not option.startswith("--") and "c" in option[1:]
+        )
+        if has_command and index + 1 < len(words):
+            return words[index + 1]
+        if not option.startswith("-"):
+            break
+    return None
+
+
+def _stage_directly_controls_process(stage: list[str]) -> bool:
+    words = _unwrap_command(stage)
+    if not words:
+        return False
+    if os.path.basename(words[0]) == "xargs":
+        invoked = _xargs_command(words)
+        return _is_terminating_process_command(invoked)
+    return _is_terminating_process_command(words)
+
+
+def _is_terminating_process_command(words: list[str]) -> bool:
+    if not words:
+        return False
+    executable = os.path.basename(words[0])
+    if executable not in _PROCESS_CONTROL_COMMANDS:
+        return False
+    if executable != "kill":
+        return True
+    args = words[1:]
+    if args and args[0] in {"-0", "-l", "-L"}:
+        return False
+    return len(args) < 2 or args[:2] not in (["-s", "0"], ["--signal", "0"])
+
+
+def _stage_shell_script(stage: list[str]) -> str | None:
+    words = _unwrap_command(stage)
+    if words and os.path.basename(words[0]) == "xargs":
+        words = _xargs_command(words)
+    return _shell_script(words)
+
+
+def _command_substitutions(words: list[str]) -> list[str]:
+    substitutions: list[str] = []
+    for index in range(len(words) - 2):
+        if words[index:index + 2] != ["$", "("]:
+            continue
+        try:
+            end = words.index(")", index + 2)
+        except ValueError:
+            continue
+        substitutions.append(" ".join(words[index + 2:end]))
+    return substitutions
+
+
+def _without_redirections(words: list[str]) -> list[str]:
+    result: list[str] = []
+    skip_target = False
+    for word in words:
+        if skip_target:
+            skip_target = False
+            continue
+        match = _REDIRECTION.match(word)
+        if match:
+            skip_target = not bool(match.group(1))
+            continue
+        result.append(word)
+    return result
+
+
+def _statement_queries_vococo(statement: list[str]) -> bool:
+    if not _VOCOCO_SERVE_TARGET.search(" ".join(_without_redirections(statement))):
+        return False
+    for stage in _pipeline_stages(statement):
+        words = _unwrap_command(stage)
+        if words and os.path.basename(words[0]) in _PROCESS_QUERY_COMMANDS:
+            return True
+    return False
+
+
+def _query_output_variables(statement: list[str]) -> set[str]:
+    if not _statement_queries_vococo(statement):
+        return set()
+    return {
+        match.group(1)
+        for word in statement
+        if (match := _QUERY_ASSIGNMENT.match(word))
+    }
+
+
+def _assigned_variables(statement: list[str]) -> set[str]:
+    return {
+        match.group(1)
+        for word in statement
+        if (match := _ASSIGNMENT.match(word))
+    }
+
+
+def _referenced_variables(statement: list[str]) -> set[str]:
+    references: set[str] = set()
+    for word in statement:
+        for match in _VARIABLE_REFERENCE.finditer(word):
+            references.add(match.group(1) or match.group(2))
+    return references
+
+
+def _statement_terminates_process(statement: list[str]) -> bool:
+    return any(
+        _stage_directly_controls_process(stage)
+        for stage in _pipeline_stages(statement)
+    )
+
+
+def _is_process_control(command: str) -> bool:
+    """是否实际调用 kill/pkill/killall 或让 xargs 执行它们。"""
+    for statement in _shell_commands(command):
+        if any(_is_process_control(cmd) for cmd in _command_substitutions(statement)):
+            return True
+        for stage in _pipeline_stages(statement):
+            if _stage_directly_controls_process(stage):
+                return True
+            script = _stage_shell_script(stage)
+            if script and _is_process_control(script):
+                return True
+    return False
+
+
+def _targets_vococo_process(command: str) -> bool:
+    query_variables: set[str] = set()
+    for statement in _shell_commands(command):
+        query_variables.difference_update(_assigned_variables(statement))
+        query_variables.update(_query_output_variables(statement))
+        uses_query_output = query_variables & _referenced_variables(statement)
+        if uses_query_output and _statement_terminates_process(statement):
+            return True
+        if any(
+            _targets_vococo_process(cmd) for cmd in _command_substitutions(statement)
+        ):
+            return True
+        stages = _pipeline_stages(statement)
+        for stage in stages:
+            if not _stage_directly_controls_process(stage):
+                continue
+            words = _unwrap_command(stage)
+            target_scope = statement if os.path.basename(words[0]) == "xargs" else stage
+            target_args = _without_redirections(target_scope)
+            if _VOCOCO_PROCESS_TARGET.search(" ".join(target_args)):
+                return True
+        for stage in stages:
+            script = _stage_shell_script(stage)
+            if script and _targets_vococo_process(script):
+                return True
+    return False
 
 
 def _looks_like_secret_exfil(cmd: str) -> bool:
@@ -226,7 +479,7 @@ def classify(
     """把一次工具调用分成 allow / escalate / block,附(原因, 非交互是否拒绝)。
 
     - block:灾难级(删根/格式化…),直接拦。
-    - escalate:5 类危险操作,请用户批准。
+    - escalate:危险但非灾难的操作,请用户批准。
     - allow:其余,放行。
 
     第三个返回值 restrict_noninteractive:该 escalate 操作在无交互通道(cron/eval)时
@@ -238,6 +491,8 @@ def classify(
         why = is_dangerous(cmd)
         if why:
             return ("block", why, False)
+        if _is_process_control(cmd):
+            return ("escalate", "进程终止命令(kill/pkill/killall)", True)
         if _looks_like_secret_exfil(cmd):
             # 疑似把密钥外带:自动化通道直接拒(restrict=True),有交互通道则请你确认
             return ("escalate", "疑似把密钥/令牌通过网络外带", True)
@@ -311,7 +566,6 @@ def _known_secret_values() -> list[str]:
     """当前持有的自用 secret 字面值(供精确匹配)。长度<8 的不参与,误伤面太大。"""
     vals = [
         config.OAUTH_TOKEN,
-        config.TELEGRAM_BOT_TOKEN,
         config.STT_API_KEY,
         config.VAPID_PRIVATE_KEY,
         config.WEB_AUTH_TOKEN,
@@ -462,15 +716,26 @@ def _deny_outside_worktree(target: str, wt: str) -> dict:
     )
 
 
+def _deny_vococo_process_control() -> dict:
+    return _deny(
+        "🚫 禁止直接控制 vococo 正式进程。会话内重启请使用 restart_self；"
+        "终端或外部场景请使用 `zsh deploy/restart.sh` 或 `zsh deploy/stop.sh`。"
+    )
+
+
 def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | None:
-    """常开正确性防线:后台任务腰斩 / 记忆孤本 / worktree 越界。命中则返回 deny 结果。
+    """常开正确性防线:正式进程控制等错误操作命中后直接返回 deny。
 
     这是跟下面 classify() 的 allow/escalate/block 三档【并列的另一套机制】,不是它的
-    第四档:这三项修的是正确性 bug(不这么做程序行为就是错的),不是「操作有多危险」,
+    第四档:这些规则修的是正确性 bug(不这么做程序行为就是错的),不是「操作有多危险」,
     所以永远生效、不受 DANGER_GUARD / APPROVAL_GATE 开关影响——关掉安全开关图的是
     「我知道风险,别再问我」,不该连带关掉这几条「关了程序就会错」的防线。
     CONTEXT.md「危险分级(Risk Tier)」条目描述的三档模型专指 classify() 的输出。
     """
+    if tool_name == "Bash" and _targets_vococo_process(
+        (tool_input or {}).get("command", "") or ""
+    ):
+        return _deny_vococo_process_control()
     if _wants_background(tool_name, tool_input):
         return _deny_background(tool_name)
     orphan = _creates_orphan_memory_file(tool_name, tool_input)
@@ -612,8 +877,8 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
             print(f"⚠️ [安全标注] 本轮读取了疑似凭据文件/命令:{sensitive}")
         verdict, reason, restrict = classify(tool_name, tool_input, cwd=current_cwd())
     except Exception:
-        # 背景判定/classify 出错时无从判定 → 放行,不阻断正常流程(这些都不是安全判定本身)
-        return {}
+        # 安全判定异常时无法确认操作安全,按 ADR 0003 fail-closed。
+        return _deny("🛑 安全判定异常,已保守拒绝此操作。请手动检查后重试。")
     if verdict == "block" and config.DANGER_GUARD:
         return _deny(
             f"⛔ 危险命令被 {config.PERSONA_NAME} 拦截({reason})。如确需执行,请你手动在终端运行。"
@@ -634,10 +899,14 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
 def build_hooks() -> dict | None:
     """返回挂给 ClaudeAgentOptions.hooks 的结构;SDK 不支持则 None。
 
-    始终挂 PreToolUse:除危险拦截/审批闸(各由 DANGER_GUARD/APPROVAL_GATE 开关控制)外,
-    还负责拦下 run_in_background、引导模型改前台重试——这是纠正「后台任务被腰斩」的正确性
-    修复,与两个安全开关无关,故即便两开关都关也要挂上。
+    始终挂 PreToolUse:危险拦截/审批闸与前台执行防线;同时挂 PostToolUse,把 SDK
+    Task* 待办投影到网页状态条。后者只展示,不进入后台执行器。
     """
     if HookMatcher is None:
         return None
-    return {"PreToolUse": [HookMatcher(matcher=None, hooks=[pretool_guard_hook])]}
+    from .sdk_task_hooks import posttool_sdk_task_sync_hook
+
+    return {
+        "PreToolUse": [HookMatcher(matcher=None, hooks=[pretool_guard_hook])],
+        "PostToolUse": [HookMatcher(matcher=None, hooks=[posttool_sdk_task_sync_hook])],
+    }

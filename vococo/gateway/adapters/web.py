@@ -9,7 +9,7 @@
 - POST /conv/rename      重命名会话
 - POST /conv/delete      删除会话
 
-只负责 Web 的 I/O 和渲染;命令/会话/事件流都在 gateway.core，与 Telegram 共用内核。
+只负责 Web 的 I/O 和渲染;命令/会话/事件流都在 gateway.core。
 Web 端不改写 Markdown 表格(浏览器能原生渲染),这正是"样式更好"的地方。
 """
 from __future__ import annotations
@@ -122,8 +122,8 @@ async def _security_mw(request: web.Request, handler):
 class _WebSink(Sink):
     """把一轮事件流以 SSE 增量推给浏览器(按 conv 打标)。
 
-    像 Telegram 一样发【全文快照】而非增量:每个 thinking/text 事件都带当前累积
-    的完整内容。这样断线补发时任何一帧都能把画面修正确,丢几帧也不会缺字。
+    发【全文快照】而非增量:每个 thinking/text 事件都带当前累积的完整内容。
+    这样断线补发时任何一帧都能把画面修正确,丢几帧也不会缺字。
 
     正文按【段】发:顶层工具一启动就切新段(seg 自增),text 帧带 seg 序号和
     该段的全文快照。前端按段建独立文字块,与工具卡按到达顺序交错排列 ——
@@ -343,10 +343,6 @@ class WebAdapter:
         # 懒加载避免非语音场景循环依赖;bridge 本身只要 _emit,不依赖 voice 包的其他模块。
         from ...voice import notify as _voice_notify
         _voice_notify.register_main_event_bridge(self._emit)
-        # 注册跨入口事件桥接:Telegram 那边发生的会话更新(自己不经过 _emit)靠这条
-        # 路推进来,见 gateway/event_bridge.py。
-        from .. import event_bridge
-        event_bridge.register(self._emit)
 
     def set_cancel_callback(self, cb: Callable[[str], bool]) -> None:
         self._cancel_callback = cb
@@ -369,6 +365,19 @@ class WebAdapter:
         if not self._ok_token(request):
             return web.json_response({"error": "unauthorized"}, status=401)
         return None
+
+    async def _handle_healthz(self, request: web.Request) -> web.Response:
+        """本机存活探针：不经过鉴权，且不泄露配置或会话数据。"""
+        from ...tools import selfops
+
+        return web.json_response(
+            {
+                "ok": True,
+                "boot_id": self._boot_id,
+                "pid": os.getpid(),
+                "revision": selfops.running_revision(),
+            }
+        )
 
     @staticmethod
     async def _read_json(request: web.Request) -> tuple[dict, web.Response | None]:
@@ -778,6 +787,26 @@ class WebAdapter:
         conv = str(body.get("conv") or "main")
         session_key = config.resolve_session_key("web", conv)
         stopped = bool(self._cancel_callback and self._cancel_callback(session_key))
+        # 任务会话(task:<id>)的「停止回复」不能只停 GatewayRunner 的轮次——
+        # 任务本体跑在 task_runner 的独立循环里,不登记在 _cancel_scopes 中,
+        # cancel_turn 管不到它。这里对任务会话直接停任务本体:排队中置 cancelled,
+        # 运行中打断并等收尾落库(逻辑同 _handle_voice_task_cancel)。
+        from ...core import tasks as bg_tasks  # 懒加载,同 _handle_voice_sidebar
+        from ...core import task_runner as bg_task_runner
+
+        task_id = bg_tasks.task_id_from_session_key(session_key)
+        if task_id is not None:
+            row = bg_tasks.get(task_id)
+            if row is not None and row["status"] not in bg_tasks.TERMINAL_STATUSES:
+                ok = bg_task_runner.cancel(task_id)
+                if not ok and row["status"] == "queued":
+                    # 竞态:排队中被并发拉起成 running 了,cancel 的 queued 分支会失败
+                    cur = bg_tasks.get(task_id)
+                    if cur and cur["status"] == "running":
+                        ok = bg_task_runner.cancel(task_id)
+                if row["status"] == "running" and ok:
+                    await bg_task_runner.cancel_and_wait(task_id)  # 等收尾,前端拿到的是准结果
+                stopped = stopped or ok
         return web.json_response({"ok": True, "stopped": stopped})
 
     async def _handle_conversations(self, request: web.Request) -> web.Response:
@@ -1142,27 +1171,47 @@ class WebAdapter:
         # default = web 端上次选定的模型;没设过才回落到 config.MODEL
         active_model = settings_store.get_web_default_model() \
             or providers.resolve(None, config.MODEL)[0]
+        efforts = {}
+        for model, _, _ in choices:
+            levels = providers.effort_levels_for_model(model)
+            value = settings_store.get_web_effort(model)
+            efforts[model] = {
+                "levels": providers.effort_choices_for_model(model),
+                # 旧版可能留有此模型不支持的值；不回显为已选，运行时也不会传它。
+                "value": value if value in levels else "",
+            }
         return web.json_response(
             {
                 "default": active_model,
-                "effort": settings_store.get_web_effort(),  # 思考深度(high/max,空=未设,前端回落默认)
+                "effort": efforts.get(active_model, {}).get("value", ""),  # 兼容旧 Web 客户端
+                "efforts": efforts,
                 "choices": [[v, label, group] for v, label, group in choices],
             }
         )
 
     async def _handle_effort_switch(self, request: web.Request) -> web.Response:
-        """静默切思考深度(high/max):不走命令管道、不触发 SSE/推送。直接落库。
-        agent 每轮构建 options 时现读 settings_store,所以下一条消息即生效。"""
+        """静默切指定模型的思考深度；agent 下一条消息即按该模型的值生效。"""
         if (g := self._guard(request)) is not None:
             return g
         body, err = await self._read_json(request)
         if err is not None:
             return err
         effort = (body.get("effort") or "").strip()
-        if effort not in ("high", "max"):
-            return web.json_response({"error": "effort 仅支持 high/max"}, status=400)
-        settings_store.set_web_effort(effort)
-        return web.json_response({"ok": True, "effort": effort})
+        model = (body.get("model") or "").strip()
+        if not model:
+            # 兼容更新前缓存住的 Web 页面：旧客户端没传 model 时按当前默认模型落库。
+            model = settings_store.get_web_default_model() \
+                or providers.resolve(None, config.MODEL)[0]
+        available = {item[0] for item in providers.available_models(MODEL_CHOICES)}
+        if model not in available:
+            return web.json_response({"error": "模型不可用"}, status=400)
+        levels = providers.effort_levels_for_model(model)
+        if effort not in levels:
+            return web.json_response(
+                {"error": f"{model} 仅支持 {'/'.join(levels)}"}, status=400
+            )
+        settings_store.set_web_effort(effort, model=model)
+        return web.json_response({"ok": True, "model": model, "effort": effort})
 
     async def _handle_commands(self, request: web.Request) -> web.Response:
         if (g := self._guard(request)) is not None:
@@ -1389,7 +1438,19 @@ class WebAdapter:
             return web.json_response({"error": "bad id"}, status=400)
         key = config.resolve_session_key("web", conv)
         events = session_store.load_turn_events(key, turn_id)
-        return web.json_response({"events": events if events is not None else []})
+        # 一轮完整时间线(工具 input/preview/detail 全量)常达几十~几百 KB,是详情页
+        # 加载的大头——必须压缩 + ETag/304,否则跨境隧道(实测 ~50KB/s)一趟要好
+        # 几秒,表现为「点开工具卡转圈/加载不出来」(同 /history 的教训,2026-08-06)。
+        body = json.dumps(
+            {"events": events if events is not None else []}, ensure_ascii=False
+        ).encode("utf-8")
+        etag = f'"{hashlib.md5(body).hexdigest()}"'
+        headers = {"Cache-Control": "no-cache", "ETag": etag}
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers=headers)
+        resp = web.Response(body=body, content_type="application/json", headers=headers)
+        resp.enable_compression()
+        return resp
 
     async def _handle_image(self, request: web.Request) -> web.StreamResponse:
         """回显某轮用户发的图片(落盘在 config.IMAGES_DIR);name 经白名单校验挡路径穿越。"""
@@ -2166,6 +2227,7 @@ class WebAdapter:
         )
         app.add_routes(
             [
+                web.get("/healthz", self._handle_healthz),
                 web.get("/", self._handle_index),
                 web.get("/manifest.json", self._handle_manifest),
                 web.get("/sw.js", self._handle_sw),

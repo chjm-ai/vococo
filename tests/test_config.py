@@ -32,10 +32,10 @@ def test_project_hash_from_key():
     assert config.project_hash_from_key("web:pabc123def:s1") == "abc123def"
     # 前端草稿会话(local- 前缀,改名后新建会话的形态——不识别会导致不建 worktree)
     assert config.project_hash_from_key("web:local-pabc123def:s1") == "abc123def"
-    # 无项目的纯草稿 / 主会话 / TG / task 前缀:都不是项目会话
+    # 无项目的纯草稿 / 主会话 / CLI / task 前缀:都不是项目会话
     assert config.project_hash_from_key("web:local-abc123") is None
     assert config.project_hash_from_key("web:main") is None
-    assert config.project_hash_from_key("tg:123") is None
+    assert config.project_hash_from_key("cli") is None
     assert config.project_hash_from_key("task:abc") is None
 
 
@@ -45,17 +45,16 @@ def test_resolve_session_key_unified(monkeypatch):
     monkeypatch.setattr(config, "UNIFY_SESSIONS", True)
     monkeypatch.setattr(config, "SESSION_KEY", "main")
     # 不同入口都归到同一会话 → 跨入口连续
-    assert config.resolve_session_key("telegram", 123) == "main"
     assert config.resolve_session_key("cli", "local") == "main"
-    assert config.resolve_session_key("feishu", "abc") == "main"
+    assert config.resolve_session_key("voice", "abc") == "main"
 
 
 def test_resolve_session_key_isolated(monkeypatch):
     from vococo import config
 
     monkeypatch.setattr(config, "UNIFY_SESSIONS", False)
-    assert config.resolve_session_key("telegram", 123) == "telegram:123"
     assert config.resolve_session_key("cli", "local") == "cli:local"
+    assert config.resolve_session_key("voice", "abc") == "voice:abc"
 
 
 def test_resolve_session_key_passes_through_voice_prefixes():
@@ -81,6 +80,6 @@ def test_project_cwd_for(isolated, tmp_path):
     # 非项目会话都回落到 None(进程默认目录)
     assert config.project_cwd_for("web:legacyconv") is None
     assert config.project_cwd_for("main") is None
-    assert config.project_cwd_for("tg:-100") is None
+    assert config.project_cwd_for("cli") is None
     # 未知哈希 → None
     assert config.project_cwd_for("web:pdeadbeef00:c1") is None

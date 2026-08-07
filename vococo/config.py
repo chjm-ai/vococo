@@ -38,16 +38,6 @@ def _ensure_subscription_auth(require: bool = True) -> str:
     return token
 
 
-def _parse_chat_ids(raw: str) -> set[int]:
-    """'123,-456 789' -> {123, -456, 789}。空 = 不限制(危险,会警告)。"""
-    out: set[int] = set()
-    for tok in raw.replace(",", " ").split():
-        tok = tok.strip()
-        if tok.lstrip("-").isdigit():
-            out.add(int(tok))
-    return out
-
-
 def _parse_bool(raw: str, default: bool) -> bool:
     s = raw.strip().lower()
     if not s:
@@ -158,15 +148,6 @@ SCHEDULER_TICK_SEC: int = int(os.environ.get("SCHEDULER_TICK_SEC", "30"))
 WATCHDOG_DUMP_SEC: int = int(os.environ.get("WATCHDOG_DUMP_SEC", "30"))
 WATCHDOG_EXIT_SEC: int = int(os.environ.get("WATCHDOG_EXIT_SEC", "180"))
 WATCHDOG_LOG_PATH: Path = DATA_DIR / "logs" / "watchdog.log"
-
-# === Telegram ===
-TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_ALLOWED_CHAT_IDS: set[int] = _parse_chat_ids(
-    os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
-)
-# 白名单为空时的姿态:默认 fail-closed(拒收一切,防陌生人搜到 bot 就能驱动 Claude)。
-# 真要「谁都能聊」必须显式设 TELEGRAM_ALLOW_ALL=1,让危险选项需要主动打开。
-TELEGRAM_ALLOW_ALL: bool = _parse_bool(os.environ.get("TELEGRAM_ALLOW_ALL", ""), False)
 
 # === Web 渠道(手机浏览器访问,自建 UI)===
 # 一个进程内起 aiohttp:SSE 流式 + 会话侧边栏。默认只监听 127.0.0.1,
@@ -306,8 +287,8 @@ VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
 VOICE_OMNI_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_OMNI_VAD_SILENCE_MS", "2500"))
 
 # === 会话统一(跨入口连续)===
-# 开启时:CLI / TUI / Telegram / 飞书 都归到同一会话 SESSION_KEY,
-# "飞书问一半切 CLI 接着聊" 成立(单用户自用的默认)。关闭则按 平台:chat 隔离。
+# 开启时:CLI / TUI / Web 都归到同一会话 SESSION_KEY,
+# "网页问一半切 CLI 接着聊" 成立(单用户自用的默认)。关闭则按 平台:chat 隔离。
 UNIFY_SESSIONS: bool = _parse_bool(os.environ.get("UNIFY_SESSIONS", ""), True)
 SESSION_KEY: str = os.environ.get("SESSION_KEY", "main").strip() or "main"
 
@@ -315,9 +296,8 @@ SESSION_KEY: str = os.environ.get("SESSION_KEY", "main").strip() or "main"
 def resolve_session_key(platform: str, chat_id: object) -> str:
     """各入口统一经此取会话键。
 
-    群聊(TG 群 chat_id 为负)永远独立成一个会话 = 一个群一个项目;
     Web 端自带多会话管理:每个对话独立成 web:<conv_id>,不受 UNIFY 影响;
-    但特殊 conv_id "main" 汇入统一主会话(从网页也能接着 TG/CLI 那条线聊);
+    但特殊 conv_id "main" 汇入统一主会话(从网页也能接着 CLI 那条线聊);
     私聊则按 UNIFY_SESSIONS:开统一则共享主会话,否则按平台隔离。
 
     `voice-chat:` 是语音模块保留前缀(主语音通话固定键)。`task:` 是统一后台任务
@@ -329,8 +309,6 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     openConv()/发消息面板打开,不用专门另写一套路由逻辑。这些前缀是保留字,
     不会跟现有项目哈希形态的 conv_id 冲突。
     """
-    if platform == "telegram" and isinstance(chat_id, int) and chat_id < 0:
-        return f"tg:{chat_id}"
     if platform == "web":
         if chat_id == "main":
             return SESSION_KEY
@@ -349,7 +327,7 @@ def project_hash_from_key(session_key: str) -> str | None:
     - web:p<hash>:<slug> —— 正式项目会话(改名前的存量 key)
     - web:local-p<hash>:<slug> —— 前端草稿会话(改名时引入 local- 前缀,
       见 index.html newChatIn;发出首条消息后后端仍原样落库,key 不带去前缀)
-    其余(main/默认项目的老 web:<conv>/TG/CLI/task:)都不带项目哈希。
+    其余(main/默认项目的老 web:<conv>/CLI/task:)都不带项目哈希。
     """
     parts = session_key.split(":")
     if len(parts) >= 3 and parts[0] == "web":
@@ -424,7 +402,6 @@ def _scrub_env_secrets() -> None:
         return
     for _k in (
         "CLAUDE_CODE_OAUTH_TOKEN",
-        "TELEGRAM_BOT_TOKEN",
         "SILICONFLOW_API_KEY",
         "VAPID_PRIVATE_KEY",
         "WEB_AUTH_TOKEN",

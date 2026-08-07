@@ -10,7 +10,6 @@ import asyncio
 import base64
 import hmac
 import json
-import os
 import time
 from aiohttp import web
 
@@ -409,14 +408,18 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     # 语音版重启退出:不经过 GatewayRunner._dispatch, 直接在这里检测退出
     if selfops.restart_pending(session.SESSION_KEY):
         selfops.pop_restart_pending(session.SESSION_KEY)
-        try:
-            await _sse(resp, "system_message", {
-                "text": "♻️ 正在重启进程加载新代码…约 10 秒后继续验证。", "restarting": True,
-            })
-            await asyncio.sleep(1.5)
-        except Exception:
-            pass
-        os._exit(selfops._EXIT_CODE)
+
+        class _RestartNotifier:
+            async def send(self, _chat_id, text: str) -> None:
+                await _sse(
+                    resp,
+                    "system_message",
+                    {"text": text, "restarting": text.startswith("♻️")},
+                )
+
+        await selfops.exit_for_restart(
+            _RestartNotifier(), "voice", session.SESSION_KEY
+        )
 
     return resp
 
@@ -500,9 +503,23 @@ async def _handle_omni_webrtc(request: web.Request) -> web.Response:
 async def _handle_tasks_list(request: web.Request) -> web.Response:
     if (g := _guard(request)) is not None:
         return g
-    # 通话视图的任务状态条只该看语音自己派发的任务(origin="voice")——cron/chat
-    # 触发的任务不该出现在这里,那不是语音喊出来的活。
-    return web.json_response(tasks.list_recent(origin="voice"))
+    # 两类任务分离(2026-08-06 对齐确认):
+    # - 通话视图不传 conv → 只看语音派发的任务(origin="voice",原有行为)
+    # - 聊天视图传 conv → 只看该会话派的程序任务(origin="chat" + dispatch_chat_id=conv)
+    conv = request.query.get("conv")
+    if conv:
+        rows = tasks.list_recent(origin="chat", dispatch_chat_id=conv)
+    else:
+        rows = tasks.list_recent(origin="voice")
+    return web.json_response(rows)
+
+
+async def _handle_sdk_tasks_list(request: web.Request) -> web.Response:
+    """当前文本会话的 SDK 待办清单,与后台执行任务分开返回。"""
+    if (g := _guard(request)) is not None:
+        return g
+    conv = request.query.get("conv")
+    return web.json_response(tasks.list_sdk_tasks(conv) if conv else [])
 
 
 async def _handle_task_detail(request: web.Request) -> web.Response:
@@ -564,6 +581,7 @@ def register_routes(app: web.Application) -> None:
             web.post("/voice/clear", _handle_clear),
             web.post("/voice/debug", _handle_debug),
             web.get("/voice/tasks", _handle_tasks_list),
+            web.get("/voice/sdk-tasks", _handle_sdk_tasks_list),
             web.get("/voice/tasks/stream", _handle_tasks_stream),
             web.get("/voice/tasks/{task_id}", _handle_task_detail),
             web.post("/voice/tasks/{task_id}/stop", _handle_task_stop),

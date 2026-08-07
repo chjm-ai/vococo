@@ -5,9 +5,10 @@
 set -euo pipefail
 
 LABEL="com.vococo"
+LEGACY_LABEL="com.vococo.boot"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/.venv/bin/vococo"
 PLIST_DST="$HOME/Library/LaunchAgents/$LABEL.plist"
+LEGACY_PLIST_DST="$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
 DOMAIN="gui/$(id -u)"
 
 _gen_plist() {
@@ -21,7 +22,7 @@ _gen_plist() {
   <!-- 经登录 shell 启动:给进程完整会话上下文(env/keychain),
        否则 launchd 直接 spawn 在某些 Mac 上会卡死(子进程/路径解析挂起) -->
   <key>ProgramArguments</key>
-  <array><string>/bin/zsh</string><string>-lc</string><string>"$BIN" serve</string></array>
+  <array><string>/bin/zsh</string><string>-lc</string><string>exec "$ROOT/deploy/run.sh" --foreground</string></array>
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>EnvironmentVariables</key>
   <dict>
@@ -42,14 +43,20 @@ PLIST
 case "${1:-status}" in
   install)
     _gen_plist
+    # 旧 one-shot boot agent 与新守护者不能并存；先精确卸载两个已知 label。
+    launchctl bootout "$DOMAIN/$LEGACY_LABEL" 2>/dev/null || true
     launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+    rm -f "$LEGACY_PLIST_DST"
+    # 手工 stop 留下的标记不能让新装的 launchd 监督者立即退出并反复重拉。
+    rm -f "$ROOT/data/.stop"
     launchctl bootstrap "$DOMAIN" "$PLIST_DST"
     launchctl enable "$DOMAIN/$LABEL"
-    echo "✅ 已安装并启动($BIN serve)。开机自启 + 崩溃自愈已开。"
+    echo "✅ 已安装唯一前台监督者。开机自启 + 子进程崩溃自愈已开。"
     ;;
   uninstall)
+    launchctl bootout "$DOMAIN/$LEGACY_LABEL" 2>/dev/null || true
     launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
-    rm -f "$PLIST_DST"
+    rm -f "$PLIST_DST" "$LEGACY_PLIST_DST"
     echo "✅ 已卸载并停止。"
     ;;
   restart)

@@ -82,6 +82,8 @@ def on_task_activity(task: dict) -> None:
             "progress_note": task["progress_note"],
             "created_at": task["created_at"],
             "updated_at": task["updated_at"],
+            "dispatch_chat_id": task.get("dispatch_chat_id"),
+            "origin": task.get("origin"),  # 前端按 origin 分流:voice→通话条,chat→会话条,cron 不进
         },
     )
     # 桥接到主 SSE:任务起跑 → 前端侧栏显示小红点。_started_tasks 防重复:
@@ -89,6 +91,11 @@ def on_task_activity(task: dict) -> None:
     if task["status"] == "running" and task["id"] not in _started_tasks:
         _started_tasks.add(task["id"])
         _bridge_event({"conv": tasks.session_key(task["id"]), "type": "start"})
+
+
+def on_sdk_task_activity(task: dict) -> None:
+    """SDK 待办变化只推网页状态条,不触发后台任务通知或侧栏会话。"""
+    _broadcast("sdk_task_update", task)
 
 
 def register_platform_push(
@@ -106,7 +113,7 @@ def register_platform_push(
 
 # ── cron 来源任务的完成钩子 ──────────────────────────────────────────────────
 # cron 任务(origin="cron")的"如何通知"跟语音/chat 任务本质不同:必须无条件写回
-# 自己的专属会话 + 推给可选的额外目标(如 telegram),不能像语音任务那样"正好有人
+# 自己的专属会话 + 推给可选的额外目标(如 web),不能像语音任务那样"正好有人
 # 在通话里就只播报、不落别的推送"——cron 任务的结果落地跟"有没有人在通话"完全
 # 无关。所以单独开一个钩子,cron/scheduler.py 启动时注册,on_task_terminal 对
 # origin="cron" 的任务直接转发给它,不复用下面语音专属的 online/offline 分支。
@@ -172,15 +179,20 @@ async def on_task_terminal(task_id: str) -> None:
         "result_summary": task["result_summary"],
         "announce_text": announce_text,
         "updated_at": task["updated_at"],
+        "dispatch_chat_id": task.get("dispatch_chat_id"),
+        "origin": origin,
     }
 
-    # ── 语音来源 + 在线:推 SSE(语音播报)。chat 来源哪怕这时刚好有人在通话,
-    # 也不该突然插播一句不相关任务的播报,径直走下面的推送路径。──────────────
-    # 2026-08-04 漏播根因修复:SSE 分支【不 return】,播报完继续走 Web Push 兜底。
-    # "页面开着(is_online)"不等于"用户能听到":挂断通话后前端 EventSource 一直
-    # 挂着(teardownCallResources 不关它),而 Omni 断开时前端只能靠 audio_b64
-    # 播放——若没有系统级推送兜底,挂断后完成的任务会彻底静默(真机反馈"不到一半
-    # 的任务完成会播报")。Web Push 是系统通知,页面在前台也不碍事,双发不会吵。
+    # ── SSE task_done:所有非 cron 来源都推(状态条/侧栏实时刷新用)。──────
+    # 2026-08-06 修复:原来 _broadcast 只落在"voice 来源 + 在线"分支里,chat 来源
+    # 的任务完成时前端状态条永远停在"进行中",直到手动刷新页面才全量校准回来。
+    # 现在 chat 也推,前端按 origin 决定是否播报(chat 不插播语音)。
+    # 语音来源 + 在线:额外合成 TTS 音频带上——"页面开着(is_online)"不等于"用户
+    # 能听到":挂断通话后前端 EventSource 一直挂着(teardownCallResources 不关它),
+    # 而 Omni 断开时前端只能靠 audio_b64 播放——若没有系统级推送兜底,挂断后完成
+    # 的任务会彻底静默(真机反馈"不到一半的任务完成会播报")。Web Push 是系统通知,
+    # 页面在前台也不碍事,双发不会吵。chat 来源哪怕这时刚好有人在通话,也不该
+    # 突然插播一句不相关任务的播报(由前端按 origin 过滤)。
     if origin == "voice" and is_online():
         # 2026-08-04:Omni 出声模式下这里也合成 TTS。原来 Omni 模式跳过合成
         # (audio_b64=None,指望前端交给 Omni 念)——但挂断通话后 omniDc 关闭、
@@ -190,7 +202,7 @@ async def on_task_terminal(task_id: str) -> None:
         # 代价是每次终态多一次 TTS 合成(几百毫秒),换来"挂断后也能听到"。
         audio = await tts.synthesize(announce_text, config.VOICE_TTS_VOICE)
         payload["audio_b64"] = base64.b64encode(audio).decode("ascii") if audio else None
-        _broadcast("task_done", payload)
+    _broadcast("task_done", payload)
 
     # ── Web Push(VAPID) 发给所有订阅设备 ──────────────────────────────
     from ..gateway.adapters.web_push import PUSH

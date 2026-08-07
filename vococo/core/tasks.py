@@ -38,6 +38,12 @@ SESSION_KEY_PREFIX = "task:"
 # 触发方枚举:UI/通知按这个字段分组,不再靠 session_key 前缀猜(2026-07-29 起前缀
 # 统一成 task:,以前 voice-task:/cron-task: 两个前缀各自为政的年代已经结束)。
 ORIGINS = frozenset({"voice", "cron", "chat"})
+_SDK_TASK_TOOL_NAMES = frozenset({"TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskDelete"})
+
+
+def is_sdk_task_tool(name: str) -> bool:
+    """SDK 待办清单工具只用于同步输入框状态条,不属于执行过程。"""
+    return name in _SDK_TASK_TOOL_NAMES
 
 
 def session_key(task_id: str) -> str:
@@ -94,6 +100,21 @@ def _conn() -> sqlite3.Connection:
             "created_at REAL NOT NULL,"
             "updated_at REAL NOT NULL)"
         )
+        # SDK 的 TaskCreate 清单只是会话内待办,与真正由 task_runner 执行的 tasks
+        # 完全隔离。否则它会被排队器、重启孤儿回收和完成通知误处理。
+        _DB.execute(
+            "CREATE TABLE IF NOT EXISTS sdk_task_views("
+            "id TEXT PRIMARY KEY,"
+            "dispatch_chat_id TEXT NOT NULL,"
+            "number INTEGER NOT NULL,"
+            "title TEXT NOT NULL,"
+            "description TEXT NOT NULL DEFAULT '',"
+            "status TEXT NOT NULL,"
+            "deleted INTEGER NOT NULL DEFAULT 0,"
+            "created_at REAL NOT NULL,"
+            "updated_at REAL NOT NULL,"
+            "UNIQUE(dispatch_chat_id, number))"
+        )
         # 向后兼容:为旧表加 dispatch_platform/dispatch_chat_id/parent_task_id/origin(幂等)
         for col, ddl in (
             ("dispatch_platform", "dispatch_platform TEXT"),
@@ -106,6 +127,13 @@ def _conn() -> sqlite3.Connection:
                 _DB.execute(f"ALTER TABLE tasks ADD COLUMN {ddl}")
             except sqlite3.OperationalError:
                 pass
+        # 已移除 SDK 任务清单到任务表的镜像。历史镜像任务没有后台执行器,
+        # 启动后必须静默冻结,避免被排队器误跑或被重启孤儿回收误报失败。
+        _DB.execute(
+            "UPDATE tasks SET status='cancelled', progress_note=?, updated_at=? "
+            "WHERE origin='task' AND status IN ('queued','running')",
+            ("SDK任务清单同步已停用", time.time()),
+        )
         _DB.commit()
     return _DB
 
@@ -170,18 +198,92 @@ def get_latest() -> dict | None:
     return _row(row) if row else None
 
 
-def list_recent(limit: int = 20, origin: str | None = None) -> list[dict]:
-    """最近的任务,按 origin 可选过滤(如只看语音派发的,或只看 cron 触发的)。"""
+def _sdk_task_id(chat_id: str, number: int) -> str:
+    return f"sdk:{chat_id}:{number}"
+
+
+def get_sdk_task(chat_id: str, number: int) -> dict | None:
+    row = _conn().execute(
+        "SELECT * FROM sdk_task_views WHERE dispatch_chat_id=? AND number=?",
+        (chat_id, number),
+    ).fetchone()
+    return _sdk_task_row(row) if row else None
+
+
+def _sdk_task_row(row: sqlite3.Row) -> dict:
+    data = _row(row)
+    data["deleted"] = bool(data["deleted"])
+    data["origin"] = "sdk_task"
+    return data
+
+
+def upsert_sdk_task(
+    *, chat_id: str, number: int, title: str, description: str, status: str
+) -> dict:
+    """写入 SDK 待办的最新投影,不经过后台任务状态机。"""
     c = _conn()
+    now = time.time()
+    task_id = _sdk_task_id(chat_id, number)
+    c.execute(
+        "INSERT INTO sdk_task_views(id,dispatch_chat_id,number,title,description,status,deleted,created_at,updated_at) "
+        "VALUES (?,?,?,?,?,?,0,?,?) "
+        "ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,"
+        "status=excluded.status,deleted=0,updated_at=excluded.updated_at",
+        (task_id, chat_id, number, title, description, status, now, now),
+    )
+    c.commit()
+    return get_sdk_task(chat_id, number)  # type: ignore[return-value]
+
+
+def delete_sdk_task(chat_id: str, number: int) -> dict | None:
+    """软删除供 SSE 通知使用;列表不会再返回该任务。"""
+    task = get_sdk_task(chat_id, number)
+    if task is None:
+        return None
+    c = _conn()
+    c.execute(
+        "UPDATE sdk_task_views SET deleted=1,updated_at=? WHERE id=?",
+        (time.time(), task["id"]),
+    )
+    c.commit()
+    task = get_sdk_task(chat_id, number)
+    if task is not None:
+        task["status"] = "deleted"
+        task["deleted"] = True
+    return task
+
+
+def list_sdk_tasks(chat_id: str, limit: int = 50) -> list[dict]:
+    """当前会话仍存在的 SDK 待办,严格按 SDK 编号排序。"""
+    rows = _conn().execute(
+        "SELECT * FROM sdk_task_views WHERE dispatch_chat_id=? AND deleted=0 "
+        "ORDER BY number ASC LIMIT ?",
+        (chat_id, limit),
+    ).fetchall()
+    return [_sdk_task_row(row) for row in rows]
+
+
+def list_recent(
+    limit: int = 20,
+    origin: str | None = None,
+    dispatch_chat_id: str | None = None,
+) -> list[dict]:
+    """最近的任务,按 origin/dispatch_chat_id 可选过滤。"""
+    c = _conn()
+    params: list = []
+    where: list[str] = []
     if origin is not None:
-        rows = c.execute(
-            "SELECT * FROM tasks WHERE origin=? ORDER BY created_at DESC LIMIT ?",
-            (origin, limit),
-        ).fetchall()
-    else:
-        rows = c.execute(
-            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
-        ).fetchall()
+        where.append("origin=?")
+        params.append(origin)
+    if dispatch_chat_id is not None:
+        where.append("dispatch_chat_id=?")
+        params.append(dispatch_chat_id)
+    sql = "SELECT * FROM tasks"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    rows = c.execute(sql, params).fetchall()
     return [_row(r) for r in rows]
 
 

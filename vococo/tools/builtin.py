@@ -413,7 +413,7 @@ async def ask_user(args: dict) -> dict:
 @tool(
     "send_message",
     "主动给用户发一条【独立消息】(不是本轮回复正文)。用于:单独发长内容、发进度提醒、"
-    "或从后台任务 ping 用户。to:'current'(默认,当前聊天)或 'platform:chat_id'(如 telegram:123)。",
+    "或从后台任务 ping 用户。to:'current'(默认,当前聊天)或 'platform:chat_id'(如 web:conv1)。",
     {
         "type": "object",
         "properties": {"text": {"type": "string"}, "to": {"type": "string"}},
@@ -434,7 +434,7 @@ async def send_message(args: dict) -> dict:
         await ctx.adapter.send(ctx.chat_id, text)
         return _ok("已发送到当前聊天。")
     if ":" not in to:
-        return _ok("to 应为 'current' 或 'platform:chat_id'(如 telegram:123)。")
+        return _ok("to 应为 'current' 或 'platform:chat_id'(如 web:conv1)。")
     platform, _, cid = to.partition(":")
     cid = cid.strip()
     target = int(cid) if cid.lstrip("-").isdigit() else cid
@@ -471,6 +471,96 @@ async def send_image(args: dict) -> dict:
         return _ok("当前渠道不支持发送图片(仅 Web 端支持)。")
     err = await ctx.adapter.send_image(ctx.chat_id, Path(path), caption)
     return _ok(err or "已发送到当前聊天。")
+
+
+@tool(
+    "generate_image",
+    "根据文字描述生成一张图片(走 codex-gpt 供应商的 gpt-image 模型),保存到本地,"
+    "并自动发到当前 Web 聊天显示(非 Web 渠道只保存,返回路径)。"
+    "prompt:图片内容描述,越具体越好(主体/风格/构图/配色/氛围);"
+    "size:可选 1024x1024(默认)/1024x1536(竖)/1536x1024(横);"
+    "model:可选 gpt-image-2(默认)/gpt-image-1.5。",
+    {
+        "type": "object",
+        "properties": {
+            "prompt": {"type": "string"},
+            "size": {"type": "string"},
+            "model": {"type": "string"},
+        },
+        "required": ["prompt"],
+    },
+)
+async def generate_image(args: dict) -> dict:
+    import base64
+    import uuid
+    from pathlib import Path
+
+    import aiohttp
+
+    from .. import providers
+    from ..gateway import clarify
+    from ..gateway.adapters.web import WebAdapter
+
+    prompt = (args.get("prompt") or "").strip()
+    if not prompt:
+        return _ok("generate_image 需要非空 prompt。")
+    size = (args.get("size") or "1024x1024").strip()
+    model = (args.get("model") or "gpt-image-2").strip()
+    if size not in ("1024x1024", "1024x1536", "1536x1024"):
+        return _ok(f"size 仅支持 1024x1024 / 1024x1536 / 1536x1024,收到:{size}")
+
+    # 1) 拿 codex-gpt 供应商配置(本地 cli-proxy-api 代理,GPT 订阅转 API)
+    found = providers.sidecar_env("codex-gpt")
+    if not found:
+        return _ok(
+            "未配置 codex-gpt 供应商(设置页 → 添加服务商,base_url 指向 GPT 订阅代理,"
+            "api_key 填代理 key)。"
+        )
+    _, env = found
+    base_url = env.get("ANTHROPIC_BASE_URL", "").rstrip("/")
+    api_key = env.get("ANTHROPIC_API_KEY", "")
+    if not base_url or not api_key:
+        return _ok("codex-gpt 供应商缺 base_url 或 api_key,请到设置页检查。")
+
+    # 2) 调代理的 OpenAI 兼容 images 端点(生图耗时,超时放宽到 5 分钟)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{base_url}/v1/images/generations",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": model, "prompt": prompt, "size": size, "n": 1},
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as resp:
+                if resp.status != 200:
+                    body = (await resp.text())[:300]
+                    return _ok(f"生图失败 HTTP {resp.status}: {body}")
+                data = await resp.json()
+    except Exception as e:
+        return _ok(f"生图请求失败: {e}")
+    items = (data or {}).get("data") or []
+    if not items or "b64_json" not in items[0]:
+        return _ok("生图响应异常(没有拿到图片数据)。")
+    raw = base64.b64decode(items[0]["b64_json"])
+
+    # 3) 按 magic bytes 判断格式,存到 data/images/
+    img_dir = config.IMAGES_DIR
+    img_dir.mkdir(parents=True, exist_ok=True)
+    ext = ".png" if raw[:8] == b"\x89PNG\r\n\x1a\n" else ".jpg"
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = img_dir / f"gen_{stamp}_{uuid.uuid4().hex[:6]}{ext}"
+    path.write_bytes(raw)
+
+    # 4) 当前是 Web 渠道 → 自动发图显示
+    sent = ""
+    ctx = clarify.current()
+    if ctx is not None and isinstance(ctx.adapter, WebAdapter):
+        err = await ctx.adapter.send_image(ctx.chat_id, path, f"{model} · {prompt[:40]}")
+        if err:
+            sent = f"(自动发送失败:{err})"
+    return _ok(f"✅ 已生成图片并保存:{path} {sent}")
 
 
 @tool(
@@ -776,6 +866,7 @@ def build_mcp_servers() -> dict:
                 ask_user,
                 send_message,
                 send_image,
+                generate_image,
                 dispatch_session,
                 restart_self,
                 list_mcp_servers,

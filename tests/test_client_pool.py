@@ -106,6 +106,10 @@ def clients(monkeypatch):
         agent, "ClaudeSDKClient", lambda options=None: FakeClient(options, registry=made)
     )
     monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("claude-sonnet-4", {}))
+    monkeypatch.setattr(
+        agent.providers, "effort_levels_for_model", lambda *a: ("low", "medium", "high", "xhigh", "max")
+    )
+    monkeypatch.setattr(agent.settings_store, "get_web_effort", lambda *a: "")
     monkeypatch.setattr(agent.settings_store, "vococo_enabled", lambda: False)
     monkeypatch.setattr(agent.settings_store, "effective_external_mcp", lambda: {})
     monkeypatch.setattr(agent.settings_store, "effective_skills", lambda: None)
@@ -152,6 +156,18 @@ async def test_compat_change_rebuilds(clients, monkeypatch):
     assert len(clients) == 2  # 新建了
     assert clients[0].disconnected  # 旧的被关
     assert clients[1].queries == 1
+
+
+@pytest.mark.anyio
+async def test_effort_change_rebuilds_warm_client(clients, monkeypatch):
+    """思考深度在 connect 时固定，切换后必须丢弃保温 client，下一轮才会真生效。"""
+    await _turn()
+    monkeypatch.setattr(agent.settings_store, "get_web_effort", lambda *a: "xhigh")
+    await _turn(resume="sid-1")
+
+    assert len(clients) == 2
+    assert clients[0].disconnected
+    assert clients[1].options.effort == "xhigh"
 
 
 @pytest.mark.anyio
@@ -208,7 +224,7 @@ async def test_route_change_rebuilds(clients):
     from vococo.gateway import clarify
 
     class _A:
-        platform = "telegram"
+        platform = "cli"
 
     class _B:
         platform = "web"

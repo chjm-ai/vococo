@@ -161,7 +161,7 @@ async def test_update_edits_fields_and_sidebar_reflects_it(cron_web_app):
                 "name": "晚间简报",
                 "prompt": "汇总今天完成了什么",
                 "schedule": {"kind": "cron", "expr": "0 21 * * *"},
-                "target": {"platform": "telegram", "chat_id": "123"},
+                "target": {"platform": "web", "chat_id": "conv1"},
             },
         )
         assert resp.status == 200
@@ -169,7 +169,7 @@ async def test_update_edits_fields_and_sidebar_reflects_it(cron_web_app):
         assert updated["name"] == "晚间简报"
         assert updated["prompt"] == "汇总今天完成了什么"
         assert updated["schedule"] == {"kind": "cron", "expr": "0 21 * * *"}
-        assert updated["target"] == {"platform": "telegram", "chat_id": "123"}
+        assert updated["target"] == {"platform": "web", "chat_id": "conv1"}
         assert updated["id"] == job["id"]
         assert updated["conv"] == job["conv"]  # 编辑不改 id/conv
 

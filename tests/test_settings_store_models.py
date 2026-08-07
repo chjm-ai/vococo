@@ -21,6 +21,17 @@ def test_add_and_list_extra_model(monkeypatch, tmp_path):
     assert models == [{"id": "claude-opus-5", "label": "Opus 5（订阅）"}]
 
 
+def test_extra_model_can_reuse_provider_and_preserves_metadata(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_extra_model(
+        "gpt-5.6-sol", "GPT-5.6 Sol（订阅）", group="codex", provider="codex-gpt"
+    )
+    settings_store.upsert_web_extra_model("gpt-5.6-sol", "GPT-5.6 Sol")
+    assert settings_store.list_web_extra_models() == [{
+        "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "group": "codex", "provider": "codex-gpt",
+    }]
+
+
 def test_add_extra_model_no_label_falls_back_to_id(monkeypatch, tmp_path):
     _point_to(monkeypatch, tmp_path)
     settings_store.upsert_web_extra_model("claude-opus-5", "")
@@ -130,6 +141,26 @@ def test_web_effort_rejects_invalid_and_clears(monkeypatch, tmp_path):
     settings_store.set_web_effort("max")
     settings_store.set_web_effort("ultra")   # 非法值 → 清空,不落库
     assert settings_store.get_web_effort() == ""
+
+
+def test_web_effort_is_kept_per_model_with_legacy_fallback(monkeypatch, tmp_path):
+    """新选择只覆盖当前模型；已有全局 high/max 继续给未迁移模型兜底。"""
+    _point_to(monkeypatch, tmp_path)
+    settings_store.set_web_effort("max")
+    settings_store.set_web_effort("low", model="gpt-5.6-sol")
+    settings_store.set_web_effort("xhigh", model="gpt-5.6-luna")
+
+    assert settings_store.get_web_effort("gpt-5.6-sol") == "low"
+    assert settings_store.get_web_effort("gpt-5.6-luna") == "xhigh"
+    assert settings_store.get_web_effort("deepseek-v4-flash") == "max"
+
+
+def test_invalid_model_effort_reverts_to_legacy_fallback(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store.set_web_effort("high")
+    settings_store.set_web_effort("max", model="gpt-5.6-sol")
+    settings_store.set_web_effort("ultra", model="gpt-5.6-sol")
+    assert settings_store.get_web_effort("gpt-5.6-sol") == "high"
 
 
 # ── 设置页手动隐藏的内置模型档位 ──────────────────────────────────────────

@@ -1,6 +1,6 @@
 """Gateway 核心 —— 平台无关。
 
-所有入口(Telegram / 飞书 / TUI)共享:
+所有入口(Web / TUI)共享:
 - 命令注册表(handle_command):/new /clear /model /history /status /help …
 - converse():消费 agent 事件流,喂给平台各自的 Sink(渲染层)
 - 会话持久化
@@ -30,6 +30,18 @@ import time
 from ..core.timeline import Timeline
 from ..memory import session_store
 from .. import providers
+
+# ─── 可选 turn 记账钩子(多租户计费用)────────────────────────────────────
+# 默认 None:个人版 / 未接入计费的部署零开销、零行为变化。
+# 注册方(如 VocoTrade 分叉区 billing)在每次 agent 轮次完成后收到
+# (session_key, reply),自行解析租户、按 usage 扣费。钩子异常不阻断聊天。
+_turn_billing_hook = None
+
+
+def set_turn_billing_hook(fn) -> None:
+    """注册每轮完成的记账回调(可选)。fn: async (session_key, reply) -> None。"""
+    global _turn_billing_hook
+    _turn_billing_hook = fn
 
 
 class Sink:
@@ -271,6 +283,12 @@ async def converse(
                 await sink.compacted(ev.trigger)
             elif isinstance(ev, Done):
                 reply = ev.reply
+                # 记账钩子:只对真实对话轮计费(/compact 压缩轮不计)
+                if not compact and _turn_billing_hook is not None:
+                    try:
+                        await _turn_billing_hook(session_key, reply)
+                    except Exception:
+                        pass  # 记账失败不阻断聊天主流程
     except asyncio.CancelledError:
         # 用户手动取消(/abort → scope.cancel())。CancelledError 继承 BaseException,
         # 上面的 except Exception 抓不到,若不在此拦下,后面的落库逻辑一行都不会跑 →
@@ -468,11 +486,6 @@ def _enabled_skill_names() -> set[str]:
 
 def _origin_from_session_key(session_key: str) -> dict | None:
     """从会话键推导接受任务的推送目标(结果推回用户接受时所在的聊天)。"""
-    if session_key.startswith("tg:"):
-        try:
-            return {"platform": "telegram", "chat_id": int(session_key[3:])}
-        except ValueError:
-            return None
     if ":" in session_key:  # 非统一模式 platform:chat_id
         platform, _, cid = session_key.partition(":")
         try:

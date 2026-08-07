@@ -281,6 +281,8 @@ try{
     <form id="composer" autocomplete="off">
       <div class="combg">
         <div class="cwrap">
+          <!-- 聊天视图后台任务状态条:有排队/进行中任务时显示在输入框顶部,与通话视图的 #taskBar 共享数据 -->
+          <div id="chatTaskBar" hidden></div>
           <div id="pending"></div>
           <div id="thumbs"></div>
           <div class="inrow">
@@ -299,8 +301,8 @@ try{
               <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
               <span class="spacer"></span>
               <div id="effortBox">
-                <button type="button" id="effortBtn" title="思考深度(DeepSeek:标准/深度)">
-                  <span id="effortName">标准</span><span class="caret chev down"></span>
+                <button type="button" id="effortBtn" title="思考深度">
+                  <span id="effortName">auto</span><span class="caret chev down"></span>
                 </button>
                 <div id="effortPop" hidden></div>
               </div>
@@ -412,9 +414,8 @@ const S = {
   es: null,
   lastId: 0,            // 已处理的最大事件编号,用于断线重连后去重
   bootId: null,         // 服务端进程启动标识,变了说明重启过,断线补发这条路救不回来,得整体核对
-  models: {default:"", choices:[]},  // /models 拉到的可选模型
+  models: {default:"", choices:[], efforts:{}},  // /models 拉到的可选模型及各模型思考深度
   model: "",            // 当前会话使用的模型(空=用默认)
-  effort: "",           // 思考深度(high/max;空=未设,胶囊回落"标准")
   commands: [],          // /commands 拉到的系统斜杠命令清单 [{name,desc}]
   skills: [],            // /commands 拉到的已启用 skill 清单 [{name,desc}]
   cmd: {open:false, items:[], active:0},  // 斜杠命令菜单当前状态
@@ -1152,34 +1153,45 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   }
 
   // ── P1 任务板:抽屉列表 + 完成播报(WHEN_IDLE:等空闲/不在录音才插播,F8/F10) ──────
-  const STATUS_WORD = {queued:"排队中", running:"进行中", done:"已完成", failed:"失败", cancelled:"已取消"};
+  const STATUS_WORD = {queued:"排队中", pending:"排队中", running:"进行中", in_progress:"进行中", paused:"已暂停", completed:"已完成", done:"已完成", failed:"失败", cancelled:"已取消", deleted:"已删除"};
 
   async function loadTasks(){
     try{
-      const resp = await fetch("/voice/tasks", {headers:{"X-Auth-Token":S.token}});
+      // 两类任务分离(2026-08-06 对齐):通话视图(voice-chat:main)拉语音任务,
+      // 聊天视图拉当前会话的 chat 任务——后端按 conv 区分(见 /voice/tasks)。
+      const conv = S.conv === "voice-chat:main" ? null : S.conv;
+      const url = conv ? `/voice/tasks?conv=${encodeURIComponent(conv)}` : "/voice/tasks";
+      const [resp, sdkResp] = await Promise.all([
+        fetch(url, {headers:{"X-Auth-Token":S.token}}),
+        conv ? fetch(`/voice/sdk-tasks?conv=${encodeURIComponent(conv)}`, {headers:{"X-Auth-Token":S.token}}) : Promise.resolve(null),
+      ]);
       if(!resp.ok) return;
       const rows = await resp.json();
+      const sdkRows = sdkResp && sdkResp.ok ? await sdkResp.json() : [];
+      // 切会话时上一个请求可能后到;不能让旧会话任务覆盖当前输入框状态条。
+      if(conv !== (S.conv === "voice-chat:main" ? null : S.conv)) return;
       renderTasks(rows);
       // 顺带全量校准状态条(SSE 断线漏事件时,打开抽屉/task_done 刷新都会走到这里兜底)。
       // 抽屉(renderTasks)看全量历史不受影响;状态条按 voiceTasksClearedAt 水位线把
       // 清空上下文之前的旧任务筛掉,否则这次全量校准又会把刚清空的条目拉回来。
       barTasks.clear();
       for(const t of rows){
-        if(t.created_at && t.created_at < voiceTasksClearedAt) continue;
+        // 水位线只对 voice 任务生效(清空语音上下文只清语音任务);
+        // chat 任务有自己的会话隔离,不跟着语音上下文走
+        if(t.origin !== "chat" && t.created_at && t.created_at < voiceTasksClearedAt) continue;
         barTasks.set(t.id, t);
-        // 任务处于活跃态说明是刚起跑(含"追问重开"),撤销之前的手动关闭,让它重新露出
-        if(t.status === "queued" || t.status === "running") dismissedTaskIds.delete(t.id);
       }
+      for(const t of sdkRows) barTasks.set(t.id, t);
       renderTaskBar();
     }catch(e){}
   }
 
   // ── 任务状态条:顶栏下方常驻横幅,派发瞬间出现(SSE task_update)。
-  //    完成后不再自动消失,改成"已完成"标记留在条里,用户点叉才手动关闭;
-  //    最多展示最近7条(进行中+已完成统一排序计数),按 updated_at 倒序 ─────────
+  //    终态任务满 10 分钟自动隐藏;去掉关闭按钮,已完成任务默认折叠。
+  //    callView #taskBar 保持简单列表;chatMain #chatTaskBar 分组展示。
   const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
-  const dismissedTaskIds = new Set();  // 用户点叉关闭过的任务id(仅前端隐藏,不动后端数据)
-  const TASKBAR_MAX = 7;
+  const TASKBAR_MAX = 7;  // 通话视图状态条最多展示条数
+  const CHAT_TASK_ACTIVE_MAX = 5;  // 聊天视图活跃任务默认展示条数
   // 状态条跟通话上下文绑定的水位线:早于这个时刻派发的任务不再回填/唤醒状态条
   // (后端 /voice/tasks 按 origin=voice 返回全部历史,不认"上下文"这个概念,过滤只能
   // 在前端做)。清空上下文时连同 barTasks 一起重置,见 #clearVoiceCtxBtn 的点击处理;
@@ -1187,40 +1199,189 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let voiceTasksClearedAt = Number(localStorage.getItem("vococo_voice_tasks_cleared_at") || 0);
 
   function upsertTaskBar(t){
-    if(t.created_at && t.created_at < voiceTasksClearedAt) return;  // 清空上下文之前派发的任务,后续状态更新也不再唤醒状态条
-    if(t.status === "queued" || t.status === "running") dismissedTaskIds.delete(t.id);
+    // 状态条接后台任务(voice/chat)和当前会话 SDK 待办(sdk_task)。
+    if(t.origin !== "voice" && t.origin !== "chat" && t.origin !== "sdk_task") return;
+    // 水位线只对 voice 任务生效;chat 任务跟语音上下文无关。
+    if(t.origin === "voice" && t.created_at && t.created_at < voiceTasksClearedAt) return;
+    if((t.origin === "chat" || t.origin === "sdk_task") && t.dispatch_chat_id !== S.conv) return;
+    if(t.deleted){ barTasks.delete(t.id); renderTaskBar(); return; }
     barTasks.set(t.id, t);
     renderTaskBar();
   }
 
   function taskbarNote(t){
     if(t.status === "running") return t.progress_note || "进行中";
-    if(t.status === "queued") return "排队中";
+    if(t.status === "in_progress") return t.description || "进行中";
+    if(t.status === "queued" || t.status === "pending") return "排队中";
     return t.result_summary || STATUS_WORD[t.status] || t.status;
   }
 
+  function isTaskDone(t){ return !["queued","pending","running","in_progress","paused"].includes(t.status); }
+  function taskbarTitle(t){ return t.origin === "sdk_task" ? `#${t.number} ${t.title}` : t.title; }
+  function taskIsRunning(t){ return t.status === "running" || t.status === "in_progress"; }
+
   function renderTaskBar(){
     const rows = [...barTasks.values()]
-      .filter(t=>!dismissedTaskIds.has(t.id) && !taskBarDoneHidden(t))
-      .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at))
-      .slice(0, TASKBAR_MAX);
-    taskBar.hidden = !rows.length;
-    taskBar.innerHTML = rows.map(t=>{
-      const done = t.status !== "queued" && t.status !== "running";
-      return `<div class="taskbar-row${done ? " done" : ""}"><span class="dot ${t.status}"></span>` +
-        `<span class="t">${esc(t.title)}</span>` +
-        `<span class="n">${esc(taskbarNote(t))}</span>` +
-        (done ? `<button class="close" data-id="${t.id}" aria-label="关闭">✕</button>` : "") +
-        `</div>`;
-    }).join("");
+      .filter(t=>!taskBarDoneHidden(t))
+      .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at));
+
+    // 两类任务分离(2026-08-06 对齐):#taskBar 只显示 voice 任务,#chatTaskBar 只显示 chat 任务。
+    // barTasks 是共享池(SSE 事件混着来),渲染时按 origin 分流,互不污染。
+    const voiceRows = rows.filter(t=>t.origin === "voice");
+    const chatRows = rows.filter(t=>t.origin === "chat" || t.origin === "sdk_task")
+      .sort((a,b)=>{
+        if(a.origin === "sdk_task" && b.origin === "sdk_task") return a.number - b.number;
+        if(a.origin === "sdk_task") return -1;
+        if(b.origin === "sdk_task") return 1;
+        return (b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at);
+      });
+
+    // 1) 通话视图 #taskBar: voice 任务简单列表,最近 7 条,差量渲染
+    renderBar($("#taskBar"), voiceRows.slice(0, TASKBAR_MAX));
+
+    // 2) 聊天视图 #chatTaskBar: chat 任务活跃/已完成分组,默认折叠已完成,活跃最多默认 5 条
+    const active = chatRows.filter(t=>!isTaskDone(t));
+    const done = chatRows.filter(t=>isTaskDone(t));
+    renderChatTaskBar(active, done);
+
     scheduleDoneHide();  // 每次渲染后重算下一个「终态满 10 分钟」的自动隐藏时刻
+  }
+  // 差量渲染单个任务条(#taskBar 用):同 id 的行存在且状态/文案没变就不重建
+  // DOM —— 旧版每次 task_update 都整段 innerHTML 重写,running 圆点的脉冲动画
+  // 随之反复重启,视觉上一直闪,像"还在持续输出"。行结构同 renderTaskBarRow
+  // (dot 两态 running/other,无 ✕ 按钮)。
+  function renderBar(el, rows){
+    el.hidden = !rows.length;
+    for(const child of [...el.querySelectorAll(".taskbar-row")]){
+      if(!rows.some(t=>t.id===child.dataset.tid)) child.remove();
+    }
+    rows.forEach((t, i)=>{
+      let row = el.querySelector(`.taskbar-row[data-tid="${t.id}"]`);
+      if(!row){
+        row = document.createElement("div");
+        row.className = "taskbar-row";
+        row.dataset.tid = t.id;
+      }
+      if(el.children[i] !== row) el.insertBefore(row, el.children[i]);  // 按排序归位
+      row.classList.toggle("done", isTaskDone(t));
+      let dot = row.querySelector(".dot");
+      if(!dot){ dot = document.createElement("span"); dot.className = "dot"; row.appendChild(dot); }
+      const dotCls = "dot " + (taskIsRunning(t) ? "running" : "other");
+      if(dot.className !== dotCls) dot.className = dotCls;  // 状态没变不动 class,动画不重启
+      let ttl = row.querySelector(".t");
+      if(!ttl){ ttl = document.createElement("span"); ttl.className = "t"; row.appendChild(ttl); }
+      const title = taskbarTitle(t);
+      if(ttl.textContent !== title) ttl.textContent = title;
+      const note = taskbarNote(t);
+      let nEl = row.querySelector(".n");
+      if(!nEl){ nEl = document.createElement("span"); nEl.className = "n"; row.appendChild(nEl); }
+      if(nEl.textContent !== note) nEl.textContent = note;
+    });
+  }
+
+  // 聊天视图任务条:活跃区行差量渲染(同 id 行存在且状态/文案没变不重建,
+  // 圆点动画不因整段重写反复重启——旧版 innerHTML 全量重写,任务高频更新时
+  // 一直闪,像"还在持续输出");分组/折叠按钮变化少,整段重建无感。
+  function renderChatTaskBar(active, done){
+    const chatTaskBar = $("#chatTaskBar");
+    const any = active.length || done.length;
+    chatTaskBar.hidden = !any;
+    if(!any){ chatTaskBar.innerHTML = ""; return; }
+
+    const expanded = chatTaskBar.dataset.activeExpanded === "1";
+    const showActive = expanded ? active : active.slice(0, CHAT_TASK_ACTIVE_MAX);
+    const doneExpanded = chatTaskBar.dataset.doneExpanded === "1";
+
+    // 容器/分组结构只建一次,行高频变化走差量
+    let box = chatTaskBar.querySelector(".chat-taskbar-box");
+    if(!box){
+      chatTaskBar.innerHTML = '<div class="chat-taskbar-box">' +
+        '<div class="ctb-section ctb-active"></div><div class="ctb-section ctb-done"></div></div>';
+      box = chatTaskBar.querySelector(".chat-taskbar-box");
+    }
+    const activeSec = box.querySelector(".ctb-active");
+    const doneSec = box.querySelector(".ctb-done");
+
+    // 活跃任务区:行差量 + 显示更多按钮(数量变化才增删,文案变了才改)
+    renderChatRows(activeSec, showActive);
+    let moreBtn = activeSec.querySelector(".ctb-more");
+    if(active.length > CHAT_TASK_ACTIVE_MAX){
+      const remain = active.length - CHAT_TASK_ACTIVE_MAX;
+      if(!moreBtn){
+        moreBtn = document.createElement("button");
+        moreBtn.type = "button"; moreBtn.className = "ctb-more"; moreBtn.dataset.type = "active";
+        activeSec.append(moreBtn);
+      }
+      moreBtn.textContent = expanded ? "收起" : `显示更多 (${remain})`;
+    } else if(moreBtn){
+      moreBtn.remove();
+    }
+
+    // 已完成任务区:默认折叠,展开时才渲染行(低频,整段重建即可)
+    doneSec.innerHTML = "";
+    if(done.length){
+      const toggle = document.createElement("button");
+      toggle.type = "button"; toggle.className = "ctb-toggle";
+      const chev = document.createElement("span");
+      chev.className = "ctb-chev" + (doneExpanded ? " open" : "");
+      toggle.append(chev, document.createTextNode(`已完成 (${done.length})`));
+      doneSec.append(toggle);
+      if(doneExpanded) renderChatRows(doneSec, done);
+    }
+  }
+
+  // 差量渲染一组 ctb 行:同 id 行存在且状态/文案没变不重建(dot 动画不重启)
+  function renderChatRows(section, rows){
+    for(const child of [...section.querySelectorAll(".ctb-row")]){
+      if(!rows.some(t=>t.id===child.dataset.tid)) child.remove();
+    }
+    rows.forEach((t, i)=>{
+      let row = section.querySelector(`.ctb-row[data-tid="${t.id}"]`);
+      if(!row){
+        row = document.createElement("div");
+        row.className = "ctb-row";
+        row.dataset.tid = t.id;
+        row.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
+        row.children[0].className = "ctb-dot";
+        row.children[1].className = "ctb-title";
+        row.children[2].className = "ctb-note";
+        section.append(row);
+      }
+      if(section.children[i] !== row) section.insertBefore(row, section.children[i]);  // 按排序归位
+      row.classList.toggle("done", isTaskDone(t));
+      const dot = row.children[0];
+      const dotCls = "ctb-dot " + (taskIsRunning(t) ? "running" : "other");
+      if(dot.className !== dotCls) dot.className = dotCls;  // 状态没变不动 class,动画不重启
+      const ttl = row.children[1];
+      const title = taskbarTitle(t);
+      if(ttl.textContent !== title) ttl.textContent = title;
+      const note = taskbarNote(t);
+      const nEl = row.children[2];
+      if(nEl.textContent !== note) nEl.textContent = note;
+    });
   }
 
   taskBar.addEventListener("click", (e)=>{
-    const closeBtn = e.target.closest(".close");
-    if(closeBtn){
+    tasksDrawer.classList.add("open");
+    loadTasks();
+  });
+
+  // 聊天视图输入框顶部的任务条:与通话视图 #taskBar 共享数据,点击打开任务抽屉
+  $("#chatTaskBar").addEventListener("click", (e)=>{
+    const moreBtn = e.target.closest(".ctb-more");
+    if(moreBtn){
       e.stopPropagation();
-      dismissedTaskIds.add(closeBtn.dataset.id);
+      const chatTaskBar = $("#chatTaskBar");
+      const key = moreBtn.dataset.type + "Expanded";
+      chatTaskBar.dataset[key] = chatTaskBar.dataset[key] === "1" ? "" : "1";
+      renderTaskBar();
+      return;
+    }
+    const toggleBtn = e.target.closest(".ctb-toggle");
+    if(toggleBtn){
+      e.stopPropagation();
+      const chatTaskBar = $("#chatTaskBar");
+      chatTaskBar.dataset.doneExpanded = chatTaskBar.dataset.doneExpanded === "1" ? "" : "1";
       renderTaskBar();
       return;
     }
@@ -1721,14 +1882,23 @@ void main(){
       syncSidebarTaskStatus(t);  // 侧边栏默认项目任务行的进行中圆点同步亮/灭
     });
     es.addEventListener("task_done", e=>{
+      const data = JSON.parse(e.data);
       tasksBadge.classList.add("on");
       loadTasks();
       loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
-      const data = JSON.parse(e.data);
       upsertTaskBar(data);  // 终态 → 状态条里标记"已完成",留在条里等用户手动点叉关闭
-      pendingAnnouncements.push(data);
-      flushAnnouncements();
+      // 只有语音后台任务能进入语音播报;聊天任务只更新自己的状态条。
+      if(data.origin === "voice"){
+        pendingAnnouncements.push(data);
+        flushAnnouncements();
+      }
     });
+    es.addEventListener("sdk_task_update", e=>{
+      const task=JSON.parse(e.data);
+      upsertTaskBar(task);
+    });
+    // SSE 断线重连成功后全量校准一次:重连期间错过的 task_done 靠这次拉全量补上
+    es.onopen = ()=>{ loadTasks(); };
   }
 
   // ── P3 阶段二:Omni-Realtime WebRTC 通话 ─────────────────────────────────
@@ -3176,7 +3346,6 @@ void main(){
       voiceTasksClearedAt = Date.now() / 1000;
       localStorage.setItem("vococo_voice_tasks_cleared_at", String(voiceTasksClearedAt));
       barTasks.clear();
-      dismissedTaskIds.clear();
       renderTaskBar();
     }catch(e){ addMsg("ai error", "清空失败:"+e.message); }
   });
@@ -3228,16 +3397,23 @@ void main(){
   // ── 视图切换入口(供侧边栏"语音任务"主行 + #voiceChatBtn 调用,见下方接线)──────
   // initOnce:原页面这些初始化(常驻任务播报订阅/拉历史/挑一次交互模式)靠整页
   // 加载天然只跑一次;现在同一个 DOM 可以反复进出通话视图,得自己拿个标记位挡住
-  // 重复跑——尤其 connectTaskStream() 重跑会攒出好几条重复的 EventSource。
+  // 重复跑。
   let initialized = false;
   function initOnce(){
     if(initialized) return;
     initialized = true;
-    connectTaskStream();
-    loadTasks();  // 顺带初始化任务状态条:页面刷新前就在跑的任务也能立刻出现在条上
     loadMainHistory();
     initUiMode();
   }
+
+  // 任务 SSE 流与全量初始化:登录后即启动,不依赖是否进入通话视图——聊天输入框顶部
+  // 的任务状态条也需要实时更新。
+  window.connectTaskStreamOnce = function(){
+    if(window.__taskStreamConnected) return;
+    window.__taskStreamConnected = true;
+    connectTaskStream();
+    loadTasks();  // 顺带初始化任务状态条:页面刷新前就在跑的任务也能立刻出现在条上
+  };
 
   // teardownCallResources:退出通话视图时收麦克风/播放/WS——原页面靠浏览器整页
   // 导航卸载页面顺带回收这些资源,现在视图常驻 DOM 不会自动卸载,不手动收就是
@@ -3302,6 +3478,9 @@ void main(){
     teardownCallResources();
     renderConvs();   // 挂断后切回聊天侧栏,取消「语音通话」行高亮
   };
+  // 任务状态条:切会话时 openConv(IIFE 外)要按当前会话刷新任务,loadTasks 是
+  // 本 IIFE 的局部函数(严格模式不泄漏全局),照 openCallView 模式挂 window 出口。
+  window.refreshTaskStatus = loadTasks;
 })();
 
 // ── 主题(深/浅/跟随系统)───────────────────────────────────────────────
@@ -3418,6 +3597,7 @@ async function tryEnter(){
     localStorage.setItem("vococo_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
     connect(); initPush();
+    connectTaskStreamOnce();  // 启动任务 SSE,让聊天输入框顶部状态条也能实时更新
     const hasSavedExpanded = localStorage.getItem("vococo_expanded") !== null;
     loadExpanded();
     if(!hasSavedExpanded){ S.expanded.add("__default__"); }  // 从没手动折叠过 → 默认项目首次展开
@@ -3770,37 +3950,54 @@ function refillCurrentMeta(){
 
 // ── 模型选择器 ────────────────────────────────────────────────────────────
 async function loadModels(){
-  try{ const r=await api("/models"); S.models=await r.json(); renderModelChip();
-       S.effort=(S.models.effort||""); renderEffortChip(); }catch(e){}
+  try{ const r=await api("/models"); S.models=await r.json(); renderModelChip(); renderEffortChip(); }catch(e){}
 }
 
 // ── 思考深度选择器 ────────────────────────────────────────────────────────
-var EFFORT_LEVELS = [
-  ["high", "标准"],
-  ["max",  "深度"],
-];
-function effortShort(id){ return (EFFORT_LEVELS.find(x=>x[0]===id)||[])[1] || (id?esc(id):"思考"); }
-function curEffort(){ return S.effort || "high"; }
-function renderEffortChip(){ $("#effortName").textContent=effortShort(curEffort()); }
+// 档位由服务端按模型返回：官方 Claude / Codex GPT 是五档，第三方兼容端点保留已验证的两档。
+function effortState(model){
+  const all=(S.models&&S.models.efforts)||{}, wanted=model||curModel();
+  const key=all[wanted] ? wanted : Object.keys(all).find(function(id){
+    return wanted.indexOf(id)===0 || id.indexOf(wanted)===0;
+  });
+  const state=key ? all[key] : {};
+  return {model:key||wanted, levels:Array.isArray(state.levels)?state.levels:[], value:state.value||""};
+}
+function effortShort(id, levels){
+  const hit=(levels||[]).find(function(item){ return item[0]===id; });
+  return hit ? hit[1] : (id?esc(id):"auto");
+}
+function curEffort(){ return effortState().value; }
+function renderEffortChip(){
+  const state=effortState(), btn=$("#effortBtn"), enabled=state.levels.length>0;
+  $("#effortName").textContent=effortShort(state.value, state.levels);
+  btn.disabled=!enabled;
+  btn.title=enabled ? "思考深度" : "此模型使用服务商默认思考深度";
+}
 function renderEffortPop(){
-  const pop=$("#effortPop"), cur=curEffort();
-  pop.innerHTML = EFFORT_LEVELS.map(function(e){
-    const on = e[0]===cur;
+  const pop=$("#effortPop"), state=effortState(), cur=state.value;
+  pop.innerHTML = state.levels.map(function(e){
+    const on=e[0]===cur;
     return '<button type="button" class="mi'+(on?" on":"")+'" data-e="'+e[0]+'">'+
-      '<span class="ml">'+e[1]+'</span>'+(on?'<span class="mk">✓</span>':'')+'</button>';
+      '<span class="ml">'+esc(e[1])+'</span>'+(on?'<span class="mk">✓</span>':'')+'</button>';
   }).join("");
   pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickEffort(b.dataset.e); });
 }
 function pickEffort(id){
+  const state=effortState(), old=state.value, saved=((S.models&&S.models.efforts)||{})[state.model];
   $("#effortPop").hidden=true;
-  if(!id || id===curEffort()) return;
-  S.effort=id;          // 乐观更新胶囊
+  if(!saved || !id || id===old) return;
+  saved.value=id;  // 乐观更新当前模型的胶囊；失败时恢复原值
   renderEffortChip();
   // POST /effort 静默切换：不走命令管道、不触发 SSE/推送;agent 下一条消息即生效
   api("/effort", {method:"POST", headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({effort:id})}).catch(()=>{});
+    body:JSON.stringify({model:state.model, effort:id})})
+    .then(function(r){ if(!r.ok) throw new Error("effort switch failed"); return r.json(); })
+    .then(function(result){ saved.value=result.effort||id; renderEffortChip(); })
+    .catch(function(){ saved.value=old; renderEffortChip(); });
 }
 $("#effortBtn").onclick=e=>{ e.stopPropagation(); const p=$("#effortPop");
+  if(!effortState().levels.length) return;
   if(p.hidden){ renderEffortPop(); p.hidden=false; } else { p.hidden=true; } };
 document.addEventListener("click", e=>{ const b=$("#effortBox"); if(b && !b.contains(e.target)){ $("#effortPop").hidden=true; } });
 
@@ -3943,6 +4140,7 @@ function pickCmd(i){
   const c=S.cmd.items[i]; if(!c) return;
   const ta=$("#ta"); ta.value="/"+c.name+" "; closeCmdMenu(); autoGrow(); ta.focus();
   const p=ta.value.length; ta.setSelectionRange(p,p);
+  saveDraft();   // 程序赋值不触发 input 事件,手动存一次草稿
 }
 // 只在"整条消息就是斜杠命令前缀,还没打空格"时弹出;打了空格说明已在填参数,收起菜单
 function checkCmdMenu(){
@@ -3959,7 +4157,7 @@ function modelShort(id){
   return id.replace(/^claude-/,"").replace(/-\d{6,}$/,"");  // 去 claude- 前缀与日期后缀
 }
 function curModel(){ return S.model || S.models.default || ""; }
-function setModel(id){ S.model=id||""; renderModelChip(); }
+function setModel(id){ S.model=id||""; renderModelChip(); renderEffortChip(); }
 function renderModelChip(){ $("#modelName").textContent=modelShort(curModel()); }
 // 模型面板分组:Anthropic 订阅(拿不到具体用量,只显示重置时间)/ Kimi 订阅(有具体用量,带小圆环)
 // / API(按量计费,不查额度)。分组顺序固定,组间只画一条分割线,不做折叠。
@@ -4676,7 +4874,6 @@ async function loadProjects(){
 // 「终态任务满 10 分钟自动隐藏」只作用于语音界面顶部的任务状态条(renderTaskBar):
 // 顶部常驻横幅最多 7 条,终态(done/failed/cancelled)任务挂满 10 分钟自动消失、
 // 不再占位置——隐藏≠删除,数据还在,任务抽屉/侧边栏/最近列表照常全量可见。
-// 手动点 ✕ 关闭仍是永久关闭(dismissedTaskIds,仅前端隐藏)。
 const DONE_HIDE_SEC = 600;
 // 终态判定与状态条一致:非「排队中/进行中」即终态。updated_at 是任务终态落库时间
 // (秒级时间戳),缺时间戳(幽灵数据)不隐藏。
@@ -4695,7 +4892,6 @@ function scheduleDoneHide(){
   if(_doneHideTimer){ clearTimeout(_doneHideTimer); _doneHideTimer=null; }
   const now=Date.now()/1000;
   const soonest = [...barTasks.values()]
-    .filter(t=>!dismissedTaskIds.has(t.id))
     .map(t=>{
       if(t.status==="queued" || t.status==="running") return null;
       const ts = t.updated_at ?? t.created_at;
@@ -5732,6 +5928,14 @@ async function toggleArchive(conv){
   const c=findConv(conv); if(!c) return;
   const next=!c.archived;
   c.archived=next; renderConvs();  // 乐观更新
+  if(next && conv===S.conv){
+    // 归档的是当前打开的会话:侧栏里它可能立刻消失(工作中/归档筛选下),聊天窗口
+    // 不能还停在被归档会话上——自动切到另一个最近活跃的会话。注意归档后它仍在
+    // S.convs 里,必须排除自己,否则「全部」筛选下 openConv 会切回它自己;
+    // 列表里只有它一个(如唯一会话)则原地不动,反正窗口本来就在显示它。
+    const target=S.convs.find(x=>x.conv!==conv);
+    if(target) openConv(target.conv);
+  }
   try{
     const r=await api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({conv,archived:next})});
@@ -5935,6 +6139,7 @@ function renderEventsFlow(events, ctx){
       flow.append(d); continue;
     }
     if(blk.type!=="tool") continue;
+    if(["TaskCreate","TaskGet","TaskList","TaskUpdate","TaskDelete"].includes(blk.name)) continue;
     const failed=blk.ok===false;
     const light=!("input" in blk);  // 懒加载空壳:没有 input 字段(/history 默认剥掉了)
     let card;
@@ -5978,6 +6183,7 @@ async function openConv(conv, silentGroup){
   // 切到目标会话时,若全局审批弹窗正开着则关闭(用户选择进去处理)
   const cmodal=$("#choiceModal"); if(cmodal && !cmodal.hidden){ cmodal.hidden=true; }
   S.conv=conv; S.stream=null;
+  restoreDraft(conv);   // 输入框草稿按会话独立:切走时已实时存好,这里恢复目标会话的草稿
   // 用户已打开该会话,清零未读标记;本地缓存也同步清,避免重绘闪烁。语音任务/定时
   // 任务的行对象不在 S.convs 里(那是 /conversations 拉的),还得去各自的侧栏缓存
   // 里找——否则只清了 S.pendingReview 这半份缓存,行对象自己的 pending_review 字段
@@ -6010,6 +6216,7 @@ async function openConv(conv, silentGroup){
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
+  window.refreshTaskStatus && window.refreshTaskStatus();  // 刷新任务状态条(loadTasks 在通话视图 IIFE 内,经 window 出口调)
   const isLocal = String(conv).startsWith("local-");
   let cached = S.histCache[conv];
   if(!cached && !isLocal){
@@ -6336,6 +6543,8 @@ function renderStatus(){
 }
 function finalizeStream(finalText, imgs){
   if(!S.stream) return;
+  // 末尾那条普通命令以前等不到下一段正文/命令,会永久散落在过程区;收工时也要归组。
+  if(S.stream.activeCard){ foldToGroup(S.stream, S.stream.activeCard); S.stream.activeCard=null; }
   if(S.stream.timer) clearInterval(S.stream.timer);
   S.stream.status.remove(); S.stream.thinktog.remove(); S.stream.think.remove();
   // 回合已结束:还没点的审批按钮全部失效(点了也只会收到"已过期")
@@ -6519,6 +6728,15 @@ function foldToGroup(s, card){
 }
 // 把单个流式事件落到 DOM(供前台实时渲染 + 切回会话时按缓冲重放两用)
 function applyStreamEvent(e){
+  // 停止回复后的防重建短窗,见 stopReply 的注释:窗口内该会话的旧帧在流已收掉
+  // 时不重建气泡(避免「点了还出现,要点第二次」);到期或命中后自动解除。
+  const g = S.stopGuard;
+  if(g){
+    if(g.conv === e.conv){
+      if(Date.now() > g.until) S.stopGuard = null;  // 窗口到期,恢复正常
+      else if(!S.stream) return;                    // 窗口内、无流 → 在途旧帧,丢弃
+    }
+  }
   switch(e.type){
     case "user":
       if(S.localSent){ S.localSent=false; break; }  // 本客户端发的,气泡已在 send() 里加了
@@ -6704,7 +6922,7 @@ async function send(text, display, opts){
   // 上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发(审批/语音走 forceSend 立即发)
   if(S.stream && !opts.forceSend){
     if(queuePending(text, S.images.slice(), S.audios.slice())){
-      S.images=[]; S.audios=[]; renderThumbs(); $("#ta").value=""; autoGrow();
+      S.images=[]; S.audios=[]; renderThumbs(); $("#ta").value=""; autoGrow(); clearDraft();
     }
     return;
   }
@@ -6738,6 +6956,7 @@ async function send(text, display, opts){
   };
   // 新会话:发出第一条后,把本地临时会话转正
   const wasLocal=String(S.conv).startsWith("local-");
+  clearDraft();   // 发送即清草稿:必须在转正前调用,否则 S.conv 已换成真实 id,local- 旧 key 清不掉
   if(wasLocal){ S.conv=S.conv.replace("local-",""); payload.conv=S.conv; renderProjSelChip(); }
   S.images=[]; S.audios=[]; renderThumbs(); $("#ta").value=""; autoGrow();
   try{
@@ -6768,10 +6987,53 @@ function updateSendBtn(){
 async function stopReply(){
   if(!S.stream) return;
   const conv=S.conv;
+  // 乐观更新:任务会话先本地把任务行置「已停止」,不等后端收尾落库——
+  // 收尾含最多 5 秒 CLI interrupt + 写库,SSE 终态要晚几秒才到,干等会让
+  // 用户以为没停住、反复点。SSE 终态到达后差量渲染覆盖成同一结果,无跳变。
+  const optimistic = markTaskStopped(conv);
+  // 防重建(点两次的根因):取消指令发出前已在途的旧帧(取消瞬间 SDK 最后吐的
+  // 文本/工具事件)会在 finalizeStream 之后才到达,而 applyStreamEvent 对
+  // streamy 事件一律 ensureStream——不拦会把已收掉的气泡重新拉起来,让用户
+  // 以为没停住、要点第二次。短窗内该会话的 streamy 事件且当前无流时一律丢弃,
+  // 窗口过后自动解除;用户手动发的新消息必在窗口之后,不受影响。
+  S.stopGuard = {conv, until: Date.now() + 2000};
+  clearTimeout(S.stopGuardTimer);
+  S.stopGuardTimer = setTimeout(()=>{ if(S.stopGuard) S.stopGuard = null; }, 2500);
+  // 顺手清掉该会话的进行中缓冲:done 到达时本来也会清,提前清掉更稳——
+  // 避免切走再切回时 maybeReplayStream 把已停止回合的旧帧重放成新的流式气泡
+  // (侧栏「正在回复」橙点也随之熄灭,由 markLive 重绘)。
+  delete S.live[conv]; delete S.streamSnap[conv]; markLive();
   finalizeStream(); // 立即结束前端流式气泡,保留已有部分文字
-  try{ await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})}); }
-  catch(e){ /* 网络异常忽略,前端已处理 */ }
+  try{
+    const r = await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
+    if(r.ok){
+      const j = await r.json();
+      if(!j.stopped){
+        if(optimistic) restoreTaskStopped(conv, optimistic);  // 停失败,恢复原状态
+        // 停不住 = 流的源头(轮次/任务)其实已经结束,比如 SSE 缓冲重放的历史流。
+        // 明说一句,免得用户以为按钮没反应、反复点。
+        addMsg("ai", "已停止(当前没有正在运行的回复或任务)");
+      }
+    }
+  }catch(e){ /* 网络异常忽略,前端已处理 */ }
   flushPending(conv); // 手动中止不会触发 done/message 事件,需主动补发排队中的下一条
+}
+// 乐观停止:任务会话(task:<id>)点停止,本地先把任务行置「已取消」给即时反馈。
+// 返回原状态供停失败时恢复;非任务会话/任务已终态返回 null。
+function markTaskStopped(conv){
+  if(!conv.startsWith("task:")) return null;
+  const t = barTasks.get(conv.slice(5));
+  if(!t || (t.status !== "queued" && t.status !== "running")) return null;
+  const prev = {status: t.status, progress_note: t.progress_note};
+  t.status = "cancelled"; t.progress_note = "已停止";
+  renderTaskBar();
+  return prev;
+}
+function restoreTaskStopped(conv, prev){
+  const t = barTasks.get(conv.slice(5));
+  if(!t) return;
+  t.status = prev.status; t.progress_note = prev.progress_note;
+  renderTaskBar();
 }
 // ── 待发送队列 ────────────────────────────────────────────────────────────
 function queuePending(text, images, audios){
@@ -6840,6 +7102,27 @@ document.addEventListener("click", e=>{ if(S.cmd.open && !e.target.closest("#cmd
 function autoGrow(){ const t=$("#ta"); t.style.height="auto"; t.style.height=Math.min(t.scrollHeight,160)+"px"; }
 $("#ta").addEventListener("input", autoGrow);
 $("#ta").addEventListener("input", checkCmdMenu);
+// ── 会话级输入草稿(纯本地缓存,按会话 id 分 key)────────────────────────
+// 每个会话的输入框内容独立存 localStorage;切会话时恢复目标会话的草稿,
+// 发送/清空时删除,避免 A 会话打的字串到 B 会话。local- 前缀的未转正新会话
+// 同样按自己 id 存,互不干扰;发送转正时旧 key 一并清掉。
+function draftKey(conv){ return "vococo_draft:"+conv; }
+function saveDraft(){
+  try{
+    if(!S.conv) return;
+    const v=$("#ta").value;
+    if(v) localStorage.setItem(draftKey(S.conv), v);
+    else localStorage.removeItem(draftKey(S.conv));  // 清空了就删 key,不留空草稿
+  }catch(e){}
+}
+function restoreDraft(conv){
+  let v=""; try{ v=localStorage.getItem(draftKey(conv))||""; }catch(e){}
+  $("#ta").value=v; autoGrow();
+}
+function clearDraft(conv){
+  try{ localStorage.removeItem(draftKey(conv||S.conv)); }catch(e){}
+}
+$("#ta").addEventListener("input", saveDraft);
 // 欢迎屏快捷入口:点击直接发送
 document.querySelectorAll("#empty .sug[data-s]").forEach(b=>{ b.onclick=()=>send(b.dataset.s); });
 
@@ -7133,6 +7416,7 @@ function insertToInput(t){
   const ta=$("#ta");
   ta.value = ta.value.trim() ? (ta.value.replace(/\s+$/,"")+" "+t) : t;
   autoGrow(); ta.focus();
+  saveDraft();   // 程序赋值不触发 input 事件,手动存一次草稿
 }
 $("#micBtn").onclick = ()=>{ if(REC.state==="idle") startRec(); };          // 麦克风:开录
 $("#recSend").onclick = e=>{ e.stopPropagation(); if(REC.state==="recording") stopRec(false); }; // 右侧 ↑:完成并发送

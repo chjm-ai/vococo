@@ -70,7 +70,7 @@ class GatewayRunner:
         # 也不自己 spawn 新进程 —— 退出即可,拉起交给 run.sh 守护循环(单实例)
         # 消费 pop 以确保只退出一次(即使有多条后续消息进来也不重复)
         if selfops.pop_restart_pending(inc.session_key) is not None:
-            await selfops.exit_for_restart(adapter, inc.chat_id)
+            await selfops.exit_for_restart(adapter, inc.chat_id, inc.session_key)
 
     async def _try_clarify(self, adapter: Adapter, inc: Incoming) -> bool:
         """把入站消息当作对某个待答 clarify 的回答来消费;消费了返回 True。"""
@@ -218,7 +218,7 @@ class GatewayRunner:
         走的是 loop 默认异常处理路径,而不是常规 try/except 能兜到的路径。
         标准 asyncio 长驻服务的做法就是自己接管 loop.set_exception_handler,
         这样下次真崩的时候能在日志里留一份完整证据,再据此对症下药 —— 纯增量、
-        不改变任何现有行为,不会影响 Telegram/网页对话。
+        不改变任何现有行为,不会影响现有对话。
         """
         import asyncio
         import traceback
@@ -242,6 +242,8 @@ class GatewayRunner:
         from ..core import client_pool, worktree  # 懒加载
 
         self._install_loop_exception_handler()
+        # 先记录本进程实际运行版本；只有存活满窗口才会晋升 stable 并结束重启事务。
+        selfops.write_running_revision()
         n = await worktree.prune_orphans()  # 启动兜底:回收无会话绑定的孤儿 worktree/悬空分支
         if n:
             print(f"🧹 启动清理:回收 {n} 个孤儿 worktree/悬空分支")
@@ -274,6 +276,7 @@ class GatewayRunner:
                     tg.start_soon(self._serve, adapter)
                 tg.start_soon(run_scheduler, self.push)
                 tg.start_soon(self._resume_after_restart)
+                tg.start_soon(selfops.mark_runtime_stable)
                 tg.start_soon(client_pool.sweep_loop)  # 定期回收空闲超时的保温 client
                 tg.start_soon(watchdog.beat_loop)  # 在循环里刷心跳,供看门狗线程判卡死
         finally:
@@ -283,17 +286,13 @@ class GatewayRunner:
 
 
 async def run_serve() -> None:
-    """组装并启动 gateway(Telegram + Web + 调度器,按配置挂载)。"""
-    from .adapters.telegram import TelegramAdapter
-
+    """组装并启动 gateway(Web + 调度器,按配置挂载)。"""
     adapters: list[Adapter] = []
-    if config.TELEGRAM_BOT_TOKEN:
-        adapters.append(TelegramAdapter())
     if config.WEB_ENABLED:
         from .adapters.web import WebAdapter
 
         adapters.append(WebAdapter())
     if not adapters:
-        print("⚠️  没启用任何入口(Telegram/Web),本次只跑调度器。")
+        print("⚠️  没启用任何入口(Web),本次只跑调度器。")
 
     await GatewayRunner(adapters).run()

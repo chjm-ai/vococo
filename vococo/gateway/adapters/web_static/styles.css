@@ -1047,27 +1047,47 @@
   #tasksBadge{position:absolute;top:0;right:0;width:8px;height:8px;border-radius:50%;
     background:var(--accent);display:none}
   #tasksBadge.on{display:block}
-  /* 后台任务状态条:顶栏下方常驻横幅——派发瞬间出现,最近5条(进行中+已完成统一排序
-     计数)按最后更新时间倒序;已完成的留在条里加"✕"手动关闭,不再自动消失。
+  /* 后台任务状态条:顶栏下方常驻横幅——派发瞬间出现,最近7条按最后更新时间倒序;
+     终态任务满 10 分钟自动隐藏,不再手动关闭。状态点统一简化:running 黑色闪烁,
+     其余灰色小点;已完成项带删除线。
      点击空白处打开任务抽屉看详情(数据来自 SSE task_update/task_done)。
      PWA 拿不到 iOS 灵动岛(Live Activities 只开放给原生 App),这条是应用内的替代。 */
   #taskBar{border-bottom:1px solid var(--line);padding:8px 16px;display:flex;
     flex-direction:column;gap:6px;cursor:pointer;flex-shrink:0}
   #taskBar[hidden]{display:none}
+  /* 聊天视图输入框顶部的任务状态条:套在带背景色的圆角矩形框内,悬浮在输入框顶部。
+     活跃任务与已完成任务分区:已完成默认折叠;活跃任务默认最多 5 条,超出显示"显示更多"。 */
+  #chatTaskBar{padding:0 0 6px;display:flex;flex-direction:column;cursor:pointer}
+  #chatTaskBar[hidden]{display:none}
+  .chat-taskbar-box{background:color-mix(in srgb, var(--panel2) 55%, transparent);
+    border:1px solid color-mix(in srgb, var(--line2) 55%, transparent);border-radius:14px;
+    padding:8px 10px 6px;display:flex;flex-direction:column;gap:7px}
+  .ctb-section{display:flex;flex-direction:column;gap:5px}
+  .ctb-row{display:flex;align-items:center;gap:8px;font-size:12.5px;min-width:0}
+  .ctb-row.done{opacity:.55;text-decoration:line-through}
+  .ctb-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;background:var(--dim2)}
+  .ctb-dot.running{width:6px;height:6px;background:#000;box-shadow:0 0 0 1px var(--line2);
+    animation:ctbPulse 1.2s ease-in-out infinite}
+  .ctb-title{font-weight:500;flex-shrink:0;max-width:45%;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .ctb-note{color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ctb-more,.ctb-toggle{border:none;background:none;color:var(--accent);font-size:12px;
+    cursor:pointer;text-align:left;padding:2px 0;width:fit-content;display:inline-flex;
+    align-items:center;gap:6px}
+  .ctb-more:hover,.ctb-toggle:hover{text-decoration:underline}
+  .ctb-chev{display:inline-block;width:6px;height:6px;border:solid currentColor;
+    border-width:0 1.5px 1.5px 0;transform:translateY(-2px) rotate(-45deg);
+    transition:transform .15s;opacity:.65}
+  .ctb-chev.open{transform:translateY(0) rotate(45deg)}
   .taskbar-row{display:flex;align-items:center;gap:8px;font-size:13px;min-width:0}
-  .taskbar-row.done{opacity:.7}
-  .taskbar-row .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-  .taskbar-row .dot.queued{background:var(--dim2)}
-  .taskbar-row .dot.running{background:var(--accent);animation:taskbarPulse 1.2s ease-in-out infinite}
-  .taskbar-row .dot.done{background:var(--ok)}
-  .taskbar-row .dot.failed,.taskbar-row .dot.cancelled{background:var(--err)}
+  .taskbar-row.done{opacity:.55;text-decoration:line-through}
+  .taskbar-row .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;background:var(--dim2)}
+  .taskbar-row .dot.running{background:#000;box-shadow:0 0 0 1px var(--line2);
+    animation:ctbPulse 1.2s ease-in-out infinite}
   .taskbar-row .t{font-weight:600;flex-shrink:0;max-width:45%;overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
   .taskbar-row .n{color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .taskbar-row .close{flex-shrink:0;border:none;background:none;color:var(--dim2);
-    font-size:14px;line-height:1;padding:2px 4px;cursor:pointer}
-  .taskbar-row .close:hover{color:var(--text)}
-  @keyframes taskbarPulse{0%,100%{opacity:1}50%{opacity:.35}}
+  @keyframes ctbPulse{0%,100%{opacity:1}50%{opacity:.35}}
   #tasksDrawer{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10;display:none}
   #tasksDrawer.open{display:block}
   #tasksSheet{position:absolute;left:0;right:0;bottom:0;max-height:70vh;overflow-y:auto;

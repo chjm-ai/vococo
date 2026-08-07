@@ -115,6 +115,77 @@ def test_available_models_includes_web_extra_model(tmp_path, monkeypatch):
     assert by_id["claude-opus-5"] == ("Opus 5（订阅）", "anthropic")
 
 
+def test_extra_model_reuses_declared_provider(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "codex-gpt", {
+            "base_url": "http://127.0.0.1:8317", "model": "gpt-5.6-terra",
+            "api_key": "sk-proxy", "vision": "1", "mgmt_key": "mgmt-secret",
+        },
+    )
+    settings_store.upsert_web_extra_model(
+        "gpt-5.6-sol", "GPT-5.6 Sol（订阅）", group="codex", provider="codex-gpt"
+    )
+    settings_store.upsert_web_extra_model(
+        "gpt-5.6-luna", "GPT-5.6 Luna（订阅）", group="codex", provider="codex-gpt"
+    )
+
+    by_id = {mid: (label, group) for mid, label, group in providers.available_models([])}
+    assert by_id["gpt-5.6-terra"] == ("gpt-5.6-terra（订阅）", "codex")
+    assert by_id["gpt-5.6-sol"] == ("GPT-5.6 Sol（订阅）", "codex")
+    assert by_id["gpt-5.6-luna"] == ("GPT-5.6 Luna（订阅）", "codex")
+
+    for model in ("gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"):
+        resolved, env = providers.resolve(model, "claude-sonnet-5")
+        assert resolved == model
+        assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8317"
+        assert env["ANTHROPIC_VISION_CAPABLE"] == "1"
+    assert providers.codex_mgmt_for_model("gpt-5.6-luna") == (
+        "mgmt-secret", "http://127.0.0.1:8317"
+    )
+
+
+def test_effort_choices_follow_model_provider_capability(tmp_path, monkeypatch):
+    """Codex GPT / 官方 Claude 为五档；普通第三方端点保守保留 high/max。"""
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "codex-gpt", {
+            "base_url": "http://127.0.0.1:8317", "model": "gpt-5.6-terra",
+            "api_key": "sk-proxy", "mgmt_key": "mgmt-secret",
+        },
+    )
+    settings_store.upsert_web_extra_model(
+        "gpt-5.6-sol", "GPT-5.6 Sol（订阅）", group="codex", provider="codex-gpt"
+    )
+    settings_store.upsert_web_provider(
+        "deepseek", {
+            "base_url": "https://api.deepseek.com/anthropic", "model": "deepseek-v4-flash",
+            "api_key": "sk-deepseek",
+        },
+    )
+
+    assert providers.effort_levels_for_model("gpt-5.6-terra") == (
+        "low", "medium", "high", "xhigh", "max"
+    )
+    assert providers.effort_levels_for_model("gpt-5.6-sol") == (
+        "low", "medium", "high", "xhigh", "max"
+    )
+    assert providers.effort_choices_for_model("claude-sonnet-5") == (
+        ("low", "low"), ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh"), ("max", "max"),
+    )
+    assert providers.effort_choices_for_model("deepseek-v4-flash") == (
+        ("high", "high"), ("max", "max"),
+    )
+
+
+def test_available_models_hides_extra_when_declared_provider_missing(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_extra_model(
+        "gpt-5.6-luna", "GPT-5.6 Luna（订阅）", group="codex", provider="codex-gpt"
+    )
+    assert "gpt-5.6-luna" not in {mid for mid, _, _ in providers.available_models([])}
+
+
 def test_available_models_dedups_web_extra_model_against_defaults(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
     settings_store.upsert_web_extra_model("claude-sonnet-5", "重复")

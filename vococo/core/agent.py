@@ -2,7 +2,7 @@
 
 stream_turn() 是核心:开启 include_partial_messages,把 SDK 的流式事件
 归一成一串好消费的事件(文字增量 / 思考增量 / 工具开始 / 工具结果 / 完成)。
-TUI 和 Telegram 都消费这同一套事件 → 流式输出 + 工具调用过程可见。
+TUI 和 Web 都消费这同一套事件 → 流式输出 + 工具调用过程可见。
 
 run_turn() 是其上的便捷封装(累积成最终回复),给纯文本 chat 用。
 """
@@ -37,6 +37,7 @@ from ..gateway import clarify, settings_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
 from . import client_pool
+from .tasks import is_sdk_task_tool
 from .prompt import build_system_prompt
 
 
@@ -141,6 +142,8 @@ class AudioAttachment:
 # kimi-k3(2026-07-16 发布)官方标称 1M context,故一并登记;其余第三方供应商模型走默认 200k。
 # deepseek-v4 全系(V4-Pro/V4-Flash,2026-04-24 发布)官方标称 1M 上下文标配;旧名
 # deepseek-chat/deepseek-reasoner 已停用且不是 1M,不在此列,走默认 200k 兜底。
+# gpt-5.6 三档(Sol/Terra/Luna)官方统一标称 ~1.05M input / 128k output;Bedrock/Kiro
+# 等第三方平台标注 272k 与官方不符,我们走 OpenAI 官方通道,按 1.05M 登记。
 _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-fable-5": 1_000_000,
     "claude-opus-5": 1_000_000,
@@ -151,6 +154,7 @@ _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-haiku-4-5": 200_000,
     "deepseek-v4": 1_000_000,
     "kimi-k3": 1_000_000,
+    "gpt-5.6": 1_050_000,
 }
 
 
@@ -360,7 +364,6 @@ _TERMINAL_TASK = frozenset({"completed", "failed", "stopped", "killed"})
 # 判定「是子代理启动」的工具名(新版 Agent / 老版 Task)。
 _SUBAGENT_TOOLS = frozenset({"Agent", "Task"})
 
-
 def assemble_tool_input(raw: str) -> dict:
     """把累积的 input_json_delta 片段解析成 dict;空/坏 JSON 都安全退化成 {}。"""
     s = (raw or "").strip()
@@ -461,11 +464,12 @@ def _compat_base_key(
     extra_tools: tuple = (),
     disallowed_tools: tuple = (),
     max_turns: int = 0,
+    effort: str = "",
 ) -> str:
     """保温 client 的兼容性哈希(不含 SDK 会话 id,那个在池里单独比)。
 
-    覆盖所有「connect 时定死、语义上每轮该重读」的输入:模型 / 供应商 env(设置页
-    改完下轮生效)/ 系统提示(记忆索引变了要重建)/ skills / MCP 配置 / cwd;外加
+    覆盖所有「connect 时定死、语义上每轮该重读」的输入:模型 / 思考深度 / 供应商 env
+    (设置页改完下轮生效)/ 系统提示(记忆索引变了要重建)/ skills / MCP 配置 / cwd;外加
     clarify 路由身份 —— SDK 内部任务在 connect 时快照了 contextvar(danger 的 cwd /
     clarify 路由),复用的前提是快照值与当前轮完全一致:统一会话从 TG 切到 Web,
     路由一变就必须重建,否则审批弹窗会发回旧入口。
@@ -487,6 +491,7 @@ def _compat_base_key(
         "extra_tools": extra_tools,
         "disallowed_tools": disallowed_tools,
         "max_turns": max_turns,
+        "effort": effort,
         "route": route,
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
@@ -625,6 +630,12 @@ async def stream_turn(
     # 供应商集成:按会话选定模型(或设置页里配置的第三方供应商)算出实际模型和
     # 要注入的 env。第三方(DeepSeek/Kimi)→注入 base_url+key;官方→env 为空走订阅。
     resolved_model, provider_env = providers.resolve(model, config.MODEL)
+    # 思考深度按模型分别保存。老版本/手改配置可能为该模型留了不支持的档位，
+    # 此处宁可不传、交给供应商默认，也不能把未知参数发到第三方端点。
+    saved_effort = settings_store.get_web_effort(resolved_model)
+    effective_effort = (
+        saved_effort if saved_effort in providers.effort_levels_for_model(resolved_model) else ""
+    )
     # 图片旁路:第三方非视觉模型(如 DeepSeek)不收 image block,硬传直接报错 →
     # 先用 qwen-vl 把图转成文字描述拼进 user_text,再以纯文本喂主模型
     # (见 core/vision.py)。官方订阅直传原图,行为不变;转换失败抛错,由 converse
@@ -672,6 +683,7 @@ async def stream_turn(
             tuple(sorted((extra_mcp_servers or {}).keys())),
             tuple(sorted(disallowed_tools or ())),
             effective_max_turns,
+            effort=effective_effort,
         )
         if pooling
         else ""
@@ -687,7 +699,7 @@ async def stream_turn(
             mcp_servers=mcp_servers,
             hooks=build_hooks(),  # PreToolUse:灾难拦截 + 危险操作审批闸
             skills=skills,
-            effort=settings_store.get_web_effort() or None,  # 思考深度(web 端设的高/深度);空=不传,交供应商默认
+            effort=effective_effort or None,  # 按当前模型的已选深度;空=不传,交供应商默认
             # vococo 专属 skill(本地插件,见 config.PLUGIN_DIR):只在这里挂,
             # 不进 ~/.claude/skills,Claude Code/Codex/OpenCode 等其它工具看不到。
             plugins=[{"type": "local", "path": str(config.PLUGIN_DIR)}],
@@ -807,7 +819,8 @@ async def stream_turn(
                                     # 主 agent 起了个子代理 → 记进「在跑」集,收工要等它结束
                                     if name in _SUBAGENT_TOOLS and tid:
                                         pending_subagents.add(tid)
-                                yield ToolStarted(name, tool_id=tid, parent_id=pid)
+                                if not is_sdk_task_tool(name):
+                                    yield ToolStarted(name, tool_id=tid, parent_id=pid)
                         elif etype == "content_block_stop":
                             # 该工具块的入参已流完 → 解析并发出 ToolInput(喂 diff/todo/审批)
                             idx = ev.get("index")
@@ -815,9 +828,10 @@ async def stream_turn(
                             if key is not None and key in tool_meta:
                                 tid, name = tool_meta.pop(key)
                                 parsed = assemble_tool_input(tool_json.pop(key, ""))
-                                yield ToolInput(
-                                    name=name, tool_id=tid, tool_input=parsed, parent_id=pid
-                                )
+                                if not is_sdk_task_tool(name):
+                                    yield ToolInput(
+                                        name=name, tool_id=tid, tool_input=parsed, parent_id=pid
+                                    )
                     elif isinstance(msg, UserMessage):
                         pid = getattr(msg, "parent_tool_use_id", None)
                         for b in msg.content:
@@ -826,14 +840,15 @@ async def stream_turn(
                                 # 子代理的结果回来了 → 从「在跑」集移除(它的 tool_id 就是 Agent 调用 id)
                                 if b.tool_use_id in pending_subagents:
                                     pending_subagents.discard(b.tool_use_id)
-                                yield ToolFinished(
-                                    name=name,
-                                    ok=not bool(b.is_error),
-                                    preview=_preview(b.content),
-                                    tool_id=b.tool_use_id,
-                                    detail=_detail(b.content),
-                                    parent_id=pid,
-                                )
+                                if not is_sdk_task_tool(name):
+                                    yield ToolFinished(
+                                        name=name,
+                                        ok=not bool(b.is_error),
+                                        preview=_preview(b.content),
+                                        tool_id=b.tool_use_id,
+                                        detail=_detail(b.content),
+                                        parent_id=pid,
+                                    )
                     elif isinstance(msg, SystemMessage):
                         # CLI 压缩了上下文(autocompact 阈值≈窗口 83%,或手动):
                         # 透传标记,让各端显示「已自动压缩」而非无感丢细节。
@@ -861,7 +876,7 @@ async def stream_turn(
                         # 缓存供 /api/usage 查询,不做阻塞(不 yield 事件给前端)。
                         _update_rate_limits(msg.rate_limit_info)
                     elif isinstance(msg, TaskStartedMessage):
-                        # 后台任务(run_in_background)启动 → 记进「在跑」集,收工要等它终态
+                        # 任务启动 → 记进「在跑」集,收工要等它终态
                         active_tasks.add(getattr(msg, "task_id", "") or "")
                     elif isinstance(msg, (TaskNotificationMessage, TaskUpdatedMessage)):
                         if getattr(msg, "status", None) in _TERMINAL_TASK:
