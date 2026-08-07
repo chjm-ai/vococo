@@ -69,24 +69,6 @@ def _broadcast(event: str, payload: dict) -> None:
         q.put_nowait((event, payload))
 
 
-def broadcast_task_done(task: dict) -> None:
-    """轻量广播终态事件:只推 SSE 给在线页面(前端状态条实时刷新),
-    不触发 Web Push/平台推送/语音播报——SDK 会话内小任务(origin="task")
-    完成不该打扰用户,通知仍走任务的既有渠道。"""
-    _broadcast(
-        "task_done",
-        {
-            "id": task["id"],
-            "title": task["title"],
-            "status": task["status"],
-            "result_summary": task.get("result_summary", ""),
-            "updated_at": task["updated_at"],
-            "dispatch_chat_id": task.get("dispatch_chat_id"),
-            "origin": task.get("origin"),
-        },
-    )
-
-
 def on_task_activity(task: dict) -> None:
     """非终态变化(派发/起跑/进度更新/排队中取消)时调用:仅在线 SSE 推 task_update,
     给通话视图的任务状态条实时刷新用;离线不推送——中间态没到打扰用户的程度,

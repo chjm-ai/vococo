@@ -37,7 +37,7 @@ SESSION_KEY_PREFIX = "task:"
 
 # 触发方枚举:UI/通知按这个字段分组,不再靠 session_key 前缀猜(2026-07-29 起前缀
 # 统一成 task:,以前 voice-task:/cron-task: 两个前缀各自为政的年代已经结束)。
-ORIGINS = frozenset({"voice", "cron", "chat", "task"})
+ORIGINS = frozenset({"voice", "cron", "chat"})
 
 
 def session_key(task_id: str) -> str:
@@ -106,6 +106,13 @@ def _conn() -> sqlite3.Connection:
                 _DB.execute(f"ALTER TABLE tasks ADD COLUMN {ddl}")
             except sqlite3.OperationalError:
                 pass
+        # 已移除 SDK 任务清单到任务表的镜像。历史镜像任务没有后台执行器,
+        # 启动后必须静默冻结,避免被排队器误跑或被重启孤儿回收误报失败。
+        _DB.execute(
+            "UPDATE tasks SET status='cancelled', progress_note=?, updated_at=? "
+            "WHERE origin='task' AND status IN ('queued','running')",
+            ("SDK任务清单同步已停用", time.time()),
+        )
         _DB.commit()
     return _DB
 
@@ -174,23 +181,14 @@ def list_recent(
     limit: int = 20,
     origin: str | None = None,
     dispatch_chat_id: str | None = None,
-    origins: tuple[str, ...] | None = None,
 ) -> list[dict]:
-    """最近的任务,按 origin/多 origin/origin+dispatch_chat_id 可选过滤。
-
-    origins 与 origin 二选一:origins 传多个 origin(如 ("chat","task")),
-    用于「一个会话里既有程序派发又有 SDK 任务」的合并查询。
-    """
+    """最近的任务,按 origin/dispatch_chat_id 可选过滤。"""
     c = _conn()
     params: list = []
     where: list[str] = []
     if origin is not None:
         where.append("origin=?")
         params.append(origin)
-    if origins is not None:
-        ph = ",".join("?" * len(origins))
-        where.append(f"origin IN ({ph})")
-        params.extend(origins)
     if dispatch_chat_id is not None:
         where.append("dispatch_chat_id=?")
         params.append(dispatch_chat_id)
@@ -204,19 +202,15 @@ def list_recent(
 
 
 def list_queued() -> list[dict]:
-    # 排除 origin='task':SDK 任务清单(TaskCreate)是会话内 AI 自己执行的,
-    # 不是 task_runner 派发的后台任务——混进排队池会被拿空 prompt 误跑一轮,
-    # 模型收到空指令只会回一堆「没看到任务内容」(2026-08-07 实测事故)。
     rows = _conn().execute(
-        "SELECT * FROM tasks WHERE status='queued' AND origin != 'task' "
-        "ORDER BY created_at ASC"
+        "SELECT * FROM tasks WHERE status='queued' ORDER BY created_at ASC"
     ).fetchall()
     return [_row(r) for r in rows]
 
 
 def count_running() -> int:
     row = _conn().execute(
-        "SELECT COUNT(*) AS n FROM tasks WHERE status='running' AND origin != 'task'"
+        "SELECT COUNT(*) AS n FROM tasks WHERE status='running'"
     ).fetchone()
     return int(row["n"])
 
@@ -315,16 +309,13 @@ def mark_orphans_failed(exclude_ids: set[str] | frozenset[str] = frozenset()) ->
 
     queued 一并处理,而不只是 running——本进程的执行器队列在内存里,重启后
     queued 任务永远不会被捡起,放着不管会变成"永远排队中"的僵尸记录。
-    排除 origin='task':SDK 任务清单不依赖 task_runner 执行(会话内模型负责),
-    重启后仍由会话维护,标失败会误伤(2026-08-07 事故:TaskCreate 建的任务
-    重启后全被标"服务重启,任务中断")。
     exclude_ids:本进程正在跑的任务 id,一律跳过——"孤儿"的定义是没有执行器
     在管的任务,活任务绝不能标死(2026-07-12 "假失败"事故的防线之一)。
     返回受影响的任务(供 task_runner 逐个走通知分发)。
     """
     c = _conn()
     rows = c.execute(
-        "SELECT * FROM tasks WHERE status IN ('queued','running') AND origin != 'task'"
+        "SELECT * FROM tasks WHERE status IN ('queued','running')"
     ).fetchall()
     orphans = [_row(r) for r in rows if r["id"] not in exclude_ids]
     if orphans:
