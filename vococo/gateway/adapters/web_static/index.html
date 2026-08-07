@@ -274,7 +274,7 @@ try{
               <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
               <span class="spacer"></span>
               <div id="effortBox">
-                <button type="button" id="effortBtn" title="思考深度(DeepSeek:标准/深度)">
+                <button type="button" id="effortBtn" title="思考深度">
                   <span id="effortName">标准</span><span class="caret chev down"></span>
                 </button>
                 <div id="effortPop" hidden></div>
@@ -387,9 +387,8 @@ const S = {
   es: null,
   lastId: 0,            // 已处理的最大事件编号,用于断线重连后去重
   bootId: null,         // 服务端进程启动标识,变了说明重启过,断线补发这条路救不回来,得整体核对
-  models: {default:"", choices:[]},  // /models 拉到的可选模型
+  models: {default:"", choices:[], efforts:{}},  // /models 拉到的可选模型及各模型思考深度
   model: "",            // 当前会话使用的模型(空=用默认)
-  effort: "",           // 思考深度(high/max;空=未设,胶囊回落"标准")
   commands: [],          // /commands 拉到的系统斜杠命令清单 [{name,desc}]
   skills: [],            // /commands 拉到的已启用 skill 清单 [{name,desc}]
   cmd: {open:false, items:[], active:0},  // 斜杠命令菜单当前状态
@@ -3906,37 +3905,54 @@ function refillCurrentMeta(){
 
 // ── 模型选择器 ────────────────────────────────────────────────────────────
 async function loadModels(){
-  try{ const r=await api("/models"); S.models=await r.json(); renderModelChip();
-       S.effort=(S.models.effort||""); renderEffortChip(); }catch(e){}
+  try{ const r=await api("/models"); S.models=await r.json(); renderModelChip(); renderEffortChip(); }catch(e){}
 }
 
 // ── 思考深度选择器 ────────────────────────────────────────────────────────
-var EFFORT_LEVELS = [
-  ["high", "标准"],
-  ["max",  "深度"],
-];
-function effortShort(id){ return (EFFORT_LEVELS.find(x=>x[0]===id)||[])[1] || (id?esc(id):"思考"); }
-function curEffort(){ return S.effort || "high"; }
-function renderEffortChip(){ $("#effortName").textContent=effortShort(curEffort()); }
+// 档位由服务端按模型返回：官方 Claude / Codex GPT 是五档，第三方兼容端点保留已验证的两档。
+function effortState(model){
+  const all=(S.models&&S.models.efforts)||{}, wanted=model||curModel();
+  const key=all[wanted] ? wanted : Object.keys(all).find(function(id){
+    return wanted.indexOf(id)===0 || id.indexOf(wanted)===0;
+  });
+  const state=key ? all[key] : {};
+  return {model:key||wanted, levels:Array.isArray(state.levels)?state.levels:[], value:state.value||""};
+}
+function effortShort(id, levels){
+  const hit=(levels||[]).find(function(item){ return item[0]===id; });
+  return hit ? hit[1] : (id?esc(id):"自动");
+}
+function curEffort(){ return effortState().value; }
+function renderEffortChip(){
+  const state=effortState(), btn=$("#effortBtn"), enabled=state.levels.length>0;
+  $("#effortName").textContent=effortShort(state.value, state.levels);
+  btn.disabled=!enabled;
+  btn.title=enabled ? "思考深度" : "此模型使用服务商默认思考深度";
+}
 function renderEffortPop(){
-  const pop=$("#effortPop"), cur=curEffort();
-  pop.innerHTML = EFFORT_LEVELS.map(function(e){
-    const on = e[0]===cur;
+  const pop=$("#effortPop"), state=effortState(), cur=state.value;
+  pop.innerHTML = state.levels.map(function(e){
+    const on=e[0]===cur;
     return '<button type="button" class="mi'+(on?" on":"")+'" data-e="'+e[0]+'">'+
-      '<span class="ml">'+e[1]+'</span>'+(on?'<span class="mk">✓</span>':'')+'</button>';
+      '<span class="ml">'+esc(e[1])+'</span>'+(on?'<span class="mk">✓</span>':'')+'</button>';
   }).join("");
   pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickEffort(b.dataset.e); });
 }
 function pickEffort(id){
+  const state=effortState(), old=state.value, saved=((S.models&&S.models.efforts)||{})[state.model];
   $("#effortPop").hidden=true;
-  if(!id || id===curEffort()) return;
-  S.effort=id;          // 乐观更新胶囊
+  if(!saved || !id || id===old) return;
+  saved.value=id;  // 乐观更新当前模型的胶囊；失败时恢复原值
   renderEffortChip();
   // POST /effort 静默切换：不走命令管道、不触发 SSE/推送;agent 下一条消息即生效
   api("/effort", {method:"POST", headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({effort:id})}).catch(()=>{});
+    body:JSON.stringify({model:state.model, effort:id})})
+    .then(function(r){ if(!r.ok) throw new Error("effort switch failed"); return r.json(); })
+    .then(function(result){ saved.value=result.effort||id; renderEffortChip(); })
+    .catch(function(){ saved.value=old; renderEffortChip(); });
 }
 $("#effortBtn").onclick=e=>{ e.stopPropagation(); const p=$("#effortPop");
+  if(!effortState().levels.length) return;
   if(p.hidden){ renderEffortPop(); p.hidden=false; } else { p.hidden=true; } };
 document.addEventListener("click", e=>{ const b=$("#effortBox"); if(b && !b.contains(e.target)){ $("#effortPop").hidden=true; } });
 
@@ -4096,7 +4112,7 @@ function modelShort(id){
   return id.replace(/^claude-/,"").replace(/-\d{6,}$/,"");  // 去 claude- 前缀与日期后缀
 }
 function curModel(){ return S.model || S.models.default || ""; }
-function setModel(id){ S.model=id||""; renderModelChip(); }
+function setModel(id){ S.model=id||""; renderModelChip(); renderEffortChip(); }
 function renderModelChip(){ $("#modelName").textContent=modelShort(curModel()); }
 // 模型面板分组:Anthropic 订阅(拿不到具体用量,只显示重置时间)/ Kimi 订阅(有具体用量,带小圆环)
 // / API(按量计费,不查额度)。分组顺序固定,组间只画一条分割线,不做折叠。

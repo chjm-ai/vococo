@@ -39,7 +39,8 @@ _DEFAULTS: dict = {
     "vococo_mcp_enabled": True,
     "external_mcp": {},         # name -> {type,command,args,env,url,headers,enabled}
     "web_default_model": "",    # web 端上次选定的模型;新会话没显式选就用它(空=回落 config.MODEL)
-    "web_effort": "",           # web 端思考深度(high/max,空=不传,交给供应商默认);见 get_web_effort
+    "web_effort": "",           # 旧版全局思考深度,作为 web_efforts 未设时的兼容回落
+    "web_efforts": {},           # 模型 -> 思考深度;不同模型分别记住自己的选择
     "web_extra_models": [],     # 设置页手动加的模型档位:[{id,label,group?,provider?}]
     "web_providers": {},        # 设置页手动加的第三方服务商:name -> {base_url,api_key,model,label}
     "disabled_builtin_models": [],  # 代码里硬编码的官方档位(MODEL_CHOICES),用户在设置页
@@ -59,7 +60,7 @@ def _load() -> dict:
     # mutate(如 list.append/dict[k]=v)就把模块级默认值永久污染了。
     for key in ("skills_enabled", "skills_hidden", "web_extra_models", "disabled_builtin_models"):
         data[key] = list(data[key]) if isinstance(data.get(key), list) else []
-    for key in ("external_mcp", "web_providers"):
+    for key in ("external_mcp", "web_providers", "web_efforts"):
         data[key] = dict(data[key]) if isinstance(data.get(key), dict) else {}
     return data
 
@@ -226,17 +227,36 @@ def set_web_default_model(model: str) -> None:
 
 
 # ── web 端思考深度(effort)─────────────────────────────────────────────
-def get_web_effort() -> str:
-    """web 端上次选定的思考深度(high/max);没设过返回空串(调用方回落:不传,交供应商默认)。"""
-    e = _load().get("web_effort") or ""
-    return e if e in ("high", "max") else ""
+_WEB_EFFORTS = frozenset(("low", "medium", "high", "xhigh", "max"))
 
 
-def set_web_effort(effort: str) -> None:
-    """web 端切思考深度时记住它;非法值(非 high/max)视为清空。"""
+def get_web_effort(model: str = "") -> str:
+    """取某模型上次选定的思考深度；未单独设置时兼容旧版全局值。
+
+    空模型参数保留给旧调用方，直接返回旧版全局值。具体模型是否支持这个值由
+    providers.effort_levels_for_model 在 Web 接口与 agent 运行时共同校验。
+    """
+    d = _load()
+    if model:
+        effort = d["web_efforts"].get(model) or ""
+        if effort in _WEB_EFFORTS:
+            return effort
+    effort = d.get("web_effort") or ""
+    return effort if effort in _WEB_EFFORTS else ""
+
+
+def set_web_effort(effort: str, *, model: str = "") -> None:
+    """记住思考深度；传 model 时只影响该模型，空模型保留旧版全局写入语义。"""
+    effort = effort if effort in _WEB_EFFORTS else ""
     with _LOCK:
         d = _load()
-        d["web_effort"] = effort if effort in ("high", "max") else ""
+        if model:
+            if effort:
+                d["web_efforts"][model] = effort
+            else:
+                d["web_efforts"].pop(model, None)
+        else:
+            d["web_effort"] = effort
         _save(d)
 
 

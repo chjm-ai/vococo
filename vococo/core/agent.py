@@ -460,11 +460,12 @@ def _compat_base_key(
     extra_tools: tuple = (),
     disallowed_tools: tuple = (),
     max_turns: int = 0,
+    effort: str = "",
 ) -> str:
     """保温 client 的兼容性哈希(不含 SDK 会话 id,那个在池里单独比)。
 
-    覆盖所有「connect 时定死、语义上每轮该重读」的输入:模型 / 供应商 env(设置页
-    改完下轮生效)/ 系统提示(记忆索引变了要重建)/ skills / MCP 配置 / cwd;外加
+    覆盖所有「connect 时定死、语义上每轮该重读」的输入:模型 / 思考深度 / 供应商 env
+    (设置页改完下轮生效)/ 系统提示(记忆索引变了要重建)/ skills / MCP 配置 / cwd;外加
     clarify 路由身份 —— SDK 内部任务在 connect 时快照了 contextvar(danger 的 cwd /
     clarify 路由),复用的前提是快照值与当前轮完全一致:统一会话从 TG 切到 Web,
     路由一变就必须重建,否则审批弹窗会发回旧入口。
@@ -486,6 +487,7 @@ def _compat_base_key(
         "extra_tools": extra_tools,
         "disallowed_tools": disallowed_tools,
         "max_turns": max_turns,
+        "effort": effort,
         "route": route,
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
@@ -624,6 +626,12 @@ async def stream_turn(
     # 供应商集成:按会话选定模型(或设置页里配置的第三方供应商)算出实际模型和
     # 要注入的 env。第三方(DeepSeek/Kimi)→注入 base_url+key;官方→env 为空走订阅。
     resolved_model, provider_env = providers.resolve(model, config.MODEL)
+    # 思考深度按模型分别保存。老版本/手改配置可能为该模型留了不支持的档位，
+    # 此处宁可不传、交给供应商默认，也不能把未知参数发到第三方端点。
+    saved_effort = settings_store.get_web_effort(resolved_model)
+    effective_effort = (
+        saved_effort if saved_effort in providers.effort_levels_for_model(resolved_model) else ""
+    )
     # 图片旁路:第三方非视觉模型(如 DeepSeek)不收 image block,硬传直接报错 →
     # 先用 qwen-vl 把图转成文字描述拼进 user_text,再以纯文本喂主模型
     # (见 core/vision.py)。官方订阅直传原图,行为不变;转换失败抛错,由 converse
@@ -671,6 +679,7 @@ async def stream_turn(
             tuple(sorted((extra_mcp_servers or {}).keys())),
             tuple(sorted(disallowed_tools or ())),
             effective_max_turns,
+            effort=effective_effort,
         )
         if pooling
         else ""
@@ -686,7 +695,7 @@ async def stream_turn(
             mcp_servers=mcp_servers,
             hooks=build_hooks(),  # PreToolUse:灾难拦截 + 危险操作审批闸
             skills=skills,
-            effort=settings_store.get_web_effort() or None,  # 思考深度(web 端设的高/深度);空=不传,交供应商默认
+            effort=effective_effort or None,  # 按当前模型的已选深度;空=不传,交供应商默认
             # vococo 专属 skill(本地插件,见 config.PLUGIN_DIR):只在这里挂,
             # 不进 ~/.claude/skills,Claude Code/Codex/OpenCode 等其它工具看不到。
             plugins=[{"type": "local", "path": str(config.PLUGIN_DIR)}],

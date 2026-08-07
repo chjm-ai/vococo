@@ -145,6 +145,39 @@ def test_extra_model_reuses_declared_provider(tmp_path, monkeypatch):
     )
 
 
+def test_effort_choices_follow_model_provider_capability(tmp_path, monkeypatch):
+    """Codex GPT / 官方 Claude 为五档；普通第三方端点保守保留 high/max。"""
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "codex-gpt", {
+            "base_url": "http://127.0.0.1:8317", "model": "gpt-5.6-terra",
+            "api_key": "sk-proxy", "mgmt_key": "mgmt-secret",
+        },
+    )
+    settings_store.upsert_web_extra_model(
+        "gpt-5.6-sol", "GPT-5.6 Sol（订阅）", group="codex", provider="codex-gpt"
+    )
+    settings_store.upsert_web_provider(
+        "deepseek", {
+            "base_url": "https://api.deepseek.com/anthropic", "model": "deepseek-v4-flash",
+            "api_key": "sk-deepseek",
+        },
+    )
+
+    assert providers.effort_levels_for_model("gpt-5.6-terra") == (
+        "low", "medium", "high", "xhigh", "max"
+    )
+    assert providers.effort_levels_for_model("gpt-5.6-sol") == (
+        "low", "medium", "high", "xhigh", "max"
+    )
+    assert providers.effort_choices_for_model("claude-sonnet-5") == (
+        ("low", "低"), ("medium", "标准"), ("high", "高"), ("xhigh", "极高"), ("max", "最大"),
+    )
+    assert providers.effort_choices_for_model("deepseek-v4-flash") == (
+        ("high", "标准"), ("max", "深度"),
+    )
+
+
 def test_available_models_hides_extra_when_declared_provider_missing(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
     settings_store.upsert_web_extra_model(
