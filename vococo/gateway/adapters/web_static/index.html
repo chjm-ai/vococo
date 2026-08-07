@@ -1131,7 +1131,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   async function loadTasks(){
     try{
-      const resp = await fetch("/voice/tasks", {headers:{"X-Auth-Token":S.token}});
+      // 两类任务分离(2026-08-06 对齐):通话视图(voice-chat:main)拉语音任务,
+      // 聊天视图拉当前会话的 chat 任务——后端按 conv 区分(见 /voice/tasks)。
+      const conv = S.conv === "voice-chat:main" ? null : S.conv;
+      const url = conv ? `/voice/tasks?conv=${encodeURIComponent(conv)}` : "/voice/tasks";
+      const resp = await fetch(url, {headers:{"X-Auth-Token":S.token}});
       if(!resp.ok) return;
       const rows = await resp.json();
       renderTasks(rows);
@@ -1140,21 +1144,21 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       // 清空上下文之前的旧任务筛掉,否则这次全量校准又会把刚清空的条目拉回来。
       barTasks.clear();
       for(const t of rows){
-        if(t.created_at && t.created_at < voiceTasksClearedAt) continue;
+        // 水位线只对 voice 任务生效(清空语音上下文只清语音任务);
+        // chat 任务有自己的会话隔离,不跟着语音上下文走
+        if(t.origin !== "chat" && t.created_at && t.created_at < voiceTasksClearedAt) continue;
         barTasks.set(t.id, t);
-        // 任务处于活跃态说明是刚起跑(含"追问重开"),撤销之前的手动关闭,让它重新露出
-        if(t.status === "queued" || t.status === "running") dismissedTaskIds.delete(t.id);
       }
       renderTaskBar();
     }catch(e){}
   }
 
   // ── 任务状态条:顶栏下方常驻横幅,派发瞬间出现(SSE task_update)。
-  //    完成后不再自动消失,改成"已完成"标记留在条里,用户点叉才手动关闭;
-  //    最多展示最近7条(进行中+已完成统一排序计数),按 updated_at 倒序 ─────────
+  //    终态任务满 10 分钟自动隐藏;去掉关闭按钮,已完成任务默认折叠。
+  //    callView #taskBar 保持简单列表;chatMain #chatTaskBar 分组展示。
   const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
-  const dismissedTaskIds = new Set();  // 用户点叉关闭过的任务id(仅前端隐藏,不动后端数据)
-  const TASKBAR_MAX = 7;
+  const TASKBAR_MAX = 7;  // 通话视图状态条最多展示条数
+  const CHAT_TASK_ACTIVE_MAX = 5;  // 聊天视图活跃任务默认展示条数
   // 状态条跟通话上下文绑定的水位线:早于这个时刻派发的任务不再回填/唤醒状态条
   // (后端 /voice/tasks 按 origin=voice 返回全部历史,不认"上下文"这个概念,过滤只能
   // 在前端做)。清空上下文时连同 barTasks 一起重置,见 #clearVoiceCtxBtn 的点击处理;
@@ -1162,8 +1166,14 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let voiceTasksClearedAt = Number(localStorage.getItem("vococo_voice_tasks_cleared_at") || 0);
 
   function upsertTaskBar(t){
-    if(t.created_at && t.created_at < voiceTasksClearedAt) return;  // 清空上下文之前派发的任务,后续状态更新也不再唤醒状态条
-    if(t.status === "queued" || t.status === "running") dismissedTaskIds.delete(t.id);
+    // 水位线只对 voice 任务生效;chat/task 任务跟语音上下文无关(2026-08-06 对齐)
+    if(t.origin !== "chat" && t.origin !== "task" && t.created_at && t.created_at < voiceTasksClearedAt) return;
+    // 任务分离(2026-08-06 对齐确认):
+    // - cron 任务不进状态条(有自己专属界面)
+    // - chat/task 任务按会话阻断:只在派发它的会话里显示
+    // - voice 任务直接收,归通话视图 #taskBar 用
+    if(t.origin === "cron") return;
+    if((t.origin === "chat" || t.origin === "task") && t.dispatch_chat_id !== S.conv) return;
     barTasks.set(t.id, t);
     renderTaskBar();
   }
@@ -1174,18 +1184,33 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     return t.result_summary || STATUS_WORD[t.status] || t.status;
   }
 
+  function isTaskDone(t){ return t.status !== "queued" && t.status !== "running"; }
+
   function renderTaskBar(){
     const rows = [...barTasks.values()]
-      .filter(t=>!dismissedTaskIds.has(t.id) && !taskBarDoneHidden(t))
-      .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at))
-      .slice(0, TASKBAR_MAX);
-    renderBar($("#taskBar"), rows);
-    renderBar($("#chatTaskBar"), rows);
+      .filter(t=>!taskBarDoneHidden(t))
+      .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at));
+
+    // 任务分离(2026-08-06 对齐):#taskBar 只显示 voice 任务,
+    // #chatTaskBar 只显示文本任务(chat=程序派发 / task=SDK 会话内任务)。
+    // barTasks 是共享池(SSE 事件混着来),渲染时按 origin 分流,互不污染。
+    const voiceRows = rows.filter(t=>t.origin === "voice");
+    const chatRows = rows.filter(t=>t.origin === "chat" || t.origin === "task");
+
+    // 1) 通话视图 #taskBar: voice 任务简单列表,最近 7 条,差量渲染
+    renderBar($("#taskBar"), voiceRows.slice(0, TASKBAR_MAX));
+
+    // 2) 聊天视图 #chatTaskBar: chat 任务活跃/已完成分组,默认折叠已完成,活跃最多默认 5 条
+    const active = chatRows.filter(t=>!isTaskDone(t));
+    const done = chatRows.filter(t=>isTaskDone(t));
+    renderChatTaskBar(active, done);
+
     scheduleDoneHide();  // 每次渲染后重算下一个「终态满 10 分钟」的自动隐藏时刻
   }
-  // 差量渲染单个任务条(与 #taskBar 共用行结构):同 id 的行存在且状态/文案没变就
-  // 不重建 DOM —— 旧版每次 task_update 都整段 innerHTML 重写,running 圆点的
-  // taskbarPulse 动画随之反复重启,视觉上一直闪,像"还在持续输出"。
+  // 差量渲染单个任务条(#taskBar 用):同 id 的行存在且状态/文案没变就不重建
+  // DOM —— 旧版每次 task_update 都整段 innerHTML 重写,running 圆点的脉冲动画
+  // 随之反复重启,视觉上一直闪,像"还在持续输出"。行结构同 renderTaskBarRow
+  // (dot 两态 running/other,无 ✕ 按钮)。
   function renderBar(el, rows){
     el.hidden = !rows.length;
     for(const child of [...el.querySelectorAll(".taskbar-row")]){
@@ -1199,11 +1224,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         row.dataset.tid = t.id;
       }
       if(el.children[i] !== row) el.insertBefore(row, el.children[i]);  // 按排序归位
-      const done = t.status !== "queued" && t.status !== "running";
-      row.classList.toggle("done", done);
+      row.classList.toggle("done", isTaskDone(t));
       let dot = row.querySelector(".dot");
       if(!dot){ dot = document.createElement("span"); dot.className = "dot"; row.appendChild(dot); }
-      if(dot.className !== "dot " + t.status) dot.className = "dot " + t.status;  // 状态没变不动 class,动画不重启
+      const dotCls = "dot " + (t.status === "running" ? "running" : "other");
+      if(dot.className !== dotCls) dot.className = dotCls;  // 状态没变不动 class,动画不重启
       let ttl = row.querySelector(".t");
       if(!ttl){ ttl = document.createElement("span"); ttl.className = "t"; row.appendChild(ttl); }
       if(ttl.textContent !== t.title) ttl.textContent = t.title;
@@ -1211,36 +1236,111 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       let nEl = row.querySelector(".n");
       if(!nEl){ nEl = document.createElement("span"); nEl.className = "n"; row.appendChild(nEl); }
       if(nEl.textContent !== note) nEl.textContent = note;
-      let closeBtn = row.querySelector(".close");
-      if(done && !closeBtn){
-        closeBtn = document.createElement("button");
-        closeBtn.className = "close"; closeBtn.dataset.id = t.id;
-        closeBtn.setAttribute("aria-label", "关闭"); closeBtn.textContent = "✕";
-        row.appendChild(closeBtn);
-      } else if(!done && closeBtn){
-        closeBtn.remove();  // 追问重开:终态行复活成运行中,✕ 收掉
+    });
+  }
+
+  // 聊天视图任务条:活跃区行差量渲染(同 id 行存在且状态/文案没变不重建,
+  // 圆点动画不因整段重写反复重启——旧版 innerHTML 全量重写,任务高频更新时
+  // 一直闪,像"还在持续输出");分组/折叠按钮变化少,整段重建无感。
+  function renderChatTaskBar(active, done){
+    const chatTaskBar = $("#chatTaskBar");
+    const any = active.length || done.length;
+    chatTaskBar.hidden = !any;
+    if(!any){ chatTaskBar.innerHTML = ""; return; }
+
+    const expanded = chatTaskBar.dataset.activeExpanded === "1";
+    const showActive = expanded ? active : active.slice(0, CHAT_TASK_ACTIVE_MAX);
+    const doneExpanded = chatTaskBar.dataset.doneExpanded === "1";
+
+    // 容器/分组结构只建一次,行高频变化走差量
+    let box = chatTaskBar.querySelector(".chat-taskbar-box");
+    if(!box){
+      chatTaskBar.innerHTML = '<div class="chat-taskbar-box">' +
+        '<div class="ctb-section ctb-active"></div><div class="ctb-section ctb-done"></div></div>';
+      box = chatTaskBar.querySelector(".chat-taskbar-box");
+    }
+    const activeSec = box.querySelector(".ctb-active");
+    const doneSec = box.querySelector(".ctb-done");
+
+    // 活跃任务区:行差量 + 显示更多按钮(数量变化才增删,文案变了才改)
+    renderChatRows(activeSec, showActive);
+    let moreBtn = activeSec.querySelector(".ctb-more");
+    if(active.length > CHAT_TASK_ACTIVE_MAX){
+      const remain = active.length - CHAT_TASK_ACTIVE_MAX;
+      if(!moreBtn){
+        moreBtn = document.createElement("button");
+        moreBtn.type = "button"; moreBtn.className = "ctb-more"; moreBtn.dataset.type = "active";
+        activeSec.append(moreBtn);
       }
+      moreBtn.textContent = expanded ? "收起" : `显示更多 (${remain})`;
+    } else if(moreBtn){
+      moreBtn.remove();
+    }
+
+    // 已完成任务区:默认折叠,展开时才渲染行(低频,整段重建即可)
+    doneSec.innerHTML = "";
+    if(done.length){
+      const toggle = document.createElement("button");
+      toggle.type = "button"; toggle.className = "ctb-toggle";
+      const chev = document.createElement("span");
+      chev.className = "ctb-chev" + (doneExpanded ? " open" : "");
+      toggle.append(chev, document.createTextNode(`已完成 (${done.length})`));
+      doneSec.append(toggle);
+      if(doneExpanded) renderChatRows(doneSec, done);
+    }
+  }
+
+  // 差量渲染一组 ctb 行:同 id 行存在且状态/文案没变不重建(dot 动画不重启)
+  function renderChatRows(section, rows){
+    for(const child of [...section.querySelectorAll(".ctb-row")]){
+      if(!rows.some(t=>t.id===child.dataset.tid)) child.remove();
+    }
+    rows.forEach((t, i)=>{
+      let row = section.querySelector(`.ctb-row[data-tid="${t.id}"]`);
+      if(!row){
+        row = document.createElement("div");
+        row.className = "ctb-row";
+        row.dataset.tid = t.id;
+        row.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
+        row.children[0].className = "ctb-dot";
+        row.children[1].className = "ctb-title";
+        row.children[2].className = "ctb-note";
+        section.append(row);
+      }
+      if(section.children[i] !== row) section.insertBefore(row, section.children[i]);  // 按排序归位
+      row.classList.toggle("done", isTaskDone(t));
+      const dot = row.children[0];
+      const dotCls = "ctb-dot " + (t.status === "running" ? "running" : "other");
+      if(dot.className !== dotCls) dot.className = dotCls;  // 状态没变不动 class,动画不重启
+      const ttl = row.children[1];
+      if(ttl.textContent !== t.title) ttl.textContent = t.title;
+      const note = taskbarNote(t);
+      const nEl = row.children[2];
+      if(nEl.textContent !== note) nEl.textContent = note;
     });
   }
 
   taskBar.addEventListener("click", (e)=>{
-    const closeBtn = e.target.closest(".close");
-    if(closeBtn){
-      e.stopPropagation();
-      dismissedTaskIds.add(closeBtn.dataset.id);
-      renderTaskBar();
-      return;
-    }
     tasksDrawer.classList.add("open");
     loadTasks();
   });
 
-  // 聊天视图输入框顶部的任务条:与通话视图 #taskBar 共享数据,点击同样打开任务抽屉
+  // 聊天视图输入框顶部的任务条:与通话视图 #taskBar 共享数据,点击打开任务抽屉
   $("#chatTaskBar").addEventListener("click", (e)=>{
-    const closeBtn = e.target.closest(".close");
-    if(closeBtn){
+    const moreBtn = e.target.closest(".ctb-more");
+    if(moreBtn){
       e.stopPropagation();
-      dismissedTaskIds.add(closeBtn.dataset.id);
+      const chatTaskBar = $("#chatTaskBar");
+      const key = moreBtn.dataset.type + "Expanded";
+      chatTaskBar.dataset[key] = chatTaskBar.dataset[key] === "1" ? "" : "1";
+      renderTaskBar();
+      return;
+    }
+    const toggleBtn = e.target.closest(".ctb-toggle");
+    if(toggleBtn){
+      e.stopPropagation();
+      const chatTaskBar = $("#chatTaskBar");
+      chatTaskBar.dataset.doneExpanded = chatTaskBar.dataset.doneExpanded === "1" ? "" : "1";
       renderTaskBar();
       return;
     }
@@ -1741,14 +1841,20 @@ void main(){
       syncSidebarTaskStatus(t);  // 侧边栏默认项目任务行的进行中圆点同步亮/灭
     });
     es.addEventListener("task_done", e=>{
+      const data = JSON.parse(e.data);
       tasksBadge.classList.add("on");
       loadTasks();
       loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
-      const data = JSON.parse(e.data);
       upsertTaskBar(data);  // 终态 → 状态条里标记"已完成",留在条里等用户手动点叉关闭
-      pendingAnnouncements.push(data);
-      flushAnnouncements();
+      // 只有 voice 任务完成才播报(2026-08-06:chat/task 文本任务完成
+      // 走 Web Push/平台推送,不该在语音通道突然念一句)
+      if(data.origin === "voice"){
+        pendingAnnouncements.push(data);
+        flushAnnouncements();
+      }
     });
+    // SSE 断线重连成功后全量校准一次:重连期间错过的 task_done 靠这次拉全量补上
+    es.onopen = ()=>{ loadTasks(); };
   }
 
   // ── P3 阶段二:Omni-Realtime WebRTC 通话 ─────────────────────────────────
@@ -3196,7 +3302,6 @@ void main(){
       voiceTasksClearedAt = Date.now() / 1000;
       localStorage.setItem("vococo_voice_tasks_cleared_at", String(voiceTasksClearedAt));
       barTasks.clear();
-      dismissedTaskIds.clear();
       renderTaskBar();
     }catch(e){ addMsg("ai error", "清空失败:"+e.message); }
   });
@@ -3329,6 +3434,9 @@ void main(){
     teardownCallResources();
     renderConvs();   // 挂断后切回聊天侧栏,取消「语音通话」行高亮
   };
+  // 任务状态条:切会话时 openConv(IIFE 外)要按当前会话刷新任务,loadTasks 是
+  // 本 IIFE 的局部函数(严格模式不泄漏全局),照 openCallView 模式挂 window 出口。
+  window.refreshTaskStatus = loadTasks;
 })();
 
 // ── 主题(深/浅/跟随系统)───────────────────────────────────────────────
@@ -4705,7 +4813,6 @@ async function loadProjects(){
 // 「终态任务满 10 分钟自动隐藏」只作用于语音界面顶部的任务状态条(renderTaskBar):
 // 顶部常驻横幅最多 7 条,终态(done/failed/cancelled)任务挂满 10 分钟自动消失、
 // 不再占位置——隐藏≠删除,数据还在,任务抽屉/侧边栏/最近列表照常全量可见。
-// 手动点 ✕ 关闭仍是永久关闭(dismissedTaskIds,仅前端隐藏)。
 const DONE_HIDE_SEC = 600;
 // 终态判定与状态条一致:非「排队中/进行中」即终态。updated_at 是任务终态落库时间
 // (秒级时间戳),缺时间戳(幽灵数据)不隐藏。
@@ -4724,7 +4831,6 @@ function scheduleDoneHide(){
   if(_doneHideTimer){ clearTimeout(_doneHideTimer); _doneHideTimer=null; }
   const now=Date.now()/1000;
   const soonest = [...barTasks.values()]
-    .filter(t=>!dismissedTaskIds.has(t.id))
     .map(t=>{
       if(t.status==="queued" || t.status==="running") return null;
       const ts = t.updated_at ?? t.created_at;
@@ -6000,6 +6106,7 @@ async function openConv(conv, silentGroup){
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
+  window.refreshTaskStatus && window.refreshTaskStatus();  // 刷新任务状态条(loadTasks 在通话视图 IIFE 内,经 window 出口调)
   const isLocal = String(conv).startsWith("local-");
   let cached = S.histCache[conv];
   if(!cached && !isLocal){

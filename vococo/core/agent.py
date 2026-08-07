@@ -360,7 +360,6 @@ _TERMINAL_TASK = frozenset({"completed", "failed", "stopped", "killed"})
 # 判定「是子代理启动」的工具名(新版 Agent / 老版 Task)。
 _SUBAGENT_TOOLS = frozenset({"Agent", "Task"})
 
-
 def assemble_tool_input(raw: str) -> dict:
     """把累积的 input_json_delta 片段解析成 dict;空/坏 JSON 都安全退化成 {}。"""
     s = (raw or "").strip()
@@ -861,7 +860,7 @@ async def stream_turn(
                         # 缓存供 /api/usage 查询,不做阻塞(不 yield 事件给前端)。
                         _update_rate_limits(msg.rate_limit_info)
                     elif isinstance(msg, TaskStartedMessage):
-                        # 后台任务(run_in_background)启动 → 记进「在跑」集,收工要等它终态
+                        # 任务启动 → 记进「在跑」集,收工要等它终态
                         active_tasks.add(getattr(msg, "task_id", "") or "")
                     elif isinstance(msg, (TaskNotificationMessage, TaskUpdatedMessage)):
                         if getattr(msg, "status", None) in _TERMINAL_TASK:

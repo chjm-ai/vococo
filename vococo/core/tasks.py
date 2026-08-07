@@ -37,7 +37,7 @@ SESSION_KEY_PREFIX = "task:"
 
 # 触发方枚举:UI/通知按这个字段分组,不再靠 session_key 前缀猜(2026-07-29 起前缀
 # 统一成 task:,以前 voice-task:/cron-task: 两个前缀各自为政的年代已经结束)。
-ORIGINS = frozenset({"voice", "cron", "chat"})
+ORIGINS = frozenset({"voice", "cron", "chat", "task"})
 
 
 def session_key(task_id: str) -> str:
@@ -170,18 +170,36 @@ def get_latest() -> dict | None:
     return _row(row) if row else None
 
 
-def list_recent(limit: int = 20, origin: str | None = None) -> list[dict]:
-    """最近的任务,按 origin 可选过滤(如只看语音派发的,或只看 cron 触发的)。"""
+def list_recent(
+    limit: int = 20,
+    origin: str | None = None,
+    dispatch_chat_id: str | None = None,
+    origins: tuple[str, ...] | None = None,
+) -> list[dict]:
+    """最近的任务,按 origin/多 origin/origin+dispatch_chat_id 可选过滤。
+
+    origins 与 origin 二选一:origins 传多个 origin(如 ("chat","task")),
+    用于「一个会话里既有程序派发又有 SDK 任务」的合并查询。
+    """
     c = _conn()
+    params: list = []
+    where: list[str] = []
     if origin is not None:
-        rows = c.execute(
-            "SELECT * FROM tasks WHERE origin=? ORDER BY created_at DESC LIMIT ?",
-            (origin, limit),
-        ).fetchall()
-    else:
-        rows = c.execute(
-            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
-        ).fetchall()
+        where.append("origin=?")
+        params.append(origin)
+    if origins is not None:
+        ph = ",".join("?" * len(origins))
+        where.append(f"origin IN ({ph})")
+        params.extend(origins)
+    if dispatch_chat_id is not None:
+        where.append("dispatch_chat_id=?")
+        params.append(dispatch_chat_id)
+    sql = "SELECT * FROM tasks"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    rows = c.execute(sql, params).fetchall()
     return [_row(r) for r in rows]
 
 

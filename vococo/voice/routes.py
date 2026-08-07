@@ -500,9 +500,16 @@ async def _handle_omni_webrtc(request: web.Request) -> web.Response:
 async def _handle_tasks_list(request: web.Request) -> web.Response:
     if (g := _guard(request)) is not None:
         return g
-    # 通话视图的任务状态条只该看语音自己派发的任务(origin="voice")——cron/chat
-    # 触发的任务不该出现在这里,那不是语音喊出来的活。
-    return web.json_response(tasks.list_recent(origin="voice"))
+    # 两类任务分离(2026-08-06 对齐确认):
+    # - 通话视图不传 conv → 只看语音派发的任务(origin="voice",原有行为)
+    # - 聊天视图传 conv → 只看该会话派的程序任务(origin="chat" + dispatch_chat_id=conv)
+    conv = request.query.get("conv")
+    if conv:
+        # 聊天视图:该会话的文本任务 = 程序派发(chat)+ SDK 会话内任务(task)
+        rows = tasks.list_recent(origins=("chat", "task"), dispatch_chat_id=conv)
+    else:
+        rows = tasks.list_recent(origin="voice")
+    return web.json_response(rows)
 
 
 async def _handle_task_detail(request: web.Request) -> web.Response:

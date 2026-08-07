@@ -83,6 +83,14 @@ function renderToolCard(name, inp){
       const sub=el("div","tc-sub"); card.append(sub); card._sub=sub;
       return card;
     }
+    if(name.startsWith("Task")){   // SDK 任务工具(TaskCreate/TaskUpdate/TaskList…)
+      // 2026-08-06:与其他 Claude 工具一致的折叠卡——标题=任务名/ID,正文=指令,
+      // 默认收起,并随其他工具一起折叠进「已执行 N 条命令」组
+      const hint=inp.subject||inp.description||inp.task_id||inp.title||inp.name||"";
+      const body=el("div","tc-code");
+      body.textContent=inp.prompt||inp.description||inp.subject||inp.title||"";
+      return toolCardShell(ic("clip")+" "+esc(name), hint, body, true);
+    }
     if(name==="TodoWrite"){
       const todos=inp.todos||[]; if(!todos.length) return null;
       const ul=el("ul","todo");
