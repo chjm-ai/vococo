@@ -120,3 +120,26 @@ def test_save_summary_too_long(isolated):
         {"topic": "long", "title": "x", "summary": "字" * 200, "body": "z"}
     )))
     assert "太长" in out
+
+
+# === generate_image ===
+def test_gen_image_empty_prompt(isolated):
+    from vococo.tools import builtin
+
+    out = _text(_run(builtin.generate_image.handler({"prompt": "  "})))
+    assert "非空 prompt" in out
+
+
+def test_gen_image_bad_size(isolated):
+    from vococo.tools import builtin
+
+    out = _text(_run(builtin.generate_image.handler({"prompt": "猫", "size": "999x999"})))
+    assert "仅支持 1024x1024" in out
+
+
+def test_gen_image_no_provider(isolated, monkeypatch):
+    from vococo.tools import builtin
+
+    monkeypatch.setattr("vococo.providers.sidecar_env", lambda name: None)
+    out = _text(_run(builtin.generate_image.handler({"prompt": "猫"})))
+    assert "未配置 codex-gpt" in out
