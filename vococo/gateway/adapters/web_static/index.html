@@ -1166,14 +1166,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let voiceTasksClearedAt = Number(localStorage.getItem("vococo_voice_tasks_cleared_at") || 0);
 
   function upsertTaskBar(t){
-    // 水位线只对 voice 任务生效;chat/task 任务跟语音上下文无关(2026-08-06 对齐)
-    if(t.origin !== "chat" && t.origin !== "task" && t.created_at && t.created_at < voiceTasksClearedAt) return;
-    // 任务分离(2026-08-06 对齐确认):
-    // - cron 任务不进状态条(有自己专属界面)
-    // - chat/task 任务按会话阻断:只在派发它的会话里显示
-    // - voice 任务直接收,归通话视图 #taskBar 用
-    if(t.origin === "cron") return;
-    if((t.origin === "chat" || t.origin === "task") && t.dispatch_chat_id !== S.conv) return;
+    // 状态条只接两种真正的后台任务:voice 归通话视图,chat 归派发它的聊天会话。
+    if(t.origin !== "voice" && t.origin !== "chat") return;
+    // 水位线只对 voice 任务生效;chat 任务跟语音上下文无关。
+    if(t.origin === "voice" && t.created_at && t.created_at < voiceTasksClearedAt) return;
+    if(t.origin === "chat" && t.dispatch_chat_id !== S.conv) return;
     barTasks.set(t.id, t);
     renderTaskBar();
   }
@@ -1209,11 +1206,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       .filter(t=>!taskBarDoneHidden(t))
       .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at));
 
-    // 任务分离(2026-08-06 对齐):#taskBar 只显示 voice 任务,
-    // #chatTaskBar 只显示文本任务(chat=程序派发 / task=SDK 会话内任务)。
+    // 两类任务分离(2026-08-06 对齐):#taskBar 只显示 voice 任务,#chatTaskBar 只显示 chat 任务。
     // barTasks 是共享池(SSE 事件混着来),渲染时按 origin 分流,互不污染。
     const voiceRows = rows.filter(t=>t.origin === "voice");
-    const chatRows = rows.filter(t=>t.origin === "chat" || t.origin === "task");
+    const chatRows = rows.filter(t=>t.origin === "chat");
 
     // 1) 通话视图 #taskBar: voice 任务简单列表,最近 7 条
     const callRows = voiceRows.slice(0, TASKBAR_MAX);
@@ -1790,8 +1786,7 @@ void main(){
       loadTasks();
       loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
       upsertTaskBar(data);  // 终态 → 状态条里标记"已完成",留在条里等用户手动点叉关闭
-      // 只有 voice 任务完成才播报(2026-08-06:chat/task 文本任务完成
-      // 走 Web Push/平台推送,不该在语音通道突然念一句)
+      // 只有语音后台任务能进入语音播报;聊天任务只更新自己的状态条。
       if(data.origin === "voice"){
         pendingAnnouncements.push(data);
         flushAnnouncements();

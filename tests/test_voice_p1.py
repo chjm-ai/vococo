@@ -195,6 +195,21 @@ async def test_dispatch_unrelated_title_passes(voice_db, monkeypatch):
     await executor._running[latest[0]["id"]]
 
 
+def test_legacy_sdk_checklist_tasks_are_retired_on_reopen(voice_db):
+    """已移除镜像功能后,旧的 SDK 任务清单不能被执行器误跑或重启回收。"""
+    queued = tasks.create("旧清单-排队", "", origin="task")
+    running = tasks.create("旧清单-进行中", "", origin="task")
+    tasks.set_status(running["id"], "running")
+
+    tasks._DB.close()
+    tasks._DB = None
+
+    assert tasks.get(queued["id"])["status"] == "cancelled"
+    assert tasks.get(running["id"])["status"] == "cancelled"
+    assert tasks.list_queued() == []
+    assert tasks.mark_orphans_failed() == []
+
+
 def test_mark_orphans_failed_covers_queued_and_running(voice_db):
     a = tasks.create("A", "p")
     tasks.set_status(a["id"], "running")
