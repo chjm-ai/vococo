@@ -246,8 +246,9 @@ def available_models(
     from .gateway import settings_store
 
     disabled = set(settings_store.list_disabled_builtin_models())
+    # extra 条目可选带 group(如 gpt-5.6-sol 归 codex 组),默认当官方订阅处理
     extra = [
-        (m["id"], m.get("label") or m["id"])
+        (m["id"], m.get("label") or m["id"], m.get("group") or "anthropic")
         for m in settings_store.list_web_extra_models()
         if m.get("id")
     ]
@@ -255,11 +256,11 @@ def available_models(
         (mid, label, "anthropic") for mid, label in default_choices if mid not in disabled
     ]
     seen = {mid for mid, _, _ in out}
-    for mid, label in extra:
+    for mid, label, egroup in extra:
         if mid in seen:
             continue
         seen.add(mid)
-        out.append((mid, label, "anthropic"))
+        out.append((mid, label, egroup))
     for name, entry in _all_web_providers().items():
         if name.lower() in _OFFICIAL_NAMES:
             continue
