@@ -364,21 +364,22 @@ def codex_mgmt_for_model(model: str) -> tuple[str, str] | None:
 
 # Claude Code SDK 支持的完整档位。DeepSeek / Kimi 等 Anthropic-compatible 端点
 # 当前只确认兼容 high/max；不能因为本地 GPT 代理支持五档就盲目把未知参数传过去。
+# 显示名与档位 id 一致(英文),与 GPT 侧档位命名对齐。
 _FULL_EFFORT_CHOICES: tuple[tuple[str, str], ...] = (
-    ("low", "低"),
-    ("medium", "标准"),
-    ("high", "高"),
-    ("xhigh", "极高"),
-    ("max", "最大"),
+    ("low", "low"),
+    ("medium", "medium"),
+    ("high", "high"),
+    ("xhigh", "xhigh"),
+    ("max", "max"),
 )
 _COMPAT_EFFORT_CHOICES: tuple[tuple[str, str], ...] = (
-    ("high", "标准"),
-    ("max", "深度"),
+    ("high", "high"),
+    ("max", "max"),
 )
 
 
 def effort_choices_for_model(model: str) -> tuple[tuple[str, str], ...]:
-    """返回模型实际可在 Web 端选择的思考深度(id, 中文名)。
+    """返回模型实际可在 Web 端选择的思考深度(id, 显示名, 现与 id 一致)。
 
     官方 Claude 与本地 Codex/GPT 代理走 Claude Code 的完整五档。普通第三方
     Anthropic-compatible 端点则保守沿用已经验证的 high/max，避免 Kimi、DeepSeek

@@ -275,7 +275,7 @@ try{
               <span class="spacer"></span>
               <div id="effortBox">
                 <button type="button" id="effortBtn" title="思考深度">
-                  <span id="effortName">标准</span><span class="caret chev down"></span>
+                  <span id="effortName">auto</span><span class="caret chev down"></span>
                 </button>
                 <div id="effortPop" hidden></div>
               </div>
@@ -3920,7 +3920,7 @@ function effortState(model){
 }
 function effortShort(id, levels){
   const hit=(levels||[]).find(function(item){ return item[0]===id; });
-  return hit ? hit[1] : (id?esc(id):"自动");
+  return hit ? hit[1] : (id?esc(id):"auto");
 }
 function curEffort(){ return effortState().value; }
 function renderEffortChip(){

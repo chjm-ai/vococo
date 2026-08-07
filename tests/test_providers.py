@@ -171,10 +171,10 @@ def test_effort_choices_follow_model_provider_capability(tmp_path, monkeypatch):
         "low", "medium", "high", "xhigh", "max"
     )
     assert providers.effort_choices_for_model("claude-sonnet-5") == (
-        ("low", "低"), ("medium", "标准"), ("high", "高"), ("xhigh", "极高"), ("max", "最大"),
+        ("low", "low"), ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh"), ("max", "max"),
     )
     assert providers.effort_choices_for_model("deepseek-v4-flash") == (
-        ("high", "标准"), ("max", "深度"),
+        ("high", "high"), ("max", "max"),
     )
 
 
