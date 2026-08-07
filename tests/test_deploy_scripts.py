@@ -57,6 +57,8 @@ def runtime(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     env = os.environ.copy()
     env["VOCOCO_RESTART_DELAY"] = "0.05"
     env["VOCOCO_RESTART_ATTEMPTS"] = "10"
+    # fake serve 不提供 HTTP；健康验收由 runtime health 测试覆盖。
+    env["VOCOCO_SKIP_HEALTH_CHECK"] = "1"
     return root, env
 
 

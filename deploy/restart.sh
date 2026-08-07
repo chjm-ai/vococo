@@ -39,6 +39,22 @@ _parent_pid() {
   print -r -- "$parent"
 }
 
+_health_field() {
+  local field="$1" payload
+  command -v curl >/dev/null 2>&1 || return 1
+  payload="$(curl -fsS --max-time 3 "${VOCOCO_HEALTH_URL:-http://127.0.0.1:${WEB_PORT:-8848}/healthz}")" || return 1
+  HEALTH_PAYLOAD="$payload" HEALTH_FIELD="$field" python3 -c '
+import json, os
+data = json.loads(os.environ["HEALTH_PAYLOAD"])
+if data.get("ok") is not True:
+    raise SystemExit(1)
+value = data.get(os.environ["HEALTH_FIELD"])
+if value is None:
+    raise SystemExit(1)
+print(value)
+' 2>/dev/null
+}
+
 if [ -f data/.stop ]; then
   echo "❌ data/.stop 存在，监督者已停止；请运行 zsh deploy/run.sh" >&2
   exit 1
@@ -108,12 +124,25 @@ if [ "$(_parent_pid "$old_pid")" != "$supervisor_pid" ]; then
   exit 1
 fi
 
+old_boot=""
+if [ "${VOCOCO_SKIP_HEALTH_CHECK:-0}" != "1" ]; then
+  old_boot="$(_health_field boot_id)" || {
+    echo "❌ /healthz 不可用，拒绝把当前服务当作可验证的重启目标" >&2
+    exit 1
+  }
+fi
+
 echo "旧 serve PID: $old_pid"
 kill "$old_pid"
 for (( attempt = 1; attempt <= RESTART_ATTEMPTS; attempt++ )); do
   sleep 0.1
   new_pid="$(_read_pid data/child.pid)" || continue
   if [ "$new_pid" != "$old_pid" ] && kill -0 "$new_pid" 2>/dev/null && _is_child "$new_pid"; then
+    if [ -n "$old_boot" ]; then
+      new_boot="$(_health_field boot_id)" || continue
+      health_pid="$(_health_field pid)" || continue
+      [ "$new_boot" != "$old_boot" ] && [ "$health_pid" = "$new_pid" ] || continue
+    fi
     echo "新 serve PID: $new_pid"
     echo "HEAD: $(git log --oneline -1 2>/dev/null || echo unknown)"
     echo "✅ 重启完成"

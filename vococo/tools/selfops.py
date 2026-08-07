@@ -358,6 +358,13 @@ def write_running_revision(revision: str | None = None) -> str | None:
     return revision
 
 
+def running_revision() -> str | None:
+    """返回当前已声明运行的 revision；healthz 只读该状态，不执行 Git。"""
+    data = _read_json(RUNNING_REVISION_PATH)
+    revision = data.get("revision") if data else None
+    return revision if isinstance(revision, str) and revision else None
+
+
 async def mark_runtime_stable(delay_sec: float = _STABLE_WINDOW_SEC) -> bool:
     """存活满稳定窗口后晋升版本；只清理与本进程相同候选版的事务。"""
     await anyio.sleep(delay_sec)
