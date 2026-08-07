@@ -115,18 +115,44 @@ def _env_for(provider: ActiveProvider) -> dict[str, str]:
     }
 
 
-def _provider_for_model(model: str) -> ActiveProvider | None:
-    """按模型名反查它属于 web_providers 里的哪个供应商(供 /model 会话覆盖用)。"""
-    for name, entry in _all_web_providers().items():
-        if _entry_field(entry, "model") == model:
-            return ActiveProvider(
-                name=name,
-                base_url=_entry_field(entry, "base_url", "baseUrl"),
-                api_key=_entry_field(entry, "api_key", "apiKey"),
-                model=model,
-                vision=_entry_vision(entry),
-            )
+def _provider_entry_by_name(entries: dict[str, dict], name: str) -> tuple[str, dict] | None:
+    """按名称取供应商条目;名称不区分大小写,兼容手填配置。"""
+    for entry_name, entry in entries.items():
+        if entry_name.lower() == name.lower():
+            return entry_name, entry
     return None
+
+
+def _provider_entry_for_model(model: str) -> tuple[str, dict] | None:
+    """按模型反查供应商;额外模型可通过 provider 复用一个代理配置。"""
+    from .gateway import settings_store
+
+    entries = _all_web_providers()
+    for name, entry in entries.items():
+        if _entry_field(entry, "model") == model:
+            return name, entry
+    for extra in settings_store.list_web_extra_models():
+        if extra.get("id") != model:
+            continue
+        provider_name = extra.get("provider")
+        if isinstance(provider_name, str) and provider_name.strip():
+            return _provider_entry_by_name(entries, provider_name.strip())
+    return None
+
+
+def _provider_for_model(model: str) -> ActiveProvider | None:
+    """按模型名反查供应商,供 /model 会话覆盖和额外模型路由使用。"""
+    found = _provider_entry_for_model(model)
+    if found is None:
+        return None
+    name, entry = found
+    return ActiveProvider(
+        name=name,
+        base_url=_entry_field(entry, "base_url", "baseUrl"),
+        api_key=_entry_field(entry, "api_key", "apiKey"),
+        model=model,
+        vision=_entry_vision(entry),
+    )
 
 
 def resolve(chosen_model: str | None, default_model: str) -> tuple[str, dict[str, str]]:
@@ -237,8 +263,8 @@ def available_models(
 
     default_choices 是代码里写死的官方档(claude-opus/sonnet/haiku),恒列在前;设置页
     可以把其中某几档隐藏掉(disabled_builtin_models,不动代码常量,只摘出选择器)。
-    web_extra_models(设置页手动补录,见 gateway.settings_store)紧随其后——同样按
-    "官方订阅"处理,不需要 key,用来填新模型发布但代码还没来得及加的空窗期。
+    web_extra_models(设置页手动补录,见 gateway.settings_store)紧随其后——未指定
+    provider 时按官方订阅处理;指定 provider 时复用对应第三方的连接配置。
     标签只留"模型名（订阅/API）",不带供应商名,免得面板换行/信息过载。
     第三个元素是分组:anthropic(官方订阅) / kimi(Kimi 订阅) / api(按量计费),
     供 WebUI 模型面板分组展示 + 决定要不要查订阅额度。
@@ -246,22 +272,25 @@ def available_models(
     from .gateway import settings_store
 
     disabled = set(settings_store.list_disabled_builtin_models())
-    # extra 条目可选带 group(如 gpt-5.6-sol 归 codex 组),默认当官方订阅处理
-    extra = [
-        (m["id"], m.get("label") or m["id"], m.get("group") or "anthropic")
-        for m in settings_store.list_web_extra_models()
-        if m.get("id")
-    ]
+    entries = _all_web_providers()
     out: list[tuple[str, str, str]] = [
         (mid, label, "anthropic") for mid, label in default_choices if mid not in disabled
     ]
     seen = {mid for mid, _, _ in out}
-    for mid, label, egroup in extra:
-        if mid in seen:
+    for extra in settings_store.list_web_extra_models():
+        mid = extra.get("id")
+        if not mid or mid in seen:
             continue
+        provider_name = extra.get("provider")
+        if provider_name:
+            if not isinstance(provider_name, str):
+                continue
+            found = _provider_entry_by_name(entries, provider_name)
+            if found is None or not _entry_field(found[1], "api_key", "apiKey"):
+                continue
         seen.add(mid)
-        out.append((mid, label, egroup))
-    for name, entry in _all_web_providers().items():
+        out.append((mid, extra.get("label") or mid, extra.get("group") or "anthropic"))
+    for name, entry in entries.items():
         if name.lower() in _OFFICIAL_NAMES:
             continue
         model = _entry_field(entry, "model")
@@ -282,11 +311,12 @@ def available_models(
 
 
 def lookup_provider_by_model(model: str) -> dict | None:
-    """按模型名查设置页里的供应商配置条目;未配置(官方模型)返回 None。"""
-    for entry in _all_web_providers().values():
-        if _entry_field(entry, "model") == model:
-            return dict(entry)
-    return None
+    """按模型名查供应商配置;额外模型会返回其复用服务商的连接信息。"""
+    found = _provider_entry_for_model(model)
+    if found is None:
+        return None
+    _, entry = found
+    return {**entry, "model": model}
 
 
 def is_subscription_host(base_url: str) -> bool:
