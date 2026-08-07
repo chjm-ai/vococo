@@ -147,6 +147,7 @@ _SUDO_OPTIONS_WITH_VALUE = {
     "--prompt", "--role", "--type", "--user",
 }
 _ENV_OPTIONS_WITH_VALUE = {"-C", "-S", "-u", "--chdir", "--split-string", "--unset"}
+_EXEC_OPTIONS_WITH_VALUE = {"-a"}
 _XARGS_OPTIONS_WITH_VALUE = {
     "-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s",
     "--arg-file", "--delimiter", "--eof", "--max-args", "--max-chars",
@@ -154,6 +155,7 @@ _XARGS_OPTIONS_WITH_VALUE = {
 }
 _SHELL_PUNCTUATION = "|;&\n()"
 _PIPE_OPERATORS = {"|", "|&"}
+_REDIRECTION = re.compile(r"^\d*(?:>>?|<<?|<>|>&|<&)(.*)$")
 
 
 def _shell_commands(command: str) -> list[list[str]]:
@@ -161,7 +163,7 @@ def _shell_commands(command: str) -> list[list[str]]:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=_SHELL_PUNCTUATION)
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
-    lexer.commenters = ""
+    lexer.commenters = "#"
     commands: list[list[str]] = [[]]
     for token in lexer:
         is_punctuation = token and all(char in _SHELL_PUNCTUATION for char in token)
@@ -199,6 +201,9 @@ def _unwrap_command(words: list[str]) -> list[str]:
         if words[index] in {"(", ")"}:
             index += 1
             continue
+        if _ASSIGNMENT.match(words[index]):
+            index += 1
+            continue
         executable = os.path.basename(words[index])
         if executable == "sudo":
             index = _skip_options(words, index + 1, _SUDO_OPTIONS_WITH_VALUE)
@@ -208,6 +213,8 @@ def _unwrap_command(words: list[str]) -> list[str]:
                 index += 1
         elif executable == "command":
             index = _skip_options(words, index + 1, set())
+        elif executable == "exec":
+            index = _skip_options(words, index + 1, _EXEC_OPTIONS_WITH_VALUE)
         else:
             break
     return words[index:]
@@ -252,9 +259,39 @@ def _stage_shell_script(stage: list[str]) -> str | None:
     return _shell_script(words)
 
 
+def _has_process_control_substitution(words: list[str]) -> bool:
+    for index in range(len(words) - 2):
+        if words[index:index + 2] != ["$", "("]:
+            continue
+        try:
+            end = words.index(")", index + 2)
+        except ValueError:
+            continue
+        if _is_process_control(" ".join(words[index + 2:end])):
+            return True
+    return False
+
+
+def _without_redirections(words: list[str]) -> list[str]:
+    result: list[str] = []
+    skip_target = False
+    for word in words:
+        if skip_target:
+            skip_target = False
+            continue
+        match = _REDIRECTION.match(word)
+        if match:
+            skip_target = not bool(match.group(1))
+            continue
+        result.append(word)
+    return result
+
+
 def _is_process_control(command: str) -> bool:
     """是否实际调用 kill/pkill/killall 或让 xargs 执行它们。"""
     for statement in _shell_commands(command):
+        if _has_process_control_substitution(statement):
+            return True
         for stage in _pipeline_stages(statement):
             if _stage_directly_controls_process(stage):
                 return True
@@ -272,7 +309,8 @@ def _targets_vococo_process(command: str) -> bool:
                 continue
             words = _unwrap_command(stage)
             target_scope = statement if os.path.basename(words[0]) == "xargs" else stage
-            if _VOCOCO_PROCESS_TARGET.search(" ".join(target_scope)):
+            target_args = _without_redirections(target_scope)
+            if _VOCOCO_PROCESS_TARGET.search(" ".join(target_args)):
                 return True
         for stage in stages:
             script = _stage_shell_script(stage)

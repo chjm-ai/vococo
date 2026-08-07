@@ -178,6 +178,9 @@ def test_classify_returns_restrict_flag():
         "(kill 1234)",
         "sh -c 'kill 1234'",
         "bash -lc 'pkill -f worker.py'",
+        "MODE=test kill 1234",
+        "exec kill 1234",
+        "echo $(kill 1234)",
     ],
 )
 def test_classify_process_control_escalates_and_restricts_noninteractive(command):
@@ -237,6 +240,8 @@ def test_guard_hook_always_denies_direct_vococo_process_control(command, monkeyp
         "echo 'vococo serve'; pkill -f worker.py",
         "echo vococo | pkill -f worker.py",
         "sh -c 'echo vococo; kill 1234'",
+        "pkill -f worker.py # vococo serve",
+        "pkill -f worker.py > vococo.log",
     ],
 )
 def test_guard_hook_does_not_bind_vococo_from_another_command_segment(
