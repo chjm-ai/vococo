@@ -47,6 +47,8 @@ case "${1:-status}" in
     launchctl bootout "$DOMAIN/$LEGACY_LABEL" 2>/dev/null || true
     launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
     rm -f "$LEGACY_PLIST_DST"
+    # 手工 stop 留下的标记不能让新装的 launchd 监督者立即退出并反复重拉。
+    rm -f "$ROOT/data/.stop"
     launchctl bootstrap "$DOMAIN" "$PLIST_DST"
     launchctl enable "$DOMAIN/$LABEL"
     echo "✅ 已安装唯一前台监督者。开机自启 + 子进程崩溃自愈已开。"
