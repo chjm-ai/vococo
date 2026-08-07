@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 import anyio
 import pytest
@@ -127,6 +129,29 @@ def test_corrupt_transaction_is_recovered_without_permanent_lock(live_supervisor
     assert not list(selfops.RESTART_TRANSACTION_PATH.parent.glob(".*.claim"))
 
 
+def test_claim_cleanup_error_does_not_turn_published_transaction_into_failure(
+    monkeypatch, capsys, live_supervisor
+):
+    _write_json(selfops.STABLE_REVISION_PATH, {"revision": "stable-sha"})
+    real_unlink = Path.unlink
+
+    def fail_claim_cleanup(path, *args, **kwargs):
+        if path.name.endswith(".claim"):
+            raise PermissionError("claim is read only")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_claim_cleanup)
+
+    result = _request()
+
+    assert result.startswith("✅")
+    transaction = json.loads(
+        selfops.RESTART_TRANSACTION_PATH.read_text(encoding="utf-8")
+    )
+    assert transaction["session_key"] == "web:one"
+    assert "claim" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("pid_text", [None, "not-a-pid", "99999999"])
 def test_restart_refuses_when_supervisor_is_not_alive(pid_text):
     _write_json(selfops.STABLE_REVISION_PATH, {"revision": "stable-sha"})
@@ -183,7 +208,7 @@ def test_consuming_resume_keeps_restart_transaction_for_rollback():
 def test_failed_state_write_leaves_no_orphan_resume(monkeypatch, live_supervisor):
     _write_json(selfops.STABLE_REVISION_PATH, {"revision": "stable-sha"})
 
-    def fail_record(_recent):
+    def fail_record(_recent, _token=None):
         raise OSError("disk full")
 
     monkeypatch.setattr(selfops, "_record_restart", fail_record)
@@ -255,6 +280,29 @@ def test_exit_rechecks_supervisor_and_aborts_if_it_died(
     failure = json.loads(selfops.RESTART_FAILURE_PATH.read_text(encoding="utf-8"))
     assert failure["session_key"] == "web:one"
     assert "监督者" in failure["reason"]
+
+
+def test_cancelled_exit_removes_only_its_own_restart_stamp(
+    monkeypatch, live_supervisor
+):
+    historical = {"token": "older-token", "requested_at": time.time() - 30}
+    _write_json(selfops.RESTART_STAMPS_PATH, [historical])
+    _write_json(selfops.STABLE_REVISION_PATH, {"revision": "stable-sha"})
+    assert _request().startswith("✅")
+    transaction = json.loads(
+        selfops.RESTART_TRANSACTION_PATH.read_text(encoding="utf-8")
+    )
+    assert transaction["restart_token"] != historical["token"]
+    live_supervisor.terminate()
+    live_supervisor.wait(timeout=5)
+
+    monkeypatch.setattr(
+        selfops.os, "_exit", lambda _code: pytest.fail("监督者已死时不得退出")
+    )
+    assert selfops.supervisor_ready_for_exit("web:one") is False
+
+    stamps = json.loads(selfops.RESTART_STAMPS_PATH.read_text(encoding="utf-8"))
+    assert stamps == [historical]
 
 
 def test_gateway_and_voice_exit_paths_use_the_shared_safe_exit():

@@ -27,6 +27,7 @@ import shlex
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import anyio
@@ -129,17 +130,51 @@ def preflight() -> str | None:
 
 
 # ── 频率保险丝 ──
-def _recent_restarts() -> list[float]:
+def _recent_restarts() -> list[object]:
     try:
         stamps = json.loads(RESTART_STAMPS_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         stamps = []
+    if not isinstance(stamps, list):
+        return []
     now = time.time()
-    return [s for s in stamps if isinstance(s, (int, float)) and now - s < _RATE_WINDOW_SEC]
+    recent = []
+    for stamp in stamps:
+        requested_at = (
+            stamp
+            if isinstance(stamp, (int, float))
+            else stamp.get("requested_at") if isinstance(stamp, dict) else None
+        )
+        if (
+            isinstance(requested_at, (int, float))
+            and now - requested_at < _RATE_WINDOW_SEC
+        ):
+            recent.append(stamp)
+    return recent
 
 
-def _record_restart(recent: list[float]) -> None:
-    _atomic_write_json(RESTART_STAMPS_PATH, recent + [time.time()])
+def _record_restart(recent: list[object], restart_token: str) -> None:
+    _atomic_write_json(
+        RESTART_STAMPS_PATH,
+        recent + [{"token": restart_token, "requested_at": time.time()}],
+    )
+
+
+def _remove_restart_stamp(restart_token: str) -> None:
+    """只撤销指定事务的限流记录，保留其它会话与旧格式历史。"""
+    try:
+        stamps = json.loads(RESTART_STAMPS_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return
+    if not isinstance(stamps, list):
+        return
+    kept = [
+        stamp
+        for stamp in stamps
+        if not (isinstance(stamp, dict) and stamp.get("token") == restart_token)
+    ]
+    if len(kept) != len(stamps):
+        _atomic_write_json(RESTART_STAMPS_PATH, kept)
 
 
 def _read_json(path: Path) -> dict | None:
@@ -167,6 +202,8 @@ def _atomic_write_json(path: Path, data: object) -> None:
             tmp.unlink()
         except FileNotFoundError:
             pass
+        except OSError as exc:
+            print(f"[selfops] 临时 JSON 清理失败 {tmp}: {exc}", flush=True)
 
 
 def _create_restart_transaction(data: dict) -> bool:
@@ -204,6 +241,9 @@ def _create_restart_transaction(data: dict) -> bool:
             claim.unlink()
         except FileNotFoundError:
             pass
+        except OSError as exc:
+            # target 已发布时，claim 只是无害垃圾，不能把成功事务改判为失败。
+            print(f"[selfops] claim 清理失败 {claim}: {exc}", flush=True)
 
 
 def _valid_restart_transaction(data: dict) -> bool:
@@ -215,6 +255,8 @@ def _valid_restart_transaction(data: dict) -> bool:
         and isinstance(data.get("session_key"), str)
         and bool(data["session_key"])
         and isinstance(data.get("requested_at"), (int, float))
+        and isinstance(data.get("restart_token"), str)
+        and bool(data["restart_token"])
     )
 
 
@@ -256,6 +298,19 @@ def _supervisor_alive() -> bool:
 def _discard_restart_state(session_key: str, reason: str) -> None:
     """监督者失联时撤销本会话事务并留下可诊断记录。"""
     _restart_pending.pop(session_key, None)
+    transaction = _read_json(RESTART_TRANSACTION_PATH)
+    restart_token = (
+        transaction.get("restart_token")
+        if transaction and transaction.get("session_key") == session_key
+        else None
+    )
+    # 事务文件仍在时其它请求会被 single-flight 拒绝；先撤 stamp 再删事务，
+    # 避免新请求并发读写 stamps 时把已撤销的 token 带回来。
+    if isinstance(restart_token, str) and restart_token:
+        try:
+            _remove_restart_stamp(restart_token)
+        except OSError as exc:
+            print(f"[selfops] 撤销重启限流记录失败: {exc}", flush=True)
     for path in (RESUME_PATH, RESTART_TRANSACTION_PATH):
         state = _read_json(path)
         if state is None or state.get("session_key") == session_key:
@@ -367,11 +422,13 @@ def request_restart(
         return "⛔ 尚无经过稳定运行窗口确认的稳定版本，已拒绝自我重启。"
 
     requested_at = int(time.time())
+    restart_token = uuid.uuid4().hex
     transaction = {
         "stable_revision": stable,
         "candidate_revision": candidate,
         "session_key": session_key,
         "requested_at": requested_at,
+        "restart_token": restart_token,
     }
     try:
         transaction_created = _create_restart_transaction(transaction)
@@ -389,10 +446,11 @@ def request_restart(
         "rollback_commit": stable,
         "candidate_revision": candidate,
         "requested_at": requested_at,
+        "restart_token": restart_token,
     }
     try:
         _atomic_write_json(RESUME_PATH, task_data)
-        _record_restart(recent)
+        _record_restart(recent, restart_token)
     except (OSError, TypeError, ValueError, OverflowError) as exc:
         for path in (RESUME_PATH, RESTART_TRANSACTION_PATH):
             try:
