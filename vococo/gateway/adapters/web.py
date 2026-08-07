@@ -1544,21 +1544,30 @@ class WebAdapter:
         if not conv:
             return web.json_response({"error": "缺少 conv"}, status=400)
         archived = bool(body.get("archived", True))
+        force = bool(body.get("force", False))
         session_key = config.resolve_session_key("web", conv)
-        session_store.set_conv_archived(session_key, archived)
-        if archived:
-            # 归档 = 会话收尾信号:没改过代码的空壳 worktree 当场回收,不留残留。
-            # 有独立提交/未提交改动的留着(内容不能丢),并提示用户未回收的原因。
-            from ...core import worktree  # 懒加载
+        if not archived:
+            session_store.set_conv_archived(session_key, False)
+            return web.json_response({"ok": True})
+        # 归档 = 会话收尾信号:没改过代码的空壳 worktree 当场回收,不留残留。
+        # 有独立提交/未提交改动的留着(内容不能丢)——但归档前先问用户:未确认(force)时
+        # 不归档,返回 need_confirm 让前端弹选择框,确认后才真归档并提示未回收原因。
+        from ...core import worktree  # 懒加载
 
-            dirty = await worktree.worktree_dirty_summary(session_key)
-            await worktree.recycle_empty_worktree(session_key)
-            if dirty:
-                return web.json_response({
-                    "ok": True, "warning": True, "dirty": dirty,
-                    "msg": "该会话有未提交改动或未合并提交,worktree 暂未回收(内容不能丢),"
-                           "合并或提交后再次归档即可回收",
-                })
+        dirty = await worktree.worktree_dirty_summary(session_key)
+        if dirty and not force:
+            return web.json_response({
+                "ok": False, "need_confirm": True, "dirty": dirty,
+                "msg": "该会话的代码有未提交改动或未合并提交,归档后 worktree 暂不回收",
+            })
+        session_store.set_conv_archived(session_key, True)
+        await worktree.recycle_empty_worktree(session_key)
+        if dirty:
+            return web.json_response({
+                "ok": True, "warning": True, "dirty": dirty,
+                "msg": "该会话有未提交改动或未合并提交,worktree 暂未回收(内容不能丢),"
+                       "合并或提交后再次归档即可回收",
+            })
         return web.json_response({"ok": True})
 
     async def _handle_conv_read(self, request: web.Request) -> web.Response:
