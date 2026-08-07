@@ -8,8 +8,8 @@ fork 炸弹等),宁可漏放也别误伤日常操作——`rm -rf ./build` 这�
 想关掉:.env 里 DANGER_GUARD=0。
 
 除「灾难级 → 直接拦」外,这里还做一层【审批闸】(APPROVAL_GATE,默认开):对
-「危险但非灾难」的 5 类操作 —— 写工作目录外的文件、git push / reset --hard、rm -rf、
-包安装(pip/npm/brew…)、curl|sh —— 在【有交互通道时】弹按钮请用户批准,无通道则放行。
+「危险但非灾难」的操作 —— 写工作目录外的文件、git push / reset --hard、rm -rf、
+包安装(pip/npm/brew…)、curl|sh、进程终止 —— 在【有交互通道时】弹按钮请用户批准。
 这就是「远程编码:动手前对齐」的安全阀,复刻 Claude Code 的权限体验但适配手机低摩擦。
 """
 from __future__ import annotations
@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextvars
 import os
 import re
+import shlex
 
 from .. import config
 
@@ -102,7 +103,7 @@ async def pretool_danger_hook(input_data, tool_use_id, context):
     return {}
 
 
-# ── 审批闸:5 类「危险但非灾难」操作 → 有交互通道时请用户批准 ──────────────────
+# ── 审批闸:「危险但非灾难」操作 → 有交互通道时请用户批准 ───────────────────
 # 都是命令级(Bash)的模式;「写工作目录外文件」是文件级,单独在 classify 里判。
 # 第三个元素 restrict_noninteractive:非交互通道(cron/eval,无人可点审批)是否直接拒绝。
 # 只对「对外/供应链/改环境」这三类置 True(push/装包/curl|sh)——它们在自动化里被注入
@@ -135,6 +136,44 @@ _SECRET_VAR_RE = re.compile(
     r"SILICONFLOW_API_KEY|VAPID_PRIVATE_KEY|WEB_AUTH_TOKEN"
 )
 _OUTBOUND_RE = re.compile(r"\b(curl|wget|nc|ncat|telnet|ssh|scp)\b|/dev/tcp/")
+
+_PROCESS_CONTROL_COMMANDS = {"kill", "pkill", "killall"}
+_VOCOCO_PROCESS_TARGET = re.compile(r"\bvococo(?:\s+serve)?\b")
+
+
+def _shell_commands(command: str) -> list[list[str]]:
+    """把 shell 文本切成命令词组,保留引号内的管道符为普通文本。"""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars="|;&\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    commands: list[list[str]] = [[]]
+    for token in lexer:
+        if token and all(char in "|;&\n" for char in token):
+            commands.append([])
+        else:
+            commands[-1].append(token)
+    return [words for words in commands if words]
+
+
+def _is_process_control(command: str) -> bool:
+    """是否在 shell 命令位置调用 kill/pkill/killall 或 xargs kill。"""
+    for words in _shell_commands(command):
+        index = 1 if words[0] == "sudo" else 0
+        if index >= len(words):
+            continue
+        executable = os.path.basename(words[index])
+        if executable in _PROCESS_CONTROL_COMMANDS:
+            return True
+        if executable == "xargs" and any(
+            os.path.basename(word) == "kill" for word in words[index + 1:]
+        ):
+            return True
+    return False
+
+
+def _targets_vococo_process(command: str) -> bool:
+    return _is_process_control(command) and bool(_VOCOCO_PROCESS_TARGET.search(command))
 
 
 def _looks_like_secret_exfil(cmd: str) -> bool:
@@ -226,7 +265,7 @@ def classify(
     """把一次工具调用分成 allow / escalate / block,附(原因, 非交互是否拒绝)。
 
     - block:灾难级(删根/格式化…),直接拦。
-    - escalate:5 类危险操作,请用户批准。
+    - escalate:危险但非灾难的操作,请用户批准。
     - allow:其余,放行。
 
     第三个返回值 restrict_noninteractive:该 escalate 操作在无交互通道(cron/eval)时
@@ -238,6 +277,8 @@ def classify(
         why = is_dangerous(cmd)
         if why:
             return ("block", why, False)
+        if _is_process_control(cmd):
+            return ("escalate", "进程终止命令(kill/pkill/killall)", True)
         if _looks_like_secret_exfil(cmd):
             # 疑似把密钥外带:自动化通道直接拒(restrict=True),有交互通道则请你确认
             return ("escalate", "疑似把密钥/令牌通过网络外带", True)
@@ -461,15 +502,26 @@ def _deny_outside_worktree(target: str, wt: str) -> dict:
     )
 
 
+def _deny_vococo_process_control() -> dict:
+    return _deny(
+        "🚫 禁止直接控制 vococo 正式进程。会话内重启请使用 restart_self；"
+        "终端或外部场景请使用 `zsh deploy/restart.sh` 或 `zsh deploy/stop.sh`。"
+    )
+
+
 def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | None:
-    """常开正确性防线:后台任务腰斩 / 记忆孤本 / worktree 越界。命中则返回 deny 结果。
+    """常开正确性防线:正式进程控制等错误操作命中后直接返回 deny。
 
     这是跟下面 classify() 的 allow/escalate/block 三档【并列的另一套机制】,不是它的
-    第四档:这三项修的是正确性 bug(不这么做程序行为就是错的),不是「操作有多危险」,
+    第四档:这些规则修的是正确性 bug(不这么做程序行为就是错的),不是「操作有多危险」,
     所以永远生效、不受 DANGER_GUARD / APPROVAL_GATE 开关影响——关掉安全开关图的是
     「我知道风险,别再问我」,不该连带关掉这几条「关了程序就会错」的防线。
     CONTEXT.md「危险分级(Risk Tier)」条目描述的三档模型专指 classify() 的输出。
     """
+    if tool_name == "Bash" and _targets_vococo_process(
+        (tool_input or {}).get("command", "") or ""
+    ):
+        return _deny_vococo_process_control()
     if _wants_background(tool_name, tool_input):
         return _deny_background(tool_name)
     orphan = _creates_orphan_memory_file(tool_name, tool_input)
@@ -611,8 +663,8 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
             print(f"⚠️ [安全标注] 本轮读取了疑似凭据文件/命令:{sensitive}")
         verdict, reason, restrict = classify(tool_name, tool_input, cwd=current_cwd())
     except Exception:
-        # 背景判定/classify 出错时无从判定 → 放行,不阻断正常流程(这些都不是安全判定本身)
-        return {}
+        # 安全判定异常时无法确认操作安全,按 ADR 0003 fail-closed。
+        return _deny("🛑 安全判定异常,已保守拒绝此操作。请手动检查后重试。")
     if verdict == "block" and config.DANGER_GUARD:
         return _deny(
             f"⛔ 危险命令被 {config.PERSONA_NAME} 拦截({reason})。如确需执行,请你手动在终端运行。"

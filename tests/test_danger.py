@@ -163,6 +163,93 @@ def test_classify_returns_restrict_flag():
     assert classify("Bash", {"command": "rm -rf ./x"})[2] is False
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "kill 1234",
+        "sudo kill -TERM 1234",
+        "pkill -f worker.py",
+        "killall python3",
+        "ps aux | grep worker | awk '{print $2}' | xargs kill",
+    ],
+)
+def test_classify_process_control_escalates_and_restricts_noninteractive(command):
+    verdict, _, restrict = classify("Bash", {"command": command})
+    assert verdict == "escalate"
+    assert restrict is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "zsh deploy/restart.sh",
+        "zsh deploy/stop.sh",
+        "echo kill",
+        "grep -R kill vococo",
+        "python -c \"print('kill 1234')\"",
+    ],
+)
+def test_classify_process_control_does_not_expand_to_unrelated_commands(command):
+    assert classify("Bash", {"command": command}) == ("allow", "", False)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        (
+            'ps aux | grep -E "vococo serve|fake-dir" | grep -v grep '
+            "| awk '{print $2}' | xargs kill"
+        ),
+        "pkill -f 'vococo serve'",
+        "killall vococo",
+    ],
+)
+def test_guard_hook_always_denies_direct_vococo_process_control(command, monkeypatch):
+    from vococo import config
+
+    monkeypatch.setattr(config, "DANGER_GUARD", False)
+    monkeypatch.setattr(config, "APPROVAL_GATE", False)
+    out = anyio.run(
+        lambda: pretool_guard_hook(
+            {"tool_name": "Bash", "tool_input": {"command": command}}, None, {}
+        )
+    )
+    result = out["hookSpecificOutput"]
+    assert result["permissionDecision"] == "deny"
+    assert "restart_self" in result["permissionDecisionReason"]
+    assert "deploy/restart.sh" in result["permissionDecisionReason"]
+    assert "deploy/stop.sh" in result["permissionDecisionReason"]
+
+
+def test_guard_hook_denies_generic_process_control_without_channel():
+    out = anyio.run(
+        lambda: pretool_guard_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "kill 1234"}}, None, {}
+        )
+    )
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("failing_check", ["_hard_guard", "classify"])
+def test_guard_hook_fails_closed_when_safety_classification_raises(
+    monkeypatch, failing_check
+):
+    from vococo.tools import danger
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(danger, failing_check, fail)
+    out = anyio.run(
+        lambda: pretool_guard_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "ls"}}, None, {}
+        )
+    )
+    result = out["hookSpecificOutput"]
+    assert result["permissionDecision"] == "deny"
+    assert "安全判定异常" in result["permissionDecisionReason"]
+
+
 def test_guard_hook_denies_new_memory_file(tmp_path, monkeypatch):
     # 在 Claude Code 项目记忆目录新建实体文件 → deny 引导写 AI_BRAIN 主库
     from vococo.tools import danger
