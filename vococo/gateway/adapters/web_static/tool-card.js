@@ -110,9 +110,10 @@ function renderToolCard(name, inp){
       const c=el("div","tc-code"); c.textContent=inp.command||"";
       return toolCardShell(ic("command")+" 命令", inp.description||"", c, true);
     }
-    // 其余工具:有明显目标参数才给个折叠预览,避免刷屏
+    // 其余工具统一给最小卡片,由主流程折进「已执行 N 条命令」。以前没有预览参数的
+    // 成功工具会在结果到达时临时补一张卡,绕过 activeCard 而散落在过程区。
     const hint=inp.file_path||inp.path||inp.pattern||inp.query||inp.url||"";
     if(hint){ const c=el("div","tc-code"); c.textContent=hint; return toolCardShell(ic("wrench")+" "+esc(name), "", c, true, inp.file_path); }
-    return null;
+    return toolCardShell(ic("wrench")+" "+esc(name), "", null, true);
   }catch(e){ return null; }
 }

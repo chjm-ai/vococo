@@ -37,6 +37,7 @@ from ..gateway import clarify, settings_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
 from . import client_pool
+from .tasks import is_sdk_task_tool
 from .prompt import build_system_prompt
 
 
@@ -806,7 +807,8 @@ async def stream_turn(
                                     # 主 agent 起了个子代理 → 记进「在跑」集,收工要等它结束
                                     if name in _SUBAGENT_TOOLS and tid:
                                         pending_subagents.add(tid)
-                                yield ToolStarted(name, tool_id=tid, parent_id=pid)
+                                if not is_sdk_task_tool(name):
+                                    yield ToolStarted(name, tool_id=tid, parent_id=pid)
                         elif etype == "content_block_stop":
                             # 该工具块的入参已流完 → 解析并发出 ToolInput(喂 diff/todo/审批)
                             idx = ev.get("index")
@@ -814,9 +816,10 @@ async def stream_turn(
                             if key is not None and key in tool_meta:
                                 tid, name = tool_meta.pop(key)
                                 parsed = assemble_tool_input(tool_json.pop(key, ""))
-                                yield ToolInput(
-                                    name=name, tool_id=tid, tool_input=parsed, parent_id=pid
-                                )
+                                if not is_sdk_task_tool(name):
+                                    yield ToolInput(
+                                        name=name, tool_id=tid, tool_input=parsed, parent_id=pid
+                                    )
                     elif isinstance(msg, UserMessage):
                         pid = getattr(msg, "parent_tool_use_id", None)
                         for b in msg.content:
@@ -825,14 +828,15 @@ async def stream_turn(
                                 # 子代理的结果回来了 → 从「在跑」集移除(它的 tool_id 就是 Agent 调用 id)
                                 if b.tool_use_id in pending_subagents:
                                     pending_subagents.discard(b.tool_use_id)
-                                yield ToolFinished(
-                                    name=name,
-                                    ok=not bool(b.is_error),
-                                    preview=_preview(b.content),
-                                    tool_id=b.tool_use_id,
-                                    detail=_detail(b.content),
-                                    parent_id=pid,
-                                )
+                                if not is_sdk_task_tool(name):
+                                    yield ToolFinished(
+                                        name=name,
+                                        ok=not bool(b.is_error),
+                                        preview=_preview(b.content),
+                                        tool_id=b.tool_use_id,
+                                        detail=_detail(b.content),
+                                        parent_id=pid,
+                                    )
                     elif isinstance(msg, SystemMessage):
                         # CLI 压缩了上下文(autocompact 阈值≈窗口 83%,或手动):
                         # 透传标记,让各端显示「已自动压缩」而非无感丢细节。

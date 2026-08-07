@@ -899,10 +899,14 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
 def build_hooks() -> dict | None:
     """返回挂给 ClaudeAgentOptions.hooks 的结构;SDK 不支持则 None。
 
-    始终挂 PreToolUse:除危险拦截/审批闸(各由 DANGER_GUARD/APPROVAL_GATE 开关控制)外,
-    还负责拦下 run_in_background、引导模型改前台重试——这是纠正「后台任务被腰斩」的正确性
-    修复,与两个安全开关无关,故即便两开关都关也要挂上。
+    始终挂 PreToolUse:危险拦截/审批闸与前台执行防线;同时挂 PostToolUse,把 SDK
+    Task* 待办投影到网页状态条。后者只展示,不进入后台执行器。
     """
     if HookMatcher is None:
         return None
-    return {"PreToolUse": [HookMatcher(matcher=None, hooks=[pretool_guard_hook])]}
+    from .sdk_task_hooks import posttool_sdk_task_sync_hook
+
+    return {
+        "PreToolUse": [HookMatcher(matcher=None, hooks=[pretool_guard_hook])],
+        "PostToolUse": [HookMatcher(matcher=None, hooks=[posttool_sdk_task_sync_hook])],
+    }

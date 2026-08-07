@@ -1127,7 +1127,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   }
 
   // ── P1 任务板:抽屉列表 + 完成播报(WHEN_IDLE:等空闲/不在录音才插播,F8/F10) ──────
-  const STATUS_WORD = {queued:"排队中", running:"进行中", done:"已完成", failed:"失败", cancelled:"已取消"};
+  const STATUS_WORD = {queued:"排队中", pending:"排队中", running:"进行中", in_progress:"进行中", paused:"已暂停", completed:"已完成", done:"已完成", failed:"失败", cancelled:"已取消", deleted:"已删除"};
 
   async function loadTasks(){
     try{
@@ -1135,9 +1135,15 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       // 聊天视图拉当前会话的 chat 任务——后端按 conv 区分(见 /voice/tasks)。
       const conv = S.conv === "voice-chat:main" ? null : S.conv;
       const url = conv ? `/voice/tasks?conv=${encodeURIComponent(conv)}` : "/voice/tasks";
-      const resp = await fetch(url, {headers:{"X-Auth-Token":S.token}});
+      const [resp, sdkResp] = await Promise.all([
+        fetch(url, {headers:{"X-Auth-Token":S.token}}),
+        conv ? fetch(`/voice/sdk-tasks?conv=${encodeURIComponent(conv)}`, {headers:{"X-Auth-Token":S.token}}) : Promise.resolve(null),
+      ]);
       if(!resp.ok) return;
       const rows = await resp.json();
+      const sdkRows = sdkResp && sdkResp.ok ? await sdkResp.json() : [];
+      // 切会话时上一个请求可能后到;不能让旧会话任务覆盖当前输入框状态条。
+      if(conv !== (S.conv === "voice-chat:main" ? null : S.conv)) return;
       renderTasks(rows);
       // 顺带全量校准状态条(SSE 断线漏事件时,打开抽屉/task_done 刷新都会走到这里兜底)。
       // 抽屉(renderTasks)看全量历史不受影响;状态条按 voiceTasksClearedAt 水位线把
@@ -1149,6 +1155,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
         if(t.origin !== "chat" && t.created_at && t.created_at < voiceTasksClearedAt) continue;
         barTasks.set(t.id, t);
       }
+      for(const t of sdkRows) barTasks.set(t.id, t);
       renderTaskBar();
     }catch(e){}
   }
@@ -1166,22 +1173,26 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let voiceTasksClearedAt = Number(localStorage.getItem("vococo_voice_tasks_cleared_at") || 0);
 
   function upsertTaskBar(t){
-    // 状态条只接两种真正的后台任务:voice 归通话视图,chat 归派发它的聊天会话。
-    if(t.origin !== "voice" && t.origin !== "chat") return;
+    // 状态条接后台任务(voice/chat)和当前会话 SDK 待办(sdk_task)。
+    if(t.origin !== "voice" && t.origin !== "chat" && t.origin !== "sdk_task") return;
     // 水位线只对 voice 任务生效;chat 任务跟语音上下文无关。
     if(t.origin === "voice" && t.created_at && t.created_at < voiceTasksClearedAt) return;
-    if(t.origin === "chat" && t.dispatch_chat_id !== S.conv) return;
+    if((t.origin === "chat" || t.origin === "sdk_task") && t.dispatch_chat_id !== S.conv) return;
+    if(t.deleted){ barTasks.delete(t.id); renderTaskBar(); return; }
     barTasks.set(t.id, t);
     renderTaskBar();
   }
 
   function taskbarNote(t){
     if(t.status === "running") return t.progress_note || "进行中";
-    if(t.status === "queued") return "排队中";
+    if(t.status === "in_progress") return t.description || "进行中";
+    if(t.status === "queued" || t.status === "pending") return "排队中";
     return t.result_summary || STATUS_WORD[t.status] || t.status;
   }
 
-  function isTaskDone(t){ return t.status !== "queued" && t.status !== "running"; }
+  function isTaskDone(t){ return !["queued","pending","running","in_progress","paused"].includes(t.status); }
+  function taskbarTitle(t){ return t.origin === "sdk_task" ? `#${t.number} ${t.title}` : t.title; }
+  function taskIsRunning(t){ return t.status === "running" || t.status === "in_progress"; }
 
   function renderTaskBar(){
     const rows = [...barTasks.values()]
@@ -1191,7 +1202,13 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     // 两类任务分离(2026-08-06 对齐):#taskBar 只显示 voice 任务,#chatTaskBar 只显示 chat 任务。
     // barTasks 是共享池(SSE 事件混着来),渲染时按 origin 分流,互不污染。
     const voiceRows = rows.filter(t=>t.origin === "voice");
-    const chatRows = rows.filter(t=>t.origin === "chat");
+    const chatRows = rows.filter(t=>t.origin === "chat" || t.origin === "sdk_task")
+      .sort((a,b)=>{
+        if(a.origin === "sdk_task" && b.origin === "sdk_task") return a.number - b.number;
+        if(a.origin === "sdk_task") return -1;
+        if(b.origin === "sdk_task") return 1;
+        return (b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at);
+      });
 
     // 1) 通话视图 #taskBar: voice 任务简单列表,最近 7 条,差量渲染
     renderBar($("#taskBar"), voiceRows.slice(0, TASKBAR_MAX));
@@ -1223,11 +1240,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       row.classList.toggle("done", isTaskDone(t));
       let dot = row.querySelector(".dot");
       if(!dot){ dot = document.createElement("span"); dot.className = "dot"; row.appendChild(dot); }
-      const dotCls = "dot " + (t.status === "running" ? "running" : "other");
+      const dotCls = "dot " + (taskIsRunning(t) ? "running" : "other");
       if(dot.className !== dotCls) dot.className = dotCls;  // 状态没变不动 class,动画不重启
       let ttl = row.querySelector(".t");
       if(!ttl){ ttl = document.createElement("span"); ttl.className = "t"; row.appendChild(ttl); }
-      if(ttl.textContent !== t.title) ttl.textContent = t.title;
+      const title = taskbarTitle(t);
+      if(ttl.textContent !== title) ttl.textContent = title;
       const note = taskbarNote(t);
       let nEl = row.querySelector(".n");
       if(!nEl){ nEl = document.createElement("span"); nEl.className = "n"; row.appendChild(nEl); }
@@ -1306,10 +1324,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       if(section.children[i] !== row) section.insertBefore(row, section.children[i]);  // 按排序归位
       row.classList.toggle("done", isTaskDone(t));
       const dot = row.children[0];
-      const dotCls = "ctb-dot " + (t.status === "running" ? "running" : "other");
+      const dotCls = "ctb-dot " + (taskIsRunning(t) ? "running" : "other");
       if(dot.className !== dotCls) dot.className = dotCls;  // 状态没变不动 class,动画不重启
       const ttl = row.children[1];
-      if(ttl.textContent !== t.title) ttl.textContent = t.title;
+      const title = taskbarTitle(t);
+      if(ttl.textContent !== title) ttl.textContent = title;
       const note = taskbarNote(t);
       const nEl = row.children[2];
       if(nEl.textContent !== note) nEl.textContent = note;
@@ -1847,6 +1866,10 @@ void main(){
         pendingAnnouncements.push(data);
         flushAnnouncements();
       }
+    });
+    es.addEventListener("sdk_task_update", e=>{
+      const task=JSON.parse(e.data);
+      upsertTaskBar(task);
     });
     // SSE 断线重连成功后全量校准一次:重连期间错过的 task_done 靠这次拉全量补上
     es.onopen = ()=>{ loadTasks(); };
@@ -6025,6 +6048,7 @@ function renderEventsFlow(events, ctx){
       flow.append(d); continue;
     }
     if(blk.type!=="tool") continue;
+    if(["TaskCreate","TaskGet","TaskList","TaskUpdate","TaskDelete"].includes(blk.name)) continue;
     const failed=blk.ok===false;
     const light=!("input" in blk);  // 懒加载空壳:没有 input 字段(/history 默认剥掉了)
     let card;
@@ -6428,6 +6452,8 @@ function renderStatus(){
 }
 function finalizeStream(finalText, imgs){
   if(!S.stream) return;
+  // 末尾那条普通命令以前等不到下一段正文/命令,会永久散落在过程区;收工时也要归组。
+  if(S.stream.activeCard){ foldToGroup(S.stream, S.stream.activeCard); S.stream.activeCard=null; }
   if(S.stream.timer) clearInterval(S.stream.timer);
   S.stream.status.remove(); S.stream.thinktog.remove(); S.stream.think.remove();
   // 回合已结束:还没点的审批按钮全部失效(点了也只会收到"已过期")

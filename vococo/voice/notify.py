@@ -93,6 +93,11 @@ def on_task_activity(task: dict) -> None:
         _bridge_event({"conv": tasks.session_key(task["id"]), "type": "start"})
 
 
+def on_sdk_task_activity(task: dict) -> None:
+    """SDK 待办变化只推网页状态条,不触发后台任务通知或侧栏会话。"""
+    _broadcast("sdk_task_update", task)
+
+
 def register_platform_push(
     fn: Callable[[str, str, str], Awaitable[None]] | None,
 ) -> None:
