@@ -1235,7 +1235,6 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   function isTaskDone(t){ return !TASK_ACTIVE_STATUSES.includes(t.status); }
   function taskbarTitle(t){ return t.origin === "sdk_task" ? `#${t.number} ${t.title}` : t.title; }
-  function taskIsRunning(t){ return t.status === "running" || t.status === "in_progress"; }
 
   function renderTaskBar(){
     const rows = [...barTasks.values()]
@@ -1283,7 +1282,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       row.classList.toggle("done", isTaskDone(t));
       let dot = row.querySelector(".dot");
       if(!dot){ dot = document.createElement("span"); dot.className = "dot"; row.appendChild(dot); }
-      const dotCls = "dot " + (taskIsRunning(t) ? "running" : "other");
+      // 圆点按状态语义色渲染(queued=灰/running=绿闪/failed=红…,见 styles.css);
+      // 状态未知时落到默认灰
+      const dotCls = "dot " + (t.status || "");
       if(dot.className !== dotCls) dot.className = dotCls;  // 状态没变不动 class,动画不重启
       let ttl = row.querySelector(".t");
       if(!ttl){ ttl = document.createElement("span"); ttl.className = "t"; row.appendChild(ttl); }
@@ -1367,7 +1368,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       if(section.children[i] !== row) section.insertBefore(row, section.children[i]);  // 按排序归位
       row.classList.toggle("done", isTaskDone(t));
       const dot = row.children[0];
-      const dotCls = "ctb-dot " + (taskIsRunning(t) ? "running" : "other");
+      // 圆点按状态语义色渲染(与 #taskBar 同款,见 styles.css);状态未知落到默认灰
+      const dotCls = "ctb-dot " + (t.status || "");
       if(dot.className !== dotCls) dot.className = dotCls;  // 状态没变不动 class,动画不重启
       const ttl = row.children[1];
       const title = taskbarTitle(t);
