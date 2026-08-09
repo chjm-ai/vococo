@@ -4444,7 +4444,7 @@ function applyUsageRow(id, data){
 function loadModelQuotas(choices){
   // 额度是账号级、组内所有模型共用,圆环挂在分组标题上,每组只查一次接口
   // (用组内第一个模型的 id 代表整组去查,结果套到分组标题的圆环上)。
-  ["anthropic","kimi"].forEach(function(gkey){
+  ["anthropic","kimi","codex"].forEach(function(gkey){
     var rep = choices.find(function(c){ return c[2]===gkey; });
     if(!rep) return;
     loadUsage(rep[0]).then(function(data){ applyUsageRow(gkey, data); });
