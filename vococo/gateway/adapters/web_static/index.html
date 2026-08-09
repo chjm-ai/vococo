@@ -1182,24 +1182,36 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       if(conv !== (S.conv === "voice-chat:main" ? null : S.conv)) return;
       renderTasks(rows);
       // 顺带全量校准状态条(SSE 断线漏事件时,打开抽屉/task_done 刷新都会走到这里兜底)。
-      // 【分槽校准,2026-08-08 修复】barTasks 是通话(#taskBar)和聊天(#chatTaskBar)两个
-      // 视图的共享池,而接口只返回当前视图对应的任务(通话=voice,聊天=该会话 chat/sdk)。
-      // 原来这里不分槽整池 clear() 再重填,聊天视图每次校准都会把 SSE 事件维护的 voice
-      // 任务清掉,而 SSE 事件又能把它们加回来——任务条"时有时无、多条在跑只剩一条"。
-      // 现在只清自己这槽:通话视图只碰 voice,聊天视图只碰当前会话的 chat/sdk。
+      // 【分槽合并校准,2026-08-08 两次修复】barTasks 是通话(#taskBar)和聊天(#chatTaskBar)
+      // 两个视图的共享池,接口只返回当前视图对应的任务(通话=voice,聊天=该会话 chat/sdk)。
+      // 第一轮修掉"整池 clear 误清另一视图"后,还有第二个竞态:接口 HTTP 快照可能比
+      // SSE 事件旧(fetch 发出时任务还在跑,响应晚于完成事件返回)——"先清空再重填"
+      // 会把已完成的任务回退成旧状态、把刚派发的任务直接吞掉(完成即消失的另一来源)。
+      // 所以校准只【补全/更新】不【清空】:SSE 事件是更新的事实来源,接口只是兜底补漏;
+      // 本地已有且状态更新的条目保留(updated_at 比较)。残留清理交给三条机制:
+      // 渲染过滤(S.conv 会话隔离)、taskBarDoneHidden(终态满 10 分钟隐藏)、
+      // 清空上下文(barTasks.clear + 水位线)。
       if(conv === null){
-        // 通话视图:voice 槽位以接口为准全量替换;水位线把清空上下文之前的旧任务筛掉,
+        // 通话视图:voice 槽位合并;水位线把清空上下文之前的旧任务筛掉,
         // 否则这次校准又把刚清空的条目拉回来(chat/sdk 槽位保持原样,由 SSE 维护)。
-        for(const [id, t] of [...barTasks]) if(t.origin === "voice") barTasks.delete(id);
         for(const t of rows){
           if(t.created_at && t.created_at < voiceTasksClearedAt) continue;
+          const prev = barTasks.get(t.id);
+          if(prev && (prev.updated_at ?? prev.created_at) > (t.updated_at ?? t.created_at)) continue;
           barTasks.set(t.id, t);
         }
       } else {
-        // 聊天视图:只校准当前会话的 chat/sdk 槽位,voice 任务保持原样(SSE 维护)。
-        for(const [id, t] of [...barTasks]) if(t.origin !== "voice" && t.dispatch_chat_id === conv) barTasks.delete(id);
-        for(const t of rows) barTasks.set(t.id, t);
-        for(const t of sdkRows) barTasks.set(t.id, t);
+        // 聊天视图:只合并当前会话的 chat/sdk,voice 任务保持原样(SSE 维护)。
+        for(const t of rows){
+          const prev = barTasks.get(t.id);
+          if(prev && (prev.updated_at ?? prev.created_at) > (t.updated_at ?? t.created_at)) continue;
+          barTasks.set(t.id, t);
+        }
+        for(const t of sdkRows){
+          const prev = barTasks.get(t.id);
+          if(prev && (prev.updated_at ?? prev.created_at) > (t.updated_at ?? t.created_at)) continue;
+          barTasks.set(t.id, t);
+        }
       }
       renderTaskBar();
     }catch(e){}
@@ -1248,10 +1260,12 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       .filter(t=>!taskBarDoneHidden(t))
       .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at));
 
-    // 两类任务分离(2026-08-06 对齐):#taskBar 只显示 voice 任务,#chatTaskBar 只显示 chat 任务。
-    // barTasks 是共享池(SSE 事件混着来),渲染时按 origin 分流,互不污染。
+    // 两类任务分离(2026-08-06 对齐):#taskBar 只显示 voice 任务,#chatTaskBar 只显示
+    // 当前会话的 chat 任务。barTasks 是共享池(SSE 事件混着来),渲染时按 origin+会话
+    // 分流,互不污染;chat/sdk 按 dispatch_chat_id===S.conv 隔离——校准只补不删后,
+    // 切会话残留的旧会话任务靠这层渲染过滤挡住(2026-08-08)。
     const voiceRows = rows.filter(t=>t.origin === "voice");
-    const chatRows = rows.filter(t=>t.origin === "chat" || t.origin === "sdk_task")
+    const chatRows = rows.filter(t=>(t.origin === "chat" || t.origin === "sdk_task") && t.dispatch_chat_id === S.conv)
       .sort((a,b)=>{
         if(a.origin === "sdk_task" && b.origin === "sdk_task") return a.number - b.number;
         if(a.origin === "sdk_task") return -1;
