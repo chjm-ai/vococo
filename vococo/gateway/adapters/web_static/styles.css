@@ -1066,8 +1066,12 @@
   .ctb-row{display:flex;align-items:center;gap:8px;font-size:12.5px;min-width:0}
   .ctb-row.done{opacity:.55;text-decoration:line-through}
   .ctb-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;background:var(--dim2)}
-  .ctb-dot.running{width:6px;height:6px;background:#000;box-shadow:0 0 0 1px var(--line2);
+  /* 状态语义色,与 .taskbar-row .dot 同款(见上) */
+  .ctb-dot.running,.ctb-dot.in_progress{width:6px;height:6px;background:var(--ok);
     animation:ctbPulse 1.2s ease-in-out infinite}
+  .ctb-dot.paused{background:var(--accent)}
+  .ctb-dot.done,.ctb-dot.completed{background:var(--ok)}
+  .ctb-dot.failed,.ctb-dot.cancelled{background:var(--err)}
   .ctb-title{font-weight:500;flex-shrink:0;max-width:45%;overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
   .ctb-note{color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1082,8 +1086,13 @@
   .taskbar-row{display:flex;align-items:center;gap:8px;font-size:13px;min-width:0}
   .taskbar-row.done{opacity:.55;text-decoration:line-through}
   .taskbar-row .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;background:var(--dim2)}
-  .taskbar-row .dot.running{background:#000;box-shadow:0 0 0 1px var(--line2);
+  /* 状态语义色(2026-08-08 对齐抽屉/侧边栏的清晰配色):排队=灰,进行中=绿+脉冲,
+     暂停=橙,完成=绿(静态,行级 done 有删除线区分),失败/取消=红 */
+  .taskbar-row .dot.running,.taskbar-row .dot.in_progress{background:var(--ok);
     animation:ctbPulse 1.2s ease-in-out infinite}
+  .taskbar-row .dot.paused{background:var(--accent)}
+  .taskbar-row .dot.done,.taskbar-row .dot.completed{background:var(--ok)}
+  .taskbar-row .dot.failed,.taskbar-row .dot.cancelled{background:var(--err)}
   .taskbar-row .t{font-weight:600;flex-shrink:0;max-width:45%;overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
   .taskbar-row .n{color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1098,7 +1107,7 @@
   .task .row{display:flex;align-items:center;gap:8px;margin:0;animation:none}
   .task .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
   .task .dot.queued{background:var(--dim2)}
-  .task .dot.running{background:var(--accent)}
+  .task .dot.running{background:var(--ok)}  /* 2026-08-08 与任务栏统一:进行中=绿 */
   .task .dot.done{background:var(--ok)}
   .task .dot.failed,.task .dot.cancelled{background:var(--err)}
   .task .title{flex:1;font-weight:600}

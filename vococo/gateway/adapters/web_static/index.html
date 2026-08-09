@@ -1161,27 +1161,39 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       // 聊天视图拉当前会话的 chat 任务——后端按 conv 区分(见 /voice/tasks)。
       const conv = S.conv === "voice-chat:main" ? null : S.conv;
       const url = conv ? `/voice/tasks?conv=${encodeURIComponent(conv)}` : "/voice/tasks";
-      const [resp, sdkResp] = await Promise.all([
+      // sdk-tasks 是聊天视图的补充数据源,它挂了不能连主校准一起废掉(allSettled 各自兜底)
+      const [resp, sdkResp] = await Promise.allSettled([
         fetch(url, {headers:{"X-Auth-Token":S.token}}),
         conv ? fetch(`/voice/sdk-tasks?conv=${encodeURIComponent(conv)}`, {headers:{"X-Auth-Token":S.token}}) : Promise.resolve(null),
       ]);
-      if(!resp.ok) return;
-      const rows = await resp.json();
-      const sdkRows = sdkResp && sdkResp.ok ? await sdkResp.json() : [];
+      const main = resp.status === "fulfilled" ? resp.value : null;
+      if(!main || !main.ok) return;
+      const rows = await main.json();
+      const sdkRows = sdkResp.status === "fulfilled" && sdkResp.value && sdkResp.value.ok
+        ? await sdkResp.value.json() : [];
       // 切会话时上一个请求可能后到;不能让旧会话任务覆盖当前输入框状态条。
       if(conv !== (S.conv === "voice-chat:main" ? null : S.conv)) return;
       renderTasks(rows);
       // 顺带全量校准状态条(SSE 断线漏事件时,打开抽屉/task_done 刷新都会走到这里兜底)。
-      // 抽屉(renderTasks)看全量历史不受影响;状态条按 voiceTasksClearedAt 水位线把
-      // 清空上下文之前的旧任务筛掉,否则这次全量校准又会把刚清空的条目拉回来。
-      barTasks.clear();
-      for(const t of rows){
-        // 水位线只对 voice 任务生效(清空语音上下文只清语音任务);
-        // chat 任务有自己的会话隔离,不跟着语音上下文走
-        if(t.origin !== "chat" && t.created_at && t.created_at < voiceTasksClearedAt) continue;
-        barTasks.set(t.id, t);
+      // 【分槽校准,2026-08-08 修复】barTasks 是通话(#taskBar)和聊天(#chatTaskBar)两个
+      // 视图的共享池,而接口只返回当前视图对应的任务(通话=voice,聊天=该会话 chat/sdk)。
+      // 原来这里不分槽整池 clear() 再重填,聊天视图每次校准都会把 SSE 事件维护的 voice
+      // 任务清掉,而 SSE 事件又能把它们加回来——任务条"时有时无、多条在跑只剩一条"。
+      // 现在只清自己这槽:通话视图只碰 voice,聊天视图只碰当前会话的 chat/sdk。
+      if(conv === null){
+        // 通话视图:voice 槽位以接口为准全量替换;水位线把清空上下文之前的旧任务筛掉,
+        // 否则这次校准又把刚清空的条目拉回来(chat/sdk 槽位保持原样,由 SSE 维护)。
+        for(const [id, t] of [...barTasks]) if(t.origin === "voice") barTasks.delete(id);
+        for(const t of rows){
+          if(t.created_at && t.created_at < voiceTasksClearedAt) continue;
+          barTasks.set(t.id, t);
+        }
+      } else {
+        // 聊天视图:只校准当前会话的 chat/sdk 槽位,voice 任务保持原样(SSE 维护)。
+        for(const [id, t] of [...barTasks]) if(t.origin !== "voice" && t.dispatch_chat_id === conv) barTasks.delete(id);
+        for(const t of rows) barTasks.set(t.id, t);
+        for(const t of sdkRows) barTasks.set(t.id, t);
       }
-      for(const t of sdkRows) barTasks.set(t.id, t);
       renderTaskBar();
     }catch(e){}
   }
@@ -1189,6 +1201,11 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // ── 任务状态条:顶栏下方常驻横幅,派发瞬间出现(SSE task_update)。
   //    终态任务满 10 分钟自动隐藏;去掉关闭按钮,已完成任务默认折叠。
   //    callView #taskBar 保持简单列表;chatMain #chatTaskBar 分组展示。
+  // 活跃(未终态)状态集合:后台任务(queued/running)与 SDK 待办(pending/in_progress/paused)
+  // 两套状态共用一份定义,isTaskDone/taskBarDoneHidden/scheduleDoneHide 都按它判断——
+  // 各自维护一份会漏(2026-08-08:SDK 新状态引入后 taskBarDoneHidden 把 in_progress
+  // 当终态,进行中的 SDK 任务满 10 分钟被误隐藏)。
+  const TASK_ACTIVE_STATUSES = ["queued","pending","running","in_progress","paused"];
   const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
   const TASKBAR_MAX = 7;  // 通话视图状态条最多展示条数
   const CHAT_TASK_ACTIVE_MAX = 5;  // 聊天视图活跃任务默认展示条数
@@ -1216,9 +1233,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     return t.result_summary || STATUS_WORD[t.status] || t.status;
   }
 
-  function isTaskDone(t){ return !["queued","pending","running","in_progress","paused"].includes(t.status); }
+  function isTaskDone(t){ return !TASK_ACTIVE_STATUSES.includes(t.status); }
   function taskbarTitle(t){ return t.origin === "sdk_task" ? `#${t.number} ${t.title}` : t.title; }
-  function taskIsRunning(t){ return t.status === "running" || t.status === "in_progress"; }
 
   function renderTaskBar(){
     const rows = [...barTasks.values()]
@@ -1266,7 +1282,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       row.classList.toggle("done", isTaskDone(t));
       let dot = row.querySelector(".dot");
       if(!dot){ dot = document.createElement("span"); dot.className = "dot"; row.appendChild(dot); }
-      const dotCls = "dot " + (taskIsRunning(t) ? "running" : "other");
+      // 圆点按状态语义色渲染(queued=灰/running=绿闪/failed=红…,见 styles.css);
+      // 状态未知时落到默认灰
+      const dotCls = "dot " + (t.status || "");
       if(dot.className !== dotCls) dot.className = dotCls;  // 状态没变不动 class,动画不重启
       let ttl = row.querySelector(".t");
       if(!ttl){ ttl = document.createElement("span"); ttl.className = "t"; row.appendChild(ttl); }
@@ -1350,7 +1368,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       if(section.children[i] !== row) section.insertBefore(row, section.children[i]);  // 按排序归位
       row.classList.toggle("done", isTaskDone(t));
       const dot = row.children[0];
-      const dotCls = "ctb-dot " + (taskIsRunning(t) ? "running" : "other");
+      // 圆点按状态语义色渲染(与 #taskBar 同款,见 styles.css);状态未知落到默认灰
+      const dotCls = "ctb-dot " + (t.status || "");
       if(dot.className !== dotCls) dot.className = dotCls;  // 状态没变不动 class,动画不重启
       const ttl = row.children[1];
       const title = taskbarTitle(t);
@@ -4878,8 +4897,7 @@ const DONE_HIDE_SEC = 600;
 // 终态判定与状态条一致:非「排队中/进行中」即终态。updated_at 是任务终态落库时间
 // (秒级时间戳),缺时间戳(幽灵数据)不隐藏。
 function taskBarDoneHidden(t){
-  const done = t.status !== "queued" && t.status !== "running";
-  if(!done) return false;
+  if(TASK_ACTIVE_STATUSES.includes(t.status)) return false;  // 活跃任务(含 SDK in_progress/paused)永不隐藏
   const ts = t.updated_at ?? t.created_at;
   if(!ts) return false;
   return (Date.now()/1000 - ts) > DONE_HIDE_SEC;
@@ -4893,7 +4911,7 @@ function scheduleDoneHide(){
   const now=Date.now()/1000;
   const soonest = [...barTasks.values()]
     .map(t=>{
-      if(t.status==="queued" || t.status==="running") return null;
+      if(TASK_ACTIVE_STATUSES.includes(t.status)) return null;
       const ts = t.updated_at ?? t.created_at;
       if(!ts) return null;
       const remain = DONE_HIDE_SEC - (now - ts);
