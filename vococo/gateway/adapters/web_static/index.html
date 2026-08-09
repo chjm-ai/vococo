@@ -643,6 +643,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 到来时置起,阻止自动回复产生的任何音频片段被误放行;我们的 pump 在
   // response.created 确认是朗读后才会清除它,防止自动回复在 gap 期泄漏。
   let omniAutoAudioBlocked=false;
+  // 自动回复保险丝定时器(2026-08-08):armOmniAutoFuse 武装后挂的超时定时器,
+  // 到点主动解除并泵一次——保险丝只是状态,超时后没人调 pump 它会永远挡着
+  // 朗读队列(SSE 句子到齐后不再有任何事件触发 pump,朗读会卡死)。
+  let omniAutoFuseTimer=null;
   // 自动回复【物理隔离】(2026-07-31):session 级只给 text,Omni 对用户话语自作主张
   // 生成的那份回复就【物理上不产生音频】。此前靠"收到 response.created 再静音"压制,
   // 但 RTP 音频走的是独立通道、比 DataChannel 事件先到,头几个字必然漏出去——而
@@ -650,10 +654,13 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 2026-07-31 真机日志:6 次开口对应 6 次 auto-response.muted,100% 触发,只是漏出
   // 的长短不一,所以时有时无。我们自己的朗读靠 response.create 的响应级 modalities
   // 覆盖成 ["text","audio"] 出声(见 pumpOmniRead)。
-  // 【自愈】响应级覆盖是从 SDK 源码扒的未文档化用法,万一这个服务端版本静默忽略它,
-  // 朗读就会变成没声音(整通电话哑掉)。所以 response.created 分支会检查服务端回执里
-  // 的实际 modalities,发现我们的朗读不含 audio 就把 session 改回 ["text","audio"]
-  // 并重念这句——最坏只哑一句,不会哑一整通。
+  // 【不回翻】响应级覆盖是从 SDK 源码扒的未文档化用法,万一这个服务端版本静默忽略
+  // 它,朗读会变成没声音——但 08-04 的"自愈翻闸"(把 session 改回 ["text","audio"]
+  // 重念)已经证明是漏音根源:session 级对自动回复同样生效,一旦翻回 audio,自动回复
+  // 就物理出声,而它的静音防线天然漏(RTP 先于 DataChannel 事件到达、created 撞上
+  // 朗读进行中不静音),用户听到的就是"AI 复读我"。主人要求这条音频任何情况下完全
+  // 静音——宁可朗读哑一句,绝不翻转 session 给自动回复任何出声可能(2026-08-08
+  // 定案,response.done 分支的翻闸已删,真哑只上报 read.silent)。
   let omniSessionModalities=["text"];
   omniAudioEl.muted = true;
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
@@ -2228,8 +2235,7 @@ void main(){
           // 先到、自动回复的 response.created 后到时的竞态(自动回复的 response.
           // created 若晚于我们的 response.create 到达,会误吃 omniReadPending
           // 计数器,假扮成我们点的朗读并开声)。
-          omniAutoActive = true;
-          omniAutoSince = Date.now();
+          armOmniAutoFuse();
           if(wsState === "thinking" || wsState === "speaking"){
             // 先留现场再砍:几秒后转写出来若判定是回声(AI 自己的声音),要能把
             // 这里砍掉的朗读恢复回去——否则回声不止造一轮假对话,还把真回答的
@@ -2287,9 +2293,8 @@ void main(){
           // 自己内容时才静音」的判断被跳过,复述音频原样播了出来。短句因为总耗时
           // 远小于 5 秒,踩不中这个窗口,只有长指令(voice_dispatch_task 常见场景)
           // 会暴露。锚点挪到"这段语音刚 commit 完"这一刻,才是保险丝真正该起算
-          // 的时间点。
-          omniAutoActive = true;
-          omniAutoSince = Date.now();
+          // 的时间点。armOmniAutoFuse 内部同样以此刻为锚。
+          armOmniAutoFuse();
           // 这句话已定型,completed 理应几百毫秒内跟到。到点没来就是被我们的
           // response.cancel 连带砍死了(见 omniDeltaFallback 注释)——拿 delta
           // 缓存顶上,别让用户的话烂在半路。
@@ -2371,12 +2376,16 @@ void main(){
               if(handsFreeActive) orbWrap.className = "speaking";
             }
           } else {
-            omniAutoActive = true; omniAutoSince = Date.now();
+            armOmniAutoFuse();
             // 立即静音:Omni 自动回复的音频在到达前已通过 RTP 推流,
             // 不静音的话用户会听到模型对用户话语的回显(即"重复念用户说的话")。
-            // 只在不朗读自己内容时静音——网络时序逆转场景下 auto-reply 的
-            // response.created 可能在朗读启动后才到,此时 omniReadActive 为
-            // true,不应静音掐断正在播的朗读(2026-07-15 修复)。
+            // 只在未朗读时静音(2026-07-15 修复保留):2026-08-08 漏音定案后,
+            // "自动回复完全静音"的硬保证由 session 级物理隔离承担(session 只给
+            // text,自动回复物理无音频,见 omniSessionModalities 声明处;自愈翻闸
+            // 已删,永不再翻回 audio)。这里撞上朗读进行中(网络时序逆转的边角)时
+            // 若还静音,会掐断正在播的真朗读——而自动回复本身没有音频可漏,所以
+            // 不静音没有漏音代价。此分支仍保留静音是为了兜底"服务端忽略 session
+            // modalities"的极端情况(自动回复真带音频时,至少 RTP 到达前先压住)。
             if(!omniReadActive) setOmniAudioMuted(true, "auto-reply");
             omniAutoAudioBlocked = true;
             // 不发送 response.cancel——它会连带杀死连续说话时后续片段的
@@ -2388,24 +2397,18 @@ void main(){
         case "response.done":
           if(omniReadActive){
             omniReadActive = false;
-            // 自愈闸(2026-08-04 从 response.created 挪来,字段纠错):判"响应级
-            // modalities 覆盖被服务端静默忽略"必须看 response.done——created 回执
-            // 里的 modalities 是 session 级快照(恒 ["text"]),done 里的才是覆盖
-            // 后的实际值。真缺 audio 说明这句一个音都没出:flip session 回
-            // ["text","audio"],塞回队头重念,保持"最坏哑一句"的原设计;服务端
-            // 不回 modalities 字段时 doneMods 为 null,保守不触发。
+            // 服务端是否认了响应级 modalities 覆盖,只看不回翻(2026-08-08 漏音
+            // 定案):这里原来(08-04 自愈闸)在 done 里发现缺 audio 就把 session
+            // 翻回 ["text","audio"] 重念——但这会让 Omni 对用户话语的自动回复
+            // 【也】物理出声(session 级对自动回复同样生效),而自动回复的静音
+            // 防线天然漏(它的 RTP 音频先于 DataChannel 事件到达,收到 created
+            // 再静音必漏开头;created 撞上朗读进行中时连静音都不触发)。主人明确
+            // 要求"这条音频任何情况下完全静音"——宁可一句朗读哑掉,绝不翻转
+            // session 给自动回复任何出声可能。真哑了只上报,留给真机日志判断
+            // 该服务端版本是否支持响应级覆盖。
             const doneMods = (data.response && data.response.modalities) || null;
-            if(doneMods && !doneMods.includes("audio") && !omniSessionModalities.includes("audio")){
-              omniSessionModalities = ["text", "audio"];
-              vdbg("modalities.fallback", {got: doneMods, via: "done"});
-              try{
-                omniDc.send(JSON.stringify({
-                  event_id: "session-modalities-fallback", type: "session.update",
-                  session: {modalities: omniSessionModalities},
-                }));
-              }catch(e){}
-              if(omniReadCurrentText) omniReadQueue.unshift(omniReadCurrentText);
-              omniSpokenChecked = true;  // 这句本来就哑,别误报 read.mismatch
+            if(doneMods && !doneMods.includes("audio")){
+              vdbg("read.silent", {got: doneMods});
             }
             // 兜底校验:audio_transcript.done 没来过(被 cancel 砍掉/服务端没发)时,
             // 拿 delta 累积的字幕补校验一次,然后清场。checkOmniSpoken 内部有
@@ -2433,6 +2436,7 @@ void main(){
               armOmniReadTailWatch();
             }
           } else {
+            clearOmniAutoFuse();
             omniAutoActive = false;
             pumpOmniRead();  // 自动回复清场了,轮到排队中的朗读
           }
@@ -2546,11 +2550,43 @@ void main(){
   // (input_text),不带任何字符串标记——跟 session instructions 里"纯文字消息
   // 直接一字不差朗读"的约定对上(2026-07-28 起不再用【朗读】前缀,见那段
   // instructions 定义处的注释)。
+
+  // 自动回复在途保险丝的统一武装点(2026-08-08 漏音排查重构):
+  // 用户每说一句,Omni 必定自动生成一份回复(create_response 关不掉)。它的
+  // response.created 到达前,谁都不能放行朗读 pump——否则自动回复的 created
+  // 会误吃 omniReadPending 计数,假扮成"我们的朗读"开声,自动回复音频原样
+  // 播出来(漏音)。武装后 pump 被挡,直到:①自动回复 response.done 自然清场
+  // (正常路径,1~3 秒);②保险丝超时主动解除(OMNI_AUTO_FUSE_MS,兜底 done
+  // 丢失/从未生成的情况,到点后必须主动 pump 一次,见 omniAutoFuseTimer)。
+  // 所有"预计自动回复在途"的时机都调它,不再各自散写 omniAutoActive 赋值:
+  // speech_started / committed / 自动回复 created / restoreOmniBargeIn /
+  // sendOmniTurn——这几处以前各清各的,清早/清晚都会让自动回复 created 趁虚
+  // 而入(2026-07-15 注释自认"网络时序逆转场景"其实就是这个洞)。
+  const OMNI_AUTO_FUSE_MS = 5000;
+  function armOmniAutoFuse(){
+    omniAutoActive = true;
+    omniAutoSince = Date.now();
+    if(omniAutoFuseTimer) clearTimeout(omniAutoFuseTimer);
+    omniAutoFuseTimer = setTimeout(() => {
+      omniAutoFuseTimer = null;
+      if(!omniAutoActive) return;  // 已被自动回复 done 清场
+      omniAutoActive = false;
+      vdbg("auto-active.fuse-expired");
+      pumpOmniRead();  // 保险丝到点:自动回复大概率不会再来了,放行朗读
+    }, OMNI_AUTO_FUSE_MS);
+  }
+  function clearOmniAutoFuse(){
+    if(omniAutoFuseTimer){ clearTimeout(omniAutoFuseTimer); omniAutoFuseTimer = null; }
+  }
+
   function pumpOmniRead(){
     if(!omniDc || omniDc.readyState !== "open") return;
-    // 保险丝:自动回复的 response.done 万一丢了(cancel 撞 done 的时序缝),别让
-    // omniAutoActive 卡死整个朗读队列——超过 5 秒当它已经结束。
-    if(omniAutoActive && Date.now() - omniAutoSince > 5000){
+    // 保险丝(被动兜底):自动回复的 response.done 万一丢了(cancel 撞 done 的
+    // 时序缝),别让 omniAutoActive 卡死整个朗读队列——超过保险丝时长当它已经
+    // 结束。主动超时解除见 armOmniAutoFuse 的定时器,这里主要服务"武装点之后
+    // 才进 pump"的路径。
+    if(omniAutoActive && Date.now() - omniAutoSince > OMNI_AUTO_FUSE_MS){
+      clearOmniAutoFuse();
       omniAutoActive = false;
       vdbg("auto-active.timeout-cleared");
     }
@@ -2847,7 +2883,12 @@ void main(){
   // 关不掉),马上 pump 会跟它的 response.created 撞车导致 rp 计数错位;等它被
   // cancel 后的 response.done 自然接力 pump,再留一个定时器兜底。
   function restoreOmniBargeIn(restore, tag){
-    omniAutoActive = false;  // 已判回声,清自动回复防护让朗读恢复(2026-07-14)
+    // 重新武装自动回复保险丝(2026-08-08):这里原来直接 omniAutoActive = false
+    // 放行朗读,但这条"用户语音"(哪怕判了回声)在服务端照样触发自动回复生成,
+    // 其 response.created 若晚于 1200ms 恢复定时器到达,会误吃 omniReadPending
+    // 计数假扮成朗读开声(漏音)。武装后 pump 被挡到自动回复 done 清场;done
+    // 万一不来,armOmniAutoFuse 的超时兜底会主动解除并 pump,不会卡死。
+    armOmniAutoFuse();
     omniTurnGen = restore.prevGen;
     if(restore.sentences.length) omniReadQueue = restore.sentences.concat(omniReadQueue);
     vdbg(tag, {q: omniReadQueue.length});
@@ -3138,7 +3179,12 @@ void main(){
     if(omniDc && (omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0 || omniAutoActive)){
       try{ omniDc.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
     }
-    omniAutoActive = false;
+    // 重新武装自动回复保险丝(2026-08-08):这句用户语音在服务端触发的自动回复
+    // 此刻大概率还在途(created/done 未回)——这里原来直接清 omniAutoActive,
+    // SSE 句子一到就 pump 抢先 response.create,迟到的自动回复 created 会误吃
+    // 计数器假扮成朗读开声(漏音)。武装后:自动回复 done 自然清场(cancel 已发,
+    // 正常 1~3 秒),万一 done 丢了由保险丝超时兜底解除,不会卡死朗读。
+    armOmniAutoFuse();
     omniReadActive = false;
     omniReadPending = 0;
     omniReadQueue = []; omniTurnDone = false;
@@ -3246,6 +3292,7 @@ void main(){
     omniMicStream = null;  // 麦克风轨道本身随 stream 变量一起在 teardownCallResources 里停
     omniUserLiveEl = null;
     omniReadQueue = []; omniReadActive = false; omniReadPending = 0; omniAutoActive = false; omniTurnDone = true;
+    clearOmniAutoFuse();  // 保险丝定时器一并清掉,别在挂断后还来 pump
     omniReadSince = 0;
     omniRecentReads = []; omniReadCurrentText = ""; omniEchoRestore = null;
     if(omniEchoRestoreTimer){ clearTimeout(omniEchoRestoreTimer); omniEchoRestoreTimer = null; }
