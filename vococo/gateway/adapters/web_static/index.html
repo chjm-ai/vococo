@@ -1220,11 +1220,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // ── 任务状态条:顶栏下方常驻横幅,派发瞬间出现(SSE task_update)。
   //    终态任务满 10 分钟自动隐藏;去掉关闭按钮,已完成任务默认折叠。
   //    callView #taskBar 保持简单列表;chatMain #chatTaskBar 分组展示。
-  // 活跃(未终态)状态集合:后台任务(queued/running)与 SDK 待办(pending/in_progress/paused)
-  // 两套状态共用一份定义,isTaskDone/taskBarDoneHidden/scheduleDoneHide 都按它判断——
-  // 各自维护一份会漏(2026-08-08:SDK 新状态引入后 taskBarDoneHidden 把 in_progress
-  // 当终态,进行中的 SDK 任务满 10 分钟被误隐藏)。
-  const TASK_ACTIVE_STATUSES = ["queued","pending","running","in_progress","paused"];
+  // TASK_ACTIVE_STATUSES 定义在顶层(见声明处):isTaskDone 等跨作用域共用,
+  // 顶层 taskBarDoneHidden/scheduleDoneHide 也要访问,放 IIFE 内会 ReferenceError。
   const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
   const TASKBAR_MAX = 7;  // 通话视图状态条最多展示条数
   const CHAT_TASK_ACTIVE_MAX = 5;  // 聊天视图活跃任务默认展示条数
@@ -4955,6 +4952,12 @@ async function loadProjects(){
 // 顶部常驻横幅最多 7 条,终态(done/failed/cancelled)任务挂满 10 分钟自动消失、
 // 不再占位置——隐藏≠删除,数据还在,任务抽屉/侧边栏/最近列表照常全量可见。
 const DONE_HIDE_SEC = 600;
+// 活跃(未终态)状态集合,任务状态条与侧边栏共用(2026-08-08 引入):后台任务
+// (queued/running)与 SDK 待办(pending/in_progress/paused)两套状态一份定义,
+// isTaskDone/taskBarDoneHidden/scheduleDoneHide 都按它判断。
+// 必须放顶层:taskBarDoneHidden/scheduleDoneHide 是顶层函数,引用 IIFE 内常量会
+// ReferenceError(2026-08-10 事故:任务栏整体渲染不出来、pageerror 刷屏)。
+const TASK_ACTIVE_STATUSES = ["queued","pending","running","in_progress","paused"];
 // 终态判定与状态条一致:非「排队中/进行中」即终态。updated_at 是任务终态落库时间
 // (秒级时间戳),缺时间戳(幽灵数据)不隐藏。
 function taskBarDoneHidden(t){
