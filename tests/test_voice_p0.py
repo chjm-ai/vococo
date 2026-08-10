@@ -220,6 +220,8 @@ async def test_voice_config_reports_enabled(voice_db, monkeypatch):
             "omni_enabled": False,
             "vad_threshold": config.VOICE_VAD_THRESHOLD,
             "vad_silence_ms": config.VOICE_OMNI_VAD_SILENCE_MS,
+            # safety_ms:前端缓冲强制发送安全网,默认 180s(2026-08-10 从 30s 调长)
+            "safety_ms": config.VOICE_OMNI_SAFETY_MS,
             "omni_voice": config.VOICE_OMNI_VOICE,
         }
 

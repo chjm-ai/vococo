@@ -116,6 +116,9 @@ async def _handle_config(request: web.Request) -> web.Response:
         # config.VOICE_OMNI_VAD_SILENCE_MS 的注释),跟旧 ws.py 链路调优的值分开。
         "vad_threshold": config.VOICE_VAD_THRESHOLD,
         "vad_silence_ms": config.VOICE_OMNI_VAD_SILENCE_MS,
+        # 前端缓冲强制发送安全网(毫秒),默认 180s:连续长口述的兜底阈值,见
+        # config.VOICE_OMNI_SAFETY_MS。
+        "safety_ms": config.VOICE_OMNI_SAFETY_MS,
         # Omni 出声模式:session.update 的 voice 字段用。注意跟 VOICE_TTS_VOICE 是
         # 两张音色表,Cherry 在 Omni-Realtime 上会 400(2026-07-10 真机实锤)。
         "omni_voice": config.VOICE_OMNI_VOICE,

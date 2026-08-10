@@ -455,6 +455,8 @@ const S = {
   vadThreshold: 0.7,    // /voice/config 的 vad_threshold/vad_silence_ms,兜底默认跟
   vadSilenceMs: 2500,   // config.py 的 VOICE_OMNI_VAD_SILENCE_MS 默认值一致;2026-07-22 800 触发对话
                          // 全面错位(正常语流停顿就判停,腰斩链路高频触发),回调到 2500 折中
+  omniSafetyMs: 180000, // /voice/config 的 safety_ms,兜底默认跟 config.py 的
+                         // VOICE_OMNI_SAFETY_MS 一致(180s 长口述安全网,2026-08-10 起)
   omniVoice: "Serena",  // /voice/config 的 omni_voice,Omni 出声模式 session.update 的音色
                          // (注意跟 Qwen-TTS 音色表不通用,Cherry 会 400,见 config.py)
 };
@@ -599,7 +601,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 时间看是否又开口;真又开口就拼到一起,超时才当一轮发出去。
   let omniPendingText=null, omniPendingTimer=null;
   // 2026-07-22 状态错乱事故的修复:flush 时机改由「说话中/转写在途」两个状态决定,
-  // 不再让 speech_started/committed 把 30s 安全网覆盖成 1~1.5s 的短定时器——
+  // 不再让 speech_started/committed 把安全网(现默认 180s,见 S.omniSafetyMs)
+  // 覆盖成 1~1.5s 的短定时器——
   // 短定时器会在下一段转写(completed)到达前把前半句发出去,后半句成孤儿,
   // 表现为"消息被吞、要说两遍才有反应、回答的是上一句"。
   let omniSpeechActive=false;   // speech_started→true / speech_stopped→false
@@ -625,10 +628,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // OMNI_PENDING_FLUSH_MS:确认「用户没在说话、也没有转写在途」之后,再等这么久
   // 就把缓冲发出去——它只在万事俱备时生效,所以可以很短;等待"下一段会不会来"的
   // 职责已经完全交给 omniSpeechActive/omniInflightSegs 两个状态(见 scheduleOmniFlush)。
-  // OMNI_PENDING_SAFETY_MS:安全网。VAD 不报 speech_stopped/转写永远不回来时,
-  // 缓冲最多压这么久必发,不至于卡死。
+  // 安全网:VAD 不报 speech_stopped/转写永远不回来时,缓冲最多压这么久必发,
+  // 不至于卡死。阈值走 /voice/config 下发的 safety_ms(默认 180s,2026-08-10 从
+  // 30s 调长,30s 对一次长口述不够;切段逻辑保留,只是放宽)。
   const OMNI_PENDING_FLUSH_MS = 600;
-  const OMNI_PENDING_SAFETY_MS = 30000;
   // 语音结束冷却期:speech_stopped 后这段时间内不启用 600ms 短定时器,改用
   // 2000ms 中位定时器,给阿里云 semantic_vad 重新检测继续说话留出时间窗口。
   // 修复要点:连续长语音时 speech_stopped→下一次 speech_started 之间的间隔
@@ -2266,7 +2269,7 @@ void main(){
             // 会在 read.created 重新开声,提示音走 Web Audio 不受影响,无副作用。
             setOmniAudioMuted(true, "speech_started");
             // 又开口了,说明上一段大概率没说完:把待发送缓冲的倒计时顺延成安全网,
-            // 等这句话的转写到齐再一起发。【2026-07-22 事故根因】这里以前把 30s
+            // 等这句话的转写到齐再一起发。【2026-07-22 事故根因】这里以前把
             // 安全网覆盖成 1.5s 短定时器——短定时器在新一段转写回来之前到点,把
             // 前半句先发了出去,后半句成孤儿,整个对话从此错位。就算这句话最终被
             // 判成回声丢弃,安全网到点也会自愈式地把缓冲发出去,不会卡死。
@@ -3116,7 +3119,7 @@ void main(){
   // flush 时机统一由 scheduleOmniFlush 按状态决定(2026-07-22 重构,事故根因见
   // omniSpeechActive 声明处注释):
   //   · 用户还在说话(omniSpeechActive)或有转写在途(omniInflightSegs>0)
-  //     → 只挂 30s 安全网,绝不短定时器误发前半句;
+  //     → 只挂安全网(S.omniSafetyMs,默认 180s),绝不短定时器误发前半句;
   //   · 都到齐了 → OMNI_PENDING_FLUSH_MS(600ms)短等待后发出。
   // 长语音各段可能间隔 >10s(Omni 服务端 force-commit 最大音频缓冲区),
   // 中间态一律走安全网,由下一段的转写到达来推进。
@@ -3142,7 +3145,7 @@ void main(){
     const looksIncomplete = tail.length <= 4 || !/[。？?！!]$/.test(tail);
     const cooldownMs = looksIncomplete ? OMNI_PENDING_LONG_COOLDOWN_MS : OMNI_PENDING_POST_SPEECH_MS;
     const cooldown = !waiting && omniSpeechStoppedTs && Date.now() - omniSpeechStoppedTs < cooldownMs;
-    const delay = waiting ? OMNI_PENDING_SAFETY_MS : cooldown ? cooldownMs : OMNI_PENDING_FLUSH_MS;
+    const delay = waiting ? S.omniSafetyMs : cooldown ? cooldownMs : OMNI_PENDING_FLUSH_MS;
     omniPendingTimer = setTimeout(flushOmniPending, delay);
     vdbg("pending.arm", {why, delay, cooldown, incomplete: looksIncomplete,
       inflight: omniInflightSegs, speaking: omniSpeechActive});
@@ -4142,6 +4145,7 @@ async function loadVoiceOmniConfig(){
     S.omniEnabled=!!d.omni_enabled;
     if(typeof d.vad_threshold==="number") S.vadThreshold=d.vad_threshold;
     if(typeof d.vad_silence_ms==="number") S.vadSilenceMs=d.vad_silence_ms;
+    if(typeof d.safety_ms==="number") S.omniSafetyMs=d.safety_ms;
     if(d.omni_voice) S.omniVoice=d.omni_voice;
     populateVoiceSelect();
   }catch(e){}
