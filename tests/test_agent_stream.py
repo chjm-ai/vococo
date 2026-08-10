@@ -109,9 +109,10 @@ def test_context_window_unknown_falls_back():
     assert context_window("some-unknown-model") == 200_000
 
 
-def test_context_window_codex_proxy_gpt_is_262k():
-    # 本地 Codex 代理实测拒绝 37 万 token 输入，不能按官方直连的 1.05M 窗口估算。
-    assert context_window("gpt-5.6-luna") == 262_144
+def test_context_window_codex_proxy_gpt_is_258k_for_all_tiers():
+    # Codex 本机模型目录:272k × 95% = 258,400；三档窗口相同，不是 API 直连的 1.05M。
+    for model in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+        assert context_window(model) == 258_400
 
 
 def test_context_window_error_explains_recovery():

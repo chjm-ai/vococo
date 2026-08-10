@@ -70,7 +70,7 @@ async def test_overfull_session_compacts_before_sending_user_message(isolated, m
     key = "web:overfull-context"
     session_store.set_chosen_model(key, "gpt-5.6-luna")
     session_store.set_sdk_session_id(key, "old-sdk-session")
-    session_store.record_usage(key, 370_000, 0, window=262_144)
+    session_store.record_usage(key, 370_000, 0, window=258_400)
     calls = []
 
     async def fake_stream(history, user_text, **kwargs):
