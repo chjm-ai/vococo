@@ -307,6 +307,19 @@ def available_models(
         else:
             group = "kimi" if kind == "订阅" else "api"
         out.append((model, f"{model}（{kind}）", group))
+    # 组序 + 组内档位统一排序:GPT-5.6 系列按能力降序(Sol 旗舰 > Terra 均衡 >
+    # Luna 轻量)。sol/luna 是设置页手加的 extra、terra 是 provider 主模型,不排
+    # 就成了 sol→luna→terra,弱档 Luna 插到中间;未知 GPT 模型档位取 99 沉底,
+    # 非 codex 组 key 全 0 靠稳定排序保持原相对顺序。
+    _GROUP_ORDER = {"anthropic": 0, "kimi": 1, "codex": 2, "api": 3}
+    _GPT_TIERS = {"gpt-5.6-sol": 0, "gpt-5.6-terra": 1, "gpt-5.6-luna": 2}
+
+    out.sort(
+        key=lambda item: (
+            _GROUP_ORDER.get(item[2], 9),
+            _GPT_TIERS.get(item[0].lower(), 99) if item[2] == "codex" else 0,
+        )
+    )
     return out
 
 
