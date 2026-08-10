@@ -417,6 +417,14 @@ def list_sessions(prefix: str) -> list[dict]:
 def _usage_fields(vals) -> dict:
     """把 (ctx, total, window, last_in, last_cache, last_out, model, chosen_model) 组装成统一字段。"""
     ctx, total, window, l_in, l_cache, l_out, model, chosen = vals
+    # 早期 GPT-5.6 会话按官方 API 的 1.05M 写入，但本机 Codex 实际目录是
+    # 272k × 95%=258,400。摘要是 Web 进度条唯一数据源，在此归一可立即修正旧
+    # 会话显示，不必等下一轮成功请求覆盖数据库残值。
+    effective_model = chosen or model or ""
+    if effective_model.lower().startswith("gpt-5.6"):
+        from ..core.agent import context_window
+
+        window = context_window(effective_model)
     return {
         "ctx_tokens": ctx or 0,
         "total_tokens": total or 0,
