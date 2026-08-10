@@ -17,7 +17,7 @@ from .. import config, providers
 from ..core import task_runner, tasks
 from ..core.agent import Done, TextDelta, ToolInput, ToolStarted
 from . import notify, omni_realtime, prompts, session, stt, task_tools, tts
-from ..gateway import clarify, settings_store
+from ..gateway import clarify, settings_store, task_routes
 from ..memory import session_store
 from ..tools import selfops
 from .adapter import VoiceAdapter
@@ -499,73 +499,35 @@ async def _handle_omni_webrtc(request: web.Request) -> web.Response:
     return web.Response(text=answer_sdp, content_type="application/sdp")
 
 
-# ── P1 任务板:列表/详情/停止/在线播报的常驻 SSE(F8/F10) ─────────────────────
+# ── P1 任务板兼容路由 ───────────────────────────────────────────────────────
+# 任务 API 已迁到 gateway.task_routes;这里保留旧 /voice/tasks* 路径,只转换参数后转发,
+# 不再维护第二套查询、停止和 SSE 实现。
+
+
+def _legacy_task_request(request: web.Request) -> web.Request:
+    params = dict(request.query)
+    params.setdefault("source", "conversation")
+    return request.clone(rel_url=request.rel_url.with_query(params))
+
+
 async def _handle_tasks_list(request: web.Request) -> web.Response:
-    if (g := _guard(request)) is not None:
-        return g
-    # 两类任务分离(2026-08-06 对齐确认):
-    # - 通话视图不传 conv → 只看语音派发的任务(origin="voice",原有行为)
-    # - 聊天视图传 conv → 只看该会话派的程序任务(origin="chat" + dispatch_chat_id=conv)
-    conv = request.query.get("conv")
-    if conv:
-        rows = tasks.list_recent(origin="chat", dispatch_chat_id=conv)
-    else:
-        rows = tasks.list_recent(origin="voice")
-    return web.json_response(rows)
+    return await task_routes.handle_tasks_list(_legacy_task_request(request))
 
 
 async def _handle_sdk_tasks_list(request: web.Request) -> web.Response:
-    """当前文本会话的 SDK 待办清单,与后台执行任务分开返回。"""
-    if (g := _guard(request)) is not None:
-        return g
-    conv = request.query.get("conv")
-    return web.json_response(tasks.list_sdk_tasks(conv) if conv else [])
+    return await task_routes.handle_sdk_tasks_list(request)
 
 
 async def _handle_task_detail(request: web.Request) -> web.Response:
-    if (g := _guard(request)) is not None:
-        return g
-    task = tasks.get(request.match_info["task_id"])
-    if task is None:
-        return web.json_response({"error": "not found"}, status=404)
-    return web.json_response(task)
+    return await task_routes.handle_task_detail(request)
 
 
 async def _handle_task_stop(request: web.Request) -> web.Response:
-    if (g := _guard(request)) is not None:
-        return g
-    ok = task_runner.cancel(request.match_info["task_id"])
-    return web.json_response({"ok": ok})
+    return await task_routes.handle_task_stop(request)
 
 
 async def _handle_tasks_stream(request: web.Request) -> web.StreamResponse:
-    """常驻 SSE:/voice 页面开着就订阅它。后台任务派发/起跑/进度变化收到
-    event:task_update(通话视图任务状态条实时刷新用),终态收到 event:task_done(F8)。"""
-    if (g := _guard(request)) is not None:
-        return g
-    resp = web.StreamResponse(
-        headers={
-            "Content-Type": "text/event-stream; charset=utf-8",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        }
-    )
-    await resp.prepare(request)
-    q = notify.subscribe()
-    try:
-        while True:
-            try:
-                event, payload = await asyncio.wait_for(q.get(), timeout=25)
-            except asyncio.TimeoutError:
-                await resp.write(b": keep-alive\n\n")  # 防中间代理/隧道空闲断连
-                continue
-            await _sse(resp, event, payload)
-    except (asyncio.CancelledError, ConnectionResetError):
-        pass
-    finally:
-        notify.unsubscribe(q)
-    return resp
+    return await task_routes.handle_tasks_stream(request)
 
 
 def register_routes(app: web.Application) -> None:

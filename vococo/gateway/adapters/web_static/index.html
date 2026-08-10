@@ -1164,16 +1164,19 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // ── P1 任务板:抽屉列表 + 完成播报(WHEN_IDLE:等空闲/不在录音才插播,F8/F10) ──────
   const STATUS_WORD = {queued:"排队中", pending:"排队中", running:"进行中", in_progress:"进行中", paused:"已暂停", completed:"已完成", done:"已完成", failed:"失败", cancelled:"已取消", deleted:"已删除"};
 
+  function taskSessionKey(){
+    return S.conv === "voice-chat:main" ? "main" : (S.conv || "main");
+  }
+
   async function loadTasks(){
     try{
-      // 两类任务分离(2026-08-06 对齐):通话视图(voice-chat:main)拉语音任务,
-      // 聊天视图拉当前会话的 chat 任务——后端按 conv 区分(见 /voice/tasks)。
-      const conv = S.conv === "voice-chat:main" ? null : S.conv;
-      const url = conv ? `/voice/tasks?conv=${encodeURIComponent(conv)}` : "/voice/tasks";
-      // sdk-tasks 是聊天视图的补充数据源,它挂了不能连主校准一起废掉(allSettled 各自兜底)
+      const sessionKey = taskSessionKey();
+      // 语音和文本任务按同一个会话查询,输入方式不再决定任务归属。
+      const url = `/tasks?session_key=${encodeURIComponent(sessionKey)}`;
+      // SDK 待办是独立投影,与后台执行任务分开返回。
       const [resp, sdkResp] = await Promise.allSettled([
         fetch(url, {headers:{"X-Auth-Token":S.token}}),
-        conv ? fetch(`/voice/sdk-tasks?conv=${encodeURIComponent(conv)}`, {headers:{"X-Auth-Token":S.token}}) : Promise.resolve(null),
+        fetch(`/sdk-tasks?session_key=${encodeURIComponent(sessionKey)}`, {headers:{"X-Auth-Token":S.token}}),
       ]);
       const main = resp.status === "fulfilled" ? resp.value : null;
       if(!main || !main.ok) return;
@@ -1181,64 +1184,41 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       const sdkRows = sdkResp.status === "fulfilled" && sdkResp.value && sdkResp.value.ok
         ? await sdkResp.value.json() : [];
       // 切会话时上一个请求可能后到;不能让旧会话任务覆盖当前输入框状态条。
-      if(conv !== (S.conv === "voice-chat:main" ? null : S.conv)) return;
+      if(sessionKey !== taskSessionKey()) return;
       renderTasks(rows);
-      // 顺带全量校准状态条(SSE 断线漏事件时,打开抽屉/task_done 刷新都会走到这里兜底)。
-      // 【分槽合并校准,2026-08-08 两次修复】barTasks 是通话(#taskBar)和聊天(#chatTaskBar)
-      // 两个视图的共享池,接口只返回当前视图对应的任务(通话=voice,聊天=该会话 chat/sdk)。
-      // 第一轮修掉"整池 clear 误清另一视图"后,还有第二个竞态:接口 HTTP 快照可能比
-      // SSE 事件旧(fetch 发出时任务还在跑,响应晚于完成事件返回)——"先清空再重填"
-      // 会把已完成的任务回退成旧状态、把刚派发的任务直接吞掉(完成即消失的另一来源)。
-      // 所以校准只【补全/更新】不【清空】:SSE 事件是更新的事实来源,接口只是兜底补漏;
-      // 本地已有且状态更新的条目保留(updated_at 比较)。残留清理交给三条机制:
-      // 渲染过滤(S.conv 会话隔离)、taskBarDoneHidden(终态满 10 分钟隐藏)、
-      // 清空上下文(barTasks.clear + 水位线)。
-      if(conv === null){
-        // 通话视图:voice 槽位合并;水位线把清空上下文之前的旧任务筛掉,
-        // 否则这次校准又把刚清空的条目拉回来(chat/sdk 槽位保持原样,由 SSE 维护)。
-        for(const t of rows){
-          if(t.created_at && t.created_at < voiceTasksClearedAt) continue;
-          const prev = barTasks.get(t.id);
-          if(prev && (prev.updated_at ?? prev.created_at) > (t.updated_at ?? t.created_at)) continue;
-          barTasks.set(t.id, t);
-        }
-      } else {
-        // 聊天视图:只合并当前会话的 chat/sdk,voice 任务保持原样(SSE 维护)。
-        for(const t of rows){
-          const prev = barTasks.get(t.id);
-          if(prev && (prev.updated_at ?? prev.created_at) > (t.updated_at ?? t.created_at)) continue;
-          barTasks.set(t.id, t);
-        }
-        for(const t of sdkRows){
-          const prev = barTasks.get(t.id);
-          if(prev && (prev.updated_at ?? prev.created_at) > (t.updated_at ?? t.created_at)) continue;
-          barTasks.set(t.id, t);
-        }
+      // 顺带全量校准状态条;接口只补漏,不覆盖 SSE 已经收到的更新。
+      for(const t of rows){
+        if(t.created_at && t.origin === "voice" && t.created_at < voiceTasksClearedAt) continue;
+        const prev = barTasks.get(t.id);
+        if(prev && (prev.updated_at ?? prev.created_at) > (t.updated_at ?? t.created_at)) continue;
+        barTasks.set(t.id, t);
+      }
+      for(const t of sdkRows){
+        const prev = barTasks.get(t.id);
+        if(prev && (prev.updated_at ?? prev.created_at) > (t.updated_at ?? t.created_at)) continue;
+        barTasks.set(t.id, t);
       }
       renderTaskBar();
     }catch(e){}
   }
 
-  // ── 任务状态条:顶栏下方常驻横幅,派发瞬间出现(SSE task_update)。
-  //    终态任务满 10 分钟自动隐藏;去掉关闭按钮,已完成任务默认折叠。
-  //    callView #taskBar 保持简单列表;chatMain #chatTaskBar 分组展示。
+  // ── 任务状态条:所有输入方式共用同一个会话任务池。─────────────────────────
   // TASK_ACTIVE_STATUSES 定义在顶层(见声明处):isTaskDone 等跨作用域共用,
   // 顶层 taskBarDoneHidden/scheduleDoneHide 也要访问,放 IIFE 内会 ReferenceError。
   const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
-  const TASKBAR_MAX = 7;  // 通话视图状态条最多展示条数
-  const CHAT_TASK_ACTIVE_MAX = 5;  // 聊天视图活跃任务默认展示条数
-  // 状态条跟通话上下文绑定的水位线:早于这个时刻派发的任务不再回填/唤醒状态条
-  // (后端 /voice/tasks 按 origin=voice 返回全部历史,不认"上下文"这个概念,过滤只能
-  // 在前端做)。清空上下文时连同 barTasks 一起重置,见 #clearVoiceCtxBtn 的点击处理;
-  // 落 localStorage 是为了同一设备刷新页面后,刚清空掉的旧任务不会又被 loadTasks() 拉回来。
+  const TASKBAR_MAX = 7;
+  const CHAT_TASK_ACTIVE_MAX = 5;
   let voiceTasksClearedAt = Number(localStorage.getItem("vococo_voice_tasks_cleared_at") || 0);
 
+  function isCurrentConversationTask(task){
+    if(task.origin !== "voice" && task.origin !== "chat" && task.origin !== "sdk_task") return false;
+    if(task.origin === "voice" && task.created_at && task.created_at < voiceTasksClearedAt) return false;
+    if(task.dispatch_chat_id) return task.dispatch_chat_id === taskSessionKey();
+    return task.origin === "voice" && taskSessionKey() === "main";
+  }
+
   function upsertTaskBar(t){
-    // 状态条接后台任务(voice/chat)和当前会话 SDK 待办(sdk_task)。
-    if(t.origin !== "voice" && t.origin !== "chat" && t.origin !== "sdk_task") return;
-    // 水位线只对 voice 任务生效;chat 任务跟语音上下文无关。
-    if(t.origin === "voice" && t.created_at && t.created_at < voiceTasksClearedAt) return;
-    if((t.origin === "chat" || t.origin === "sdk_task") && t.dispatch_chat_id !== S.conv) return;
+    if(!isCurrentConversationTask(t)) return;
     if(t.deleted){ barTasks.delete(t.id); renderTaskBar(); return; }
     barTasks.set(t.id, t);
     renderTaskBar();
@@ -1256,31 +1236,19 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
   function renderTaskBar(){
     const rows = [...barTasks.values()]
+      .filter(isCurrentConversationTask)
       .filter(t=>!taskBarDoneHidden(t))
       .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at));
+    const inCall = !$("#callView").hidden;
+    const sdkRows = rows.filter(t=>t.origin === "sdk_task")
+      .sort((a,b)=>a.number - b.number);
+    const conversationRows = rows.filter(t=>t.origin !== "sdk_task");
 
-    // 两类任务分离(2026-08-06 对齐):#taskBar 只显示 voice 任务,#chatTaskBar 只显示
-    // 当前会话的 chat 任务。barTasks 是共享池(SSE 事件混着来),渲染时按 origin+会话
-    // 分流,互不污染;chat/sdk 按 dispatch_chat_id===S.conv 隔离——校准只补不删后,
-    // 切会话残留的旧会话任务靠这层渲染过滤挡住(2026-08-08)。
-    const voiceRows = rows.filter(t=>t.origin === "voice");
-    const chatRows = rows.filter(t=>(t.origin === "chat" || t.origin === "sdk_task") && t.dispatch_chat_id === S.conv)
-      .sort((a,b)=>{
-        if(a.origin === "sdk_task" && b.origin === "sdk_task") return a.number - b.number;
-        if(a.origin === "sdk_task") return -1;
-        if(b.origin === "sdk_task") return 1;
-        return (b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at);
-      });
-
-    // 1) 通话视图 #taskBar: voice 任务简单列表,最近 7 条,差量渲染
-    renderBar($("#taskBar"), voiceRows.slice(0, TASKBAR_MAX));
-
-    // 2) 聊天视图 #chatTaskBar: chat 任务活跃/已完成分组,默认折叠已完成,活跃最多默认 5 条
-    const active = chatRows.filter(t=>!isTaskDone(t));
-    const done = chatRows.filter(t=>isTaskDone(t));
-    renderChatTaskBar(active, done);
-
-    scheduleDoneHide();  // 每次渲染后重算下一个「终态满 10 分钟」的自动隐藏时刻
+    renderBar($("#taskBar"), inCall ? conversationRows.slice(0, TASKBAR_MAX) : []);
+    const active = conversationRows.filter(t=>!isTaskDone(t));
+    const done = conversationRows.filter(t=>isTaskDone(t));
+    renderChatTaskBar(inCall ? [] : [...sdkRows, ...active], inCall ? [] : done);
+    scheduleDoneHide();
   }
   // 差量渲染单个任务条(#taskBar 用):同 id 的行存在且状态/文案没变就不重建
   // DOM —— 旧版每次 task_update 都整段 innerHTML 重写,running 圆点的脉冲动画
@@ -1448,7 +1416,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       const stopEl = rowEl.querySelector(".stop");
       if(stopEl) stopEl.addEventListener("click", async (e)=>{
         e.stopPropagation();
-        await fetch(`/voice/tasks/${t.id}/stop`, {method:"POST", headers:{"X-Auth-Token":S.token}});
+        await fetch(`/tasks/${t.id}/stop`, {method:"POST", headers:{"X-Auth-Token":S.token}});
         loadTasks();
       });
       tasksList.appendChild(rowEl);
@@ -1914,7 +1882,7 @@ void main(){
   }
 
   function connectTaskStream(){
-    const es = new EventSource("/voice/tasks/stream?token=" + encodeURIComponent(S.token));
+    const es = new EventSource("/tasks/stream?token=" + encodeURIComponent(S.token));
     es.addEventListener("task_update", e=>{
       const t=JSON.parse(e.data);
       upsertTaskBar(t);  // 派发/起跑/进度变化 → 状态条实时刷新
@@ -1926,8 +1894,8 @@ void main(){
       loadTasks();
       loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
       upsertTaskBar(data);  // 终态 → 状态条里标记"已完成",留在条里等用户手动点叉关闭
-      // 只有语音后台任务能进入语音播报;聊天任务只更新自己的状态条。
-      if(data.origin === "voice"){
+      // 当前处于语音视图时,同一会话创建的任务都可以进入语音播报。
+      if(!$("#callView").hidden && isCurrentConversationTask(data)){
         pendingAnnouncements.push(data);
         flushAnnouncements();
       }

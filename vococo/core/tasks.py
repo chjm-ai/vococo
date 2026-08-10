@@ -287,6 +287,39 @@ def list_recent(
     return [_row(r) for r in rows]
 
 
+def list_recent_for_source(
+    limit: int = 20,
+    source: str = "conversation",
+    dispatch_chat_id: str | None = None,
+) -> list[dict]:
+    """按中性任务来源查询,兼容旧表里的 origin 字段。
+
+    conversation 包含历史上的 voice/chat 两种来源;它们是同一种后台任务,
+    只保留 origin 是为了兼容旧数据和旧通知逻辑。
+    """
+    origin_groups = {
+        "conversation": ("voice", "chat"),
+        "cron": ("cron",),
+        "all": tuple(ORIGINS),
+    }
+    origins = origin_groups.get(source)
+    if origins is None:
+        return []
+
+    clauses = [f"origin IN ({','.join('?' for _ in origins)})"]
+    params: list[object] = list(origins)
+    if dispatch_chat_id is not None:
+        clauses.append("dispatch_chat_id=?")
+        params.append(dispatch_chat_id)
+    params.append(limit)
+    rows = _conn().execute(
+        "SELECT * FROM tasks WHERE " + " AND ".join(clauses)
+        + " ORDER BY created_at DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return [_row(row) for row in rows]
+
+
 def list_queued() -> list[dict]:
     rows = _conn().execute(
         "SELECT * FROM tasks WHERE status='queued' ORDER BY created_at ASC"

@@ -20,82 +20,50 @@ from ..core.task_words import status_emoji
 from ..memory import session_store
 from . import tts
 
-_subscribers: set[asyncio.Queue] = set()
+from ..core import task_events
+
+# 兼容旧测试和旧路由的模块级名称;实际状态由 core.task_events 持有。
+_subscribers = task_events._subscribers
+_started_tasks = task_events._started_tasks
 
 # 注册的平台推送回调:async (platform, chat_id, text) -> None
 _platform_push: Callable[[str, str, str], Awaitable[None]] | None = None
 
-# ── 主 SSE 桥接(后台任务侧栏小红点) ──────────────────────────────────
-_main_event_bridge: Callable[[dict], None] | None = None
-# 已发 start 的任务 id 集合,防止进度更新重复发(仅首次起跑发一次)。
-_started_tasks: set[str] = set()
-
 
 def register_main_event_bridge(fn: Callable[[dict], None] | None) -> None:
-    """注册/注销主 SSE 桥接回调,把语音任务状态变化(起跑/终态)以 start/done
-    事件推给主 SSE 通道,让后台任务侧栏行的小红点能像普通会话行一样闪烁。
-
-    由 WebAdapter 在初始化时注册,传入 self._emit。
-    传入 None 可注销(主要用于测试清理)。"""
-    global _main_event_bridge
-    _main_event_bridge = fn
-
-
-def _bridge_event(payload: dict) -> None:
-    if _main_event_bridge is not None:
-        try:
-            _main_event_bridge(payload)
-        except Exception:
-            pass
+    """兼容旧调用方,主 SSE 桥接实际由通用任务事件总线管理。"""
+    task_events.register_main_event_bridge(fn)
 
 
 def subscribe() -> asyncio.Queue:
-    """/voice/tasks/stream 建连时调用,返回一个只属于该连接的事件队列。"""
-    q: asyncio.Queue = asyncio.Queue()
-    _subscribers.add(q)
-    return q
+    """兼容旧路由,订阅通用后台任务事件。"""
+    return task_events.subscribe()
 
 
 def unsubscribe(q: asyncio.Queue) -> None:
-    _subscribers.discard(q)
+    task_events.unsubscribe(q)
 
 
 def is_online() -> bool:
-    return bool(_subscribers)
+    return task_events.is_online()
 
 
 def _broadcast(event: str, payload: dict) -> None:
-    for q in list(_subscribers):
-        q.put_nowait((event, payload))
+    task_events._broadcast(event, payload)
+
+
+def _bridge_event(payload: dict) -> None:
+    task_events._bridge_event(payload)
 
 
 def on_task_activity(task: dict) -> None:
-    """非终态变化(派发/起跑/进度更新/排队中取消)时调用:仅在线 SSE 推 task_update,
-    给通话视图的任务状态条实时刷新用;离线不推送——中间态没到打扰用户的程度,
-    回来打开页面拉一次 /voice/tasks 自然能看到。"""
-    _broadcast(
-        "task_update",
-        {
-            "id": task["id"],
-            "title": task["title"],
-            "status": task["status"],
-            "progress_note": task["progress_note"],
-            "created_at": task["created_at"],
-            "updated_at": task["updated_at"],
-            "dispatch_chat_id": task.get("dispatch_chat_id"),
-            "origin": task.get("origin"),  # 前端按 origin 分流:voice→通话条,chat→会话条,cron 不进
-        },
-    )
-    # 桥接到主 SSE:任务起跑 → 前端侧栏显示小红点。_started_tasks 防重复:
-    # 进度更新(工具调用等)也走本函数,但只有首次起跑的 running 才需要发 start。
-    if task["status"] == "running" and task["id"] not in _started_tasks:
-        _started_tasks.add(task["id"])
-        _bridge_event({"conv": tasks.session_key(task["id"]), "type": "start"})
+    """兼容旧调用方,转发通用后台任务状态事件。"""
+    task_events.on_task_activity(task)
 
 
 def on_sdk_task_activity(task: dict) -> None:
-    """SDK 待办变化只推网页状态条,不触发后台任务通知或侧栏会话。"""
-    _broadcast("sdk_task_update", task)
+    """兼容旧调用方,转发 SDK 待办投影事件。"""
+    task_events.on_sdk_task_activity(task)
 
 
 def register_platform_push(
@@ -231,3 +199,11 @@ async def on_task_terminal(task_id: str) -> None:
             )
         except Exception:
             pass  # 平台推送失败不影响主流程
+
+
+async def _terminal_event_handler(task_id: str) -> None:
+    """通过事件总线调用当前通知实现,方便测试替换 on_task_terminal。"""
+    await on_task_terminal(task_id)
+
+
+task_events.register_terminal_handler(_terminal_event_handler)

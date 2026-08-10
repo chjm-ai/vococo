@@ -1,7 +1,7 @@
 """统一后台任务引擎:派发一个任务 = 一个 asyncio task,跑独立的 stream_turn。
 
-并发上限 TASK_MAX_CONCURRENCY,超出的排队(queued);任务终态时触发
-notify.on_task_terminal 并顺手拉起下一个排队任务。
+并发上限 TASK_MAX_CONCURRENCY,超出的排队(queued);任务终态时通过
+core.task_events 广播并顺手拉起下一个排队任务。
 
 2026-07-29 通用化(原 voice/executor.py):语音派发、cron 定时、普通会话发起
 "独立新会话"三种触发方式共用这一个引擎——都是"没人盯着、后台自己跑一轮"这同一
@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 from .. import config, providers
 from ..memory import session_store
 from ..tools import danger
-from . import tasks, worktree
+from . import task_events, tasks, worktree
 from .agent import (
     Done,
     SessionStarted,
@@ -90,12 +90,12 @@ def _start_one(task: dict, turn_text: str | None = None) -> bool:
 
 
 def _notify_activity(task_id: str) -> None:
-    """任务非终态变化后,把最新行广播给在线页面(通话视图任务状态条实时刷新)。"""
-    from ..voice import notify  # 懒加载,避免非语音场景也引入 voice 包(见模块头说明)
+    """任务非终态变化后,把最新行广播给在线页面。"""
+    from . import task_events
 
     row = tasks.get(task_id)
     if row is not None:
-        notify.on_task_activity(row)
+        task_events.on_task_activity(row)
 
 
 def progress_text(name: str, tool_input: dict) -> str:
@@ -167,7 +167,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     """跑一个任务的一轮对话。turn_text 为 None(首次派发)用 row['prompt'];
     非 None(追问/cron 再次触发)则是这一轮实际发给模型的文本——历史靠 resume 接,
     不用每次都把全部历史重新拼进 prompt(见 append())。"""
-    from ..voice import notify  # 懒加载,避免非语音场景也引入 voice 包(见模块头说明)
+    from . import task_events
 
     row = tasks.get(task_id)
     if row is None:
@@ -303,7 +303,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             flush=True,
         )
 
-    await notify.on_task_terminal(task_id)
+    await task_events.emit_terminal(task_id)
 
     _maybe_start_next()
 
@@ -399,8 +399,6 @@ async def append(task_id: str, instruction: str) -> dict:
 def cancel(task_id: str) -> bool:
     """取消一个任务:排队中直接置 cancelled;运行中 cancel 对应 asyncio task
     (由 _run 的 except CancelledError 分支落终态)。"""
-    from ..voice import notify  # 懒加载,避免非语音场景也引入 voice 包(见模块头说明)
-
     row = tasks.get(task_id)
     if row is None:
         return False
@@ -417,7 +415,7 @@ def cancel(task_id: str) -> bool:
             except RuntimeError:
                 pass
             else:
-                asyncio.create_task(notify.on_task_terminal(task_id))
+                asyncio.create_task(task_events.emit_terminal(task_id))
         return ok
     if row["status"] == "running":
         t = _running.get(task_id)
@@ -441,13 +439,6 @@ async def cancel_and_wait(task_id: str, timeout: float = 10.0) -> None:
 
 
 async def heal_after_restart() -> None:
-    """serve 重启后调用一次(见 F11):把残留 queued/running 标失败,并按通知规则分发。
-
-    只在 web.py 的 serve 启动路径调用(不要挂到 register_routes 之类会被测试/脚本
-    顺带执行的地方);并排除本进程 _running 里的活任务——刚启动时它本来就是空的,
-    这层排除是防线,保证本函数无论被谁在什么时机调用都杀不了活人。
-    """
-    from ..voice import notify  # 懒加载,避免非语音场景也引入 voice 包(见模块头说明)
-
+    """serve 重启后调用一次:把残留 queued/running 标失败并广播终态。"""
     for row in tasks.mark_orphans_failed(exclude_ids=set(_running)):
-        await notify.on_task_terminal(row["id"])
+        await task_events.emit_terminal(row["id"])
