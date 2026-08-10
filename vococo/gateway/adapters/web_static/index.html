@@ -1459,6 +1459,18 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 只能等下次交互才被想起来——加个定时兜底,别指望状态转换事件一定会来。
   setInterval(()=>{ if(pendingAnnouncements.length) flushAnnouncements(); }, 8000);
 
+  // 音频补发(2026-08-10):服务端广播先行、TTS 合成后补——同 id 的 audio_patch
+  // 事件带 audio_b64,只服务"Omni 断开、只能靠 Web Audio 播"的场景:
+  // - 原播报还在 pending(用户正忙没念)→ 给它补上音频,等下轮 flush 连气泡一起播;
+  // - Omni 通话中 → 文字已念/将念,音频冗余,忽略;
+  // - 其余(气泡已加、Omni 已断)→ 直接补播音频。
+  function applyAnnouncementAudio(data){
+    const pending = pendingAnnouncements.find(p => p.id === data.id);
+    if(pending){ pending.audio_b64 = data.audio_b64; return; }
+    if(omniDc && omniDc.readyState === "open") return;
+    if(audioCtx && data.audio_b64){ playQueue.push({seq:-1, audio_b64: data.audio_b64}); pumpPlayback(); }
+  }
+
   // ── 通话状态字/声波球/提示音(免提 Omni 与按住说话共用)─────────────────────
   const STATE_WORD = {idle:"空闲", capturing:"聆听中…", thinking:"思考中…", speaking:"工作中…"};
   const STATE_CLASS = {capturing:"listening", thinking:"thinking", speaking:"playing"};
@@ -1906,6 +1918,12 @@ void main(){
       loadTasks();
       loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
       upsertTaskBar(data);  // 终态 → 状态条里标记"已完成",留在条里等用户手动点叉关闭
+      // 音频补发(2026-08-10):服务端广播先行、TTS 合成后补,同 id 的 audio_patch
+      // 事件带 audio_b64——第一条通常没有音频,播报文字先到;合成完这条才来。
+      if(data.audio_patch){
+        applyAnnouncementAudio(data);
+        return;
+      }
       // 当前处于语音视图时,同一会话创建的任务都可以进入语音播报。
       if(!$("#callView").hidden && isCurrentConversationTask(data)){
         pendingAnnouncements.push(data);

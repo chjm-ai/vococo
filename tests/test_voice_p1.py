@@ -791,14 +791,22 @@ async def test_notify_broadcasts_sse_event_when_online(voice_db, monkeypatch):
     q = notify.subscribe()
     try:
         await notify.on_task_terminal(t["id"])
-        event, payload = q.get_nowait()
+        await asyncio.sleep(0.05)  # 等后台补发协程(合成即回)跑完
+        first_event, first = q.get_nowait()
+        second_event, second = q.get_nowait()
     finally:
         notify.unsubscribe(q)
 
-    assert event == "task_done"
-    assert payload["id"] == t["id"]
-    assert payload["result_summary"] == "一句话摘要"
-    assert payload["audio_b64"]
+    # 2026-08-10 广播先行:第一条事件(播报文字)不带音频、立刻到;第二条
+    # audio_patch 补发音频,前端 Omni 断开时靠它 Web Audio 兜底。
+    assert first_event == "task_done"
+    assert first["id"] == t["id"]
+    assert first["result_summary"] == "一句话摘要"
+    assert not first.get("audio_b64")
+    assert second_event == "task_done"
+    assert second["id"] == t["id"]
+    assert second.get("audio_patch") is True
+    assert second["audio_b64"]
 
 
 @pytest.mark.anyio
@@ -840,13 +848,62 @@ async def test_notify_synthesizes_tts_even_when_omni_enabled(voice_db, monkeypat
     q = notify.subscribe()
     try:
         await notify.on_task_terminal(t["id"])
-        event, payload = q.get_nowait()
+        await asyncio.sleep(0.05)  # 等后台补发协程(合成即回)跑完
+        events = []
+        while not q.empty():
+            events.append(q.get_nowait())
     finally:
         notify.unsubscribe(q)
 
-    assert event == "task_done"
-    assert payload["announce_text"]
-    assert payload["audio_b64"]
+    # 2026-08-10 广播先行:文字事件先到(无音频),audio_patch 后补音频
+    assert events[0][0] == "task_done"
+    assert events[0][1]["announce_text"]
+    assert not events[0][1].get("audio_b64")
+    patches = [p for e, p in events if p.get("audio_patch")]
+    assert patches and patches[0]["audio_b64"]
+
+
+@pytest.mark.anyio
+async def test_notify_broadcast_not_blocked_by_slow_tts(voice_db, monkeypatch):
+    """2026-08-10 播报提速:TTS 合成慢/卡(失败重试最长 20s)不能拖住 SSE 广播和
+    Web Push——广播先行,合成结果后补。以前先 await 合成再广播,播报被拖几秒~
+    十几秒,听感就是"完成很久才播报/以为没播"(用户反馈久没听过任务播报了)。"""
+    from vococo.gateway.adapters import web_push
+
+    calls = []
+
+    async def fake_push(**kwargs):
+        calls.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(web_push.PUSH, "notify", fake_push)
+
+    async def slow_synthesize(_text, _voice):
+        await asyncio.sleep(0.5)  # 慢合成:广播和推送都不该等它
+        return b"AUDIO"
+
+    monkeypatch.setattr(tts, "synthesize", slow_synthesize)
+
+    t = tasks.create("标题", "p")
+    tasks.set_status(t["id"], "running")
+    tasks.finish(t["id"], "done", "完整结果", "一句话摘要")
+
+    q = notify.subscribe()
+    try:
+        # on_task_terminal 本身不该被合成拖住:0.3s 内返回(慢合成才跑一半)
+        await asyncio.wait_for(notify.on_task_terminal(t["id"]), timeout=0.3)
+        # 广播和 Web Push 必须在合成完成前就绪
+        first_event, first = q.get_nowait()
+        assert first_event == "task_done"
+        assert not first.get("audio_b64")  # 文字先到,不等音频
+        assert calls  # Web Push 也没被合成拖住
+        # 等后台合成补发 audio_patch
+        await asyncio.sleep(0.7)
+        _, patch = q.get_nowait()
+        assert patch.get("audio_patch") is True
+        assert patch["audio_b64"]
+    finally:
+        notify.unsubscribe(q)
 
 
 @pytest.mark.anyio
