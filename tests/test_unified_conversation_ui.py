@@ -25,11 +25,16 @@ def test_sidebar_has_one_unified_conversation_entry():
     assert 'onclick="openCallView()">进入对话</button>' in html
 
 
-def test_call_view_moves_voice_controls_above_shared_composer():
+def test_call_view_uses_exclusive_voice_or_text_panels():
+    html = STATIC_INDEX.read_text(encoding="utf-8")
     styles = STATIC_STYLES.read_text(encoding="utf-8")
 
-    assert "#callView.with-composer #callFoot" in styles
-    assert "#callView.with-composer #callBody" in styles
+    assert 'id="voiceModeTab"' in html
+    assert 'id="textModeTab"' in html
+    assert 'setCallInputMode("voice")' in html
+    assert 'setCallInputMode("text")' in html
+    assert "#callModeTabs" in styles
+    assert "#callVoicePanel[hidden],#callTextPanel[hidden]" in styles
 
 
 def test_service_worker_cache_version_changes_with_shell_contract():
