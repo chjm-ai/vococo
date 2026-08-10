@@ -2692,10 +2692,18 @@ void main(){
     vdbg(muted ? "audio.mute" : "audio.unmute", why);
   }
 
+  function updateCallModeTabs(){
+    // 通话进行中(连接中/已接通/断线待重连)隐藏「语音/文本」切换,挂断回到默认状态才显示,
+    // 避免通话中遮挡 UI。按住说话兜底模式无 Omni 状态,恒显示(该模式无持续"通话中"态)。
+    const tabs = document.getElementById("callModeTabs");
+    if(tabs) tabs.hidden = (omniConnStatus !== "disconnected" || handsFreeActive);
+  }
+
   function setOmniConnStatus(status){
     if(omniConnStatus === status) return;
     omniConnStatus = status;
     if(connDotEl) connDotEl.className = "conn-" + status;
+    updateCallModeTabs();
     vdbg("conn.status", status);
   }
 
@@ -3559,6 +3567,7 @@ void main(){
     releaseWakeLock();  // 挂断就不需要屏幕常亮了,让系统恢复正常锁屏节能
     stopWorkSound();    // 工作音效跟着通话走,挂断即停(audioCtx 也会在下面 close)
     handsFreeActive = false;  // 先立 flag:让 scheduleOmniReconnect 的回调知道用户已挂断
+    updateCallModeTabs();  // 上面 setOmniConnStatus("disconnected") 时 handsFreeActive 还置着,此刻补刷一次,下次进通话视图切换钮是显示的
     if(omniReconnectTimer){ clearTimeout(omniReconnectTimer); omniReconnectTimer = null; }
     stopOmniHandsFree();
     if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }

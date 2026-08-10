@@ -1023,6 +1023,7 @@
   #callModeTabs{pointer-events:auto;align-self:center;display:flex;gap:2px;padding:3px;
     margin:0 auto 8px;background:color-mix(in srgb,var(--panel) 92%,transparent);
     border:1px solid var(--line2);border-radius:14px;box-shadow:var(--shadow)}
+  #callModeTabs[hidden]{display:none}   /* 通话进行中隐藏切换,防遮挡(display:flex 覆盖 UA 样式,须显式补) */
   #callModeTabs button{border:0;background:transparent;color:var(--dim);border-radius:10px;
     padding:6px 22px;font-size:13px;cursor:pointer;transition:background .15s,color .15s}
   #callModeTabs button[aria-selected="true"]{background:var(--accent);color:#fff}
