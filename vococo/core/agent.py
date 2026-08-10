@@ -142,8 +142,9 @@ class AudioAttachment:
 # kimi-k3(2026-07-16 发布)官方标称 1M context,故一并登记;其余第三方供应商模型走默认 200k。
 # deepseek-v4 全系(V4-Pro/V4-Flash,2026-04-24 发布)官方标称 1M 上下文标配;旧名
 # deepseek-chat/deepseek-reasoner 已停用且不是 1M,不在此列,走默认 200k 兜底。
-# gpt-5.6 三档(Sol/Terra/Luna)官方统一标称 ~1.05M input / 128k output;Bedrock/Kiro
-# 等第三方平台标注 272k 与官方不符,我们走 OpenAI 官方通道,按 1.05M 登记。
+# gpt-5.6 三档(Sol/Terra/Luna)官方直连可达 ~1.05M input / 128k output；但当前本地
+# Codex 代理实际按 262k 接收，实测 37 万 token 会直接报 context window exceeded。这里
+# 必须按真实链路保守估算，否则自动压缩永远来不及触发。
 _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-fable-5": 1_000_000,
     "claude-opus-5": 1_000_000,
@@ -154,7 +155,7 @@ _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-haiku-4-5": 200_000,
     "deepseek-v4": 1_000_000,
     "kimi-k3": 1_000_000,
-    "gpt-5.6": 1_050_000,
+    "gpt-5.6": 262_144,
 }
 
 
@@ -252,6 +253,9 @@ def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
         return f"⚠️ Claude 官方服务出错(状态码 {api_error_status}),不是咱们这边的问题,稍等再试"
     if api_error_status in (401, 403):
         return f"⚠️ 调用被拒绝(状态码 {api_error_status}),八成是密钥/权限配置问题,请联系维护者"
+    dl = detail.lower()
+    if "context window" in dl or "input exceeds" in dl:
+        return "⚠️ 当前会话上下文超出模型窗口；系统将先自动压缩再继续本次请求。"
     if api_error_status == 400:
         return "⚠️ 请求被 Claude 拒绝(400),可能是发送内容有问题,换个问法或联系维护者"
     if api_error_status:
@@ -261,7 +265,6 @@ def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
             "⚠️ 这轮操作步骤太多,达到单轮工具调用上限被截断——不代表任务失败,"
             "回一句「继续」就能接着往下跑"
         )
-    dl = detail.lower()
     if any(kw in dl for kw in ("rate", "429", "quota", "limit", "overloaded", "529")):
         return "⚠️ Claude 限额/过载,稍等片刻再试"
     if detail:

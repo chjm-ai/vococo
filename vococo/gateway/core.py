@@ -23,6 +23,7 @@ from ..core.agent import (
     ToolFinished,
     ToolInput,
     ToolStarted,
+    context_window,
     stream_turn,
 )
 import time
@@ -235,6 +236,28 @@ async def converse(
             user_text += f"\n\n[语音/音频附件:{au.filename}]\n转写文字稿:\n{au.transcript}"
     # 上一轮的 SDK 会话 id:非空则本轮用 resume 让 SDK 重放真·多轮历史,不再拼历史大文本
     resume_sid = session_store.get_sdk_session_id(session_key)
+    # 运行中的 SDK transcript 不会在发送前自动压缩。若上轮已测得上下文逼近当前
+    # 模型的真实窗口，先发 SDK 内置 /compact，再发送用户本次原话；否则这次请求会
+    # 被上游直接 400 拒绝，用户只能反复点「继续」。
+    chosen_model = model or session_store.get_chosen_model(session_key) or config.MODEL
+    resolved_model, _ = providers.resolve(chosen_model, config.MODEL)
+    used_tokens = int(session_store.session_summary(session_key).get("ctx_tokens", 0) or 0)
+    needs_preflight_compact = (
+        not compact
+        and bool(resume_sid)
+        and used_tokens >= int(context_window(resolved_model) * 0.65)
+    )
+    if needs_preflight_compact:
+        async for ev in stream_turn(
+            [], "", model=model, cwd=cwd, resume=resume_sid, session_key=session_key,
+            compact_only=True,
+        ):
+            if isinstance(ev, Compacted):
+                await sink.compacted(ev.trigger or "preflight")
+            elif isinstance(ev, Done):
+                if ev.reply.sdk_session_id:
+                    resume_sid = ev.reply.sdk_session_id
+                    session_store.set_sdk_session_id(session_key, resume_sid)
     reply: AgentReply | None = None
     timeline = Timeline()  # 录过程时间线,轮末随正文落库(刷新可重建工具卡)
     # 流式进行中:节流把当前全文写进 turns.draft_text,供前端刷新后兜底恢复
