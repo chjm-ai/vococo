@@ -3565,7 +3565,7 @@ void main(){
     closeSidebar();
     S.conv = "voice-chat:main";
     mountSharedComposer(true);
-    setCallInputMode("voice");
+    setCallInputMode("text");
     $("#chatMain").hidden = true;
     $("#callView").hidden = false;
     acquireWakeLock();
@@ -3587,8 +3587,10 @@ void main(){
     renderConvs();   // 侧栏按通话状态重绘,让「语音通话」行高亮
   };
   window.closeCallView = function(){
-    if($("#callView").hidden) return;  // 没在通话视图里,啥也不用做(openConv 收口时无条件调用)
     mountSharedComposer(false);
+    // 缓存版本错位或上次加载中断时,composer 可能留在隐藏的文本面板里。
+    // 即使 callView 已隐藏也先归位,保证普通会话始终有输入框。
+    if($("#callView").hidden) return;
     $("#callView").hidden = true;
     $("#chatMain").hidden = false;
     teardownCallResources();
@@ -4733,11 +4735,8 @@ function skelRow(extraClass){
   return row;
 }
 function buildVoiceMainRow(inCall){
-  const vs = S.voiceSidebar;
-  // 数据还没拉过(刚登录那一瞬)→ 返回骨架占位行,位置先钉住,别让「对话」行凭空冒出来;
-  // 已拉过但确实没有主会话(正常状态)→ 不渲染。
-  if(!S.voiceSidebarLoaded) return skelRow("voicemain");
-  if(!vs || !vs.main) return null;
+  // 主会话是固定入口,不能依赖 /voice/sidebar 请求成功才显示。该请求只负责
+  // 后台任务元数据;网络失败时仍必须保留入口,让用户至少能继续发消息。
   const mainRow=el("div","conv voicemain"+(inCall?" active":""));
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");

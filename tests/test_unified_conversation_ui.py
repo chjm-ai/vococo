@@ -22,6 +22,8 @@ def test_sidebar_has_one_unified_conversation_entry():
 
     assert 'const mainConv=S.convs.find(c=>c.conv==="main");' not in html
     assert 'mainCt.textContent="主会话"' in html
+    assert 'if(!S.voiceSidebarLoaded) return skelRow("voicemain");' not in html
+    assert "if(!vs || !vs.main) return null;" not in html
     assert 'onclick="openCallView()">进入主会话</button>' in html
     assert '<span class="title">主会话</span>' in html
 
@@ -34,6 +36,8 @@ def test_call_view_uses_exclusive_voice_or_text_panels():
     assert 'id="textModeTab"' in html
     assert 'setCallInputMode("voice")' in html
     assert 'setCallInputMode("text")' in html
+    assert 'mountSharedComposer(true);\n    setCallInputMode("text");' in html
+    assert html.index('mountSharedComposer(false);') < html.index('if($("#callView").hidden) return;')
     assert "#callModeTabs" in styles
     assert "#callVoicePanel[hidden],#callTextPanel[hidden]" in styles
 
@@ -41,4 +45,4 @@ def test_call_view_uses_exclusive_voice_or_text_panels():
 def test_service_worker_cache_version_changes_with_shell_contract():
     sw = STATIC_SW.read_text(encoding="utf-8")
 
-    assert 'const SHELL_CACHE = "vococo-shell-v2";' in sw
+    assert 'const SHELL_CACHE = "vococo-shell-v3";' in sw
