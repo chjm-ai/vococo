@@ -634,10 +634,15 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let omniMicMuteTimer=null;
   let omniMicEpoch=0;   // 见下注释:旧现场的开麦定时器到点后用它证伪
   const omniAudioEl = $("#omniRemoteAudio");
-  // 【重要】音频输出通道永不静音:2026-07-15 修复前,远端 <audio> 的 muted 被
-  // 用于压制自动回复和朗读收尾的音频,这会导致 AI 自己的 TTS 语音输出被掐掉、
-  // 用户听不到完整回复。修复后:音频输出始终开放,自动回复只靠 response.cancel
-  // 砍掉,宁可短暂漏一个字也不能消掉完整回答。
+  // 【重要】输出通道默认静音反转策略(2026-08-10 漏音二次定案):2026-07-15 起
+  // 一直奉行"音频输出通道永不静音、自动回复只靠 cancel 砍掉"——但真机日志证明
+  // 自动回复【一直带音频】(它的 response.done 回执 modalities="text+audio",
+  // session 级 text 物理隔离从未生效,见下),而静音式压制天生慢半拍(RTP 音频
+  // 先于 DataChannel 事件到达),每次自动回复都漏开头;created 撞上朗读进行中时
+  // 连静音都不触发,整个自动回复原样播出——这就是"偶尔漏几秒"的来源。v2 反转:
+  // 元素【默认静音】,只在"确认是我们主动点的朗读在出声"期间开声(朗读 created
+  // 开声 → 尾音排空/整轮收尾静音)。自动回复音频集中在"用户说完话后的几秒
+  // 窗口"到达,该窗口内元素必然静音,从源头压住;朗读音频不受影响。
   let omniAudioMuted=true;
   // 自动回复音频阻断标志(2026-07-15):每当自动回复的 response.created
   // 到来时置起,阻止自动回复产生的任何音频片段被误放行;我们的 pump 在
@@ -647,20 +652,17 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 到点主动解除并泵一次——保险丝只是状态,超时后没人调 pump 它会永远挡着
   // 朗读队列(SSE 句子到齐后不再有任何事件触发 pump,朗读会卡死)。
   let omniAutoFuseTimer=null;
-  // 自动回复【物理隔离】(2026-07-31):session 级只给 text,Omni 对用户话语自作主张
-  // 生成的那份回复就【物理上不产生音频】。此前靠"收到 response.created 再静音"压制,
-  // 但 RTP 音频走的是独立通道、比 DataChannel 事件先到,头几个字必然漏出去——而
-  // Omni 自动回复的典型内容就是复述/确认用户刚说的话,用户听到的就是"AI 在复读我"。
-  // 2026-07-31 真机日志:6 次开口对应 6 次 auto-response.muted,100% 触发,只是漏出
-  // 的长短不一,所以时有时无。我们自己的朗读靠 response.create 的响应级 modalities
-  // 覆盖成 ["text","audio"] 出声(见 pumpOmniRead)。
-  // 【不回翻】响应级覆盖是从 SDK 源码扒的未文档化用法,万一这个服务端版本静默忽略
-  // 它,朗读会变成没声音——但 08-04 的"自愈翻闸"(把 session 改回 ["text","audio"]
-  // 重念)已经证明是漏音根源:session 级对自动回复同样生效,一旦翻回 audio,自动回复
-  // 就物理出声,而它的静音防线天然漏(RTP 先于 DataChannel 事件到达、created 撞上
-  // 朗读进行中不静音),用户听到的就是"AI 复读我"。主人要求这条音频任何情况下完全
-  // 静音——宁可朗读哑一句,绝不翻转 session 给自动回复任何出声可能(2026-08-08
-  // 定案,response.done 分支的翻闸已删,真哑只上报 read.silent)。
+  // 【物理隔离实测未生效】(2026-08-10 真机日志定案):session 级 modalities 只给
+  // ["text"],指望 Omni 对用户话语自动生成的回复"物理上不产生音频"——但日志里
+  // 自动回复的 response.done 回执 modalities="text+audio"(与我们的朗读相同),
+  // 说明服务端对自动回复固定带音频,session 级 text 对自动回复【无效】,07-31
+  // 的"物理隔离"从未真正生效,漏音防线一直是"created 到达时静音"这个迟到压制
+  // (RTP 先到必漏开头,2026-07-31 真机日志"6 次开口 6 次 muted 还是漏"就是证据)。
+  // 08-08 的"翻闸"更是把这个迟到的防线也拆了,漏音升级成完整复读。v2 不赌
+  // 服务端行为:输出通道默认静音(见上注释),自动回复音频到达时元素必然是静的,
+  // 朗读靠响应级 modalities 覆盖出声(朗读 created 回执恒 "text"、done 回执
+  // "text+audio",2026-08-10 日志确认响应级覆盖服务端认)。朗读哑掉的兜底:
+  // done 回执缺 audio 时上报 read.silent,不翻转 session(翻转 = 自动回复出声)。
   let omniSessionModalities=["text"];
   omniAudioEl.muted = true;
   // 调试信号上报:浏览器↔阿里云的 DataChannel 服务端完全看不见,2026-07-10 两次
@@ -1962,7 +1964,8 @@ void main(){
     omniReadCreateDegraded = false;
     if(omniMicMuteTimer){ clearTimeout(omniMicMuteTimer); omniMicMuteTimer = null; }
     applyMicEnabled();
-    setOmniAudioMuted(false, "conn-start");  // 音频输出始终开放,不静音输出通道;静音只作用于麦克风输入轨道(track.enabled)
+    // 输出通道保持静音(2026-08-10 反转):连接建立时没有朗读在出声,自动回复
+    // 音频却可能在用户开口后随时到达——默认静音直到朗读 created 确认才开声。
     // 新连接:上一条连接没等到 completed 的兜底现场作废,别把旧句在新会话上重发
     if(omniDeltaFallbackTimer){ clearTimeout(omniDeltaFallbackTimer); omniDeltaFallbackTimer = null; }
     omniDeltaFallback = null; omniFallbackSentItem = null;
@@ -2196,11 +2199,18 @@ void main(){
         vdbg("dc:" + data.type, {
           rp: omniReadPending, ra: omniReadActive, aa: omniAutoActive,
           q: omniReadQueue.length,
-          // response.* 事件带上这次 response 的实际 modalities:这是验证"自动回复
-          // 只出 text、我们的朗读出 audio"这套物理隔离到底生效没有的直接证据——
-          // 朗读的应为 text+audio,Omni 自动回复的应为 text。
+          // response.* 事件带上这次 response 的实际 modalities:2026-08-10 真机
+          // 日志定案——created 回执恒 "text"(session 级快照),done 回执才是实际
+          // 值;而自动回复的 done 也是 "text+audio",证明物理隔离从未生效。
           mod: (data.response && data.response.modalities)
             ? data.response.modalities.join("+") : undefined,
+          // 能否"源头区分"两条 response 的验证埋点(2026-08-10):若服务端回显
+          // 响应级 instructions(我们的朗读带 OMNI_READ_INSTRUCTIONS 独特指令)
+          // 或 trigger 字段(turn_detected 之类),就能精确区分自动回复、源头丢弃;
+          // 真机日志里这两个字段是否出现/内容如何,决定未来能否升级方案。
+          ins: (data.response && data.response.instructions)
+            ? String(data.response.instructions).slice(0, 24) : undefined,
+          trig: (data.response && data.response.trigger) || undefined,
           err: data.error ? String(data.error.message || data.error.code || "") : undefined,
         });
       }
@@ -2358,16 +2368,15 @@ void main(){
             }
           } else {
             armOmniAutoFuse();
-            // 立即静音:Omni 自动回复的音频在到达前已通过 RTP 推流,
-            // 不静音的话用户会听到模型对用户话语的回显(即"重复念用户说的话")。
-            // 只在未朗读时静音(2026-07-15 修复保留):2026-08-08 漏音定案后,
-            // "自动回复完全静音"的硬保证由 session 级物理隔离承担(session 只给
-            // text,自动回复物理无音频,见 omniSessionModalities 声明处;自愈翻闸
-            // 已删,永不再翻回 audio)。这里撞上朗读进行中(网络时序逆转的边角)时
-            // 若还静音,会掐断正在播的真朗读——而自动回复本身没有音频可漏,所以
-            // 不静音没有漏音代价。此分支仍保留静音是为了兜底"服务端忽略 session
-            // modalities"的极端情况(自动回复真带音频时,至少 RTP 到达前先压住)。
-            if(!omniReadActive) setOmniAudioMuted(true, "auto-reply");
+            // 无条件静音(2026-08-10 二次定案):自动回复【一直带音频】(真机日志
+            // 它的 done 回执 text+audio),created 只是"它开始生成"的信号,音频
+            // RTP 紧随其后。此前"只在未朗读时静音"的例外(2026-07-15)会让撞上
+            // 朗读进行中的自动回复整个播出来——而服务端同一时刻只允许一个 active
+            // response,自动回复的 created 撞上朗读,说明朗读已被服务端顶替/排队,
+            // 此刻静音丢的只是死朗读的尾巴,换来的却是自动回复一字不漏。v2 反转
+            // 策略下这是兜底闸:正常流程里自动回复到达时元素本来就静音(默认静音),
+            // 这里只在异常时序(朗读窗口内自动回复才 created)时把缺口补上。
+            setOmniAudioMuted(true, "auto-reply");
             omniAutoAudioBlocked = true;
             // 不发送 response.cancel——它会连带杀死连续说话时后续片段的
             // transcription.completed 事件。自动回复的音频已被静音,且
@@ -2419,6 +2428,10 @@ void main(){
           } else {
             clearOmniAutoFuse();
             omniAutoActive = false;
+            // 自动回复 done 只代表"生成完毕",RTP 尾巴可能还欠着几百毫秒到几秒
+            // 没播(生成快于播放)——此刻立即静音,把自动回复的尾巴掐掉(它是不该
+            // 播的内容),别让它漏进下一句朗读的开头(2026-08-10 反转策略)。
+            setOmniAudioMuted(true, "auto-done");
             pumpOmniRead();  // 自动回复清场了,轮到排队中的朗读
           }
           break;
@@ -2663,6 +2676,10 @@ void main(){
     wsState = "idle";
     setStatus(STATE_WORD.idle);
     if(handsFreeActive) orbWrap.className = "idle";
+    // 整轮念完,输出通道收回静音(2026-08-10 反转策略):下一次开声只发生在
+    // 确认朗读的 response.created。此刻用户已说完话,自动回复随时可能到达,
+    // 元素必须回到默认静音态。
+    setOmniAudioMuted(true, "read-idle");
     // 首回复静音期间整轮念完:等估算播放尾巴过去再开麦。用【顺序播放模型】——
     // 音频从首句起连续播,逐句累加(230ms/字),句间有生成间隙才从该句自己的
     // read.create 重新起算;缓冲只留 0.4s。之前每句独立加 2s 缓冲,两句连播时
@@ -2775,6 +2792,9 @@ void main(){
     if(omniReadTailTimer){ clearTimeout(omniReadTailTimer); omniReadTailTimer = null; }
     try{ omniDc.send(JSON.stringify({type: "response.cancel"})); }catch(e){}
     omniReadActive = false; omniReadPending = 0;
+    // 哑火朗读已被判死,输出通道收回静音(2026-08-10 反转策略)——不静音的话
+    // 元素保持上一句朗读的开声状态,迟到的自动回复音频会趁虚播出。
+    setOmniAudioMuted(true, "read-stall");
     pumpOmniRead();
   }
 
@@ -3285,6 +3305,7 @@ void main(){
     omniUserBubble = null; omniUserBubbleText = ""; omniUserSentTs = 0;
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
+    setOmniAudioMuted(true, "hangup");  // 挂断收口:输出通道回默认静音态
   }
 
   // ── 按钮模式:一轮交互完成后回到按钮待机状态,等待用户再次点击 ──────────────
