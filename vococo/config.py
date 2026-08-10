@@ -285,6 +285,11 @@ VOICE_VAD_THRESHOLD: float = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.7"))
 # 定时器被 speech 事件误覆盖的 bug,表现为消息被吞/答非所问。回调到 2500ms 折中:
 # semantic_vad 语义判停为主,2500ms 静音兜底,比 4500ms 快很多又不至于句中误切。
 VOICE_OMNI_VAD_SILENCE_MS: int = int(os.environ.get("VOICE_OMNI_VAD_SILENCE_MS", "2500"))
+# 免提链路前端缓冲的强制发送安全网(毫秒):VAD 不报 speech_stopped / 转写丢失时,
+# 用户连续说话最多攒这么久必发(防卡死兜底,见 index.html scheduleOmniFlush)。
+# 30s 对一次长口述(连续说 3 分钟)不够,2026-08-10 调成默认 180s——切段逻辑本身
+# 保留,只是阈值放宽;用户正常说话(中间有停顿)由 VAD 判停驱动,不碰安全网。
+VOICE_OMNI_SAFETY_MS: int = int(os.environ.get("VOICE_OMNI_SAFETY_MS", "180000"))
 
 # === 会话统一(跨入口连续)===
 # 开启时:CLI / TUI / Web 都归到同一会话 SESSION_KEY,
