@@ -266,7 +266,7 @@ try{
         <h2>你好，我是 vococo</h2>
         <p>你的私人 AI 助理 · 有什么需要直接说</p>
         <div class="sugs">
-          <button type="button" class="sug" onclick="openCallView()">进入对话</button>
+          <button type="button" class="sug" onclick="openCallView()">进入主会话</button>
           <button class="sug" data-s="你能做什么">你能做什么</button>
           <button class="sug" data-s="有哪些技能">有哪些技能</button>
           <button class="sug" data-s="看看今天的安排">看看今天的安排</button>
@@ -333,8 +333,8 @@ try{
   <main id="callView" hidden>
     <header id="callHead">
       <button id="backLink" title="展开侧栏"></button>
-      <span class="title">语音通话</span>
-      <button id="clearVoiceCtxBtn" title="清空语音通话上下文(AI 从头开始,历史保留)"></button>
+      <span class="title">主会话</span>
+      <button id="clearVoiceCtxBtn" title="清空主会话上下文(AI 从头开始,历史保留)"></button>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
     <!-- 后台任务状态条:有排队/进行中任务才出现,见 renderTaskBar() -->
@@ -3409,7 +3409,7 @@ void main(){
   // 清空语音通话上下文:清的是 voice-chat:main(见后端 /voice/clear),下一轮从零开始;
   // 同时抹掉本地已显示的对话与半截的流式态,视觉上也回到干净起点。
   $("#clearVoiceCtxBtn").addEventListener("click", async ()=>{
-    if(!confirm("清空语音通话的上下文?(AI 会从头开始,历史记录仍保留)")) return;
+    if(!confirm("清空主会话的上下文?(AI 会从头开始,历史记录仍保留)")) return;
     try{
       const resp = await fetch("/voice/clear", {method:"POST", headers:{"X-Auth-Token":S.token}});
       if(!resp.ok) throw new Error("HTTP "+resp.status);
@@ -4741,7 +4741,7 @@ function buildVoiceMainRow(inCall){
   const mainRow=el("div","conv voicemain"+(inCall?" active":""));
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");
-  const mainCt=el("div","ct"); mainCt.textContent="对话"; mainBody.append(mainCt);
+  const mainCt=el("div","ct"); mainCt.textContent="主会话"; mainBody.append(mainCt);
   // 主行不显示时刻(2026-08-04:与其他会话行区分,保持简洁)
   mainRow.append(mainBody);
   mainRow.onclick=()=>{ openCallView(); };

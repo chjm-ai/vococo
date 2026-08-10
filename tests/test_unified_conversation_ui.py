@@ -21,8 +21,9 @@ def test_sidebar_has_one_unified_conversation_entry():
     html = STATIC_INDEX.read_text(encoding="utf-8")
 
     assert 'const mainConv=S.convs.find(c=>c.conv==="main");' not in html
-    assert 'mainCt.textContent="对话"' in html
-    assert 'onclick="openCallView()">进入对话</button>' in html
+    assert 'mainCt.textContent="主会话"' in html
+    assert 'onclick="openCallView()">进入主会话</button>' in html
+    assert '<span class="title">主会话</span>' in html
 
 
 def test_call_view_uses_exclusive_voice_or_text_panels():
