@@ -125,8 +125,14 @@ async def on_task_terminal(task_id: str) -> None:
     # 结果(done/failed)才标未读,用户主动 cancelled 的不标——跟 _WebSink.done()
     # 只在真正产出内容时才 set_pending_review(而不是用户手动 /abort 时)是同一套
     # 语义,不需要"哦这条被我自己取消的任务也弹了个未读点"这种噪音。
-    if task["status"] != "cancelled":
-        session_store.set_pending_review(tasks.session_key(task_id), True)
+    # 2026-08-10 加固:这只是播报/推送链路的"前置动作",DB 写挂了不能把后面的
+    # SSE 广播和 Web Push 一起拖死(emit_terminal 会吞异常,前置一步抛错=整条
+    # 通知链静默消失)——单独 try,失败只丢侧栏未读点。
+    try:
+        if task["status"] != "cancelled":
+            session_store.set_pending_review(tasks.session_key(task_id), True)
+    except Exception:
+        pass
     # 先桥接 done 事件到主 SSE:让侧栏小红点熄灭(在播报/推送之前推,别让侧栏
     # 一直亮在已结束的任务上,也别卡住后面的异步推送路径)——这一步跟 origin
     # 无关,任何来源的任务都要让侧栏及时刷新。
@@ -161,15 +167,15 @@ async def on_task_terminal(task_id: str) -> None:
     # 的任务会彻底静默(真机反馈"不到一半的任务完成会播报")。Web Push 是系统通知,
     # 页面在前台也不碍事,双发不会吵。chat 来源哪怕这时刚好有人在通话,也不该
     # 突然插播一句不相关任务的播报(由前端按 origin 过滤)。
+    # 2026-08-10 播报提速:原来 voice+在线分支【先 await 合成、再广播】——TTS
+    # 失败重试最长 20s(2×10s 超时),任务完成播报被串行拖住几秒~十几秒,听感就是
+    # "完成很久了才播报/以为没播"。而 Omni 通话中前端根本不碰 audio_b64(Omni
+    # 直接念文字)。现在合成改后台任务并行、广播立即发出;合成完若有音频,再补发
+    # 一条同 id 的 audio_patch 事件,前端 Omni 断开时靠它 Web Audio 兜底。
     if origin == "voice" and is_online():
-        # 2026-08-04:Omni 出声模式下这里也合成 TTS。原来 Omni 模式跳过合成
-        # (audio_b64=None,指望前端交给 Omni 念)——但挂断通话后 omniDc 关闭、
-        # 不重连,前端没有 Omni 也没有 audio_b64,播报只落得一个气泡、无声。
-        # 现在始终带上音频:通话中前端仍优先 Omni 朗读(双声不并存,见前端
-        # flushAnnouncements 的 omniDc 分支),挂断后 Web Audio 也能念出来。
-        # 代价是每次终态多一次 TTS 合成(几百毫秒),换来"挂断后也能听到"。
-        audio = await tts.synthesize(announce_text, config.VOICE_TTS_VOICE)
-        payload["audio_b64"] = base64.b64encode(audio).decode("ascii") if audio else None
+        # 2026-08-04 定案:Omni 出声模式下也合成(挂断后 omniDc 关闭不重连,前端
+        # 没有 Omni 也没有 audio_b64 就彻底无声)——合成不删,挪到后台协程。
+        asyncio.create_task(_patch_audio_after(payload, announce_text))
     _broadcast("task_done", payload)
 
     # ── Web Push(VAPID) 发给所有订阅设备 ──────────────────────────────
@@ -181,13 +187,16 @@ async def on_task_terminal(task_id: str) -> None:
     title_prefix = {"done": "任务完成", "failed": "任务失败", "cancelled": "任务取消"}.get(
         task["status"], "任务结束"
     )
-    await PUSH.notify(
-        title=f"{title_prefix}:{task['title']}",
-        body=body,
-        conv=session_key,  # 点开推送直接跳到这个任务自己的会话,而不是一个不存在的占位 conv
-        kind="done" if task["status"] == "done" else ("error" if task["status"] == "failed" else "cancelled"),
-        tag=f"task-{task['id']}",
-    )
+    try:
+        await PUSH.notify(
+            title=f"{title_prefix}:{task['title']}",
+            body=body,
+            conv=session_key,  # 点开推送直接跳到这个任务自己的会话,而不是一个不存在的占位 conv
+            kind="done" if task["status"] == "done" else ("error" if task["status"] == "failed" else "cancelled"),
+            tag=f"task-{task['id']}",
+        )
+    except Exception:
+        pass  # Web Push 网关抽风时静默降级,不影响已发出的 SSE 播报
 
     # ── 平台推送:发给任务的派发者(如果 Web Push 不可配或任务有 dispatch 上下文) ──
     if _platform_push is not None and task.get("dispatch_platform") and task.get("dispatch_chat_id"):
@@ -199,6 +208,23 @@ async def on_task_terminal(task_id: str) -> None:
             )
         except Exception:
             pass  # 平台推送失败不影响主流程
+
+async def _patch_audio_after(payload: dict, announce_text: str) -> None:
+    """后台合成播报音频,完成后补发同 id 的 audio_patch 事件。
+
+    广播和推送都已发出,这里失败也只少一段可选音频(文字气泡/Omni 朗读/Web Push
+    都已落地)——所以整体包 try,合成异常绝不外泄成"Task exception was never
+    retrieved"的噪音。
+    """
+    try:
+        audio = await tts.synthesize(announce_text, config.VOICE_TTS_VOICE)
+        if audio:
+            patch = dict(payload)
+            patch["audio_b64"] = base64.b64encode(audio).decode("ascii")
+            patch["audio_patch"] = True  # 前端据此识别"同 id 的音频补发"
+            _broadcast("task_done", patch)
+    except Exception:
+        pass
 
 
 async def _terminal_event_handler(task_id: str) -> None:
