@@ -116,6 +116,32 @@ def test_global_restart_transaction_is_single_flight(live_supervisor):
     assert transaction["session_key"] == "web:first"
 
 
+def test_stale_transaction_from_old_head_is_replaced(live_supervisor):
+    _write_json(selfops.STABLE_REVISION_PATH, {"revision": "stable-sha"})
+    _write_json(
+        selfops.RESTART_TRANSACTION_PATH,
+        {
+            "stable_revision": "old-stable",
+            "candidate_revision": "old-candidate",
+            "session_key": "voice-chat:main",
+            "requested_at": time.time() - 60,
+            "restart_token": "stale-token",
+        },
+    )
+    _write_json(selfops.RESUME_PATH, {"restart_token": "stale-token"})
+
+    result = _request()
+
+    assert result.startswith("✅")
+    transaction = json.loads(
+        selfops.RESTART_TRANSACTION_PATH.read_text(encoding="utf-8")
+    )
+    assert transaction["candidate_revision"] == "candidate-sha"
+    resume = json.loads(selfops.RESUME_PATH.read_text(encoding="utf-8"))
+    assert resume["candidate_revision"] == "candidate-sha"
+    assert resume["restart_token"] != "stale-token"
+
+
 def test_corrupt_transaction_is_recovered_without_permanent_lock(live_supervisor):
     _write_json(selfops.STABLE_REVISION_PATH, {"revision": "stable-sha"})
     selfops.RESTART_TRANSACTION_PATH.write_text("{", encoding="utf-8")
@@ -373,16 +399,22 @@ def test_stable_window_promotes_running_revision_and_clears_transaction():
     assert not selfops.RESTART_TRANSACTION_PATH.exists()
 
 
-def test_stable_window_does_not_clear_a_different_candidate():
+def test_stable_window_clears_transaction_from_old_head():
     _write_json(
         selfops.RESTART_TRANSACTION_PATH,
-        {"stable_revision": "stable-sha", "candidate_revision": "other-sha"},
+        {
+            "stable_revision": "stable-sha",
+            "candidate_revision": "other-sha",
+            "session_key": "web:one",
+            "requested_at": time.time(),
+            "restart_token": "stale-token",
+        },
     )
     selfops.write_running_revision("candidate-sha")
 
-    anyio.run(selfops.mark_runtime_stable, 0)
+    assert anyio.run(selfops.mark_runtime_stable, 0) is True
 
-    assert selfops.RESTART_TRANSACTION_PATH.exists()
+    assert not selfops.RESTART_TRANSACTION_PATH.exists()
 
 
 def test_stable_window_runs_git_head_outside_the_event_loop(monkeypatch):
