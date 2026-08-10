@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from vococo.core.agent import AgentReply, Done, TextDelta
+from vococo.core.agent import AgentReply, Compacted, Done, TextDelta
 from vococo.gateway import core
 from vococo.gateway.core import Sink
 from vococo.memory import session_store
@@ -59,6 +59,37 @@ async def test_cancel_preserves_question_for_next_turn(isolated, monkeypatch):
 
     assert seen["history_len"] == 1
     assert seen["first_user"] == "对比我们的系统和 claude code"
+
+
+@pytest.mark.anyio
+async def test_overfull_session_compacts_before_sending_user_message(isolated, monkeypatch):
+    """本地 Codex 代理的 GPT 上下文已超限时，先 /compact 再发送原问题。"""
+    from vococo.core import worktree
+
+    monkeypatch.setattr(worktree, "ensure_worktree", _noop_worktree)
+    key = "web:overfull-context"
+    session_store.set_chosen_model(key, "gpt-5.6-luna")
+    session_store.set_sdk_session_id(key, "old-sdk-session")
+    session_store.record_usage(key, 370_000, 0, window=262_144)
+    calls = []
+
+    async def fake_stream(history, user_text, **kwargs):
+        calls.append((user_text, kwargs["resume"], kwargs["compact_only"]))
+        if kwargs["compact_only"]:
+            yield Compacted(trigger="preflight")
+            yield Done(AgentReply("", [], None, False, sdk_session_id="compacted-sdk"))
+        else:
+            yield Done(AgentReply("恢复了", [], None, False, sdk_session_id="fresh-sdk"))
+
+    monkeypatch.setattr(core, "stream_turn", fake_stream)
+
+    reply = await core.converse(key, "继续", None, Sink())
+
+    assert reply and reply.text == "恢复了"
+    assert calls == [
+        ("", "old-sdk-session", True),
+        ("继续", "compacted-sdk", False),
+    ]
 
 
 @pytest.mark.anyio

@@ -109,6 +109,22 @@ def test_context_window_unknown_falls_back():
     assert context_window("some-unknown-model") == 200_000
 
 
+def test_context_window_codex_proxy_gpt_is_262k():
+    # 本地 Codex 代理实测拒绝 37 万 token 输入，不能按官方直连的 1.05M 窗口估算。
+    assert context_window("gpt-5.6-luna") == 262_144
+
+
+def test_context_window_error_explains_recovery():
+    from vococo.core.agent import describe_llm_error
+
+    text = describe_llm_error(
+        400, "Your input exceeds the context window of this model."
+    )
+
+    assert "上下文" in text
+    assert "自动压缩" in text
+
+
 # === _compact_threshold:大窗口模型不能被 CLI 的旧窗口认知提前压缩 ===
 
 
