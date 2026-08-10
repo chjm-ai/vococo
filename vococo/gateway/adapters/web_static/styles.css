@@ -1017,6 +1017,11 @@
   #callView{flex:1;display:flex;flex-direction:column;min-width:0;position:relative;
     background:var(--bg2);overflow:hidden}
   #callView[hidden]{display:none}
+  /* 统一对话视图复用主会话 composer;语音控制整体上移,避免两个输入区叠在一起。 */
+  #callView.with-composer #callFoot{bottom:var(--composer-h,104px)}
+  #callView.with-composer #callBody{padding-bottom:calc(216px + var(--composer-h,104px) + env(safe-area-inset-bottom));
+    scroll-padding-bottom:calc(216px + var(--composer-h,104px) + env(safe-area-inset-bottom))}
+  #callView.with-composer > #composer{z-index:12}
   #callHead{display:flex;align-items:center;gap:12px;padding:14px 16px;
     padding-top:calc(14px + env(safe-area-inset-top));border-bottom:1px solid var(--line)}
   #callHead #backLink{color:var(--dim);line-height:1;padding:4px;display:inline-flex}
