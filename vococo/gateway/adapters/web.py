@@ -2296,6 +2296,9 @@ class WebAdapter:
                 web.get("/doc/preview", self._handle_doc_preview),
             ]
         )
+        from ...gateway import task_routes
+
+        task_routes.register_routes(app)
         if config.VOICE_ENABLED:  # 实验性语音伴聊模式,见 vococo/voice/
             from ...voice import register_routes as _voice_register_routes
 
