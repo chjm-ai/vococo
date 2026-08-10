@@ -142,9 +142,9 @@ class AudioAttachment:
 # kimi-k3(2026-07-16 发布)官方标称 1M context,故一并登记;其余第三方供应商模型走默认 200k。
 # deepseek-v4 全系(V4-Pro/V4-Flash,2026-04-24 发布)官方标称 1M 上下文标配;旧名
 # deepseek-chat/deepseek-reasoner 已停用且不是 1M,不在此列,走默认 200k 兜底。
-# gpt-5.6 三档(Sol/Terra/Luna)官方直连可达 ~1.05M input / 128k output；但当前本地
-# Codex 代理实际按 262k 接收，实测 37 万 token 会直接报 context window exceeded。这里
-# 必须按真实链路保守估算，否则自动压缩永远来不及触发。
+# gpt-5.6 三档(Sol/Terra/Luna)官方 API 直连可达 1.05M input / 128k output；但当前
+# Codex 本机模型目录均标 272k，并要求预留 5% 自动压缩空间，实际可用 258,400。这里
+# 必须按真实链路估算，否则自动压缩永远来不及触发。
 _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-fable-5": 1_000_000,
     "claude-opus-5": 1_000_000,
@@ -155,7 +155,7 @@ _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-haiku-4-5": 200_000,
     "deepseek-v4": 1_000_000,
     "kimi-k3": 1_000_000,
-    "gpt-5.6": 262_144,
+    "gpt-5.6": 258_400,
 }
 
 
