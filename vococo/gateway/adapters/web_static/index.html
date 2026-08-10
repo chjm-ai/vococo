@@ -408,6 +408,7 @@ try{
 const S = {
   token: localStorage.getItem("vococo_token") || "",
   conv: "main",
+  callReturnConv: "main", // 进入主会话前的普通会话;挂断后恢复,避免刷新错读语音会话历史
   convs: [],            // [{conv,title,turns,last_ts,pinned}]
   projects: [],         // [{hash,name,path,last_used}]
   project: null,        // 「活跃」项目 hash(顶部 ＋新对话 建在此;随打开的会话联动);null=默认项目
@@ -3563,6 +3564,9 @@ void main(){
 
   window.openCallView = function(){
     closeSidebar();
+    // 从普通会话进入主会话时记住原位置。重复点入口时 S.conv 已是语音主会话,
+    // 不能覆盖掉返回位置。
+    if(S.conv !== "voice-chat:main") S.callReturnConv = S.conv || "main";
     S.conv = "voice-chat:main";
     mountSharedComposer(true);
     setCallInputMode("text");
@@ -3593,6 +3597,7 @@ void main(){
     if($("#callView").hidden) return;
     $("#callView").hidden = true;
     $("#chatMain").hidden = false;
+    S.conv = S.callReturnConv;
     teardownCallResources();
     renderConvs();   // 挂断后切回聊天侧栏,取消「语音通话」行高亮
   };
