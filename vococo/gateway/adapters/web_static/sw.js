@@ -5,7 +5,7 @@
       静默拉最新版;发现 / 变了就 postMessage 通知页面弹"点击刷新"。
       /api /events /send 等动态接口一律不拦,照常走网络。 */
 
-const SHELL_CACHE = "vococo-shell-v1";
+const SHELL_CACHE = "vococo-shell-v2";
 // 只缓存这份白名单里的路径(按 pathname 匹配,?v= 版本参数算在完整 URL 里)
 const SHELL_PATHS = new Set([
   "/", "/styles.css", "/tool-card.js", "/manifest.json", "/favicon.ico",
