@@ -208,6 +208,22 @@ def _atomic_write_json(path: Path, data: object) -> None:
             print(f"[selfops] 临时 JSON 清理失败 {tmp}: {exc}", flush=True)
 
 
+def _discard_stale_transaction(data: dict) -> bool:
+    """清理候选版本已不再是当前 HEAD 的遗留事务。"""
+    token = data.get("restart_token")
+    try:
+        if isinstance(token, str) and token:
+            _remove_restart_stamp(token)
+        RESTART_TRANSACTION_PATH.unlink(missing_ok=True)
+        resume = _read_json(RESUME_PATH)
+        if resume and resume.get("restart_token") == token:
+            RESUME_PATH.unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"[selfops] 清理过期重启事务失败: {exc}", flush=True)
+        return False
+    return True
+
+
 def _create_restart_transaction(data: dict) -> bool:
     """完整写好临时文件后原子发布；进程崩溃不会留下半截事务。"""
     RESTART_TRANSACTION_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -224,7 +240,17 @@ def _create_restart_transaction(data: dict) -> bool:
 
             existing = _read_json(RESTART_TRANSACTION_PATH)
             if existing is not None and _valid_restart_transaction(existing):
-                return False
+                current_revision = git_head()
+                if (
+                    not current_revision
+                    or existing["candidate_revision"] == current_revision
+                    or not _discard_stale_transaction(existing)
+                ):
+                    return False
+                print(
+                    "[selfops] 丢弃候选版本已不在当前 HEAD 的过期重启事务",
+                    flush=True,
+                )
             if RESTART_TRANSACTION_PATH.exists():
                 RESTART_TRANSACTION_PATH.unlink()
 
@@ -382,7 +408,9 @@ async def mark_runtime_stable(delay_sec: float = _STABLE_WINDOW_SEC) -> bool:
 
     transaction = _read_json(RESTART_TRANSACTION_PATH)
     if transaction is not None and transaction.get("candidate_revision") != revision:
-        return False
+        if not _valid_restart_transaction(transaction) or not _discard_stale_transaction(transaction):
+            return False
+        transaction = None
     _atomic_write_json(
         STABLE_REVISION_PATH,
         {"revision": revision, "pid": os.getpid(), "stable_at": int(time.time())},
