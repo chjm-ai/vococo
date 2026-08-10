@@ -3570,6 +3570,7 @@ void main(){
     // 不能覆盖掉返回位置。
     if(S.conv !== "voice-chat:main") S.callReturnConv = S.conv || "main";
     S.conv = "voice-chat:main";
+    renderProjSelChip();  // 草稿会话切入主会话时，收起仅草稿可见的项目选择器
     mountSharedComposer(true);
     setCallInputMode("text");
     $("#chatMain").hidden = true;
@@ -3600,6 +3601,7 @@ void main(){
     $("#callView").hidden = true;
     $("#chatMain").hidden = false;
     S.conv = S.callReturnConv;
+    renderProjSelChip();  // 返回草稿会话时，恢复项目选择器
     teardownCallResources();
     renderConvs();   // 挂断后切回聊天侧栏,取消「语音通话」行高亮
   };
