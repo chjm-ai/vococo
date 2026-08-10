@@ -458,6 +458,9 @@ const S = {
   omniVoice: "Serena",  // /voice/config 的 omni_voice,Omni 出声模式 session.update 的音色
                          // (注意跟 Qwen-TTS 音色表不通用,Cherry 会 400,见 config.py)
 };
+// 顶部任务条与侧边栏的停止/隐藏逻辑共用；不能放进通话 IIFE，否则侧边栏重绘会
+// 因找不到 barTasks 直接中断，连带项目列表无法渲染。
+const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
 const esc = s => s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -1213,9 +1216,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   }
 
   // ── 任务状态条:所有输入方式共用同一个会话任务池。─────────────────────────
-  // TASK_ACTIVE_STATUSES 定义在顶层(见声明处):isTaskDone 等跨作用域共用,
-  // 顶层 taskBarDoneHidden/scheduleDoneHide 也要访问,放 IIFE 内会 ReferenceError。
-  const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
+  // TASK_ACTIVE_STATUSES 与 barTasks 都定义在顶层(见声明处):顶层的
+  // taskBarDoneHidden/scheduleDoneHide 需要访问，不能再收进 IIFE。
   const TASKBAR_MAX = 7;
   const CHAT_TASK_ACTIVE_MAX = 5;
   let voiceTasksClearedAt = Number(localStorage.getItem("vococo_voice_tasks_cleared_at") || 0);
