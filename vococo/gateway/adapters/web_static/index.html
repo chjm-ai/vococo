@@ -347,30 +347,39 @@ try{
          跟 2026-07-10 炸过的"本地 Web Audio 转 <audio>"(a544051)不是一回事。
          audio 不带 controls 不占版面,不用 hidden。 -->
     <audio id="omniRemoteAudio" autoplay playsinline></audio>
-    <footer id="callFoot">
-      <button id="stopBtn" hidden><span class="btnicon" id="stopIcon"></span>停</button>
-      <!-- 半双工兜底:只有免提初始化失败/浏览器不支持时才出现,见 initUiMode() -->
-      <button id="talkBtn" hidden>按住说话</button>
-      <!-- 免提是唯一路径:进入通话视图就自动开始,不需要再点一次按钮——
-           声纹球常驻可见,状态文字紧贴在球下面,静音/挂断这两个小图标按钮同一行。 -->
-      <div id="handsFreeUi">
-        <div id="orbWrap" class="idle" title="点一下可以打断 AI 说话">
-          <canvas id="orbCanvas" width="640" height="200"></canvas>
-        </div>
-        <div id="statusLine"><span id="connDot" class="conn-disconnected"></span><div id="status">连接中…</div></div>
-        <div id="callActions">
-          <button id="muteToggleBtn" title="静音麦克风" aria-label="静音麦克风"></button>
-          <div id="voicePickBtn" title="切换音色">
-            <span id="voiceIcon"></span>
-            <select id="voiceSelect" aria-label="切换音色"></select>
-          </div>
-          <button id="endHandsFreeBtn" title="结束通话" aria-label="结束通话"></button>
-        </div>
+    <div id="callDock">
+      <div id="callModeTabs" role="tablist" aria-label="输入模式">
+        <button id="voiceModeTab" type="button" role="tab" aria-selected="true">语音</button>
+        <button id="textModeTab" type="button" role="tab" aria-selected="false">文本</button>
       </div>
-      <!-- 启动按钮模式:进入通话视图不自动开始录音,用户点这个按钮才启动。
-           一轮交互结束后回到此按钮待机状态,再点再开始。 -->
-      <button id="startCallBtn" hidden title="开始录音" aria-label="开始录音"></button>
-    </footer>
+      <div id="callVoicePanel">
+        <footer id="callFoot">
+          <button id="stopBtn" hidden><span class="btnicon" id="stopIcon"></span>停</button>
+          <!-- 半双工兜底:只有免提初始化失败/浏览器不支持时才出现,见 initUiMode() -->
+          <button id="talkBtn" hidden>按住说话</button>
+          <!-- 免提是唯一路径:进入通话视图就自动开始,不需要再点一次按钮——
+               声纹球常驻可见,状态文字紧贴在球下面,静音/挂断这两个小图标按钮同一行。 -->
+          <div id="handsFreeUi">
+            <div id="orbWrap" class="idle" title="点一下可以打断 AI 说话">
+              <canvas id="orbCanvas" width="640" height="200"></canvas>
+            </div>
+            <div id="statusLine"><span id="connDot" class="conn-disconnected"></span><div id="status">连接中…</div></div>
+            <div id="callActions">
+              <button id="muteToggleBtn" title="静音麦克风" aria-label="静音麦克风"></button>
+              <div id="voicePickBtn" title="切换音色">
+                <span id="voiceIcon"></span>
+                <select id="voiceSelect" aria-label="切换音色"></select>
+              </div>
+              <button id="endHandsFreeBtn" title="结束通话" aria-label="结束通话"></button>
+            </div>
+          </div>
+          <!-- 启动按钮模式:进入通话视图不自动开始录音,用户点这个按钮才启动。
+               一轮交互结束后回到此按钮待机状态,再点再开始。 -->
+          <button id="startCallBtn" hidden title="开始录音" aria-label="开始录音"></button>
+        </footer>
+      </div>
+      <div id="callTextPanel" hidden></div>
+    </div>
     <div id="tasksDrawer">
       <div id="tasksSheet">
         <h3>后台任务</h3>
@@ -3465,15 +3474,27 @@ void main(){
   // 加载天然只跑一次;现在同一个 DOM 可以反复进出通话视图,得自己拿个标记位挡住
   // 重复跑。
   let initialized = false;
+  let callInputMode = "voice";
   const sharedComposer = $("#composer");
+  function setCallInputMode(mode){
+    callInputMode = mode === "text" ? "text" : "voice";
+    const isText = callInputMode === "text";
+    $("#voiceModeTab").setAttribute("aria-selected", String(!isText));
+    $("#textModeTab").setAttribute("aria-selected", String(isText));
+    $("#callVoicePanel").hidden = isText;
+    $("#callTextPanel").hidden = !isText;
+    if(isText) $("#ta").focus();
+    renderTaskBar();
+  }
+  $("#voiceModeTab").onclick = ()=>setCallInputMode("voice");
+  $("#textModeTab").onclick = ()=>setCallInputMode("text");
+
   function mountSharedComposer(inCall){
     if(inCall){
-      if(sharedComposer.parentElement !== $("#callView")) $("#callView").appendChild(sharedComposer);
-      $("#callView").classList.add("with-composer");
+      if(sharedComposer.parentElement !== $("#callTextPanel")) $("#callTextPanel").appendChild(sharedComposer);
       return;
     }
     if(sharedComposer.parentElement !== $("#chatMain")) $("#chatMain").appendChild(sharedComposer);
-    $("#callView").classList.remove("with-composer");
   }
 
   async function sendCallText(text){
@@ -3544,6 +3565,7 @@ void main(){
     closeSidebar();
     S.conv = "voice-chat:main";
     mountSharedComposer(true);
+    setCallInputMode("voice");
     $("#chatMain").hidden = true;
     $("#callView").hidden = false;
     acquireWakeLock();
