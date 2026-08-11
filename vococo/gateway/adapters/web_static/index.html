@@ -783,6 +783,9 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     const tracks = stream.getAudioTracks();
     if(!tracks.length) return false;
     if(!tracks.some(t => t.readyState === "live")) return false;
+    // 2026-08-11:首回复静音期间轨道 enabled=false,analyser 电平恒静音是预期,
+    // 不是僵尸流——跳过电平判定,否则静音 ≥15s 会被判 mic.zombie 强制换流重连。
+    if(omniMicMuted || micMuted) return true;
     // 音频活动检测:analyser 就绪时读取电平,排除 readyState=live 但不出声的僵尸流
     if(analyser && audioCtx && audioCtx.state === "running"){
       const buf = new Uint8Array(analyser.frequencyBinCount);
@@ -828,6 +831,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   // 麦克风流音频活动检测:读取 analyser 电平,在 watchdog 中周期性调用。
   // diff<2 说明接近纯静音——可能不是用户没说话,而是流已僵尸(iOS 中断后)。
   function checkMicAudioActivity(){
+    if(omniMicMuted || micMuted) return;  // 主动静音时电平恒静,跳过僵尸判定(2026-08-11)
     if(!analyser || !audioCtx) return;
     if(audioCtx.state !== "running") return;  // 被挂起时 analyser 不产生数据
     const buf = new Uint8Array(analyser.frequencyBinCount);
@@ -871,7 +875,14 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
       try{ t.onended = null; }catch(e){}
       try{ t.onmute = null; }catch(e){}
       t.onended = () => suspectMicProblem("ended");
-      t.onmute = () => suspectMicProblem("muted");
+      t.onmute = () => {
+        // 2026-08-11:首回复静音(omniMicMuted)/手动静音(micMuted)是主动行为——
+        // 轨道 enabled=false 时 iOS WebKit 会派发 mute 事件,不是故障。跳过嫌疑
+        // 计数,否则 3.5s 窗口 ≥2 次就触发强制重连、通话被拆(真机日志 12:05:27
+        // 静音 → 12:05:38/39 mic.suspect×2 → reconnect.scheduled,每通只剩第一轮)。
+        if(omniMicMuted || micMuted) return;
+        suspectMicProblem("muted");
+      };
     });
   }
 
@@ -2655,9 +2666,11 @@ void main(){
           // 朗读还在进行(长回复 > 15 秒)时不开麦——等 maybeOmniIdle
           // 按播放尾巴估算完再静音恢复(2026-07-14 修复)。
           if(omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0) return;
-          // 尾音排空监听还在进行也不开麦:response.done 后音频可能没播完,
-          // armOmniReadTailWatch 在 150ms 轮询周期内,开麦就会漏回声。
-          if(omniReadTailTimer) return;
+          // 2026-08-11 加固:cap 到点说明朗读已结束(上面朗读中已 return),但尾音
+          // 排空监听(150ms 轮询)可能因 analyser tap 失败一直挂着——原逻辑直接
+          // return 会让恢复开麦永久落空(真机 10:51 那通朗读完 17s 无 mic.unmute)。
+          // cap 是 15s 硬上限,回声窗口早已过去,直接接管开麦。
+          if(omniReadTailTimer){ clearTimeout(omniReadTailTimer); omniReadTailTimer = null; }
           setOmniMicMuted(false, "first-reply-cap");
         }, 15000);
       }
