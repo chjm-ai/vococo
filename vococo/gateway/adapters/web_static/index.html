@@ -2616,6 +2616,21 @@ void main(){
     if(omniAutoFuseTimer){ clearTimeout(omniAutoFuseTimer); omniAutoFuseTimer = null; }
   }
 
+  // 朗读全部结束 → 恢复开麦(2026-08-11 根因修复):首回复静音(mic.mute
+  // first-reply)的恢复原本只挂在 maybeOmniIdle,而它第一道闸要求 omniTurnDone
+  // ——那要等 sendOmniTurn 的 SSE 流走完才置位。流慢/挂起(iOS Safari fetch
+  // streaming 实测会挂)或 gen 被打断时 omniTurnDone 永远 false,麦克风跟着
+  // 永久静音,下一轮说话全废(真机 11:06 轮:朗读 11:06:35 念完,流没走完,
+  // 无恢复,用户挂断重开)。这里独立于 omniTurnDone:只要朗读队列清空且没有
+  // 进行中的朗读/自动回复,立即恢复开麦,不等流。
+  function maybeRestoreMic(){
+    if(omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0) return;
+    if(omniAutoActive && Date.now() - omniAutoSince < OMNI_AUTO_FUSE_MS) return;  // 自动回复在途,再等等
+    if(!omniMicMuted) return;
+    if(omniMicMuteTimer){ clearTimeout(omniMicMuteTimer); omniMicMuteTimer = null; }
+    setOmniMicMuted(false, "read-finished");
+  }
+
   function pumpOmniRead(){
     if(!omniDc || omniDc.readyState !== "open") return;
     // 保险丝(被动兜底):自动回复的 response.done 万一丢了(cancel 撞 done 的
@@ -2628,7 +2643,7 @@ void main(){
       vdbg("auto-active.timeout-cleared");
     }
     if(omniReadActive || omniAutoActive || omniReadPending > 0) return;
-    if(omniReadQueue.length === 0){ maybeOmniIdle(); return; }
+    if(omniReadQueue.length === 0){ maybeOmniIdle(); maybeRestoreMic(); return; }
     const text = omniReadQueue.shift();
     try{
       omniDc.send(JSON.stringify({
@@ -2663,13 +2678,11 @@ void main(){
         omniMicMuteTimer = setTimeout(() => {
           omniMicMuteTimer = null;
           if(micEpoch !== omniMicEpoch) return;  // 现场已换新,别把新状态覆写回去
-          // 朗读还在进行(长回复 > 15 秒)时不开麦——等 maybeOmniIdle
-          // 按播放尾巴估算完再静音恢复(2026-07-14 修复)。
-          if(omniReadActive || omniReadPending > 0 || omniReadQueue.length > 0) return;
-          // 2026-08-11 加固:cap 到点说明朗读已结束(上面朗读中已 return),但尾音
-          // 排空监听(150ms 轮询)可能因 analyser tap 失败一直挂着——原逻辑直接
-          // return 会让恢复开麦永久落空(真机 10:51 那通朗读完 17s 无 mic.unmute)。
-          // cap 是 15s 硬上限,回声窗口早已过去,直接接管开麦。
+          // 15s 硬上限【无条件开麦】(2026-08-11 恢复 07-12 原意):07-14 加的
+          // "朗读还在进行就不开麦,等 maybeOmniIdle"依赖 omniTurnDone,而它可能
+          // 因 SSE 流不结束永远 false——硬上限就失效,第一答太长时用户永远失去
+          // 打断能力(真机 11:06 轮朗读 30s,cap 到点时朗读中,恢复落空,下一轮
+          // 收音全废)。开麦后剩余回声交文字层兜底,这正是原设计的取舍。
           if(omniReadTailTimer){ clearTimeout(omniReadTailTimer); omniReadTailTimer = null; }
           setOmniMicMuted(false, "first-reply-cap");
         }, 15000);
