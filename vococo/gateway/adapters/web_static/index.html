@@ -7112,10 +7112,12 @@ async function send(text, display, opts){
   const files=S.files.map(x=>x.filename);
   // display:点按钮时传选项文字,气泡显示友好文字而非原始命令(如 /clarify id 0)
   const shown=(display!=null)?display:text;
+  // 有文字时也要列出附件；否则用户只能看到自己的文字，误以为文件没有随消息发送。
+  const fileLabel=files.length ? `\n\n📎 附件：${files.join("、")}` : "";
   // opts.reuseBubble:语音已先冒了占位气泡并回填文字,这里不再重复冒泡
   if(!opts.reuseBubble && (shown || imgs.length || auds.length || files.length)){
-    const fallback=auds.length ? "(语音/音频)" : files.length ? `(附件：${files.join("、")})` : "(图片)";
-    const b=addBubble("me", shown||fallback, imgs, auds);
+    const fallback=auds.length ? "(语音/音频)" : files.length ? "(文件附件)" : "(图片)";
+    const b=addBubble("me", (shown||fallback)+fileLabel, imgs, auds);
     // 有音频还没转写:气泡上加转圈 loading(转写在发送后由服务端做,短音频 1~2s,
     // 会议录音几分钟),收到回复流 start 事件(开始回答)才停转
     if(auds.some(a=>!a.text)){
