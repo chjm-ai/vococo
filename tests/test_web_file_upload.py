@@ -1,6 +1,8 @@
 """Web 通用文件附件：类型不设白名单，由模型/API 决定是否可读取。"""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
@@ -94,12 +96,36 @@ async def test_upload_file_over_size_limit_rejected(file_app, adapter, monkeypat
     assert not adapter._pending_files
 
 
+def test_sent_bubble_lists_file_even_when_message_has_text():
+    html = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'const fileLabel=files.length ? `\\n\\n📎 附件：${files.join("、")}` : "";' in html
+    assert 'addBubble("me", (shown||fallback)+fileLabel, imgs, auds)' in html
+
+
 @pytest.mark.anyio
-async def test_file_attachment_becomes_document_content_block():
-    """文件原样编码为 document block，不按类型提前转换或拒绝。"""
+async def test_utf8_html_attachment_becomes_text_content_block():
+    """HTML 正文必须作为文本送入模型，不能依赖 document block 的供应商兼容性。"""
     prompt = agent._build_prompt(
         [], "读取这个文件", [],
-        [FileAttachment(b"hello", "application/x-nd", "sample.nd")],
+        [FileAttachment(b"<h1>Hello</h1>", "text/html", "sample.html")],
+    )
+    message = await anext(prompt)
+
+    assert message["message"]["content"][1] == {
+        "type": "text",
+        "text": "[文件附件: sample.html]\n<h1>Hello</h1>",
+    }
+
+
+@pytest.mark.anyio
+async def test_binary_file_attachment_becomes_document_content_block():
+    """二进制文件维持 document block，交由上游判断是否支持。"""
+    prompt = agent._build_prompt(
+        [], "读取这个文件", [],
+        [FileAttachment(b"\0\xff", "application/x-nd", "sample.nd")],
     )
     message = await anext(prompt)
     document = message["message"]["content"][1]
@@ -109,5 +135,5 @@ async def test_file_attachment_becomes_document_content_block():
     assert document["source"] == {
         "type": "base64",
         "media_type": "application/x-nd",
-        "data": "aGVsbG8=",
+        "data": "AP8=",
     }

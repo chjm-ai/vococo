@@ -134,6 +134,20 @@ class FileAttachment:
     filename: str
 
 
+def _file_text(file: FileAttachment) -> str | None:
+    """能无损按 UTF-8 解码的附件直接作为文本送入模型。
+
+    HTML、Markdown、代码等文本文件若伪装成 document block，第三方 Anthropic 兼容端点
+    常会静默忽略或不解析；改成 text block 才能确保正文实际到达模型。二进制文件仍保留
+    document block，交由上游判断是否支持。
+    """
+    try:
+        text = file.data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return None if "\0" in text else text
+
+
 @dataclass
 class AudioAttachment:
     """一段用户上传的音频。
@@ -471,6 +485,13 @@ def _build_prompt(
             }
         )
     for file in files:
+        file_text = _file_text(file)
+        if file_text is not None:
+            content.append({
+                "type": "text",
+                "text": f"[文件附件: {file.filename}]\n{file_text}",
+            })
+            continue
         content.append(
             {
                 "type": "document",
