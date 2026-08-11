@@ -324,7 +324,7 @@ try{
           </div>
         </div>
       </div>
-      <input type="file" id="file" accept="image/*,audio/*" multiple hidden>
+      <input type="file" id="file" multiple hidden>
     </form>
   </main>
   <!-- 通话视图:语音通话(原独立 /voice 页,2026-07-09 并入主 SPA,见 00-overview.md
@@ -419,6 +419,7 @@ const S = {
   browseDir: "",        // 目录浏览器当前所在目录
   images: [],           // {data,media_type,url}
   audios: [],           // {id,filename,text,mediaType,url,status}:status = uploading|done|error
+  files: [],            // {id,filename,mediaType,status}:通用文件，类型不设前端白名单
   stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
   localSent: false,     // 本客户端刚发了消息,收到 "user" 事件时跳过(避免重复气泡)
   es: null,
@@ -7055,40 +7056,40 @@ async function send(text, display, opts){
   opts=opts||{};
   closeCmdMenu();
   if(!$("#callView").hidden && !opts.forceMain) return window.sendCallText(text);
-  text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length) return;
-  // 先等所有音频上传完成(文件到服务器才发;上传秒回,最多等 90s 超时)——
-  // 否则上传中的音频 id 还是 null,发出去后端会静默跳过,音频白发还顶掉后续消息。
-  // 等待期间发送按钮转 loading,别让用户觉得"点了没反应"(慢网下上传可能要好几十秒)。
-  if(S.audios.some(a=>!a.id)){
+  text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length && !S.files.length) return;
+  // 音频和通用文件都先上传，拿到临时 id 后再发送，避免服务端静默跳过。
+  const uploads=[...S.audios,...S.files];
+  if(uploads.some(item=>!item.id)){
     const wbtn=$("#sendBtn");
     if(wbtn){ wbtn.disabled=true; wbtn.textContent="⋯"; wbtn.classList.add("uploading"); }
-    try{ await Promise.all(S.audios.map(a=>a.done||Promise.resolve())); }
+    try{ await Promise.all(uploads.map(item=>item.done||Promise.resolve())); }
     finally{ if(wbtn){ wbtn.disabled=false; wbtn.classList.remove("uploading"); updateSendBtn(); } }
   }
-  // 上传失败的音频:文件根本没到服务器,发了也白发。给"忽略并发送"降级选项,
-  // 不让一条音频把文字消息卡死(点按钮=丢掉失败音频、只发文字)。
-  if(S.audios.some(a=>a.status==="error")){
-    const fail = S.audios.find(a=>a.status==="error");
-    const b=addBubble("ai","⚠️ 音频「"+(fail?.filename||"")+"」上传失败"+(fail?.error?("："+fail.error):"")+"，可移除后重试；或忽略音频直接发送文字。");
+  // 上传失败的附件还没到服务器，保留「忽略并发送」以免卡住文字消息。
+  if(uploads.some(item=>item.status==="error")){
+    const fail=uploads.find(item=>item.status==="error");
+    const b=addBubble("ai","⚠️ 附件「"+(fail?.filename||"")+"」上传失败"+(fail?.error?("："+fail.error):"")+"，可移除后重试；或忽略附件直接发送文字。");
     const skip=el("button","bact skip"); skip.textContent="忽略并发送";
-    skip.onclick=()=>{ S.audios=S.audios.filter(a=>a.status!=="error"); b.remove(); send(text, display, opts); };
+    skip.onclick=()=>{ S.audios=S.audios.filter(item=>item.status!=="error"); S.files=S.files.filter(item=>item.status!=="error"); b.remove(); send(text, display, opts); };
     b.append(skip);
     return;
   }
   // 上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发(审批/语音走 forceSend 立即发)
   if(S.stream && !opts.forceSend){
-    if(queuePending(text, S.images.slice(), S.audios.slice())){
-      S.images=[]; S.audios=[]; renderThumbs(); $("#ta").value=""; autoGrow(); clearDraft();
+    if(queuePending(text, S.images.slice(), S.audios.slice(), S.files.slice())){
+      S.images=[]; S.audios=[]; S.files=[]; renderThumbs(); $("#ta").value=""; autoGrow(); clearDraft();
     }
     return;
   }
   const imgs=S.images.map(x=>x.url);
   const auds=S.audios.map(x=>({url:x.url, filename:x.filename, text:x.text}));
+  const files=S.files.map(x=>x.filename);
   // display:点按钮时传选项文字,气泡显示友好文字而非原始命令(如 /clarify id 0)
   const shown=(display!=null)?display:text;
   // opts.reuseBubble:语音已先冒了占位气泡并回填文字,这里不再重复冒泡
-  if(!opts.reuseBubble && (shown || imgs.length || auds.length)){
-    const b=addBubble("me", shown||(auds.length?"(语音/音频)":"(图片)"), imgs, auds);
+  if(!opts.reuseBubble && (shown || imgs.length || auds.length || files.length)){
+    const fallback=auds.length ? "(语音/音频)" : files.length ? `(附件：${files.join("、")})` : "(图片)";
+    const b=addBubble("me", shown||fallback, imgs, auds);
     // 有音频还没转写:气泡上加转圈 loading(转写在发送后由服务端做,短音频 1~2s,
     // 会议录音几分钟),收到回复流 start 事件(开始回答)才停转
     if(auds.some(a=>!a.text)){
@@ -7109,12 +7110,13 @@ async function send(text, display, opts){
     conv:S.conv, text,
     images:S.images.map(x=>({data:x.data,media_type:x.media_type})),
     audios:S.audios.map(x=>({id:x.id})),
+    files:S.files.map(x=>({id:x.id})),
   };
   // 新会话:发出第一条后,把本地临时会话转正
   const wasLocal=String(S.conv).startsWith("local-");
   clearDraft();   // 发送即清草稿:必须在转正前调用,否则 S.conv 已换成真实 id,local- 旧 key 清不掉
   if(wasLocal){ S.conv=S.conv.replace("local-",""); payload.conv=S.conv; renderProjSelChip(); }
-  S.images=[]; S.audios=[]; renderThumbs(); $("#ta").value=""; autoGrow();
+  S.images=[]; S.audios=[]; S.files=[]; renderThumbs(); $("#ta").value=""; autoGrow();
   try{
     await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(wasLocal) setTimeout(loadConvs, 400);
@@ -7192,11 +7194,11 @@ function restoreTaskStopped(conv, prev){
   renderTaskBar();
 }
 // ── 待发送队列 ────────────────────────────────────────────────────────────
-function queuePending(text, images, audios){
-  if(!text && !(images||[]).length && !(audios||[]).length) return;
+function queuePending(text, images, audios, files){
+  if(!text && !(images||[]).length && !(audios||[]).length && !(files||[]).length) return;
   const q = S.pending[S.conv] || (S.pending[S.conv]=[]);
   if(q.length>=3){ pendFull(); return false; }  // 满 3 条不再排队,抖一下提示
-  q.push({id:++S.pendId, text, images:images||[], audios:audios||[]});
+  q.push({id:++S.pendId, text, images:images||[], audios:audios||[], files:files||[]});
   drawPending();
   return true;
 }
@@ -7211,7 +7213,8 @@ function drawPending(){
   for(const it of (S.pending[S.conv]||[])){
     const row=el("div","pi");
     const clk=el("span","clock"); clk.textContent="⏳";
-    const tx=el("span","ptext"); tx.textContent=it.text||((it.audios||[]).length?"(语音/音频)":"(图片)");
+    const tx=el("span","ptext");
+    tx.textContent=it.text||((it.audios||[]).length ? "(语音/音频)" : (it.files||[]).length ? "(附件)" : "(图片)");
     const del=el("button","pdel"); del.type="button"; del.title="删除"; del.textContent="×";
     del.onclick=()=>removePending(it.id);
     row.append(clk,tx,del); box.append(row);
@@ -7228,7 +7231,8 @@ function flushPending(conv){
   const item=q.shift(); if(!q.length) delete S.pending[conv];
   if(conv===S.conv){
     drawPending();
-    S.images=(item.images||[]).slice(); S.audios=(item.audios||[]).slice(); renderThumbs();
+    S.images=(item.images||[]).slice(); S.audios=(item.audios||[]).slice();
+    S.files=(item.files||[]).slice(); renderThumbs();
     send(item.text, null, {forceSend:true});
     return;
   }
@@ -7237,6 +7241,7 @@ function flushPending(conv){
     conv, text:item.text,
     images:(item.images||[]).map(x=>({data:x.data,media_type:x.media_type})),
     audios:(item.audios||[]).map(x=>({id:x.id})),
+    files:(item.files||[]).map(x=>({id:x.id})),
   };
   api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(loadConvs).catch(()=>{});
 }
@@ -7317,7 +7322,9 @@ function loadImgEl(src){ return new Promise((res,rej)=>{ const im=new Image(); i
 $("#imgBtn").onclick = ()=>$("#file").click();
 $("#file").onchange = e=>{
   for(const f of e.target.files){
-    if((f.type||"").startsWith("audio/")) addAudioFile(f); else addImageFile(f);
+    if((f.type||"").startsWith("image/")) addImageFile(f);
+    else if((f.type||"").startsWith("audio/")) addAudioFile(f);
+    else addFile(f);  // 不按格式拦截，交给所选模型/API 判断是否支持
   }
   e.target.value="";
 };
@@ -7342,6 +7349,17 @@ function renderThumbs(){
     if(au.status==="error" && au.error) label.title=au.error;
     const x=el("button","x"); x.textContent="×";
     x.onclick=()=>{ S.audios.splice(idx,1); renderThumbs(); };
+    w.append(label,x); box.append(w);
+  });
+  S.files.forEach((file,idx)=>{
+    const w=el("div","t filechip "+(file.status||"done"));
+    const label=el("span","flabel");
+    label.textContent = file.status==="uploading" ? `📎 ${file.filename} · 上传中…`
+      : file.status==="error" ? `📎 ${file.filename} · 上传失败`
+      : `📎 ${file.filename}`;
+    if(file.status==="error" && file.error) label.title=file.error;
+    const x=el("button","x"); x.textContent="×";
+    x.onclick=()=>{ S.files.splice(idx,1); renderThumbs(); };
     w.append(label,x); box.append(w);
   });
 }
@@ -7374,6 +7392,33 @@ function uploadAudio(f, item){
       item.id=d.id; item.text=d.text; item.status="done";
     }catch(e){
       item.status="error"; item.error = e.name==="AbortError" ? "上传超时,请重试" : e.message;
+    }
+    renderThumbs();
+  })();
+}
+
+// ── 通用文件 ──────────────────────────────────────────────────────────────
+const FILE_MAX_BYTES = 32*1024*1024;
+function addFile(f){
+  if(!f) return;
+  if(f.size > FILE_MAX_BYTES){ addBubble("ai", `⚠️ 文件"${f.name}"超过 32MB 上限，没有上传。`); return; }
+  const item={id:null,filename:f.name||"附件",mediaType:f.type||"application/octet-stream",status:"uploading"};
+  S.files.push(item); renderThumbs();
+  uploadFile(f,item);
+}
+function uploadFile(f,item){
+  item.done=(async()=>{
+    try{
+      const form=new FormData(); form.append("file",f,item.filename);
+      const ac=new AbortController();
+      const timer=setTimeout(()=>ac.abort(),90000);
+      const r=await api("/upload_file",{method:"POST",body:form,signal:ac.signal});
+      clearTimeout(timer);
+      const d=await r.json();
+      if(!r.ok || d.error) throw new Error(d.error || ("HTTP "+r.status));
+      item.id=d.id; item.status="done";
+    }catch(e){
+      item.status="error"; item.error=e.name==="AbortError" ? "上传超时，请重试" : e.message;
     }
     renderThumbs();
   })();

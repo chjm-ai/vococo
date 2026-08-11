@@ -9,6 +9,7 @@ run_turn() 是其上的便捷封装(累积成最终回复),给纯文本 chat 用
 from __future__ import annotations
 
 import asyncio
+import base64
 import functools
 import json
 import re
@@ -118,6 +119,19 @@ class ImageAttachment:
 
     data: str  # base64
     media_type: str  # 如 image/jpeg
+
+
+@dataclass
+class FileAttachment:
+    """一个原样转交模型的通用文件附件。
+
+    Web 端不按扩展名或 MIME 类型拦截。模型/API 不支持的文件类型由上游返回明确错误，
+    避免浏览器擅自拒绝用户要发送的文件。
+    """
+
+    data: bytes
+    media_type: str
+    filename: str
 
 
 @dataclass
@@ -424,10 +438,10 @@ def _detail(content, n: int = 4000) -> str:
     return s[:n] + ("\n…(已截断)" if len(s) > n else "")
 
 
-async def _image_prompt_stream(
+async def _attachment_prompt_stream(
     content: list[dict[str, Any]],
 ) -> AsyncIterator[dict[str, Any]]:
-    """把带图片的一轮包成 SDK 要的流式输入(单条 user 消息)。"""
+    """把带附件的一轮包成 SDK 要的流式输入(单条 user 消息)。"""
     yield {
         "type": "user",
         "message": {"role": "user", "content": content},
@@ -436,10 +450,13 @@ async def _image_prompt_stream(
 
 
 def _build_prompt(
-    history: list[Turn], user_text: str, images: list[ImageAttachment]
+    history: list[Turn],
+    user_text: str,
+    images: list[ImageAttachment],
+    files: list[FileAttachment],
 ) -> str | AsyncIterator[dict[str, Any]]:
     text = _compose_prompt(history, user_text)
-    if not images:
+    if not images and not files:
         return text
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
     for img in images:
@@ -453,7 +470,19 @@ def _build_prompt(
                 },
             }
         )
-    return _image_prompt_stream(content)
+    for file in files:
+        content.append(
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": file.media_type,
+                    "data": base64.b64encode(file.data).decode("ascii"),
+                },
+                "title": file.filename,
+            }
+        )
+    return _attachment_prompt_stream(content)
 
 
 def _compat_base_key(
@@ -587,6 +616,7 @@ async def stream_turn(
     user_text: str,
     model: str | None = None,
     images: list[ImageAttachment] | None = None,
+    files: list[FileAttachment] | None = None,
     cwd: str | None = None,
     resume: str | None = None,
     session_key: str | None = None,
@@ -760,7 +790,9 @@ async def stream_turn(
                     # 保温命中时压在活 client 上,下一轮正常对话自然落在压缩后。
                     await client.query("/compact")
                 else:
-                    await client.query(_build_prompt(prompt_history, user_text, images or []))
+                    await client.query(
+                        _build_prompt(prompt_history, user_text, images or [], files or [])
+                    )
                 pending_subagents: set[str] = set()  # Agent/Task 调用 id,未拿到结果 = 子代理还在跑
                 active_tasks: set[str] = set()  # 后台任务 task_id,未见终态 = 还在跑
                 result_seen = False
