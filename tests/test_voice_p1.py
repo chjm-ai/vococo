@@ -519,6 +519,8 @@ async def test_append_on_queued_task_merges_prompt(voice_db):
 
 @pytest.mark.anyio
 async def test_dispatch_queues_beyond_concurrency_limit(voice_db, monkeypatch):
+    # 该用例只测排队状态,不需要在当前巨大仓库的真实 worktree 列表里建目录。
+    monkeypatch.setattr(executor.worktree, "ensure_worktree_for_task", _noop_coro)
     monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 1)
     gate = asyncio.Event()
 
@@ -537,9 +539,11 @@ async def test_dispatch_queues_beyond_concurrency_limit(voice_db, monkeypatch):
     handle_a = executor._running[a["id"]]
     gate.set()
     await handle_a
-    # gate 已经 set,A 跑完后 _maybe_start_next() 拉起的 B 在同一拍事件循环里就跟着
-    # 跑完了(mock 的 gate.wait() 不会真正挂起),所以这里直接断言终态即可,不必
-    # 再抓一次 _running 里的 handle。
+    # A 收尾时会拉起 B,但 create_task 的调度可能落在下一拍;拿到句柄后等它
+    # 真正收尾,避免把调度时序误判成任务状态错误。
+    handle_b = executor._running.get(b["id"])
+    if handle_b is not None:
+        await handle_b
     assert tasks.get(a["id"])["status"] == "done"
     assert tasks.get(b["id"])["status"] == "done"
 
@@ -689,6 +693,20 @@ async def test_dispatch_tool_defaults_cwd_to_project_root(voice_db, monkeypatch)
         {"title": "修登录bug", "prompt": "内容", "cwd": "/tmp/other-proj"}
     )
     assert tasks.get_latest()["cwd"] == "/tmp/other-proj"
+
+
+def test_dispatch_uses_context_project_when_cwd_missing(voice_db, monkeypatch, tmp_path):
+    project = tmp_path / "matched-project"
+    project.mkdir()
+    h = session_store.upsert_project(str(project))["hash"]
+    monkeypatch.setattr(executor, "_maybe_start_next", lambda: None)
+
+    task = executor.dispatch(
+        "上下文项目", "prompt", context_session_key=f"web:p{h}:conv1", origin="chat"
+    )
+
+    assert task["cwd"] == str(project.resolve())
+    assert tasks.get(task["id"])["cwd"] == str(project.resolve())
 
 
 @pytest.mark.anyio

@@ -942,6 +942,7 @@ class WebAdapter:
                 prompt=j.get("prompt"),
                 schedule=j.get("schedule"),
                 target=j.get("target"),
+                cwd=j.get("cwd"),
             )
             rows.append(row)
         return web.json_response({"jobs": rows})
@@ -967,8 +968,9 @@ class WebAdapter:
         target = body.get("target") or None
         if target is not None and not (target.get("platform") and target.get("chat_id") is not None):
             target = None
+        cwd = (body.get("cwd") or "").strip() or None
         job = scheduler.create_job(
-            name=name, prompt=prompt, schedule=schedule, target=target
+            name=name, prompt=prompt, schedule=schedule, target=target, cwd=cwd
         )
         return web.json_response({"job": job})
 
@@ -993,8 +995,9 @@ class WebAdapter:
         target = body.get("target") or None
         if target is not None and not (target.get("platform") and target.get("chat_id") is not None):
             target = None
+        cwd = (body.get("cwd") or "").strip() or None
         job = scheduler.update_job(
-            job_id, name=name, prompt=prompt, schedule=schedule, target=target
+            job_id, name=name, prompt=prompt, schedule=schedule, target=target, cwd=cwd
         )
         if job is None:
             return web.json_response({"error": "任务不存在"}, status=404)

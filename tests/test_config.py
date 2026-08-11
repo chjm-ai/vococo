@@ -68,6 +68,23 @@ def test_resolve_session_key_passes_through_voice_prefixes():
     assert config.resolve_session_key("web", "p1234:5") == "web:p1234:5"
 
 
+def test_execution_project_root_falls_back_to_default(isolated, monkeypatch, tmp_path):
+    from vococo import config
+    from vococo.memory import session_store
+
+    default = tmp_path / "default"
+    monkeypatch.setattr(config, "ROOT_DIR", default)
+    project = tmp_path / "project"
+    project.mkdir()
+    h = session_store.upsert_project(str(project))["hash"]
+
+    assert config.execution_project_root_for(f"web:p{h}:c1") == str(project.resolve())
+    assert config.execution_project_root_for("web:unmatched") == str(default)
+    assert config.execution_project_root_for() == str(default)
+    assert config.resolve_execution_root(session_key=f"web:p{h}:c1") == str(project.resolve())
+    assert config.resolve_execution_root(cwd="/tmp/explicit") == "/tmp/explicit"
+
+
 def test_project_cwd_for(isolated, tmp_path):
     from vococo import config
     from vococo.memory import session_store

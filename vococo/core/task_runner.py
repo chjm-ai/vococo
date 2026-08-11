@@ -330,6 +330,7 @@ def dispatch(
     model: str | None = None,
     origin: str = "voice",
     task_id: str | None = None,
+    context_session_key: str | None = None,
 ) -> dict:
     """落库 + 尝试立即起跑(并发满则排队)。立即返回任务行,不等待执行。
 
@@ -339,7 +340,10 @@ def dispatch(
     必须在 _maybe_start_next() 真正起跑前写进 session_meta.chosen_model,
     _run()/_drive() 才能读到(见 _drive 里的 get_chosen_model)。
     origin/task_id 透传给 tasks.create()(见其文档:cron 复用 job_id 当 task_id)。
+    context_session_key:当前对话 key;cwd 未指定时按该会话匹配具体项目,匹配不到回落
+    默认项目。最终落库的是项目根,执行时再由 _run() 创建任务专属 worktree。
     """
+    cwd = config.resolve_execution_root(session_key=context_session_key, cwd=cwd)
     task = tasks.create(title=title, prompt=prompt, cwd=cwd,
                         dispatch_platform=dispatch_platform,
                         dispatch_chat_id=dispatch_chat_id,

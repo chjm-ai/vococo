@@ -64,6 +64,31 @@ async def test_ensure_worktree_for_task_creates_isolated_branch(isolated, monkey
 
 
 @pytest.mark.anyio
+async def test_ensure_worktree_for_default_session_uses_default_project(
+    isolated, monkeypatch, tmp_path
+):
+    from vococo import config
+    from vococo.core import worktree
+    from vococo.memory import session_store
+
+    monkeypatch.setattr(config, "ROOT_DIR", tmp_path / "default-project")
+    monkeypatch.setattr(worktree, "_wt_base", lambda root: tmp_path / "wt-base")
+    repo = tmp_path / "default-project"
+    _init_repo(repo)
+
+    wt_dir = await worktree.ensure_worktree("main")
+
+    assert wt_dir is not None
+    assert Path(wt_dir).is_dir()
+    assert session_store.get_worktree("main") == wt_dir
+    branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=wt_dir, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert branch == "vococo/main"
+
+
+@pytest.mark.anyio
 async def test_ensure_worktree_for_task_none_for_non_git_dir(isolated, monkeypatch, tmp_path):
     from vococo.core import worktree
 
