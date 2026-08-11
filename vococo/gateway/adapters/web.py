@@ -31,7 +31,7 @@ from aiohttp import web
 
 from ... import config, providers
 from ...core import title
-from ...core.agent import AgentReply, get_rate_limits
+from ...core.agent import AgentReply, FileAttachment, get_rate_limits
 from ...memory import session_store
 from .. import git_status, settings_store
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
@@ -332,6 +332,9 @@ class WebAdapter:
         # id -> (bytes, filename, media_type, transcript, 存入时刻);
         # 每次新增顺手清一遍超过 1 小时没被 /send 消费掉的(用户选了没发/半路放弃)。
         self._pending_audio: dict[str, tuple[bytes, str, str, str, float]] = {}
+        # 通用文件附件同样只在「选择 → 发送」之间短暂保留；类型不做白名单。
+        # id -> (bytes, filename, media_type, 存入时刻)
+        self._pending_files: dict[str, tuple[bytes, str, str, float]] = {}
         self._runner: web.AppRunner | None = None
         self._cancel_callback: Callable[[str], bool] | None = None
         self._model_switch_callback: Callable[[str, str], None] | None = None
@@ -699,11 +702,23 @@ class WebAdapter:
             audios.append(AudioAttachment(
                 data=data, media_type=media_type, filename=filename, transcript=transcript,
             ))
-        if not text and not images and not audios:
+        files: list[FileAttachment] = []
+        for item in body.get("files") or []:
+            pending = self._pending_files.pop(item.get("id") or "", None)
+            if pending is None:
+                continue  # id 不存在/已消费/已过期:跟音频保持一致，静默跳过
+            data, filename, media_type, _ts = pending
+            files.append(FileAttachment(data=data, filename=filename, media_type=media_type))
+        if not text and not images and not audios and not files:
             return web.json_response({"error": "empty"}, status=400)
         if not text:
-            text = "(语音/音频,无文字说明,请解读转写内容)" if audios else "(图片,无文字说明,看看图里是什么)"
-        await self._ingest(conv, text, images=images, audios=audios)
+            if audios:
+                text = "(语音/音频,无文字说明,请解读转写内容)"
+            elif files:
+                text = "(文件附件,无文字说明,请读取附件内容)"
+            else:
+                text = "(图片,无文字说明,看看图里是什么)"
+        await self._ingest(conv, text, images=images, audios=audios, files=files)
         return web.json_response({"ok": True})
 
     async def _ingest(
@@ -712,12 +727,14 @@ class WebAdapter:
         text: str,
         images: list[ImageAttachment] | None = None,
         audios: list[AudioAttachment] | None = None,
+        files: list[FileAttachment] | None = None,
     ) -> None:
         """把一条消息塞进指定会话的处理流水线——浏览器发送(_handle_send)和外部注入
         (语音跨端续聊,见 inject()/gateway/web_bridge.py)共用同一份逻辑,保证标题
         占位/项目 touch/用户气泡广播/入队 dispatch 完全一致的行为,不会两边走岔。"""
         images = images or []
         audios = audios or []
+        files = files or []
         # 首条消息自动给会话起个名(命令 / 主会话除外):先落一个截断兜底标题,
         # 同时立刻异步起模型总结(不等 AI 首轮回复——那可能跑很久,侧边栏不能干等)
         if not text.startswith("/") and conv != "main":
@@ -733,7 +750,9 @@ class WebAdapter:
         # 广播用户消息让其他客户端(如桌面端)能实时渲染用户气泡
         if not text.startswith("/"):
             self._emit({"conv": conv, "type": "user", "text": text})
-        self._inbox.put_nowait(Incoming(self.platform, conv, text, images=images, audios=audios))
+        self._inbox.put_nowait(
+            Incoming(self.platform, conv, text, images=images, audios=audios, files=files)
+        )
 
     async def inject(self, conv: str, text: str) -> None:
         """语音跨端续聊的公开入口:把一句话当成这个网页会话的下一轮发送——
@@ -1402,6 +1421,38 @@ class WebAdapter:
         # text 留空:真正的转写在 /send 消费时做,上传这里只保证文件已到
         self._pending_audio[aid] = (audio, filename, media_type, "", time.monotonic())
         return web.json_response({"id": aid, "filename": filename, "text": ""})
+
+    def _prune_pending_files(self) -> None:
+        """清掉超过 1 小时没被 /send 消费的通用附件。"""
+        cutoff = time.monotonic() - 3600
+        stale = [k for k, v in self._pending_files.items() if v[3] < cutoff]
+        for k in stale:
+            self._pending_files.pop(k, None)
+
+    async def _handle_upload_file(self, request: web.Request) -> web.Response:
+        """接收任意类型文件并临时保存，实际兼容性留给模型/API 判断。"""
+        if (g := self._guard(request)) is not None:
+            return g
+        reader = await request.multipart()
+        part = await reader.next()
+        while part is not None and part.name != "file":
+            part = await reader.next()
+        if part is None or not part.filename:
+            return web.json_response({"error": "没收到文件"}, status=400)
+        data = await part.read(decode=False)
+        if not data:
+            return web.json_response({"error": "文件为空"}, status=400)
+        if len(data) > config.FILE_MAX_BYTES:
+            return web.json_response(
+                {"error": f"文件超过 {config.FILE_MAX_BYTES // 1024 // 1024}MB 上限"}, status=400
+            )
+        filename = part.filename
+        media_type = (part.headers.get("Content-Type", "").split(";", 1)[0].strip()
+                      or "application/octet-stream")
+        self._prune_pending_files()
+        file_id = uuid.uuid4().hex
+        self._pending_files[file_id] = (data, filename, media_type, time.monotonic())
+        return web.json_response({"id": file_id, "filename": filename})
 
     async def _handle_audio(self, request: web.Request) -> web.StreamResponse:
         """回显某轮用户发的音频(落盘在 config.AUDIO_DIR);name 经白名单校验挡路径穿越。"""
@@ -2276,6 +2327,7 @@ class WebAdapter:
                 web.get("/audio", self._handle_audio),
                 web.post("/transcribe", self._handle_transcribe),
                 web.post("/upload_audio", self._handle_upload_audio),
+                web.post("/upload_file", self._handle_upload_file),
                 web.post("/conv/rename", self._handle_rename),
                 web.post("/conv/duplicate", self._handle_conv_duplicate),
                 web.post("/conv/delete", self._handle_delete),

@@ -17,6 +17,7 @@ from ..core.agent import (
     AudioAttachment,
     Compacted,
     Done,
+    FileAttachment,
     ImageAttachment,
     TextDelta,
     ThinkingDelta,
@@ -189,6 +190,7 @@ async def converse(
     sink: Sink,
     images: list[ImageAttachment] | None = None,
     audios: list[AudioAttachment] | None = None,
+    files: list[FileAttachment] | None = None,
     store_user: str | None = None,
     cwd_override: str | None = None,
     compact: bool = False,
@@ -274,7 +276,7 @@ async def converse(
     _err_msg = ""           # 流式期间抛出的异常消息
     try:
         async for ev in stream_turn(
-            history, user_text, model=model, images=images, cwd=cwd, resume=resume_sid,
+            history, user_text, model=model, images=images, files=files, cwd=cwd, resume=resume_sid,
             session_key=session_key,  # 传给保温池:同会话下一轮复用活 client,零冷启动
             compact_only=compact,
         ):
