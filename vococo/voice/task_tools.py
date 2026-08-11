@@ -96,10 +96,9 @@ def _find_web_session(session_id: str) -> dict | None:
     "——是延续就改调 voice_continue_session,确实跟它没有承接关系、是全新主题时再重调"
     "本工具派发;你应该同时口头告诉用户「好,我去办,好了叫你」"
     "这类话。title:6 字以内短名(会出现在播报/任务卡片里);prompt:完整任务描述(后台会话"
-    "看不到当前对话上下文,必须把要做的事说完整);cwd:任务要在哪个项目目录下干活——"
-    "涉及改代码/改仓库文件/查项目代码的任务【必须】传该项目根目录的绝对路径,"
-    "是 git 仓库会自动开独立 worktree+分支,绝不会动主目录;不传则默认落到"
-    "vococo 自己的仓库(同样走 worktree 隔离)。model:用户明确指定要用哪个"
+    "看不到当前对话上下文,必须把要做的事说完整);cwd:任务要在哪个项目目录下干活,可传"
+    "项目根目录的绝对路径;不传时系统会按当前对话匹配项目,匹配不到再落到 vococo 默认"
+    "仓库。只要是 git 仓库就自动开独立 worktree+分支,绝不会动主目录。model:用户明确指定要用哪个"
     f"模型跑这个任务时才传(如「用 opus 跑」),可选值:{_MODEL_EXAMPLES};"
     "没听到用户点名要哪个模型就不要传——任务【不会】继承当前对话的模型,"
     "而是自动兜底到已配置的第三方供应商(优先 DeepSeek,"
@@ -118,10 +117,9 @@ def _find_web_session(session_id: str) -> dict | None:
 async def voice_dispatch_task(args: dict) -> dict:
     title = (args.get("title") or "").strip()
     prompt = (args.get("prompt") or "").strip()
-    # 不传 cwd 就默认本项目根:2026-07-12 事故里模型从没传过 cwd,worktree 隔离
-    # 形同虚设,子代理直接在 serve 的主检出目录上改代码拉分支——代码层兜底,
-    # 让"忘了传"也走 worktree,而不是落到主目录。
-    cwd = (args.get("cwd") or "").strip() or str(config.ROOT_DIR)
+    # cwd 显式传入时优先;否则由统一后台任务入口按当前会话匹配项目,
+    # 匹配不到再回落默认项目。执行时会在项目根下创建任务专属 worktree。
+    cwd = (args.get("cwd") or "").strip() or None
     model = (args.get("model") or "").strip()
     if not (title and prompt):
         return _ok("voice_dispatch_task 需要 title 和 prompt 都非空。")
@@ -146,7 +144,7 @@ async def voice_dispatch_task(args: dict) -> dict:
     task = task_runner.dispatch(
         title=title, prompt=prompt, cwd=cwd, model=model or None,
         dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
-        origin="voice",
+        origin="voice", context_session_key=ctx.session_key if ctx else None,
     )
     model_note = f",模型:{model}" if model else ""
     return _ok(f"已派发,session_id={task['id']},标题「{title}」{model_note},状态:{status_word(task['status'])}。")

@@ -214,13 +214,21 @@ async def converse(
     from ..core import worktree  # 懒加载
 
     history = session_store.load_recent(session_key)
-    root = config.project_root_for(session_key)  # 主仓库路径,供审批闸认项目文件为"内部"
+    # 具体项目优先,未匹配到时落默认项目;后台任务续聊再以任务落库的原始 cwd 为准。
+    root = config.execution_project_root_for(session_key)
+    if session_key.startswith("task:"):
+        from ..core import tasks as bg_tasks
+
+        task = bg_tasks.get(session_key[len("task:"):])
+        if task and task.get("cwd"):
+            root = task["cwd"]
     if cwd_override is not None:
         cwd = cwd_override
     else:
-        # 项目会话首次干活时懒创建独立 worktree(每会话一分支,物理隔离);非项目会话直接跳过
+        # 所有会话(含默认项目)首次干活时都懒创建独立 worktree,让 Agent 子任务继承
+        # 到的 cwd 不会直接落在主仓库;非 git 目录仍回退项目根。
         await worktree.ensure_worktree(session_key)
-        cwd = config.project_cwd_for(session_key)  # 有 worktree→用它;否则项目根;再否则 None(进程默认)
+        cwd = config.project_cwd_for(session_key) or session_store.get_worktree(session_key) or root
     cwd_token = danger.set_cwd(cwd, project_root=root)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
     stored_user = store_user if store_user is not None else user_text
     turn_id = session_store.start_turn(session_key, stored_user)
@@ -535,7 +543,13 @@ def _handle_suggest(arg: str, session_key: str) -> CommandOutcome:
     action, ref = action.strip().lower(), ref.strip()
 
     if action in ("accept", "接受") and ref:
-        job = suggestions.accept_suggestion(ref, origin=_origin_from_session_key(session_key))
+        from .. import config
+
+        job = suggestions.accept_suggestion(
+            ref,
+            origin=_origin_from_session_key(session_key),
+            cwd=config.resolve_execution_root(session_key=session_key),
+        )
         if job is None:
             return CommandOutcome(reply="没找到这条待定建议(可能已处理)。/suggest 看列表。")
         return CommandOutcome(reply=f"✅ 已接受,建好定时任务「{job.get('name')}」。")

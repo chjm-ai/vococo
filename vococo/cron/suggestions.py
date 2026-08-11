@@ -152,11 +152,13 @@ def dismiss_suggestion(ref: str) -> bool:
     return bool(s) and _set_status(s["id"], _DISMISSED)
 
 
-def accept_suggestion(ref: str, *, origin: Optional[dict] = None) -> Optional[dict]:
+def accept_suggestion(
+    ref: str, *, origin: Optional[dict] = None, cwd: Optional[str] = None
+) -> Optional[dict]:
     """接受建议:用其 job_spec 建真正的 cron 任务。返回该任务,或 None。
 
     origin({"platform","chat_id"})并入 job 的 target,让任务结果推回用户
-    接受时所在的聊天。
+    接受时所在的聊天。cwd 只在建议没有显式目录时补入,用于保留项目上下文。
     """
     s = get_suggestion(ref)
     if not s or s.get("status") != _PENDING:
@@ -167,6 +169,8 @@ def accept_suggestion(ref: str, *, origin: Optional[dict] = None) -> Optional[di
     spec: dict[str, Any] = dict(s.get("job_spec") or {})
     if origin is not None and not spec.get("target"):
         spec["target"] = origin
+    if cwd and not spec.get("cwd"):
+        spec["cwd"] = cwd
     job = create_job(**spec)
     _set_status(s["id"], _ACCEPTED)
     return job

@@ -105,7 +105,7 @@ AI_BRAIN_DIR: Path = Path(
     os.path.expanduser(os.environ.get("AI_BRAIN_DIR", "~/AI_BRAIN"))
 )
 
-# 本项目(vococo)仓库根目录——语音派后台任务时的默认 cwd(见 voice/task_tools.py):
+# 本项目(vococo)仓库根目录——所有后台任务未匹配到项目时的默认 cwd:
 # 没显式指定项目就落到这里,由 worktree 机制隔离,绝不在主检出目录上直接干活
 ROOT_DIR: Path = _ROOT
 # 运行时数据目录(prompt_toolkit 历史等)
@@ -356,6 +356,25 @@ def project_root_for(session_key: str) -> str | None:
     from .memory import session_store
 
     return session_store.path_for_hash(h)
+
+
+def execution_project_root_for(session_key: str | None = None) -> str:
+    """返回一次执行应该使用的项目根目录。
+
+    找得到会话绑定的具体项目就用该项目;普通会话、草稿未匹配到项目或没有会话
+    上下文时统一回落默认项目。这个函数只返回仓库根目录,不返回 worktree;
+    worktree 由调用方按本次会话/任务创建并绑定。
+    """
+    root = project_root_for(session_key) if session_key else None
+    return root or str(ROOT_DIR)
+
+
+def resolve_execution_root(
+    *, session_key: str | None = None, cwd: str | None = None
+) -> str:
+    """解析子任务/后台任务的工作根目录:显式 cwd 优先,其次当前项目,最后默认项目。"""
+    explicit = (cwd or "").strip()
+    return explicit or execution_project_root_for(session_key)
 
 
 def project_cwd_for(session_key: str) -> str | None:

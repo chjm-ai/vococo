@@ -77,6 +77,19 @@ def test_accept_creates_job(sugg_env):
     assert suggestions.list_pending() == []
 
 
+def test_accept_suggestion_preserves_project_cwd(sugg_env):
+    from vococo.cron import suggestions
+
+    suggestions.add_suggestion(
+        title="项目任务", description="", source="catalog",
+        job_spec=_spec(), dedup_key="project-cwd",
+    )
+    sid = suggestions.list_pending()[0]["id"]
+    job = suggestions.accept_suggestion(sid, cwd="/tmp/project")
+    assert job is not None
+    assert job["cwd"] == "/tmp/project"
+
+
 def test_accept_nonpending_returns_none(sugg_env):
     from vococo.cron import suggestions
 
@@ -234,6 +247,7 @@ def test_cron_admin_not_found(sugg_env):
 
 def test_add_cron_job_needs_approval(sugg_env):
     """add_cron_job:无交互通道→fail-closed 拒绝、不落盘;有通道+批准→真正创建。"""
+    from vococo import config
     from vococo.cron import scheduler
     from vococo.tools import builtin
 
@@ -251,6 +265,7 @@ def test_add_cron_job_needs_approval(sugg_env):
     assert len(jobs) == 1
     assert jobs[0]["name"] == "一次性任务"
     assert jobs[0]["schedule"]["kind"] == "once"
+    assert jobs[0]["cwd"] == str(config.ROOT_DIR)
     assert jobs[0]["enabled"] is True
 
 

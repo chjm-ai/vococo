@@ -173,6 +173,8 @@ def _append_index(topic: str, summary: str, category: str) -> None:
     },
 )
 async def suggest_automation(args: dict) -> dict:
+    from ..gateway import clarify
+
     title = (args.get("title") or "").strip()
     description = (args.get("description") or "").strip()
     cron = (args.get("cron") or "").strip()
@@ -186,15 +188,19 @@ async def suggest_automation(args: dict) -> dict:
         croniter(cron)
     except Exception:
         return _ok(f"cron 表达式「{cron}」不合法(要 5 段,如 '0 8 * * *')。")
+    ctx = clarify.current()
+    job_spec = {
+        "name": title,
+        "prompt": prompt,
+        "schedule": {"kind": "cron", "expr": cron},
+    }
+    if ctx:
+        job_spec["cwd"] = config.resolve_execution_root(session_key=ctx.session_key)
     rec = suggestions.add_suggestion(
         title=title,
         description=description,
         source="usage",
-        job_spec={
-            "name": title,
-            "prompt": prompt,
-            "schedule": {"kind": "cron", "expr": cron},
-        },
+        job_spec=job_spec,
         dedup_key=dedup_key,
     )
     if rec is None:
@@ -250,6 +256,7 @@ async def add_cron_job(args: dict) -> dict:
     import time as _time
 
     from ..cron import scheduler
+    from ..gateway import clarify
     from . import danger
 
     name = (args.get("name") or "").strip()
@@ -284,7 +291,13 @@ async def add_cron_job(args: dict) -> dict:
     if not await danger.require_approval("创建定时任务", detail):
         return _ok(f"🛑 未批准创建任务「{name}」,已跳过。")
 
-    job = scheduler.create_job(name=name, prompt=prompt, schedule=schedule, model=model)
+    ctx = clarify.current()
+    cwd = config.resolve_execution_root(
+        session_key=ctx.session_key if ctx else None,
+    )
+    job = scheduler.create_job(
+        name=name, prompt=prompt, schedule=schedule, model=model, cwd=cwd,
+    )
     return _ok(f"✅ 已创建任务「{name}」({_sched_desc(job['schedule'])}),id={job['id']}。")
 
 
@@ -594,19 +607,15 @@ async def dispatch_session(args: dict) -> dict:
     if not (title and prompt):
         return _ok("dispatch_session 需要 title 和 prompt 都非空。")
     ctx = clarify.current()
-    # 不传 cwd 默认跟随当前会话绑定的项目(没绑定项目就落 vococo 自己的仓库,
-    # 同样走 worktree 隔离)——跟 voice_dispatch_task"忘了传就兜底到项目根"是同一个
-    # 理由(2026-07-12 事故:cwd 兜底缺失会导致隔离形同虚设)。
-    cwd = (args.get("cwd") or "").strip()
-    if not cwd:
-        root = config.project_root_for(ctx.session_key) if ctx else None
-        cwd = root or str(config.ROOT_DIR)
+    # cwd 显式传入时优先;否则由统一后台任务入口按当前会话匹配项目,
+    # 匹配不到再落默认项目。任务执行时还会在该根目录下创建独立 worktree。
+    cwd = (args.get("cwd") or "").strip() or None
     dispatch_platform = ctx.adapter.platform if (ctx and ctx.adapter) else None
     dispatch_chat_id = str(ctx.chat_id) if (ctx and ctx.chat_id is not None) else None
     task = task_runner.dispatch(
         title=title, prompt=prompt, cwd=cwd,
         dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
-        origin="chat",
+        origin="chat", context_session_key=ctx.session_key if ctx else None,
     )
     return _ok(
         f"已派发一条独立新会话,session_id={task['id']},标题「{title}」,"

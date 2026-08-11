@@ -142,18 +142,17 @@ async def _prune_dangling_branches(root: str) -> int:
 
 
 async def ensure_worktree(session_key: str) -> str | None:
-    """确保项目会话有独立 worktree;返回其路径,否则 None(回退项目根)。
+    """确保一次会话有独立 worktree;返回其路径,否则 None(回退项目根)。
 
-    幂等:已绑定且目录仍在 → 直接返回。非项目会话 / 非 git 仓库 / 建失败 → None,
-    不阻塞对话(这一轮就回落项目根,下一轮再试)。
+    能匹配到具体项目就使用具体项目;普通会话、草稿未匹配到项目时使用默认项目。
+    这样 Agent 子任务继承当前 SDK 的 cwd 时,默认项目也不会直接落在主检出目录。
+    幂等:已绑定且目录仍在 → 直接返回。非 git 仓库 / 建失败 → None,不阻塞对话。
     """
-    root = config.project_root_for(session_key)
-    if not root:  # 非项目会话(CLI/TG/main),秒退,零 DB 开销
+    root = config.execution_project_root_for(session_key)
+    if not root:
         return None
-    # 项目哈希从 key 统一解析(兼容 p<hash> 与草稿 local-p<hash> 两种形态)
-    phash = config.project_hash_from_key(session_key)
-    if not phash:
-        return None
+    # 项目哈希按真实根目录计算:默认项目没有 web:p<hash> 会话 key。
+    phash = session_store.project_hash(root)
     slug = _slug(session_key.split(":")[-1])
     return await _ensure_worktree_impl(session_key, root, phash, slug)
 
@@ -225,7 +224,7 @@ async def recycle_empty_worktree(session_key: str) -> bool:
     path = session_store.get_worktree(session_key)
     if not path or not os.path.isdir(path):
         return False
-    root = config.project_root_for(session_key)
+    root = config.execution_project_root_for(session_key)
     if not (root and os.path.isdir(root)):
         return False
     branch = await _branch_of_worktree(root, path)
@@ -257,7 +256,7 @@ async def worktree_dirty_summary(session_key: str) -> dict | None:
     path = session_store.get_worktree(session_key)
     if not path or not os.path.isdir(path):
         return None
-    root = config.project_root_for(session_key)
+    root = config.execution_project_root_for(session_key)
     if not (root and os.path.isdir(root)):
         return None
     _, st, _ = await _git(path, "status", "--porcelain")
@@ -284,7 +283,7 @@ async def remove_worktree(session_key: str) -> None:
     path = session_store.get_worktree(session_key)
     if not path:
         return
-    root = config.project_root_for(session_key)
+    root = config.execution_project_root_for(session_key)
     session_store.clear_worktree(session_key)
     if not (root and os.path.isdir(root)):
         return
@@ -309,11 +308,17 @@ async def prune_orphans() -> int:
     """
     bound = {os.path.realpath(p) for p in session_store.all_worktree_paths()}
     cleaned = 0
-    for proj in session_store.list_projects():
-        root = proj["path"]
+    roots: dict[str, str] = {
+        os.path.realpath(proj["path"]): proj["path"]
+        for proj in session_store.list_projects()
+    }
+    # 默认项目不在 projects 表里,但它的会话同样会创建 worktree,需要纳入启动清理。
+    default_root = str(config.ROOT_DIR)
+    roots.setdefault(os.path.realpath(default_root), default_root)
+    for root in roots.values():
         if not os.path.isdir(root) or not await _is_git_repo(root):
             continue
-        base = _wt_base(root) / proj["hash"]
+        base = _wt_base(root) / session_store.project_hash(root)
         if not base.exists():
             continue
         for wt in base.iterdir():
