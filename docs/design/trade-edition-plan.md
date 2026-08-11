@@ -4,7 +4,7 @@
 > 配套存档:server-edition.md / server-edition-tech-plan.md(**已废弃**,同代码双模式路线,仅作参考;P0 代码存档锚点 `git tag server-edition-p0`)。
 
 ## 1. 背景与路线转变
-- 现状:vococo 个人版快速迭代;服务器版曾走「同一套代码 + VOCOCO_MODE=server」路线,P0 已上线 Lobster(ai.chjm.cc)。
+- 现状:vococo 个人版快速迭代;服务器版曾走「同一套代码 + VOCOCO_MODE=server」路线，P0 曾部署于 Lobster；该部署已清空，Lobster 与 ai.chjm.cc 现归 VocoTrade。
 - 问题:P0 仍是 Coder 逻辑——客户拿到的是「翻版 Wazir」(单一人格、开发者形态 UI、通用聊天框),不是数字员工产品。产品形态差异不是开关能表达的,双模式越往后每加一个功能都要写两套分支。
 - 新路线:**两套代码**。vococo 个人版继续;VocoTrade 独立仓库,产品逻辑彻底重构。个人版新能力通过「同步区」机制单向搬运,避免双份维护。
 
