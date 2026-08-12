@@ -2127,6 +2127,7 @@ void main(){
     await omniPc.setRemoteDescription({type: "answer", sdp: answerSdp});
 
     handsFreeActive = true;
+    startKeepAliveAudio();  // 通话保活音轨:锁屏防挂起(见函数注释)
     orbConnecting = false;
     setOmniConnStatus("connected");
     orbWrap.className = "idle";
@@ -3370,6 +3371,7 @@ void main(){
     omniSpeechActive = false; omniInflightSegs = 0; omniSpeechStoppedTs = 0;
     omniUserBubble = null; omniUserBubbleText = ""; omniUserSentTs = 0;
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
+    stopKeepAliveAudio();  // 通话已收线,保活音轨一并停掉(锁屏防挂起)
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
     setOmniAudioMuted(true, "hangup");  // 挂断收口:输出通道回默认静音态
   }
@@ -3527,6 +3529,37 @@ void main(){
     // 回到前台立刻补播,别等下次交互才想起来。
     flushAnnouncements();
   });
+
+  // ── 通话保活音轨(iOS 锁屏防挂起,2026-08-12 降级方案落地)───────────────
+  // wakeLock 在 iOS「加到主屏幕」的 PWA 上有 WebKit bug(254545,iOS 18.4 才修):
+  // request 成功 resolve 但屏幕照样熄,且 JS 侧无法检测"拿了锁却没生效"——
+  // 所以 wakeLock 只是尽力而为,真机熄屏时通话照样断,本音轨就是兜底。
+  // 原理:iOS 对"正在播放音频"的页面按后台音频 App 对待,锁屏后【不冻结】
+  // 页面——定时器、SSE fetch 流、WebRTC 全链路继续跑。因此通话期间循环播放
+  // 一条【内容本身静音】的 0.25s WAV(不是 muted 属性,音量属性正常,只有 PCM
+  // 数据全零),听感为零、不占带宽(内联 data URI),换来锁屏后通话不断。
+  // 与 wakeLock 双保险:锁生效时屏幕不锁,这条音轨无感;锁失效(iOS PWA bug)
+  // 时它兜住。挂断即停,重连时随 stop/startOmniHandsFree 自然重启。
+  // 副作用:锁屏界面可能出现"网页音频"播放条——那是保活还在的标志,不是 bug。
+  const KEEP_ALIVE_WAV = "data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YdAHAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
+  let keepAliveEl = null;
+  function startKeepAliveAudio(){
+    if(keepAliveEl){ try{ keepAliveEl.play().catch(()=>{}); }catch(e){} return; }
+    const el = document.createElement("audio");
+    el.loop = true; el.preload = "auto"; el.setAttribute("playsinline", "");
+    el.src = KEEP_ALIVE_WAV;
+    el.addEventListener("error", ()=>{ vdbg("keepalive.err"); keepAliveEl = null; });
+    keepAliveEl = el;
+    const p = el.play();
+    if(p && p.catch) p.catch(err => { vdbg("keepalive.playfail", String(err)); keepAliveEl = null; });
+    vdbg("keepalive.on");
+  }
+  function stopKeepAliveAudio(){
+    if(!keepAliveEl) return;
+    try{ keepAliveEl.pause(); }catch(e){}
+    try{ keepAliveEl.src = ""; }catch(e){}
+    keepAliveEl = null;
+  }
 
   // ── 视图切换入口(统一对话视图复用主会话 composer)────────────────────────
   // initOnce:原页面这些初始化(常驻任务播报订阅/拉历史/挑一次交互模式)靠整页
