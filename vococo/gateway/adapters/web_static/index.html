@@ -2128,6 +2128,7 @@ void main(){
 
     handsFreeActive = true;
     startKeepAliveAudio();  // 通话保活音轨:锁屏防挂起(见函数注释)
+    acquireWakeLock();      // 通话真正开始:申请屏幕常亮,防自动熄屏(见函数注释)
     orbConnecting = false;
     setOmniConnStatus("connected");
     orbWrap.className = "idle";
@@ -3372,6 +3373,7 @@ void main(){
     omniUserBubble = null; omniUserBubbleText = ""; omniUserSentTs = 0;
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     stopKeepAliveAudio();  // 通话已收线,保活音轨一并停掉(锁屏防挂起)
+    releaseWakeLock();     // 通话已结束,释放常亮锁让系统正常熄屏节能
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
     setOmniAudioMuted(true, "hangup");  // 挂断收口:输出通道回默认静音态
   }
@@ -3497,14 +3499,18 @@ void main(){
     }
   }
 
-  // ── 屏幕常亮(Screen Wake Lock):免提通话时用户不碰屏幕,iOS 自动锁屏会把
-  // PWA 冻结、麦克风和 WebRTC 一起断掉,只能手动点亮再等重连——所以进通话视图
-  // 就申请常亮锁,挂断/切走时释放。锁在页面切后台时会被系统自动收回(规范行为),
-  // 回到前台得重新申请,靠下面的 visibilitychange 补。
-  // 兼容性:iOS 16.4+ 支持该 API,但"加到主屏幕"的 PWA 里有 WebKit bug
-  // (bugs.webkit.org/254545:request 成功 resolve 但屏幕照样熄),iOS 18.4 才修好。
-  // 失败/不生效无法从 JS 侧检测,只能靠 vdbg 上报 + 真机验证;若真机仍熄屏,
-  // 下一步再上 NoSleep 式静音循环视频兜底,这里先走干净的标准路径。
+  // ── 屏幕常亮(Screen Wake Lock):通话激活期间用户不碰屏幕,iOS 自动熄屏会
+  // 把 PWA 冻结、麦克风和 WebRTC 一起断掉——所以建连成功(通话真正开始)才申请
+  // 常亮锁,挂断/空闲收线/退出视图时释放(待机界面不申请,不白耗电)。
+  // 与保活音轨分工:wakeLock 管【防自动熄屏】(屏幕不锁,页面不冻结),
+  // 保活音轨管【锁屏后的保活】(wakeLock 失效/iOS PWA bug 时锁了屏也不断),
+  // 两者并存、互不替代。
+  // 锁在页面切后台时会被系统自动收回(规范行为),回到前台得重新申请,
+  // 靠下面的 visibilitychange 补(仅通话激活期间)。
+  // 兼容性:iOS 16.4+ 支持该 API,不支持的浏览器走 wakelock.unsupported 静默
+  // 降级不报错;但"加到主屏幕"的 PWA 里有 WebKit bug(bugs.webkit.org/254545:
+  // request 成功 resolve 但屏幕照样熄),iOS 18.4 才修好——失败/不生效无法
+  // 从 JS 侧检测,只能靠 vdbg 上报 + 真机验证,所以保活音轨必须一直开着。
   let wakeLockSentinel = null;
   async function acquireWakeLock(){
     if(!("wakeLock" in navigator)){ vdbg("wakelock.unsupported"); return; }
@@ -3522,7 +3528,7 @@ void main(){
   }
   document.addEventListener("visibilitychange", ()=>{
     if(document.hidden) return;
-    if(!$("#callView").hidden) acquireWakeLock();
+    if(handsFreeActive) acquireWakeLock();  // 通话激活期间回前台:重拿常亮锁
     // 切回前台时可能刚经历过电话打断/蓝牙断开:怀疑麦克风有问题
     if(handsFreeActive) suspectMicProblem("vischange");
     // P0 修复(2026-07-27):切后台/锁屏期间 SSE 事件可能已经到了但没被处理,
@@ -3665,7 +3671,8 @@ void main(){
     setCallInputMode("text");
     $("#chatMain").hidden = true;
     $("#callView").hidden = false;
-    acquireWakeLock();
+    // 常亮锁不再在这里申请:待机(未点开始通话)不常亮省电,通话建连成功后由
+    // startOmniHandsFree 申请、挂断/收线由 stopOmniHandsFree 释放(见 wakeLock 段)。
     initOnce();
     // 按钮启动模式:不自动开始录音,显示"开始录音"按钮等待用户点击
     buttonMode = true;
