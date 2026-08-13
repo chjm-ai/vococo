@@ -18,14 +18,32 @@
 ## 运维坑(踩过的,别重犯)
 
 - **worktree 会话**:Web 端每个项目会话跑在独立 git worktree + 分支,根治互相抢分支。改动提交后合回 main 生效。
-- **合回 main 用 `zsh deploy/merge-main.sh`**(可加 `--restart` 顺带重启)。worktree 里 `git checkout main` **永远**报 "main 已经被工作区使用"(exit 128,main 被主仓库工作区占用)——已有 7 个会话踩过,别再试;脚本自带预检(未提交/主仓库脏/不在 main)和冲突自动 abort。
+- **合回 main 用 `zsh deploy/merge-main.sh`**(只合并,不重启)。worktree 里 `git checkout main` **永远**报 "main 已经被工作区使用"(exit 128,main 被主仓库工作区占用)——已有 7 个会话踩过,别再试;脚本自带预检(未提交/主仓库脏/不在 main)和冲突自动 abort。
 - **重启 serve 只有两条正路**:vococo 会话内(改自身代码)用 `restart_self` 工具;外部会话/终端跑 `zsh deploy/restart.sh`。**禁止手搓 pgrep/kill 流程**——sandbox 里 pgrep 静默为空,曾诱发模型虚构"重启成功"(2026-07-06);汇报重启结果必须引用脚本/工具输出里真实出现的 PID。
-  - `merge-main.sh --restart` 内部会自动算出当前 worktree 对应的 web 会话 key(`web:p<项目哈希>:<会话slug>`)传给 `restart.sh --self=`,自我排除后不会再把"发起重启的这个会话自己"误判成"别的会话在跑"而弹确认——只有真有**别的**会话在跑才会拦(2026-07-09 修复,此前 `merge-main.sh --restart` 在非交互环境下必然因为自身被判定为"在跑"而卡死取消)。
-  - 但如果你就是当前会话本人、只是想改完代码重启验证,**优先直接调 `restart_self` 工具**而不是 `merge-main.sh --restart`——前者有"遗书+还魂"自动续聊验证闭环,后者只是干重启,重启完不会自动带你回来对话。
+  - **合并后要重启验证,走两步法**:先 `merge-main.sh`(不带任何参数)完成合并,再调 `restart_self` 工具。后者有"遗书+还魂"自动续聊验证闭环,重启完自动回到当前会话继续验证;`restart.sh` 是硬杀重启,没有还魂,会打断正在生成的回复,**AI 会话内禁用**。
+  - `merge-main.sh --restart` **已于 2026-08 移除**(理由同上,它内部调的就是硬杀的 `restart.sh`)。现在传这个参数脚本会直接报错退出并提示两步法,见 [deploy/merge-main.sh](deploy/merge-main.sh) 开头。旧会话若照冻结的旧指引去传 `--restart`,请按报错改用两步法,**别把这个报错当 bug 去私改脚本**(2026-08-04 踩过)。
 - **别误杀原版 hermes**:本项目配置在 `~/.vococo/`,**刻意独立于**原版 Hermes 的 `~/.hermes`,两者互不干扰。重启只动 vococo 自己的进程。
 - **记忆唯一主库**:记忆实体文件只存在 AI_BRAIN 主库,`.claude` 项目侧全是软链;**禁止**在 Claude Code 项目记忆目录新建实体文件(会成孤本)。
 - **editable 安装 + worktree**:`pip install -e` 会让 worktree 里的改动被主仓库的已安装包屏蔽,调试时用 `uv run` 从当前目录跑。
 - **假死看门狗**([gateway/watchdog.py](vococo/gateway/watchdog.py)):run.sh 只兜"进程退出",兜不住"活着但事件循环卡死"(2026-07-21 假死 70 分钟,全靠系统超时运气恢复)。现在循环无响应 30s → 全线程堆栈写入 `data/logs/watchdog.log`(排查卡点看这里),180s → 自杀退出码 70 交 run.sh 拉起。阈值可用环境变量 `WATCHDOG_DUMP_SEC`/`WATCHDOG_EXIT_SEC` 调。
+
+## 省上下文:每轮固定注入的三笔开销
+
+system prompt 的 append 块 + skill 描述是每轮都进的固定成本,长会话里被 prompt cache 兜着不显眼,
+但一直占着上下文窗口。2026-08-13 清过一轮,别再把这三笔加回来:
+
+- **别重复注入 SDK 已经注了的东西**。`core/prompt.py` 现在会检测两处:①项目 `CLAUDE.md` 是
+  `AGENTS.md` 的软链(本仓即如此)→ 跳过 `<project_guide>`,SDK 读 CLAUDE.md 时已注过;
+  ② `~/.claude/projects/<slug>/memory/MEMORY.md` 软链到 AI_BRAIN 主库 → 跳过 `<memory_index>`
+  全文,只留一句指针。两处合计曾每轮白烧约 6.5k token。判定都以 `realpath` 相同为准,
+  不是同一份文件照旧注入,不会把索引弄丢。
+- **skill 白名单可以按项目收敛**:`data/web_settings.json` 的 `skills_by_project`
+  (`项目绝对路径 → skill 名列表`),按路径祖先匹配,主仓库配一条所有 worktree 自动继承;
+  没命中的会话回落全局 `skills_enabled`。每个 skill 的 name+description 都逐字进 system prompt
+  (35 个 ≈6k token/轮),vococo 自己的编码会话只挂 13 个编码相关的,省约 4k token/轮。
+  目前没有设置页 UI,直接改 JSON;改完下一轮生效(设置每轮重读)。
+- **`_INJECT_MAX_CHARS`(prompt.py)是截断保险丝,不是目标值**:MEMORY.md 长过它就静默截尾,
+  最新沉淀的记忆刚存就从索引里消失。上调前先看看是不是又有重复注入可以砍。
 
 ## 排障:查会话
 

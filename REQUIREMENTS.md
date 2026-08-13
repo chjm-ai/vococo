@@ -4,7 +4,7 @@
 > 架构参考 [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent),但**锁定 Claude、单用户、精简**——只保留个人助理真正需要的部分。
 
 - 版本:v0.1
-- 状态:M0–M3 已落地(见 [README](README.md) 里程碑表)
+- 状态:M0–M3 已落地(里程碑表见本文第 9 节)
 
 ---
 
@@ -124,12 +124,12 @@ Agent loop(core/agent.py):载入上下文 → claude-agent-sdk.query()
 | 认证 | `CLAUDE_CODE_OAUTH_TOKEN` + 删 `ANTHROPIC_API_KEY` | 订阅唯一正路 |
 | 默认模型 | `claude-sonnet-5`(可配) | 日常速度+智能平衡;Opus 5 留给重活 |
 | 会话存储 | SQLite(LIKE 子串检索) | 本地、零依赖;中文场景 LIKE 已够,不上 FTS5 |
-| 平台接入 | 自写轻量 adapter | Web 自建 UI;TG 用官方 bot API |
+| 平台接入 | 自写轻量 adapter | Web 自建 UI(SSE 流式);IM 平台适配器已移除 |
 
 ### 5.2 与原版 Hermes 的差异(砍了什么)
 
 - ❌ 多 provider 适配器 → ✅ 只留 Claude(设置页可挂第三方 Anthropic 兼容端点)
-- ❌ 29 个平台 → ✅ Web + TG + CLI 三个
+- ❌ 29 个平台 → ✅ Web + CLI/TUI(早期的 TG adapter 已移除,手机端改走 Web PWA)
 - ❌ 6 种终端后端(docker/ssh/modal…) → ✅ 本地直跑
 - ❌ 命令审批 UI 重造、RL 训练、credential pool → ✅ 不要
 - ✅ 保留:统一网关、SQLite 会话记忆、工具热注册、cron 主动投递
@@ -165,7 +165,7 @@ Agent loop(core/agent.py):载入上下文 → claude-agent-sdk.query()
 
 | 维度 | 要求 |
 |---|---|
-| 单用户 | 只服务一个人,无需鉴权/隔离(Web/TG 走口令/白名单只为防陌生人闯入) |
+| 单用户 | 只服务一个人,无需鉴权/隔离(Web 走访问口令只为防陌生人闯入) |
 | 隐私 | 会话数据全本地(SQLite),不上云;令牌只在本地 `.env` |
 | 可靠性 | 网关进程崩了能自启;会话落盘不丢 |
 | 成本 | 订阅模式无按量费;但要尊重周限额,Opus 别滥用 |
@@ -180,7 +180,7 @@ Agent loop(core/agent.py):载入上下文 → claude-agent-sdk.query()
 |---|---|---|
 | **M0 内核打样** | 订阅 agent loop + CLI 对话 | 命令行能聊,走的是订阅 |
 | **M1 记忆闭环** | 会话记忆 + 调 skill + 接 AI_BRAIN | 重启不失忆、能调 skill、能读写 AI_BRAIN |
-| **M2 多入口** | Web + TG + 跨入口连续 | 手机能找它,会话跨入口连续 |
+| **M2 多入口** | Web + CLI/TUI + 跨入口连续 | 手机能找它,会话跨入口连续 |
 | **M3 主动化** | cron + 定时投递 | 每早自动推一条简报 |
 
 后续设计与决策记录见 [docs/adr/](docs/adr/) 与 [docs/design/](docs/design/)。

@@ -155,6 +155,6 @@ vococo/voice/
 
 ## 6. 交付物
 
-代码 + 测试 + 本文档同目录追加 `01-phase0-实现记录.md`(实际接触点行数、
+代码 + 测试 + 本文档同目录追加 `archive/01-phase0-实现记录.md`(实际接触点行数、
 遇到的坑、移除清单复核)。合回 main 用 `zsh deploy/merge-main.sh`,
 重启验证用 `zsh deploy/restart.sh`(禁手搓 kill)。

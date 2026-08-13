@@ -112,7 +112,7 @@ def clients(monkeypatch):
     monkeypatch.setattr(agent.settings_store, "get_web_effort", lambda *a: "")
     monkeypatch.setattr(agent.settings_store, "vococo_enabled", lambda: False)
     monkeypatch.setattr(agent.settings_store, "effective_external_mcp", lambda: {})
-    monkeypatch.setattr(agent.settings_store, "effective_skills", lambda: None)
+    monkeypatch.setattr(agent.settings_store, "effective_skills", lambda cwd=None: None)
     monkeypatch.setattr(
         agent, "build_system_prompt", lambda cwd=None, cache_key=None: {"append": "p"}
     )

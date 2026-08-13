@@ -17,7 +17,7 @@ _Avoid_: 对话(conversation)、聊天记录
 兜底项目,收纳所有未显式归属的会话。其 cwd 即进程默认工作目录。老会话迁移到这里;新用户初始也在这里。
 _Avoid_: 未分类
 
-**说明:项目是 Web 端概念。** TG/CLI 及跨入口的 main 线不属于任何项目,永远跑在进程默认目录下,不受 Web 端项目操作影响。
+**说明:项目是 Web 端概念。** CLI 及跨入口的 main 线不属于任何项目,永远跑在进程默认目录下,不受 Web 端项目操作影响。
 
 **Risk Tier(危险分级)**:
 每次工具调用被 `classify()`(`tools/danger.py`)判成三档 —— `allow`(放行)/ `escalate`(请用户批准)/ `block`(直接拦)。灾难级(删整根、格式化磁盘、覆写裸盘、fork 炸弹)→ `block`;5 类危险操作(写**项目 cwd 外**的文件、`git push`/`git reset --hard`、`rm -rf`、包安装、`curl|sh`)→ `escalate`;其余 `allow`。`escalate`/`block` 分别受 `APPROVAL_GATE`/`DANGER_GUARD` 开关控制。
@@ -28,7 +28,7 @@ _Avoid_: 白名单/黑名单(这是三档而非二元)
 _Avoid_: 把这三项当成 Risk Tier 的第四档
 
 **Approval Gate(审批闸)**:
-对 `escalate` 的操作,在**有交互通道时**(Web/TG)弹「允许一次 / 拒绝」请用户拍板;**无通道时**(CLI/eval/cron)放行(信任该通道);超时或发送失败视为拒绝。这是「远程编码:动手前对齐」的安全阀。
+对 `escalate` 的操作,在**有交互通道时**(Web)弹「允许一次 / 拒绝」请用户拍板;**无通道时**(CLI/eval/cron)放行(信任该通道);超时或发送失败视为拒绝。这是「远程编码:动手前对齐」的安全阀。
 _Avoid_: 权限系统(它只管 escalate 这一档,不是全量权限模型)
 
 **Tool Card(工具卡片)**:
