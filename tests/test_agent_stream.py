@@ -13,6 +13,8 @@ from vococo.core.agent import (
     _compact_threshold,
     _load_system_prompt,
     _needs_trade_mcp,
+    _read_prompt_cache,
+    _write_prompt_cache,
     _cli_working_dir,
     _query_context_usage,
     _turn_env,
@@ -72,6 +74,15 @@ def test_cloud_project_uses_stable_cli_cwd():
 
     assert cli_cwd == str(config.ROOT_DIR)
     assert cloud in note
+
+
+def test_prompt_cache_is_local_and_persistent(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    prompt = {"type": "preset", "preset": "claude_code", "append": "项目规则"}
+
+    _write_prompt_cache("/iCloud/project", prompt)
+
+    assert _read_prompt_cache("/iCloud/project") == prompt
 
 
 def test_assemble_full_json():

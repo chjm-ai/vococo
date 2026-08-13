@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
+import hashlib
 import json
 import re
 import time
@@ -121,6 +122,37 @@ _rate_limits: dict[str, dict] = {}
 # AI_BRAIN 在 iCloud 上被驱逐时 read/open 会卡住。超时后设全局熔断窗口，让后续
 # 首轮直接走最小 preset；窗口过后再尝试恢复完整记忆，而不是每次都等待超时。
 _prompt_load_unavailable_until = 0.0
+_prompt_refreshing: set[str] = set()
+
+
+def _prompt_cache_key(cwd: str | None) -> str:
+    return hashlib.sha256((cwd or "<default>").encode()).hexdigest()
+
+
+def _prompt_cache_file(cwd: str | None) -> Path:
+    return config.DATA_DIR / "prompt_cache" / f"{_prompt_cache_key(cwd)}.json"
+
+
+def _read_prompt_cache(cwd: str | None) -> dict | None:
+    """只读本地 data 缓存，不访问 iCloud。"""
+    try:
+        data = json.loads(_prompt_cache_file(cwd).read_text(encoding="utf-8"))
+        prompt = data.get("prompt")
+        return prompt if isinstance(prompt, dict) and isinstance(prompt.get("append"), str) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _write_prompt_cache(cwd: str | None, prompt: dict) -> None:
+    """原子写本地快照；缓存损坏时下次自动重建。"""
+    path = _prompt_cache_file(cwd)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"prompt": prompt}, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
 
 
 def get_rate_limits() -> dict[str, dict]:
@@ -335,15 +367,11 @@ def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
     return "⚠️ 出了点问题,请重试"
 
 
-async def _load_system_prompt(cwd: str | None, resume: str | None) -> dict:
-    """限时读取本地画像/记忆；iCloud 卡住时退回最小提示词继续对话。"""
+async def _read_fresh_system_prompt(cwd: str | None, resume: str | None) -> dict | None:
+    """限时从来源文件生成提示词快照；超时返回 None。"""
     global _prompt_load_unavailable_until
-    if _is_cloud_sync_path(cwd):
-        # 项目 AGENTS.md 同在 iCloud；读它也可能卡住。该路径由调用方明确附入提示词，
-        # 模型仍可按需 Read，不能让“注入指南”本身阻断整轮。
-        return {"type": "preset", "preset": "claude_code", "append": ""}
     if time.monotonic() < _prompt_load_unavailable_until:
-        return {"type": "preset", "preset": "claude_code", "append": ""}
+        return None
     try:
         with anyio.fail_after(config.PROMPT_LOAD_TIMEOUT):
             # abandon_on_cancel 很关键：iCloud 的同步 open() 不能被 Python 中断，
@@ -358,7 +386,35 @@ async def _load_system_prompt(cwd: str | None, resume: str | None) -> dict:
             f"⚠️ 读取 AI_BRAIN 超时，{config.PROMPT_LOAD_BACKOFF:.0f}s 内跳过记忆加载",
             flush=True,
         )
-        return {"type": "preset", "preset": "claude_code", "append": ""}
+        return None
+
+
+async def _refresh_system_prompt_cache(cwd: str | None) -> None:
+    """后台刷新来源文件；本轮始终继续使用当前本地快照。"""
+    key = _prompt_cache_key(cwd)
+    try:
+        prompt = await _read_fresh_system_prompt(cwd, None)
+        if prompt is not None:
+            await anyio.to_thread.run_sync(_write_prompt_cache, cwd, prompt)
+    finally:
+        _prompt_refreshing.discard(key)
+
+
+async def _load_system_prompt(cwd: str | None, resume: str | None) -> dict:
+    """本地快照优先；来源有改动由后台刷新，避免 iCloud 阻塞首字。"""
+    cached = _read_prompt_cache(cwd)
+    key = _prompt_cache_key(cwd)
+    if cached is not None:
+        # 下一轮之前尽力刷新。即便 iCloud 卡住，也只占后台线程，不阻断本轮模型启动。
+        if key not in _prompt_refreshing and time.monotonic() >= _prompt_load_unavailable_until:
+            _prompt_refreshing.add(key)
+            asyncio.create_task(_refresh_system_prompt_cache(cwd))
+        return cached
+    prompt = await _read_fresh_system_prompt(cwd, resume)
+    if prompt is not None:
+        await anyio.to_thread.run_sync(_write_prompt_cache, cwd, prompt)
+        return prompt
+    return {"type": "preset", "preset": "claude_code", "append": ""}
 
 
 # === 流式事件类型 ===
