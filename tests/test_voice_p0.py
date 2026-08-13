@@ -475,6 +475,81 @@ async def test_voice_send_rejects_concurrent_turn(voice_db, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_voice_stop_cancels_matching_running_turn(voice_db, monkeypatch):
+    import asyncio
+
+    routes._prev_text, routes._prev_ts = "", 0.0
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        yield Done(AgentReply(text="不该到这里", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+    app = web.Application()
+    routes.register_routes(app)
+    turn_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    async with TestClient(TestServer(app)) as client:
+        task = asyncio.ensure_future(client.post(
+            "/voice/send", json={"text": "第一句"}, headers={"X-Voice-Turn-Id": turn_id}
+        ))
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        stop = await client.post("/voice/stop", json={"turn_id": turn_id})
+        assert await stop.json() == {
+            "ok": True, "turn_id": turn_id, "cancelled": True, "reason": None,
+        }
+        await asyncio.wait_for(cancelled.wait(), timeout=5)
+        assert (await task).status == 200
+
+
+@pytest.mark.anyio
+async def test_voice_stop_for_old_turn_does_not_cancel_new_turn(voice_db, monkeypatch):
+    import asyncio
+
+    routes._prev_text, routes._prev_ts = "", 0.0
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        yield Done(AgentReply(text="不该到这里", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+    app = web.Application()
+    routes.register_routes(app)
+    active_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    stale_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    async with TestClient(TestServer(app)) as client:
+        task = asyncio.ensure_future(client.post(
+            "/voice/send", json={"text": "第一句"}, headers={"X-Voice-Turn-Id": active_id}
+        ))
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        stale_stop = await client.post("/voice/stop", json={"turn_id": stale_id})
+        assert await stale_stop.json() == {
+            "ok": True, "turn_id": stale_id, "cancelled": False, "reason": "stale_or_finished",
+        }
+        await asyncio.sleep(0)
+        assert not cancelled.is_set()
+
+        await client.post("/voice/stop", json={"turn_id": active_id})
+        await asyncio.wait_for(cancelled.wait(), timeout=5)
+        assert (await task).status == 200
+
+
+@pytest.mark.anyio
 async def test_voice_send_preempts_running_http_turn(voice_db, monkeypatch):
     """新一句到达时,持锁的上一轮 HTTP turn 该被抢占取消,而不是 409 拒答
     (2026-07-10 真机:一轮长任务持锁,用户连问几句全被"上一轮还没处理完"弹回)。

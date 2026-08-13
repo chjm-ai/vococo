@@ -988,16 +988,49 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     await sendTurn(fd);
   }
 
+  function makeVoiceTurnId(){
+    if(window.crypto?.randomUUID) return window.crypto.randomUUID();
+    const hex = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx";
+    return hex.replace(/[xy]/g, char=>{
+      const value = Math.floor(Math.random() * 16);
+      return (char === "x" ? value : (value & 3) | 8).toString(16);
+    });
+  }
+
+  let activeVoiceTurn = null;
+  function isActiveVoiceTurn(turn){ return activeVoiceTurn === turn; }
+  function finishVoiceTurn(turn){ if(isActiveVoiceTurn(turn)) activeVoiceTurn = null; }
+  function cancelActiveVoiceTurn(reason){
+    const turn = activeVoiceTurn;
+    if(!turn) return;
+    activeVoiceTurn = null;
+    fetch("/voice/stop", {
+      method:"POST",
+      headers:{"Content-Type":"application/json", "X-Auth-Token":S.token},
+      body:JSON.stringify({turn_id:turn.id, reason}),
+    }).catch(()=>{});
+    turn.controller.abort();
+  }
+  function beginVoiceTurn(){
+    cancelActiveVoiceTurn("superseded");
+    const turn = {id:makeVoiceTurnId(), controller:new AbortController()};
+    activeVoiceTurn = turn;
+    return turn;
+  }
+
   async function sendTurn(body){
+    const turn = beginVoiceTurn();
     busy = true; talkBtn.disabled = true; stopBtn.hidden = false;
     ttsFailureNoticedThisTurn = false;
     setStatus("识别中…", "thinking");
-    const headers = {"X-Auth-Token": S.token};
-    const init = {method: "POST", headers};
+    const headers = {"X-Auth-Token": S.token, "X-Voice-Turn-Id": turn.id};
+    const init = {method: "POST", headers, signal:turn.controller.signal};
     if(body instanceof FormData) init.body = body;
     else { headers["Content-Type"] = "application/json"; init.body = JSON.stringify(body); }
 
     const finish = ()=>{
+      if(activeVoiceTurn && !isActiveVoiceTurn(turn)) return;
+      finishVoiceTurn(turn);
       busy = false; talkBtn.disabled = false; stopBtn.hidden = true; setStatus("空闲");
       endActivity();  // 回合结束:动作行保留在气泡流里,只断开指针,下一轮另起一条
       flushAnnouncements();
@@ -1005,7 +1038,8 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
 
     let resp;
     try{ resp = await fetch("/voice/send", init); }
-    catch(e){ addMsg("ai error", "连不上服务"); finish(); return; }
+    catch(e){ if(isActiveVoiceTurn(turn)) addMsg("ai error", "连不上服务"); finish(); return; }
+    if(!isActiveVoiceTurn(turn)) return;
     if(resp.status === 401){ authError(); finish(); return; }
     if(!resp.ok || !resp.body){
       addMsg("ai error", resp.status === 409 ? "上一轮还没说完" : "出错了");
@@ -1018,6 +1052,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     try{
       while(true){
         const {value, done} = await reader.read();
+        if(!isActiveVoiceTurn(turn)){ try{ reader.cancel(); }catch(e){} return; }
         if(done) break;
         buf += dec.decode(value, {stream:true});
         let sep;
@@ -1181,7 +1216,7 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
     playQueue = [];
     if(currentSource){ try{ currentSource.onended = null; currentSource.stop(); }catch(e){} currentSource = null; }
     playing = false;
-    fetch("/voice/stop", {method:"POST", headers:{"X-Auth-Token":S.token}}).catch(()=>{});
+    cancelActiveVoiceTurn("manual");
   });
 
   function authError(){
@@ -1913,6 +1948,7 @@ void main(){
     // Omni 出声模式:点声纹球打断=取消 Omni 正在念/排队要念的内容 + 作废在飞的 Claude 流
     if(omniDc){
       omniTurnGen++;
+      cancelActiveVoiceTurn("manual");
       cancelOmniReading("manual");
       omniTurnDone = true;
       wsState = "idle"; setStatus(STATE_WORD.idle);
@@ -3223,6 +3259,7 @@ void main(){
   // gen 机制:进来时记一个代号,期间被打断(omniTurnGen 变了)就不再把迟到的
   // 流式结果应用到界面/朗读队列上。
   async function sendOmniTurn(text){
+    const turn = beginVoiceTurn();
     const gen = ++omniTurnGen;
     omniCapturingSince = 0;  // 离开 capturing 状态,看门狗不再盯
     wsState = "thinking";
@@ -3280,19 +3317,22 @@ void main(){
     try{
       resp = await fetch("/voice/send", {
         method: "POST",
-        headers: {"Content-Type": "application/json", "X-Auth-Token": S.token},
+        headers: {"Content-Type": "application/json", "X-Auth-Token": S.token, "X-Voice-Turn-Id": turn.id},
         body: JSON.stringify({text, tts: false}),
+        signal: turn.controller.signal,
       });
     }catch(e){
-      if(gen === omniTurnGen){ addMsg("ai error", "连不上服务"); speakOmniNotice("现在连不上服务,稍等再说一次试试。"); omniTurnDone = true; toIdle(); }
+      if(gen === omniTurnGen && isActiveVoiceTurn(turn)){ addMsg("ai error", "连不上服务"); speakOmniNotice("现在连不上服务,稍等再说一次试试。"); omniTurnDone = true; toIdle(); }
+      finishVoiceTurn(turn);
       return;
     }
-    if(gen !== omniTurnGen) return;  // 已经被打断,后面的响应不用管了
+    if(gen !== omniTurnGen || !isActiveVoiceTurn(turn)) return;  // 已经被打断,后面的响应不用管了
     if(!resp.ok || !resp.body){
       addMsg("ai error", resp.status === 409 ? "上一轮还没说完" : "出错了");
       speakOmniNotice(resp.status === 409 ? "上一句还在处理,稍等一下。" : "刚才那句出错了,再说一遍试试。");
       omniTurnDone = true;
       toIdle();
+      finishVoiceTurn(turn);
       return;
     }
 
@@ -3301,14 +3341,14 @@ void main(){
     try{
       while(true){
         const {value, done} = await reader.read();
-        if(gen !== omniTurnGen){ try{ reader.cancel(); }catch(e){} return; }
+        if(gen !== omniTurnGen || !isActiveVoiceTurn(turn)){ try{ reader.cancel(); }catch(e){} return; }
         if(done) break;
         buf += dec.decode(value, {stream:true});
         let sep;
         while((sep = buf.indexOf("\n\n")) >= 0){
           const block = buf.slice(0, sep); buf = buf.slice(sep+2);
           const ev = parseSseBlock(block);
-          if(!ev || gen !== omniTurnGen) continue;
+          if(!ev || gen !== omniTurnGen || !isActiveVoiceTurn(turn)) continue;
           if(ev.event === "text"){
             stopWorkSound();  // AI 开口了,工作音效退场
             if(!currentTurnAiEl) currentTurnAiEl = addMsg("ai", "");
@@ -3337,7 +3377,7 @@ void main(){
         }
       }
     }catch(e){ /* 流中断,不额外报错 */ }
-    if(gen !== omniTurnGen) return;
+    if(gen !== omniTurnGen || !isActiveVoiceTurn(turn)) return;
     currentTurnAiEl = null; currentTurnFull = "";
     endActivity();
     omniTurnDone = true;
@@ -3345,11 +3385,13 @@ void main(){
     // 不直接回 idle:朗读队列可能还有没念完的,由 maybeOmniIdle 在念完后收尾。
     maybeOmniIdle();
     pumpOmniRead();
+    finishVoiceTurn(turn);
   }
 
   function stopOmniHandsFree(){
     stopThinkingTone();
     omniTurnGen++;  // 让还在飞的 sendOmniTurn 流式结果失效
+    cancelActiveVoiceTurn("hangup");
     // 先摘 handler 再 close:close 本身会触发 dc.onclose/pc.onconnectionstatechange,
     // 不摘的话主动关闭也会被当成"断线"排一次重连。
     if(omniDc){ try{ omniDc.onclose = null; omniDc.close(); }catch(e){} omniDc = null; }
