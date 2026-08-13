@@ -42,6 +42,18 @@ def test_call_view_uses_exclusive_voice_or_text_panels():
     assert "#callVoicePanel[hidden],#callTextPanel[hidden]" in styles
 
 
+def test_voice_turns_are_aborted_and_cancelled_when_call_ends():
+    html = STATIC_INDEX.read_text(encoding="utf-8")
+
+    assert "let activeVoiceTurn = null;" in html
+    assert "function cancelActiveVoiceTurn(reason){" in html
+    assert '"X-Voice-Turn-Id": turn.id' in html
+    assert "signal: turn.controller.signal" in html
+    assert 'cancelActiveVoiceTurn("hangup");' in html
+    assert 'cancelActiveVoiceTurn("manual");' in html
+    assert "!isActiveVoiceTurn(turn)" in html
+
+
 def test_closing_call_view_restores_previously_open_conversation():
     html = STATIC_INDEX.read_text(encoding="utf-8")
 

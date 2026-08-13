@@ -10,7 +10,9 @@ import asyncio
 import base64
 import hmac
 import json
+import re
 import time
+import uuid
 from aiohttp import web
 
 from .. import config, providers
@@ -24,14 +26,34 @@ from .adapter import VoiceAdapter
 
 _VOICE_CONFIG_FILE = config.DATA_DIR / "voice_config.json"
 
-# 同一时刻只允许一轮语音对话在跑;stop 通过它通知正在跑的那一轮别再合成音频了。
-# _turn_task:正在持锁跑的那一轮 HTTP handler task——新一句话到达时用它抢占旧轮
-# (语音同一时刻只有一个人在说,新话为准),不再一律 409 拒之门外(2026-07-10 真机:
-# 一轮长任务持锁,用户连问几句全被"上一轮还没处理完"弹回)。旧 WS 链路持锁时
-# _turn_task 为 None,维持原 409 行为。
+# 同一时刻只允许一轮语音对话在跑。每轮带独有 turn_id:挂断时只能取消自己发起的
+# 那一轮，迟到的 stop 包不能误杀下一轮。_turn_task 是持锁运行的 HTTP handler，
+# 新一句语音仍可抢占旧轮；旧 WS 链路持锁时它为 None，维持原 409 行为。
 _lock = asyncio.Lock()
 _stop_event: asyncio.Event | None = None
 _turn_task: asyncio.Task | None = None
+_turn_id: str | None = None
+_TURN_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def _request_turn_id(request: web.Request) -> str:
+    """读取前端轮次 ID；旧客户端未传时服务端补一个，保留其原有行为。"""
+    turn_id = request.headers.get("X-Voice-Turn-Id", "").strip()
+    if turn_id and _TURN_ID_RE.fullmatch(turn_id):
+        return turn_id
+    return str(uuid.uuid4())
+
+
+def _cancel_active_turn(turn_id: str | None = None) -> bool:
+    """停止当前匹配轮的生成与 TTS；无 ID 的旧 stop 请求只安全地停 TTS。"""
+    if turn_id is not None and turn_id != _turn_id:
+        return False
+    if _stop_event is not None:
+        _stop_event.set()
+    if turn_id is not None and _turn_task is not None and not _turn_task.done():
+        _turn_task.cancel()
+        return True
+    return _stop_event is not None
 
 # 文本累积器(2026-07-22):当 Omni VAD 将一段长语音腰斩成多段、前端缓冲没及时合并
 # 时,后端在抢占路径里合并相邻文本再送 Claude。_prev_text 存上一轮的请求文本,
@@ -190,9 +212,10 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     # _prev_text/_prev_ts 缺 global 声明曾是定时炸弹(2026-07-22):函数里对它们有
     # 赋值,Python 会把整个函数内的引用都当局部变量,抢占路径一读就 UnboundLocalError
     # → 新一句直接 500,旧轮也没被取消。
-    global _stop_event, _turn_task, _prev_text, _prev_ts
+    global _stop_event, _turn_task, _turn_id, _prev_text, _prev_ts
     if (g := _guard(request)) is not None:
         return g
+    turn_id = _request_turn_id(request)
     is_audio = (request.content_type or "").startswith("multipart/")
     audio = filename = actype = None
     user_text = ""
@@ -229,7 +252,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
             return web.json_response({"error": "上一轮还没说完"}, status=409)
         # 抢占:取消旧轮(它的 CancelledError 分支会把半截回复落库),等它释放锁。
         # 15 秒等不到(stream_turn 的取消收尾最多含 5 秒 CLI interrupt)才放弃。
-        t.cancel()
+        _cancel_active_turn(_turn_id)
         print("[voice/send] 新一句抢占:已取消上一轮,等待锁释放…", flush=True)
         try:
             await asyncio.wait_for(_lock.acquire(), timeout=15)
@@ -241,6 +264,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
         except asyncio.TimeoutError:  # 极小概率:两句话同时到,锁被同行请求抢先
             return web.json_response({"error": "上一轮还没说完"}, status=409)
     _turn_task = asyncio.current_task()
+    _turn_id = turn_id
 
     # 为下一轮可能的文本累积记录当前请求的文本和时间戳
     if not is_audio:
@@ -406,6 +430,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
             clarify.clear_session(session.SESSION_KEY)
         if _turn_task is asyncio.current_task():
             _turn_task = None
+            _turn_id = None
         _lock.release()
 
     # 语音版重启退出:不经过 GatewayRunner._dispatch, 直接在这里检测退出
@@ -469,9 +494,23 @@ async def _sentence_sender(resp: web.StreamResponse, queue: "asyncio.Queue", fir
 async def _handle_stop(request: web.Request) -> web.Response:
     if (g := _guard(request)) is not None:
         return g
-    if _stop_event is not None:
-        _stop_event.set()
-    return web.json_response({"ok": True})
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    turn_id = (body.get("turn_id") or "").strip()
+    if not _TURN_ID_RE.fullmatch(turn_id):
+        # 老页面无轮次 ID 时只停掉朗读，不能猜测取消哪一轮模型任务。
+        if _stop_event is not None:
+            _stop_event.set()
+        return web.json_response({"ok": True, "cancelled": False, "reason": "missing_turn_id"})
+    cancelled = _cancel_active_turn(turn_id)
+    return web.json_response({
+        "ok": True,
+        "turn_id": turn_id,
+        "cancelled": cancelled,
+        "reason": None if cancelled else "stale_or_finished",
+    })
 
 
 async def _handle_clear(request: web.Request) -> web.Response:
