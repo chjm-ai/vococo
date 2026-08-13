@@ -86,6 +86,12 @@ def mark_inactive(session_key: str) -> None:
     _dump_active_sessions()
 
 
+def clear_active_sessions_after_restart() -> None:
+    """新进程启动时清掉上个进程遗留的“运行中”标记。"""
+    _active_sessions.clear()
+    _dump_active_sessions()
+
+
 def other_active_sessions(exclude_key: str) -> list[str]:
     """除 exclude_key 外,当前仍有轮次在跑的会话 key(重启前的连坐风险提示用)。"""
     return sorted(k for k in _active_sessions if k != exclude_key)

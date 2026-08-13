@@ -17,6 +17,18 @@ def _clean_clarify():
     clarify._by_session.clear()
 
 
+def test_restart_clears_stale_active_sessions(tmp_path, monkeypatch):
+    from vococo import config
+    from vococo.gateway import clarify
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    clarify.mark_active("web:stale")
+    clarify.clear_active_sessions_after_restart()
+
+    assert clarify.other_active_sessions("") == []
+    assert (tmp_path / "active_sessions.json").read_text() == "[]"
+
+
 def _text(result: dict) -> str:
     return result["content"][0]["text"]
 
