@@ -1614,6 +1614,13 @@ class WebAdapter:
         # 里是 data/worktrees/<hash>/<slug>,basename 是会话 slug,长得跟分支名一样,
         # 标题栏就会显示成"分支名"而不是真正的项目名。
         proj_root = config.project_root_for(key) if bound else cwd
+        if proj_root is None and cwd:
+            # task: 等会话 key 无项目 hash,project_root_for 取不到;worktree 路径是
+            # <项目根>/data/worktrees/<hash>/<slug>,从路径反推项目根
+            p = Path(cwd)
+            if p.parent.parent.name == "worktrees":
+                proj_root = str(p.parent.parent.parent)
+        proj_root = proj_root or cwd
         info.update(
             is_project=True, bound_project=bound, path=cwd,
             name=os.path.basename(proj_root) or proj_root, project_path=proj_root,
