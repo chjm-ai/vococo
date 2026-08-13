@@ -143,6 +143,7 @@ async def test_warm_hit_reuses_client(clients):
     assert len(clients) == 1  # 零冷启动:没有新建 client
     assert clients[0].queries == 2
     assert not clients[0].disconnected
+    assert clients[0].options.max_buffer_size == agent._SDK_MAX_BUFFER_SIZE
     assert r2.sdk_session_id == "sid-1"
     assert "web:pool-test" in client_pool._pool  # 用完放回
 

@@ -558,6 +558,10 @@ def _compat_base_key(
 # 注:danger.py 拦 run_in_background=true 拦不住这个默认异步——CLI 默认异步时模型入参里
 # 根本没这个字段,那道 deny 只是模型显式请求后台时的双保险。
 _FORCE_FOREGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
+# SDK 默认只缓冲 1MB 的 CLI 单条 NDJSON 消息。工具读取大文件或返回长结果时会超限，
+# 消息流被 SDK 中止，Web 端收不到 done 事件而一直显示“思考中”。16MB 足够覆盖这类
+# 正常工作负载，同时避免无限制缓冲。
+_SDK_MAX_BUFFER_SIZE = 16 * 1024 * 1024
 
 
 # CLI 子进程的 stderr 噪音过滤(2026-07-10):hook 撞上已关闭的流(轮被取消/client
@@ -763,6 +767,7 @@ async def stream_turn(
             env=_turn_env(provider_env),  # 设置页供应商 base_url+key + 恒定强制前台开关(见 _turn_env)
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
             disallowed_tools=list(disallowed_tools or []),
+            max_buffer_size=_SDK_MAX_BUFFER_SIZE,
             stderr=_cli_stderr,  # 过滤 Bun 源码刷屏,见 _cli_stderr 顶部注释
         )
 

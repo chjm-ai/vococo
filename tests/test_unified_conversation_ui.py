@@ -78,6 +78,8 @@ def test_task_status_map_is_shared_with_sidebar_helpers():
     assert html.index("const barTasks = new Map();") < html.index("// ── 通话视图:")
     assert "function scheduleDoneHide(){" in html
     assert "const soonest = [...barTasks.values()]" in html
+    assert "window.refreshTaskBar = renderTaskBar;" in html
+    assert "window.refreshTaskBar?.()" in html
 
 
 def test_service_worker_cache_version_changes_with_shell_contract():

@@ -3747,6 +3747,9 @@ void main(){
   // 任务状态条:切会话时 openConv(IIFE 外)要按当前会话刷新任务,loadTasks 是
   // 本 IIFE 的局部函数(严格模式不泄漏全局),照 openCallView 模式挂 window 出口。
   window.refreshTaskStatus = loadTasks;
+  // 终态任务的隐藏定时器在 IIFE 外，不能直接引用这里的局部函数；暴露一个明确出口，
+  // 否则到期时会抛 ReferenceError，后续页面脚本也会被中断。
+  window.refreshTaskBar = renderTaskBar;
 })();
 
 // ── 主题(深/浅/跟随系统)───────────────────────────────────────────────
@@ -5166,7 +5169,7 @@ function scheduleDoneHide(){
     .filter(v=>v!==null)
     .sort((a,b)=>a-b)[0];
   if(soonest!==undefined){
-    _doneHideTimer=setTimeout(()=>{ renderTaskBar(); }, Math.max(1000, soonest*1000));
+    _doneHideTimer=setTimeout(()=>{ window.refreshTaskBar?.(); }, Math.max(1000, soonest*1000));
   }
 }
 async function loadVoiceSidebar(){
