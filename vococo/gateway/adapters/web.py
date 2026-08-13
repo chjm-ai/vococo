@@ -987,10 +987,15 @@ class WebAdapter:
         target = body.get("target") or None
         if target is not None and not (target.get("platform") and target.get("chat_id") is not None):
             target = None
-        cwd = (body.get("cwd") or "").strip() or None
-        job = scheduler.create_job(
-            name=name, prompt=prompt, schedule=schedule, target=target, cwd=cwd
-        )
+        cwd = body.get("cwd")
+        if cwd is not None and not isinstance(cwd, str):
+            return web.json_response({"error": "cwd 必须是字符串"}, status=400)
+        try:
+            job = scheduler.create_job(
+                name=name, prompt=prompt, schedule=schedule, target=target, cwd=cwd
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
         return web.json_response({"job": job})
 
     async def _handle_cron_update(self, request: web.Request) -> web.Response:
@@ -1014,10 +1019,18 @@ class WebAdapter:
         target = body.get("target") or None
         if target is not None and not (target.get("platform") and target.get("chat_id") is not None):
             target = None
-        cwd = (body.get("cwd") or "").strip() or None
-        job = scheduler.update_job(
-            job_id, name=name, prompt=prompt, schedule=schedule, target=target, cwd=cwd
-        )
+        kwargs = {}
+        if "cwd" in body:
+            cwd = body["cwd"]
+            if cwd is not None and not isinstance(cwd, str):
+                return web.json_response({"error": "cwd 必须是字符串"}, status=400)
+            kwargs["cwd"] = cwd
+        try:
+            job = scheduler.update_job(
+                job_id, name=name, prompt=prompt, schedule=schedule, target=target, **kwargs
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
         if job is None:
             return web.json_response({"error": "任务不存在"}, status=404)
         return web.json_response({"job": job})

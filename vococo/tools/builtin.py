@@ -239,7 +239,9 @@ def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:
     "name:任务名;prompt:到点后要执行的完整指令(自包含,执行时看不到当前这轮对话,"
     "背景信息要写全);cron 和 run_in_minutes 二选一——cron:5段cron表达式(周期性,"
     "如 '0 8 * * *' = 每天早8点);run_in_minutes:多少分钟后执行一次"
-    "(一次性,触发后自动停用);model:可选,指定用哪个模型跑。",
+    "(一次性,触发后自动停用);model:可选,指定用哪个模型跑;cwd:可选的任务工作目录(必须是"
+    "存在的绝对路径)。应根据任务实际要操作的项目主动指定 cwd;省略时才沿用当前会话项目目录,"
+    "没有项目目录则回退默认项目。",
     {
         "type": "object",
         "properties": {
@@ -248,6 +250,7 @@ def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:
             "cron": {"type": "string"},
             "run_in_minutes": {"type": "number"},
             "model": {"type": "string"},
+            "cwd": {"type": "string"},
         },
         "required": ["name", "prompt"],
     },
@@ -264,6 +267,9 @@ async def add_cron_job(args: dict) -> dict:
     cron_expr = (args.get("cron") or "").strip()
     run_in_minutes = args.get("run_in_minutes")
     model = (args.get("model") or "").strip() or None
+    requested_cwd = args.get("cwd")
+    if requested_cwd is not None and not isinstance(requested_cwd, str):
+        return _ok("cwd 必须是字符串。")
 
     if not name or not prompt:
         return _ok("add_cron_job 需要 name / prompt 都非空。")
@@ -285,16 +291,22 @@ async def add_cron_job(args: dict) -> dict:
     if err:
         return _ok(err)
 
+    ctx = clarify.current()
+    if requested_cwd is None or not requested_cwd.strip():
+        cwd = config.resolve_execution_root(
+            session_key=ctx.session_key if ctx else None,
+        )
+    else:
+        cwd, err = scheduler.normalize_cwd(requested_cwd)
+        if err:
+            return _ok(err)
+
     # 新建是持久化类操作(被注入后可偷偷种一个定时后门),要用户点头;
     # cron/eval 上下文(无人可问)直接拒绝——复用 set_cron_job_enabled/delete_cron_job 同一套闸门。
-    detail = f"「{name}」— {_sched_desc(schedule)} — 指令:{prompt[:80]}"
+    detail = f"「{name}」— {_sched_desc(schedule)} — 工作目录:{cwd} — 指令:{prompt[:80]}"
     if not await danger.require_approval("创建定时任务", detail):
         return _ok(f"🛑 未批准创建任务「{name}」,已跳过。")
 
-    ctx = clarify.current()
-    cwd = config.resolve_execution_root(
-        session_key=ctx.session_key if ctx else None,
-    )
     job = scheduler.create_job(
         name=name, prompt=prompt, schedule=schedule, model=model, cwd=cwd,
     )
