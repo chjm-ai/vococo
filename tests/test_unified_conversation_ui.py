@@ -5,6 +5,8 @@ from pathlib import Path
 STATIC_INDEX = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/index.html"
 STATIC_STYLES = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/styles.css"
 STATIC_SW = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/sw.js"
+WORKTREE = Path(__file__).parents[1] / "vococo/core/worktree.py"
+GATEWAY_RUN = Path(__file__).parents[1] / "vococo/gateway/run.py"
 
 
 def test_call_view_reuses_shared_composer_and_routes_text_to_voice_turn():
@@ -86,3 +88,10 @@ def test_service_worker_cache_version_changes_with_shell_contract():
     sw = STATIC_SW.read_text(encoding="utf-8")
 
     assert 'const SHELL_CACHE = "vococo-shell-v3";' in sw
+
+
+def test_startup_worktree_cleanup_is_bounded():
+    assert "_GIT_TIMEOUT_SEC = 8" in WORKTREE.read_text(encoding="utf-8")
+    assert "await asyncio.wait_for(worktree.prune_orphans(), timeout=15)" in GATEWAY_RUN.read_text(
+        encoding="utf-8"
+    )

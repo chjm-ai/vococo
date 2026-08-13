@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 
 import anyio
 
@@ -244,7 +245,12 @@ class GatewayRunner:
         self._install_loop_exception_handler()
         # 先记录本进程实际运行版本；只有存活满窗口才会晋升 stable 并结束重启事务。
         selfops.write_running_revision()
-        n = await worktree.prune_orphans()  # 启动兜底:回收无会话绑定的孤儿 worktree/悬空分支
+        try:
+            n = await asyncio.wait_for(worktree.prune_orphans(), timeout=15)
+        except TimeoutError:
+            # 清理是兜底，不能因 iCloud/网络盘上的 git 卡住而让整个 Web 服务不上线。
+            n = 0
+            print("⚠️ 启动清理超时，已跳过；服务继续启动", flush=True)
         if n:
             print(f"🧹 启动清理:回收 {n} 个孤儿 worktree/悬空分支")
         clarify.register_push(self.push)  # 让 send_message 等工具能主动发消息
