@@ -313,6 +313,13 @@ def _pending_map(prefix: str) -> dict[str, bool]:
     return {r["key"]: r.get("pending_review", False) for r in session_store.list_sessions(prefix)}
 
 
+def _compressed_json(data: dict) -> web.Response:
+    """首屏/侧边栏的大 JSON 协商压缩，避免跨隧道传输拖慢刷新。"""
+    resp = web.json_response(data)
+    resp.enable_compression()
+    return resp
+
+
 class WebAdapter:
     platform = "web"
 
@@ -835,7 +842,7 @@ class WebAdapter:
         # 主会话(与 TG/CLI 共享的统一会话)固定置顶,conv id 用 "main"
         main = session_store.session_summary(config.resolve_session_key("web", "main"))
         main.update(key="main", title="主会话", pinned=True, conv="main")
-        return web.json_response({"main": main, "conversations": convs})
+        return _compressed_json({"main": main, "conversations": convs})
 
     async def _handle_conv_search(self, request: web.Request) -> web.Response:
         """侧边栏全局搜索(⌘F):标题优先、正文其次,含归档会话;被删除的
@@ -890,7 +897,7 @@ class WebAdapter:
                 c["task_updated_at"] = row["updated_at"]
                 c["title"] = row["title"]
             task_convs.append(c)
-        return web.json_response({"main": main, "tasks": task_convs})
+        return _compressed_json({"main": main, "tasks": task_convs})
 
     async def _handle_voice_task_cancel(self, request: web.Request) -> web.Response:
         """侧边栏「语音任务」行上的停止按钮:停一个后台任务(排队中直接置
@@ -964,7 +971,7 @@ class WebAdapter:
                 cwd=j.get("cwd"),
             )
             rows.append(row)
-        return web.json_response({"jobs": rows})
+        return _compressed_json({"jobs": rows})
 
     async def _handle_cron_create(self, request: web.Request) -> web.Response:
         """管理界面直接新建定时任务(不经过建议/审批——用户在管理界面上的操作本身
@@ -1080,7 +1087,7 @@ class WebAdapter:
         """项目列表(侧边栏按项目分组用)。"""
         if (g := self._guard(request)) is not None:
             return g
-        return web.json_response({"projects": session_store.list_projects()})
+        return _compressed_json({"projects": session_store.list_projects()})
 
     @staticmethod
     def _browse_roots() -> list[Path]:
@@ -1215,7 +1222,7 @@ class WebAdapter:
                 # 旧版可能留有此模型不支持的值；不回显为已选，运行时也不会传它。
                 "value": value if value in levels else "",
             }
-        return web.json_response(
+        return _compressed_json(
             {
                 "default": active_model,
                 "effort": efforts.get(active_model, {}).get("value", ""),  # 兼容旧 Web 客户端

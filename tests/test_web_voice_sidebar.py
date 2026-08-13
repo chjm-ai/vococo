@@ -55,6 +55,19 @@ async def test_voice_sidebar_returns_main_pinned_first_and_task_rows(web_app):
 
 
 @pytest.mark.anyio
+async def test_voice_sidebar_compresses_large_json_when_browser_accepts_gzip(web_app):
+    """侧边栏首次加载会走隧道，大 JSON 必须协商压缩。"""
+    for i in range(30):
+        task = tasks.create(f"任务{i}", "很长的任务说明" * 20)
+        session_store.append(f"task:{task['id']}", "问", "答" * 100)
+
+    async with TestClient(TestServer(web_app)) as client:
+        resp = await client.get("/voice/sidebar", headers={"Accept-Encoding": "gzip"})
+        assert resp.status == 200
+        assert resp.headers.get("Content-Encoding") == "gzip"
+
+
+@pytest.mark.anyio
 async def test_voice_sidebar_task_row_carries_done_timestamp(web_app):
     """2026-08-04:任务行透传完成时间 task_updated_at(终态落库时更新),前端据此
     做「终态任务显示满 10 分钟自动隐藏」(voiceTaskHidden)——新完成的 10 分钟内
