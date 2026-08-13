@@ -11,11 +11,27 @@ from vococo import config
 from vococo.core.agent import (
     ToolInput,
     _compact_threshold,
+    _load_system_prompt,
     _query_context_usage,
     _turn_env,
     assemble_tool_input,
     context_window,
 )
+
+
+def test_load_system_prompt_times_out_without_blocking_turn(monkeypatch):
+    """iCloud 卡在同步读文件时，必须放弃等待并让模型调用继续。"""
+    import vococo.core.agent as agent
+
+    async def stuck_reader(*_args, **_kwargs):
+        await anyio.sleep(1)
+
+    monkeypatch.setattr(config, "PROMPT_LOAD_TIMEOUT", 0.01)
+    monkeypatch.setattr(agent.anyio.to_thread, "run_sync", stuck_reader)
+
+    prompt = anyio.run(_load_system_prompt, "/tmp/project", "resume-id")
+
+    assert prompt == {"type": "preset", "preset": "claude_code", "append": ""}
 
 
 def test_assemble_full_json():

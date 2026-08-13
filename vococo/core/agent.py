@@ -300,6 +300,21 @@ def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
     return "⚠️ 出了点问题,请重试"
 
 
+async def _load_system_prompt(cwd: str | None, resume: str | None) -> dict:
+    """限时读取本地画像/记忆；iCloud 卡住时退回最小提示词继续对话。"""
+    try:
+        with anyio.fail_after(config.PROMPT_LOAD_TIMEOUT):
+            # abandon_on_cancel 很关键：iCloud 的同步 open() 不能被 Python 中断，
+            # 默认会等线程自己返回，超时形同虚设。丢弃等待后让本轮继续启动 CLI。
+            return await anyio.to_thread.run_sync(
+                functools.partial(build_system_prompt, cwd, cache_key=resume),
+                abandon_on_cancel=True,
+            )
+    except TimeoutError:
+        print("⚠️ 读取 AI_BRAIN 超时，本轮已跳过记忆加载", flush=True)
+        return {"type": "preset", "preset": "claude_code", "append": ""}
+
+
 # === 流式事件类型 ===
 # parent_id:非空表示该事件来自子代理(Task 工具)内部,值为所属 Task 调用的 tool_id。
 # 渲染层据此把子代理的动作嵌进对应 Task 卡片,而不是混进主消息流。
@@ -730,9 +745,7 @@ async def stream_turn(
     # 软链,偶发"文件被驱逐到云端、访问要现拉"卡住同步 read_text 数秒到数分钟——若直接
     # 跑在事件循环里,这一次卡顿会冻结【所有】会话(2026-07-21/07-23 两次假死均系于此,
     # 见 gateway/watchdog.py 事故记录)。cache_key 命中时函数本身秒返回,进线程池的开销可忽略。
-    sys_prompt = await anyio.to_thread.run_sync(
-        functools.partial(build_system_prompt, cwd, cache_key=resume)
-    )
+    sys_prompt = await _load_system_prompt(cwd, resume)
 
     effective_max_turns = max_turns or config.MAX_TURNS
 

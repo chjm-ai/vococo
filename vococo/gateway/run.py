@@ -245,6 +245,9 @@ class GatewayRunner:
         self._install_loop_exception_handler()
         # 先记录本进程实际运行版本；只有存活满窗口才会晋升 stable 并结束重启事务。
         selfops.write_running_revision()
+        recovered = session_store.recover_interrupted_turns()
+        if recovered:
+            print(f"⚠️ 已收尾 {recovered} 条被重启中断的回复", flush=True)
         try:
             n = await asyncio.wait_for(worktree.prune_orphans(), timeout=15)
         except TimeoutError:

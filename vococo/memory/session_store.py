@@ -286,6 +286,18 @@ def cancel_turn(turn_id: int) -> None:
     c.commit()
 
 
+def recover_interrupted_turns() -> int:
+    """将进程重启遗留的进行中回合收尾，避免前端永久显示加载中。"""
+    c = _conn()
+    message = "⚠️ 服务重启导致本轮回复中断，请重新发送。"
+    cur = c.execute(
+        "UPDATE turns SET assistant_text=?, draft_text='', ts=? WHERE assistant_text=''",
+        (message, time.time()),
+    )
+    c.commit()
+    return cur.rowcount
+
+
 def flush_draft(turn_id: int, text: str) -> None:
     """流式进行中:把当前已输出的正文节流写进 draft_text 列,供刷新后兜底。"""
     c = _conn()

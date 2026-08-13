@@ -12,6 +12,21 @@ def test_append_and_load_recent(isolated):
     assert history[-1].assistant == "回二"
 
 
+def test_recover_interrupted_turns_finishes_pending_rows(isolated):
+    from vococo.memory import session_store
+
+    pending = session_store.start_turn("web:pending", "还在吗")
+    session_store.flush_draft(pending, "回复到一半")
+    finished = session_store.start_turn("web:done", "完成了吗")
+    session_store.finish_turn(finished, "已完成")
+
+    assert session_store.recover_interrupted_turns() == 1
+    row = session_store.load_history("web:pending")[-1]
+    assert row["pending"] is False
+    assert row["assistant"] == "⚠️ 服务重启导致本轮回复中断，请重新发送。"
+    assert "draft" not in row
+
+
 def test_sessions_isolated_by_key(isolated):
     from vococo.memory import session_store
 

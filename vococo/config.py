@@ -87,6 +87,9 @@ MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "0"))
 PERMISSION_MODE: str = os.environ.get("AGENT_PERMISSION_MODE", "bypassPermissions").strip()
 # 单轮硬超时(秒):卡死也能恢复。clarify 等用户回复会占用本轮,故放宽到 10 分钟。
 AGENT_TURN_TIMEOUT: int = int(os.environ.get("AGENT_TURN_TIMEOUT", "3600"))
+# 组装 system prompt 时读取 AI_BRAIN/iCloud 文件的最长等待时间。iCloud 文件被驱逐时
+# open() 可能无限挂起；超时后本轮跳过画像/记忆，不能把整条对话卡在“思考中”。
+PROMPT_LOAD_TIMEOUT: float = float(os.environ.get("PROMPT_LOAD_TIMEOUT", "10"))
 # ask_user 等用户回复的超时(秒),须 < AGENT_TURN_TIMEOUT,好让 clarify 先返回、本轮别被硬砍。
 CLARIFY_TIMEOUT: int = int(os.environ.get("CLARIFY_TIMEOUT", "300"))
 # === 保温池(会话级常驻 ClaudeSDKClient,见 core/client_pool.py)===
