@@ -1587,16 +1587,22 @@ class WebAdapter:
 
     # ── 项目 Git 状态 ────────────────────────────────────────────────────
     def _conv_cwd(self, conv: str) -> str | None:
-        """会话对应的项目工作目录;非项目会话(main/普通 web)返回 None。"""
+        """会话对应的项目工作目录;非项目会话(main/普通 web)返回 None。
+
+        task: 等非项目 key 的会话 project_cwd_for 认不出(见 gateway/core.py),
+        补 get_worktree 兜底——否则任务栏 git 状态会回退到 serve 进程目录,
+        显示成主仓库分支而非任务自己的 worktree 分支。
+        """
         key = config.resolve_session_key("web", conv)
-        return config.project_cwd_for(key)
+        return config.project_cwd_for(key) or session_store.get_worktree(key)
 
     async def _handle_conv_git(self, request: web.Request) -> web.Response:
         """会话对应项目的 git 状态;非项目会话回退到 serve 进程 cwd。"""
         if (g := self._guard(request)) is not None:
             return g
         key = config.resolve_session_key("web", request.query.get("conv", ""))
-        cwd = config.project_cwd_for(key)
+        # task: 等非项目 key 认不出项目 hash,补 get_worktree 兜底(与 core.py 一致)
+        cwd = config.project_cwd_for(key) or session_store.get_worktree(key)
         bound = cwd is not None
         if not cwd:
             cwd = os.getcwd()
