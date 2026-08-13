@@ -36,6 +36,25 @@ def test_load_system_prompt_times_out_without_blocking_turn(monkeypatch):
     assert prompt == {"type": "preset", "preset": "claude_code", "append": ""}
 
 
+def test_load_system_prompt_skips_retry_during_backoff(monkeypatch):
+    import vococo.core.agent as agent
+
+    called = False
+
+    async def reader(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return {"append": "unexpected"}
+
+    monkeypatch.setattr(agent.anyio.to_thread, "run_sync", reader)
+    monkeypatch.setattr(agent, "_prompt_load_unavailable_until", agent.time.monotonic() + 60)
+
+    prompt = anyio.run(_load_system_prompt, None, None)
+
+    assert called is False
+    assert prompt == {"type": "preset", "preset": "claude_code", "append": ""}
+
+
 def test_trade_mcp_only_for_trade_message_or_project(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "execution_project_root_for", lambda _key: str(tmp_path / "notes"))
     assert _needs_trade_mcp("记录病情", "web:notes") is False

@@ -13,6 +13,7 @@ import base64
 import functools
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Union
@@ -116,6 +117,10 @@ def _cli_working_dir(cwd: str | None) -> tuple[str | None, str]:
 # 这里缓存最新值供 /api/usage 等外部查询,无需额外 API 调用。
 # 结构:{rate_limit_type: {status, resets_at, utilization, overage_status}}
 _rate_limits: dict[str, dict] = {}
+
+# AI_BRAIN 在 iCloud 上被驱逐时 read/open 会卡住。超时后设全局熔断窗口，让后续
+# 首轮直接走最小 preset；窗口过后再尝试恢复完整记忆，而不是每次都等待超时。
+_prompt_load_unavailable_until = 0.0
 
 
 def get_rate_limits() -> dict[str, dict]:
@@ -332,9 +337,12 @@ def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
 
 async def _load_system_prompt(cwd: str | None, resume: str | None) -> dict:
     """限时读取本地画像/记忆；iCloud 卡住时退回最小提示词继续对话。"""
+    global _prompt_load_unavailable_until
     if _is_cloud_sync_path(cwd):
         # 项目 AGENTS.md 同在 iCloud；读它也可能卡住。该路径由调用方明确附入提示词，
         # 模型仍可按需 Read，不能让“注入指南”本身阻断整轮。
+        return {"type": "preset", "preset": "claude_code", "append": ""}
+    if time.monotonic() < _prompt_load_unavailable_until:
         return {"type": "preset", "preset": "claude_code", "append": ""}
     try:
         with anyio.fail_after(config.PROMPT_LOAD_TIMEOUT):
@@ -345,7 +353,11 @@ async def _load_system_prompt(cwd: str | None, resume: str | None) -> dict:
                 abandon_on_cancel=True,
             )
     except TimeoutError:
-        print("⚠️ 读取 AI_BRAIN 超时，本轮已跳过记忆加载", flush=True)
+        _prompt_load_unavailable_until = time.monotonic() + config.PROMPT_LOAD_BACKOFF
+        print(
+            f"⚠️ 读取 AI_BRAIN 超时，{config.PROMPT_LOAD_BACKOFF:.0f}s 内跳过记忆加载",
+            flush=True,
+        )
         return {"type": "preset", "preset": "claude_code", "append": ""}
 
 
