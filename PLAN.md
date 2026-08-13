@@ -1,7 +1,10 @@
 # 会话与任务统一重构实施计划
 
 > 依据：`docs/design/voice-companion/05-session-unification-and-code-reuse-plan.md`
-> 当前状态：已获用户确认，按里程碑实施。
+> 当前状态：**部分完成后停滞**（2026-08-13 核对）。M1 全done、M3/M5 各完成一半；
+> **M2、M4 一行未动**——`core/conversation` 层不存在，`voice-chat:main` 仍是独立会话键
+> （`voice/session.py:18`），旧 `/voice/tasks*` 兼容转发仍在（`voice/routes.py:545`）。
+> 下面的复选框是实况，不是待办承诺；要继续推进请先重读依据文档再动手。
 
 ## 目标
 

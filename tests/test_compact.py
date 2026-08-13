@@ -98,7 +98,7 @@ def client_factory(monkeypatch):
     monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("claude-sonnet-4", {}))
     monkeypatch.setattr(agent.settings_store, "vococo_enabled", lambda: False)
     monkeypatch.setattr(agent.settings_store, "effective_external_mcp", lambda: {})
-    monkeypatch.setattr(agent.settings_store, "effective_skills", lambda: None)
+    monkeypatch.setattr(agent.settings_store, "effective_skills", lambda cwd=None: None)
     monkeypatch.setattr(
         agent, "build_system_prompt", lambda cwd=None, cache_key=None: {"append": "p"}
     )

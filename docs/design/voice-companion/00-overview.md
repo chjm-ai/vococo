@@ -4,7 +4,7 @@
 > WebRTC 唯一管线**(见 [ADR 0004](../../adr/0004-voice-omni-only.md))。本目录里
 > 关于「级联 STT→Claude→TTS」与 P2 全双工(ws.py / DashScope 实时 WS / 声纹识别)
 > 的架构描述**均已成为历史**——那些代码已删除,判定纯函数存档在
-> [04-echo-heuristics-archive.md](04-echo-heuristics-archive.md)(原
+> [04-echo-heuristics-archive.md](archive/04-echo-heuristics-archive.md)(原
 > `vococo/voice/heuristics.py`,2026-07-23 因零调用方从活代码降级为文档)。
 > 仍然有效的部分:P1 任务板全套(派活/进度/
 > 播报)、/voice/send 回复轮、按住说话兜底、§2 的后端隔离约束与 §5 验收哲学。

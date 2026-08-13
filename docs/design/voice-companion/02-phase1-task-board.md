@@ -119,6 +119,6 @@ Claude 要在语音会话里调这三个工具,而 `stream_turn()` 目前不接�
 
 ## 6. 交付物
 
-代码 + 测试 + `02-phase1-实现记录.md`(实际接触点、agent.py 改动 diff 摘要、
+代码 + 测试 + `archive/02-phase1-实现记录.md`(实际接触点、agent.py 改动 diff 摘要、
 移除清单复核——注意本期移除清单多了 agent.py 那 ≤10 行)。
 合 main:`zsh deploy/merge-main.sh`;重启:`zsh deploy/restart.sh`。

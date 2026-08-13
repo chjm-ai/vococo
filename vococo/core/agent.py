@@ -714,7 +714,9 @@ async def stream_turn(
     mcp_servers.update(external_mcp)
     if extra_mcp_servers:  # P1 语音任务板注入的三个工具,默认 None 对现有调用零影响
         mcp_servers.update(extra_mcp_servers)
-    skills = settings_store.effective_skills()  # None=全量;白名单则只挂这些(瘦身 tool schema)
+    # None=全量;白名单则只挂这些(瘦身 tool schema)。传 cwd:项目可配专用白名单,
+    # 编码会话不必背着小红书/外贸那批 skill 的描述(见 settings_store.effective_skills)。
+    skills = settings_store.effective_skills(cwd)
     if isinstance(skills, list):  # 白名单模式漏不掉插件自带的 skill(见 _PLUGIN_SKILLS)
         skills = list(dict.fromkeys([*skills, *_PLUGIN_SKILLS]))
     # cwd=项目会话补注入其 AGENTS.md;cache_key=会话 id:同一 SDK 会话内冻结 append 快照,

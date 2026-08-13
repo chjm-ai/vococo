@@ -1,9 +1,13 @@
-"""system prompt 组装:项目 AGENTS.md 注入规则。"""
+"""system prompt 组装:项目 AGENTS.md 注入规则 + 与 SDK 自带注入的去重。"""
 import os
 import time
 from pathlib import Path
 
-from vococo.core.prompt import _load_project_agents, build_system_prompt
+from vococo.core.prompt import (
+    _load_memory_index,
+    _load_project_agents,
+    build_system_prompt,
+)
 
 
 def test_agents_only_injected(tmp_path: Path):
@@ -22,6 +26,50 @@ def test_agents_injected_even_with_claude_md(tmp_path: Path):
     (tmp_path / "AGENTS.md").write_text("PROJECT_RULE_ALPHA", encoding="utf-8")
     (tmp_path / "CLAUDE.md").write_text("规则见 AGENTS.md", encoding="utf-8")
     assert "PROJECT_RULE_ALPHA" in _load_project_agents(str(tmp_path))
+
+
+def test_agents_skipped_when_claude_md_is_the_same_file(tmp_path: Path):
+    """CLAUDE.md 是 AGENTS.md 的软链(本仓即如此)→ 跳过,别逐字注两遍。
+
+    SDK 按 cwd 读 CLAUDE.md 时已经把同一份文件注进 system prompt 了。
+    """
+    (tmp_path / "AGENTS.md").write_text("PROJECT_RULE_ALPHA", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").symlink_to(tmp_path / "AGENTS.md")
+    assert _load_project_agents(str(tmp_path)) == ""
+
+
+def test_memory_index_skipped_when_sdk_auto_memory_is_same_file(tmp_path, monkeypatch):
+    """auto-memory 软链到同一份 MEMORY.md → 只留指针,不重复注全文(省约 6k token)。"""
+    from vococo.core import prompt as prompt_mod
+
+    brain = tmp_path / "AI_BRAIN"
+    brain.mkdir()
+    (brain / "MEMORY.md").write_text("MEMORY_LINE_ALPHA", encoding="utf-8")
+    cwd = tmp_path / "Repos" / "proj"
+    cwd.mkdir(parents=True)
+    # 造 SDK 的 auto-memory:~/.claude/projects/<slug>/memory/MEMORY.md 软链到主库
+    home = tmp_path / "home"
+    auto = home / ".claude" / "projects" / prompt_mod._slug(str(cwd.resolve())) / "memory"
+    auto.mkdir(parents=True)
+    (auto / "MEMORY.md").symlink_to(brain / "MEMORY.md")
+    monkeypatch.setattr(prompt_mod.config, "AI_BRAIN_DIR", brain)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    out = _load_memory_index(str(cwd))
+    assert "MEMORY_LINE_ALPHA" not in out and "auto-memory" in out
+
+
+def test_memory_index_injected_when_no_auto_memory(tmp_path, monkeypatch):
+    """没有 auto-memory 的项目 → 照旧注全文,别把索引弄丢了。"""
+    from vococo.core import prompt as prompt_mod
+
+    brain = tmp_path / "AI_BRAIN"
+    brain.mkdir()
+    (brain / "MEMORY.md").write_text("MEMORY_LINE_ALPHA", encoding="utf-8")
+    monkeypatch.setattr(prompt_mod.config, "AI_BRAIN_DIR", brain)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "empty_home"))
+
+    assert "MEMORY_LINE_ALPHA" in _load_memory_index(str(tmp_path))
 
 
 def test_none_and_missing_skip(tmp_path: Path):
