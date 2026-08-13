@@ -183,6 +183,7 @@ try{
   <aside id="sidebar">
     <div class="shead">
       <div class="brand">vococo</div>
+      <span id="syncState" class="syncstate syncing" title="正在连接服务">同步中</span>
       <button id="searchBtn" class="sfoicon" title="搜索会话 (⌘F)"></button>
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
@@ -444,6 +445,7 @@ const S = {
   voiceRec: {},         // conv → {bubble}:语音转写中的占位气泡,按录音发起时所属会话记录,切走再切回能补出来
   convFilter: "all",
   rateStatus: {level:"ok", msg:"", lastErr:"", ts:0},  // ok|warn|err, 更新侧栏底部状态点
+  serviceState: "syncing", // syncing|online|cached|offline：缓存画面不能伪装成在线数据
   dragSrc: null,        // 项目拖拽排序:正在被拖起的项目 hash
   dragMoved: false,     // 刚发生过一次拖拽落地,下一次 click 吞掉(不触发分组展开/收起)
   voiceSidebar: {main:null, tasks:[]},  // /voice/sidebar 拉到的"语音任务"固定分组数据
@@ -3840,9 +3842,24 @@ async function idbSetHist(conv, turns){
 // ── API ─────────────────────────────────────────────────────────────────
 async function api(path, opts={}){
   opts.headers = Object.assign({"X-Auth-Token": S.token}, opts.headers||{});
-  const r = await fetch(path, opts);
+  let r;
+  try{ r = await fetch(path, opts); }
+  catch(e){ setServiceState("offline"); throw e; }
   if(r.status===401){ showLogin(); throw new Error("401"); }
+  setServiceState(r.status>=500 ? "offline" : "online");
   return r;
+}
+
+function setServiceState(state){
+  S.serviceState=state;
+  const el=$("#syncState"); if(!el) return;
+  const view={
+    syncing:["同步中", "正在向服务同步最新数据"],
+    online:["已同步", "数据已从服务确认"],
+    cached:["缓存数据", "正在同步；当前侧边栏来自本地缓存"],
+    offline:["服务不可达", "正在显示本地缓存；刷新后仍无法连接服务"],
+  }[state] || ["同步中", "正在向服务同步最新数据"];
+  el.className="syncstate "+state; el.textContent=view[0]; el.title=view[1];
 }
 // 语音通话入口只保留侧边栏根目录置顶的「语音通话」行(见 buildVoiceMainRow),
 // 不再在聊天输入框上方浮一个圆球——那个入口跟侧栏那行重复,已按用户要求去掉。
@@ -3858,11 +3875,13 @@ async function tryEnter(){
   // 这里立刻把内容区铺成骨架屏,不要空等——避免"口令消失→空白/欢迎屏→数据陆续到位"的中间闪烁态。
   $("#wrap").innerHTML=""; $("#empty").style.display="none"; $("#convLoading").classList.add("on");
   const cachedConvs = await idbGet("convs");
-  if(cachedConvs) applyConvs(cachedConvs);  // 磁盘缓存先画一版侧栏,消除刷新页面后的空白/闪烁
+  if(cachedConvs){ applyConvs(cachedConvs); setServiceState("cached"); }  // 缓存先画,但明确不是已同步数据
   try{
     const r = await fetch("/conversations", {headers:{"X-Auth-Token":S.token}});
     if(r.status===401){ $("#loginErr").textContent="口令错误"; showLogin(); return; }
+    if(!r.ok) throw new Error("HTTP "+r.status);
     const d = await r.json();
+    setServiceState("online");
     idbSet("convs", d);   // 落盘,下次刷新页面秒出侧栏
     localStorage.setItem("vococo_token", S.token);
     $("#login").style.display="none"; $("#app").hidden=false;
@@ -3883,7 +3902,10 @@ async function tryEnter(){
     await secondary;
     initVoiceSelect();
     renderConvs();  // 项目分组数据(loadProjects)到位后再补画一次侧栏分组
-  }catch(e){ $("#loginErr").textContent="连接失败"; }
+  }catch(e){
+    setServiceState("offline");
+    if(!cachedConvs) $("#loginErr").textContent="服务不可达，请稍后重试";
+  }
 }
 $("#loginBtn").onclick = ()=>{ S.token = $("#pw").value.trim(); tryEnter(); };
 $("#pw").onkeydown = e=>{ if(e.key==="Enter"){ S.token=$("#pw").value.trim(); tryEnter(); } };
@@ -5130,7 +5152,7 @@ function renderProjGroup(box, g, inCall){
 // ── 项目 ─────────────────────────────────────────────────────────────────
 async function loadProjects(){
   try{ const r=await api("/projects"); S.projects=(await r.json()).projects||[]; }
-  catch(e){ S.projects=[]; }
+  catch(e){}  // 保留最后一次成功数据，离线状态由同步标记明确提示
 }
 
 // ── 语音任务:侧边栏固定分组(主语音会话 + 各后台任务会话)────────────────────
@@ -5175,7 +5197,7 @@ function scheduleDoneHide(){
 }
 async function loadVoiceSidebar(){
   try{ const r=await api("/voice/sidebar"); S.voiceSidebar=await r.json(); }
-  catch(e){ S.voiceSidebar={main:null, tasks:[]}; }
+  catch(e){}  // 不能把旧数据清空伪装成“服务端没有任务”
   S.voiceSidebarLoaded=true;   // 拉完(成功/失败)都算到位,「语音通话」骨架行退场
   renderConvs();
   if($("#empty").style.display==="flex") renderEmptyRecent();  // 欢迎屏正开着 → 语音任务到位后补一次最近对话
@@ -5202,7 +5224,7 @@ function syncSidebarTaskStatus(t){
 // ── 定时任务:侧边栏固定分组(每个任务一条专属会话)────────────────────────────
 async function loadCronSidebar(){
   try{ const r=await api("/cron/sidebar"); S.cronJobs=(await r.json()).jobs||[]; }
-  catch(e){ S.cronJobs=[]; }
+  catch(e){}  // 请求失败时保留上次成功列表，并由“服务不可达”状态说明
   renderConvs();
   syncCronHeader();   // 正开着某条任务会话时,启停开关的状态要跟上最新数据
   refillCurrentMeta();   // 同 loadVoiceSidebar:数据到位后补一次模型回填
@@ -5389,11 +5411,21 @@ async function toggleCronJob(id, enabled){
 }
 async function deleteCronJob(id, title, conv){
   if(!confirm(`删除定时任务「${title||""}」?这条任务的历史记录也会一起删掉,不可恢复。`)) return;
-  try{ await api("/cron/jobs/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}); }
-  catch(e){ alert("删除失败"); return; }
   const wasActive = conv && S.conv===conv;
-  await loadCronSidebar();
+  const previous=S.cronJobs;
+  S.cronJobs=S.cronJobs.filter(j=>j.job_id!==id);  // 乐观删除：点击后立刻从侧栏消失
+  renderConvs(); syncCronHeader(); syncMoreHeader();
   if(wasActive) openConv("main");   // 删的是当前正开着的任务会话 → 切回主会话
+  try{
+    const r=await api("/cron/jobs/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});
+    const d=await r.json();
+    if(!r.ok || d.error) throw new Error(d.error||"删除失败");
+  }catch(e){
+    S.cronJobs=previous;  // 服务端拒绝/网络失败：原样回滚
+    renderConvs(); syncCronHeader(); syncMoreHeader();
+    alert(e.message||"删除失败"); return;
+  }
+  await loadCronSidebar();  // 成功后以服务端数据最终校准
 }
 $("#cfPreset").onchange = ()=>{ const v=$("#cfPreset").value; if(v!=="custom") $("#cfCron").value=v; };
 $("#cfCancel").onclick = closeCronModal;
@@ -6871,6 +6903,10 @@ function handleEvent(e){
     bufPush(e.conv, e); markLive();
     if(e.conv===S.conv){ applyStreamEvent(e); if(S.stream) S.stream.lastEvt=Date.now(); }
     return;
+  }
+  // 模型刚通过定时任务工具完成增删改时，立刻同步列表；不必等整轮回复结束。
+  if(e.type==="tool_end" && e.ok && ["add_cron_job","delete_cron_job","set_cron_job_enabled"].includes(e.name)){
+    loadCronSidebar();
   }
   // 会话有新回合 → 历史已变,作废其缓存(含磁盘),下次打开会重新拉取
   if(e.type==="done"||e.type==="message"){ delete S.histCache[e.conv]; idbDel("hist:"+e.conv); }

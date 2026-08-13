@@ -100,6 +100,11 @@
     font-size:20px;font-weight:700;color:var(--text);cursor:pointer;
     transition:color .15s}
   #sidebar .shead .brand:hover{color:var(--accent)}
+  .syncstate{flex:none;max-width:76px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    padding:2px 6px;border:1px solid var(--line);border-radius:999px;font-size:10px;line-height:14px;color:var(--muted)}
+  .syncstate.syncing,.syncstate.cached{background:var(--panel)}
+  .syncstate.online{color:#347a58;border-color:#8dc9a8;background:#eef9f2}
+  .syncstate.offline{color:#ad4e4e;border-color:#e5aaaa;background:#fff2f2}
   /* 列表行统一规范:所有可点行(＋新对话 / 分组头 / 会话)共用同一内边距 + 圆角,
      hover 的灰底矩形尺寸与圆角完全一致 */
   /* #convList 是固定外框(Tab 栏 + 列表),只有 #convBody 滚动 */

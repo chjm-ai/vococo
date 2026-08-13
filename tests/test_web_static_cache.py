@@ -63,6 +63,18 @@ async def test_index_injects_asset_versions(static_app):
 
 
 @pytest.mark.anyio
+async def test_index_marks_cached_data_and_refreshes_cron_tools(static_app):
+    """离线时缓存不能伪装成在线；模型操作定时任务后立即重拉侧栏。"""
+    status, body, _ = await _get(static_app, "/")
+    assert status == 200
+    html = body.decode("utf-8")
+    assert 'id="syncState"' in html
+    assert 'cached:["缓存数据"' in html
+    assert 'offline:["服务不可达"' in html
+    assert '"add_cron_job","delete_cron_job","set_cron_job_enabled"' in html
+
+
+@pytest.mark.anyio
 async def test_versioned_asset_gets_immutable_cache(static_app):
     status, _, headers = await _get(static_app, f"/styles.css?v={_digest('styles.css')}")
     assert status == 200
