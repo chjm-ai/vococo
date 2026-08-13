@@ -13,6 +13,7 @@ from vococo.core.agent import (
     _compact_threshold,
     _load_system_prompt,
     _needs_trade_mcp,
+    _cli_working_dir,
     _query_context_usage,
     _turn_env,
     assemble_tool_input,
@@ -44,6 +45,14 @@ def test_trade_mcp_only_for_trade_message_or_project(monkeypatch, tmp_path):
         config, "execution_project_root_for", lambda _key: "/Users/wesley/Repos/vocotrade"
     )
     assert _needs_trade_mcp("继续", "web:trade") is True
+
+
+def test_cloud_project_uses_stable_cli_cwd():
+    cloud = "/Users/wesley/Library/Mobile Documents/iCloud~md~obsidian/Documents/Wesley notes"
+    cli_cwd, note = _cli_working_dir(cloud)
+
+    assert cli_cwd == str(config.ROOT_DIR)
+    assert cloud in note
 
 
 def test_assemble_full_json():

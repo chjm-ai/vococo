@@ -94,6 +94,23 @@ def _needs_trade_mcp(user_text: str, session_key: str | None) -> bool:
     except OSError:
         return False
 
+
+def _is_cloud_sync_path(cwd: str | None) -> bool:
+    """iCloud Drive 的同步目录不能稳定作为 Claude CLI 的进程 cwd。"""
+    return bool(cwd and "/Library/Mobile Documents/" in str(cwd))
+
+
+def _cli_working_dir(cwd: str | None) -> tuple[str | None, str]:
+    """返回稳定的 CLI cwd，以及需要补进 system prompt 的项目路径说明。"""
+    if not _is_cloud_sync_path(cwd):
+        return cwd, ""
+    return (
+        str(config.ROOT_DIR),
+        "\n\n当前任务项目位于 iCloud 同步目录，Claude CLI 已从稳定目录启动以避免 iCloud "
+        "启动失败。需要读写项目文件时，必须使用以下绝对路径，不要假定当前工作目录：\n"
+        f"<project_path>{cwd}</project_path>",
+    )
+
 # ── 速率额度缓存 ──────────────────────────────────────────────────────────
 # SDK 在流式回复中会发出 RateLimitEvent(含 5h/7d 利用率+重置时间),
 # 这里缓存最新值供 /api/usage 等外部查询,无需额外 API 调用。
@@ -315,6 +332,10 @@ def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
 
 async def _load_system_prompt(cwd: str | None, resume: str | None) -> dict:
     """限时读取本地画像/记忆；iCloud 卡住时退回最小提示词继续对话。"""
+    if _is_cloud_sync_path(cwd):
+        # 项目 AGENTS.md 同在 iCloud；读它也可能卡住。该路径由调用方明确附入提示词，
+        # 模型仍可按需 Read，不能让“注入指南”本身阻断整轮。
+        return {"type": "preset", "preset": "claude_code", "append": ""}
     try:
         with anyio.fail_after(config.PROMPT_LOAD_TIMEOUT):
             # abandon_on_cancel 很关键：iCloud 的同步 open() 不能被 Python 中断，
@@ -765,6 +786,9 @@ async def stream_turn(
     # 跑在事件循环里,这一次卡顿会冻结【所有】会话(2026-07-21/07-23 两次假死均系于此,
     # 见 gateway/watchdog.py 事故记录)。cache_key 命中时函数本身秒返回,进线程池的开销可忽略。
     sys_prompt = await _load_system_prompt(cwd, resume)
+    cli_cwd, cloud_project_note = _cli_working_dir(cwd)
+    if cloud_project_note:
+        sys_prompt = {**sys_prompt, "append": sys_prompt.get("append", "") + cloud_project_note}
 
     effective_max_turns = max_turns or config.MAX_TURNS
 
@@ -795,7 +819,7 @@ async def stream_turn(
             # vococo 专属 skill(本地插件,见 config.PLUGIN_DIR):只在这里挂,
             # 不进 ~/.claude/skills,Claude Code/Codex/OpenCode 等其它工具看不到。
             plugins=[{"type": "local", "path": str(config.PLUGIN_DIR)}],
-            cwd=cwd,  # 项目会话→该文件夹当工作根(自动加载其 CLAUDE.md/.claude);None=进程默认目录
+            cwd=cli_cwd,  # iCloud 项目改从稳定目录启动，实际项目路径见 system prompt
             env=_turn_env(provider_env),  # 设置页供应商 base_url+key + 恒定强制前台开关(见 _turn_env)
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
             disallowed_tools=list(disallowed_tools or []),
