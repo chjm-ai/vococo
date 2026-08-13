@@ -1619,7 +1619,7 @@ class WebAdapter:
             # <项目根>/data/worktrees/<hash>/<slug>,从路径反推项目根
             p = Path(cwd)
             if p.parent.parent.name == "worktrees":
-                proj_root = str(p.parent.parent.parent)
+                proj_root = str(p.parent.parent.parent.parent)
         proj_root = proj_root or cwd
         info.update(
             is_project=True, bound_project=bound, path=cwd,
