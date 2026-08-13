@@ -269,6 +269,30 @@ def test_add_cron_job_needs_approval(sugg_env):
     assert jobs[0]["enabled"] is True
 
 
+def test_add_cron_job_accepts_explicit_cwd(sugg_env, tmp_path):
+    from vococo.cron import scheduler
+    from vococo.tools import builtin
+
+    cwd = tmp_path / "obsidian-project"
+    cwd.mkdir()
+    out = _text(_run_approved(lambda: builtin.add_cron_job.handler({
+        "name": "整理笔记", "prompt": "整理项目文档", "run_in_minutes": 60, "cwd": str(cwd),
+    })))
+    assert "已创建" in out
+    assert scheduler.load_jobs()[0]["cwd"] == str(cwd.resolve())
+
+
+def test_add_cron_job_rejects_invalid_cwd(sugg_env):
+    from vococo.cron import scheduler
+    from vococo.tools import builtin
+
+    out = _text(asyncio.run(builtin.add_cron_job.handler({
+        "name": "x", "prompt": "y", "run_in_minutes": 5, "cwd": "relative/path",
+    })))
+    assert "绝对路径" in out
+    assert scheduler.load_jobs() == []
+
+
 def test_add_cron_job_validation(sugg_env):
     from vococo.tools import builtin
 

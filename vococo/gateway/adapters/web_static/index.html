@@ -92,6 +92,7 @@ try{
           <input id="cfCron" placeholder="0 8 * * *"/>
         </div>
         <input id="cfTelegram" placeholder="可选:同时推送到 Telegram 的 chat_id"/>
+        <input id="cfCwd" placeholder="可选:工作目录绝对路径（留空使用默认项目）"/>
         <div class="pmfoot">
           <button id="cfCancel">取消</button>
           <button class="pmok" id="cfSave">✓ 创建</button>
@@ -5357,15 +5358,16 @@ function showCronForm(job){
   $("#cfPreset").value = expr && presetOpts.includes(expr) ? expr : "custom";
   $("#cfCron").value = expr;
   $("#cfTelegram").value = (job && job.target && job.target.platform==="telegram") ? (job.target.chat_id ?? "") : "";
+  $("#cfCwd").value = job ? (job.cwd || "") : "";
   if(!job) $("#cfName").focus();
 }
 async function saveCronJob(){
   const name=$("#cfName").value.trim(), prompt=$("#cfPrompt").value.trim();
-  const cron=$("#cfCron").value.trim(), tgChat=$("#cfTelegram").value.trim();
+  const cron=$("#cfCron").value.trim(), tgChat=$("#cfTelegram").value.trim(), cwd=$("#cfCwd").value.trim();
   if(!name || !prompt){ alert("任务名称和执行指令不能为空"); return; }
   if(!cron){ alert("请选一个预设频率,或填自定义 cron 表达式"); return; }
   const editId=S.cronEditId;
-  const body={name, prompt, schedule:{kind:"cron", expr:cron}};
+  const body={name, prompt, schedule:{kind:"cron", expr:cron}, cwd};
   if(editId) body.id=editId;
   if(tgChat) body.target={platform:"telegram", chat_id:tgChat};
   let d;

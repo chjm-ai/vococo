@@ -31,6 +31,7 @@ import datetime
 import json
 import time
 import uuid
+from pathlib import Path
 from typing import Awaitable, Callable
 
 import anyio
@@ -42,6 +43,7 @@ from ..core.agent import run_turn
 from ..memory import session_store
 
 PushFn = Callable[[str, object, str], Awaitable[None]]  # (platform, chat_id, text)
+_UNSET = object()
 
 
 def load_jobs() -> list[dict]:
@@ -72,6 +74,24 @@ def save_jobs(jobs: list[dict]) -> None:
     )
 
 
+def normalize_cwd(cwd: str | None) -> tuple[str | None, str | None]:
+    """校验并规范化任务工作目录;空值表示沿用运行时默认目录。"""
+    if cwd is None:
+        return None, None
+    if not isinstance(cwd, str):
+        return None, "cwd 必须是字符串。"
+    if not cwd.strip():
+        return None, None
+    if not Path(cwd).is_absolute():
+        return None, "cwd 必须是绝对路径。"
+    path = Path(cwd).resolve()
+    if not path.exists():
+        return None, f"cwd 不存在: {path}"
+    if not path.is_dir():
+        return None, f"cwd 必须是目录: {path}"
+    return str(path), None
+
+
 def create_job(
     *, name: str, prompt: str, schedule: dict, target: dict | None = None,
     model: str | None = None, cwd: str | None = None,
@@ -79,6 +99,9 @@ def create_job(
     """新建一个 cron 任务并落盘,返回该任务。接受建议(accept_suggestion)或管理界面
     直接新建都走这一个入口,不搞第二套引擎。每个任务自带一条专属会话(conv),
     历次运行结果落在这条会话里;target 是可选的额外推送目标(如 web)。"""
+    cwd, err = normalize_cwd(cwd)
+    if err:
+        raise ValueError(err)
     jobs = load_jobs()
     job_id = uuid.uuid4().hex[:8]
     job = {
@@ -102,7 +125,7 @@ def create_job(
 
 def update_job(
     job_id: str, *, name: str, prompt: str, schedule: dict, target: dict | None = None,
-    cwd: str | None = None,
+    cwd: str | None | object = _UNSET,
 ) -> dict | None:
     """编辑已有任务的名称/指令/调度/推送目标(管理界面的「编辑」用);不改 id/conv/
     enabled/统计字段。调度变了就把 next_run_at 清掉,让下一跳按新调度重算。
@@ -115,7 +138,10 @@ def update_job(
     job["prompt"] = prompt
     job["schedule"] = schedule
     job["target"] = target
-    if cwd is not None:
+    if cwd is not _UNSET:
+        cwd, err = normalize_cwd(cwd)
+        if err:
+            raise ValueError(err)
         job["cwd"] = cwd
     job["next_run_at"] = None
     save_jobs(jobs)
