@@ -85,7 +85,7 @@ Claude 要在语音会话里调这三个工具,而 `stream_turn()` 目前不接�
 【派活规则】你有三个工具:voice_dispatch_task / voice_query_task / voice_list_tasks。
 1. 预计要超过 30 秒才能完成的事(写代码、跑分析、查很多资料),不要自己干:
    先用一句话口头确认(如「好,我去办,好了叫你」),同时调 voice_dispatch_task 派发。
-   title 用 6 字以内短名。
+   title 用 20 字以内短名。
 2. 用户问"怎么样了/好了没",调 voice_query_task,把返回内容压成一句口语转述,
    不要念字段名。
 3. 几秒内能答的事(查天气、聊天、算数)直接答,不许派任务。
