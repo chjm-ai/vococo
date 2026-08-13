@@ -405,14 +405,6 @@ _MCP_WRITE_TOOLS = frozenset({
     "mcp__lemlist_lite__delete_campaign_lead",
     "mcp__lemlist_lite__upsert_contact",
     "mcp__lemlist_lite__delete_contact",
-    "mcp__smartlead__create_campaign",
-    "mcp__smartlead__set_campaign_status",
-    "mcp__smartlead__set_campaign_sequences",
-    "mcp__smartlead__add_campaign_leads",
-    "mcp__smartlead__pause_campaign_lead",
-    "mcp__smartlead__resume_campaign_lead",
-    "mcp__smartlead__set_warmup",
-    "mcp__smartlead__reply_email_thread",
 })
 
 # 当前轮的工作目录(工作目录功能会在开轮时 set_cwd;未设则 None → 越界检查休眠)
