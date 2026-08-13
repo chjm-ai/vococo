@@ -14,6 +14,7 @@ import functools
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator, Union
 
 import anyio
@@ -80,6 +81,18 @@ def _maybe_auto_enable_trade_mcp(user_text: str) -> None:
     except Exception:
         # 设置读写失败不打断对话:这轮不自动开,手动开关仍可用
         pass
+
+
+def _needs_trade_mcp(user_text: str, session_key: str | None) -> bool:
+    """外贸 MCP 只挂给外贸项目或明确命中的请求，别拖慢普通/Obsidian 会话。"""
+    text = (user_text or "").lower()
+    if any(k in text for k in _TRADE_KEYWORDS):
+        return True
+    try:
+        root = config.execution_project_root_for(session_key)
+        return Path(root).name.lower() == "vocotrade"
+    except OSError:
+        return False
 
 # ── 速率额度缓存 ──────────────────────────────────────────────────────────
 # SDK 在流式回复中会发出 RateLimitEvent(含 5h/7d 利用率+重置时间),
@@ -726,7 +739,13 @@ async def stream_turn(
     # MCP / skill 从运行时设置(网页设置页可改)计算,不再写死;改完下一轮即生效
     # (保温 client 的这些参数在 connect 时定死,靠兼容性哈希「一变就重建」保住该语义)。
     mcp_on = settings_store.vococo_enabled()
-    external_mcp = settings_store.effective_external_mcp()  # 用户加的外部 server
+    # 外部 MCP 是外贸专用且有较重的子进程启动成本。此前“已启用”会被无差别
+    # 带进 Obsidian/普通项目，导致无关会话也受其启动失败或卡死连坐。
+    external_mcp = (
+        settings_store.effective_external_mcp()
+        if _needs_trade_mcp(user_text, session_key)
+        else {}
+    )
     mcp_servers: dict = {}
     if mcp_on:
         mcp_servers.update(build_mcp_servers())  # 内置 vococo(记忆/定时/发消息等)

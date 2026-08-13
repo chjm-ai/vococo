@@ -12,6 +12,7 @@ from vococo.core.agent import (
     ToolInput,
     _compact_threshold,
     _load_system_prompt,
+    _needs_trade_mcp,
     _query_context_usage,
     _turn_env,
     assemble_tool_input,
@@ -32,6 +33,17 @@ def test_load_system_prompt_times_out_without_blocking_turn(monkeypatch):
     prompt = anyio.run(_load_system_prompt, "/tmp/project", "resume-id")
 
     assert prompt == {"type": "preset", "preset": "claude_code", "append": ""}
+
+
+def test_trade_mcp_only_for_trade_message_or_project(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "execution_project_root_for", lambda _key: str(tmp_path / "notes"))
+    assert _needs_trade_mcp("记录病情", "web:notes") is False
+    assert _needs_trade_mcp("帮我创建外贸邮件发送计划", "web:notes") is True
+
+    monkeypatch.setattr(
+        config, "execution_project_root_for", lambda _key: "/Users/wesley/Repos/vocotrade"
+    )
+    assert _needs_trade_mcp("继续", "web:trade") is True
 
 
 def test_assemble_full_json():
