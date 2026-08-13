@@ -398,13 +398,21 @@ def _looks_like_secret_exfil(cmd: str) -> bool:
 _WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
 # 外部 MCP 写操作白名单:命中 → escalate 请批准(cron/无交互通道直接拒)。
-# 与 tools/lemlist_lite.py 的写工具一一对应,新增写工具时这里同步加。
+# 与精简 MCP 的全部远端改写工具一一对应,新增写工具时这里同步加。
 _MCP_WRITE_TOOLS = frozenset({
     "mcp__lemlist_lite__send_email",
     "mcp__lemlist_lite__add_campaign_lead",
     "mcp__lemlist_lite__delete_campaign_lead",
     "mcp__lemlist_lite__upsert_contact",
     "mcp__lemlist_lite__delete_contact",
+    "mcp__smartlead__create_campaign",
+    "mcp__smartlead__set_campaign_status",
+    "mcp__smartlead__set_campaign_sequences",
+    "mcp__smartlead__add_campaign_leads",
+    "mcp__smartlead__pause_campaign_lead",
+    "mcp__smartlead__resume_campaign_lead",
+    "mcp__smartlead__set_warmup",
+    "mcp__smartlead__reply_email_thread",
 })
 
 # 当前轮的工作目录(工作目录功能会在开轮时 set_cwd;未设则 None → 越界检查休眠)
