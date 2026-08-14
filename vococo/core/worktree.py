@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import os
 import re
 import shutil
@@ -19,6 +20,8 @@ from pathlib import Path
 
 from .. import config
 from ..memory import session_store
+
+_GIT_TIMEOUT_SEC = 8
 
 
 def _wt_base(root: str) -> Path:
@@ -36,7 +39,14 @@ async def _git(cwd: str, *args: str) -> tuple[int, str, str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        out, err = await proc.communicate()
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT_SEC)
+    except TimeoutError:
+        # iCloud/网络盘上的仓库偶尔会让 git 永久卡住；清理只是尽力而为，不能拖死 serve。
+        with suppress(ProcessLookupError):
+            proc.kill()
+        with suppress(Exception):
+            await proc.wait()
+        return 124, "", f"git 命令超时({_GIT_TIMEOUT_SEC}s)"
     except (OSError, ValueError) as e:
         return 127, "", str(e)
     return (

@@ -83,9 +83,9 @@ class RichSink(core.Sink):
         # 思考/正文/工具状态全由基类聚合,这里只负责刷新 rich.Live
         self.live.update(self._render())
 
-    async def done(self, reply: AgentReply) -> None:
+    async def done(self, reply: AgentReply, turn_id: int | None = None) -> None:
         self.reply = reply
-        await super().done(reply)  # 写入 answer 并 render
+        await super().done(reply, turn_id)  # 写入 answer 并 render
 
 
 async def run_tui() -> None:

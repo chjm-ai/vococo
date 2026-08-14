@@ -11,9 +11,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
+import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator, Union
 
 import anyio
@@ -90,11 +93,63 @@ def _external_mcp_for_task(user_text: str, session_key: str | None = None) -> se
             session_store.set_auto_external_mcp_names(session_key, names)
     return names
 
+
+def _is_cloud_sync_path(cwd: str | None) -> bool:
+    """iCloud Drive 的同步目录不能稳定作为 Claude CLI 的进程 cwd。"""
+    return bool(cwd and "/Library/Mobile Documents/" in str(cwd))
+
+
+def _cli_working_dir(cwd: str | None) -> tuple[str | None, str]:
+    """返回稳定的 CLI cwd，以及需要补进 system prompt 的项目路径说明。"""
+    if not _is_cloud_sync_path(cwd):
+        return cwd, ""
+    return (
+        str(config.ROOT_DIR),
+        "\n\n当前任务项目位于 iCloud 同步目录，Claude CLI 已从稳定目录启动以避免 iCloud "
+        "启动失败。需要读写项目文件时，必须使用以下绝对路径，不要假定当前工作目录：\n"
+        f"<project_path>{cwd}</project_path>",
+    )
+
 # ── 速率额度缓存 ──────────────────────────────────────────────────────────
 # SDK 在流式回复中会发出 RateLimitEvent(含 5h/7d 利用率+重置时间),
 # 这里缓存最新值供 /api/usage 等外部查询,无需额外 API 调用。
 # 结构:{rate_limit_type: {status, resets_at, utilization, overage_status}}
 _rate_limits: dict[str, dict] = {}
+
+# AI_BRAIN 在 iCloud 上被驱逐时 read/open 会卡住。超时后设全局熔断窗口，让后续
+# 首轮直接走最小 preset；窗口过后再尝试恢复完整记忆，而不是每次都等待超时。
+_prompt_load_unavailable_until = 0.0
+_prompt_refreshing: set[str] = set()
+
+
+def _prompt_cache_key(cwd: str | None) -> str:
+    return hashlib.sha256((cwd or "<default>").encode()).hexdigest()
+
+
+def _prompt_cache_file(cwd: str | None) -> Path:
+    return config.DATA_DIR / "prompt_cache" / f"{_prompt_cache_key(cwd)}.json"
+
+
+def _read_prompt_cache(cwd: str | None) -> dict | None:
+    """只读本地 data 缓存，不访问 iCloud。"""
+    try:
+        data = json.loads(_prompt_cache_file(cwd).read_text(encoding="utf-8"))
+        prompt = data.get("prompt")
+        return prompt if isinstance(prompt, dict) and isinstance(prompt.get("append"), str) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _write_prompt_cache(cwd: str | None, prompt: dict) -> None:
+    """原子写本地快照；缓存损坏时下次自动重建。"""
+    path = _prompt_cache_file(cwd)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"prompt": prompt}, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
 
 
 def get_rate_limits() -> dict[str, dict]:
@@ -307,6 +362,56 @@ def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
     if detail:
         return f"⚠️ 出了点问题:{detail[:120]}"
     return "⚠️ 出了点问题,请重试"
+
+
+async def _read_fresh_system_prompt(cwd: str | None, resume: str | None) -> dict | None:
+    """限时从来源文件生成提示词快照；超时返回 None。"""
+    global _prompt_load_unavailable_until
+    if time.monotonic() < _prompt_load_unavailable_until:
+        return None
+    try:
+        with anyio.fail_after(config.PROMPT_LOAD_TIMEOUT):
+            # abandon_on_cancel 很关键：iCloud 的同步 open() 不能被 Python 中断，
+            # 默认会等线程自己返回，超时形同虚设。丢弃等待后让本轮继续启动 CLI。
+            return await anyio.to_thread.run_sync(
+                functools.partial(build_system_prompt, cwd, cache_key=resume),
+                abandon_on_cancel=True,
+            )
+    except TimeoutError:
+        _prompt_load_unavailable_until = time.monotonic() + config.PROMPT_LOAD_BACKOFF
+        print(
+            f"⚠️ 读取 AI_BRAIN 超时，{config.PROMPT_LOAD_BACKOFF:.0f}s 内跳过记忆加载",
+            flush=True,
+        )
+        return None
+
+
+async def _refresh_system_prompt_cache(cwd: str | None) -> None:
+    """后台刷新来源文件；本轮始终继续使用当前本地快照。"""
+    key = _prompt_cache_key(cwd)
+    try:
+        prompt = await _read_fresh_system_prompt(cwd, None)
+        if prompt is not None:
+            await anyio.to_thread.run_sync(_write_prompt_cache, cwd, prompt)
+    finally:
+        _prompt_refreshing.discard(key)
+
+
+async def _load_system_prompt(cwd: str | None, resume: str | None) -> dict:
+    """本地快照优先；来源有改动由后台刷新，避免 iCloud 阻塞首字。"""
+    cached = _read_prompt_cache(cwd)
+    key = _prompt_cache_key(cwd)
+    if cached is not None:
+        # 下一轮之前尽力刷新。即便 iCloud 卡住，也只占后台线程，不阻断本轮模型启动。
+        if key not in _prompt_refreshing and time.monotonic() >= _prompt_load_unavailable_until:
+            _prompt_refreshing.add(key)
+            asyncio.create_task(_refresh_system_prompt_cache(cwd))
+        return cached
+    prompt = await _read_fresh_system_prompt(cwd, resume)
+    if prompt is not None:
+        await anyio.to_thread.run_sync(_write_prompt_cache, cwd, prompt)
+        return prompt
+    return {"type": "preset", "preset": "claude_code", "append": ""}
 
 
 # === 流式事件类型 ===
@@ -567,6 +672,10 @@ def _compat_base_key(
 # 注:danger.py 拦 run_in_background=true 拦不住这个默认异步——CLI 默认异步时模型入参里
 # 根本没这个字段,那道 deny 只是模型显式请求后台时的双保险。
 _FORCE_FOREGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
+# SDK 默认只缓冲 1MB 的 CLI 单条 NDJSON 消息。工具读取大文件或返回长结果时会超限，
+# 消息流被 SDK 中止，Web 端收不到 done 事件而一直显示“思考中”。16MB 足够覆盖这类
+# 正常工作负载，同时避免无限制缓冲。
+_SDK_MAX_BUFFER_SIZE = 16 * 1024 * 1024
 
 
 # CLI 子进程的 stderr 噪音过滤(2026-07-10):hook 撞上已关闭的流(轮被取消/client
@@ -741,9 +850,10 @@ async def stream_turn(
     # 软链,偶发"文件被驱逐到云端、访问要现拉"卡住同步 read_text 数秒到数分钟——若直接
     # 跑在事件循环里,这一次卡顿会冻结【所有】会话(2026-07-21/07-23 两次假死均系于此,
     # 见 gateway/watchdog.py 事故记录)。cache_key 命中时函数本身秒返回,进线程池的开销可忽略。
-    sys_prompt = await anyio.to_thread.run_sync(
-        functools.partial(build_system_prompt, cwd, cache_key=resume)
-    )
+    sys_prompt = await _load_system_prompt(cwd, resume)
+    cli_cwd, cloud_project_note = _cli_working_dir(cwd)
+    if cloud_project_note:
+        sys_prompt = {**sys_prompt, "append": sys_prompt.get("append", "") + cloud_project_note}
 
     effective_max_turns = max_turns or config.MAX_TURNS
 
@@ -774,10 +884,11 @@ async def stream_turn(
             # vococo 专属 skill(本地插件,见 config.PLUGIN_DIR):只在这里挂,
             # 不进 ~/.claude/skills,Claude Code/Codex/OpenCode 等其它工具看不到。
             plugins=[{"type": "local", "path": str(config.PLUGIN_DIR)}],
-            cwd=cwd,  # 项目会话→该文件夹当工作根(自动加载其 CLAUDE.md/.claude);None=进程默认目录
+            cwd=cli_cwd,  # iCloud 项目改从稳定目录启动，实际项目路径见 system prompt
             env=_turn_env(provider_env),  # 设置页供应商 base_url+key + 恒定强制前台开关(见 _turn_env)
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
             disallowed_tools=list(disallowed_tools or []),
+            max_buffer_size=_SDK_MAX_BUFFER_SIZE,
             stderr=_cli_stderr,  # 过滤 Bun 源码刷屏,见 _cli_stderr 顶部注释
         )
 

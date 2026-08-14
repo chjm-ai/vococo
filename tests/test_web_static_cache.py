@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from aiohttp import web
@@ -60,6 +61,22 @@ async def test_index_injects_asset_versions(static_app):
     # 裸引用不应残留
     assert '"/styles.css"' not in html
     assert '"/tool-card.js"' not in html
+
+
+@pytest.mark.anyio
+async def test_index_marks_cached_data_and_refreshes_cron_tools(static_app):
+    """离线时缓存不能伪装成在线；模型操作定时任务后立即重拉侧栏。"""
+    status, body, _ = await _get(static_app, "/")
+    assert status == 200
+    html = body.decode("utf-8")
+    assert 'id="syncState"' in html
+    # 2026-08-14 前端模块化:syncState 状态表在 app-core.js,cron 工具清单在 stream.js
+    static_dir = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static"
+    app_core = (static_dir / "app-core.js").read_text(encoding="utf-8")
+    stream = (static_dir / "stream.js").read_text(encoding="utf-8")
+    assert 'cached:["缓存数据"' in app_core
+    assert 'offline:["服务不可达"' in app_core
+    assert '"add_cron_job","delete_cron_job","set_cron_job_enabled"' in stream
 
 
 @pytest.mark.anyio

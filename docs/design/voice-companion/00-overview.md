@@ -76,15 +76,19 @@
   `gateway.adapters.web_push` 等)——单向依赖。
 - 现有代码**永远不 import** voice 模块,唯一例外是 2.2 表中 web.py 那 ≤5 行挂载钩子。
 
-### 2.4 移除清单(必须始终成立)
+### 2.4 移除清单(历史条款,已失效)
 
-彻底移除本功能 = 以下四步,之后 `uv run pytest` 全绿、serve 正常跑:
+> ⚠️ 2026-08-14 修订:本节写于语音伴聊的**实验期**,当时承诺「整段可 rm -rf 移除」。
+> 语音此后已转为正式功能(ADR-0004:Omni 为唯一免提管线),Web 主 UI 与语音深度
+> 共生(通话视图、任务状态条、TTS 播报都在主 SPA 内),下面这套「四步移除」
+> 不再成立;真要移除须按现状重新评估,别照抄旧清单。
 
-1. `rm -rf vococo/voice/ tests/test_voice_* docs/design/voice-companion/`
-2. 还原 web.py 的 ≤5 行、index.html 的 ≤15 行、config.py 的 ≤10 行、
-   (P1 后)agent.py 的 ≤10 行
-3. `rm -rf data/voice/`
-4. `.env` 删掉 `VOICE_` 前缀变量
+~~彻底移除本功能 = 以下四步,之后 `uv run pytest` 全绿、serve 正常跑:~~
+
+1. ~~`rm -rf vococo/voice/ tests/test_voice_* docs/design/voice-companion/`~~
+2. ~~还原 web.py 的 ≤5 行、index.html 的 ≤15 行、config.py 的 ≤10 行、(P1 后)agent.py 的 ≤10 行~~
+3. ~~`rm -rf data/voice/`~~
+4. ~~`.env` 删掉 `VOICE_` 前缀变量~~
 
 每期交付时,须在 PR/commit 说明里**重申当期结束后的移除清单**。
 

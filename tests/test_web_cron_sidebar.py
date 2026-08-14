@@ -69,6 +69,22 @@ async def test_sidebar_empty_then_create_shows_job(cron_web_app):
 
 
 @pytest.mark.anyio
+async def test_create_accepts_and_normalizes_cwd(cron_web_app, tmp_path):
+    async with TestClient(TestServer(cron_web_app)) as client:
+        cwd = tmp_path / "obsidian-project"
+        cwd.mkdir()
+        resp = await client.post(
+            "/cron/jobs/create",
+            json={
+                "name": "整理笔记", "prompt": "整理项目文档",
+                "schedule": {"kind": "cron", "expr": "0 8 * * *"}, "cwd": str(cwd),
+            },
+        )
+        assert resp.status == 200
+        assert (await resp.json())["job"]["cwd"] == str(cwd.resolve())
+
+
+@pytest.mark.anyio
 async def test_create_rejects_bad_cron_and_empty_fields(cron_web_app):
     async with TestClient(TestServer(cron_web_app)) as client:
         resp = await client.post(
@@ -170,6 +186,7 @@ async def test_update_edits_fields_and_sidebar_reflects_it(cron_web_app):
         assert updated["prompt"] == "汇总今天完成了什么"
         assert updated["schedule"] == {"kind": "cron", "expr": "0 21 * * *"}
         assert updated["target"] == {"platform": "web", "chat_id": "conv1"}
+        assert updated["cwd"] is None
         assert updated["id"] == job["id"]
         assert updated["conv"] == job["conv"]  # 编辑不改 id/conv
 

@@ -1,6 +1,6 @@
 # vococo 服务器版 产品思路
 
-> ⚠️ **已废弃,仅存档**(2026-08-06)。双模式路线已推翻,改走「两套代码」路线,见 `docs/design/trade-edition-plan.md`(VocoTrade)。本文件及其技术方案对应的 P0 代码已整体移除,存档锚点 `git tag server-edition-p0`。
+> ⚠️ **已废弃,仅存档**(2026-08-06)。双模式路线已推翻,改走「两套代码」路线,见 vocotrade 仓 `docs/design/trade-edition-plan.md`(VocoTrade;本仓副本 2026-08-14 删除)。本文件及其技术方案对应的 P0 代码已整体移除,存档锚点 `git tag server-edition-p0`。
 >
 > 2026-08-05 调研产出。基于 vococo 与 intertrade-bot(`~/Desktop/Repos/intertrade-bot`)两仓库代码现状,非凭空设计。
 > 目标:把 vococo 从「单用户本地个人助理」扩展为「多租户 SaaS」,作为跟客户交互的 AI 端口对外服务。

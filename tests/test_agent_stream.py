@@ -11,11 +11,75 @@ from vococo import config
 from vococo.core.agent import (
     ToolInput,
     _compact_threshold,
+    _load_system_prompt,
+    _external_mcp_for_task,
+    _read_prompt_cache,
+    _write_prompt_cache,
+    _cli_working_dir,
     _query_context_usage,
     _turn_env,
     assemble_tool_input,
     context_window,
 )
+
+
+def test_load_system_prompt_times_out_without_blocking_turn(monkeypatch):
+    """iCloud 卡在同步读文件时，必须放弃等待并让模型调用继续。"""
+    import vococo.core.agent as agent
+
+    async def stuck_reader(*_args, **_kwargs):
+        await anyio.sleep(1)
+
+    monkeypatch.setattr(config, "PROMPT_LOAD_TIMEOUT", 0.01)
+    monkeypatch.setattr(agent.anyio.to_thread, "run_sync", stuck_reader)
+
+    prompt = anyio.run(_load_system_prompt, "/tmp/project", "resume-id")
+
+    assert prompt == {"type": "preset", "preset": "claude_code", "append": ""}
+
+
+def test_load_system_prompt_skips_retry_during_backoff(monkeypatch, tmp_path):
+    import vococo.core.agent as agent
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+
+    called = False
+
+    async def reader(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return {"append": "unexpected"}
+
+    monkeypatch.setattr(agent.anyio.to_thread, "run_sync", reader)
+    monkeypatch.setattr(agent, "_prompt_load_unavailable_until", agent.time.monotonic() + 60)
+
+    prompt = anyio.run(_load_system_prompt, None, None)
+
+    assert called is False
+    assert prompt == {"type": "preset", "preset": "claude_code", "append": ""}
+
+
+def test_trade_mcp_only_for_explicit_data_task():
+    """项目目录不是加载条件；只有本轮明确的数据任务才请求外部 MCP。"""
+    assert _external_mcp_for_task("记录病情", "web:notes") == set()
+    assert _external_mcp_for_task("查 lemlist 的 campaign 回复", "web:notes") == {"lemlist"}
+
+
+def test_cloud_project_uses_stable_cli_cwd():
+    cloud = "/Users/wesley/Library/Mobile Documents/iCloud~md~obsidian/Documents/Wesley notes"
+    cli_cwd, note = _cli_working_dir(cloud)
+
+    assert cli_cwd == str(config.ROOT_DIR)
+    assert cloud in note
+
+
+def test_prompt_cache_is_local_and_persistent(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    prompt = {"type": "preset", "preset": "claude_code", "append": "项目规则"}
+
+    _write_prompt_cache("/iCloud/project", prompt)
+
+    assert _read_prompt_cache("/iCloud/project") == prompt
 
 
 def test_assemble_full_json():

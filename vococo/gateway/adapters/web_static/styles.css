@@ -100,6 +100,11 @@
     font-size:20px;font-weight:700;color:var(--text);cursor:pointer;
     transition:color .15s}
   #sidebar .shead .brand:hover{color:var(--accent)}
+  .syncstate{flex:none;max-width:76px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    padding:2px 6px;border:1px solid var(--line);border-radius:999px;font-size:10px;line-height:14px;color:var(--muted)}
+  .syncstate.syncing,.syncstate.cached{background:var(--panel)}
+  .syncstate.online{color:#347a58;border-color:#8dc9a8;background:#eef9f2}
+  .syncstate.offline{color:#ad4e4e;border-color:#e5aaaa;background:#fff2f2}
   /* 列表行统一规范:所有可点行(＋新对话 / 分组头 / 会话)共用同一内边距 + 圆角,
      hover 的灰底矩形尺寸与圆角完全一致 */
   /* #convList 是固定外框(Tab 栏 + 列表),只有 #convBody 滚动 */
@@ -642,6 +647,17 @@
   .audiorow .atranscript{margin-top:4px;font-size:12.5px;color:var(--dim)}
   .audiorow .atranscript summary{cursor:pointer;color:var(--accent)}
   .audiorow .atranscript div{margin-top:4px;white-space:pre-wrap;color:var(--text)}
+  /* AI 消息底部:回复时间 + 复制/重新生成小按钮,见 buildTurnFoot */
+  .turnfoot{display:flex;align-items:center;gap:2px;margin-top:4px;min-height:24px}
+  .turnfoot .tftime{font-size:11px;color:var(--dim2);margin-right:2px;font-variant-numeric:tabular-nums;user-select:none}
+  .turnfoot .tfbtn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;
+    border-radius:6px;color:var(--dim);cursor:pointer;opacity:.6;flex-shrink:0;border:none;background:none;
+    transition:background .15s,color .15s,opacity .15s}
+  .turnfoot .tfbtn:hover{opacity:1;background:var(--panel2);color:var(--text)}
+  .turnfoot .tfbtn:active{transform:scale(.9)}
+  .turnfoot .tfbtn:disabled{opacity:.3;cursor:default}
+  .turnfoot .tfbtn .ic{width:14px;height:14px}
+  .turnfoot .tfregen:disabled .ic{animation:spin .8s linear infinite}
 
   /* 图片大图查看器:点聊天里的图放大,支持上/下一张与关闭 */
   #imgViewer{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.88)}

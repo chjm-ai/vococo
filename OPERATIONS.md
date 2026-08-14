@@ -5,15 +5,10 @@
 
 ## 安全模型细节
 
-工具调用分三档(概念定义见 CONTEXT.md「危险分级 / 审批闸」):
-
-| 档位 | 触发 | 行为 |
-|------|------|------|
-| `block` | 删整根 / 格式化磁盘 / fork 炸弹 | 直接拦 |
-| `escalate` | 写项目 cwd 外的文件、`git push`、`git reset --hard`、`rm -rf`、装包、`curl\|sh` | 有交互通道时请用户批准 |
-| `allow` | 其余 | 放行 |
-
+三档表(block / escalate / allow)的唯一维护处在 [AGENTS.md](AGENTS.md)「安全模型」
+(每个 AI 会话必读的那份);概念定义见 CONTEXT.md「危险分级 / 审批闸 / Hard Guard」。
 判定逻辑在 [tools/danger.py](vococo/tools/danger.py),经 PreToolUse hook 生效。
+本节不复述表格——之前两处各存一份,规则改动时必然漂移。
 
 ## 运维坑(踩过的,别重犯)
 

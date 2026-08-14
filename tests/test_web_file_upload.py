@@ -97,7 +97,8 @@ async def test_upload_file_over_size_limit_rejected(file_app, adapter, monkeypat
 
 
 def test_sent_bubble_lists_file_even_when_message_has_text():
-    html = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/index.html").read_text(
+    # 2026-08-14 前端模块化:发送逻辑在 composer.js(原 index.html 内联)
+    html = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/composer.js").read_text(
         encoding="utf-8"
     )
 

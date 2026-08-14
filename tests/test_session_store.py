@@ -12,6 +12,21 @@ def test_append_and_load_recent(isolated):
     assert history[-1].assistant == "回二"
 
 
+def test_recover_interrupted_turns_finishes_pending_rows(isolated):
+    from vococo.memory import session_store
+
+    pending = session_store.start_turn("web:pending", "还在吗")
+    session_store.flush_draft(pending, "回复到一半")
+    finished = session_store.start_turn("web:done", "完成了吗")
+    session_store.finish_turn(finished, "已完成")
+
+    assert session_store.recover_interrupted_turns() == 1
+    row = session_store.load_history("web:pending")[-1]
+    assert row["pending"] is False
+    assert row["assistant"] == "⚠️ 服务重启导致本轮回复中断，请重新发送。"
+    assert "draft" not in row
+
+
 def test_sessions_isolated_by_key(isolated):
     from vococo.memory import session_store
 
@@ -309,3 +324,47 @@ def test_clear_purges_audio_files(isolated, monkeypatch):
 
     session_store.clear("web:1")
     assert not audio_file.exists()
+
+
+def test_load_history_includes_ts(isolated):
+    """/turn/regenerate 之类的"重新生成"要在前端就地显示回复时刻,得靠 load_history
+    把 turns.ts 带出来(以前这一列存在库里但没进 SELECT)。"""
+    from vococo.memory import session_store
+
+    turn_id = session_store.start_turn("web:1", "现在几点")
+    session_store.finish_turn(turn_id, "下午三点")
+
+    row = session_store.load_history("web:1")[-1]
+    assert isinstance(row["ts"], float) and row["ts"] > 0
+
+
+def test_delete_last_turn_removes_latest_finished_turn(isolated):
+    from vococo.memory import session_store
+
+    turn_id = session_store.start_turn("web:1", "重新说一遍")
+    session_store.finish_turn(turn_id, "不满意的回答")
+
+    user_text = session_store.delete_last_turn("web:1", turn_id)
+
+    assert user_text == "重新说一遍"
+    assert session_store.load_history("web:1") == []
+
+
+def test_delete_last_turn_rejects_stale_or_pending_turn(isolated):
+    """只能删"最新且已完成"那一轮——防止过期按钮误删中间历史,或误删还在
+    流式输出中的一轮(assistant_text 还是空串)。"""
+    from vococo.memory import session_store
+
+    older = session_store.start_turn("web:1", "第一句")
+    session_store.finish_turn(older, "回一")
+    newer = session_store.start_turn("web:1", "第二句")
+    session_store.finish_turn(newer, "回二")
+
+    # 拿着不是最新一轮的 id 去删:拒绝,数据原样保留
+    assert session_store.delete_last_turn("web:1", older) is None
+    assert len(session_store.load_history("web:1")) == 2
+
+    # 最新一轮存在但还没写完(pending):同样拒绝
+    pending = session_store.start_turn("web:1", "第三句")
+    assert session_store.delete_last_turn("web:1", pending) is None
+    assert len(session_store.load_history("web:1")) == 3

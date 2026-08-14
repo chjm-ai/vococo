@@ -85,9 +85,11 @@ def test_accept_suggestion_preserves_project_cwd(sugg_env):
         job_spec=_spec(), dedup_key="project-cwd",
     )
     sid = suggestions.list_pending()[0]["id"]
-    job = suggestions.accept_suggestion(sid, cwd="/tmp/project")
+    project = sugg_env / "project"
+    project.mkdir()
+    job = suggestions.accept_suggestion(sid, cwd=str(project))
     assert job is not None
-    assert job["cwd"] == "/tmp/project"
+    assert job["cwd"] == str(project)
 
 
 def test_accept_nonpending_returns_none(sugg_env):
@@ -121,11 +123,11 @@ def test_get_by_index_and_title(sugg_env):
 
 
 def test_catalog_seed_idempotent(sugg_env):
-    from vococo.cron import suggestion_catalog, suggestions
+    from vococo.cron import suggestions
 
-    n1 = suggestion_catalog.seed()
+    n1 = suggestions.seed_catalog()
     assert n1 >= 1
-    assert suggestion_catalog.seed() == 0  # 第二次全被 dedup 跳过
+    assert suggestions.seed_catalog() == 0  # 第二次全被 dedup 跳过
     assert len(suggestions.list_pending()) == n1
 
 
@@ -150,10 +152,10 @@ def test_suggest_automation_bad_cron(sugg_env):
 
 
 def test_suggest_command_lists_and_accepts(sugg_env):
-    from vococo.cron import suggestion_catalog
+    from vococo.cron import suggestions
     from vococo.gateway import core
 
-    suggestion_catalog.seed()
+    suggestions.seed_catalog()
     # 无参 → 出 Choice(带接受/忽略按钮)
     out = core.handle_command("/suggest", "web:c1", "m")
     assert out.choice is not None
@@ -267,6 +269,30 @@ def test_add_cron_job_needs_approval(sugg_env):
     assert jobs[0]["schedule"]["kind"] == "once"
     assert jobs[0]["cwd"] == str(config.ROOT_DIR)
     assert jobs[0]["enabled"] is True
+
+
+def test_add_cron_job_accepts_explicit_cwd(sugg_env, tmp_path):
+    from vococo.cron import scheduler
+    from vococo.tools import builtin
+
+    cwd = tmp_path / "obsidian-project"
+    cwd.mkdir()
+    out = _text(_run_approved(lambda: builtin.add_cron_job.handler({
+        "name": "整理笔记", "prompt": "整理项目文档", "run_in_minutes": 60, "cwd": str(cwd),
+    })))
+    assert "已创建" in out
+    assert scheduler.load_jobs()[0]["cwd"] == str(cwd.resolve())
+
+
+def test_add_cron_job_rejects_invalid_cwd(sugg_env):
+    from vococo.cron import scheduler
+    from vococo.tools import builtin
+
+    out = _text(asyncio.run(builtin.add_cron_job.handler({
+        "name": "x", "prompt": "y", "run_in_minutes": 5, "cwd": "relative/path",
+    })))
+    assert "绝对路径" in out
+    assert scheduler.load_jobs() == []
 
 
 def test_add_cron_job_validation(sugg_env):

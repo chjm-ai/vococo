@@ -556,10 +556,6 @@ async def _handle_tasks_list(request: web.Request) -> web.Response:
     return await task_routes.handle_tasks_list(_legacy_task_request(request))
 
 
-async def _handle_sdk_tasks_list(request: web.Request) -> web.Response:
-    return await task_routes.handle_sdk_tasks_list(request)
-
-
 async def _handle_task_detail(request: web.Request) -> web.Response:
     return await task_routes.handle_task_detail(request)
 
@@ -585,7 +581,6 @@ def register_routes(app: web.Application) -> None:
             web.post("/voice/clear", _handle_clear),
             web.post("/voice/debug", _handle_debug),
             web.get("/voice/tasks", _handle_tasks_list),
-            web.get("/voice/sdk-tasks", _handle_sdk_tasks_list),
             web.get("/voice/tasks/stream", _handle_tasks_stream),
             web.get("/voice/tasks/{task_id}", _handle_task_detail),
             web.post("/voice/tasks/{task_id}/stop", _handle_task_stop),
