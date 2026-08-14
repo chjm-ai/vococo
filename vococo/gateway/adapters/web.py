@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import functools
 import hmac
 import json
 import mimetypes
@@ -31,12 +32,12 @@ from aiohttp import web
 
 from ... import config, providers
 from ...core import title
-from ...core.agent import AgentReply, FileAttachment, get_rate_limits
+from ...core.agent import AgentReply, FileAttachment
 from ...memory import session_store
 from .. import git_status, settings_store
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
 from .base import AudioAttachment, ImageAttachment, Incoming
-from .usage_local import get_local_claude_usage
+from ..web_auth import check_web_auth
 from .web_push import PUSH
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
@@ -320,6 +321,27 @@ def _compressed_json(data: dict) -> web.Response:
     return resp
 
 
+def _authed(fn):
+    """handler 装饰器:先过鉴权闸(_guard),未授权直接 401,handler 本体不再写这两行。"""
+    @functools.wraps(fn)
+    async def wrapper(self, request):
+        if (g := self._guard(request)) is not None:
+            return g
+        return await fn(self, request)
+    return wrapper
+
+
+def _json_body(fn):
+    """handler 装饰器:解析 POST JSON,坏 body 直接 400;好 body 注入为第三个位置参数。"""
+    @functools.wraps(fn)
+    async def wrapper(self, request):
+        body, err = await self._read_json(request)
+        if err is not None:
+            return err
+        return await fn(self, request, body)
+    return wrapper
+
+
 class WebAdapter:
     platform = "web"
 
@@ -362,19 +384,13 @@ class WebAdapter:
         self._model_switch_callback = cb
 
     # ── 认证 ────────────────────────────────────────────────────────────
+    # 规则实现收在 gateway/web_auth.py(与 task_routes 共用);这里只留两个薄委托,
+    # 保住既有调用面(_authed 装饰器走 _guard;SSE 走 _ok_token 要纯文本 401)。
     def _ok_token(self, request: web.Request) -> bool:
-        if not config.WEB_AUTH_TOKEN:
-            return True  # 未设口令 = 不校验(仅本机调试;非本机绑定时启动已 fail-closed)
-        # 只认请求头,不再收 ?token= query:query 会进 cloudflared 访问日志 / 浏览器历史 /
-        # Referer,一旦泄露等于交出控制权。前端(含 SSE 的 FetchSSE)本就走 X-Auth-Token 头。
-        # 用 hmac.compare_digest 常量时间比较,堵住按字节时序爆破口令(审计 #3 / 2-3)。
-        tok = request.headers.get("X-Auth-Token") or ""
-        return hmac.compare_digest(tok, config.WEB_AUTH_TOKEN)
+        return check_web_auth(request) is None
 
     def _guard(self, request: web.Request) -> web.Response | None:
-        if not self._ok_token(request):
-            return web.json_response({"error": "unauthorized"}, status=401)
-        return None
+        return check_web_auth(request)
 
     async def _handle_healthz(self, request: web.Request) -> web.Response:
         """本机存活探针：不经过鉴权，且不泄露配置或会话数据。"""
@@ -674,12 +690,9 @@ class WebAdapter:
             self._clients.discard(q)
         return resp
 
-    async def _handle_send(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
+    @_authed
+    @_json_body
+    async def _handle_send(self, request: web.Request, body: dict) -> web.Response:
         conv = str(body.get("conv") or "main")
         text = (body.get("text") or "").strip()
         images = [
@@ -766,13 +779,10 @@ class WebAdapter:
         跟用户自己在浏览器里发消息完全等价(见 gateway/web_bridge.py)。"""
         await self._ingest(conv, text)
 
-    async def _handle_model_switch(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_model_switch(self, request: web.Request, body: dict) -> web.Response:
         """静默切模型：不走命令管道、不触发任何 SSE/推送通知。直接落库。"""
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         conv = str(body.get("conv") or "main")
         model = (body.get("model") or "").strip()
         if not model:
@@ -804,12 +814,9 @@ class WebAdapter:
         # 广播让各客户端刷新侧边栏/标题栏(前端收到 type=title 只做 loadConvs)
         self._emit({"conv": conv, "type": "title", "title": new_title})
 
-    async def _handle_abort(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
+    @_authed
+    @_json_body
+    async def _handle_abort(self, request: web.Request, body: dict) -> web.Response:
         conv = str(body.get("conv") or "main")
         session_key = config.resolve_session_key("web", conv)
         stopped = bool(self._cancel_callback and self._cancel_callback(session_key))
@@ -835,20 +842,18 @@ class WebAdapter:
                 stopped = stopped or ok
         return web.json_response({"ok": True, "stopped": stopped})
 
+    @_authed
     async def _handle_conversations(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
         convs = _rows_with_conv("web:")
         # 主会话(与 TG/CLI 共享的统一会话)固定置顶,conv id 用 "main"
         main = session_store.session_summary(config.resolve_session_key("web", "main"))
         main.update(key="main", title="主会话", pinned=True, conv="main")
         return _compressed_json({"main": main, "conversations": convs})
 
+    @_authed
     async def _handle_conv_search(self, request: web.Request) -> web.Response:
         """侧边栏全局搜索(⌘F):标题优先、正文其次,含归档会话;被删除的
         会话已物理删除,天然不在结果里。"""
-        if (g := self._guard(request)) is not None:
-            return g
         q = (request.query.get("q") or "").strip()
         if not q:
             return web.json_response({"results": []})
@@ -867,6 +872,7 @@ class WebAdapter:
                     it["title"] = row["title"]
         return web.json_response({"results": items})
 
+    @_authed
     async def _handle_voice_sidebar(self, request: web.Request) -> web.Response:
         """侧边栏"语音任务"固定分组:主语音会话 + 语音派发的各后台任务会话。
 
@@ -880,8 +886,6 @@ class WebAdapter:
         test_voice_sidebar_task_row_survives_missing_task_row)时保留展示——判不出
         origin,历史上这种情况本就只可能是语音任务的残留数据,不因为判不出就隐藏。
         """
-        if (g := self._guard(request)) is not None:
-            return g
         from ...core import tasks as bg_tasks  # 懒加载,避免非任务场景也引入这块
 
         main = session_store.session_summary("voice-chat:main")
@@ -899,18 +903,15 @@ class WebAdapter:
             task_convs.append(c)
         return _compressed_json({"main": main, "tasks": task_convs})
 
-    async def _handle_voice_task_cancel(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_voice_task_cancel(self, request: web.Request, body: dict) -> web.Response:
         """侧边栏「语音任务」行上的停止按钮:停一个后台任务(排队中直接置
         cancelled;运行中打断当前这轮并等收尾落库)。跟 voice_cancel_task 走同一套
         task_runner.cancel 逻辑,前端只传完整 conv(task:<id>),不猜字段。"""
-        if (g := self._guard(request)) is not None:
-            return g
         from ...core import task_runner as bg_task_runner  # 懒加载,同 _handle_voice_sidebar
         from ...core import tasks as bg_tasks
 
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         conv = str(body.get("conv") or "")
         task_id = bg_tasks.task_id_from_session_key(conv) or conv
         row = bg_tasks.get(task_id)
@@ -939,12 +940,11 @@ class WebAdapter:
                                   "message": "已停止"})
 
     # ── 定时任务 ─────────────────────────────────────────────────────────
+    @_authed
     async def _handle_cron_sidebar(self, request: web.Request) -> web.Response:
         """侧边栏"定时任务"分组:每个任务一条专属会话(task:<job_id>,job_id 本身
         就复用作统一后台任务引擎的 task_id,见 core/tasks.py 的 origin 字段说明),
         跟"语音任务"同一个模板。只在有任务时前端才渲染这个分组。"""
-        if (g := self._guard(request)) is not None:
-            return g
         from ...cron import scheduler
 
         jobs = scheduler.load_jobs()
@@ -973,16 +973,13 @@ class WebAdapter:
             rows.append(row)
         return _compressed_json({"jobs": rows})
 
-    async def _handle_cron_create(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_cron_create(self, request: web.Request, body: dict) -> web.Response:
         """管理界面直接新建定时任务(不经过建议/审批——用户在管理界面上的操作本身
         就是明确的第一方意图)。"""
-        if (g := self._guard(request)) is not None:
-            return g
         from ...cron import scheduler
 
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         name = (body.get("name") or "").strip()
         prompt = (body.get("prompt") or "").strip()
         schedule = body.get("schedule")
@@ -1005,15 +1002,12 @@ class WebAdapter:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response({"job": job})
 
-    async def _handle_cron_update(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_cron_update(self, request: web.Request, body: dict) -> web.Response:
         """管理界面编辑已有定时任务(名称/指令/调度/推送目标),同样不经过审批。"""
-        if (g := self._guard(request)) is not None:
-            return g
         from ...cron import scheduler
 
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         job_id = (body.get("id") or "").strip()
         name = (body.get("name") or "").strip()
         prompt = (body.get("prompt") or "").strip()
@@ -1042,14 +1036,11 @@ class WebAdapter:
             return web.json_response({"error": "任务不存在"}, status=404)
         return web.json_response({"job": job})
 
-    async def _handle_cron_set_enabled(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
+    @_authed
+    @_json_body
+    async def _handle_cron_set_enabled(self, request: web.Request, body: dict) -> web.Response:
         from ...cron import scheduler
 
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         job_id = (body.get("id") or "").strip()
         enabled = bool(body.get("enabled"))
         jobs = scheduler.load_jobs()
@@ -1062,14 +1053,11 @@ class WebAdapter:
         scheduler.save_jobs(jobs)
         return web.json_response({"ok": True, "job": job})
 
-    async def _handle_cron_delete(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
+    @_authed
+    @_json_body
+    async def _handle_cron_delete(self, request: web.Request, body: dict) -> web.Response:
         from ...cron import scheduler
 
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         job_id = (body.get("id") or "").strip()
         jobs = scheduler.load_jobs()
         job = next((j for j in jobs if j.get("id") == job_id), None)
@@ -1083,10 +1071,9 @@ class WebAdapter:
         return web.json_response({"ok": True})
 
     # ── 项目 ─────────────────────────────────────────────────────────────
+    @_authed
     async def _handle_projects(self, request: web.Request) -> web.Response:
         """项目列表(侧边栏按项目分组用)。"""
-        if (g := self._guard(request)) is not None:
-            return g
         return _compressed_json({"projects": session_store.list_projects()})
 
     @staticmethod
@@ -1113,6 +1100,7 @@ class WebAdapter:
                 return True
         return False
 
+    @_authed
     async def _handle_browse(self, request: web.Request) -> web.Response:
         """服务端目录浏览器:列出某目录下的子文件夹(默认从用户主目录起)。
 
@@ -1120,8 +1108,6 @@ class WebAdapter:
         主目录 + 已登记项目目录的子树内**(审计 web#2 / 2-4):越界的 ?dir=/、
         ?dir=/etc 会被夹回主目录,避免把整块硬盘目录结构暴露出去。
         """
-        if (g := self._guard(request)) is not None:
-            return g
         roots = self._browse_roots()
         home = roots[0] if roots else Path.home()
         raw = request.query.get("dir") or str(home)
@@ -1150,13 +1136,10 @@ class WebAdapter:
             parent = str(base.parent)
         return web.json_response({"dir": str(base), "parent": parent, "entries": entries})
 
-    async def _handle_project_create(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_project_create(self, request: web.Request, body: dict) -> web.Response:
         """新建/复活项目:校验路径是真实目录 → 入库,返回项目信息。"""
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         path = (body.get("path") or "").strip()
         if not path:
             return web.json_response({"error": "路径不能为空"}, status=400)
@@ -1165,47 +1148,37 @@ class WebAdapter:
             return web.json_response({"error": f"不是有效目录:{norm}"}, status=400)
         return web.json_response({"project": session_store.upsert_project(norm)})
 
-    async def _handle_project_remove(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_project_remove(self, request: web.Request, body: dict) -> web.Response:
         """软移除项目:仅从列表隐藏,文件夹与会话历史都不动。"""
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         h = (body.get("hash") or "").strip()
         if h:
             session_store.hide_project(h)
         return web.json_response({"ok": True})
 
-    async def _handle_project_reorder(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_project_reorder(self, request: web.Request, body: dict) -> web.Response:
         """侧边栏拖拽排序落库:body={"order": [hash, ...]},按新顺序整体覆盖。"""
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         order = body.get("order")
         if not isinstance(order, list):
             return web.json_response({"error": "order 必须是数组"}, status=400)
         session_store.reorder_projects([str(h) for h in order])
         return web.json_response({"ok": True})
 
-    async def _handle_conv_pin(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_conv_pin(self, request: web.Request, body: dict) -> web.Response:
         """置顶/取消置顶会话:body={"conv": ..., "pinned": bool}。"""
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         conv = str(body.get("conv") or "")
         if not conv:
             return web.json_response({"error": "conv 不能为空"}, status=400)
         session_store.set_conv_pinned(config.resolve_session_key("web", conv), bool(body.get("pinned")))
         return web.json_response({"ok": True})
 
+    @_authed
     async def _handle_models(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
         # 模型清单 = 官方档 + 设置页里配好的 DeepSeek/Kimi 等(available_models);
         # label 带描述(如订阅/API 标签),前端 renderModelPop 直接展示。
         # default=当前激活的模型(跟随设置页默认或 config.MODEL)。
@@ -1231,13 +1204,10 @@ class WebAdapter:
             }
         )
 
-    async def _handle_effort_switch(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_effort_switch(self, request: web.Request, body: dict) -> web.Response:
         """静默切指定模型的思考深度；agent 下一条消息即按该模型的值生效。"""
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         effort = (body.get("effort") or "").strip()
         model = (body.get("model") or "").strip()
         if not model:
@@ -1255,9 +1225,8 @@ class WebAdapter:
         settings_store.set_web_effort(effort, model=model)
         return web.json_response({"ok": True, "model": model, "effort": effort})
 
+    @_authed
     async def _handle_commands(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
         # 斜杠命令清单 = COMMAND_LIST(单一来源,和 TG /help、setMyCommands 共用),
         # 供输入框 "/" 触发的快捷菜单渲染 + 前缀过滤。
         # skills 另开一段(带分隔线):只列当前已启用、对 agent 可见的,和
@@ -1271,110 +1240,18 @@ class WebAdapter:
         )
 
     # ── 订阅配额查询 ───────────────────────────────────────────────────────
+    @_authed
     async def _handle_api_usage(self, request: web.Request) -> web.Response:
         """GET /api/usage — 查询当前模型的订阅配额(5h/7d 利用率+重置时间)。
 
-        Claude 订阅:数据来自 SDK 流式回复中的 RateLimitEvent(已缓存)。
-        Kimi 订阅:主动调 api.kimi.com/coding/v1/usages。
-        API 按量计费(DeepSeek 等):返回 {type:"api"}。
+        各供应商(Kimi/Codex/Claude/按量 API)的查询与合并逻辑收在
+        providers.usage_for_model,这里只做 HTTP 壳。
         """
-        if (g := self._guard(request)) is not None:
-            return g
-
-        model = (request.query.get("model") or "").strip()
-        if not model:
-            model = providers.resolve(None, config.MODEL)[0]
-
-        # Kimi 订阅(api.kimi.com);providers 模块内部处理 web_providers 条目的
-        # snake_case/camelCase 归一化,这里只拿到规整好的 api_key。
-        api_key = providers.subscription_api_key_for_model(model)
-        if api_key is not None:
-            if api_key:
-                try:
-                    data = await providers.kimi_usage(api_key)
-                    return web.json_response(data)
-                except Exception as ex:
-                    return web.json_response(
-                        {"provider": "kimi", "error": str(ex)}, status=502
-                    )
-            return web.json_response({"provider": "kimi", "type": "api"})
-
-        # Codex OAuth 代理(本地,GPT 订阅):经代理 management api-call 转发
-        # chatgpt.com/backend-api/wham/usage 查额度(见 providers.codex_usage)。
-        mgmt = providers.codex_mgmt_for_model(model)
-        if mgmt is not None:
-            mgmt_key, base_url = mgmt
-            try:
-                data = await providers.codex_usage(mgmt_key, base_url)
-                return web.json_response(data)
-            except Exception as ex:
-                return web.json_response(
-                    {"provider": "codex", "error": str(ex)}, status=502
-                )
-
-        # Claude 官方订阅:优先用 SDK 缓存的 RateLimitEvent(官方精确值),
-        # 若 utilization 缺失则合并本地日志估算值作兜底,确保始终有具体百分比。
-        p_entry = providers.lookup_provider_by_model(model)
-        if not p_entry or p_entry.get("name", "").lower() in ("claude", "official", "anthropic"):
-            official = get_rate_limits()
-            local = await get_local_claude_usage()
-
-            five_off = (official.get("five_hour") or {}) if isinstance(official, dict) else {}
-            five_loc = (local.get("limits", {}).get("five_hour") or {}) if local else {}
-
-            # 官方有利用率就用官方的;否则退回本地估算,但要明确标注来源
-            source = "official"
-            if five_off.get("utilization") is not None:
-                merged = dict(five_off)
-            elif local:
-                merged = dict(five_loc)
-                source = "local_estimate"
-            else:
-                merged = dict(five_off)
-
-            # resets_at 两边可能都有,取官方优先
-            if not merged.get("resets_at") and five_off.get("resets_at"):
-                merged["resets_at"] = five_off["resets_at"]
-            if not merged.get("resets_at") and five_loc.get("resets_at"):
-                merged["resets_at"] = five_loc["resets_at"]
-
-            # 7d 窗口同样合并
-            seven_off = (official.get("seven_day") or {}) if isinstance(official, dict) else {}
-            seven_loc = (local.get("limits", {}).get("seven_day") or {}) if local else {}
-            if seven_off.get("utilization") is not None:
-                merged_seven = dict(seven_off)
-                seven_source = "official"
-            elif local:
-                merged_seven = dict(seven_loc)
-                seven_source = "local_estimate"
-            else:
-                merged_seven = dict(seven_off)
-                seven_source = None
-
-            payload: dict = {
-                "provider": "claude",
-                "source": source,
-                "limits": {"five_hour": merged, "seven_day": merged_seven},
-            }
-            if local:
-                # 本地估算详情给前端 hover 卡片用
-                payload["local"] = local.get("local")
-                payload["forecast"] = local.get("forecast")
-                payload["pace"] = local.get("pace")
-                payload["local_history"] = local.get("local_history")
-                payload["confidence"] = local.get("confidence")
-
-            # 标注 7d 数据来源(如果存在)
-            if merged_seven:
-                merged_seven["source"] = seven_source
-            merged["source"] = source
-
-            return web.json_response(payload)
-
-        # 其他(DeepSeek/Moonshot API 等):按量计费,无配额
-        return web.json_response({"provider": "api", "type": "api"})
+        payload, status = await providers.usage_for_model(request.query.get("model"))
+        return web.json_response(payload, status=status)
 
     # ── 语音转文字 ───────────────────────────────────────────────────────
+    @_authed
     async def _handle_transcribe(self, request: web.Request) -> web.Response:
         """收手机录音 → 调阿里 DashScope 转成文字回给前端(填进输入框)。
 
@@ -1385,8 +1262,6 @@ class WebAdapter:
         """
         from ...voice import stt as voice_stt  # 懒加载,避免非语音场景也引入这个包
 
-        if (g := self._guard(request)) is not None:
-            return g
         if not config.DASHSCOPE_API_KEY:
             return web.json_response(
                 {"error": "未配置语音转写:请在 .env 设 DASHSCOPE_API_KEY"},
@@ -1416,6 +1291,7 @@ class WebAdapter:
         for k in stale:
             self._pending_audio.pop(k, None)
 
+    @_authed
     async def _handle_upload_audio(self, request: web.Request) -> web.Response:
         """收音频文件 → 秒存暂存(只存不转写),返回 id 给前端;/send 时再现场转写。
 
@@ -1425,8 +1301,6 @@ class WebAdapter:
         """
         from ...voice import stt as voice_stt  # 懒加载,同 _handle_transcribe
 
-        if (g := self._guard(request)) is not None:
-            return g
         audio, filename, ctype = await voice_stt.read_audio(request)
         if not audio:
             return web.json_response({"error": "没收到音频"}, status=400)
@@ -1449,10 +1323,9 @@ class WebAdapter:
         for k in stale:
             self._pending_files.pop(k, None)
 
+    @_authed
     async def _handle_upload_file(self, request: web.Request) -> web.Response:
         """接收任意类型文件并临时保存，实际兼容性留给模型/API 判断。"""
-        if (g := self._guard(request)) is not None:
-            return g
         reader = await request.multipart()
         part = await reader.next()
         while part is not None and part.name != "file":
@@ -1474,18 +1347,16 @@ class WebAdapter:
         self._pending_files[file_id] = (data, filename, media_type, time.monotonic())
         return web.json_response({"id": file_id, "filename": filename})
 
+    @_authed
     async def _handle_audio(self, request: web.Request) -> web.StreamResponse:
         """回显某轮用户发的音频(落盘在 config.AUDIO_DIR);name 经白名单校验挡路径穿越。"""
-        if (g := self._guard(request)) is not None:
-            return g
         p = session_store.audio_path(request.query.get("name", ""))
         if p is None:
             return web.json_response({"error": "not found"}, status=404)
         return web.FileResponse(p, headers={"Cache-Control": "max-age=31536000, immutable"})
 
+    @_authed
     async def _handle_history(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
         conv = request.query.get("conv", "main")
         key = config.resolve_session_key("web", conv)
         turns = session_store.load_history(key, limit=40)
@@ -1501,10 +1372,9 @@ class WebAdapter:
         resp.enable_compression()  # 源站→CF 边缘这段也压缩着走,别指望 CF 兜底
         return resp
 
+    @_authed
     async def _handle_turn_events(self, request: web.Request) -> web.Response:
         """按 turn id 单独取某一轮的完整过程时间线(工具卡片懒加载:点开才拉)。"""
-        if (g := self._guard(request)) is not None:
-            return g
         conv = request.query.get("conv", "main")
         try:
             turn_id = int(request.query.get("id", ""))
@@ -1526,19 +1396,17 @@ class WebAdapter:
         resp.enable_compression()
         return resp
 
+    @_authed
     async def _handle_image(self, request: web.Request) -> web.StreamResponse:
         """回显某轮用户发的图片(落盘在 config.IMAGES_DIR);name 经白名单校验挡路径穿越。"""
-        if (g := self._guard(request)) is not None:
-            return g
         p = session_store.image_path(request.query.get("name", ""))
         if p is None:
             return web.json_response({"error": "not found"}, status=404)
         # 图片按内容寻址(文件名带 turn_id,内容不变)→ 长缓存,刷新不重复拉
         return web.FileResponse(p, headers={"Cache-Control": "max-age=31536000, immutable"})
 
+    @_authed
     async def _handle_rename(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
         body = await request.json()
         conv = str(body.get("conv") or "")
         title = (body.get("title") or "").strip()
@@ -1546,6 +1414,7 @@ class WebAdapter:
             session_store.set_title(config.resolve_session_key("web", conv), title)
         return web.json_response({"ok": True})
 
+    @_authed
     async def _handle_conv_duplicate(self, request: web.Request) -> web.Response:
         """POST /conv/duplicate  {conv}  复制会话:内容全量搬到新会话,标题加「副本」。
 
@@ -1553,8 +1422,6 @@ class WebAdapter:
         任务/语音会话(task:/voice-chat:)复制出来是独立普通 web 会话,不会撞 key。
         返回 {conv: 新会话id, title: 新标题};前端据此刷新列表并打开副本。
         """
-        if (g := self._guard(request)) is not None:
-            return g
         body = await request.json()
         conv = str(body.get("conv") or "")
         if not conv:
@@ -1571,9 +1438,8 @@ class WebAdapter:
         session_store.duplicate_session(src_key, dst_key, title + "副本")
         return web.json_response({"conv": new_conv, "title": title + "副本"})
 
+    @_authed
     async def _handle_delete(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
         body = await request.json()
         conv = str(body.get("conv") or "")
         force = bool(body.get("force", False))
@@ -1616,10 +1482,9 @@ class WebAdapter:
         key = config.resolve_session_key("web", conv)
         return config.project_cwd_for(key) or session_store.get_worktree(key)
 
+    @_authed
     async def _handle_conv_git(self, request: web.Request) -> web.Response:
         """会话对应项目的 git 状态;非项目会话回退到 serve 进程 cwd。"""
-        if (g := self._guard(request)) is not None:
-            return g
         key = config.resolve_session_key("web", request.query.get("conv", ""))
         # task: 等非项目 key 认不出项目 hash,补 get_worktree 兜底(与 core.py 一致)
         cwd = config.project_cwd_for(key) or session_store.get_worktree(key)
@@ -1647,13 +1512,10 @@ class WebAdapter:
         )
         return web.json_response(info)
 
-    async def _handle_conv_git_branch(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_conv_git_branch(self, request: web.Request, body: dict) -> web.Response:
         """在项目工作目录建并切到新分支(当前改动随之带过去)。"""
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         name = (body.get("name") or "").strip()
         from ...core import worktree  # 懒加载
 
@@ -1681,13 +1543,10 @@ class WebAdapter:
         return web.json_response(info)
 
     # ── 设置:技能 / MCP ─────────────────────────────────────────────────
-    async def _handle_conv_archive(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_conv_archive(self, request: web.Request, body: dict) -> web.Response:
         """POST /conv/archive  {conv, archived: bool}  设置会话归档状态。"""
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         conv = (body.get("conv") or "").strip()
         if not conv:
             return web.json_response({"error": "缺少 conv"}, status=400)
@@ -1718,13 +1577,10 @@ class WebAdapter:
             })
         return web.json_response({"ok": True})
 
-    async def _handle_conv_read(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_conv_read(self, request: web.Request, body: dict) -> web.Response:
         """POST /conv/read  {conv}  用户已打开该会话,清零 pending_review 标记。"""
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         conv = (body.get("conv") or "").strip()
         if not conv:
             return web.json_response({"error": "缺少 conv"}, status=400)
@@ -1732,28 +1588,23 @@ class WebAdapter:
         session_store.set_pending_review(session_key, False)
         return web.json_response({"ok": True})
 
+    @_authed
     async def _handle_prefs_get(self, request: web.Request) -> web.Response:
         """GET /prefs  返回用户偏好 JSON。"""
-        if (g := self._guard(request)) is not None:
-            return g
         return web.json_response(session_store.get_prefs())
 
-    async def _handle_prefs_set(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_prefs_set(self, request: web.Request, body: dict) -> web.Response:
         """POST /prefs  {key: value, ...}  批量写入用户偏好。"""
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         if not isinstance(body, dict):
             return web.json_response({"error": "body must be object"}, status=400)
         session_store.set_prefs(body)
         return web.json_response({"ok": True})
 
+    @_authed
     async def _handle_settings(self, request: web.Request) -> web.Response:
         """设置页初始快照:技能清单 + MCP(内置 vococo + 外部)+ 记忆/AGENTS 文件列表。"""
-        if (g := self._guard(request)) is not None:
-            return g
         # active = 当前实际在用的模型,算法跟 _handle_models 的 default 保持一致
         active_model = settings_store.get_web_default_model() \
             or providers.resolve(None, config.MODEL)[0]
@@ -1782,12 +1633,9 @@ class WebAdapter:
             }
         )
 
-    async def _handle_settings_skill(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
+    @_authed
+    @_json_body
+    async def _handle_settings_skill(self, request: web.Request, body: dict) -> web.Response:
         name = (body.get("name") or "").strip()
         if not name:
             return web.json_response({"error": "缺少 name"}, status=400)
@@ -1798,28 +1646,21 @@ class WebAdapter:
         )
         return web.json_response({"ok": True, "mode": settings_store.skills_mode()})
 
+    @_authed
     async def _handle_settings_skills_reset(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
         settings_store.reset_skills()
         return web.json_response({"ok": True})
 
-    async def _handle_settings_mcp_vococo(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
+    @_authed
+    @_json_body
+    async def _handle_settings_mcp_vococo(self, request: web.Request, body: dict) -> web.Response:
         settings_store.set_vococo(bool(body.get("enabled")))
         return web.json_response({"ok": True})
 
-    async def _handle_settings_mcp_external(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_settings_mcp_external(self, request: web.Request, body: dict) -> web.Response:
         """增删改 / 开关外部 MCP server。action: add|update|remove|toggle。"""
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         action = (body.get("action") or "").strip()
         name = (body.get("name") or "").strip()
         if not name:
@@ -1836,7 +1677,9 @@ class WebAdapter:
             return web.json_response({"error": err}, status=400)
         return web.json_response({"ok": True})
 
-    async def _handle_settings_model(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_settings_model(self, request: web.Request, body: dict) -> web.Response:
         """增/改/删设置页手动加的官方模型档位,或隐藏/恢复代码内置档位。
         action: add(新增/编辑,id 相同即覆盖 label)|remove|toggle_builtin。
 
@@ -1844,11 +1687,6 @@ class WebAdapter:
         MODEL_CHOICES 里代码写死的档位摘出/放回选择器(不改代码,可随时恢复)。
         不用改代码、不用重启,下一次拉 /models(即刷新页面/切模型面板)就带上。
         """
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         action = (body.get("action") or "add").strip()
         model_id = (body.get("id") or "").strip()
         if not model_id:
@@ -1864,16 +1702,13 @@ class WebAdapter:
             return web.json_response({"error": err}, status=400)
         return web.json_response({"ok": True})
 
-    async def _handle_settings_provider(self, request: web.Request) -> web.Response:
+    @_authed
+    @_json_body
+    async def _handle_settings_provider(self, request: web.Request, body: dict) -> web.Response:
         """新增/删除设置页手动加的第三方服务商。action: add|remove。
 
         直接落 web_settings.json,同样不用重启——providers.py 每次都现读现并。
         """
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         action = (body.get("action") or "add").strip()
         name = (body.get("name") or "").strip()
         if not name:
@@ -1919,9 +1754,8 @@ class WebAdapter:
             return None  # 目录穿越,拒
         return target
 
+    @_authed
     async def _handle_file_read(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
         target = self._safe_brain_path(request.query.get("rel", ""))
         if target is None:
             return web.json_response({"error": "非法路径"}, status=400)
@@ -1931,12 +1765,9 @@ class WebAdapter:
             return web.json_response({"error": "读取失败"}, status=500)
         return web.json_response({"rel": request.query.get("rel", ""), "content": content})
 
-    async def _handle_file_save(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
+    @_authed
+    @_json_body
+    async def _handle_file_save(self, request: web.Request, body: dict) -> web.Response:
         rel = (body.get("rel") or "").strip()
         target = self._safe_brain_path(rel)
         if target is None:
@@ -2029,9 +1860,8 @@ class WebAdapter:
                 return found
         return None
 
+    @_authed
     async def _handle_doc_preview(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
         root = self._conv_cwd(request.query.get("conv", "")) or os.getcwd()
         # 模糊兜底可能要 os.walk 扫大几千个文件(_DOC_SEARCH_MAX_SCAN),丢进线程池——
         # 这是单进程 server,同一个 event loop 还扛着其他会话的 SSE 长连接,同步扫盘会
@@ -2214,11 +2044,9 @@ class WebAdapter:
             return web.json_response({"checked": {}})
         return web.json_response(data)
 
-    async def _handle_checkin_post(self, request: web.Request) -> web.Response:
+    @_json_body
+    async def _handle_checkin_post(self, request: web.Request, body: dict) -> web.Response:
         """POST /api/checkin/{name}  {checked: {"姓名": bool}} 保存签到状态。"""
-        body, err = await self._read_json(request)
-        if err is not None:
-            return err
         path = self._checkin_path(request.match_info.get("name", ""))
         try:
             path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
@@ -2241,30 +2069,24 @@ class WebAdapter:
             request=request,
         )
 
+    @_authed
     async def _handle_push_config(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
         return web.json_response(PUSH.public_config())
 
+    @_authed
     async def _handle_push_subs(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
         return web.json_response({"subs": PUSH.list_public()})
 
-    async def _handle_push_subscribe(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
-        sub, err = await self._read_json(request)
-        if err is not None:
-            return err
+    @_authed
+    @_json_body
+    async def _handle_push_subscribe(self, request: web.Request, sub: dict) -> web.Response:
         ok = PUSH.add(sub if isinstance(sub, dict) else {})
         if not ok:
             return web.json_response({"error": "invalid subscription"}, status=400)
         return web.json_response({"ok": True})
 
+    @_authed
     async def _handle_push_unsubscribe(self, request: web.Request) -> web.Response:
-        if (g := self._guard(request)) is not None:
-            return g
         try:
             body = await request.json()
         except (json.JSONDecodeError, ValueError):
@@ -2272,11 +2094,10 @@ class WebAdapter:
         PUSH.remove((body or {}).get("endpoint", ""))
         return web.json_response({"ok": True})
 
+    @_authed
     async def _handle_push_test(self, request: web.Request) -> web.Response:
         """自测端点:给所有已登记订阅发一条测试通知,返回送出设备数。
         kind=approval → 前台聚焦时 SW 也弹,测试时页面正开着也能看到。"""
-        if (g := self._guard(request)) is not None:
-            return g
         sent = await PUSH.notify(
             "🔔 测试通知",
             "看到这条 = 推送链路通了。",

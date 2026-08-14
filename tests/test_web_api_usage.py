@@ -43,14 +43,14 @@ def _local_usage(data: dict):
 async def test_usage_uses_official_when_utilization_present(usage_app, monkeypatch):
     """官方有 utilization 时优先用官方,但仍附本地详情供 hover 卡片。"""
     monkeypatch.setattr(
-        "vococo.gateway.adapters.web.get_rate_limits",
+        "vococo.core.agent.get_rate_limits",
         lambda: {
             "five_hour": {"utilization": 0.5, "limit": 1000, "remaining": 500, "resets_at": 1234567890},
             "seven_day": {"utilization": 0.3, "limit": 7000, "remaining": 4900},
         },
     )
     monkeypatch.setattr(
-        "vococo.gateway.adapters.web.get_local_claude_usage",
+        "vococo.gateway.adapters.usage_local.get_local_claude_usage",
         _local_usage({
             "provider": "claude",
             "source": "local_estimate",
@@ -78,11 +78,11 @@ async def test_usage_uses_official_when_utilization_present(usage_app, monkeypat
 async def test_usage_falls_back_to_local_when_official_missing(usage_app, monkeypatch):
     """官方 utilization 缺失时退回本地估算,并标注来源。"""
     monkeypatch.setattr(
-        "vococo.gateway.adapters.web.get_rate_limits",
+        "vococo.core.agent.get_rate_limits",
         lambda: {"five_hour": {"resets_at": 1234567890}},
     )
     monkeypatch.setattr(
-        "vococo.gateway.adapters.web.get_local_claude_usage",
+        "vococo.gateway.adapters.usage_local.get_local_claude_usage",
         _local_usage({
             "provider": "claude",
             "source": "local_estimate",

@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vococo 架构深化评审 · 2026-08-14</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral', flowchart:{curve:'basis'}});</script>
+<style>
+  body{font-family:-apple-system,"PingFang SC","Noto Sans SC",sans-serif;background:#f8fafc}
+  .badge{font-size:11px;font-weight:700;padding:3px 10px;border-radius:9999px;letter-spacing:.02em}
+  .b-strong{background:#dcfce7;color:#15803d}
+  .b-explore{background:#fef9c3;color:#a16207}
+  .b-spec{background:#e0e7ff;color:#4338ca}
+  .filetag{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:2px 7px;color:#334155;display:inline-block;margin:2px 2px}
+  .deadbox{background:#fff1f2;border:1px solid #fecdd3;border-radius:8px;padding:8px 12px;font-size:13px;margin:4px 0;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .bar{height:26px;border-radius:6px;display:flex;align-items:center;padding:0 10px;font-size:12px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden}
+  .lbl{font-size:11px;color:#64748b;margin-bottom:4px;font-weight:600}
+  .mod{border:1.5px solid #cbd5e1;border-radius:8px;background:#fff;padding:6px 10px;font-size:12px;margin:3px 0}
+  .mod b{font-size:12px}
+  .mod .sub{color:#64748b;font-size:11px}
+  .arrow{text-align:center;color:#94a3b8;font-size:16px;line-height:1.2}
+  .okbox{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:6px 10px;font-size:12.5px;margin:3px 0}
+  h3.sec{font-size:12px;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 6px}
+  .card h2{font-size:19px;font-weight:800;color:#0f172a}
+  .num{font-family:ui-monospace,Menlo,monospace;color:#94a3b8;font-weight:700}
+  table.dt{width:100%;font-size:12.5px;border-collapse:collapse}
+  table.dt th{text-align:left;color:#64748b;font-weight:700;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:11.5px}
+  table.dt td{padding:5px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top}
+  .warn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;font-size:12.5px;color:#92400e}
+</style>
+</head>
+<body class="max-w-5xl mx-auto px-5 py-8">
+
+<header class="mb-8">
+  <div class="text-xs font-bold text-slate-400 tracking-widest mb-1">ARCHITECTURE REVIEW · vococo · 2026-08-14</div>
+  <h1 class="text-3xl font-black text-slate-900">架构深化机会:8 个候选</h1>
+  <p class="text-slate-500 mt-2 text-sm leading-relaxed">
+    近期密集迭代(iCloud 卡顿修复 / SSE 卡死修复 / cron cwd / prompt 去重)之后,全仓 62 个 Python 文件约 1.66 万行 + 单文件前端 7930 行。
+    本次评审用<b>删除测试</b>(删掉这个模块,复杂度是消失还是转移?)筛选出下列<b>深化(Deepening)</b>机会——把浅模块变深,让杠杆(Leverage,调用方少知道)与局部性(Locality,改动聚在一处)同时变好。
+    所有关键结论均已抽查核实(死代码零生产引用、53 处 <code>_guard</code> 重复等均经 grep 验证)。
+  </p>
+  <div class="flex gap-3 mt-4 text-xs">
+    <span class="badge b-strong">Strong · 建议直接做</span>
+    <span class="badge b-explore">Worth exploring · 值得进入设计探讨</span>
+    <span class="badge b-spec">Speculative · 先观察</span>
+  </div>
+</header>
+
+<!-- ========== 候选 1: 死代码大扫除 ========== -->
+<section class="card bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <h2><span class="num">#1</span> 死代码大扫除:删除测试全绿的模块</h2>
+    <span class="badge b-strong">Strong</span>
+  </div>
+
+  <h3 class="sec">Files(均已 grep 核实:生产零引用)</h3>
+  <div>
+    <span class="filetag">gateway/migrate_cc_switch.py(全文件 99 行)</span>
+    <span class="filetag">core/tasks.py:194 get_latest()</span>
+    <span class="filetag">gateway/core.py:36-46 set_turn_billing_hook()</span>
+    <span class="filetag">index.html:6309 addSysNote</span>
+    <span class="filetag">index.html:7767 insertToInput</span>
+    <span class="filetag">index.html:4260 curEffort</span>
+    <span class="filetag">index.html:4906 skelRow</span>
+    <span class="filetag">index.html:94/5385-5397 Telegram 推送表单</span>
+    <span class="filetag">cron/suggestion_catalog.py(并入 suggestions.py)</span>
+  </div>
+
+  <h3 class="sec">Problem</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    一次性迁移脚本、悬空扩展点、仅测试调用的函数、已下线 Telegram 渠道的前端表单与注释——它们全通过了<b>删除测试</b>的理想形态:删掉后复杂度<b>直接消失</b>,不转移到任何调用方。
+    <code>set_turn_billing_hook</code> 更糟:它是一个从未注册的接缝(Seam),每个读 <code>converse</code> 的人都要为它分心;<code>voice/notify.py:26-27</code> 甚至直接别名 <code>task_events._subscribers</code> 私成员,让"改事件总线内部结构"这件事不敢做。
+  </p>
+
+  <h3 class="sec">Before / After</h3>
+  <div class="grid grid-cols-2 gap-4 items-start">
+    <div>
+      <div class="lbl">BEFORE · 9 处死重混在活代码里</div>
+      <div class="deadbox"><span>migrate_cc_switch.py(99行)</span><span class="text-rose-400 font-bold">一次性使命已完</span></div>
+      <div class="deadbox"><span>set_turn_billing_hook</span><span class="text-rose-400 font-bold">零注册的接缝</span></div>
+      <div class="deadbox"><span>get_latest / 4 个前端死函数</span><span class="text-rose-400 font-bold">仅定义无调用</span></div>
+      <div class="deadbox"><span>Telegram 表单 + ws.py 注释</span><span class="text-rose-400 font-bold">渠道已下线</span></div>
+      <div class="deadbox"><span>suggestion_catalog.py(38行)</span><span class="text-rose-400 font-bold">过度拆分</span></div>
+    </div>
+    <div>
+      <div class="lbl">AFTER · 全部删除/合并</div>
+      <div class="okbox">🗑 删除;若留念想,<code>migrate_cc_switch</code> 移 <code>scripts/</code> 降级为运维脚本</div>
+      <div class="okbox">🗑 删 hook;<code>converse</code> 少一个永远走不到的分支</div>
+      <div class="okbox">🗑 测试改用 <code>list_recent(limit=1)</code>;前端删 4 函数</div>
+      <div class="okbox">🗑 cron 表单只剩 web push;旧注释改述现状</div>
+      <div class="okbox">🔀 目录数据并入 <code>suggestions.py</code></div>
+    </div>
+  </div>
+
+  <h3 class="sec">Benefits</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    <b>局部性</b>:后续每一次重构的 diff 都变小(搜索不再命中死分支)。<b>杠杆</b>:事件总线拿回私成员所有权,内部重构自由度恢复。<b>测试</b>:删掉"仅测试调用的生产函数"后,测试直接钉在真实接口上。
+    零风险:每一项都是纯删除,有 git 历史兜底。约可净删 <b>300+ 行</b>。
+  </p>
+</section>
+
+<!-- ========== 候选 2: index.html ========== -->
+<section class="card bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <h2><span class="num">#2</span> index.html(7930 行单文件)按功能拆成模块</h2>
+    <span class="badge b-strong">Strong</span>
+  </div>
+
+  <h3 class="sec">Files</h3>
+  <div><span class="filetag">gateway/adapters/web_static/index.html:407-7928(一个 &lt;script&gt; 7521 行)</span><span class="filetag">tool-card.js(已有成功拆分先例)</span></div>
+
+  <h3 class="sec">Problem</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    语音通话(515-3757)、设置面板(5442-6224)、侧边栏会话列表(4710-5151)、SSE 流式渲染(6595-7202)、附件发送(7203-7778)等十余个关注点塞在同一个 script 标签里,靠全局变量 <code>S</code>、<code>api()</code>、<code>el/esc</code> 互相纠缠。
+    这是<b>最浅的模块形态</b>:没有任何接口,所有实现细节对所有维护者(以及 AI)暴露。近期每个前端迭代(任务栏、侧边栏压缩、SSE 修复)都要在这 7900 行里翻找,冲突率与认知成本随迭代线性上升。
+  </p>
+
+  <h3 class="sec">Before / After(质量图,宽度∝行数)</h3>
+  <div class="grid grid-cols-2 gap-4">
+    <div>
+      <div class="lbl">BEFORE · 一个 7930 行的"大平层"</div>
+      <div class="bar" style="width:100%;background:#f43f5e">index.html · 7930 行(语音 3242 / 设置 782 / 侧边栏 441 / 流式 607 / 发送 575 …)</div>
+      <div class="bar mt-1" style="width:16%;background:#94a3b8">tool-card.js 119</div>
+      <p class="text-xs text-slate-400 mt-2">理解"设置面板"= 在 7900 行里捞 5442-6224,且与语音共享全局态</p>
+    </div>
+    <div>
+      <div class="lbl">AFTER · 外壳 + 显式共享核 + 功能文件</div>
+      <div class="bar" style="width:22%;background:#0ea5e9">app-core.js · 共享态(S/api/el)≈150</div>
+      <div class="bar mt-1" style="width:42%;background:#f59e0b">voice.js · 通话视图 ≈3200</div>
+      <div class="bar mt-1" style="width:20%;background:#8b5cf6">settings.js ≈780</div>
+      <div class="bar mt-1" style="width:14%;background:#10b981">sidebar.js ≈440</div>
+      <div class="bar mt-1" style="width:16%;background:#10b981">stream.js ≈600</div>
+      <div class="bar mt-1" style="width:15%;background:#10b981">composer.js ≈575</div>
+      <div class="bar mt-1" style="width:30%;background:#64748b">index.html · 骨架+按序 &lt;script src&gt; ≈400</div>
+      <p class="text-xs text-slate-400 mt-2">无构建步骤,纯静态 PWA 直接多几个 script 标签即可,tool-card.js 已验证该模式</p>
+    </div>
+  </div>
+
+  <h3 class="sec">Benefits</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    <b>局部性</b>:改语音只动 voice.js,改设置只动 settings.js;git 冲突面缩小一个数量级。<b>杠杆</b>:共享态收敛成 <code>AppCore</code> 一个显式对象后,"前端有多少全局态"从考古题变成读一个文件。<b>测试</b>:拆出后可对 mdToHtml、renderConvs 等纯函数写真实单测(现状 <code>test_unified_conversation_ui.py</code> 只能断言 HTML 里有没有某个字符串)。
+  </p>
+  <div class="warn mt-3">前置条件:先把共享全局态收敛成显式对象,否则语音 IIFE 拆出去即报引用错误。建议拆序:mdToHtml/设置/侧边栏(低耦合)先行,语音最后。</div>
+</section>
+
+<!-- ========== 候选 3: web.py 路由骨架 ========== -->
+<section class="card bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <h2><span class="num">#3</span> web.py:把 53 处鉴权/26 处读 JSON 的骨架收进调度层</h2>
+    <span class="badge b-strong">Strong</span>
+  </div>
+
+  <h3 class="sec">Files</h3>
+  <div><span class="filetag">gateway/adapters/web.py(2411 行,53× self._guard + 26× self._read_json)</span><span class="filetag">gateway/task_routes.py:17-25(鉴权第二份实现)</span></div>
+
+  <h3 class="sec">Problem</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    每个 handler 以同一套仪式开场:<code>guard → read_json → 取字段 → try/except → json_response</code>。仪式代码与业务代码比例接近 1:1——handler 是<b>浅模块</b>的教科书形态。
+    鉴权还有第二份实现(<code>task_routes.py</code> 与 <code>web.py</code> 各自维护 <code>hmac.compare_digest</code> 逻辑),token 校验规则变更要改两处。另外 <code>_handle_api_usage</code>(:1274-1375)让 Web 适配器直接知道 Kimi/Codex/Claude 三家配额协议——供应商细节泄漏过了接缝。
+  </p>
+
+  <h3 class="sec">Before / After</h3>
+  <pre class="mermaid">
+flowchart LR
+  subgraph B["BEFORE · 每个 handler 自背骨架(×40 余处)"]
+    R1[路由表] --> H1["_handle_send<br/>guard→json→业务"]
+    R1 --> H2["_handle_cron_create<br/>guard→json→业务"]
+    R1 --> H3["_handle_model_switch<br/>guard→json→业务"]
+    R1 -.-> Hn["… 40+ 个,仪式重复 53/26 次"]
+    T["task_routes.py<br/>鉴权第二份"] -.重复.- H1
+  end
+  </pre>
+  <pre class="mermaid">
+flowchart LR
+  subgraph A["AFTER · 骨架上收,handler 只剩业务"]
+    R2["路由表+统一鉴权/JSON 装饰层<br/>单一 check_web_auth"] --> B1["send(conv_id,text)→业务"]
+    R2 --> B2["cron_create(spec)→业务"]
+    R2 --> B3["model_switch(m)→业务"]
+    R2 --> U["/api/usage → providers.usage_for_model()<br/>(供应商差异收回 providers 内)"]
+  end
+  </pre>
+
+  <h3 class="sec">Benefits</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    <b>杠杆</b>:新增一个路由只需写业务函数,鉴权/解析/400/401 全部免费获得——这正是"深模块"的定义:接口小,行为多。<b>局部性</b>:鉴权逻辑从 2+ 处变 1 处;供应商配额协议从 Web 层收回 <code>providers.py</code>。<b>测试</b>:骨架层可一次性测透(鉴权拒绝、坏 JSON),handler 测试聚焦业务分支。预计净减 300-400 行重复。
+  </p>
+</section>
+
+<!-- ========== 候选 4: stream_turn ========== -->
+<section class="card bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <h2><span class="num">#4</span> stream_turn(508 行):按职责切成四个具名模块</h2>
+    <span class="badge b-explore">Worth exploring</span>
+  </div>
+
+  <h3 class="sec">Files</h3>
+  <div><span class="filetag">core/agent.py:756-1264</span><span class="filetag">内嵌: _make_options :876-897 · _stream_once :898-1233 · 安全网压缩 :1144-1198 · 保温池降级 :1237-1249</span><span class="filetag">core/agent.py:53-98 外贸 MCP 关键词</span></div>
+
+  <h3 class="sec">Problem</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    一个函数同时做五件事:构造 SDK 选项、读 SSE 事件流、等子代理/后台任务、上下文安全网压缩、保温池 checkout/三级降级。近期三处生产级修复(SSE 卡死、iCloud 卡顿、prompt 去重)都发生在这个函数体内——补丁叠补丁正是因为<b>局部性缺失</b>:任何修复都必须先理解 508 行的全部上下文。
+    另有业务泄漏:<code>_TRADE_KEYWORDS</code>("lemlist/拓客/外贸")写在核心循环里,agent 每轮替外贸业务做开关决策。
+  </p>
+
+  <h3 class="sec">Before / After</h3>
+  <div class="grid grid-cols-2 gap-4">
+    <div>
+      <div class="lbl">BEFORE · 508 行纠缠体</div>
+      <div class="mod" style="border-color:#fda4af;background:#fff1f2"><b>stream_turn</b> <span class="sub">756-1264</span>
+        <div class="mod mt-1">选项构造 <span class="sub">(供应商/env/工具白名单)</span></div>
+        <div class="mod">事件流消费 <span class="sub">(SSE/子代理等待/工具卡片)</span></div>
+        <div class="mod">安全网压缩 <span class="sub">(窗口预算/丢最旧)</span></div>
+        <div class="mod">保温池降级链 <span class="sub">(命中→冷启→再降级)</span></div>
+        <div class="mod" style="background:#fef3c7">外贸关键词判断 <span class="sub">(业务混入核心)</span></div>
+      </div>
+    </div>
+    <div>
+      <div class="lbl">AFTER · 编排者 + 四个深模块</div>
+      <div class="mod" style="border-color:#86efac;background:#f0fdf4"><b>stream_turn</b> <span class="sub">≈80 行:降级链 + 事件转发</span></div>
+      <div class="arrow">↓ 委托</div>
+      <div class="mod"><b>build_turn_options()</b> <span class="sub">选项构造一处收口</span></div>
+      <div class="mod"><b>stream_once()</b> <span class="sub">单轮事件流</span></div>
+      <div class="mod"><b>safety_compact()</b> <span class="sub">压缩策略独立可测</span></div>
+      <div class="mod"><b>checkout_or_coldstart()</b> <span class="sub">保温池策略显式化</span></div>
+      <div class="mod" style="background:#fef3c7"><b>trade 触发策略</b> 移到 tools 侧 <span class="sub">agent 只问 bool</span></div>
+    </div>
+  </div>
+
+  <h3 class="sec">Benefits</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    <b>局部性</b>:下次 SSE 再卡,只需读 stream_once;改压缩策略不动流读取。<b>杠杆</b>:task_runner 与 converse 两个调用方共享的"一轮"语义终于有显式形状。<b>测试</b>:压缩、降级链可以脱离 SDK 流单测(现有 test_agent_stream 是大集成,定位慢)。
+    风险:这是心脏地带,必须配现有集成测试全绿 + 行为逐条对照,适合 grilling 后再动手。
+  </p>
+</section>
+
+<!-- ========== 候选 5: voice 包归位 ========== -->
+<section class="card bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <h2><span class="num">#5</span> voice 包归位:通用通知迁出 voice,任务路由收拢</h2>
+    <span class="badge b-explore">Worth exploring</span>
+  </div>
+
+  <h3 class="sec">Files</h3>
+  <div><span class="filetag">voice/notify.py:26-56(透传 + 私成员别名)</span><span class="filetag">voice/adapter.py:12-36(20 行 shim)</span><span class="filetag">voice/routes.py:544-591(legacy /voice/tasks 转发)</span><span class="filetag">tools/sdk_task_hooks.py:40(tools→voice 反向依赖)</span></div>
+
+  <h3 class="sec">Problem</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    ADR 0004 后语音只剩 Omni 一条管线,但包结构还停留在三管线时代:<code>notify.py</code> 里真正干活的"任务终态播报"被 gateway、cron、sdk_task_hooks 三方调用——它是平台功能,却住在 voice 包里,且上半文件是对 <code>core.task_events</code> 的纯透传(含私成员别名)。
+    依赖方向因此倒置:<b>tools(安全 hook 装配)→ voice(通知)→ core(事件总线)</b>。任务路由也裂成两处:<code>/voice/tasks/list|stop</code> 在 voice/routes 转发,而 <code>/voice/tasks/cancel</code> 却注册在 web.py。
+  </p>
+
+  <h3 class="sec">Before / After</h3>
+  <pre class="mermaid">
+flowchart BT
+  subgraph BEFORE
+    direction BT
+    TE1[core/task_events]
+    VN1["voice/notify<br/>(透传+播报)"]
+    GW1[gateway/run.py] --> VN1
+    CR1[cron/scheduler] --> VN1
+    SDK1["tools/sdk_task_hooks"] --> VN1
+    VN1 -->|别名 _subscribers 私成员| TE1
+  end
+  </pre>
+  <pre class="mermaid">
+flowchart BT
+  subgraph AFTER
+    direction BT
+    TE2["core/task_events<br/>+ notify 通用播报"]
+    GW2[gateway/run.py] --> TE2
+    CR2[cron/scheduler] --> TE2
+    SDK2[tools/sdk_task_hooks] --> TE2
+    VN2["voice: 只留 TTS 播报一小片"] --> TE2
+  end
+  </pre>
+
+  <h3 class="sec">Benefits</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    <b>局部性</b>:依赖方向恢复单向(tools→core,voice→core),事件总线收回私成员。<b>杠杆</b>:gateway/cron 不再为了发通知 import 语音包。<b>接缝纪律</b>:<code>/voice/tasks*</code> 统一收进 <code>task_routes.py</code>,前端改一次路径,voice/routes 里的 legacy 转发层(约 50 行)删除。
+    与 ADR 0004 无冲突——这是把它没扫完的尾巴扫完。
+  </p>
+</section>
+
+<!-- ========== 候选 6: memory 合并 ========== -->
+<section class="card bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <h2><span class="num">#6</span> memory/:四个一张表的小文件合回会话存储</h2>
+    <span class="badge b-explore">Worth exploring</span>
+  </div>
+
+  <h3 class="sec">Files</h3>
+  <div><span class="filetag">memory/prefs.py(28 行)</span><span class="filetag">memory/worktrees.py(47 行)</span><span class="filetag">memory/projects.py(88 行)</span><span class="filetag">memory/search.py(110 行)</span><span class="filetag">memory/session_store.py:20-50(19 个 re-export)</span><span class="filetag">memory/audio.py × images.py(同一套落盘流程两份)</span></div>
+
+  <h3 class="sec">Problem</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    prefs/worktrees/projects/search 每个文件只包一张表的 CRUD,全部操作同一个 <code>state.db</code>,且几乎全部经 <code>session_store.py</code> re-export 后被使用——子模块是<b>透传层</b>:删掉它们,复杂度只是回到唯一调用方,总量不变但文件数与跳转次数减少。
+    audio.py 与 images.py 是同一套"白名单文件名→安全扩展名→落盘→记 DB→按会话清理"流程的两份拷贝。
+  </p>
+
+  <h3 class="sec">Before / After</h3>
+  <div class="grid grid-cols-2 gap-4">
+    <div>
+      <div class="lbl">BEFORE · 8 个文件,理解一张表要跳 3 层</div>
+      <div class="mod">session_store.py <span class="sub">598 行 + 19 个 re-export</span></div>
+      <div class="mod">prefs.py <span class="sub">28 行</span></div>
+      <div class="mod">worktrees.py <span class="sub">47 行</span></div>
+      <div class="mod">projects.py <span class="sub">88 行</span></div>
+      <div class="mod">search.py <span class="sub">110 行</span></div>
+      <div class="mod" style="background:#fef3c7">audio.py ≈ images.py <span class="sub">同一流程两份</span></div>
+    </div>
+    <div>
+      <div class="lbl">AFTER · 3 个深模块</div>
+      <div class="mod" style="border-color:#86efac"><b>session_store.py</b> <span class="sub">合并 4 小表 CRUD,取消 re-export,≈850 行单文件</span></div>
+      <div class="mod" style="border-color:#86efac"><b>media.py</b> <span class="sub">落盘/路径/清理一套实现,audio/images 只留元数据差异</span></div>
+      <div class="mod"><b>_db.py</b> <span class="sub">连接+schema 保持不动</span></div>
+      <p class="text-xs text-slate-400 mt-2">audio/images 涉及路径穿越防护,合并时保留各自安全测试</p>
+    </div>
+  </div>
+
+  <h3 class="sec">Benefits</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    <b>局部性</b>:"会话库有哪些表"从读 5 个文件变读 1 个;schema 迁移时不用跨文件对齐。<b>杠杆</b>:调用方接口不变(还是 session_store.xxx),纯内部收敛,风险低。<b>测试</b>:正好补上现状缺口(memory/* 目前几乎零直接单测),合并后以 session_store 为唯一测试面。
+  </p>
+</section>
+
+<!-- ========== 候选 7: danger.py 分层 ========== -->
+<section class="card bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <h2><span class="num">#7</span> danger.py(912 行):规则表与引擎分家</h2>
+    <span class="badge b-explore">Worth exploring</span>
+  </div>
+
+  <h3 class="sec">Files</h3>
+  <div><span class="filetag">tools/danger.py:35-44 灾难规则表</span><span class="filetag">:111-125 escalate 规则表</span><span class="filetag">:402-408 MCP 写白名单</span><span class="filetag">:554-559 密钥形状表</span><span class="filetag">:476-515 classify</span><span class="filetag">:608-747 _hard_guard</span><span class="filetag">:802-896 审批 UI</span></div>
+
+  <h3 class="sec">Problem</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    危险分级(Risk Tier)的<b>策略数据</b>(四张规则表)与<b>执行机制</b>(shell 解析、分类器、常开防线、审批闸 UI、输出脱敏)混在一个文件。想审"现在到底拦什么"需要在 912 行引擎代码里捞数据表;想改引擎又得小心不碰表。
+    这是安全关键代码,<b>审阅成本就是安全成本</b>。
+  </p>
+
+  <h3 class="sec">Before / After</h3>
+  <div class="grid grid-cols-2 gap-4">
+    <div>
+      <div class="lbl">BEFORE · 数据与机制同炉</div>
+      <div class="bar" style="width:100%;background:#f43f5e">danger.py · 912 行(4 张表 + 解析 + 分类 + hard_guard + 审批 UI + 脱敏)</div>
+      <p class="text-xs text-slate-400 mt-2">审规则 → 读引擎;改引擎 → 怕碰表</p>
+    </div>
+    <div>
+      <div class="lbl">AFTER · danger/ 包,接口不变</div>
+      <div class="bar" style="width:24%;background:#f59e0b">rules.py · 纯数据表 ≈150</div>
+      <div class="bar mt-1" style="width:34%;background:#0ea5e9">engine.py · 解析+classify ≈300</div>
+      <div class="bar mt-1" style="width:26%;background:#0ea5e9">guard.py · 常开防线 ≈150</div>
+      <div class="bar mt-1" style="width:18%;background:#8b5cf6">approval.py ≈100</div>
+      <div class="bar mt-1" style="width:14%;background:#8b5cf6">redact.py ≈90</div>
+      <p class="text-xs text-slate-400 mt-2">对外仍 <code>from tools.danger import classify</code>(包 __init__ 聚合)</p>
+    </div>
+  </div>
+
+  <h3 class="sec">Benefits</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    <b>局部性</b>:规则评审 = 只看 rules.py 一个纯数据文件(可以要求每次改表必须附测试,机制不动)。<b>杠杆</b>:调用方(agent/PreToolUse hook)接口零变化。<b>测试</b>:现有 test_danger.py 已是行为级测试,可直接当拆分回归网;规则表独立后还能加"表完整性"校验(如每条 escalate 规则必须有对应测试用例)。
+  </p>
+  <div class="warn mt-3">注意:这是 ADR 0003 的核心落地件。拆分本身不改行为,但 PR 需附"规则表逐条 diff 为零"的证明,别把精简做成安全回归。</div>
+</section>
+
+<!-- ========== 候选 8: 文档 ========== -->
+<section class="card bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <h2><span class="num">#8</span> 文档层:单一事实源 + 过期件归档</h2>
+    <span class="badge b-strong">Strong</span>
+  </div>
+
+  <h3 class="sec">重复对照表(同一事实多处维护,必漂移)</h3>
+  <table class="dt">
+    <tr><th>事实</th><th>重复的文档</th><th>处置</th></tr>
+    <tr><td>特性矩阵 / 多供应商切换</td><td>README:8-20,59-65 × REQUIREMENTS:70-93,139-144</td><td>README 只留电梯演讲+入口,特性矩阵归 REQUIREMENTS</td></tr>
+    <tr><td>危险分级 / merge-main / restart_self</td><td>AGENTS:20-36 × OPERATIONS:6-36</td><td>AGENTS 留一行索引,正文归 OPERATIONS</td></tr>
+    <tr><td>会话统一重构计划</td><td>PLAN.md(55行) × docs/design/voice-companion/05-…plan.md</td><td>PLAN.md 并入设计文档「执行状态」节</td></tr>
+  </table>
+
+  <h3 class="sec">过期件(描述的对象已不存在/已废弃)</h3>
+  <div class="deadbox"><span>docs/design/server-edition.md + server-edition-tech-plan.md</span><span>已标"废弃仅存档" → 移入 archive/</span></div>
+  <div class="deadbox"><span>docs/design/trade-edition-plan.md</span><span>属于 vocotrade 仓 → 迁走,本仓留链接</span></div>
+  <div class="deadbox"><span>REQUIREMENTS.md:92 P2 项(Obsidian 读写/向量记忆/Web 仪表板)</span><span>未落地 → 移 roadmap,需求只留已验收</span></div>
+  <div class="deadbox"><span>voice-companion/00-overview.md:81-89 移除清单</span><span>写着 rm -rf vococo/voice,但 voice 在活跃维护 → 改述现状</span></div>
+  <div class="deadbox"><span>docs/superpowers/(restart-hardening 计划+设计)</span><span>一次性 staging 区 → 完成后归档,README 说明用途</span></div>
+
+  <div class="warn mt-3">⚠ 与 ADR 冲突提示:ADR-0003 多处描述 Telegram 通道与 TELEGRAM_ALLOW_ALL,而 adapter 已删。ADR 是决策记录,建议<b>追加修订注记</b>("2026-08:Telegram 适配器已移除,相关边界条款失效")而非改写历史正文。</div>
+
+  <h3 class="sec">Benefits</h3>
+  <p class="text-sm text-slate-600 leading-relaxed">
+    <b>局部性</b>:每条事实只有一个家,改一处即全部生效——文档层的"深度"就是引用而非复述。<b>杠杆</b>:新会话/新 AI 读本仓时,README+AGENTS 合计从 ~230 行降到 ~120 行,token 成本与误导率同降。<b>AI 可导航性</b>:过期文档是 AI 幻觉的主要饲料,归档比删除更稳。
+  </p>
+</section>
+
+<!-- ========== Top recommendation ========== -->
+<section class="bg-slate-900 text-white rounded-2xl p-6 mb-6">
+  <div class="text-xs font-bold tracking-widest text-slate-400 mb-1">TOP RECOMMENDATION</div>
+  <h2 class="text-xl font-black">先做 #1 大扫除,再做 #2 index.html 拆分</h2>
+  <p class="text-sm text-slate-300 mt-2 leading-relaxed">
+    <b>#1 先行</b>:纯删除、零风险、有 git 兜底,一次提交净删 300+ 行;更重要的是它给后续所有重构清场——死分支不再污染搜索,悬空接缝不再干扰阅读。
+    <b>#2 跟进</b>:杠杆最大。前端是当前迭代最频繁的表面(近 10 个 commit 里 6 个碰到它),7900 行单文件让每个修复都付全量认知税;拆分后每个功能块成为独立测试面。
+    两者相加覆盖"精简"诉求的 80%,且都不触碰 #4/#7 这类心脏地带——那些留给专门的 grilling 会话。
+  </p>
+  <div class="grid grid-cols-4 gap-3 mt-4 text-center">
+    <div class="bg-slate-800 rounded-xl p-3"><div class="text-2xl font-black text-emerald-400">300+</div><div class="text-xs text-slate-400">#1 净删行数</div></div>
+    <div class="bg-slate-800 rounded-xl p-3"><div class="text-2xl font-black text-sky-400">7930→~400</div><div class="text-xs text-slate-400">#2 主文件行数</div></div>
+    <div class="bg-slate-800 rounded-xl p-3"><div class="text-2xl font-black text-amber-400">53+26</div><div class="text-xs text-slate-400">#3 消除的仪式重复</div></div>
+    <div class="bg-slate-800 rounded-xl p-3"><div class="text-2xl font-black text-violet-400">6→2</div><div class="text-xs text-slate-400">#8 特性事实源收敛</div></div>
+  </div>
+</section>
+
+<!-- ========== 健康不动 ========== -->
+<section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-10">
+  <h2 class="text-lg font-black text-slate-900">经探查确认健康、明确不建议动</h2>
+  <p class="text-xs text-slate-400 mb-3">过度重构比欠重构更贵。以下模块接口与实现匹配、职责单一,删除测试显示它们在真正扛复杂度:</p>
+  <div class="grid grid-cols-2 gap-x-6 gap-y-1 text-[13px] text-slate-600">
+    <div>✅ <b>core/client_pool.py</b> — 保温池接口即行为,不浅</div>
+    <div>✅ <b>core/task_runner + tasks + task_events + task_words</b> — 四件套边界清楚,合并只会引 import 环</div>
+    <div>✅ <b>gateway/web_bridge.py</b> — 薄桥但解了 voice↔runner 循环 import</div>
+    <div>✅ <b>gateway/clarify.py</b> — 关注点都在 clarify 生命周期内</div>
+    <div>✅ <b>tools/selfops.py</b> — 自我重启闭环内聚完整</div>
+    <div>✅ <b>voice/omni_realtime / stt / tts / session / prompts</b> — Omni-only 下职责各归其位</div>
+    <div>✅ <b>cron/scheduler.py</b> — 调度器已通用化</div>
+    <div>✅ <b>CONTEXT.md / ADR-0001/0002/0004</b> — 术语与决策记录与代码一致</div>
+    <div>✅ <b>styles.css(1264 行)/ sw.js / tool-card.js</b> — 规模正常,模式健康</div>
+    <div>✅ <b>memory/_db.py / session_store 作为统一入口</b> — facade 合理,问题只在身后小文件过碎</div>
+  </div>
+  <p class="text-xs text-slate-400 mt-4">另:providers.py(541 行)里 Codex/Kimi 用量查询可迁出独立 usage 模块,属 Speculative,已并入 #3 的 /api/usage 收口一并解决,不单列。</p>
+</section>
+
+<footer class="text-center text-xs text-slate-400 pb-8">
+  术语:模块/接口/实现/深度/浅模块/接缝/适配器/杠杆/局部性 — 见 improve-codebase-architecture/LANGUAGE.md ·
+  领域词:会话/项目/危险分级/审批闸/回复轮/语音任务 — 见 CONTEXT.md
+</footer>
+
+</body>
+</html>

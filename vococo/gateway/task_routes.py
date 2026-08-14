@@ -6,23 +6,16 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 
 from aiohttp import web
 
-from .. import config
 from ..core import task_events, task_runner, tasks
+from .web_auth import check_web_auth
 
 
 def _guard(request: web.Request, *, allow_query_token: bool = False) -> web.Response | None:
-    if not config.WEB_AUTH_TOKEN:
-        return None
-    token = request.headers.get("X-Auth-Token") or ""
-    if allow_query_token:
-        token = token or request.query.get("token") or ""
-    if hmac.compare_digest(token, config.WEB_AUTH_TOKEN):
-        return None
-    return web.json_response({"error": "unauthorized"}, status=401)
+    """薄委托:规则实现收在 web_auth.check_web_auth(与 web.py 共用一份)。"""
+    return check_web_auth(request, allow_query_token=allow_query_token)
 
 
 def _dispatch_chat_id(request: web.Request) -> str | None:
