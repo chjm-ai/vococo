@@ -219,3 +219,24 @@ async def test_analyze_keeps_person_with_real_evidence(monkeypatch):
     result = await pp.analyze(text)
     assert len(result["people"]) == 1
     assert result["people"][0]["name"] == "胜源"
+
+
+# ── DeepSeek 供应商接入(取代 SiliconFlow)────────────────────────────────────
+@pytest.mark.anyio
+async def test_deepseek_api_key_reuses_settings_page_provider(monkeypatch):
+    """key 复用设置页 "deepseek" 第三方供应商(与标题总结兜底同一来源),不新增密钥。"""
+    monkeypatch.setattr(
+        pp.providers, "sidecar_env",
+        lambda name: ("deepseek-v4-flash", {"ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+                                             "ANTHROPIC_API_KEY": "sk-test-123"})
+        if name == "deepseek" else None,
+    )
+    assert pp._deepseek_api_key() == "sk-test-123"
+
+
+@pytest.mark.anyio
+async def test_chat_json_skips_when_deepseek_unconfigured(monkeypatch):
+    """设置页没配 deepseek 供应商 → 直接跳过分析,不发请求、不报错。"""
+    monkeypatch.setattr(pp.providers, "sidecar_env", lambda name: None)
+    result = await pp._chat_json([{"role": "user", "content": "x"}])
+    assert result is None

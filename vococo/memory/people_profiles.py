@@ -38,7 +38,7 @@ from pathlib import Path
 
 import aiohttp
 
-from .. import config
+from .. import config, providers
 from . import _db
 
 # 会议转写的说话人分段前缀:[说话人N]
@@ -272,15 +272,36 @@ _ANALYZE_PROMPT = """从下面的文本里提取人物互动信息,输出 JSON�
 """
 
 
-async def _chat_json(messages: list[dict], *, retries: int = 4) -> dict | None:
-    """轻量 OpenAI 兼容调用,要求 JSON 输出;失败返回 None(调用方跳过,不写文件)。
+def _deepseek_api_key() -> str:
+    """复用设置页已配置的 "deepseek" 第三方供应商 key(与 core/title.py 标题
+    总结兜底同一账号、同一条 settings_store 记录),不新增独立密钥。
 
-    retries:429(限流)重试次数,指数退避(2/4/8/16秒)。全量回扫连续调用
-    同一个 SiliconFlow 端点很容易触发限流(实测 275 次连续请求撞了 200+ 次 429),
-    单次失败就放弃会把"没跑"误判成"没人物",必须先扛过限流再谈跳过。
+    providers.sidecar_env 是给 Claude Code SDK 子进程注入 env 用的(走
+    /anthropic 兼容代理路由),这里只借它拿到明文 key,自己另走 DeepSeek
+    原生 OpenAI 兼容端点(见 _chat_json)。设置页没配 deepseek 供应商 →
+    返回空串,调用方据此判断分析功能不可用。
     """
-    url = f"{config.STT_BASE_URL}/chat/completions"
-    headers = {"Authorization": f"Bearer {config.STT_API_KEY}"}
+    fallback = providers.sidecar_env("deepseek")
+    if not fallback:
+        return ""
+    _, env = fallback
+    return env.get("ANTHROPIC_API_KEY", "")
+
+
+async def _chat_json(messages: list[dict], *, retries: int = 4) -> dict | None:
+    """轻量 OpenAI 兼容调用(DeepSeek 原生端点),要求 JSON 输出;失败返回 None
+    (调用方跳过,不写文件)。
+
+    retries:429(限流)重试次数,指数退避(2/4/8/16秒)——全量回扫连续调用
+    同一个端点容易触发限流,单次失败就放弃会把"没跑"误判成"没人物",必须先
+    扛过限流再谈跳过。
+    """
+    api_key = _deepseek_api_key()
+    if not api_key:
+        print("[people_profiles] 未配置 deepseek 第三方供应商(设置页添加),跳过分析", flush=True)
+        return None
+    url = f"{config.PEOPLE_PROFILES_BASE_URL}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}"}
     payload = {
         "model": config.PEOPLE_PROFILES_MODEL,
         "temperature": 0,
@@ -335,9 +356,9 @@ async def analyze(text: str, meta: dict | None = None) -> dict | None:
         people_list=_describe_people(people),
         text=text[:6000],  # 控制 token,长转写截前 6000 字(讲话主体通常在前段)
     )
-    # 主动节流:全量回扫是连续调用同一个 SiliconFlow 端点,不等就撞限流
-    # (实测 275 次连续请求 429 了 200+ 次)。0.5s 间隔换成 <2 req/s,
-    # 比"撞了再退避"更省时间,退避留作真撞上限流时的兜底。
+    # 主动节流:全量回扫是连续调用同一个端点,不等就容易撞限流
+    # (切换到 DeepSeek 前用 SiliconFlow 时,实测 275 次连续请求 429 了 200+ 次)。
+    # 0.5s 间隔换成 <2 req/s,比"撞了再退避"更省时间,退避留作真撞上限流时的兜底。
     await asyncio.sleep(0.5)
     result = await _chat_json([
         {"role": "system", "content": _ANALYZE_SYSTEM},

@@ -232,7 +232,9 @@ STT_CLEANUP_MODEL: str = (
 # === 人脉画像自动更新(会话/录音转写 → AI_BRAIN/memory/people/ 画像)===
 # 默认开:定时扫描新 turn 的录音转写(带 [说话人N] 分段/逐字稿/audios 字段),
 # 用 LLM 提取人物互动信息,追加进对应画像文件并刷新 last_updated。见
-# memory/people_profiles.py。分析模型默认复用 STT_CLEANUP_MODEL(SiliconFlow 72B)。
+# memory/people_profiles.py。分析模型走 DeepSeek 原生 OpenAI 兼容端点,key
+# 复用设置页已配置的 "deepseek" 第三方供应商(与 core/title.py 标题总结兜底
+# 同一账号,见 people_profiles._deepseek_api_key),不新增独立密钥。
 PEOPLE_PROFILES_ENABLED: bool = _parse_bool(
     os.environ.get("PEOPLE_PROFILES_ENABLED", ""), True
 )
@@ -240,8 +242,13 @@ PEOPLE_PROFILES_SCAN_MINUTES: int = int(
     os.environ.get("PEOPLE_PROFILES_SCAN_MINUTES", "30").strip() or "30"
 )
 PEOPLE_PROFILES_MODEL: str = (
-    os.environ.get("PEOPLE_PROFILES_MODEL", "").strip() or STT_CLEANUP_MODEL
+    os.environ.get("PEOPLE_PROFILES_MODEL", "").strip() or "deepseek-chat"
 )
+# DeepSeek 原生 API(非 /anthropic 那个给 Claude Code CLI 用的兼容代理路由)——
+# 结构化 JSON 提取用标准 OpenAI 风格 /chat/completions + response_format,
+# deepseek-chat 无思考过程直接出结果;deepseek-v4-flash 走 /anthropic 代理时
+# 默认带 reasoning_content,不适合这种轻量提取。
+PEOPLE_PROFILES_BASE_URL: str = "https://api.deepseek.com"
 # 待确认提醒推送目标 "platform:chat_id"(可选;不配则只记 pending 文件+日志)
 PEOPLE_PROFILE_TARGET: str = os.environ.get("PEOPLE_PROFILE_TARGET", "").strip()
 
