@@ -91,7 +91,11 @@ def _frontmatter_block(text: str) -> dict:
 
 
 def _index_rows() -> list[list[str]]:
-    """解析 people-network.md 的速查表格,返回 [名字, 别名, 关系, 标签] 行列表。"""
+    """解析 people-network.md 的速查表格,返回 [名字, 别名, 关系, 标签, 互动] 行列表。
+
+    2026-08-14 增加第 5 列「互动」= 该人物画像里互动记录的条数,读取端可据
+    此快速识别互动多/少的人物。旧表格(4 列)解析时互动列补空串,兼容。
+    """
     rows: list[list[str]] = []
     try:
         text = index_path().read_text(encoding="utf-8")
@@ -102,11 +106,55 @@ def _index_rows() -> list[list[str]]:
         if line.startswith("|") and "名字" in line and "别名" in line:
             in_table = True
             continue
-        if in_table and line.startswith("|") and set(line.strip()) != {"|", "-", ":", " "}:
+        # 分隔线(|---|---|)跳过:字符集只有 | - : 空格
+        if in_table and line.startswith("|") and set(line.strip()) <= {"|", "-", ":", " "}:
+            continue
+        if in_table and line.startswith("|"):
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
             if len(cells) >= 4:
-                rows.append(cells[:4])
+                cells = cells[:5] + [""] * (5 - len(cells))
+                rows.append(cells)
     return rows
+
+
+def _interaction_count(name: str) -> int:
+    """统计画像文件「互动记录」section 的条数(以 - 开头的行)。
+
+    与索引第 5 列「互动」一致:写入画像时同步刷新,读取端用这个数识别
+    人物的互动密度(如排序/筛选高频联系人)。
+    """
+    p = people_dir() / f"{_safe_filename(name)}.md"
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    idx = text.find("## 互动记录")
+    if idx < 0:
+        return 0
+    end = text.find("\n## ", idx + 4)
+    body = text[idx:] if end < 0 else text[idx:end]
+    return sum(1 for l in body.splitlines() if l.strip().startswith("-"))
+
+
+def _refresh_index_count(name: str) -> None:
+    """把人物的互动次数同步进索引第 5 列(已有行就更新,没有就跳过)。"""
+    count = _interaction_count(name)
+    try:
+        text = index_path().read_text(encoding="utf-8")
+    except OSError:
+        return
+    lines = text.splitlines()
+    changed = False
+    for i, ln in enumerate(lines):
+        if not ln.strip().startswith("|"):
+            continue
+        cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+        if len(cells) >= 5 and cells[0] == name:
+            cells[4] = str(count)
+            lines[i] = "| " + " | ".join(cells) + " |"
+            changed = True
+    if changed:
+        index_path().write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def known_people() -> list[dict]:
@@ -119,7 +167,7 @@ def known_people() -> list[dict]:
     pd = people_dir()
     files = {f.stem for f in pd.glob("*.md")} if pd.is_dir() else set()
     people: dict[str, dict] = {}
-    for name, aliases, rel, tags in _index_rows():
+    for name, aliases, rel, tags, _cnt in _index_rows():
         if name not in files:
             continue  # 幽灵索引行:文件不存在,不纳入已知名单
         people[name] = {"name": name, "aliases": aliases, "relationship": rel, "tags": tags}
@@ -606,7 +654,8 @@ def _register_index(name: str, result: dict) -> str:
     marker = "| " + name + " |"
     if marker in text:
         return ""
-    line = f"| {name} |  | {rel} | {tags} |"
+    count = _interaction_count(name)
+    line = f"| {name} |  | {rel} | {tags} | {count} |"
     lines = text.splitlines()
     # 找表格最后一条【数据行】:以 | 开头,且去掉 |/-/:/空格 后还有内容
     # (分隔线 |---|---|---|---| 全是这几个字符,会被排除;表头行虽然也有
@@ -654,6 +703,8 @@ async def process_note(text: str, note_title: str, note_date: str) -> dict:
         p["known"] = std in {k["name"] for k in people_known} or bool(p.get("known", False))
         change = _write_or_update_profile(std, p, date6, note_title)
         registered = _register_index(std, p) if not p["known"] else ""
+        # 画像可能新增了互动记录 → 同步刷新索引第 5 列的互动次数
+        _refresh_index_count(std)
         updated.append(change + (" · " + registered if registered else ""))
     return {"status": "done", "updated": updated}
 

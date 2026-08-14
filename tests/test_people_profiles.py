@@ -527,3 +527,34 @@ def test_known_people_skips_ghost_index_rows(tmp_path):
     names = [k["name"] for k in known]
     assert "胜源" in names
     assert "幽灵甲" not in names
+
+
+# ── 索引「互动」列:统计画像互动记录条数并同步进索引 ─────────────────────────
+def test_interaction_count(tmp_path):
+    """互动次数 = 画像文件「互动记录」section 的条数。"""
+    from vococo import config
+    people = tmp_path / "people"
+    people.mkdir()
+    f = people / "胜源.md"
+    f.write_text(
+        "---\nrelationship: 朋友\n---\n\n## 画像\n- x\n\n## 互动记录\n"
+        "- 250816 a → [[250816 胜源、小玉、蒋豪]]\n- 251029 b → [[251029 胜源]]\n",
+        encoding="utf-8",
+    )
+    with __import__("unittest.mock").mock.patch.object(pp, "people_dir", lambda: people):
+        assert pp._interaction_count("胜源") == 2
+
+
+def test_index_rows_parses_five_columns(tmp_path):
+    """索引 5 列解析:名字/别名/关系/标签/互动;旧 4 列表格互动补空串。"""
+    from vococo import config
+    idx = tmp_path / "people-network.md"
+    idx.write_text(
+        "| 名字 | 别名 | 关系 | 标签 | 互动 |\n|---|---|---|---|---|\n"
+        "| 胜源 | 盛源 | 朋友 | 化工 | 17 |\n| 小玉 |  | 朋友 |  | 3 |\n",
+        encoding="utf-8",
+    )
+    with __import__("unittest.mock").mock.patch.object(pp, "index_path", lambda: idx):
+        rows = pp._index_rows()
+    assert rows[0] == ["胜源", "盛源", "朋友", "化工", "17"]
+    assert rows[1][4] == "3"
