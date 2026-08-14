@@ -121,11 +121,11 @@ def test_get_by_index_and_title(sugg_env):
 
 
 def test_catalog_seed_idempotent(sugg_env):
-    from vococo.cron import suggestion_catalog, suggestions
+    from vococo.cron import suggestions
 
-    n1 = suggestion_catalog.seed()
+    n1 = suggestions.seed_catalog()
     assert n1 >= 1
-    assert suggestion_catalog.seed() == 0  # 第二次全被 dedup 跳过
+    assert suggestions.seed_catalog() == 0  # 第二次全被 dedup 跳过
     assert len(suggestions.list_pending()) == n1
 
 
@@ -150,10 +150,10 @@ def test_suggest_automation_bad_cron(sugg_env):
 
 
 def test_suggest_command_lists_and_accepts(sugg_env):
-    from vococo.cron import suggestion_catalog
+    from vococo.cron import suggestions
     from vococo.gateway import core
 
-    suggestion_catalog.seed()
+    suggestions.seed_catalog()
     # 无参 → 出 Choice(带接受/忽略按钮)
     out = core.handle_command("/suggest", "web:c1", "m")
     assert out.choice is not None

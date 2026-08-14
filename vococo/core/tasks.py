@@ -191,13 +191,6 @@ def get(task_id: str) -> dict | None:
     return _row(row) if row else None
 
 
-def get_latest() -> dict | None:
-    row = _conn().execute(
-        "SELECT * FROM tasks ORDER BY created_at DESC LIMIT 1"
-    ).fetchone()
-    return _row(row) if row else None
-
-
 def _sdk_task_id(chat_id: str, number: int) -> str:
     return f"sdk:{chat_id}:{number}"
 

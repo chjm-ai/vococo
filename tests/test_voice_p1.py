@@ -56,10 +56,10 @@ def test_create_defaults_to_queued(voice_db):
     assert tasks.get(t["id"])["title"] == "标题"
 
 
-def test_get_latest_returns_most_recently_created(voice_db):
+def test_list_recent_returns_most_recently_created(voice_db):
     tasks.create("A", "p1")
     b = tasks.create("B", "p2")
-    assert tasks.get_latest()["id"] == b["id"]
+    assert tasks.list_recent(limit=1)[0]["id"] == b["id"]
 
 
 def test_set_status_allows_legal_transition(voice_db):
@@ -659,7 +659,7 @@ async def test_dispatch_tool_dispatches_and_reports_task_id(voice_db, monkeypatc
     result = await task_tools.voice_dispatch_task.handler({"title": "标题", "prompt": "内容"})
     text = result["content"][0]["text"]
     assert "session_id=" in text and "标题" in text
-    assert tasks.get_latest()["title"] == "标题"
+    assert tasks.list_recent(limit=1)[0]["title"] == "标题"
 
 
 @pytest.mark.anyio
@@ -680,7 +680,7 @@ async def test_dispatch_tool_defaults_cwd_to_project_root(voice_db, monkeypatch)
     monkeypatch.setattr(executor.worktree, "ensure_worktree_for_task", fake_ensure)
 
     await task_tools.voice_dispatch_task.handler({"title": "标题", "prompt": "内容"})
-    row = tasks.get_latest()
+    row = tasks.list_recent(limit=1)[0]
     assert row["cwd"] == str(config.ROOT_DIR)  # 落库的就是默认项目根
     running = executor._running.get(row["id"])
     if running is not None:
@@ -692,7 +692,7 @@ async def test_dispatch_tool_defaults_cwd_to_project_root(voice_db, monkeypatch)
     await task_tools.voice_dispatch_task.handler(
         {"title": "修登录bug", "prompt": "内容", "cwd": "/tmp/other-proj"}
     )
-    assert tasks.get_latest()["cwd"] == "/tmp/other-proj"
+    assert tasks.list_recent(limit=1)[0]["cwd"] == "/tmp/other-proj"
 
 
 def test_dispatch_uses_context_project_when_cwd_missing(voice_db, monkeypatch, tmp_path):

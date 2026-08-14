@@ -91,7 +91,6 @@ try{
           </select>
           <input id="cfCron" placeholder="0 8 * * *"/>
         </div>
-        <input id="cfTelegram" placeholder="可选:同时推送到 Telegram 的 chat_id"/>
         <input id="cfCwd" placeholder="可选:工作目录绝对路径（留空使用默认项目）"/>
         <div class="pmfoot">
           <button id="cfCancel">取消</button>
@@ -454,7 +453,7 @@ const S = {
   cronEditId: null,     // 定时任务表单当前在编辑哪个 job_id;null=新建模式
   swipedConv: null,     // 当前左滑展开的会话 id;renderConvs 重建 DOM 时靠它补回 swiped 状态,
                          // 否则任意会话(含后台)一完成回合就会触发 loadConvs→renderConvs 把菜单冲掉
-  omniEnabled: false,   // /voice/config 的 omni_enabled,P3 阶段二开关,登录后预取好,
+  omniEnabled: false,   // /voice/config 的 omni_enabled(免提 Omni 管线开关),登录后预取好,
                          // 避免每次进通话视图都要等一趟网络往返才知道走哪条路径
   vadThreshold: 0.7,    // /voice/config 的 vad_threshold/vad_silence_ms,兜底默认跟
   vadSilenceMs: 2500,   // config.py 的 VOICE_OMNI_VAD_SILENCE_MS 默认值一致;2026-07-22 800 触发对话
@@ -552,10 +551,10 @@ function setIcon(el, name){ el.innerHTML = ic(name); }
   let ttsFailureNoticedThisTurn=false;  // 每轮最多提示一次,避免连续几句都合成失败时刷屏
   let currentTurnAiEl=null, currentTurnFull="";
 
-  // ── P3 阶段二:Omni-Realtime WebRTC 通话(见 wireOmniDataChannel 一段)────────
-  // S.omniEnabled(登录时预取,见 loadVoiceOmniConfig)开着就整条走 WebRTC 替代
-  // 上面这套 ws.py + Web Audio API 播放队列,两条路径互斥、共用同一批 UI 元素
-  // (orbWrap/statusEl/handsFreeUi 等),关着完全不影响原有路径。
+  // ── Omni-Realtime WebRTC 通话(免提唯一管线,ADR 0004;见 wireOmniDataChannel 一段)──
+  // S.omniEnabled(登录时预取,见 loadVoiceOmniConfig)开着就整条走 WebRTC;
+  // 关掉则通话视图只剩按住说话(录音→/voice/send)。自建 ws 全双工管线已退休,
+  // 两条路径共用同一批 UI 元素(orbWrap/statusEl/handsFreeUi 等)。
   let omniPc=null, omniDc=null, omniMicStream=null, omniUserLiveEl=null;
   // Omni 出声模式的朗读队列:Claude 的回答按句子进队,靠 conversation.item.create +
   // response.create 让 Omni 逐句念出来(同一时刻只能有一个进行中的 response,
@@ -1992,7 +1991,7 @@ void main(){
     es.onopen = ()=>{ loadTasks(); };
   }
 
-  // ── P3 阶段二:Omni-Realtime WebRTC 通话 ─────────────────────────────────
+  // ── Omni-Realtime WebRTC 通话(免提唯一管线,ADR 0004)──────────────────────
   // 2026-07-10 架构(第二版,Omni 出声):Omni 当"耳朵+嘴巴",大脑仍然是 Claude。
   // - 耳朵:WebRTC 连线做识别(ASR)+断句(VAD)+打断信号,跟第一版相同。
   // - 大脑:识别到一整句话后转发给 /voice/send(Claude 全套工具/画像/记忆),
@@ -4257,7 +4256,6 @@ function effortShort(id, levels){
   const hit=(levels||[]).find(function(item){ return item[0]===id; });
   return hit ? hit[1] : (id?esc(id):"auto");
 }
-function curEffort(){ return effortState().value; }
 function renderEffortChip(){
   const state=effortState(), btn=$("#effortBtn"), enabled=state.levels.length>0;
   $("#effortName").textContent=effortShort(state.value, state.levels);
@@ -4299,8 +4297,8 @@ async function loadCommands(){
   }catch(e){}
 }
 
-// P3 阶段二:通话视图走 ws.py 还是 Omni-Realtime WebRTC,登录后预取一次,
-// 避免每次进通话视图都要等一趟网络往返才知道走哪条路径。
+// 免提走 Omni-Realtime WebRTC(ADR 0004 后唯一免提管线;关掉则只剩按住说话)。
+// 登录后预取一次,避免每次进通话视图都要等一趟网络往返才知道走哪条路径。
 async function loadVoiceOmniConfig(){
   try{
     const r=await api("/voice/config"); const d=await r.json();
@@ -4902,13 +4900,6 @@ function convsInGroup(hash){
 // 语音通话主行(通话入口),与主会话一起置顶在根目录最前(不属于任何分组,数据来自 /voice/sidebar)。
 // 通话视图开着时不看 S.conv(那还停在离开前的聊天会话上没变),由调用方传进来的 inCall
 // (= #callView 是否显示)决定「语音通话」这一行是否高亮成"你现在就在这儿"。
-// 侧边栏骨架行(数据未到时的占位,复用聊天区 skelshine 动画;真实行渲染时被替换)
-function skelRow(extraClass){
-  const row=el("div","conv skelrow"+(extraClass?" "+extraClass:""));
-  const body=el("div","cvbody"); body.append(el("div","skel sbar"));
-  row.append(body);
-  return row;
-}
 function buildVoiceMainRow(inCall){
   // 主会话是固定入口,不能依赖 /voice/sidebar 请求成功才显示。该请求只负责
   // 后台任务元数据;网络失败时仍必须保留入口,让用户至少能继续发消息。
@@ -5382,19 +5373,17 @@ function showCronForm(job){
   const presetOpts=[...$("#cfPreset").options].map(o=>o.value);
   $("#cfPreset").value = expr && presetOpts.includes(expr) ? expr : "custom";
   $("#cfCron").value = expr;
-  $("#cfTelegram").value = (job && job.target && job.target.platform==="telegram") ? (job.target.chat_id ?? "") : "";
   $("#cfCwd").value = job ? (job.cwd || "") : "";
   if(!job) $("#cfName").focus();
 }
 async function saveCronJob(){
   const name=$("#cfName").value.trim(), prompt=$("#cfPrompt").value.trim();
-  const cron=$("#cfCron").value.trim(), tgChat=$("#cfTelegram").value.trim(), cwd=$("#cfCwd").value.trim();
+  const cron=$("#cfCron").value.trim(), cwd=$("#cfCwd").value.trim();
   if(!name || !prompt){ alert("任务名称和执行指令不能为空"); return; }
   if(!cron){ alert("请选一个预设频率,或填自定义 cron 表达式"); return; }
   const editId=S.cronEditId;
   const body={name, prompt, schedule:{kind:"cron", expr:cron}, cwd};
   if(editId) body.id=editId;
-  if(tgChat) body.target={platform:"telegram", chat_id:tgChat};
   let d;
   try{
     const r=await api(editId?"/cron/jobs/update":"/cron/jobs/create",
@@ -6306,7 +6295,6 @@ function buildSysNote(text){
   const row=el("div","row sys"); const b=el("div","sysnote"); b.textContent=text;
   row.append(b); return row;
 }
-function addSysNote(text){ $("#wrap").append(buildSysNote(text)); }
 // 每轮渲染成一块 <div class="turn-block" data-tid data-sig>,供 renderTurns 按轮 diff 复用 DOM
 function buildTurnBlock(t, conv){
   const wrap=el("div","turn-block");
@@ -6892,7 +6880,7 @@ function handleEvent(e){
   }
   // 后台标题总结完成 → 刷新侧边栏/标题栏(loadConvs 会顺带同步顶栏标题),无论前后台会话
   if(e.type==="title"){ loadConvs(); return; }
-  // 非 web 入口(目前是 Telegram)驱动的会话有新动静,见 gateway/event_bridge.py:
+  // 非 web 入口(cron/语音任务等)驱动的会话有新动静,见 core/task_events.py 主事件桥:
   // 那边没有 start/thinking 流式过程可镜像,直接拼气泡容易出现"回复凭空冒出来,
   // 缺前面那句提问"的错位画面——干脆让浏览器去核对真实数据最省心。
   if(e.type==="sync"){ loadConvs(); if(e.conv===S.conv) reloadHistory(true); return; }
@@ -7763,12 +7751,6 @@ function voiceFail(b, msg, blob, ext, conv){
   const rb=el("button"); rb.type="button"; rb.className="vretry"; rb.textContent="重录";
   rb.onclick=()=>{ const row=b.closest(".row"); if(row) row.remove(); startRec(); };
   b.append(t, retryBtn, rb);
-}
-function insertToInput(t){
-  const ta=$("#ta");
-  ta.value = ta.value.trim() ? (ta.value.replace(/\s+$/,"")+" "+t) : t;
-  autoGrow(); ta.focus();
-  saveDraft();   // 程序赋值不触发 input 事件,手动存一次草稿
 }
 $("#micBtn").onclick = ()=>{ if(REC.state==="idle") startRec(); };          // 麦克风:开录
 $("#recSend").onclick = e=>{ e.stopPropagation(); if(REC.state==="recording") stopRec(false); }; // 右侧 ↑:完成并发送

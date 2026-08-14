@@ -3,14 +3,12 @@
 
 说明:此模块过去依赖 cc-switch 桌面 App 写入的 ~/.claude-hermes/config.yaml。
 现在已经有了自己的设置页"模型"管理界面和独立存储(data/web_settings.json),所以
-把核心语义改成从 settings_store 读取。cc-switch 配置文件不再被运行时读取,仅作为
-一次性迁移脚本的数据来源(见 gateway/migrate_cc_switch.py)。
+把核心语义改成从 settings_store 读取。cc-switch 配置文件不再被读取,一次性迁移
+脚本(gateway/migrate_cc_switch.py)已于 2026-08 随死代码清理删除(git 历史可查)。
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from pathlib import Path
 
 # 兜底默认模型;与 config.MODEL 的默认保持一致。
 _FALLBACK_MODEL = "claude-sonnet-5"
@@ -23,19 +21,6 @@ _OFFICIAL_NAMES = ("claude", "official", "anthropic", "claude-official")
 # Kimi(Moonshot)的订阅套餐固定走这个域名,其余第三方供应商(DeepSeek/Kimi 的常规
 # API key 入口等)一律按量计费的 API 处理。
 _SUBSCRIPTION_HOSTS = ("api.kimi.com",)  # Kimi Coding 订阅套餐
-
-
-def cc_switch_config_path() -> Path:
-    """旧 cc-switch 配置文件路径。
-
-    保留这个函数是给一次性迁移脚本用;运行时不再读取该文件。
-    注意:~/.claude-hermes 与 CLAUDE_HERMES_HOME 是【历史遗留名】,故意不随项目
-    改名——它指向旧版 cc-switch 时代真实写在磁盘上的目录,改了名迁移脚本就
-    找不到旧数据了。
-    """
-    raw = os.environ.get("CLAUDE_HERMES_HOME", "").strip()
-    base = Path(os.path.expanduser(raw)) if raw else Path.home() / ".claude-hermes"
-    return base / "config.yaml"
 
 
 @dataclass(frozen=True)

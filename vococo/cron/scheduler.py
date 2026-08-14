@@ -332,8 +332,8 @@ async def run_scheduler(push: PushFn) -> None:
 
     voice_notify.register_cron_terminal_hook(_hook)
     try:
-        from . import suggestion_catalog
-        n = suggestion_catalog.seed()
+        from . import suggestions
+        n = suggestions.seed_catalog()
         if n:
             print(f"💡 已登记 {n} 条起步自动化建议(用 /建议 查看接受)")
     except Exception as e:  # 播种失败不拖垮调度
