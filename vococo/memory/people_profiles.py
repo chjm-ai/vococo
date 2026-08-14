@@ -142,6 +142,57 @@ def _known_name_index(people: list[dict]) -> dict[str, str]:
     return idx
 
 
+_MERGE_PROMPT = """你是私人助理。以下「候选人物」来自同一篇笔记的提取结果,「已有名单」是
+主人的长期人脉库。请判断:候选中的名字,是否有与已有名单中的某人是【同一人】的(判断依据:
+同音/近音异写如 思源=胜源、盛元=胜源、喆铭=黄喆铭(带姓不带姓)、阿盛=阿胜、湘伟=相伟;
+或明显的转写错误)。只合并你有把握的;不确定的一律不合并。
+
+【已有名单】(标准名 | 别名):
+{people_list}
+
+【候选】: {candidates}
+
+输出严格 JSON(无 markdown 围栏):{{"merge": {{"候选名": "已有名单中的标准名"}}}}
+没有可合并的就输出 {{"merge": {{}}}}
+"""
+
+
+async def _resolve_name_merges(names: list[str], people: list[dict]) -> dict[str, str]:
+    """把提取到的人名归并到已有标准名:先精确匹配(含别名),剩余的批量交给 LLM
+    复核同音/近音/带姓不带姓是否同一人。返回 {提取名: 标准名};未命中的名字
+    不进映射(调用方按新建处理)。
+
+    根因(2026-08-14 全量扫描建出 105 个文件,其中 34 个是已有人的同音变体):
+    提取 prompt 里的"同音归并"是顺手约束,LLM 执行不牢靠;这里程序侧补一道
+    独立复核,而且一次调用处理整篇的全部候选,成本可控。
+    """
+    idx = _known_name_index(people)
+    mapping: dict[str, str] = {}
+    unknown: list[str] = []
+    for n in names:
+        if n in idx:
+            mapping[n] = idx[n]
+        else:
+            unknown.append(n)
+    if not unknown:
+        return mapping
+    prompt = _MERGE_PROMPT.format(
+        people_list=_describe_people(people),
+        candidates="、".join(unknown),
+    )
+    resp = await _chat_json(
+        [
+            {"role": "system", "content": "你是私人助理,负责维护主人的人脉库,只输出 JSON。"},
+            {"role": "user", "content": prompt},
+        ]
+    )
+    if resp and isinstance(resp.get("merge"), dict):
+        for cand, std in resp["merge"].items():
+            if cand in unknown and std in idx.values():
+                mapping[cand] = std
+    return mapping
+
+
 # ── LLM 分析:提取人物互动 ────────────────────────────────────────────────────
 _ANALYZE_SYSTEM = (
     "你是私人助理,负责从一篇 Obsidian 个人笔记里提取人物互动信息,更新主人的人脉画像库。"
@@ -533,13 +584,21 @@ async def process_note(text: str, note_title: str, note_date: str) -> dict:
         return {"status": "skipped", "reason": "未提取到人物"}
     updated: list[str] = []
     date6 = note_date.replace("-", "")[2:]
+    # 归并:提取名可能带同音/近音/带姓不带姓变体,先对整篇全部候选做一次
+    # 名字归并(精确查表 + LLM 复核),再写文件——否则同一人会被拆成多个画像。
+    people_known = known_people()
+    merge_map = await _resolve_name_merges(
+        [p.get("name", "").strip() for p in result["people"] if p.get("name", "").strip()],
+        people_known,
+    )
     for p in result["people"]:
         name = p.get("name", "").strip()
         if not name:
             continue
-        p["known"] = bool(p.get("known", False))
-        change = _write_or_update_profile(name, p, date6, note_title)
-        registered = _register_index(name, p) if not p["known"] else ""
+        std = merge_map.get(name, name)
+        p["known"] = std in {k["name"] for k in people_known} or bool(p.get("known", False))
+        change = _write_or_update_profile(std, p, date6, note_title)
+        registered = _register_index(std, p) if not p["known"] else ""
         updated.append(change + (" · " + registered if registered else ""))
     return {"status": "done", "updated": updated}
 
