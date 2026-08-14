@@ -116,6 +116,27 @@ async def test_write_update_same_day_dedup(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_append_to_last_section_no_trailing_blank_line(tmp_path, monkeypatch):
+    """给文件【最后一个】section 追加内容,不能在文件末尾多留一空行。
+
+    真实踩坑:_append_section 不管是不是最后一个 section 都恒定用 "\\n\\n" 分隔
+    (为了隔开下一个 "## XX"),但"互动记录"通常是文件最后一节,tail 为空时那个
+    "\\n\\n" 就变成了多余的文件末尾空行——生产回扫后小玉/湘伟/胜源三个文件都比
+    原本的格式多了一行,人工核对时才发现。
+    """
+    monkeypatch.setattr(pp, "people_dir", lambda: tmp_path)
+    (tmp_path / "李四.md").write_text(
+        "---\nrelationship: 朋友\ntags: []\nlast_updated: 2026-08-01\n---\n\n"
+        "## 互动记录\n- 260801 初次见面 → [[260801-初次见面]]\n",
+        encoding="utf-8",
+    )
+    pp._write_or_update_profile("李四", {"interaction": "聊天", "note_title": "x"}, "260814")
+    text = (tmp_path / "李四.md").read_text(encoding="utf-8")
+    assert not text.endswith("\n\n")   # 文件末尾只有一个换行,不是两个
+    assert text.endswith("[[260814-x]]\n")
+
+
+@pytest.mark.anyio
 async def test_write_update_base_relationship_not_overridden(tmp_path, monkeypatch):
     """基础关系(朋友)不被一次互动推断的角色覆盖,新角色并入 tags。"""
     monkeypatch.setattr(pp, "people_dir", lambda: tmp_path)
