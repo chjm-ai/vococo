@@ -72,11 +72,6 @@ def on_task_activity(task: dict) -> None:
     _bridge_event({"conv": tasks.session_key(task["id"]), "type": "start"})
 
 
-def on_sdk_task_activity(task: dict) -> None:
-    """广播 SDK 待办投影变化,不触发后台任务通知。"""
-    _broadcast("sdk_task_update", task)
-
-
 def register_terminal_handler(
     handler: Callable[[str], Awaitable[None]],
 ) -> None:

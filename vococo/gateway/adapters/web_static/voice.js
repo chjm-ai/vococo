@@ -729,27 +729,15 @@
       const sessionKey = taskSessionKey();
       // 语音和文本任务按同一个会话查询,输入方式不再决定任务归属。
       const url = `/tasks?session_key=${encodeURIComponent(sessionKey)}`;
-      // SDK 待办是独立投影,与后台执行任务分开返回。
-      const [resp, sdkResp] = await Promise.allSettled([
-        fetch(url, {headers:{"X-Auth-Token":S.token}}),
-        fetch(`/sdk-tasks?session_key=${encodeURIComponent(sessionKey)}`, {headers:{"X-Auth-Token":S.token}}),
-      ]);
-      const main = resp.status === "fulfilled" ? resp.value : null;
-      if(!main || !main.ok) return;
+      const main = await fetch(url, {headers:{"X-Auth-Token":S.token}});
+      if(!main.ok) return;
       const rows = await main.json();
-      const sdkRows = sdkResp.status === "fulfilled" && sdkResp.value && sdkResp.value.ok
-        ? await sdkResp.value.json() : [];
       // 切会话时上一个请求可能后到;不能让旧会话任务覆盖当前输入框状态条。
       if(sessionKey !== taskSessionKey()) return;
       renderTasks(rows);
       // 顺带全量校准状态条;接口只补漏,不覆盖 SSE 已经收到的更新。
       for(const t of rows){
         if(t.created_at && t.origin === "voice" && t.created_at < voiceTasksClearedAt) continue;
-        const prev = barTasks.get(t.id);
-        if(prev && (prev.updated_at ?? prev.created_at) > (t.updated_at ?? t.created_at)) continue;
-        barTasks.set(t.id, t);
-      }
-      for(const t of sdkRows){
         const prev = barTasks.get(t.id);
         if(prev && (prev.updated_at ?? prev.created_at) > (t.updated_at ?? t.created_at)) continue;
         barTasks.set(t.id, t);
@@ -766,7 +754,7 @@
   let voiceTasksClearedAt = Number(localStorage.getItem("vococo_voice_tasks_cleared_at") || 0);
 
   function isCurrentConversationTask(task){
-    if(task.origin !== "voice" && task.origin !== "chat" && task.origin !== "sdk_task") return false;
+    if(task.origin !== "voice" && task.origin !== "chat") return false;
     if(task.origin === "voice" && task.created_at && task.created_at < voiceTasksClearedAt) return false;
     if(task.dispatch_chat_id) return task.dispatch_chat_id === taskSessionKey();
     return task.origin === "voice" && taskSessionKey() === "main";
@@ -787,7 +775,7 @@
   }
 
   function isTaskDone(t){ return !TASK_ACTIVE_STATUSES.includes(t.status); }
-  function taskbarTitle(t){ return t.origin === "sdk_task" ? `#${t.number} ${t.title}` : t.title; }
+  function taskbarTitle(t){ return t.title; }
 
   function renderTaskBar(){
     const rows = [...barTasks.values()]
@@ -795,14 +783,11 @@
       .filter(t=>!taskBarDoneHidden(t))
       .sort((a,b)=>(b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at));
     const inCall = !$("#callView").hidden;
-    const sdkRows = rows.filter(t=>t.origin === "sdk_task")
-      .sort((a,b)=>a.number - b.number);
-    const conversationRows = rows.filter(t=>t.origin !== "sdk_task");
 
-    renderBar($("#taskBar"), inCall ? conversationRows.slice(0, TASKBAR_MAX) : []);
-    const active = conversationRows.filter(t=>!isTaskDone(t));
-    const done = conversationRows.filter(t=>isTaskDone(t));
-    renderChatTaskBar(inCall ? [] : [...sdkRows, ...active], inCall ? [] : done);
+    renderBar($("#taskBar"), inCall ? rows.slice(0, TASKBAR_MAX) : []);
+    const active = rows.filter(t=>!isTaskDone(t));
+    const done = rows.filter(t=>isTaskDone(t));
+    renderChatTaskBar(inCall ? [] : active, inCall ? [] : done);
     scheduleDoneHide();
   }
   // 差量渲染单个任务条(#taskBar 用):同 id 的行存在且状态/文案没变就不重建
@@ -1473,10 +1458,6 @@ void main(){
         pendingAnnouncements.push(data);
         flushAnnouncements();
       }
-    });
-    es.addEventListener("sdk_task_update", e=>{
-      const task=JSON.parse(e.data);
-      upsertTaskBar(task);
     });
     // SSE 断线重连成功后全量校准一次:重连期间错过的 task_done 靠这次拉全量补上
     es.onopen = ()=>{ loadTasks(); };

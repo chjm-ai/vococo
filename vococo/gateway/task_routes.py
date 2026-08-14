@@ -43,13 +43,6 @@ async def handle_tasks_list(request: web.Request) -> web.Response:
     return web.json_response(rows)
 
 
-async def handle_sdk_tasks_list(request: web.Request) -> web.Response:
-    if (guard := _guard(request)) is not None:
-        return guard
-    chat_id = _dispatch_chat_id(request)
-    return web.json_response(tasks.list_sdk_tasks(chat_id) if chat_id else [])
-
-
 async def handle_task_detail(request: web.Request) -> web.Response:
     if (guard := _guard(request)) is not None:
         return guard
@@ -106,7 +99,6 @@ def register_routes(app: web.Application) -> None:
         [
             web.get("/tasks", handle_tasks_list),
             web.get("/tasks/stream", handle_tasks_stream),
-            web.get("/sdk-tasks", handle_sdk_tasks_list),
             web.get("/tasks/{task_id}", handle_task_detail),
             web.post("/tasks/{task_id}/stop", handle_task_stop),
         ]

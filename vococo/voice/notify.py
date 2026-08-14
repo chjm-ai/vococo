@@ -61,11 +61,6 @@ def on_task_activity(task: dict) -> None:
     task_events.on_task_activity(task)
 
 
-def on_sdk_task_activity(task: dict) -> None:
-    """兼容旧调用方,转发 SDK 待办投影事件。"""
-    task_events.on_sdk_task_activity(task)
-
-
 def register_platform_push(
     fn: Callable[[str, str, str], Awaitable[None]] | None,
 ) -> None:
