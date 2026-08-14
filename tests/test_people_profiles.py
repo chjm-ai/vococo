@@ -411,3 +411,52 @@ async def test_safe_read_text_normal_file(tmp_path):
 @pytest.mark.anyio
 async def test_safe_read_text_missing_file_returns_none(tmp_path):
     assert await pp._safe_read_text(tmp_path / "不存在.md") is None
+
+
+# ── 名字归并:防同音变体重复建人 ──────────────────────────────────────────────
+def test_resolve_name_merges_exact_match_with_aliases():
+    """精确匹配(含索引别名,如 思源=胜源)直接归并,不发 LLM 请求。"""
+    people = [
+        {"name": "胜源", "aliases": "盛源, 圣源, 思源, 刘胜源", "relationship": "", "tags": ""},
+        {"name": "小玉", "aliases": "", "relationship": "", "tags": ""},
+    ]
+    # 全走精确查表:没未知名字 → 不调 _chat_json
+    import anyio
+
+    async def run():
+        return await pp._resolve_name_merges(["思源", "胜源"], people)
+
+    result = anyio.run(run)
+    assert result == {"思源": "胜源", "胜源": "胜源"}
+
+
+@pytest.mark.anyio
+async def test_resolve_name_merges_llm_confirm_same_person(monkeypatch):
+    """未知名字交给 LLM 复核,确认同音/带姓不带姓是同一人则归并。"""
+    people = [
+        {"name": "胜源", "aliases": "", "relationship": "", "tags": ""},
+        {"name": "喆铭", "aliases": "", "relationship": "", "tags": ""},
+    ]
+    calls = {}
+
+    async def fake_chat(messages, **kw):
+        calls["n"] = calls.get("n", 0) + 1
+        return {"merge": {"盛元": "胜源", "黄喆铭": "喆铭"}}
+
+    monkeypatch.setattr(pp, "_chat_json", fake_chat)
+    result = await pp._resolve_name_merges(["盛元", "黄喆铭", "全新人物"], people)
+    assert calls.get("n") == 1  # 一次批量调用
+    assert result == {"盛元": "胜源", "黄喆铭": "喆铭"}  # 全新人物不进映射
+
+
+@pytest.mark.anyio
+async def test_resolve_name_merges_llm_merge_not_in_known_ignored(monkeypatch):
+    """LLM 返回的归并目标不在已知名单里(幻觉)→ 忽略该条。"""
+    people = [{"name": "胜源", "aliases": "", "relationship": "", "tags": ""}]
+
+    async def fake_chat(messages, **kw):
+        return {"merge": {"盛元": "不存在的名字"}}
+
+    monkeypatch.setattr(pp, "_chat_json", fake_chat)
+    result = await pp._resolve_name_merges(["盛元"], people)
+    assert result == {}
