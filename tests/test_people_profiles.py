@@ -335,6 +335,50 @@ async def test_analyze_drops_person_not_in_title_and_no_evidence(monkeypatch):
     assert result["people"] == []
 
 
+@pytest.mark.anyio
+async def test_analyze_evidence_matches_despite_markdown_and_spacing_noise(monkeypatch):
+    """LLM"逐字复制"引用时常无意识去掉 markdown 粗体符号、CJK/数字间距——
+    这只是格式噪音,内容一致就该核验通过,不能整批当成编造丢弃。
+
+    真实踩坑:生产全量回扫时,原文"华工校友郑素典专注 PP（聚丙烯）现货交易，
+    年营收 70 多亿"(带空格)对应 LLM 引用"华工校友郑素典专注PP（聚丙烯）现货
+    交易，年营收70多亿"(无空格)、原文"**关于 Andy：** 他在宝洁做过营销"对应
+    LLM 引用"关于 Andy：他在宝洁做过营销"(无 ** 号)——十几条真实信息因为
+    字节级 in 判断被误杀,必须做 markdown+空白规整化后再比较。
+    """
+    text = "同学业务：华工校友郑素典专注 PP（聚丙烯）现货交易，年营收 70 多亿。"
+
+    async def fake_chat_json(messages):
+        return {"people": [
+            {"name": "郑素典", "known": False,
+             "evidence": "华工校友郑素典专注PP（聚丙烯）现货交易，年营收70多亿",
+             "interaction": "专注PP现货交易，年营收70多亿", "dynamics": [], "tags": []},
+        ]}
+
+    monkeypatch.setattr(pp, "_chat_json", fake_chat_json)
+    result = await pp.analyze(text, "沟通记录整理", "2026-06-15")
+    assert len(result["people"]) == 1
+    assert result["people"][0]["name"] == "郑素典"
+
+
+@pytest.mark.anyio
+async def test_analyze_evidence_matches_despite_markdown_bold_marker(monkeypatch):
+    """LLM 引用时去掉了原文的 markdown 粗体 ** 记号,内容仍应核验通过。"""
+    text = "* **关于 Andy：** 他在宝洁做过营销，现在深耕东南亚跨境电商。"
+
+    async def fake_chat_json(messages):
+        return {"people": [
+            {"name": "Andy", "known": True,
+             "evidence": "关于 Andy：他在宝洁做过营销，现在深耕东南亚跨境电商",
+             "interaction": "在宝洁做过营销，现深耕东南亚跨境电商", "dynamics": [], "tags": []},
+        ]}
+
+    monkeypatch.setattr(pp, "_chat_json", fake_chat_json)
+    result = await pp.analyze(text, "圣诞团契之行", "2025-12-19")
+    assert len(result["people"]) == 1
+    assert result["people"][0]["name"] == "Andy"
+
+
 # ── DeepSeek 供应商接入(取代 SiliconFlow)────────────────────────────────────
 @pytest.mark.anyio
 async def test_deepseek_api_key_reuses_settings_page_provider(monkeypatch):
