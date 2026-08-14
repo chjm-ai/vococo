@@ -97,6 +97,13 @@ def conn() -> sqlite3.Connection:
         # 最后一条回复文本是不是错误提示。
         if "last_error" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN last_error INTEGER DEFAULT 0")
+        # 外部 MCP 只能按会话临时启用，绝不再改全局设置；自动命中的短时续接状态也存这里。
+        if "external_mcp_names" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN external_mcp_names TEXT")
+        if "auto_external_mcp_names" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN auto_external_mcp_names TEXT")
+        if "auto_external_mcp_at" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN auto_external_mcp_at REAL")
         # 迁移:turns 增 events 列 —— 该轮的过程时间线(文字段+工具调用)JSON,
         # 供前端刷新后完整重建"工具卡与文字交错"的画面;老行为 NULL(只有纯文本)。
         tcols = {r[1] for r in _DB.execute("PRAGMA table_info(turns)")}

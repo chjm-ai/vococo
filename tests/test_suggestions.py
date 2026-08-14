@@ -85,9 +85,11 @@ def test_accept_suggestion_preserves_project_cwd(sugg_env):
         job_spec=_spec(), dedup_key="project-cwd",
     )
     sid = suggestions.list_pending()[0]["id"]
-    job = suggestions.accept_suggestion(sid, cwd="/tmp/project")
+    project = sugg_env / "project"
+    project.mkdir()
+    job = suggestions.accept_suggestion(sid, cwd=str(project))
     assert job is not None
-    assert job["cwd"] == "/tmp/project"
+    assert job["cwd"] == str(project)
 
 
 def test_accept_nonpending_returns_none(sugg_env):

@@ -181,6 +181,7 @@ async def converse(
     files: list[FileAttachment] | None = None,
     store_user: str | None = None,
     cwd_override: str | None = None,
+    is_explicit_project_override: bool | None = None,
     compact: bool = False,
 ) -> AgentReply | None:
     """跑一轮:载入历史 → 流式 → 喂 sink → 落库。
@@ -196,6 +197,8 @@ async def converse(
     那一套(`project_cwd_for` 认不出非项目 session_key,如统一后台任务引擎的
     `task:{id}`)。后台任务续聊要延续任务派发时的 cwd,由调用方(gateway/run.py)从
     `core.tasks` 查出来传进来。
+    is_explicit_project_override:cwd_override 对应任务是否由用户显式指定目录；避免
+    默认 cwd 被覆写后误判成项目会话。
     """
     from .. import config  # 懒加载,与本模块其余用法一致
 
@@ -206,6 +209,12 @@ async def converse(
     history = session_store.load_recent(session_key)
     # 具体项目优先,未匹配到时落默认项目;后台任务续聊再以任务落库的原始 cwd 为准。
     root = config.execution_project_root_for(session_key)
+    # 普通聊天也会回落到默认项目根；只有项目会话或调用方显式覆写 cwd 才算项目上下文。
+    is_explicit_project = (
+        is_explicit_project_override
+        if is_explicit_project_override is not None
+        else config.project_root_for(session_key) is not None or cwd_override is not None
+    )
     if session_key.startswith("task:"):
         from ..core import tasks as bg_tasks
 
@@ -247,7 +256,8 @@ async def converse(
     )
     if needs_preflight_compact:
         async for ev in stream_turn(
-            [], "", model=model, cwd=cwd, resume=resume_sid, session_key=session_key,
+            [], "", model=model, cwd=cwd, is_explicit_project=is_explicit_project,
+            resume=resume_sid, session_key=session_key,
             compact_only=True,
         ):
             if isinstance(ev, Compacted):
@@ -264,7 +274,8 @@ async def converse(
     _err_msg = ""           # 流式期间抛出的异常消息
     try:
         async for ev in stream_turn(
-            history, user_text, model=model, images=images, files=files, cwd=cwd, resume=resume_sid,
+            history, user_text, model=model, images=images, files=files, cwd=cwd,
+            is_explicit_project=is_explicit_project, resume=resume_sid,
             session_key=session_key,  # 传给保温池:同会话下一轮复用活 client,零冷启动
             compact_only=compact,
         ):

@@ -1,16 +1,14 @@
-"""外贸 MCP 按需加载:A(一句话开关 set_external_mcp)+ B(关键词自动触发)。
-
-monkeypatch settings_store._PATH 指向临时文件,不碰真实 data/web_settings.json。
-"""
+"""外部 MCP 按任务加载：不改全局开关，手动开关只属于当前会话。"""
 from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from vococo.core import agent
-from vococo.gateway import settings_store
+from vococo.gateway import clarify, settings_store
 from vococo.tools import builtin
 
 
@@ -24,14 +22,12 @@ def _text(result: dict) -> str:
 
 @pytest.fixture
 def cfg(monkeypatch, tmp_path):
-    """把 settings_store 指到临时文件,并预置一个外部 MCP(默认关闭)。"""
     monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
-    err = settings_store.upsert_external("lemlist", {
-        "type": "stdio", "command": "python3",
-        "args": ["lemlist_lite.py"], "env": {"LEMLIST_API_KEY": "k"},
-        "enabled": False,
-    })
-    assert err is None
+    for name in ("lemlist", "dataforseo", "analytics-mcp"):
+        err = settings_store.upsert_external(name, {
+            "type": "stdio", "command": "python3", "args": [], "env": {}, "enabled": True,
+        })
+        assert err is None
     return tmp_path
 
 
@@ -39,58 +35,52 @@ def _load() -> dict:
     return json.loads(settings_store._PATH.read_text(encoding="utf-8"))
 
 
-# === A:set_external_mcp 一句话开关 ===
-def test_set_external_mcp_off_to_on(cfg):
-    out = _text(_run(builtin.set_external_mcp.handler({"name": "lemlist", "enabled": True})))
-    assert "开启" in out and "lemlist" in out
-    assert _load()["external_mcp"]["lemlist"]["enabled"] is True
-
-
-def test_set_external_mcp_on_to_off(cfg):
-    settings_store.set_external_enabled("lemlist", True)
-    out = _text(_run(builtin.set_external_mcp.handler({"name": "lemlist", "enabled": False})))
-    assert "关闭" in out
-    assert _load()["external_mcp"]["lemlist"]["enabled"] is False
-
-
-def test_set_external_mcp_unknown_name(cfg):
-    out = _text(_run(builtin.set_external_mcp.handler({"name": "nope", "enabled": True})))
-    assert "未找到" in out
-    assert "nope" not in _load()["external_mcp"]  # 未知名不会被误建
-
-
-def test_set_external_mcp_toolkit_all(cfg):
-    """「外贸工具包」一键全开:多个 server 一起切。"""
-    settings_store.upsert_external("dataforseo", {"type": "stdio", "command": "npx", "args": [], "env": {}, "enabled": False})
-    out = _text(_run(builtin.set_external_mcp.handler({"name": "外贸工具包", "enabled": True})))
-    assert "开启" in out and "lemlist" in out and "dataforseo" in out
-    d = _load()["external_mcp"]
-    assert d["lemlist"]["enabled"] is True and d["dataforseo"]["enabled"] is True
-
-
-# === B:关键词自动触发 ===
-@pytest.mark.parametrize("msg", [
-    "帮我拓客,找越南面料采购", "查一下 lemlist 的 campaign 回复", "外贸客户开发",
-    "看看 google ads 搜索量", "GA4 网站流量分析", "退订名单里有谁",
+@pytest.mark.parametrize(("msg", "expected"), [
+    ("查一下 Lemlist 的 campaign 回复", {"lemlist"}),
+    ("分析这个域名的反链和关键词排名", {"dataforseo"}),
+    ("查 GA4 最近 7 天的网站流量", {"analytics-mcp"}),
 ])
-def test_auto_enable_on_trade_keyword(cfg, msg):
-    agent._maybe_auto_enable_trade_mcp(msg)
+def test_task_intent_selects_only_needed_mcp(msg, expected):
+    assert agent._external_mcp_for_task(msg) == expected
+
+
+@pytest.mark.parametrize("msg", [
+    "SEO 是什么意思？", "介绍一下 GA4", "你好", "帮我写篇文章",
+])
+def test_non_action_text_does_not_load_external_mcp(msg):
+    assert agent._external_mcp_for_task(msg) == set()
+
+
+def test_auto_match_never_mutates_global_enabled(cfg):
+    settings_store.set_external_enabled("analytics-mcp", False)
+    agent._external_mcp_for_task("查 GA4 网站流量")
+    assert _load()["external_mcp"]["analytics-mcp"]["enabled"] is False
+
+
+def test_effective_external_mcp_filters_requested_servers(cfg):
+    assert set(settings_store.effective_external_mcp({"lemlist"})) == {"lemlist"}
+    assert set(settings_store.effective_external_mcp(set())) == set()
+
+
+def test_continue_reuses_recent_automatic_mcp(monkeypatch):
+    monkeypatch.setattr(agent.session_store, "set_auto_external_mcp_names", lambda *_: None)
+    monkeypatch.setattr(
+        agent.session_store, "get_recent_auto_external_mcp_names", lambda *_: {"analytics-mcp"},
+    )
+    assert agent._external_mcp_for_task("继续查刚才的数据", "web:abc") == {"analytics-mcp"}
+
+
+def test_manual_switch_only_changes_current_session(monkeypatch, cfg):
+    active: set[str] = set()
+    monkeypatch.setattr(builtin.session_store, "get_external_mcp_names", lambda _: set(active))
+    monkeypatch.setattr(
+        builtin.session_store, "set_external_mcp_names", lambda _, names: active.update(names),
+    )
+    token = clarify._current.set(SimpleNamespace(session_key="web:one"))
+    try:
+        out = _text(_run(builtin.set_external_mcp.handler({"name": "lemlist", "enabled": True})))
+    finally:
+        clarify._current.reset(token)
+    assert "当前会话" in out
+    assert active == {"lemlist"}
     assert _load()["external_mcp"]["lemlist"]["enabled"] is True
-
-
-@pytest.mark.parametrize("msg", ["你好", "帮我写篇文章", "整理一下 Things 任务"])
-def test_auto_enable_ignores_normal_talk(cfg, msg):
-    agent._maybe_auto_enable_trade_mcp(msg)
-    assert _load()["external_mcp"]["lemlist"]["enabled"] is False
-
-
-def test_auto_enable_idempotent_no_crash(cfg):
-    """已开启时再触发不报错、状态保持。"""
-    settings_store.set_external_enabled("lemlist", True)
-    agent._maybe_auto_enable_trade_mcp("外贸拓客")
-    assert _load()["external_mcp"]["lemlist"]["enabled"] is True
-
-
-def test_auto_enable_empty_msg(cfg):
-    agent._maybe_auto_enable_trade_mcp("")
-    assert _load()["external_mcp"]["lemlist"]["enabled"] is False

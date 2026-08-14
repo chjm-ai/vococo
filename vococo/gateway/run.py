@@ -137,11 +137,13 @@ class GatewayRunner:
         # core/worktree.ensure_worktree_for_task);续聊要接着在那条隔离分支上改,
         # 不能退回原始项目根,否则前半段任务的改动在分支、续聊的改动在主目录,对不上。
         cwd_override = None
+        is_explicit_project_override = None
         if key.startswith(bg_tasks.SESSION_KEY_PREFIX):
             row = bg_tasks.get(bg_tasks.task_id_from_session_key(key))
             if row is not None:
                 wt = session_store.get_worktree(key)
                 cwd_override = wt if wt and os.path.isdir(wt) else row["cwd"]
+                is_explicit_project_override = bool(row.get("cwd_explicit"))
         # 设置本轮路由上下文(供 ask_user 工具反问时找到该发给谁),随 contextvar 传入工具
         token = clarify.set_current(key, adapter, inc.chat_id)
         clarify.mark_active(key)  # 全局登记"我在跑了",供 restart_self 等查"还有谁没结束"
@@ -154,7 +156,9 @@ class GatewayRunner:
                         await core.converse(
                             key, inc.text, model, adapter.make_sink(inc.chat_id),
                             images=inc.images, audios=inc.audios, files=inc.files,
-                            store_user=inc.store_text, cwd_override=cwd_override, compact=compact_flag,
+                            store_user=inc.store_text, cwd_override=cwd_override,
+                            is_explicit_project_override=is_explicit_project_override,
+                            compact=compact_flag,
                         )
                 except TimeoutError:
                     pass  # 超时静默处理,不向用户发送错误消息

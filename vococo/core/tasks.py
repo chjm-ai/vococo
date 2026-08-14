@@ -90,6 +90,7 @@ def _conn() -> sqlite3.Connection:
             "title TEXT NOT NULL,"
             "prompt TEXT NOT NULL,"
             "cwd TEXT,"
+            "cwd_explicit INTEGER NOT NULL DEFAULT 0,"
             "status TEXT NOT NULL,"
             "progress_note TEXT NOT NULL DEFAULT '',"
             "result_summary TEXT NOT NULL DEFAULT '',"
@@ -105,6 +106,7 @@ def _conn() -> sqlite3.Connection:
             ("dispatch_platform", "dispatch_platform TEXT"),
             ("dispatch_chat_id", "dispatch_chat_id TEXT"),
             ("parent_task_id", "parent_task_id TEXT"),
+            ("cwd_explicit", "cwd_explicit INTEGER NOT NULL DEFAULT 0"),
             # 老数据(改名前落库的行)一律是语音派发的,默认值 'voice' 准确反映历史事实。
             ("origin", "origin TEXT NOT NULL DEFAULT 'voice'"),
         ):
@@ -131,6 +133,7 @@ def create(
     title: str,
     prompt: str,
     cwd: str | None = None,
+    cwd_explicit: bool = False,
     dispatch_platform: str | None = None,
     dispatch_chat_id: str | None = None,
     origin: str = "voice",
@@ -151,10 +154,10 @@ def create(
     tid = task_id or secrets.token_hex(4)
     now = time.time()
     c.execute(
-        "INSERT INTO tasks(id,title,prompt,cwd,status,progress_note,result_summary,"
+        "INSERT INTO tasks(id,title,prompt,cwd,cwd_explicit,status,progress_note,result_summary,"
         "result_full,dispatch_platform,dispatch_chat_id,origin,created_at,updated_at) "
-        "VALUES (?,?,?,?,'queued','','','',?,?,?,?,?)",
-        (tid, title, prompt, cwd, dispatch_platform, dispatch_chat_id, origin, now, now),
+        "VALUES (?,?,?,?,?,'queued','','','',?,?,?,?,?)",
+        (tid, title, prompt, cwd, int(cwd_explicit), dispatch_platform, dispatch_chat_id, origin, now, now),
     )
     c.commit()
     return get(tid)

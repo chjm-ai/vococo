@@ -12,7 +12,7 @@ from vococo.core.agent import (
     ToolInput,
     _compact_threshold,
     _load_system_prompt,
-    _needs_trade_mcp,
+    _external_mcp_for_task,
     _read_prompt_cache,
     _write_prompt_cache,
     _cli_working_dir,
@@ -38,8 +38,10 @@ def test_load_system_prompt_times_out_without_blocking_turn(monkeypatch):
     assert prompt == {"type": "preset", "preset": "claude_code", "append": ""}
 
 
-def test_load_system_prompt_skips_retry_during_backoff(monkeypatch):
+def test_load_system_prompt_skips_retry_during_backoff(monkeypatch, tmp_path):
     import vococo.core.agent as agent
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
 
     called = False
 
@@ -57,15 +59,10 @@ def test_load_system_prompt_skips_retry_during_backoff(monkeypatch):
     assert prompt == {"type": "preset", "preset": "claude_code", "append": ""}
 
 
-def test_trade_mcp_only_for_trade_message_or_project(monkeypatch, tmp_path):
-    monkeypatch.setattr(config, "execution_project_root_for", lambda _key: str(tmp_path / "notes"))
-    assert _needs_trade_mcp("记录病情", "web:notes") is False
-    assert _needs_trade_mcp("帮我创建外贸邮件发送计划", "web:notes") is True
-
-    monkeypatch.setattr(
-        config, "execution_project_root_for", lambda _key: "/Users/wesley/Repos/vocotrade"
-    )
-    assert _needs_trade_mcp("继续", "web:trade") is True
+def test_trade_mcp_only_for_explicit_data_task():
+    """项目目录不是加载条件；只有本轮明确的数据任务才请求外部 MCP。"""
+    assert _external_mcp_for_task("记录病情", "web:notes") == set()
+    assert _external_mcp_for_task("查 lemlist 的 campaign 回复", "web:notes") == {"lemlist"}
 
 
 def test_cloud_project_uses_stable_cli_cwd():
