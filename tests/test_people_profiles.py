@@ -503,3 +503,27 @@ async def test_analyze_evidence_downgrade_when_name_in_body(monkeypatch):
     monkeypatch.setattr(pp, "_chat_json", fake_chat)
     out = await pp.analyze(note, "251219 Frank邀请的基督徒圣诞活动", "2025-12-19")
     assert [p["name"] for p in out["people"]] == ["Alex"]
+
+
+# ── known_people:幽灵索引行(文件不存在)不纳入已知名单 ───────────────────────
+def test_known_people_skips_ghost_index_rows(tmp_path):
+    """索引里有但画像文件不存在的人物(清理后没删索引行)→ 不算已知人物,
+    否则重跑时幽灵会被当成已知人物直接重建文件(真实踩坑)。"""
+    from vococo import config
+    people = tmp_path / "people"
+    people.mkdir()
+    (people / "胜源.md").write_text("---\nrelationship: 朋友\n---\n", encoding="utf-8")
+    idx = tmp_path / "people-network.md"
+    idx.write_text(
+        "## 人脉速查\n\n| 名字 | 别名 | 关系 | 标签 |\n|---|---|---|---|\n"
+        "| 胜源 | 盛源 | 朋友 | 化工 |\n| 幽灵甲 |  |  |  |\n",
+        encoding="utf-8",
+    )
+    monkeypatch_pp = __import__("unittest.mock").mock.patch.object(pp, "index_path", lambda: idx)
+    with monkeypatch_pp:
+        # people_dir 也要指向 tmp_path/people
+        with __import__("unittest.mock").mock.patch.object(pp, "people_dir", lambda: people):
+            known = pp.known_people()
+    names = [k["name"] for k in known]
+    assert "胜源" in names
+    assert "幽灵甲" not in names

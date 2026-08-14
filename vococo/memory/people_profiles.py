@@ -110,11 +110,19 @@ def _index_rows() -> list[list[str]]:
 
 
 def known_people() -> list[dict]:
-    """已知人物列表:名字 + 别名(索引) + 关系/标签(索引 + 画像 frontmatter 兜底)。"""
+    """已知人物列表:名字 + 别名(索引) + 关系/标签(索引 + 画像 frontmatter 兜底)。
+
+    只收录【文件真实存在】的人物:索引行可能残留"幽灵"——人物文件被清理(合并/
+    删除)后索引行没同步删,下次扫描会把幽灵当已知人物直接写文件重建(真实踩坑:
+    清理 10 个假人物文件后重跑,Open-CLAW/Wesley/大牛等又全部被"新建"回来)。
+    """
+    pd = people_dir()
+    files = {f.stem for f in pd.glob("*.md")} if pd.is_dir() else set()
     people: dict[str, dict] = {}
     for name, aliases, rel, tags in _index_rows():
+        if name not in files:
+            continue  # 幽灵索引行:文件不存在,不纳入已知名单
         people[name] = {"name": name, "aliases": aliases, "relationship": rel, "tags": tags}
-    pd = people_dir()
     if pd.is_dir():
         for f in sorted(pd.glob("*.md")):
             name = f.stem
