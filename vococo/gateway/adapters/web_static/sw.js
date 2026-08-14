@@ -5,10 +5,13 @@
       静默拉最新版;发现 / 变了就 postMessage 通知页面弹"点击刷新"。
       /api /events /send 等动态接口一律不拦,照常走网络。 */
 
-const SHELL_CACHE = "vococo-shell-v3";
+const SHELL_CACHE = "vococo-shell-v4";
 // 只缓存这份白名单里的路径(按 pathname 匹配,?v= 版本参数算在完整 URL 里)
+// app-core/markdown/sidebar/settings/stream/composer/voice:2026-08-14 从 index.html 拆出的功能块
 const SHELL_PATHS = new Set([
   "/", "/styles.css", "/tool-card.js", "/manifest.json", "/favicon.ico",
+  "/app-core.js", "/markdown.js", "/sidebar.js", "/settings.js",
+  "/stream.js", "/composer.js", "/voice.js",
   "/vococo-mark.svg", "/icon-192.png", "/icon-512.png",
   "/icon-maskable-512.png", "/apple-touch-icon.png",
 ]);

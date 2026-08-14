@@ -41,6 +41,14 @@ from ..web_auth import check_web_auth
 from .web_push import PUSH
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
+
+# index.html 引用的可版本化静态资源:_handle_index 把 "/name" 引用改写成 "?v=内容哈希"
+_VERSIONED_ASSETS = (
+    "styles.css", "tool-card.js",
+    # 2026-08-14 前端模块化:从 index.html 拆出的功能块(加载顺序即此顺序)
+    "app-core.js", "markdown.js", "sidebar.js", "settings.js",
+    "stream.js", "composer.js", "voice.js",
+)
 _DOC_PREVIEW_MAX = 3 * 1024 * 1024  # 文档预览分屏读文件上限;超过就不读,前端提示下载/自己开
 # 文档预览模糊兜底搜索用:直接拼接找不到时,按路径尾部扫一遍——AI 提到文件时经常掉了包名
 # 前缀(比如把 vococo/memory/images.py 说成 memory/images.py)。跳过这些目录纯粹是
@@ -580,13 +588,13 @@ class WebAdapter:
     # ── HTTP 路由 ────────────────────────────────────────────────────────
     @staticmethod
     def _inject_asset_versions(html_bytes: bytes) -> bytes:
-        """把 HTML 里的 /styles.css、/tool-card.js 引用改写成带内容哈希的 ?v= URL。
+        """把 HTML 里的静态资源引用改写成带内容哈希的 ?v= URL。
 
         URL 即版本:文件一变哈希就变,配合 _versioned_static 的 immutable 头,
         CF 边缘/浏览器长缓存直接命中;文件没变则 URL 稳定,缓存持续有效。
         文件读不到就原样返回(引用裸路径也能工作,只是回到协商缓存)。
         """
-        for name in ("styles.css", "tool-card.js"):
+        for name in _VERSIONED_ASSETS:
             try:
                 digest = hashlib.md5((_STATIC / name).read_bytes()).hexdigest()[:12]
             except OSError:
@@ -1962,6 +1970,11 @@ class WebAdapter:
         # 2026-07-23 从 index.html 内联 <script> 拆出(工具卡片渲染那一段)
         return self._versioned_static(request, "tool-card.js", "text/javascript")
 
+    async def _handle_app_js(self, request: web.Request) -> web.Response:
+        # 2026-08-14 前端模块化拆出的功能 JS(app-core/sidebar/voice 等),同走双轨缓存;
+        # 路由正则已把 name 限定在 _VERSIONED_ASSETS 白名单内,无路径穿越面。
+        return self._versioned_static(request, request.match_info["name"], "text/javascript")
+
     async def _handle_favicon(self, request: web.Request) -> web.Response:
         # 跟 vococo-mark.svg 同口径:允许 CDN 边缘缓存 1 天,省跨境回源;
         # 换标后最多 1 天内生效,可接受(2026-07-21,此前是 no-cache 强制每次回源)
@@ -2141,6 +2154,10 @@ class WebAdapter:
                 web.get("/sw.js", self._handle_sw),
                 web.get("/styles.css", self._handle_styles),
                 web.get("/tool-card.js", self._handle_tool_card_js),
+                web.get(
+                    r"/{name:(?:app-core|markdown|sidebar|settings|stream|composer|voice)\.js}",
+                    self._handle_app_js,
+                ),
                 web.get("/favicon.ico", self._handle_favicon),
                 web.get("/vococo-mark.svg", self._handle_mark),
                 web.get("/pub/{path:.*}", self._handle_publish),
