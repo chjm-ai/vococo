@@ -193,6 +193,36 @@ async def _resolve_name_merges(names: list[str], people: list[dict]) -> dict[str
     return mapping
 
 
+# 泛指敬称/代词:不是人名,LLM 常把"那位大牛/这个老板"直接当成名字提取
+_JUNK_TITLES = (
+    "会长", "副会长", "老板", "先生", "女士", "女生", "男生", "同学",
+    "朋友", "师兄", "师姐", "老师", "师傅", "大叔", "阿姨", "客户",
+    "医生", "经理", "总监", "校长", "书记", "部长",
+)
+_JUNK_PRAISES = ("大牛", "大佬", "大神", "牛人", "小姐姐", "小哥哥", "大V")
+
+
+def _is_junk_name(name: str) -> bool:
+    """名单外的新名字,先做程序侧过滤,别让 LLM 把指代/称谓/代号建成画像。
+
+    2026-08-14 全量扫描教训:新建了「化工校友会副会长」「字节背景女生」「服装
+    老板」「酒店咨询朋友」(称谓指代)、「大牛」(敬称)、「Open-CLAW」(工具代号)、
+    「Wesley」(主人自己)这类非人脉条目。规则只拦"明显是"的,拿不准的放行
+    (宁可多一条让人工删,不误杀真人物如"张老板""Traster")。
+    """
+    if not name:
+        return True
+    if name == "Wesley":
+        return True  # 主人自己(工作坊/演示笔记里自称)
+    if "-" in name or "_" in name:
+        return True  # 代号/机器名,如 Open-CLAW
+    if name in _JUNK_PRAISES:
+        return True
+    if len(name) >= 4 and any(t in name for t in _JUNK_TITLES):
+        return True
+    return False
+
+
 # ── LLM 分析:提取人物互动 ────────────────────────────────────────────────────
 _ANALYZE_SYSTEM = (
     "你是私人助理,负责从一篇 Obsidian 个人笔记里提取人物互动信息,更新主人的人脉画像库。"
@@ -216,9 +246,13 @@ _ANALYZE_PROMPT = """从下面这篇笔记里提取人物互动信息,输出 JSO
 1. 笔记里出现了哪些人物的【新事实信息】?提取对象是"信息",不是"名字":
    - 与主人直接对话/通话/见面的人(含标题点名、正文匿名指代的情况,见上)
    - 主人提到的某人近况/身份/合作/互动("小玉帮我找场地""她叔叔是华工校友会副会长")
-   不是提取对象:AI 工具名、电影角色、泛指人群("老板们""同学们");
-   纯身份称谓("叔叔""副会长""总经理""那个女生")不是人名,不得建新人物;
-   服务器/主机/项目/产品的代号(给机器/项目起的英文名)不是人物,拿不准就不提取。
+   不是提取对象:AI 工具名(OpenClaw/Open-CLAW 这类工具/项目代号)、电影角色、
+   泛指人群("老板们""同学们")、泛指敬称("那位大牛""这个大佬")——指代没名没姓
+   的人("化工校友会副会长""字节背景女生""服装老板""酒店咨询朋友")不是人名,
+   不得建新人物;纯身份称谓("叔叔""副会长""总经理""那个女生")不是人名;
+   笔记里主人自称("Wesley""我叫Wesley")不算人物互动,不提取;
+   名人作为类比/举例的对象(如"像张雪峰那样""像'得到'一样")不是互动,不提取;
+   服务器/主机/项目/产品的代号不是人物,拿不准就不提取。
 2. 对每个提取到的人物:
    - evidence:从笔记正文里【逐字复制】一段 10~30 字、能证明这个人物确实被提到的
      原句片段(必须是原文真实存在的连续字符,不能转述、不能概括、不能编造——
@@ -596,6 +630,10 @@ async def process_note(text: str, note_title: str, note_date: str) -> dict:
         if not name:
             continue
         std = merge_map.get(name, name)
+        if std not in {k["name"] for k in people_known} and _is_junk_name(std):
+            # 名单外且明显是指代/称谓/代号/主人自称 → 丢弃,不建画像
+            print(f"[people_profiles] 过滤非人物条目: {std}(来自「{note_title}」)", flush=True)
+            continue
         p["known"] = std in {k["name"] for k in people_known} or bool(p.get("known", False))
         change = _write_or_update_profile(std, p, date6, note_title)
         registered = _register_index(std, p) if not p["known"] else ""
