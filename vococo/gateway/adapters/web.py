@@ -730,9 +730,6 @@ class WebAdapter:
                 )
                 if transcript is None:
                     transcript = f"(音频转写失败:{t_err},请重新上传)"
-                elif not transcript.startswith("(音频转写失败"):
-                    # 转写成功即触发人脉画像分析(后台任务,不阻塞回复);失败/占位不进
-                    self._launch_profile_update(transcript, conv)
             audios.append(AudioAttachment(
                 data=data, media_type=media_type, filename=filename, transcript=transcript,
             ))
@@ -1304,33 +1301,6 @@ class WebAdapter:
         stale = [k for k, v in self._pending_audio.items() if v[4] < cutoff]
         for k in stale:
             self._pending_audio.pop(k, None)
-
-    def _launch_profile_update(self, transcript: str, conv: str) -> None:
-        """录音转写完成后即时触发人脉画像分析(后台任务,不阻塞本次回复)。
-
-        分析失败/无人物不影响主流程;定时扫描(people_profiles.scan_new_turns)
-        是同机制的兜底,这里只负责"刚录完马上看到画像更新"的即时体验。
-        """
-        from ...memory import people_profiles
-
-        async def _run() -> None:
-            try:
-                if not people_profiles.has_signal(transcript, "audio"):
-                    return
-                r = await people_profiles.process_text(transcript, {
-                    "date": time.strftime("%Y-%m-%d"),
-                    "source": "audio",
-                    "session_key": conv,
-                })
-                if r.get("status") == "done":
-                    print(f"[人脉] 录音即时分析完成: {', '.join(r['updated'])}", flush=True)
-            except Exception as e:  # noqa: BLE001——分析失败不拖垮发送
-                print(f"[人脉] 即时分析失败: {e}", flush=True)
-
-        try:
-            asyncio.get_event_loop().create_task(_run())
-        except RuntimeError:
-            pass  # 无运行中事件循环(异常环境),交给定时扫描兜底
 
     @_authed
     async def _handle_upload_audio(self, request: web.Request) -> web.Response:

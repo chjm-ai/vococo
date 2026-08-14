@@ -320,6 +320,29 @@ def _schedule_after(expr: str, after: float) -> float:
     return time.mktime(nxt.timetuple())
 
 
+async def _scan_people_profiles(push: PushFn) -> None:
+    """每天定时扫描 Obsidian 个人笔记,提取人物互动更新画像(见
+    memory/people_profiles.scan_obsidian_notes)。识别不到具体人物的
+    聊天/线下活动类笔记会记待确认项,按配置推送提醒。
+    """
+    from ..memory import people_profiles
+
+    summaries = await people_profiles.scan_obsidian_notes()
+    if not summaries:
+        return
+    pending = [s for s in summaries if s.get("status") == "pending"]
+    for s in summaries:
+        print(f"[人脉] 「{s.get('note')}」: {s.get('status')}", flush=True)
+    if pending and ":" in config.PEOPLE_PROFILE_TARGET:
+        platform, _, chat_id = config.PEOPLE_PROFILE_TARGET.partition(":")
+        first = pending[0]
+        await push(
+            platform.strip(), chat_id.strip(),
+            f"👤 {len(pending)} 篇笔记没识别出具体人物(如「{first.get('note')}」),"
+            "看看是不是漏了,需要的话手动补充人脉画像。",
+        )
+
+
 async def run_scheduler(push: PushFn) -> None:
     """常驻调度循环:心跳 + 到期任务 +(可选)定时反思/人脉扫描。启动时播种起步建议目录。"""
     from ..voice import notify as voice_notify
@@ -339,7 +362,7 @@ async def run_scheduler(push: PushFn) -> None:
     except Exception as e:  # 播种失败不拖垮调度
         print(f"[建议] 播种起步目录出错: {e}")
     extra = f" · 反思 {config.REFLECT_CRON}" if config.REFLECT_ENABLED else ""
-    extra += f" · 人脉扫描 {config.PEOPLE_PROFILES_SCAN_MINUTES}min" if config.PEOPLE_PROFILES_ENABLED else ""
+    extra += f" · 人脉扫描 {config.PEOPLE_PROFILES_SCAN_CRON}" if config.PEOPLE_PROFILES_ENABLED else ""
     print(f"⏱  调度器启动(每 {config.SCHEDULER_TICK_SEC}s 一跳{extra})")
     reflect_next: float | None = None
     people_next: float | None = None
@@ -360,32 +383,13 @@ async def run_scheduler(push: PushFn) -> None:
             if config.PEOPLE_PROFILES_ENABLED:
                 now = time.time()
                 if people_next is None:
-                    people_next = now + config.PEOPLE_PROFILES_SCAN_MINUTES * 60
+                    people_next = _schedule_after(config.PEOPLE_PROFILES_SCAN_CRON, now)
                 elif now >= people_next:
-                    people_next = now + config.PEOPLE_PROFILES_SCAN_MINUTES * 60
+                    people_next = _schedule_after(config.PEOPLE_PROFILES_SCAN_CRON, now)
                     try:
-                        from ..memory import people_profiles
-                        summaries = await people_profiles.scan_new_turns()
-                        pending = [
-                            (s["turn_id"], r.get("reason"))
-                            for s in summaries
-                            for r in s.get("results", [])
-                            if r.get("status") == "pending"
-                        ]
-                        for s in summaries:
-                            for r in s.get("results", []):
-                                print(f"[人脉] turn {s['turn_id']}: {r.get('status')}", flush=True)
-                        # 识别不到参与者的录音 → 按配置推送一句询问,请主人补充
-                        if pending and ":" in config.PEOPLE_PROFILE_TARGET:
-                            platform, _, chat_id = config.PEOPLE_PROFILE_TARGET.partition(":")
-                            await push(
-                                platform.strip(), chat_id.strip(),
-                                f"👤 {len(pending)} 段录音没识别出参与者"
-                                f"(turn {pending[0][0]}):{pending[0][1]},"
-                                "补充一下是谁?",
-                            )
+                        await _scan_people_profiles(push)
                     except Exception as e:  # 扫描失败不拖垮调度
-                        print(f"[人脉] 扫描出错: {e}")
+                        print(f"[人脉] 出错: {e}")
         except Exception as e:
             print(f"[调度器] tick 出错: {e}")
         await anyio.sleep(config.SCHEDULER_TICK_SEC)
