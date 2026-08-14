@@ -229,18 +229,19 @@ STT_CLEANUP_MODEL: str = (
     or "Qwen/Qwen2.5-72B-Instruct"
 )
 
-# === 人脉画像自动更新(会话/录音转写 → AI_BRAIN/memory/people/ 画像)===
-# 默认开:定时扫描新 turn 的录音转写(带 [说话人N] 分段/逐字稿/audios 字段),
-# 用 LLM 提取人物互动信息,追加进对应画像文件并刷新 last_updated。见
+# === 人脉画像自动更新(Obsidian 个人笔记 → AI_BRAIN/memory/people/ 画像)===
+# 默认开:每天定时扫描 Obsidian vault 里的个人思考/聊天/线下活动笔记,用 LLM
+# 提取人物互动信息,追加进对应画像文件并刷新 last_updated。见
 # memory/people_profiles.py。分析模型走 DeepSeek 原生 OpenAI 兼容端点,key
 # 复用设置页已配置的 "deepseek" 第三方供应商(与 core/title.py 标题总结兜底
 # 同一账号,见 people_profiles._deepseek_api_key),不新增独立密钥。
 PEOPLE_PROFILES_ENABLED: bool = _parse_bool(
     os.environ.get("PEOPLE_PROFILES_ENABLED", ""), True
 )
-PEOPLE_PROFILES_SCAN_MINUTES: int = int(
-    os.environ.get("PEOPLE_PROFILES_SCAN_MINUTES", "30").strip() or "30"
-)
+# 每天扫描一次(cron 表达式,同 REFLECT_CRON 的写法/时区处理),默认早上 7 点。
+PEOPLE_PROFILES_SCAN_CRON: str = os.environ.get(
+    "PEOPLE_PROFILES_SCAN_CRON", "0 7 * * *"
+).strip()
 PEOPLE_PROFILES_MODEL: str = (
     os.environ.get("PEOPLE_PROFILES_MODEL", "").strip() or "deepseek-chat"
 )
@@ -251,6 +252,21 @@ PEOPLE_PROFILES_MODEL: str = (
 PEOPLE_PROFILES_BASE_URL: str = "https://api.deepseek.com"
 # 待确认提醒推送目标 "platform:chat_id"(可选;不配则只记 pending 文件+日志)
 PEOPLE_PROFILE_TARGET: str = os.environ.get("PEOPLE_PROFILE_TARGET", "").strip()
+
+# Obsidian vault 根目录:AI_BRAIN_DIR 本身是 vault 内 "AI_Brain" 文件夹的软链,
+# 取其真实路径的父目录就是 vault 根(可用 OBSIDIAN_VAULT_DIR 显式覆盖)。
+_obsidian_vault_env = os.environ.get("OBSIDIAN_VAULT_DIR", "").strip()
+OBSIDIAN_VAULT_DIR: Path = (
+    Path(_obsidian_vault_env) if _obsidian_vault_env else AI_BRAIN_DIR.resolve().parent
+)
+# 扫描目录(相对 vault 根,逗号分隔):个人思考(按年分文件夹)+ 一对一沟通记录 +
+# 线下活动/会议笔记(个人向 + AI 咨询项目向两处)。
+PEOPLE_PROFILES_OBSIDIAN_FOLDERS: list[str] = [
+    f.strip() for f in os.environ.get(
+        "PEOPLE_PROFILES_OBSIDIAN_FOLDERS",
+        "1.个人/思考,1.个人/社交/聊天,1.个人/社交/线下活动,2.重点项目/AI咨询/07-线下活动",
+    ).split(",") if f.strip()
+]
 
 
 # === 语音伴聊模式(实验性,见 docs/design/voice-companion/)===
