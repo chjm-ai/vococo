@@ -130,19 +130,19 @@ def load_history(session_key: str, limit: int = 40, *, full_events: bool = False
     c = _conn()
     wm = _watermark(c, session_key)
     rows = c.execute(
-        "SELECT id, user_text, assistant_text, events, draft_text, images, audios FROM turns "
+        "SELECT id, ts, user_text, assistant_text, events, draft_text, images, audios FROM turns "
         "WHERE session_key=? AND id>? ORDER BY id DESC LIMIT ?",
         (session_key, wm, limit),
     ).fetchall()
     out: list[dict] = []
-    for tid, u, a, ev, draft, imgs, auds in reversed(rows):
+    for tid, ts, u, a, ev, draft, imgs, auds in reversed(rows):
         try:
             events = json.loads(ev) if ev else []
         except (json.JSONDecodeError, ValueError):
             events = []
         if events and not full_events:
             events = _strip_events(events)
-        entry: dict = {"id": tid, "user": u, "assistant": a, "pending": a == "", "events": events}
+        entry: dict = {"id": tid, "ts": ts, "user": u, "assistant": a, "pending": a == "", "events": events}
         if a == "" and draft:
             entry["draft"] = draft
         # 图片:库里存文件名,给前端换成取图 URL(前端 <img src> 直接用)
@@ -284,6 +284,29 @@ def cancel_turn(turn_id: int) -> None:
     c = _conn()
     c.execute("DELETE FROM turns WHERE id=? AND assistant_text=''", (turn_id,))
     c.commit()
+
+
+def delete_last_turn(session_key: str, turn_id: int) -> str | None:
+    """删掉某会话「最后一轮」,返回其 user_text 供调用方重新入队(= 前端"重新生成")。
+
+    只允许删最新一轮(核对 id 与 DESC LIMIT 1 查到的一致)且该轮已完成
+    (assistant_text 非空)——防止前端拿着过期/进行中的 turn_id 误删,打乱
+    后续轮次的上下文连续性。不满足条件返回 None,调用方据此拒绝这次请求。
+
+    注:SDK 会话走 resume 续聊,被删掉这轮的问答在模型侧 resume 的 transcript
+    里仍"读得到"——重新生成能让用户不再看到旧回复,但不能让模型真正忘记它答过
+    什么,这是 resume 模式续聊的固有限制,不在这里解决。
+    """
+    c = _conn()
+    row = c.execute(
+        "SELECT id, user_text, assistant_text FROM turns WHERE session_key=? ORDER BY id DESC LIMIT 1",
+        (session_key,),
+    ).fetchone()
+    if not row or row[0] != turn_id or row[2] == "":
+        return None
+    c.execute("DELETE FROM turns WHERE id=?", (turn_id,))
+    c.commit()
+    return row[1]
 
 
 def recover_interrupted_turns() -> int:
