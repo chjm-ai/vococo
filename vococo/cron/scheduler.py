@@ -321,7 +321,7 @@ def _schedule_after(expr: str, after: float) -> float:
 
 
 async def run_scheduler(push: PushFn) -> None:
-    """常驻调度循环:心跳 + 到期任务 +(可选)定时反思。启动时播种起步建议目录。"""
+    """常驻调度循环:心跳 + 到期任务 +(可选)定时反思/人脉扫描。启动时播种起步建议目录。"""
     from ..voice import notify as voice_notify
 
     # cron 任务(origin="cron")跑完一轮后,统一后台任务引擎经这个钩子把结果转发
@@ -339,8 +339,10 @@ async def run_scheduler(push: PushFn) -> None:
     except Exception as e:  # 播种失败不拖垮调度
         print(f"[建议] 播种起步目录出错: {e}")
     extra = f" · 反思 {config.REFLECT_CRON}" if config.REFLECT_ENABLED else ""
+    extra += f" · 人脉扫描 {config.PEOPLE_PROFILES_SCAN_MINUTES}min" if config.PEOPLE_PROFILES_ENABLED else ""
     print(f"⏱  调度器启动(每 {config.SCHEDULER_TICK_SEC}s 一跳{extra})")
     reflect_next: float | None = None
+    people_next: float | None = None
     while True:
         try:
             _write_heartbeat()
@@ -355,6 +357,35 @@ async def run_scheduler(push: PushFn) -> None:
                         await _reflect(push)
                     except Exception as e:  # 反思失败不拖垮调度
                         print(f"[反思] 出错: {e}")
+            if config.PEOPLE_PROFILES_ENABLED:
+                now = time.time()
+                if people_next is None:
+                    people_next = now + config.PEOPLE_PROFILES_SCAN_MINUTES * 60
+                elif now >= people_next:
+                    people_next = now + config.PEOPLE_PROFILES_SCAN_MINUTES * 60
+                    try:
+                        from ..memory import people_profiles
+                        summaries = await people_profiles.scan_new_turns()
+                        pending = [
+                            (s["turn_id"], r.get("reason"))
+                            for s in summaries
+                            for r in s.get("results", [])
+                            if r.get("status") == "pending"
+                        ]
+                        for s in summaries:
+                            for r in s.get("results", []):
+                                print(f"[人脉] turn {s['turn_id']}: {r.get('status')}", flush=True)
+                        # 识别不到参与者的录音 → 按配置推送一句询问,请主人补充
+                        if pending and ":" in config.PEOPLE_PROFILE_TARGET:
+                            platform, _, chat_id = config.PEOPLE_PROFILE_TARGET.partition(":")
+                            await push(
+                                platform.strip(), chat_id.strip(),
+                                f"👤 {len(pending)} 段录音没识别出参与者"
+                                f"(turn {pending[0][0]}):{pending[0][1]},"
+                                "补充一下是谁?",
+                            )
+                    except Exception as e:  # 扫描失败不拖垮调度
+                        print(f"[人脉] 扫描出错: {e}")
         except Exception as e:
             print(f"[调度器] tick 出错: {e}")
         await anyio.sleep(config.SCHEDULER_TICK_SEC)

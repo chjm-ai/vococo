@@ -229,6 +229,23 @@ STT_CLEANUP_MODEL: str = (
     or "Qwen/Qwen2.5-72B-Instruct"
 )
 
+# === 人脉画像自动更新(会话/录音转写 → AI_BRAIN/memory/people/ 画像)===
+# 默认开:定时扫描新 turn 的录音转写(带 [说话人N] 分段/逐字稿/audios 字段),
+# 用 LLM 提取人物互动信息,追加进对应画像文件并刷新 last_updated。见
+# memory/people_profiles.py。分析模型默认复用 STT_CLEANUP_MODEL(SiliconFlow 72B)。
+PEOPLE_PROFILES_ENABLED: bool = _parse_bool(
+    os.environ.get("PEOPLE_PROFILES_ENABLED", ""), True
+)
+PEOPLE_PROFILES_SCAN_MINUTES: int = int(
+    os.environ.get("PEOPLE_PROFILES_SCAN_MINUTES", "30").strip() or "30"
+)
+PEOPLE_PROFILES_MODEL: str = (
+    os.environ.get("PEOPLE_PROFILES_MODEL", "").strip() or STT_CLEANUP_MODEL
+)
+# 待确认提醒推送目标 "platform:chat_id"(可选;不配则只记 pending 文件+日志)
+PEOPLE_PROFILE_TARGET: str = os.environ.get("PEOPLE_PROFILE_TARGET", "").strip()
+
+
 # === 语音伴聊模式(实验性,见 docs/design/voice-companion/)===
 # 手机上像打电话一样跟 AI 说话。默认开;体验不好会整体移除,故独立成 VOICE_ 前缀。
 VOICE_ENABLED: bool = _parse_bool(os.environ.get("VOICE_ENABLED", ""), True)

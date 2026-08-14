@@ -1,0 +1,134 @@
+"""人脉画像自动更新(memory/people_profiles.py):信号判断、文本提取、写文件防重。
+
+LLM 分析(analyze/process_text)不在这测(要 key+花钱),全部逻辑层验证:
+- has_signal:什么文本值得分析(录音/会议分段/口述互动 vs 闲聊)
+- _extract_texts:只取主人输入与录音转写,不扫 AI 回复
+- 写文件:frontmatter 格式保持、同日防重、基础关系不被覆盖
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from vococo.memory import people_profiles as pp
+
+
+def _turn_row(user_text: str = "", audios: list | None = None) -> tuple:
+    """造一个 turns 行:(id, ts, session_key, user_text, assistant_text, audios)"""
+    return (
+        1, 1750000000.0, "test:conv1", user_text, "AI 的回复不该被扫描",
+        json.dumps(audios, ensure_ascii=False) if audios else "",
+    )
+
+
+# ── 信号判断 ────────────────────────────────────────────────────────────────
+@pytest.mark.anyio
+async def test_has_signal_audio_long_text():
+    """录音转写:≥200 字即分析(没人名正是要问的场景)。"""
+    assert pp.has_signal("长" * 200, "audio")
+    assert not pp.has_signal("短录音", "audio")
+
+
+@pytest.mark.anyio
+async def test_has_signal_speaker_segments():
+    """[说话人N] 会议分段:无条件值得分析。"""
+    assert pp.has_signal("[说话人1] 好的\n[说话人2] 收到", "user")
+
+
+@pytest.mark.anyio
+async def test_has_signal_user_text_needs_name_and_length(monkeypatch):
+    """普通对话文本:≥300 字且含已知人名才分析;短文本/无人名跳过。"""
+    monkeypatch.setattr(pp, "known_people", lambda: [{
+        "name": "胜源", "aliases": "", "relationship": "朋友", "tags": ""
+    }])
+    assert pp.has_signal("胜源" + "聊" * 300, "user")
+    assert not pp.has_signal("胜源聊了几句", "user")          # 太短
+    assert not pp.has_signal("聊" * 300, "user")              # 无人名
+
+
+# ── 文本提取 ────────────────────────────────────────────────────────────────
+@pytest.mark.anyio
+async def test_extract_texts_audio_and_user_only():
+    """只取录音转写 + 主人输入;AI 回复(assistant_text)一律不扫。"""
+    row = _turn_row(
+        user_text="胜源" + "聊" * 300,
+        audios=[{"file": "a.xm4a", "text": "通话转写" * 60}],
+    )
+    texts = pp._extract_texts(row)
+    assert len(texts) == 2
+    assert texts[0][1] == "audio"
+    assert texts[1][1] == "user"
+    assert all(src != "assistant" for _, src in texts)
+
+
+@pytest.mark.anyio
+async def test_extract_texts_skips_short_user_text():
+    """短的对话文本(随口一句)不提取。"""
+    row = _turn_row(user_text="早上医生的录音", audios=[])
+    assert pp._extract_texts(row) == []
+
+
+# ── 写文件:防重与格式保持 ───────────────────────────────────────────────────
+@pytest.mark.anyio
+async def test_write_update_same_day_dedup(tmp_path, monkeypatch):
+    """同一天同一人物:互动记录/动态只追加一次(防 LLM 措辞抖动重复)。"""
+    monkeypatch.setattr(pp, "people_dir", lambda: tmp_path)
+    (tmp_path / "张三.md").write_text(
+        "---\nrelationship: 朋友\ntags: [AI]\nlast_updated: 2026-08-01\n---\n\n"
+        "## 基本信息\n- 职业：开发者\n\n## 画像\n- 熟悉 AI\n\n## 互动记录\n"
+        "- 260801 初次见面 → [[260801-初次见面]]\n",
+        encoding="utf-8",
+    )
+    r1 = pp._write_or_update_profile(
+        "张三", {"interaction": "聊了AI项目", "dynamics": ["在做AI产品"],
+                "tags": ["AI"], "note_title": "AI项目"}, "260814",
+    )
+    assert "互动记录+1" in r1
+    # 同一天再跑(措辞不同):不追加
+    r2 = pp._write_or_update_profile(
+        "张三", {"interaction": "讨论AI项目合作", "dynamics": ["在做AI产品中"],
+                "tags": ["AI"], "note_title": "AI项目二"}, "260814",
+    )
+    assert "互动记录+1" not in r2
+    assert "动态+1条" not in r2
+    text = (tmp_path / "张三.md").read_text(encoding="utf-8")
+    assert text.count("- 260814 ") == 1          # 互动记录一条
+    assert text.count("[260814]") == 1           # 动态一条
+    assert "last_updated: 2026-08-14" in text    # 日期刷新,frontmatter 格式不变
+
+
+@pytest.mark.anyio
+async def test_write_update_base_relationship_not_overridden(tmp_path, monkeypatch):
+    """基础关系(朋友)不被一次互动推断的角色覆盖,新角色并入 tags。"""
+    monkeypatch.setattr(pp, "people_dir", lambda: tmp_path)
+    (tmp_path / "张三.md").write_text(
+        "---\nrelationship: 朋友\ntags: []\nlast_updated: 2026-08-01\n---\n\n"
+        "## 画像\n- 熟悉 AI\n\n## 互动记录\n- 260801 初次见面 → [[260801-初次见面]]\n",
+        encoding="utf-8",
+    )
+    pp._write_or_update_profile(
+        "张三", {"interaction": "一起办活动", "relationship": "工作坊合作伙伴",
+                "tags": [], "note_title": "活动"}, "260814",
+    )
+    text = (tmp_path / "张三.md").read_text(encoding="utf-8")
+    assert "relationship: 朋友" in text              # 关系保留
+    assert "工作坊合作伙伴" in text.split("---")[1]  # 新角色进 tags
+
+
+@pytest.mark.anyio
+async def test_new_profile_file_keeps_template(tmp_path, monkeypatch):
+    """新人物:按现有模板建文件,frontmatter 三键齐全。"""
+    monkeypatch.setattr(pp, "people_dir", lambda: tmp_path)
+    r = pp._write_or_update_profile(
+        "李四", {"interaction": "初识,聊了电商", "dynamics": ["在做出海电商"],
+                "occupation": "跨境电商运营", "tags": ["电商出海"],
+                "relationship": "朋友", "note_title": "初识李四"}, "260814",
+    )
+    assert r.startswith("新建")
+    text = (tmp_path / "李四.md").read_text(encoding="utf-8")
+    assert text.startswith("---\nrelationship: 朋友\n")
+    assert "tags: [电商出海]" in text
+    assert "last_updated: " in text
+    assert "## 互动记录" in text
+    assert "- 260814 初识,聊了电商 → [[260814-初识李四]]" in text
