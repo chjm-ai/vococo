@@ -250,6 +250,11 @@ PEOPLE_PROFILES_MODEL: str = (
 # deepseek-chat 无思考过程直接出结果;deepseek-v4-flash 走 /anthropic 代理时
 # 默认带 reasoning_content,不适合这种轻量提取。
 PEOPLE_PROFILES_BASE_URL: str = "https://api.deepseek.com"
+# 人脉扫描的机制状态文件(扫描水位/待确认清单)放 AI_BRAIN 而不是 data/:
+# 业务 cron 任务跑在任务专属 worktree(data/ 是空的、写主仓库 data/ 会被
+# 危险分级拦),而 AI_BRAIN 是后台任务唯一可写的豁免目录。
+PEOPLE_PROFILES_WATERMARK: Path = AI_BRAIN_DIR / "people_profile_obsidian_watermark.json"
+PEOPLE_PROFILES_PENDING: Path = AI_BRAIN_DIR / "people_profile_pending.json"
 # 待确认提醒推送目标 "platform:chat_id"(可选;不配则只记 pending 文件+日志)
 PEOPLE_PROFILE_TARGET: str = os.environ.get("PEOPLE_PROFILE_TARGET", "").strip()
 

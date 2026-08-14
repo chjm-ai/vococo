@@ -150,41 +150,6 @@ def _append_index(topic: str, summary: str, category: str) -> None:
 
 
 @tool(
-    "scan_people_profiles",
-    "扫描 Obsidian 个人笔记(思考/聊天/线下活动/AI咨询线下活动),提取人物互动"
-    "更新 AI_BRAIN/memory/people/ 人脉画像,并返回运行统计(处理篇数/更新明细/"
-    "待确认/过滤/错误)。默认增量扫描(只处理新写或改过的笔记,按 mtime 水位);"
-    "传 all=true 会清空水位全量重扫(耗时 10 分钟+,非必要别用)。",
-    {"all": bool},
-)
-async def scan_people_profiles(args: dict) -> dict:
-    from ..memory import people_profiles
-
-    if args.get("all"):
-        import json
-        people_profiles._obsidian_watermark_path().write_text("{}", encoding="utf-8")
-    summaries = await people_profiles.scan_obsidian_notes()
-    done = [s for s in summaries if s.get("status") == "done"]
-    pending = [s for s in summaries if s.get("status") == "pending"]
-    skipped = [s for s in summaries if s.get("status") == "skipped"]
-    error = [s for s in summaries if s.get("status") == "error"]
-    if not summaries:
-        return _ok("没有新/改动的笔记,画像无更新。")
-    lines = [
-        f"共处理 {len(summaries)} 篇笔记:更新 {len(done)} / 待确认 {len(pending)}"
-        f" / 无人物跳过 {len(skipped)} / 错误 {len(error)}",
-    ]
-    for s in done:
-        lines.append(f"  · {s['note']}: {', '.join(s['updated'])}")
-    for s in pending[:5]:
-        lines.append(f"  ⚠ 待确认「{s['note']}」没识别出具体人物")
-    if len(pending) > 5:
-        lines.append(f"  …还有 {len(pending)-5} 篇待确认")
-    for s in error[:3]:
-        lines.append(f"  ✗ {s['note']}: {s.get('reason')}")
-    return _ok("\n".join(lines))
-
-@tool(
     "suggest_automation",
     f"给 {config.USER_NAME} 提一条【定时自动化建议】(不会自动开跑,等他用 /建议 一键接受)。"
     "当你发现他反复问/做同一件事、适合排成定时任务时用。\n"
@@ -203,7 +168,6 @@ async def scan_people_profiles(args: dict) -> dict:
         "required": ["title", "description", "cron", "prompt"],
     },
 )
-
 async def suggest_automation(args: dict) -> dict:
     from ..gateway import clarify
 
@@ -894,7 +858,6 @@ def build_mcp_servers() -> dict:
             tools=[
                 recall_past,
                 save_memory,
-                scan_people_profiles,
                 suggest_automation,
                 add_cron_job,
                 list_cron_jobs,
