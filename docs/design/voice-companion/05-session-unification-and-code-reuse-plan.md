@@ -990,3 +990,39 @@ core.tasks         负责后台任务
 ```
 
 不要先隐藏入口、再靠补丁把两个会话勉强接在一起。那样短期看起来快，长期会保留两套状态机和两套上下文问题，达不到“代码更简洁、更复用”的目标。
+
+---
+
+## 13. 执行状态(2026-08-14 核对;原 PLAN.md 已并入本节)
+
+M1 全 done;M3/M5 各完成一半;**M2、M4 一行未动**——`core/conversation` 层不存在,
+`voice-chat:main` 仍是独立会话键(`voice/session.py`),旧 `/voice/tasks*` 兼容转发仍在
+(`voice/routes.py`)。以下是实况,不是待办承诺;要继续推进请先重读本文档再动手。
+
+### M1:任务领域中性化 ✅
+- [x] 任务查询从 `origin=voice/chat` 收敛到 `session_key` / `source`
+- [x] 中性 `/tasks*` API,旧 `/voice/tasks*` 只做兼容转发
+- [x] 任务事件广播从 `voice.notify` 拆出(core/task_events.py)
+- [x] ~~保持 sdk_task_views 与后台执行任务分开~~ → **2026-08-14:SDK 待办投影已整体移除**
+  (hook/tasks 表函数//sdk-tasks 路由/前端渲染全删),任务池只剩真实后台任务
+- [x] 任务事件总线测试 + 既有任务回归全绿
+
+### M2:统一前台会话轮次 ⬜ 未动
+- [ ] 新增 `core.conversation` 轮次协调层;统一 session lock/turn_id/取消/resume/事件/落库
+- [ ] Web 文本与 `/voice/send` 共用该层;保持前端行为不变,完成单测和并发测试
+
+### M3:统一前端输入和时间线 ◐ 一半
+- [x] 复用主会话 composer,不另写语音输入框
+- [ ] 统一文本/语音事件渲染和任务状态条;语音控制只留 Omni/录音/TTS/静音/打断适配职责
+- [ ] 浏览器与移动端回归测试
+
+### M4:统一主会话与历史 ⬜ 未动
+- [ ] `voice-chat:main` 迁移到 `main`;统一清空/历史/标题/模型/思考深度语义
+- [ ] 保留旧 Key 只读兼容和旧入口跳转;验证刷新、重启、跨设备恢复
+
+### M5:统一入口与清理 ◐ 一半
+- [x] 页面默认进入统一「对话」视图;移除重复的主会话/语音入口
+- [ ] 删除重复 session、turn、history、notify 实现;更新旧设计文档,执行移除演练
+
+> 2026-08-14 另注:前端 index.html 已拆分为 7 个 JS 模块(app-core/markdown/sidebar/
+> settings/stream/composer/voice),M3 继续推进时按新文件布局施工。

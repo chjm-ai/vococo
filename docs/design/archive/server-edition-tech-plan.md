@@ -1,6 +1,6 @@
 # vococo 服务器版 技术方案(路径②:同一套代码 + 部署模式)
 
-> ⚠️ **已废弃,仅存档**(2026-08-06)。双模式路线已推翻,改走「两套代码」路线,见 `docs/design/trade-edition-plan.md`(VocoTrade)。本文件对应的 P0 代码已整体移除,存档锚点 `git tag server-edition-p0`。
+> ⚠️ **已废弃,仅存档**(2026-08-06)。双模式路线已推翻,改走「两套代码」路线,见 vocotrade 仓 `docs/design/trade-edition-plan.md`(VocoTrade;本仓副本 2026-08-14 删除)。本文件对应的 P0 代码已整体移除,存档锚点 `git tag server-edition-p0`。
 >
 > 2026-08-05。配套文档:`docs/design/server-edition.md`(产品思路与路线决策)。
 > 本文件是落地层设计:每个改动给出具体文件、函数、schema。行号以撰写时 main 分支为准。

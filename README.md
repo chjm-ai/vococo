@@ -7,17 +7,15 @@
 
 ## 特性
 
-- **多渠道,一个会话**:TUI / CLI / Web(自建 PWA,手机浏览器直达)任选;默认全端共享同一主会话,网页上问一半切 CLI 接着聊。
-- **Web 自建 UI**:多会话侧边栏、工具调用卡片(对齐 Claude Code 体验)、模型面板 + 订阅限额环、设置页(模型/供应商/skill/MCP/思考深度全可在线改)。
-- **语音优先**:按住说话 → STT 转文字进对话;TTS 朗读回复;Omni 实时免提通话(可打断、带回声过滤)。
-- **后台任务引擎**:语音派活 / cron 定时 / 普通会话里「开个独立新会话」三种触发共用一套引擎;每个任务跑在独立 git worktree + 分支,干完推送汇报,绝不碰主目录。
-- **项目会话隔离**:Web 端把会话绑定到项目仓库后,每个会话自动开独立 worktree + 分支,并行会话互不抢分支。
-- **长期记忆**:启动注入 `~/AI_BRAIN` 画像与记忆索引;对话中 `save_memory` 沉淀、`recall_past` 跨会话召回;记忆就是纯 Markdown 文件,Obsidian 可直接维护。
-- **多供应商热切换**:官方订阅为主,DeepSeek / Kimi / 任意 Anthropic 兼容中转在设置页添加即生效,无需重启;`/model` 会话级临时切换。
-- **安全模型**:灾难命令直接拦截(删根/格式化/fork 炸弹);写目录外、`git push`、装包等 5 类危险操作在手机弹按钮请你批准;启动时收敛 `.env` secret 出 env,工具输出自动打码。
-- **Web Push 系统通知**:页面关了、锁屏了也收得到(回复完成 / 待审批 / 主动推送 / 出错四种场景)。
-- **consent-first 主动化**:cron 定时任务 + 自动化建议——它发现你反复做同一件事时只提建议,你点头才开跑,绝不擅自建任务。
-- **自我运维**:`vococo doctor` 一键自检;`restart_self` 工具让它改完自身代码后安全重启(遗书+还魂);事件循环假死看门狗自动自杀拉起。
+- **多渠道,一个会话**:TUI / CLI / Web(自建 PWA,手机浏览器直达);默认全端共享同一主会话。
+- **Web 自建 UI**:多会话侧边栏、工具调用卡片(对齐 Claude Code)、模型面板 + 限额环、设置页全在线改。
+- **语音优先**:按住说话(STT)、TTS 朗读、Omni 实时免提通话(可打断)。
+- **后台任务引擎**:语音派活 / cron / 独立新会话共用一套引擎,任务跑在独立 git worktree。
+- **长期记忆**:启动注入 `~/AI_BRAIN`;`save_memory` 沉淀、`recall_past` 召回,纯 Markdown。
+- **多供应商热切换**:DeepSeek / Kimi / 任意 Anthropic 兼容中转在设置页添加即生效(详见 REQUIREMENTS §6)。
+- **安全模型 + 自我运维**:危险三档闸、手机审批;`vococo doctor` 自检、`restart_self` 安全重启、看门狗防假死。
+
+需求矩阵与验收标准见 [REQUIREMENTS.md](REQUIREMENTS.md) §4,本节不重复维护。
 
 ## 架构
 
@@ -61,11 +59,7 @@ Web 入口:`serve` 时设 `WEB_ENABLED=1` 即在同进程起网页服务(默认�
 想用 **DeepSeek / Kimi** 或任意第三方 Anthropic 兼容中转:在 Web 设置页的「模型」
 管理界面直接添加(base_url + key + model),**每轮自动生效,无需重启**;会话里
 `/model <模型名>` 可临时覆盖。只用第三方时,`.env` 里的订阅 token 可留空。
-模型名 / key / base_url 全在设置页管理,vococo 不硬编码任何供应商。
-
-旧版 [cc-switch](https://github.com/farion1231/cc-switch) 桌面 App 的配置
-(`~/.claude-hermes/config.yaml`,历史遗留路径名)可用一次性脚本导入设置页:
-`python -m vococo.gateway.migrate_cc_switch`。
+认证细节见 [REQUIREMENTS.md](REQUIREMENTS.md) §6。
 
 ## 常驻(macOS)
 
@@ -128,10 +122,8 @@ uv run vococo chat
 
 ## 设计要点
 
-- **只服务 Claude**:底层 `claude-agent-sdk`,认证用订阅令牌(`CLAUDE_CODE_OAUTH_TOKEN`),不花 API 按量费。
-- **复用现有 skills**:claude-agent-sdk 底层即 Claude Code,可直接挂载已有 Claude skills 当工具;另有 `plugin/` 放 vococo 专属 skill。
-- **不重造记忆**:接已有的 `~/AI_BRAIN`(USER.md 画像 + memory/ 知识),纯 Markdown,跨工具共享。
-- **安全分层不是可选项**:bypassPermissions 的便利背后,是灾难拦截 + 审批闸 + secret 收敛 + 输出打码四层网(见 [SECURITY.md](SECURITY.md) 与 [CONTEXT.md](CONTEXT.md))。
+设计原则、非目标红线、与原版 Hermes 的差异对照见 [REQUIREMENTS.md](REQUIREMENTS.md)
+§1–§5;术语与安全模型见 [CONTEXT.md](CONTEXT.md) / [SECURITY.md](SECURITY.md)。
 
 > ⚠️ 订阅令牌只配个人自用;商用/对外必须改回 API key 按量计费。
 

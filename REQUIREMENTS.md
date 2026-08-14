@@ -89,7 +89,7 @@
 
 ### 4.3 P2(以后再说)
 
-- Obsidian vault 读写、语音输入(STT,已落地)、信息简报聚合、可选向量记忆、Web 仪表板
+未立项的设想移到 [docs/roadmap.md](docs/roadmap.md);本文件只保留已验收范围。
 
 ---
 
