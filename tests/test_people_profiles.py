@@ -460,3 +460,21 @@ async def test_resolve_name_merges_llm_merge_not_in_known_ignored(monkeypatch):
     monkeypatch.setattr(pp, "_chat_json", fake_chat)
     result = await pp._resolve_name_merges(["盛元"], people)
     assert result == {}
+
+
+# ── 非人物条目过滤:称谓/敬称/代号/主人自称不建画像 ─────────────────────────
+def test_junk_name_filter():
+    """名单外的新名字,指代/称谓/敬称/代号/主人自称 → 过滤,不建画像。"""
+    assert pp._is_junk_name("化工校友会副会长")
+    assert pp._is_junk_name("字节背景女生")
+    assert pp._is_junk_name("服装老板")
+    assert pp._is_junk_name("酒店咨询朋友")
+    assert pp._is_junk_name("雅恩食品客户")
+    assert pp._is_junk_name("大牛")
+    assert pp._is_junk_name("Open-CLAW")
+    assert pp._is_junk_name("Wesley")
+    # 拿不准的放行(宁可人工删,不误杀真人物)
+    assert not pp._is_junk_name("张老板")      # 称呼式但有实质信息
+    assert not pp._is_junk_name("Traster")     # 英文长名,真人
+    assert not pp._is_junk_name("小飞")
+    assert not pp._is_junk_name("胜源")
