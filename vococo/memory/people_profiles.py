@@ -163,7 +163,10 @@ def _extract_texts(turn_row: tuple) -> list[tuple[str, str]]:
     只取【主人的原始输入】(user_text)和【录音转写】(audios 字段):
     - "audio":audios 字段的录音转写全文——明确是主人上传的录音(通话/会议/口述),
       真人互动素材,没人名也值得分析(正好是"问参与者是谁"的场景)。
-    - "user":主人贴的 [说话人N] 会议转写、逐字稿、或 ≥300 字长文本(口述互动)。
+    - "user":主人的原始输入全文。这里不做长度/内容过滤——判断"值不值得分析"
+      是 has_signal 的职责,这里只负责"取出来"(早前在这层设了 ≥300 字门槛,
+      把"小玉是我的铁哥们…帮我找场地"这类 195 字的真实互动信息挡在外面,
+      过滤逻辑该统一交给 has_signal,这里不重复判断)。
     不扫 assistant_text:Ai 回复是模型生成的,信息源自 user 或可能是脑补,
     扫描它会把"小玉叔叔/副会长"这类身份称谓误当新人物建画像(试跑踩过)。
     """
@@ -179,10 +182,7 @@ def _extract_texts(turn_row: tuple) -> list[tuple[str, str]]:
             except (json.JSONDecodeError, TypeError, AttributeError):
                 pass
     if user_text:
-        # 会议转写分段或 ≥300 字长文本(逐字稿/口述互动)都值得判断;
-        # 是否含人名/够不够分析由 has_signal 决定
-        if _SPEAKER_PATTERN.search(user_text) or len(user_text) >= 300:
-            texts.append((user_text, "user"))
+        texts.append((user_text, "user"))
     return texts
 
 
@@ -201,20 +201,23 @@ def has_signal(text: str, source: str = "") -> bool:
     - 录音转写(audio):真人互动素材,默认分析(哪怕没人名——识别不到正是
       需要询问用户补充的场景)。
     - 会议转写([说话人N] 分段):明确多人,分析。
-    - 普通对话文本:要够长(≥300 字)且含人名,才值得花一次 LLM——
-      主人可能口述互动信息("今天和小玉聊了…"),也可能只是跟 AI 讨论某人,
-      后者靠 LLM 判断不提取,但短文本(随口一提)直接跳过省成本。
+    - 普通对话文本含已知人名:不设长度门槛(实测"小玉是我的铁哥们…帮我找场地"
+      这类真实互动信息只有 195 字,曾被"≥300字"门槛误伤漏掉;LLM 判空的成本
+      远低于漏掉真实信息的代价),只过滤掉纯提及式的极短片段(<15 字,如
+      "@小玉"这种没有实质内容的一次性点名)。
+    - 完全不含已知人名、但够长(≥300字)的文本:可能是同音异写的新人物或
+      会议逐字稿,仍然分析。
     """
     if _SPEAKER_PATTERN.search(text):
         return True
     if source == "audio":
         return len(text) >= 200
-    if len(text) < 300:
-        return False
     people = known_people()
     idx = _known_name_index(people)
-    hits = sum(1 for n in idx if n and len(n) >= 2 and n in text)
-    return hits >= 1
+    has_known_name = any(n for n in idx if n and len(n) >= 2 and n in text)
+    if has_known_name:
+        return len(text) >= 15
+    return len(text) >= 300
 
 
 # ── LLM 分析:提取人物互动 ────────────────────────────────────────────────────
@@ -235,7 +238,11 @@ _ANALYZE_PROMPT = """从下面的文本里提取人物互动信息,输出 JSON�
    不是提取对象:主人在与 AI 讨论某人/问某人信息/让 AI 处理某人的事(如
    "小玉改为分享人""我和胜源是什么关系"这类工作讨论,只算提名字,不算新信息);
    AI 工具名、电影角色、泛指人群("老板们""同学们");
-   纯身份称谓("叔叔""副会长""总经理""那个女生")不是人名,不得建新人物。
+   纯身份称谓("叔叔""副会长""总经理""那个女生")不是人名,不得建新人物;
+   服务器/主机/项目/产品的代号("Kimmy""Nova""Oris"这类给机器/项目起的英文名,
+   常出现在"XX 的云端/部署/节点/上线"这类技术语境里)不是人物,拿不准就不提取
+   ——这类代号和人名字面上分不清,必须看上下文动作判断:主语是不是在"部署/
+   配置/重启"它、还是在跟它"聊天/见面/通话"。
 2. 对每个提取到的人物:
    - 先在已知库匹配(注意转写同音/近音异写,如 思源/圣源/胜源、喆铭=黄喆铭、小玉;按读音归并到已知库标准名)
    - interaction:这次互动/提及的一句话摘要(40字内,写清事实:一起做了什么/聊了什么/对方近况)
@@ -258,8 +265,13 @@ _ANALYZE_PROMPT = """从下面的文本里提取人物互动信息,输出 JSON�
 """
 
 
-async def _chat_json(messages: list[dict]) -> dict | None:
-    """轻量 OpenAI 兼容调用,要求 JSON 输出;失败返回 None(调用方跳过,不写文件)。"""
+async def _chat_json(messages: list[dict], *, retries: int = 4) -> dict | None:
+    """轻量 OpenAI 兼容调用,要求 JSON 输出;失败返回 None(调用方跳过,不写文件)。
+
+    retries:429(限流)重试次数,指数退避(2/4/8/16秒)。全量回扫连续调用
+    同一个 SiliconFlow 端点很容易触发限流(实测 275 次连续请求撞了 200+ 次 429),
+    单次失败就放弃会把"没跑"误判成"没人物",必须先扛过限流再谈跳过。
+    """
     url = f"{config.STT_BASE_URL}/chat/completions"
     headers = {"Authorization": f"Bearer {config.STT_API_KEY}"}
     payload = {
@@ -269,19 +281,27 @@ async def _chat_json(messages: list[dict]) -> dict | None:
         "messages": messages,
     }
     timeout = aiohttp.ClientTimeout(total=60)
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as sess:
-            async with sess.post(url, json=payload, headers=headers) as resp:
-                body = await resp.text()
-        if resp.status != 200:
-            print(f"[people_profiles] LLM 返回 {resp.status}", flush=True)
+    for attempt in range(retries + 1):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as sess:
+                async with sess.post(url, json=payload, headers=headers) as resp:
+                    body = await resp.text()
+            if resp.status == 429 and attempt < retries:
+                await asyncio.sleep(2 ** (attempt + 1))
+                continue
+            if resp.status != 200:
+                print(f"[people_profiles] LLM 返回 {resp.status}", flush=True)
+                return None
+            content = json.loads(body)["choices"][0]["message"]["content"]
+            content = content.strip()
+            content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
+            return json.loads(content)
+        except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, ValueError):
+            if attempt < retries:
+                await asyncio.sleep(2 ** (attempt + 1))
+                continue
             return None
-        content = json.loads(body)["choices"][0]["message"]["content"]
-        content = content.strip()
-        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
-        return json.loads(content)
-    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, ValueError):
-        return None
+    return None
 
 
 def _describe_people(people: list[dict]) -> str:
@@ -308,6 +328,10 @@ async def analyze(text: str, meta: dict | None = None) -> dict | None:
         people_list=_describe_people(people),
         text=text[:6000],  # 控制 token,长转写截前 6000 字(讲话主体通常在前段)
     )
+    # 主动节流:全量回扫是连续调用同一个 SiliconFlow 端点,不等就撞限流
+    # (实测 275 次连续请求 429 了 200+ 次)。0.5s 间隔换成 <2 req/s,
+    # 比"撞了再退避"更省时间,退避留作真撞上限流时的兜底。
+    await asyncio.sleep(0.5)
     result = await _chat_json([
         {"role": "system", "content": _ANALYZE_SYSTEM},
         {"role": "user", "content": prompt},
