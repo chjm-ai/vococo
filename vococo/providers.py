@@ -3,14 +3,12 @@
 
 说明:此模块过去依赖 cc-switch 桌面 App 写入的 ~/.claude-hermes/config.yaml。
 现在已经有了自己的设置页"模型"管理界面和独立存储(data/web_settings.json),所以
-把核心语义改成从 settings_store 读取。cc-switch 配置文件不再被运行时读取,仅作为
-一次性迁移脚本的数据来源(见 gateway/migrate_cc_switch.py)。
+把核心语义改成从 settings_store 读取。cc-switch 配置文件不再被读取,一次性迁移
+脚本(gateway/migrate_cc_switch.py)已于 2026-08 随死代码清理删除(git 历史可查)。
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from pathlib import Path
 
 # 兜底默认模型;与 config.MODEL 的默认保持一致。
 _FALLBACK_MODEL = "claude-sonnet-5"
@@ -23,19 +21,6 @@ _OFFICIAL_NAMES = ("claude", "official", "anthropic", "claude-official")
 # Kimi(Moonshot)的订阅套餐固定走这个域名,其余第三方供应商(DeepSeek/Kimi 的常规
 # API key 入口等)一律按量计费的 API 处理。
 _SUBSCRIPTION_HOSTS = ("api.kimi.com",)  # Kimi Coding 订阅套餐
-
-
-def cc_switch_config_path() -> Path:
-    """旧 cc-switch 配置文件路径。
-
-    保留这个函数是给一次性迁移脚本用;运行时不再读取该文件。
-    注意:~/.claude-hermes 与 CLAUDE_HERMES_HOME 是【历史遗留名】,故意不随项目
-    改名——它指向旧版 cc-switch 时代真实写在磁盘上的目录,改了名迁移脚本就
-    找不到旧数据了。
-    """
-    raw = os.environ.get("CLAUDE_HERMES_HOME", "").strip()
-    base = Path(os.path.expanduser(raw)) if raw else Path.home() / ".claude-hermes"
-    return base / "config.yaml"
 
 
 @dataclass(frozen=True)
@@ -539,3 +524,105 @@ async def kimi_usage(api_key: str) -> dict:
         "provider": "kimi",
         "limits": {"five_hour": five_hour},
     }
+
+
+# ─── 用量查询(/api/usage 的数据源)─────────────────────────────────────
+async def usage_for_model(model: str | None) -> tuple[dict, int]:
+    """按模型查订阅配额,返回 (payload, http_status);Web 层只做 json_response。
+
+    Claude 订阅:SDK 流式回复的 RateLimitEvent 缓存(官方精确值),utilization 缺失
+    时合并本地日志估算兜底,确保始终有具体百分比。Kimi 订阅:主动调
+    api.kimi.com/coding/v1/usages。Codex OAuth 代理(本地,GPT 订阅):经代理
+    management api-call 转发 chatgpt.com/backend-api/wham/usage。
+    API 按量计费(DeepSeek 等):{"provider":"api","type":"api"}。
+    """
+    from . import config
+
+    model = (model or "").strip()
+    if not model:
+        model = resolve(None, config.MODEL)[0]
+
+    # Kimi 订阅(api.kimi.com);web_providers 条目的 snake_case/camelCase 归一化
+    # 已在 subscription_api_key_for_model 内做完,这里拿到的就是规整好的 api_key。
+    api_key = subscription_api_key_for_model(model)
+    if api_key is not None:
+        if api_key:
+            try:
+                return await kimi_usage(api_key), 200
+            except Exception as ex:
+                return {"provider": "kimi", "error": str(ex)}, 502
+        return {"provider": "kimi", "type": "api"}, 200
+
+    # Codex OAuth 代理(本地,GPT 订阅):经代理 management api 转发查额度
+    mgmt = codex_mgmt_for_model(model)
+    if mgmt is not None:
+        try:
+            return await codex_usage(*mgmt), 200
+        except Exception as ex:
+            return {"provider": "codex", "error": str(ex)}, 502
+
+    # Claude 官方订阅:优先用 SDK 缓存的 RateLimitEvent(官方精确值),
+    # 若 utilization 缺失则合并本地日志估算值作兜底。
+    p_entry = lookup_provider_by_model(model)
+    if not p_entry or p_entry.get("name", "").lower() in _OFFICIAL_NAMES:
+        # 懒加载:core.agent 依赖本模块,顶层 import 会成环
+        from .core.agent import get_rate_limits
+        from .gateway.adapters.usage_local import get_local_claude_usage
+
+        official = get_rate_limits()
+        local = await get_local_claude_usage()
+
+        five_off = (official.get("five_hour") or {}) if isinstance(official, dict) else {}
+        five_loc = (local.get("limits", {}).get("five_hour") or {}) if local else {}
+
+        # 官方有利用率就用官方的;否则退回本地估算,但要明确标注来源
+        source = "official"
+        if five_off.get("utilization") is not None:
+            merged = dict(five_off)
+        elif local:
+            merged = dict(five_loc)
+            source = "local_estimate"
+        else:
+            merged = dict(five_off)
+
+        # resets_at 两边可能都有,取官方优先
+        if not merged.get("resets_at") and five_off.get("resets_at"):
+            merged["resets_at"] = five_off["resets_at"]
+        if not merged.get("resets_at") and five_loc.get("resets_at"):
+            merged["resets_at"] = five_loc["resets_at"]
+
+        # 7d 窗口同样合并
+        seven_off = (official.get("seven_day") or {}) if isinstance(official, dict) else {}
+        seven_loc = (local.get("limits", {}).get("seven_day") or {}) if local else {}
+        if seven_off.get("utilization") is not None:
+            merged_seven = dict(seven_off)
+            seven_source = "official"
+        elif local:
+            merged_seven = dict(seven_loc)
+            seven_source = "local_estimate"
+        else:
+            merged_seven = dict(seven_off)
+            seven_source = None
+
+        payload: dict = {
+            "provider": "claude",
+            "source": source,
+            "limits": {"five_hour": merged, "seven_day": merged_seven},
+        }
+        if local:
+            # 本地估算详情给前端 hover 卡片用
+            payload["local"] = local.get("local")
+            payload["forecast"] = local.get("forecast")
+            payload["pace"] = local.get("pace")
+            payload["local_history"] = local.get("local_history")
+            payload["confidence"] = local.get("confidence")
+
+        # 标注 7d 数据来源(如果存在)
+        if merged_seven:
+            merged_seven["source"] = seven_source
+        merged["source"] = source
+
+        return payload, 200
+
+    # 其他(DeepSeek/Moonshot API 等):按量计费,无配额
+    return {"provider": "api", "type": "api"}, 200

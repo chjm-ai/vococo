@@ -58,21 +58,3 @@ async def test_tasks_api_rejects_unknown_source(task_api_client):
 
     assert response.status == 400
     assert (await response.json())["error"] == "source 不支持"
-
-
-@pytest.mark.anyio
-async def test_tasks_api_keeps_sdk_tasks_separate(task_api_client):
-    tasks.upsert_sdk_task(
-        chat_id="main",
-        number=1,
-        title="待办",
-        description="不是后台任务",
-        status="pending",
-    )
-
-    response = await task_api_client.get("/sdk-tasks?session_key=main")
-
-    assert response.status == 200
-    rows = await response.json()
-    assert rows[0]["origin"] == "sdk_task"
-    assert tasks.list_recent_for_source(dispatch_chat_id="main") == []

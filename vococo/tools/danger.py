@@ -899,14 +899,11 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
 def build_hooks() -> dict | None:
     """返回挂给 ClaudeAgentOptions.hooks 的结构;SDK 不支持则 None。
 
-    始终挂 PreToolUse:危险拦截/审批闸与前台执行防线;同时挂 PostToolUse,把 SDK
-    Task* 待办投影到网页状态条。后者只展示,不进入后台执行器。
+    只挂 PreToolUse:危险拦截/审批闸与前台执行防线。
     """
     if HookMatcher is None:
         return None
-    from .sdk_task_hooks import posttool_sdk_task_sync_hook
 
     return {
         "PreToolUse": [HookMatcher(matcher=None, hooks=[pretool_guard_hook])],
-        "PostToolUse": [HookMatcher(matcher=None, hooks=[posttool_sdk_task_sync_hook])],
     }
