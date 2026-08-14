@@ -59,6 +59,63 @@ function addBubble(who, text, imgs, auds){
   $("#wrap").append(row); updateEmpty(); scrollDown(true);
   return b;
 }
+// AI 消息底部一行:回复时间(灰色小字)+ 复制 + 重新生成。turnId 为空(如命令回复/
+// cron 推送这类不走 Sink.done 的消息)时不挂重新生成按钮——没有 turn id 无法安全定位
+// 该删哪一行。isLast 由调用方按"是否本会话最新一轮"传入,只有它为真时才挂该按钮。
+function buildTurnFoot(conv, turnId, text, ts, isLast){
+  const foot=el("div","turnfoot");
+  const tm=el("span","tftime"); tm.textContent=ts?fmtTime(ts):"";
+  foot.append(tm);
+  const cp=el("button","tfbtn"); cp.type="button"; cp.title="复制"; cp.setAttribute("aria-label","复制");
+  cp.innerHTML=ic("copy");
+  cp.onclick=()=>copyMsgText(cp, text||"");
+  foot.append(cp);
+  if(isLast && turnId!=null){
+    const rg=el("button","tfbtn tfregen"); rg.type="button"; rg.title="重新生成"; rg.setAttribute("aria-label","重新生成");
+    rg.innerHTML=ic("refresh");
+    rg.onclick=()=>regenerateTurn(conv, turnId, rg);
+    foot.append(rg);
+  }
+  return foot;
+}
+function copyMsgText(btn, text){
+  if(!text || !navigator.clipboard) return;
+  navigator.clipboard.writeText(text).then(()=>{
+    const old=btn.innerHTML; btn.innerHTML=ic("save");
+    setTimeout(()=>{ btn.innerHTML=old; }, 1200);
+  }).catch(()=>{});
+}
+// 重新生成:删掉服务端最后一轮(仅允许对着最新一轮操作,见 delete_last_turn),
+// 保留原有的用户气泡不动,原地起一个新的流式回复气泡再把同一句话发一遍——
+// 视觉上等价于"AI 的这个回答被替换了",而不是在下面又新开一轮对话。
+async function regenerateTurn(conv, turnId, btn){
+  if(btn.disabled) return;
+  btn.disabled=true;
+  let data=null;
+  try{
+    const r=await api("/turn/regenerate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,id:turnId})});
+    data=await r.json().catch(()=>null);
+  }catch(e){
+    btn.disabled=false;
+    addBubble("ai","⚠️ 重新生成失败:"+e.message);
+    return;
+  }
+  if(!data || !data.ok){
+    btn.disabled=false;
+    addBubble("ai","⚠️ "+((data&&data.error)||"重新生成失败,可能不是最新一条回复"));
+    return;
+  }
+  delete S.histCache[conv]; idbDel("hist:"+conv);
+  if(S.conv===conv){
+    const row=btn.closest(".row"); if(row) row.remove();
+    S.localSent=true;   // 用户气泡原样保留,避免下面 /send 回显的 "user" 事件又重复冒一条
+    ensureStream();
+  }
+  try{
+    await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({conv, text:data.text, images:[], audios:[], files:[]})});
+  }catch(e){ addBubble("ai","⚠️ 发送失败:"+e.message); }
+}
 // 带鉴权头拉图并显示;token 只在头里传,不进 URL(不泄露到日志/历史/Referer)
 async function loadAuthedImg(im, url){
   try{
@@ -183,6 +240,10 @@ setInterval(()=>{
 function ensureStream(t0){
   // 为当前会话准备一个流式 assistant 气泡(含状态行/思考/过程区)
   if(S.stream) return S.stream;
+  // 新一轮开始 = 上一轮不再是"最新一轮",之前挂的重新生成按钮跟着失效——
+  // 摘掉它,不留一个点了只会收到 409 的过期按钮(正常 diff 重绘也会摘,这里
+  // 是让画面立刻反映,不用等下次 /history 重拉)。
+  $("#wrap").querySelectorAll(".tfregen").forEach(b=>b.remove());
   const row=el("div","row ai");
   const bubble=el("div","bubble");
   const status=el("div","status");
@@ -252,7 +313,7 @@ function renderStatus(){
   S.stream.status.innerHTML = '<span class="chip live">'+label+DOTS+esc(tick)+'</span>'
     + '<button type="button" class="statusstop" title="停止回复" aria-label="停止回复"><span class="sq"></span></button>';
 }
-function finalizeStream(finalText, imgs){
+function finalizeStream(finalText, imgs, turnId){
   if(!S.stream) return;
   // 末尾那条普通命令以前等不到下一段正文/命令,会永久散落在过程区;收工时也要归组。
   if(S.stream.activeCard){ foldToGroup(S.stream, S.stream.activeCard); S.stream.activeCard=null; }
@@ -267,6 +328,11 @@ function finalizeStream(finalText, imgs){
     for(const k in S.stream.segs){ const d=S.stream.segs[k]; d.innerHTML=mdToHtml(d.dataset.raw); }
   }
   appendImgs(S.stream.bubble, imgs);
+  // 刚说完就地挂时间/复制/重新生成——不用等用户切走再切回、走 /history 重绘才补出来。
+  // turnId 只有 done 事件(常规对话轮)才带,命令回复/cron 推送(message 事件)没有,
+  // 此时不挂重新生成按钮(见 buildTurnFoot)。ts 用本地时间近似,跟服务端落库时刻
+  // 只差一次网络往返,消息级"几点几分"的粒度感知不出来。
+  S.stream.bubble.append(buildTurnFoot(S.conv, turnId, streamText(S.stream), Date.now()/1000, true));
   S.stream=null; updateSendBtn(); scrollDown();
 }
 // 构成一个"进行中回合"的流式事件类型(可重放以重建气泡)。done/message/choice 不在此列。
@@ -369,7 +435,7 @@ function handleEvent(e){
   switch(e.type){
     case "done": {
       const errBubble = S.stream ? S.stream.bubble : null;
-      finalizeStream(e.text);
+      finalizeStream(e.text, undefined, e.turn_id);
       if(e.is_error){
         if(errBubble) errBubble.classList.add("err");
         // 有 api_error_status(429/529/5xx等)= 后端已确认是模型服务商那边的错,

@@ -139,7 +139,7 @@ class Sink:
         """CLI 自动压缩了上下文。基类只刷新;Web 子类覆盖以推专门事件。"""
         await self.render()
 
-    async def done(self, reply: AgentReply) -> None:
+    async def done(self, reply: AgentReply, turn_id: int | None = None) -> None:
         if reply.text:
             self.answer = reply.text
         await self.render()
@@ -371,7 +371,7 @@ async def converse(
                 last_out=reply.output_tokens,
                 model=reply.model,
             )
-        await sink.done(reply)
+        await sink.done(reply, turn_id)
     else:
         session_store.cancel_turn(turn_id)
     return reply

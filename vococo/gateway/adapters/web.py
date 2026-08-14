@@ -241,7 +241,7 @@ class _WebSink(Sink):
         self.a._live.pop(self.conv, None)
         self.a._emit({"conv": self.conv, "type": "cancelled"})
 
-    async def done(self, reply: AgentReply) -> None:
+    async def done(self, reply: AgentReply, turn_id: int | None = None) -> None:
         # 发 done 前先输出最终全文快照,补全限流可能漏掉的尾巴,确保重连缓冲里有完整版
         if self._think:
             self.a._emit({"conv": self.conv, "type": "thinking", "text": self._think})
@@ -258,6 +258,9 @@ class _WebSink(Sink):
                 "is_error": reply.is_error,
                 "error": reply.error or "",
                 "api_error_status": reply.api_error_status,
+                # 这轮落库的 turn id:前端刚说完就能就地挂"复制/重新生成"按钮,
+                # 不用等下次打开会话才从 /history 里补——见 _handle_turn_regenerate。
+                "turn_id": turn_id,
                 "ctx_tokens": meta.get("ctx_tokens", 0),
                 "total_tokens": meta.get("total_tokens", 0),
                 "ctx_window": meta.get("ctx_window", 0),
@@ -1405,6 +1408,31 @@ class WebAdapter:
         return resp
 
     @_authed
+    @_json_body
+    async def _handle_turn_regenerate(self, request: web.Request, body: dict) -> web.Response:
+        """POST /turn/regenerate {conv, id}:重新生成某会话最新一轮的 AI 回复。
+
+        只删库(session_store.delete_last_turn 已核对 id 确实是最新一轮),重新
+        入队交给前端复用 /send 那一套发送/流式渲染逻辑——不在这里重跑一遍
+        _ingest,避免两套"发送"实现分叉。id 不是最新一轮(前端按钮过期,如
+        用户手快连点两次)时返回 409,前端据此提示而不是静默失败。
+        """
+        conv = str(body.get("conv") or "")
+        try:
+            turn_id = int(body.get("id"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad id"}, status=400)
+        if not conv:
+            return web.json_response({"error": "missing conv"}, status=400)
+        key = config.resolve_session_key("web", conv)
+        user_text = session_store.delete_last_turn(key, turn_id)
+        if user_text is None:
+            return web.json_response(
+                {"ok": False, "error": "只能重新生成最新一条回复"}, status=409
+            )
+        return web.json_response({"ok": True, "text": user_text})
+
+    @_authed
     async def _handle_image(self, request: web.Request) -> web.StreamResponse:
         """回显某轮用户发的图片(落盘在 config.IMAGES_DIR);name 经白名单校验挡路径穿越。"""
         p = session_store.image_path(request.query.get("name", ""))
@@ -2194,6 +2222,7 @@ class WebAdapter:
                 web.get("/commands", self._handle_commands),
                 web.get("/history", self._handle_history),
                 web.get("/turn_events", self._handle_turn_events),
+                web.post("/turn/regenerate", self._handle_turn_regenerate),
                 web.get("/image", self._handle_image),
                 web.get("/audio", self._handle_audio),
                 web.post("/transcribe", self._handle_transcribe),

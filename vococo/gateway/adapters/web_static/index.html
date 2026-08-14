@@ -1084,8 +1084,10 @@ function buildSysNote(text){
   const row=el("div","row sys"); const b=el("div","sysnote"); b.textContent=text;
   row.append(b); return row;
 }
-// 每轮渲染成一块 <div class="turn-block" data-tid data-sig>,供 renderTurns 按轮 diff 复用 DOM
-function buildTurnBlock(t, conv){
+// 每轮渲染成一块 <div class="turn-block" data-tid data-sig>,供 renderTurns 按轮 diff 复用 DOM。
+// isLast:是否本会话最新一轮——只有最新一轮才挂"重新生成"按钮(见 buildTurnFoot),
+// 删中间历史会打乱后续轮次的上下文连续性。
+function buildTurnBlock(t, conv, isLast){
   const wrap=el("div","turn-block");
   if(t.user && t.user.startsWith(SYS_MARK)) wrap.append(buildSysNote(t.user.slice(SYS_MARK.length).trim()));
   else wrap.append(buildBubble("me", t.user, t.images, t.audios).row);
@@ -1102,6 +1104,7 @@ function buildTurnBlock(t, conv){
     // AI 主动发的图(send_image)不进 events 时间线,单独存在 t.ai_images——
     // 不贴回来的话,历史/刷新后这张图就只剩折叠指令卡里的文件名文字,看不到图。
     appendImgs(b, t.ai_images);
+    b.append(buildTurnFoot(conv, t.id, t.assistant, t.ts, isLast));
     wrap.append(row);
   }else if(t.draft){
     // 进行中但后端正流式写 draft:用部分内容起底兜底,避免刷新后空白;
@@ -1131,10 +1134,13 @@ function renderTurns(turns, conv){
     // id 理论上都有(turns 表主键);兜底给个按位置区分的 key,防止万一没有时
     // 多轮全撞在同一个 key 上、互相顶掉导致陈旧节点删不干净。
     const tid=t.id!=null?String(t.id):("i"+idx);
-    const sig=JSON.stringify(t);
+    const isLast=idx===turns.length-1;
+    // isLast 拼进 sig:同一轮从"最新"变成"不是最新"(后面来了新的一轮)时,
+    // 即便这轮本身内容没变也要重建 DOM,否则过期的"重新生成"按钮会一直留着。
+    const sig=JSON.stringify(t)+(isLast?"|L":"");
     let node=existing.get(tid);
     if(!node || node.dataset.sig!==sig){
-      const fresh=buildTurnBlock(t, conv);
+      const fresh=buildTurnBlock(t, conv, isLast);
       fresh.dataset.tid=tid; fresh.dataset.sig=sig;
       if(node) node.replaceWith(fresh); else wrap.insertBefore(fresh, anchor?anchor.nextSibling:wrap.firstChild);
       node=fresh;
