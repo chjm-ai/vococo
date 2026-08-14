@@ -816,10 +816,9 @@ async def remove_mcp_server(args: dict) -> dict:
 
 @tool(
     "set_external_mcp",
-    "开关一个外部 MCP server 的挂载(开=挂进每轮上下文,关=不挂)。"
-    "改完【下一条消息即生效,无需新建会话】,对话历史不丢。"
-    "外部 MCP 工具体积很大(lemlist 120 个工具 ≈11 万 token/轮),"
-    "日常闲聊应保持关闭省上下文;做外贸拓客/SEO/GA 分析等任务前再开,用完记得关。"
+    "开关当前会话的外部 MCP 挂载(开=后续轮次挂进上下文,关=停挂),不会影响其它会话。"
+    "改完【下一条消息即生效】,新会话默认不继承。外部 MCP 工具体积很大，"
+    "日常闲聊不应常驻；明确做外贸拓客/SEO/GA 分析等多轮任务时再开，用完关闭。"
     "name:要开关的 server 名(用 list_mcp_servers 查看全部及其当前状态);"
     "enabled:true=挂载 / false=停挂。也可以一次开全套外贸工具(lemlist+dataforseo+"
     "analytics-mcp):name 传「外贸工具包」,enabled 按需。",
@@ -833,30 +832,32 @@ async def remove_mcp_server(args: dict) -> dict:
     },
 )
 async def set_external_mcp(args: dict) -> dict:
-    from ..gateway.settings_store import list_external, set_external_enabled
+    from ..gateway import clarify
+    from ..gateway.settings_store import list_external
 
+    ctx = clarify.current()
+    if ctx is None:
+        return _ok("外部 MCP 只能在有活动会话时开关。")
     name = (args.get("name") or "").strip()
     enabled = bool(args.get("enabled"))
     if not name:
         return _ok("name 不能为空。")
     all_items = list_external()
     if name == "外贸工具包":
-        targets = [s["name"] for s in all_items if s["type"] in ("http", "stdio", "sse")]
+        targets = {s["name"] for s in all_items if s["type"] in ("http", "stdio", "sse")}
         if not targets:
             return _ok("当前没有任何外部 MCP 可开关。")
-        for t in targets:
-            set_external_enabled(t, enabled)
-        act = "开启" if enabled else "关闭"
-        return _ok(
-            f"✅ 已{act}全部外部 MCP:{'、'.join(targets)}。"
-            "下一条消息即生效,无需新建会话,对话历史不丢。"
-        )
-    found = next((s for s in all_items if s["name"] == name), None)
-    if not found:
-        return _ok(f"未找到外部 MCP「{name}」。用 list_mcp_servers 查看列表。")
-    set_external_enabled(name, enabled)
+    else:
+        found = next((s for s in all_items if s["name"] == name), None)
+        if not found:
+            return _ok(f"未找到外部 MCP「{name}」。用 list_mcp_servers 查看列表。")
+        targets = {name}
+    active = session_store.get_external_mcp_names(ctx.session_key)
+    active.update(targets) if enabled else active.difference_update(targets)
+    session_store.set_external_mcp_names(ctx.session_key, active)
     act = "开启" if enabled else "关闭"
-    return _ok(f"✅ 已{act}外部 MCP「{name}」。下一条消息即生效,无需新建会话,对话历史不丢。")
+    scope = "全部外部 MCP" if name == "外贸工具包" else f"外部 MCP「{name}」"
+    return _ok(f"✅ 已为当前会话{act}{scope}。下一条消息即生效，其他会话不受影响。")
 
 
 def build_mcp_servers() -> dict:

@@ -36,7 +36,9 @@ _DEFAULTS: dict = {
     "skills_mode": "default",   # default=跟随 config.SKILLS;custom=用下面的白名单
     "skills_enabled": [],       # custom 态生效的显式白名单
     "skills_hidden": [],        # 仅设置列表折叠用
-    "skills_by_project": {},    # 项目绝对路径 -> 该项目专用白名单(见 effective_skills)
+    "skills_by_project": {},    # 项目绝对路径 -> 该项目专用白名单(兼容旧配置，优先级最高)
+    "skill_profiles": {},       # profile 名 -> skill 白名单，如 {"coding": ["skill-a"]}
+    "project_profiles": {},     # 项目绝对路径 -> profile 名，按路径祖先匹配
     "vococo_mcp_enabled": True,
     "external_mcp": {},         # name -> {type,command,args,env,url,headers,enabled}
     "web_default_model": "",    # web 端上次选定的模型;新会话没显式选就用它(空=回落 config.MODEL)
@@ -61,7 +63,10 @@ def _load() -> dict:
     # mutate(如 list.append/dict[k]=v)就把模块级默认值永久污染了。
     for key in ("skills_enabled", "skills_hidden", "web_extra_models", "disabled_builtin_models"):
         data[key] = list(data[key]) if isinstance(data.get(key), list) else []
-    for key in ("external_mcp", "web_providers", "web_efforts", "skills_by_project"):
+    for key in (
+        "external_mcp", "web_providers", "web_efforts", "skills_by_project",
+        "skill_profiles", "project_profiles",
+    ):
         data[key] = dict(data[key]) if isinstance(data.get(key), dict) else {}
     return data
 
@@ -383,34 +388,40 @@ def web_providers_raw() -> dict[str, dict]:
     return dict(_load()["web_providers"])
 
 
-def effective_skills(cwd: str | None = None) -> list[str] | str | None:
-    """传给 ClaudeAgentOptions.skills 的值。default 态原样返回 config.SKILLS。
+def _deepest_path_value(mapping: dict, cwd: str | None):
+    """取 cwd 的最深祖先配置；worktree 会自然继承其项目根配置。"""
+    if not cwd:
+        return None
+    try:
+        here = Path(cwd).resolve()
+    except OSError:
+        return None
+    hits = []
+    for raw, value in mapping.items():
+        base = Path(str(raw)).expanduser()
+        if base == here or base in here.parents:
+            hits.append((len(str(base)), value))
+    return max(hits, default=(0, None))[1]
 
-    cwd 命中 `skills_by_project` 时改用该项目的专用白名单:每个 skill 的
-    name+description 都逐字进 system prompt(35 个 ≈6k token/轮),而编码项目里
-    小红书/交友/Google Ads 那批永远用不上。给具体项目配一份精简白名单能砍掉大半,
-    又不影响日常助理会话(它们 cwd 落不到项目上,照旧走全局设置)。
 
-    匹配按路径祖先关系,不要求精确相等——项目会话实际跑在 `<repo>/data/worktrees/…`
-    里,配置只需写主仓库路径一条,所有 worktree 自动继承。多条命中取最深的那条。
+def effective_skills(
+    cwd: str | None = None, *, is_explicit_project: bool = False,
+) -> list[str] | str | None:
+    """传给 ClaudeAgentOptions.skills 的值。
+
+    普通聊天也会回退到 vococo 根目录，不能仅凭最终 cwd 判断它是编码会话；只有用户
+    明确选择项目目录或显式传入 cwd 的会话，才允许命中项目 profile。专用白名单保留
+    为最高优先级，兼容已有配置；随后按 `project_profiles` 找 profile 对应的白名单。
     """
     d = _load()
-    by_project = d["skills_by_project"]
-    if cwd and by_project:
-        try:
-            here = Path(cwd).resolve()
-        except OSError:
-            here = None
-        if here is not None:
-            hits = []
-            for raw, names in by_project.items():
-                if not isinstance(names, list):
-                    continue
-                base = Path(raw).expanduser()
-                if base == here or base in here.parents:
-                    hits.append((len(str(base)), list(names)))
-            if hits:
-                return max(hits)[1]  # 多条命中取路径最深(最具体)的那条
+    if is_explicit_project:
+        names = _deepest_path_value(d["skills_by_project"], cwd)
+        if isinstance(names, list):
+            return list(names)
+        profile = _deepest_path_value(d["project_profiles"], cwd)
+        profile_skills = d["skill_profiles"].get(profile) if isinstance(profile, str) else None
+        if isinstance(profile_skills, list):
+            return list(profile_skills)
     if d["skills_mode"] == "custom":
         return list(d["skills_enabled"])
     return config.SKILLS
@@ -513,11 +524,13 @@ def set_external_enabled(name: str, enabled: bool) -> None:
             _save(d)
 
 
-def effective_external_mcp() -> dict:
-    """开启的外部 server → {name: sdk_config}（剥掉内部用的 enabled 字段）。"""
+def effective_external_mcp(names: set[str] | None = None) -> dict:
+    """按请求名返回已启用的外部 server，None 兼容旧调用而返回全部。"""
     d = _load()
     servers: dict = {}
     for name, cfg in d["external_mcp"].items():
+        if names is not None and name not in names:
+            continue
         if not cfg.get("enabled", True):
             continue
         c = {k: v for k, v in cfg.items() if k != "enabled" and v not in (None, "", [], {})}

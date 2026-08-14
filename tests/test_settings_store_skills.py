@@ -35,7 +35,9 @@ def test_project_whitelist_wins(store, tmp_path):
         "skills_enabled": ["alpha", "beta"],
         "skills_by_project": {str(proj): ["only-this"]},
     })
-    assert settings_store.effective_skills(str(proj)) == ["only-this"]
+    assert settings_store.effective_skills(str(proj), is_explicit_project=True) == ["only-this"]
+    # 默认 cwd 即使刚好落在这个目录，也不能被误判成项目会话。
+    assert settings_store.effective_skills(str(proj)) == ["alpha", "beta"]
     # 别的目录不受影响
     assert settings_store.effective_skills(str(tmp_path)) == ["alpha", "beta"]
 
@@ -46,7 +48,7 @@ def test_worktree_inherits_repo_config(store, tmp_path):
     wt = proj / "data" / "worktrees" / "abc123" / "sess"
     wt.mkdir(parents=True)
     store({"skills_by_project": {str(proj): ["only-this"]}})
-    assert settings_store.effective_skills(str(wt)) == ["only-this"]
+    assert settings_store.effective_skills(str(wt), is_explicit_project=True) == ["only-this"]
 
 
 def test_deepest_match_wins(store, tmp_path):
@@ -55,8 +57,8 @@ def test_deepest_match_wins(store, tmp_path):
     child = parent / "vococo"
     child.mkdir(parents=True)
     store({"skills_by_project": {str(parent): ["broad"], str(child): ["narrow"]}})
-    assert settings_store.effective_skills(str(child)) == ["narrow"]
-    assert settings_store.effective_skills(str(parent)) == ["broad"]
+    assert settings_store.effective_skills(str(child), is_explicit_project=True) == ["narrow"]
+    assert settings_store.effective_skills(str(parent), is_explicit_project=True) == ["broad"]
 
 
 def test_broken_entry_ignored(store, tmp_path):
@@ -69,3 +71,28 @@ def test_broken_entry_ignored(store, tmp_path):
         "skills_by_project": {str(proj): "not-a-list"},
     })
     assert settings_store.effective_skills(str(proj)) == ["alpha"]
+
+
+def test_profile_requires_explicit_project(store, tmp_path):
+    """默认 cwd 不能误命中 profile，避免普通聊天被当作编码会话。"""
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    store({
+        "skills_mode": "custom",
+        "skills_enabled": ["assistant"],
+        "skill_profiles": {"coding": ["code"]},
+        "project_profiles": {str(proj): "coding"},
+    })
+    assert settings_store.effective_skills(str(proj)) == ["assistant"]
+    assert settings_store.effective_skills(str(proj), is_explicit_project=True) == ["code"]
+
+
+def test_explicit_project_profile_inherits_worktree(store, tmp_path):
+    proj = tmp_path / "repo"
+    wt = proj / "data" / "worktrees" / "abc" / "session"
+    wt.mkdir(parents=True)
+    store({
+        "skill_profiles": {"coding": ["code"]},
+        "project_profiles": {str(proj): "coding"},
+    })
+    assert settings_store.effective_skills(str(wt), is_explicit_project=True) == ["code"]

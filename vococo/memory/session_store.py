@@ -293,6 +293,55 @@ def flush_draft(turn_id: int, text: str) -> None:
     c.commit()
 
 
+def set_external_mcp_names(session_key: str, names: set[str]) -> None:
+    """保存用户手动开启的外部 MCP；状态只属于当前会话。"""
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta(session_key, watermark_id, external_mcp_names) VALUES (?,0,?) "
+        "ON CONFLICT(session_key) DO UPDATE SET external_mcp_names=excluded.external_mcp_names",
+        (session_key, json.dumps(sorted(names), ensure_ascii=False)),
+    )
+    c.commit()
+
+
+def get_external_mcp_names(session_key: str) -> set[str]:
+    row = _conn().execute(
+        "SELECT external_mcp_names FROM session_meta WHERE session_key=?", (session_key,)
+    ).fetchone()
+    try:
+        names = json.loads(row[0]) if row and row[0] else []
+    except (TypeError, json.JSONDecodeError):
+        names = []
+    return {name for name in names if isinstance(name, str)}
+
+
+def set_auto_external_mcp_names(session_key: str, names: set[str]) -> None:
+    """记录自动命中的 MCP，供短时「继续」请求复用，不作为全局开关。"""
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta(session_key, watermark_id, auto_external_mcp_names, auto_external_mcp_at) "
+        "VALUES (?,0,?,?) ON CONFLICT(session_key) DO UPDATE SET "
+        "auto_external_mcp_names=excluded.auto_external_mcp_names, "
+        "auto_external_mcp_at=excluded.auto_external_mcp_at",
+        (session_key, json.dumps(sorted(names), ensure_ascii=False), time.time()),
+    )
+    c.commit()
+
+
+def get_recent_auto_external_mcp_names(session_key: str, max_age: float = 1800) -> set[str]:
+    row = _conn().execute(
+        "SELECT auto_external_mcp_names, auto_external_mcp_at FROM session_meta WHERE session_key=?",
+        (session_key,),
+    ).fetchone()
+    if not row or not row[0] or not row[1] or time.time() - float(row[1]) > max_age:
+        return set()
+    try:
+        names = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        names = []
+    return {name for name in names if isinstance(name, str)}
+
+
 def clear(session_key: str) -> None:
     c = _conn()
     purge_session_images(c, session_key)  # 先清图片文件,再删轮次
@@ -300,7 +349,9 @@ def clear(session_key: str) -> None:
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute(
         "UPDATE session_meta SET ctx_tokens=0, total_tokens=0, "
-        "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL WHERE session_key=?",
+        "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL, "
+        "external_mcp_names=NULL, auto_external_mcp_names=NULL, auto_external_mcp_at=NULL "
+        "WHERE session_key=?",
         (session_key,),
     )
     c.commit()

@@ -35,6 +35,7 @@ from claude_agent_sdk import (
 
 from .. import config, providers
 from ..gateway import clarify, settings_store
+from ..memory import session_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
 from . import client_pool
@@ -47,39 +48,47 @@ from .prompt import build_system_prompt
 # 它连带隐藏(_scan_skills 只扫 ~/.claude/skills,看不到插件里的 skill,没法在设置页单独管)。
 _PLUGIN_SKILLS = ["vococo-internal:vococo-web-publish"]
 
-# ── 外贸 MCP 自动触发(B 方案)──────────────────────────────────────────────
-# 外部 MCP(lemlist/dataforseo/GA4)工具 schema 巨大(lemlist 120 个 ≈11 万
-# token/轮),默认全关省上下文。用户消息命中外贸关键词 → 自动全开并【持久化】
-# (开了就保持,不自动关):保温池哈希只在第一次触发那轮变一次,之后稳定,不会
-# 每轮抖动重建。用户也可随时说「关掉外贸工具」手动关(见 tools/builtin.set_external_mcp)。
-_TRADE_KEYWORDS = (
-    "lemlist", "拓客", "获客", "面料", "纺织", "外贸", "fabric", "textile",
-    "cold email", "coldemail", "邮件营销", "邮件序列", "潜在客户", "客户开发",
-    "leads", "campaign", "退订", "unsubscribe", "收件箱", "inbox",
-    "lemleads", "people database", "enrich", "邮箱验证", "找客户",
-    "backlink", "反链", "搜索量", "search volume", "seo", "google ads",
-    "ga4", "google analytics", "网站流量", "域名分析",
+# ── 外部 MCP 按任务加载 ──────────────────────────────────────────────────
+# Lemlist 等工具 schema 很大，默认不挂。只在用户明确要求查询/操作对应外部数据时，
+# 为本轮挂上所需 server；绝不因一次命中而改全局 enabled，避免污染其它会话。
+_MCP_ACTION_WORDS = (
+    "查", "查询", "查看", "看", "分析", "统计", "获取", "拉取", "导出", "同步",
+    "找", "筛", "发送", "回复", "创建", "管理", "report", "query", "analyze",
 )
+_MCP_CONTINUE_WORDS = ("继续", "接着", "刚才", "上一步", "再查", "再看")
+_MCP_TASK_KEYWORDS = {
+    "lemlist": (
+        "lemlist", "拓客", "获客", "cold email", "coldemail", "邮件营销", "邮件序列",
+        "潜在客户", "客户开发", "leads", "campaign", "退订", "unsubscribe", "收件箱",
+        "inbox", "lemleads", "people database", "enrich", "邮箱验证", "找客户",
+    ),
+    "dataforseo": (
+        "dataforseo", "backlink", "反链", "搜索量", "search volume", "域名分析",
+        "关键词排名", "关键词数据",
+    ),
+    "analytics-mcp": ("ga4", "google analytics", "网站流量", "访问量", "转化数据"),
+}
 
 
-def _maybe_auto_enable_trade_mcp(user_text: str) -> None:
-    """消息命中外贸关键词 → 自动开启全部外部 MCP(持久化,本轮即生效)。
-
-    只写在「存在未启用 server」时;写一次后哈希稳定,保温 client 不反复重建。
-    静默执行不打扰;手动关仍走 set_external_mcp。
-    """
-    if not user_text:
-        return
-    t = user_text.lower()
-    if not any(k in t for k in _TRADE_KEYWORDS):
-        return
-    try:
-        for s in settings_store.list_external():
-            if not s.get("enabled", True):
-                settings_store.set_external_enabled(s["name"], True)
-    except Exception:
-        # 设置读写失败不打断对话:这轮不自动开,手动开关仍可用
-        pass
+def _external_mcp_for_task(user_text: str, session_key: str | None = None) -> set[str]:
+    """根据明确任务意图选本轮所需 MCP；短时「继续」可继承上一轮自动命中。"""
+    text = (user_text or "").lower()
+    if not text:
+        return set()
+    is_action = any(word in text for word in _MCP_ACTION_WORDS)
+    names = {
+        name for name, keywords in _MCP_TASK_KEYWORDS.items()
+        if is_action and any(keyword in text for keyword in keywords)
+    }
+    if names:
+        if session_key:
+            session_store.set_auto_external_mcp_names(session_key, names)
+        return names
+    if session_key and any(word in text for word in _MCP_CONTINUE_WORDS):
+        names = session_store.get_recent_auto_external_mcp_names(session_key)
+        if names:
+            session_store.set_auto_external_mcp_names(session_key, names)
+    return names
 
 # ── 速率额度缓存 ──────────────────────────────────────────────────────────
 # SDK 在流式回复中会发出 RateLimitEvent(含 5h/7d 利用率+重置时间),
@@ -639,6 +648,7 @@ async def stream_turn(
     images: list[ImageAttachment] | None = None,
     files: list[FileAttachment] | None = None,
     cwd: str | None = None,
+    is_explicit_project: bool = False,
     resume: str | None = None,
     session_key: str | None = None,
     extra_mcp_servers: dict | None = None,
@@ -701,22 +711,27 @@ async def stream_turn(
             raise RuntimeError(err)
         user_text = f"{user_text}\n\n{desc}" if user_text.strip() else desc
         images = None
-    # B 方案:命中外贸关键词自动挂外部 MCP(持久化开启,本轮即生效)。
-    # 放在读 effective_external_mcp 之前,保证命中那一轮就带上工具。
-    _maybe_auto_enable_trade_mcp(user_text)
-    # MCP / skill 从运行时设置(网页设置页可改)计算,不再写死;改完下一轮即生效
-    # (保温 client 的这些参数在 connect 时定死,靠兼容性哈希「一变就重建」保住该语义)。
+    # 外部 MCP 默认不挂；本轮明确的数据任务或当前会话的手动开关才会请求对应 server。
+    # settings 的 enabled 仍是全局总开关，但任务匹配绝不会反向改它。
+    requested_external = _external_mcp_for_task(user_text, session_key)
+    if session_key:
+        requested_external |= session_store.get_external_mcp_names(session_key)
+    # MCP / skill 从运行时设置计算；这些参数在 SDK connect 时定死，兼容性哈希变化会重建 client。
     mcp_on = settings_store.vococo_enabled()
-    external_mcp = settings_store.effective_external_mcp()  # 用户加的外部 server
+    external_mcp = (
+        settings_store.effective_external_mcp(requested_external) if requested_external else {}
+    )
     mcp_servers: dict = {}
     if mcp_on:
         mcp_servers.update(build_mcp_servers())  # 内置 vococo(记忆/定时/发消息等)
     mcp_servers.update(external_mcp)
     if extra_mcp_servers:  # P1 语音任务板注入的三个工具,默认 None 对现有调用零影响
         mcp_servers.update(extra_mcp_servers)
-    # None=全量;白名单则只挂这些(瘦身 tool schema)。传 cwd:项目可配专用白名单,
-    # 编码会话不必背着小红书/外贸那批 skill 的描述(见 settings_store.effective_skills)。
-    skills = settings_store.effective_skills(cwd)
+    # 普通聊天虽有默认 cwd，却不是项目会话；只有显式项目才能命中 profile。
+    skills = (
+        settings_store.effective_skills(cwd, is_explicit_project=True)
+        if is_explicit_project else settings_store.effective_skills(cwd)
+    )
     if isinstance(skills, list):  # 白名单模式漏不掉插件自带的 skill(见 _PLUGIN_SKILLS)
         skills = list(dict.fromkeys([*skills, *_PLUGIN_SKILLS]))
     # cwd=项目会话补注入其 AGENTS.md;cache_key=会话 id:同一 SDK 会话内冻结 append 快照,

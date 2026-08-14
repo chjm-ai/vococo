@@ -218,7 +218,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         # 上面干净的 prompt_text)——收尾时从回复里抠出来,见 _split_summary_tag。
         async for ev in stream_turn(
             [], prompt_text + _SUMMARY_TAG_INSTRUCTION, model=model, cwd=effective_cwd,
-            session_key=session_key, resume=resume_sid, max_turns=config.TASK_MAX_TURNS,
+            is_explicit_project=bool(row.get("cwd_explicit")), session_key=session_key,
+            resume=resume_sid, max_turns=config.TASK_MAX_TURNS,
         ):
             if isinstance(ev, SessionStarted):
                 # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮
@@ -343,8 +344,9 @@ def dispatch(
     context_session_key:当前对话 key;cwd 未指定时按该会话匹配具体项目,匹配不到回落
     默认项目。最终落库的是项目根,执行时再由 _run() 创建任务专属 worktree。
     """
+    cwd_explicit = bool((cwd or "").strip())
     cwd = config.resolve_execution_root(session_key=context_session_key, cwd=cwd)
-    task = tasks.create(title=title, prompt=prompt, cwd=cwd,
+    task = tasks.create(title=title, prompt=prompt, cwd=cwd, cwd_explicit=cwd_explicit,
                         dispatch_platform=dispatch_platform,
                         dispatch_chat_id=dispatch_chat_id,
                         origin=origin, task_id=task_id)
