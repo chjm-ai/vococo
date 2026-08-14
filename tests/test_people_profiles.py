@@ -1,9 +1,10 @@
 """人脉画像自动更新(memory/people_profiles.py):信号判断、文本提取、写文件防重。
 
-LLM 分析(analyze/process_text)不在这测(要 key+花钱),全部逻辑层验证:
+真实 LLM 调用不在这测(要 key+花钱),`_chat_json` 统一 mock 掉,全部逻辑层验证:
 - has_signal:什么文本值得分析(录音/会议分段/口述互动 vs 闲聊)
 - _extract_texts:只取主人输入与录音转写,不扫 AI 回复
 - 写文件:frontmatter 格式保持、同日防重、基础关系不被覆盖
+- analyze:引用核验(LLM 声称的原文引用必须真的存在,防主题联想式幻觉)
 """
 from __future__ import annotations
 
@@ -133,6 +134,36 @@ async def test_write_update_base_relationship_not_overridden(tmp_path, monkeypat
 
 
 @pytest.mark.anyio
+async def test_register_index_inserts_after_last_row_not_header(tmp_path, monkeypatch):
+    """新人物登记要插在表格最后一条数据行之后,不能插到表头正下方。
+
+    真实踩坑:旧实现用 re.search 找"第一个"匹配 `^\\|.+\\|$` 的行,那正好是
+    表头本身(不是最后一行),导致新人物全部堆在表头和分隔线之间,把表格
+    结构插坏——生产回扫时连续新建 3 个人物,索引整个乱掉。
+    """
+    monkeypatch.setattr(pp, "index_path", lambda: tmp_path / "people-network.md")
+    (tmp_path / "people-network.md").write_text(
+        "---\nname: people-network\n---\n\n## 人脉速查\n\n"
+        "| 名字 | 别名 | 关系 | 标签 |\n|---|---|---|---|\n"
+        "| Alex |  | 朋友 | AI |\n| Bob |  | 同事 | 电商 |\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pp, "_index_rows", lambda: [["Alex", "", "朋友", "AI"], ["Bob", "", "同事", "电商"]])
+    pp._register_index("新人", {"relationship": "朋友", "tags": ["测试"]})
+    text = (tmp_path / "people-network.md").read_text(encoding="utf-8")
+    lines = [l for l in text.splitlines() if l.strip()]
+    # 表头 → 分隔线 → Alex → Bob → 新人,顺序不能乱,新人必须排最后
+    assert lines[-4:] == [
+        "| 名字 | 别名 | 关系 | 标签 |",
+        "|---|---|---|---|",
+        "| Alex |  | 朋友 | AI |",
+        "| Bob |  | 同事 | 电商 |",
+    ] or lines[-1] == "| 新人 |  | 朋友 | 测试 |"
+    assert text.index("| 新人 |") > text.index("| Bob |")   # 新人排在 Bob 之后
+    assert text.index("| 新人 |") > text.index("|---|")     # 且在分隔线之后
+
+
+@pytest.mark.anyio
 async def test_new_profile_file_keeps_template(tmp_path, monkeypatch):
     """新人物:按现有模板建文件,frontmatter 三键齐全。"""
     monkeypatch.setattr(pp, "people_dir", lambda: tmp_path)
@@ -148,3 +179,43 @@ async def test_new_profile_file_keeps_template(tmp_path, monkeypatch):
     assert "last_updated: " in text
     assert "## 互动记录" in text
     assert "- 260814 初识,聊了电商 → [[260814-初识李四]]" in text
+
+
+# ── analyze:引用核验(防主题联想式幻觉)────────────────────────────────────────
+@pytest.mark.anyio
+async def test_analyze_drops_person_with_fabricated_evidence(monkeypatch):
+    """LLM 声称的 evidence 在原文里根本找不到 → 整条丢弃。
+
+    真实踩坑:turn 1789 全文只讲"修bug+看耳鼻喉科",没提任何人名,LLM 却因为
+    "医生/耳鼻喉科"跟已知人物 Alex 的"医疗管理系统"标签主题相似,幻觉出一条
+    Alex 互动记录。evidence 字段要求 LLM 提供可核验的原文引用,这里验证:
+    编造的引用(原文里真的没有)会被过滤掉,不会进入最终结果。
+    """
+    text = "刚派了个后台任务修bug,另外最近在看耳鼻喉科,打鼾有点严重。"
+
+    async def fake_chat_json(messages):
+        return {"people": [
+            {"name": "Alex", "known": True, "evidence": "跟Alex约了看医生",
+             "interaction": "聊了医疗话题", "dynamics": [], "tags": [], "note_title": "x"},
+        ]}
+
+    monkeypatch.setattr(pp, "_chat_json", fake_chat_json)
+    result = await pp.analyze(text)
+    assert result["people"] == []  # 编造的引用在原文里找不到,被丢弃
+
+
+@pytest.mark.anyio
+async def test_analyze_keeps_person_with_real_evidence(monkeypatch):
+    """evidence 是原文里真实存在的片段 → 保留。"""
+    text = "那这个也是我跟思源还有小玉我们第一次举办AI的线下活动。"
+
+    async def fake_chat_json(messages):
+        return {"people": [
+            {"name": "胜源", "known": True, "evidence": "我跟思源还有小玉我们第一次举办AI的线下活动",
+             "interaction": "共同举办AI编程工作坊", "dynamics": [], "tags": [], "note_title": "工作坊"},
+        ]}
+
+    monkeypatch.setattr(pp, "_chat_json", fake_chat_json)
+    result = await pp.analyze(text)
+    assert len(result["people"]) == 1
+    assert result["people"][0]["name"] == "胜源"
