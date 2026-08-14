@@ -753,7 +753,9 @@ def _note_date(path: Path, text: str) -> str:
 
 
 def _obsidian_watermark_path() -> Path:
-    return config.DATA_DIR / "people_profile_obsidian_watermark.json"
+    """扫描水位文件(路径见 config.PEOPLE_PROFILES_WATERMARK,放 AI_BRAIN
+    而不是 data/——业务 cron 任务跑在 worktree,AI_BRAIN 是唯一可写豁免)。"""
+    return config.PEOPLE_PROFILES_WATERMARK
 
 
 def _load_obsidian_watermark() -> dict[str, float]:
@@ -773,7 +775,7 @@ def _save_obsidian_watermark(wm: dict[str, float]) -> None:
 
 
 def _pending_path() -> Path:
-    return config.DATA_DIR / "people_profile_pending.json"
+    return config.PEOPLE_PROFILES_PENDING
 
 
 def _note_pending(rel_path: str, note_date: str) -> None:

@@ -163,7 +163,8 @@ async def test_write_update_same_day_dedup(tmp_path, monkeypatch):
     text = (tmp_path / "张三.md").read_text(encoding="utf-8")
     assert text.count("- 260814 ") == 1          # 互动记录一条
     assert text.count("[260814]") == 1           # 动态一条
-    assert "last_updated: 2026-08-14" in text    # 日期刷新,frontmatter 格式不变
+    from datetime import date as _d
+    assert f"last_updated: {_d.today().isoformat()}" in text  # 日期刷新,frontmatter 格式不变
 
 
 @pytest.mark.anyio
