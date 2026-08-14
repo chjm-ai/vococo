@@ -37,20 +37,34 @@ async def test_has_signal_speaker_segments():
 
 
 @pytest.mark.anyio
-async def test_has_signal_user_text_needs_name_and_length(monkeypatch):
-    """普通对话文本:≥300 字且含已知人名才分析;短文本/无人名跳过。"""
+async def test_has_signal_user_text_name_match_no_length_gate(monkeypatch):
+    """含已知人名:不设 300 字门槛,只挡纯点名式极短片段(<15字)。
+
+    真实踩坑:"小玉是我的铁哥们,信任程度非常高…帮我找场地、找合作资源"只有
+    195 字,曾被旧的"≥300字"门槛挡在外面,是明确的真实信息漏判——门槛该由
+    "有没有实质内容"(交给 LLM 判断)决定,不该由字数硬卡。
+    """
     monkeypatch.setattr(pp, "known_people", lambda: [{
         "name": "胜源", "aliases": "", "relationship": "朋友", "tags": ""
     }])
-    assert pp.has_signal("胜源" + "聊" * 300, "user")
-    assert not pp.has_signal("胜源聊了几句", "user")          # 太短
-    assert not pp.has_signal("聊" * 300, "user")              # 无人名
+    assert pp.has_signal(
+        "胜源是我的铁哥们，信任程度非常高，不用怀疑，最近他帮我找了不少资源。", "user"
+    )  # 40字左右,含人名,过去会被挡,现在放行
+    assert not pp.has_signal("@胜源", "user")  # 纯点名,无实质内容,<15字挡掉
+
+
+@pytest.mark.anyio
+async def test_has_signal_long_text_without_name_match():
+    """无人名但够长(≥300字):仍分析——可能是同音异写的新人物或逐字稿。"""
+    assert pp.has_signal("聊" * 300, "user")
+    assert not pp.has_signal("聊" * 100, "user")  # 无人名且不够长,跳过
 
 
 # ── 文本提取 ────────────────────────────────────────────────────────────────
 @pytest.mark.anyio
 async def test_extract_texts_audio_and_user_only():
-    """只取录音转写 + 主人输入;AI 回复(assistant_text)一律不扫。"""
+    """只取录音转写 + 主人输入(不做长度过滤,过滤是 has_signal 的职责);
+    AI 回复(assistant_text)一律不扫。"""
     row = _turn_row(
         user_text="胜源" + "聊" * 300,
         audios=[{"file": "a.xm4a", "text": "通话转写" * 60}],
@@ -63,10 +77,12 @@ async def test_extract_texts_audio_and_user_only():
 
 
 @pytest.mark.anyio
-async def test_extract_texts_skips_short_user_text():
-    """短的对话文本(随口一句)不提取。"""
+async def test_extract_texts_includes_short_user_text():
+    """提取阶段不过滤长度——短文本也要拿出来,交给 has_signal 判断值不值得分析。"""
     row = _turn_row(user_text="早上医生的录音", audios=[])
-    assert pp._extract_texts(row) == []
+    texts = pp._extract_texts(row)
+    assert texts == [("早上医生的录音", "user")]
+    assert not pp.has_signal(texts[0][0], texts[0][1])  # 但 has_signal 会挡掉它
 
 
 # ── 写文件:防重与格式保持 ───────────────────────────────────────────────────
