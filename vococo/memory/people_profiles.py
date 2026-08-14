@@ -426,8 +426,13 @@ def _append_section(text: str, section: str, line: str, dedup_key: str | None = 
     pat = re.compile(rf"(## {section}\n)(.*?)(?=\n## |\Z)", re.S)
     m = pat.search(text)
     if m:
+        tail = text[m.end():]
+        # 是文件最后一个 section(tail 为空)只补一个换行;不是最后一个才要
+        # 空行去分隔下一个 "## XX" ——之前恒定加 "\n\n" 会在文件末尾多留一空行
+        # (踩过:小玉/湘伟/胜源三个文件都因此比原格式多了一行尾部空行)。
+        sep = "\n\n" if tail else "\n"
         return (
-            text[:m.end(1)] + text[m.start(2):m.end(2)].rstrip() + "\n" + line + "\n\n" + text[m.end():],
+            text[:m.end(1)] + text[m.start(2):m.end(2)].rstrip() + "\n" + line + sep + tail,
             True,
         )
     return text.rstrip() + "\n\n## " + section + "\n" + line + "\n", True
