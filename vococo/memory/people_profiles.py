@@ -258,6 +258,16 @@ async def _chat_json(messages: list[dict], *, retries: int = 4) -> dict | None:
     return None
 
 
+def _normalize_for_match(s: str) -> str:
+    """去 markdown 强调/项目符号(*_#`)和全部空白,只留实际文字内容再比较。
+
+    LLM"逐字复制"原文引用时,经常无意识规整掉 "**关于 Andy：**" 这类粗体+
+    项目符号的 markdown 装饰,以及 "专注 PP（聚丙烯）" 这类 CJK/数字间的
+    空格——内容完全一致,只是格式噪音,不该被字节级 in 判断当成"编造"。
+    """
+    return re.sub(r"[*_`#]", "", re.sub(r"\s+", "", s))
+
+
 def _describe_people(people: list[dict]) -> str:
     lines = []
     for p in people:
@@ -296,6 +306,7 @@ async def analyze(text: str, note_title: str, note_date: str) -> dict | None:
     people_out = result.get("people") or []
     if not isinstance(people_out, list):
         people_out = []
+    normalized_text = _normalize_for_match(text)
     verified = []
     for p in people_out:
         if not isinstance(p, dict) or not p.get("name"):
@@ -306,13 +317,18 @@ async def analyze(text: str, note_title: str, note_date: str) -> dict | None:
         # ——防"主题相似"就联想出不存在的互动(真实踩过案例:一段讲看病的文本
         # 因"医生"话题联想到医疗行业的已知朋友,原文里连人名都没提过)。
         # evidence 是可编造的软约束,这一步是能程序核实的硬约束。
+        # 匹配前先做 _normalize_for_match(去 markdown 强调符号+全部空白)——
+        # Obsidian 笔记大量用 "**关于 Andy：**" 这类粗体+项目符号格式,原文
+        # "专注 PP（聚丙烯）" 这类 CJK/数字间距,LLM"逐字复制"时会不自觉去掉
+        # ** 和多余空格,字节级 in 判断因此把真实引用整批误杀(真实踩坑:全量
+        # 回扫时"郑素典""Andy""蔡蔡"等十几条真实信息被这样错误丢弃)。
+        if evidence and _normalize_for_match(evidence) in normalized_text:
+            pass  # 原文引用核验通过
         # 例外:名字本身就出现在笔记标题里(如"251029 胜源 关于化工出海"),
         # 正文常用"发言人1/发言人2"匿名指代、不会再点一次名字,这种情况
         # 允许 evidence 留空,用"名字在标题里"这条更简单、同样可程序核实的
         # 规则代替(真实踩坑:胜源本人在自己的聊天记录里因为这条硬要求反而
         # 没被提取到)。
-        if evidence and evidence in text:
-            pass  # 原文引用核验通过
         elif name in note_title:
             pass  # 标题点名核验通过
         else:
