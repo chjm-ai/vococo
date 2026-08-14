@@ -344,13 +344,15 @@ async def _chat_json(messages: list[dict], *, retries: int = 4) -> dict | None:
 
 
 def _normalize_for_match(s: str) -> str:
-    """去 markdown 强调/项目符号(*_#`)和全部空白,只留实际文字内容再比较。
+    """去 markdown 强调/项目符号(*_`#-)和全部空白,只留实际文字内容再比较。
 
     LLM"逐字复制"原文引用时,经常无意识规整掉 "**关于 Andy：**" 这类粗体+
     项目符号的 markdown 装饰,以及 "专注 PP（聚丙烯）" 这类 CJK/数字间的
     空格——内容完全一致,只是格式噪音,不该被字节级 in 判断当成"编造"。
+    2026-08-14 加 "-":Obsidian 列表 "- **Alex（中大教授）：**" 的项目符号
+    在 LLM 拼行引用时会被吞掉,两边一比较就不匹配,把真实信息误杀。
     """
-    return re.sub(r"[*_`#]", "", re.sub(r"\s+", "", s))
+    return re.sub(r"[*_`#-]", "", re.sub(r"\s+", "", s))
 
 
 def _describe_people(people: list[dict]) -> str:
@@ -416,6 +418,13 @@ async def analyze(text: str, note_title: str, note_date: str) -> dict | None:
         # 没被提取到)。
         elif name in note_title:
             pass  # 标题点名核验通过
+        # 降级:引用格式对不上(多行列表被 LLM 拼行、丢项目符号等)不代表是编的,
+        # 只要名字本身真的出现在正文里,这条提取就有字面依据——核验的本意是防
+        # "名字都没出现过却靠主题联想编人",名字在正文即通过(真实案例:圣诞活动
+        # 笔记 "- **Alex（中大教授）：**\n- **背景：** 岭南学院博导…" 的引用
+        # 被格式差异误杀,而 Alex 明明就在正文里)。
+        elif _normalize_for_match(name) in normalized_text:
+            pass  # 名字出现在正文 → 降级通过
         else:
             print(
                 f"[people_profiles] 丢弃未验证的提取: {name}"

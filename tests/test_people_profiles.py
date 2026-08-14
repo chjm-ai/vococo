@@ -478,3 +478,28 @@ def test_junk_name_filter():
     assert not pp._is_junk_name("Traster")     # 英文长名,真人
     assert not pp._is_junk_name("小飞")
     assert not pp._is_junk_name("胜源")
+
+
+# ── 引用核验降级:名字出现在正文即通过,格式差异不误杀 ───────────────────────
+@pytest.mark.anyio
+async def test_analyze_evidence_downgrade_when_name_in_body(monkeypatch):
+    """引用是列表拼行格式对不上,但名字在正文出现过 → 降级通过,不丢弃。
+    真实案例:圣诞活动笔记 "- **Alex（中大教授）：**" 被格式差异误杀。"""
+    note = (
+        "- **Alex（中大教授）：**\n"
+        "- **背景：** 岭南学院博导，搞医疗管理系统的。\n"
+        "- **反思：** 当时有点虚，没聊开"
+    )
+    resp = {
+        "people": [{
+            "name": "Alex", "known": True,
+            "evidence": "Alex（中大教授）：背景：岭南学院博导，搞医疗管理系统的。",
+            "interaction": "圣诞活动认识中大教授Alex", "dynamics": [],
+            "occupation": "岭南学院博导", "tags": ["医疗管理系统"], "relationship": "",
+        }]
+    }
+    async def fake_chat(messages, **kw):
+        return resp
+    monkeypatch.setattr(pp, "_chat_json", fake_chat)
+    out = await pp.analyze(note, "251219 Frank邀请的基督徒圣诞活动", "2025-12-19")
+    assert [p["name"] for p in out["people"]] == ["Alex"]
