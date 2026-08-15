@@ -1082,6 +1082,12 @@ class WebAdapter:
         return web.json_response({"ok": True})
 
     # ── 本机系统任务(只读)───────────────────────────────────────────────
+    # 2026-08-15 事故:枚举/读脚本是同步阻塞 IO,直接在 handler 里跑会占住整条事件循环——
+    # 真机命中过 com.linxai.xhs.daily 的脚本在 ~/Desktop(iCloud 同步路径)下,open() 卡住
+    # 184 秒,看门狗判定假死自杀重启(见 data/logs/watchdog.log)。用 to_thread 挪到线程池
+    # + wait_for 兜超时,再慢也只拖垮这一个请求,不会波及整条事件循环/其它会话。
+    _SYSTEM_TASKS_TIMEOUT_SEC = 8
+
     @_authed
     async def _handle_system_tasks(self, request: web.Request) -> web.Response:
         """「定时」Tab 的「本机系统任务」区块:本机 launchd/crontab 里真正带调度
@@ -1090,9 +1096,17 @@ class WebAdapter:
         还在跑"不用开终端就能核对。"""
         from ...cron import system_tasks
 
+        try:
+            tasks = await asyncio.wait_for(
+                asyncio.to_thread(system_tasks.list_tasks), self._SYSTEM_TASKS_TIMEOUT_SEC
+            )
+        except asyncio.TimeoutError:
+            return web.json_response(
+                {"error": "枚举系统任务超时(可能有脚本/日志在 iCloud 未同步的路径上)"}, status=504
+            )
         return _compressed_json({
             "hostname": system_tasks.hostname(),
-            "tasks": system_tasks.list_tasks(),
+            "tasks": tasks,
         })
 
     @_authed
@@ -1102,7 +1116,14 @@ class WebAdapter:
         from ...cron import system_tasks
 
         task_id = request.query.get("id", "")
-        detail = system_tasks.task_detail(task_id)
+        try:
+            detail = await asyncio.wait_for(
+                asyncio.to_thread(system_tasks.task_detail, task_id), self._SYSTEM_TASKS_TIMEOUT_SEC
+            )
+        except asyncio.TimeoutError:
+            return web.json_response(
+                {"error": "读取超时(脚本/日志可能在 iCloud 未同步的路径上,稍后重试)"}, status=504
+            )
         if detail is None:
             return web.json_response({"error": "任务不存在"}, status=404)
         return web.json_response({"task": detail})
