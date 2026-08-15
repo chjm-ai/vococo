@@ -48,6 +48,10 @@ const S = {
   voiceSidebarLoaded: false, // /voice/sidebar 是否已拉过(未拉时侧边栏「语音通话」行显示骨架占位,见 buildVoiceMainRow)
   cronJobs: [],         // /cron/sidebar 拉到的定时任务列表 [{conv,job_id,title,schedule_desc,enabled,last_status,...}]
   cronEditId: null,     // 定时任务表单当前在编辑哪个 job_id;null=新建模式
+  cronGroups: {         // 「定时」Tab 两类任务分组的折叠状态,默认展开 VOCOCO、收起本机任务
+    managed: localStorage.getItem("vococo_cron_group_managed") !== "0",
+    system: localStorage.getItem("vococo_cron_group_system") === "1"
+  },
   systemTasks: [],      // /system/tasks 拉到的本机系统任务列表(launchd/crontab,只读,见 cron/system_tasks.py)
   systemHostname: "",   // /system/tasks 返回的当前机器名,标在「本机系统任务」区块标题上
   swipedConv: null,     // 当前左滑展开的会话 id;renderConvs 重建 DOM 时靠它补回 swiped 状态,
