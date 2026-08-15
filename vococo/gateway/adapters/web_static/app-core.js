@@ -48,6 +48,8 @@ const S = {
   voiceSidebarLoaded: false, // /voice/sidebar 是否已拉过(未拉时侧边栏「语音通话」行显示骨架占位,见 buildVoiceMainRow)
   cronJobs: [],         // /cron/sidebar 拉到的定时任务列表 [{conv,job_id,title,schedule_desc,enabled,last_status,...}]
   cronEditId: null,     // 定时任务表单当前在编辑哪个 job_id;null=新建模式
+  systemTasks: [],      // /system/tasks 拉到的本机系统任务列表(launchd/crontab,只读,见 cron/system_tasks.py)
+  systemHostname: "",   // /system/tasks 返回的当前机器名,标在「本机系统任务」区块标题上
   swipedConv: null,     // 当前左滑展开的会话 id;renderConvs 重建 DOM 时靠它补回 swiped 状态,
                          // 否则任意会话(含后台)一完成回合就会触发 loadConvs→renderConvs 把菜单冲掉
   omniEnabled: false,   // /voice/config 的 omni_enabled(免提 Omni 管线开关),登录后预取好,
@@ -252,6 +254,7 @@ async function tryEnter(){
       .then(updateFilterBtn).catch(()=>{});
     loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
     loadCronSidebar();   // 同上,定时任务分组
+    loadSystemTasks();   // 同上,「定时」Tab 里的本机系统任务(launchd/crontab)区块
     await secondary;
     initVoiceSelect();
     renderConvs();  // 项目分组数据(loadProjects)到位后再补画一次侧栏分组
