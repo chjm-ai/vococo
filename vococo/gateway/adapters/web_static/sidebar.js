@@ -699,12 +699,23 @@ function openCronModal(job){
   showCronForm(job);
 }
 function closeCronModal(){ $("#cronModal").hidden=true; S.cronEditId=null; }
+function syncCronMode(){
+  const script=$("#cfMode").value==="script";
+  $("#cfScriptFields").hidden=!script;
+  $("#cfPrompt").placeholder=script
+    ? "脚本用途说明,如「检查外贸邮件和退信情况」"
+    : "到点时要执行的指令,如「查一下今天的日历和待办,简短汇总」";
+}
 function showCronForm(job){
   S.cronEditId = job ? job.job_id : null;
   $("#cronModalTitle").textContent = job ? "编辑定时任务" : "＋ 新建定时任务";
   $("#cfSave").textContent = job ? "✓ 保存" : "✓ 创建";
   $("#cfName").value = job ? (job.name || job.title || "") : "";
+  $("#cfMode").value = job && job.mode==="script" ? "script" : "agent";
   $("#cfPrompt").value = job ? (job.prompt || "") : "";
+  $("#cfCommand").value = job ? (job.command || "") : "";
+  $("#cfSummarizePrompt").value = job ? (job.summarize_prompt || "") : "";
+  syncCronMode();
   // 编辑表单只支持 cron 表达式调度(跟新建一致);任务若是 interval/once 调度(只能靠
   // 工具/建议创建),这里留空,保存时必须重新选一个频率,不会静默把调度类型改掉。
   const expr = (job && job.schedule && job.schedule.kind==="cron") ? (job.schedule.expr||"") : "";
@@ -717,10 +728,13 @@ function showCronForm(job){
 async function saveCronJob(){
   const name=$("#cfName").value.trim(), prompt=$("#cfPrompt").value.trim();
   const cron=$("#cfCron").value.trim(), cwd=$("#cfCwd").value.trim();
-  if(!name || !prompt){ alert("任务名称和执行指令不能为空"); return; }
+  const mode=$("#cfMode").value, command=$("#cfCommand").value.trim();
+  const summarize_prompt=$("#cfSummarizePrompt").value.trim();
+  if(!name || !prompt){ alert("任务名称和执行说明不能为空"); return; }
+  if(mode==="script" && !command){ alert("脚本任务需要填写要执行的命令"); return; }
   if(!cron){ alert("请选一个预设频率,或填自定义 cron 表达式"); return; }
   const editId=S.cronEditId;
-  const body={name, prompt, schedule:{kind:"cron", expr:cron}, cwd};
+  const body={name, prompt, schedule:{kind:"cron", expr:cron}, cwd, mode, command, summarize_prompt};
   if(editId) body.id=editId;
   let d;
   try{
@@ -755,6 +769,7 @@ async function deleteCronJob(id, title, conv){
   await loadCronSidebar();  // 成功后以服务端数据最终校准
 }
 $("#cfPreset").onchange = ()=>{ const v=$("#cfPreset").value; if(v!=="custom") $("#cfCron").value=v; };
+$("#cfMode").onchange = syncCronMode;
 $("#cfCancel").onclick = closeCronModal;
 $("#cfSave").onclick = saveCronJob;
 $("#cronModal").onclick = e=>{ if(e.target===$("#cronModal")) closeCronModal(); };

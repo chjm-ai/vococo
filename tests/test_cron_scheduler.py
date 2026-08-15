@@ -363,3 +363,35 @@ async def test_run_job_routes_script_mode_to_run_script_job(cron_env, monkeypatc
     await asyncio.sleep(0)  # 让 create_task 包的协程有机会跑一次
 
     assert called == [job["id"]]
+
+
+# ── 创建/编辑:脚本模式配置校验与转换 ───────────────────────────────────────
+
+
+def test_create_and_update_script_job(cron_env):
+    """脚本任务持久化 command/总结提示;切回 Agent 时必须清掉脚本字段。"""
+    job = scheduler.create_job(
+        name="固定巡检", prompt="检查外部服务状态",
+        schedule={"kind": "cron", "expr": "0 8 * * *"}, mode="script",
+        command="python3 ~/scripts/check.py", summarize_prompt="有异常才简短说明",
+    )
+    assert job["mode"] == "script"
+    assert job["command"] == "python3 ~/scripts/check.py"
+    assert job["summarize_prompt"] == "有异常才简短说明"
+
+    updated = scheduler.update_job(
+        job["id"], name="固定巡检", prompt="检查外部服务状态",
+        schedule={"kind": "cron", "expr": "0 8 * * *"}, mode="agent",
+        command="", summarize_prompt="",
+    )
+    assert updated is not None
+    assert "mode" not in updated and "command" not in updated and "summarize_prompt" not in updated
+
+
+def test_script_job_requires_command(cron_env):
+    """脚本任务没命令时拒绝,避免到点后才发现无法运行。"""
+    with pytest.raises(ValueError, match="需要非空 command"):
+        scheduler.create_job(
+            name="坏脚本", prompt="说明", schedule={"kind": "cron", "expr": "0 8 * * *"},
+            mode="script", command="",
+        )

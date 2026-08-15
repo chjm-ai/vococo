@@ -105,14 +105,40 @@ def normalize_cwd(cwd: str | None) -> tuple[str | None, str | None]:
     return str(path), None
 
 
+def normalize_execution(
+    mode: object, command: object, summarize_prompt: object,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """校验并标准化任务执行方式。
+
+    ``None``/``agent`` 是默认 Agent 会话模式,不保存多余字段以兼容旧任务;
+    ``script`` 必须带可执行命令,可选轻量总结提示。返回
+    ``(mode, command, summarize_prompt, error)``。
+    """
+    if mode is None or mode == "" or mode == "agent":
+        if command not in (None, "") or summarize_prompt not in (None, ""):
+            return None, None, None, "AI 会话任务不能填写脚本命令或总结提示。"
+        return None, None, None, None
+    if mode != "script":
+        return None, None, None, "mode 只支持 agent 或 script。"
+    if not isinstance(command, str) or not command.strip():
+        return None, None, None, "脚本任务需要非空 command。"
+    if summarize_prompt is not None and not isinstance(summarize_prompt, str):
+        return None, None, None, "summarize_prompt 必须是字符串。"
+    return "script", command.strip(), (summarize_prompt or "").strip() or None, None
+
+
 def create_job(
     *, name: str, prompt: str, schedule: dict, target: dict | None = None,
-    model: str | None = None, cwd: str | None = None,
+    model: str | None = None, cwd: str | None = None, mode: str | None = None,
+    command: str | None = None, summarize_prompt: str | None = None,
 ) -> dict:
     """新建一个 cron 任务并落盘,返回该任务。接受建议(accept_suggestion)或管理界面
     直接新建都走这一个入口,不搞第二套引擎。每个任务自带一条专属会话(conv),
     历次运行结果落在这条会话里;target 是可选的额外推送目标(如 web)。"""
     cwd, err = normalize_cwd(cwd)
+    if err:
+        raise ValueError(err)
+    mode, command, summarize_prompt, err = normalize_execution(mode, command, summarize_prompt)
     if err:
         raise ValueError(err)
     jobs = load_jobs()
@@ -131,6 +157,8 @@ def create_job(
         "last_run_at": None,
         "last_status": None,
     }
+    if mode == "script":
+        job.update(mode=mode, command=command, summarize_prompt=summarize_prompt)
     jobs.append(job)
     save_jobs(jobs)
     return job
@@ -138,15 +166,24 @@ def create_job(
 
 def update_job(
     job_id: str, *, name: str, prompt: str, schedule: dict, target: dict | None = None,
-    cwd: str | None | object = _UNSET,
+    cwd: str | None | object = _UNSET, mode: str | None | object = _UNSET,
+    command: str | None | object = _UNSET, summarize_prompt: str | None | object = _UNSET,
 ) -> dict | None:
-    """编辑已有任务的名称/指令/调度/推送目标(管理界面的「编辑」用);不改 id/conv/
-    enabled/统计字段。调度变了就把 next_run_at 清掉,让下一跳按新调度重算。
+    """编辑已有任务的名称/指令/调度/推送目标/执行方式(管理界面的「编辑」用);不改
+    id/conv/enabled/统计字段。调度变了就把 next_run_at 清掉,让下一跳按新调度重算。
     找不到该任务返回 None。"""
     jobs = load_jobs()
     job = next((j for j in jobs if j.get("id") == job_id), None)
     if job is None:
         return None
+    next_mode = job.get("mode") if mode is _UNSET else mode
+    next_command = job.get("command") if command is _UNSET else command
+    next_summarize = job.get("summarize_prompt") if summarize_prompt is _UNSET else summarize_prompt
+    next_mode, next_command, next_summarize, err = normalize_execution(
+        next_mode, next_command, next_summarize,
+    )
+    if err:
+        raise ValueError(err)
     job["name"] = name
     job["prompt"] = prompt
     job["schedule"] = schedule
@@ -156,6 +193,12 @@ def update_job(
         if err:
             raise ValueError(err)
         job["cwd"] = cwd
+    if next_mode == "script":
+        job.update(mode=next_mode, command=next_command, summarize_prompt=next_summarize)
+    else:
+        job.pop("mode", None)
+        job.pop("command", None)
+        job.pop("summarize_prompt", None)
     job["next_run_at"] = None
     save_jobs(jobs)
     return job

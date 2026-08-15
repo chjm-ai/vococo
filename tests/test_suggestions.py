@@ -151,6 +151,24 @@ def test_suggest_automation_bad_cron(sugg_env):
     assert "不合法" in out
 
 
+def test_suggest_automation_preserves_script_job_spec(sugg_env):
+    """AI 提的固定脚本任务经接受后仍保留零 LLM 信号配置。"""
+    from vococo.cron import suggestions
+    from vococo.tools import builtin
+
+    out = _text(asyncio.run(builtin.suggest_automation.handler({
+        "title": "固定巡检", "description": "每天检查", "cron": "0 8 * * *",
+        "prompt": "检查状态", "mode": "script", "command": "python3 check.py",
+        "summarize_prompt": "有异常才说明",
+    })))
+    assert "已提建议" in out
+    rec = suggestions.list_pending()[0]
+    assert rec["job_spec"]["mode"] == "script"
+    job = suggestions.accept_suggestion(rec["id"])
+    assert job is not None
+    assert job["command"] == "python3 check.py"
+
+
 def test_suggest_command_lists_and_accepts(sugg_env):
     from vococo.cron import suggestions
     from vococo.gateway import core

@@ -154,7 +154,9 @@ def _append_index(topic: str, summary: str, category: str) -> None:
     f"给 {config.USER_NAME} 提一条【定时自动化建议】(不会自动开跑,等他用 /建议 一键接受)。"
     "当你发现他反复问/做同一件事、适合排成定时任务时用。\n"
     "title:简短名;description:一句话说明做什么;cron:5 段 cron 表达式"
-    "(如 '0 8 * * *' = 每天早 8 点);prompt:到点时你要执行的任务指令;"
+    "(如 '0 8 * * *' = 每天早 8 点);prompt:到点时你要执行的任务指令。"
+    "固定脚本型任务可传 mode='script'、command 和可选 summarize_prompt:命令末行输出"
+    "##CRON_SIGNAL:0## 时零 LLM 直接展示,输出 1 时才做轻量总结;"
     "dedup_key:去重键(同键被忽略后不再提,省略则用 title)。",
     {
         "type": "object",
@@ -163,6 +165,9 @@ def _append_index(topic: str, summary: str, category: str) -> None:
             "description": {"type": "string"},
             "cron": {"type": "string"},
             "prompt": {"type": "string"},
+            "mode": {"type": "string", "enum": ["agent", "script"]},
+            "command": {"type": "string"},
+            "summarize_prompt": {"type": "string"},
             "dedup_key": {"type": "string"},
         },
         "required": ["title", "description", "cron", "prompt"],
@@ -175,6 +180,9 @@ async def suggest_automation(args: dict) -> dict:
     description = (args.get("description") or "").strip()
     cron = (args.get("cron") or "").strip()
     prompt = (args.get("prompt") or "").strip()
+    mode = args.get("mode")
+    command = args.get("command")
+    summarize_prompt = args.get("summarize_prompt")
     dedup_key = (args.get("dedup_key") or "").strip() or f"usage:{title}"
     if not (title and cron and prompt):
         return _ok("suggest_automation 需要 title / cron / prompt 都非空。")
@@ -184,12 +192,18 @@ async def suggest_automation(args: dict) -> dict:
         croniter(cron)
     except Exception:
         return _ok(f"cron 表达式「{cron}」不合法(要 5 段,如 '0 8 * * *')。")
+    from ..cron import scheduler
+    _, _, _, err = scheduler.normalize_execution(mode, command, summarize_prompt)
+    if err:
+        return _ok(err)
     ctx = clarify.current()
     job_spec = {
         "name": title,
         "prompt": prompt,
         "schedule": {"kind": "cron", "expr": cron},
     }
+    if mode == "script":
+        job_spec.update(mode="script", command=command.strip(), summarize_prompt=(summarize_prompt or "").strip() or None)
     if ctx:
         job_spec["cwd"] = config.resolve_execution_root(session_key=ctx.session_key)
     rec = suggestions.add_suggestion(
@@ -234,7 +248,9 @@ def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:
     "如 '0 8 * * *' = 每天早8点);run_in_minutes:多少分钟后执行一次"
     "(一次性,触发后自动停用);model:可选,指定用哪个模型跑;cwd:可选的任务工作目录(必须是"
     "存在的绝对路径)。应根据任务实际要操作的项目主动指定 cwd;省略时才沿用当前会话项目目录,"
-    "没有项目目录则回退默认项目。",
+    "没有项目目录则回退默认项目。固定脚本型任务优先传 mode='script' 与 command:脚本末行输出"
+    "##CRON_SIGNAL:0## 时直接展示结果、零 LLM,输出 1 时才按可选 summarize_prompt 轻量总结;"
+    "需要现场分析/决策的任务不要用脚本模式。",
     {
         "type": "object",
         "properties": {
@@ -244,6 +260,9 @@ def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:
             "run_in_minutes": {"type": "number"},
             "model": {"type": "string"},
             "cwd": {"type": "string"},
+            "mode": {"type": "string", "enum": ["agent", "script"]},
+            "command": {"type": "string"},
+            "summarize_prompt": {"type": "string"},
         },
         "required": ["name", "prompt"],
     },
@@ -260,6 +279,9 @@ async def add_cron_job(args: dict) -> dict:
     cron_expr = (args.get("cron") or "").strip()
     run_in_minutes = args.get("run_in_minutes")
     model = (args.get("model") or "").strip() or None
+    mode = args.get("mode")
+    command = args.get("command")
+    summarize_prompt = args.get("summarize_prompt")
     requested_cwd = args.get("cwd")
     if requested_cwd is not None and not isinstance(requested_cwd, str):
         return _ok("cwd 必须是字符串。")
@@ -283,6 +305,9 @@ async def add_cron_job(args: dict) -> dict:
     err = scheduler.validate_schedule(schedule)
     if err:
         return _ok(err)
+    _, _, _, err = scheduler.normalize_execution(mode, command, summarize_prompt)
+    if err:
+        return _ok(err)
 
     ctx = clarify.current()
     if requested_cwd is None or not requested_cwd.strip():
@@ -302,6 +327,7 @@ async def add_cron_job(args: dict) -> dict:
 
     job = scheduler.create_job(
         name=name, prompt=prompt, schedule=schedule, model=model, cwd=cwd,
+        mode=mode, command=command, summarize_prompt=summarize_prompt,
     )
     return _ok(f"✅ 已创建任务「{name}」({_sched_desc(job['schedule'])}),id={job['id']}。")
 
