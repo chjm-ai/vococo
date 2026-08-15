@@ -980,6 +980,9 @@ class WebAdapter:
                 schedule=j.get("schedule"),
                 target=j.get("target"),
                 cwd=j.get("cwd"),
+                mode=j.get("mode") or "agent",
+                command=j.get("command"),
+                summarize_prompt=j.get("summarize_prompt"),
             )
             rows.append(row)
         return _compressed_json({"jobs": rows})
@@ -1005,9 +1008,13 @@ class WebAdapter:
         cwd = body.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
             return web.json_response({"error": "cwd 必须是字符串"}, status=400)
+        mode = body.get("mode")
+        command = body.get("command")
+        summarize_prompt = body.get("summarize_prompt")
         try:
             job = scheduler.create_job(
-                name=name, prompt=prompt, schedule=schedule, target=target, cwd=cwd
+                name=name, prompt=prompt, schedule=schedule, target=target, cwd=cwd,
+                mode=mode, command=command, summarize_prompt=summarize_prompt,
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
@@ -1037,6 +1044,9 @@ class WebAdapter:
             if cwd is not None and not isinstance(cwd, str):
                 return web.json_response({"error": "cwd 必须是字符串"}, status=400)
             kwargs["cwd"] = cwd
+        for field in ("mode", "command", "summarize_prompt"):
+            if field in body:
+                kwargs[field] = body[field]
         try:
             job = scheduler.update_job(
                 job_id, name=name, prompt=prompt, schedule=schedule, target=target, **kwargs

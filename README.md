@@ -83,7 +83,10 @@ agent 派生的 `claude` 子进程会同步阻塞冻住事件循环。所以用 
 ## 定时主动推送
 
 编辑 `data/cron_jobs.json`(模板见 `deploy/cron_jobs.sample.json`),把任务 `enabled` 设 true,
-`serve` 进程每 30s 检查到期任务,跑 agent 后推到 Web/系统推送。支持 `cron` / `interval` / `once` 三种调度。
+`serve` 进程每 30s 检查到期任务并推送结果。支持 `cron` / `interval` / `once` 三种调度。
+默认是需要分析/决策的 Agent 任务;固定脚本可设 `mode: "script"` 和 `command`,直接执行、不进
+Agent。脚本末行输出 `##CRON_SIGNAL:0##` 时原样展示结果、零 LLM 调用;输出
+`##CRON_SIGNAL:1##` 时才按可选 `summarize_prompt` 做一次轻量总结。
 也可以直接对它说「每天早上 8 点给我发 XX」——它会用 `add_cron_job` 建好等你确认。
 
 ## 快速开始

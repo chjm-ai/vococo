@@ -217,3 +217,30 @@ async def test_update_rejects_bad_cron_and_unknown_id(cron_web_app):
             json={"id": "ghost", "name": "a", "prompt": "b", "schedule": {"kind": "cron", "expr": "0 8 * * *"}},
         )
         assert resp.status == 404
+
+
+@pytest.mark.anyio
+async def test_create_script_job_and_expose_fields_in_sidebar(cron_web_app):
+    """管理界面可完整创建脚本任务,侧栏回填编辑需要的执行字段。"""
+    async with TestClient(TestServer(cron_web_app)) as client:
+        payload = {
+            "name": "固定巡检", "prompt": "检查状态", "mode": "script",
+            "command": "python3 ~/scripts/check.py", "summarize_prompt": "有异常才说明",
+            "schedule": {"kind": "cron", "expr": "0 8 * * *"},
+        }
+        resp = await client.post("/cron/jobs/create", json=payload)
+        assert resp.status == 200
+        job = (await resp.json())["job"]
+        assert job["mode"] == "script"
+        assert job["command"] == payload["command"]
+
+        resp = await client.get("/cron/sidebar")
+        row = (await resp.json())["jobs"][0]
+        assert row["mode"] == "script"
+        assert row["command"] == payload["command"]
+        assert row["summarize_prompt"] == payload["summarize_prompt"]
+
+        payload["command"] = ""
+        resp = await client.post("/cron/jobs/create", json=payload)
+        assert resp.status == 400
+        assert "需要非空 command" in (await resp.json())["error"]

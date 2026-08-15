@@ -78,7 +78,15 @@ try{
       <div class="pmhead"><span id="cronModalTitle">＋ 新建定时任务</span></div>
       <div id="cronForm">
         <input id="cfName" placeholder="任务名称,如「晨间简报」"/>
+        <select id="cfMode">
+          <option value="agent">AI 会话任务（需要分析、判断或多步操作）</option>
+          <option value="script">脚本任务（固定命令；无变化时零 LLM）</option>
+        </select>
         <textarea id="cfPrompt" placeholder="到点时要执行的指令,如「查一下今天的日历和待办,简短汇总」"></textarea>
+        <div id="cfScriptFields" hidden>
+          <textarea id="cfCommand" placeholder="要执行的命令,如「python3 ~/scripts/daily_check.py」"></textarea>
+          <textarea id="cfSummarizePrompt" placeholder="可选:仅脚本输出 ##CRON_SIGNAL:1## 时的轻量总结要求"></textarea>
+        </div>
         <div class="cfrow">
           <select id="cfPreset">
             <option value="custom">自定义 cron 表达式…</option>
