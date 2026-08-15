@@ -347,14 +347,13 @@ function renderRecentTab(box, inCall){
 // 1) VOCOCO 定时任务:在 vococo 内创建/编辑/启停,有专属会话和运行记录;
 // 2) 本机系统任务:Mac 的 launchd/crontab,只读展示脚本与状态。
 // 默认展开 VOCOCO、收起本机任务;折叠状态记在 localStorage,刷新后保持。
-function buildCronGroupHeader(key, title, count, detail){
+function buildCronGroupHeader(key, title){
   const open=!!S.cronGroups[key];
   const h=el("div","projgrp crongrp");
   h.setAttribute("role","button");
   h.tabIndex=0;
   h.setAttribute("aria-expanded",String(open));
   const nm=el("span","pgname"); nm.textContent=title; h.append(nm);
-  const meta=el("span","cronGroupMeta"); meta.textContent=`${count} 条${detail?` · ${detail}`:""}`; h.append(meta);
   const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);
   const toggle=()=>{
     S.cronGroups[key]=!S.cronGroups[key];
@@ -380,7 +379,7 @@ function renderCronTab(box, inCall){
   const systemTasks=S.systemTasks||[];
 
   // vococo 自己管理的任务:可编辑、可启停、可进入专属会话查看历史。
-  box.append(buildCronGroupHeader("managed","VOCOCO 定时任务",jobs.length,"可编辑 · 可启停"));
+  box.append(buildCronGroupHeader("managed","VOCOCO 定时任务"));
   if(S.cronGroups.managed){
     if(jobs.length) renderCronGroupRows(box,jobs.map(buildCronJobRow),"__cron_managed__");
     else box.append(sideTabEmpty("暂无 VOCOCO 定时任务"));
@@ -390,8 +389,7 @@ function renderCronTab(box, inCall){
 
   // Mac launchd/crontab 任务:只读查看,增删改仍在系统配置里完成。
   if(systemTasks.length){
-    const detail=S.systemHostname?`只读 · ${S.systemHostname}`:"只读";
-    box.append(buildCronGroupHeader("system","本机系统任务",systemTasks.length,detail));
+    box.append(buildCronGroupHeader("system","本机系统任务"));
     if(S.cronGroups.system){
       for(const t of systemTasks) box.append(buildSystemTaskRow(t));
     }

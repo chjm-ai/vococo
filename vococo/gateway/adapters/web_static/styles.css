@@ -249,8 +249,6 @@
   .crongrp{cursor:pointer;margin-top:8px}
   .crongrp:first-child{margin-top:2px}
   .crongrp + .crongrp{border-top:1px solid var(--line);padding-top:9px}
-  .crongrp .cronGroupMeta{margin-left:auto;color:var(--dim2);font-size:11px;font-weight:500;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60%}
   .crongrp .pgcaret{margin-right:0;flex-shrink:0}
   .crongrp:focus-visible{outline:1px solid var(--accent);outline-offset:-1px}
   /* 项目拖拽排序:可拖起手型,拖起半透明,悬停目标高亮上边框示意插入位置 */
