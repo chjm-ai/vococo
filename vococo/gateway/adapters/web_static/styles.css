@@ -1242,7 +1242,7 @@
 
   /* ── 文档预览分屏(点聊天里的文档链接/工具卡文件路径,右侧滑出)────────────── */
   .doclink{display:inline-flex;align-items:center;gap:4px;padding:1px 8px 1px 6px;
-    background:var(--panel2);border:1px solid var(--line2);border-radius:7px;
+    background:var(--panel2);border:1px solid var(--line2);border-radius:7px;cursor:pointer;
     color:var(--text);font-size:.93em;text-decoration:none;transition:border-color .15s,background .15s}
   .doclink .ic{width:13px;height:13px;color:var(--accent)}
   @media(hover:hover){ .doclink:hover{border-color:var(--accent);background:var(--panel)} }
