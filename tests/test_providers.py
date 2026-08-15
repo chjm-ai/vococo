@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from vococo import providers
 from vococo.gateway import settings_store
 
@@ -247,6 +249,16 @@ def test_sidecar_env_empty_name_returns_any_third_party(tmp_path, monkeypatch):
 def test_sidecar_env_empty_name_none_when_no_provider(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
     assert providers.sidecar_env("") is None
+
+
+# ── sidecar_chat:cron 脚本任务模式的轻量一次性总结 ───────────────────
+# 真实 LLM 调用不在这测(要 key+花钱,跟 people_profiles.py._chat_json 同一约定),
+# 只测不用发网络请求就能确定结果的分支;调用方(cron/scheduler.py)自己的测试
+# 直接 mock 这个函数,不深入到 aiohttp 层。
+@pytest.mark.anyio
+async def test_sidecar_chat_returns_none_when_no_provider(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    assert await providers.sidecar_chat("总结一下") is None
 
 
 # ── vision 声明:Codex/GPT 代理直传图片 ───────────────────────────────

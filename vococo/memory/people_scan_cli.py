@@ -28,14 +28,18 @@ from pathlib import Path  # noqa: E402
 import anyio  # noqa: E402
 
 
-def _print_summary(summaries: list[dict]) -> None:
+def _print_summary(summaries: list[dict]) -> bool:
+    """打印人话统计,返回这轮是否有实质信号(更新或待确认 > 0)。cron 脚本任务
+    模式(见 cron/scheduler.py 的 ##CRON_SIGNAL## 约定)靠这个决定要不要额外
+    花一次 LLM 调用把统计总结成自然语言——没信号(比如 40 篇全是"无人物跳过")
+    原始这几行文字已经够用,不值得再调 LLM。"""
     done = [s for s in summaries if s.get("status") == "done"]
     pending = [s for s in summaries if s.get("status") == "pending"]
     skipped = [s for s in summaries if s.get("status") == "skipped"]
     error = [s for s in summaries if s.get("status") == "error"]
     if not summaries:
         print("没有新/改动的笔记,画像无更新。")
-        return
+        return False
     print(
         f"共处理 {len(summaries)} 篇笔记:更新 {len(done)} / 待确认 {len(pending)}"
         f" / 无人物跳过 {len(skipped)} / 错误 {len(error)}"
@@ -48,6 +52,7 @@ def _print_summary(summaries: list[dict]) -> None:
         print(f"  …还有 {len(pending) - 5} 篇待确认")
     for s in error[:3]:
         print(f"  ✗ {s['note']}: {s.get('reason')}")
+    return bool(done or pending)
 
 
 def main() -> int:
@@ -70,7 +75,10 @@ def main() -> int:
     if args.all:
         pp._obsidian_watermark_path().write_text("{}", encoding="utf-8")
     summaries = anyio.run(pp.scan_obsidian_notes)
-    _print_summary(summaries)
+    has_signal = _print_summary(summaries)
+    # cron 脚本任务模式(scheduler._run_script_job)解析这行判断要不要调 LLM 总结,
+    # 见其 ##CRON_SIGNAL## 约定;打印在最后一行,前面的人话统计原样保留。
+    print(f"##CRON_SIGNAL:{1 if has_signal else 0}##")
     return 0
 
 
