@@ -416,8 +416,14 @@ function renderConvs(){
   else if(S.sideTab==="pinned") renderPinnedTab(box, inCall);
   else if(S.sideTab==="recent") renderRecentTab(box, inCall);
   else renderProjectsTab(box, inCall);
-  // 同步标题栏:loadConvs 刷新 S.convs 后调 renderConvs,标题可能已更新
-  const activeConv=S.convs.find(c=>c.conv===S.conv);
+  // 同步标题栏:loadConvs/loadVoiceSidebar/loadCronSidebar 刷新各自列表后都会调 renderConvs,
+  // 标题(含改名)可能已更新。语音任务/定时任务会话不在 S.convs 里(那是 /conversations 拉的),
+  // 查找逻辑跟 openConv 保持一致——否则在任务自己的会话里改名,顶部标题栏不会跟着刷新
+  // (侧栏那行没事,因为它是整个重建的;标题栏是这里单独同步的,漏了这几个来源就会显示旧名字)。
+  const activeConv=S.convs.find(c=>c.conv===S.conv)
+    || (S.voiceSidebar.main && S.voiceSidebar.main.conv===S.conv ? S.voiceSidebar.main : null)
+    || S.voiceSidebar.tasks.find(x=>x.conv===S.conv)
+    || S.cronJobs.find(x=>x.conv===S.conv);
   if(activeConv) $("#convTitle").textContent=activeConv.title||"新对话";
 }
 
