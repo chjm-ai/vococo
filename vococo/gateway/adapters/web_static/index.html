@@ -100,6 +100,26 @@ try{
     </div>
   </div>
 
+  <!-- 本机系统任务详情(只读):launchd/crontab 里带调度周期的任务,点开看脚本+日志,
+       见 web.py /system/tasks、/system/tasks/detail、cron/system_tasks.py -->
+  <div id="sysTaskModal" hidden>
+    <div class="pmbox">
+      <div class="pmhead">
+        <span id="stModalTitle">系统任务</span>
+        <button id="stClose" title="关闭">✕</button>
+      </div>
+      <div id="stBody">
+        <div id="stMeta" class="stmeta"></div>
+        <div class="stseclabel">命令</div>
+        <pre id="stCommand" class="stpre"></pre>
+        <div class="stseclabel">脚本内容</div>
+        <pre id="stScript" class="stpre"></pre>
+        <div class="stseclabel">日志</div>
+        <div id="stLogs"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- 删除会话三选确认(worktree 有未提交改动/未合并提交时):归档保留 / 仍然删除 / 取消。
        归档 = 只提醒不丢内容(代码留 worktree 等合并);删除 = worktree 内容一起丢,必须明示 -->
   <div id="delModal" hidden>

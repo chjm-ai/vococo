@@ -1081,6 +1081,32 @@ class WebAdapter:
             session_store.delete_session(conv)
         return web.json_response({"ok": True})
 
+    # ── 本机系统任务(只读)───────────────────────────────────────────────
+    @_authed
+    async def _handle_system_tasks(self, request: web.Request) -> web.Response:
+        """「定时」Tab 的「本机系统任务」区块:本机 launchd/crontab 里真正带调度
+        周期的任务(见 cron/system_tasks.py 模块头的识别标准),纯只读——不是
+        vococo 自己管的任务,不提供增删改,只是让"我以为在跑的脚本是不是真的
+        还在跑"不用开终端就能核对。"""
+        from ...cron import system_tasks
+
+        return _compressed_json({
+            "hostname": system_tasks.hostname(),
+            "tasks": system_tasks.list_tasks(),
+        })
+
+    @_authed
+    async def _handle_system_task_detail(self, request: web.Request) -> web.Response:
+        """单条系统任务详情:脚本内容 + 日志尾部,点开列表行时按需拉取
+        (不放进列表接口,避免侧栏首屏一次性读一堆脚本/日志文件)。"""
+        from ...cron import system_tasks
+
+        task_id = request.query.get("id", "")
+        detail = system_tasks.task_detail(task_id)
+        if detail is None:
+            return web.json_response({"error": "任务不存在"}, status=404)
+        return web.json_response({"task": detail})
+
     # ── 项目 ─────────────────────────────────────────────────────────────
     @_authed
     async def _handle_projects(self, request: web.Request) -> web.Response:
@@ -2210,6 +2236,8 @@ class WebAdapter:
                 web.post("/cron/jobs/update", self._handle_cron_update),
                 web.post("/cron/jobs/enable", self._handle_cron_set_enabled),
                 web.post("/cron/jobs/delete", self._handle_cron_delete),
+                web.get("/system/tasks", self._handle_system_tasks),
+                web.get("/system/tasks/detail", self._handle_system_task_detail),
                 web.get("/projects", self._handle_projects),
                 web.get("/browse", self._handle_browse),
                 web.post("/projects/create", self._handle_project_create),

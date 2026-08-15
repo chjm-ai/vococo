@@ -361,6 +361,14 @@ function renderCronTab(box, inCall){
   }
   const add=el("div","projgrp projadd"); add.textContent="＋ 新建定时任务…";
   add.onclick=()=>openCronModal(null); box.append(add);
+
+  // 「本机系统任务」区块:launchd/crontab 里的定时脚本,只读,见 loadSystemTasks
+  if(S.systemTasks.length){
+    const hdr=el("div","systaskhdr");
+    hdr.textContent="本机系统任务"+(S.systemHostname?`(${S.systemHostname})`:"");
+    box.append(hdr);
+    for(const t of S.systemTasks) box.append(buildSystemTaskRow(t));
+  }
 }
 // 「项目」Tab:手风琴——默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
 function renderProjectsTab(box, inCall){
@@ -517,6 +525,16 @@ async function loadCronSidebar(){
   syncCronHeader();   // 正开着某条任务会话时,启停开关的状态要跟上最新数据
   refillCurrentMeta();   // 同 loadVoiceSidebar:数据到位后补一次模型回填
 }
+// 「定时」Tab 里的「本机系统任务」区块:本机 launchd/crontab 里真正带调度周期的任务
+// (只读,见 web.py /system/tasks、cron/system_tasks.py 模块头的识别标准),跟上面
+// vococo 自己管的 cron 任务是两回事——这里纯展示"我以为在跑的脚本是不是真的还在跑"。
+async function loadSystemTasks(){
+  try{
+    const r=await api("/system/tasks"); const d=await r.json();
+    S.systemHostname=d.hostname||""; S.systemTasks=d.tasks||[];
+  }catch(e){}  // 同上,失败保留上次成功列表
+  renderConvs();
+}
 // 标题栏右侧的任务操作区(启停开关/编辑/「⋯」):只在 cron-task 会话显示,开关状态取自 S.cronJobs
 function syncCronHeader(){
   // 直接按 conv 精确匹配 S.cronJobs(不再靠前缀字符串猜——2026-07-29 起 cron 任务
@@ -552,6 +570,29 @@ function buildCronJobRow(j){
   more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,j.conv);}; body.append(more);
   row.append(body);
   row.onclick=()=>openConv(j.conv);
+  return row;
+}
+// 单条本机系统任务行(launchd/crontab,只读):点进去看脚本内容 + 日志尾部(openSystemTaskModal)。
+// 没有专属会话,不走 openConv;没有「⋯」菜单——增删改去改 plist/crontab 本身,这里只读。
+function buildSystemTaskRow(t){
+  const row=el("div","conv ingroup systask");
+  const body=el("div","cvbody");
+  const ct=el("div","ct"); ct.textContent=t.name||"系统任务";
+  body.append(ct);
+  // resident(常驻守护进程):没在跑才是异常——launchctl 里查不到 PID 意味着该常驻的
+  // 进程挂了。scheduled(定时触发):没在跑是常态(等下次触发),只在"未加载"或
+  // "上次退出码非 0"时才提示,不对 running 状态本身做判断(触发间隙必然是 false)。
+  if(t.enabled===false){
+    const b=el("span","stbadge sterr"); b.textContent="未加载"; body.append(b);
+  }else if(t.task_type==="resident"){
+    const ok=t.running===true;
+    const b=el("span","stbadge "+(ok?"stok":"sterr")); b.textContent=ok?"运行中":"已停止"; body.append(b);
+  }else if(t.last_exit_code){
+    const b=el("span","stbadge sterr"); b.textContent="上次失败"; body.append(b);
+  }
+  const tm=el("span","ctime"); tm.textContent=t.schedule_desc||""; body.append(tm);
+  row.append(body);
+  row.onclick=()=>openSystemTaskModal(t);
   return row;
 }
 // 项目分组拖拽排序(原生 HTML5 DnD:桌面拖起手感好,鼠标移动量够才触发,不影响原有点击展开)
@@ -724,3 +765,41 @@ $("#convCronToggle").onclick = ()=>{ const j=S.cronJobs.find(x=>x.conv===S.conv)
 $("#convCronEditBtn").onclick = ()=>{ const j=S.cronJobs.find(x=>x.conv===S.conv); if(j) openCronModal(j); };
 $("#convCronMore").onclick = ev=>{ ev.stopPropagation(); openConvMenu($("#convCronMore"), S.conv, true); };
 $("#convMoreBtn").onclick = ev=>{ ev.stopPropagation(); openConvMenu($("#convMoreBtn"), S.conv, false); };
+
+// ── 本机系统任务详情弹窗(只读)────────────────────────────────────────────
+// 点开一行,按需拉 /system/tasks/detail(脚本内容+日志尾部不放列表接口里,见 web.py 注释)。
+async function openSystemTaskModal(t){
+  $("#sysTaskModal").hidden=false;
+  $("#stModalTitle").textContent=t.name||"系统任务";
+  let statusLabel = "";
+  if(t.source==="launchd"){
+    if(t.enabled===false) statusLabel="未加载";
+    else if(t.task_type==="resident") statusLabel=t.running?"运行中":"已停止";
+    else statusLabel=t.running?"运行中":"待触发";
+    // resident 类型当前健康(running)时,历史退出码只是噪音(可能是很久前一次正常重载
+    // 留下的);只有"已停止"或 scheduled 类型才值得带出来当诊断线索
+    const showExitCode = t.last_exit_code && !(t.task_type==="resident" && t.running);
+    if(showExitCode) statusLabel+=` · 上次退出码 ${t.last_exit_code}`;
+  }
+  $("#stMeta").textContent=`来源:${t.source==="launchd"?"launchd":"crontab"} · 调度:${t.schedule_desc||"?"}`
+    +(statusLabel ? ` · ${statusLabel}` : "");
+  $("#stCommand").textContent=t.command||"";
+  $("#stScript").textContent="加载中…";
+  $("#stLogs").innerHTML="";
+  try{
+    const r=await api("/system/tasks/detail?id="+encodeURIComponent(t.id));
+    const d=(await r.json()).task;
+    $("#stScript").textContent=d.script_content || d.script_error || "(无脚本内容)";
+    const logEntries=Object.entries(d.logs||{});
+    if(!logEntries.length){
+      const empty=el("div","stlogempty"); empty.textContent="(无日志文件)"; $("#stLogs").append(empty);
+    }
+    for(const [path,tail] of logEntries){
+      const h=el("div","stlogpath"); h.textContent=path; $("#stLogs").append(h);
+      const pre=el("pre","stpre"); pre.textContent=tail||"(空)"; $("#stLogs").append(pre);
+    }
+  }catch(e){ $("#stScript").textContent="加载失败"; }
+}
+function closeSystemTaskModal(){ $("#sysTaskModal").hidden=true; }
+$("#stClose").onclick = closeSystemTaskModal;
+$("#sysTaskModal").onclick = e=>{ if(e.target===$("#sysTaskModal")) closeSystemTaskModal(); };
