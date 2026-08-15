@@ -343,31 +343,58 @@ function renderRecentTab(box, inCall){
     box.append(more);
   }
 }
-// 「定时」Tab:扁平列表——全部定时任务(2026-08-04 从「项目」Tab 分组独立成 Tab,
-// Tab 本身就是入口,不再可折叠),末尾一行「新建定时任务」;任务多时默认截前 CONV_SHOW_MAX 条
-function renderCronTab(box, inCall){
-  if(S.cronJobs.length){
-    const rows=S.cronJobs.map(buildCronJobRow);
-    const shown=S.moreShown.has("__cron__")?rows:rows.slice(0,CONV_SHOW_MAX);
-    for(const r of shown) box.append(r);
-    if(rows.length>shown.length){
-      const more=el("div","conv ingroup convmore");
-      const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
-      more.onclick=()=>{ S.moreShown.add("__cron__"); renderConvs(); };
-      box.append(more);
-    }
-  }else{
-    box.append(sideTabEmpty("暂无定时任务"));
+// 「定时」Tab:两类任务各自一个可折叠分组:
+// 1) VOCOCO 定时任务:在 vococo 内创建/编辑/启停,有专属会话和运行记录;
+// 2) 本机系统任务:Mac 的 launchd/crontab,只读展示脚本与状态。
+// 默认展开 VOCOCO、收起本机任务;折叠状态记在 localStorage,刷新后保持。
+function buildCronGroupHeader(key, title, count, detail){
+  const open=!!S.cronGroups[key];
+  const h=el("div","projgrp crongrp");
+  h.setAttribute("role","button");
+  h.tabIndex=0;
+  h.setAttribute("aria-expanded",String(open));
+  const nm=el("span","pgname"); nm.textContent=title; h.append(nm);
+  const meta=el("span","cronGroupMeta"); meta.textContent=`${count} 条${detail?` · ${detail}`:""}`; h.append(meta);
+  const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);
+  const toggle=()=>{
+    S.cronGroups[key]=!S.cronGroups[key];
+    localStorage.setItem(`vococo_cron_group_${key}`,S.cronGroups[key]?"1":"0");
+    renderConvs();
+  };
+  h.onclick=toggle;
+  h.onkeydown=ev=>{ if(ev.key==="Enter"||ev.key===" "){ ev.preventDefault(); toggle(); } };
+  return h;
+}
+function renderCronGroupRows(box, rows, key){
+  const shown=S.moreShown.has(key)?rows:rows.slice(0,CONV_SHOW_MAX);
+  for(const r of shown) box.append(r);
+  if(rows.length>shown.length){
+    const more=el("div","conv ingroup convmore");
+    const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
+    more.onclick=()=>{ S.moreShown.add(key); renderConvs(); };
+    box.append(more);
   }
-  const add=el("div","projgrp projadd"); add.textContent="＋ 新建定时任务…";
-  add.onclick=()=>openCronModal(null); box.append(add);
+}
+function renderCronTab(box, inCall){
+  const jobs=S.cronJobs||[];
+  const systemTasks=S.systemTasks||[];
 
-  // 「本机系统任务」区块:launchd/crontab 里的定时脚本,只读,见 loadSystemTasks
-  if(S.systemTasks.length){
-    const hdr=el("div","systaskhdr");
-    hdr.textContent="本机系统任务"+(S.systemHostname?`(${S.systemHostname})`:"");
-    box.append(hdr);
-    for(const t of S.systemTasks) box.append(buildSystemTaskRow(t));
+  // vococo 自己管理的任务:可编辑、可启停、可进入专属会话查看历史。
+  box.append(buildCronGroupHeader("managed","VOCOCO 定时任务",jobs.length,"可编辑 · 可启停"));
+  if(S.cronGroups.managed){
+    if(jobs.length) renderCronGroupRows(box,jobs.map(buildCronJobRow),"__cron_managed__");
+    else box.append(sideTabEmpty("暂无 VOCOCO 定时任务"));
+    const add=el("div","projgrp projadd"); add.textContent="＋ 新建定时任务…";
+    add.onclick=()=>openCronModal(null); box.append(add);
+  }
+
+  // Mac launchd/crontab 任务:只读查看,增删改仍在系统配置里完成。
+  if(systemTasks.length){
+    const detail=S.systemHostname?`只读 · ${S.systemHostname}`:"只读";
+    box.append(buildCronGroupHeader("system","本机系统任务",systemTasks.length,detail));
+    if(S.cronGroups.system){
+      for(const t of systemTasks) box.append(buildSystemTaskRow(t));
+    }
   }
 }
 // 「项目」Tab:手风琴——默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
