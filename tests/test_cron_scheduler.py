@@ -32,6 +32,7 @@ def cron_env(isolated, monkeypatch):
     monkeypatch.setattr(scheduler.config, "CRON_JOBS_PATH", data / "cron_jobs.json")
     monkeypatch.setattr(bg_tasks, "_DB", None)
     task_runner._running.clear()
+    scheduler._script_running.clear()
     yield data
     if bg_tasks._DB is not None:
         bg_tasks._DB.close()
@@ -56,7 +57,7 @@ async def test_run_job_dispatches_and_persists_to_own_conv(cron_env, monkeypatch
     job = scheduler.create_job(
         name="晨间简报", prompt="汇总今天安排", schedule={"kind": "cron", "expr": "0 8 * * *"}
     )
-    scheduler._run_job(job)
+    scheduler._run_job(job, _noop_coro)
     await task_runner._running[job["id"]]
 
     row = bg_tasks.get(job["id"])
@@ -85,13 +86,13 @@ async def test_run_job_second_trigger_appends_same_task_no_new_row(cron_env, mon
     job = scheduler.create_job(
         name="晨间简报", prompt="汇总今天安排", schedule={"kind": "cron", "expr": "0 8 * * *"}
     )
-    scheduler._run_job(job)
+    scheduler._run_job(job, _noop_coro)
     await task_runner._running[job["id"]]
 
     # 第二次触发落在"终态续聊"分支,_run_job 内部用 asyncio.create_task 包了一层
     # append()(不阻塞 _tick),要先让出一次事件循环,_running[job_id] 才会被
     # append() 内部的 _start_one 填上。
-    scheduler._run_job(job)
+    scheduler._run_job(job, _noop_coro)
     await asyncio.sleep(0)
     await task_runner._running[job["id"]]
 
@@ -193,3 +194,172 @@ def test_load_jobs_migrates_legacy_cron_task_prefix(cron_env):
     jobs = scheduler.load_jobs()
     assert jobs[0]["conv"] == "task:legacy2"
     assert scheduler.load_jobs()[0]["conv"] == "task:legacy2"
+
+
+# ── 脚本任务模式(mode=="script"):直接跑命令,不进 Agent 会话 ────────────────
+# 2026-08-15 加:有信号(更新/待确认)才值得花一次 LLM 总结,没信号时原始脚本
+# 输出直接当结果——零 LLM 调用。见模块头「脚本任务」模式说明、
+# memory/people_scan_cli.py 的 ##CRON_SIGNAL## 约定。
+
+
+class _FakeProc:
+    """假的 asyncio subprocess,communicate() 直接吐预设 stdout,不真的起进程。"""
+
+    def __init__(self, stdout: bytes, returncode: int = 0):
+        self._stdout = stdout
+        self.returncode = returncode
+
+    async def communicate(self):
+        return self._stdout, b""
+
+
+def _make_script_job(**overrides) -> dict:
+    job = scheduler.create_job(
+        name="人脉画像更新", prompt="[脚本任务模式,此 prompt 仅供参考]",
+        schedule={"kind": "cron", "expr": "0 7 * * *"},
+    )
+    job.update(mode="script", command="echo hi", summarize_prompt="把统计总结成一句话")
+    job.update(overrides)
+    scheduler.save_jobs([job])
+    return job
+
+
+@pytest.mark.anyio
+async def test_run_script_job_no_signal_skips_llm(cron_env, monkeypatch):
+    """没信号(##CRON_SIGNAL:0##):原始脚本输出直接当结果,绝不调 sidecar_chat。"""
+    async def fake_subprocess_shell(cmd, **kw):
+        return _FakeProc("没有新/改动的笔记,画像无更新。\n##CRON_SIGNAL:0##\n".encode())
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+
+    async def fail_sidecar_chat(*a, **k):
+        raise AssertionError("没信号不该调 LLM")
+
+    monkeypatch.setattr(scheduler.providers, "sidecar_chat", fail_sidecar_chat)
+
+    job = _make_script_job()
+    pushes = []
+
+    async def fake_push(platform, chat_id, text):
+        pushes.append((platform, chat_id, text))
+
+    await scheduler._run_script_job(job, fake_push)
+
+    turns = session_store.load_recent(job["conv"])
+    assert len(turns) == 1
+    assert "没有新/改动的笔记" in turns[0].assistant
+    assert "CRON_SIGNAL" not in turns[0].assistant  # 标记已被剥掉,不该出现在展示文本里
+
+    updated = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
+    assert updated["last_status"] == "success"
+    assert updated["last_run_at"] is not None
+    assert pushes and "没有新/改动的笔记" in pushes[0][2]
+
+
+@pytest.mark.anyio
+async def test_run_script_job_with_signal_calls_summarizer(cron_env, monkeypatch):
+    """有信号(##CRON_SIGNAL:1##):追加一次轻量总结,总结结果替换成展示文本。"""
+    raw = "共处理 3 篇笔记:更新 1 / 待确认 0 / 无人物跳过 2 / 错误 0\n  · a: 胜源\n##CRON_SIGNAL:1##\n"
+
+    async def fake_subprocess_shell(cmd, **kw):
+        return _FakeProc(raw.encode())
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+
+    calls = []
+
+    async def fake_sidecar_chat(prompt, **kw):
+        calls.append(prompt)
+        return "今天更新了胜源的画像。"
+
+    monkeypatch.setattr(scheduler.providers, "sidecar_chat", fake_sidecar_chat)
+
+    job = _make_script_job()
+    await scheduler._run_script_job(job, _noop_coro)
+
+    assert len(calls) == 1
+    assert "把统计总结成一句话" in calls[0] and "胜源" in calls[0]
+    turns = session_store.load_recent(job["conv"])
+    assert turns[0].assistant == "今天更新了胜源的画像。"
+
+
+@pytest.mark.anyio
+async def test_run_script_job_summarizer_failure_falls_back_to_raw(cron_env, monkeypatch):
+    """总结调用失败(返回 None,如未配置 DeepSeek/网络错误):原样回退到脚本原文,
+    不能把这轮结果丢了。"""
+    async def fake_subprocess_shell(cmd, **kw):
+        return _FakeProc("共处理 1 篇笔记:更新 1 / 待确认 0 / 无人物跳过 0 / 错误 0\n##CRON_SIGNAL:1##\n".encode())
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+
+    async def fake_sidecar_chat(*a, **k):
+        return None
+
+    monkeypatch.setattr(scheduler.providers, "sidecar_chat", fake_sidecar_chat)
+
+    job = _make_script_job()
+    await scheduler._run_script_job(job, _noop_coro)
+
+    turns = session_store.load_recent(job["conv"])
+    assert "共处理 1 篇笔记" in turns[0].assistant
+
+
+@pytest.mark.anyio
+async def test_run_script_job_no_summarize_prompt_skips_llm_even_with_signal(cron_env, monkeypatch):
+    """job 没配 summarize_prompt:哪怕有信号也不调 LLM(该字段本来就是可选的)。"""
+    async def fake_subprocess_shell(cmd, **kw):
+        return _FakeProc("共处理 1 篇笔记:更新 1 / 待确认 0 / 无人物跳过 0 / 错误 0\n##CRON_SIGNAL:1##\n".encode())
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+
+    async def fail_sidecar_chat(*a, **k):
+        raise AssertionError("没配 summarize_prompt 不该调 LLM")
+
+    monkeypatch.setattr(scheduler.providers, "sidecar_chat", fail_sidecar_chat)
+
+    job = _make_script_job(summarize_prompt="")
+    await scheduler._run_script_job(job, _noop_coro)  # 不抛异常即通过
+
+
+@pytest.mark.anyio
+async def test_run_script_job_command_error_marks_failed_no_summarizer(cron_env, monkeypatch):
+    """命令本身跑失败(非 0 退出码):标记 error,原样展示报错,不调 LLM 润色。"""
+    async def fake_subprocess_shell(cmd, **kw):
+        return _FakeProc(b"Traceback...\nModuleNotFoundError", returncode=1)
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+
+    async def fail_sidecar_chat(*a, **k):
+        raise AssertionError("执行失败不该调 LLM")
+
+    monkeypatch.setattr(scheduler.providers, "sidecar_chat", fail_sidecar_chat)
+
+    job = _make_script_job()
+    await scheduler._run_script_job(job, _noop_coro)
+
+    updated = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
+    assert updated["last_status"] == "error"
+    turns = session_store.load_recent(job["conv"])
+    assert "ModuleNotFoundError" in turns[0].assistant
+
+
+@pytest.mark.anyio
+async def test_run_job_routes_script_mode_to_run_script_job(cron_env, monkeypatch):
+    """_run_job 按 mode 路由:script 模式绝不该碰 task_runner/Agent 那条路径。"""
+    called = []
+
+    async def fake_run_script_job(job, push):
+        called.append(job["id"])
+
+    monkeypatch.setattr(scheduler, "_run_script_job", fake_run_script_job)
+
+    def fail_dispatch(**kw):
+        raise AssertionError("script 模式不该走 task_runner.dispatch")
+
+    monkeypatch.setattr(task_runner, "dispatch", fail_dispatch)
+
+    job = _make_script_job()
+    scheduler._run_job(job, _noop_coro)
+    await asyncio.sleep(0)  # 让 create_task 包的协程有机会跑一次
+
+    assert called == [job["id"]]

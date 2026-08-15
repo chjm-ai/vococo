@@ -626,3 +626,44 @@ async def usage_for_model(model: str | None) -> tuple[dict, int]:
 
     # 其他(DeepSeek/Moonshot API 等):按量计费,无配额
     return {"provider": "api", "type": "api"}, 200
+
+
+async def sidecar_chat(prompt: str, *, timeout: float = 30) -> str | None:
+    """轻量一次性纯文本补全:没有工具、没有系统提示包,不是完整 Agent 会话,只是
+    "把一段文字丢给已配置的 DeepSeek 拿一句总结/润色"这类场景用(如 cron 脚本
+    任务模式的结果总结,见 cron/scheduler.py)——一次完整 Agent 会话哪怕文本很短
+    也要重付系统提示+工具定义的打包成本,这种场景不值得。
+
+    走 DeepSeek 原生 OpenAI 兼容端点(跟 memory/people_profiles.py._chat_json
+    同一账号同一 key,只是这里不要求 JSON 输出)。没配置 DeepSeek 或调用失败都
+    返回 None,调用方自己决定怎么兜底(通常是回退到原始文本,不阻塞主流程)。
+    """
+    fallback = sidecar_env("deepseek")
+    if fallback is None:
+        return None
+    _, env = fallback
+    api_key = env.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return None
+
+    import aiohttp
+
+    from . import config
+
+    payload = {
+        "model": config.PEOPLE_PROFILES_MODEL,
+        "temperature": 0.3,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    url = f"{config.PEOPLE_PROFILES_BASE_URL}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as sess:
+            async with sess.post(url, json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    return None
+                body = await resp.json()
+        text = (body["choices"][0]["message"]["content"] or "").strip()
+        return text or None
+    except (aiohttp.ClientError, TimeoutError, KeyError, IndexError, ValueError):
+        return None

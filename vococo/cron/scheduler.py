@@ -11,7 +11,10 @@ job 结构:
   "target": {"platform": "web", "chat_id": "conv1"},  # 额外推送目标(可选,不填就只落会话+系统推送)
   "cwd": "/path/to/project",  # 项目根目录;执行时若为 git 仓库会开专属 worktree
   "model": null, "enabled": true,
-  "next_run_at": null, "last_run_at": null, "last_status": null
+  "next_run_at": null, "last_run_at": null, "last_status": null,
+  "mode": "script",              # 可选,不填/其它值 = 默认 Agent 任务(下面走 task_runner)
+  "command": "python xxx.py",    # mode=="script" 时必填:直接跑的 shell 命令
+  "summarize_prompt": "...",     # mode=="script" 可选:命令输出有信号时才用它总结
 }
 
 2026-07-29 通用化:cron 触发的每一轮执行,不再自己起一个孤立的 run_turn(无历史、
@@ -23,12 +26,22 @@ job 结构:
 _on_task_terminal,由 voice/notify.py 的 register_cron_terminal_hook 转发过来),
 不再像以前那样在 _run_job 里同步等它跑完再处理——_tick 触发完就该去处理下一个
 到期任务/写心跳,不能被一个慢任务拖住整个调度器。
+
+2026-08-15 加「脚本任务」模式(mode=="script",见 _run_script_job):有些任务
+本质是"跑一个脚本、把输出当结果"(如人脉画像扫描),走 Agent 任务为此也要
+重付一整套系统提示+工具定义+多轮往返的成本,即使脚本大多数时候什么新东西
+都没跑出来。脚本任务直接 subprocess 跑 command,不进 Agent;命令输出末尾若带
+##CRON_SIGNAL:0/1## 标记(约定,见 memory/people_scan_cli.py 的实现示例),0
+表示没有实质产出——原始输出直接当结果,零 LLM 调用;1(或没带标记,保守当
+"有事"防止吞掉未知格式的输出)才用 providers.sidecar_chat 顺手总结一次
+(同样不是完整 Agent 会话,没有工具/系统提示开销)。
 """
 from __future__ import annotations
 
 import asyncio
 import datetime
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -37,7 +50,7 @@ from typing import Awaitable, Callable
 import anyio
 from croniter import croniter
 
-from .. import config
+from .. import config, providers
 from ..core import task_runner, tasks as bg_tasks
 from ..core.agent import run_turn
 from ..memory import session_store
@@ -208,12 +221,16 @@ def _write_heartbeat() -> None:
     config.HEARTBEAT_PATH.write_text(str(int(time.time())), encoding="utf-8")
 
 
-def _run_job(job: dict) -> None:
-    """触发一次 job 执行,交给统一后台任务引擎异步跑,不等它跑完——job_id 本身
-    复用作 task_id(见模块头说明):首次触发 dispatch,以后每次到点都是对同一个
-    task 再 append 一轮。真正的回填统计(last_run_at/last_status)和推送在
+def _run_job(job: dict, push: PushFn) -> None:
+    """触发一次 job 执行,不等它跑完。mode=="script" 直接丢给 _run_script_job
+    (脚本任务,见模块头说明);默认走统一后台任务引擎——job_id 本身复用作
+    task_id(见模块头说明):首次触发 dispatch,以后每次到点都是对同一个 task
+    再 append 一轮。Agent 任务的回填统计(last_run_at/last_status)和推送在
     _on_task_terminal 里,任务跑完后异步触发。"""
     job_id = job["id"]
+    if job.get("mode") == "script":
+        asyncio.create_task(_run_script_job(job, push))
+        return
     if bg_tasks.get(job_id) is None:
         task_runner.dispatch(
             title=job.get("name") or "定时任务", prompt=job["prompt"],
@@ -226,20 +243,19 @@ def _run_job(job: dict) -> None:
         asyncio.create_task(task_runner.append(job_id, job["prompt"]))
 
 
-async def _on_task_terminal(task: dict, push: PushFn) -> None:
-    """由 voice/notify.py 的 register_cron_terminal_hook 转发过来,任务(origin=cron)
-    跑完一轮后异步调用一次:回填 job 的 last_run_at/last_status,并推送结果——
-    跟以前 _run_job 尾部的推送格式/目标完全一致(专属会话 + 可选额外目标),只是
-    现在是异步触发,不再是 _tick 同步等出来的。"""
+async def _push_job_result(job_id: str, status: str, text: str, push: PushFn) -> dict | None:
+    """回填 job 的 last_run_at/last_status 并推送结果——Agent 任务
+    (_on_task_terminal)和脚本任务(_run_script_job)收尾共用,格式/目标完全
+    一致(专属会话 + 可选额外目标)。任务定义已被删除时返回 None,不报错、
+    不推送(只是一次孤立的收尾)。"""
     jobs = load_jobs()
-    job = next((j for j in jobs if j.get("id") == task["id"]), None)
-    if job is None:  # 任务定义已被删除,只是一次孤立的收尾,不用回填统计
-        return
+    job = next((j for j in jobs if j.get("id") == job_id), None)
+    if job is None:
+        return None
     job["last_run_at"] = int(time.time())
-    job["last_status"] = "error" if task["status"] == "failed" else "success"
+    job["last_status"] = status
     save_jobs(jobs)
-    text = task.get("result_summary") or task.get("result_full") or "(无输出)"
-    conv = job.get("conv") or f"task:{job['id']}"
+    conv = job.get("conv") or f"task:{job_id}"
     msg = f"⏰ {job.get('name','任务')}\n\n{text}"
     # 默认目标就是这条专属会话本身(platform=web):走 send() 会同时触发系统推送
     # (场景③"主动/cron",已覆盖 Mac/iPhone 等一切订阅了 Web Push 的设备)。
@@ -247,9 +263,68 @@ async def _on_task_terminal(task: dict, push: PushFn) -> None:
     tgt = job.get("target") or {}  # 额外目标(如 web),可选,不填就只有上面这条
     if tgt.get("platform") and tgt.get("chat_id") is not None:
         await push(tgt["platform"], tgt["chat_id"], msg)
+    return job
 
 
-def _tick() -> None:
+async def _on_task_terminal(task: dict, push: PushFn) -> None:
+    """由 voice/notify.py 的 register_cron_terminal_hook 转发过来,Agent 任务
+    (origin=cron)跑完一轮后异步调用一次——它自己的会话轮次已经由
+    task_runner._run() 写好(真的 Agent 会话,带完整时间线),这里只回填
+    统计+推送,跟以前一样,只是现在是异步触发,不再是 _tick 同步等出来的。"""
+    text = task.get("result_summary") or task.get("result_full") or "(无输出)"
+    status = "error" if task["status"] == "failed" else "success"
+    await _push_job_result(task["id"], status, text, push)
+
+
+_SIGNAL_RE = re.compile(r"[ \t]*##CRON_SIGNAL:([01])##[ \t]*\n?")
+_script_running: set[str] = set()  # 脚本任务正在跑的 job_id,防同一任务并发触发
+
+
+async def _run_script_job(job: dict, push: PushFn) -> None:
+    """脚本任务模式(mode=="script",见模块头说明):直接跑 job["command"],不进
+    Agent 会话——没有系统提示/工具定义的打包成本。命令输出末尾若带
+    ##CRON_SIGNAL:0/1## 标记,0 表示没有实质产出,原始输出直接当结果、零 LLM
+    调用;1(或没带标记,保守当"有事")才用 job 可选的 summarize_prompt 通过
+    providers.sidecar_chat 追加一次轻量总结,失败/未配置就原样回退到脚本输出,
+    不阻塞主流程。"""
+    job_id = job["id"]
+    if job_id in _script_running:  # 上一轮还没跑完,这一跳先不重复触发
+        return
+    _script_running.add(job_id)
+    try:
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                job["command"], cwd=job.get("cwd") or None,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=config.TASK_TIMEOUT_MIN * 60
+            )
+            raw = out.decode("utf-8", errors="replace").strip()
+            ok = proc.returncode == 0
+        except (OSError, asyncio.TimeoutError) as exc:
+            raw, ok = f"脚本执行出错:{exc}", False
+
+        m = _SIGNAL_RE.search(raw)
+        has_signal = (m.group(1) == "1") if m else True
+        text = _SIGNAL_RE.sub("", raw).strip() or "(无输出)"
+
+        if ok and has_signal and job.get("summarize_prompt"):
+            summarized = await providers.sidecar_chat(
+                f"{job['summarize_prompt']}\n\n[原始运行结果]\n{text}"
+            )
+            if summarized:
+                text = summarized
+
+        session_key = job.get("conv") or f"task:{job_id}"
+        turn_id = session_store.start_turn(session_key, f"[脚本任务] {job.get('name','')}")
+        session_store.finish_turn(turn_id, text)
+        await _push_job_result(job_id, "success" if ok else "error", text, push)
+    finally:
+        _script_running.discard(job_id)
+
+
+def _tick(push: PushFn) -> None:
     """检查到期任务并触发——本身是同步/瞬时的(触发只是把任务丢给后台引擎,不等
     它跑完),不会因为某个任务耗时长而拖住心跳/其它到期任务(2026-07-29 前这里
     整段 await _run_job 到底,一个慢任务能卡住整个调度循环)。"""
@@ -272,7 +347,7 @@ def _tick() -> None:
                 job["next_run_at"] = _next_run(job["schedule"], now)
             changed = True
             try:
-                _run_job(job)
+                _run_job(job, push)
             except Exception as e:  # 单个任务触发失败不拖垮调度
                 job["last_status"] = f"error: {e}"
     if changed:
@@ -341,13 +416,14 @@ async def run_scheduler(push: PushFn) -> None:
     extra = f" · 反思 {config.REFLECT_CRON}" if config.REFLECT_ENABLED else ""
     print(f"⏱  调度器启动(每 {config.SCHEDULER_TICK_SEC}s 一跳{extra})")
     # 人脉画像更新已改为 cron_jobs.json 里的可见任务(每天 7 点,定时 tab 可
-    # 查看运行状态与结果),不再是代码内置分支——见 tools/builtin.py 的
-    # scan_people_profiles 工具,以及 cron_jobs.json 的「人脉画像更新」条目。
+    # 查看运行状态与结果),不再是代码内置分支——见 memory/people_scan_cli.py
+    # 业务 CLI 入口,以及 cron_jobs.json 的「人脉画像更新」条目(mode=="script",
+    # 见模块头「脚本任务」模式说明)。
     reflect_next: float | None = None
     while True:
         try:
             _write_heartbeat()
-            _tick()
+            _tick(push)
             if config.REFLECT_ENABLED:
                 now = time.time()
                 if reflect_next is None:
