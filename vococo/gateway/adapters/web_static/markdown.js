@@ -15,8 +15,10 @@ function docLinkHtml(txt, target){
   const isHttp = /^https?:\/\//i.test(target);
   const attr = isHttp ? 'data-doc-url="'+target+'"' : 'data-doc-path="'+target+'"';
   // href 留着当兜底:点击处理器(见 initDocPreview)正常都会 preventDefault 走站内预览,
-  // 万一 JS 没跑起来,http 链接至少还能退化成新标签页打开,本地路径没有可跳的地方就给 #。
-  return '<a href="'+(isHttp?target:"#")+'" class="doclink" '+attr+(isHttp?' target="_blank" rel="noopener"':"")+'>'+ic("doc")+" "+txt+"</a>";
+  // 万一 JS 没跑起来,http 链接至少还能退化成新标签页打开;本地路径不写 href——
+  // 写 href="#" 会被 iOS 长按菜单"拷贝链接"拿到(结果是域名/#,没用),不写 href
+  // 的 <a> 不会触发 iOS 链接长按菜单,用户长按变成文字选中,可以正常拷贝路径文本。
+  return '<a'+(isHttp?' href="'+target+'"':'')+' class="doclink" '+attr+(isHttp?' target="_blank" rel="noopener"':"")+'>'+ic("doc")+" "+txt+"</a>";
 }
 function inlineMd(t){
   t = esc(t);
