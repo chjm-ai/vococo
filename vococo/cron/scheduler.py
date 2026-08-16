@@ -41,7 +41,9 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import os
 import re
+import signal
 import time
 import uuid
 from pathlib import Path
@@ -323,6 +325,24 @@ _SIGNAL_RE = re.compile(r"[ \t]*##CRON_SIGNAL:([01])##[ \t]*\n?")
 _script_running: set[str] = set()  # 脚本任务正在跑的 job_id,防同一任务并发触发
 
 
+async def _terminate_script_process(proc: asyncio.subprocess.Process) -> None:
+    """超时后终止整个脚本进程组,避免 shell 的子进程遗留到下一次调度。"""
+    if proc.returncode is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:  # 恰好自然结束
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except asyncio.TimeoutError:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        await proc.wait()
+
+
 async def _run_script_job(job: dict, push: PushFn) -> None:
     """脚本任务模式(mode=="script",见模块头说明):直接跑 job["command"],不进
     Agent 会话——没有系统提示/工具定义的打包成本。命令输出末尾若带
@@ -335,18 +355,26 @@ async def _run_script_job(job: dict, push: PushFn) -> None:
         return
     _script_running.add(job_id)
     try:
+        proc: asyncio.subprocess.Process | None = None
         try:
+            # 独立进程组:超时后能连同 shell 拉起的子进程一起收回。
             proc = await asyncio.create_subprocess_shell(
                 job["command"], cwd=job.get("cwd") or None,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
             )
             out, _ = await asyncio.wait_for(
                 proc.communicate(), timeout=config.TASK_TIMEOUT_MIN * 60
             )
             raw = out.decode("utf-8", errors="replace").strip()
             ok = proc.returncode == 0
-        except (OSError, asyncio.TimeoutError) as exc:
-            raw, ok = f"脚本执行出错:{exc}", False
+        except asyncio.TimeoutError:
+            if proc is not None:
+                await _terminate_script_process(proc)
+            raw, ok = f"脚本执行超时:超过 {config.TASK_TIMEOUT_MIN} 分钟仍未完成,已终止。", False
+        except OSError as exc:
+            detail = str(exc) or type(exc).__name__
+            raw, ok = f"脚本执行出错:{detail}", False
 
         m = _SIGNAL_RE.search(raw)
         has_signal = (m.group(1) == "1") if m else True

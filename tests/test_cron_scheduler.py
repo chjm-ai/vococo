@@ -344,6 +344,37 @@ async def test_run_script_job_command_error_marks_failed_no_summarizer(cron_env,
 
 
 @pytest.mark.anyio
+async def test_run_script_job_timeout_explains_and_terminates(cron_env, monkeypatch):
+    """超时不能只留下空白异常文本,且必须请求终止遗留脚本进程。"""
+    proc = _FakeProc(b"")
+    proc.returncode = None
+
+    async def fake_subprocess_shell(cmd, **kw):
+        assert kw["start_new_session"] is True
+        return proc
+
+    async def fake_wait_for(awaitable, **kw):
+        awaitable.close()  # 模拟 wait_for 取消 communicate() 协程
+        raise asyncio.TimeoutError
+
+    stopped = []
+
+    async def fake_terminate(p):
+        stopped.append(p)
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+    monkeypatch.setattr(scheduler.asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(scheduler, "_terminate_script_process", fake_terminate)
+
+    job = _make_script_job()
+    await scheduler._run_script_job(job, _noop_coro)
+
+    assert stopped == [proc]
+    turns = session_store.load_recent(job["conv"])
+    assert f"超过 {scheduler.config.TASK_TIMEOUT_MIN} 分钟" in turns[0].assistant
+
+
+@pytest.mark.anyio
 async def test_run_job_routes_script_mode_to_run_script_job(cron_env, monkeypatch):
     """_run_job 按 mode 路由:script 模式绝不该碰 task_runner/Agent 那条路径。"""
     called = []
