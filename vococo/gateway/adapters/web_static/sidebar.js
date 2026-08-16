@@ -379,10 +379,10 @@ function renderCronTab(box, inCall){
   const systemTasks=S.systemTasks||[];
 
   // vococo 自己管理的任务:可编辑、可启停、可进入专属会话查看历史。
-  box.append(buildCronGroupHeader("managed","VOCOCO 定时任务"));
+  box.append(buildCronGroupHeader("managed","定时任务"));
   if(S.cronGroups.managed){
     if(jobs.length) renderCronGroupRows(box,jobs.map(buildCronJobRow),"__cron_managed__");
-    else box.append(sideTabEmpty("暂无 VOCOCO 定时任务"));
+    else box.append(sideTabEmpty("暂无定时任务"));
     const add=el("div","projgrp projadd"); add.textContent="＋ 新建定时任务…";
     add.onclick=()=>openCronModal(null); box.append(add);
   }
