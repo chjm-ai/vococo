@@ -98,8 +98,17 @@ def _load_global_agents() -> str:
 
     这是用户亲手维护的权威指令(沟通风格、中立纪律、记忆沉淀规范等),
     各 harness 共用,不套数据围栏。
+
+    去重:~/.claude/CLAUDE.md 若软链到同一份文件,SDK 已原生注入,不重复。
     """
-    text = _read_clipped(config.AI_BRAIN_DIR / "AGENTS.md", "AI_BRAIN/AGENTS.md")
+    agents_path = config.AI_BRAIN_DIR / "AGENTS.md"
+    try:
+        sdk_global = Path.home() / ".claude" / "CLAUDE.md"
+        if sdk_global.is_file() and sdk_global.resolve() == agents_path.resolve():
+            return ""
+    except OSError:
+        pass
+    text = _read_clipped(agents_path, "AI_BRAIN/AGENTS.md")
     if not text:
         return ""
     return (
