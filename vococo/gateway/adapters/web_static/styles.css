@@ -248,7 +248,6 @@
   /* 「定时」Tab 两类任务的手风琴标题:VOCOCO 可管理任务 + 本机只读任务。 */
   .crongrp{cursor:pointer;margin-top:8px}
   .crongrp:first-child{margin-top:2px}
-  .crongrp + .crongrp{border-top:1px solid var(--line);padding-top:9px}
   .crongrp .pgcaret{margin-right:0;flex-shrink:0}
   .crongrp:focus-visible{outline:1px solid var(--accent);outline-offset:-1px}
   /* 项目拖拽排序:可拖起手型,拖起半透明,悬停目标高亮上边框示意插入位置 */
