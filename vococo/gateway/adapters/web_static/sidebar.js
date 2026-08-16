@@ -603,7 +603,36 @@ function buildCronJobRow(j){
   more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,j.conv);}; body.append(more);
   row.append(body);
   row.onclick=()=>openConv(j.conv);
+  bindCronDrag(row, j.job_id);
   return row;
+}
+// 定时任务拖拽排序(复用项目拖拽模式:HTML5 DnD,拖起半透明,落地蓝线提示)
+function bindCronDrag(row, jobId){
+  row.draggable=true;
+  row.ondragstart=ev=>{
+    if(ev.target.closest(".more")){ev.preventDefault();return;}
+    ev.dataTransfer.effectAllowed="move";
+    ev.dataTransfer.setData("text/plain",jobId);
+    S._cronDragSrc=jobId;
+    setTimeout(()=>row.classList.add("dragging"),0);
+  };
+  row.ondragend=()=>{row.classList.remove("dragging");S._cronDragSrc=null;};
+  row.ondragover=ev=>{if(!S._cronDragSrc||S._cronDragSrc===jobId)return;ev.preventDefault();ev.dataTransfer.dropEffect="move";row.classList.add("dragover");};
+  row.ondragleave=()=>row.classList.remove("dragover");
+  row.ondrop=ev=>{
+    ev.preventDefault();row.classList.remove("dragover");
+    const src=ev.dataTransfer.getData("text/plain");
+    if(src&&src!==jobId) reorderCronJob(src,jobId);
+  };
+}
+function reorderCronJob(srcId,targetId){
+  const arr=S.cronJobs;
+  const si=arr.findIndex(j=>j.job_id===srcId), ti=arr.findIndex(j=>j.job_id===targetId);
+  if(si<0||ti<0)return;
+  const [item]=arr.splice(si,1); arr.splice(ti,0,item);
+  renderConvs();
+  api("/cron/jobs/reorder",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({order:arr.map(j=>j.job_id)})}).catch(()=>{});
 }
 // 单条本机系统任务行(launchd/crontab,只读):点进去看脚本内容 + 日志尾部(openSystemTaskModal)。
 // 没有专属会话,不走 openConv;没有「⋯」菜单——增删改去改 plist/crontab 本身,这里只读。
