@@ -1649,6 +1649,7 @@ class WebAdapter:
             {
                 "skills": {
                     "mode": settings_store.skills_mode(),
+                    "coding_mode": settings_store.coding_skills_mode(),
                     "items": settings_store.list_skills(),
                 },
                 "mcp": {
@@ -1675,16 +1676,29 @@ class WebAdapter:
         name = (body.get("name") or "").strip()
         if not name:
             return web.json_response({"error": "缺少 name"}, status=400)
+        scope = body.get("scope", "general")
+        if scope not in {"general", "coding"}:
+            return web.json_response({"error": "scope 只能是 general 或 coding"}, status=400)
         settings_store.set_skill(
             name,
             enabled=body.get("enabled") if "enabled" in body else None,
             hidden=body.get("hidden") if "hidden" in body else None,
+            scope=scope,
         )
-        return web.json_response({"ok": True, "mode": settings_store.skills_mode()})
+        return web.json_response({
+            "ok": True,
+            "mode": settings_store.skills_mode(),
+            "coding_mode": settings_store.coding_skills_mode(),
+        })
 
     @_authed
     async def _handle_settings_skills_reset(self, request: web.Request) -> web.Response:
         settings_store.reset_skills()
+        return web.json_response({"ok": True})
+
+    @_authed
+    async def _handle_settings_coding_skills_reset(self, request: web.Request) -> web.Response:
+        settings_store.reset_coding_skills()
         return web.json_response({"ok": True})
 
     @_authed
@@ -2242,6 +2256,7 @@ class WebAdapter:
                 web.get("/settings", self._handle_settings),
                 web.post("/settings/skill", self._handle_settings_skill),
                 web.post("/settings/skills/reset", self._handle_settings_skills_reset),
+                web.post("/settings/skills/coding/reset", self._handle_settings_coding_skills_reset),
                 web.post("/settings/mcp/vococo", self._handle_settings_mcp_vococo),
                 web.post("/settings/mcp/external", self._handle_settings_mcp_external),
                 web.post("/settings/model", self._handle_settings_model),

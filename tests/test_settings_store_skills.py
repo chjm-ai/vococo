@@ -1,4 +1,4 @@
-"""settings_store.effective_skills:全局白名单 + 项目级收敛。"""
+"""settings_store.effective_skills:全局 Skill + 显式 Git 项目的 coding Profile。"""
 import json
 
 import pytest
@@ -19,80 +19,113 @@ def store(tmp_path, monkeypatch):
     return write
 
 
+def _git_repo(path):
+    path.mkdir()
+    (path / ".git").mkdir()
+    return path
+
+
 def test_falls_back_to_global_whitelist(store, tmp_path):
-    """没配项目白名单 → 照旧走全局 custom 白名单。"""
+    """没选项目或目录不是 Git 工作区 → 照旧走全局 custom 白名单。"""
     store({"skills_mode": "custom", "skills_enabled": ["alpha", "beta"]})
     assert settings_store.effective_skills(str(tmp_path)) == ["alpha", "beta"]
     assert settings_store.effective_skills(None) == ["alpha", "beta"]
+    assert settings_store.effective_skills(str(tmp_path), is_explicit_project=True) == ["alpha", "beta"]
 
 
-def test_project_whitelist_wins(store, tmp_path):
-    """cwd 命中项目配置 → 用项目白名单,不用全局那份。"""
-    proj = tmp_path / "repo"
-    proj.mkdir()
-    store({
-        "skills_mode": "custom",
-        "skills_enabled": ["alpha", "beta"],
-        "skills_by_project": {str(proj): ["only-this"]},
-    })
-    assert settings_store.effective_skills(str(proj), is_explicit_project=True) == ["only-this"]
-    # 默认 cwd 即使刚好落在这个目录，也不能被误判成项目会话。
-    assert settings_store.effective_skills(str(proj)) == ["alpha", "beta"]
-    # 别的目录不受影响
-    assert settings_store.effective_skills(str(tmp_path)) == ["alpha", "beta"]
-
-
-def test_worktree_inherits_repo_config(store, tmp_path):
-    """项目会话跑在 <repo>/data/worktrees/… 里,只配主仓库一条就该继承。"""
-    proj = tmp_path / "repo"
-    wt = proj / "data" / "worktrees" / "abc123" / "sess"
-    wt.mkdir(parents=True)
-    store({"skills_by_project": {str(proj): ["only-this"]}})
-    assert settings_store.effective_skills(str(wt), is_explicit_project=True) == ["only-this"]
-
-
-def test_deepest_match_wins(store, tmp_path):
-    """父子目录都配了 → 取更具体(路径更深)的那条。"""
-    parent = tmp_path / "repos"
-    child = parent / "vococo"
-    child.mkdir(parents=True)
-    store({"skills_by_project": {str(parent): ["broad"], str(child): ["narrow"]}})
-    assert settings_store.effective_skills(str(child), is_explicit_project=True) == ["narrow"]
-    assert settings_store.effective_skills(str(parent), is_explicit_project=True) == ["broad"]
-
-
-def test_broken_entry_ignored(store, tmp_path):
-    """配置被手改坏(值不是列表)→ 忽略该条,不崩,回落全局。"""
-    proj = tmp_path / "repo"
-    proj.mkdir()
-    store({
-        "skills_mode": "custom",
-        "skills_enabled": ["alpha"],
-        "skills_by_project": {str(proj): "not-a-list"},
-    })
-    assert settings_store.effective_skills(str(proj)) == ["alpha"]
-
-
-def test_profile_requires_explicit_project(store, tmp_path):
-    """默认 cwd 不能误命中 profile，避免普通聊天被当作编码会话。"""
-    proj = tmp_path / "repo"
-    proj.mkdir()
+def test_explicit_git_project_uses_coding_profile(store, tmp_path):
+    """用户显式选择的任意 Git 仓库都加载 coding Profile。"""
+    repo = _git_repo(tmp_path / "new-project")
     store({
         "skills_mode": "custom",
         "skills_enabled": ["assistant"],
         "skill_profiles": {"coding": ["code"]},
-        "project_profiles": {str(proj): "coding"},
     })
-    assert settings_store.effective_skills(str(proj)) == ["assistant"]
-    assert settings_store.effective_skills(str(proj), is_explicit_project=True) == ["code"]
+
+    assert settings_store.effective_skills(str(repo), is_explicit_project=True) == ["code"]
 
 
-def test_explicit_project_profile_inherits_worktree(store, tmp_path):
-    proj = tmp_path / "repo"
-    wt = proj / "data" / "worktrees" / "abc" / "session"
-    wt.mkdir(parents=True)
+def test_explicit_git_subdirectory_uses_coding_profile(store, tmp_path):
+    """从仓库子目录启动也应识别为代码项目。"""
+    repo = _git_repo(tmp_path / "repo")
+    subdir = repo / "packages" / "web"
+    subdir.mkdir(parents=True)
+    store({"skill_profiles": {"coding": ["code"]}})
+
+    assert settings_store.effective_skills(str(subdir), is_explicit_project=True) == ["code"]
+
+
+def test_explicit_git_worktree_uses_coding_profile(store, tmp_path):
+    """linked worktree 的 .git 是文件，仍应识别为 Git 工作区。"""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / ".git").write_text("gitdir: /tmp/repo/.git/worktrees/session\n")
+    store({"skill_profiles": {"coding": ["code"]}})
+
+    assert settings_store.effective_skills(str(worktree), is_explicit_project=True) == ["code"]
+
+
+def test_default_cwd_does_not_use_coding_profile(store, tmp_path):
+    """普通聊天即使默认 cwd 恰好是 Git 仓库，也不能误进编码模式。"""
+    repo = _git_repo(tmp_path / "repo")
     store({
+        "skills_mode": "custom",
+        "skills_enabled": ["assistant"],
         "skill_profiles": {"coding": ["code"]},
-        "project_profiles": {str(proj): "coding"},
     })
-    assert settings_store.effective_skills(str(wt), is_explicit_project=True) == ["code"]
+
+    assert settings_store.effective_skills(str(repo)) == ["assistant"]
+
+
+def test_legacy_path_configuration_is_ignored(store, tmp_path):
+    """路径白名单已废弃，Git 项目一律由 coding Profile 决定。"""
+    repo = _git_repo(tmp_path / "repo")
+    store({
+        "skills_mode": "custom",
+        "skills_enabled": ["assistant"],
+        "skills_by_project": {str(repo): ["legacy"]},
+        "skill_profiles": {"coding": ["code"]},
+        "project_profiles": {str(repo): "other"},
+    })
+
+    assert settings_store.effective_skills(str(repo), is_explicit_project=True) == ["code"]
+
+
+def test_coding_skills_inherit_general_until_first_change(store, monkeypatch):
+    """未单独配置 coding 时继承通用名单；首次改动再复制为独立名单。"""
+    monkeypatch.setattr(settings_store, "_scan_skills", lambda: [
+        {"name": "assistant", "description": ""}, {"name": "code", "description": ""},
+    ])
+    store({"skills_mode": "custom", "skills_enabled": ["assistant"]})
+
+    before = {item["name"]: item for item in settings_store.list_skills()}
+    assert settings_store.coding_skills_mode() == "inherit"
+    assert before["assistant"]["coding_enabled"] is True
+    assert before["code"]["coding_enabled"] is False
+
+    settings_store.set_skill("code", enabled=True, scope="coding")
+
+    after = {item["name"]: item for item in settings_store.list_skills()}
+    assert settings_store.coding_skills_mode() == "custom"
+    assert after["assistant"]["enabled"] is True  # 通用名单没被改动
+    assert after["code"]["enabled"] is False
+    assert after["assistant"]["coding_enabled"] is True
+    assert after["code"]["coding_enabled"] is True
+
+
+def test_reset_coding_skills_returns_to_general_inheritance(store, monkeypatch):
+    monkeypatch.setattr(settings_store, "_scan_skills", lambda: [
+        {"name": "assistant", "description": ""}, {"name": "code", "description": ""},
+    ])
+    store({
+        "skills_mode": "custom",
+        "skills_enabled": ["assistant"],
+        "skill_profiles": {"coding": ["code"]},
+    })
+
+    settings_store.reset_coding_skills()
+
+    items = {item["name"]: item for item in settings_store.list_skills()}
+    assert settings_store.coding_skills_mode() == "inherit"
+    assert items["assistant"]["coding_enabled"] is True
+    assert items["code"]["coding_enabled"] is False

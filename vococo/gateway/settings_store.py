@@ -36,9 +36,7 @@ _DEFAULTS: dict = {
     "skills_mode": "default",   # default=跟随 config.SKILLS;custom=用下面的白名单
     "skills_enabled": [],       # custom 态生效的显式白名单
     "skills_hidden": [],        # 仅设置列表折叠用
-    "skills_by_project": {},    # 项目绝对路径 -> 该项目专用白名单(兼容旧配置，优先级最高)
     "skill_profiles": {},       # profile 名 -> skill 白名单，如 {"coding": ["skill-a"]}
-    "project_profiles": {},     # 项目绝对路径 -> profile 名，按路径祖先匹配
     "vococo_mcp_enabled": True,
     "external_mcp": {},         # name -> {type,command,args,env,url,headers,enabled}
     "web_default_model": "",    # web 端上次选定的模型;新会话没显式选就用它(空=回落 config.MODEL)
@@ -63,10 +61,7 @@ def _load() -> dict:
     # mutate(如 list.append/dict[k]=v)就把模块级默认值永久污染了。
     for key in ("skills_enabled", "skills_hidden", "web_extra_models", "disabled_builtin_models"):
         data[key] = list(data[key]) if isinstance(data.get(key), list) else []
-    for key in (
-        "external_mcp", "web_providers", "web_efforts", "skills_by_project",
-        "skill_profiles", "project_profiles",
-    ):
+    for key in ("external_mcp", "web_providers", "web_efforts", "skill_profiles"):
         data[key] = dict(data[key]) if isinstance(data.get(key), dict) else {}
     return data
 
@@ -165,23 +160,29 @@ def _base_enabled_set(available: set[str]) -> set[str]:
     return set(available)
 
 
+def _global_enabled_set(data: dict, available: set[str]) -> set[str]:
+    if data["skills_mode"] == "custom":
+        return set(data["skills_enabled"])
+    return _base_enabled_set(available)
+
+
 # ── 技能:对外查询 / 修改 ────────────────────────────────────────────────
 def list_skills() -> list[dict]:
-    """给设置页用:每个可用 skill 的 name/description/enabled/hidden。"""
+    """给设置页用:每个可用 skill 的通用/编程启用状态及隐藏状态。"""
     d = _load()
     skills = _scan_skills()
     available = {s["name"] for s in skills}
     hidden = set(d["skills_hidden"])
-    if d["skills_mode"] == "custom":
-        enabled = set(d["skills_enabled"])
-    else:
-        enabled = _base_enabled_set(available)
+    enabled = _global_enabled_set(d, available)
+    coding = d["skill_profiles"].get("coding")
+    coding_enabled = set(coding) if isinstance(coding, list) else enabled
     out = []
     for s in skills:
         out.append({
             "name": s["name"],
             "description": s["description"],
             "enabled": s["name"] in enabled,
+            "coding_enabled": s["name"] in coding_enabled,
             "hidden": s["name"] in hidden,
         })
     return out
@@ -191,7 +192,16 @@ def skills_mode() -> str:
     return _load()["skills_mode"]
 
 
-def set_skill(name: str, enabled: bool | None = None, hidden: bool | None = None) -> None:
+def coding_skills_mode() -> str:
+    """coding 未单独配置时继承通用名单；空列表仍是有效的独立名单。"""
+    return "custom" if isinstance(_load()["skill_profiles"].get("coding"), list) else "inherit"
+
+
+def set_skill(
+    name: str, enabled: bool | None = None, hidden: bool | None = None, *, scope: str = "general",
+) -> None:
+    if scope not in {"general", "coding"}:
+        raise ValueError("scope 只能是 general 或 coding")
     with _LOCK:
         d = _load()
         if hidden is not None:
@@ -199,22 +209,42 @@ def set_skill(name: str, enabled: bool | None = None, hidden: bool | None = None
             hs.add(name) if hidden else hs.discard(name)
             d["skills_hidden"] = sorted(hs)
         if enabled is not None:
-            if d["skills_mode"] != "custom":
-                # 第一次动 → 把当前(default 语义下的)启用集固化成显式白名单
-                d["skills_enabled"] = sorted(_base_enabled_set(_available_names()))
-                d["skills_mode"] = "custom"
-            es = set(d["skills_enabled"])
-            es.add(name) if enabled else es.discard(name)
-            d["skills_enabled"] = sorted(es)
+            available = _available_names()
+            if scope == "coding":
+                # 首次改单个 coding Skill 时，把当前通用名单复制为独立配置，避免意外清空。
+                saved = d["skill_profiles"].get("coding")
+                es = set(saved) if isinstance(saved, list) else _global_enabled_set(d, available)
+                es.add(name) if enabled else es.discard(name)
+                profiles = dict(d["skill_profiles"])
+                profiles["coding"] = sorted(es)
+                d["skill_profiles"] = profiles
+            else:
+                if d["skills_mode"] != "custom":
+                    # 第一次动 → 把当前(default 语义下的)启用集固化成显式白名单
+                    d["skills_enabled"] = sorted(_base_enabled_set(available))
+                    d["skills_mode"] = "custom"
+                es = set(d["skills_enabled"])
+                es.add(name) if enabled else es.discard(name)
+                d["skills_enabled"] = sorted(es)
         _save(d)
 
 
 def reset_skills() -> None:
-    """技能回到"跟随默认(通常全量)",清掉显式白名单;隐藏保留。"""
+    """通用 Skill 回到"跟随默认(通常全量)",清掉显式白名单;隐藏保留。"""
     with _LOCK:
         d = _load()
         d["skills_mode"] = "default"
         d["skills_enabled"] = []
+        _save(d)
+
+
+def reset_coding_skills() -> None:
+    """Git 编程项目重新继承通用 Skill 名单。"""
+    with _LOCK:
+        d = _load()
+        profiles = dict(d["skill_profiles"])
+        profiles.pop("coding", None)
+        d["skill_profiles"] = profiles
         _save(d)
 
 
@@ -388,20 +418,17 @@ def web_providers_raw() -> dict[str, dict]:
     return dict(_load()["web_providers"])
 
 
-def _deepest_path_value(mapping: dict, cwd: str | None):
-    """取 cwd 的最深祖先配置；worktree 会自然继承其项目根配置。"""
+def _is_git_workspace(cwd: str | None) -> bool:
+    """目录或任一父目录存在 Git 元数据；兼容主仓和 linked worktree 的 .git 文件。"""
     if not cwd:
-        return None
+        return False
     try:
-        here = Path(cwd).resolve()
+        here = Path(cwd).expanduser().resolve()
     except OSError:
-        return None
-    hits = []
-    for raw, value in mapping.items():
-        base = Path(str(raw)).expanduser()
-        if base == here or base in here.parents:
-            hits.append((len(str(base)), value))
-    return max(hits, default=(0, None))[1]
+        return False
+    if not here.is_dir():
+        return False
+    return any((path / ".git").exists() for path in (here, *here.parents))
 
 
 def effective_skills(
@@ -409,17 +436,12 @@ def effective_skills(
 ) -> list[str] | str | None:
     """传给 ClaudeAgentOptions.skills 的值。
 
-    普通聊天也会回退到 vococo 根目录，不能仅凭最终 cwd 判断它是编码会话；只有用户
-    明确选择项目目录或显式传入 cwd 的会话，才允许命中项目 profile。专用白名单保留
-    为最高优先级，兼容已有配置；随后按 `project_profiles` 找 profile 对应的白名单。
+    普通聊天虽会回退到 vococo 根目录，但不是项目会话。只有用户明确选择的 Git
+    工作区才加载 `coding` Profile；非 Git 目录和普通聊天仍走全局 Skill 配置。
     """
     d = _load()
-    if is_explicit_project:
-        names = _deepest_path_value(d["skills_by_project"], cwd)
-        if isinstance(names, list):
-            return list(names)
-        profile = _deepest_path_value(d["project_profiles"], cwd)
-        profile_skills = d["skill_profiles"].get(profile) if isinstance(profile, str) else None
+    if is_explicit_project and _is_git_workspace(cwd):
+        profile_skills = d["skill_profiles"].get("coding")
         if isinstance(profile_skills, list):
             return list(profile_skills)
     if d["skills_mode"] == "custom":

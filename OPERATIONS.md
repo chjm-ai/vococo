@@ -32,12 +32,11 @@ system prompt 的 append 块 + skill 描述是每轮都进的固定成本,长会
   ② `~/.claude/projects/<slug>/memory/MEMORY.md` 软链到 AI_BRAIN 主库 → 跳过 `<memory_index>`
   全文,只留一句指针。两处合计曾每轮白烧约 6.5k token。判定都以 `realpath` 相同为准,
   不是同一份文件照旧注入,不会把索引弄丢。
-- **skill 白名单可以按项目收敛**:`data/web_settings.json` 的 `skills_by_project`
-  (`项目绝对路径 → skill 名列表`)优先级最高，按路径祖先匹配，主仓库配一条所有 worktree 自动继承。
-  新配置可用 `skill_profiles` (`profile → skill 名列表`) + `project_profiles` (`项目路径 → profile`)
-  表达复用 profile；只有用户明确选中的项目目录才会匹配 profile，普通聊天即使运行时回退到 vococo
-  cwd 也仍走全局 `skills_enabled`。每个 skill 的 name+description 都逐字进 system prompt，
-  目前没有设置页 UI，直接改 JSON；改完下一轮生效(设置每轮重读)。
+- **显式 Git 项目自动加载 coding Profile**:`data/web_settings.json` 的 `skill_profiles.coding`
+  是编码 Skill 白名单。用户明确选择的目录或后台任务显式 cwd，只要自身或父目录含 `.git`
+  （主仓 `.git` 目录、linked worktree 的 `.git` 文件均可）就自动命中；不再维护项目路径白名单。
+  普通聊天即使运行时回退到 vococo cwd 也仍走全局 `skills_enabled`。每个 skill 的 name+description
+  都逐字进 system prompt，目前没有设置页 UI，直接改 JSON；改完下一轮生效(设置每轮重读)。
 - **外部 MCP 按任务加载**:外部 server 的 `enabled` 只是总开关；日常不挂。明确查询/操作
   Lemlist、DataForSEO 或 GA4 时才为该轮加载相应 server，短时「继续」可续接；`set_external_mcp`
   的手动开关只作用当前会话。禁止恢复旧的“关键词命中后持久化开启全部 MCP”逻辑。

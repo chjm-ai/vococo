@@ -3,7 +3,7 @@
 // 与内联脚本同属全局作用域(无构建步骤),加载顺序见 index.html。
 
 // ── 设置(MCP / 技能 / 记忆 / 人设)────────────────────────────────────────
-const SET = { data:null, tab:"mcp", skq:"", mcpFormOpen:false, modelFormOpen:false, providerFormOpen:false };
+const SET = { data:null, tab:"mcp", skq:"", skScope:"general", mcpFormOpen:false, modelFormOpen:false, providerFormOpen:false };
 $("#settingsBtn").innerHTML = ic("gear");
 
 async function openSettings(){
@@ -485,23 +485,33 @@ async function saveProviderForm(){
 
 // ── 技能分区 ──────────────────────────────────────────────────────────────
 function renderSkillPane(){
-  const sk=SET.data.skills;
+  const sk=SET.data.skills, scope=SET.skScope;
   const q=SET.skq.toLowerCase();
   let items=sk.items.slice();
   if(q) items=items.filter(x=>x.name.toLowerCase().includes(q)||(x.description||"").toLowerCase().includes(q));
   // 未隐藏在前,隐藏的沉底
   items.sort((a,b)=>(a.hidden?1:0)-(b.hidden?1:0));
-  const onCount=sk.items.filter(x=>x.enabled).length;
+  const enabledKey=scope==="coding"?"coding_enabled":"enabled";
+  const onCount=sk.items.filter(x=>x[enabledKey]).length;
+  const coding=scope==="coding";
+  const mode=coding?sk.coding_mode:sk.mode;
+  const title=coding?"Git 编程项目":"通用会话";
+  const desc=coding
+    ? "只在用户明确选择 Git 仓库时加载。与通用会话名单独立，避免无关 Skill 占用上下文。"
+    : "用于普通聊天和非 Git 目录。关闭 = 不挂给 AI(省 token、不会被调用);隐藏 = 仅在此列表折叠。";
   let h='<h3>'+ic("zap")+'技能 Skills</h3>'+
-    '<p class="shint">关闭 = 不挂给 AI(省 token、不会被调用);隐藏 = 仅在此列表折叠。共 '+sk.items.length+' 个,已开启 '+onCount+' 个。'+
-    (sk.mode==="custom"?'<b>(自定义名单)</b>':'<b>(跟随默认)</b>')+'</p>';
+    '<div class="skScope"><button class="'+(!coding?"active":"")+'" data-skscope="general">通用会话</button>'+
+    '<button class="'+(coding?"active":"")+'" data-skscope="coding">Git 编程项目</button></div>'+
+    '<p class="shint">'+desc+' 共 '+sk.items.length+' 个，已开启 '+onCount+' 个。'+
+    (mode==="custom"?'<b>(独立名单)</b>':'<b>(继承通用名单)</b>')+'</p>';
   h+='<div class="skbar"><div class="sksearch">'+ic("search")+'<input id="skSearch" placeholder="搜索技能…" value="'+esc(SET.skq)+'"></div>'+
-     '<button class="btn ghost sm" id="skReset">恢复默认名单</button></div>';
+     '<button class="btn ghost sm" id="skReset">'+(coding?"改为继承通用":"恢复默认名单")+'</button></div>';
   if(!items.length){ h+='<div class="setempty">没有匹配的技能</div>'; }
   items.forEach(x=>{
+    const enabled=!!x[enabledKey];
     const acts='<button class="miniact'+(x.hidden?" on":"")+'" data-skhide="'+esc(x.name)+'">'+(x.hidden?"显示":"隐藏")+'</button>'+
-      '<label class="sw"><input type="checkbox" data-sken="'+esc(x.name)+'"'+(x.enabled?" checked":"")+'><span class="track"></span></label>';
-    h += settingsRow("data-sk", x.name, esc(x.name), x.description?esc(x.description):"", !x.enabled||x.hidden, acts);
+      '<label class="sw"><input type="checkbox" data-sken="'+esc(x.name)+'"'+(enabled?" checked":"")+'><span class="track"></span></label>';
+    h += settingsRow("data-sk", x.name, esc(x.name), x.description?esc(x.description):"", !enabled||x.hidden, acts);
   });
   $("#setPane").innerHTML=h;
   bindSkillPane();
@@ -509,16 +519,22 @@ function renderSkillPane(){
 function bindSkillPane(){
   const s=$("#skSearch");
   if(s){ s.oninput=()=>{ SET.skq=s.value; const pos=s.selectionStart; renderSkillPane(); const n=$("#skSearch"); if(n){ n.focus(); n.setSelectionRange(pos,pos); } }; }
+  $("#setPane").querySelectorAll("[data-skscope]").forEach(b=>{
+    b.onclick=()=>{ SET.skScope=b.dataset.skscope; renderSkillPane(); };
+  });
   $("#skReset").onclick=async()=>{
-    await api("/settings/skills/reset",{method:"POST"});
+    const path=SET.skScope==="coding"?"/settings/skills/coding/reset":"/settings/skills/reset";
+    await api(path,{method:"POST"});
     const r=await api("/settings"); SET.data=await r.json(); renderSkillPane();
   };
   $("#setPane").querySelectorAll("[data-sken]").forEach(inp=>{
     inp.onchange=async()=>{
-      const name=inp.dataset.sken, on=inp.checked;
-      const r=await api("/settings/skill",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,enabled:on})});
-      const d=await r.json(); SET.data.skills.mode=d.mode||SET.data.skills.mode;
-      const it=SET.data.skills.items.find(x=>x.name===name); if(it)it.enabled=on;
+      const name=inp.dataset.sken, on=inp.checked, scope=SET.skScope;
+      const r=await api("/settings/skill",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,enabled:on,scope})});
+      const d=await r.json();
+      SET.data.skills.mode=d.mode||SET.data.skills.mode;
+      SET.data.skills.coding_mode=d.coding_mode||SET.data.skills.coding_mode;
+      const it=SET.data.skills.items.find(x=>x.name===name); if(it)it[scope==="coding"?"coding_enabled":"enabled"]=on;
       renderSkillPane();
     };
   });
