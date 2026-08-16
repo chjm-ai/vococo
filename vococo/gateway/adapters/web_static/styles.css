@@ -416,6 +416,11 @@
   .srow .miniact.danger:hover{color:var(--err);background:rgba(209,103,74,.12)}
   .srow.off .sname{color:var(--dim)}
 
+  /* 技能作用范围:通用会话 / 明确选择的 Git 编程项目 */
+  .skScope{display:flex;gap:4px;margin:12px 0 8px;padding:3px;background:var(--panel2);border-radius:9px;width:max-content}
+  .skScope button{padding:5px 9px;border-radius:7px;color:var(--dim);font-size:12px;transition:background .15s,color .15s}
+  .skScope button.active{background:var(--panel);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+
   /* 技能搜索框 + 计数 */
   .skbar{display:flex;align-items:center;gap:8px;margin-bottom:6px}
   .sksearch{flex:1;display:flex;align-items:center;gap:7px;background:var(--panel2);
