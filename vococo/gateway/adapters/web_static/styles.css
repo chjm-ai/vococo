@@ -253,8 +253,8 @@
   .crongrp:focus-visible{outline:1px solid var(--accent);outline-offset:-1px}
   /* 项目拖拽排序:可拖起手型,拖起半透明,悬停目标高亮上边框示意插入位置 */
   .projgrp[draggable="true"]{cursor:grab}
-  .projgrp.dragging{opacity:.4}
-  .projgrp.dragover{box-shadow:inset 0 2px 0 var(--accent)}
+  .projgrp.dragging,.conv.dragging{opacity:.4}
+  .projgrp.dragover,.conv.dragover{box-shadow:inset 0 2px 0 var(--accent)}
   .conv.ingroup{margin-left:12px}   /* 分组下的会话缩进,体现层级 */
   /* 「展开更多」:分组超过 5 条时的第 6 行,颜色比普通会话行淡一档 */
   .conv.convmore{color:var(--dim2);font-size:13px}

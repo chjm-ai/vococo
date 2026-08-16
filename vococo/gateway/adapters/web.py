@@ -1076,6 +1076,22 @@ class WebAdapter:
 
     @_authed
     @_json_body
+    async def _handle_cron_reorder(self, request: web.Request, body: dict) -> web.Response:
+        """定时任务拖拽排序:body={"order": [job_id, ...]},按新顺序整体覆盖 cron_jobs.json。"""
+        from ...cron import scheduler
+
+        order = body.get("order")
+        if not isinstance(order, list):
+            return web.json_response({"error": "order 必须是数组"}, status=400)
+        jobs = scheduler.load_jobs()
+        by_id = {j["id"]: j for j in jobs}
+        reordered = [by_id[jid] for jid in order if jid in by_id]
+        remaining = [j for j in jobs if j["id"] not in set(order)]
+        scheduler.save_jobs(reordered + remaining)
+        return web.json_response({"ok": True})
+
+    @_authed
+    @_json_body
     async def _handle_cron_delete(self, request: web.Request, body: dict) -> web.Response:
         from ...cron import scheduler
 
@@ -2266,6 +2282,7 @@ class WebAdapter:
                 web.post("/cron/jobs/create", self._handle_cron_create),
                 web.post("/cron/jobs/update", self._handle_cron_update),
                 web.post("/cron/jobs/enable", self._handle_cron_set_enabled),
+                web.post("/cron/jobs/reorder", self._handle_cron_reorder),
                 web.post("/cron/jobs/delete", self._handle_cron_delete),
                 web.get("/system/tasks", self._handle_system_tasks),
                 web.get("/system/tasks/detail", self._handle_system_task_detail),
