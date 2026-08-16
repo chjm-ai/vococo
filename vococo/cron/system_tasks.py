@@ -58,6 +58,18 @@ _SCRIPT_EXTS = (".sh", ".py", ".zsh", ".bash", ".js", ".mjs", ".rb", ".pl", ".co
 _REDIRECT_RE = re.compile(r">>?\s*(/\S+)")
 _WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"]
 
+# launchd Label → 中文显示名;未收录的 label 原样展示
+_DISPLAY_NAMES: dict[str, str] = {
+    "com.claude-to-im.bridge": "Claude 消息桥接",
+    "com.cloudflared-obsidian": "Cloudflared 隧道",
+    "com.cloudflared-health": "隧道健康检查",
+    "com.wesley.calctld": "日历权限守护",
+    "com.wesley.cli-proxy-api": "AI 代理转发",
+    "com.wesley.personal-audio": "语音技能守护",
+    "com.wesley.icloud-monitor": "iCloud 同步监控",
+    "com.wesley.xiaoyuzhou-monitor": "小宇宙播客监控",
+}
+
 
 def hostname() -> str:
     name = socket.gethostname()
@@ -120,7 +132,7 @@ def _list_launchd_tasks() -> list[dict]:
             "id": f"launchd:{label}",
             "source": "launchd",
             "task_type": task_type,
-            "name": label,
+            "name": _DISPLAY_NAMES.get(label, label),
             "schedule_desc": schedule_desc,
             "command": command,
             "script_path": _extract_script_path(script_tokens),
