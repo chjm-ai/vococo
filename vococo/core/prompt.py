@@ -93,6 +93,21 @@ def _read_clipped(path, hint: str) -> str:
     return text
 
 
+def _load_global_agents() -> str:
+    """读 AI_BRAIN/AGENTS.md 作为跨 harness 全局约定。缺失则跳过。
+
+    这是用户亲手维护的权威指令(沟通风格、中立纪律、记忆沉淀规范等),
+    各 harness 共用,不套数据围栏。
+    """
+    text = _read_clipped(config.AI_BRAIN_DIR / "AGENTS.md", "AI_BRAIN/AGENTS.md")
+    if not text:
+        return ""
+    return (
+        "\n\n=== 全局约定(来自 AI_BRAIN/AGENTS.md,各 harness 共用)===\n"
+        f"{text}"
+    )
+
+
 def _load_user_profile() -> str:
     """读 AI_BRAIN/USER.md 作为长期画像。缺失则跳过。"""
     text = _read_clipped(config.AI_BRAIN_DIR / "USER.md", "AI_BRAIN/USER.md")
@@ -235,9 +250,10 @@ def build_system_prompt(cwd: str | None = None, cache_key: str | None = None) ->
             _APPEND_CACHE.move_to_end(cache_key)
             return {"type": "preset", "preset": "claude_code", "append": text}
         # AGENTS.md 变了 → 落到下方重新组装,并覆盖该 key 的快照
+    global_agents = _load_global_agents()
     data_blocks = _load_user_profile() + _load_memory_index(cwd)
     fence = f"\n\n=== 参考数据围栏 ===\n{_MEMORY_FENCE}" if data_blocks else ""
-    append = PERSONA + fence + data_blocks + _load_project_agents(cwd)
+    append = PERSONA + global_agents + fence + data_blocks + _load_project_agents(cwd)
     if cache_key:
         _APPEND_CACHE[cache_key] = (_agents_mtime(cwd), append)
         while len(_APPEND_CACHE) > _APPEND_CACHE_MAX:
