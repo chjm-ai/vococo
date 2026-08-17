@@ -696,6 +696,11 @@
   .turnfoot .tfbtn:disabled{opacity:.3;cursor:default}
   .turnfoot .tfbtn .ic{width:14px;height:14px}
   .turnfoot .tfregen:disabled .ic{animation:spin .8s linear infinite}
+  /* 重启中断的回复:「继续生成」按钮(见 buildTurnFoot interrupted=true)要高亮醒目 */
+  .turnfoot .tfbtn.tfrgen-resume{width:auto;padding:0 10px;height:26px;font-size:12.5px;font-weight:600;
+    color:#fff;background:var(--accent);opacity:1;border-radius:8px;margin-left:4px}
+  .turnfoot .tfbtn.tfrgen-resume:hover{background:var(--accent2);opacity:1}
+  .turn-block.interrupted .bubble{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
 
   /* 图片大图查看器:点聊天里的图放大,支持上/下一张与关闭 */
   #imgViewer{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.88)}

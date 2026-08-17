@@ -657,7 +657,13 @@ class WebAdapter:
             await resp.write(b": connected\n\n")
             # 不带 SSE id(不占游标、不参与去重):告诉前端这次连的是哪个进程实例,
             # 前端跟自己记的上一个值一比对,变了就知道服务端重启过、缓冲补不全了。
-            hello = json.dumps({"type": "hello", "boot_id": self._boot_id}, ensure_ascii=False)
+            # 顺带带上当前 seq:重启后编号从 0 重新数,前端拿到新进程的编号起点,
+            # 把旧的去重游标(上次进程的最大编号)重置掉——否则新事件 id 全小于旧游标,
+            # 被前端当"补发的旧事件"丢弃,页面就此静默断流,只能靠手动刷新救回来。
+            hello = json.dumps(
+                {"type": "hello", "boot_id": self._boot_id, "seq": self._seq},
+                ensure_ascii=False,
+            )
             await resp.write(f"data: {hello}\n\n".encode("utf-8"))
             # 首连/重连都两阶段恢复「进行中那一轮」——先秒推状态帧(几十字节,让用户立刻看到
             # "还在跑、到哪步",不会误发),内容帧随后慢补。旧历史仍走 /history 拉,不在此重放。
