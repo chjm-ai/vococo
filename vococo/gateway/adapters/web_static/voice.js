@@ -1638,6 +1638,7 @@ void main(){
 
     handsFreeActive = true;
     startKeepAliveAudio();  // 通话保活音轨:锁屏防挂起(见函数注释)
+    startKeepAliveVideo();  // 通话防熄屏视频:阻止 iOS 自动锁屏(见函数注释)
     acquireWakeLock();      // 通话真正开始:申请屏幕常亮,防自动熄屏(见函数注释)
     orbConnecting = false;
     setOmniConnStatus("connected");
@@ -2889,6 +2890,7 @@ void main(){
     omniUserBubble = null; omniUserBubbleText = ""; omniUserSentTs = 0;
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
     stopKeepAliveAudio();  // 通话已收线,保活音轨一并停掉(锁屏防挂起)
+    stopKeepAliveVideo();  // 通话已结束,防熄屏视频一并停掉
     releaseWakeLock();     // 通话已结束,释放常亮锁让系统正常熄屏节能
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
     setOmniAudioMuted(true, "hangup");  // 挂断收口:输出通道回默认静音态
@@ -3045,6 +3047,7 @@ void main(){
   document.addEventListener("visibilitychange", ()=>{
     if(document.hidden) return;
     if(handsFreeActive) acquireWakeLock();  // 通话激活期间回前台:重拿常亮锁
+    if(handsFreeActive) startKeepAliveVideo();  // 顺带恢复防熄屏视频
     // 切回前台时可能刚经历过电话打断/蓝牙断开:怀疑麦克风有问题
     if(handsFreeActive) suspectMicProblem("vischange");
     // P0 修复(2026-07-27):切后台/锁屏期间 SSE 事件可能已经到了但没被处理,
@@ -3082,6 +3085,44 @@ void main(){
     try{ keepAliveEl.src = ""; }catch(e){}
     keepAliveEl = null;
   }
+
+  // ── 通话防熄屏视频(iOS 自动锁屏兜底,2026-08-17 真机反馈后落地)──────────
+  // wakeLock 在 iOS PWA 上受 WebKit bug 254545 影响(request 成功也照样熄屏,
+  // iOS 18.4 才修),而 iOS 对【正在播放的 video】豁免自动锁屏(NoSleep.js 同款
+  // hack),静音 audio 不行——audio 只能保"锁了屏之后页面不冻结",防不了
+  // "系统自动锁屏"本身。因此通话期间再循环播放一条 1s 黑帧静音 mp4
+  // (muted+playsinline+1px 隐藏元素,无听感无画面),让 iOS 认为页面有视频
+  // 在播、不自动熄屏。三层分工互不替代:wakeLock(18.4+ 生效,最省电)→
+  // video(防自动熄屏)→ audio(锁屏后保活)。
+  // 注意:data URI 播放依赖 web.py 的 CSP 已放行 media-src data:(2026-08-17 加)。
+  // 副作用:极少机型可能短暂出现媒体播放指示,无害。
+  const KEEP_ALIVE_MP4 = "data:video/mp4;base64,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";
+  let keepAliveVideo = null;
+  function startKeepAliveVideo(){
+    if(keepAliveVideo){ try{ keepAliveVideo.play().catch(()=>{}); }catch(e){} return; }
+    const v = document.createElement("video");
+    v.loop = true; v.muted = true; v.preload = "auto";
+    v.setAttribute("playsinline", "");
+    v.setAttribute("webkit-playsinline", "");
+    // 隐藏但可播放:display:none 会停播,这里压到 1px + 移出视口
+    v.style.cssText = "position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none";
+    v.src = KEEP_ALIVE_MP4;
+    v.addEventListener("error", ()=>{ vdbg("keepalive-video.err"); keepAliveVideo = null; });
+    keepAliveVideo = v;
+    const p = v.play();
+    if(p && p.catch) p.catch(err => { vdbg("keepalive-video.playfail", String(err)); keepAliveVideo = null; });
+    vdbg("keepalive-video.on");
+  }
+  function stopKeepAliveVideo(){
+    if(!keepAliveVideo) return;
+    try{ keepAliveVideo.pause(); }catch(e){}
+    try{ keepAliveVideo.src = ""; }catch(e){}
+    keepAliveVideo = null;
+  }
+  // iOS 要求媒体播放由用户手势发起:建连链路里的直接调用若因 async 丢失
+  // 手势窗口被拒,这里在每次触摸屏幕时顺手恢复(幂等,已在播则 no-op)。
+  document.addEventListener("pointerdown", ()=>{ if(handsFreeActive) startKeepAliveVideo(); });
+  document.addEventListener("touchstart", ()=>{ if(handsFreeActive) startKeepAliveVideo(); });
 
   // ── 视图切换入口(统一对话视图复用主会话 composer)────────────────────────
   // initOnce:原页面这些初始化(常驻任务播报订阅/拉历史/挑一次交互模式)靠整页

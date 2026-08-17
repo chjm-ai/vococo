@@ -69,6 +69,7 @@ _CSP = (
     "default-src 'self'; "
     "script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'; "
+    "media-src 'self' data: blob:; "  # 保活音轨/防熄屏视频走 data: 内联(voice.js),blob: 给 WebRTC 兜底
     "img-src 'self' data: blob: https:; "
     "frame-src 'self' blob: https:; "
     "connect-src 'self'; "
