@@ -612,7 +612,7 @@ async function openFileEditor(rel, group, isNew){
     try{ const rr=await api("/settings"); SET.data=await rr.json(); }catch(e){}
   };
 }
-// 会话「更多」浮层菜单(单例):点 ⋯ 弹出,目前只放「删除」,点即执行(不再二次确认)
+// 会话「更多」浮层菜单(单例):点 ⋯ 弹出,重命名/置顶/归档/复制/删除,点即执行(不再二次确认)
 let convMenuEl=null, convMenuBtn=null;
 function closeConvMenu(){
   if(convMenuBtn){ convMenuBtn.classList.remove("on"); convMenuBtn=null; }
@@ -682,6 +682,9 @@ function openConvMenu(btn, conv, slim){
     const convObj=findConv(conv);
     const isMain=conv==="main";
     const isPinned=!!(convObj&&convObj.pinned);
+    const ren=el("button","cmitem"); ren.innerHTML=ic("edit")+" 重命名";
+    ren.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); renameConv(conv); };
+    m.append(ren);
     if(!isMain){
       const pin=el("button","cmitem"); pin.innerHTML=ic("pin")+(isPinned?" 取消置顶":" 置顶");
       pin.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); pinConv(conv, !isPinned); };
@@ -790,6 +793,23 @@ function delConfirmChoice(bits){
     m.onclick=e=>{ if(e.target===m) done("cancel"); };  // 点遮罩 = 取消
     m.hidden=false;
   });
+}
+async function renameConv(conv){
+  const c=findConv(conv); if(!c) return;
+  const title=(prompt("重命名会话", c.title||"")||"").trim();
+  if(!title || title===c.title) return;
+  const prev=c.title;
+  c.title=title; renderConvs();   // 乐观更新,立即重绘
+  // 纯本地会话(从未发过消息)服务端没有记录,改名只停在本地——发出第一条消息后
+  // conv 会转正成新 key(见 composer.js sendMsg 的 wasLocal 分支),这里存了也白存
+  if(String(conv).startsWith("local-")) return;
+  try{
+    const r=await api("/conv/rename",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,title})});
+    const j=await r.json().catch(()=>({}));
+    if(!j.ok) throw new Error();
+  }catch(e){
+    c.title=prev; renderConvs(); alert("重命名失败");
+  }
 }
 async function duplicateConv(conv){
   try{
