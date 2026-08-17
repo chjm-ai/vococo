@@ -62,7 +62,9 @@ function addBubble(who, text, imgs, auds){
 // AI 消息底部一行:回复时间(灰色小字)+ 复制 + 重新生成。turnId 为空(如命令回复/
 // cron 推送这类不走 Sink.done 的消息)时不挂重新生成按钮——没有 turn id 无法安全定位
 // 该删哪一行。isLast 由调用方按"是否本会话最新一轮"传入,只有它为真时才挂该按钮。
-function buildTurnFoot(conv, turnId, text, ts, isLast){
+// interrupted=true:这条是被服务重启打断的回复,按钮换成醒目的「继续生成」(同一套
+// /turn/regenerate 重发链路,视觉上给用户一个明确的恢复入口,而不是让他重打一遍)。
+function buildTurnFoot(conv, turnId, text, ts, isLast, interrupted){
   const foot=el("div","turnfoot");
   const tm=el("span","tftime"); tm.textContent=ts?fmtTime(ts):"";
   foot.append(tm);
@@ -71,9 +73,12 @@ function buildTurnFoot(conv, turnId, text, ts, isLast){
   cp.onclick=()=>copyMsgText(cp, text||"");
   foot.append(cp);
   if(isLast && turnId!=null){
-    const rg=el("button","tfbtn tfregen"); rg.type="button"; rg.title="重新生成"; rg.setAttribute("aria-label","重新生成");
-    rg.innerHTML=ic("refresh");
-    rg.onclick=()=>regenerateTurn(conv, turnId, rg);
+    const rg=el("button","tfbtn tfregen"+(interrupted?" tfrgen-resume":""));
+    rg.type="button";
+    rg.title=interrupted?"服务重启中断了这条回复,点击继续生成":"重新生成";
+    rg.setAttribute("aria-label",rg.title);
+    rg.innerHTML=interrupted?"🔄 继续生成":ic("refresh");
+    rg.onclick=()=>regenerateTurn(conv, turnId, rg);   // 手动点击要报错提示,不传 auto
     foot.append(rg);
   }
   return foot;
@@ -88,33 +93,54 @@ function copyMsgText(btn, text){
 // 重新生成:删掉服务端最后一轮(仅允许对着最新一轮操作,见 delete_last_turn),
 // 保留原有的用户气泡不动,原地起一个新的流式回复气泡再把同一句话发一遍——
 // 视觉上等价于"AI 的这个回答被替换了",而不是在下面又新开一轮对话。
-async function regenerateTurn(conv, turnId, btn){
-  if(btn.disabled) return;
-  btn.disabled=true;
+// auto=true 是重启后的自动恢复(见 maybeAutoResume):btn 可以为 null(无按钮可点),
+// 失败静默 —— 双标签页/用户已发新消息等竞态下 409 不弹提示,气泡还在用户可手动点。
+async function regenerateTurn(conv, turnId, btn, auto){
+  if(btn && btn.disabled) return;
+  if(btn) btn.disabled=true;
   let data=null;
   try{
     const r=await api("/turn/regenerate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,id:turnId})});
     data=await r.json().catch(()=>null);
   }catch(e){
-    btn.disabled=false;
+    if(auto) return;
+    if(btn) btn.disabled=false;
     addBubble("ai","⚠️ 重新生成失败:"+e.message);
     return;
   }
   if(!data || !data.ok){
-    btn.disabled=false;
+    if(auto) return;
+    if(btn) btn.disabled=false;
     addBubble("ai","⚠️ "+((data&&data.error)||"重新生成失败,可能不是最新一条回复"));
     return;
   }
   delete S.histCache[conv]; idbDel("hist:"+conv);
   if(S.conv===conv){
-    const row=btn.closest(".row"); if(row) row.remove();
+    if(btn){
+      const row=btn.closest(".row"); if(row) row.remove();
+    }else{
+      // 自动恢复(无按钮可点):按 turn id 定位消息块,删掉 AI 回复气泡(用户气泡原样保留)
+      const blk=document.querySelector('#wrap .turn-block[data-tid="'+turnId+'"]');
+      if(blk){ const rows=blk.querySelectorAll(".row"); const r=rows[rows.length-1]; if(r) r.remove(); }
+    }
     S.localSent=true;   // 用户气泡原样保留,避免下面 /send 回显的 "user" 事件又重复冒一条
     ensureStream();
   }
   try{
     await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({conv, text:data.text, images:[], audios:[], files:[]})});
-  }catch(e){ addBubble("ai","⚠️ 发送失败:"+e.message); }
+  }catch(e){ if(!auto) addBubble("ai","⚠️ 发送失败:"+e.message); }
+}
+// 重启中断的回复 → 自动继续生成:该会话最新一条带 interrupted 标记(服务端
+// recover_interrupted_turns 收尾时写入)就自动重发同一句话,实现接近语音通话的
+// "无感恢复"。S.autoResumed 每会话只触发一次;用户已在这之后发了新消息(该轮不再
+// 是最新)→ /turn/regenerate 409 → 静默放弃,气泡保留,用户可手动点「继续生成」。
+function maybeAutoResume(conv, turns){
+  if(!turns || !turns.length || !conv || S.autoResumed[conv]) return;
+  const last=turns[turns.length-1];
+  if(!last || last.pending || !(last.events||[]).some(x=>x.type==="interrupted")) return;
+  S.autoResumed[conv]=true;
+  setTimeout(()=>regenerateTurn(conv, last.id, null, true), 300);  // 让气泡先渲染出来再恢复
 }
 // 带鉴权头拉图并显示;token 只在头里传,不进 URL(不泄露到日志/历史/Referer)
 async function loadAuthedImg(im, url){
@@ -360,10 +386,18 @@ function markLive(){
 }
 function handleEvent(e){
   // 服务端进程重启标识:变了说明断线期间进程重启过,环形缓冲/_live 全清空了,
-  // 靠事件补发这条路救不回来 —— 主动整体核对一次(侧栏 + 当前会话历史),别等用户自己发现内容旧了
+  // 靠事件补发这条路救不回来 —— 主动整体核对一次(侧栏 + 当前会话历史),别等用户自己发现内容旧了。
+  // 关键:重启后服务端事件编号从 0 重新数,而 S.lastId 还停在旧进程的最大编号上,
+  // 不重置的话新事件 id 全 ≤ 旧游标,被 onmessage 的去重判断当"补发的旧事件"丢弃,
+  // 页面就此静默断流 —— 这就是"重启后必须手动刷新才能继续对话"的根因。
   if(e.type==="hello"){
     const prev=S.bootId; S.bootId=e.boot_id;
-    if(prev && prev!==e.boot_id){ loadConvs(); reloadHistory(true); }
+    if(prev && prev!==e.boot_id){
+      if(typeof e.seq==="number") S.lastId=e.seq; else S.lastId=0;  // 去重游标对齐新进程编号空间
+      if(S.es) S.es.lastId=null;                                    // Last-Event-ID 补发游标同样作废
+      S.autoResumed={};                                             // 新进程再给一次自动恢复机会
+      loadConvs(); reloadHistory(true);
+    }
     return;
   }
   // 后台标题总结完成 → 刷新侧边栏/标题栏(loadConvs 会顺带同步顶栏标题),无论前后台会话

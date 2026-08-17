@@ -25,6 +25,9 @@ def test_recover_interrupted_turns_finishes_pending_rows(isolated):
     assert row["pending"] is False
     assert row["assistant"] == "⚠️ 服务重启导致本轮回复中断，请重新发送。"
     assert "draft" not in row
+    # 中断标记要写进 events(/history 透传):前端据此识别「被重启打断的回复」,
+    # 自动/一键继续生成,而不是让用户手动重发
+    assert row["events"] == [{"type": "interrupted"}]
 
 
 def test_sessions_isolated_by_key(isolated):

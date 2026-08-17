@@ -1117,6 +1117,10 @@ function buildSysNote(text){
 // 删中间历史会打乱后续轮次的上下文连续性。
 function buildTurnBlock(t, conv, isLast){
   const wrap=el("div","turn-block");
+  // 服务重启打断的回复:服务端收尾时在 events 里写了 interrupted 标记(/history 透传),
+  // 这里识别出来给消息打上标记样式,foot 换成醒目的「继续生成」按钮(见 buildTurnFoot)
+  const interrupted=(t.events||[]).some(x=>x.type==="interrupted");
+  if(interrupted) wrap.classList.add("interrupted");
   if(t.user && t.user.startsWith(SYS_MARK)) wrap.append(buildSysNote(t.user.slice(SYS_MARK.length).trim()));
   else wrap.append(buildBubble("me", t.user, t.images, t.audios).row);
   if(!t.pending){
@@ -1132,7 +1136,7 @@ function buildTurnBlock(t, conv, isLast){
     // AI 主动发的图(send_image)不进 events 时间线,单独存在 t.ai_images——
     // 不贴回来的话,历史/刷新后这张图就只剩折叠指令卡里的文件名文字,看不到图。
     appendImgs(b, t.ai_images);
-    b.append(buildTurnFoot(conv, t.id, t.assistant, t.ts, isLast));
+    b.append(buildTurnFoot(conv, t.id, t.assistant, t.ts, isLast, interrupted));
     wrap.append(row);
   }else if(t.draft){
     // 进行中但后端正流式写 draft:用部分内容起底兜底,避免刷新后空白;
@@ -1180,6 +1184,7 @@ function renderTurns(turns, conv){
   });
   for(const node of existing.values()) node.remove();  // 剩下的是不在新列表里的旧轮(如清空会话)
   updateEmpty(); scrollDown(true);
+  maybeAutoResume(conv, turns);  // 最新一条是重启中断的回复 → 自动继续生成(幂等,见 stream.js)
 }
 // 工具卡片懒加载:整轮 events 只在用户点开这一轮里任意一张卡片时才拉一次(见 wireLazyToolCard)
 async function lazyFetchTurnEvents(ctx){

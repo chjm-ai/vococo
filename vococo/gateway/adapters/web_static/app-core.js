@@ -23,6 +23,7 @@ const S = {
   es: null,
   lastId: 0,            // 已处理的最大事件编号,用于断线重连后去重
   bootId: null,         // 服务端进程启动标识,变了说明重启过,断线补发这条路救不回来,得整体核对
+  autoResumed: {},      // conv → bool:重启中断的回复已自动触发过继续生成(每会话一次,防重复)
   models: {default:"", choices:[], efforts:{}},  // /models 拉到的可选模型及各模型思考深度
   model: "",            // 当前会话使用的模型(空=用默认)
   commands: [],          // /commands 拉到的系统斜杠命令清单 [{name,desc}]

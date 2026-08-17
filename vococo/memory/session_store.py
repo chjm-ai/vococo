@@ -310,12 +310,19 @@ def delete_last_turn(session_key: str, turn_id: int) -> str | None:
 
 
 def recover_interrupted_turns() -> int:
-    """将进程重启遗留的进行中回合收尾，避免前端永久显示加载中。"""
+    """将进程重启遗留的进行中回合收尾，避免前端永久显示加载中。
+
+    events 里写中断标记 [{"type":"interrupted"}]（/history 会透传给前端）:
+    前端据此识别「这条是被重启打断的回复」，自动/一键继续生成（复用
+    /turn/regenerate 把同一句话重发一遍），不用用户手动重打。
+    """
     c = _conn()
     message = "⚠️ 服务重启导致本轮回复中断，请重新发送。"
+    marker = json.dumps([{"type": "interrupted"}], ensure_ascii=False)
     cur = c.execute(
-        "UPDATE turns SET assistant_text=?, draft_text='', ts=? WHERE assistant_text=''",
-        (message, time.time()),
+        "UPDATE turns SET assistant_text=?, events=?, draft_text='', ts=? "
+        "WHERE assistant_text=''",
+        (message, marker, time.time()),
     )
     c.commit()
     return cur.rowcount
