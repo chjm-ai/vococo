@@ -27,9 +27,22 @@ config.py 路径/常量;providers.py 多供应商切换
 | 长期偏好、历史决策、过去聊过的事 | 先看已注入的 `MEMORY.md` 索引;需要细节时用 `recall_past` 或只读索引指向的单个文件。 |
 | 项目现状、运行命令、架构 | 先读 `README.md` 或本文件指向的单个文档;运维/排障才读 `OPERATIONS.md`,术语/安全判定才读 `CONTEXT.md`。 |
 
-人物资料以画像库为准,不要把称谓或同音别名当作另一个人。读取 iCloud 上的 AI_BRAIN 文件
-若遇到 `EINTR`/暂时不可读,应重试一次;仍失败就如实说明「资料暂时不可读」,不能据此
-推断画像不存在。回答只引用本轮实际读到的资料,不要补造细节。
+人物资料以画像库为准,不要把称谓或同音别名当作另一个人。回答只引用本轮实际读到的资料,
+不要补造细节。
+
+### AI_BRAIN 读不到时:是 TCC 权限,不是 iCloud 抖动(别重试)
+`~/AI_BRAIN` 软链到 iCloud。读它报 `Operation not permitted` 或 `Interrupted system
+call`(EINTR)时,**两种报错是同一个病的两副面孔:macOS TCC 权限。重试无效,重试 100 次
+也一样**——iCloud Drive 目录只能靠「完全磁盘访问」放行,不弹窗直接拒(EPERM);其余受保护
+目录(Desktop 等)系统想弹授权框,但 vococo 是 launchd 后台进程、没有 GUI 会话应答,超时
+被打断(EINTR)。不得据此推断画像不存在,要如实说「AI_BRAIN 读不到,是 TCC 权限问题」。
+
+修法:系统设置 → 隐私与安全性 → 完全磁盘访问权限,加 `/bin/zsh`(plist 的
+ProgramArguments[0],TCC 认的 responsible process),然后**必须整栈重启**才生效。
+⚠️ `restart_self` 修不好这个:它只换 python 那一层,而 launchd 直接拉起的
+zsh(run.sh:127 的 while 循环)会一直活着并带着授权前的旧 TCC 上下文,子进程全部继承。
+整栈重启要在终端跑 `launchctl kickstart -k gui/$(id -u)/com.vococo`;
+会话内跑会被 danger.py 的「禁止直接控制 vococo 正式进程」防线拦下(这是对的)。
 
 ## 安全模型(动手前必读)
 工具调用分三档,判定在 tools/danger.py(经 PreToolUse hook 生效):
