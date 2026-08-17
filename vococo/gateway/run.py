@@ -144,6 +144,10 @@ class GatewayRunner:
                 wt = session_store.get_worktree(key)
                 cwd_override = wt if wt and os.path.isdir(wt) else row["cwd"]
                 is_explicit_project_override = bool(row.get("cwd_explicit"))
+            # 人工续聊链路:用户手动给这个任务会话发消息,等于重新激活它——
+            # 自动取消归档(前端侧边栏按 archived 过滤,归档中的任务在
+            # 「工作中」视图下不可见,见 web_static/sidebar.js buildVoiceTaskRow)。
+            session_store.set_conv_archived(key, False)
         # 设置本轮路由上下文(供 ask_user 工具反问时找到该发给谁),随 contextvar 传入工具
         token = clarify.set_current(key, adapter, inc.chat_id)
         clarify.mark_active(key)  # 全局登记"我在跑了",供 restart_self 等查"还有谁没结束"

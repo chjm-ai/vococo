@@ -84,6 +84,10 @@ def _start_one(task: dict, turn_text: str | None = None) -> bool:
     task_id = task["id"]
     if not tasks.set_status(task_id, "running"):
         return False
+    # 任务重新激活(追问/续接/cron 再次触发)时自动取消归档——归档只在任务静默时
+    # 才有意义,重新开跑必须回到侧边栏可见,否则前端「工作中」过滤会藏掉它
+    # (见 web_static/sidebar.js buildVoiceTaskRow 的 convFilter 判定)。
+    session_store.set_conv_archived(tasks.session_key(task_id), False)
     _notify_activity(task_id)
     _running[task_id] = asyncio.create_task(_run(task_id, turn_text))
     return True
