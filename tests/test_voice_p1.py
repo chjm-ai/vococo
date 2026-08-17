@@ -1115,6 +1115,40 @@ async def test_web_manual_message_to_archived_task_clears_archived(voice_db, mon
     assert session_store.list_sessions("task:")[0]["archived"] is False
 
 
+@pytest.mark.anyio
+async def test_web_manual_message_to_archived_conv_clears_archived(voice_db, monkeypatch):
+    """人工链路同样作用于普通 web 会话(不止 task: 后台任务):用户手动给
+    已归档的网页对话发消息 → 自动取消归档(2026-08-17 实测 msvgphius97j
+    只修了 task: 前缀,普通 web: 会话漏了)。"""
+    from vococo.gateway.adapters.base import Incoming
+    from vococo.gateway.run import GatewayRunner
+
+    async def fake_converse(key, text, model, sink, **kw):
+        return None
+
+    monkeypatch.setattr(gateway_core, "converse", fake_converse)
+
+    key = config.resolve_session_key("web", "msvgphius97j")
+    session_store.start_turn(key, "问候")
+    session_store.set_conv_archived(key, True)
+    assert session_store.list_sessions("web:")[0]["archived"] is True
+
+    class StubAdapter:
+        platform = "web"
+
+        async def send(self, chat_id, text):
+            pass
+
+        def make_sink(self, chat_id):
+            return None
+
+    runner = GatewayRunner(adapters=[])
+    inc = Incoming(platform="web", chat_id="msvgphius97j", text="接着聊")
+    await runner._handle(StubAdapter(), inc)
+
+    assert session_store.list_sessions("web:")[0]["archived"] is False
+
+
 def test_reopen_after_terminal_reenables_start_bridge(voice_db):
     """任务终态后再被续接重开,start 桥接必须重新触发——否则前端侧边栏
     永远收不到"任务又开始跑了"的信号,行状态停在旧值。"""
