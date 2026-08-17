@@ -488,7 +488,16 @@ def clean_external_config(body: dict) -> tuple[dict, str | None]:
             return {}, "stdio 类型需要 command"
         raw_args = body.get("args")
         if isinstance(raw_args, str):
-            args = raw_args.split()
+            stripped = raw_args.strip()
+            if stripped.startswith("["):
+                import json as _json
+                try:
+                    parsed = _json.loads(stripped)
+                    args = [str(a) for a in parsed] if isinstance(parsed, list) else stripped.split()
+                except _json.JSONDecodeError:
+                    args = stripped.split()
+            else:
+                args = stripped.split()
         elif isinstance(raw_args, list):
             args = [str(a) for a in raw_args]
         else:
