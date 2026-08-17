@@ -1,11 +1,14 @@
 /* vococo Service Worker —— 两件事:
    1. Web Push 通知(iOS 16.4+ 装到主屏的 PWA 才收得到,后端 VAPID 推送唤醒本 worker);
    2. 应用外壳缓存(2026-07-23 提速):跨境隧道首字节要 1.5~3.5s、带宽 ~50KB/s,
-      把 / 和静态资源缓存在本机,打开秒出界面(stale-while-revalidate),后台
-      静默拉最新版;发现 / 变了就 postMessage 通知页面弹"点击刷新"。
-      /api /events /send 等动态接口一律不拦,照常走网络。 */
+      把 / 和静态资源缓存在本机,打开秒出界面,后台静默拉最新版;发现 / 变了就
+      postMessage 通知页面弹"点击刷新"。/api /events /send 等动态接口一律不拦,照常走网络。
+      2026-08-17:/ 从"缓存优先"改成"网络优先、超时退回缓存"——见下面 fetch 里的注释,
+      此前部署新版本后要连刷两次页面才真正生效,一次排查"重启后无感重连"的修复时
+      正被这层坑了一道(前端代码没变,是缓存了没刷新出来,误以为修复本身没生效)。 */
 
 const SHELL_CACHE = "vococo-shell-v4";
+const SHELL_NETWORK_TIMEOUT_MS = 1200;  // 超过此预算网络还没回应就退回缓存,不让跨境隧道用户干等
 // 只缓存这份白名单里的路径(按 pathname 匹配,?v= 版本参数算在完整 URL 里)
 // app-core/markdown/sidebar/settings/stream/composer/voice:2026-08-14 从 index.html 拆出的功能块
 const SHELL_PATHS = new Set([
@@ -41,8 +44,10 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin || !SHELL_PATHS.has(url.pathname)) return;
 
-  // stale-while-revalidate:有缓存立刻回缓存,同时后台拉网络更新缓存;
-  // 没缓存(首次)就等网络。网络层仍走浏览器 HTTP 缓存(ETag 304 白捡)。
+  // 拉网络 + 更新缓存;命中 / 且 ETag 变了就 postMessage 通知所有窗口弹刷新提示
+  // (两端 ETag 都由源站按内容哈希生成,直接比较即可判断内容是否真的变了)。
+  // 返回值:网络异常(断网/超时)给 undefined,让调用方退回缓存;服务端给出的响应
+  // (哪怕 404/500)原样透传——网络优先的本意就是信服务端当下的真实回答。
   const revalidate = (async () => {
     let resp;
     try { resp = await fetch(req); } catch (_) { return undefined; }
@@ -57,7 +62,6 @@ self.addEventListener("fetch", (event) => {
         .map((k) => cache.delete(k))
     );
     await cache.put(req, resp.clone());
-    // 首页内容变了 → 通知所有窗口弹刷新提示(ETag 比对,双方都由源站按内容哈希生成)
     if (url.pathname === "/" && cached) {
       const oldTag = cached.headers.get("ETag");
       const newTag = resp.headers.get("ETag");
@@ -68,19 +72,32 @@ self.addEventListener("fetch", (event) => {
     }
     return resp;
   })();
+  // 走哪条 respondWith 分支都不影响这个后台任务必须完整跑完(更新缓存、发通知)
   event.waitUntil(revalidate.then(() => {}, () => {}));
-  event.respondWith(
+
+  const cacheFallback = () =>
     caches
       .open(SHELL_CACHE)
       .then((c) => c.match(req))
-      .then(
-        (cached) =>
-          cached ||
-          revalidate.then(
-            (r) => r || new Response("offline", { status: 503 })
-          )
-      )
-  );
+      .then((cached) => cached || revalidate.then((r) => r || new Response("offline", { status: 503 })));
+
+  if (url.pathname === "/") {
+    // 网络优先、超时(SHELL_NETWORK_TIMEOUT_MS)退回缓存:保证【刷新一次】就拿到最新版本。
+    // 此前 / 也走缓存优先,会先吃到缓存里的旧 HTML(里面 <script> 引用的还是旧 ?v=哈希),
+    // 连带把旧 JS 也一起钉住——要连刷两次才真正生效。超时预算内网络没回应就照原样退回
+    // 缓存,不让跨境隧道用户干等;网络请求仍在 waitUntil 里跑完更新缓存供下次刷新用。
+    event.respondWith(
+      Promise.race([
+        revalidate,
+        new Promise((resolve) => setTimeout(resolve, SHELL_NETWORK_TIMEOUT_MS)),
+      ]).then((resp) => resp || cacheFallback())
+    );
+    return;
+  }
+  // 其余路径(?v=内容哈希 的版本化资源、manifest/favicon/icons 等):维持缓存优先——
+  // 只要 / 能一次刷新就拿到最新的 ?v= 引用,这些路径天然没有"刷新也拿不到新版"的问题,
+  // 缓存优先换来的秒开体验没理由放弃。
+  event.respondWith(cacheFallback());
 });
 
 // 后端推来的负载:{title, body, tag, conv, url, kind}
