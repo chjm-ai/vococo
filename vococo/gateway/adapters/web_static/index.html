@@ -1400,7 +1400,12 @@ async function reloadHistory(force){
         S.stream.lastEvt=Date.now();
         return;
       }
-      finalizeStream();  // 服务端已收尾,前端漏接了 → 收掉卡住的流式气泡,改用下面的权威历史重绘
+      // 服务端已收尾,前端漏接了 → 收掉卡住的流式气泡,改用下面的权威历史重绘。
+      // finalizeStream 只清状态条、不摘 DOM 节点,且这颗气泡没有 data-tid——
+      // 不手动 remove 的话 renderTurns 认不出它是同一轮,会跟权威重绘的新气泡重复显示。
+      const staleRow=S.stream.row;
+      finalizeStream();
+      staleRow.remove();
     }
     S.histCache[conv]=d.turns;
     idbSetHist(conv, d.turns);
