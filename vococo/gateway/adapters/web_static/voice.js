@@ -737,7 +737,9 @@
       renderTasks(rows);
       // 顺带全量校准状态条;接口只补漏,不覆盖 SSE 已经收到的更新。
       for(const t of rows){
-        if(t.created_at && t.origin === "voice" && t.created_at < voiceTasksClearedAt) continue;
+        // 同 isCurrentConversationTask:活跃(重新激活)任务不受清空时间戳过滤
+        if(t.created_at && t.origin === "voice" && t.created_at < voiceTasksClearedAt
+           && !TASK_ACTIVE_STATUSES.includes(t.status)) continue;
         const prev = barTasks.get(t.id);
         if(prev && (prev.updated_at ?? prev.created_at) > (t.updated_at ?? t.created_at)) continue;
         barTasks.set(t.id, t);
@@ -755,7 +757,11 @@
 
   function isCurrentConversationTask(task){
     if(task.origin !== "voice" && task.origin !== "chat") return false;
-    if(task.origin === "voice" && task.created_at && task.created_at < voiceTasksClearedAt) return false;
+    // 「清空上下文」时间戳只该滤掉旧对话遗留的终态任务;任务被续接/追问重新
+    // 激活(活跃状态)后不再受它限制——否则老任务重开时状态条永远停在旧的
+    // "已完成"打叉不刷新(2026-08-17 修复,见 task_update 链路)。
+    if(task.origin === "voice" && task.created_at && task.created_at < voiceTasksClearedAt
+       && !TASK_ACTIVE_STATUSES.includes(task.status)) return false;
     if(task.dispatch_chat_id) return task.dispatch_chat_id === taskSessionKey();
     return task.origin === "voice" && taskSessionKey() === "main";
   }

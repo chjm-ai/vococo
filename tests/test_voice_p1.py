@@ -10,7 +10,7 @@ import asyncio
 import pytest
 
 from vococo import config
-from vococo.core import task_runner as executor
+from vococo.core import task_events, task_runner as executor
 from vococo.core import tasks
 from vococo.core.agent import AgentReply, Done, SessionStarted, ToolInput
 from vococo.gateway import core as gateway_core
@@ -1039,3 +1039,100 @@ async def test_notify_falls_back_to_web_push_when_offline(voice_db, monkeypatch)
     assert len(calls) == 1
     assert calls[0]["title"] == "任务失败:标题"
     assert calls[0]["body"] == "出错了"
+
+
+# ── 续接重新激活:取消归档 + 状态事件(2026-08-17 修复)────────────────────
+
+@pytest.mark.anyio
+async def test_append_reactivates_archived_task_clears_archived(voice_db, monkeypatch):
+    """AI 续接链路:voice_continue_session → append 把已归档的终态任务重新激活时,
+    自动取消归档,且前端订阅的 task_update 事件能收到 status=running。"""
+
+    async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
+        yield Done(AgentReply(text="续接完成", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+
+    task = executor.dispatch("老任务", "第一轮")
+    await executor._running[task["id"]]
+    assert tasks.get(task["id"])["status"] == "done"
+
+    # 用户归档这个任务会话(前端 /conv/archive 干的事)
+    key = tasks.session_key(task["id"])
+    session_store.set_conv_archived(key, True)
+    assert session_store.list_sessions("task:")[0]["archived"] is True
+
+    queue = task_events.subscribe()
+    try:
+        result = await executor.append(task["id"], "接着做")
+        assert result["ok"] is True
+        assert tasks.get(task["id"])["status"] == "running"
+        # 归档被自动取消
+        assert session_store.list_sessions("task:")[0]["archived"] is False
+        # 前端能实时感知状态变化
+        event, payload = await asyncio.wait_for(queue.get(), timeout=5)
+        assert event == "task_update"
+        assert payload["id"] == task["id"] and payload["status"] == "running"
+        await executor._running[task["id"]]  # 收尾,别让 asyncio task 悬挂
+    finally:
+        task_events.unsubscribe(queue)
+
+
+@pytest.mark.anyio
+async def test_web_manual_message_to_archived_task_clears_archived(voice_db, monkeypatch):
+    """人工链路:web 界面手动给已归档的任务会话发消息 → 自动取消归档
+    (走 GatewayRunner._handle 的 task: 分支,等价于用户点开任务会话发消息)。"""
+    from vococo.gateway.adapters.base import Incoming
+    from vococo.gateway.run import GatewayRunner
+
+    async def fake_converse(key, text, model, sink, **kw):
+        return None
+
+    monkeypatch.setattr(gateway_core, "converse", fake_converse)
+
+    t = tasks.create("老任务", "p")
+    tasks.set_status(t["id"], "running")
+    tasks.finish(t["id"], "done", "r", "s")
+    key = tasks.session_key(t["id"])
+    session_store.start_turn(key, "第一轮对话")
+    session_store.set_conv_archived(key, True)
+    assert session_store.list_sessions("task:")[0]["archived"] is True
+
+    class StubAdapter:
+        platform = "web"
+
+        async def send(self, chat_id, text):
+            pass
+
+        def make_sink(self, chat_id):
+            return None
+
+    runner = GatewayRunner(adapters=[])
+    inc = Incoming(platform="web", chat_id=key, text="接着做")
+    await runner._handle(StubAdapter(), inc)
+
+    assert session_store.list_sessions("task:")[0]["archived"] is False
+
+
+def test_reopen_after_terminal_reenables_start_bridge(voice_db):
+    """任务终态后再被续接重开,start 桥接必须重新触发——否则前端侧边栏
+    永远收不到"任务又开始跑了"的信号,行状态停在旧值。"""
+    task_events._started_tasks.clear()
+    bridges = []
+    task_events.register_main_event_bridge(bridges.append)
+    try:
+        t = tasks.create("任务", "p")
+        tasks.set_status(t["id"], "running")
+        task_events.on_task_activity(tasks.get(t["id"]))
+        assert bridges == [{"conv": f"task:{t['id']}", "type": "start"}]
+
+        # 终态 → 重开:start 桥接要再次触发
+        tasks.finish(t["id"], "done", "r", "s")
+        asyncio.run(task_events.emit_terminal(t["id"]))
+        bridges.clear()
+        tasks.set_status(t["id"], "running")
+        task_events.on_task_activity(tasks.get(t["id"]))
+        assert bridges == [{"conv": f"task:{t['id']}", "type": "start"}]
+    finally:
+        task_events.register_main_event_bridge(None)

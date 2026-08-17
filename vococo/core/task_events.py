@@ -82,6 +82,10 @@ def register_terminal_handler(
 
 async def emit_terminal(task_id: str) -> None:
     """通知所有终态处理器,处理器失败不阻塞其他处理器。"""
+    # 任务进入终态即解除 start 去重:同一任务被续接/追问重新激活(running)时,
+    # on_task_activity 的 start 桥接要能再次触发,前端侧边栏才会补拉最新状态
+    # (2026-08-17 修复:续接老任务后侧边栏/状态条停在"已完成"不刷新)。
+    _started_tasks.discard(task_id)
     for handler in tuple(_terminal_handlers):
         try:
             await handler(task_id)
