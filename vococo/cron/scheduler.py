@@ -168,7 +168,8 @@ def create_job(
 
 def update_job(
     job_id: str, *, name: str, prompt: str, schedule: dict, target: dict | None = None,
-    cwd: str | None | object = _UNSET, mode: str | None | object = _UNSET,
+    cwd: str | None | object = _UNSET, model: str | None | object = _UNSET,
+    mode: str | None | object = _UNSET,
     command: str | None | object = _UNSET, summarize_prompt: str | None | object = _UNSET,
 ) -> dict | None:
     """编辑已有任务的名称/指令/调度/推送目标/执行方式(管理界面的「编辑」用);不改
@@ -195,6 +196,8 @@ def update_job(
         if err:
             raise ValueError(err)
         job["cwd"] = cwd
+    if model is not _UNSET:
+        job["model"] = model or None
     if next_mode == "script":
         job.update(mode=next_mode, command=next_command, summarize_prompt=next_summarize)
     else:
