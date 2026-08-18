@@ -1350,6 +1350,10 @@ async function openConv(conv, silentGroup){
   }
   if(S.voiceRec[conv]) renderVoicePending(conv);  // 切回时该会话仍在转写 → 补出占位气泡,不然像是丢了
   if(conv && !isLocal){
+    // 拉历史这段网络往返期间,若该会话仍在流式,SSE 事件会先到——handleEvent 里
+    // 已经无条件 bufPush 进 S.live,这里挡住 applyStreamEvent 直接建气泡,避免它
+    // 跟 /history 铺出来的草稿气泡各建一个;等下面 maybeReplayStream 统一从缓冲重放。
+    S.histLoading=conv;
     try{
       const r=await api("/history?conv="+encodeURIComponent(conv)); const d=await r.json();
       if(S.conv!==conv) return;   // 拉取期间已切到别的会话 → 丢弃过期结果,避免内容错乱
@@ -1359,6 +1363,7 @@ async function openConv(conv, silentGroup){
       // renderTurns 内部按轮 diff,没变的轮直接跳过——不用再在这里整包比对一次
       renderTurns(d.turns, conv);
     }catch(e){ $("#convLoading").classList.remove("on"); }
+    finally{ if(S.histLoading===conv) S.histLoading=null; }
     maybeReplayStream(conv);   // 该会话仍在流式 → 用缓冲在历史下方重建流式气泡(切换不中断)
     if(S.conv===conv && S.pendingChoice[conv]) renderChoice(S.pendingChoice[conv]);  // 切回带待审批的会话 → 补出按钮
     return;

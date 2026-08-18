@@ -411,7 +411,8 @@ function handleEvent(e){
   // 清空回放缓冲/刷新侧栏),否则会把还没说完的这一轮拦腰截断成两条气泡。
   if(e.type==="message" && e.mid_turn){
     bufPush(e.conv, e); markLive();
-    if(e.conv===S.conv){ applyStreamEvent(e); if(S.stream) S.stream.lastEvt=Date.now(); }
+    // histLoading 窗口内(openConv 正在拉 /history)不直接建气泡,已缓冲,等 maybeReplayStream 统一重放
+    if(e.conv===S.conv && S.histLoading!==e.conv){ applyStreamEvent(e); if(S.stream) S.stream.lastEvt=Date.now(); }
     return;
   }
   // 模型刚通过定时任务工具完成增删改时，立刻同步列表；不必等整轮回复结束。
@@ -465,7 +466,12 @@ function handleEvent(e){
   }
   // 当前会话本轮结束 → 清掉可能残留的暂存审批
   if(e.type==="done"||e.type==="message") delete S.pendingChoice[e.conv];
-  if(STREAMY.indexOf(e.type)>=0){ applyStreamEvent(e); if(S.stream) S.stream.lastEvt=Date.now(); return; }
+  if(STREAMY.indexOf(e.type)>=0){
+    // histLoading 窗口内:上面已 bufPush 缓冲过,这里不直接建气泡——避免跟 openConv 里
+    // /history 铺出来的草稿气泡各建一个,等 maybeReplayStream 统一从缓冲重放一次收尾。
+    if(S.histLoading!==e.conv){ applyStreamEvent(e); if(S.stream) S.stream.lastEvt=Date.now(); }
+    return;
+  }
   switch(e.type){
     case "done": {
       const errBubble = S.stream ? S.stream.bubble : null;

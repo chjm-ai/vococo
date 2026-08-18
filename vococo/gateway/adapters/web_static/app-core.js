@@ -34,6 +34,8 @@ const S = {
   turnEventsCache: {},  // turn_id → 完整 events[]:工具卡片懒加载,点开某轮任意卡片后整轮缓存复用
   pendingChoice: {},    // conv → choice 事件:审批发给非当前会话时暂存,切回该会话再渲染
   live: {},             // conv → 进行中回合的事件缓冲:任意会话(含后台)都记录,切回时重放重建流式气泡
+  histLoading: null,    // openConv 正在拉 /history 的会话名:该窗口内 SSE 流式事件只缓冲不建气泡,
+                         // 防止和 /history 里的草稿气泡各建一个、切会话瞬间闪出重复内容(见 openConv/handleEvent)
   streamSnap: {},       // conv → {state,asOf}:离开时摘下的流式气泡 DOM + 已处理到的事件下标,
                          // 切回来同一进度直接接上,不用把 live 缓冲从头重放一遍(见 maybeReplayStream)
   pendingReview: {},    // conv → bool:本地缓存会话是否有未读完成内容(避免灰点闪烁)
