@@ -20,7 +20,35 @@
 - **别误杀原版 hermes**:本项目配置在 `~/.vococo/`,**刻意独立于**原版 Hermes 的 `~/.hermes`,两者互不干扰。重启只动 vococo 自己的进程。
 - **记忆唯一主库**:记忆实体文件只存在 AI_BRAIN 主库,`.claude` 项目侧全是软链;**禁止**在 Claude Code 项目记忆目录新建实体文件(会成孤本)。
 - **editable 安装 + worktree**:`pip install -e` 会让 worktree 里的改动被主仓库的已安装包屏蔽,调试时用 `uv run` 从当前目录跑。
+- **换过 `claude setup-token` / 别处重新登录后,必须同步更新 `.env` 的 `CLAUDE_CODE_OAUTH_TOKEN` 并重启**:同账号签发新令牌会吊销旧的,不同步就把服务的官方模型通道掐了,而且**失效是静默的**(日常对话走第三方、后台任务自动回落)。详见下方「订阅令牌」一节。
 - **假死看门狗**([gateway/watchdog.py](vococo/gateway/watchdog.py)):run.sh 只兜"进程退出",兜不住"活着但事件循环卡死"(2026-07-21 假死 70 分钟,全靠系统超时运气恢复)。现在循环无响应 30s → 全线程堆栈写入 `data/logs/watchdog.log`(排查卡点看这里),180s → 自杀退出码 70 交 run.sh 拉起。阈值可用环境变量 `WATCHDOG_DUMP_SEC`/`WATCHDOG_EXIT_SEC` 调。
+
+## 订阅令牌(CLAUDE_CODE_OAUTH_TOKEN)
+
+官方 Claude 模型的**唯一**认证来源是 `.env` 里的这个长效令牌(`claude setup-token` 生成),
+**不是**本机 `claude` 的登录态。原因见 [core/agent.py](vococo/core/agent.py) `_turn_env()`:
+config 启动时已把令牌从父进程 `os.environ` pop 掉,CLI 子进程只认这里显式注入的那份。
+所以「我终端里 `claude` 跑得好好的」跟「服务能不能用官方模型」是两件独立的事。
+
+**纪律:任何时候重新跑 `claude setup-token`、或在别处重新 `/login`,都必须同步更新
+`/Users/wesley/Repos/vococo/.env` 并重启服务。** 同账号签发新令牌会**吊销**旧的,不同步
+就等于把服务的官方模型通道掐了。
+
+**换令牌流程**(整套要在有浏览器的环境里做,`setup-token` 是交互式 OAuth):
+
+1. `claude setup-token` → 浏览器授权 → 拿到 `sk-ant-oat01-...`
+2. 替换 `.env` 里 `CLAUDE_CODE_OAUTH_TOKEN=` 那一行
+3. `uv run vococo doctor` 确认探活通过
+4. 按上面的两步法重启(`merge-main.sh` 若有改动,再 `restart_self`)
+
+**为什么失效很难被发现**(2026-08-16 踩过,静默了五天):官方模型是唯一踩这个令牌的
+路径,而日常对话默认走设置页的第三方端点(当时 `web_default_model` 是 Kimi),后台任务在
+[core/task_runner.py](vococo/core/task_runner.py) 里还会自动回落 DeepSeek——三条路都绕开了它。
+当时 `doctor` 也只判断令牌非空就报 ✅,纯假阳性。现在 `doctor` 会实打实发一个
+`max_tokens=1` 的请求验活(`providers.probe_subscription_token`),401 直接报 ❌。
+
+排查时认准服务端原话:`OAuth access token has been revoked` = 被吊销(多半是别处签了新令牌),
+跟自然过期不是一回事——`setup-token` 令牌有效期约一年,几天就失效基本都是被顶掉的。
 
 ## 省上下文:每轮固定注入的三笔开销
 

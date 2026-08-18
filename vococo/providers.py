@@ -22,6 +22,9 @@ _OFFICIAL_NAMES = ("claude", "official", "anthropic", "claude-official")
 # API key 入口等)一律按量计费的 API 处理。
 _SUBSCRIPTION_HOSTS = ("api.kimi.com",)  # Kimi Coding 订阅套餐
 
+# 订阅令牌探活用的模型:挑最便宜的 haiku,配 max_tokens=1,一次开销可忽略。
+PROBE_MODEL = "claude-haiku-4-5-20251001"
+
 
 @dataclass(frozen=True)
 class ActiveProvider:
@@ -212,6 +215,67 @@ def has_active_third_party() -> bool:
             if not provider.is_official:
                 return True
     return False
+
+
+def probe_subscription_token(token: str, *, timeout: float = 10) -> tuple[str, str]:
+    """探活订阅令牌:发一个 max_tokens=1 的最小请求,看官方认不认。
+
+    返回 (state, detail),state 三态:
+      - "ok"      认证通过,官方模型可用
+      - "bad"     明确被拒(401/403),令牌失效/被吊销,detail 带服务端原话
+      - "unknown" 没结论(网络不通、限流、服务端 5xx),不足以判定令牌坏了
+
+    三态是刻意的:网络抖动跟令牌被吊销必须分开,否则 doctor 一断网就报假 ❌。429 也
+    归 unknown——限流说明认证其实已经过了。
+
+    刻意用 stdlib urllib 而不是本模块其余地方的 aiohttp:唯一调用方 doctor 是同步的,
+    为一次性探活起个事件循环不划算。
+
+    2026-08-16 加。在此之前 doctor 只判断 token 非空就报 ✅「已配置(走订阅)」,
+    从不验活。.env 里的令牌被吊销("OAuth access token has been revoked")后整整五天
+    没人发现:官方模型是唯一踩这个令牌的路径,日常对话默认走第三方端点,后台任务在
+    core/task_runner.py 里还会自动回落 DeepSeek,失效全程静默。
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    if not token.strip():
+        return "bad", "未配置"
+    body = json.dumps(
+        {
+            "model": PROBE_MODEL,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+    ).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={
+            "content-type": "application/json",
+            "authorization": f"Bearer {token.strip()}",
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "oauth-2025-04-20",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return ("ok", f"HTTP {resp.status}") if resp.status == 200 else (
+                "unknown", f"HTTP {resp.status}"
+            )
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = json.loads(e.read()).get("error", {}).get("message", "")
+        except Exception:  # noqa: BLE001 —— 拿不到详情就只报状态码
+            pass
+        suffix = f" · {detail}" if detail else ""
+        if e.code in (401, 403):
+            return "bad", f"HTTP {e.code}{suffix}"
+        return "unknown", f"HTTP {e.code}{suffix}"
+    except Exception as e:  # noqa: BLE001 —— 网络层失败一律 unknown,不冤枉令牌
+        return "unknown", f"{type(e).__name__}: {e}"
 
 
 def load_active() -> ActiveProvider | None:
