@@ -350,3 +350,70 @@ def test_available_models_codex_group(tmp_path, monkeypatch):
     choices = providers.available_models([])
     gpt = [c for c in choices if c[0] == "gpt-5.5"]
     assert gpt and gpt[0][2] == "codex"
+
+
+# ── probe_subscription_token:订阅令牌探活的三态 ─────────────────────
+def _fake_urlopen(monkeypatch, *, status=None, http_error=None, exc=None):
+    """替换 providers 内部 urllib.request.urlopen,不发真实请求。"""
+    import urllib.request
+
+    class _Resp:
+        def __init__(self, code):
+            self.status = code
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake(req, timeout=None):
+        if exc is not None:
+            raise exc
+        if http_error is not None:
+            raise http_error
+        return _Resp(status)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake)
+
+
+def _http_error(code: int, message: str):
+    import io
+    import json
+    import urllib.error
+
+    body = json.dumps({"type": "error", "error": {"type": "x", "message": message}}).encode()
+    return urllib.error.HTTPError("u", code, "err", {}, io.BytesIO(body))
+
+
+def test_probe_token_empty_is_bad():
+    assert providers.probe_subscription_token("  ") == ("bad", "未配置")
+
+
+def test_probe_token_ok(monkeypatch):
+    _fake_urlopen(monkeypatch, status=200)
+    state, _ = providers.probe_subscription_token("sk-ant-oat01-x")
+    assert state == "ok"
+
+
+def test_probe_token_revoked_is_bad(monkeypatch):
+    """401 = 明确被拒,detail 里要带上服务端原话,便于分辨吊销还是别的。"""
+    _fake_urlopen(monkeypatch, http_error=_http_error(401, "OAuth access token has been revoked."))
+    state, detail = providers.probe_subscription_token("sk-ant-oat01-x")
+    assert state == "bad"
+    assert "401" in detail and "revoked" in detail
+
+
+def test_probe_token_rate_limited_is_unknown(monkeypatch):
+    """429 说明认证其实过了,不能当成令牌失效。"""
+    _fake_urlopen(monkeypatch, http_error=_http_error(429, "rate limited"))
+    state, _ = providers.probe_subscription_token("sk-ant-oat01-x")
+    assert state == "unknown"
+
+
+def test_probe_token_network_failure_is_unknown(monkeypatch):
+    """断网不能报假 ❌。"""
+    _fake_urlopen(monkeypatch, exc=OSError("no route to host"))
+    state, detail = providers.probe_subscription_token("sk-ant-oat01-x")
+    assert state == "unknown"
+    assert "OSError" in detail

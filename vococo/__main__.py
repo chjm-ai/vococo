@@ -85,7 +85,23 @@ def _cmd_doctor() -> None:
 
     active = providers.load_active()
     if config.OAUTH_TOKEN:
-        oks.append("CLAUDE_CODE_OAUTH_TOKEN 已配置(走订阅)")
+        # 只判断"非空"等于没检查:令牌被吊销时照样非空,官方模型却已全线不可用
+        # (2026-08-16 踩过,静默了五天)。这里实打实发一个请求验活,见
+        # providers.probe_subscription_token 的注释。
+        state, detail = providers.probe_subscription_token(config.OAUTH_TOKEN)
+        if state == "ok":
+            oks.append("CLAUDE_CODE_OAUTH_TOKEN 探活通过(走订阅)")
+        elif state == "bad":
+            errs.append(
+                f"CLAUDE_CODE_OAUTH_TOKEN 已失效({detail})—— 官方模型全线不可用。"
+                "重新跑 `claude setup-token` 换新令牌并更新 .env,"
+                "见 OPERATIONS.md「订阅令牌(CLAUDE_CODE_OAUTH_TOKEN)」"
+            )
+        else:
+            warns.append(
+                f"CLAUDE_CODE_OAUTH_TOKEN 探活没结论({detail})—— "
+                "多半是网络/限流,不代表令牌失效,联网后重跑 doctor 确认"
+            )
     elif active and not active.is_official:
         oks.append(f"无订阅 token,但设置页已激活第三方供应商 {active.name}(可用)")
     else:
