@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#181716">
+<title>文档预览</title>
+<link rel="icon" type="image/svg+xml" href="/vococo-mark.svg?v=2">
+<!-- 防闪烁:渲染前先套用上次选择的主题,跟 index.html 同一套 -->
+<script>(function(){try{var t=localStorage.getItem("vococo_theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="/styles.css">
+<style>
+  html,body{height:100%;margin:0}
+  body{background:var(--bg2)}
+  #docPreview{width:100%;height:100vh;border-left:none}
+</style>
+</head>
+<body>
+<!-- 独立窗口:markdown.js 的 openDocPreview/initDocPreview 就是给这一份骨架写的,
+     跟主页面 #docPreview 结构保持一致才能直接复用,不用另写一遍渲染逻辑。
+     #wrap/#loginBtn 只是满足 app-core.js/markdown.js 顶层初始化要摸到的元素,本页
+     用不到对话列表和登录表单,留空隐藏即可——注意不能套一层 #login:styles.css 里
+     `#login{position:fixed;inset:0;display:flex}` 是 ID 选择器,比 hidden 属性的
+     UA 默认样式优先级高,套了会变成一层看不见内容但吃光所有点击的全屏遮罩。 -->
+<div id="wrap" hidden></div>
+<input id="pw" hidden><button id="loginBtn" hidden></button>
+<aside id="docPreview">
+  <header id="dpHead">
+    <span id="dpTitle">预览</span>
+    <button type="button" id="dpOpenBtn" title="在新标签页打开" hidden></button>
+    <button type="button" id="dpWinBtn" title="再开一个独立窗口"></button>
+    <button type="button" id="dpDlBtn" title="下载" hidden></button>
+    <button type="button" id="dpClose" title="关闭窗口">✕</button>
+  </header>
+  <div id="dpBody"></div>
+</aside>
+<script src="/app-core.js"></script>
+<script src="/markdown.js"></script>
+<script>
+(function(){
+  // 独立窗口不走 SSE/对话流,不需要 stream.js——DOTS 是加载态用的小动画,单独补一个常量,
+  // 不为了一个字符串常量拖进整个 stream.js(那份文件是给主页面的会话流式渲染用的)。
+  window.DOTS = '<span class="dots"><i></i><i></i><i></i></span>';
+  const qs = new URLSearchParams(location.search);
+  const kind = qs.get("kind") === "url" ? "url" : "path";
+  const target = qs.get("target") || "";
+  const title = qs.get("title") || target;
+  S.conv = qs.get("conv") || "";
+  document.title = title ? title + " · 文档预览" : "文档预览";
+  $("#dpClose").onclick = () => window.close();
+  if(!target){
+    $("#dpBody").innerHTML = '<div class="dp-err">缺少预览目标</div>';
+  } else {
+    openDocPreview({kind, target, title});
+  }
+})();
+</script>
+</body>
+</html>

@@ -122,6 +122,14 @@ async function openDocPreview({kind, target, title}){
   body.innerHTML = '<div class="dp-loading">'+DOTS+'</div>';
   $("#dpOpenBtn").hidden = kind!=="url";
   if(kind==="url") $("#dpOpenBtn").onclick = ()=>window.open(target, "_blank", "noopener");
+  // 独立窗口:走真实页面 /doc-preview.html,不是当前对话内的分屏——token 不经 URL(那是
+  // 明确的安全红线,见 web_auth.py),独立窗口靠同源共享的 localStorage 自己取 token。
+  $("#dpWinBtn").onclick = ()=>{
+    const params = new URLSearchParams({kind, target, title: title||target});
+    if(S.conv) params.set("conv", S.conv);
+    window.open("/doc-preview.html?"+params.toString(), "_blank",
+      "noopener,width=980,height=860,menubar=no,toolbar=no,location=no,status=no");
+  };
   $("#dpDlBtn").hidden = true;
   if(kind==="url"){ renderDocUrl(target); return; }
   try{
@@ -195,6 +203,7 @@ function renderDocBlob(blob, target){
 }
 function initDocPreview(){
   $("#dpOpenBtn").innerHTML=ic("external");
+  $("#dpWinBtn").innerHTML=ic("newwin");
   $("#dpDlBtn").innerHTML=ic("download");
   $("#dpClose").innerHTML=ic("close");
   $("#dpClose").onclick=closeDocPreview;
@@ -209,3 +218,32 @@ function initDocPreview(){
   });
 }
 initDocPreview();
+
+// ── 预览面板宽度可拖拽调整(拖左边缘,记住上次宽度)──────────────────────────
+// 移动端(#docPreview 变 position:fixed 全屏,见 styles.css)没有 #dpResize,下面的
+// 逻辑靠 handle 判空自然跳过,不用另写媒体查询分支。
+const DP_WIDTH_KEY = "vococo_docpreview_width";
+const DP_WIDTH_MIN = 320, DP_WIDTH_MAX_VW = 0.92;
+function initDocPreviewResize(){
+  const panel = $("#docPreview"), handle = $("#dpResize");
+  if(!panel || !handle) return;
+  const clamp = w => Math.max(DP_WIDTH_MIN, Math.min(innerWidth*DP_WIDTH_MAX_VW, w));
+  const saved = parseInt(localStorage.getItem(DP_WIDTH_KEY)||"", 10);
+  if(saved) panel.style.width = clamp(saved)+"px";
+  let startX=0, startW=0;
+  const onMove = e => { panel.style.width = clamp(startW + (startX - e.clientX))+"px"; };
+  const onUp = () => {
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", onUp);
+    document.body.style.cursor=""; document.body.style.userSelect="";
+    localStorage.setItem(DP_WIDTH_KEY, Math.round(panel.getBoundingClientRect().width));
+  };
+  handle.addEventListener("pointerdown", e=>{
+    startX = e.clientX; startW = panel.getBoundingClientRect().width;
+    document.body.style.cursor="col-resize"; document.body.style.userSelect="none";
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    e.preventDefault();
+  });
+}
+initDocPreviewResize();

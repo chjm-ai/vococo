@@ -427,9 +427,11 @@ try{
   </main>
   <!-- 文档预览分屏:点聊天里的文档链接/写文件工具卡右侧滑出,不离开当前对话 -->
   <aside id="docPreview" hidden>
+    <div id="dpResize" title="拖拽调整宽度"></div>
     <header id="dpHead">
       <span id="dpTitle">预览</span>
       <button type="button" id="dpOpenBtn" title="在新标签页打开" hidden></button>
+      <button type="button" id="dpWinBtn" title="在独立窗口打开"></button>
       <button type="button" id="dpDlBtn" title="下载" hidden></button>
       <button type="button" id="dpClose" title="关闭">✕</button>
     </header>

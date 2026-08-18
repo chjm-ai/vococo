@@ -631,6 +631,25 @@ class WebAdapter:
         resp.enable_compression()  # 起源端 gzip:250KB 文本压到几十 KB,弱网首屏立省
         return resp
 
+    async def _handle_doc_preview_page(self, request: web.Request) -> web.Response:
+        """文档预览的独立窗口页(见 markdown.js 里 dpWinBtn):跟 index.html 一样是静态壳,
+        不做服务端鉴权——页面 JS 从 localStorage 读 token 走 /doc/preview 取内容,真正
+        的口令校验在那个数据接口上(query 不收 token,见 web_auth.py),这里没有额外攻击面。
+        """
+        try:
+            html_bytes = self._inject_asset_versions((_STATIC / "doc-preview.html").read_bytes())
+        except OSError:
+            html_bytes = b"<h1>doc-preview.html missing</h1>"
+        etag = f'"{hashlib.md5(html_bytes).hexdigest()}"'
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers={"Cache-Control": "no-cache", "ETag": etag})
+        resp = web.Response(
+            body=html_bytes, content_type="text/html", charset="utf-8",
+            headers={"Cache-Control": "no-cache", "ETag": etag},
+        )
+        resp.enable_compression()
+        return resp
+
     async def _handle_events(self, request: web.Request) -> web.StreamResponse:
         if not self._ok_token(request):
             return web.Response(status=401, text="unauthorized")
@@ -2349,6 +2368,7 @@ class WebAdapter:
                 web.get("/file/read", self._handle_file_read),
                 web.post("/file/save", self._handle_file_save),
                 web.get("/doc/preview", self._handle_doc_preview),
+                web.get("/doc-preview.html", self._handle_doc_preview_page),
             ]
         )
         from ...gateway import task_routes
