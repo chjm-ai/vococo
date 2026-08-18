@@ -1169,7 +1169,8 @@ function buildTurnBlock(t, conv, isLast){
 let _wrapConv=null;
 function renderTurns(turns, conv){
   const wrap=$("#wrap");
-  if(conv!==_wrapConv){ wrap.innerHTML=""; _wrapConv=conv; }
+  let changed=(conv!==_wrapConv);
+  if(changed){ wrap.innerHTML=""; _wrapConv=conv; }
   const existing=new Map();
   for(const node of wrap.children){ if(node.dataset && node.dataset.tid) existing.set(node.dataset.tid, node); }
   let anchor=null;
@@ -1186,15 +1187,20 @@ function renderTurns(turns, conv){
       const fresh=buildTurnBlock(t, conv, isLast);
       fresh.dataset.tid=tid; fresh.dataset.sig=sig;
       if(node) node.replaceWith(fresh); else wrap.insertBefore(fresh, anchor?anchor.nextSibling:wrap.firstChild);
-      node=fresh;
+      node=fresh; changed=true;
     }else if(anchor ? anchor.nextSibling!==node : wrap.firstChild!==node){
       wrap.insertBefore(node, anchor?anchor.nextSibling:wrap.firstChild);  // 顺序变了(罕见)才挪
     }
     existing.delete(tid);
     anchor=node;
   });
+  if(existing.size) changed=true;
   for(const node of existing.values()) node.remove();  // 剩下的是不在新列表里的旧轮(如清空会话)
-  updateEmpty(); scrollDown(true);
+  updateEmpty();
+  // 只有这次渲染真的产生了 DOM 变化(新轮/删轮/切会话)才强制滚底;静态会话被
+  // reviveSSE(切标签页回来/网络恢复/窗口聚焦)重新拉一次历史但内容没变时,不该
+  // 打断用户正在向上翻看历史的滚动位置(2026-08-18 修复:曾经无条件 scrollDown(true))。
+  if(changed) scrollDown(true);
   maybeAutoResume(conv, turns);  // 最新一条是重启中断的回复 → 自动继续生成(幂等,见 stream.js)
 }
 // 工具卡片懒加载:整轮 events 只在用户点开这一轮里任意一张卡片时才拉一次(见 wireLazyToolCard)
