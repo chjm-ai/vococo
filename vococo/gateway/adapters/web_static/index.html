@@ -77,16 +77,22 @@ try{
     <div class="pmbox">
       <div class="pmhead"><span id="cronModalTitle">＋ 新建定时任务</span></div>
       <div id="cronForm">
-        <input id="cfName" placeholder="任务名称,如「晨间简报」"/>
+        <label class="cflabel">任务名称</label>
+        <input id="cfName" placeholder="如「晨间简报」"/>
+        <label class="cflabel">执行方式</label>
         <select id="cfMode">
           <option value="agent">AI 会话任务（需要分析、判断或多步操作）</option>
           <option value="script">脚本任务（固定命令；无变化时零 LLM）</option>
         </select>
+        <label class="cflabel">执行指令</label>
         <textarea id="cfPrompt" placeholder="到点时要执行的指令,如「查一下今天的日历和待办,简短汇总」"></textarea>
         <div id="cfScriptFields" hidden>
-          <textarea id="cfCommand" placeholder="要执行的命令,如「python3 ~/scripts/daily_check.py」"></textarea>
-          <textarea id="cfSummarizePrompt" placeholder="可选:仅脚本输出 ##CRON_SIGNAL:1## 时的轻量总结要求"></textarea>
+          <label class="cflabel">脚本命令</label>
+          <textarea id="cfCommand" placeholder="如「python3 ~/scripts/daily_check.py」"></textarea>
+          <label class="cflabel">总结要求（可选）</label>
+          <textarea id="cfSummarizePrompt" placeholder="仅脚本输出 ##CRON_SIGNAL:1## 时的轻量总结要求"></textarea>
         </div>
+        <label class="cflabel">执行频率</label>
         <div class="cfrow">
           <select id="cfPreset">
             <option value="custom">自定义 cron 表达式…</option>
@@ -99,8 +105,10 @@ try{
           </select>
           <input id="cfCron" placeholder="0 8 * * *"/>
         </div>
-        <input id="cfCwd" placeholder="可选:工作目录绝对路径（留空使用默认项目）"/>
+        <label class="cflabel">执行模型</label>
         <select id="cfModel"><option value="">默认模型</option></select>
+        <label class="cflabel">工作目录（可选）</label>
+        <input id="cfCwd" placeholder="绝对路径，留空使用默认项目"/>
         <div class="pmfoot">
           <button id="cfCancel">取消</button>
           <button class="pmok" id="cfSave">✓ 创建</button>
