@@ -318,9 +318,9 @@
   #cronForm .cflabel{font-size:12.5px;font-weight:600;color:var(--dim);margin-top:6px}
   #cronForm .cflabel:first-child{margin-top:0}
   #cronForm input,#cronForm textarea,#cronForm select{background:var(--panel2);border:1px solid var(--line2);border-radius:9px;
-    color:var(--text);padding:9px 12px;font-size:13.5px;font-family:inherit}
+    color:var(--text);padding:9px 12px;font-size:13.5px;font-family:inherit;flex-shrink:0}
   #cronForm textarea{resize:none;min-height:38px;max-height:200px;overflow-y:auto;field-sizing:content}
-  #cfScriptFields{display:flex;flex-direction:column;gap:6px}
+  #cfScriptFields{display:flex;flex-direction:column;gap:6px;flex-shrink:0}
   #cronForm .cfrow{display:flex;gap:8px}
   #cronForm .cfrow select{flex:1;min-width:0}
   #cronForm .cfrow input{flex:1;min-width:0}
