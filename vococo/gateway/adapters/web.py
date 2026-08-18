@@ -911,20 +911,25 @@ class WebAdapter:
 
     @_authed
     async def _handle_voice_sidebar(self, request: web.Request) -> web.Response:
-        """侧边栏"语音任务"固定分组:主语音会话 + 语音派发的各后台任务会话。
+        """侧边栏"后台任务"固定分组:主语音会话 + 语音/网页派发的各后台任务会话。
 
         跟 _handle_conversations 一个模板,只是数据源换成 voice-chat:/task: 前缀
         （见 03-phase2-实现记录.md 存储统一改动一节)。任务行的 conv 字段用完整 key
         (不剥前缀)——resolve_session_key 的透传分支要吃完整字符串。
 
         2026-07-29 统一后 task: 前缀不再是语音专属(cron/chat 触发的任务也落在这个
-        前缀下),这里要按 origin="voice" 过滤,不然定时任务/网页发起的任务会混进
-        "语音任务"分组。任务元数据(voice.db)行万一缺失(row is None)时保留展示——
-        判不出 origin,当作语音任务的残留数据。但 mode="script" 的 cron 任务从不经过
-        task_runner.dispatch(),天生就没有 voice.db 行(见 cron/scheduler.py
-        _run_job),这条"缺失即语音"的假设对它们不成立——会让脚本类定时任务永久漏
-        进"语音任务"/"最近"分组(2026-08-18 排查 task:7c099f16 发现)。这里额外拿
-        cron_jobs.json 的 job id 集合兜底剔除,行缺失也不会误判成语音任务。
+        前缀下),这里按 origin 过滤:排除 cron(定时任务有自己专属的
+        _handle_cron_sidebar,重复出现会两处都能看到同一条、造成困惑),但保留
+        chat(dispatch_session 派发的独立会话)——2026-08-18 发现 dispatch_session
+        建的会话原先被这里的 origin=="voice" 硬过滤掉,又不在 _handle_conversations
+        的 web: 前缀里,导致"派了个独立会话"却哪个列表都找不到,只能靠全局搜索碰运气
+        (见 tools/builtin.py dispatch_session 工具描述)。任务元数据(voice.db)行
+        万一缺失(row is None)时保留展示——判不出 origin,当作语音任务的残留数据。
+        但 mode="script" 的 cron 任务从不经过 task_runner.dispatch(),天生就没有
+        voice.db 行(见 cron/scheduler.py _run_job),这条"缺失即语音"的假设对它们
+        不成立——会让脚本类定时任务永久漏进本分组/"最近"分组(2026-08-18 排查
+        task:7c099f16 发现)。这里额外拿 cron_jobs.json 的 job id 集合兜底剔除,
+        行缺失也不会误判成语音任务。
         """
         from ...core import tasks as bg_tasks  # 懒加载,避免非任务场景也引入这块
         from ...cron import scheduler as cron_scheduler
@@ -937,7 +942,7 @@ class WebAdapter:
             task_id = bg_tasks.task_id_from_session_key(c["key"]) or c["key"]
             row = bg_tasks.get(task_id)
             if row is not None:
-                if row.get("origin", "voice") != "voice":
+                if row.get("origin", "voice") not in ("voice", "chat"):
                     continue
                 c["task_status"] = row["status"]
                 c["task_updated_at"] = row["updated_at"]
