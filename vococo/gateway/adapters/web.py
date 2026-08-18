@@ -1015,13 +1015,14 @@ class WebAdapter:
         cwd = body.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
             return web.json_response({"error": "cwd 必须是字符串"}, status=400)
+        model = body.get("model") or None
         mode = body.get("mode")
         command = body.get("command")
         summarize_prompt = body.get("summarize_prompt")
         try:
             job = scheduler.create_job(
                 name=name, prompt=prompt, schedule=schedule, target=target, cwd=cwd,
-                mode=mode, command=command, summarize_prompt=summarize_prompt,
+                model=model, mode=mode, command=command, summarize_prompt=summarize_prompt,
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
@@ -1051,7 +1052,7 @@ class WebAdapter:
             if cwd is not None and not isinstance(cwd, str):
                 return web.json_response({"error": "cwd 必须是字符串"}, status=400)
             kwargs["cwd"] = cwd
-        for field in ("mode", "command", "summarize_prompt"):
+        for field in ("model", "mode", "command", "summarize_prompt"):
             if field in body:
                 kwargs[field] = body[field]
         try:

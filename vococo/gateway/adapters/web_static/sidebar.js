@@ -754,6 +754,21 @@ $("#projModal").onclick = e=>{ if(e.target===$("#projModal")) closeProjModal(); 
 // job 不传 = 新建模式;传了 = 编辑模式(表单回填该任务的字段,保存时打 update 接口)。
 // 列表在侧栏「定时任务」分组里看,启停/删除在该任务的「⋯」菜单里操作,这个弹窗只管
 // 「新建一条」或「编辑一条」的详情表单。
+let _cronModelCache=null;
+async function populateCronModelSelect(selected){
+  const sel=$("#cfModel");
+  if(!_cronModelCache){
+    try{
+      const r=await api("/models"); const d=await r.json();
+      _cronModelCache=d.choices||[];
+    }catch(e){ _cronModelCache=[]; }
+  }
+  sel.innerHTML='<option value="">默认模型</option>';
+  for(const [v,label] of _cronModelCache){
+    const o=document.createElement("option"); o.value=v; o.textContent=label; sel.appendChild(o);
+  }
+  sel.value=selected||"";
+}
 function openCronModal(job){
   $("#cronModal").hidden=false;
   showCronForm(job);
@@ -783,6 +798,7 @@ function showCronForm(job){
   $("#cfPreset").value = expr && presetOpts.includes(expr) ? expr : "custom";
   $("#cfCron").value = expr;
   $("#cfCwd").value = job ? (job.cwd || "") : "";
+  populateCronModelSelect(job ? (job.model || "") : "");
   if(!job) $("#cfName").focus();
 }
 async function saveCronJob(){
@@ -794,7 +810,8 @@ async function saveCronJob(){
   if(mode==="script" && !command){ alert("脚本任务需要填写要执行的命令"); return; }
   if(!cron){ alert("请选一个预设频率,或填自定义 cron 表达式"); return; }
   const editId=S.cronEditId;
-  const body={name, prompt, schedule:{kind:"cron", expr:cron}, cwd, mode, command, summarize_prompt};
+  const model=$("#cfModel").value;
+  const body={name, prompt, schedule:{kind:"cron", expr:cron}, cwd, model, mode, command, summarize_prompt};
   if(editId) body.id=editId;
   let d;
   try{

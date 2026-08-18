@@ -311,13 +311,13 @@
      「⋯」菜单(见 openConvMenu 里的 isCron 分支),不再放在这个弹窗里 */
   #cronModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
   #cronModal[hidden]{display:none}
-  #cronModal .pmbox{width:min(480px,92vw);display:flex;flex-direction:column;
+  #cronModal .pmbox{width:min(600px,92vw);display:flex;flex-direction:column;
     background:var(--panel);border:1px solid var(--line2);border-radius:16px;overflow:hidden}
   #cronModal .pmhead{padding:15px 18px;font-size:15px;font-weight:700;border-bottom:1px solid var(--line)}
-  #cronForm{padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+  #cronForm{padding:18px 20px;display:flex;flex-direction:column;gap:10px}
   #cronForm input,#cronForm textarea,#cronForm select{background:var(--panel2);border:1px solid var(--line2);border-radius:9px;
     color:var(--text);padding:8px 11px;font-size:13px;font-family:inherit}
-  #cronForm textarea{resize:vertical;min-height:56px}
+  #cronForm textarea{resize:vertical;min-height:80px}
   #cronForm .cfrow{display:flex;gap:8px}
   #cronForm .cfrow select{flex:1;min-width:0}
   #cronForm .cfrow input{flex:1;min-width:0}
