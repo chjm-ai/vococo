@@ -919,12 +919,17 @@ class WebAdapter:
 
         2026-07-29 统一后 task: 前缀不再是语音专属(cron/chat 触发的任务也落在这个
         前缀下),这里要按 origin="voice" 过滤,不然定时任务/网页发起的任务会混进
-        "语音任务"分组。任务元数据(voice.db)行万一缺失(row is None,见
-        test_voice_sidebar_task_row_survives_missing_task_row)时保留展示——判不出
-        origin,历史上这种情况本就只可能是语音任务的残留数据,不因为判不出就隐藏。
+        "语音任务"分组。任务元数据(voice.db)行万一缺失(row is None)时保留展示——
+        判不出 origin,当作语音任务的残留数据。但 mode="script" 的 cron 任务从不经过
+        task_runner.dispatch(),天生就没有 voice.db 行(见 cron/scheduler.py
+        _run_job),这条"缺失即语音"的假设对它们不成立——会让脚本类定时任务永久漏
+        进"语音任务"/"最近"分组(2026-08-18 排查 task:7c099f16 发现)。这里额外拿
+        cron_jobs.json 的 job id 集合兜底剔除,行缺失也不会误判成语音任务。
         """
         from ...core import tasks as bg_tasks  # 懒加载,避免非任务场景也引入这块
+        from ...cron import scheduler as cron_scheduler
 
+        cron_job_ids = {job["id"] for job in cron_scheduler.load_jobs()}
         main = session_store.session_summary("voice-chat:main")
         main.update(key="voice-chat:main", conv="voice-chat:main", title="语音通话", pinned=True)
         task_convs = []
@@ -937,6 +942,8 @@ class WebAdapter:
                 c["task_status"] = row["status"]
                 c["task_updated_at"] = row["updated_at"]
                 c["title"] = row["title"]
+            elif task_id in cron_job_ids:
+                continue
             task_convs.append(c)
         return _compressed_json({"main": main, "tasks": task_convs})
 

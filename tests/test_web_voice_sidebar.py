@@ -114,3 +114,26 @@ async def test_voice_sidebar_task_row_survives_missing_task_row(web_app):
     assert len(data["tasks"]) == 1
     assert data["tasks"][0]["conv"] == "task:ghost123"
     assert "task_status" not in data["tasks"][0]
+
+
+@pytest.mark.anyio
+async def test_voice_sidebar_hides_script_cron_job_with_no_task_row(web_app, monkeypatch):
+    """mode="script" 的定时任务从不经过 task_runner.dispatch(),voice.db 里天生没有
+    它的行——"行缺失就当语音任务保留"的假设对它不成立,不然会永久混进"语音任务"/
+    "最近"分组(2026-08-18 排查 task:7c099f16 发现的真实 bug)。"""
+    from vococo import config
+    from vococo.cron import scheduler as cron_scheduler
+
+    monkeypatch.setattr(config, "CRON_JOBS_PATH", config.DATA_DIR / "cron_jobs.json")
+    cron_scheduler.save_jobs(
+        [{"id": "7c099f16", "name": "脚本任务", "mode": "script",
+          "schedule": {"kind": "cron", "expr": "10 10 * * *"}, "conv": "task:7c099f16"}]
+    )
+    session_store.append("task:7c099f16", "问", "答")
+
+    async with TestClient(TestServer(web_app)) as client:
+        resp = await client.get("/voice/sidebar")
+        assert resp.status == 200
+        data = await resp.json()
+
+    assert data["tasks"] == []
