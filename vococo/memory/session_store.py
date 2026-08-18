@@ -309,23 +309,34 @@ def delete_last_turn(session_key: str, turn_id: int) -> str | None:
     return row[1]
 
 
-def recover_interrupted_turns() -> int:
+def recover_interrupted_turns() -> list[dict]:
     """将进程重启遗留的进行中回合收尾，避免前端永久显示加载中。
 
     events 里写中断标记 [{"type":"interrupted"}]（/history 会透传给前端）:
     前端据此识别「这条是被重启打断的回复」，自动/一键继续生成（复用
     /turn/regenerate 把同一句话重发一遍），不用用户手动重打。
+
+    返回受影响的 [{"turn_id", "session_key", "user_text"}, ...]，供重启流程
+    对"非发起会话"做自动重发判断（见 gateway/run.py _auto_resend_interrupted）。
     """
     c = _conn()
+    rows = c.execute(
+        "SELECT id, session_key, user_text FROM turns WHERE assistant_text=''"
+    ).fetchall()
+    if not rows:
+        return []
     message = "⚠️ 服务重启导致本轮回复中断，请重新发送。"
     marker = json.dumps([{"type": "interrupted"}], ensure_ascii=False)
-    cur = c.execute(
+    c.execute(
         "UPDATE turns SET assistant_text=?, events=?, draft_text='', ts=? "
         "WHERE assistant_text=''",
         (message, marker, time.time()),
     )
     c.commit()
-    return cur.rowcount
+    return [
+        {"turn_id": row[0], "session_key": row[1], "user_text": row[2]}
+        for row in rows
+    ]
 
 
 def flush_draft(turn_id: int, text: str) -> None:

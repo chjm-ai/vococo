@@ -27,6 +27,7 @@ class GatewayRunner:
         self._locks: dict[str, anyio.Lock] = {}  # 每会话一把锁:同会话串行
         self._tg: anyio.abc.TaskGroup | None = None  # nursery,用于并发派发
         self._cancel_scopes: dict[str, anyio.CancelScope] = {}  # 每会话当前轮 CancelScope
+        self._recovered_interrupted: list[dict] = []  # 本次启动收尾的中断轮次(还魂用)
 
     async def push(self, platform: str, chat_id, text: str) -> None:
         adapter = self.adapters.get(platform)
@@ -188,17 +189,23 @@ class GatewayRunner:
                 await anyio.sleep(5)
 
     async def _resume_after_restart(self) -> None:
-        """自我重启后的「还魂」:读遗书(读完即删,至多一次)→ 回原对话注入验证指令。
+        """自我重启后的「还魂」:读遗书(读完即删,至多一次)→ 回原对话注入验证指令,
+        并把重启前【连坐被打断的其他会话】自动重发一遍(见 _auto_resend_interrupted)。
 
         agent 改完自身代码用 restart_self 重启后,新进程从这里接上:
         往原对话派发一条系统消息,走和真实用户消息完全相同的 _dispatch 流水线
         (锁/clarify 上下文/流式 sink/历史落库全都一致)。
+
+        只在【确实是 restart_self 触发的重启】(读到遗书)时才自动重发其他会话——
+        普通崩溃重启没有遗书,故意不做这个连带处理:一句会稳定触发崩溃的消息若
+        被无限自动重发,会把偶发崩溃放大成"重发→再崩→再重发"的消息风暴。
         """
         task = selfops.consume_resume()
         rolled_back = selfops.consume_rollback_flag()  # 无遗书也消费,清掉陈旧标记
         if task is None:
             return
         await anyio.sleep(3)  # 等 adapter 起好(web 端口绑定 / TG 轮询就绪)
+        await self._auto_resend_interrupted(exclude_key=task.get("session_key"))
 
         # 语音模式:GatewayRunner 没有 voice adapter, 暂存给 _handle_send 消费
         if task.get("platform") == "voice":
@@ -217,6 +224,32 @@ class GatewayRunner:
             store_text=selfops.build_resume_store_text(task, rolled_back),  # 入库/显示的简短系统条
         )
         await self._dispatch(adapter, inc)
+
+    async def _auto_resend_interrupted(self, exclude_key: str | None) -> None:
+        """把重启前连坐打断的【其他会话】自动重发一遍原话,不用等用户回到那个
+        会话页面才触发(对齐 web 前端 stream.js maybeAutoResume 的效果,但主动推)。
+
+        全系统只有一个 web adapter,普通对话/后台任务/语音三种 session_key
+        (web:<conv>/task:<id>/voice-chat:<id>)都经它路由(见 config.resolve_session_key),
+        所以这里不用按平台分流,统一走 web adapter 的 _dispatch。
+        """
+        adapter = self.adapters.get("web")
+        if adapter is None:
+            return
+        from .adapters.web import _conv_id_for_key  # 惰性导入,避免 import 环
+
+        for item in self._recovered_interrupted:
+            key = item["session_key"]
+            if key == exclude_key:
+                continue
+            user_text = session_store.delete_last_turn(key, item["turn_id"])
+            if user_text is None:
+                continue  # 轮次已不是最新(比如用户已手动处理过)—— 跳过,保留中断提示
+            inc = Incoming(platform="web", chat_id=_conv_id_for_key(key), text=user_text)
+            if self._tg is not None:
+                self._tg.start_soon(self._dispatch, adapter, inc)
+            else:
+                await self._dispatch(adapter, inc)
 
     def _install_loop_exception_handler(self) -> None:
         """全局兜底:抓"我们进程自己到底抛了什么异常"的真实证据。
@@ -256,9 +289,9 @@ class GatewayRunner:
         selfops.write_running_revision()
         # active_sessions 是上个进程留给外部重启脚本的尽力标记，新进程不存在那些任务。
         clarify.clear_active_sessions_after_restart()
-        recovered = session_store.recover_interrupted_turns()
-        if recovered:
-            print(f"⚠️ 已收尾 {recovered} 条被重启中断的回复", flush=True)
+        self._recovered_interrupted = session_store.recover_interrupted_turns()
+        if self._recovered_interrupted:
+            print(f"⚠️ 已收尾 {len(self._recovered_interrupted)} 条被重启中断的回复", flush=True)
         try:
             n = await asyncio.wait_for(worktree.prune_orphans(), timeout=15)
         except TimeoutError:
