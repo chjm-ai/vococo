@@ -280,13 +280,17 @@ def test_stop_never_kills_same_command_unowned_child(runtime) -> None:
         (root / "data" / "child.pid").write_text(
             f"{unrelated.pid}\n", encoding="utf-8"
         )
+        # 这条路径下 child.pid 被顶替,stop.sh 认不出真正的子进程、不会去杀它,
+        # 于是会跑满 stop.sh 里"等监督者自行退出"的 20×0.05s=1s 轮询兜底,
+        # 再去直接杀监督者——比其它场景多一轮 20 次 ps/kill 探测,在这台机器上
+        # 实测 fork 开销让总耗时逼近甚至超过 3s(2026-08-18 复现),放宽超时。
         result = subprocess.run(
             ["zsh", str(root / "deploy" / "stop.sh")],
             cwd=root,
             env=env,
             text=True,
             capture_output=True,
-            timeout=3,
+            timeout=8,
         )
 
         assert result.returncode == 0
