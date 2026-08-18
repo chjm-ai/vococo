@@ -41,8 +41,10 @@ call`(EINTR)时,**两种报错是同一个病的两副面孔:macOS TCC 权限。
 ProgramArguments[0],TCC 认的 responsible process),然后**必须整栈重启**才生效。
 ⚠️ `restart_self` 修不好这个:它只换 python 那一层,而 launchd 直接拉起的
 zsh(run.sh:127 的 while 循环)会一直活着并带着授权前的旧 TCC 上下文,子进程全部继承。
-整栈重启要在终端跑 `launchctl kickstart -k gui/$(id -u)/com.vococo`;
-会话内跑会被 danger.py 的「禁止直接控制 vococo 正式进程」防线拦下(这是对的)。
+整栈重启只能靠 `launchctl kickstart -k gui/$(id -u)/com.vococo`。
+它**不会**被 danger.py 拦(_PROCESS_CONTROL_COMMANDS 只认 kill/pkill/killall),会话内
+能跑通,但代价是:遗书/还魂只在 restart_self 路径上写,kickstart 会把当前会话拦腰斩断且
+回不来。所以会话内要跑,先跟主人讲清楚这一点,让他自己决定在终端跑还是授权你跑。
 
 ## 安全模型(动手前必读)
 工具调用分三档,判定在 tools/danger.py(经 PreToolUse hook 生效):
