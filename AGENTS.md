@@ -30,21 +30,34 @@ config.py 路径/常量;providers.py 多供应商切换
 人物资料以画像库为准,不要把称谓或同音别名当作另一个人。回答只引用本轮实际读到的资料,
 不要补造细节。
 
-### AI_BRAIN 读不到时:是 TCC 权限,不是 iCloud 抖动(别重试)
-`~/AI_BRAIN` 软链到 iCloud。读它报 `Operation not permitted` 或 `Interrupted system
-call`(EINTR)时,**两种报错是同一个病的两副面孔:macOS TCC 权限。重试无效,重试 100 次
-也一样**——iCloud Drive 目录只能靠「完全磁盘访问」放行,不弹窗直接拒(EPERM);其余受保护
-目录(Desktop 等)系统想弹授权框,但 vococo 是 launchd 后台进程、没有 GUI 会话应答,超时
-被打断(EINTR)。不得据此推断画像不存在,要如实说「AI_BRAIN 读不到,是 TCC 权限问题」。
+### AI_BRAIN 读不到时:先做对照实验,别急着加权限、别重启 vococo
+`~/AI_BRAIN` 软链到 iCloud。读它报 `Interrupted system call`(EINTR)或
+`Operation not permitted` 时,**重试无效,重试 100 次也一样**;也不得据此推断画像不存在,
+要如实说「AI_BRAIN 读不到」。
 
-修法:系统设置 → 隐私与安全性 → 完全磁盘访问权限,加 `/bin/zsh`(plist 的
-ProgramArguments[0],TCC 认的 responsible process),然后**必须整栈重启**才生效。
-⚠️ `restart_self` 修不好这个:它只换 python 那一层,而 launchd 直接拉起的
-zsh(run.sh:127 的 while 循环)会一直活着并带着授权前的旧 TCC 上下文,子进程全部继承。
-整栈重启只能靠 `launchctl kickstart -k gui/$(id -u)/com.vococo`。
-它**不会**被 danger.py 拦(_PROCESS_CONTROL_COMMANDS 只认 kill/pkill/killall),会话内
-能跑通,但代价是:遗书/还魂只在 restart_self 路径上写,kickstart 会把当前会话拦腰斩断且
-回不来。所以会话内要跑,先跟主人讲清楚这一点,让他自己决定在终端跑还是授权你跑。
+**第一步永远是这条对照命令**(2026-08-18 实测定案,别跳过):
+```
+ls ~/Downloads     # 受 TCC 保护,但不走 iCloud —— 一步分开两种病因
+```
+| Downloads | AI_BRAIN | 结论 |
+|---|---|---|
+| ✅ 可读 | ❌ 失败 | 真的是 iCloud/文件提供者问题 |
+| ❌ 也失败 | ❌ 失败 | **TCC 子系统卡死,与 iCloud 无关 → 唯一解是重启 macOS** |
+
+TCC 卡死的判据:`ps -o lstart -p $(pgrep tccd)` 显示 tccd 自开机起就没换过,且
+`~/Movies` 这类目录直接挂起数分钟不返回(系统在等一个永远弹不出来的授权框)。
+`tccd` 受 SIP 保护,`killall tccd` 杀不动,所以**除了重启系统没有别的办法**。
+此时加「完全磁盘访问」、重启 vococo 全是白费——2026-08-18 就是这么白折腾了三轮。
+
+⚠️ 反面教材,别重蹈:当时拿 `~/Desktop` 当对照组,但它开了「桌面与文稿」iCloud 同步、
+本身就是 iCloud 托管,于是推出「不是 iCloud 特有问题」的错误结论,又绕去查
+fileproviderd。`~/Downloads` 才是干净对照组。判断前先确认对照组真的干净。
+
+顺带备查(与上面无关,是另一件事):整栈重启 vococo 只能靠
+`launchctl kickstart -k gui/$(id -u)/com.vococo`,`restart_self` 只换 python 那一层,
+launchd 拉起的 zsh(run.sh:127 的 while 循环)会一直活着。kickstart 不会被 danger.py 拦
+(_PROCESS_CONTROL_COMMANDS 只认 kill/pkill/killall),但它不写遗书,会把当前会话拦腰
+斩断且回不来——会话内要跑,先跟主人讲清楚。
 
 ## 安全模型(动手前必读)
 工具调用分三档,判定在 tools/danger.py(经 PreToolUse hook 生效):
