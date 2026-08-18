@@ -987,6 +987,7 @@ class WebAdapter:
                 schedule=j.get("schedule"),
                 target=j.get("target"),
                 cwd=j.get("cwd"),
+                model=j.get("model"),
                 mode=j.get("mode") or "agent",
                 command=j.get("command"),
                 summarize_prompt=j.get("summarize_prompt"),
