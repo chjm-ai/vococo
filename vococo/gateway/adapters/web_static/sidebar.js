@@ -754,6 +754,8 @@ $("#projModal").onclick = e=>{ if(e.target===$("#projModal")) closeProjModal(); 
 // job 不传 = 新建模式;传了 = 编辑模式(表单回填该任务的字段,保存时打 update 接口)。
 // 列表在侧栏「定时任务」分组里看,启停/删除在该任务的「⋯」菜单里操作,这个弹窗只管
 // 「新建一条」或「编辑一条」的详情表单。
+function autoResizeTA(ta){ta.style.height="auto";ta.style.height=ta.scrollHeight+"px";}
+for(const ta of $$("#cronForm textarea")) ta.addEventListener("input",()=>autoResizeTA(ta));
 let _cronModelCache=null;
 async function populateCronModelSelect(selected){
   const sel=$("#cfModel");
@@ -799,6 +801,7 @@ function showCronForm(job){
   $("#cfCron").value = expr;
   $("#cfCwd").value = job ? (job.cwd || "") : "";
   populateCronModelSelect(job ? (job.model || "") : "");
+  requestAnimationFrame(()=>{for(const ta of $$("#cronForm textarea")) autoResizeTA(ta);});
   if(!job) $("#cfName").focus();
 }
 async function saveCronJob(){
