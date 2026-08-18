@@ -20,7 +20,10 @@ def test_recover_interrupted_turns_finishes_pending_rows(isolated):
     finished = session_store.start_turn("web:done", "完成了吗")
     session_store.finish_turn(finished, "已完成")
 
-    assert session_store.recover_interrupted_turns() == 1
+    recovered = session_store.recover_interrupted_turns()
+    assert len(recovered) == 1
+    assert recovered[0]["session_key"] == "web:pending"
+    assert recovered[0]["user_text"] == "还在吗"
     row = session_store.load_history("web:pending")[-1]
     assert row["pending"] is False
     assert row["assistant"] == "⚠️ 服务重启导致本轮回复中断，请重新发送。"
