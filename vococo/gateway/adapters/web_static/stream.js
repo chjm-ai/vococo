@@ -423,12 +423,14 @@ function handleEvent(e){
   if(e.type==="done"||e.type==="message"){ delete S.histCache[e.conv]; idbDel("hist:"+e.conv); }
   // 维护每会话"进行中"缓冲:无论前台/后台都记录,切回该会话时可完整重建流式气泡
   if(STREAMY.indexOf(e.type)>=0){ bufPush(e.conv, e); markLive();
-    // 后台任务起跑事件来自 notify 桥接(主 SSE) → 侧栏此行可能还不存在
-    // (首次触发,loadVoiceSidebar 还没拉过最新数据),在这里拉一次确保渲染。
-    // 不是每帧都拉:只 start 且行不在侧栏数据里时才触发。
-    if(e.type==="start" && String(e.conv).startsWith("task:") &&
-       !(S.voiceSidebar.tasks||[]).find(x=>x.conv===e.conv)){
-      loadVoiceSidebar();
+    // start = 这一轮刚起跑的时刻,也正是后端刚把 archived 清掉/状态改成 running 的
+    // 时刻(见 run.py._handle / task_runner._start_one)。之前只在"侧栏还没这一行"
+    // 时才刷新,续接一个侧栏里本来就存在的旧行(已归档/已完成)不会触发,archived
+    // 和状态要等这一轮 done 才刷新——期间侧栏一直显示旧数据,长任务尤其明显。
+    // 都是廉价的 GET,不必省这一次:start 无条件刷新对应侧栏。
+    if(e.type==="start"){
+      if(String(e.conv).startsWith("task:")) loadVoiceSidebar();
+      else loadConvs();
     }
   }
   if(e.type==="done"||e.type==="message"){
