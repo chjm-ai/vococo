@@ -20,7 +20,7 @@ _Avoid_: 未分类
 **说明:项目是 Web 端概念。** CLI 及跨入口的 main 线不属于任何项目,永远跑在进程默认目录下,不受 Web 端项目操作影响。
 
 **Risk Tier(危险分级)**:
-每次工具调用被 `classify()`(`tools/danger.py`)判成三档 —— `allow`(放行)/ `escalate`(请用户批准)/ `block`(直接拦)。灾难级(删整根、格式化磁盘、覆写裸盘、fork 炸弹)→ `block`;5 类危险操作(写**项目 cwd 外**的文件、`git push`/`git reset --hard`、`rm -rf`、包安装、`curl|sh`)→ `escalate`;其余 `allow`。`escalate`/`block` 分别受 `APPROVAL_GATE`/`DANGER_GUARD` 开关控制。
+每次工具调用被 `classify()`(`tools/danger.py`)判成三档 —— `allow`(放行)/ `escalate`(请用户批准)/ `block`(直接拦)。灾难级(删整根、格式化磁盘、覆写裸盘、fork 炸弹)→ `block`;5 类危险操作(写**项目 cwd 外**的文件、`git push`/`git reset --hard`、`rm -rf`、包安装、`curl|sh`)→ `escalate`;其余 `allow`。「写 cwd 外」有两处豁免不弹审批:AI_BRAIN 记忆目录、系统临时目录(`/tmp`、`$TMPDIR`)——前者是正常记忆读写,后者是一次性草稿脚本,都不构成「注入落地后门」的持久化风险。`escalate`/`block` 分别受 `APPROVAL_GATE`/`DANGER_GUARD` 开关控制。
 _Avoid_: 白名单/黑名单(这是三档而非二元)
 
 **Hard Guard(常开正确性防线)**:

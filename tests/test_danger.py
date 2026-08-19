@@ -118,6 +118,16 @@ def test_classify_write_outside_cwd(tmp_path):
     assert classify("Write", {"file_path": "/etc/evil"}, cwd=str(tmp_path))[0] == "escalate"
 
 
+def test_classify_write_system_tmp_allowed(tmp_path):
+    """系统临时目录里的草稿脚本不算「越界写」,不该弹审批。"""
+    import os
+    import tempfile
+
+    scratch = os.path.join(tempfile.gettempdir(), "vococo_test_scratch.py")
+    assert classify("Write", {"file_path": scratch}, cwd=str(tmp_path))[0] == "allow"
+    assert classify("Write", {"file_path": "/tmp/vococo_test_scratch.py"}, cwd=str(tmp_path))[0] == "allow"
+
+
 def test_classify_external_mcp_write_escalates():
     """外部 MCP 写操作(发邮件/删数据)必须请批准,读操作不拦。"""
     assert classify("mcp__lemlist_lite__send_email", {"message": "hi"})[0] == "escalate"
