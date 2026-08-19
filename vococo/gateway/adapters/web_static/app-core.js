@@ -237,10 +237,15 @@ async function tryEnter(){
   // 有缓存口令时,首帧就已经靠 #bootSkip 样式把口令页藏起来、#app 显示出来了(见 </head> 后那段内联脚本)。
   // 这里立刻把内容区铺成骨架屏,不要空等——避免"口令消失→空白/欢迎屏→数据陆续到位"的中间闪烁态。
   $("#wrap").innerHTML=""; $("#empty").style.display="none"; $("#convLoading").classList.add("on");
+  // 服务端偏好(/prefs)要等到下面的 secondary 批次才拉回来,首屏这次沿用
+  // localStorage 缓存的上次 filter(跟主题缓存同一个套路)——命中"active"/
+  // "archived" 时直接让后端只回那一半,省掉归档堆积后的越境传输量。
+  try{ const cf = localStorage.getItem("vococo_conv_filter"); if(cf) S.convFilter = cf; }catch(e){}
   const cachedConvs = await idbGet("convs");
   if(cachedConvs){ applyConvs(cachedConvs); setServiceState("cached"); }  // 缓存先画,但明确不是已同步数据
   try{
-    const r = await fetch("/conversations", {headers:{"X-Auth-Token":S.token}});
+    const qs = (S.convFilter==="active"||S.convFilter==="archived") ? ("?filter="+S.convFilter) : "";
+    const r = await fetch("/conversations"+qs, {headers:{"X-Auth-Token":S.token}});
     if(r.status===401){ $("#loginErr").textContent="口令错误"; showLogin(); return; }
     if(!r.ok) throw new Error("HTTP "+r.status);
     const d = await r.json();

@@ -89,7 +89,15 @@ async function loadPrefs(){
       try{ localStorage.setItem("vococo_theme", p.theme); }catch(e){}
       syncTheme();
     }
-    if(p.conv_filter) S.convFilter = p.conv_filter;
+    if(p.conv_filter){
+      // 首屏那次 /conversations 是在偏好加载出来前发的(见 tryEnter),用的是
+      // localStorage 缓存的旧值或"all"兜底;这里服务端值一旦跟当下不一致,
+      // 补拉一次按真实 filter 瘦身的数据,不能只是原地改 S.convFilter 不刷新。
+      const changed = p.conv_filter !== S.convFilter;
+      S.convFilter = p.conv_filter;
+      try{ localStorage.setItem("vococo_conv_filter", p.conv_filter); }catch(e){}
+      if(changed) await loadConvs();
+    }
   }catch(e){}
 }
 // 用一份 /conversations 响应数据重建 S.convs(供 loadConvs() 与登录时的首次拉取共用,
@@ -104,7 +112,11 @@ function applyConvs(d){
   renderConvs();   // 会话刷新后同步标题栏
 }
 async function loadConvs(){
-  const r = await api("/conversations"); const d = await r.json();
+  // S.convFilter 是 active/archived 时让后端只回那一半,省掉归档堆积后的
+  // 传输量(隧道带宽有限,见 prefetchHistories 上面那段注释);"all"/未知值
+  // 不加参数,保持全量。
+  const qs = (S.convFilter==="active"||S.convFilter==="archived") ? ("?filter="+S.convFilter) : "";
+  const r = await api("/conversations"+qs); const d = await r.json();
   applyConvs(d);
   idbSet("convs", d);
   prefetchHistories();
