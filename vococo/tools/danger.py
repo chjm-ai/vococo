@@ -18,6 +18,7 @@ import contextvars
 import os
 import re
 import shlex
+import tempfile
 
 from .. import config
 
@@ -473,6 +474,24 @@ def _inside_ai_brain(path: str, cwd: str | None) -> bool:
         return False
 
 
+def _inside_scratch_tmp(path: str, cwd: str | None) -> bool:
+    """目标文件是否落在系统临时目录内(/tmp、$TMPDIR)。
+
+    这类文件是一次性草稿(临时脚本、中间产物),进程/重启后即失效,不构成
+    「注入后落地后门/改配置」的持久化风险,不该跟改真实文件一样每次弹审批。
+    """
+    if not path:
+        return False
+    try:
+        target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
+        tmp_bases = {os.path.realpath(tempfile.gettempdir()), os.path.realpath("/tmp")}
+        return any(
+            os.path.commonpath([target, base]) == base for base in tmp_bases
+        )
+    except (ValueError, OSError):
+        return False
+
+
 def classify(
     tool_name: str, tool_input: dict, cwd: str | None = None
 ) -> tuple[str, str, bool]:
@@ -504,6 +523,9 @@ def classify(
         path = ti.get("file_path") or ti.get("notebook_path") or ""
         # AI_BRAIN 是 vococo 正常记忆目录,虽在项目根外,但不应每次弹审批
         if path and _inside_ai_brain(path, cwd):
+            return ("allow", "", False)
+        # 系统临时目录:一次性草稿脚本,不持久化,不应每次弹审批
+        if path and _inside_scratch_tmp(path, cwd):
             return ("allow", "", False)
         if _outside_cwd(path, cwd):
             # 写工作目录外:自动化通道也拒绝(可能被注入用来落地后门/改配置)
