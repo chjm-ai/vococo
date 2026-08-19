@@ -1104,7 +1104,9 @@ function renderConvFilterPop(){
   const pop=$("#convFilterPop");
   pop.innerHTML=opts.map(([v,l])=>'<button class="fmi'+(S.convFilter===v?" on":"")+'" data-fv="'+v+'">'+l+'</button>').join("");
   pop.querySelectorAll(".fmi").forEach(b=>{
-    b.onclick=e=>{ e.stopPropagation(); S.convFilter=b.dataset.fv; pop.hidden=true; updateFilterBtn(); renderConvs();
+    b.onclick=e=>{ e.stopPropagation(); S.convFilter=b.dataset.fv; pop.hidden=true; updateFilterBtn();
+      try{ localStorage.setItem("vococo_conv_filter", S.convFilter); }catch(err){}
+      loadConvs();   // active/archived 现在是服务端过滤的瘦身请求,不是纯客户端重新渲染缓存
       api("/prefs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv_filter:S.convFilter})}).catch(()=>{}); };
   });
 }

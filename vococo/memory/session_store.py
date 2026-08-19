@@ -470,7 +470,7 @@ def ensure_title(session_key: str, from_text: str, limit: int = 40) -> str | Non
     return title
 
 
-def list_sessions(prefix: str) -> list[dict]:
+def list_sessions(prefix: str, *, archived: bool | None = None) -> list[dict]:
     """列出 session_key 以 prefix 开头的会话摘要,最近活跃的排前面。
 
     返回 [{key, title, turns, last_ts}, ...]。turns 只算当前上下文窗口
@@ -479,8 +479,17 @@ def list_sessions(prefix: str) -> list[dict]:
     会话键来源取「有 turn」∪「有标题」:新建会话在 AI 回复完之前只写了
     session_meta 标题、还没有 turn 落库,若只按 turns 表列会导致它刚发完
     第一条就从侧边栏消失(要等回复完才出现)。带标题即视为一个会话。
+
+    archived=None(默认)不过滤,兼容旧调用;传 True/False 时在 SQL 层
+    (HAVING,因为 archived 是聚合后的字段)只取归档/未归档会话——过滤越境
+    (跨境隧道带宽有限)传输,不要整包拉回来再在调用方/前端筛。
     """
     c = _conn()
+    having = ""
+    params: list = [prefix + "%", prefix + "%"]
+    if archived is not None:
+        having = " HAVING COALESCE(MAX(m.archived),0) = ?"
+        params.append(1 if archived else 0)
     rows = c.execute(
         "WITH keys AS ("
         "  SELECT session_key FROM turns WHERE session_key LIKE ?"
@@ -497,18 +506,18 @@ def list_sessions(prefix: str) -> list[dict]:
         "  COALESCE(MAX(m.last_cache),0), COALESCE(MAX(m.last_out),0), MAX(m.model), "
         "  MAX(m.chosen_model), COALESCE(MAX(m.archived),0), "
         "  COALESCE(MAX(m.pending_review),0), COALESCE(MAX(m.pinned),0), "
-        "  COALESCE(MAX(m.last_error),0) "
+        "  COALESCE(MAX(m.last_error),0), MAX(m.title) "
         "FROM keys k "
         "LEFT JOIN session_meta m ON k.session_key = m.session_key "
         "LEFT JOIN turns t ON t.session_key = k.session_key "
         "  AND t.id > COALESCE(m.watermark_id, 0) "
-        "GROUP BY k.session_key ORDER BY 3 DESC",
-        (prefix + "%", prefix + "%"),
+        "GROUP BY k.session_key" + having + " ORDER BY 3 DESC",
+        params,
     ).fetchall()
     out: list[dict] = []
     for row in rows:
         key, turns, last_ts = row[0], row[1], row[2]
-        item = {"key": key, "title": get_title(key) or "新对话", "turns": turns, "last_ts": last_ts}
+        item = {"key": key, "title": row[15] or "新对话", "turns": turns, "last_ts": last_ts}
         item.update(_usage_fields(row[3:11]))
         item["archived"] = bool(row[11])
         item["pending_review"] = bool(row[12])

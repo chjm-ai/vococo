@@ -303,7 +303,7 @@ def _conv_id_for_key(key: str) -> str:
     return key
 
 
-def _rows_with_conv(prefix: str) -> list[dict]:
+def _rows_with_conv(prefix: str, *, archived: bool | None = None) -> list[dict]:
     """session_store.list_sessions(prefix) 的结果统一装上 conv 字段。
 
     普通会话/语音任务两个侧栏分组都从这里取数据——它们和 pending_review/
@@ -312,8 +312,10 @@ def _rows_with_conv(prefix: str) -> list[dict]:
     (cron-task 分组数据源是 scheduler.load_jobs() 而非 list_sessions() 直接
     返回的行,结构不同,不套用本函数,但仍可用 list_sessions() 查同一份字段,
     见 _handle_cron_sidebar 的 _pending_map 用法)。
+
+    archived 透传给 list_sessions:None 取全部,True/False 只取归档/未归档。
     """
-    rows = session_store.list_sessions(prefix)
+    rows = session_store.list_sessions(prefix, archived=archived)
     for r in rows:
         r["conv"] = _conv_id_for_key(r["key"])
     return rows
@@ -881,7 +883,11 @@ class WebAdapter:
 
     @_authed
     async def _handle_conversations(self, request: web.Request) -> web.Response:
-        convs = _rows_with_conv("web:")
+        # ?filter=active|archived 时在 SQL 层就把另一半过滤掉,只传前端要看的
+        # 那部分——不带该参数(如首屏用户偏好还没加载出来前那次)则保持全量,
+        # 见 sidebar.js loadConvs()/app-core.js tryEnter() 里的调用方注释。
+        archived = {"active": False, "archived": True}.get(request.query.get("filter"))
+        convs = _rows_with_conv("web:", archived=archived)
         # 主会话(与 TG/CLI 共享的统一会话)固定置顶,conv id 用 "main"
         main = session_store.session_summary(config.resolve_session_key("web", "main"))
         main.update(key="main", title="主会话", pinned=True, conv="main")
