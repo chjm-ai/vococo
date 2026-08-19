@@ -559,3 +559,90 @@ def test_index_rows_parses_five_columns(tmp_path):
         rows = pp._index_rows()
     assert rows[0] == ["胜源", "盛源", "朋友", "化工", "17"]
     assert rows[1][4] == "3"
+
+
+# ── 对话来源写入(save_person 工具) ──────────────────────────────────────────
+def _setup_people(tmp_path, monkeypatch, index_text: str = ""):
+    """把画像目录和索引都指到 tmp_path,返回 (画像目录, 索引路径)。"""
+    people = tmp_path / "people"
+    people.mkdir()
+    idx = tmp_path / "people-network.md"
+    idx.write_text(
+        index_text
+        or "| 名字 | 别名 | 关系 | 标签 | 互动 |\n|---|---|---|---|---|\n"
+           "| 胜源 | 盛源, 圣元 | 核心合伙人 | 化工 | 17 |\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pp, "people_dir", lambda: people)
+    monkeypatch.setattr(pp, "index_path", lambda: idx)
+    return people, idx
+
+
+def test_resolve_person_name_merges_alias(tmp_path, monkeypatch):
+    """对话里说别名要归到标准名,否则同一个人会被拆成两个画像文件。"""
+    people, _ = _setup_people(tmp_path, monkeypatch)
+    (people / "胜源.md").write_text("---\nrelationship: 核心合伙人\ntags: []\nlast_updated: 2026-08-01\n---\n", encoding="utf-8")
+    assert pp.resolve_person_name("圣元") == ("胜源", True)   # 别名
+    assert pp.resolve_person_name("胜源") == ("胜源", True)   # 本名
+    assert pp.resolve_person_name(" 盛 源 ") == ("胜源", True)  # 去空白兜底
+    assert pp.resolve_person_name("查无此人") == ("查无此人", False)
+
+
+def test_save_from_conversation_marks_source_not_wikilink(tmp_path, monkeypatch):
+    """对话来源没有对应笔记,互动记录不能编 wikilink(会变死链),标「（对话）」。"""
+    people, _ = _setup_people(tmp_path, monkeypatch)
+    (people / "胜源.md").write_text(
+        "---\nrelationship: 核心合伙人\ntags: []\nlast_updated: 2026-08-01\n---\n\n"
+        "## 画像\n- 做化工贸易\n\n## 互动记录\n- 260801 见面 → [[260801-见面]]\n",
+        encoding="utf-8",
+    )
+    res = pp.save_from_conversation("圣元", interaction="电话聊了期货持仓", date6="260819")
+    assert res["name"] == "胜源" and res["known"] is True
+    text = (people / "胜源.md").read_text(encoding="utf-8")
+    assert "- 260819 电话聊了期货持仓 →（对话）" in text
+    assert "[[" not in text.split("## 互动记录")[1].split("260819")[1]  # 新行没有 wikilink
+    assert "- 260801 见面 → [[260801-见面]]" in text                    # 旧的笔记行不动
+
+
+def test_save_from_conversation_creates_and_registers(tmp_path, monkeypatch):
+    """画像库里没有的人:建文件 + 登记索引,和 cron 那条线格式一致。"""
+    people, idx = _setup_people(tmp_path, monkeypatch)
+    res = pp.save_from_conversation(
+        "新朋友", interaction="展会上认识", dynamics=["做AI硬件"],
+        occupation="创业者", relationship="朋友", date6="260819",
+    )
+    assert res["known"] is False and "新建" in res["change"]
+    text = (people / "新朋友.md").read_text(encoding="utf-8")
+    assert "relationship: 朋友" in text and "- 职业：创业者" in text
+    assert "- 260819 展会上认识 →（对话）" in text
+    assert "| 新朋友 |" in idx.read_text(encoding="utf-8")
+
+
+def test_save_from_conversation_dynamics_only_no_empty_interaction(tmp_path, monkeypatch):
+    """只补画像事实、没有具体互动时,不该在互动记录里留一行空摘要。"""
+    people, _ = _setup_people(tmp_path, monkeypatch)
+    (people / "胜源.md").write_text(
+        "---\nrelationship: 核心合伙人\ntags: []\nlast_updated: 2026-08-01\n---\n\n"
+        "## 画像\n- 做化工贸易\n\n## 互动记录\n- 260801 见面 → [[260801-见面]]\n",
+        encoding="utf-8",
+    )
+    pp.save_from_conversation("胜源", dynamics=["今年转做期货为主"], date6="260819")
+    text = (people / "胜源.md").read_text(encoding="utf-8")
+    assert "- [260819] 今年转做期货为主" in text
+    assert "- 260819 " not in text            # 没有互动记录行
+    assert "→（对话）" not in text
+
+
+def test_append_section_keeps_single_blank_line(tmp_path, monkeypatch):
+    """反复追加不能让 section 之间的空行越积越多(旧版恒定 "\\n\\n" 的老毛病)。"""
+    people, _ = _setup_people(tmp_path, monkeypatch)
+    (people / "胜源.md").write_text(
+        "---\nrelationship: 核心合伙人\ntags: []\nlast_updated: 2026-08-01\n---\n\n"
+        "## 画像\n- 做化工贸易\n\n## 互动记录\n- 260801 见面 → [[260801-见面]]\n",
+        encoding="utf-8",
+    )
+    for i, d6 in enumerate(["260819", "260820", "260821"]):
+        pp.save_from_conversation("胜源", interaction=f"第{i}次", dynamics=[f"动态{i}"], date6=d6)
+    text = (people / "胜源.md").read_text(encoding="utf-8")
+    assert "\n\n\n" not in text
+    assert text.count("## 互动记录") == 1

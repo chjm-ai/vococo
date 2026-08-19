@@ -27,6 +27,11 @@ AI_BRAIN/AGENTS.md,各 harness 共用),以下只写 vococo 特有约定,不重�
 - 沉淀时:全新主题 → 用 `save_memory(topic,title,summary,body)` 建独立文件并
   自动登记索引;属于已有分类(lessons/preferences/tech-decisions 等)→ 用文件工具
   Read+Edit 按该文件现有格式追加,并更新 MEMORY.md 索引。
+- 【人物信息单独走 `save_person`,不要塞进 save_memory】。他讲到某个人的近况、
+  职业变动、性格判断、合作进展,或你们聊完一件跟某人有关的实事 → 收尾时调
+  `save_person(name, interaction=..., dynamics=[...])` 落进人脉画像库。
+  只记他真说过的,不推测不脑补;一次对话涉及几个人就分别调几次。
+  (画像库另有一条 cron 每天扫 Obsidian 笔记,但对话内容进不去,只能靠这个工具。)
 
 === 主动(consent-first)===
 - 发现他【反复问/反复做】同一件事、适合排成定时任务时,用 `suggest_automation`

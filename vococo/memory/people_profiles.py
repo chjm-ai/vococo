@@ -62,6 +62,15 @@ _BASE_RELATIONSHIPS = {"朋友", "高中同学", "大学同学", "同学", "同�
 
 # 互动记录追加行:YYMMDD 摘要 → [[真实笔记文件名]](wikilink 用真实文件名,不编造)
 _INTERACTION_LINE = "- {date} {summary} → [[{note_title}]]"
+# 对话来源(save_person 工具)没有对应笔记,不能编 wikilink,改标来源后缀
+_INTERACTION_LINE_NO_NOTE = "- {date} {summary} →（对话）"
+
+
+def _interaction_line(date: str, summary: str, note_title: str) -> str:
+    """note_title 为空 = 来源是对话而非笔记,不生成 wikilink(否则是死链)。"""
+    if note_title:
+        return _INTERACTION_LINE.format(date=date, summary=summary, note_title=note_title)
+    return _INTERACTION_LINE_NO_NOTE.format(date=date, summary=summary)
 
 
 def people_dir() -> Path:
@@ -530,9 +539,12 @@ def _append_section(text: str, section: str, line: str, dedup_key: str | None = 
     m = pat.search(text)
     if m:
         tail = text[m.end():]
-        # 是文件最后一个 section(tail 为空)只补一个换行;不是最后一个才要
-        # 空行去分隔下一个 "## XX"(恒定加 "\n\n" 会在文件末尾多留一空行)。
-        sep = "\n\n" if tail else "\n"
+        # 正则的 lookahead 是 (?=\n## |\Z),所以 tail 要么是空(最后一个 section),
+        # 要么已经自带前导 "\n"——两种情况都只补一个 "\n":空时是文件结尾换行,
+        # 非空时和 tail 的前导换行凑成隔开下一个 "## XX" 的空行。
+        # (旧版这里恒定加 "\n\n",每追加一条就在 section 之间多留一个空行,
+        #  画像文件被反复扫描后会越积越松散。)
+        sep = "\n" if not tail or tail.startswith("\n") else "\n\n"
         return (
             text[:m.end(1)] + text[m.start(2):m.end(2)].rstrip() + "\n" + line + sep + tail,
             True,
@@ -567,9 +579,7 @@ def _new_profile_file(name: str, result: dict, date6: str, note_title: str) -> s
     if not dyn:
         body.append("- (待补充)")
     body += ["", "## 互动记录"]
-    body.append(_INTERACTION_LINE.format(
-        date=date6, summary=result.get("interaction") or "初次互动", note_title=note_title,
-    ))
+    body.append(_interaction_line(date6, result.get("interaction") or "初次互动", note_title))
     return "\n".join(body) + "\n"
 
 
@@ -584,8 +594,8 @@ def _write_or_update_profile(name: str, result: dict, date6: str, note_title: st
     pd = people_dir()
     pd.mkdir(parents=True, exist_ok=True)
     path = pd / f"{_safe_filename(name)}.md"
-    interaction = result.get("interaction") or ""
-    line = _INTERACTION_LINE.format(date=date6, summary=interaction, note_title=note_title)
+    interaction = (result.get("interaction") or "").strip()
+    line = _interaction_line(date6, interaction, note_title)
 
     if not path.exists():
         path.write_text(_new_profile_file(name, result, date6, note_title), encoding="utf-8")
@@ -608,7 +618,10 @@ def _write_or_update_profile(name: str, result: dict, date6: str, note_title: st
 
     # 互动记录按「同日期」去重:LLM 措辞会抖,子串去重挡不住同一事实的
     # 不同写法;一天一人最多一条互动记录(与现有画像风格一致,如 250816 一条)。
-    text, app_interaction = _append_section(text, "互动记录", line, dedup_key=f"- {date6} ")
+    # 没有互动内容(save_person 只补画像事实)就不追加,免得留一行空摘要。
+    app_interaction = False
+    if interaction:
+        text, app_interaction = _append_section(text, "互动记录", line, dedup_key=f"- {date6} ")
     # 动态也按「同日期」去重(与互动记录一致)。
     seen_dyn = set()
     dyn_added = 0
@@ -671,6 +684,66 @@ def _register_index(name: str, result: dict) -> str:
         text = text.rstrip() + "\n" + line + "\n"
     index_path().write_text(text, encoding="utf-8")
     return "索引登记"
+
+
+def resolve_person_name(name: str) -> tuple[str, bool]:
+    """把对话里说的名字(可能是别名/带姓不带姓)归并到画像库的标准名。
+
+    返回 (标准名, 是否已知)。只做精确查表(含别名、去空白兜底),不调 LLM——
+    save_person 是同步的工具调用,而且模型手上已有本轮上下文,判断力不比
+    LLM 复核差;查不到就按新人处理。
+    """
+    name = name.strip()
+    people = known_people()
+    idx = _known_name_index(people)
+    if name in idx:
+        return idx[name], True
+    norm = {_normalize_for_match(k): v for k, v in idx.items()}
+    hit = norm.get(_normalize_for_match(name))
+    if hit:
+        return hit, True
+    return name, False
+
+
+def save_from_conversation(
+    name: str,
+    *,
+    interaction: str = "",
+    dynamics: list[str] | None = None,
+    occupation: str = "",
+    relationship: str = "",
+    tags: list[str] | None = None,
+    date6: str | None = None,
+) -> dict:
+    """把对话里聊到的人物信息落进画像库(save_person 工具的实现)。
+
+    与 cron 扫笔记那条线共用同一套写入函数,所以格式、去重、关系保守更新、
+    索引登记的行为完全一致;唯一区别是 note_title 传空 —— 对话来源没有对应
+    笔记,不能编 wikilink,互动记录行改标「→（对话）」。
+
+    date6 默认今天。互动记录仍按「同日期」去重:同一天里对话先写了一条,
+    当晚 cron 扫到同日笔记就不再追加(一天一人一条,与现有画像风格一致)。
+    """
+    std, known = resolve_person_name(name)
+    if not std:
+        return {"status": "error", "reason": "name 为空"}
+    result = {
+        "interaction": (interaction or "").strip(),
+        "dynamics": [d.strip() for d in (dynamics or []) if d.strip()],
+        "occupation": (occupation or "").strip(),
+        "relationship": (relationship or "").strip(),
+        "tags": [t.strip() for t in (tags or []) if t.strip()],
+    }
+    date6 = date6 or time.strftime("%y%m%d")
+    change = _write_or_update_profile(std, result, date6, "")
+    registered = _register_index(std, result) if not known else ""
+    _refresh_index_count(std)
+    return {
+        "status": "done",
+        "name": std,
+        "known": known,
+        "change": change + (" · " + registered if registered else ""),
+    }
 
 
 async def process_note(text: str, note_title: str, note_date: str) -> dict:
