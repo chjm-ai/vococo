@@ -1374,7 +1374,7 @@
   @media(max-width:390px){.wb-project-grid{grid-template-columns:1fr}.wb-project-card{min-height:132px}.wb-project-foot{flex-direction:row}.wb-hero-stats div{min-width:76px;padding:11px}.wb-hero-stats b{font-size:20px}}
 
   /* ── 工作台：日 / 周 / 月的执行清单，不使用独立视觉语言 ───────────────── */
-  #workbenchView{flex:1;min-width:0;overflow-y:auto;scrollbar-gutter:stable;background:var(--bg2)}
+  #workbenchView{flex:1;min-width:0;overflow-y:scroll;scrollbar-gutter:stable;background:var(--bg2)}
   #workbenchView[hidden]{display:none}
   #wbContent{width:min(980px,100%);margin:0 auto;padding:26px 32px 56px}
   .wb-toolbar{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:0 0 16px;border-bottom:1px solid var(--line)}
