@@ -212,7 +212,7 @@ function convsInGroup(hash){
 function buildVoiceMainRow(inCall){
   // 主会话是固定入口,不能依赖 /voice/sidebar 请求成功才显示。该请求只负责
   // 后台任务元数据;网络失败时仍必须保留入口,让用户至少能继续发消息。
-  const mainRow=el("div","conv voicemain"+(inCall?" active":""));
+  const mainRow=el("div","conv"+(inCall?" active":""));
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");
   const mainCt=el("div","ct"); mainCt.textContent="主会话"; mainBody.append(mainCt);
@@ -220,6 +220,13 @@ function buildVoiceMainRow(inCall){
   mainRow.append(mainBody);
   mainRow.onclick=()=>{ openCallView(); };
   return mainRow;
+}
+function buildWorkbenchRow(){
+  const row=el("div","conv"+(S.surface==="workbench"?" active":""));
+  const body=el("div","cvbody"); body.innerHTML=ic("grid");
+  const title=el("div","ct"); title.textContent="工作台"; body.append(title);
+  row.append(body); row.onclick=()=>openWorkbench();
+  return row;
 }
 // 语音后台任务的单条行(与普通会话行同构);archived 筛选不通过时返回 null。
 // 拆成单条构建是为了跟普通会话按时间混排(见 renderConvs 里默认项目分组的合并排序)。
@@ -419,6 +426,7 @@ function renderConvs(){
   $("#newBtn").innerHTML = '<div class="cvbody">'+ic("edit")+'<div class="ct">新对话</div></div>';
   const top=$("#convTopRows"); top.innerHTML="";
   const vm=buildVoiceMainRow(inCall); if(vm) top.append(vm);
+  const workbench=buildWorkbenchRow(); if(workbench) top.append(workbench);
   // 列表区:Tab 栏固定(#sideTabs),只有分组内容(#convBody)滚动;首次渲染会清掉骨架行
   const tabs=$("#sideTabs"); tabs.innerHTML=""; renderSideTabs(tabs);
   const box=$("#convBody"); box.innerHTML="";

@@ -227,7 +227,7 @@ try{
       <div id="newBtn" class="conv"><div class="cvbody"><div class="skel sbar"></div></div></div>
       <div id="convTopRows">
         <div class="conv skelrow"><div class="cvbody"><div class="skel sbar"></div></div></div>
-        <div class="conv voicemain skelrow"><div class="cvbody"><div class="skel sbar w45"></div></div></div>
+        <div class="conv skelrow"><div class="cvbody"><div class="skel sbar w45"></div></div></div>
       </div>
     </div>
     <div id="convList">
@@ -365,6 +365,10 @@ try{
       <input type="file" id="file" multiple hidden>
     </form>
   </main>
+  <!-- 核心工作台 Demo：数据与交互均在前端内存，不触达现有任务/文档同步链路。 -->
+  <main id="workbenchView" hidden>
+    <div id="wbContent"></div>
+  </main>
   <!-- 通话视图:语音通话(原独立 /voice 页,2026-07-09 并入主 SPA,见 00-overview.md
        §2 隔离约束的修订说明)。跟 #chatMain 互斥显隐,左上角复用同一套侧栏展开逻辑,
        原地叠加不打断通话——这正是要合并的原因。 -->
@@ -445,6 +449,7 @@ try{
 <script src="/app-core.js"></script>
 <script src="/markdown.js"></script>
 <script src="/sidebar.js"></script>
+<script src="/workbench.js"></script>
 <script src="/settings.js"></script>
 <script src="/stream.js"></script>
 <script>
@@ -1306,7 +1311,9 @@ function renderEventsFlow(events, ctx){
   return flow;
 }
 async function openConv(conv, silentGroup){
+  closeWorkbench();
   closeCallView();  // 切到别的会话就等于离开通话;没在通话视图里时这行是空操作
+  S.surface = "chat";
   $("#chatMain").hidden = false;  // 确保聊天界面可见
   closeCmdMenu();
   // 离开的会话仍在流式:别把已经建好的工具卡 DOM 扔掉重来,摘下来存好,回来时直接接回,

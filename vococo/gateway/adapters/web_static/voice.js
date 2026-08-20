@@ -3224,6 +3224,8 @@ void main(){
   }
 
   window.openCallView = function(){
+    closeWorkbench();
+    S.surface = "call";
     closeSidebar();
     // 从普通会话进入主会话时记住原位置。重复点入口时 S.conv 已是语音主会话,
     // 不能覆盖掉返回位置。

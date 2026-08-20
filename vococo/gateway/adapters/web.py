@@ -46,7 +46,7 @@ _STATIC = Path(__file__).resolve().parent / "web_static"
 _VERSIONED_ASSETS = (
     "styles.css", "tool-card.js",
     # 2026-08-14 前端模块化:从 index.html 拆出的功能块(加载顺序即此顺序)
-    "app-core.js", "markdown.js", "sidebar.js", "settings.js",
+    "app-core.js", "markdown.js", "sidebar.js", "settings.js", "workbench.js",
     "stream.js", "composer.js", "voice.js",
 )
 _DOC_PREVIEW_MAX = 3 * 1024 * 1024  # 文档预览分屏读文件上限;超过就不读,前端提示下载/自己开
@@ -2316,7 +2316,7 @@ class WebAdapter:
                 web.get("/styles.css", self._handle_styles),
                 web.get("/tool-card.js", self._handle_tool_card_js),
                 web.get(
-                    r"/{name:(?:app-core|markdown|sidebar|settings|stream|composer|voice)\.js}",
+                    r"/{name:(?:app-core|markdown|sidebar|settings|workbench|stream|composer|voice)\.js}",
                     self._handle_app_js,
                 ),
                 web.get("/favicon.ico", self._handle_favicon),
