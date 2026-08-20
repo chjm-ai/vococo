@@ -1383,13 +1383,10 @@ async function openConv(conv, silentGroup){
     if(citem) citem.pending_review=false;
     api("/conv/read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv:conv})}).catch(()=>{});
   }
-  // 语音任务/定时任务会话不在 S.convs 里(那是 /conversations 拉的),标题去各自的侧栏缓存里找。
-  // 语音主会话(voice-chat:main)单独存在 S.voiceSidebar.main,也要接上——否则打开它时
-  // c 永远找不到,chosen_model 回填不了,模型胶囊只能回落全局默认。
-  const c=S.convs.find(x=>x.conv===conv)
-    || (S.voiceSidebar.main && S.voiceSidebar.main.conv===conv ? S.voiceSidebar.main : null)
-    || S.voiceSidebar.tasks.find(x=>x.conv===conv)
-    || S.cronJobs.find(x=>x.conv===conv);
+  // 搜索结果可能因当前筛选不在 S.convs 里;findConv 还会回查搜索缓存,保证标题和菜单
+  // 跟内容历史一起切换。语音主会话不在 tasks 数组,单独接上。
+  const c=(S.voiceSidebar.main && S.voiceSidebar.main.conv===conv ? S.voiceSidebar.main : null)
+    || findConv(conv);
   if(!(c && c.pinned)){   // 主会话等置顶行不属于任何分组,别联动展开/切换"默认项目"
     S.project=convProject(conv);
     // silentGroup:APP 启动时静默落地到新对话用,别把用户上次手动折叠的分组重新展开
@@ -1529,6 +1526,18 @@ function smHl(text, q){
   if(i < 0) return esc(text);
   return esc(text.slice(0,i)) + "<b>" + esc(text.slice(i, i+q.length)) + "</b>" + esc(text.slice(i+q.length));
 }
+// 搜索命中的已归档会话可能被当前「工作中」筛选从 S.convs 排除。保留一份轻量缓存，
+// 让打开后的标题和菜单也能取到同一条会话；下次侧栏拉到该会话时由正式数据优先。
+function openSearchResult(r){
+  if(!r || !r.conv) return;
+  if(!findConv(r.conv)){
+    S.searchConvs.push({
+      conv:r.conv, title:r.title||"新对话", archived:!!r.archived,
+      last_ts:r.last_ts||null, turns:r.last_ts ? 1 : 0,
+    });
+  }
+  openConv(r.conv);
+}
 function renderSearchResults(q){
   const box = $("#smList"); box.innerHTML = "";
   if(!SM.results.length){ box.innerHTML = '<div class="smempty">没有匹配的会话</div>'; return; }
@@ -1540,7 +1549,7 @@ function renderSearchResults(q){
     const tm = fmtTime(r.last_ts); if(tm){ const te=el("span","smtime"); te.textContent=tm; t.append(te); }
     row.append(t);
     if(r.snippet){ const sn=el("div","smsnip"); sn.innerHTML = smHl(r.snippet, q); row.append(sn); }
-    row.onclick = ()=>{ closeSearchModal(); openConv(r.conv); };
+    row.onclick = ()=>{ closeSearchModal(); openSearchResult(r); };
     box.append(row);
   });
 }
@@ -1567,7 +1576,7 @@ $("#smInput").onkeydown = e=>{
     if(selEl) selEl.scrollIntoView({block:"nearest"});
   } else if(e.key==="Enter"){
     e.preventDefault();
-    const r = SM.results[SM.sel]; if(r){ closeSearchModal(); openConv(r.conv); }
+    const r = SM.results[SM.sel]; if(r){ closeSearchModal(); openSearchResult(r); }
   } else if(e.key==="Escape"){ closeSearchModal(); }
 };
 $("#searchModal").onclick = e=>{ if(e.target.id==="searchModal") closeSearchModal(); };

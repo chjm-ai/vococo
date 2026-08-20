@@ -96,7 +96,7 @@ def test_task_status_map_is_shared_with_sidebar_helpers():
 def test_service_worker_cache_version_changes_with_shell_contract():
     sw = STATIC_SW.read_text(encoding="utf-8")
 
-    assert 'const SHELL_CACHE = "vococo-shell-v4";' in sw
+    assert 'const SHELL_CACHE = "vococo-shell-v5";' in sw
 
 
 def test_startup_worktree_cleanup_is_bounded():
@@ -104,3 +104,17 @@ def test_startup_worktree_cleanup_is_bounded():
     assert "await asyncio.wait_for(worktree.prune_orphans(), timeout=15)" in GATEWAY_RUN.read_text(
         encoding="utf-8"
     )
+
+
+def test_search_opened_archived_conversation_keeps_title_and_menu_state():
+    """搜索结果不在当前侧栏筛选内时，仍要给详情标题和菜单提供会话对象。"""
+    html = _shell()
+
+    assert "searchConvs: []" in html
+    assert "function openSearchResult(r){" in html
+    assert "S.searchConvs.push({" in html
+    assert "openSearchResult(r);" in html
+    assert "|| (S.searchConvs||[]).find(x=>x.conv===conv);" in html
+    assert "? S.searchConvs" in html
+    assert "const activeConv=findConv(S.conv);" in html
+    assert "syncMoreHeader();   // 搜索先打开任务、列表后到时,收起普通会话的旧菜单" in html

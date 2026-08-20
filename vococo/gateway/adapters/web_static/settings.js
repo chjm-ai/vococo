@@ -739,7 +739,10 @@ $("#messages").addEventListener("scroll", ()=>{ updateScrollBtn(); }, {passive:t
 // 按 conv id 找会话对象:普通会话在 S.convs,后台任务(语音/cron)行分别在 S.voiceSidebar.tasks / S.cronJobs
 // (2026-07-29:定时任务漏查这里,导致打开定时任务会话时顶部上下文占用图标读不到数据而隐藏)
 function findConv(conv){
-  return S.convs.find(x=>x.conv===conv) || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv) || (S.cronJobs||[]).find(x=>x.conv===conv);
+  return S.convs.find(x=>x.conv===conv)
+    || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv)
+    || (S.cronJobs||[]).find(x=>x.conv===conv)
+    || (S.searchConvs||[]).find(x=>x.conv===conv);
 }
 async function delConv(conv){
   // 语音/定时任务行不在 S.convs 里,从各自所在的列表里乐观移除(定时任务目前走 openConvMenu 的
@@ -747,6 +750,7 @@ async function delConv(conv){
   const list = S.convs.some(x=>x.conv===conv) ? S.convs
     : (S.voiceSidebar.tasks||[]).some(x=>x.conv===conv) ? S.voiceSidebar.tasks
     : (S.cronJobs||[]).some(x=>x.conv===conv) ? S.cronJobs
+    : (S.searchConvs||[]).some(x=>x.conv===conv) ? S.searchConvs
     : null;
   if(!list) return;
   const idx=list.findIndex(x=>x.conv===conv);
