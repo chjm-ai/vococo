@@ -243,7 +243,8 @@ def record_usage(
     model: str = "",
 ) -> None:
     """一轮结束后更新 token 计量:ctx_tokens/明细取最新(=当前上下文占用),
-    total_tokens 累加(=当前窗口的消耗)。"""
+    total_tokens 累加(=当前窗口的消耗)。ctx_tokens=0 代表本轮真实查询失败
+    (agent.py 不再用不可靠的累计值兜底),此时保留数据库里的旧值,不拿 0 覆盖。"""
     c = _conn()
     c.execute(
         "INSERT INTO session_meta"
@@ -251,7 +252,8 @@ def record_usage(
         " last_in, last_cache, last_out, model) "
         "VALUES (?,0,?,?,?,?,?,?,?) "
         "ON CONFLICT(session_key) DO UPDATE SET "
-        "ctx_tokens=excluded.ctx_tokens, "
+        "ctx_tokens=CASE WHEN excluded.ctx_tokens>0 THEN excluded.ctx_tokens "
+        "ELSE session_meta.ctx_tokens END, "
         "total_tokens=COALESCE(session_meta.total_tokens,0)+excluded.total_tokens, "
         "ctx_window=excluded.ctx_window, last_in=excluded.last_in, "
         "last_cache=excluded.last_cache, last_out=excluded.last_out, "

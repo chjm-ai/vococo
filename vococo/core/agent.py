@@ -1091,8 +1091,10 @@ async def stream_turn(
                         cache_read = cache_r  # 缓存命中(便宜的复读)
                         output_tokens = out_t
                         turn_tokens = input_fresh + out_t  # 本轮新鲜吞吐,累计即消耗(不含缓存复读)
-                        # 上下文占用先用累计值兜底,下面 get_context_usage 成功则覆盖为真实值
-                        context_tokens = input_fresh + cache_read
+                        # 上下文占用只信 get_context_usage 的真实值(下面覆盖);这里不再拿
+                        # input_fresh+cache_read 兜底——那是本轮跨工具调用的累计吞吐量,跟"当前
+                        # 窗口占用"不是一回事,工具调用一多能滚到远超窗口本身(2026-08-20 真机
+                        # 事故:圆环显示 116%)。真实查询失败就保持 0,由 record_usage 保留旧值。
                         # 实际模型取 model_usage 里【主 agent】那一档(SDK 报告的真实模型)。
                         # 有子代理时 model_usage 是多 key 字典,不能随缘取第一个。
                         mu = getattr(msg, "model_usage", None) or {}

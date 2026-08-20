@@ -5,6 +5,11 @@
 // ── 状态 ────────────────────────────────────────────────────────────────
 const S = {
   token: localStorage.getItem("vococo_token") || "",
+  // 工作台独立窗口(见 workbench.js 的 wb-win-btn),登录后直接落地工作台、跳过通话视图。
+  // 走独立路径 /workbench 而不是 "/?view=workbench"——sw.js 的离线缓存只按 pathname
+  // 白名单 "/",query 串不影响命中,会被当成 "/" 走网络优先超时退回缓存那条特殊逻辑,
+  // 全新 URL 缓存未命中时直接 503,慢网络下独立窗口会打开一片空白(见 web.py 路由注释)。
+  standaloneWorkbench: location.pathname === "/workbench",
   surface: "chat",  // chat | call | workbench：当前主视图，仅供前端切换与侧栏高亮
   conv: "main",
   callReturnConv: "main", // 进入主会话前的普通会话;挂断后恢复,避免刷新错读语音会话历史
@@ -267,8 +272,12 @@ async function tryEnter(){
     if(!hasSavedExpanded){ S.expanded.add("__default__"); }  // 从没手动折叠过 → 默认项目首次展开
     applyConvs(d);   // 这次 /conversations 顺便验证了口令,数据直接拿来用,不用再多打一次
     prefetchHistories();   // 后台预热最近会话历史(有 2.5s 延迟,不抢首屏带宽)
-    // 默认进入统一对话视图:文本和语音共用一个输入区,主会话入口不再单独占一行。
-    openCallView();
+    // 独立窗口打开的工作台(?view=workbench,见 workbench.js 的 wb-win-btn):跳过通话视图,
+    // 直接落地工作台内容区。sb-collapsed 把桌面侧边栏收起到宽度 0(跟手动收起是同一套
+    // CSS/状态),但保留 wb-hamb 展开图标——收起不等于砍掉入口,想展开还是能点开。
+    // wb-standalone 只用来藏"独立窗口"按钮本身,不做二次开窗。
+    if(S.standaloneWorkbench){ document.body.classList.add("wb-standalone", "sb-collapsed"); openWorkbench(); }
+    else { openCallView(); }  // 默认进入统一对话视图:文本和语音共用一个输入区,主会话入口不再单独占一行。
     // 侧边栏用得到的次要数据(主题偏好/项目列表/模型/斜杠命令)并行去拉,不再堵在落地页前面。
     const secondary = Promise.all([loadPrefs(), loadProjects(), loadModels(), loadCommands(), loadVoiceOmniConfig()])
       .then(updateFilterBtn).catch(()=>{});

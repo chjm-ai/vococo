@@ -2520,6 +2520,13 @@ class WebAdapter:
             [
                 web.get("/healthz", self._handle_healthz),
                 web.get("/", self._handle_index),
+                # 工作台独立窗口(见 web_static/workbench.js 的 wb-win-btn):同一份 index.html,
+                # 但用独立路径而不是 "/?view=workbench"——sw.js 的 SHELL_PATHS 只白名单了
+                # "/" 本身(按 pathname 匹配,query 串不影响判定),会被当成 "/" 走那条
+                # "网络优先、超时(1.2s)退回缓存"的特殊逻辑;这个全新 URL 从没进过缓存,
+                # 缓存未命中时直接给 503 offline——独立窗口在跨境隧道等慢网络下就会打开
+                # 一片空白。换成不在白名单里的路径,请求原样透传给浏览器默认处理,绕开这套逻辑。
+                web.get("/workbench", self._handle_index),
                 web.get("/manifest.json", self._handle_manifest),
                 web.get("/sw.js", self._handle_sw),
                 web.get("/styles.css", self._handle_styles),
