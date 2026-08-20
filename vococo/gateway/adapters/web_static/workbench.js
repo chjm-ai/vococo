@@ -5,10 +5,10 @@
 const WORKBENCH_DEMO = {
   today: "2026-08-20",
   projects: [
-    {id:"consulting", name:"AI 咨询", state:"推进中"},
-    {id:"vocotrade", name:"VocoTrade", state:"收口中"},
-    {id:"fabric", name:"面料外贸", state:"待校准"},
-    {id:"transition", name:"离职过渡", state:"本周关键"},
+    {id:"consulting", name:"AI 咨询"},
+    {id:"vocotrade", name:"VocoTrade"},
+    {id:"fabric", name:"面料外贸"},
+    {id:"transition", name:"离职过渡"},
   ],
   sources: [
     {id:"august-plan", label:"月计划 / 2026年8月", path:"/Users/wesley/Library/Mobile Documents/iCloud~md~obsidian/Documents/Wesley notes/5.规划/2026月计划/2026年8月.md"},
@@ -32,7 +32,8 @@ const WORKBENCH_DEMO = {
   ],
 };
 
-const WB = {project:"all", view:"week", anchor:"2026-08-20", editorTaskId:null, newTask:null, collapsed:new Set()};
+const WB = {project:"all", view:"week", anchor:"2026-08-20", editorTaskId:null, selectedTaskId:null, newTask:null, collapsed:new Set()};
+let wbClickTimer = null;
 
 function workbenchProject(id){ return WORKBENCH_DEMO.projects.find(project => project.id === id); }
 function workbenchSource(id){ return WORKBENCH_DEMO.sources.find(source => source.id === id); }
@@ -79,32 +80,36 @@ function workbenchSourceLink(task, compact){
 }
 
 function workbenchTaskRow(task){
+  if(WB.editorTaskId === task.id) return renderWorkbenchTaskEditor(task);
   const action = task.status === "done" ? "恢复" : "完成";
-  const expanded = WB.editorTaskId === task.id;
-  return '<article class="wb-task wb-'+esc(task.status)+(expanded ? " is-open" : "")+'" data-task="'+esc(task.id)+'">'+
+  const selected = WB.selectedTaskId === task.id;
+  return '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+'" data-task="'+esc(task.id)+'">'+
     '<button class="wb-check" type="button" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
-    '<strong class="wb-task-title">'+esc(task.title)+'</strong>'+workbenchSourceLink(task, true)+'</article>'+
-    (expanded ? renderWorkbenchTaskEditor(task) : "");
+    '<strong class="wb-task-title">'+esc(task.title)+'</strong>'+workbenchSourceLink(task, true)+'</article>';
 }
 
 function renderWorkbenchTaskEditor(task){
+  const action = task.status === "done" ? "恢复" : "完成";
   const sources = (task.sourceIds||[]).map(id => {
     const source = workbenchSource(id);
     return source ? '<button type="button" class="wb-source-link" data-source="'+esc(id)+'" data-highlight="'+esc(workbenchTaskHighlight(task))+'">'+ic("doc")+'<span>'+esc(source.label)+'</span></button>' : "";
   }).join("");
   const images = (task.images||[]).map((image, index) => '<figure><img src="'+esc(image)+'" alt="任务附件"><button type="button" data-remove-image="'+index+'" data-image-task="'+esc(task.id)+'" aria-label="移除图片">×</button></figure>').join("");
-  return '<section class="wb-task-editor" data-editor="'+esc(task.id)+'">'+
-    '<div class="wb-editor-head"><input data-edit-title="'+esc(task.id)+'" value="'+esc(task.title)+'" aria-label="任务标题"><button type="button" data-close-editor aria-label="收起任务">×</button></div>'+
+  return '<article class="wb-task wb-editor-shell wb-task-card wb-'+esc(task.status)+'" data-task="'+esc(task.id)+'">'+
+    '<div class="wb-card-head">'+
+      '<button class="wb-check" type="button" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
+      '<input class="wb-card-title" data-edit-title="'+esc(task.id)+'" value="'+esc(task.title)+'" aria-label="任务标题">'+
+    '</div>'+
     '<textarea data-edit-detail="'+esc(task.id)+'" placeholder="备注">'+esc(task.detail||"")+'</textarea>'+
     '<div class="wb-editor-footer"><button type="button" data-schedule-today="'+esc(task.id)+'">今天</button><input type="date" data-schedule-date="'+esc(task.id)+'" value="'+esc(task.date||"")+'" aria-label="安排日期"><div class="wb-editor-sources">'+sources+'</div></div>'+
-    (images ? '<div class="wb-image-list">'+images+'</div>' : "")+'</section>';
+    (images ? '<div class="wb-image-list">'+images+'</div>' : "")+'</article>';
 }
 
 function workbenchNewTaskCard(project){
   if(!WB.newTask || WB.newTask.project !== project.id) return "";
   const sourceOptions = WORKBENCH_DEMO.sources.map(source => '<option value="'+esc(source.id)+'" '+(WB.newTask.sourceId === source.id ? "selected" : "")+'>'+esc(source.label)+'</option>').join("");
   const projectOptions = WORKBENCH_DEMO.projects.map(item => '<option value="'+esc(item.id)+'" '+(WB.newTask.project === item.id ? "selected" : "")+'>'+esc(item.name)+'</option>').join("");
-  return '<section class="wb-task-editor wb-new-task" data-new-card><div class="wb-editor-head"><input data-new-title placeholder="新建待办事项" value="'+esc(WB.newTask.title)+'" aria-label="任务标题"><button type="button" data-cancel-new aria-label="取消新建">×</button></div>'+
+  return '<section class="wb-editor-shell wb-new-task" data-new-card><div class="wb-editor-head"><input data-new-title placeholder="新建待办事项" value="'+esc(WB.newTask.title)+'" aria-label="任务标题"><button type="button" data-cancel-new aria-label="取消新建">×</button></div>'+
     '<textarea data-new-detail placeholder="备注">'+esc(WB.newTask.detail)+'</textarea>'+
     '<div class="wb-editor-footer"><select data-new-project aria-label="项目">'+projectOptions+'</select><select data-new-source aria-label="来源文档"><option value="">来源文档</option>'+sourceOptions+'</select><input type="date" data-new-date value="'+esc(WB.newTask.date||"")+'" aria-label="安排日期"><button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
 }
@@ -113,7 +118,7 @@ function workbenchProjectBlock(project, tasks){
   const groupId = workbenchGroupId(project);
   const collapsed = WB.collapsed.has(groupId);
   const body = tasks.length ? '<div class="wb-task-list">'+tasks.map(workbenchTaskRow).join("")+'</div>' : '<p class="wb-empty">暂无任务</p>';
-  return '<section class="wb-project-block"><button type="button" class="wb-project-toggle" data-group="'+esc(groupId)+'" aria-expanded="'+(!collapsed)+'"><span class="wb-project-name"><i class="wb-chevron" aria-hidden="true"></i><strong>'+esc(project.name)+'</strong><em>'+esc(project.state)+'</em></span><span>'+tasks.length+' 项</span></button>'+
+  return '<section class="wb-project-block"><button type="button" class="wb-project-toggle" data-group="'+esc(groupId)+'" aria-expanded="'+(!collapsed)+'"><span class="wb-project-name"><i class="wb-chevron" aria-hidden="true"></i><strong>'+esc(project.name)+'</strong></span></button>'+
     (collapsed ? "" : body+workbenchNewTaskCard(project))+'</section>';
 }
 
@@ -176,7 +181,9 @@ function addWorkbenchImages(taskId, files){
 function openWorkbenchNewTask(){
   const project = WB.project === "all" ? WORKBENCH_DEMO.projects[0] : workbenchProject(WB.project);
   if(!project) return;
+  clearTimeout(wbClickTimer);
   WB.editorTaskId = null;
+  WB.selectedTaskId = null;
   WB.newTask = {project:project.id, title:"", detail:"", sourceId:"", date:WB.view === "day" ? WB.anchor : ""};
   renderWorkbench();
   requestAnimationFrame(() => $("[data-new-title]")?.focus());
@@ -220,20 +227,49 @@ $("#workbenchView").addEventListener("click", event => {
   if(event.target.closest("[data-new-task]")){ openWorkbenchNewTask(); return; }
   if(event.target.closest("[data-save-new]")){ saveWorkbenchNewTask(); return; }
   if(event.target.closest("[data-cancel-new]")){ WB.newTask=null; renderWorkbench(); return; }
-  if(event.target.closest("[data-close-editor]")){ WB.editorTaskId=null; renderWorkbench(); return; }
   const today = event.target.closest("[data-schedule-today]");
   if(today){ scheduleWorkbenchTask(today.dataset.scheduleToday, WORKBENCH_DEMO.today); return; }
   const removeImage = event.target.closest("[data-remove-image]");
   if(removeImage){ const task=workbenchTask(removeImage.dataset.imageTask); task?.images?.splice(Number(removeImage.dataset.removeImage), 1); renderWorkbench(); return; }
   const taskRow = event.target.closest("[data-task]");
-  if(taskRow){ WB.newTask=null; WB.editorTaskId = WB.editorTaskId === taskRow.dataset.task ? null : taskRow.dataset.task; renderWorkbench(); return; }
+  if(taskRow){
+    if(taskRow.dataset.task === WB.editorTaskId) return;
+    // 单击延迟触发选中，留出窗口给浏览器原生 dblclick 检测（重渲染会替换节点，破坏双击识别）
+    // 双击的两次 click 都会走到这里：必须先清掉上一个待触发的计时器，否则会遗留一个孤儿计时器，
+    // 在 dblclick 打开编辑卡之后延迟把它关掉。
+    clearTimeout(wbClickTimer);
+    const taskId = taskRow.dataset.task;
+    wbClickTimer = setTimeout(() => { wbClickTimer = null; selectWorkbenchTask(taskId); }, 250);
+    return;
+  }
   const project = event.target.closest("[data-project]");
-  if(project){ WB.project = project.dataset.project; WB.newTask=null; WB.editorTaskId=null; renderWorkbench(); return; }
+  if(project){ clearTimeout(wbClickTimer); WB.project = project.dataset.project; WB.newTask=null; WB.editorTaskId=null; WB.selectedTaskId=null; renderWorkbench(); return; }
   const view = event.target.closest("[data-view]");
-  if(view){ WB.view = view.dataset.view; WB.newTask=null; WB.editorTaskId=null; renderWorkbench(); return; }
+  if(view){ clearTimeout(wbClickTimer); WB.view = view.dataset.view; WB.newTask=null; WB.editorTaskId=null; WB.selectedTaskId=null; renderWorkbench(); return; }
   const nav = event.target.closest("[data-nav]");
   if(nav){ shiftWorkbenchDate(Number(nav.dataset.nav)); return; }
-  if(event.target.closest("[data-today]")){ WB.anchor = WORKBENCH_DEMO.today; renderWorkbench(); }
+  if(event.target.closest("[data-today]")){ WB.anchor = WORKBENCH_DEMO.today; renderWorkbench(); return; }
+  if(WB.editorTaskId){ WB.editorTaskId=null; renderWorkbench(); }
+});
+
+function selectWorkbenchTask(taskId){
+  WB.newTask = null;
+  WB.editorTaskId = null;
+  WB.selectedTaskId = taskId;
+  renderWorkbench();
+}
+
+$("#workbenchView").addEventListener("dblclick", event => {
+  if(event.target.closest("[data-complete],[data-source]")) return;
+  const taskRow = event.target.closest("[data-task]");
+  if(!taskRow) return;
+  if(wbClickTimer){ clearTimeout(wbClickTimer); wbClickTimer = null; }
+  if(taskRow.dataset.task === WB.editorTaskId) return;
+  WB.newTask = null;
+  WB.selectedTaskId = null;
+  WB.editorTaskId = taskRow.dataset.task;
+  renderWorkbench();
+  requestAnimationFrame(() => $(".wb-card-title")?.focus());
 });
 
 $("#workbenchView").addEventListener("input", event => {
@@ -264,7 +300,12 @@ $("#workbenchView").addEventListener("paste", event => {
 });
 
 document.addEventListener("keydown", event => {
-  if($("#workbenchView").hidden || event.code !== "Space" || event.ctrlKey || event.metaKey || event.altKey) return;
+  if($("#workbenchView").hidden) return;
+  if(event.key === "Escape"){
+    if(WB.editorTaskId || WB.newTask){ WB.editorTaskId=null; WB.newTask=null; renderWorkbench(); }
+    return;
+  }
+  if(event.code !== "Space" || event.ctrlKey || event.metaKey || event.altKey) return;
   if(event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
   event.preventDefault(); openWorkbenchNewTask();
 });
