@@ -1434,8 +1434,30 @@ class WebAdapter:
     @_authed
     @_json_body
     async def _handle_workbench_task_delete(self, request: web.Request, body: dict) -> web.Response:
+        """软删除:移入回收站,不再直接落盘删除。彻底删除见 _handle_workbench_task_purge。"""
         task_id = str(body.get("id") or "")
         workbench.delete_task(task_id)
+        return web.json_response({"ok": True})
+
+    @_authed
+    async def _handle_workbench_trash(self, request: web.Request) -> web.Response:
+        """回收站列表——懒加载,不在首屏 /workbench 里带,免得平时白传这份数据。"""
+        return web.json_response({"tasks": workbench.list_deleted_tasks()})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_task_restore(self, request: web.Request, body: dict) -> web.Response:
+        task = workbench.restore_task(str(body.get("id") or ""))
+        if task is None:
+            return web.json_response({"error": "任务不在回收站里"}, status=404)
+        return web.json_response({"task": task})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_task_purge(self, request: web.Request, body: dict) -> web.Response:
+        ok = workbench.purge_task(str(body.get("id") or ""))
+        if not ok:
+            return web.json_response({"error": "任务不在回收站里"}, status=404)
         return web.json_response({"ok": True})
 
     @_authed
@@ -2546,6 +2568,9 @@ class WebAdapter:
                 web.post("/workbench/tasks/create", self._handle_workbench_task_create),
                 web.post("/workbench/tasks/update", self._handle_workbench_task_update),
                 web.post("/workbench/tasks/delete", self._handle_workbench_task_delete),
+                web.get("/workbench/trash", self._handle_workbench_trash),
+                web.post("/workbench/tasks/restore", self._handle_workbench_task_restore),
+                web.post("/workbench/tasks/purge", self._handle_workbench_task_purge),
                 web.post("/workbench/tasks/image/add", self._handle_workbench_task_image_add),
                 web.post("/workbench/tasks/image/remove", self._handle_workbench_task_image_remove),
                 web.post("/conv/pin", self._handle_conv_pin),

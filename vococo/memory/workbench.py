@@ -76,10 +76,10 @@ def _seed_if_empty() -> None:
     )
     c.executemany(
         "INSERT INTO workbench_tasks(id, project_id, title, detail, status, date, month, week, "
-        "source_ids, images, sort_order, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "source_ids, images, sort_order, created_at, updated_at, deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             (t["id"], t["project"], t["title"], "", t["status"], t["date"], t["month"], t["week"],
-             json.dumps(t["sourceIds"], ensure_ascii=False), "[]", i, now, now)
+             json.dumps(t["sourceIds"], ensure_ascii=False), "[]", i, now, now, None)
             for i, t in enumerate(_SEED_TASKS)
         ],
     )
@@ -102,7 +102,7 @@ def _row_to_source(row) -> dict:
 
 def _row_to_task(row) -> dict:
     (id_, project_id, title, detail, status, date, month, week,
-     source_ids, images, sort_order, created_at, updated_at) = row
+     source_ids, images, sort_order, created_at, updated_at, deleted_at) = row
     return {
         "id": id_,
         "project": project_id,
@@ -117,12 +117,13 @@ def _row_to_task(row) -> dict:
         "sortOrder": sort_order,
         "createdAt": created_at,
         "updatedAt": updated_at,
+        "deletedAt": deleted_at,
     }
 
 
 _TASK_COLUMNS = (
     "id, project_id, title, detail, status, date, month, week, "
-    "source_ids, images, sort_order, created_at, updated_at"
+    "source_ids, images, sort_order, created_at, updated_at, deleted_at"
 )
 
 
@@ -193,10 +194,20 @@ def list_sources() -> list[dict]:
 # ── 任务 ────────────────────────────────────────────────────────────────
 
 def list_tasks() -> list[dict]:
-    """全量任务(个人规模全量拉取即可;按日/周/月分组、按项目筛选交给前端)。"""
+    """全量任务(个人规模全量拉取即可;按日/周/月分组、按项目筛选交给前端)。
+    不含已软删除(回收站)的任务,那份数据走 list_deleted_tasks() 单独懒加载。
+    """
     _seed_if_empty()
     rows = _db.conn().execute(
-        f"SELECT {_TASK_COLUMNS} FROM workbench_tasks ORDER BY sort_order ASC"
+        f"SELECT {_TASK_COLUMNS} FROM workbench_tasks WHERE deleted_at IS NULL ORDER BY sort_order ASC"
+    ).fetchall()
+    return [_row_to_task(r) for r in rows]
+
+
+def list_deleted_tasks() -> list[dict]:
+    """回收站:按删除时间倒序,最近删的排最前。"""
+    rows = _db.conn().execute(
+        f"SELECT {_TASK_COLUMNS} FROM workbench_tasks WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
     ).fetchall()
     return [_row_to_task(r) for r in rows]
 
@@ -224,9 +235,9 @@ def create_task(
     task_id = _new_id("wt")
     c.execute(
         "INSERT INTO workbench_tasks(id, project_id, title, detail, status, date, month, week, "
-        "source_ids, images, sort_order, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "source_ids, images, sort_order, created_at, updated_at, deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (task_id, project_id, title, detail, status, date, month, week,
-         json.dumps(source_ids or [], ensure_ascii=False), "[]", max_order + 1, now, now),
+         json.dumps(source_ids or [], ensure_ascii=False), "[]", max_order + 1, now, now, None),
     )
     c.commit()
     return get_task(task_id)
@@ -264,8 +275,30 @@ def update_task(task_id: str, **fields) -> dict | None:
 
 
 def delete_task(task_id: str) -> bool:
+    """软删除:移入回收站,图片原样留着(万一要恢复)。真正落盘删除见 purge_task。"""
+    c = _db.conn()
+    cur = c.execute(
+        "UPDATE workbench_tasks SET deleted_at=? WHERE id=? AND deleted_at IS NULL",
+        (time.time(), task_id),
+    )
+    c.commit()
+    return cur.rowcount > 0
+
+
+def restore_task(task_id: str) -> dict | None:
+    c = _db.conn()
+    cur = c.execute(
+        "UPDATE workbench_tasks SET deleted_at=NULL, updated_at=? WHERE id=? AND deleted_at IS NOT NULL",
+        (time.time(), task_id),
+    )
+    c.commit()
+    return get_task(task_id) if cur.rowcount else None
+
+
+def purge_task(task_id: str) -> bool:
+    """回收站里的「彻底删除」:只允许清已经软删除过的任务,防止误删还在用的任务。"""
     task = get_task(task_id)
-    if task is None:
+    if task is None or task["deletedAt"] is None:
         return False
     c = _db.conn()
     c.execute("DELETE FROM workbench_tasks WHERE id=?", (task_id,))

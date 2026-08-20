@@ -37,6 +37,9 @@ def workbench_web_app(isolated, monkeypatch):
             web.post("/workbench/tasks/create", adapter._handle_workbench_task_create),
             web.post("/workbench/tasks/update", adapter._handle_workbench_task_update),
             web.post("/workbench/tasks/delete", adapter._handle_workbench_task_delete),
+            web.get("/workbench/trash", adapter._handle_workbench_trash),
+            web.post("/workbench/tasks/restore", adapter._handle_workbench_task_restore),
+            web.post("/workbench/tasks/purge", adapter._handle_workbench_task_purge),
             web.post("/workbench/tasks/image/add", adapter._handle_workbench_task_image_add),
             web.post("/workbench/tasks/image/remove", adapter._handle_workbench_task_image_remove),
         ]
@@ -122,6 +125,48 @@ async def test_update_and_delete_task_via_http(workbench_web_app):
         assert resp.status == 200
 
         resp = await client.get("/workbench")
+        assert task_id not in {t["id"] for t in (await resp.json())["tasks"]}
+
+
+@pytest.mark.anyio
+async def test_trash_lifecycle_via_http(workbench_web_app):
+    async with TestClient(TestServer(workbench_web_app)) as client:
+        resp = await client.get("/workbench")
+        project_id = (await resp.json())["projects"][0]["id"]
+
+        resp = await client.post(
+            "/workbench/tasks/create", json={"project": project_id, "title": "要删的任务"}
+        )
+        task_id = (await resp.json())["task"]["id"]
+
+        resp = await client.post("/workbench/tasks/delete", json={"id": task_id})
+        assert resp.status == 200
+
+        # 主列表不再包含它,回收站里能看到
+        resp = await client.get("/workbench")
+        assert task_id not in {t["id"] for t in (await resp.json())["tasks"]}
+        resp = await client.get("/workbench/trash")
+        trashed = (await resp.json())["tasks"]
+        assert task_id in {t["id"] for t in trashed}
+
+        # 恢复:回到主列表,不在回收站
+        resp = await client.post("/workbench/tasks/restore", json={"id": task_id})
+        assert resp.status == 200
+        assert (await resp.json())["task"]["deletedAt"] is None
+        resp = await client.get("/workbench")
+        assert task_id in {t["id"] for t in (await resp.json())["tasks"]}
+        resp = await client.get("/workbench/trash")
+        assert task_id not in {t["id"] for t in (await resp.json())["tasks"]}
+
+        # 还没删,彻底删除应该被拒绝
+        resp = await client.post("/workbench/tasks/purge", json={"id": task_id})
+        assert resp.status == 404
+
+        # 删了之后彻底删除才成功,且回收站里也没了
+        await client.post("/workbench/tasks/delete", json={"id": task_id})
+        resp = await client.post("/workbench/tasks/purge", json={"id": task_id})
+        assert resp.status == 200
+        resp = await client.get("/workbench/trash")
         assert task_id not in {t["id"] for t in (await resp.json())["tasks"]}
 
 

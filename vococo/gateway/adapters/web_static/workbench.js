@@ -171,13 +171,40 @@ function openWorkbenchSource(sourceId, highlight){
 }
 
 function renderWorkbenchHeader(){
-  const dateNav = WB.view === "unscheduled" ? "" :
+  const dateFreeView = WB.view === "unscheduled" || WB.view === "trash";
+  const dateNav = dateFreeView ? "" :
     '<div class="wb-date-nav"><button type="button" data-nav="-1" aria-label="上一个周期">‹</button><strong>'+workbenchDateLabel()+'</strong><button type="button" data-nav="1" aria-label="下一个周期">›</button><button type="button" data-today>今天</button></div>';
+  const newTaskBtn = WB.view === "trash" ? "" : '<button type="button" class="wb-add-task" data-new-task>+ 新建任务</button>';
   return '<header class="wb-toolbar"><div class="wb-title"><button class="wb-hamb" type="button" data-sidebar aria-label="打开侧边栏">'+ic("panel")+'</button><h1>工作台</h1></div>'+
-    '<div class="wb-controls"><button type="button" class="wb-add-task" data-new-task>+ 新建任务</button><div class="wb-switch">'+
+    '<div class="wb-controls">'+newTaskBtn+'<div class="wb-switch">'+
       ["day","week","month"].map(view => '<button class="'+(WB.view === view ? "on" : "")+'" type="button" data-view="'+view+'">'+({day:"日",week:"周",month:"月"}[view])+'</button>').join("")+
       '<button class="wb-switch-icon'+(WB.view === "unscheduled" ? " on" : "")+'" type="button" data-view="unscheduled" aria-label="未排期">'+ic("inbox")+'</button>'+
+      '<button class="wb-switch-icon'+(WB.view === "trash" ? " on" : "")+'" type="button" data-view="trash" aria-label="回收站">'+ic("trash")+'</button>'+
     '</div>'+dateNav+'</div></header>';
+}
+
+const WB_TRASH = {tasks: [], loaded: false};
+
+async function loadWorkbenchTrash(){
+  try{
+    const r = await api("/workbench/trash");
+    const d = await r.json();
+    WB_TRASH.tasks = d.tasks || [];
+  }catch(e){}
+  WB_TRASH.loaded = true;
+}
+
+function workbenchTrashRow(task){
+  return '<article class="wb-task wb-trash-row" data-trash-task="'+esc(task.id)+'">'+
+    '<div class="wb-task-copy"><strong class="wb-task-title">'+esc(task.title)+'</strong></div>'+
+    '<div class="wb-trash-actions"><button type="button" data-restore-task="'+esc(task.id)+'">恢复</button><button type="button" class="wb-ctx-danger" data-purge-task="'+esc(task.id)+'">彻底删除</button></div>'+
+    '</article>';
+}
+
+function renderWorkbenchTrash(){
+  if(!WB_TRASH.loaded) return '<p class="wb-empty">加载中…</p>';
+  if(!WB_TRASH.tasks.length) return '<p class="wb-empty">回收站是空的。</p>';
+  return '<div class="wb-task-list wb-trash-list">'+WB_TRASH.tasks.map(workbenchTrashRow).join("")+'</div>';
 }
 
 function renderWorkbenchProjectFilter(){
@@ -202,7 +229,8 @@ function workbenchAutoGrowAll(){
 function renderWorkbench(){
   const root = $("#wbContent");
   if(!root) return;
-  root.innerHTML = renderWorkbenchHeader()+renderWorkbenchProjectFilter()+renderWorkbenchProjects();
+  const body = WB.view === "trash" ? renderWorkbenchTrash() : renderWorkbenchProjectFilter()+renderWorkbenchProjects();
+  root.innerHTML = renderWorkbenchHeader()+body;
   hydrateWorkbenchImages();
   workbenchAutoGrowAll();
 }
@@ -501,9 +529,10 @@ async function saveWorkbenchNewTask(){
   renderWorkbench();
 }
 
+// 删除 = 软删除(移入回收站)，不用再弹确认框——删错了去回收站图标里恢复就行。
 async function deleteWorkbenchTask(taskId){
   const task = workbenchTask(taskId);
-  if(!task || !confirm('删除任务「'+task.title+'」？不可恢复。')) return;
+  if(!task) return;
   WB_DATA.tasks = WB_DATA.tasks.filter(t => t.id !== taskId);
   if(WB.editorTaskId === taskId) WB.editorTaskId = null;
   WB.selected.delete(taskId);
@@ -512,6 +541,31 @@ async function deleteWorkbenchTask(taskId){
     const r = await api("/workbench/tasks/delete", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:taskId})});
     if(!r.ok) throw new Error("删除失败");
   }catch(e){ alert("删除失败，请刷新页面重试"); }
+}
+
+async function workbenchRestoreTask(taskId){
+  const idx = WB_TRASH.tasks.findIndex(t => t.id === taskId);
+  if(idx === -1) return;
+  const [task] = WB_TRASH.tasks.splice(idx, 1);
+  renderWorkbench();
+  try{
+    const r = await api("/workbench/tasks/restore", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:taskId})});
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error||"恢复失败");
+    WB_DATA.tasks.push(d.task);
+  }catch(e){ WB_TRASH.tasks.splice(idx, 0, task); renderWorkbench(); alert("恢复失败："+(e.message||"")); }
+}
+
+async function workbenchPurgeTask(taskId){
+  if(!confirm("彻底删除该任务？不可恢复。")) return;
+  const idx = WB_TRASH.tasks.findIndex(t => t.id === taskId);
+  if(idx === -1) return;
+  const [task] = WB_TRASH.tasks.splice(idx, 1);
+  renderWorkbench();
+  try{
+    const r = await api("/workbench/tasks/purge", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:taskId})});
+    if(!r.ok) throw new Error("彻底删除失败");
+  }catch(e){ WB_TRASH.tasks.splice(idx, 0, task); renderWorkbench(); alert("彻底删除失败："+(e.message||"")); }
 }
 
 // ── 多选批量操作（右键菜单）─────────────────────────────────────────────
@@ -559,7 +613,7 @@ function workbenchBatchMove(ids, projectId){
 }
 
 function workbenchBatchDelete(ids){
-  if(!ids.length || !confirm('删除选中的 '+ids.length+' 个任务？不可恢复。')) return;
+  if(!ids.length) return;
   const idSet = new Set(ids);
   WB_DATA.tasks = WB_DATA.tasks.filter(t => !idSet.has(t.id));
   if(idSet.has(WB.editorTaskId)) WB.editorTaskId = null;
@@ -692,7 +746,18 @@ $("#workbenchView").addEventListener("click", event => {
   const project = event.target.closest("[data-project]");
   if(project){ clearTimeout(wbClickTimer); WB.project = project.dataset.project; WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null; renderWorkbench(); return; }
   const view = event.target.closest("[data-view]");
-  if(view){ clearTimeout(wbClickTimer); WB.view = view.dataset.view; WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null; renderWorkbench(); return; }
+  if(view){
+    clearTimeout(wbClickTimer);
+    WB.view = view.dataset.view;
+    WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null;
+    renderWorkbench();
+    if(WB.view === "trash") loadWorkbenchTrash().then(() => { if(WB.view === "trash") renderWorkbench(); });
+    return;
+  }
+  const restoreBtn = event.target.closest("[data-restore-task]");
+  if(restoreBtn){ workbenchRestoreTask(restoreBtn.dataset.restoreTask); return; }
+  const purgeBtn = event.target.closest("[data-purge-task]");
+  if(purgeBtn){ workbenchPurgeTask(purgeBtn.dataset.purgeTask); return; }
   const nav = event.target.closest("[data-nav]");
   if(nav){ shiftWorkbenchDate(Number(nav.dataset.nav)); return; }
   if(event.target.closest("[data-today]")){ WB.anchor = workbenchToday(); renderWorkbench(); return; }
