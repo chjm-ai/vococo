@@ -1356,6 +1356,7 @@ function renderEventsFlow(events, ctx){
 async function openConv(conv, silentGroup){
   closeWorkbench();
   closeCallView();  // 切到别的会话就等于离开通话;没在通话视图里时这行是空操作
+  if(typeof hideDocPreviewPanel==="function") hideDocPreviewPanel();  // 只隐藏,不清 S.docPreview[旧会话],按会话记忆见下方恢复
   S.surface = "chat";
   $("#chatMain").hidden = false;  // 确保聊天界面可见
   closeCmdMenu();
@@ -1373,6 +1374,8 @@ async function openConv(conv, silentGroup){
   S.conv=conv; S.stream=null;
   restoreDraft(conv);   // 输入框草稿按会话独立:切走时已实时存好,这里恢复目标会话的草稿
   if(typeof restoreComposerAttachments==="function") restoreComposerAttachments(conv);
+  // 文档预览面板同样按会话独立:目标会话之前打开过就重新渲染,没有就保持上面已隐藏的状态
+  if(S.docPreview[conv] && typeof openDocPreview==="function") openDocPreview(S.docPreview[conv]);
   // 用户已打开该会话,清零未读标记;本地缓存也同步清,避免重绘闪烁。语音任务/定时
   // 任务的行对象不在 S.convs 里(那是 /conversations 拉的),还得去各自的侧栏缓存
   // 里找——否则只清了 S.pendingReview 这半份缓存,行对象自己的 pending_review 字段
