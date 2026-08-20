@@ -333,14 +333,71 @@ async function removeWorkbenchImage(taskId, name){
   catch(e){}
 }
 
+// 跟 workbenchMorphTask 是同一套手法：先量出「长成之后」的高度，再从 0 长过去，
+// 而不是整页重渲染后让新卡片凭空「啪」地出现。
+function workbenchInsertNewTaskCard(project){
+  const block = document.querySelector('[data-group="'+CSS.escape(workbenchGroupId(project))+'"]')?.closest(".wb-project-block");
+  if(!block) return false;
+  const wrap = document.createElement("div");
+  wrap.innerHTML = workbenchNewTaskCard(project);
+  const card = wrap.firstElementChild;
+  if(!card) return false;
+  block.appendChild(card);
+  const endRect = card.getBoundingClientRect();
+  const endMarginTop = getComputedStyle(card).marginTop;
+  card.style.height = "0px";
+  card.style.marginTop = "0px";
+  card.style.overflow = "hidden";
+  void card.offsetHeight;
+  card.style.transition = "height .2s cubic-bezier(.22,.61,.36,1), margin-top .2s cubic-bezier(.22,.61,.36,1)";
+  requestAnimationFrame(() => {
+    card.style.height = endRect.height+"px";
+    card.style.marginTop = endMarginTop;
+  });
+  card.addEventListener("transitionend", function onEnd(event){
+    if(event.propertyName !== "height" || event.target !== card) return;
+    card.style.height = ""; card.style.marginTop = ""; card.style.overflow = ""; card.style.transition = "";
+    card.removeEventListener("transitionend", onEnd);
+  });
+  return true;
+}
+
+// 取消新建时对称地收回去，而不是直接从 DOM 里消失。
+function workbenchRemoveNewTaskCard(){
+  const card = document.querySelector("[data-new-card]");
+  if(!card) return false;
+  card.style.height = card.getBoundingClientRect().height+"px";
+  card.style.marginTop = getComputedStyle(card).marginTop;
+  card.style.overflow = "hidden";
+  void card.offsetHeight;
+  card.style.transition = "height .16s ease, margin-top .16s ease, opacity .16s ease";
+  requestAnimationFrame(() => {
+    card.style.height = "0px";
+    card.style.marginTop = "0px";
+    card.style.opacity = "0";
+  });
+  card.addEventListener("transitionend", function onEnd(event){
+    if(event.propertyName !== "height" || event.target !== card) return;
+    card.remove();
+  });
+  return true;
+}
+
 function openWorkbenchNewTask(){
   const project = WB.project === "all" ? WB_DATA.projects[0] : workbenchProject(WB.project);
   if(!project){ alert("请先新建一个项目。"); return; }
   clearTimeout(wbClickTimer);
+  const prevEditor = WB.editorTaskId;
   WB.editorTaskId = null;
   WB.selectedTaskId = null;
   WB.newTask = {project:project.id, title:"", detail:"", sourceId:"", date:WB.view === "day" ? WB.anchor : ""};
-  renderWorkbench();
+  const groupId = workbenchGroupId(project);
+  const wasCollapsed = WB.collapsed.has(groupId);
+  if(wasCollapsed) WB.collapsed.delete(groupId);
+  let ok = !wasCollapsed;
+  if(ok && prevEditor) ok = workbenchMorphTask(prevEditor) && ok;
+  if(ok) ok = workbenchInsertNewTaskCard(project) && ok;
+  if(!ok) renderWorkbench();
   requestAnimationFrame(() => $("[data-new-title]")?.focus());
 }
 
@@ -458,7 +515,7 @@ $("#workbenchView").addEventListener("click", event => {
   if(event.target.closest("[data-new-task]")){ openWorkbenchNewTask(); return; }
   if(event.target.closest("[data-add-project]")){ addWorkbenchProject(); return; }
   if(event.target.closest("[data-save-new]")){ saveWorkbenchNewTask(); return; }
-  if(event.target.closest("[data-cancel-new]")){ WB.newTask=null; renderWorkbench(); return; }
+  if(event.target.closest("[data-cancel-new]")){ WB.newTask=null; if(!workbenchRemoveNewTaskCard()) renderWorkbench(); return; }
   const today = event.target.closest("[data-schedule-today]");
   if(today){ scheduleWorkbenchTask(today.dataset.scheduleToday, workbenchToday()); return; }
   const removeImage = event.target.closest("[data-remove-image]");
@@ -610,7 +667,7 @@ $("#workbenchView").addEventListener("paste", event => {
 document.addEventListener("keydown", event => {
   if($("#workbenchView").hidden) return;
   if(event.key === "Escape"){
-    if(WB.newTask){ WB.newTask=null; renderWorkbench(); }
+    if(WB.newTask){ WB.newTask=null; if(!workbenchRemoveNewTaskCard()) renderWorkbench(); }
     else if(WB.editorTaskId){
       const id = WB.editorTaskId;
       WB.editorTaskId = null;
