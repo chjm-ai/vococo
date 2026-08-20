@@ -270,6 +270,8 @@ try{
           <button class="hswitch" id="convCronToggle" type="button" title="启用/停用" hidden></button>
           <button class="hmore" id="convCronEditBtn" type="button" title="编辑任务" hidden></button>
           <button class="hmore" id="convCronMore" type="button" title="更多" hidden>⋯</button>
+          <button class="hmore" id="convDocsBtn" type="button" title="本会话文档"></button>
+          <div id="convDocsPop" hidden></div>
           <button id="barMeta" type="button" title="上下文占用 · 点击看明细" hidden>
             <svg class="ctxring" viewBox="0 0 20 20"><circle class="track" cx="10" cy="10" r="8"/><circle class="fill" id="ctxRing" cx="10" cy="10" r="8"/></svg>
             <span id="ctxPct">0%</span>
@@ -1039,6 +1041,44 @@ function copyCodeBlock(btn){
 $("#barMeta").onclick = e=>{ e.stopPropagation(); const p=$("#ctxPop"); p.hidden=!p.hidden; };
 document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contains(e.target)) $("#ctxPop").hidden=true; });
 
+// ── 会话文档:标题栏图标按需列出本会话提及、创建或编辑过的文档(不混代码文件) ──────
+function renderConvDocuments(documents){
+  const pop=$("#convDocsPop");
+  if(!documents.length){ pop.innerHTML='<div class="cdempty">本会话还没有可查看的文档</div>'; return; }
+  pop.innerHTML='<div class="cdhead">本会话文档 <span>'+documents.length+'</span></div>'+
+    '<div class="cdlist">'+documents.map((d,i)=>
+      '<button class="cdrow" type="button" data-i="'+i+'">'+
+        '<span class="cdicon">'+ic("doc")+'</span><span class="cdmain">'+
+          '<span class="cdname">'+esc(d.name||d.path)+'</span>'+
+          '<span class="cdpath">'+esc(d.path)+'</span>'+
+        '</span><span class="cdactions">'+(d.actions||[]).map(a=>'<i>'+esc(a)+'</i>').join("")+'</span>'+
+      '</button>'
+    ).join("")+'</div>';
+  pop.querySelectorAll(".cdrow").forEach(btn=>{ btn.onclick=()=>{
+    const d=documents[+btn.dataset.i]; if(!d) return;
+    pop.hidden=true;
+    openDocPreview({kind:/^https?:\/\//i.test(d.path)?"url":"path", target:d.path, title:d.name||d.path});
+  }; });
+}
+async function toggleConvDocuments(){
+  const pop=$("#convDocsPop");
+  $("#ctxPop").hidden=true;
+  if(!pop.hidden){ pop.hidden=true; return; }
+  const conv=S.conv;
+  pop.hidden=false; pop.innerHTML='<div class="cdempty">加载中…</div>';
+  try{
+    const r=await api("/conv/documents?conv="+encodeURIComponent(conv));
+    const d=await r.json();
+    if(S.conv!==conv) return;
+    renderConvDocuments(d.documents||[]);
+  }catch(e){
+    if(S.conv===conv) pop.innerHTML='<div class="cdempty">加载失败，请重试</div>';
+  }
+}
+$("#convDocsBtn").innerHTML=ic("doc");
+$("#convDocsBtn").onclick=e=>{ e.stopPropagation(); toggleConvDocuments(); };
+document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contains(e.target)) $("#convDocsPop").hidden=true; });
+
 // ── 归档 + 会话筛选 ──────────────────────────────────────────────────────
 // 归档时 worktree 有未提交改动/未合并提交 → 后端先不归档,弹「确定归档/放弃」确认框,
 // 用户点头(force)才真归档——归档不丢内容,但会触发收尾回收信号,所以先问一句。
@@ -1309,6 +1349,7 @@ async function openConv(conv, silentGroup){
   closeCallView();  // 切到别的会话就等于离开通话;没在通话视图里时这行是空操作
   $("#chatMain").hidden = false;  // 确保聊天界面可见
   closeCmdMenu();
+  $("#convDocsPop").hidden=true;
   // 离开的会话仍在流式:别把已经建好的工具卡 DOM 扔掉重来,摘下来存好,回来时直接接回,
   // 只补上离开期间新增的那几条事件(见 maybeReplayStream)
   if(S.stream && S.conv && S.conv!==conv){
