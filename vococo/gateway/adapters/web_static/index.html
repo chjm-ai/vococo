@@ -1366,8 +1366,10 @@ async function openConv(conv, silentGroup){
   }
   // 切到目标会话时,若全局审批弹窗正开着则关闭(用户选择进去处理)
   const cmodal=$("#choiceModal"); if(cmodal && !cmodal.hidden){ cmodal.hidden=true; }
+  if(typeof saveComposerAttachments==="function") saveComposerAttachments(S.conv);
   S.conv=conv; S.stream=null;
   restoreDraft(conv);   // 输入框草稿按会话独立:切走时已实时存好,这里恢复目标会话的草稿
+  if(typeof restoreComposerAttachments==="function") restoreComposerAttachments(conv);
   // 用户已打开该会话,清零未读标记;本地缓存也同步清,避免重绘闪烁。语音任务/定时
   // 任务的行对象不在 S.convs 里(那是 /conversations 拉的),还得去各自的侧栏缓存
   // 里找——否则只清了 S.pendingReview 这半份缓存,行对象自己的 pending_review 字段

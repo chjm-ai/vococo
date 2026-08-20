@@ -2,6 +2,26 @@
 // 2026-08-14 从 index.html 拆出(前端模块化):发送 / 待发送队列 / 草稿 / 图片·音频·文件附件 / 大图查看器 / 语音输入。
 // 与内联脚本同属全局作用域(无构建步骤),加载顺序见 index.html。
 
+// ── 会话级待发送附件 ─────────────────────────────────────────────────────
+// 图片 base64 和已上传附件都可能很大，不能放 localStorage；仅在当前页面内按会话保存。
+function saveComposerAttachments(conv=S.conv){
+  if(!conv) return;
+  if(S.images.length || S.audios.length || S.files.length){
+    S.composerAttachments[conv]={images:S.images,audios:S.audios,files:S.files};
+  }else delete S.composerAttachments[conv];
+}
+function restoreComposerAttachments(conv){
+  const attachments=S.composerAttachments[conv]||{};
+  S.images=attachments.images||[];
+  S.audios=attachments.audios||[];
+  S.files=attachments.files||[];
+  renderThumbs();
+}
+function clearComposerAttachments(conv=S.conv){
+  if(conv) delete S.composerAttachments[conv];
+  if(conv===S.conv){ S.images=[]; S.audios=[]; S.files=[]; }
+}
+
 // ── 发送 ────────────────────────────────────────────────────────────────
 async function send(text, display, opts){
   opts=opts||{};
@@ -28,7 +48,7 @@ async function send(text, display, opts){
   // 上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发(审批/语音走 forceSend 立即发)
   if(S.stream && !opts.forceSend){
     if(queuePending(text, S.images.slice(), S.audios.slice(), S.files.slice())){
-      S.images=[]; S.audios=[]; S.files=[]; renderThumbs(); $("#ta").value=""; autoGrow(); clearDraft();
+      clearComposerAttachments(); renderThumbs(); $("#ta").value=""; autoGrow(); clearDraft();
     }
     return;
   }
@@ -68,8 +88,9 @@ async function send(text, display, opts){
   // 新会话:发出第一条后,把本地临时会话转正
   const wasLocal=String(S.conv).startsWith("local-");
   clearDraft();   // 发送即清草稿:必须在转正前调用,否则 S.conv 已换成真实 id,local- 旧 key 清不掉
+  clearComposerAttachments();
   if(wasLocal){ S.conv=S.conv.replace("local-",""); payload.conv=S.conv; renderProjSelChip(); }
-  S.images=[]; S.audios=[]; S.files=[]; renderThumbs(); $("#ta").value=""; autoGrow();
+  renderThumbs(); $("#ta").value=""; autoGrow();
   try{
     await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(wasLocal) setTimeout(loadConvs, 400);
@@ -185,7 +206,7 @@ function flushPending(conv){
   if(conv===S.conv){
     drawPending();
     S.images=(item.images||[]).slice(); S.audios=(item.audios||[]).slice();
-    S.files=(item.files||[]).slice(); renderThumbs();
+    S.files=(item.files||[]).slice(); saveComposerAttachments(); renderThumbs();
     send(item.text, null, {forceSend:true});
     return;
   }

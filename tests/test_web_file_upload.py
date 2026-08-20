@@ -106,6 +106,18 @@ def test_sent_bubble_lists_file_even_when_message_has_text():
     assert 'addBubble("me", (shown||fallback)+fileLabel, imgs, auds)' in html
 
 
+def test_unsent_attachments_are_isolated_by_conversation():
+    static = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static"
+    composer = (static / "composer.js").read_text(encoding="utf-8")
+    index = (static / "index.html").read_text(encoding="utf-8")
+
+    assert "function saveComposerAttachments(conv=S.conv)" in composer
+    assert "S.composerAttachments[conv]={images:S.images,audios:S.audios,files:S.files}" in composer
+    assert "function restoreComposerAttachments(conv)" in composer
+    assert "saveComposerAttachments(S.conv);" in index
+    assert "restoreComposerAttachments(conv);" in index
+
+
 @pytest.mark.anyio
 async def test_utf8_html_attachment_becomes_text_content_block():
     """HTML 正文必须作为文本送入模型，不能依赖 document block 的供应商兼容性。"""
