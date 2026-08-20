@@ -425,24 +425,22 @@ function renderImgViewer(){
   const n=IV.list.length;
   IV.idx=(IV.idx+n)%n;
   const im=IV.list[IV.idx];
-  // 先用当前已有的(缩略图或空)占位秒开,原图在 loadFullImg 里异步拉回来再换上
-  $("#ivImg").src = im.naturalWidth ? ivSrc(im) : (im._fullBlobUrl||"");
+  // 先用当前已有的(缩略图或空)占位秒开,原图在 loadFullImg 里异步拉回来再换上;
+  // 原图若已经缓存过(fetchCachedBlobUrl 命中),这里能同步拿到,直接显示不用等
+  const cached = im.dataset.full && _imgBlobCache.get(im.dataset.full);
+  $("#ivImg").src = cached || (im.naturalWidth ? ivSrc(im) : "");
   $("#ivCount").textContent=(IV.idx+1)+" / "+n;
   $("#ivPrev").style.display=$("#ivNext").style.display=$("#ivCount").style.display = n>1?"":"none";
-  loadFullImg(im);
+  if(!cached) loadFullImg(im);
 }
 // 查看器里点开的是聊天气泡缩略图,这里单独拉一次不带 thumb 的原图换上去;换的是
-// #ivImg,不动聊天气泡本身的 <img src>(那份省流量的缩略图不受影响)。拉到过就缓存在
-// im._fullBlobUrl 上,同一张图重复打开查看器不用再拉一次。
+// #ivImg,不动聊天气泡本身的 <img src>(那份省流量的缩略图不受影响)。走
+// fetchCachedBlobUrl(stream.js)的全局缓存,而不是缓存在 img 元素上——切会话会
+// 把 DOM 全部重建,元素级缓存跟着失效,同一张图切回来还得重拉一次原图。
 async function loadFullImg(im){
   if(!im.dataset.full) return;  // 实时发送的 blob:/data: 图本来就是原图,ivSrc 已经够用
-  if(!im._fullBlobUrl){
-    try{
-      const r=await api(im.dataset.full); if(!r.ok) return;
-      im._fullBlobUrl=URL.createObjectURL(await r.blob());
-    }catch(e){ return; }
-  }
-  if(IV.list[IV.idx]===im) $("#ivImg").src=im._fullBlobUrl;  // 拉的过程中用户可能已经切走了,别覆盖
+  const o = await fetchCachedBlobUrl(im.dataset.full);
+  if(o && IV.list[IV.idx]===im) $("#ivImg").src=o;  // 拉的过程中用户可能已经切走了,别覆盖
 }
 function closeImgViewer(){ $("#imgViewer").hidden=true; $("#ivImg").removeAttribute("src"); IV.list=[]; }
 $("#ivClose").onclick=closeImgViewer;

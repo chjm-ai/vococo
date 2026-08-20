@@ -10,6 +10,28 @@
 // 可视区域才发请求——一个会话历史一次拉 40 轮,图多的话不懒加载会把所有图片的
 // 鉴权请求一次性全砸出去,详情页卡半天。点大图查看原图走 openImgViewer/loadFullImg
 // (composer.js),不在这里处理。
+//
+// 切会话时 #wrap 整个重建,同一张图的 <img> 元素会被扔掉重新创建——单靠浏览器
+// HTTP 缓存只能省下"重新下载字节"这一步,fetch()+blob()+createObjectURL 这套异步
+// 链路每次切回来都要重走一遍,肉眼仍是"又转一下才出图",跟没缓存一样。这里按完整
+// 请求 URL 缓存 blob URL,同一张图本次标签页只走一次这套流程,之后同步复用。
+// 有上限(200张)防止长会话/多会话累积内存无限涨,超了按最旧淘汰并 revoke。
+const _imgBlobCache = new Map();
+const _IMG_BLOB_CACHE_MAX = 200;
+async function fetchCachedBlobUrl(url){
+  if(_imgBlobCache.has(url)) return _imgBlobCache.get(url);
+  try{
+    const r=await api(url); if(!r.ok) return null;
+    const b=await r.blob(); const o=URL.createObjectURL(b);
+    if(_imgBlobCache.size>=_IMG_BLOB_CACHE_MAX){
+      const oldest=_imgBlobCache.keys().next().value;
+      URL.revokeObjectURL(_imgBlobCache.get(oldest));
+      _imgBlobCache.delete(oldest);
+    }
+    _imgBlobCache.set(url, o);
+    return o;
+  }catch(e){ return null; }
+}
 const _imgLazyObserver = new IntersectionObserver((entries)=>{
   for(const e of entries){
     if(!e.isIntersecting) continue;
@@ -160,13 +182,11 @@ function maybeAutoResume(conv, turns){
 }
 // 带鉴权头拉图并显示;token 只在头里传,不进 URL(不泄露到日志/历史/Referer)。
 // thumb=true 时追加 &thumb=1 拉缩略图(聊天气泡默认用这个);查看原图走 loadFullImg。
+// 实际取数据走 fetchCachedBlobUrl,同一 URL 本次标签页只 fetch 一次。
 async function loadAuthedImg(im, url, thumb){
-  try{
-    const full = thumb ? url+(url.includes("?")?"&":"?")+"thumb=1" : url;
-    const r=await api(full); if(!r.ok) return;
-    const b=await r.blob(); const o=URL.createObjectURL(b);
-    im.onload=()=>URL.revokeObjectURL(o); im.src=o;
-  }catch(e){}
+  const full = thumb ? url+(url.includes("?")?"&":"?")+"thumb=1" : url;
+  const o = await fetchCachedBlobUrl(full);
+  if(o) im.src=o;
 }
 function scrollDown(force){
   const m=$("#messages");
