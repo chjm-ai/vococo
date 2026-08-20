@@ -93,10 +93,32 @@ async def test_workbench_demo_stays_frontend_only(static_app):
     assert 'view:"week"' in source
     assert "本周待安排" in source
     assert "本月待分配" in source
-    assert "renderWorkbenchSource" in source
+    assert "openWorkbenchSource" in source
+    assert "openDocPreview({kind:\"path\"" in source
+    assert "renderWorkbenchSource" not in source
+    assert "renderWorkbenchDetail" in source
+    assert 'data-group' in source
+    assert 'data-schedule-today' in source
+    assert 'data-edit-detail' in source
+    assert "addWorkbenchImages" in source
     assert 'data-sidebar' in source
     assert "expandSidebarResponsive" in source
     assert "api(" not in source
+    styles = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/styles.css").read_text(encoding="utf-8")
+    assert "#workbenchView .wb-toolbar{position:sticky" in styles
+    assert "#workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) auto" in styles
+
+
+def test_doc_preview_keeps_task_highlight_in_split_and_window():
+    """工作台来源打开分屏后，高亮参数也必须进入独立窗口。"""
+    static_dir = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static"
+    preview = (static_dir / "markdown.js").read_text(encoding="utf-8")
+    window = (static_dir / "doc-preview.html").read_text(encoding="utf-8")
+    assert "function highlightPreviewText" in preview
+    assert "highlightPreviewText(body, highlight)" in preview
+    assert "new URLSearchParams({kind, target, title: title||target, highlight})" in preview
+    assert 'qs.get("highlight")' in window
+    assert "openDocPreview({kind, target, title, highlight})" in window
 
 
 @pytest.mark.anyio

@@ -1329,6 +1329,7 @@
   #dpHead button{width:32px;height:32px;border-radius:9px;flex-shrink:0;color:var(--dim);
     display:inline-flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
   @media(hover:hover){ #dpHead button:hover{background:var(--panel2);color:var(--text)} }
+  .dp-highlight{background:color-mix(in srgb,var(--accent) 35%,transparent);color:var(--text);border-radius:3px;padding:0 2px;box-decoration-break:clone;-webkit-box-decoration-break:clone}
   #dpBody{flex:1;overflow:auto;position:relative}
   .dp-loading{display:flex;align-items:center;justify-content:center;height:100%;color:var(--dim)}
   .dp-err{padding:20px;color:var(--dim);font-size:13.5px;line-height:1.6}
@@ -1402,3 +1403,43 @@
   .wb-source-panel>div>span{font-size:11px}.wb-source-panel>div>strong{font-size:14px}.wb-source-panel dl{font-size:12px}
   @media(min-width:761px){body.sb-collapsed .wb-hamb{display:flex}}
   @media(max-width:760px){#wbContent{width:100%;padding:18px 16px 44px}.wb-hamb{display:flex}.wb-title{min-height:38px}.wb-toolbar{gap:10px}}
+
+  /* 任务是工作台的基本阅读单位：一行看完，不用分割线切碎节奏。 */
+  #workbenchView .wb-toolbar,#workbenchView .wb-project-filter,#workbenchView .wb-task-list,
+  #workbenchView .wb-task,#workbenchView .wb-project-block,#workbenchView .wb-project-block:last-child,
+  #workbenchView .wb-goals,#workbenchView .wb-empty,#workbenchView .wb-demo-note{border:0}
+  #workbenchView .wb-section{margin-top:20px}
+  #workbenchView .wb-section-head{margin-bottom:5px}
+  #workbenchView .wb-task-list{display:flex;flex-direction:column;gap:1px}
+  #workbenchView .wb-task{display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 2px;border-radius:7px}
+  @media(hover:hover){#workbenchView .wb-task:hover{background:var(--panel)}}
+  #workbenchView .wb-check{margin:0}
+  #workbenchView .wb-task-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px;font-weight:600}
+  #workbenchView .wb-task-side{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0;color:var(--dim2);font-size:12px;line-height:20px;white-space:nowrap}
+  #workbenchView .wb-task-side .wb-project-tag{color:var(--dim)}
+  #workbenchView .wb-task-side .wb-source-link{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #workbenchView .wb-focus .wb-task-side{color:var(--accent)}
+  #workbenchView .wb-block .wb-task-side{color:var(--err)}
+  #workbenchView .wb-project-block{margin-top:18px;padding:0}
+  #workbenchView .wb-project-block>header{padding:0 0 4px}
+  #workbenchView .wb-goals{margin:2px 0 4px;padding:0}
+  #workbenchView .wb-goal-row{padding:3px 0}
+  #workbenchView .wb-demo-note{margin-top:22px;padding-top:0}
+  @media(max-width:760px){#workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,44vw);gap:8px}#workbenchView .wb-task-side{gap:6px;overflow-x:auto;scrollbar-width:none}#workbenchView .wb-task-side::-webkit-scrollbar{display:none}#workbenchView .wb-task-side .wb-project-tag{display:none}#workbenchView .wb-task-side .wb-source-link{max-width:92px}}
+
+  /* 工作台标题栏固定在自身滚动区顶部；列表只显示任务与项目，细节进入详情页。 */
+  #workbenchView .wb-toolbar{position:sticky;top:0;z-index:8;padding-top:18px;background:var(--bg2)}
+  #workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) auto;cursor:pointer}
+  #workbenchView .wb-project-tag{padding:0;color:var(--dim2);font-size:12px;line-height:20px;white-space:nowrap}
+  #workbenchView .wb-section-toggle{width:100%;display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:0;text-align:left;color:var(--text)}
+  #workbenchView .wb-section-toggle h2{margin:0;font-family:inherit;font-size:14px;font-weight:600}
+  #workbenchView .wb-section-toggle span{color:var(--dim2);font-size:12px}
+  #workbenchView .wb-section-toggle:hover h2{color:var(--accent)}
+  .wb-detail-bar{position:sticky;top:0;z-index:8;display:flex;align-items:center;gap:10px;min-height:56px;padding:18px 0 12px;background:var(--bg2)}
+  .wb-detail-bar button{padding:4px 0;color:var(--dim);font-size:12px}.wb-detail-bar button:hover{color:var(--accent)}.wb-detail-bar span{color:var(--dim2);font-size:12px}
+  .wb-detail{padding-top:10px}.wb-detail-title{display:block;width:100%;border:0;border-radius:0;background:transparent;color:var(--text);font:600 18px/1.45 inherit;outline:none;padding:4px 0}.wb-detail-title:focus{color:var(--accent)}
+  .wb-detail-label,.wb-detail-sources,.wb-detail-images,.wb-detail-context{display:block;margin-top:22px;color:var(--dim2);font-size:12px}.wb-detail-label textarea{display:block;width:100%;min-height:132px;resize:vertical;margin-top:7px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:14px/1.6 inherit;outline:none}.wb-detail-label textarea:focus{border-color:var(--accent)}
+  .wb-detail-schedule{display:flex;align-items:center;gap:9px;margin-top:22px}.wb-detail-schedule>div{display:flex;flex-direction:column;gap:1px;margin-right:auto}.wb-detail-schedule span{color:var(--dim2);font-size:12px}.wb-detail-schedule strong{font-size:14px}.wb-detail-schedule button,.wb-detail-images button{padding:6px 9px;border-radius:7px;background:var(--panel2);color:var(--text);font-size:12px}.wb-detail-schedule button:hover,.wb-detail-images button:hover{background:var(--line2)}.wb-detail-schedule input{width:128px;padding:5px 7px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);font-size:12px}
+  .wb-detail-context strong{display:block;margin-top:4px;color:var(--text);font-size:14px}.wb-detail-sources>div{display:flex;flex-wrap:wrap;gap:10px;margin-top:5px}.wb-detail-sources small{display:block;margin-top:5px;color:var(--dim2);font-size:11px}.wb-detail-sources .wb-source-link{font-size:12px}
+  .wb-detail-images>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:12px}.wb-image-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.wb-image-list figure{position:relative;width:104px;height:78px;margin:0;border-radius:7px;overflow:hidden;background:var(--panel)}.wb-image-list img{display:block;width:100%;height:100%;object-fit:cover}.wb-image-list button{position:absolute;right:4px;top:4px;width:22px;height:22px;padding:0;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:15px;line-height:20px}
+  @media(max-width:760px){#workbenchView .wb-toolbar{padding-top:18px}.wb-detail-bar{padding-top:18px}.wb-detail-schedule{align-items:flex-end;flex-wrap:wrap}.wb-detail-schedule>div{width:100%;margin-right:0}.wb-detail-schedule input{flex:1}.wb-detail-title{font-size:16px}}
