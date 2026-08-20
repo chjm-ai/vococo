@@ -166,6 +166,11 @@ def conn() -> sqlite3.Connection:
         # 因此保留,用户看不出任何差异。用 REPLACE 把前缀替换成 task:,turns 和
         # session_meta 两张表都要改(query 每次重连都会跑,但改完之后 WHERE 命中 0 行,
         # 代价可忽略,不必再加一个「是否已迁移过」的标记列)。
+        # deleted_at: 工作台任务软删除时间戳,NULL=未删除。删除改成"移入回收站"而不是
+        # 直接 DELETE,配合 workbench.py 的 list_deleted_tasks/restore_task/purge_task。
+        wtcols = {r[1] for r in _DB.execute("PRAGMA table_info(workbench_tasks)")}
+        if "deleted_at" not in wtcols:
+            _DB.execute("ALTER TABLE workbench_tasks ADD COLUMN deleted_at REAL")
         for table in ("turns", "session_meta"):
             for old_prefix in ("voice-task:", "cron-task:"):
                 _DB.execute(
