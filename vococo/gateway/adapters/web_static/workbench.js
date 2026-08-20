@@ -124,6 +124,7 @@ function workbenchProjectBlock(project, tasks){
 }
 
 function workbenchVisibleTasks(){
+  if(WB.view === "unscheduled") return workbenchTasks(task => !task.date);
   if(WB.view === "day") return workbenchTasks(task => task.date === WB.anchor);
   if(WB.view === "week") return workbenchTasks(task => task.week === workbenchWeekKey());
   return workbenchTasks(task => task.month === workbenchMonthKey());
@@ -143,9 +144,13 @@ function openWorkbenchSource(sourceId, highlight){
 }
 
 function renderWorkbenchHeader(){
+  const dateNav = WB.view === "unscheduled" ? "" :
+    '<div class="wb-date-nav"><button type="button" data-nav="-1" aria-label="上一个周期">‹</button><strong>'+workbenchDateLabel()+'</strong><button type="button" data-nav="1" aria-label="下一个周期">›</button><button type="button" data-today>今天</button></div>';
   return '<header class="wb-toolbar"><div class="wb-title"><button class="wb-hamb" type="button" data-sidebar aria-label="打开侧边栏">'+ic("panel")+'</button><h1>工作台</h1></div>'+
-    '<div class="wb-controls"><button type="button" class="wb-add-task" data-new-task>+ 新建任务</button><div class="wb-switch">'+["day","week","month"].map(view => '<button class="'+(WB.view === view ? "on" : "")+'" type="button" data-view="'+view+'">'+({day:"日",week:"周",month:"月"}[view])+'</button>').join("")+'</div>'+
-    '<div class="wb-date-nav"><button type="button" data-nav="-1" aria-label="上一个周期">‹</button><strong>'+workbenchDateLabel()+'</strong><button type="button" data-nav="1" aria-label="下一个周期">›</button><button type="button" data-today>今天</button></div></div></header>';
+    '<div class="wb-controls"><button type="button" class="wb-add-task" data-new-task>+ 新建任务</button><div class="wb-switch">'+
+      ["day","week","month"].map(view => '<button class="'+(WB.view === view ? "on" : "")+'" type="button" data-view="'+view+'">'+({day:"日",week:"周",month:"月"}[view])+'</button>').join("")+
+      '<button class="wb-switch-icon'+(WB.view === "unscheduled" ? " on" : "")+'" type="button" data-view="unscheduled" aria-label="未排期">'+ic("inbox")+'</button>'+
+    '</div>'+dateNav+'</div></header>';
 }
 
 function renderWorkbenchProjectFilter(){
