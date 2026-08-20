@@ -110,7 +110,7 @@ function workbenchNewTaskCard(project){
   if(!WB.newTask || WB.newTask.project !== project.id) return "";
   const sourceOptions = WB_DATA.sources.map(source => '<option value="'+esc(source.id)+'" '+(WB.newTask.sourceId === source.id ? "selected" : "")+'>'+esc(source.label)+'</option>').join("");
   const projectOptions = WB_DATA.projects.map(item => '<option value="'+esc(item.id)+'" '+(WB.newTask.project === item.id ? "selected" : "")+'>'+esc(item.name)+'</option>').join("");
-  return '<section class="wb-editor-shell wb-new-task" data-new-card><div class="wb-editor-head"><input data-new-title placeholder="新建待办事项" value="'+esc(WB.newTask.title)+'" aria-label="任务标题"><button type="button" data-cancel-new aria-label="取消新建">×</button></div>'+
+  return '<section class="wb-editor-shell wb-new-task" data-new-card><div class="wb-editor-head"><input data-new-title placeholder="新建待办事项" value="'+esc(WB.newTask.title)+'" aria-label="任务标题"></div>'+
     '<textarea data-new-detail placeholder="备注">'+esc(WB.newTask.detail)+'</textarea>'+
     '<div class="wb-editor-footer"><select data-new-project aria-label="项目">'+projectOptions+'</select><select data-new-source aria-label="来源文档"><option value="">来源文档</option>'+sourceOptions+'</select><input type="date" data-new-date value="'+esc(WB.newTask.date||"")+'" aria-label="安排日期"><button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
 }
@@ -536,7 +536,6 @@ $("#workbenchView").addEventListener("click", event => {
   if(event.target.closest("[data-new-task]")){ openWorkbenchNewTask(); return; }
   if(event.target.closest("[data-add-project]")){ addWorkbenchProject(); return; }
   if(event.target.closest("[data-save-new]")){ saveWorkbenchNewTask(); return; }
-  if(event.target.closest("[data-cancel-new]")){ WB.newTask=null; if(!workbenchRemoveNewTaskCard()) renderWorkbench(); return; }
   const today = event.target.closest("[data-schedule-today]");
   if(today){ scheduleWorkbenchTask(today.dataset.scheduleToday, workbenchToday()); return; }
   const removeImage = event.target.closest("[data-remove-image]");
@@ -548,6 +547,9 @@ $("#workbenchView").addEventListener("click", event => {
     if(task && name){ task.images.splice(idx, 1); if(!workbenchMorphTask(taskId)) renderWorkbench(); removeWorkbenchImage(taskId, name); }
     return;
   }
+  // 新建卡片内部（标题输入框、备注、日期、项目/来源下拉）保留原生交互，不走下面的
+  // 「点击空白处收起」逻辑——那些点击都已经在上面按具体 data-* 处理过或本就该正常触发。
+  if(event.target.closest("[data-new-card]")) return;
   const taskRow = event.target.closest("[data-task]");
   if(taskRow){
     const taskId = taskRow.dataset.task;
@@ -576,6 +578,12 @@ $("#workbenchView").addEventListener("click", event => {
     const id = WB.editorTaskId;
     WB.editorTaskId = null;
     if(!workbenchMorphTask(id)) renderWorkbench();
+    return;
+  }
+  // 点击空白处收起新建卡片：标题写了内容就当完成新建，没写就当取消——不再需要专门的叉。
+  if(WB.newTask){
+    if(WB.newTask.title.trim()) saveWorkbenchNewTask();
+    else { WB.newTask = null; if(!workbenchRemoveNewTaskCard()) renderWorkbench(); }
   }
 });
 
