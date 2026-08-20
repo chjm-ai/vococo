@@ -118,7 +118,7 @@ function workbenchProjectBlock(project, tasks){
   const groupId = workbenchGroupId(project);
   const collapsed = WB.collapsed.has(groupId);
   const body = tasks.length ? '<div class="wb-task-list">'+tasks.map(workbenchTaskRow).join("")+'</div>' : '<p class="wb-empty">暂无任务</p>';
-  return '<section class="wb-project-block"><button type="button" class="wb-project-toggle" data-group="'+esc(groupId)+'" aria-expanded="'+(!collapsed)+'"><span class="wb-project-name"><i class="wb-chevron" aria-hidden="true"></i><strong>'+esc(project.name)+'</strong></span></button>'+
+  return '<section class="wb-project-block"><button type="button" class="wb-project-toggle" data-group="'+esc(groupId)+'" aria-expanded="'+(!collapsed)+'"><span class="wb-project-name"><strong>'+esc(project.name)+'</strong><i class="wb-chevron" aria-hidden="true"></i></span></button>'+
     (collapsed ? "" : body+workbenchNewTaskCard(project))+'</section>';
 }
 
@@ -174,22 +174,37 @@ function workbenchMorphTask(taskId){
   const node = workbenchNodeForTask(taskId);
   const task = workbenchTask(taskId);
   if(!node || !task) return false;
-  const startHeight = node.getBoundingClientRect().height;
+  const startRect = node.getBoundingClientRect();
   const wrap = document.createElement("div");
   wrap.innerHTML = workbenchTaskRow(task);
   const next = wrap.firstElementChild;
   if(!next) return false;
   node.replaceWith(next);
-  const endHeight = next.getBoundingClientRect().height;
-  if(Math.abs(endHeight - startHeight) < 1) return true;
-  next.style.height = startHeight+"px";
+  const endRect = next.getBoundingClientRect();
+  const endStyle = getComputedStyle(next);
+  const endMarginLeft = endStyle.marginLeft;
+  const endMarginRight = endStyle.marginRight;
+  const sameSize = Math.abs(endRect.height - startRect.height) < 1 && Math.abs(endRect.width - startRect.width) < 1;
+  if(sameSize) return true;
+  // 编辑卡比列表行宽（左右各多出 16px），行→卡切换时宽度也要跟高度一起过渡，
+  // 否则宽度是一瞬间跳变的，看起来就是「抖一下」。
+  next.style.height = startRect.height+"px";
+  next.style.width = startRect.width+"px";
+  next.style.marginLeft = "0px";
+  next.style.marginRight = "0px";
   next.style.overflow = "hidden";
   void next.offsetHeight;
-  next.style.transition = "height .2s cubic-bezier(.22,.61,.36,1)";
-  requestAnimationFrame(() => { next.style.height = endHeight+"px"; });
+  next.style.transition = "height .2s cubic-bezier(.22,.61,.36,1), width .2s cubic-bezier(.22,.61,.36,1), margin-left .2s cubic-bezier(.22,.61,.36,1), margin-right .2s cubic-bezier(.22,.61,.36,1)";
+  requestAnimationFrame(() => {
+    next.style.height = endRect.height+"px";
+    next.style.width = endRect.width+"px";
+    next.style.marginLeft = endMarginLeft;
+    next.style.marginRight = endMarginRight;
+  });
   next.addEventListener("transitionend", function onEnd(event){
     if(event.propertyName !== "height" || event.target !== next) return;
-    next.style.height = ""; next.style.overflow = ""; next.style.transition = "";
+    next.style.height = ""; next.style.width = ""; next.style.marginLeft = ""; next.style.marginRight = "";
+    next.style.overflow = ""; next.style.transition = "";
     next.removeEventListener("transitionend", onEnd);
   });
   return true;
