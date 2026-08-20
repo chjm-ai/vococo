@@ -48,13 +48,14 @@
   const kind = qs.get("kind") === "url" ? "url" : "path";
   const target = qs.get("target") || "";
   const title = qs.get("title") || target;
+  const highlight = qs.get("highlight") || "";
   S.conv = qs.get("conv") || "";
   document.title = title ? title + " · 文档预览" : "文档预览";
   $("#dpClose").onclick = () => window.close();
   if(!target){
     $("#dpBody").innerHTML = '<div class="dp-err">缺少预览目标</div>';
   } else {
-    openDocPreview({kind, target, title});
+    openDocPreview({kind, target, title, highlight});
   }
 })();
 </script>

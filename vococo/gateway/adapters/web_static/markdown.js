@@ -114,7 +114,7 @@ function closeDocPreview(){
   dpRevoke();
   $("#dpBody").innerHTML = "";
 }
-async function openDocPreview({kind, target, title}){
+async function openDocPreview({kind, target, title, highlight=""}){
   dpRevoke();
   $("#docPreview").hidden = false;
   $("#dpTitle").textContent = title || target;
@@ -125,13 +125,13 @@ async function openDocPreview({kind, target, title}){
   // 独立窗口:走真实页面 /doc-preview.html,不是当前对话内的分屏——token 不经 URL(那是
   // 明确的安全红线,见 web_auth.py),独立窗口靠同源共享的 localStorage 自己取 token。
   $("#dpWinBtn").onclick = ()=>{
-    const params = new URLSearchParams({kind, target, title: title||target});
+    const params = new URLSearchParams({kind, target, title: title||target, highlight});
     if(S.conv) params.set("conv", S.conv);
     window.open("/doc-preview.html?"+params.toString(), "_blank",
       "noopener,width=980,height=860,menubar=no,toolbar=no,location=no,status=no");
   };
   $("#dpDlBtn").hidden = true;
-  if(kind==="url"){ renderDocUrl(target); return; }
+  if(kind==="url"){ renderDocUrl(target, highlight); return; }
   try{
     const resp = await api("/doc/preview?conv="+encodeURIComponent(S.conv||"")+"&path="+encodeURIComponent(target));
     if(!resp.ok){
@@ -140,7 +140,7 @@ async function openDocPreview({kind, target, title}){
       body.innerHTML = '<div class="dp-err">'+esc(msg)+'</div>';
       return;
     }
-    renderDocBlob(await resp.blob(), target);
+    renderDocBlob(await resp.blob(), target, highlight);
   }catch(e){
     body.innerHTML = '<div class="dp-err">加载失败,检查一下网络</div>';
   }
@@ -148,7 +148,26 @@ async function openDocPreview({kind, target, title}){
 // 外部 URL 的 iframe 是真实跨域内容(不像本地文件那样先读成 blob 隔离),给个宽松沙箱——
 // 挡"跳出 iframe 劫持整个页面"(不给 allow-top-navigation),别的照常放行,不影响正常浏览。
 const DP_URL_SANDBOX = 'sandbox="allow-scripts allow-same-origin allow-popups allow-forms"';
-function renderDocUrl(target){
+function highlightPreviewText(body, text){
+  const phrase = (text||"").trim();
+  if(!phrase) return;
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  let node;
+  while((node = walker.nextNode())){
+    const start = node.data.indexOf(phrase);
+    if(start < 0) continue;
+    const fragment = document.createDocumentFragment();
+    fragment.append(node.data.slice(0, start));
+    const mark = document.createElement("mark");
+    mark.className = "dp-highlight"; mark.textContent = phrase; fragment.append(mark);
+    fragment.append(node.data.slice(start + phrase.length));
+    node.parentNode.replaceChild(fragment, node);
+    requestAnimationFrame(()=>mark.scrollIntoView({block:"center", behavior:"smooth"}));
+    return;
+  }
+}
+
+function renderDocUrl(target, highlight=""){
   const body=$("#dpBody"), ext=extOf(target);
   const sameOrigin = target.startsWith(location.origin+"/");
   if(ext==="md"||ext==="markdown"||ext==="txt"){
@@ -158,6 +177,7 @@ function renderDocUrl(target){
     fetch(target).then(r=>r.text()).then(txt=>{
       if(ext==="txt"){ body.innerHTML=""; const pre=el("pre","dp-text"); pre.textContent=txt; body.append(pre); }
       else body.innerHTML='<div class="dp-md bubble">'+mdToHtml(txt)+'</div>';
+      highlightPreviewText(body, highlight);
     }).catch(()=>{ dpExternalFallback(target, "读取失败,下面尝试直接显示原页面。"); });
     return;
   }
@@ -174,7 +194,7 @@ function dpExternalFallback(target, note){
     '<div class="dp-err">'+esc(note)+' 如果下面还是空白,点右上角"在新标签页打开"直接看原页面。</div>'+
     '<iframe class="dp-frame" '+DP_URL_SANDBOX+' src="'+esc(target)+'"></iframe>';
 }
-function renderDocBlob(blob, target){
+function renderDocBlob(blob, target, highlight=""){
   const body=$("#dpBody"), ctype=(blob.type||"").split(";")[0].trim(), ext=extOf(target);
   $("#dpDlBtn").hidden=false;
   $("#dpDlBtn").onclick=()=>{
@@ -186,9 +206,9 @@ function renderDocBlob(blob, target){
   const isMd = ext==="md"||ext==="markdown"||ctype==="text/markdown";
   const textExts=["txt","json","log","py","js","jsx","ts","tsx","sh","yml","yaml","css","xml","csv","ini"];
   if(isMd){
-    blob.text().then(txt=>{ body.innerHTML='<div class="dp-md bubble">'+mdToHtml(txt)+'</div>'; });
+    blob.text().then(txt=>{ body.innerHTML='<div class="dp-md bubble">'+mdToHtml(txt)+'</div>'; highlightPreviewText(body, highlight); });
   } else if(ctype.startsWith("text/")||textExts.includes(ext)){
-    blob.text().then(txt=>{ body.innerHTML=""; const pre=el("pre","dp-text"); pre.textContent=txt; body.append(pre); });
+    blob.text().then(txt=>{ body.innerHTML=""; const pre=el("pre","dp-text"); pre.textContent=txt; body.append(pre); highlightPreviewText(body, highlight); });
   } else if(ctype.startsWith("image/")||/^(png|jpe?g|gif|webp|svg)$/.test(ext)){
     DP.objUrl=URL.createObjectURL(blob); body.innerHTML='<img class="dp-img" src="'+DP.objUrl+'">';
   } else if(ctype==="application/pdf"||ext==="pdf"){
