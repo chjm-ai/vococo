@@ -150,7 +150,7 @@ function renderWorkbenchHeader(){
     '<div class="wb-controls"><button type="button" class="wb-add-task" data-new-task>+ 新建任务</button><div class="wb-switch">'+
       ["day","week","month"].map(view => '<button class="'+(WB.view === view ? "on" : "")+'" type="button" data-view="'+view+'">'+({day:"日",week:"周",month:"月"}[view])+'</button>').join("")+
       '<button class="wb-switch-icon'+(WB.view === "unscheduled" ? " on" : "")+'" type="button" data-view="unscheduled" aria-label="未排期">'+ic("inbox")+'</button>'+
-    '</div>'+dateNav+'</div></header>';
+    '</div>'+dateNav+'<button type="button" class="wb-win-btn" data-workbench-win title="独立窗口" aria-label="独立窗口">'+ic("newwin")+'</button></div></header>';
 }
 
 function renderWorkbenchProjectFilter(){
@@ -523,7 +523,15 @@ async function openWorkbench(){
 
 function closeWorkbench(){ const view = $("#workbenchView"); if(view) view.hidden = true; }
 
+// 独立窗口:走真实页面(带侧栏的完整 SPA)加 ?view=workbench,登录后直接落地工作台、
+// 不显示侧边导航(见 app-core.js tryEnter 的 standaloneWorkbench 分支 + wb-standalone 样式)。
+function openWorkbenchStandalone(){
+  window.open("/?view=workbench", "_blank",
+    "noopener,width=1180,height=860,menubar=no,toolbar=no,location=no,status=no");
+}
+
 $("#workbenchView").addEventListener("click", event => {
+  if(event.target.closest("[data-workbench-win]")){ openWorkbenchStandalone(); return; }
   if(event.target.closest("[data-sidebar]")){ expandSidebarResponsive(); return; }
   const complete = event.target.closest("[data-complete]");
   if(complete){ toggleWorkbenchTask(complete.dataset.complete); return; }
