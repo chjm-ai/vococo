@@ -82,9 +82,10 @@ function workbenchTaskRow(task){
   if(WB.editorTaskId === task.id) return renderWorkbenchTaskEditor(task);
   const action = task.status === "done" ? "恢复" : "完成";
   const selected = WB.selectedTaskId === task.id;
+  const detail = task.detail ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
   return '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+'" data-task="'+esc(task.id)+'" draggable="true">'+
     '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
-    '<strong class="wb-task-title">'+esc(task.title)+'</strong>'+workbenchSourceLink(task, true)+'</article>';
+    '<div class="wb-task-copy"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+detail+'</div>'+workbenchSourceLink(task, true)+'</article>';
 }
 
 function renderWorkbenchTaskEditor(task){
