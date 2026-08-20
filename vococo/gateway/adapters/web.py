@@ -33,7 +33,7 @@ from aiohttp import web
 from ... import config, providers
 from ...core import title
 from ...core.agent import AgentReply, FileAttachment
-from ...memory import session_store
+from ...memory import session_store, workbench
 from .. import git_status, settings_store
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
 from .base import AudioAttachment, ImageAttachment, Incoming
@@ -1360,6 +1360,105 @@ class WebAdapter:
         session_store.reorder_projects([str(h) for h in order])
         return web.json_response({"ok": True})
 
+    # ── 工作台 ───────────────────────────────────────────────────────────
+    @_authed
+    async def _handle_workbench(self, request: web.Request) -> web.Response:
+        """工作台首屏:项目/来源文档/任务一次性拉全(个人规模,不分页/不筛选)。"""
+        return _compressed_json({
+            "projects": workbench.list_projects(),
+            "sources": workbench.list_sources(),
+            "tasks": workbench.list_tasks(),
+        })
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_project_create(self, request: web.Request, body: dict) -> web.Response:
+        project = workbench.create_project(str(body.get("name") or ""))
+        if project is None:
+            return web.json_response({"error": "名称不能为空"}, status=400)
+        return web.json_response({"project": project})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_project_rename(self, request: web.Request, body: dict) -> web.Response:
+        project = workbench.rename_project(str(body.get("id") or ""), str(body.get("name") or ""))
+        if project is None:
+            return web.json_response({"error": "项目不存在或名称为空"}, status=400)
+        return web.json_response({"project": project})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_project_archive(self, request: web.Request, body: dict) -> web.Response:
+        pid = str(body.get("id") or "")
+        if pid:
+            workbench.archive_project(pid)
+        return web.json_response({"ok": True})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_project_reorder(self, request: web.Request, body: dict) -> web.Response:
+        order = body.get("order")
+        if not isinstance(order, list):
+            return web.json_response({"error": "order 必须是数组"}, status=400)
+        workbench.reorder_projects([str(pid) for pid in order])
+        return web.json_response({"ok": True})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_task_create(self, request: web.Request, body: dict) -> web.Response:
+        task = workbench.create_task(
+            str(body.get("project") or ""),
+            str(body.get("title") or ""),
+            detail=str(body.get("detail") or ""),
+            date=body.get("date") or None,
+            month=body.get("month") or None,
+            week=body.get("week") or None,
+            source_ids=body.get("sourceIds") or [],
+        )
+        if task is None:
+            return web.json_response({"error": "project / title 不能为空"}, status=400)
+        return web.json_response({"task": task})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_task_update(self, request: web.Request, body: dict) -> web.Response:
+        task_id = str(body.get("id") or "")
+        if not task_id:
+            return web.json_response({"error": "id 不能为空"}, status=400)
+        fields = {k: v for k, v in body.items() if k != "id"}
+        task = workbench.update_task(task_id, **fields)
+        if task is None:
+            return web.json_response({"error": "任务不存在或字段无效"}, status=404)
+        return web.json_response({"task": task})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_task_delete(self, request: web.Request, body: dict) -> web.Response:
+        task_id = str(body.get("id") or "")
+        workbench.delete_task(task_id)
+        return web.json_response({"ok": True})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_task_image_add(self, request: web.Request, body: dict) -> web.Response:
+        task_id = str(body.get("id") or "")
+        data = body.get("data")
+        media_type = str(body.get("mediaType") or "")
+        if not task_id or not isinstance(data, str) or not data:
+            return web.json_response({"error": "id / data 不能为空"}, status=400)
+        name = workbench.add_task_image(task_id, data, media_type)
+        if name is None:
+            return web.json_response({"error": "任务不存在或图片数据无效"}, status=400)
+        return web.json_response({"name": name})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_task_image_remove(self, request: web.Request, body: dict) -> web.Response:
+        task_id = str(body.get("id") or "")
+        name = str(body.get("name") or "")
+        ok = workbench.remove_task_image(task_id, name)
+        return web.json_response({"ok": ok})
+
     @_authed
     @_json_body
     async def _handle_conv_pin(self, request: web.Request, body: dict) -> web.Response:
@@ -2439,6 +2538,16 @@ class WebAdapter:
                 web.post("/projects/create", self._handle_project_create),
                 web.post("/projects/remove", self._handle_project_remove),
                 web.post("/projects/reorder", self._handle_project_reorder),
+                web.get("/workbench", self._handle_workbench),
+                web.post("/workbench/projects/create", self._handle_workbench_project_create),
+                web.post("/workbench/projects/rename", self._handle_workbench_project_rename),
+                web.post("/workbench/projects/archive", self._handle_workbench_project_archive),
+                web.post("/workbench/projects/reorder", self._handle_workbench_project_reorder),
+                web.post("/workbench/tasks/create", self._handle_workbench_task_create),
+                web.post("/workbench/tasks/update", self._handle_workbench_task_update),
+                web.post("/workbench/tasks/delete", self._handle_workbench_task_delete),
+                web.post("/workbench/tasks/image/add", self._handle_workbench_task_image_add),
+                web.post("/workbench/tasks/image/remove", self._handle_workbench_task_image_remove),
                 web.post("/conv/pin", self._handle_conv_pin),
                 web.get("/models", self._handle_models),
                 web.post("/effort", self._handle_effort_switch),

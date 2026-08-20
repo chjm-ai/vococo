@@ -24,7 +24,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from .. import config
 from ..cron import suggestions
-from ..memory import people_profiles, session_store
+from ..memory import people_profiles, session_store, workbench
 
 _TOPIC_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 _DEFAULT_CATEGORY = "其他主题"
@@ -458,6 +458,169 @@ async def delete_cron_job(args: dict) -> dict:
     jobs.remove(j)
     scheduler.save_jobs(jobs)
     return _ok(f"🗑 已删除任务「{j.get('name')}」。")
+
+def _resolve_workbench_project(ref: str, projects: list[dict]) -> dict | None:
+    """按 id / 名字(不分大小写)解析一个工作台项目。"""
+    ref = ref.strip()
+    for p in projects:
+        if p["id"] == ref:
+            return p
+    lowered = ref.lower()
+    for p in projects:
+        if p["name"].lower() == lowered:
+            return p
+    return None
+
+def _resolve_workbench_task(ref: str, tasks: list[dict]) -> dict | None:
+    """按 id / 1-based 序号 / 标题(精确匹配优先,退而求其次子串匹配)解析一个工作台任务。"""
+    ref = ref.strip()
+    for t in tasks:
+        if t["id"] == ref:
+            return t
+    if ref.isdigit():
+        i = int(ref) - 1
+        if 0 <= i < len(tasks):
+            return tasks[i]
+    lowered = ref.lower()
+    for t in tasks:
+        if t["title"].lower() == lowered:
+            return t
+    for t in tasks:
+        if lowered in t["title"].lower():
+            return t
+    return None
+
+def _workbench_week_key(date_str: str) -> str:
+    """日期所在周(周一起)的周一日期,跟前端 workbenchWeekKey 同一套算法。"""
+    d = datetime.date.fromisoformat(date_str)
+    return (d - datetime.timedelta(days=d.weekday())).isoformat()
+
+@tool(
+    "list_workbench_projects",
+    "列出工作台的所有项目(GTD 分类标签,如「AI 咨询」「VocoTrade」)。"
+    "新建/移动任务前先用它确认项目名字或 id。",
+    {"type": "object", "properties": {}},
+)
+async def list_workbench_projects(args: dict) -> dict:
+    projects = workbench.list_projects()
+    if not projects:
+        return _ok("工作台当前没有项目。")
+    lines = [f"{i}. [{p['id']}] {p['name']}" for i, p in enumerate(projects, 1)]
+    return _ok("工作台项目:\n" + "\n".join(lines))
+
+@tool(
+    "list_workbench_tasks",
+    "列出工作台任务(GTD 待办)。project:可选,按项目 id/名字过滤,不传返回全部。"
+    "用户问「今天/这周有什么任务」「工作台上有什么」时用,自己按返回的 date 字段筛日期。",
+    {"type": "object", "properties": {"project": {"type": "string"}}},
+)
+async def list_workbench_tasks(args: dict) -> dict:
+    ref = (args.get("project") or "").strip()
+    tasks = workbench.list_tasks()
+    if ref:
+        project = _resolve_workbench_project(ref, workbench.list_projects())
+        if not project:
+            return _ok(f"没找到项目「{ref}」。用 list_workbench_projects 看列表。")
+        tasks = [t for t in tasks if t["project"] == project["id"]]
+    if not tasks:
+        return _ok("没有符合条件的工作台任务。")
+    status_label = {"todo": "待办", "done": "已完成", "focus": "本轮重点", "block": "受阻"}
+    lines = [
+        f"{i}. [{t['id']}] {t['title']} — {status_label.get(t['status'], t['status'])}"
+        f"{' — ' + t['date'] if t['date'] else ''}(项目:{t['project']})"
+        for i, t in enumerate(tasks, 1)
+    ]
+    return _ok("工作台任务:\n" + "\n".join(lines))
+
+@tool(
+    "create_workbench_task",
+    "在工作台新建一条待办任务。project:项目 id 或名字(必须已存在,用 "
+    "list_workbench_projects 先确认);title:标题;detail:可选备注;"
+    "date:可选,安排到具体某天(YYYY-MM-DD),不传则只进「未排期」的待办堆。",
+    {
+        "type": "object",
+        "properties": {
+            "project": {"type": "string"},
+            "title": {"type": "string"},
+            "detail": {"type": "string"},
+            "date": {"type": "string"},
+        },
+        "required": ["project", "title"],
+    },
+)
+async def create_workbench_task(args: dict) -> dict:
+    project_ref = (args.get("project") or "").strip()
+    title = (args.get("title") or "").strip()
+    if not project_ref or not title:
+        return _ok("create_workbench_task 需要 project / title 都非空。")
+    project = _resolve_workbench_project(project_ref, workbench.list_projects())
+    if not project:
+        return _ok(f"没找到项目「{project_ref}」。用 list_workbench_projects 看列表。")
+    date = (args.get("date") or "").strip() or None
+    month = date[:7] if date else None
+    week = _workbench_week_key(date) if date else None
+    task = workbench.create_task(
+        project["id"], title, detail=(args.get("detail") or "").strip(),
+        date=date, month=month, week=week,
+    )
+    if task is None:
+        return _ok("新建失败,标题不能为空。")
+    return _ok(f"✅ 已在「{project['name']}」新建任务「{title}」,id={task['id']}。")
+
+@tool(
+    "update_workbench_task",
+    "更新工作台任务的状态/标题/备注/日期(按 id/序号/标题 定位)。"
+    "status 取值:todo(待办)/done(完成)/focus(本轮重点)/block(受阻)。"
+    "用户说「把 X 标记完成/挪到明天/改成重点」时用。",
+    {
+        "type": "object",
+        "properties": {
+            "task": {"type": "string"},
+            "status": {"type": "string", "enum": ["todo", "done", "focus", "block"]},
+            "title": {"type": "string"},
+            "detail": {"type": "string"},
+            "date": {"type": "string"},
+        },
+        "required": ["task"],
+    },
+)
+async def update_workbench_task(args: dict) -> dict:
+    ref = (args.get("task") or "").strip()
+    if not ref:
+        return _ok("update_workbench_task 需要 task(id/序号/标题)。")
+    t = _resolve_workbench_task(ref, workbench.list_tasks())
+    if not t:
+        return _ok(f"没找到任务「{ref}」。用 list_workbench_tasks 看列表。")
+    fields: dict = {}
+    for key in ("status", "title", "detail"):
+        if key in args:
+            fields[key] = args[key]
+    if "date" in args:
+        date = (args.get("date") or "").strip() or None
+        fields["date"] = date
+        fields["month"] = date[:7] if date else t["month"]
+        fields["week"] = _workbench_week_key(date) if date else t["week"]
+    updated = workbench.update_task(t["id"], **fields)
+    if updated is None:
+        return _ok("更新失败,字段无效。")
+    return _ok(f"✅ 已更新任务「{updated['title']}」。")
+
+@tool(
+    "delete_workbench_task",
+    "删除一条工作台任务(按 id/序号/标题)。不可恢复,删前最好先向用户确认。",
+    {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]},
+)
+async def delete_workbench_task(args: dict) -> dict:
+    from . import danger
+
+    ref = (args.get("task") or "").strip()
+    t = _resolve_workbench_task(ref, workbench.list_tasks())
+    if not t:
+        return _ok(f"没找到任务「{ref}」。用 list_workbench_tasks 看列表。")
+    if not await danger.require_approval("删除工作台任务", f"任务「{t['title']}」(不可恢复)"):
+        return _ok(f"🛑 未批准删除任务「{t['title']}」,已跳过。")
+    workbench.delete_task(t["id"])
+    return _ok(f"🗑 已删除任务「{t['title']}」。")
 
 @tool(
     "ask_user",
@@ -946,6 +1109,11 @@ def build_mcp_servers() -> dict:
                 list_cron_jobs,
                 set_cron_job_enabled,
                 delete_cron_job,
+                list_workbench_projects,
+                list_workbench_tasks,
+                create_workbench_task,
+                update_workbench_task,
+                delete_workbench_task,
                 ask_user,
                 send_message,
                 send_image,
