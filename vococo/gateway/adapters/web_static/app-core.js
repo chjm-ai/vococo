@@ -19,6 +19,7 @@ const S = {
   images: [],           // {data,media_type,url}
   audios: [],           // {id,filename,text,mediaType,url,status}:status = uploading|done|error
   files: [],            // {id,filename,mediaType,status}:通用文件，类型不设前端白名单
+  composerAttachments: {}, // conv → {images,audios,files}:未发送附件仅在当前页面内按会话隔离
   stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
   localSent: false,     // 本客户端刚发了消息,收到 "user" 事件时跳过(避免重复气泡)
   es: null,
