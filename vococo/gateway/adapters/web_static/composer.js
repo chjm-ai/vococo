@@ -411,10 +411,11 @@ function ivSrc(im){
     im._ivurl=cv.toDataURL("image/png"); return im._ivurl;
   }catch(e){ return im.src; }
 }
-function openImgViewer(img){
+function openImgViewer(img, list){
   // 聊天气泡里的图默认是缩略图(懒加载,可能还没触发),按 dataset.full 认«有效图片»,
   // 不能只按 naturalWidth 判断,否则还没滚到可视区的图会被漏掉,←/→ 切换时跳过。
-  IV.list=Array.from(document.querySelectorAll("#wrap .imgs img")).filter(g=>g.src||g.dataset.full);
+  // list 可选:传了就用这份(比如工作台备注区的图片),不传按聊天气泡的默认取法。
+  IV.list=(list || Array.from(document.querySelectorAll("#wrap .imgs img"))).filter(g=>g.src||g.dataset.full);
   if(!IV.list.length) return;
   IV.idx=Math.max(0, IV.list.indexOf(img));
   renderImgViewer();
