@@ -159,11 +159,24 @@ function renderWorkbenchProjectFilter(){
     '<button class="wb-project-add" type="button" data-add-project aria-label="新建项目" title="新建项目">'+ic("plus")+'</button></div>';
 }
 
+// 备注框跟着内容长高，但夹在 [最小, 最大] 之间——超过最大值就交给自己的滚动条，
+// 不然一段很长的备注能把整张卡片撑到没边。
+const WB_DETAIL_MIN_H = 76, WB_DETAIL_MAX_H = 240;
+function workbenchAutoGrowTextarea(el){
+  if(!el) return;
+  el.style.height = "auto";
+  el.style.height = Math.min(Math.max(el.scrollHeight, WB_DETAIL_MIN_H), WB_DETAIL_MAX_H)+"px";
+}
+function workbenchAutoGrowAll(){
+  document.querySelectorAll("#workbenchView textarea[data-edit-detail], #workbenchView textarea[data-new-detail]").forEach(workbenchAutoGrowTextarea);
+}
+
 function renderWorkbench(){
   const root = $("#wbContent");
   if(!root) return;
   root.innerHTML = renderWorkbenchHeader()+renderWorkbenchProjectFilter()+renderWorkbenchProjects();
   hydrateWorkbenchImages();
+  workbenchAutoGrowAll();
 }
 
 function workbenchNodeForTask(taskId){
@@ -196,6 +209,7 @@ function workbenchMorphTask(taskId){
   if(!next) return false;
   node.replaceWith(next);
   hydrateWorkbenchImages();
+  workbenchAutoGrowTextarea(next.querySelector("textarea[data-edit-detail]"));
   const endRect = next.getBoundingClientRect();
   const endStyle = getComputedStyle(next);
   const endMarginLeft = endStyle.marginLeft;
@@ -349,6 +363,7 @@ function workbenchInsertNewTaskCard(project){
   const card = wrap.firstElementChild;
   if(!card) return false;
   block.appendChild(card);
+  workbenchAutoGrowTextarea(card.querySelector("textarea[data-new-detail]"));
   const endRect = card.getBoundingClientRect();
   const endMarginTop = getComputedStyle(card).marginTop;
   card.style.height = "0px";
@@ -636,12 +651,12 @@ $("#workbenchView").addEventListener("input", event => {
   const task = workbenchTask(event.target.dataset.editTitle || event.target.dataset.editDetail);
   if(task){
     if(event.target.dataset.editTitle) task.title = event.target.value;
-    if(event.target.dataset.editDetail) task.detail = event.target.value;
+    if(event.target.dataset.editDetail){ task.detail = event.target.value; workbenchAutoGrowTextarea(event.target); }
     return;
   }
   if(!WB.newTask) return;
   if("newTitle" in event.target.dataset) WB.newTask.title = event.target.value;
-  if("newDetail" in event.target.dataset) WB.newTask.detail = event.target.value;
+  if("newDetail" in event.target.dataset){ WB.newTask.detail = event.target.value; workbenchAutoGrowTextarea(event.target); }
 });
 
 // 标题/备注失焦时才落库，避免每敲一个字都打一次 API。
