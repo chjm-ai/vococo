@@ -118,3 +118,11 @@ def test_search_opened_archived_conversation_keeps_title_and_menu_state():
     assert "? S.searchConvs" in html
     assert "const activeConv=findConv(S.conv);" in html
     assert "syncMoreHeader();   // 搜索先打开任务、列表后到时,收起普通会话的旧菜单" in html
+
+
+def test_unarchive_search_result_refreshes_active_sidebar():
+    """历史搜索打开的归档会话取消归档后，应重拉当前筛选的侧栏列表。"""
+    html = _shell()
+    archive_fn = html[html.index("async function toggleArchive(conv){") : html.index("function dirtyBits(")]
+
+    assert "if(!next) await loadConvs();" in archive_fn

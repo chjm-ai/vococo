@@ -1121,7 +1121,10 @@ async function toggleArchive(conv){
       // worktree 有未提交改动/未合并提交,归档了但没回收——告诉用户为什么
       alert("已归档成功。该会话的代码还有"+dirtyBits(j.dirty||{})+",worktree 暂未回收(内容不能丢)。\n\n合并或提交后再次归档即可回收。");
     }
-  }catch(err){ c.archived=!next; renderConvs(); }
+  }catch(err){ c.archived=!next; renderConvs(); return; }
+  // 从历史搜索打开的归档会话不在当前「工作中」筛选数据里；取消归档成功后需重拉，
+  // 才能把它并入 S.convs 并立即显示在侧边栏。
+  if(!next) await loadConvs();
   if(next && c.pinned) pinConv(conv, false);   // 归档的会话不该再占着置顶分组,顺手取消置顶
 }
 // worktree 未提交内容摘要文案:未提交改动/未跟踪文件/未合并提交,全空给兜底文案。
