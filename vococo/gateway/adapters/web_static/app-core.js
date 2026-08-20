@@ -5,6 +5,7 @@
 // ── 状态 ────────────────────────────────────────────────────────────────
 const S = {
   token: localStorage.getItem("vococo_token") || "",
+  standaloneWorkbench: new URLSearchParams(location.search).get("view") === "workbench",  // 工作台独立窗口(见 workbench.js 的 wb-win-btn),登录后直接落地工作台、跳过通话视图
   surface: "chat",  // chat | call | workbench：当前主视图，仅供前端切换与侧栏高亮
   conv: "main",
   callReturnConv: "main", // 进入主会话前的普通会话;挂断后恢复,避免刷新错读语音会话历史
@@ -267,8 +268,10 @@ async function tryEnter(){
     if(!hasSavedExpanded){ S.expanded.add("__default__"); }  // 从没手动折叠过 → 默认项目首次展开
     applyConvs(d);   // 这次 /conversations 顺便验证了口令,数据直接拿来用,不用再多打一次
     prefetchHistories();   // 后台预热最近会话历史(有 2.5s 延迟,不抢首屏带宽)
-    // 默认进入统一对话视图:文本和语音共用一个输入区,主会话入口不再单独占一行。
-    openCallView();
+    // 独立窗口打开的工作台(?view=workbench,见 workbench.js 的 wb-win-btn):跳过通话视图,
+    // 不需要侧边导航,直接落地工作台内容区,body 打上 wb-standalone 让 CSS 藏起汉堡按钮。
+    if(S.standaloneWorkbench){ document.body.classList.add("wb-standalone"); openWorkbench(); }
+    else { openCallView(); }  // 默认进入统一对话视图:文本和语音共用一个输入区,主会话入口不再单独占一行。
     // 侧边栏用得到的次要数据(主题偏好/项目列表/模型/斜杠命令)并行去拉,不再堵在落地页前面。
     const secondary = Promise.all([loadPrefs(), loadProjects(), loadModels(), loadCommands(), loadVoiceOmniConfig()])
       .then(updateFilterBtn).catch(()=>{});

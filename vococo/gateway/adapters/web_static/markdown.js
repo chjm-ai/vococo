@@ -136,6 +136,7 @@ async function openDocPreview({kind, target, title, highlight=""}){
     if(S.conv) params.set("conv", S.conv);
     window.open("/doc-preview.html?"+params.toString(), "_blank",
       "noopener,width=980,height=860,menubar=no,toolbar=no,location=no,status=no");
+    closeDocPreview();
   };
   $("#dpDlBtn").hidden = true;
   if(kind==="url"){ renderDocUrl(target, highlight); return; }
