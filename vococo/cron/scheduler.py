@@ -392,7 +392,7 @@ async def _run_script_job(job: dict, push: PushFn) -> None:
 
         session_key = job.get("conv") or f"task:{job_id}"
         turn_id = session_store.start_turn(session_key, f"[脚本任务] {job.get('name','')}")
-        session_store.finish_turn(turn_id, text)
+        session_store.finish_turn(turn_id, text, session_key=session_key)
         await _push_job_result(job_id, "success" if ok else "error", text, push)
     finally:
         _script_running.discard(job_id)

@@ -42,6 +42,26 @@ def test_sessions_isolated_by_key(isolated):
     assert len(session_store.load_recent("task:1")) == 1
 
 
+def test_deleted_turn_cannot_write_to_reused_id(isolated):
+    """删除中的旧流拿到已复用的 id，也不能污染后来新建的会话。"""
+    from vococo.memory import session_store
+
+    old_key = "web:deleted"
+    new_key = "web:current"
+    old_id = session_store.start_turn(old_key, "旧会话的问题")
+    session_store.delete_session(old_key)
+    new_id = session_store.start_turn(new_key, "新会话的问题")
+    assert new_id == old_id  # SQLite INTEGER PRIMARY KEY 会复用刚删除的最大 id
+
+    assert not session_store.flush_draft(old_id, "旧会话的残余正文", session_key=old_key)
+    assert not session_store.finish_turn(old_id, "旧会话的最终回复", session_key=old_key)
+
+    history = session_store.load_history(new_key)
+    assert history[-1]["user"] == "新会话的问题"
+    assert history[-1]["pending"] is True
+    assert "draft" not in history[-1]
+
+
 def test_gpt56_summary_normalizes_stale_context_window(isolated):
     """旧会话曾按 API 的 1.05M 落库，Web 进度条必须改按 Codex 的实际有效窗口显示。"""
     from vococo.memory import session_store
