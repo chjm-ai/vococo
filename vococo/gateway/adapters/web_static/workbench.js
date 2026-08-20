@@ -152,11 +152,92 @@ function renderWorkbench(){
   root.innerHTML = renderWorkbenchHeader()+'<div class="wb-project-filter"><button class="'+(WB.project === "all" ? "on" : "")+'" type="button" data-project="all">全部项目</button>'+WORKBENCH_DEMO.projects.map(project => '<button class="'+(WB.project === project.id ? "on" : "")+'" type="button" data-project="'+esc(project.id)+'">'+esc(project.name)+'</button>').join("")+'</div>'+renderWorkbenchProjects();
 }
 
+function workbenchNodeForTask(taskId){
+  return document.querySelector('[data-task="'+CSS.escape(taskId)+'"]');
+}
+
+// 只替换单个任务节点，不重建整棵列表；否则每次点击都会让浏览器把全表回流一遍，动效必卡。
+function workbenchSwapTask(taskId){
+  const node = workbenchNodeForTask(taskId);
+  const task = workbenchTask(taskId);
+  if(!node || !task) return false;
+  const wrap = document.createElement("div");
+  wrap.innerHTML = workbenchTaskRow(task);
+  const next = wrap.firstElementChild;
+  if(!next) return false;
+  node.replaceWith(next);
+  return true;
+}
+
+// 同上，额外做一个高度过渡：行与卡片高度不同，直接换节点会「啪」一下跳变，这里让它长出来/收回去。
+function workbenchMorphTask(taskId){
+  const node = workbenchNodeForTask(taskId);
+  const task = workbenchTask(taskId);
+  if(!node || !task) return false;
+  const startHeight = node.getBoundingClientRect().height;
+  const wrap = document.createElement("div");
+  wrap.innerHTML = workbenchTaskRow(task);
+  const next = wrap.firstElementChild;
+  if(!next) return false;
+  node.replaceWith(next);
+  const endHeight = next.getBoundingClientRect().height;
+  if(Math.abs(endHeight - startHeight) < 1) return true;
+  next.style.height = startHeight+"px";
+  next.style.overflow = "hidden";
+  void next.offsetHeight;
+  next.style.transition = "height .2s cubic-bezier(.22,.61,.36,1)";
+  requestAnimationFrame(() => { next.style.height = endHeight+"px"; });
+  next.addEventListener("transitionend", function onEnd(event){
+    if(event.propertyName !== "height" || event.target !== next) return;
+    next.style.height = ""; next.style.overflow = ""; next.style.transition = "";
+    next.removeEventListener("transitionend", onEnd);
+  });
+  return true;
+}
+
+function selectWorkbenchTask(taskId){
+  const prevEditor = WB.editorTaskId;
+  const prevSelected = WB.selectedTaskId;
+  const hadNewTask = !!WB.newTask;
+  WB.newTask = null;
+  WB.editorTaskId = null;
+  WB.selectedTaskId = taskId;
+  if(hadNewTask){ renderWorkbench(); return; }
+  let ok = true;
+  if(prevEditor && prevEditor !== taskId) ok = workbenchMorphTask(prevEditor) && ok;
+  if(prevSelected && prevSelected !== taskId && prevSelected !== prevEditor) ok = workbenchSwapTask(prevSelected) && ok;
+  ok = workbenchSwapTask(taskId) && ok;
+  if(!ok) renderWorkbench();
+}
+
+function openWorkbenchEditor(taskId){
+  const prevEditor = WB.editorTaskId;
+  const prevSelected = WB.selectedTaskId;
+  const hadNewTask = !!WB.newTask;
+  WB.newTask = null;
+  WB.selectedTaskId = null;
+  WB.editorTaskId = taskId;
+  let ok = !hadNewTask;
+  if(ok){
+    if(prevEditor && prevEditor !== taskId) ok = workbenchMorphTask(prevEditor) && ok;
+    if(prevSelected && prevSelected !== taskId && prevSelected !== prevEditor) ok = workbenchSwapTask(prevSelected) && ok;
+    ok = workbenchMorphTask(taskId) && ok;
+  }
+  if(!ok) renderWorkbench();
+  requestAnimationFrame(() => {
+    const el = $(".wb-card-title");
+    if(!el) return;
+    el.focus({preventScroll:true});
+    const len = el.value.length;
+    el.setSelectionRange(len, len); // 只定位光标，不要默认全选标题
+  });
+}
+
 function toggleWorkbenchTask(taskId){
   const task = workbenchTask(taskId);
   if(!task) return;
   task.status = task.status === "done" ? "todo" : "done";
-  renderWorkbench();
+  if(!workbenchSwapTask(taskId)) renderWorkbench();
 }
 
 function scheduleWorkbenchTask(taskId, date){
@@ -233,12 +314,18 @@ $("#workbenchView").addEventListener("click", event => {
   if(removeImage){ const task=workbenchTask(removeImage.dataset.imageTask); task?.images?.splice(Number(removeImage.dataset.removeImage), 1); renderWorkbench(); return; }
   const taskRow = event.target.closest("[data-task]");
   if(taskRow){
-    if(taskRow.dataset.task === WB.editorTaskId) return;
-    // 单击延迟触发选中，留出窗口给浏览器原生 dblclick 检测（重渲染会替换节点，破坏双击识别）
+    const taskId = taskRow.dataset.task;
+    if(taskId === WB.editorTaskId) return;
+    if(taskId === WB.selectedTaskId){
+      // 已经是选中状态：这一下直接打开，不用再等去分辨是不是双击
+      clearTimeout(wbClickTimer); wbClickTimer = null;
+      openWorkbenchEditor(taskId);
+      return;
+    }
+    // 单击延迟触发选中，留出窗口给浏览器原生 dblclick 检测（提前重渲染会替换节点，破坏双击识别）
     // 双击的两次 click 都会走到这里：必须先清掉上一个待触发的计时器，否则会遗留一个孤儿计时器，
     // 在 dblclick 打开编辑卡之后延迟把它关掉。
     clearTimeout(wbClickTimer);
-    const taskId = taskRow.dataset.task;
     wbClickTimer = setTimeout(() => { wbClickTimer = null; selectWorkbenchTask(taskId); }, 250);
     return;
   }
@@ -249,27 +336,21 @@ $("#workbenchView").addEventListener("click", event => {
   const nav = event.target.closest("[data-nav]");
   if(nav){ shiftWorkbenchDate(Number(nav.dataset.nav)); return; }
   if(event.target.closest("[data-today]")){ WB.anchor = WORKBENCH_DEMO.today; renderWorkbench(); return; }
-  if(WB.editorTaskId){ WB.editorTaskId=null; renderWorkbench(); }
+  if(WB.editorTaskId){
+    const id = WB.editorTaskId;
+    WB.editorTaskId = null;
+    if(!workbenchMorphTask(id)) renderWorkbench();
+  }
 });
-
-function selectWorkbenchTask(taskId){
-  WB.newTask = null;
-  WB.editorTaskId = null;
-  WB.selectedTaskId = taskId;
-  renderWorkbench();
-}
 
 $("#workbenchView").addEventListener("dblclick", event => {
   if(event.target.closest("[data-complete],[data-source]")) return;
   const taskRow = event.target.closest("[data-task]");
   if(!taskRow) return;
   if(wbClickTimer){ clearTimeout(wbClickTimer); wbClickTimer = null; }
-  if(taskRow.dataset.task === WB.editorTaskId) return;
-  WB.newTask = null;
-  WB.selectedTaskId = null;
-  WB.editorTaskId = taskRow.dataset.task;
-  renderWorkbench();
-  requestAnimationFrame(() => $(".wb-card-title")?.focus());
+  const taskId = taskRow.dataset.task;
+  if(taskId === WB.editorTaskId) return;
+  openWorkbenchEditor(taskId);
 });
 
 $("#workbenchView").addEventListener("input", event => {
@@ -302,7 +383,12 @@ $("#workbenchView").addEventListener("paste", event => {
 document.addEventListener("keydown", event => {
   if($("#workbenchView").hidden) return;
   if(event.key === "Escape"){
-    if(WB.editorTaskId || WB.newTask){ WB.editorTaskId=null; WB.newTask=null; renderWorkbench(); }
+    if(WB.newTask){ WB.newTask=null; renderWorkbench(); }
+    else if(WB.editorTaskId){
+      const id = WB.editorTaskId;
+      WB.editorTaskId = null;
+      if(!workbenchMorphTask(id)) renderWorkbench();
+    }
     return;
   }
   if(event.code !== "Space" || event.ctrlKey || event.metaKey || event.altKey) return;
