@@ -269,8 +269,10 @@ async function tryEnter(){
     applyConvs(d);   // 这次 /conversations 顺便验证了口令,数据直接拿来用,不用再多打一次
     prefetchHistories();   // 后台预热最近会话历史(有 2.5s 延迟,不抢首屏带宽)
     // 独立窗口打开的工作台(?view=workbench,见 workbench.js 的 wb-win-btn):跳过通话视图,
-    // 不需要侧边导航,直接落地工作台内容区,body 打上 wb-standalone 让 CSS 藏起汉堡按钮。
-    if(S.standaloneWorkbench){ document.body.classList.add("wb-standalone"); openWorkbench(); }
+    // 直接落地工作台内容区。sb-collapsed 把桌面侧边栏收起到宽度 0(跟手动收起是同一套
+    // CSS/状态),但保留 wb-hamb 展开图标——收起不等于砍掉入口,想展开还是能点开。
+    // wb-standalone 只用来藏"独立窗口"按钮本身,不做二次开窗。
+    if(S.standaloneWorkbench){ document.body.classList.add("wb-standalone", "sb-collapsed"); openWorkbench(); }
     else { openCallView(); }  // 默认进入统一对话视图:文本和语音共用一个输入区,主会话入口不再单独占一行。
     // 侧边栏用得到的次要数据(主题偏好/项目列表/模型/斜杠命令)并行去拉,不再堵在落地页前面。
     const secondary = Promise.all([loadPrefs(), loadProjects(), loadModels(), loadCommands(), loadVoiceOmniConfig()])
