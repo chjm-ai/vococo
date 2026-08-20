@@ -27,6 +27,7 @@ class GatewayRunner:
         self._locks: dict[str, anyio.Lock] = {}  # 每会话一把锁:同会话串行
         self._tg: anyio.abc.TaskGroup | None = None  # nursery,用于并发派发
         self._cancel_scopes: dict[str, anyio.CancelScope] = {}  # 每会话当前轮 CancelScope
+        self._turn_finished: dict[str, anyio.Event] = {}  # 当前轮收尾信号,删除会话时等待它退出
         self._recovered_interrupted: list[dict] = []  # 本次启动收尾的中断轮次(还魂用)
 
     async def push(self, platform: str, chat_id, text: str) -> None:
@@ -48,6 +49,23 @@ class GatewayRunner:
             scope.cancel()
             return True
         return False
+
+    async def cancel_and_wait_turn(
+        self, session_key: str, timeout: float = 10.0
+    ) -> tuple[bool, bool]:
+        """取消普通对话并等待其收尾，返回(原本是否运行, 是否已收尾)。
+
+        删除会话不能只发 cancel 后立刻删库：旧流仍可能继续刷 draft/finish。超时
+        时调用方必须拒绝删除，避免 Agent 还在执行工具却被用户误以为已经停止。
+        """
+        scope = self._cancel_scopes.get(session_key)
+        finished = self._turn_finished.get(session_key)
+        if scope is None or finished is None:
+            return False, True
+        scope.cancel()
+        with anyio.move_on_after(timeout) as timeout_scope:
+            await finished.wait()
+        return True, not timeout_scope.cancel_called
 
     def update_model_cache(self, session_key: str, model: str) -> None:
         """同步更新内存中的模型缓存;UI 切模型时由 WebAdapter 回调触发。"""
@@ -154,7 +172,9 @@ class GatewayRunner:
         token = clarify.set_current(key, adapter, inc.chat_id)
         clarify.mark_active(key)  # 全局登记"我在跑了",供 restart_self 等查"还有谁没结束"
         scope = anyio.CancelScope()
+        finished = anyio.Event()
         self._cancel_scopes[key] = scope
+        self._turn_finished[key] = finished
         try:
             with scope:
                 try:
@@ -170,6 +190,9 @@ class GatewayRunner:
                     pass  # 超时静默处理,不向用户发送错误消息
         finally:
             self._cancel_scopes.pop(key, None)
+            if self._turn_finished.get(key) is finished:
+                self._turn_finished.pop(key, None)
+            finished.set()
             clarify.mark_inactive(key)
             clarify.reset_current(token)
             clarify.clear_session(key)  # 轮结束,取消任何还挂着的 clarify
@@ -305,10 +328,13 @@ class GatewayRunner:
         from ..voice import notify as voice_notify
 
         voice_notify.register_platform_push(self.push)
-        # 注册取消回调到所有支持的 adapter(如 WebAdapter)
+        # 注册取消回调到所有支持的 adapter(如 WebAdapter)。删除会话用等待版，
+        # 普通「停止回复」保留原来的立即返回版，避免用户点击后白等。
         for adapter in self.adapters.values():
             if hasattr(adapter, "set_cancel_callback"):
                 adapter.set_cancel_callback(self.cancel_turn)
+            if hasattr(adapter, "set_cancel_and_wait_callback"):
+                adapter.set_cancel_and_wait_callback(self.cancel_and_wait_turn)
         # 注册模型切换回调 + 语音→网页跨端续聊桥接(WebAdapter 专属):语音喊一声
         # 就能让某个 web: 会话继续跑(见 gateway/web_bridge.py、
         # voice/task_tools.py 的 voice_continue_session)

@@ -281,17 +281,18 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         _running.pop(task_id, None)
 
     if status == "cancelled":
-        session_store.finish_turn(turn_id, "(任务已取消)", events=timeline.blocks)
+        session_store.finish_turn(turn_id, "(任务已取消)", events=timeline.blocks, session_key=session_key)
         ok = tasks.set_status(task_id, "cancelled", progress_note="已取消")
     elif status == "done":
         clean_text, tag_summary = _split_summary_tag(result_text)
-        session_store.finish_turn(turn_id, clean_text, events=timeline.blocks)
+        session_store.finish_turn(turn_id, clean_text, events=timeline.blocks, session_key=session_key)
         if sdk_session_id:
             session_store.set_sdk_session_id(session_key, sdk_session_id)
         ok = tasks.finish(task_id, "done", clean_text, tag_summary or _summarize(clean_text))
     else:
         session_store.finish_turn(
-            turn_id, result_text or f"(执行失败:{error_note})", events=timeline.blocks
+            turn_id, result_text or f"(执行失败:{error_note})", events=timeline.blocks,
+            session_key=session_key,
         )
         if sdk_session_id:
             session_store.set_sdk_session_id(session_key, sdk_session_id)

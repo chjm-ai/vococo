@@ -293,7 +293,7 @@ async def converse(
                 _draft_full += delta_text
                 now = time.monotonic()
                 if now - _draft_last_ts > 0.7:
-                    session_store.flush_draft(turn_id, _draft_full)
+                    session_store.flush_draft(turn_id, _draft_full, session_key=session_key)
                     _draft_last_ts = now
             elif isinstance(ev, ThinkingDelta):
                 await sink.thinking(ev.text)
@@ -322,15 +322,19 @@ async def converse(
         # 凭空消失,下一轮完全没上下文(第一轮被取消时=彻底失忆)。
         # 这里把「提问 + 已产出的部分回复」补落库,再原样抛出让 CancelScope 正常收尾。
         partial = (_draft_full or "").strip()
-        session_store.finish_turn(
-            turn_id, partial or "(上一条回复已被取消)", events=timeline.blocks
+        persisted = session_store.finish_turn(
+            turn_id, partial or "(上一条回复已被取消)", events=timeline.blocks,
+            session_key=session_key,
         )
-        # 通常取消发生在拿到 ResultMessage 前(reply 为 None、无 sdk_session_id);
-        # 万一已拿到就存回,让下一轮仍能 resume 接上真·多轮历史。
-        if reply is not None and reply.sdk_session_id:
-            session_store.set_sdk_session_id(session_key, reply.sdk_session_id)
-        # 通知渲染层本轮已被人为取消(Web 端可据此清理进行中快照,防止刷新后重放旧内容)
-        await sink.cancelled()
+        # 会话已被删除时,旧请求的 turn id 可能已被新会话复用。归属校验失败即停止:
+        # 不能重建 session_meta,也不能再向客户端推被删会话的终态事件。
+        if persisted:
+            # 通常取消发生在拿到 ResultMessage 前(reply 为 None、无 sdk_session_id);
+            # 万一已拿到就存回,让下一轮仍能 resume 接上真·多轮历史。
+            if reply is not None and reply.sdk_session_id:
+                session_store.set_sdk_session_id(session_key, reply.sdk_session_id)
+            # 通知渲染层本轮已被人为取消(Web 端可据此清理进行中快照,防止刷新后重放旧内容)
+            await sink.cancelled()
         raise  # 原样抛出;cwd 由 finally 统一 reset
     except Exception as exc:
         _err_msg = str(exc)
@@ -363,8 +367,14 @@ async def converse(
         reply.text = danger.redact_secrets(reply.text)
         # 最后一刷:确保 refresh 前最后 0.7s 内输出的内容也进 draft
         if _draft_full:
-            session_store.flush_draft(turn_id, _draft_full)
-        session_store.finish_turn(turn_id, reply.text, events=timeline.blocks)
+            session_store.flush_draft(turn_id, _draft_full, session_key=session_key)
+        persisted = session_store.finish_turn(
+            turn_id, reply.text, events=timeline.blocks, session_key=session_key
+        )
+        # 删除会话会删掉这轮的行;后续旧流即使拿着被 SQLite 复用的 id 也必须止步，
+        # 不得借 set_last_error / usage / sink.done 把已删除会话重新建回来。
+        if not persisted:
+            return reply
         # 记下这一轮是不是以报错收尾(限流/超时等)——语音端靠这个字段找出"卡住
         # 等续聊"的网页会话,不用去猜最后一条回复文本是不是错误提示。
         session_store.set_last_error(session_key, bool(reply.is_error))
@@ -384,7 +394,7 @@ async def converse(
             )
         await sink.done(reply, turn_id)
     else:
-        session_store.cancel_turn(turn_id)
+        session_store.cancel_turn(turn_id, session_key=session_key)
     return reply
 
 

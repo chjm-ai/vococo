@@ -763,14 +763,17 @@ async function delConv(conv){
   try{
     const r=await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
     const j=await r.json().catch(()=>({}));
-    if(j && j.need_confirm){
+    if(!r.ok || !j.ok && !j.need_confirm) throw new Error(j.error||"删除失败");
+    if(j.need_confirm){
       // 会话 worktree 里有未提交改动/未合并提交:先回滚乐观假删,弹三选——
       // 归档保留(只提醒不丢内容)/ 仍然删除(force,worktree 内容一起丢) / 取消
       list.splice(idx,0,removed); renderConvs();
       const choice=await delConfirmChoice(dirtyBits(j.dirty||{}));
       if(choice==="archive"){ toggleArchive(conv); return; }  // 归档保留:代码留 worktree,只提醒不回收
       if(choice!=="delete") return;                            // 取消:列表已恢复
-      await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,force:true})});
+      const forceResp=await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,force:true})});
+      const forceData=await forceResp.json().catch(()=>({}));
+      if(!forceResp.ok || !forceData.ok) throw new Error(forceData.error||"删除失败");
       // force 删除成功后行已被回滚恢复,需再移除一次(否则残留到刷新还看得到)
       const f=list.findIndex(x=>x.conv===conv);
       if(f>=0){
@@ -781,7 +784,7 @@ async function delConv(conv){
     // 删除失败:回滚列表并提示(行可能已恢复,先确认不在再插,避免重复行)
     if(!list.some(x=>x.conv===conv)) list.splice(idx,0,removed);
     renderConvs();
-    alert("删除失败,已恢复该会话");
+    alert((err&&err.message)||"删除失败,已恢复该会话");
   }
 }
 // 删除会话三选确认(worktree 有未提交改动时):归档保留 / 仍然删除 / 取消。

@@ -281,8 +281,18 @@ def start_turn(session_key: str, user_text: str) -> int:
     return cur.lastrowid  # type: ignore[return-value]
 
 
-def finish_turn(turn_id: int, assistant_text: str, events: list | None = None) -> None:
+def finish_turn(
+    turn_id: int,
+    assistant_text: str,
+    events: list | None = None,
+    *,
+    session_key: str | None = None,
+) -> bool:
     """用 AI 回复填完 start_turn 占的坑;events=该轮过程时间线(可选)。
+
+    ``session_key`` 是流式调用方必须传入的归属校验。删除会话后 SQLite 可能复用
+    turn id;旧请求不能只凭 id 把回复写进后来新建的会话。保留空值仅兼容历史测试
+    和一次性脚本路径，运行中的 Agent 均要传入自己的 session_key。
 
     顺手把 ts 刷到回复完成的时刻——侧边栏排序按 ts 取最新,这样"AI 回复完"
     和"用户发消息"两个动作都会把会话顶到最前面,而不是停在用户发消息那一刻。
@@ -294,18 +304,27 @@ def finish_turn(turn_id: int, assistant_text: str, events: list | None = None) -
             ev_json = json.dumps(events, ensure_ascii=False)
         except (TypeError, ValueError):
             ev_json = None  # 时间线序列化失败不影响正文落库
-    c.execute(
-        "UPDATE turns SET assistant_text=?, events=?, draft_text='', ts=? WHERE id=?",
-        (assistant_text, ev_json, time.time(), turn_id),
-    )
+    sql = "UPDATE turns SET assistant_text=?, events=?, draft_text='', ts=? WHERE id=?"
+    params: tuple = (assistant_text, ev_json, time.time(), turn_id)
+    if session_key is not None:
+        sql += " AND session_key=?"
+        params += (session_key,)
+    cur = c.execute(sql, params)
     c.commit()
+    return cur.rowcount == 1
 
 
-def cancel_turn(turn_id: int) -> None:
+def cancel_turn(turn_id: int, *, session_key: str | None = None) -> bool:
     """AI 回复出错/取消时删掉进行中的 turn,避免孤儿 pending 行残留。"""
     c = _conn()
-    c.execute("DELETE FROM turns WHERE id=? AND assistant_text=''", (turn_id,))
+    sql = "DELETE FROM turns WHERE id=? AND assistant_text=''"
+    params: tuple = (turn_id,)
+    if session_key is not None:
+        sql += " AND session_key=?"
+        params += (session_key,)
+    cur = c.execute(sql, params)
     c.commit()
+    return cur.rowcount == 1
 
 
 def delete_last_turn(session_key: str, turn_id: int) -> str | None:
@@ -361,11 +380,17 @@ def recover_interrupted_turns() -> list[dict]:
     ]
 
 
-def flush_draft(turn_id: int, text: str) -> None:
+def flush_draft(turn_id: int, text: str, *, session_key: str | None = None) -> bool:
     """流式进行中:把当前已输出的正文节流写进 draft_text 列,供刷新后兜底。"""
     c = _conn()
-    c.execute("UPDATE turns SET draft_text=? WHERE id=?", (text, turn_id))
+    sql = "UPDATE turns SET draft_text=? WHERE id=?"
+    params: tuple = (text, turn_id)
+    if session_key is not None:
+        sql += " AND session_key=?"
+        params += (session_key,)
+    cur = c.execute(sql, params)
     c.commit()
+    return cur.rowcount == 1
 
 
 def set_external_mcp_names(session_key: str, names: set[str]) -> None:

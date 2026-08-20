@@ -26,7 +26,7 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import AsyncIterator, Callable
+from typing import AsyncIterator, Awaitable, Callable
 
 from aiohttp import web
 
@@ -436,6 +436,7 @@ class WebAdapter:
         self._pending_files: dict[str, tuple[bytes, str, str, float]] = {}
         self._runner: web.AppRunner | None = None
         self._cancel_callback: Callable[[str], bool] | None = None
+        self._cancel_and_wait_callback: Callable[[str], Awaitable[tuple[bool, bool]]] | None = None
         self._model_switch_callback: Callable[[str, str], None] | None = None
         # 进程本次启动的标识:重启后这个值必变。前端拿它跟上次记住的值比对——
         # 一旦不一样就说明断线期间进程重启过,上面的环形缓冲/_live 全被清空了,
@@ -448,6 +449,12 @@ class WebAdapter:
 
     def set_cancel_callback(self, cb: Callable[[str], bool]) -> None:
         self._cancel_callback = cb
+
+    def set_cancel_and_wait_callback(
+        self, cb: Callable[[str], Awaitable[tuple[bool, bool]]]
+    ) -> None:
+        """注册删除会话专用的取消回调：取消后必须等 Agent 真的收尾。"""
+        self._cancel_and_wait_callback = cb
 
     def set_model_switch_callback(self, cb: Callable[[str, str], None]) -> None:
         """注册模型切换回调:UI 切模型时同步更新 GatewayRunner 的内存缓存。"""
@@ -1664,6 +1671,15 @@ class WebAdapter:
         conv = str(body.get("conv") or "")
         force = bool(body.get("force", False))
         if conv and conv != "main":
+            key = config.resolve_session_key("web", conv)
+            # 普通 web 会话与后台任务同样必须先停再删。否则旧 Agent 持有的
+            # turn_id 会在 SQLite 复用后串写进新会话；超时则拒绝删除，不能假装已停。
+            if self._cancel_and_wait_callback is not None:
+                was_running, stopped = await self._cancel_and_wait_callback(key)
+                if was_running and not stopped:
+                    return web.json_response(
+                        {"ok": False, "error": "回复仍在停止，请稍后再试"}, status=409
+                    )
             from ...core import tasks as bg_tasks  # 懒加载
 
             task_id = bg_tasks.task_id_from_session_key(conv)
@@ -1675,7 +1691,6 @@ class WebAdapter:
                 await task_runner.cancel_and_wait(task_id)
             from ...core import worktree  # 懒加载
 
-            key = config.resolve_session_key("web", conv)
             # 有未提交改动/独立提交:先提示,用户确认(force)后才真删——删 worktree
             # 会把这些内容一起丢掉,不能无声进行
             dirty = await worktree.worktree_dirty_summary(key)
