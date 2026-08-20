@@ -59,18 +59,11 @@ _DOC_SEARCH_SKIP_DIRS = {
 }
 _DOC_SEARCH_MAX_SCAN = 20000  # 扫描文件数上限,避免大仓库/大 vault 卡住请求
 
-# 会话文档列表只收人会实际阅读的文档/表格/演示稿，不把 .py/.js 等代码文件混进来。
-# 正则先从聊天正文里切出可能的路径或 URL，再按后缀做最终判定；工具写入路径单独处理。
+# 会话文档列表只收实际交付的可阅读文档/表格/演示稿；HTML 和代码文件都不显示。
 _SESSION_DOC_EXTENSIONS = {
     ".md", ".markdown", ".txt", ".pdf", ".doc", ".docx", ".odt", ".rtf",
-    ".csv", ".tsv", ".xls", ".xlsx", ".numbers", ".ppt", ".pptx", ".key",
-    ".pages", ".html", ".htm",
+    ".csv", ".tsv", ".xls", ".xlsx", ".numbers", ".ppt", ".pptx", ".key", ".pages",
 }
-_SESSION_DOC_EXT_PATTERN = "|".join(sorted((ext[1:] for ext in _SESSION_DOC_EXTENSIONS), key=len, reverse=True))
-_SESSION_DOC_TOKEN_RE = re.compile(
-    rf'''(?<![\w/])(?:https?://|~/|/|\./|\.\./)?[^\s<>()\[\]{{}}"'`、，。；：！？]+?\.(?:{_SESSION_DOC_EXT_PATTERN})(?:[?#][^\s<>()\[\]{{}}"'`、，。；：！？]*)?(?=$|[\s<>()\[\]{{}}"'`、，。；：！？])''',
-    re.IGNORECASE,
-)
 _SESSION_DOC_TRAILING = ".,;:!?，。；：！？）】》」』"
 
 # 纵深防御(审计 web#5/#9 · 2-9)。CSP 里 script/style 仍留 'unsafe-inline'——前端是单文件
@@ -364,60 +357,38 @@ def _document_ref(value: object) -> str | None:
 
 
 def _session_documents(turns: list[dict]) -> list[dict]:
-    """从完整会话历史提取文档引用，合并同一路径的创建/编辑/提及来源。"""
+    """从创建或编辑工具事件提取实际文档，忽略聊天中仅提及的路径。"""
     found: dict[str, dict] = {}
-
-    def add(value: object, action: str, ts: float | int | None) -> None:
-        path = _document_ref(value)
-        if path is None:
-            return
-        row = found.get(path)
-        if row is None:
-            name = Path(path.split("?", 1)[0].split("#", 1)[0]).name or path
-            row = found[path] = {"path": path, "name": name, "actions": [], "last_ts": ts or 0}
-        if action not in row["actions"]:
-            row["actions"].append(action)
-            row["actions"].sort(key=lambda item: ("创建", "编辑", "提及").index(item))
-        row["last_ts"] = max(row["last_ts"], ts or 0)
-
-    def add_mentions(text: object, ts: float | int | None) -> None:
-        if not isinstance(text, str):
-            return
-        for candidate in _SESSION_DOC_TOKEN_RE.findall(text):
-            add(candidate, "提及", ts)
-
     tool_actions = {
         "Write": "创建",
         "Edit": "编辑",
         "MultiEdit": "编辑",
         "NotebookEdit": "编辑",
     }
+
     for turn in turns:
         ts = turn.get("ts") or 0
-        add_mentions(turn.get("user"), ts)
-        add_mentions(turn.get("assistant"), ts)
-        add_mentions(turn.get("draft"), ts)
         for event in turn.get("events") or []:
             if not isinstance(event, dict):
                 continue
-            if event.get("type") == "text":
-                add_mentions(event.get("text"), ts)
-                continue
             action = tool_actions.get(event.get("name")) if event.get("type") == "tool" else None
-            if action:
-                inp = event.get("input") or {}
-                add(inp.get("file_path"), action, ts)
-                add(inp.get("notebook_path"), action, ts)
+            if not action:
+                continue
+            inp = event.get("input") or {}
+            for value in (inp.get("file_path"), inp.get("notebook_path")):
+                path = _document_ref(value)
+                if path is None:
+                    continue
+                row = found.get(path)
+                if row is None:
+                    name = Path(path.split("?", 1)[0].split("#", 1)[0]).name or path
+                    row = found[path] = {"path": path, "name": name, "actions": [], "last_ts": ts or 0}
+                if action not in row["actions"]:
+                    row["actions"].append(action)
+                    row["actions"].sort(key=lambda item: ("创建", "编辑").index(item))
+                row["last_ts"] = max(row["last_ts"], ts or 0)
 
-    # 创建/编辑的文件优先，其次按最近一次出现时间排；同分时路径稳定排序。
-    return sorted(
-        found.values(),
-        key=lambda row: (
-            not any(action in ("创建", "编辑") for action in row["actions"]),
-            -row["last_ts"],
-            row["path"].lower(),
-        ),
-    )
+    return sorted(found.values(), key=lambda row: (-row["last_ts"], row["path"].lower()))
 
 
 def _authed(fn):
@@ -1589,11 +1560,11 @@ class WebAdapter:
 
     @_authed
     async def _handle_conv_documents(self, request: web.Request) -> web.Response:
-        """返回本会话提及、创建或编辑过的非代码文档，供标题栏文档入口按需展示。"""
+        """返回本会话创建或编辑过的非 HTML 文档，供标题栏文档入口按需展示。"""
         conv = request.query.get("conv", "main")
         key = config.resolve_session_key("web", conv)
-        # 这是用户主动点击后的低频请求，需要覆盖完整会话；不复用 /history 的 40 轮限制。
-        turns = await asyncio.to_thread(session_store.load_history, key, limit=10_000, full_events=True)
+        # 只读含相关工具的事件，避免打开列表时加载整段会话正文和无关工具输出。
+        turns = await asyncio.to_thread(session_store.load_document_events, key)
         return _compressed_json({"documents": _session_documents(turns)})
 
     @_authed
