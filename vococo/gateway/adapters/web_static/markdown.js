@@ -109,12 +109,19 @@ function mdToHtml(src){
 const DP = {objUrl:null};
 function extOf(u){ const m=(u||"").match(/\.([a-z0-9]+)(?:\?.*)?$/i); return m ? m[1].toLowerCase() : ""; }
 function dpRevoke(){ if(DP.objUrl){ URL.revokeObjectURL(DP.objUrl); DP.objUrl=null; } }
-function closeDocPreview(){
+// hideDocPreviewPanel 只管隐藏 DOM(切会话离开当前视图用,不清该会话记住的面板状态);
+// closeDocPreview 是用户主动关闭(点 X / Esc),连同 S.docPreview[S.conv] 一并清掉。
+function hideDocPreviewPanel(){
   $("#docPreview").hidden = true;
   dpRevoke();
   $("#dpBody").innerHTML = "";
 }
+function closeDocPreview(){
+  delete S.docPreview[S.conv];
+  hideDocPreviewPanel();
+}
 async function openDocPreview({kind, target, title, highlight=""}){
+  S.docPreview[S.conv] = {kind, target, title, highlight};
   dpRevoke();
   $("#docPreview").hidden = false;
   $("#dpTitle").textContent = title || target;
