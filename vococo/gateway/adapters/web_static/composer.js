@@ -412,7 +412,9 @@ function ivSrc(im){
   }catch(e){ return im.src; }
 }
 function openImgViewer(img){
-  IV.list=Array.from(document.querySelectorAll("#wrap .imgs img")).filter(g=>g.src && g.naturalWidth);
+  // 聊天气泡里的图默认是缩略图(懒加载,可能还没触发),按 dataset.full 认«有效图片»,
+  // 不能只按 naturalWidth 判断,否则还没滚到可视区的图会被漏掉,←/→ 切换时跳过。
+  IV.list=Array.from(document.querySelectorAll("#wrap .imgs img")).filter(g=>g.src||g.dataset.full);
   if(!IV.list.length) return;
   IV.idx=Math.max(0, IV.list.indexOf(img));
   renderImgViewer();
@@ -421,9 +423,25 @@ function openImgViewer(img){
 function renderImgViewer(){
   const n=IV.list.length;
   IV.idx=(IV.idx+n)%n;
-  $("#ivImg").src=ivSrc(IV.list[IV.idx]);
+  const im=IV.list[IV.idx];
+  // 先用当前已有的(缩略图或空)占位秒开,原图在 loadFullImg 里异步拉回来再换上
+  $("#ivImg").src = im.naturalWidth ? ivSrc(im) : (im._fullBlobUrl||"");
   $("#ivCount").textContent=(IV.idx+1)+" / "+n;
   $("#ivPrev").style.display=$("#ivNext").style.display=$("#ivCount").style.display = n>1?"":"none";
+  loadFullImg(im);
+}
+// 查看器里点开的是聊天气泡缩略图,这里单独拉一次不带 thumb 的原图换上去;换的是
+// #ivImg,不动聊天气泡本身的 <img src>(那份省流量的缩略图不受影响)。拉到过就缓存在
+// im._fullBlobUrl 上,同一张图重复打开查看器不用再拉一次。
+async function loadFullImg(im){
+  if(!im.dataset.full) return;  // 实时发送的 blob:/data: 图本来就是原图,ivSrc 已经够用
+  if(!im._fullBlobUrl){
+    try{
+      const r=await api(im.dataset.full); if(!r.ok) return;
+      im._fullBlobUrl=URL.createObjectURL(await r.blob());
+    }catch(e){ return; }
+  }
+  if(IV.list[IV.idx]===im) $("#ivImg").src=im._fullBlobUrl;  // 拉的过程中用户可能已经切走了,别覆盖
 }
 function closeImgViewer(){ $("#imgViewer").hidden=true; $("#ivImg").removeAttribute("src"); IV.list=[]; }
 $("#ivClose").onclick=closeImgViewer;

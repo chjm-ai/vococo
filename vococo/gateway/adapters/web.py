@@ -1625,8 +1625,16 @@ class WebAdapter:
 
     @_authed
     async def _handle_image(self, request: web.Request) -> web.StreamResponse:
-        """回显某轮用户发的图片(落盘在 config.IMAGES_DIR);name 经白名单校验挡路径穿越。"""
-        p = session_store.image_path(request.query.get("name", ""))
+        """回显某轮用户发的图片(落盘在 config.IMAGES_DIR);name 经白名单校验挡路径穿越。
+
+        ?thumb=1 时返回缩略图(首次访问懒生成并缓存,见 images.thumb_path)——聊天气泡
+        默认只拉这份小图,点击放大时前端才再拉一次不带 thumb 的原图。
+        """
+        name = request.query.get("name", "")
+        if request.query.get("thumb"):
+            p = session_store.thumb_path(name)
+        else:
+            p = session_store.image_path(name)
         if p is None:
             return web.json_response({"error": "not found"}, status=404)
         # 图片按内容寻址(文件名带 turn_id,内容不变)→ 长缓存,刷新不重复拉

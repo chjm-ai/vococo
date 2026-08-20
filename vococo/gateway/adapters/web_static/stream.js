@@ -6,13 +6,29 @@
 // 图片组渲染,气泡(buildBubble/finalizeStream/mid_turn 消息/历史 AI 发图)统一走这个,
 // 别各处各写一份 —— 已经因为漏了一处(buildTurnBlock 没传 imgs)导致 AI 发的图刷新后
 // 消失过一次。
+// 历史图默认只拉缩略图(?thumb=1,见 web.py _handle_image),且要等图片真正进入
+// 可视区域才发请求——一个会话历史一次拉 40 轮,图多的话不懒加载会把所有图片的
+// 鉴权请求一次性全砸出去,详情页卡半天。点大图查看原图走 openImgViewer/loadFullImg
+// (composer.js),不在这里处理。
+const _imgLazyObserver = new IntersectionObserver((entries)=>{
+  for(const e of entries){
+    if(!e.isIntersecting) continue;
+    const im=e.target; _imgLazyObserver.unobserve(im);
+    loadAuthedImg(im, im.dataset.full, true);
+  }
+}, {rootMargin:"300px"});
 function appendImgs(container, imgs){
   if(!imgs || !imgs.length) return;
   const g=el("div","imgs");
   for(const u of imgs){ const im=el("img");
-    // 历史图走 /image?name=(需鉴权头,浏览器 <img> 不带) → 用 api() 取 blob;
-    // 实时发的是 data:/blob: URL,直接塞 src。
-    if(typeof u==="string" && u.startsWith("/")) loadAuthedImg(im,u); else im.src=u;
+    // 历史图走 /image?name=(需鉴权头,浏览器 <img> 不带) → 懒加载缩略图;
+    // 实时发的是 data:/blob: URL,已是最终分辨率,直接塞 src。
+    if(typeof u==="string" && u.startsWith("/")){
+      im.dataset.full=u;
+      _imgLazyObserver.observe(im);
+    } else {
+      im.src=u;
+    }
     im.onclick=()=>openImgViewer(im);
     g.append(im);
   }
@@ -142,10 +158,12 @@ function maybeAutoResume(conv, turns){
   S.autoResumed[conv]=true;
   setTimeout(()=>regenerateTurn(conv, last.id, null, true), 300);  // 让气泡先渲染出来再恢复
 }
-// 带鉴权头拉图并显示;token 只在头里传,不进 URL(不泄露到日志/历史/Referer)
-async function loadAuthedImg(im, url){
+// 带鉴权头拉图并显示;token 只在头里传,不进 URL(不泄露到日志/历史/Referer)。
+// thumb=true 时追加 &thumb=1 拉缩略图(聊天气泡默认用这个);查看原图走 loadFullImg。
+async function loadAuthedImg(im, url, thumb){
   try{
-    const r=await api(url); if(!r.ok) return;
+    const full = thumb ? url+(url.includes("?")?"&":"?")+"thumb=1" : url;
+    const r=await api(full); if(!r.ok) return;
     const b=await r.blob(); const o=URL.createObjectURL(b);
     im.onload=()=>URL.revokeObjectURL(o); im.src=o;
   }catch(e){}
