@@ -83,13 +83,16 @@ async def test_index_marks_cached_data_and_refreshes_cron_tools(static_app):
 
 
 @pytest.mark.anyio
-async def test_workbench_demo_stays_frontend_only(static_app):
+async def test_workbench_js_talks_to_backend(static_app):
+    """工作台前端已接后端(memory/workbench.py + /workbench* 路由),不再是写死的 demo。"""
     status, body, headers = await _get(static_app, "/workbench.js")
     assert status == 200
     assert headers["Cache-Control"] == "no-cache"
     source = body.decode("utf-8")
-    assert "WORKBENCH_DEMO" in source
-    assert "不请求、不写入 Obsidian / Things / SQLite" in source
+    assert "WORKBENCH_DEMO" not in source
+    assert 'api("/workbench")' in source
+    assert "/workbench/tasks/create" in source
+    assert "/workbench/projects/create" in source  # 项目不写死,支持界面新建
     assert 'view:"week"' in source
     assert "goals:" not in source
     assert "月目标" not in source
@@ -99,6 +102,7 @@ async def test_workbench_demo_stays_frontend_only(static_app):
     assert "renderWorkbenchDetail" not in source
     assert 'data-group' in source
     assert 'data-new-task' in source
+    assert 'data-add-project' in source
     assert 'data-new-title' in source
     assert 'event.code !== "Space"' in source
     assert 'data-schedule-today' in source
@@ -106,8 +110,7 @@ async def test_workbench_demo_stays_frontend_only(static_app):
     assert "addWorkbenchImages" in source
     assert 'data-sidebar' in source
     assert "expandSidebarResponsive" in source
-    assert "api(" not in source
-    styles = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/styles.css").read_text(encoding="utf-8")
+    styles =(Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/styles.css").read_text(encoding="utf-8")
     assert "#workbenchView .wb-toolbar{position:sticky" in styles
     assert "#workbenchView .wb-task{display:grid;grid-template-columns:20px minmax(0,1fr) minmax(120px,170px)" in styles
     assert "#workbenchView .wb-project-toggle{display:flex;align-items:center" in styles
