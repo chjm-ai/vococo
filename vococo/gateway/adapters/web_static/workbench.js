@@ -76,15 +76,15 @@ function workbenchSourceLink(task, compact){
   if(!sources.length) return '<span class="wb-no-source">无来源</span>';
   const source = sources[0];
   const suffix = sources.length > 1 ? " +"+(sources.length-1) : "";
-  return '<button type="button" class="wb-source-link'+(compact ? " wb-task-source" : "")+'" data-source="'+esc(source.id)+'" data-highlight="'+esc(workbenchTaskHighlight(task))+'" title="'+esc(source.label)+'">'+ic("doc")+'<span>'+esc(source.label)+suffix+'</span></button>';
+  return '<button type="button" draggable="false" class="wb-source-link'+(compact ? " wb-task-source" : "")+'" data-source="'+esc(source.id)+'" data-highlight="'+esc(workbenchTaskHighlight(task))+'" title="'+esc(source.label)+'">'+ic("doc")+'<span>'+esc(source.label)+suffix+'</span></button>';
 }
 
 function workbenchTaskRow(task){
   if(WB.editorTaskId === task.id) return renderWorkbenchTaskEditor(task);
   const action = task.status === "done" ? "恢复" : "完成";
   const selected = WB.selectedTaskId === task.id;
-  return '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+'" data-task="'+esc(task.id)+'">'+
-    '<button class="wb-check" type="button" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
+  return '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+'" data-task="'+esc(task.id)+'" draggable="true">'+
+    '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
     '<strong class="wb-task-title">'+esc(task.title)+'</strong>'+workbenchSourceLink(task, true)+'</article>';
 }
 
@@ -192,6 +192,35 @@ function workbenchMorphTask(taskId){
     next.style.height = ""; next.style.overflow = ""; next.style.transition = "";
     next.removeEventListener("transitionend", onEnd);
   });
+  return true;
+}
+
+// 只在同一个项目分组内调整任务的相对顺序；显示顺序即 WORKBENCH_DEMO.tasks 的数组顺序。
+function workbenchReorderTask(draggedId, targetId, placeBefore){
+  if(draggedId === targetId) return false;
+  const tasks = WORKBENCH_DEMO.tasks;
+  const dragged = workbenchTask(draggedId);
+  const target = workbenchTask(targetId);
+  if(!dragged || !target || dragged.project !== target.project) return false;
+  const draggedIdx = tasks.indexOf(dragged);
+  tasks.splice(draggedIdx, 1);
+  let targetIdx = tasks.indexOf(target);
+  if(!placeBefore) targetIdx += 1;
+  tasks.splice(targetIdx, 0, dragged);
+  return true;
+}
+
+function workbenchRefreshProjectBlock(projectId){
+  const project = workbenchProject(projectId);
+  if(!project) return false;
+  const node = document.querySelector('[data-group="'+CSS.escape(workbenchGroupId(project))+'"]')?.closest(".wb-project-block");
+  if(!node) return false;
+  const tasks = workbenchVisibleTasks().filter(task => task.project === projectId);
+  const wrap = document.createElement("div");
+  wrap.innerHTML = workbenchProjectBlock(project, tasks);
+  const next = wrap.firstElementChild;
+  if(!next) return false;
+  node.replaceWith(next);
   return true;
 }
 
@@ -351,6 +380,57 @@ $("#workbenchView").addEventListener("dblclick", event => {
   const taskId = taskRow.dataset.task;
   if(taskId === WB.editorTaskId) return;
   openWorkbenchEditor(taskId);
+});
+
+let wbDragTaskId = null;
+
+function workbenchClearDropIndicators(){
+  document.querySelectorAll(".wb-task-drop-before,.wb-task-drop-after").forEach(el => el.classList.remove("wb-task-drop-before", "wb-task-drop-after"));
+}
+
+$("#workbenchView").addEventListener("dragstart", event => {
+  const row = event.target.closest("[data-task]");
+  if(!row || row.classList.contains("wb-task-card") || row.dataset.task === WB.editorTaskId){ event.preventDefault(); return; }
+  wbDragTaskId = row.dataset.task;
+  clearTimeout(wbClickTimer); wbClickTimer = null;
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", wbDragTaskId);
+  row.classList.add("wb-task-dragging");
+});
+
+$("#workbenchView").addEventListener("dragover", event => {
+  if(!wbDragTaskId) return;
+  const row = event.target.closest("[data-task]");
+  if(!row || row.dataset.task === wbDragTaskId) return;
+  const dragged = workbenchTask(wbDragTaskId);
+  const target = workbenchTask(row.dataset.task);
+  if(!dragged || !target || dragged.project !== target.project) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  const before = event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2;
+  workbenchClearDropIndicators();
+  row.classList.toggle("wb-task-drop-before", before);
+  row.classList.toggle("wb-task-drop-after", !before);
+});
+
+$("#workbenchView").addEventListener("drop", event => {
+  if(!wbDragTaskId) return;
+  const row = event.target.closest("[data-task]");
+  workbenchClearDropIndicators();
+  if(!row || row.dataset.task === wbDragTaskId){ wbDragTaskId = null; return; }
+  const taskId = wbDragTaskId; wbDragTaskId = null;
+  const dragged = workbenchTask(taskId);
+  const target = workbenchTask(row.dataset.task);
+  if(!dragged || !target || dragged.project !== target.project) return;
+  event.preventDefault();
+  const before = row.classList.contains("wb-task-drop-before");
+  if(workbenchReorderTask(taskId, row.dataset.task, before) && !workbenchRefreshProjectBlock(dragged.project)) renderWorkbench();
+});
+
+$("#workbenchView").addEventListener("dragend", event => {
+  event.target.closest("[data-task]")?.classList.remove("wb-task-dragging");
+  workbenchClearDropIndicators();
+  wbDragTaskId = null;
 });
 
 $("#workbenchView").addEventListener("input", event => {
