@@ -33,6 +33,7 @@ def static_app():
             web.get("/", adapter._handle_index),
             web.get("/styles.css", adapter._handle_styles),
             web.get("/tool-card.js", adapter._handle_tool_card_js),
+            web.get(r"/{name:workbench\.js}", adapter._handle_app_js),
             web.get("/sw.js", adapter._handle_sw),
         ]
     )
@@ -58,6 +59,8 @@ async def test_index_injects_asset_versions(static_app):
     html = body.decode("utf-8")
     assert f'"/styles.css?v={_digest("styles.css")}"' in html
     assert f'"/tool-card.js?v={_digest("tool-card.js")}"' in html
+    assert f'"/workbench.js?v={_digest("workbench.js")}"' in html
+    assert 'id="workbenchView"' in html
     # 裸引用不应残留
     assert '"/styles.css"' not in html
     assert '"/tool-card.js"' not in html
@@ -77,6 +80,23 @@ async def test_index_marks_cached_data_and_refreshes_cron_tools(static_app):
     assert 'cached:["缓存数据"' in app_core
     assert 'offline:["服务不可达"' in app_core
     assert '"add_cron_job","delete_cron_job","set_cron_job_enabled"' in stream
+
+
+@pytest.mark.anyio
+async def test_workbench_demo_stays_frontend_only(static_app):
+    status, body, headers = await _get(static_app, "/workbench.js")
+    assert status == 200
+    assert headers["Cache-Control"] == "no-cache"
+    source = body.decode("utf-8")
+    assert "WORKBENCH_DEMO" in source
+    assert "不请求、不写入 Obsidian / Things / SQLite" in source
+    assert 'view:"week"' in source
+    assert "本周待安排" in source
+    assert "本月待分配" in source
+    assert "renderWorkbenchSource" in source
+    assert 'data-sidebar' in source
+    assert "expandSidebarResponsive" in source
+    assert "api(" not in source
 
 
 @pytest.mark.anyio
