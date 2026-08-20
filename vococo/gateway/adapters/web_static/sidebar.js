@@ -438,10 +438,7 @@ function renderConvs(){
   // 标题(含改名)可能已更新。语音任务/定时任务会话不在 S.convs 里(那是 /conversations 拉的),
   // 查找逻辑跟 openConv 保持一致——否则在任务自己的会话里改名,顶部标题栏不会跟着刷新
   // (侧栏那行没事,因为它是整个重建的;标题栏是这里单独同步的,漏了这几个来源就会显示旧名字)。
-  const activeConv=S.convs.find(c=>c.conv===S.conv)
-    || (S.voiceSidebar.main && S.voiceSidebar.main.conv===S.conv ? S.voiceSidebar.main : null)
-    || S.voiceSidebar.tasks.find(x=>x.conv===S.conv)
-    || S.cronJobs.find(x=>x.conv===S.conv);
+  const activeConv=findConv(S.conv);
   if(activeConv) $("#convTitle").textContent=activeConv.title||"新对话";
 }
 
@@ -574,6 +571,7 @@ async function loadCronSidebar(){
   catch(e){}  // 请求失败时保留上次成功列表，并由“服务不可达”状态说明
   renderConvs();
   syncCronHeader();   // 正开着某条任务会话时,启停开关的状态要跟上最新数据
+  syncMoreHeader();   // 搜索先打开任务、列表后到时,收起普通会话的旧菜单
   refillCurrentMeta();   // 同 loadVoiceSidebar:数据到位后补一次模型回填
 }
 // 「定时」Tab 里的「本机系统任务」区块:本机 launchd/crontab 里真正带调度周期的任务

@@ -9,6 +9,7 @@ const S = {
   conv: "main",
   callReturnConv: "main", // 进入主会话前的普通会话;挂断后恢复,避免刷新错读语音会话历史
   convs: [],            // [{conv,title,turns,last_ts,pinned}]
+  searchConvs: [],      // 搜索打开但不在当前筛选侧栏内的会话,供标题栏和操作菜单继续引用
   projects: [],         // [{hash,name,path,last_used}]
   project: null,        // 「活跃」项目 hash(顶部 ＋新对话 建在此;随打开的会话联动);null=默认项目
   expanded: new Set(),  // 已展开的分组:默认项目用 "__default__",项目用其 hash
