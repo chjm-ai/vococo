@@ -74,6 +74,22 @@ def test_gpt56_summary_normalizes_stale_context_window(isolated):
     assert session_store.list_sessions("web:gpt")[0]["ctx_window"] == 258_400
 
 
+def test_record_usage_zero_ctx_tokens_keeps_previous_value(isolated):
+    """真实 get_context_usage 查询失败时 agent.py 传 0 进来，不能让它把上一轮的
+    真实占用冲成 0（2026-08-20 真机事故：查询失败又用不可靠的累计值兜底，
+    圆环显示 116%；改成失败就传 0，这里验证 0 不会覆盖旧值）。"""
+    from vococo.memory import session_store
+
+    session_store.append("web:c", "你好", "你好")
+    session_store.record_usage("web:c", 107_182, 100, window=1_000_000, last_cache=1_163_122)
+    assert session_store.session_summary("web:c")["ctx_tokens"] == 107_182
+
+    session_store.record_usage("web:c", 0, 50, window=1_000_000, last_cache=2_000)
+    summary = session_store.session_summary("web:c")
+    assert summary["ctx_tokens"] == 107_182  # 旧值保留，没被 0 冲掉
+    assert summary["last_cache"] == 2_000  # 其它明细仍照常刷新
+
+
 def test_duplicate_session_copies_turns_and_title(isolated):
     from vococo.memory import session_store
 
