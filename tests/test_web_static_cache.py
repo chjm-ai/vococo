@@ -91,13 +91,16 @@ async def test_workbench_demo_stays_frontend_only(static_app):
     assert "WORKBENCH_DEMO" in source
     assert "不请求、不写入 Obsidian / Things / SQLite" in source
     assert 'view:"week"' in source
-    assert "本周待安排" in source
-    assert "本月待分配" in source
+    assert "goals:" not in source
+    assert "月目标" not in source
+    assert "今天推进" not in source
     assert "openWorkbenchSource" in source
     assert "openDocPreview({kind:\"path\"" in source
-    assert "renderWorkbenchSource" not in source
-    assert "renderWorkbenchDetail" in source
+    assert "renderWorkbenchDetail" not in source
     assert 'data-group' in source
+    assert 'data-new-task' in source
+    assert 'data-new-title' in source
+    assert 'event.code !== "Space"' in source
     assert 'data-schedule-today' in source
     assert 'data-edit-detail' in source
     assert "addWorkbenchImages" in source
@@ -106,7 +109,8 @@ async def test_workbench_demo_stays_frontend_only(static_app):
     assert "api(" not in source
     styles = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/styles.css").read_text(encoding="utf-8")
     assert "#workbenchView .wb-toolbar{position:sticky" in styles
-    assert "#workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) auto" in styles
+    assert "#workbenchView .wb-task{display:grid;grid-template-columns:20px minmax(0,1fr) minmax(120px,170px)" in styles
+    assert "#workbenchView .wb-project-toggle{display:flex;align-items:center" in styles
 
 
 def test_doc_preview_keeps_task_highlight_in_split_and_window():
