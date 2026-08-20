@@ -304,6 +304,65 @@ def test_append_turn_image_does_not_touch_user_uploaded_images(isolated):
     assert history[-1]["ai_images"] == ["/image?name=ai_reply.png"]
 
 
+def test_thumb_path_generates_and_caches_downscaled_image(isolated, monkeypatch):
+    """点开对话详情时聊天气泡只拉缩略图(见 web._handle_image ?thumb=1);首次访问懒生成
+    并落盘,二次访问直接命中缓存文件,不重复用 Pillow 压缩。"""
+    import io
+
+    from PIL import Image
+
+    from vococo import config
+    from vococo.core.agent import ImageAttachment
+    from vococo.memory import session_store
+
+    monkeypatch.setattr(config, "IMAGES_DIR", isolated / "data" / "images")
+
+    buf = io.BytesIO()
+    Image.new("RGB", (1000, 800), "red").save(buf, format="PNG")
+    b64 = __import__("base64").b64encode(buf.getvalue()).decode()
+
+    turn_id = session_store.start_turn("web:1", "这是一张大图")
+    names = session_store.save_turn_images(
+        turn_id, [ImageAttachment(data=b64, media_type="image/png")]
+    )
+    name = names[0]
+
+    thumb = session_store.thumb_path(name)
+    assert thumb is not None and thumb.is_file()
+    with Image.open(thumb) as im:
+        assert max(im.size) <= 320  # 长边压到阈值以内
+
+    cached_thumb = session_store.thumb_path(name)
+    assert cached_thumb == thumb  # 二次访问命中缓存,同一份文件
+
+
+def test_purge_session_images_removes_thumb_too(isolated, monkeypatch):
+    """删会话要把缩略图缓存一并清掉,否则孤儿缩略图文件永久堆积在磁盘上。"""
+    import io
+
+    from PIL import Image
+
+    from vococo import config
+    from vococo.core.agent import ImageAttachment
+    from vococo.memory import _db, session_store
+
+    monkeypatch.setattr(config, "IMAGES_DIR", isolated / "data" / "images")
+
+    buf = io.BytesIO()
+    Image.new("RGB", (100, 100), "blue").save(buf, format="PNG")
+    b64 = __import__("base64").b64encode(buf.getvalue()).decode()
+
+    turn_id = session_store.start_turn("web:2", "另一张图")
+    names = session_store.save_turn_images(
+        turn_id, [ImageAttachment(data=b64, media_type="image/png")]
+    )
+    thumb = session_store.thumb_path(names[0])
+    assert thumb.is_file()
+
+    session_store.purge_session_images(_db.conn(), "web:2")
+    assert not thumb.is_file()
+
+
 def test_save_turn_audio_persists_transcript_and_loads_history(isolated, monkeypatch):
     """音频落盘 + 转写文字一起记进 turns.audios;历史里能拿到回放 URL 和转写文字。"""
     from vococo import config

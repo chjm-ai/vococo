@@ -98,6 +98,35 @@ def image_path(name: str):
     return p if p.is_file() else None
 
 
+_THUMB_MAX = 320  # 缩略图最长边(px);历史消息一屏可能同时挂几十张图,拖慢首屏
+_THUMBS_DIR_NAME = "_thumbs"
+
+
+def thumb_path(name: str):
+    """按文件名返回缩略图路径(Path);首次访问时用 Pillow 生成并落盘缓存,此后直接命中。
+
+    内容寻址(原图文件名不变→缩略图文件名跟着不变),同一张图只生成一次。
+    生成失败(损坏文件/PIL 不支持的格式)时回落到原图路径,保证至少能显示原图。
+    非法名/原图不存在时同 image_path 返回 None。
+    """
+    orig = image_path(name)
+    if orig is None:
+        return None
+    thumb = config.IMAGES_DIR / _THUMBS_DIR_NAME / name
+    if thumb.is_file():
+        return thumb
+    try:
+        from PIL import Image
+
+        thumb.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(orig) as im:
+            im.thumbnail((_THUMB_MAX, _THUMB_MAX))
+            im.save(thumb)
+        return thumb
+    except Exception:
+        return orig
+
+
 def purge_session_images(c: sqlite3.Connection, session_key: str) -> None:
     """删会话前把它名下所有图片文件从磁盘清掉,避免孤儿文件堆积。供 session_store 的
     clear()/delete_session() 调用(传入同一条连接,同一事务里先清文件再删行)。"""
@@ -113,3 +142,4 @@ def purge_session_images(c: sqlite3.Connection, session_key: str) -> None:
         for n in names:
             if _IMG_NAME_RE.match(n or ""):
                 (config.IMAGES_DIR / n).unlink(missing_ok=True)
+                (config.IMAGES_DIR / _THUMBS_DIR_NAME / n).unlink(missing_ok=True)

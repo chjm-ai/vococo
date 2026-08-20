@@ -29,6 +29,7 @@ from .images import (  # noqa: F401 (re-export)
     image_path,
     purge_session_images,
     save_turn_images,
+    thumb_path,
 )
 from .prefs import get_prefs, set_prefs  # noqa: F401 (re-export)
 from .projects import (  # noqa: F401 (re-export)
