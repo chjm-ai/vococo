@@ -1041,7 +1041,7 @@ function copyCodeBlock(btn){
 $("#barMeta").onclick = e=>{ e.stopPropagation(); const p=$("#ctxPop"); p.hidden=!p.hidden; };
 document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contains(e.target)) $("#ctxPop").hidden=true; });
 
-// ── 会话文档:标题栏图标按需列出本会话提及、创建或编辑过的文档(不混代码文件) ──────
+// ── 会话文档:标题栏图标按需列出本会话创建或编辑的文档(不混 HTML/代码文件) ──────
 function renderConvDocuments(documents){
   const pop=$("#convDocsPop");
   if(!documents.length){ pop.innerHTML='<div class="cdempty">本会话还没有可查看的文档</div>'; return; }

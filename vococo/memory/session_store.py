@@ -174,6 +174,28 @@ def load_history(session_key: str, limit: int = 40, *, full_events: bool = False
     return out
 
 
+def load_document_events(session_key: str, limit: int = 10_000) -> list[dict]:
+    """只取含文档创建/编辑工具的事件，避免文档列表扫描整段会话正文与无关工具输出。"""
+    c = _conn()
+    wm = _watermark(c, session_key)
+    tool_markers = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+    clauses = " OR ".join("events LIKE ?" for _ in tool_markers)
+    rows = c.execute(
+        "SELECT ts, events FROM turns "
+        f"WHERE session_key=? AND id>? AND events IS NOT NULL AND ({clauses}) "
+        "ORDER BY id DESC LIMIT ?",
+        (session_key, wm, *(f'%\"name\": \"{name}\"%' for name in tool_markers), limit),
+    ).fetchall()
+    out: list[dict] = []
+    for ts, ev in reversed(rows):
+        try:
+            events = json.loads(ev)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        out.append({"ts": ts, "events": events})
+    return out
+
+
 def load_turn_events(session_key: str, turn_id: int) -> list | None:
     """按 id 精确取某一轮的完整过程时间线(懒加载工具卡详情用)。
 

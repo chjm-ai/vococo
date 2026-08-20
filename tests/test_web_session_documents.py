@@ -1,4 +1,4 @@
-"""会话详情「文档」入口：只聚合文档，不把代码文件混进列表。"""
+"""会话详情「文档」入口：只聚合实际创建或编辑的非 HTML 文档。"""
 from __future__ import annotations
 
 import pytest
@@ -25,7 +25,7 @@ def documents_app(isolated, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_session_documents_collects_document_mentions_and_file_changes(documents_app):
+async def test_session_documents_collects_only_created_or_edited_non_html_files(documents_app):
     turn_id = session_store.start_turn(
         "web:docs", "请查看 docs/brief.md、https://example.com/spec.pdf 和 core/app.py"
     )
@@ -35,6 +35,7 @@ async def test_session_documents_collects_document_mentions_and_file_changes(doc
         events=[
             {"type": "tool", "name": "Write", "input": {"file_path": "/tmp/plan.md"}},
             {"type": "tool", "name": "Edit", "input": {"file_path": "reports/summary.xlsx"}},
+            {"type": "tool", "name": "Write", "input": {"file_path": "previews/report.html"}},
             {"type": "tool", "name": "Edit", "input": {"file_path": "core/settings.py"}},
         ],
     )
@@ -46,10 +47,10 @@ async def test_session_documents_collects_document_mentions_and_file_changes(doc
 
     by_path = {item["path"]: item for item in documents}
     assert by_path["/tmp/plan.md"]["actions"] == ["创建"]
-    assert by_path["reports/summary.xlsx"]["actions"] == ["编辑", "提及"]
-    assert by_path["docs/brief.md"]["actions"] == ["提及"]
-    assert by_path["https://example.com/spec.pdf"]["actions"] == ["提及"]
+    assert by_path["reports/summary.xlsx"]["actions"] == ["编辑"]
+    assert "docs/brief.md" not in by_path
+    assert "https://example.com/spec.pdf" not in by_path
     assert "core/app.py" not in by_path
     assert "core/settings.py" not in by_path
-    # 创建/编辑的文档优先显示，方便从会话详情直接打开成果。
-    assert [item["path"] for item in documents[:2]] == ["/tmp/plan.md", "reports/summary.xlsx"]
+    assert "previews/report.html" not in by_path
+    assert [item["path"] for item in documents] == ["/tmp/plan.md", "reports/summary.xlsx"]
