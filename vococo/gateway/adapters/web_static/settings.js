@@ -657,7 +657,7 @@ function bindSwipe(row, body, act){
 $("#convBody").addEventListener("scroll", ()=>closeAllSwipes());
 function openConvMenu(btn, conv, slim){
   if(convMenuBtn===btn){ closeConvMenu(); return; }   // 再点一次同一个 → 收起
-  closeConvMenu();
+  closeHeaderPopovers();
   convMenuBtn=btn; btn.classList.add("on");
   const m=el("div","convmenu"); m.style.visibility="hidden";
   // 定时任务会话:菜单换成编辑/启停/删除(归档对定时任务没意义,见 buildCronJobRow)。

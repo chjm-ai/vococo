@@ -44,9 +44,9 @@ _STATIC = Path(__file__).resolve().parent / "web_static"
 
 # index.html 引用的可版本化静态资源:_handle_index 把 "/name" 引用改写成 "?v=内容哈希"
 _VERSIONED_ASSETS = (
-    "styles.css", "tool-card.js",
+    "styles.css", "mascot.css", "tool-card.js",
     # 2026-08-14 前端模块化:从 index.html 拆出的功能块(加载顺序即此顺序)
-    "app-core.js", "markdown.js", "sidebar.js", "settings.js", "workbench.js",
+    "app-core.js", "mascot.js", "markdown.js", "sidebar.js", "settings.js", "workbench.js",
     "stream.js", "composer.js", "voice.js",
 )
 _DOC_PREVIEW_MAX = 3 * 1024 * 1024  # 文档预览分屏读文件上限;超过就不读,前端提示下载/自己开
@@ -1414,6 +1414,8 @@ class WebAdapter:
             month=body.get("month") or None,
             week=body.get("week") or None,
             source_ids=body.get("sourceIds") or [],
+            parent_id=body.get("parentId") or None,
+            assignee=str(body.get("assignee") or "human"),
         )
         if task is None:
             return web.json_response({"error": "project / title 不能为空"}, status=400)
@@ -1485,6 +1487,28 @@ class WebAdapter:
         name = str(body.get("name") or "")
         ok = workbench.remove_task_image(task_id, name)
         return web.json_response({"ok": ok})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_task_dispatch(self, request: web.Request, body: dict) -> web.Response:
+        """从任务发起一个 AI 会话执行。prompt 不传则用 task.detail。"""
+        from ...core import task_runner
+
+        task_id = str(body.get("id") or "")
+        task = workbench.get_task(task_id)
+        if task is None:
+            return web.json_response({"error": "任务不存在"}, status=404)
+        prompt = str(body.get("prompt") or "").strip() or task["detail"]
+        if not prompt:
+            return web.json_response({"error": "任务没有备注/prompt，无法执行"}, status=400)
+        title = task["title"][:20]
+        session = task_runner.dispatch(
+            title=title, prompt=prompt,
+            origin="workbench",
+        )
+        workbench.link_session(task_id, session["id"])
+        updated_task = workbench.get_task(task_id)
+        return web.json_response({"sessionId": session["id"], "task": updated_task})
 
     @_authed
     @_json_body
@@ -2341,6 +2365,10 @@ class WebAdapter:
         # 2026-07-23 从 index.html 内联 <style> 拆出
         return self._versioned_static(request, "styles.css", "text/css")
 
+    async def _handle_mascot_styles(self, request: web.Request) -> web.Response:
+        # 小幽像素组件样式和主样式同走版本化缓存，避免 PWA 缓存到旧页面后 404。
+        return self._versioned_static(request, "mascot.css", "text/css")
+
     async def _handle_tool_card_js(self, request: web.Request) -> web.Response:
         # 2026-07-23 从 index.html 内联 <script> 拆出(工具卡片渲染那一段)
         return self._versioned_static(request, "tool-card.js", "text/javascript")
@@ -2537,9 +2565,10 @@ class WebAdapter:
                 web.get("/manifest.json", self._handle_manifest),
                 web.get("/sw.js", self._handle_sw),
                 web.get("/styles.css", self._handle_styles),
+                web.get("/mascot.css", self._handle_mascot_styles),
                 web.get("/tool-card.js", self._handle_tool_card_js),
                 web.get(
-                    r"/{name:(?:app-core|markdown|sidebar|settings|workbench|stream|composer|voice)\.js}",
+                    r"/{name:(?:app-core|mascot|markdown|sidebar|settings|workbench|stream|composer|voice)\.js}",
                     self._handle_app_js,
                 ),
                 web.get("/favicon.ico", self._handle_favicon),
@@ -2588,6 +2617,7 @@ class WebAdapter:
                 web.post("/workbench/tasks/purge", self._handle_workbench_task_purge),
                 web.post("/workbench/tasks/image/add", self._handle_workbench_task_image_add),
                 web.post("/workbench/tasks/image/remove", self._handle_workbench_task_image_remove),
+                web.post("/workbench/tasks/dispatch", self._handle_workbench_task_dispatch),
                 web.post("/conv/pin", self._handle_conv_pin),
                 web.get("/models", self._handle_models),
                 web.post("/effort", self._handle_effort_switch),

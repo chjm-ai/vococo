@@ -21,6 +21,7 @@ const S = {
   moreShown: new Set(), // 点过「展开更多」的分组(键同 expanded):折叠该组或刷新页面即清空,回到默认 5 条
   sideTab: localStorage.getItem("vococo_sidetab") || "projects",  // 侧栏「项目/置顶/最近」Tab,记住上次选择
   tabShown: {pinned: 20, recent: 20},  // 「置顶」「最近」两个 Tab 各自已展示的条数,点「更多」每次 +20
+  tabLastFetch: {},     // 侧栏 Tab 各自上次发起刷新请求的时间戳(ms),点击 Tab 时按此节流(见 sidebar.js refreshSideTabIfStale)
   browseDir: "",        // 目录浏览器当前所在目录
   images: [],           // {data,media_type,url}
   audios: [],           // {id,filename,text,mediaType,url,status}:status = uploading|done|error
@@ -85,6 +86,15 @@ const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
 const esc = s => s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// 标题栏弹层互斥：打开任一项时，收起其余项（含「⋯」菜单），避免在窄屏上彼此遮挡。
+function closeHeaderPopovers(except){
+  for(const id of ["projPop","gitPop","ctxPop","convDocsPop"]){
+    const pop=$("#"+id);
+    if(pop && pop!==except) pop.hidden=true;
+  }
+  if(typeof closeConvMenu === "function") closeConvMenu();
+}
 
 // ── 线框图标(替代实体 emoji,统一 currentColor 描边风格)──────────────────
 const ICONS = {
@@ -286,6 +296,9 @@ async function tryEnter(){
     loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
     loadCronSidebar();   // 同上,定时任务分组
     loadSystemTasks();   // 同上,「定时」Tab 里的本机系统任务(launchd/crontab)区块
+    // 登录这一波已经把各 Tab 的数据都拉了一遍,记下时间戳,避免落地后立刻点 Tab 又空转一次请求
+    const _loginTs=Date.now();
+    S.tabLastFetch.projects=_loginTs; S.tabLastFetch.pinned=_loginTs; S.tabLastFetch.recent=_loginTs; S.tabLastFetch.cron=_loginTs;
     await secondary;
     initVoiceSelect();
     renderConvs();  // 项目分组数据(loadProjects)到位后再补画一次侧栏分组

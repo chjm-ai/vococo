@@ -32,8 +32,9 @@ def static_app():
         [
             web.get("/", adapter._handle_index),
             web.get("/styles.css", adapter._handle_styles),
+            web.get("/mascot.css", adapter._handle_mascot_styles),
             web.get("/tool-card.js", adapter._handle_tool_card_js),
-            web.get(r"/{name:workbench\.js}", adapter._handle_app_js),
+            web.get(r"/{name:(?:mascot|workbench)\.js}", adapter._handle_app_js),
             web.get("/sw.js", adapter._handle_sw),
         ]
     )
@@ -58,11 +59,15 @@ async def test_index_injects_asset_versions(static_app):
     assert status == 200
     html = body.decode("utf-8")
     assert f'"/styles.css?v={_digest("styles.css")}"' in html
+    assert f'"/mascot.css?v={_digest("mascot.css")}"' in html
+    assert f'"/mascot.js?v={_digest("mascot.js")}"' in html
     assert f'"/tool-card.js?v={_digest("tool-card.js")}"' in html
     assert f'"/workbench.js?v={_digest("workbench.js")}"' in html
     assert 'id="workbenchView"' in html
     # 裸引用不应残留
     assert '"/styles.css"' not in html
+    assert '"/mascot.css"' not in html
+    assert '"/mascot.js"' not in html
     assert '"/tool-card.js"' not in html
 
 
@@ -105,7 +110,7 @@ async def test_workbench_js_talks_to_backend(static_app):
     assert 'data-add-project' in source
     assert 'data-new-title' in source
     assert 'event.code !== "Space"' in source
-    assert 'data-schedule-today' in source
+    assert 'data-open-dp' in source  # 任务日期统一由日期面板触发器处理
     assert 'data-edit-detail' in source
     assert "addWorkbenchImages" in source
     assert 'data-sidebar' in source
@@ -134,6 +139,19 @@ async def test_versioned_asset_gets_immutable_cache(static_app):
     assert status == 200
     assert headers["Cache-Control"] == "public, max-age=31536000, immutable"
     assert headers.get("ETag")
+
+
+@pytest.mark.anyio
+async def test_mascot_assets_are_served_and_versioned(static_app):
+    status, css, headers = await _get(static_app, f"/mascot.css?v={_digest('mascot.css')}")
+    assert status == 200
+    assert b".voco-mascot" in css
+    assert headers["Cache-Control"] == "public, max-age=31536000, immutable"
+
+    status, script, headers = await _get(static_app, f"/mascot.js?v={_digest('mascot.js')}")
+    assert status == 200
+    assert b"VocoMascot" in script
+    assert headers["Cache-Control"] == "public, max-age=31536000, immutable"
 
 
 @pytest.mark.anyio

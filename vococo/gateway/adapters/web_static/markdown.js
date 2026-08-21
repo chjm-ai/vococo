@@ -92,8 +92,31 @@ function mdToHtml(src){
       out+=t+"</tbody></table>"; continue;
     }
     if(m=ln.match(/^\s*>\s?(.*)$/)){ flush(); const q=[]; while(i<L.length&&(m=L[i].match(/^\s*>\s?(.*)$/))){ q.push(m[1]); i++; } out+="<blockquote>"+q.map(inlineMd).join("<br>")+"</blockquote>"; continue; }
-    if(/^\s*[-*+]\s+/.test(ln)){ flush(); let h="<ul>"; while(i<L.length&&(m=L[i].match(/^\s*[-*+]\s+(.*)$/))){ h+="<li>"+inlineMd(m[1])+"</li>"; i++; } out+=h+"</ul>"; continue; }
-    if(/^\s*\d+\.\s+/.test(ln)){ flush(); let h="<ol>"; while(i<L.length&&(m=L[i].match(/^\s*\d+\.\s+(.*)$/))){ h+="<li>"+inlineMd(m[1])+"</li>"; i++; } out+=h+"</ol>"; continue; }
+    // 列表项常跨多行:AI 输出习惯"N. 标题" + 缩进续行(标题后两个空格换行接说明),
+    // 项之间还会夹空行(CommonMark 松散列表)。原来的收集循环只认"这一行本身是不是
+    // 列表项",一遇到缩进续行或空行就当列表结束,把一条列表拆成好几个各自从 1 开始
+    // 编号的独立 <ul>/<ol>,页面上序号全变 1(2026-08-21 踩过)。collectList 把"缩进
+    // 续行"并入上一个 <li>,把"空行后仍是列表项"当作同一列表延续,才不会被拆散。
+    const collectList = markerRe => {
+      const items=[]; let mm;
+      while(i<L.length){
+        if(mm=L[i].match(markerRe)){ items.push([mm[1]]); i++; continue; }
+        if(items.length && /^\s+\S/.test(L[i])){ items[items.length-1].push(L[i].trim()); i++; continue; }
+        if(!L[i].trim()){ let j=i+1; while(j<L.length&&!L[j].trim())j++; if(j<L.length&&markerRe.test(L[j])){ i=j; continue; } }
+        break;
+      }
+      return items;
+    };
+    if(/^\s*[-*+]\s+/.test(ln)){
+      flush();
+      const items=collectList(/^\s*[-*+]\s+(.*)$/);
+      out+="<ul>"+items.map(lines=>"<li>"+lines.map(inlineMd).join(" ")+"</li>").join("")+"</ul>"; continue;
+    }
+    if(/^\s*\d+\.\s+/.test(ln)){
+      flush();
+      const items=collectList(/^\s*\d+\.\s+(.*)$/);
+      out+="<ol>"+items.map(lines=>"<li>"+lines.map(inlineMd).join(" ")+"</li>").join("")+"</ol>"; continue;
+    }
     para.push(ln); i++;
   }
   flush();
