@@ -57,6 +57,13 @@ function workbenchProjectMatches(item){
 function workbenchTasks(filter){ return WB_DATA.tasks.filter(task => !task.parentId && workbenchProjectMatches(task) && filter(task)); }
 function workbenchAllTasks(filter){ return WB_DATA.tasks.filter(task => workbenchProjectMatches(task) && filter(task)); }
 function workbenchIsDateView(){ return WB.view === "day" || WB.view === "week" || WB.view === "month" || WB.view === "unscheduled"; }
+function workbenchCurrentFilter(){
+  if(WB.view === "unscheduled") return task => !task.date;
+  if(WB.view === "day") return task => task.date === WB.anchor;
+  if(WB.view === "week"){ const wk = workbenchWeekKey(); return task => task.week === wk; }
+  if(WB.view === "month"){ const mk = workbenchMonthKey(); return task => task.month === mk; }
+  return null;
+}
 function workbenchChildren(parentId){ return WB_DATA.tasks.filter(task => task.parentId === parentId); }
 function workbenchChildrenStats(parentId){ const children = workbenchChildren(parentId); return {total: children.length, done: children.filter(c => c.status === "done").length}; }
 function workbenchTaskHighlight(task){ return task.highlight || task.title.split(/[：（(]/)[0]; }
@@ -228,11 +235,17 @@ function workbenchAssigneeBadge(task){
 }
 
 function workbenchChildCount(task){
-  if(task.parentId || workbenchIsDateView()) return '';
-  const stats = workbenchChildrenStats(task.id);
+  if(task.parentId) return '';
+  const dateFilter = workbenchCurrentFilter();
+  const children = dateFilter ? workbenchChildren(task.id).filter(dateFilter) : workbenchChildren(task.id);
+  const total = children.length;
+  const done = children.filter(c => c.status === "done").length;
   const expanded = WB.expanded.has(task.id);
-  if(!stats.total) return '<span class="wb-child-toggle'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="添加子任务">+</span>';
-  return '<span class="wb-child-count'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="子任务">'+stats.done+'/'+stats.total+'</span>';
+  if(!total){
+    if(dateFilter) return '';
+    return '<span class="wb-child-toggle'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="添加子任务">+</span>';
+  }
+  return '<span class="wb-child-count'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="子任务">'+done+'/'+total+'</span>';
 }
 
 function workbenchParentBadge(task, isChild){
@@ -244,12 +257,14 @@ function workbenchParentBadge(task, isChild){
 
 function workbenchChildRows(parentId){
   if(!WB.expanded.has(parentId)) return '';
-  const children = workbenchChildren(parentId);
-  const newCard = (WB.newTask && WB.newTask.parentId === parentId) ? workbenchNewChildCard(parentId) : '';
-  if(!children.length && !newCard) return '<div class="wb-children" data-parent="'+esc(parentId)+'"><button type="button" class="wb-add-child" data-add-child="'+esc(parentId)+'">+ 添加子任务</button></div>';
-  return '<div class="wb-children" data-parent="'+esc(parentId)+'">'+children.map(child => workbenchTaskRow(child, true)).join('')+
-    newCard+
-    '<button type="button" class="wb-add-child" data-add-child="'+esc(parentId)+'">+ 添加子任务</button></div>';
+  const dateFilter = workbenchCurrentFilter();
+  const children = dateFilter ? workbenchChildren(parentId).filter(dateFilter) : workbenchChildren(parentId);
+  const isDate = !!dateFilter;
+  const newCard = (!isDate && WB.newTask && WB.newTask.parentId === parentId) ? workbenchNewChildCard(parentId) : '';
+  const addBtn = isDate ? '' : '<button type="button" class="wb-add-child" data-add-child="'+esc(parentId)+'">+ 添加子任务</button>';
+  if(!children.length && !newCard && !addBtn) return '';
+  if(!children.length && !newCard) return '<div class="wb-children" data-parent="'+esc(parentId)+'">'+addBtn+'</div>';
+  return '<div class="wb-children" data-parent="'+esc(parentId)+'">'+children.map(child => workbenchTaskRow(child, true)).join('')+newCard+addBtn+'</div>';
 }
 
 function workbenchNewChildCard(parentId){
@@ -270,7 +285,7 @@ function workbenchSessionLinks(task){
 function workbenchTaskRow(task, isChild){
   if(WB.editorTaskId === task.id){
     const editor = renderWorkbenchTaskEditor(task);
-    if(isChild || task.parentId || workbenchIsDateView()) return editor;
+    if(isChild || task.parentId) return editor;
     return editor + workbenchChildRows(task.id);
   }
   const action = task.status === "done" ? "恢复" : "完成";
@@ -282,7 +297,7 @@ function workbenchTaskRow(task, isChild){
     '<div class="wb-task-copy">'+workbenchAssigneeBadge(task)+'<strong class="wb-task-title">'+esc(task.title)+'</strong>'+detail+'</div>'+
     '<div class="wb-task-end">'+workbenchParentBadge(task, isChild)+workbenchChildCount(task)+workbenchSourceLink(task, true)+'</div>'+
     '</article>';
-  if(isChild || task.parentId || workbenchIsDateView()) return row;
+  if(isChild || task.parentId) return row;
   return row + workbenchChildRows(task.id);
 }
 
@@ -340,13 +355,13 @@ function workbenchProjectBlock(project, tasks){
 // 跟原来"done 任务原地打勾变灰"的行为不一样，切完成状态要连带触发整块重渲染
 // （见 toggleWorkbenchTask/workbenchBatchComplete），不能再用原地 swap 节点那条快路径。
 function workbenchVisibleTasks(){
-  if(WB.view === "unscheduled") return workbenchAllTasks(task => !task.date && task.status !== "done");
-  if(WB.view === "day") return workbenchAllTasks(task => task.date === WB.anchor && task.status !== "done");
-  if(WB.view === "week") return workbenchAllTasks(task => task.week === workbenchWeekKey() && task.status !== "done");
-  // 月视图特殊处理：不隐藏已完成任务（一屏看完整月的完成情况），配合
-  // workbenchTaskRow 里"月视图不显示备注"一起把列表压紧，不然一整月的任务堆起来太长。
-  if(WB.view === "month") return workbenchAllTasks(task => task.month === workbenchMonthKey());
-  return workbenchTasks(task => task.status !== "done"); // "project" 视图：跨时间，只按项目筛选
+  const dateFilter = workbenchCurrentFilter();
+  if(!dateFilter) return workbenchTasks(task => task.status !== "done");
+  const hideDone = WB.view !== "month";
+  const combined = hideDone ? (task => dateFilter(task) && task.status !== "done") : dateFilter;
+  const all = workbenchAllTasks(combined);
+  const visibleParentIds = new Set(all.filter(t => !t.parentId).map(t => t.id));
+  return all.filter(task => !task.parentId || !visibleParentIds.has(task.parentId));
 }
 
 function renderWorkbenchProjects(){
