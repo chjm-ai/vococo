@@ -693,13 +693,14 @@ async function openWorkbench(){
 
 function closeWorkbench(){ const view = $("#workbenchView"); if(view) view.hidden = true; }
 
-// 独立窗口:走真实页面(带侧栏的完整 SPA)/workbench,登录后直接落地工作台内容区
+// 独立窗口:走真实页面(带侧栏的完整 SPA)/workbench/window,登录后直接落地工作台内容区
 // (见 app-core.js tryEnter 的 standaloneWorkbench 分支 + wb-standalone 样式)。
 // 不用 "/?view=workbench":sw.js 离线缓存按 pathname 白名单 "/",这个全新 query'd URL
 // 会被当成 "/" 走网络优先超时退回缓存那条特殊逻辑,缓存未命中时给 503,慢网络下独立
-// 窗口会打开一片空白(见 web.py 路由注释)。/workbench 不在白名单里,请求原样透传。
+// 窗口会打开一片空白(见 web.py 路由注释)。/workbench/window 不在白名单里,请求原样透传。
+// 不能叫 "/workbench"——那是数据接口(loadWorkbenchData 用),撞了会导致数据取不到。
 function openWorkbenchStandalone(){
-  window.open("/workbench", "_blank",
+  window.open("/workbench/window", "_blank",
     "noopener,width=1180,height=860,menubar=no,toolbar=no,location=no,status=no");
 }
 
