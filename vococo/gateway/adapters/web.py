@@ -2526,7 +2526,9 @@ class WebAdapter:
                 # "网络优先、超时(1.2s)退回缓存"的特殊逻辑;这个全新 URL 从没进过缓存,
                 # 缓存未命中时直接给 503 offline——独立窗口在跨境隧道等慢网络下就会打开
                 # 一片空白。换成不在白名单里的路径,请求原样透传给浏览器默认处理,绕开这套逻辑。
-                web.get("/workbench", self._handle_index),
+                # 注意:不能叫 "/workbench"——那个路径已经是下面 _handle_workbench 的数据
+                # 接口(GET /workbench 返回 JSON),撞了会导致数据接口被这条页面路由顶掉。
+                web.get("/workbench/window", self._handle_index),
                 web.get("/manifest.json", self._handle_manifest),
                 web.get("/sw.js", self._handle_sw),
                 web.get("/styles.css", self._handle_styles),

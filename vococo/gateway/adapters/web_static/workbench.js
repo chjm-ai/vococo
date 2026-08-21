@@ -174,14 +174,13 @@ function renderWorkbenchHeader(){
   const dateFreeView = WB.view === "unscheduled" || WB.view === "trash";
   const dateNav = dateFreeView ? "" :
     '<div class="wb-date-nav"><button type="button" data-nav="-1" aria-label="上一个周期">‹</button><strong>'+workbenchDateLabel()+'</strong><button type="button" data-nav="1" aria-label="下一个周期">›</button><button type="button" data-today>今天</button></div>';
-  const newTaskBtn = WB.view === "trash" ? "" : '<button type="button" class="wb-add-task" data-new-task>+ 新建任务</button>';
   return '<header class="wb-toolbar"><div class="wb-title"><button class="wb-hamb" type="button" data-sidebar aria-label="打开侧边栏">'+ic("panel")+'</button><h1>工作台</h1>'+
       '<button type="button" class="wb-win-btn" data-workbench-win title="独立窗口" aria-label="独立窗口">'+ic("newwin")+'</button></div>'+
-    '<div class="wb-controls">'+newTaskBtn+'<div class="wb-switch">'+
-      ["day","week","month"].map(view => '<button class="'+(WB.view === view ? "on" : "")+'" type="button" data-view="'+view+'">'+({day:"日",week:"周",month:"月"}[view])+'</button>').join("")+
+    '<div class="wb-switch">'+
       '<button class="wb-switch-icon'+(WB.view === "unscheduled" ? " on" : "")+'" type="button" data-view="unscheduled" aria-label="未排期">'+ic("inbox")+'</button>'+
       '<button class="wb-switch-icon'+(WB.view === "trash" ? " on" : "")+'" type="button" data-view="trash" aria-label="回收站">'+ic("trash")+'</button>'+
-    '</div>'+dateNav+'</div></header>';
+      ["day","week","month"].map(view => '<button class="'+(WB.view === view ? "on" : "")+'" type="button" data-view="'+view+'">'+({day:"日",week:"周",month:"月"}[view])+'</button>').join("")+
+    '</div>'+dateNav+'</header>';
 }
 
 const WB_TRASH = {tasks: [], loaded: false};
@@ -920,13 +919,14 @@ async function openWorkbench(){
 
 function closeWorkbench(){ const view = $("#workbenchView"); if(view) view.hidden = true; }
 
-// 独立窗口:走真实页面(带侧栏的完整 SPA)/workbench,登录后直接落地工作台内容区
+// 独立窗口:走真实页面(带侧栏的完整 SPA)/workbench/window,登录后直接落地工作台内容区
 // (见 app-core.js tryEnter 的 standaloneWorkbench 分支 + wb-standalone 样式)。
 // 不用 "/?view=workbench":sw.js 离线缓存按 pathname 白名单 "/",这个全新 query'd URL
 // 会被当成 "/" 走网络优先超时退回缓存那条特殊逻辑,缓存未命中时给 503,慢网络下独立
-// 窗口会打开一片空白(见 web.py 路由注释)。/workbench 不在白名单里,请求原样透传。
+// 窗口会打开一片空白(见 web.py 路由注释)。/workbench/window 不在白名单里,请求原样透传。
+// 不能叫 "/workbench"——那是数据接口(loadWorkbenchData 用),撞了会导致数据取不到。
 function openWorkbenchStandalone(){
-  window.open("/workbench", "_blank",
+  window.open("/workbench/window", "_blank",
     "noopener,width=1180,height=860,menubar=no,toolbar=no,location=no,status=no");
 }
 
