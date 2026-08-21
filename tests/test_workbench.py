@@ -51,6 +51,19 @@ def test_create_update_delete_task(isolated):
     task = workbench.create_task(project["id"], "写个任务", date="2026-08-21", month="2026-08", week="2026-08-17")
     assert task["status"] == "todo"
     assert task["project"] == project["id"]
+    assert task["date"] == "2026-08-21"
+    assert task["week"] == "2026-08-17"
+
+    child = workbench.create_task(
+        project["id"], "子任务", parent_id=task["id"], month="2026-08", week="2026-08-17"
+    )
+    assert child["parentId"] == task["id"]
+    assert child["date"] is None
+
+    unscheduled = workbench.update_task(child["id"], date=None, month=None, week=None)
+    assert unscheduled["date"] is None
+    assert unscheduled["month"] is None
+    assert unscheduled["week"] is None
 
     updated = workbench.update_task(task["id"], status="done", title="改了标题")
     assert updated["status"] == "done"
