@@ -1562,8 +1562,9 @@
     #wbContent{padding-top:0}
     #workbenchView .wb-toolbar{gap:10px;padding-top:12px;padding-bottom:12px}
     #workbenchView .wb-title h1{font-size:17px;line-height:23px}
-    #workbenchView .wb-switch{flex-wrap:wrap}
-    #workbenchView .wb-switch button{font-size:14px}
+    #workbenchView .wb-switch-row{gap:6px}
+    #workbenchView .wb-switch{flex-wrap:wrap;gap:1px;padding:2px}
+    #workbenchView .wb-switch button{font-size:14px;padding:6px 8px}
     #workbenchView .wb-project-filter button{font-size:14px}
     #workbenchView .wb-project-toggle>span:last-child{font-size:13px}
     #workbenchView .wb-project-name strong{font-size:15px}
