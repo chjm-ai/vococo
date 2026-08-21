@@ -282,7 +282,7 @@ function workbenchParentBadge(task, isChild){
   const parent = workbenchTask(task.parentId);
   if(!parent) return '';
   const label = "父任务："+parent.title;
-  return '<span class="wb-parent-badge" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("branch")+'</span>';
+  return '<span class="wb-parent-badge" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("branch")+'<span>'+esc(parent.title)+'</span></span>';
 }
 
 function workbenchChildRows(parentId){
@@ -328,8 +328,8 @@ function workbenchTaskRow(task, isChild){
   const childClass = isChild ? " wb-task-child" : "";
   const row = '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+childClass+'" data-task="'+esc(task.id)+'" draggable="true">'+
     '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
-    '<div class="wb-task-copy"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+detail+'</div>'+
-    '<div class="wb-task-end">'+workbenchScheduleBadge(task)+workbenchParentBadge(task, isChild)+workbenchChildCount(task)+workbenchAssigneeBadge(task)+'</div>'+
+    '<div class="wb-task-copy"><div class="wb-task-title-row"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+workbenchParentBadge(task, isChild)+'</div>'+detail+'</div>'+
+    '<div class="wb-task-end">'+workbenchScheduleBadge(task)+workbenchChildCount(task)+workbenchAssigneeBadge(task)+'</div>'+
     '</article>';
   if(isChild) return row + workbenchChildRows(task.id);
   if(task.parentId) return row + workbenchChildRows(task.id) + (WB.newTask?.siblingTaskId === task.id ? workbenchNewChildCard(task.parentId, true) : '');
@@ -1208,12 +1208,12 @@ async function dispatchWorkbenchTask(taskId){
   }catch(e){ alert("派发执行失败："+(e.message||"")); }
 }
 
-// 选中一个任务时新建：子任务选中 -> 挂同一父任务下的兄弟任务；顶层任务选中 -> 挂它下面的子任务。
-function workbenchOpenNewTaskAtSelectedLevel(){
+// 选中任意一个任务（顶层或子任务）按回车：总是在它下面新建一个子任务，不管选中项本身是不是子任务。
+function workbenchOpenChildOfSelected(){
   if(WB.view === "completed" || WB.view === "trash" || WB.selected.size !== 1) return;
   const task = workbenchTask([...WB.selected][0]);
   if(!task) return;
-  openWorkbenchNewChild(task.parentId || task.id, task.parentId ? task.id : null);
+  openWorkbenchNewChild(task.id, null);
 }
 
 function openWorkbenchNewChild(parentId, siblingTaskId){
@@ -2038,11 +2038,11 @@ document.addEventListener("keydown", event => {
   if(event.key === "Enter" && !event.isComposing && event.keyCode !== 229 && event.target.matches("[data-new-title],[data-edit-title]")){
     event.preventDefault(); workbenchFinishActiveCard(); return;
   }
-  // 选中任务卡（非编辑态）时按回车：子任务 -> 新建同层级兄弟任务；顶层任务 -> 新建子任务。
+  // 选中任务卡（非编辑态）时按回车：不管选中的是顶层任务还是子任务，都在它下面新建子任务。
   if(event.key === "Enter" && !event.isComposing && event.keyCode !== 229 && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !WB.newTask && !WB.editorTaskId){
     if(event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
     if(WB.selected.size !== 1) return;
-    event.preventDefault(); workbenchOpenNewTaskAtSelectedLevel(); return;
+    event.preventDefault(); workbenchOpenChildOfSelected(); return;
   }
   if(event.key === "Escape"){
     if(WB_DP.open){ workbenchDpClose(); return; }
@@ -2063,8 +2063,12 @@ document.addEventListener("keydown", event => {
   if(event.code !== "Space" || event.ctrlKey || event.metaKey || event.altKey) return;
   if(event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
   if(event.shiftKey){
-    if(WB.selected.size !== 1) return;
-    event.preventDefault(); workbenchOpenNewTaskAtSelectedLevel(); return;
+    if(WB.view === "completed" || WB.view === "trash" || WB.selected.size !== 1) return;
+    const task = workbenchTask([...WB.selected][0]);
+    if(!task) return;
+    event.preventDefault();
+    openWorkbenchNewChild(task.parentId || task.id, task.parentId ? task.id : null);
+    return;
   }
   if(WB.view === "completed" || WB.view === "trash") return; // 这两个视图没有项目分组，插不进新建卡
   event.preventDefault(); openWorkbenchNewTask();
