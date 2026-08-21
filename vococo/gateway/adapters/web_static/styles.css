@@ -1118,19 +1118,20 @@
   #callTextPanel > #composer{position:relative;left:auto;right:auto;bottom:auto;z-index:0}
   #callTextPanel > #composer::before{display:none}
   #callVoicePanel #callFoot{position:relative;left:auto;right:auto;bottom:auto}
-  #callView #callBody{padding-bottom:calc(280px + env(safe-area-inset-bottom));
-    scroll-padding-bottom:calc(280px + env(safe-area-inset-bottom))}
+  #callView #callBody{padding-bottom:calc(180px + env(safe-area-inset-bottom));
+    scroll-padding-bottom:calc(180px + env(safe-area-inset-bottom))}
   #callHead{display:flex;align-items:center;gap:12px;padding:14px 16px;
     padding-top:calc(14px + env(safe-area-inset-top));border-bottom:1px solid var(--line)}
   #callHead #backLink{color:var(--dim);line-height:1;padding:4px;display:inline-flex}
   #callHead #backLink .ic{width:20px;height:20px}
   #callHead .title{font-weight:600;flex:1}
   /* callFoot 改浮层后 callBody 一直铺到视图底;底 padding 让最新气泡的停靠点
-     抬到渐变遮罩完全透明的边界(212px)之上——最新消息任何时候都清晰可读,
-     只有往回翻的历史消息才滑进声波后面的渐隐区 */
+     抬到渐变遮罩完全透明的边界(128px)之上——最新消息任何时候都清晰可读,
+     只有往回翻的历史消息才滑进吉祥物身后的渐隐区。这个数值 2026-08-21 跟着
+     #callFoot 一起从"横向声波"改"竖直吉祥物"收窄过一次,见下面 #callFoot 注释。 */
   #callBody{flex:1;overflow-y:auto;padding:16px;
-    padding-bottom:calc(216px + env(safe-area-inset-bottom));
-    scroll-padding-bottom:calc(216px + env(safe-area-inset-bottom))}
+    padding-bottom:calc(130px + env(safe-area-inset-bottom));
+    scroll-padding-bottom:calc(130px + env(safe-area-inset-bottom))}
   #transcript{display:flex;flex-direction:column;gap:12px;max-width:680px;margin:0 auto}
   /* .activity 是前台工具动作行(查记录/跑脚本),跟垫话术共用一套"透明小字"外观;
      区别只在数据来源:filler 是话术,activity 由 SSE activity 事件原地更新 */
@@ -1220,17 +1221,19 @@
   .task .stop{border:1px solid var(--err);color:var(--err);background:none;border-radius:14px;
     padding:2px 10px;font-size:12px}
   .task-empty{color:var(--dim2);text-align:center;padding:20px}
-  /* 底部整块(声波+状态+挂断)是叠在 callBody 上面的浮层,不占文档流——
-     遮罩从下往上渐变:按钮+状态文字那截(~96px+安全区)实色,声波区一路渐隐,
-     顶部全透明,转写文字能从声波后面透出来,显示范围更大。
-     pointer-events 只留给按钮和声波(点声波=打断),透明区的点击/滚动穿透给转写区。 */
+  /* 底部整块(吉祥物+状态+挂断)是叠在 callBody 上面的浮层,不占文档流——
+     遮罩从下往上渐变:按钮+状态文字那截(~64px+安全区)实色,吉祥物区一路渐隐,
+     顶部全透明,转写文字能从吉祥物后面透出来,显示范围更大。
+     pointer-events 只留给按钮和吉祥物(点吉祥物=打断),透明区的点击/滚动穿透给转写区。
+     2026-08-21:声波 canvas 换成小幽吉祥物后整块高度收窄——竖直角色不需要
+     原来给横向声波留的那么高,顺带少遮一截聊天记录(280px→180px 见 #callBody)。 */
   #callFoot{position:absolute;left:0;right:0;bottom:0;pointer-events:none;
-    padding:20px 16px calc(8px + env(safe-area-inset-bottom));display:flex;
-    flex-direction:column;align-items:center;gap:16px;
+    padding:8px 16px calc(6px + env(safe-area-inset-bottom));display:flex;
+    flex-direction:column;align-items:center;gap:6px;
     background:linear-gradient(to top,
       var(--bg2) 0,
-      var(--bg2) calc(env(safe-area-inset-bottom) + 96px),
-      transparent calc(env(safe-area-inset-bottom) + 212px))}
+      var(--bg2) calc(env(safe-area-inset-bottom) + 64px),
+      transparent calc(env(safe-area-inset-bottom) + 128px))}
   #callFoot button,#callFoot #orbWrap,#callFoot #voicePickBtn{pointer-events:auto}
   .btnicon{display:inline-flex;margin-right:6px;vertical-align:-3px}
   .btnicon .ic{width:16px;height:16px}
@@ -1244,17 +1247,17 @@
   #talkBtn:disabled{opacity:.5}
   #talkBtn[hidden],#stopBtn[hidden]{display:none}
 
-  /* P2 全双工:进 call view 即自动开始,唯一常驻视觉是一条声波动效(不再是圆球),
-     状态文字贴在波形正下方,挂断是波形下方一个深灰圆角方块(停止语义)。
-     波形本身用 canvas 画(见 drawOrbWaveform),这里只管容器;氛围光已由着色器
-     内建(柱后柔光),旧版 ::before 弥散光晕于动效 v3 时移除。 */
-  #handsFreeUi{display:flex;flex-direction:column;align-items:center;gap:20px}
+  /* P2 全双工:进 call view 即自动开始,唯一常驻视觉是小幽吉祥物(原来是声波 canvas,
+     2026-08-21 换掉——动效收回吉祥物本体的眼睛/脚/身体伸缩,不再画外挂的音柱/
+     三点/光晕,见 mascot.js STATES.listening/conn 和 voice.js driveOrbMascot)。
+     状态文字紧贴在吉祥物正下方,挂断是吉祥物下方一个深灰圆角方块(停止语义)。 */
+  #handsFreeUi{display:flex;flex-direction:column;align-items:center;gap:6px}
   #handsFreeUi[hidden]{display:none}
-  #orbWrap{position:relative;width:280px;height:100px;display:flex;align-items:center;
+  #orbWrap{position:relative;width:280px;height:68px;display:flex;align-items:flex-end;
     justify-content:center;cursor:pointer}
-  #orbCanvas{position:relative;z-index:1;width:280px;height:100px;pointer-events:none}
+  #orbWrap .voco-mascot{--s:2.5}
 
-  #statusLine{display:flex;align-items:center;justify-content:center;gap:8px;min-height:20px}
+  #statusLine{display:flex;align-items:center;justify-content:center;gap:8px;min-height:18px}
   #connDot{width:8px;height:8px;border-radius:50%;flex-shrink:0;transition:background .4s ease,box-shadow .4s ease}
   #connDot.conn-connected{background:#5aa469;box-shadow:0 0 6px rgba(90,164,105,.5)}
   #connDot.conn-connecting{background:#e8a84c;box-shadow:0 0 6px rgba(232,168,76,.5);animation:connPulse 1.2s ease-in-out infinite}
@@ -1324,8 +1327,15 @@
   #dpHead{display:flex;align-items:center;gap:6px;padding:10px 12px;
     padding-top:calc(10px + env(safe-area-inset-top));border-bottom:1px solid var(--line2);
     background:var(--bar-bg);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);flex-shrink:0}
-  #dpTitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  .dp-title-wrap{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  #dpTitle{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
     font-size:13.5px;font-weight:600}
+  #dpUrlRow{display:flex;align-items:center;gap:4px;min-width:0}
+  #dpUrlText{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-size:11.5px;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  #dpHead #dpCopyBtn{width:22px;height:22px;border-radius:6px;flex-shrink:0;color:var(--dim2);
+    display:inline-flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
+  #dpHead #dpCopyBtn .ic{width:13px;height:13px}
   #dpHead button{width:32px;height:32px;border-radius:9px;flex-shrink:0;color:var(--dim);
     display:inline-flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
   @media(hover:hover){ #dpHead button:hover{background:var(--panel2);color:var(--text)} }
@@ -1549,7 +1559,7 @@
   @media(max-width:760px){#workbenchView .wb-toolbar{gap:10px}#workbenchView .wb-switch{flex-wrap:wrap}#workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,42vw);gap:8px}#workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}#workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}}
 
   /* ── 子任务 / 执行者 / 会话绑定 ─────────────────────────────────── */
-  #workbenchView .wb-children{margin:0 0 0 30px;display:flex;flex-direction:column;gap:2px}
+  #workbenchView .wb-children{margin:0 0 0 30px;display:flex;flex-direction:column;gap:2px;will-change:height,opacity}
   #workbenchView .wb-task-child{opacity:.92}
   #workbenchView .wb-task-child .wb-task-title{font-weight:500}
   #workbenchView .wb-editor-footer .wb-add-child{display:inline-flex;align-items:center;gap:4px;color:var(--dim);cursor:pointer}
@@ -1560,8 +1570,9 @@
   #workbenchView .wb-assignee-ai{color:var(--accent)}
   #workbenchView .wb-schedule{display:inline-flex;align-items:center;gap:4px;min-width:0;padding:0;color:var(--dim);font-size:11px;line-height:20px;white-space:nowrap}
   #workbenchView .wb-schedule:hover{color:var(--accent)}
-  #workbenchView .wb-child-count{flex:0 0 auto;padding:1px 6px;border-radius:4px;background:var(--panel2);color:var(--dim);font-size:11px;line-height:18px;cursor:pointer;white-space:nowrap}
+  #workbenchView .wb-child-count{flex:0 0 auto;padding:1px 6px;border-radius:4px;background:var(--panel2);color:var(--dim);font-size:11px;line-height:18px;cursor:pointer;white-space:nowrap;transition:background .15s ease,color .15s ease}
   #workbenchView .wb-child-count:hover{background:var(--line);color:var(--text)}
+  #workbenchView .wb-child-count.is-expanded{background:var(--accent);color:#fff}
   #workbenchView .wb-parent-badge{display:grid;place-items:center;flex:0 0 auto;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:var(--panel2);color:var(--dim);cursor:pointer}
   #workbenchView .wb-parent-badge .ic{width:13px;height:13px}
   #workbenchView .wb-parent-badge:hover{background:var(--line);color:var(--accent)}

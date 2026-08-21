@@ -29,7 +29,13 @@
 <input id="pw" hidden><button id="loginBtn" hidden></button>
 <aside id="docPreview">
   <header id="dpHead">
-    <span id="dpTitle">预览</span>
+    <div class="dp-title-wrap">
+      <span id="dpTitle">预览</span>
+      <div id="dpUrlRow">
+        <span id="dpUrlText"></span>
+        <button type="button" id="dpCopyBtn" title="复制完整地址"></button>
+      </div>
+    </div>
     <button type="button" id="dpOpenBtn" title="在新标签页打开" hidden></button>
     <button type="button" id="dpWinBtn" title="再开一个独立窗口"></button>
     <button type="button" id="dpDlBtn" title="下载" hidden></button>

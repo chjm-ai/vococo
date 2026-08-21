@@ -148,6 +148,16 @@ async function openDocPreview({kind, target, title, highlight=""}){
   dpRevoke();
   $("#docPreview").hidden = false;
   $("#dpTitle").textContent = title || target;
+  $("#dpUrlText").textContent = target;
+  $("#dpCopyBtn").hidden = !target;
+  $("#dpCopyBtn").onclick = ()=>{
+    if(!target) return;
+    navigator.clipboard.writeText(target).then(()=>{
+      const old = $("#dpCopyBtn").innerHTML;
+      $("#dpCopyBtn").innerHTML = ic("save");
+      setTimeout(()=>$("#dpCopyBtn").innerHTML = old, 1200);
+    }).catch(()=>{});
+  };
   const body = $("#dpBody");
   body.innerHTML = '<div class="dp-loading">'+DOTS+'</div>';
   $("#dpOpenBtn").hidden = kind!=="url";
@@ -256,6 +266,7 @@ function initDocPreview(){
   $("#dpOpenBtn").innerHTML=ic("external");
   $("#dpWinBtn").innerHTML=ic("newwin");
   $("#dpDlBtn").innerHTML=ic("download");
+  $("#dpCopyBtn").innerHTML=ic("copy");
   $("#dpClose").innerHTML=ic("close");
   $("#dpClose").onclick=closeDocPreview;
   document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#docPreview").hidden) closeDocPreview(); });
