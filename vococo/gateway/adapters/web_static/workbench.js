@@ -1046,7 +1046,9 @@ $("#workbenchView").addEventListener("click", event => {
       openWorkbenchEditor(taskId);
       return;
     }
-    // 单击延迟触发选中，留出窗口给浏览器原生 dblclick 检测（提前重渲染会替换节点，破坏双击识别）
+    // 高亮先走，跟手；真正的选中状态（anchor/关编辑卡等）延迟到 250ms 后确认不是双击
+    // 再落地——提前重渲染会替换节点，破坏双击识别。纯 class 增删不碰节点，可以先做。
+    workbenchApplySelectionClasses(WB.selected, new Set([taskId]));
     // 双击的两次 click 都会走到这里：必须先清掉上一个待触发的计时器，否则会遗留一个孤儿计时器，
     // 在 dblclick 打开编辑卡之后延迟把它关掉。
     clearTimeout(wbClickTimer);
