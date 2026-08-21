@@ -1482,9 +1482,20 @@
   #workbenchView .wb-dp-trigger.has-date{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
   #workbenchView .wb-dp-trigger .ic{width:14px;height:14px;flex:0 0 auto}
   .wb-dp{position:fixed;z-index:70;display:none;width:280px;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--card);box-shadow:var(--shadow);font-size:13px}
-  .wb-dp-search{margin-bottom:8px}
-  .wb-dp-search input{width:100%;padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);font-family:inherit;font-size:12px;outline:none}
-  .wb-dp-search input.wb-dp-search-bad{border-color:var(--err)}
+  .wb-dp-search{position:relative;margin-bottom:8px}
+  .wb-dp-search input{width:100%;padding:6px 26px 6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);font-family:inherit;font-size:12px;outline:none}
+  .wb-dp-search-clear{position:absolute;right:4px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:20px;height:20px;padding:0;border:0;border-radius:50%;background:none;color:var(--dim2)}
+  .wb-dp-search-clear:hover{background:var(--panel2);color:var(--text)}
+  .wb-dp-search-clear .ic{width:11px;height:11px}
+  .wb-dp-results{display:flex;flex-direction:column;gap:2px;max-height:220px;overflow-y:auto}
+  .wb-dp-result{display:flex;align-items:center;gap:8px;width:100%;padding:7px 8px;border:0;border-radius:8px;background:none;text-align:left;font-family:inherit;font-size:13px;color:var(--text)}
+  .wb-dp-result:hover{background:var(--panel2)}
+  .wb-dp-result.is-active{background:var(--accent);color:#fff}
+  .wb-dp-result.is-active .wb-dp-result-weekday{color:rgba(255,255,255,.8)}
+  .wb-dp-result-icon{display:grid;place-items:center;flex:0 0 auto;width:22px;height:22px;border-radius:6px;background:var(--err);color:#fff}
+  .wb-dp-result-icon .ic{width:13px;height:13px}
+  .wb-dp-result-label{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .wb-dp-result-weekday{flex:0 0 auto;color:var(--dim2);font-size:12px}
   .wb-dp-actions{display:flex;gap:6px;margin-bottom:10px}
   .wb-dp-actions button{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;height:30px;padding:0;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);font-family:inherit;font-size:12px}
   .wb-dp-actions button .ic{width:13px;height:13px}
