@@ -414,7 +414,13 @@ try{
   <aside id="docPreview" hidden>
     <div id="dpResize" title="拖拽调整宽度"></div>
     <header id="dpHead">
-      <span id="dpTitle">预览</span>
+      <div class="dp-title-wrap">
+        <span id="dpTitle">预览</span>
+        <div id="dpUrlRow">
+          <span id="dpUrlText"></span>
+          <button type="button" id="dpCopyBtn" title="复制完整地址"></button>
+        </div>
+      </div>
       <button type="button" id="dpOpenBtn" title="在新标签页打开" hidden></button>
       <button type="button" id="dpWinBtn" title="在独立窗口打开"></button>
       <button type="button" id="dpDlBtn" title="下载" hidden></button>

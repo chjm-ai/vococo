@@ -1327,8 +1327,15 @@
   #dpHead{display:flex;align-items:center;gap:6px;padding:10px 12px;
     padding-top:calc(10px + env(safe-area-inset-top));border-bottom:1px solid var(--line2);
     background:var(--bar-bg);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);flex-shrink:0}
-  #dpTitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  .dp-title-wrap{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  #dpTitle{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
     font-size:13.5px;font-weight:600}
+  #dpUrlRow{display:flex;align-items:center;gap:4px;min-width:0}
+  #dpUrlText{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-size:11.5px;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  #dpHead #dpCopyBtn{width:22px;height:22px;border-radius:6px;flex-shrink:0;color:var(--dim2);
+    display:inline-flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
+  #dpHead #dpCopyBtn .ic{width:13px;height:13px}
   #dpHead button{width:32px;height:32px;border-radius:9px;flex-shrink:0;color:var(--dim);
     display:inline-flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
   @media(hover:hover){ #dpHead button:hover{background:var(--panel2);color:var(--text)} }
