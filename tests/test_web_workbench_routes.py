@@ -38,6 +38,7 @@ def workbench_web_app(isolated, monkeypatch):
             web.post("/workbench/tasks/update", adapter._handle_workbench_task_update),
             web.post("/workbench/tasks/delete", adapter._handle_workbench_task_delete),
             web.get("/workbench/trash", adapter._handle_workbench_trash),
+            web.post("/workbench/trash/empty", adapter._handle_workbench_trash_empty),
             web.post("/workbench/tasks/restore", adapter._handle_workbench_task_restore),
             web.post("/workbench/tasks/purge", adapter._handle_workbench_task_purge),
             web.post("/workbench/tasks/image/add", adapter._handle_workbench_task_image_add),
@@ -168,6 +169,26 @@ async def test_trash_lifecycle_via_http(workbench_web_app):
         assert resp.status == 200
         resp = await client.get("/workbench/trash")
         assert task_id not in {t["id"] for t in (await resp.json())["tasks"]}
+
+
+@pytest.mark.anyio
+async def test_empty_trash_via_http(workbench_web_app):
+    async with TestClient(TestServer(workbench_web_app)) as client:
+        resp = await client.get("/workbench")
+        project_id = (await resp.json())["projects"][0]["id"]
+
+        resp = await client.post(
+            "/workbench/tasks/create", json={"project": project_id, "title": "会被清空的任务"}
+        )
+        task_id = (await resp.json())["task"]["id"]
+        await client.post("/workbench/tasks/delete", json={"id": task_id})
+
+        resp = await client.post("/workbench/trash/empty")
+        assert resp.status == 200
+        assert (await resp.json())["count"] == 1
+
+        resp = await client.get("/workbench/trash")
+        assert (await resp.json())["tasks"] == []
 
 
 @pytest.mark.anyio
