@@ -270,7 +270,7 @@ function renderWorkbenchHeader(){
       workbenchTabHtml("month", "月")+
       workbenchTabHtml("project", "项目")+
       workbenchTabHtml("completed", "已完成")+
-      workbenchTabHtml("trash", ic("trash"), {icon:true, aria:"回收站"})+
+      workbenchTabHtml("trash", "回收站")+
     '</div></header>';
 }
 
@@ -305,7 +305,7 @@ function refreshWorkbenchTrashIfStale(){
 // 点行本身展开/收起详情（标题/备注/图片/来源，只读——回收站里的任务不提供编辑，
 // 要改就先恢复）；点"恢复"/"彻底删除"两个按钮走各自的 data-* 处理，不会触发展开。
 function workbenchTrashRow(task){
-  const actions = '<div class="wb-trash-actions"><button type="button" data-restore-task="'+esc(task.id)+'">恢复</button><button type="button" class="wb-ctx-danger" data-purge-task="'+esc(task.id)+'">'+ic("trash")+'<span>彻底删除</span></button></div>';
+  const actions = '<div class="wb-trash-actions"><button type="button" data-restore-task="'+esc(task.id)+'">恢复</button><button type="button" class="wb-ctx-danger" data-purge-task="'+esc(task.id)+'">彻底删除</button></div>';
   if(WB_TRASH.expandedId !== task.id){
     return '<article class="wb-task wb-trash-row" data-trash-task="'+esc(task.id)+'">'+
       '<div class="wb-task-copy"><strong class="wb-task-title">'+esc(task.title)+'</strong></div>'+actions+
