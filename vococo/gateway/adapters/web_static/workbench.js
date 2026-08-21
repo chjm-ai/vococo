@@ -253,14 +253,13 @@ function workbenchSwapTask(taskId){
   return true;
 }
 
-// 同上，额外做一个高度过渡：行与卡片高度不同，直接换节点会「啪」一下跳变，这里让它长出来/收回去。
-function workbenchMorphTask(taskId){
-  const node = workbenchNodeForTask(taskId);
-  const task = workbenchTask(taskId);
-  if(!node || !task) return false;
+// 通用的「节点原地换成另一段 HTML，尺寸不同就把高度/宽度过渡一下」动效：
+// 行 ↔ 卡片切换、新建卡收起成任务行，都复用这一套，不必每个场景各写一份。
+function workbenchAnimateMorph(node, html){
+  if(!node) return false;
   const startRect = node.getBoundingClientRect();
   const wrap = document.createElement("div");
-  wrap.innerHTML = workbenchTaskRow(task);
+  wrap.innerHTML = html;
   const next = wrap.firstElementChild;
   if(!next) return false;
   node.replaceWith(next);
@@ -294,6 +293,13 @@ function workbenchMorphTask(taskId){
     next.removeEventListener("transitionend", onEnd);
   });
   return true;
+}
+
+// 卡片 ↔ 行来回切换时用：行与卡片高度不同，直接换节点会「啪」一下跳变，这里让它长出来/收回去。
+function workbenchMorphTask(taskId){
+  const task = workbenchTask(taskId);
+  if(!task) return false;
+  return workbenchAnimateMorph(workbenchNodeForTask(taskId), workbenchTaskRow(task));
 }
 
 // 只在同一个项目分组内调整任务的相对顺序；显示顺序即 WB_DATA.tasks 的数组顺序（不持久化，刷新后按后端 sort_order 恢复）。
@@ -509,7 +515,7 @@ function openWorkbenchNewTask(){
   requestAnimationFrame(() => $("[data-new-title]")?.focus());
 }
 
-async function saveWorkbenchNewTask(collapse){
+async function saveWorkbenchNewTask(){
   const draft = WB.newTask;
   if(!draft) return;
   const title = draft.title.trim();
@@ -524,8 +530,8 @@ async function saveWorkbenchNewTask(collapse){
     const d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error||"创建失败");
     WB_DATA.tasks.push(d.task);
-    // 回车快速新建：保存完直接收起卡片，不占着编辑态；点「添加」按钮才留在编辑卡里方便继续补充。
-    if(!collapse) WB.editorTaskId = d.task.id;
+    // 新建卡原地收缩成任务行，跟其它「卡片 ↔ 行」切换共用同一套动效，不整表重渲染。
+    if(workbenchAnimateMorph(document.querySelector("[data-new-card]"), workbenchTaskRow(d.task))) return;
   }catch(e){ alert("新建任务失败："+(e.message||"")); }
   renderWorkbench();
 }
@@ -1204,7 +1210,7 @@ $("#workbenchView").addEventListener("paste", event => {
 document.addEventListener("keydown", event => {
   if($("#workbenchView").hidden) return;
   if(event.key === "Enter" && event.target.matches("[data-new-title]")){
-    event.preventDefault(); saveWorkbenchNewTask(true); return;
+    event.preventDefault(); saveWorkbenchNewTask(); return;
   }
   if(event.key === "Escape"){
     if(WB_DP.open){ workbenchDpClose(); return; }
