@@ -20,7 +20,7 @@ import uuid
 from .. import config
 from . import _db
 
-_STATUSES = {"todo", "done", "focus", "block"}
+_STATUSES = {"todo", "done", "focus", "block", "cancelled"}
 _ASSIGNEES = {"human", "ai"}
 _IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _EXT_STRIP_RE = re.compile(r"[^a-z0-9]")
@@ -279,7 +279,7 @@ def create_task(
         "parent_id, assignee, session_ids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (task_id, project_id, title, detail, status, date, month, week,
          "[]", max_order + 1, now, now, None,
-         now if status == "done" else None,
+         now if status in ("done", "cancelled") else None,
          parent_id, assignee, "[]"),
     )
     c.commit()
@@ -306,11 +306,11 @@ def update_task(task_id: str, **fields) -> dict | None:
         column = {"project": "project_id", "parentId": "parent_id"}.get(key, key)
         sets.append(f"{column}=?")
         params.append(value)
-        # 完成时间跟着 status 走:切到 done 记下此刻,切回其它状态就清空——
-        # 「已完成」按天分组要的是真实完成时刻,不能拿 updated_at(编辑标题/备注也会碰它)顶替。
+        # 完成时间跟着 status 走:切到 done/cancelled 记下此刻,切回其它状态就清空——
+        # 「日志」按天分组要的是真实完成/取消时刻,不能拿 updated_at(编辑标题/备注也会碰它)顶替。
         if key == "status":
             sets.append("completed_at=?")
-            params.append(time.time() if value == "done" else None)
+            params.append(time.time() if value in ("done", "cancelled") else None)
     if not sets:
         return get_task(task_id)
     sets.append("updated_at=?")

@@ -524,7 +524,7 @@ async def list_workbench_tasks(args: dict) -> dict:
         tasks = [t for t in tasks if t["project"] == project["id"]]
     if not tasks:
         return _ok("没有符合条件的工作台任务。")
-    status_label = {"todo": "待办", "done": "已完成", "focus": "本轮重点", "block": "受阻"}
+    status_label = {"todo": "待办", "done": "已完成", "focus": "本轮重点", "block": "受阻", "cancelled": "已取消"}
     lines = [
         f"{i}. [{t['id']}] {t['title']} — {status_label.get(t['status'], t['status'])}"
         f"{' — ' + t['date'] if t['date'] else ''}(项目:{t['project']})"
@@ -586,13 +586,13 @@ async def create_workbench_task(args: dict) -> dict:
 @tool(
     "update_workbench_task",
     "更新工作台任务的状态/标题/备注/日期(按 id/序号/标题 定位)。"
-    "status 取值:todo(待办)/done(完成)/focus(本轮重点)/block(受阻)。"
-    "用户说「把 X 标记完成/挪到明天/改成重点」时用。",
+    "status 取值:todo(待办)/done(完成)/focus(本轮重点)/block(受阻)/cancelled(已取消)。"
+    "用户说「把 X 标记完成/挪到明天/改成重点/取消」时用。",
     {
         "type": "object",
         "properties": {
             "task": {"type": "string"},
-            "status": {"type": "string", "enum": ["todo", "done", "focus", "block"]},
+            "status": {"type": "string", "enum": ["todo", "done", "focus", "block", "cancelled"]},
             "title": {"type": "string"},
             "detail": {"type": "string"},
             "date": {"type": "string"},

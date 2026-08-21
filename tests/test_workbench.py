@@ -146,6 +146,12 @@ def test_completed_at_tracks_status_toggle(isolated):
     created_done = workbench.create_task(project["id"], "创建即完成", status="done")
     assert created_done["completedAt"] is not None
 
+    cancelled = workbench.update_task(task["id"], status="cancelled")
+    assert cancelled["completedAt"] is not None
+
+    reopened_from_cancelled = workbench.update_task(task["id"], status="todo")
+    assert reopened_from_cancelled["completedAt"] is None
+
 
 def test_empty_trash(isolated, monkeypatch):
     from vococo import config
