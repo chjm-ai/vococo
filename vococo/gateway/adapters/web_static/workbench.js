@@ -268,7 +268,11 @@ function workbenchSessionLinks(task){
 }
 
 function workbenchTaskRow(task, isChild){
-  if(WB.editorTaskId === task.id) return renderWorkbenchTaskEditor(task);
+  if(WB.editorTaskId === task.id){
+    const editor = renderWorkbenchTaskEditor(task);
+    if(isChild || task.parentId || workbenchIsDateView()) return editor;
+    return editor + workbenchChildRows(task.id);
+  }
   const action = task.status === "done" ? "恢复" : "完成";
   const selected = WB.selected.has(task.id);
   const detail = (task.detail && WB.view !== "month") ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
