@@ -110,8 +110,9 @@ function workbenchAssigneeBadge(task){
 function workbenchChildCount(task){
   if(task.parentId) return '';
   const stats = workbenchChildrenStats(task.id);
-  if(!stats.total) return '';
-  return '<span class="wb-child-count" data-toggle-children="'+esc(task.id)+'" title="子任务">'+stats.done+'/'+stats.total+'</span>';
+  const expanded = WB.expanded.has(task.id);
+  if(!stats.total) return '<span class="wb-child-toggle'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="添加子任务">+</span>';
+  return '<span class="wb-child-count'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="子任务">'+stats.done+'/'+stats.total+'</span>';
 }
 
 function workbenchChildRows(parentId){
@@ -1466,9 +1467,11 @@ function workbenchCtxMenuHtml(){
     return opts+'<div class="wb-ctx-sep"></div><button type="button" data-ctx="back">‹ 返回</button>';
   }
   const n = wbCtxIds.length;
+  const addChildBtn = (n === 1 && !workbenchTask(wbCtxIds[0])?.parentId) ? '<button type="button" data-ctx="add-child">添加子任务</button>' : '';
   return '<button type="button" data-ctx="date">时间...</button>'+
     '<button type="button" data-ctx="done">标记完成</button>'+
     '<button type="button" data-ctx="move">移动到...</button>'+
+    addChildBtn+
     '<div class="wb-ctx-sep"></div>'+
     '<button type="button" data-ctx="set-ai">设为 AI 任务</button>'+
     '<button type="button" data-ctx="set-human">设为人工任务</button>'+
@@ -1521,6 +1524,7 @@ function workbenchHandleCtxClick(event){
   const action = event.target.closest("[data-ctx]")?.dataset.ctx;
   if(!action) return;
   if(action === "back"){ wbCtxMode = "root"; workbenchRenderCtxMenu(); return; }
+  if(action === "add-child" && wbCtxIds.length === 1){ workbenchCloseCtxMenu(); openWorkbenchNewChild(wbCtxIds[0]); return; }
   if(action === "date"){
     const rect = document.getElementById("wbCtxMenu").getBoundingClientRect();
     const ids = [...wbCtxIds];
