@@ -18,19 +18,29 @@
 // 有上限(200张)防止长会话/多会话累积内存无限涨,超了按最旧淘汰并 revoke。
 const _imgBlobCache = new Map();
 const _IMG_BLOB_CACHE_MAX = 200;
+// 重连/切前后台时机常伴随网络本就不稳,鉴权图片请求偶发失败以前直接放弃且不重试,
+// 图就永久空白只能靠手动刷新页面才能恢复——这里加 3 次退避重试兜住那次抖动。
 async function fetchCachedBlobUrl(url){
   if(_imgBlobCache.has(url)) return _imgBlobCache.get(url);
-  try{
-    const r=await api(url); if(!r.ok) return null;
-    const b=await r.blob(); const o=URL.createObjectURL(b);
-    if(_imgBlobCache.size>=_IMG_BLOB_CACHE_MAX){
-      const oldest=_imgBlobCache.keys().next().value;
-      URL.revokeObjectURL(_imgBlobCache.get(oldest));
-      _imgBlobCache.delete(oldest);
+  const MAX_RETRY=3;
+  for(let i=0;i<MAX_RETRY;i++){
+    try{
+      const r=await api(url);
+      if(!r.ok) throw new Error("http "+r.status);
+      const b=await r.blob(); const o=URL.createObjectURL(b);
+      if(_imgBlobCache.size>=_IMG_BLOB_CACHE_MAX){
+        const oldest=_imgBlobCache.keys().next().value;
+        URL.revokeObjectURL(_imgBlobCache.get(oldest));
+        _imgBlobCache.delete(oldest);
+      }
+      _imgBlobCache.set(url, o);
+      return o;
+    }catch(e){
+      if(i===MAX_RETRY-1) return null;
+      await new Promise(res=>setTimeout(res, 500*(i+1)));
     }
-    _imgBlobCache.set(url, o);
-    return o;
-  }catch(e){ return null; }
+  }
+  return null;
 }
 const _imgLazyObserver = new IntersectionObserver((entries)=>{
   for(const e of entries){
@@ -603,7 +613,7 @@ function applyStreamEvent(e){
       if(S.localSent){ S.localSent=false; break; }  // 本客户端发的,气泡已在 send() 里加了
       // 无活跃流式气泡 = 不是本轮发送 → 历史已渲染过该消息,跳过避免重复
       if(!S.stream) break;
-      addBubble("me", e.text); break;
+      addBubble("me", e.text, e.images); break;
     case "start":
       if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }
       if(S.stream) S.stream.audioPending = false;  // 转写完成,状态行恢复正常文案
