@@ -408,20 +408,21 @@ function renderWorkbenchProjects(){
   if(WB.project === WB_UNASSIGNED_ID){
     projects = [WB_UNASSIGNED_PROJECT];
   }else if(WB.project === "all"){
-    // 「未分组」只在确实有游离任务时才出现，避免空占位。
-    projects = unassignedTasks.length ? [...WB_DATA.projects, WB_UNASSIGNED_PROJECT] : WB_DATA.projects;
+    // 「未分组」固定显示在最底部，哪怕暂时没有游离任务，方便拖任务过去。
+    projects = [...WB_DATA.projects, WB_UNASSIGNED_PROJECT];
   }else{
     const one = workbenchProject(WB.project);
     projects = one ? [one] : [];
   }
   if(!projects.length) return '<p class="wb-empty">还没有项目，点右上角「+」新建一个。</p>';
-  // 「全部项目」概览下，没任务的项目分组直接不显示（避免一屏全是"暂无任务"的空壳）；
+  // 「全部项目」概览下，没任务的真实项目分组直接不显示（避免一屏全是"暂无任务"的空壳）；
   // 但正在这个项目里写新任务草稿时不能藏——不然卡片会凭空消失。单选某个具体项目时
   // 永远显示该项目自己的区块，哪怕是空的，不然用户点进去会看到一片空白，无处新建。
+  // 「未分组」固定显示在最底部（见上方 projects 组装），不受这条空分组隐藏规则影响。
   const blocks = projects.map(project => {
     const list = project.id === WB_UNASSIGNED_ID ? unassignedTasks : tasks.filter(task => task.project === project.id);
     const hasDraft = WB.newTask && WB.newTask.project === project.id;
-    if(WB.project === "all" && !list.length && !hasDraft) return "";
+    if(WB.project === "all" && project.id !== WB_UNASSIGNED_ID && !list.length && !hasDraft) return "";
     return workbenchProjectBlock(project, list);
   }).filter(Boolean);
   if(!blocks.length) return '<p class="wb-empty">暂无任务。</p>';
@@ -1193,6 +1194,14 @@ async function dispatchWorkbenchTask(taskId){
     if(t && d.task) Object.assign(t, d.task);
     if(!workbenchMorphTask(taskId)) renderWorkbench();
   }catch(e){ alert("派发执行失败："+(e.message||"")); }
+}
+
+// 选中一个任务时新建：子任务选中 -> 挂同一父任务下的兄弟任务；顶层任务选中 -> 挂它下面的子任务。
+function workbenchOpenNewTaskAtSelectedLevel(){
+  if(WB.view === "completed" || WB.view === "trash" || WB.selected.size !== 1) return;
+  const task = workbenchTask([...WB.selected][0]);
+  if(!task) return;
+  openWorkbenchNewChild(task.parentId || task.id, task.parentId ? task.id : null);
 }
 
 function openWorkbenchNewChild(parentId, siblingTaskId){
@@ -1997,6 +2006,12 @@ document.addEventListener("keydown", event => {
   if(event.key === "Enter" && !event.isComposing && event.keyCode !== 229 && event.target.matches("[data-new-title],[data-edit-title]")){
     event.preventDefault(); workbenchFinishActiveCard(); return;
   }
+  // 选中任务卡（非编辑态）时按回车：子任务 -> 新建同层级兄弟任务；顶层任务 -> 新建子任务。
+  if(event.key === "Enter" && !event.isComposing && event.keyCode !== 229 && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !WB.newTask && !WB.editorTaskId){
+    if(event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
+    if(WB.selected.size !== 1) return;
+    event.preventDefault(); workbenchOpenNewTaskAtSelectedLevel(); return;
+  }
   if(event.key === "Escape"){
     if(WB_DP.open){ workbenchDpClose(); return; }
     if(workbenchCtxMenuOpen()){ workbenchCloseCtxMenu(); return; }
@@ -2015,12 +2030,8 @@ document.addEventListener("keydown", event => {
   if(event.code !== "Space" || event.ctrlKey || event.metaKey || event.altKey) return;
   if(event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
   if(event.shiftKey){
-    if(WB.view === "completed" || WB.view === "trash" || WB.selected.size !== 1) return;
-    const task = workbenchTask([...WB.selected][0]);
-    if(!task) return;
-    event.preventDefault();
-    openWorkbenchNewChild(task.parentId || task.id, task.parentId ? task.id : null);
-    return;
+    if(WB.selected.size !== 1) return;
+    event.preventDefault(); workbenchOpenNewTaskAtSelectedLevel(); return;
   }
   if(WB.view === "completed" || WB.view === "trash") return; // 这两个视图没有项目分组，插不进新建卡
   event.preventDefault(); openWorkbenchNewTask();
