@@ -65,7 +65,9 @@ CREATE TABLE IF NOT EXISTS workbench_tasks(
   images TEXT NOT NULL DEFAULT '[]',
   sort_order REAL NOT NULL DEFAULT 0,
   created_at REAL NOT NULL,
-  updated_at REAL NOT NULL
+  updated_at REAL NOT NULL,
+  deleted_at REAL,
+  completed_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_wb_tasks_project ON workbench_tasks(project_id);
 """
@@ -171,6 +173,10 @@ def conn() -> sqlite3.Connection:
         wtcols = {r[1] for r in _DB.execute("PRAGMA table_info(workbench_tasks)")}
         if "deleted_at" not in wtcols:
             _DB.execute("ALTER TABLE workbench_tasks ADD COLUMN deleted_at REAL")
+        # completed_at: 任务标记完成那一刻的时间戳,NULL=未完成。「已完成」视图按天分组
+        # 展示要用真实完成时间,不能拿 updated_at 顶替(编辑标题/备注也会碰它)。
+        if "completed_at" not in wtcols:
+            _DB.execute("ALTER TABLE workbench_tasks ADD COLUMN completed_at REAL")
         for table in ("turns", "session_meta"):
             for old_prefix in ("voice-task:", "cron-task:"):
                 _DB.execute(
