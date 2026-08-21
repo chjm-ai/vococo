@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小幽通话页重设计 v2 · 效果预览</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 240'%3E%3Cpath d='M68 176 V112 a52 52 0 0 1 104 0 V176 q -17 12 -34.7 0 q -17.3 12 -34.6 0 q -17 12 -34.7 0 Z' fill='%23FF8A26'/%3E%3Ccircle cx='100' cy='118' r='11' fill='%233D2410'/%3E%3Ccircle cx='140' cy='118' r='11' fill='%233D2410'/%3E%3C/svg%3E">
+<style>
+/* ============================================================
+   通话页外壳 —— 变量值与生产 styles.css :root / [data-theme=light] 逐条对齐
+   ============================================================ */
+:root{
+  --bg:#181716; --bg2:#1c1b19; --panel:#252320; --panel2:#302f2c; --card:#2b2a27;
+  --line:#3a3934; --line2:#4a4941;
+  --text:#ecebe3; --dim:#a5a094; --dim2:#716d61;
+  --accent:#d97757; --accent2:#c8613f;
+  --ok:#5aa469; --err:#d1674a;
+}
+[data-theme="light"]{
+  --bg:#ffffff; --bg2:#ffffff; --panel:#f7f7f7; --panel2:#eeeeee; --card:#ffffff;
+  --line:#e5e5e5; --line2:#d8d8d8;
+  --text:#29261f; --dim:#6d6757; --dim2:#9a9482;
+  --accent:#bd5d3a; --accent2:#a84e2f;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;min-height:100%;background:#0f0e0d;color:var(--text);
+  font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;}
+body{display:flex;flex-direction:column;align-items:center;gap:20px;padding:26px 16px 60px;}
+
+.top-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center;}
+.top-badge{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);
+  background:var(--panel);border:1px solid var(--line);padding:6px 12px;border-radius:999px;}
+.top-badge b{color:var(--accent);font-weight:600}
+.top-badge .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:pulse 1.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.theme-toggle{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:3px;font-size:12px;}
+.theme-toggle button{border:0;background:transparent;color:var(--dim);padding:5px 14px;border-radius:999px;cursor:pointer;}
+.theme-toggle button.active{background:var(--accent);color:#fff;}
+
+.correction{max-width:700px;font-size:12.5px;color:var(--dim2);text-align:center;line-height:1.8;padding:0 8px;}
+.correction b{color:var(--dim)}
+
+.layout{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap;justify-content:center;max-width:920px;}
+
+/* ---------- 手机通话卡片:结构照抄线上 #callView / #callFoot ---------- */
+.phone{
+  width:360px;height:680px;background:var(--bg2);border-radius:34px;
+  border:1px solid var(--line);box-shadow:0 30px 70px rgba(0,0,0,.55),inset 0 0 0 6px #0f0e0d;
+  display:flex;flex-direction:column;overflow:hidden;position:relative;flex-shrink:0;
+}
+.p-head{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line);flex-shrink:0;}
+.p-head .back{color:var(--dim);font-size:16px;}
+.p-head .title{flex:1;font-weight:600;font-size:14px;color:var(--text);}
+.p-head .clear{color:var(--dim2);font-size:13px;}
+
+/* 假转写区:几条静态气泡,营造"底部浮层盖在聊天记录上"的真实感,不是本次重设计对象 */
+.p-body{flex:1;overflow:hidden;padding:16px;display:flex;flex-direction:column;gap:12px;position:relative;}
+.fake-bubble{max-width:78%;padding:9px 13px;border-radius:14px;font-size:13px;color:var(--dim);background:var(--card);border:1px solid var(--line);}
+.fake-bubble.me{align-self:flex-end;background:color-mix(in srgb, var(--accent) 16%, var(--card));color:var(--text);}
+.fake-bubble.ai{align-self:flex-start;}
+
+/* ---------- callFoot:绝对定位浮层,渐变盖住转写区底部——与线上 #callFoot 同规格 ---------- */
+/* 高度比线上再压缩一截:线上 280×100 那个高度是为"横向声波"留的,吉祥物是
+   竖直角色不需要那么高;下移贴近状态文字、缩小整块浮层,少遮对话。 */
+.call-foot{position:absolute;left:0;right:0;bottom:0;padding:8px 16px 18px;display:flex;
+  flex-direction:column;align-items:center;gap:5px;
+  background:linear-gradient(to top, var(--bg2) 0, var(--bg2) 56px, transparent 128px);}
+
+.orb-wrap{position:relative;width:280px;height:68px;display:flex;align-items:flex-end;justify-content:center;cursor:pointer;}
+/* 吉祥物本体是唯一动效载体:不加光晕/粒子/角标等外部装饰 */
+.orb-wrap .voco-mascot{--s:2.5;}
+
+.status-line{display:flex;align-items:center;justify-content:center;gap:8px;min-height:18px;}
+.conn-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;transition:background .4s ease,box-shadow .4s ease;}
+.conn-dot.conn-connected{background:var(--ok);box-shadow:0 0 6px rgba(90,164,105,.5);}
+.conn-dot.conn-connecting{background:#e8a84c;box-shadow:0 0 6px rgba(232,168,76,.5);animation:connPulse 1.2s ease-in-out infinite;}
+.conn-dot.conn-disconnected{background:var(--err);box-shadow:0 0 6px rgba(209,103,74,.4);}
+@keyframes connPulse{0%,100%{opacity:.5} 50%{opacity:1}}
+.status-txt{font-size:14px;color:var(--dim);text-align:center;transition:color .3s ease;letter-spacing:.02em;}
+.status-txt.listening{color:var(--err);}
+.status-txt.thinking,.status-txt.playing{color:var(--accent);}
+
+.call-actions{display:flex;align-items:center;gap:16px;}
+.round-btn{width:46px;height:46px;border-radius:50%;border:none;display:inline-flex;align-items:center;
+  justify-content:center;font-size:18px;cursor:pointer;transition:background .15s ease,color .15s ease,transform .12s ease;}
+.round-btn:active{transform:scale(.92);}
+#muteBtn{background:var(--panel2);color:var(--dim);}
+#muteBtn:hover{background:var(--panel);color:var(--text);}
+#muteBtn.muted{background:var(--err);color:#fff;}
+#voiceBtn{background:var(--panel2);color:var(--dim);}
+#voiceBtn:hover{background:var(--panel);color:var(--text);}
+#hangupBtn{background:var(--err);color:#fff;}
+#hangupBtn:hover{background:#b85a3f;}
+
+/* 挂断后:线上是直接隐藏整套声波 UI,换回待机大按钮——如实复刻这个硬切,不是我加的动画 */
+.standby-btn{width:64px;height:64px;border-radius:50%;border:none;background:var(--panel2);color:var(--dim);
+  display:none;align-items:center;justify-content:center;font-size:22px;cursor:pointer;margin:0 auto;}
+.standby-btn.show{display:inline-flex;}
+.call-foot.ended .orb-wrap,.call-foot.ended .status-line,.call-foot.ended .call-actions{display:none;}
+
+/* ---------- 预览控制台 ---------- */
+.console{width:340px;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:18px 18px 20px;flex-shrink:0;}
+.console h2{font-size:13px;color:var(--dim);margin:0 0 4px;font-weight:600;letter-spacing:.02em;}
+.console p.hint{font-size:12px;color:var(--dim2);margin:0 0 12px;line-height:1.7;}
+.state-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;}
+.state-btn{padding:10px 8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--text);
+  font-size:12.5px;cursor:pointer;text-align:center;transition:all .15s;line-height:1.4;}
+.state-btn b{display:block;font-size:12.5px;}
+.state-btn span{display:block;font-size:10.5px;color:var(--dim2);margin-top:1px;}
+.state-btn:hover{border-color:var(--accent)}
+.state-btn.active{background:color-mix(in srgb, var(--accent) 16%, var(--card));border-color:var(--accent);color:var(--accent);}
+
+.sound-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line);font-size:12.5px;}
+.sound-row:last-of-type{border-bottom:1px solid var(--line);margin-bottom:14px;}
+.sound-row .snd-name{color:var(--text);}
+.sound-row .snd-tag{display:inline-block;font-size:9.5px;padding:1px 5px;border-radius:4px;margin-left:5px;vertical-align:1px;}
+.sound-row .snd-tag.real{background:color-mix(in srgb, var(--ok) 20%, transparent);color:var(--ok);}
+.sound-row .snd-tag.new{background:color-mix(in srgb, var(--accent) 20%, transparent);color:var(--accent);}
+.sound-row .snd-desc{display:block;color:var(--dim2);font-size:10.5px;margin-top:1px;}
+.sound-row button{width:30px;height:30px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--dim);cursor:pointer;flex-shrink:0;}
+.sound-row button:hover{border-color:var(--accent);color:var(--accent)}
+
+.toggle-row{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;color:var(--text);padding:8px 0;gap:10px;}
+.toggle-row .sub{display:block;color:var(--dim2);font-size:10.5px;margin-top:2px;}
+.tswitch{width:38px;height:22px;border-radius:11px;background:var(--card);border:1px solid var(--line);position:relative;cursor:pointer;flex-shrink:0;}
+.tswitch i{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--dim);transition:all .18s;}
+.tswitch.on{background:color-mix(in srgb, var(--accent) 40%, var(--card));border-color:var(--accent)}
+.tswitch.on i{left:18px;background:var(--accent)}
+.mic-note{margin-top:4px;font-size:11px;color:var(--dim2);min-height:14px;}
+
+.mapping{margin-top:14px;padding-top:14px;border-top:1px solid var(--line);}
+.mapping table{width:100%;border-collapse:collapse;font-size:11.5px;}
+.mapping td{padding:5px 2px;color:var(--dim);border-bottom:1px dashed var(--line);vertical-align:top;}
+.mapping td:first-child{color:var(--accent);white-space:nowrap;font-weight:600;}
+
+/* ============================================================
+   小幽像素引擎(与生产 mascot.js 完全一致,新增 conn 一个派生态区分"连接中"/"AI思考中")
+   ============================================================ */
+.voco-mascot {
+  --pal-p: #FF8A26; --pal-w: #FFC07A; --pal-d: #F56F0E; --pal-k: #3D2410;
+  --cw: 24; --ch: 28; --s: 4;
+  display: inline-block; position: relative;
+  width: calc(var(--cw) * 1px * var(--s)); height: calc(var(--ch) * 1px * var(--s));
+  vertical-align: middle; line-height: 0;
+}
+.voco-mascot i.vmi { position: absolute; left: 0; top: 0; width: 1px; height: 1px; transform: scale(var(--s)); transform-origin: 0 0; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <div class="top-badge"><span class="dot"></span> 设计预览 v4 · 思考复用说话姿态 + 底部区域收窄</div>
+  <div class="theme-toggle">
+    <button id="themeDark" class="active">深色</button>
+    <button id="themeLight">浅色</button>
+  </div>
+</div>
+<div class="correction">
+  "AI思考中"不再单独设计姿态，直接复用"AI说话中"的摇摆——两者靠音效区分（思考中是循环音，
+  执行任务时循环音上再叠一层更轻的滴答），样式一样不影响理解。吉祥物整体下移贴近状态文字，
+  底部浮层高度也比线上原来的声波区更矮，减少对聊天记录的遮挡。
+</div>
+
+<div class="layout">
+
+  <div class="phone" id="phone">
+    <div class="p-head">
+      <span class="back">‹</span>
+      <span class="title">主会话</span>
+      <span class="clear">⟲</span>
+    </div>
+    <div class="p-body">
+      <div class="fake-bubble ai">早，今天有什么安排？</div>
+      <div class="fake-bubble me">帮我看看昨天那个部署有没有异常</div>
+      <div class="fake-bubble ai">看了一下日志，昨晚 3 点那次重启是正常的定时任务，没有异常。</div>
+    </div>
+    <div class="call-foot" id="callFoot">
+      <div class="orb-wrap" id="orbWrap" title="点一下可以打断 AI 说话">
+        <span class="voco-mascot" data-state="idle" id="mascotEl"></span>
+      </div>
+      <div class="status-line">
+        <span class="conn-dot conn-connecting" id="connDot"></span>
+        <span class="status-txt" id="statusTxt">连接中…</span>
+      </div>
+      <div class="call-actions">
+        <button class="round-btn" id="muteBtn" title="静音麦克风">🎙</button>
+        <button class="round-btn" id="voiceBtn" title="切换音色">🗣</button>
+        <button class="round-btn" id="hangupBtn" title="结束通话">📞</button>
+      </div>
+      <button class="standby-btn" id="standbyBtn" title="通话">🎙</button>
+    </div>
+  </div>
+
+  <div class="console">
+    <h2>状态切换（仅真实存在的转移路径）</h2>
+    <p class="hint">默认免提入口静默接通，无拨号音；下方按钮按真实触发顺序排列。</p>
+    <div class="state-grid" id="stateGrid"></div>
+
+    <h2>音效试听</h2>
+    <p class="hint" style="margin-bottom:8px"><span style="color:var(--ok)">绿标</span>=线上已有场景的重新配色；<span style="color:var(--accent)">橙标</span>=线上目前完全没有声音，是新提议，未默认接入状态切换。</p>
+    <div id="soundList"></div>
+
+    <div class="toggle-row">
+      <div>真实麦克风驱动聆听呼吸幅度<span class="sub">没有音柱了，改成音量越大身体"鼓"得越明显</span></div>
+      <div class="tswitch" id="micSwitch"><i></i></div>
+    </div>
+    <div class="mic-note" id="micNote"></div>
+
+    <div class="mapping">
+      <h2 style="margin-bottom:8px">真实状态 → 吉祥物本体表达(仅眼睛/脚/身体)</h2>
+      <table>
+        <tr><td>conn 连接中</td><td>闭眼 + 收脚 + 身体缓慢呼吸(2.4s)</td></tr>
+        <tr><td>listen 聆听中</td><td>睁眼 + 身体随音量呼吸(真实频谱驱动 scale)</td></tr>
+        <tr><td>think 思考中</td><td>复用 speak 的摇摆姿态，靠 660Hz 循环音区分</td></tr>
+        <tr><td>+ 执行任务时</td><td>姿态还是摇摆，只在音效上叠加一层更轻的滴答</td></tr>
+        <tr><td>speak AI说话中</td><td>身体摇摆，单响一声后安静，样式和思考中一样</td></tr>
+        <tr><td>静音 / 挂断</td><td>不动吉祥物——线上现状如此，按钮态自己变化</td></tr>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const CW = 24, CH = 28;
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  const NEUTRAL = (() => {
+    const p = new Array(CH).fill(null);
+    p[5]=[11,12];p[6]=[10,13];p[7]=[9,14];p[8]=[8,15];p[9]=[7,16];
+    p[10]=[6,17];p[11]=[6,17];p[12]=[6,17];p[13]=[6,17];
+    p[14]=[7,16];p[15]=[7,16];p[16]=[7,16];
+    p[17]=[6,17];p[18]=[5,18];p[19]=[5,18];
+    return p;
+  })();
+  const HL = [[7,9],[8,8],[8,9],[9,7],[9,8],[10,6],[10,7]];
+  const SH = [[15,16],[16,16],[17,17],[18,17],[18,18],[19,18]];
+  function eyeCells(state) {
+    const out = [];
+    if (state === 'open') { for (const row of [12,13]) for (const c of [9,10,13,14]) out.push([row,c]); }
+    else if (state === 'closed') { for (const c of [9,10,13,14]) out.push([13,c]); }
+    else if (state === 'x') { out.push([12,8],[12,10],[13,9],[14,8],[14,10]); out.push([12,13],[12,15],[13,14],[14,13],[14,15]); }
+    return out;
+  }
+  const TOES = [[5,6],[8,9],[11,12],[14,15],[17,18]];
+  const FEET = {
+    waveA: (()=>{const c=[];TOES.forEach(([a,b])=>c.push([20,a],[20,b]));c.push([21,8],[21,9],[21,14],[21,15]);return c;})(),
+    waveB: (()=>{const c=[];TOES.forEach(([a,b])=>c.push([20,a],[20,b]));c.push([21,5],[21,6],[21,11],[21,12],[21,17],[21,18]);return c;})(),
+    tuck: [[20,8],[20,9],[20,11],[20,12],[20,14],[20,15]],
+    wide: (()=>{const c=[];[[4,6],[8,9],[11,12],[14,15],[17,19]].forEach(([a,b])=>{for(let x=a;x<=b;x++){c.push([20,x]);c.push([21,x]);}});return c;})(),
+    droop: [[21,8],[21,9],[21,11],[21,12],[21,14],[21,15]],
+    flat: [[20,8],[20,9],[20,10],[20,13],[20,14],[20,15]]
+  };
+  function frameShadow(opts) {
+    const { dy=0, dx=0, scale=1, eyes='open', feet='waveA', hl=true, sh=true } = opts;
+    let profile = NEUTRAL.map(r => r ? [r[0], r[1]] : null);
+    if (scale !== 1) {
+      profile = profile.map(r => { if (!r) return null; const mid=(r[0]+r[1])/2, halfw=(r[1]-r[0])/2*scale; return [clamp(Math.round(mid-halfw),0,CW-1), clamp(Math.round(mid+halfw),0,CW-1)]; });
+    }
+    const map = new Map();
+    const setCell = (row,col,ch) => { if (row<0||row>=CH||col<0||col>=CW) return; map.set(row+','+col, ch); };
+    profile.forEach((r,row) => { if (!r) return; for (let c=r[0]; c<=r[1]; c++) setCell(row+dy, c+dx, 'p'); });
+    if (hl) HL.forEach(([r,c]) => setCell(r+dy, c+dx, 'w'));
+    if (sh) SH.forEach(([r,c]) => setCell(r+dy, c+dx, 'd'));
+    FEET[feet].forEach(([r,c]) => setCell(r+dy, c+dx, 'p'));
+    eyeCells(eyes).forEach(([r,c]) => setCell(r+dy, c+dx, 'k'));
+    const parts = [];
+    map.forEach((ch,key) => { const [row,col] = key.split(','); parts.push(col+'px '+row+'px 0 0 var(--pal-'+ch+')'); });
+    return parts.join(',');
+  }
+  const STATES = {
+    idle: { dur:'4.8s', frames:[
+      frameShadow({dy:0,eyes:'open',feet:'waveA'}), frameShadow({dy:-1,eyes:'open',feet:'waveB'}),
+      frameShadow({dy:0,eyes:'open',feet:'waveA'}), frameShadow({dy:-1,eyes:'open',feet:'waveB'}),
+      frameShadow({dy:0,eyes:'open',feet:'waveA'}), frameShadow({dy:-1,eyes:'closed',feet:'waveB'})
+    ]},
+    // 连接中/重连中:跟"AI思考中"区分开,不加外部元素,只用已有参数
+    // (scale 呼吸 + 闭眼 + 收脚)组合出一种"还没睁眼、正在建立"的慢节奏。
+    conn: { dur:'2.4s', frames:[
+      frameShadow({scale:0.90,eyes:'closed',feet:'tuck'}),
+      frameShadow({scale:0.96,eyes:'closed',feet:'tuck'}),
+      frameShadow({scale:1.03,eyes:'closed',feet:'tuck'}),
+      frameShadow({scale:1.06,eyes:'closed',feet:'tuck'}),
+      frameShadow({scale:1.00,eyes:'closed',feet:'tuck'})
+    ]},
+    // 聆听中:去掉音柱(那是挂在脚下的外部图形),改成身体本身随音量呼吸式起伏——
+    // 真实麦克风驱动时直接改这个 scale,不再画额外的柱子。这里是固定循环的默认节奏。
+    listening: { dur:'1.0s', frames:[
+      frameShadow({scale:1.00,eyes:'open',feet:'waveA'}),
+      frameShadow({scale:1.07,eyes:'open',feet:'waveB'}),
+      frameShadow({scale:1.02,eyes:'open',feet:'waveA'}),
+      frameShadow({scale:1.09,eyes:'open',feet:'waveB'})
+    ]},
+    // AI思考中:不再单独设计姿态,直接复用"说话中"的摇摆——两者用音效区分就够了,
+    // 样式一样不影响理解(思考中 = 660Hz循环/可叠加任务滴答;说话中 = 单响后安静)。
+    busy: { dur:'.6s', frames:[
+      frameShadow({dx:-2,eyes:'open',feet:'waveA'}), frameShadow({dx:0,eyes:'open',feet:'waveA'}), frameShadow({dx:2,eyes:'open',feet:'waveA'})
+    ]}
+  };
+  let css = '';
+  Object.entries(STATES).forEach(([name, def]) => {
+    const n = def.frames.length, stepPct = 100/n;
+    let body = '';
+    def.frames.forEach((f,i) => { body += (i*stepPct).toFixed(3)+'% { box-shadow:'+f+'; }\n'; });
+    body += '100% { box-shadow:'+def.frames[0]+'; }\n';
+    css += '@keyframes vm-'+name+' {\n'+body+'}\n';
+    css += '.voco-mascot[data-state="'+name+'"] i.vmi { animation: vm-'+name+' '+def.dur+' steps(1,end) infinite backwards; }\n';
+  });
+  const styleTag = document.createElement('style');
+  styleTag.textContent = css;
+  document.head.appendChild(styleTag);
+  function mount(el){ if(!el.querySelector('i.vmi')) el.appendChild(document.createElement('i')).className='vmi'; }
+  document.querySelectorAll('.voco-mascot').forEach(mount);
+  window.VocoMascot = { frameShadow };
+})();
+</script>
+
+<script>
+(function(){
+  "use strict";
+  const mascotEl = document.getElementById('mascotEl');
+  const statusTxt = document.getElementById('statusTxt');
+  const connDot = document.getElementById('connDot');
+  const callFoot = document.getElementById('callFoot');
+  const standbyBtn = document.getElementById('standbyBtn');
+
+  // 真实转移路径(照抄 voice.js 的 wsState/orbConnecting/STATE_WORD/STATE_CLASS):
+  // 免提自动进入 → conn(静默) → connected 后 idle → 用户开口 listen → 说完 think
+  // → 回复 speak → 回到 listen 循环;断线走 conn(有声)重来一遍。
+  const STATES = [
+    { key:'conn', label:'连接中', sub:'conn · 呼吸+闭眼', mascot:'conn', text:'连接中…', cls:'', dot:'connecting', sound:null },
+    { key:'idle', label:'待机(已接通)', sub:'idle', mascot:'idle', text:'聆听中…', cls:'listening', dot:'connected', sound:null },
+    { key:'listen', label:'聆听中', sub:'listening · 身体呼吸', mascot:'listening', text:'聆听中…', cls:'listening', dot:'connected', sound:'capture' },
+    { key:'think', label:'AI思考中·等回复', sub:'busy(复用) · 660Hz循环', mascot:'busy', text:'工作中…', cls:'thinking', dot:'connected', sound:'send' },
+    { key:'think_activity', label:'AI思考中·执行任务', sub:'busy(复用) · 叠加任务滴答', mascot:'busy', text:'工作中…', cls:'thinking', dot:'connected', sound:'send_activity' },
+    { key:'speak', label:'AI说话中', sub:'busy · 单响后安静', mascot:'busy', text:'工作中…', cls:'playing', dot:'connected', sound:'speak' },
+    { key:'reconnect', label:'断线重连', sub:'conn(复用) · 有声', mascot:'conn', text:'重连中…', cls:'thinking', dot:'disconnected', sound:'disconnect' },
+  ];
+  const byKey = Object.fromEntries(STATES.map(s=>[s.key,s]));
+  let liveListening = false;
+
+  // ---------- 音效:严格对齐 voice.js 真实触发参数(频率/时长/波形),配色改暖音色 ----------
+  let actx = null;
+  function ctx(){ if(!actx) actx = new (window.AudioContext||window.webkitAudioContext)(); if(actx.state==='suspended') actx.resume(); return actx; }
+  function tone(freq, durMs, {type='sine', vol=0.16, delay=0}={}){
+    const c = ctx(); const t0 = c.currentTime + delay/1000;
+    const osc = c.createOscillator(); const gain = c.createGain();
+    osc.type = type; osc.frequency.setValueAtTime(freq, t0);
+    osc.connect(gain); gain.connect(c.destination);
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(vol, t0 + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + durMs/1000);
+    osc.start(t0); osc.stop(t0 + durMs/1000 + 0.02);
+  }
+  let thinkingLoopTimer = null;
+  function stopThinkingLoop(){ if(thinkingLoopTimer){ clearInterval(thinkingLoopTimer); thinkingLoopTimer=null; } }
+  // 线上真实:AI 调工具执行任务时(showActivity→startWorkSound)在思考循环之上叠加
+  // 一段更轻、更快的两音滴答(1318.5→1760Hz,每1.6秒一次,音量比思考音更低)。
+  let activityLoopTimer = null;
+  function stopActivityLoop(){ if(activityLoopTimer){ clearInterval(activityLoopTimer); activityLoopTimer=null; } }
+  function playActivityTick(){
+    tone(1318.5, 90, {type:'sine', vol:.07});
+    tone(1760, 90, {type:'sine', vol:.07, delay:180});
+  }
+  const SOUNDS = {
+    // 线上真实:进入 capturing 瞬间单响(880Hz sine 80ms)
+    capture: { name:'开始聆听', tag:'real', desc:'线上原声：880Hz 单响，进 listen 瞬间触发一次', play:()=>tone(880,80,{type:'sine',vol:.14}) },
+    // 线上真实:发送用户这句话(1350Hz)+ 思考循环起个头(660Hz,之后每1.2s重复)
+    send: { name:'发送 + 思考循环', tag:'real', desc:'线上原声：1350Hz 单响 + 660Hz 每1.2秒循环，直到AI开口', play:()=>{
+      tone(1350,70,{type:'sine',vol:.15});
+      stopThinkingLoop(); stopActivityLoop();
+      const beep=()=>tone(660,90,{type:'sine',vol:.12});
+      setTimeout(beep, 60);
+      thinkingLoopTimer = setInterval(beep, 1200);
+    } },
+    // 线上真实:调工具阶段——思考循环继续响,同时叠加更轻的任务滴答,两层声音同时存在
+    send_activity: { name:'发送 + 思考循环 + 任务滴答', tag:'real', desc:'线上原声：思考循环不停，之上叠加一层更轻的执行任务滴答', play:()=>{
+      tone(1350,70,{type:'sine',vol:.15});
+      stopThinkingLoop(); stopActivityLoop();
+      const beep=()=>tone(660,90,{type:'sine',vol:.12});
+      setTimeout(beep, 60);
+      thinkingLoopTimer = setInterval(beep, 1200);
+      setTimeout(playActivityTick, 300);
+      activityLoopTimer = setInterval(playActivityTick, 1600);
+    } },
+    // 线上真实:AI 单独调工具那一小段,可以单独试听(不叠加思考循环)
+    activity: { name:'执行任务中(工具调用)', tag:'real', desc:'线上原声：1318.5→1760Hz 两音滴答，每1.6秒一次，音量比思考音更低', play:()=>{
+      stopActivityLoop();
+      playActivityTick();
+      activityLoopTimer = setInterval(playActivityTick, 1600);
+      setTimeout(stopActivityLoop, 5000); // 试听 5 秒自动停,避免一直响
+    } },
+    // 线上真实:response.created 时停掉思考循环 + 单响 660Hz(和思考音同音色)
+    speak: { name:'AI 开口', tag:'real', desc:'线上原声：停掉思考循环和任务滴答，660Hz 单响', play:()=>{ stopThinkingLoop(); stopActivityLoop(); tone(660,90,{type:'sine',vol:.13}); } },
+    // 线上真实:断线时下降双音,重连成功上升双音
+    disconnect: { name:'断线', tag:'real', desc:'线上原声：520→330Hz 下降双音', play:()=>{ tone(520,110,{type:'sine',vol:.13}); tone(330,150,{type:'sine',vol:.11,delay:120}); } },
+    reconnect: { name:'重连成功', tag:'real', desc:'线上原声：330→660Hz 上升双音', play:()=>{ tone(330,110,{type:'sine',vol:.13}); tone(660,150,{type:'sine',vol:.12,delay:120}); } },
+    // 以下两个:线上现在完全静音,是本次新提议,默认不接入状态切换,只能单独试听
+    mute_new: { name:'静音切换(新提议)', tag:'new', desc:'线上现状：无声。新提议：短促中性点击音', play:()=>tone(440,45,{type:'square',vol:.06}) },
+    hangup_new: { name:'挂断(新提议)', tag:'new', desc:'线上现状：无声,直接收起UI。新提议：短促下沉音收尾', play:()=>tone(500,160,{type:'sine',vol:.1}) },
+  };
+
+  function applyState(key){
+    const s = byKey[key];
+    statusTxt.textContent = s.text;
+    statusTxt.className = 'status-txt' + (s.cls ? ' '+s.cls : '');
+    connDot.className = 'conn-dot conn-'+s.dot;
+    if(!(liveListening && key==='listen')) mascotEl.dataset.state = s.mascot;
+    if(s.sound) SOUNDS[s.sound].play();
+    if(key === 'reconnect'){
+      setTimeout(()=>SOUNDS.reconnect.play(), 1400);
+      setTimeout(()=>applyState('listen'), 1500);
+    }
+    document.querySelectorAll('.state-btn').forEach(b=>b.classList.toggle('active', b.dataset.key===key));
+  }
+
+  const stateGrid = document.getElementById('stateGrid');
+  STATES.forEach(s=>{
+    const btn = document.createElement('button');
+    btn.className = 'state-btn'; btn.dataset.key = s.key;
+    btn.innerHTML = '<b>'+s.label+'</b><span>'+s.sub+'</span>';
+    btn.onclick = ()=>applyState(s.key);
+    stateGrid.appendChild(btn);
+  });
+
+  const soundList = document.getElementById('soundList');
+  Object.entries(SOUNDS).forEach(([key,s])=>{
+    const row = document.createElement('div'); row.className='sound-row';
+    row.innerHTML = '<div><span class="snd-name">'+s.name+'<span class="snd-tag '+s.tag+'">'+(s.tag==='real'?'线上已有':'新提议')+'</span></span><span class="snd-desc">'+s.desc+'</span></div><button>▶</button>';
+    row.querySelector('button').onclick = ()=>s.play();
+    soundList.appendChild(row);
+  });
+
+  // 静音:只改按钮外观,吉祥物不动——如实复刻线上现状
+  const muteBtn = document.getElementById('muteBtn');
+  muteBtn.onclick = ()=>{
+    const on = muteBtn.classList.toggle('muted');
+    SOUNDS.mute_new.play();
+  };
+  document.getElementById('voiceBtn').onclick = ()=>tone(1350,70,{type:'sine',vol:.1});
+
+  // 挂断:硬切回待机按钮,不做吉祥物告别动画——如实复刻线上现状(硬切前先响一声新提议音,方便对比)
+  document.getElementById('hangupBtn').onclick = ()=>{
+    SOUNDS.hangup_new.play();
+    stopThinkingLoop(); stopActivityLoop();
+    callFoot.classList.add('ended');
+    standbyBtn.classList.add('show');
+  };
+  standbyBtn.onclick = ()=>{
+    callFoot.classList.remove('ended');
+    standbyBtn.classList.remove('show');
+    applyState('conn');
+    setTimeout(()=>applyState('idle'), 1200);
+  };
+
+  document.getElementById('orbWrap').addEventListener('click', ()=>{
+    const cur = document.querySelector('.state-btn.active');
+    if(cur && (cur.dataset.key==='think' || cur.dataset.key==='think_activity' || cur.dataset.key==='speak')){
+      stopThinkingLoop(); stopActivityLoop();
+      applyState('idle');
+    }
+  });
+
+  // 真实麦克风驱动聆听声柱(线上聆听态本就用真实频谱,这里同样接麦克风)
+  const micSwitch = document.getElementById('micSwitch');
+  const micNote = document.getElementById('micNote');
+  let micStream=null, analyser=null, rafId=null;
+  function stopLive(){
+    liveListening=false; micSwitch.classList.remove('on');
+    if(rafId) cancelAnimationFrame(rafId);
+    if(micStream) micStream.getTracks().forEach(t=>t.stop());
+    micStream=null;
+    const iEl = mascotEl.querySelector('i.vmi');
+    iEl.style.boxShadow=''; iEl.style.animation='';
+    micNote.textContent='';
+  }
+  micSwitch.onclick = async ()=>{
+    if(liveListening){ stopLive(); return; }
+    try{
+      micNote.textContent = '请求麦克风权限…';
+      micStream = await navigator.mediaDevices.getUserMedia({audio:true});
+      const c = ctx();
+      const src = c.createMediaStreamSource(micStream);
+      analyser = c.createAnalyser(); analyser.fftSize = 512;
+      src.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      liveListening = true; micSwitch.classList.add('on');
+      applyState('listen');
+      micNote.textContent = '已开启,说话试试看';
+      const iEl = mascotEl.querySelector('i.vmi');
+      iEl.style.animation = 'none';
+      let smoothed = 1;
+      (function loop(){
+        if(!liveListening) return;
+        analyser.getByteFrequencyData(data);
+        let sum=0; for(let i=0;i<data.length;i++) sum+=data[i];
+        const level = sum/data.length/255;
+        // 没有音柱了:真人说话音量直接驱动身体呼吸幅度(scale),越大声吉祥物"鼓"得越明显
+        const target = 1 + Math.min(0.42, level*1.5);
+        smoothed += (target - smoothed) * 0.35;
+        iEl.style.boxShadow = VocoMascot.frameShadow({eyes:'open', feet:'waveA', scale:smoothed});
+        rafId = requestAnimationFrame(loop);
+      })();
+    }catch(e){
+      micNote.textContent = '未获得麦克风权限('+e.name+')';
+      liveListening=false; micSwitch.classList.remove('on');
+    }
+  };
+
+  document.getElementById('themeDark').onclick = ()=>{
+    document.documentElement.removeAttribute('data-theme');
+    document.getElementById('themeDark').classList.add('active');
+    document.getElementById('themeLight').classList.remove('active');
+  };
+  document.getElementById('themeLight').onclick = ()=>{
+    document.documentElement.setAttribute('data-theme','light');
+    document.getElementById('themeLight').classList.add('active');
+    document.getElementById('themeDark').classList.remove('active');
+  };
+
+  applyState('conn');
+  setTimeout(()=>applyState('idle'), 1500);
+})();
+</script>
+</body>
+</html>

@@ -96,7 +96,7 @@ def test_task_status_map_is_shared_with_sidebar_helpers():
 def test_service_worker_cache_version_changes_with_shell_contract():
     sw = STATIC_SW.read_text(encoding="utf-8")
 
-    assert 'const SHELL_CACHE = "vococo-shell-v7";' in sw
+    assert 'const SHELL_CACHE = "vococo-shell-v8";' in sw
 
 
 def test_startup_worktree_cleanup_is_bounded():

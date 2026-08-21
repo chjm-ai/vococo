@@ -383,8 +383,8 @@ try{
           <!-- 免提是唯一路径:进入通话视图就自动开始,不需要再点一次按钮——
                声纹球常驻可见,状态文字紧贴在球下面,静音/挂断这两个小图标按钮同一行。 -->
           <div id="handsFreeUi">
-            <div id="orbWrap" class="idle" title="点一下可以打断 AI 说话">
-              <canvas id="orbCanvas" width="640" height="200"></canvas>
+            <div id="orbWrap" title="点一下可以打断 AI 说话">
+              <span class="voco-mascot" data-state="idle" id="mascotEl"></span>
             </div>
             <div id="statusLine"><span id="connDot" class="conn-disconnected"></span><div id="status">连接中…</div></div>
             <div id="callActions">
