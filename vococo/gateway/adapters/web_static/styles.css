@@ -1457,7 +1457,7 @@
   /* 独立窗口本身(?view=workbench)不需要再开一层同样的窗口;侧边栏靠 sb-collapsed 收起
      但 wb-hamb 展开图标保留(见 app-core.js tryEnter 的 standaloneWorkbench 分支)。 */
   body.wb-standalone .wb-win-btn{display:none!important}
-  #workbenchView .wb-project-filter{display:flex;gap:5px;overflow-x:auto;padding:4px 0 3px;border:0}#workbenchView .wb-project-filter button{padding:6px 12px;border-radius:6px;font-size:13px}#workbenchView .wb-project-add{display:grid;place-items:center;width:26px;height:26px;padding:0;border:1px dashed var(--line2);border-radius:6px;color:var(--dim2)}#workbenchView .wb-project-add:hover{border-style:solid;color:var(--text)}
+  #workbenchView .wb-project-filter{display:flex;align-items:center;gap:5px;overflow-x:auto;padding:4px 0 3px;border:0}#workbenchView .wb-project-filter button{padding:6px 12px;border-radius:6px;font-size:13px}#workbenchView .wb-project-add{display:inline-flex;align-items:center;justify-content:center;padding:6px 9px;color:var(--dim2)}
   #workbenchView .wb-project-list{display:flex;flex-direction:column;gap:20px;margin-top:16px}#workbenchView .wb-project-block{margin:0;padding:0;border:0}
   #workbenchView .wb-project-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;min-height:28px;padding:2px 6px;border-radius:7px;text-align:left;color:var(--text);cursor:pointer;transition:background .15s,color .15s}#workbenchView .wb-project-toggle>span:last-child{color:var(--dim2);font-size:12px;line-height:20px}
   @media(hover:hover){ #workbenchView .wb-project-toggle:hover{background:var(--panel2)} }
