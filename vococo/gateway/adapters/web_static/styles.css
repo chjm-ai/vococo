@@ -1379,8 +1379,8 @@
   #wbContent{width:min(980px,100%);margin:0 auto;padding:26px 32px 56px}
   .wb-toolbar{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:20px;padding:0 0 16px;border-bottom:1px solid var(--line)}
   .wb-title{display:flex;align-items:baseline;gap:9px}.wb-title h1{margin:0;font-size:21px;line-height:1.2;font-weight:650;letter-spacing:-.02em}.wb-title span{font-size:11px;color:var(--dim2)}
-  .wb-switch{display:flex;justify-self:center;padding:2px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}.wb-switch button{min-width:30px;padding:4px 8px;border-radius:5px;color:var(--dim);font-size:12px}.wb-switch button.on{background:var(--panel2);color:var(--text);font-weight:650}
-  .wb-date-nav{display:flex;align-items:center;justify-self:end;gap:5px;color:var(--dim)}.wb-date-nav strong{min-width:130px;text-align:center;color:var(--text);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}.wb-date-nav button{padding:3px 6px;border-radius:5px;color:var(--dim);font-size:12px}.wb-date-nav button:hover{background:var(--panel2);color:var(--text)}.wb-date-nav button[data-nav]{font-size:19px;line-height:16px}
+  .wb-switch{display:flex;gap:16px;padding:0;border:0;border-radius:0;background:none}.wb-switch button{min-width:0;padding:4px 2px;border-radius:5px;color:var(--dim);font-size:12px}.wb-switch button.on{background:var(--panel2);color:var(--text);font-weight:650}
+  .wb-date-nav{display:flex;align-items:center;gap:5px;padding:11px 0 3px;color:var(--dim)}.wb-date-nav strong{min-width:130px;text-align:left;color:var(--text);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}.wb-date-nav button{padding:3px 6px;border-radius:5px;color:var(--dim);font-size:12px}.wb-date-nav button:hover{background:var(--panel2);color:var(--text)}.wb-date-nav button[data-nav]{font-size:19px;line-height:16px}
   .wb-project-filter{display:flex;gap:6px;overflow-x:auto;padding:15px 0 1px;border-bottom:1px solid var(--line)}.wb-project-filter button{flex:0 0 auto;padding:5px 8px;border-radius:6px;color:var(--dim);font-size:12px}.wb-project-filter button:hover,.wb-project-filter button.on{background:var(--panel2);color:var(--text)}.wb-project-filter button.on{font-weight:650}
   .wb-section{margin-top:27px}.wb-section-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}.wb-section-head h2{margin:0;font-size:13px;font-weight:700}.wb-section-head span{color:var(--dim2);font-size:11px}
   .wb-task-list{border-top:1px solid var(--line)}.wb-task{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;padding:12px 2px;border-bottom:1px solid var(--line);align-items:start}.wb-task.done{opacity:.48}.wb-check{width:20px;height:20px;margin-top:1px;border:1px solid var(--line2);border-radius:5px;display:grid;place-items:center;color:var(--dim);font-size:12px;font-weight:800}.wb-done .wb-check{background:var(--ok);border-color:var(--ok);color:#fff}.wb-block .wb-check{color:var(--err);border-color:var(--err)}
@@ -1445,7 +1445,8 @@
   @media(max-width:760px){#workbenchView .wb-toolbar{padding-top:18px}.wb-detail-bar{padding-top:18px}.wb-detail-schedule{align-items:flex-end;flex-wrap:wrap}.wb-detail-schedule>div{width:100%;margin-right:0}.wb-detail-schedule input{flex:1}.wb-detail-title{font-size:16px}}
 
   /* ── 工作台：项目是唯一分组，任务细节原地展开 ───────────────────────── */
-  #workbenchView .wb-toolbar{position:sticky;top:0;z-index:8;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:18px;padding:18px 0 12px;background:var(--bg2)}
+  #workbenchView .wb-toolbar{position:sticky;top:0;z-index:8;display:flex;flex-direction:column;align-items:stretch;gap:10px;padding:18px 0 12px;background:var(--bg2)}
+  #workbenchView .wb-title-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
   #workbenchView .wb-title{display:flex;align-items:center;gap:8px}#workbenchView .wb-title h1{font-size:16px;line-height:20px;font-weight:650}
   #workbenchView .wb-switch-icon{display:inline-flex;align-items:center;justify-content:center;width:26px}#workbenchView .wb-switch-icon .ic{width:14px;height:14px;vertical-align:0}
   #workbenchView .wb-win-btn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border-radius:7px;color:var(--dim)}#workbenchView .wb-win-btn:hover{background:var(--panel2);color:var(--text)}#workbenchView .wb-win-btn .ic{width:15px;height:15px}
@@ -1513,11 +1514,14 @@
   .wb-dp-expand{display:flex;justify-content:center;width:100%;padding:5px 0 0;border:0;background:none;color:var(--dim2)}
   .wb-dp-expand:hover{color:var(--text)}
   .wb-dp-expand .ic{width:15px;height:15px}
-  #workbenchView .wb-trash-row{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:default}
-  #workbenchView .wb-trash-row:hover{background:none}
+  #workbenchView .wb-trash-row{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer}
   #workbenchView .wb-trash-row .wb-task-title{text-decoration:line-through;color:var(--dim)}
+  #workbenchView .wb-trash-row-expanded{display:block;cursor:default}
+  #workbenchView .wb-trash-row-expanded .wb-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  #workbenchView .wb-trash-row-expanded .wb-task-title{white-space:normal}
+  #workbenchView .wb-trash-detail{margin:8px 0 0;color:var(--dim2);font-size:13px;line-height:1.5;white-space:pre-wrap}
   #workbenchView .wb-trash-actions{display:flex;gap:6px;flex:0 0 auto}
-  #workbenchView .wb-trash-actions button{padding:5px 10px;border:1px solid var(--line);border-radius:6px;background:none;color:var(--dim);font-size:12px}
+  #workbenchView .wb-trash-actions button{display:inline-flex;align-items:center;gap:4px;padding:5px 10px;border:1px solid var(--line);border-radius:6px;background:none;color:var(--dim);font-size:12px}
   #workbenchView .wb-trash-actions button:hover{background:var(--panel2);color:var(--text)}
   #workbenchView .wb-trash-actions .wb-ctx-danger:hover{color:var(--err);border-color:var(--err)}
   #workbenchView .wb-trash-toolbar{display:flex;justify-content:flex-end;padding:2px 0 12px}
@@ -1527,4 +1531,4 @@
   #workbenchView .wb-completed-group{padding-top:12px;border-top:1px solid var(--line)}#workbenchView .wb-completed-group:first-child{border-top:0;padding-top:0}
   #workbenchView .wb-completed-date{margin:0 0 4px;color:var(--dim2);font-size:12px;font-weight:650}
   #workbenchView .wb-new-task{margin-top:8px;border-color:var(--line2)}#workbenchView .wb-new-task .wb-editor-footer{flex-wrap:wrap}#workbenchView .wb-new-task .wb-primary{margin-left:auto;background:var(--text);color:var(--bg2);border-color:var(--text)}
-  @media(max-width:760px){#workbenchView .wb-toolbar{display:flex;align-items:flex-start;flex-direction:column;gap:10px}#workbenchView .wb-switch{align-self:center;flex-wrap:wrap;justify-content:center}#workbenchView .wb-date-nav{align-self:flex-end;margin-left:auto}#workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,42vw);gap:8px}#workbenchView .wb-task-source{max-width:42vw}#workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}#workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}#workbenchView .wb-editor-sources{order:2;width:100%;margin-left:0}}
+  @media(max-width:760px){#workbenchView .wb-toolbar{gap:10px}#workbenchView .wb-switch{flex-wrap:wrap}#workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,42vw);gap:8px}#workbenchView .wb-task-source{max-width:42vw}#workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}#workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}#workbenchView .wb-editor-sources{order:2;width:100%;margin-left:0}}
