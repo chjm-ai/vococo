@@ -509,7 +509,7 @@ function openWorkbenchNewTask(){
   requestAnimationFrame(() => $("[data-new-title]")?.focus());
 }
 
-async function saveWorkbenchNewTask(){
+async function saveWorkbenchNewTask(collapse){
   const draft = WB.newTask;
   if(!draft) return;
   const title = draft.title.trim();
@@ -524,7 +524,8 @@ async function saveWorkbenchNewTask(){
     const d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error||"创建失败");
     WB_DATA.tasks.push(d.task);
-    WB.editorTaskId = d.task.id;
+    // 回车快速新建：保存完直接收起卡片，不占着编辑态；点「添加」按钮才留在编辑卡里方便继续补充。
+    if(!collapse) WB.editorTaskId = d.task.id;
   }catch(e){ alert("新建任务失败："+(e.message||"")); }
   renderWorkbench();
 }
@@ -1203,7 +1204,7 @@ $("#workbenchView").addEventListener("paste", event => {
 document.addEventListener("keydown", event => {
   if($("#workbenchView").hidden) return;
   if(event.key === "Enter" && event.target.matches("[data-new-title]")){
-    event.preventDefault(); saveWorkbenchNewTask(); return;
+    event.preventDefault(); saveWorkbenchNewTask(true); return;
   }
   if(event.key === "Escape"){
     if(WB_DP.open){ workbenchDpClose(); return; }
