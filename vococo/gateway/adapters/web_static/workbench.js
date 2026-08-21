@@ -143,7 +143,7 @@ function workbenchTaskRow(task, isChild){
   if(WB.editorTaskId === task.id) return renderWorkbenchTaskEditor(task);
   const action = task.status === "done" ? "恢复" : "完成";
   const selected = WB.selected.has(task.id);
-  const detail = task.detail ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
+  const detail = (task.detail && WB.view !== "month") ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
   const childClass = isChild ? " wb-task-child" : "";
   const row = '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+childClass+'" data-task="'+esc(task.id)+'" draggable="true">'+
     '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
@@ -205,7 +205,9 @@ function workbenchVisibleTasks(){
   if(WB.view === "unscheduled") return workbenchTasks(task => !task.date && task.status !== "done");
   if(WB.view === "day") return workbenchTasks(task => task.date === WB.anchor && task.status !== "done");
   if(WB.view === "week") return workbenchTasks(task => task.week === workbenchWeekKey() && task.status !== "done");
-  if(WB.view === "month") return workbenchTasks(task => task.month === workbenchMonthKey() && task.status !== "done");
+  // 月视图特殊处理：不隐藏已完成任务（一屏看完整月的完成情况），配合
+  // workbenchTaskRow 里"月视图不显示备注"一起把列表压紧，不然一整月的任务堆起来太长。
+  if(WB.view === "month") return workbenchTasks(task => task.month === workbenchMonthKey());
   return workbenchTasks(task => task.status !== "done"); // "project" 视图：跨时间，只按项目筛选
 }
 
