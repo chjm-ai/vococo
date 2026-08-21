@@ -678,7 +678,7 @@ function openWorkbenchEditor(taskId){
 // 勾选完成后，先原地打勾停留一小段时间（让用户看清「已完成」的反馈），
 // 再收起腾出空间；taskId -> setTimeout 句柄，方便在停留期间被取消（比如又点了一次撤销）。
 const WB_COMPLETE_HOLD = new Map();
-const WB_COMPLETE_HOLD_MS = 2200;
+const WB_COMPLETE_HOLD_MS = 1500;
 
 // 已完成的任务在这几个视图里直接隐藏（见 workbenchVisibleTasks）。勾选完成时先走
 // workbenchSwapTask 原地换勾选态，停留后再用 workbenchShrinkOut 收起；取消完成（恢复）
@@ -768,16 +768,23 @@ function workbenchGrowIn(node){
 }
 
 // 通用「节点收缩到 0 后从 DOM 移除」动效，跟 workbenchGrowIn 对称。
+// 父容器（.wb-task-list）用的是 flex + gap 排间距，不是 margin——gap 不会跟着
+// height 一起被压缩，节点移除瞬间会多出一份 gap 的空隙，看起来像"卡一下"。
+// 这里额外把 margin-bottom 动画到 -gap，让 gap 也随着收起过程一起吃掉，移除时才是无缝的。
 function workbenchShrinkOut(node){
   if(!node) return false;
+  const parent = node.parentElement;
+  const gap = parent ? (parseFloat(getComputedStyle(parent).rowGap) || 0) : 0;
   node.style.height = node.getBoundingClientRect().height+"px";
   node.style.marginTop = getComputedStyle(node).marginTop;
+  node.style.marginBottom = "0px";
   node.style.overflow = "hidden";
   void node.offsetHeight;
-  node.style.transition = "height .16s ease, margin-top .16s ease, opacity .16s ease";
+  node.style.transition = "height .16s ease, margin-top .16s ease, margin-bottom .16s ease, opacity .16s ease";
   requestAnimationFrame(() => {
     node.style.height = "0px";
     node.style.marginTop = "0px";
+    node.style.marginBottom = (-gap)+"px";
     node.style.opacity = "0";
   });
   node.addEventListener("transitionend", function onEnd(event){
