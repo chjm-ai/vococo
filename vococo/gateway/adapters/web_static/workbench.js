@@ -250,7 +250,7 @@ function workbenchScheduleLabel(task){
 function workbenchScheduleBadge(task){
   const label = workbenchScheduleLabel(task);
   if(!label) return '';
-  return '<button type="button" class="wb-schedule" data-open-dp="task:'+esc(task.id)+'" title="调整日期">'+ic("calendar")+'<span>'+esc(label)+'</span></button>';
+  return '<button type="button" class="wb-schedule" data-open-dp="task:'+esc(task.id)+'" title="调整日期">'+esc(label)+'</button>';
 }
 
 function workbenchShouldAutoExpandChildren(parentId){
@@ -265,11 +265,10 @@ function workbenchChildrenExpanded(parentId){
 
 function workbenchAssigneeBadge(task){
   if(task.assignee === "ai") return '<span class="wb-assignee wb-assignee-ai" title="AI 执行">'+ic("bot")+'</span>';
-  return '';
+  return '<span class="wb-assignee wb-assignee-human" title="人工执行">'+ic("person")+'</span>';
 }
 
 function workbenchChildCount(task){
-  if(task.parentId) return '';
   const children = workbenchChildren(task.id);
   if(!children.length) return '';
   const done = children.filter(c => c.status === "done").length;
@@ -312,7 +311,6 @@ function workbenchSessionLinks(task){
 function workbenchTaskRow(task, isChild){
   if(WB.editorTaskId === task.id){
     const editor = renderWorkbenchTaskEditor(task);
-    if(isChild || task.parentId) return editor;
     return editor + workbenchChildRows(task.id);
   }
   const action = task.status === "done" ? "恢复" : "完成";
@@ -324,8 +322,8 @@ function workbenchTaskRow(task, isChild){
     '<div class="wb-task-copy"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+detail+'</div>'+
     '<div class="wb-task-end">'+workbenchScheduleBadge(task)+workbenchParentBadge(task, isChild)+workbenchChildCount(task)+workbenchAssigneeBadge(task)+'</div>'+
     '</article>';
-  if(isChild) return row;
-  if(task.parentId) return row + (WB.newTask?.siblingTaskId === task.id ? workbenchNewChildCard(task.parentId, true) : '');
+  if(isChild) return row + workbenchChildRows(task.id);
+  if(task.parentId) return row + workbenchChildRows(task.id) + (WB.newTask?.siblingTaskId === task.id ? workbenchNewChildCard(task.parentId, true) : '');
   return row + workbenchChildRows(task.id);
 }
 
@@ -380,14 +378,25 @@ function workbenchProjectBlock(project, tasks){
 // 已完成的任务只在「已完成」tab 里看（按天分组），unscheduled/day/week/project 这几个
 // 视图一律不显示——跟原来"done 任务原地打勾变灰"的行为不一样，切完成状态要连带触发整块
 // 重渲染（见 toggleWorkbenchTask/workbenchBatchComplete），不能再用原地 swap 节点那条快路径。
+function workbenchHasVisibleAncestor(task, visibleIds){
+  const seen = new Set();
+  let parentId = task.parentId;
+  while(parentId && !seen.has(parentId)){
+    if(visibleIds.has(parentId)) return true;
+    seen.add(parentId);
+    parentId = workbenchTask(parentId)?.parentId;
+  }
+  return false;
+}
+
 function workbenchVisibleTasks(){
   const dateFilter = workbenchCurrentFilter();
   if(!dateFilter) return workbenchTasks(task => task.status !== "done");
   const hideDone = WB.view !== "month";
   const combined = hideDone ? (task => dateFilter(task) && task.status !== "done") : dateFilter;
   const all = workbenchAllTasks(combined);
-  const visibleParentIds = new Set(all.filter(t => !t.parentId).map(t => t.id));
-  return all.filter(task => !task.parentId || !visibleParentIds.has(task.parentId));
+  const visibleIds = new Set(all.map(task => task.id));
+  return all.filter(task => !workbenchHasVisibleAncestor(task, visibleIds));
 }
 
 function renderWorkbenchProjects(){
@@ -668,6 +677,43 @@ function workbenchReorderTask(draggedId, targetId, placeBefore){
   if(!placeBefore) targetIdx += 1;
   tasks.splice(targetIdx, 0, dragged);
   return true;
+}
+
+function workbenchPersistTaskParent(task, parentId, orderBefore){
+  const before = {parentId:task.parentId};
+  task.parentId = parentId;
+  const after = {parentId:task.parentId};
+  renderWorkbench();
+  workbenchPersistTaskChange(task.id, before, after).then(ok => {
+    if(!ok && orderBefore){ WB_DATA.tasks = orderBefore; renderWorkbench(); }
+  });
+}
+
+function workbenchExpandTaskTree(taskId){
+  const children = workbenchChildren(taskId);
+  if(!children.length) return;
+  WB.expanded.add(taskId); WB.collapsed.delete(taskId);
+  children.forEach(child => workbenchExpandTaskTree(child.id));
+}
+
+function workbenchNestTask(taskId, parentId){
+  const task = workbenchTask(taskId);
+  const parent = workbenchTask(parentId);
+  if(!task || !parent || task.project !== parent.project || task.parentId === parentId) return;
+  const orderBefore = WB_DATA.tasks.slice();
+  workbenchReorderTask(taskId, parentId, false);
+  WB.expanded.add(parentId); WB.collapsed.delete(parentId);
+  workbenchExpandTaskTree(parentId);
+  workbenchExpandTaskTree(taskId);
+  workbenchPersistTaskParent(task, parentId, orderBefore);
+}
+
+function workbenchPromoteTask(taskId, targetId, placeBefore){
+  const task = workbenchTask(taskId);
+  if(!task || !task.parentId) return;
+  const orderBefore = WB_DATA.tasks.slice();
+  workbenchReorderTask(taskId, targetId, placeBefore);
+  workbenchPersistTaskParent(task, null, orderBefore);
 }
 
 function workbenchRefreshProjectBlock(projectId){
@@ -1776,7 +1822,16 @@ $("#workbenchView").addEventListener("dblclick", event => {
 let wbDragTaskId = null;
 
 function workbenchClearDropIndicators(){
-  document.querySelectorAll(".wb-task-drop-before,.wb-task-drop-after").forEach(el => el.classList.remove("wb-task-drop-before", "wb-task-drop-after"));
+  document.querySelectorAll(".wb-task-drop-before,.wb-task-drop-after,.wb-task-drop-nest").forEach(el => el.classList.remove("wb-task-drop-before", "wb-task-drop-after", "wb-task-drop-nest"));
+}
+
+function workbenchDropMode(dragged, target, clientY, rect){
+  if(!target.parentId){
+    const center = clientY >= rect.top + rect.height * .25 && clientY <= rect.bottom - rect.height * .25;
+    if(center) return dragged.parentId === target.id ? "noop" : "nest";
+    if(dragged.parentId) return "promote";
+  }
+  return "reorder";
 }
 
 $("#workbenchView").addEventListener("dragstart", event => {
@@ -1796,12 +1851,15 @@ $("#workbenchView").addEventListener("dragover", event => {
   const dragged = workbenchTask(wbDragTaskId);
   const target = workbenchTask(row.dataset.task);
   if(!dragged || !target || dragged.project !== target.project) return;
+  const rect = row.getBoundingClientRect();
+  const mode = workbenchDropMode(dragged, target, event.clientY, rect);
+  workbenchClearDropIndicators();
+  if(mode === "noop") return;
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
-  const before = event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2;
-  workbenchClearDropIndicators();
-  row.classList.toggle("wb-task-drop-before", before);
-  row.classList.toggle("wb-task-drop-after", !before);
+  if(mode === "nest") row.classList.add("wb-task-drop-nest");
+  else row.classList.toggle("wb-task-drop-before", event.clientY < rect.top + rect.height / 2);
+  if(mode !== "nest") row.classList.toggle("wb-task-drop-after", event.clientY >= rect.top + rect.height / 2);
 });
 
 $("#workbenchView").addEventListener("drop", event => {
@@ -1814,8 +1872,13 @@ $("#workbenchView").addEventListener("drop", event => {
   const target = workbenchTask(row.dataset.task);
   if(!dragged || !target || dragged.project !== target.project) return;
   event.preventDefault();
-  const before = row.classList.contains("wb-task-drop-before");
-  if(workbenchReorderTask(taskId, row.dataset.task, before) && !workbenchRefreshProjectBlock(dragged.project)) renderWorkbench();
+  const rect = row.getBoundingClientRect();
+  const mode = workbenchDropMode(dragged, target, event.clientY, rect);
+  if(mode === "noop") return;
+  if(mode === "nest"){ workbenchNestTask(taskId, target.id); return; }
+  const before = event.clientY < rect.top + rect.height / 2;
+  if(mode === "promote"){ workbenchPromoteTask(taskId, target.id, before); return; }
+  if(workbenchReorderTask(taskId, target.id, before) && !workbenchRefreshProjectBlock(dragged.project)) renderWorkbench();
 });
 
 $("#workbenchView").addEventListener("dragend", event => {
