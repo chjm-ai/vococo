@@ -294,10 +294,18 @@ function workbenchChildRows(parentId){
   return '<div class="wb-children" data-parent="'+esc(parentId)+'">'+rows+newCard+'</div>';
 }
 
+function workbenchAssigneeSwitch(isAi, taskId){
+  const attr = taskId ? ' data-toggle-assignee="'+esc(taskId)+'"' : ' data-new-assignee';
+  return '<div class="wb-assignee-switch" role="group" aria-label="执行者">'+
+    '<button type="button" class="wb-assignee-opt'+(isAi ? "" : " is-on")+'"'+attr+' data-assignee-set="human" title="人工" aria-label="人工">'+ic("person")+'</button>'+
+    '<button type="button" class="wb-assignee-opt'+(isAi ? " is-on" : "")+'"'+attr+' data-assignee-set="ai" title="AI" aria-label="AI">'+ic("bot")+'</button>'+
+    '</div>';
+}
+
 function workbenchNewChildCard(parentId, standalone){
   if(!WB.newTask || WB.newTask.parentId !== parentId) return '';
   const isAi = WB.newTask.assignee === "ai";
-  const assigneeBtn = '<button type="button" class="wb-assignee-toggle'+(isAi ? " is-ai" : "")+'" data-new-assignee title="切换执行者">'+(isAi ? ic("bot")+"<span>AI</span>" : ic("person")+"<span>人工</span>")+'</button>';
+  const assigneeBtn = workbenchAssigneeSwitch(isAi);
   return '<section class="wb-editor-shell wb-new-task'+(standalone ? "" : " wb-new-child")+'" data-new-card><div class="wb-editor-head"><input data-new-title placeholder="新建子任务" value="'+esc(WB.newTask.title)+'" aria-label="子任务标题"></div>'+
     '<textarea data-new-detail placeholder="'+(isAi ? "Prompt" : "备注")+'">'+esc(WB.newTask.detail)+'</textarea>'+
     '<div class="wb-editor-footer">'+assigneeBtn+'<button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
@@ -332,7 +340,7 @@ function renderWorkbenchTaskEditor(task){
   const action = (task.status === "done" || task.status === "cancelled") ? "恢复" : "完成";
   const images = (task.images||[]).map((name, index) => '<figure><img data-full="/image?name='+encodeURIComponent(name)+'" alt="任务附件"><button type="button" data-remove-image="'+index+'" data-image-task="'+esc(task.id)+'" aria-label="移除图片">×</button></figure>').join("");
   const isAi = task.assignee === "ai";
-  const assigneeBtn = '<button type="button" class="wb-assignee-toggle'+(isAi ? " is-ai" : "")+'" data-toggle-assignee="'+esc(task.id)+'" title="切换执行者">'+(isAi ? ic("bot")+"<span>AI</span>" : ic("person")+"<span>人工</span>")+'</button>';
+  const assigneeBtn = workbenchAssigneeSwitch(isAi, task.id);
   const dispatchBtn = isAi ? '<button type="button" class="wb-dispatch-btn" data-dispatch="'+esc(task.id)+'" title="让 AI 执行此任务">▶ 执行</button>' : "";
   const addChildBtn = !task.parentId ? '<button type="button" class="wb-add-child" data-add-child="'+esc(task.id)+'">'+ic("plus")+'<span>添加子任务</span></button>' : '';
   const sessionLinks = workbenchSessionLinks(task);
@@ -342,19 +350,18 @@ function renderWorkbenchTaskEditor(task){
     '<div class="wb-card-head">'+
       '<button class="wb-check" type="button" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
       '<input class="wb-card-title" data-edit-title="'+esc(task.id)+'" value="'+esc(task.title)+'" aria-label="任务标题">'+
-      '<button type="button" class="wb-card-delete" data-delete-task="'+esc(task.id)+'" aria-label="删除任务">'+ic("trash")+'</button>'+
     '</div>'+
     '<textarea data-edit-detail="'+esc(task.id)+'" placeholder="'+(isAi ? "Prompt（AI 执行时的指令）" : "备注（思路/要点）")+'">'+esc(task.detail||"")+'</textarea>'+
     (images ? '<div class="wb-image-list">'+images+'</div>' : "")+
     sessionLinks+
-    '<div class="wb-editor-footer">'+assigneeBtn+dispatchBtn+'<button type="button" class="wb-dp-trigger'+(workbenchScheduleLabel(task) ? " has-date" : "")+'" data-open-dp="task:'+esc(task.id)+'">'+ic("calendar")+'<span>'+esc(scheduleLabel)+'</span></button>'+addChildBtn+parentLink+'</div>'+'</article>';
+    '<div class="wb-editor-footer">'+assigneeBtn+'<button type="button" class="wb-dp-trigger'+(workbenchScheduleLabel(task) ? " has-date" : "")+'" data-open-dp="task:'+esc(task.id)+'">'+ic("calendar")+'<span>'+esc(scheduleLabel)+'</span></button>'+addChildBtn+parentLink+dispatchBtn+'</div>'+'</article>';
 }
 
 function workbenchNewTaskCard(project){
   if(!WB.newTask || WB.newTask.project !== project.id) return "";
   const projectOptions = [...WB_DATA.projects, WB_UNASSIGNED_PROJECT].map(item => '<option value="'+esc(item.id)+'" '+(WB.newTask.project === item.id ? "selected" : "")+'>'+esc(item.name)+'</option>').join("");
   const isAi = WB.newTask.assignee === "ai";
-  const assigneeBtn = '<button type="button" class="wb-assignee-toggle'+(isAi ? " is-ai" : "")+'" data-new-assignee title="切换执行者">'+(isAi ? ic("bot")+"<span>AI</span>" : ic("person")+"<span>人工</span>")+'</button>';
+  const assigneeBtn = workbenchAssigneeSwitch(isAi);
   const scheduleLabel = workbenchScheduleLabel(WB.newTask) || "设定日期";
   return '<section class="wb-editor-shell wb-new-task" data-new-card><div class="wb-editor-head"><input data-new-title placeholder="新建待办事项" value="'+esc(WB.newTask.title)+'" aria-label="任务标题"></div>'+
     '<textarea data-new-detail placeholder="'+(isAi ? "Prompt（AI 执行时的指令）" : "备注")+'">'+esc(WB.newTask.detail)+'</textarea>'+
@@ -1175,11 +1182,13 @@ function gotoWorkbenchParent(parentId){
   });
 }
 
-function toggleWorkbenchAssignee(taskId){
+function toggleWorkbenchAssignee(taskId, target){
   const task = workbenchTask(taskId);
   if(!task) return;
   const prev = task.assignee;
-  task.assignee = prev === "ai" ? "human" : "ai";
+  const next = target || (prev === "ai" ? "human" : "ai");
+  if(next === prev) return;
+  task.assignee = next;
   if(!workbenchMorphTask(taskId)) renderWorkbench();
   persistWorkbenchTask(taskId, {assignee: task.assignee}, {assignee: prev});
 }
@@ -1754,7 +1763,7 @@ $("#workbenchView").addEventListener("click", event => {
   const toggleChildren = event.target.closest("[data-toggle-children]");
   if(toggleChildren){ toggleWorkbenchChildren(toggleChildren.dataset.toggleChildren); return; }
   const toggleAssignee = event.target.closest("[data-toggle-assignee]");
-  if(toggleAssignee){ toggleWorkbenchAssignee(toggleAssignee.dataset.toggleAssignee); return; }
+  if(toggleAssignee){ toggleWorkbenchAssignee(toggleAssignee.dataset.toggleAssignee, toggleAssignee.dataset.assigneeSet); return; }
   const dispatch = event.target.closest("[data-dispatch]");
   if(dispatch){ dispatchWorkbenchTask(dispatch.dataset.dispatch); return; }
   const addChild = event.target.closest("[data-add-child]");
@@ -1764,9 +1773,11 @@ $("#workbenchView").addEventListener("click", event => {
   const sessionLink = event.target.closest("[data-session]");
   if(sessionLink){ const sid = sessionLink.dataset.session; if(typeof openConv === "function") openConv("task:"+sid); return; }
   const newAssignee = event.target.closest("[data-new-assignee]");
-  if(newAssignee && WB.newTask){ WB.newTask.assignee = WB.newTask.assignee === "ai" ? "human" : "ai"; renderWorkbench(); requestAnimationFrame(() => $("[data-new-title]")?.focus()); return; }
-  const del = event.target.closest("[data-delete-task]");
-  if(del){ deleteWorkbenchTask(del.dataset.deleteTask); return; }
+  if(newAssignee && WB.newTask){
+    const next = newAssignee.dataset.assigneeSet || (WB.newTask.assignee === "ai" ? "human" : "ai");
+    if(next !== WB.newTask.assignee){ WB.newTask.assignee = next; renderWorkbench(); requestAnimationFrame(() => $("[data-new-title]")?.focus()); }
+    return;
+  }
   const openDp = event.target.closest("[data-open-dp]");
   if(openDp){
     const [kind, id] = openDp.dataset.openDp.split(":");
@@ -2043,9 +2054,10 @@ document.addEventListener("keydown", event => {
     }
     return;
   }
-  if((event.key === "Delete" || event.key === "Backspace") && WB.selected.size && !event.metaKey && !event.ctrlKey && !event.altKey){
+  if((event.key === "Delete" || event.key === "Backspace") && !event.metaKey && !event.ctrlKey && !event.altKey){
     if(event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
-    event.preventDefault(); workbenchBatchDelete([...WB.selected]); return;
+    if(WB.selected.size){ event.preventDefault(); workbenchBatchDelete([...WB.selected]); return; }
+    if(WB.editorTaskId){ event.preventDefault(); deleteWorkbenchTask(WB.editorTaskId); return; }
   }
   if(event.code !== "Space" || event.ctrlKey || event.metaKey || event.altKey) return;
   if(event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
