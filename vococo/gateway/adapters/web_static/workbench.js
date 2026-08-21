@@ -684,7 +684,7 @@ function shiftWorkbenchDate(direction){
 // ── 日期选择弹层（仿 Things）─────────────────────────────────────────────
 // 三处入口共用同一个弹层实例：任务编辑卡单个日期、新建任务卡日期、右键菜单批量日期。
 // target: {kind:"task", id} | {kind:"new"} | {kind:"ctx", ids}
-const WB_DP = {open:false, target:null, expanded:false, baseWeek:null, rangeBefore:4, rangeAfter:12};
+const WB_DP = {open:false, target:null, expanded:false, baseWeek:null, rangeBefore:4, rangeAfter:12, results:[], _reposition:null};
 const WB_DP_STEP = 8; // 展开后触底/触顶时一次追加的周数
 
 function workbenchDpLabel(dateStr){
@@ -730,16 +730,46 @@ function workbenchDpCurrentDate(){
   return null; // ctx：批量操作没有单一「当前日期」
 }
 
-// 支持 9/12、9-12、2026-9-12、2026/9/12、9月12日 几种写法；缺省年份一律取今年——
-// 没有月份翻页按钮，跨月只能靠这个搜索框，不需要猜测年份意图。
-function workbenchDpParseSearch(text){
+// 支持 9/12、9-12、2026-9-12、2026/9/12、9月12日、9月（缺省 1 号）几种写法。
+// 带年份 → 唯一结果；不带年份 → 年份有歧义，列出「今天起最近的一次出现」+ 后两年，共最多 3 条候选
+// （仿 Things 的搜索结果下拉，不用猜用户想要哪一年）。
+function workbenchDpParseQuery(text){
   const s = text.trim();
   if(!s) return null;
   let m = s.match(/^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?$/);
-  if(m) return workbenchDpNormalize(+m[1], +m[2], +m[3]);
+  if(m) return {year:+m[1], month:+m[2], day:+m[3]};
   m = s.match(/^(\d{1,2})[-/月](\d{1,2})日?$/);
-  if(m) return workbenchDpNormalize(new Date().getFullYear(), +m[1], +m[2]);
+  if(m) return {year:null, month:+m[1], day:+m[2]};
+  m = s.match(/^(\d{1,2})月$/);
+  if(m) return {year:null, month:+m[1], day:1};
   return null;
+}
+
+function workbenchDpResultItem(dateKey){
+  const d = workbenchDate(dateKey);
+  const now = new Date();
+  const label = (d.getFullYear() !== now.getFullYear() ? d.getFullYear()+"年" : "")+(d.getMonth()+1)+"月"+d.getDate()+"日";
+  const weekday = "周"+"日一二三四五六"[d.getDay()];
+  return {dateKey, label, weekday};
+}
+
+function workbenchDpSearchResults(text){
+  const parsed = workbenchDpParseQuery(text);
+  if(!parsed || parsed.month < 1 || parsed.month > 12 || parsed.day < 1 || parsed.day > 31) return [];
+  if(parsed.year != null){
+    const key = workbenchDpNormalize(parsed.year, parsed.month, parsed.day);
+    return key ? [workbenchDpResultItem(key)] : [];
+  }
+  const today = workbenchToday();
+  let y = new Date().getFullYear();
+  const firstTry = workbenchDpNormalize(y, parsed.month, parsed.day);
+  if(!firstTry || firstTry < today) y += 1;
+  const results = [];
+  for(let tries = 0; results.length < 3 && tries < 6; tries++, y++){
+    const key = workbenchDpNormalize(y, parsed.month, parsed.day);
+    if(key) results.push(workbenchDpResultItem(key));
+  }
+  return results;
 }
 
 function workbenchDpNormalize(year, month, day){
@@ -772,21 +802,42 @@ function workbenchDpWeekRow(weekKey, selected, today){
   return '<div class="wb-dp-week">'+cells+'</div>';
 }
 
-function workbenchDpRender(){
+function workbenchDpResultRow(item, index){
+  return '<button type="button" class="wb-dp-result'+(index === 0 ? " is-active" : "")+'" data-dp-pick="'+item.dateKey+'">'+
+    '<span class="wb-dp-result-icon">'+ic("calendar")+'</span>'+
+    '<span class="wb-dp-result-label">'+esc(item.label)+'</span>'+
+    '<span class="wb-dp-result-weekday">'+esc(item.weekday)+'</span></button>';
+}
+
+// 弹层分「外壳」（搜索框，一次性建好，不随打字重建）和「主体」（日历 / 搜索结果，随状态换）。
+// 打字每敲一下都要重渲染主体，要是连搜索框一起 innerHTML 掉，输入框会丢焦点/丢光标位置。
+function workbenchDpRenderShell(){
   const el = document.getElementById("wbDatePicker");
   if(!el) return;
-  const current = workbenchDpCurrentDate();
-  const today = workbenchToday();
-  const weeks = WB_DP.expanded
-    ? workbenchDpWeekStarts(workbenchDpSundayKey(today), WB_DP.rangeBefore, WB_DP.rangeAfter)
-    : workbenchDpWeekStarts(WB_DP.baseWeek, 0, 3);
-  const rows = weeks.map(weekKey => workbenchDpWeekRow(weekKey, current, today)).join("");
   el.innerHTML =
-    '<div class="wb-dp-search"><input type="text" data-dp-search placeholder="搜索日期，如 9/12 或 2026-09-12" aria-label="搜索日期"></div>'+
-    '<div class="wb-dp-actions"><button type="button" data-dp-today>'+ic("star")+'<span>今天</span></button><button type="button" data-dp-clear'+(current ? "" : " disabled")+'><span>移除</span></button></div>'+
-    '<div class="wb-dp-weekdays">'+["周日","周一","周二","周三","周四","周五","周六"].map(w => '<span>'+w+'</span>').join("")+'</div>'+
-    '<div class="wb-dp-grid'+(WB_DP.expanded ? " is-expanded" : "")+'" data-dp-grid>'+rows+'</div>'+
-    (WB_DP.expanded ? "" : '<button type="button" class="wb-dp-expand" data-dp-expand aria-label="展开更多日期">'+ic("chevronDown")+'</button>');
+    '<div class="wb-dp-search"><input type="text" data-dp-search placeholder="搜索日期，如 9/12 或 2026年9月12日" aria-label="搜索日期"><button type="button" class="wb-dp-search-clear" data-dp-search-clear hidden aria-label="清空搜索">'+ic("close")+'</button></div>'+
+    '<div data-dp-body></div>';
+}
+
+function workbenchDpRenderBody(){
+  const body = document.querySelector("#wbDatePicker [data-dp-body]");
+  if(!body) return;
+  if(WB_DP.results.length){
+    body.innerHTML = '<div class="wb-dp-results" data-dp-results>'+WB_DP.results.map(workbenchDpResultRow).join("")+'</div>';
+  } else {
+    const current = workbenchDpCurrentDate();
+    const today = workbenchToday();
+    const weeks = WB_DP.expanded
+      ? workbenchDpWeekStarts(workbenchDpSundayKey(today), WB_DP.rangeBefore, WB_DP.rangeAfter)
+      : workbenchDpWeekStarts(WB_DP.baseWeek, 0, 3);
+    const rows = weeks.map(weekKey => workbenchDpWeekRow(weekKey, current, today)).join("");
+    body.innerHTML =
+      '<div class="wb-dp-actions"><button type="button" data-dp-today>'+ic("star")+'<span>今天</span></button><button type="button" data-dp-clear'+(current ? "" : " disabled")+'><span>移除</span></button></div>'+
+      '<div class="wb-dp-weekdays">'+["周日","周一","周二","周三","周四","周五","周六"].map(w => '<span>'+w+'</span>').join("")+'</div>'+
+      '<div class="wb-dp-grid'+(WB_DP.expanded ? " is-expanded" : "")+'" data-dp-grid>'+rows+'</div>'+
+      (WB_DP.expanded ? "" : '<button type="button" class="wb-dp-expand" data-dp-expand aria-label="展开更多日期">'+ic("chevronDown")+'</button>');
+  }
+  if(WB_DP._reposition) WB_DP._reposition(); // 主体换了搜索结果/日历，高度跟着变，重新贴一次锚点
 }
 
 function workbenchDpEnsureEl(){
@@ -800,8 +851,13 @@ function workbenchDpEnsureEl(){
   el.addEventListener("click", workbenchDpHandleClick);
   el.addEventListener("contextmenu", event => event.preventDefault());
   el.addEventListener("scroll", workbenchDpHandleScroll, true); // capture：滚动事件不冒泡，得在祖先上抓 capture 阶段
+  el.addEventListener("input", event => {
+    if(event.target.matches("[data-dp-search]")) workbenchDpHandleSearchInput(event.target);
+  });
   el.addEventListener("keydown", event => {
-    if(event.key === "Enter" && event.target.matches("[data-dp-search]")) workbenchDpHandleSearch(event.target);
+    if(event.key !== "Enter" || !event.target.matches("[data-dp-search]")) return;
+    const top = WB_DP.results[0];
+    if(top) workbenchDpApply(top.dateKey);
   });
   return el;
 }
@@ -811,9 +867,17 @@ function workbenchDpHandleClick(event){
   if(pick){ workbenchDpApply(pick.dataset.dpPick); return; }
   if(event.target.closest("[data-dp-today]")){ workbenchDpApply(workbenchToday()); return; }
   if(event.target.closest("[data-dp-clear]")){ workbenchDpApply(null); return; }
+  if(event.target.closest("[data-dp-search-clear]")){
+    WB_DP.results = [];
+    const input = document.querySelector("#wbDatePicker [data-dp-search]");
+    if(input){ input.value = ""; input.focus(); }
+    document.querySelector("#wbDatePicker [data-dp-search-clear]")?.setAttribute("hidden", "");
+    workbenchDpRenderBody();
+    return;
+  }
   if(event.target.closest("[data-dp-expand]")){
     WB_DP.expanded = true;
-    workbenchDpRender();
+    workbenchDpRenderBody();
     const grid = document.querySelector("#wbDatePicker [data-dp-grid]");
     const target = grid?.querySelector(".is-selected") || grid?.querySelector(".is-today");
     if(grid && target) grid.scrollTop = target.closest(".wb-dp-week").offsetTop - grid.clientHeight/2;
@@ -821,20 +885,12 @@ function workbenchDpHandleClick(event){
   }
 }
 
-function workbenchDpHandleSearch(input){
-  const dateKey = workbenchDpParseSearch(input.value);
-  if(!dateKey){ input.classList.add("wb-dp-search-bad"); return; }
-  input.classList.remove("wb-dp-search-bad");
-  WB_DP.expanded = true;
-  WB_DP.baseWeek = workbenchDpSundayKey(dateKey);
-  const today = workbenchToday();
-  const weeksDiff = Math.round((workbenchDate(WB_DP.baseWeek) - workbenchDate(workbenchDpSundayKey(today))) / (7*86400000));
-  if(weeksDiff > 0) WB_DP.rangeAfter = Math.max(WB_DP.rangeAfter, weeksDiff + 2);
-  else if(weeksDiff < 0) WB_DP.rangeBefore = Math.max(WB_DP.rangeBefore, -weeksDiff + 2);
-  workbenchDpRender();
-  const grid = document.querySelector("#wbDatePicker [data-dp-grid]");
-  const target = grid?.querySelector('[data-dp-pick="'+dateKey+'"]');
-  if(grid && target) grid.scrollTop = target.closest(".wb-dp-week").offsetTop - grid.clientHeight/2 + 40;
+// 边打字边出结果列表（仿 Things 搜索下拉），不用等回车；输入清空就退回日历视图。
+function workbenchDpHandleSearchInput(input){
+  const clearBtn = document.querySelector("#wbDatePicker [data-dp-search-clear]");
+  if(clearBtn) clearBtn.toggleAttribute("hidden", !input.value);
+  WB_DP.results = workbenchDpSearchResults(input.value);
+  workbenchDpRenderBody();
 }
 
 // 展开态触底/触顶各自往那个方向再拉一批周；往上拉是往同一个滚动容器的顶部插入内容，
@@ -846,20 +902,22 @@ function workbenchDpHandleScroll(event){
   const prevHeight = grid.scrollHeight;
   if(grid.scrollTop < 100){
     WB_DP.rangeBefore += WB_DP_STEP;
-    workbenchDpRender();
+    workbenchDpRenderBody();
     const newGrid = document.querySelector("#wbDatePicker [data-dp-grid]");
     if(newGrid) newGrid.scrollTop = prevScrollTop + (newGrid.scrollHeight - prevHeight);
   }else if(grid.scrollHeight - grid.scrollTop - grid.clientHeight < 100){
     WB_DP.rangeAfter += WB_DP_STEP;
-    workbenchDpRender();
+    workbenchDpRenderBody();
     const newGrid = document.querySelector("#wbDatePicker [data-dp-grid]");
     if(newGrid) newGrid.scrollTop = prevScrollTop;
   }
 }
 
-function workbenchDpPosition(anchorEl){
+// 主体在「日历」和「搜索结果」之间切换时高度不一样，每次重渲染主体都要贴一次锚点——
+// 这两个函数被存进 WB_DP._reposition，由 workbenchDpRenderBody 在每次换内容后调用。
+function workbenchDpClampToAnchor(rect){
   const el = document.getElementById("wbDatePicker");
-  const rect = anchorEl.getBoundingClientRect();
+  if(!el) return;
   el.style.left = rect.left+"px"; el.style.top = (rect.bottom+6)+"px";
   requestAnimationFrame(() => {
     const w = el.getBoundingClientRect();
@@ -870,25 +928,9 @@ function workbenchDpPosition(anchorEl){
   });
 }
 
-function workbenchDpOpenCommon(target){
-  WB_DP.open = true; WB_DP.target = target; WB_DP.expanded = false;
-  WB_DP.rangeBefore = 4; WB_DP.rangeAfter = 12;
-  const current = workbenchDpCurrentDate();
-  WB_DP.baseWeek = workbenchDpSundayKey(current || workbenchToday());
-  const el = workbenchDpEnsureEl();
-  el.style.display = "block";
-  workbenchDpRender();
-  return el;
-}
-
-function workbenchDpOpen(target, anchorEl){
-  workbenchDpOpenCommon(target);
-  workbenchDpPosition(anchorEl);
-}
-
-function workbenchDpOpenAt(target, x, y){
-  const el = workbenchDpOpenCommon(target);
-  el.style.left = x+"px"; el.style.top = y+"px";
+function workbenchDpClampToPoint(x, y){
+  const el = document.getElementById("wbDatePicker");
+  if(!el) return;
   requestAnimationFrame(() => {
     const rect = el.getBoundingClientRect();
     el.style.left = Math.max(4, Math.min(x, window.innerWidth - rect.width - 4))+"px";
@@ -896,8 +938,33 @@ function workbenchDpOpenAt(target, x, y){
   });
 }
 
+function workbenchDpOpenCommon(target){
+  WB_DP.open = true; WB_DP.target = target; WB_DP.expanded = false; WB_DP.results = [];
+  WB_DP.rangeBefore = 4; WB_DP.rangeAfter = 12;
+  const current = workbenchDpCurrentDate();
+  WB_DP.baseWeek = workbenchDpSundayKey(current || workbenchToday());
+  const el = workbenchDpEnsureEl();
+  el.style.display = "block";
+  workbenchDpRenderShell();
+  workbenchDpRenderBody();
+  return el;
+}
+
+function workbenchDpOpen(target, anchorEl){
+  workbenchDpOpenCommon(target);
+  WB_DP._reposition = () => workbenchDpClampToAnchor(anchorEl.getBoundingClientRect());
+  WB_DP._reposition();
+}
+
+function workbenchDpOpenAt(target, x, y){
+  const el = workbenchDpOpenCommon(target);
+  el.style.left = x+"px"; el.style.top = y+"px";
+  WB_DP._reposition = () => workbenchDpClampToPoint(x, y);
+  WB_DP._reposition();
+}
+
 function workbenchDpClose(){
-  WB_DP.open = false; WB_DP.target = null;
+  WB_DP.open = false; WB_DP.target = null; WB_DP._reposition = null;
   const el = document.getElementById("wbDatePicker");
   if(el) el.style.display = "none";
 }
