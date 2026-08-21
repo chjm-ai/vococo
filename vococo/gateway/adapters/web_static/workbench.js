@@ -322,13 +322,18 @@ function workbenchNewTaskCard(project){
     '<div class="wb-editor-footer">'+assigneeBtn+'<select data-new-project aria-label="项目">'+projectOptions+'</select><select data-new-source aria-label="来源文档"><option value="">来源文档</option>'+sourceOptions+'</select><button type="button" class="wb-dp-trigger'+(WB.newTask.date ? " has-date" : "")+'" data-open-dp="new">'+ic("calendar")+'<span>'+esc(workbenchDpLabel(WB.newTask.date))+'</span></button><button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
 }
 
+// 「详情」= 在项目 tab 里已经选定某个具体项目（点分组标题跳转过来，或用二级筛选 chip
+// 选的）——这时分组标题是多余的（当前就在这个项目里，点了也是原地不动），改成只显示
+// 任务列表，底部露一个弱化的「删除分组」入口。「未分组」是伪项目，没有删除的意义。
 function workbenchProjectBlock(project, tasks){
   const groupId = workbenchGroupId(project);
+  const isDetail = WB.view === "project" && WB.project !== "all";
   const newCard = (!WB.newTask || !WB.newTask.parentId) ? workbenchNewTaskCard(project) : "";
   const rows = tasks.map(t => workbenchTaskRow(t)).join("") + newCard;
   const body = rows ? '<div class="wb-task-list">'+rows+'</div>' : '<p class="wb-empty">暂无任务</p>';
-  return '<section class="wb-project-block"><button type="button" class="wb-project-toggle" data-group="'+esc(groupId)+'" data-goto-project="'+esc(project.id)+'" title="查看「'+esc(project.name)+'」项目"><span class="wb-project-name"><strong>'+esc(project.name)+'</strong><i class="wb-chevron" aria-hidden="true"></i></span></button>'+
-    body+'</section>';
+  const header = isDetail ? "" : '<button type="button" class="wb-project-toggle" data-goto-project="'+esc(project.id)+'" title="查看「'+esc(project.name)+'」项目"><span class="wb-project-name"><strong>'+esc(project.name)+'</strong><i class="wb-chevron" aria-hidden="true"></i></span></button>';
+  const deleteBtn = (isDetail && project.id !== WB_UNASSIGNED_ID) ? '<button type="button" class="wb-project-delete" data-delete-project="'+esc(project.id)+'">删除分组</button>' : "";
+  return '<section class="wb-project-block" data-group="'+esc(groupId)+'">'+header+body+deleteBtn+'</section>';
 }
 
 // 已完成的任务只在「已完成」tab 里看（按天分组），这几个视图一律不显示——
@@ -1488,6 +1493,13 @@ $("#workbenchView").addEventListener("click", event => {
     WB.view = "project"; WB.project = gotoProject.dataset.gotoProject;
     WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null;
     renderWorkbench(); refreshWorkbenchDataIfStale();
+    return;
+  }
+  const deleteProject = event.target.closest("[data-delete-project]");
+  if(deleteProject){
+    const id = deleteProject.dataset.deleteProject;
+    const project = workbenchProject(id);
+    if(project && confirm('删除「'+project.name+'」这个分组？名下任务不会被删除，只是这个分组不再显示。')) archiveWorkbenchProject(id);
     return;
   }
   if(event.target.closest("[data-new-task]")){ openWorkbenchNewTask(); return; }
