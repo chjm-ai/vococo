@@ -675,17 +675,35 @@ function openWorkbenchEditor(taskId){
   });
 }
 
-// 已完成的任务在这几个视图里直接隐藏（见 workbenchVisibleTasks），所以不能再走
-// workbenchSwapTask 原地换节点那条快路径——切完成态要么让行消失要么让空分组塌掉，
-// 只能整体重渲染。
+// 勾选完成后，先原地打勾停留一小段时间（让用户看清「已完成」的反馈），
+// 再收起腾出空间；taskId -> setTimeout 句柄，方便在停留期间被取消（比如又点了一次撤销）。
+const WB_COMPLETE_HOLD = new Map();
+const WB_COMPLETE_HOLD_MS = 2200;
+
+// 已完成的任务在这几个视图里直接隐藏（见 workbenchVisibleTasks）。勾选完成时先走
+// workbenchSwapTask 原地换勾选态，停留后再用 workbenchShrinkOut 收起；取消完成（恢复）
+// 不需要停留，直接整体重渲染即可。
 function toggleWorkbenchTask(taskId){
   const task = workbenchTask(taskId);
   if(!task) return;
+  const pendingHold = WB_COMPLETE_HOLD.get(taskId);
+  if(pendingHold){ clearTimeout(pendingHold); WB_COMPLETE_HOLD.delete(taskId); }
   const before = {status: task.status};
-  task.status = task.status === "done" ? "todo" : "done";
+  const completing = task.status !== "done";
+  task.status = completing ? "done" : "todo";
   const after = {status: task.status};
-  renderWorkbench();
   workbenchPersistTaskChange(taskId, before, after);
+  if(completing && workbenchSwapTask(taskId)){
+    WB_COMPLETE_HOLD.set(taskId, setTimeout(() => {
+      WB_COMPLETE_HOLD.delete(taskId);
+      const node = workbenchNodeForTask(taskId);
+      const stillDone = workbenchTask(taskId)?.status === "done";
+      if(!node || !stillDone) return;
+      if(!workbenchShrinkOut(node)) renderWorkbench();
+    }, WB_COMPLETE_HOLD_MS));
+    return;
+  }
+  renderWorkbench();
 }
 
 function scheduleWorkbenchTask(taskId, date){
