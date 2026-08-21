@@ -1217,6 +1217,10 @@ document.addEventListener("keydown", event => {
     }
     return;
   }
+  if((event.key === "Delete" || event.key === "Backspace") && WB.selected.size && !event.metaKey && !event.ctrlKey && !event.altKey){
+    if(event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
+    event.preventDefault(); workbenchBatchDelete([...WB.selected]); return;
+  }
   if(event.code !== "Space" || event.ctrlKey || event.metaKey || event.altKey) return;
   if(event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
   event.preventDefault(); openWorkbenchNewTask();
