@@ -1202,6 +1202,9 @@ $("#workbenchView").addEventListener("paste", event => {
 
 document.addEventListener("keydown", event => {
   if($("#workbenchView").hidden) return;
+  if(event.key === "Enter" && event.target.matches("[data-new-title]")){
+    event.preventDefault(); saveWorkbenchNewTask(); return;
+  }
   if(event.key === "Escape"){
     if(WB_DP.open){ workbenchDpClose(); return; }
     if(workbenchCtxMenuOpen()){ workbenchCloseCtxMenu(); return; }
