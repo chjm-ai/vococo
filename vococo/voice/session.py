@@ -14,6 +14,7 @@ from typing import AsyncIterator
 from .. import config, providers
 from ..core.agent import AgentReply, Done, Event, describe_llm_error, stream_turn
 from ..memory import session_store
+from . import prompts
 
 SESSION_KEY = "voice-chat:main"
 HISTORY_LIMIT = 20
@@ -80,6 +81,7 @@ async def _candidate_stream(
         async for ev in stream_turn(
             history, prompt_text, model=model, resume=resume, session_key=SESSION_KEY,
             extra_mcp_servers=extra_mcp_servers, disallowed_tools=_DISALLOWED_TOOLS,
+            system_prompt_extra=prompts.voice_system_prompt_extra(),
         ):
             if isinstance(ev, Done):
                 if ev.reply.is_error and not emitted:

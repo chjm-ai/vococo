@@ -91,18 +91,26 @@ def test_sentence_splitter_has_no_screen_only_suppression():
 # ── 指令块拼接 ────────────────────────────────────────────────────────────
 def test_build_prompt_wraps_instruction_block():
     out = prompts.build_prompt("明天天气怎么样")
-    assert "【语音模式】" in out
+    assert "【回复长度】" in out
     assert out.strip().endswith("用户说:明天天气怎么样")
 
 
-def test_build_prompt_covers_delayed_reminders_within_timeout(monkeypatch):
+def test_voice_system_prompt_extra_contains_mode_rules():
+    """2026-08-22 拆分:内容逐轮不变的语音模式规则挪进了 system_prompt_extra
+    (见 voice/prompts.py 模块说明),不再每轮塞进 user_text 吃不到 prompt cache。"""
+    out = prompts.voice_system_prompt_extra()
+    assert "【语音模式】" in out
+
+
+def test_voice_system_prompt_extra_covers_delayed_reminders_within_timeout(monkeypatch):
     """2026-07-07 真机踩坑:AI 对"2分钟后提醒我"这类请求嘴上答应却没真调工具。
     修法是教它延时提醒也走 voice_dispatch_task(sleep 后回复即可,任务终态会
-    自动触发通知),并写清楚仅限任务超时时长以内。"""
+    自动触发通知),并写清楚仅限任务超时时长以内。现读 config 现格式化,
+    monkeypatch 后无需重启即生效(见 voice_system_prompt_extra 实现)。"""
     from vococo import config
 
     monkeypatch.setattr(config, "TASK_TIMEOUT_MIN", 30)
-    out = prompts.build_prompt("过2分钟提醒我")
+    out = prompts.voice_system_prompt_extra()
     assert "延时提醒" in out
     assert "30 分钟以内" in out
 
@@ -137,29 +145,30 @@ def test_build_prompt_negation_does_not_expand_reply():
     assert "不受 100 字上限限制" not in out
 
 
-def test_build_prompt_includes_transcription_tolerance_rule():
+def test_voice_system_prompt_extra_includes_transcription_tolerance_rule():
     """Omni-Realtime 不支持热词(2026-07-10 查证:仅 Fun-ASR/Paraformer 系列有),
-    误听纠错只能靠大脑——指令块必须带【转写容错】规则。"""
-    out = prompts.build_prompt("随便说点什么")
+    误听纠错只能靠大脑——system_prompt_extra 必须带【转写容错】规则。"""
+    out = prompts.voice_system_prompt_extra()
     assert "【转写容错】" in out
 
 
-def test_build_prompt_forbids_claiming_success_without_tool_call():
-    out = prompts.build_prompt("随便说点什么")
+def test_voice_system_prompt_extra_forbids_claiming_success_without_tool_call():
+    out = prompts.voice_system_prompt_extra()
     assert "没有真的调用 voice_dispatch_task" in out
 
 
-def test_build_prompt_requires_clarifying_ambiguous_task_before_dispatch():
-    """2026-07-07 用户反馈:派活前该先把笼统的需求问清楚,不能自己脑补一个大任务就派出去。"""
-    out = prompts.build_prompt("帮我查一下世界杯赛程")
+def test_voice_system_prompt_extra_requires_clarifying_ambiguous_task_before_dispatch():
+    """2026-07-07 用户反馈:派活前该先把笼统的需求问清楚,不能自己脑补一个大任务就派出去。
+    这条规则内容不随用户这句话变化,已挪进 system_prompt_extra(2026-08-22 拆分)。"""
+    out = prompts.voice_system_prompt_extra()
     assert "都跟用户对齐" in out
     assert "脑补一个" in out
 
 
-def test_build_prompt_requires_confirming_self_designed_breakdown_before_dispatch():
+def test_voice_system_prompt_extra_requires_confirming_self_designed_breakdown_before_dispatch():
     """2026-07-07 用户反馈第二层:方向明确但模型自己设计了拆解方案(比如把"分析梅西"
     拆成俱乐部/国家队/荣誉等好几块)时,也要先说方案、等确认,不能连怎么拆都替用户定了。"""
-    out = prompts.build_prompt("帮我分析一下梅西的职业生涯")
+    out = prompts.voice_system_prompt_extra()
     assert "这个拆解方案" in out
     assert "不是用户说的" in out
 
@@ -275,7 +284,7 @@ async def test_voice_send_streams_text_sentence_done_and_strips_instruction_on_s
 
     # 拼进 stream_turn 的是指令块 + 原文;落库的是剥离指令块后的原文
     assert "明天天气怎么样" in captured_prompt["text"]
-    assert "【语音模式】" in captured_prompt["text"]
+    assert "【回复长度】" in captured_prompt["text"]
     history = session.load_history()
     assert len(history) == 1
     assert history[0].user == "明天天气怎么样"
@@ -678,6 +687,28 @@ async def test_voice_session_fallback_when_official_blocked(voice_db, monkeypatc
     assert isinstance(final, Done)
     assert final.reply.text == "兜底回复"
     assert not final.reply.is_error
+
+
+@pytest.mark.anyio
+async def test_voice_session_passes_stable_rules_as_system_prompt_extra(voice_db, monkeypatch):
+    """2026-08-22 拆分:session.run_turn 必须把 voice_system_prompt_extra() 透传给
+    stream_turn 的 system_prompt_extra 参数,这条稳定规则块才走得进 system_prompt
+    的 prompt cache,而不是又被漏掉、退回每轮塞进 user_text 的老路。"""
+    monkeypatch.setattr(config, "MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(providers, "load_active", lambda: None)
+
+    captured = {}
+
+    async def fake_stream_turn(history, user_text, model=None, **kwargs):
+        captured["system_prompt_extra"] = kwargs.get("system_prompt_extra")
+        yield Done(AgentReply(text="好", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(session, "stream_turn", fake_stream_turn)
+
+    [ev async for ev in session.run_turn("你好")]
+    assert "【语音模式】" in (captured["system_prompt_extra"] or "")
+    # user_text(build_prompt 的输出)不该再重复带上这条稳定规则
+    assert "【语音模式】" not in prompts.build_prompt("你好")
 
 
 @pytest.mark.anyio
