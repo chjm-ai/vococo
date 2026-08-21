@@ -230,10 +230,7 @@ function workbenchChildCount(task){
   const total = children.length;
   const done = children.filter(c => c.status === "done").length;
   const expanded = WB.expanded.has(task.id);
-  if(!total){
-    if(dateFilter) return '';
-    return '<span class="wb-child-toggle'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="添加子任务">+</span>';
-  }
+  if(!total) return '<span class="wb-child-toggle'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="添加子任务">+</span>';
   return '<span class="wb-child-count'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="子任务">'+done+'/'+total+'</span>';
 }
 
@@ -248,10 +245,8 @@ function workbenchChildRows(parentId){
   if(!WB.expanded.has(parentId)) return '';
   const dateFilter = workbenchCurrentFilter();
   const children = dateFilter ? workbenchChildren(parentId).filter(dateFilter) : workbenchChildren(parentId);
-  const isDate = !!dateFilter;
-  const newCard = (!isDate && WB.newTask && WB.newTask.parentId === parentId) ? workbenchNewChildCard(parentId) : '';
-  const addBtn = isDate ? '' : '<button type="button" class="wb-add-child" data-add-child="'+esc(parentId)+'">+ 添加子任务</button>';
-  if(!children.length && !newCard && !addBtn) return '';
+  const newCard = (WB.newTask && WB.newTask.parentId === parentId) ? workbenchNewChildCard(parentId) : '';
+  const addBtn = '<button type="button" class="wb-add-child" data-add-child="'+esc(parentId)+'">+ 添加子任务</button>';
   if(!children.length && !newCard) return '<div class="wb-children" data-parent="'+esc(parentId)+'">'+addBtn+'</div>';
   return '<div class="wb-children" data-parent="'+esc(parentId)+'">'+children.map(child => workbenchTaskRow(child, true)).join('')+newCard+addBtn+'</div>';
 }
