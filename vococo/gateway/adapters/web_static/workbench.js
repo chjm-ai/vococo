@@ -314,12 +314,12 @@ function workbenchTaskRow(task, isChild){
     const editor = renderWorkbenchTaskEditor(task);
     return editor + workbenchChildRows(task.id);
   }
-  const action = task.status === "done" ? "恢复" : "完成";
+  const action = (task.status === "done" || task.status === "cancelled") ? "恢复" : "完成";
   const selected = WB.selected.has(task.id);
   const detail = (task.detail && WB.view !== "month") ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
   const childClass = isChild ? " wb-task-child" : "";
   const row = '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+childClass+'" data-task="'+esc(task.id)+'" draggable="true">'+
-    '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
+    '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
     '<div class="wb-task-copy"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+detail+'</div>'+
     '<div class="wb-task-end">'+workbenchScheduleBadge(task)+workbenchParentBadge(task, isChild)+workbenchChildCount(task)+workbenchAssigneeBadge(task)+'</div>'+
     '</article>';
@@ -329,7 +329,7 @@ function workbenchTaskRow(task, isChild){
 }
 
 function renderWorkbenchTaskEditor(task){
-  const action = task.status === "done" ? "恢复" : "完成";
+  const action = (task.status === "done" || task.status === "cancelled") ? "恢复" : "完成";
   const images = (task.images||[]).map((name, index) => '<figure><img data-full="/image?name='+encodeURIComponent(name)+'" alt="任务附件"><button type="button" data-remove-image="'+index+'" data-image-task="'+esc(task.id)+'" aria-label="移除图片">×</button></figure>').join("");
   const isAi = task.assignee === "ai";
   const assigneeBtn = '<button type="button" class="wb-assignee-toggle'+(isAi ? " is-ai" : "")+'" data-toggle-assignee="'+esc(task.id)+'" title="切换执行者">'+(isAi ? ic("bot")+"<span>AI</span>" : ic("person")+"<span>人工</span>")+'</button>';
@@ -341,7 +341,7 @@ function renderWorkbenchTaskEditor(task){
   return '<article class="wb-task wb-editor-shell wb-task-card wb-'+esc(task.status)+'" data-task="'+esc(task.id)+'">'+
     parentLink+
     '<div class="wb-card-head">'+
-      '<button class="wb-check" type="button" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
+      '<button class="wb-check" type="button" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
       '<input class="wb-card-title" data-edit-title="'+esc(task.id)+'" value="'+esc(task.title)+'" aria-label="任务标题">'+
       '<button type="button" class="wb-card-delete" data-delete-task="'+esc(task.id)+'" aria-label="删除任务">'+ic("trash")+'</button>'+
     '</div>'+
@@ -390,11 +390,13 @@ function workbenchHasVisibleAncestor(task, visibleIds){
   return false;
 }
 
+function workbenchIsLogged(task){ return task.status === "done" || task.status === "cancelled"; }
+
 function workbenchVisibleTasks(){
   const dateFilter = workbenchCurrentFilter();
-  if(!dateFilter) return workbenchTasks(task => task.status !== "done");
+  if(!dateFilter) return workbenchTasks(task => !workbenchIsLogged(task));
   const hideDone = WB.view !== "month";
-  const combined = hideDone ? (task => dateFilter(task) && task.status !== "done") : dateFilter;
+  const combined = hideDone ? (task => dateFilter(task) && !workbenchIsLogged(task)) : dateFilter;
   const all = workbenchAllTasks(combined);
   const visibleIds = new Set(all.map(task => task.id));
   return all.filter(task => !workbenchHasVisibleAncestor(task, visibleIds));
@@ -461,8 +463,8 @@ function renderWorkbenchHeader(){
       '<div class="wb-switch">'+
         workbenchTabHtml("project", "项目")+
         workbenchTabHtml("unscheduled", "未排期")+
-        workbenchTabHtml("completed", "已完成")+
-        workbenchTabHtml("trash", "回收站")+
+        workbenchTabHtml("completed", "日志")+
+        workbenchTabHtml("trash", "废弃")+
       '</div>'+
     '</div></header>';
 }
@@ -515,21 +517,21 @@ function workbenchTrashRow(task){
 
 function renderWorkbenchTrash(){
   if(!WB_TRASH.loaded) return '<p class="wb-empty">加载中…</p>';
-  const toolbar = WB_TRASH.tasks.length ? '<div class="wb-trash-toolbar"><button type="button" class="wb-ctx-danger" data-empty-trash>清空回收站</button></div>' : "";
-  if(!WB_TRASH.tasks.length) return '<p class="wb-empty">回收站是空的。</p>';
+  const toolbar = WB_TRASH.tasks.length ? '<div class="wb-trash-toolbar"><button type="button" class="wb-ctx-danger" data-empty-trash>清空废弃</button></div>' : "";
+  if(!WB_TRASH.tasks.length) return '<p class="wb-empty">废弃是空的。</p>';
   return toolbar+'<div class="wb-task-list wb-trash-list">'+WB_TRASH.tasks.map(workbenchTrashRow).join("")+'</div>';
 }
 
 async function workbenchEmptyTrash(){
   if(!WB_TRASH.tasks.length) return;
-  if(!confirm("清空回收站？"+WB_TRASH.tasks.length+" 个任务将被永久删除，不可恢复。")) return;
+  if(!confirm("清空废弃？"+WB_TRASH.tasks.length+" 个任务将被永久删除，不可恢复。")) return;
   const prev = WB_TRASH.tasks;
   WB_TRASH.tasks = [];
   renderWorkbench();
   try{
     const r = await api("/workbench/trash/empty", {method:"POST"});
     if(!r.ok) throw new Error("清空失败");
-  }catch(e){ WB_TRASH.tasks = prev; renderWorkbench(); alert("清空回收站失败："+(e.message||"")); }
+  }catch(e){ WB_TRASH.tasks = prev; renderWorkbench(); alert("清空废弃失败："+(e.message||"")); }
 }
 
 // ── 已完成：跟时间/项目无关，按「完成当天」分组，最近完成的排最前 ──────────────
@@ -549,8 +551,8 @@ function workbenchCompletedGroupLabel(dateKey){
 }
 
 function renderWorkbenchCompleted(){
-  const tasks = WB_DATA.tasks.filter(task => task.status === "done");
-  if(!tasks.length) return '<p class="wb-empty">还没有已完成的任务。</p>';
+  const tasks = WB_DATA.tasks.filter(workbenchIsLogged);
+  if(!tasks.length) return '<p class="wb-empty">还没有日志。</p>';
   const groups = new Map();
   tasks.forEach(task => {
     const key = workbenchCompletedDayKey(task) || "unknown";
@@ -817,7 +819,7 @@ function toggleWorkbenchTask(taskId){
   const pendingHold = WB_COMPLETE_HOLD.get(taskId);
   if(pendingHold){ clearTimeout(pendingHold); WB_COMPLETE_HOLD.delete(taskId); }
   const before = {status: task.status};
-  const completing = task.status !== "done";
+  const completing = task.status !== "done" && task.status !== "cancelled";
   task.status = completing ? "done" : "todo";
   const after = {status: task.status};
   workbenchPersistTaskChange(taskId, before, after);
@@ -1248,6 +1250,24 @@ function workbenchBatchComplete(ids){
   });
   if(!before.length) return;
   // 已完成任务会被当前视图隐藏，必须整体重渲染。
+  renderWorkbench();
+  Promise.all(after.map(({id, patch}, index) => persistWorkbenchTask(id, patch, before[index].patch))).then(results => {
+    if(results.every(Boolean)) workbenchRemember({type:"task-patch", before, after});
+  });
+}
+
+// 已取消跟已完成走同一套「隐藏于常规视图、在日志 tab 可见」的规则，直接照抄
+// workbenchBatchComplete 的结构。
+function workbenchBatchCancel(ids){
+  const before = [], after = [];
+  ids.forEach(id => {
+    const task = workbenchTask(id);
+    if(!task || task.status === "cancelled") return;
+    before.push({id, patch:{status:task.status}});
+    task.status = "cancelled";
+    after.push({id, patch:{status:task.status}});
+  });
+  if(!before.length) return;
   renderWorkbench();
   Promise.all(after.map(({id, patch}, index) => persistWorkbenchTask(id, patch, before[index].patch))).then(results => {
     if(results.every(Boolean)) workbenchRemember({type:"task-patch", before, after});
@@ -2024,6 +2044,7 @@ function workbenchCtxMenuHtml(){
   const n = wbCtxIds.length;
   return '<button type="button" data-ctx="date">时间...</button>'+
     '<button type="button" data-ctx="done">标记完成</button>'+
+    '<button type="button" data-ctx="cancel">标记为已取消</button>'+
     '<button type="button" data-ctx="move">移动到...</button>'+
     '<div class="wb-ctx-sep"></div>'+
     '<button type="button" data-ctx="set-ai">设为 AI 任务</button>'+
@@ -2086,6 +2107,7 @@ function workbenchHandleCtxClick(event){
   }
   if(action === "move"){ wbCtxMode = "move"; workbenchRenderCtxMenu(); return; }
   if(action === "done"){ workbenchBatchComplete(wbCtxIds); workbenchCloseCtxMenu(); return; }
+  if(action === "cancel"){ workbenchBatchCancel(wbCtxIds); workbenchCloseCtxMenu(); return; }
   if(action === "set-ai" || action === "set-human"){
     const assignee = action === "set-ai" ? "ai" : "human";
     wbCtxIds.forEach(id => { const t = workbenchTask(id); if(t){ const prev = t.assignee; t.assignee = assignee; persistWorkbenchTask(id, {assignee}, {assignee: prev}); }});
