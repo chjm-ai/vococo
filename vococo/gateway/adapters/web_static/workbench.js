@@ -1134,6 +1134,7 @@ $("#workbenchView").addEventListener("paste", event => {
 document.addEventListener("keydown", event => {
   if($("#workbenchView").hidden) return;
   if(event.key === "Escape"){
+    if(WB_DP.open){ workbenchDpClose(); return; }
     if(workbenchCtxMenuOpen()){ workbenchCloseCtxMenu(); return; }
     if(WB.newTask){ WB.newTask=null; if(!workbenchRemoveNewTaskCard()) renderWorkbench(); }
     else if(WB.editorTaskId){
