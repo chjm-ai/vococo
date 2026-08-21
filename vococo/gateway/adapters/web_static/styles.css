@@ -1555,7 +1555,7 @@
   #workbenchView .wb-completed-group{padding-top:12px;border-top:1px solid var(--line)}#workbenchView .wb-completed-group:first-child{border-top:0;padding-top:0}
   #workbenchView .wb-completed-date{margin:0 0 4px;color:var(--dim2);font-size:12px;font-weight:650}
   #workbenchView .wb-new-task{margin-top:8px;border-color:var(--line2)}#workbenchView .wb-new-task .wb-editor-footer{flex-wrap:wrap}#workbenchView .wb-new-task .wb-primary{margin-left:auto;background:var(--text);color:var(--bg2);border-color:var(--text)}
-  @media(max-width:760px){#workbenchView .wb-toolbar{gap:10px}#workbenchView .wb-switch{flex-wrap:wrap}#workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,42vw);gap:8px}#workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}#workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}}
+  @media(max-width:760px){#workbenchView .wb-toolbar{gap:10px;padding-top:10px;padding-bottom:10px}#workbenchView .wb-title h1{font-size:16px;line-height:22px}#workbenchView .wb-switch{flex-wrap:wrap}#workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,max-content);gap:8px}#workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}#workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}}
 
   /* ── 子任务 / 执行者 / 会话绑定 ─────────────────────────────────── */
   #workbenchView .wb-children{margin:0 0 0 30px;display:flex;flex-direction:column;gap:2px;will-change:height,opacity}
