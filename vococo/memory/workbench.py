@@ -176,6 +176,46 @@ def reorder_projects(order: list[str]) -> None:
 
 # ── 任务 ────────────────────────────────────────────────────────────────
 
+def move_task(task_id: str, parent_id: str | None, order: list[str]) -> dict | None:
+    """原子地更新任务父级与全局显示顺序，避免刷新后拖拽结果丢失。"""
+    c = _db.conn()
+    task = c.execute(
+        "SELECT project_id FROM workbench_tasks WHERE id=? AND deleted_at IS NULL", (task_id,)
+    ).fetchone()
+    active_ids = [r[0] for r in c.execute(
+        "SELECT id FROM workbench_tasks WHERE deleted_at IS NULL"
+    ).fetchall()]
+    if task is None or len(order) != len(active_ids) or set(order) != set(active_ids):
+        return None
+
+    if parent_id:
+        seen = {task_id}
+        ancestor_id = parent_id
+        while ancestor_id:
+            if ancestor_id in seen:
+                return None
+            seen.add(ancestor_id)
+            parent = c.execute(
+                "SELECT project_id, parent_id FROM workbench_tasks WHERE id=? AND deleted_at IS NULL",
+                (ancestor_id,),
+            ).fetchone()
+            if parent is None or parent[0] != task[0]:
+                return None
+            ancestor_id = parent[1]
+
+    c.execute(
+        "UPDATE workbench_tasks SET parent_id=?, updated_at=? WHERE id=?",
+        (parent_id, time.time(), task_id),
+    )
+    c.executemany(
+        "UPDATE workbench_tasks SET sort_order=? WHERE id=?",
+        [(i, item_id) for i, item_id in enumerate(order)],
+    )
+    c.commit()
+    return get_task(task_id)
+
+
+
 def list_tasks() -> list[dict]:
     """全量任务(个人规模全量拉取即可;按日/周/月分组、按项目筛选交给前端)。
     不含已软删除(回收站)的任务,那份数据走 list_deleted_tasks() 单独懒加载。

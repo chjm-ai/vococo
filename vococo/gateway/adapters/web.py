@@ -1433,6 +1433,18 @@ class WebAdapter:
 
     @_authed
     @_json_body
+    async def _handle_workbench_task_move(self, request: web.Request, body: dict) -> web.Response:
+        task_id = str(body.get("id") or "")
+        order = body.get("order")
+        if not task_id or not isinstance(order, list):
+            return web.json_response({"error": "id / order 无效"}, status=400)
+        task = workbench.move_task(task_id, body.get("parentId") or None, [str(item) for item in order])
+        if task is None:
+            return web.json_response({"error": "任务、父级或排序无效"}, status=400)
+        return web.json_response({"task": task})
+
+    @_authed
+    @_json_body
     async def _handle_workbench_task_delete(self, request: web.Request, body: dict) -> web.Response:
         """软删除:移入回收站,不再直接落盘删除。彻底删除见 _handle_workbench_task_purge。"""
         task_id = str(body.get("id") or "")
@@ -2608,6 +2620,7 @@ class WebAdapter:
                 web.post("/workbench/projects/reorder", self._handle_workbench_project_reorder),
                 web.post("/workbench/tasks/create", self._handle_workbench_task_create),
                 web.post("/workbench/tasks/update", self._handle_workbench_task_update),
+                web.post("/workbench/tasks/move", self._handle_workbench_task_move),
                 web.post("/workbench/tasks/delete", self._handle_workbench_task_delete),
                 web.get("/workbench/trash", self._handle_workbench_trash),
                 web.post("/workbench/trash/empty", self._handle_workbench_trash_empty),

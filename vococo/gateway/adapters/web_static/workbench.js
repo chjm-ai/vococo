@@ -260,6 +260,7 @@ function workbenchShouldAutoExpandChildren(parentId){
 }
 
 function workbenchChildrenExpanded(parentId){
+  if(WB.view === "project") return !WB.collapsed.has(parentId);
   return WB.expanded.has(parentId) || (workbenchShouldAutoExpandChildren(parentId) && !WB.collapsed.has(parentId));
 }
 
@@ -679,14 +680,36 @@ function workbenchReorderTask(draggedId, targetId, placeBefore){
   return true;
 }
 
-function workbenchPersistTaskParent(task, parentId, orderBefore){
+function workbenchPersistTaskPlacement(task, parentId, orderBefore){
   const before = {parentId:task.parentId};
   task.parentId = parentId;
   const after = {parentId:task.parentId};
   renderWorkbench();
-  workbenchPersistTaskChange(task.id, before, after).then(ok => {
-    if(!ok && orderBefore){ WB_DATA.tasks = orderBefore; renderWorkbench(); }
-  });
+  api("/workbench/tasks/move", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:task.id, parentId, order:WB_DATA.tasks.map(item => item.id)})})
+    .then(r => r.json().then(data => ({ok:r.ok && !data.error, data})))
+    .then(({ok}) => {
+      if(ok){ workbenchRememberTaskPatch(task.id, before, after); return; }
+      task.parentId = before.parentId;
+      WB_DATA.tasks = orderBefore;
+      renderWorkbench();
+    })
+    .catch(() => {
+      task.parentId = before.parentId;
+      WB_DATA.tasks = orderBefore;
+      renderWorkbench();
+    });
+}
+
+function workbenchTaskIsAncestor(ancestorId, taskId){
+  if(ancestorId === taskId) return true;
+  const seen = new Set();
+  let parentId = workbenchTask(taskId)?.parentId;
+  while(parentId && !seen.has(parentId)){
+    if(parentId === ancestorId) return true;
+    seen.add(parentId);
+    parentId = workbenchTask(parentId)?.parentId;
+  }
+  return false;
 }
 
 function workbenchExpandTaskTree(taskId){
@@ -696,16 +719,16 @@ function workbenchExpandTaskTree(taskId){
   children.forEach(child => workbenchExpandTaskTree(child.id));
 }
 
-function workbenchNestTask(taskId, parentId){
+function workbenchNestTask(taskId, parentId, siblingId, placeBefore){
   const task = workbenchTask(taskId);
   const parent = workbenchTask(parentId);
-  if(!task || !parent || task.project !== parent.project || task.parentId === parentId) return;
+  if(!task || !parent || task.project !== parent.project || task.parentId === parentId || workbenchTaskIsAncestor(taskId, parentId)) return;
   const orderBefore = WB_DATA.tasks.slice();
-  workbenchReorderTask(taskId, parentId, false);
+  workbenchReorderTask(taskId, siblingId || parentId, siblingId ? placeBefore : false);
   WB.expanded.add(parentId); WB.collapsed.delete(parentId);
   workbenchExpandTaskTree(parentId);
   workbenchExpandTaskTree(taskId);
-  workbenchPersistTaskParent(task, parentId, orderBefore);
+  workbenchPersistTaskPlacement(task, parentId, orderBefore);
 }
 
 function workbenchPromoteTask(taskId, targetId, placeBefore){
@@ -713,7 +736,7 @@ function workbenchPromoteTask(taskId, targetId, placeBefore){
   if(!task || !task.parentId) return;
   const orderBefore = WB_DATA.tasks.slice();
   workbenchReorderTask(taskId, targetId, placeBefore);
-  workbenchPersistTaskParent(task, null, orderBefore);
+  workbenchPersistTaskPlacement(task, null, orderBefore);
 }
 
 function workbenchRefreshProjectBlock(projectId){
@@ -1120,6 +1143,7 @@ function gotoWorkbenchParent(parentId){
   if(!parent) return;
   WB.view = "project";
   WB.project = parent.project || WB_UNASSIGNED_ID;
+  workbenchResetChildExpansion();
   WB.expanded.add(parentId);
   WB.editorTaskId = parentId;
   renderWorkbench();
@@ -1705,6 +1729,7 @@ $("#workbenchView").addEventListener("click", event => {
   if(gotoProject){
     clearTimeout(wbClickTimer);
     WB.view = "project"; WB.project = gotoProject.dataset.gotoProject;
+    workbenchResetChildExpansion();
     WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null;
     renderWorkbench(); refreshWorkbenchDataIfStale();
     return;
@@ -1761,7 +1786,7 @@ $("#workbenchView").addEventListener("click", event => {
     return;
   }
   const project = event.target.closest("[data-project]");
-  if(project){ clearTimeout(wbClickTimer); WB.project = project.dataset.project; WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null; renderWorkbench(); refreshWorkbenchDataIfStale(); return; }
+  if(project){ clearTimeout(wbClickTimer); WB.project = project.dataset.project; workbenchResetChildExpansion(); WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null; renderWorkbench(); refreshWorkbenchDataIfStale(); return; }
   const view = event.target.closest("[data-view]");
   if(view){
     clearTimeout(wbClickTimer);
@@ -1826,11 +1851,13 @@ function workbenchClearDropIndicators(){
 }
 
 function workbenchDropMode(dragged, target, clientY, rect){
-  if(!target.parentId){
-    const center = clientY >= rect.top + rect.height * .25 && clientY <= rect.bottom - rect.height * .25;
-    if(center) return dragged.parentId === target.id ? "noop" : "nest";
-    if(dragged.parentId) return "promote";
+  if(target.parentId){
+    if(workbenchTaskIsAncestor(dragged.id, target.parentId)) return "noop";
+    return dragged.parentId === target.parentId ? "reorder" : "nest-child";
   }
+  const center = clientY >= rect.top + rect.height * .25 && clientY <= rect.bottom - rect.height * .25;
+  if(center) return dragged.parentId === target.id ? "noop" : "nest";
+  if(dragged.parentId) return "promote";
   return "reorder";
 }
 
@@ -1877,8 +1904,10 @@ $("#workbenchView").addEventListener("drop", event => {
   if(mode === "noop") return;
   if(mode === "nest"){ workbenchNestTask(taskId, target.id); return; }
   const before = event.clientY < rect.top + rect.height / 2;
+  if(mode === "nest-child"){ workbenchNestTask(taskId, target.parentId, target.id, before); return; }
   if(mode === "promote"){ workbenchPromoteTask(taskId, target.id, before); return; }
-  if(workbenchReorderTask(taskId, target.id, before) && !workbenchRefreshProjectBlock(dragged.project)) renderWorkbench();
+  const orderBefore = WB_DATA.tasks.slice();
+  if(workbenchReorderTask(taskId, target.id, before)) workbenchPersistTaskPlacement(dragged, dragged.parentId, orderBefore);
 });
 
 $("#workbenchView").addEventListener("dragend", event => {
