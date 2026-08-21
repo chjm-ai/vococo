@@ -423,7 +423,7 @@ function renderCronTab(box, inCall){
   // vococo 自己管理的任务:可编辑、可启停、可进入专属会话查看历史。
   box.append(buildCronGroupHeader("managed","定时任务"));
   if(S.cronGroups.managed){
-    if(jobs.length) renderCronGroupRows(box,jobs.map(buildCronJobRow),"__cron_managed__");
+    if(jobs.length) renderCronGroupRows(box,jobs.map(j=>buildCronJobRow(j, inCall)),"__cron_managed__");
     else box.append(sideTabEmpty("暂无定时任务"));
     const add=el("div","projgrp projadd"); add.textContent="＋ 新建定时任务…";
     add.onclick=()=>openCronModal(null); box.append(add);
@@ -445,18 +445,23 @@ function renderProjectsTab(box, inCall){
 }
 function renderConvs(){
   const inCall = !$("#callView").hidden;  // 统一对话视图打开时,侧栏只高亮「对话」入口
+  // 工作台/通话打开期间 S.conv 还停在离开前那个会话上没变,普通会话/任务/定时行不能再按
+  // c.conv===S.conv 高亮——否则会跟工作台/通话入口的高亮同时出现(2026-08-21 反馈的双重高亮)。
+  const awayFromChat = inCall || S.surface==="workbench";
   // 顶部固定区只保留新对话按钮和统一对话入口,不再显示重复的主会话行。
+  const isDraft = !awayFromChat && String(S.conv||"").startsWith("local-");   // 当前正停在一个还没发出第一条消息的新对话草稿上
   $("#newBtn").innerHTML = '<div class="cvbody">'+ic("edit")+'<div class="ct">新对话</div></div>';
+  $("#newBtn").classList.toggle("active", isDraft);
   const top=$("#convTopRows"); top.innerHTML="";
   const vm=buildVoiceMainRow(inCall); if(vm) top.append(vm);
   const workbench=buildWorkbenchRow(); if(workbench) top.append(workbench);
   // 列表区:Tab 栏固定(#sideTabs),只有分组内容(#convBody)滚动;首次渲染会清掉骨架行
   const tabs=$("#sideTabs"); tabs.innerHTML=""; renderSideTabs(tabs);
   const box=$("#convBody"); box.innerHTML="";
-  if(S.sideTab==="cron") renderCronTab(box, inCall);
-  else if(S.sideTab==="pinned") renderPinnedTab(box, inCall);
-  else if(S.sideTab==="recent") renderRecentTab(box, inCall);
-  else renderProjectsTab(box, inCall);
+  if(S.sideTab==="cron") renderCronTab(box, awayFromChat);
+  else if(S.sideTab==="pinned") renderPinnedTab(box, awayFromChat);
+  else if(S.sideTab==="recent") renderRecentTab(box, awayFromChat);
+  else renderProjectsTab(box, awayFromChat);
   // 同步标题栏:loadConvs/loadVoiceSidebar/loadCronSidebar 刷新各自列表后都会调 renderConvs,
   // 标题(含改名)可能已更新。语音任务/定时任务会话不在 S.convs 里(那是 /conversations 拉的),
   // 查找逻辑跟 openConv 保持一致——否则在任务自己的会话里改名,顶部标题栏不会跟着刷新
@@ -629,8 +634,8 @@ function syncMoreHeader(){
 }
 // 单条定时任务行:点进去看该任务的历次运行记录(它就是一条普通会话);「⋯」跟普通
 // 会话行同一套 openConvMenu,点开是编辑/启停/删除(见 openConvMenu 里的 isCron 分支)
-function buildCronJobRow(j){
-  const row=el("div","conv ingroup"+(j.conv===S.conv?" active":""));
+function buildCronJobRow(j, awayFromChat){
+  const row=el("div","conv ingroup"+(!awayFromChat && j.conv===S.conv?" active":""));
   row.dataset.conv=j.conv;
   const body=el("div","cvbody");
   // 跟普通会话/语音任务行同一套判断:S.live 有值(SSE 收到 start~done 之间的事件)

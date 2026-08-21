@@ -1,6 +1,5 @@
 /* ============================================================
    小幽 XIAOYOU · vococo 吉祥物像素组件样式
-   设计规范见 docs/design/mascot-xiaoyou.md
    用法: <span class="voco-mascot" data-state="idle"></span>
    可选状态: idle / listening / thinking / busy / done / err / sleep / icon
    缩放: 在容器上设置 --s(默认 4),1 = 1px/格,网格 24x28(icon 为 14x16)

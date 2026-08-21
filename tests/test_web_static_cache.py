@@ -115,8 +115,12 @@ async def test_workbench_js_talks_to_backend(static_app):
     assert "addWorkbenchImages" in source
     assert 'data-sidebar' in source
     assert "expandSidebarResponsive" in source
+    assert "WB_HISTORY_MAX = 30" in source
+    assert "function workbenchUndo()" in source
+    assert "function workbenchRedo()" in source
     styles =(Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/styles.css").read_text(encoding="utf-8")
     assert "#workbenchView .wb-toolbar{position:sticky" in styles
+    assert "font-size:14px;font-weight:400;line-height:1.7" in styles
     assert "#workbenchView .wb-task{display:grid;grid-template-columns:20px minmax(0,1fr) minmax(120px,170px)" in styles
     assert "#workbenchView .wb-project-toggle{display:flex;align-items:center" in styles
 
