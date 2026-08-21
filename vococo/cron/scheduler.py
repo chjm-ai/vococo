@@ -53,7 +53,7 @@ import anyio
 from croniter import croniter
 
 from .. import config, providers
-from ..core import task_runner, tasks as bg_tasks
+from ..core import task_events, task_runner, tasks as bg_tasks
 from ..core.agent import run_turn
 from ..memory import session_store
 
@@ -357,6 +357,11 @@ async def _run_script_job(job: dict, push: PushFn) -> None:
     if job_id in _script_running:  # 上一轮还没跑完,这一跳先不重复触发
         return
     _script_running.add(job_id)
+    conv = job.get("conv") or f"task:{job_id}"
+    # 脚本任务不走 task_runner,永远不会触发 on_task_activity 的 start/done 桥接
+    # ——侧栏的 S.live 因此收不到事件,闪烁点永远不亮(2026-08-21 排查定位)。
+    # 这里手动补一次同样的 SSE 事件,跟 Agent 任务共用同一套侧栏渲染逻辑。
+    task_events._bridge_event({"conv": conv, "type": "start"})
     try:
         proc: asyncio.subprocess.Process | None = None
         try:
@@ -390,12 +395,12 @@ async def _run_script_job(job: dict, push: PushFn) -> None:
             if summarized:
                 text = summarized
 
-        session_key = job.get("conv") or f"task:{job_id}"
-        turn_id = session_store.start_turn(session_key, f"[脚本任务] {job.get('name','')}")
-        session_store.finish_turn(turn_id, text, session_key=session_key)
+        turn_id = session_store.start_turn(conv, f"[脚本任务] {job.get('name','')}")
+        session_store.finish_turn(turn_id, text, session_key=conv)
         await _push_job_result(job_id, "success" if ok else "error", text, push)
     finally:
         _script_running.discard(job_id)
+        task_events._bridge_event({"conv": conv, "type": "done"})
 
 
 def _tick(push: PushFn) -> None:

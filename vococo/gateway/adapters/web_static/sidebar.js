@@ -610,7 +610,10 @@ function buildCronJobRow(j){
   const row=el("div","conv ingroup"+(j.conv===S.conv?" active":""));
   row.dataset.conv=j.conv;
   const body=el("div","cvbody");
-  if(j.pending_review || S.pendingReview[j.conv]) { const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }
+  // 跟普通会话/语音任务行同一套判断:S.live 有值(SSE 收到 start~done 之间的事件)
+  // 才闪烁,没有则退回未读灰点——之前这里漏了这个分支,定时任务运行中永远不闪。
+  if(S.live[j.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
+  else if(j.pending_review || S.pendingReview[j.conv]) { const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }
   const ct=el("div","ct"); ct.textContent=j.title||"定时任务";
   if(!j.enabled) ct.style.opacity="0.5";
   body.append(ct);
