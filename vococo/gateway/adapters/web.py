@@ -35,7 +35,7 @@ from ...core import title
 from ...core.agent import AgentReply, FileAttachment
 from ...memory import session_store, workbench
 from .. import git_status, settings_store
-from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink
+from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink, is_command
 from .base import AudioAttachment, ImageAttachment, Incoming
 from ..web_auth import check_web_auth
 from .web_push import PUSH
@@ -859,7 +859,7 @@ class WebAdapter:
         files = files or []
         # 首条消息自动给会话起个名(命令 / 主会话除外):先落一个截断兜底标题,
         # 同时立刻异步起模型总结(不等 AI 首轮回复——那可能跑很久,侧边栏不能干等)
-        if not text.startswith("/") and conv != "main":
+        if not is_command(text) and conv != "main":
             session_key = config.resolve_session_key("web", conv)
             placeholder = session_store.ensure_title(session_key, text)
             if placeholder:
@@ -870,7 +870,7 @@ class WebAdapter:
         if conv.startswith("p") and ":" in conv:
             session_store.touch_project(conv[1:].split(":", 1)[0])
         # 广播用户消息让其他客户端(如桌面端)能实时渲染用户气泡
-        if not text.startswith("/"):
+        if not is_command(text):
             self._emit({"conv": conv, "type": "user", "text": text})
         self._inbox.put_nowait(
             Incoming(self.platform, conv, text, images=images, audios=audios, files=files)
