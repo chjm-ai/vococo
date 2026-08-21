@@ -73,7 +73,7 @@
   #login .card{width:100%;max-width:340px;text-align:center;animation:pop .4s ease}
   #login .logo{width:68px;height:68px;margin:0 auto 16px;color:var(--text);
     display:flex;align-items:center;justify-content:center}
-  #login .logo svg{width:100%;height:100%}
+  #login .logo .voco-mascot{--s:2.4}
   #login h1{font-size:30px;margin:0 0 6px;letter-spacing:1px;font-weight:600;
     font-family:Optima,"Times New Roman","Songti SC",serif}
   #login p{color:var(--dim);margin:0 0 26px;font-size:14px}
