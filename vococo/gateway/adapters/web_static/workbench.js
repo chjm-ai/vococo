@@ -52,6 +52,8 @@ function workbenchProjectMatches(item){
   return item.project === WB.project;
 }
 function workbenchTasks(filter){ return WB_DATA.tasks.filter(task => !task.parentId && workbenchProjectMatches(task) && filter(task)); }
+function workbenchAllTasks(filter){ return WB_DATA.tasks.filter(task => workbenchProjectMatches(task) && filter(task)); }
+function workbenchIsDateView(){ return WB.view === "day" || WB.view === "week" || WB.view === "month" || WB.view === "unscheduled"; }
 function workbenchChildren(parentId){ return WB_DATA.tasks.filter(task => task.parentId === parentId); }
 function workbenchChildrenStats(parentId){ const children = workbenchChildren(parentId); return {total: children.length, done: children.filter(c => c.status === "done").length}; }
 function workbenchTaskHighlight(task){ return task.highlight || task.title.split(/[：（(]/)[0]; }
@@ -108,11 +110,18 @@ function workbenchAssigneeBadge(task){
 }
 
 function workbenchChildCount(task){
-  if(task.parentId) return '';
+  if(task.parentId || workbenchIsDateView()) return '';
   const stats = workbenchChildrenStats(task.id);
   const expanded = WB.expanded.has(task.id);
   if(!stats.total) return '<span class="wb-child-toggle'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="添加子任务">+</span>';
   return '<span class="wb-child-count'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="子任务">'+stats.done+'/'+stats.total+'</span>';
+}
+
+function workbenchParentBadge(task, isChild){
+  if(!task.parentId || isChild) return '';
+  const parent = workbenchTask(task.parentId);
+  if(!parent) return '';
+  return '<button type="button" class="wb-parent-badge" data-goto-parent="'+esc(task.parentId)+'" title="父任务">↩ '+esc(parent.title)+'</button>';
 }
 
 function workbenchChildRows(parentId){
@@ -149,9 +158,9 @@ function workbenchTaskRow(task, isChild){
   const row = '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+childClass+'" data-task="'+esc(task.id)+'" draggable="true">'+
     '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
     '<div class="wb-task-copy">'+workbenchAssigneeBadge(task)+'<strong class="wb-task-title">'+esc(task.title)+'</strong>'+detail+'</div>'+
-    '<div class="wb-task-end">'+workbenchChildCount(task)+workbenchSourceLink(task, true)+'</div>'+
+    '<div class="wb-task-end">'+workbenchParentBadge(task, isChild)+workbenchChildCount(task)+workbenchSourceLink(task, true)+'</div>'+
     '</article>';
-  if(isChild || task.parentId) return row;
+  if(isChild || task.parentId || workbenchIsDateView()) return row;
   return row + workbenchChildRows(task.id);
 }
 
@@ -166,7 +175,9 @@ function renderWorkbenchTaskEditor(task){
   const assigneeBtn = '<button type="button" class="wb-assignee-toggle'+(isAi ? " is-ai" : "")+'" data-toggle-assignee="'+esc(task.id)+'" title="切换执行者">'+(isAi ? "⚡ AI" : "👤 人工")+'</button>';
   const dispatchBtn = isAi ? '<button type="button" class="wb-dispatch-btn" data-dispatch="'+esc(task.id)+'" title="让 AI 执行此任务">▶ 执行</button>' : "";
   const sessionLinks = workbenchSessionLinks(task);
+  const parentLink = task.parentId ? (function(){ const p = workbenchTask(task.parentId); return p ? '<div class="wb-parent-link"><button type="button" data-goto-parent="'+esc(task.parentId)+'">↩ 父任务：'+esc(p.title)+'</button></div>' : ''; })() : '';
   return '<article class="wb-task wb-editor-shell wb-task-card wb-'+esc(task.status)+'" data-task="'+esc(task.id)+'">'+
+    parentLink+
     '<div class="wb-card-head">'+
       '<button class="wb-check" type="button" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
       '<input class="wb-card-title" data-edit-title="'+esc(task.id)+'" value="'+esc(task.title)+'" aria-label="任务标题">'+
@@ -200,10 +211,10 @@ function workbenchProjectBlock(project, tasks){
 }
 
 function workbenchVisibleTasks(){
-  if(WB.view === "unscheduled") return workbenchTasks(task => !task.date);
-  if(WB.view === "day") return workbenchTasks(task => task.date === WB.anchor);
-  if(WB.view === "week") return workbenchTasks(task => task.week === workbenchWeekKey());
-  if(WB.view === "month") return workbenchTasks(task => task.month === workbenchMonthKey());
+  if(WB.view === "unscheduled") return workbenchAllTasks(task => !task.date);
+  if(WB.view === "day") return workbenchAllTasks(task => task.date === WB.anchor);
+  if(WB.view === "week") return workbenchAllTasks(task => task.week === workbenchWeekKey());
+  if(WB.view === "month") return workbenchAllTasks(task => task.month === workbenchMonthKey());
   return workbenchTasks(() => true); // "project" 视图：跨时间，只按项目筛选
 }
 
@@ -704,6 +715,20 @@ function toggleWorkbenchChildren(parentId){
   if(WB.expanded.has(parentId)) WB.expanded.delete(parentId);
   else WB.expanded.add(parentId);
   renderWorkbench();
+}
+
+function gotoWorkbenchParent(parentId){
+  const parent = workbenchTask(parentId);
+  if(!parent) return;
+  WB.view = "project";
+  WB.project = parent.project || WB_UNASSIGNED_ID;
+  WB.expanded.add(parentId);
+  WB.editorTaskId = parentId;
+  renderWorkbench();
+  requestAnimationFrame(() => {
+    const el = document.querySelector('[data-task="'+parentId+'"]');
+    if(el) el.scrollIntoView({behavior:'smooth', block:'center'});
+  });
 }
 
 function toggleWorkbenchAssignee(taskId){
@@ -1225,6 +1250,8 @@ $("#workbenchView").addEventListener("click", event => {
   if(dispatch){ dispatchWorkbenchTask(dispatch.dataset.dispatch); return; }
   const addChild = event.target.closest("[data-add-child]");
   if(addChild){ openWorkbenchNewChild(addChild.dataset.addChild); return; }
+  const gotoParent = event.target.closest("[data-goto-parent]");
+  if(gotoParent){ gotoWorkbenchParent(gotoParent.dataset.gotoParent); return; }
   const sessionLink = event.target.closest("[data-session]");
   if(sessionLink){ const sid = sessionLink.dataset.session; if(typeof openConv === "function") openConv("task:"+sid); return; }
   const newAssignee = event.target.closest("[data-new-assignee]");
