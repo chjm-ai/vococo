@@ -559,9 +559,9 @@
   #gitPop .gerr[hidden]{display:none}
   #gitPop .gempty{font-size:12.5px;color:var(--dim)}
   #ctxBox{position:relative;flex-shrink:0;display:flex;align-items:center;gap:6px}
-  /* 「⋯」任务操作键:标题栏右侧,跟侧栏会话行的「⋯」同一套视觉语言(见 .conv .more) */
-  .hmore{font-size:18px;line-height:1;color:var(--dim2);padding:5px 9px;border-radius:9px;
-    cursor:pointer;transition:background .16s,color .16s;flex-shrink:0;display:flex;align-items:center}
+  /* 标题栏图标操作统一为正方形：定时任务与普通会话共用，避免 hover 灰底横向膨胀。 */
+  .hmore{width:28px;height:28px;padding:0;border-radius:9px;font-size:18px;line-height:1;color:var(--dim2);
+    cursor:pointer;transition:background .16s,color .16s;flex-shrink:0;display:flex;align-items:center;justify-content:center}
   .hmore:hover,.hmore.on{color:var(--text);background:var(--panel2)}
   .hmore[hidden]{display:none}
   .hmore .ic{width:16px;height:16px}
