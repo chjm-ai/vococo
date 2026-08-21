@@ -1445,6 +1445,11 @@ class WebAdapter:
         return web.json_response({"tasks": workbench.list_deleted_tasks()})
 
     @_authed
+    async def _handle_workbench_trash_empty(self, request: web.Request) -> web.Response:
+        count = workbench.empty_trash()
+        return web.json_response({"ok": True, "count": count})
+
+    @_authed
     @_json_body
     async def _handle_workbench_task_restore(self, request: web.Request, body: dict) -> web.Response:
         task = workbench.restore_task(str(body.get("id") or ""))
@@ -2578,6 +2583,7 @@ class WebAdapter:
                 web.post("/workbench/tasks/update", self._handle_workbench_task_update),
                 web.post("/workbench/tasks/delete", self._handle_workbench_task_delete),
                 web.get("/workbench/trash", self._handle_workbench_trash),
+                web.post("/workbench/trash/empty", self._handle_workbench_trash_empty),
                 web.post("/workbench/tasks/restore", self._handle_workbench_task_restore),
                 web.post("/workbench/tasks/purge", self._handle_workbench_task_purge),
                 web.post("/workbench/tasks/image/add", self._handle_workbench_task_image_add),

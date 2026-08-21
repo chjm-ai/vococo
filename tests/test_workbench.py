@@ -87,6 +87,49 @@ def test_trash_restore_and_purge(isolated):
     assert workbench.purge_task(task["id"]) is False  # 已经不存在,再删返回 False
 
 
+def test_completed_at_tracks_status_toggle(isolated):
+    """已完成视图按「完成当天」分组，靠的就是这个字段——status 切 done/切回都要跟上。"""
+    from vococo.memory import workbench
+
+    project = workbench.create_project("完成时间测试项目")
+    task = workbench.create_task(project["id"], "待完成任务")
+    assert task["completedAt"] is None
+
+    done = workbench.update_task(task["id"], status="done")
+    assert done["completedAt"] is not None
+
+    reopened = workbench.update_task(task["id"], status="todo")
+    assert reopened["completedAt"] is None
+
+    created_done = workbench.create_task(project["id"], "创建即完成", status="done")
+    assert created_done["completedAt"] is not None
+
+
+def test_empty_trash(isolated, monkeypatch):
+    from vococo import config
+    from vococo.memory import workbench
+
+    monkeypatch.setattr(config, "IMAGES_DIR", isolated / "data" / "images")
+
+    project = workbench.create_project("清空回收站测试项目")
+    kept = workbench.create_task(project["id"], "不会被删的任务")
+    trashed_a = workbench.create_task(project["id"], "会被清空的任务A")
+    trashed_b = workbench.create_task(project["id"], "会被清空的任务B")
+    data = base64.b64encode(b"fake-png-bytes").decode()
+    image_name = workbench.add_task_image(trashed_a["id"], data, "image/png")
+
+    workbench.delete_task(trashed_a["id"])
+    workbench.delete_task(trashed_b["id"])
+
+    assert workbench.empty_trash() == 2
+    assert workbench.list_deleted_tasks() == []
+    assert workbench.get_task(trashed_a["id"]) is None
+    assert workbench.get_task(trashed_b["id"]) is None
+    assert not (config.IMAGES_DIR / image_name).is_file()  # 图片跟着彻底清理
+    assert workbench.get_task(kept["id"]) is not None  # 没删的任务不受影响
+    assert workbench.empty_trash() == 0  # 已经空了，再清一次是 no-op
+
+
 def test_update_task_rejects_invalid_status(isolated):
     from vococo.memory import workbench
 
