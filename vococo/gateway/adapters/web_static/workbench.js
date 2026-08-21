@@ -351,9 +351,9 @@ function workbenchProjectBlock(project, tasks){
   return '<section class="wb-project-block" data-group="'+esc(groupId)+'">'+header+body+deleteBtn+'</section>';
 }
 
-// 已完成的任务只在「已完成」tab 里看（按天分组），这几个视图一律不显示——
-// 跟原来"done 任务原地打勾变灰"的行为不一样，切完成状态要连带触发整块重渲染
-// （见 toggleWorkbenchTask/workbenchBatchComplete），不能再用原地 swap 节点那条快路径。
+// 已完成的任务只在「已完成」tab 里看（按天分组），unscheduled/day/week/project 这几个
+// 视图一律不显示——跟原来"done 任务原地打勾变灰"的行为不一样，切完成状态要连带触发整块
+// 重渲染（见 toggleWorkbenchTask/workbenchBatchComplete），不能再用原地 swap 节点那条快路径。
 function workbenchVisibleTasks(){
   const dateFilter = workbenchCurrentFilter();
   if(!dateFilter) return workbenchTasks(task => task.status !== "done");
@@ -737,6 +737,12 @@ function toggleWorkbenchTask(taskId){
   task.status = completing ? "done" : "todo";
   const after = {status: task.status};
   workbenchPersistTaskChange(taskId, before, after);
+  // 月视图本来就会把已完成任务一起展示（见 workbenchVisibleTasks），打勾/恢复都不影响
+  // 任务是否可见，原地换勾选态即可，不用收起也不用整体重渲染。
+  if(WB.view === "month"){
+    if(!workbenchSwapTask(taskId)) renderWorkbench();
+    return;
+  }
   if(completing && workbenchSwapTask(taskId)){
     WB_COMPLETE_HOLD.set(taskId, setTimeout(() => {
       WB_COMPLETE_HOLD.delete(taskId);
@@ -820,6 +826,9 @@ function workbenchShrinkOut(node){
   const parent = node.parentElement;
   const gap = parent ? (parseFloat(getComputedStyle(parent).rowGap) || 0) : 0;
   node.style.height = node.getBoundingClientRect().height+"px";
+  // 样式表里 .wb-task 有 min-height:36px，不清掉的话内联 height 会被它钳住——动画途中
+  // 高度其实纹丝不动，直到节点被移除的最后一帧才猛地收拢，这才是卡顿的真正来源。
+  node.style.minHeight = "0px";
   node.style.marginTop = getComputedStyle(node).marginTop;
   node.style.marginBottom = "0px";
   node.style.overflow = "hidden";
