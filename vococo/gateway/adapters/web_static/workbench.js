@@ -1,8 +1,8 @@
 "use strict";
-// 工作台：项目/来源文档/任务全部走 /workbench* 接口读写(memory/workbench.py + state.db)，
+// 工作台：项目/任务全部走 /workbench* 接口读写(memory/workbench.py + state.db)，
 // 不再是纯前端 demo。项目支持在界面上新建/重命名/归档，不写死数量。
 
-const WB_DATA = {projects: [], sources: [], tasks: []};
+const WB_DATA = {projects: [], tasks: []};
 // 后端不校验 project_id、也没有"未分组"的概念（vococo/memory/workbench.py 里
 // project_id 是 NOT NULL 但没有 FK 约束）——这里用空字符串当哨兵值，纯前端合成一个
 // 「未分组」伪项目做兜底分组，不需要改后端 schema。
@@ -16,7 +16,6 @@ let wbClickTimer = null;
 
 function workbenchIsRealProject(id){ return WB_DATA.projects.some(project => project.id === id); }
 function workbenchProject(id){ return id === WB_UNASSIGNED_ID ? WB_UNASSIGNED_PROJECT : WB_DATA.projects.find(project => project.id === id); }
-function workbenchSource(id){ return WB_DATA.sources.find(source => source.id === id); }
 function workbenchTask(id){ return WB_DATA.tasks.find(task => task.id === id); }
 function workbenchDate(value){ return new Date(value+"T12:00:00"); }
 function workbenchDateKey(date){ return date.toISOString().slice(0, 10); }
@@ -66,7 +65,6 @@ function workbenchCurrentFilter(){
 }
 function workbenchChildren(parentId){ return WB_DATA.tasks.filter(task => task.parentId === parentId); }
 function workbenchChildrenStats(parentId){ const children = workbenchChildren(parentId); return {total: children.length, done: children.filter(c => c.status === "done").length}; }
-function workbenchTaskHighlight(task){ return task.highlight || task.title.split(/[：（(]/)[0]; }
 function workbenchGroupId(project){ return "project:"+WB.view+":"+project.id; }
 
 // ── 数据加载 ────────────────────────────────────────────────────────────
@@ -80,7 +78,6 @@ async function loadWorkbenchData(){
     const r = await api("/workbench");
     const d = await r.json();
     WB_DATA.projects = d.projects || [];
-    WB_DATA.sources = d.sources || [];
     WB_DATA.tasks = d.tasks || [];
     wbDataFetchedAt = Date.now();   // 失败时不更新,下次点击立刻重试而不是白等 30s
   }catch(e){}
@@ -221,14 +218,6 @@ function workbenchPersistTaskChange(taskId, before, after){
   });
 }
 
-function workbenchSourceLink(task, compact){
-  const sources = (task.sourceIds||[]).map(workbenchSource).filter(Boolean);
-  if(!sources.length) return '<span class="wb-no-source">无来源</span>';
-  const source = sources[0];
-  const suffix = sources.length > 1 ? " +"+(sources.length-1) : "";
-  return '<button type="button" draggable="false" class="wb-source-link'+(compact ? " wb-task-source" : "")+'" data-source="'+esc(source.id)+'" data-highlight="'+esc(workbenchTaskHighlight(task))+'" title="'+esc(source.label)+'">'+ic("doc")+'<span>'+esc(source.label)+suffix+'</span></button>';
-}
-
 function workbenchAssigneeBadge(task){
   if(task.assignee === "ai") return '<span class="wb-assignee wb-assignee-ai" title="AI 执行">⚡</span>';
   return '';
@@ -294,8 +283,8 @@ function workbenchTaskRow(task, isChild){
   const childClass = isChild ? " wb-task-child" : "";
   const row = '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+childClass+'" data-task="'+esc(task.id)+'" draggable="true">'+
     '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
-    '<div class="wb-task-copy">'+workbenchAssigneeBadge(task)+'<strong class="wb-task-title">'+esc(task.title)+'</strong>'+detail+'</div>'+
-    '<div class="wb-task-end">'+workbenchParentBadge(task, isChild)+workbenchChildCount(task)+workbenchSourceLink(task, true)+'</div>'+
+    '<div class="wb-task-copy"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+detail+'</div>'+
+    '<div class="wb-task-end">'+workbenchParentBadge(task, isChild)+workbenchChildCount(task)+workbenchAssigneeBadge(task)+'</div>'+
     '</article>';
   if(isChild || task.parentId) return row;
   return row + workbenchChildRows(task.id);
@@ -303,10 +292,6 @@ function workbenchTaskRow(task, isChild){
 
 function renderWorkbenchTaskEditor(task){
   const action = task.status === "done" ? "恢复" : "完成";
-  const sources = (task.sourceIds||[]).map(id => {
-    const source = workbenchSource(id);
-    return source ? '<button type="button" class="wb-source-link" data-source="'+esc(id)+'" data-highlight="'+esc(workbenchTaskHighlight(task))+'">'+ic("doc")+'<span>'+esc(source.label)+'</span></button>' : "";
-  }).join("");
   const images = (task.images||[]).map((name, index) => '<figure><img data-full="/image?name='+encodeURIComponent(name)+'" alt="任务附件"><button type="button" data-remove-image="'+index+'" data-image-task="'+esc(task.id)+'" aria-label="移除图片">×</button></figure>').join("");
   const isAi = task.assignee === "ai";
   const assigneeBtn = '<button type="button" class="wb-assignee-toggle'+(isAi ? " is-ai" : "")+'" data-toggle-assignee="'+esc(task.id)+'" title="切换执行者">'+(isAi ? "⚡ AI" : "👤 人工")+'</button>';
@@ -323,18 +308,17 @@ function renderWorkbenchTaskEditor(task){
     '<textarea data-edit-detail="'+esc(task.id)+'" placeholder="'+(isAi ? "Prompt（AI 执行时的指令）" : "备注（思路/要点）")+'">'+esc(task.detail||"")+'</textarea>'+
     (images ? '<div class="wb-image-list">'+images+'</div>' : "")+
     sessionLinks+
-    '<div class="wb-editor-footer">'+assigneeBtn+dispatchBtn+'<button type="button" class="wb-dp-trigger'+(task.date ? " has-date" : "")+'" data-open-dp="task:'+esc(task.id)+'">'+ic("calendar")+'<span>'+esc(workbenchDpLabel(task.date))+'</span></button><div class="wb-editor-sources">'+sources+'</div></div>'+'</article>';
+    '<div class="wb-editor-footer">'+assigneeBtn+dispatchBtn+'<button type="button" class="wb-dp-trigger'+(task.date ? " has-date" : "")+'" data-open-dp="task:'+esc(task.id)+'">'+ic("calendar")+'<span>'+esc(workbenchDpLabel(task.date))+'</span></button></div>'+'</article>';
 }
 
 function workbenchNewTaskCard(project){
   if(!WB.newTask || WB.newTask.project !== project.id) return "";
-  const sourceOptions = WB_DATA.sources.map(source => '<option value="'+esc(source.id)+'" '+(WB.newTask.sourceId === source.id ? "selected" : "")+'>'+esc(source.label)+'</option>').join("");
   const projectOptions = [...WB_DATA.projects, WB_UNASSIGNED_PROJECT].map(item => '<option value="'+esc(item.id)+'" '+(WB.newTask.project === item.id ? "selected" : "")+'>'+esc(item.name)+'</option>').join("");
   const isAi = WB.newTask.assignee === "ai";
   const assigneeBtn = '<button type="button" class="wb-assignee-toggle'+(isAi ? " is-ai" : "")+'" data-new-assignee title="切换执行者">'+(isAi ? "⚡ AI" : "👤 人工")+'</button>';
   return '<section class="wb-editor-shell wb-new-task" data-new-card><div class="wb-editor-head"><input data-new-title placeholder="新建待办事项" value="'+esc(WB.newTask.title)+'" aria-label="任务标题"></div>'+
     '<textarea data-new-detail placeholder="'+(isAi ? "Prompt（AI 执行时的指令）" : "备注")+'">'+esc(WB.newTask.detail)+'</textarea>'+
-    '<div class="wb-editor-footer">'+assigneeBtn+'<select data-new-project aria-label="项目">'+projectOptions+'</select><select data-new-source aria-label="来源文档"><option value="">来源文档</option>'+sourceOptions+'</select><button type="button" class="wb-dp-trigger'+(WB.newTask.date ? " has-date" : "")+'" data-open-dp="new">'+ic("calendar")+'<span>'+esc(workbenchDpLabel(WB.newTask.date))+'</span></button><button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
+    '<div class="wb-editor-footer">'+assigneeBtn+'<select data-new-project aria-label="项目">'+projectOptions+'</select><button type="button" class="wb-dp-trigger'+(WB.newTask.date ? " has-date" : "")+'" data-open-dp="new">'+ic("calendar")+'<span>'+esc(workbenchDpLabel(WB.newTask.date))+'</span></button><button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
 }
 
 // 「详情」= 在项目 tab 里已经选定某个具体项目（点分组标题跳转过来，或用二级筛选 chip
@@ -391,12 +375,6 @@ function renderWorkbenchProjects(){
   }).filter(Boolean);
   if(!blocks.length) return '<p class="wb-empty">暂无任务。</p>';
   return '<div class="wb-project-list">'+blocks.join("")+'</div>';
-}
-
-function openWorkbenchSource(sourceId, highlight){
-  const source = workbenchSource(sourceId);
-  if(!source || typeof openDocPreview !== "function") return;
-  openDocPreview({kind:"path", target:source.path, title:source.label, highlight});
 }
 
 // 一级导航共 7 个并列 tab，互斥选中：inbox / 日 / 周 / 月 / 项目 / 已完成 / 回收站。
@@ -476,15 +454,10 @@ function workbenchTrashRow(task){
   }
   const detail = task.detail ? '<p class="wb-trash-detail">'+esc(task.detail)+'</p>' : '<p class="wb-empty">无备注</p>';
   const images = (task.images||[]).map(name => '<figure><img data-full="/image?name='+encodeURIComponent(name)+'" alt="任务附件"></figure>').join("");
-  const sources = (task.sourceIds||[]).map(id => {
-    const source = workbenchSource(id);
-    return source ? '<button type="button" class="wb-source-link" data-source="'+esc(id)+'" data-highlight="'+esc(workbenchTaskHighlight(task))+'">'+ic("doc")+'<span>'+esc(source.label)+'</span></button>' : "";
-  }).join("");
   return '<article class="wb-task wb-trash-row wb-trash-row-expanded" data-trash-task="'+esc(task.id)+'">'+
     '<div class="wb-card-head"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+actions+'</div>'+
     detail+
     (images ? '<div class="wb-image-list">'+images+'</div>' : "")+
-    (sources ? '<div class="wb-editor-sources">'+sources+'</div>' : "")+
     '</article>';
 }
 
@@ -881,7 +854,7 @@ function openWorkbenchNewTask(){
   const prevEditor = WB.editorTaskId;
   WB.editorTaskId = null;
   WB.selected = new Set(); WB.selectAnchor = null;
-  WB.newTask = {project:project.id, title:"", detail:"", sourceId:"", date:WB.view === "day" ? WB.anchor : "", assignee:"human", parentId:null};
+  WB.newTask = {project:project.id, title:"", detail:"", date:WB.view === "day" ? WB.anchor : "", assignee:"human", parentId:null};
   let ok = true;
   if(prevEditor) ok = workbenchMorphTask(prevEditor) && ok;
   if(ok) ok = workbenchInsertNewTaskCard(project) && ok;
@@ -897,7 +870,7 @@ async function saveWorkbenchNewTask(){
   const date = draft.date || null;
   const month = date ? date.slice(0, 7) : workbenchMonthKey();
   const week = date ? workbenchWeekKey(workbenchDate(date)) : (WB.view === "month" ? null : workbenchWeekKey());
-  const payload = {project:draft.project, title, detail:draft.detail, date, month, week, sourceIds:draft.sourceId ? [draft.sourceId] : [], assignee:draft.assignee||"human", parentId:draft.parentId||null};
+  const payload = {project:draft.project, title, detail:draft.detail, date, month, week, assignee:draft.assignee||"human", parentId:draft.parentId||null};
   WB.newTask = null;
   // 乐观本地先造一条临时任务，卡片立刻收起成行——不用等接口回来才有动效，否则回车会
   // 感觉「慢半拍」；等真实 id 回来了原地把临时 id 换掉，保存失败就把这一行撤回。
@@ -988,7 +961,7 @@ function openWorkbenchNewChild(parentId){
   WB.editorTaskId = null;
   WB.selected = new Set(); WB.selectAnchor = null;
   WB.expanded.add(parentId);
-  WB.newTask = {project:project.id, title:"", detail:"", sourceId:"", date:WB.view === "day" ? WB.anchor : "", assignee:"human", parentId:parentId};
+  WB.newTask = {project:project.id, title:"", detail:"", date:WB.view === "day" ? WB.anchor : "", assignee:"human", parentId:parentId};
   renderWorkbench();
   requestAnimationFrame(() => $("[data-new-title]")?.focus());
 }
@@ -1509,8 +1482,6 @@ $("#workbenchView").addEventListener("click", event => {
     workbenchDpOpen(kind === "task" ? {kind:"task", id} : {kind:"new"}, openDp);
     return;
   }
-  const source = event.target.closest("[data-source]");
-  if(source){ openWorkbenchSource(source.dataset.source, source.dataset.highlight); return; }
   const gotoProject = event.target.closest("[data-goto-project]");
   if(gotoProject){
     clearTimeout(wbClickTimer);
@@ -1540,7 +1511,7 @@ $("#workbenchView").addEventListener("click", event => {
   }
   const img = event.target.closest(".wb-image-list img");
   if(img){ openImgViewer(img, [...img.closest(".wb-image-list").querySelectorAll("img")]); return; }
-  // 新建卡片内部（标题输入框、备注、日期、项目/来源下拉）保留原生交互，不走下面的
+  // 新建卡片内部（标题输入框、备注、日期、项目下拉）保留原生交互，不走下面的
   // 「点击空白处收起」逻辑——那些点击都已经在上面按具体 data-* 处理过或本就该正常触发。
   if(event.target.closest("[data-new-card]")) return;
   const taskRow = event.target.closest("[data-task]");
@@ -1620,7 +1591,7 @@ $("#workbenchView").addEventListener("contextmenu", event => {
 });
 
 $("#workbenchView").addEventListener("dblclick", event => {
-  if(event.target.closest("[data-complete],[data-source]")) return;
+  if(event.target.closest("[data-complete]")) return;
   const taskRow = event.target.closest("[data-task]");
   if(!taskRow) return;
   if(wbClickTimer){ clearTimeout(wbClickTimer); wbClickTimer = null; }
@@ -1719,7 +1690,6 @@ $("#workbenchView").addEventListener("focusout", event => {
 $("#workbenchView").addEventListener("change", event => {
   if(!WB.newTask) return;
   if("newProject" in event.target.dataset){ WB.newTask.project=event.target.value; renderWorkbench(); }
-  if("newSource" in event.target.dataset) WB.newTask.sourceId=event.target.value;
 });
 
 $("#workbenchView").addEventListener("paste", event => {

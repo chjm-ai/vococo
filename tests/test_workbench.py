@@ -11,7 +11,6 @@ def test_first_access_seeds_demo_data(isolated):
     assert {p["name"] for p in projects} == {"AI 咨询", "VocoTrade", "面料外贸", "离职过渡"}
     tasks = workbench.list_tasks()
     assert len(tasks) == 12
-    assert workbench.list_sources()
 
 
 def test_create_project_not_hardcoded(isolated):

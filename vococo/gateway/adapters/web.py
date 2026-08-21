@@ -1363,10 +1363,9 @@ class WebAdapter:
     # ── 工作台 ───────────────────────────────────────────────────────────
     @_authed
     async def _handle_workbench(self, request: web.Request) -> web.Response:
-        """工作台首屏:项目/来源文档/任务一次性拉全(个人规模,不分页/不筛选)。"""
+        """工作台首屏:项目/任务一次性拉全(个人规模,不分页/不筛选)。"""
         return _compressed_json({
             "projects": workbench.list_projects(),
-            "sources": workbench.list_sources(),
             "tasks": workbench.list_tasks(),
         })
 
@@ -1413,7 +1412,6 @@ class WebAdapter:
             date=body.get("date") or None,
             month=body.get("month") or None,
             week=body.get("week") or None,
-            source_ids=body.get("sourceIds") or [],
             parent_id=body.get("parentId") or None,
             assignee=str(body.get("assignee") or "human"),
         )

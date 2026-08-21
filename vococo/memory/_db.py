@@ -46,12 +46,6 @@ CREATE TABLE IF NOT EXISTS workbench_projects(
   sort_order REAL NOT NULL DEFAULT 0,
   archived INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS workbench_sources(
-  id TEXT PRIMARY KEY,
-  label TEXT NOT NULL,
-  path TEXT NOT NULL,
-  sort_order REAL NOT NULL DEFAULT 0
-);
 CREATE TABLE IF NOT EXISTS workbench_tasks(
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -61,7 +55,6 @@ CREATE TABLE IF NOT EXISTS workbench_tasks(
   date TEXT,
   month TEXT,
   week TEXT,
-  source_ids TEXT NOT NULL DEFAULT '[]',
   images TEXT NOT NULL DEFAULT '[]',
   sort_order REAL NOT NULL DEFAULT 0,
   created_at REAL NOT NULL,
@@ -181,6 +174,11 @@ def conn() -> sqlite3.Connection:
             _DB.execute("ALTER TABLE workbench_tasks ADD COLUMN assignee TEXT NOT NULL DEFAULT 'human'")
         if "session_ids" not in wtcols:
             _DB.execute("ALTER TABLE workbench_tasks ADD COLUMN session_ids TEXT NOT NULL DEFAULT '[]'")
+        # 2026-08-21 工作台去掉「来源文档」字段:老库里的 source_ids 列/workbench_sources
+        # 表原样删掉,任务本身的其它数据不受影响。
+        if "source_ids" in wtcols:
+            _DB.execute("ALTER TABLE workbench_tasks DROP COLUMN source_ids")
+        _DB.execute("DROP TABLE IF EXISTS workbench_sources")
         for table in ("turns", "session_meta"):
             for old_prefix in ("voice-task:", "cron-task:"):
                 _DB.execute(

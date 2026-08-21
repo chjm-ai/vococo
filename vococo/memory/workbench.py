@@ -1,4 +1,4 @@
-"""工作台(GTD 待办看板)—— 项目/来源文档/任务 CRUD,SQLite 存储。
+"""工作台(GTD 待办看板)—— 项目/任务 CRUD,SQLite 存储。
 
 工作台前端(gateway/adapters/web_static/workbench.js)最早是一份纯前端 demo,数据
 写死在 WORKBENCH_DEMO 常量里。_seed_if_empty() 把那份已经维护好的真实任务清单原样
@@ -35,25 +35,19 @@ _SEED_PROJECTS = [
     {"id": "fabric", "name": "面料外贸"},
     {"id": "transition", "name": "离职过渡"},
 ]
-_SEED_SOURCES = [
-    {"id": "august-plan", "label": "月计划 / 2026年8月", "path": f"{_OBSIDIAN_ROOT}/5.规划/2026月计划/2026年8月.md"},
-    {"id": "consulting-now", "label": "AI咨询 / NOW", "path": f"{_OBSIDIAN_ROOT}/2.重点项目/AI咨询/NOW.md"},
-    {"id": "vocotrade-now", "label": "VocoTrade / NOW", "path": f"{_OBSIDIAN_ROOT}/2.重点项目/VocoTrade/NOW.md"},
-    {"id": "fabric-now", "label": "面料外贸 / NOW", "path": f"{_OBSIDIAN_ROOT}/2.重点项目/面料外贸/NOW.md"},
-]
 _SEED_TASKS = [
-    {"id": "talk-script", "project": "consulting", "title": "约人话术准备", "status": "done", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-18", "sourceIds": ["consulting-now"]},
-    {"id": "meet-network", "project": "consulting", "title": "约见第一梯队：胜源、喆铭", "status": "focus", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-20", "sourceIds": ["august-plan", "consulting-now"]},
-    {"id": "case-page", "project": "consulting", "title": "案例单页初稿（vococo + VocoTrade）", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None, "sourceIds": ["august-plan"]},
-    {"id": "agent-wrap", "project": "vocotrade", "title": "邮件获客 agent 收口", "status": "focus", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-20", "sourceIds": ["august-plan", "vocotrade-now"]},
-    {"id": "video-path", "project": "vocotrade", "title": "研究 AI 剪辑宣传视频链路", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None, "sourceIds": ["august-plan"]},
-    {"id": "material-direction", "project": "vocotrade", "title": "确定宣传素材的第一版方向", "status": "todo", "month": "2026-08", "week": None, "date": None, "sourceIds": ["vocotrade-now"]},
-    {"id": "crawler-plan", "project": "fabric", "title": "确认 B12–B16 爬虫排产的下一步", "status": "block", "month": "2026-08", "week": "2026-08-17", "date": None, "sourceIds": ["fabric-now"]},
-    {"id": "difs", "project": "fabric", "title": "DIFS 展会预热：核对 B 批补发", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-21", "sourceIds": ["fabric-now"]},
-    {"id": "lemlist", "project": "fabric", "title": "跟踪 BD-Knit-01 回复与退信", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None, "sourceIds": ["fabric-now"]},
-    {"id": "contract", "project": "transition", "title": "确认竞业协议条款原文", "status": "focus", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-20", "sourceIds": ["august-plan"]},
-    {"id": "family-talk", "project": "transition", "title": "跟小雯同步创业计划与对外说法", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None, "sourceIds": ["august-plan"]},
-    {"id": "mortgage", "project": "transition", "title": "房贷延期材料咨询", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None, "sourceIds": ["august-plan"]},
+    {"id": "talk-script", "project": "consulting", "title": "约人话术准备", "status": "done", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-18"},
+    {"id": "meet-network", "project": "consulting", "title": "约见第一梯队：胜源、喆铭", "status": "focus", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-20"},
+    {"id": "case-page", "project": "consulting", "title": "案例单页初稿（vococo + VocoTrade）", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None},
+    {"id": "agent-wrap", "project": "vocotrade", "title": "邮件获客 agent 收口", "status": "focus", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-20"},
+    {"id": "video-path", "project": "vocotrade", "title": "研究 AI 剪辑宣传视频链路", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None},
+    {"id": "material-direction", "project": "vocotrade", "title": "确定宣传素材的第一版方向", "status": "todo", "month": "2026-08", "week": None, "date": None},
+    {"id": "crawler-plan", "project": "fabric", "title": "确认 B12–B16 爬虫排产的下一步", "status": "block", "month": "2026-08", "week": "2026-08-17", "date": None},
+    {"id": "difs", "project": "fabric", "title": "DIFS 展会预热：核对 B 批补发", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-21"},
+    {"id": "lemlist", "project": "fabric", "title": "跟踪 BD-Knit-01 回复与退信", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None},
+    {"id": "contract", "project": "transition", "title": "确认竞业协议条款原文", "status": "focus", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-20"},
+    {"id": "family-talk", "project": "transition", "title": "跟小雯同步创业计划与对外说法", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None},
+    {"id": "mortgage", "project": "transition", "title": "房贷延期材料咨询", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None},
 ]
 
 def _seed_if_empty() -> None:
@@ -72,16 +66,12 @@ def _seed_if_empty() -> None:
         [(p["id"], p["name"], i) for i, p in enumerate(_SEED_PROJECTS)],
     )
     c.executemany(
-        "INSERT INTO workbench_sources(id, label, path, sort_order) VALUES (?,?,?,?)",
-        [(s["id"], s["label"], s["path"], i) for i, s in enumerate(_SEED_SOURCES)],
-    )
-    c.executemany(
         "INSERT INTO workbench_tasks(id, project_id, title, detail, status, date, month, week, "
-        "source_ids, images, sort_order, created_at, updated_at, deleted_at, completed_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "images, sort_order, created_at, updated_at, deleted_at, completed_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             (t["id"], t["project"], t["title"], "", t["status"], t["date"], t["month"], t["week"],
-             json.dumps(t["sourceIds"], ensure_ascii=False), "[]", i, now, now, None,
+             "[]", i, now, now, None,
              now if t["status"] == "done" else None)
             for i, t in enumerate(_SEED_TASKS)
         ],
@@ -98,14 +88,9 @@ def _row_to_project(row) -> dict:
     return {"id": id_, "name": name, "sortOrder": sort_order}
 
 
-def _row_to_source(row) -> dict:
-    id_, label, path, sort_order = row
-    return {"id": id_, "label": label, "path": path, "sortOrder": sort_order}
-
-
 def _row_to_task(row) -> dict:
     (id_, project_id, title, detail, status, date, month, week,
-     source_ids, images, sort_order, created_at, updated_at, deleted_at, completed_at,
+     images, sort_order, created_at, updated_at, deleted_at, completed_at,
      parent_id, assignee, session_ids) = row
     return {
         "id": id_,
@@ -116,7 +101,6 @@ def _row_to_task(row) -> dict:
         "date": date,
         "month": month,
         "week": week,
-        "sourceIds": json.loads(source_ids or "[]"),
         "images": json.loads(images or "[]"),
         "sortOrder": sort_order,
         "createdAt": created_at,
@@ -131,7 +115,7 @@ def _row_to_task(row) -> dict:
 
 _TASK_COLUMNS = (
     "id, project_id, title, detail, status, date, month, week, "
-    "source_ids, images, sort_order, created_at, updated_at, deleted_at, completed_at, "
+    "images, sort_order, created_at, updated_at, deleted_at, completed_at, "
     "parent_id, assignee, session_ids"
 )
 
@@ -190,16 +174,6 @@ def reorder_projects(order: list[str]) -> None:
     c.commit()
 
 
-# ── 来源文档 ─────────────────────────────────────────────────────────────
-
-def list_sources() -> list[dict]:
-    _seed_if_empty()
-    rows = _db.conn().execute(
-        "SELECT id, label, path, sort_order FROM workbench_sources ORDER BY sort_order ASC"
-    ).fetchall()
-    return [_row_to_source(r) for r in rows]
-
-
 # ── 任务 ────────────────────────────────────────────────────────────────
 
 def list_tasks() -> list[dict]:
@@ -231,7 +205,6 @@ def get_task(task_id: str) -> dict | None:
 def create_task(
     project_id: str, title: str, *, detail: str = "", status: str = "todo",
     date: str | None = None, month: str | None = None, week: str | None = None,
-    source_ids: list[str] | None = None,
     parent_id: str | None = None, assignee: str = "human",
 ) -> dict | None:
     title = title.strip()
@@ -247,10 +220,10 @@ def create_task(
     task_id = _new_id("wt")
     c.execute(
         "INSERT INTO workbench_tasks(id, project_id, title, detail, status, date, month, week, "
-        "source_ids, images, sort_order, created_at, updated_at, deleted_at, completed_at, "
-        "parent_id, assignee, session_ids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "images, sort_order, created_at, updated_at, deleted_at, completed_at, "
+        "parent_id, assignee, session_ids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (task_id, project_id, title, detail, status, date, month, week,
-         json.dumps(source_ids or [], ensure_ascii=False), "[]", max_order + 1, now, now, None,
+         "[]", max_order + 1, now, now, None,
          now if status == "done" else None,
          parent_id, assignee, "[]"),
     )
@@ -258,7 +231,7 @@ def create_task(
     return get_task(task_id)
 
 
-_UPDATABLE_FIELDS = {"title", "detail", "status", "date", "month", "week", "project", "sourceIds", "assignee", "parentId"}
+_UPDATABLE_FIELDS = {"title", "detail", "status", "date", "month", "week", "project", "assignee", "parentId"}
 
 
 def update_task(task_id: str, **fields) -> dict | None:
@@ -275,9 +248,7 @@ def update_task(task_id: str, **fields) -> dict | None:
             value = value.strip()
             if not value:
                 continue
-        column = {"project": "project_id", "sourceIds": "source_ids", "parentId": "parent_id"}.get(key, key)
-        if key == "sourceIds":
-            value = json.dumps(value, ensure_ascii=False)
+        column = {"project": "project_id", "parentId": "parent_id"}.get(key, key)
         sets.append(f"{column}=?")
         params.append(value)
         # 完成时间跟着 status 走:切到 done 记下此刻,切回其它状态就清空——
