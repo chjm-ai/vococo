@@ -20,7 +20,7 @@ import uuid
 from .. import config
 from . import _db
 
-_STATUSES = {"todo", "done", "focus", "block"}
+_STATUSES = {"todo", "done", "focus", "block", "cancelled"}
 _ASSIGNEES = {"human", "ai"}
 _IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _EXT_STRIP_RE = re.compile(r"[^a-z0-9]")
@@ -176,16 +176,18 @@ def reorder_projects(order: list[str]) -> None:
 
 # ── 任务 ────────────────────────────────────────────────────────────────
 
-def move_task(task_id: str, parent_id: str | None, order: list[str]) -> dict | None:
-    """原子地更新任务父级与全局显示顺序，避免刷新后拖拽结果丢失。"""
+def move_task(task_id: str, parent_id: str | None, project_id: str, order: list[str]) -> dict | None:
+    """原子地迁移任务树、更新父级与全局显示顺序，避免刷新后拖拽结果丢失。"""
     c = _db.conn()
-    task = c.execute(
-        "SELECT project_id FROM workbench_tasks WHERE id=? AND deleted_at IS NULL", (task_id,)
-    ).fetchone()
-    active_ids = [r[0] for r in c.execute(
-        "SELECT id FROM workbench_tasks WHERE deleted_at IS NULL"
-    ).fetchall()]
-    if task is None or len(order) != len(active_ids) or set(order) != set(active_ids):
+    rows = c.execute(
+        "SELECT id, project_id, parent_id FROM workbench_tasks WHERE deleted_at IS NULL"
+    ).fetchall()
+    tasks = {row[0]: {"project": row[1], "parentId": row[2]} for row in rows}
+    if task_id not in tasks or len(order) != len(tasks) or set(order) != set(tasks):
+        return None
+    if project_id and c.execute(
+        "SELECT 1 FROM workbench_projects WHERE id=? AND archived=0", (project_id,)
+    ).fetchone() is None:
         return None
 
     if parent_id:
@@ -195,18 +197,31 @@ def move_task(task_id: str, parent_id: str | None, order: list[str]) -> dict | N
             if ancestor_id in seen:
                 return None
             seen.add(ancestor_id)
-            parent = c.execute(
-                "SELECT project_id, parent_id FROM workbench_tasks WHERE id=? AND deleted_at IS NULL",
-                (ancestor_id,),
-            ).fetchone()
-            if parent is None or parent[0] != task[0]:
+            parent = tasks.get(ancestor_id)
+            if parent is None or parent["project"] != project_id:
                 return None
-            ancestor_id = parent[1]
+            ancestor_id = parent["parentId"]
 
-    c.execute(
-        "UPDATE workbench_tasks SET parent_id=?, updated_at=? WHERE id=?",
-        (parent_id, time.time(), task_id),
+    children_by_parent: dict[str, list[str]] = {}
+    for item_id, item in tasks.items():
+        if item["parentId"]:
+            children_by_parent.setdefault(item["parentId"], []).append(item_id)
+    subtree, seen = [], set()
+    pending = [task_id]
+    while pending:
+        item_id = pending.pop()
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        subtree.append(item_id)
+        pending.extend(children_by_parent.get(item_id, []))
+
+    now = time.time()
+    c.executemany(
+        "UPDATE workbench_tasks SET project_id=?, updated_at=? WHERE id=?",
+        [(project_id, now, item_id) for item_id in subtree],
     )
+    c.execute("UPDATE workbench_tasks SET parent_id=? WHERE id=?", (parent_id, task_id))
     c.executemany(
         "UPDATE workbench_tasks SET sort_order=? WHERE id=?",
         [(i, item_id) for i, item_id in enumerate(order)],
@@ -264,7 +279,7 @@ def create_task(
         "parent_id, assignee, session_ids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (task_id, project_id, title, detail, status, date, month, week,
          "[]", max_order + 1, now, now, None,
-         now if status == "done" else None,
+         now if status in ("done", "cancelled") else None,
          parent_id, assignee, "[]"),
     )
     c.commit()
@@ -291,11 +306,11 @@ def update_task(task_id: str, **fields) -> dict | None:
         column = {"project": "project_id", "parentId": "parent_id"}.get(key, key)
         sets.append(f"{column}=?")
         params.append(value)
-        # 完成时间跟着 status 走:切到 done 记下此刻,切回其它状态就清空——
-        # 「已完成」按天分组要的是真实完成时刻,不能拿 updated_at(编辑标题/备注也会碰它)顶替。
+        # 完成时间跟着 status 走:切到 done/cancelled 记下此刻,切回其它状态就清空——
+        # 「日志」按天分组要的是真实完成/取消时刻,不能拿 updated_at(编辑标题/备注也会碰它)顶替。
         if key == "status":
             sets.append("completed_at=?")
-            params.append(time.time() if value == "done" else None)
+            params.append(time.time() if value in ("done", "cancelled") else None)
     if not sets:
         return get_task(task_id)
     sets.append("updated_at=?")

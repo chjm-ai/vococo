@@ -1435,12 +1435,13 @@ class WebAdapter:
     @_json_body
     async def _handle_workbench_task_move(self, request: web.Request, body: dict) -> web.Response:
         task_id = str(body.get("id") or "")
+        project_id = body.get("project")
         order = body.get("order")
-        if not task_id or not isinstance(order, list):
-            return web.json_response({"error": "id / order 无效"}, status=400)
-        task = workbench.move_task(task_id, body.get("parentId") or None, [str(item) for item in order])
+        if not task_id or not isinstance(project_id, str) or not isinstance(order, list):
+            return web.json_response({"error": "id / project / order 无效"}, status=400)
+        task = workbench.move_task(task_id, body.get("parentId") or None, project_id, [str(item) for item in order])
         if task is None:
-            return web.json_response({"error": "任务、父级或排序无效"}, status=400)
+            return web.json_response({"error": "任务、父级、项目或排序无效"}, status=400)
         return web.json_response({"task": task})
 
     @_authed

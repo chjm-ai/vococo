@@ -282,7 +282,7 @@ function workbenchParentBadge(task, isChild){
   const parent = workbenchTask(task.parentId);
   if(!parent) return '';
   const label = "父任务："+parent.title;
-  return '<button type="button" class="wb-parent-badge" data-goto-parent="'+esc(task.parentId)+'" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("tasks")+'</button>';
+  return '<span class="wb-parent-badge" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("branch")+'</span>';
 }
 
 function workbenchChildRows(parentId){
@@ -322,12 +322,12 @@ function workbenchTaskRow(task, isChild){
     const editor = renderWorkbenchTaskEditor(task);
     return editor + workbenchChildRows(task.id);
   }
-  const action = task.status === "done" ? "恢复" : "完成";
+  const action = (task.status === "done" || task.status === "cancelled") ? "恢复" : "完成";
   const selected = WB.selected.has(task.id);
   const detail = (task.detail && WB.view !== "month") ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
   const childClass = isChild ? " wb-task-child" : "";
   const row = '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+childClass+'" data-task="'+esc(task.id)+'" draggable="true">'+
-    '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
+    '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
     '<div class="wb-task-copy"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+detail+'</div>'+
     '<div class="wb-task-end">'+workbenchScheduleBadge(task)+workbenchParentBadge(task, isChild)+workbenchChildCount(task)+workbenchAssigneeBadge(task)+'</div>'+
     '</article>';
@@ -337,25 +337,24 @@ function workbenchTaskRow(task, isChild){
 }
 
 function renderWorkbenchTaskEditor(task){
-  const action = task.status === "done" ? "恢复" : "完成";
+  const action = (task.status === "done" || task.status === "cancelled") ? "恢复" : "完成";
   const images = (task.images||[]).map((name, index) => '<figure><img data-full="/image?name='+encodeURIComponent(name)+'" alt="任务附件"><button type="button" data-remove-image="'+index+'" data-image-task="'+esc(task.id)+'" aria-label="移除图片">×</button></figure>').join("");
   const isAi = task.assignee === "ai";
   const assigneeBtn = workbenchAssigneeSwitch(isAi, task.id);
   const dispatchBtn = isAi ? '<button type="button" class="wb-dispatch-btn" data-dispatch="'+esc(task.id)+'" title="让 AI 执行此任务">▶ 执行</button>' : "";
   const addChildBtn = !task.parentId ? '<button type="button" class="wb-add-child" data-add-child="'+esc(task.id)+'">'+ic("plus")+'<span>添加子任务</span></button>' : '';
   const sessionLinks = workbenchSessionLinks(task);
-  const parentLink = task.parentId ? (function(){ const p = workbenchTask(task.parentId); return p ? '<div class="wb-parent-link"><button type="button" data-goto-parent="'+esc(task.parentId)+'">↩ 父任务：'+esc(p.title)+'</button></div>' : ''; })() : '';
+  const parentLink = task.parentId ? (function(){ const p = workbenchTask(task.parentId); const label = p ? "查看父任务："+p.title : "查看父任务"; return '<button type="button" class="wb-parent-link" data-goto-parent="'+esc(task.parentId)+'" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("branch")+(p ? '<span>'+esc(p.title)+'</span>' : '')+'</button>'; })() : '';
   const scheduleLabel = workbenchScheduleLabel(task) || "设定日期";
   return '<article class="wb-task wb-editor-shell wb-task-card wb-'+esc(task.status)+'" data-task="'+esc(task.id)+'">'+
-    parentLink+
     '<div class="wb-card-head">'+
-      '<button class="wb-check" type="button" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
+      '<button class="wb-check" type="button" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
       '<input class="wb-card-title" data-edit-title="'+esc(task.id)+'" value="'+esc(task.title)+'" aria-label="任务标题">'+
     '</div>'+
     '<textarea data-edit-detail="'+esc(task.id)+'" placeholder="'+(isAi ? "Prompt（AI 执行时的指令）" : "备注（思路/要点）")+'">'+esc(task.detail||"")+'</textarea>'+
     (images ? '<div class="wb-image-list">'+images+'</div>' : "")+
     sessionLinks+
-    '<div class="wb-editor-footer">'+assigneeBtn+'<button type="button" class="wb-dp-trigger'+(workbenchScheduleLabel(task) ? " has-date" : "")+'" data-open-dp="task:'+esc(task.id)+'">'+ic("calendar")+'<span>'+esc(scheduleLabel)+'</span></button>'+addChildBtn+dispatchBtn+'</div>'+'</article>';
+    '<div class="wb-editor-footer">'+assigneeBtn+'<button type="button" class="wb-dp-trigger'+(workbenchScheduleLabel(task) ? " has-date" : "")+'" data-open-dp="task:'+esc(task.id)+'">'+ic("calendar")+'<span>'+esc(scheduleLabel)+'</span></button>'+addChildBtn+parentLink+dispatchBtn+'</div>'+'</article>';
 }
 
 function workbenchNewTaskCard(project){
@@ -397,11 +396,13 @@ function workbenchHasVisibleAncestor(task, visibleIds){
   return false;
 }
 
+function workbenchIsLogged(task){ return task.status === "done" || task.status === "cancelled"; }
+
 function workbenchVisibleTasks(){
   const dateFilter = workbenchCurrentFilter();
-  if(!dateFilter) return workbenchTasks(task => task.status !== "done");
+  if(!dateFilter) return workbenchTasks(task => !workbenchIsLogged(task));
   const hideDone = WB.view !== "month";
-  const combined = hideDone ? (task => dateFilter(task) && task.status !== "done") : dateFilter;
+  const combined = hideDone ? (task => dateFilter(task) && !workbenchIsLogged(task)) : dateFilter;
   const all = workbenchAllTasks(combined);
   const visibleIds = new Set(all.map(task => task.id));
   return all.filter(task => !workbenchHasVisibleAncestor(task, visibleIds));
@@ -416,20 +417,21 @@ function renderWorkbenchProjects(){
   if(WB.project === WB_UNASSIGNED_ID){
     projects = [WB_UNASSIGNED_PROJECT];
   }else if(WB.project === "all"){
-    // 「未分组」只在确实有游离任务时才出现，避免空占位。
-    projects = unassignedTasks.length ? [...WB_DATA.projects, WB_UNASSIGNED_PROJECT] : WB_DATA.projects;
+    // 「未分组」固定显示在最底部，哪怕暂时没有游离任务，方便拖任务过去。
+    projects = [...WB_DATA.projects, WB_UNASSIGNED_PROJECT];
   }else{
     const one = workbenchProject(WB.project);
     projects = one ? [one] : [];
   }
   if(!projects.length) return '<p class="wb-empty">还没有项目，点右上角「+」新建一个。</p>';
-  // 「全部项目」概览下，没任务的项目分组直接不显示（避免一屏全是"暂无任务"的空壳）；
+  // 「全部项目」概览下，没任务的真实项目分组直接不显示（避免一屏全是"暂无任务"的空壳）；
   // 但正在这个项目里写新任务草稿时不能藏——不然卡片会凭空消失。单选某个具体项目时
   // 永远显示该项目自己的区块，哪怕是空的，不然用户点进去会看到一片空白，无处新建。
+  // 「未分组」固定显示在最底部（见上方 projects 组装），不受这条空分组隐藏规则影响。
   const blocks = projects.map(project => {
     const list = project.id === WB_UNASSIGNED_ID ? unassignedTasks : tasks.filter(task => task.project === project.id);
     const hasDraft = WB.newTask && WB.newTask.project === project.id;
-    if(WB.project === "all" && !list.length && !hasDraft) return "";
+    if(WB.project === "all" && project.id !== WB_UNASSIGNED_ID && !list.length && !hasDraft) return "";
     return workbenchProjectBlock(project, list);
   }).filter(Boolean);
   if(!blocks.length) return '<p class="wb-empty">暂无任务。</p>';
@@ -468,8 +470,8 @@ function renderWorkbenchHeader(){
       '<div class="wb-switch">'+
         workbenchTabHtml("project", "项目")+
         workbenchTabHtml("unscheduled", "未排期")+
-        workbenchTabHtml("completed", "已完成")+
-        workbenchTabHtml("trash", "回收站")+
+        workbenchTabHtml("completed", "日志")+
+        workbenchTabHtml("trash", "废弃")+
       '</div>'+
     '</div></header>';
 }
@@ -522,21 +524,21 @@ function workbenchTrashRow(task){
 
 function renderWorkbenchTrash(){
   if(!WB_TRASH.loaded) return '<p class="wb-empty">加载中…</p>';
-  const toolbar = WB_TRASH.tasks.length ? '<div class="wb-trash-toolbar"><button type="button" class="wb-ctx-danger" data-empty-trash>清空回收站</button></div>' : "";
-  if(!WB_TRASH.tasks.length) return '<p class="wb-empty">回收站是空的。</p>';
+  const toolbar = WB_TRASH.tasks.length ? '<div class="wb-trash-toolbar"><button type="button" class="wb-ctx-danger" data-empty-trash>清空废弃</button></div>' : "";
+  if(!WB_TRASH.tasks.length) return '<p class="wb-empty">废弃是空的。</p>';
   return toolbar+'<div class="wb-task-list wb-trash-list">'+WB_TRASH.tasks.map(workbenchTrashRow).join("")+'</div>';
 }
 
 async function workbenchEmptyTrash(){
   if(!WB_TRASH.tasks.length) return;
-  if(!confirm("清空回收站？"+WB_TRASH.tasks.length+" 个任务将被永久删除，不可恢复。")) return;
+  if(!confirm("清空废弃？"+WB_TRASH.tasks.length+" 个任务将被永久删除，不可恢复。")) return;
   const prev = WB_TRASH.tasks;
   WB_TRASH.tasks = [];
   renderWorkbench();
   try{
     const r = await api("/workbench/trash/empty", {method:"POST"});
     if(!r.ok) throw new Error("清空失败");
-  }catch(e){ WB_TRASH.tasks = prev; renderWorkbench(); alert("清空回收站失败："+(e.message||"")); }
+  }catch(e){ WB_TRASH.tasks = prev; renderWorkbench(); alert("清空废弃失败："+(e.message||"")); }
 }
 
 // ── 已完成：跟时间/项目无关，按「完成当天」分组，最近完成的排最前 ──────────────
@@ -556,8 +558,8 @@ function workbenchCompletedGroupLabel(dateKey){
 }
 
 function renderWorkbenchCompleted(){
-  const tasks = WB_DATA.tasks.filter(task => task.status === "done");
-  if(!tasks.length) return '<p class="wb-empty">还没有已完成的任务。</p>';
+  const tasks = WB_DATA.tasks.filter(workbenchIsLogged);
+  if(!tasks.length) return '<p class="wb-empty">还没有日志。</p>';
   const groups = new Map();
   tasks.forEach(task => {
     const key = workbenchCompletedDayKey(task) || "unknown";
@@ -672,13 +674,13 @@ function workbenchMorphTask(taskId){
   return workbenchAnimateMorph(workbenchNodeForTask(taskId), workbenchTaskRow(task));
 }
 
-// 只在同一个项目分组内调整任务的相对顺序；显示顺序即 WB_DATA.tasks 的数组顺序（不持久化，刷新后按后端 sort_order 恢复）。
+// 显示顺序即 WB_DATA.tasks 的数组顺序；拖拽结束时再将全量顺序落库。
 function workbenchReorderTask(draggedId, targetId, placeBefore){
   if(draggedId === targetId) return false;
   const tasks = WB_DATA.tasks;
   const dragged = workbenchTask(draggedId);
   const target = workbenchTask(targetId);
-  if(!dragged || !target || dragged.project !== target.project) return false;
+  if(!dragged || !target) return false;
   const draggedIdx = tasks.indexOf(dragged);
   tasks.splice(draggedIdx, 1);
   let targetIdx = tasks.indexOf(target);
@@ -687,21 +689,40 @@ function workbenchReorderTask(draggedId, targetId, placeBefore){
   return true;
 }
 
-function workbenchPersistTaskPlacement(task, parentId, orderBefore){
-  const before = {parentId:task.parentId};
+function workbenchTaskTree(taskId){
+  const tree = [], seen = new Set(), pending = [taskId];
+  while(pending.length){
+    const itemId = pending.pop();
+    if(seen.has(itemId)) continue;
+    const task = workbenchTask(itemId);
+    if(!task) continue;
+    seen.add(itemId);
+    tree.push(task);
+    workbenchChildren(itemId).forEach(child => pending.push(child.id));
+  }
+  return tree;
+}
+
+function workbenchPersistTaskPlacement(task, parentId, projectId, orderBefore){
+  const tree = workbenchTaskTree(task.id);
+  const before = tree.map(item => ({id:item.id, patch:{parentId:item.parentId, project:item.project}}));
   task.parentId = parentId;
-  const after = {parentId:task.parentId};
+  tree.forEach(item => { item.project = projectId; });
+  const after = tree.map(item => ({id:item.id, patch:{parentId:item.parentId, project:item.project}}));
   renderWorkbench();
-  api("/workbench/tasks/move", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:task.id, parentId, order:WB_DATA.tasks.map(item => item.id)})})
+  api("/workbench/tasks/move", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:task.id, parentId, project:projectId, order:WB_DATA.tasks.map(item => item.id)})})
     .then(r => r.json().then(data => ({ok:r.ok && !data.error, data})))
     .then(({ok}) => {
-      if(ok){ workbenchRememberTaskPatch(task.id, before, after); return; }
-      task.parentId = before.parentId;
+      if(ok){
+        if(JSON.stringify(before) !== JSON.stringify(after)) workbenchRemember({type:"task-patch", before, after});
+        return;
+      }
+      before.forEach(({id, patch}) => Object.assign(workbenchTask(id)||{}, patch));
       WB_DATA.tasks = orderBefore;
       renderWorkbench();
     })
     .catch(() => {
-      task.parentId = before.parentId;
+      before.forEach(({id, patch}) => Object.assign(workbenchTask(id)||{}, patch));
       WB_DATA.tasks = orderBefore;
       renderWorkbench();
     });
@@ -729,21 +750,22 @@ function workbenchExpandTaskTree(taskId){
 function workbenchNestTask(taskId, parentId, siblingId, placeBefore){
   const task = workbenchTask(taskId);
   const parent = workbenchTask(parentId);
-  if(!task || !parent || task.project !== parent.project || task.parentId === parentId || workbenchTaskIsAncestor(taskId, parentId)) return;
+  if(!task || !parent || task.parentId === parentId || workbenchTaskIsAncestor(taskId, parentId)) return;
   const orderBefore = WB_DATA.tasks.slice();
   workbenchReorderTask(taskId, siblingId || parentId, siblingId ? placeBefore : false);
   WB.expanded.add(parentId); WB.collapsed.delete(parentId);
   workbenchExpandTaskTree(parentId);
   workbenchExpandTaskTree(taskId);
-  workbenchPersistTaskPlacement(task, parentId, orderBefore);
+  workbenchPersistTaskPlacement(task, parentId, parent.project, orderBefore);
 }
 
 function workbenchPromoteTask(taskId, targetId, placeBefore){
   const task = workbenchTask(taskId);
-  if(!task || !task.parentId) return;
+  const target = workbenchTask(targetId);
+  if(!task || !target || !task.parentId) return;
   const orderBefore = WB_DATA.tasks.slice();
   workbenchReorderTask(taskId, targetId, placeBefore);
-  workbenchPersistTaskPlacement(task, null, orderBefore);
+  workbenchPersistTaskPlacement(task, null, target.project, orderBefore);
 }
 
 function workbenchRefreshProjectBlock(projectId){
@@ -824,7 +846,7 @@ function toggleWorkbenchTask(taskId){
   const pendingHold = WB_COMPLETE_HOLD.get(taskId);
   if(pendingHold){ clearTimeout(pendingHold); WB_COMPLETE_HOLD.delete(taskId); }
   const before = {status: task.status};
-  const completing = task.status !== "done";
+  const completing = task.status !== "done" && task.status !== "cancelled";
   task.status = completing ? "done" : "todo";
   const after = {status: task.status};
   workbenchPersistTaskChange(taskId, before, after);
@@ -1185,6 +1207,14 @@ async function dispatchWorkbenchTask(taskId){
   }catch(e){ alert("派发执行失败："+(e.message||"")); }
 }
 
+// 选中一个任务时新建：子任务选中 -> 挂同一父任务下的兄弟任务；顶层任务选中 -> 挂它下面的子任务。
+function workbenchOpenNewTaskAtSelectedLevel(){
+  if(WB.view === "completed" || WB.view === "trash" || WB.selected.size !== 1) return;
+  const task = workbenchTask([...WB.selected][0]);
+  if(!task) return;
+  openWorkbenchNewChild(task.parentId || task.id, task.parentId ? task.id : null);
+}
+
 function openWorkbenchNewChild(parentId, siblingTaskId){
   const parent = workbenchTask(parentId);
   if(!parent) return;
@@ -1257,6 +1287,24 @@ function workbenchBatchComplete(ids){
   });
   if(!before.length) return;
   // 已完成任务会被当前视图隐藏，必须整体重渲染。
+  renderWorkbench();
+  Promise.all(after.map(({id, patch}, index) => persistWorkbenchTask(id, patch, before[index].patch))).then(results => {
+    if(results.every(Boolean)) workbenchRemember({type:"task-patch", before, after});
+  });
+}
+
+// 已取消跟已完成走同一套「隐藏于常规视图、在日志 tab 可见」的规则，直接照抄
+// workbenchBatchComplete 的结构。
+function workbenchBatchCancel(ids){
+  const before = [], after = [];
+  ids.forEach(id => {
+    const task = workbenchTask(id);
+    if(!task || task.status === "cancelled") return;
+    before.push({id, patch:{status:task.status}});
+    task.status = "cancelled";
+    after.push({id, patch:{status:task.status}});
+  });
+  if(!before.length) return;
   renderWorkbench();
   Promise.all(after.map(({id, patch}, index) => persistWorkbenchTask(id, patch, before[index].patch))).then(results => {
     if(results.every(Boolean)) workbenchRemember({type:"task-patch", before, after});
@@ -1846,7 +1894,7 @@ $("#workbenchView").addEventListener("contextmenu", event => {
 });
 
 $("#workbenchView").addEventListener("dblclick", event => {
-  if(event.target.closest("[data-complete]")) return;
+  if(event.target.closest("[data-complete],[data-toggle-children]")) return;
   const taskRow = event.target.closest("[data-task]");
   if(!taskRow) return;
   if(wbClickTimer){ clearTimeout(wbClickTimer); wbClickTimer = null; }
@@ -1888,7 +1936,7 @@ $("#workbenchView").addEventListener("dragover", event => {
   if(!row || row.dataset.task === wbDragTaskId) return;
   const dragged = workbenchTask(wbDragTaskId);
   const target = workbenchTask(row.dataset.task);
-  if(!dragged || !target || dragged.project !== target.project) return;
+  if(!dragged || !target) return;
   const rect = row.getBoundingClientRect();
   const mode = workbenchDropMode(dragged, target, event.clientY, rect);
   workbenchClearDropIndicators();
@@ -1908,7 +1956,7 @@ $("#workbenchView").addEventListener("drop", event => {
   const taskId = wbDragTaskId; wbDragTaskId = null;
   const dragged = workbenchTask(taskId);
   const target = workbenchTask(row.dataset.task);
-  if(!dragged || !target || dragged.project !== target.project) return;
+  if(!dragged || !target) return;
   event.preventDefault();
   const rect = row.getBoundingClientRect();
   const mode = workbenchDropMode(dragged, target, event.clientY, rect);
@@ -1918,7 +1966,7 @@ $("#workbenchView").addEventListener("drop", event => {
   if(mode === "nest-child"){ workbenchNestTask(taskId, target.parentId, target.id, before); return; }
   if(mode === "promote"){ workbenchPromoteTask(taskId, target.id, before); return; }
   const orderBefore = WB_DATA.tasks.slice();
-  if(workbenchReorderTask(taskId, target.id, before)) workbenchPersistTaskPlacement(dragged, dragged.parentId, orderBefore);
+  if(workbenchReorderTask(taskId, target.id, before)) workbenchPersistTaskPlacement(dragged, dragged.parentId, target.project, orderBefore);
 });
 
 $("#workbenchView").addEventListener("dragend", event => {
@@ -1989,6 +2037,12 @@ document.addEventListener("keydown", event => {
   if(event.key === "Enter" && !event.isComposing && event.keyCode !== 229 && event.target.matches("[data-new-title],[data-edit-title]")){
     event.preventDefault(); workbenchFinishActiveCard(); return;
   }
+  // 选中任务卡（非编辑态）时按回车：子任务 -> 新建同层级兄弟任务；顶层任务 -> 新建子任务。
+  if(event.key === "Enter" && !event.isComposing && event.keyCode !== 229 && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !WB.newTask && !WB.editorTaskId){
+    if(event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
+    if(WB.selected.size !== 1) return;
+    event.preventDefault(); workbenchOpenNewTaskAtSelectedLevel(); return;
+  }
   if(event.key === "Escape"){
     if(WB_DP.open){ workbenchDpClose(); return; }
     if(workbenchCtxMenuOpen()){ workbenchCloseCtxMenu(); return; }
@@ -2008,12 +2062,8 @@ document.addEventListener("keydown", event => {
   if(event.code !== "Space" || event.ctrlKey || event.metaKey || event.altKey) return;
   if(event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
   if(event.shiftKey){
-    if(WB.view === "completed" || WB.view === "trash" || WB.selected.size !== 1) return;
-    const task = workbenchTask([...WB.selected][0]);
-    if(!task) return;
-    event.preventDefault();
-    openWorkbenchNewChild(task.parentId || task.id, task.parentId ? task.id : null);
-    return;
+    if(WB.selected.size !== 1) return;
+    event.preventDefault(); workbenchOpenNewTaskAtSelectedLevel(); return;
   }
   if(WB.view === "completed" || WB.view === "trash") return; // 这两个视图没有项目分组，插不进新建卡
   event.preventDefault(); openWorkbenchNewTask();
@@ -2036,6 +2086,7 @@ function workbenchCtxMenuHtml(){
   const n = wbCtxIds.length;
   return '<button type="button" data-ctx="date">时间...</button>'+
     '<button type="button" data-ctx="done">标记完成</button>'+
+    '<button type="button" data-ctx="cancel">标记为已取消</button>'+
     '<button type="button" data-ctx="move">移动到...</button>'+
     '<div class="wb-ctx-sep"></div>'+
     '<button type="button" data-ctx="set-ai">设为 AI 任务</button>'+
@@ -2098,6 +2149,7 @@ function workbenchHandleCtxClick(event){
   }
   if(action === "move"){ wbCtxMode = "move"; workbenchRenderCtxMenu(); return; }
   if(action === "done"){ workbenchBatchComplete(wbCtxIds); workbenchCloseCtxMenu(); return; }
+  if(action === "cancel"){ workbenchBatchCancel(wbCtxIds); workbenchCloseCtxMenu(); return; }
   if(action === "set-ai" || action === "set-human"){
     const assignee = action === "set-ai" ? "ai" : "human";
     wbCtxIds.forEach(id => { const t = workbenchTask(id); if(t){ const prev = t.assignee; t.assignee = assignee; persistWorkbenchTask(id, {assignee}, {assignee: prev}); }});

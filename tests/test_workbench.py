@@ -81,25 +81,29 @@ def test_create_update_delete_task(isolated):
     assert workbench.delete_task(task["id"]) is False  # 已经在回收站,再删返回 False
 
 
-def test_move_task_nests_and_persists_child_order(isolated):
+def test_move_task_nests_across_projects_and_persists_child_order(isolated):
     from vococo.memory import workbench
 
-    project = workbench.create_project("拖拽排序测试项目")
-    parent = workbench.create_task(project["id"], "父任务")
-    first_child = workbench.create_task(project["id"], "子任务一", parent_id=parent["id"])
-    root = workbench.create_task(project["id"], "待移动任务")
-    second_child = workbench.create_task(project["id"], "子任务二", parent_id=parent["id"])
+    source_project = workbench.create_project("源项目")
+    target_project = workbench.create_project("目标项目")
+    parent = workbench.create_task(target_project["id"], "父任务")
+    first_child = workbench.create_task(target_project["id"], "子任务一", parent_id=parent["id"])
+    root = workbench.create_task(source_project["id"], "待移动任务")
+    descendant = workbench.create_task(source_project["id"], "后代任务", parent_id=root["id"])
+    second_child = workbench.create_task(target_project["id"], "子任务二", parent_id=parent["id"])
     order = [task["id"] for task in workbench.list_tasks()]
     order.remove(root["id"])
     order.insert(order.index(second_child["id"]), root["id"])
 
-    moved = workbench.move_task(root["id"], parent["id"], order)
+    moved = workbench.move_task(root["id"], parent["id"], target_project["id"], order)
     assert moved["parentId"] == parent["id"]
     assert [task["id"] for task in workbench.list_children(parent["id"])] == [
         first_child["id"], root["id"], second_child["id"]
     ]
+    assert workbench.get_task(root["id"])["project"] == target_project["id"]
+    assert workbench.get_task(descendant["id"])["project"] == target_project["id"]
     assert [task["id"] for task in workbench.list_tasks()] == order
-    assert workbench.move_task(parent["id"], first_child["id"], order) is None  # 禁止形成循环
+    assert workbench.move_task(parent["id"], first_child["id"], target_project["id"], order) is None  # 禁止形成循环
 
 
 def test_trash_restore_and_purge(isolated):
@@ -141,6 +145,12 @@ def test_completed_at_tracks_status_toggle(isolated):
 
     created_done = workbench.create_task(project["id"], "创建即完成", status="done")
     assert created_done["completedAt"] is not None
+
+    cancelled = workbench.update_task(task["id"], status="cancelled")
+    assert cancelled["completedAt"] is not None
+
+    reopened_from_cancelled = workbench.update_task(task["id"], status="todo")
+    assert reopened_from_cancelled["completedAt"] is None
 
 
 def test_empty_trash(isolated, monkeypatch):
