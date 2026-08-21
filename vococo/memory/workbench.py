@@ -77,10 +77,12 @@ def _seed_if_empty() -> None:
     )
     c.executemany(
         "INSERT INTO workbench_tasks(id, project_id, title, detail, status, date, month, week, "
-        "source_ids, images, sort_order, created_at, updated_at, deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "source_ids, images, sort_order, created_at, updated_at, deleted_at, completed_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             (t["id"], t["project"], t["title"], "", t["status"], t["date"], t["month"], t["week"],
-             json.dumps(t["sourceIds"], ensure_ascii=False), "[]", i, now, now, None)
+             json.dumps(t["sourceIds"], ensure_ascii=False), "[]", i, now, now, None,
+             now if t["status"] == "done" else None)
             for i, t in enumerate(_SEED_TASKS)
         ],
     )
@@ -103,7 +105,7 @@ def _row_to_source(row) -> dict:
 
 def _row_to_task(row) -> dict:
     (id_, project_id, title, detail, status, date, month, week,
-     source_ids, images, sort_order, created_at, updated_at, deleted_at,
+     source_ids, images, sort_order, created_at, updated_at, deleted_at, completed_at,
      parent_id, assignee, session_ids) = row
     return {
         "id": id_,
@@ -120,6 +122,7 @@ def _row_to_task(row) -> dict:
         "createdAt": created_at,
         "updatedAt": updated_at,
         "deletedAt": deleted_at,
+        "completedAt": completed_at,
         "parentId": parent_id,
         "assignee": assignee or "human",
         "sessionIds": json.loads(session_ids or "[]"),
@@ -128,7 +131,7 @@ def _row_to_task(row) -> dict:
 
 _TASK_COLUMNS = (
     "id, project_id, title, detail, status, date, month, week, "
-    "source_ids, images, sort_order, created_at, updated_at, deleted_at, "
+    "source_ids, images, sort_order, created_at, updated_at, deleted_at, completed_at, "
     "parent_id, assignee, session_ids"
 )
 
@@ -244,10 +247,11 @@ def create_task(
     task_id = _new_id("wt")
     c.execute(
         "INSERT INTO workbench_tasks(id, project_id, title, detail, status, date, month, week, "
-        "source_ids, images, sort_order, created_at, updated_at, deleted_at, "
-        "parent_id, assignee, session_ids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "source_ids, images, sort_order, created_at, updated_at, deleted_at, completed_at, "
+        "parent_id, assignee, session_ids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (task_id, project_id, title, detail, status, date, month, week,
          json.dumps(source_ids or [], ensure_ascii=False), "[]", max_order + 1, now, now, None,
+         now if status == "done" else None,
          parent_id, assignee, "[]"),
     )
     c.commit()
@@ -276,6 +280,11 @@ def update_task(task_id: str, **fields) -> dict | None:
             value = json.dumps(value, ensure_ascii=False)
         sets.append(f"{column}=?")
         params.append(value)
+        # 完成时间跟着 status 走:切到 done 记下此刻,切回其它状态就清空——
+        # 「已完成」按天分组要的是真实完成时刻,不能拿 updated_at(编辑标题/备注也会碰它)顶替。
+        if key == "status":
+            sets.append("completed_at=?")
+            params.append(time.time() if value == "done" else None)
     if not sets:
         return get_task(task_id)
     sets.append("updated_at=?")
@@ -345,6 +354,18 @@ def purge_task(task_id: str) -> bool:
     for name in task["images"]:
         _unlink_image(name)
     return True
+
+
+def empty_trash() -> int:
+    """清空回收站:彻底删除所有已软删除的任务及其图片,返回删掉的条数。"""
+    deleted = list_deleted_tasks()
+    c = _db.conn()
+    c.execute("DELETE FROM workbench_tasks WHERE deleted_at IS NOT NULL")
+    c.commit()
+    for task in deleted:
+        for name in task["images"]:
+            _unlink_image(name)
+    return len(deleted)
 
 
 # ── 任务图片(复用 config.IMAGES_DIR,文件名走既有 /image?name= 回显接口) ──────

@@ -34,8 +34,9 @@ function renderProjPop(){
   if(!d || !d.is_project){ pop.hidden=true; return; }
   pop.innerHTML='<div class="ppath">'+esc(d.project_path||d.path||"")+'</div>';
 }
-$("#convProjName").onclick=e=>{ e.stopPropagation(); const p=$("#projPop");
-  if(p.hidden){ renderProjPop(); p.hidden=false; } else p.hidden=true; };
+$("#convProjName").onclick=e=>{ e.stopPropagation(); const p=$("#projPop"), opening=p.hidden;
+  closeHeaderPopovers(opening ? p : null);
+  if(opening){ renderProjPop(); p.hidden=false; } };
 document.addEventListener("click", e=>{ const b=$("#projBox"); if(b && !b.contains(e.target)) $("#projPop").hidden=true; });
 // 默认分支名:vococo/月日-时分,方便一次会话开一条隔离分支
 function defaultBranchName(){ const d=new Date(), p=n=>String(n).padStart(2,"0");
@@ -72,8 +73,9 @@ async function createGitBranch(){
     const b=$("#convGit"); b.innerHTML=gitBtnLabel(d); b.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0));
   }catch(e){ err.textContent="网络错误"; err.hidden=false; btn.disabled=false; btn.textContent="新建并切换"; }
 }
-$("#convGit").onclick=e=>{ e.stopPropagation(); const p=$("#gitPop");
-  if(p.hidden){ renderGitPop(); p.hidden=false; } else p.hidden=true; };
+$("#convGit").onclick=e=>{ e.stopPropagation(); const p=$("#gitPop"), opening=p.hidden;
+  closeHeaderPopovers(opening ? p : null);
+  if(opening){ renderGitPop(); p.hidden=false; } };
 document.addEventListener("click", e=>{ const b=$("#gitBox"); if(b && !b.contains(e.target)) $("#gitPop").hidden=true; });
 
 // ── 会话列表 ─────────────────────────────────────────────────────────────
@@ -317,15 +319,36 @@ const CONV_SHOW_MAX = 7;   // 每个项目分组默认最多展示的会话数,�
                           //  侧边栏/最近列表全量可见;老任务时间久了自然沉底,不霸占首屏)
 const TAB_PAGE_SIZE = 20;   // 「置顶」「最近」Tab 分页粒度:默认 20 条,点「更多」每次再加 20 条
 const SIDE_TABS = [{key:"projects",label:"项目"},{key:"cron",label:"定时"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
+// SSE 已经在有数据变更时主动 push 刷新(见 stream.js loadConvs/loadCronSidebar 调用点),
+// 这里的点击刷新只是断线/后台挂起期间(移动端切后台网络被系统冻结)的兜底,不需要很灵敏,
+// 30s 内重复点击/来回切 Tab 不重新拉取,避免抖动请求。
+const SIDE_TAB_REFRESH_MS = 30000;
+// 各 Tab 展示的数据分别来自哪份接口:项目/置顶两个 Tab 都是从 S.convs 里筛的,刷新即 loadConvs();
+// 「最近」还混了语音任务,一并刷 loadVoiceSidebar();「定时」是 vococo 任务 + 本机系统任务两块。
+const SIDE_TAB_REFRESHERS = {
+  projects: () => Promise.all([loadConvs(), loadProjects()]).then(renderConvs),
+  pinned: () => loadConvs(),
+  recent: () => Promise.all([loadConvs(), loadVoiceSidebar()]),
+  cron: () => Promise.all([loadCronSidebar(), loadSystemTasks()]),
+};
+function refreshSideTabIfStale(key){
+  const now=Date.now();
+  const last=S.tabLastFetch[key]||0;
+  if(now-last < SIDE_TAB_REFRESH_MS) return;
+  S.tabLastFetch[key]=now;
+  SIDE_TAB_REFRESHERS[key]?.();
+}
 // 侧栏第二层 Tab:项目/定时/置顶/最近,切 Tab 记住选择,不影响下方各分组自己的展开态
 function renderSideTabs(box){
   const bar=el("div","sidetabs");
   for(const t of SIDE_TABS){
     const b=el("div","sidetab"+(S.sideTab===t.key?" active":"")); b.textContent=t.label;
     b.onclick=()=>{
-      if(S.sideTab===t.key) return;
-      S.sideTab=t.key; try{ localStorage.setItem("vococo_sidetab", t.key); }catch(e){}
-      renderConvs();
+      if(S.sideTab!==t.key){
+        S.sideTab=t.key; try{ localStorage.setItem("vococo_sidetab", t.key); }catch(e){}
+        renderConvs();
+      }
+      refreshSideTabIfStale(t.key);
     };
     bar.append(b);
   }

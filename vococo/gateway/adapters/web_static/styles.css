@@ -73,7 +73,7 @@
   #login .card{width:100%;max-width:340px;text-align:center;animation:pop .4s ease}
   #login .logo{width:68px;height:68px;margin:0 auto 16px;color:var(--text);
     display:flex;align-items:center;justify-content:center}
-  #login .logo svg{width:100%;height:100%}
+  #login .logo .voco-mascot{--s:2.4}
   #login h1{font-size:30px;margin:0 0 6px;letter-spacing:1px;font-weight:600;
     font-family:Optima,"Times New Roman","Songti SC",serif}
   #login p{color:var(--dim);margin:0 0 26px;font-size:14px}
@@ -559,9 +559,9 @@
   #gitPop .gerr[hidden]{display:none}
   #gitPop .gempty{font-size:12.5px;color:var(--dim)}
   #ctxBox{position:relative;flex-shrink:0;display:flex;align-items:center;gap:6px}
-  /* 「⋯」任务操作键:标题栏右侧,跟侧栏会话行的「⋯」同一套视觉语言(见 .conv .more) */
-  .hmore{font-size:18px;line-height:1;color:var(--dim2);padding:5px 9px;border-radius:9px;
-    cursor:pointer;transition:background .16s,color .16s;flex-shrink:0;display:flex;align-items:center}
+  /* 标题栏图标操作统一为正方形：定时任务与普通会话共用，避免 hover 灰底横向膨胀。 */
+  .hmore{width:28px;height:28px;padding:0;border-radius:9px;font-size:18px;line-height:1;color:var(--dim2);
+    cursor:pointer;transition:background .16s,color .16s;flex-shrink:0;display:flex;align-items:center;justify-content:center}
   .hmore:hover,.hmore.on{color:var(--text);background:var(--panel2)}
   .hmore[hidden]{display:none}
   .hmore .ic{width:16px;height:16px}
@@ -824,9 +824,9 @@
      不再用 position:absolute 铺满居中——内容变多(带最近对话列表)要能跟 #messages 一起滚动。 */
   #empty{display:none;flex-direction:column;padding:8px 6px 24px;pointer-events:auto;
     max-width:640px;margin:0 auto;width:100%}
-  #empty .elogo{width:64px;height:64px;margin:12px auto 14px;color:var(--text);
+  #empty .elogo{width:64px;height:64px;margin:12px auto 14px;
     display:flex;align-items:center;justify-content:center;animation:pop .5s ease}
-  #empty .elogo svg{width:100%;height:100%}
+  #empty .elogo .voco-mascot{--s:2.2}
   #empty h2{margin:0 0 6px;font-size:22px;font-weight:600;text-align:center;
     font-family:Optima,"Times New Roman","Songti SC",serif}
   #empty p{margin:0 0 20px;color:var(--dim);font-size:14px;text-align:center}
@@ -1466,13 +1466,15 @@
   #workbenchView .wb-check{display:grid;place-items:center;width:20px;height:20px;margin:0;padding:0;line-height:1;border-radius:5px}#workbenchView .wb-task-copy{min-width:0}#workbenchView .wb-task-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px;font-weight:600}#workbenchView .wb-task-detail{display:-webkit-box;width:100%;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;margin:2px 0 0;color:var(--dim2);font-size:13px;line-height:1.4}#workbenchView .wb-task-source{display:flex;align-items:center;justify-content:flex-end;gap:4px;min-width:0;max-width:170px;margin-left:auto;color:var(--dim);font-size:12px;line-height:20px;white-space:nowrap;text-decoration:none}#workbenchView .wb-task-source .ic{width:13px;height:13px;flex:0 0 13px}#workbenchView .wb-task-source span{overflow:hidden;text-overflow:ellipsis}#workbenchView .wb-no-source{justify-self:end;color:var(--dim2);font-size:12px;line-height:20px}
   #workbenchView .wb-empty{margin:4px 0 0;padding:8px 2px;border:0;color:var(--dim2);font-size:12px}
   @keyframes wbCardIn{from{opacity:0}to{opacity:1}}
-  #workbenchView .wb-editor-shell{margin:2px -16px 8px;width:calc(100% + 32px);padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--card);box-shadow:0 4px 16px color-mix(in srgb,var(--text) 6%,transparent);animation:wbCardIn .15s ease}
+  /* 编辑卡沿用任务行的三列栅格：复选框 20px + 10px 间距 + 文字列。
+     所有内容落在文字列起点，展开/收起时标题和描述不会左右跳动。 */
+  #workbenchView .wb-editor-shell{margin:2px 0 8px;width:auto;padding:14px 7px;border:1px solid var(--line);border-radius:10px;background:var(--card);box-shadow:0 4px 16px color-mix(in srgb,var(--text) 6%,transparent);animation:wbCardIn .15s ease}
   #workbenchView .wb-task-card{display:block;cursor:default}
   #workbenchView .wb-task-card:hover{background:var(--card)}
   #workbenchView .wb-card-head{display:flex;align-items:center;gap:10px}#workbenchView .wb-card-title{flex:1;min-width:0;padding:2px 0;border:0;background:transparent;color:var(--text);font-family:inherit;font-size:14px;line-height:20px;font-weight:600;outline:none}#workbenchView .wb-card-delete{display:grid;place-items:center;width:26px;height:26px;padding:0;border-radius:6px;color:var(--dim2)}#workbenchView .wb-card-delete:hover{background:var(--panel2);color:var(--err)}
-  #workbenchView .wb-editor-head{display:flex;align-items:center;gap:8px}#workbenchView .wb-editor-head input{flex:1;min-width:0;padding:2px 0;border:0;background:transparent;color:var(--text);font-family:inherit;font-size:14px;line-height:20px;font-weight:600;outline:none}#workbenchView .wb-editor-head input:focus{color:var(--accent)}
-  #workbenchView .wb-editor-shell textarea{display:block;width:100%;min-height:76px;max-height:240px;overflow-y:auto;margin-top:10px;padding:0;border:0;background:transparent;color:var(--text);font-family:inherit;font-size:13px;line-height:1.7;outline:none;resize:none}#workbenchView .wb-editor-shell textarea:focus{color:var(--text)}
-  #workbenchView .wb-editor-footer{display:flex;align-items:center;gap:7px;margin-top:10px}#workbenchView .wb-editor-footer button,#workbenchView .wb-editor-footer select{height:28px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--dim);font-family:inherit;font-size:12px;line-height:26px}#workbenchView .wb-editor-footer button:hover{background:var(--panel2);color:var(--text)}#workbenchView .wb-editor-sources{display:flex;align-items:center;gap:7px;min-width:0;margin-left:auto}#workbenchView .wb-editor-sources .wb-source-link{display:flex;align-items:center;gap:4px;max-width:180px;font-size:12px;text-decoration:none}#workbenchView .wb-editor-sources .wb-source-link span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.wb-image-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.wb-image-list figure{position:relative;width:104px;height:78px;margin:0;border-radius:7px;overflow:hidden;background:var(--panel)}.wb-image-list img{display:block;width:100%;height:100%;object-fit:cover;cursor:zoom-in}.wb-image-list button{position:absolute;right:4px;top:4px;width:22px;height:22px;padding:0;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:15px;line-height:20px}
+  #workbenchView .wb-editor-head{display:flex;align-items:center;gap:8px;margin-left:30px}#workbenchView .wb-editor-head input{flex:1;min-width:0;padding:2px 0;border:0;background:transparent;color:var(--text);font-family:inherit;font-size:14px;line-height:20px;font-weight:600;outline:none}
+  #workbenchView .wb-editor-shell textarea{display:block;width:calc(100% - 30px);min-height:76px;max-height:240px;overflow-y:auto;margin:10px 0 0 30px;padding:0;border:0;background:transparent;color:var(--text);font-family:inherit;font-size:13px;line-height:1.7;outline:none;resize:none}#workbenchView .wb-editor-shell textarea:focus{color:var(--text)}
+  #workbenchView .wb-editor-footer{display:flex;align-items:center;gap:7px;margin:10px 0 0 30px}#workbenchView .wb-editor-footer button,#workbenchView .wb-editor-footer select{height:28px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--dim);font-family:inherit;font-size:12px;line-height:26px}#workbenchView .wb-editor-footer button:hover{background:var(--panel2);color:var(--text)}#workbenchView .wb-editor-sources{display:flex;align-items:center;gap:7px;min-width:0;margin-left:auto}#workbenchView .wb-editor-sources .wb-source-link{display:flex;align-items:center;gap:4px;max-width:180px;font-size:12px;text-decoration:none}#workbenchView .wb-editor-sources .wb-source-link span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.wb-image-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.wb-image-list figure{position:relative;width:104px;height:78px;margin:0;border-radius:7px;overflow:hidden;background:var(--panel)}.wb-image-list img{display:block;width:100%;height:100%;object-fit:cover;cursor:zoom-in}.wb-image-list button{position:absolute;right:4px;top:4px;width:22px;height:22px;padding:0;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:15px;line-height:20px}
   .wb-ctx-menu{position:fixed;z-index:60;display:none;min-width:180px;max-width:240px;padding:6px;border:1px solid var(--line);border-radius:10px;background:var(--card);box-shadow:var(--shadow);font-size:13px}
   .wb-ctx-menu button{display:block;width:100%;padding:7px 10px;border:0;border-radius:6px;background:none;text-align:left;color:var(--text);font-size:13px}
   .wb-ctx-menu button:hover{background:var(--panel2)}
@@ -1520,8 +1522,14 @@
   #workbenchView .wb-trash-actions button{padding:5px 10px;border:1px solid var(--line);border-radius:6px;background:none;color:var(--dim);font-size:12px}
   #workbenchView .wb-trash-actions button:hover{background:var(--panel2);color:var(--text)}
   #workbenchView .wb-trash-actions .wb-ctx-danger:hover{color:var(--err);border-color:var(--err)}
+  #workbenchView .wb-trash-toolbar{display:flex;justify-content:flex-end;padding:2px 0 12px}
+  #workbenchView .wb-trash-toolbar .wb-ctx-danger{padding:5px 10px;border:1px solid var(--line);border-radius:6px;color:var(--dim);font-size:12px}
+  #workbenchView .wb-trash-toolbar .wb-ctx-danger:hover{color:var(--err);border-color:var(--err)}
+  #workbenchView .wb-completed-list{display:flex;flex-direction:column;gap:18px;margin-top:4px}
+  #workbenchView .wb-completed-group{padding-top:12px;border-top:1px solid var(--line)}#workbenchView .wb-completed-group:first-child{border-top:0;padding-top:0}
+  #workbenchView .wb-completed-date{margin:0 0 4px;color:var(--dim2);font-size:12px;font-weight:650}
   #workbenchView .wb-new-task{margin-top:8px;border-color:var(--line2)}#workbenchView .wb-new-task .wb-editor-footer{flex-wrap:wrap}#workbenchView .wb-new-task .wb-primary{margin-left:auto;background:var(--text);color:var(--bg2);border-color:var(--text)}
-  @media(max-width:760px){#workbenchView .wb-toolbar{display:flex;align-items:flex-start;flex-direction:column;gap:10px}#workbenchView .wb-switch{align-self:center}#workbenchView .wb-date-nav{align-self:flex-end;margin-left:auto}#workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,42vw);gap:8px}#workbenchView .wb-task-source{max-width:42vw}#workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}#workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}#workbenchView .wb-editor-sources{order:2;width:100%;margin-left:0}}
+  @media(max-width:760px){#workbenchView .wb-toolbar{display:flex;align-items:flex-start;flex-direction:column;gap:10px}#workbenchView .wb-switch{align-self:center;flex-wrap:wrap;justify-content:center}#workbenchView .wb-date-nav{align-self:flex-end;margin-left:auto}#workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,42vw);gap:8px}#workbenchView .wb-task-source{max-width:42vw}#workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}#workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}#workbenchView .wb-editor-sources{order:2;width:100%;margin-left:0}}
 
   /* ── 子任务 / 执行者 / 会话绑定 ─────────────────────────────────── */
   #workbenchView .wb-children{margin:0 0 0 30px;display:flex;flex-direction:column;gap:2px}
