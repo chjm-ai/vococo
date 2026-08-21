@@ -8,7 +8,7 @@ const WB_DATA = {projects: [], sources: [], tasks: []};
 // 「未分组」伪项目做兜底分组，不需要改后端 schema。
 const WB_UNASSIGNED_ID = "";
 const WB_UNASSIGNED_PROJECT = {id: WB_UNASSIGNED_ID, name: "未分组"};
-const WB = {project:"all", view:"week", anchor:null, editorTaskId:null, selected:new Set(), selectAnchor:null, newTask:null, collapsed:new Set(), expanded:new Set(), editSnapshots:new Map()};
+const WB = {project:"all", view:"week", anchor:null, editorTaskId:null, selected:new Set(), selectAnchor:null, newTask:null, expanded:new Set(), editSnapshots:new Map()};
 const WB_HISTORY_MAX = 30;
 const WB_HISTORY_KEY = "vococo:workbench-history";
 const WB_HISTORY = {undo:[], redo:[], busy:false};
@@ -55,6 +55,8 @@ function workbenchProjectMatches(item){
   return item.project === WB.project;
 }
 function workbenchTasks(filter){ return WB_DATA.tasks.filter(task => !task.parentId && workbenchProjectMatches(task) && filter(task)); }
+function workbenchAllTasks(filter){ return WB_DATA.tasks.filter(task => workbenchProjectMatches(task) && filter(task)); }
+function workbenchIsDateView(){ return WB.view === "day" || WB.view === "week" || WB.view === "month" || WB.view === "unscheduled"; }
 function workbenchChildren(parentId){ return WB_DATA.tasks.filter(task => task.parentId === parentId); }
 function workbenchChildrenStats(parentId){ const children = workbenchChildren(parentId); return {total: children.length, done: children.filter(c => c.status === "done").length}; }
 function workbenchTaskHighlight(task){ return task.highlight || task.title.split(/[：（(]/)[0]; }
@@ -226,11 +228,18 @@ function workbenchAssigneeBadge(task){
 }
 
 function workbenchChildCount(task){
-  if(task.parentId) return '';
+  if(task.parentId || workbenchIsDateView()) return '';
   const stats = workbenchChildrenStats(task.id);
   const expanded = WB.expanded.has(task.id);
   if(!stats.total) return '<span class="wb-child-toggle'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="添加子任务">+</span>';
   return '<span class="wb-child-count'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="子任务">'+stats.done+'/'+stats.total+'</span>';
+}
+
+function workbenchParentBadge(task, isChild){
+  if(!task.parentId || isChild) return '';
+  const parent = workbenchTask(task.parentId);
+  if(!parent) return '';
+  return '<button type="button" class="wb-parent-badge" data-goto-parent="'+esc(task.parentId)+'" title="父任务">↩ '+esc(parent.title)+'</button>';
 }
 
 function workbenchChildRows(parentId){
@@ -259,17 +268,21 @@ function workbenchSessionLinks(task){
 }
 
 function workbenchTaskRow(task, isChild){
-  if(WB.editorTaskId === task.id) return renderWorkbenchTaskEditor(task);
+  if(WB.editorTaskId === task.id){
+    const editor = renderWorkbenchTaskEditor(task);
+    if(isChild || task.parentId || workbenchIsDateView()) return editor;
+    return editor + workbenchChildRows(task.id);
+  }
   const action = task.status === "done" ? "恢复" : "完成";
   const selected = WB.selected.has(task.id);
-  const detail = task.detail ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
+  const detail = (task.detail && WB.view !== "month") ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
   const childClass = isChild ? " wb-task-child" : "";
   const row = '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+childClass+'" data-task="'+esc(task.id)+'" draggable="true">'+
     '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
     '<div class="wb-task-copy">'+workbenchAssigneeBadge(task)+'<strong class="wb-task-title">'+esc(task.title)+'</strong>'+detail+'</div>'+
-    '<div class="wb-task-end">'+workbenchChildCount(task)+workbenchSourceLink(task, true)+'</div>'+
+    '<div class="wb-task-end">'+workbenchParentBadge(task, isChild)+workbenchChildCount(task)+workbenchSourceLink(task, true)+'</div>'+
     '</article>';
-  if(isChild || task.parentId) return row;
+  if(isChild || task.parentId || workbenchIsDateView()) return row;
   return row + workbenchChildRows(task.id);
 }
 
@@ -284,7 +297,9 @@ function renderWorkbenchTaskEditor(task){
   const assigneeBtn = '<button type="button" class="wb-assignee-toggle'+(isAi ? " is-ai" : "")+'" data-toggle-assignee="'+esc(task.id)+'" title="切换执行者">'+(isAi ? "⚡ AI" : "👤 人工")+'</button>';
   const dispatchBtn = isAi ? '<button type="button" class="wb-dispatch-btn" data-dispatch="'+esc(task.id)+'" title="让 AI 执行此任务">▶ 执行</button>' : "";
   const sessionLinks = workbenchSessionLinks(task);
+  const parentLink = task.parentId ? (function(){ const p = workbenchTask(task.parentId); return p ? '<div class="wb-parent-link"><button type="button" data-goto-parent="'+esc(task.parentId)+'">↩ 父任务：'+esc(p.title)+'</button></div>' : ''; })() : '';
   return '<article class="wb-task wb-editor-shell wb-task-card wb-'+esc(task.status)+'" data-task="'+esc(task.id)+'">'+
+    parentLink+
     '<div class="wb-card-head">'+
       '<button class="wb-check" type="button" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "block" ? "!" : "")+'</button>'+
       '<input class="wb-card-title" data-edit-title="'+esc(task.id)+'" value="'+esc(task.title)+'" aria-label="任务标题">'+
@@ -307,25 +322,30 @@ function workbenchNewTaskCard(project){
     '<div class="wb-editor-footer">'+assigneeBtn+'<select data-new-project aria-label="项目">'+projectOptions+'</select><select data-new-source aria-label="来源文档"><option value="">来源文档</option>'+sourceOptions+'</select><button type="button" class="wb-dp-trigger'+(WB.newTask.date ? " has-date" : "")+'" data-open-dp="new">'+ic("calendar")+'<span>'+esc(workbenchDpLabel(WB.newTask.date))+'</span></button><button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
 }
 
+// 「详情」= 在项目 tab 里已经选定某个具体项目（点分组标题跳转过来，或用二级筛选 chip
+// 选的）——这时分组标题是多余的（当前就在这个项目里，点了也是原地不动），改成只显示
+// 任务列表，底部露一个弱化的「删除分组」入口。「未分组」是伪项目，没有删除的意义。
 function workbenchProjectBlock(project, tasks){
   const groupId = workbenchGroupId(project);
-  const collapsed = WB.collapsed.has(groupId);
-  const newCard = (!collapsed && (!WB.newTask || !WB.newTask.parentId)) ? workbenchNewTaskCard(project) : "";
+  const isDetail = WB.view === "project" && WB.project !== "all";
+  const newCard = (!WB.newTask || !WB.newTask.parentId) ? workbenchNewTaskCard(project) : "";
   const rows = tasks.map(t => workbenchTaskRow(t)).join("") + newCard;
   const body = rows ? '<div class="wb-task-list">'+rows+'</div>' : '<p class="wb-empty">暂无任务</p>';
-  return '<section class="wb-project-block"><button type="button" class="wb-project-toggle" data-group="'+esc(groupId)+'" aria-expanded="'+(!collapsed)+'"><span class="wb-project-name"><strong>'+esc(project.name)+'</strong><i class="wb-chevron" aria-hidden="true"></i></span></button>'+
-    (collapsed ? "" : body)+'</section>';
+  const header = isDetail ? "" : '<button type="button" class="wb-project-toggle" data-goto-project="'+esc(project.id)+'" title="查看「'+esc(project.name)+'」项目"><span class="wb-project-name"><strong>'+esc(project.name)+'</strong><i class="wb-chevron" aria-hidden="true"></i></span></button>';
+  const deleteBtn = (isDetail && project.id !== WB_UNASSIGNED_ID) ? '<button type="button" class="wb-project-delete" data-delete-project="'+esc(project.id)+'">删除分组</button>' : "";
+  return '<section class="wb-project-block" data-group="'+esc(groupId)+'">'+header+body+deleteBtn+'</section>';
 }
 
 // 已完成的任务只在「已完成」tab 里看（按天分组），unscheduled/day/week/project 这几个
 // 视图一律不显示——跟原来"done 任务原地打勾变灰"的行为不一样，切完成状态要连带触发整块
 // 重渲染（见 toggleWorkbenchTask/workbenchBatchComplete），不能再用原地 swap 节点那条快路径。
-// 月视图是例外：本来就要连当月已完成的任务一起显示，所以不按 status 过滤。
 function workbenchVisibleTasks(){
-  if(WB.view === "unscheduled") return workbenchTasks(task => !task.date && task.status !== "done");
-  if(WB.view === "day") return workbenchTasks(task => task.date === WB.anchor && task.status !== "done");
-  if(WB.view === "week") return workbenchTasks(task => task.week === workbenchWeekKey() && task.status !== "done");
-  if(WB.view === "month") return workbenchTasks(task => task.month === workbenchMonthKey());
+  if(WB.view === "unscheduled") return workbenchAllTasks(task => !task.date && task.status !== "done");
+  if(WB.view === "day") return workbenchAllTasks(task => task.date === WB.anchor && task.status !== "done");
+  if(WB.view === "week") return workbenchAllTasks(task => task.week === workbenchWeekKey() && task.status !== "done");
+  // 月视图特殊处理：不隐藏已完成任务（一屏看完整月的完成情况），配合
+  // workbenchTaskRow 里"月视图不显示备注"一起把列表压紧，不然一整月的任务堆起来太长。
+  if(WB.view === "month") return workbenchAllTasks(task => task.month === workbenchMonthKey());
   return workbenchTasks(task => task.status !== "done"); // "project" 视图：跨时间，只按项目筛选
 }
 
@@ -377,20 +397,28 @@ function workbenchTabHtml(view, label, opts){
   return '<button class="'+cls.join(" ")+'" type="button" data-view="'+view+'"'+aria+'>'+label+'</button>';
 }
 
-// 标题行(工作台标题 + 独立窗口按钮放最右)单独一行，tab 一行，日期切换/项目筛选
-// 作为「第二行」跟在 header 后面(见 renderWorkbenchSecondRow + renderWorkbenchBody)。
+// 标题行(工作台标题 + 独立窗口按钮放最右)单独一行；tab 行是两段式分段选择器（参考
+// 侧边栏 .sidetabs 的视觉语言）——第一段"日周月"是时间维度，第二段"项目/未排期/
+// 已完成/回收站"是跟时间无关的独立列表。两段共用同一个 WB.view 状态，靠
+// workbenchTabHtml 每次渲染时用 WB.view === view 现算 .on class，天然互斥，不用
+// 额外写"选了这段就清那段"的逻辑。日期切换/项目筛选作为「第二行」跟在 header 后面
+// (见 renderWorkbenchSecondRow + renderWorkbenchBody)。
 function renderWorkbenchHeader(){
   return '<header class="wb-toolbar">'+
     '<div class="wb-title-row"><div class="wb-title"><button class="wb-hamb" type="button" data-sidebar aria-label="打开侧边栏">'+ic("panel")+'</button><h1>工作台</h1></div>'+
       '<button type="button" class="wb-win-btn" data-workbench-win title="独立窗口" aria-label="独立窗口">'+ic("newwin")+'</button></div>'+
-    '<div class="wb-switch">'+
-      workbenchTabHtml("unscheduled", "未排期")+
-      workbenchTabHtml("day", "日")+
-      workbenchTabHtml("week", "周")+
-      workbenchTabHtml("month", "月")+
-      workbenchTabHtml("project", "项目")+
-      workbenchTabHtml("completed", "已完成")+
-      workbenchTabHtml("trash", "回收站")+
+    '<div class="wb-switch-row">'+
+      '<div class="wb-switch">'+
+        workbenchTabHtml("day", "日")+
+        workbenchTabHtml("week", "周")+
+        workbenchTabHtml("month", "月")+
+      '</div>'+
+      '<div class="wb-switch">'+
+        workbenchTabHtml("project", "项目")+
+        workbenchTabHtml("unscheduled", "未排期")+
+        workbenchTabHtml("completed", "已完成")+
+        workbenchTabHtml("trash", "回收站")+
+      '</div>'+
     '</div></header>';
 }
 
@@ -839,11 +867,8 @@ function openWorkbenchNewTask(){
   WB.editorTaskId = null;
   WB.selected = new Set(); WB.selectAnchor = null;
   WB.newTask = {project:project.id, title:"", detail:"", sourceId:"", date:WB.view === "day" ? WB.anchor : "", assignee:"human", parentId:null};
-  const groupId = workbenchGroupId(project);
-  const wasCollapsed = WB.collapsed.has(groupId);
-  if(wasCollapsed) WB.collapsed.delete(groupId);
-  let ok = !wasCollapsed;
-  if(ok && prevEditor) ok = workbenchMorphTask(prevEditor) && ok;
+  let ok = true;
+  if(prevEditor) ok = workbenchMorphTask(prevEditor) && ok;
   if(ok) ok = workbenchInsertNewTaskCard(project) && ok;
   if(!ok) renderWorkbench();
   requestAnimationFrame(() => $("[data-new-title]")?.focus());
@@ -899,6 +924,20 @@ function toggleWorkbenchChildren(parentId){
   if(WB.expanded.has(parentId)) WB.expanded.delete(parentId);
   else WB.expanded.add(parentId);
   renderWorkbench();
+}
+
+function gotoWorkbenchParent(parentId){
+  const parent = workbenchTask(parentId);
+  if(!parent) return;
+  WB.view = "project";
+  WB.project = parent.project || WB_UNASSIGNED_ID;
+  WB.expanded.add(parentId);
+  WB.editorTaskId = parentId;
+  renderWorkbench();
+  requestAnimationFrame(() => {
+    const el = document.querySelector('[data-task="'+parentId+'"]');
+    if(el) el.scrollIntoView({behavior:'smooth', block:'center'});
+  });
 }
 
 function toggleWorkbenchAssignee(taskId){
@@ -1441,6 +1480,8 @@ $("#workbenchView").addEventListener("click", event => {
   if(dispatch){ dispatchWorkbenchTask(dispatch.dataset.dispatch); return; }
   const addChild = event.target.closest("[data-add-child]");
   if(addChild){ openWorkbenchNewChild(addChild.dataset.addChild); return; }
+  const gotoParent = event.target.closest("[data-goto-parent]");
+  if(gotoParent){ gotoWorkbenchParent(gotoParent.dataset.gotoParent); return; }
   const sessionLink = event.target.closest("[data-session]");
   if(sessionLink){ const sid = sessionLink.dataset.session; if(typeof openConv === "function") openConv("task:"+sid); return; }
   const newAssignee = event.target.closest("[data-new-assignee]");
@@ -1455,8 +1496,21 @@ $("#workbenchView").addEventListener("click", event => {
   }
   const source = event.target.closest("[data-source]");
   if(source){ openWorkbenchSource(source.dataset.source, source.dataset.highlight); return; }
-  const group = event.target.closest("[data-group]");
-  if(group){ WB.collapsed.has(group.dataset.group) ? WB.collapsed.delete(group.dataset.group) : WB.collapsed.add(group.dataset.group); renderWorkbench(); return; }
+  const gotoProject = event.target.closest("[data-goto-project]");
+  if(gotoProject){
+    clearTimeout(wbClickTimer);
+    WB.view = "project"; WB.project = gotoProject.dataset.gotoProject;
+    WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null;
+    renderWorkbench(); refreshWorkbenchDataIfStale();
+    return;
+  }
+  const deleteProject = event.target.closest("[data-delete-project]");
+  if(deleteProject){
+    const id = deleteProject.dataset.deleteProject;
+    const project = workbenchProject(id);
+    if(project && confirm('删除「'+project.name+'」这个分组？名下任务不会被删除，只是这个分组不再显示。')) archiveWorkbenchProject(id);
+    return;
+  }
   if(event.target.closest("[data-new-task]")){ openWorkbenchNewTask(); return; }
   if(event.target.closest("[data-add-project]")){ addWorkbenchProject(); return; }
   if(event.target.closest("[data-save-new]")){ saveWorkbenchNewTask(); return; }
