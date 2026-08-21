@@ -376,20 +376,28 @@ function workbenchTabHtml(view, label, opts){
   return '<button class="'+cls.join(" ")+'" type="button" data-view="'+view+'"'+aria+'>'+label+'</button>';
 }
 
-// 标题行(工作台标题 + 独立窗口按钮放最右)单独一行，tab 一行，日期切换/项目筛选
-// 作为「第二行」跟在 header 后面(见 renderWorkbenchSecondRow + renderWorkbenchBody)。
+// 标题行(工作台标题 + 独立窗口按钮放最右)单独一行；tab 行是两段式分段选择器（参考
+// 侧边栏 .sidetabs 的视觉语言）——第一段"日周月"是时间维度，第二段"项目/未排期/
+// 已完成/回收站"是跟时间无关的独立列表。两段共用同一个 WB.view 状态，靠
+// workbenchTabHtml 每次渲染时用 WB.view === view 现算 .on class，天然互斥，不用
+// 额外写"选了这段就清那段"的逻辑。日期切换/项目筛选作为「第二行」跟在 header 后面
+// (见 renderWorkbenchSecondRow + renderWorkbenchBody)。
 function renderWorkbenchHeader(){
   return '<header class="wb-toolbar">'+
     '<div class="wb-title-row"><div class="wb-title"><button class="wb-hamb" type="button" data-sidebar aria-label="打开侧边栏">'+ic("panel")+'</button><h1>工作台</h1></div>'+
       '<button type="button" class="wb-win-btn" data-workbench-win title="独立窗口" aria-label="独立窗口">'+ic("newwin")+'</button></div>'+
-    '<div class="wb-switch">'+
-      workbenchTabHtml("unscheduled", "未排期")+
-      workbenchTabHtml("day", "日")+
-      workbenchTabHtml("week", "周")+
-      workbenchTabHtml("month", "月")+
-      workbenchTabHtml("project", "项目")+
-      workbenchTabHtml("completed", "已完成")+
-      workbenchTabHtml("trash", "回收站")+
+    '<div class="wb-switch-row">'+
+      '<div class="wb-switch">'+
+        workbenchTabHtml("day", "日")+
+        workbenchTabHtml("week", "周")+
+        workbenchTabHtml("month", "月")+
+      '</div>'+
+      '<div class="wb-switch">'+
+        workbenchTabHtml("project", "项目")+
+        workbenchTabHtml("unscheduled", "未排期")+
+        workbenchTabHtml("completed", "已完成")+
+        workbenchTabHtml("trash", "回收站")+
+      '</div>'+
     '</div></header>';
 }
 

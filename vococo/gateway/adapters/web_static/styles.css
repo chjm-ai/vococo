@@ -1396,7 +1396,7 @@
   #wbContent{width:min(820px,100%);padding:18px 32px 48px}
   .wb-toolbar{min-height:42px;padding-bottom:12px}.wb-title{gap:8px}.wb-title h1{font-size:15px;letter-spacing:0;font-weight:600}.wb-title span{font-size:11px}
   .wb-hamb{display:none;width:38px;height:38px;margin:-8px 0 -8px -8px;border-radius:11px;align-items:center;justify-content:center;color:var(--dim)}.wb-hamb .ic{width:19px;height:19px}.wb-hamb:hover{background:var(--panel2);color:var(--text)}
-  .wb-switch button{font-size:12px}.wb-date-nav strong,.wb-date-nav button{font-size:12px}.wb-date-nav button[data-nav]{font-size:18px}
+  .wb-date-nav strong,.wb-date-nav button{font-size:14px}.wb-date-nav button[data-nav]{font-size:18px}
   .wb-project-filter button{font-size:12px}.wb-section{margin-top:24px}.wb-section-head h2{font-family:inherit;font-size:14px;line-height:1.4;font-weight:600;letter-spacing:0}.wb-section-head span{font-size:12px}
   .wb-task{padding:11px 2px}.wb-task-line strong{font-size:14px}.wb-project-tag,.wb-task-meta,.wb-source-link,.wb-manual{font-size:12px}.wb-task-sources{margin-top:4px}.wb-empty{font-size:12px}
   .wb-project-block h2{font-size:14px}.wb-project-block header>div>span,.wb-goal-row span,.wb-unaligned{font-size:12px}.wb-goal-row strong{font-size:14px}.wb-demo-note{font-size:11px}
@@ -1448,14 +1448,16 @@
   #workbenchView .wb-toolbar{position:sticky;top:0;z-index:8;display:flex;flex-direction:column;align-items:stretch;gap:16px;padding:18px 0 12px;background:var(--bg2)}
   #workbenchView .wb-title-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
   #workbenchView .wb-title{display:flex;align-items:center;gap:8px}#workbenchView .wb-title h1{font-size:20px;line-height:26px;font-weight:700}
-  #workbenchView .wb-switch button{padding:7px 14px;border-radius:8px;font-size:14px;font-weight:600}
-  #workbenchView .wb-switch button.on{background:var(--panel2);color:var(--accent);font-weight:700}
+  #workbenchView .wb-switch-row{display:flex;flex-wrap:wrap;gap:12px}
+  #workbenchView .wb-switch{display:flex;gap:2px;padding:3px;border-radius:10px;background:var(--panel)}
+  #workbenchView .wb-switch button{padding:6px 12px;border-radius:8px;font-size:13px;color:var(--dim);font-weight:400}
+  #workbenchView .wb-switch button.on{background:var(--card);color:var(--text);font-weight:600}
   #workbenchView .wb-switch-icon{display:inline-flex;align-items:center;justify-content:center;width:26px}#workbenchView .wb-switch-icon .ic{width:14px;height:14px;vertical-align:0}
   #workbenchView .wb-win-btn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border-radius:7px;color:var(--dim)}#workbenchView .wb-win-btn:hover{background:var(--panel2);color:var(--text)}#workbenchView .wb-win-btn .ic{width:15px;height:15px}
   /* 独立窗口本身(?view=workbench)不需要再开一层同样的窗口;侧边栏靠 sb-collapsed 收起
      但 wb-hamb 展开图标保留(见 app-core.js tryEnter 的 standaloneWorkbench 分支)。 */
   body.wb-standalone .wb-win-btn{display:none!important}
-  #workbenchView .wb-project-filter{display:flex;gap:5px;overflow-x:auto;padding:4px 0 3px;border:0}#workbenchView .wb-project-filter button{padding:5px 8px;border-radius:6px;font-size:12px}#workbenchView .wb-project-add{display:grid;place-items:center;width:26px;height:26px;padding:0;border:1px dashed var(--line2);border-radius:6px;color:var(--dim2)}#workbenchView .wb-project-add:hover{border-style:solid;color:var(--text)}
+  #workbenchView .wb-project-filter{display:flex;gap:5px;overflow-x:auto;padding:4px 0 3px;border:0}#workbenchView .wb-project-filter button{padding:5px 8px;border-radius:6px;font-size:14px}#workbenchView .wb-project-add{display:grid;place-items:center;width:26px;height:26px;padding:0;border:1px dashed var(--line2);border-radius:6px;color:var(--dim2)}#workbenchView .wb-project-add:hover{border-style:solid;color:var(--text)}
   #workbenchView .wb-project-list{display:flex;flex-direction:column;gap:20px;margin-top:16px}#workbenchView .wb-project-block{margin:0;padding:0;border:0}
   #workbenchView .wb-project-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;min-height:28px;padding:0;text-align:left;color:var(--text)}#workbenchView .wb-project-toggle>span:last-child{color:var(--dim2);font-size:12px;line-height:20px}
   #workbenchView .wb-project-name{display:inline-flex;align-items:center;gap:7px;min-width:0}#workbenchView .wb-project-name strong{font-size:14px;line-height:20px;font-weight:650}#workbenchView .wb-project-name em{font-style:normal;color:var(--dim2);font-size:12px;line-height:20px}
