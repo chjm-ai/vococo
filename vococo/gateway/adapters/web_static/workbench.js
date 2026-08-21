@@ -8,7 +8,7 @@ const WB_DATA = {projects: [], sources: [], tasks: []};
 // 「未分组」伪项目做兜底分组，不需要改后端 schema。
 const WB_UNASSIGNED_ID = "";
 const WB_UNASSIGNED_PROJECT = {id: WB_UNASSIGNED_ID, name: "未分组"};
-const WB = {project:"all", view:"week", anchor:null, editorTaskId:null, selected:new Set(), selectAnchor:null, newTask:null, collapsed:new Set(), expanded:new Set(), editSnapshots:new Map()};
+const WB = {project:"all", view:"week", anchor:null, editorTaskId:null, selected:new Set(), selectAnchor:null, newTask:null, expanded:new Set(), editSnapshots:new Map()};
 const WB_HISTORY_MAX = 30;
 const WB_HISTORY_KEY = "vococo:workbench-history";
 const WB_HISTORY = {undo:[], redo:[], busy:false};
@@ -309,12 +309,11 @@ function workbenchNewTaskCard(project){
 
 function workbenchProjectBlock(project, tasks){
   const groupId = workbenchGroupId(project);
-  const collapsed = WB.collapsed.has(groupId);
-  const newCard = (!collapsed && (!WB.newTask || !WB.newTask.parentId)) ? workbenchNewTaskCard(project) : "";
+  const newCard = (!WB.newTask || !WB.newTask.parentId) ? workbenchNewTaskCard(project) : "";
   const rows = tasks.map(t => workbenchTaskRow(t)).join("") + newCard;
   const body = rows ? '<div class="wb-task-list">'+rows+'</div>' : '<p class="wb-empty">暂无任务</p>';
-  return '<section class="wb-project-block"><button type="button" class="wb-project-toggle" data-group="'+esc(groupId)+'" aria-expanded="'+(!collapsed)+'"><span class="wb-project-name"><strong>'+esc(project.name)+'</strong><i class="wb-chevron" aria-hidden="true"></i></span></button>'+
-    (collapsed ? "" : body)+'</section>';
+  return '<section class="wb-project-block"><button type="button" class="wb-project-toggle" data-group="'+esc(groupId)+'" data-goto-project="'+esc(project.id)+'" title="查看「'+esc(project.name)+'」项目"><span class="wb-project-name"><strong>'+esc(project.name)+'</strong><i class="wb-chevron" aria-hidden="true"></i></span></button>'+
+    body+'</section>';
 }
 
 // 已完成的任务只在「已完成」tab 里看（按天分组），这几个视图一律不显示——
@@ -837,11 +836,8 @@ function openWorkbenchNewTask(){
   WB.editorTaskId = null;
   WB.selected = new Set(); WB.selectAnchor = null;
   WB.newTask = {project:project.id, title:"", detail:"", sourceId:"", date:WB.view === "day" ? WB.anchor : "", assignee:"human", parentId:null};
-  const groupId = workbenchGroupId(project);
-  const wasCollapsed = WB.collapsed.has(groupId);
-  if(wasCollapsed) WB.collapsed.delete(groupId);
-  let ok = !wasCollapsed;
-  if(ok && prevEditor) ok = workbenchMorphTask(prevEditor) && ok;
+  let ok = true;
+  if(prevEditor) ok = workbenchMorphTask(prevEditor) && ok;
   if(ok) ok = workbenchInsertNewTaskCard(project) && ok;
   if(!ok) renderWorkbench();
   requestAnimationFrame(() => $("[data-new-title]")?.focus());
@@ -1453,8 +1449,14 @@ $("#workbenchView").addEventListener("click", event => {
   }
   const source = event.target.closest("[data-source]");
   if(source){ openWorkbenchSource(source.dataset.source, source.dataset.highlight); return; }
-  const group = event.target.closest("[data-group]");
-  if(group){ WB.collapsed.has(group.dataset.group) ? WB.collapsed.delete(group.dataset.group) : WB.collapsed.add(group.dataset.group); renderWorkbench(); return; }
+  const gotoProject = event.target.closest("[data-goto-project]");
+  if(gotoProject){
+    clearTimeout(wbClickTimer);
+    WB.view = "project"; WB.project = gotoProject.dataset.gotoProject;
+    WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null;
+    renderWorkbench(); refreshWorkbenchDataIfStale();
+    return;
+  }
   if(event.target.closest("[data-new-task]")){ openWorkbenchNewTask(); return; }
   if(event.target.closest("[data-add-project]")){ addWorkbenchProject(); return; }
   if(event.target.closest("[data-save-new]")){ saveWorkbenchNewTask(); return; }
