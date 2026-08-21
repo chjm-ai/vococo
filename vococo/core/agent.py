@@ -764,6 +764,7 @@ async def stream_turn(
     disallowed_tools: list[str] | None = None,
     max_turns: int | None = None,
     compact_only: bool = False,
+    system_prompt_extra: str = "",
 ) -> AsyncIterator[Event]:
     """流式跑一轮,逐个 yield 事件,最后 yield Done。
 
@@ -776,6 +777,12 @@ async def stream_turn(
     disallowed_tools:代码层硬拦一批工具名(如语音前台会话禁 Edit/Write,逼真正的
     改代码走 voice_dispatch_task 派后台任务),不同于 prompt 里"建议模型别用"——
     这里模型的调用请求根本不会被 SDK 放行,是稳定保证而非临场判断。
+
+    system_prompt_extra:调用方专属、但每轮内容不变的规则文本(如语音模式的稳定
+    规则块),追加进 system_prompt 而不是塞进 user_text——system_prompt 在 resume
+    场景下走 SDK/Anthropic 的 prompt cache,同样的文字只在首轮真正处理一次,后面
+    轮次缓存命中;放进 user_text 则每轮都是全新内容,吃不到缓存(2026-08-22 语音
+    首字延迟排查发现的优化点,见 voice/prompts.py 的稳定/动态拆分)。
 
     max_turns:单轮 agentic 轮数上限,None/0 用全局 config.MAX_TURNS(全局 0=不限,
     SDK 侧不传上限,靠 AGENT_TURN_TIMEOUT 硬超时兜底)。2026-07-10 真机事故:
@@ -854,6 +861,8 @@ async def stream_turn(
     cli_cwd, cloud_project_note = _cli_working_dir(cwd)
     if cloud_project_note:
         sys_prompt = {**sys_prompt, "append": sys_prompt.get("append", "") + cloud_project_note}
+    if system_prompt_extra:
+        sys_prompt = {**sys_prompt, "append": sys_prompt.get("append", "") + system_prompt_extra}
 
     effective_max_turns = max_turns or config.MAX_TURNS
 
