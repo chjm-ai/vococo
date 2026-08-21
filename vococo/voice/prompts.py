@@ -1,6 +1,18 @@
-"""语音模式指令块:每轮拼在 user_text 前,不改 core/prompt.py。
+"""语音模式指令块:拆成两部分,不改 core/prompt.py。
 
 见 docs/design/voice-companion/01-phase0-voice-entry.md §4.4。
+
+2026-08-22 拆分(排查语音"一直思考中不回复"时发现的优化点,见
+memory/vococo/vococo-voice-thinking-stall-20260821.md):原来这一整块规则
+(转写容错/客观表达/派活规则/任务板硬性规则等,每轮内容完全相同)被塞进
+user_text,每轮都当全新文字重新处理,吃不到 prompt cache——实测这部分光
+build_prompt() 的输出就有 4461 字符。现在拆成:
+- voice_system_prompt_extra():内容不随轮次变化的部分,追加进 system_prompt
+  (session.py 传给 stream_turn 的 system_prompt_extra),走 resume 场景下的
+  prompt cache,首轮之后基本零成本。
+- build_prompt():只保留真正每轮都会变的部分(回复长度判定、长任务提示、
+  任务板实时快照、用户这句话本身),继续拼进 user_text。
+两部分内容逐字保留原规则文本,只是搬了位置,不改判断逻辑。
 """
 from __future__ import annotations
 
@@ -51,21 +63,26 @@ from ..core import tasks
 # "详细讲/全都念/完整内容/展开讲"也被压成短回复,只能不停说"继续"拼接,体验差。
 # 修法:规则 2 改成动态措辞——用户本轮输入命中详细意图词(且没被"不用详细"这类
 # 否定抵消)时换成放宽版 _REPLY_LENGTH_DETAIL,其余场景照旧短回复。判定见
-# _wants_detail,输出侧(TTS)本身无硬截断,所以放宽 prompt 即生效。
-_INSTRUCTION_BLOCK = """【语音模式】用户正通过语音跟你对话,他现在很可能没在看屏幕——这是一个纯语音助手,
+# _wants_detail,输出侧(TTS)本身无硬截断,所以放宽 prompt 即生效。这条判定逻辑
+# 仍然依赖当前这句话的内容,没法挪进稳定块,继续留在 build_prompt() 每轮计算。
+
+_VOICE_STABLE_RULES_TEMPLATE = """
+
+【语音模式】用户正通过语音跟你对话,他现在很可能没在看屏幕——这是一个纯语音助手,
 你说的每一句话都会被朗读出来,规则:
-1. 你输出的文字就是要被朗读的内容,没有"只写在屏幕上不用念"这回事——
+- 你输出的文字就是要被朗读的内容,没有"只写在屏幕上不用念"这回事——
 不要因为内容长就只说一句空话搪塞(比如不能只说"帮你查到了/写好了"就不讲具体内容)。
-2. {reply_length_rule}
-3. 一次涉及多条结果(比如多篇笔记、多个文件、多条搜索结果)时:第一次只报
+- 一次涉及多条结果(比如多篇笔记、多个文件、多条搜索结果)时:第一次只报
 清单——有几条、各自大致是什么主题,不要展开任何一条的具体内容,然后问
 "要听哪一条的详细内容",等用户点名了再展开讲那一条。
-4. 单条内容本身就很长、讲不完时:先讲最关键的一两点,然后主动问一句
+- 单条内容本身就很长、讲不完时:先讲最关键的一两点,然后主动问一句
 "要不要我继续讲讲 YY",把是否继续的决定权交给用户,不要因为想讲全就超字数。
-5. 口语化中文,自然说话;禁止 markdown、代码块、链接符号——没法读;
+- 口语化中文,自然说话;禁止 markdown、代码块、链接符号——没法读;
 列表/要点改成"第一…第二…"或"分别是…"这样说出来,不要用星号/编号。
-6. 预计要花一点时间才能干完的事(查资料、跑命令),后端会自动垫一句等待话术,
+- 预计要花一点时间才能干完的事(查资料、跑命令),后端会自动垫一句等待话术,
 你不用自己说等待话术,专心把结果讲清楚就行。
+- 回复长度默认限制见每轮消息里的【回复长度】提示,以那条为准(有时会因为
+用户这句话要求"详细"而放宽,不是固定不变的)。
 正例(查到多篇笔记):「找到了三篇,分别是会议纪要、项目复盘和一篇读书笔记,
 要听哪一篇的详细内容?」
 反例:「帮你查到了,细节看屏幕。」/ 一口气把三篇笔记的内容都展开讲一遍
@@ -150,20 +167,30 @@ prompt 里写清楚"先执行 sleep 对应秒数(或算好等到的时间点),�
    承接关系的既有任务"的提示,说明本次派发被拦住了——按提示改用
    voice_continue_session 续接;确认是全新主题后再重调 voice_dispatch_task 即可放行。
 
-【任务板快照】下面是后台任务板"此时此刻"的真实状态,由代码直接从数据库生成,
-比你的记忆新、比你的猜测准:
-{task_snapshot}
-围绕任务进度的硬性规则:
-1. 回答"某任务怎么样了/查到了没"只能照这份快照说:快照说进行中就是进行中,
+【任务板快照】每轮消息末尾会附上后台任务板"此时此刻"的真实状态,由代码直接从
+数据库生成,比你的记忆新、比你的猜测准。围绕任务进度的硬性规则:
+1. 回答"某任务怎么样了/查到了没"只能照那份快照说:快照说进行中就是进行中,
    说已完成就把结果摘要转述给用户,说失败了就如实说失败原因——绝不允许跟快照矛盾。
 2. 用户问的细节快照里没有,就调 voice_query_session 拿到真实结果再答,不许凭印象补。
 3. 任务还没完成、或你根本没派过任务,就绝不能宣称"查到了/根因是XX"——调查类
    问题在拿到真实结果之前,只能说"还在查/还没查",编一个听起来合理的结论是
    最严重的违规行为,哪怕用户在追问也不行。
 4. 快照每行都带 session_id:要续接/查细节时直接用这个 id 调 voice_continue_session
-   或 voice_query_session,不用再绕 voice_list_sessions。
-{long_task_hint}
-用户说:{user_text}"""
+   或 voice_query_session,不用再绕 voice_list_sessions。"""
+
+
+def voice_system_prompt_extra() -> str:
+    """追加进 system_prompt 的语音专属稳定规则块(见模块顶部说明)。
+
+    内容逐轮字面相同(不掺用户这句话/任务板实时数据),现读 config 现格式化
+    (成本可忽略,不是文件 I/O),只为了让 config.ROOT_DIR/TASK_TIMEOUT_MIN
+    运行期被改(设置页/测试 monkeypatch)时立即反映,不用等进程重启。
+    """
+    return _VOICE_STABLE_RULES_TEMPLATE.format(
+        project_root=config.ROOT_DIR,
+        timeout_min=config.TASK_TIMEOUT_MIN,
+    )
+
 
 # 派活规则第2条完全靠模型临场判断"这事要不要拆后台",没有代码兜底——2026-07-09
 # 复盘过一次真实事故:用户口述一个7步骤的复杂任务,当时侥幸被正确识别派发,但
@@ -178,9 +205,10 @@ _REPLY_LENGTH_SHORT = (
 )
 _REPLY_LENGTH_DETAIL = (
     "用户本轮明确要求展开讲细节(话里带 详细/全部/完整/展开/细说/念一遍 这类词)\n"
-    "时,不受 100 字上限限制,把用户要的内容完整讲清楚;第 3、4 条(先报清单、\n"
-    "留钩子问要不要继续)这时也不适用——用户已经点名要全量内容,直接把内容讲全,\n"
-    "不要让他靠说\"继续\"来拼接。用户没有明确要求详细时,仍按 100 字以内的短回复来。"
+    "时,不受 100 字上限限制,把用户要的内容完整讲清楚;系统提示里【语音模式】第 3、4 条\n"
+    "(先报清单、留钩子问要不要继续)这时也不适用——用户已经点名要全量内容,直接把\n"
+    "内容讲全,不要让他靠说\"继续\"来拼接。用户没有明确要求详细时,仍按 100 字以内的\n"
+    "短回复来。"
 )
 
 # 详细意图词:命中即放宽。注意"全部/全都"这类词在口语里也可能只是泛称
@@ -209,15 +237,24 @@ def _wants_detail(user_text: str) -> bool:
 
 
 _LONG_TASK_HINT = """【输入较长提示】这段话有 {char_count} 个字,比日常对话明显长很多,
-很可能是在交代一件复杂或多步骤的事,而不是随口一句话。认真对照上面【派活规则】
-判断:只要踩中第2条的任何一个工作量信号,该走 voice_dispatch_task 就不要因为想
+很可能是在交代一件复杂或多步骤的事,而不是随口一句话。认真对照系统提示里的
+【派活规则】判断:只要踩中第2条的任何一个工作量信号,该走 voice_dispatch_task 就不要因为想
 一次性简单答完而漏派;如果方向不明确或你打算自己拆成好几步,记得先跟用户
 确认过再派,不能因为这条提示就跳过确认直接派活。
 """
 
+# 只保留每轮真正会变的内容:回复长度判定(取决于这句话)、长任务提示(取决于
+# 这句话的字数)、任务板实时快照(取决于此刻数据库状态)、用户原话。稳定不变的
+# 规则说明搬进了 voice_system_prompt_extra()(system_prompt_extra),不再每轮重复。
+_DYNAMIC_BLOCK = """【回复长度】{reply_length_rule}
+{long_task_hint}【任务板快照】
+{task_snapshot}
+
+用户说:{user_text}"""
+
 
 def build_prompt(user_text: str) -> str:
-    """把用户原话包上语音模式指令块,喂给 stream_turn。落库时不存这层包装。"""
+    """把用户原话包上每轮会变的动态部分,喂给 stream_turn。落库时不存这层包装。"""
     long_task_hint = (
         _LONG_TASK_HINT.format(char_count=len(user_text))
         if len(user_text) > config.VOICE_LONG_TASK_CHARS
@@ -233,11 +270,9 @@ def build_prompt(user_text: str) -> str:
         task_snapshot = tasks.snapshot_for_prompt(origin="voice")
     except Exception:  # noqa: BLE001
         task_snapshot = "(快照生成失败,这一轮请用 voice_query_session 查询真实状态)"
-    return _INSTRUCTION_BLOCK.format(
+    return _DYNAMIC_BLOCK.format(
         user_text=user_text,
-        timeout_min=config.TASK_TIMEOUT_MIN,
         long_task_hint=long_task_hint,
         task_snapshot=task_snapshot,
-        project_root=config.ROOT_DIR,
         reply_length_rule=reply_length_rule,
     )

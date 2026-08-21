@@ -128,8 +128,9 @@ def test_build_prompt_injects_task_snapshot(voice_db):
     out = prompts.build_prompt("那个任务怎么样了")
     assert "【任务板快照】" in out
     assert f"「查资料」(session_id={t['id']})进行中" in out
-    # 防虚构硬规则也要在场
-    assert "绝不能宣称" in out
+    # 防虚构硬规则内容不随快照变化,已挪进 system_prompt_extra(2026-08-22 拆分),
+    # 但仍必须在场
+    assert "绝不能宣称" in prompts.voice_system_prompt_extra()
 
 
 def test_snapshot_lines_include_session_id(voice_db):
