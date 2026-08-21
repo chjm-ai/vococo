@@ -714,6 +714,11 @@ function toggleGroup(hash){
 function newChatIn(hash, focus, expand){
   S.project=hash;
   if(expand!==false){ S.expanded.add(grpKey(hash)); saveExpanded(); }
+  // 同项目下若已有一个还没发出第一条消息的草稿会话(local-xxx,turns=0),直接复用它
+  // (连同它在 localStorage 里存的输入框草稿一起带回来),不再另起一个空会话——
+  // 否则"新对话→打几个字→切走→再点新对话"每次都会把刚才的草稿会话晾在一边。
+  const existing = S.convs.find(c=>String(c.conv).startsWith("local-") && c.turns===0 && convProject(c.conv)===hash);
+  if(existing){ openConv(existing.conv, expand===false); if(focus!==false) $("#ta").focus(); return; }
   const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6);
   const conv="local-"+(hash?("p"+hash+":"):"")+id;
   S.convs.unshift({conv,title:"新对话",turns:0,last_ts:null});

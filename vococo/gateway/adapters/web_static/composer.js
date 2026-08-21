@@ -86,10 +86,17 @@ async function send(text, display, opts){
     files:S.files.map(x=>({id:x.id})),
   };
   // 新会话:发出第一条后,把本地临时会话转正
+  const oldConv=S.conv;
   const wasLocal=String(S.conv).startsWith("local-");
   clearDraft();   // 发送即清草稿:必须在转正前调用,否则 S.conv 已换成真实 id,local- 旧 key 清不掉
   clearComposerAttachments();
-  if(wasLocal){ S.conv=S.conv.replace("local-",""); payload.conv=S.conv; renderProjSelChip(); }
+  if(wasLocal){
+    S.conv=S.conv.replace("local-",""); payload.conv=S.conv; renderProjSelChip();
+    // S.convs 里那条草稿行(conv=local-xxx)原地更新成新的真实 id,别留一条转正前的孤儿条目——
+    // 否则"新对话"复用逻辑(newChatIn)会把它当成还没发消息的草稿误重新打开
+    const entry=S.convs.find(x=>x.conv===oldConv);
+    if(entry){ entry.conv=S.conv; entry.turns=1; }
+  }
   renderThumbs(); $("#ta").value=""; autoGrow();
   try{
     await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
@@ -104,8 +111,14 @@ async function sendCmd(cmd, conv){
   conv = conv || S.conv;
   const isCurrent = conv===S.conv;
   const payload={conv:conv, text:cmd, images:[]};
+  const oldConv=conv;
   const wasLocal=String(conv).startsWith("local-");
-  if(wasLocal){ conv=conv.replace("local-",""); payload.conv=conv; if(isCurrent){ S.conv=conv; renderProjSelChip(); } }
+  if(wasLocal){
+    conv=conv.replace("local-",""); payload.conv=conv;
+    if(isCurrent){ S.conv=conv; renderProjSelChip(); }
+    const entry=S.convs.find(x=>x.conv===oldConv);
+    if(entry){ entry.conv=conv; entry.turns=1; }
+  }
   try{
     await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(wasLocal) setTimeout(loadConvs, 400);
