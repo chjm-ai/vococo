@@ -449,38 +449,23 @@ function workbenchRowRange(anchorId, targetId){
 }
 
 function workbenchSelectSingle(taskId){
-  const prevEditor = WB.editorTaskId;
-  const hadNewTask = !!WB.newTask;
-  WB.newTask = null;
-  WB.editorTaskId = null;
+  // 选中另一个任务前先收起当前展开的卡片，跟点击空白处、回车走同一个收起逻辑——
+  // 新建卡有标题就落地保存，不能因为切换选中就把没提交的内容悄悄丢了。
+  workbenchFinishActiveCard();
   workbenchSetSelection([taskId]);
   WB.selectAnchor = taskId;
-  if(hadNewTask){ renderWorkbench(); return; }
-  if(prevEditor && prevEditor !== taskId && !workbenchMorphTask(prevEditor)) renderWorkbench();
 }
 
 function workbenchSelectRange(anchorId, targetId){
-  const prevEditor = WB.editorTaskId;
-  const hadNewTask = !!WB.newTask;
-  WB.newTask = null;
-  WB.editorTaskId = null;
+  workbenchFinishActiveCard();
   workbenchSetSelection(workbenchRowRange(anchorId, targetId));
-  if(hadNewTask){ renderWorkbench(); return; }
-  if(prevEditor && !workbenchMorphTask(prevEditor)) renderWorkbench();
 }
 
 function openWorkbenchEditor(taskId){
-  const prevEditor = WB.editorTaskId;
-  const hadNewTask = !!WB.newTask;
-  WB.newTask = null;
+  workbenchFinishActiveCard();
   workbenchSetSelection([]);
   WB.editorTaskId = taskId;
-  let ok = !hadNewTask;
-  if(ok){
-    if(prevEditor && prevEditor !== taskId) ok = workbenchMorphTask(prevEditor) && ok;
-    ok = workbenchMorphTask(taskId) && ok;
-  }
-  if(!ok) renderWorkbench();
+  if(!workbenchMorphTask(taskId)) renderWorkbench();
   requestAnimationFrame(() => {
     const el = $(".wb-card-title");
     if(!el) return;
@@ -634,15 +619,24 @@ async function saveWorkbenchNewTask(){
   const week = date ? workbenchWeekKey(workbenchDate(date)) : (WB.view === "month" ? null : workbenchWeekKey());
   const payload = {project:draft.project, title, detail:draft.detail, date, month, week, sourceIds:draft.sourceId ? [draft.sourceId] : []};
   WB.newTask = null;
+  // 乐观本地先造一条临时任务，卡片立刻收起成行——不用等接口回来才有动效，否则回车会
+  // 感觉「慢半拍」；等真实 id 回来了原地把临时 id 换掉，保存失败就把这一行撤回。
+  const temp = Object.assign({id:"tmp-"+Math.random().toString(36).slice(2), status:"todo", images:[]}, payload);
+  WB_DATA.tasks.push(temp);
+  if(!workbenchAnimateMorph(document.querySelector("[data-new-card]"), workbenchTaskRow(temp))) renderWorkbench();
   try{
     const r = await api("/workbench/tasks/create", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
     const d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error||"创建失败");
-    WB_DATA.tasks.push(d.task);
-    // 新建卡原地收缩成任务行，跟其它「卡片 ↔ 行」切换共用同一套动效，不整表重渲染。
-    if(workbenchAnimateMorph(document.querySelector("[data-new-card]"), workbenchTaskRow(d.task))) return;
-  }catch(e){ alert("新建任务失败："+(e.message||"")); }
-  renderWorkbench();
+    const idx = WB_DATA.tasks.indexOf(temp);
+    if(idx !== -1) WB_DATA.tasks[idx] = d.task;
+    const node = workbenchNodeForTask(temp.id);
+    if(node){ node.dataset.task = d.task.id; node.querySelector("[data-complete]")?.setAttribute("data-complete", d.task.id); }
+  }catch(e){
+    WB_DATA.tasks = WB_DATA.tasks.filter(t => t !== temp);
+    alert("新建任务失败："+(e.message||""));
+    renderWorkbench();
+  }
 }
 
 // 收起当前展开的卡片——不管是新建卡还是已有任务的编辑卡：新建卡有标题就当完成新建，
