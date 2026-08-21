@@ -65,6 +65,11 @@ def test_create_update_delete_task(isolated):
     assert unscheduled["month"] is None
     assert unscheduled["week"] is None
 
+    promoted = workbench.update_task(child["id"], parentId=None)
+    assert promoted["parentId"] is None
+    nested = workbench.update_task(child["id"], parentId=task["id"])
+    assert nested["parentId"] == task["id"]
+
     updated = workbench.update_task(task["id"], status="done", title="改了标题")
     assert updated["status"] == "done"
     assert updated["title"] == "改了标题"
