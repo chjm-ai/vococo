@@ -87,6 +87,14 @@ const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
 const esc = s => s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
+// 标题栏弹层互斥：打开任一项时，收起其余项，避免在窄屏上彼此遮挡。
+function closeHeaderPopovers(except){
+  for(const id of ["projPop","gitPop","ctxPop","convDocsPop"]){
+    const pop=$("#"+id);
+    if(pop && pop!==except) pop.hidden=true;
+  }
+}
+
 // ── 线框图标(替代实体 emoji,统一 currentColor 描边风格)──────────────────
 const ICONS = {
   mic:'<path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/>',

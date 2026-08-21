@@ -34,8 +34,9 @@ function renderProjPop(){
   if(!d || !d.is_project){ pop.hidden=true; return; }
   pop.innerHTML='<div class="ppath">'+esc(d.project_path||d.path||"")+'</div>';
 }
-$("#convProjName").onclick=e=>{ e.stopPropagation(); const p=$("#projPop");
-  if(p.hidden){ renderProjPop(); p.hidden=false; } else p.hidden=true; };
+$("#convProjName").onclick=e=>{ e.stopPropagation(); const p=$("#projPop"), opening=p.hidden;
+  closeHeaderPopovers(opening ? p : null);
+  if(opening){ renderProjPop(); p.hidden=false; } };
 document.addEventListener("click", e=>{ const b=$("#projBox"); if(b && !b.contains(e.target)) $("#projPop").hidden=true; });
 // 默认分支名:vococo/月日-时分,方便一次会话开一条隔离分支
 function defaultBranchName(){ const d=new Date(), p=n=>String(n).padStart(2,"0");
@@ -72,8 +73,9 @@ async function createGitBranch(){
     const b=$("#convGit"); b.innerHTML=gitBtnLabel(d); b.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0));
   }catch(e){ err.textContent="网络错误"; err.hidden=false; btn.disabled=false; btn.textContent="新建并切换"; }
 }
-$("#convGit").onclick=e=>{ e.stopPropagation(); const p=$("#gitPop");
-  if(p.hidden){ renderGitPop(); p.hidden=false; } else p.hidden=true; };
+$("#convGit").onclick=e=>{ e.stopPropagation(); const p=$("#gitPop"), opening=p.hidden;
+  closeHeaderPopovers(opening ? p : null);
+  if(opening){ renderGitPop(); p.hidden=false; } };
 document.addEventListener("click", e=>{ const b=$("#gitBox"); if(b && !b.contains(e.target)) $("#gitPop").hidden=true; });
 
 // ── 会话列表 ─────────────────────────────────────────────────────────────

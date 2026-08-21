@@ -1023,7 +1023,8 @@ function copyCodeBlock(btn){
     setTimeout(()=> btn.innerHTML = old, 1200);
   }).catch(()=>{});
 }
-$("#barMeta").onclick = e=>{ e.stopPropagation(); const p=$("#ctxPop"); p.hidden=!p.hidden; };
+$("#barMeta").onclick = e=>{ e.stopPropagation(); const p=$("#ctxPop"), opening=p.hidden;
+  closeHeaderPopovers(opening ? p : null); p.hidden=!opening; };
 document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contains(e.target)) $("#ctxPop").hidden=true; });
 
 // ── 会话文档:标题栏图标按需列出本会话创建或编辑的文档(不混 HTML/代码文件) ──────
@@ -1046,9 +1047,9 @@ function renderConvDocuments(documents){
   }; });
 }
 async function toggleConvDocuments(){
-  const pop=$("#convDocsPop");
-  $("#ctxPop").hidden=true;
-  if(!pop.hidden){ pop.hidden=true; return; }
+  const pop=$("#convDocsPop"), opening=pop.hidden;
+  closeHeaderPopovers(opening ? pop : null);
+  if(!opening) return;
   const conv=S.conv;
   pop.hidden=false; pop.innerHTML='<div class="cdempty">加载中…</div>';
   try{
