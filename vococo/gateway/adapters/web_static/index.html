@@ -9,13 +9,14 @@
 <title>vococo</title>
 <!-- PWA:装到主屏 + Web Push 系统通知 -->
 <link rel="manifest" href="/manifest.json">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
-<link rel="icon" type="image/svg+xml" href="/vococo-mark.svg?v=2">
-<link rel="icon" href="/favicon.ico?v=2" sizes="any">
-<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png?v=2">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=3">
+<link rel="icon" type="image/svg+xml" href="/vococo-mark.svg?v=3">
+<link rel="icon" href="/favicon.ico?v=3" sizes="any">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png?v=3">
 <!-- 防闪烁:渲染前先套用上次选择的主题 -->
 <script>(function(){try{var t=localStorage.getItem("vococo_theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
 <link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/mascot.css">
 </head>
 <body>
 
@@ -290,18 +291,7 @@ try{
       </div>
       <div id="empty">
         <div class="elogo">
-          <svg viewBox="150 20 100 220" xmlns="http://www.w3.org/2000/svg">
-            <g fill="currentColor" transform="translate(0,-10)">
-              <path d="M150 232 q0 -11 14 -13 q22 -3 36 -3 q14 0 36 3 q14 2 14 13 q0 9 -14 11 q-22 3 -36 3 q-14 0 -36 -3 q-14 -2 -14 -11 z"/>
-              <path d="M170 214 q-3 -6 0 -12 q10 -3 30 -3 q20 0 30 3 q3 6 0 12 q-30 5 -30 5 q0 0 -30 -5 z"/>
-              <path d="M200 108 C 218 108 230 120 230 138 C 230 156 220 168 214 182 C 209 194 207 202 208 210 L 192 210 C 193 202 191 194 186 182 C 180 168 170 156 170 138 C 170 120 182 108 200 108 Z"/>
-              <ellipse cx="200" cy="108" rx="30" ry="7.5"/>
-              <ellipse cx="200" cy="98" rx="21" ry="5"/>
-              <path d="M170 94 C 165 87 165 77 168 70 C 173 78 181 82 188 81 C 189 70 193 61 200 54 C 207 61 211 70 212 81 C 219 82 227 78 232 70 C 235 77 235 87 230 94 C 220 89 210 87 200 87 C 190 87 180 89 170 94 Z"/>
-              <circle cx="200" cy="46" r="7.5"/>
-              <circle cx="200" cy="74" r="4" fill="#c9a227"/>
-            </g>
-          </svg>
+          <span class="voco-mascot" data-state="idle"></span>
         </div>
         <h2>你好，我是 vococo</h2>
         <p>你的私人 AI 助理 · 有什么需要直接说</p>
@@ -447,6 +437,7 @@ try{
 
 <!-- 工具卡片渲染:纯函数声明,不在自己的顶层调用任何东西,放在主脚本前不影响执行顺序
      (它引用的 el/esc/ic/mdToHtml/DOTS 只在函数体内用,真正被调用时主脚本早已跑完)。 -->
+<script src="/mascot.js"></script>
 <script src="/tool-card.js"></script>
 <script src="/app-core.js"></script>
 <script src="/markdown.js"></script>

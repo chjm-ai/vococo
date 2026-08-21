@@ -1,0 +1,24 @@
+/* ============================================================
+   小幽 XIAOYOU · vococo 吉祥物像素组件样式
+   设计规范见 docs/design/mascot-xiaoyou.md
+   用法: <span class="voco-mascot" data-state="idle"></span>
+   可选状态: idle / listening / thinking / busy / done / err / sleep / icon
+   缩放: 在容器上设置 --s(默认 4),1 = 1px/格,网格 24x28(icon 为 14x16)
+   ============================================================ */
+.voco-mascot {
+  --pal-p: #FF8A26; --pal-w: #FFC07A; --pal-d: #F56F0E; --pal-k: #3D2410;
+  --cw: 24; --ch: 28; --s: 4;
+  display: inline-block;
+  position: relative;
+  width: calc(var(--cw) * 1px * var(--s));
+  height: calc(var(--ch) * 1px * var(--s));
+  vertical-align: middle;
+  line-height: 0;
+}
+.voco-mascot[data-state="icon"] { --cw: 14; --ch: 16; }
+.voco-mascot i.vmi {
+  position: absolute; left: 0; top: 0; width: 1px; height: 1px;
+  transform: scale(var(--s)); transform-origin: 0 0;
+}
+/* 蔫掉状态整体去饱和,不需要单独换色板 */
+.voco-mascot[data-state="err"] { filter: grayscale(82%) brightness(.88); }
