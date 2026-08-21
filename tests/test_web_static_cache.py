@@ -105,7 +105,7 @@ async def test_workbench_js_talks_to_backend(static_app):
     assert 'data-add-project' in source
     assert 'data-new-title' in source
     assert 'event.code !== "Space"' in source
-    assert 'data-schedule-today' in source
+    assert 'data-open-dp' in source  # 任务日期统一由日期面板触发器处理
     assert 'data-edit-detail' in source
     assert "addWorkbenchImages" in source
     assert 'data-sidebar' in source

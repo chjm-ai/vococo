@@ -363,15 +363,11 @@ function workbenchRowRange(anchorId, targetId){
 }
 
 function workbenchSelectSingle(taskId){
-  // 选中另一个任务前先收起当前展开的卡片，跟点击空白处、回车走同一个收起逻辑——
-  // 新建卡有标题就落地保存，不能因为切换选中就把没提交的内容悄悄丢了。
-  workbenchFinishActiveCard();
   workbenchSetSelection([taskId]);
   WB.selectAnchor = taskId;
 }
 
 function workbenchSelectRange(anchorId, targetId){
-  workbenchFinishActiveCard();
   workbenchSetSelection(workbenchRowRange(anchorId, targetId));
 }
 
@@ -1074,6 +1070,9 @@ $("#workbenchView").addEventListener("click", event => {
   if(taskRow){
     const taskId = taskRow.dataset.task;
     if(taskId === WB.editorTaskId) return;
+    // 任务切换的选中状态还要保留 250ms 的双击判定，但收起当前卡片不能等它：
+    // 否则点击别的任务后，卡片会明显晚半拍才开始收起。
+    workbenchFinishActiveCard();
     if(event.shiftKey && WB.selectAnchor && WB.selectAnchor !== taskId){
       clearTimeout(wbClickTimer); wbClickTimer = null;
       workbenchSelectRange(WB.selectAnchor, taskId);
@@ -1232,7 +1231,9 @@ $("#workbenchView").addEventListener("paste", event => {
 
 document.addEventListener("keydown", event => {
   if($("#workbenchView").hidden) return;
-  if(event.key === "Enter" && event.target.matches("[data-new-title],[data-edit-title]")){
+  // 中文等输入法组词时 Enter 只用于确认候选词，不能当作「完成任务」。
+  // 部分浏览器在 compositionend 前会把该键报成 229，两个条件都要排除。
+  if(event.key === "Enter" && !event.isComposing && event.keyCode !== 229 && event.target.matches("[data-new-title],[data-edit-title]")){
     event.preventDefault(); workbenchFinishActiveCard(); return;
   }
   if(event.key === "Escape"){
