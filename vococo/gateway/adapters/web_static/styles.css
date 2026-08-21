@@ -824,9 +824,9 @@
      不再用 position:absolute 铺满居中——内容变多(带最近对话列表)要能跟 #messages 一起滚动。 */
   #empty{display:none;flex-direction:column;padding:8px 6px 24px;pointer-events:auto;
     max-width:640px;margin:0 auto;width:100%}
-  #empty .elogo{width:64px;height:64px;margin:12px auto 14px;color:var(--text);
+  #empty .elogo{width:64px;height:64px;margin:12px auto 14px;
     display:flex;align-items:center;justify-content:center;animation:pop .5s ease}
-  #empty .elogo svg{width:100%;height:100%}
+  #empty .elogo .voco-mascot{--s:2.2}
   #empty h2{margin:0 0 6px;font-size:22px;font-weight:600;text-align:center;
     font-family:Optima,"Times New Roman","Songti SC",serif}
   #empty p{margin:0 0 20px;color:var(--dim);font-size:14px;text-align:center}
