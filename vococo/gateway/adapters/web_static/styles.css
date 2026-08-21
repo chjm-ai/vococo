@@ -1476,7 +1476,7 @@
   #workbenchView .wb-chevron{width:7px;height:7px;flex:0 0 7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg) translate(-1px,1px)}
   #workbenchView .wb-project-delete{display:block;margin:16px auto 0;padding:4px 10px;border:0;background:none;color:var(--dim2);font-size:11px;opacity:.5;cursor:pointer;transition:opacity .15s,color .15s}
   @media(hover:hover){ #workbenchView .wb-project-delete:hover{opacity:1;color:var(--err)} }
-  #workbenchView .wb-task-list{display:flex;flex-direction:column;gap:2px;margin:5px -12px 0;border:0}#workbenchView .wb-task{display:grid;grid-template-columns:20px minmax(0,1fr) minmax(120px,170px);align-items:start;gap:10px;min-height:36px;padding:6px 12px;border:0;border-radius:7px;cursor:pointer;position:relative}#workbenchView .wb-task:hover{background:var(--panel)}#workbenchView .wb-task.is-selected{background:var(--panel2)}
+  #workbenchView .wb-task-list{display:flex;flex-direction:column;gap:2px;margin:5px -12px 0;border:0}#workbenchView .wb-task{display:grid;grid-template-columns:20px minmax(0,1fr) minmax(120px,170px);align-items:center;gap:10px;min-height:36px;padding:6px 12px;border:0;border-radius:7px;cursor:pointer;position:relative}#workbenchView .wb-task:hover{background:var(--panel)}#workbenchView .wb-task.is-selected{background:var(--panel2)}
   #workbenchView .wb-task:not(.wb-task-card){-webkit-user-select:none;user-select:none}
   #workbenchView .wb-task.wb-task-dragging{opacity:.4}
   #workbenchView .wb-task.wb-task-drop-before::before,#workbenchView .wb-task.wb-task-drop-after::after{content:"";position:absolute;left:0;right:0;height:2px;background:var(--accent);border-radius:0;pointer-events:none}
@@ -1488,7 +1488,7 @@
   @keyframes wbCardIn{from{opacity:0}to{opacity:1}}
   /* 编辑卡沿用任务行的三列栅格：复选框 20px + 10px 间距 + 文字列。
      所有内容落在文字列起点，展开/收起时标题和描述不会左右跳动。 */
-  #workbenchView .wb-editor-shell{margin:2px 0 8px;width:auto;padding:10px 16px;border:1px solid var(--line);border-radius:10px;background:var(--card);box-shadow:0 4px 16px color-mix(in srgb,var(--text) 6%,transparent);animation:wbCardIn .15s ease}
+  #workbenchView .wb-editor-shell{margin:2px 0 8px;width:auto;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);box-shadow:0 4px 16px color-mix(in srgb,var(--text) 6%,transparent);animation:wbCardIn .15s ease}
   #workbenchView .wb-task-card{display:block;cursor:default}
   #workbenchView .wb-task-card:hover{background:var(--card)}
   #workbenchView .wb-card-head{display:flex;align-items:center;gap:10px}#workbenchView .wb-card-title{flex:1;min-width:0;padding:2px 0;border:0;background:transparent;color:var(--text);font-family:inherit;font-size:14px;line-height:20px;font-weight:600;outline:none}
@@ -1576,12 +1576,12 @@
   #workbenchView .wb-parent-badge{display:inline-flex;align-items:center;gap:3px;min-width:0;max-width:45%;color:var(--dim2);font-size:12px;line-height:20px;white-space:nowrap}
   #workbenchView .wb-parent-badge .ic{flex:0 0 auto;width:13px;height:13px}
   #workbenchView .wb-parent-badge span{overflow:hidden;text-overflow:ellipsis}
-  #workbenchView .wb-editor-footer .wb-parent-link{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;width:auto;padding:0 8px;margin-left:auto}
-  #workbenchView .wb-editor-footer .wb-parent-link .ic{width:14px;height:14px}
-  #workbenchView .wb-editor-footer .wb-parent-link:hover{color:var(--accent)}
+  #workbenchView .wb-parent-link{display:inline-flex;align-items:center;gap:5px;margin:0 0 8px;padding:0;border:0;background:none;color:var(--dim2);font-size:12px;line-height:16px;cursor:pointer}
+  #workbenchView .wb-parent-link .ic{width:13px;height:13px}
+  #workbenchView .wb-parent-link:hover{color:var(--accent)}
   #workbenchView .wb-task-end{display:flex;align-items:center;gap:8px;min-width:0;justify-content:flex-end}
-  #workbenchView .wb-assignee-switch{display:inline-flex;align-items:center;gap:2px;height:28px;padding:2px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
-  #workbenchView .wb-assignee-opt{display:inline-flex;align-items:center;justify-content:center;width:24px;height:22px;padding:0;border:0;border-radius:4px;background:none;color:var(--dim2);cursor:pointer}
+  #workbenchView .wb-assignee-switch{display:inline-flex;align-items:center;gap:2px;height:26px;padding:3px;border:0;border-radius:6px;background:var(--panel)}
+  #workbenchView .wb-assignee-opt{display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:0;border-radius:4px;background:none;color:var(--dim2);cursor:pointer}
   #workbenchView .wb-assignee-opt .ic{width:14px;height:14px}
   #workbenchView .wb-assignee-opt:hover{color:var(--text)}
   #workbenchView .wb-assignee-opt.is-on{background:var(--panel2);color:var(--text)}
