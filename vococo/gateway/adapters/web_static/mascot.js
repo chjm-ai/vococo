@@ -2,7 +2,7 @@
    小幽 XIAOYOU · vococo 吉祥物像素引擎
    24x28 基底网格,全部状态从同一 NEUTRAL 轮廓派生(平移/缩放 + 部件叠加)
    颜色走 CSS 变量 var(--pal-*),换肤只需改 .voco-mascot 上的变量
-   设计规范见 docs/design/mascot-xiaoyou.md;来源 vococo-mascots.html 展示页引擎精简版
+   生产版像素引擎:仅保留运行所需的状态与色板
    ============================================================ */
 (function () {
   "use strict";

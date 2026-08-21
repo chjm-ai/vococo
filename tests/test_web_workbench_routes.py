@@ -55,7 +55,6 @@ async def test_workbench_bundle_is_seeded_on_first_load(workbench_web_app):
         data = await resp.json()
         assert {p["name"] for p in data["projects"]} == {"AI 咨询", "VocoTrade", "面料外贸", "离职过渡"}
         assert len(data["tasks"]) == 12
-        assert data["sources"]
 
 
 @pytest.mark.anyio

@@ -102,8 +102,6 @@ async def test_workbench_js_talks_to_backend(static_app):
     assert "goals:" not in source
     assert "月目标" not in source
     assert "今天推进" not in source
-    assert "openWorkbenchSource" in source
-    assert "openDocPreview({kind:\"path\"" in source
     assert "renderWorkbenchDetail" not in source
     assert 'data-group' in source
     assert 'data-new-task' in source
