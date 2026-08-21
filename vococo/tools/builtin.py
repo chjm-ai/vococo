@@ -535,8 +535,11 @@ async def list_workbench_tasks(args: dict) -> dict:
 @tool(
     "create_workbench_task",
     "在工作台新建一条待办任务。project:项目 id 或名字(必须已存在,用 "
-    "list_workbench_projects 先确认);title:标题;detail:可选备注;"
-    "date:可选,安排到具体某天(YYYY-MM-DD),不传则只进「未排期」的待办堆。",
+    "list_workbench_projects 先确认);title:标题;detail:可选备注(assignee=ai 时写 prompt,"
+    "assignee=human 时写思路);"
+    "date:可选,安排到具体某天(YYYY-MM-DD),不传则只进「未排期」的待办堆;"
+    "parent:可选,父任务的 id 或标题,建子任务时传;"
+    "assignee:可选,'ai' 或 'human'(默认 human),标记任务由 AI 执行还是人执行。",
     {
         "type": "object",
         "properties": {
@@ -544,6 +547,8 @@ async def list_workbench_tasks(args: dict) -> dict:
             "title": {"type": "string"},
             "detail": {"type": "string"},
             "date": {"type": "string"},
+            "parent": {"type": "string"},
+            "assignee": {"type": "string", "enum": ["ai", "human"]},
         },
         "required": ["project", "title"],
     },
@@ -556,16 +561,27 @@ async def create_workbench_task(args: dict) -> dict:
     project = _resolve_workbench_project(project_ref, workbench.list_projects())
     if not project:
         return _ok(f"没找到项目「{project_ref}」。用 list_workbench_projects 看列表。")
+    parent_ref = (args.get("parent") or "").strip()
+    parent_id = None
+    if parent_ref:
+        parent = _resolve_workbench_task(parent_ref, workbench.list_tasks())
+        if not parent:
+            return _ok(f"没找到父任务「{parent_ref}」。用 list_workbench_tasks 看列表。")
+        parent_id = parent["id"]
     date = (args.get("date") or "").strip() or None
     month = date[:7] if date else None
     week = _workbench_week_key(date) if date else None
+    assignee = (args.get("assignee") or "human").strip()
     task = workbench.create_task(
         project["id"], title, detail=(args.get("detail") or "").strip(),
         date=date, month=month, week=week,
+        parent_id=parent_id, assignee=assignee,
     )
     if task is None:
         return _ok("新建失败,标题不能为空。")
-    return _ok(f"✅ 已在「{project['name']}」新建任务「{title}」,id={task['id']}。")
+    parent_hint = f"(父任务: {parent_ref})" if parent_id else ""
+    assignee_hint = "🤖" if assignee == "ai" else "👤"
+    return _ok(f"✅ {assignee_hint} 已在「{project['name']}」新建任务「{title}」{parent_hint},id={task['id']}。")
 
 @tool(
     "update_workbench_task",

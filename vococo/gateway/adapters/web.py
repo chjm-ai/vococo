@@ -1414,6 +1414,8 @@ class WebAdapter:
             month=body.get("month") or None,
             week=body.get("week") or None,
             source_ids=body.get("sourceIds") or [],
+            parent_id=body.get("parentId") or None,
+            assignee=str(body.get("assignee") or "human"),
         )
         if task is None:
             return web.json_response({"error": "project / title 不能为空"}, status=400)
@@ -1485,6 +1487,28 @@ class WebAdapter:
         name = str(body.get("name") or "")
         ok = workbench.remove_task_image(task_id, name)
         return web.json_response({"ok": ok})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_task_dispatch(self, request: web.Request, body: dict) -> web.Response:
+        """从任务发起一个 AI 会话执行。prompt 不传则用 task.detail。"""
+        from ...core import task_runner
+
+        task_id = str(body.get("id") or "")
+        task = workbench.get_task(task_id)
+        if task is None:
+            return web.json_response({"error": "任务不存在"}, status=404)
+        prompt = str(body.get("prompt") or "").strip() or task["detail"]
+        if not prompt:
+            return web.json_response({"error": "任务没有备注/prompt，无法执行"}, status=400)
+        title = task["title"][:20]
+        session = task_runner.dispatch(
+            title=title, prompt=prompt,
+            origin="workbench",
+        )
+        workbench.link_session(task_id, session["id"])
+        updated_task = workbench.get_task(task_id)
+        return web.json_response({"sessionId": session["id"], "task": updated_task})
 
     @_authed
     @_json_body
@@ -2593,6 +2617,7 @@ class WebAdapter:
                 web.post("/workbench/tasks/purge", self._handle_workbench_task_purge),
                 web.post("/workbench/tasks/image/add", self._handle_workbench_task_image_add),
                 web.post("/workbench/tasks/image/remove", self._handle_workbench_task_image_remove),
+                web.post("/workbench/tasks/dispatch", self._handle_workbench_task_dispatch),
                 web.post("/conv/pin", self._handle_conv_pin),
                 web.get("/models", self._handle_models),
                 web.post("/effort", self._handle_effort_switch),
