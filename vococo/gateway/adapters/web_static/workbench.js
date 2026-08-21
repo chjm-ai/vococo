@@ -115,7 +115,7 @@ function renderWorkbenchTaskEditor(task){
     '</div>'+
     '<textarea data-edit-detail="'+esc(task.id)+'" placeholder="备注">'+esc(task.detail||"")+'</textarea>'+
     (images ? '<div class="wb-image-list">'+images+'</div>' : "")+
-    '<div class="wb-editor-footer"><button type="button" data-schedule-today="'+esc(task.id)+'">今天</button><input type="date" data-schedule-date="'+esc(task.id)+'" value="'+esc(task.date||"")+'" aria-label="安排日期"><div class="wb-editor-sources">'+sources+'</div></div>'+'</article>';
+    '<div class="wb-editor-footer"><button type="button" class="wb-dp-trigger'+(task.date ? " has-date" : "")+'" data-open-dp="task:'+esc(task.id)+'">'+ic("calendar")+'<span>'+esc(workbenchDpLabel(task.date))+'</span></button><div class="wb-editor-sources">'+sources+'</div></div>'+'</article>';
 }
 
 function workbenchNewTaskCard(project){
@@ -124,7 +124,7 @@ function workbenchNewTaskCard(project){
   const projectOptions = [...WB_DATA.projects, WB_UNASSIGNED_PROJECT].map(item => '<option value="'+esc(item.id)+'" '+(WB.newTask.project === item.id ? "selected" : "")+'>'+esc(item.name)+'</option>').join("");
   return '<section class="wb-editor-shell wb-new-task" data-new-card><div class="wb-editor-head"><input data-new-title placeholder="新建待办事项" value="'+esc(WB.newTask.title)+'" aria-label="任务标题"></div>'+
     '<textarea data-new-detail placeholder="备注">'+esc(WB.newTask.detail)+'</textarea>'+
-    '<div class="wb-editor-footer"><select data-new-project aria-label="项目">'+projectOptions+'</select><select data-new-source aria-label="来源文档"><option value="">来源文档</option>'+sourceOptions+'</select><input type="date" data-new-date value="'+esc(WB.newTask.date||"")+'" aria-label="安排日期"><button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
+    '<div class="wb-editor-footer"><select data-new-project aria-label="项目">'+projectOptions+'</select><select data-new-source aria-label="来源文档"><option value="">来源文档</option>'+sourceOptions+'</select><button type="button" class="wb-dp-trigger'+(WB.newTask.date ? " has-date" : "")+'" data-open-dp="new">'+ic("calendar")+'<span>'+esc(workbenchDpLabel(WB.newTask.date))+'</span></button><button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
 }
 
 function workbenchProjectBlock(project, tasks){
@@ -682,6 +682,233 @@ function shiftWorkbenchDate(direction){
   WB.anchor = workbenchDateKey(date); renderWorkbench();
 }
 
+// ── 日期选择弹层（仿 Things）─────────────────────────────────────────────
+// 三处入口共用同一个弹层实例：任务编辑卡单个日期、新建任务卡日期、右键菜单批量日期。
+// target: {kind:"task", id} | {kind:"new"} | {kind:"ctx", ids}
+const WB_DP = {open:false, target:null, expanded:false, baseWeek:null, rangeBefore:4, rangeAfter:12};
+const WB_DP_STEP = 8; // 展开后触底/触顶时一次追加的周数
+
+function workbenchDpLabel(dateStr){
+  if(!dateStr) return "设定日期";
+  if(dateStr === workbenchToday()) return "今天";
+  const d = workbenchDate(dateStr);
+  const now = new Date();
+  return (d.getFullYear() !== now.getFullYear() ? d.getFullYear()+"年" : "")+(d.getMonth()+1)+"月"+d.getDate()+"日";
+}
+
+// 面板按周日起始排列，只影响这个弹层的视觉网格，跟 workbenchWeekKey（周一起始，后端分组用）互不相关。
+function workbenchDpSundayKey(dateStr){
+  const d = workbenchDate(dateStr);
+  d.setDate(d.getDate() - d.getDay());
+  return workbenchDateKey(d);
+}
+
+function workbenchDpWeekStarts(baseWeekKey, before, after){
+  const base = workbenchDate(baseWeekKey);
+  const keys = [];
+  for(let i = -before; i <= after; i++){
+    const d = new Date(base); d.setDate(d.getDate() + i*7);
+    keys.push(workbenchDateKey(d));
+  }
+  return keys;
+}
+
+function workbenchDpDaysOfWeek(weekStartKey){
+  const start = workbenchDate(weekStartKey);
+  const days = [];
+  for(let i = 0; i < 7; i++){
+    const d = new Date(start); d.setDate(d.getDate()+i);
+    days.push(workbenchDateKey(d));
+  }
+  return days;
+}
+
+function workbenchDpCurrentDate(){
+  const target = WB_DP.target;
+  if(!target) return null;
+  if(target.kind === "task") return workbenchTask(target.id)?.date || null;
+  if(target.kind === "new") return WB.newTask ? WB.newTask.date : null;
+  return null; // ctx：批量操作没有单一「当前日期」
+}
+
+// 支持 9/12、9-12、2026-9-12、2026/9/12、9月12日 几种写法；缺省年份一律取今年——
+// 没有月份翻页按钮，跨月只能靠这个搜索框，不需要猜测年份意图。
+function workbenchDpParseSearch(text){
+  const s = text.trim();
+  if(!s) return null;
+  let m = s.match(/^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?$/);
+  if(m) return workbenchDpNormalize(+m[1], +m[2], +m[3]);
+  m = s.match(/^(\d{1,2})[-/月](\d{1,2})日?$/);
+  if(m) return workbenchDpNormalize(new Date().getFullYear(), +m[1], +m[2]);
+  return null;
+}
+
+function workbenchDpNormalize(year, month, day){
+  if(month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const d = new Date(year, month-1, day, 12);
+  if(d.getMonth() !== month-1) return null; // 拒绝 2/30 这类溢出日期
+  return workbenchDateKey(d);
+}
+
+function workbenchDpApply(dateStr){
+  const target = WB_DP.target;
+  if(!target) return;
+  if(target.kind === "task") scheduleWorkbenchTask(target.id, dateStr);
+  else if(target.kind === "new"){ WB.newTask.date = dateStr; renderWorkbench(); }
+  else if(target.kind === "ctx") workbenchBatchSchedule(target.ids, dateStr);
+  workbenchDpClose();
+}
+
+function workbenchDpWeekRow(weekKey, selected, today){
+  const cells = workbenchDpDaysOfWeek(weekKey).map(dayKey => {
+    const d = workbenchDate(dayKey);
+    const isMonthStart = d.getDate() === 1;
+    const label = isMonthStart ? (d.getMonth()+1)+"月<br>1" : String(d.getDate());
+    const cls = ["wb-dp-day"];
+    if(isMonthStart) cls.push("is-month-start");
+    if(dayKey === today) cls.push("is-today");
+    if(dayKey === selected) cls.push("is-selected");
+    return '<button type="button" class="'+cls.join(" ")+'" data-dp-pick="'+dayKey+'">'+label+'</button>';
+  }).join("");
+  return '<div class="wb-dp-week">'+cells+'</div>';
+}
+
+function workbenchDpRender(){
+  const el = document.getElementById("wbDatePicker");
+  if(!el) return;
+  const current = workbenchDpCurrentDate();
+  const today = workbenchToday();
+  const weeks = WB_DP.expanded
+    ? workbenchDpWeekStarts(workbenchDpSundayKey(today), WB_DP.rangeBefore, WB_DP.rangeAfter)
+    : workbenchDpWeekStarts(WB_DP.baseWeek, 0, 3);
+  const rows = weeks.map(weekKey => workbenchDpWeekRow(weekKey, current, today)).join("");
+  el.innerHTML =
+    '<div class="wb-dp-search"><input type="text" data-dp-search placeholder="搜索日期，如 9/12 或 2026-09-12" aria-label="搜索日期"></div>'+
+    '<div class="wb-dp-actions"><button type="button" data-dp-today>'+ic("star")+'<span>今天</span></button><button type="button" data-dp-clear'+(current ? "" : " disabled")+'><span>移除</span></button></div>'+
+    '<div class="wb-dp-weekdays">'+["周日","周一","周二","周三","周四","周五","周六"].map(w => '<span>'+w+'</span>').join("")+'</div>'+
+    '<div class="wb-dp-grid'+(WB_DP.expanded ? " is-expanded" : "")+'" data-dp-grid>'+rows+'</div>'+
+    (WB_DP.expanded ? "" : '<button type="button" class="wb-dp-expand" data-dp-expand aria-label="展开更多日期">'+ic("chevronDown")+'</button>');
+}
+
+function workbenchDpEnsureEl(){
+  let el = document.getElementById("wbDatePicker");
+  if(el) return el;
+  el = document.createElement("div");
+  el.id = "wbDatePicker";
+  el.className = "wb-dp";
+  el.style.display = "none";
+  document.body.appendChild(el);
+  el.addEventListener("click", workbenchDpHandleClick);
+  el.addEventListener("contextmenu", event => event.preventDefault());
+  el.addEventListener("scroll", workbenchDpHandleScroll, true); // capture：滚动事件不冒泡，得在祖先上抓 capture 阶段
+  el.addEventListener("keydown", event => {
+    if(event.key === "Enter" && event.target.matches("[data-dp-search]")) workbenchDpHandleSearch(event.target);
+  });
+  return el;
+}
+
+function workbenchDpHandleClick(event){
+  const pick = event.target.closest("[data-dp-pick]");
+  if(pick){ workbenchDpApply(pick.dataset.dpPick); return; }
+  if(event.target.closest("[data-dp-today]")){ workbenchDpApply(workbenchToday()); return; }
+  if(event.target.closest("[data-dp-clear]")){ workbenchDpApply(null); return; }
+  if(event.target.closest("[data-dp-expand]")){
+    WB_DP.expanded = true;
+    workbenchDpRender();
+    const grid = document.querySelector("#wbDatePicker [data-dp-grid]");
+    const target = grid?.querySelector(".is-selected") || grid?.querySelector(".is-today");
+    if(grid && target) grid.scrollTop = target.closest(".wb-dp-week").offsetTop - grid.clientHeight/2;
+    return;
+  }
+}
+
+function workbenchDpHandleSearch(input){
+  const dateKey = workbenchDpParseSearch(input.value);
+  if(!dateKey){ input.classList.add("wb-dp-search-bad"); return; }
+  input.classList.remove("wb-dp-search-bad");
+  WB_DP.expanded = true;
+  WB_DP.baseWeek = workbenchDpSundayKey(dateKey);
+  const today = workbenchToday();
+  const weeksDiff = Math.round((workbenchDate(WB_DP.baseWeek) - workbenchDate(workbenchDpSundayKey(today))) / (7*86400000));
+  if(weeksDiff > 0) WB_DP.rangeAfter = Math.max(WB_DP.rangeAfter, weeksDiff + 2);
+  else if(weeksDiff < 0) WB_DP.rangeBefore = Math.max(WB_DP.rangeBefore, -weeksDiff + 2);
+  workbenchDpRender();
+  const grid = document.querySelector("#wbDatePicker [data-dp-grid]");
+  const target = grid?.querySelector('[data-dp-pick="'+dateKey+'"]');
+  if(grid && target) grid.scrollTop = target.closest(".wb-dp-week").offsetTop - grid.clientHeight/2 + 40;
+}
+
+// 展开态触底/触顶各自往那个方向再拉一批周；往上拉是往同一个滚动容器的顶部插入内容，
+// 必须用 scrollHeight 差值把 scrollTop 顶回去，不然刚才看的那一段会往下窜。
+function workbenchDpHandleScroll(event){
+  const grid = event.target.closest?.("[data-dp-grid]");
+  if(!grid || !WB_DP.expanded) return;
+  const prevScrollTop = grid.scrollTop;
+  const prevHeight = grid.scrollHeight;
+  if(grid.scrollTop < 100){
+    WB_DP.rangeBefore += WB_DP_STEP;
+    workbenchDpRender();
+    const newGrid = document.querySelector("#wbDatePicker [data-dp-grid]");
+    if(newGrid) newGrid.scrollTop = prevScrollTop + (newGrid.scrollHeight - prevHeight);
+  }else if(grid.scrollHeight - grid.scrollTop - grid.clientHeight < 100){
+    WB_DP.rangeAfter += WB_DP_STEP;
+    workbenchDpRender();
+    const newGrid = document.querySelector("#wbDatePicker [data-dp-grid]");
+    if(newGrid) newGrid.scrollTop = prevScrollTop;
+  }
+}
+
+function workbenchDpPosition(anchorEl){
+  const el = document.getElementById("wbDatePicker");
+  const rect = anchorEl.getBoundingClientRect();
+  el.style.left = rect.left+"px"; el.style.top = (rect.bottom+6)+"px";
+  requestAnimationFrame(() => {
+    const w = el.getBoundingClientRect();
+    let left = rect.left, top = rect.bottom+6;
+    if(left + w.width > window.innerWidth - 4) left = window.innerWidth - w.width - 4;
+    if(top + w.height > window.innerHeight - 4) top = rect.top - w.height - 6;
+    el.style.left = Math.max(4, left)+"px"; el.style.top = Math.max(4, top)+"px";
+  });
+}
+
+function workbenchDpOpenCommon(target){
+  WB_DP.open = true; WB_DP.target = target; WB_DP.expanded = false;
+  WB_DP.rangeBefore = 4; WB_DP.rangeAfter = 12;
+  const current = workbenchDpCurrentDate();
+  WB_DP.baseWeek = workbenchDpSundayKey(current || workbenchToday());
+  const el = workbenchDpEnsureEl();
+  el.style.display = "block";
+  workbenchDpRender();
+  return el;
+}
+
+function workbenchDpOpen(target, anchorEl){
+  workbenchDpOpenCommon(target);
+  workbenchDpPosition(anchorEl);
+}
+
+function workbenchDpOpenAt(target, x, y){
+  const el = workbenchDpOpenCommon(target);
+  el.style.left = x+"px"; el.style.top = y+"px";
+  requestAnimationFrame(() => {
+    const rect = el.getBoundingClientRect();
+    el.style.left = Math.max(4, Math.min(x, window.innerWidth - rect.width - 4))+"px";
+    el.style.top = Math.max(4, Math.min(y, window.innerHeight - rect.height - 4))+"px";
+  });
+}
+
+function workbenchDpClose(){
+  WB_DP.open = false; WB_DP.target = null;
+  const el = document.getElementById("wbDatePicker");
+  if(el) el.style.display = "none";
+}
+
+document.addEventListener("mousedown", event => {
+  if(!WB_DP.open) return;
+  if(event.target.closest("#wbDatePicker") || event.target.closest("[data-open-dp]")) return;
+  workbenchDpClose();
+});
+
 async function openWorkbench(){
   closeCallView(); S.surface = "workbench";
   $("#chatMain").hidden = true; $("#workbenchView").hidden = false;
@@ -710,6 +937,12 @@ $("#workbenchView").addEventListener("click", event => {
   if(complete){ toggleWorkbenchTask(complete.dataset.complete); return; }
   const del = event.target.closest("[data-delete-task]");
   if(del){ deleteWorkbenchTask(del.dataset.deleteTask); return; }
+  const openDp = event.target.closest("[data-open-dp]");
+  if(openDp){
+    const [kind, id] = openDp.dataset.openDp.split(":");
+    workbenchDpOpen(kind === "task" ? {kind:"task", id} : {kind:"new"}, openDp);
+    return;
+  }
   const source = event.target.closest("[data-source]");
   if(source){ openWorkbenchSource(source.dataset.source, source.dataset.highlight); return; }
   const group = event.target.closest("[data-group]");
@@ -717,8 +950,6 @@ $("#workbenchView").addEventListener("click", event => {
   if(event.target.closest("[data-new-task]")){ openWorkbenchNewTask(); return; }
   if(event.target.closest("[data-add-project]")){ addWorkbenchProject(); return; }
   if(event.target.closest("[data-save-new]")){ saveWorkbenchNewTask(); return; }
-  const today = event.target.closest("[data-schedule-today]");
-  if(today){ scheduleWorkbenchTask(today.dataset.scheduleToday, workbenchToday()); return; }
   const removeImage = event.target.closest("[data-remove-image]");
   if(removeImage){
     const taskId = removeImage.dataset.imageTask;
@@ -888,11 +1119,9 @@ $("#workbenchView").addEventListener("focusout", event => {
 });
 
 $("#workbenchView").addEventListener("change", event => {
-  if(event.target.dataset.scheduleDate){ scheduleWorkbenchTask(event.target.dataset.scheduleDate, event.target.value); return; }
   if(!WB.newTask) return;
   if("newProject" in event.target.dataset){ WB.newTask.project=event.target.value; renderWorkbench(); }
   if("newSource" in event.target.dataset) WB.newTask.sourceId=event.target.value;
-  if("newDate" in event.target.dataset) WB.newTask.date=event.target.value;
 });
 
 $("#workbenchView").addEventListener("paste", event => {
@@ -929,11 +1158,6 @@ function workbenchCtxMenuOpen(){
 }
 
 function workbenchCtxMenuHtml(){
-  if(wbCtxMode === "date"){
-    return '<div class="wb-ctx-date-row"><input type="date" data-ctx-date-input aria-label="选择日期"></div>'+
-      '<button type="button" data-ctx="clear-date">移出日期（未排期）</button>'+
-      '<div class="wb-ctx-sep"></div><button type="button" data-ctx="back">‹ 返回</button>';
-  }
   if(wbCtxMode === "move"){
     const opts = [...WB_DATA.projects, WB_UNASSIGNED_PROJECT].map(p => '<button type="button" data-ctx-move="'+esc(p.id)+'">'+esc(p.name)+'</button>').join("");
     return opts+'<div class="wb-ctx-sep"></div><button type="button" data-ctx="back">‹ 返回</button>';
@@ -992,21 +1216,16 @@ function workbenchHandleCtxClick(event){
   if(!action) return;
   if(action === "back"){ wbCtxMode = "root"; workbenchRenderCtxMenu(); return; }
   if(action === "date"){
-    wbCtxMode = "date"; workbenchRenderCtxMenu();
-    requestAnimationFrame(() => document.querySelector("#wbCtxMenu [data-ctx-date-input]")?.focus());
+    const rect = document.getElementById("wbCtxMenu").getBoundingClientRect();
+    const ids = [...wbCtxIds];
+    workbenchCloseCtxMenu();
+    workbenchDpOpenAt({kind:"ctx", ids}, rect.left, rect.top);
     return;
   }
   if(action === "move"){ wbCtxMode = "move"; workbenchRenderCtxMenu(); return; }
   if(action === "done"){ workbenchBatchComplete(wbCtxIds); workbenchCloseCtxMenu(); return; }
   if(action === "delete"){ workbenchBatchDelete(wbCtxIds); workbenchCloseCtxMenu(); return; }
-  if(action === "clear-date"){ workbenchBatchSchedule(wbCtxIds, null); workbenchCloseCtxMenu(); return; }
 }
-
-document.addEventListener("change", event => {
-  if(!event.target.matches("#wbCtxMenu [data-ctx-date-input]")) return;
-  workbenchBatchSchedule(wbCtxIds, event.target.value || null);
-  workbenchCloseCtxMenu();
-});
 
 // 用 mousedown 而不是 click 来判定「点了菜单外面」：右键弹出菜单本身就是由一次
 // mousedown+contextmenu 触发的，如果监听 click 来关闭，某些浏览器会在 contextmenu
