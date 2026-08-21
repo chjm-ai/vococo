@@ -130,9 +130,13 @@ function workbenchNewTaskCard(project){
 function workbenchProjectBlock(project, tasks){
   const groupId = workbenchGroupId(project);
   const collapsed = WB.collapsed.has(groupId);
-  const body = tasks.length ? '<div class="wb-task-list">'+tasks.map(workbenchTaskRow).join("")+'</div>' : '<p class="wb-empty">暂无任务</p>';
+  // 新建卡跟任务行必须同处 .wb-task-list 里——它俩共用同一套「行 ↔ 卡片」尺寸过渡动效
+  // (workbenchAnimateMorph 原地换节点，不会挪动父容器)，放在列表外面对齐会跟着错位。
+  const newCard = collapsed ? "" : workbenchNewTaskCard(project);
+  const rows = tasks.map(workbenchTaskRow).join("") + newCard;
+  const body = rows ? '<div class="wb-task-list">'+rows+'</div>' : '<p class="wb-empty">暂无任务</p>';
   return '<section class="wb-project-block"><button type="button" class="wb-project-toggle" data-group="'+esc(groupId)+'" aria-expanded="'+(!collapsed)+'"><span class="wb-project-name"><strong>'+esc(project.name)+'</strong><i class="wb-chevron" aria-hidden="true"></i></span></button>'+
-    (collapsed ? "" : body+workbenchNewTaskCard(project))+'</section>';
+    (collapsed ? "" : body)+'</section>';
 }
 
 function workbenchVisibleTasks(){
@@ -446,55 +450,74 @@ async function removeWorkbenchImage(taskId, name){
   catch(e){}
 }
 
-// 跟 workbenchMorphTask 是同一套手法：先量出「长成之后」的高度，再从 0 长过去，
-// 而不是整页重渲染后让新卡片凭空「啪」地出现。
-function workbenchInsertNewTaskCard(project){
-  const block = document.querySelector('[data-group="'+CSS.escape(workbenchGroupId(project))+'"]')?.closest(".wb-project-block");
-  if(!block) return false;
-  const wrap = document.createElement("div");
-  wrap.innerHTML = workbenchNewTaskCard(project);
-  const card = wrap.firstElementChild;
-  if(!card) return false;
-  block.appendChild(card);
-  workbenchAutoGrowTextarea(card.querySelector("textarea[data-new-detail]"));
-  const endRect = card.getBoundingClientRect();
-  const endMarginTop = getComputedStyle(card).marginTop;
-  card.style.height = "0px";
-  card.style.marginTop = "0px";
-  card.style.overflow = "hidden";
-  void card.offsetHeight;
-  card.style.transition = "height .2s cubic-bezier(.22,.61,.36,1), margin-top .2s cubic-bezier(.22,.61,.36,1)";
+// 通用「已插入 DOM 的节点从 0 长到自然高度」动效，跟 workbenchAnimateMorph 同一个思路：
+// 先量出目标尺寸，再从 0 过渡过去，而不是整页重渲染后让节点凭空「啪」地出现。
+function workbenchGrowIn(node){
+  if(!node) return false;
+  const endRect = node.getBoundingClientRect();
+  const endMarginTop = getComputedStyle(node).marginTop;
+  node.style.height = "0px";
+  node.style.marginTop = "0px";
+  node.style.overflow = "hidden";
+  void node.offsetHeight;
+  node.style.transition = "height .2s cubic-bezier(.22,.61,.36,1), margin-top .2s cubic-bezier(.22,.61,.36,1)";
   requestAnimationFrame(() => {
-    card.style.height = endRect.height+"px";
-    card.style.marginTop = endMarginTop;
+    node.style.height = endRect.height+"px";
+    node.style.marginTop = endMarginTop;
   });
-  card.addEventListener("transitionend", function onEnd(event){
-    if(event.propertyName !== "height" || event.target !== card) return;
-    card.style.height = ""; card.style.marginTop = ""; card.style.overflow = ""; card.style.transition = "";
-    card.removeEventListener("transitionend", onEnd);
+  node.addEventListener("transitionend", function onEnd(event){
+    if(event.propertyName !== "height" || event.target !== node) return;
+    node.style.height = ""; node.style.marginTop = ""; node.style.overflow = ""; node.style.transition = "";
+    node.removeEventListener("transitionend", onEnd);
   });
   return true;
 }
 
-// 取消新建时对称地收回去，而不是直接从 DOM 里消失。
-function workbenchRemoveNewTaskCard(){
-  const card = document.querySelector("[data-new-card]");
-  if(!card) return false;
-  card.style.height = card.getBoundingClientRect().height+"px";
-  card.style.marginTop = getComputedStyle(card).marginTop;
-  card.style.overflow = "hidden";
-  void card.offsetHeight;
-  card.style.transition = "height .16s ease, margin-top .16s ease, opacity .16s ease";
+// 通用「节点收缩到 0 后从 DOM 移除」动效，跟 workbenchGrowIn 对称。
+function workbenchShrinkOut(node){
+  if(!node) return false;
+  node.style.height = node.getBoundingClientRect().height+"px";
+  node.style.marginTop = getComputedStyle(node).marginTop;
+  node.style.overflow = "hidden";
+  void node.offsetHeight;
+  node.style.transition = "height .16s ease, margin-top .16s ease, opacity .16s ease";
   requestAnimationFrame(() => {
-    card.style.height = "0px";
-    card.style.marginTop = "0px";
-    card.style.opacity = "0";
+    node.style.height = "0px";
+    node.style.marginTop = "0px";
+    node.style.opacity = "0";
   });
-  card.addEventListener("transitionend", function onEnd(event){
-    if(event.propertyName !== "height" || event.target !== card) return;
-    card.remove();
+  node.addEventListener("transitionend", function onEnd(event){
+    if(event.propertyName !== "height" || event.target !== node) return;
+    node.remove();
   });
   return true;
+}
+
+// 新建卡必须插进 .wb-task-list 里，跟任务行做同一个父容器的兄弟节点——
+// 它后续会被 workbenchAnimateMorph 原地换成任务行，容器不对齐会跟着错位。
+// 项目原本没有任务时列表容器都不存在（渲染的是「暂无任务」提示），这里顺带把它建出来。
+function workbenchInsertNewTaskCard(project){
+  const block = document.querySelector('[data-group="'+CSS.escape(workbenchGroupId(project))+'"]')?.closest(".wb-project-block");
+  if(!block) return false;
+  let list = block.querySelector(".wb-task-list");
+  if(!list){
+    list = document.createElement("div");
+    list.className = "wb-task-list";
+    (block.querySelector(".wb-empty") || null)?.replaceWith(list);
+    if(!list.isConnected) block.appendChild(list);
+  }
+  const wrap = document.createElement("div");
+  wrap.innerHTML = workbenchNewTaskCard(project);
+  const card = wrap.firstElementChild;
+  if(!card) return false;
+  list.appendChild(card);
+  workbenchAutoGrowTextarea(card.querySelector("textarea[data-new-detail]"));
+  return workbenchGrowIn(card);
+}
+
+// 取消新建时对称地收回去，而不是直接从 DOM 里消失。
+function workbenchRemoveNewTaskCard(){
+  return workbenchShrinkOut(document.querySelector("[data-new-card]"));
 }
 
 function openWorkbenchNewTask(){
@@ -534,6 +557,21 @@ async function saveWorkbenchNewTask(){
     if(workbenchAnimateMorph(document.querySelector("[data-new-card]"), workbenchTaskRow(d.task))) return;
   }catch(e){ alert("新建任务失败："+(e.message||"")); }
   renderWorkbench();
+}
+
+// 收起当前展开的卡片——不管是新建卡还是已有任务的编辑卡：新建卡有标题就当完成新建，
+// 没标题就当取消；编辑卡直接收回成一行。点击空白处、回车都走这一个函数，别各写一份。
+function workbenchFinishActiveCard(){
+  if(WB.newTask){
+    if(WB.newTask.title.trim()) saveWorkbenchNewTask();
+    else { WB.newTask = null; if(!workbenchRemoveNewTaskCard()) renderWorkbench(); }
+    return;
+  }
+  if(WB.editorTaskId){
+    const id = WB.editorTaskId;
+    WB.editorTaskId = null;
+    if(!workbenchMorphTask(id)) renderWorkbench();
+  }
 }
 
 // 删除 = 软删除(移入回收站)，不用再弹确认框——删错了去回收站图标里恢复就行。
@@ -1080,17 +1118,8 @@ $("#workbenchView").addEventListener("click", event => {
   const nav = event.target.closest("[data-nav]");
   if(nav){ shiftWorkbenchDate(Number(nav.dataset.nav)); return; }
   if(event.target.closest("[data-today]")){ WB.anchor = workbenchToday(); renderWorkbench(); return; }
-  if(WB.editorTaskId){
-    const id = WB.editorTaskId;
-    WB.editorTaskId = null;
-    if(!workbenchMorphTask(id)) renderWorkbench();
-    return;
-  }
-  // 点击空白处收起新建卡片：标题写了内容就当完成新建，没写就当取消——不再需要专门的叉。
-  if(WB.newTask){
-    if(WB.newTask.title.trim()) saveWorkbenchNewTask();
-    else { WB.newTask = null; if(!workbenchRemoveNewTaskCard()) renderWorkbench(); }
-  }
+  // 点击空白处收起当前展开的卡片（新建卡或编辑卡）。
+  workbenchFinishActiveCard();
 });
 
 $("#workbenchView").addEventListener("contextmenu", event => {
@@ -1209,8 +1238,8 @@ $("#workbenchView").addEventListener("paste", event => {
 
 document.addEventListener("keydown", event => {
   if($("#workbenchView").hidden) return;
-  if(event.key === "Enter" && event.target.matches("[data-new-title]")){
-    event.preventDefault(); saveWorkbenchNewTask(); return;
+  if(event.key === "Enter" && event.target.matches("[data-new-title],[data-edit-title]")){
+    event.preventDefault(); workbenchFinishActiveCard(); return;
   }
   if(event.key === "Escape"){
     if(WB_DP.open){ workbenchDpClose(); return; }
