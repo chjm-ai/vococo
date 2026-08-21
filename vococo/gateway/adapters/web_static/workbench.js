@@ -14,6 +14,10 @@ const WB_HISTORY_KEY = "vococo:workbench-history";
 const WB_HISTORY = {undo:[], redo:[], busy:false};
 let wbClickTimer = null;
 
+// 触屏没有 hover，"先选中再点一下打开"这套桌面手势摸不到反馈，容易让人觉得点了没反应。
+// 复用 CSS 里已经在用的 (hover: none) 判定，触屏设备改成点一下直接打开详情。
+function wbIsTouchLike(){ return typeof window.matchMedia === "function" && window.matchMedia("(hover: none)").matches; }
+
 function workbenchIsRealProject(id){ return WB_DATA.projects.some(project => project.id === id); }
 function workbenchProject(id){ return id === WB_UNASSIGNED_ID ? WB_UNASSIGNED_PROJECT : WB_DATA.projects.find(project => project.id === id); }
 function workbenchTask(id){ return WB_DATA.tasks.find(task => task.id === id); }
@@ -1828,6 +1832,11 @@ $("#workbenchView").addEventListener("click", event => {
     if(event.shiftKey && WB.selectAnchor && WB.selectAnchor !== taskId){
       clearTimeout(wbClickTimer); wbClickTimer = null;
       workbenchSelectRange(WB.selectAnchor, taskId);
+      return;
+    }
+    if(wbIsTouchLike()){
+      clearTimeout(wbClickTimer); wbClickTimer = null;
+      openWorkbenchEditor(taskId);
       return;
     }
     if(WB.selected.size === 1 && WB.selected.has(taskId)){
