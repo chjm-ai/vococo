@@ -43,15 +43,6 @@
     flat: [[20, 8], [20, 9], [20, 10], [20, 13], [20, 14], [20, 15]]
   };
 
-  const BAR_COLS = [[6, 7], [9, 10], [12, 13], [15, 16], [18, 19]];
-  function barCells(heights) {
-    const out = [];
-    heights.forEach((h, i) => {
-      const [a, b] = BAR_COLS[i];
-      for (let row = 28 - h; row <= 27; row++) for (let x = a; x <= b; x++) out.push([row, x]);
-    });
-    return out;
-  }
   function dotCells(active) {
     const cols = [8, 12, 16], out = [];
     cols.forEach((c, i) => {
@@ -66,7 +57,7 @@
   const Z1 = zGlyph(16), Z2 = zGlyph(18), Z3 = zGlyph(19);
 
   function frameShadow(opts) {
-    const { dy = 0, dx = 0, scale = 1, eyes = 'open', feet = 'waveA', bars = null, dots = null, zzz = null, hl = true, sh = true } = opts;
+    const { dy = 0, dx = 0, scale = 1, eyes = 'open', feet = 'waveA', dots = null, zzz = null, hl = true, sh = true } = opts;
     let profile = NEUTRAL.map(r => r ? [r[0], r[1]] : null);
     if (scale !== 1) {
       profile = profile.map(r => {
@@ -82,7 +73,6 @@
     if (sh) SH.forEach(([r, c]) => setCell(r + dy, c + dx, 'd'));
     FEET[feet].forEach(([r, c]) => setCell(r + dy, c + dx, 'p'));
     eyeCells(eyes).forEach(([r, c]) => setCell(r + dy, c + dx, 'k'));
-    if (bars) barCells(bars).forEach(([r, c]) => setCell(r, c, 'p'));
     if (dots != null) dotCells(dots).forEach(([r, c]) => setCell(r, c, 'k'));
     if (zzz) zzz.forEach(([r, c]) => setCell(r, c, 'k'));
     const parts = [];
@@ -111,12 +101,27 @@
         frameShadow({ dy: -1, eyes: 'closed', feet: 'waveB' })
       ]
     },
+    // 聆听中:不画外挂音柱,身体本身随音量呼吸式伸缩——通话场景里这个默认循环只是
+    // 静默时的兜底节奏,真实麦克风电平接入时由调用方直接覆盖 scale(见 voice.js
+    // driveOrbMascot,通话结束/离开聆听态会把覆盖交还给这里的 CSS 关键帧)。
     listening: {
       dur: '1.0s', frames: [
-        frameShadow({ dy: 0, eyes: 'open', feet: 'waveA', bars: [2, 4, 6, 4, 2] }),
-        frameShadow({ dy: -1, eyes: 'open', feet: 'waveB', bars: [4, 6, 3, 6, 4] }),
-        frameShadow({ dy: 0, eyes: 'open', feet: 'waveA', bars: [6, 3, 5, 3, 6] }),
-        frameShadow({ dy: -1, eyes: 'open', feet: 'waveB', bars: [3, 5, 2, 5, 3] })
+        frameShadow({ scale: 1.00, eyes: 'open', feet: 'waveA' }),
+        frameShadow({ scale: 1.07, eyes: 'open', feet: 'waveB' }),
+        frameShadow({ scale: 1.02, eyes: 'open', feet: 'waveA' }),
+        frameShadow({ scale: 1.09, eyes: 'open', feet: 'waveB' })
+      ]
+    },
+    // 连接中/重连中:跟"AI思考中"区分开,不加外挂图形,只用已有参数(scale 呼吸 +
+    // 闭眼 + 收脚)组合出"还没睁眼、正在建立"的慢节奏——不复用 thinking/busy,
+    // 因为连接中和"AI在想/说"是两件事,合并会让用户分不清是在连线还是在等回复。
+    conn: {
+      dur: '2.4s', frames: [
+        frameShadow({ scale: 0.90, eyes: 'closed', feet: 'tuck' }),
+        frameShadow({ scale: 0.96, eyes: 'closed', feet: 'tuck' }),
+        frameShadow({ scale: 1.03, eyes: 'closed', feet: 'tuck' }),
+        frameShadow({ scale: 1.06, eyes: 'closed', feet: 'tuck' }),
+        frameShadow({ scale: 1.00, eyes: 'closed', feet: 'tuck' })
       ]
     },
     thinking: {
@@ -179,8 +184,12 @@
   }
 
   // 状态切换辅助:VocoMascot.setState(el, 'listening')
+  // frameShadow 单独导出给需要"实时数据覆盖某一帧"的调用方用(比如通话页拿真实
+  // 麦克风电平直接算 box-shadow,盖过下面这套 CSS 关键帧动画;离开该状态记得把
+  // i.vmi 的内联 animation/boxShadow 清空,交还给 CSS)。
   window.VocoMascot = {
     mountAll: mountAll,
+    frameShadow: frameShadow,
     setState: function (el, state) {
       if (el) el.dataset.state = state;
     }

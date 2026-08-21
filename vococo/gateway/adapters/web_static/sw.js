@@ -7,7 +7,7 @@
       此前部署新版本后要连刷两次页面才真正生效,一次排查"重启后无感重连"的修复时
       正被这层坑了一道(前端代码没变,是缓存了没刷新出来,误以为修复本身没生效)。 */
 
-const SHELL_CACHE = "vococo-shell-v7";
+const SHELL_CACHE = "vococo-shell-v8";
 const SHELL_NETWORK_TIMEOUT_MS = 1200;  // 超过此预算网络还没回应就退回缓存,不让跨境隧道用户干等
 // 只缓存这份白名单里的路径(按 pathname 匹配,?v= 版本参数算在完整 URL 里)
 // app-core/markdown/sidebar/settings/workbench/stream/composer/voice:从 index.html 拆出的功能块

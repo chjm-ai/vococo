@@ -11,7 +11,7 @@
   const transcriptEl=$("#transcript"), statusEl=$("#status"), talkBtn=$("#talkBtn"),
     stopBtn=$("#stopBtn"), tasksBtn=$("#tasksBtn"), tasksBadge=$("#tasksBadge"),
     tasksDrawer=$("#tasksDrawer"), tasksList=$("#tasksList"), taskBar=$("#taskBar"),
-    handsFreeUi=$("#handsFreeUi"), orbWrap=$("#orbWrap"),
+    handsFreeUi=$("#handsFreeUi"), orbWrap=$("#orbWrap"), mascotEl=$("#mascotEl"),
     endHandsFreeBtn=$("#endHandsFreeBtn"), muteToggleBtn=$("#muteToggleBtn"),
     backLink=$("#callHead #backLink"), startBtn=$("#startCallBtn"),
     connDotEl=$("#connDot");
@@ -1013,8 +1013,7 @@
     return typeof AudioWorkletNode !== "undefined";
   }
 
-  let analyser=null, analyserSource=null, outputAnalyser=null, omniOutTap=null, orbCanvasCtx=null, orbAnimHandle=null;
-  let orbLevels=null;  // 各柱子的平滑幅度,跨帧保留做指数平滑,消除原始频谱数据的跳变感
+  let analyser=null, analyserSource=null, outputAnalyser=null, omniOutTap=null, orbAnimHandle=null;
 
   function ensureAnalyser(){
     if(analyser || !audioCtx || !stream) return;
@@ -1033,333 +1032,40 @@
     outputAnalyser.fftSize = 64;
   }
 
-  const WAVE_BARS = 56;  // 一排竖条,绕水平中线上下镜像成一条声波
-
-  // 波形配色跟随主题(从 :root 读 accent 系列),缓存起来、每隔若干帧刷新一次,
-  // 这样切换浅/深色主题时颜色也会跟上,又不必每帧都 getComputedStyle。
-  let waveColors=null, waveColorTick=0;
-  function waveColorFor(state){
-    if(!waveColors || (waveColorTick++ % 30)===0){
-      const cs=getComputedStyle(document.documentElement);
-      waveColors={
-        accent:cs.getPropertyValue("--accent").trim(),
-        accent2:cs.getPropertyValue("--accent2").trim(),
-        err:cs.getPropertyValue("--err").trim(),
-        dim:cs.getPropertyValue("--dim2").trim(),
-      };
-    }
-    if(state==="capturing") return [waveColors.err, waveColors.accent];
-    if(state==="speaking")  return [waveColors.accent2, waveColors.accent];
-    if(state==="thinking")  return [waveColors.accent, waveColors.accent2];
-    return [waveColors.dim, waveColors.dim];  // idle
-  }
-
-  // ═══ 声波动效 v3:「经典波形·精修」(WebGL)═════════════════════════════
-  // 保留旧版柱状频谱的骨架(56→44 柱、钟形包络、各状态动律公式),升级三件事:
-  //   1. 配色:品牌橙锚点的 IQ 虹彩调色板沿柱阵流动,垂直光泽渐变+顶端提亮;
-  //      空闲=暖灰微澜,连接中整体压成灰调+灰白微光扫过(与活跃状态强区分);
-  //   2. 过渡:状态权重(orbW)指数缓动 + 着色器内"涟漪式接力"——中心柱先变、
-  //      边缘柱延迟,切状态像一阵涟漪从中间荡开,无硬切;
-  //   3. 聆听:真实麦克风频谱驱动柱高,一道闪光沿柱阵恒速滑行(亮度随音量,
-  //      速度恒定——速度若随音量实时变会造成相位跳变=抽搐)。
-  // 频谱统一走一张 32x1 亮度纹理:聆听喂真实频谱、其余喂合成节奏,过渡期两边
-  // 数据在同一张纹理上自然衔接。WebGL 起不来(老设备/编译失败)时回落旧版
-  // Canvas 2D 竖条(drawOrbWaveform2D),canvas 原地换新保证 2d 可用。
-  const ORB_BANDS = 32;
-  let orbGl=null, orbGlU=null, orbGlFailed=false, orbSpecTex=null;
-  let orbBands=null, orbBandBytes=null, orbLevelAvg=0, orbPrevT=0;
+  // ═══ 声波区 v4:小幽吉祥物接管 ═══════════════════════════════════════════
+  // 原来这里是 WebGL/2D 画的横向声波竖条(WAVE_BARS/ORB_BANDS/着色器),2026-08-21
+  // 换成吉祥物本体演——8 态引擎(mascot.js)里 idle/busy 原样复用,新增了一个
+  // conn(连接中,呼吸+闭眼)专门区分"正在建连"和"AI在想":这两者以前很难在这么
+  // 小的视觉里分清,现在"AI思考中"干脆直接复用 busy 的摇摆姿态,靠已有的思考
+  // 循环音/任务滴答音效区分,不用为它单凑一个视觉。
+  // "聆听中"不再画外挂音柱,吉祥物身体本身随真实麦克风电平呼吸式伸缩——
+  // driveOrbMascot 每帧直接算 box-shadow 覆盖掉 mascot.css 的 CSS 关键帧动画,
+  // 离开聆听态就把内联覆盖清空,交还给 CSS(见 mascot.js STATES.listening 注释)。
   let orbConnecting=false;  // startOmniHandsFree 置起,SDP 应答落地/挂断清掉
-  const orbW = {idle:1, conn:0, listen:0, think:0, speak:0};
+  let orbMascotTgt=null;    // 当前已应用到吉祥物身上的目标态,变化时才动 DOM
+  let orbMicSmoothed=1;     // 聆听态身体呼吸幅度的指数平滑值,跨帧保留消除跳变
 
-  const ORB_VERT = "attribute vec2 aPos; void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }";
-  const ORB_FRAG = `
-#ifdef GL_FRAGMENT_PRECISION_HIGH
-precision highp float;
-#else
-precision mediump float;
-#endif
-uniform vec2 uRes;
-uniform float uTime;
-uniform float uIdle, uConn, uListen, uThink, uSpeak;
-uniform float uLevel;   // 平滑后的总能量 0..1
-uniform float uDark;    // 深色主题=1:柱子是"光";浅色主题=0:柱子是"颜料"
-uniform sampler2D uSpec;
-
-// 频谱采样:与旧版柱状映射一致,x=0..1 从低频到高频
-float spec(float x){ return texture2D(uSpec, vec2(clamp(x, 0.0, 1.0), 0.5)).r; }
-// 虹彩调色板:6 个手工色标循环渐变(珊瑚橙→金→玫瑰→紫→青→奶油),
-// 相邻色标的中点过渡色均人工验过不发灰——余弦色环会周期性扫过橄榄/芥末段,显脏,弃用
-vec3 pal(float h){
-  float x = fract(h) * 6.0;
-  vec3 c0 = vec3(1.00, .55, .30), c1 = vec3(1.00, .78, .44), c2 = vec3(.96, .52, .70);
-  vec3 c3 = vec3(.58, .50, 1.00), c4 = vec3(.34, .78, .92), c5 = vec3(1.00, .87, .64);
-  vec3 col = mix(c0, c1, clamp(x, 0., 1.));
-  col = mix(col, c2, clamp(x - 1., 0., 1.));
-  col = mix(col, c3, clamp(x - 2., 0., 1.));
-  col = mix(col, c4, clamp(x - 3., 0., 1.));
-  col = mix(col, c5, clamp(x - 4., 0., 1.));
-  return mix(col, c0, clamp(x - 5., 0., 1.));
-}
-
-void main(){
-  vec2 p = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
-  float t = uTime;
-  float lv = uLevel;
-  vec3 col = vec3(0.0);
-  float N = 44.0;
-  float halfW = uRes.x / uRes.y * 0.5;
-  float u = clamp(p.x / (2.0 * halfW) + 0.5, 0.0, 1.0);
-  float bi = floor(u * N);
-  float bu = fract(u * N);
-  float cx = (bi + 0.5) / N;
-  float envB = sin(3.14159 * cx);       // 钟形包络:中间高两端低(沿用旧版)
-  float fi = bi;
-  // 波纹式接力过渡:中心柱先响应状态变化,边缘柱延迟——切换像涟漪荡开
-  float dly = abs(cx - 0.5) * 2.0;
-  float wI = clamp(uIdle   * 1.6 - dly * 0.6, 0.0, 1.0);
-  float wC = clamp(uConn   * 1.6 - dly * 0.6, 0.0, 1.0);
-  float wL = clamp(uListen * 1.6 - dly * 0.6, 0.0, 1.0);
-  float wT = clamp(uThink  * 1.6 - dly * 0.6, 0.0, 1.0);
-  float wS = clamp(uSpeak  * 1.6 - dly * 0.6, 0.0, 1.0);
-  float wSum = max(wI + wC + wL + wT + wS, 0.35);
-  // 各状态柱高:公式沿用旧版,聆听/播放接频谱纹理(真实或合成,由 JS 侧决定)
-  float hI = 0.06 + 0.05 * sin(t * 1.4 + fi * 0.5);
-  float hC = 0.045 + 0.025 * sin(t * 1.1 + fi * 0.35);
-  float hL = 0.08 + spec(cx) * 0.75 * (0.6 + lv * 0.5);
-  float hT = 0.30 + 0.20 * sin(t * 3.0 - fi * 0.35);
-  float hS = 0.15 + spec(cx) * 0.60 * (0.7 + lv * 0.4);
-  float h = ((wI * hI + wC * hC + wL * hL + wT * hT + wS * hS) / wSum) * envB;
-  float H = max(h * 0.46, 0.012);
-  float actW = min(1.0, (wL + wT + wS) / wSum);   // 接力后的活跃度(配色同样带涟漪)
-  float connW = wC / wSum;
-  // 圆润竖条
-  float bx = abs(bu - 0.5);
-  float mask = smoothstep(0.36, 0.26, bx) * smoothstep(H, H * 0.86, abs(p.y));
-  // 配色:沿宽度的虹彩流动 + 状态定调(连接=灰,空闲=暖灰)
-  float hue = cx * 0.30 + t * 0.02 + uThink * (cx * 0.2 + t * 0.05) + uSpeak * 0.03 * sin(t * 1.5);
-  vec3 bar = pal(hue);
-  bar = mix(pow(bar, vec3(1.6)) * 1.05, bar, uDark);   // 浅色主题:gamma 加深成"颜料",防粉笔灰
-  float satF = mix(0.35, 0.22, uDark);
-  float satv = (satF + (1.0 - satF) * actW) * (1.0 - 0.88 * connW);
-  vec3 gray = vec3(dot(bar, vec3(.333))) * mix(vec3(1.0, .95, .88), vec3(1.0), uDark);
-  bar = mix(gray, bar, clamp(satv, 0.0, 1.0));
-  // 垂直光泽渐变(上亮下沉) + 顶端提亮
-  float vg = 0.72 + 0.34 * smoothstep(-H, H, p.y);
-  float tip = smoothstep(H * 0.72, H * 0.98, abs(p.y)) * 0.35;
-  float bright = 0.55 + 0.45 * ((wL * (0.5 + lv * 0.9) + wS * 0.75 + wT * 0.6 + wC * 0.25 + wI * 0.15) / wSum);
-  col += bar * mask * (vg + tip) * bright;
-  // 柱后柔光(仅深色主题,克制)
-  col += bar * envB * exp(-abs(p.y) / (H * 1.8 + 0.02)) * smoothstep(0.36, 0.30, bx) * 0.16 * uDark * actW;
-  // 连接中:灰白微光扫过柱阵
-  if(uConn > 0.003){
-    float cxs = fract(t * 0.30) * 2.8 - 1.4;
-    col += vec3(.82, .81, .78) * exp(-(p.x - cxs) * (p.x - cxs) * 10.0) * mask * 0.5 * uConn;
-  }
-  // 聆听:闪光沿柱阵恒速滑行,亮度随声音(速度恒定,避免相位跳变)
-  if(uListen > 0.003){
-    float gx = fract(t * 0.5) * 2.1 * halfW - 1.05 * halfW;
-    float glint = exp(-(p.x - gx) * (p.x - gx) * 24.0);
-    col += vec3(1.0, .97, .92) * glint * mask * uListen * (0.35 + lv * 0.9);
-  }
-  // 输出预乘 alpha:深色主题下是"光"(alpha 松),浅色主题下是"颜料"(alpha 实+掐低强度尾巴)
-  float aOut = clamp(max(col.r, max(col.g, col.b)) * 1.1, 0.0, 1.0);
-  aOut = pow(aOut, mix(1.35, 0.9, uDark));
-  float cut = (1.0 - uDark) * 0.10;
-  aOut = clamp((aOut - cut) / (1.0 - cut), 0.0, 1.0);
-  gl_FragColor = vec4(clamp(col, 0.0, 1.0) * aOut, aOut);
-}`;
-
-  function orbCompile(gl, type, src){
-    const sh = gl.createShader(type);
-    gl.shaderSource(sh, src); gl.compileShader(sh);
-    if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
-      vdbg("orb.glsl.fail", String(gl.getShaderInfoLog(sh)).slice(0, 160));
-      return null;
-    }
-    return sh;
-  }
-
-  function initOrbGL(canvas){
-    let gl = null;
-    try{
-      gl = canvas.getContext("webgl",
-        {alpha:true, premultipliedAlpha:true, antialias:false, depth:false, stencil:false});
-    }catch(e){}
-    if(!gl){ orbGlFailed = true; return; }
-    const vs = orbCompile(gl, gl.VERTEX_SHADER, ORB_VERT);
-    const fs = orbCompile(gl, gl.FRAGMENT_SHADER, ORB_FRAG);
-    let prog = null, ok = false;
-    if(vs && fs){
-      prog = gl.createProgram();
-      gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
-      ok = gl.getProgramParameter(prog, gl.LINK_STATUS);
-    }
-    if(!ok){
-      // 编译/链接失败:canvas 已被 webgl 上下文占住、拿不回 2d,
-      // 原地换一个同属性的新 canvas 给 2D 兜底用
-      orbGlFailed = true;
-      canvas.replaceWith(canvas.cloneNode(false));
-      return;
-    }
-    gl.useProgram(prog);
-    const buf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
-    const loc = gl.getAttribLocation(prog, "aPos");
-    gl.enableVertexAttribArray(loc);
-    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    orbSpecTex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, orbSpecTex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, ORB_BANDS, 1, 0,
-      gl.LUMINANCE, gl.UNSIGNED_BYTE, new Uint8Array(ORB_BANDS));
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    const U = {};
-    ["uRes","uTime","uIdle","uConn","uListen","uThink","uSpeak","uLevel","uDark",
-     "uAccent","uAccent2","uErr","uDim","uSpec"].forEach(n => U[n] = gl.getUniformLocation(prog, n));
-    gl.uniform2f(U.uRes, canvas.width, canvas.height);
-    gl.uniform1i(U.uSpec, 0);
-    orbGl = gl; orbGlU = U;
-  }
-
-  // 主题色解析成 GLSL vec3(跟 waveColorFor 同样的缓存节奏,主题切换能跟上)
-  let orbTheme=null, orbThemeTick=0;
-  function orbHexVec(s, fb){
-    const m = /^#([0-9a-f]{6})$/i.exec(s || "");
-    if(!m) return fb;
-    const n = parseInt(m[1], 16);
-    return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
-  }
-  function orbThemeVecs(){
-    if(!orbTheme || (orbThemeTick++ % 60) === 0){
-      const cs = getComputedStyle(document.documentElement);
-      const v = n => cs.getPropertyValue(n).trim();
-      const bg = orbHexVec(v("--bg2"), [0.1, 0.1, 0.1]);
-      orbTheme = {
-        accent:  orbHexVec(v("--accent"),  [0.85, 0.47, 0.34]),
-        accent2: orbHexVec(v("--accent2"), [0.78, 0.38, 0.25]),
-        err:     orbHexVec(v("--err"),     [0.82, 0.40, 0.29]),
-        dim:     orbHexVec(v("--dim2"),    [0.44, 0.43, 0.38]),
-        dark: (0.2126 * bg[0] + 0.7152 * bg[1] + 0.0722 * bg[2]) < 0.5 ? 1 : 0,
-      };
-    }
-    return orbTheme;
-  }
-
-  function drawOrbWaveform(){
-    orbAnimHandle = requestAnimationFrame(drawOrbWaveform);
-    const canvas = $("#orbCanvas");
-    if(!orbGl && !orbGlFailed) initOrbGL(canvas);
-    if(orbGlFailed){ drawOrbWaveform2D(); return; }
-    const gl = orbGl, U = orbGlU;
-    const t = (performance.now() / 1000) % 3600;  // 卷回避免 mediump 精度流失
-    let dt = t - orbPrevT; orbPrevT = t;
-    if(dt <= 0 || dt > 0.1) dt = 0.016;  // 首帧/切后台回来,别让权重一步跳完
-
-    // 形态权重:指数缓动逼近目标(时间常数≈0.35s,配合着色器内涟漪接力),切状态=权重滑移而非硬切
+  function driveOrbMascot(){
+    orbAnimHandle = requestAnimationFrame(driveOrbMascot);
     const tgt = orbConnecting ? "conn"
-      : wsState === "capturing" ? "listen"
-      : wsState === "thinking"  ? "think"
-      : wsState === "speaking"  ? "speak" : "idle";
-    const k = 1 - Math.exp(-dt * 2.8);
-    for(const s in orbW) orbW[s] += ((s === tgt ? 1 : 0) - orbW[s]) * k;
-
-    // 频谱纹理:聆听喂真实麦克风频谱;播放接得上本地 TTS analyser 就用真的,
-    // Omni 出声(WebRTC 远端轨道,iOS 上进不了 Web Audio)喂合成节奏;其余喂微息
-    if(!orbBands){ orbBands = new Float32Array(ORB_BANDS); orbBandBytes = new Uint8Array(ORB_BANDS); }
-    let src = null;
-    if(wsState === "capturing") src = analyser;
-    else if(wsState === "speaking") src = outputAnalyser;
-    let data = null;
-    if(src){ data = new Uint8Array(src.frequencyBinCount); src.getByteFrequencyData(data); }
-    let sum = 0;
-    for(let i = 0; i < ORB_BANDS; i++){
-      let target;
-      if(data){
-        target = data[Math.floor(i / ORB_BANDS * data.length)] / 255;
-      } else if(wsState === "thinking"){
-        target = 0.30 + 0.20 * Math.sin(t * 3 - i * 0.6);
-      } else if(wsState === "speaking"){
-        target = 0.35 + 0.25 * Math.sin(t * 6 - i * 0.9) * Math.abs(Math.sin(t * 1.7 + i * 0.23));
-      } else {
-        target = 0.06 + 0.05 * Math.sin(t * 1.4 + i * 0.9);
-      }
-      orbBands[i] += (target - orbBands[i]) * 0.28;  // 指数平滑,吃掉原始数据的跳变
-      orbBandBytes[i] = Math.max(0, Math.min(255, orbBands[i] * 255));
-      sum += orbBands[i];
+      : wsState === "capturing" ? "listening"
+      : (wsState === "thinking" || wsState === "speaking") ? "busy" : "idle";
+    const iEl = mascotEl.querySelector("i.vmi");
+    if(tgt !== orbMascotTgt){
+      orbMascotTgt = tgt;
+      mascotEl.dataset.state = tgt;
+      if(iEl){ iEl.style.animation = ""; iEl.style.boxShadow = ""; }  // 交还给 CSS 关键帧
+      orbMicSmoothed = 1;
     }
-    orbLevelAvg += (sum / ORB_BANDS - orbLevelAvg) * 0.15;
-
-    const th = orbThemeVecs();
-    gl.bindTexture(gl.TEXTURE_2D, orbSpecTex);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, ORB_BANDS, 1, gl.LUMINANCE, gl.UNSIGNED_BYTE, orbBandBytes);
-    gl.uniform1f(U.uTime, t);
-    gl.uniform1f(U.uIdle, orbW.idle);
-    gl.uniform1f(U.uConn, orbW.conn);
-    gl.uniform1f(U.uListen, orbW.listen);
-    gl.uniform1f(U.uThink, orbW.think);
-    gl.uniform1f(U.uSpeak, orbW.speak);
-    gl.uniform1f(U.uLevel, Math.min(1, orbLevelAvg * 1.6));
-    gl.uniform1f(U.uDark, th.dark);
-    gl.uniform3fv(U.uAccent, th.accent);
-    gl.uniform3fv(U.uAccent2, th.accent2);
-    gl.uniform3fv(U.uErr, th.err);
-    gl.uniform3fv(U.uDim, th.dim);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-  }
-
-  // ── 2D 兜底:老版竖条声波,WebGL 不可用时由 drawOrbWaveform 每帧转调 ──
-  function drawOrbWaveform2D(){
-    const canvas = $("#orbCanvas");
-    if(!orbCanvasCtx) orbCanvasCtx = canvas.getContext("2d");
-    if(!orbCanvasCtx) return;
-    const ctx = orbCanvasCtx;
-    const w = canvas.width, h = canvas.height, cy = h/2;
-    ctx.clearRect(0, 0, w, h);
-    if(!orbLevels) orbLevels = new Float32Array(WAVE_BARS);
-
-    let src = null;
-    if(wsState === "capturing") src = analyser;
-    else if(wsState === "speaking") src = outputAnalyser;
-    let data = null;
-    if(src){ data = new Uint8Array(src.frequencyBinCount); src.getByteFrequencyData(data); }
-
-    const t = performance.now() / 1000;
-    const [c1, c2] = waveColorFor(wsState);
-    const grad = ctx.createLinearGradient(0, 0, w, 0);
-    grad.addColorStop(0, c1); grad.addColorStop(0.5, c2); grad.addColorStop(1, c1);
-    ctx.strokeStyle = grad;
-    ctx.lineCap = "round";
-
-    const gap = w / WAVE_BARS;
-    const barW = Math.max(3, gap * 0.42);
-    ctx.lineWidth = barW;
-    const maxH = h * 0.42;
-    for(let i=0;i<WAVE_BARS;i++){
-      // 钟形包络:中间高、两头收,让整条波像真实声纹而不是齐平的方块阵
-      const env = Math.sin((i / (WAVE_BARS - 1)) * Math.PI);
-      let target;
-      if(data){
-        target = data[Math.floor(i / WAVE_BARS * data.length)] / 255;
-      } else if(wsState === "thinking"){
-        target = 0.30 + 0.20 * Math.sin(t * 3 - i * 0.35);
-      } else if(wsState === "speaking"){
-        target = 0.35 + 0.22 * Math.sin(t * 6 - i * 0.5) * Math.abs(Math.sin(t * 1.7 + i * 0.13));
-      } else {
-        target = 0.06 + 0.05 * Math.sin(t * 1.4 + i * 0.5);  // idle 微起伏
-      }
-      orbLevels[i] += (target - orbLevels[i]) * 0.28;
-      const amp = orbLevels[i] * env;
-      const half = Math.max(barW * 0.5, amp * maxH);
-      const x = gap * (i + 0.5);
-      ctx.beginPath();
-      ctx.moveTo(x, cy - half + barW * 0.5);
-      ctx.lineTo(x, cy + half - barW * 0.5);
-      ctx.stroke();
-    }
+    if(tgt !== "listening" || !analyser || !iEl) return;
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(data);
+    let sum = 0; for(let i=0;i<data.length;i++) sum += data[i];
+    const level = sum / data.length / 255;
+    const target = 1 + Math.min(0.42, level * 1.5);
+    orbMicSmoothed += (target - orbMicSmoothed) * 0.35;
+    iEl.style.animation = "none";
+    iEl.style.boxShadow = VocoMascot.frameShadow({eyes:"open", feet:"waveA", scale:orbMicSmoothed});
   }
 
   function playTone(freq, durMs, shape, vol){
@@ -1528,8 +1234,8 @@ void main(){
     // 新连接:上一条连接没等到 completed 的兜底现场作废,别把旧句在新会话上重发
     if(omniDeltaFallbackTimer){ clearTimeout(omniDeltaFallbackTimer); omniDeltaFallbackTimer = null; }
     omniDeltaFallback = null; omniFallbackSentItem = null;
-    ensureAnalyser();        // 麦克风侧声纹(capturing 状态用)
-    if(!orbAnimHandle) drawOrbWaveform();
+    ensureAnalyser();        // 麦克风侧电平(capturing 状态时驱动吉祥物呼吸幅度用)
+    if(!orbAnimHandle) driveOrbMascot();
 
     omniPc = new RTCPeerConnection();
     omniMicStream.getTracks().forEach(t => omniPc.addTrack(t, omniMicStream));
@@ -3205,10 +2911,14 @@ void main(){
     recorder = null;
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
     if(orbAnimHandle){ cancelAnimationFrame(orbAnimHandle); orbAnimHandle = null; }
-    orbCanvasCtx = null; analyser = null; analyserSource = null; outputAnalyser = null; omniOutTap = null; orbLevels = null;
-    // 声波球回到干净的空闲态,下次通话不带上一通的残余权重(GL 上下文本身留着复用)
-    orbConnecting = false; orbLevelAvg = 0;
-    orbW.idle = 1; orbW.conn = orbW.listen = orbW.think = orbW.speak = 0;
+    analyser = null; analyserSource = null; outputAnalyser = null; omniOutTap = null;
+    // 吉祥物回到干净的空闲态,下次通话不带上一通的残余状态
+    orbConnecting = false; orbMascotTgt = null; orbMicSmoothed = 1;
+    if(mascotEl){
+      mascotEl.dataset.state = "idle";
+      const iEl = mascotEl.querySelector("i.vmi");
+      if(iEl){ iEl.style.animation = ""; iEl.style.boxShadow = ""; }
+    }
     if(audioCtx){ try{ audioCtx.close(); }catch(e){} audioCtx = null; }
     handsFreeActive = false; micMuted = false; wsState = "idle";
     busy = false; talkBtn.disabled = false; talkBtn.classList.remove("recording");
