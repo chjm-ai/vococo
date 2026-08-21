@@ -21,6 +21,7 @@ from .. import config
 from . import _db
 
 _STATUSES = {"todo", "done", "focus", "block"}
+_ASSIGNEES = {"human", "ai"}
 _IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _EXT_STRIP_RE = re.compile(r"[^a-z0-9]")
 
@@ -102,7 +103,8 @@ def _row_to_source(row) -> dict:
 
 def _row_to_task(row) -> dict:
     (id_, project_id, title, detail, status, date, month, week,
-     source_ids, images, sort_order, created_at, updated_at, deleted_at) = row
+     source_ids, images, sort_order, created_at, updated_at, deleted_at,
+     parent_id, assignee, session_ids) = row
     return {
         "id": id_,
         "project": project_id,
@@ -118,12 +120,16 @@ def _row_to_task(row) -> dict:
         "createdAt": created_at,
         "updatedAt": updated_at,
         "deletedAt": deleted_at,
+        "parentId": parent_id,
+        "assignee": assignee or "human",
+        "sessionIds": json.loads(session_ids or "[]"),
     }
 
 
 _TASK_COLUMNS = (
     "id, project_id, title, detail, status, date, month, week, "
-    "source_ids, images, sort_order, created_at, updated_at, deleted_at"
+    "source_ids, images, sort_order, created_at, updated_at, deleted_at, "
+    "parent_id, assignee, session_ids"
 )
 
 
@@ -223,10 +229,13 @@ def create_task(
     project_id: str, title: str, *, detail: str = "", status: str = "todo",
     date: str | None = None, month: str | None = None, week: str | None = None,
     source_ids: list[str] | None = None,
+    parent_id: str | None = None, assignee: str = "human",
 ) -> dict | None:
     title = title.strip()
     if not title or status not in _STATUSES:
         return None
+    if assignee not in _ASSIGNEES:
+        assignee = "human"
     now = time.time()
     c = _db.conn()
     max_order = c.execute(
@@ -235,15 +244,17 @@ def create_task(
     task_id = _new_id("wt")
     c.execute(
         "INSERT INTO workbench_tasks(id, project_id, title, detail, status, date, month, week, "
-        "source_ids, images, sort_order, created_at, updated_at, deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "source_ids, images, sort_order, created_at, updated_at, deleted_at, "
+        "parent_id, assignee, session_ids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (task_id, project_id, title, detail, status, date, month, week,
-         json.dumps(source_ids or [], ensure_ascii=False), "[]", max_order + 1, now, now, None),
+         json.dumps(source_ids or [], ensure_ascii=False), "[]", max_order + 1, now, now, None,
+         parent_id, assignee, "[]"),
     )
     c.commit()
     return get_task(task_id)
 
 
-_UPDATABLE_FIELDS = {"title", "detail", "status", "date", "month", "week", "project", "sourceIds"}
+_UPDATABLE_FIELDS = {"title", "detail", "status", "date", "month", "week", "project", "sourceIds", "assignee", "parentId"}
 
 
 def update_task(task_id: str, **fields) -> dict | None:
@@ -254,11 +265,13 @@ def update_task(task_id: str, **fields) -> dict | None:
             continue
         if key == "status" and value not in _STATUSES:
             continue
+        if key == "assignee" and value not in _ASSIGNEES:
+            continue
         if key == "title":
             value = value.strip()
             if not value:
                 continue
-        column = {"project": "project_id", "sourceIds": "source_ids"}.get(key, key)
+        column = {"project": "project_id", "sourceIds": "source_ids", "parentId": "parent_id"}.get(key, key)
         if key == "sourceIds":
             value = json.dumps(value, ensure_ascii=False)
         sets.append(f"{column}=?")
@@ -272,6 +285,32 @@ def update_task(task_id: str, **fields) -> dict | None:
     cur = c.execute(f"UPDATE workbench_tasks SET {', '.join(sets)} WHERE id=?", params)
     c.commit()
     return get_task(task_id) if cur.rowcount else None
+
+
+def link_session(task_id: str, session_id: str) -> dict | None:
+    """往任务的 session_ids 数组追加一个会话 ID。"""
+    task = get_task(task_id)
+    if task is None:
+        return None
+    ids = task["sessionIds"]
+    if session_id not in ids:
+        ids.append(session_id)
+    c = _db.conn()
+    c.execute(
+        "UPDATE workbench_tasks SET session_ids=?, updated_at=? WHERE id=?",
+        (json.dumps(ids, ensure_ascii=False), time.time(), task_id),
+    )
+    c.commit()
+    return get_task(task_id)
+
+
+def list_children(parent_id: str) -> list[dict]:
+    """列出某个父任务下的所有子任务。"""
+    rows = _db.conn().execute(
+        f"SELECT {_TASK_COLUMNS} FROM workbench_tasks WHERE parent_id=? AND deleted_at IS NULL ORDER BY sort_order ASC",
+        (parent_id,),
+    ).fetchall()
+    return [_row_to_task(r) for r in rows]
 
 
 def delete_task(task_id: str) -> bool:

@@ -171,6 +171,12 @@ def conn() -> sqlite3.Connection:
         wtcols = {r[1] for r in _DB.execute("PRAGMA table_info(workbench_tasks)")}
         if "deleted_at" not in wtcols:
             _DB.execute("ALTER TABLE workbench_tasks ADD COLUMN deleted_at REAL")
+        if "parent_id" not in wtcols:
+            _DB.execute("ALTER TABLE workbench_tasks ADD COLUMN parent_id TEXT")
+        if "assignee" not in wtcols:
+            _DB.execute("ALTER TABLE workbench_tasks ADD COLUMN assignee TEXT NOT NULL DEFAULT 'human'")
+        if "session_ids" not in wtcols:
+            _DB.execute("ALTER TABLE workbench_tasks ADD COLUMN session_ids TEXT NOT NULL DEFAULT '[]'")
         for table in ("turns", "session_meta"):
             for old_prefix in ("voice-task:", "cron-task:"):
                 _DB.execute(
