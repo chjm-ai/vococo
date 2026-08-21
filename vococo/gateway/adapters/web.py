@@ -869,9 +869,13 @@ class WebAdapter:
         # 项目会话(conv = p<hash>:<convid>)→ 刷新项目最近使用时间,好让侧边栏排序
         if conv.startswith("p") and ":" in conv:
             session_store.touch_project(conv[1:].split(":", 1)[0])
-        # 广播用户消息让其他客户端(如桌面端)能实时渲染用户气泡
+        # 广播用户消息让其他客户端(如桌面端)能实时渲染用户气泡。图片这时还没走到
+        # save_turn_images(在 core.py 的轮次处理里,晚于本次广播),没法给 /image?name=
+        # 这种服务端引用,所以跟本地发送方一样直接带 dataURL——不然其他客户端这条
+        # 气泡永远没图,得等下次整包刷新历史才补得出来。
         if not is_command(text):
-            self._emit({"conv": conv, "type": "user", "text": text})
+            img_urls = [f"data:{i.media_type};base64,{i.data}" for i in images]
+            self._emit({"conv": conv, "type": "user", "text": text, "images": img_urls})
         self._inbox.put_nowait(
             Incoming(self.platform, conv, text, images=images, audios=audios, files=files)
         )
