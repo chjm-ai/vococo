@@ -174,14 +174,13 @@ function renderWorkbenchHeader(){
   const dateFreeView = WB.view === "unscheduled" || WB.view === "trash";
   const dateNav = dateFreeView ? "" :
     '<div class="wb-date-nav"><button type="button" data-nav="-1" aria-label="上一个周期">‹</button><strong>'+workbenchDateLabel()+'</strong><button type="button" data-nav="1" aria-label="下一个周期">›</button><button type="button" data-today>今天</button></div>';
-  const newTaskBtn = WB.view === "trash" ? "" : '<button type="button" class="wb-add-task" data-new-task>+ 新建任务</button>';
   return '<header class="wb-toolbar"><div class="wb-title"><button class="wb-hamb" type="button" data-sidebar aria-label="打开侧边栏">'+ic("panel")+'</button><h1>工作台</h1>'+
       '<button type="button" class="wb-win-btn" data-workbench-win title="独立窗口" aria-label="独立窗口">'+ic("newwin")+'</button></div>'+
-    '<div class="wb-controls">'+newTaskBtn+'<div class="wb-switch">'+
-      ["day","week","month"].map(view => '<button class="'+(WB.view === view ? "on" : "")+'" type="button" data-view="'+view+'">'+({day:"日",week:"周",month:"月"}[view])+'</button>').join("")+
+    '<div class="wb-switch">'+
       '<button class="wb-switch-icon'+(WB.view === "unscheduled" ? " on" : "")+'" type="button" data-view="unscheduled" aria-label="未排期">'+ic("inbox")+'</button>'+
       '<button class="wb-switch-icon'+(WB.view === "trash" ? " on" : "")+'" type="button" data-view="trash" aria-label="回收站">'+ic("trash")+'</button>'+
-    '</div>'+dateNav+'</div></header>';
+      ["day","week","month"].map(view => '<button class="'+(WB.view === view ? "on" : "")+'" type="button" data-view="'+view+'">'+({day:"日",week:"周",month:"月"}[view])+'</button>').join("")+
+    '</div>'+dateNav+'</header>';
 }
 
 const WB_TRASH = {tasks: [], loaded: false};
