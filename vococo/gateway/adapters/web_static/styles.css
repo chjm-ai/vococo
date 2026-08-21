@@ -1571,8 +1571,11 @@
   #workbenchView .wb-child-count{flex:0 0 auto;padding:1px 6px;border-radius:4px;background:var(--panel2);color:var(--dim);font-size:11px;line-height:18px;cursor:pointer;white-space:nowrap;transition:background .15s ease,color .15s ease}
   #workbenchView .wb-child-count:hover{background:var(--line);color:var(--text)}
   #workbenchView .wb-child-count.is-expanded{background:var(--accent);color:#fff}
-  #workbenchView .wb-parent-badge{display:grid;place-items:center;flex:0 0 auto;width:20px;height:20px;color:var(--dim)}
-  #workbenchView .wb-parent-badge .ic{width:14px;height:14px}
+  #workbenchView .wb-task-title-row{display:flex;align-items:center;gap:5px;min-width:0}
+  #workbenchView .wb-task-title-row .wb-task-title{flex:0 1 auto}
+  #workbenchView .wb-parent-badge{display:inline-flex;align-items:center;gap:3px;min-width:0;max-width:45%;color:var(--dim2);font-size:12px;line-height:20px;white-space:nowrap}
+  #workbenchView .wb-parent-badge .ic{flex:0 0 auto;width:13px;height:13px}
+  #workbenchView .wb-parent-badge span{overflow:hidden;text-overflow:ellipsis}
   #workbenchView .wb-editor-footer .wb-parent-link{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;width:auto;padding:0 8px;margin-left:auto}
   #workbenchView .wb-editor-footer .wb-parent-link .ic{width:14px;height:14px}
   #workbenchView .wb-editor-footer .wb-parent-link:hover{color:var(--accent)}
