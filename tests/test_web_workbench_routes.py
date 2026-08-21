@@ -143,8 +143,10 @@ async def test_move_task_via_http_keeps_child_order(workbench_web_app):
             json={"project": project_id, "title": "已有子任务", "parentId": parent["id"]},
         )
         child = (await resp.json())["task"]
+        resp = await client.post("/workbench/projects/create", json={"name": "源项目"})
+        source_project_id = (await resp.json())["project"]["id"]
         resp = await client.post(
-            "/workbench/tasks/create", json={"project": project_id, "title": "待移动任务"}
+            "/workbench/tasks/create", json={"project": source_project_id, "title": "待移动任务"}
         )
         root = (await resp.json())["task"]
         resp = await client.get("/workbench")
@@ -153,10 +155,13 @@ async def test_move_task_via_http_keeps_child_order(workbench_web_app):
         order.insert(order.index(child["id"]), root["id"])
 
         resp = await client.post(
-            "/workbench/tasks/move", json={"id": root["id"], "parentId": parent["id"], "order": order}
+            "/workbench/tasks/move",
+            json={"id": root["id"], "parentId": parent["id"], "project": project_id, "order": order},
         )
         assert resp.status == 200
-        assert (await resp.json())["task"]["parentId"] == parent["id"]
+        moved = (await resp.json())["task"]
+        assert moved["parentId"] == parent["id"]
+        assert moved["project"] == project_id
         resp = await client.get("/workbench")
         tasks = (await resp.json())["tasks"]
         assert [task["id"] for task in tasks] == order

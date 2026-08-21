@@ -98,6 +98,7 @@ async def test_workbench_js_talks_to_backend(static_app):
     assert 'api("/workbench")' in source
     assert "/workbench/tasks/create" in source
     assert "/workbench/projects/create" in source  # 项目不写死,支持界面新建
+    assert '[data-complete],[data-toggle-children]' in source  # 子任务展开按钮双击不应打开详情
     assert 'view:"week"' in source
     assert "goals:" not in source
     assert "月目标" not in source

@@ -176,16 +176,18 @@ def reorder_projects(order: list[str]) -> None:
 
 # ── 任务 ────────────────────────────────────────────────────────────────
 
-def move_task(task_id: str, parent_id: str | None, order: list[str]) -> dict | None:
-    """原子地更新任务父级与全局显示顺序，避免刷新后拖拽结果丢失。"""
+def move_task(task_id: str, parent_id: str | None, project_id: str, order: list[str]) -> dict | None:
+    """原子地迁移任务树、更新父级与全局显示顺序，避免刷新后拖拽结果丢失。"""
     c = _db.conn()
-    task = c.execute(
-        "SELECT project_id FROM workbench_tasks WHERE id=? AND deleted_at IS NULL", (task_id,)
-    ).fetchone()
-    active_ids = [r[0] for r in c.execute(
-        "SELECT id FROM workbench_tasks WHERE deleted_at IS NULL"
-    ).fetchall()]
-    if task is None or len(order) != len(active_ids) or set(order) != set(active_ids):
+    rows = c.execute(
+        "SELECT id, project_id, parent_id FROM workbench_tasks WHERE deleted_at IS NULL"
+    ).fetchall()
+    tasks = {row[0]: {"project": row[1], "parentId": row[2]} for row in rows}
+    if task_id not in tasks or len(order) != len(tasks) or set(order) != set(tasks):
+        return None
+    if project_id and c.execute(
+        "SELECT 1 FROM workbench_projects WHERE id=? AND archived=0", (project_id,)
+    ).fetchone() is None:
         return None
 
     if parent_id:
@@ -195,18 +197,31 @@ def move_task(task_id: str, parent_id: str | None, order: list[str]) -> dict | N
             if ancestor_id in seen:
                 return None
             seen.add(ancestor_id)
-            parent = c.execute(
-                "SELECT project_id, parent_id FROM workbench_tasks WHERE id=? AND deleted_at IS NULL",
-                (ancestor_id,),
-            ).fetchone()
-            if parent is None or parent[0] != task[0]:
+            parent = tasks.get(ancestor_id)
+            if parent is None or parent["project"] != project_id:
                 return None
-            ancestor_id = parent[1]
+            ancestor_id = parent["parentId"]
 
-    c.execute(
-        "UPDATE workbench_tasks SET parent_id=?, updated_at=? WHERE id=?",
-        (parent_id, time.time(), task_id),
+    children_by_parent: dict[str, list[str]] = {}
+    for item_id, item in tasks.items():
+        if item["parentId"]:
+            children_by_parent.setdefault(item["parentId"], []).append(item_id)
+    subtree, seen = [], set()
+    pending = [task_id]
+    while pending:
+        item_id = pending.pop()
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        subtree.append(item_id)
+        pending.extend(children_by_parent.get(item_id, []))
+
+    now = time.time()
+    c.executemany(
+        "UPDATE workbench_tasks SET project_id=?, updated_at=? WHERE id=?",
+        [(project_id, now, item_id) for item_id in subtree],
     )
+    c.execute("UPDATE workbench_tasks SET parent_id=? WHERE id=?", (parent_id, task_id))
     c.executemany(
         "UPDATE workbench_tasks SET sort_order=? WHERE id=?",
         [(i, item_id) for i, item_id in enumerate(order)],
