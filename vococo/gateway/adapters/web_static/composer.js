@@ -92,6 +92,7 @@ async function send(text, display, opts){
   clearComposerAttachments();
   if(wasLocal){
     S.conv=S.conv.replace("local-",""); payload.conv=S.conv; renderProjSelChip();
+    refreshGit(S.conv);
     // S.convs 里那条草稿行(conv=local-xxx)原地更新成新的真实 id,别留一条转正前的孤儿条目——
     // 否则"新对话"复用逻辑(newChatIn)会把它当成还没发消息的草稿误重新打开
     const entry=S.convs.find(x=>x.conv===oldConv);
@@ -116,6 +117,7 @@ async function sendCmd(cmd, conv){
   if(wasLocal){
     conv=conv.replace("local-",""); payload.conv=conv;
     if(isCurrent){ S.conv=conv; renderProjSelChip(); }
+    if(isCurrent) refreshGit(S.conv);
     const entry=S.convs.find(x=>x.conv===oldConv);
     if(entry){ entry.conv=conv; entry.turns=1; }
   }
