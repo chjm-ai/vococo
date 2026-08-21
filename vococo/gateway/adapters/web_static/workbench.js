@@ -56,6 +56,11 @@ function workbenchTaskHighlight(task){ return task.highlight || task.title.split
 function workbenchGroupId(project){ return "project:"+WB.view+":"+project.id; }
 
 // ── 数据加载 ────────────────────────────────────────────────────────────
+// 工作台没有 SSE 推送(不像侧边栏靠 stream.js 主动 push),数据只在 openWorkbench() 打开
+// 那一刻拉一次;之后切项目 chip/切日周月视图都只是本地过滤 WB_DATA,不会跟服务端对一次。
+// 加个"点 Tab 时按上次拉取时间兜底刷新"——30s 内来回切不重复请求,超过才真正拉一次。
+let wbDataFetchedAt = 0;
+const WB_REFRESH_STALE_MS = 30000;
 async function loadWorkbenchData(){
   try{
     const r = await api("/workbench");
@@ -63,7 +68,12 @@ async function loadWorkbenchData(){
     WB_DATA.projects = d.projects || [];
     WB_DATA.sources = d.sources || [];
     WB_DATA.tasks = d.tasks || [];
+    wbDataFetchedAt = Date.now();   // 失败时不更新,下次点击立刻重试而不是白等 30s
   }catch(e){}
+}
+function refreshWorkbenchDataIfStale(){
+  if(Date.now() - wbDataFetchedAt < WB_REFRESH_STALE_MS) return;
+  loadWorkbenchData().then(renderWorkbench);
 }
 
 // 乐观更新已经改完本地字段并重渲染后调用：失败时按 rollback 把字段改回去再重渲染一次。
@@ -183,15 +193,22 @@ function renderWorkbenchHeader(){
     '</div>'+dateNav+'</header>';
 }
 
-const WB_TRASH = {tasks: [], loaded: false};
+const WB_TRASH = {tasks: [], loaded: false, fetchedAt: 0};
 
 async function loadWorkbenchTrash(){
   try{
     const r = await api("/workbench/trash");
     const d = await r.json();
     WB_TRASH.tasks = d.tasks || [];
+    WB_TRASH.fetchedAt = Date.now();   // 失败时不更新,下次进回收站立刻重试
   }catch(e){}
   WB_TRASH.loaded = true;
+}
+// 原来每次点「回收站」都无条件重拉,来回切 Tab 会重复请求同一份数据;跟 refreshWorkbenchDataIfStale
+// 一样按 30s 节流,首次进入(fetchedAt=0)必定超过阈值,不影响"第一次进去要拉数据"。
+function refreshWorkbenchTrashIfStale(){
+  if(Date.now() - WB_TRASH.fetchedAt < WB_REFRESH_STALE_MS) return;
+  loadWorkbenchTrash().then(() => { if(WB.view === "trash") renderWorkbench(); });
 }
 
 function workbenchTrashRow(task){
@@ -1063,14 +1080,15 @@ $("#workbenchView").addEventListener("click", event => {
     return;
   }
   const project = event.target.closest("[data-project]");
-  if(project){ clearTimeout(wbClickTimer); WB.project = project.dataset.project; WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null; renderWorkbench(); return; }
+  if(project){ clearTimeout(wbClickTimer); WB.project = project.dataset.project; WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null; renderWorkbench(); refreshWorkbenchDataIfStale(); return; }
   const view = event.target.closest("[data-view]");
   if(view){
     clearTimeout(wbClickTimer);
     WB.view = view.dataset.view;
     WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null;
     renderWorkbench();
-    if(WB.view === "trash") loadWorkbenchTrash().then(() => { if(WB.view === "trash") renderWorkbench(); });
+    if(WB.view === "trash") refreshWorkbenchTrashIfStale();
+    else refreshWorkbenchDataIfStale();
     return;
   }
   const restoreBtn = event.target.closest("[data-restore-task]");
