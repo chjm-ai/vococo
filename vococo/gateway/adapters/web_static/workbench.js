@@ -316,7 +316,7 @@ function workbenchProjectBlock(project, tasks){
   const newCard = (!WB.newTask || !WB.newTask.parentId) ? workbenchNewTaskCard(project) : "";
   const rows = tasks.map(t => workbenchTaskRow(t)).join("") + newCard;
   const body = rows ? '<div class="wb-task-list">'+rows+'</div>' : '<p class="wb-empty">暂无任务</p>';
-  const header = isDetail ? "" : '<button type="button" class="wb-project-toggle" data-goto-project="'+esc(project.id)+'" title="查看「'+esc(project.name)+'」项目"><span class="wb-project-name"><strong>'+esc(project.name)+'</strong><i class="wb-chevron" aria-hidden="true"></i></span></button>';
+  const header = isDetail ? "" : '<button type="button" class="wb-project-toggle" data-goto-project="'+esc(project.id)+'" title="查看「'+esc(project.name)+'」项目"><i class="wb-project-icon" aria-hidden="true">'+ic("folder")+'</i><span class="wb-project-name"><strong>'+esc(project.name)+'</strong><i class="wb-chevron" aria-hidden="true"></i></span></button>';
   const deleteBtn = (isDetail && project.id !== WB_UNASSIGNED_ID) ? '<button type="button" class="wb-project-delete" data-delete-project="'+esc(project.id)+'">删除分组</button>' : "";
   return '<section class="wb-project-block" data-group="'+esc(groupId)+'">'+header+body+deleteBtn+'</section>';
 }
