@@ -1555,7 +1555,36 @@
   #workbenchView .wb-completed-group{padding-top:12px;border-top:1px solid var(--line)}#workbenchView .wb-completed-group:first-child{border-top:0;padding-top:0}
   #workbenchView .wb-completed-date{margin:0 0 4px;color:var(--dim2);font-size:12px;font-weight:650}
   #workbenchView .wb-new-task{margin-top:8px;border-color:var(--line2)}#workbenchView .wb-new-task .wb-editor-footer{flex-wrap:wrap}#workbenchView .wb-new-task .wb-primary{margin-left:auto;background:var(--text);color:var(--bg2);border-color:var(--text)}
-  @media(max-width:760px){#workbenchView .wb-toolbar{gap:10px;padding-top:10px;padding-bottom:10px}#workbenchView .wb-title h1{font-size:16px;line-height:22px}#workbenchView .wb-switch{flex-wrap:wrap}#workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,max-content);gap:8px}#workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}#workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}}
+  /* 移动端(≤760px):顶栏改单层内边距(#wbContent 顶部清零,只留 .wb-toolbar 自己
+     那一层),仿聊天页 header.bar/callHead 的做法,不再两层内边距叠加;字号在桌面基础上
+     统一 +1px,缓解移动端偏小。 */
+  @media(max-width:760px){
+    #wbContent{padding-top:0}
+    #workbenchView .wb-toolbar{gap:10px;padding-top:12px;padding-bottom:12px}
+    #workbenchView .wb-title h1{font-size:17px;line-height:23px}
+    #workbenchView .wb-switch{flex-wrap:wrap}
+    #workbenchView .wb-switch button{font-size:14px}
+    #workbenchView .wb-project-filter button{font-size:14px}
+    #workbenchView .wb-project-toggle>span:last-child{font-size:13px}
+    #workbenchView .wb-project-name strong{font-size:15px}
+    #workbenchView .wb-project-name em{font-size:13px}
+    #workbenchView .wb-project-delete{font-size:12px}
+    #workbenchView .wb-section-toggle h2{font-size:15px}
+    #workbenchView .wb-section-toggle span{font-size:13px}
+    #workbenchView .wb-task-title{font-size:15px}
+    #workbenchView .wb-task-detail{font-size:14px}
+    #workbenchView .wb-empty{font-size:13px}
+    #workbenchView .wb-schedule{font-size:12px}
+    #workbenchView .wb-child-count{font-size:12px}
+    #workbenchView .wb-parent-badge{font-size:13px}
+    #workbenchView .wb-parent-link{font-size:13px}
+    #workbenchView .wb-session-link{font-size:12px}
+    #workbenchView .wb-dispatch-btn{font-size:13px}
+    .wb-date-nav strong,.wb-date-nav button{font-size:14px}
+    #workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,max-content);gap:8px}
+    #workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}
+    #workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}
+  }
 
   /* ── 子任务 / 执行者 / 会话绑定 ─────────────────────────────────── */
   #workbenchView .wb-children{margin:0 0 0 30px;display:flex;flex-direction:column;gap:2px;will-change:height,opacity}
