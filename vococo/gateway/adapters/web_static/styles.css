@@ -1567,7 +1567,6 @@
   #workbenchView .wb-editor-footer .wb-add-child:hover{color:var(--accent)}
   #workbenchView .wb-assignee{display:grid;place-items:center;flex:0 0 auto;width:20px;height:20px;color:var(--dim2)}
   #workbenchView .wb-assignee .ic{width:15px;height:15px}
-  #workbenchView .wb-assignee-ai{color:var(--accent)}
   #workbenchView .wb-schedule{display:inline-flex;align-items:center;gap:4px;min-width:0;padding:0;color:var(--dim);font-size:11px;line-height:20px;white-space:nowrap}
   #workbenchView .wb-schedule:hover{color:var(--accent)}
   #workbenchView .wb-child-count{flex:0 0 auto;padding:1px 6px;border-radius:4px;background:var(--panel2);color:var(--dim);font-size:11px;line-height:18px;cursor:pointer;white-space:nowrap;transition:background .15s ease,color .15s ease}

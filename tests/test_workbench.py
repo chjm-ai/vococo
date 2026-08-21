@@ -81,6 +81,27 @@ def test_create_update_delete_task(isolated):
     assert workbench.delete_task(task["id"]) is False  # 已经在回收站,再删返回 False
 
 
+def test_move_task_nests_and_persists_child_order(isolated):
+    from vococo.memory import workbench
+
+    project = workbench.create_project("拖拽排序测试项目")
+    parent = workbench.create_task(project["id"], "父任务")
+    first_child = workbench.create_task(project["id"], "子任务一", parent_id=parent["id"])
+    root = workbench.create_task(project["id"], "待移动任务")
+    second_child = workbench.create_task(project["id"], "子任务二", parent_id=parent["id"])
+    order = [task["id"] for task in workbench.list_tasks()]
+    order.remove(root["id"])
+    order.insert(order.index(second_child["id"]), root["id"])
+
+    moved = workbench.move_task(root["id"], parent["id"], order)
+    assert moved["parentId"] == parent["id"]
+    assert [task["id"] for task in workbench.list_children(parent["id"])] == [
+        first_child["id"], root["id"], second_child["id"]
+    ]
+    assert [task["id"] for task in workbench.list_tasks()] == order
+    assert workbench.move_task(parent["id"], first_child["id"], order) is None  # 禁止形成循环
+
+
 def test_trash_restore_and_purge(isolated):
     from vococo.memory import workbench
 

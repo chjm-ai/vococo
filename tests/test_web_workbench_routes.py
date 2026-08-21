@@ -36,6 +36,7 @@ def workbench_web_app(isolated, monkeypatch):
             web.post("/workbench/projects/reorder", adapter._handle_workbench_project_reorder),
             web.post("/workbench/tasks/create", adapter._handle_workbench_task_create),
             web.post("/workbench/tasks/update", adapter._handle_workbench_task_update),
+            web.post("/workbench/tasks/move", adapter._handle_workbench_task_move),
             web.post("/workbench/tasks/delete", adapter._handle_workbench_task_delete),
             web.get("/workbench/trash", adapter._handle_workbench_trash),
             web.post("/workbench/trash/empty", adapter._handle_workbench_trash_empty),
@@ -126,6 +127,40 @@ async def test_update_and_delete_task_via_http(workbench_web_app):
 
         resp = await client.get("/workbench")
         assert task_id not in {t["id"] for t in (await resp.json())["tasks"]}
+
+
+@pytest.mark.anyio
+async def test_move_task_via_http_keeps_child_order(workbench_web_app):
+    async with TestClient(TestServer(workbench_web_app)) as client:
+        resp = await client.get("/workbench")
+        project_id = (await resp.json())["projects"][0]["id"]
+        resp = await client.post(
+            "/workbench/tasks/create", json={"project": project_id, "title": "父任务"}
+        )
+        parent = (await resp.json())["task"]
+        resp = await client.post(
+            "/workbench/tasks/create",
+            json={"project": project_id, "title": "已有子任务", "parentId": parent["id"]},
+        )
+        child = (await resp.json())["task"]
+        resp = await client.post(
+            "/workbench/tasks/create", json={"project": project_id, "title": "待移动任务"}
+        )
+        root = (await resp.json())["task"]
+        resp = await client.get("/workbench")
+        order = [task["id"] for task in (await resp.json())["tasks"]]
+        order.remove(root["id"])
+        order.insert(order.index(child["id"]), root["id"])
+
+        resp = await client.post(
+            "/workbench/tasks/move", json={"id": root["id"], "parentId": parent["id"], "order": order}
+        )
+        assert resp.status == 200
+        assert (await resp.json())["task"]["parentId"] == parent["id"]
+        resp = await client.get("/workbench")
+        tasks = (await resp.json())["tasks"]
+        assert [task["id"] for task in tasks] == order
+        assert [task["id"] for task in tasks if task["parentId"] == parent["id"]] == [root["id"], child["id"]]
 
 
 @pytest.mark.anyio
