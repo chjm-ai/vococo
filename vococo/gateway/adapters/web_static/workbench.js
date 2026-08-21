@@ -336,7 +336,7 @@ function renderWorkbenchTaskEditor(task){
   const dispatchBtn = isAi ? '<button type="button" class="wb-dispatch-btn" data-dispatch="'+esc(task.id)+'" title="让 AI 执行此任务">▶ 执行</button>' : "";
   const addChildBtn = !task.parentId ? '<button type="button" class="wb-add-child" data-add-child="'+esc(task.id)+'">'+ic("plus")+'<span>添加子任务</span></button>' : '';
   const sessionLinks = workbenchSessionLinks(task);
-  const parentLink = task.parentId ? (function(){ const p = workbenchTask(task.parentId); const label = p ? "查看父任务："+p.title : "查看父任务"; return '<button type="button" class="wb-parent-link" data-goto-parent="'+esc(task.parentId)+'" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("branch")+'</button>'; })() : '';
+  const parentLink = task.parentId ? (function(){ const p = workbenchTask(task.parentId); const label = p ? "查看父任务："+p.title : "查看父任务"; return '<button type="button" class="wb-parent-link" data-goto-parent="'+esc(task.parentId)+'" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("branch")+(p ? '<span>'+esc(p.title)+'</span>' : '')+'</button>'; })() : '';
   const scheduleLabel = workbenchScheduleLabel(task) || "设定日期";
   return '<article class="wb-task wb-editor-shell wb-task-card wb-'+esc(task.status)+'" data-task="'+esc(task.id)+'">'+
     '<div class="wb-card-head">'+

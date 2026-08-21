@@ -1574,7 +1574,7 @@
   #workbenchView .wb-child-count.is-expanded{background:var(--accent);color:#fff}
   #workbenchView .wb-parent-badge{display:grid;place-items:center;flex:0 0 auto;width:20px;height:20px;color:var(--dim)}
   #workbenchView .wb-parent-badge .ic{width:14px;height:14px}
-  #workbenchView .wb-editor-footer .wb-parent-link{display:grid;place-items:center;flex:0 0 auto;width:28px;padding:0;margin-left:auto}
+  #workbenchView .wb-editor-footer .wb-parent-link{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;width:auto;padding:0 8px;margin-left:auto}
   #workbenchView .wb-editor-footer .wb-parent-link .ic{width:14px;height:14px}
   #workbenchView .wb-editor-footer .wb-parent-link:hover{color:var(--accent)}
   #workbenchView .wb-task-end{display:flex;align-items:center;gap:8px;min-width:0;justify-content:flex-end}
