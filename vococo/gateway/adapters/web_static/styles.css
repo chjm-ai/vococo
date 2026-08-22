@@ -1682,7 +1682,6 @@
   #workbenchView .wb-child-toggle{display:grid;place-items:center;flex:0 0 auto;width:20px;height:20px;padding:0;border:0;border-radius:4px;background:none;color:var(--dim2);cursor:pointer;transition:background .15s ease,color .15s ease}
   #workbenchView .wb-child-toggle .ic{width:15px;height:15px}
   #workbenchView .wb-child-toggle:hover{background:var(--panel2);color:var(--text)}
-  #workbenchView .wb-child-toggle.is-expanded{color:var(--accent)}
   #workbenchView .wb-task-title-row{display:flex;align-items:center;gap:5px;min-width:0}
   #workbenchView .wb-task-title-row .wb-task-title{flex:0 1 auto}
   #workbenchView .wb-parent-badge{display:inline-flex;align-items:center;gap:3px;min-width:0;max-width:45%;color:var(--dim2);font-size:12px;line-height:20px;white-space:nowrap}

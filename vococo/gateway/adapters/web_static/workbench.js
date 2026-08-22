@@ -1364,6 +1364,12 @@ function workbenchChildrenBadge(parentId){
   return node ? node.querySelector('[data-toggle-children="'+CSS.escape(parentId)+'"]') : null;
 }
 
+function workbenchSetChildToggleIcon(badge, expanded){
+  if(!badge) return;
+  badge.innerHTML = ic(expanded ? "chevronUp" : "chevronDown");
+  badge.title = expanded ? "收起子任务" : "展开子任务";
+}
+
 function workbenchExpandChildren(parentId){
   if(WB_CHILDREN_ANIMATING.has(parentId)) return;
   WB_CHILDREN_ANIMATING.add(parentId);
@@ -1383,6 +1389,7 @@ function workbenchExpandChildren(parentId){
   workbenchAutoGrowAll();
   const badge = workbenchChildrenBadge(parentId);
   if(badge) badge.classList.add("is-expanded");
+  workbenchSetChildToggleIcon(badge, true);
   const endHeight = node.scrollHeight;
   node.style.height = "0px";
   node.style.opacity = "0";
@@ -1409,6 +1416,7 @@ function workbenchCollapseChildren(parentId){
   const node = workbenchChildrenNode(parentId);
   const badge = workbenchChildrenBadge(parentId);
   if(badge) badge.classList.remove("is-expanded");
+  workbenchSetChildToggleIcon(badge, false);
   if(!node){
     WB_CHILDREN_ANIMATING.delete(parentId);
     renderWorkbench();
