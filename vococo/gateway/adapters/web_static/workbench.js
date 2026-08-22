@@ -331,12 +331,11 @@ function workbenchAssigneeBadge(task){
   return '<span class="wb-assignee wb-assignee-human" title="人工执行">'+ic("person")+'</span>';
 }
 
-function workbenchChildCount(task){
+function workbenchChildToggle(task){
   const children = workbenchChildren(task.id);
   if(!children.length) return '';
-  const done = children.filter(c => c.status === "done").length;
   const expanded = workbenchChildrenExpanded(task.id);
-  return '<span class="wb-child-count'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="子任务">'+done+'/'+children.length+'</span>';
+  return '<button type="button" class="wb-child-toggle'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="'+(expanded ? "收起子任务" : "展开子任务")+'">'+ic(expanded ? "chevronUp" : "chevronDown")+'</button>';
 }
 
 function workbenchParentBadge(task, isChild){
@@ -400,7 +399,7 @@ function workbenchTaskRow(task, isChild){
   const touch = wbIsTouchLike();
   const inner = '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
     '<div class="wb-task-copy"><div class="wb-task-title-row"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+workbenchParentBadge(task, isChild)+'</div>'+detail+'</div>'+
-    '<div class="wb-task-end">'+workbenchScheduleBadge(task)+workbenchChildCount(task)+workbenchAssigneeBadge(task)+'</div>';
+    '<div class="wb-task-end">'+workbenchScheduleBadge(task)+(workbenchChildren(task.id).length ? workbenchChildToggle(task) : workbenchAssigneeBadge(task))+'</div>';
   // 多选模式下行尾常驻一个圆形选中指示（仿 Things：空心=未选，实心+勾=已选）；
   // 平时用 CSS 隐藏，不需要因为进/出多选模式而整段重渲染——is-selected 类已经在维护了。
   const selectCircle = touch ? '<div class="wb-select-circle" aria-hidden="true">'+ic("save")+'</div>' : "";
