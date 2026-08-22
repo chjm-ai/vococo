@@ -102,8 +102,35 @@ def test_move_task_nests_across_projects_and_persists_child_order(isolated):
     ]
     assert workbench.get_task(root["id"])["project"] == target_project["id"]
     assert workbench.get_task(descendant["id"])["project"] == target_project["id"]
-    assert [task["id"] for task in workbench.list_tasks()] == order
     assert workbench.move_task(parent["id"], first_child["id"], target_project["id"], order) is None  # 禁止形成循环
+
+
+def test_move_task_only_reorders_affected_siblings(isolated):
+    """拖拽一张卡片时,只重排它所在这一层的兄弟——不能因为浏览器标签页里的
+    全量顺序过期,就把跟这次拖拽无关的其它分支子任务顺序也覆盖掉。"""
+    from vococo.memory import workbench
+
+    project = workbench.create_project("排序测试项目")
+    parent_a = workbench.create_task(project["id"], "父任务A")
+    a1 = workbench.create_task(project["id"], "A的子任务1", parent_id=parent_a["id"])
+    a2 = workbench.create_task(project["id"], "A的子任务2", parent_id=parent_a["id"])
+    parent_b = workbench.create_task(project["id"], "父任务B")
+    b1 = workbench.create_task(project["id"], "B的子任务1", parent_id=parent_b["id"])
+    b2 = workbench.create_task(project["id"], "B的子任务2", parent_id=parent_b["id"])
+
+    # 模拟"网页标签页没刷新":client 手里的全量顺序(含种子数据),把 B 的两个
+    # 子任务顺序也颠倒了,但这次操作只是把 A 的子任务反过来拖拽,跟 B 无关。
+    stale_order = [task["id"] for task in workbench.list_tasks()]
+    stale_order.remove(b1["id"])
+    stale_order.insert(stale_order.index(b2["id"]) + 1, b1["id"])
+    stale_order.remove(a2["id"])
+    stale_order.insert(stale_order.index(a1["id"]), a2["id"])
+
+    moved = workbench.move_task(a2["id"], parent_a["id"], project["id"], stale_order)
+    assert moved is not None
+    assert [t["id"] for t in workbench.list_children(parent_a["id"])] == [a2["id"], a1["id"]]
+    # B 分支没被这次拖拽触碰到,顺序应该维持数据库原样(创建顺序),不能被 stale_order 带偏。
+    assert [t["id"] for t in workbench.list_children(parent_b["id"])] == [b1["id"], b2["id"]]
 
 
 def test_trash_restore_and_purge(isolated):

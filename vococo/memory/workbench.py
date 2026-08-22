@@ -177,7 +177,14 @@ def reorder_projects(order: list[str]) -> None:
 # ── 任务 ────────────────────────────────────────────────────────────────
 
 def move_task(task_id: str, parent_id: str | None, project_id: str, order: list[str]) -> dict | None:
-    """原子地迁移任务树、更新父级与全局显示顺序，避免刷新后拖拽结果丢失。"""
+    """原子地迁移任务树、更新父级,并只重排"目标层级"里的兄弟顺序。
+
+    order 仍是浏览器当前内存里的全量任务 id(用来校验没有漏任务/多任务,防止
+    拖拽发生时客户端数据已过期),但落库时只依据 order 里的相对顺序,重新编号
+    task_id 所在这一层的兄弟(同 project + 同 parent_id),不再把 order 的顺序
+    整体覆盖回全库——否则网页标签页只要没刷新到最新数据,随手拖一张卡片就会
+    把跟这次拖拽无关的其它分支子任务顺序也打乱。
+    """
     c = _db.conn()
     rows = c.execute(
         "SELECT id, project_id, parent_id FROM workbench_tasks WHERE deleted_at IS NULL"
@@ -222,9 +229,18 @@ def move_task(task_id: str, parent_id: str | None, project_id: str, order: list[
         [(project_id, now, item_id) for item_id in subtree],
     )
     c.execute("UPDATE workbench_tasks SET parent_id=? WHERE id=?", (parent_id, task_id))
+
+    # 只重排 task_id 落地后所在的那一层兄弟(同 project、同 parent_id),
+    # 其它分支的 sort_order 原样不动。
+    siblings = {
+        item_id for item_id, item in tasks.items()
+        if item_id != task_id and item["parentId"] == parent_id and item["project"] == project_id
+    }
+    siblings.add(task_id)
+    group_order = [item_id for item_id in order if item_id in siblings]
     c.executemany(
         "UPDATE workbench_tasks SET sort_order=? WHERE id=?",
-        [(i, item_id) for i, item_id in enumerate(order)],
+        [(i, item_id) for i, item_id in enumerate(group_order)],
     )
     c.commit()
     return get_task(task_id)

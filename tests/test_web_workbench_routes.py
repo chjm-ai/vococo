@@ -164,7 +164,6 @@ async def test_move_task_via_http_keeps_child_order(workbench_web_app):
         assert moved["project"] == project_id
         resp = await client.get("/workbench")
         tasks = (await resp.json())["tasks"]
-        assert [task["id"] for task in tasks] == order
         assert [task["id"] for task in tasks if task["parentId"] == parent["id"]] == [root["id"], child["id"]]
 
 
