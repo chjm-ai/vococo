@@ -8,7 +8,7 @@ const WB_DATA = {projects: [], tasks: []};
 // 「未分组」伪项目做兜底分组，不需要改后端 schema。
 const WB_UNASSIGNED_ID = "";
 const WB_UNASSIGNED_PROJECT = {id: WB_UNASSIGNED_ID, name: "未分组"};
-const WB = {project:"all", view:"week", anchor:null, editorTaskId:null, selected:new Set(), selectAnchor:null, newTask:null, expanded:new Set(), collapsed:new Set(), editSnapshots:new Map()};
+const WB = {project:"all", view:"week", anchor:null, editorTaskId:null, editorDocked:false, selected:new Set(), selectAnchor:null, newTask:null, expanded:new Set(), collapsed:new Set(), editSnapshots:new Map()};
 const WB_HISTORY_MAX = 30;
 const WB_HISTORY_KEY = "vococo:workbench-history";
 const WB_HISTORY = {undo:[], redo:[], busy:false};
@@ -27,9 +27,9 @@ function wbFocusSoon(selector, after){
     if(!el) return;
     el.focus({preventScroll:true});
     after?.(el);
-    // docked 卡片本来就固定贴在键盘上方（见 #wbDock），不需要再滚——只有原地插在
-    // 列表里的卡片（桌面新建、触屏详情编辑）才需要把自己滚到键盘挡不住的地方。
-    if(wbIsTouchLike() && !WB.newTask?.docked) wbScrollAboveKeyboard(el);
+    // docked 卡片（新建/触屏详情，见 #wbDock）本来就固定贴在键盘上方，不需要再滚；
+    // 只有桌面原地插在列表里的卡片才需要把自己滚到键盘挡不住的地方。
+    if(wbIsTouchLike() && !WB.newTask?.docked && !WB.editorDocked) wbScrollAboveKeyboard(el);
   };
   if(wbIsTouchLike()) run(); else requestAnimationFrame(run);
 }
@@ -362,7 +362,9 @@ function workbenchSessionLinks(task){
 }
 
 function workbenchTaskRow(task, isChild){
-  if(WB.editorTaskId === task.id){
+  // docked（触屏）时详情卡不占列表位置，改在 #wbDock 里编辑（见 renderWbDock）——
+  // 这里就当没打开编辑器，正常渲染这一行，跟贴键盘的浮层对不上位的问题天然不存在。
+  if(WB.editorTaskId === task.id && !WB.editorDocked){
     const editor = renderWorkbenchTaskEditor(task);
     return editor + workbenchChildRows(task.id);
   }
@@ -662,6 +664,13 @@ function renderWorkbenchBody(){
 function renderWbDock(){
   const dock = document.getElementById("wbDock");
   if(!dock) return;
+  if(WB.editorTaskId && WB.editorDocked){
+    const task = workbenchTask(WB.editorTaskId);
+    dock.innerHTML = task ? renderWorkbenchTaskEditor(task) : "";
+    hydrateWorkbenchImages();
+    workbenchAutoGrowTextarea(dock.querySelector("textarea[data-edit-detail]"));
+    return;
+  }
   if(!WB.newTask || !WB.newTask.docked){ dock.innerHTML = ""; return; }
   const html = WB.newTask.parentId
     ? workbenchNewChildCardHtml(WB.newTask.parentId, true)
@@ -957,8 +966,11 @@ function openWorkbenchEditor(taskId){
   workbenchFinishActiveCard();
   workbenchSetSelection([]);
   WB.editorTaskId = taskId;
-  if(!workbenchMorphTask(taskId)) renderWorkbench();
-  wbFocusSoon(".wb-card-title", el => {
+  // 触屏走跟新建卡一样的 docked 浮层（贴键盘上方），不再原地把任务行 morph 成编辑卡——
+  // 列表位置、滚动、导航栏都不用管，桌面维持原来的原地展开。
+  WB.editorDocked = wbIsTouchLike();
+  if(WB.editorDocked || !workbenchMorphTask(taskId)) renderWorkbench();
+  wbFocusSoon(WB.editorDocked ? "#wbDock .wb-card-title" : ".wb-card-title", el => {
     const len = el.value.length;
     el.setSelectionRange(len, len); // 只定位光标，不要默认全选标题
   });
@@ -1210,8 +1222,12 @@ function workbenchFinishActiveCard(){
   }
   if(WB.editorTaskId){
     const id = WB.editorTaskId;
+    const wasDocked = WB.editorDocked;
     WB.editorTaskId = null;
-    if(!workbenchMorphTask(id)) renderWorkbench();
+    WB.editorDocked = false;
+    // docked 时列表里本来就是正常行（没有卡可 morph），只需要清空 #wbDock；
+    // 走一次全量重渲染最简单，也顺带同步了列表行（万一编辑期间标题/备注变了）。
+    if(wasDocked || !workbenchMorphTask(id)) renderWorkbench();
   }
 }
 
@@ -2356,8 +2372,10 @@ document.addEventListener("keydown", event => {
     if(WB.newTask){ WB.newTask=null; if(!workbenchRemoveNewTaskCard()) renderWorkbench(); }
     else if(WB.editorTaskId){
       const id = WB.editorTaskId;
+      const wasDocked = WB.editorDocked;
       WB.editorTaskId = null;
-      if(!workbenchMorphTask(id)) renderWorkbench();
+      WB.editorDocked = false;
+      if(wasDocked || !workbenchMorphTask(id)) renderWorkbench();
     }
     return;
   }
