@@ -370,10 +370,12 @@ function workbenchTaskRow(task, isChild){
   const selected = WB.selected.has(task.id);
   const detail = (task.detail && WB.view !== "month") ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
   const childClass = isChild ? " wb-task-child" : "";
-  const row = '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+childClass+'" data-task="'+esc(task.id)+'" draggable="true">'+
-    '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
+  const touch = wbIsTouchLike();
+  const inner = '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
     '<div class="wb-task-copy"><div class="wb-task-title-row"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+workbenchParentBadge(task, isChild)+'</div>'+detail+'</div>'+
-    '<div class="wb-task-end">'+workbenchScheduleBadge(task)+workbenchChildCount(task)+workbenchAssigneeBadge(task)+'</div>'+
+    '<div class="wb-task-end">'+workbenchScheduleBadge(task)+workbenchChildCount(task)+workbenchAssigneeBadge(task)+'</div>';
+  const row = '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+(touch ? " wb-swipeable" : "")+childClass+'" data-task="'+esc(task.id)+'" draggable="true">'+
+    (touch ? '<div class="wb-swipe-body">'+inner+'</div><div class="wb-swipe-actions"><button type="button" class="wb-swipe-btn wb-swipe-date" data-swipe-dp="'+esc(task.id)+'" aria-label="日期">'+ic("calendar")+'</button><button type="button" class="wb-swipe-btn wb-swipe-del" data-swipe-del="'+esc(task.id)+'" aria-label="删除">'+ic("trash")+'</button></div>' : inner)+
     '</article>';
   if(isChild) return row + workbenchChildRows(task.id);
   if(task.parentId) return row + workbenchChildRows(task.id) + (WB.newTask?.siblingTaskId === task.id ? workbenchNewChildCard(task.parentId, true) : '');
@@ -674,9 +676,68 @@ function renderWorkbench(){
   root.innerHTML = renderWorkbenchHeader()+renderWorkbenchBody();
   hydrateWorkbenchImages();
   workbenchAutoGrowAll();
+  wbBindAllSwipes();
   renderWbDock();
   // 已完成/回收站没有项目分组，插不进新建卡，FAB 在这两个视图下藏起来。
   $("#wbFab")?.classList.toggle("wb-fab-off", WB.view === "completed" || WB.view === "trash");
+}
+
+// ── 移动端任务行左滑操作（日期 + 删除）────────────────────────────────────
+const WB_SWIPE_W = 88;
+
+function wbCloseSwipe(row){
+  row.classList.remove("wb-swiped");
+}
+
+function wbCloseAllSwipes(except){
+  document.querySelectorAll(".wb-swipeable.wb-swiped").forEach(r => { if(r !== except) wbCloseSwipe(r); });
+}
+
+function wbBindSwipe(row){
+  const body = row.querySelector(".wb-swipe-body");
+  const act = row.querySelector(".wb-swipe-actions");
+  if(!body || !act) return;
+  let startX = 0, startY = 0, dx = 0, lock = null, dragging = false;
+  row.addEventListener("touchstart", ev => {
+    if(ev.touches.length !== 1) return;
+    startX = ev.touches[0].clientX; startY = ev.touches[0].clientY;
+    dx = 0; lock = null; dragging = false;
+    row.classList.add("wb-swiping");
+  }, {passive: true});
+  row.addEventListener("touchmove", ev => {
+    if(ev.touches.length !== 1) return;
+    const x = ev.touches[0].clientX, y = ev.touches[0].clientY;
+    const ddx = x - startX, ddy = y - startY;
+    if(lock === null) lock = Math.abs(ddx) > Math.abs(ddy) + 4 ? "x" : (Math.abs(ddy) > Math.abs(ddx) + 4 ? "y" : null);
+    if(lock !== "x") return;
+    dragging = true;
+    const base = row.classList.contains("wb-swiped") ? -WB_SWIPE_W : 0;
+    dx = Math.max(-WB_SWIPE_W, Math.min(0, base + ddx));
+    body.style.transform = "translateX(" + dx + "px)";
+    act.style.transform = "translateX(" + (WB_SWIPE_W + dx) + "px)";
+  }, {passive: true});
+  const end = () => {
+    row.classList.remove("wb-swiping");
+    body.style.transform = ""; act.style.transform = "";
+    if(dragging){
+      row._wbJustSwiped = true;
+      if(dx <= -WB_SWIPE_W / 2){ wbCloseAllSwipes(row); row.classList.add("wb-swiped"); }
+      else wbCloseSwipe(row);
+    }
+    dragging = false;
+  };
+  row.addEventListener("touchend", end);
+  row.addEventListener("touchcancel", end);
+}
+
+function wbBindAllSwipes(){
+  if(!wbIsTouchLike()) return;
+  document.querySelectorAll("#wbContent .wb-swipeable").forEach(wbBindSwipe);
+  const scrollEl = document.getElementById("workbenchView");
+  if(scrollEl && !scrollEl._wbSwipeScrollBound){
+    scrollEl._wbSwipeScrollBound = true;
+    scrollEl.addEventListener("scroll", () => wbCloseAllSwipes());
+  }
 }
 
 function workbenchNodeForTask(taskId){
@@ -694,6 +755,7 @@ function workbenchSwapTask(taskId){
   if(!next) return false;
   node.replaceWith(next);
   hydrateWorkbenchImages();
+  if(next.classList.contains("wb-swipeable")) wbBindSwipe(next);
   return true;
 }
 
@@ -708,6 +770,7 @@ function workbenchAnimateMorph(node, html){
   if(!next) return false;
   node.replaceWith(next);
   hydrateWorkbenchImages();
+  if(next.classList.contains("wb-swipeable")) wbBindSwipe(next);
   workbenchAutoGrowTextarea(next.querySelector("textarea[data-edit-detail]"));
   const endRect = next.getBoundingClientRect();
   const endStyle = getComputedStyle(next);
@@ -1845,6 +1908,7 @@ function openWorkbenchStandalone(){
 }
 
 $("#workbenchView").addEventListener("click", event => {
+  if(!event.target.closest(".wb-swipe-actions")) wbCloseAllSwipes();
   if(event.target.closest("[data-workbench-win]")){ openWorkbenchStandalone(); return; }
   if(event.target.closest("[data-sidebar]")){ expandSidebarResponsive(); return; }
   const complete = event.target.closest("[data-complete]");
@@ -1871,6 +1935,20 @@ $("#workbenchView").addEventListener("click", event => {
   if(openDp){
     const [kind, id] = openDp.dataset.openDp.split(":");
     workbenchDpOpen(kind === "task" ? {kind:"task", id} : {kind:"new"}, openDp);
+    return;
+  }
+  const swipeDp = event.target.closest("[data-swipe-dp]");
+  if(swipeDp){
+    const tid = swipeDp.dataset.swipeDp;
+    wbCloseAllSwipes();
+    workbenchDpOpen({kind:"task", id:tid}, swipeDp);
+    return;
+  }
+  const swipeDel = event.target.closest("[data-swipe-del]");
+  if(swipeDel){
+    const tid = swipeDel.dataset.swipeDel;
+    wbCloseAllSwipes();
+    deleteWorkbenchTask(tid);
     return;
   }
   const gotoProject = event.target.closest("[data-goto-project]");
@@ -1908,6 +1986,8 @@ $("#workbenchView").addEventListener("click", event => {
   if(event.target.closest("[data-new-card]")) return;
   const taskRow = event.target.closest("[data-task]");
   if(taskRow){
+    // 刚滑动过的行松手后会触发一次 click，吞掉它避免打开详情。
+    if(taskRow._wbJustSwiped){ taskRow._wbJustSwiped = false; return; }
     const taskId = taskRow.dataset.task;
     if(taskId === WB.editorTaskId) return;
     // 移动端：详情卡（或新建卡）开着的时候点别的任务，只收起当前卡，不直接跳到点的

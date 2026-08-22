@@ -1493,6 +1493,20 @@
     #wbFab.wb-fab-dragging{box-shadow:0 10px 30px rgba(0,0,0,.45)}
     #workbenchView #wbContent{padding-bottom:88px}
   }
+  /* ── 移动端任务行左滑操作（日期 + 删除）───────────────────────────── */
+  @media(hover:none){
+    #workbenchView .wb-task.wb-swipeable{display:block;overflow:hidden;touch-action:pan-y;position:relative;padding:0}
+    #workbenchView .wb-swipe-body{display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:start;gap:10px;padding:6px 12px;width:100%;transition:transform .22s ease}
+    #workbenchView .wb-swiping .wb-swipe-body{transition:none}
+    #workbenchView .wb-swiped .wb-swipe-body{transform:translateX(-88px)}
+    .wb-swipe-actions{position:absolute;top:0;right:0;bottom:0;width:88px;display:flex;transform:translateX(100%);transition:transform .22s ease}
+    .wb-swiping .wb-swipe-actions{transition:none}
+    .wb-swiped .wb-swipe-actions{transform:translateX(0)}
+    .wb-swipe-btn{flex:1;border:none;display:flex;align-items:center;justify-content:center;color:#fff;cursor:pointer}
+    .wb-swipe-btn .ic{width:18px;height:18px}
+    .wb-swipe-date{background:var(--accent)}
+    .wb-swipe-del{background:var(--err);border-radius:0 7px 7px 0}
+  }
   /* FAB 新建的 docked 浮层：固定贴在键盘上方（bottom 由 JS 按 visualViewport 实时算），
      不占列表位置，避免被导航栏/键盘挡住；内容一多就自己滚，不会把面板越撑越高。 */
   #wbDock:empty{display:none}
