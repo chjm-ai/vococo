@@ -1608,6 +1608,7 @@
   .wb-dp-clear .ic{width:13px;height:13px}
   .wb-dp-clear:hover{background:var(--panel);color:var(--err);opacity:1}
   .wb-dp-clear[disabled]{visibility:hidden;pointer-events:none}
+  .wb-dp-picker{min-height:190px}
   .wb-dp-weekdays{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:2px;color:var(--dim2);font-size:14px;text-align:center}
   .wb-dp-grid{display:flex;flex-direction:column;gap:2px}
   .wb-dp-grid.is-expanded{max-height:260px;overflow-y:auto;scrollbar-width:thin}
@@ -1623,7 +1624,7 @@
   .wb-dp-week-pager{display:flex;justify-content:space-between;gap:6px;margin-bottom:4px}
   .wb-dp-week-pager button{padding:5px 8px;border:0;border-radius:6px;background:none;color:var(--dim2);font-family:inherit;font-size:12px}
   .wb-dp-week-pager button:hover{background:var(--panel2);color:var(--text)}
-  .wb-dp-week-list{display:flex;flex-direction:column;gap:2px;max-height:260px;overflow-y:auto;scrollbar-width:thin}
+  .wb-dp-week-list{display:flex;flex-direction:column;gap:2px;max-height:150px;overflow-y:auto;scrollbar-width:thin}
   .wb-dp-week-row{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:8px 10px;border:0;border-radius:8px;background:none;text-align:left;color:var(--text);font-family:inherit;font-size:14px;font-variant-numeric:tabular-nums}
   .wb-dp-week-row:hover{background:var(--panel2)}
   .wb-dp-week-row.is-today{color:var(--accent);font-weight:700}
@@ -1647,6 +1648,8 @@
     .wb-dp-day{height:36px}
     .wb-dp-month{padding:13px 0}
     .wb-dp-month-nav strong{font-size:16px}
+    .wb-dp-picker{min-height:210px}
+    .wb-dp-week-list{max-height:170px}
     .wb-dp-week-pager button{font-size:13px}
   }
   #workbenchView .wb-trash-row{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer}
