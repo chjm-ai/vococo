@@ -380,7 +380,11 @@ function workbenchProjectBlock(project, tasks){
   const groupId = workbenchGroupId(project);
   const isDetail = WB.view === "project" && WB.project !== "all";
   const newCard = (!WB.newTask || !WB.newTask.parentId) ? workbenchNewTaskCard(project) : "";
-  const rows = tasks.map(t => workbenchTaskRow(t)).join("") + newCard;
+  // 移动端 FAB 新建可以指定插到某个已有任务前面（点顶部/拖拽定位），不然新建卡固定长在列表最底下。
+  const beforeId = newCard && WB.newTask.beforeTaskId;
+  const rows = (beforeId && tasks.some(t => t.id === beforeId))
+    ? tasks.map(t => (t.id === beforeId ? newCard : "")+workbenchTaskRow(t)).join("")
+    : tasks.map(t => workbenchTaskRow(t)).join("") + newCard;
   const body = rows ? '<div class="wb-task-list">'+rows+'</div>' : '<p class="wb-empty">暂无任务</p>';
   const header = isDetail ? "" : '<button type="button" class="wb-project-toggle" data-goto-project="'+esc(project.id)+'" title="查看「'+esc(project.name)+'」项目"><i class="wb-project-icon" aria-hidden="true">'+ic("folder")+'</i><span class="wb-project-name"><strong>'+esc(project.name)+'</strong><i class="wb-chevron" aria-hidden="true"></i></span></button>';
   const deleteBtn = (isDetail && project.id !== WB_UNASSIGNED_ID) ? '<button type="button" class="wb-project-delete" data-delete-project="'+esc(project.id)+'">删除分组</button>' : "";
@@ -610,6 +614,8 @@ function renderWorkbench(){
   root.innerHTML = renderWorkbenchHeader()+renderWorkbenchBody();
   hydrateWorkbenchImages();
   workbenchAutoGrowAll();
+  // 已完成/回收站没有项目分组，插不进新建卡，FAB 在这两个视图下藏起来。
+  $("#wbFab")?.classList.toggle("wb-fab-off", WB.view === "completed" || WB.view === "trash");
 }
 
 function workbenchNodeForTask(taskId){
@@ -1039,11 +1045,13 @@ async function saveWorkbenchNewTask(){
   const title = draft.title.trim();
   if(!title){ $("[data-new-title]")?.focus(); return; }
   const payload = {project:draft.project, title, detail:draft.detail, date:draft.date||null, month:draft.month||null, week:draft.week||null, assignee:draft.assignee||"human", parentId:draft.parentId||null};
+  const beforeTaskId = draft.beforeTaskId || null; // 移动端 FAB 定位新建用，见 workbenchOpenNewTaskBefore
   WB.newTask = null;
   // 乐观本地先造一条临时任务，卡片立刻收起成行——不用等接口回来才有动效，否则回车会
   // 感觉「慢半拍」；等真实 id 回来了原地把临时 id 换掉，保存失败就把这一行撤回。
   const temp = Object.assign({id:"tmp-"+Math.random().toString(36).slice(2), status:"todo", images:[]}, payload);
-  WB_DATA.tasks.push(temp);
+  const beforeIdx = beforeTaskId ? WB_DATA.tasks.findIndex(t => t.id === beforeTaskId) : -1;
+  if(beforeIdx !== -1) WB_DATA.tasks.splice(beforeIdx, 0, temp); else WB_DATA.tasks.push(temp);
   if(!workbenchAnimateMorph(document.querySelector("[data-new-card]"), workbenchTaskRow(temp))) renderWorkbench();
   try{
     const r = await api("/workbench/tasks/create", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
@@ -1058,6 +1066,10 @@ async function saveWorkbenchNewTask(){
       node.querySelector('[data-open-dp="task:'+temp.id+'"]')?.setAttribute("data-open-dp", "task:"+d.task.id);
     }
     workbenchRemember({type:"task-presence", before:[], after:[{task:workbenchHistoryClone(d.task), index:idx}]});
+    // 创建接口只会把新任务追加到末尾，插到中间的位置得靠 move 接口单独持久化一次顺序。
+    if(beforeIdx !== -1){
+      api("/workbench/tasks/move", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:d.task.id, parentId:d.task.parentId||null, project:d.task.project, order:WB_DATA.tasks.map(item => item.id)})}).catch(() => {});
+    }
   }catch(e){
     WB_DATA.tasks = WB_DATA.tasks.filter(t => t !== temp);
     alert("新建任务失败："+(e.message||""));
@@ -1218,6 +1230,18 @@ function workbenchOpenChildOfSelected(){
   const task = workbenchTask([...WB.selected][0]);
   if(!task) return;
   openWorkbenchNewChild(task.id, null);
+}
+
+// 移动端 FAB 专用：新建卡插到某个已有顶层任务前面（beforeTaskId 为空就跟原来一样落在最底下）。
+// 桌面的 openWorkbenchNewTask 靠 grow-in 动效直接插入 DOM，这里改走全量重渲染——
+// 跟 openWorkbenchNewChild 定位子任务卡是同一个套路，任意位置插入本来就得靠渲染函数算。
+function workbenchOpenNewTaskBefore(project, beforeTaskId){
+  clearTimeout(wbClickTimer);
+  WB.editorTaskId = null;
+  WB.selected = new Set(); WB.selectAnchor = null;
+  WB.newTask = Object.assign({project:project.id, title:"", detail:"", assignee:"human", parentId:null, siblingTaskId:null, beforeTaskId:beforeTaskId||null}, workbenchCurrentViewSchedule());
+  renderWorkbench();
+  requestAnimationFrame(() => $("[data-new-title]")?.focus());
 }
 
 function openWorkbenchNewChild(parentId, siblingTaskId){
@@ -1984,6 +2008,111 @@ $("#workbenchView").addEventListener("dragend", event => {
   workbenchClearDropIndicators();
   wbDragTaskId = null;
 });
+
+// ── 移动端新建任务 FAB ───────────────────────────────────────────────────
+// 触屏没有原生 HTML5 拖拽（上面那一整套 dragstart/dragover/drop 靠鼠标），FAB 自己
+// 用 Pointer Events 实现一套最小的拖拽：按住不动一段距离内算「拖拽」，松手时看落在
+// 哪条任务行的上/下半区，插到那条前面/后面；没有明显位移就当一次普通点击，插到
+// 当前视图最上方。只在触屏设备上出现（见 styles.css 的 hover:none）。
+const WB_FAB = {pointerId:null, dragging:false, startX:0, startY:0};
+
+function wbFabClearDrop(){
+  document.querySelectorAll(".wb-task-drop-before,.wb-task-drop-after").forEach(el => el.classList.remove("wb-task-drop-before", "wb-task-drop-after"));
+}
+
+// FAB 跟手移动时自己正好挡在指尖下面，直接 elementFromPoint 只会摸到自己——量之前先让它对点击透明。
+function wbFabElementUnder(clientX, clientY, dragEl){
+  dragEl.style.pointerEvents = "none";
+  const el = document.elementFromPoint(clientX, clientY);
+  dragEl.style.pointerEvents = "";
+  return el;
+}
+
+function wbFabUpdateTarget(clientX, clientY, dragEl){
+  wbFabClearDrop();
+  const el = wbFabElementUnder(clientX, clientY, dragEl);
+  const row = el?.closest?.("#workbenchView .wb-task-list > [data-task]");
+  if(!row) return null;
+  const rect = row.getBoundingClientRect();
+  const before = clientY < rect.top + rect.height / 2;
+  row.classList.toggle("wb-task-drop-before", before);
+  row.classList.toggle("wb-task-drop-after", !before);
+  return {row, before};
+}
+
+// 顶层任务行之间偶尔夹着自己的子任务块（.wb-children），跳过去才是下一个真正的兄弟任务。
+function wbFabNextTopLevelId(row){
+  let el = row.nextElementSibling;
+  if(el && el.classList.contains("wb-children")) el = el.nextElementSibling;
+  return (el && el.matches("[data-task]")) ? el.dataset.task : null;
+}
+
+function wbFabRowProject(row){
+  const task = workbenchTask(row.dataset.task);
+  if(!task) return null;
+  return workbenchIsRealProject(task.project) ? workbenchProject(task.project) : WB_UNASSIGNED_PROJECT;
+}
+
+function workbenchFabAddAtTop(){
+  if(WB.view === "completed" || WB.view === "trash") return;
+  const project = WB.project === "all" ? WB_DATA.projects[0] : workbenchProject(WB.project);
+  if(!project){ alert("请先新建一个项目。"); return; }
+  const block = document.querySelector('[data-group="'+CSS.escape(workbenchGroupId(project))+'"]');
+  const firstRow = block?.querySelector(".wb-task-list > [data-task]");
+  workbenchOpenNewTaskBefore(project, firstRow?.dataset.task || null);
+}
+
+function workbenchFabDropAt(clientX, clientY, dragEl){
+  const hit = wbFabUpdateTarget(clientX, clientY, dragEl);
+  wbFabClearDrop();
+  if(!hit) return;
+  const project = wbFabRowProject(hit.row);
+  if(!project) return;
+  const beforeTaskId = hit.before ? hit.row.dataset.task : wbFabNextTopLevelId(hit.row);
+  workbenchOpenNewTaskBefore(project, beforeTaskId);
+}
+
+(function(){
+  const fab = $("#wbFab");
+  if(!fab) return;
+  // 自己拦下 click：松手那一刻已经在 pointerup 里处理完了，浏览器紧接着补发的原生
+  // click 冒泡到 #workbenchView 会被最后那句「点空白处收起当前卡片」当场把新建卡关掉。
+  fab.addEventListener("click", event => event.stopPropagation());
+  fab.addEventListener("pointerdown", event => {
+    if(event.button !== 0 && event.pointerType === "mouse") return;
+    WB_FAB.pointerId = event.pointerId;
+    WB_FAB.dragging = false;
+    WB_FAB.startX = event.clientX; WB_FAB.startY = event.clientY;
+    fab.setPointerCapture(event.pointerId);
+  });
+  fab.addEventListener("pointermove", event => {
+    if(event.pointerId !== WB_FAB.pointerId) return;
+    const dx = event.clientX - WB_FAB.startX, dy = event.clientY - WB_FAB.startY;
+    if(!WB_FAB.dragging && Math.hypot(dx, dy) > 10){
+      WB_FAB.dragging = true;
+      fab.classList.add("wb-fab-dragging");
+    }
+    if(WB_FAB.dragging){
+      fab.style.transform = "translate("+dx+"px,"+(dy-36)+"px)";
+      wbFabUpdateTarget(event.clientX, event.clientY, fab);
+    }
+  });
+  fab.addEventListener("pointerup", event => {
+    if(event.pointerId !== WB_FAB.pointerId) return;
+    WB_FAB.pointerId = null;
+    fab.classList.remove("wb-fab-dragging");
+    fab.style.transform = "";
+    if(WB_FAB.dragging){ WB_FAB.dragging = false; workbenchFabDropAt(event.clientX, event.clientY, fab); }
+    else workbenchFabAddAtTop();
+    wbFabClearDrop();
+  });
+  fab.addEventListener("pointercancel", () => {
+    WB_FAB.pointerId = null; WB_FAB.dragging = false;
+    fab.classList.remove("wb-fab-dragging");
+    fab.style.transform = "";
+    wbFabClearDrop();
+  });
+})();
 
 $("#workbenchView").addEventListener("focusin", event => {
   const taskId = event.target.dataset.editTitle || event.target.dataset.editDetail;

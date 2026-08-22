@@ -349,6 +349,10 @@ try{
   <!-- 核心工作台 Demo：数据与交互均在前端内存，不触达现有任务/文档同步链路。 -->
   <main id="workbenchView" hidden>
     <div id="wbContent"></div>
+    <!-- 移动端新建任务入口：桌面靠键盘 Space / 侧边"+"，触屏没有这些，补一个悬浮按钮——
+         点一下插到当前视图顶部；按住拖到某条任务上松手插到那条前/后。只在 (hover:none)
+         设备上出现，见 styles.css。 -->
+    <button id="wbFab" type="button" aria-label="新建任务">+</button>
   </main>
   <!-- 通话视图:语音通话(原独立 /voice 页,2026-07-09 并入主 SPA,见 00-overview.md
        §2 隔离约束的修订说明)。跟 #chatMain 互斥显隐,左上角复用同一套侧栏展开逻辑,
