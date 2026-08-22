@@ -1496,7 +1496,7 @@
   /* ── 移动端任务行左滑操作（日期 + 删除）───────────────────────────── */
   @media(hover:none){
     #workbenchView .wb-task.wb-swipeable{display:block;overflow:hidden;touch-action:pan-y;position:relative;padding:0}
-    #workbenchView .wb-swipe-body{display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:start;gap:10px;padding:6px 12px;width:100%;transition:transform .22s ease}
+    #workbenchView .wb-swipe-body{display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:start;gap:10px;padding:8px 12px;width:100%;transition:transform .22s ease}
     #workbenchView .wb-swiping .wb-swipe-body{transition:none}
     #workbenchView .wb-swiped .wb-swipe-body{transform:translateX(-88px)}
     .wb-swipe-actions{position:absolute;top:0;right:0;bottom:0;width:88px;display:flex;transform:translateX(100%);transition:transform .22s ease}
@@ -1612,15 +1612,17 @@
     #workbenchView .wb-task-title{font-size:16px}
     #workbenchView .wb-task-detail{display:none}
     #workbenchView .wb-empty{font-size:14px}
-    #workbenchView .wb-schedule{font-size:13px}
+    #workbenchView .wb-schedule{font-size:14px}
     #workbenchView .wb-child-count{font-size:13px}
     #workbenchView .wb-parent-badge{font-size:14px}
     #workbenchView .wb-parent-link{font-size:14px}
     #workbenchView .wb-session-link{font-size:13px}
     #workbenchView .wb-dispatch-btn{font-size:14px}
     .wb-date-nav strong,.wb-date-nav button{font-size:15px}
-    #workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,max-content);gap:8px}
+    #workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,max-content);gap:8px;padding:8px 12px}
     #workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}
+    #workbenchView .wb-card-title{font-size:15px}
+    #workbenchView .wb-editor-shell textarea{font-size:15px}
     #workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}
   }
 
