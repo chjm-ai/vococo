@@ -1864,23 +1864,69 @@ function workbenchDpRenderShell(){
     '<div data-dp-body></div>';
 }
 
+// 日历（默认按天选）、周选择器、月选择器共用同一套 actions 行 + 清除按钮外壳，
+// 中间的选择区随 WB_DP.mode 切换——"本周"/"本月" 变成模式开关（再点一下切回日历），
+// 不再是"立刻套用当前周/月"的一次性预设。
+function workbenchDpDayGridHtml(){
+  const current = workbenchDpCurrentDate();
+  const today = workbenchToday();
+  const weeks = WB_DP.expanded
+    ? workbenchDpWeekStarts(workbenchDpSundayKey(today), WB_DP.rangeBefore, WB_DP.rangeAfter)
+    : workbenchDpWeekStarts(WB_DP.baseWeek, 0, 3);
+  const rows = weeks.map(weekKey => workbenchDpWeekRow(weekKey, current, today)).join("");
+  return '<div class="wb-dp-weekdays">'+["周日","周一","周二","周三","周四","周五","周六"].map(w => '<span>'+w+'</span>').join("")+'</div>'+
+    '<div class="wb-dp-grid'+(WB_DP.expanded ? " is-expanded" : "")+'" data-dp-grid>'+rows+'</div>'+
+    (WB_DP.expanded ? "" : '<button type="button" class="wb-dp-expand" data-dp-expand aria-label="展开更多日期">'+ic("chevronDown")+'</button>');
+}
+
+function workbenchDpWeekPickerHtml(){
+  const selectedWeek = workbenchDpCurrentSchedule()?.week || null;
+  const todayWeek = workbenchWeekKey(workbenchDate(workbenchToday()));
+  const base = WB_DP.weekBase || todayWeek;
+  const rows = Array.from({length:12}, (_, i) => {
+    const d = workbenchDate(base); d.setDate(d.getDate() + (i-2)*7);
+    const weekKey = workbenchWeekKey(d);
+    const start = workbenchDate(weekKey);
+    const end = new Date(start); end.setDate(start.getDate()+6);
+    const label = "Week"+workbenchWeekNumber(start)+" · "+(start.getMonth()+1)+"/"+start.getDate()+"–"+(end.getMonth()+1)+"/"+end.getDate();
+    const cls = ["wb-dp-week-row"];
+    if(weekKey === todayWeek) cls.push("is-today");
+    if(weekKey === selectedWeek) cls.push("is-selected");
+    return '<button type="button" class="'+cls.join(" ")+'" data-dp-pick-week="'+weekKey+'">'+label+(weekKey === todayWeek ? '<span class="wb-dp-tag">本周</span>' : '')+'</button>';
+  }).join("");
+  return '<div class="wb-dp-week-pager"><button type="button" data-dp-week-page="-1" aria-label="更早的周">‹ 更早</button><button type="button" data-dp-week-page="1" aria-label="更晚的周">更晚 ›</button></div>'+
+    '<div class="wb-dp-week-list" data-dp-week-list>'+rows+'</div>';
+}
+
+function workbenchDpMonthPickerHtml(){
+  const selectedMonth = workbenchDpCurrentSchedule()?.month || null;
+  const todayMonth = workbenchToday().slice(0, 7);
+  const year = WB_DP.monthYear || workbenchDate(workbenchToday()).getFullYear();
+  const cells = Array.from({length:12}, (_, i) => {
+    const mk = year+"-"+String(i+1).padStart(2, "0");
+    const cls = ["wb-dp-month"];
+    if(mk === todayMonth) cls.push("is-today");
+    if(mk === selectedMonth) cls.push("is-selected");
+    return '<button type="button" class="'+cls.join(" ")+'" data-dp-pick-month="'+mk+'">'+(i+1)+'月</button>';
+  }).join("");
+  return '<div class="wb-dp-month-nav"><button type="button" data-dp-year="-1" aria-label="上一年">‹</button><strong>'+year+'年</strong><button type="button" data-dp-year="1" aria-label="下一年">›</button></div>'+
+    '<div class="wb-dp-month-grid">'+cells+'</div>';
+}
+
 function workbenchDpRenderBody(){
   const body = document.querySelector("#wbDatePicker [data-dp-body]");
   if(!body) return;
   if(WB_DP.results.length){
     body.innerHTML = '<div class="wb-dp-results" data-dp-results>'+WB_DP.results.map(workbenchDpResultRow).join("")+'</div>';
   } else {
-    const current = workbenchDpCurrentDate();
-    const today = workbenchToday();
-    const weeks = WB_DP.expanded
-      ? workbenchDpWeekStarts(workbenchDpSundayKey(today), WB_DP.rangeBefore, WB_DP.rangeAfter)
-      : workbenchDpWeekStarts(WB_DP.baseWeek, 0, 3);
-    const rows = weeks.map(weekKey => workbenchDpWeekRow(weekKey, current, today)).join("");
+    const picker = WB_DP.mode === "week" ? workbenchDpWeekPickerHtml()
+      : WB_DP.mode === "month" ? workbenchDpMonthPickerHtml()
+      : workbenchDpDayGridHtml();
     body.innerHTML =
-      '<div class="wb-dp-actions"><button type="button" data-dp-preset="today">'+ic("star")+'<span>今天</span></button><button type="button" data-dp-preset="week">本周</button><button type="button" data-dp-preset="month">本月</button></div>'+
-      '<div class="wb-dp-weekdays">'+["周日","周一","周二","周三","周四","周五","周六"].map(w => '<span>'+w+'</span>').join("")+'</div>'+
-      '<div class="wb-dp-grid'+(WB_DP.expanded ? " is-expanded" : "")+'" data-dp-grid>'+rows+'</div>'+
-      (WB_DP.expanded ? "" : '<button type="button" class="wb-dp-expand" data-dp-expand aria-label="展开更多日期">'+ic("chevronDown")+'</button>')+
+      '<div class="wb-dp-actions"><button type="button" data-dp-preset="today">'+ic("star")+'<span>今天</span></button>'+
+      '<button type="button" class="'+(WB_DP.mode === "week" ? "is-on" : "")+'" data-dp-preset="week">本周</button>'+
+      '<button type="button" class="'+(WB_DP.mode === "month" ? "is-on" : "")+'" data-dp-preset="month">本月</button></div>'+
+      picker+
       '<button type="button" class="wb-dp-clear" data-dp-clear'+(workbenchDpHasSchedule() ? "" : " disabled")+' title="移除排期" aria-label="移除排期">'+ic("eraser")+'</button>';
   }
   if(WB_DP._reposition) WB_DP._reposition(); // 主体换了搜索结果/日历，高度跟着变，重新贴一次锚点
@@ -1889,6 +1935,14 @@ function workbenchDpRenderBody(){
 function workbenchDpEnsureEl(){
   let el = document.getElementById("wbDatePicker");
   if(el) return el;
+  if(!document.getElementById("wbDpBackdrop")){
+    const backdrop = document.createElement("div");
+    backdrop.id = "wbDpBackdrop";
+    // 桌面端透明不挡点击，靠 document mousedown 判断点在外面就关；移动端 CSS 把它变成
+    // 真正的遮罩层，同时兼作点击关闭（底部弹层是模态的，点空白处也该能关）。
+    backdrop.addEventListener("click", workbenchDpClose);
+    document.body.appendChild(backdrop);
+  }
   el = document.createElement("div");
   el.id = "wbDatePicker";
   el.className = "wb-dp";
@@ -1911,8 +1965,32 @@ function workbenchDpEnsureEl(){
 function workbenchDpHandleClick(event){
   const pick = event.target.closest("[data-dp-pick]");
   if(pick){ workbenchDpApplyDate(pick.dataset.dpPick); return; }
+  const pickWeek = event.target.closest("[data-dp-pick-week]");
+  if(pickWeek){ workbenchDpApply(workbenchWeekSchedule(pickWeek.dataset.dpPickWeek)); return; }
+  const pickMonth = event.target.closest("[data-dp-pick-month]");
+  if(pickMonth){ workbenchDpApply(workbenchMonthSchedule(pickMonth.dataset.dpPickMonth)); return; }
+  const yearNav = event.target.closest("[data-dp-year]");
+  if(yearNav){
+    WB_DP.monthYear = (WB_DP.monthYear || workbenchDate(workbenchToday()).getFullYear()) + Number(yearNav.dataset.dpYear);
+    workbenchDpRenderBody();
+    return;
+  }
+  const weekPage = event.target.closest("[data-dp-week-page]");
+  if(weekPage){
+    const base = workbenchDate(WB_DP.weekBase || workbenchWeekKey(workbenchDate(workbenchToday())));
+    base.setDate(base.getDate() + Number(weekPage.dataset.dpWeekPage) * 8 * 7);
+    WB_DP.weekBase = workbenchWeekKey(base);
+    workbenchDpRenderBody();
+    return;
+  }
   const preset = event.target.closest("[data-dp-preset]");
-  if(preset){ workbenchDpApply(workbenchDpPresetSchedule(preset.dataset.dpPreset)); return; }
+  if(preset){
+    const kind = preset.dataset.dpPreset;
+    if(kind === "today"){ workbenchDpApply(workbenchDpPresetSchedule("today")); return; }
+    WB_DP.mode = WB_DP.mode === kind ? "day" : kind; // 再点一次同一个预设，切回日历
+    workbenchDpRenderBody();
+    return;
+  }
   if(event.target.closest("[data-dp-clear]")){ workbenchDpApply(workbenchUnscheduled()); return; }
   if(event.target.closest("[data-dp-search-clear]")){
     WB_DP.results = [];
@@ -1990,8 +2068,13 @@ function workbenchDpOpenCommon(target){
   WB_DP.rangeBefore = 4; WB_DP.rangeAfter = 12;
   const current = workbenchDpCurrentSchedule();
   WB_DP.baseWeek = workbenchDpSundayKey(current?.date || current?.week || (current?.month ? current.month+"-01" : workbenchToday()));
+  // 有已有排期就直接落在对应模式（周排期打开就是周选择器，月排期打开就是月选择器），没有才落回日历。
+  WB_DP.mode = current?.month ? "month" : current?.week ? "week" : "day";
+  WB_DP.weekBase = current?.week || workbenchWeekKey(workbenchDate(workbenchToday()));
+  WB_DP.monthYear = current?.month ? +current.month.slice(0, 4) : workbenchDate(workbenchToday()).getFullYear();
   const el = workbenchDpEnsureEl();
   el.style.display = "block";
+  document.getElementById("wbDpBackdrop")?.classList.add("show");
   workbenchDpRenderShell();
   workbenchDpRenderBody();
   return el;
@@ -2014,6 +2097,7 @@ function workbenchDpClose(){
   WB_DP.open = false; WB_DP.target = null; WB_DP._reposition = null;
   const el = document.getElementById("wbDatePicker");
   if(el) el.style.display = "none";
+  document.getElementById("wbDpBackdrop")?.classList.remove("show");
 }
 
 document.addEventListener("mousedown", event => {
