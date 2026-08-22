@@ -18,6 +18,14 @@ let wbClickTimer = null;
 // 复用 CSS 里已经在用的 (hover: none) 判定，触屏设备改成点一下直接打开详情。
 function wbIsTouchLike(){ return typeof window.matchMedia === "function" && window.matchMedia("(hover: none)").matches; }
 
+// iOS 等触屏浏览器只认"用户手势调用栈内同步 focus()"才弹虚拟键盘；requestAnimationFrame
+// 已经跳出这个调用栈了，键盘就弹不出来（光标能看见，键盘不出现）——触屏改成立即同步聚焦，
+// 桌面维持原来的下一帧再聚焦（展开动画期间同步聚焦容易带来意外滚动）。
+function wbFocusSoon(selector, after){
+  const run = () => { const el = $(selector); if(!el) return; el.focus({preventScroll:true}); after?.(el); };
+  if(wbIsTouchLike()) run(); else requestAnimationFrame(run);
+}
+
 function workbenchIsRealProject(id){ return WB_DATA.projects.some(project => project.id === id); }
 function workbenchProject(id){ return id === WB_UNASSIGNED_ID ? WB_UNASSIGNED_PROJECT : WB_DATA.projects.find(project => project.id === id); }
 function workbenchTask(id){ return WB_DATA.tasks.find(task => task.id === id); }
@@ -834,10 +842,7 @@ function openWorkbenchEditor(taskId){
   workbenchSetSelection([]);
   WB.editorTaskId = taskId;
   if(!workbenchMorphTask(taskId)) renderWorkbench();
-  requestAnimationFrame(() => {
-    const el = $(".wb-card-title");
-    if(!el) return;
-    el.focus({preventScroll:true});
+  wbFocusSoon(".wb-card-title", el => {
     const len = el.value.length;
     el.setSelectionRange(len, len); // 只定位光标，不要默认全选标题
   });
@@ -1036,7 +1041,7 @@ function openWorkbenchNewTask(){
   if(prevEditor) ok = workbenchMorphTask(prevEditor) && ok;
   if(ok) ok = workbenchInsertNewTaskCard(project) && ok;
   if(!ok) renderWorkbench();
-  requestAnimationFrame(() => $("[data-new-title]")?.focus());
+  wbFocusSoon("[data-new-title]");
 }
 
 async function saveWorkbenchNewTask(){
@@ -1241,7 +1246,7 @@ function workbenchOpenNewTaskBefore(project, beforeTaskId){
   WB.selected = new Set(); WB.selectAnchor = null;
   WB.newTask = Object.assign({project:project.id, title:"", detail:"", assignee:"human", parentId:null, siblingTaskId:null, beforeTaskId:beforeTaskId||null}, workbenchCurrentViewSchedule());
   renderWorkbench();
-  requestAnimationFrame(() => $("[data-new-title]")?.focus());
+  wbFocusSoon("[data-new-title]");
 }
 
 function openWorkbenchNewChild(parentId, siblingTaskId){
@@ -1255,7 +1260,7 @@ function openWorkbenchNewChild(parentId, siblingTaskId){
   WB.expanded.add(parentId); WB.collapsed.delete(parentId);
   WB.newTask = Object.assign({project:project.id, title:"", detail:"", assignee:"human", parentId, siblingTaskId:siblingTaskId||null}, workbenchCurrentViewSchedule());
   renderWorkbench();
-  requestAnimationFrame(() => $("[data-new-title]")?.focus());
+  wbFocusSoon("[data-new-title]");
 }
 
 // 删除 = 软删除(移入回收站)，不用再弹确认框——删错了去回收站图标里恢复就行。
@@ -1804,7 +1809,7 @@ $("#workbenchView").addEventListener("click", event => {
   const newAssignee = event.target.closest("[data-new-assignee]");
   if(newAssignee && WB.newTask){
     const next = newAssignee.dataset.assigneeSet || (WB.newTask.assignee === "ai" ? "human" : "ai");
-    if(next !== WB.newTask.assignee){ WB.newTask.assignee = next; renderWorkbench(); requestAnimationFrame(() => $("[data-new-title]")?.focus()); }
+    if(next !== WB.newTask.assignee){ WB.newTask.assignee = next; renderWorkbench(); wbFocusSoon("[data-new-title]"); }
     return;
   }
   const openDp = event.target.closest("[data-open-dp]");
@@ -1850,6 +1855,13 @@ $("#workbenchView").addEventListener("click", event => {
   if(taskRow){
     const taskId = taskRow.dataset.task;
     if(taskId === WB.editorTaskId) return;
+    // 移动端：详情卡（或新建卡）开着的时候点别的任务，只收起当前卡，不直接跳到点的
+    // 那条——不然手滑很容易连续切换详情。想看别的任务，先收起再点一次。
+    if(wbIsTouchLike() && (WB.editorTaskId || WB.newTask)){
+      clearTimeout(wbClickTimer); wbClickTimer = null;
+      workbenchFinishActiveCard();
+      return;
+    }
     // 任务切换的选中状态还要保留 250ms 的双击判定，但收起当前卡片不能等它：
     // 否则点击别的任务后，卡片会明显晚半拍才开始收起。
     workbenchFinishActiveCard();
@@ -2012,12 +2024,12 @@ $("#workbenchView").addEventListener("dragend", event => {
 // ── 移动端新建任务 FAB ───────────────────────────────────────────────────
 // 触屏没有原生 HTML5 拖拽（上面那一整套 dragstart/dragover/drop 靠鼠标），FAB 自己
 // 用 Pointer Events 实现一套最小的拖拽：按住不动一段距离内算「拖拽」，松手时看落在
-// 哪条任务行的上/下半区，插到那条前面/后面；没有明显位移就当一次普通点击，插到
-// 当前视图最上方。只在触屏设备上出现（见 styles.css 的 hover:none）。
+// 哪条任务行的哪个区——中间一段落成子任务，上/下沿插到那条前面/后面；没有明显位移
+// 就当一次普通点击，插到当前视图最上方。只在触屏设备上出现（见 styles.css 的 hover:none）。
 const WB_FAB = {pointerId:null, dragging:false, startX:0, startY:0};
 
 function wbFabClearDrop(){
-  document.querySelectorAll(".wb-task-drop-before,.wb-task-drop-after").forEach(el => el.classList.remove("wb-task-drop-before", "wb-task-drop-after"));
+  document.querySelectorAll(".wb-task-drop-before,.wb-task-drop-after,.wb-task-drop-nest").forEach(el => el.classList.remove("wb-task-drop-before", "wb-task-drop-after", "wb-task-drop-nest"));
 }
 
 // FAB 跟手移动时自己正好挡在指尖下面，直接 elementFromPoint 只会摸到自己——量之前先让它对点击透明。
@@ -2028,16 +2040,20 @@ function wbFabElementUnder(clientX, clientY, dragEl){
   return el;
 }
 
+// 行的中间一半判定成「落到这条任务上」（新建子任务），跟桌面原生拖拽的 nest 判定
+// （workbenchDropMode）用同一套 25%/75% 分界，手感一致。
 function wbFabUpdateTarget(clientX, clientY, dragEl){
   wbFabClearDrop();
   const el = wbFabElementUnder(clientX, clientY, dragEl);
   const row = el?.closest?.("#workbenchView .wb-task-list > [data-task]");
   if(!row) return null;
   const rect = row.getBoundingClientRect();
-  const before = clientY < rect.top + rect.height / 2;
-  row.classList.toggle("wb-task-drop-before", before);
-  row.classList.toggle("wb-task-drop-after", !before);
-  return {row, before};
+  const relY = (clientY - rect.top) / rect.height;
+  const mode = relY < .25 ? "before" : relY > .75 ? "after" : "nest";
+  row.classList.toggle("wb-task-drop-before", mode === "before");
+  row.classList.toggle("wb-task-drop-after", mode === "after");
+  row.classList.toggle("wb-task-drop-nest", mode === "nest");
+  return {row, mode};
 }
 
 // 顶层任务行之间偶尔夹着自己的子任务块（.wb-children），跳过去才是下一个真正的兄弟任务。
@@ -2066,9 +2082,10 @@ function workbenchFabDropAt(clientX, clientY, dragEl){
   const hit = wbFabUpdateTarget(clientX, clientY, dragEl);
   wbFabClearDrop();
   if(!hit) return;
+  if(hit.mode === "nest"){ openWorkbenchNewChild(hit.row.dataset.task, null); return; }
   const project = wbFabRowProject(hit.row);
   if(!project) return;
-  const beforeTaskId = hit.before ? hit.row.dataset.task : wbFabNextTopLevelId(hit.row);
+  const beforeTaskId = hit.mode === "before" ? hit.row.dataset.task : wbFabNextTopLevelId(hit.row);
   workbenchOpenNewTaskBefore(project, beforeTaskId);
 }
 
