@@ -2283,15 +2283,21 @@ function workbenchFabDropAt(clientX, clientY, dragEl){
 })();
 
 // docked 新建卡（#wbDock）跟着键盘走：键盘弹起来时 visualViewport 会变矮，两者的差
-// 就是键盘（+浏览器地址栏之类）占掉的高度，把面板贴在这段之上，键盘收起时自然归位到
-// 屏幕底部。空的时候 CSS :empty 直接不占地方，这里更新 bottom 不会有任何可见影响。
+// 就是键盘（+浏览器地址栏之类）占掉的高度，把面板贴在这段之上。空的时候 CSS :empty
+// 直接不占地方，这里更新 bottom 不会有任何可见影响。
+// 键盘被收起（不管是键盘自己的收起键、切到别的 app 再回来，还是别的手势，不只是点
+// 空白）也当一次「完成」：不然浮层没了键盘撑着，孤零零贴在屏幕最下面，像卡死了。
 (function(){
   const dock = document.getElementById("wbDock");
   if(!dock || !window.visualViewport) return;
   const vv = window.visualViewport;
+  let wasKeyboardOpen = false;
   const update = () => {
     const gap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
     dock.style.bottom = (gap + 12) + "px";
+    const keyboardOpen = gap > 80;
+    if(wasKeyboardOpen && !keyboardOpen && (WB.newTask?.docked || WB.editorDocked)) workbenchFinishActiveCard();
+    wasKeyboardOpen = keyboardOpen;
   };
   vv.addEventListener("resize", update);
   vv.addEventListener("scroll", update);
