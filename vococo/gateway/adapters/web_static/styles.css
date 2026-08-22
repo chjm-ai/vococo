@@ -1579,6 +1579,11 @@
   .wb-ctx-menu button:hover{background:var(--panel2)}
   .wb-ctx-menu .wb-ctx-sep{margin:5px 2px;border-top:1px solid var(--line)}
   .wb-ctx-menu .wb-ctx-danger{color:var(--err)}
+  /* 通用"选择浮层"背景层：桌面端透明不挡点击（靠 mousedown 判外部关闭），移动端
+     在下面 @media 里变实体半透明+可点击，配合 .wb-ctx-menu 的底部弹出样式一起用。
+     .wb-dp 系列（日期选择器）走自己独立的 #wbDpBackdrop，不共用这层。 */
+  #wbSheetBackdrop{position:fixed;inset:0;z-index:59;display:none;background:transparent;pointer-events:none}
+  #wbSheetBackdrop.show{display:block}
   #workbenchView .wb-dp-trigger{display:inline-flex;align-items:center;gap:5px}
   #workbenchView .wb-dp-trigger .ic{width:14px;height:14px;flex:0 0 auto}
   #wbDpBackdrop{position:fixed;inset:0;z-index:69;display:none;background:transparent;pointer-events:none}
@@ -1642,6 +1647,9 @@
   .wb-dp-month.is-selected{background:var(--accent);color:#fff;font-weight:700}
   @media(max-width:760px){
     #wbDpBackdrop.show{background:rgba(0,0,0,.5);pointer-events:auto}
+    #wbSheetBackdrop.show{background:rgba(0,0,0,.5);pointer-events:auto}
+    .wb-ctx-menu{left:0!important;right:0!important;top:auto!important;bottom:0;width:100%;max-width:100%;max-height:70vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:10px 12px calc(10px + env(safe-area-inset-bottom));font-size:16px}
+    .wb-ctx-menu button{padding:11px 12px;font-size:16px}
     .wb-dp{left:0!important;right:0;top:auto!important;bottom:0;width:100%;max-width:100%;max-height:78vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:14px 16px calc(14px + env(safe-area-inset-bottom));font-size:16px}
     .wb-dp-search input,.wb-dp-result,.wb-dp-result-weekday,.wb-dp-actions button,.wb-dp-weekdays,.wb-dp-day,.wb-dp-day.is-month-start,.wb-dp-week-row,.wb-dp-month{font-size:16px}
     .wb-dp-actions button{height:36px}
