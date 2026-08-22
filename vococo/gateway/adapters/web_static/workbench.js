@@ -21,13 +21,13 @@ let WB_VIEW_PREFS = {};
 try{ WB_VIEW_PREFS = JSON.parse(localStorage.getItem(WB_VIEW_PREFS_KEY) || "{}"); }catch(e){ WB_VIEW_PREFS = {}; }
 function wbViewPref(view){ return WB_VIEW_PREFS[view] || (WB_VIEW_PREFS[view] = {}); }
 function wbSaveViewPrefs(){ try{ localStorage.setItem(WB_VIEW_PREFS_KEY, JSON.stringify(WB_VIEW_PREFS)); }catch(e){} }
-// 移动端(≤760px)原来在 CSS 里硬 display:none 常年隐藏备注(屏幕小、列表要紧凑)；
-// 这条默认值继续保留，但改成"没手动点过开关"时的初始值，用户点了开关就按开关来，
-// 不会被 CSS 焊死到打不开——同一账号在手机/桌面本来就是两份 localStorage，天然分开记。
+// 移动端(≤760px)原来在 CSS 里硬 display:none、月视图原来在渲染函数里硬判断
+// WB.view!=="month"，都是"常年隐藏备注、点开关也没用"——这两条默认值继续保留，
+// 但改成"没手动点过开关"时的初始值，用户点了开关就按开关来，不再被焊死打不开。
 function wbIsMobileWidth(){ return typeof window.matchMedia === "function" && window.matchMedia("(max-width:760px)").matches; }
 function wbNotesHidden(view){
   const pref = wbViewPref(view);
-  return pref.hideNotes === undefined ? wbIsMobileWidth() : !!pref.hideNotes;
+  return pref.hideNotes === undefined ? (view === "month" || wbIsMobileWidth()) : !!pref.hideNotes;
 }
 function wbAllCollapsed(view){ return !!wbViewPref(view).collapseAll; }
 
@@ -395,7 +395,7 @@ function workbenchTaskRow(task, isChild){
   }
   const action = (task.status === "done" || task.status === "cancelled") ? "恢复" : "完成";
   const selected = WB.selected.has(task.id);
-  const detail = (task.detail && WB.view !== "month" && !wbNotesHidden(WB.view)) ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
+  const detail = (task.detail && !wbNotesHidden(WB.view)) ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
   const childClass = isChild ? " wb-task-child" : "";
   const touch = wbIsTouchLike();
   const inner = '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
