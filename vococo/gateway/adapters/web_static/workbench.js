@@ -2183,15 +2183,20 @@ function wbFabElementUnder(clientX, clientY, dragEl){
 function wbFabUpdateTarget(clientX, clientY, dragEl){
   wbFabClearDrop();
   const el = wbFabElementUnder(clientX, clientY, dragEl);
-  const row = el?.closest?.("#workbenchView .wb-task-list > [data-task]");
+  // 匹配顶层任务和子任务（子任务在 .wb-children 下，不是 .wb-task-list 的直接子元素）
+  const row = el?.closest?.("#workbenchView [data-task]:not(.wb-task-card)");
   if(!row) return null;
   const rect = row.getBoundingClientRect();
   const relY = (clientY - rect.top) / rect.height;
-  const mode = relY < .25 ? "before" : relY > .75 ? "after" : "nest";
+  const task = workbenchTask(row.dataset.task);
+  // 子任务之间只做 before/after，不做 nest（不支持三层嵌套）
+  const isChild = !!(task && task.parentId);
+  const mode = isChild ? (relY < .5 ? "before" : "after")
+    : (relY < .25 ? "before" : relY > .75 ? "after" : "nest");
   row.classList.toggle("wb-task-drop-before", mode === "before");
   row.classList.toggle("wb-task-drop-after", mode === "after");
   row.classList.toggle("wb-task-drop-nest", mode === "nest");
-  return {row, mode};
+  return {row, mode, isChild};
 }
 
 // 顶层任务行之间偶尔夹着自己的子任务块（.wb-children），跳过去才是下一个真正的兄弟任务。
@@ -2221,6 +2226,22 @@ function workbenchFabDropAt(clientX, clientY, dragEl){
   wbFabClearDrop();
   if(!hit) return;
   if(hit.mode === "nest"){ openWorkbenchNewChild(hit.row.dataset.task, null, {docked:true}); return; }
+  // 落在子任务之间：在同一父任务下插入新子任务
+  if(hit.isChild){
+    const task = workbenchTask(hit.row.dataset.task);
+    if(!task || !task.parentId) return;
+    let siblingId = null;
+    if(hit.mode === "after"){
+      siblingId = task.id;
+    }else{
+      // before：找到前一个兄弟，插在它后面；没有前兄弟就插到子任务列表顶部（siblingId=null）
+      const siblings = workbenchChildren(task.parentId);
+      const idx = siblings.findIndex(s => s.id === task.id);
+      if(idx > 0) siblingId = siblings[idx - 1].id;
+    }
+    openWorkbenchNewChild(task.parentId, siblingId, {docked:true});
+    return;
+  }
   const project = wbFabRowProject(hit.row);
   if(!project) return;
   const beforeTaskId = hit.mode === "before" ? hit.row.dataset.task : wbFabNextTopLevelId(hit.row);
