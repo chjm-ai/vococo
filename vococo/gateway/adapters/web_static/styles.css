@@ -1610,7 +1610,7 @@
   .wb-dp-clear[disabled]{visibility:hidden;pointer-events:none}
   .wb-dp-picker{min-height:190px}
   .wb-dp-weekdays{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:2px;color:var(--dim2);font-size:14px;text-align:center}
-  .wb-dp-grid{display:flex;flex-direction:column;gap:2px}
+  .wb-dp-grid{display:flex;flex-direction:column;gap:8px}
   .wb-dp-grid.is-expanded{max-height:260px;overflow-y:auto;scrollbar-width:thin}
   .wb-dp-week{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
   .wb-dp-day{display:grid;place-items:center;height:30px;padding:0;border:0;border-radius:7px;background:none;color:var(--text);font-family:inherit;font-size:14px;line-height:1.15}
@@ -1648,8 +1648,9 @@
     .wb-dp-day{height:36px}
     .wb-dp-month{padding:13px 0}
     .wb-dp-month-nav strong{font-size:16px}
-    .wb-dp-picker{min-height:210px}
+    .wb-dp-picker{min-height:232px}
     .wb-dp-week-list{max-height:170px}
+    .wb-dp-grid{gap:10px}
     .wb-dp-week-pager button{font-size:13px}
   }
   #workbenchView .wb-trash-row{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer}
