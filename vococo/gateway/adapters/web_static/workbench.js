@@ -2205,10 +2205,8 @@ function wbFabUpdateTarget(clientX, clientY, dragEl){
   const rect = row.getBoundingClientRect();
   const relY = (clientY - rect.top) / rect.height;
   const task = workbenchTask(row.dataset.task);
-  // 子任务之间只做 before/after，不做 nest（不支持三层嵌套）
   const isChild = !!(task && task.parentId);
-  const mode = isChild ? (relY < .5 ? "before" : "after")
-    : (relY < .25 ? "before" : relY > .75 ? "after" : "nest");
+  const mode = relY < .25 ? "before" : relY > .75 ? "after" : "nest";
   row.classList.toggle("wb-task-drop-before", mode === "before");
   row.classList.toggle("wb-task-drop-after", mode === "after");
   row.classList.toggle("wb-task-drop-nest", mode === "nest");
