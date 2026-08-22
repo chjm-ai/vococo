@@ -1528,6 +1528,15 @@
     .wb-swipe-select{position:absolute;top:0;left:0;bottom:0;width:64px;display:flex;align-items:center;justify-content:center;background:var(--dim2);color:#fff;opacity:0;pointer-events:none}
     .wb-swipe-select .ic{width:18px;height:18px}
     .wb-swipe-select.wb-swipe-select-armed{background:var(--accent)}
+    /* 多选模式下行尾常驻的圆形选中指示：平时不占地方（display:none + 0 宽列），
+       进多选才现身，跟 is-selected 类联动，不需要为了显示/隐藏它去重渲染整行。 */
+    .wb-select-circle{display:none;width:22px;height:22px;border-radius:50%;align-items:center;justify-content:center;border:1.5px solid var(--dim2);color:transparent;flex:none}
+    .wb-select-circle .ic{width:13px;height:13px}
+  }
+  @media(hover:none){
+    body.wb-multiselect-mode #workbenchView .wb-swipe-body{grid-template-columns:20px minmax(0,1fr) auto 26px}
+    body.wb-multiselect-mode #workbenchView .wb-select-circle{display:flex}
+    body.wb-multiselect-mode #workbenchView .wb-task.is-selected .wb-select-circle{background:var(--accent);border-color:var(--accent);color:#fff}
   }
   /* ── 移动端多选：右上角"完成" + 底部批量操作栏（仿 Things 左滑进多选）──────── */
   #wbMultiDone{display:none}

@@ -401,8 +401,11 @@ function workbenchTaskRow(task, isChild){
   const inner = '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
     '<div class="wb-task-copy"><div class="wb-task-title-row"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+workbenchParentBadge(task, isChild)+'</div>'+detail+'</div>'+
     '<div class="wb-task-end">'+workbenchScheduleBadge(task)+workbenchChildCount(task)+workbenchAssigneeBadge(task)+'</div>';
+  // 多选模式下行尾常驻一个圆形选中指示（仿 Things：空心=未选，实心+勾=已选）；
+  // 平时用 CSS 隐藏，不需要因为进/出多选模式而整段重渲染——is-selected 类已经在维护了。
+  const selectCircle = touch ? '<div class="wb-select-circle" aria-hidden="true">'+ic("save")+'</div>' : "";
   const row = '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+(touch ? " wb-swipeable" : "")+childClass+'" data-task="'+esc(task.id)+'" draggable="true">'+
-    (touch ? '<div class="wb-swipe-select" aria-hidden="true">'+ic("save")+'</div><div class="wb-swipe-body">'+inner+'</div><div class="wb-swipe-actions"><button type="button" class="wb-swipe-btn wb-swipe-date" data-swipe-dp="'+esc(task.id)+'" aria-label="日期">'+ic("calendar")+'</button><button type="button" class="wb-swipe-btn wb-swipe-move" data-swipe-move="'+esc(task.id)+'" aria-label="移动分组">'+ic("folder")+'</button><button type="button" class="wb-swipe-btn wb-swipe-del" data-swipe-del="'+esc(task.id)+'" aria-label="删除">'+ic("trash")+'</button></div>' : inner)+
+    (touch ? '<div class="wb-swipe-select" aria-hidden="true">'+ic("save")+'</div><div class="wb-swipe-body">'+inner+selectCircle+'</div><div class="wb-swipe-actions"><button type="button" class="wb-swipe-btn wb-swipe-date" data-swipe-dp="'+esc(task.id)+'" aria-label="日期">'+ic("calendar")+'</button><button type="button" class="wb-swipe-btn wb-swipe-move" data-swipe-move="'+esc(task.id)+'" aria-label="移动分组">'+ic("folder")+'</button><button type="button" class="wb-swipe-btn wb-swipe-del" data-swipe-del="'+esc(task.id)+'" aria-label="删除">'+ic("trash")+'</button></div>' : inner)+
     '</article>';
   if(isChild) return row + workbenchChildRows(task.id);
   if(task.parentId) return row + workbenchChildRows(task.id) + (WB.newTask?.siblingTaskId === task.id ? workbenchNewChildCard(task.parentId, true) : '');
@@ -748,6 +751,9 @@ function wbBindSwipe(row){
   }, {passive: true});
   row.addEventListener("touchmove", ev => {
     if(ev.touches.length !== 1) return;
+    // 多选模式下选中/取消全靠点一下，横滑手势整个让路——不然容易跟"点选"的轻触混淆，
+    // 也没必要再左滑出日期/移动/删除（批量操作已经在底部工具栏了）。
+    if(WB.multiSelectMode) return;
     const x = ev.touches[0].clientX, y = ev.touches[0].clientY;
     const ddx = x - startX, ddy = y - startY;
     if(lock === null) lock = Math.abs(ddx) > Math.abs(ddy) + 4 ? "x" : (Math.abs(ddy) > Math.abs(ddx) + 4 ? "y" : null);
