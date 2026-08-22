@@ -1989,15 +1989,11 @@ function workbenchDpHandleClick(event){
   }
   const preset = event.target.closest("[data-dp-preset]");
   if(preset){
-    const kind = preset.dataset.dpPreset;
-    if(kind === "today"){
-      // 从周/月视图点「今天」先切回日历，不直接关面板；已经在日历视图时再点一下才真正套用+关闭。
-      if(WB_DP.mode !== "day"){ WB_DP.mode = "day"; workbenchDpRenderBody(); return; }
-      workbenchDpApply(workbenchDpPresetSchedule("today"));
-      return;
-    }
-    WB_DP.mode = WB_DP.mode === kind ? "day" : kind; // 再点一次同一个预设，切回日历
-    workbenchDpRenderBody();
+    const kind = preset.dataset.dpPreset; // "today" | "week" | "month"
+    const targetMode = kind === "today" ? "day" : kind;
+    // 第一下只切视图（不套用、不关面板）；已经在那个视图上再点一下，才真正套用「今天/本周/本月」并关闭。
+    if(WB_DP.mode !== targetMode){ WB_DP.mode = targetMode; workbenchDpRenderBody(); return; }
+    workbenchDpApply(workbenchDpPresetSchedule(kind));
     return;
   }
   if(event.target.closest("[data-dp-clear]")){ workbenchDpApply(workbenchUnscheduled()); return; }
