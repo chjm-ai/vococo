@@ -1521,7 +1521,7 @@
   @keyframes wbCardIn{from{opacity:0}to{opacity:1}}
   /* 编辑卡沿用任务行的三列栅格：复选框 20px + 10px 间距 + 文字列。
      所有内容落在文字列起点，展开/收起时标题和描述不会左右跳动。 */
-  #workbenchView .wb-editor-shell{margin:2px 0 8px;width:auto;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);box-shadow:0 4px 16px color-mix(in srgb,var(--text) 6%,transparent);animation:wbCardIn .15s ease}
+  #workbenchView .wb-editor-shell{margin:2px 0 8px;width:auto;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);box-shadow:0 6px 12px color-mix(in srgb,var(--text) 4%,transparent);animation:wbCardIn .15s ease}
   #workbenchView .wb-task-card{display:block;cursor:default}
   #workbenchView .wb-task-card:hover{background:var(--card)}
   #workbenchView .wb-card-head{display:flex;align-items:center;gap:10px}#workbenchView .wb-card-title{flex:1;min-width:0;padding:2px 0;border:0;background:transparent;color:var(--text);font-family:inherit;font-size:14px;line-height:20px;font-weight:600;outline:none}
