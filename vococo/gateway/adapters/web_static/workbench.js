@@ -1930,10 +1930,13 @@ function workbenchDpRenderBody(){
     const picker = WB_DP.mode === "week" ? workbenchDpWeekPickerHtml()
       : WB_DP.mode === "month" ? workbenchDpMonthPickerHtml()
       : workbenchDpDayGridHtml();
+    // 没被选中的 tab 显示"日/周/月"，选中的那个才显示"今天/本周/本月"；不再用星标区分。
     body.innerHTML =
-      '<div class="wb-dp-actions"><button type="button" data-dp-preset="today">'+ic("star")+'<span>今天</span></button>'+
-      '<button type="button" class="'+(WB_DP.mode === "week" ? "is-on" : "")+'" data-dp-preset="week">本周</button>'+
-      '<button type="button" class="'+(WB_DP.mode === "month" ? "is-on" : "")+'" data-dp-preset="month">本月</button></div>'+
+      '<div class="wb-dp-actions">'+
+      '<button type="button" class="'+(WB_DP.mode === "day" ? "is-on" : "")+'" data-dp-preset="today"><span>'+(WB_DP.mode === "day" ? "今天" : "日")+'</span></button>'+
+      '<button type="button" class="'+(WB_DP.mode === "week" ? "is-on" : "")+'" data-dp-preset="week"><span>'+(WB_DP.mode === "week" ? "本周" : "周")+'</span></button>'+
+      '<button type="button" class="'+(WB_DP.mode === "month" ? "is-on" : "")+'" data-dp-preset="month"><span>'+(WB_DP.mode === "month" ? "本月" : "月")+'</span></button>'+
+      '</div>'+
       // 固定高度容器：三个 tab（日/周/月）内容高矮不一，套一层固定高度，切换时面板不跳动。
       '<div class="wb-dp-picker">'+picker+'</div>'+
       '<button type="button" class="wb-dp-clear" data-dp-clear'+(workbenchDpHasSchedule() ? "" : " disabled")+' title="移除排期" aria-label="移除排期">'+ic("eraser")+'</button>';
