@@ -2312,10 +2312,17 @@ $("#workbenchView").addEventListener("focusin", event => {
   const field = event.target.dataset.editTitle ? "title" : event.target.dataset.editDetail ? "detail" : null;
   const task = workbenchTask(taskId);
   if(task && field) WB.editSnapshots.set(taskId+":"+field, task[field]);
-  // 编辑卡内聚焦时锁住滚动位置：浏览器默认会把焦点元素滚进视野，负 margin 卡片会横向抖。
+  // 编辑卡内聚焦时锁住滚动位置：浏览器会跨多帧持续调整滚动（键盘动画期间），
+  // 单次 rAF 来不及，改为用 scroll 事件在 500ms 内持续把位置钉回去。
   if(event.target.closest(".wb-task-card")){
     const sv = document.getElementById("workbenchView");
-    if(sv){ const x = sv.scrollLeft, y = sv.scrollTop; requestAnimationFrame(() => { sv.scrollLeft = x; sv.scrollTop = y; }); }
+    if(sv){
+      const x = sv.scrollLeft, y = sv.scrollTop;
+      const lock = () => { sv.scrollLeft = x; sv.scrollTop = y; };
+      sv.addEventListener("scroll", lock);
+      setTimeout(() => sv.removeEventListener("scroll", lock), 500);
+      lock();
+    }
   }
 });
 
