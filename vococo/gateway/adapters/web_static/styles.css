@@ -1628,12 +1628,6 @@
     #workbenchView .wb-section-toggle span{font-size:14px}
     #workbenchView .wb-task-title{font-size:16px}
     #workbenchView .wb-empty{font-size:14px}
-    #workbenchView .wb-schedule{font-size:14px}
-    #workbenchView .wb-child-count{font-size:13px}
-    #workbenchView .wb-parent-badge{font-size:14px}
-    #workbenchView .wb-parent-link{font-size:14px}
-    #workbenchView .wb-session-link{font-size:13px}
-    #workbenchView .wb-dispatch-btn{font-size:14px}
     .wb-date-nav strong,.wb-date-nav button{font-size:15px}
     #workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,max-content);gap:8px;padding:8px 12px}
     #workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}
@@ -1678,4 +1672,15 @@
   #workbenchView .wb-session-links{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
   #workbenchView .wb-session-link{padding:3px 8px;border:1px solid var(--line);border-radius:5px;color:var(--dim);font-size:11px;text-decoration:none;cursor:pointer}
   #workbenchView .wb-session-link:hover{background:var(--panel2);color:var(--accent);border-color:var(--accent)}
+  /* 这几个字号覆盖必须放在上面对应基础规则之后:选择器同权重时按源码顺序算,
+     放前面（旧版曾放在 760px 断点靠前的位置）会被后面出现的基础规则盖掉,
+     移动端等于白覆盖——2026-08-22 排查「日期/父任务名称在移动端还是很小」定位到此。 */
+  @media(max-width:760px){
+    #workbenchView .wb-schedule{font-size:14px}
+    #workbenchView .wb-child-count{font-size:13px}
+    #workbenchView .wb-parent-badge{font-size:14px}
+    #workbenchView .wb-parent-link{font-size:14px}
+    #workbenchView .wb-session-link{font-size:13px}
+    #workbenchView .wb-dispatch-btn{font-size:14px}
+  }
   #workbenchView .wb-new-child{margin:4px 0 0 30px;width:calc(100% - 30px)}
