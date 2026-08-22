@@ -1868,6 +1868,7 @@ function workbenchDpRenderShell(){
   const el = document.getElementById("wbDatePicker");
   if(!el) return;
   el.innerHTML =
+    '<div class="wb-sheet-handle" aria-hidden="true"></div>'+
     '<div class="wb-dp-search"><input type="text" data-dp-search placeholder="搜索日期，如 9/12 或 2026年9月12日" aria-label="搜索日期"><button type="button" class="wb-dp-search-clear" data-dp-search-clear hidden aria-label="清空搜索">'+ic("close")+'</button></div>'+
     '<div data-dp-body></div>';
 }
@@ -2715,6 +2716,46 @@ function wbSheetBackdrop(){
   return el;
 }
 
+// ── 底部弹层的下滑关闭手势：只在移动端底部弹出态生效（桌面端面板是锚定悬浮，不装
+// 这套）。抓手（.wb-sheet-handle）是唯一的拖拽触发区，跟手指走；松手过阈值就关，
+// 没过就弹回原位——面板本体（日历/周/月三种 mode、ctx 菜单、项目选择器）不用各自
+// 实现一遍，靠"关掉当前这块 id 对应的浮层"这一个统一出口分发。
+function wbSheetCloseByEl(el){
+  if(el.id === "wbDatePicker") workbenchDpClose();
+  else if(el.id === "wbCtxMenu") workbenchCloseCtxMenu();
+  else if(el.id === "wbProjectPicker") workbenchProjectPickerClose();
+}
+
+(function(){
+  let dragEl = null, startY = 0, pointerId = null;
+  function isMobileSheet(){ return window.matchMedia("(max-width:760px)").matches; }
+  document.addEventListener("pointerdown", event => {
+    const handle = event.target.closest(".wb-sheet-handle");
+    if(!handle || !isMobileSheet()) return;
+    dragEl = handle.closest(".wb-dp, .wb-ctx-menu");
+    if(!dragEl) return;
+    startY = event.clientY;
+    pointerId = event.pointerId;
+    dragEl.style.transition = "none";
+    handle.setPointerCapture?.(pointerId);
+  });
+  document.addEventListener("pointermove", event => {
+    if(!dragEl || event.pointerId !== pointerId) return;
+    const dy = Math.max(0, event.clientY - startY);
+    dragEl.style.transform = "translateY("+dy+"px)";
+  });
+  function endDrag(event){
+    if(!dragEl || event.pointerId !== pointerId) return;
+    const dy = Math.max(0, event.clientY - startY);
+    const el = dragEl;
+    el.style.transition = ""; el.style.transform = "";
+    if(dy > 70) wbSheetCloseByEl(el);
+    dragEl = null; pointerId = null;
+  }
+  document.addEventListener("pointerup", endDrag);
+  document.addEventListener("pointercancel", endDrag);
+})();
+
 // ── 多选右键菜单：时间 / 完成 / 移动到 / 删除 ────────────────────────────
 let wbCtxIds = [];
 let wbCtxMode = "root";
@@ -2752,7 +2793,7 @@ function workbenchRenderCtxMenu(){
     el.addEventListener("click", workbenchHandleCtxClick);
     el.addEventListener("contextmenu", event => event.preventDefault());
   }
-  el.innerHTML = workbenchCtxMenuHtml();
+  el.innerHTML = '<div class="wb-sheet-handle" aria-hidden="true"></div>'+workbenchCtxMenuHtml();
   return el;
 }
 
@@ -2849,7 +2890,7 @@ function workbenchProjectPickerOpen(anchorEl){
       renderWorkbench();
     });
   }
-  el.innerHTML = workbenchProjectPickerHtml();
+  el.innerHTML = '<div class="wb-sheet-handle" aria-hidden="true"></div>'+workbenchProjectPickerHtml();
   el.style.display = "block";
   wbSheetBackdrop().classList.add("show");
   const rect = anchorEl.getBoundingClientRect();

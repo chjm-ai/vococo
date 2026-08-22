@@ -1584,6 +1584,7 @@
      .wb-dp 系列（日期选择器）走自己独立的 #wbDpBackdrop，不共用这层。 */
   #wbSheetBackdrop{position:fixed;inset:0;z-index:59;display:none;background:transparent;pointer-events:none}
   #wbSheetBackdrop.show{display:block}
+  .wb-sheet-handle{display:none}
   #workbenchView .wb-dp-trigger{display:inline-flex;align-items:center;gap:5px}
   #workbenchView .wb-dp-trigger .ic{width:14px;height:14px;flex:0 0 auto}
   #wbDpBackdrop{position:fixed;inset:0;z-index:69;display:none;background:transparent;pointer-events:none}
@@ -1651,6 +1652,10 @@
     .wb-ctx-menu{left:0!important;right:0!important;top:auto!important;bottom:0;width:100%;max-width:100%;max-height:70vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:10px 12px calc(10px + env(safe-area-inset-bottom));font-size:16px}
     .wb-ctx-menu button{padding:11px 12px;font-size:16px}
     .wb-dp{left:0!important;right:0;top:auto!important;bottom:0;width:100%;max-width:100%;max-height:78vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:14px 16px calc(14px + env(safe-area-inset-bottom));font-size:16px}
+    /* 底部弹层顶部的抓手：只在移动端底部弹出态出现，向下拖拽这一条即可关闭面板
+       （逻辑见 workbench.js 里的通用 pointerdown/move/up 拖拽处理）。 */
+    .wb-sheet-handle{display:flex;justify-content:center;margin:-6px -8px 6px;padding:6px 0;touch-action:none}
+    .wb-sheet-handle::after{content:"";width:36px;height:4px;border-radius:2px;background:var(--line2);opacity:.8}
     .wb-dp-search input,.wb-dp-result,.wb-dp-result-weekday,.wb-dp-actions button,.wb-dp-weekdays,.wb-dp-day,.wb-dp-day.is-month-start,.wb-dp-week-row,.wb-dp-month{font-size:16px}
     .wb-dp-actions button{height:36px}
     .wb-dp-day{height:36px}
