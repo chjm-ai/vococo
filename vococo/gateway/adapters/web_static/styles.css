@@ -1485,6 +1485,14 @@
   #workbenchView .wb-task.wb-task-drop-nest{background:color-mix(in srgb,var(--accent) 12%,var(--panel));box-shadow:inset 0 0 0 1px var(--accent)}
   #workbenchView .wb-check{display:grid;place-items:center;flex:none;width:20px;height:20px;margin:0;padding:0;line-height:1;border-radius:5px}#workbenchView .wb-task-list>.wb-task>.wb-check{margin-top:1px}#workbenchView .wb-task-copy{min-width:0}#workbenchView .wb-task-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px;font-weight:600}#workbenchView .wb-task-detail{display:-webkit-box;width:100%;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;margin:2px 0 0;color:var(--dim2);font-size:13px;line-height:1.4}
   #workbenchView .wb-empty{margin:4px 0 0;padding:8px 2px;border:0;color:var(--dim2);font-size:12px}
+  /* 移动端新建任务 FAB：只在没有 hover 能力的设备（触屏）上出现，桌面用键盘/侧边按钮就够了。 */
+  #wbFab{display:none}
+  @media(hover:none){
+    #wbFab{display:flex;align-items:center;justify-content:center;position:fixed;right:20px;bottom:calc(20px + env(safe-area-inset-bottom));width:54px;height:54px;border:none;border-radius:50%;background:var(--accent);color:#fff;font-size:30px;font-weight:300;line-height:1;box-shadow:0 6px 20px rgba(0,0,0,.32);z-index:55;touch-action:none;-webkit-user-select:none;user-select:none}
+    #wbFab.wb-fab-off{display:none}
+    #wbFab.wb-fab-dragging{box-shadow:0 10px 30px rgba(0,0,0,.45)}
+    #workbenchView #wbContent{padding-bottom:88px}
+  }
   @keyframes wbCardIn{from{opacity:0}to{opacity:1}}
   /* 编辑卡沿用任务行的三列栅格：复选框 20px + 10px 间距 + 文字列。
      所有内容落在文字列起点，展开/收起时标题和描述不会左右跳动。 */
