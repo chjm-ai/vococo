@@ -38,9 +38,12 @@ function wbFocusSoon(selector, after){
 // visualViewport 的 resize 事件等键盘真的弹完了再把卡片滚到可见区域，比瞎猜延时准；
 // 有的机型不发这个事件，兜底再补一次超时。
 function wbScrollAboveKeyboard(el){
+  // 编辑卡是用户点击任务行原地展开的，已经在可视区域内，不需要滚动——
+  // scrollIntoView 反而会让卡片跳动。只有新建卡（不在 .wb-task-card 里）才需要滚。
+  if(el.closest(".wb-task-card")) return;
   const card = el.closest(".wb-editor-shell") || el;
   let done = false;
-  const scroll = () => { if(done) return; done = true; card.scrollIntoView({block:"center", behavior:"smooth"}); };
+  const scroll = () => { if(done) return; done = true; card.scrollIntoView({block:"nearest", behavior:"smooth"}); };
   if(window.visualViewport){
     const vv = window.visualViewport;
     const onResize = () => { vv.removeEventListener("resize", onResize); scroll(); };
@@ -2287,6 +2290,11 @@ $("#workbenchView").addEventListener("focusin", event => {
   const field = event.target.dataset.editTitle ? "title" : event.target.dataset.editDetail ? "detail" : null;
   const task = workbenchTask(taskId);
   if(task && field) WB.editSnapshots.set(taskId+":"+field, task[field]);
+  // 编辑卡内聚焦时锁住滚动位置：浏览器默认会把焦点元素滚进视野，负 margin 卡片会横向抖。
+  if(event.target.closest(".wb-task-card")){
+    const sv = document.getElementById("workbenchView");
+    if(sv){ const x = sv.scrollLeft, y = sv.scrollTop; requestAnimationFrame(() => { sv.scrollLeft = x; sv.scrollTop = y; }); }
+  }
 });
 
 $("#workbenchView").addEventListener("input", event => {
