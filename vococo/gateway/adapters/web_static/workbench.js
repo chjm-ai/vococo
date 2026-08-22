@@ -2083,7 +2083,9 @@ function workbenchDpOpenCommon(target){
   const current = workbenchDpCurrentSchedule();
   WB_DP.baseWeek = workbenchDpSundayKey(current?.date || current?.week || (current?.month ? current.month+"-01" : workbenchToday()));
   // 有已有排期就直接落在对应模式（周排期打开就是周选择器，月排期打开就是月选择器），没有才落回日历。
-  WB_DP.mode = current?.month ? "month" : current?.week ? "week" : "day";
+  // 注意顺序：date/week 排期会连带把 month 字段也算出来（见 workbenchDateSchedule/workbenchWeekSchedule），
+  // 必须先判 date 再判 week 最后才判 month，否则周排期的 month 字段会把它误判成月排期。
+  WB_DP.mode = current?.date ? "day" : current?.week ? "week" : current?.month ? "month" : "day";
   WB_DP.weekBase = current?.week || workbenchWeekKey(workbenchDate(workbenchToday()));
   WB_DP.monthYear = current?.month ? +current.month.slice(0, 4) : workbenchDate(workbenchToday()).getFullYear();
   const el = workbenchDpEnsureEl();
