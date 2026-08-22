@@ -435,13 +435,13 @@ function renderWorkbenchTaskEditor(task){
 
 function workbenchNewTaskCardHtml(project){
   if(!WB.newTask || WB.newTask.project !== project.id) return "";
-  const projectOptions = [...WB_DATA.projects, WB_UNASSIGNED_PROJECT].map(item => '<option value="'+esc(item.id)+'" '+(WB.newTask.project === item.id ? "selected" : "")+'>'+esc(item.name)+'</option>').join("");
+  const projectLabel = (workbenchProject(WB.newTask.project) || WB_UNASSIGNED_PROJECT).name;
   const isAi = WB.newTask.assignee === "ai";
   const assigneeBtn = workbenchAssigneeSwitch(isAi);
   const scheduleLabel = workbenchScheduleLabel(WB.newTask) || "设定日期";
   return '<section class="wb-editor-shell wb-new-task" data-new-card><div class="wb-editor-head"><input data-new-title placeholder="新建待办事项" value="'+esc(WB.newTask.title)+'" aria-label="任务标题"></div>'+
     '<textarea data-new-detail placeholder="'+(isAi ? "Prompt（AI 执行时的指令）" : "备注")+'">'+esc(WB.newTask.detail)+'</textarea>'+
-    '<div class="wb-editor-footer">'+assigneeBtn+'<select data-new-project aria-label="项目">'+projectOptions+'</select><button type="button" class="wb-dp-trigger'+(workbenchScheduleLabel(WB.newTask) ? " has-date" : "")+'" data-open-dp="new">'+ic("calendar")+'<span>'+esc(scheduleLabel)+'</span></button><button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
+    '<div class="wb-editor-footer">'+assigneeBtn+'<button type="button" class="wb-dp-trigger" data-open-project-picker aria-label="选择项目">'+ic("folder")+'<span>'+esc(projectLabel)+'</span></button><button type="button" class="wb-dp-trigger'+(workbenchScheduleLabel(WB.newTask) ? " has-date" : "")+'" data-open-dp="new">'+ic("calendar")+'<span>'+esc(scheduleLabel)+'</span></button><button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
 }
 
 // docked 模式（移动端 FAB 点顶/拖拽新建）不在原地渲染，卡片改在 #wbDock 里出（见 renderWbDock），
@@ -2181,6 +2181,8 @@ $("#workbenchView").addEventListener("click", event => {
     workbenchDpOpen(kind === "task" ? {kind:"task", id} : {kind:"new"}, openDp);
     return;
   }
+  const openProjectPicker = event.target.closest("[data-open-project-picker]");
+  if(openProjectPicker){ workbenchProjectPickerOpen(openProjectPicker); return; }
   const swipeDp = event.target.closest("[data-swipe-dp]");
   if(swipeDp){
     const tid = swipeDp.dataset.swipeDp;
@@ -2634,11 +2636,6 @@ $("#workbenchView").addEventListener("focusout", event => {
   workbenchPersistTaskChange(taskId, before, after);
 });
 
-$("#workbenchView").addEventListener("change", event => {
-  if(!WB.newTask) return;
-  if("newProject" in event.target.dataset){ WB.newTask.project=event.target.value; renderWorkbench(); }
-});
-
 $("#workbenchView").addEventListener("paste", event => {
   const taskId = event.target.dataset.editDetail;
   const files = [...(event.clipboardData?.items||[])].map(item => item.getAsFile()).filter(Boolean);
@@ -2669,6 +2666,7 @@ document.addEventListener("keydown", event => {
   if(event.key === "Escape"){
     if(WB_DP.open){ workbenchDpClose(); return; }
     if(workbenchCtxMenuOpen()){ workbenchCloseCtxMenu(); return; }
+    if(workbenchProjectPickerIsOpen()){ workbenchProjectPickerClose(); return; }
     if(WB.newTask){ WB.newTask=null; if(!workbenchRemoveNewTaskCard()) renderWorkbench(); }
     else if(WB.editorTaskId){
       const id = WB.editorTaskId;
@@ -2697,6 +2695,22 @@ document.addEventListener("keydown", event => {
   if(WB.view === "completed" || WB.view === "trash") return; // 这两个视图没有项目分组，插不进新建卡
   event.preventDefault(); openWorkbenchNewTask();
 });
+
+// ── 通用"选择浮层"背景层：桌面端锚定悬浮，移动端底部弹出。ctx 菜单和项目选择器
+// 共用同一个 backdrop——桌面端透明不挡点击，移动端点它关闭当前打开的那一个。
+function wbSheetBackdrop(){
+  let el = document.getElementById("wbSheetBackdrop");
+  if(!el){
+    el = document.createElement("div");
+    el.id = "wbSheetBackdrop";
+    document.body.appendChild(el);
+    el.addEventListener("click", () => {
+      if(workbenchCtxMenuOpen()) workbenchCloseCtxMenu();
+      workbenchProjectPickerClose();
+    });
+  }
+  return el;
+}
 
 // ── 多选右键菜单：时间 / 完成 / 移动到 / 删除 ────────────────────────────
 let wbCtxIds = [];
@@ -2745,6 +2759,7 @@ function workbenchOpenCtxMenu(x, y, ids, mode){
   const el = workbenchRenderCtxMenu();
   el.style.display = "block";
   el.style.left = x+"px"; el.style.top = y+"px";
+  wbSheetBackdrop().classList.add("show");
   requestAnimationFrame(() => {
     // 菜单靠近视口边缘时夹回来，不然会被裁掉一截。
     const rect = el.getBoundingClientRect();
@@ -2757,6 +2772,7 @@ function workbenchCloseCtxMenu(){
   const el = document.getElementById("wbCtxMenu");
   if(el) el.style.display = "none";
   wbCtxIds = [];
+  if(!workbenchProjectPickerIsOpen()) wbSheetBackdrop().classList.remove("show");
 }
 
 function workbenchHandleCtxClick(event){
@@ -2798,6 +2814,62 @@ document.addEventListener("mousedown", event => {
   if(!workbenchCtxMenuOpen()) return;
   if(event.target.closest("#wbCtxMenu")) return;
   workbenchCloseCtxMenu();
+});
+
+// ── 新建任务的项目选择：原生 <select> 换成跟右键菜单同款的浮层——桌面端锚定在
+// 触发按钮旁，移动端走底部弹出。复用 .wb-ctx-menu 的样式和交互，只是列表内容换成项目名。
+function workbenchProjectPickerIsOpen(){
+  const el = document.getElementById("wbProjectPicker");
+  return !!el && el.style.display !== "none";
+}
+
+function workbenchProjectPickerHtml(){
+  return [...WB_DATA.projects, WB_UNASSIGNED_PROJECT].map(p =>
+    '<button type="button" data-pp="'+esc(p.id)+'">'+esc(p.name)+'</button>'
+  ).join("");
+}
+
+function workbenchProjectPickerOpen(anchorEl){
+  if(!WB.newTask) return;
+  let el = document.getElementById("wbProjectPicker");
+  if(!el){
+    el = document.createElement("div");
+    el.id = "wbProjectPicker";
+    el.className = "wb-ctx-menu";
+    el.style.display = "none";
+    document.body.appendChild(el);
+    el.addEventListener("click", event => {
+      const btn = event.target.closest("[data-pp]");
+      if(!btn || !WB.newTask) return;
+      WB.newTask.project = btn.dataset.pp;
+      workbenchProjectPickerClose();
+      renderWorkbench();
+    });
+  }
+  el.innerHTML = workbenchProjectPickerHtml();
+  el.style.display = "block";
+  wbSheetBackdrop().classList.add("show");
+  const rect = anchorEl.getBoundingClientRect();
+  el.style.left = rect.left+"px"; el.style.top = (rect.bottom+6)+"px";
+  requestAnimationFrame(() => {
+    const w = el.getBoundingClientRect();
+    let left = rect.left, top = rect.bottom+6;
+    if(left + w.width > window.innerWidth - 4) left = window.innerWidth - w.width - 4;
+    if(top + w.height > window.innerHeight - 4) top = rect.top - w.height - 6;
+    el.style.left = Math.max(4, left)+"px"; el.style.top = Math.max(4, top)+"px";
+  });
+}
+
+function workbenchProjectPickerClose(){
+  const el = document.getElementById("wbProjectPicker");
+  if(el) el.style.display = "none";
+  if(!workbenchCtxMenuOpen()) wbSheetBackdrop().classList.remove("show");
+}
+
+document.addEventListener("mousedown", event => {
+  if(!workbenchProjectPickerIsOpen()) return;
+  if(event.target.closest("#wbProjectPicker") || event.target.closest("[data-open-project-picker]")) return;
+  workbenchProjectPickerClose();
 });
 
 window.openWorkbench = openWorkbench;
