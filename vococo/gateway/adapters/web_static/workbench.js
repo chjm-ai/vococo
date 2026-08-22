@@ -502,21 +502,19 @@ function renderWorkbenchProjects(){
   if(WB.project === WB_UNASSIGNED_ID){
     projects = [WB_UNASSIGNED_PROJECT];
   }else if(WB.project === "all"){
-    // 「未分组」固定显示在最底部，哪怕暂时没有游离任务，方便拖任务过去。
     projects = [...WB_DATA.projects, WB_UNASSIGNED_PROJECT];
   }else{
     const one = workbenchProject(WB.project);
     projects = one ? [one] : [];
   }
   if(!projects.length) return '<p class="wb-empty">还没有项目，点右上角「+」新建一个。</p>';
-  // 「全部项目」概览下，没任务的真实项目分组直接不显示（避免一屏全是"暂无任务"的空壳）；
+  // 「全部项目」概览下，没任务的分组（含「未分组」）直接不显示（避免一屏全是"暂无任务"的空壳）；
   // 但正在这个项目里写新任务草稿时不能藏——不然卡片会凭空消失。单选某个具体项目时
   // 永远显示该项目自己的区块，哪怕是空的，不然用户点进去会看到一片空白，无处新建。
-  // 「未分组」固定显示在最底部（见上方 projects 组装），不受这条空分组隐藏规则影响。
   const blocks = projects.map(project => {
     const list = project.id === WB_UNASSIGNED_ID ? unassignedTasks : tasks.filter(task => task.project === project.id);
     const hasDraft = WB.newTask && WB.newTask.project === project.id;
-    if(WB.project === "all" && project.id !== WB_UNASSIGNED_ID && !list.length && !hasDraft) return "";
+    if(WB.project === "all" && !list.length && !hasDraft) return "";
     return workbenchProjectBlock(project, list);
   }).filter(Boolean);
   if(!blocks.length) return '<p class="wb-empty">暂无任务。</p>';
