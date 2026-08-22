@@ -808,7 +808,9 @@ function wbEnterMultiSelect(taskId){
   WB.selected = next;
   WB.selectAnchor = taskId;
   wbRenderMultiSelectBar();
-  if(WB.selected.size === 0) wbExitMultiSelect();
+  // 选空了也不自动退出——留在多选态、"完成"按钮还在，退出只认那个按钮。之前"选空自动
+  // 退出"这条会在快速双击同一行时开口子：第一下清空选区顺带退出多选，第二下就落到
+  // 普通单击路径，误把详情卡打开了（跟"多选模式下禁止开详情"的要求冲突）。
 }
 
 function wbExitMultiSelect(){
@@ -2045,6 +2047,13 @@ function openWorkbenchStandalone(){
 
 $("#workbenchView").addEventListener("click", event => {
   if(!event.target.closest(".wb-swipe-actions")) wbCloseAllSwipes();
+  // 多选模式下，点任务行内任何东西（完成勾选/日期徽标/父任务链接/展开子任务…）都先让位
+  // 给"选中/取消"——不然手指点歪一点就跑去标完成或跳转，跟"进多选就是为了批量选"的
+  // 意图冲突。真要单独编辑，先退出多选（右上角"完成"）。
+  if(WB.multiSelectMode && wbIsTouchLike()){
+    const row = event.target.closest("[data-task]");
+    if(row){ wbEnterMultiSelect(row.dataset.task); return; }
+  }
   if(event.target.closest("[data-workbench-win]")){ openWorkbenchStandalone(); return; }
   if(event.target.closest("[data-sidebar]")){ expandSidebarResponsive(); return; }
   if(event.target.closest("[data-toggle-notes]")){ wbToggleNotes(); return; }
@@ -2136,12 +2145,6 @@ $("#workbenchView").addEventListener("click", event => {
     if(taskRow._wbJustSwiped){ taskRow._wbJustSwiped = false; return; }
     const taskId = taskRow.dataset.task;
     if(taskId === WB.editorTaskId) return;
-    // 移动端多选模式下，点任务行 = 切换选中，不打开详情；退出靠右上角"完成"按钮。
-    if(wbIsTouchLike() && WB.multiSelectMode){
-      clearTimeout(wbClickTimer); wbClickTimer = null;
-      wbEnterMultiSelect(taskId);
-      return;
-    }
     // 移动端：详情卡（或新建卡）开着的时候点别的任务，只收起当前卡，不直接跳到点的
     // 那条——不然手滑很容易连续切换详情。想看别的任务，先收起再点一次。
     if(wbIsTouchLike() && (WB.editorTaskId || WB.newTask)){
@@ -2227,6 +2230,7 @@ $("#workbenchView").addEventListener("contextmenu", event => {
 });
 
 $("#workbenchView").addEventListener("dblclick", event => {
+  if(WB.multiSelectMode) return; // 多选模式下双击也不该跳去开详情，交互目的就是选中/取消
   if(event.target.closest("[data-complete],[data-toggle-children]")) return;
   const taskRow = event.target.closest("[data-task]");
   if(!taskRow) return;
