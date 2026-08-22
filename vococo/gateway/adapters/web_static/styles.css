@@ -1520,7 +1520,7 @@
     .wb-swiped .wb-swipe-actions{transform:translateX(0)}
     .wb-swipe-btn{flex:1;border:none;display:flex;align-items:center;justify-content:center;color:#fff;cursor:pointer}
     .wb-swipe-btn .ic{width:18px;height:18px}
-    .wb-swipe-date{background:var(--accent)}
+    .wb-swipe-date{background:var(--dim2)}
     .wb-swipe-move{background:var(--dim2)}
     .wb-swipe-del{background:var(--err);border-radius:0 7px 7px 0}
   }
