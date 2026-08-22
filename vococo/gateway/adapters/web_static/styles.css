@@ -1679,9 +1679,10 @@
   #workbenchView .wb-assignee .ic{width:15px;height:15px}
   #workbenchView .wb-schedule{display:inline-flex;align-items:center;gap:4px;min-width:0;padding:0;color:var(--dim);font-size:11px;line-height:20px;white-space:nowrap}
   #workbenchView .wb-schedule:hover{color:var(--accent)}
-  #workbenchView .wb-child-count{flex:0 0 auto;padding:1px 6px;border-radius:4px;background:var(--panel2);color:var(--dim);font-size:11px;line-height:18px;cursor:pointer;white-space:nowrap;transition:background .15s ease,color .15s ease}
-  #workbenchView .wb-child-count:hover{background:var(--line);color:var(--text)}
-  #workbenchView .wb-child-count.is-expanded{background:var(--accent);color:#fff}
+  #workbenchView .wb-child-toggle{display:grid;place-items:center;flex:0 0 auto;width:20px;height:20px;padding:0;border:0;border-radius:4px;background:none;color:var(--dim2);cursor:pointer;transition:background .15s ease,color .15s ease}
+  #workbenchView .wb-child-toggle .ic{width:15px;height:15px}
+  #workbenchView .wb-child-toggle:hover{background:var(--panel2);color:var(--text)}
+  #workbenchView .wb-child-toggle.is-expanded{color:var(--accent)}
   #workbenchView .wb-task-title-row{display:flex;align-items:center;gap:5px;min-width:0}
   #workbenchView .wb-task-title-row .wb-task-title{flex:0 1 auto}
   #workbenchView .wb-parent-badge{display:inline-flex;align-items:center;gap:3px;min-width:0;max-width:45%;color:var(--dim2);font-size:12px;line-height:20px;white-space:nowrap}
@@ -1706,7 +1707,6 @@
      移动端等于白覆盖——2026-08-22 排查「日期/父任务名称在移动端还是很小」定位到此。 */
   @media(max-width:760px){
     #workbenchView .wb-schedule{font-size:14px}
-    #workbenchView .wb-child-count{font-size:13px}
     #workbenchView .wb-parent-badge{font-size:14px}
     #workbenchView .wb-parent-link{font-size:14px}
     #workbenchView .wb-session-link{font-size:13px}
