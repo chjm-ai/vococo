@@ -543,13 +543,15 @@ function workbenchTabHtml(view, label, opts){
 // 额外写"选了这段就清那段"的逻辑。日期切换/项目筛选作为「第二行」跟在 header 后面
 // (见 renderWorkbenchSecondRow + renderWorkbenchBody)。
 function renderWorkbenchHeader(){
-  const notesOn = wbNotesHidden(WB.view);
-  const collapseOn = wbAllCollapsed(WB.view);
+  // 高亮(is-on)代表"内容正显示/展开中"，不是"隐藏/折叠模式已启用"——
+  // 不然点开的东西看着反而是灰的、没点开的东西看着是亮的，反直觉。
+  const notesOn = !wbNotesHidden(WB.view);
+  const collapseOn = !wbAllCollapsed(WB.view);
   return '<header class="wb-toolbar">'+
     '<div class="wb-title-row"><div class="wb-title"><button class="wb-hamb" type="button" data-sidebar aria-label="打开侧边栏">'+ic("panel")+'</button><h1>工作台</h1></div>'+
       '<div class="wb-title-actions">'+
-      '<button type="button" class="wb-win-btn'+(notesOn ? " is-on" : "")+'" data-toggle-notes title="'+(notesOn ? "显示所有备注" : "隐藏所有备注")+'" aria-label="显示/隐藏所有备注" aria-pressed="'+notesOn+'">'+ic("doc")+'</button>'+
-      '<button type="button" class="wb-win-btn'+(collapseOn ? " is-on" : "")+'" data-toggle-collapse-all title="'+(collapseOn ? "展开所有子任务" : "折叠所有子任务")+'" aria-label="折叠/展开所有子任务" aria-pressed="'+collapseOn+'">'+ic("branch")+'</button>'+
+      '<button type="button" class="wb-win-btn'+(notesOn ? " is-on" : "")+'" data-toggle-notes title="'+(notesOn ? "隐藏所有备注" : "显示所有备注")+'" aria-label="显示/隐藏所有备注" aria-pressed="'+notesOn+'">'+ic("doc")+'</button>'+
+      '<button type="button" class="wb-win-btn'+(collapseOn ? " is-on" : "")+'" data-toggle-collapse-all title="'+(collapseOn ? "折叠所有子任务" : "展开所有子任务")+'" aria-label="折叠/展开所有子任务" aria-pressed="'+collapseOn+'">'+ic("branch")+'</button>'+
       '<button type="button" class="wb-win-btn" data-workbench-win title="独立窗口" aria-label="独立窗口">'+ic("newwin")+'</button>'+
       '</div></div>'+
     '<div class="wb-switch-row">'+
