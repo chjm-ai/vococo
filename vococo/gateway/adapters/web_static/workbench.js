@@ -21,7 +21,14 @@ let WB_VIEW_PREFS = {};
 try{ WB_VIEW_PREFS = JSON.parse(localStorage.getItem(WB_VIEW_PREFS_KEY) || "{}"); }catch(e){ WB_VIEW_PREFS = {}; }
 function wbViewPref(view){ return WB_VIEW_PREFS[view] || (WB_VIEW_PREFS[view] = {}); }
 function wbSaveViewPrefs(){ try{ localStorage.setItem(WB_VIEW_PREFS_KEY, JSON.stringify(WB_VIEW_PREFS)); }catch(e){} }
-function wbNotesHidden(view){ return !!wbViewPref(view).hideNotes; }
+// 移动端(≤760px)原来在 CSS 里硬 display:none 常年隐藏备注(屏幕小、列表要紧凑)；
+// 这条默认值继续保留，但改成"没手动点过开关"时的初始值，用户点了开关就按开关来，
+// 不会被 CSS 焊死到打不开——同一账号在手机/桌面本来就是两份 localStorage，天然分开记。
+function wbIsMobileWidth(){ return typeof window.matchMedia === "function" && window.matchMedia("(max-width:760px)").matches; }
+function wbNotesHidden(view){
+  const pref = wbViewPref(view);
+  return pref.hideNotes === undefined ? wbIsMobileWidth() : !!pref.hideNotes;
+}
 function wbAllCollapsed(view){ return !!wbViewPref(view).collapseAll; }
 
 // 触屏没有 hover，"先选中再点一下打开"这套桌面手势摸不到反馈，容易让人觉得点了没反应。
