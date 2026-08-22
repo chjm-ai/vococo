@@ -356,6 +356,11 @@ try{
     <!-- FAB 新建卡的 docked 浮层：贴在虚拟键盘上方编辑，完成/点空白才真正插入列表对应
          位置（见 workbench.js 的 renderWbDock/wbDockTrackKeyboard）。空的时候不占地方。 -->
     <div id="wbDock"></div>
+    <!-- 移动端多选：右滑任务行进入（见 workbench.js wbEnterMultiSelect），右上角"完成"
+         退出，底部工具栏批量操作。内容由 JS 在首次绑定时填充（要用 ic() 出图标），
+         这里只留容器，跟 #wbFab 一样是固定在 workbenchView 之外的静态壳。 -->
+    <button id="wbMultiDone" type="button" hidden>完成</button>
+    <div id="wbMultiBar" hidden></div>
   </main>
   <!-- 通话视图:语音通话(原独立 /voice 页,2026-07-09 并入主 SPA,见 00-overview.md
        §2 隔离约束的修订说明)。跟 #chatMain 互斥显隐,左上角复用同一套侧栏展开逻辑,
