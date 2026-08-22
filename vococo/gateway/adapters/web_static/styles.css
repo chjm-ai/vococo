@@ -1568,7 +1568,11 @@
      统一 +1px,缓解移动端偏小。 */
   @media(max-width:760px){
     #wbContent{padding-top:0}
-    #workbenchView .wb-toolbar{gap:10px;padding-top:12px;padding-bottom:12px}
+    /* iOS PWA(standalone + black-translucent + viewport-fit=cover)下页面顶到状态栏底下,
+       顶栏必须自己补 safe-area,做法同 header.bar / #callHead / .shead / .sethead。
+       Safari 标签页模式该值为 0,所以浏览器里看不出差别,只有装到桌面才暴露。 */
+    #workbenchView .wb-toolbar{gap:10px;padding-top:calc(10px + env(safe-area-inset-top));padding-bottom:10px}
+    .wb-detail-bar{padding-top:calc(10px + env(safe-area-inset-top));padding-bottom:10px;min-height:0}
     #workbenchView .wb-title h1{font-size:17px;line-height:23px}
     #workbenchView .wb-switch-row{gap:6px}
     #workbenchView .wb-switch{flex-wrap:wrap;gap:1px;padding:2px}
