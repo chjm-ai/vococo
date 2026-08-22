@@ -30,7 +30,7 @@ async function send(text, display, opts){
   text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length && !S.files.length) return;
   // 发送目标钉死在发起时的会话/附件快照:下面等上传的 await 期间用户可能已经切走,
   // S.conv/S.images 等全局状态会变成新会话的——不钉死就会把这条消息、气泡、回执错投过去。
-  const sendConv=S.conv;
+  let sendConv=S.conv;
   const isCurrent=()=>S.conv===sendConv;
   const sendImages=S.images.slice(), sendAudios=S.audios.slice(), sendFiles=S.files.slice();
   // 音频和通用文件都先上传，拿到临时 id 后再发送，避免服务端静默跳过。
@@ -98,7 +98,7 @@ async function send(text, display, opts){
   clearDraft(sendConv);   // 发送即清草稿:必须在转正前调用,否则真实 id 落地后 local- 旧 key 清不掉
   clearComposerAttachments(sendConv);
   if(wasLocal && isCurrent()){
-    S.conv=S.conv.replace("local-",""); payload.conv=S.conv; renderProjSelChip();
+    S.conv=S.conv.replace("local-",""); sendConv=S.conv; payload.conv=S.conv; renderProjSelChip();
     refreshGit(S.conv);
     // S.convs 里那条草稿行(conv=local-xxx)原地更新成新的真实 id,别留一条转正前的孤儿条目——
     // 否则"新对话"复用逻辑(newChatIn)会把它当成还没发消息的草稿误重新打开
