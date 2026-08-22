@@ -1476,7 +1476,7 @@
   #workbenchView .wb-chevron{width:7px;height:7px;flex:0 0 7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg) translate(-1px,1px)}
   #workbenchView .wb-project-delete{display:block;margin:16px auto 0;padding:4px 10px;border:0;background:none;color:var(--dim2);font-size:11px;opacity:.5;cursor:pointer;transition:opacity .15s,color .15s}
   @media(hover:hover){ #workbenchView .wb-project-delete:hover{opacity:1;color:var(--err)} }
-  #workbenchView .wb-task-list{display:flex;flex-direction:column;gap:2px;margin:5px -12px 0;border:0}#workbenchView .wb-task{display:grid;grid-template-columns:20px minmax(0,1fr) minmax(120px,170px);align-items:center;gap:10px;min-height:36px;padding:6px 12px;border:0;border-radius:7px;cursor:pointer;position:relative}#workbenchView .wb-task:hover{background:var(--panel)}#workbenchView .wb-task.is-selected{background:var(--panel2)}
+  #workbenchView .wb-task-list{display:flex;flex-direction:column;gap:2px;margin:5px -12px 0;border:0}#workbenchView .wb-task{display:grid;grid-template-columns:20px minmax(0,1fr) minmax(120px,170px);align-items:start;gap:10px;padding:6px 12px;border:0;border-radius:7px;cursor:pointer;position:relative}#workbenchView .wb-task:hover{background:var(--panel)}#workbenchView .wb-task.is-selected{background:var(--panel2)}
   #workbenchView .wb-task:not(.wb-task-card){-webkit-user-select:none;user-select:none}
   #workbenchView .wb-task.wb-task-dragging{opacity:.4}
   #workbenchView .wb-task.wb-task-drop-before::before,#workbenchView .wb-task.wb-task-drop-after::after{content:"";position:absolute;left:0;right:0;height:2px;background:var(--accent);border-radius:0;pointer-events:none}
