@@ -27,7 +27,9 @@ function wbFocusSoon(selector, after){
     if(!el) return;
     el.focus({preventScroll:true});
     after?.(el);
-    if(wbIsTouchLike()) wbScrollAboveKeyboard(el);
+    // docked 卡片本来就固定贴在键盘上方（见 #wbDock），不需要再滚——只有原地插在
+    // 列表里的卡片（桌面新建、触屏详情编辑）才需要把自己滚到键盘挡不住的地方。
+    if(wbIsTouchLike() && !WB.newTask?.docked) wbScrollAboveKeyboard(el);
   };
   if(wbIsTouchLike()) run(); else requestAnimationFrame(run);
 }
@@ -337,13 +339,20 @@ function workbenchAssigneeSwitch(isAi, taskId){
     '</div>';
 }
 
-function workbenchNewChildCard(parentId, standalone){
+function workbenchNewChildCardHtml(parentId, standalone){
   if(!WB.newTask || WB.newTask.parentId !== parentId) return '';
   const isAi = WB.newTask.assignee === "ai";
   const assigneeBtn = workbenchAssigneeSwitch(isAi);
   return '<section class="wb-editor-shell wb-new-task'+(standalone ? "" : " wb-new-child")+'" data-new-card><div class="wb-editor-head"><input data-new-title placeholder="新建子任务" value="'+esc(WB.newTask.title)+'" aria-label="子任务标题"></div>'+
     '<textarea data-new-detail placeholder="'+(isAi ? "Prompt" : "备注")+'">'+esc(WB.newTask.detail)+'</textarea>'+
     '<div class="wb-editor-footer">'+assigneeBtn+'<button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
+}
+
+// docked 模式（移动端 FAB 拖拽建子任务）不在原地渲染，卡片改在 #wbDock 里出（见 renderWbDock），
+// 避免被列表滚动位置和导航栏挡住。
+function workbenchNewChildCard(parentId, standalone){
+  if(WB.newTask?.docked) return '';
+  return workbenchNewChildCardHtml(parentId, standalone);
 }
 
 function workbenchSessionLinks(task){
@@ -393,7 +402,7 @@ function renderWorkbenchTaskEditor(task){
     '<div class="wb-editor-footer">'+assigneeBtn+'<button type="button" class="wb-dp-trigger'+(workbenchScheduleLabel(task) ? " has-date" : "")+'" data-open-dp="task:'+esc(task.id)+'">'+ic("calendar")+'<span>'+esc(scheduleLabel)+'</span></button>'+addChildBtn+dispatchBtn+'</div>'+'</article>';
 }
 
-function workbenchNewTaskCard(project){
+function workbenchNewTaskCardHtml(project){
   if(!WB.newTask || WB.newTask.project !== project.id) return "";
   const projectOptions = [...WB_DATA.projects, WB_UNASSIGNED_PROJECT].map(item => '<option value="'+esc(item.id)+'" '+(WB.newTask.project === item.id ? "selected" : "")+'>'+esc(item.name)+'</option>').join("");
   const isAi = WB.newTask.assignee === "ai";
@@ -402,6 +411,13 @@ function workbenchNewTaskCard(project){
   return '<section class="wb-editor-shell wb-new-task" data-new-card><div class="wb-editor-head"><input data-new-title placeholder="新建待办事项" value="'+esc(WB.newTask.title)+'" aria-label="任务标题"></div>'+
     '<textarea data-new-detail placeholder="'+(isAi ? "Prompt（AI 执行时的指令）" : "备注")+'">'+esc(WB.newTask.detail)+'</textarea>'+
     '<div class="wb-editor-footer">'+assigneeBtn+'<select data-new-project aria-label="项目">'+projectOptions+'</select><button type="button" class="wb-dp-trigger'+(workbenchScheduleLabel(WB.newTask) ? " has-date" : "")+'" data-open-dp="new">'+ic("calendar")+'<span>'+esc(scheduleLabel)+'</span></button><button type="button" class="wb-primary" data-save-new>添加</button></div></section>';
+}
+
+// docked 模式（移动端 FAB 点顶/拖拽新建）不在原地渲染，卡片改在 #wbDock 里出（见 renderWbDock），
+// 避免插入点被滚动位置和底部导航栏挡住——面板固定贴在键盘上方，完成/点空白才真正插入列表。
+function workbenchNewTaskCard(project){
+  if(WB.newTask?.docked) return "";
+  return workbenchNewTaskCardHtml(project);
 }
 
 // 「详情」= 在项目 tab 里已经选定某个具体项目（点分组标题跳转过来，或用二级筛选 chip
@@ -639,12 +655,26 @@ function renderWorkbenchBody(){
   return renderWorkbenchSecondRow()+bodyContent;
 }
 
+// 移动端 FAB 新建走 docked 模式：卡片不插进列表，改在这个固定在键盘上方的浮层里编辑，
+// 完成或点空白（走 saveWorkbenchNewTask/workbenchFinishActiveCard）才真正插入对应位置。
+function renderWbDock(){
+  const dock = document.getElementById("wbDock");
+  if(!dock) return;
+  if(!WB.newTask || !WB.newTask.docked){ dock.innerHTML = ""; return; }
+  const html = WB.newTask.parentId
+    ? workbenchNewChildCardHtml(WB.newTask.parentId, true)
+    : (workbenchProject(WB.newTask.project) ? workbenchNewTaskCardHtml(workbenchProject(WB.newTask.project)) : "");
+  dock.innerHTML = html;
+  workbenchAutoGrowTextarea(dock.querySelector("textarea[data-new-detail]"));
+}
+
 function renderWorkbench(){
   const root = $("#wbContent");
   if(!root) return;
   root.innerHTML = renderWorkbenchHeader()+renderWorkbenchBody();
   hydrateWorkbenchImages();
   workbenchAutoGrowAll();
+  renderWbDock();
   // 已完成/回收站没有项目分组，插不进新建卡，FAB 在这两个视图下藏起来。
   $("#wbFab")?.classList.toggle("wb-fab-off", WB.view === "completed" || WB.view === "trash");
 }
@@ -1074,13 +1104,15 @@ async function saveWorkbenchNewTask(){
   if(!title){ $("[data-new-title]")?.focus(); return; }
   const payload = {project:draft.project, title, detail:draft.detail, date:draft.date||null, month:draft.month||null, week:draft.week||null, assignee:draft.assignee||"human", parentId:draft.parentId||null};
   const beforeTaskId = draft.beforeTaskId || null; // 移动端 FAB 定位新建用，见 workbenchOpenNewTaskBefore
+  const docked = !!draft.docked; // 卡片长在 #wbDock 里，不在列表里，不能原地 morph 成行
   WB.newTask = null;
   // 乐观本地先造一条临时任务，卡片立刻收起成行——不用等接口回来才有动效，否则回车会
   // 感觉「慢半拍」；等真实 id 回来了原地把临时 id 换掉，保存失败就把这一行撤回。
   const temp = Object.assign({id:"tmp-"+Math.random().toString(36).slice(2), status:"todo", images:[]}, payload);
   const beforeIdx = beforeTaskId ? WB_DATA.tasks.findIndex(t => t.id === beforeTaskId) : -1;
   if(beforeIdx !== -1) WB_DATA.tasks.splice(beforeIdx, 0, temp); else WB_DATA.tasks.push(temp);
-  if(!workbenchAnimateMorph(document.querySelector("[data-new-card]"), workbenchTaskRow(temp))) renderWorkbench();
+  if(docked) renderWorkbench();
+  else if(!workbenchAnimateMorph(document.querySelector("[data-new-card]"), workbenchTaskRow(temp))) renderWorkbench();
   try{
     const r = await api("/workbench/tasks/create", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
     const d = await r.json();
@@ -1261,18 +1293,18 @@ function workbenchOpenChildOfSelected(){
 }
 
 // 移动端 FAB 专用：新建卡插到某个已有顶层任务前面（beforeTaskId 为空就跟原来一样落在最底下）。
-// 桌面的 openWorkbenchNewTask 靠 grow-in 动效直接插入 DOM，这里改走全量重渲染——
-// 跟 openWorkbenchNewChild 定位子任务卡是同一个套路，任意位置插入本来就得靠渲染函数算。
+// docked：卡片不直接插进列表 DOM，改在 #wbDock 里编辑，完成时才落到 beforeTaskId 记的位置——
+// 不然插入点滚动到哪、导航栏挡没挡都得现算，键盘一弹更难兼顾。
 function workbenchOpenNewTaskBefore(project, beforeTaskId){
   clearTimeout(wbClickTimer);
   WB.editorTaskId = null;
   WB.selected = new Set(); WB.selectAnchor = null;
-  WB.newTask = Object.assign({project:project.id, title:"", detail:"", assignee:"human", parentId:null, siblingTaskId:null, beforeTaskId:beforeTaskId||null}, workbenchCurrentViewSchedule());
+  WB.newTask = Object.assign({project:project.id, title:"", detail:"", assignee:"human", parentId:null, siblingTaskId:null, beforeTaskId:beforeTaskId||null, docked:true}, workbenchCurrentViewSchedule());
   renderWorkbench();
   wbFocusSoon("[data-new-title]");
 }
 
-function openWorkbenchNewChild(parentId, siblingTaskId){
+function openWorkbenchNewChild(parentId, siblingTaskId, opts){
   const parent = workbenchTask(parentId);
   if(!parent) return;
   const project = workbenchProject(parent.project) || WB_DATA.projects[0];
@@ -1281,7 +1313,7 @@ function openWorkbenchNewChild(parentId, siblingTaskId){
   WB.editorTaskId = null;
   WB.selected = new Set(); WB.selectAnchor = null;
   WB.expanded.add(parentId); WB.collapsed.delete(parentId);
-  WB.newTask = Object.assign({project:project.id, title:"", detail:"", assignee:"human", parentId, siblingTaskId:siblingTaskId||null}, workbenchCurrentViewSchedule());
+  WB.newTask = Object.assign({project:project.id, title:"", detail:"", assignee:"human", parentId, siblingTaskId:siblingTaskId||null, docked:!!opts?.docked}, workbenchCurrentViewSchedule());
   renderWorkbench();
   wbFocusSoon("[data-new-title]");
 }
@@ -2105,7 +2137,7 @@ function workbenchFabDropAt(clientX, clientY, dragEl){
   const hit = wbFabUpdateTarget(clientX, clientY, dragEl);
   wbFabClearDrop();
   if(!hit) return;
-  if(hit.mode === "nest"){ openWorkbenchNewChild(hit.row.dataset.task, null); return; }
+  if(hit.mode === "nest"){ openWorkbenchNewChild(hit.row.dataset.task, null, {docked:true}); return; }
   const project = wbFabRowProject(hit.row);
   if(!project) return;
   const beforeTaskId = hit.mode === "before" ? hit.row.dataset.task : wbFabNextTopLevelId(hit.row);
@@ -2152,6 +2184,22 @@ function workbenchFabDropAt(clientX, clientY, dragEl){
     fab.style.transform = "";
     wbFabClearDrop();
   });
+})();
+
+// docked 新建卡（#wbDock）跟着键盘走：键盘弹起来时 visualViewport 会变矮，两者的差
+// 就是键盘（+浏览器地址栏之类）占掉的高度，把面板贴在这段之上，键盘收起时自然归位到
+// 屏幕底部。空的时候 CSS :empty 直接不占地方，这里更新 bottom 不会有任何可见影响。
+(function(){
+  const dock = document.getElementById("wbDock");
+  if(!dock || !window.visualViewport) return;
+  const vv = window.visualViewport;
+  const update = () => {
+    const gap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    dock.style.bottom = (gap + 12) + "px";
+  };
+  vv.addEventListener("resize", update);
+  vv.addEventListener("scroll", update);
+  update();
 })();
 
 $("#workbenchView").addEventListener("focusin", event => {
