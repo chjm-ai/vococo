@@ -1464,8 +1464,14 @@
   #workbenchView .wb-switch button.on{background:var(--card);color:var(--text);font-weight:600}
   #workbenchView .wb-switch-icon{display:inline-flex;align-items:center;justify-content:center;width:26px}#workbenchView .wb-switch-icon .ic{width:14px;height:14px;vertical-align:0}
   #workbenchView .wb-title-actions{display:flex;align-items:center;gap:4px}
-  #workbenchView .wb-win-btn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border-radius:7px;color:var(--dim)}#workbenchView .wb-win-btn:hover{background:var(--panel2);color:var(--text)}#workbenchView .wb-win-btn .ic{width:15px;height:15px}
-  #workbenchView .wb-win-btn.is-on{background:var(--panel2);color:var(--accent)}
+  #workbenchView .wb-win-btn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border-radius:7px;color:var(--dim)}#workbenchView .wb-win-btn .ic{width:15px;height:15px}
+  /* hover 只在真有鼠标悬停能力的设备上生效——不然触屏点一下,:hover 在 iOS/Android
+     上不会像桌面那样随手指离开就清掉,会一直"糊"在按钮上,看着像卡死的选中状态。
+     跟 .wb-project-toggle:hover 同一套写法(见上面)。 */
+  @media(hover:hover){ #workbenchView .wb-win-btn:hover{background:var(--panel2);color:var(--text)} }
+  /* 选中态不用强调色(橙色),跟 .wb-assignee-opt.is-on 同一个灰阶方案,只是"这个开关按下去了"，
+     不是"有需要留意的重要状态"。 */
+  #workbenchView .wb-win-btn.is-on{background:var(--panel2);color:var(--text)}
   /* 独立窗口本身(?view=workbench)不需要再开一层同样的窗口;侧边栏靠 sb-collapsed 收起
      但 wb-hamb 展开图标保留(见 app-core.js tryEnter 的 standaloneWorkbench 分支)。 */
   body.wb-standalone .wb-win-btn{display:none!important}
