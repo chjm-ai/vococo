@@ -16,6 +16,7 @@ config.py 路径/常量;providers.py 多供应商切换
 ## 约定
 文档/注释一律中文;改代码前先读懂现状,保持原风格,优先简单方案。
 系统提示三层堆叠:claude_code preset + PERSONA + 动态记忆,见 core/prompt.py。
+改完代码直接提交并合并回 main(`zsh deploy/merge-main.sh`);若改动涉及后端(core/gateway/cron/tools 等非纯前端代码),提交合并后要询问主人是否顺便重启(`restart_self`)。
 
 ## 按需加载资料
 默认只根据当前对话和本文件行动,不要为「可能有用」预读整个资料库或遍历项目。先判断
