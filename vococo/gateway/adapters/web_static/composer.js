@@ -28,8 +28,13 @@ async function send(text, display, opts){
   closeCmdMenu();
   if(!$("#callView").hidden && !opts.forceMain) return window.sendCallText(text);
   text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length && !S.files.length) return;
+  // 发送目标钉死在发起时的会话/附件快照:下面等上传的 await 期间用户可能已经切走,
+  // S.conv/S.images 等全局状态会变成新会话的——不钉死就会把这条消息、气泡、回执错投过去。
+  const sendConv=S.conv;
+  const isCurrent=()=>S.conv===sendConv;
+  const sendImages=S.images.slice(), sendAudios=S.audios.slice(), sendFiles=S.files.slice();
   // 音频和通用文件都先上传，拿到临时 id 后再发送，避免服务端静默跳过。
-  const uploads=[...S.audios,...S.files];
+  const uploads=[...sendAudios,...sendFiles];
   if(uploads.some(item=>!item.id)){
     const wbtn=$("#sendBtn");
     if(wbtn){ wbtn.disabled=true; wbtn.textContent="⋯"; wbtn.classList.add("uploading"); }
@@ -38,6 +43,7 @@ async function send(text, display, opts){
   }
   // 上传失败的附件还没到服务器，保留「忽略并发送」以免卡住文字消息。
   if(uploads.some(item=>item.status==="error")){
+    if(!isCurrent()) return;  // 已切走:失败提示/重试按钮没地方挂,静默放弃这次发送
     const fail=uploads.find(item=>item.status==="error");
     const b=addBubble("ai","⚠️ 附件「"+(fail?.filename||"")+"」上传失败"+(fail?.error?("："+fail.error):"")+"，可移除后重试；或忽略附件直接发送文字。");
     const skip=el("button","bact skip"); skip.textContent="忽略并发送";
@@ -47,20 +53,21 @@ async function send(text, display, opts){
   }
   // 上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发(审批/语音走 forceSend 立即发)
   if(S.stream && !opts.forceSend){
-    if(queuePending(text, S.images.slice(), S.audios.slice(), S.files.slice())){
-      clearComposerAttachments(); renderThumbs(); $("#ta").value=""; autoGrow(); clearDraft();
+    if(isCurrent() && queuePending(text, sendImages, sendAudios, sendFiles)){
+      clearComposerAttachments(sendConv); renderThumbs(); $("#ta").value=""; autoGrow(); clearDraft(sendConv);
     }
     return;
   }
-  const imgs=S.images.map(x=>x.url);
-  const auds=S.audios.map(x=>({url:x.url, filename:x.filename, text:x.text}));
-  const files=S.files.map(x=>x.filename);
+  const imgs=sendImages.map(x=>x.url);
+  const auds=sendAudios.map(x=>({url:x.url, filename:x.filename, text:x.text}));
+  const files=sendFiles.map(x=>x.filename);
   // display:点按钮时传选项文字,气泡显示友好文字而非原始命令(如 /clarify id 0)
   const shown=(display!=null)?display:text;
   // 有文字时也要列出附件；否则用户只能看到自己的文字，误以为文件没有随消息发送。
   const fileLabel=files.length ? `\n\n📎 附件：${files.join("、")}` : "";
   // opts.reuseBubble:语音已先冒了占位气泡并回填文字,这里不再重复冒泡
-  if(!opts.reuseBubble && (shown || imgs.length || auds.length || files.length)){
+  // !isCurrent():上传等待期间用户已切到别的会话,#wrap 不再属于 sendConv,气泡不能往上贴
+  if(!opts.reuseBubble && isCurrent() && (shown || imgs.length || auds.length || files.length)){
     const fallback=auds.length ? "(语音/音频)" : files.length ? "(文件附件)" : "(图片)";
     const b=addBubble("me", (shown||fallback)+fileLabel, imgs, auds);
     // 有音频还没转写:气泡上加转圈 loading(转写在发送后由服务端做,短音频 1~2s,
@@ -73,24 +80,24 @@ async function send(text, display, opts){
   // 标记本轮由本客户端发出,避免收到 "user" 事件时渲染重复气泡
   if(!text.startsWith("/")) S.localSent = true;
   // 非命令消息:立刻挂一个"💭 思考中…"气泡,不等服务器 start 事件,反馈更即时(像 TG 秒回 typing)
-  if(!text.startsWith("/") && !S.stream){
+  if(!text.startsWith("/") && !S.stream && isCurrent()){
     ensureStream();
     // 有音频待转写:状态行标"音频转写中",让用户知道还在进行(短音频 1~2s,
     // 会议录音几分钟),回复流 start 事件到达后切回正常"思考中/工作中"
     if(auds.some(a=>!a.text)) S.stream.audioPending = true;
   }
   const payload={
-    conv:S.conv, text,
-    images:S.images.map(x=>({data:x.data,media_type:x.media_type})),
-    audios:S.audios.map(x=>({id:x.id})),
-    files:S.files.map(x=>({id:x.id})),
+    conv:sendConv, text,
+    images:sendImages.map(x=>({data:x.data,media_type:x.media_type})),
+    audios:sendAudios.map(x=>({id:x.id})),
+    files:sendFiles.map(x=>({id:x.id})),
   };
-  // 新会话:发出第一条后,把本地临时会话转正
-  const oldConv=S.conv;
-  const wasLocal=String(S.conv).startsWith("local-");
-  clearDraft();   // 发送即清草稿:必须在转正前调用,否则 S.conv 已换成真实 id,local- 旧 key 清不掉
-  clearComposerAttachments();
-  if(wasLocal){
+  // 新会话:发出第一条后,把本地临时会话转正(用户已切走时跳过,S.conv 已经不是这条草稿了)
+  const oldConv=sendConv;
+  const wasLocal=String(sendConv).startsWith("local-");
+  clearDraft(sendConv);   // 发送即清草稿:必须在转正前调用,否则真实 id 落地后 local- 旧 key 清不掉
+  clearComposerAttachments(sendConv);
+  if(wasLocal && isCurrent()){
     S.conv=S.conv.replace("local-",""); payload.conv=S.conv; renderProjSelChip();
     refreshGit(S.conv);
     // S.convs 里那条草稿行(conv=local-xxx)原地更新成新的真实 id,别留一条转正前的孤儿条目——
@@ -101,13 +108,13 @@ async function send(text, display, opts){
       if(entry.wbTaskId && typeof linkWorkbenchTaskSession==="function"){ linkWorkbenchTaskSession(entry.wbTaskId, S.conv); delete entry.wbTaskId; }
     }
   }
-  renderThumbs(); $("#ta").value=""; autoGrow();
+  if(isCurrent()){ renderThumbs(); $("#ta").value=""; autoGrow(); }
   try{
     await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    if(wasLocal) setTimeout(loadConvs, 400);
+    if(wasLocal && isCurrent()) setTimeout(loadConvs, 400);
   }catch(err){
     if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }  // 发送失败,停掉 loading
-    addBubble("ai","⚠️ 发送失败:"+err.message);
+    if(isCurrent()) addBubble("ai","⚠️ 发送失败:"+err.message);
   }
 }
 // 静默发命令(如 /model 切换):不渲染用户气泡,回执由服务端 message 事件带回
