@@ -996,7 +996,9 @@ class WebAdapter:
         chat(dispatch_session 派发的独立会话)——2026-08-18 发现 dispatch_session
         建的会话原先被这里的 origin=="voice" 硬过滤掉,又不在 _handle_conversations
         的 web: 前缀里,导致"派了个独立会话"却哪个列表都找不到,只能靠全局搜索碰运气
-        (见 tools/builtin.py dispatch_session 工具描述)。任务元数据(voice.db)行
+        (见 tools/builtin.py dispatch_session 工具描述)。2026-08-22 同理把 workbench
+        (工作台任务卡片"执行"按钮派发)加进白名单——凡是新增一个 task_runner.dispatch
+        调用方且想让会话出现在这个分组,都要记得把新 origin 加进这条白名单。任务元数据(voice.db)行
         万一缺失(row is None)时保留展示——判不出 origin,当作语音任务的残留数据。
         但 mode="script" 的 cron 任务从不经过 task_runner.dispatch(),天生就没有
         voice.db 行(见 cron/scheduler.py _run_job),这条"缺失即语音"的假设对它们
@@ -1015,7 +1017,7 @@ class WebAdapter:
             task_id = bg_tasks.task_id_from_session_key(c["key"]) or c["key"]
             row = bg_tasks.get(task_id)
             if row is not None:
-                if row.get("origin", "voice") not in ("voice", "chat"):
+                if row.get("origin", "voice") not in ("voice", "chat", "workbench"):
                     continue
                 c["task_status"] = row["status"]
                 c["task_updated_at"] = row["updated_at"]
@@ -1503,6 +1505,24 @@ class WebAdapter:
         ok = workbench.remove_task_image(task_id, name)
         return web.json_response({"ok": ok})
 
+    @staticmethod
+    def _match_workbench_project_cwd(project_id: str) -> str | None:
+        """按任务分组名匹配执行侧项目(文件夹名大小写不敏感全等);匹配不到回落默认项目。
+
+        任务分组(workbench_projects)和执行侧项目(projects,即侧边栏文件夹)是两张
+        互不关联的表,这里靠名字做唯一的桥接。
+        """
+        wb_project = next((p for p in workbench.list_projects() if p["id"] == project_id), None)
+        if wb_project is None:
+            return None
+        name = wb_project["name"].strip().lower()
+        if not name:
+            return None
+        for proj in session_store.list_projects():
+            if proj["name"].strip().lower() == name:
+                return proj["path"]
+        return None
+
     @_authed
     @_json_body
     async def _handle_workbench_task_dispatch(self, request: web.Request, body: dict) -> web.Response:
@@ -1517,13 +1537,32 @@ class WebAdapter:
         if not prompt:
             return web.json_response({"error": "任务没有备注/prompt，无法执行"}, status=400)
         title = task["title"][:20]
+        cwd = self._match_workbench_project_cwd(task["project"])
         session = task_runner.dispatch(
-            title=title, prompt=prompt,
+            title=title, prompt=prompt, cwd=cwd,
             origin="workbench",
         )
         workbench.link_session(task_id, session["id"])
         updated_task = workbench.get_task(task_id)
         return web.json_response({"sessionId": session["id"], "task": updated_task})
+
+    @_authed
+    @_json_body
+    async def _handle_workbench_task_link(self, request: web.Request, body: dict) -> web.Response:
+        """把一个已存在的会话 conv 关联回任务(任务卡片"会话N"链接的数据来源)。
+
+        用于"预填草稿、用户手动发送"这条路径:发草稿转正成真实 conv 后前端才知道
+        conv id,此时才回头补关联,不像 _handle_workbench_task_dispatch 那样起跑瞬间
+        就知道 session id。
+        """
+        task_id = str(body.get("id") or "")
+        conv = str(body.get("conv") or "")
+        if not task_id or not conv:
+            return web.json_response({"error": "id / conv 不能为空"}, status=400)
+        updated_task = workbench.link_session(task_id, conv)
+        if updated_task is None:
+            return web.json_response({"error": "任务不存在"}, status=404)
+        return web.json_response({"task": updated_task})
 
     @_authed
     @_json_body
@@ -2634,6 +2673,7 @@ class WebAdapter:
                 web.post("/workbench/tasks/image/add", self._handle_workbench_task_image_add),
                 web.post("/workbench/tasks/image/remove", self._handle_workbench_task_image_remove),
                 web.post("/workbench/tasks/dispatch", self._handle_workbench_task_dispatch),
+                web.post("/workbench/tasks/link", self._handle_workbench_task_link),
                 web.post("/conv/pin", self._handle_conv_pin),
                 web.get("/models", self._handle_models),
                 web.post("/effort", self._handle_effort_switch),

@@ -96,7 +96,10 @@ async function send(text, display, opts){
     // S.convs 里那条草稿行(conv=local-xxx)原地更新成新的真实 id,别留一条转正前的孤儿条目——
     // 否则"新对话"复用逻辑(newChatIn)会把它当成还没发消息的草稿误重新打开
     const entry=S.convs.find(x=>x.conv===oldConv);
-    if(entry){ entry.conv=S.conv; entry.turns=1; }
+    if(entry){
+      entry.conv=S.conv; entry.turns=1;
+      if(entry.wbTaskId && typeof linkWorkbenchTaskSession==="function"){ linkWorkbenchTaskSession(entry.wbTaskId, S.conv); delete entry.wbTaskId; }
+    }
   }
   renderThumbs(); $("#ta").value=""; autoGrow();
   try{

@@ -1352,18 +1352,28 @@ function toggleWorkbenchAssignee(taskId, target){
   persistWorkbenchTask(taskId, {assignee: task.assignee}, {assignee: prev});
 }
 
-async function dispatchWorkbenchTask(taskId){
+// 点"执行"不再直接后台起跑:改成新建一个（按任务分组名匹配到的）项目会话，把
+// 任务备注预填进输入框，交给用户自己确认发送——避免 AI 想都没想就跑偏。草稿会话
+// 转正(见 composer.js send() 里的 wasLocal 分支)后要把真实 conv 关联回任务卡片
+// "会话N"链接,靠 entry.wbTaskId 这个自定义字段带过去。
+function dispatchWorkbenchTask(taskId){
   const task = workbenchTask(taskId);
   if(!task) return;
   if(!task.detail?.trim()){ alert("任务没有备注/prompt，无法执行。请先填写备注。"); return; }
-  try{
-    const r = await api("/workbench/tasks/dispatch", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:taskId})});
-    const d = await r.json();
-    if(!r.ok || d.error) throw new Error(d.error||"执行失败");
-    const t = workbenchTask(taskId);
-    if(t && d.task) Object.assign(t, d.task);
-    if(!workbenchMorphTask(taskId)) renderWorkbench();
-  }catch(e){ alert("派发执行失败："+(e.message||"")); }
+  const wbProject = workbenchProject(task.project);
+  const projectName = (wbProject && wbProject.name || "").trim().toLowerCase();
+  const matched = projectName && (S.projects||[]).find(p => (p.name||"").trim().toLowerCase() === projectName);
+  newChatIn(matched ? matched.hash : null);
+  const entry = S.convs.find(c => c.conv === S.conv);
+  if(entry) entry.wbTaskId = taskId;
+  $("#ta").value = task.detail;
+  autoGrow();
+  saveDraft();
+}
+
+// 草稿会话转正瞬间(composer.js)调用:把新出现的真实 conv 关联回任务卡片。
+function linkWorkbenchTaskSession(taskId, conv){
+  api("/workbench/tasks/link", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:taskId, conv:conv})}).catch(()=>{});
 }
 
 // 选中任意一个任务（顶层或子任务）按回车：总是在它下面新建一个子任务，不管选中项本身是不是子任务。
@@ -1943,7 +1953,7 @@ $("#workbenchView").addEventListener("click", event => {
   const gotoParent = event.target.closest("[data-goto-parent]");
   if(gotoParent){ gotoWorkbenchParent(gotoParent.dataset.gotoParent); return; }
   const sessionLink = event.target.closest("[data-session]");
-  if(sessionLink){ const sid = sessionLink.dataset.session; if(typeof openConv === "function") openConv("task:"+sid); return; }
+  if(sessionLink){ const sid = sessionLink.dataset.session; if(typeof openConv === "function") openConv(sid); return; }
   const newAssignee = event.target.closest("[data-new-assignee]");
   if(newAssignee && WB.newTask){
     const next = newAssignee.dataset.assigneeSet || (WB.newTask.assignee === "ai" ? "human" : "ai");

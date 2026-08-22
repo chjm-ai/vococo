@@ -44,6 +44,7 @@ def workbench_web_app(isolated, monkeypatch):
             web.post("/workbench/tasks/purge", adapter._handle_workbench_task_purge),
             web.post("/workbench/tasks/image/add", adapter._handle_workbench_task_image_add),
             web.post("/workbench/tasks/image/remove", adapter._handle_workbench_task_image_remove),
+            web.post("/workbench/tasks/link", adapter._handle_workbench_task_link),
         ]
     )
     return app
@@ -254,3 +255,26 @@ async def test_task_image_add_and_remove_via_http(workbench_web_app):
         )
         assert (await resp.json())["ok"] is True
         assert not (config.IMAGES_DIR / name).is_file()
+
+
+@pytest.mark.anyio
+async def test_task_link_session_via_http(workbench_web_app):
+    async with TestClient(TestServer(workbench_web_app)) as client:
+        resp = await client.get("/workbench")
+        project_id = (await resp.json())["projects"][0]["id"]
+        resp = await client.post(
+            "/workbench/tasks/create", json={"project": project_id, "title": "待关联任务"}
+        )
+        task_id = (await resp.json())["task"]["id"]
+
+        resp = await client.post(
+            "/workbench/tasks/link", json={"id": task_id, "conv": "p1234567890:abcd"}
+        )
+        assert resp.status == 200
+        task = (await resp.json())["task"]
+        assert task["sessionIds"] == ["p1234567890:abcd"]
+
+        resp = await client.post(
+            "/workbench/tasks/link", json={"id": "no-such-task", "conv": "p1234567890:abcd"}
+        )
+        assert resp.status == 404
