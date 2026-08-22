@@ -22,8 +22,31 @@ function wbIsTouchLike(){ return typeof window.matchMedia === "function" && wind
 // 已经跳出这个调用栈了，键盘就弹不出来（光标能看见，键盘不出现）——触屏改成立即同步聚焦，
 // 桌面维持原来的下一帧再聚焦（展开动画期间同步聚焦容易带来意外滚动）。
 function wbFocusSoon(selector, after){
-  const run = () => { const el = $(selector); if(!el) return; el.focus({preventScroll:true}); after?.(el); };
+  const run = () => {
+    const el = $(selector);
+    if(!el) return;
+    el.focus({preventScroll:true});
+    after?.(el);
+    if(wbIsTouchLike()) wbScrollAboveKeyboard(el);
+  };
   if(wbIsTouchLike()) run(); else requestAnimationFrame(run);
+}
+
+// 键盘弹出是异步动画，弹起来才会把可视区域挤小，卡片经常被新键盘盖住一截——用
+// visualViewport 的 resize 事件等键盘真的弹完了再把卡片滚到可见区域，比瞎猜延时准；
+// 有的机型不发这个事件，兜底再补一次超时。
+function wbScrollAboveKeyboard(el){
+  const card = el.closest(".wb-editor-shell") || el;
+  let done = false;
+  const scroll = () => { if(done) return; done = true; card.scrollIntoView({block:"center", behavior:"smooth"}); };
+  if(window.visualViewport){
+    const vv = window.visualViewport;
+    const onResize = () => { vv.removeEventListener("resize", onResize); scroll(); };
+    vv.addEventListener("resize", onResize);
+    setTimeout(() => { vv.removeEventListener("resize", onResize); scroll(); }, 400);
+  }else{
+    setTimeout(scroll, 300);
+  }
 }
 
 function workbenchIsRealProject(id){ return WB_DATA.projects.some(project => project.id === id); }
