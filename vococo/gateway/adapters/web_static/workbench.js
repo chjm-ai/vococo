@@ -14,6 +14,16 @@ const WB_HISTORY_KEY = "vococo:workbench-history";
 const WB_HISTORY = {undo:[], redo:[], busy:false};
 let wbClickTimer = null;
 
+// 「显示/隐藏所有备注」「折叠/展开所有子任务」这两个开关每个视图（日/周/月/项目/
+// 未排期/日志/废弃）各记各的，不互相影响；存 localStorage，刷新页面也要记得住。
+const WB_VIEW_PREFS_KEY = "vococo:workbench-view-prefs";
+let WB_VIEW_PREFS = {};
+try{ WB_VIEW_PREFS = JSON.parse(localStorage.getItem(WB_VIEW_PREFS_KEY) || "{}"); }catch(e){ WB_VIEW_PREFS = {}; }
+function wbViewPref(view){ return WB_VIEW_PREFS[view] || (WB_VIEW_PREFS[view] = {}); }
+function wbSaveViewPrefs(){ try{ localStorage.setItem(WB_VIEW_PREFS_KEY, JSON.stringify(WB_VIEW_PREFS)); }catch(e){} }
+function wbNotesHidden(view){ return !!wbViewPref(view).hideNotes; }
+function wbAllCollapsed(view){ return !!wbViewPref(view).collapseAll; }
+
 // 触屏没有 hover，"先选中再点一下打开"这套桌面手势摸不到反馈，容易让人觉得点了没反应。
 // 复用 CSS 里已经在用的 (hover: none) 判定，触屏设备改成点一下直接打开详情。
 function wbIsTouchLike(){ return typeof window.matchMedia === "function" && window.matchMedia("(hover: none)").matches; }
@@ -300,8 +310,13 @@ function workbenchShouldAutoExpandChildren(parentId){
 }
 
 function workbenchChildrenExpanded(parentId){
-  if(WB.view === "project") return !WB.collapsed.has(parentId);
-  return WB.expanded.has(parentId) || (workbenchShouldAutoExpandChildren(parentId) && !WB.collapsed.has(parentId));
+  // 手动展开/折叠过某个具体任务（点它自己的子任务计数徽标）优先级最高，
+  // 盖过「折叠/展开所有子任务」这个视图级别的默认值。
+  if(WB.expanded.has(parentId)) return true;
+  if(WB.collapsed.has(parentId)) return false;
+  if(wbAllCollapsed(WB.view)) return false;
+  if(WB.view === "project") return true;
+  return workbenchShouldAutoExpandChildren(parentId);
 }
 
 function workbenchAssigneeBadge(task){
@@ -373,7 +388,7 @@ function workbenchTaskRow(task, isChild){
   }
   const action = (task.status === "done" || task.status === "cancelled") ? "恢复" : "完成";
   const selected = WB.selected.has(task.id);
-  const detail = (task.detail && WB.view !== "month") ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
+  const detail = (task.detail && WB.view !== "month" && !wbNotesHidden(WB.view)) ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
   const childClass = isChild ? " wb-task-child" : "";
   const touch = wbIsTouchLike();
   const inner = '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
@@ -521,9 +536,15 @@ function workbenchTabHtml(view, label, opts){
 // 额外写"选了这段就清那段"的逻辑。日期切换/项目筛选作为「第二行」跟在 header 后面
 // (见 renderWorkbenchSecondRow + renderWorkbenchBody)。
 function renderWorkbenchHeader(){
+  const notesOn = wbNotesHidden(WB.view);
+  const collapseOn = wbAllCollapsed(WB.view);
   return '<header class="wb-toolbar">'+
     '<div class="wb-title-row"><div class="wb-title"><button class="wb-hamb" type="button" data-sidebar aria-label="打开侧边栏">'+ic("panel")+'</button><h1>工作台</h1></div>'+
-      '<button type="button" class="wb-win-btn" data-workbench-win title="独立窗口" aria-label="独立窗口">'+ic("newwin")+'</button></div>'+
+      '<div class="wb-title-actions">'+
+      '<button type="button" class="wb-win-btn'+(notesOn ? " is-on" : "")+'" data-toggle-notes title="'+(notesOn ? "显示所有备注" : "隐藏所有备注")+'" aria-label="显示/隐藏所有备注" aria-pressed="'+notesOn+'">'+ic("doc")+'</button>'+
+      '<button type="button" class="wb-win-btn'+(collapseOn ? " is-on" : "")+'" data-toggle-collapse-all title="'+(collapseOn ? "展开所有子任务" : "折叠所有子任务")+'" aria-label="折叠/展开所有子任务" aria-pressed="'+collapseOn+'">'+ic("branch")+'</button>'+
+      '<button type="button" class="wb-win-btn" data-workbench-win title="独立窗口" aria-label="独立窗口">'+ic("newwin")+'</button>'+
+      '</div></div>'+
     '<div class="wb-switch-row">'+
       '<div class="wb-switch">'+
         workbenchTabHtml("day", "日")+
@@ -1238,6 +1259,22 @@ function workbenchResetChildExpansion(){
   WB.expanded.clear(); WB.collapsed.clear();
 }
 
+function wbToggleNotes(){
+  const pref = wbViewPref(WB.view);
+  pref.hideNotes = !pref.hideNotes;
+  wbSaveViewPrefs();
+  renderWorkbench();
+}
+
+function wbToggleCollapseAll(){
+  const pref = wbViewPref(WB.view);
+  pref.collapseAll = !pref.collapseAll;
+  wbSaveViewPrefs();
+  // 清掉手动展开/折叠过的个别任务，不然点了「全部折叠/展开」还有漏网之鱼保持原样。
+  workbenchResetChildExpansion();
+  renderWorkbench();
+}
+
 const WB_CHILDREN_ANIMATING = new Set();
 
 function toggleWorkbenchChildren(parentId){
@@ -1940,6 +1977,8 @@ $("#workbenchView").addEventListener("click", event => {
   if(!event.target.closest(".wb-swipe-actions")) wbCloseAllSwipes();
   if(event.target.closest("[data-workbench-win]")){ openWorkbenchStandalone(); return; }
   if(event.target.closest("[data-sidebar]")){ expandSidebarResponsive(); return; }
+  if(event.target.closest("[data-toggle-notes]")){ wbToggleNotes(); return; }
+  if(event.target.closest("[data-toggle-collapse-all]")){ wbToggleCollapseAll(); return; }
   const complete = event.target.closest("[data-complete]");
   if(complete){ toggleWorkbenchTask(complete.dataset.complete); return; }
   const toggleChildren = event.target.closest("[data-toggle-children]");
