@@ -1598,27 +1598,27 @@
        Safari 标签页模式该值为 0,所以浏览器里看不出差别,只有装到桌面才暴露。 */
     #workbenchView .wb-toolbar{gap:10px;padding-top:calc(10px + env(safe-area-inset-top));padding-bottom:10px}
     .wb-detail-bar{padding-top:calc(10px + env(safe-area-inset-top));padding-bottom:10px;min-height:0}
-    #workbenchView .wb-title h1{font-size:17px;line-height:23px}
+    #workbenchView .wb-title h1{font-size:18px;line-height:24px}
     #workbenchView .wb-switch-row{gap:6px}
     #workbenchView .wb-switch{flex-wrap:wrap;gap:1px;padding:2px}
-    #workbenchView .wb-switch button{font-size:14px;padding:6px 8px}
-    #workbenchView .wb-project-filter button{font-size:14px}
-    #workbenchView .wb-project-toggle>span:last-child{font-size:13px}
-    #workbenchView .wb-project-name strong{font-size:15px}
-    #workbenchView .wb-project-name em{font-size:13px}
-    #workbenchView .wb-project-delete{font-size:12px}
-    #workbenchView .wb-section-toggle h2{font-size:15px}
-    #workbenchView .wb-section-toggle span{font-size:13px}
-    #workbenchView .wb-task-title{font-size:15px}
-    #workbenchView .wb-task-detail{font-size:14px}
-    #workbenchView .wb-empty{font-size:13px}
-    #workbenchView .wb-schedule{font-size:12px}
-    #workbenchView .wb-child-count{font-size:12px}
-    #workbenchView .wb-parent-badge{font-size:13px}
-    #workbenchView .wb-parent-link{font-size:13px}
-    #workbenchView .wb-session-link{font-size:12px}
-    #workbenchView .wb-dispatch-btn{font-size:13px}
-    .wb-date-nav strong,.wb-date-nav button{font-size:14px}
+    #workbenchView .wb-switch button{font-size:15px;padding:6px 8px}
+    #workbenchView .wb-project-filter button{font-size:15px}
+    #workbenchView .wb-project-toggle>span:last-child{font-size:14px}
+    #workbenchView .wb-project-name strong{font-size:16px}
+    #workbenchView .wb-project-name em{font-size:14px}
+    #workbenchView .wb-project-delete{font-size:13px}
+    #workbenchView .wb-section-toggle h2{font-size:16px}
+    #workbenchView .wb-section-toggle span{font-size:14px}
+    #workbenchView .wb-task-title{font-size:16px}
+    #workbenchView .wb-task-detail{display:none}
+    #workbenchView .wb-empty{font-size:14px}
+    #workbenchView .wb-schedule{font-size:13px}
+    #workbenchView .wb-child-count{font-size:13px}
+    #workbenchView .wb-parent-badge{font-size:14px}
+    #workbenchView .wb-parent-link{font-size:14px}
+    #workbenchView .wb-session-link{font-size:13px}
+    #workbenchView .wb-dispatch-btn{font-size:14px}
+    .wb-date-nav strong,.wb-date-nav button{font-size:15px}
     #workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,max-content);gap:8px}
     #workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}
     #workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}
