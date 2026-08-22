@@ -402,7 +402,7 @@ function workbenchTaskRow(task, isChild){
     '<div class="wb-task-copy"><div class="wb-task-title-row"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+workbenchParentBadge(task, isChild)+'</div>'+detail+'</div>'+
     '<div class="wb-task-end">'+workbenchScheduleBadge(task)+workbenchChildCount(task)+workbenchAssigneeBadge(task)+'</div>';
   const row = '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+(touch ? " wb-swipeable" : "")+childClass+'" data-task="'+esc(task.id)+'" draggable="true">'+
-    (touch ? '<div class="wb-swipe-body">'+inner+'</div><div class="wb-swipe-actions"><button type="button" class="wb-swipe-btn wb-swipe-date" data-swipe-dp="'+esc(task.id)+'" aria-label="日期">'+ic("calendar")+'</button><button type="button" class="wb-swipe-btn wb-swipe-del" data-swipe-del="'+esc(task.id)+'" aria-label="删除">'+ic("trash")+'</button></div>' : inner)+
+    (touch ? '<div class="wb-swipe-body">'+inner+'</div><div class="wb-swipe-actions"><button type="button" class="wb-swipe-btn wb-swipe-date" data-swipe-dp="'+esc(task.id)+'" aria-label="日期">'+ic("calendar")+'</button><button type="button" class="wb-swipe-btn wb-swipe-move" data-swipe-move="'+esc(task.id)+'" aria-label="移动分组">'+ic("folder")+'</button><button type="button" class="wb-swipe-btn wb-swipe-del" data-swipe-del="'+esc(task.id)+'" aria-label="删除">'+ic("trash")+'</button></div>' : inner)+
     '</article>';
   if(isChild) return row + workbenchChildRows(task.id);
   if(task.parentId) return row + workbenchChildRows(task.id) + (WB.newTask?.siblingTaskId === task.id ? workbenchNewChildCard(task.parentId, true) : '');
@@ -722,8 +722,8 @@ function renderWorkbench(){
   $("#wbFab")?.classList.toggle("wb-fab-off", WB.view === "completed" || WB.view === "trash");
 }
 
-// ── 移动端任务行左滑操作（日期 + 删除）────────────────────────────────────
-const WB_SWIPE_W = 88;
+// ── 移动端任务行左滑操作（日期 + 移动分组 + 删除）─────────────────────────
+const WB_SWIPE_W = 132;
 
 function wbCloseSwipe(row){
   row.classList.remove("wb-swiped");
@@ -2019,6 +2019,14 @@ $("#workbenchView").addEventListener("click", event => {
     workbenchDpOpen({kind:"task", id:tid}, swipeDp);
     return;
   }
+  const swipeMove = event.target.closest("[data-swipe-move]");
+  if(swipeMove){
+    const tid = swipeMove.dataset.swipeMove;
+    const rect = swipeMove.getBoundingClientRect();
+    wbCloseAllSwipes();
+    workbenchOpenCtxMenu(rect.right, rect.top, [tid], "move");
+    return;
+  }
   const swipeDel = event.target.closest("[data-swipe-del]");
   if(swipeDel){
     const tid = swipeDel.dataset.swipeDel;
@@ -2535,9 +2543,9 @@ function workbenchRenderCtxMenu(){
   return el;
 }
 
-function workbenchOpenCtxMenu(x, y, ids){
+function workbenchOpenCtxMenu(x, y, ids, mode){
   wbCtxIds = ids;
-  wbCtxMode = "root";
+  wbCtxMode = mode || "root";
   const el = workbenchRenderCtxMenu();
   el.style.display = "block";
   el.style.left = x+"px"; el.style.top = y+"px";
