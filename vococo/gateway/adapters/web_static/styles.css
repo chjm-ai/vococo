@@ -1493,6 +1493,17 @@
     #wbFab.wb-fab-dragging{box-shadow:0 10px 30px rgba(0,0,0,.45)}
     #workbenchView #wbContent{padding-bottom:88px}
   }
+  /* FAB 新建的 docked 浮层：固定贴在键盘上方（bottom 由 JS 按 visualViewport 实时算），
+     不占列表位置，避免被导航栏/键盘挡住；内容一多就自己滚，不会把面板越撑越高。 */
+  #wbDock:empty{display:none}
+  @media(hover:none){
+    /* z-index 65：压过 FAB(55)/右键菜单(60)，但让给日期选择器 .wb-dp(70)——卡片里
+       「设定日期」按钮开的就是它，不能被浮层自己盖住。 */
+    #wbDock{position:fixed;left:12px;right:12px;bottom:12px;z-index:65;max-height:50vh;overflow-y:auto;border-radius:14px;box-shadow:0 -10px 30px rgba(0,0,0,.4)}
+    /* 双 id 选择器压过 #workbenchView .wb-editor-shell 那条负 margin（同权重按源码顺序，
+       它在文件更后面会赢），不然 docked 卡片在手机宽度下会被拉出 #wbDock 的可视范围。 */
+    #workbenchView #wbDock .wb-editor-shell{margin:0}
+  }
   @keyframes wbCardIn{from{opacity:0}to{opacity:1}}
   /* 编辑卡沿用任务行的三列栅格：复选框 20px + 10px 间距 + 文字列。
      所有内容落在文字列起点，展开/收起时标题和描述不会左右跳动。 */
