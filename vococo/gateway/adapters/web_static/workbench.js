@@ -1934,7 +1934,8 @@ function workbenchDpRenderBody(){
       '<div class="wb-dp-actions"><button type="button" data-dp-preset="today">'+ic("star")+'<span>今天</span></button>'+
       '<button type="button" class="'+(WB_DP.mode === "week" ? "is-on" : "")+'" data-dp-preset="week">本周</button>'+
       '<button type="button" class="'+(WB_DP.mode === "month" ? "is-on" : "")+'" data-dp-preset="month">本月</button></div>'+
-      picker+
+      // 固定高度容器：三个 tab（日/周/月）内容高矮不一，套一层固定高度，切换时面板不跳动。
+      '<div class="wb-dp-picker">'+picker+'</div>'+
       '<button type="button" class="wb-dp-clear" data-dp-clear'+(workbenchDpHasSchedule() ? "" : " disabled")+' title="移除排期" aria-label="移除排期">'+ic("eraser")+'</button>';
   }
   if(WB_DP._reposition) WB_DP._reposition(); // 主体换了搜索结果/日历，高度跟着变，重新贴一次锚点
@@ -1994,7 +1995,12 @@ function workbenchDpHandleClick(event){
   const preset = event.target.closest("[data-dp-preset]");
   if(preset){
     const kind = preset.dataset.dpPreset;
-    if(kind === "today"){ workbenchDpApply(workbenchDpPresetSchedule("today")); return; }
+    if(kind === "today"){
+      // 从周/月视图点「今天」先切回日历，不直接关面板；已经在日历视图时再点一下才真正套用+关闭。
+      if(WB_DP.mode !== "day"){ WB_DP.mode = "day"; workbenchDpRenderBody(); return; }
+      workbenchDpApply(workbenchDpPresetSchedule("today"));
+      return;
+    }
     WB_DP.mode = WB_DP.mode === kind ? "day" : kind; // 再点一次同一个预设，切回日历
     workbenchDpRenderBody();
     return;
