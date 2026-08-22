@@ -8,7 +8,7 @@ const WB_DATA = {projects: [], tasks: []};
 // 「未分组」伪项目做兜底分组，不需要改后端 schema。
 const WB_UNASSIGNED_ID = "";
 const WB_UNASSIGNED_PROJECT = {id: WB_UNASSIGNED_ID, name: "未分组"};
-const WB = {project:"all", view:"week", anchor:null, editorTaskId:null, editorDocked:false, selected:new Set(), selectAnchor:null, newTask:null, expanded:new Set(), collapsed:new Set(), editSnapshots:new Map()};
+const WB = {project:"all", view:"week", anchor:null, editorTaskId:null, editorDocked:false, selected:new Set(), selectAnchor:null, newTask:null, expanded:new Set(), collapsed:new Set(), editSnapshots:new Map(), multiSelectMode:false};
 const WB_HISTORY_MAX = 30;
 const WB_HISTORY_KEY = "vococo:workbench-history";
 const WB_HISTORY = {undo:[], redo:[], busy:false};
@@ -215,7 +215,7 @@ async function workbenchHistorySetTaskPresence(target, other){
     const ids = new Set(items.map(({task}) => task.id));
     WB_DATA.tasks = WB_DATA.tasks.filter(task => !ids.has(task.id));
   }
-  WB.selected = new Set(); WB.selectAnchor = null; WB.editorTaskId = null;
+  wbResetSelection(); WB.editorTaskId = null;
   renderWorkbench();
   try{
     if(shouldExist){
@@ -402,7 +402,7 @@ function workbenchTaskRow(task, isChild){
     '<div class="wb-task-copy"><div class="wb-task-title-row"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+workbenchParentBadge(task, isChild)+'</div>'+detail+'</div>'+
     '<div class="wb-task-end">'+workbenchScheduleBadge(task)+workbenchChildCount(task)+workbenchAssigneeBadge(task)+'</div>';
   const row = '<article class="wb-task wb-'+esc(task.status)+(selected ? " is-selected" : "")+(touch ? " wb-swipeable" : "")+childClass+'" data-task="'+esc(task.id)+'" draggable="true">'+
-    (touch ? '<div class="wb-swipe-body">'+inner+'</div><div class="wb-swipe-actions"><button type="button" class="wb-swipe-btn wb-swipe-date" data-swipe-dp="'+esc(task.id)+'" aria-label="日期">'+ic("calendar")+'</button><button type="button" class="wb-swipe-btn wb-swipe-move" data-swipe-move="'+esc(task.id)+'" aria-label="移动分组">'+ic("folder")+'</button><button type="button" class="wb-swipe-btn wb-swipe-del" data-swipe-del="'+esc(task.id)+'" aria-label="删除">'+ic("trash")+'</button></div>' : inner)+
+    (touch ? '<div class="wb-swipe-select" aria-hidden="true">'+ic("save")+'</div><div class="wb-swipe-body">'+inner+'</div><div class="wb-swipe-actions"><button type="button" class="wb-swipe-btn wb-swipe-date" data-swipe-dp="'+esc(task.id)+'" aria-label="日期">'+ic("calendar")+'</button><button type="button" class="wb-swipe-btn wb-swipe-move" data-swipe-move="'+esc(task.id)+'" aria-label="移动分组">'+ic("folder")+'</button><button type="button" class="wb-swipe-btn wb-swipe-del" data-swipe-del="'+esc(task.id)+'" aria-label="删除">'+ic("trash")+'</button></div>' : inner)+
     '</article>';
   if(isChild) return row + workbenchChildRows(task.id);
   if(task.parentId) return row + workbenchChildRows(task.id) + (WB.newTask?.siblingTaskId === task.id ? workbenchNewChildCard(task.parentId, true) : '');
@@ -722,8 +722,9 @@ function renderWorkbench(){
   $("#wbFab")?.classList.toggle("wb-fab-off", WB.view === "completed" || WB.view === "trash");
 }
 
-// ── 移动端任务行左滑操作（日期 + 移动分组 + 删除）─────────────────────────
+// ── 移动端任务行滑动操作（左滑：日期/移动/删除；右滑：进多选）───────────────
 const WB_SWIPE_W = 132;
+const WB_SWIPE_R = 64; // 右滑进多选的拖拽上限/判定阈值（阈值取一半，32px）
 
 function wbCloseSwipe(row){
   row.classList.remove("wb-swiped");
@@ -736,6 +737,7 @@ function wbCloseAllSwipes(except){
 function wbBindSwipe(row){
   const body = row.querySelector(".wb-swipe-body");
   const act = row.querySelector(".wb-swipe-actions");
+  const sel = row.querySelector(".wb-swipe-select");
   if(!body || !act) return;
   let startX = 0, startY = 0, dx = 0, lock = null, dragging = false;
   row.addEventListener("touchstart", ev => {
@@ -752,16 +754,22 @@ function wbBindSwipe(row){
     if(lock !== "x") return;
     dragging = true;
     const base = row.classList.contains("wb-swiped") ? -WB_SWIPE_W : 0;
-    dx = Math.max(-WB_SWIPE_W, Math.min(0, base + ddx));
+    dx = Math.max(-WB_SWIPE_W, Math.min(WB_SWIPE_R, base + ddx));
     body.style.transform = "translateX(" + dx + "px)";
     act.style.transform = "translateX(" + (WB_SWIPE_W + dx) + "px)";
+    if(sel){
+      sel.style.opacity = dx > 0 ? Math.min(1, dx / WB_SWIPE_R) : 0;
+      sel.classList.toggle("wb-swipe-select-armed", dx >= WB_SWIPE_R / 2);
+    }
   }, {passive: true});
   const end = () => {
     row.classList.remove("wb-swiping");
     body.style.transform = ""; act.style.transform = "";
+    if(sel){ sel.style.opacity = ""; sel.classList.remove("wb-swipe-select-armed"); }
     if(dragging){
       row._wbJustSwiped = true;
       if(dx <= -WB_SWIPE_W / 2){ wbCloseAllSwipes(row); row.classList.add("wb-swiped"); }
+      else if(dx >= WB_SWIPE_R / 2){ wbCloseSwipe(row); wbEnterMultiSelect(row.dataset.task); }
       else wbCloseSwipe(row);
     }
     dragging = false;
@@ -778,6 +786,55 @@ function wbBindAllSwipes(){
     scrollEl._wbSwipeScrollBound = true;
     scrollEl.addEventListener("scroll", () => wbCloseAllSwipes());
   }
+}
+
+// ── 移动端多选（右滑进入，仿 Things：底部工具栏 + 右上角"完成"退出）──────────
+// 只在触屏生效，跟桌面的 shift+点击/右键多选是两条独立路径，互不干扰。
+function wbEnterMultiSelect(taskId){
+  wbCloseAllSwipes();
+  if(!WB.multiSelectMode){
+    WB.multiSelectMode = true;
+    document.body.classList.add("wb-multiselect-mode");
+  }
+  const next = new Set(WB.selected);
+  if(next.has(taskId)) next.delete(taskId); else next.add(taskId);
+  workbenchApplySelectionClasses(WB.selected, next);
+  WB.selected = next;
+  WB.selectAnchor = taskId;
+  wbRenderMultiSelectBar();
+  if(WB.selected.size === 0) wbExitMultiSelect();
+}
+
+function wbExitMultiSelect(){
+  WB.multiSelectMode = false;
+  document.body.classList.remove("wb-multiselect-mode");
+  workbenchApplySelectionClasses(WB.selected, new Set());
+  WB.selected = new Set();
+  WB.selectAnchor = null;
+  wbRenderMultiSelectBar();
+}
+
+// 别处（切 tab/项目、批量删除后…）本来就要清空选中态，顺带把多选模式也带出去，
+// 不然桌面端切视图后移动端的底部工具栏会孤零零地留在那——选区已经空了，UI 却没退出。
+function wbResetSelection(){
+  WB.selected = new Set();
+  WB.selectAnchor = null;
+  if(WB.multiSelectMode){
+    WB.multiSelectMode = false;
+    document.body.classList.remove("wb-multiselect-mode");
+  }
+  wbRenderMultiSelectBar();
+}
+
+function wbRenderMultiSelectBar(){
+  const bar = document.getElementById("wbMultiBar");
+  const done = document.getElementById("wbMultiDone");
+  if(!bar || !done) return;
+  const n = WB.selected.size;
+  bar.hidden = !WB.multiSelectMode;
+  done.hidden = !WB.multiSelectMode;
+  done.textContent = WB.multiSelectMode ? "完成("+n+")" : "完成";
+  bar.querySelectorAll("[data-multi]").forEach(btn => { btn.disabled = n === 0; });
 }
 
 function workbenchNodeForTask(taskId){
@@ -1194,7 +1251,7 @@ function openWorkbenchNewTask(){
   clearTimeout(wbClickTimer);
   const prevEditor = WB.editorTaskId;
   WB.editorTaskId = null;
-  WB.selected = new Set(); WB.selectAnchor = null;
+  wbResetSelection();
   WB.newTask = Object.assign({project:project.id, title:"", detail:"", assignee:"human", parentId:null, siblingTaskId:null}, workbenchCurrentViewSchedule());
   let ok = true;
   if(prevEditor) ok = workbenchMorphTask(prevEditor) && ok;
@@ -1434,7 +1491,7 @@ function workbenchOpenChildOfSelected(){
 function workbenchOpenNewTaskBefore(project, beforeTaskId){
   clearTimeout(wbClickTimer);
   WB.editorTaskId = null;
-  WB.selected = new Set(); WB.selectAnchor = null;
+  wbResetSelection();
   WB.newTask = Object.assign({project:project.id, title:"", detail:"", assignee:"human", parentId:null, siblingTaskId:null, beforeTaskId:beforeTaskId||null, docked:true}, workbenchCurrentViewSchedule());
   renderWorkbench();
   wbFocusSoon("[data-new-title]");
@@ -1447,7 +1504,7 @@ function openWorkbenchNewChild(parentId, siblingTaskId, opts){
   if(!project) return;
   clearTimeout(wbClickTimer);
   WB.editorTaskId = null;
-  WB.selected = new Set(); WB.selectAnchor = null;
+  wbResetSelection();
   WB.expanded.add(parentId); WB.collapsed.delete(parentId);
   WB.newTask = Object.assign({project:project.id, title:"", detail:"", assignee:"human", parentId, siblingTaskId:siblingTaskId||null, docked:!!opts?.docked}, workbenchCurrentViewSchedule());
   renderWorkbench();
@@ -1575,7 +1632,7 @@ async function workbenchBatchDelete(ids){
   if(!entries.length) return;
   WB_DATA.tasks = WB_DATA.tasks.filter(t => !idSet.has(t.id));
   if(idSet.has(WB.editorTaskId)) WB.editorTaskId = null;
-  WB.selected = new Set(); WB.selectAnchor = null;
+  wbResetSelection();
   renderWorkbench();
   try{
     for(const {task} of entries) await workbenchHistoryRequest("/workbench/tasks/delete", {id:task.id});
@@ -1761,7 +1818,7 @@ function workbenchDpApply(schedule){
   if(!target) return;
   if(target.kind === "task") scheduleWorkbenchTask(target.id, schedule);
   else if(target.kind === "new"){ workbenchApplySchedule(WB.newTask, schedule); renderWorkbench(); }
-  else if(target.kind === "ctx") workbenchBatchSchedule(target.ids, schedule);
+  else if(target.kind === "ctx"){ workbenchBatchSchedule(target.ids, schedule); if(WB.multiSelectMode) wbExitMultiSelect(); }
   workbenchDpClose();
 }
 
@@ -2039,7 +2096,7 @@ $("#workbenchView").addEventListener("click", event => {
     clearTimeout(wbClickTimer);
     WB.view = "project"; WB.project = gotoProject.dataset.gotoProject;
     workbenchResetChildExpansion();
-    WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null;
+    WB.newTask=null; WB.editorTaskId=null; wbResetSelection();
     renderWorkbench(); refreshWorkbenchDataIfStale();
     return;
   }
@@ -2073,6 +2130,12 @@ $("#workbenchView").addEventListener("click", event => {
     if(taskRow._wbJustSwiped){ taskRow._wbJustSwiped = false; return; }
     const taskId = taskRow.dataset.task;
     if(taskId === WB.editorTaskId) return;
+    // 移动端多选模式下，点任务行 = 切换选中，不打开详情；退出靠右上角"完成"按钮。
+    if(wbIsTouchLike() && WB.multiSelectMode){
+      clearTimeout(wbClickTimer); wbClickTimer = null;
+      wbEnterMultiSelect(taskId);
+      return;
+    }
     // 移动端：详情卡（或新建卡）开着的时候点别的任务，只收起当前卡，不直接跳到点的
     // 那条——不然手滑很容易连续切换详情。想看别的任务，先收起再点一次。
     if(wbIsTouchLike() && (WB.editorTaskId || WB.newTask)){
@@ -2109,13 +2172,13 @@ $("#workbenchView").addEventListener("click", event => {
     return;
   }
   const project = event.target.closest("[data-project]");
-  if(project){ clearTimeout(wbClickTimer); WB.project = project.dataset.project; workbenchResetChildExpansion(); WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null; renderWorkbench(); refreshWorkbenchDataIfStale(); return; }
+  if(project){ clearTimeout(wbClickTimer); WB.project = project.dataset.project; workbenchResetChildExpansion(); WB.newTask=null; WB.editorTaskId=null; wbResetSelection(); renderWorkbench(); refreshWorkbenchDataIfStale(); return; }
   const view = event.target.closest("[data-view]");
   if(view){
     clearTimeout(wbClickTimer);
     WB.view = view.dataset.view;
     if(WB.view !== "project") WB.project = "all"; // 项目筛选只在「项目」tab 下有意义，切走就复位
-    WB.newTask=null; WB.editorTaskId=null; WB.selected=new Set(); WB.selectAnchor=null; workbenchResetChildExpansion();
+    WB.newTask=null; WB.editorTaskId=null; wbResetSelection(); workbenchResetChildExpansion();
     renderWorkbench();
     if(WB.view === "trash") refreshWorkbenchTrashIfStale();
     else refreshWorkbenchDataIfStale();
@@ -2368,6 +2431,32 @@ function workbenchFabDropAt(clientX, clientY, dragEl){
   });
 })();
 
+// 移动端多选：底部工具栏 + 右上角"完成"，右滑进入见 wbEnterMultiSelect。两个元素是
+// 固定在 #workbenchView 外层的静态 DOM（跟 #wbFab/#wbDock 同一套模式），不会被
+// renderWorkbench() 的重绘冲掉，只靠 wbRenderMultiSelectBar() 切 hidden/文案。
+(function(){
+  const done = document.getElementById("wbMultiDone");
+  const bar = document.getElementById("wbMultiBar");
+  if(!done || !bar) return;
+  bar.innerHTML = '<button type="button" data-multi="date">'+ic("calendar")+'<span>日期</span></button>'+
+    '<button type="button" data-multi="move">'+ic("folder")+'<span>移动</span></button>'+
+    '<button type="button" data-multi="more">'+ic("more")+'<span>更多</span></button>'+
+    '<button type="button" class="wb-multi-danger" data-multi="delete">'+ic("trash")+'<span>删除</span></button>';
+  done.addEventListener("click", () => wbExitMultiSelect());
+  bar.addEventListener("click", event => {
+    const btn = event.target.closest("[data-multi]");
+    if(!btn || btn.disabled) return;
+    const ids = [...WB.selected];
+    if(!ids.length) return;
+    const rect = btn.getBoundingClientRect();
+    const action = btn.dataset.multi;
+    if(action === "date") workbenchDpOpenAt({kind:"ctx", ids}, rect.left, rect.top);
+    else if(action === "move") workbenchOpenCtxMenu(rect.left, rect.top, ids, "move");
+    else if(action === "more") workbenchOpenCtxMenu(rect.left, rect.top, ids);
+    else if(action === "delete") workbenchBatchDelete(ids);
+  });
+})();
+
 // docked 新建卡（#wbDock）跟着键盘走：键盘弹起来时 visualViewport 会变矮，两者的差
 // 就是键盘（+浏览器地址栏之类）占掉的高度，把面板贴在这段之上。空的时候 CSS :empty
 // 直接不占地方，这里更新 bottom 不会有任何可见影响。
@@ -2564,10 +2653,14 @@ function workbenchCloseCtxMenu(){
 }
 
 function workbenchHandleCtxClick(event){
+  // 移动端从底部多选工具栏弹出这个菜单时，选区其实已经"用掉了"——菜单里的操作
+  // 一执行完就该退出多选，不然工具栏和高亮会孤零零地留在已经处理完的任务上。
+  const exitMultiIfNeeded = () => { if(WB.multiSelectMode) wbExitMultiSelect(); };
   const moveTo = event.target.closest("[data-ctx-move]");
   if(moveTo){
     workbenchBatchMove(wbCtxIds, moveTo.dataset.ctxMove);
     workbenchCloseCtxMenu();
+    exitMultiIfNeeded();
     return;
   }
   const action = event.target.closest("[data-ctx]")?.dataset.ctx;
@@ -2581,14 +2674,14 @@ function workbenchHandleCtxClick(event){
     return;
   }
   if(action === "move"){ wbCtxMode = "move"; workbenchRenderCtxMenu(); return; }
-  if(action === "done"){ workbenchBatchComplete(wbCtxIds); workbenchCloseCtxMenu(); return; }
-  if(action === "cancel"){ workbenchBatchCancel(wbCtxIds); workbenchCloseCtxMenu(); return; }
+  if(action === "done"){ workbenchBatchComplete(wbCtxIds); workbenchCloseCtxMenu(); exitMultiIfNeeded(); return; }
+  if(action === "cancel"){ workbenchBatchCancel(wbCtxIds); workbenchCloseCtxMenu(); exitMultiIfNeeded(); return; }
   if(action === "set-ai" || action === "set-human"){
     const assignee = action === "set-ai" ? "ai" : "human";
     wbCtxIds.forEach(id => { const t = workbenchTask(id); if(t){ const prev = t.assignee; t.assignee = assignee; persistWorkbenchTask(id, {assignee}, {assignee: prev}); }});
-    workbenchCloseCtxMenu(); renderWorkbench(); return;
+    workbenchCloseCtxMenu(); renderWorkbench(); exitMultiIfNeeded(); return;
   }
-  if(action === "delete"){ workbenchBatchDelete(wbCtxIds); workbenchCloseCtxMenu(); return; }
+  if(action === "delete"){ workbenchBatchDelete(wbCtxIds); workbenchCloseCtxMenu(); exitMultiIfNeeded(); return; }
 }
 
 // 用 mousedown 而不是 click 来判定「点了菜单外面」：右键弹出菜单本身就是由一次

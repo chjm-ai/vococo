@@ -1523,7 +1523,27 @@
     .wb-swipe-date{background:var(--dim2)}
     .wb-swipe-move{background:var(--dim2)}
     .wb-swipe-del{background:var(--err);border-radius:0 7px 7px 0}
+    /* 右滑进多选：跟左滑的操作按钮同一个视觉语言，但不常驻展开——松手要么已经
+       触发进多选（transform 复位），要么没拖够直接弹回，所以只用 opacity 做反馈。 */
+    .wb-swipe-select{position:absolute;top:0;left:0;bottom:0;width:64px;display:flex;align-items:center;justify-content:center;background:var(--dim2);color:#fff;opacity:0;pointer-events:none}
+    .wb-swipe-select .ic{width:18px;height:18px}
+    .wb-swipe-select.wb-swipe-select-armed{background:var(--accent)}
   }
+  /* ── 移动端多选：右上角"完成" + 底部批量操作栏（仿 Things 左滑进多选）──────── */
+  #wbMultiDone{display:none}
+  @media(hover:none){
+    body.wb-multiselect-mode #wbFab{display:none}
+    #wbMultiDone{display:flex;align-items:center;justify-content:center;position:fixed;top:calc(10px + env(safe-area-inset-top));right:14px;z-index:56;height:34px;padding:0 14px;border:none;border-radius:17px;background:var(--accent);color:#fff;font-size:14px;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.28)}
+    #wbMultiDone[hidden]{display:none}
+    #wbMultiBar{position:fixed;left:0;right:0;bottom:0;z-index:56;display:flex;padding:8px 6px calc(8px + env(safe-area-inset-bottom));background:var(--panel);box-shadow:0 -6px 20px rgba(0,0,0,.32)}
+    #wbMultiBar[hidden]{display:none}
+    #wbMultiBar button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;border:none;background:transparent;color:var(--text);font-size:11px}
+    #wbMultiBar button:disabled{opacity:.35}
+    #wbMultiBar button .ic{width:20px;height:20px}
+    #wbMultiBar button.wb-multi-danger{color:var(--err)}
+    body.wb-multiselect-mode #workbenchView #wbContent{padding-bottom:96px}
+  }
+  body.wb-multiselect-mode #workbenchView .wb-task.is-selected{background:color-mix(in srgb,var(--accent) 16%,var(--panel2))}
   /* FAB 新建的 docked 浮层：固定贴在键盘上方（bottom 由 JS 按 visualViewport 实时算），
      不占列表位置，避免被导航栏/键盘挡住；内容一多就自己滚，不会把面板越撑越高。 */
   #wbDock:empty{display:none}
