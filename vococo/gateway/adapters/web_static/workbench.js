@@ -30,6 +30,7 @@ function wbNotesHidden(view){
   return pref.hideNotes === undefined ? (view === "month" || wbIsMobileWidth()) : !!pref.hideNotes;
 }
 function wbAllCollapsed(view){ return !!wbViewPref(view).collapseAll; }
+function wbParentLabelsHidden(view){ return !!wbViewPref(view).hideParentLabels; }
 
 // 触屏没有 hover，"先选中再点一下打开"这套桌面手势摸不到反馈，容易让人觉得点了没反应。
 // 复用 CSS 里已经在用的 (hover: none) 判定，触屏设备改成点一下直接打开详情。
@@ -355,7 +356,8 @@ function workbenchParentBadge(task, isChild){
   if(!ancestors.length) return '';
   const trail = ancestors.map(a => a.title).join(' › ');
   const label = "父任务："+trail;
-  return '<span class="wb-parent-badge" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("branch")+'<span>'+esc(trail)+'</span></span>';
+  const textHtml = wbParentLabelsHidden(WB.view) ? '' : '<span>'+esc(trail)+'</span>';
+  return '<span class="wb-parent-badge" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("branch")+textHtml+'</span>';
 }
 
 function workbenchChildRows(parentId){
@@ -559,11 +561,13 @@ function renderWorkbenchHeader(){
   // 不然点开的东西看着反而是灰的、没点开的东西看着是亮的，反直觉。
   const notesOn = !wbNotesHidden(WB.view);
   const collapseOn = !wbAllCollapsed(WB.view);
+  const parentLabelsOn = !wbParentLabelsHidden(WB.view);
   return '<header class="wb-toolbar">'+
     '<div class="wb-title-row"><div class="wb-title"><button class="wb-hamb" type="button" data-sidebar aria-label="打开侧边栏">'+ic("panel")+'</button><h1>工作台</h1></div>'+
       '<div class="wb-title-actions">'+
       '<button type="button" class="wb-win-btn'+(notesOn ? " is-on" : "")+'" data-toggle-notes title="'+(notesOn ? "隐藏所有备注" : "显示所有备注")+'" aria-label="显示/隐藏所有备注" aria-pressed="'+notesOn+'">'+ic("doc")+'</button>'+
-      '<button type="button" class="wb-win-btn'+(collapseOn ? " is-on" : "")+'" data-toggle-collapse-all title="'+(collapseOn ? "折叠所有子任务" : "展开所有子任务")+'" aria-label="折叠/展开所有子任务" aria-pressed="'+collapseOn+'">'+ic("branch")+'</button>'+
+      '<button type="button" class="wb-win-btn'+(parentLabelsOn ? " is-on" : "")+'" data-toggle-parent-labels title="'+(parentLabelsOn ? "隐藏父任务名称" : "显示父任务名称")+'" aria-label="显示/隐藏父任务名称" aria-pressed="'+parentLabelsOn+'">'+ic("branch")+'</button>'+
+      '<button type="button" class="wb-win-btn'+(collapseOn ? " is-on" : "")+'" data-toggle-collapse-all title="'+(collapseOn ? "折叠所有子任务" : "展开所有子任务")+'" aria-label="折叠/展开所有子任务" aria-pressed="'+collapseOn+'">'+ic("chevronDown")+'</button>'+
       '<button type="button" class="wb-win-btn" data-workbench-win title="独立窗口" aria-label="独立窗口">'+ic("newwin")+'</button>'+
       '</div></div>'+
     '<div class="wb-switch-row">'+
@@ -1355,6 +1359,13 @@ function wbToggleCollapseAll(){
   wbSaveViewPrefs();
   // 清掉手动展开/折叠过的个别任务，不然点了「全部折叠/展开」还有漏网之鱼保持原样。
   workbenchResetChildExpansion();
+  renderWorkbench();
+}
+
+function wbToggleParentLabels(){
+  const pref = wbViewPref(WB.view);
+  pref.hideParentLabels = !pref.hideParentLabels;
+  wbSaveViewPrefs();
   renderWorkbench();
 }
 
@@ -2168,6 +2179,7 @@ $("#workbenchView").addEventListener("click", event => {
   if(event.target.closest("[data-workbench-win]")){ openWorkbenchStandalone(); return; }
   if(event.target.closest("[data-sidebar]")){ expandSidebarResponsive(); return; }
   if(event.target.closest("[data-toggle-notes]")){ wbToggleNotes(); return; }
+  if(event.target.closest("[data-toggle-parent-labels]")){ wbToggleParentLabels(); return; }
   if(event.target.closest("[data-toggle-collapse-all]")){ wbToggleCollapseAll(); return; }
   const complete = event.target.closest("[data-complete]");
   if(complete){ toggleWorkbenchTask(complete.dataset.complete); return; }
