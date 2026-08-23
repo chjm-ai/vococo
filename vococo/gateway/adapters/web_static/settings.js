@@ -15,8 +15,8 @@ async function openSettings(){
     if(!r.ok) throw new Error("HTTP "+r.status);
     SET.data = await r.json();
   }catch(e){
-    $("#setPane").innerHTML = '<div class="setempty">加载失败:'+esc(String(e&&e.message||e))+
-      '<br><button class="btn ghost sm" style="margin-top:12px" onclick="openSettings()">重试</button></div>';
+    $("#setPane").innerHTML = html`<div class="setempty">加载失败:${String(e&&e.message||e)}
+      <br><button class="btn ghost sm" style="margin-top:12px" onclick="openSettings()">重试</button></div>`;
     return;
   }
   renderSetTab();
@@ -265,14 +265,14 @@ function renderMcpPane(){
 // loadNotifyDevices 各自手写复刻了一遍,收口成这一处共享骨架——.sacts 里装什么(开关/
 // 按钮/两者都有/都没有)每处差异真实存在,不强行统一,交给调用方自己拼 actsHtml。
 function settingsRow(rowAttr, rowKey, nameHtml, descHtml, off, actsHtml){
-  return '<div class="srow'+(off?" off":"")+'"'+(rowAttr?' '+rowAttr+'="'+esc(rowKey)+'"':'')+'>'+
-    '<div class="sinfo"><div class="sname">'+nameHtml+'</div>'+
-    (descHtml?'<div class="sdesc">'+descHtml+'</div>':'')+'</div>'+
-    '<div class="sacts">'+actsHtml+'</div></div>';
+  return html`<div class="srow${html.raw(off?" off":"")}"${html.raw(rowAttr?' '+rowAttr+'="'+esc(rowKey)+'"':'')}>
+    <div class="sinfo"><div class="sname">${html.raw(nameHtml)}</div>
+    ${html.raw(descHtml?'<div class="sdesc">'+descHtml+'</div>':'')}</div>
+    <div class="sacts">${html.raw(actsHtml)}</div></div>`;
 }
 function mcpRow(id, nameHtml, descHtml, on, key, canDelete){
-  const acts=(canDelete?'<button class="miniact danger" data-mdel="'+esc(id)+'">删除</button>':'')+
-    '<label class="sw"><input type="checkbox" data-mtgl="'+esc(key)+'"'+(on?" checked":"")+'><span class="track"></span></label>';
+  const acts=html`${html.raw(canDelete?'<button class="miniact danger" data-mdel="'+esc(id)+'">删除</button>':'')}
+    <label class="sw"><input type="checkbox" data-mtgl="${key}"${html.raw(on?" checked":"")}><span class="track"></span></label>`;
   return settingsRow("data-mrow", key, nameHtml, descHtml, !on, acts);
 }
 function mcpFormHtml(){
