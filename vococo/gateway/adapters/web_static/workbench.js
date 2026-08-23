@@ -131,6 +131,17 @@ function workbenchCurrentFilter(){
 }
 function workbenchChildren(parentId){ return WB_DATA.tasks.filter(task => task.parentId === parentId); }
 function workbenchChildrenStats(parentId){ const children = workbenchChildren(parentId); return {total: children.length, done: children.filter(c => c.status === "done").length}; }
+function workbenchAncestors(task){
+  const chain = []; let cur = task;
+  while(cur && cur.parentId){
+    const p = workbenchTask(cur.parentId);
+    if(!p) break;
+    chain.push(p);
+    cur = p;
+    if(chain.length > 10) break;
+  }
+  return chain.reverse();
+}
 function workbenchGroupId(project){ return "project:"+WB.view+":"+project.id; }
 
 // ── 数据加载 ────────────────────────────────────────────────────────────
@@ -340,10 +351,11 @@ function workbenchChildToggle(task){
 
 function workbenchParentBadge(task, isChild){
   if(!task.parentId || isChild) return '';
-  const parent = workbenchTask(task.parentId);
-  if(!parent) return '';
-  const label = "父任务："+parent.title;
-  return '<span class="wb-parent-badge" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("branch")+'<span>'+esc(parent.title)+'</span></span>';
+  const ancestors = workbenchAncestors(task);
+  if(!ancestors.length) return '';
+  const trail = ancestors.map(a => a.title).join(' › ');
+  const label = "父任务："+trail;
+  return '<span class="wb-parent-badge" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("branch")+'<span>'+esc(trail)+'</span></span>';
 }
 
 function workbenchChildRows(parentId){
@@ -419,7 +431,7 @@ function renderWorkbenchTaskEditor(task){
   const dispatchBtn = isAi ? '<button type="button" class="wb-dispatch-btn" data-dispatch="'+esc(task.id)+'" title="让 AI 执行此任务">▶ 执行</button>' : "";
   const addChildBtn = !task.parentId ? '<button type="button" class="wb-add-child" data-add-child="'+esc(task.id)+'">'+ic("plus")+'<span>添加子任务</span></button>' : '';
   const sessionLinks = workbenchSessionLinks(task);
-  const parentLink = task.parentId ? (function(){ const p = workbenchTask(task.parentId); const label = p ? "查看父任务："+p.title : "查看父任务"; return '<button type="button" class="wb-parent-link" data-goto-parent="'+esc(task.parentId)+'" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("branch")+(p ? '<span>'+esc(p.title)+'</span>' : '')+'</button>'; })() : '';
+  const parentLink = task.parentId ? (function(){ const ancestors = workbenchAncestors(task); const trail = ancestors.map(a => a.title).join(' › '); const label = trail ? "查看父任务："+trail : "查看父任务"; return '<button type="button" class="wb-parent-link" data-goto-parent="'+esc(task.parentId)+'" title="'+esc(label)+'" aria-label="'+esc(label)+'">'+ic("branch")+(trail ? '<span>'+esc(trail)+'</span>' : '')+'</button>'; })() : '';
   const scheduleLabel = workbenchScheduleLabel(task) || "设定日期";
   return '<article class="wb-task wb-editor-shell wb-task-card wb-'+esc(task.status)+'" data-task="'+esc(task.id)+'">'+
     parentLink+
