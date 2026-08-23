@@ -87,6 +87,20 @@ const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
 const esc = s => s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
+// 模板字符串拼 HTML 的轻量替代:插值默认自动 esc(),已知安全的 HTML 片段(比如别处
+// html`` 拼好的子结果)用 html.raw() 包一层跳过转义。不引入构建步骤、不改变现有
+// "字符串拼 innerHTML" 的写法,只是把散落各处的手工 esc(...)+'...' 收成一处。
+function html(strings, ...values){
+  let out = strings[0];
+  for(let i=0;i<values.length;i++){
+    const v = values[i];
+    out += (v && typeof v === "object" && "__raw" in v) ? v.__raw : esc(v==null ? "" : String(v));
+    out += strings[i+1];
+  }
+  return out;
+}
+html.raw = s => ({__raw: s==null ? "" : String(s)});
+
 // 标题栏弹层互斥：打开任一项时，收起其余项（含「⋯」菜单），避免在窄屏上彼此遮挡。
 function closeHeaderPopovers(except){
   for(const id of ["projPop","gitPop","ctxPop","convDocsPop"]){
