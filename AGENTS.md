@@ -1,6 +1,8 @@
 # AGENTS.md — vococo 开发指南
 
-索引:README(现状/命令)、CONTEXT(术语/危险分级)、REQUIREMENTS(需求)、OPERATIONS(运维坑+排障脚本)。
+索引:README(现状/命令)、CONTEXT(术语/危险分级)、REQUIREMENTS(需求)、OPERATIONS(运维坑+排障脚本)、DESIGN(前端设计令牌规范)。
+
+改前端样式前必读 DESIGN.md:颜色/字号/间距/圆角/过渡全部走 CSS 变量,禁止手写数值。
 
 ## 环境 / 命令
 uv sync --extra dev 装依赖;uv run pytest 跑测试。
