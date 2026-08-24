@@ -1545,6 +1545,11 @@
   #workbenchView .wb-task.wb-task-drop-nest{background:color-mix(in srgb,var(--accent) 12%,var(--panel));box-shadow:inset 0 0 0 1.5px var(--accent)}
   #workbenchView .wb-check{display:grid;place-items:center;flex:none;width:20px;height:20px;margin:0;padding:0;line-height:1;border-radius:var(--r-sm)}#workbenchView .wb-task-list>.wb-task>.wb-check{margin-top:1px}#workbenchView .wb-task-copy{min-width:0}#workbenchView .wb-task-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-xl);line-height:20px;font-weight:600}#workbenchView .wb-task-detail{display:-webkit-box;width:100%;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;margin:2px 0 0;color:var(--dim2);font-size:var(--fs-md);line-height:1.4}
   #workbenchView .wb-empty{margin:4px 0 0;padding:var(--sp-3) 2px;border:0;color:var(--dim2);font-size:var(--fs-base)}
+  /* 整页级空状态：吉祥物 + 标题 + 提示，跟聊天页 #empty 是同一套语言（见该处 .elogo）。 */
+  #workbenchView .wb-empty-hero{display:flex;flex-direction:column;align-items:center;margin:4px 0 0;padding:48px var(--sp-4) 40px;text-align:center}
+  #workbenchView .wb-empty-hero .voco-mascot{--s:2.6;margin-bottom:var(--sp-4)}
+  #workbenchView .wb-empty-hero strong{font-size:var(--fs-xl);font-weight:600;color:var(--text)}
+  #workbenchView .wb-empty-hero span{display:block;margin-top:4px;color:var(--dim);font-size:var(--fs-base)}
   /* 移动端新建任务 FAB：只在没有 hover 能力的设备（触屏）上出现，桌面用键盘/侧边按钮就够了。 */
   #wbFab{display:none}
   @media(hover:none){
