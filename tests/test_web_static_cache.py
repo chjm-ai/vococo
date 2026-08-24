@@ -114,6 +114,8 @@ async def test_workbench_js_talks_to_backend(static_app):
     assert 'data-new-title' in source
     assert 'event.code !== "Space"' in source
     assert 'data-open-dp' in source  # 任务日期统一由日期面板触发器处理
+    assert "未排期" in source  # 未排期任务也保留可点击的日期入口
+    assert "is-unscheduled" in source
     assert 'data-edit-detail' in source
     assert "addWorkbenchImages" in source
     assert 'data-sidebar' in source
@@ -123,7 +125,7 @@ async def test_workbench_js_talks_to_backend(static_app):
     assert "function workbenchRedo()" in source
     styles =(Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/styles.css").read_text(encoding="utf-8")
     assert "#workbenchView .wb-toolbar{position:sticky" in styles
-    assert "font-size:14px;font-weight:400;line-height:1.7" in styles
+    assert "font-size:var(--fs-lg);font-weight:400;line-height:1.7" in styles
     assert "#workbenchView .wb-task{display:grid;grid-template-columns:20px minmax(0,1fr) minmax(120px,170px)" in styles
     assert "#workbenchView .wb-project-toggle{display:flex;align-items:center" in styles
 

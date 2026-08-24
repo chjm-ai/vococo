@@ -1765,6 +1765,7 @@
   #workbenchView .wb-assignee{display:grid;place-items:center;flex:0 0 auto;width:20px;height:20px;color:var(--dim2)}
   #workbenchView .wb-assignee .ic{width:15px;height:15px}
   #workbenchView .wb-schedule{display:inline-flex;align-items:center;gap:4px;min-width:0;padding:0;color:var(--dim);font-size:var(--fs-base);line-height:20px;white-space:nowrap}
+  #workbenchView .wb-schedule.is-unscheduled{color:var(--dim2)}
   #workbenchView .wb-schedule:hover{color:var(--accent)}
   #workbenchView .wb-child-toggle{display:grid;place-items:center;flex:0 0 auto;width:20px;height:20px;padding:0;border:0;border-radius:var(--r-sm);background:none;color:var(--dim2);cursor:pointer;transition:background var(--t-fast) ease,color var(--t-fast) ease}
   #workbenchView .wb-child-toggle .ic{width:15px;height:15px}
