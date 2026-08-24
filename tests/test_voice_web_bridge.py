@@ -98,7 +98,7 @@ async def test_web_adapter_inject_enqueues_same_as_browser_send(web_db):
     assert inc.text == "接着跑一下"
     assert inc.session_key == "web:conv1"
     # 跟真实浏览器发消息一样广播了用户气泡,其它客户端(如桌面端)才能实时看到
-    assert broadcasts == [{"conv": "conv1", "type": "user", "text": "接着跑一下"}]
+    assert broadcasts == [{"conv": "conv1", "type": "user", "text": "接着跑一下", "images": []}]
 
 
 # ── voice_continue_session / voice_list_sessions(网页对话分支) ─────────────

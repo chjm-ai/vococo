@@ -318,8 +318,9 @@ function workbenchScheduleLabel(task){
 
 function workbenchScheduleBadge(task){
   const label = workbenchScheduleLabel(task);
-  if(!label) return '';
-  return '<button type="button" class="wb-schedule" data-open-dp="task:'+esc(task.id)+'" title="调整日期">'+esc(label)+'</button>';
+  const unscheduled = !label;
+  // 未排期也必须保留日期入口，不能因为没有日期标签就失去修改排期的方式。
+  return '<button type="button" class="wb-schedule'+(unscheduled ? ' is-unscheduled' : '')+'" data-open-dp="task:'+esc(task.id)+'" title="'+(unscheduled ? '安排日期' : '调整日期')+'">'+esc(label || '未排期')+'</button>';
 }
 
 function workbenchShouldAutoExpandChildren(parentId){
