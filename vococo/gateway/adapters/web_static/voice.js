@@ -270,6 +270,7 @@
   let _resettingMic = 0;  // resetMicStream 重入守卫:阻止 onended→suspect→reconnect 自循环
   let _micSilentCount = 0;
   let _micSilentTs = 0;
+  let _ctxStuckTicks = 0;  // AudioContext 连续被判"非 running"的看门狗次数(见 omniReadStallCheck)
 
   function micStreamHealthy(){
     if(!stream) return false;
@@ -357,8 +358,75 @@
         setTimeout(() => {
           if(!micStreamHealthy()) suspectMicProblem("audioctx-resume");
         }, 300);
+      } else if(audioCtx.state !== "running" && handsFreeActive){
+        // 通话期间被系统挂起:立刻尝试拉回来。挂着不管的后果不只是没音效——
+        // micStreamHealthy/checkMicAudioActivity 的僵尸流判定都以 state==="running"
+        // 为前提,ctx 一直挂着等于把麦克风自检整个关掉(2026-08-24 根因之一)。
+        try{ audioCtx.resume().catch(()=>{}); }catch(e){}
       }
     };
+  }
+
+  // ── 息屏/切后台回来的音频链路复活(2026-08-24)───────────────────────────
+  // 历史上三次"息屏断连"修复(wakeLock / 保活音轨 / 防熄屏视频)全部是【预防】,
+  // 没有一层负责【息屏之后怎么恢复】——而息屏总有防不住的时候(用户主动按电源键、
+  // 来电打断、iOS 18.4 以下的 PWA wakeLock bug)。这里补上恢复:
+  //   ① AudioContext 被 iOS 挂起后必须显式 resume,否则麦克风自检永久瘫痪;
+  //   ② 保活音轨/防熄屏视频被系统暂停后要重新起播(以前只重启了视频);
+  //   ③ 远端 <audio> 被音频中断暂停后要重新 play(),否则 AI 出声全程听不见;
+  //   ④ 收尾做一次【真·探活】:ctx 拉不回来 / 麦克风轨道死了 / 电平恒静音,
+  //      就直接强制重连,而不是像以前那样界面写着"聆听中"实则全链路失聪。
+  let resumeProbeTimer = null;
+  function resumeAudioPipeline(why){
+    vdbg("resume.begin", {why, ctx: audioCtx && audioCtx.state,
+      ka: !!(keepAliveEl && !keepAliveEl.paused), kv: !!(keepAliveVideo && !keepAliveVideo.paused)});
+    if(audioCtx && audioCtx.state !== "running"){
+      try{ audioCtx.resume().catch(err=>vdbg("resume.ctx.fail", String(err))); }catch(e){}
+    }
+    startKeepAliveAudio();
+    startKeepAliveVideo();
+    if(omniAudioEl && omniAudioEl.srcObject && omniAudioEl.paused){
+      try{ omniAudioEl.play().catch(err=>vdbg("resume.remote.fail", String(err))); }catch(e){}
+    }
+    if(resumeProbeTimer) clearTimeout(resumeProbeTimer);
+    resumeProbeTimer = setTimeout(()=>{ resumeProbeTimer = null; probeAfterResume(why); }, 1200);
+  }
+
+  // 复活后的真·探活:只在通话仍激活时跑,判死就强制重连(force=true 跳过
+  // "pc 看着还 connected 就不重建"那道闸——息屏杀掉的是麦克风和音频会话,
+  // WebRTC 连接状态在这种故障里恰恰是【一直显示 connected】的,不能信它)。
+  function probeAfterResume(why){
+    if(!handsFreeActive) return;
+    if(audioCtx && audioCtx.state !== "running"){
+      vdbg("resume.probe.ctx-stuck", audioCtx.state);
+      scheduleOmniReconnect("resume:ctx-stuck", 300, true);
+      return;
+    }
+    const tracks = stream ? stream.getAudioTracks() : [];
+    if(!tracks.length || !tracks.some(t => t.readyState === "live")){
+      vdbg("resume.probe.track-dead", tracks.map(t=>t.readyState).join(","));
+      scheduleOmniReconnect("resume:track-dead", 300, true);
+      return;
+    }
+    // 主动静音期间电平本来就恒静,没法判,交给常规看门狗
+    if(omniMicMuted || micMuted || !analyser){ vdbg("resume.probe.skip"); return; }
+    // 连采 6 次(约 1.2s)全是纯静音 = 僵尸流:真实麦克风即使安静房间也有底噪抖动。
+    let samples = 0, flat = 0;
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    const tick = setInterval(()=>{
+      if(!handsFreeActive || !analyser || omniMicMuted || micMuted){ clearInterval(tick); return; }
+      analyser.getByteTimeDomainData(buf);
+      if(Math.max(...buf) - Math.min(...buf) < 2) flat++;
+      if(++samples < 6) return;
+      clearInterval(tick);
+      if(flat === samples){
+        vdbg("resume.probe.mic-zombie", {why});
+        resetMicStream();
+        scheduleOmniReconnect("resume:mic-zombie", 300, true);
+      } else {
+        vdbg("resume.probe.ok", {flat, samples});
+      }
+    }, 200);
   }
 
   // 给麦克风流的每条音轨挂监听:iOS 电话打断/蓝牙断开时 track 会 mute/ended
@@ -2008,6 +2076,20 @@
     // 3s 一次的周期性秒杀也检查麦克风健康——设备切换不一定触发 onended/mute,
     // 比如 iOS 在后台杀音频会话后,轨道可能静默 ended 而不发事件。
     if(handsFreeActive){
+      // AudioContext 卡在挂起态的自愈(2026-08-24):没有 visibilitychange 事件的
+      // 场景(来电打断、控制中心、部分安卓浏览器直接冻结页面而不派发事件)也要
+      // 兜住——ctx 不 running 时上面两个自检全都是空转,连续 5 次(约 15s)拉不
+      // 回来就当作真中断,交给探活流程判死重连。
+      if(audioCtx && audioCtx.state !== "running"){
+        try{ audioCtx.resume().catch(()=>{}); }catch(e){}
+        if(++_ctxStuckTicks >= 5){
+          _ctxStuckTicks = 0;
+          vdbg("watchdog.ctx-stuck", audioCtx.state);
+          resumeAudioPipeline("watchdog");
+        }
+      } else {
+        _ctxStuckTicks = 0;
+      }
       if(!micStreamHealthy()) suspectMicProblem("stale");
       checkMicAudioActivity();
     }
@@ -2601,9 +2683,18 @@
     omniSpeechActive = false; omniInflightSegs = 0; omniSpeechStoppedTs = 0;
     omniUserBubble = null; omniUserBubbleText = ""; omniUserSentTs = 0;
     if(omniReadWatchdog){ clearInterval(omniReadWatchdog); omniReadWatchdog = null; }
-    stopKeepAliveAudio();  // 通话已收线,保活音轨一并停掉(锁屏防挂起)
-    stopKeepAliveVideo();  // 通话已结束,防熄屏视频一并停掉
-    releaseWakeLock();     // 通话已结束,释放常亮锁让系统正常熄屏节能
+    // 复活探针作废:连线已经拆了,再让它到点去判"麦克风死了"会顶掉新建的连接
+    if(resumeProbeTimer){ clearTimeout(resumeProbeTimer); resumeProbeTimer = null; }
+    _ctxStuckTicks = 0;
+    // 【只在真挂断时才收保活】(2026-08-24):stopOmniHandsFree 同时被重连/切音色
+    // 复用,那两条路径 handsFreeActive 仍为 true。原来无条件停保活,等于在重连的
+    // 几秒空窗里把"页面别被冻结"的唯一依靠拆了——锁屏状态下正好卡在这个窗口,
+    // 页面直接冻住,重连永远跑不完,表现就是"息屏后再也接不回来"。
+    if(!handsFreeActive){
+      stopKeepAliveAudio();  // 通话已收线,保活音轨一并停掉(锁屏防挂起)
+      stopKeepAliveVideo();  // 通话已结束,防熄屏视频一并停掉
+      releaseWakeLock();     // 通话已结束,释放常亮锁让系统正常熄屏节能
+    }
     if(omniAudioEl){ try{ omniAudioEl.srcObject = null; }catch(e){} }
     setOmniAudioMuted(true, "hangup");  // 挂断收口:输出通道回默认静音态
   }
@@ -2616,6 +2707,11 @@
     stopOmniHandsFree();
     resetMicStream();  // 停掉麦克风,避免 LED 常亮
     handsFreeActive = false;
+    // 真收线:保活媒体与常亮锁由本路径自己收(stopOmniHandsFree 里那段现在
+    // 只认 handsFreeActive=false,而它被调用时这里还没置 false)。
+    stopKeepAliveAudio();
+    stopKeepAliveVideo();
+    releaseWakeLock();
     handsFreeUi.hidden = true;
     startBtn.hidden = false;
     startBtn.title = "通话"; startBtn.setAttribute("aria-label", "通话");
@@ -2757,9 +2853,14 @@
     wakeLockSentinel = null;
   }
   document.addEventListener("visibilitychange", ()=>{
-    if(document.hidden) return;
+    if(document.hidden){
+      if(handsFreeActive) vdbg("bg.enter", {ctx: audioCtx && audioCtx.state});
+      return;
+    }
     if(handsFreeActive) acquireWakeLock();  // 通话激活期间回前台:重拿常亮锁
-    if(handsFreeActive) startKeepAliveVideo();  // 顺带恢复防熄屏视频
+    // 息屏/切后台回来的完整复活流程(2026-08-24):以前这里只补了 wakeLock 和
+    // 防熄屏视频,保活音轨、AudioContext、远端音频元素三样都没人管——见 resumeAudioPipeline。
+    if(handsFreeActive) resumeAudioPipeline("vischange");
     // 切回前台时可能刚经历过电话打断/蓝牙断开:怀疑麦克风有问题
     if(handsFreeActive) suspectMicProblem("vischange");
     // P0 修复(2026-07-27):切后台/锁屏期间 SSE 事件可能已经到了但没被处理,
@@ -2786,15 +2887,20 @@
     el.loop = true; el.preload = "auto"; el.setAttribute("playsinline", "");
     el.src = KEEP_ALIVE_WAV;
     el.addEventListener("error", ()=>{ vdbg("keepalive.err"); keepAliveEl = null; });
+    // 【必须挂进文档】(2026-08-24):游离(没有父节点)的媒体元素在 iOS WebKit 上
+    // 不参与渲染,后台音频会话/防熄屏豁免统统不认它——2026-08-12、08-17 两次保活
+    // 修复都栽在这里,元素建了、play() 也 resolve 了,系统侧却当它不存在。
+    document.body.appendChild(el);
     keepAliveEl = el;
     const p = el.play();
-    if(p && p.catch) p.catch(err => { vdbg("keepalive.playfail", String(err)); keepAliveEl = null; });
+    if(p && p.catch) p.catch(err => { vdbg("keepalive.playfail", String(err)); });
     vdbg("keepalive.on");
   }
   function stopKeepAliveAudio(){
     if(!keepAliveEl) return;
     try{ keepAliveEl.pause(); }catch(e){}
     try{ keepAliveEl.src = ""; }catch(e){}
+    try{ keepAliveEl.remove(); }catch(e){}
     keepAliveEl = null;
   }
 
@@ -2816,25 +2922,39 @@
     v.loop = true; v.muted = true; v.preload = "auto";
     v.setAttribute("playsinline", "");
     v.setAttribute("webkit-playsinline", "");
-    // 隐藏但可播放:display:none 会停播,这里压到 1px + 移出视口
-    v.style.cssText = "position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none";
+    // 隐藏但必须【真的在渲染】:display:none / visibility:hidden / 移出视口太远
+    // 都可能被 WebKit 判为"不可见"从而不给 idle-lock 豁免,opacity 也不能给 0
+    // (NoSleep.js 同款约束)。压到 1px、留在视口左下角、透明度 0.01 肉眼不可见。
+    v.style.cssText = "position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-1";
     v.src = KEEP_ALIVE_MP4;
-    v.addEventListener("error", ()=>{ vdbg("keepalive-video.err"); keepAliveVideo = null; });
+    v.addEventListener("error", ()=>{ vdbg("keepalive-video.err"); });
+    // 【必须挂进文档】(2026-08-24 根因):原实现建完元素直接 play(),从未
+    // appendChild——游离元素没有渲染树节点,iOS 的"有视频在播就不自动锁屏"
+    // 豁免根本轮不到它,2026-08-17 那次修复实际全程未生效。
+    document.body.appendChild(v);
     keepAliveVideo = v;
     const p = v.play();
-    if(p && p.catch) p.catch(err => { vdbg("keepalive-video.playfail", String(err)); keepAliveVideo = null; });
+    if(p && p.catch) p.catch(err => { vdbg("keepalive-video.playfail", String(err)); });
     vdbg("keepalive-video.on");
   }
   function stopKeepAliveVideo(){
     if(!keepAliveVideo) return;
     try{ keepAliveVideo.pause(); }catch(e){}
     try{ keepAliveVideo.src = ""; }catch(e){}
+    try{ keepAliveVideo.remove(); }catch(e){}
     keepAliveVideo = null;
   }
   // iOS 要求媒体播放由用户手势发起:建连链路里的直接调用若因 async 丢失
   // 手势窗口被拒,这里在每次触摸屏幕时顺手恢复(幂等,已在播则 no-op)。
-  document.addEventListener("pointerdown", ()=>{ if(handsFreeActive) startKeepAliveVideo(); });
-  document.addEventListener("touchstart", ()=>{ if(handsFreeActive) startKeepAliveVideo(); });
+  // 音轨也一并恢复:两条保活媒体都可能被系统中断暂停,只补视频等于漏了一半。
+  function resumeKeepAliveOnGesture(){
+    if(!handsFreeActive) return;
+    startKeepAliveVideo();
+    startKeepAliveAudio();
+    if(audioCtx && audioCtx.state !== "running"){ try{ audioCtx.resume().catch(()=>{}); }catch(e){} }
+  }
+  document.addEventListener("pointerdown", resumeKeepAliveOnGesture);
+  document.addEventListener("touchstart", resumeKeepAliveOnGesture);
 
   // ── 视图切换入口(统一对话视图复用主会话 composer)────────────────────────
   // initOnce:原页面这些初始化(常驻任务播报订阅/拉历史/挑一次交互模式)靠整页
