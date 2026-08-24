@@ -584,9 +584,8 @@
   #gitPop .gph{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:4px}
   #gitPop .gbr{font-size:var(--fs-md);font-weight:600;color:var(--accent);display:inline-flex;align-items:center;gap:6px}
   #gitPop .gah{font-size:var(--fs-sm);color:var(--dim);font-variant-numeric:tabular-nums}
-  #gitPop .gsub{font-size:var(--fs-sm);color:var(--dim2);word-break:break-all;
+  #gitPop .gsub{font-size:var(--fs-sm);color:var(--dim2);word-break:break-all;margin-bottom:var(--sp-2);
     font-family:ui-monospace,Menlo,monospace}
-  #gitPop .ghint{font-size:var(--fs-sm);color:var(--dim);margin:2px 0 var(--sp-2)}
   #gitPop .gsum{font-size:var(--fs-sm);color:var(--dim);padding-bottom:var(--sp-2);
     border-bottom:1px solid var(--line);margin-bottom:var(--sp-2)}
   #gitPop .gclean{font-size:var(--fs-sm);color:var(--dim);padding:2px 0 var(--sp-1)}

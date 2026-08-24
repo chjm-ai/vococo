@@ -68,7 +68,7 @@ function renderGitFiles(d){
   let html='<div class="gfiles">';
   for(const [label,list] of groups){
     if(!list.length) continue;
-    html+='<div class="ggrp">'+label+' · '+list.length+'</div>'
+    html+='<div class="ggrp">'+label+'</div>'
       +list.map(f=>'<div class="gf"><span class="gx">'+esc((f.x||"").trim()||"?")+'</span><span class="gp">'+esc(f.path)+'</span></div>').join("");
   }
   html+='</div>';
@@ -88,7 +88,6 @@ function renderGitPop(){
   pop.innerHTML=
     '<div class="gph"><span class="gbr"><span class="gdot '+gitDotClass(d)+'"></span>⎇ '+esc(d.branch)+'</span>'+(ah.length?'<span class="gah">'+ah.join(" ")+'</span>':'')+'</div>'+
     '<div class="gsub">'+esc(d.path)+'</div>'+
-    '<div class="ghint">仅统计当前会话的隔离工作区,与项目主目录分开</div>'+
     summary+
     renderGitFiles(d);
 }
