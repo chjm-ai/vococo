@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import datetime
 import json
 import re
 import time
@@ -247,11 +248,48 @@ def move_task(task_id: str, parent_id: str | None, project_id: str, order: list[
 
 
 
+def _roll_overdue_tasks() -> None:
+    """惰性版 Things 的 Today:读取任务前,把过期未完成任务的 date/week/month 滚到当前周期
+    (昨天→今天、上周→本周、上月→本月),已完成/已取消的保留原时间不动(日志要用)。
+    date/week/month 三者互斥使用(建任务时只填其中一档更细的,粗档跟着派生),
+    所以按 date > week > month 优先级只判一档就够,不会重复触发。
+    """
+    today = datetime.date.today()
+    today_str = today.isoformat()
+    week_str = (today - datetime.timedelta(days=today.weekday())).isoformat()
+    month_str = today_str[:7]
+    c = _db.conn()
+    rows = c.execute(
+        "SELECT id, date, week, month FROM workbench_tasks "
+        "WHERE deleted_at IS NULL AND status NOT IN ('done','cancelled')"
+    ).fetchall()
+    now = time.time()
+    updates = []
+    for task_id, date, week, month in rows:
+        if date:
+            if date < today_str:
+                updates.append((today_str, month_str, week_str, now, task_id))
+        elif week:
+            if week < week_str:
+                updates.append((None, month_str, week_str, now, task_id))
+        elif month:
+            if month < month_str:
+                updates.append((None, month_str, None, now, task_id))
+    if not updates:
+        return
+    c.executemany(
+        "UPDATE workbench_tasks SET date=?, month=?, week=?, updated_at=? WHERE id=?",
+        updates,
+    )
+    c.commit()
+
+
 def list_tasks() -> list[dict]:
     """全量任务(个人规模全量拉取即可;按日/周/月分组、按项目筛选交给前端)。
     不含已软删除(回收站)的任务,那份数据走 list_deleted_tasks() 单独懒加载。
     """
     _seed_if_empty()
+    _roll_overdue_tasks()
     rows = _db.conn().execute(
         f"SELECT {_TASK_COLUMNS} FROM workbench_tasks WHERE deleted_at IS NULL ORDER BY sort_order ASC"
     ).fetchall()
