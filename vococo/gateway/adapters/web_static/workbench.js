@@ -2922,13 +2922,15 @@ document.addEventListener("keydown", event => {
     return;
   }
   if(WB.view === "completed" || WB.view === "trash") return; // 这两个视图没有项目分组，插不进新建卡
-  // 空格：选中顶层任务就在同组下方插入同级任务；选中子任务就在其下方插入同级子任务；
+  // 空格：只有实际显示在子任务列表里的任务才新增同级子任务。日/周/月等筛选
+  // 会把父任务不在当前范围内的子任务直接列为一级任务，此时应新增一级任务。
   // 没有选中（或多选）时维持原样——插到当前分组最底下。
   if(WB.selected.size === 1){
     const task = workbenchTask([...WB.selected][0]);
     if(task){
       event.preventDefault();
-      if(task.parentId) openWorkbenchNewChild(task.parentId, task.id);
+      const isRenderedChild = !!workbenchNodeForTask(task.id)?.closest(".wb-children");
+      if(task.parentId && isRenderedChild) openWorkbenchNewChild(task.parentId, task.id);
       else openWorkbenchNewTask(task.id);
       return;
     }

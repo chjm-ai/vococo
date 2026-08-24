@@ -113,6 +113,9 @@ async def test_workbench_js_talks_to_backend(static_app):
     assert 'data-add-project' in source
     assert 'data-new-title' in source
     assert 'event.code !== "Space"' in source
+    # 日期筛选会把父任务不在当前范围内的子任务直接列为一级任务；空格应据实际 DOM 层级新建。
+    assert 'const isRenderedChild = !!workbenchNodeForTask(task.id)?.closest(".wb-children");' in source
+    assert 'if(task.parentId && isRenderedChild) openWorkbenchNewChild(task.parentId, task.id);' in source
     assert 'data-open-dp' in source  # 任务日期统一由日期面板触发器处理
     assert "未排期" in source  # 未排期任务也保留可点击的日期入口
     assert "is-unscheduled" in source
