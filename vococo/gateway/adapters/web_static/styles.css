@@ -1790,7 +1790,8 @@
   #workbenchView .wb-assignee-opt.is-on{color:var(--text);opacity:1}
   #workbenchView .wb-dispatch-btn{display:inline-flex;align-items:center;gap:3px;height:28px;padding:0 var(--sp-4);margin-left:auto;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);color:var(--dim);font-size:var(--fs-base);font-weight:600;cursor:pointer}
   #workbenchView .wb-dispatch-btn:hover{background:var(--panel2);color:var(--text)}
-  #workbenchView .wb-session-links{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
-  #workbenchView .wb-session-link{max-width:220px;padding:var(--sp-1) var(--sp-3);border-radius:var(--r-sm);overflow:hidden;color:var(--dim);font-size:var(--fs-md);line-height:26px;white-space:nowrap;text-overflow:ellipsis;text-decoration:none;cursor:pointer}
-  #workbenchView .wb-session-link:hover{background:var(--panel2);color:var(--accent)}
+  #workbenchView .wb-session-links{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;margin-left:auto}
+  #workbenchView .wb-session-links + .wb-dispatch-btn{margin-left:0}
+  #workbenchView .wb-session-link{display:inline-flex;align-items:center;height:28px;max-width:220px;padding:0 var(--sp-3);border-radius:var(--r-sm);overflow:hidden;color:var(--dim);font-size:var(--fs-md);white-space:nowrap;text-overflow:ellipsis;text-decoration:none;cursor:pointer}
+  #workbenchView .wb-session-link:hover{background:var(--panel2)}
   #workbenchView .wb-new-child{margin:4px 0 0}
