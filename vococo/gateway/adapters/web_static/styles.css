@@ -1790,4 +1790,4 @@
   #workbenchView .wb-session-links{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
   #workbenchView .wb-session-link{padding:var(--sp-1) var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--dim);font-size:var(--fs-md);text-decoration:none;cursor:pointer}
   #workbenchView .wb-session-link:hover{background:var(--panel2);color:var(--accent);border-color:var(--accent)}
-  #workbenchView .wb-new-child{margin:4px 0 0 30px;width:calc(100% - 30px)}
+  #workbenchView .wb-new-child{margin:4px 0 0}
