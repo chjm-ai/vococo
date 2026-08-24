@@ -1186,19 +1186,37 @@ function openWorkbenchEditor(taskId){
   });
 }
 
-// 勾选完成后，先原地打勾停留一小段时间（让用户看清「已完成」的反馈），
-// 再收起腾出空间；taskId -> setTimeout 句柄，方便在停留期间被取消（比如又点了一次撤销）。
-const WB_COMPLETE_HOLD = new Map();
-const WB_COMPLETE_HOLD_MS = 1500;
+// 标记完成/取消后，先原地停留一小段时间（让用户看清状态反馈），
+// 再收起腾出空间；taskId -> setTimeout 句柄，方便在停留期间被撤销。
+const WB_TERMINAL_HOLD = new Map();
+const WB_TERMINAL_HOLD_MS = 1500;
 
-// 已完成的任务在这几个视图里直接隐藏（见 workbenchVisibleTasks）。勾选完成时先走
-// workbenchSwapTask 原地换勾选态，停留后再用 workbenchShrinkOut 收起；取消完成（恢复）
-// 不需要停留，直接整体重渲染即可。
+function workbenchClearTerminalHold(taskId){
+  const pendingHold = WB_TERMINAL_HOLD.get(taskId);
+  if(pendingHold){ clearTimeout(pendingHold); WB_TERMINAL_HOLD.delete(taskId); }
+}
+
+function workbenchHoldTerminalTask(taskId){
+  workbenchClearTerminalHold(taskId);
+  const node = workbenchNodeForTask(taskId);
+  if(!node) return false;
+  WB_TERMINAL_HOLD.set(taskId, setTimeout(() => {
+    WB_TERMINAL_HOLD.delete(taskId);
+    const task = workbenchTask(taskId);
+    const stillTerminal = task && (task.status === "done" || task.status === "cancelled");
+    const currentNode = workbenchNodeForTask(taskId);
+    if(!currentNode || !stillTerminal) return;
+    if(!workbenchShrinkOut(currentNode)) renderWorkbench();
+  }, WB_TERMINAL_HOLD_MS));
+  return true;
+}
+
+// 已完成/已取消的任务在这几个视图里直接隐藏（见 workbenchVisibleTasks）。状态切换时先走
+// workbenchSwapTask 原地换状态，停留后再用 workbenchShrinkOut 收起；恢复任务则直接重渲染。
 function toggleWorkbenchTask(taskId){
   const task = workbenchTask(taskId);
   if(!task) return;
-  const pendingHold = WB_COMPLETE_HOLD.get(taskId);
-  if(pendingHold){ clearTimeout(pendingHold); WB_COMPLETE_HOLD.delete(taskId); }
+  workbenchClearTerminalHold(taskId);
   const before = {status: task.status};
   const completing = task.status !== "done" && task.status !== "cancelled";
   task.status = completing ? "done" : "todo";
@@ -1211,13 +1229,7 @@ function toggleWorkbenchTask(taskId){
     return;
   }
   if(completing && workbenchSwapTask(taskId)){
-    WB_COMPLETE_HOLD.set(taskId, setTimeout(() => {
-      WB_COMPLETE_HOLD.delete(taskId);
-      const node = workbenchNodeForTask(taskId);
-      const stillDone = workbenchTask(taskId)?.status === "done";
-      if(!node || !stillDone) return;
-      if(!workbenchShrinkOut(node)) renderWorkbench();
-    }, WB_COMPLETE_HOLD_MS));
+    workbenchHoldTerminalTask(taskId);
     return;
   }
   renderWorkbench();
@@ -1737,12 +1749,21 @@ function workbenchBatchCancel(ids){
   ids.forEach(id => {
     const task = workbenchTask(id);
     if(!task || task.status === "cancelled") return;
+    workbenchClearTerminalHold(id);
     before.push({id, patch:{status:task.status}});
     task.status = "cancelled";
     after.push({id, patch:{status:task.status}});
   });
   if(!before.length) return;
-  renderWorkbench();
+  // 先原地显示「已取消」，停留片刻后再收起；和单个任务标记完成保持一致。
+  let swapped = 0;
+  after.forEach(({id}) => {
+    if(workbenchSwapTask(id)){
+      swapped++;
+      workbenchHoldTerminalTask(id);
+    }
+  });
+  if(!swapped) renderWorkbench();
   Promise.all(after.map(({id, patch}, index) => persistWorkbenchTask(id, patch, before[index].patch))).then(results => {
     if(results.every(Boolean)) workbenchRemember({type:"task-patch", before, after});
   });

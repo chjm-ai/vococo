@@ -4,6 +4,7 @@ from pathlib import Path
 
 STATIC_INDEX = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/index.html"
 STATIC_STYLES = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/styles.css"
+STATIC_WORKBENCH = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/workbench.js"
 STATIC_SW = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/sw.js"
 WORKTREE = Path(__file__).parents[1] / "vococo/core/worktree.py"
 GATEWAY_RUN = Path(__file__).parents[1] / "vococo/gateway/run.py"
@@ -91,6 +92,15 @@ def test_task_status_map_is_shared_with_sidebar_helpers():
     assert "const soonest = [...barTasks.values()]" in html
     assert "window.refreshTaskBar = renderTaskBar;" in html
     assert "window.refreshTaskBar?.()" in html
+
+
+def test_workbench_cancel_holds_before_hiding():
+    js = STATIC_WORKBENCH.read_text(encoding="utf-8")
+
+    assert "const WB_TERMINAL_HOLD = new Map();" in js
+    cancel_fn = js[js.index("function workbenchBatchCancel(ids){") : js.index("function workbenchBatchSchedule(ids, schedule){")]
+    assert "workbenchSwapTask(id)" in cancel_fn
+    assert "workbenchHoldTerminalTask(id)" in cancel_fn
 
 
 def test_service_worker_cache_version_changes_with_shell_contract():
