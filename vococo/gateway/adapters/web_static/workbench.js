@@ -32,6 +32,16 @@ function wbNotesHidden(view){
 function wbAllCollapsed(view){ return !!wbViewPref(view).collapseAll; }
 function wbParentLabelsHidden(view){ return !!wbViewPref(view).hideParentLabels; }
 
+// 「是否显示已完成任务」是全局唯一开关（不像上面三个按视图各记各的）：日/周/月/项目
+// 四个视图共用同一个状态，跟用户的产品预期一致——不需要切个视图就要重新开一次。
+const WB_SHOW_DONE_KEY = "vococo:workbench-show-done";
+let WB_SHOW_DONE = localStorage.getItem(WB_SHOW_DONE_KEY) === "1";
+function wbToggleShowDone(){
+  WB_SHOW_DONE = !WB_SHOW_DONE;
+  try{ localStorage.setItem(WB_SHOW_DONE_KEY, WB_SHOW_DONE ? "1" : "0"); }catch(e){}
+  renderWorkbench();
+}
+
 // 触屏没有 hover，"先选中再点一下打开"这套桌面手势摸不到反馈，容易让人觉得点了没反应。
 // 复用 CSS 里已经在用的 (hover: none) 判定，触屏设备改成点一下直接打开详情。
 function wbIsTouchLike(){ return typeof window.matchMedia === "function" && window.matchMedia("(hover: none)").matches; }
@@ -502,9 +512,10 @@ function workbenchProjectBlock(project, tasks){
   return '<section class="wb-project-block" data-group="'+esc(groupId)+'">'+header+body+deleteBtn+'</section>';
 }
 
-// 已完成的任务只在「已完成」tab 里看（按天分组），unscheduled/day/week/project 这几个
-// 视图一律不显示——跟原来"done 任务原地打勾变灰"的行为不一样，切完成状态要连带触发整块
-// 重渲染（见 toggleWorkbenchTask/workbenchBatchComplete），不能再用原地 swap 节点那条快路径。
+// 已完成的任务默认在「已完成」tab 里看（按天分组）；unscheduled/day/week/month/project
+// 这几个视图是否显示已完成任务由右上角「显示已完成」开关（WB_SHOW_DONE）统一控制，不
+// 再按视图各自硬编码。切完成状态要连带触发整块重渲染（见 toggleWorkbenchTask/
+// workbenchBatchComplete），不能再用原地 swap 节点那条快路径。
 function workbenchHasVisibleAncestor(task, visibleIds){
   const seen = new Set();
   let parentId = task.parentId;
@@ -520,8 +531,8 @@ function workbenchIsLogged(task){ return task.status === "done" || task.status =
 
 function workbenchVisibleTasks(){
   const dateFilter = workbenchCurrentFilter();
-  if(!dateFilter) return workbenchTasks(task => !workbenchIsLogged(task));
-  const hideDone = WB.view !== "month";
+  const hideDone = !WB_SHOW_DONE;
+  if(!dateFilter) return workbenchTasks(task => !hideDone || !workbenchIsLogged(task));
   const combined = hideDone ? (task => dateFilter(task) && !workbenchIsLogged(task)) : dateFilter;
   const all = workbenchAllTasks(combined);
   const visibleIds = new Set(all.map(task => task.id));
@@ -588,9 +599,11 @@ function renderWorkbenchHeader(){
   const notesOn = !wbNotesHidden(WB.view);
   const collapseOn = !wbAllCollapsed(WB.view);
   const parentLabelsOn = !wbParentLabelsHidden(WB.view);
+  const showDoneOn = WB_SHOW_DONE;
   return '<header class="wb-toolbar">'+
     '<div class="wb-title-row"><div class="wb-title"><button class="wb-hamb" type="button" data-sidebar aria-label="打开侧边栏">'+ic("panel")+'</button><h1>工作台</h1></div>'+
       '<div class="wb-title-actions">'+
+      '<button type="button" class="wb-win-btn'+(showDoneOn ? " is-on" : "")+'" data-toggle-show-done title="'+(showDoneOn ? "隐藏已完成任务" : "显示已完成任务")+'" aria-label="显示/隐藏已完成任务" aria-pressed="'+showDoneOn+'">'+ic("eye")+'</button>'+
       '<button type="button" class="wb-win-btn'+(notesOn ? " is-on" : "")+'" data-toggle-notes title="'+(notesOn ? "隐藏所有备注" : "显示所有备注")+'" aria-label="显示/隐藏所有备注" aria-pressed="'+notesOn+'">'+ic("doc")+'</button>'+
       '<button type="button" class="wb-win-btn'+(parentLabelsOn ? " is-on" : "")+'" data-toggle-parent-labels title="'+(parentLabelsOn ? "隐藏父任务名称" : "显示父任务名称")+'" aria-label="显示/隐藏父任务名称" aria-pressed="'+parentLabelsOn+'">'+ic("branch")+'</button>'+
       '<button type="button" class="wb-win-btn'+(collapseOn ? " is-on" : "")+'" data-toggle-collapse-all title="'+(collapseOn ? "折叠所有子任务" : "展开所有子任务")+'" aria-label="折叠/展开所有子任务" aria-pressed="'+collapseOn+'">'+ic("chevronDown")+'</button>'+
@@ -2268,6 +2281,7 @@ $("#workbenchView").addEventListener("click", event => {
   }
   if(event.target.closest("[data-workbench-win]")){ openWorkbenchStandalone(); return; }
   if(event.target.closest("[data-sidebar]")){ expandSidebarResponsive(); return; }
+  if(event.target.closest("[data-toggle-show-done]")){ wbToggleShowDone(); return; }
   if(event.target.closest("[data-toggle-notes]")){ wbToggleNotes(); return; }
   if(event.target.closest("[data-toggle-parent-labels]")){ wbToggleParentLabels(); return; }
   if(event.target.closest("[data-toggle-collapse-all]")){ wbToggleCollapseAll(); return; }
