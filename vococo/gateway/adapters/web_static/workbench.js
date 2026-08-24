@@ -472,11 +472,18 @@ function workbenchProjectBlock(project, tasks){
   const groupId = workbenchGroupId(project);
   const isDetail = WB.view === "project" && WB.project !== "all";
   const newCard = (!WB.newTask || !WB.newTask.parentId) ? workbenchNewTaskCard(project) : "";
-  // 移动端 FAB 新建可以指定插到某个已有任务前面（点顶部/拖拽定位），不然新建卡固定长在列表最底下。
+  // 移动端 FAB 新建可以指定插到某个已有任务前面（点顶部/拖拽定位）；键盘空格新建可以指定插到
+  // 某个已有任务后面（含它自己的子任务块）；都没指定就跟原来一样固定长在列表最底下。
   const beforeId = newCard && WB.newTask.beforeTaskId;
-  const rows = (beforeId && tasks.some(t => t.id === beforeId))
-    ? tasks.map(t => (t.id === beforeId ? newCard : "")+workbenchTaskRow(t)).join("")
-    : tasks.map(t => workbenchTaskRow(t)).join("") + newCard;
+  const afterId = newCard && WB.newTask.afterTaskId;
+  let rows;
+  if(afterId && tasks.some(t => t.id === afterId)){
+    rows = tasks.map(t => workbenchTaskRow(t)+(t.id === afterId ? newCard : "")).join("");
+  }else if(beforeId && tasks.some(t => t.id === beforeId)){
+    rows = tasks.map(t => (t.id === beforeId ? newCard : "")+workbenchTaskRow(t)).join("");
+  }else{
+    rows = tasks.map(t => workbenchTaskRow(t)).join("") + newCard;
+  }
   const body = rows ? '<div class="wb-task-list">'+rows+'</div>' : '<p class="wb-empty">暂无任务</p>';
   const header = isDetail ? "" : '<button type="button" class="wb-project-toggle" data-goto-project="'+esc(project.id)+'" title="查看「'+esc(project.name)+'」项目"><i class="wb-project-icon" aria-hidden="true">'+ic("folder")+'</i><span class="wb-project-name"><strong>'+esc(project.name)+'</strong><i class="wb-chevron" aria-hidden="true"></i></span></button>';
   const deleteBtn = (isDetail && project.id !== WB_UNASSIGNED_ID) ? '<button type="button" class="wb-project-delete" data-delete-project="'+esc(project.id)+'">删除分组</button>' : "";
@@ -1258,7 +1265,7 @@ function workbenchShrinkOut(node){
 // 新建卡必须插进 .wb-task-list 里，跟任务行做同一个父容器的兄弟节点——
 // 它后续会被 workbenchAnimateMorph 原地换成任务行，容器不对齐会跟着错位。
 // 项目原本没有任务时列表容器都不存在（渲染的是「暂无任务」提示），这里顺带把它建出来。
-function workbenchInsertNewTaskCard(project){
+function workbenchInsertNewTaskCard(project, afterTaskId){
   const block = document.querySelector('[data-group="'+CSS.escape(workbenchGroupId(project))+'"]')?.closest(".wb-project-block");
   if(!block) return false;
   let list = block.querySelector(".wb-task-list");
@@ -1272,7 +1279,14 @@ function workbenchInsertNewTaskCard(project){
   wrap.innerHTML = workbenchNewTaskCard(project);
   const card = wrap.firstElementChild;
   if(!card) return false;
-  list.appendChild(card);
+  // afterTaskId 落在同一顶层任务的「已展开子任务块」后面才对，不然会插进它自己的子任务列表里。
+  const anchorTaskNode = afterTaskId ? list.querySelector('[data-task="'+CSS.escape(afterTaskId)+'"]') : null;
+  if(anchorTaskNode){
+    const childrenNode = list.querySelector('[data-parent="'+CSS.escape(afterTaskId)+'"]');
+    (childrenNode || anchorTaskNode).after(card);
+  }else{
+    list.appendChild(card);
+  }
   workbenchAutoGrowTextarea(card.querySelector("textarea[data-new-detail]"));
   return workbenchGrowIn(card);
 }
@@ -1282,17 +1296,19 @@ function workbenchRemoveNewTaskCard(){
   return workbenchShrinkOut(document.querySelector("[data-new-card]"));
 }
 
-function openWorkbenchNewTask(){
-  const project = WB.project === "all" ? WB_DATA.projects[0] : workbenchProject(WB.project);
+// afterTaskId 给了就插在该顶层任务（及其已展开的子任务块）下方，同组同级；不给就跟原来一样落在分组最底下。
+function openWorkbenchNewTask(afterTaskId){
+  const anchorTask = afterTaskId ? workbenchTask(afterTaskId) : null;
+  const project = anchorTask ? workbenchProject(anchorTask.project) : (WB.project === "all" ? WB_DATA.projects[0] : workbenchProject(WB.project));
   if(!project){ alert("请先新建一个项目。"); return; }
   clearTimeout(wbClickTimer);
   const prevEditor = WB.editorTaskId;
   WB.editorTaskId = null;
   wbResetSelection();
-  WB.newTask = Object.assign({project:project.id, title:"", detail:"", assignee:"human", parentId:null, siblingTaskId:null}, workbenchCurrentViewSchedule());
+  WB.newTask = Object.assign({project:project.id, title:"", detail:"", assignee:"human", parentId:null, siblingTaskId:null, afterTaskId:afterTaskId||null}, workbenchCurrentViewSchedule());
   let ok = true;
   if(prevEditor) ok = workbenchMorphTask(prevEditor) && ok;
-  if(ok) ok = workbenchInsertNewTaskCard(project) && ok;
+  if(ok) ok = workbenchInsertNewTaskCard(project, afterTaskId) && ok;
   if(!ok) renderWorkbench();
   wbFocusSoon("[data-new-title]");
 }
@@ -1304,13 +1320,18 @@ async function saveWorkbenchNewTask(){
   if(!title){ $("[data-new-title]")?.focus(); return; }
   const payload = {project:draft.project, title, detail:draft.detail, date:draft.date||null, month:draft.month||null, week:draft.week||null, assignee:draft.assignee||"human", parentId:draft.parentId||null};
   const beforeTaskId = draft.beforeTaskId || null; // 移动端 FAB 定位新建用，见 workbenchOpenNewTaskBefore
+  const afterTaskId = draft.afterTaskId || draft.siblingTaskId || null; // 键盘空格 / 拖拽定位插到某任务后面
   const docked = !!draft.docked; // 卡片长在 #wbDock 里，不在列表里，不能原地 morph 成行
   WB.newTask = null;
   // 乐观本地先造一条临时任务，卡片立刻收起成行——不用等接口回来才有动效，否则回车会
   // 感觉「慢半拍」；等真实 id 回来了原地把临时 id 换掉，保存失败就把这一行撤回。
   const temp = Object.assign({id:"tmp-"+Math.random().toString(36).slice(2), status:"todo", images:[]}, payload);
-  const beforeIdx = beforeTaskId ? WB_DATA.tasks.findIndex(t => t.id === beforeTaskId) : -1;
-  if(beforeIdx !== -1) WB_DATA.tasks.splice(beforeIdx, 0, temp); else WB_DATA.tasks.push(temp);
+  let insertIdx = beforeTaskId ? WB_DATA.tasks.findIndex(t => t.id === beforeTaskId) : -1;
+  if(insertIdx === -1 && afterTaskId){
+    const afterIdx = WB_DATA.tasks.findIndex(t => t.id === afterTaskId);
+    if(afterIdx !== -1) insertIdx = afterIdx + 1;
+  }
+  if(insertIdx !== -1) WB_DATA.tasks.splice(insertIdx, 0, temp); else WB_DATA.tasks.push(temp);
   if(docked) renderWorkbench();
   else {
     const newCardNode = document.querySelector("[data-new-card]");
@@ -1331,7 +1352,7 @@ async function saveWorkbenchNewTask(){
     }
     workbenchRemember({type:"task-presence", before:[], after:[{task:workbenchHistoryClone(d.task), index:idx}]});
     // 创建接口只会把新任务追加到末尾，插到中间的位置得靠 move 接口单独持久化一次顺序。
-    if(beforeIdx !== -1){
+    if(insertIdx !== -1){
       api("/workbench/tasks/move", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:d.task.id, parentId:d.task.parentId||null, project:d.task.project, order:WB_DATA.tasks.map(item => item.id)})}).catch(() => {});
     }
   }catch(e){
@@ -2729,14 +2750,26 @@ document.addEventListener("keydown", event => {
   if(event.code !== "Space" || event.ctrlKey || event.metaKey || event.altKey) return;
   if(event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
   if(event.shiftKey){
+    // Shift+空格：不管选中的是顶层任务还是子任务，都在它下面新建"子任务"（子任务再按一次就是孙任务）。
     if(WB.view === "completed" || WB.view === "trash" || WB.selected.size !== 1) return;
     const task = workbenchTask([...WB.selected][0]);
     if(!task) return;
     event.preventDefault();
-    openWorkbenchNewChild(task.parentId || task.id, task.parentId ? task.id : null);
+    openWorkbenchNewChild(task.id, null);
     return;
   }
   if(WB.view === "completed" || WB.view === "trash") return; // 这两个视图没有项目分组，插不进新建卡
+  // 空格：选中顶层任务就在同组下方插入同级任务；选中子任务就在其下方插入同级子任务；
+  // 没有选中（或多选）时维持原样——插到当前分组最底下。
+  if(WB.selected.size === 1){
+    const task = workbenchTask([...WB.selected][0]);
+    if(task){
+      event.preventDefault();
+      if(task.parentId) openWorkbenchNewChild(task.parentId, task.id);
+      else openWorkbenchNewTask(task.id);
+      return;
+    }
+  }
   event.preventDefault(); openWorkbenchNewTask();
 });
 
