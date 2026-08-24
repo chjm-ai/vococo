@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import datetime
 
 
 def test_first_access_seeds_demo_data(isolated):
@@ -178,6 +179,44 @@ def test_completed_at_tracks_status_toggle(isolated):
 
     reopened_from_cancelled = workbench.update_task(task["id"], status="todo")
     assert reopened_from_cancelled["completedAt"] is None
+
+
+def test_overdue_tasks_roll_forward_to_current_period(isolated):
+    """类似 Things 的 today 逻辑:昨天/上周/上月的未完成任务,读取时自动滚到本期;
+    已完成/已取消的保留原时间不动(日志要用)。"""
+    from vococo.memory import workbench
+
+    project = workbench.create_project("滚动测试项目")
+    today = datetime.date.today()
+    yesterday = (today - datetime.timedelta(days=1)).isoformat()
+    last_week = (today - datetime.timedelta(days=today.weekday() + 7)).isoformat()
+    last_month_date = (today.replace(day=1) - datetime.timedelta(days=1))
+    last_month = last_month_date.isoformat()[:7]
+
+    overdue_day = workbench.create_task(project["id"], "昨天的任务", date=yesterday, month=yesterday[:7], week=yesterday)
+    overdue_week = workbench.create_task(project["id"], "上周的任务", week=last_week, month=last_week[:7])
+    overdue_month = workbench.create_task(project["id"], "上月的任务", month=last_month)
+    done_overdue = workbench.create_task(project["id"], "昨天但已完成", date=yesterday, month=yesterday[:7], week=yesterday, status="done")
+
+    tasks = {t["id"]: t for t in workbench.list_tasks()}
+    today_str = today.isoformat()
+    this_week = (today - datetime.timedelta(days=today.weekday())).isoformat()
+    this_month = today_str[:7]
+
+    assert tasks[overdue_day["id"]]["date"] == today_str
+    assert tasks[overdue_day["id"]]["week"] == this_week
+    assert tasks[overdue_day["id"]]["month"] == this_month
+
+    assert tasks[overdue_week["id"]]["date"] is None
+    assert tasks[overdue_week["id"]]["week"] == this_week
+    assert tasks[overdue_week["id"]]["month"] == this_month
+
+    assert tasks[overdue_month["id"]]["date"] is None
+    assert tasks[overdue_month["id"]]["week"] is None
+    assert tasks[overdue_month["id"]]["month"] == this_month
+
+    # 已完成的过期任务原样保留,不被滚动
+    assert tasks[done_overdue["id"]]["date"] == yesterday
 
 
 def test_empty_trash(isolated, monkeypatch):
