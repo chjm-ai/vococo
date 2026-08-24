@@ -142,6 +142,14 @@ def test_doc_preview_keeps_task_highlight_in_split_and_window():
     assert "openDocPreview({kind, target, title, highlight})" in window
 
 
+def test_standalone_workbench_suppresses_global_choice_modal():
+    """工作台独立窗口不能被其他会话的确认选项遮挡。"""
+    static_dir = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static"
+    stream = (static_dir / "stream.js").read_text(encoding="utf-8")
+    assert "function openChoiceModal(conv, e)" in stream
+    assert "if(S.standaloneWorkbench) return;" in stream
+
+
 @pytest.mark.anyio
 async def test_versioned_asset_gets_immutable_cache(static_app):
     status, _, headers = await _get(static_app, f"/styles.css?v={_digest('styles.css')}")
