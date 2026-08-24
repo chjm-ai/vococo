@@ -224,10 +224,8 @@ async def converse(
     if cwd_override is not None:
         cwd = cwd_override
     else:
-        # 所有会话(含默认项目)首次干活时都懒创建独立 worktree,让 Agent 子任务继承
-        # 到的 cwd 不会直接落在主仓库;非 git 目录仍回退项目根。
-        await worktree.ensure_worktree(session_key)
-        cwd = config.project_cwd_for(session_key) or session_store.get_worktree(session_key) or root
+        # Git 项目必须先拿到独立 worktree。创建失败就中止本轮,不能把 Agent 放回主检出目录。
+        cwd = await worktree.execution_cwd(session_key)
     cwd_token = danger.set_cwd(cwd, project_root=root)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
     stored_user = store_user if store_user is not None else user_text
     turn_id = session_store.start_turn(session_key, stored_user)

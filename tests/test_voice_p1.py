@@ -44,6 +44,10 @@ async def _noop_coro(*_a, **_k) -> None:
     return None
 
 
+async def _root_cwd(root, *_a, **_k):
+    return root
+
+
 async def _bytes_coro(b: bytes) -> bytes:
     return b
 
@@ -521,7 +525,7 @@ async def test_append_on_queued_task_merges_prompt(voice_db):
 @pytest.mark.anyio
 async def test_dispatch_queues_beyond_concurrency_limit(voice_db, monkeypatch):
     # 该用例只测排队状态,不需要在当前巨大仓库的真实 worktree 列表里建目录。
-    monkeypatch.setattr(executor.worktree, "ensure_worktree_for_task", _noop_coro)
+    monkeypatch.setattr(executor.worktree, "execution_cwd_for_task", _root_cwd)
     monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 1)
     gate = asyncio.Event()
 
@@ -655,7 +659,7 @@ async def test_dispatch_tool_dispatches_and_reports_task_id(voice_db, monkeypatc
     monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
     monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
     # 默认 cwd 落到本项目根后,_run 会真去建 worktree——测试里挡掉,不碰真实仓库
-    monkeypatch.setattr(executor.worktree, "ensure_worktree_for_task", _noop_coro)
+    monkeypatch.setattr(executor.worktree, "execution_cwd_for_task", _root_cwd)
 
     result = await task_tools.voice_dispatch_task.handler({"title": "标题", "prompt": "内容"})
     text = result["content"][0]["text"]
@@ -674,11 +678,11 @@ async def test_dispatch_tool_defaults_cwd_to_project_root(voice_db, monkeypatch)
     monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
     wt_calls = []
 
-    async def fake_ensure(root, task_id):
+    async def fake_execution_cwd(root, task_id):
         wt_calls.append(root)
-        return None
+        return root
 
-    monkeypatch.setattr(executor.worktree, "ensure_worktree_for_task", fake_ensure)
+    monkeypatch.setattr(executor.worktree, "execution_cwd_for_task", fake_execution_cwd)
 
     await task_tools.voice_dispatch_task.handler({"title": "标题", "prompt": "内容"})
     row = tasks.list_recent(limit=1)[0]
@@ -687,6 +691,36 @@ async def test_dispatch_tool_defaults_cwd_to_project_root(voice_db, monkeypatch)
     if running is not None:
         await running
     assert wt_calls == [str(config.ROOT_DIR)]  # worktree 隔离确实被触发
+
+
+@pytest.mark.anyio
+async def test_worktree_failure_marks_task_failed_without_calling_agent(voice_db, monkeypatch):
+    """Git 隔离失败不能让后台任务带着主目录 cwd 继续跑。"""
+    from vococo.core import worktree
+
+    agent_called = False
+
+    async def fail_execution_cwd(root, task_id):
+        raise worktree.WorktreeIsolationError("无法创建独立工作树")
+
+    async def fake_stream_turn(*_args, **_kwargs):
+        nonlocal agent_called
+        agent_called = True
+        yield Done(AgentReply(text="不应执行", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(executor.worktree, "execution_cwd_for_task", fail_execution_cwd)
+    monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+
+    task = executor.dispatch("隔离失败", "不要写主分支")
+    running = executor._running.get(task["id"])
+    assert running is not None
+    await running
+
+    row = tasks.get(task["id"])
+    assert row["status"] == "failed"
+    assert "独立工作树" in row["result_summary"]
+    assert agent_called is False
 
     # 显式传 cwd 则原样保留,不被默认值覆盖(标题避开与上面任务的 bigram 重叠,
     # 免得触发派发前关联检测)
@@ -761,7 +795,7 @@ async def test_cancel_tool_stops_running_task_and_waits(voice_db, monkeypatch):
 
     monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
     monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
-    monkeypatch.setattr(executor.worktree, "ensure_worktree_for_task", _noop_coro)
+    monkeypatch.setattr(executor.worktree, "execution_cwd_for_task", _root_cwd)
 
     task = executor.dispatch("在跑活", "prompt")
     await started.wait()
