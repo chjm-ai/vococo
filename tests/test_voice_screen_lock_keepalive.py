@@ -77,7 +77,9 @@ def test_resume_pipeline_wired_and_probes(source: str) -> None:
     """
     assert 'resumeAudioPipeline("vischange")' in source
     pipeline = _slice(source, "function resumeAudioPipeline(why)", "function probeAfterResume(why)")
-    assert "audioCtx.resume()" in pipeline
+    # ctx 恢复统一走 ensureAudioCtxRunning(2026-08-24 提示音静音修复后收口,
+    # 见 test_voice_audioctx_tone_recovery.py)
+    assert "ensureAudioCtxRunning(" in pipeline
     assert "startKeepAliveAudio();" in pipeline
     assert "startKeepAliveVideo();" in pipeline
     assert "omniAudioEl.play()" in pipeline

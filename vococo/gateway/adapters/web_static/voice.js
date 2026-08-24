@@ -248,7 +248,9 @@
   }
 
   function unlockAudio(){
-    if(audioCtx) return;
+    // closed 的 ctx 是死的:resume 恒 reject,createOscillator 静默无声。
+    // 原来这里只看 audioCtx 是否为 null,一旦留下个 closed 的实例就永久哑巴。
+    if(audioCtx && audioCtx.state !== "closed") return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const buf = audioCtx.createBuffer(1, 1, 22050);
     const src = audioCtx.createBufferSource();
@@ -256,6 +258,80 @@
     src.connect(audioCtx.destination);
     src.start(0);
     wireAudioContextInterruptionHandler();
+  }
+
+  // ── AudioContext 恢复闸(2026-08-24)────────────────────────────────────
+  // 所有提示音(连接成功/思考中/回复中/发送/断线)都从 audioCtx 出声,ctx 一挂起
+  // 就集体消失。iOS 会在两种时机挂起它:①WebRTC 建连/重连时 getUserMedia 重新
+  // 协商音频会话;②息屏、来电等系统打断。挂起后有两种可能:suspended(resume
+  // 能救回来)和 interrupted(WebKit 私有态,resume 会一直 reject,得整个重建)。
+  // 这个闸把"恢复"收成一个入口:并发调用共用同一次 resume;连续救不回来就重建。
+  let _ctxResuming = null;       // 进行中的 resume promise,防止并发重复发起
+  let _ctxResumeFails = 0;       // 连续恢复失败次数,到阈值就重建
+  let _ctxRebuiltAt = 0;         // 上次重建时刻,限流防抖(重建本身会打断正在播的音频)
+  const CTX_REBUILD_COOLDOWN_MS = 10000;
+  function ensureAudioCtxRunning(why){
+    if(!audioCtx) return Promise.resolve(false);
+    if(audioCtx.state === "running"){ _ctxResumeFails = 0; return Promise.resolve(true); }
+    if(_ctxResuming) return _ctxResuming;
+    if(audioCtx.state === "closed"){
+      const revived = rebuildAudioCtx("closed:" + why);
+      return Promise.resolve(revived);
+    }
+    _ctxResuming = Promise.resolve()
+      .then(() => audioCtx.resume())
+      .then(() => {
+        _ctxResuming = null;
+        const ok = !!audioCtx && audioCtx.state === "running";
+        if(ok){ _ctxResumeFails = 0; vdbg("ctx.resumed", why); }
+        else _ctxResumeFails++;
+        return ok;
+      })
+      .catch(err => {
+        _ctxResuming = null;
+        _ctxResumeFails++;
+        vdbg("ctx.resume.fail", {why, fails: _ctxResumeFails, err: String(err).slice(0, 80)});
+        // 连续两次拉不回来 = 多半卡在 interrupted,resume 再试一万次也一样,重建
+        if(_ctxResumeFails >= 2) return rebuildAudioCtx("stuck:" + why);
+        return false;
+      });
+    return _ctxResuming;
+  }
+
+  // 重建 AudioContext:老实例 close 掉换一个新的。挂在老 ctx 上的节点(麦克风
+  // analyser、输出 analyser/tap、工作音效的 gain)会随之全部作废,必须一并重置
+  // 再按需重建,否则后面 micStreamHealthy/尾音排空全在读一个死节点。
+  function rebuildAudioCtx(why){
+    const now = Date.now();
+    if(now - _ctxRebuiltAt < CTX_REBUILD_COOLDOWN_MS){ vdbg("ctx.rebuild.skip", why); return false; }
+    _ctxRebuiltAt = now;
+    vdbg("ctx.rebuild", {why, prev: audioCtx && audioCtx.state});
+    stopWorkSound();  // gain 挂在老 ctx 上,先收掉,别留个野定时器
+    const old = audioCtx;
+    audioCtx = null;
+    // 先摘 handler 再 close:close 本身会派发 statechange,不摘就是拿着一个正在
+    // 被替换的全局变量回调自己。
+    if(old){ try{ old.onstatechange = null; }catch(e){} try{ old.close(); }catch(e){} }
+    if(analyserSource){ try{ analyserSource.disconnect(); }catch(e){} }
+    if(omniOutTap){ try{ omniOutTap.disconnect(); }catch(e){} }
+    analyser = null; analyserSource = null; outputAnalyser = null; omniOutTap = null;
+    try{ unlockAudio(); }catch(e){ vdbg("ctx.rebuild.fail", String(e)); return false; }
+    _ctxResumeFails = 0;
+    // 新建的 ctx 在自动播放策略下可能落在 suspended,推一把;这次没赶上的音效
+    // 由下一次调用补(思考音每 1.2s 一响,听感上察觉不到)。
+    if(audioCtx.state !== "running"){ try{ audioCtx.resume().catch(()=>{}); }catch(e){} }
+    ensureAnalyser();  // 麦克风电平(僵尸流判定/吉祥物呼吸)靠它,新 ctx 上重挂
+    // 远端输出 tap 也重挂:尾音排空监听靠它感知 AI 是否还在出声
+    if(omniAudioEl && omniAudioEl.srcObject){
+      ensureOutputAnalyser();
+      if(outputAnalyser){
+        try{
+          omniOutTap = audioCtx.createMediaStreamSource(omniAudioEl.srcObject);
+          omniOutTap.connect(outputAnalyser);
+        }catch(e){ omniOutTap = null; vdbg("ctx.rebuild.tap-fail", String(e)); }
+      }
+    }
+    return !!audioCtx && audioCtx.state === "running";
   }
 
   // 设备切换检测:track.onended/onmute + devicechange + visibilitychange 都往
@@ -353,6 +429,9 @@
     if(!audioCtx) return;
     try{ audioCtx.onstatechange = null; }catch(e){}
     audioCtx.onstatechange = () => {
+      // 重建过程中老实例 close 也会触发本回调,而那一刻 audioCtx 已被置空/换新,
+      // 直接读 .state 会抛 TypeError(2026-08-24)。
+      if(!audioCtx) return;
       vdbg("audioctx.state", audioCtx.state);
       if(audioCtx.state === "running" && handsFreeActive){
         setTimeout(() => {
@@ -362,7 +441,7 @@
         // 通话期间被系统挂起:立刻尝试拉回来。挂着不管的后果不只是没音效——
         // micStreamHealthy/checkMicAudioActivity 的僵尸流判定都以 state==="running"
         // 为前提,ctx 一直挂着等于把麦克风自检整个关掉(2026-08-24 根因之一)。
-        try{ audioCtx.resume().catch(()=>{}); }catch(e){}
+        ensureAudioCtxRunning("statechange");
       }
     };
   }
@@ -380,9 +459,7 @@
   function resumeAudioPipeline(why){
     vdbg("resume.begin", {why, ctx: audioCtx && audioCtx.state,
       ka: !!(keepAliveEl && !keepAliveEl.paused), kv: !!(keepAliveVideo && !keepAliveVideo.paused)});
-    if(audioCtx && audioCtx.state !== "running"){
-      try{ audioCtx.resume().catch(err=>vdbg("resume.ctx.fail", String(err))); }catch(e){}
-    }
+    ensureAudioCtxRunning("pipeline:" + why);
     startKeepAliveAudio();
     startKeepAliveVideo();
     if(omniAudioEl && omniAudioEl.srcObject && omniAudioEl.paused){
@@ -705,7 +782,7 @@
       // iOS 在 getUserMedia/通话音频会话切换时会把 AudioContext 挂起(state 变
       // suspended/interrupted),挂起期间 currentTime 不走,此刻排的音全落在过去
       // =无声——先 resume,这一轮跳过,下一轮 interval 再响。
-      if(audioCtx.state !== "running"){ try{ audioCtx.resume(); }catch(e){} return; }
+      if(audioCtx.state !== "running"){ ensureAudioCtxRunning("worksound"); return; }
       const t0 = audioCtx.currentTime;
       [1318.5, 1760].forEach((freq, i)=>{  // E6→A6 上行小滴答,间隔 180ms
         const osc = audioCtx.createOscillator();
@@ -756,7 +833,9 @@
     playing = true;
     setStatus("工作中…", "playing");
     try{
-      if(audioCtx.state === "suspended") await audioCtx.resume();
+      // 走统一恢复闸:只认 suspended 会漏掉 iOS 的 interrupted 私有态,而
+      // 裸 resume 一旦 reject 就被外层 catch 吞成"跳过这句",整段回复无声播完。
+      await ensureAudioCtxRunning("playback");
       const audioBuffer = await audioCtx.decodeAudioData(base64ToArrayBuffer(item.audio_b64));
       await new Promise((resolve, reject)=>{
         const source = audioCtx.createBufferSource();
@@ -1136,12 +1215,25 @@
     iEl.style.boxShadow = VocoMascot.frameShadow({eyes:"open", feet:"waveA", scale:orbMicSmoothed});
   }
 
+  // playTone:ctx 在跑就直接出声;被 iOS 挂起就先恢复【再把这一声补上】。
+  // 2026-08-24 之前这里是 `resume(); return;`——发起恢复后把本次音效直接丢掉,
+  // 而 resume 是异步的,真正恢复要到下一次调用才看得到。断连重连时 iOS 会因为
+  // resetMicStream+getUserMedia 重新协商音频会话而把 ctx 打成 suspended/interrupted,
+  // 于是"连接成功""思考中""回复中"这几声正好全落在这个窗口里被丢干净;若 ctx
+  // 卡在 interrupted(iOS 私有态,resume 会一直 reject),就一路静音到下次重连
+  // 重新激活音频会话为止——这就是用户报的"断连后音效不响、重连又好了"。
   function playTone(freq, durMs, shape, vol){
     if(!audioCtx) return;
-    // iOS 在通话(WebRTC)期间会把 AudioContext 挂起,挂起后 createOscillator
-    // 等 API 静默成功但不出声——先恢复再播放,如 resume 失败则跳过本次音效
-    // (2026-07-14 真机:所有音效全消失,根因在此)。
-    if(audioCtx.state !== "running"){ try{ audioCtx.resume(); }catch(e){} return; }
+    if(audioCtx.state === "running"){ emitTone(freq, durMs, shape, vol); return; }
+    const askedAt = Date.now();
+    ensureAudioCtxRunning("tone").then(ok => {
+      // 恢复本身可能要几百毫秒;超过 1.5s 再补这一声就不合时宜了(状态早变了),
+      // 老老实实丢掉,别在用户已经说下一句时冒出个上一轮的提示音。
+      if(ok && Date.now() - askedAt < 1500) emitTone(freq, durMs, shape, vol);
+    });
+  }
+  function emitTone(freq, durMs, shape, vol){
+    if(!audioCtx || audioCtx.state !== "running") return;
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.type = shape || "sine";
@@ -1282,6 +1374,12 @@
       return false;
     }
     vdbg("omni.mic.ok");
+    // 【音效静音的正面修复点】(2026-08-24):上面 resetMicStream + getUserMedia 会让
+    // iOS 重新协商音频会话(playback ↔ play-and-record),AudioContext 常在这一刻被
+    // 打成 suspended/interrupted。重连路径正好每次都走这里,所以"断连之后提示音
+    // 全哑、下次重连又好了"是必然而不是玄学。拿到新流就立刻把 ctx 拉回来,
+    // 别等 playReconnectTone 撞上挂起态。
+    ensureAudioCtxRunning("mic-acquired");
     // 新连接(含重连/切音色的全新流):重置首回复静音状态;用户之前按的手动静音
     // (micMuted)要带到新流上——都交给 applyMicEnabled 统一仲裁重算。
     omniFirstReplyMuteUsed = false; omniMicMuted = false;
@@ -2081,7 +2179,7 @@
       // 兜住——ctx 不 running 时上面两个自检全都是空转,连续 5 次(约 15s)拉不
       // 回来就当作真中断,交给探活流程判死重连。
       if(audioCtx && audioCtx.state !== "running"){
-        try{ audioCtx.resume().catch(()=>{}); }catch(e){}
+        ensureAudioCtxRunning("watchdog");
         if(++_ctxStuckTicks >= 5){
           _ctxStuckTicks = 0;
           vdbg("watchdog.ctx-stuck", audioCtx.state);
@@ -2951,7 +3049,7 @@
     if(!handsFreeActive) return;
     startKeepAliveVideo();
     startKeepAliveAudio();
-    if(audioCtx && audioCtx.state !== "running"){ try{ audioCtx.resume().catch(()=>{}); }catch(e){} }
+    ensureAudioCtxRunning("gesture");
   }
   document.addEventListener("pointerdown", resumeKeepAliveOnGesture);
   document.addEventListener("touchstart", resumeKeepAliveOnGesture);
