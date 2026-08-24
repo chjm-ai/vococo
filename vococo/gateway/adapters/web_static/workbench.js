@@ -2480,7 +2480,9 @@ $("#workbenchView").addEventListener("click", event => {
   const nav = event.target.closest("[data-nav]");
   if(nav){ shiftWorkbenchDate(Number(nav.dataset.nav)); return; }
   if(event.target.closest("[data-today]")){ WB.anchor = workbenchToday(); workbenchResetChildExpansion(); renderWorkbench(); return; }
-  // 点击空白处收起当前展开的卡片（新建卡或编辑卡）。
+  // 点击空白处取消任务选中，并收起当前展开的卡片（新建卡或编辑卡）。
+  clearTimeout(wbClickTimer); wbClickTimer = null;
+  wbResetSelection();
   workbenchFinishActiveCard();
 });
 
