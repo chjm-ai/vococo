@@ -1547,7 +1547,7 @@
   #workbenchView .wb-task.wb-swipeable.wb-task-drop-before::before{top:0}
   #workbenchView .wb-task.wb-swipeable.wb-task-drop-after::after{bottom:0}
   #workbenchView .wb-task.wb-task-drop-nest{background:color-mix(in srgb,var(--accent) 12%,var(--panel));box-shadow:inset 0 0 0 1.5px var(--accent)}
-  #workbenchView .wb-drop-tail{display:none}#workbenchView.wb-drag-active .wb-drop-tail{display:block;position:relative;height:var(--sp-3)}#workbenchView .wb-drop-tail.is-drop-target::before{content:"";position:absolute;top:50%;left:0;right:0;height:2px;background:var(--accent);border-radius:var(--r-sm);transform:translateY(-50%)}
+  #workbenchView .wb-children.is-drop-target::after{content:"";position:absolute;left:0;right:0;bottom:calc(var(--sp-2) / 2);height:2px;background:var(--accent);border-radius:var(--r-sm);transform:translateY(50%)}
   #workbenchView .wb-check{display:grid;place-items:center;flex:none;width:20px;height:20px;margin:0;padding:0;line-height:1;border-radius:var(--r-sm)}#workbenchView .wb-task-list>.wb-task>.wb-check{margin-top:1px}#workbenchView .wb-task-copy{min-width:0}#workbenchView .wb-task-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-xl);line-height:20px;font-weight:600}#workbenchView .wb-task-detail{display:-webkit-box;width:100%;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;margin:2px 0 0;color:var(--dim2);font-size:var(--fs-md);line-height:1.4}
   #workbenchView .wb-empty{margin:4px 0 0;padding:var(--sp-3) 2px;border:0;color:var(--dim2);font-size:var(--fs-base)}
   /* 整页级空状态：吉祥物 + 标题 + 提示，跟聊天页 #empty 是同一套语言（见该处 .elogo）。 */
@@ -1757,7 +1757,7 @@
   }
 
   /* ── 子任务 / 执行者 / 会话绑定 ─────────────────────────────────── */
-  #workbenchView .wb-children{margin:0 0 0 30px;display:flex;flex-direction:column;gap:2px;will-change:height,opacity}
+  #workbenchView .wb-children{position:relative;margin:0 0 0 30px;padding-bottom:var(--sp-2);display:flex;flex-direction:column;gap:2px;will-change:height,opacity}
   #workbenchView .wb-task-child{opacity:.92}
   #workbenchView .wb-task-child .wb-task-title{font-weight:500}
   #workbenchView .wb-editor-footer .wb-add-child{display:inline-flex;align-items:center;gap:4px;color:var(--dim);cursor:pointer}
