@@ -582,25 +582,24 @@
     box-shadow:var(--shadow);animation:pop .18s ease}
   #gitPop[hidden]{display:none}
   #gitPop .gph{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:4px}
-  #gitPop .gbr{font-size:var(--fs-md);font-weight:600;color:var(--accent)}
+  #gitPop .gbr{font-size:var(--fs-md);font-weight:600;color:var(--accent);display:inline-flex;align-items:center;gap:6px}
   #gitPop .gah{font-size:var(--fs-sm);color:var(--dim);font-variant-numeric:tabular-nums}
-  #gitPop .gsub{font-size:var(--fs-sm);color:var(--dim2);word-break:break-all;margin-bottom:10px;
+  #gitPop .gsub{font-size:var(--fs-sm);color:var(--dim2);word-break:break-all;
     font-family:ui-monospace,Menlo,monospace}
+  #gitPop .ghint{font-size:var(--fs-sm);color:var(--dim);margin:2px 0 var(--sp-2)}
+  #gitPop .gsum{font-size:var(--fs-sm);color:var(--dim);padding-bottom:var(--sp-2);
+    border-bottom:1px solid var(--line);margin-bottom:var(--sp-2)}
   #gitPop .gclean{font-size:var(--fs-sm);color:var(--dim);padding:2px 0 var(--sp-1)}
-  #gitPop .gfiles{max-height:180px;overflow:auto;margin-bottom:8px;
-    border-top:1px solid var(--line);padding-top:var(--sp-2)}
+  #gitPop .gfiles{max-height:220px;overflow:auto}
+  #gitPop .ggrp{font-size:var(--fs-sm);color:var(--dim2);font-weight:600;padding:var(--sp-2) 0 2px}
   #gitPop .gf{display:flex;gap:8px;align-items:baseline;font-size:var(--fs-sm);padding:2px 0}
   #gitPop .gf .gx{flex-shrink:0;width:20px;color:var(--accent);font-family:ui-monospace,Menlo,monospace}
   #gitPop .gf .gp{color:var(--text);word-break:break-all}
-  #gitPop .gnew{display:flex;gap:6px;border-top:1px solid var(--line);padding-top:var(--sp-4)}
-  #gitPop .gnew input{flex:1;min-width:0;font-size:var(--fs-sm);padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);
-    border:1px solid var(--line2);background:var(--panel2);color:var(--text)}
-  #gitPop .gnew button{flex-shrink:0;font-size:var(--fs-sm);padding:var(--sp-2) var(--sp-4);border-radius:var(--r-md);
-    background:var(--accent);color:var(--on-accent);font-weight:500;transition:opacity var(--t-fast)}
-  #gitPop .gnew button:disabled{opacity:.55}
-  #gitPop .gerr{font-size:var(--fs-sm);color:var(--err);margin-top:8px}
-  #gitPop .gerr[hidden]{display:none}
+  #gitPop .gmore{font-size:var(--fs-sm);color:var(--dim);padding-top:var(--sp-2)}
   #gitPop .gempty{font-size:var(--fs-sm);color:var(--dim)}
+  .gdot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok-fg);flex-shrink:0}
+  .gdot-warn{background:var(--warn)}
+  .gdot-err{background:var(--err-fg)}
   #ctxBox{position:relative;flex-shrink:0;display:flex;align-items:center;gap:6px}
   /* 标题栏图标操作统一为正方形：定时任务与普通会话共用，避免 hover 灰底横向膨胀。 */
   .hmore{width:28px;height:28px;padding:0;border-radius:var(--r-md);font-size:18px;line-height:1;color:var(--dim2);

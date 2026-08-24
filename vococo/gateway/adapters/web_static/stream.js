@@ -492,6 +492,9 @@ function handleEvent(e){
     if(e.conv===S.conv){
       S.pendingReview[e.conv]=false; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=false;
       delete S.live[e.conv]; delete S.streamSnap[e.conv]; markLive();
+      // 这一轮可能改了代码:顶栏 Git 状态原先只在切会话时拉一次,任务跑完不会自动
+      // 更新,顶栏就会一直停留在"工作区干净"——这里补一次悄悄刷新(不重置按钮/不关弹层)
+      if(e.type==="done" && typeof refreshGitQuiet==="function") refreshGitQuiet(e.conv);
       // 后端不知道"用户正盯着这个会话看",完成时统一先标为未读;这里既然正在看,
       // 主动清一次服务端标记再拉 loadConvs——顺序不能反,否则 loadConvs 抢先拉到
       // 服务端还没清的"未读",又把本地清零覆盖回去。

@@ -3,30 +3,47 @@
 // 与内联脚本同属全局作用域(无构建步骤),加载顺序见 index.html。
 
 // ── 项目 Git 状态 ─────────────────────────────────────────────────────────
-// 顶栏那颗 ⎇ 按钮:仅项目会话显示;点开弹层看改动 + 一键建分支
+// 顶栏那颗 ⎇ 按钮:仅项目会话显示;点开弹层看改动明细
+function gitDotClass(d){ return (d.dirty>0||d.unmerged>0) ? "gdot-warn" : "gdot-ok"; }
 function gitBtnLabel(d){
-  let s='⎇ '+esc(d.branch);
+  let s='<span class="gdot '+gitDotClass(d)+'"></span>⎇ '+esc(d.branch);
   if(d.unmerged) s+=' <span class="gahb">↑'+d.unmerged+'</span>';   // 未合并提交(相对 main):标题栏直接可见
   if(d.dirty) s+=' •'+d.dirty;
   if(d.added||d.removed){
-    s+=' <span style="color:#3fb950">+'+d.added+'</span>'
-      +' <span style="color:#f85149">-'+d.removed+'</span>';
+    s+=' <span style="color:var(--ok-fg)">+'+d.added+'</span>'
+      +' <span style="color:var(--err-fg)">-'+d.removed+'</span>';
   }
   return s;
 }
+// 拉一次状态,写进 S.git;调用方各自决定要不要顺带更新按钮/弹层
+async function fetchGitStatus(conv){
+  try{
+    const r=await api("/conv/git?conv="+encodeURIComponent(conv)); const d=await r.json();
+    if(S.conv!==conv) return null;                                 // 期间切走了,丢弃结果
+    S.git=d; return d;
+  }catch(e){ return null; }
+}
+function applyGitBtn(d){
+  const btn=$("#convGit"), pbtn=$("#convProjName");
+  if(!d || !d.is_project){ btn.hidden=true; pbtn.hidden=true; return; }
+  pbtn.textContent=d.name; pbtn.hidden=false;
+  if(!d.is_repo){ btn.hidden=false; btn.textContent="⎇ 非 git 仓库"; return; }
+  btn.hidden=false; btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0));
+}
+// 切会话专用:先把按钮重置成加载态、收起弹层,再整份刷新
 async function refreshGit(conv){
   const btn=$("#convGit"), pbtn=$("#convProjName");
   $("#gitPop").hidden=true; $("#projPop").hidden=true;
   btn.hidden=false; btn.classList.remove("dirty"); btn.textContent="⎇ …"; pbtn.hidden=true;
-  try{
-    const r=await api("/conv/git?conv="+encodeURIComponent(conv)); const d=await r.json();
-    if(S.conv!==conv) return;                                      // 期间切走了,丢弃结果
-    S.git=d;
-    if(!d.is_project){ btn.hidden=true; return; }
-    pbtn.textContent=d.name; pbtn.hidden=false;
-    if(!d.is_repo){ btn.textContent="⎇ 非 git 仓库"; return; }
-    btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0));
-  }catch(e){ btn.hidden=true; pbtn.hidden=true; }
+  applyGitBtn(await fetchGitStatus(conv));
+}
+// 悄悄刷新:不重置按钮文字、不关已开着的弹层——供"打开弹层"和"这一轮任务跑完"两处调用,
+// 避免每次都用加载态闪一下,也避免打断用户正在看的弹层内容
+async function refreshGitQuiet(conv){
+  const d = await fetchGitStatus(conv);
+  if(!d) return;
+  applyGitBtn(d);
+  if(!$("#gitPop").hidden) renderGitPop();
 }
 // 项目名 pill:点开看完整路径(project_path 是仓库根,不是本会话的 worktree cwd)
 function renderProjPop(){
@@ -38,44 +55,46 @@ $("#convProjName").onclick=e=>{ e.stopPropagation(); const p=$("#projPop"), open
   closeHeaderPopovers(opening ? p : null);
   if(opening){ renderProjPop(); p.hidden=false; } };
 document.addEventListener("click", e=>{ const b=$("#projBox"); if(b && !b.contains(e.target)) $("#projPop").hidden=true; });
-// 默认分支名:vococo/月日-时分,方便一次会话开一条隔离分支
-function defaultBranchName(){ const d=new Date(), p=n=>String(n).padStart(2,"0");
-  return "vococo/"+p(d.getMonth()+1)+p(d.getDate())+"-"+p(d.getHours())+p(d.getMinutes()); }
+// 改动文件按状态分组(M/A/D/未跟踪/其他),超过后端截断上限(60)时提示还有多少没显示
+function renderGitFiles(d){
+  if(!d.dirty) return '<div class="gclean">✓ 工作区干净</div>';
+  const groups=[["未跟踪",[]],["新增",[]],["已修改",[]],["已删除",[]],["其他",[]]];
+  for(const f of d.files){
+    const x=(f.x||"").trim();
+    let idx=4;
+    if(x==="??") idx=0; else if(x.includes("A")) idx=1; else if(x.includes("M")) idx=2; else if(x.includes("D")) idx=3;
+    groups[idx][1].push(f);
+  }
+  let html='<div class="gfiles">';
+  for(const [label,list] of groups){
+    if(!list.length) continue;
+    html+='<div class="ggrp">'+label+' · '+list.length+'</div>'
+      +list.map(f=>'<div class="gf"><span class="gx">'+esc((f.x||"").trim()||"?")+'</span><span class="gp">'+esc(f.path)+'</span></div>').join("");
+  }
+  html+='</div>';
+  const hidden=d.dirty-d.files.length;
+  if(hidden>0) html+='<div class="gmore">另有 '+hidden+' 个文件未显示</div>';
+  return html;
+}
 function renderGitPop(){
   const d=S.git, pop=$("#gitPop");
   if(!d || !d.is_project){ pop.hidden=true; return; }
   if(!d.is_repo){ pop.innerHTML='<div class="gph"><span class="gbr">'+esc(d.name)+'</span></div>'+
     '<div class="gempty">该项目目录不是 git 仓库</div>'; return; }
   const ah=[]; if(d.ahead) ah.push("↑"+d.ahead); if(d.behind) ah.push("↓"+d.behind);
-  const files = d.dirty
-    ? '<div class="gfiles">'+d.files.map(f=>'<div class="gf"><span class="gx">'+esc((f.x||"").trim()||"?")+'</span><span class="gp">'+esc(f.path)+'</span></div>').join("")+'</div>'
-    : '<div class="gclean">✓ 工作区干净</div>';
+  const summary = d.dirty
+    ? '<div class="gsum">'+d.dirty+' 个文件有改动 · <span style="color:var(--ok-fg)">+'+d.added+'</span> <span style="color:var(--err-fg)">-'+d.removed+'</span></div>'
+    : '';
   pop.innerHTML=
-    '<div class="gph"><span class="gbr">⎇ '+esc(d.branch)+'</span>'+(ah.length?'<span class="gah">'+ah.join(" ")+'</span>':'')+'</div>'+
+    '<div class="gph"><span class="gbr"><span class="gdot '+gitDotClass(d)+'"></span>⎇ '+esc(d.branch)+'</span>'+(ah.length?'<span class="gah">'+ah.join(" ")+'</span>':'')+'</div>'+
     '<div class="gsub">'+esc(d.path)+'</div>'+
-    files+
-    '<div class="gnew"><input id="gitBrName" type="text" placeholder="新分支名" value="'+esc(defaultBranchName())+'"><button id="gitBrGo" type="button">新建并切换</button></div>'+
-    '<div class="gerr" id="gitErr" hidden></div>';
-  $("#gitBrGo").onclick=createGitBranch;
-  $("#gitBrName").onkeydown=e=>{ if(e.key==="Enter") createGitBranch(); };
-}
-async function createGitBranch(){
-  const name=$("#gitBrName").value.trim(), err=$("#gitErr"), btn=$("#gitBrGo");
-  err.hidden=true;
-  if(!name){ err.textContent="请填写分支名"; err.hidden=false; return; }
-  btn.disabled=true; btn.textContent="创建中…";
-  try{
-    const r=await api("/conv/git/branch",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({conv:S.conv, name})});
-    const d=await r.json();
-    if(!r.ok){ err.textContent=d.error||"创建失败"; err.hidden=false; btn.disabled=false; btn.textContent="新建并切换"; return; }
-    S.git=d; renderGitPop();                                       // 重绘:分支名已切到新分支
-    const b=$("#convGit"); b.innerHTML=gitBtnLabel(d); b.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0));
-  }catch(e){ err.textContent="网络错误"; err.hidden=false; btn.disabled=false; btn.textContent="新建并切换"; }
+    '<div class="ghint">仅统计当前会话的隔离工作区,与项目主目录分开</div>'+
+    summary+
+    renderGitFiles(d);
 }
 $("#convGit").onclick=e=>{ e.stopPropagation(); const p=$("#gitPop"), opening=p.hidden;
   closeHeaderPopovers(opening ? p : null);
-  if(opening){ renderGitPop(); p.hidden=false; } };
+  if(opening){ renderGitPop(); p.hidden=false; refreshGitQuiet(S.conv); } };
 document.addEventListener("click", e=>{ const b=$("#gitBox"); if(b && !b.contains(e.target)) $("#gitPop").hidden=true; });
 
 // ── 会话列表 ─────────────────────────────────────────────────────────────
