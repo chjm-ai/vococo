@@ -118,6 +118,8 @@ async def test_workbench_js_talks_to_backend(static_app):
     assert 'if(task.parentId && isRenderedChild) openWorkbenchNewChild(task.parentId, task.id);' in source
     # 打开新建卡时不一定全量重绘；清空选择必须同步移除旧行的 is-selected 样式。
     assert 'function wbResetSelection(){\n  // 新建卡可只插入一个节点而不整页重绘，必须先移除旧行的视觉选中态。\n  workbenchSetSelection([]);' in source
+    # 空白点击要清掉待确认的单击计时器和当前选择，避免选中态残留或延迟复活。
+    assert 'clearTimeout(wbClickTimer); wbClickTimer = null;\n  wbResetSelection();\n  workbenchFinishActiveCard();' in source
     assert 'data-open-dp' in source  # 任务日期统一由日期面板触发器处理
     assert "未排期" in source  # 未排期任务也保留可点击的日期入口
     assert "is-unscheduled" in source
