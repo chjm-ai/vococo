@@ -254,7 +254,7 @@ $("#ta").addEventListener("keydown", e=>{
     if((e.key==="Enter"||e.key==="Tab") && S.cmd.items.length){ e.preventDefault(); pickCmd(S.cmd.active); return; }
     if(e.key==="Escape"){ e.preventDefault(); closeCmdMenu(); return; }
   }
-  if(e.key==="Enter" && !e.shiftKey && window.innerWidth>760){ e.preventDefault(); send($("#ta").value); }
+  if(e.key==="Enter" && !e.shiftKey && !IS_MOBILE_DEVICE){ e.preventDefault(); send($("#ta").value); }
 });
 // "工作中"状态行右侧的停止按钮(状态行每秒重绘,用事件委托一次绑定)
 document.addEventListener("click", e=>{ if(e.target.closest(".statusstop")){ e.preventDefault(); stopReply(); } });

@@ -24,7 +24,9 @@ function wbSaveViewPrefs(){ try{ localStorage.setItem(WB_VIEW_PREFS_KEY, JSON.st
 // 移动端(≤760px)原来在 CSS 里硬 display:none、月视图原来在渲染函数里硬判断
 // WB.view!=="month"，都是"常年隐藏备注、点开关也没用"——这两条默认值继续保留，
 // 但改成"没手动点过开关"时的初始值，用户点了开关就按开关来，不再被焊死打不开。
-function wbIsMobileWidth(){ return typeof window.matchMedia === "function" && window.matchMedia("(max-width:760px)").matches; }
+// 这里判"是否移动端"同时要求真手机/平板设备,窗口窄的桌面浏览器不算——避免拉小窗口
+// 时莫名其妙把备注默认隐藏掉。
+function wbIsMobileWidth(){ return IS_MOBILE_DEVICE && typeof window.matchMedia === "function" && window.matchMedia("(max-width:760px)").matches; }
 function wbNotesHidden(view){
   const pref = wbViewPref(view);
   return pref.hideNotes === undefined ? (view === "month" || wbIsMobileWidth()) : !!pref.hideNotes;
@@ -2972,7 +2974,7 @@ function wbSheetCloseByEl(el){
 
 (function(){
   let dragEl = null, startY = 0, pointerId = null;
-  function isMobileSheet(){ return window.matchMedia("(max-width:760px)").matches; }
+  function isMobileSheet(){ return IS_MOBILE_DEVICE && window.matchMedia("(max-width:760px)").matches; }
   document.addEventListener("pointerdown", event => {
     const handle = event.target.closest(".wb-sheet-handle");
     if(!handle || !isMobileSheet()) return;

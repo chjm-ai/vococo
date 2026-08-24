@@ -1105,34 +1105,40 @@
   #backdrop{display:none;position:fixed;inset:0;background:var(--ov-3);z-index:25;backdrop-filter:blur(2px)}
 
   @media(max-width:760px){
-    #sidebar{position:fixed;inset:8px auto 8px 8px;margin:0;border-radius:32px;width:300px;
+    /* 抽屉式侧边栏(覆盖+背景遮罩)只给真手机/平板;桌面窗口拉到同样窄度走下面
+       device-mobile 之外的"收起态"逻辑,不弹抽屉。 */
+    html.device-mobile #sidebar{position:fixed;inset:8px auto 8px 8px;margin:0;border-radius:32px;width:300px;
       transform:translateX(calc(-100% - 16px))}
     /* 圆角变大后投影会跟着往里收,底部安全区夹角容易露出平背景;加深加大投影把这块阴影感补回来 */
-    #sidebar.open{transform:translateX(0);box-shadow:0 10px 32px rgba(0,0,0,.34)}
-    #hamb{display:flex}
-    #backdrop.show{display:block}
-    /* 移动端左右留白收窄:桌面 32px 在窄屏太挤,回到 16px;上下不额外加(见 .combg 基础规则) */
+    html.device-mobile #sidebar.open{transform:translateX(0);box-shadow:0 10px 32px rgba(0,0,0,.34)}
+    html.device-mobile #hamb{display:flex}
+    html.device-mobile #backdrop.show{display:block}
+    /* 移动端左右留白收窄:桌面 32px 在窄屏太挤,回到 16px;上下不额外加(见 .combg 基础规则)。
+       这几条是纯版式收紧,跟设备类型无关,桌面窗口拉小同样适用。 */
     #messages,#convLoading{padding-left:var(--sp-5);padding-right:var(--sp-5)}
     header.bar{padding-left:var(--sp-5);padding-right:var(--sp-5)}
     #composer .combg{padding-left:var(--sp-5);padding-right:var(--sp-5)}
-    /* 移动端侧栏:菜单行加大触控尺寸、字号整体 +1px,圆角贴近 iOS 大圆角风格 */
-    #sidebar .shead .brand{font-size:21px}
-    .projgrp,.conv{padding:var(--sp-3) var(--sp-4)}
-    .projgrp{font-size:var(--fs-base)}
-    .conv .ct{font-size:var(--fs-lg)}
-    .conv .ctime{font-size:var(--fs-sm)}
-    .sfoot{font-size:var(--fs-base);padding:var(--sp-4) var(--sp-4) var(--sp-4) var(--sp-5)}
-    .convmenu .cmitem{font-size:var(--fs-base)}
-    #convFilterPop .fmi{font-size:var(--fs-base)}
+    /* 移动端侧栏:菜单行加大触控尺寸、字号整体 +1px,圆角贴近 iOS 大圆角风格。
+       是按 300px 抽屉宽度调的,桌面 280px 窄侧栏放大字号会挤/换行,只给真手机/平板。 */
+    html.device-mobile #sidebar .shead .brand{font-size:21px}
+    html.device-mobile .projgrp,html.device-mobile .conv{padding:var(--sp-3) var(--sp-4)}
+    html.device-mobile .projgrp{font-size:var(--fs-base)}
+    html.device-mobile .conv .ct{font-size:var(--fs-lg)}
+    html.device-mobile .conv .ctime{font-size:var(--fs-sm)}
+    html.device-mobile .sfoot{font-size:var(--fs-base);padding:var(--sp-4) var(--sp-4) var(--sp-4) var(--sp-5)}
+    html.device-mobile .convmenu .cmitem{font-size:var(--fs-base)}
+    html.device-mobile #convFilterPop .fmi{font-size:var(--fs-base)}
   }
   /* 桌面宽屏:基础字号调小(手机保持 16px 不变,避免 iOS 聚焦缩放) */
   @media(min-width:761px){
     html,body{font-size:var(--fs-base);line-height:1.55}
-    #collapseBtn{display:flex}
-    /* 收起:侧边栏宽度归零,顶栏 ☰ 变身为"展开"入口 */
-    body.sb-collapsed #sidebar{width:0;margin-left:0;border-color:transparent;box-shadow:none;overflow:hidden}
-    body.sb-collapsed #hamb{display:flex}
   }
+  /* 侧边栏收起/展开控件:按"是不是桌面设备"决定,不按窗口宽度——桌面窗口拉多窄,
+     收起按钮和收起态都得照常工作,不能因为撞到 760px 断点就变成移动端抽屉。 */
+  html:not(.device-mobile) #collapseBtn{display:flex}
+  /* 收起:侧边栏宽度归零,顶栏 ☰ 变身为"展开"入口 */
+  html:not(.device-mobile) body.sb-collapsed #sidebar{width:0;margin-left:0;border-color:transparent;box-shadow:none;overflow:hidden}
+  html:not(.device-mobile) body.sb-collapsed #hamb{display:flex}
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
   .ic{width:14px;height:14px;vertical-align:-2.5px;flex-shrink:0}
   #micBtn .ic{width:17px;height:17px;vertical-align:-4px}
@@ -1461,8 +1467,9 @@
   .wb-task{padding:var(--sp-4) 2px}.wb-task-line strong{font-size:var(--fs-base)}.wb-project-tag,.wb-task-meta,.wb-source-link,.wb-manual{font-size:var(--fs-sm)}.wb-task-sources{margin-top:4px}.wb-empty{font-size:var(--fs-sm)}
   .wb-project-block h2{font-size:var(--fs-base)}.wb-project-block header>div>span,.wb-goal-row span,.wb-unaligned{font-size:var(--fs-sm)}.wb-goal-row strong{font-size:var(--fs-base)}.wb-demo-note{font-size:var(--fs-sm)}
   .wb-source-panel>div>span{font-size:var(--fs-sm)}.wb-source-panel>div>strong{font-size:var(--fs-base)}.wb-source-panel dl{font-size:var(--fs-sm)}
-  @media(min-width:761px){body.sb-collapsed .wb-hamb{display:flex}}
-  @media(max-width:760px){#wbContent{width:100%;padding:18px var(--sp-5) 44px}.wb-hamb{display:flex}.wb-title{min-height:38px}.wb-toolbar{gap:10px}}
+  /* 同 #hamb/#collapseBtn:按设备类型决定,不按窗口宽度。 */
+  html:not(.device-mobile) body.sb-collapsed .wb-hamb{display:flex}
+  @media(max-width:760px){#wbContent{width:100%;padding:18px var(--sp-5) 44px}html.device-mobile .wb-hamb{display:flex}.wb-title{min-height:38px}.wb-toolbar{gap:10px}}
 
   /* 任务是工作台的基本阅读单位：一行看完，不用分割线切碎节奏。 */
   #workbenchView .wb-toolbar,#workbenchView .wb-project-filter,#workbenchView .wb-task-list,
@@ -1701,21 +1708,23 @@
   .wb-dp-month.is-today{color:var(--accent);font-weight:700}
   .wb-dp-month.is-selected{background:var(--accent);color:var(--on-accent);font-weight:700}
   @media(max-width:760px){
-    #wbDpBackdrop.show{background:var(--ov-3);pointer-events:auto}
-    #wbSheetBackdrop.show{background:var(--ov-3);pointer-events:auto}
-    .wb-ctx-menu{left:0!important;right:0!important;top:auto!important;bottom:0;width:100%;max-width:100%;max-height:70vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:10px 12px calc(10px + env(safe-area-inset-bottom))}
-    .wb-ctx-menu button{padding:var(--sp-4) var(--sp-4)}
-    .wb-dp{left:0!important;right:0;top:auto!important;bottom:0;width:100%;max-width:100%;max-height:78vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:14px 16px calc(14px + env(safe-area-inset-bottom))}
+    /* 底部弹层这套(全屏宽度贴底+拖拽抓手)只给真手机/平板;桌面窗口拉小时
+       日期选择器/右键菜单照旧走上面定义的悬浮小面板,不整体变成移动端抽屉。 */
+    html.device-mobile #wbDpBackdrop.show{background:var(--ov-3);pointer-events:auto}
+    html.device-mobile #wbSheetBackdrop.show{background:var(--ov-3);pointer-events:auto}
+    html.device-mobile .wb-ctx-menu{left:0!important;right:0!important;top:auto!important;bottom:0;width:100%;max-width:100%;max-height:70vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:10px 12px calc(10px + env(safe-area-inset-bottom))}
+    html.device-mobile .wb-ctx-menu button{padding:var(--sp-4) var(--sp-4)}
+    html.device-mobile .wb-dp{left:0!important;right:0;top:auto!important;bottom:0;width:100%;max-width:100%;max-height:78vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:14px 16px calc(14px + env(safe-area-inset-bottom))}
     /* 底部弹层顶部的抓手：只在移动端底部弹出态出现，向下拖拽这一条即可关闭面板
        （逻辑见 workbench.js 里的通用 pointerdown/move/up 拖拽处理）。 */
-    .wb-sheet-handle{display:flex;justify-content:center;margin:-6px -8px 6px;padding:var(--sp-2) 0;touch-action:none}
-    .wb-sheet-handle::after{content:"";width:36px;height:4px;border-radius:2px;background:var(--line2);opacity:.8}
-    .wb-dp-actions button{height:36px}
-    .wb-dp-day{height:36px}
-    .wb-dp-month{padding:var(--sp-4) 0}
-    .wb-dp-picker{min-height:232px}
-    .wb-dp-week-list{max-height:170px}
-    .wb-dp-grid{gap:10px}
+    html.device-mobile .wb-sheet-handle{display:flex;justify-content:center;margin:-6px -8px 6px;padding:var(--sp-2) 0;touch-action:none}
+    html.device-mobile .wb-sheet-handle::after{content:"";width:36px;height:4px;border-radius:2px;background:var(--line2);opacity:.8}
+    html.device-mobile .wb-dp-actions button{height:36px}
+    html.device-mobile .wb-dp-day{height:36px}
+    html.device-mobile .wb-dp-month{padding:var(--sp-4) 0}
+    html.device-mobile .wb-dp-picker{min-height:232px}
+    html.device-mobile .wb-dp-week-list{max-height:170px}
+    html.device-mobile .wb-dp-grid{gap:10px}
   }
   #workbenchView .wb-trash-row{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer}
   #workbenchView .wb-trash-row .wb-task-title{text-decoration:line-through;color:var(--dim)}

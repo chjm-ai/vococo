@@ -86,6 +86,11 @@ const barTasks = new Map();  // id -> 任务行,最近若干条(不限状态)
 const $ = s => document.querySelector(s);
 const el = (t,c) => { const e=document.createElement(t); if(c)e.className=c; return e; };
 const esc = s => s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// 真实移动设备(手机/平板 UA)判断,和视口宽度无关——用来把"窗口拉小的桌面浏览器"跟
+// "真手机"分开。CSS 断点(760px)仍按宽度管版式(窄屏收紧间距字号),这个常量只管要不要
+// 触发抽屉/拖拽关闭等移动端专属交互。class 在 index.html 头部提前打到 <html> 上防闪烁,
+// 这里直接读同一个判断结果,保证 CSS 和 JS 的设备判断永远一致。
+const IS_MOBILE_DEVICE = document.documentElement.classList.contains("device-mobile");
 
 // 模板字符串拼 HTML 的轻量替代:插值默认自动 esc(),已知安全的 HTML 片段(比如别处
 // html`` 拼好的子结果)用 html.raw() 包一层跳过转义。不引入构建步骤、不改变现有
