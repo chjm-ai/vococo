@@ -142,6 +142,12 @@ function workbenchCurrentFilter(){
 }
 function workbenchChildren(parentId){ return WB_DATA.tasks.filter(task => task.parentId === parentId); }
 function workbenchChildrenStats(parentId){ const children = workbenchChildren(parentId); return {total: children.length, done: children.filter(c => c.status === "done").length}; }
+// 展开子任务只在「展示」这条路径上受 WB_SHOW_DONE 影响——排序/拖拽/计数(workbenchChildrenStats)
+// 仍然要看到全部子任务，不然拖拽排序基准会跟着开关状态变，反而更乱。
+function workbenchVisibleChildren(parentId){
+  const children = workbenchChildren(parentId);
+  return WB_SHOW_DONE ? children : children.filter(task => !workbenchIsLogged(task));
+}
 function workbenchAncestors(task){
   const chain = []; let cur = task;
   while(cur && cur.parentId){
@@ -345,7 +351,7 @@ function workbenchScheduleBadge(task){
 function workbenchShouldAutoExpandChildren(parentId){
   const parent = workbenchTask(parentId);
   const dateFilter = workbenchCurrentFilter();
-  return !!(parent && dateFilter && dateFilter(parent) && workbenchChildren(parentId).some(dateFilter));
+  return !!(parent && dateFilter && dateFilter(parent) && workbenchVisibleChildren(parentId).some(dateFilter));
 }
 
 function workbenchChildrenExpanded(parentId){
@@ -364,7 +370,7 @@ function workbenchAssigneeBadge(task){
 }
 
 function workbenchChildToggle(task){
-  const children = workbenchChildren(task.id);
+  const children = workbenchVisibleChildren(task.id);
   if(!children.length) return '';
   const expanded = workbenchChildrenExpanded(task.id);
   return '<button type="button" class="wb-child-toggle'+(expanded ? ' is-expanded' : '')+'" data-toggle-children="'+esc(task.id)+'" title="'+(expanded ? "收起子任务" : "展开子任务")+'">'+ic(expanded ? "chevronUp" : "chevronDown")+'</button>';
@@ -382,7 +388,7 @@ function workbenchParentBadge(task, isChild){
 
 function workbenchChildRows(parentId){
   if(!workbenchChildrenExpanded(parentId)) return '';
-  const children = workbenchChildren(parentId);
+  const children = workbenchVisibleChildren(parentId);
   const newCard = (WB.newTask && WB.newTask.parentId === parentId && !WB.newTask.siblingTaskId) ? workbenchNewChildCard(parentId) : '';
   const rows = children.map(child => workbenchTaskRow(child, true)+(WB.newTask?.siblingTaskId === child.id ? workbenchNewChildCard(parentId) : '')).join('');
   if(!rows && !newCard) return '';
@@ -434,7 +440,7 @@ function workbenchTaskRow(task, isChild){
   const rolledDot = task.rolled ? '<span class="wb-rolled-dot" title="过期后自动滚到当前周期" aria-hidden="true"></span>' : '';
   const inner = '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
     '<div class="wb-task-copy"><div class="wb-task-title-row"><strong class="wb-task-title">'+rolledDot+esc(task.title)+'</strong>'+workbenchParentBadge(task, isChild)+'</div>'+detail+'</div>'+
-    '<div class="wb-task-end">'+workbenchScheduleBadge(task)+(workbenchChildren(task.id).length ? workbenchChildToggle(task) : workbenchAssigneeBadge(task))+'</div>';
+    '<div class="wb-task-end">'+workbenchScheduleBadge(task)+(workbenchVisibleChildren(task.id).length ? workbenchChildToggle(task) : workbenchAssigneeBadge(task))+'</div>';
   // 多选模式下行尾常驻一个圆形选中指示（仿 Things：空心=未选，实心+勾=已选）；
   // 平时用 CSS 隐藏，不需要因为进/出多选模式而整段重渲染——is-selected 类已经在维护了。
   const selectCircle = touch ? '<div class="wb-select-circle" aria-hidden="true">'+ic("save")+'</div>' : "";
@@ -1192,9 +1198,9 @@ function toggleWorkbenchTask(taskId){
   task.status = completing ? "done" : "todo";
   const after = {status: task.status};
   workbenchPersistTaskChange(taskId, before, after);
-  // 月视图本来就会把已完成任务一起展示（见 workbenchVisibleTasks），打勾/恢复都不影响
-  // 任务是否可见，原地换勾选态即可，不用收起也不用整体重渲染。
-  if(WB.view === "month"){
+  // 「显示已完成」开关开着时，打勾/恢复都不影响任务是否可见，原地换勾选态即可，
+  // 不用收起也不用整体重渲染（见 workbenchVisibleTasks）。
+  if(WB_SHOW_DONE){
     if(!workbenchSwapTask(taskId)) renderWorkbench();
     return;
   }
