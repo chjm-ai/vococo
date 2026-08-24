@@ -17,15 +17,17 @@ from vococo.gateway.core import Sink
 from vococo.memory import session_store
 
 
-async def _noop_worktree(session_key):  # ensure_worktree 的异步替身
-    return None
+async def _default_cwd(session_key):
+    from vococo import config
+
+    return str(config.ROOT_DIR)
 
 
 @pytest.mark.anyio
 async def test_cancel_preserves_question_for_next_turn(isolated, monkeypatch):
     from vococo.core import worktree
 
-    monkeypatch.setattr(worktree, "ensure_worktree", _noop_worktree)
+    monkeypatch.setattr(worktree, "execution_cwd", _default_cwd)
 
     key = "web:cancel-test"
 
@@ -66,7 +68,7 @@ async def test_overfull_session_compacts_before_sending_user_message(isolated, m
     """本地 Codex 代理的 GPT 上下文已超限时，先 /compact 再发送原问题。"""
     from vococo.core import worktree
 
-    monkeypatch.setattr(worktree, "ensure_worktree", _noop_worktree)
+    monkeypatch.setattr(worktree, "execution_cwd", _default_cwd)
     key = "web:overfull-context"
     session_store.set_chosen_model(key, "gpt-5.6-luna")
     session_store.set_sdk_session_id(key, "old-sdk-session")

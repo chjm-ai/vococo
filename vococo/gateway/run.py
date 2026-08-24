@@ -12,7 +12,7 @@ import asyncio
 import anyio
 
 from .. import config
-from ..core import tasks as bg_tasks
+from ..core import tasks as bg_tasks, worktree
 from ..cron.scheduler import run_scheduler
 from ..memory import session_store
 from ..tools import selfops
@@ -153,20 +153,15 @@ class GatewayRunner:
                     session_store.append(key, inc.text, outcome.reply)
                 if not compact_flag:
                     return
-        # 后台任务续聊(session_key=task:{id},语音派发/cron/chat 三种触发方共用同
-        # 一套引擎,见 core/task_runner.py)要延续任务派发时的工作目录——converse()
-        # 按 session_key 推导 cwd 那套认不出这种非项目 key,显式传进去(见
-        # 03-phase2-实现记录.md 存储统一改动一节)。任务派发时若原始 cwd 是 git 仓库,
-        # task_runner._run 会给它开专属 worktree + 分支并绑定同一个 key(见
-        # core/worktree.ensure_worktree_for_task);续聊要接着在那条隔离分支上改,
-        # 不能退回原始项目根,否则前半段任务的改动在分支、续聊的改动在主目录,对不上。
+        # 后台任务续聊要回到任务自己的 worktree。绑定丢失时重新确保隔离;若 Git 项目
+        # 无法建 worktree 会直接中止，不能把续聊回退到任务原始项目根。
         cwd_override = None
         is_explicit_project_override = None
         if key.startswith(bg_tasks.SESSION_KEY_PREFIX):
             row = bg_tasks.get(bg_tasks.task_id_from_session_key(key))
             if row is not None:
-                wt = session_store.get_worktree(key)
-                cwd_override = wt if wt and os.path.isdir(wt) else row["cwd"]
+                task_id = bg_tasks.task_id_from_session_key(key)
+                cwd_override = await worktree.execution_cwd_for_task(row["cwd"], task_id)
                 is_explicit_project_override = bool(row.get("cwd_explicit"))
         # 设置本轮路由上下文(供 ask_user 工具反问时找到该发给谁),随 contextvar 传入工具
         token = clarify.set_current(key, adapter, inc.chat_id)

@@ -1974,12 +1974,15 @@ class WebAdapter:
         name = (body.get("name") or "").strip()
         from ...core import worktree  # 懒加载
 
-        # 先确保该会话有独立 worktree,再在它自己的目录里建分支 —— 只影响本会话,不动别人
+        # 先确保该会话有独立 worktree,再在它自己的目录里建分支 —— 只影响本会话,不动别人。
+        # Git 项目建 worktree 失败时拒绝操作，禁止 checkout 到主检出目录。
         key = config.resolve_session_key("web", str(body.get("conv") or ""))
-        await worktree.ensure_worktree(key)
-        cwd = self._conv_cwd(str(body.get("conv") or ""))
-        if not cwd:
+        if config.project_root_for(key) is None:
             return web.json_response({"error": "该会话不是项目会话"}, status=400)
+        try:
+            cwd = await worktree.execution_cwd(key)
+        except worktree.WorktreeIsolationError as exc:
+            return web.json_response({"error": str(exc)}, status=503)
         if not name or " " in name or name.startswith("-"):
             return web.json_response({"error": "分支名非法"}, status=400)
         # 交给 git 兜底校验(拒绝 .. / ~ / 控制字符 / 已占用等)
