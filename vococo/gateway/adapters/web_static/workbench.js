@@ -150,6 +150,7 @@ function workbenchGroupId(project){ return "project:"+WB.view+":"+project.id; }
 // 那一刻拉一次;之后切项目 chip/切日周月视图都只是本地过滤 WB_DATA,不会跟服务端对一次。
 // 加个"点 Tab 时按上次拉取时间兜底刷新"——30s 内来回切不重复请求,超过才真正拉一次。
 let wbDataFetchedAt = 0;
+let wbPlacementVersion = 0;
 const WB_REFRESH_STALE_MS = 30000;
 async function loadWorkbenchData(){
   try{
@@ -163,6 +164,14 @@ async function loadWorkbenchData(){
 function refreshWorkbenchDataIfStale(){
   if(Date.now() - wbDataFetchedAt < WB_REFRESH_STALE_MS) return;
   loadWorkbenchData().then(renderWorkbench);
+}
+
+// 拖拽先乐观更新，落库成功后再用服务端数据校准整棵任务树；旧请求晚返回时不能覆盖新一次拖拽。
+function workbenchRefreshPlacement(version){
+  if(version !== wbPlacementVersion) return;
+  loadWorkbenchData().then(() => {
+    if(version === wbPlacementVersion) renderWorkbench();
+  });
 }
 
 // ── 撤销 / 重做 ───────────────────────────────────────────────────────────
@@ -1007,9 +1016,17 @@ function workbenchTaskTree(taskId){
   return tree;
 }
 
+function workbenchRestoreTaskPlacement(before, orderBefore, version){
+  if(version !== wbPlacementVersion) return;
+  before.forEach(({id, patch}) => Object.assign(workbenchTask(id)||{}, patch));
+  WB_DATA.tasks = orderBefore;
+  renderWorkbench();
+}
+
 function workbenchPersistTaskPlacement(task, parentId, projectId, orderBefore){
   const tree = workbenchTaskTree(task.id);
   const before = tree.map(item => ({id:item.id, patch:{parentId:item.parentId, project:item.project}}));
+  const version = ++wbPlacementVersion;
   task.parentId = parentId;
   tree.forEach(item => { item.project = projectId; });
   const after = tree.map(item => ({id:item.id, patch:{parentId:item.parentId, project:item.project}}));
@@ -1017,19 +1034,11 @@ function workbenchPersistTaskPlacement(task, parentId, projectId, orderBefore){
   api("/workbench/tasks/move", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:task.id, parentId, project:projectId, order:WB_DATA.tasks.map(item => item.id)})})
     .then(r => r.json().then(data => ({ok:r.ok && !data.error, data})))
     .then(({ok}) => {
-      if(ok){
-        if(JSON.stringify(before) !== JSON.stringify(after)) workbenchRemember({type:"task-patch", before, after});
-        return;
-      }
-      before.forEach(({id, patch}) => Object.assign(workbenchTask(id)||{}, patch));
-      WB_DATA.tasks = orderBefore;
-      renderWorkbench();
+      if(!ok){ workbenchRestoreTaskPlacement(before, orderBefore, version); return; }
+      if(JSON.stringify(before) !== JSON.stringify(after)) workbenchRemember({type:"task-patch", before, after});
+      workbenchRefreshPlacement(version);
     })
-    .catch(() => {
-      before.forEach(({id, patch}) => Object.assign(workbenchTask(id)||{}, patch));
-      WB_DATA.tasks = orderBefore;
-      renderWorkbench();
-    });
+    .catch(() => workbenchRestoreTaskPlacement(before, orderBefore, version));
 }
 
 function workbenchTaskIsAncestor(ancestorId, taskId){
