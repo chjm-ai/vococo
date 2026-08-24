@@ -13,8 +13,13 @@
 <link rel="icon" type="image/svg+xml" href="/vococo-mark.svg?v=4">
 <link rel="icon" href="/favicon.ico?v=4" sizes="any">
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png?v=4">
-<!-- 防闪烁:渲染前先套用上次选择的主题 -->
-<script>(function(){try{var t=localStorage.getItem("vococo_theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<!-- 防闪烁:渲染前先套用上次选择的主题 + 真实设备类型(UA,与视口宽度无关)。
+     后者用来把"窗口拉小的桌面浏览器"和"真手机"分开——CSS 断点(760px)仍按宽度管版式
+     (窄屏收紧间距字号,桌面拉小照样适用),device-mobile 这个 class 只管要不要触发
+     侧边栏抽屉/底部弹层拖拽关闭等移动端专属交互,详见 styles.css/app-core.js 里同名判断。 -->
+<script>(function(){try{var t=localStorage.getItem("vococo_theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}
+  if(/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) document.documentElement.classList.add("device-mobile");
+})();</script>
 <link rel="stylesheet" href="/styles.css">
 <link rel="stylesheet" href="/mascot.css">
 </head>
@@ -1493,9 +1498,10 @@ async function reloadHistory(force){
 // #newBtn 内容(与主会话行同构:edit 图标 + 文字)在 renderConvs 里设置——
 // 数据到位前保持 HTML 预置的骨架,避免"先出按钮、列表后到"的分裂感。
 $("#newBtn").onclick = newChat;
-// 顶栏 ☰:桌面(收起态)= 展开侧边栏;移动端 = 抽屉式打开
+// 顶栏 ☰:桌面设备(含拉窄的窗口,收起态)= 展开侧边栏;真手机/平板 = 抽屉式打开。
+// 按设备类型分支,不按窗口宽度——桌面窗口拉再小也不弹抽屉。
 function expandSidebarResponsive(){
-  if(window.innerWidth>760){ setSidebarCollapsed(false); }
+  if(!IS_MOBILE_DEVICE){ setSidebarCollapsed(false); }
   else { $("#sidebar").classList.add("open"); $("#backdrop").classList.add("show"); }
   loadVoiceSidebar();  // 打开侧边栏时刷新语音后台任务(新派发的运行中任务也能及时出现在默认项目)
 }
