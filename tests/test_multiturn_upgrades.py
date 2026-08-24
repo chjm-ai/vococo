@@ -66,6 +66,16 @@ def test_compose_prompt_fenced_recovery_format():
     assert "[当前这轮]" in out
 
 
+def test_compose_prompt_restores_image_path():
+    out = _compose_prompt(
+        [Turn(user="把这张图用到网站", image_paths=["/tmp/chat-images/12_0.png"])],
+        "继续处理",
+    )
+
+    assert "[本条消息携带的聊天图片附件，可用 Read 工具读取]" in out
+    assert "本机文件：/tmp/chat-images/12_0.png" in out
+
+
 # === system prompt 会话内快照 ===
 
 
