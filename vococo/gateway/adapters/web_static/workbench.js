@@ -586,8 +586,8 @@ function renderWorkbenchHeader(){
       '<div class="wb-switch">'+
         workbenchTabHtml("project", "项目")+
         workbenchTabHtml("unscheduled", "未排期")+
-        workbenchTabHtml("completed", "日志")+
-        workbenchTabHtml("trash", "废弃")+
+        workbenchTabHtml("completed", "日志簿")+
+        workbenchTabHtml("trash", "废纸篓")+
       '</div>'+
     '</div></header>';
 }
@@ -640,21 +640,21 @@ function workbenchTrashRow(task){
 
 function renderWorkbenchTrash(){
   if(!WB_TRASH.loaded) return '<p class="wb-empty">加载中…</p>';
-  const toolbar = WB_TRASH.tasks.length ? '<div class="wb-trash-toolbar"><button type="button" class="wb-ctx-danger" data-empty-trash>清空废弃</button></div>' : "";
-  if(!WB_TRASH.tasks.length) return workbenchEmptyState("done", "废弃是空的", "没有被丢弃的任务");
+  const toolbar = WB_TRASH.tasks.length ? '<div class="wb-trash-toolbar"><button type="button" class="wb-ctx-danger" data-empty-trash>清空废纸篓</button></div>' : "";
+  if(!WB_TRASH.tasks.length) return workbenchEmptyState("done", "废纸篓是空的", "没有被丢弃的任务");
   return toolbar+'<div class="wb-task-list wb-trash-list">'+WB_TRASH.tasks.map(workbenchTrashRow).join("")+'</div>';
 }
 
 async function workbenchEmptyTrash(){
   if(!WB_TRASH.tasks.length) return;
-  if(!confirm("清空废弃？"+WB_TRASH.tasks.length+" 个任务将被永久删除，不可恢复。")) return;
+  if(!confirm("清空废纸篓？"+WB_TRASH.tasks.length+" 个任务将被永久删除，不可恢复。")) return;
   const prev = WB_TRASH.tasks;
   WB_TRASH.tasks = [];
   renderWorkbench();
   try{
     const r = await api("/workbench/trash/empty", {method:"POST"});
     if(!r.ok) throw new Error("清空失败");
-  }catch(e){ WB_TRASH.tasks = prev; renderWorkbench(); alert("清空废弃失败："+(e.message||"")); }
+  }catch(e){ WB_TRASH.tasks = prev; renderWorkbench(); alert("清空废纸篓失败："+(e.message||"")); }
 }
 
 // ── 已完成：跟时间/项目无关，按「完成当天」分组，最近完成的排最前 ──────────────
@@ -675,7 +675,7 @@ function workbenchCompletedGroupLabel(dateKey){
 
 function renderWorkbenchCompleted(){
   const tasks = WB_DATA.tasks.filter(workbenchIsLogged);
-  if(!tasks.length) return workbenchEmptyState("idle", "还没有日志", "完成任务后会记录在这里");
+  if(!tasks.length) return workbenchEmptyState("idle", "日志簿是空的", "完成任务后会记录在这里");
   const groups = new Map();
   tasks.forEach(task => {
     const key = workbenchCompletedDayKey(task) || "unknown";
