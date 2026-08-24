@@ -1195,8 +1195,8 @@
     background:var(--accent);display:none}
   #tasksBadge.on{display:block}
   /* 后台任务状态条:顶栏下方常驻横幅——派发瞬间出现,最近7条按最后更新时间倒序;
-     终态任务满 10 分钟自动隐藏,不再手动关闭。状态点统一简化:running 黑色闪烁,
-     其余灰色小点;已完成项带删除线。
+     终态任务满 10 分钟自动隐藏,不再手动关闭。状态点:running 赤陶橙闪烁(同侧栏),
+     其余按语义色;已完成项带删除线。
      点击空白处打开任务抽屉看详情(数据来自 SSE task_update/task_done)。
      PWA 拿不到 iOS 灵动岛(Live Activities 只开放给原生 App),这条是应用内的替代。 */
   #taskBar{border-bottom:1px solid var(--line);padding:var(--sp-3) var(--sp-5);display:flex;
@@ -1214,9 +1214,9 @@
   .ctb-row.done{opacity:.55;text-decoration:line-through}
   .ctb-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;background:var(--dim2)}
   /* 状态语义色,与 .taskbar-row .dot 同款(见上) */
-  .ctb-dot.running,.ctb-dot.in_progress{width:6px;height:6px;background:var(--ok);
+  .ctb-dot.running,.ctb-dot.in_progress{width:6px;height:6px;background:var(--accent);
     animation:ctbPulse 1.2s ease-in-out infinite}
-  .ctb-dot.paused{background:var(--accent)}
+  .ctb-dot.paused{background:var(--warn)}
   .ctb-dot.done,.ctb-dot.completed{background:var(--ok)}
   .ctb-dot.failed,.ctb-dot.cancelled{background:var(--err)}
   .ctb-title{font-weight:500;flex-shrink:0;max-width:45%;overflow:hidden;
@@ -1233,11 +1233,12 @@
   .taskbar-row{display:flex;align-items:center;gap:8px;font-size:var(--fs-md);min-width:0}
   .taskbar-row.done{opacity:.55;text-decoration:line-through}
   .taskbar-row .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;background:var(--dim2)}
-  /* 状态语义色(2026-08-08 对齐抽屉/侧边栏的清晰配色):排队=灰,进行中=绿+脉冲,
-     暂停=橙,完成=绿(静态,行级 done 有删除线区分),失败/取消=红 */
-  .taskbar-row .dot.running,.taskbar-row .dot.in_progress{background:var(--ok);
+  /* 状态语义色(2026-08-24 对齐侧边栏 .conv .livedot):排队=灰,进行中=赤陶橙+脉冲,
+     暂停=警告黄,完成=绿(静态,行级 done 有删除线区分),失败/取消=红。
+     进行中不再用 --ok:绿是"已完成"的语义色,跑着的任务用 --accent 才和侧栏一致 */
+  .taskbar-row .dot.running,.taskbar-row .dot.in_progress{background:var(--accent);
     animation:ctbPulse 1.2s ease-in-out infinite}
-  .taskbar-row .dot.paused{background:var(--accent)}
+  .taskbar-row .dot.paused{background:var(--warn)}
   .taskbar-row .dot.done,.taskbar-row .dot.completed{background:var(--ok)}
   .taskbar-row .dot.failed,.taskbar-row .dot.cancelled{background:var(--err)}
   .taskbar-row .t{font-weight:600;flex-shrink:0;max-width:45%;overflow:hidden;
@@ -1254,7 +1255,7 @@
   .task .row{display:flex;align-items:center;gap:8px;margin:0;animation:none}
   .task .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
   .task .dot.queued{background:var(--dim2)}
-  .task .dot.running{background:var(--ok)}  /* 2026-08-08 与任务栏统一:进行中=绿 */
+  .task .dot.running{background:var(--accent);animation:ctbPulse 1.2s ease-in-out infinite}  /* 2026-08-24 与任务栏/侧栏统一:进行中=赤陶橙+脉冲 */
   .task .dot.done{background:var(--ok)}
   .task .dot.failed,.task .dot.cancelled{background:var(--err)}
   .task .title{flex:1;font-weight:600}
