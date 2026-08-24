@@ -8,7 +8,7 @@ from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from vococo.core import agent
-from vococo.core.agent import FileAttachment
+from vococo.core.agent import FileAttachment, ImageAttachment
 from vococo.gateway.adapters.web import WebAdapter
 
 
@@ -116,6 +116,22 @@ def test_unsent_attachments_are_isolated_by_conversation():
     assert "function restoreComposerAttachments(conv)" in composer
     assert "saveComposerAttachments(S.conv);" in index
     assert "restoreComposerAttachments(conv);" in index
+
+
+@pytest.mark.anyio
+async def test_image_attachment_includes_persisted_local_path():
+    """图片既作为视觉内容传入，也要告诉模型受控落盘路径。"""
+    prompt = agent._build_prompt(
+        [], "用这张图做头像",
+        [ImageAttachment("QUJD", "image/png", "/tmp/chat-images/12_0.png")], [],
+    )
+    message = await anext(prompt)
+
+    assert message["message"]["content"][1] == {
+        "type": "text",
+        "text": "[聊天图片附件 1，可用 Read 工具读取]\n本机文件：/tmp/chat-images/12_0.png",
+    }
+    assert message["message"]["content"][2]["type"] == "image"
 
 
 @pytest.mark.anyio

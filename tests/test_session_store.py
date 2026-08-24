@@ -302,6 +302,24 @@ def test_append_turn_image_persists_to_current_turn(isolated):
     assert "images" not in history[-1]
 
 
+def test_load_recent_restores_user_image_path_for_model(isolated, monkeypatch):
+    """历史重建时，模型仍能定位用户此前上传的原图。"""
+    from vococo import config
+    from vococo.core.agent import ImageAttachment
+    from vococo.memory import session_store
+
+    monkeypatch.setattr(config, "IMAGES_DIR", isolated / "data" / "images")
+    turn_id = session_store.start_turn("web:1", "把这张图用到网站里")
+    image = ImageAttachment(data="aGVsbG8=", media_type="image/png")
+    session_store.save_turn_images(turn_id, [image])
+    session_store.finish_turn(turn_id, "好的")
+
+    expected = str(config.IMAGES_DIR / f"{turn_id}_0.png")
+    history = session_store.load_recent("web:1")
+    assert image.local_path == expected
+    assert history[-1].image_paths == [expected]
+
+
 def test_append_turn_image_does_not_touch_user_uploaded_images(isolated):
     """同一轮里既有用户上传图又有 AI 主动发图时,两者要分别落进 images / ai_images,
     不能混在一起(混了会导致 AI 发的图被误贴到用户自己发的那条气泡上)。"""

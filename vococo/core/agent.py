@@ -175,6 +175,7 @@ class Turn:
 
     user: str
     assistant: str = ""
+    image_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -183,6 +184,7 @@ class ImageAttachment:
 
     data: str  # base64
     media_type: str  # 如 image/jpeg
+    local_path: str = ""  # 持久化后供模型直接读取的受控本机路径
 
 
 @dataclass
@@ -536,6 +538,11 @@ def _compose_prompt(history: list[Turn], user_text: str) -> str:
     ]
     for t in history:
         lines.append(f"我:{t.user}")
+        if t.image_paths:
+            lines.append(
+                "[本条消息携带的聊天图片附件，可用 Read 工具读取]\n"
+                + "\n".join(f"本机文件：{path}" for path in t.image_paths)
+            )
         if t.assistant:
             lines.append(f"你:{t.assistant}")
     lines.append("\n[当前这轮]")
@@ -587,7 +594,12 @@ def _build_prompt(
     if not images and not files:
         return text
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-    for img in images:
+    for idx, img in enumerate(images, start=1):
+        if img.local_path:
+            content.append({
+                "type": "text",
+                "text": f"[聊天图片附件 {idx}，可用 Read 工具读取]\n本机文件：{img.local_path}",
+            })
         content.append(
             {
                 "type": "image",

@@ -65,6 +65,20 @@ def _watermark(c, session_key: str) -> int:
     return row[0] if row else 0
 
 
+def _user_image_paths(raw: str | None) -> list[str]:
+    """把用户上传图的文件名还原成模型可读取的本机路径。"""
+    try:
+        names = json.loads(raw) if raw else []
+    except (json.JSONDecodeError, ValueError):
+        return []
+    return [
+        str(path) for name in names
+        if isinstance(name, str)
+        and not name.startswith(AI_IMAGE_PREFIX)
+        and (path := image_path(name)) is not None
+    ]
+
+
 def load_recent(session_key: str, limit: int = 40) -> list[Turn]:
     """只取当前会话(水位线之后)的最近 N 轮;跳过进行中(assistant_text='')的 turn。"""
     from ..core.agent import Turn  # 延迟 import:打破模块级循环依赖
@@ -72,11 +86,14 @@ def load_recent(session_key: str, limit: int = 40) -> list[Turn]:
     c = _conn()
     wm = _watermark(c, session_key)
     rows = c.execute(
-        "SELECT user_text, assistant_text FROM turns "
+        "SELECT user_text, assistant_text, images FROM turns "
         "WHERE session_key=? AND id>? AND assistant_text!='' ORDER BY id DESC LIMIT ?",
         (session_key, wm, limit),
     ).fetchall()
-    return [Turn(user=u, assistant=a) for u, a in reversed(rows)]
+    return [
+        Turn(user=u, assistant=a, image_paths=_user_image_paths(images))
+        for u, a, images in reversed(rows)
+    ]
 
 
 # 与前端 tool-card.js 的 renderToolCard() 决策保持一致:这几个工具名不看 input 内容,

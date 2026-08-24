@@ -50,7 +50,11 @@ def save_turn_images(turn_id: int, images: list) -> list[str]:
         except (binascii.Error, ValueError):
             continue  # 坏 base64:跳过这张
         name = f"{turn_id}_{idx}.{_img_ext(getattr(im, 'media_type', ''))}"
-        (config.IMAGES_DIR / name).write_bytes(raw)
+        path = config.IMAGES_DIR / name
+        path.write_bytes(raw)
+        # 这张图会在本轮原样喂给模型；同时把受控落盘路径回填，模型需要将图片
+        # 用作网站素材等文件操作时可直接读取，不必再猜临时目录。
+        im.local_path = str(path)
         names.append(name)
     if names:
         c = _db.conn()
