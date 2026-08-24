@@ -1454,7 +1454,7 @@
   #wbContent{width:min(820px,100%);padding:18px 32px 48px}
   .wb-toolbar{min-height:42px;padding-bottom:var(--sp-4)}.wb-title{gap:8px}.wb-title h1{font-size:var(--fs-lg);letter-spacing:0;font-weight:600}.wb-title span{font-size:var(--fs-sm)}
   .wb-hamb{display:none;width:38px;height:38px;margin:-8px 0 -8px -8px;border-radius:var(--r-lg);align-items:center;justify-content:center;color:var(--dim)}.wb-hamb .ic{width:19px;height:19px}.wb-hamb:hover{background:var(--panel2);color:var(--text)}
-  .wb-date-nav strong,.wb-date-nav button{font-size:var(--fs-md)}.wb-date-nav button[data-nav]{font-size:18px}
+  .wb-date-nav strong,.wb-date-nav button{font-size:var(--fs-lg)}.wb-date-nav button[data-nav]{font-size:18px}
   .wb-project-filter button{font-size:var(--fs-sm)}.wb-section{margin-top:24px}.wb-section-head h2{font-family:inherit;font-size:var(--fs-base);line-height:1.4;font-weight:600;letter-spacing:0}.wb-section-head span{font-size:var(--fs-sm)}
   .wb-task{padding:var(--sp-4) 2px}.wb-task-line strong{font-size:var(--fs-base)}.wb-project-tag,.wb-task-meta,.wb-source-link,.wb-manual{font-size:var(--fs-sm)}.wb-task-sources{margin-top:4px}.wb-empty{font-size:var(--fs-sm)}
   .wb-project-block h2{font-size:var(--fs-base)}.wb-project-block header>div>span,.wb-goal-row span,.wb-unaligned{font-size:var(--fs-sm)}.wb-goal-row strong{font-size:var(--fs-base)}.wb-demo-note{font-size:var(--fs-sm)}
@@ -1472,7 +1472,7 @@
   #workbenchView .wb-task{display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:10px;padding:var(--sp-3) 2px;border-radius:var(--r-sm)}
   @media(hover:hover){#workbenchView .wb-task:hover{background:var(--panel)}}
   #workbenchView .wb-check{margin:0}
-  #workbenchView .wb-task-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-base);line-height:20px;font-weight:600}
+  #workbenchView .wb-task-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-xl);line-height:20px;font-weight:600}
   #workbenchView .wb-task-side{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0;color:var(--dim2);font-size:var(--fs-sm);line-height:20px;white-space:nowrap}
   #workbenchView .wb-task-side .wb-project-tag{color:var(--dim)}
   #workbenchView .wb-task-side .wb-source-link{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1490,8 +1490,8 @@
   #workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) auto;cursor:pointer}
   #workbenchView .wb-project-tag{padding:0;color:var(--dim2);font-size:var(--fs-sm);line-height:20px;white-space:nowrap}
   #workbenchView .wb-section-toggle{width:100%;display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:0;text-align:left;color:var(--text)}
-  #workbenchView .wb-section-toggle h2{margin:0;font-family:inherit;font-size:var(--fs-base);font-weight:600}
-  #workbenchView .wb-section-toggle span{color:var(--dim2);font-size:var(--fs-sm)}
+  #workbenchView .wb-section-toggle h2{margin:0;font-family:inherit;font-size:var(--fs-xl);font-weight:600}
+  #workbenchView .wb-section-toggle span{color:var(--dim2);font-size:var(--fs-base)}
   #workbenchView .wb-section-toggle:hover h2{color:var(--accent)}
   .wb-detail-bar{position:sticky;top:0;z-index:8;display:flex;align-items:center;gap:10px;min-height:56px;padding:18px 0 var(--sp-4);background:var(--bg2)}
   .wb-detail-bar button{padding:var(--sp-1) 0;color:var(--dim);font-size:var(--fs-sm)}.wb-detail-bar button:hover{color:var(--accent)}.wb-detail-bar span{color:var(--dim2);font-size:var(--fs-sm)}
@@ -1508,7 +1508,7 @@
   #workbenchView .wb-title{display:flex;align-items:center;gap:8px}#workbenchView .wb-title h1{font-size:20px;line-height:26px;font-weight:700}
   #workbenchView .wb-switch-row{display:flex;flex-wrap:wrap;gap:12px}
   #workbenchView .wb-switch{display:flex;gap:2px;padding:var(--sp-1);border-radius:var(--r-md);background:var(--panel)}
-  #workbenchView .wb-switch button{padding:var(--sp-2) var(--sp-4);border-radius:var(--r-md);font-size:var(--fs-md);color:var(--dim);font-weight:400}
+  #workbenchView .wb-switch button{padding:var(--sp-2) var(--sp-4);border-radius:var(--r-md);font-size:var(--fs-lg);color:var(--dim);font-weight:400}
   #workbenchView .wb-switch button.on{background:var(--card);color:var(--text);font-weight:600}
   #workbenchView .wb-switch-icon{display:inline-flex;align-items:center;justify-content:center;width:26px}#workbenchView .wb-switch-icon .ic{width:14px;height:14px;vertical-align:0}
   #workbenchView .wb-title-actions{display:flex;align-items:center;gap:4px}
@@ -1525,14 +1525,14 @@
      只挑独立窗口这一个按钮藏——「显示/隐藏备注」「折叠/展开子任务」两个开关跟它共用
      .wb-win-btn 做外观,不能被这条连坐一起藏掉。 */
   body.wb-standalone [data-workbench-win]{display:none!important}
-  #workbenchView .wb-project-filter{display:flex;align-items:center;gap:5px;overflow-x:auto;padding:var(--sp-1) 0 var(--sp-1);border:0}#workbenchView .wb-project-filter button{padding:var(--sp-2) var(--sp-4);border-radius:var(--r-md);font-size:var(--fs-md)}#workbenchView .wb-project-add{display:inline-flex;align-items:center;justify-content:center;padding:var(--sp-2) var(--sp-3);color:var(--dim2)}
+  #workbenchView .wb-project-filter{display:flex;align-items:center;gap:5px;overflow-x:auto;padding:var(--sp-1) 0 var(--sp-1);border:0}#workbenchView .wb-project-filter button{padding:var(--sp-2) var(--sp-4);border-radius:var(--r-md);font-size:var(--fs-lg)}#workbenchView .wb-project-add{display:inline-flex;align-items:center;justify-content:center;padding:var(--sp-2) var(--sp-3);color:var(--dim2)}
   #workbenchView .wb-project-list{display:flex;flex-direction:column;gap:20px;margin-top:16px}#workbenchView .wb-project-block{margin:0;padding:0;border:0}
-  #workbenchView .wb-project-toggle{display:flex;align-items:center;gap:8px;width:fit-content;max-width:100%;margin-left:-12px;padding:var(--sp-2) var(--sp-4);border-radius:var(--r-sm);text-align:left;color:var(--text);cursor:pointer;transition:background var(--t-fast),color var(--t-fast)}#workbenchView .wb-project-toggle>span:last-child{color:var(--dim2);font-size:var(--fs-sm);line-height:20px}
+  #workbenchView .wb-project-toggle{display:flex;align-items:center;gap:8px;width:fit-content;max-width:100%;margin-left:-12px;padding:var(--sp-2) var(--sp-4);border-radius:var(--r-sm);text-align:left;color:var(--text);cursor:pointer;transition:background var(--t-fast),color var(--t-fast)}#workbenchView .wb-project-toggle>span:last-child{color:var(--dim2);font-size:var(--fs-base);line-height:20px}
   @media(hover:hover){ #workbenchView .wb-project-toggle:hover{background:var(--panel)} }
   #workbenchView .wb-project-icon{display:grid;place-items:center;flex:0 0 24px;width:24px;height:24px;color:var(--dim2)}#workbenchView .wb-project-icon .ic{width:17px;height:17px}
-  #workbenchView .wb-project-name{display:inline-flex;align-items:center;gap:7px;min-width:0;margin-top:0}#workbenchView .wb-project-name strong{font-size:var(--fs-base);line-height:20px;font-weight:650}#workbenchView .wb-project-name em{font-style:normal;color:var(--dim2);font-size:var(--fs-sm);line-height:20px}
+  #workbenchView .wb-project-name{display:inline-flex;align-items:center;gap:7px;min-width:0;margin-top:0}#workbenchView .wb-project-name strong{font-size:var(--fs-xl);line-height:20px;font-weight:650}#workbenchView .wb-project-name em{font-style:normal;color:var(--dim2);font-size:var(--fs-base);line-height:20px}
   #workbenchView .wb-chevron{width:7px;height:7px;flex:0 0 7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg) translate(-1px,1px)}
-  #workbenchView .wb-project-delete{display:block;margin:16px auto 0;padding:var(--sp-1) var(--sp-4);border:0;background:none;color:var(--dim2);font-size:var(--fs-sm);opacity:.5;cursor:pointer;transition:opacity var(--t-fast),color var(--t-fast)}
+  #workbenchView .wb-project-delete{display:block;margin:16px auto 0;padding:var(--sp-1) var(--sp-4);border:0;background:none;color:var(--dim2);font-size:var(--fs-md);opacity:.5;cursor:pointer;transition:opacity var(--t-fast),color var(--t-fast)}
   @media(hover:hover){ #workbenchView .wb-project-delete:hover{opacity:1;color:var(--err)} }
   #workbenchView .wb-task-list{display:flex;flex-direction:column;gap:2px;margin:5px -12px 0;border:0}#workbenchView .wb-task{display:grid;grid-template-columns:20px minmax(0,1fr) minmax(120px,170px);align-items:start;gap:10px;padding:var(--sp-2) var(--sp-4);border:0;border-radius:var(--r-sm);cursor:pointer;position:relative}#workbenchView .wb-task:hover{background:var(--panel)}#workbenchView .wb-task.is-selected{background:var(--panel2)}
   #workbenchView .wb-task:not(.wb-task-card){-webkit-user-select:none;user-select:none}
@@ -1543,8 +1543,8 @@
   #workbenchView .wb-task.wb-swipeable.wb-task-drop-before::before{top:0}
   #workbenchView .wb-task.wb-swipeable.wb-task-drop-after::after{bottom:0}
   #workbenchView .wb-task.wb-task-drop-nest{background:color-mix(in srgb,var(--accent) 12%,var(--panel));box-shadow:inset 0 0 0 1.5px var(--accent)}
-  #workbenchView .wb-check{display:grid;place-items:center;flex:none;width:20px;height:20px;margin:0;padding:0;line-height:1;border-radius:var(--r-sm)}#workbenchView .wb-task-list>.wb-task>.wb-check{margin-top:1px}#workbenchView .wb-task-copy{min-width:0}#workbenchView .wb-task-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-base);line-height:20px;font-weight:600}#workbenchView .wb-task-detail{display:-webkit-box;width:100%;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;margin:2px 0 0;color:var(--dim2);font-size:var(--fs-md);line-height:1.4}
-  #workbenchView .wb-empty{margin:4px 0 0;padding:var(--sp-3) 2px;border:0;color:var(--dim2);font-size:var(--fs-sm)}
+  #workbenchView .wb-check{display:grid;place-items:center;flex:none;width:20px;height:20px;margin:0;padding:0;line-height:1;border-radius:var(--r-sm)}#workbenchView .wb-task-list>.wb-task>.wb-check{margin-top:1px}#workbenchView .wb-task-copy{min-width:0}#workbenchView .wb-task-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-xl);line-height:20px;font-weight:600}#workbenchView .wb-task-detail{display:-webkit-box;width:100%;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;margin:2px 0 0;color:var(--dim2);font-size:var(--fs-md);line-height:1.4}
+  #workbenchView .wb-empty{margin:4px 0 0;padding:var(--sp-3) 2px;border:0;color:var(--dim2);font-size:var(--fs-base)}
   /* 移动端新建任务 FAB：只在没有 hover 能力的设备（触屏）上出现，桌面用键盘/侧边按钮就够了。 */
   #wbFab{display:none}
   @media(hover:none){
@@ -1618,8 +1618,8 @@
   #workbenchView .wb-editor-head{display:flex;align-items:center;gap:8px;margin-left:30px}#workbenchView .wb-editor-head input{flex:1;min-width:0;padding:2px 0;border:0;background:transparent;color:var(--text);font-family:inherit;font-size:var(--fs-lg);line-height:20px;font-weight:600;outline:none}
   #workbenchView .wb-editor-shell textarea{display:block;width:calc(100% - 30px);min-height:76px;max-height:240px;overflow-y:auto;margin:10px 0 0 30px;padding:0;border:0;background:transparent;color:var(--text);font-family:inherit;font-size:var(--fs-lg);font-weight:400;line-height:1.7;outline:none;resize:none}#workbenchView .wb-editor-shell textarea:focus{color:var(--text)}
   #workbenchView .wb-editor-footer{display:flex;align-items:center;gap:7px;margin:10px 0 0 30px}#workbenchView .wb-editor-footer button,#workbenchView .wb-editor-footer select{height:28px;padding:0 var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);color:var(--dim);font-family:inherit;font-size:var(--fs-md);line-height:26px}#workbenchView .wb-editor-footer button:hover{background:var(--panel2);color:var(--text)}.wb-image-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.wb-image-list figure{position:relative;width:104px;height:78px;margin:0;border-radius:var(--r-sm);overflow:hidden;background:var(--panel)}.wb-image-list img{display:block;width:100%;height:100%;object-fit:cover;cursor:zoom-in}.wb-image-list button{position:absolute;right:4px;top:4px;width:22px;height:22px;padding:0;border-radius:50%;background:rgba(0,0,0,.6);color:var(--on-accent);font-size:var(--fs-lg);line-height:20px}
-  .wb-ctx-menu{position:fixed;z-index:60;display:none;min-width:180px;max-width:240px;padding:var(--sp-2);border:1px solid var(--line);border-radius:var(--r-md);background:var(--card);box-shadow:var(--shadow);font-size:var(--fs-md)}
-  .wb-ctx-menu button{display:block;width:100%;padding:var(--sp-2) var(--sp-4);border:0;border-radius:var(--r-sm);background:none;text-align:left;color:var(--text);font-size:var(--fs-md)}
+  .wb-ctx-menu{position:fixed;z-index:60;display:none;min-width:180px;max-width:240px;padding:var(--sp-2);border:1px solid var(--line);border-radius:var(--r-md);background:var(--card);box-shadow:var(--shadow);font-size:var(--fs-xl)}
+  .wb-ctx-menu button{display:block;width:100%;padding:var(--sp-2) var(--sp-4);border:0;border-radius:var(--r-sm);background:none;text-align:left;color:var(--text);font-size:var(--fs-xl)}
   .wb-ctx-menu button:hover{background:var(--panel2)}
   .wb-ctx-menu .wb-ctx-sep{margin:5px 2px;border-top:1px solid var(--line)}
   .wb-ctx-menu .wb-ctx-danger{color:var(--err)}
@@ -1633,23 +1633,23 @@
   #workbenchView .wb-dp-trigger .ic{width:14px;height:14px;flex:0 0 auto}
   #wbDpBackdrop{position:fixed;inset:0;z-index:69;display:none;background:transparent;pointer-events:none}
   #wbDpBackdrop.show{display:block}
-  .wb-dp{position:fixed;z-index:70;display:none;width:280px;padding:var(--sp-4);border:1px solid var(--line);border-radius:var(--r-lg);background:var(--card);box-shadow:var(--shadow);font-size:var(--fs-base)}
+  .wb-dp{position:fixed;z-index:70;display:none;width:280px;padding:var(--sp-4);border:1px solid var(--line);border-radius:var(--r-lg);background:var(--card);box-shadow:var(--shadow);font-size:var(--fs-xl)}
   .wb-dp-search{position:relative;margin-bottom:8px}
-  .wb-dp-search input{width:100%;padding:var(--sp-2) 26px var(--sp-2) var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);color:var(--text);font-family:inherit;font-size:var(--fs-base);outline:none}
+  .wb-dp-search input{width:100%;padding:var(--sp-2) 26px var(--sp-2) var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);color:var(--text);font-family:inherit;font-size:var(--fs-xl);outline:none}
   .wb-dp-search-clear{position:absolute;right:4px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:20px;height:20px;padding:0;border:0;border-radius:50%;background:none;color:var(--dim2)}
   .wb-dp-search-clear:hover{background:var(--panel2);color:var(--text)}
   .wb-dp-search-clear .ic{width:11px;height:11px}
   .wb-dp-results{display:flex;flex-direction:column;gap:2px;max-height:220px;overflow-y:auto}
-  .wb-dp-result{display:flex;align-items:center;gap:8px;width:100%;padding:var(--sp-2) var(--sp-3);border:0;border-radius:var(--r-md);background:none;text-align:left;font-family:inherit;font-size:var(--fs-base);color:var(--text)}
+  .wb-dp-result{display:flex;align-items:center;gap:8px;width:100%;padding:var(--sp-2) var(--sp-3);border:0;border-radius:var(--r-md);background:none;text-align:left;font-family:inherit;font-size:var(--fs-xl);color:var(--text)}
   .wb-dp-result:hover{background:var(--panel2)}
   .wb-dp-result.is-active{background:var(--accent);color:var(--on-accent)}
   .wb-dp-result.is-active .wb-dp-result-weekday{color:var(--wh-3)}
   .wb-dp-result-icon{display:grid;place-items:center;flex:0 0 auto;width:22px;height:22px;border-radius:var(--r-sm);background:var(--err);color:var(--on-accent)}
   .wb-dp-result-icon .ic{width:13px;height:13px}
   .wb-dp-result-label{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .wb-dp-result-weekday{flex:0 0 auto;color:var(--dim2);font-size:var(--fs-base)}
+  .wb-dp-result-weekday{flex:0 0 auto;color:var(--dim2);font-size:var(--fs-xl)}
   .wb-dp-actions{display:flex;gap:6px;margin-bottom:10px}
-  .wb-dp-actions button{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;height:30px;padding:0;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);color:var(--text);font-family:inherit;font-size:var(--fs-base)}
+  .wb-dp-actions button{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;height:30px;padding:0;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);color:var(--text);font-family:inherit;font-size:var(--fs-xl)}
   .wb-dp-actions button .ic{width:13px;height:13px}
   .wb-dp-actions button:hover{background:var(--panel2)}
   .wb-dp-actions button.is-on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
@@ -1659,23 +1659,23 @@
   .wb-dp-clear:hover{background:var(--panel);color:var(--err);opacity:1}
   .wb-dp-clear[disabled]{visibility:hidden;pointer-events:none}
   .wb-dp-picker{min-height:190px}
-  .wb-dp-weekdays{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:2px;color:var(--dim2);font-size:var(--fs-base);text-align:center}
+  .wb-dp-weekdays{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:2px;color:var(--dim2);font-size:var(--fs-xl);text-align:center}
   .wb-dp-grid{display:flex;flex-direction:column;gap:8px}
   .wb-dp-grid.is-expanded{max-height:260px;overflow-y:auto;scrollbar-width:thin}
   .wb-dp-week{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
-  .wb-dp-day{display:grid;place-items:center;height:30px;padding:0;border:0;border-radius:var(--r-sm);background:none;color:var(--text);font-family:inherit;font-size:var(--fs-base);line-height:1.15}
+  .wb-dp-day{display:grid;place-items:center;height:30px;padding:0;border:0;border-radius:var(--r-sm);background:none;color:var(--text);font-family:inherit;font-size:var(--fs-xl);line-height:1.15}
   .wb-dp-day:hover{background:var(--panel2)}
   .wb-dp-day.is-today{color:var(--accent);font-weight:700}
   .wb-dp-day.is-selected{background:var(--accent);color:var(--on-accent);font-weight:700}
-  .wb-dp-day.is-month-start{font-size:var(--fs-base);font-weight:600}
+  .wb-dp-day.is-month-start{font-size:var(--fs-xl);font-weight:600}
   .wb-dp-expand{display:flex;justify-content:center;width:100%;padding:var(--sp-2) 0 0;border:0;background:none;color:var(--dim2)}
   .wb-dp-expand:hover{color:var(--text)}
   .wb-dp-expand .ic{width:15px;height:15px}
   .wb-dp-week-pager{display:flex;justify-content:space-between;gap:6px;margin-bottom:4px}
-  .wb-dp-week-pager button{padding:var(--sp-2) var(--sp-3);border:0;border-radius:var(--r-sm);background:none;color:var(--dim2);font-family:inherit;font-size:var(--fs-sm)}
+  .wb-dp-week-pager button{padding:var(--sp-2) var(--sp-3);border:0;border-radius:var(--r-sm);background:none;color:var(--dim2);font-family:inherit;font-size:var(--fs-md)}
   .wb-dp-week-pager button:hover{background:var(--panel2);color:var(--text)}
   .wb-dp-week-list{display:flex;flex-direction:column;gap:2px;max-height:150px;overflow-y:auto;scrollbar-width:thin}
-  .wb-dp-week-row{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:var(--sp-3) var(--sp-4);border:0;border-radius:var(--r-md);background:none;text-align:left;color:var(--text);font-family:inherit;font-size:var(--fs-base);font-variant-numeric:tabular-nums}
+  .wb-dp-week-row{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:var(--sp-3) var(--sp-4);border:0;border-radius:var(--r-md);background:none;text-align:left;color:var(--text);font-family:inherit;font-size:var(--fs-xl);font-variant-numeric:tabular-nums}
   .wb-dp-week-row:hover{background:var(--panel2)}
   .wb-dp-week-row.is-today{color:var(--accent);font-weight:700}
   .wb-dp-week-row.is-selected{background:var(--accent);color:var(--on-accent);font-weight:700}
@@ -1684,31 +1684,28 @@
   .wb-dp-month-nav{display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:8px;color:var(--dim)}
   .wb-dp-month-nav button{padding:var(--sp-1) var(--sp-4);border:0;border-radius:var(--r-sm);background:none;color:var(--dim);font-size:17px;line-height:16px}
   .wb-dp-month-nav button:hover{background:var(--panel2);color:var(--text)}
-  .wb-dp-month-nav strong{min-width:64px;text-align:center;color:var(--text);font-size:var(--fs-base);font-weight:600;font-variant-numeric:tabular-nums}
+  .wb-dp-month-nav strong{min-width:64px;text-align:center;color:var(--text);font-size:var(--fs-xl);font-weight:600;font-variant-numeric:tabular-nums}
   .wb-dp-month-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
-  .wb-dp-month{padding:var(--sp-4) 0;border:0;border-radius:var(--r-md);background:var(--panel);color:var(--text);font-family:inherit;font-size:var(--fs-base)}
+  .wb-dp-month{padding:var(--sp-4) 0;border:0;border-radius:var(--r-md);background:var(--panel);color:var(--text);font-family:inherit;font-size:var(--fs-xl)}
   .wb-dp-month:hover{background:var(--panel2)}
   .wb-dp-month.is-today{color:var(--accent);font-weight:700}
   .wb-dp-month.is-selected{background:var(--accent);color:var(--on-accent);font-weight:700}
   @media(max-width:760px){
     #wbDpBackdrop.show{background:var(--ov-3);pointer-events:auto}
     #wbSheetBackdrop.show{background:var(--ov-3);pointer-events:auto}
-    .wb-ctx-menu{left:0!important;right:0!important;top:auto!important;bottom:0;width:100%;max-width:100%;max-height:70vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:10px 12px calc(10px + env(safe-area-inset-bottom));font-size:var(--fs-xl)}
-    .wb-ctx-menu button{padding:var(--sp-4) var(--sp-4);font-size:var(--fs-xl)}
-    .wb-dp{left:0!important;right:0;top:auto!important;bottom:0;width:100%;max-width:100%;max-height:78vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:14px 16px calc(14px + env(safe-area-inset-bottom));font-size:var(--fs-xl)}
+    .wb-ctx-menu{left:0!important;right:0!important;top:auto!important;bottom:0;width:100%;max-width:100%;max-height:70vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:10px 12px calc(10px + env(safe-area-inset-bottom))}
+    .wb-ctx-menu button{padding:var(--sp-4) var(--sp-4)}
+    .wb-dp{left:0!important;right:0;top:auto!important;bottom:0;width:100%;max-width:100%;max-height:78vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:14px 16px calc(14px + env(safe-area-inset-bottom))}
     /* 底部弹层顶部的抓手：只在移动端底部弹出态出现，向下拖拽这一条即可关闭面板
        （逻辑见 workbench.js 里的通用 pointerdown/move/up 拖拽处理）。 */
     .wb-sheet-handle{display:flex;justify-content:center;margin:-6px -8px 6px;padding:var(--sp-2) 0;touch-action:none}
     .wb-sheet-handle::after{content:"";width:36px;height:4px;border-radius:2px;background:var(--line2);opacity:.8}
-    .wb-dp-search input,.wb-dp-result,.wb-dp-result-weekday,.wb-dp-actions button,.wb-dp-weekdays,.wb-dp-day,.wb-dp-day.is-month-start,.wb-dp-week-row,.wb-dp-month{font-size:var(--fs-xl)}
     .wb-dp-actions button{height:36px}
     .wb-dp-day{height:36px}
     .wb-dp-month{padding:var(--sp-4) 0}
-    .wb-dp-month-nav strong{font-size:var(--fs-xl)}
     .wb-dp-picker{min-height:232px}
     .wb-dp-week-list{max-height:170px}
     .wb-dp-grid{gap:10px}
-    .wb-dp-week-pager button{font-size:var(--fs-md)}
   }
   #workbenchView .wb-trash-row{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer}
   #workbenchView .wb-trash-row .wb-task-title{text-decoration:line-through;color:var(--dim)}
@@ -1728,8 +1725,8 @@
   #workbenchView .wb-completed-date{margin:0 0 4px;color:var(--dim2);font-size:var(--fs-md);font-weight:650}
   #workbenchView .wb-new-task{margin-top:8px;border-color:var(--line2)}#workbenchView .wb-new-task .wb-editor-footer{flex-wrap:wrap}#workbenchView .wb-new-task .wb-primary{margin-left:auto;background:var(--text);color:var(--bg2);border-color:var(--text)}
   /* 移动端(≤760px):顶栏改单层内边距(#wbContent 顶部清零,只留 .wb-toolbar 自己
-     那一层),仿聊天页 header.bar/callHead 的做法,不再两层内边距叠加;字号在桌面基础上
-     统一 +1px,缓解移动端偏小。 */
+     那一层),仿聊天页 header.bar/callHead 的做法,不再两层内边距叠加。字号已在桌面基础
+     上统一到移动端原来的档位,这里不再重复覆盖。 */
   @media(max-width:760px){
     #wbContent{padding-top:0}
     /* iOS PWA(standalone + black-translucent + viewport-fit=cover)下页面顶到状态栏底下,
@@ -1740,21 +1737,9 @@
     #workbenchView .wb-title h1{font-size:18px;line-height:24px}
     #workbenchView .wb-switch-row{gap:6px}
     #workbenchView .wb-switch{flex-wrap:wrap;gap:1px;padding:2px}
-    #workbenchView .wb-switch button{font-size:var(--fs-lg);padding:var(--sp-2) var(--sp-3)}
-    #workbenchView .wb-project-filter button{font-size:var(--fs-lg)}
-    #workbenchView .wb-project-toggle>span:last-child{font-size:var(--fs-base)}
-    #workbenchView .wb-project-name strong{font-size:var(--fs-xl)}
-    #workbenchView .wb-project-name em{font-size:var(--fs-base)}
-    #workbenchView .wb-project-delete{font-size:var(--fs-md)}
-    #workbenchView .wb-section-toggle h2{font-size:var(--fs-xl)}
-    #workbenchView .wb-section-toggle span{font-size:var(--fs-base)}
-    #workbenchView .wb-task-title{font-size:var(--fs-xl)}
-    #workbenchView .wb-empty{font-size:var(--fs-base)}
-    .wb-date-nav strong,.wb-date-nav button{font-size:var(--fs-lg)}
+    #workbenchView .wb-switch button{padding:var(--sp-2) var(--sp-3)}
     #workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,max-content);gap:8px;padding:var(--sp-3) var(--sp-4)}
     #workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}
-    #workbenchView .wb-card-title{font-size:var(--fs-lg)}
-    #workbenchView .wb-editor-shell textarea{font-size:var(--fs-lg)}
     #workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}
     /* 独立窗口在移动端点了也没意义(手机浏览器没有多窗口这回事)，直接不显示；
        同一排的「显示/隐藏备注」「折叠/展开子任务」两个开关照常留着。 */
@@ -1770,17 +1755,17 @@
   #workbenchView .wb-editor-footer .wb-add-child:hover{color:var(--accent)}
   #workbenchView .wb-assignee{display:grid;place-items:center;flex:0 0 auto;width:20px;height:20px;color:var(--dim2)}
   #workbenchView .wb-assignee .ic{width:15px;height:15px}
-  #workbenchView .wb-schedule{display:inline-flex;align-items:center;gap:4px;min-width:0;padding:0;color:var(--dim);font-size:var(--fs-sm);line-height:20px;white-space:nowrap}
+  #workbenchView .wb-schedule{display:inline-flex;align-items:center;gap:4px;min-width:0;padding:0;color:var(--dim);font-size:var(--fs-base);line-height:20px;white-space:nowrap}
   #workbenchView .wb-schedule:hover{color:var(--accent)}
   #workbenchView .wb-child-toggle{display:grid;place-items:center;flex:0 0 auto;width:20px;height:20px;padding:0;border:0;border-radius:var(--r-sm);background:none;color:var(--dim2);cursor:pointer;transition:background var(--t-fast) ease,color var(--t-fast) ease}
   #workbenchView .wb-child-toggle .ic{width:15px;height:15px}
   #workbenchView .wb-child-toggle:hover{background:var(--panel2);color:var(--text)}
   #workbenchView .wb-task-title-row{display:flex;align-items:center;gap:5px;min-width:0}
   #workbenchView .wb-task-title-row .wb-task-title{flex:0 1 auto}
-  #workbenchView .wb-parent-badge{display:inline-flex;align-items:center;gap:3px;min-width:0;max-width:45%;color:var(--dim2);font-size:var(--fs-sm);line-height:20px;white-space:nowrap}
+  #workbenchView .wb-parent-badge{display:inline-flex;align-items:center;gap:3px;min-width:0;max-width:45%;color:var(--dim2);font-size:var(--fs-base);line-height:20px;white-space:nowrap}
   #workbenchView .wb-parent-badge .ic{flex:0 0 auto;width:13px;height:13px}
   #workbenchView .wb-parent-badge span{overflow:hidden;text-overflow:ellipsis}
-  #workbenchView .wb-parent-link{display:inline-flex;align-items:center;gap:5px;margin:0 0 8px;padding:0;border:0;background:none;color:var(--dim2);font-size:var(--fs-sm);line-height:16px;cursor:pointer}
+  #workbenchView .wb-parent-link{display:inline-flex;align-items:center;gap:5px;margin:0 0 8px;padding:0;border:0;background:none;color:var(--dim2);font-size:var(--fs-base);line-height:16px;cursor:pointer}
   #workbenchView .wb-parent-link .ic{width:13px;height:13px}
   #workbenchView .wb-parent-link:hover{color:var(--accent)}
   #workbenchView .wb-task-end{display:flex;align-items:center;gap:8px;min-width:0;justify-content:flex-end}
@@ -1791,19 +1776,9 @@
   #workbenchView .wb-assignee-opt .ic{width:15px;height:15px}
   #workbenchView .wb-assignee-opt:hover{opacity:.7}
   #workbenchView .wb-assignee-opt.is-on{color:var(--text);opacity:1}
-  #workbenchView .wb-dispatch-btn{display:inline-flex;align-items:center;gap:3px;height:28px;padding:0 var(--sp-4);margin-left:auto;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);color:var(--dim);font-size:var(--fs-sm);font-weight:600;cursor:pointer}
+  #workbenchView .wb-dispatch-btn{display:inline-flex;align-items:center;gap:3px;height:28px;padding:0 var(--sp-4);margin-left:auto;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);color:var(--dim);font-size:var(--fs-base);font-weight:600;cursor:pointer}
   #workbenchView .wb-dispatch-btn:hover{background:var(--panel2);color:var(--text)}
   #workbenchView .wb-session-links{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-  #workbenchView .wb-session-link{padding:var(--sp-1) var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--dim);font-size:var(--fs-sm);text-decoration:none;cursor:pointer}
+  #workbenchView .wb-session-link{padding:var(--sp-1) var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--dim);font-size:var(--fs-md);text-decoration:none;cursor:pointer}
   #workbenchView .wb-session-link:hover{background:var(--panel2);color:var(--accent);border-color:var(--accent)}
-  /* 这几个字号覆盖必须放在上面对应基础规则之后:选择器同权重时按源码顺序算,
-     放前面（旧版曾放在 760px 断点靠前的位置）会被后面出现的基础规则盖掉,
-     移动端等于白覆盖——2026-08-22 排查「日期/父任务名称在移动端还是很小」定位到此。 */
-  @media(max-width:760px){
-    #workbenchView .wb-schedule{font-size:var(--fs-base)}
-    #workbenchView .wb-parent-badge{font-size:var(--fs-base)}
-    #workbenchView .wb-parent-link{font-size:var(--fs-base)}
-    #workbenchView .wb-session-link{font-size:var(--fs-md)}
-    #workbenchView .wb-dispatch-btn{font-size:var(--fs-base)}
-  }
   #workbenchView .wb-new-child{margin:4px 0 0 30px;width:calc(100% - 30px)}
