@@ -1103,12 +1103,15 @@ function workbenchSetSelection(ids){
 
 // 取 anchor→target 之间「同一个项目分组、当前 DOM 顺序」上的所有任务 id；
 // 两端不在同一个 .wb-task-list 里（比如跨了项目分组）就退化成只选 target。
+// 子任务嵌在 .wb-children 里、不是 .wb-task-list 的直接子节点，要单独按「同一个父任务
+// 下的子任务列表」取直接子节点，否则两端都是子任务时会因为找不到而退化成只选 target。
 function workbenchRowRange(anchorId, targetId){
   const anchorNode = workbenchNodeForTask(anchorId);
   const targetNode = workbenchNodeForTask(targetId);
   if(!anchorNode || !targetNode) return [targetId];
-  const list = anchorNode.closest(".wb-task-list");
-  if(!list || list !== targetNode.closest(".wb-task-list")) return [targetId];
+  const list = anchorNode.closest(".wb-children") || anchorNode.closest(".wb-task-list");
+  const targetList = targetNode.closest(".wb-children") || targetNode.closest(".wb-task-list");
+  if(!list || list !== targetList) return [targetId];
   const rows = [...list.querySelectorAll(":scope > [data-task]")];
   const i = rows.indexOf(anchorNode), j = rows.indexOf(targetNode);
   if(i === -1 || j === -1) return [targetId];
