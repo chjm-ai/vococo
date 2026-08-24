@@ -1728,18 +1728,16 @@ function workbenchBatchSchedule(ids, schedule){
 }
 
 function workbenchBatchMove(ids, projectId){
-  const before = [], after = [];
-  ids.forEach(id => {
-    const task = workbenchTask(id);
-    if(!task) return;
-    before.push({id, patch:{project:task.project}});
-    task.project = projectId;
-    after.push({id, patch:{project:task.project}});
-  });
-  if(!before.length) return;
-  renderWorkbench();
-  Promise.all(after.map(({id, patch}, index) => persistWorkbenchTask(id, patch, before[index].patch))).then(results => {
-    if(results.every(Boolean)) workbenchRemember({type:"task-patch", before, after});
+  const selected = new Set(ids);
+  // 同时选中父子任务时只迁父任务，避免后续又把已随父任务迁走的子任务提升成根任务。
+  const roots = ids.map(workbenchTask).filter(task => task && !workbenchAncestors(task).some(parent => selected.has(parent.id)));
+  roots.forEach(task => {
+    const parent = workbenchTask(task.parentId);
+    // 跨项目的子任务不能继续挂在旧项目的父任务下：项目视图只从父任务渲染，
+    // 旧实现虽已写入数据库，却会让任务在目标项目里不可见，表现为「点击没反应」。
+    const parentId = parent?.project === projectId ? parent.id : null;
+    if(task.project === projectId && task.parentId === parentId) return;
+    workbenchPersistTaskPlacement(task, parentId, projectId, [...WB_DATA.tasks]);
   });
 }
 
