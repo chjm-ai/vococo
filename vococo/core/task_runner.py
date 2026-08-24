@@ -183,14 +183,10 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     session_key = tasks.session_key(task_id)
     turn_id = session_store.start_turn(session_key, prompt_text)
     sdk_session_id: str | None = None
-    # 任务 cwd 指到一个 git 仓库就给这次任务开专属 worktree + 分支(vococo/<task_id>),
-    # 跟 Web/CLI「一会话一分支」看齐——语音这边真要动代码,必须走这条派后台任务的路径
-    # 才能拿到工具(前台语音会话已代码层禁掉 Edit/Write,见 voice/session.py),而这条
-    # 路径现在也不再直接在原 cwd 上改,落地的是隔离分支,不是主目录/主分支。非 git 仓库
-    # (或没给 cwd)拿到 None,原样回退到 row["cwd"],不阻塞非代码类任务(查资料等)。
-    worktree_dir = await worktree.ensure_worktree_for_task(row["cwd"], task_id)
-    effective_cwd = worktree_dir or row["cwd"]
-    cwd_token = danger.set_cwd(effective_cwd, project_root=row["cwd"] if worktree_dir else None)
+    # Git 项目任务必须在专属 worktree + 分支(vococo/<task_id>)执行;创建失败就让任务失败,
+    # 绝不能回退 row["cwd"] 的主检出目录。非 Git 目录仍可原样执行资料类任务。
+    effective_cwd = row["cwd"]
+    cwd_token = None
     last_progress_ts = 0.0
     result_text = ""
     status = "failed"
@@ -268,6 +264,11 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                     )
 
     try:
+        effective_cwd = await worktree.execution_cwd_for_task(row["cwd"], task_id)
+        cwd_token = danger.set_cwd(
+            effective_cwd,
+            project_root=row["cwd"] if effective_cwd != row["cwd"] else None,
+        )
         await asyncio.wait_for(_drive(), timeout=config.TASK_TIMEOUT_MIN * 60)
         status = "failed" if error_note else "done"
     except asyncio.CancelledError:
@@ -277,7 +278,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     except Exception as exc:  # noqa: BLE001 —— 兜底:任何异常都要走到终态收尾,不留 running 僵尸
         error_note = f"执行出错:{exc}"
     finally:
-        danger.reset_cwd(cwd_token)
+        if cwd_token is not None:
+            danger.reset_cwd(cwd_token)
         _running.pop(task_id, None)
 
     if status == "cancelled":

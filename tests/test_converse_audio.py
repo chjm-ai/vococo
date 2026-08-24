@@ -15,8 +15,10 @@ from vococo.gateway.core import Sink
 from vococo.memory import session_store
 
 
-async def _noop_worktree(session_key):
-    return None
+async def _default_cwd(session_key):
+    from vococo import config
+
+    return str(config.ROOT_DIR)
 
 
 @pytest.mark.anyio
@@ -24,7 +26,7 @@ async def test_audio_transcript_injected_into_prompt_not_stored_text(isolated, m
     from vococo import config
     from vococo.core import worktree
 
-    monkeypatch.setattr(worktree, "ensure_worktree", _noop_worktree)
+    monkeypatch.setattr(worktree, "execution_cwd", _default_cwd)
     monkeypatch.setattr(config, "AUDIO_DIR", isolated / "data" / "audio")
 
     seen = {}

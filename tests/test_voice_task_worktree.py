@@ -120,3 +120,45 @@ async def test_two_tasks_same_repo_get_distinct_branches(isolated, monkeypatch, 
     wt_a = await worktree.ensure_worktree_for_task(str(repo), "task-a")
     wt_b = await worktree.ensure_worktree_for_task(str(repo), "task-b")
     assert wt_a != wt_b
+
+
+@pytest.mark.anyio
+async def test_git_task_refuses_to_run_without_worktree(isolated, monkeypatch, tmp_path):
+    """worktree 创建失败时必须 fail closed，不能把任务放回项目主目录。"""
+    from vococo.core import worktree
+
+    repo = tmp_path / "proj"
+    _init_repo(repo)
+
+    async def fail_add(*_args):
+        return False, "simulated failure"
+
+    monkeypatch.setattr(worktree, "_try_add", fail_add)
+    with pytest.raises(worktree.WorktreeIsolationError, match="已停止执行"):
+        await worktree.execution_cwd_for_task(str(repo), "task-no-fallback")
+
+
+@pytest.mark.anyio
+async def test_non_git_task_keeps_original_cwd(isolated, tmp_path):
+    from vococo.core import worktree
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert await worktree.execution_cwd_for_task(str(plain), "task-plain") == str(plain)
+
+
+@pytest.mark.anyio
+async def test_git_session_refuses_to_run_without_worktree(isolated, monkeypatch, tmp_path):
+    from vococo import config
+    from vococo.core import worktree
+
+    repo = tmp_path / "default-project"
+    _init_repo(repo)
+    monkeypatch.setattr(config, "ROOT_DIR", repo)
+
+    async def fail_add(*_args):
+        return False, "simulated failure"
+
+    monkeypatch.setattr(worktree, "_try_add", fail_add)
+    with pytest.raises(worktree.WorktreeIsolationError, match="已停止执行"):
+        await worktree.execution_cwd("main")

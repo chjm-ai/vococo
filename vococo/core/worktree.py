@@ -151,13 +151,12 @@ async def _prune_dangling_branches(root: str) -> int:
     return n
 
 
-async def ensure_worktree(session_key: str) -> str | None:
-    """确保一次会话有独立 worktree;返回其路径,否则 None(回退项目根)。
+class WorktreeIsolationError(RuntimeError):
+    """Git 项目会话无法拿到独立 worktree 时中止执行,禁止落回主检出目录。"""
 
-    能匹配到具体项目就使用具体项目;普通会话、草稿未匹配到项目时使用默认项目。
-    这样 Agent 子任务继承当前 SDK 的 cwd 时,默认项目也不会直接落在主检出目录。
-    幂等:已绑定且目录仍在 → 直接返回。非 git 仓库 / 建失败 → None,不阻塞对话。
-    """
+
+async def ensure_worktree(session_key: str) -> str | None:
+    """确保一次会话有独立 worktree;非 Git 目录返回 None。"""
     root = config.execution_project_root_for(session_key)
     if not root:
         return None
@@ -168,13 +167,7 @@ async def ensure_worktree(session_key: str) -> str | None:
 
 
 async def ensure_worktree_for_task(root: str, task_id: str) -> str | None:
-    """统一后台任务引擎(core/task_runner.py)专用:给这次任务开独立 worktree + 分支,
-    跟 Web/CLI「一会话一 worktree」是同一套机制,只是绑定 key 换成任务自己的
-    `task:<id>`(该 key 本就是这个任务在 session_store 里的落库 key,一对一,
-    不会跟别的任务/对话抢)。root 不是 git 仓库(或干脆是 None)就直接 None,任务照常
-    在原 cwd 跑,不因为隔离失败而阻塞——后台任务要的是"改代码有分支兜底",不是
-    "非项目目录也必须建 worktree"。
-    """
+    """给后台任务开独立 worktree;非 Git 目录返回 None。"""
     if not root:
         return None
     from . import tasks as bg_tasks  # 懒加载,避免非任务场景也引入这块
@@ -183,6 +176,32 @@ async def ensure_worktree_for_task(root: str, task_id: str) -> str | None:
     phash = session_store.project_hash(root)
     slug = _slug(task_id)
     return await _ensure_worktree_impl(session_key, root, phash, slug)
+
+
+async def _execution_cwd(root: str, session_key: str, candidate: str | None) -> str:
+    """收敛所有入口的隔离策略:Git 项目没有 worktree 就拒绝执行。"""
+    if candidate:
+        return candidate
+    if root and await _is_git_repo(root):
+        raise WorktreeIsolationError(
+            f"Git 项目会话未能创建独立工作树，已停止执行以保护主分支: {root}"
+        )
+    return root
+
+
+async def execution_cwd(session_key: str) -> str:
+    """普通会话的实际 cwd;Git 项目必须成功绑定 worktree。"""
+    root = config.execution_project_root_for(session_key)
+    wt = await ensure_worktree(session_key)
+    return await _execution_cwd(root, session_key, wt)
+
+
+async def execution_cwd_for_task(root: str, task_id: str) -> str:
+    """后台任务的实际 cwd;Git 项目必须成功绑定 worktree。"""
+    wt = await ensure_worktree_for_task(root, task_id)
+    from . import tasks as bg_tasks  # 懒加载,避免非任务场景也引入这块
+
+    return await _execution_cwd(root, bg_tasks.session_key(task_id), wt)
 
 
 async def _ensure_worktree_impl(session_key: str, root: str, phash: str, slug: str) -> str | None:
@@ -208,13 +227,11 @@ async def _ensure_worktree_impl(session_key: str, root: str, phash: str, slug: s
             session_store.set_worktree(session_key, wt_dir)
             return wt_dir
 
-    # 全都失败 —— 绝不静默回退 main:响亮报警到日志(含当前分支,方便你立刻发现处理)。
-    # 仍返回 None(本轮回退项目根,不炸对话),但这回你在 vococo.out.log 里看得见。
+    # 全都失败:调用方会拒绝在 Git 项目继续执行,绝不回退到主检出目录。
     cur = await _current_branch(root)
     print(
-        f"[worktree] ⚠️ 会话 {session_key} 建 worktree 失败,本轮将回退到项目根 "
-        f"{root}(当前分支 {cur});若该分支是 main 则本轮改动会落到主分支! "
-        f"末次错误: {last_err.strip()[:200]}",
+        f"[worktree] ⚠️ 会话 {session_key} 建 worktree 失败,已阻止在项目根执行 "
+        f"{root}(当前分支 {cur});末次错误: {last_err.strip()[:200]}",
         file=sys.stderr,
         flush=True,
     )

@@ -1967,6 +1967,39 @@ class WebAdapter:
         )
         return web.json_response(info)
 
+    @_authed
+    @_json_body
+    async def _handle_conv_git_branch(self, request: web.Request, body: dict) -> web.Response:
+        """在项目工作目录建并切到新分支(当前改动随之带过去)。"""
+        name = (body.get("name") or "").strip()
+        from ...core import worktree  # 懒加载
+
+        # 先确保该会话有独立 worktree,再在它自己的目录里建分支 —— 只影响本会话,不动别人。
+        # Git 项目建 worktree 失败时拒绝操作，禁止 checkout 到主检出目录。
+        key = config.resolve_session_key("web", str(body.get("conv") or ""))
+        if config.project_root_for(key) is None:
+            return web.json_response({"error": "该会话不是项目会话"}, status=400)
+        try:
+            cwd = await worktree.execution_cwd(key)
+        except worktree.WorktreeIsolationError as exc:
+            return web.json_response({"error": str(exc)}, status=503)
+        if not name or " " in name or name.startswith("-"):
+            return web.json_response({"error": "分支名非法"}, status=400)
+        # 交给 git 兜底校验(拒绝 .. / ~ / 控制字符 / 已占用等)
+        code, _, _ = await git_status.run_git(cwd, "check-ref-format", "--branch", name)
+        if code != 0:
+            return web.json_response({"error": f"分支名非法:{name}"}, status=400)
+        code, _, err = await git_status.run_git(cwd, "checkout", "-b", name)
+        if code != 0:
+            return web.json_response({"error": err.strip() or "创建分支失败"}, status=400)
+        info = await git_status.git_status(cwd)
+        proj_root = config.project_root_for(key) or cwd
+        info.update(
+            is_project=True, path=cwd,
+            name=os.path.basename(proj_root) or proj_root, project_path=proj_root,
+        )
+        return web.json_response(info)
+
     # ── 设置:技能 / MCP ─────────────────────────────────────────────────
     @_authed
     @_json_body
@@ -2673,6 +2706,7 @@ class WebAdapter:
                 web.post("/conv/archive", self._handle_conv_archive),
                 web.post("/conv/read", self._handle_conv_read),
                 web.get("/conv/git", self._handle_conv_git),
+                web.post("/conv/git/branch", self._handle_conv_git_branch),
                 # 用户偏好
                 web.get("/prefs", self._handle_prefs_get),
                 web.post("/prefs", self._handle_prefs_set),

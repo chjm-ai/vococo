@@ -8,15 +8,17 @@ from vococo.gateway import core
 from vococo.gateway.core import Sink
 
 
-async def _noop_worktree(session_key):
-    return None
+async def _default_cwd(session_key):
+    from vococo import config
+
+    return str(config.ROOT_DIR)
 
 
 @pytest.mark.anyio
 async def test_file_attachment_forwarded_to_agent(isolated, monkeypatch):
     from vococo.core import worktree
 
-    monkeypatch.setattr(worktree, "ensure_worktree", _noop_worktree)
+    monkeypatch.setattr(worktree, "execution_cwd", _default_cwd)
     seen = {}
 
     async def fake_stream(history, user_text, **kwargs):
