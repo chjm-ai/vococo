@@ -2468,7 +2468,7 @@ let wbDragTaskId = null;
 
 function workbenchClearDropIndicators(){
   document.querySelectorAll(".wb-task-drop-before,.wb-task-drop-after,.wb-task-drop-nest").forEach(el => el.classList.remove("wb-task-drop-before", "wb-task-drop-after", "wb-task-drop-nest"));
-  document.querySelectorAll(".wb-children.is-drop-target").forEach(el => el.classList.remove("is-drop-target"));
+  document.querySelectorAll(".wb-children.is-drop-target,.wb-task-list.is-drop-target").forEach(el => el.classList.remove("is-drop-target"));
 }
 
 function workbenchDropAfterTaskTree(taskId, siblingId){
@@ -2480,17 +2480,22 @@ function workbenchDropAfterTaskTree(taskId, siblingId){
   workbenchPersistTaskPlacement(task, sibling.parentId, sibling.project, orderBefore);
 }
 
-// 子树底部固定保留同级落点，避免拖拽开始后再增删 DOM 导致原生拖拽状态不稳定。
+function workbenchDropTailSiblingId(container){
+  if(container.classList.contains("wb-children")) return container.dataset.parent || null;
+  return [...container.children].reverse().find(node => node.matches("[data-task]"))?.dataset.task || null;
+}
+
+// 子树、项目分组底部都固定保留同级落点，避免拖拽开始后再增删 DOM 导致原生拖拽状态不稳定。
 function workbenchDropTailTarget(event, draggedId){
-  const children = event.target.closest(".wb-children");
-  if(!children) return null;
-  const padding = parseFloat(getComputedStyle(children).paddingBottom);
-  const rect = children.getBoundingClientRect();
+  const container = event.target.closest(".wb-children,.wb-task-list");
+  if(!container) return null;
+  const padding = parseFloat(getComputedStyle(container).paddingBottom);
+  const rect = container.getBoundingClientRect();
   if(!padding || event.clientY < rect.bottom - padding) return null;
   const dragged = workbenchTask(draggedId);
-  const sibling = workbenchTask(children.dataset.parent);
+  const sibling = workbenchTask(workbenchDropTailSiblingId(container));
   if(!dragged || !sibling || dragged.id === sibling.id || workbenchTaskIsAncestor(dragged.id, sibling.parentId)) return null;
-  return {children, sibling};
+  return {container, sibling};
 }
 
 function workbenchDropMode(dragged, target, clientY, rect){
@@ -2521,7 +2526,7 @@ $("#workbenchView").addEventListener("dragover", event => {
     workbenchClearDropIndicators();
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
-    tailTarget.children.classList.add("is-drop-target");
+    tailTarget.container.classList.add("is-drop-target");
     return;
   }
   const row = event.target.closest("[data-task]");
