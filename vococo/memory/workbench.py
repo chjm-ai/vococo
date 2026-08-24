@@ -92,7 +92,7 @@ def _row_to_project(row) -> dict:
 def _row_to_task(row) -> dict:
     (id_, project_id, title, detail, status, date, month, week,
      images, sort_order, created_at, updated_at, deleted_at, completed_at,
-     parent_id, assignee, session_ids) = row
+     parent_id, assignee, session_ids, rolled) = row
     return {
         "id": id_,
         "project": project_id,
@@ -111,13 +111,14 @@ def _row_to_task(row) -> dict:
         "parentId": parent_id,
         "assignee": assignee or "human",
         "sessionIds": json.loads(session_ids or "[]"),
+        "rolled": rolled,
     }
 
 
 _TASK_COLUMNS = (
     "id, project_id, title, detail, status, date, month, week, "
     "images, sort_order, created_at, updated_at, deleted_at, completed_at, "
-    "parent_id, assignee, session_ids"
+    "parent_id, assignee, session_ids, rolled"
 )
 
 
@@ -248,11 +249,17 @@ def move_task(task_id: str, parent_id: str | None, project_id: str, order: list[
 
 
 
+_ROLL_KINDS = {"date", "week", "month"}
+
+
 def _roll_overdue_tasks() -> None:
     """惰性版 Things 的 Today:读取任务前,把过期未完成任务的 date/week/month 滚到当前周期
     (昨天→今天、上周→本周、上月→本月),已完成/已取消的保留原时间不动(日志要用)。
     date/week/month 三者互斥使用(建任务时只填其中一档更细的,粗档跟着派生),
     所以按 date > week > month 优先级只判一档就够,不会重复触发。
+
+    滚动的同时把 rolled 标记成命中的那一档(date/week/month),供前端在对应的日/周/月
+    视图顶部弹黄条提醒 + 任务名前点小黄点;点掉提醒走 dismiss_rollover() 清空。
     """
     today = datetime.date.today()
     today_str = today.isoformat()
@@ -268,20 +275,30 @@ def _roll_overdue_tasks() -> None:
     for task_id, date, week, month in rows:
         if date:
             if date < today_str:
-                updates.append((today_str, month_str, week_str, now, task_id))
+                updates.append((today_str, month_str, week_str, "date", now, task_id))
         elif week:
             if week < week_str:
-                updates.append((None, month_str, week_str, now, task_id))
+                updates.append((None, month_str, week_str, "week", now, task_id))
         elif month:
             if month < month_str:
-                updates.append((None, month_str, None, now, task_id))
+                updates.append((None, month_str, None, "month", now, task_id))
     if not updates:
         return
     c.executemany(
-        "UPDATE workbench_tasks SET date=?, month=?, week=?, updated_at=? WHERE id=?",
+        "UPDATE workbench_tasks SET date=?, month=?, week=?, rolled=?, updated_at=? WHERE id=?",
         updates,
     )
     c.commit()
+
+
+def dismiss_rollover(kind: str) -> int:
+    """清掉某一档(date/week/month,对应日/周/月视图)已读的滚动提醒,返回清掉的条数。"""
+    if kind not in _ROLL_KINDS:
+        return 0
+    c = _db.conn()
+    cur = c.execute("UPDATE workbench_tasks SET rolled=NULL WHERE rolled=?", (kind,))
+    c.commit()
+    return cur.rowcount
 
 
 def list_tasks() -> list[dict]:

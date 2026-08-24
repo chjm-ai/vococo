@@ -411,8 +411,9 @@ function workbenchTaskRow(task, isChild){
   const detail = (task.detail && !wbNotesHidden(WB.view)) ? '<p class="wb-task-detail">'+esc(task.detail)+'</p>' : "";
   const childClass = isChild ? " wb-task-child" : "";
   const touch = wbIsTouchLike();
+  const rolledDot = task.rolled ? '<span class="wb-rolled-dot" title="过期后自动滚到当前周期" aria-hidden="true"></span>' : '';
   const inner = '<button class="wb-check" type="button" draggable="false" data-complete="'+esc(task.id)+'" aria-label="'+action+'：'+esc(task.title)+'">'+(task.status === "done" ? "✓" : task.status === "cancelled" ? "×" : task.status === "block" ? "!" : "")+'</button>'+
-    '<div class="wb-task-copy"><div class="wb-task-title-row"><strong class="wb-task-title">'+esc(task.title)+'</strong>'+workbenchParentBadge(task, isChild)+'</div>'+detail+'</div>'+
+    '<div class="wb-task-copy"><div class="wb-task-title-row"><strong class="wb-task-title">'+rolledDot+esc(task.title)+'</strong>'+workbenchParentBadge(task, isChild)+'</div>'+detail+'</div>'+
     '<div class="wb-task-end">'+workbenchScheduleBadge(task)+(workbenchChildren(task.id).length ? workbenchChildToggle(task) : workbenchAssigneeBadge(task))+'</div>';
   // 多选模式下行尾常驻一个圆形选中指示（仿 Things：空心=未选，实心+勾=已选）；
   // 平时用 CSS 隐藏，不需要因为进/出多选模式而整段重渲染——is-selected 类已经在维护了。
@@ -708,11 +709,48 @@ function workbenchAutoGrowAll(){
   document.querySelectorAll("#workbenchView textarea[data-edit-detail], #workbenchView textarea[data-new-detail]").forEach(workbenchAutoGrowTextarea);
 }
 
+// 日/周/月三个视图各自独立统计"过期未完成任务被自动滚到当前周期"的条数(对应
+// 后端 rolled 字段的 date/week/month 三档,互斥,不用再按 WB.anchor 过滤——rolled
+// 非空的任务本来就已经被滚到"当前"了)。未排期/项目/日志簿/回收站不涉及滚动,不弹条。
+function workbenchRolloverKind(){
+  if(WB.view === "day") return "date";
+  if(WB.view === "week") return "week";
+  if(WB.view === "month") return "month";
+  return null;
+}
+
+const WB_ROLLOVER_LABEL = {date: "今天", week: "本周", month: "本月"};
+
+function workbenchRolloverBanner(){
+  const kind = workbenchRolloverKind();
+  if(!kind) return "";
+  const count = WB_DATA.tasks.filter(task => task.rolled === kind).length;
+  if(!count) return "";
+  return '<div class="wb-rollover-banner" data-rollover-kind="'+kind+'">'+
+    '<span>您有 '+count+' 个待办已过期，自动移到了'+WB_ROLLOVER_LABEL[kind]+'</span>'+
+    '<button type="button" data-dismiss-rollover="'+kind+'">好</button>'+
+    '</div>';
+}
+
+async function workbenchDismissRollover(kind){
+  const affected = WB_DATA.tasks.filter(task => task.rolled === kind);
+  if(!affected.length) return;
+  affected.forEach(task => { task.rolled = null; });
+  renderWorkbench();
+  try{
+    const r = await api("/workbench/tasks/rollover/dismiss", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({kind})});
+    if(!r.ok) throw new Error("dismiss failed");
+  }catch(e){
+    affected.forEach(task => { task.rolled = kind; });
+    renderWorkbench();
+  }
+}
+
 function renderWorkbenchBody(){
   const bodyContent = WB.view === "trash" ? renderWorkbenchTrash()
     : WB.view === "completed" ? renderWorkbenchCompleted()
     : renderWorkbenchProjects(); // unscheduled / day / week / month / project：都按项目分组展示
-  return renderWorkbenchSecondRow()+bodyContent;
+  return renderWorkbenchSecondRow()+workbenchRolloverBanner()+bodyContent;
 }
 
 // 移动端 FAB 新建走 docked 模式：卡片不插进列表，改在这个固定在键盘上方的浮层里编辑，
@@ -2341,6 +2379,8 @@ $("#workbenchView").addEventListener("click", event => {
   const purgeBtn = event.target.closest("[data-purge-task]");
   if(purgeBtn){ workbenchPurgeTask(purgeBtn.dataset.purgeTask); return; }
   if(event.target.closest("[data-empty-trash]")){ workbenchEmptyTrash(); return; }
+  const dismissRollover = event.target.closest("[data-dismiss-rollover]");
+  if(dismissRollover){ workbenchDismissRollover(dismissRollover.dataset.dismissRollover); return; }
   const trashRow = event.target.closest("[data-trash-task]");
   if(trashRow){
     const id = trashRow.dataset.trashTask;
