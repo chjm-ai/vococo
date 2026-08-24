@@ -710,6 +710,8 @@ function playChime(){
 }
 // 跨会话审批/确认:弹出全屏 modal,显示会话标题、问题内容和可点选项
 function openChoiceModal(conv, e){
+  // 工作台独立窗口只处理任务,不能被其他会话的确认选项盖住。
+  if(S.standaloneWorkbench) return;
   const modal=$("#choiceModal"); if(!modal) return;
   const titleEl=$("#choiceModalTitle"); const promptEl=$("#choiceModalPrompt"); const optsEl=$("#choiceModalOpts");
   const c = S.convs.find(x=>x.conv===conv);
