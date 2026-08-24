@@ -684,7 +684,7 @@ function renderWorkbenchCompleted(){
   const keys = [...groups.keys()].sort((a, b) => a === "unknown" ? 1 : b === "unknown" ? -1 : (a < b ? 1 : -1));
   return '<div class="wb-completed-list">'+keys.map(key => {
     const label = key === "unknown" ? "未知日期" : workbenchCompletedGroupLabel(key);
-    const rows = groups.get(key).map(workbenchTaskRow).join("");
+    const rows = groups.get(key).map(task => workbenchTaskRow(task)).join("");
     return '<section class="wb-completed-group"><h3 class="wb-completed-date">'+esc(label)+'</h3><div class="wb-task-list">'+rows+'</div></section>';
   }).join("")+'</div>';
 }
@@ -877,8 +877,9 @@ function workbenchSwapTask(taskId){
   const node = workbenchNodeForTask(taskId);
   const task = workbenchTask(taskId);
   if(!node || !task) return false;
+  const isChild = !!node.closest(".wb-children");
   const wrap = document.createElement("div");
-  wrap.innerHTML = workbenchTaskRow(task);
+  wrap.innerHTML = workbenchTaskRow(task, isChild);
   const next = wrap.firstElementChild;
   if(!next) return false;
   node.replaceWith(next);
@@ -931,10 +932,15 @@ function workbenchAnimateMorph(node, html){
 }
 
 // 卡片 ↔ 行来回切换时用：行与卡片高度不同，直接换节点会「啪」一下跳变，这里让它长出来/收回去。
+// isChild 靠 DOM 位置（是否在 .wb-children 容器里）现算，不能信节点自身的 class ——
+// 编辑卡的 <article> 从来不带 wb-task-child，子任务展开成编辑卡再收起就会在这一步把
+// isChild 判丢，导致收起后误把父任务徽标显示出来。
 function workbenchMorphTask(taskId){
   const task = workbenchTask(taskId);
   if(!task) return false;
-  return workbenchAnimateMorph(workbenchNodeForTask(taskId), workbenchTaskRow(task));
+  const node = workbenchNodeForTask(taskId);
+  const isChild = !!(node && node.closest(".wb-children"));
+  return workbenchAnimateMorph(node, workbenchTaskRow(task, isChild));
 }
 
 // 显示顺序即 WB_DATA.tasks 的数组顺序；拖拽结束时再将全量顺序落库。
@@ -1306,7 +1312,11 @@ async function saveWorkbenchNewTask(){
   const beforeIdx = beforeTaskId ? WB_DATA.tasks.findIndex(t => t.id === beforeTaskId) : -1;
   if(beforeIdx !== -1) WB_DATA.tasks.splice(beforeIdx, 0, temp); else WB_DATA.tasks.push(temp);
   if(docked) renderWorkbench();
-  else if(!workbenchAnimateMorph(document.querySelector("[data-new-card]"), workbenchTaskRow(temp))) renderWorkbench();
+  else {
+    const newCardNode = document.querySelector("[data-new-card]");
+    const isChild = !!(newCardNode && newCardNode.closest(".wb-children"));
+    if(!workbenchAnimateMorph(newCardNode, workbenchTaskRow(temp, isChild))) renderWorkbench();
+  }
   try{
     const r = await api("/workbench/tasks/create", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
     const d = await r.json();
