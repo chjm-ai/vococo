@@ -1105,19 +1105,25 @@
   #backdrop{display:none;position:fixed;inset:0;background:var(--ov-3);z-index:25;backdrop-filter:blur(2px)}
 
   @media(max-width:760px){
-    /* 抽屉式侧边栏(覆盖+背景遮罩)只给真手机/平板;桌面窗口拉到同样窄度走下面
-       device-mobile 之外的"收起态"逻辑,不弹抽屉。 */
-    html.device-mobile #sidebar{position:fixed;inset:8px auto 8px 8px;margin:0;border-radius:32px;width:300px;
+    /* 窄屏放不下"侧栏+内容"两栏,侧边栏默认收到画面外,点 ☰ 才以浮层盖在内容上方——
+       这是空间不够的布局问题,任何设备都需要,不分设备类型(不然桌面窄窗口下侧栏会
+       常年占 280px,内容被挤成一条缝)。真正分设备的是下面的视觉/手势细节:移动端是
+       圆角抽屉+大字号+安全区留白,桌面窄窗口就是普通贴边浮层,没有那些"手机味"处理。 */
+    #sidebar{position:fixed;top:8px;bottom:8px;left:8px;z-index:26;width:280px;
+      border-radius:var(--r-lg);box-shadow:0 10px 28px rgba(0,0,0,.28);
       transform:translateX(calc(-100% - 16px))}
-    /* 圆角变大后投影会跟着往里收,底部安全区夹角容易露出平背景;加深加大投影把这块阴影感补回来 */
-    html.device-mobile #sidebar.open{transform:translateX(0);box-shadow:0 10px 32px rgba(0,0,0,.34)}
-    html.device-mobile #hamb{display:flex}
-    html.device-mobile #backdrop.show{display:block}
+    #sidebar.open{transform:translateX(0)}
+    #hamb{display:flex}
+    #backdrop.show{display:block}
     /* 移动端左右留白收窄:桌面 32px 在窄屏太挤,回到 16px;上下不额外加(见 .combg 基础规则)。
        这几条是纯版式收紧,跟设备类型无关,桌面窗口拉小同样适用。 */
     #messages,#convLoading{padding-left:var(--sp-5);padding-right:var(--sp-5)}
     header.bar{padding-left:var(--sp-5);padding-right:var(--sp-5)}
     #composer .combg{padding-left:var(--sp-5);padding-right:var(--sp-5)}
+    /* 真手机/平板:圆角更大、四周留白挤到 8px、抽屉宽度加到 300px,配合下面字号加大;
+       圆角变大后投影会跟着往里收,加深加大投影把这块阴影感补回来。 */
+    html.device-mobile #sidebar{inset:8px auto 8px 8px;margin:0;border-radius:32px;width:300px}
+    html.device-mobile #sidebar.open{box-shadow:0 10px 32px rgba(0,0,0,.34)}
     /* 移动端侧栏:菜单行加大触控尺寸、字号整体 +1px,圆角贴近 iOS 大圆角风格。
        是按 300px 抽屉宽度调的,桌面 280px 窄侧栏放大字号会挤/换行,只给真手机/平板。 */
     html.device-mobile #sidebar .shead .brand{font-size:21px}
@@ -1132,12 +1138,12 @@
   /* 桌面宽屏:基础字号调小(手机保持 16px 不变,避免 iOS 聚焦缩放) */
   @media(min-width:761px){
     html,body{font-size:var(--fs-base);line-height:1.55}
+    /* 宽屏收起:侧边栏宽度归零,顶栏 ☰ 变身为"展开"入口。窄屏下 #sidebar 已经在上面
+       默认收到画面外了,sb-collapsed 在窄屏没有额外意义,不需要重复处理。 */
+    html:not(.device-mobile) body.sb-collapsed #sidebar{width:0;margin-left:0;border-color:transparent;box-shadow:none;overflow:hidden}
   }
-  /* 侧边栏收起/展开控件:按"是不是桌面设备"决定,不按窗口宽度——桌面窗口拉多窄,
-     收起按钮和收起态都得照常工作,不能因为撞到 760px 断点就变成移动端抽屉。 */
+  /* 侧边栏收起按钮只给桌面设备用(移动端没有"收起态"这个概念,只有开/关抽屉)。 */
   html:not(.device-mobile) #collapseBtn{display:flex}
-  /* 收起:侧边栏宽度归零,顶栏 ☰ 变身为"展开"入口 */
-  html:not(.device-mobile) body.sb-collapsed #sidebar{width:0;margin-left:0;border-color:transparent;box-shadow:none;overflow:hidden}
   html:not(.device-mobile) body.sb-collapsed #hamb{display:flex}
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
   .ic{width:14px;height:14px;vertical-align:-2.5px;flex-shrink:0}
@@ -1469,7 +1475,7 @@
   .wb-source-panel>div>span{font-size:var(--fs-sm)}.wb-source-panel>div>strong{font-size:var(--fs-base)}.wb-source-panel dl{font-size:var(--fs-sm)}
   /* 同 #hamb/#collapseBtn:按设备类型决定,不按窗口宽度。 */
   html:not(.device-mobile) body.sb-collapsed .wb-hamb{display:flex}
-  @media(max-width:760px){#wbContent{width:100%;padding:18px var(--sp-5) 44px}html.device-mobile .wb-hamb{display:flex}.wb-title{min-height:38px}.wb-toolbar{gap:10px}}
+  @media(max-width:760px){#wbContent{width:100%;padding:18px var(--sp-5) 44px}.wb-hamb{display:flex}.wb-title{min-height:38px}.wb-toolbar{gap:10px}}
 
   /* 任务是工作台的基本阅读单位：一行看完，不用分割线切碎节奏。 */
   #workbenchView .wb-toolbar,#workbenchView .wb-project-filter,#workbenchView .wb-task-list,
