@@ -162,3 +162,21 @@ async def test_git_session_refuses_to_run_without_worktree(isolated, monkeypatch
     monkeypatch.setattr(worktree, "_try_add", fail_add)
     with pytest.raises(worktree.WorktreeIsolationError, match="已停止执行"):
         await worktree.execution_cwd("main")
+
+
+@pytest.mark.anyio
+async def test_worktree_directory_is_locally_excluded_from_project_status(isolated, tmp_path):
+    """任意 Git 项目无需手动改 .gitignore，创建 worktree 后主仓库仍应干净。"""
+    from vococo.core import worktree
+
+    repo = tmp_path / "proj"
+    _init_repo(repo)
+    wt_dir = await worktree.ensure_worktree_for_task(str(repo), "task-ignored")
+
+    assert wt_dir is not None
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout
+    assert status == ""
+    assert "/data/worktrees/" in (repo / ".git" / "info" / "exclude").read_text()

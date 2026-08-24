@@ -25,9 +25,7 @@ _GIT_TIMEOUT_SEC = 8
 
 
 def _wt_base(root: str) -> Path:
-    """worktree 统一放「会话项目自己的 data/worktrees」下:
-    vococo 项目 = vococo/data/worktrees(位置不变),其他项目各归各的 data/。
-    data/ 已在各项目 .gitignore 里,不污染源码树。"""
+    """worktree 统一放「会话项目自己的 data/worktrees」下。"""
     return Path(root) / "data" / "worktrees"
 
 
@@ -59,6 +57,35 @@ async def _git(cwd: str, *args: str) -> tuple[int, str, str]:
 async def _is_git_repo(path: str) -> bool:
     code, out, _ = await _git(path, "rev-parse", "--is-inside-work-tree")
     return code == 0 and out.strip() == "true"
+
+
+async def _exclude_worktree_dir(root: str) -> bool:
+    """把 data/worktrees 放入当前仓库本地 exclude，不要求项目修改 .gitignore。"""
+    code, out, _ = await _git(root, "rev-parse", "--git-path", "info/exclude")
+    if code != 0 or not out.strip():
+        return False
+    path = Path(out.strip())
+    if not path.is_absolute():
+        path = Path(root) / path
+    rule = "/data/worktrees/"
+    try:
+        existing = path.read_text("utf-8") if path.exists() else ""
+        rules = {line.strip() for line in existing.splitlines()}
+        if rule in rules or "data/worktrees/" in rules:
+            return True
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            if existing and not existing.endswith("\n"):
+                f.write("\n")
+            f.write(f"{rule}\n")
+        return True
+    except OSError as exc:
+        print(
+            f"[worktree] ⚠️ 无法写入本地 exclude,不创建 worktree 以免污染项目目录: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
 
 
 async def _current_branch(root: str) -> str:
@@ -212,6 +239,8 @@ async def _ensure_worktree_impl(session_key: str, root: str, phash: str, slug: s
         session_store.clear_worktree(session_key)  # 目录被手删 → 清绑定重来
 
     if not os.path.isdir(root) or not await _is_git_repo(root):
+        return None
+    if not await _exclude_worktree_dir(root):
         return None
 
     base_dir = _wt_base(root) / phash
