@@ -428,7 +428,11 @@ function workbenchNewChildCard(parentId, standalone){
 function workbenchSessionLinks(task){
   const ids = task.sessionIds || [];
   if(!ids.length) return '';
-  return '<div class="wb-session-links">'+ids.map((sid, i) => '<a class="wb-session-link" data-session="'+esc(sid)+'" title="查看会话">会话'+(i+1)+'</a>').join('')+'</div>';
+  return '<div class="wb-session-links">'+ids.map(sid => {
+    const conv = typeof findConv === "function" ? findConv(sid) : null;
+    const name = (conv && conv.title) || "新对话";
+    return '<a class="wb-session-link" data-session="'+esc(sid)+'" title="'+esc(name)+'">'+esc(name)+'</a>';
+  }).join('')+'</div>';
 }
 
 function workbenchTaskRow(task, isChild){
@@ -477,8 +481,7 @@ function renderWorkbenchTaskEditor(task){
     '</div>'+
     '<textarea data-edit-detail="'+esc(task.id)+'" placeholder="'+(isAi ? "Prompt（AI 执行时的指令）" : "备注（思路/要点）")+'">'+esc(task.detail||"")+'</textarea>'+
     (images ? '<div class="wb-image-list">'+images+'</div>' : "")+
-    sessionLinks+
-    '<div class="wb-editor-footer">'+assigneeBtn+'<button type="button" class="wb-dp-trigger'+(workbenchScheduleLabel(task) ? " has-date" : "")+'" data-open-dp="task:'+esc(task.id)+'">'+ic("calendar")+'<span>'+esc(scheduleLabel)+'</span></button>'+addChildBtn+dispatchBtn+'</div>'+'</article>';
+    '<div class="wb-editor-footer">'+assigneeBtn+'<button type="button" class="wb-dp-trigger'+(workbenchScheduleLabel(task) ? " has-date" : "")+'" data-open-dp="task:'+esc(task.id)+'">'+ic("calendar")+'<span>'+esc(scheduleLabel)+'</span></button>'+addChildBtn+sessionLinks+dispatchBtn+'</div>'+'</article>';
 }
 
 function workbenchNewTaskCardHtml(project){
