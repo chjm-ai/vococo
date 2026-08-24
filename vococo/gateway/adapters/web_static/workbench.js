@@ -509,6 +509,13 @@ function workbenchVisibleTasks(){
   return all.filter(task => !workbenchHasVisibleAncestor(task, visibleIds));
 }
 
+// 整页级空状态（没有项目/没有任务/回收站为空等）配吉祥物出场，跟聊天页 #empty
+// 是同一套视觉语言；列表内部零散的"暂无任务"提示不套这个，避免一屏多个吉祥物打架。
+function workbenchEmptyState(state, title, hint){
+  return '<div class="wb-empty-hero"><span class="voco-mascot" data-state="'+state+'"></span>'+
+    '<strong>'+esc(title)+'</strong>'+(hint ? '<span>'+esc(hint)+'</span>' : "")+'</div>';
+}
+
 function renderWorkbenchProjects(){
   const tasks = workbenchVisibleTasks();
   const unassignedTasks = tasks.filter(task => !workbenchIsRealProject(task.project));
@@ -523,7 +530,7 @@ function renderWorkbenchProjects(){
     const one = workbenchProject(WB.project);
     projects = one ? [one] : [];
   }
-  if(!projects.length) return '<p class="wb-empty">还没有项目，点右上角「+」新建一个。</p>';
+  if(!projects.length) return workbenchEmptyState("idle", "还没有项目", "点右上角「+」新建一个吧");
   // 「全部项目」概览下，没任务的分组（含「未分组」）直接不显示（避免一屏全是"暂无任务"的空壳）；
   // 但正在这个项目里写新任务草稿时不能藏——不然卡片会凭空消失。单选某个具体项目时
   // 永远显示该项目自己的区块，哪怕是空的，不然用户点进去会看到一片空白，无处新建。
@@ -533,7 +540,7 @@ function renderWorkbenchProjects(){
     if(WB.project === "all" && !list.length && !hasDraft) return "";
     return workbenchProjectBlock(project, list);
   }).filter(Boolean);
-  if(!blocks.length) return '<p class="wb-empty">暂无任务。</p>';
+  if(!blocks.length) return workbenchEmptyState("sleep", "暂无任务", "工作台很干净，去建一个吧");
   return '<div class="wb-project-list">'+blocks.join("")+'</div>';
 }
 
@@ -634,7 +641,7 @@ function workbenchTrashRow(task){
 function renderWorkbenchTrash(){
   if(!WB_TRASH.loaded) return '<p class="wb-empty">加载中…</p>';
   const toolbar = WB_TRASH.tasks.length ? '<div class="wb-trash-toolbar"><button type="button" class="wb-ctx-danger" data-empty-trash>清空废弃</button></div>' : "";
-  if(!WB_TRASH.tasks.length) return '<p class="wb-empty">废弃是空的。</p>';
+  if(!WB_TRASH.tasks.length) return workbenchEmptyState("done", "废弃是空的", "没有被丢弃的任务");
   return toolbar+'<div class="wb-task-list wb-trash-list">'+WB_TRASH.tasks.map(workbenchTrashRow).join("")+'</div>';
 }
 
@@ -668,7 +675,7 @@ function workbenchCompletedGroupLabel(dateKey){
 
 function renderWorkbenchCompleted(){
   const tasks = WB_DATA.tasks.filter(workbenchIsLogged);
-  if(!tasks.length) return '<p class="wb-empty">还没有日志。</p>';
+  if(!tasks.length) return workbenchEmptyState("idle", "还没有日志", "完成任务后会记录在这里");
   const groups = new Map();
   tasks.forEach(task => {
     const key = workbenchCompletedDayKey(task) || "unknown";
@@ -735,6 +742,7 @@ function renderWorkbench(){
   hydrateWorkbenchImages();
   workbenchAutoGrowAll();
   wbBindAllSwipes();
+  if(window.VocoMascot) VocoMascot.mountAll(root);
   renderWbDock();
   // 已完成/回收站没有项目分组，插不进新建卡，FAB 在这两个视图下藏起来。
   $("#wbFab")?.classList.toggle("wb-fab-off", WB.view === "completed" || WB.view === "trash");
