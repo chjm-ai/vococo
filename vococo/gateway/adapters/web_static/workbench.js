@@ -2481,7 +2481,7 @@ $("#workbenchView").addEventListener("dblclick", event => {
 let wbDragTaskId = null;
 
 function workbenchClearDropIndicators(){
-  document.querySelectorAll(".wb-task-drop-before,.wb-task-drop-after,.wb-task-drop-nest").forEach(el => el.classList.remove("wb-task-drop-before", "wb-task-drop-after", "wb-task-drop-nest"));
+  document.querySelectorAll(".wb-task-drop-before,.wb-task-drop-after,.wb-task-drop-nest,.wb-task-drop-promote").forEach(el => el.classList.remove("wb-task-drop-before", "wb-task-drop-after", "wb-task-drop-nest", "wb-task-drop-promote"));
   document.querySelectorAll(".wb-children.is-drop-target,.wb-task-list.is-drop-target").forEach(el => el.classList.remove("is-drop-target"));
 }
 
@@ -2512,15 +2512,31 @@ function workbenchDropTailTarget(event, draggedId){
   return {container, sibling};
 }
 
+function workbenchIsLastChild(task){
+  return workbenchChildren(task.parentId).at(-1)?.id === task.id;
+}
+
+function workbenchPeerDropMode(dragged, target){
+  if(target.parentId) return dragged.parentId === target.parentId ? "reorder" : "nest-child";
+  return dragged.parentId ? "promote" : "reorder";
+}
+
 function workbenchDropMode(dragged, target, clientY, rect){
+  const isLowerHalf = clientY >= rect.top + rect.height / 2;
+  const hasChildren = workbenchChildren(target.id).length > 0;
+  if(target.parentId && workbenchTaskIsAncestor(dragged.id, target.parentId)) return "noop";
+  if(hasChildren){
+    if(!workbenchChildrenExpanded(target.id)) return workbenchPeerDropMode(dragged, target);
+    if(isLowerHalf) return dragged.parentId === target.id ? "noop" : "nest";
+    return workbenchPeerDropMode(dragged, target);
+  }
   if(target.parentId){
-    if(workbenchTaskIsAncestor(dragged.id, target.parentId)) return "noop";
-    return dragged.parentId === target.parentId ? "reorder" : "nest-child";
+    if(workbenchIsLastChild(target) && isLowerHalf) return "promote-after-parent";
+    return workbenchPeerDropMode(dragged, target);
   }
   const center = clientY >= rect.top + rect.height * .25 && clientY <= rect.bottom - rect.height * .25;
   if(center) return dragged.parentId === target.id ? "noop" : "nest";
-  if(dragged.parentId) return "promote";
-  return "reorder";
+  return workbenchPeerDropMode(dragged, target);
 }
 
 $("#workbenchView").addEventListener("dragstart", event => {
@@ -2555,8 +2571,9 @@ $("#workbenchView").addEventListener("dragover", event => {
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
   if(mode === "nest") row.classList.add("wb-task-drop-nest");
+  else if(mode === "promote-after-parent") row.classList.add("wb-task-drop-promote");
   else row.classList.toggle("wb-task-drop-before", event.clientY < rect.top + rect.height / 2);
-  if(mode !== "nest") row.classList.toggle("wb-task-drop-after", event.clientY >= rect.top + rect.height / 2);
+  if(mode !== "nest" && mode !== "promote-after-parent") row.classList.toggle("wb-task-drop-after", event.clientY >= rect.top + rect.height / 2);
 });
 
 $("#workbenchView").addEventListener("drop", event => {
@@ -2575,6 +2592,7 @@ $("#workbenchView").addEventListener("drop", event => {
   const mode = workbenchDropMode(dragged, target, event.clientY, rect);
   if(mode === "noop") return;
   if(mode === "nest"){ workbenchNestTask(taskId, target.id); return; }
+  if(mode === "promote-after-parent"){ workbenchDropAfterTaskTree(taskId, target.parentId); return; }
   const before = event.clientY < rect.top + rect.height / 2;
   if(mode === "nest-child"){ workbenchNestTask(taskId, target.parentId, target.id, before); return; }
   if(mode === "promote"){ workbenchPromoteTask(taskId, target.id, before); return; }
@@ -2596,7 +2614,7 @@ $("#workbenchView").addEventListener("dragend", event => {
 const WB_FAB = {pointerId:null, dragging:false, startX:0, startY:0};
 
 function wbFabClearDrop(){
-  document.querySelectorAll(".wb-task-drop-before,.wb-task-drop-after,.wb-task-drop-nest").forEach(el => el.classList.remove("wb-task-drop-before", "wb-task-drop-after", "wb-task-drop-nest"));
+  document.querySelectorAll(".wb-task-drop-before,.wb-task-drop-after,.wb-task-drop-nest,.wb-task-drop-promote").forEach(el => el.classList.remove("wb-task-drop-before", "wb-task-drop-after", "wb-task-drop-nest", "wb-task-drop-promote"));
 }
 
 // FAB 跟手移动时自己正好挡在指尖下面，直接 elementFromPoint 只会摸到自己——量之前先让它对点击透明。
