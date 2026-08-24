@@ -2438,6 +2438,18 @@ let wbDragTaskId = null;
 
 function workbenchClearDropIndicators(){
   document.querySelectorAll(".wb-task-drop-before,.wb-task-drop-after,.wb-task-drop-nest").forEach(el => el.classList.remove("wb-task-drop-before", "wb-task-drop-after", "wb-task-drop-nest"));
+  document.querySelectorAll(".wb-drop-hint").forEach(el => el.remove());
+}
+
+function workbenchDropHintText(mode){
+  return mode === "nest" ? "作为该任务的子任务" : "与该任务同级排序";
+}
+
+function workbenchShowDropHint(row, mode){
+  const hint = document.createElement("span");
+  hint.className = "wb-drop-hint";
+  hint.textContent = workbenchDropHintText(mode);
+  row.append(hint);
 }
 
 function workbenchDropMode(dragged, target, clientY, rect){
@@ -2477,6 +2489,7 @@ $("#workbenchView").addEventListener("dragover", event => {
   if(mode === "nest") row.classList.add("wb-task-drop-nest");
   else row.classList.toggle("wb-task-drop-before", event.clientY < rect.top + rect.height / 2);
   if(mode !== "nest") row.classList.toggle("wb-task-drop-after", event.clientY >= rect.top + rect.height / 2);
+  workbenchShowDropHint(row, mode);
 });
 
 $("#workbenchView").addEventListener("drop", event => {
