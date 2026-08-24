@@ -329,7 +329,13 @@ function workbenchScheduleLabel(task){
     return (date.getFullYear() !== now.getFullYear() ? date.getFullYear()+"年" : "")+(date.getMonth()+1)+"月"+date.getDate()+"日";
   }
   if(task.week){
-    if(task.week === workbenchWeekKey(workbenchDate(workbenchToday()))) return "本周";
+    const thisWeek = workbenchWeekKey(workbenchDate(workbenchToday()));
+    if(task.week === thisWeek) return "本周";
+    const diffWeeks = Math.round((workbenchDate(task.week) - workbenchDate(thisWeek)) / (7*86400000));
+    if(diffWeeks === -1) return "上周";
+    if(diffWeeks === -2) return "上上周";
+    if(diffWeeks === 1) return "下周";
+    if(diffWeeks === 2) return "下下周";
     const date = workbenchDate(task.week);
     return (date.getMonth()+1)+"月"+date.getDate()+"日当周";
   }
