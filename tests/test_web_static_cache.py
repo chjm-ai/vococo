@@ -98,6 +98,10 @@ async def test_workbench_js_talks_to_backend(static_app):
     assert 'api("/workbench")' in source
     assert "/workbench/tasks/create" in source
     assert "/workbench/projects/create" in source  # 项目不写死,支持界面新建
+    # 跨项目移动子任务时必须提升为根任务；否则目标项目只渲染本项目父任务，子任务会不可见。
+    assert "function workbenchBatchMove(ids, projectId)" in source
+    assert "parent?.project === projectId ? parent.id : null" in source
+    assert "workbenchPersistTaskPlacement(task, parentId, projectId" in source
     assert '[data-complete],[data-toggle-children]' in source  # 子任务展开按钮双击不应打开详情
     assert 'view:"week"' in source
     assert "goals:" not in source
