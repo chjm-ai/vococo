@@ -863,11 +863,7 @@ function wbEnterMultiSelect(taskId){
     WB.multiSelectMode = true;
     document.body.classList.add("wb-multiselect-mode");
   }
-  const next = new Set(WB.selected);
-  if(next.has(taskId)) next.delete(taskId); else next.add(taskId);
-  workbenchApplySelectionClasses(WB.selected, next);
-  WB.selected = next;
-  WB.selectAnchor = taskId;
+  workbenchToggleSelection(taskId);
   wbRenderMultiSelectBar();
   // 选空了也不自动退出——留在多选态、"完成"按钮还在，退出只认那个按钮。之前"选空自动
   // 退出"这条会在快速双击同一行时开口子：第一下清空选区顺带退出多选，第二下就落到
@@ -1099,6 +1095,13 @@ function workbenchSetSelection(ids){
   const next = new Set(ids);
   workbenchApplySelectionClasses(WB.selected, next);
   WB.selected = next;
+}
+
+function workbenchToggleSelection(taskId){
+  const next = new Set(WB.selected);
+  if(next.has(taskId)) next.delete(taskId); else next.add(taskId);
+  workbenchSetSelection(next);
+  WB.selectAnchor = taskId;
 }
 
 // 取 anchor→target 之间「同一个项目分组、当前 DOM 顺序」上的所有任务 id；
@@ -2337,6 +2340,13 @@ $("#workbenchView").addEventListener("click", event => {
     // 任务切换的选中状态还要保留 250ms 的双击判定，但收起当前卡片不能等它：
     // 否则点击别的任务后，卡片会明显晚半拍才开始收起。
     workbenchFinishActiveCard();
+    // 桌面端 Cmd（macOS）/ Ctrl（Windows）逐条增减选区，可跨项目；Shift 仍按当前项目
+    // 的视觉顺序选取区间。
+    if((event.metaKey || event.ctrlKey) && !event.shiftKey){
+      clearTimeout(wbClickTimer); wbClickTimer = null;
+      workbenchToggleSelection(taskId);
+      return;
+    }
     if(event.shiftKey && WB.selectAnchor && WB.selectAnchor !== taskId){
       clearTimeout(wbClickTimer); wbClickTimer = null;
       workbenchSelectRange(WB.selectAnchor, taskId);
