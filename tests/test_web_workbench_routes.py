@@ -38,6 +38,7 @@ def workbench_web_app(isolated, monkeypatch):
             web.post("/workbench/tasks/update", adapter._handle_workbench_task_update),
             web.post("/workbench/tasks/move", adapter._handle_workbench_task_move),
             web.post("/workbench/tasks/delete", adapter._handle_workbench_task_delete),
+            web.post("/workbench/tasks/rollover/dismiss", adapter._handle_workbench_rollover_dismiss),
             web.get("/workbench/trash", adapter._handle_workbench_trash),
             web.post("/workbench/trash/empty", adapter._handle_workbench_trash_empty),
             web.post("/workbench/tasks/restore", adapter._handle_workbench_task_restore),
@@ -128,6 +129,39 @@ async def test_update_and_delete_task_via_http(workbench_web_app):
 
         resp = await client.get("/workbench")
         assert task_id not in {t["id"] for t in (await resp.json())["tasks"]}
+
+
+@pytest.mark.anyio
+async def test_rollover_dismiss_via_http_clears_dot(workbench_web_app):
+    """过期任务读取时被自动滚到本周(rolled="week"),点黄条"好"对应的 dismiss 接口清空标记。"""
+    import datetime
+
+    async with TestClient(TestServer(workbench_web_app)) as client:
+        resp = await client.get("/workbench")
+        project_id = (await resp.json())["projects"][0]["id"]
+
+        last_week = (datetime.date.today() - datetime.timedelta(days=14)).isoformat()
+        resp = await client.post(
+            "/workbench/tasks/create",
+            json={"project": project_id, "title": "过期周任务"},
+        )
+        task_id = (await resp.json())["task"]["id"]
+        await client.post(
+            "/workbench/tasks/update",
+            json={"id": task_id, "week": last_week, "month": last_week[:7]},
+        )
+
+        resp = await client.get("/workbench")
+        task = next(t for t in (await resp.json())["tasks"] if t["id"] == task_id)
+        assert task["rolled"] == "week"
+
+        resp = await client.post("/workbench/tasks/rollover/dismiss", json={"kind": "week"})
+        assert resp.status == 200
+        assert (await resp.json())["count"] >= 1
+
+        resp = await client.get("/workbench")
+        task = next(t for t in (await resp.json())["tasks"] if t["id"] == task_id)
+        assert task["rolled"] is None
 
 
 @pytest.mark.anyio

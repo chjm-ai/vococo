@@ -1459,6 +1459,14 @@ class WebAdapter:
         return web.json_response({"ok": True})
 
     @_authed
+    @_json_body
+    async def _handle_workbench_rollover_dismiss(self, request: web.Request, body: dict) -> web.Response:
+        """点掉日/周/月视图顶部"过期任务已自动滚动"的黄条提醒,清空对应任务的小黄点。"""
+        kind = str(body.get("kind") or "")
+        count = workbench.dismiss_rollover(kind)
+        return web.json_response({"ok": True, "count": count})
+
+    @_authed
     async def _handle_workbench_trash(self, request: web.Request) -> web.Response:
         """回收站列表——懒加载,不在首屏 /workbench 里带,免得平时白传这份数据。"""
         return web.json_response({"tasks": workbench.list_deleted_tasks()})
@@ -2666,6 +2674,7 @@ class WebAdapter:
                 web.post("/workbench/tasks/update", self._handle_workbench_task_update),
                 web.post("/workbench/tasks/move", self._handle_workbench_task_move),
                 web.post("/workbench/tasks/delete", self._handle_workbench_task_delete),
+                web.post("/workbench/tasks/rollover/dismiss", self._handle_workbench_rollover_dismiss),
                 web.get("/workbench/trash", self._handle_workbench_trash),
                 web.post("/workbench/trash/empty", self._handle_workbench_trash_empty),
                 web.post("/workbench/tasks/restore", self._handle_workbench_task_restore),

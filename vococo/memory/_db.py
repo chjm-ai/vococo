@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS workbench_tasks(
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL,
   deleted_at REAL,
-  completed_at REAL
+  completed_at REAL,
+  rolled TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_wb_tasks_project ON workbench_tasks(project_id);
 """
@@ -174,6 +175,10 @@ def conn() -> sqlite3.Connection:
             _DB.execute("ALTER TABLE workbench_tasks ADD COLUMN assignee TEXT NOT NULL DEFAULT 'human'")
         if "session_ids" not in wtcols:
             _DB.execute("ALTER TABLE workbench_tasks ADD COLUMN session_ids TEXT NOT NULL DEFAULT '[]'")
+        # rolled: 'date'/'week'/'month'/NULL,标记该任务是不是被"过期未完成自动滚到当前
+        # 周期"命中过(工作台顶部黄条提醒 + 任务名前小黄点用),点黄条"好"后清空。
+        if "rolled" not in wtcols:
+            _DB.execute("ALTER TABLE workbench_tasks ADD COLUMN rolled TEXT")
         # 2026-08-21 工作台去掉「来源文档」字段:老库里的 source_ids 列/workbench_sources
         # 表原样删掉,任务本身的其它数据不受影响。
         if "source_ids" in wtcols:
