@@ -925,7 +925,8 @@ function wbExitMultiSelect(){
 // 别处（切 tab/项目、批量删除后…）本来就要清空选中态，顺带把多选模式也带出去，
 // 不然桌面端切视图后移动端的底部工具栏会孤零零地留在那——选区已经空了，UI 却没退出。
 function wbResetSelection(){
-  WB.selected = new Set();
+  // 新建卡可只插入一个节点而不整页重绘，必须先移除旧行的视觉选中态。
+  workbenchSetSelection([]);
   WB.selectAnchor = null;
   if(WB.multiSelectMode){
     WB.multiSelectMode = false;
