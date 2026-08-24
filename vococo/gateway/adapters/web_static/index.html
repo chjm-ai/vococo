@@ -1498,17 +1498,19 @@ async function reloadHistory(force){
 // #newBtn 内容(与主会话行同构:edit 图标 + 文字)在 renderConvs 里设置——
 // 数据到位前保持 HTML 预置的骨架,避免"先出按钮、列表后到"的分裂感。
 $("#newBtn").onclick = newChat;
-// 顶栏 ☰:桌面设备(含拉窄的窗口,收起态)= 展开侧边栏;真手机/平板 = 抽屉式打开。
-// 按设备类型分支,不按窗口宽度——桌面窗口拉再小也不弹抽屉。
+// 顶栏 ☰:桌面设备且放得下(收起态,宽屏)= 展开侧边栏,直接挤开内容;
+// 真手机/平板,或桌面窗口窄到放不下两栏 = 浮层抽屉式打开,盖在内容上方不挤压宽度。
 function expandSidebarResponsive(){
-  if(!IS_MOBILE_DEVICE){ setSidebarCollapsed(false); }
+  if(!IS_MOBILE_DEVICE && window.innerWidth>760){ setSidebarCollapsed(false); }
   else { $("#sidebar").classList.add("open"); $("#backdrop").classList.add("show"); }
   loadVoiceSidebar();  // 打开侧边栏时刷新语音后台任务(新派发的运行中任务也能及时出现在默认项目)
 }
 $("#hamb").onclick = expandSidebarResponsive;
 $("#collapseBtn").innerHTML = ic("panel");
 $("#hamb").innerHTML = ic("panel");
-$("#collapseBtn").onclick = ()=> setSidebarCollapsed(true);   // 侧边栏内:收起
+// 侧边栏内的收起按钮:宽屏桌面是真收起(挤压布局的收起态);窄屏(浮层抽屉态,不论
+// 设备)点它等同点背景遮罩,只是关掉这次打开的浮层,没有"收起态"可言。
+$("#collapseBtn").onclick = ()=> { if(window.innerWidth<=760) closeSidebar(); else setSidebarCollapsed(true); };
 $("#backdrop").onclick = closeSidebar;
 $(".brand").onclick = ()=>{ closeSidebar(); newChat(); };  // 品牌名 → 开一个新对话
 function closeSidebar(){ $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("show"); }
