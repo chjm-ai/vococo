@@ -2860,11 +2860,32 @@ $("#workbenchView").addEventListener("focusin", event => {
   }
 });
 
+// 停止敲字 700ms 后就算没失焦也自动落库一次：既减小"编辑中一直不落库,刷新/切走就
+// 全丢"的窗口，也让"改完就要保存"符合直觉，不用非得先点别处。focusout/隐藏页面时
+// 若这个定时器还没触发，走各自的即时 flush，互相用 workbenchCancelFieldFlush 防止重复发送。
+const WB_FIELD_FLUSH_DEBOUNCE_MS = 700;
+const wbFieldFlushTimers = new Map();
+function workbenchCancelFieldFlush(taskId, field){
+  const key = taskId+":"+field;
+  clearTimeout(wbFieldFlushTimers.get(key));
+  wbFieldFlushTimers.delete(key);
+}
+function workbenchScheduleFieldFlush(el){
+  if(!el || !el.dataset) return;
+  const taskId = el.dataset.editTitle || el.dataset.editDetail;
+  const field = el.dataset.editTitle ? "title" : el.dataset.editDetail ? "detail" : null;
+  if(!taskId || !field) return;
+  const key = taskId+":"+field;
+  clearTimeout(wbFieldFlushTimers.get(key));
+  wbFieldFlushTimers.set(key, setTimeout(() => { wbFieldFlushTimers.delete(key); workbenchFlushFieldEdit(el); }, WB_FIELD_FLUSH_DEBOUNCE_MS));
+}
+
 $("#workbenchView").addEventListener("input", event => {
   const task = workbenchTask(event.target.dataset.editTitle || event.target.dataset.editDetail);
   if(task){
     if(event.target.dataset.editTitle) task.title = event.target.value;
     if(event.target.dataset.editDetail){ task.detail = event.target.value; workbenchAutoGrowTextarea(event.target); }
+    workbenchScheduleFieldFlush(event.target);
     return;
   }
   if(!WB.newTask) return;
@@ -2872,7 +2893,7 @@ $("#workbenchView").addEventListener("input", event => {
   if("newDetail" in event.target.dataset){ WB.newTask.detail = event.target.value; workbenchAutoGrowTextarea(event.target); }
 });
 
-// 标题/备注失焦时才落库，避免每敲一个字都打一次 API；一次编辑字段记作一条撤销记录。
+// 标题/备注落库：失焦、防抖到点、或页面即将隐藏都会调用这里；一次编辑字段记作一条撤销记录。
 function workbenchFlushFieldEdit(el){
   if(!el || !el.dataset) return;
   const titleId = el.dataset.editTitle;
@@ -2880,6 +2901,7 @@ function workbenchFlushFieldEdit(el){
   const taskId = titleId || detailId;
   const field = titleId ? "title" : detailId ? "detail" : null;
   if(!taskId || !field) return;
+  workbenchCancelFieldFlush(taskId, field);
   const task = workbenchTask(taskId);
   const snapshotKey = taskId+":"+field;
   const previous = WB.editSnapshots.get(snapshotKey);
@@ -2888,6 +2910,8 @@ function workbenchFlushFieldEdit(el){
   const before = {[field]:previous};
   const after = {[field]:task[field]};
   workbenchPersistTaskChange(taskId, before, after);
+  // 落库后若还在编辑同一字段，重新记快照为"已保存的当前值"，避免下一次 flush 把同一次改动重复上报历史。
+  if(document.activeElement === el) WB.editSnapshots.set(snapshotKey, task[field]);
 }
 
 $("#workbenchView").addEventListener("focusout", event => workbenchFlushFieldEdit(event.target));
