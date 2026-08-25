@@ -8,7 +8,7 @@ const WB_DATA = {projects: [], tasks: []};
 // 「未分组」伪项目做兜底分组，不需要改后端 schema。
 const WB_UNASSIGNED_ID = "";
 const WB_UNASSIGNED_PROJECT = {id: WB_UNASSIGNED_ID, name: "未分组"};
-const WB = {project:"all", view:"week", anchor:null, editorTaskId:null, editorDocked:false, selected:new Set(), selectAnchor:null, newTask:null, expanded:new Set(), collapsed:new Set(), editSnapshots:new Map(), multiSelectMode:false};
+const WB = {project:"all", view:"week", anchor:null, editorTaskId:null, editorDocked:false, selected:new Set(), selectAnchor:null, newTask:null, expanded:new Set(), collapsed:new Set(), editSnapshots:new Map(), multiSelectMode:false, pendingSaves:new Map()};
 const WB_HISTORY_MAX = 30;
 const WB_HISTORY_KEY = "vococo:workbench-history";
 const WB_HISTORY = {undo:[], redo:[], busy:false};
@@ -175,7 +175,14 @@ async function loadWorkbenchData(){
     const r = await api("/workbench");
     const d = await r.json();
     WB_DATA.projects = d.projects || [];
-    WB_DATA.tasks = d.tasks || [];
+    const tasks = d.tasks || [];
+    // 有编辑请求还没落盘确认（focusout 后 fire-and-forget 发出）时，服务端这次拉取
+    // 大概率还是旧值；用本地乐观值盖回去，避免"改完切个 tab 又变回原样"。
+    for(const task of tasks){
+      const pending = WB.pendingSaves.get(task.id);
+      if(pending) Object.assign(task, pending);
+    }
+    WB_DATA.tasks = tasks;
     wbDataFetchedAt = Date.now();   // 失败时不更新,下次点击立刻重试而不是白等 30s
   }catch(e){}
 }
@@ -300,8 +307,12 @@ workbenchHistoryLoad();
 
 // 乐观更新已经改完本地字段并重渲染后调用：失败时按 rollback 把字段改回去再重渲染一次。
 async function persistWorkbenchTask(taskId, patch, rollback){
+  // 记入 pending：请求落盘确认前，loadWorkbenchData() 重新拉取到的旧值不能覆盖这次编辑。
+  const pending = Object.assign({}, WB.pendingSaves.get(taskId), patch);
+  WB.pendingSaves.set(taskId, pending);
   try{
-    const r = await api("/workbench/tasks/update", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(Object.assign({id:taskId}, patch))});
+    // keepalive：焦点一丢就发请求，用户紧接着切 tab/刷新页面时也不能被浏览器直接掐断。
+    const r = await api("/workbench/tasks/update", {method:"POST", keepalive:true, headers:{"Content-Type":"application/json"}, body:JSON.stringify(Object.assign({id:taskId}, patch))});
     const d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error||"更新失败");
     return true;
@@ -309,6 +320,12 @@ async function persistWorkbenchTask(taskId, patch, rollback){
     if(rollback){ const task = workbenchTask(taskId); if(task){ Object.assign(task, rollback); if(!workbenchSwapTask(taskId)) renderWorkbench(); } }
     alert("工作台同步失败："+(e.message||""));
     return false;
+  }finally{
+    const current = WB.pendingSaves.get(taskId);
+    if(current){
+      for(const key of Object.keys(patch)) delete current[key];
+      if(!Object.keys(current).length) WB.pendingSaves.delete(taskId);
+    }
   }
 }
 
