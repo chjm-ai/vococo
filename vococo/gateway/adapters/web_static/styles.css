@@ -1764,7 +1764,10 @@
     #workbenchView .wb-switch{flex-wrap:wrap;gap:1px;padding:2px}
     #workbenchView .wb-switch button{padding:var(--sp-2) var(--sp-3)}
     #workbenchView .wb-task{grid-template-columns:20px minmax(0,1fr) minmax(0,max-content);gap:8px;padding:var(--sp-3) var(--sp-4)}
-    #workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}
+    /* 编辑卡贴边出血(抵消 #wbContent 左右 16px 内边距,占满整屏宽度)是手机专属的
+       视觉选择,只给真手机/平板;桌面窄窗口保留正常两侧留白,不然卡片会算错宽度
+       溢出窗口边缘(左侧文字被裁掉)。 */
+    html.device-mobile #workbenchView .wb-editor-shell{margin-left:-16px;margin-right:-16px}
     #workbenchView .wb-editor-footer{align-items:flex-start;flex-wrap:wrap}
     /* 独立窗口在移动端点了也没意义(手机浏览器没有多窗口这回事)，直接不显示；
        同一排的「显示/隐藏备注」「折叠/展开子任务」两个开关照常留着。 */
