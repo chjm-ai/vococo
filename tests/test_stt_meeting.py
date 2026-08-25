@@ -98,6 +98,39 @@ async def test_attachment_routes_by_duration(isolated, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_attachment_falls_back_to_meeting_when_flash_says_too_long(isolated, monkeypatch):
+    """探测失败/判成短录音,但快速通道以"超过时长限制"拒绝时,兜底改走会议转写重试,
+    不直接把错误甩给用户(2026-08-25 谈判策略录音就是撞在这:探测失败误判成短录音,
+    直接报错没重试)。"""
+    from vococo import config
+
+    monkeypatch.setattr(config, "AUDIO_DIR", isolated / "audio")
+    monkeypatch.setattr(config, "PUBLISHED_DIR", isolated / "published")
+    monkeypatch.setattr(config, "DASHSCOPE_API_KEY", "k")
+
+    async def fake_probe(audio, filename):
+        return None  # ffprobe 探测失败
+
+    async def fake_short(audio, filename, ctype, *, timeout_sec=180):
+        return None, "音频超过转写服务时长限制,暂不支持"
+
+    seen_diarize = []
+
+    async def fake_meeting(audio, filename, ctype, *, host, diarize=True):
+        seen_diarize.append(diarize)
+        return "个人长录音内容", ""
+
+    monkeypatch.setattr(stt, "probe_duration", fake_probe)
+    monkeypatch.setattr(stt, "transcribe", fake_short)
+    monkeypatch.setattr(stt, "transcribe_meeting", fake_meeting)
+
+    text, err = await stt.transcribe_attachment(b"x", "m.m4a", "audio/m4a", host="h")
+    assert text == "个人长录音内容"
+    assert err == ""
+    assert seen_diarize == [False]  # 兜底重试不开说话人分离
+
+
+@pytest.mark.anyio
 async def test_meeting_success_cleans_public_file(isolated, monkeypatch):
     """成功路径:提交→轮询 SUCCEEDED→格式化返回,公网临时文件与本地残留都清掉。"""
     import aiohttp
