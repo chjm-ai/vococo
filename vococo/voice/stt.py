@@ -398,11 +398,17 @@ async def transcribe_attachment(
     < 4.5 分钟 → qwen3-asr-flash(快,它有 5 分钟时长上限);
     4.5~40 分钟 → paraformer 异步转写,不开说话人分离(个人长录音,如手机录音);
     ≥ 40 分钟 → paraformer + 说话人分离(会议)。
-    探测失败(无 ffmpeg/格式太怪)当短录音处理,不影响上传。"""
+    探测失败(无 ffmpeg/格式太怪)当短录音处理;猜错了(其实是长录音)快速通道会
+    因超过 5 分钟上限报错,此时兜底改走会议转写通道重试一次,不直接把错误甩给用户
+    (2026-08-25 谈判策略录音探测失败误判成短录音,直接报错没重试的真实事故)。"""
     if config.DASHSCOPE_API_KEY and audio:
         duration = await probe_duration(audio, filename)
         if duration is not None and duration >= config.MEETING_ASR_MIN_SECONDS:
             return await transcribe_meeting(audio, filename, ctype, host=host, diarize=True)
         if duration is not None and duration >= config.ASR_FLASH_MAX_SECONDS:
             return await transcribe_meeting(audio, filename, ctype, host=host, diarize=False)
+        text, err = await transcribe(audio, filename, ctype, timeout_sec=timeout_sec)
+        if text is None and "时长限制" in err:
+            return await transcribe_meeting(audio, filename, ctype, host=host, diarize=False)
+        return text, err
     return await transcribe(audio, filename, ctype, timeout_sec=timeout_sec)
