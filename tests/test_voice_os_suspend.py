@@ -73,14 +73,15 @@ def test_suspend_state_cleared_on_hangup(source: str) -> None:
     assert "osSuspended = false;" in teardown
 
 
-def test_wakelock_denial_is_surfaced_to_user(source: str) -> None:
-    """常亮被拒必须告诉用户。
+def test_sustained_wakelock_denial_is_surfaced_to_user(source: str) -> None:
+    """【持续】拿不到常亮才提示用户,瞬时被拒不提示。
 
-    真机日志 85 次申请里 48 次 NotAllowedError(iOS 低电量模式直接拒发)。
-    既然平台不允许后台录音,常亮拿不到就等于通话随时会被息屏打断——只记 vdbg
-    等于让用户一直蒙在鼓里。
+    2026-08-25 首版这里断言的是"一见 NotAllowedError 就提示低电量模式",那是
+    误判:真机日志显示同一次通话里 fail 和 acquired 交替出现,是瞬时失败,
+    低电量模式会是持续拒绝,对不上。详见 test_voice_wakelock_lifecycle.py。
     """
-    fn = _slice(source, "async function acquireWakeLock()", "let wakeLockWarned")
+    fn = _slice(source, "async function acquireWakeLock()", "function scheduleWakeLockRetry")
     assert "wakeLockWarned" in fn
-    assert 'String(e).includes("NotAllowed")' in fn
+    assert "wakeLockFailStreakSince > 45000" in fn, "要连续失败一段时间才提示"
     assert "addMsg(" in fn, "要有用户可见的提示,不能只打日志"
+    assert "多半开了低电量模式" not in fn, "误判结论已撤"

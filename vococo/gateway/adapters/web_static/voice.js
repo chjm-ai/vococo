@@ -2261,6 +2261,14 @@
       }
       if(!micStreamHealthy()) suspectMicProblem("stale");
       checkMicAudioActivity();
+      // 常亮锁兜底(2026-08-25):release 事件是主路径,但不是所有浏览器都派发它
+      // (iOS PWA 上有丢事件的报告)。这里每 3s 直接查 sentinel 的真实状态,掉了
+      // 就补——开车长通话没有重连事件可蹭,只有这个周期性检查能兜住。
+      if(wakeLockSupported && document.visibilityState === "visible"
+         && (!wakeLockSentinel || wakeLockSentinel.released) && !wakeLockRetryTimer){
+        vdbg("wakelock.watchdog", "lost");
+        acquireWakeLock();
+      }
     }
     // 即使在聆听/空闲阶段也检查 WebRTC 连接健康——静默断连(如 120 分钟
     // 会话上限到点)若不及时发现,用户说话永远没回复,表现像 AI 掉线。
@@ -3006,41 +3014,134 @@
   // 降级不报错;但"加到主屏幕"的 PWA 里有 WebKit bug(bugs.webkit.org/254545:
   // request 成功 resolve 但屏幕照样熄),iOS 18.4 才修好——失败/不生效无法
   // 从 JS 侧检测,只能靠 vdbg 上报 + 真机验证,所以保活音轨必须一直开着。
+  // ── 常亮锁生命周期(2026-08-25 重写)────────────────────────────────────
+  // 使用场景定调:主人开车时长通话,【从不手动锁屏】,断线全是"聊太久,手机到了
+  // 自动熄屏时间自己熄"。所以常亮锁必须【全程持有到通话结束】,这是防线本身,
+  // 不是锦上添花——它一掉,后面那套息屏挂起/自动接回都只是收尸的。
+  //
+  // 原实现的三个致命缺口(真机日志实锤):
+  // ① release 事件只把 sentinel 置空,【既不记日志也不重新申请】。日志里
+  //    11:14:20 acquired → 11:14:29 又 acquired,9 秒内两次成功=中间锁被释放过;
+  //    而 acquireWakeLock 只在重连/切前台时才被调用,长时间安静通话没有重连,
+  //    锁掉了就一直空着,屏幕自然到点就熄。这是开车场景的真凶。
+  // ② 申请失败(NotAllowedError)之后没有任何重试,要等下一次偶然的重连。日志里
+  //    fail 到下一次 acquired 常隔 10~50 秒,00:27:16/20/23 还连炸三次。
+  // ③ 页面不可见时照样发请求——必被拒(日志有一条明确的 "Document is hidden"),
+  //    白白污染失败计数。
+  //
+  // 现在:release 立刻补申请、失败按 1/2/4/8s 退避重试、不可见时挂起等 visible、
+  // 3s 看门狗兜底(有浏览器不派发 release 事件),并且每 30s 打一次 wakelock.held
+  // 心跳——没有这条心跳,"锁到底有没有全程持有"在真机上根本无法证明。
   let wakeLockSentinel = null;
+  let wakeLockRetryTimer = null;
+  let wakeLockRetryAttempts = 0;
+  let wakeLockPendingVisible = false;  // 因页面不可见而挂起的申请,等 visible 立刻补
+  let wakeLockFailStreakSince = 0;     // 连续申请不到的起点,用于"持续拿不到"的用户提示
+  let wakeLockWarned = false;          // 提示每次页面加载只弹一次,不刷屏
+  let wakeLockHeldSince = 0;
+  let wakeLockHeartbeat = null;
+
+  const wakeLockSupported = "wakeLock" in navigator;
+  if(!wakeLockSupported) vdbg("wakelock.unsupported");  // 只在加载时报一次,别被看门狗刷屏
   async function acquireWakeLock(){
-    if(!("wakeLock" in navigator)){ vdbg("wakelock.unsupported"); return; }
-    if(wakeLockSentinel) return;  // 已持有(release 事件会把它清回 null,不会泄漏)
+    if(!wakeLockSupported) return;
+    if(wakeLockSentinel && !wakeLockSentinel.released) return;  // 已持有
+    if(!handsFreeActive) return;             // 只在通话激活期持有,待机不白耗电
+    if(document.visibilityState !== "visible"){
+      // 不可见时请求必被拒(规范如此),别浪费也别污染失败统计,挂起等回前台
+      wakeLockPendingVisible = true;
+      vdbg("wakelock.deferred", "hidden");
+      return;
+    }
     try{
-      wakeLockSentinel = await navigator.wakeLock.request("screen");
-      wakeLockSentinel.addEventListener("release", ()=>{ wakeLockSentinel = null; });
+      const sentinel = await navigator.wakeLock.request("screen");
+      // 申请是异步的:await 期间用户可能已经挂断,拿到就得还回去,别把屏幕吊着
+      if(!handsFreeActive){ try{ sentinel.release(); }catch(e){} return; }
+      wakeLockSentinel = sentinel;
+      wakeLockHeldSince = Date.now();
+      wakeLockRetryAttempts = 0;
+      wakeLockFailStreakSince = 0;
+      wakeLockPendingVisible = false;
+      sentinel.addEventListener("release", ()=>{
+        // 【核心修复】系统释放锁 = 屏幕随时会自己熄。立刻补申请,不留空窗。
+        const heldMs = wakeLockHeldSince ? Date.now() - wakeLockHeldSince : -1;
+        wakeLockSentinel = null;
+        wakeLockHeldSince = 0;
+        vdbg("wakelock.released", {heldMs, active: handsFreeActive, vis: document.visibilityState});
+        if(handsFreeActive) scheduleWakeLockRetry(0);
+      });
       vdbg("wakelock.acquired");
+      startWakeLockHeartbeat();
     }catch(e){
       wakeLockSentinel = null;
-      vdbg("wakelock.fail", String(e));
-      // 2026-08-25 真机日志:85 次申请里 48 次 NotAllowedError「Permission was denied」。
-      // iOS 在【低电量模式】下直接拒发屏幕常亮锁。以前只闷头记 vdbg,用户完全不知道
-      // 常亮这条防线是废的,只觉得"怎么老是自己息屏断线"。既然平台不允许后台录音
-      // (见 enterOsSuspend),常亮拿不到就等于通话随时会被息屏打断,必须让用户知道。
-      if(!wakeLockWarned && String(e).includes("NotAllowed")){
+      if(!wakeLockFailStreakSince) wakeLockFailStreakSince = Date.now();
+      vdbg("wakelock.fail", {err: String(e), attempts: wakeLockRetryAttempts,
+        streakMs: Date.now() - wakeLockFailStreakSince});
+      scheduleWakeLockRetry();
+      // 只有【持续】拿不到才提示用户。瞬时被拒是常态(日志里 fail 后隔几十秒又成功),
+      // 上一版一见 NotAllowedError 就断言"低电量模式"并弹提示,是误判,已撤。
+      if(!wakeLockWarned && handsFreeActive && Date.now() - wakeLockFailStreakSince > 45000){
         wakeLockWarned = true;
-        addMsg("ai filler", "提醒:系统不让我保持屏幕常亮(多半开了低电量模式)。手机浏览器不允许后台录音,息屏就会中断通话——需要长时间语音的话,先关掉低电量模式,或把自动锁屏调长一点。");
+        addMsg("ai filler", "提醒:这一分钟里我一直没能让屏幕保持常亮,通话中屏幕可能会自动熄灭而中断(手机浏览器不允许后台录音)。如果在开车,建议把「自动锁定」调成「永不」,或检查是否开了低电量模式。");
       }
     }
   }
-  let wakeLockWarned = false;  // 常亮被拒的提示每次页面加载只弹一次,不刷屏
+
+  // 退避重试:0/1/2/4/8s 封顶。第一次(release 触发)不等,立刻补。
+  function scheduleWakeLockRetry(forceDelayMs){
+    if(wakeLockRetryTimer) return;
+    if(!handsFreeActive) return;
+    const delay = forceDelayMs != null ? forceDelayMs
+      : Math.min(1000 * Math.pow(2, wakeLockRetryAttempts), 8000);
+    wakeLockRetryAttempts++;
+    wakeLockRetryTimer = setTimeout(()=>{
+      wakeLockRetryTimer = null;
+      acquireWakeLock();
+    }, delay);
+  }
+
+  // 持有心跳:每 30s 一条 wakelock.held。真机验证"通话全程有没有掉锁"只能靠它——
+  // 没有心跳的话,日志里看不到锁的持有区间,只能看到零星的 acquired/fail。
+  function startWakeLockHeartbeat(){
+    if(wakeLockHeartbeat) return;
+    wakeLockHeartbeat = setInterval(()=>{
+      if(!handsFreeActive){ stopWakeLockHeartbeat(); return; }
+      const held = !!(wakeLockSentinel && !wakeLockSentinel.released);
+      vdbg("wakelock.held", {held, heldMs: wakeLockHeldSince ? Date.now() - wakeLockHeldSince : 0,
+        vis: document.visibilityState});
+      if(!held) acquireWakeLock();  // 心跳发现锁没了也补一次
+    }, 30000);
+  }
+  function stopWakeLockHeartbeat(){
+    if(wakeLockHeartbeat){ clearInterval(wakeLockHeartbeat); wakeLockHeartbeat = null; }
+  }
+
   function releaseWakeLock(){
+    if(wakeLockRetryTimer){ clearTimeout(wakeLockRetryTimer); wakeLockRetryTimer = null; }
+    wakeLockRetryAttempts = 0;
+    wakeLockPendingVisible = false;
+    wakeLockFailStreakSince = 0;
+    stopWakeLockHeartbeat();
     if(!wakeLockSentinel) return;
     try{ wakeLockSentinel.release(); }catch(e){}
     wakeLockSentinel = null;
+    wakeLockHeldSince = 0;
   }
   document.addEventListener("visibilitychange", ()=>{
     if(document.hidden){
       if(handsFreeActive) vdbg("bg.enter", {ctx: audioCtx && audioCtx.state});
       return;
     }
+    // 【第一件事】回到可见的瞬间就抢常亮锁,不排在重连/接回后面。锁在页面不可见
+    // 期间会被系统收回(规范行为),回前台补得越晚,屏幕自己熄的窗口就越大。
+    if(handsFreeActive){
+      if(wakeLockRetryTimer){ clearTimeout(wakeLockRetryTimer); wakeLockRetryTimer = null; }
+      wakeLockRetryAttempts = 0;  // 之前的失败多半就是因为不可见,退避重新计数
+      acquireWakeLock();
+    }
+    wakeLockPendingVisible = false;
     // 息屏被系统挂起过:回前台自动接回(平台不允许后台录音,只能在这一刻重来)
     if(osSuspended){ resumeFromOsSuspend(); flushAnnouncements(); return; }
-    if(handsFreeActive) acquireWakeLock();  // 通话激活期间回前台:重拿常亮锁
     // 息屏/切后台回来的完整复活流程(2026-08-24):以前这里只补了 wakeLock 和
     // 防熄屏视频,保活音轨、AudioContext、远端音频元素三样都没人管——见 resumeAudioPipeline。
     if(handsFreeActive) resumeAudioPipeline("vischange");
