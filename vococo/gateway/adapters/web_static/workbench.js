@@ -2873,9 +2873,10 @@ $("#workbenchView").addEventListener("input", event => {
 });
 
 // 标题/备注失焦时才落库，避免每敲一个字都打一次 API；一次编辑字段记作一条撤销记录。
-$("#workbenchView").addEventListener("focusout", event => {
-  const titleId = event.target.dataset.editTitle;
-  const detailId = event.target.dataset.editDetail;
+function workbenchFlushFieldEdit(el){
+  if(!el || !el.dataset) return;
+  const titleId = el.dataset.editTitle;
+  const detailId = el.dataset.editDetail;
   const taskId = titleId || detailId;
   const field = titleId ? "title" : detailId ? "detail" : null;
   if(!taskId || !field) return;
@@ -2887,7 +2888,16 @@ $("#workbenchView").addEventListener("focusout", event => {
   const before = {[field]:previous};
   const after = {[field]:task[field]};
   workbenchPersistTaskChange(taskId, before, after);
-});
+}
+
+$("#workbenchView").addEventListener("focusout", event => workbenchFlushFieldEdit(event.target));
+
+// 改完字不点别处、直接刷新/切浏览器标签页/切到别的 App：这种操作不会触发 focusout，
+// 输入框其实还聚焦着——落库请求根本没发出去，看起来像"保存很慢/丢字"。
+// visibilitychange(变 hidden)覆盖切标签页/切App/锁屏；pagehide 兜底覆盖刷新/关闭页面。
+function workbenchFlushActiveEditOnHide(){ workbenchFlushFieldEdit(document.activeElement); }
+document.addEventListener("visibilitychange", () => { if(document.visibilityState === "hidden") workbenchFlushActiveEditOnHide(); });
+window.addEventListener("pagehide", workbenchFlushActiveEditOnHide);
 
 $("#workbenchView").addEventListener("paste", event => {
   const taskId = event.target.dataset.editDetail;
