@@ -253,7 +253,9 @@ function renderDocBlob(blob, target, highlight=""){
   } else if(ctype.startsWith("image/")||/^(png|jpe?g|gif|webp|svg)$/.test(ext)){
     DP.objUrl=URL.createObjectURL(blob); body.innerHTML='<img class="dp-img" src="'+DP.objUrl+'">';
   } else if(ctype==="application/pdf"||ext==="pdf"){
-    DP.objUrl=URL.createObjectURL(blob); body.innerHTML='<iframe class="dp-frame" src="'+DP.objUrl+'"></iframe>';
+    // Safari 对 <iframe src="blob:...">渲染 PDF 是已知 WebKit 老毛病,整页空白(2026-08-25 排查确认);
+    // <embed> 走插件式渲染路径,Safari/Chrome/Firefox 都认,换掉 iframe 即可。
+    DP.objUrl=URL.createObjectURL(blob); body.innerHTML='<embed class="dp-frame" type="application/pdf" src="'+DP.objUrl+'">';
   } else if(ctype==="text/html"||ext==="html"||ext==="htm"){
     // 沙箱只放行弹窗,不给 allow-scripts+allow-same-origin(会让 blob 里的脚本拿到跟主站同源的能力,
     // 等于把鉴权 token 所在的页面上下文让给了一份 AI 写的、未经审查的 HTML)——预览允许有损,不允许有洞。
