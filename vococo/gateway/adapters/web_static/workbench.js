@@ -2880,11 +2880,24 @@ function workbenchScheduleFieldFlush(el){
   wbFieldFlushTimers.set(key, setTimeout(() => { wbFieldFlushTimers.delete(key); workbenchFlushFieldEdit(el); }, WB_FIELD_FLUSH_DEBOUNCE_MS));
 }
 
+// 落库前一直标"未保存"（文字变暗），落库确认（成功或失败回滚后）才摘掉——
+// 让"是不是保存好了"能靠肉眼判断，而不是瞎猜网络快慢。跟 undo 用的 WB.editSnapshots
+// 分开一套独立状态，避免互相牵连出 bug。
+function workbenchFieldEl(taskId, field){
+  const attr = field === "title" ? "data-edit-title" : "data-edit-detail";
+  return document.querySelector('#workbenchView ['+attr+'="'+CSS.escape(taskId)+'"]');
+}
+function workbenchClearFieldPendingVisual(taskId, field){
+  const el = workbenchFieldEl(taskId, field);
+  if(el) el.classList.remove("wb-field-pending");
+}
+
 $("#workbenchView").addEventListener("input", event => {
   const task = workbenchTask(event.target.dataset.editTitle || event.target.dataset.editDetail);
   if(task){
     if(event.target.dataset.editTitle) task.title = event.target.value;
     if(event.target.dataset.editDetail){ task.detail = event.target.value; workbenchAutoGrowTextarea(event.target); }
+    event.target.classList.add("wb-field-pending");
     workbenchScheduleFieldFlush(event.target);
     return;
   }
@@ -2906,10 +2919,15 @@ function workbenchFlushFieldEdit(el){
   const snapshotKey = taskId+":"+field;
   const previous = WB.editSnapshots.get(snapshotKey);
   WB.editSnapshots.delete(snapshotKey);
-  if(!task || previous === undefined || previous === task[field]) return;
+  if(!task || previous === undefined || previous === task[field]){ workbenchClearFieldPendingVisual(taskId, field); return; }
   const before = {[field]:previous};
   const after = {[field]:task[field]};
-  workbenchPersistTaskChange(taskId, before, after);
+  workbenchPersistTaskChange(taskId, before, after).then(() => {
+    // 这次请求飞在半路上时用户可能又敲了新字：只有当前值仍等于这次保存的值才摘暗色，
+    // 否则说明有更新的编辑还没落库，不能提前把"未保存"标记摘了。
+    const current = workbenchTask(taskId);
+    if(current && current[field] === after[field]) workbenchClearFieldPendingVisual(taskId, field);
+  });
   // 落库后若还在编辑同一字段，重新记快照为"已保存的当前值"，避免下一次 flush 把同一次改动重复上报历史。
   if(document.activeElement === el) WB.editSnapshots.set(snapshotKey, task[field]);
 }
