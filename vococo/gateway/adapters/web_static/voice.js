@@ -377,7 +377,75 @@
     return true;
   }
 
+  // ── 息屏挂起:平台硬边界,不是可以修的 bug(2026-08-25 真机日志定案)────────
+  // 11:05 那次事故的完整时间线证明:息屏后【页面根本没被冻结】,后台 JS 连跑
+  // 20 秒还完成了一整轮对话——之前三轮修复(保活视频/保活音轨/ctx 复活)保的
+  // 那条命本来就没断。真正断的是麦克风:iOS 在页面不可见约 20 秒后主动把
+  // getUserMedia 轨道 ended 掉(WebKit 隐私设计,防网页后台偷听),Web 平台
+  // 没有任何 API 能豁免,PWA 也一样。
+  // 既然拿不回麦克风,就别再空转:后台状态下的 getUserMedia 必然失败,重连只会
+  // 烧退避计数、放一串断线提示音,最后 button-mode.return 把状态清干净——用户
+  // 解锁回来看到的是"通话没了,自己重新点"。改为进入显式的【息屏挂起】态:
+  // 停连接、留现场,等真正回到前台再自动接回。
+  let osSuspended = false;          // 通话因息屏/切后台被系统挂起,等回前台自动接回
+  let osSuspendResumeTimer = null;
+  const MIC_DEAD_REASONS = new Set(["ended", "stale", "zombie", "muted"]);
+
+  function enterOsSuspend(reason){
+    if(osSuspended) return;
+    osSuspended = true;
+    vdbg("os-suspend.enter", reason);
+    if(omniReconnectTimer){ clearTimeout(omniReconnectTimer); omniReconnectTimer = null; }
+    handsFreeActive = false;   // 先落 flag:让看门狗/重连全部停手(保活也随之收掉)
+    stopOmniHandsFree();
+    resetMicStream();          // 轨道已被系统回收,握着没意义,回前台重新申请
+    setOmniConnStatus("disconnected");
+    setStatus("已挂起(息屏)", "");
+    orbWrap.className = "idle";
+    // 不显示"开始通话"按钮:回前台会自动接回,按钮出来反而诱导用户手点
+    startBtn.hidden = true;
+    handsFreeUi.hidden = false;
+  }
+
+  // 回到前台:等音频会话真的恢复了再申请麦克风。11:06:03 那次失败就是抢早了——
+  // visibilitychange 同一拍就重连,ctx 还 suspended、wakeLock 被拒,信令 fetch
+  // 直接 TypeError: Load failed,退避两轮后放弃回按钮态。
+  async function resumeFromOsSuspend(){
+    if(!osSuspended || document.hidden) return;
+    if(osSuspendResumeTimer){ clearTimeout(osSuspendResumeTimer); osSuspendResumeTimer = null; }
+    vdbg("os-suspend.resume.begin");
+    setStatus("正在接回…", "thinking");
+    setOmniConnStatus("connecting");
+    await ensureAudioCtxRunning("os-resume");
+    // 再等一拍:iOS 解锁瞬间音频会话还在 interrupted↔running 之间抖(日志里
+    // 11:05:27~31 抖了四次),这时候 getUserMedia 拿到的多半又是条死轨道。
+    await new Promise(r => setTimeout(r, 700));
+    if(document.hidden || !osSuspended) return;
+    let ok = false;
+    try{ ok = await startHandsFree(); }
+    catch(e){ vdbg("os-suspend.resume.fail", String(e)); }
+    if(ok){
+      osSuspended = false;
+      buttonMode = true;
+      vdbg("os-suspend.resume.ok");
+      playReconnectTone();
+      addMsg("ai filler", "刚才息屏,系统把麦克风收走了(手机浏览器不允许后台录音),现在已经接回来,继续说吧。");
+      return;
+    }
+    // 接回失败:退回按钮待机,把主动权交还用户,别在这儿无限重试
+    vdbg("os-suspend.resume.giveup");
+    osSuspended = false;
+    returnToButtonState();
+    setStatus("息屏已断开,点击继续", "");
+    startBtn.title = "点击继续通话"; startBtn.setAttribute("aria-label", "点击继续通话");
+  }
+
   function suspectMicProblem(reason){
+    // 后台/息屏状态下麦克风出问题 = 系统回收,不是故障,重连必然失败
+    if(document.hidden && handsFreeActive && MIC_DEAD_REASONS.has(reason)){
+      enterOsSuspend("mic:" + reason);
+      return;
+    }
     if(!handsFreeActive) return;
     const now = Date.now();
     if(now - micHealthSuspectTs > MIC_HEALTH_WINDOW){
@@ -1537,6 +1605,9 @@
   // 往往还要挂 5~10 秒才跳 disconnected,等它自己发现黄花菜都凉了。
   function scheduleOmniReconnect(reason, delayMs, force){
     if(!handsFreeActive || omniReconnectTimer) return;
+    // 页面不可见时重连是纯浪费:getUserMedia 在后台拿不到活轨道,信令 fetch 也常
+    // 直接 Load failed(2026-08-25 日志 11:06:19)。转成息屏挂起,等回前台再说。
+    if(document.hidden){ enterOsSuspend("reconnect:" + reason); return; }
     // 连接要重建了:缓冲里已定稿的用户话先发出去——它走 HTTP /voice/send,不依赖
     // 这条 WebRTC;不发的话重建的 teardown 会把 omniPendingText 清掉,用户的问题
     // 就人间蒸发了(2026-07-22 真机 13:03:29 实锤:提问压在安全网里等 flush,
@@ -2943,8 +3014,20 @@
       wakeLockSentinel = await navigator.wakeLock.request("screen");
       wakeLockSentinel.addEventListener("release", ()=>{ wakeLockSentinel = null; });
       vdbg("wakelock.acquired");
-    }catch(e){ wakeLockSentinel = null; vdbg("wakelock.fail", String(e)); }
+    }catch(e){
+      wakeLockSentinel = null;
+      vdbg("wakelock.fail", String(e));
+      // 2026-08-25 真机日志:85 次申请里 48 次 NotAllowedError「Permission was denied」。
+      // iOS 在【低电量模式】下直接拒发屏幕常亮锁。以前只闷头记 vdbg,用户完全不知道
+      // 常亮这条防线是废的,只觉得"怎么老是自己息屏断线"。既然平台不允许后台录音
+      // (见 enterOsSuspend),常亮拿不到就等于通话随时会被息屏打断,必须让用户知道。
+      if(!wakeLockWarned && String(e).includes("NotAllowed")){
+        wakeLockWarned = true;
+        addMsg("ai filler", "提醒:系统不让我保持屏幕常亮(多半开了低电量模式)。手机浏览器不允许后台录音,息屏就会中断通话——需要长时间语音的话,先关掉低电量模式,或把自动锁屏调长一点。");
+      }
+    }
   }
+  let wakeLockWarned = false;  // 常亮被拒的提示每次页面加载只弹一次,不刷屏
   function releaseWakeLock(){
     if(!wakeLockSentinel) return;
     try{ wakeLockSentinel.release(); }catch(e){}
@@ -2955,6 +3038,8 @@
       if(handsFreeActive) vdbg("bg.enter", {ctx: audioCtx && audioCtx.state});
       return;
     }
+    // 息屏被系统挂起过:回前台自动接回(平台不允许后台录音,只能在这一刻重来)
+    if(osSuspended){ resumeFromOsSuspend(); flushAnnouncements(); return; }
     if(handsFreeActive) acquireWakeLock();  // 通话激活期间回前台:重拿常亮锁
     // 息屏/切后台回来的完整复活流程(2026-08-24):以前这里只补了 wakeLock 和
     // 防熄屏视频,保活音轨、AudioContext、远端音频元素三样都没人管——见 resumeAudioPipeline。
@@ -3120,6 +3205,9 @@
     releaseWakeLock();  // 挂断就不需要屏幕常亮了,让系统恢复正常锁屏节能
     stopWorkSound();    // 工作音效跟着通话走,挂断即停(audioCtx 也会在下面 close)
     handsFreeActive = false;  // 先立 flag:让 scheduleOmniReconnect 的回调知道用户已挂断
+    // 用户已经离开通话视图:息屏挂起态作废,别在下次回前台自作主张把通话接回来
+    osSuspended = false;
+    if(osSuspendResumeTimer){ clearTimeout(osSuspendResumeTimer); osSuspendResumeTimer = null; }
     updateCallModeTabs();  // 上面 setOmniConnStatus("disconnected") 时 handsFreeActive 还置着,此刻补刷一次,下次进通话视图切换钮是显示的
     if(omniReconnectTimer){ clearTimeout(omniReconnectTimer); omniReconnectTimer = null; }
     stopOmniHandsFree();
