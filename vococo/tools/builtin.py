@@ -459,6 +459,97 @@ async def delete_cron_job(args: dict) -> dict:
     scheduler.save_jobs(jobs)
     return _ok(f"🗑 已删除任务「{j.get('name')}」。")
 
+@tool(
+    "update_cron_job",
+    "修改一个已有定时任务(按 序号/id/名字定位),原地更新而不是删除重建。"
+    "只需传要改的字段,其余字段保持不变。\n"
+    "ref:必填,定位任务;name/prompt:可选,改名字/指令;cron:可选,改成新的周期性cron表达式"
+    "(如 '0 9 * * *' = 每天早9点);run_in_minutes:可选,改成多少分钟后跑一次的一次性任务"
+    "(cron 与 run_in_minutes 最多传一个,都不传则调度不变);model/cwd:可选;"
+    "mode='script' 时需配 command,可选 summarize_prompt。",
+    {
+        "type": "object",
+        "properties": {
+            "ref": {"type": "string"},
+            "name": {"type": "string"},
+            "prompt": {"type": "string"},
+            "cron": {"type": "string"},
+            "run_in_minutes": {"type": "number"},
+            "model": {"type": "string"},
+            "cwd": {"type": "string"},
+            "mode": {"type": "string", "enum": ["agent", "script"]},
+            "command": {"type": "string"},
+            "summarize_prompt": {"type": "string"},
+        },
+        "required": ["ref"],
+    },
+)
+async def update_cron_job(args: dict) -> dict:
+    import time as _time
+
+    from ..cron import scheduler
+    from . import danger
+
+    ref = (args.get("ref") or "").strip()
+    jobs = scheduler.load_jobs()
+    job = _resolve_job(ref, jobs)
+    if not job:
+        return _ok(f"没找到任务「{ref}」。用 list_cron_jobs 看列表。")
+
+    cron_expr = (args.get("cron") or "").strip()
+    run_in_minutes = args.get("run_in_minutes")
+    if cron_expr and run_in_minutes is not None:
+        return _ok("cron 和 run_in_minutes 最多传一个。")
+    if cron_expr:
+        schedule = {"kind": "cron", "expr": cron_expr}
+    elif run_in_minutes is not None:
+        try:
+            minutes = float(run_in_minutes)
+        except (TypeError, ValueError):
+            return _ok("run_in_minutes 必须是数字。")
+        if minutes <= 0:
+            return _ok("run_in_minutes 必须是正数。")
+        schedule = {"kind": "once", "run_at": _time.time() + minutes * 60}
+    else:
+        schedule = job.get("schedule", {})
+    err = scheduler.validate_schedule(schedule)
+    if err:
+        return _ok(err)
+
+    name = (args.get("name") or "").strip() or job.get("name")
+    prompt = (args.get("prompt") or "").strip() or job.get("prompt")
+
+    kwargs: dict = {}
+    if "cwd" in args:
+        requested_cwd = args.get("cwd")
+        if requested_cwd is not None and not isinstance(requested_cwd, str):
+            return _ok("cwd 必须是字符串。")
+        kwargs["cwd"] = requested_cwd
+    if "model" in args:
+        kwargs["model"] = (args.get("model") or "").strip() or None
+    for field in ("mode", "command", "summarize_prompt"):
+        if field in args:
+            kwargs[field] = args.get(field)
+
+    # 改定时任务是持久化类操作,和 add/delete/set_enabled 一样要用户点头;
+    # cron/eval 上下文(无人可问)直接拒绝。
+    detail = f"「{job.get('name')}」— 改为 {_sched_desc(schedule)}"
+    if name != job.get("name"):
+        detail += f" — 改名为「{name}」"
+    if not await danger.require_approval("修改定时任务", detail):
+        return _ok(f"🛑 未批准修改任务「{job.get('name')}」,已跳过。")
+
+    try:
+        updated = scheduler.update_job(
+            job["id"], name=name, prompt=prompt, schedule=schedule,
+            target=job.get("target"), **kwargs,
+        )
+    except ValueError as exc:
+        return _ok(str(exc))
+    if updated is None:
+        return _ok(f"没找到任务「{ref}」。")
+    return _ok(f"✅ 已更新任务「{updated.get('name')}」({_sched_desc(updated['schedule'])})。")
+
 def _resolve_workbench_project(ref: str, projects: list[dict]) -> dict | None:
     """按 id / 名字(不分大小写)解析一个工作台项目。"""
     ref = ref.strip()
@@ -1124,6 +1215,7 @@ def build_mcp_servers() -> dict:
                 add_cron_job,
                 list_cron_jobs,
                 set_cron_job_enabled,
+                update_cron_job,
                 delete_cron_job,
                 list_workbench_projects,
                 list_workbench_tasks,
