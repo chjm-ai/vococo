@@ -118,6 +118,18 @@ def test_unsent_attachments_are_isolated_by_conversation():
     assert "restoreComposerAttachments(conv);" in index
 
 
+def test_file_drop_reuses_upload_validation_and_reports_unsupported_formats():
+    composer = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/composer.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function handleAttachmentFiles(files)" in composer
+    assert "handleAttachmentFiles(e.dataTransfer?.files);" in composer
+    assert "function rejectUnsupportedFile(f)" in composer
+    assert "暂不支持文件" in composer
+    assert "else if(isSupportedFile(f)) addFile(f);" in composer
+
+
 @pytest.mark.anyio
 async def test_image_attachment_includes_persisted_local_path():
     """图片既作为视觉内容传入，也要告诉模型受控落盘路径。"""
