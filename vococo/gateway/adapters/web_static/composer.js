@@ -110,11 +110,22 @@ async function send(text, display, opts){
   }
   if(isCurrent()){ renderThumbs(); $("#ta").value=""; autoGrow(); }
   try{
-    await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    const r=await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(!r.ok){
+      let detail="";
+      try{ const d=await r.json(); detail=d.error||""; }catch(e){}
+      throw new Error(detail||("HTTP "+r.status));
+    }
     if(wasLocal && isCurrent()) setTimeout(loadConvs, 400);
   }catch(err){
     if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }  // 发送失败,停掉 loading
-    if(isCurrent()) addBubble("ai","⚠️ 发送失败:"+err.message);
+    // /send 失败时不能把附件和文字一起吞掉,否则用户只能重新选择文件,且误以为已发送。
+    if(isCurrent()){
+      S.images=sendImages; S.audios=sendAudios; S.files=sendFiles;
+      saveComposerAttachments(); renderThumbs();
+      $("#ta").value=text; autoGrow(); saveDraft();
+      addBubble("ai","⚠️ 发送失败:"+err.message+"，附件已保留，可重试。" );
+    }
   }
 }
 // 静默发命令(如 /model 切换):不渲染用户气泡,回执由服务端 message 事件带回

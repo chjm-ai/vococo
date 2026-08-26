@@ -77,7 +77,25 @@ async def test_send_consumes_uploaded_file(file_app, adapter, isolated):
     assert [(f.data, f.filename, f.media_type) for f in inc.files] == [
         (b"pdf bytes", "report.pdf", "application/pdf")
     ]
+    prompt = agent._build_prompt([], inc.text, inc.images, inc.files)
+    message = await anext(prompt)
+    assert "pdf bytes" in message["message"]["content"][1]["text"]
     assert "file-id" not in adapter._pending_files
+
+
+@pytest.mark.anyio
+async def test_send_reports_expired_uploaded_file_instead_of_silently_dropping(file_app, adapter):
+    async with TestClient(TestServer(file_app)) as client:
+        resp = await client.post(
+            "/send",
+            json={"conv": "main", "text": "读取附件", "files": [{"id": "expired-id"}]},
+            headers={"X-Auth-Token": ""},
+        )
+        data = await resp.json()
+
+    assert resp.status == 400
+    assert "上传已失效" in data["error"]
+    assert adapter._inbox.empty()
 
 
 @pytest.mark.anyio
@@ -128,6 +146,16 @@ def test_file_drop_reuses_upload_validation_and_reports_unsupported_formats():
     assert "function rejectUnsupportedFile(f)" in composer
     assert "暂不支持文件" in composer
     assert "else if(isSupportedFile(f)) addFile(f);" in composer
+
+
+def test_send_failure_keeps_file_attachment_for_retry():
+    composer = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/composer.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "if(!r.ok)" in composer
+    assert "S.images=sendImages; S.audios=sendAudios; S.files=sendFiles;" in composer
+    assert "附件已保留，可重试" in composer
 
 
 @pytest.mark.anyio

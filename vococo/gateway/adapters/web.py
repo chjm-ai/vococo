@@ -804,6 +804,12 @@ class WebAdapter:
             for i in (body.get("images") or [])
             if i.get("data")
         ]
+        requested_file_ids = [str(item.get("id") or "") for item in body.get("files") or []]
+        missing_file_ids = [file_id for file_id in requested_file_ids if file_id not in self._pending_files]
+        if missing_file_ids:
+            return web.json_response(
+                {"error": "文件附件上传已失效，请重新上传后再发送"}, status=400
+            )
         audios: list[AudioAttachment] = []
         for a in body.get("audios") or []:
             pending = self._pending_audio.pop(a.get("id") or "", None)
@@ -825,11 +831,8 @@ class WebAdapter:
                 data=data, media_type=media_type, filename=filename, transcript=transcript,
             ))
         files: list[FileAttachment] = []
-        for item in body.get("files") or []:
-            pending = self._pending_files.pop(item.get("id") or "", None)
-            if pending is None:
-                continue  # id 不存在/已消费/已过期:跟音频保持一致，静默跳过
-            data, filename, media_type, _ts = pending
+        for file_id in requested_file_ids:
+            data, filename, media_type, _ts = self._pending_files.pop(file_id)
             files.append(FileAttachment(data=data, filename=filename, media_type=media_type))
         if not text and not images and not audios and not files:
             return web.json_response({"error": "empty"}, status=400)
