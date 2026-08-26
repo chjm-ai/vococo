@@ -62,6 +62,24 @@ def test_deleted_turn_cannot_write_to_reused_id(isolated):
     assert "draft" not in history[-1]
 
 
+def test_find_session_matches_turn_or_title_visibility(isolated):
+    from vococo.memory import session_store
+
+    # 老会话可能只有 turns；新会话在首轮回复前可能只有 title，两种都必须可精确找到。
+    session_store.append("web:turn-only", "你好", "你好")
+    session_store.set_title("web:title-only", "等首轮回复")
+    session_store.set_last_error("web:turn-only", True)
+
+    turn_only = session_store.find_session("web:turn-only")
+    assert turn_only == {
+        "key": "web:turn-only",
+        "title": "新对话",
+        "last_error": True,
+    }
+    assert session_store.find_session("web:title-only")["title"] == "等首轮回复"
+    assert session_store.find_session("web:missing") is None
+
+
 def test_gpt56_summary_normalizes_stale_context_window(isolated):
     """旧会话曾按 API 的 1.05M 落库，Web 进度条必须改按 Codex 的实际有效窗口显示。"""
     from vococo.memory import session_store

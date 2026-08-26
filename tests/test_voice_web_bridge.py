@@ -160,6 +160,29 @@ async def test_continue_session_web_idle_dispatches_without_cancel(web_db):
 
 
 @pytest.mark.anyio
+async def test_continue_session_web_uses_exact_session_lookup(web_db, monkeypatch):
+    """给出 ID 时不能为确认存在性而聚合、排序并扫描全部网页会话。"""
+    session_store.append("web:conv1", "问", "答")
+    monkeypatch.setattr(
+        session_store,
+        "list_sessions",
+        lambda *_args, **_kwargs: pytest.fail("精确查找不应调用 list_sessions"),
+    )
+    calls = []
+
+    async def fake_dispatch(conv: str, text: str) -> None:
+        calls.append((conv, text))
+
+    web_bridge.register(fake_dispatch, lambda _key: False)
+    result = await task_tools.voice_continue_session.handler(
+        {"session_id": "conv1", "instruction": "继续"}
+    )
+
+    assert "session_id=conv1" in result["content"][0]["text"]
+    assert calls == [("conv1", "继续")]
+
+
+@pytest.mark.anyio
 async def test_continue_session_web_running_interrupts_first(web_db):
     session_store.append("web:conv1", "问", "答")
     calls = []

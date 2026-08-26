@@ -82,9 +82,9 @@ def _web_conv(session_key: str) -> str:
 
 
 def _find_web_session(session_id: str) -> dict | None:
-    """按 conv id 在网页会话列表里找一条;找不到返回 None。"""
+    """按 conv id 精确定位网页会话;不扫描全部网页会话。"""
     key = config.resolve_session_key("web", session_id)
-    return next((r for r in session_store.list_sessions("web:") if r["key"] == key), None)
+    return session_store.find_session(key)
 
 
 @tool(
