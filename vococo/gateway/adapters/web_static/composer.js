@@ -319,14 +319,56 @@ async function compressImage(f){
 }
 function loadImgEl(src){ return new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=src; }); }
 $("#imgBtn").onclick = ()=>$("#file").click();
-$("#file").onchange = e=>{
-  for(const f of e.target.files){
-    if((f.type||"").startsWith("image/")) addImageFile(f);
-    else if((f.type||"").startsWith("audio/")) addAudioFile(f);
-    else addFile(f);  // 不按格式拦截，交给所选模型/API 判断是否支持
+// 通用附件只放行模型链路已覆盖的常见文本/文档格式;不支持的格式在上传前明确提示。
+const SUPPORTED_FILE_EXTENSIONS = new Set([
+  "md","markdown","txt","log","csv","tsv","json","yaml","yml","xml",
+  "html","htm","css","js","jsx","ts","tsx","py","sh","bash","zsh","sql","ini","toml",
+  "pdf","doc","docx","odt","rtf","xls","xlsx","numbers","ppt","pptx","key","pages",
+]);
+const SUPPORTED_FILE_TYPES = new Set([
+  "application/pdf","application/json","application/xml","text/csv","text/markdown",
+]);
+function fileExtension(name){
+  const value=String(name||"").toLowerCase();
+  const dot=value.lastIndexOf(".");
+  return dot>0 && dot<value.length-1 ? value.slice(dot+1) : "";
+}
+function isSupportedFile(f){
+  const type=String(f?.type||"").split(";",1)[0].toLowerCase();
+  return type.startsWith("text/") || SUPPORTED_FILE_TYPES.has(type) || SUPPORTED_FILE_EXTENSIONS.has(fileExtension(f?.name));
+}
+function rejectUnsupportedFile(f){
+  const name=f?.name||"未命名文件";
+  const ext=fileExtension(name);
+  addBubble("ai", `⚠️ 暂不支持文件「${name}」${ext ? `（.${ext}）` : ""}，请上传图片、音频或常见文本/文档格式。`);
+}
+function handleAttachmentFiles(files){
+  for(const f of Array.from(files||[])){
+    const type=String(f.type||"").toLowerCase();
+    if(type.startsWith("image/")) addImageFile(f);
+    else if(type.startsWith("audio/")) addAudioFile(f);
+    else if(isSupportedFile(f)) addFile(f);
+    else rejectUnsupportedFile(f);
   }
+}
+$("#file").onchange = e=>{
+  handleAttachmentFiles(e.target.files);
   e.target.value="";
 };
+// 拖到输入框时复用文件选择流程,阻止浏览器把文件直接打开/导航离开当前页面。
+const dropTarget=document.querySelector(".inrow");
+if(dropTarget){
+  ["dragenter","dragover"].forEach(type=>dropTarget.addEventListener(type,e=>{
+    e.preventDefault(); e.stopPropagation(); dropTarget.classList.add("dragover");
+  }));
+  dropTarget.addEventListener("dragleave",e=>{
+    if(!e.relatedTarget || !dropTarget.contains(e.relatedTarget)) dropTarget.classList.remove("dragover");
+  });
+  dropTarget.addEventListener("drop",e=>{
+    e.preventDefault(); e.stopPropagation(); dropTarget.classList.remove("dragover");
+    handleAttachmentFiles(e.dataTransfer?.files);
+  });
+}
 // 粘贴:聊天框内 Ctrl/⌘+V 粘贴剪贴板里的图片(可多张),并入队列;纯文本粘贴不受影响
 $("#ta").addEventListener("paste", e=>{
   const items = e.clipboardData && e.clipboardData.items; if(!items) return;

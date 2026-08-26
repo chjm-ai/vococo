@@ -1034,8 +1034,9 @@
   #thumbs .filechip.uploading .flabel{color:var(--dim)}
   /* 竖排输入框:文本区在上(默认约 2 行),工具条在下 */
   .inrow{position:relative;display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line2);
-    border-radius:20px;padding:var(--sp-3) var(--sp-4) var(--sp-2);transition:border-color var(--t-fast),box-shadow var(--t-fast)}
-  .inrow:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--focus-ring)}
+    border-radius:20px;padding:var(--sp-3) var(--sp-4) var(--sp-2);transition:border-color var(--t-fast),box-shadow var(--t-fast),background var(--t-fast)}
+  .inrow:focus-within,.inrow.dragover{border-color:var(--accent);box-shadow:0 0 0 3px var(--focus-ring)}
+  .inrow.dragover{background:color-mix(in srgb,var(--accent) 8%,var(--card))}
   /* 斜杠命令菜单:输入 "/" 时弹出,悬浮在整个输入框上方,随前缀过滤;结构复用 #modelPop 样式 */
   #cmdPop{position:absolute;left:0;right:0;bottom:calc(100% + 8px);z-index:20;max-height:260px;overflow-y:auto;
     background:var(--card);border:1px solid var(--line2);border-radius:var(--r-xl);padding:var(--sp-2);
