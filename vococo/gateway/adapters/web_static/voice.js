@@ -41,6 +41,10 @@
   let pausedForInterrupt=false;
   let ttsFailureNoticedThisTurn=false;  // 每轮最多提示一次,避免连续几句都合成失败时刷屏
   let currentTurnAiEl=null, currentTurnFull="";
+  // 本轮是否期待语音(sendTurn 里按 body.tts 置位):文本 tab 显式传 tts:false 时,
+  // 服务端 sentence 事件照发但不带音频(见 voice/routes.py _handle_send 注释)——
+  // 这不是合成失败,别当失败处理(否则文本模式下会误报"有一句没能读出来")。
+  let currentTurnAudioExpected=true;
 
   // ── Omni-Realtime WebRTC 通话(免提唯一管线,ADR 0004;见 wireOmniDataChannel 一段)──
   // S.omniEnabled(登录时预取,见 loadVoiceOmniConfig)开着就整条走 WebRTC;
@@ -728,6 +732,7 @@
     const turn = beginVoiceTurn();
     busy = true; talkBtn.disabled = true; stopBtn.hidden = false;
     ttsFailureNoticedThisTurn = false;
+    currentTurnAudioExpected = !(body && !(body instanceof FormData) && body.tts === false);
     setStatus("识别中…", "thinking");
     const headers = {"X-Auth-Token": S.token, "X-Voice-Turn-Id": turn.id};
     const init = {method: "POST", headers, signal:turn.controller.signal};
@@ -777,8 +782,7 @@
           } else if(ev.event === "activity"){
             showActivity(ev.data.text);
           } else if(ev.event === "sentence"){
-            playQueue.push(ev.data);
-            pumpPlayback();
+            if(currentTurnAudioExpected){ playQueue.push(ev.data); pumpPlayback(); }
           } else if(ev.event === "done"){
             if(!aiEl) aiEl = addMsg("ai", "");
             if(ev.data.full_text){ full = ev.data.full_text; renderAi(aiEl, full); }
@@ -3279,6 +3283,10 @@
     clearDraft();
     $("#ta").value="";
     autoGrow();
+    // 服务端只在音频转写路径回一条 event:transcript(见 voice/routes.py _handle_send)——
+    // 文字直发没有"转写"这一步,不会收到这条事件,气泡得在本地立刻补上,否则用户
+    // 发的消息永远不会出现在转写区(AI 照样能回复,只是自己那句话画面上凭空消失)。
+    addMsg("me", text);
     await sendTurn({text, tts:false});
   }
   window.sendCallText = sendCallText;
