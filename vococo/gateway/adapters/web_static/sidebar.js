@@ -157,7 +157,7 @@ async function prefetchHistories(){
     try{
       const r=await api("/history?conv="+encodeURIComponent(c.conv));
       const d=await r.json();
-      S.histCache[c.conv]=d.turns;
+      histCacheSet(c.conv, d.turns);
       idbSetHist(c.conv, d.turns);
     }catch(e){ break; }                        // 网络不给力就收手,下次刷新再预热
   }

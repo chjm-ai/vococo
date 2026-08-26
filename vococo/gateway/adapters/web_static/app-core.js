@@ -41,8 +41,10 @@ const S = {
   skills: [],            // /commands 拉到的已启用 skill 清单 [{name,desc}]
   cmd: {open:false, items:[], active:0},  // 斜杠命令菜单当前状态
   git: null,            // 当前项目会话的 git 状态(/conv/git 返回);非项目会话为 null
-  histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁
-  turnEventsCache: {},  // turn_id → 完整 events[]:工具卡片懒加载,点开某轮任意卡片后整轮缓存复用
+  histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁(有 LRU 上限,见 histCacheSet)
+  turnEventsCache: new Map(),  // turn_id → 完整 events[]:工具卡片懒加载,点开某轮任意卡片后整轮缓存复用
+                               // (有 LRU 上限,见 turnEventsSet;用 Map 是因为 turn id 是纯数字,
+                               //  普通对象的纯数字键不按插入顺序遍历,做不了 LRU)
   pendingChoice: {},    // conv → choice 事件:审批发给非当前会话时暂存,切回该会话再渲染
   live: {},             // conv → 进行中回合的事件缓冲:任意会话(含后台)都记录,切回时重放重建流式气泡
   histLoading: null,    // openConv 正在拉 /history 的会话名:该窗口内 SSE 流式事件只缓冲不建气泡,
@@ -247,6 +249,28 @@ async function idbSetHist(conv, turns){
     }
     idbSet("hist:__order__", next);
   }catch(e){}
+}
+
+// ── 内存缓存的容量闸 ────────────────────────────────────────────────────
+// 磁盘那层(idbSetHist)早就有 HIST_CACHE_CAP,内存这两层以前是漏的:标签页开着不刷新
+// 逛过几十个会话、点开过几十张工具卡之后,这些对象只增不减,最终把内存吃到 Safari
+// 弹「因为使用了大量内存,此网页 App 已重新载入」。这里给它们各配一个 LRU 上限。
+const HIST_MEM_CAP=12;       // 内存里最多留几个会话的历史(每个会话 40 轮,见服务端 load_history)
+const TURN_EVENTS_CAP=10;    // 最多留几轮的完整 events(单轮工具输出可以是几 MB)
+// conv 名不是纯数字串,普通对象的键按插入顺序遍历 → 先删再插即可让键序等于访问序
+function histCacheSet(conv, turns){
+  delete S.histCache[conv];
+  S.histCache[conv]=turns;
+  const keys=Object.keys(S.histCache);
+  for(let i=0;i<keys.length-HIST_MEM_CAP;i++) delete S.histCache[keys[i]];
+}
+function turnEventsSet(tid, events){
+  S.turnEventsCache.delete(tid);
+  S.turnEventsCache.set(tid, events);
+  while(S.turnEventsCache.size>TURN_EVENTS_CAP){
+    S.turnEventsCache.delete(S.turnEventsCache.keys().next().value);
+  }
+  return events;
 }
 
 // ── API ─────────────────────────────────────────────────────────────────

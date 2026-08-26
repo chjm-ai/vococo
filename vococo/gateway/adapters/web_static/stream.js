@@ -15,25 +15,35 @@
 // HTTP 缓存只能省下"重新下载字节"这一步,fetch()+blob()+createObjectURL 这套异步
 // 链路每次切回来都要重走一遍,肉眼仍是"又转一下才出图",跟没缓存一样。这里按完整
 // 请求 URL 缓存 blob URL,同一张图本次标签页只走一次这套流程,之后同步复用。
-// 有上限(200张)防止长会话/多会话累积内存无限涨,超了按最旧淘汰并 revoke。
-const _imgBlobCache = new Map();
+// 有上限防止长会话/多会话累积内存无限涨,超了按最旧淘汰并 revoke。两道闸一起看:
+// 条数闸挡"很多小图",字节闸挡"少数几个大文件"——语音消息也走这里(loadAuthedAudio),
+// 单条音频动辄几 MB,只数条数的话 200 条能顶到几百 MB。
+const _imgBlobCache = new Map();   // url → {o:blobUrl, size:字节}
 const _IMG_BLOB_CACHE_MAX = 200;
+const _IMG_BLOB_BYTES_MAX = 64*1024*1024;
+let _imgBlobBytes = 0;
+function _blobCacheEvict(){
+  // size>1:永远保留最后插入的那条,否则单个超大文件会把自己也淘汰掉,调用方拿到已 revoke 的 URL
+  while(_imgBlobCache.size>1 && (_imgBlobCache.size>_IMG_BLOB_CACHE_MAX || _imgBlobBytes>_IMG_BLOB_BYTES_MAX)){
+    const oldest=_imgBlobCache.keys().next().value;
+    const ent=_imgBlobCache.get(oldest);
+    URL.revokeObjectURL(ent.o); _imgBlobBytes-=ent.size;
+    _imgBlobCache.delete(oldest);
+  }
+}
 // 重连/切前后台时机常伴随网络本就不稳,鉴权图片请求偶发失败以前直接放弃且不重试,
 // 图就永久空白只能靠手动刷新页面才能恢复——这里加 3 次退避重试兜住那次抖动。
 async function fetchCachedBlobUrl(url){
-  if(_imgBlobCache.has(url)) return _imgBlobCache.get(url);
+  if(_imgBlobCache.has(url)) return _imgBlobCache.get(url).o;
   const MAX_RETRY=3;
   for(let i=0;i<MAX_RETRY;i++){
     try{
       const r=await api(url);
       if(!r.ok) throw new Error("http "+r.status);
       const b=await r.blob(); const o=URL.createObjectURL(b);
-      if(_imgBlobCache.size>=_IMG_BLOB_CACHE_MAX){
-        const oldest=_imgBlobCache.keys().next().value;
-        URL.revokeObjectURL(_imgBlobCache.get(oldest));
-        _imgBlobCache.delete(oldest);
-      }
-      _imgBlobCache.set(url, o);
+      _imgBlobCache.set(url, {o, size:b.size||0});
+      _imgBlobBytes += b.size||0;
+      _blobCacheEvict();
       return o;
     }catch(e){
       if(i===MAX_RETRY-1) return null;
@@ -87,11 +97,12 @@ function appendAuds(container, auds){
   }
   container.append(g);
 }
+// 走 fetchCachedBlobUrl 而不是自己 createObjectURL:后者建出来的 blob URL 从来没人
+// revoke,而切会话时 #wrap 整个重建、同一条语音每切回来一次就再泄一份(音频动辄几 MB),
+// 是长时间不刷新后内存暴涨的一个源头。复用图片那套缓存顺带拿到 LRU 上限 + revoke。
 async function loadAuthedAudio(player, url){
-  try{
-    const r=await api(url); if(!r.ok) return;
-    const b=await r.blob(); player.src=URL.createObjectURL(b);
-  }catch(e){}
+  const o=await fetchCachedBlobUrl(url);
+  if(o) player.src=o;
 }
 function buildBubble(who, text, imgs, auds){
   const row=el("div","row "+(who==="me"?"me":"ai"));

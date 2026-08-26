@@ -1220,6 +1220,19 @@ function buildTurnBlock(t, conv, isLast){
 // turns[].id 偶然对不上也不该指望复用旧 DOM,这里强制先清空再铺,避免旧会话
 // 内容残留(2026-07-24 曾因跳过这层 conv 判断,导致切会话瞬间看到上一个会话的
 // 正文残留在新会话下方——本该在 conv 变化时硬清空却漏了)。
+// 一轮的变化指纹。以前这里直接 JSON.stringify(整个 turn) 再挂到 dataset.sig 上,
+// 等于把 40 轮历史(含 events 时间线)的完整 JSON 文本长期钉在 DOM 里,还要每次重绘
+// 全量重算一遍——内存和 CPU 双重浪费。改成只取各字段的长度/条数做短签名:
+// 同一 turn id 下,正文变了长度几乎不可能不变;events 尾条单独取 type+序列化长度,
+// 兜住"条数没变但最后一条在增长"(流式草稿)这种情况。
+function turnSig(t, isLast){
+  const ev=t.events||[];
+  const last=ev.length?ev[ev.length-1]:null;
+  return [t.id, t.ts||0, (t.user||"").length, (t.assistant||"").length, (t.draft||"").length,
+          t.pending?1:0, ev.length, last?last.type+":"+JSON.stringify(last).length:"",
+          (t.images||[]).length, (t.audios||[]).length, (t.ai_images||[]).length,
+          isLast?"L":""].join("|");
+}
 let _wrapConv=null;
 function renderTurns(turns, conv){
   const wrap=$("#wrap");
@@ -1235,7 +1248,7 @@ function renderTurns(turns, conv){
     const isLast=idx===turns.length-1;
     // isLast 拼进 sig:同一轮从"最新"变成"不是最新"(后面来了新的一轮)时,
     // 即便这轮本身内容没变也要重建 DOM,否则过期的"重新生成"按钮会一直留着。
-    const sig=JSON.stringify(t)+(isLast?"|L":"");
+    const sig=turnSig(t, isLast);
     let node=existing.get(tid);
     if(!node || node.dataset.sig!==sig){
       const fresh=buildTurnBlock(t, conv, isLast);
@@ -1260,14 +1273,13 @@ function renderTurns(turns, conv){
 // 工具卡片懒加载:整轮 events 只在用户点开这一轮里任意一张卡片时才拉一次(见 wireLazyToolCard)
 async function lazyFetchTurnEvents(ctx){
   if(!ctx || ctx.tid==null) return null;
-  if(S.turnEventsCache[ctx.tid]) return S.turnEventsCache[ctx.tid];
+  if(S.turnEventsCache.has(ctx.tid)) return turnEventsSet(ctx.tid, S.turnEventsCache.get(ctx.tid));  // 命中也刷一下 LRU 位置
   if(S._turnEventsPending && S._turnEventsPending[ctx.tid]) return S._turnEventsPending[ctx.tid];
   const pending=(async()=>{
     try{
       const r=await api("/turn_events?conv="+encodeURIComponent(ctx.conv)+"&id="+encodeURIComponent(ctx.tid));
       const d=await r.json();
-      S.turnEventsCache[ctx.tid]=d.events||[];
-      return S.turnEventsCache[ctx.tid];
+      return turnEventsSet(ctx.tid, d.events||[]);
     }catch(e){ return null; }
   })();
   (S._turnEventsPending||(S._turnEventsPending={}))[ctx.tid]=pending;
@@ -1415,7 +1427,7 @@ async function openConv(conv, silentGroup){
   if(!cached && !isLocal){
     cached = await idbGet("hist:"+conv);        // 内存没有(刷新页面后的第一次打开)→ 试磁盘
     if(S.conv!==conv) return;                    // 等磁盘的功夫用户切走了 → 丢弃,避免内容错乱
-    if(cached) S.histCache[conv]=cached;
+    if(cached) histCacheSet(conv, cached);
   }
   const hasMsgs = c && c.turns > 0;             // 侧栏记录里该会话有历史消息
   if(cached){ renderTurns(cached, conv); }      // 命中缓存:立即渲染,消除"先闪空屏再出内容"
@@ -1434,7 +1446,7 @@ async function openConv(conv, silentGroup){
       const r=await api("/history?conv="+encodeURIComponent(conv)); const d=await r.json();
       if(S.conv!==conv) return;   // 拉取期间已切到别的会话 → 丢弃过期结果,避免内容错乱
       $("#convLoading").classList.remove("on");
-      S.histCache[conv]=d.turns;
+      histCacheSet(conv, d.turns);
       idbSetHist(conv, d.turns);  // 落盘,下次刷新页面这个会话也能秒开
       // renderTurns 内部按轮 diff,没变的轮直接跳过——不用再在这里整包比对一次
       renderTurns(d.turns, conv);
@@ -1488,7 +1500,7 @@ async function reloadHistory(force){
       finalizeStream();
       staleRow.remove();
     }
-    S.histCache[conv]=d.turns;
+    histCacheSet(conv, d.turns);
     idbSetHist(conv, d.turns);
     renderTurns(d.turns, conv);  // 内部按轮 diff,没变的轮直接跳过
   }catch(e){}
