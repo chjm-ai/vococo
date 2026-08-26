@@ -452,7 +452,8 @@ function renderImgViewer(){
   const im=IV.list[IV.idx];
   // 先用当前已有的(缩略图或空)占位秒开,原图在 loadFullImg 里异步拉回来再换上;
   // 原图若已经缓存过(fetchCachedBlobUrl 命中),这里能同步拿到,直接显示不用等
-  const cached = im.dataset.full && _imgBlobCache.get(im.dataset.full);
+  const ent = im.dataset.full && _imgBlobCache.get(im.dataset.full);
+  const cached = ent && ent.o;   // 缓存项是 {o,size},取 blob URL(见 stream.js 的字节闸)
   $("#ivImg").src = cached || (im.naturalWidth ? ivSrc(im) : "");
   $("#ivCount").textContent=(IV.idx+1)+" / "+n;
   $("#ivPrev").style.display=$("#ivNext").style.display=$("#ivCount").style.display = n>1?"":"none";
