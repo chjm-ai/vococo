@@ -594,6 +594,29 @@ def list_sessions(prefix: str, *, archived: bool | None = None) -> list[dict]:
     return out
 
 
+def find_session(session_key: str) -> dict | None:
+    """按完整 key 精确确认一个侧边栏会话，只取续接/状态查询所需字段。
+
+    不能拿 list_sessions() 后再遍历：后者会为同一前缀下的每个会话聚合轮次、排序并
+    组装 token 摘要。这里以 session_meta 的主键和 turns 的联合索引做两次精确探测，
+    保持「有轮次或有标题才算会话」与 list_sessions() 相同的可见性语义。
+    """
+    row = _conn().execute(
+        "SELECT EXISTS(SELECT 1 FROM turns WHERE session_key=?), "
+        "m.title, COALESCE(m.last_error, 0) "
+        "FROM (SELECT ? AS session_key) AS k "
+        "LEFT JOIN session_meta AS m ON m.session_key=k.session_key",
+        (session_key, session_key),
+    ).fetchone()
+    if not row or (not row[0] and not row[1]):
+        return None
+    return {
+        "key": session_key,
+        "title": row[1] or "新对话",
+        "last_error": bool(row[2]),
+    }
+
+
 def _usage_fields(vals) -> dict:
     """把 (ctx, total, window, last_in, last_cache, last_out, model, chosen_model) 组装成统一字段。"""
     ctx, total, window, l_in, l_cache, l_out, model, chosen = vals
