@@ -72,6 +72,19 @@ async def test_index_injects_asset_versions(static_app):
 
 
 @pytest.mark.anyio
+async def test_history_paging_has_loading_indicator(static_app):
+    status, body, _ = await _get(static_app, "/")
+    assert status == 200
+    html = body.decode("utf-8")
+    assert 'id="historyLoading"' in html
+    assert "setEarlierHistoryLoading(true)" in html
+    assert "setEarlierHistoryLoading(Boolean(S.histPaging[S.conv]?.loading))" in html
+    styles = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/styles.css").read_text(encoding="utf-8")
+    assert "#historyLoading.on{display:flex}" in styles
+    assert ".hloadspin" in styles
+
+
+@pytest.mark.anyio
 async def test_index_marks_cached_data_and_refreshes_cron_tools(static_app):
     """离线时缓存不能伪装成在线；模型操作定时任务后立即重拉侧栏。"""
     status, body, _ = await _get(static_app, "/")
