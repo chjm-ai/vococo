@@ -239,6 +239,8 @@ async def converse(
         session_store.save_turn_audio(turn_id, audios)
         for au in audios:
             user_text += f"\n\n[语音/音频附件:{au.filename}]\n转写文字稿:\n{au.transcript}"
+    if files:
+        session_store.save_turn_files(turn_id, files)
     # 上一轮的 SDK 会话 id:非空则本轮用 resume 让 SDK 重放真·多轮历史,不再拼历史大文本
     resume_sid = session_store.get_sdk_session_id(session_key)
     # 运行中的 SDK transcript 不会在发送前自动压缩。若上轮已测得上下文逼近当前

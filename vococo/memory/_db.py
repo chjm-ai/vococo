@@ -142,10 +142,14 @@ def conn() -> sqlite3.Connection:
         # 这里只存文件名)。刷新后 /history 带出文件名 → 前端用 /image?name= 取回显示。
         if "images" not in tcols:
             _DB.execute("ALTER TABLE turns ADD COLUMN images TEXT")
-        # audios: 该轮用户发的音频,JSON 列表 [{"file":文件名,"text":转写文字}]。
+        # audios: 该轮用户发的音频,JSON 列表 [{"file":落盘名,"filename":原始文件名,"text":转写文字}]。
         # 音频本体落盘在 config.AUDIO_DIR;转写文字随行一起存,不用每次刷新重新转写。
         if "audios" not in tcols:
             _DB.execute("ALTER TABLE turns ADD COLUMN audios TEXT")
+        # files: 该轮用户发的通用附件元数据(JSON 列表),只存文件名和 MIME 类型,
+        # 正文只在当前轮喂给模型;刷新后仍需把文件名还原到用户气泡。
+        if "files" not in tcols:
+            _DB.execute("ALTER TABLE turns ADD COLUMN files TEXT")
         # sort_order: 侧边栏项目分组的手动拖拽顺序(升序);老库里全是 NULL,
         # 用 -last_used 补一次初值,让升级后的默认顺序等价于原来的"最近使用在前"。
         pcols = {r[1] for r in _DB.execute("PRAGMA table_info(projects)")}

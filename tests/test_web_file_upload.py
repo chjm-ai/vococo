@@ -163,6 +163,18 @@ def test_send_failure_keeps_file_attachment_for_retry():
     assert "附件已保留，可重试" in composer
 
 
+def test_history_replays_file_and_audio_names():
+    root = Path(__file__).parents[1] / "vococo"
+    store = (root / "memory/session_store.py").read_text(encoding="utf-8")
+    stream = (root / "gateway/adapters/web_static/stream.js").read_text(encoding="utf-8")
+    index = (root / "gateway/adapters/web_static/index.html").read_text(encoding="utf-8")
+
+    assert "entry[\"files\"]" in store
+    assert '"filename": e.get("filename", "")' in store
+    assert 'name.textContent="🎵 "+a.filename' in stream
+    assert 'const fileNames=(t.files||[])' in index
+
+
 def test_send_clears_visible_composer_and_keeps_background_retry_snapshot():
     composer = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/composer.js").read_text(
         encoding="utf-8"

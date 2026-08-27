@@ -743,6 +743,7 @@
   .imgs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
   .imgs img{width:120px;height:120px;object-fit:cover;border-radius:var(--r-md);cursor:zoom-in}
   .auds{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+  .audiorow .audioname{margin-bottom:var(--sp-1);font-size:var(--fs-sm);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .audiorow audio{width:100%;max-width:320px;height:36px}
   .audiorow .atranscript{margin-top:4px;font-size:var(--fs-sm);color:var(--dim)}
   .audiorow .atranscript summary{cursor:pointer;color:var(--accent)}

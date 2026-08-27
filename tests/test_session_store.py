@@ -437,9 +437,30 @@ def test_save_turn_audio_persists_transcript_and_loads_history(isolated, monkeyp
     # media_type="audio/mpeg" 的子类型 mpeg 直接当扩展名(跟 images.py._img_ext 同规则,
     # 不做常见类型到扩展名的映射,所以是 .mpeg 不是 .mp3)
     assert history[-1]["audios"] == [
-        {"url": f"/audio?name={turn_id}_0.mpeg", "text": "今天下午三点开会"}
+        {
+            "url": f"/audio?name={turn_id}_0.mpeg",
+            "filename": "memo.mp3",
+            "text": "今天下午三点开会",
+        }
     ]
     assert (config.AUDIO_DIR / f"{turn_id}_0.mpeg").read_bytes() == b"fake-mp3-bytes"
+
+
+def test_save_turn_files_persists_names_and_loads_history(isolated):
+    from vococo.core.agent import FileAttachment
+    from vococo.memory import session_store
+
+    turn_id = session_store.start_turn("web:files", "读取附件")
+    session_store.save_turn_files(
+        turn_id,
+        [FileAttachment(data=b"content", media_type="text/markdown", filename="方案.md")],
+    )
+    session_store.finish_turn(turn_id, "已读取")
+
+    history = session_store.load_history("web:files")
+    assert history[-1]["files"] == [
+        {"name": "方案.md", "media_type": "text/markdown"}
+    ]
 
 
 def test_clear_purges_audio_files(isolated, monkeypatch):

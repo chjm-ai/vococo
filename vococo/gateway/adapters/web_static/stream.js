@@ -84,6 +84,9 @@ function appendAuds(container, auds){
   const g=el("div","auds");
   for(const a of auds){
     const row=el("div","audiorow");
+    if(a.filename){
+      const name=el("div","audioname"); name.textContent="🎵 "+a.filename; row.append(name);
+    }
     const player=el("audio"); player.controls=true; player.preload="none";
     if(typeof a.url==="string" && a.url.startsWith("/")) loadAuthedAudio(player,a.url); else player.src=a.url;
     row.append(player);
