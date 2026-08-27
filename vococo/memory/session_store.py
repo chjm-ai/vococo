@@ -135,11 +135,19 @@ def _strip_events(events: list) -> list:
     return [_strip_tool_block(b) if b.get("type") == "tool" else b for b in events]
 
 
-def load_history(session_key: str, limit: int = 40, *, full_events: bool = False) -> list[dict]:
+def load_history(
+    session_key: str,
+    limit: int = 40,
+    *,
+    full_events: bool = False,
+    before_id: int | None = None,
+) -> list[dict]:
     """历史展示用:含进行中 turn,pending=True 标注;events 是该轮过程时间线。
 
     pending 轮有 draft_text 时一并返回 —— 前端刷新后可用部分内容起底重建气泡,
     避免「刷新时进行中的回复一片空白」;SSE 恢复后同 seg 全文覆盖无缝续上。
+
+    ``before_id`` 不为空时只取它之前的更早轮次,供 Web 端滚到顶部继续加载历史。
 
     full_events=False(默认)时,tool 块的 input/preview/detail 会被砍掉只留空壳
     ——这几个字段是单轮体积的大头(工具调用多的一轮能到几十KB),前端只在用户
@@ -147,10 +155,16 @@ def load_history(session_key: str, limit: int = 40, *, full_events: bool = False
     """
     c = _conn()
     wm = _watermark(c, session_key)
+    where = "WHERE session_key=? AND id>?"
+    params: list[object] = [session_key, wm]
+    if before_id is not None:
+        where += " AND id<?"
+        params.append(before_id)
+    params.append(limit)
     rows = c.execute(
         "SELECT id, ts, user_text, assistant_text, events, draft_text, images, audios FROM turns "
-        "WHERE session_key=? AND id>? ORDER BY id DESC LIMIT ?",
-        (session_key, wm, limit),
+        f"{where} ORDER BY id DESC LIMIT ?",
+        params,
     ).fetchall()
     out: list[dict] = []
     for tid, ts, u, a, ev, draft, imgs, auds in reversed(rows):
@@ -190,6 +204,17 @@ def load_history(session_key: str, limit: int = 40, *, full_events: bool = False
             ]
         out.append(entry)
     return out
+
+
+def has_history_before(session_key: str, before_id: int) -> bool:
+    """判断水位线之后、指定轮次之前是否还有更早历史。"""
+    c = _conn()
+    wm = _watermark(c, session_key)
+    row = c.execute(
+        "SELECT 1 FROM turns WHERE session_key=? AND id>? AND id<? LIMIT 1",
+        (session_key, wm, before_id),
+    ).fetchone()
+    return row is not None
 
 
 def load_document_events(session_key: str, limit: int = 10_000) -> list[dict]:

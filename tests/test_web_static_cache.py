@@ -226,6 +226,32 @@ async def test_history_etag_304_roundtrip(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_history_cursor_loads_earlier_page(monkeypatch):
+    from vococo.memory import session_store
+
+    adapter = WebAdapter()
+    adapter._guard = lambda request: None
+    calls = []
+
+    def fake_load(key, limit=40, **kwargs):
+        calls.append((key, limit, kwargs))
+        return [{"id": i, "user": str(i), "assistant": str(i)} for i in range(1, 41)]
+
+    monkeypatch.setattr(session_store, "load_history", fake_load)
+    monkeypatch.setattr(session_store, "has_history_before", lambda key, before: True)
+    app = web.Application()
+    app.add_routes([web.get("/history", adapter._handle_history)])
+
+    status, body, _ = await _get(app, "/history?conv=main&before=42")
+    assert status == 200
+    assert json.loads(body)["has_more"] is True
+    assert calls == [("main", 40, {"before_id": 42})]
+
+    status, _, _ = await _get(app, "/history?conv=main&before=nope")
+    assert status == 400
+
+
+@pytest.mark.anyio
 async def test_index_etag_tracks_asset_changes(static_app, monkeypatch, tmp_path):
     """CSS 内容一变 → 注入的 v 变 → index.html 字节变 → ETag 变,客户端必拿到新 HTML。"""
     fake = tmp_path / "web_static"

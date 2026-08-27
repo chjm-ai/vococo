@@ -1234,8 +1234,27 @@ function turnSig(t, isLast){
           isLast?"L":""].join("|");
 }
 let _wrapConv=null;
-function renderTurns(turns, conv){
+function mergeHistoryTurns(current, incoming){
+  if(!incoming || !incoming.length) return [];
+  if(!current || !current.length) return incoming.slice();
+  const byId=new Map();
+  for(const t of [...current, ...incoming]){
+    const key=t.id!=null ? String(t.id) : "fallback:"+byId.size;
+    byId.set(key, t);
+  }
+  return [...byId.values()].sort((a,b)=>(a.id||0)-(b.id||0));
+}
+function mergeLatestHistory(current, incoming){
+  if(!current || !current.length || !incoming || !incoming.length) return (incoming||[]).slice();
+  const firstId=incoming[0].id;
+  const older=firstId==null ? [] : current.filter(t=>t.id!=null && t.id<firstId);
+  return mergeHistoryTurns(older, incoming);
+}
+function renderTurns(turns, conv, opts={}){
   const wrap=$("#wrap");
+  const preserveScroll=!!opts.preserveScroll;
+  const oldAnchor=preserveScroll ? wrap.firstElementChild : null;
+  const oldAnchorTop=oldAnchor ? oldAnchor.getBoundingClientRect().top : 0;
   let changed=(conv!==_wrapConv);
   if(changed){ wrap.innerHTML=""; _wrapConv=conv; }
   const existing=new Map();
@@ -1267,9 +1286,40 @@ function renderTurns(turns, conv){
   // 只有这次渲染真的产生了 DOM 变化(新轮/删轮/切会话)才强制滚底;静态会话被
   // reviveSSE(切标签页回来/网络恢复/窗口聚焦)重新拉一次历史但内容没变时,不该
   // 打断用户正在向上翻看历史的滚动位置(2026-08-18 修复:曾经无条件 scrollDown(true))。
-  if(changed) scrollDown(true);
+  if(changed && !preserveScroll) scrollDown(true);
+  if(preserveScroll && oldAnchor && oldAnchor.isConnected){
+    // 向顶部插入更早轮次后,把原来第一轮的位置顶回来,避免加载历史时画面跳动。
+    const delta=oldAnchor.getBoundingClientRect().top-oldAnchorTop;
+    if(delta) $("#messages").scrollTop += delta;
+    updateScrollBtn();
+  }
   maybeAutoResume(conv, turns);  // 最新一条是重启中断的回复 → 自动继续生成(幂等,见 stream.js)
 }
+
+async function loadEarlierHistory(){
+  const conv=S.conv;
+  if(!conv || String(conv).startsWith("local-")) return;
+  const current=S.histCache[conv]||[];
+  const first=current[0];
+  if(!first || first.id==null) return;
+  const state=S.histPaging[conv]||(S.histPaging[conv]={loading:false,hasMore:true});
+  if(state.loading || state.hasMore===false) return;
+  state.loading=true;
+  try{
+    const r=await api("/history?conv="+encodeURIComponent(conv)+"&before="+encodeURIComponent(first.id));
+    const d=await r.json();
+    if(S.conv!==conv) return;
+    const older=d.turns||[];
+    state.hasMore=d.has_more===true;
+    if(!older.length) return;
+    const merged=mergeHistoryTurns(S.histCache[conv]||current, older);
+    histCacheSet(conv, merged);
+    idbSetHist(conv, merged);
+    renderTurns(merged, conv, {preserveScroll:true});
+  }catch(e){}
+  finally{ state.loading=false; }
+}
+
 // 工具卡片懒加载:整轮 events 只在用户点开这一轮里任意一张卡片时才拉一次(见 wireLazyToolCard)
 async function lazyFetchTurnEvents(ctx){
   if(!ctx || ctx.tid==null) return null;
@@ -1429,7 +1479,10 @@ async function openConv(conv, silentGroup){
     if(cached) histCacheSet(conv, cached);
   }
   const hasMsgs = c && c.turns > 0;             // 侧栏记录里该会话有历史消息
-  if(cached){ renderTurns(cached, conv); }      // 命中缓存:立即渲染,消除"先闪空屏再出内容"
+  if(cached){
+    if(!S.histPaging[conv]) S.histPaging[conv]={loading:false,hasMore:cached.length>=40};
+    renderTurns(cached, conv);
+  }      // 命中缓存:立即渲染,消除"先闪空屏再出内容"
   else if(!isLocal && hasMsgs){                 // 只在「换到一个有历史、还没拉过的真实会话」时才铺骨架屏
     $("#wrap").innerHTML=""; $("#empty").style.display="none"; $("#convLoading").classList.add("on");
   }else{                                        // 新建会话 / 空会话:不闪骨架,清空后交给 updateEmpty 出欢迎屏
@@ -1445,10 +1498,13 @@ async function openConv(conv, silentGroup){
       const r=await api("/history?conv="+encodeURIComponent(conv)); const d=await r.json();
       if(S.conv!==conv) return;   // 拉取期间已切到别的会话 → 丢弃过期结果,避免内容错乱
       $("#convLoading").classList.remove("on");
-      histCacheSet(conv, d.turns);
-      idbSetHist(conv, d.turns);  // 落盘,下次刷新页面这个会话也能秒开
+      const state=S.histPaging[conv]||(S.histPaging[conv]={loading:false,hasMore:true});
+      const turns=mergeLatestHistory(S.histCache[conv], d.turns);
+      if(state.hasMore!==false) state.hasMore=d.has_more===true;
+      histCacheSet(conv, turns);
+      idbSetHist(conv, turns);  // 落盘,下次刷新页面这个会话也能秒开
       // renderTurns 内部按轮 diff,没变的轮直接跳过——不用再在这里整包比对一次
-      renderTurns(d.turns, conv);
+      renderTurns(turns, conv);
     }catch(e){ $("#convLoading").classList.remove("on"); }
     finally{ if(S.histLoading===conv) S.histLoading=null; }
     maybeReplayStream(conv);   // 该会话仍在流式 → 用缓冲在历史下方重建流式气泡(切换不中断)
@@ -1499,9 +1555,12 @@ async function reloadHistory(force){
       finalizeStream();
       staleRow.remove();
     }
-    histCacheSet(conv, d.turns);
-    idbSetHist(conv, d.turns);
-    renderTurns(d.turns, conv);  // 内部按轮 diff,没变的轮直接跳过
+    const state=S.histPaging[conv]||(S.histPaging[conv]={loading:false,hasMore:true});
+    const turns=mergeLatestHistory(S.histCache[conv], d.turns);
+    if(state.hasMore!==false) state.hasMore=d.has_more===true;
+    histCacheSet(conv, turns);
+    idbSetHist(conv, turns);
+    renderTurns(turns, conv);  // 内部按轮 diff,没变的轮直接跳过
   }catch(e){}
 }
 
