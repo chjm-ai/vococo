@@ -3354,8 +3354,12 @@
     closeSidebar();
     // 从普通会话进入主会话时记住原位置。重复点入口时 S.conv 已是语音主会话,
     // 不能覆盖掉返回位置。
-    if(S.conv !== "voice-chat:main") S.callReturnConv = S.conv || "main";
+    if(S.conv !== "voice-chat:main"){
+      S.callReturnConv = S.conv || "main";
+      if(typeof saveComposerState==="function") saveComposerState(S.conv);
+    }
     S.conv = "voice-chat:main";
+    if(typeof restoreComposerState==="function") restoreComposerState(S.conv);
     renderProjSelChip();  // 草稿会话切入主会话时，收起仅草稿可见的项目选择器
     mountSharedComposer(true);
     setCallInputMode("text");
@@ -3385,9 +3389,11 @@
     // 缓存版本错位或上次加载中断时,composer 可能留在隐藏的文本面板里。
     // 即使 callView 已隐藏也先归位,保证普通会话始终有输入框。
     if($("#callView").hidden) return;
+    if(typeof saveComposerState==="function") saveComposerState(S.conv);
     $("#callView").hidden = true;
     $("#chatMain").hidden = false;
     S.conv = S.callReturnConv;
+    if(typeof restoreComposerState==="function") restoreComposerState(S.conv);
     renderProjSelChip();  // 返回草稿会话时，恢复项目选择器
     teardownCallResources();
     renderConvs();   // 挂断后切回聊天侧栏,取消「语音通话」行高亮

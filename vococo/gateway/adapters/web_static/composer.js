@@ -21,6 +21,17 @@ function clearComposerAttachments(conv=S.conv){
   if(conv) delete S.composerAttachments[conv];
   if(conv===S.conv){ S.images=[]; S.audios=[]; S.files=[]; }
 }
+// 会话切换不只要保存附件,还要把当前输入框显式落成草稿。输入事件通常会
+// 自动保存,但上传/切视图等异步链路不能依赖它刚好已经触发。
+function saveComposerState(conv=S.conv){
+  if(!conv) return;
+  saveDraft(conv);
+  saveComposerAttachments(conv);
+}
+function restoreComposerState(conv){
+  restoreDraft(conv);
+  restoreComposerAttachments(conv);
+}
 
 // ── 发送 ────────────────────────────────────────────────────────────────
 async function send(text, display, opts){
@@ -58,6 +69,9 @@ async function send(text, display, opts){
     }
     return;
   }
+  // 上传/发送是异步链路;同一会话在请求完成前再次提交不能重复发出。
+  if(S.sending[sendConv]) return;
+  S.sending[sendConv]=true;
   const imgs=sendImages.map(x=>x.url);
   const auds=sendAudios.map(x=>({url:x.url, filename:x.filename, text:x.text}));
   const files=sendFiles.map(x=>x.filename);
@@ -92,23 +106,24 @@ async function send(text, display, opts){
     audios:sendAudios.map(x=>({id:x.id})),
     files:sendFiles.map(x=>({id:x.id})),
   };
-  // 新会话:发出第一条后,把本地临时会话转正(用户已切走时跳过,S.conv 已经不是这条草稿了)
+  // 新会话:发出第一条后,把本地临时会话转正。转正不能依赖当前仍停在哪个会话,
+  // 否则上传期间切走再回来会把消息发到前端专用的 local- id。
   const oldConv=sendConv;
   const wasLocal=String(sendConv).startsWith("local-");
-  clearDraft(sendConv);   // 发送即清草稿:必须在转正前调用,否则真实 id 落地后 local- 旧 key 清不掉
-  clearComposerAttachments(sendConv);
-  if(wasLocal && isCurrent()){
-    S.conv=S.conv.replace("local-",""); sendConv=S.conv; payload.conv=S.conv; renderProjSelChip();
-    refreshGit(S.conv);
-    // S.convs 里那条草稿行(conv=local-xxx)原地更新成新的真实 id,别留一条转正前的孤儿条目——
+  if(wasLocal){
+    sendConv=sendConv.replace(/^local-/,""); payload.conv=sendConv;
+    delete S.sending[oldConv]; S.sending[sendConv]=true;
+    // S.convs 里那条草稿行(conv=local-xxx)原地更新成真实 id,别留一条转正前的孤儿条目——
     // 否则"新对话"复用逻辑(newChatIn)会把它当成还没发消息的草稿误重新打开
     const entry=S.convs.find(x=>x.conv===oldConv);
     if(entry){
-      entry.conv=S.conv; entry.turns=1;
-      if(entry.wbTaskId && typeof linkWorkbenchTaskSession==="function"){ linkWorkbenchTaskSession(entry.wbTaskId, S.conv); delete entry.wbTaskId; }
+      entry.conv=sendConv; entry.turns=1;
+      if(entry.wbTaskId && typeof linkWorkbenchTaskSession==="function"){ linkWorkbenchTaskSession(entry.wbTaskId, sendConv); delete entry.wbTaskId; }
+    }
+    if(S.conv===oldConv){
+      S.conv=sendConv; renderProjSelChip(); refreshGit(S.conv);
     }
   }
-  if(isCurrent()){ renderThumbs(); $("#ta").value=""; autoGrow(); }
   try{
     const r=await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(!r.ok){
@@ -116,14 +131,25 @@ async function send(text, display, opts){
       try{ const d=await r.json(); detail=d.error||""; }catch(e){}
       throw new Error(detail||("HTTP "+r.status));
     }
+    // 只有服务端确认接收后才清理草稿/附件。之前在 /send 发起前就清理,
+    // 用户若在上传或发送期间切会话,回来会看到附件和文字凭空消失。
+    delete S.sending[oldConv]; delete S.sending[sendConv];
+    clearDraft(oldConv); clearComposerAttachments(oldConv);
+    if(sendConv!==oldConv){ clearDraft(sendConv); clearComposerAttachments(sendConv); }
+    if(isCurrent()){ renderThumbs(); $("#ta").value=""; autoGrow(); }
     if(wasLocal && isCurrent()) setTimeout(loadConvs, 400);
   }catch(err){
-    if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }  // 发送失败,停掉 loading
+    delete S.sending[oldConv]; delete S.sending[sendConv];
     // /send 失败时不能把附件和文字一起吞掉,否则用户只能重新选择文件,且误以为已发送。
+    // 当前已切到别的会话时,也要把失败态写回原会话缓存,切回后才能重试。
+    S.composerAttachments[oldConv]={images:sendImages,audios:sendAudios,files:sendFiles};
+    S.composerAttachments[sendConv]={images:sendImages,audios:sendAudios,files:sendFiles};
+    saveDraft(oldConv,text); saveDraft(sendConv,text);
+    if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }  // 发送失败,停掉 loading
     if(isCurrent()){
       S.images=sendImages; S.audios=sendAudios; S.files=sendFiles;
       saveComposerAttachments(); renderThumbs();
-      $("#ta").value=text; autoGrow(); saveDraft();
+      $("#ta").value=text; autoGrow();
       addBubble("ai","⚠️ 发送失败:"+err.message+"，附件已保留，可重试。" );
     }
   }
@@ -278,12 +304,12 @@ $("#ta").addEventListener("input", checkCmdMenu);
 // 发送/清空时删除,避免 A 会话打的字串到 B 会话。local- 前缀的未转正新会话
 // 同样按自己 id 存,互不干扰;发送转正时旧 key 一并清掉。
 function draftKey(conv){ return "vococo_draft:"+conv; }
-function saveDraft(){
+function saveDraft(conv=S.conv, value){
   try{
-    if(!S.conv) return;
-    const v=$("#ta").value;
-    if(v) localStorage.setItem(draftKey(S.conv), v);
-    else localStorage.removeItem(draftKey(S.conv));  // 清空了就删 key,不留空草稿
+    if(!conv) return;
+    const v=value===undefined ? $("#ta").value : value;
+    if(v) localStorage.setItem(draftKey(conv), v);
+    else localStorage.removeItem(draftKey(conv));  // 清空了就删 key,不留空草稿
   }catch(e){}
 }
 function restoreDraft(conv){
