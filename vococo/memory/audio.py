@@ -1,7 +1,7 @@
 """用户音频落盘(Web 消息)。
 
-音频本体写进 config.AUDIO_DIR,连同转写文字一起记进 turns.audios(JSON 列表,
-元素 {"file":文件名,"text":转写文字})。与 images.py 的不同之处:图片直接喂给
+音频本体写进 config.AUDIO_DIR,连同原始文件名和转写文字一起记进 turns.audios(JSON 列表,
+元素 {"file":落盘名,"filename":原始文件名,"text":转写文字})。与 images.py 的不同之处:图片直接喂给
 模型的多模态 block,音频协议层压根没有对应的 block 类型(见 core/agent.py
 AudioAttachment 的说明),AI"解读"的其实是转写文字——所以这里连转写文字一起
 存,不然刷新页面后历史轮次就只剩一个能回放但没人"读懂"过的音频文件。
@@ -41,7 +41,11 @@ def save_turn_audio(turn_id: int, audios: list) -> list[dict]:
             continue
         name = f"{turn_id}_{idx}.{_audio_ext(getattr(au, 'media_type', ''))}"
         (config.AUDIO_DIR / name).write_bytes(data)
-        entries.append({"file": name, "text": getattr(au, "transcript", "") or ""})
+        entries.append({
+            "file": name,
+            "filename": str(getattr(au, "filename", "") or ""),
+            "text": getattr(au, "transcript", "") or "",
+        })
     if entries:
         c = _db.conn()
         c.execute(

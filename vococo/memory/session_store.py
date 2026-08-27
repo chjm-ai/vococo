@@ -23,6 +23,7 @@ from .audio import (  # noqa: F401 (re-export)
     purge_session_audio,
     save_turn_audio,
 )
+from .files import save_turn_files  # noqa: F401 (re-export)
 from .images import (  # noqa: F401 (re-export)
     AI_IMAGE_PREFIX,
     append_turn_image,
@@ -148,12 +149,12 @@ def load_history(session_key: str, limit: int = 40, *, full_events: bool = False
     c = _conn()
     wm = _watermark(c, session_key)
     rows = c.execute(
-        "SELECT id, ts, user_text, assistant_text, events, draft_text, images, audios FROM turns "
+        "SELECT id, ts, user_text, assistant_text, events, draft_text, images, audios, files FROM turns "
         "WHERE session_key=? AND id>? ORDER BY id DESC LIMIT ?",
         (session_key, wm, limit),
     ).fetchall()
     out: list[dict] = []
-    for tid, ts, u, a, ev, draft, imgs, auds in reversed(rows):
+    for tid, ts, u, a, ev, draft, imgs, auds, files in reversed(rows):
         try:
             events = json.loads(ev) if ev else []
         except (json.JSONDecodeError, ValueError):
@@ -177,16 +178,33 @@ def load_history(session_key: str, limit: int = 40, *, full_events: bool = False
             entry["images"] = ["/image?name=" + n for n in user_names]
         if ai_names:
             entry["ai_images"] = ["/image?name=" + n for n in ai_names]
-        # 音频:库里存 [{file,text}],给前端换成取音频 URL + 带上转写文字(气泡里展开可看)
+        # 音频:库里存 [{file,filename,text}],给前端换成取音频 URL + 原始文件名 + 转写文字
         try:
             audio_entries = json.loads(auds) if auds else []
         except (json.JSONDecodeError, ValueError):
             audio_entries = []
         if audio_entries:
             entry["audios"] = [
-                {"url": "/audio?name=" + e.get("file", ""), "text": e.get("text", "")}
+                {
+                    "url": "/audio?name=" + e.get("file", ""),
+                    "filename": e.get("filename", ""),
+                    "text": e.get("text", ""),
+                }
                 for e in audio_entries
                 if e.get("file")
+            ]
+        try:
+            file_entries = json.loads(files) if files else []
+        except (json.JSONDecodeError, ValueError):
+            file_entries = []
+        if file_entries:
+            entry["files"] = [
+                {
+                    "name": str(e.get("name") or e.get("filename") or ""),
+                    "media_type": str(e.get("media_type") or ""),
+                }
+                for e in file_entries
+                if isinstance(e, dict) and (e.get("name") or e.get("filename"))
             ]
         out.append(entry)
     return out
@@ -483,7 +501,7 @@ def clear(session_key: str) -> None:
 
 
 def duplicate_session(src_key: str, dst_key: str, title: str) -> None:
-    """复制会话:全部轮次(含 images/audios/events)搬到新 key,标题用新标题。
+    """复制会话:全部轮次(含 images/audios/files/events)搬到新 key,标题用新标题。
 
     ts 统一刷新为当前时间 —— 侧边栏按 MAX(t.ts) 倒序,新副本要顶到列表最前
     (保持原 ts 会沉到原会话旁边,用户复制完找不到)。
@@ -494,8 +512,8 @@ def duplicate_session(src_key: str, dst_key: str, title: str) -> None:
     c = _conn()
     c.execute(
         "INSERT INTO turns(session_key, ts, user_text, assistant_text, "
-        "draft_text, events, images, audios) "
-        "SELECT ?, ?, user_text, assistant_text, draft_text, events, images, audios "
+        "draft_text, events, images, audios, files) "
+        "SELECT ?, ?, user_text, assistant_text, draft_text, events, images, audios, files "
         "FROM turns WHERE session_key=?",
         (dst_key, time.time(), src_key),
     )

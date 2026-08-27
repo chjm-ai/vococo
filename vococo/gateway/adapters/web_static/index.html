@@ -1187,7 +1187,11 @@ function buildTurnBlock(t, conv, isLast){
   const interrupted=(t.events||[]).some(x=>x.type==="interrupted");
   if(interrupted) wrap.classList.add("interrupted");
   if(t.user && t.user.startsWith(SYS_MARK)) wrap.append(buildSysNote(t.user.slice(SYS_MARK.length).trim()));
-  else wrap.append(buildBubble("me", t.user, t.images, t.audios).row);
+  else {
+    const fileNames=(t.files||[]).map(f=>typeof f==="string"?f:(f.name||f.filename||"")).filter(Boolean);
+    const fileLabel=fileNames.length ? `\n\n📎 附件：${fileNames.join("、")}` : "";
+    wrap.append(buildBubble("me", t.user+fileLabel, t.images, t.audios).row);
+  }
   if(!t.pending){
     const {row,b}=buildBubble("ai","");
     if(t.events && t.events.length){
@@ -1231,6 +1235,7 @@ function turnSig(t, isLast){
   return [t.id, t.ts||0, (t.user||"").length, (t.assistant||"").length, (t.draft||"").length,
           t.pending?1:0, ev.length, last?last.type+":"+JSON.stringify(last).length:"",
           (t.images||[]).length, (t.audios||[]).length, (t.ai_images||[]).length,
+          (t.files||[]).length, (t.files||[]).map(f=>f.name||f.filename||f).join(","),
           isLast?"L":""].join("|");
 }
 let _wrapConv=null;
