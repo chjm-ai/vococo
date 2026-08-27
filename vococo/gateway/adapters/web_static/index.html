@@ -277,6 +277,9 @@ try{
       </div>
     </header>
     <div id="messages">
+      <div id="historyLoading" role="status" aria-live="polite" hidden>
+        <span class="hloadspin" aria-hidden="true"></span><span>加载更早消息…</span>
+      </div>
       <div class="wrap" id="wrap"></div>
       <div id="convLoading">
         <div class="skel ai"></div>
@@ -1296,6 +1299,12 @@ function renderTurns(turns, conv, opts={}){
   maybeAutoResume(conv, turns);  // 最新一条是重启中断的回复 → 自动继续生成(幂等,见 stream.js)
 }
 
+function setEarlierHistoryLoading(on){
+  const node=$("#historyLoading");
+  if(!node) return;
+  node.hidden=!on;
+  node.classList.toggle("on", on);
+}
 async function loadEarlierHistory(){
   const conv=S.conv;
   if(!conv || String(conv).startsWith("local-")) return;
@@ -1305,6 +1314,7 @@ async function loadEarlierHistory(){
   const state=S.histPaging[conv]||(S.histPaging[conv]={loading:false,hasMore:true});
   if(state.loading || state.hasMore===false) return;
   state.loading=true;
+  setEarlierHistoryLoading(true);
   try{
     const r=await api("/history?conv="+encodeURIComponent(conv)+"&before="+encodeURIComponent(first.id));
     const d=await r.json();
@@ -1317,7 +1327,10 @@ async function loadEarlierHistory(){
     idbSetHist(conv, merged);
     renderTurns(merged, conv, {preserveScroll:true});
   }catch(e){}
-  finally{ state.loading=false; }
+  finally{
+    state.loading=false;
+    setEarlierHistoryLoading(Boolean(S.histPaging[S.conv]?.loading));
+  }
 }
 
 // 工具卡片懒加载:整轮 events 只在用户点开这一轮里任意一张卡片时才拉一次(见 wireLazyToolCard)
