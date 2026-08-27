@@ -1386,10 +1386,9 @@ async function openConv(conv, silentGroup){
   }
   // 切到目标会话时,若全局审批弹窗正开着则关闭(用户选择进去处理)
   const cmodal=$("#choiceModal"); if(cmodal && !cmodal.hidden){ cmodal.hidden=true; }
-  if(typeof saveComposerAttachments==="function") saveComposerAttachments(S.conv);
+  if(typeof saveComposerState==="function") saveComposerState(S.conv);
   S.conv=conv; S.stream=null;
-  restoreDraft(conv);   // 输入框草稿按会话独立:切走时已实时存好,这里恢复目标会话的草稿
-  if(typeof restoreComposerAttachments==="function") restoreComposerAttachments(conv);
+  if(typeof restoreComposerState==="function") restoreComposerState(conv);
   // 文档预览面板同样按会话独立:目标会话之前打开过就重新渲染,没有就保持上面已隐藏的状态
   if(S.docPreview[conv] && typeof openDocPreview==="function") openDocPreview(S.docPreview[conv]);
   // 用户已打开该会话,清零未读标记;本地缓存也同步清,避免重绘闪烁。语音任务/定时
