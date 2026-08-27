@@ -5,7 +5,7 @@
 - GET  /events           SSE 长连接,服务器把流式事件推给浏览器
 - POST /send             浏览器发消息(文本 + 可选图片)进 inbox
 - GET  /conversations    会话列表(侧边栏)
-- GET  /history?conv=    某会话最近历史(切换会话时加载)
+- GET  /history?conv=    某会话最近历史(切换会话时加载;带 before 可向前翻页)
 - POST /conv/rename      重命名会话
 - POST /conv/delete      删除会话
 
@@ -1767,11 +1767,25 @@ class WebAdapter:
     async def _handle_history(self, request: web.Request) -> web.Response:
         conv = request.query.get("conv", "main")
         key = config.resolve_session_key("web", conv)
-        turns = session_store.load_history(key, limit=40)
+        before_raw = request.query.get("before")
+        before_id = None
+        if before_raw:
+            try:
+                before_id = int(before_raw)
+            except ValueError:
+                return web.json_response({"error": "bad cursor"}, status=400)
+            if before_id <= 0:
+                return web.json_response({"error": "bad cursor"}, status=400)
+        turns = session_store.load_history(key, limit=40, **(
+            {"before_id": before_id} if before_id is not None else {}
+        ))
+        has_more = bool(turns) and len(turns) == 40 and session_store.has_history_before(
+            key, turns[0]["id"]
+        )
         # 重会话一包 JSON 有 300~500KB(gzip 后 70~145KB),跨境隧道 ~50KB/s 一趟要好几秒;
         # 而切会话大多是"回看",内容根本没变——加 ETag/304 协商,没变只回空包。
         # 前端零改动:fetch 走浏览器 HTTP 缓存,自动带 If-None-Match、304 时透明取缓存正文。
-        body = json.dumps({"turns": turns}, ensure_ascii=False).encode("utf-8")
+        body = json.dumps({"turns": turns, "has_more": has_more}, ensure_ascii=False).encode("utf-8")
         etag = f'"{hashlib.md5(body).hexdigest()}"'
         headers = {"Cache-Control": "no-cache", "ETag": etag}
         if request.headers.get("If-None-Match") == etag:

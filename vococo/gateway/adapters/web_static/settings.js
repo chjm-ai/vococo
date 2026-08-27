@@ -734,7 +734,11 @@ function openProjMenu(btn, hash){
 }
 document.addEventListener("click", closeProjMenu);
 $("#convBody").addEventListener("scroll", closeProjMenu);
-$("#messages").addEventListener("scroll", ()=>{ updateScrollBtn(); }, {passive:true}); // 流式时用户上翻→显示↓按钮
+$("#messages").addEventListener("scroll", ()=>{
+  updateScrollBtn();
+  // 滚到顶部自动按最早一轮继续取历史,函数在 index.html 主脚本中声明。
+  if(typeof loadEarlierHistory === "function") loadEarlierHistory();
+}, {passive:true}); // 流式时用户上翻→显示↓按钮
 
 // 按 conv id 找会话对象:普通会话在 S.convs,后台任务(语音/cron)行分别在 S.voiceSidebar.tasks / S.cronJobs
 // (2026-07-29:定时任务漏查这里,导致打开定时任务会话时顶部上下文占用图标读不到数据而隐藏)
