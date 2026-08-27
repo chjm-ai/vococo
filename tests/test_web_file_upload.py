@@ -134,6 +134,8 @@ def test_unsent_attachments_are_isolated_by_conversation():
     assert "function restoreComposerAttachments(conv)" in composer
     assert "function saveComposerState(conv=S.conv)" in composer
     assert "function restoreComposerState(conv)" in composer
+    assert "if(S.sending[conv]){" in composer
+    assert "S.images=[]; S.audios=[]; S.files=[]; renderThumbs();" in composer
     assert "saveComposerState(S.conv);" in index
     assert "restoreComposerState(conv);" in index
 
@@ -161,17 +163,20 @@ def test_send_failure_keeps_file_attachment_for_retry():
     assert "附件已保留，可重试" in composer
 
 
-def test_send_clears_composer_only_after_server_confirmation():
+def test_send_clears_visible_composer_and_keeps_background_retry_snapshot():
     composer = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/composer.js").read_text(
         encoding="utf-8"
     )
+    core = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/app-core.js").read_text(
+        encoding="utf-8"
+    )
 
-    assert "sending: {}," in (
-        Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/app-core.js"
-    ).read_text(encoding="utf-8")
-    assert "只有服务端确认接收后才清理草稿/附件" in composer
-    assert "delete S.sending[oldConv]; delete S.sending[sendConv];" in composer
-    assert composer.index("await api(\"/send\"") < composer.index("只有服务端确认接收后才清理草稿/附件")
+    assert "sending: {}," in core
+    assert "inflightComposer: {}," in core
+    assert "S.inflightComposer[sendConv]={text, images:sendImages, audios:sendAudios, files:sendFiles};" in composer
+    assert "clearComposerVisible();" in composer
+    assert "S.inflightComposer[oldConv]" in composer
+    assert composer.index("clearComposerVisible();") < composer.index("await api(\"/send\"")
 
 
 @pytest.mark.anyio
