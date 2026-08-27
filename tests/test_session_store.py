@@ -496,6 +496,36 @@ def test_load_history_includes_ts(isolated):
     assert isinstance(row["ts"], float) and row["ts"] > 0
 
 
+def test_load_history_before_id_returns_earlier_turns(isolated):
+    """Web 顶部翻页按最早一轮的 id 取更早历史,且结果仍保持旧→新顺序。"""
+    from vococo.memory import session_store
+
+    ids = []
+    for i in range(5):
+        turn_id = session_store.start_turn("web:1", f"问题{i}")
+        session_store.finish_turn(turn_id, f"回答{i}")
+        ids.append(turn_id)
+
+    page = session_store.load_history("web:1", limit=2, before_id=ids[2])
+    assert [row["id"] for row in page] == ids[0:2]
+    assert session_store.has_history_before("web:1", ids[3]) is True
+    assert session_store.has_history_before("web:1", ids[0]) is False
+
+
+def test_load_history_before_id_respects_watermark(isolated):
+    from vococo.memory import session_store
+
+    for text in ("旧一", "旧二"):
+        turn_id = session_store.start_turn("web:1", text)
+        session_store.finish_turn(turn_id, "回答")
+    session_store.new_session("web:1")
+    turn_id = session_store.start_turn("web:1", "新一")
+    session_store.finish_turn(turn_id, "回答")
+
+    assert session_store.load_history("web:1", before_id=turn_id) == []
+    assert session_store.has_history_before("web:1", turn_id) is False
+
+
 def test_delete_last_turn_removes_latest_finished_turn(isolated):
     from vococo.memory import session_store
 

@@ -42,6 +42,7 @@ const S = {
   cmd: {open:false, items:[], active:0},  // 斜杠命令菜单当前状态
   git: null,            // 当前项目会话的 git 状态(/conv/git 返回);非项目会话为 null
   histCache: {},        // conv → turns[]:切会话时先渲缓存,消除空屏闪烁(有 LRU 上限,见 histCacheSet)
+  histPaging: {},       // conv → {loading,hasMore}:历史向上翻页状态,防止顶部重复请求
   turnEventsCache: new Map(),  // turn_id → 完整 events[]:工具卡片懒加载,点开某轮任意卡片后整轮缓存复用
                                // (有 LRU 上限,见 turnEventsSet;用 Map 是因为 turn id 是纯数字,
                                //  普通对象的纯数字键不按插入顺序遍历,做不了 LRU)
@@ -53,6 +54,8 @@ const S = {
                          // 切回来同一进度直接接上,不用把 live 缓冲从头重放一遍(见 maybeReplayStream)
   pendingReview: {},    // conv → bool:本地缓存会话是否有未读完成内容(避免灰点闪烁)
   pending: {},          // conv → 待发送队列 [{id,text,images}]:上一个任务没结束时点发送,暂存,任务完成自动发
+  sending: {},          // conv → bool:该会话有一条正在上传/发送的消息
+  inflightComposer: {}, // conv → {text,images,audios,files}:发送中的后台重试快照
   pendId: 0,            // 待发送项自增 id,供删除定位
   voiceRec: {},         // conv → {bubble}:语音转写中的占位气泡,按录音发起时所属会话记录,切走再切回能补出来
   convFilter: "all",

@@ -132,8 +132,12 @@ def test_unsent_attachments_are_isolated_by_conversation():
     assert "function saveComposerAttachments(conv=S.conv)" in composer
     assert "S.composerAttachments[conv]={images:S.images,audios:S.audios,files:S.files}" in composer
     assert "function restoreComposerAttachments(conv)" in composer
-    assert "saveComposerAttachments(S.conv);" in index
-    assert "restoreComposerAttachments(conv);" in index
+    assert "function saveComposerState(conv=S.conv)" in composer
+    assert "function restoreComposerState(conv)" in composer
+    assert "if(S.sending[conv]){" in composer
+    assert "S.images=[]; S.audios=[]; S.files=[]; renderThumbs();" in composer
+    assert "saveComposerState(S.conv);" in index
+    assert "restoreComposerState(conv);" in index
 
 
 def test_file_drop_reuses_upload_validation_and_reports_unsupported_formats():
@@ -155,6 +159,7 @@ def test_send_failure_keeps_file_attachment_for_retry():
 
     assert "if(!r.ok)" in composer
     assert "S.images=sendImages; S.audios=sendAudios; S.files=sendFiles;" in composer
+    assert "S.composerAttachments[oldConv]={images:sendImages,audios:sendAudios,files:sendFiles};" in composer
     assert "附件已保留，可重试" in composer
 
 
@@ -168,6 +173,22 @@ def test_history_replays_file_and_audio_names():
     assert '"filename": e.get("filename", "")' in store
     assert 'name.textContent="🎵 "+a.filename' in stream
     assert 'const fileNames=(t.files||[])' in index
+
+
+def test_send_clears_visible_composer_and_keeps_background_retry_snapshot():
+    composer = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/composer.js").read_text(
+        encoding="utf-8"
+    )
+    core = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/app-core.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "sending: {}," in core
+    assert "inflightComposer: {}," in core
+    assert "S.inflightComposer[sendConv]={text, images:sendImages, audios:sendAudios, files:sendFiles};" in composer
+    assert "clearComposerVisible();" in composer
+    assert "S.inflightComposer[oldConv]" in composer
+    assert composer.index("clearComposerVisible();") < composer.index("await api(\"/send\"")
 
 
 @pytest.mark.anyio

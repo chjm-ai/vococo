@@ -859,6 +859,12 @@
   .skel.me{align-self:flex-end;height:36px;width:44%;background:var(--user1);opacity:.35}
   .skel.ai2{align-self:flex-start;height:80px;width:75%;background:var(--panel2)}
   @keyframes skelshine{0%,100%{opacity:.45}50%{opacity:.85}}
+  /* 向上翻页时固定在消息区顶部的轻量加载提示 */
+  #historyLoading{display:none;align-items:center;justify-content:center;gap:var(--sp-2);
+    padding:var(--sp-2) var(--sp-5);color:var(--dim);font-size:var(--fs-sm)}
+  #historyLoading.on{display:flex}
+  .hloadspin{width:var(--sp-4);height:var(--sp-4);border:2px solid var(--line2);
+    border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
 
   /* 空状态 / 新对话欢迎屏:默认不显示,由 updateEmpty()/openConv() 按真实数据决定何时出现,
      避免 #app 刚显示、数据还没到位时先闪一下欢迎屏。2026-07-15 起首页(#homeView)已下架,

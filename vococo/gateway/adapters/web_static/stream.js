@@ -325,9 +325,19 @@ setInterval(()=>{
   // 正在streaming的会话期间发生过短暂重连,漏接了这条的某帧),强制核对一次历史自愈
   else if(S.stream && Date.now()-(S.stream.lastEvt||S.stream.t0||0) > 25000) reloadHistory(true);
 }, 8000);
+// /history 可能已经用 draft 字段铺出一个"草稿气泡"(pending 轮、data-tid 挂在 turn-block 上)。
+// 建真正的流式气泡前先把它摘掉,否则同一轮回复会同时挂着草稿气泡和流式气泡,看着像重复了两遍。
+// 摘的判据是"带 .status 的 .row.ai"——正常已完成的历史气泡不带这个状态行。
+function removeStalePendingBubble(){
+  const rows=$("#wrap").querySelectorAll(".row.ai");
+  for(let i=rows.length-1;i>=0;i--){
+    if(rows[i].querySelector(".status")){ rows[i].remove(); break; }
+  }
+}
 function ensureStream(t0){
   // 为当前会话准备一个流式 assistant 气泡(含状态行/思考/过程区)
   if(S.stream) return S.stream;
+  removeStalePendingBubble();
   // 新一轮开始 = 上一轮不再是"最新一轮",之前挂的重新生成按钮跟着失效——
   // 摘掉它,不留一个点了只会收到 409 的过期按钮(正常 diff 重绘也会摘,这里
   // 是让画面立刻反映,不用等下次 /history 重拉)。
@@ -678,12 +688,9 @@ function maybeReplayStream(conv){
   if(S.conv!==conv) return;
   const buf=S.live[conv]; if(!buf||!buf.length) return;
   // renderTurns 可能已用 draft 渲染了部分内容;不管接下来走哪条重建路径,都先清掉,
-  // 避免出现两个 AI 气泡(草稿+流式)
-  // rows 现在可能套在 turn-block 容器里(见 renderTurns),不能再假定是 #wrap 的直接子节点
-  const rows=$("#wrap").querySelectorAll(".row.ai");
-  for(let i=rows.length-1;i>=0;i--){
-    if(rows[i].querySelector(".status")){ rows[i].remove(); break; }
-  }
+  // 避免出现两个 AI 气泡(草稿+流式)。restore-from-snap 分支下面是直接 append 现成的
+  // S.stream.row、不经过 ensureStream(),所以这里仍需单独摘一次。
+  removeStalePendingBubble();
   const snap=S.streamSnap[conv];
   delete S.streamSnap[conv];
   if(snap && snap.asOf<=buf.length){

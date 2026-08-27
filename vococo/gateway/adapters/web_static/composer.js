@@ -6,6 +6,8 @@
 // 图片 base64 和已上传附件都可能很大，不能放 localStorage；仅在当前页面内按会话保存。
 function saveComposerAttachments(conv=S.conv){
   if(!conv) return;
+  // 发送中的内容已经从界面移走,不能因为切会话时看到空数组而覆盖后台快照。
+  if(S.sending[conv] && S.inflightComposer[conv]) return;
   if(S.images.length || S.audios.length || S.files.length){
     S.composerAttachments[conv]={images:S.images,audios:S.audios,files:S.files};
   }else delete S.composerAttachments[conv];
@@ -21,6 +23,27 @@ function clearComposerAttachments(conv=S.conv){
   if(conv) delete S.composerAttachments[conv];
   if(conv===S.conv){ S.images=[]; S.audios=[]; S.files=[]; }
 }
+function clearComposerVisible(){
+  S.images=[]; S.audios=[]; S.files=[];
+  renderThumbs();
+  $("#ta").value=""; autoGrow();
+}
+// 会话切换不只要保存附件,还要把当前输入框显式落成草稿。输入事件通常会
+// 自动保存,但上传/切视图等异步链路不能依赖它刚好已经触发。
+function saveComposerState(conv=S.conv){
+  if(!conv) return;
+  saveDraft(conv);
+  saveComposerAttachments(conv);
+}
+function restoreComposerState(conv){
+  restoreDraft(conv);
+  if(S.sending[conv]){
+    // 发送中的内容已经在发送入口处清空,切回来也保持这个"已发出"的表面状态。
+    S.images=[]; S.audios=[]; S.files=[]; renderThumbs();
+    return;
+  }
+  restoreComposerAttachments(conv);
+}
 
 // ── 发送 ────────────────────────────────────────────────────────────────
 async function send(text, display, opts){
@@ -33,6 +56,14 @@ async function send(text, display, opts){
   let sendConv=S.conv;
   const isCurrent=()=>S.conv===sendConv;
   const sendImages=S.images.slice(), sendAudios=S.audios.slice(), sendFiles=S.files.slice();
+  // 先把本轮内容放进内存快照,再立即清空界面。切会话时只切换到空的编辑态,
+  // 失败时再从快照恢复,让用户看到的反馈和「已发出」一致。
+  if(S.sending[sendConv]) return;
+  S.sending[sendConv]=true;
+  S.inflightComposer[sendConv]={text, images:sendImages, audios:sendAudios, files:sendFiles};
+  delete S.composerAttachments[sendConv];
+  clearDraft(sendConv);
+  clearComposerVisible();
   // 音频和通用文件都先上传，拿到临时 id 后再发送，避免服务端静默跳过。
   const uploads=[...sendAudios,...sendFiles];
   if(uploads.some(item=>!item.id)){
@@ -43,6 +74,16 @@ async function send(text, display, opts){
   }
   // 上传失败的附件还没到服务器，保留「忽略并发送」以免卡住文字消息。
   if(uploads.some(item=>item.status==="error")){
+    const pending=S.inflightComposer[sendConv];
+    delete S.sending[sendConv]; delete S.inflightComposer[sendConv];
+    if(pending){
+      S.composerAttachments[sendConv]={images:pending.images,audios:pending.audios,files:pending.files};
+      saveDraft(sendConv,pending.text);
+      if(isCurrent()){
+        S.images=pending.images; S.audios=pending.audios; S.files=pending.files;
+        renderThumbs(); $("#ta").value=pending.text; autoGrow();
+      }
+    }
     if(!isCurrent()) return;  // 已切走:失败提示/重试按钮没地方挂,静默放弃这次发送
     const fail=uploads.find(item=>item.status==="error");
     const b=addBubble("ai","⚠️ 附件「"+(fail?.filename||"")+"」上传失败"+(fail?.error?("："+fail.error):"")+"，可移除后重试；或忽略附件直接发送文字。");
@@ -51,10 +92,18 @@ async function send(text, display, opts){
     b.append(skip);
     return;
   }
-  // 上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发(审批/语音走 forceSend 立即发)
-  if(S.stream && !opts.forceSend){
-    if(isCurrent() && queuePending(text, sendImages, sendAudios, sendFiles)){
+  // 当前会话上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发。
+  // 已切到别的会话时,S.stream 属于别的会话,不能因此吞掉本轮后台发送。
+  if(S.stream && !opts.forceSend && isCurrent()){
+    const queued=queuePending(text, sendImages, sendAudios, sendFiles);
+    const pending=S.inflightComposer[sendConv];
+    delete S.sending[sendConv]; delete S.inflightComposer[sendConv];
+    if(queued){
       clearComposerAttachments(sendConv); renderThumbs(); $("#ta").value=""; autoGrow(); clearDraft(sendConv);
+    }else if(pending){
+      S.composerAttachments[sendConv]={images:pending.images,audios:pending.audios,files:pending.files};
+      S.images=pending.images; S.audios=pending.audios; S.files=pending.files;
+      renderThumbs(); $("#ta").value=pending.text; autoGrow(); saveDraft(sendConv,pending.text);
     }
     return;
   }
@@ -92,23 +141,26 @@ async function send(text, display, opts){
     audios:sendAudios.map(x=>({id:x.id})),
     files:sendFiles.map(x=>({id:x.id})),
   };
-  // 新会话:发出第一条后,把本地临时会话转正(用户已切走时跳过,S.conv 已经不是这条草稿了)
+  // 新会话:发出第一条后,把本地临时会话转正。转正不能依赖当前仍停在哪个会话,
+  // 否则上传期间切走再回来会把消息发到前端专用的 local- id。
   const oldConv=sendConv;
   const wasLocal=String(sendConv).startsWith("local-");
-  clearDraft(sendConv);   // 发送即清草稿:必须在转正前调用,否则真实 id 落地后 local- 旧 key 清不掉
-  clearComposerAttachments(sendConv);
-  if(wasLocal && isCurrent()){
-    S.conv=S.conv.replace("local-",""); sendConv=S.conv; payload.conv=S.conv; renderProjSelChip();
-    refreshGit(S.conv);
-    // S.convs 里那条草稿行(conv=local-xxx)原地更新成新的真实 id,别留一条转正前的孤儿条目——
+  if(wasLocal){
+    sendConv=sendConv.replace(/^local-/,""); payload.conv=sendConv;
+    S.inflightComposer[sendConv]=S.inflightComposer[oldConv];
+    delete S.inflightComposer[oldConv];
+    delete S.sending[oldConv]; S.sending[sendConv]=true;
+    // S.convs 里那条草稿行(conv=local-xxx)原地更新成真实 id,别留一条转正前的孤儿条目——
     // 否则"新对话"复用逻辑(newChatIn)会把它当成还没发消息的草稿误重新打开
     const entry=S.convs.find(x=>x.conv===oldConv);
     if(entry){
-      entry.conv=S.conv; entry.turns=1;
-      if(entry.wbTaskId && typeof linkWorkbenchTaskSession==="function"){ linkWorkbenchTaskSession(entry.wbTaskId, S.conv); delete entry.wbTaskId; }
+      entry.conv=sendConv; entry.turns=1;
+      if(entry.wbTaskId && typeof linkWorkbenchTaskSession==="function"){ linkWorkbenchTaskSession(entry.wbTaskId, sendConv); delete entry.wbTaskId; }
+    }
+    if(S.conv===oldConv){
+      S.conv=sendConv; renderProjSelChip(); refreshGit(S.conv);
     }
   }
-  if(isCurrent()){ renderThumbs(); $("#ta").value=""; autoGrow(); }
   try{
     const r=await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(!r.ok){
@@ -116,14 +168,31 @@ async function send(text, display, opts){
       try{ const d=await r.json(); detail=d.error||""; }catch(e){}
       throw new Error(detail||("HTTP "+r.status));
     }
+    // 服务端确认后才丢弃后台快照。可见输入框早已在发送入口清空,
+    // 用户若在上传或发送期间切会话,回来仍保持「已发出」的表面状态。
+    const hasNewContent=isCurrent() &&
+      (!!$("#ta").value || S.images.length || S.audios.length || S.files.length);
+    delete S.sending[oldConv]; delete S.sending[sendConv];
+    delete S.inflightComposer[oldConv]; delete S.inflightComposer[sendConv];
+    clearDraft(oldConv);
+    if(!hasNewContent){
+      clearDraft(sendConv);
+      delete S.composerAttachments[oldConv]; delete S.composerAttachments[sendConv];
+      if(isCurrent()) clearComposerVisible();
+    }
     if(wasLocal && isCurrent()) setTimeout(loadConvs, 400);
   }catch(err){
-    if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }  // 发送失败,停掉 loading
+    delete S.sending[oldConv]; delete S.sending[sendConv];
     // /send 失败时不能把附件和文字一起吞掉,否则用户只能重新选择文件,且误以为已发送。
+    // 当前已切到别的会话时,也要把失败态写回原会话缓存,切回后才能重试。
+    S.composerAttachments[oldConv]={images:sendImages,audios:sendAudios,files:sendFiles};
+    S.composerAttachments[sendConv]={images:sendImages,audios:sendAudios,files:sendFiles};
+    saveDraft(oldConv,text); saveDraft(sendConv,text);
+    if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }  // 发送失败,停掉 loading
     if(isCurrent()){
       S.images=sendImages; S.audios=sendAudios; S.files=sendFiles;
       saveComposerAttachments(); renderThumbs();
-      $("#ta").value=text; autoGrow(); saveDraft();
+      $("#ta").value=text; autoGrow();
       addBubble("ai","⚠️ 发送失败:"+err.message+"，附件已保留，可重试。" );
     }
   }
@@ -278,12 +347,12 @@ $("#ta").addEventListener("input", checkCmdMenu);
 // 发送/清空时删除,避免 A 会话打的字串到 B 会话。local- 前缀的未转正新会话
 // 同样按自己 id 存,互不干扰;发送转正时旧 key 一并清掉。
 function draftKey(conv){ return "vococo_draft:"+conv; }
-function saveDraft(){
+function saveDraft(conv=S.conv, value){
   try{
-    if(!S.conv) return;
-    const v=$("#ta").value;
-    if(v) localStorage.setItem(draftKey(S.conv), v);
-    else localStorage.removeItem(draftKey(S.conv));  // 清空了就删 key,不留空草稿
+    if(!conv) return;
+    const v=value===undefined ? $("#ta").value : value;
+    if(v) localStorage.setItem(draftKey(conv), v);
+    else localStorage.removeItem(draftKey(conv));  // 清空了就删 key,不留空草稿
   }catch(e){}
 }
 function restoreDraft(conv){

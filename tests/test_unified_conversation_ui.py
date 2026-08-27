@@ -74,14 +74,28 @@ def test_closing_call_view_restores_previously_open_conversation():
     assert "S.conv = S.callReturnConv;" in html
 
 
+def test_switching_views_preserves_composer_draft_and_uploading_attachment():
+    html = _shell()
+
+    open_view = html[html.index("window.openCallView = function()") : html.index("window.closeCallView = function()")]
+    close_view = html[html.index("window.closeCallView = function()") : html.index("// 任务状态条")]
+
+    assert 'saveComposerState(S.conv);' in open_view
+    assert 'restoreComposerState(S.conv);' in open_view
+    assert 'saveComposerState(S.conv);' in close_view
+    assert 'restoreComposerState(S.conv);' in close_view
+
+
 def test_switching_main_view_refreshes_draft_project_selector():
     html = _shell()
 
     call_view = html[html.index("window.openCallView = function()") : html.index("window.closeCallView = function()")]
     close_view = html[html.index("window.closeCallView = function()") : html.index("// 任务状态条")]
 
-    assert "S.conv = \"voice-chat:main\";\n    renderProjSelChip();" in call_view
-    assert "S.conv = S.callReturnConv;\n    renderProjSelChip();" in close_view
+    assert 'S.conv = "voice-chat:main";' in call_view
+    assert "S.conv = S.callReturnConv;" in close_view
+    assert "renderProjSelChip();  // 草稿会话切入主会话时，收起仅草稿可见的项目选择器" in call_view
+    assert "renderProjSelChip();  // 返回草稿会话时，恢复项目选择器" in close_view
 
 
 def test_task_status_map_is_shared_with_sidebar_helpers():
