@@ -1143,9 +1143,9 @@
     html.device-mobile .convmenu .cmitem{font-size:var(--fs-base)}
     html.device-mobile #convFilterPop .fmi{font-size:var(--fs-base)}
   }
-  /* 桌面宽屏:基础字号调小(手机保持 16px 不变,避免 iOS 聚焦缩放) */
+  /* 宽屏基础字号统一为 16px,与窄屏一致,避免维护两套字号 */
   @media(min-width:761px){
-    html,body{font-size:var(--fs-base);line-height:1.55}
+    html,body{line-height:1.55}
     /* 宽屏收起:侧边栏宽度归零,顶栏 ☰ 变身为"展开"入口。窄屏下 #sidebar 已经在上面
        默认收到画面外了,sb-collapsed 在窄屏没有额外意义,不需要重复处理。 */
     html:not(.device-mobile) body.sb-collapsed #sidebar{width:0;margin-left:0;border-color:transparent;box-shadow:none;overflow:hidden}
