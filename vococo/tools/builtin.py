@@ -700,9 +700,10 @@ async def create_workbench_task(args: dict) -> dict:
 
 @tool(
     "update_workbench_task",
-    "更新工作台任务的状态/标题/备注/日期(按 id/序号/标题 定位)。"
+    "更新工作台任务的状态/标题/备注/日期/父任务(按 id/序号/标题 定位)。"
     "status 取值:todo(待办)/done(完成)/focus(本轮重点)/block(受阻)/cancelled(已取消)。"
-    "用户说「把 X 标记完成/挪到明天/改成重点/取消」时用。",
+    "parent:父任务 id 或标题,传空字符串可解除父任务变顶级。"
+    "用户说「把 X 标记完成/挪到明天/改成重点/取消/移到 Y 下面」时用。",
     {
         "type": "object",
         "properties": {
@@ -711,6 +712,7 @@ async def create_workbench_task(args: dict) -> dict:
             "title": {"type": "string"},
             "detail": {"type": "string"},
             "date": {"type": "string"},
+            "parent": {"type": "string"},
         },
         "required": ["task"],
     },
@@ -731,6 +733,15 @@ async def update_workbench_task(args: dict) -> dict:
         fields["date"] = date
         fields["month"] = date[:7] if date else t["month"]
         fields["week"] = _workbench_week_key(date) if date else t["week"]
+    if "parent" in args:
+        parent_ref = (args["parent"] or "").strip()
+        if parent_ref:
+            parent = _resolve_workbench_task(parent_ref, workbench.list_tasks())
+            if not parent:
+                return _ok(f"没找到父任务「{parent_ref}」。用 list_workbench_tasks 看列表。")
+            fields["parentId"] = parent["id"]
+        else:
+            fields["parentId"] = None
     updated = workbench.update_task(t["id"], **fields)
     if updated is None:
         return _ok("更新失败,字段无效。")
