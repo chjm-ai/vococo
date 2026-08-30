@@ -431,6 +431,10 @@ function finalizeStream(finalText, imgs, turnId){
   // 此时不挂重新生成按钮(见 buildTurnFoot)。ts 用本地时间近似,跟服务端落库时刻
   // 只差一次网络往返,消息级"几点几分"的粒度感知不出来。
   S.stream.bubble.append(buildTurnFoot(S.conv, turnId, streamText(S.stream), Date.now()/1000, true));
+  // 补上 data-tid:这颗气泡是原地转正的,renderTurns 靠 tid 去重——不补的话,回合结束后
+  // 只要该会话不切换直接又触发一次 renderTurns(如切后台再切回来 reviveSSE→reloadHistory),
+  // 就会认不出这是同一轮,把它当"新的一轮"再建一个节点,同一段回复看着重复了两遍。
+  if(turnId!=null) S.stream.row.dataset.tid=String(turnId);
   S.stream=null; updateSendBtn(); scrollDown();
 }
 // 构成一个"进行中回合"的流式事件类型(可重放以重建气泡)。done/message/choice 不在此列。
