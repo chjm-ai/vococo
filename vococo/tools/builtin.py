@@ -616,11 +616,35 @@ async def list_workbench_tasks(args: dict) -> dict:
     if not tasks:
         return _ok("没有符合条件的工作台任务。")
     status_label = {"todo": "待办", "done": "已完成", "focus": "本轮重点", "block": "受阻", "cancelled": "已取消"}
-    lines = [
-        f"{i}. [{t['id']}] {t['title']} — {status_label.get(t['status'], t['status'])}"
-        f"{' — ' + t['date'] if t['date'] else ''}(项目:{t['project']})"
-        for i, t in enumerate(tasks, 1)
-    ]
+
+    by_id = {t["id"]: t for t in tasks}
+    children: dict[str | None, list[dict]] = {}
+    for t in tasks:
+        children.setdefault(t.get("parentId"), []).append(t)
+
+    lines: list[str] = []
+    counter = [0]
+
+    def _walk(parent_id: str | None, depth: int) -> None:
+        for t in children.get(parent_id, []):
+            counter[0] += 1
+            indent = "  " * depth
+            status = status_label.get(t["status"], t["status"])
+            date_part = f" — {t['date']}" if t.get("date") else ""
+            lines.append(f"{indent}{counter[0]}. [{t['id']}] {t['title']} — {status}{date_part}(项目:{t['project']})")
+            _walk(t["id"], depth + 1)
+
+    _walk(None, 0)
+
+    orphans = [t for t in tasks if t.get("parentId") and t["parentId"] not in by_id]
+    for t in orphans:
+        if any(t["id"] in line for line in lines):
+            continue
+        counter[0] += 1
+        status = status_label.get(t["status"], t["status"])
+        date_part = f" — {t['date']}" if t.get("date") else ""
+        lines.append(f"{counter[0]}. [{t['id']}] {t['title']} — {status}{date_part}(项目:{t['project']})")
+
     return _ok("工作台任务:\n" + "\n".join(lines))
 
 @tool(
