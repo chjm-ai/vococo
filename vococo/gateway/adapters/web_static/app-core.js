@@ -30,7 +30,10 @@ const S = {
   docPreview: {},       // conv → {kind,target,title,highlight}:文档预览面板按会话独立记忆,
                          // 切会话时据此显示/隐藏并重新渲染(见 openConv、markdown.js 的 openDocPreview/closeDocPreview)
   stream: null,         // 当前正在流式的 assistant 气泡 DOM 引用
-  localSent: false,     // 本客户端刚发了消息,收到 "user" 事件时跳过(避免重复气泡)
+  localSent: {},        // conv → bool:本客户端刚在该会话发了消息,收到它的 "user" 事件时跳过
+                        // (避免重复气泡)。必须按会话记:手机端同时在发、或 cron/语音后台任务
+                        // 也会产生 user 事件,共用一个全局布尔会被别的会话误消费,导致本会话
+                        // 的用户气泡重复冒一条。
   es: null,
   lastId: 0,            // 已处理的最大事件编号,用于断线重连后去重
   bootId: null,         // 服务端进程启动标识,变了说明重启过,断线补发这条路救不回来,得整体核对
@@ -310,7 +313,7 @@ function showLogin(){
 async function tryEnter(){
   // 有缓存口令时,首帧就已经靠 #bootSkip 样式把口令页藏起来、#app 显示出来了(见 </head> 后那段内联脚本)。
   // 这里立刻把内容区铺成骨架屏,不要空等——避免"口令消失→空白/欢迎屏→数据陆续到位"的中间闪烁态。
-  $("#wrap").innerHTML=""; $("#empty").style.display="none"; $("#convLoading").classList.add("on");
+  clearWrap(); $("#empty").style.display="none"; $("#convLoading").classList.add("on");
   // 服务端偏好(/prefs)要等到下面的 secondary 批次才拉回来,首屏这次沿用
   // localStorage 缓存的上次 filter(跟主题缓存同一个套路)——命中"active"/
   // "archived" 时直接让后端只回那一半,省掉归档堆积后的越境传输量。

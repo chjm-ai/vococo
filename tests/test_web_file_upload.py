@@ -121,7 +121,9 @@ def test_sent_bubble_lists_file_even_when_message_has_text():
     )
 
     assert 'const fileLabel=files.length ? `\\n\\n📎 附件：${files.join("、")}` : "";' in html
-    assert 'addBubble("me", (shown||fallback)+fileLabel, imgs, auds)' in html
+    # 末尾的 true 是 eph 标记:这颗乐观气泡的内容服务端也会落库,权威历史重绘后要清掉它,
+    # 否则同一句话会重复显示一遍(见 stream.js 的 tagConvNode / index.html 的 renderTurns)
+    assert 'addBubble("me", (shown||fallback)+fileLabel, imgs, auds, true)' in html
 
 
 def test_unsent_attachments_are_isolated_by_conversation():
