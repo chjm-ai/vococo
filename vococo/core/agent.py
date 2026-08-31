@@ -223,12 +223,17 @@ class AudioAttachment:
     不存在"某些模型支持某些不支持"),没法像图片那样直接塞进多模态请求。
     这里走的是"转写后当文字喂给模型"这条路——data/media_type/filename 只用于
     落盘回放,真正喂给 AI"解读"的是上传时已经跑完 ASR 的 transcript。
+
+    local_path 跟图片同理:音频落盘后把本机绝对路径一并告诉模型。转写超长失败、
+    或要拿原始音频再跑别的处理(如 audio-processor 的长音频 ASR)时,模型才有路径
+    可用;否则它只有一个磁盘上并不存在的原始文件名,只能瞎猜文件在哪。
     """
 
     data: bytes  # 原始字节(来自 multipart 上传,不是 base64——音频不再二次编码进网络传输)
     media_type: str  # 如 audio/mpeg
     filename: str
     transcript: str  # 上传时已转写好的文字稿
+    local_path: str = ""  # 落盘后供模型直接读取/处理的受控本机路径
 
 
 # 各模型上下文窗口(token)。前缀匹配,未知默认 200k。

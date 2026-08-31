@@ -424,26 +424,27 @@ def test_save_turn_audio_persists_transcript_and_loads_history(isolated, monkeyp
     monkeypatch.setattr(config, "AUDIO_DIR", isolated / "data" / "audio")
 
     turn_id = session_store.start_turn("web:1", "这段录音在说什么?")
-    session_store.save_turn_audio(
-        turn_id,
-        [AudioAttachment(
-            data=b"fake-mp3-bytes", media_type="audio/mpeg",
-            filename="memo.mp3", transcript="今天下午三点开会",
-        )],
+    au = AudioAttachment(
+        data=b"fake-mp3-bytes", media_type="audio/mpeg",
+        filename="memo.mp3", transcript="今天下午三点开会",
     )
+    session_store.save_turn_audio(turn_id, [au])
+    # 落盘后必须回填本机路径:模型要拿原始音频再处理(转写失败/长音频重跑)全靠它,
+    # 没有它就只剩一个磁盘上并不存在的原始文件名,模型只能瞎猜文件在哪
+    assert au.local_path == str(config.AUDIO_DIR / f"{turn_id}_0.mp3")
     session_store.finish_turn(turn_id, "这段录音在提醒下午三点开会")
 
     history = session_store.load_history("web:1")
-    # media_type="audio/mpeg" 的子类型 mpeg 直接当扩展名(跟 images.py._img_ext 同规则,
-    # 不做常见类型到扩展名的映射,所以是 .mpeg 不是 .mp3)
+    # 落盘扩展名以原始文件名为准(memo.mp3 → .mp3),不用 media_type 的子类型 mpeg:
+    # 浏览器给 m4a 之类的 type 常为空或不准,落错扩展名会让后续 ffmpeg/ASR 解析失败
     assert history[-1]["audios"] == [
         {
-            "url": f"/audio?name={turn_id}_0.mpeg",
+            "url": f"/audio?name={turn_id}_0.mp3",
             "filename": "memo.mp3",
             "text": "今天下午三点开会",
         }
     ]
-    assert (config.AUDIO_DIR / f"{turn_id}_0.mpeg").read_bytes() == b"fake-mp3-bytes"
+    assert (config.AUDIO_DIR / f"{turn_id}_0.mp3").read_bytes() == b"fake-mp3-bytes"
 
 
 def test_save_turn_files_persists_names_and_loads_history(isolated):

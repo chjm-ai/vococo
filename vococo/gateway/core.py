@@ -238,7 +238,12 @@ async def converse(
     if audios:
         session_store.save_turn_audio(turn_id, audios)
         for au in audios:
-            user_text += f"\n\n[语音/音频附件:{au.filename}]\n转写文字稿:\n{au.transcript}"
+            user_text += f"\n\n[语音/音频附件:{au.filename}]"
+            # 路径必须给:转写失败或要对原始音频再做处理(长音频重跑 ASR、剪辑、抽轨)
+            # 时,模型只有原始文件名的话在磁盘上根本找不到,只会去猜"是不是没同步"
+            if getattr(au, "local_path", ""):
+                user_text += f"\n本机文件(可直接读取/处理):{au.local_path}"
+            user_text += f"\n转写文字稿:\n{au.transcript}"
     if files:
         session_store.save_turn_files(turn_id, files)
     # 上一轮的 SDK 会话 id:非空则本轮用 resume 让 SDK 重放真·多轮历史,不再拼历史大文本

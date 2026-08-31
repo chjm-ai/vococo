@@ -419,6 +419,13 @@ function fileExtension(name){
   const dot=value.lastIndexOf(".");
   return dot>0 && dot<value.length-1 ? value.slice(dot+1) : "";
 }
+// MIME 兜底:部分浏览器/系统给 m4a、wav 之类的 type 是空串,光靠 type 会误判成
+// 「不支持的文件」直接拒掉;按扩展名再认一次,保证音频永远走 /upload_audio 那条落盘链路。
+const AUDIO_EXTENSIONS = new Set(["m4a","mp3","wav","aac","flac","ogg","opus","webm","amr","aiff","aif","wma","caf"]);
+function isAudioFile(f){
+  const type=String(f?.type||"").toLowerCase();
+  return type.startsWith("audio/") || AUDIO_EXTENSIONS.has(fileExtension(f?.name));
+}
 function isSupportedFile(f){
   const type=String(f?.type||"").split(";",1)[0].toLowerCase();
   return type.startsWith("text/") || SUPPORTED_FILE_TYPES.has(type) || SUPPORTED_FILE_EXTENSIONS.has(fileExtension(f?.name));
@@ -432,7 +439,7 @@ function handleAttachmentFiles(files){
   for(const f of Array.from(files||[])){
     const type=String(f.type||"").toLowerCase();
     if(type.startsWith("image/")) addImageFile(f);
-    else if(type.startsWith("audio/")) addAudioFile(f);
+    else if(isAudioFile(f)) addAudioFile(f);
     else if(isSupportedFile(f)) addFile(f);
     else rejectUnsupportedFile(f);
   }
@@ -498,7 +505,7 @@ function renderThumbs(){
 // 由服务端拼进消息,模型回复里自然说明,不会卡住发送。
 const AUDIO_MAX_BYTES = 100*1024*1024;
 function addAudioFile(f){
-  if(!f || !(f.type||"").startsWith("audio/")) return;
+  if(!f || !isAudioFile(f)) return;   // type 可能为空,按扩展名兜底,见 isAudioFile
   if(f.size > AUDIO_MAX_BYTES){ addBubble("ai", `⚠️ 音频"${f.name}"超过 100MB 上限,没有上传。`); return; }
   const item = {id:null, filename:f.name||"audio", text:"", mediaType:f.type||"audio/mpeg", url:URL.createObjectURL(f), status:"uploading"};
   S.audios.push(item); renderThumbs();
