@@ -223,6 +223,27 @@ async def test_utf8_html_attachment_becomes_text_content_block():
 
 
 @pytest.mark.anyio
+async def test_file_attachment_prompt_carries_local_path():
+    """落盘路径必须进提示词:没有它模型就只有一个磁盘上不存在的原始文件名,
+    想用工具处理原始文件(xlsx 读表/pdf 抽页)只能瞎猜位置。"""
+    text_att = FileAttachment(b"# hi", "text/markdown", "方案.md", local_path="/tmp/f/9_0.md")
+    bin_att = FileAttachment(b"\0\xff", "application/pdf", "报价.pdf", local_path="/tmp/f/9_1.pdf")
+    prompt = agent._build_prompt([], "看看附件", [], [text_att, bin_att])
+    message = await anext(prompt)
+    content = message["message"]["content"]
+
+    assert content[1] == {
+        "type": "text",
+        "text": "[文件附件: 方案.md]\n本机文件（可直接读取/处理）：/tmp/f/9_0.md\n# hi",
+    }
+    assert content[2] == {
+        "type": "text",
+        "text": "[文件附件: 报价.pdf]\n本机文件（可直接读取/处理）：/tmp/f/9_1.pdf",
+    }
+    assert content[3]["type"] == "document"  # 二进制正文仍照旧走 document block
+
+
+@pytest.mark.anyio
 async def test_binary_file_attachment_becomes_document_content_block():
     """二进制文件维持 document block，交由上游判断是否支持。"""
     prompt = agent._build_prompt(

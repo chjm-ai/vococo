@@ -193,11 +193,15 @@ class FileAttachment:
 
     Web 端不按扩展名或 MIME 类型拦截。模型/API 不支持的文件类型由上游返回明确错误，
     避免浏览器擅自拒绝用户要发送的文件。
+
+    local_path 同图片/音频：附件落盘后的本机绝对路径。正文虽然也进了 content block，
+    但要用工具处理原始文件（xlsx 读表、pdf 抽页、大文件 grep）就必须有路径。
     """
 
     data: bytes
     media_type: str
     filename: str
+    local_path: str = ""  # 落盘后供模型直接读取/处理的受控本机路径
 
 
 def _file_text(file: FileAttachment) -> str | None:
@@ -616,13 +620,18 @@ def _build_prompt(
             }
         )
     for file in files:
+        # 路径必须给:正文虽然也塞进了 block,但要用工具处理原始文件(xlsx 读表、
+        # pdf 抽页、转格式)时,没有路径模型就只有一个磁盘上不存在的原始文件名
+        where = f"\n本机文件（可直接读取/处理）：{file.local_path}" if file.local_path else ""
         file_text = _file_text(file)
         if file_text is not None:
             content.append({
                 "type": "text",
-                "text": f"[文件附件: {file.filename}]\n{file_text}",
+                "text": f"[文件附件: {file.filename}]{where}\n{file_text}",
             })
             continue
+        if where:
+            content.append({"type": "text", "text": f"[文件附件: {file.filename}]{where}"})
         content.append(
             {
                 "type": "document",
