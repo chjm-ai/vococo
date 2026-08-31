@@ -120,6 +120,8 @@ DATA_DIR: Path = _ROOT / "data"
 IMAGES_DIR: Path = DATA_DIR / "images"
 # 用户发的音频落盘目录(转写后仍保留原文件供回放,见 memory/audio.py)
 AUDIO_DIR: Path = DATA_DIR / "audio"
+# 用户发的通用文件附件落盘目录(pdf/xlsx/docx 等,落盘后模型才有路径可用工具处理)
+FILES_DIR: Path = DATA_DIR / "files"
 # 单个音频附件大小上限(转写走 AI 解读,不是原生多模态,过大只会拖垮转写接口)
 AUDIO_MAX_BYTES: int = 100 * 1024 * 1024
 # 通用文件附件只限制体积、不限制扩展名/MIME；模型不支持时由上游返回错误。

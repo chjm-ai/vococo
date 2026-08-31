@@ -447,21 +447,49 @@ def test_save_turn_audio_persists_transcript_and_loads_history(isolated, monkeyp
     assert (config.AUDIO_DIR / f"{turn_id}_0.mp3").read_bytes() == b"fake-mp3-bytes"
 
 
-def test_save_turn_files_persists_names_and_loads_history(isolated):
+def test_save_turn_files_persists_names_and_loads_history(isolated, monkeypatch):
+    from vococo import config
     from vococo.core.agent import FileAttachment
     from vococo.memory import session_store
 
+    monkeypatch.setattr(config, "FILES_DIR", isolated / "data" / "files")
+
     turn_id = session_store.start_turn("web:files", "读取附件")
-    session_store.save_turn_files(
-        turn_id,
-        [FileAttachment(data=b"content", media_type="text/markdown", filename="方案.md")],
-    )
+    att = FileAttachment(data=b"content", media_type="text/markdown", filename="方案.md")
+    session_store.save_turn_files(turn_id, [att])
     session_store.finish_turn(turn_id, "已读取")
+
+    # 落盘 + 回填路径:模型要用工具处理原始文件就靠 local_path,只有原始文件名找不到文件。
+    # 落盘名用 turn_id 编号 + 原扩展名(原名可能带中文/空格,不进磁盘名)
+    saved = config.FILES_DIR / f"{turn_id}_0.md"
+    assert saved.read_bytes() == b"content"
+    assert att.local_path == str(saved)
 
     history = session_store.load_history("web:files")
     assert history[-1]["files"] == [
         {"name": "方案.md", "media_type": "text/markdown"}
     ]
+
+
+def test_clear_purges_attachment_files(isolated, monkeypatch):
+    """清空会话要连带把落盘的通用附件删掉,不留孤儿文件(同音频/图片)。"""
+    from vococo import config
+    from vococo.core.agent import FileAttachment
+    from vococo.memory import session_store
+
+    monkeypatch.setattr(config, "FILES_DIR", isolated / "data" / "files")
+
+    turn_id = session_store.start_turn("web:files", "看看这个表")
+    session_store.save_turn_files(
+        turn_id,
+        [FileAttachment(data=b"\x00binary", media_type="application/pdf", filename="报价.pdf")],
+    )
+    session_store.finish_turn(turn_id, "看完了")
+    saved = config.FILES_DIR / f"{turn_id}_0.pdf"
+    assert saved.exists()
+
+    session_store.clear("web:files")
+    assert not saved.exists()
 
 
 def test_clear_purges_audio_files(isolated, monkeypatch):

@@ -16,9 +16,11 @@ async def _default_cwd(session_key):
 
 @pytest.mark.anyio
 async def test_file_attachment_forwarded_to_agent(isolated, monkeypatch):
+    from vococo import config
     from vococo.core import worktree
 
     monkeypatch.setattr(worktree, "execution_cwd", _default_cwd)
+    monkeypatch.setattr(config, "FILES_DIR", isolated / "data" / "files")  # 附件会落盘,别写进真实数据目录
     seen = {}
 
     async def fake_stream(history, user_text, **kwargs):

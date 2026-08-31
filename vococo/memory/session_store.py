@@ -23,7 +23,7 @@ from .audio import (  # noqa: F401 (re-export)
     purge_session_audio,
     save_turn_audio,
 )
-from .files import save_turn_files  # noqa: F401 (re-export)
+from .files import purge_session_files, save_turn_files  # noqa: F401 (re-export)
 from .images import (  # noqa: F401 (re-export)
     AI_IMAGE_PREFIX,
     append_turn_image,
@@ -509,6 +509,7 @@ def clear(session_key: str) -> None:
     c = _conn()
     purge_session_images(c, session_key)  # 先清图片文件,再删轮次
     purge_session_audio(c, session_key)  # 音频同理
+    purge_session_files(c, session_key)  # 通用附件同理
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute(
         "UPDATE session_meta SET ctx_tokens=0, total_tokens=0, "
@@ -816,6 +817,7 @@ def delete_session(session_key: str) -> None:
     c = _conn()
     purge_session_images(c, session_key)  # 先清图片文件,再删轮次
     purge_session_audio(c, session_key)  # 音频同理
+    purge_session_files(c, session_key)  # 通用附件同理
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute("DELETE FROM session_meta WHERE session_key=?", (session_key,))
     c.commit()
