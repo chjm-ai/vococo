@@ -66,6 +66,30 @@ def save_turn_images(turn_id: int, images: list) -> list[str]:
     return names
 
 
+def clone_turn_images(turn_id: int, names: list) -> list[str]:
+    """把一批已落盘的图片复制成属于 turn_id 的新副本,返回新文件名列表。
+
+    供 duplicate_session 用:副本会话必须持有自己的文件,否则两个会话共享同一批
+    磁盘文件,删掉任一个都会把另一个的图片一起清空(purge_session_images 按文件名删)。
+    源文件缺失/文件名非法的单张跳过,不影响其余。
+    """
+    out: list[str] = []
+    config.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    for idx, old in enumerate(names):
+        if not isinstance(old, str) or not _IMG_NAME_RE.match(old):
+            continue
+        src = config.IMAGES_DIR / old
+        if not src.is_file():
+            continue
+        ext = old.rsplit(".", 1)[-1] if "." in old else "png"
+        # AI 主动发的图必须保住 ai_ 前缀:历史渲染靠它区分贴用户气泡还是 AI 气泡
+        prefix = AI_IMAGE_PREFIX if old.startswith(AI_IMAGE_PREFIX) else ""
+        new = f"{prefix}{turn_id}_{idx}.{ext}"
+        (config.IMAGES_DIR / new).write_bytes(src.read_bytes())
+        out.append(new)
+    return out
+
+
 def append_turn_image(session_key: str, name: str) -> None:
     """AI 主动发的一张图(send_image 工具)追加进当前(最新)一轮的 turns.images。
 

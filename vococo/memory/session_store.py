@@ -20,13 +20,19 @@ from typing import TYPE_CHECKING
 from . import _db
 from .audio import (  # noqa: F401 (re-export)
     audio_path,
+    clone_turn_audio,
     purge_session_audio,
     save_turn_audio,
 )
-from .files import purge_session_files, save_turn_files  # noqa: F401 (re-export)
+from .files import (  # noqa: F401 (re-export)
+    clone_turn_files,
+    purge_session_files,
+    save_turn_files,
+)
 from .images import (  # noqa: F401 (re-export)
     AI_IMAGE_PREFIX,
     append_turn_image,
+    clone_turn_images,
     image_path,
     purge_session_images,
     save_turn_images,
@@ -64,6 +70,15 @@ def _watermark(c, session_key: str) -> int:
         "SELECT watermark_id FROM session_meta WHERE session_key=?", (session_key,)
     ).fetchone()
     return row[0] if row else 0
+
+
+def _loads_list(raw: str | None) -> list:
+    """turns 里 images/audios/files 三列都是 JSON 列表;坏数据当空列表,别让整轮炸掉。"""
+    try:
+        value = json.loads(raw) if raw else []
+    except (json.JSONDecodeError, ValueError):
+        return []
+    return value if isinstance(value, list) else []
 
 
 def _user_image_paths(raw: str | None) -> list[str]:
@@ -531,18 +546,40 @@ def duplicate_session(src_key: str, dst_key: str, title: str) -> None:
 
     ts 统一刷新为当前时间 —— 侧边栏按 MAX(t.ts) 倒序,新副本要顶到列表最前
     (保持原 ts 会沉到原会话旁边,用户复制完找不到)。
-    图片/音频本体已落盘在共享目录,turns 里只存文件名列表,无需复制文件。
+    图片/音频/附件的本体会连带复制一份、文件名改挂到新轮次上(2026-08-31 修):
+    此前两个会话共享同一批磁盘文件,删掉任何一个都会把另一个的附件一起清空
+    (purge_* 按文件名删),副本里只剩死链。
     不搬 watermark/token 计量(新会话从零开始,上下文窗口独立)、不搬置顶/
     归档/项目绑定 —— 副本是干净的新会话,只继承对话内容。
     """
     c = _conn()
-    c.execute(
-        "INSERT INTO turns(session_key, ts, user_text, assistant_text, "
-        "draft_text, events, images, audios, files) "
-        "SELECT ?, ?, user_text, assistant_text, draft_text, events, images, audios, files "
-        "FROM turns WHERE session_key=?",
-        (dst_key, time.time(), src_key),
-    )
+    rows = c.execute(
+        "SELECT user_text, assistant_text, draft_text, events, images, audios, files "
+        "FROM turns WHERE session_key=? ORDER BY id",
+        (src_key,),
+    ).fetchall()
+    now = time.time()
+    for user_text, assistant_text, draft, events, imgs, auds, fs in rows:
+        cur = c.execute(
+            "INSERT INTO turns(session_key, ts, user_text, assistant_text, "
+            "draft_text, events) VALUES (?,?,?,?,?,?)",
+            (dst_key, now, user_text, assistant_text, draft, events),
+        )
+        new_id = cur.lastrowid
+        # 附件本体复制到以新 turn_id 命名的文件,让副本完全独立于原会话
+        new_imgs = clone_turn_images(new_id, _loads_list(imgs))
+        new_auds = clone_turn_audio(new_id, _loads_list(auds))
+        new_files = clone_turn_files(new_id, _loads_list(fs))
+        if new_imgs or new_auds or new_files:
+            c.execute(
+                "UPDATE turns SET images=?, audios=?, files=? WHERE id=?",
+                (
+                    json.dumps(new_imgs, ensure_ascii=False) if new_imgs else None,
+                    json.dumps(new_auds, ensure_ascii=False) if new_auds else None,
+                    json.dumps(new_files, ensure_ascii=False) if new_files else None,
+                    new_id,
+                ),
+            )
     c.execute(
         "INSERT INTO session_meta(session_key, watermark_id, title) VALUES (?,0,?)",
         (dst_key, title),
