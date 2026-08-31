@@ -1265,8 +1265,16 @@ function renderTurns(turns, conv, opts={}){
   const oldAnchorTop=oldAnchor ? oldAnchor.getBoundingClientRect().top : 0;
   let changed=(conv!==_wrapConv);
   if(changed){ wrap.innerHTML=""; _wrapConv=conv; }
+  // tid → 节点数组:通常 1 个;但"进行中回合"是用户气泡+流式气泡两颗独立裸节点
+  // (回合结束时 finalizeStream 给两颗都打上同一个 tid,见 stream.js),合并成
+  // 权威的单个 turn-block 时,两颗裸节点要一并清掉,不能只顶掉其中一个。
   const existing=new Map();
-  for(const node of wrap.children){ if(node.dataset && node.dataset.tid) existing.set(node.dataset.tid, node); }
+  for(const node of wrap.children){
+    if(!node.dataset || !node.dataset.tid) continue;
+    const tid=node.dataset.tid;
+    if(!existing.has(tid)) existing.set(tid, []);
+    existing.get(tid).push(node);
+  }
   let anchor=null;
   turns.forEach((t,idx)=>{
     // id 理论上都有(turns 表主键);兜底给个按位置区分的 key,防止万一没有时
@@ -1276,11 +1284,13 @@ function renderTurns(turns, conv, opts={}){
     // isLast 拼进 sig:同一轮从"最新"变成"不是最新"(后面来了新的一轮)时,
     // 即便这轮本身内容没变也要重建 DOM,否则过期的"重新生成"按钮会一直留着。
     const sig=turnSig(t, isLast);
-    let node=existing.get(tid);
+    const nodes=existing.get(tid);
+    let node=nodes&&nodes[0];
     if(!node || node.dataset.sig!==sig){
       const fresh=buildTurnBlock(t, conv, isLast);
       fresh.dataset.tid=tid; fresh.dataset.sig=sig;
       if(node) node.replaceWith(fresh); else wrap.insertBefore(fresh, anchor?anchor.nextSibling:wrap.firstChild);
+      if(nodes) for(let i=1;i<nodes.length;i++) nodes[i].remove();  // 同 tid 的多余裸节点一并清掉
       node=fresh; changed=true;
     }else if(anchor ? anchor.nextSibling!==node : wrap.firstChild!==node){
       wrap.insertBefore(node, anchor?anchor.nextSibling:wrap.firstChild);  // 顺序变了(罕见)才挪
@@ -1289,7 +1299,7 @@ function renderTurns(turns, conv, opts={}){
     anchor=node;
   });
   if(existing.size) changed=true;
-  for(const node of existing.values()) node.remove();  // 剩下的是不在新列表里的旧轮(如清空会话)
+  for(const nodes of existing.values()) for(const node of nodes) node.remove();  // 剩下的是不在新列表里的旧轮(如清空会话)
   updateEmpty();
   // 只有这次渲染真的产生了 DOM 变化(新轮/删轮/切会话)才强制滚底;静态会话被
   // reviveSSE(切标签页回来/网络恢复/窗口聚焦)重新拉一次历史但内容没变时,不该

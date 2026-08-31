@@ -434,7 +434,13 @@ function finalizeStream(finalText, imgs, turnId){
   // 补上 data-tid:这颗气泡是原地转正的,renderTurns 靠 tid 去重——不补的话,回合结束后
   // 只要该会话不切换直接又触发一次 renderTurns(如切后台再切回来 reviveSSE→reloadHistory),
   // 就会认不出这是同一轮,把它当"新的一轮"再建一个节点,同一段回复看着重复了两遍。
-  if(turnId!=null) S.stream.row.dataset.tid=String(turnId);
+  // 同一轮的用户气泡(userRow,composer.js 乐观渲染时挂的)是另一颗独立的裸节点,
+  // 真正的历史轮次却是"user+ai 合并成一个 turn-block"——两颗裸节点都打上同一个 tid,
+  // 靠 renderTurns 里"同 tid 多节点一并清掉"的逻辑收尾,否则发出的这句话也会重复一遍。
+  if(turnId!=null){
+    S.stream.row.dataset.tid=String(turnId);
+    if(S.stream.userRow) S.stream.userRow.dataset.tid=String(turnId);
+  }
   S.stream=null; updateSendBtn(); scrollDown();
 }
 // 构成一个"进行中回合"的流式事件类型(可重放以重建气泡)。done/message/choice 不在此列。

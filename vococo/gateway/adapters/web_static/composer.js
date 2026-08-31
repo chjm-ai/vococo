@@ -116,9 +116,11 @@ async function send(text, display, opts){
   const fileLabel=files.length ? `\n\n📎 附件：${files.join("、")}` : "";
   // opts.reuseBubble:语音已先冒了占位气泡并回填文字,这里不再重复冒泡
   // !isCurrent():上传等待期间用户已切到别的会话,#wrap 不再属于 sendConv,气泡不能往上贴
+  let meRow=null;
   if(!opts.reuseBubble && isCurrent() && (shown || imgs.length || auds.length || files.length)){
     const fallback=auds.length ? "(语音/音频)" : files.length ? "(文件附件)" : "(图片)";
     const b=addBubble("me", (shown||fallback)+fileLabel, imgs, auds);
+    meRow=b.closest(".row");
     // 有音频还没转写:气泡上加转圈 loading(转写在发送后由服务端做,短音频 1~2s,
     // 会议录音几分钟),收到回复流 start 事件(开始回答)才停转
     if(auds.some(a=>!a.text)){
@@ -134,6 +136,10 @@ async function send(text, display, opts){
     // 有音频待转写:状态行标"音频转写中",让用户知道还在进行(短音频 1~2s,
     // 会议录音几分钟),回复流 start 事件到达后切回正常"思考中/工作中"
     if(auds.some(a=>!a.text)) S.stream.audioPending = true;
+    // 记下这条乐观渲染的用户气泡:回合结束时 finalizeStream 要给它补上跟 AI
+    // 那颗气泡一样的 data-tid,否则历史重绘认不出它是同一轮,会把发出的这句话
+    // 也重复渲染一遍(见 finalizeStream 里的说明)。
+    if(meRow) S.stream.userRow=meRow;
   }
   const payload={
     conv:sendConv, text,
