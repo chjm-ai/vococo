@@ -1,6 +1,8 @@
 """会话库:落库 / 载入 / 水位线开新会话 / 拆词检索 / 清空。"""
 from __future__ import annotations
 
+import base64
+
 
 def test_append_and_load_recent(isolated):
     from vococo.memory import session_store
@@ -125,6 +127,43 @@ def test_duplicate_session_copies_turns_and_title(isolated):
     a = session_store.list_sessions("web:a")[0]
     b = session_store.list_sessions("web:b")[0]
     assert b["last_ts"] >= a["last_ts"]
+
+
+def test_duplicate_session_clones_attachment_files(isolated, monkeypatch):
+    """副本必须持有自己的附件文件:否则删掉原会话会把副本的图/音/附件一起清空。"""
+    from vococo import config
+    from vococo.core.agent import AudioAttachment, FileAttachment, ImageAttachment
+    from vococo.memory import session_store
+
+    monkeypatch.setattr(config, "IMAGES_DIR", isolated / "data" / "images")
+    monkeypatch.setattr(config, "AUDIO_DIR", isolated / "data" / "audio")
+    monkeypatch.setattr(config, "FILES_DIR", isolated / "data" / "files")
+
+    turn_id = session_store.start_turn("web:a", "都看看")
+    session_store.save_turn_images(
+        turn_id, [ImageAttachment(data=base64.b64encode(b"png").decode(), media_type="image/png")]
+    )
+    session_store.save_turn_audio(
+        turn_id,
+        [AudioAttachment(data=b"wav", media_type="audio/wav", filename="a.wav", transcript="喂")],
+    )
+    session_store.save_turn_files(
+        turn_id, [FileAttachment(data=b"pdf", media_type="application/pdf", filename="报价.pdf")]
+    )
+    session_store.finish_turn(turn_id, "看完了")
+
+    session_store.duplicate_session("web:a", "web:b", "副本")
+    copy = session_store.load_history("web:b")[-1]
+    copied_img = copy["images"][0].split("name=")[1]
+    copied_audio = copy["audios"][0]["url"].split("name=")[1]
+    assert copied_img != f"{turn_id}_0.png"  # 换了新文件名,不再和原会话共用同一份
+
+    session_store.delete_session("web:a")  # 删原会话会 purge 它名下的文件
+
+    assert (config.IMAGES_DIR / copied_img).exists()
+    assert (config.AUDIO_DIR / copied_audio).exists()
+    assert len(list(config.FILES_DIR.iterdir())) == 1  # 原会话那份被清,副本那份还在
+    assert session_store.load_history("web:b")[-1]["files"][0]["name"] == "报价.pdf"
 
 
 def test_duplicate_session_empty_source_ok(isolated):

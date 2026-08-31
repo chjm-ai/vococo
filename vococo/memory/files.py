@@ -69,6 +69,31 @@ def save_turn_files(turn_id: int, files: list) -> list[dict]:
     return entries
 
 
+def clone_turn_files(turn_id: int, entries: list) -> list[dict]:
+    """把一批已落盘的附件复制成属于 turn_id 的新副本,返回新的 entries。
+
+    同 images.clone_turn_images:副本会话要持有自己的文件,否则删原会话会连副本的
+    附件一起清掉。源文件缺失的条目保留文件名等显示信息、去掉 file 字段。
+    """
+    out: list[dict] = []
+    config.FILES_DIR.mkdir(parents=True, exist_ok=True)
+    for idx, e in enumerate(entries):
+        if not isinstance(e, dict):
+            continue
+        old = e.get("file") or ""
+        new_entry = dict(e)
+        src = config.FILES_DIR / old if _FILE_NAME_RE.match(old) else None
+        if src is not None and src.is_file():
+            ext = old.rsplit(".", 1)[-1] if "." in old else "bin"
+            new = f"{turn_id}_{idx}.{ext}"
+            (config.FILES_DIR / new).write_bytes(src.read_bytes())
+            new_entry["file"] = new
+        else:
+            new_entry.pop("file", None)
+        out.append(new_entry)
+    return out
+
+
 def purge_session_files(c: sqlite3.Connection, session_key: str) -> None:
     """删会话前把它名下所有附件文件从磁盘清掉,避免孤儿文件堆积。用法同
     purge_session_audio:传入同一条连接,同一事务里先清文件再删行。"""

@@ -72,6 +72,31 @@ def save_turn_audio(turn_id: int, audios: list) -> list[dict]:
     return entries
 
 
+def clone_turn_audio(turn_id: int, entries: list) -> list[dict]:
+    """把一批已落盘的音频复制成属于 turn_id 的新副本,返回新的 entries。
+
+    同 images.clone_turn_images:副本会话要持有自己的文件,否则删原会话会连副本的
+    音频一起清掉。源文件缺失的条目保留转写文字、去掉 file 字段(至少不丢文字稿)。
+    """
+    out: list[dict] = []
+    config.AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    for idx, e in enumerate(entries):
+        if not isinstance(e, dict):
+            continue
+        old = e.get("file") or ""
+        new_entry = dict(e)
+        src = config.AUDIO_DIR / old if _AUDIO_NAME_RE.match(old) else None
+        if src is not None and src.is_file():
+            ext = old.rsplit(".", 1)[-1] if "." in old else "bin"
+            new = f"{turn_id}_{idx}.{ext}"
+            (config.AUDIO_DIR / new).write_bytes(src.read_bytes())
+            new_entry["file"] = new
+        else:
+            new_entry.pop("file", None)
+        out.append(new_entry)
+    return out
+
+
 def audio_path(name: str):
     """按文件名返回音频的磁盘路径(Path);非法名/不存在返回 None —— 供 HTTP 取音频时校验。"""
     if not name or not _AUDIO_NAME_RE.match(name):
