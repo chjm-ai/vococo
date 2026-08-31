@@ -18,8 +18,17 @@ from . import _db
 _AUDIO_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")  # 文件名白名单,挡路径穿越
 
 
-def _audio_ext(media_type: str) -> str:
-    """从 media_type(如 audio/mpeg)取一个安全的扩展名;取不到回落 bin。"""
+def _audio_ext(media_type: str, filename: str = "") -> str:
+    """取一个安全的扩展名:原始文件名优先,其次 media_type,都取不到回落 bin。
+
+    优先用原始文件名,是因为浏览器给 m4a 之类的 type 常常为空或不准(回落成
+    audio/mpeg),落成 .mpeg 会让后续 ffmpeg/ASR 按错误容器解析;文件名里的
+    .m4a 才是真的。
+    """
+    from_name = (filename or "").rsplit(".", 1)[-1] if "." in (filename or "") else ""
+    from_name = re.sub(r"[^a-z0-9]", "", from_name.strip().lower())
+    if from_name and len(from_name) <= 5:
+        return from_name
     ext = (media_type or "").split("/")[-1].split(";")[0].strip().lower()
     ext = re.sub(r"[^a-z0-9]", "", ext)
     return ext or "bin"
@@ -39,8 +48,15 @@ def save_turn_audio(turn_id: int, audios: list) -> list[dict]:
         data = getattr(au, "data", None)
         if not data:
             continue
-        name = f"{turn_id}_{idx}.{_audio_ext(getattr(au, 'media_type', ''))}"
-        (config.AUDIO_DIR / name).write_bytes(data)
+        ext = _audio_ext(getattr(au, "media_type", ""), str(getattr(au, "filename", "") or ""))
+        name = f"{turn_id}_{idx}.{ext}"
+        path = config.AUDIO_DIR / name
+        path.write_bytes(data)
+        # 回填本机路径:模型要能拿原始音频再处理(转写失败/长音频重跑)就靠这个,同图片
+        try:
+            au.local_path = str(path)
+        except AttributeError:
+            pass
         entries.append({
             "file": name,
             "filename": str(getattr(au, "filename", "") or ""),
