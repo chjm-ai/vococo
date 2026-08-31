@@ -116,10 +116,27 @@ function buildBubble(who, text, imgs, auds){
   appendAuds(b, auds);
   return {row, b};
 }
-function addBubble(who, text, imgs, auds){
+// eph=true:这颗气泡的内容服务端也会落库,权威历史重绘后它就是多余的(见 tagConvNode)。
+// 纯前端提示(上传失败/发送失败/超限)不传 eph,它们不在历史里,清掉就再也回不来了。
+function addBubble(who, text, imgs, auds, eph){
   const {row,b}=buildBubble(who, text, imgs, auds);
+  tagConvNode(row, null, eph);
   $("#wrap").append(row); updateEmpty(); scrollDown(true);
   return b;
+}
+// 给直接贴进 #wrap 的"裸节点"(乐观用户气泡、命令回执、报错提示、流式气泡)盖上会话戳。
+// renderTurns 只按 data-tid 做轮次 diff,看不见这些没有 tid 的节点、也删不掉;不盖戳的话
+// 它们会一直粘在消息区里,切到别的会话时露出来(跨会话显示),并且因为它们停在 #wrap 末尾,
+// 后来重绘的权威轮次会插到它们【上面】,看着就是"上一条已发的消息跑到最下面"。
+function tagConvNode(node, conv, eph){
+  if(!node) return node;
+  node.dataset.conv=String(conv!=null?conv:S.conv);
+  if(eph) node.dataset.eph="1";
+  return node;
+}
+// 新会话发出第一条后由 local-xxx 转正成真实 id:把已贴出去的裸节点上的旧戳改过来
+function retagConvNodes(from, to){
+  $("#wrap").querySelectorAll('[data-conv="'+String(from)+'"]').forEach(n=>{ n.dataset.conv=String(to); });
 }
 // AI 消息底部一行:回复时间(灰色小字)+ 复制 + 重新生成。turnId 为空(如命令回复/
 // cron 推送这类不走 Sink.done 的消息)时不挂重新生成按钮——没有 turn id 无法安全定位
@@ -185,7 +202,7 @@ async function regenerateTurn(conv, turnId, btn, auto){
       const blk=document.querySelector('#wrap .turn-block[data-tid="'+turnId+'"]');
       if(blk){ const rows=blk.querySelectorAll(".row"); const r=rows[rows.length-1]; if(r) r.remove(); }
     }
-    S.localSent=true;   // 用户气泡原样保留,避免下面 /send 回显的 "user" 事件又重复冒一条
+    S.localSent[conv]=true;   // 用户气泡原样保留,避免下面 /send 回显的 "user" 事件又重复冒一条
     ensureStream();
   }
   try{
@@ -351,7 +368,7 @@ function ensureStream(t0){
   // flow:文字段与工具卡按到达顺序交错追加(复刻 Claude Code 的边说边干)
   const flow=el("div","flow");
   bubble.append(thinktog,think,flow,status);  // 状态行(工作中…)放气泡底部,像 TG 的打字指示
-  row.append(bubble); $("#wrap").append(row); updateEmpty();
+  row.append(bubble); tagConvNode(row, null, true); $("#wrap").append(row); updateEmpty();
   thinktog.onclick=()=>{ const on=think.classList.toggle("show"); tcv.classList.toggle("down", on); };
   S.stream={row,bubble,status,think,thinktog,flow,segs:{},tools:[],cards:{},subs:{},activeCard:null,tgroup:null,toolCount:0,t0:t0||Date.now(),lastEvt:Date.now()};
   resumeStreamTimer(S.stream);  // 状态行的耗时计数每秒走字;流被任何路径丢弃(完成/切会话)都会自行停表,不泄漏
@@ -580,7 +597,7 @@ function handleEvent(e){
       setMeta(e); loadConvs(); flushPending(e.conv); break; }
     case "message": // 命令回复 / 报错 / cron 推送(AI 主动发图走 mid_turn 分支,不会到这里)
       if(S.stream && !streamText(S.stream)){ finalizeStream(e.text, e.images); }
-      else { S.stream=null; addBubble("ai", e.text, e.images); }
+      else { S.stream=null; addBubble("ai", e.text, e.images, null, true); }
       // 后端推送的报错也更新侧栏状态
       if(e.text&&e.text.includes("⚠️")){
         const el2=e.text.toLowerCase();
@@ -647,10 +664,10 @@ function applyStreamEvent(e){
   }
   switch(e.type){
     case "user":
-      if(S.localSent){ S.localSent=false; break; }  // 本客户端发的,气泡已在 send() 里加了
+      if(S.localSent[e.conv]){ delete S.localSent[e.conv]; break; }  // 本客户端发的,气泡已在 send() 里加了
       // 无活跃流式气泡 = 不是本轮发送 → 历史已渲染过该消息,跳过避免重复
       if(!S.stream) break;
-      addBubble("me", e.text, e.images); break;
+      addBubble("me", e.text, e.images, null, true); break;
     case "start":
       if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }
       if(S.stream) S.stream.audioPending = false;  // 转写完成,状态行恢复正常文案

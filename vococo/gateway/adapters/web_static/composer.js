@@ -119,7 +119,7 @@ async function send(text, display, opts){
   let meRow=null;
   if(!opts.reuseBubble && isCurrent() && (shown || imgs.length || auds.length || files.length)){
     const fallback=auds.length ? "(语音/音频)" : files.length ? "(文件附件)" : "(图片)";
-    const b=addBubble("me", (shown||fallback)+fileLabel, imgs, auds);
+    const b=addBubble("me", (shown||fallback)+fileLabel, imgs, auds, true);
     meRow=b.closest(".row");
     // 有音频还没转写:气泡上加转圈 loading(转写在发送后由服务端做,短音频 1~2s,
     // 会议录音几分钟),收到回复流 start 事件(开始回答)才停转
@@ -129,7 +129,7 @@ async function send(text, display, opts){
     }
   }
   // 标记本轮由本客户端发出,避免收到 "user" 事件时渲染重复气泡
-  if(!text.startsWith("/")) S.localSent = true;
+  if(!text.startsWith("/")) S.localSent[sendConv] = true;
   // 非命令消息:立刻挂一个"💭 思考中…"气泡,不等服务器 start 事件,反馈更即时(像 TG 秒回 typing)
   if(!text.startsWith("/") && !S.stream && isCurrent()){
     ensureStream();
@@ -156,6 +156,9 @@ async function send(text, display, opts){
     S.inflightComposer[sendConv]=S.inflightComposer[oldConv];
     delete S.inflightComposer[oldConv];
     delete S.sending[oldConv]; S.sending[sendConv]=true;
+    // localSent 上面是按发起时的 local- id 打的,而回显的 "user" 事件带的是转正后的真实
+    // id —— 不迁移这把钥匙就对不上,新会话第一条消息会重复冒一个气泡。
+    if(S.localSent[oldConv]){ delete S.localSent[oldConv]; S.localSent[sendConv]=true; }
     // S.convs 里那条草稿行(conv=local-xxx)原地更新成真实 id,别留一条转正前的孤儿条目——
     // 否则"新对话"复用逻辑(newChatIn)会把它当成还没发消息的草稿误重新打开
     const entry=S.convs.find(x=>x.conv===oldConv);
@@ -165,6 +168,9 @@ async function send(text, display, opts){
     }
     if(S.conv===oldConv){
       S.conv=sendConv; renderProjSelChip(); refreshGit(S.conv);
+      // 消息区里已经贴出去的裸节点(乐观用户气泡、流式气泡)盖的还是 local- 那个戳,
+      // 一并改成转正后的真实 id,否则 renderTurns 会把它们当"别的会话的残留"清掉。
+      if(typeof retagConvNodes==="function") retagConvNodes(oldConv, sendConv);
     }
   }
   try{
@@ -699,7 +705,7 @@ function stopRec(cancel){
 // 转写中占位气泡:按"录音发起时所属会话"存进 S.voiceRec,切走再切回能补出来(否则像是丢了)
 function renderVoicePending(conv){
   const st=S.voiceRec[conv]; if(!st) return;
-  const b=addBubble("me","");
+  const b=addBubble("me","",null,null,true);
   b.classList.add("voicebub");
   b.innerHTML='<span class="vwait"><span class="sp"></span>转写中…</span>';
   st.bubble=b;

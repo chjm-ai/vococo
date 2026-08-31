@@ -1242,6 +1242,9 @@ function turnSig(t, isLast){
           isLast?"L":""].join("|");
 }
 let _wrapConv=null;
+// 清空消息区的唯一入口:DOM 和 _wrapConv 这个"消息区现在装的是哪个会话"的记号必须同步改,
+// 谁也别单独动其中一半(见 renderTurns / openConv 里的说明)。
+function clearWrap(conv){ $("#wrap").innerHTML=""; _wrapConv=(conv!==undefined?conv:null); }
 function mergeHistoryTurns(current, incoming){
   if(!incoming || !incoming.length) return [];
   if(!current || !current.length) return incoming.slice();
@@ -1265,6 +1268,23 @@ function renderTurns(turns, conv, opts={}){
   const oldAnchorTop=oldAnchor ? oldAnchor.getBoundingClientRect().top : 0;
   let changed=(conv!==_wrapConv);
   if(changed){ wrap.innerHTML=""; _wrapConv=conv; }
+  // 没换会话时也要扫一遍"裸节点"(没有 data-tid,不参与下面的轮次 diff:乐观用户气泡、
+  // 命令回执、被丢弃的流式气泡)。它们盖了会话戳(见 stream.js 的 tagConvNode),不清的话
+  // 会一直粘在消息区里跨会话露出来,且因为停在 #wrap 末尾,新渲染的权威轮次会插到它们
+  // 【上面】,看着就是"上一条已发的消息跑到了最下面"。
+  // 两类要清:①戳跟当前会话对不上的(别的会话的残留);②本会话的 data-eph 节点——eph 表示
+  // 这条服务端也落了库,下面的权威历史会把它渲出来,留着就是重复。清 eph 有个前提:该会话
+  // 此刻没有进行中的流式/录音,否则正在长出来的那颗气泡会被自己的历史重绘顺手抹掉。
+  else {
+    const busy=(S.stream && String(S.conv)===String(conv)) || S.voiceRec[conv];
+    for(const node of [...wrap.children]){
+      if(!node.dataset || node.dataset.tid) continue;
+      const stamp=node.dataset.conv;
+      if(!stamp) continue;                                    // 没盖戳的(老节点/别处贴的)不碰
+      if(stamp!==String(conv)){ node.remove(); changed=true; }
+      else if(node.dataset.eph==="1" && !busy){ node.remove(); changed=true; }
+    }
+  }
   // tid → 节点数组:通常 1 个;但"进行中回合"是用户气泡+流式气泡两颗独立裸节点
   // (回合结束时 finalizeStream 给两颗都打上同一个 tid,见 stream.js),合并成
   // 权威的单个 turn-block 时,两颗裸节点要一并清掉,不能只顶掉其中一个。
@@ -1511,10 +1531,13 @@ async function openConv(conv, silentGroup){
     if(!S.histPaging[conv]) S.histPaging[conv]={loading:false,hasMore:cached.length>=40};
     renderTurns(cached, conv);
   }      // 命中缓存:立即渲染,消除"先闪空屏再出内容"
+  // 这两条分支自己清空消息区、不经过 renderTurns,必须顺手把 _wrapConv 记成目标会话。
+  // 漏记的话消息区装的是新会话的内容、_wrapConv 还停在上一个会话,之后 renderTurns 会误判
+  // 「没换过会话」而不清空,把两个会话的气泡混在一起(跨会话显示的根因)。
   else if(!isLocal && hasMsgs){                 // 只在「换到一个有历史、还没拉过的真实会话」时才铺骨架屏
-    $("#wrap").innerHTML=""; $("#empty").style.display="none"; $("#convLoading").classList.add("on");
+    clearWrap(conv); $("#empty").style.display="none"; $("#convLoading").classList.add("on");
   }else{                                        // 新建会话 / 空会话:不闪骨架,清空后交给 updateEmpty 出欢迎屏
-    $("#wrap").innerHTML=""; $("#convLoading").classList.remove("on");
+    clearWrap(conv); $("#convLoading").classList.remove("on");
   }
   if(S.voiceRec[conv]) renderVoicePending(conv);  // 切回时该会话仍在转写 → 补出占位气泡,不然像是丢了
   if(conv && !isLocal){
