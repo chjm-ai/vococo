@@ -143,3 +143,40 @@ def test_gen_image_no_provider(isolated, monkeypatch):
     monkeypatch.setattr("vococo.providers.sidecar_env", lambda name: None)
     out = _text(_run(builtin.generate_image.handler({"prompt": "猫"})))
     assert "未配置 codex-gpt" in out
+
+
+# === merge_workbench_projects ===
+def test_merge_workbench_projects_moves_all_tasks_after_approval(isolated, monkeypatch):
+    from vococo.memory import workbench
+    from vococo.tools import builtin
+
+    async def approve(*args):
+        return True
+
+    monkeypatch.setattr("vococo.tools.danger.require_approval", approve)
+    projects = {project["name"]: project["id"] for project in workbench.list_projects()}
+    out = _text(_run(builtin.merge_workbench_projects.handler({
+        "target": "VocoTrade", "sources": ["面料外贸"],
+    })))
+
+    assert "迁移 3 条任务" in out
+    assert {project["name"] for project in workbench.list_projects()} == {
+        "AI 咨询", "VocoTrade", "离职过渡"
+    }
+    assert all(task["project"] == projects["VocoTrade"] for task in workbench.list_tasks() if task["id"] in {"crawler-plan", "difs", "lemlist"})
+
+
+def test_merge_workbench_projects_stops_without_approval(isolated, monkeypatch):
+    from vococo.memory import workbench
+    from vococo.tools import builtin
+
+    async def reject(*args):
+        return False
+
+    monkeypatch.setattr("vococo.tools.danger.require_approval", reject)
+    out = _text(_run(builtin.merge_workbench_projects.handler({
+        "target": "VocoTrade", "sources": ["面料外贸"],
+    })))
+
+    assert "未批准" in out
+    assert "面料外贸" in {project["name"] for project in workbench.list_projects()}
