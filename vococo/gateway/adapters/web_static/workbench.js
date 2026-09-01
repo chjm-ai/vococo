@@ -756,7 +756,7 @@ function renderWorkbenchCompleted(){
 }
 
 function renderWorkbenchProjectFilter(){
-  const chips = WB_DATA.projects.map(project => '<button class="'+(WB.project === project.id ? "on" : "")+'" type="button" data-project="'+esc(project.id)+'" title="右键：重命名/归档">'+esc(project.name)+'</button>').join("");
+  const chips = WB_DATA.projects.map(project => '<button class="'+(WB.project === project.id ? "on" : "")+'" type="button" data-project="'+esc(project.id)+'" title="右键：重命名/合并/归档">'+esc(project.name)+'</button>').join("");
   const unassignedChip = '<button class="'+(WB.project === WB_UNASSIGNED_ID ? "on" : "")+'" type="button" data-project="'+WB_UNASSIGNED_ID+'">未分组</button>';
   return '<div class="wb-project-filter"><button class="'+(WB.project === "all" ? "on" : "")+'" type="button" data-project="all">全部项目</button>'+chips+unassignedChip+
     '<button class="wb-project-add" type="button" data-add-project aria-label="新建项目" title="新建项目">'+ic("plus")+'</button></div>';
@@ -1879,12 +1879,35 @@ async function archiveWorkbenchProject(projectId){
   }catch(e){ alert("归档失败，请刷新页面重试"); }
 }
 
+async function mergeWorkbenchProject(sourceId, targetName){
+  const source = workbenchProject(sourceId);
+  const target = WB_DATA.projects.find(project => project.name.toLowerCase() === targetName.toLowerCase());
+  if(!source || !target){ alert("找不到目标项目。"); return; }
+  if(source.id === target.id){ alert("不能合并到自身。"); return; }
+  if(!confirm('将「'+source.name+'」的全部任务（含已完成与回收站）迁入「'+target.name+'」，并归档来源项目？')) return;
+  try{
+    const r = await api("/workbench/projects/merge", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({target:target.id, sources:[source.id]})});
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error||"合并失败");
+    WB_DATA.tasks.forEach(task => { if(task.project === source.id) task.project = target.id; });
+    WB_DATA.projects = WB_DATA.projects.filter(project => project.id !== source.id);
+    if(WB.project === source.id) WB.project = target.id;
+    renderWorkbench();
+  }catch(e){ alert("合并失败："+(e.message||"请刷新页面重试")); }
+}
+
 function workbenchProjectMenu(projectId){
   const project = workbenchProject(projectId);
   if(!project) return;
-  const name = prompt("重命名项目(清空后确定 = 归档该项目，名下任务会保留)：", project.name);
+  const name = prompt("项目操作：直接输入名称=重命名；输入 >目标项目名=合并；清空=归档。", project.name);
   if(name === null) return;
   const trimmed = name.trim();
+  if(trimmed.startsWith(">")){
+    const targetName = trimmed.slice(1).trim();
+    if(!targetName) alert("请在 > 后输入目标项目名。");
+    else mergeWorkbenchProject(projectId, targetName);
+    return;
+  }
   if(!trimmed){
     if(confirm('归档项目「'+project.name+'」？名下任务仍会保留，只是不再显示。')) archiveWorkbenchProject(projectId);
     return;

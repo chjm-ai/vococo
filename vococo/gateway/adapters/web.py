@@ -1404,6 +1404,18 @@ class WebAdapter:
 
     @_authed
     @_json_body
+    async def _handle_workbench_project_merge(self, request: web.Request, body: dict) -> web.Response:
+        target_id = str(body.get("target") or "")
+        sources = body.get("sources")
+        if not isinstance(sources, list):
+            return web.json_response({"error": "target / sources 无效"}, status=400)
+        result = workbench.merge_projects(target_id, [str(item) for item in sources])
+        if result is None:
+            return web.json_response({"error": "目标或来源项目无效"}, status=400)
+        return web.json_response(result)
+
+    @_authed
+    @_json_body
     async def _handle_workbench_project_reorder(self, request: web.Request, body: dict) -> web.Response:
         order = body.get("order")
         if not isinstance(order, list):
@@ -2689,6 +2701,7 @@ class WebAdapter:
                 web.post("/workbench/projects/create", self._handle_workbench_project_create),
                 web.post("/workbench/projects/rename", self._handle_workbench_project_rename),
                 web.post("/workbench/projects/archive", self._handle_workbench_project_archive),
+                web.post("/workbench/projects/merge", self._handle_workbench_project_merge),
                 web.post("/workbench/projects/reorder", self._handle_workbench_project_reorder),
                 web.post("/workbench/tasks/create", self._handle_workbench_task_create),
                 web.post("/workbench/tasks/update", self._handle_workbench_task_update),

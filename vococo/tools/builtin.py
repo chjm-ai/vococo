@@ -600,6 +600,47 @@ async def list_workbench_projects(args: dict) -> dict:
     return _ok("工作台项目:\n" + "\n".join(lines))
 
 @tool(
+    "merge_workbench_projects",
+    "合并工作台项目:把 sources 中项目的全部任务(包括已完成和回收站任务)迁入 target,"
+    "并归档来源项目。target/sources 均可传项目 id 或名称。此操作会隐藏来源项目,"
+    "执行前必须已向用户确认。",
+    {
+        "type": "object",
+        "properties": {
+            "target": {"type": "string"},
+            "sources": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["target", "sources"],
+    },
+)
+async def merge_workbench_projects(args: dict) -> dict:
+    from . import danger
+
+    target_ref = (args.get("target") or "").strip()
+    source_refs = [str(item).strip() for item in (args.get("sources") or []) if str(item).strip()]
+    projects = workbench.list_projects()
+    target = _resolve_workbench_project(target_ref, projects)
+    sources = [_resolve_workbench_project(ref, projects) for ref in source_refs]
+    if not target or not source_refs or any(source is None for source in sources):
+        return _ok("项目不存在。请先用 list_workbench_projects 确认 target 和 sources。")
+    source_ids = [source["id"] for source in sources if source]
+    if target["id"] in source_ids or len(set(source_ids)) != len(source_ids):
+        return _ok("目标项目不能同时作为来源项目,来源项目也不能重复。")
+    source_names = "、".join(source["name"] for source in sources if source)
+    if not await danger.require_approval(
+        "合并工作台项目",
+        f"将「{source_names}」的全部任务迁入「{target['name']}」,并归档来源项目",
+    ):
+        return _ok("🛑 未批准合并工作台项目,已跳过。")
+    result = workbench.merge_projects(target["id"], source_ids)
+    if result is None:
+        return _ok("合并失败:目标或来源项目已失效,请刷新后重试。")
+    return _ok(
+        f"✅ 已将「{source_names}」合并到「{target['name']}」:迁移 {result['taskCount']} 条任务,"
+        "来源项目已归档。"
+    )
+
+@tool(
     "list_workbench_tasks",
     "列出工作台任务(GTD 待办)。project:可选,按项目 id/名字过滤,不传返回全部。"
     "用户问「今天/这周有什么任务」「工作台上有什么」时用,自己按返回的 date 字段筛日期。",
@@ -1253,6 +1294,7 @@ def build_mcp_servers() -> dict:
                 update_cron_job,
                 delete_cron_job,
                 list_workbench_projects,
+                merge_workbench_projects,
                 list_workbench_tasks,
                 create_workbench_task,
                 update_workbench_task,
