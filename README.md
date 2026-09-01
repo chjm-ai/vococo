@@ -1,21 +1,42 @@
-# vococo
+<p align="center">
+  <img src="docs/images/logo.png" width="120" alt="vococo logo">
+</p>
 
-基于 **Claude 订阅** 的个人 AI 助理,给自己用。单用户、常驻、语音优先、多渠道共用一个大脑。
-架构参考 [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent),锁定 Claude、单用户、精简。
+<h1 align="center">vococo</h1>
 
-> 完整需求见 [REQUIREMENTS.md](REQUIREMENTS.md)。
+<p align="center">
+  基于 <b>Claude 订阅</b> 的个人 AI 助理，单用户、常驻、语音优先、多渠道共用一个大脑。
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/python-≥3.11-blue" alt="Python">
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey" alt="Platform">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+</p>
+
+---
+
+## 截图
+
+| 聊天 · 工具调用 | 工作台 |
+|:---:|:---:|
+| ![chat](docs/images/chat.jpg) | ![workbench](docs/images/workbench.jpg) |
+| **语音对话** | **定时任务** |
+| ![voice](docs/images/voice.jpg) | ![cron](docs/images/cron.jpg) |
+
+---
+
+> 完整需求与验收标准见 [REQUIREMENTS.md](REQUIREMENTS.md)。
 
 ## 特性
 
-- **多渠道,一个会话**:TUI / CLI / Web(自建 PWA,手机浏览器直达);默认全端共享同一主会话。
-- **Web 自建 UI**:多会话侧边栏、工具调用卡片(对齐 Claude Code)、模型面板 + 限额环、设置页全在线改。
-- **语音优先**:按住说话(STT)、TTS 朗读、Omni 实时免提通话(可打断)。
-- **后台任务引擎**:语音派活 / cron / 独立新会话共用一套引擎,任务跑在独立 git worktree。
-- **长期记忆**:启动注入 `~/AI_BRAIN`;`save_memory` 沉淀、`recall_past` 召回,纯 Markdown。
-- **多供应商热切换**:DeepSeek / Kimi / 任意 Anthropic 兼容中转在设置页添加即生效(详见 REQUIREMENTS §6)。
-- **安全模型 + 自我运维**:危险三档闸、手机审批;`vococo doctor` 自检、`restart_self` 安全重启、看门狗防假死。
-
-需求矩阵与验收标准见 [REQUIREMENTS.md](REQUIREMENTS.md) §4,本节不重复维护。
+- **多渠道，一个会话** — TUI / CLI / Web（自建 PWA，手机浏览器直达）；全端共享同一主会话
+- **Web 自建 UI** — 多会话侧边栏、工具调用卡片、模型面板 + 限额环、设置页全在线改
+- **语音优先** — 按住说话（STT）、TTS 朗读、Omni 实时免提通话（可打断）
+- **后台任务引擎** — 语音派活 / cron / 独立新会话共用一套引擎，任务跑在独立 git worktree
+- **长期记忆** — 启动注入 `~/AI_BRAIN`；`save_memory` 沉淀、`recall_past` 召回，纯 Markdown
+- **多供应商热切换** — DeepSeek / Kimi / 任意 Anthropic 兼容中转，设置页添加即生效
+- **安全模型 + 自我运维** — 危险三档闸、手机审批；`vococo doctor` 自检、`restart_self` 安全重启、看门狗防假死
 
 ## 架构
 
