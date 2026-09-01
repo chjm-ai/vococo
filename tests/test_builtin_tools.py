@@ -145,38 +145,34 @@ def test_gen_image_no_provider(isolated, monkeypatch):
     assert "未配置 codex-gpt" in out
 
 
-# === merge_workbench_projects ===
-def test_merge_workbench_projects_moves_all_tasks_after_approval(isolated, monkeypatch):
+# === 工作台项目操作 ===
+def test_create_rename_and_archive_workbench_project(isolated, monkeypatch):
     from vococo.memory import workbench
     from vococo.tools import builtin
 
     async def approve(*args):
         return True
 
-    monkeypatch.setattr("vococo.tools.danger.require_approval", approve)
-    projects = {project["name"]: project["id"] for project in workbench.list_projects()}
-    out = _text(_run(builtin.merge_workbench_projects.handler({
-        "target": "VocoTrade", "sources": ["面料外贸"],
+    created = _text(_run(builtin.create_workbench_project.handler({"name": "新项目"})))
+    assert "已创建" in created
+    renamed = _text(_run(builtin.rename_workbench_project.handler({
+        "project": "新项目", "name": "已改名项目",
     })))
+    assert "重命名" in renamed
+    monkeypatch.setattr("vococo.tools.danger.require_approval", approve)
+    archived = _text(_run(builtin.archive_workbench_project.handler({"project": "已改名项目"})))
+    assert "已归档" in archived
+    assert "已改名项目" not in {project["name"] for project in workbench.list_projects()}
 
-    assert "迁移 3 条任务" in out
-    assert {project["name"] for project in workbench.list_projects()} == {
-        "AI 咨询", "VocoTrade", "离职过渡"
-    }
-    assert all(task["project"] == projects["VocoTrade"] for task in workbench.list_tasks() if task["id"] in {"crawler-plan", "difs", "lemlist"})
 
-
-def test_merge_workbench_projects_stops_without_approval(isolated, monkeypatch):
+def test_move_workbench_task_moves_task_tree_to_project(isolated):
     from vococo.memory import workbench
     from vococo.tools import builtin
 
-    async def reject(*args):
-        return False
-
-    monkeypatch.setattr("vococo.tools.danger.require_approval", reject)
-    out = _text(_run(builtin.merge_workbench_projects.handler({
-        "target": "VocoTrade", "sources": ["面料外贸"],
+    projects = {project["name"]: project["id"] for project in workbench.list_projects()}
+    out = _text(_run(builtin.move_workbench_task.handler({
+        "task": "crawler-plan", "project": "VocoTrade",
     })))
 
-    assert "未批准" in out
-    assert "面料外贸" in {project["name"] for project in workbench.list_projects()}
+    assert "已将任务" in out
+    assert workbench.get_task("crawler-plan")["project"] == projects["VocoTrade"]
