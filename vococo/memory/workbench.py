@@ -167,42 +167,6 @@ def archive_project(project_id: str) -> None:
     c.commit()
 
 
-def merge_projects(target_id: str, source_ids: list[str]) -> dict | None:
-    """把多个活跃项目的全部任务迁入目标项目,并归档来源项目。
-
-    连同回收站任务一起迁移,避免后续恢复时落到已归档项目。任务树的父子关系不变;
-    同一来源项目的整棵树都进入目标项目,不会出现跨项目父子节点。
-    """
-    source_ids = list(dict.fromkeys(source_ids))
-    if not target_id or not source_ids or target_id in source_ids:
-        return None
-    c = _db.conn()
-    active = {
-        row[0] for row in c.execute(
-            "SELECT id FROM workbench_projects WHERE archived=0"
-        ).fetchall()
-    }
-    if target_id not in active or not set(source_ids).issubset(active):
-        return None
-    try:
-        c.execute("BEGIN")
-        placeholders = ",".join("?" for _ in source_ids)
-        moved = c.execute(
-            f"UPDATE workbench_tasks SET project_id=?, updated_at=? "
-            f"WHERE project_id IN ({placeholders})",
-            (target_id, time.time(), *source_ids),
-        ).rowcount
-        c.execute(
-            f"UPDATE workbench_projects SET archived=1 WHERE id IN ({placeholders})",
-            source_ids,
-        )
-        c.commit()
-    except Exception:
-        c.rollback()
-        raise
-    return {"targetId": target_id, "sourceIds": source_ids, "taskCount": moved}
-
-
 def reorder_projects(order: list[str]) -> None:
     c = _db.conn()
     c.executemany(

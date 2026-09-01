@@ -600,45 +600,93 @@ async def list_workbench_projects(args: dict) -> dict:
     return _ok("工作台项目:\n" + "\n".join(lines))
 
 @tool(
-    "merge_workbench_projects",
-    "合并工作台项目:把 sources 中项目的全部任务(包括已完成和回收站任务)迁入 target,"
-    "并归档来源项目。target/sources 均可传项目 id 或名称。此操作会隐藏来源项目,"
-    "执行前必须已向用户确认。",
+    "create_workbench_project",
+    "在工作台创建项目。name 为项目名称。",
+    {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+)
+async def create_workbench_project(args: dict) -> dict:
+    name = (args.get("name") or "").strip()
+    project = workbench.create_project(name)
+    if project is None:
+        return _ok("项目名称不能为空。")
+    return _ok(f"✅ 已创建项目「{project['name']}」,id={project['id']}。")
+
+
+@tool(
+    "rename_workbench_project",
+    "重命名工作台项目。project 可传项目 id 或名称；name 为新名称。",
+    {
+        "type": "object",
+        "properties": {"project": {"type": "string"}, "name": {"type": "string"}},
+        "required": ["project", "name"],
+    },
+)
+async def rename_workbench_project(args: dict) -> dict:
+    project_ref = (args.get("project") or "").strip()
+    name = (args.get("name") or "").strip()
+    project = _resolve_workbench_project(project_ref, workbench.list_projects())
+    if not project:
+        return _ok(f"没找到项目「{project_ref}」。用 list_workbench_projects 看列表。")
+    updated = workbench.rename_project(project["id"], name)
+    if updated is None:
+        return _ok("项目名称不能为空。")
+    return _ok(f"✅ 已将项目「{project['name']}」重命名为「{updated['name']}」。")
+
+
+@tool(
+    "archive_workbench_project",
+    "归档工作台项目(从项目列表隐藏但不删除任何任务)。project 可传项目 id 或名称。"
+    "归档前必须已向用户确认。",
+    {"type": "object", "properties": {"project": {"type": "string"}}, "required": ["project"]},
+)
+async def archive_workbench_project(args: dict) -> dict:
+    from . import danger
+
+    project_ref = (args.get("project") or "").strip()
+    project = _resolve_workbench_project(project_ref, workbench.list_projects())
+    if not project:
+        return _ok(f"没找到项目「{project_ref}」。用 list_workbench_projects 看列表。")
+    if not await danger.require_approval("归档工作台项目", f"项目「{project['name']}」(任务会保留)"):
+        return _ok(f"🛑 未批准归档项目「{project['name']}」,已跳过。")
+    workbench.archive_project(project["id"])
+    return _ok(f"✅ 已归档项目「{project['name']}」,名下任务已保留。")
+
+
+@tool(
+    "move_workbench_task",
+    "将一条工作台任务连同其未删除的子任务树迁入目标项目。task 和 project 可传 id 或名称；"
+    "parent 可选，指定后挂到目标项目中的父任务下，省略则移为顶级任务。",
     {
         "type": "object",
         "properties": {
-            "target": {"type": "string"},
-            "sources": {"type": "array", "items": {"type": "string"}},
+            "task": {"type": "string"},
+            "project": {"type": "string"},
+            "parent": {"type": "string"},
         },
-        "required": ["target", "sources"],
+        "required": ["task", "project"],
     },
 )
-async def merge_workbench_projects(args: dict) -> dict:
-    from . import danger
-
-    target_ref = (args.get("target") or "").strip()
-    source_refs = [str(item).strip() for item in (args.get("sources") or []) if str(item).strip()]
-    projects = workbench.list_projects()
-    target = _resolve_workbench_project(target_ref, projects)
-    sources = [_resolve_workbench_project(ref, projects) for ref in source_refs]
-    if not target or not source_refs or any(source is None for source in sources):
-        return _ok("项目不存在。请先用 list_workbench_projects 确认 target 和 sources。")
-    source_ids = [source["id"] for source in sources if source]
-    if target["id"] in source_ids or len(set(source_ids)) != len(source_ids):
-        return _ok("目标项目不能同时作为来源项目,来源项目也不能重复。")
-    source_names = "、".join(source["name"] for source in sources if source)
-    if not await danger.require_approval(
-        "合并工作台项目",
-        f"将「{source_names}」的全部任务迁入「{target['name']}」,并归档来源项目",
-    ):
-        return _ok("🛑 未批准合并工作台项目,已跳过。")
-    result = workbench.merge_projects(target["id"], source_ids)
-    if result is None:
-        return _ok("合并失败:目标或来源项目已失效,请刷新后重试。")
-    return _ok(
-        f"✅ 已将「{source_names}」合并到「{target['name']}」:迁移 {result['taskCount']} 条任务,"
-        "来源项目已归档。"
-    )
+async def move_workbench_task(args: dict) -> dict:
+    task_ref = (args.get("task") or "").strip()
+    project_ref = (args.get("project") or "").strip()
+    tasks = workbench.list_tasks()
+    task = _resolve_workbench_task(task_ref, tasks)
+    project = _resolve_workbench_project(project_ref, workbench.list_projects())
+    if not task:
+        return _ok(f"没找到任务「{task_ref}」。用 list_workbench_tasks 看列表。")
+    if not project:
+        return _ok(f"没找到项目「{project_ref}」。用 list_workbench_projects 看列表。")
+    parent_ref = (args.get("parent") or "").strip()
+    parent_id = None
+    if parent_ref:
+        parent = _resolve_workbench_task(parent_ref, tasks)
+        if not parent:
+            return _ok(f"没找到父任务「{parent_ref}」。用 list_workbench_tasks 看列表。")
+        parent_id = parent["id"]
+    moved = workbench.move_task(task["id"], parent_id, project["id"], [item["id"] for item in tasks])
+    if moved is None:
+        return _ok("迁移失败:目标项目、父任务或任务层级无效。")
+    return _ok(f"✅ 已将任务「{moved['title']}」迁入「{project['name']}」。")
 
 @tool(
     "list_workbench_tasks",
@@ -1294,7 +1342,10 @@ def build_mcp_servers() -> dict:
                 update_cron_job,
                 delete_cron_job,
                 list_workbench_projects,
-                merge_workbench_projects,
+                create_workbench_project,
+                rename_workbench_project,
+                archive_workbench_project,
+                move_workbench_task,
                 list_workbench_tasks,
                 create_workbench_task,
                 update_workbench_task,

@@ -33,7 +33,6 @@ def workbench_web_app(isolated, monkeypatch):
             web.post("/workbench/projects/create", adapter._handle_workbench_project_create),
             web.post("/workbench/projects/rename", adapter._handle_workbench_project_rename),
             web.post("/workbench/projects/archive", adapter._handle_workbench_project_archive),
-            web.post("/workbench/projects/merge", adapter._handle_workbench_project_merge),
             web.post("/workbench/projects/reorder", adapter._handle_workbench_project_reorder),
             web.post("/workbench/tasks/create", adapter._handle_workbench_task_create),
             web.post("/workbench/tasks/update", adapter._handle_workbench_task_update),
@@ -107,50 +106,6 @@ async def test_rename_and_archive_project_via_http(workbench_web_app):
         resp = await client.get("/workbench")
         names = {p["name"] for p in (await resp.json())["projects"]}
         assert "已改名" not in names
-
-
-@pytest.mark.anyio
-async def test_merge_projects_via_http_moves_active_and_trashed_tasks(workbench_web_app):
-    async with TestClient(TestServer(workbench_web_app)) as client:
-        bundle = await client.get("/workbench")
-        projects = {project["name"]: project["id"] for project in (await bundle.json())["projects"]}
-        target_id = projects["VocoTrade"]
-        source_id = projects["面料外贸"]
-
-        resp = await client.post(
-            "/workbench/tasks/create", json={"project": source_id, "title": "回收站任务"}
-        )
-        trashed_id = (await resp.json())["task"]["id"]
-        await client.post("/workbench/tasks/delete", json={"id": trashed_id})
-
-        resp = await client.post(
-            "/workbench/projects/merge", json={"target": target_id, "sources": [source_id]}
-        )
-        assert resp.status == 200
-        result = await resp.json()
-        assert result["targetId"] == target_id
-        assert result["sourceIds"] == [source_id]
-        assert result["taskCount"] >= 1
-
-        bundle = await client.get("/workbench")
-        data = await bundle.json()
-        assert source_id not in {project["id"] for project in data["projects"]}
-        assert all(task["project"] == target_id for task in data["tasks"] if task["id"] in {"crawler-plan", "difs", "lemlist"})
-
-        trashed = await client.get("/workbench/trash")
-        task = next(task for task in (await trashed.json())["tasks"] if task["id"] == trashed_id)
-        assert task["project"] == target_id
-
-
-@pytest.mark.anyio
-async def test_merge_projects_rejects_target_as_source(workbench_web_app):
-    async with TestClient(TestServer(workbench_web_app)) as client:
-        bundle = await client.get("/workbench")
-        target_id = (await bundle.json())["projects"][0]["id"]
-        resp = await client.post(
-            "/workbench/projects/merge", json={"target": target_id, "sources": [target_id]}
-        )
-        assert resp.status == 400
 
 
 @pytest.mark.anyio
