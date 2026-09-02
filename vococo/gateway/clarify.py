@@ -30,6 +30,8 @@ class _Ctx:
     session_key: str
     adapter: object  # 有 present_choice / send 的 adapter
     chat_id: object
+    # generate_image 在 Web 渠道已自动展示的文件。本轮内 send_image 不得重复发送。
+    auto_sent_image_paths: set[str] = field(default_factory=set)
 
 
 # 当前轮的路由信息(随 contextvar 传进 MCP 工具)

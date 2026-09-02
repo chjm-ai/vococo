@@ -85,6 +85,12 @@ def test_build_system_prompt_threads_cwd(tmp_path: Path):
     assert "本项目指南" not in build_system_prompt(None)["append"]
 
 
+def test_prompt_forbids_duplicate_image_send():
+    out = build_system_prompt(None)["append"]
+    assert "generate_image" in out
+    assert "不得再对该图片调用" in out
+
+
 def test_cache_invalidated_on_agents_mtime_change(tmp_path: Path):
     """同一 cache_key 下 AGENTS.md 修改后,冻结快照自动失效重装。
 

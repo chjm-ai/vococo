@@ -145,6 +145,28 @@ def test_gen_image_no_provider(isolated, monkeypatch):
     assert "未配置 codex-gpt" in out
 
 
+def test_send_image_rejects_same_turn_auto_generated_image(tmp_path, monkeypatch):
+    """generate_image 已自动展示的文件，send_image 必须拒绝重复发送。"""
+    from vococo.gateway import clarify
+    from vococo.gateway.adapters import web as web_mod
+    from vococo.tools import builtin
+
+    class FakeWebAdapter:
+        async def send_image(self, *args):
+            raise AssertionError("不应重复发送")
+
+    monkeypatch.setattr(web_mod, "WebAdapter", FakeWebAdapter)
+    image_path = tmp_path / "generated.png"
+    token = clarify.set_current("web:test", FakeWebAdapter(), "test")
+    try:
+        clarify.current().auto_sent_image_paths.add(str(image_path.resolve()))
+        out = _text(_run(builtin.send_image.handler({"path": str(image_path)})))
+    finally:
+        clarify.reset_current(token)
+
+    assert "已由 generate_image 自动发送" in out
+
+
 # === 工作台项目操作 ===
 def test_create_rename_and_archive_workbench_project(isolated, monkeypatch):
     from vococo.memory import workbench

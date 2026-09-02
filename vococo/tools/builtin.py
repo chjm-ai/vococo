@@ -932,9 +932,10 @@ async def send_message(args: dict) -> dict:
 
 @tool(
     "send_image",
-    "把一张本地图片文件(截图/生图产出)发送到当前 Web 聊天里显示。仅 Web 端支持,"
-    "其他渠道会提示不支持。path:本地图片文件的绝对路径(png/jpg/jpeg/gif/webp);"
-    "caption:可选,作为图片说明文字一并显示。",
+    "把一张本地图片文件(截图或已有文件)发送到当前 Web 聊天里显示。仅 Web 端支持,"
+    "其他渠道会提示不支持。注意:本轮 generate_image 成功后的图片已经自动显示,"
+    "严禁再用本工具发送同一路径,否则会重复发图。path:本地图片文件的绝对路径"
+    "(png/jpg/jpeg/gif/webp);caption:可选,作为图片说明文字一并显示。",
     {
         "type": "object",
         "properties": {
@@ -954,16 +955,20 @@ async def send_image(args: dict) -> dict:
     caption = (args.get("caption") or "").strip()
     if not path:
         return _ok("send_image 需要非空 path。")
+    image_path = Path(path).expanduser().resolve()
     ctx = clarify.current()
     if ctx is None or not isinstance(ctx.adapter, WebAdapter):
         return _ok("当前渠道不支持发送图片(仅 Web 端支持)。")
-    err = await ctx.adapter.send_image(ctx.chat_id, Path(path), caption)
+    if str(image_path) in ctx.auto_sent_image_paths:
+        return _ok("该图片已由 generate_image 自动发送到当前聊天，本轮禁止重复发送。")
+    err = await ctx.adapter.send_image(ctx.chat_id, image_path, caption)
     return _ok(err or "已发送到当前聊天。")
 
 @tool(
     "generate_image",
     "根据文字描述生成一张图片(走 codex-gpt 供应商的 gpt-image 模型),保存到本地,"
-    "并自动发到当前 Web 聊天显示(非 Web 渠道只保存,返回路径)。"
+    "并自动发到当前 Web 聊天显示(非 Web 渠道只保存,返回路径)。Web 渠道生成成功后图片"
+    "已经展示，严禁在同一轮再调用 send_image 发送该图片。"
     "prompt:图片内容描述,越具体越好(主体/风格/构图/配色/氛围);"
     "size:可选 1024x1024(默认)/1024x1536(竖)/1536x1024(横);"
     "model:可选 gpt-image-2(默认)/gpt-image-1.5。",
@@ -1040,13 +1045,16 @@ async def generate_image(args: dict) -> dict:
     path = img_dir / f"gen_{stamp}_{uuid.uuid4().hex[:6]}{ext}"
     path.write_bytes(raw)
 
-    # 4) 当前是 Web 渠道 → 自动发图显示
+    # 4) 当前是 Web 渠道 → 自动发图显示，并登记路径拦住本轮的重复 send_image。
     sent = ""
     ctx = clarify.current()
     if ctx is not None and isinstance(ctx.adapter, WebAdapter):
         err = await ctx.adapter.send_image(ctx.chat_id, path, f"{model} · {prompt[:40]}")
         if err:
             sent = f"(自动发送失败:{err})"
+        else:
+            ctx.auto_sent_image_paths.add(str(path.resolve()))
+            sent = "(已自动发送到当前聊天；本轮不要再调用 send_image)"
     return _ok(f"✅ 已生成图片并保存:{path} {sent}")
 
 @tool(
