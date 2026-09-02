@@ -89,6 +89,12 @@ def conn() -> sqlite3.Connection:
             "last_in",
             "last_cache",
             "last_out",
+            # cache_read_total/input_fresh_total=全会话累计(跟 total_tokens 一样只加不减,
+            # /new /clear 才清零),供算「会话累计缓存命中率」= cache_read_total /
+            # (cache_read_total+input_fresh_total)。last_cache/last_in 只是最近一轮快照,
+            # 换模型/多轮之后就丢了历史,算不出全会话口径。
+            "cache_read_total",
+            "input_fresh_total",
         ):
             if col not in cols:
                 _DB.execute(

@@ -300,7 +300,8 @@ def new_session(session_key: str) -> None:
         "VALUES (?,?,0,0) "
         "ON CONFLICT(session_key) DO UPDATE SET "
         "watermark_id=excluded.watermark_id, ctx_tokens=0, total_tokens=0, "
-        "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL",
+        "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL, "
+        "cache_read_total=0, input_fresh_total=0",
         (session_key, row[0]),
     )
     c.commit()
@@ -319,21 +320,31 @@ def record_usage(
 ) -> None:
     """一轮结束后更新 token 计量:ctx_tokens/明细取最新(=当前上下文占用),
     total_tokens 累加(=当前窗口的消耗)。ctx_tokens=0 代表本轮真实查询失败
-    (agent.py 不再用不可靠的累计值兜底),此时保留数据库里的旧值,不拿 0 覆盖。"""
+    (agent.py 不再用不可靠的累计值兜底),此时保留数据库里的旧值,不拿 0 覆盖。
+
+    cache_read_total/input_fresh_total 跟 total_tokens 一样是全会话累加(不是
+    last_cache/last_in 那种覆盖式快照),供算「会话累计缓存命中率」=
+    cache_read_total/(cache_read_total+input_fresh_total)。换模型也照样累加——
+    数值本身不区分模型,调用方展示时要注意跨模型混算的口径问题(见函数外说明)。"""
     c = _conn()
     c.execute(
         "INSERT INTO session_meta"
         "(session_key, watermark_id, ctx_tokens, total_tokens, ctx_window, "
-        " last_in, last_cache, last_out, model) "
-        "VALUES (?,0,?,?,?,?,?,?,?) "
+        " last_in, last_cache, last_out, model, cache_read_total, input_fresh_total) "
+        "VALUES (?,0,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(session_key) DO UPDATE SET "
         "ctx_tokens=CASE WHEN excluded.ctx_tokens>0 THEN excluded.ctx_tokens "
         "ELSE session_meta.ctx_tokens END, "
         "total_tokens=COALESCE(session_meta.total_tokens,0)+excluded.total_tokens, "
         "ctx_window=excluded.ctx_window, last_in=excluded.last_in, "
         "last_cache=excluded.last_cache, last_out=excluded.last_out, "
-        "model=excluded.model",
-        (session_key, ctx_tokens, add_tokens, window, last_in, last_cache, last_out, model),
+        "model=excluded.model, "
+        "cache_read_total=COALESCE(session_meta.cache_read_total,0)+excluded.cache_read_total, "
+        "input_fresh_total=COALESCE(session_meta.input_fresh_total,0)+excluded.input_fresh_total",
+        (
+            session_key, ctx_tokens, add_tokens, window, last_in, last_cache, last_out, model,
+            last_cache, last_in,
+        ),
     )
     c.commit()
 
@@ -529,6 +540,7 @@ def clear(session_key: str) -> None:
     c.execute(
         "UPDATE session_meta SET ctx_tokens=0, total_tokens=0, "
         "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL, "
+        "cache_read_total=0, input_fresh_total=0, "
         "external_mcp_names=NULL, auto_external_mcp_names=NULL, auto_external_mcp_at=NULL "
         "WHERE session_key=?",
         (session_key,),
@@ -652,7 +664,9 @@ def list_sessions(prefix: str, *, archived: bool | None = None) -> list[dict]:
         "  COALESCE(MAX(m.ctx_tokens),0), COALESCE(MAX(m.total_tokens),0), "
         "  COALESCE(MAX(m.ctx_window),0), COALESCE(MAX(m.last_in),0), "
         "  COALESCE(MAX(m.last_cache),0), COALESCE(MAX(m.last_out),0), MAX(m.model), "
-        "  MAX(m.chosen_model), COALESCE(MAX(m.archived),0), "
+        "  MAX(m.chosen_model), "
+        "  COALESCE(MAX(m.cache_read_total),0), COALESCE(MAX(m.input_fresh_total),0), "
+        "  COALESCE(MAX(m.archived),0), "
         "  COALESCE(MAX(m.pending_review),0), COALESCE(MAX(m.pinned),0), "
         "  COALESCE(MAX(m.last_error),0), MAX(m.title) "
         "FROM keys k "
@@ -665,12 +679,12 @@ def list_sessions(prefix: str, *, archived: bool | None = None) -> list[dict]:
     out: list[dict] = []
     for row in rows:
         key, turns, last_ts = row[0], row[1], row[2]
-        item = {"key": key, "title": row[15] or "新对话", "turns": turns, "last_ts": last_ts}
-        item.update(_usage_fields(row[3:11]))
-        item["archived"] = bool(row[11])
-        item["pending_review"] = bool(row[12])
-        item["pinned"] = bool(row[13])
-        item["last_error"] = bool(row[14])
+        item = {"key": key, "title": row[17] or "新对话", "turns": turns, "last_ts": last_ts}
+        item.update(_usage_fields(row[3:13]))
+        item["archived"] = bool(row[13])
+        item["pending_review"] = bool(row[14])
+        item["pinned"] = bool(row[15])
+        item["last_error"] = bool(row[16])
         out.append(item)
     return out
 
@@ -699,8 +713,9 @@ def find_session(session_key: str) -> dict | None:
 
 
 def _usage_fields(vals) -> dict:
-    """把 (ctx, total, window, last_in, last_cache, last_out, model, chosen_model) 组装成统一字段。"""
-    ctx, total, window, l_in, l_cache, l_out, model, chosen = vals
+    """把 (ctx, total, window, last_in, last_cache, last_out, model, chosen_model,
+    cache_read_total, input_fresh_total) 组装成统一字段。"""
+    ctx, total, window, l_in, l_cache, l_out, model, chosen, cache_read_total, input_fresh_total = vals
     # 早期 GPT-5.6 会话按官方 API 的 1.05M 写入，但本机 Codex 实际目录是
     # 272k × 95%=258,400。摘要是 Web 进度条唯一数据源，在此归一可立即修正旧
     # 会话显示，不必等下一轮成功请求覆盖数据库残值。
@@ -718,6 +733,8 @@ def _usage_fields(vals) -> dict:
         "last_out": l_out or 0,
         "model": model or "",         # 实际跑过的模型(带日期,给 token 面板)
         "chosen_model": chosen or "",  # 会话选定的模型(给输入框胶囊,空=用默认)
+        "cache_read_total": cache_read_total or 0,   # 全会话累计缓存命中(跨模型混算,见调用方)
+        "input_fresh_total": input_fresh_total or 0,  # 全会话累计非缓存输入,配 cache_read_total 算命中率
     }
 
 
@@ -734,7 +751,9 @@ def session_summary(session_key: str) -> dict:
     trow = c.execute(
         "SELECT COALESCE(ctx_tokens,0), COALESCE(total_tokens,0), "
         "COALESCE(ctx_window,0), COALESCE(last_in,0), COALESCE(last_cache,0), "
-        "COALESCE(last_out,0), model, chosen_model FROM session_meta WHERE session_key=?",
+        "COALESCE(last_out,0), model, chosen_model, "
+        "COALESCE(cache_read_total,0), COALESCE(input_fresh_total,0) "
+        "FROM session_meta WHERE session_key=?",
         (session_key,),
     ).fetchone()
     out = {
@@ -743,7 +762,7 @@ def session_summary(session_key: str) -> dict:
         "turns": turns,
         "last_ts": last_ts,
     }
-    out.update(_usage_fields(trow if trow else (0, 0, 0, 0, 0, 0, "", "")))
+    out.update(_usage_fields(trow if trow else (0, 0, 0, 0, 0, 0, "", "", 0, 0)))
     return out
 
 

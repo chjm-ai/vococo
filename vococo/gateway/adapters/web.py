@@ -277,6 +277,8 @@ class _WebSink(Sink):
                 "last_out": meta.get("last_out", 0),
                 "model": meta.get("model", ""),
                 "chosen_model": meta.get("chosen_model", ""),
+                "cache_read_total": meta.get("cache_read_total", 0),
+                "input_fresh_total": meta.get("input_fresh_total", 0),
             }
         )
         # 场景①「回复完成」:人不在页面时弹系统通知(前台由 SW 自行抑制)
