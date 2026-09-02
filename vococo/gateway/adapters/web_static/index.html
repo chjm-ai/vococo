@@ -565,6 +565,7 @@ function setMeta(d){
   S.meta = {
     ctx:+d.ctx_tokens||0, total:+d.total_tokens||0, win:+d.ctx_window||CTX_WINDOW,
     lin:+d.last_in||0, lc:+d.last_cache||0, lout:+d.last_out||0, model:d.model||"",
+    crt:+d.cache_read_total||0, ift:+d.input_fresh_total||0,
   };
   setModel(d.chosen_model||"");   // 胶囊显示"会话选定的模型",空则回落默认(不用带日期的实跑 id)
   renderMeta();
@@ -1018,6 +1019,9 @@ function renderMeta(){
   $("#ctxRing").style.strokeDasharray="50.27"; $("#ctxRing").style.strokeDashoffset=String(50.27*(1-pct/100)); $("#ctxPct").textContent=pct+"%";
   bar.classList.toggle("warn", warn); pop.classList.toggle("warn", warn);
   const free=Math.max(0,win-m.ctx), fpct=Math.max(0,100-pct);
+  // 会话累计缓存命中率 = 累计缓存复用 / (累计缓存复用+累计非缓存输入);两个累计值
+  // 换模型也照样加(见后端 record_usage 注释),跨模型混算只当粗略参考,不是精确成本口径。
+  const hitBase=m.crt+m.ift, hitPct= hitBase>0 ? Math.round(m.crt/hitBase*100) : null;
   const cid = S.conv || "";
   pop.innerHTML =
     '<div class="convid"><span class="k">会话 ID</span><span class="idv" title="'+esc(cid)+'">'+esc(cid)+'</span><button class="cpy" id="ctxCopyBtn" title="复制 ID">'+ic("copy")+'</button></div>'+
@@ -1029,6 +1033,7 @@ function renderMeta(){
     metaRow("其中缓存复用", fmtTok(m.lc), "", "sub")+
     metaRow("本轮输出", fmtTok(m.lout), "")+
     metaRow("累计消耗", fmtTok(m.total), "")+
+    (hitPct!=null ? metaRow("累计缓存命中率", hitPct+"%", "") : "")+
     (m.model ? '<div class="pr sep"><span class="k">模型</span><span class="mdl">'+esc(m.model)+'</span></div>' : "");
   $("#ctxCopyBtn").onclick = e => { e.stopPropagation(); copyConvId(); };
 }
