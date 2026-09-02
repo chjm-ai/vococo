@@ -64,16 +64,41 @@ async function send(text, display, opts){
   delete S.composerAttachments[sendConv];
   clearDraft(sendConv);
   clearComposerVisible();
-  // 音频和通用文件都先上传，拿到临时 id 后再发送，避免服务端静默跳过。
+  // --- 立即渲染用户气泡,不等上传完成,大文件上传期间也能看到已发消息 ---
   const uploads=[...sendAudios,...sendFiles];
+  const imgs=sendImages.map(x=>x.url);
+  const auds=sendAudios.map(x=>({url:x.url, filename:x.filename, text:x.text}));
+  const files=sendFiles.map(x=>x.filename);
+  const shown=(display!=null)?display:text;
+  const fileLabel=files.length ? `\n\n📎 附件：${files.join("、")}` : "";
+  let meRow=null;
+  if(!opts.reuseBubble && isCurrent() && (shown || imgs.length || auds.length || files.length)){
+    const fallback=auds.length ? "(语音/音频)" : files.length ? "(文件附件)" : "(图片)";
+    const b=addBubble("me", (shown||fallback)+fileLabel, imgs, auds, true);
+    meRow=b.closest(".row");
+    if(auds.some(a=>!a.text)){
+      S.audioLoading = el("span","aspin");
+      b.append(S.audioLoading);
+    }
+    if(uploads.some(item=>!item.id)){
+      S.uploadLoading = el("span","aspin");
+      b.append(S.uploadLoading);
+    }
+  }
+  // 音频和通用文件都先上传，拿到临时 id 后再发送，避免服务端静默跳过。
   if(uploads.some(item=>!item.id)){
     const wbtn=$("#sendBtn");
     if(wbtn){ wbtn.disabled=true; wbtn.textContent="⋯"; wbtn.classList.add("uploading"); }
     try{ await Promise.all(uploads.map(item=>item.done||Promise.resolve())); }
-    finally{ if(wbtn){ wbtn.disabled=false; wbtn.classList.remove("uploading"); updateSendBtn(); } }
+    finally{
+      if(wbtn){ wbtn.disabled=false; wbtn.classList.remove("uploading"); updateSendBtn(); }
+      if(S.uploadLoading){ S.uploadLoading.remove(); S.uploadLoading=null; }
+    }
   }
   // 上传失败的附件还没到服务器，保留「忽略并发送」以免卡住文字消息。
   if(uploads.some(item=>item.status==="error")){
+    if(meRow) meRow.remove();
+    if(S.audioLoading) S.audioLoading=null;
     const pending=S.inflightComposer[sendConv];
     delete S.sending[sendConv]; delete S.inflightComposer[sendConv];
     if(pending){
@@ -84,7 +109,7 @@ async function send(text, display, opts){
         renderThumbs(); $("#ta").value=pending.text; autoGrow();
       }
     }
-    if(!isCurrent()) return;  // 已切走:失败提示/重试按钮没地方挂,静默放弃这次发送
+    if(!isCurrent()) return;
     const fail=uploads.find(item=>item.status==="error");
     const b=addBubble("ai","⚠️ 附件「"+(fail?.filename||"")+"」上传失败"+(fail?.error?("："+fail.error):"")+"，可移除后重试；或忽略附件直接发送文字。");
     const skip=el("button","bact skip"); skip.textContent="忽略并发送";
@@ -95,6 +120,8 @@ async function send(text, display, opts){
   // 当前会话上一个任务还没结束 → 不打断,排进待发送队列,任务完成后自动发。
   // 已切到别的会话时,S.stream 属于别的会话,不能因此吞掉本轮后台发送。
   if(S.stream && !opts.forceSend && isCurrent()){
+    if(meRow) meRow.remove();
+    if(S.audioLoading) S.audioLoading=null;
     const queued=queuePending(text, sendImages, sendAudios, sendFiles);
     const pending=S.inflightComposer[sendConv];
     delete S.sending[sendConv]; delete S.inflightComposer[sendConv];
@@ -107,38 +134,10 @@ async function send(text, display, opts){
     }
     return;
   }
-  const imgs=sendImages.map(x=>x.url);
-  const auds=sendAudios.map(x=>({url:x.url, filename:x.filename, text:x.text}));
-  const files=sendFiles.map(x=>x.filename);
-  // display:点按钮时传选项文字,气泡显示友好文字而非原始命令(如 /clarify id 0)
-  const shown=(display!=null)?display:text;
-  // 有文字时也要列出附件；否则用户只能看到自己的文字，误以为文件没有随消息发送。
-  const fileLabel=files.length ? `\n\n📎 附件：${files.join("、")}` : "";
-  // opts.reuseBubble:语音已先冒了占位气泡并回填文字,这里不再重复冒泡
-  // !isCurrent():上传等待期间用户已切到别的会话,#wrap 不再属于 sendConv,气泡不能往上贴
-  let meRow=null;
-  if(!opts.reuseBubble && isCurrent() && (shown || imgs.length || auds.length || files.length)){
-    const fallback=auds.length ? "(语音/音频)" : files.length ? "(文件附件)" : "(图片)";
-    const b=addBubble("me", (shown||fallback)+fileLabel, imgs, auds, true);
-    meRow=b.closest(".row");
-    // 有音频还没转写:气泡上加转圈 loading(转写在发送后由服务端做,短音频 1~2s,
-    // 会议录音几分钟),收到回复流 start 事件(开始回答)才停转
-    if(auds.some(a=>!a.text)){
-      S.audioLoading = el("span","aspin");
-      b.append(S.audioLoading);
-    }
-  }
-  // 标记本轮由本客户端发出,避免收到 "user" 事件时渲染重复气泡
   if(!text.startsWith("/")) S.localSent[sendConv] = true;
-  // 非命令消息:立刻挂一个"💭 思考中…"气泡,不等服务器 start 事件,反馈更即时(像 TG 秒回 typing)
   if(!text.startsWith("/") && !S.stream && isCurrent()){
     ensureStream();
-    // 有音频待转写:状态行标"音频转写中",让用户知道还在进行(短音频 1~2s,
-    // 会议录音几分钟),回复流 start 事件到达后切回正常"思考中/工作中"
     if(auds.some(a=>!a.text)) S.stream.audioPending = true;
-    // 记下这条乐观渲染的用户气泡:回合结束时 finalizeStream 要给它补上跟 AI
-    // 那颗气泡一样的 data-tid,否则历史重绘认不出它是同一轮,会把发出的这句话
-    // 也重复渲染一遍(见 finalizeStream 里的说明)。
     if(meRow) S.stream.userRow=meRow;
   }
   const payload={
