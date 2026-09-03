@@ -106,11 +106,14 @@ function bindStatsPane(){
 // ── 总览 ────────────────────────────────────────────────────────────────
 function stOverview(){
   const d = ST.data, o = d.overview;
-  const models = d.models||[];
+  // 这是 vococo 的面板,数字就只算 vococo 自己的用量;在终端直接跑 Claude Code 的那部分
+  // 同样写进 ~/.claude 日志,但混进来会让总数虚高,只在下方留一句脚注交代。
+  const models = (d.models||[]).filter(m=>m.scope==="vococo");
+  const otherCost = (d.models||[]).filter(m=>m.scope!=="vococo").reduce((s,m)=>s+m.cost,0);
   const totalCost = models.reduce((s,m)=>s+m.cost,0);
-  const vocoCost = models.filter(m=>m.scope==="vococo").reduce((s,m)=>s+m.cost,0);
-  const hitBase = (o.cache_read||0)+(o.input_fresh||0);
-  const hit = hitBase ? (o.cache_read/hitBase*100) : 0;
+  const hitRead = models.reduce((s,m)=>s+m.cache_r,0);
+  const hitFresh = models.reduce((s,m)=>s+m.in_tok+m.cache_w,0);
+  const hit = (hitRead+hitFresh) ? (hitRead/(hitRead+hitFresh)*100) : 0;
   const tools = d.tools||[];
   const toolRate = o.tool_calls ? (o.tool_ok/o.tool_calls*100).toFixed(1) : "—";
 
@@ -119,8 +122,9 @@ function stOverview(){
     ["会话数", o.sessions, "已归档 "+o.archived],
     ["对话轮次", stNum(o.turns), o.days ? "日均 "+Math.round(o.turns/o.days)+" 轮" : ""],
     ["工具调用", stNum(o.tool_calls), "成功率 "+toolRate+"%"],
-    ["等值花费", stMoney(totalCost), "vococo "+stMoney(vocoCost)],
-    ["缓存命中", hit.toFixed(1)+"%", stNum(o.cache_read)+" 复用"],
+    ["等值花费", stMoney(totalCost),
+      (o.days?"日均 "+stMoney(totalCost/o.days):"") + (o.turns?" · 每轮 "+stMoney(totalCost/o.turns):"")],
+    ["缓存命中", hit.toFixed(1)+"%", "少花了 "+stMoney(models.reduce((s,m)=>s+(m.saved||0),0))],
   ].map(k=>`<div class="k"><div class="n">${k[1]}</div><div class="l">${k[0]}</div><div class="d">${k[2]}</div></div>`).join("");
 
   // 工作强度日历:一格一天,从首次对话排到今天(最多一年),满宽自动换行。
@@ -150,27 +154,32 @@ function stOverview(){
       <span style="margin-left:auto">${days[0]} → 今天 · 最忙一天 ${maxTurns} 轮</span></div>`;
   }
 
-  // 模型:同一个模型的 vococo / 终端两条并成一行,再标 vococo 占比
+  // 模型表:命中率按模型单列一列——全局那个平均数会被用得最多的模型带偏,
+  // 拆开才看得出是哪个模型/哪种用法在反复重建上下文。
   const by = {};
   models.forEach(m=>{
-    const t = by[m.model] || (by[m.model] = {calls:0,cost:0,in:0,out:0,cr:0,voco:0});
-    t.calls+=m.calls; t.cost+=m.cost; t.in+=m.in_tok+m.cache_w; t.out+=m.out_tok; t.cr+=m.cache_r;
-    if(m.scope==="vococo") t.voco+=m.cost;
+    const t = by[m.model] || (by[m.model] = {calls:0,cost:0,in:0,out:0,cr:0,fresh:0});
+    t.calls+=m.calls; t.cost+=m.cost; t.in+=m.in_tok+m.cache_w; t.out+=m.out_tok;
+    t.cr+=m.cache_r; t.fresh+=m.in_tok+m.cache_w;
   });
   const list = Object.entries(by).sort((a,b)=>b[1].cost-a[1].cost);
   let modelSec = '<div class="setempty">这段时间没有模型调用记录</div>';
   if(list.length){
     const stack = list.map(([n,t],i)=>
       `<div style="width:${totalCost?t.cost/totalCost*100:0}%;background:${ST_PALETTE[i%8]}" title="${esc(n)} ${stMoney(t.cost)}"></div>`).join("");
-    const rows = list.map(([n,t],i)=>`<tr>
+    const rows = list.map(([n,t],i)=>{
+      const base = t.cr+t.fresh;
+      const rate = base ? Math.round(t.cr/base*100) : null;
+      return `<tr>
       <td><span class="stdot" style="background:${ST_PALETTE[i%8]}"></span>${esc(n)}</td>
       <td class="r">${stNum(t.calls)}</td><td class="r">${stNum(t.in)}</td><td class="r">${stNum(t.out)}</td>
-      <td class="r">${stNum(t.cr)}</td><td class="r">${stMoney(t.cost)}</td>
-      <td class="r">${t.cost?Math.round(t.voco/t.cost*100):0}%</td></tr>`).join("");
+      <td class="r">${stMoney(t.cost)}</td><td class="r">${t.calls?stMoney(t.cost/t.calls):"—"}</td>
+      <td class="r" style="${rate!==null&&rate<60?"color:var(--warn)":""}">${rate===null?"—":rate+"%"}</td></tr>`;
+    }).join("");
     modelSec = `<div class="ststack">${stack}</div>
       <table class="sttab"><tr><th>模型</th><th class="r">调用</th><th class="r">输入</th><th class="r">输出</th>
-      <th class="r">缓存读</th><th class="r">等值花费</th>
-      <th class="r" title="这个模型的花费里,有多少是 vococo 会话产生的;其余来自你在终端直接跑的 Claude Code">这里花的</th></tr>${rows}</table>`;
+      <th class="r">等值花费</th><th class="r" title="该模型平均每次调用的等值成本">单次均价</th>
+      <th class="r" title="缓存读 ÷(缓存读+全价输入);低于 60% 标黄,通常意味着上下文被反复重建">缓存命中</th></tr>${rows}</table>`;
   }
 
   // 每日花费趋势:日历是全年,这张图跟随上面选的时间范围
@@ -199,9 +208,8 @@ function stOverview(){
   <div class="stsec"><div class="sechd">模型使用与花费</div>${modelSec}
     <p class="shint" style="margin-top:var(--sp-3)">花费是按官方单价折算的<b>等值成本</b>:Claude 官方走订阅、实际不额外扣钱,
       这个数用来看干了多少活;DeepSeek / Kimi / 中转这些按量计费的才是真实支出。
-      单价表可在 <code>data/model_prices.json</code> 覆盖。<br>
-      最后一列<b>「这里花的」</b>= 该模型的花费里 vococo 会话占多少,剩下的是你在终端直接跑 Claude Code 用掉的
-      (两边共用同一份 <code>~/.claude</code> 日志,所以能分开算)。</p></div>
+      单价表可在 <code>data/model_prices.json</code> 覆盖。
+      以上只统计 vococo 自己的用量${otherCost?`;你在终端直接跑 Claude Code 的 ${stMoney(otherCost)} 没算进来`:""}。</p></div>
   ${trend}
   <div class="stsec"><div class="sechd">运行健康</div><div class="stgrid2">
     <div><svg width="104" height="104" viewBox="0 0 36 36">
@@ -211,7 +219,7 @@ function stOverview(){
       <text x="18" y="18.5" text-anchor="middle" style="fill:var(--text);font-size:6.5px;font-weight:600">${hit.toFixed(1)}%</text>
       <text x="18" y="23" text-anchor="middle" style="fill:var(--dim);font-size:3px">缓存命中</text></svg>
       <div class="stchips"><span class="stchip">累计吞吐 ${stNum(o.total_tokens)}</span>
-        <span class="stchip">复用 ${stNum(o.cache_read)}</span>
+        <span class="stchip">复用 ${stNum(hitRead)} / 全价 ${stNum(hitFresh)}</span>
         <span class="stchip ${o.errors>20?"bad":"good"}">异常会话 ${o.errors}</span></div></div>
     <div>${toolBars||'<div class="setempty">没有工具调用</div>'}</div>
   </div></div>`;

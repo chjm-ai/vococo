@@ -356,16 +356,23 @@ def overview(range_key: str = "30d") -> dict[str, Any]:
     ):
         c = cost_of(model, i, o, cw, cr, prices)
         m = models.setdefault((model, scope), dict(
-            model=model, scope=scope, calls=0, in_tok=0, out_tok=0, cache_w=0, cache_r=0, cost=0.0))
+            model=model, scope=scope, calls=0, in_tok=0, out_tok=0, cache_w=0, cache_r=0,
+            cost=0.0, saved=0.0))
         m["calls"] += calls; m["in_tok"] += i; m["out_tok"] += o
         m["cache_w"] += cw; m["cache_r"] += cr; m["cost"] += c
+        # 缓存省下的钱:同样这些 token 若不走缓存,要按全价输入计费,差价即节省。
+        # 各模型折扣不同(Claude 约一折,DeepSeek 更低),必须按模型单价分别算。
+        p = prices.get(model, _FALLBACK_PRICE)
+        m["saved"] += cr * (p[0] - p[3]) / 1e6
         hit_read += cr
         hit_fresh += i + cw
 
-    # 每天的花费也按整年给(日历 tooltip 用),前端画趋势图时再按 range 切片
+    # 每天的花费也按整年给(日历 tooltip 用),前端画趋势图时再按 range 切片。
+    # 只算 vococo 自己的:面板的花费口径统一是"这个助理花的",终端里手跑 Claude Code
+    # 的用量另计,混进日历/趋势会跟上面的总数对不上。
     for day, model, i, o, cw, cr in db.execute(
         "SELECT day, model, sum(in_tok), sum(out_tok), sum(cache_w), sum(cache_r)"
-        " FROM usage_hourly WHERE day>=? GROUP BY day, model", (year_ago,)
+        " FROM usage_hourly WHERE day>=? AND scope='vococo' GROUP BY day, model", (year_ago,)
     ):
         d = daily.setdefault(day, {"turns": 0})
         d["cost"] = round(d.get("cost", 0.0) + cost_of(model, i, o, cw, cr, prices), 4)
