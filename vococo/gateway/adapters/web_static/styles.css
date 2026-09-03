@@ -485,6 +485,63 @@
   .btn.sm{padding:var(--sp-2) var(--sp-4);font-size:var(--fs-sm)}
   .setrowbtns{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}
 
+  /* 数据面板(设置 → 数据):总览 + 会话明细 */
+  .stbar{display:flex;align-items:center;gap:var(--sp-3);margin-bottom:var(--sp-4);flex-wrap:wrap}
+  .stx{display:flex;gap:var(--sp-1);padding:var(--sp-1);background:var(--panel2);border-radius:var(--r-md)}
+  .stx button{padding:var(--sp-2) var(--sp-4);border-radius:var(--r-sm);color:var(--dim);font-size:var(--fs-sm);
+    transition:background var(--t-fast),color var(--t-fast)}
+  .stx button.active{background:var(--panel);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+  .stkpi{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--sp-3);margin-bottom:var(--sp-5)}
+  .stkpi .k{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-4)}
+  .stkpi .k .n{font-size:20px;font-weight:700;letter-spacing:-.3px;font-variant-numeric:tabular-nums}
+  .stkpi .k .l{font-size:var(--fs-sm);color:var(--dim)}
+  .stkpi .k .d{font-size:var(--fs-sm);color:var(--dim2);margin-top:2px}
+  .stsec{margin-bottom:var(--sp-5)}
+  .stcal{display:flex;gap:2px;overflow-x:auto;padding-bottom:var(--sp-2)}
+  .stcal .col{display:flex;flex-direction:column;gap:2px}
+  .stcal .cel{width:12px;height:12px;border-radius:2px;background:var(--panel2)}
+  .stlg{display:flex;align-items:center;gap:var(--sp-2);color:var(--dim2);font-size:var(--fs-sm);margin-top:var(--sp-2)}
+  .stlg .cel{width:12px;height:12px;border-radius:2px;background:var(--panel2)}
+  .sttab{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
+  .sttab th{text-align:left;color:var(--dim2);font-weight:600;border-bottom:1px solid var(--line);padding:var(--sp-2) var(--sp-1)}
+  .sttab td{padding:var(--sp-2) var(--sp-1);border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+  .sttab .r{text-align:right}
+  .stdot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:var(--sp-2)}
+  .ststack{display:flex;height:18px;border-radius:var(--r-sm);overflow:hidden;margin-bottom:var(--sp-3)}
+  .stbars{display:flex;align-items:flex-end;gap:2px;height:88px}
+  .stbars i{flex:1;background:linear-gradient(180deg,var(--accent),var(--accent2));border-radius:2px 2px 0 0;min-height:2px}
+  .stmini{height:6px;background:var(--panel2);border-radius:var(--r-pill);overflow:hidden}
+  .stmini i{display:block;height:100%;background:var(--accent);border-radius:var(--r-pill)}
+  .stgrid2{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-5)}
+  .stchips{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin-top:var(--sp-3)}
+  .stchip{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-pill);
+    padding:1px var(--sp-3);font-size:var(--fs-sm);color:var(--dim)}
+  .stchip.bad{color:var(--err-fg);border-color:var(--err-line);background:var(--err-bg)}
+  .stchip.good{color:var(--ok-fg);border-color:var(--ok-line);background:var(--ok-bg)}
+  .stsrch{display:flex;align-items:center;gap:var(--sp-2);background:var(--panel2);border:1px solid var(--line2);
+    border-radius:var(--r-md);padding:var(--sp-2) var(--sp-4);margin-bottom:var(--sp-3)}
+  .stsrch .ic{width:15px;height:15px;color:var(--dim2)}
+  .stsrch input{flex:1;min-width:0;background:none;border:none;outline:none;color:var(--text);font-size:var(--fs-md)}
+  .strow{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3) var(--sp-2);
+    border-bottom:1px solid var(--line);cursor:pointer;transition:background var(--t-fast)}
+  .strow:hover{background:var(--panel2)}
+  .strow .t{flex:1;min-width:0}
+  .strow .t .nm{font-size:var(--fs-md);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .strow .t .mt{font-size:var(--fs-sm);color:var(--dim2);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .strow .num{text-align:right;font-size:var(--fs-sm);font-variant-numeric:tabular-nums;flex-shrink:0;min-width:52px}
+  .strow .num b{display:block;font-size:var(--fs-md);font-weight:600}
+  .strow .num span{color:var(--dim2)}
+  .stdet{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-5)}
+  .stdet h4{margin:0 0 var(--sp-1);font-size:var(--fs-base)}
+  .stdet .kv{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--sp-3);margin:var(--sp-4) 0}
+  .stdet .kv span{display:block;font-size:var(--fs-sm);color:var(--dim2)}
+  .stdet .kv b{font-size:var(--fs-lg);font-variant-numeric:tabular-nums}
+  @media(max-width:640px){
+    .stkpi{grid-template-columns:repeat(2,1fr)}
+    .stgrid2{grid-template-columns:1fr}
+    .stdet .kv{grid-template-columns:repeat(2,1fr)}
+  }
+
   /* 外部 MCP 添加表单 */
   .mcpform{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-5);margin-top:8px}
   .mcpform .fld{margin-bottom:10px}

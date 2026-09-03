@@ -3,7 +3,7 @@
 // 与内联脚本同属全局作用域(无构建步骤),加载顺序见 index.html。
 
 // ── 设置(MCP / 技能 / 记忆 / 人设)────────────────────────────────────────
-const SET = { data:null, tab:"mcp", skq:"", skScope:"general", mcpFormOpen:false, modelFormOpen:false, providerFormOpen:false };
+const SET = { data:null, tab:"stats", skq:"", skScope:"general", mcpFormOpen:false, modelFormOpen:false, providerFormOpen:false };
 $("#settingsBtn").innerHTML = ic("gear");
 
 async function openSettings(){
@@ -32,7 +32,8 @@ $("#setTabs").onclick = e=>{
   renderSetTab();
 };
 function renderSetTab(){
-  if(SET.tab==="mcp") renderMcpPane();
+  if(SET.tab==="stats") renderStatsPane();   // 见 stats.js
+  else if(SET.tab==="mcp") renderMcpPane();
   else if(SET.tab==="models") renderModelsPane();
   else if(SET.tab==="skill") renderSkillPane();
   else if(SET.tab==="memory") renderFileList("memory");

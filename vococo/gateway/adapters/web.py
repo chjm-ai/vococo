@@ -34,7 +34,7 @@ from ... import config, providers
 from ...core import title
 from ...core.agent import AgentReply, FileAttachment
 from ...memory import session_store, workbench
-from .. import git_status, settings_store
+from .. import git_status, settings_store, stats
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink, is_command
 from .base import AudioAttachment, ImageAttachment, Incoming
 from ..web_auth import check_web_auth
@@ -46,7 +46,8 @@ _STATIC = Path(__file__).resolve().parent / "web_static"
 _VERSIONED_ASSETS = (
     "styles.css", "mascot.css", "tool-card.js",
     # 2026-08-14 前端模块化:从 index.html 拆出的功能块(加载顺序即此顺序)
-    "app-core.js", "mascot.js", "markdown.js", "sidebar.js", "settings.js", "workbench.js",
+    "app-core.js", "mascot.js", "markdown.js", "sidebar.js", "settings.js", "stats.js",
+    "workbench.js",
     "stream.js", "composer.js", "voice.js",
 )
 _DOC_PREVIEW_MAX = 3 * 1024 * 1024  # 文档预览分屏读文件上限;超过就不读,前端提示下载/自己开
@@ -1660,6 +1661,23 @@ class WebAdapter:
         payload, status = await providers.usage_for_model(request.query.get("model"))
         return web.json_response(payload, status=status)
 
+    # ── 运行数据面板 ───────────────────────────────────────────────────────
+    @_authed
+    async def _handle_stats(self, request: web.Request) -> web.Response:
+        """GET /stats?range=7d|30d|all — 设置页「数据」面板的全部数据。
+
+        聚合与增量 ETL 都在 gateway/stats.py,这里只做 HTTP 壳。首次调用要建库
+        (扫一遍 ~/.claude 日志,约 20 秒),之后走增量、几百毫秒。
+        """
+        rng = request.query.get("range") or "30d"
+        if rng not in ("7d", "30d", "all"):
+            rng = "30d"
+        try:
+            data = await stats.payload(rng)
+        except Exception as exc:  # 统计页挂了不该影响别的设置分区
+            return web.json_response({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+        return web.json_response(data)
+
     # ── 语音转文字 ───────────────────────────────────────────────────────
     @_authed
     async def _handle_transcribe(self, request: web.Request) -> web.Response:
@@ -2652,7 +2670,7 @@ class WebAdapter:
                 web.get("/mascot.css", self._handle_mascot_styles),
                 web.get("/tool-card.js", self._handle_tool_card_js),
                 web.get(
-                    r"/{name:(?:app-core|mascot|markdown|sidebar|settings|workbench|stream|composer|voice)\.js}",
+                    r"/{name:(?:app-core|mascot|markdown|sidebar|settings|stats|workbench|stream|composer|voice)\.js}",
                     self._handle_app_js,
                 ),
                 web.get("/favicon.ico", self._handle_favicon),
@@ -2709,6 +2727,7 @@ class WebAdapter:
                 web.get("/models", self._handle_models),
                 web.post("/effort", self._handle_effort_switch),
                 web.get("/api/usage", self._handle_api_usage),
+                web.get("/stats", self._handle_stats),
                 web.get("/commands", self._handle_commands),
                 web.get("/history", self._handle_history),
                 web.get("/conv/documents", self._handle_conv_documents),
