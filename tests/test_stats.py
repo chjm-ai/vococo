@@ -64,9 +64,10 @@ def test_scope_split_and_cost(isolated, monkeypatch):
     data = stats.overview("all")
     scopes = {m["scope"]: m for m in data["models"]}
     assert set(scopes) == {"vococo", "other"}
-    # sonnet 输入 $3/百万,各 100 万 token → 各 $3
+    # sonnet 输入 $3/百万,各 100 万 token → 各 $3；总账的每日花费要合并两个入口。
     assert round(scopes["vococo"]["cost"], 2) == 3.0
     assert round(scopes["other"]["cost"], 2) == 3.0
+    assert round(data["daily"]["2026-09-01"]["cost"], 2) == 6.0
 
 
 def test_price_override(isolated, monkeypatch):

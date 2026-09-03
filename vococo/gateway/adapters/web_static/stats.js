@@ -61,7 +61,7 @@ function stHeader(){
   const ranges = [["7d","7 天"],["30d","30 天"],["all","全部"]]
     .map(([v,l])=>`<button class="${ST.range===v?"active":""}" data-str="${v}">${l}</button>`).join("");
   return '<h3>'+ic("gear")+'数据面板</h3>'+
-    '<p class="shint">vococo 的运行统计:工作强度、模型用量与花费、运行健康,以及每个会话的明细。</p>'+
+    '<p class="shint">全部 AI 工作总账（含 vococo 与终端）+ vococo 运行统计:工作强度、模型用量、花费、运行健康与会话明细。</p>'+
     `<div class="stbar"><div class="stx">${tabs}</div><div class="stx" style="margin-left:auto">${ranges}</div></div>`;
 }
 
@@ -106,10 +106,9 @@ function bindStatsPane(){
 // ── 总览 ────────────────────────────────────────────────────────────────
 function stOverview(){
   const d = ST.data, o = d.overview;
-  // 这是 vococo 的面板,数字就只算 vococo 自己的用量;在终端直接跑 Claude Code 的那部分
-  // 同样写进 ~/.claude 日志,但混进来会让总数虚高,只在下方留一句脚注交代。
-  const models = (d.models||[]).filter(m=>m.scope==="vococo");
-  const otherCost = (d.models||[]).filter(m=>m.scope!=="vococo").reduce((s,m)=>s+m.cost,0);
+  // 总账覆盖全部 AI 工作:包括 vococo 和终端直接运行 Claude Code。两者都是同一件任务
+  // 的不同入口,拆开反而无法回答"我总共花了多少"。
+  const models = d.models||[];
   const totalCost = models.reduce((s,m)=>s+m.cost,0);
   const hitRead = models.reduce((s,m)=>s+m.cache_r,0);
   const hitFresh = models.reduce((s,m)=>s+m.in_tok+m.cache_w,0);
@@ -209,7 +208,7 @@ function stOverview(){
     <p class="shint" style="margin-top:var(--sp-3)">花费是按官方单价折算的<b>等值成本</b>:Claude 官方走订阅、实际不额外扣钱,
       这个数用来看干了多少活;DeepSeek / Kimi / 中转这些按量计费的才是真实支出。
       单价表可在 <code>data/model_prices.json</code> 覆盖。
-      以上只统计 vococo 自己的用量${otherCost?`;你在终端直接跑 Claude Code 的 ${stMoney(otherCost)} 没算进来`:""}。</p></div>
+      总账包含 vococo 与终端直接运行 Claude Code 的全部用量；会话明细只列 vococo 会话。</p></div>
   ${trend}
   <div class="stsec"><div class="sechd">运行健康</div><div class="stgrid2">
     <div><svg width="104" height="104" viewBox="0 0 36 36">
