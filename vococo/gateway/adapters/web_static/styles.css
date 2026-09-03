@@ -497,11 +497,14 @@
   .stkpi .k .l{font-size:var(--fs-sm);color:var(--dim)}
   .stkpi .k .d{font-size:var(--fs-sm);color:var(--dim2);margin-top:2px}
   .stsec{margin-bottom:var(--sp-5)}
-  .stcal{display:flex;gap:2px;overflow-x:auto;padding-bottom:var(--sp-2)}
-  .stcal .col{display:flex;flex-direction:column;gap:2px}
-  .stcal .cel{width:12px;height:12px;border-radius:2px;background:var(--panel2)}
+  /* 日历:一格一天,按时间顺序连续排列、满宽自动换行。
+     不用 GitHub 那种"一列一周"的排法——那种要固定 53 列才好看,而这里历史只有几十天时
+     会空出大半张图;auto-fill 让列数跟着面板宽度走,几十天是两行,一年就是八行,始终填满。 */
+  .stcal{display:grid;grid-template-columns:repeat(auto-fill,minmax(13px,1fr));gap:2px}
+  .stcal .cel{aspect-ratio:1;border-radius:2px;background:var(--panel2)}
+  .stcal .cel.mstart{box-shadow:inset 0 0 0 1px var(--line2)}  /* 每月 1 号描边,当刻度用 */
   .stlg{display:flex;align-items:center;gap:var(--sp-2);color:var(--dim2);font-size:var(--fs-sm);margin-top:var(--sp-2)}
-  .stlg .cel{width:12px;height:12px;border-radius:2px;background:var(--panel2)}
+  .stlg .cel{width:11px;height:11px;border-radius:2px;background:var(--panel2)}
   .sttab{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
   .sttab th{text-align:left;color:var(--dim2);font-weight:600;border-bottom:1px solid var(--line);padding:var(--sp-2) var(--sp-1)}
   .sttab td{padding:var(--sp-2) var(--sp-1);border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}

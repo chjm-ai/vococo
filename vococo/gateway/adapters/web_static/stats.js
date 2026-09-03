@@ -123,33 +123,31 @@ function stOverview(){
     ["缓存命中", hit.toFixed(1)+"%", stNum(o.cache_read)+" 复用"],
   ].map(k=>`<div class="k"><div class="n">${k[1]}</div><div class="l">${k[0]}</div><div class="d">${k[2]}</div></div>`).join("");
 
-  // 工作强度日历:一格一天,列 = 一周,行 = 周日→周六
+  // 工作强度日历:一格一天,从首次对话排到今天(最多一年),满宽自动换行。
+  // 刻意不跟随上面的时间范围——日历的价值就是看长期节奏,切到「7 天」也该看到全部历史。
   const days = Object.keys(d.daily||{}).sort();
   let cal = '<div class="setempty">还没有对话数据</div>', maxTurns = 0, calLegend = "";
   if(days.length){
     maxTurns = Math.max(...days.map(k=>d.daily[k].turns||0));
     const cur = new Date(days[0]+"T00:00:00");
-    cur.setDate(cur.getDate()-cur.getDay());       // 对齐到周日,列才不会错行
-    const end = new Date(days[days.length-1]+"T00:00:00");
-    let cols = "";
+    const end = new Date(); end.setHours(0,0,0,0);
+    const key = dd=>dd.getFullYear()+"-"+String(dd.getMonth()+1).padStart(2,"0")+"-"+String(dd.getDate()).padStart(2,"0");
+    let cells = "";
     while(cur<=end){
-      let col = "";
-      for(let i=0;i<7;i++){
-        const key = cur.getFullYear()+"-"+String(cur.getMonth()+1).padStart(2,"0")+"-"+String(cur.getDate()).padStart(2,"0");
-        const e = d.daily[key];
-        const v = e ? (e.turns||0) : 0;
-        const tip = e ? `${key} · ${v} 轮${e.cost?" · "+stMoney(e.cost):""}` : key;
-        col += `<div class="cel" style="${stShade(v,maxTurns)}" title="${tip}"></div>`;
-        cur.setDate(cur.getDate()+1);
-      }
-      cols += `<div class="col">${col}</div>`;
+      const k = key(cur);
+      const e = d.daily[k];
+      const v = e ? (e.turns||0) : 0;
+      const wk = "日一二三四五六"[cur.getDay()];
+      cells += `<div class="cel${cur.getDate()===1?" mstart":""}" style="${stShade(v,maxTurns)}"
+        title="${k} 周${wk} · ${v} 轮${e&&e.cost?" · "+stMoney(e.cost):""}"></div>`;
+      cur.setDate(cur.getDate()+1);
     }
-    cal = `<div class="stcal">${cols}</div>`;
+    cal = `<div class="stcal">${cells}</div>`;
     calLegend = `<div class="stlg">少 <span class="cel"></span>
       <span class="cel" style="${stShade(maxTurns*0.2,maxTurns)}"></span>
       <span class="cel" style="${stShade(maxTurns*0.5,maxTurns)}"></span>
       <span class="cel" style="${stShade(maxTurns,maxTurns)}"></span> 多
-      <span style="margin-left:auto">最忙一天 ${maxTurns} 轮</span></div>`;
+      <span style="margin-left:auto">${days[0]} → 今天 · 最忙一天 ${maxTurns} 轮</span></div>`;
   }
 
   // 模型:同一个模型的 vococo / 终端两条并成一行,再标 vococo 占比
@@ -171,11 +169,13 @@ function stOverview(){
       <td class="r">${t.cost?Math.round(t.voco/t.cost*100):0}%</td></tr>`).join("");
     modelSec = `<div class="ststack">${stack}</div>
       <table class="sttab"><tr><th>模型</th><th class="r">调用</th><th class="r">输入</th><th class="r">输出</th>
-      <th class="r">缓存读</th><th class="r">等值花费</th><th class="r">vococo</th></tr>${rows}</table>`;
+      <th class="r">缓存读</th><th class="r">等值花费</th>
+      <th class="r" title="这个模型的花费里,有多少是 vococo 会话产生的;其余来自你在终端直接跑的 Claude Code">这里花的</th></tr>${rows}</table>`;
   }
 
-  // 每日花费趋势
-  const costDays = days.filter(k=>d.daily[k].cost);
+  // 每日花费趋势:日历是全年,这张图跟随上面选的时间范围
+  const keep = ST.range==="7d" ? 7 : ST.range==="30d" ? 30 : days.length;
+  const costDays = days.slice(-keep).filter(k=>d.daily[k].cost);
   let trend = "";
   if(costDays.length){
     const vals = costDays.map(k=>d.daily[k].cost);
@@ -199,7 +199,9 @@ function stOverview(){
   <div class="stsec"><div class="sechd">模型使用与花费</div>${modelSec}
     <p class="shint" style="margin-top:var(--sp-3)">花费是按官方单价折算的<b>等值成本</b>:Claude 官方走订阅、实际不额外扣钱,
       这个数用来看干了多少活;DeepSeek / Kimi / 中转这些按量计费的才是真实支出。
-      单价表可在 <code>data/model_prices.json</code> 覆盖。</p></div>
+      单价表可在 <code>data/model_prices.json</code> 覆盖。<br>
+      最后一列<b>「这里花的」</b>= 该模型的花费里 vococo 会话占多少,剩下的是你在终端直接跑 Claude Code 用掉的
+      (两边共用同一份 <code>~/.claude</code> 日志,所以能分开算)。</p></div>
   ${trend}
   <div class="stsec"><div class="sechd">运行健康</div><div class="stgrid2">
     <div><svg width="104" height="104" viewBox="0 0 36 36">
