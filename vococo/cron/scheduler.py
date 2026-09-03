@@ -279,6 +279,12 @@ def _run_job(job: dict, push: PushFn) -> None:
     if job.get("mode") == "script":
         asyncio.create_task(_run_script_job(job, push))
         return
+    # 编辑页选的模型是这条任务唯一的权威来源:每次触发都同步进任务会话的
+    # chosen_model,不能只在首次 dispatch 时写一次——否则编辑页把模型改了,
+    # 后续触发走 append() 不会重新传 model,会静默延续上一次(甚至用户在
+    # 任务会话里手动切过的)旧模型,跟编辑页显示的对不上。
+    if job.get("model"):
+        session_store.set_chosen_model(bg_tasks.session_key(job_id), job["model"])
     if bg_tasks.get(job_id) is None:
         task_runner.dispatch(
             title=job.get("name") or "定时任务", prompt=job["prompt"],
