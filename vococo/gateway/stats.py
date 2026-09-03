@@ -368,11 +368,11 @@ def overview(range_key: str = "30d") -> dict[str, Any]:
         hit_fresh += i + cw
 
     # 每天的花费也按整年给(日历 tooltip 用),前端画趋势图时再按 range 切片。
-    # 只算 vococo 自己的:面板的花费口径统一是"这个助理花的",终端里手跑 Claude Code
-    # 的用量另计,混进日历/趋势会跟上面的总数对不上。
+    # 总账覆盖全部 AI 工作:既含 vococo,也含终端直接跑 Claude Code。入口不同不改变
+    # "完成一件任务总共花了多少"这个口径。
     for day, model, i, o, cw, cr in db.execute(
         "SELECT day, model, sum(in_tok), sum(out_tok), sum(cache_w), sum(cache_r)"
-        " FROM usage_hourly WHERE day>=? AND scope='vococo' GROUP BY day, model", (year_ago,)
+        " FROM usage_hourly WHERE day>=? GROUP BY day, model", (year_ago,)
     ):
         d = daily.setdefault(day, {"turns": 0})
         d["cost"] = round(d.get("cost", 0.0) + cost_of(model, i, o, cw, cr, prices), 4)
