@@ -64,10 +64,10 @@ def test_scope_split_and_cost(isolated, monkeypatch):
     data = stats.overview("all")
     scopes = {m["scope"]: m for m in data["models"]}
     assert set(scopes) == {"vococo", "other"}
-    # sonnet 输入 $3/百万,各 100 万 token → 各 $3；总账的每日花费要合并两个入口。
-    assert round(scopes["vococo"]["cost"], 2) == 3.0
-    assert round(scopes["other"]["cost"], 2) == 3.0
-    assert round(data["daily"]["2026-09-01"]["cost"], 2) == 6.0
+    # sonnet 输入 $2/百万,各 100 万 token → 各 $2；总账的每日花费要合并两个入口。
+    assert round(scopes["vococo"]["cost"], 2) == 2.0
+    assert round(scopes["other"]["cost"], 2) == 2.0
+    assert round(data["daily"]["2026-09-01"]["cost"], 2) == 4.0
 
 
 def test_price_override(isolated, monkeypatch):
@@ -108,7 +108,7 @@ def test_session_rows_join_turns_and_logs(isolated, monkeypatch):
     rows = stats.sessions("all")
     row = next(r for r in rows if r["key"] == "web:main")
     assert row["linked"] is True
-    assert round(row["cost"], 2) == 3.3        # 输入 $3 + 缓存读 $0.3
+    assert round(row["cost"], 2) == 2.2        # 输入 $2 + 缓存读 $0.2
     assert row["cache_read"] == 1_000_000      # 命中率取日志,不看老会话缺失的累计字段
     assert row["tools"] == 2 and row["tool_fail"] == 1
     assert row["top_tools"][0] == {"name": "Bash", "calls": 2}
