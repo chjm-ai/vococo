@@ -1334,6 +1334,63 @@ async def set_external_mcp(args: dict) -> dict:
     scope = "全部外部 MCP" if name == "外贸工具包" else f"外部 MCP「{name}」"
     return _ok(f"✅ 已为当前会话{act}{scope}。下一条消息即生效，其他会话不受影响。")
 
+
+@tool(
+    "switch_model",
+    f"把【当前这个会话】后续轮次要用的模型切换成 {config.USER_NAME} 指定的那个——"
+    "他说「把模型切成 XX / 接下来用 XX 跑 / 换到 XX 模型」这类话时调它真正完成切换,"
+    "不要只口头答应。model 传用户原话里指的模型即可,不用拼规范 id(如「opus 4.6」"
+    "「kimi k3」「sonnet」「gpt sol」),系统会按当前已配置的模型自动匹配;匹配不上或"
+    "指代不明确(如只说「切到 opus」而 opus 有好几档)时会返回候选清单,你据此再向"
+    "用户澄清,不要自己替他挑。只影响当前会话,从【下一轮】开始生效——本轮仍由旧"
+    "模型把话答完,这一点要如实告诉用户;想回到默认模型时说「恢复默认」即可。"
+    "注意别跟派后台任务时给 voice_dispatch_task 传的 model(只管那一个任务)混淆,"
+    "后台任务的模型由派发那一刻决定,不受本工具影响。",
+    {
+        "type": "object",
+        "properties": {"model": {"type": "string"}},
+        "required": ["model"],
+    },
+)
+async def switch_model(args: dict) -> dict:
+    from .. import providers
+    from ..gateway import clarify
+    from ..gateway.core import MODEL_CHOICES
+
+    text = (args.get("model") or "").strip()
+    if not text:
+        return _ok("switch_model 需要 model 参数:用户想切到的模型名/说法。")
+    ctx = clarify.current()
+    if ctx is None or not getattr(ctx, "session_key", ""):
+        return _ok("当前轮次没有可切换的会话上下文,无法切换模型。")
+    # 「恢复默认/自动/切回默认」→ 清掉本会话的模型覆盖,回到设置页/全局默认回落链
+    norm = providers.normalize_model_text(text)
+    if any(k in norm for k in ("默认", "自动", "default", "auto")):
+        session_store.set_chosen_model(ctx.session_key, "")
+        return _ok("✅ 已取消当前会话的模型指定,后续轮次回到默认模型。")
+    candidates = providers.available_models(MODEL_CHOICES)
+    hits = providers.match_models_by_text(text, candidates)
+    if not hits:
+        listing = "、".join(f"{mid}({label})" for mid, label, _ in candidates)
+        return _ok(
+            f"已配置的模型里没找到与「{text}」匹配的。目前可用的有:{listing}"
+            "——请让用户说得更具体,或从这些里挑一个。"
+        )
+    if len(hits) > 1:
+        listing = "、".join(f"{i+1}.{mid}" for i, (mid, _l, _g) in enumerate(hits))
+        return _ok(
+            f"「{text}」同时匹配到多个模型:{listing}。请向用户确认要切哪一个,"
+            "或让用户说得更具体(带上系列/版本,如「opus 4.6」「sonnet 5」)。"
+        )
+    mid, label, _g = hits[0]
+    session_store.set_chosen_model(ctx.session_key, mid)
+    return _ok(
+        f"✅ 已把当前会话的模型切换为 {mid}({label})。"
+        "从下一轮开始生效(本轮继续由旧模型把话答完);"
+        "若旧模型与它不兼容已自动断开续接,下次会用新模型重新起上下文。"
+    )
+
+
 def build_mcp_servers() -> dict:
     """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
     return {
@@ -1368,6 +1425,7 @@ def build_mcp_servers() -> dict:
                 add_mcp_server,
                 remove_mcp_server,
                 set_external_mcp,
+                switch_model,
             ],
         )
     }

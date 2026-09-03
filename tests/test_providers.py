@@ -417,3 +417,56 @@ def test_probe_token_network_failure_is_unknown(monkeypatch):
     state, detail = providers.probe_subscription_token("sk-ant-oat01-x")
     assert state == "unknown"
     assert "OSError" in detail
+
+
+# ── normalize_model_text / match_models_by_text(switch_model 的模糊匹配)──────
+# 候选样例与 available_models() 同构:(id, label, group)
+_CAND = [
+    ("claude-fable-5", "Fable 5(订阅)", "anthropic"),
+    ("claude-opus-5", "Opus 5(订阅)", "anthropic"),
+    ("claude-opus-4-6", "Opus 4.6(订阅)", "anthropic"),
+    ("claude-sonnet-5", "Sonnet 5(订阅)", "anthropic"),
+    ("claude-sonnet-4-6", "Sonnet 4.6(订阅)", "anthropic"),
+    ("claude-haiku-4-5", "Haiku 4.5(订阅)", "anthropic"),
+    ("kimi-k3", "kimi-k3(API)", "api"),
+    ("K2.7 Code", "K2.7 Code(API)", "api"),
+]
+
+
+def test_normalize_model_text():
+    assert providers.normalize_model_text("claude opus 4.6") == "claudeopus46"
+    assert providers.normalize_model_text("Opus-4.6") == "opus46"
+    assert providers.normalize_model_text("  K2.7·Code  ") == "k27code"
+    assert providers.normalize_model_text("") == ""
+    assert providers.normalize_model_text(None) == ""
+
+
+def test_match_exact_id_gets_full_name_first():
+    # 用户直接说规范 id(带横杠)也能归一化全等命中
+    hits = providers.match_models_by_text("claude-opus-4-6", _CAND)
+    assert [h[0] for h in hits] == ["claude-opus-4-6"]
+
+
+def test_match_spoken_name_unique():
+    hits = providers.match_models_by_text("opus 4.6", _CAND)
+    assert [h[0] for h in hits] == ["claude-opus-4-6"]
+
+
+def test_match_short_series_name_ambiguous_keeps_order():
+    # "opus" 同时含 opus-5 与 opus-4-6:返回全部候选让上层澄清,不擅自挑
+    hits = providers.match_models_by_text("opus", _CAND)
+    assert [h[0] for h in hits] == ["claude-opus-5", "claude-opus-4-6"]
+
+
+def test_match_multi_word_provider_model():
+    # 第三方供应商的自由文本模型名(带空格)同样能按口语命中
+    hits = providers.match_models_by_text("k2.7", _CAND)
+    assert [h[0] for h in hits] == ["K2.7 Code"]
+    hits = providers.match_models_by_text("kimi k3", _CAND)
+    assert [h[0] for h in hits] == ["kimi-k3"]
+
+
+def test_match_miss_and_empty():
+    assert providers.match_models_by_text("gpt-7", _CAND) == []
+    assert providers.match_models_by_text("", _CAND) == []
+    assert providers.match_models_by_text(None, _CAND) == []
