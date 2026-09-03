@@ -379,9 +379,20 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                     # 这轮干净收尾了,累积器清零——之后到的文字是新话,不是本句的断片,
                     # 别把它拼在已经答完的问题后面。
                     _prev_text = ""
-                    if reply.model and not reply.is_error:
+                    # 每轮回写实际模型:主模型失败、语音自动换候选兜底
+                    # (voice/session.py _model_candidates)成功后,把实际成功的那个
+                    # 记回 chosen_model,下一轮无缝沿用同一模型。但轮中用户若已显式
+                    # 切了模型(switch_model 工具写库),此刻 chosen_model ≠ 本轮开跑
+                    # 时的 model,再回写会把用户刚切的覆盖掉 —— 只在没人动过时回写。
+                    _model_untouched = (
+                        session_store.get_chosen_model(session.SESSION_KEY) == model
+                    )
+                    if reply.model and not reply.is_error and _model_untouched:
                         session_store.set_chosen_model(session.SESSION_KEY, reply.model)
-                    if reply.sdk_session_id:
+                    # 轮中若切了模型,set_chosen_model 已把 sdk_session_id 清掉(新旧模型
+                    # 的 transcript 不兼容,resume 会延续旧模型的调用身份);这里不要再把
+                    # 旧 sid 存回去,否则下一轮又 resume 旧 transcript,切换等于白切。
+                    if reply.sdk_session_id and _model_untouched:
                         session.set_resume(reply.sdk_session_id)
                     done_payload = {"full_text": reply.text or full_text}
                     if reply.is_error:

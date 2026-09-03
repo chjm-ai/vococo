@@ -198,3 +198,86 @@ def test_move_workbench_task_moves_task_tree_to_project(isolated):
 
     assert "已将任务" in out
     assert workbench.get_task("crawler-plan")["project"] == projects["VocoTrade"]
+
+
+# === switch_model(自然语言切模型) ===
+def _point_settings(tmp_path, monkeypatch):
+    """把设置页存储指向临时文件,避免读到真实 data/web_settings.json 的供应商。"""
+    from vococo.gateway import settings_store
+
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
+
+
+def _run_switch_model(model: str):
+    from vococo.tools import builtin
+
+    return _text(_run(builtin.switch_model.handler({"model": model})))
+
+
+def test_switch_model_no_ctx_refused(isolated, monkeypatch):
+    """没有会话上下文(后台任务等非对话轮次)时拒绝,不乱切。"""
+    from vococo.tools import builtin
+
+    _point_settings(isolated, monkeypatch)
+    assert "无法切换" in _run_switch_model("opus 4.6")
+    # 空参也要有明确报错
+    assert "需要 model" in _run_switch_model("  ")
+
+
+def test_switch_model_hit_writes_chosen_model(isolated, monkeypatch):
+    """口语命中唯一模型 → 写入 chosen_model,下一轮生效。"""
+    from vococo.gateway import clarify
+    from vococo.memory import session_store
+
+    _point_settings(isolated, monkeypatch)
+    token = clarify.set_current("cli-switch-1", object(), "chat")
+    try:
+        out = _run_switch_model("opus 4.6")
+    finally:
+        clarify.reset_current(token)
+    assert "claude-opus-4-6" in out
+    assert "下一轮" in out
+    assert session_store.get_chosen_model("cli-switch-1") == "claude-opus-4-6"
+
+
+def test_switch_model_ambiguous_asks_back(isolated, monkeypatch):
+    """「opus」命中多档 → 不擅自挑,列候选让用户澄清,库不动。"""
+    from vococo.gateway import clarify
+    from vococo.memory import session_store
+
+    _point_settings(isolated, monkeypatch)
+    token = clarify.set_current("cli-switch-2", object(), "chat")
+    try:
+        out = _run_switch_model("opus")
+    finally:
+        clarify.reset_current(token)
+    assert "多个模型" in out and "claude-opus-5" in out
+    assert session_store.get_chosen_model("cli-switch-2") == ""
+
+
+def test_switch_model_miss_lists_available(isolated, monkeypatch):
+    from vococo.gateway import clarify
+
+    _point_settings(isolated, monkeypatch)
+    token = clarify.set_current("cli-switch-3", object(), "chat")
+    try:
+        out = _run_switch_model("gpt-9")
+    finally:
+        clarify.reset_current(token)
+    assert "没找到" in out and "可用的有" in out
+
+
+def test_switch_model_restore_default_clears(isolated, monkeypatch):
+    """「恢复默认」清掉本会话的模型覆盖,回到回落链。"""
+    from vococo.gateway import clarify
+    from vococo.memory import session_store
+
+    _point_settings(isolated, monkeypatch)
+    session_store.set_chosen_model("cli-switch-4", "claude-opus-4-6")
+    token = clarify.set_current("cli-switch-4", object(), "chat")
+    try:
+        out = _run_switch_model("恢复默认")
+    finally:
+        clarify.reset_current(token)
+    assert "取消" in out
+    assert session_store.get_chosen_model("cli-switch-4") == ""

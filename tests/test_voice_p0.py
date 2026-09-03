@@ -755,3 +755,52 @@ async def test_voice_session_error_when_all_candidates_fail(voice_db, monkeypatc
     assert isinstance(final, Done)
     assert final.reply.is_error
     assert "network down" in final.reply.error
+
+
+@pytest.mark.anyio
+async def test_voice_send_keeps_user_switched_model_over_done_writeback(
+    voice_db, monkeypatch
+):
+    """轮中用户(经 switch_model 工具)切了模型 → Done 收尾的回写/resume 都不许覆盖。
+
+    语音每轮 Done 后会把实际跑的模型写回 chosen_model 并续存 sdk_session_id(为
+    候选兜底设计);若轮中 chosen_model 已被工具改成别的值,这两步会把用户刚切的
+    覆盖掉 → 必须只在"没人动过"时回写。
+    """
+
+    # 会话原本锁在 claude-sonnet-5 上,且上一轮留过 resume id
+    session_store.set_chosen_model(session.SESSION_KEY, "claude-sonnet-5")
+    session_store.set_sdk_session_id(session.SESSION_KEY, "sdk-old")
+
+    async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
+        assert model == "claude-sonnet-5"  # 本轮仍由旧模型开跑
+        # 模拟轮中 switch_model 工具把会话切到 claude-opus-4-6(会顺带清 resume id)
+        session_store.set_chosen_model(session.SESSION_KEY, "claude-opus-4-6")
+        yield TextDelta("好的,")
+        yield Done(
+            AgentReply(
+                text="好的,已经切了。",
+                tool_calls=[], cost_usd=None, is_error=False,
+                sdk_session_id="sdk-old",  # 旧模型的 transcript id
+            )
+        )
+
+    monkeypatch.setattr(session, "run_turn", fake_run_turn)
+
+    async def fake_synthesize(text, voice):
+        return b"FAKE-MP3-BYTES"
+
+    monkeypatch.setattr(tts, "synthesize", fake_synthesize)
+
+    app = web.Application()
+    routes.register_routes(app)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/voice/send", json={"text": "切到 opus 4.6"})
+        assert resp.status == 200
+        body = (await resp.read()).decode("utf-8")
+
+    assert [e for e, _ in _parse_sse(body)][-1] == "done"
+    # 用户切的模型保住了,没被 reply.model 回写覆盖
+    assert session_store.get_chosen_model(session.SESSION_KEY) == "claude-opus-4-6"
+    # 旧 transcript 的 resume id 也没被塞回去 —— 否则下轮 resume 旧模型上下文
+    assert not session.get_resume()

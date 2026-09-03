@@ -118,17 +118,24 @@ class GatewayRunner:
         # 否则归档中的会话在侧边栏「工作中」过滤下不可见,续聊完也找不到
         # (见 web_static/sidebar.js buildVoiceTaskRow/buildConvRow 的 convFilter)。
         session_store.set_conv_archived(key, False)
-        # 优先内存里本次会话的切换,其次库里持久化的选定(重启后仍在);
-        # 全新会话(两者都没有)才回落"这个端上次用的默认模型"/全局默认,并【立即锁定】
-        # 为本会话的 chosen_model —— 否则后面别的会话再切换默认模型,会把这个已经用过
-        # 模型的老会话也带跑(缓存/上下文都对不上了)。锁定后,默认模型的变化只影响
-        # 真正还没用过模型的全新会话。
-        model = self.models.get(key) or session_store.get_chosen_model(key)
-        if not model:
+        # DB(chosen_model)是模型选择的唯一事实源:/model 命令、Web 胶囊、switch_model
+        # 工具都写它;内存 self.models 只是本进程镜像。以 DB 为准每轮刷新镜像 ——
+        # 否则 switch_model 这类只写 DB 的切换,下一轮仍读到内存旧值,切了不生效。
+        stored = session_store.get_chosen_model(key)
+        if stored:
+            self.models[key] = stored
+            model = stored
+        else:
+            # DB 空 = 本会话从没锁过模型,或用户"恢复默认"显式清掉了覆盖 ——
+            # 两种情况都走回落链,不能沿用内存里的过期镜像(/model 切过又被清空的
+            # 场景镜像已失效)。回落"这个端上次用的默认模型"/全局默认,并【立即
+            # 锁定】为本会话的 chosen_model —— 否则默认模型一变,把已经用过模型
+            # 的老会话也带跑(缓存/上下文都对不上了)。锁定后,默认模型的变化只
+            # 影响真正还没用过模型的全新会话。
             model = settings_store.get_web_default_model() if inc.platform == "web" else ""
             model = model or config.MODEL
             session_store.set_chosen_model(key, model)
-        self.models[key] = model
+            self.models[key] = model
         compact_flag = False  # /compact 命令:不短路,走下方 converse 的压缩轮
         if core.is_command(inc.text):
             outcome = core.handle_command(inc.text, key, model)

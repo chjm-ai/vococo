@@ -372,6 +372,42 @@ def available_models(
     return out
 
 
+def normalize_model_text(text: str) -> str:
+    """自然语言里的模型名归一化:小写、去掉空白与 .-_/· 等常见分隔符。
+
+    "claude opus 4.6" / "Opus-4.6" / "opus4.6" 归一后都是 "claudeopus46",
+    供 switch_model 这类自然语言入口与候选模型 id 做全等/包含匹配。
+    纯文本工具,不做语义判断;空输入返回空串。
+    """
+    import re
+
+    return re.sub(r"[\s\-_./·（）()]+", "", (text or "").strip().lower())
+
+
+def match_models_by_text(
+    text: str, candidates: list[tuple[str, str, str]]
+) -> list[tuple[str, str, str]]:
+    """按用户口语在候选模型里找命中的 (id, label, group),保持候选原顺序。
+
+    text 是用户原话/别名(如 "opus 4.6"、"kimi k3"、"deepseek"),candidates 形如
+    available_models() 的返回值。规则:输入归一化后与某候选 id 归一化形式【全等】
+    的排最前(用户直接说了规范 id 的场景);其余按"候选归一化串包含输入归一化串"
+    过滤(唯一子串也算命中),零命中返回 []。歧义(多个候选都包含)不在这里消解,
+    由调用方把列表交回给用户澄清——绝不擅自替用户猜。
+    """
+    want = normalize_model_text(text)
+    if not want:
+        return []
+    normed = [
+        (mid, label, group, normalize_model_text(mid))
+        for mid, label, group in candidates
+    ]
+    exact = [c[:3] for c in normed if c[3] == want]
+    if exact:
+        return exact
+    return [c[:3] for c in normed if want in c[3]]
+
+
 def lookup_provider_by_model(model: str) -> dict | None:
     """按模型名查供应商配置;额外模型会返回其复用服务商的连接信息。"""
     found = _provider_entry_for_model(model)
