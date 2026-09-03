@@ -28,25 +28,30 @@ from typing import Any
 from .. import config
 
 # ── 单价表($/百万 token:输入 / 输出 / 缓存写 / 缓存读)────────────────────
-# 官方价随时会变,中转模型(K2.7 Code / gpt-5.6-* 等)更是按同档估的,只求量级对。
-# 要改单价不用动代码:在 data/model_prices.json 写 {"模型名":[in,out,cache_w,cache_r]}。
+# 2026-09-03 按各家官方定价页核对更新过一轮,来源:
+#   Claude  https://platform.claude.com/docs/en/about-claude/pricing (5 分钟缓存写档)
+#   DeepSeek https://api-docs.deepseek.com/quick_start/pricing (离峰价;峰值 01-04/06-10 UTC 周一至周五翻倍,这里按离峰算)
+#   OpenAI  https://developers.openai.com/api/docs/pricing (短上下文档)
+#   Kimi    https://platform.kimi.ai/docs/pricing/chat-k3、chat-k2-7-code
+# DeepSeek/OpenAI/Kimi 都没有独立的"写缓存"加价,cache_w 按未命中输入价填。
+# 官方价随时会变,以后要改不用动代码:在 data/model_prices.json 写 {"模型名":[in,out,cache_w,cache_r]}。
 _DEFAULT_PRICES: dict[str, tuple[float, float, float, float]] = {
-    "claude-opus-5": (15, 75, 18.75, 1.5),
-    "claude-opus-4-8": (15, 75, 18.75, 1.5),
-    "claude-opus-4-6": (15, 75, 18.75, 1.5),
-    "claude-sonnet-5": (3, 15, 3.75, 0.3),
-    "claude-fable-5": (3, 15, 3.75, 0.3),
-    "claude-haiku-4-5-20251001": (0.8, 4, 1, 0.08),
-    "deepseek-v4-flash": (0.28, 0.42, 0.28, 0.028),
-    "deepseek-v4-pro": (0.55, 2.19, 0.55, 0.055),
-    "gpt-5.6-terra": (1.25, 10, 1.25, 0.125),
-    "gpt-5.6-luna": (1.25, 10, 1.25, 0.125),
-    "gpt-5.6-sol": (1.25, 10, 1.25, 0.125),
-    "gpt-5.5": (1.25, 10, 1.25, 0.125),
-    "kimi-k3": (0.6, 2.5, 0.6, 0.06),
-    "K2.7 Code": (0.6, 2.5, 0.6, 0.06),
+    "claude-opus-5": (5, 25, 6.25, 0.5),
+    "claude-opus-4-8": (5, 25, 6.25, 0.5),
+    "claude-opus-4-6": (5, 25, 6.25, 0.5),
+    "claude-sonnet-5": (2, 10, 2.5, 0.2),
+    "claude-fable-5": (10, 50, 12.5, 1),
+    "claude-haiku-4-5-20251001": (1, 5, 1.25, 0.1),
+    "deepseek-v4-flash": (0.22, 0.66, 0.22, 0.007),
+    "deepseek-v4-pro": (0.66, 1.98, 0.66, 0.022),
+    "gpt-5.6-terra": (2, 12, 2, 0.2),
+    "gpt-5.6-luna": (0.2, 1.2, 0.2, 0.02),
+    "gpt-5.6-sol": (4, 20, 4, 0.4),
+    "gpt-5.5": (5, 30, 5, 0.5),
+    "kimi-k3": (3, 15, 3, 0.3),
+    "K2.7 Code": (0.95, 4, 0.95, 0.19),
 }
-_FALLBACK_PRICE = (3.0, 15.0, 3.75, 0.3)  # 认不出的模型按 sonnet 档估,别当准数
+_FALLBACK_PRICE = (2.0, 10.0, 2.5, 0.2)  # 认不出的模型按 sonnet 5 档估,别当准数
 _PRICES_PATH = config.DATA_DIR / "model_prices.json"
 
 _LOGS_DIR = Path(os.path.expanduser("~/.claude/projects"))
