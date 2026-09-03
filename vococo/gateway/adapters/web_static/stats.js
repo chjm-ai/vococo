@@ -31,6 +31,44 @@ function stDur(sec){
   if(sec<86400) return (sec/3600).toFixed(1)+" 小时";
   return (sec/86400).toFixed(1)+" 天";
 }
+
+// 图表统一的悬停浮层:不用浏览器原生 title,避免在深浅主题、密集格子图里难看又延迟。
+let ST_TIP;
+function stTipAttr(lines){
+  const text = lines.filter(Boolean).join("\n");
+  return `data-st-tip="${esc(text)}" aria-label="${esc(lines.filter(Boolean).join("，"))}"`;
+}
+function stTipNode(){
+  if(!ST_TIP){
+    ST_TIP = document.createElement("div");
+    ST_TIP.id = "stTip"; ST_TIP.className = "sttip";
+    ST_TIP.setAttribute("role", "tooltip"); ST_TIP.hidden = true;
+    document.body.append(ST_TIP);
+  }
+  return ST_TIP;
+}
+function stHideTip(){ if(ST_TIP) ST_TIP.hidden = true; }
+function stPlaceTip(x,y){
+  const tip = stTipNode();
+  const gap = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sp-3")) || 8;
+  const rect = tip.getBoundingClientRect();
+  tip.style.left = Math.max(gap, Math.min(x + gap, innerWidth - rect.width - gap))+"px";
+  tip.style.top = Math.max(gap, Math.min(y + gap, innerHeight - rect.height - gap))+"px";
+}
+function stShowTip(ev){
+  const tip = stTipNode();
+  tip.textContent = ev.currentTarget.dataset.stTip || "";
+  tip.hidden = false;
+  stPlaceTip(ev.clientX, ev.clientY);
+}
+function bindStatsTips(pane){
+  pane.querySelectorAll("[data-st-tip]").forEach(el=>{
+    el.onpointerenter = ev=>{ if(ev.pointerType !== "touch") stShowTip(ev); };
+    el.onpointermove = ev=>{ if(!ST_TIP?.hidden && ev.pointerType !== "touch") stPlaceTip(ev.clientX, ev.clientY); };
+    el.onpointerleave = stHideTip;
+  });
+}
+
 // 强度 → 颜色:开方压一下,否则个别爆量的一天会把其余全压成同一个浅色
 function stShade(v,max){
   if(!v||!max) return "";
@@ -66,6 +104,7 @@ function stHeader(){
 }
 
 function drawStats(){
+  stHideTip();
   const pane = $("#setPane");
   let body;
   if(ST.loading && !ST.data) body = '<div class="setload">统计中…首次打开要扫一遍历史日志,大约 20 秒</div>';
@@ -101,6 +140,7 @@ function bindStatsPane(){
       if(n){ n.focus(); n.setSelectionRange(pos,pos); }
     };
   }
+  bindStatsTips(pane);
 }
 
 // ── 总览 ────────────────────────────────────────────────────────────────
@@ -141,8 +181,8 @@ function stOverview(){
       const e = d.daily[k];
       const v = e ? (e.turns||0) : 0;
       const wk = "日一二三四五六"[cur.getDay()];
-      cells += `<div class="cel${cur.getDate()===1?" mstart":""}" style="${stShade(v,maxTurns)}"
-        title="${k} 周${wk} · ${v} 轮${e&&e.cost?" · "+stMoney(e.cost):""}"></div>`;
+      cells += `<div class="cel sttip-target${cur.getDate()===1?" mstart":""}" style="${stShade(v,maxTurns)}"
+        ${stTipAttr([`${k} 周${wk}`, `对话 ${v} 轮`, `全天 AI 总账 ${e&&e.cost?stMoney(e.cost):"—"}`])}></div>`;
       cur.setDate(cur.getDate()+1);
     }
     cal = `<div class="stcal">${cells}</div>`;
@@ -164,8 +204,12 @@ function stOverview(){
   const list = Object.entries(by).sort((a,b)=>b[1].cost-a[1].cost);
   let modelSec = '<div class="setempty">这段时间没有模型调用记录</div>';
   if(list.length){
-    const stack = list.map(([n,t],i)=>
-      `<div style="width:${totalCost?t.cost/totalCost*100:0}%;background:${ST_PALETTE[i%8]}" title="${esc(n)} ${stMoney(t.cost)}"></div>`).join("");
+    const stack = list.map(([n,t],i)=>{
+      const base = t.cr+t.fresh;
+      const rate = base ? Math.round(t.cr/base*100)+"%" : "—";
+      return `<div class="sttip-target" style="width:${totalCost?t.cost/totalCost*100:0}%;background:${ST_PALETTE[i%8]}"
+        ${stTipAttr([n, `等值花费 ${stMoney(t.cost)}`, `调用 ${stNum(t.calls)} · 缓存命中 ${rate}`])}></div>`;
+    }).join("");
     const rows = list.map(([n,t],i)=>{
       const base = t.cr+t.fresh;
       const rate = base ? Math.round(t.cr/base*100) : null;
@@ -188,7 +232,8 @@ function stOverview(){
   if(costDays.length){
     const vals = costDays.map(k=>d.daily[k].cost);
     const mx = Math.max(...vals);
-    const bars = costDays.map((k,i)=>`<i style="height:${Math.max(2,vals[i]/mx*100)}%" title="${k} ${stMoney(vals[i])}"></i>`).join("");
+    const bars = costDays.map((k,i)=>`<i class="sttip-target" style="height:${Math.max(2,vals[i]/mx*100)}%"
+      ${stTipAttr([k, `全天 AI 总账 ${stMoney(vals[i])}`])}></i>`).join("");
     const avg = vals.reduce((s,v)=>s+v,0)/vals.length;
     trend = `<div class="stsec"><div class="sechd">每日花费趋势</div>
       <div class="stbars">${bars}</div>
@@ -197,7 +242,8 @@ function stOverview(){
         <span>${costDays[costDays.length-1]}</span></div></div>`;
   }
 
-  const toolBars = tools.slice(0,7).map(t=>`<div style="margin-bottom:var(--sp-3)">
+  const toolBars = tools.slice(0,7).map(t=>`<div class="sttip-target" style="margin-bottom:var(--sp-3)"
+    ${stTipAttr([t.name, `调用 ${stNum(t.calls)} 次`, `成功 ${stNum(t.ok)} 次 · ${Math.round(t.ok/t.calls*100)}%`])}>
     <div style="display:flex;justify-content:space-between;font-size:var(--fs-sm)">
       <span>${esc(t.name)}</span><span style="color:var(--dim2)">${stNum(t.calls)} · ${Math.round(t.ok/t.calls*100)}%</span></div>
     <div class="stmini"><i style="width:${tools[0].calls?t.calls/tools[0].calls*100:0}%"></i></div></div>`).join("");
@@ -211,7 +257,7 @@ function stOverview(){
       总账包含 vococo 与终端直接运行 Claude Code 的全部用量；会话明细只列 vococo 会话。</p></div>
   ${trend}
   <div class="stsec"><div class="sechd">运行健康</div><div class="stgrid2">
-    <div><svg width="104" height="104" viewBox="0 0 36 36">
+    <div><svg class="sttip-target" ${stTipAttr([`缓存命中 ${hit.toFixed(1)}%`, `复用 ${stNum(hitRead)} / 全价 ${stNum(hitFresh)}`, `少花了 ${stMoney(models.reduce((s,m)=>s+(m.saved||0),0))}`])} width="104" height="104" viewBox="0 0 36 36">
       <circle cx="18" cy="18" r="15.9" style="fill:none;stroke:var(--panel2);stroke-width:3.2"/>
       <circle cx="18" cy="18" r="15.9" stroke-dasharray="${hit.toFixed(1)} 100" transform="rotate(-90 18 18)"
         style="fill:none;stroke:var(--accent);stroke-width:3.2;stroke-linecap:round"/>

@@ -513,6 +513,11 @@
   .ststack{display:flex;height:18px;border-radius:var(--r-sm);overflow:hidden;margin-bottom:var(--sp-3)}
   .stbars{display:flex;align-items:flex-end;gap:2px;height:88px}
   .stbars i{flex:1;background:linear-gradient(180deg,var(--accent),var(--accent2));border-radius:2px 2px 0 0;min-height:2px}
+  .sttip-target{cursor:default}
+  .sttip{position:fixed;z-index:90;max-width:calc(100vw - var(--sp-5));padding:var(--sp-2) var(--sp-3);
+    border:1px solid var(--line2);border-radius:var(--r-md);background:var(--card);color:var(--text);
+    box-shadow:var(--shadow);font-size:var(--fs-sm);line-height:1.5;white-space:pre-line;pointer-events:none}
+  .sttip[hidden]{display:none}
   .stmini{height:6px;background:var(--panel2);border-radius:var(--r-pill);overflow:hidden}
   .stmini i{display:block;height:100%;background:var(--accent);border-radius:var(--r-pill)}
   .stgrid2{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-5)}
