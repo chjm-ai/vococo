@@ -330,8 +330,12 @@ def overview(range_key: str = "30d") -> dict[str, Any]:
     tw = "WHERE ts>=?" if since else ""
     args = (since,) if since else ()
 
+    # 日历刻意不跟 range 走:它画的是整整一年的方格,切到「7 天」也应该看到全年的
+    # 使用节奏(近一年之外的太老,画了也看不清)。花费趋势图再由前端按 range 切片。
+    year_ago = time.strftime("%Y-%m-%d", time.localtime(time.time() - 366 * 86400))
     daily = {d: {"turns": n} for d, n in st.execute(
-        f"SELECT date(ts,'unixepoch','localtime') d, count(*) FROM turns {tw} GROUP BY d", args)}
+        "SELECT date(ts,'unixepoch','localtime') d, count(*) FROM turns"
+        " WHERE date(ts,'unixepoch','localtime')>=? GROUP BY d", (year_ago,))}
     turns, days_active = (st.execute(
         f"SELECT count(*), count(DISTINCT date(ts,'unixepoch','localtime')) FROM turns {tw}",
         args).fetchone() or (0, 0))
@@ -357,8 +361,14 @@ def overview(range_key: str = "30d") -> dict[str, Any]:
         m["cache_w"] += cw; m["cache_r"] += cr; m["cost"] += c
         hit_read += cr
         hit_fresh += i + cw
+
+    # 每天的花费也按整年给(日历 tooltip 用),前端画趋势图时再按 range 切片
+    for day, model, i, o, cw, cr in db.execute(
+        "SELECT day, model, sum(in_tok), sum(out_tok), sum(cache_w), sum(cache_r)"
+        " FROM usage_hourly WHERE day>=? GROUP BY day, model", (year_ago,)
+    ):
         d = daily.setdefault(day, {"turns": 0})
-        d["cost"] = round(d.get("cost", 0.0) + c, 4)
+        d["cost"] = round(d.get("cost", 0.0) + cost_of(model, i, o, cw, cr, prices), 4)
 
     tools = {name: [calls, ok] for name, calls, ok in db.execute(
         f"SELECT name, sum(calls), sum(ok) FROM tool_daily {dw} GROUP BY name", dargs)}
