@@ -153,13 +153,17 @@ function stOverview(){
   const hitRead = models.reduce((s,m)=>s+m.cache_r,0);
   const hitFresh = models.reduce((s,m)=>s+m.in_tok+m.cache_w,0);
   const hit = (hitRead+hitFresh) ? (hitRead/(hitRead+hitFresh)*100) : 0;
+  // 与花费相同,累计 token 也按全部入口算;缓存读/写是实际发生的 token 用量,不能漏掉。
+  const totalInput = models.reduce((s,m)=>s+m.in_tok+m.cache_w+m.cache_r,0);
+  const totalOutput = models.reduce((s,m)=>s+m.out_tok,0);
+  const totalTokens = totalInput+totalOutput;
   const tools = d.tools||[];
   const toolRate = o.tool_calls ? (o.tool_ok/o.tool_calls*100).toFixed(1) : "—";
 
   const kpis = [
-    ["活跃天数", o.days, o.first_day ? "首次对话 "+o.first_day : ""],
-    ["会话数", o.sessions, "已归档 "+o.archived],
+    ["会话数", o.sessions, "活跃 "+o.days+" 天 · 已归档 "+o.archived],
     ["对话轮次", stNum(o.turns), o.days ? "日均 "+Math.round(o.turns/o.days)+" 轮" : ""],
+    ["累计 tokens", stNum(totalTokens), "输入 "+stNum(totalInput)+" · 输出 "+stNum(totalOutput)],
     ["工具调用", stNum(o.tool_calls), "成功率 "+toolRate+"%"],
     ["等值花费", stMoney(totalCost),
       (o.days?"日均 "+stMoney(totalCost/o.days):"") + (o.turns?" · 每轮 "+stMoney(totalCost/o.turns):"")],
@@ -263,7 +267,7 @@ function stOverview(){
         style="fill:none;stroke:var(--accent);stroke-width:3.2;stroke-linecap:round"/>
       <text x="18" y="18.5" text-anchor="middle" style="fill:var(--text);font-size:6.5px;font-weight:600">${hit.toFixed(1)}%</text>
       <text x="18" y="23" text-anchor="middle" style="fill:var(--dim);font-size:3px">缓存命中</text></svg>
-      <div class="stchips"><span class="stchip">累计吞吐 ${stNum(o.total_tokens)}</span>
+      <div class="stchips"><span class="stchip">累计 tokens ${stNum(totalTokens)}</span>
         <span class="stchip">复用 ${stNum(hitRead)} / 全价 ${stNum(hitFresh)}</span>
         <span class="stchip ${o.errors>20?"bad":"good"}">异常会话 ${o.errors}</span></div></div>
     <div>${toolBars||'<div class="setempty">没有工具调用</div>'}</div>
