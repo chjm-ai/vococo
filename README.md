@@ -36,6 +36,7 @@
 - **后台任务引擎** — 语音派活 / cron / 独立新会话共用一套引擎，任务跑在独立 git worktree
 - **长期记忆** — 启动注入 `~/AI_BRAIN`；`save_memory` 沉淀、`recall_past` 召回，纯 Markdown
 - **多供应商热切换** — DeepSeek / Kimi / 任意 Anthropic 兼容中转，设置页添加即生效
+- **运行数据面板** — 设置页「数据」:工作强度日历、各模型用量与花费、缓存命中/工具成功率，逐个会话可下钻
 - **安全模型 + 自我运维** — 危险三档闸、手机审批；`vococo doctor` 自检、`restart_self` 安全重启、看门狗防假死
 
 ## 架构
@@ -47,7 +48,8 @@ core/                  agent 循环(claude-agent-sdk)· client 保温池 · prom
 gateway/               平台内核(命令注册表 / converse / 会话路由)
   ├─ adapters/web        自建 PWA(SSE 流式 / 多会话 / 设置页)
   ├─ adapters/web_push   VAPID Web Push 系统通知
-  └─ settings_store.py   设置页存储(供应商/模型/skill/MCP/effort)
+  ├─ settings_store.py   设置页存储(供应商/模型/skill/MCP/effort)
+  └─ stats.py            运行数据面板:日志增量 ETL(stats.db)+ 用量/花费/会话聚合
 cron/                  cron / interval / once 调度 + 自动化建议(consent-first)
 memory/                SQLite 会话库(state.db)+ 检索 + 图片/音频附件
 tools/                 内置 MCP server(记忆/定时/发消息/自我重启…)

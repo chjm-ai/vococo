@@ -13,7 +13,7 @@ const SHELL_NETWORK_TIMEOUT_MS = 1200;  // 超过此预算网络还没回应就�
 // app-core/markdown/sidebar/settings/workbench/stream/composer/voice:从 index.html 拆出的功能块
 const SHELL_PATHS = new Set([
   "/", "/styles.css", "/mascot.css", "/mascot.js", "/tool-card.js", "/manifest.json", "/favicon.ico",
-  "/app-core.js", "/markdown.js", "/sidebar.js", "/settings.js", "/workbench.js",
+  "/app-core.js", "/markdown.js", "/sidebar.js", "/settings.js", "/stats.js", "/workbench.js",
   "/stream.js", "/composer.js", "/voice.js",
   "/vococo-mark.svg", "/icon-192.png", "/icon-512.png",
   "/icon-maskable-512.png", "/apple-touch-icon.png",
