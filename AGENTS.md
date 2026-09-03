@@ -20,6 +20,14 @@ config.py 路径/常量;providers.py 多供应商切换
 系统提示三层堆叠:claude_code preset + PERSONA + 动态记忆,见 core/prompt.py。
 改完代码直接提交并合并回 main(`zsh deploy/merge-main.sh`);若改动涉及后端(core/gateway/cron/tools 等非纯前端代码),提交合并后要询问主人是否顺便重启(`restart_self`)。
 
+**大改动合并后顺手推 GitHub**(`git push origin main`,远端 `chjm-ai/vococo`):
+- 算「大改动」:新增文件/模块、新接口或数据结构、跨多个文件的重构、依赖变更、
+  影响别人怎么用的行为改动。凡是值得单独写一条 feat/refactor 的,基本都算。
+- 不算:改错别字、调文案、单行修 bug、纯注释——这类攒着,下次大改动一起带上去。
+- push 属 escalate 档,有交互通道时会弹审批,批了才走;后台任务(无交互通道)会被拦,
+  这时如实说「已合并 main、未 push」,别当成推成功了。
+- 推之前先 `git log origin/main..main --oneline` 看一眼要推什么,推完把结果一句话带过。
+
 ## 按需加载资料
 默认只根据当前对话和本文件行动,不要为「可能有用」预读整个资料库或遍历项目。先判断
 问题属于哪类,再只读对应的最小资料链:
