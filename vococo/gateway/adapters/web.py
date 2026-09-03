@@ -104,6 +104,11 @@ _PUBLISH_CSP = (
 # 写明的外部域,其余指令沿用站点默认 _CSP 的收紧。只按文件名精确匹配,其它 /pub 页面
 # 维持 _PUBLISH_CSP 沙箱不动——不要往这里加"页面内容不可信"的东西。
 _APP_PUBLISH_NAMES = {"food-log.html", "workshop-checkin-20260802.html"}
+# 目录级白名单(相对于 PUBLISHED_DIR 的目录前缀):该目录下所有文件都走宽松 CSP。
+# 用途:多文件小站点(如 ai-radar)的 index.html 需 fetch 同目录 data.json,sandbox 的
+# opaque origin 会让相对路径 fetch 变成跨域被拦;这些站点是我们自己的可信内容,不是用
+# 户上传的,可以安全解除 sandbox。
+_APP_PUBLISH_DIRS = {"ai-radar"}
 _APP_PUBLISH_CSP = (
     _CSP.replace(
         "connect-src 'self'",
@@ -2528,6 +2533,17 @@ class WebAdapter:
         target = self._safe_published_path(request.match_info.get("path", ""))
         if target is None or not target.is_file():
             return web.Response(status=404, text="not found")
+        # 判断是否走宽松 CSP:文件名精确命中 _APP_PUBLISH_NAMES,或目录前缀命中
+        # _APP_PUBLISH_DIRS(多文件站点需要 fetch 同目录资源,sandbox opaque origin 会拦)。
+        pub_root = config.PUBLISHED_DIR.resolve()
+        try:
+            rel = target.resolve().relative_to(pub_root).parts
+        except ValueError:
+            rel = ()
+        use_app_csp = (
+            target.name in _APP_PUBLISH_NAMES
+            or (len(rel) >= 2 and rel[0] in _APP_PUBLISH_DIRS)
+        )
         return web.FileResponse(
             target,
             # X-Frame-Options 显式设成 SAMEORIGIN(不能不设——中间件 _security_mw 用 setdefault
@@ -2535,7 +2551,7 @@ class WebAdapter:
             headers={
                 "Cache-Control": "no-cache",
                 "Content-Security-Policy": (
-                    _APP_PUBLISH_CSP if target.name in _APP_PUBLISH_NAMES else _PUBLISH_CSP
+                    _APP_PUBLISH_CSP if use_app_csp else _PUBLISH_CSP
                 ),
                 "X-Frame-Options": "SAMEORIGIN",
             },
