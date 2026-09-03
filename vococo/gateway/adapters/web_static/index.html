@@ -101,7 +101,7 @@ try{
           <input id="cfCron" placeholder="0 8 * * *"/>
         </div>
         <label class="cflabel">执行模型</label>
-        <select id="cfModel"><option value="">默认模型</option></select>
+        <select id="cfModel"></select>
         <label class="cflabel">工作目录（可选）</label>
         <input id="cfCwd" placeholder="绝对路径，留空使用默认项目"/>
       </div>
@@ -793,9 +793,25 @@ function modelShort(id){
   if(c) return c[1].replace(/[(（][^)）]*[)）]\s*$/,"").trim();   // 去掉末尾的 （订阅）/（API）标注
   return id.replace(/^claude-/,"").replace(/-\d{6,}$/,"");  // 去 claude- 前缀与日期后缀
 }
-function curModel(){ return S.model || S.models.default || ""; }
+// 定时任务会话里"模型"不认 S.model(那是聊天临时切的),永远认编辑页存的
+// job.model——否则任务本体到点用哪个模型跑,跟输入框显示的会对不上。
+function curModel(){
+  const job=(S.cronJobs||[]).find(x=>x.conv===S.conv);
+  if(job) return job.model||"";
+  return S.model || S.models.default || "";
+}
 function setModel(id){ S.model=id||""; renderModelChip(); renderEffortChip(); }
 function renderModelChip(){ $("#modelName").textContent=modelShort(curModel()); }
+// 定时任务会话:模型只读(锁定编辑页的值,对话里不可切换)+ 思考深度整个隐藏
+// (2026-09-03 反馈:两处模型来源不一致会打乱缓存命中,干脆锁死为编辑页单一来源)。
+function syncModelLock(){
+  const job=(S.cronJobs||[]).find(x=>x.conv===S.conv) || null;
+  $("#modelBtn").disabled=!!job;
+  $("#modelBtn").title=job ? "定时任务的模型由「编辑任务」设置,对话里不可切换" : "切换模型";
+  $("#effortBox").hidden=!!job;
+  renderModelChip();
+  renderEffortChip();
+}
 // 模型面板分组:Anthropic 订阅(拿不到具体用量,只显示重置时间)/ Kimi 订阅(有具体用量,带小圆环)
 // / API(按量计费,不查额度)。分组顺序固定,组间只画一条分割线,不做折叠。
 var MODEL_GROUPS = [["anthropic","Anthropic 订阅"],["kimi","Kimi 订阅"],["codex","Codex 订阅"],["api","API"]];
@@ -1521,6 +1537,7 @@ async function openConv(conv, silentGroup){
   syncCronHeader();   // 定时任务会话 → 标题栏亮出启停开关/编辑/「⋯」
   syncMoreHeader();   // 普通会话 → 标题栏最右侧亮出「⋯」(置顶/归档/删除)
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
+  syncModelLock();   // 定时任务会话 → 模型只读锁定编辑页的值 + 隐藏思考深度
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
   window.refreshTaskStatus && window.refreshTaskStatus();  // 刷新任务状态条(loadTasks 在通话视图 IIFE 内,经 window 出口调)

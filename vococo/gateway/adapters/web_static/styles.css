@@ -938,6 +938,9 @@
   #modelBtn #modelName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #modelBtn:hover{color:var(--text);background:var(--panel2)}
   #modelBtn:active{transform:scale(.96)}
+  /* 定时任务会话:模型锁定编辑页的值,按钮只读展示,去掉下拉箭头避免误以为能点 */
+  #modelBtn:disabled{cursor:default;pointer-events:none}
+  #modelBtn:disabled .caret{display:none}
   /* 折线箭头(chevron):border 描边 + 旋转,替代实心三角,略大;默认指向右,.down 转朝下 */
   .chev{flex-shrink:0;width:6px;height:6px;border:solid currentColor;border-width:0 1.5px 1.5px 0;
     transform:translateX(-1px) rotate(-45deg);transition:transform var(--t-fast)}   /* 收起:朝右(向左补 1px 视觉居中) */

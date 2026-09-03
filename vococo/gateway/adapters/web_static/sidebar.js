@@ -619,6 +619,7 @@ async function loadCronSidebar(){
   syncCronHeader();   // 正开着某条任务会话时,启停开关的状态要跟上最新数据
   syncMoreHeader();   // 搜索先打开任务、列表后到时,收起普通会话的旧菜单
   refillCurrentMeta();   // 同 loadVoiceSidebar:数据到位后补一次模型回填
+  if(typeof syncModelLock==="function") syncModelLock();   // job 列表刚到位/编辑后刷新 → 重新锁定模型显示
 }
 // 「定时」Tab 里的「本机系统任务」区块:本机 launchd/crontab 里真正带调度周期的任务
 // (只读,见 web.py /system/tasks、cron/system_tasks.py 模块头的识别标准),跟上面
@@ -837,11 +838,15 @@ async function populateCronModelSelect(selected){
       _cronModelCache=d.choices||[];
     }catch(e){ _cronModelCache=[]; }
   }
-  sel.innerHTML='<option value="">默认模型</option>';
+  sel.innerHTML="";
   for(const [v,label] of _cronModelCache){
     const o=document.createElement("option"); o.value=v; o.textContent=label; sel.appendChild(o);
   }
-  sel.value=selected||"";
+  // 不再留"默认模型"空选项——任务必须锁定一个具体模型(见 index.html curModel()
+  // 的任务专属分支)。新建任务默认选 DeepSeek(周期任务偏好便宜稳定、不占官方订阅
+  // 额度);编辑已有任务或找不到 DeepSeek 时退回原值/列表第一项。
+  const deepseek=_cronModelCache.find(function(c){ return (c[0]||"").toLowerCase().indexOf("deepseek")>=0; });
+  sel.value=selected || (deepseek && deepseek[0]) || (_cronModelCache[0] && _cronModelCache[0][0]) || "";
 }
 function openCronModal(job){
   $("#cronModal").hidden=false;
