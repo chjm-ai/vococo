@@ -178,6 +178,14 @@ def test_reenable_builtin_model(monkeypatch, tmp_path):
     assert settings_store.list_disabled_builtin_models() == []
 
 
+def test_legacy_disabled_builtin_models_migrates_to_all_models_list(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store._PATH.write_text(
+        '{"disabled_builtin_models": ["claude-opus-4-6"]}', encoding="utf-8"
+    )
+    assert settings_store.list_disabled_models() == ["claude-opus-4-6"]
+
+
 def test_disable_builtin_model_is_idempotent(monkeypatch, tmp_path):
     _point_to(monkeypatch, tmp_path)
     settings_store.set_builtin_model_disabled("claude-opus-4-6", True)

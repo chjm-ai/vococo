@@ -15,8 +15,8 @@
   可选 group/provider 指向已有第三方服务商;没指向时按官方订阅走)。id 是键、重复 id
   直接覆盖 label=编辑;web_providers 是第三方端点(base_url+api_key+model),直接落
   data/web_settings.json。
-  避免两边互相覆写。disabled_builtin_models 是代码里 MODEL_CHOICES 硬编码档位的隐藏
-  名单(不能真删常量,只能摘出选择器,可随时恢复)。providers.py 每次都现读现并,
+  避免两边互相覆写。disabled_models 是模型选择面板的隐藏名单，内置档位和
+  第三方服务商模型都能隐藏、也都能恢复。providers.py 每次都现读现并，
   同样【改完下一轮就生效】。
 """
 from __future__ import annotations
@@ -44,8 +44,9 @@ _DEFAULTS: dict = {
     "web_efforts": {},           # 模型 -> 思考深度;不同模型分别记住自己的选择
     "web_extra_models": [],     # 设置页手动加的模型档位:[{id,label,group?,provider?}]
     "web_providers": {},        # 设置页手动加的第三方服务商:name -> {base_url,api_key,model,label}
-    "disabled_builtin_models": [],  # 代码里硬编码的官方档位(MODEL_CHOICES),用户在设置页
-                                     # 手动隐藏掉的那些 id——不能真删代码常量,只能从选择器里摘掉
+    "disabled_models": [],      # 模型选择面板隐藏名单，覆盖内置和第三方模型
+    # 兼容 2026-09 前的设置文件；读取时会迁入 disabled_models。
+    "disabled_builtin_models": [],
 }
 
 
@@ -55,11 +56,15 @@ def _load() -> dict:
         raw = json.loads(_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
         raw = {}
-    data = {**_DEFAULTS, **(raw if isinstance(raw, dict) else {})}
+    raw = raw if isinstance(raw, dict) else {}
+    data = {**_DEFAULTS, **raw}
+    # 旧版只允许隐藏官方档位，沿用原名单，避免升级后已隐藏的模型重新出现。
+    if "disabled_models" not in raw:
+        data["disabled_models"] = raw.get("disabled_builtin_models", [])
     # 保证子结构类型正确(手改坏了也不崩)——同时必须复制出新对象,不能直接拿 _DEFAULTS
     # 里的 list/dict 引用:文件不存在时 data[key] 会等于 _DEFAULTS[key] 本身,调用方一
     # mutate(如 list.append/dict[k]=v)就把模块级默认值永久污染了。
-    for key in ("skills_enabled", "skills_hidden", "web_extra_models", "disabled_builtin_models"):
+    for key in ("skills_enabled", "skills_hidden", "web_extra_models", "disabled_models", "disabled_builtin_models"):
         data[key] = list(data[key]) if isinstance(data.get(key), list) else []
     for key in ("external_mcp", "web_providers", "web_efforts", "skill_profiles"):
         data[key] = dict(data[key]) if isinstance(data.get(key), dict) else {}
@@ -343,18 +348,29 @@ def remove_web_extra_model(model_id: str) -> None:
         _save(d)
 
 
-# ── 设置页手动隐藏的内置模型档位(MODEL_CHOICES 里代码写死的那些) ──────────
+# ── 模型选择面板的可见性 ───────────────────────────────────────────────────
+def list_disabled_models() -> list[str]:
+    """返回模型选择面板隐藏名单，内置和第三方模型共用。"""
+    return list(_load()["disabled_models"])
+
+
+def set_model_disabled(model_id: str, disabled: bool) -> None:
+    """隐藏或恢复模型选择面板中的一个当前候选。"""
+    with _LOCK:
+        d = _load()
+        hidden = set(d["disabled_models"])
+        hidden.add(model_id) if disabled else hidden.discard(model_id)
+        d["disabled_models"] = sorted(hidden)
+        _save(d)
+
+
+# 兼容旧调用方与旧设置接口；存储语义已扩展到所有模型。
 def list_disabled_builtin_models() -> list[str]:
-    return list(_load()["disabled_builtin_models"])
+    return list_disabled_models()
 
 
 def set_builtin_model_disabled(model_id: str, disabled: bool) -> None:
-    with _LOCK:
-        d = _load()
-        s = set(d["disabled_builtin_models"])
-        s.add(model_id) if disabled else s.discard(model_id)
-        d["disabled_builtin_models"] = sorted(s)
-        _save(d)
+    set_model_disabled(model_id, disabled)
 
 
 # ── 设置页手动加的第三方服务商 ────────────────────────────────────────────

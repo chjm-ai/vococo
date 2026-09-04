@@ -345,22 +345,23 @@ async function saveMcpForm(){
   renderMcpPane();
 }
 
-// ── 模型分区(内置档位可隐藏/恢复,自定义模型/服务商可增改删,改完下一轮/刷新即生效)──
+// ── 模型分区(模型面板同源显示/隐藏,自定义模型/服务商可增改删,改完下一轮/刷新即生效)──
 function renderModelsPane(){
-  const md = SET.data.models || {active:"", builtin:[], custom:[], providers:[]};
+  const md = SET.data.models || {active:"", choices:[], builtin:[], custom:[], providers:[]};
   const curTag = ' <span class="mctag cur">当前</span>';
   let h = '<h3>'+ic("bot")+'模型 & 服务商</h3>'+
     '<p class="shint">"当前"标的是这个会话正在用的模型。新模型发布但代码还没跟上时,先在下面手动补一档;'+
     '第三方服务商(DeepSeek/Kimi/中转等)也可以直接在这加,保存后刷新模型面板即生效,不用重启。</p>';
 
-  h += '<div class="sechd">内置模型档位</div>';
-  (md.builtin||[]).forEach(m=>{
+  h += '<div class="sechd">模型面板显示</div>'+
+    '<p class="shint" style="margin:2px 0 6px">这里和聊天页模型面板完全一致；关闭后从面板隐藏，随时可恢复。</p>';
+  (md.choices||md.builtin||[]).forEach(m=>{
     const cur = m.id===md.active ? curTag : '';
-    const acts = '<label class="sw"><input type="checkbox" data-bitgl="'+esc(m.id)+'"'+(m.disabled?'':' checked')+'><span class="track"></span></label>';
-    h += settingsRow("data-birow", m.id, esc(m.label)+cur, esc(m.id), !!m.disabled, acts);
+    const acts = '<label class="sw"><input type="checkbox" data-modeltgl="'+esc(m.id)+'"'+(m.disabled?'':' checked')+'><span class="track"></span></label>';
+    h += settingsRow("data-modelrow", m.id, esc(m.label)+cur, esc(m.id), !!m.disabled, acts);
   });
 
-  h += '<div class="sechd">自定义模型档位</div>';
+  h += '<div class="sechd">自定义模型档位配置</div>';
   if(!md.custom.length){
     h += '<p class="shint" style="margin:2px 0 6px">还没有手动加的档位。</p>';
   } else {
@@ -417,12 +418,14 @@ function providerFormHtml(){
   '</div>';
 }
 function bindModelsPane(){
-  $("#setPane").querySelectorAll("[data-bitgl]").forEach(inp=>{
+  $("#setPane").querySelectorAll("[data-modeltgl]").forEach(inp=>{
     inp.onchange = async()=>{
-      const id=inp.dataset.bitgl, disabled=!inp.checked;
+      const id=inp.dataset.modeltgl, disabled=!inp.checked;
       inp.closest(".srow").classList.toggle("off", disabled);
-      await api("/settings/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"toggle_builtin", id, disabled})});
-      const m=SET.data.models.builtin.find(x=>x.id===id); if(m) m.disabled=disabled;
+      const r=await api("/settings/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"toggle", id, disabled})});
+      if(!r.ok){ inp.checked=!disabled; inp.closest(".srow").classList.toggle("off", !disabled); return; }
+      const choices=SET.data.models.choices||SET.data.models.builtin||[];
+      const m=choices.find(x=>x.id===id); if(m) m.disabled=disabled;
     };
   });
   $("#setPane").querySelectorAll("[data-mdedit]").forEach(b=>{
