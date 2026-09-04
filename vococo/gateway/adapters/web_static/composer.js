@@ -48,32 +48,32 @@ function restoreComposerState(conv){
 // ── 发送 ────────────────────────────────────────────────────────────────
 // /send 已入队但 HTTP 回执在代理/网络层丢失时，服务端会先广播带同一 id 的 user SSE
 // 事件。该事件是唯一可靠的"已接收"凭据，不能用同会话的任意 start/user 事件猜测。
-function newClientMessageId(){
+function newClientRequestId(){
   if(globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return Date.now().toString(36)+"-"+Math.random().toString(36).slice(2);
 }
-function acknowledgeSend(clientMessageId){
-  if(!clientMessageId || !(clientMessageId in S.sendAcks)) return;
-  const ack=S.sendAcks[clientMessageId];
+function acknowledgeSend(clientRequestId){
+  if(!clientRequestId || !(clientRequestId in S.sendAcks)) return;
+  const ack=S.sendAcks[clientRequestId];
   if(typeof ack==="function") ack();
-  else S.sendAcks[clientMessageId]=true;
+  else S.sendAcks[clientRequestId]=true;
 }
-function waitForSendAck(clientMessageId, timeout=4000){
-  if(S.sendAcks[clientMessageId]===true){
-    delete S.sendAcks[clientMessageId];
+function waitForSendAck(clientRequestId, timeout=4000){
+  if(S.sendAcks[clientRequestId]===true){
+    delete S.sendAcks[clientRequestId];
     return Promise.resolve(true);
   }
   return new Promise(resolve=>{
     const timer=setTimeout(()=>{
-      if(S.sendAcks[clientMessageId]===finish) delete S.sendAcks[clientMessageId];
+      if(S.sendAcks[clientRequestId]===finish) delete S.sendAcks[clientRequestId];
       resolve(false);
     },timeout);
     const finish=()=>{
       clearTimeout(timer);
-      delete S.sendAcks[clientMessageId];
+      delete S.sendAcks[clientRequestId];
       resolve(true);
     };
-    S.sendAcks[clientMessageId]=finish;
+    S.sendAcks[clientRequestId]=finish;
   });
 }
 async function send(text, display, opts){
@@ -170,14 +170,14 @@ async function send(text, display, opts){
     if(auds.some(a=>!a.text)) S.stream.audioPending = true;
     if(meRow) S.stream.userRow=meRow;
   }
-  const clientMessageId=newClientMessageId();
-  S.sendAcks[clientMessageId]=false;
+  const clientRequestId=newClientRequestId();
+  S.sendAcks[clientRequestId]=false;
   const payload={
     conv:sendConv, text,
     images:sendImages.map(x=>({data:x.data,media_type:x.media_type})),
     audios:sendAudios.map(x=>({id:x.id})),
     files:sendFiles.map(x=>({id:x.id})),
-    client_message_id:clientMessageId,
+    client_request_id:clientRequestId,
   };
   // 新会话:发出第一条后,把本地临时会话转正。转正不能依赖当前仍停在哪个会话,
   // 否则上传期间切走再回来会把消息发到前端专用的 local- id。
@@ -218,10 +218,10 @@ async function send(text, display, opts){
   }catch(err){
     sendError=err;
     // 网络断开与网关 5xx 都可能发生在服务端已入队之后；4xx 才是明确拒绝，不能误判成功。
-    if((!err.httpStatus || err.httpStatus>=500) && await waitForSendAck(clientMessageId)) sendError=null;
+    if((!err.httpStatus || err.httpStatus>=500) && await waitForSendAck(clientRequestId)) sendError=null;
   }
   if(!sendError){
-    delete S.sendAcks[clientMessageId];
+    delete S.sendAcks[clientRequestId];
     // 服务端确认后才丢弃后台快照。可见输入框早已在发送入口清空,
     // 用户若在上传或发送期间切会话,回来仍保持「已发出」的表面状态。
     const hasNewContent=isCurrent() &&
@@ -239,7 +239,7 @@ async function send(text, display, opts){
   }
   delete S.sending[oldConv]; delete S.sending[sendConv];
   delete S.localSent[oldConv]; delete S.localSent[sendConv];
-  delete S.sendAcks[clientMessageId];
+  delete S.sendAcks[clientRequestId];
   // /send 失败时不能把附件和文字一起吞掉,否则用户只能重新选择文件,且误以为已发送。
   // 当前已切到别的会话时,也要把失败态写回原会话缓存,切回后才能重试。
   S.composerAttachments[oldConv]={images:sendImages,audios:sendAudios,files:sendFiles};

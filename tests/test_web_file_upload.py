@@ -84,7 +84,7 @@ async def test_send_consumes_uploaded_file(file_app, adapter, isolated):
 
 
 @pytest.mark.anyio
-async def test_send_user_event_carries_client_message_id(file_app, adapter, monkeypatch):
+async def test_send_user_event_carries_client_request_id(file_app, adapter, monkeypatch):
     """HTTP 回执丢失时，前端只能用匹配的 SSE 事件确认本次发送已入队。"""
     events = []
     monkeypatch.setattr(adapter, "_emit", events.append)
@@ -92,14 +92,14 @@ async def test_send_user_event_carries_client_message_id(file_app, adapter, monk
     async with TestClient(TestServer(file_app)) as client:
         resp = await client.post(
             "/send",
-            json={"conv": "main", "text": "确认这条消息", "client_message_id": "msg-123"},
+            json={"conv": "main", "text": "确认这条消息", "client_request_id": "msg-123"},
             headers={"X-Auth-Token": ""},
         )
 
     assert resp.status == 200
     assert events == [{
         "conv": "main", "type": "user", "text": "确认这条消息", "images": [],
-        "client_message_id": "msg-123",
+        "client_request_id": "msg-123",
     }]
 
 
@@ -192,9 +192,9 @@ def test_send_uses_matching_sse_ack_when_http_receipt_is_lost():
     core = (static / "app-core.js").read_text(encoding="utf-8")
 
     assert "sendAcks: {}," in core
-    assert "client_message_id:clientMessageId," in composer
-    assert "await waitForSendAck(clientMessageId)" in composer
-    assert "acknowledgeSend(e.client_message_id)" in stream
+    assert "client_request_id:clientRequestId," in composer
+    assert "await waitForSendAck(clientRequestId)" in composer
+    assert "acknowledgeSend(e.client_request_id)" in stream
 
 
 def test_history_replays_file_and_audio_names():
