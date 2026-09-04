@@ -46,6 +46,36 @@ function restoreComposerState(conv){
 }
 
 // ── 发送 ────────────────────────────────────────────────────────────────
+// /send 已入队但 HTTP 回执在代理/网络层丢失时，服务端会先广播带同一 id 的 user SSE
+// 事件。该事件是唯一可靠的"已接收"凭据，不能用同会话的任意 start/user 事件猜测。
+function newClientMessageId(){
+  if(globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return Date.now().toString(36)+"-"+Math.random().toString(36).slice(2);
+}
+function acknowledgeSend(clientMessageId){
+  if(!clientMessageId || !(clientMessageId in S.sendAcks)) return;
+  const ack=S.sendAcks[clientMessageId];
+  if(typeof ack==="function") ack();
+  else S.sendAcks[clientMessageId]=true;
+}
+function waitForSendAck(clientMessageId, timeout=4000){
+  if(S.sendAcks[clientMessageId]===true){
+    delete S.sendAcks[clientMessageId];
+    return Promise.resolve(true);
+  }
+  return new Promise(resolve=>{
+    const timer=setTimeout(()=>{
+      if(S.sendAcks[clientMessageId]===finish) delete S.sendAcks[clientMessageId];
+      resolve(false);
+    },timeout);
+    const finish=()=>{
+      clearTimeout(timer);
+      delete S.sendAcks[clientMessageId];
+      resolve(true);
+    };
+    S.sendAcks[clientMessageId]=finish;
+  });
+}
 async function send(text, display, opts){
   opts=opts||{};
   closeCmdMenu();
@@ -140,11 +170,14 @@ async function send(text, display, opts){
     if(auds.some(a=>!a.text)) S.stream.audioPending = true;
     if(meRow) S.stream.userRow=meRow;
   }
+  const clientMessageId=newClientMessageId();
+  S.sendAcks[clientMessageId]=false;
   const payload={
     conv:sendConv, text,
     images:sendImages.map(x=>({data:x.data,media_type:x.media_type})),
     audios:sendAudios.map(x=>({id:x.id})),
     files:sendFiles.map(x=>({id:x.id})),
+    client_message_id:clientMessageId,
   };
   // 新会话:发出第一条后,把本地临时会话转正。转正不能依赖当前仍停在哪个会话,
   // 否则上传期间切走再回来会把消息发到前端专用的 local- id。
@@ -172,13 +205,23 @@ async function send(text, display, opts){
       if(typeof retagConvNodes==="function") retagConvNodes(oldConv, sendConv);
     }
   }
+  let sendError=null;
   try{
     const r=await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(!r.ok){
       let detail="";
       try{ const d=await r.json(); detail=d.error||""; }catch(e){}
-      throw new Error(detail||("HTTP "+r.status));
+      const error=new Error(detail||("HTTP "+r.status));
+      error.httpStatus=r.status;
+      throw error;
     }
+  }catch(err){
+    sendError=err;
+    // 网络断开与网关 5xx 都可能发生在服务端已入队之后；4xx 才是明确拒绝，不能误判成功。
+    if((!err.httpStatus || err.httpStatus>=500) && await waitForSendAck(clientMessageId)) sendError=null;
+  }
+  if(!sendError){
+    delete S.sendAcks[clientMessageId];
     // 服务端确认后才丢弃后台快照。可见输入框早已在发送入口清空,
     // 用户若在上传或发送期间切会话,回来仍保持「已发出」的表面状态。
     const hasNewContent=isCurrent() &&
@@ -192,20 +235,22 @@ async function send(text, display, opts){
       if(isCurrent()) clearComposerVisible();
     }
     if(wasLocal && isCurrent()) setTimeout(loadConvs, 400);
-  }catch(err){
-    delete S.sending[oldConv]; delete S.sending[sendConv];
-    // /send 失败时不能把附件和文字一起吞掉,否则用户只能重新选择文件,且误以为已发送。
-    // 当前已切到别的会话时,也要把失败态写回原会话缓存,切回后才能重试。
-    S.composerAttachments[oldConv]={images:sendImages,audios:sendAudios,files:sendFiles};
-    S.composerAttachments[sendConv]={images:sendImages,audios:sendAudios,files:sendFiles};
-    saveDraft(oldConv,text); saveDraft(sendConv,text);
-    if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }  // 发送失败,停掉 loading
-    if(isCurrent()){
-      S.images=sendImages; S.audios=sendAudios; S.files=sendFiles;
-      saveComposerAttachments(); renderThumbs();
-      $("#ta").value=text; autoGrow();
-      addBubble("ai","⚠️ 发送失败:"+err.message+"，附件已保留，可重试。" );
-    }
+    return;
+  }
+  delete S.sending[oldConv]; delete S.sending[sendConv];
+  delete S.localSent[oldConv]; delete S.localSent[sendConv];
+  delete S.sendAcks[clientMessageId];
+  // /send 失败时不能把附件和文字一起吞掉,否则用户只能重新选择文件,且误以为已发送。
+  // 当前已切到别的会话时,也要把失败态写回原会话缓存,切回后才能重试。
+  S.composerAttachments[oldConv]={images:sendImages,audios:sendAudios,files:sendFiles};
+  S.composerAttachments[sendConv]={images:sendImages,audios:sendAudios,files:sendFiles};
+  saveDraft(oldConv,text); saveDraft(sendConv,text);
+  if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }  // 发送失败,停掉 loading
+  if(isCurrent()){
+    S.images=sendImages; S.audios=sendAudios; S.files=sendFiles;
+    saveComposerAttachments(); renderThumbs();
+    $("#ta").value=text; autoGrow();
+    addBubble("ai","⚠️ 发送失败:"+sendError.message+"，附件已保留，可重试。" );
   }
 }
 // 静默发命令(如 /model 切换):不渲染用户气泡,回执由服务端 message 事件带回
