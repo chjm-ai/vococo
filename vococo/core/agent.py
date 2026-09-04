@@ -925,6 +925,11 @@ async def stream_turn(
             disallowed_tools=list(disallowed_tools or []),
             max_buffer_size=_SDK_MAX_BUFFER_SIZE,
             stderr=_cli_stderr,  # 过滤 Bun 源码刷屏,见 _cli_stderr 顶部注释
+            # CLI 内置 autocompact 按它自己的模型注册表算阈值,对新扩容大窗口模型
+            # (如 opus-4-6 1M)经常没跟上、按旧的小窗口提前触发,跟前端按我们权威表
+            # 算的百分比对不上(2026-09-04 真机案例)。--autocompact 上限 1M,拉满等于
+            # 让它在所有模型上实际不触发,阈值判断完全交给我们自己的 65%/83% 安全网。
+            extra_args={"autocompact": "1000000"},
         )
 
     async def _stream_once(
