@@ -59,7 +59,7 @@ const S = {
   pending: {},          // conv → 待发送队列 [{id,text,images}]:上一个任务没结束时点发送,暂存,任务完成自动发
   sending: {},          // conv → bool:该会话有一条正在上传/发送的消息
   inflightComposer: {}, // conv → {text,images,audios,files}:发送中的后台重试快照
-  sendAcks: {},         // client_message_id → false|true|resolve:POST 回执丢失时由 SSE 确认已入队
+  sendAcks: {},         // client_request_id → false|true|resolve:POST 回执丢失时由 SSE 确认已入队
   pendId: 0,            // 待发送项自增 id,供删除定位
   voiceRec: {},         // conv → {bubble}:语音转写中的占位气泡,按录音发起时所属会话记录,切走再切回能补出来
   convFilter: "all",

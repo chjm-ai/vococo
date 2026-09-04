@@ -499,9 +499,9 @@ function handleEvent(e){
     }
     return;
   }
-  // /send 的 HTTP 回执可能在代理/网络层丢失；带同一 client_message_id 的 user 事件
+  // /send 的 HTTP 回执可能在代理/网络层丢失；带同一 client_request_id 的 user 事件
   // 说明服务端已完成 _ingest 并入队，可作为这条 POST 的可靠成功确认。
-  if(e.type==="user" && e.client_message_id) acknowledgeSend(e.client_message_id);
+  if(e.type==="user" && e.client_request_id) acknowledgeSend(e.client_request_id);
   // 后台标题总结完成 → 刷新侧边栏/标题栏(loadConvs 会顺带同步顶栏标题),无论前后台会话
   if(e.type==="title"){ loadConvs(); return; }
   // 非 web 入口(cron/语音任务等)驱动的会话有新动静,见 core/task_events.py 主事件桥:
