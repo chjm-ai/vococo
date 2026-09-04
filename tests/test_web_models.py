@@ -6,6 +6,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from vococo.gateway.adapters.web import WebAdapter
+from vococo.gateway import settings_store
 
 
 @pytest.fixture
@@ -15,6 +16,17 @@ def models_app():
     app.add_routes([
         web.get("/models", adapter._handle_models),
         web.post("/effort", adapter._handle_effort_switch),
+    ])
+    return app
+
+
+@pytest.fixture
+def settings_models_app():
+    adapter = WebAdapter()
+    app = web.Application()
+    app.add_routes([
+        web.get("/settings", adapter._handle_settings),
+        web.post("/settings/model", adapter._handle_settings_model),
     ])
     return app
 
@@ -108,3 +120,37 @@ async def test_effort_switch_validates_model_specific_levels(models_app, model_s
 
     assert model_settings["gpt-5.6-terra"] == "low"
     assert model_settings["deepseek-v4-flash"] == "max"
+
+
+@pytest.mark.anyio
+async def test_settings_models_match_panel_choices_and_can_hide_kimi(
+    settings_models_app, monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
+    monkeypatch.setattr(settings_store, "list_skills", lambda: [])
+    assert settings_store.upsert_web_provider(
+        "kimi", {
+            "base_url": "https://api.kimi.com/coding",
+            "model": "kimi-k3",
+            "api_key": "sk-kimi",
+        },
+    ) is None
+
+    async with TestClient(TestServer(settings_models_app)) as client:
+        before = await client.get("/settings", headers={"X-Auth-Token": ""})
+        assert before.status == 200
+        choices = (await before.json())["models"]["choices"]
+        assert {item["id"]: item for item in choices}["kimi-k3"] == {
+            "id": "kimi-k3", "label": "kimi-k3（订阅）", "group": "kimi", "disabled": False,
+        }
+
+        hidden = await client.post(
+            "/settings/model", headers={"X-Auth-Token": ""},
+            json={"action": "toggle", "id": "kimi-k3", "disabled": True},
+        )
+        assert hidden.status == 200
+
+        after = await client.get("/settings", headers={"X-Auth-Token": ""})
+        choices = (await after.json())["models"]["choices"]
+
+    assert {item["id"]: item["disabled"] for item in choices}["kimi-k3"] is True

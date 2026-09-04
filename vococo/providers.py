@@ -306,12 +306,13 @@ def _billing_kind(base_url: str) -> str:
 
 
 def available_models(
-    default_choices: list[tuple[str, str]],
+    default_choices: list[tuple[str, str]], include_disabled: bool = False,
 ) -> list[tuple[str, str, str]]:
     """/model 无参时的候选:官方默认档 + 设置页手动加的档位 + 设置页里的各供应商模型。
 
-    default_choices 是代码里写死的官方档(claude-opus/sonnet/haiku),恒列在前;设置页
-    可以把其中某几档隐藏掉(disabled_builtin_models,不动代码常量,只摘出选择器)。
+    default_choices 是代码里写死的官方档(claude-opus/sonnet/haiku),恒列在前。设置页
+    可以隐藏任意候选(内置档位、第三方服务商模型或手动补录模型)；include_disabled=True
+    时供设置页列出完整名单并恢复已隐藏的模型。
     web_extra_models(设置页手动补录,见 gateway.settings_store)紧随其后——未指定
     provider 时按官方订阅处理;指定 provider 时复用对应第三方的连接配置。
     标签只留"模型名（订阅/API）",不带供应商名,免得面板换行/信息过载。
@@ -320,15 +321,17 @@ def available_models(
     """
     from .gateway import settings_store
 
-    disabled = set(settings_store.list_disabled_builtin_models())
+    disabled = set(settings_store.list_disabled_models())
     entries = _all_web_providers()
     out: list[tuple[str, str, str]] = [
-        (mid, label, "anthropic") for mid, label in default_choices if mid not in disabled
+        (mid, label, "anthropic")
+        for mid, label in default_choices
+        if include_disabled or mid not in disabled
     ]
     seen = {mid for mid, _, _ in out}
     for extra in settings_store.list_web_extra_models():
         mid = extra.get("id")
-        if not mid or mid in seen:
+        if not mid or mid in seen or (not include_disabled and mid in disabled):
             continue
         provider_name = extra.get("provider")
         if provider_name:
@@ -343,7 +346,12 @@ def available_models(
         if name.lower() in _OFFICIAL_NAMES:
             continue
         model = _entry_field(entry, "model")
-        if not model or model in seen or not _entry_field(entry, "api_key", "apiKey"):
+        if (
+            not model
+            or model in seen
+            or (not include_disabled and model in disabled)
+            or not _entry_field(entry, "api_key", "apiKey")
+        ):
             continue
         seen.add(model)
         base_url = _entry_field(entry, "base_url", "baseUrl")

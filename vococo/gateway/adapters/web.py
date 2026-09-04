@@ -2108,7 +2108,12 @@ class WebAdapter:
         # active = 当前实际在用的模型,算法跟 _handle_models 的 default 保持一致
         active_model = settings_store.get_web_default_model() \
             or providers.resolve(None, config.MODEL)[0]
-        disabled = set(settings_store.list_disabled_builtin_models())
+        disabled = set(settings_store.list_disabled_models())
+        # 设置页的显示开关必须和聊天模型面板同源；include_disabled 让已隐藏模型仍可恢复。
+        model_choices = [
+            {"id": model_id, "label": label, "group": group, "disabled": model_id in disabled}
+            for model_id, label, group in providers.available_models(MODEL_CHOICES, True)
+        ]
         return web.json_response(
             {
                 "skills": {
@@ -2122,10 +2127,9 @@ class WebAdapter:
                 },
                 "models": {
                     "active": active_model,
-                    "builtin": [
-                        {"id": mid, "label": label, "disabled": mid in disabled}
-                        for mid, label in MODEL_CHOICES
-                    ],
+                    "choices": model_choices,
+                    # 旧前端缓存仍读取 builtin，保留同一份全量名单直到缓存自然更新。
+                    "builtin": model_choices,
                     "custom": settings_store.list_web_extra_models(),
                     "providers": settings_store.list_web_providers(),
                 },
@@ -2194,19 +2198,24 @@ class WebAdapter:
     @_authed
     @_json_body
     async def _handle_settings_model(self, request: web.Request, body: dict) -> web.Response:
-        """增/改/删设置页手动加的官方模型档位,或隐藏/恢复代码内置档位。
-        action: add(新增/编辑,id 相同即覆盖 label)|remove|toggle_builtin。
+        """增/改/删手动模型档位，或隐藏/恢复模型选择面板的任意候选。
+        action: add(新增/编辑,id 相同即覆盖 label)|remove|toggle。
 
-        add/remove 用来填"新模型发布了但代码还没跟上"的空窗;toggle_builtin 是
-        MODEL_CHOICES 里代码写死的档位摘出/放回选择器(不改代码,可随时恢复)。
-        不用改代码、不用重启,下一次拉 /models(即刷新页面/切模型面板)就带上。
+        add/remove 用来填"新模型发布了但代码还没跟上"的空窗；toggle 对内置档位、
+        Kimi/Codex 等第三方模型一视同仁。旧客户端的 toggle_builtin 继续兼容。
+        不用改代码、不用重启，下一次拉 /models(即刷新页面/切模型面板)就带上。
         """
         action = (body.get("action") or "add").strip()
         model_id = (body.get("id") or "").strip()
         if not model_id:
             return web.json_response({"error": "缺少 id"}, status=400)
-        if action == "toggle_builtin":
-            settings_store.set_builtin_model_disabled(model_id, bool(body.get("disabled")))
+        if action in {"toggle", "toggle_builtin"}:
+            available = {
+                item[0] for item in providers.available_models(MODEL_CHOICES, True)
+            }
+            if model_id not in available:
+                return web.json_response({"error": "模型不存在"}, status=404)
+            settings_store.set_model_disabled(model_id, bool(body.get("disabled")))
             return web.json_response({"ok": True})
         if action == "remove":
             settings_store.remove_web_extra_model(model_id)

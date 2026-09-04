@@ -108,6 +108,17 @@ def test_available_models_kimi_subscription_group(tmp_path, monkeypatch):
     assert by_id["kimi-k3"] == ("kimi-k3（订阅）", "kimi")
 
 
+def test_available_models_hides_kimi_subscription_but_lists_it_for_settings(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "kimi", {"base_url": "https://api.kimi.com/coding", "model": "kimi-k3", "api_key": "sk-xxx"}
+    )
+    settings_store.set_model_disabled("kimi-k3", True)
+
+    assert "kimi-k3" not in {mid for mid, _, _ in providers.available_models([])}
+    assert "kimi-k3" in {mid for mid, _, _ in providers.available_models([], True)}
+
+
 def test_available_models_includes_web_extra_model(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
     settings_store.upsert_web_extra_model("claude-opus-5", "Opus 5（订阅）")
