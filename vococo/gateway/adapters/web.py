@@ -805,6 +805,7 @@ class WebAdapter:
     async def _handle_send(self, request: web.Request, body: dict) -> web.Response:
         conv = str(body.get("conv") or "main")
         text = (body.get("text") or "").strip()
+        client_message_id = str(body.get("client_message_id") or "")
         images = [
             ImageAttachment(
                 data=i["data"], media_type=i.get("media_type", "image/jpeg")
@@ -851,7 +852,10 @@ class WebAdapter:
                 text = "(文件附件,无文字说明,请读取附件内容)"
             else:
                 text = "(图片,无文字说明,看看图里是什么)"
-        await self._ingest(conv, text, images=images, audios=audios, files=files)
+        await self._ingest(
+            conv, text, images=images, audios=audios, files=files,
+            client_message_id=client_message_id,
+        )
         return web.json_response({"ok": True})
 
     async def _ingest(
@@ -861,6 +865,7 @@ class WebAdapter:
         images: list[ImageAttachment] | None = None,
         audios: list[AudioAttachment] | None = None,
         files: list[FileAttachment] | None = None,
+        client_message_id: str = "",
     ) -> None:
         """把一条消息塞进指定会话的处理流水线——浏览器发送(_handle_send)和外部注入
         (语音跨端续聊,见 inject()/gateway/web_bridge.py)共用同一份逻辑,保证标题
@@ -886,7 +891,10 @@ class WebAdapter:
         # 气泡永远没图,得等下次整包刷新历史才补得出来。
         if not is_command(text):
             img_urls = [f"data:{i.media_type};base64,{i.data}" for i in images]
-            self._emit({"conv": conv, "type": "user", "text": text, "images": img_urls})
+            event = {"conv": conv, "type": "user", "text": text, "images": img_urls}
+            if client_message_id:
+                event["client_message_id"] = client_message_id
+            self._emit(event)
         self._inbox.put_nowait(
             Incoming(self.platform, conv, text, images=images, audios=audios, files=files)
         )

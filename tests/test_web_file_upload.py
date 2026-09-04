@@ -84,6 +84,26 @@ async def test_send_consumes_uploaded_file(file_app, adapter, isolated):
 
 
 @pytest.mark.anyio
+async def test_send_user_event_carries_client_message_id(file_app, adapter, monkeypatch):
+    """HTTP 回执丢失时，前端只能用匹配的 SSE 事件确认本次发送已入队。"""
+    events = []
+    monkeypatch.setattr(adapter, "_emit", events.append)
+
+    async with TestClient(TestServer(file_app)) as client:
+        resp = await client.post(
+            "/send",
+            json={"conv": "main", "text": "确认这条消息", "client_message_id": "msg-123"},
+            headers={"X-Auth-Token": ""},
+        )
+
+    assert resp.status == 200
+    assert events == [{
+        "conv": "main", "type": "user", "text": "确认这条消息", "images": [],
+        "client_message_id": "msg-123",
+    }]
+
+
+@pytest.mark.anyio
 async def test_send_reports_expired_uploaded_file_instead_of_silently_dropping(file_app, adapter):
     async with TestClient(TestServer(file_app)) as client:
         resp = await client.post(
@@ -163,6 +183,18 @@ def test_send_failure_keeps_file_attachment_for_retry():
     assert "S.images=sendImages; S.audios=sendAudios; S.files=sendFiles;" in composer
     assert "S.composerAttachments[oldConv]={images:sendImages,audios:sendAudios,files:sendFiles};" in composer
     assert "附件已保留，可重试" in composer
+
+
+def test_send_uses_matching_sse_ack_when_http_receipt_is_lost():
+    static = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static"
+    composer = (static / "composer.js").read_text(encoding="utf-8")
+    stream = (static / "stream.js").read_text(encoding="utf-8")
+    core = (static / "app-core.js").read_text(encoding="utf-8")
+
+    assert "sendAcks: {}," in core
+    assert "client_message_id:clientMessageId," in composer
+    assert "await waitForSendAck(clientMessageId)" in composer
+    assert "acknowledgeSend(e.client_message_id)" in stream
 
 
 def test_history_replays_file_and_audio_names():
