@@ -562,18 +562,22 @@ function addAudioFile(f){
   uploadAudio(f, item);
 }
 function uploadAudio(f, item){
-  // 暴露 item.done:send() 发送前会 await 它,保证"文件已到服务器"才发出消息,
-  // 不会出现音频还在上传(id 为 null)就被发送、后端静默跳过导致音频丢失的情况
+  const clientId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)+Date.now().toString(36);
   item.done = (async()=>{
     try{
       const form = new FormData(); form.append("audio", f, item.filename);
       const ac = new AbortController();
-      const timer = setTimeout(()=>ac.abort(), 90000);  // 上传卡住 90s 报超时,别无限挂
-      const r = await api("/upload_audio", {method:"POST", body:form, signal:ac.signal});
+      const timer = setTimeout(()=>ac.abort(), 90000);
+      let r = await api("/upload_audio?client_id="+clientId, {method:"POST", body:form, signal:ac.signal});
       clearTimeout(timer);
-      const d = await r.json();
+      if(r.status===524){
+        await new Promise(ok=>setTimeout(ok,3000));
+        r = await api("/check_upload?client_id="+clientId);
+        if(!r.ok) throw new Error("上传超时（Cloudflare 524），请重试");
+      }
+      let d; try{ d=await r.json(); }catch(e){ throw new Error("HTTP "+r.status); }
       if(!r.ok || d.error) throw new Error(d.error || ("HTTP "+r.status));
-      item.id=d.id; item.text=d.text; item.status="done";
+      item.id=d.id; item.text=d.text||""; item.status="done";
     }catch(e){
       item.status="error"; item.error = e.name==="AbortError" ? "上传超时,请重试" : e.message;
     }
@@ -591,14 +595,20 @@ function addFile(f){
   uploadFile(f,item);
 }
 function uploadFile(f,item){
+  const clientId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)+Date.now().toString(36);
   item.done=(async()=>{
     try{
       const form=new FormData(); form.append("file",f,item.filename);
       const ac=new AbortController();
       const timer=setTimeout(()=>ac.abort(),90000);
-      const r=await api("/upload_file",{method:"POST",body:form,signal:ac.signal});
+      let r=await api("/upload_file?client_id="+clientId,{method:"POST",body:form,signal:ac.signal});
       clearTimeout(timer);
-      const d=await r.json();
+      if(r.status===524){
+        await new Promise(ok=>setTimeout(ok,3000));
+        r=await api("/check_upload?client_id="+clientId);
+        if(!r.ok) throw new Error("上传超时（Cloudflare 524），请重试");
+      }
+      let d; try{ d=await r.json(); }catch(e){ throw new Error("HTTP "+r.status); }
       if(!r.ok || d.error) throw new Error(d.error || ("HTTP "+r.status));
       item.id=d.id; item.status="done";
     }catch(e){

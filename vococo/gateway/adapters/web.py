@@ -1739,8 +1739,17 @@ class WebAdapter:
         转写从上传挪到发送:上传只负责"文件到了",秒回不卡交互(转写失败也不会
         让用户干等);发送后由 /send 现场 await 转写(短音频 1~2s,会议录音几分钟),
         转写失败把错误文本拼进消息由模型回应——见 _handle_send。
+
+        client_id(可选 query param):前端生成的幂等 key。大文件上传可能触发
+        Cloudflare 524 超时但服务端已收到数据,前端用同一 client_id 调
+        /check_upload 验证,避免重复上传。
         """
-        from ...voice import stt as voice_stt  # 懒加载,同 _handle_transcribe
+        client_id = request.query.get("client_id", "")
+        if client_id and client_id in self._pending_audio:
+            _, filename, _, text, _ = self._pending_audio[client_id]
+            return web.json_response({"id": client_id, "filename": filename, "text": text})
+
+        from ...voice import stt as voice_stt
 
         audio, filename, ctype = await voice_stt.read_audio(request)
         if not audio:
@@ -1751,9 +1760,8 @@ class WebAdapter:
                 status=400,
             )
         self._prune_pending_audio()
-        aid = uuid.uuid4().hex
+        aid = client_id or uuid.uuid4().hex
         media_type = (ctype or "audio/mpeg").split(";")[0].strip() or "audio/mpeg"
-        # text 留空:真正的转写在 /send 消费时做,上传这里只保证文件已到
         self._pending_audio[aid] = (audio, filename, media_type, "", time.monotonic())
         return web.json_response({"id": aid, "filename": filename, "text": ""})
 
@@ -1767,6 +1775,11 @@ class WebAdapter:
     @_authed
     async def _handle_upload_file(self, request: web.Request) -> web.Response:
         """接收任意类型文件并临时保存，实际兼容性留给模型/API 判断。"""
+        client_id = request.query.get("client_id", "")
+        if client_id and client_id in self._pending_files:
+            _, filename, _, _ = self._pending_files[client_id]
+            return web.json_response({"id": client_id, "filename": filename})
+
         reader = await request.multipart()
         part = await reader.next()
         while part is not None and part.name != "file":
@@ -1784,9 +1797,23 @@ class WebAdapter:
         media_type = (part.headers.get("Content-Type", "").split(";", 1)[0].strip()
                       or "application/octet-stream")
         self._prune_pending_files()
-        file_id = uuid.uuid4().hex
+        file_id = client_id or uuid.uuid4().hex
         self._pending_files[file_id] = (data, filename, media_type, time.monotonic())
         return web.json_response({"id": file_id, "filename": filename})
+
+    @_authed
+    async def _handle_check_upload(self, request: web.Request) -> web.Response:
+        """轻量查询:前端上传大文件遭 Cloudflare 524 后,用 client_id 确认数据是否已到。"""
+        client_id = request.query.get("client_id", "")
+        if not client_id:
+            return web.json_response({"error": "missing client_id"}, status=400)
+        if client_id in self._pending_audio:
+            _, filename, _, text, _ = self._pending_audio[client_id]
+            return web.json_response({"id": client_id, "filename": filename, "text": text})
+        if client_id in self._pending_files:
+            _, filename, _, _ = self._pending_files[client_id]
+            return web.json_response({"id": client_id, "filename": filename})
+        return web.json_response({"error": "not found"}, status=404)
 
     @_authed
     async def _handle_audio(self, request: web.Request) -> web.StreamResponse:
@@ -2771,6 +2798,7 @@ class WebAdapter:
                 web.post("/transcribe", self._handle_transcribe),
                 web.post("/upload_audio", self._handle_upload_audio),
                 web.post("/upload_file", self._handle_upload_file),
+                web.get("/check_upload", self._handle_check_upload),
                 web.post("/conv/rename", self._handle_rename),
                 web.post("/conv/duplicate", self._handle_conv_duplicate),
                 web.post("/conv/delete", self._handle_delete),
