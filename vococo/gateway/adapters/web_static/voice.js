@@ -33,6 +33,11 @@
   let busy=false;
   let playQueue=[], playing=false;
   let pendingAnnouncements=[];  // task_done 到达时用户正忙(说话/播放/录音)→ 先攒着,空闲了再播
+  // 播报已交给 Omni 朗读的指纹(id+"|"+announce_text):任务完成播报第一发(无音频)到达时
+  // Omni 在线会直接念掉,晚到的 audio_patch 补丁若在 Omni 断开后才到(用户念完就挂断/收线),
+  // 按旧逻辑会再 Web Audio 补播一遍 = 同一条成功消息听两遍(2026-09-07 真机反馈)。
+  // 只有"从来没被念过"的播报才允许补丁补播,念过的到此为止。
+  let spokenAnnounceKeys=new Set();
   let buttonMode=false;  // 按钮模式:true=一轮交互结束后回到按钮待机状态,不自动继续收音
 
   // ── 通话视图共享状态(免提=Omni WebRTC;按住说话共用同一套播放队列/气泡)────
@@ -1201,6 +1206,9 @@
         // Omni 出声模式:播报交给 Omni 念——跟对话同一把声音、同一条 RTC 链路,
         // 服务端回声消除拿得到参考信号;不再走旧 TTS 的 Web Audio 播放
         // (两套声音并存=语气割裂+自回声风险,2026-07-10 定案)。
+        // 交给 Omni 即登记指纹:这条播报已被接管,晚到的 audio_patch 补丁不再补播
+        // (补丁只在"从没念过"时才需要,见 applyAnnouncementAudio)。
+        spokenAnnounceKeys.add(data.id + "|" + data.announce_text);
         omniReadQueue.push(data.announce_text);
         queuedForOmni = true;
       } else if(audioCtx && data.audio_b64){ playQueue.push({seq:-1, audio_b64: data.audio_b64}); pumpPlayback(); }
@@ -1216,11 +1224,16 @@
   // 事件带 audio_b64,只服务"Omni 断开、只能靠 Web Audio 播"的场景:
   // - 原播报还在 pending(用户正忙没念)→ 给它补上音频,等下轮 flush 连气泡一起播;
   // - Omni 通话中 → 文字已念/将念,音频冗余,忽略;
-  // - 其余(气泡已加、Omni 已断)→ 直接补播音频。
+  // - 已交给 Omni 念过但 Omni 随后断开(念完即挂断/收线)→ 补丁不补播,否则同一条
+  //   成功消息 Omni 念一遍、挂断后 Web Audio 又念一遍(2026-09-07 真机重复播报);
+  // - 其余(气泡已加、Omni 一直没念过)→ 直接补播音频。
   function applyAnnouncementAudio(data){
-    const pending = pendingAnnouncements.find(p => p.id === data.id);
+    // 同 id 可能对应多次完成(任务被续接后再次跑完,announce_text 不同),补丁必须
+    // 按 id+文本双匹配找自己的 pending,光按 id 会把补丁错补给另一条播报。
+    const pending = pendingAnnouncements.find(p => p.id === data.id && p.announce_text === data.announce_text);
     if(pending){ pending.audio_b64 = data.audio_b64; return; }
     if(omniDc && omniDc.readyState === "open") return;
+    if(spokenAnnounceKeys.has(data.id + "|" + data.announce_text)) return;
     if(audioCtx && data.audio_b64){ playQueue.push({seq:-1, audio_b64: data.audio_b64}); pumpPlayback(); }
   }
 
