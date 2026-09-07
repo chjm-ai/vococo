@@ -128,6 +128,19 @@ def test_classify_write_system_tmp_allowed(tmp_path):
     assert classify("Write", {"file_path": "/tmp/vococo_test_scratch.py"}, cwd=str(tmp_path))[0] == "allow"
 
 
+def test_classify_write_obsidian_vault_allowed(tmp_path, monkeypatch):
+    """Obsidian vault 内(如 iCloud 同步的笔记目录)是业务笔记目录,后台任务也应能直写。"""
+    from vococo import config
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.setattr(config, "OBSIDIAN_VAULT_DIR", vault)
+    inside = str(vault / "1.个人" / "note.md")
+    assert classify("Write", {"file_path": inside}, cwd=str(tmp_path))[0] == "allow"
+    # vault 之外仍照常 escalate,豁免不扩大化
+    assert classify("Write", {"file_path": "/etc/evil"}, cwd=str(tmp_path))[0] == "escalate"
+
+
 def test_classify_external_mcp_write_escalates():
     """外部 MCP 写操作(发邮件/删数据)必须请批准,读操作不拦。"""
     assert classify("mcp__lemlist_lite__send_email", {"message": "hi"})[0] == "escalate"

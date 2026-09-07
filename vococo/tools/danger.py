@@ -474,6 +474,24 @@ def _inside_ai_brain(path: str, cwd: str | None) -> bool:
         return False
 
 
+def _inside_obsidian_vault(path: str, cwd: str | None) -> bool:
+    """目标文件是否落在 Obsidian vault 根内(含符号链接解析)。
+
+    vault 根取 config.OBSIDIAN_VAULT_DIR:默认是 AI_BRAIN_DIR 真实路径的父目录
+    (AI_BRAIN 软链指向 vault 内 "AI_Brain" 文件夹,iCloud 同步),也可用环境变量
+    OBSIDIAN_VAULT_DIR 显式覆盖——与 AI_BRAIN 同属业务笔记目录,后台任务
+    (无交互通道)也应能直接写入,不应每次被 escalate 拒绝。
+    """
+    if not path:
+        return False
+    try:
+        target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
+        vault_base = os.path.realpath(config.OBSIDIAN_VAULT_DIR)
+        return os.path.commonpath([target, vault_base]) == vault_base
+    except (ValueError, OSError):
+        return False
+
+
 def _inside_scratch_tmp(path: str, cwd: str | None) -> bool:
     """目标文件是否落在系统临时目录内(/tmp、$TMPDIR)。
 
@@ -523,6 +541,9 @@ def classify(
         path = ti.get("file_path") or ti.get("notebook_path") or ""
         # AI_BRAIN 是 vococo 正常记忆目录,虽在项目根外,但不应每次弹审批
         if path and _inside_ai_brain(path, cwd):
+            return ("allow", "", False)
+        # Obsidian vault(含 AI_Brain 在内)同属业务笔记目录,后台任务也应能直写
+        if path and _inside_obsidian_vault(path, cwd):
             return ("allow", "", False)
         # 系统临时目录:一次性草稿脚本,不持久化,不应每次弹审批
         if path and _inside_scratch_tmp(path, cwd):
