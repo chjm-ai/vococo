@@ -1606,10 +1606,9 @@ async function reloadHistory(force){
     const d=await r.json();
     if(S.conv!==conv) return;  // await 期间切了会话 → 丢弃
     if(S.stream){
-      // 流式气泡是在本次 fetch 发起之后才建的 → 历史数据不含这条消息对应的 pending
-      // turn,不能据此判定流式气泡"过时"并销毁——否则会出现"思考中...突然消失,过
-      // 一会才重新出现工作中..."的闪烁(竞态:send() 在 await 期间建了气泡)。
-      if((S.stream.t0||0) >= fetchT0){ S.stream.lastEvt=Date.now(); return; }
+      // 气泡还没收到任何服务端内容(无文字、无工具)= 刚建的,服务端可能还没创建
+      // pending turn;用此刻拿到的历史(不含该 turn)来判定它"过时"会误杀。
+      if(!streamText(S.stream) && S.stream.tools.length===0){ S.stream.lastEvt=Date.now(); return; }
       const last=d.turns[d.turns.length-1];
       if(!last || last.pending){
         // 服务端也还在跑,别用整包重绘打断流式气泡;但若 draft_text 已经领先本地画面
