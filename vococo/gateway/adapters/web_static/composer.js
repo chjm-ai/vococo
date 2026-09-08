@@ -110,12 +110,6 @@ async function send(text, display, opts){
       S.audioLoading = el("span","aspin");
       b.append(S.audioLoading);
     }
-    if(uploads.some(item=>!item.id)){
-      const st=el("div","status upload-status");
-      st.innerHTML='附件上传中<span class="dots"><i></i><i></i><i></i></span>';
-      b.append(st);
-      S.uploadLoading=st;
-    }
   }
   // 音频和通用文件都先上传，拿到临时 id 后再发送，避免服务端静默跳过。
   if(uploads.some(item=>!item.id)){
@@ -124,14 +118,12 @@ async function send(text, display, opts){
     try{ await Promise.all(uploads.map(item=>item.done||Promise.resolve())); }
     finally{
       if(wbtn){ wbtn.disabled=false; wbtn.classList.remove("uploading"); updateSendBtn(); }
-      if(S.uploadLoading) S.uploadLoading.innerHTML='发送中<span class="dots"><i></i><i></i><i></i></span>';
     }
   }
   // 上传失败的附件还没到服务器，保留「忽略并发送」以免卡住文字消息。
   if(uploads.some(item=>item.status==="error")){
     if(meRow) meRow.remove();
     if(S.audioLoading) S.audioLoading=null;
-    if(S.uploadLoading) S.uploadLoading=null;
     const pending=S.inflightComposer[sendConv];
     delete S.sending[sendConv]; delete S.inflightComposer[sendConv];
     if(pending){
@@ -155,7 +147,6 @@ async function send(text, display, opts){
   if(S.stream && !opts.forceSend && isCurrent()){
     if(meRow) meRow.remove();
     if(S.audioLoading) S.audioLoading=null;
-    if(S.uploadLoading) S.uploadLoading=null;
     const queued=queuePending(text, sendImages, sendAudios, sendFiles);
     const pending=S.inflightComposer[sendConv];
     delete S.sending[sendConv]; delete S.inflightComposer[sendConv];
@@ -169,7 +160,6 @@ async function send(text, display, opts){
     return;
   }
   if(!text.startsWith("/")) S.localSent[sendConv] = true;
-  if(S.uploadLoading){ S.uploadLoading.remove(); S.uploadLoading=null; }
   if(!text.startsWith("/") && !S.stream && isCurrent()){
     ensureStream();
     if(auds.some(a=>!a.text)) S.stream.audioPending = true;
