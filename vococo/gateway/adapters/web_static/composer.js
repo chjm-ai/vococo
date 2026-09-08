@@ -111,8 +111,10 @@ async function send(text, display, opts){
       b.append(S.audioLoading);
     }
     if(uploads.some(item=>!item.id)){
-      S.uploadLoading = el("span","aspin");
-      b.append(S.uploadLoading);
+      const st=el("div","status upload-status");
+      st.innerHTML='附件上传中<span class="dots"><i></i><i></i><i></i></span>';
+      b.append(st);
+      S.uploadLoading=st;
     }
   }
   // 音频和通用文件都先上传，拿到临时 id 后再发送，避免服务端静默跳过。
