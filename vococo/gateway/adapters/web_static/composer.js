@@ -106,7 +106,7 @@ async function send(text, display, opts){
     const fallback=auds.length ? "(语音/音频)" : files.length ? "(文件附件)" : "(图片)";
     const b=addBubble("me", (shown||fallback)+fileLabel, imgs, auds, true);
     meRow=b.closest(".row");
-    if(auds.some(a=>!a.text)){
+    if(uploads.some(item=>!item.id) || auds.some(a=>!a.text)){
       S.audioLoading = el("span","aspin");
       b.append(S.audioLoading);
     }
@@ -114,10 +114,10 @@ async function send(text, display, opts){
   // 音频和通用文件都先上传，拿到临时 id 后再发送，避免服务端静默跳过。
   if(uploads.some(item=>!item.id)){
     const wbtn=$("#sendBtn");
-    if(wbtn){ wbtn.disabled=true; wbtn.textContent="⋯"; wbtn.classList.add("uploading"); }
+    if(wbtn) wbtn.disabled=true;
     try{ await Promise.all(uploads.map(item=>item.done||Promise.resolve())); }
     finally{
-      if(wbtn){ wbtn.disabled=false; wbtn.classList.remove("uploading"); updateSendBtn(); }
+      if(wbtn){ wbtn.disabled=false; updateSendBtn(); }
     }
   }
   // 上传失败的附件还没到服务器，保留「忽略并发送」以免卡住文字消息。

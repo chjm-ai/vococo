@@ -1170,8 +1170,6 @@
   #sendBtn:disabled{opacity:.4;box-shadow:none}
   #sendBtn.stop-mode{background:linear-gradient(135deg,var(--danger),var(--danger2));font-size:var(--fs-md)}
   #sendBtn.stop-mode:hover{box-shadow:0 4px 16px rgba(192,48,48,.5)}
-  /* 等待音频上传:按钮文字变 ⋯ 并呼吸,给"点了有反应"的即时反馈(慢网可能等几十秒) */
-  #sendBtn.uploading{animation:pulse 1s ease-in-out infinite}
   /* 气泡内动作按钮(如"忽略并发送"降级选项) */
   .bubble .bact{display:inline-block;margin-top:8px;padding:var(--sp-2) var(--sp-5);border-radius:var(--r-lg);
     background:var(--panel2);color:var(--text);font-size:var(--fs-md);font-weight:600;cursor:pointer;
