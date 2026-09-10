@@ -382,6 +382,8 @@ async def _chat_json(messages: list[dict], *, retries: int = 4) -> dict | None:
         "model": config.PEOPLE_PROFILES_MODEL,
         "temperature": 0,
         "response_format": {"type": "json_object"},
+        # 显式关思考:开着的话 temperature=0 会被服务端静默忽略(见 config.py 注释)
+        "thinking": {"type": "disabled"},
         "messages": messages,
     }
     timeout = aiohttp.ClientTimeout(total=60)
