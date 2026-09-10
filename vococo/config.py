@@ -245,13 +245,14 @@ PEOPLE_PROFILES_SCAN_CRON: str = os.environ.get(
     "PEOPLE_PROFILES_SCAN_CRON", "0 7 * * *"
 ).strip()
 PEOPLE_PROFILES_MODEL: str = (
-    os.environ.get("PEOPLE_PROFILES_MODEL", "").strip() or "deepseek-chat"
+    os.environ.get("PEOPLE_PROFILES_MODEL", "").strip() or "deepseek-flash"
 )
 # DeepSeek 原生 API(非 /anthropic 那个给 Claude Code CLI 用的兼容代理路由)——
-# 结构化 JSON 提取用标准 OpenAI 风格 /chat/completions + response_format,
-# deepseek-chat 是非思考模式别名(2026-09-10 实测仍无 reasoning_content、直接出
-# 结果,后端已指向 V4.1 Flash);deepseek-flash 这种正式名默认带 reasoning_content,
-# 不适合这种轻量提取,故不换名。
+# 结构化 JSON 提取用标准 OpenAI 风格 /chat/completions + response_format。
+# 模型名统一用官方正式 ID deepseek-flash:旧别名 deepseek-chat 已不在官方 /models
+# 列表里,随时可能被撤。该正式名默认开思考,而思考模式下 temperature 会被服务端
+# 静默忽略(官方 thinking_mode 文档明说,不报错也不生效),会让下面的 temperature=0
+# 失效,故调用处一律带 thinking={"type":"disabled"} 显式关掉。
 PEOPLE_PROFILES_BASE_URL: str = "https://api.deepseek.com"
 # 人脉扫描的机制状态文件(扫描水位/待确认清单)放 AI_BRAIN 而不是 data/:
 # 业务 cron 任务跑在任务专属 worktree(data/ 是空的、写主仓库 data/ 会被

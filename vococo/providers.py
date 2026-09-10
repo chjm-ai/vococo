@@ -761,6 +761,8 @@ async def sidecar_chat(prompt: str, *, timeout: float = 30) -> str | None:
     payload = {
         "model": config.PEOPLE_PROFILES_MODEL,
         "temperature": 0.3,
+        # 显式关思考:开着的话 temperature 会被服务端静默忽略(见 config.py 注释)
+        "thinking": {"type": "disabled"},
         "messages": [{"role": "user", "content": prompt}],
     }
     url = f"{config.PEOPLE_PROFILES_BASE_URL}/chat/completions"
