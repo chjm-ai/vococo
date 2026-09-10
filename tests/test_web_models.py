@@ -48,7 +48,7 @@ def model_settings(monkeypatch):
     levels = {
         "gpt-5.6-terra": (("low", "low"), ("medium", "medium"), ("high", "high"),
                             ("xhigh", "xhigh"), ("max", "max")),
-        "deepseek-v4-flash": (("high", "high"), ("max", "max")),
+        "deepseek-v4-flash": (("off", "关闭"), ("high", "high"), ("max", "max")),
     }
     saved = {"gpt-5.6-terra": "xhigh", "deepseek-v4-flash": "max"}
 
@@ -96,7 +96,7 @@ async def test_models_return_effort_levels_per_model(models_app, model_settings)
         "value": "xhigh",
     }
     assert data["efforts"]["deepseek-v4-flash"] == {
-        "levels": [["high", "high"], ["max", "max"]],
+        "levels": [["off", "关闭"], ["high", "high"], ["max", "max"]],
         "value": "max",
     }
 
@@ -116,10 +116,24 @@ async def test_effort_switch_validates_model_specific_levels(models_app, model_s
             json={"model": "deepseek-v4-flash", "effort": "xhigh"},
         )
         assert unsupported.status == 400
-        assert (await unsupported.json())["error"] == "deepseek-v4-flash 仅支持 high/max"
+        assert (await unsupported.json())["error"] == "deepseek-v4-flash 仅支持 off/high/max"
+
+        # DeepSeek 独有的「关闭」档要能落库;GPT 侧没这档,传了应被拒
+        off = await client.post(
+            "/effort", headers={"X-Auth-Token": ""},
+            json={"model": "deepseek-v4-flash", "effort": "off"},
+        )
+        assert off.status == 200
+        assert await off.json() == {"ok": True, "model": "deepseek-v4-flash", "effort": "off"}
+
+        not_for_gpt = await client.post(
+            "/effort", headers={"X-Auth-Token": ""},
+            json={"model": "gpt-5.6-terra", "effort": "off"},
+        )
+        assert not_for_gpt.status == 400
 
     assert model_settings["gpt-5.6-terra"] == "low"
-    assert model_settings["deepseek-v4-flash"] == "max"
+    assert model_settings["deepseek-v4-flash"] == "off"
 
 
 @pytest.mark.anyio

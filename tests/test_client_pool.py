@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -169,6 +170,34 @@ async def test_effort_change_rebuilds_warm_client(clients, monkeypatch):
     assert len(clients) == 2
     assert clients[0].disconnected
     assert clients[1].options.effort == "xhigh"
+
+
+@pytest.mark.anyio
+async def test_effort_off_disables_thinking_via_extra_body(clients, monkeypatch):
+    """档位「关闭」:effort 留空,改由 CLI 的请求体合并口子关思考。
+
+    SDK 的 thinking 参数对第三方模型会被 CLI 丢掉(见 agent.py 注释),所以这里断言
+    的是环境变量而不是 options.thinking。
+    """
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("deepseek-flash", {"K": "v"}))
+    monkeypatch.setattr(
+        agent.providers, "effort_levels_for_model", lambda *a: ("off", "high", "max")
+    )
+    monkeypatch.setattr(agent.settings_store, "get_web_effort", lambda *a: "off")
+    await _turn()
+
+    assert clients[0].options.effort is None
+    extra = json.loads(clients[0].options.env["CLAUDE_CODE_EXTRA_BODY"])
+    assert extra == {"thinking": {"type": "disabled"}}
+
+
+@pytest.mark.anyio
+async def test_effort_without_off_keeps_thinking_untouched(clients):
+    """没选档位(=auto)时不注入任何请求体参数,行为与改造前一致。"""
+    await _turn()
+
+    assert clients[0].options.effort is None
+    assert "CLAUDE_CODE_EXTRA_BODY" not in clients[0].options.env
 
 
 @pytest.mark.anyio

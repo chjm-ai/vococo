@@ -176,6 +176,12 @@ def test_effort_choices_follow_model_provider_capability(tmp_path, monkeypatch):
             "api_key": "sk-deepseek",
         },
     )
+    settings_store.upsert_web_provider(
+        "kimi", {
+            "base_url": "https://api.moonshot.cn/anthropic", "model": "kimi-k3",
+            "api_key": "sk-kimi",
+        },
+    )
 
     assert providers.effort_levels_for_model("gpt-5.6-terra") == (
         "low", "medium", "high", "xhigh", "max"
@@ -186,7 +192,11 @@ def test_effort_choices_follow_model_provider_capability(tmp_path, monkeypatch):
     assert providers.effort_choices_for_model("claude-sonnet-5") == (
         ("low", "low"), ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh"), ("max", "max"),
     )
+    # DeepSeek 实测支持关思考,多给一档;其它第三方兼容端点没验过,不跟着加
     assert providers.effort_choices_for_model("deepseek-v4-flash") == (
+        ("off", "关闭"), ("high", "high"), ("max", "max"),
+    )
+    assert providers.effort_choices_for_model("kimi-k3") == (
         ("high", "high"), ("max", "max"),
     )
 

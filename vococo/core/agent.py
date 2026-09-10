@@ -847,6 +847,17 @@ async def stream_turn(
     effective_effort = (
         saved_effort if saved_effort in providers.effort_levels_for_model(resolved_model) else ""
     )
+    # "off" 不在 SDK 的 EffortLevel(low..max)里,它是关闭思考开关,只能靠请求体参数实现:
+    # CLI 对第三方模型只发 output_config.effort、压根不发 thinking(2026-09-11 抓包实测,
+    # SDK 的 thinking={"type":"disabled"} 传下去就被丢掉),而 DeepSeek 认的 effort 档位
+    # (low/medium/high/xhigh/ultra/max)里也没有"关"这一档。唯一的口子是这个 CLI 环境变量
+    # (请求体合并),带上它 DeepSeek 才真的不思考。同轮 effort 必须留空。
+    thinking_off = effective_effort == "off"
+    if thinking_off and provider_env:
+        provider_env = {
+            **provider_env,
+            "CLAUDE_CODE_EXTRA_BODY": '{"thinking": {"type": "disabled"}}',
+        }
     # 图片旁路:第三方非视觉模型(如 DeepSeek)不收 image block,硬传直接报错 →
     # 先用 qwen-vl 把图转成文字描述拼进 user_text,再以纯文本喂主模型
     # (见 core/vision.py)。官方订阅直传原图,行为不变;转换失败抛错,由 converse
@@ -920,7 +931,7 @@ async def stream_turn(
             mcp_servers=mcp_servers,
             hooks=build_hooks(),  # PreToolUse:灾难拦截 + 危险操作审批闸
             skills=skills,
-            effort=effective_effort or None,  # 按当前模型的已选深度;空=不传,交供应商默认
+            effort=None if thinking_off else (effective_effort or None),  # 空=不传,交供应商默认
             # vococo 专属 skill(本地插件,见 config.PLUGIN_DIR):只在这里挂,
             # 不进 ~/.claude/skills,Claude Code/Codex/OpenCode 等其它工具看不到。
             plugins=[{"type": "local", "path": str(config.PLUGIN_DIR)}],
