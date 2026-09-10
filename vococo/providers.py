@@ -482,14 +482,34 @@ _COMPAT_EFFORT_CHOICES: tuple[tuple[str, str], ...] = (
     ("high", "high"),
     ("max", "max"),
 )
+# DeepSeek 官方端点额外支持"关闭思考"。它不是 SDK 的 effort 档位(EffortLevel 只有
+# low..max),而是个开关:core/agent.py 见到 "off" 会改传 thinking={"type":"disabled"}
+# 并把 effort 留空。2026-09-11 实测 https://api.deepseek.com/anthropic 认这个参数
+# (响应里不再有 thinking block),而同端点上的 reasoning.effort="none" 无效。
+# 关掉思考的附带价值:思考模式下 temperature 会被服务端静默忽略,关了才真正生效。
+# 显示名用中文「关闭」,和英文的深度档位并排时一眼能看出它是开关而不是一档深度。
+_DEEPSEEK_EFFORT_CHOICES: tuple[tuple[str, str], ...] = (
+    ("off", "关闭"),
+    ("high", "high"),
+    ("max", "max"),
+)
+
+
+def _is_deepseek_endpoint(provider: ActiveProvider) -> bool:
+    """是否 DeepSeek 官方端点。按 base_url 主机名判定——供应商名是用户可改的,不算数。"""
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(provider.base_url).hostname or "").lower()
+    return host == "deepseek.com" or host.endswith(".deepseek.com")
 
 
 def effort_choices_for_model(model: str) -> tuple[tuple[str, str], ...]:
-    """返回模型实际可在 Web 端选择的思考深度(id, 显示名, 现与 id 一致)。
+    """返回模型实际可在 Web 端选择的思考深度(id, 显示名)。
 
     官方 Claude 与本地 Codex/GPT 代理走 Claude Code 的完整五档。普通第三方
-    Anthropic-compatible 端点则保守沿用已经验证的 high/max，避免 Kimi、DeepSeek
-    等服务商收到其未声明支持的 low/medium/xhigh 参数。
+    Anthropic-compatible 端点则保守沿用已经验证的 high/max，避免 Kimi 等服务商
+    收到其未声明支持的 low/medium/xhigh 参数；只有实测过的 DeepSeek 官方端点
+    才多给一档「关闭」。
     """
     provider = _provider_for_model(model)
     if (
@@ -499,6 +519,8 @@ def effort_choices_for_model(model: str) -> tuple[tuple[str, str], ...]:
         or codex_mgmt_for_model(model) is not None
     ):
         return _FULL_EFFORT_CHOICES
+    if _is_deepseek_endpoint(provider):
+        return _DEEPSEEK_EFFORT_CHOICES
     return _COMPAT_EFFORT_CHOICES
 
 
