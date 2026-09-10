@@ -249,8 +249,9 @@ PEOPLE_PROFILES_MODEL: str = (
 )
 # DeepSeek 原生 API(非 /anthropic 那个给 Claude Code CLI 用的兼容代理路由)——
 # 结构化 JSON 提取用标准 OpenAI 风格 /chat/completions + response_format,
-# deepseek-chat 无思考过程直接出结果;deepseek-v4-flash 走 /anthropic 代理时
-# 默认带 reasoning_content,不适合这种轻量提取。
+# deepseek-chat 是非思考模式别名(2026-09-10 实测仍无 reasoning_content、直接出
+# 结果,后端已指向 V4.1 Flash);deepseek-flash 这种正式名默认带 reasoning_content,
+# 不适合这种轻量提取,故不换名。
 PEOPLE_PROFILES_BASE_URL: str = "https://api.deepseek.com"
 # 人脉扫描的机制状态文件(扫描水位/待确认清单)放 AI_BRAIN 而不是 data/:
 # 业务 cron 任务跑在任务专属 worktree(data/ 是空的、写主仓库 data/ 会被
