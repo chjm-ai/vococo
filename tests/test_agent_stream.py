@@ -155,16 +155,18 @@ def test_turn_env_third_party_does_not_get_oauth_injection():
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
 
-# === context_window:DeepSeek V4 全系 1M ===
+# === context_window:DeepSeek V4.1 Flash / V4 全系 1M ===
 
 
 def test_context_window_deepseek_v4_is_1m():
+    assert context_window("deepseek-flash") == 1_000_000
     assert context_window("deepseek-v4-flash") == 1_000_000
     assert context_window("deepseek-v4-pro") == 1_000_000
 
 
 def test_context_window_deepseek_old_names_fall_back():
-    # 已停用的旧名(deepseek-chat/reasoner)不是 1M,走默认 200k 兜底
+    # deepseek-chat/reasoner 是官方保留的模式别名(chat=非思考),不在 1M 登记表内,
+    # 按默认 200k 兜底——偏保守,只会早压缩,不会超窗报错。
     assert context_window("deepseek-chat") == 200_000
     assert context_window("deepseek-reasoner") == 200_000
 

@@ -6,7 +6,7 @@
 模型两级:
   1. 首选 Haiku —— 走 Claude 订阅(SDK 一次性 query,不烧 API 钱);
   2. 失败(撞限额/网络)→ 回落设置页里名为 deepseek 的第三方供应商
-     (当前配置 = deepseek-v4-flash,按量但极便宜);
+     (当前配置 = deepseek-flash / V4.1 Flash,按量但极便宜);
   3. 都失败 → 返回 None,调用方保留截断兜底,静默放弃。
 """
 from __future__ import annotations

@@ -243,8 +243,10 @@ class AudioAttachment:
 # 各模型上下文窗口(token)。前缀匹配,未知默认 200k。
 # Opus 4.x/Sonnet 5/Fable 5 官方已标配 1M input;Sonnet 4.6/Haiku 4.5 仍为 200k。
 # kimi-k3(2026-07-16 发布)官方标称 1M context,故一并登记;其余第三方供应商模型走默认 200k。
-# deepseek-v4 全系(V4-Pro/V4-Flash,2026-04-24 发布)官方标称 1M 上下文标配;旧名
-# deepseek-chat/deepseek-reasoner 已停用且不是 1M,不在此列,走默认 200k 兜底。
+# deepseek-flash(V4.1 Flash,2026-09-10 发布)官方标称 1M 上下文标配,最大输出 384K;
+# 旧名 deepseek-v4 全系(V4-Pro/V4-Flash,2026-04-24)同为 1M,官方仍接受并路由到
+# V4.1 Flash,故一起登记以免降级;旧名 deepseek-chat/deepseek-reasoner 不是 1M,
+# 不在此列,走默认 200k 兜底。
 # gpt-5.6 三档(Sol/Terra/Luna)官方 API 直连可达 1.05M input / 128k output；但当前
 # Codex 本机模型目录均标 272k，并要求预留 5% 自动压缩空间，实际可用 258,400。这里
 # 必须按真实链路估算，否则自动压缩永远来不及触发。
@@ -256,6 +258,7 @@ _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-sonnet-5": 1_000_000,
     "claude-sonnet-4-6": 200_000,
     "claude-haiku-4-5": 200_000,
+    "deepseek-flash": 1_000_000,
     "deepseek-v4": 1_000_000,
     "kimi-k3": 1_000_000,
     "gpt-5.6": 258_400,
