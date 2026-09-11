@@ -172,6 +172,14 @@ async def test_effort_change_rebuilds_warm_client(clients, monkeypatch):
     assert clients[1].options.effort == "xhigh"
 
 
+async def _turn_with_effort(clients, monkeypatch, effort: str):
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("deepseek-flash", {"K": "v"}))
+    monkeypatch.setattr(agent.providers, "effort_levels_for_model", lambda *a: (effort,))
+    monkeypatch.setattr(agent.settings_store, "get_web_effort", lambda *a: effort)
+    await _turn()
+    return clients[0].options
+
+
 @pytest.mark.anyio
 async def test_effort_off_disables_thinking_via_extra_body(clients, monkeypatch):
     """档位「关闭」:effort 留空,改由 CLI 的请求体合并口子关思考。
@@ -179,21 +187,37 @@ async def test_effort_off_disables_thinking_via_extra_body(clients, monkeypatch)
     SDK 的 thinking 参数对第三方模型会被 CLI 丢掉(见 agent.py 注释),所以这里断言
     的是环境变量而不是 options.thinking。
     """
-    monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("deepseek-flash", {"K": "v"}))
-    monkeypatch.setattr(
-        agent.providers, "effort_levels_for_model", lambda *a: ("off", "high", "max")
-    )
-    monkeypatch.setattr(agent.settings_store, "get_web_effort", lambda *a: "off")
-    await _turn()
+    options = await _turn_with_effort(clients, monkeypatch, "off")
 
-    assert clients[0].options.effort is None
-    extra = json.loads(clients[0].options.env["CLAUDE_CODE_EXTRA_BODY"])
-    assert extra == {"thinking": {"type": "disabled"}}
+    assert options.effort is None
+    assert json.loads(options.env["CLAUDE_CODE_EXTRA_BODY"]) == {
+        "thinking": {"type": "disabled"}
+    }
 
 
 @pytest.mark.anyio
-async def test_effort_without_off_keeps_thinking_untouched(clients):
-    """没选档位(=auto)时不注入任何请求体参数,行为与改造前一致。"""
+async def test_effort_ultra_goes_through_extra_body(clients, monkeypatch):
+    """ultra 不在 CLI 的 --effort 白名单里,同样只能注入请求体。"""
+    options = await _turn_with_effort(clients, monkeypatch, "ultra")
+
+    assert options.effort is None
+    assert json.loads(options.env["CLAUDE_CODE_EXTRA_BODY"]) == {
+        "output_config": {"effort": "ultra"}
+    }
+
+
+@pytest.mark.anyio
+async def test_effort_normal_level_passes_effort_only(clients, monkeypatch):
+    """普通档位照旧走 --effort,不注入请求体——别把所有档位都改成注入。"""
+    options = await _turn_with_effort(clients, monkeypatch, "xhigh")
+
+    assert options.effort == "xhigh"
+    assert "CLAUDE_CODE_EXTRA_BODY" not in options.env
+
+
+@pytest.mark.anyio
+async def test_effort_unset_keeps_both_untouched(clients):
+    """没选档位(=auto)时 effort 与请求体都不动,行为与改造前一致。"""
     await _turn()
 
     assert clients[0].options.effort is None

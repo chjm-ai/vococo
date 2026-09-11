@@ -594,7 +594,7 @@ async function loadModels(){
 
 // ── 思考深度选择器 ────────────────────────────────────────────────────────
 // 档位由服务端按模型返回：官方 Claude / Codex GPT 是五档，第三方兼容端点已验证两档，
-// DeepSeek 多一档「关闭」(关思考,id=off)。这里只负责照着渲染,不写死档位。
+// DeepSeek 是完整六档 + 一档「关闭」(关思考,id=off)。这里只负责照着渲染,不写死档位。
 function effortState(model){
   const all=(S.models&&S.models.efforts)||{}, wanted=model||curModel();
   const key=all[wanted] ? wanted : Object.keys(all).find(function(id){

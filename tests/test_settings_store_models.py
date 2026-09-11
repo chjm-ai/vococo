@@ -139,7 +139,7 @@ def test_set_and_get_web_effort(monkeypatch, tmp_path):
 def test_web_effort_rejects_invalid_and_clears(monkeypatch, tmp_path):
     _point_to(monkeypatch, tmp_path)
     settings_store.set_web_effort("max")
-    settings_store.set_web_effort("ultra")   # 非法值 → 清空,不落库
+    settings_store.set_web_effort("turbo")   # 非法值 → 清空,不落库
     assert settings_store.get_web_effort() == ""
 
 
@@ -159,7 +159,7 @@ def test_invalid_model_effort_reverts_to_legacy_fallback(monkeypatch, tmp_path):
     _point_to(monkeypatch, tmp_path)
     settings_store.set_web_effort("high")
     settings_store.set_web_effort("max", model="gpt-5.6-sol")
-    settings_store.set_web_effort("ultra", model="gpt-5.6-sol")
+    settings_store.set_web_effort("turbo", model="gpt-5.6-sol")
     assert settings_store.get_web_effort("gpt-5.6-sol") == "high"
 
 

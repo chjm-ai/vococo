@@ -482,17 +482,29 @@ _COMPAT_EFFORT_CHOICES: tuple[tuple[str, str], ...] = (
     ("high", "high"),
     ("max", "max"),
 )
-# DeepSeek 官方端点额外支持"关闭思考"。它不是 SDK 的 effort 档位(EffortLevel 只有
-# low..max),而是个开关:core/agent.py 见到 "off" 会改传 thinking={"type":"disabled"}
-# 并把 effort 留空。2026-09-11 实测 https://api.deepseek.com/anthropic 认这个参数
-# (响应里不再有 thinking block),而同端点上的 reasoning.effort="none" 无效。
+# DeepSeek 官方端点支持完整六档(low/medium/high/xhigh/ultra/max,2026-09-11 实测
+# 其 output_config.effort 的报错白名单),外加一个"关闭思考"开关。
+# ⚠️ 其中两个档位 CLI 的 --effort 发不出去:ultra 不在 CLI 的白名单里(会警告后回退),
+# "off" 更不是 effort 而是开关——这两个改由 core/agent.py 走请求体注入,见那里的注释。
 # 关掉思考的附带价值:思考模式下 temperature 会被服务端静默忽略,关了才真正生效。
 # 显示名用中文「关闭」,和英文的深度档位并排时一眼能看出它是开关而不是一档深度。
 _DEEPSEEK_EFFORT_CHOICES: tuple[tuple[str, str], ...] = (
     ("off", "关闭"),
+    ("low", "low"),
+    ("medium", "medium"),
     ("high", "high"),
+    ("xhigh", "xhigh"),
+    ("ultra", "ultra"),
     ("max", "max"),
 )
+# 走不了 --effort、只能靠请求体注入的档位 → 要并入请求体的 JSON。
+# off:CLI 对第三方模型压根不发 thinking(SDK 的 thinking 选项被丢弃),
+#     而同端点上只有 thinking:{"type":"disabled"} 真能关掉思考;
+# ultra:CLI 不认这个值(会警告后回退默认档),只能自己往请求体里塞。
+_EXTRA_BODY_EFFORTS: dict[str, str] = {
+    "off": '{"thinking": {"type": "disabled"}}',
+    "ultra": '{"output_config": {"effort": "ultra"}}',
+}
 
 
 def _is_deepseek_endpoint(provider: ActiveProvider) -> bool:
@@ -522,6 +534,11 @@ def effort_choices_for_model(model: str) -> tuple[tuple[str, str], ...]:
     if _is_deepseek_endpoint(provider):
         return _DEEPSEEK_EFFORT_CHOICES
     return _COMPAT_EFFORT_CHOICES
+
+
+def extra_body_for_effort(effort: str) -> str:
+    """返回要塞进 CLAUDE_CODE_EXTRA_BODY 的 JSON 串;空串=该档位走 effort 参数就行。"""
+    return _EXTRA_BODY_EFFORTS.get(effort, "")
 
 
 def effort_levels_for_model(model: str) -> tuple[str, ...]:

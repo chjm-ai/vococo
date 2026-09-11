@@ -192,13 +192,18 @@ def test_effort_choices_follow_model_provider_capability(tmp_path, monkeypatch):
     assert providers.effort_choices_for_model("claude-sonnet-5") == (
         ("low", "low"), ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh"), ("max", "max"),
     )
-    # DeepSeek 实测支持关思考,多给一档;其它第三方兼容端点没验过,不跟着加
+    # DeepSeek 实测支持完整六档 + 关思考开关;其它第三方兼容端点没验过,不跟着加
     assert providers.effort_choices_for_model("deepseek-v4-flash") == (
-        ("off", "关闭"), ("high", "high"), ("max", "max"),
+        ("off", "关闭"), ("low", "low"), ("medium", "medium"), ("high", "high"),
+        ("xhigh", "xhigh"), ("ultra", "ultra"), ("max", "max"),
     )
     assert providers.effort_choices_for_model("kimi-k3") == (
         ("high", "high"), ("max", "max"),
     )
+    # CLI 的 --effort 发不出去的档位才要额外注入请求体,其余的返回空串
+    assert providers.extra_body_for_effort("off") == '{"thinking": {"type": "disabled"}}'
+    assert providers.extra_body_for_effort("ultra") == '{"output_config": {"effort": "ultra"}}'
+    assert providers.extra_body_for_effort("max") == ""
 
 
 def test_available_models_hides_extra_when_declared_provider_missing(tmp_path, monkeypatch):

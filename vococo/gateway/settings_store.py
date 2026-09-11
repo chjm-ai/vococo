@@ -270,7 +270,7 @@ def set_web_default_model(model: str) -> None:
 # ── web 端思考深度(effort)─────────────────────────────────────────────
 # 这里只做"是不是一个认识的档位"的粗筛,具体某模型支持哪几档由
 # providers.effort_choices_for_model 决定。"off" 是关闭思考开关(仅 DeepSeek)。
-_WEB_EFFORTS = frozenset(("off", "low", "medium", "high", "xhigh", "max"))
+_WEB_EFFORTS = frozenset(("off", "low", "medium", "high", "xhigh", "ultra", "max"))
 
 
 def get_web_effort(model: str = "") -> str:
