@@ -70,6 +70,18 @@ def test_scope_split_and_cost(isolated, monkeypatch):
     assert round(data["daily"]["2026-09-01"]["cost"], 2) == 4.0
 
 
+def test_gpt6_astra_uses_builtin_price(isolated, monkeypatch):
+    stats, logs = _prepare(isolated, monkeypatch)
+    _write_log(
+        logs / "-Users-me-vococo", "sess-a",
+        [("gpt-6-astra", _usage(1_000_000, 0), "2026-09-01T10:00:00.000Z")],
+    )
+
+    stats._run_etl()
+
+    assert round(stats.overview("all")["models"][0]["cost"], 2) == 10.0
+
+
 def test_price_override(isolated, monkeypatch):
     """data/model_prices.json 能覆盖内置单价,不用改代码。"""
     from vococo import config
