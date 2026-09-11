@@ -22,6 +22,12 @@ _OFFICIAL_NAMES = ("claude", "official", "anthropic", "claude-official")
 # API key 入口等)一律按量计费的 API 处理。
 _SUBSCRIPTION_HOSTS = ("api.kimi.com",)  # Kimi Coding 订阅套餐
 
+# 本地 Codex OAuth 代理已配置时自动提供的模型。模型通过同一代理转发,不要求用户
+# 在设置页重复手填一个 extra model；代理本身不支持时由其返回明确错误。
+_CODEX_BUILTIN_MODELS: tuple[tuple[str, str], ...] = (
+    ("gpt-6-astra", "GPT-6 Astra（订阅）"),
+)
+
 # 订阅令牌探活用的模型:挑最便宜的 haiku,配 max_tokens=1,一次开销可忽略。
 PROBE_MODEL = "claude-haiku-4-5-20251001"
 
@@ -125,6 +131,10 @@ def _provider_entry_for_model(model: str) -> tuple[str, dict] | None:
         provider_name = extra.get("provider")
         if isinstance(provider_name, str) and provider_name.strip():
             return _provider_entry_by_name(entries, provider_name.strip())
+    if model in dict(_CODEX_BUILTIN_MODELS):
+        for name, entry in entries.items():
+            if _entry_field(entry, "mgmt_key"):
+                return name, entry
     return None
 
 
@@ -342,6 +352,16 @@ def available_models(
                 continue
         seen.add(mid)
         out.append((mid, extra.get("label") or mid, extra.get("group") or "anthropic"))
+    has_codex_proxy = any(
+        _entry_field(entry, "mgmt_key") and _entry_field(entry, "api_key", "apiKey")
+        for entry in entries.values()
+    )
+    if has_codex_proxy:
+        for mid, label in _CODEX_BUILTIN_MODELS:
+            if mid in seen or (not include_disabled and mid in disabled):
+                continue
+            seen.add(mid)
+            out.append((mid, label, "codex"))
     for name, entry in entries.items():
         if name.lower() in _OFFICIAL_NAMES:
             continue
@@ -364,12 +384,16 @@ def available_models(
         else:
             group = "kimi" if kind == "订阅" else "api"
         out.append((model, f"{model}（{kind}）", group))
-    # 组序 + 组内档位统一排序:GPT-5.6 系列按能力降序(Sol 旗舰 > Terra 均衡 >
-    # Luna 轻量)。sol/luna 是设置页手加的 extra、terra 是 provider 主模型,不排
-    # 就成了 sol→luna→terra,弱档 Luna 插到中间;未知 GPT 模型档位取 99 沉底,
-    # 非 codex 组 key 全 0 靠稳定排序保持原相对顺序。
+    # 组序 + 组内档位统一排序:GPT-6 Astra 在最前，GPT-5.6 三档按能力降序
+    # (Sol 旗舰 > Terra 均衡 > Luna 轻量)。未知 GPT 模型档位取 99 沉底，非
+    # codex 组 key 全 0 靠稳定排序保持原相对顺序。
     _GROUP_ORDER = {"anthropic": 0, "kimi": 1, "codex": 2, "api": 3}
-    _GPT_TIERS = {"gpt-5.6-sol": 0, "gpt-5.6-terra": 1, "gpt-5.6-luna": 2}
+    _GPT_TIERS = {
+        "gpt-6-astra": 0,
+        "gpt-5.6-sol": 1,
+        "gpt-5.6-terra": 2,
+        "gpt-5.6-luna": 3,
+    }
 
     out.sort(
         key=lambda item: (

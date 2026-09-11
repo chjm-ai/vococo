@@ -158,6 +158,30 @@ def test_extra_model_reuses_declared_provider(tmp_path, monkeypatch):
     )
 
 
+def test_gpt6_astra_is_available_through_configured_codex_proxy(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "codex-gpt", {
+            "base_url": "http://127.0.0.1:8317", "model": "gpt-5.6-terra",
+            "api_key": "sk-proxy", "mgmt_key": "mgmt-secret",
+        },
+    )
+
+    by_id = {mid: (label, group) for mid, label, group in providers.available_models([])}
+    assert by_id["gpt-6-astra"] == ("GPT-6 Astra（订阅）", "codex")
+    assert providers.resolve("gpt-6-astra", "claude-sonnet-5") == (
+        "gpt-6-astra", {
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:8317",
+            "ANTHROPIC_API_KEY": "sk-proxy",
+            "CLAUDE_CODE_OAUTH_TOKEN": "",
+            "ANTHROPIC_VISION_CAPABLE": "",
+        },
+    )
+    assert providers.codex_mgmt_for_model("gpt-6-astra") == (
+        "mgmt-secret", "http://127.0.0.1:8317"
+    )
+
+
 def test_effort_choices_follow_model_provider_capability(tmp_path, monkeypatch):
     """Codex GPT / 官方 Claude 为五档；普通第三方端点保守保留 high/max。"""
     _point_settings_to(monkeypatch, tmp_path)
