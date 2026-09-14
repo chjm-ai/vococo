@@ -469,10 +469,17 @@ def test_probe_token_network_failure_is_unknown(monkeypatch):
     assert "OSError" in detail
 
 
+def test_model_choices_use_fable51():
+    from vococo.gateway.core import MODEL_CHOICES
+
+    assert ("claude-fable-5-1", "Fable 5.1（订阅）") in MODEL_CHOICES
+    assert not any(model == "claude-fable-5" for model, _ in MODEL_CHOICES)
+
+
 # ── normalize_model_text / match_models_by_text(switch_model 的模糊匹配)──────
 # 候选样例与 available_models() 同构:(id, label, group)
 _CAND = [
-    ("claude-fable-5", "Fable 5(订阅)", "anthropic"),
+    ("claude-fable-5-1", "Fable 5.1(订阅)", "anthropic"),
     ("claude-opus-5", "Opus 5(订阅)", "anthropic"),
     ("claude-opus-4-6", "Opus 4.6(订阅)", "anthropic"),
     ("claude-sonnet-5", "Sonnet 5(订阅)", "anthropic"),
@@ -500,6 +507,11 @@ def test_match_exact_id_gets_full_name_first():
 def test_match_spoken_name_unique():
     hits = providers.match_models_by_text("opus 4.6", _CAND)
     assert [h[0] for h in hits] == ["claude-opus-4-6"]
+
+
+def test_match_fable5_uses_fable51():
+    hits = providers.match_models_by_text("fable 5", _CAND)
+    assert [h[0] for h in hits] == ["claude-fable-5-1"]
 
 
 def test_match_short_series_name_ambiguous_keeps_order():
