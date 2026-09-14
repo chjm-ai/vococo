@@ -41,6 +41,7 @@ _DEFAULT_PRICES: dict[str, tuple[float, float, float, float]] = {
     "claude-opus-4-6": (5, 25, 6.25, 0.5),
     "claude-sonnet-5": (2, 10, 2.5, 0.2),
     "claude-fable-5": (10, 50, 12.5, 1),
+    "claude-fable-5-1": (10, 50, 12.5, 0.25),
     "claude-haiku-4-5-20251001": (1, 5, 1.25, 0.1),
     # 2026-09-10 起 deepseek-flash = V4.1 Flash,输入 0.15 / 输出 0.6(离峰),
     # 比 V4 Flash 降价约 30%;旧名 deepseek-v4-flash 已被官方路由到 V4.1 Flash

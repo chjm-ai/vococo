@@ -82,6 +82,19 @@ def test_gpt6_astra_uses_builtin_price(isolated, monkeypatch):
     assert round(stats.overview("all")["models"][0]["cost"], 2) == 10.0
 
 
+def test_fable51_uses_builtin_price(isolated, monkeypatch):
+    stats, logs = _prepare(isolated, monkeypatch)
+    _write_log(
+        logs / "-Users-me-vococo", "sess-a",
+        [("claude-fable-5-1", _usage(1_000_000, 0, cr=1_000_000),
+          "2026-09-01T10:00:00.000Z")],
+    )
+
+    stats._run_etl()
+
+    assert round(stats.overview("all")["models"][0]["cost"], 2) == 10.25
+
+
 def test_price_override(isolated, monkeypatch):
     """data/model_prices.json 能覆盖内置单价,不用改代码。"""
     from vococo import config

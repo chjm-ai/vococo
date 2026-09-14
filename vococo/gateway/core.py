@@ -419,7 +419,7 @@ HELP_TEXT = "可用命令:\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_LI
 # 可选模型(/model 无参时弹这些供选择)。标签只留"名字（订阅）"——官方模型统一走订阅,
 # 不加营销文案(如"最强/更均衡"),免得干扰用户判断。
 MODEL_CHOICES: list[tuple[str, str]] = [
-    ("claude-fable-5", "Fable 5（订阅）"),
+    ("claude-fable-5-1", "Fable 5.1（订阅）"),
     ("claude-opus-5", "Opus 5（订阅）"),
     ("claude-opus-4-6", "Opus 4.6（订阅）"),
     ("claude-sonnet-5", "Sonnet 5（订阅）"),
