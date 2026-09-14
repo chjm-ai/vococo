@@ -1184,10 +1184,13 @@
        这是空间不够的布局问题,任何设备都需要,不分设备类型(不然桌面窄窗口下侧栏会
        常年占 280px,内容被挤成一条缝)。真正分设备的是下面的视觉/手势细节:移动端是
        圆角抽屉+大字号+安全区留白,桌面窄窗口就是普通贴边浮层,没有那些"手机味"处理。 */
+    /* 收起态必须 box-shadow:none:抽屉是靠 translateX 挪到画面左外侧,右边缘只差 8px
+       就到屏幕边,28px 模糊的投影会溢过来,在左侧留一条灰边(桌面窄窗口下尤其明显)。
+       投影只在 .open 时才挂,并跟着 transform 一起过渡,关的时候先淡掉。 */
     #sidebar{position:fixed;top:8px;bottom:8px;left:8px;z-index:26;width:280px;
-      border-radius:var(--r-lg);box-shadow:0 10px 28px rgba(0,0,0,.28);
+      border-radius:var(--r-lg);box-shadow:none;
       transform:translateX(calc(-100% - 16px))}
-    #sidebar.open{transform:translateX(0)}
+    #sidebar.open{transform:translateX(0);box-shadow:0 10px 28px rgba(0,0,0,.28)}
     #hamb{display:flex}
     #backdrop.show{display:block}
     /* 移动端左右留白收窄:桌面 32px 在窄屏太挤,回到 16px;上下不额外加(见 .combg 基础规则)。
