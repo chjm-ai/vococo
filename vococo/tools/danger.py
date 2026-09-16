@@ -766,6 +766,14 @@ def _deny_vococo_process_control() -> dict:
     )
 
 
+def _deny_workflow() -> dict:
+    return _deny(
+        "🚫 本 harness 不支持 Workflow 工具——前端无法渲染其进度和结果,调了也看不到。"
+        "替代方案:① 需要子代理 → 用 Agent(同步,当场出结果);"
+        "② 需要独立后台任务 → 用 dispatch_session(会出现在侧栏任务列表)。"
+    )
+
+
 def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | None:
     """常开正确性防线:正式进程控制等错误操作命中后直接返回 deny。
 
@@ -775,6 +783,8 @@ def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | Non
     「我知道风险,别再问我」,不该连带关掉这几条「关了程序就会错」的防线。
     CONTEXT.md「危险分级(Risk Tier)」条目描述的三档模型专指 classify() 的输出。
     """
+    if tool_name == "Workflow":
+        return _deny_workflow()
     if tool_name == "Bash" and _targets_vococo_process(
         (tool_input or {}).get("command", "") or ""
     ):
