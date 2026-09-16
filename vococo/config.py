@@ -293,6 +293,9 @@ VOICE_TTS_VOICE: str = (
 # (原定 3 是为了防止并发任务打爆 API 额度,先跑一个月看看额度压力再定)
 TASK_MAX_CONCURRENCY: int = int(os.environ.get("TASK_MAX_CONCURRENCY", "7"))
 TASK_TIMEOUT_MIN: int = int(os.environ.get("TASK_TIMEOUT_MIN", "30"))
+# 网页派出的独立会话需要长期跑完，默认不限时；设为正整数才启用超时。
+# 语音/cron 仍沿用 TASK_TIMEOUT_MIN，避免无人值守任务无限占用并发槽。
+CHAT_TASK_TIMEOUT_MIN: int = int(os.environ.get("CHAT_TASK_TIMEOUT_MIN", "0"))
 # 单轮 agentic 轮数上限,0=跟随全局 MAX_TURNS(全局也是 0 即不限,由 TASK_TIMEOUT_MIN
 # 超时兜底)。保留独立开关是因为查日志/翻代码这类任务动辄几十轮,2026-07-10 真机
 # 事故:全局 40 轮让一个查日志任务白跑 8 分钟。

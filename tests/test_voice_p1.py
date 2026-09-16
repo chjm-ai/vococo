@@ -402,6 +402,24 @@ async def test_task_timeout_marks_failed(voice_db, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_chat_task_has_no_default_timeout(voice_db, monkeypatch):
+    monkeypatch.setattr(config, "TASK_TIMEOUT_MIN", 0.001)
+    monkeypatch.setattr(config, "CHAT_TASK_TIMEOUT_MIN", 0)
+
+    async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
+        await asyncio.sleep(0.1)
+        yield Done(AgentReply(text="已完成", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+
+    task = executor.dispatch("标题", "prompt", origin="chat")
+    await executor._running[task["id"]]
+
+    assert tasks.get(task["id"])["status"] == "done"
+
+
+@pytest.mark.anyio
 async def test_cancel_running_task_sets_cancelled(voice_db, monkeypatch):
     started = asyncio.Event()
 
