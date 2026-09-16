@@ -167,6 +167,13 @@ def _summarize(result_text: str) -> str:
     return text[: _SUMMARY_MAX - 1] + "…"
 
 
+def _timeout_min(row: dict) -> int:
+    """网页独立会话默认不限时，其他无人值守任务保留兜底超时。"""
+    if row["origin"] == "chat":
+        return config.CHAT_TASK_TIMEOUT_MIN
+    return config.TASK_TIMEOUT_MIN
+
+
 async def _run(task_id: str, turn_text: str | None = None) -> None:
     """跑一个任务的一轮对话。turn_text 为 None(首次派发)用 row['prompt'];
     非 None(追问/cron 再次触发)则是这一轮实际发给模型的文本——历史靠 resume 接,
@@ -269,12 +276,16 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             effective_cwd,
             project_root=row["cwd"] if effective_cwd != row["cwd"] else None,
         )
-        await asyncio.wait_for(_drive(), timeout=config.TASK_TIMEOUT_MIN * 60)
+        timeout_min = _timeout_min(row)
+        if timeout_min > 0:
+            await asyncio.wait_for(_drive(), timeout=timeout_min * 60)
+        else:
+            await _drive()
         status = "failed" if error_note else "done"
     except asyncio.CancelledError:
         status = "cancelled"
     except asyncio.TimeoutError:
-        error_note = f"超时(超过 {config.TASK_TIMEOUT_MIN} 分钟)"
+        error_note = f"超时(超过 {timeout_min} 分钟)"
     except Exception as exc:  # noqa: BLE001 —— 兜底:任何异常都要走到终态收尾,不留 running 僵尸
         error_note = f"执行出错:{exc}"
     finally:
