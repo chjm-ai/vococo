@@ -19,7 +19,7 @@ import pytest
 from vococo.core import task_runner
 from vococo.core import tasks as bg_tasks
 from vococo.core.task_runner import _SUMMARY_TAG_INSTRUCTION
-from vococo.core.agent import AgentReply, Done
+from vococo.core.agent import AgentReply, Done, SessionStarted
 from vococo.cron import scheduler
 from vococo.memory import session_store
 from vococo.voice import notify
@@ -101,6 +101,43 @@ async def test_run_job_second_trigger_appends_same_task_no_new_row(cron_env, mon
     # 落库的 turn 本身仍是干净的原文(见另一个用例的断言)。
     expected = "汇总今天安排" + _SUMMARY_TAG_INSTRUCTION
     assert calls == [expected, expected]
+
+
+@pytest.mark.anyio
+async def test_cron_second_trigger_starts_fresh_no_resume(cron_env, monkeypatch):
+    """cron 自动触发每次从零开始:第二次触发不 resume 上一次的 SDK session,
+    避免上下文无限膨胀。用户手动消息(走 converse)不受影响。"""
+    resume_args = []
+
+    async def fake_stream_turn(history, prompt, cwd=None, session_key=None, resume=None, **kw):
+        resume_args.append(resume)
+        yield SessionStarted(session_id=f"sid-{len(resume_args)}")
+        yield Done(AgentReply(text=f"第{len(resume_args)}次", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(task_runner, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+
+    job = scheduler.create_job(
+        name="测试任务", prompt="测试", schedule={"kind": "cron", "expr": "0 8 * * *"}
+    )
+
+    # 第一次触发(dispatch):没有 resume
+    scheduler._run_job(job, _noop_coro)
+    await task_runner._running[job["id"]]
+    assert resume_args[0] is None
+
+    # 第一次跑完后 SDK session id 应已存入
+    sk = bg_tasks.session_key(job["id"])
+    assert session_store.get_sdk_session_id(sk) == "sid-1"
+
+    # 第二次触发(append):我们的改动应清掉 sdk_session_id,使 resume=None
+    scheduler._run_job(job, _noop_coro)
+    await asyncio.sleep(0)
+    await task_runner._running[job["id"]]
+    assert resume_args[1] is None, "cron 第二次触发不应 resume,应从零开始"
+
+    # 跑完后新的 sdk_session_id 仍会存回去(供用户手动排查时 resume)
+    assert session_store.get_sdk_session_id(sk) == "sid-2"
 
 
 # ── _on_task_terminal:回填统计 + 推送(不依赖真的跑一轮,直接构造终态 task) ──
