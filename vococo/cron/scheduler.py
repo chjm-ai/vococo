@@ -291,9 +291,11 @@ def _run_job(job: dict, push: PushFn) -> None:
             cwd=job.get("cwd"), model=job.get("model"), origin="cron", task_id=job_id,
         )
     else:
-        # append() 是协程,但内部只有"打断正在跑的那一轮"才真正 await 点什么
-        # (cancel_and_wait);cron 是 fire-and-forget 触发,不等这一轮结果,
-        # 用 create_task 起个后台协程,不阻塞 _tick 继续处理其它到期任务。
+        # cron 自动触发不续接上次上下文——prompt 本身是完整指令,不依赖历史;
+        # 清掉 sdk_session_id 让下一轮从零开始,避免上下文无限膨胀。
+        # 用户通过 web UI 手动发消息走 gateway/core.py converse(),
+        # 仍会 resume 最近一次运行的 SDK session,可用于排查。
+        session_store.set_sdk_session_id(bg_tasks.session_key(job_id), None)
         asyncio.create_task(task_runner.append(job_id, job["prompt"]))
 
 
