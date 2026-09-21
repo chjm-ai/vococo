@@ -147,12 +147,12 @@ def _add_campaign_lead(args):
     return _fmt(_call("POST", f"/campaigns/{_str(args, 'campaignId')}/leads", body))
 
 
-@_reg("delete_campaign_lead", "【写操作·需批准】从 campaign 移除一个线索(不影响联系人)。", {
-    "type": "object", "required": ["campaignId", "leadId"],
-    "properties": {"campaignId": {"type": "string"}, "leadId": {"type": "string", "description": "lea_ 开头"}},
+@_reg("delete_campaign_lead", "【写操作·需批准】退订一个线索：lead 状态转 variableUnsubscribed，并加入团队退订名单，该邮箱此后不再收到任何信（不只是移出本 campaign，影响面是账户级）。", {
+    "type": "object", "required": ["campaignId", "email"],
+    "properties": {"campaignId": {"type": "string"}, "email": {"type": "string", "description": "必须传邮箱地址；传 lea_ 开头的 leadId 会返回 404「An email is required to unsub a lead」"}},
 })
 def _delete_campaign_lead(args):
-    return _fmt(_call("DELETE", f"/campaigns/{_str(args, 'campaignId')}/leads/{_str(args, 'leadId')}"))
+    return _fmt(_call("DELETE", f"/campaigns/{_str(args, 'campaignId')}/leads/{_str(args, 'email')}"))
 
 
 @_reg("search_contacts", "按姓名/邮箱搜索 CRM 联系人(团队内已有客户)。", {
