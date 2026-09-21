@@ -37,7 +37,7 @@ from ...memory import session_store, workbench
 from .. import git_status, settings_store, stats
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink, is_command
 from .base import AudioAttachment, ImageAttachment, Incoming, VideoAttachment
-from ..web_auth import check_web_auth
+from ..web_auth import check_media_ticket, check_web_auth, sign_media_ticket
 from .web_push import PUSH
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
@@ -348,6 +348,25 @@ def _compressed_json(data: dict) -> web.Response:
     resp = web.json_response(data)
     resp.enable_compression()
     return resp
+
+
+def _video_url(name: str) -> str:
+    """视频取流 URL + 限时票据(见 web_auth.sign_media_ticket)。
+
+    <video src> 带不了 X-Auth-Token,所以视频这一类必须让浏览器能直接拉——票据只对
+    这一个文件名有效且会过期,不是把全局口令搬进 query。
+    """
+    return f"/video?name={name}{sign_media_ticket('video', name)}"
+
+
+def _sign_history_videos(turns: list[dict]) -> None:
+    """把 load_history 里的裸 /video?name= 就地换成带票据的 URL(用户/AI 两侧都要)。"""
+    for t in turns:
+        for field in ("videos", "ai_videos"):
+            for item in t.get(field) or []:
+                name = str(item.get("url", "")).removeprefix("/video?name=")
+                if name:
+                    item["url"] = _video_url(name)
 
 
 def _document_ref(value: object) -> str | None:
@@ -667,7 +686,7 @@ class WebAdapter:
         self._emit({
             "conv": str(chat_id), "type": "message", "text": caption,
             "videos": [{
-                "url": f"/video?name={name}",
+                "url": _video_url(name),
                 "filename": src_path.name,
                 "media_type": f"video/{ext}",
             }],
@@ -1932,16 +1951,21 @@ class WebAdapter:
             return web.json_response({"error": "not found"}, status=404)
         return web.FileResponse(p, headers={"Cache-Control": "max-age=31536000, immutable"})
 
-    @_authed
     async def _handle_video(self, request: web.Request) -> web.StreamResponse:
         """回放某轮视频(落盘在 config.VIDEOS_DIR);name 经白名单校验挡路径穿越。
 
-        鉴权只认 X-Auth-Token 请求头(见 web_auth.py,query token 一律不收),而
-        <video src> 带不了请求头 —— 所以前端跟图片/音频一样走 fetch→blob,而且是
-        【点了播放才拉】:视频动辄几十 MB,不能像缩略图那样进会话就预载一片。
-        代价是拿不到 Range 分段(整段下完才起播),这是不开 query token 的必然取舍。
+        鉴权走 check_media_ticket:先认 X-Auth-Token 请求头,没有则验 URL 上那张
+        【只对这一个文件名有效、12 小时过期】的票据——<video src> 带不了请求头,
+        不给票据就只能整段 fetch 成 blob 才能播(全下完才起播、进度条也拖不动)。
+        票据泄露的上限是那一个视频文件,跟"把全局口令放 query"不是一回事。
+
+        FileResponse 自带 Range 支持:浏览器 preload="metadata" 只拉头部几百 KB
+        (够渲染出首帧当封面),点播放才继续按需取,拖进度条也只取那一段。
         """
-        p = session_store.video_path(request.query.get("name", ""))
+        name = request.query.get("name", "")
+        if (g := check_media_ticket(request, "video", name)) is not None:
+            return g
+        p = session_store.video_path(name)
         if p is None:
             return web.json_response({"error": "not found"}, status=404)
         return web.FileResponse(p, headers={"Cache-Control": "max-age=31536000, immutable"})
@@ -1962,6 +1986,7 @@ class WebAdapter:
         turns = session_store.load_history(key, limit=40, **(
             {"before_id": before_id} if before_id is not None else {}
         ))
+        _sign_history_videos(turns)
         has_more = bool(turns) and len(turns) == 40 and session_store.has_history_before(
             key, turns[0]["id"]
         )
