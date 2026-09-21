@@ -543,6 +543,24 @@ function renderThumbs(){
   });
 }
 
+// ── 上传结果确认 ──────────────────────────────────────────────────────────
+// 移动端最常见的"假失败":息屏/切后台/4G-WiFi 切换会掐断连接,fetch 直接 throw,
+// 但服务端其实已经把字节收全并存进 pending(见后端 _handle_upload_audio)。
+// 原来只对 Cloudflare 524 做二次确认,其他失败一律判死,于是明明传上去了却报
+// 「上传失败」。改成任何失败都先拿 client_id 问一次 /check_upload;服务端可能
+// 还在收尾,所以隔几秒重试几轮再认输。
+const UPLOAD_CHECK_DELAYS = [1500, 5000, 12000];
+async function confirmUpload(clientId){
+  for(const wait of UPLOAD_CHECK_DELAYS){
+    await new Promise(ok=>setTimeout(ok, wait));
+    try{
+      const r = await api("/check_upload?client_id="+clientId);
+      if(r.ok) return await r.json();
+    }catch(e){ /* 网络还没恢复,下一轮再试 */ }
+  }
+  return null;
+}
+
 // ── 音频 ────────────────────────────────────────────────────────────────
 // 选完音频立刻上传(只存文件秒回,不等转写):AI"解读"音频靠的是转写文字,不是
 // 原生多模态——协议层没有 audio 这种 content block(见后端 core/agent.py 的
@@ -565,16 +583,24 @@ function uploadAudio(f, item){
       const timer = setTimeout(()=>ac.abort(), 90000);
       let r = await api("/upload_audio?client_id="+clientId, {method:"POST", body:form, signal:ac.signal});
       clearTimeout(timer);
-      if(r.status===524){
-        await new Promise(ok=>setTimeout(ok,3000));
-        r = await api("/check_upload?client_id="+clientId);
-        if(!r.ok) throw new Error("上传超时（Cloudflare 524），请重试");
+      let d;
+      if(r.ok){
+        try{ d=await r.json(); }catch(e){ d=null; }
       }
-      let d; try{ d=await r.json(); }catch(e){ throw new Error("HTTP "+r.status); }
-      if(!r.ok || d.error) throw new Error(d.error || ("HTTP "+r.status));
+      // 4xx 是服务端明确拒绝(超限/格式不对),没必要再去确认,直接把原因抛出来。
+      if(!d || d.error){
+        if(r.status>=400 && r.status<500 && r.status!==408){
+          let msg; try{ msg=(await r.json()).error; }catch(e){}
+          const err=new Error(msg || ("HTTP "+r.status)); err.fatal=true; throw err;
+        }
+        d = await confirmUpload(clientId);
+        if(!d || d.error){ const err=new Error("HTTP "+r.status); err.fatal=true; throw err; }
+      }
       item.id=d.id; item.text=d.text||""; item.status="done";
     }catch(e){
-      item.status="error"; item.error = e.name==="AbortError" ? "上传超时,请重试" : e.message;
+      const d = e.fatal ? null : await confirmUpload(clientId);
+      if(d && !d.error){ item.id=d.id; item.text=d.text||""; item.status="done"; }
+      else { item.status="error"; item.error = e.name==="AbortError" ? "上传超时,请重试" : e.message; }
     }
     renderThumbs();
   })();
@@ -598,16 +624,23 @@ function uploadFile(f,item){
       const timer=setTimeout(()=>ac.abort(),90000);
       let r=await api("/upload_file?client_id="+clientId,{method:"POST",body:form,signal:ac.signal});
       clearTimeout(timer);
-      if(r.status===524){
-        await new Promise(ok=>setTimeout(ok,3000));
-        r=await api("/check_upload?client_id="+clientId);
-        if(!r.ok) throw new Error("上传超时（Cloudflare 524），请重试");
+      let d;
+      if(r.ok){
+        try{ d=await r.json(); }catch(e){ d=null; }
       }
-      let d; try{ d=await r.json(); }catch(e){ throw new Error("HTTP "+r.status); }
-      if(!r.ok || d.error) throw new Error(d.error || ("HTTP "+r.status));
+      if(!d || d.error){
+        if(r.status>=400 && r.status<500 && r.status!==408){
+          let msg; try{ msg=(await r.json()).error; }catch(e){}
+          const err=new Error(msg || ("HTTP "+r.status)); err.fatal=true; throw err;
+        }
+        d = await confirmUpload(clientId);
+        if(!d || d.error){ const err=new Error("HTTP "+r.status); err.fatal=true; throw err; }
+      }
       item.id=d.id; item.status="done";
     }catch(e){
-      item.status="error"; item.error=e.name==="AbortError" ? "上传超时，请重试" : e.message;
+      const d = e.fatal ? null : await confirmUpload(clientId);
+      if(d && !d.error){ item.id=d.id; item.status="done"; }
+      else { item.status="error"; item.error=e.name==="AbortError" ? "上传超时，请重试" : e.message; }
     }
     renderThumbs();
   })();
