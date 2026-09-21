@@ -550,6 +550,14 @@ function renderThumbs(){
 // 「上传失败」。改成任何失败都先拿 client_id 问一次 /check_upload;服务端可能
 // 还在收尾,所以隔几秒重试几轮再认输。
 const UPLOAD_CHECK_DELAYS = [1500, 5000, 12000];
+// 超时按文件大小算,不再一刀切 90 秒:弱网 4G 实测几十 KB/s,90 秒连 5MB 都传不完,
+// abort 掐断后服务端只收到半截(不入 pending),就成了真失败。按 40KB/s 兜底估时,
+// 再留 60 秒握手余量,上限 15 分钟防止永远挂着。
+const UPLOAD_MIN_MS = 90*1000, UPLOAD_MAX_MS = 15*60*1000, UPLOAD_BYTES_PER_SEC = 40*1024;
+function uploadTimeoutMs(bytes){
+  const est = 60*1000 + (Number(bytes)||0)/UPLOAD_BYTES_PER_SEC*1000;
+  return Math.min(UPLOAD_MAX_MS, Math.max(UPLOAD_MIN_MS, Math.round(est)));
+}
 async function confirmUpload(clientId){
   for(const wait of UPLOAD_CHECK_DELAYS){
     await new Promise(ok=>setTimeout(ok, wait));
@@ -580,7 +588,7 @@ function uploadAudio(f, item){
     try{
       const form = new FormData(); form.append("audio", f, item.filename);
       const ac = new AbortController();
-      const timer = setTimeout(()=>ac.abort(), 90000);
+      const timer = setTimeout(()=>ac.abort(), uploadTimeoutMs(f.size));
       let r = await api("/upload_audio?client_id="+clientId, {method:"POST", body:form, signal:ac.signal});
       clearTimeout(timer);
       let d;
@@ -621,7 +629,7 @@ function uploadFile(f,item){
     try{
       const form=new FormData(); form.append("file",f,item.filename);
       const ac=new AbortController();
-      const timer=setTimeout(()=>ac.abort(),90000);
+      const timer=setTimeout(()=>ac.abort(),uploadTimeoutMs(f.size));
       let r=await api("/upload_file?client_id="+clientId,{method:"POST",body:form,signal:ac.signal});
       clearTimeout(timer);
       let d;
