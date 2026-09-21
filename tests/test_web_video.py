@@ -172,6 +172,58 @@ def test_video_path_blocks_traversal(video_dir):
     assert session_store.video_path("nope.mp4") is None
 
 
+@pytest.mark.anyio
+async def test_video_ticket_lets_browser_play_without_auth_header(video_dir, monkeypatch):
+    """<video src> 带不了请求头:URL 上的限时票据必须能单独放行,且只对这一个文件有效。"""
+    from vococo.gateway import web_auth
+    from vococo.gateway.adapters import web as web_mod
+
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "s3cret")
+    adapter = WebAdapter()
+    video_dir.mkdir(parents=True, exist_ok=True)
+    (video_dir / "1_0.mp4").write_bytes(b"movie")
+
+    app = web.Application()
+    app.add_routes([web.get("/video", adapter._handle_video)])
+    async with TestClient(TestServer(app)) as client:
+        url = web_mod._video_url("1_0.mp4")
+        assert "sig=" in url and "exp=" in url
+        assert "s3cret" not in url  # 全局口令只以 HMAC 派生值出现,原值不进 URL
+
+        assert (await client.get(url)).status == 200  # 无请求头,仅凭票据放行
+        assert (await client.get("/video?name=1_0.mp4")).status == 401  # 没票 → 挡住
+        # 换个文件名重放同一张票:签名把 name 签进去了,必然对不上
+        bad = url.replace("name=1_0.mp4", "name=other.mp4")
+        assert (await client.get(bad)).status == 401
+
+    # 过期票据不认(直接签一张 13 小时前的)
+    stale = web_auth.sign_media_ticket("video", "1_0.mp4", now=0)
+    assert "exp=" in stale
+    assert int(stale.split("exp=")[1].split("&")[0]) < 24 * 3600  # 1970 年那张,早过期
+
+
+def test_history_urls_carry_ticket(monkeypatch):
+    from vococo.gateway.adapters import web as web_mod
+
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "s3cret")
+    turns = [{
+        "videos": [{"url": "/video?name=1_0.mp4"}],
+        "ai_videos": [{"url": "/video?name=ai_x.mp4"}],
+    }]
+    web_mod._sign_history_videos(turns)
+    assert "sig=" in turns[0]["videos"][0]["url"]
+    assert "sig=" in turns[0]["ai_videos"][0]["url"]  # AI 发的也得能播,别只签用户那半边
+
+
+def test_frontend_plays_inline_without_extra_click():
+    js = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/stream.js").read_text(
+        encoding="utf-8"
+    )
+    assert "videoload" not in js  # 「点击加载」那一步已经去掉
+    assert 'player.preload="metadata"' in js  # 只拉头部渲染首帧,不预载正片
+    assert "player.src=url;" in js
+
+
 def test_frontend_routes_video_to_its_own_upload_endpoint():
     js = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/composer.js").read_text(
         encoding="utf-8"

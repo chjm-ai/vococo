@@ -107,9 +107,13 @@ async function loadAuthedAudio(player, url){
   const o=await fetchCachedBlobUrl(url);
   if(o) player.src=o;
 }
-// 视频组渲染:历史视频走 /video?name=(要鉴权头,<video src> 带不了)→ 先显示一张
-// 「🎬 文件名 · 点击加载」的卡片,点了才 fetch 成 blob 再播。不像图片那样进会话就
-// 预载:一条几十 MB,自动拉几条就能把流量和内存吃光。实时发的是 blob:,直接塞 src。
+// 视频组渲染:直接给 <video controls>,用户点播放就播。
+// 历史视频的 URL 自带限时票据(见后端 _video_url),所以能当普通 src 用,不必像
+// 图片/音频那样 fetch 成 blob —— 那条路要整段下完才起播、还拖不动进度条。
+// preload="metadata" 只拉头部:够浏览器渲染出首帧当封面(看得见画面,不是黑框),
+// 又不会一进会话就把几十 MB 正片拖下来。
+// 票据过期(页面开着超过 12 小时)时 <video> 会静默报 error,这里兜一句可点的提示,
+// 否则用户只看到一个点不动的播放器,完全不知道发生了什么。
 function appendVids(container, vids){
   if(!vids || !vids.length) return;
   const g=el("div","vids");
@@ -120,19 +124,17 @@ function appendVids(container, vids){
     const name=(typeof v==="object" && v.filename) || "";
     if(name){ const cap=el("div","videoname"); cap.textContent="🎬 "+name; row.append(cap); }
     const player=el("video"); player.controls=true; player.preload="metadata"; player.playsInline=true;
+    player.src=url;
     if(url.startsWith("/")){
-      const load=el("button","videoload"); load.type="button";
-      load.textContent="▶ 点击加载视频";
-      load.onclick=async()=>{
-        load.disabled=true; load.textContent="加载中…";
-        const o=await fetchCachedBlobUrl(url);
-        if(!o){ load.disabled=false; load.textContent="⚠️ 加载失败,点击重试"; return; }
-        player.src=o; load.replaceWith(player); player.play().catch(()=>{});
+      player.onerror=()=>{
+        if(row.querySelector(".videoerr")) return;
+        const tip=el("button","videoerr"); tip.type="button";
+        tip.textContent="⚠️ 视频链接已过期,点此重新载入";
+        tip.onclick=()=>reloadHistory(true);
+        row.append(tip);
       };
-      row.append(load);
-    } else {
-      player.src=url; row.append(player);
     }
+    row.append(player);
     g.append(row);
   }
   container.append(g);
