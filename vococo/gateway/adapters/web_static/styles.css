@@ -813,6 +813,16 @@
   .audiorow .atranscript{margin-top:4px;font-size:var(--fs-sm);color:var(--dim)}
   .audiorow .atranscript summary{cursor:pointer;color:var(--accent)}
   .audiorow .atranscript div{margin-top:4px;white-space:pre-wrap;color:var(--text)}
+  /* 视频组:气泡内的播放器/「点击加载」占位按钮,见 stream.js appendVids */
+  .vids{display:flex;flex-direction:column;gap:var(--sp-2);margin-top:var(--sp-2)}
+  .videorow .videoname{margin-bottom:var(--sp-1);font-size:var(--fs-sm);color:var(--dim);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .videorow video{width:100%;max-width:360px;border-radius:var(--r-md);background:#000;display:block}
+  .videorow .videoload{display:inline-flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-4);
+    border-radius:var(--r-xl);background:var(--panel2);border:1px solid var(--line2);color:var(--text);
+    font-size:var(--fs-sm);cursor:pointer;transition:background var(--t-fast),border-color var(--t-fast)}
+  .videorow .videoload:hover{border-color:var(--accent)}
+  .videorow .videoload:disabled{color:var(--dim);cursor:default}
   /* AI 消息底部:回复时间 + 复制/重新生成小按钮,见 buildTurnFoot */
   .turnfoot{display:flex;align-items:center;gap:2px;margin-top:4px;min-height:24px}
   .turnfoot .tftime{font-size:var(--fs-sm);color:var(--dim2);margin-right:2px;font-variant-numeric:tabular-nums;user-select:none}

@@ -36,7 +36,7 @@ from ...core.agent import AgentReply, FileAttachment
 from ...memory import session_store, workbench
 from .. import git_status, settings_store, stats
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink, is_command
-from .base import AudioAttachment, ImageAttachment, Incoming
+from .base import AudioAttachment, ImageAttachment, Incoming, VideoAttachment
 from ..web_auth import check_web_auth
 from .web_push import PUSH
 
@@ -442,6 +442,9 @@ class WebAdapter:
         # 通用文件附件同样只在「选择 → 发送」之间短暂保留；类型不做白名单。
         # id -> (bytes, filename, media_type, 存入时刻)
         self._pending_files: dict[str, tuple[bytes, str, str, float]] = {}
+        # 视频同理:体积最大,更不能走 /send 的 JSON+base64,只在「选择 → 发送」之间暂存。
+        # id -> (bytes, filename, media_type, 存入时刻)
+        self._pending_videos: dict[str, tuple[bytes, str, str, float]] = {}
         self._runner: web.AppRunner | None = None
         self._cancel_callback: Callable[[str], bool] | None = None
         self._cancel_and_wait_callback: Callable[[str], Awaitable[tuple[bool, bool]]] | None = None
@@ -632,6 +635,52 @@ class WebAdapter:
         session_store.set_pending_review(session_key, True)
         self._push_notify(
             title=config.PERSONA_NAME, body=caption or "[图片]", conv=str(chat_id),
+            kind="proactive", enabled=config.PUSH_ON_PROACTIVE,
+        )
+        return None
+
+    async def send_video(self, chat_id: int | str, src_path: Path, caption: str = "") -> str | None:
+        """把本地视频文件复制进 VIDEOS_DIR 并作为一条 assistant 气泡推给前端;返回错误信息(None=成功)。
+
+        跟 send_image 一条路子(mid_turn=True、落库、推送),只是格式白名单换成浏览器
+        <video> 真能播的那几种:mkv/avi 之流发出去只是个黑框,不如直接拒了让模型先转码。
+        """
+        if not src_path.is_file():
+            return f"文件不存在:{src_path}"
+        ext = src_path.suffix.lower().lstrip(".")
+        if ext not in session_store.VIDEO_EXTS:
+            return (
+                f"不支持的视频格式:{ext or '(无后缀)'};"
+                f"浏览器能直接播的是 {'/'.join(sorted(session_store.VIDEO_EXTS))},"
+                "其他格式请先用 ffmpeg 转成 mp4(H.264+AAC)再发。"
+            )
+        size = src_path.stat().st_size
+        if size > config.VIDEO_MAX_BYTES:
+            return (
+                f"视频 {size / 1024 / 1024:.0f}MB,超过 "
+                f"{config.VIDEO_MAX_BYTES // 1024 // 1024}MB 上限,请先压缩再发。"
+            )
+        config.VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+        # "ai_"前缀同图片:load_history 靠它把 AI 发的视频贴回 AI 气泡,不能改名
+        name = f"{session_store.AI_VIDEO_PREFIX}{uuid.uuid4().hex}.{ext}"
+        (config.VIDEOS_DIR / name).write_bytes(src_path.read_bytes())
+        self._emit({
+            "conv": str(chat_id), "type": "message", "text": caption,
+            "videos": [{
+                "url": f"/video?name={name}",
+                "filename": src_path.name,
+                "media_type": f"video/{ext}",
+            }],
+            "mid_turn": True,
+        })
+        session_key = config.resolve_session_key("web", str(chat_id))
+        # 落库进当前轮次:只推 SSE 不落库的话,刷新后这个视频会永久消失(同 send_image)
+        session_store.append_turn_video(session_key, {
+            "file": name, "filename": src_path.name, "media_type": f"video/{ext}",
+        })
+        session_store.set_pending_review(session_key, True)
+        self._push_notify(
+            title=config.PERSONA_NAME, body=caption or "[视频]", conv=str(chat_id),
             kind="proactive", enabled=config.PUSH_ON_PROACTIVE,
         )
         return None
@@ -843,17 +892,27 @@ class WebAdapter:
         for file_id in requested_file_ids:
             data, filename, media_type, _ts = self._pending_files.pop(file_id)
             files.append(FileAttachment(data=data, filename=filename, media_type=media_type))
-        if not text and not images and not audios and not files:
+        videos: list[VideoAttachment] = []
+        for v in body.get("videos") or []:
+            pending = self._pending_videos.pop(v.get("id") or "", None)
+            if pending is None:
+                continue  # id 不存在/已消费/已过期:静默跳过这条,别整条消息发不出去
+            data, filename, media_type, _ts = pending
+            videos.append(VideoAttachment(data=data, media_type=media_type, filename=filename))
+        if not text and not images and not audios and not files and not videos:
             return web.json_response({"error": "empty"}, status=400)
         if not text:
             if audios:
                 text = "(语音/音频,无文字说明,请解读转写内容)"
             elif files:
                 text = "(文件附件,无文字说明,请读取附件内容)"
+            elif videos:
+                # 不写"看看视频里是什么":模型看不了,写成那样只会诱导它假装看过
+                text = "(视频,无文字说明,先别自行分析内容,等我说要做什么)"
             else:
                 text = "(图片,无文字说明,看看图里是什么)"
         await self._ingest(
-            conv, text, images=images, audios=audios, files=files,
+            conv, text, images=images, audios=audios, files=files, videos=videos,
             client_request_id=client_request_id,
         )
         return web.json_response({"ok": True})
@@ -865,6 +924,7 @@ class WebAdapter:
         images: list[ImageAttachment] | None = None,
         audios: list[AudioAttachment] | None = None,
         files: list[FileAttachment] | None = None,
+        videos: list[VideoAttachment] | None = None,
         client_request_id: str = "",
     ) -> None:
         """把一条消息塞进指定会话的处理流水线——浏览器发送(_handle_send)和外部注入
@@ -873,6 +933,7 @@ class WebAdapter:
         images = images or []
         audios = audios or []
         files = files or []
+        videos = videos or []
         # 首条消息自动给会话起个名(命令 / 主会话除外):先落一个截断兜底标题,
         # 同时立刻异步起模型总结(不等 AI 首轮回复——那可能跑很久,侧边栏不能干等)
         if not is_command(text) and conv != "main":
@@ -892,11 +953,18 @@ class WebAdapter:
         if not is_command(text):
             img_urls = [f"data:{i.media_type};base64,{i.data}" for i in images]
             event = {"conv": conv, "type": "user", "text": text, "images": img_urls}
+            # 视频不跟图片一样内联 dataURL 广播(几十 MB 塞进 SSE 帧会把连接打爆),
+            # 只广播文件名占个位;真正的播放器等这一轮落库后由权威历史重绘补上。
+            if videos:
+                event["video_names"] = [v.filename for v in videos]
             if client_request_id:
                 event["client_request_id"] = client_request_id
             self._emit(event)
         self._inbox.put_nowait(
-            Incoming(self.platform, conv, text, images=images, audios=audios, files=files)
+            Incoming(
+                self.platform, conv, text,
+                images=images, audios=audios, files=files, videos=videos,
+            )
         )
 
     async def inject(self, conv: str, text: str) -> None:
@@ -1801,6 +1869,44 @@ class WebAdapter:
         self._pending_files[file_id] = (data, filename, media_type, time.monotonic())
         return web.json_response({"id": file_id, "filename": filename})
 
+    def _prune_pending_videos(self) -> None:
+        """清掉超过 1 小时没被 /send 消费的视频(体积大,留着白占内存)。"""
+        cutoff = time.monotonic() - 3600
+        for k in [k for k, v in self._pending_videos.items() if v[3] < cutoff]:
+            self._pending_videos.pop(k, None)
+
+    @_authed
+    async def _handle_upload_video(self, request: web.Request) -> web.Response:
+        """接收一个视频文件暂存,/send 时只带 id 引用(同音频那条链路,不走 base64)。"""
+        client_id = request.query.get("client_id", "")
+        if client_id and client_id in self._pending_videos:
+            _, filename, _, _ = self._pending_videos[client_id]
+            return web.json_response({"id": client_id, "filename": filename})
+
+        reader = await request.multipart()
+        part = await reader.next()
+        while part is not None and part.name != "video":
+            part = await reader.next()
+        if part is None or not part.filename:
+            return web.json_response({"error": "没收到视频"}, status=400)
+        data = await part.read(decode=False)
+        if not data:
+            return web.json_response({"error": "视频为空"}, status=400)
+        if len(data) > config.VIDEO_MAX_BYTES:
+            return web.json_response(
+                {"error": f"视频超过 {config.VIDEO_MAX_BYTES // 1024 // 1024}MB 上限"},
+                status=400,
+            )
+        filename = part.filename
+        # 浏览器对 mov/m4v 给的 Content-Type 常常为空:回落 video/mp4,真正决定
+        # 容器的是落盘时按文件名取的扩展名(见 memory/videos.py)
+        media_type = (part.headers.get("Content-Type", "").split(";", 1)[0].strip()
+                      or "video/mp4")
+        self._prune_pending_videos()
+        vid = client_id or uuid.uuid4().hex
+        self._pending_videos[vid] = (data, filename, media_type, time.monotonic())
+        return web.json_response({"id": vid, "filename": filename})
+
     @_authed
     async def _handle_check_upload(self, request: web.Request) -> web.Response:
         """轻量查询:前端上传大文件遭 Cloudflare 524 后,用 client_id 确认数据是否已到。"""
@@ -1813,12 +1919,29 @@ class WebAdapter:
         if client_id in self._pending_files:
             _, filename, _, _ = self._pending_files[client_id]
             return web.json_response({"id": client_id, "filename": filename})
+        if client_id in self._pending_videos:
+            _, filename, _, _ = self._pending_videos[client_id]
+            return web.json_response({"id": client_id, "filename": filename})
         return web.json_response({"error": "not found"}, status=404)
 
     @_authed
     async def _handle_audio(self, request: web.Request) -> web.StreamResponse:
         """回显某轮用户发的音频(落盘在 config.AUDIO_DIR);name 经白名单校验挡路径穿越。"""
         p = session_store.audio_path(request.query.get("name", ""))
+        if p is None:
+            return web.json_response({"error": "not found"}, status=404)
+        return web.FileResponse(p, headers={"Cache-Control": "max-age=31536000, immutable"})
+
+    @_authed
+    async def _handle_video(self, request: web.Request) -> web.StreamResponse:
+        """回放某轮视频(落盘在 config.VIDEOS_DIR);name 经白名单校验挡路径穿越。
+
+        鉴权只认 X-Auth-Token 请求头(见 web_auth.py,query token 一律不收),而
+        <video src> 带不了请求头 —— 所以前端跟图片/音频一样走 fetch→blob,而且是
+        【点了播放才拉】:视频动辄几十 MB,不能像缩略图那样进会话就预载一片。
+        代价是拿不到 Range 分段(整段下完才起播),这是不开 query token 的必然取舍。
+        """
+        p = session_store.video_path(request.query.get("name", ""))
         if p is None:
             return web.json_response({"error": "not found"}, status=404)
         return web.FileResponse(p, headers={"Cache-Control": "max-age=31536000, immutable"})
@@ -2706,9 +2829,10 @@ class WebAdapter:
     async def _start_server(self) -> None:
         self._preflight()
         app = web.Application(
-            # 图片走 JSON+base64(32MB 够用);音频走独立的 multipart /upload_audio,
-            # 上限对齐 config.AUDIO_MAX_BYTES(100MB),外加 multipart 边界等开销留一点余量
-            client_max_size=config.AUDIO_MAX_BYTES + 8 * 1024 * 1024,
+            # 图片走 JSON+base64(32MB 够用);音频/视频走独立的 multipart 上传端点,
+            # 上限对齐两者里更大的那个(各 100MB),外加 multipart 边界等开销留一点余量
+            client_max_size=max(config.AUDIO_MAX_BYTES, config.VIDEO_MAX_BYTES)
+            + 8 * 1024 * 1024,
             middlewares=[_security_mw],  # 跨源写拦截 + 安全响应头(2-9)
         )
         app.add_routes(
@@ -2795,9 +2919,11 @@ class WebAdapter:
                 web.post("/turn/regenerate", self._handle_turn_regenerate),
                 web.get("/image", self._handle_image),
                 web.get("/audio", self._handle_audio),
+                web.get("/video", self._handle_video),
                 web.post("/transcribe", self._handle_transcribe),
                 web.post("/upload_audio", self._handle_upload_audio),
                 web.post("/upload_file", self._handle_upload_file),
+                web.post("/upload_video", self._handle_upload_video),
                 web.get("/check_upload", self._handle_check_upload),
                 web.post("/conv/rename", self._handle_rename),
                 web.post("/conv/duplicate", self._handle_conv_duplicate),

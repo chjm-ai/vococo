@@ -184,6 +184,7 @@ class GatewayRunner:
                         await core.converse(
                             key, inc.text, model, adapter.make_sink(inc.chat_id),
                             images=inc.images, audios=inc.audios, files=inc.files,
+                            videos=inc.videos,
                             store_user=inc.store_text, cwd_override=cwd_override,
                             is_explicit_project_override=is_explicit_project_override,
                             compact=compact_flag,
