@@ -107,19 +107,50 @@ async function loadAuthedAudio(player, url){
   const o=await fetchCachedBlobUrl(url);
   if(o) player.src=o;
 }
-function buildBubble(who, text, imgs, auds){
+// 视频组渲染:历史视频走 /video?name=(要鉴权头,<video src> 带不了)→ 先显示一张
+// 「🎬 文件名 · 点击加载」的卡片,点了才 fetch 成 blob 再播。不像图片那样进会话就
+// 预载:一条几十 MB,自动拉几条就能把流量和内存吃光。实时发的是 blob:,直接塞 src。
+function appendVids(container, vids){
+  if(!vids || !vids.length) return;
+  const g=el("div","vids");
+  for(const v of vids){
+    const url=typeof v==="string" ? v : (v?.url||"");
+    if(!url) continue;
+    const row=el("div","videorow");
+    const name=(typeof v==="object" && v.filename) || "";
+    if(name){ const cap=el("div","videoname"); cap.textContent="🎬 "+name; row.append(cap); }
+    const player=el("video"); player.controls=true; player.preload="metadata"; player.playsInline=true;
+    if(url.startsWith("/")){
+      const load=el("button","videoload"); load.type="button";
+      load.textContent="▶ 点击加载视频";
+      load.onclick=async()=>{
+        load.disabled=true; load.textContent="加载中…";
+        const o=await fetchCachedBlobUrl(url);
+        if(!o){ load.disabled=false; load.textContent="⚠️ 加载失败,点击重试"; return; }
+        player.src=o; load.replaceWith(player); player.play().catch(()=>{});
+      };
+      row.append(load);
+    } else {
+      player.src=url; row.append(player);
+    }
+    g.append(row);
+  }
+  container.append(g);
+}
+function buildBubble(who, text, imgs, auds, vids){
   const row=el("div","row "+(who==="me"?"me":"ai"));
   const b=el("div","bubble");
   if(who==="me"){ b.textContent=text; } else { b.innerHTML = text?mdToHtml(text):""; }
   row.append(b);
   appendImgs(b, imgs);
   appendAuds(b, auds);
+  appendVids(b, vids);
   return {row, b};
 }
 // eph=true:这颗气泡的内容服务端也会落库,权威历史重绘后它就是多余的(见 tagConvNode)。
 // 纯前端提示(上传失败/发送失败/超限)不传 eph,它们不在历史里,清掉就再也回不来了。
-function addBubble(who, text, imgs, auds, eph){
-  const {row,b}=buildBubble(who, text, imgs, auds);
+function addBubble(who, text, imgs, auds, eph, vids){
+  const {row,b}=buildBubble(who, text, imgs, auds, vids);
   tagConvNode(row, null, eph);
   $("#wrap").append(row); updateEmpty(); scrollDown(true);
   return b;
@@ -428,7 +459,7 @@ function renderStatus(){
   S.stream.status.innerHTML = '<span class="chip live">'+label+DOTS+esc(tick)+'</span>'
     + '<button type="button" class="statusstop" title="停止回复" aria-label="停止回复"><span class="sq"></span></button>';
 }
-function finalizeStream(finalText, imgs, turnId){
+function finalizeStream(finalText, imgs, turnId, vids){
   if(!S.stream) return;
   // 末尾那条普通命令以前等不到下一段正文/命令,会永久散落在过程区;收工时也要归组。
   if(S.stream.activeCard){ foldToGroup(S.stream, S.stream.activeCard); S.stream.activeCard=null; }
@@ -443,6 +474,7 @@ function finalizeStream(finalText, imgs, turnId){
     for(const k in S.stream.segs){ const d=S.stream.segs[k]; d.innerHTML=mdToHtml(d.dataset.raw); }
   }
   appendImgs(S.stream.bubble, imgs);
+  appendVids(S.stream.bubble, vids);
   // 刚说完就地挂时间/复制/重新生成——不用等用户切走再切回、走 /history 重绘才补出来。
   // turnId 只有 done 事件(常规对话轮)才带,命令回复/cron 推送(message 事件)没有,
   // 此时不挂重新生成按钮(见 buildTurnFoot)。ts 用本地时间近似,跟服务端落库时刻
@@ -599,8 +631,8 @@ function handleEvent(e){
       }else{ setRateStatus("ok","",""); }
       setMeta(e); loadConvs(); flushPending(e.conv); break; }
     case "message": // 命令回复 / 报错 / cron 推送(AI 主动发图走 mid_turn 分支,不会到这里)
-      if(S.stream && !streamText(S.stream)){ finalizeStream(e.text, e.images); }
-      else { S.stream=null; addBubble("ai", e.text, e.images, null, true); }
+      if(S.stream && !streamText(S.stream)){ finalizeStream(e.text, e.images, undefined, e.videos); }
+      else { S.stream=null; addBubble("ai", e.text, e.images, null, true, e.videos); }
       // 后端推送的报错也更新侧栏状态
       if(e.text&&e.text.includes("⚠️")){
         const el2=e.text.toLowerCase();
@@ -670,7 +702,9 @@ function applyStreamEvent(e){
       if(S.localSent[e.conv]){ delete S.localSent[e.conv]; break; }  // 本客户端发的,气泡已在 send() 里加了
       // 无活跃流式气泡 = 不是本轮发送 → 历史已渲染过该消息,跳过避免重复
       if(!S.stream) break;
-      addBubble("me", e.text, e.images, null, true); break;
+      // 其他客户端发的视频不内联广播(太大),只带文件名占位;真正的播放器等这一轮
+      // 落库后由权威历史重绘补上(见后端 _ingest 的 video_names)
+      addBubble("me", e.text + ((e.video_names||[]).length ? "\n\n🎬 "+e.video_names.join("、") : ""), e.images, null, true); break;
     case "start":
       if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }
       if(S.stream) S.stream.audioPending = false;  // 转写完成,状态行恢复正常文案
@@ -705,10 +739,11 @@ function applyStreamEvent(e){
     case "compact": { const s=ensureStream();
       const d=el("div","compactline"); d.textContent=e.trigger==="manual"?"已手动压缩上下文,对话继续":"上下文已自动压缩,对话继续";
       s.flow.append(d); scrollDown(); break; }
-    case "message": { // mid_turn 图片消息(send_image 工具),只在本轮回复过程中途出现
+    case "message": { // mid_turn 图片/视频消息(send_image / send_video),本轮回复过程中途出现
       const s=ensureStream();
       if(e.text){ const d=el("div","seg"); d.innerHTML=mdToHtml(e.text); s.flow.append(d); }
       appendImgs(s.flow, e.images);
+      appendVids(s.flow, e.videos);
       renderStatus(); scrollDown(); break; }
   }
 }

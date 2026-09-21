@@ -98,13 +98,17 @@ async function send(text, display, opts){
   const uploads=[...sendAudios,...sendFiles];
   const imgs=sendImages.map(x=>x.url);
   const auds=sendAudios.map(x=>({url:x.url, filename:x.filename, text:x.text}));
-  const files=sendFiles.map(x=>x.filename);
+  // 视频混在 sendFiles 里(见 addVideoFile 的说明):这里拆开——普通附件只在文本里
+  // 报个文件名,视频要在气泡内直接给播放器(用本地 blob URL,不必等上传完)
+  const files=sendFiles.filter(x=>x.kind!=="video").map(x=>x.filename);
+  const vids=sendFiles.filter(x=>x.kind==="video")
+    .map(x=>({url:x.url, filename:x.filename, media_type:x.mediaType}));
   const shown=(display!=null)?display:text;
   const fileLabel=files.length ? `\n\n📎 附件：${files.join("、")}` : "";
   let meRow=null;
-  if(!opts.reuseBubble && isCurrent() && (shown || imgs.length || auds.length || files.length)){
-    const fallback=auds.length ? "(语音/音频)" : files.length ? "(文件附件)" : "(图片)";
-    const b=addBubble("me", (shown||fallback)+fileLabel, imgs, auds, true);
+  if(!opts.reuseBubble && isCurrent() && (shown || imgs.length || auds.length || files.length || vids.length)){
+    const fallback=auds.length ? "(语音/音频)" : vids.length ? "(视频)" : files.length ? "(文件附件)" : "(图片)";
+    const b=addBubble("me", (shown||fallback)+fileLabel, imgs, auds, true, vids);
     meRow=b.closest(".row");
     if(uploads.some(item=>!item.id) || auds.some(a=>!a.text)){
       S.audioLoading = el("span","aspin");
@@ -171,7 +175,8 @@ async function send(text, display, opts){
     conv:sendConv, text,
     images:sendImages.map(x=>({data:x.data,media_type:x.media_type})),
     audios:sendAudios.map(x=>({id:x.id})),
-    files:sendFiles.map(x=>({id:x.id})),
+    files:sendFiles.filter(x=>x.kind!=="video").map(x=>({id:x.id})),
+    videos:sendFiles.filter(x=>x.kind==="video").map(x=>({id:x.id})),
     client_request_id:clientRequestId,
   };
   // 新会话:发出第一条后,把本地临时会话转正。转正不能依赖当前仍停在哪个会话,
@@ -371,7 +376,8 @@ function flushPending(conv){
     conv, text:item.text,
     images:(item.images||[]).map(x=>({data:x.data,media_type:x.media_type})),
     audios:(item.audios||[]).map(x=>({id:x.id})),
-    files:(item.files||[]).map(x=>({id:x.id})),
+    files:(item.files||[]).filter(x=>x.kind!=="video").map(x=>({id:x.id})),
+    videos:(item.files||[]).filter(x=>x.kind==="video").map(x=>({id:x.id})),
   };
   api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(loadConvs).catch(()=>{});
 }
@@ -478,12 +484,13 @@ function isSupportedFile(f){
 function rejectUnsupportedFile(f){
   const name=f?.name||"未命名文件";
   const ext=fileExtension(name);
-  addBubble("ai", `⚠️ 暂不支持文件「${name}」${ext ? `（.${ext}）` : ""}，请上传图片、音频或常见文本/文档格式。`);
+  addBubble("ai", `⚠️ 暂不支持文件「${name}」${ext ? `（.${ext}）` : ""}，请上传图片、音频、视频或常见文本/文档格式。`);
 }
 function handleAttachmentFiles(files){
   for(const f of Array.from(files||[])){
     const type=String(f.type||"").toLowerCase();
     if(type.startsWith("image/")) addImageFile(f);
+    else if(isVideoFile(f)) addVideoFile(f);
     else if(isAudioFile(f)) addAudioFile(f);
     else if(isSupportedFile(f)) addFile(f);
     else rejectUnsupportedFile(f);
@@ -533,9 +540,10 @@ function renderThumbs(){
   S.files.forEach((file,idx)=>{
     const w=el("div","t filechip "+(file.status||"done"));
     const label=el("span","flabel");
-    label.textContent = file.status==="uploading" ? `📎 ${file.filename} · 上传中…`
-      : file.status==="error" ? `📎 ${file.filename} · 上传失败`
-      : `📎 ${file.filename}`;
+    const icon = file.kind==="video" ? "🎬" : "📎";
+    label.textContent = file.status==="uploading" ? `${icon} ${file.filename} · 上传中…`
+      : file.status==="error" ? `${icon} ${file.filename} · 上传失败`
+      : `${icon} ${file.filename}`;
     if(file.status==="error" && file.error) label.title=file.error;
     const x=el("button","x"); x.textContent="×";
     x.onclick=()=>{ S.files.splice(idx,1); renderThumbs(); };
@@ -631,6 +639,60 @@ function uploadFile(f,item){
       const ac=new AbortController();
       const timer=setTimeout(()=>ac.abort(),uploadTimeoutMs(f.size));
       let r=await api("/upload_file?client_id="+clientId,{method:"POST",body:form,signal:ac.signal});
+      clearTimeout(timer);
+      let d;
+      if(r.ok){
+        try{ d=await r.json(); }catch(e){ d=null; }
+      }
+      if(!d || d.error){
+        if(r.status>=400 && r.status<500 && r.status!==408){
+          let msg; try{ msg=(await r.json()).error; }catch(e){}
+          const err=new Error(msg || ("HTTP "+r.status)); err.fatal=true; throw err;
+        }
+        d = await confirmUpload(clientId);
+        if(!d || d.error){ const err=new Error("HTTP "+r.status); err.fatal=true; throw err; }
+      }
+      item.id=d.id; item.status="done";
+    }catch(e){
+      const d = e.fatal ? null : await confirmUpload(clientId);
+      if(d && !d.error){ item.id=d.id; item.status="done"; }
+      else { item.status="error"; item.error=e.name==="AbortError" ? "上传超时，请重试" : e.message; }
+    }
+    renderThumbs();
+  })();
+}
+
+// ── 视频 ──────────────────────────────────────────────────────────────────
+// 视频复用 S.files 这条队列(上传/失败重试/切会话保存/排队 全套逻辑已经在那儿了),
+// 只用 kind:"video" 打个标:上传走 /upload_video、发送时拆进 payload.videos、
+// 气泡里渲染成播放器而不是 📎 文字。单开一个 S.videos 数组要把十几处状态迁移
+// 全抄一遍,徒增走样的机会。
+const VIDEO_MAX_BYTES = 100*1024*1024;
+const VIDEO_EXTENSIONS = new Set(["mp4","mov","m4v","webm","ogv"]);
+function isVideoFile(f){
+  const type=String(f?.type||"").toLowerCase();
+  if(type.startsWith("audio/")) return false;  // audio/webm 别被下面的扩展名兜底抢走
+  // 浏览器给 mov/m4v 的 type 常常为空,按扩展名兜底(同 isAudioFile 的道理)
+  return type.startsWith("video/") || VIDEO_EXTENSIONS.has(fileExtension(f?.name));
+}
+function addVideoFile(f){
+  if(!f) return;
+  if(f.size > VIDEO_MAX_BYTES){ addBubble("ai", `⚠️ 视频"${f.name}"超过 100MB 上限，没有上传。`); return; }
+  const item={
+    id:null, kind:"video", filename:f.name||"视频",
+    mediaType:f.type||"video/mp4", url:URL.createObjectURL(f), status:"uploading",
+  };
+  S.files.push(item); renderThumbs();
+  uploadVideo(f,item);
+}
+function uploadVideo(f,item){
+  const clientId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)+Date.now().toString(36);
+  item.done=(async()=>{
+    try{
+      const form=new FormData(); form.append("video",f,item.filename);
+      const ac=new AbortController();
+      const timer=setTimeout(()=>ac.abort(),uploadTimeoutMs(f.size));
+      let r=await api("/upload_video?client_id="+clientId,{method:"POST",body:form,signal:ac.signal});
       clearTimeout(timer);
       let d;
       if(r.ok){

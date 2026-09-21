@@ -156,6 +156,11 @@ def conn() -> sqlite3.Connection:
         # 正文只在当前轮喂给模型;刷新后仍需把文件名还原到用户气泡。
         if "files" not in tcols:
             _DB.execute("ALTER TABLE turns ADD COLUMN files TEXT")
+        # videos: 该轮的视频,JSON 列表 [{"file":落盘名,"filename":原始文件名,"media_type":MIME}]。
+        # 本体落盘在 config.VIDEOS_DIR;视频没有多模态 block 可用,模型侧只拿到路径
+        # (见 memory/videos.py),这一列纯粹是为了刷新后历史气泡里还能播。
+        if "videos" not in tcols:
+            _DB.execute("ALTER TABLE turns ADD COLUMN videos TEXT")
         # sort_order: 侧边栏项目分组的手动拖拽顺序(升序);老库里全是 NULL,
         # 用 -last_used 补一次初值,让升级后的默认顺序等价于原来的"最近使用在前"。
         pcols = {r[1] for r in _DB.execute("PRAGMA table_info(projects)")}

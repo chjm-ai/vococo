@@ -51,7 +51,7 @@ gateway/               平台内核(命令注册表 / converse / 会话路由)
   ├─ settings_store.py   设置页存储(供应商/模型/skill/MCP/effort)
   └─ stats.py            运行数据面板:日志增量 ETL(stats.db)+ 用量/花费/会话聚合
 cron/                  cron / interval / once 调度 + 自动化建议(consent-first)
-memory/                SQLite 会话库(state.db)+ 检索 + 图片/音频附件
+memory/                SQLite 会话库(state.db)+ 检索 + 图片/音频/视频附件
 tools/                 内置 MCP server(记忆/定时/发消息/自我重启…)
                        + danger.py(灾难拦截 + 审批闸 PreToolUse hook)
 tui/                   rich/prompt_toolkit 流式 TUI(工具过程 + Markdown)

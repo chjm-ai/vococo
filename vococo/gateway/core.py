@@ -24,6 +24,7 @@ from ..core.agent import (
     ToolFinished,
     ToolInput,
     ToolStarted,
+    VideoAttachment,
     context_window,
     stream_turn,
 )
@@ -179,6 +180,7 @@ async def converse(
     images: list[ImageAttachment] | None = None,
     audios: list[AudioAttachment] | None = None,
     files: list[FileAttachment] | None = None,
+    videos: list[VideoAttachment] | None = None,
     store_user: str | None = None,
     cwd_override: str | None = None,
     is_explicit_project_override: bool | None = None,
@@ -246,6 +248,26 @@ async def converse(
             user_text += f"\n转写文字稿:\n{au.transcript}"
     if files:
         session_store.save_turn_files(turn_id, files)
+    # 视频落盘 + 元信息入库。喂模型的只有【路径 + 元信息】,视频本体一个字节都不进
+    # 请求体:协议没有 video block,几十 MB base64 塞进去不是被拒就是烧穿窗口
+    # (见 core/agent.py VideoAttachment)。要看内容,模型自己 ffmpeg 抽帧再 Read。
+    if videos:
+        session_store.save_turn_videos(turn_id, videos)
+        for vi in videos:
+            user_text += f"\n\n[视频附件:{vi.filename}]"
+            local = getattr(vi, "local_path", "")
+            if local:
+                from pathlib import Path
+
+                meta = session_store.video_probe_meta(Path(local))
+                if meta:
+                    user_text += f"\n{meta}"
+                user_text += (
+                    f"\n本机文件:{local}"
+                    "\n(模型无法直接观看视频。需要了解画面内容就用 ffmpeg 按需抽帧"
+                    "到临时目录再 Read 那几张图;需要听内容就抽出音轨再转写。"
+                    "用户没要求分析内容时不必自作主张跑这些。)"
+                )
     # 上一轮的 SDK 会话 id:非空则本轮用 resume 让 SDK 重放真·多轮历史,不再拼历史大文本
     resume_sid = session_store.get_sdk_session_id(session_key)
     # 运行中的 SDK transcript 不会在发送前自动压缩。若上轮已测得上下文逼近当前

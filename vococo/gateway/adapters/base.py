@@ -5,7 +5,12 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator, Protocol
 
 from ... import config
-from ...core.agent import AudioAttachment, FileAttachment, ImageAttachment
+from ...core.agent import (
+    AudioAttachment,
+    FileAttachment,
+    ImageAttachment,
+    VideoAttachment,
+)
 from ..core import Choice, Sink
 
 
@@ -19,6 +24,7 @@ class Incoming:
     images: list[ImageAttachment] = field(default_factory=list)
     audios: list[AudioAttachment] = field(default_factory=list)
     files: list[FileAttachment] = field(default_factory=list)
+    videos: list[VideoAttachment] = field(default_factory=list)
     # 入库替代文本:系统注入的消息(如自我重启还魂)用它,让长指令不当用户话显示/存库
     store_text: str | None = None
 

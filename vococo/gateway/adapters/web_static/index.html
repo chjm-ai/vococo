@@ -1217,7 +1217,7 @@ function buildTurnBlock(t, conv, isLast){
   else {
     const fileNames=(t.files||[]).map(f=>typeof f==="string"?f:(f.name||f.filename||"")).filter(Boolean);
     const fileLabel=fileNames.length ? `\n\n📎 附件：${fileNames.join("、")}` : "";
-    wrap.append(buildBubble("me", t.user+fileLabel, t.images, t.audios).row);
+    wrap.append(buildBubble("me", t.user+fileLabel, t.images, t.audios, t.videos).row);
   }
   if(!t.pending){
     const {row,b}=buildBubble("ai","");
@@ -1232,6 +1232,8 @@ function buildTurnBlock(t, conv, isLast){
     // AI 主动发的图(send_image)不进 events 时间线,单独存在 t.ai_images——
     // 不贴回来的话,历史/刷新后这张图就只剩折叠指令卡里的文件名文字,看不到图。
     appendImgs(b, t.ai_images);
+    // AI 主动发的视频(send_video)同理,单独存在 t.ai_videos
+    appendVids(b, t.ai_videos);
     b.append(buildTurnFoot(conv, t.id, t.assistant, t.ts, isLast, interrupted));
     wrap.append(row);
   }else if(t.draft){
@@ -1263,6 +1265,7 @@ function turnSig(t, isLast){
           t.pending?1:0, ev.length, last?last.type+":"+JSON.stringify(last).length:"",
           (t.images||[]).length, (t.audios||[]).length, (t.ai_images||[]).length,
           (t.files||[]).length, (t.files||[]).map(f=>f.name||f.filename||f).join(","),
+          (t.videos||[]).length, (t.ai_videos||[]).length,
           isLast?"L":""].join("|");
 }
 let _wrapConv=null;

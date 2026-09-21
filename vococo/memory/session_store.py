@@ -50,6 +50,16 @@ from .projects import (  # noqa: F401 (re-export)
     upsert_project,
 )
 from .search import search, search_sessions  # noqa: F401 (re-export)
+from .videos import (  # noqa: F401 (re-export)
+    AI_VIDEO_PREFIX,
+    VIDEO_EXTS,
+    append_turn_video,
+    clone_turn_videos,
+    probe_meta as video_probe_meta,
+    purge_session_videos,
+    save_turn_videos,
+    video_path,
+)
 from .worktrees import (  # noqa: F401 (re-export)
     all_worktree_paths,
     clear_worktree,
@@ -178,12 +188,13 @@ def load_history(
         params.append(before_id)
     params.append(limit)
     rows = c.execute(
-        "SELECT id, ts, user_text, assistant_text, events, draft_text, images, audios, files FROM turns "
+        "SELECT id, ts, user_text, assistant_text, events, draft_text, images, audios, files, videos "
+        "FROM turns "
         f"{where} ORDER BY id DESC LIMIT ?",
         params,
     ).fetchall()
     out: list[dict] = []
-    for tid, ts, u, a, ev, draft, imgs, auds, files in reversed(rows):
+    for tid, ts, u, a, ev, draft, imgs, auds, files, vids in reversed(rows):
         try:
             events = json.loads(ev) if ev else []
         except (json.JSONDecodeError, ValueError):
@@ -235,6 +246,26 @@ def load_history(
                 for e in file_entries
                 if isinstance(e, dict) and (e.get("name") or e.get("filename"))
             ]
+        # 视频:库里存 [{file,filename,media_type}],换成取流 URL;同图片那样按
+        # "ai_"前缀拆成用户气泡的 videos 和 AI 气泡的 ai_videos
+        try:
+            video_entries = json.loads(vids) if vids else []
+        except (json.JSONDecodeError, ValueError):
+            video_entries = []
+        user_vids, ai_vids = [], []
+        for e in video_entries:
+            if not isinstance(e, dict) or not e.get("file"):
+                continue
+            item = {
+                "url": "/video?name=" + e["file"],
+                "filename": str(e.get("filename") or ""),
+                "media_type": str(e.get("media_type") or ""),
+            }
+            (ai_vids if e["file"].startswith(AI_VIDEO_PREFIX) else user_vids).append(item)
+        if user_vids:
+            entry["videos"] = user_vids
+        if ai_vids:
+            entry["ai_videos"] = ai_vids
         out.append(entry)
     return out
 
@@ -536,6 +567,7 @@ def clear(session_key: str) -> None:
     purge_session_images(c, session_key)  # 先清图片文件,再删轮次
     purge_session_audio(c, session_key)  # 音频同理
     purge_session_files(c, session_key)  # 通用附件同理
+    purge_session_videos(c, session_key)  # 视频同理(体积最大,更不能留孤儿)
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute(
         "UPDATE session_meta SET ctx_tokens=0, total_tokens=0, "
@@ -566,12 +598,12 @@ def duplicate_session(src_key: str, dst_key: str, title: str) -> None:
     """
     c = _conn()
     rows = c.execute(
-        "SELECT user_text, assistant_text, draft_text, events, images, audios, files "
+        "SELECT user_text, assistant_text, draft_text, events, images, audios, files, videos "
         "FROM turns WHERE session_key=? ORDER BY id",
         (src_key,),
     ).fetchall()
     now = time.time()
-    for user_text, assistant_text, draft, events, imgs, auds, fs in rows:
+    for user_text, assistant_text, draft, events, imgs, auds, fs, vids in rows:
         cur = c.execute(
             "INSERT INTO turns(session_key, ts, user_text, assistant_text, "
             "draft_text, events) VALUES (?,?,?,?,?,?)",
@@ -582,13 +614,15 @@ def duplicate_session(src_key: str, dst_key: str, title: str) -> None:
         new_imgs = clone_turn_images(new_id, _loads_list(imgs))
         new_auds = clone_turn_audio(new_id, _loads_list(auds))
         new_files = clone_turn_files(new_id, _loads_list(fs))
-        if new_imgs or new_auds or new_files:
+        new_vids = clone_turn_videos(new_id, _loads_list(vids))
+        if new_imgs or new_auds or new_files or new_vids:
             c.execute(
-                "UPDATE turns SET images=?, audios=?, files=? WHERE id=?",
+                "UPDATE turns SET images=?, audios=?, files=?, videos=? WHERE id=?",
                 (
                     json.dumps(new_imgs, ensure_ascii=False) if new_imgs else None,
                     json.dumps(new_auds, ensure_ascii=False) if new_auds else None,
                     json.dumps(new_files, ensure_ascii=False) if new_files else None,
+                    json.dumps(new_vids, ensure_ascii=False) if new_vids else None,
                     new_id,
                 ),
             )
@@ -874,6 +908,7 @@ def delete_session(session_key: str) -> None:
     purge_session_images(c, session_key)  # 先清图片文件,再删轮次
     purge_session_audio(c, session_key)  # 音频同理
     purge_session_files(c, session_key)  # 通用附件同理
+    purge_session_videos(c, session_key)  # 视频同理(体积最大,更不能留孤儿)
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute("DELETE FROM session_meta WHERE session_key=?", (session_key,))
     c.commit()

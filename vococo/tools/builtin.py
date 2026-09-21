@@ -965,6 +965,39 @@ async def send_image(args: dict) -> dict:
     return _ok(err or "已发送到当前聊天。")
 
 @tool(
+    "send_video",
+    "把一个本地视频文件发送到当前 Web 聊天里、直接内嵌播放器显示。仅 Web 端支持。"
+    "只收浏览器能直接播的格式(mp4/mov/m4v/webm/ogv),mkv/avi 等请先用 ffmpeg 转成 "
+    "mp4(H.264+AAC)再发;单个不超过 100MB,过大先压缩。"
+    "path:本地视频文件的绝对路径;caption:可选,作为说明文字一并显示。",
+    {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "caption": {"type": "string"},
+        },
+        "required": ["path"],
+    },
+)
+async def send_video(args: dict) -> dict:
+    from pathlib import Path
+
+    from ..gateway import clarify
+    from ..gateway.adapters.web import WebAdapter
+
+    path = (args.get("path") or "").strip()
+    caption = (args.get("caption") or "").strip()
+    if not path:
+        return _ok("send_video 需要非空 path。")
+    video_path = Path(path).expanduser().resolve()
+    ctx = clarify.current()
+    if ctx is None or not isinstance(ctx.adapter, WebAdapter):
+        return _ok("当前渠道不支持发送视频(仅 Web 端支持)。")
+    err = await ctx.adapter.send_video(ctx.chat_id, video_path, caption)
+    return _ok(err or "已发送到当前聊天。")
+
+
+@tool(
     "generate_image",
     "根据文字描述生成一张图片(走 codex-gpt 供应商的 gpt-image 模型),保存到本地,"
     "并自动发到当前 Web 聊天显示(非 Web 渠道只保存,返回路径)。Web 渠道生成成功后图片"
@@ -1418,6 +1451,7 @@ def build_mcp_servers() -> dict:
                 ask_user,
                 send_message,
                 send_image,
+                send_video,
                 generate_image,
                 dispatch_session,
                 restart_self,

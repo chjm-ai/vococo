@@ -240,6 +240,23 @@ class AudioAttachment:
     local_path: str = ""  # 落盘后供模型直接读取/处理的受控本机路径
 
 
+@dataclass
+class VideoAttachment:
+    """一段用户上传的视频。
+
+    处境跟音频一样、比音频更极端:协议层没有 video content block,而且视频动辄几十
+    MB,哪怕有 block 也不能整段塞进请求体。所以本类【不进任何 content block】——
+    落盘后只把 local_path(和体积等元信息)写进用户消息文本,模型想"看懂"内容就自己
+    用 ffmpeg 抽帧再 Read 那几张图,想听就抽音轨走 ASR。这是目前唯一能把成本控制住
+    又不骗模型"我看过了"的做法。
+    """
+
+    data: bytes  # 原始字节(multipart 上传)
+    media_type: str  # 如 video/mp4
+    filename: str
+    local_path: str = ""  # 落盘后供模型抽帧/转码的受控本机路径
+
+
 # 各模型上下文窗口(token)。前缀匹配,未知默认 200k。
 # Opus 4.x/Sonnet 5/Fable 5 官方已标配 1M input;Sonnet 4.6/Haiku 4.5 仍为 200k。
 # kimi-k3(2026-07-16 发布)官方标称 1M context,故一并登记;其余第三方供应商模型走默认 200k。
