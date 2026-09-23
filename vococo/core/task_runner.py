@@ -355,7 +355,7 @@ def dispatch(
 
     dispatch_platform/dispatch_chat_id: 任务是从哪个平台哪个会话派来的,
     终态通知时靠它们回推该发给谁(见 voice/notify.py)。
-    model:指定要用哪个模型跑这个任务(如 claude-opus-5),不传就用当前全局默认——
+    model:指定要用哪个模型跑这个任务(如 claude-opus-5-5),不传就用当前全局默认——
     必须在 _maybe_start_next() 真正起跑前写进 session_meta.chosen_model,
     _run()/_drive() 才能读到(见 _drive 里的 get_chosen_model)。
     origin/task_id 透传给 tasks.create()(见其文档:cron 复用 job_id 当 task_id)。
