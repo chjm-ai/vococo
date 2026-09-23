@@ -338,8 +338,8 @@ def test_set_chosen_model_first_time_does_not_fail(isolated):
     """首次为会话设置模型(无旧 chosen_model)也能正常落库。"""
     from vococo.memory import session_store
 
-    session_store.set_chosen_model("web:new", "claude-opus-5")
-    assert session_store.get_chosen_model("web:new") == "claude-opus-5"
+    session_store.set_chosen_model("web:new", "claude-opus-5-5")
+    assert session_store.get_chosen_model("web:new") == "claude-opus-5-5"
 
 
 def test_append_turn_image_persists_to_current_turn(isolated):

@@ -36,7 +36,7 @@ from .. import config
 # DeepSeek/OpenAI/Kimi 都没有独立的"写缓存"加价,cache_w 按未命中输入价填。
 # 官方价随时会变,以后要改不用动代码:在 data/model_prices.json 写 {"模型名":[in,out,cache_w,cache_r]}。
 _DEFAULT_PRICES: dict[str, tuple[float, float, float, float]] = {
-    "claude-opus-5": (5, 25, 6.25, 0.5),
+    "claude-opus-5-5": (4, 20, 5, 0.4),
     "claude-opus-5": (5, 25, 6.25, 0.5),
     "claude-opus-4-8": (5, 25, 6.25, 0.5),
     "claude-opus-4-6": (5, 25, 6.25, 0.5),

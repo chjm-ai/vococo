@@ -271,7 +271,7 @@ class VideoAttachment:
 # 必须按真实链路估算，否则自动压缩永远来不及触发。
 _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-fable-5-1": 1_000_000,
-    "claude-opus-5": 1_000_000,
+    "claude-opus-5-5": 1_000_000,
     "claude-opus-4-6": 1_000_000,
     "claude-sonnet-5": 1_000_000,
     "claude-haiku-4-5": 200_000,
