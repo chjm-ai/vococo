@@ -21,8 +21,8 @@ def _point_settings_to(monkeypatch, tmp_path: Path) -> None:
 # ── 基础 resolve / load_active / has_active_third_party ──────────────
 def test_resolve_default_model_when_no_providers(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
-    model, env = providers.resolve(None, "claude-sonnet")
-    assert model == "claude-sonnet"
+    model, env = providers.resolve(None, "claude-sonnet-5")
+    assert model == "claude-sonnet-5"
     assert env == {}
 
 
@@ -31,8 +31,8 @@ def test_resolve_explicit_official_model_no_env(tmp_path, monkeypatch):
     settings_store.upsert_web_provider(
         "deepseek", {"base_url": "https://api.deepseek.com", "model": "deepseek-chat", "api_key": "sk-xxx"}
     )
-    model, env = providers.resolve("claude-opus", "claude-sonnet")
-    assert model == "claude-opus"
+    model, env = providers.resolve("claude-opus-5-5", "claude-sonnet-5")
+    assert model == "claude-opus-5-5"
     assert env == {}
 
 
@@ -41,7 +41,7 @@ def test_resolve_explicit_third_party_model_injects_env(tmp_path, monkeypatch):
     settings_store.upsert_web_provider(
         "deepseek", {"base_url": "https://api.deepseek.com/anthropic", "model": "deepseek-chat", "api_key": "sk-xxx"}
     )
-    model, env = providers.resolve("deepseek-chat", "claude-sonnet")
+    model, env = providers.resolve("deepseek-chat", "claude-sonnet-5")
     assert model == "deepseek-chat"
     assert env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
     assert env["ANTHROPIC_API_KEY"] == "sk-xxx"
@@ -79,7 +79,7 @@ def test_has_active_third_party_false_when_no_key(tmp_path, monkeypatch):
 def test_has_active_third_party_false_when_official_host(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
     settings_store.upsert_web_provider(
-        "claude", {"base_url": "https://api.anthropic.com", "model": "claude-sonnet", "api_key": "sk-xxx"}
+        "claude", {"base_url": "https://api.anthropic.com", "model": "claude-sonnet-5", "api_key": "sk-xxx"}
     )
     assert providers.has_active_third_party() is False
 
@@ -90,11 +90,11 @@ def test_available_models_lists_builtin_and_web_providers(tmp_path, monkeypatch)
     settings_store.upsert_web_provider(
         "deepseek", {"base_url": "https://api.deepseek.com/anthropic", "model": "deepseek-chat", "api_key": "sk-xxx"}
     )
-    defaults = [("claude-opus", "Opus"), ("claude-sonnet", "Sonnet")]
+    defaults = [("claude-opus-5-5", "Opus 5.5"), ("claude-sonnet-5", "Sonnet 5")]
     out = providers.available_models(defaults)
     by_id = {mid: (label, group) for mid, label, group in out}
     ids = list(by_id)
-    assert ids[:2] == ["claude-opus", "claude-sonnet"]  # 官方档在前
+    assert ids[:2] == ["claude-opus-5-5", "claude-sonnet-5"]  # 官方档在前
     assert by_id["deepseek-chat"] == ("deepseek-chat（API）", "api")
 
 
@@ -121,11 +121,11 @@ def test_available_models_hides_kimi_subscription_but_lists_it_for_settings(tmp_
 
 def test_available_models_includes_web_extra_model(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
-    settings_store.upsert_web_extra_model("claude-opus", "Opus（订阅）")
-    defaults = [("claude-sonnet", "Sonnet（订阅）")]
+    settings_store.upsert_web_extra_model("claude-opus-5-5", "Opus 5.5（订阅）")
+    defaults = [("claude-sonnet-5", "Sonnet 5（订阅）")]
     out = providers.available_models(defaults)
     by_id = {mid: (label, group) for mid, label, group in out}
-    assert by_id["claude-opus"] == ("Opus（订阅）", "anthropic")
+    assert by_id["claude-opus-5-5"] == ("Opus 5.5（订阅）", "anthropic")
 
 
 def test_extra_model_reuses_declared_provider(tmp_path, monkeypatch):
@@ -149,7 +149,7 @@ def test_extra_model_reuses_declared_provider(tmp_path, monkeypatch):
     assert by_id["gpt-5.6-luna"] == ("GPT-5.6 Luna（订阅）", "codex")
 
     for model in ("gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"):
-        resolved, env = providers.resolve(model, "claude-sonnet")
+        resolved, env = providers.resolve(model, "claude-sonnet-5")
         assert resolved == model
         assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8317"
         assert env["ANTHROPIC_VISION_CAPABLE"] == "1"
@@ -169,7 +169,7 @@ def test_gpt6_astra_is_available_through_configured_codex_proxy(tmp_path, monkey
 
     by_id = {mid: (label, group) for mid, label, group in providers.available_models([])}
     assert by_id["gpt-6-astra"] == ("GPT-6 Astra（订阅）", "codex")
-    assert providers.resolve("gpt-6-astra", "claude-sonnet") == (
+    assert providers.resolve("gpt-6-astra", "claude-sonnet-5") == (
         "gpt-6-astra", {
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:8317",
             "ANTHROPIC_API_KEY": "sk-proxy",
@@ -213,7 +213,7 @@ def test_effort_choices_follow_model_provider_capability(tmp_path, monkeypatch):
     assert providers.effort_levels_for_model("gpt-5.6-sol") == (
         "low", "medium", "high", "xhigh", "max"
     )
-    assert providers.effort_choices_for_model("claude-sonnet") == (
+    assert providers.effort_choices_for_model("claude-sonnet-5") == (
         ("low", "low"), ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh"), ("max", "max"),
     )
     # DeepSeek 实测支持完整六档 + 关思考开关;其它第三方兼容端点没验过,不跟着加
@@ -240,20 +240,20 @@ def test_available_models_hides_extra_when_declared_provider_missing(tmp_path, m
 
 def test_available_models_dedups_web_extra_model_against_defaults(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
-    settings_store.upsert_web_extra_model("claude-sonnet", "重复")
-    defaults = [("claude-sonnet", "Sonnet（订阅）")]
+    settings_store.upsert_web_extra_model("claude-sonnet-5", "重复")
+    defaults = [("claude-sonnet-5", "Sonnet 5（订阅）")]
     out = providers.available_models(defaults)
-    assert [mid for mid, _, _ in out].count("claude-sonnet") == 1
+    assert [mid for mid, _, _ in out].count("claude-sonnet-5") == 1
 
 
 def test_available_models_hides_disabled_builtin(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
     settings_store.set_builtin_model_disabled("claude-opus-4-6", True)
-    defaults = [("claude-opus-4-6", "Opus 4.6"), ("claude-sonnet", "Sonnet")]
+    defaults = [("claude-opus-4-6", "Opus 4.6"), ("claude-sonnet-5", "Sonnet 5")]
     out = providers.available_models(defaults)
     ids = [mid for mid, _, _ in out]
     assert "claude-opus-4-6" not in ids
-    assert "claude-sonnet" in ids
+    assert "claude-sonnet-5" in ids
 
 
 # ── sidecar_env:标题总结兜底 ────────────────────────────────────────
@@ -318,7 +318,7 @@ def test_resolve_vision_provider_injects_capable_flag(tmp_path, monkeypatch):
     settings_store.upsert_web_provider(
         "codex-gpt", {"base_url": "http://127.0.0.1:8317", "model": "gpt-5.6", "api_key": "sk-proxy", "vision": "1"}
     )
-    model, env = providers.resolve("gpt-5.6", "claude-sonnet")
+    model, env = providers.resolve("gpt-5.6", "claude-sonnet-5")
     assert model == "gpt-5.6"
     assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8317"
     assert env["ANTHROPIC_API_KEY"] == "sk-proxy"
@@ -331,7 +331,7 @@ def test_resolve_non_vision_provider_flag_empty(tmp_path, monkeypatch):
     settings_store.upsert_web_provider(
         "deepseek", {"base_url": "https://api.deepseek.com/anthropic", "model": "deepseek-chat", "api_key": "sk-xxx"}
     )
-    _, env = providers.resolve("deepseek-chat", "claude-sonnet")
+    _, env = providers.resolve("deepseek-chat", "claude-sonnet-5")
     assert env["ANTHROPIC_VISION_CAPABLE"] == ""
 
 
@@ -469,21 +469,21 @@ def test_probe_token_network_failure_is_unknown(monkeypatch):
     assert "OSError" in detail
 
 
-def test_model_choices_use_fable():
+def test_model_choices_use_fable51():
     from vococo.gateway.core import MODEL_CHOICES
 
-    assert ("claude-fable", "Fable（订阅）") in MODEL_CHOICES
-    assert not any(model == "claude-fable-5-1" for model, _ in MODEL_CHOICES)
+    assert ("claude-fable-5-1", "Fable 5.1（订阅）") in MODEL_CHOICES
+    assert not any(model == "claude-fable" for model, _ in MODEL_CHOICES)
 
 
 # ── normalize_model_text / match_models_by_text(switch_model 的模糊匹配)──────
 # 候选样例与 available_models() 同构:(id, label, group)
 _CAND = [
-    ("claude-fable", "Fable(订阅)", "anthropic"),
-    ("claude-opus", "Opus(订阅)", "anthropic"),
+    ("claude-fable-5-1", "Fable 5.1(订阅)", "anthropic"),
+    ("claude-opus-5-5", "Opus 5.5(订阅)", "anthropic"),
     ("claude-opus-4-6", "Opus 4.6(订阅)", "anthropic"),
-    ("claude-sonnet", "Sonnet(订阅)", "anthropic"),
-    ("claude-haiku", "Haiku(订阅)", "anthropic"),
+    ("claude-sonnet-5", "Sonnet 5(订阅)", "anthropic"),
+    ("claude-haiku-4-5", "Haiku 4.5(订阅)", "anthropic"),
     ("kimi-k3", "kimi-k3(API)", "api"),
     ("K2.7 Code", "K2.7 Code(API)", "api"),
 ]
@@ -508,15 +508,15 @@ def test_match_spoken_name_unique():
     assert [h[0] for h in hits] == ["claude-opus-4-6"]
 
 
-def test_match_fable():
-    hits = providers.match_models_by_text("fable", _CAND)
-    assert [h[0] for h in hits] == ["claude-fable"]
+def test_match_fable5_uses_fable51():
+    hits = providers.match_models_by_text("fable 5", _CAND)
+    assert [h[0] for h in hits] == ["claude-fable-5-1"]
 
 
 def test_match_short_series_name_ambiguous_keeps_order():
-    # "opus" 同时含 opus-5 与 opus-4-6:返回全部候选让上层澄清,不擅自挑
+    # "opus" 同时含 opus-5-5 与 opus-4-6:返回全部候选让上层澄清,不擅自挑
     hits = providers.match_models_by_text("opus", _CAND)
-    assert [h[0] for h in hits] == ["claude-opus", "claude-opus-4-6"]
+    assert [h[0] for h in hits] == ["claude-opus-5-5", "claude-opus-4-6"]
 
 
 def test_match_multi_word_provider_model():

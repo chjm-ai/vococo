@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # 兜底默认模型;与 config.MODEL 的默认保持一致。
-_FALLBACK_MODEL = "claude-sonnet"
+_FALLBACK_MODEL = "claude-sonnet-5"
 
 # 官方 Anthropic 端点特征:命中即视为"走订阅",不注入第三方鉴权。
 _OFFICIAL_HOSTS = ("api.anthropic.com",)
@@ -29,7 +29,7 @@ _CODEX_BUILTIN_MODELS: tuple[tuple[str, str], ...] = (
 )
 
 # 订阅令牌探活用的模型:挑最便宜的 haiku,配 max_tokens=1,一次开销可忽略。
-PROBE_MODEL = "claude-haiku"
+PROBE_MODEL = "claude-haiku-4-5"
 
 
 @dataclass(frozen=True)

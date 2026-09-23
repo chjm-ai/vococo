@@ -397,8 +397,8 @@ function modelFormHtml(){
   const cur = editing ? (SET.data.models.custom.find(m=>m.id===editing)||{}) : {};
   return '<div class="mcpform" id="mdForm">'+
     '<div class="fld"><label>模型 id(填 API 认的那个模型名)</label>'+
-      '<input id="mdId" placeholder="claude-opus" value="'+esc(cur.id||"")+'"'+(editing?' readonly':'')+'></div>'+
-    '<div class="fld"><label>显示名(可空,默认用 id)</label><input id="mdLabel" placeholder="Opus（订阅）" value="'+esc(cur.label||"")+'"></div>'+
+      '<input id="mdId" placeholder="claude-opus-5-5" value="'+esc(cur.id||"")+'"'+(editing?' readonly':'')+'></div>'+
+    '<div class="fld"><label>显示名(可空,默认用 id)</label><input id="mdLabel" placeholder="Opus 5.5（订阅）" value="'+esc(cur.label||"")+'"></div>'+
     '<div class="mcperr" id="mdErr"></div>'+
     '<div class="setrowbtns"><button class="btn primary sm" id="mdSave">保存</button><button class="btn ghost sm" id="mdCancel">取消</button></div>'+
   '</div>';

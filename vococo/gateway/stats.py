@@ -36,11 +36,14 @@ from .. import config
 # DeepSeek/OpenAI/Kimi 都没有独立的"写缓存"加价,cache_w 按未命中输入价填。
 # 官方价随时会变,以后要改不用动代码:在 data/model_prices.json 写 {"模型名":[in,out,cache_w,cache_r]}。
 _DEFAULT_PRICES: dict[str, tuple[float, float, float, float]] = {
-    "claude-opus": (5, 25, 6.25, 0.5),
+    "claude-opus-5-5": (5, 25, 6.25, 0.5),
+    "claude-opus-5": (5, 25, 6.25, 0.5),
+    "claude-opus-4-8": (5, 25, 6.25, 0.5),
     "claude-opus-4-6": (5, 25, 6.25, 0.5),
-    "claude-sonnet": (2, 10, 2.5, 0.2),
-    "claude-fable": (10, 50, 12.5, 0.25),
-    "claude-haiku": (1, 5, 1.25, 0.1),
+    "claude-sonnet-5": (2, 10, 2.5, 0.2),
+    "claude-fable-5-1": (10, 50, 12.5, 0.25),
+    "claude-fable-5": (10, 50, 12.5, 1),
+    "claude-haiku-4-5-20251001": (1, 5, 1.25, 0.1),
     # 2026-09-10 起 deepseek-flash = V4.1 Flash,输入 0.15 / 输出 0.6(离峰),
     # 比 V4 Flash 降价约 30%;旧名 deepseek-v4-flash 已被官方路由到 V4.1 Flash
     # 并按 Flash 单价计费,故同价登记,免得旧会话记录按已失效的旧价估算。
