@@ -248,7 +248,7 @@ def test_query_context_usage_prefers_raw_max_when_larger():
     # CLI 认的窗口(rawMaxTokens)比我们权威表(sonnet-5=100万)大 → 采信 CLI 的更大值
     client = _StubClient({"totalTokens": 500, "rawMaxTokens": 2_000_000})
     cu, total, ctx_window_val, stale = anyio.run(
-        _query_context_usage, client, "claude-sonnet-5"
+        _query_context_usage, client, "claude-sonnet"
     )
     assert total == 500
     assert ctx_window_val == 2_000_000
@@ -259,7 +259,7 @@ def test_query_context_usage_detects_stale_cli_window():
     # CLI 认的窗口(20万)明显小于权威表(sonnet-5=100万)→ 采信权威表,并标记 stale
     client = _StubClient({"totalTokens": 900_000, "rawMaxTokens": 200_000})
     cu, total, ctx_window_val, stale = anyio.run(
-        _query_context_usage, client, "claude-sonnet-5"
+        _query_context_usage, client, "claude-sonnet"
     )
     assert ctx_window_val == 1_000_000
     assert stale is True
@@ -269,7 +269,7 @@ def test_query_context_usage_falls_back_on_error():
     # 旧 CLI 不支持 get_context_usage → 静默降级,按模型名估窗口,不抛异常
     client = _StubClient(raises=True)
     cu, total, ctx_window_val, stale = anyio.run(
-        _query_context_usage, client, "claude-haiku-4-5"
+        _query_context_usage, client, "claude-haiku"
     )
     assert cu is None
     assert total == 0

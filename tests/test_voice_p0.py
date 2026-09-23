@@ -629,7 +629,7 @@ def _parse_sse(body: str) -> list[tuple[str, dict]]:
 @pytest.mark.anyio
 async def test_voice_session_fallback_when_official_blocked(voice_db, monkeypatch):
     """Claude 官方模型在起点就失败时,语音通话应自动切到已配置的第三方供应商。"""
-    monkeypatch.setattr(config, "MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(config, "MODEL", "claude-sonnet")
 
     def fake_resolve(chosen, default):
         if chosen == "deepseek-chat":
@@ -657,7 +657,7 @@ async def test_voice_session_fallback_when_official_blocked(voice_db, monkeypatc
 
     async def fake_stream_turn(history, user_text, model=None, **kwargs):
         calls.append(model)
-        if model == "claude-sonnet-5":
+        if model == "claude-sonnet":
             yield Done(
                 AgentReply(
                     text="",
@@ -681,7 +681,7 @@ async def test_voice_session_fallback_when_official_blocked(voice_db, monkeypatc
     monkeypatch.setattr(session, "stream_turn", fake_stream_turn)
 
     events = [ev async for ev in session.run_turn("你好")]
-    assert calls == ["claude-sonnet-5", "deepseek-chat"]
+    assert calls == ["claude-sonnet", "deepseek-chat"]
     assert any(isinstance(ev, TextDelta) and ev.text == "兜底回复" for ev in events)
     final = events[-1]
     assert isinstance(final, Done)
@@ -694,7 +694,7 @@ async def test_voice_session_passes_stable_rules_as_system_prompt_extra(voice_db
     """2026-08-22 拆分:session.run_turn 必须把 voice_system_prompt_extra() 透传给
     stream_turn 的 system_prompt_extra 参数,这条稳定规则块才走得进 system_prompt
     的 prompt cache,而不是又被漏掉、退回每轮塞进 user_text 的老路。"""
-    monkeypatch.setattr(config, "MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(config, "MODEL", "claude-sonnet")
     monkeypatch.setattr(providers, "load_active", lambda: None)
 
     captured = {}
@@ -714,7 +714,7 @@ async def test_voice_session_passes_stable_rules_as_system_prompt_extra(voice_db
 @pytest.mark.anyio
 async def test_voice_session_no_fallback_when_primary_succeeds(voice_db, monkeypatch):
     """主模型正常时,不应再触发备用模型。"""
-    monkeypatch.setattr(config, "MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(config, "MODEL", "claude-sonnet")
     monkeypatch.setattr(providers, "load_active", lambda: None)
 
     calls = []
@@ -734,14 +734,14 @@ async def test_voice_session_no_fallback_when_primary_succeeds(voice_db, monkeyp
     monkeypatch.setattr(session, "stream_turn", fake_stream_turn)
 
     events = [ev async for ev in session.run_turn("你好")]
-    assert calls == ["claude-sonnet-5"]
+    assert calls == ["claude-sonnet"]
     assert events[-1].reply.text == "正常回复"
 
 
 @pytest.mark.anyio
 async def test_voice_session_error_when_all_candidates_fail(voice_db, monkeypatch):
     """所有候选模型都失败时,应返回一个 is_error=True 的 Done。"""
-    monkeypatch.setattr(config, "MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(config, "MODEL", "claude-sonnet")
     monkeypatch.setattr(providers, "load_active", lambda: None)
 
     async def fake_stream_turn(history, user_text, model=None, **kwargs):
@@ -768,12 +768,12 @@ async def test_voice_send_keeps_user_switched_model_over_done_writeback(
     覆盖掉 → 必须只在"没人动过"时回写。
     """
 
-    # 会话原本锁在 claude-sonnet-5 上,且上一轮留过 resume id
-    session_store.set_chosen_model(session.SESSION_KEY, "claude-sonnet-5")
+    # 会话原本锁在 claude-sonnet 上,且上一轮留过 resume id
+    session_store.set_chosen_model(session.SESSION_KEY, "claude-sonnet")
     session_store.set_sdk_session_id(session.SESSION_KEY, "sdk-old")
 
     async def fake_run_turn(prompt_text, model=None, extra_mcp_servers=None):
-        assert model == "claude-sonnet-5"  # 本轮仍由旧模型开跑
+        assert model == "claude-sonnet"  # 本轮仍由旧模型开跑
         # 模拟轮中 switch_model 工具把会话切到 claude-opus-4-6(会顺带清 resume id)
         session_store.set_chosen_model(session.SESSION_KEY, "claude-opus-4-6")
         yield TextDelta("好的,")

@@ -63,7 +63,7 @@ async def test_usage_uses_official_when_utilization_present(usage_app, monkeypat
     )
 
     async with TestClient(TestServer(usage_app)) as client:
-        status, data = await _get(client, "/api/usage?model=claude-sonnet-4-6")
+        status, data = await _get(client, "/api/usage?model=claude-sonnet")
         assert status == 200
         assert data["provider"] == "claude"
         assert data["source"] == "official"
@@ -95,7 +95,7 @@ async def test_usage_falls_back_to_local_when_official_missing(usage_app, monkey
     )
 
     async with TestClient(TestServer(usage_app)) as client:
-        status, data = await _get(client, "/api/usage?model=claude-sonnet-4-6")
+        status, data = await _get(client, "/api/usage?model=claude-sonnet")
         assert status == 200
         assert data["source"] == "local_estimate"
         assert data["limits"]["five_hour"]["utilization"] == 0.65

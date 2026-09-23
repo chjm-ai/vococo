@@ -141,7 +141,7 @@ uv run vococo chat
 | `VOCOCO_USER_NAME` | 否 | 助理如何称呼你,默认「主人」 |
 | `VOCOCO_PERSONA_NAME` | 否 | 助理人格代号(UI/提示文案里露出),默认「Wazir」 |
 | `AI_BRAIN_DIR` | 否 | 长期记忆目录,默认 `~/AI_BRAIN`;不存在则记忆功能自动跳过 |
-| `AGENT_MODEL` | 否 | 默认 `claude-sonnet-5` |
+| `AGENT_MODEL` | 否 | 默认 `claude-sonnet` |
 | `WEB_ENABLED` / `WEB_AUTH_TOKEN` | 否 | 启用手机浏览器 Web 入口;走公网必设口令 |
 
 其余变量(安全闸、语音、Web Push、多供应商…)在 `.env.example` 里逐条有注释。
