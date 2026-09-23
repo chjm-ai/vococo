@@ -31,8 +31,8 @@ def test_resolve_explicit_official_model_no_env(tmp_path, monkeypatch):
     settings_store.upsert_web_provider(
         "deepseek", {"base_url": "https://api.deepseek.com", "model": "deepseek-chat", "api_key": "sk-xxx"}
     )
-    model, env = providers.resolve("claude-opus-5-5", "claude-sonnet-5")
-    assert model == "claude-opus-5-5"
+    model, env = providers.resolve("claude-opus-5", "claude-sonnet-5")
+    assert model == "claude-opus-5"
     assert env == {}
 
 
@@ -90,11 +90,11 @@ def test_available_models_lists_builtin_and_web_providers(tmp_path, monkeypatch)
     settings_store.upsert_web_provider(
         "deepseek", {"base_url": "https://api.deepseek.com/anthropic", "model": "deepseek-chat", "api_key": "sk-xxx"}
     )
-    defaults = [("claude-opus-5-5", "Opus 5.5"), ("claude-sonnet-5", "Sonnet 5")]
+    defaults = [("claude-opus-5", "Opus 5"), ("claude-sonnet-5", "Sonnet 5")]
     out = providers.available_models(defaults)
     by_id = {mid: (label, group) for mid, label, group in out}
     ids = list(by_id)
-    assert ids[:2] == ["claude-opus-5-5", "claude-sonnet-5"]  # 官方档在前
+    assert ids[:2] == ["claude-opus-5", "claude-sonnet-5"]  # 官方档在前
     assert by_id["deepseek-chat"] == ("deepseek-chat（API）", "api")
 
 
@@ -121,11 +121,11 @@ def test_available_models_hides_kimi_subscription_but_lists_it_for_settings(tmp_
 
 def test_available_models_includes_web_extra_model(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
-    settings_store.upsert_web_extra_model("claude-opus-5-5", "Opus 5.5（订阅）")
+    settings_store.upsert_web_extra_model("claude-opus-5", "Opus 5（订阅）")
     defaults = [("claude-sonnet-5", "Sonnet 5（订阅）")]
     out = providers.available_models(defaults)
     by_id = {mid: (label, group) for mid, label, group in out}
-    assert by_id["claude-opus-5-5"] == ("Opus 5.5（订阅）", "anthropic")
+    assert by_id["claude-opus-5"] == ("Opus 5（订阅）", "anthropic")
 
 
 def test_extra_model_reuses_declared_provider(tmp_path, monkeypatch):
@@ -480,7 +480,7 @@ def test_model_choices_use_fable51():
 # 候选样例与 available_models() 同构:(id, label, group)
 _CAND = [
     ("claude-fable-5-1", "Fable 5.1(订阅)", "anthropic"),
-    ("claude-opus-5-5", "Opus 5.5(订阅)", "anthropic"),
+    ("claude-opus-5", "Opus 5(订阅)", "anthropic"),
     ("claude-opus-4-6", "Opus 4.6(订阅)", "anthropic"),
     ("claude-sonnet-5", "Sonnet 5(订阅)", "anthropic"),
     ("claude-haiku-4-5", "Haiku 4.5(订阅)", "anthropic"),
@@ -516,7 +516,7 @@ def test_match_fable5_uses_fable51():
 def test_match_short_series_name_ambiguous_keeps_order():
     # "opus" 同时含 opus-5-5 与 opus-4-6:返回全部候选让上层澄清,不擅自挑
     hits = providers.match_models_by_text("opus", _CAND)
-    assert [h[0] for h in hits] == ["claude-opus-5-5", "claude-opus-4-6"]
+    assert [h[0] for h in hits] == ["claude-opus-5", "claude-opus-4-6"]
 
 
 def test_match_multi_word_provider_model():

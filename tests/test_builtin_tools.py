@@ -251,7 +251,7 @@ def test_switch_model_ambiguous_asks_back(isolated, monkeypatch):
         out = _run_switch_model("opus")
     finally:
         clarify.reset_current(token)
-    assert "多个模型" in out and "claude-opus-5-5" in out
+    assert "多个模型" in out and "claude-opus-5" in out
     assert session_store.get_chosen_model("cli-switch-2") == ""
 
 
