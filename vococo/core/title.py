@@ -19,7 +19,7 @@ from .. import providers
 # 默认 limit 与此保持一致。
 MAX_LEN = 40
 
-_PRIMARY_MODEL = "claude-haiku"  # 走订阅
+_PRIMARY_MODEL = "claude-haiku-4-5"  # 走订阅
 _FALLBACK_PROVIDER = "deepseek"  # 设置页里的第三方供应商名(按名查,不写死模型)
 _TIMEOUT = 45  # 单次尝试秒数;标题不急,但别无限挂着
 

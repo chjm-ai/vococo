@@ -270,11 +270,11 @@ class VideoAttachment:
 # Codex 本机模型目录均标 272k，并要求预留 5% 自动压缩空间，实际可用 258,400。这里
 # 必须按真实链路估算，否则自动压缩永远来不及触发。
 _CONTEXT_WINDOWS: dict[str, int] = {
-    "claude-fable": 1_000_000,
-    "claude-opus": 1_000_000,
+    "claude-fable-5-1": 1_000_000,
+    "claude-opus-5-5": 1_000_000,
     "claude-opus-4-6": 1_000_000,
-    "claude-sonnet": 1_000_000,
-    "claude-haiku": 200_000,
+    "claude-sonnet-5": 1_000_000,
+    "claude-haiku-4-5": 200_000,
     "deepseek-flash": 1_000_000,
     "deepseek-v4": 1_000_000,
     "kimi-k3": 1_000_000,

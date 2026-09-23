@@ -324,10 +324,10 @@ def test_set_chosen_model_clears_sdk_session_id_on_change(isolated):
     """切换模型时要把旧的 SDK session id 清掉,避免 resume 旧模型导致限额延续。"""
     from vococo.memory import session_store
 
-    session_store.set_chosen_model("web:test", "claude-sonnet")
+    session_store.set_chosen_model("web:test", "claude-sonnet-5")
     session_store.set_sdk_session_id("web:test", "sess-123")
     # 同模型不应当清
-    session_store.set_chosen_model("web:test", "claude-sonnet")
+    session_store.set_chosen_model("web:test", "claude-sonnet-5")
     assert session_store.get_sdk_session_id("web:test") == "sess-123"
     # 切到别的模型必须清
     session_store.set_chosen_model("web:test", "deepseek-chat")
@@ -338,8 +338,8 @@ def test_set_chosen_model_first_time_does_not_fail(isolated):
     """首次为会话设置模型(无旧 chosen_model)也能正常落库。"""
     from vococo.memory import session_store
 
-    session_store.set_chosen_model("web:new", "claude-opus")
-    assert session_store.get_chosen_model("web:new") == "claude-opus"
+    session_store.set_chosen_model("web:new", "claude-opus-5-5")
+    assert session_store.get_chosen_model("web:new") == "claude-opus-5-5"
 
 
 def test_append_turn_image_persists_to_current_turn(isolated):
