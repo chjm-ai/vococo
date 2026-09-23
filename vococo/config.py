@@ -78,7 +78,7 @@ USER_NAME: str = os.environ.get("VOCOCO_USER_NAME", "主人").strip() or "主人
 # 助理人格代号:出现在 UI 标题/拦截提示/系统 prompt(见 core/prompt.py)。
 # 默认「Wazir」,在 .env 设 VOCOCO_PERSONA_NAME 即可换成自己的人格名。
 PERSONA_NAME: str = os.environ.get("VOCOCO_PERSONA_NAME", "Wazir").strip() or "Wazir"
-MODEL: str = os.environ.get("AGENT_MODEL", "claude-sonnet-5").strip()
+MODEL: str = os.environ.get("AGENT_MODEL", "claude-sonnet").strip()
 # 单轮 agentic 轮数上限,0=不限(交给 AGENT_TURN_TIMEOUT 硬超时兜底)。2026-07-10 起
 # 默认放开:100 也照样截断过正经长任务,轮数不是好的成本闸,超时才是。
 MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "0"))

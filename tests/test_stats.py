@@ -39,13 +39,13 @@ def test_etl_is_incremental(isolated, monkeypatch):
     stats, logs = _prepare(isolated, monkeypatch)
     ts = "2026-09-01T10:00:00.000Z"
     path = _write_log(logs / "-Users-me-vococo", "sess-a",
-                      [("claude-sonnet-5", _usage(), ts)] * 2)
+                      [("claude-sonnet", _usage(), ts)] * 2)
 
     stats._run_etl()
     calls = stats._conn().execute("SELECT sum(calls) FROM usage_hourly").fetchone()[0]
     assert calls == 2
 
-    _write_log(path.parent, "sess-a", [("claude-sonnet-5", _usage(), ts)])
+    _write_log(path.parent, "sess-a", [("claude-sonnet", _usage(), ts)])
     stats._run_etl()
     assert stats._conn().execute("SELECT sum(calls) FROM usage_hourly").fetchone()[0] == 3
     # 没有新内容时再扫一次也不该重复累加
@@ -57,8 +57,8 @@ def test_scope_split_and_cost(isolated, monkeypatch):
     """vococo 自己的会话与终端里手跑的分开统计;花费按单价表折算。"""
     stats, logs = _prepare(isolated, monkeypatch)
     ts = "2026-09-01T10:00:00.000Z"
-    _write_log(logs / "-Users-me-vococo", "sess-a", [("claude-sonnet-5", _usage(1_000_000, 0), ts)])
-    _write_log(logs / "-Users-me-other", "sess-b", [("claude-sonnet-5", _usage(1_000_000, 0), ts)])
+    _write_log(logs / "-Users-me-vococo", "sess-a", [("claude-sonnet", _usage(1_000_000, 0), ts)])
+    _write_log(logs / "-Users-me-other", "sess-b", [("claude-sonnet", _usage(1_000_000, 0), ts)])
     stats._run_etl()
 
     data = stats.overview("all")
@@ -86,7 +86,7 @@ def test_fable51_uses_builtin_price(isolated, monkeypatch):
     stats, logs = _prepare(isolated, monkeypatch)
     _write_log(
         logs / "-Users-me-vococo", "sess-a",
-        [("claude-fable-5-1", _usage(1_000_000, 0, cr=1_000_000),
+        [("claude-fable", _usage(1_000_000, 0, cr=1_000_000),
           "2026-09-01T10:00:00.000Z")],
     )
 
@@ -103,9 +103,9 @@ def test_price_override(isolated, monkeypatch):
     stats, logs = _prepare(isolated, monkeypatch)
     monkeypatch.setattr(stats_mod, "_PRICES_PATH", config.DATA_DIR / "model_prices.json")
     (config.DATA_DIR / "model_prices.json").write_text(
-        json.dumps({"claude-sonnet-5": [30, 0, 0, 0]}), encoding="utf-8")
+        json.dumps({"claude-sonnet": [30, 0, 0, 0]}), encoding="utf-8")
     _write_log(logs / "-Users-me-vococo", "sess-a",
-               [("claude-sonnet-5", _usage(1_000_000, 0), "2026-09-01T10:00:00.000Z")])
+               [("claude-sonnet", _usage(1_000_000, 0), "2026-09-01T10:00:00.000Z")])
     stats._run_etl()
     assert round(stats.overview("all")["models"][0]["cost"], 2) == 30.0
 
@@ -125,7 +125,7 @@ def test_session_rows_join_turns_and_logs(isolated, monkeypatch):
     session_store.finish_turn(session_store.start_turn("web:main", "再问"), "再答")
     session_store.set_sdk_session_id("web:main", "sess-a")
     _write_log(logs / "-Users-me-vococo", "sess-a",
-               [("claude-sonnet-5", _usage(1_000_000, 0, cr=1_000_000),
+               [("claude-sonnet", _usage(1_000_000, 0, cr=1_000_000),
                  "2026-09-01T10:00:00.000Z")])
     stats._run_etl()
     stats._etl_turns()
