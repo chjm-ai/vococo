@@ -122,7 +122,11 @@ function appendVids(container, vids){
     if(!url) continue;
     const row=el("div","videorow");
     const name=(typeof v==="object" && v.filename) || "";
-    if(name){ const cap=el("div","videoname"); cap.textContent="🎬 "+name; row.append(cap); }
+    const head=el("div","videohead");
+    if(name){ const cap=el("div","videoname"); cap.textContent="🎬 "+name; head.append(cap); }
+    const dl=el("a","videodl"); dl.href=url; dl.download=name||"video"; dl.title="下载视频"; dl.innerHTML=ic("download");
+    head.append(dl);
+    row.append(head);
     const player=el("video"); player.controls=true; player.preload="metadata"; player.playsInline=true;
     player.src=url;
     if(url.startsWith("/")){
