@@ -819,9 +819,11 @@
   .videorow .videoname{font-size:var(--fs-sm);color:var(--dim);
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .videorow .videodl{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;flex-shrink:0;
-    margin-left:auto;border-radius:var(--r-sm);color:var(--dim);cursor:pointer;opacity:.7;
+    margin-left:auto;border-radius:var(--r-sm);color:var(--dim);cursor:pointer;opacity:.7;border:none;background:none;
     transition:background var(--t-fast),color var(--t-fast),opacity var(--t-fast)}
   .videorow .videodl:hover{opacity:1;background:var(--panel2);color:var(--text)}
+  .videorow .videodl:disabled{opacity:.3;cursor:default}
+  .videorow .videodl.ready{opacity:1;color:var(--accent)}
   .videorow .videodl .ic{width:14px;height:14px}
   .videorow video{width:100%;max-width:360px;border-radius:var(--r-md);background:#000;display:block}
   .videorow .videoerr{display:inline-flex;align-items:center;margin-top:var(--sp-2);padding:var(--sp-2) var(--sp-4);

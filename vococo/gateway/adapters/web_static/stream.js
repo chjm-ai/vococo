@@ -107,6 +107,44 @@ async function loadAuthedAudio(player, url){
   const o=await fetchCachedBlobUrl(url);
   if(o) player.src=o;
 }
+// 视频下载:iOS 上(尤其是"添加到主屏幕"后的独立 PWA,没有 Safari 自带的地址栏/
+// 返回按钮兜底)直接导航到视频 URL 或用 <a download> 都可能被系统接管成一个卡死的
+// 全屏文档预览页,连"完成"按钮都没有,回不去聊天界面。真正稳的路径是系统级分享面板
+// (navigator.share 分享文件),但分享面板要求"点击那一刻"必须还在用户手势的有效期内——
+// 视频动辄几十 MB,先 await fetch 完再调 share() 时手势早就过期了,Safari 会直接拒绝、
+// 一拒绝就退回最初那个卡死页面(上一版就是栽在这)。所以拆成两次点击:
+// 第一次点击后台把视频拉到内存里(这段时间手势可以过期,无所谓);拉完变成"就绪"状态;
+// 用户再点一次,share() 是在这第二次点击的手势里同步发起的,不会被拒。
+const _videoShareCache = new Map();  // url → File,只活在这次页面会话里
+async function onVideoDownloadClick(url, filename, btn){
+  const cached=_videoShareCache.get(url);
+  if(cached){
+    try{
+      if(navigator.share && (!navigator.canShare || navigator.canShare({files:[cached]}))){
+        await navigator.share({files:[cached], title:filename});
+        return;
+      }
+    }catch(e){
+      if(e && e.name==="AbortError") return;  // 用户自己在分享面板里点了取消
+    }
+    window.open(url, "_blank", "noopener");  // 没有文件分享能力/分享失败:退回直接打开
+    return;
+  }
+  btn.disabled=true; btn.title="下载准备中…";
+  try{
+    const resp=await api(url);
+    if(!resp.ok) throw new Error("http "+resp.status);
+    const blob=await resp.blob();
+    _videoShareCache.set(url, new File([blob], filename, {type: blob.type||"video/mp4"}));
+    btn.title="已就绪,再点一次保存到相册/文件";
+    btn.classList.add("ready");
+  }catch(e){
+    btn.title="下载视频";
+    window.open(url, "_blank", "noopener");
+  }finally{
+    btn.disabled=false;
+  }
+}
 // 视频组渲染:直接给 <video controls>,用户点播放就播。
 // 历史视频的 URL 自带限时票据(见后端 _video_url),所以能当普通 src 用,不必像
 // 图片/音频那样 fetch 成 blob —— 那条路要整段下完才起播、还拖不动进度条。
@@ -124,12 +162,8 @@ function appendVids(container, vids){
     const name=(typeof v==="object" && v.filename) || "";
     const head=el("div","videohead");
     if(name){ const cap=el("div","videoname"); cap.textContent="🎬 "+name; head.append(cap); }
-    // 故意不用 <a download>:iOS 会把它当成"另存为文件"交给系统级文档预览处理,
-    // 在微信/WhatsApp 这类应用内浏览器里弹出一个没有任何返回按钮的全屏页面,把人卡死。
-    // 改成新标签页直接打开原始链接:Safari 对着直接打开的视频文件,播放器顶部自带一个
-    // 原生下载按钮,这条路径不会触发那个卡死的文档预览。
-    const dl=el("a","videodl"); dl.href=url; dl.target="_blank"; dl.rel="noopener";
-    dl.title="下载视频"; dl.innerHTML=ic("download");
+    const dl=el("button","videodl"); dl.type="button"; dl.title="下载视频"; dl.innerHTML=ic("download");
+    dl.onclick=()=>onVideoDownloadClick(url, name||"video.mp4", dl);
     head.append(dl);
     row.append(head);
     const player=el("video"); player.controls=true; player.preload="metadata"; player.playsInline=true;
