@@ -107,32 +107,6 @@ async function loadAuthedAudio(player, url){
   const o=await fetchCachedBlobUrl(url);
   if(o) player.src=o;
 }
-// 视频下载:iOS 上 <a download> 会被系统当成"打开文档"处理,弹出一个没有返回按钮的
-// 全屏预览页(尤其是在微信/WhatsApp 这类应用内浏览器里,连系统的"完成"按钮都没有,
-// 用户被卡死出不去)。有 navigator.share 文件分享能力的机型一律走原生分享面板
-// (存到"照片"/"文件",分享完自动回到页面);没有这个能力的老旧浏览器才退回 <a download>。
-async function downloadVideo(url, filename, btn){
-  const fallback=()=>{ const a=el("a"); a.href=url; a.download=filename; document.body.append(a); a.click(); a.remove(); };
-  if(!navigator.canShare){ fallback(); return; }
-  btn.disabled=true;
-  try{
-    const resp=await api(url);
-    if(!resp.ok) throw new Error("http "+resp.status);
-    const blob=await resp.blob();
-    const file=new File([blob], filename, {type: blob.type||"video/mp4"});
-    if(navigator.canShare({files:[file]})){
-      await navigator.share({files:[file], title:filename});
-    }else{
-      const o=URL.createObjectURL(blob);
-      const a=el("a"); a.href=o; a.download=filename; document.body.append(a); a.click(); a.remove();
-      setTimeout(()=>URL.revokeObjectURL(o), 4000);
-    }
-  }catch(e){
-    if(!(e && e.name==="AbortError")) fallback();  // AbortError = 用户自己取消了分享面板
-  }finally{
-    btn.disabled=false;
-  }
-}
 // 视频组渲染:直接给 <video controls>,用户点播放就播。
 // 历史视频的 URL 自带限时票据(见后端 _video_url),所以能当普通 src 用,不必像
 // 图片/音频那样 fetch 成 blob —— 那条路要整段下完才起播、还拖不动进度条。
@@ -150,8 +124,12 @@ function appendVids(container, vids){
     const name=(typeof v==="object" && v.filename) || "";
     const head=el("div","videohead");
     if(name){ const cap=el("div","videoname"); cap.textContent="🎬 "+name; head.append(cap); }
-    const dl=el("button","videodl"); dl.type="button"; dl.title="下载视频"; dl.innerHTML=ic("download");
-    dl.onclick=()=>downloadVideo(url, name||"video.mp4", dl);
+    // 故意不用 <a download>:iOS 会把它当成"另存为文件"交给系统级文档预览处理,
+    // 在微信/WhatsApp 这类应用内浏览器里弹出一个没有任何返回按钮的全屏页面,把人卡死。
+    // 改成新标签页直接打开原始链接:Safari 对着直接打开的视频文件,播放器顶部自带一个
+    // 原生下载按钮,这条路径不会触发那个卡死的文档预览。
+    const dl=el("a","videodl"); dl.href=url; dl.target="_blank"; dl.rel="noopener";
+    dl.title="下载视频"; dl.innerHTML=ic("download");
     head.append(dl);
     row.append(head);
     const player=el("video"); player.controls=true; player.preload="metadata"; player.playsInline=true;
