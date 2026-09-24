@@ -359,14 +359,32 @@ def _video_url(name: str) -> str:
     return f"/video?name={name}{sign_media_ticket('video', name)}"
 
 
-def _sign_history_videos(turns: list[dict]) -> None:
-    """把 load_history 里的裸 /video?name= 就地换成带票据的 URL(用户/AI 两侧都要)。"""
+def _video_preview_url(name: str) -> str | None:
+    """低码率预览版的 URL;【只在预览版已经生成好时】才给,否则 None(前端就播原片)。
+
+    不能"先给 preview URL、没好就回原片顶上":播放器对同一个 URL 会发多次 Range 请求,
+    中途预览版转好了,后面的片段就换成另一个文件,播到一半直接卡死。
+    """
+    if session_store.video_preview_path(name) is None:
+        return None
+    return f"/video?name={name}&preview=1{sign_media_ticket('video', name)}"
+
+
+def _sign_history_videos(turns: list[dict]) -> list[str]:
+    """把 load_history 里的裸 /video?name= 就地换成带票据的 URL(用户/AI 两侧都要),
+    预览版已就绪的顺带附上 preview_url。返回还缺预览版、值得去转的文件名。"""
+    pending: list[str] = []
     for t in turns:
         for field in ("videos", "ai_videos"):
             for item in t.get(field) or []:
                 name = str(item.get("url", "")).removeprefix("/video?name=")
                 if name:
                     item["url"] = _video_url(name)
+                    if pv := _video_preview_url(name):
+                        item["preview_url"] = pv
+                    elif session_store.video_needs_preview(name):
+                        pending.append(name)
+    return pending
 
 
 def _document_ref(value: object) -> str | None:
@@ -1972,20 +1990,27 @@ class WebAdapter:
         if p is None:
             return web.json_response({"error": "not found"}, status=404)
         # preview=1:气泡内播放要低码率预览版(见 memory/videos.py);下载不带这个参数拿原片。
-        # 预览版还没有就先回原片顶上,同时后台开转——但这份"顶替"不能被浏览器长缓存,
-        # 否则预览版转好之后这个 URL 也永远拿不到它。
+        # 正常情况前端只在预览版就绪后才请求它(见 _video_preview_url);万一没有(被删了等)
+        # 就回原片顶上,且不许长缓存,免得这个 URL 以后永远拿不到预览版。
         if request.query.get("preview"):
             pv = session_store.video_preview_path(name)
             if pv is not None:
                 return web.FileResponse(pv, headers={"Cache-Control": "max-age=31536000, immutable"})
-            if session_store.video_needs_preview(name):
-                self._spawn_video_preview(name)
             return web.FileResponse(p, headers={"Cache-Control": "no-store"})
         return web.FileResponse(p, headers={"Cache-Control": "max-age=31536000, immutable"})
 
     def _spawn_video_preview(self, name: str) -> None:
-        """后台转预览版(事件循环对 task 只留弱引用,不存一份可能被中途回收)。"""
-        t = asyncio.create_task(session_store.ensure_video_preview(name))
+        """后台转预览版(事件循环对 task 只留弱引用,不存一份可能被中途回收)。
+
+        转好后广播 video_preview 事件:页面上还没开始播的同一视频就地切到预览版
+        (刚发出来的视频不用刷新页面也能用上)。
+        """
+        async def run() -> None:
+            await session_store.ensure_video_preview(name)
+            if pv := _video_preview_url(name):
+                self._emit({"type": "video_preview", "name": name, "preview_url": pv})
+
+        t = asyncio.create_task(run())
         self._video_preview_tasks.add(t)
         t.add_done_callback(self._video_preview_tasks.discard)
 
@@ -2005,7 +2030,9 @@ class WebAdapter:
         turns = session_store.load_history(key, limit=40, **(
             {"before_id": before_id} if before_id is not None else {}
         ))
-        _sign_history_videos(turns)
+        # 打开会话就把还缺预览版的视频排上队转,别等用户点播放才开始
+        for name in _sign_history_videos(turns):
+            self._spawn_video_preview(name)
         has_more = bool(turns) and len(turns) == 40 and session_store.has_history_before(
             key, turns[0]["id"]
         )

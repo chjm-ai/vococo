@@ -118,8 +118,22 @@ const _videoShareCache = new Map();  // url → File,只活在这次页面会话
 // 下载好的视频顺手给播放器用:整段数据已在内存,播放不必再走网络加载第二遍。
 // 反向(先播后下)做不到:播放只按需取片段,凑不出完整文件,下载仍得拉全量。
 const _videoBlobUrls = new Map();  // url → blob: URL,同 _videoShareCache 生命周期
-// 播放默认走低码率预览版(preview=1,后端没转好会先回原片);下载按钮拉的是原片 url
-function videoPlayUrl(url){ return _videoBlobUrls.get(url) || (url.startsWith("/") ? url+"&preview=1" : url); }
+// 播放优先级:已下载到内存的原片 > 低码率预览版 > 原片。预览版 URL 只在后端转好后才下发
+// (历史里的 preview_url,或转好时的 video_preview 事件),同一个播放地址不会中途换文件。
+// 下载按钮永远拉原片 url。
+const _videoPreviewUrls = new Map();  // 视频文件名 → preview_url(来自 video_preview 事件)
+function videoFileName(url){ return new URLSearchParams(url.split("?")[1]||"").get("name") || ""; }
+function videoPlayUrl(url, previewUrl){
+  return _videoBlobUrls.get(url) || previewUrl || _videoPreviewUrls.get(videoFileName(url)) || url;
+}
+// 后台转好预览版:还没开始播的同一视频就地换源;正在播/播过的不动,免得打断
+function onVideoPreviewReady(e){
+  _videoPreviewUrls.set(e.name, e.preview_url);
+  for(const p of document.querySelectorAll("video[data-vname]")){
+    if(p.dataset.vname!==e.name || !p.paused || p.currentTime>0 || p.src.startsWith("blob:")) continue;
+    p.src=e.preview_url;
+  }
+}
 function useLocalVideo(player, url){
   const local=_videoBlobUrls.get(url);
   // 正在播就不换源:换源会打断播放,而 iOS 不允许非手势里重新 play() 有声视频
@@ -197,7 +211,8 @@ function appendVids(container, vids){
     head.append(dl);
     row.append(head);
     const player=el("video"); player.controls=true; player.preload="metadata"; player.playsInline=true;
-    player.src=videoPlayUrl(url);
+    player.src=videoPlayUrl(url, typeof v==="object" && v.preview_url);
+    player.dataset.vname=videoFileName(url);
     player.addEventListener("pause", ()=>useLocalVideo(player, url));  // 边播边下完的,暂停时再切到本地
     dl.onclick=()=>onVideoDownloadClick(url, name||"video.mp4", dl, player);
     if(url.startsWith("/")){
@@ -613,6 +628,7 @@ function handleEvent(e){
   if(e.type==="user" && e.client_request_id) acknowledgeSend(e.client_request_id);
   // 后台标题总结完成 → 刷新侧边栏/标题栏(loadConvs 会顺带同步顶栏标题),无论前后台会话
   if(e.type==="title"){ loadConvs(); return; }
+  if(e.type==="video_preview"){ onVideoPreviewReady(e); return; }
   // 非 web 入口(cron/语音任务等)驱动的会话有新动静,见 core/task_events.py 主事件桥:
   // 那边没有 start/thinking 流式过程可镜像,直接拼气泡容易出现"回复凭空冒出来,
   // 缺前面那句提问"的错位画面——干脆让浏览器去核对真实数据最省心。
