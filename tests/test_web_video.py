@@ -221,8 +221,8 @@ def test_frontend_plays_inline_without_extra_click():
     )
     assert "videoload" not in js  # 「点击加载」那一步已经去掉
     assert 'player.preload="metadata"' in js  # 只拉头部渲染首帧,不预载正片
-    assert "player.src=videoPlayUrl(url);" in js
-    assert '"&preview=1"' in js  # 气泡内播放走低码率预览版,下载才拉原片
+    assert "player.src=videoPlayUrl(url, " in js
+    assert 'e.type==="video_preview"' in js  # 预览版转好后就地切源,不用刷新
 
 
 def test_frontend_routes_video_to_its_own_upload_endpoint():
@@ -236,9 +236,12 @@ def test_frontend_routes_video_to_its_own_upload_endpoint():
 
 
 @pytest.mark.anyio
-async def test_preview_falls_back_then_serves_transcoded(adapter, video_dir, monkeypatch):
-    """preview=1:预览版没好先回原片且不许长缓存;转好后换成预览版;不带参数永远是原片。"""
+async def test_preview_url_only_after_ready_and_event_emitted(adapter, video_dir, monkeypatch):
+    """预览版没好:历史不给 preview_url(防同一播放地址中途换文件)、并排队去转;
+    转好后广播 video_preview 事件,历史里出现 preview_url,取到的是预览版;原片 URL 不变。"""
     import asyncio
+
+    from vococo.gateway.adapters import web as web_mod
 
     monkeypatch.setattr(videos, "PREVIEW_MIN_BYTES", 0)
     monkeypatch.setattr(videos.shutil, "which", lambda _: "/usr/bin/ffmpeg")
@@ -251,15 +254,24 @@ async def test_preview_falls_back_then_serves_transcoded(adapter, video_dir, mon
     monkeypatch.setattr(session_store, "ensure_video_preview", fake_ensure)
     video_dir.mkdir(parents=True, exist_ok=True)
     (video_dir / "1_0.mp4").write_bytes(b"original movie")
+
+    turns = [{"videos": [{"url": "/video?name=1_0.mp4"}]}]
+    assert web_mod._sign_history_videos(turns) == ["1_0.mp4"]
+    assert "preview_url" not in turns[0]["videos"][0]
+
+    events = []
+    monkeypatch.setattr(adapter, "_emit", events.append)
+    adapter._spawn_video_preview("1_0.mp4")
+    await asyncio.gather(*adapter._video_preview_tasks)
+    assert events and events[0]["type"] == "video_preview" and events[0]["name"] == "1_0.mp4"
+
+    turns = [{"videos": [{"url": "/video?name=1_0.mp4"}]}]
+    assert web_mod._sign_history_videos(turns) == []
+    pv_url = turns[0]["videos"][0]["preview_url"]
     app = web.Application()
     app.add_routes([web.get("/video", adapter._handle_video)])
     async with TestClient(TestServer(app)) as client:
-        r = await client.get("/video?name=1_0.mp4&preview=1")
-        assert await r.read() == b"original movie"
-        assert r.headers["Cache-Control"] == "no-store"
-        await asyncio.gather(*adapter._video_preview_tasks)
-        r = await client.get("/video?name=1_0.mp4&preview=1")
-        assert await r.read() == b"small"
+        assert await (await client.get(pv_url)).read() == b"small"
         assert await (await client.get("/video?name=1_0.mp4")).read() == b"original movie"
 
 
