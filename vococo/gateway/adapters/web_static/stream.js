@@ -115,6 +115,18 @@ async function loadAuthedAudio(player, url){
 // 把按钮变成「点此保存」,用户再点一下(新的手势)就能弹出。失败一律在按钮上写明,
 // 不再悄悄 window.open(异步里调会被拦,等于没反应)。
 const _videoShareCache = new Map();  // url → File,只活在这次页面会话里
+// 下载好的视频顺手给播放器用:整段数据已在内存,播放不必再走网络加载第二遍。
+// 反向(先播后下)做不到:播放只按需取片段,凑不出完整文件,下载仍得拉全量。
+const _videoBlobUrls = new Map();  // url → blob: URL,同 _videoShareCache 生命周期
+function videoPlayUrl(url){ return _videoBlobUrls.get(url) || url; }
+function useLocalVideo(player, url){
+  const local=_videoBlobUrls.get(url);
+  // 正在播就不换源:换源会打断播放,而 iOS 不允许非手势里重新 play() 有声视频
+  if(!player || !local || player.src===local || !player.paused) return;
+  const t=player.currentTime;
+  player.src=local;
+  if(t) player.addEventListener("loadedmetadata", ()=>{ player.currentTime=t; }, {once:true});
+}
 function setVideoDlLabel(btn, text){
   let lab=btn.querySelector(".dllabel");
   if(!lab){ lab=el("span","dllabel"); btn.append(lab); }
@@ -134,7 +146,7 @@ async function shareVideoFile(file, filename, btn, auto){
     setVideoDlLabel(btn, "保存失败:"+((e && e.name) || "未知错误"));
   }
 }
-async function onVideoDownloadClick(url, filename, btn){
+async function onVideoDownloadClick(url, filename, btn, player){
   const cached=_videoShareCache.get(url);
   if(cached){ shareVideoFile(cached, filename, btn, false); return; }  // 同步发起,手势有效
   if(btn.classList.contains("busy")) return;
@@ -153,6 +165,8 @@ async function onVideoDownloadClick(url, filename, btn){
     }
     const file=new File(parts, filename, {type: resp.headers.get("Content-Type")||"video/mp4"});
     _videoShareCache.set(url, file);
+    _videoBlobUrls.set(url, URL.createObjectURL(file));
+    useLocalVideo(player, url);
     btn.classList.add("ready"); setVideoDlLabel(btn, "点此保存");
     await shareVideoFile(file, filename, btn, true);
   }catch(e){
@@ -179,11 +193,12 @@ function appendVids(container, vids){
     const head=el("div","videohead");
     if(name){ const cap=el("div","videoname"); cap.textContent="🎬 "+name; head.append(cap); }
     const dl=el("button","videodl"); dl.type="button"; dl.title="下载视频"; dl.innerHTML=ic("download");
-    dl.onclick=()=>onVideoDownloadClick(url, name||"video.mp4", dl);
     head.append(dl);
     row.append(head);
     const player=el("video"); player.controls=true; player.preload="metadata"; player.playsInline=true;
-    player.src=url;
+    player.src=videoPlayUrl(url);
+    player.addEventListener("pause", ()=>useLocalVideo(player, url));  // 边播边下完的,暂停时再切到本地
+    dl.onclick=()=>onVideoDownloadClick(url, name||"video.mp4", dl, player);
     if(url.startsWith("/")){
       player.onerror=()=>{
         if(row.querySelector(".videoerr")) return;
