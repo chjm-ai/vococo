@@ -221,7 +221,8 @@ def test_frontend_plays_inline_without_extra_click():
     )
     assert "videoload" not in js  # 「点击加载」那一步已经去掉
     assert 'player.preload="metadata"' in js  # 只拉头部渲染首帧,不预载正片
-    assert "player.src=url;" in js
+    assert "player.src=videoPlayUrl(url);" in js
+    assert '"&preview=1"' in js  # 气泡内播放走低码率预览版,下载才拉原片
 
 
 def test_frontend_routes_video_to_its_own_upload_endpoint():
@@ -232,3 +233,49 @@ def test_frontend_routes_video_to_its_own_upload_endpoint():
     assert 'videos:sendFiles.filter(x=>x.kind==="video")' in js
     # audio/webm 不能被视频扩展名兜底抢走(两边都认 webm)
     assert 'if(type.startsWith("audio/")) return false;' in js
+
+
+@pytest.mark.anyio
+async def test_preview_falls_back_then_serves_transcoded(adapter, video_dir, monkeypatch):
+    """preview=1:预览版没好先回原片且不许长缓存;转好后换成预览版;不带参数永远是原片。"""
+    import asyncio
+
+    monkeypatch.setattr(videos, "PREVIEW_MIN_BYTES", 0)
+    monkeypatch.setattr(videos.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+
+    async def fake_ensure(name):
+        dst = videos._preview_file(name)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"small")
+
+    monkeypatch.setattr(session_store, "ensure_video_preview", fake_ensure)
+    video_dir.mkdir(parents=True, exist_ok=True)
+    (video_dir / "1_0.mp4").write_bytes(b"original movie")
+    app = web.Application()
+    app.add_routes([web.get("/video", adapter._handle_video)])
+    async with TestClient(TestServer(app)) as client:
+        r = await client.get("/video?name=1_0.mp4&preview=1")
+        assert await r.read() == b"original movie"
+        assert r.headers["Cache-Control"] == "no-store"
+        await asyncio.gather(*adapter._video_preview_tasks)
+        r = await client.get("/video?name=1_0.mp4&preview=1")
+        assert await r.read() == b"small"
+        assert await (await client.get("/video?name=1_0.mp4")).read() == b"original movie"
+
+
+def test_purge_removes_preview_too(video_dir):
+    key = "web:v3"
+    turn_id = session_store.start_turn(key, "带视频的一轮")
+
+    class _V:
+        data = b"bytes"
+        media_type = "video/mp4"
+        filename = "a.mp4"
+        local_path = ""
+
+    name = session_store.save_turn_videos(turn_id, [_V()])[0]["file"]
+    pv = videos._preview_file(name)
+    pv.parent.mkdir(parents=True, exist_ok=True)
+    pv.write_bytes(b"p")
+    session_store.delete_session(key)
+    assert not pv.exists()  # 预览版也得跟着删,不然删会话留一堆孤儿副本

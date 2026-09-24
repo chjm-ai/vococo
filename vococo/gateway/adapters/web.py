@@ -448,6 +448,7 @@ class WebAdapter:
         self._clients: set[asyncio.Queue[tuple[int, str]]] = set()
         self._seq = 0  # 全局单调递增的事件编号
         self._buffer: deque[tuple[int, str]] = deque(maxlen=2000)  # 断线补发用的环形缓冲
+        self._video_preview_tasks: set[asyncio.Task] = set()  # 后台转预览版的任务(持强引用防回收)
         # 每会话「进行中那一轮」的活状态快照:conv -> {started, phase, frames:[(seq,payload)]}。
         # 刷新/首连时据此「状态先行、内容随后」地恢复——先秒推一条状态帧让用户知道
         # 「这轮还在跑、到哪一步」(避免空窗误发),再慢慢补回思考/正文/工具帧。
@@ -683,6 +684,8 @@ class WebAdapter:
         # "ai_"前缀同图片:load_history 靠它把 AI 发的视频贴回 AI 气泡,不能改名
         name = f"{session_store.AI_VIDEO_PREFIX}{uuid.uuid4().hex}.{ext}"
         (config.VIDEOS_DIR / name).write_bytes(src_path.read_bytes())
+        if session_store.video_needs_preview(name):
+            self._spawn_video_preview(name)  # 发出去就开始转预览版,用户点播放时多半已经好了
         self._emit({
             "conv": str(chat_id), "type": "message", "text": caption,
             "videos": [{
@@ -1968,7 +1971,23 @@ class WebAdapter:
         p = session_store.video_path(name)
         if p is None:
             return web.json_response({"error": "not found"}, status=404)
+        # preview=1:气泡内播放要低码率预览版(见 memory/videos.py);下载不带这个参数拿原片。
+        # 预览版还没有就先回原片顶上,同时后台开转——但这份"顶替"不能被浏览器长缓存,
+        # 否则预览版转好之后这个 URL 也永远拿不到它。
+        if request.query.get("preview"):
+            pv = session_store.video_preview_path(name)
+            if pv is not None:
+                return web.FileResponse(pv, headers={"Cache-Control": "max-age=31536000, immutable"})
+            if session_store.video_needs_preview(name):
+                self._spawn_video_preview(name)
+            return web.FileResponse(p, headers={"Cache-Control": "no-store"})
         return web.FileResponse(p, headers={"Cache-Control": "max-age=31536000, immutable"})
+
+    def _spawn_video_preview(self, name: str) -> None:
+        """后台转预览版(事件循环对 task 只留弱引用,不存一份可能被中途回收)。"""
+        t = asyncio.create_task(session_store.ensure_video_preview(name))
+        self._video_preview_tasks.add(t)
+        t.add_done_callback(self._video_preview_tasks.discard)
 
     @_authed
     async def _handle_history(self, request: web.Request) -> web.Response:
