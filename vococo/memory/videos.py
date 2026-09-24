@@ -13,9 +13,13 @@ Claude Messages 协议没有 video block(这层协议各供应商一致),硬塞�
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import re
+import shutil
 import sqlite3
+from pathlib import Path
 
 from .. import config
 from . import _db
@@ -174,6 +178,85 @@ def video_path(name: str):
     return p if p.is_file() else None
 
 
+# ── 预览版(低码率副本)──────────────────────────────────────────────────
+# 聊天气泡里播放走预览版,下载才拉原片:跨境隧道带宽很低,几十 MB 的原片边播边缓冲
+# 会卡很久。预览版限长边 960、码率封顶 700k,实测 95 秒竖屏 43MB → 2.3MB、转码 17 秒。
+# 存在 VIDEOS_DIR/preview/<原名>.mp4,不跟原片混放(原片目录的命名/前缀规则不受影响)。
+PREVIEW_MIN_BYTES = 4 * 1024 * 1024  # 原片比这还小就直接播原片,转码不划算
+_PREVIEW_TIMEOUT = 600
+_preview_jobs: set[str] = set()     # 正在转的,防同一视频被并发请求重复开 ffmpeg
+_preview_failed: set[str] = set()   # 转失败的,本进程内不再重试(否则每次播放都白跑一遍)
+_preview_sem: asyncio.Semaphore | None = None  # 同一时刻只转一个,别把机器 CPU 吃满
+
+
+def _preview_file(name: str) -> Path:
+    return config.VIDEOS_DIR / "preview" / f"{name}.mp4"
+
+
+def preview_path(name: str) -> Path | None:
+    """已生成好的预览版路径;没有(未生成/转码中/原片太小/非法名)返回 None。"""
+    if not name or not _VIDEO_NAME_RE.match(name):
+        return None
+    p = _preview_file(name)
+    return p if p.is_file() else None
+
+
+def needs_preview(name: str) -> bool:
+    """这个视频值不值得、还需不需要去生成预览版。"""
+    src = video_path(name)
+    if src is None or name in _preview_jobs or name in _preview_failed:
+        return False
+    if _preview_file(name).is_file() or not shutil.which("ffmpeg"):
+        return False
+    try:
+        return src.stat().st_size >= PREVIEW_MIN_BYTES
+    except OSError:
+        return False
+
+
+async def ensure_preview(name: str) -> None:
+    """后台生成预览版;已有/在转/不值得转时直接返回。失败只记一笔,不抛错。"""
+    global _preview_sem
+    if not needs_preview(name):
+        return
+    _preview_jobs.add(name)
+    dst = _preview_file(name)
+    tmp = dst.with_name(f"{name}.tmp.mp4")  # 先写临时文件再改名:没转完的半截文件绝不能被拿去播
+    try:
+        if _preview_sem is None:
+            _preview_sem = asyncio.Semaphore(1)
+        async with _preview_sem:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            proc = await asyncio.create_subprocess_exec(
+                shutil.which("ffmpeg") or "ffmpeg", "-v", "error", "-y",
+                "-i", str(config.VIDEOS_DIR / name),
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-vf", "scale=w='min(960,iw)':h='min(960,ih)'"
+                       ":force_original_aspect_ratio=decrease:force_divisible_by=2",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                "-maxrate", "700k", "-bufsize", "1400k", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "64k", "-ac", "2",
+                "-movflags", "+faststart",  # moov 放文件头,手机不用等下完就能起播
+                str(tmp),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                code = await asyncio.wait_for(proc.wait(), _PREVIEW_TIMEOUT)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                code = -1
+        if code == 0 and tmp.is_file():
+            os.replace(tmp, dst)
+        else:
+            _preview_failed.add(name)
+    except OSError:
+        _preview_failed.add(name)
+    finally:
+        tmp.unlink(missing_ok=True)
+        _preview_jobs.discard(name)
+
+
 def purge_session_videos(c: sqlite3.Connection, session_key: str) -> None:
     """删会话前把它名下所有视频文件从磁盘清掉,避免孤儿文件堆积(视频体积大,更不能留)。"""
     rows = c.execute(
@@ -189,3 +272,4 @@ def purge_session_videos(c: sqlite3.Connection, session_key: str) -> None:
             name = (e.get("file") or "") if isinstance(e, dict) else ""
             if _VIDEO_NAME_RE.match(name or ""):
                 (config.VIDEOS_DIR / name).unlink(missing_ok=True)
+                _preview_file(name).unlink(missing_ok=True)

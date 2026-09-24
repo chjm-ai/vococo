@@ -118,7 +118,8 @@ const _videoShareCache = new Map();  // url → File,只活在这次页面会话
 // 下载好的视频顺手给播放器用:整段数据已在内存,播放不必再走网络加载第二遍。
 // 反向(先播后下)做不到:播放只按需取片段,凑不出完整文件,下载仍得拉全量。
 const _videoBlobUrls = new Map();  // url → blob: URL,同 _videoShareCache 生命周期
-function videoPlayUrl(url){ return _videoBlobUrls.get(url) || url; }
+// 播放默认走低码率预览版(preview=1,后端没转好会先回原片);下载按钮拉的是原片 url
+function videoPlayUrl(url){ return _videoBlobUrls.get(url) || (url.startsWith("/") ? url+"&preview=1" : url); }
 function useLocalVideo(player, url){
   const local=_videoBlobUrls.get(url);
   // 正在播就不换源:换源会打断播放,而 iOS 不允许非手势里重新 play() 有声视频
