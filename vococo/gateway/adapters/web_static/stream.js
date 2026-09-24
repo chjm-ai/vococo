@@ -107,42 +107,58 @@ async function loadAuthedAudio(player, url){
   const o=await fetchCachedBlobUrl(url);
   if(o) player.src=o;
 }
-// 视频下载:iOS 上(尤其是"添加到主屏幕"后的独立 PWA,没有 Safari 自带的地址栏/
-// 返回按钮兜底)直接导航到视频 URL 或用 <a download> 都可能被系统接管成一个卡死的
-// 全屏文档预览页,连"完成"按钮都没有,回不去聊天界面。真正稳的路径是系统级分享面板
-// (navigator.share 分享文件),但分享面板要求"点击那一刻"必须还在用户手势的有效期内——
-// 视频动辄几十 MB,先 await fetch 完再调 share() 时手势早就过期了,Safari 会直接拒绝、
-// 一拒绝就退回最初那个卡死页面(上一版就是栽在这)。所以拆成两次点击:
-// 第一次点击后台把视频拉到内存里(这段时间手势可以过期,无所谓);拉完变成"就绪"状态;
-// 用户再点一次,share() 是在这第二次点击的手势里同步发起的,不会被拒。
+// 视频下载:iOS 独立 PWA 里 <a download>/直接打开视频 URL 都会被系统接管成一个没有返回
+// 按钮的全屏预览页,人被卡死。唯一能正常回来的路是系统分享面板(navigator.share 分享文件,
+// 里面有"存储视频"),但它要求调用时仍在点击手势有效期内,而视频要先整段拉进内存。
+// 所以:点第一下开始下载并在按钮上实时显示进度(跨境隧道带宽很低,几十 MB 要好几分钟,
+// 之前没进度 = 用户以为没反应);下完先试着直接弹分享面板,被系统以"手势过期"拒绝就
+// 把按钮变成「点此保存」,用户再点一下(新的手势)就能弹出。失败一律在按钮上写明,
+// 不再悄悄 window.open(异步里调会被拦,等于没反应)。
 const _videoShareCache = new Map();  // url → File,只活在这次页面会话里
-async function onVideoDownloadClick(url, filename, btn){
-  const cached=_videoShareCache.get(url);
-  if(cached){
-    try{
-      if(navigator.share && (!navigator.canShare || navigator.canShare({files:[cached]}))){
-        await navigator.share({files:[cached], title:filename});
-        return;
-      }
-    }catch(e){
-      if(e && e.name==="AbortError") return;  // 用户自己在分享面板里点了取消
-    }
-    window.open(url, "_blank", "noopener");  // 没有文件分享能力/分享失败:退回直接打开
+function setVideoDlLabel(btn, text){
+  let lab=btn.querySelector(".dllabel");
+  if(!lab){ lab=el("span","dllabel"); btn.append(lab); }
+  lab.textContent=text;
+}
+async function shareVideoFile(file, filename, btn, auto){
+  if(!navigator.share || !navigator.canShare || !navigator.canShare({files:[file]})){
+    setVideoDlLabel(btn, "当前浏览器不支持保存");
     return;
   }
-  btn.disabled=true; btn.title="下载准备中…";
+  try{
+    await navigator.share({files:[file], title:filename});
+    setVideoDlLabel(btn, "点此保存");
+  }catch(e){
+    if(e && e.name==="AbortError") return;             // 用户自己在分享面板里点了取消
+    if(auto && e && e.name==="NotAllowedError") return; // 手势已过期,等用户点「点此保存」
+    setVideoDlLabel(btn, "保存失败:"+((e && e.name) || "未知错误"));
+  }
+}
+async function onVideoDownloadClick(url, filename, btn){
+  const cached=_videoShareCache.get(url);
+  if(cached){ shareVideoFile(cached, filename, btn, false); return; }  // 同步发起,手势有效
+  if(btn.classList.contains("busy")) return;
+  btn.classList.add("busy"); setVideoDlLabel(btn, "下载中 0%");
   try{
     const resp=await api(url);
-    if(!resp.ok) throw new Error("http "+resp.status);
-    const blob=await resp.blob();
-    _videoShareCache.set(url, new File([blob], filename, {type: blob.type||"video/mp4"}));
-    btn.title="已就绪,再点一次保存到相册/文件";
-    btn.classList.add("ready");
+    if(!resp.ok) throw new Error("HTTP "+resp.status);
+    const total=+resp.headers.get("Content-Length")||0;
+    const reader=resp.body.getReader(), parts=[];
+    let got=0;
+    for(;;){
+      const {done, value}=await reader.read();
+      if(done) break;
+      parts.push(value); got+=value.length;
+      setVideoDlLabel(btn, "下载中 "+(total ? Math.floor(got*100/total)+"%" : (got/1048576).toFixed(1)+"MB"));
+    }
+    const file=new File(parts, filename, {type: resp.headers.get("Content-Type")||"video/mp4"});
+    _videoShareCache.set(url, file);
+    btn.classList.add("ready"); setVideoDlLabel(btn, "点此保存");
+    await shareVideoFile(file, filename, btn, true);
   }catch(e){
-    btn.title="下载视频";
-    window.open(url, "_blank", "noopener");
+    setVideoDlLabel(btn, "下载失败,点击重试");
   }finally{
-    btn.disabled=false;
+    btn.classList.remove("busy");
   }
 }
 // 视频组渲染:直接给 <video controls>,用户点播放就播。
