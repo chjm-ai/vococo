@@ -71,6 +71,16 @@ system prompt 的 append 块 + skill 描述是每轮都进的固定成本,长会
 - **`_INJECT_MAX_CHARS`(prompt.py)是截断保险丝,不是目标值**:MEMORY.md 长过它就静默截尾,
   最新沉淀的记忆刚存就从索引里消失。上调前先看看是不是又有重复注入可以砍。
 
+## 国内中转入口(cn-tunnel)
+
+国内访问走 Cloudflare 会落到海外边缘(实测 colo=AMS),打开重会话要 1.5~3s;经国内服务器中转只要约 0.2s。
+链路:本机 Web 端口 → SSH 反向隧道 → 国内服务器 `127.0.0.1:18849` → 服务器 nginx(https)反代出去。
+原 Cloudflare 入口照常可用,两条并存。
+
+- 安装/卸载:`bash deploy/cn-tunnel.sh install <ssh主机别名>`;`status` / `logs` / `restart` / `uninstall` 同 launchd.sh 用法。
+- 服务器侧 sshd 要配 `ClientAliveInterval`,否则本机断网重连时,旧转发还占着端口,新连接会反复失败(见脚本头注释)。
+- 隧道断开时入口返回 502,先看 `bash deploy/cn-tunnel.sh logs`。
+
 ## 排障:查会话
 
 会话数据在 `data/state.db`(SQLite,`turns`/`session_meta`/`projects` 三张表,见 [session_store.py](vococo/memory/session_store.py))。别再手写 SQL 或翻 `~/.claude/projects/`——用 [scripts/inspect_sessions.py](scripts/inspect_sessions.py):
