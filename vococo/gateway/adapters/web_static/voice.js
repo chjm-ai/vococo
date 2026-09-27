@@ -1440,6 +1440,7 @@
     }
   }
 
+  let taskStreamOpened = false;
   function connectTaskStream(){
     const es = new EventSource("/tasks/stream?token=" + encodeURIComponent(S.token));
     es.addEventListener("task_update", e=>{
@@ -1466,7 +1467,7 @@
       }
     });
     // SSE 断线重连成功后全量校准一次:重连期间错过的 task_done 靠这次拉全量补上
-    es.onopen = ()=>{ loadTasks(); };
+    es.onopen = ()=>{ taskStreamOpened = true; loadTasks(); };
   }
 
   // ── Omni-Realtime WebRTC 通话(免提唯一管线,ADR 0004)──────────────────────
@@ -3365,7 +3366,10 @@
     if(window.__taskStreamConnected) return;
     window.__taskStreamConnected = true;
     connectTaskStream();
-    loadTasks();  // 顺带初始化任务状态条:页面刷新前就在跑的任务也能立刻出现在条上
+    // 初始化任务状态条交给 es.onopen 的 loadTasks(页面刷新前就在跑的任务也能出现在条上)。
+    // 不在这里再拉一次:两次撞在启动那一刻重复了;且订阅之后的快照才不会漏掉中间完成的任务。
+    // 3 秒还没连上就兜底拉一次,别让状态条一直空着。
+    setTimeout(()=>{ if(!taskStreamOpened) loadTasks(); }, 3000);
   };
 
   // teardownCallResources:退出通话视图时收麦克风/播放/WS——原页面靠浏览器整页

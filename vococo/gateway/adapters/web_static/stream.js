@@ -657,6 +657,7 @@ function handleEvent(e){
     // 都是廉价的 GET,不必省这一次:start 无条件刷新对应侧栏。
     if(e.type==="start"){
       if(String(e.conv).startsWith("task:")) loadVoiceSidebar();
+      else if("elapsed" in e) loadConvsSoon();  // 连上时补发的进行中会话,见 loadConvsSoon
       else loadConvs();
     }
   }
