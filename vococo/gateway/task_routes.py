@@ -27,6 +27,13 @@ def _dispatch_chat_id(request: web.Request) -> str | None:
     return value or None
 
 
+def _json(data: dict | list) -> web.Response:
+    """协商 gzip + 中文按原文输出(默认 \\uXXXX 转义会让中文体积翻倍)。"""
+    resp = web.json_response(data, dumps=functools.partial(json.dumps, ensure_ascii=False))
+    resp.enable_compression()
+    return resp
+
+
 async def handle_tasks_list(request: web.Request) -> web.Response:
     if (guard := _guard(request)) is not None:
         return guard
@@ -42,11 +49,11 @@ async def handle_tasks_list(request: web.Request) -> web.Response:
         source=source,
         dispatch_chat_id=_dispatch_chat_id(request),
     )
-    # 列表带 result_full 全文,单条长结果就有几万字;不压缩、中文转 \uXXXX 时实测 510KB,
-    # 是 Web 启动时最慢的一个请求(国内线路 1.3s)。
-    resp = web.json_response(rows, dumps=functools.partial(json.dumps, ensure_ascii=False))
-    resp.enable_compression()
-    return resp
+    # 列表不带 result_full 全文:20 条里全文占 258KB(单条就能几万字),是 Web 启动最慢的
+    # 请求。只标 has_full,前端列表出来后空闲时再逐条走 /tasks/{id} 预取详情。
+    for row in rows:
+        row["has_full"] = bool(row.pop("result_full", ""))
+    return _json(rows)
 
 
 async def handle_task_detail(request: web.Request) -> web.Response:
@@ -55,7 +62,7 @@ async def handle_task_detail(request: web.Request) -> web.Response:
     task = tasks.get(request.match_info["task_id"])
     if task is None:
         return web.json_response({"error": "not found"}, status=404)
-    return web.json_response(task)
+    return _json(task)
 
 
 async def handle_task_stop(request: web.Request) -> web.Response:

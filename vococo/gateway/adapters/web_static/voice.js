@@ -959,6 +959,7 @@
       // 切会话时上一个请求可能后到;不能让旧会话任务覆盖当前输入框状态条。
       if(sessionKey !== taskSessionKey()) return;
       renderTasks(rows);
+      scheduleTaskPrefetch(rows);  // 列表先出,详情等页面空闲后再逐条预取
       // 顺带全量校准状态条;接口只补漏,不覆盖 SSE 已经收到的更新。
       for(const t of rows){
         // 同 isCurrentConversationTask:活跃(重新激活)任务不受清空时间戳过滤
@@ -1166,6 +1167,46 @@
     loadTasks();
   });
 
+  // ── 任务详情(result_full)按需 + 空闲预取 ─────────────────────────────────
+  // /tasks 列表不带全文(单条能几万字,全带上会拖慢进应用);列表出来后等页面空闲,
+  // 再逐条低优先级预取进缓存,用户点开时基本已就绪,不用每次点都现拉。
+  // 缓存按 updated_at 认版本:任务续跑/重跑后版本变了自动重取。
+  const taskFullCache = new Map();    // id -> {v: updated_at, text}
+  const taskFullInflight = new Map(); // id -> Promise,预取和点击撞上同一条时共用一次请求
+  let taskPrefetchTimer = null;
+
+  function cachedTaskFull(t){
+    const c = taskFullCache.get(t.id);
+    return c && c.v === t.updated_at ? c.text : null;
+  }
+
+  function fetchTaskFull(t, low){
+    if(taskFullInflight.has(t.id)) return taskFullInflight.get(t.id);
+    const p = fetch(`/tasks/${encodeURIComponent(t.id)}`, {headers:{"X-Auth-Token":S.token}, priority: low ? "low" : "auto"})
+      .then(r=> r.ok ? r.json() : null)
+      .then(d=>{
+        if(!d) return null;
+        taskFullCache.set(t.id, {v: d.updated_at, text: d.result_full || ""});
+        return d.result_full || "";
+      })
+      .catch(()=>null)
+      .finally(()=> taskFullInflight.delete(t.id));
+    taskFullInflight.set(t.id, p);
+    return p;
+  }
+
+  // 等页面 load 完再空闲,逐条串行预取——不跟首屏请求抢带宽
+  function scheduleTaskPrefetch(rows){
+    clearTimeout(taskPrefetchTimer);
+    const todo = rows.filter(t=> t.has_full && !TASK_ACTIVE_STATUSES.includes(t.status) && cachedTaskFull(t) === null);
+    if(!todo.length) return;
+    const idle = window.requestIdleCallback || (fn=> setTimeout(fn, 200));
+    const start = ()=>{ taskPrefetchTimer = setTimeout(()=> idle(async ()=>{
+      for(const t of todo){ if(cachedTaskFull(t) === null) await fetchTaskFull(t, true); }
+    }), 2000); };
+    if(document.readyState === "complete") start(); else window.addEventListener("load", start, {once:true});
+  }
+
   function renderTasks(rows){
     tasksList.innerHTML = "";
     if(!rows.length){ tasksList.innerHTML = '<div class="task-empty">还没有任务</div>'; return; }
@@ -1178,10 +1219,18 @@
         `<span class="title">${esc(t.title)}</span><span>${STATUS_WORD[t.status] || t.status}</span>` +
         (active ? '<button class="stop">停止</button>' : "") + `</div>` +
         `<div class="note">${esc(t.status === "running" ? t.progress_note : (t.result_summary || ""))}</div>` +
-        `<div class="full">${esc(t.result_full || "")}</div>`;
-      rowEl.querySelector(".row").addEventListener("click", (e)=>{
+        `<div class="full">${esc(cachedTaskFull(t) || "")}</div>`;
+      rowEl.querySelector(".row").addEventListener("click", async (e)=>{
         if(e.target.closest(".stop")) return;
-        rowEl.querySelector(".full").classList.toggle("open");
+        const full = rowEl.querySelector(".full");
+        full.classList.toggle("open");
+        if(!full.classList.contains("open") || !t.has_full) return;
+        const cached = cachedTaskFull(t);
+        if(cached !== null){ full.textContent = cached; return; }
+        full.textContent = "加载中…";
+        const text = await fetchTaskFull(t, false);
+        full.textContent = text === null ? "加载失败,再点一次重试" : text;
+        if(text === null) full.classList.remove("open");
       });
       const stopEl = rowEl.querySelector(".stop");
       if(stopEl) stopEl.addEventListener("click", async (e)=>{
