@@ -869,6 +869,17 @@ function syncCronMode(){
     ? "脚本用途说明,如「检查外贸邮件和退信情况」"
     : "到点时要执行的指令,如「查一下今天的日历和待办,简短汇总」";
 }
+function syncCronTrigger(){
+  const t=$("#cfTrigger").value;
+  $("#cfCronFields").hidden = t!=="cron";
+  $("#cfWebhookFields").hidden = t!=="webhook";
+  $("#cfWatchFields").hidden = t!=="watch";
+}
+function cronHookUrl(job){
+  const sch=job && job.schedule;
+  if(!sch || sch.kind!=="webhook" || !sch.secret) return "";
+  return location.origin+"/hook/"+encodeURIComponent(job.job_id)+"?key="+encodeURIComponent(sch.secret);
+}
 function showCronForm(job){
   S.cronEditId = job ? job.job_id : null;
   $("#cronModalTitle").textContent = job ? "编辑定时任务" : "＋ 新建定时任务";
@@ -885,6 +896,12 @@ function showCronForm(job){
   const presetOpts=[...$("#cfPreset").options].map(o=>o.value);
   $("#cfPreset").value = expr && presetOpts.includes(expr) ? expr : "custom";
   $("#cfCron").value = expr;
+  const kind = job && job.schedule ? job.schedule.kind : "cron";
+  $("#cfTrigger").value = (kind==="webhook"||kind==="watch") ? kind : "cron";
+  $("#cfHookUrl").value = cronHookUrl(job);
+  $("#cfWatchPath").value = kind==="watch" ? (job.schedule.path||"") : "";
+  $("#cfWatchGlob").value = kind==="watch" ? (job.schedule.glob||"") : "";
+  syncCronTrigger();
   $("#cfCwd").value = job ? (job.cwd || "") : "";
   populateCronModelSelect(job ? (job.model || "") : "");
   requestAnimationFrame(()=>{for(const ta of document.querySelectorAll("#cronForm textarea")) autoResizeTA(ta);});
@@ -897,10 +914,21 @@ async function saveCronJob(){
   const summarize_prompt=$("#cfSummarizePrompt").value.trim();
   if(!name || !prompt){ alert("任务名称和执行说明不能为空"); return; }
   if(mode==="script" && !command){ alert("脚本任务需要填写要执行的命令"); return; }
-  if(!cron){ alert("请选一个预设频率,或填自定义 cron 表达式"); return; }
+  const trigger=$("#cfTrigger").value;
+  let schedule;
+  if(trigger==="webhook"){
+    schedule={kind:"webhook"};   // secret 由服务端生成/沿用
+  }else if(trigger==="watch"){
+    const path=$("#cfWatchPath").value.trim();
+    if(!path){ alert("请填写要监听的目录"); return; }
+    schedule={kind:"watch", path, glob:$("#cfWatchGlob").value.trim()||"*"};
+  }else{
+    if(!cron){ alert("请选一个预设频率,或填自定义 cron 表达式"); return; }
+    schedule={kind:"cron", expr:cron};
+  }
   const editId=S.cronEditId;
   const model=$("#cfModel").value;
-  const body={name, prompt, schedule:{kind:"cron", expr:cron}, cwd, model, mode, command, summarize_prompt};
+  const body={name, prompt, schedule, cwd, model, mode, command, summarize_prompt};
   if(editId) body.id=editId;
   let d;
   try{
@@ -909,6 +937,14 @@ async function saveCronJob(){
     d=await r.json();
   }catch(e){ alert(editId?"保存失败":"创建失败"); return; }
   if(d.error){ alert(d.error); return; }
+  // 新建的 Webhook 任务:保存后才有链接,留在弹窗里给用户复制
+  if(!editId && d.job && d.job.schedule && d.job.schedule.kind==="webhook"){
+    S.cronEditId=d.job.id;
+    $("#cronModalTitle").textContent="编辑定时任务"; $("#cfSave").textContent="✓ 保存";
+    $("#cfHookUrl").value=cronHookUrl({job_id:d.job.id, schedule:d.job.schedule});
+    await loadCronSidebar();
+    return;
+  }
   closeCronModal(); await loadCronSidebar();
 }
 async function toggleCronJob(id, enabled){
@@ -936,6 +972,12 @@ async function deleteCronJob(id, title, conv){
 }
 $("#cfPreset").onchange = ()=>{ const v=$("#cfPreset").value; if(v!=="custom") $("#cfCron").value=v; };
 $("#cfMode").onchange = syncCronMode;
+$("#cfTrigger").onchange = syncCronTrigger;
+$("#cfHookCopy").onclick = async ()=>{
+  const v=$("#cfHookUrl").value; if(!v){ alert("保存后才会生成链接"); return; }
+  try{ await navigator.clipboard.writeText(v); $("#cfHookCopy").textContent="已复制"; setTimeout(()=>$("#cfHookCopy").textContent="复制",1500); }
+  catch(e){ $("#cfHookUrl").select(); }
+};
 $("#cfCancel").onclick = closeCronModal;
 $("#cfSave").onclick = saveCronJob;
 $("#cronModal").onclick = e=>{ if(e.target===$("#cronModal")) closeCronModal(); };

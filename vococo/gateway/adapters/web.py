@@ -2848,6 +2848,29 @@ class WebAdapter:
             request=request,
         )
 
+    # ── 事件触发:外部 Webhook 入口(见 cron/events.py)──────────────────────
+    # 不走 Web 登录口令(外部系统拿不到),改用每个任务自己的 secret:?key= 或请求头
+    # X-Vococo-Key。只接受已启用的 webhook 型任务;请求体 ≤64KB,当作事件数据进缓冲,
+    # 同一任务 60 秒内的多次请求会合并成一次运行。
+    async def _handle_hook(self, request: web.Request) -> web.Response:
+        from ...cron import events, scheduler
+
+        job_id = request.match_info.get("job_id", "")
+        job = next((j for j in scheduler.load_jobs() if j.get("id") == job_id), None)
+        sch = (job or {}).get("schedule") or {}
+        if job is None or sch.get("kind") != "webhook" or not job.get("enabled"):
+            return web.json_response({"error": "not found"}, status=404)
+        key = request.query.get("key") or request.headers.get("X-Vococo-Key", "")
+        if not key or not hmac.compare_digest(str(key), str(sch.get("secret") or "")):
+            return web.json_response({"error": "forbidden"}, status=403)
+        raw = await request.content.read(events.WEBHOOK_MAX_BYTES + 1)
+        if len(raw) > events.WEBHOOK_MAX_BYTES:
+            return web.json_response({"error": "payload too large"}, status=413)
+        text = raw.decode("utf-8", errors="replace").strip()
+        ctype = request.headers.get("Content-Type", "")
+        events.submit(job_id, f"Webhook 请求(Content-Type: {ctype or '无'}):\n{text or '(空)'}")
+        return web.json_response({"ok": True, "queued": True}, status=202)
+
     # ── 安全:永久审批规则 / 审批记录 / 待批队列(设置页「安全」页签)──────────
     @_authed
     async def _handle_security(self, request: web.Request) -> web.Response:
@@ -3005,6 +3028,7 @@ class WebAdapter:
                 web.get("/api/checkin/{name}", self._handle_checkin_get),
                 web.post("/api/checkin/{name}", self._handle_checkin_post),
                 web.get(r"/{name}.png", self._handle_icon),
+                web.post("/hook/{job_id}", self._handle_hook),
                 web.get("/security", self._handle_security),
                 web.post("/security/rule/delete", self._handle_security_rule_delete),
                 web.post("/security/missed", self._handle_security_missed),

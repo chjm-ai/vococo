@@ -85,7 +85,7 @@ async function loadSecurity(){
         (m.rule_label?'<br>📌 '+esc(m.rule_label):''), false,
         (m.rule_kind?'<button class="btn ghost sm" data-missed="'+esc(m.id)+'" data-act="forever">永远允许并重跑</button>':'')+
         '<button class="btn ghost sm" data-missed="'+esc(m.id)+'" data-act="once">允许一次并重跑</button>'+
-        '<button class="miniact" data-missed="'+esc(m.id)+'" data-act="dismiss">忽略</button>')).join("");
+        '<button class="miniact" data-missed="'+esc(m.id)+'" data-act="dismiss">忽略</button>').replace('class="srow','class="srow secmissed')).join("");
   }
   h+='<div class="sechd">永久规则</div>';
   if(!(d.rules||[]).length) h+='<div class="setempty">还没有规则。审批弹窗里点「永远允许」会存到这里。</div>';

@@ -39,6 +39,10 @@ _Avoid_: 权限系统(它只管 escalate 这一档,不是全量权限模型)
 Web 上把一次工具调用渲染成结构化 UI —— 待办清单(TodoWrite)、红绿 diff(Edit/Write/MultiEdit)、计划卡(ExitPlanMode)、命令预览(Bash/Read)。复刻 Claude Code「看得见过程」的体验。
 _Avoid_: 工具日志(它是结构化交互,不是纯文本流水)
 
+**Event Trigger(事件触发)**:
+定时任务除了按时间(cron/interval/once),还能按事件跑(`cron/events.py`):`webhook`(外部 POST `/hook/<job_id>?key=<secret>`,不走 Web 口令、只认任务自己的密钥)和 `watch`(调度器每跳扫一次目录,新文件/改动触发,首扫只记基线)。事件先进缓冲:任务在跑不打断、60 秒内的多次事件合并成一次。事件数据对 Agent 是不可信外部内容,用 `<event_data>` 围栏包住;脚本任务经环境变量 `VOCOCO_EVENT` / `VOCOCO_EVENT_FILES` 拿到。
+_Avoid_: 把 webhook 当成 Web 登录口令的替代(它只能触发指定任务)
+
 **Suggestion(建议)**:
 一个待用户一键接受才生效的定时任务提议(consent-first)。
 _Avoid_: 自动触发/自主任务

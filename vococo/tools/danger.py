@@ -1192,7 +1192,8 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
     try:
         hard = _hard_guard(tool_name, tool_input, current_cwd())
         if hard:
-            _audit(tool_name, "guard", "常开防线", _describe(tool_name, tool_input), "blocked")
+            why = (hard.get("hookSpecificOutput") or {}).get("permissionDecisionReason", "")
+            _audit(tool_name, "guard", why[:80] or "常开防线", _describe(tool_name, tool_input), "blocked")
             return hard
         # 敏感读取:只标注不拦(见上方 _sensitive_read_target 说明)
         sensitive = _sensitive_read_target(tool_name, tool_input)

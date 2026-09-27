@@ -316,14 +316,14 @@ def test_add_cron_job_rejects_invalid_cwd(sugg_env):
 def test_add_cron_job_validation(sugg_env):
     from vococo.tools import builtin
 
-    # cron 和 run_in_minutes 都不填
+    # cron / run_in_minutes / trigger 都不填
     out = _text(asyncio.run(builtin.add_cron_job.handler({"name": "x", "prompt": "y"})))
-    assert "二选一" in out
+    assert "三选一" in out
 
-    # cron 和 run_in_minutes 都填
+    # cron 和 run_in_minutes 都填(三者只能选一个)
     out = _text(asyncio.run(builtin.add_cron_job.handler(
         {"name": "x", "prompt": "y", "cron": "0 8 * * *", "run_in_minutes": 5})))
-    assert "二选一" in out
+    assert "三选一" in out
 
     # 非法 cron 表达式:validate_schedule 先拦下,不会走到审批那一步
     out = _text(asyncio.run(builtin.add_cron_job.handler(
