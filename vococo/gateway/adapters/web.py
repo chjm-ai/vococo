@@ -1100,7 +1100,8 @@ class WebAdapter:
             return web.json_response({"results": []})
         from ...core import tasks as bg_tasks  # 懒加载,同 _handle_voice_sidebar
 
-        items = session_store.search_sessions(q, limit=50)
+        # 全表 LIKE 扫描,数据涨到 9000 轮后要 60~100ms,放线程里别卡住其他请求
+        items = await asyncio.to_thread(session_store.search_sessions, q, limit=50)
         for it in items:
             key = it["key"]
             it["conv"] = _conv_id_for_key(key)
@@ -1111,7 +1112,7 @@ class WebAdapter:
                 row = bg_tasks.get(task_id)
                 if row is not None:
                     it["title"] = row["title"]
-        return web.json_response({"results": items})
+        return _compressed_json({"results": items})
 
     @_authed
     async def _handle_voice_sidebar(self, request: web.Request) -> web.Response:
@@ -2119,7 +2120,9 @@ class WebAdapter:
         """
         name = request.query.get("name", "")
         if request.query.get("thumb"):
-            p = session_store.thumb_path(name)
+            # 现生成缩略图是 CPU 活(大图 150~330ms),放事件循环里会把同时进来的
+            # /history、搜索、SSE 全卡住——打开一个图多的新会话曾整页卡好几秒
+            p = await asyncio.to_thread(session_store.thumb_path, name)
         else:
             p = session_store.image_path(name)
         if p is None:
@@ -3041,6 +3044,8 @@ class WebAdapter:
         from ...core import task_runner as _task_runner
 
         asyncio.ensure_future(_task_runner.heal_after_restart())
+        # 缩略图后台补齐:别等用户打开旧会话时才现生成(一次性,之后只补新图)
+        asyncio.ensure_future(asyncio.to_thread(session_store.backfill_thumbs))
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, config.WEB_HOST, config.WEB_PORT)

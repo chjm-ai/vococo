@@ -422,9 +422,50 @@ def test_thumb_path_generates_and_caches_downscaled_image(isolated, monkeypatch)
     assert thumb is not None and thumb.is_file()
     with Image.open(thumb) as im:
         assert max(im.size) <= 320  # 长边压到阈值以内
+        assert im.format == "WEBP"  # 统一存 WebP,比原格式小约 60%
 
     cached_thumb = session_store.thumb_path(name)
     assert cached_thumb == thumb  # 二次访问命中缓存,同一份文件
+
+
+def test_backfill_thumbs_fills_missing_and_drops_legacy(isolated, monkeypatch):
+    """服务启动时后台补齐缩略图:没缩略图的原图补上,旧版按原格式存的缩略图清掉,
+    已有的不重复生成——不然第一次打开图多的旧会话要现场生成,整页图片出不来。"""
+    import io
+
+    from PIL import Image
+
+    from vococo import config
+    from vococo.core.agent import ImageAttachment
+    from vococo.memory import session_store
+
+    monkeypatch.setattr(config, "IMAGES_DIR", isolated / "data" / "images")
+
+    def _b64(mode, color):
+        buf = io.BytesIO()
+        Image.new(mode, (600, 400), color).save(buf, format="PNG")
+        return __import__("base64").b64encode(buf.getvalue()).decode()
+
+    turn_id = session_store.start_turn("web:3", "两张图")
+    names = session_store.save_turn_images(
+        turn_id,
+        [
+            ImageAttachment(data=_b64("RGBA", (0, 0, 255, 128)), media_type="image/png"),
+            ImageAttachment(data=_b64("P", 3), media_type="image/png"),
+        ],
+    )
+    legacy = config.IMAGES_DIR / "_thumbs" / names[0]  # 旧版缩略图:与原图同名同格式
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_bytes(b"old")
+
+    assert session_store.backfill_thumbs() == 2
+    assert not legacy.exists()
+    for n in names:
+        thumb = session_store.thumb_path(n)
+        assert thumb.name == n + ".webp"
+        with Image.open(thumb) as im:
+            assert max(im.size) <= 320
+    assert session_store.backfill_thumbs() == 0  # 都有了就不重复生成
 
 
 def test_purge_session_images_removes_thumb_too(isolated, monkeypatch):

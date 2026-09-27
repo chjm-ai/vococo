@@ -10,8 +10,10 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
 import re
 import sqlite3
+import threading
 
 from .. import config
 from . import _db
@@ -128,31 +130,86 @@ def image_path(name: str):
 
 _THUMB_MAX = 320  # 缩略图最长边(px);历史消息一屏可能同时挂几十张图,拖慢首屏
 _THUMBS_DIR_NAME = "_thumbs"
+# 缩略图统一存 WebP(带透明通道也能存):实测比原格式小约 60%,国内中转线路带宽有限。
+# 文件名 = 原图名 + ".webp";旧版按原格式存的同名缩略图由 backfill_thumbs 顺手清掉。
+_THUMB_SUFFIX = ".webp"
+
+
+def _thumb_file(name: str):
+    return config.IMAGES_DIR / _THUMBS_DIR_NAME / (name + _THUMB_SUFFIX)
+
+
+def _make_thumb(orig, thumb) -> None:
+    """用 Pillow 生成缩略图。CPU 活(大图一张 150~330ms),调用方别放在事件循环里跑。
+
+    先写临时文件再改名:请求线程和后台补齐可能同时生成同一张,改名是原子的,
+    读的一方不会读到写了一半的文件。
+    """
+    from PIL import Image
+
+    thumb.parent.mkdir(parents=True, exist_ok=True)
+    tmp = thumb.with_name(f"{thumb.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    with Image.open(orig) as im:
+        im.thumbnail((_THUMB_MAX, _THUMB_MAX))
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGBA" if im.mode in ("P", "LA", "PA") else "RGB")
+        im.save(tmp, "WEBP", quality=80, method=4)
+    tmp.replace(thumb)
 
 
 def thumb_path(name: str):
-    """按文件名返回缩略图路径(Path);首次访问时用 Pillow 生成并落盘缓存,此后直接命中。
+    """按文件名返回缩略图路径(Path);没有就现生成并落盘缓存,此后直接命中。
 
     内容寻址(原图文件名不变→缩略图文件名跟着不变),同一张图只生成一次。
     生成失败(损坏文件/PIL 不支持的格式)时回落到原图路径,保证至少能显示原图。
     非法名/原图不存在时同 image_path 返回 None。
+    现生成要占 CPU,Web 端经 asyncio.to_thread 调用;平时由 backfill_thumbs 提前备好。
     """
     orig = image_path(name)
     if orig is None:
         return None
-    thumb = config.IMAGES_DIR / _THUMBS_DIR_NAME / name
+    thumb = _thumb_file(name)
     if thumb.is_file():
         return thumb
     try:
-        from PIL import Image
-
-        thumb.parent.mkdir(parents=True, exist_ok=True)
-        with Image.open(orig) as im:
-            im.thumbnail((_THUMB_MAX, _THUMB_MAX))
-            im.save(thumb)
+        _make_thumb(orig, thumb)
         return thumb
     except Exception:
         return orig
+
+
+def backfill_thumbs() -> int:
+    """给还没有缩略图的原图补生成,返回新生成的张数。服务启动后在后台线程跑一遍。
+
+    不补的话,第一次打开图多的旧会话要现场生成,整页图片迟迟出不来(2026-09-27 实测
+    626 张原图里有 312 张没缩略图)。新图优先:最近的会话最可能被打开。
+    """
+    d = config.IMAGES_DIR
+    if not d.is_dir():
+        return 0
+    thumbs_dir = d / _THUMBS_DIR_NAME
+    if thumbs_dir.is_dir():  # 清掉旧版按原格式存的缩略图和中断留下的临时文件
+        for f in thumbs_dir.iterdir():
+            if not f.name.endswith(_THUMB_SUFFIX):
+                f.unlink(missing_ok=True)
+    origs = []
+    for p in d.iterdir():
+        try:
+            if p.is_file() and _IMG_NAME_RE.match(p.name):
+                origs.append((p.stat().st_mtime, p))
+        except OSError:
+            continue
+    made = 0
+    for _, p in sorted(origs, key=lambda x: x[0], reverse=True):
+        thumb = _thumb_file(p.name)
+        if thumb.is_file():
+            continue
+        try:
+            _make_thumb(p, thumb)
+            made += 1
+        except Exception:
+            continue
+    return made
 
 
 def purge_session_images(c: sqlite3.Connection, session_key: str) -> None:
@@ -170,4 +227,4 @@ def purge_session_images(c: sqlite3.Connection, session_key: str) -> None:
         for n in names:
             if _IMG_NAME_RE.match(n or ""):
                 (config.IMAGES_DIR / n).unlink(missing_ok=True)
-                (config.IMAGES_DIR / _THUMBS_DIR_NAME / n).unlink(missing_ok=True)
+                _thumb_file(n).unlink(missing_ok=True)

@@ -32,6 +32,7 @@ from .files import (  # noqa: F401 (re-export)
 from .images import (  # noqa: F401 (re-export)
     AI_IMAGE_PREFIX,
     append_turn_image,
+    backfill_thumbs,
     clone_turn_images,
     image_path,
     purge_session_images,
