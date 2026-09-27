@@ -58,3 +58,40 @@ async def test_tasks_api_rejects_unknown_source(task_api_client):
 
     assert response.status == 400
     assert (await response.json())["error"] == "source 不支持"
+
+
+def _done_task(title: str, full: str) -> dict:
+    t = tasks.create(title, "prompt", dispatch_chat_id="main", origin="chat")
+    tasks.set_status(t["id"], "running")
+    tasks.finish(t["id"], "done", full, "一句话摘要")
+    return t
+
+
+@pytest.mark.anyio
+async def test_tasks_api_list_omits_full_text_but_flags_it(task_api_client):
+    """列表不带 result_full(单条能几万字,拖慢进应用),只标 has_full;详情走 /tasks/{id}。"""
+    long = _done_task("长结果", "完整结果" * 5000)
+    queued = _create_task(origin="chat", dispatch_chat_id="main")
+
+    response = await task_api_client.get(
+        "/tasks?session_key=main", headers={"Accept-Encoding": "gzip"}
+    )
+
+    assert response.status == 200
+    assert response.headers.get("Content-Encoding") == "gzip"
+    rows = {row["id"]: row for row in await response.json()}
+    assert "result_full" not in rows[long["id"]]
+    assert rows[long["id"]]["has_full"] is True
+    assert rows[long["id"]]["result_summary"] == "一句话摘要"  # 摘要照常给,列表要显示
+    assert rows[queued["id"]]["has_full"] is False
+
+
+@pytest.mark.anyio
+async def test_tasks_api_detail_returns_full_text_unescaped(task_api_client):
+    t = _done_task("详情", "完整结果")
+
+    response = await task_api_client.get(f"/tasks/{t['id']}")
+
+    assert response.status == 200
+    assert "完整结果" in await response.text()  # 中文按原文输出,不是 \uXXXX
+    assert (await response.json())["result_full"] == "完整结果"
