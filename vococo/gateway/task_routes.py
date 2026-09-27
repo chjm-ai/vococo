@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import json
 
 from aiohttp import web
 
@@ -40,7 +42,11 @@ async def handle_tasks_list(request: web.Request) -> web.Response:
         source=source,
         dispatch_chat_id=_dispatch_chat_id(request),
     )
-    return web.json_response(rows)
+    # 列表带 result_full 全文,单条长结果就有几万字;不压缩、中文转 \uXXXX 时实测 510KB,
+    # 是 Web 启动时最慢的一个请求(国内线路 1.3s)。
+    resp = web.json_response(rows, dumps=functools.partial(json.dumps, ensure_ascii=False))
+    resp.enable_compression()
+    return resp
 
 
 async def handle_task_detail(request: web.Request) -> web.Response:

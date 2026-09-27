@@ -343,9 +343,13 @@ def _pending_map(prefix: str) -> dict[str, bool]:
     return {r["key"]: r.get("pending_review", False) for r in session_store.list_sessions(prefix)}
 
 
-def _compressed_json(data: dict) -> web.Response:
-    """首屏/侧边栏的大 JSON 协商压缩，避免跨隧道传输拖慢刷新。"""
-    resp = web.json_response(data)
+def _compressed_json(data: dict | list) -> web.Response:
+    """首屏/侧边栏的大 JSON 协商压缩，避免跨隧道传输拖慢刷新。
+
+    中文按原文输出:默认 ensure_ascii 会把每个汉字转成 6 字节的 \\uXXXX(原文 3 字节),
+    实测 /tasks 因此从 ~100KB 胀到 510KB。
+    """
+    resp = web.json_response(data, dumps=functools.partial(json.dumps, ensure_ascii=False))
     resp.enable_compression()
     return resp
 
@@ -1764,7 +1768,7 @@ class WebAdapter:
         # skills 另开一段(带分隔线):只列当前已启用、对 agent 可见的,和
         # gateway/core.py 里放行 "/skill名" 穿透给 agent 的判定(_enabled_skill_names)同一口径。
         skills = [s for s in settings_store.list_skills() if s["enabled"]]
-        return web.json_response(
+        return _compressed_json(
             {
                 "commands": [{"name": n, "desc": d} for n, d in COMMAND_LIST],
                 "skills": [{"name": s["name"], "desc": s["description"]} for s in skills],
