@@ -122,7 +122,9 @@ async function loadPrefs(){
 }
 // 用一份 /conversations 响应数据重建 S.convs(供 loadConvs() 与登录时的首次拉取共用,
 // 登录那次不用再多打一次 /conversations)。
+var _convsFetchedAt = 0, _convsSoonTimer = null;
 function applyConvs(d){
+  _convsFetchedAt = Date.now();
   const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
   // 新建但还没发出第一条消息的本地会话(conv=local-xxx)后端还不认识,不在返回列表里;
   // 合并时保留它,否则录音/转写等待期间只要有别的会话触发这次刷新,这条新会话就会被冲没
@@ -140,6 +142,13 @@ async function loadConvs(){
   applyConvs(d);
   idbSet("convs", d);
   prefetchHistories();
+}
+// 推送连上时,服务端会给每个进行中的会话补发一帧 start(带 elapsed,见 web.py _handle_events)。
+// 这些会话的状态刚拉到的 /conversations 里已经有了,N 个会话在跑还会连发 N 次——
+// 合并成至多一次,且 3 秒内刚拉过就跳过。实时的 start 仍走 loadConvs() 立即刷新。
+function loadConvsSoon(){
+  clearTimeout(_convsSoonTimer);
+  _convsSoonTimer = setTimeout(()=>{ if(Date.now() - _convsFetchedAt > 3000) loadConvs(); }, 300);
 }
 // ── 后台预热最近会话的历史 ────────────────────────────────────────────────
 // 刷新/新开页面后,IndexedDB 里可能没有(或已过期)最近会话的历史,第一次点开要等一趟
