@@ -348,6 +348,8 @@ class GatewayRunner:
             from . import web_bridge
 
             web_bridge.register(web_adapter.inject, self.cancel_turn)
+            # 后台任务的审批弹窗走 Web 端任务会话(见 tools/danger.py _approve_background)
+            clarify.register_background_adapter(web_adapter)
         from . import watchdog
 
         watchdog.start_thread()  # 假死看门狗:循环卡死 → dump 堆栈 → 自杀交 run.sh 拉起

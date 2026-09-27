@@ -28,12 +28,20 @@ _Avoid_: 白名单/黑名单(这是三档而非二元)
 _Avoid_: 把这三项当成 Risk Tier 的第四档
 
 **Approval Gate(审批闸)**:
-对 `escalate` 的操作,在**有交互通道时**(Web)弹「允许一次 / 拒绝」请用户拍板;**无通道时**(CLI/eval/cron)放行(信任该通道);超时或发送失败视为拒绝。这是「远程编码:动手前对齐」的安全阀。
+对 `escalate` 的操作,在**有交互通道时**(Web)弹「允许一次 / 本次会话(本任务)都允许 / 永远允许 / 拒绝」请用户拍板;超时或发送失败视为拒绝。这是「远程编码:动手前对齐」的安全阀。
+- **后台任务**(cron/语音派活/独立会话):对外/装包类操作弹到 Web 任务会话 + 手机推送,等 `BG_APPROVAL_WAIT_SEC`(默认 10 分钟);超时或处在免打扰时段 `BG_APPROVAL_QUIET`(默认 23-8)→ 先跳过,记进**待批队列**,事后在「设置→安全」一键「永远允许并重跑 / 允许一次并重跑 / 忽略」。本地操作(`rm -rf` 子目录、`reset --hard`)后台照旧放行。
+- **永久规则**(Approval Rule):「永远允许」只收窄不放大——写入按文件所在目录(家目录之下、非凭据目录)、`git push` 按仓库(命令里切目录/夹带其他危险操作不给)、外部 MCP 写按工具名;装包/进程终止/密钥外带/`curl|sh`/`rm -rf` 永不给。存 `state.db` 的 `approval_rules`。
+- **审批记录**(Audit Log):每次 escalate 的结果 + block + 常开防线拦截都记进 `audit_log`,保留 90 天,「设置→安全」可查。
+实现见 `tools/danger.py`(判定/弹窗)+ `memory/approvals.py`(存储)。
 _Avoid_: 权限系统(它只管 escalate 这一档,不是全量权限模型)
 
 **Tool Card(工具卡片)**:
 Web 上把一次工具调用渲染成结构化 UI —— 待办清单(TodoWrite)、红绿 diff(Edit/Write/MultiEdit)、计划卡(ExitPlanMode)、命令预览(Bash/Read)。复刻 Claude Code「看得见过程」的体验。
 _Avoid_: 工具日志(它是结构化交互,不是纯文本流水)
+
+**Event Trigger(事件触发)**:
+定时任务除了按时间(cron/interval/once),还能按事件跑(`cron/events.py`):`webhook`(外部 POST `/hook/<job_id>?key=<secret>`,不走 Web 口令、只认任务自己的密钥)和 `watch`(调度器每跳扫一次目录,新文件/改动触发,首扫只记基线)。事件先进缓冲:任务在跑不打断、60 秒内的多次事件合并成一次。事件数据对 Agent 是不可信外部内容,用 `<event_data>` 围栏包住;脚本任务经环境变量 `VOCOCO_EVENT` / `VOCOCO_EVENT_FILES` 拿到。
+_Avoid_: 把 webhook 当成 Web 登录口令的替代(它只能触发指定任务)
 
 **Suggestion(建议)**:
 一个待用户一键接受才生效的定时任务提议(consent-first)。

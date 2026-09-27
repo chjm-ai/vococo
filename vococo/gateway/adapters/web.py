@@ -2848,6 +2848,93 @@ class WebAdapter:
             request=request,
         )
 
+    # ── 事件触发:外部 Webhook 入口(见 cron/events.py)──────────────────────
+    # 不走 Web 登录口令(外部系统拿不到),改用每个任务自己的 secret:?key= 或请求头
+    # X-Vococo-Key。只接受已启用的 webhook 型任务;请求体 ≤64KB,当作事件数据进缓冲,
+    # 同一任务 60 秒内的多次请求会合并成一次运行。
+    async def _handle_hook(self, request: web.Request) -> web.Response:
+        from ...cron import events, scheduler
+
+        job_id = request.match_info.get("job_id", "")
+        job = next((j for j in scheduler.load_jobs() if j.get("id") == job_id), None)
+        sch = (job or {}).get("schedule") or {}
+        if job is None or sch.get("kind") != "webhook" or not job.get("enabled"):
+            return web.json_response({"error": "not found"}, status=404)
+        key = request.query.get("key") or request.headers.get("X-Vococo-Key", "")
+        if not key or not hmac.compare_digest(str(key), str(sch.get("secret") or "")):
+            return web.json_response({"error": "forbidden"}, status=403)
+        raw = await request.content.read(events.WEBHOOK_MAX_BYTES + 1)
+        if len(raw) > events.WEBHOOK_MAX_BYTES:
+            return web.json_response({"error": "payload too large"}, status=413)
+        text = raw.decode("utf-8", errors="replace").strip()
+        ctype = request.headers.get("Content-Type", "")
+        events.submit(job_id, f"Webhook 请求(Content-Type: {ctype or '无'}):\n{text or '(空)'}")
+        return web.json_response({"ok": True, "queued": True}, status=202)
+
+    # ── 安全:永久审批规则 / 审批记录 / 待批队列(设置页「安全」页签)──────────
+    @_authed
+    async def _handle_security(self, request: web.Request) -> web.Response:
+        from ...memory import approvals
+
+        decision = request.query.get("decision", "")
+        return web.json_response({
+            "rules": approvals.list_rules(),
+            "audit": approvals.list_audit(limit=300, decision=decision),
+            "missed": approvals.list_missed(),
+            "decisions": approvals.DECISIONS,
+        })
+
+    @_authed
+    @_json_body
+    async def _handle_security_rule_delete(self, request: web.Request, body: dict) -> web.Response:
+        from ...memory import approvals
+
+        if not approvals.delete_rule(str((body or {}).get("id", ""))):
+            return web.json_response({"error": "规则不存在"}, status=404)
+        return web.json_response({"ok": True})
+
+    @_authed
+    @_json_body
+    async def _handle_security_missed(self, request: web.Request, body: dict) -> web.Response:
+        """待批队列处理:forever=存规则+重跑 / once=一次性许可+重跑 / dismiss=忽略。"""
+        from ...core import task_runner, tasks
+        from ...memory import approvals
+        from ...tools import danger
+
+        body = body or {}
+        m = approvals.get_missed(str(body.get("id", "")))
+        if m is None:
+            return web.json_response({"error": "这条已经处理过或不存在"}, status=404)
+        action = str(body.get("action", ""))
+        if action == "dismiss":
+            approvals.set_missed_status(m["id"], "dismissed")
+            return web.json_response({"ok": True})
+        if action not in ("forever", "once"):
+            return web.json_response({"error": "未知操作"}, status=400)
+        task_id = tasks.task_id_from_session_key(m["session_key"])
+        if not task_id or tasks.get(task_id) is None:
+            return web.json_response({"error": "对应的后台任务已不存在"}, status=404)
+        if action == "forever":
+            if not m["rule_kind"]:
+                return web.json_response({"error": "这类操作不支持永远允许"}, status=400)
+            approvals.add_rule(m["rule_kind"], m["rule_scope"], m["rule_label"] or "")
+        else:
+            danger.grant_once(m["session_key"], m["reason"])
+        approvals.set_missed_status(m["id"], "approved")
+        res = await task_runner.append(
+            task_id,
+            f"之前被拦下等审批的操作已获主人批准:{m['reason']} {m['detail']}\n"
+            "请重新执行这一步,并把之前因此没做完的部分补完。",
+        )
+        return web.json_response({"ok": bool(res.get("ok")), "message": res.get("message", "")})
+
+    @_authed
+    async def _handle_security_pending(self, request: web.Request) -> web.Response:
+        """后台任务正在等的审批弹窗(刷新页面后前端据此补弹)。"""
+        from ...tools import danger
+
+        return web.json_response({"pending": danger.pending_background_choices()})
+
     @_authed
     async def _handle_push_config(self, request: web.Request) -> web.Response:
         return web.json_response(PUSH.public_config())
@@ -2941,6 +3028,11 @@ class WebAdapter:
                 web.get("/api/checkin/{name}", self._handle_checkin_get),
                 web.post("/api/checkin/{name}", self._handle_checkin_post),
                 web.get(r"/{name}.png", self._handle_icon),
+                web.post("/hook/{job_id}", self._handle_hook),
+                web.get("/security", self._handle_security),
+                web.post("/security/rule/delete", self._handle_security_rule_delete),
+                web.post("/security/missed", self._handle_security_missed),
+                web.get("/security/pending", self._handle_security_pending),
                 web.get("/push/config", self._handle_push_config),
                 web.get("/push/subs", self._handle_push_subs),
                 web.post("/push/subscribe", self._handle_push_subscribe),

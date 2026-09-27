@@ -39,6 +39,7 @@ function renderSetTab(){
   else if(SET.tab==="memory") renderFileList("memory");
   else if(SET.tab==="agents") renderFileList("agents");
   else if(SET.tab==="notify") renderNotifyPane();
+  else if(SET.tab==="security") renderSecurityPane();
   else if(SET.tab==="appearance") renderAppearancePane();
 }
 
@@ -51,6 +52,70 @@ function renderAppearancePane(){
   opts.forEach(o=>{ h += `<button class="tsopt${mode===o.v?" active":""}" onclick="setTheme('${o.v}')">${o.label}</button>`; });
   h += '</div>';
   $("#setPane").innerHTML = h;
+}
+
+// ── 安全分区(永久审批规则 / 待批队列 / 审批记录)──────────────────────────────
+// 数据来自 GET /security(memory/approvals.py)。审批记录可按结果筛选。
+const SEC = { filter:"" };
+const SEC_KIND = { write_dir:"写入目录", git_push:"git push", mcp_tool:"外部工具" };
+const SEC_FILTERS = [["","全部"],["denied","你拒绝了"],["timeout","超时"],["noninteractive_deny","无人值守拒绝"],["blocked","直接拦截"],["rule","命中规则"]];
+async function renderSecurityPane(){
+  let h = '<h3>'+ic("lock")+'安全</h3>'+
+    '<p class="shint">危险操作的审批规则和记录。点「永远允许」存下的规则列在这里,不需要了随时删掉。</p>';
+  h += '<div id="secBody" class="setempty">加载中…</div>';
+  $("#setPane").innerHTML = h;
+  await loadSecurity();
+}
+function secConvLink(key){
+  if(!key) return '<span class="dim">—</span>';
+  return '<a href="#" data-secconv="'+esc(key)+'">'+esc(key)+'</a>';
+}
+async function loadSecurity(){
+  const box=$("#secBody"); if(!box) return;
+  let d;
+  try{ d=await (await api("/security?decision="+encodeURIComponent(SEC.filter))).json(); }
+  catch(e){ box.innerHTML='加载失败:'+esc(e&&e.message||e); return; }
+  const dec=d.decisions||{};
+  let h='';
+  if((d.missed||[]).length){
+    h+='<div class="sechd">待批队列('+d.missed.length+')</div>'+
+       '<p class="shint">后台任务等审批超时被拒的操作。批准后会按选项存规则并让该任务重跑一次。</p>';
+    h+=d.missed.map(m=>settingsRow("", "", esc(m.reason),
+        esc(m.detail)+'<br>'+esc(fmtTime(m.ts))+' · '+secConvLink(m.session_key)+
+        (m.rule_label?'<br>📌 '+esc(m.rule_label):''), false,
+        (m.rule_kind?'<button class="btn ghost sm" data-missed="'+esc(m.id)+'" data-act="forever">永远允许并重跑</button>':'')+
+        '<button class="btn ghost sm" data-missed="'+esc(m.id)+'" data-act="once">允许一次并重跑</button>'+
+        '<button class="miniact" data-missed="'+esc(m.id)+'" data-act="dismiss">忽略</button>').replace('class="srow','class="srow secmissed')).join("");
+  }
+  h+='<div class="sechd">永久规则</div>';
+  if(!(d.rules||[]).length) h+='<div class="setempty">还没有规则。审批弹窗里点「永远允许」会存到这里。</div>';
+  else h+=d.rules.map(r=>settingsRow("", "", esc(SEC_KIND[r.kind]||r.kind)+' · '+esc(r.scope),
+      esc(r.label)+'<br>'+esc(fmtTime(r.created_at))+' 创建 · 命中 '+r.hits+' 次'+
+      (r.last_used_at?' · 最近 '+esc(fmtTime(r.last_used_at)):''), false,
+      '<button class="miniact danger" data-secdel="'+esc(r.id)+'">删除</button>')).join("");
+  h+='<div class="sechd">审批记录</div><p class="shint">需要审批或被拦下的操作,保留 90 天。</p>';
+  h+='<div class="secfilters">'+SEC_FILTERS.map(([v,l])=>
+      '<button class="btn sm '+(SEC.filter===v?'primary':'ghost')+'" data-secf="'+v+'">'+l+'</button>').join("")+'</div>';
+  if(!(d.audit||[]).length) h+='<div class="setempty">没有记录。</div>';
+  else h+=d.audit.map(a=>settingsRow("", "", esc(dec[a.decision]||a.decision)+' · '+esc(a.reason||a.tier),
+      esc(a.detail)+'<br>'+esc(fmtTime(a.ts))+' · '+esc(a.tool)+' · '+secConvLink(a.session_key), false, '')).join("");
+  box.className=""; box.innerHTML=h;
+  box.querySelectorAll("[data-secf]").forEach(b=>b.onclick=()=>{ SEC.filter=b.dataset.secf; loadSecurity(); });
+  box.querySelectorAll("[data-secconv]").forEach(a=>a.onclick=e=>{ e.preventDefault(); closeSettings(); openConv(a.dataset.secconv); });
+  box.querySelectorAll("[data-secdel]").forEach(b=>b.onclick=async()=>{
+    if(!confirm("删除这条规则?之后同类操作会重新询问。")) return;
+    b.disabled=true;
+    const r=await api("/security/rule/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:b.dataset.secdel})});
+    if(!r.ok){ alert("删除失败"); b.disabled=false; return; }
+    loadSecurity();
+  });
+  box.querySelectorAll("[data-missed]").forEach(b=>b.onclick=async()=>{
+    box.querySelectorAll("[data-missed]").forEach(x=>x.disabled=true);
+    const r=await api("/security/missed",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id:b.dataset.missed, action:b.dataset.act})});
+    if(!r.ok){ const j=await r.json().catch(()=>({})); alert("操作失败:"+(j.error||r.status)); }
+    loadSecurity();
+  });
 }
 
 // ── 通知分区(Web Push 系统通知)──────────────────────────────────────────

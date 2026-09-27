@@ -416,7 +416,7 @@ async def test_run_job_routes_script_mode_to_run_script_job(cron_env, monkeypatc
     """_run_job 按 mode 路由:script 模式绝不该碰 task_runner/Agent 那条路径。"""
     called = []
 
-    async def fake_run_script_job(job, push):
+    async def fake_run_script_job(job, push, extra_env=None):
         called.append(job["id"])
 
     monkeypatch.setattr(scheduler, "_run_script_job", fake_run_script_job)

@@ -87,6 +87,28 @@ try{
           <label class="cflabel">总结要求（可选）</label>
           <textarea id="cfSummarizePrompt" placeholder="仅脚本输出 ##CRON_SIGNAL:1## 时的轻量总结要求"></textarea>
         </div>
+        <label class="cflabel">触发方式</label>
+        <select id="cfTrigger">
+          <option value="cron">按时间（cron 定时）</option>
+          <option value="webhook">Webhook（外部请求触发，如 iPhone 快捷指令）</option>
+          <option value="watch">文件夹监听（出现新文件时触发）</option>
+        </select>
+        <div id="cfWebhookFields" hidden>
+          <label class="cflabel">触发链接</label>
+          <div class="cfrow">
+            <input id="cfHookUrl" readonly placeholder="保存后自动生成"/>
+            <button type="button" id="cfHookCopy">复制</button>
+          </div>
+          <div class="cfhint">用 POST 请求这个链接即可触发，请求内容会作为事件数据交给任务；链接里带密钥，别外传。</div>
+        </div>
+        <div id="cfWatchFields" hidden>
+          <label class="cflabel">监听目录</label>
+          <input id="cfWatchPath" placeholder="绝对路径，如 /Users/me/Recordings"/>
+          <label class="cflabel">文件匹配（可选）</label>
+          <input id="cfWatchGlob" placeholder="*（全部），或 *.m4a"/>
+          <div class="cfhint">只看这一层目录，不含子目录；首次保存只记下现有文件，之后新增或改动的文件才会触发。</div>
+        </div>
+        <div id="cfCronFields">
         <label class="cflabel">执行频率</label>
         <div class="cfrow">
           <select id="cfPreset">
@@ -99,6 +121,7 @@ try{
             <option value="0 * * * *">每小时</option>
           </select>
           <input id="cfCron" placeholder="0 8 * * *"/>
+        </div>
         </div>
         <label class="cflabel">执行模型</label>
         <select id="cfModel"></select>
@@ -206,6 +229,7 @@ try{
           <button class="settab" data-tab="memory">记忆</button>
           <button class="settab" data-tab="agents">人设</button>
           <button class="settab" data-tab="notify">通知</button>
+          <button class="settab" data-tab="security">安全</button>
           <button class="settab" data-tab="appearance">外观</button>
         </div>
         <div class="setpane" id="setPane"></div>

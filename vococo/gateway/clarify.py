@@ -126,6 +126,22 @@ async def push(platform: str, chat_id, text: str) -> bool:
     return True
 
 
+# ── 后台任务审批的弹窗通道 ──
+# 后台任务(cron/语音派活/独立会话)没有 _current 轮上下文,审批要弹到 Web 端的任务会话
+# (conv = task:<id>)里。GatewayRunner 启动时把 WebAdapter 登记在这;没登记(纯 CLI/TUI)
+# 就没有后台审批通道,danger 会直接把操作记进待批队列。
+_bg_adapter = None
+
+
+def register_background_adapter(adapter) -> None:
+    global _bg_adapter
+    _bg_adapter = adapter
+
+
+def background_adapter():
+    return _bg_adapter
+
+
 # ── 工具侧:登记 + 阻塞等 ──
 def register(session_key: str, choices: list[str]) -> _Pending:
     p = _Pending(

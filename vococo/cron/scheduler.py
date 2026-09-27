@@ -7,6 +7,7 @@ job 结构:
 {
   "id": "morning", "name": "晨间简报", "prompt": "...",
   "schedule": {"kind": "cron", "expr": "0 8 * * *"}        # 或 {"kind":"interval","minutes":60} / {"kind":"once","run_at": <epoch>}
+  # 事件触发(见 cron/events.py):{"kind":"webhook","secret":"..."} / {"kind":"watch","path":"/目录","glob":"*.m4a"}
   "conv": "task:morning",   # 该任务专属会话,历次运行结果落在这里(侧栏可点开看)
   "target": {"platform": "web", "chat_id": "conv1"},  # 额外推送目标(可选,不填就只落会话+系统推送)
   "cwd": "/path/to/project",  # 项目根目录;执行时若为 git 仓库会开专属 worktree
@@ -56,6 +57,7 @@ from .. import config, providers
 from ..core import task_events, task_runner, tasks as bg_tasks
 from ..core.agent import run_turn
 from ..memory import session_store
+from . import events
 
 PushFn = Callable[[str, object, str], Awaitable[None]]  # (platform, chat_id, text)
 _UNSET = object()
@@ -143,6 +145,8 @@ def create_job(
     mode, command, summarize_prompt, err = normalize_execution(mode, command, summarize_prompt)
     if err:
         raise ValueError(err)
+    if events.is_event_kind(schedule):
+        schedule = events.normalize(schedule)
     jobs = load_jobs()
     job_id = uuid.uuid4().hex[:8]
     job = {
@@ -187,6 +191,8 @@ def update_job(
     )
     if err:
         raise ValueError(err)
+    if events.is_event_kind(schedule):
+        schedule = events.normalize(schedule, job.get("schedule"))
     job["name"] = name
     job["prompt"] = prompt
     job["schedule"] = schedule
@@ -218,6 +224,8 @@ def describe_schedule(schedule: dict) -> str:
         return f"每{schedule.get('minutes', 60)}分钟"
     if kind == "once":
         return "一次性"
+    if kind in events.EVENT_KINDS:
+        return events.describe(schedule)
     return kind or "?"
 
 
@@ -242,7 +250,9 @@ def validate_schedule(schedule: dict) -> str | None:
         if not isinstance(run_at, (int, float)):
             return "once 的 run_at 必须是 unix 时间戳"
         return None
-    return f"未知调度类型「{kind}」(只支持 cron/interval/once)"
+    if kind in events.EVENT_KINDS:
+        return events.validate(schedule)
+    return f"未知调度类型「{kind}」(只支持 cron/interval/once/webhook/watch)"
 
 
 def _next_run(schedule: dict, after: float) -> float | None:
@@ -269,16 +279,22 @@ def _write_heartbeat() -> None:
     config.HEARTBEAT_PATH.write_text(str(int(time.time())), encoding="utf-8")
 
 
-def _run_job(job: dict, push: PushFn) -> None:
+def _run_job(
+    job: dict, push: PushFn, *, prompt: str | None = None, extra_env: dict | None = None,
+) -> None:
     """触发一次 job 执行,不等它跑完。mode=="script" 直接丢给 _run_script_job
     (脚本任务,见模块头说明);默认走统一后台任务引擎——job_id 本身复用作
     task_id(见模块头说明):首次触发 dispatch,以后每次到点都是对同一个 task
     再 append 一轮。Agent 任务的回填统计(last_run_at/last_status)和推送在
-    _on_task_terminal 里,任务跑完后异步触发。"""
+    _on_task_terminal 里,任务跑完后异步触发。
+
+    prompt / extra_env:事件触发(cron/events.py)时传入——Agent 任务这一轮用 prompt
+    (原指令 + 事件数据)代替 job["prompt"],脚本任务把 extra_env 并进子进程环境变量。"""
     job_id = job["id"]
     if job.get("mode") == "script":
-        asyncio.create_task(_run_script_job(job, push))
+        asyncio.create_task(_run_script_job(job, push, extra_env=extra_env))
         return
+    turn_prompt = prompt or job["prompt"]
     # 编辑页选的模型是这条任务唯一的权威来源:每次触发都同步进任务会话的
     # chosen_model,不能只在首次 dispatch 时写一次——否则编辑页把模型改了,
     # 后续触发走 append() 不会重新传 model,会静默延续上一次(甚至用户在
@@ -287,7 +303,7 @@ def _run_job(job: dict, push: PushFn) -> None:
         session_store.set_chosen_model(bg_tasks.session_key(job_id), job["model"])
     if bg_tasks.get(job_id) is None:
         task_runner.dispatch(
-            title=job.get("name") or "定时任务", prompt=job["prompt"],
+            title=job.get("name") or "定时任务", prompt=turn_prompt,
             cwd=job.get("cwd"), model=job.get("model"), origin="cron", task_id=job_id,
         )
     else:
@@ -296,7 +312,7 @@ def _run_job(job: dict, push: PushFn) -> None:
         # 用户通过 web UI 手动发消息走 gateway/core.py converse(),
         # 仍会 resume 最近一次运行的 SDK session,可用于排查。
         session_store.set_sdk_session_id(bg_tasks.session_key(job_id), None)
-        asyncio.create_task(task_runner.append(job_id, job["prompt"]))
+        asyncio.create_task(task_runner.append(job_id, turn_prompt))
 
 
 async def _push_job_result(job_id: str, status: str, text: str, push: PushFn) -> dict | None:
@@ -354,7 +370,7 @@ async def _terminate_script_process(proc: asyncio.subprocess.Process) -> None:
         await proc.wait()
 
 
-async def _run_script_job(job: dict, push: PushFn) -> None:
+async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None) -> None:
     """脚本任务模式(mode=="script",见模块头说明):直接跑 job["command"],不进
     Agent 会话——没有系统提示/工具定义的打包成本。命令输出末尾若带
     ##CRON_SIGNAL:0/1## 标记,0 表示没有实质产出,原始输出直接当结果、零 LLM
@@ -376,6 +392,7 @@ async def _run_script_job(job: dict, push: PushFn) -> None:
             # 独立进程组:超时后能连同 shell 拉起的子进程一起收回。
             proc = await asyncio.create_subprocess_shell(
                 job["command"], cwd=job.get("cwd") or None,
+                env={**os.environ, **extra_env} if extra_env else None,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                 start_new_session=True,
             )
@@ -421,6 +438,8 @@ def _tick(push: PushFn) -> None:
     for job in jobs:
         if not job.get("enabled"):
             continue
+        if events.is_event_kind(job.get("schedule")):
+            continue  # 事件触发的任务不按时间跑,由 events.tick 负责
         if job.get("next_run_at") is None:
             job["next_run_at"] = _next_run(job["schedule"], now)
             changed = True
@@ -511,6 +530,7 @@ async def run_scheduler(push: PushFn) -> None:
         try:
             _write_heartbeat()
             _tick(push)
+            await events.tick(push)
             if config.REFLECT_ENABLED:
                 now = time.time()
                 if reflect_next is None:

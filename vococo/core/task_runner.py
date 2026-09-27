@@ -167,6 +167,41 @@ def _summarize(result_text: str) -> str:
     return text[: _SUMMARY_MAX - 1] + "…"
 
 
+def _cron_job_budget(task_id: str) -> int | None:
+    """cron 任务的 job_id 就是 task_id;job 里填了 budget_tokens 就用它覆盖全局单次上限。"""
+    try:
+        from ..cron import scheduler  # 懒加载:cron 包依赖本模块,顶部 import 会循环
+
+        for job in scheduler.load_jobs():
+            if job.get("id") == task_id and job.get("budget_tokens"):
+                return int(job["budget_tokens"])
+    except Exception:  # noqa: BLE001 —— 读不到 job 就用全局默认
+        pass
+    return None
+
+
+def _counts_daily(row: dict) -> bool:
+    """哪些任务计入每日总量:无人值守的 cron / 语音派活;网页派出的独立会话不算。"""
+    return row.get("origin") != "chat"
+
+
+def _token_budget(row: dict) -> tuple[int, str]:
+    """本轮 token 上限 + 超每日总量时的拒跑原因(空串=可以跑)。0=不限。"""
+    if row.get("origin") == "chat":
+        return config.CHAT_TASK_TOKEN_BUDGET, ""
+    per_run = _cron_job_budget(row["id"]) or config.TASK_TOKEN_BUDGET
+    cap = config.BG_DAILY_TOKEN_BUDGET
+    if not cap:
+        return per_run, ""
+    remaining = cap - tasks.daily_usage()
+    if remaining <= 0:
+        return 0, (
+            f"今天后台任务的 token 总量已达上限({cap // 10000} 万),这一轮没有启动;"
+            "明天自动恢复,急用可在 .env 调大 BG_DAILY_TOKEN_BUDGET"
+        )
+    return (min(per_run, remaining) if per_run else remaining), ""
+
+
 def _timeout_min(row: dict) -> int:
     """网页独立会话默认不限时，其他无人值守任务保留兜底超时。"""
     if row["origin"] == "chat":
@@ -198,12 +233,17 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     result_text = ""
     status = "failed"
     error_note = ""
+    used_tokens = 0  # 本轮新鲜 token,收尾计入每日总量
+    token_budget, over_daily = _token_budget(row)
     # 录过程时间线(工具调用 + 正文交错),跟普通文字对话(gateway/core.py converse())
     # 对齐——否则任务跑完侧边栏只看得到最后一句摘要,回溯不了 AI 到底做了什么。
     timeline = Timeline()
 
     async def _drive() -> None:
-        nonlocal result_text, last_progress_ts, error_note, sdk_session_id
+        nonlocal result_text, last_progress_ts, error_note, sdk_session_id, used_tokens
+        if over_daily:
+            error_note = over_daily
+            return
         resume_sid = session_store.get_sdk_session_id(session_key)
         # 会话选定的模型——派发/追问时(dispatch 的 model 参数)已经提前写进
         # session_meta(见 dispatch()),这里读出来传给 stream_turn;没设过就是
@@ -226,7 +266,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         async for ev in stream_turn(
             [], prompt_text + _SUMMARY_TAG_INSTRUCTION, model=model, cwd=effective_cwd,
             is_explicit_project=bool(row.get("cwd_explicit")), session_key=session_key,
-            resume=resume_sid, max_turns=config.TASK_MAX_TURNS,
+            resume=resume_sid, max_turns=config.TASK_MAX_TURNS, token_budget=token_budget,
         ):
             if isinstance(ev, SessionStarted):
                 # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮
@@ -253,6 +293,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             elif isinstance(ev, Done):
                 result_text = ev.reply.text
                 sdk_session_id = ev.reply.sdk_session_id
+                used_tokens = max(ev.reply.stream_tokens, ev.reply.turn_tokens)
                 if ev.reply.is_error:
                     error_note = ev.reply.error or "模型返回了错误"
                 # 跟普通文字对话(gateway/core.py converse())对齐:记一笔 token 用量,
@@ -270,6 +311,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                         model=ev.reply.model,
                     )
 
+    # 登记本轮属于哪个任务会话:审批闸据此把要批的操作推到 Web 任务会话、记审批记录/待批队列
+    task_session_token = danger.set_task_session(session_key)
     try:
         effective_cwd = await worktree.execution_cwd_for_task(row["cwd"], task_id)
         cwd_token = danger.set_cwd(
@@ -291,7 +334,13 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     finally:
         if cwd_token is not None:
             danger.reset_cwd(cwd_token)
+        danger.reset_task_session(task_session_token)
         _running.pop(task_id, None)
+        if used_tokens and _counts_daily(row):
+            try:
+                tasks.add_daily_usage(used_tokens)
+            except Exception as exc:  # noqa: BLE001 —— 记账失败不影响任务收尾
+                print(f"[task_runner] 每日用量记账失败:{exc}", flush=True)
 
     if status == "cancelled":
         session_store.finish_turn(turn_id, "(任务已取消)", events=timeline.blocks, session_key=session_key)

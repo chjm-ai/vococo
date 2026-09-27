@@ -25,3 +25,17 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(_db, "_DB", None)
     yield tmp_path
     _db.reset()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_audit(monkeypatch, request):
+    """审批记录/永久规则默认不落真实 state.db(tools/danger.py 每次审批都会写)。
+    需要真实读写的用例请用 isolated 夹具——它会把库指到临时目录,这里就不再拦。"""
+    if "isolated" in request.fixturenames:
+        return
+    from vococo.memory import approvals
+
+    monkeypatch.setattr(approvals, "log", lambda **kw: None)
+    monkeypatch.setattr(approvals, "match_rule", lambda kind, target: None)
+    monkeypatch.setattr(approvals, "add_rule", lambda *a, **kw: {})
+    monkeypatch.setattr(approvals, "add_missed", lambda **kw: "")

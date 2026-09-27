@@ -364,7 +364,10 @@
   #cronForm input,#cronForm textarea,#cronForm select{background:var(--panel2);border:1px solid var(--line2);border-radius:var(--r-md);
     color:var(--text);padding:var(--sp-3) var(--sp-4);font-size:var(--fs-md);font-family:inherit;flex-shrink:0}
   #cronForm textarea{resize:none;min-height:38px;max-height:200px;overflow-y:auto;field-sizing:content}
-  #cfScriptFields{display:flex;flex-direction:column;gap:6px;flex-shrink:0}
+  #cfScriptFields,#cfWebhookFields,#cfWatchFields,#cfCronFields{display:flex;flex-direction:column;gap:6px;flex-shrink:0}
+  #cfScriptFields[hidden],#cfWebhookFields[hidden],#cfWatchFields[hidden],#cfCronFields[hidden]{display:none}
+  #cronForm .cfhint{font-size:var(--fs-sm);color:var(--muted)}
+  #cronForm .cfrow button{padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);border:1px solid var(--line2);background:var(--panel2);color:var(--text);cursor:pointer;font-size:var(--fs-sm);flex-shrink:0}
   #cronForm .cfrow{display:flex;gap:8px}
   #cronForm .cfrow select{flex:1;min-width:0}
   #cronForm .cfrow input{flex:1;min-width:0}
@@ -483,6 +486,10 @@
   .btn.primary:hover{background:var(--accent2)}
   .btn.ghost{background:none;border-color:var(--line2)}
   .btn.sm{padding:var(--sp-2) var(--sp-4);font-size:var(--fs-sm)}
+  .srow.secmissed{flex-wrap:wrap}
+  .srow.secmissed .sinfo{flex-basis:100%}
+  .srow.secmissed .sacts{flex-wrap:wrap;gap:var(--sp-2)}
+  .secfilters{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin:var(--sp-2) 0 var(--sp-3)}
   .setrowbtns{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}
 
   /* 数据面板(设置 → 数据):总览 + 会话明细 */

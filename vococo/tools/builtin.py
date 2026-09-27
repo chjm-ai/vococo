@@ -306,7 +306,11 @@ def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:
     "存在的绝对路径)。应根据任务实际要操作的项目主动指定 cwd;省略时才沿用当前会话项目目录,"
     "没有项目目录则回退默认项目。固定脚本型任务优先传 mode='script' 与 command:脚本末行输出"
     "##CRON_SIGNAL:0## 时直接展示结果、零 LLM,输出 1 时才按可选 summarize_prompt 轻量总结;"
-    "需要现场分析/决策的任务不要用脚本模式。",
+    "需要现场分析/决策的任务不要用脚本模式。\n"
+    "事件触发(和 cron / run_in_minutes 三选一):trigger='webhook' → 外部 POST 专属链接时触发"
+    "(如 iPhone 快捷指令、GitHub),链接在 Web 定时任务编辑页复制;trigger='watch' + watch_path"
+    "(绝对路径目录)+ 可选 watch_glob(如 '*.m4a')→ 目录里出现新文件/文件改动时触发。"
+    "事件内容会随指令一起交给任务(脚本任务经环境变量 VOCOCO_EVENT / VOCOCO_EVENT_FILES 拿到)。",
     {
         "type": "object",
         "properties": {
@@ -314,6 +318,9 @@ def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:
             "prompt": {"type": "string"},
             "cron": {"type": "string"},
             "run_in_minutes": {"type": "number"},
+            "trigger": {"type": "string", "enum": ["webhook", "watch"]},
+            "watch_path": {"type": "string"},
+            "watch_glob": {"type": "string"},
             "model": {"type": "string"},
             "cwd": {"type": "string"},
             "mode": {"type": "string", "enum": ["agent", "script"]},
@@ -344,10 +351,20 @@ async def add_cron_job(args: dict) -> dict:
 
     if not name or not prompt:
         return _ok("add_cron_job 需要 name / prompt 都非空。")
-    if bool(cron_expr) == bool(run_in_minutes):
-        return _ok("cron 和 run_in_minutes 必须二选一(不能都填或都不填)。")
+    trigger = (args.get("trigger") or "").strip()
+    if sum(bool(x) for x in (cron_expr, run_in_minutes, trigger)) != 1:
+        return _ok("cron / run_in_minutes / trigger 必须三选一(不能都填或都不填)。")
 
-    if cron_expr:
+    if trigger == "webhook":
+        schedule = {"kind": "webhook"}
+    elif trigger == "watch":
+        schedule = {
+            "kind": "watch", "path": (args.get("watch_path") or "").strip(),
+            "glob": (args.get("watch_glob") or "").strip() or "*",
+        }
+    elif trigger:
+        return _ok("trigger 只支持 webhook / watch。")
+    elif cron_expr:
         schedule = {"kind": "cron", "expr": cron_expr}
     else:
         try:
@@ -385,7 +402,13 @@ async def add_cron_job(args: dict) -> dict:
         name=name, prompt=prompt, schedule=schedule, model=model, cwd=cwd,
         mode=mode, command=command, summarize_prompt=summarize_prompt,
     )
-    return _ok(f"✅ 已创建任务「{name}」({_sched_desc(job['schedule'])}),id={job['id']}。")
+    msg = f"✅ 已创建任务「{name}」({_sched_desc(job['schedule'])}),id={job['id']}。"
+    if job["schedule"].get("kind") == "webhook":
+        msg += (
+            f" 触发地址:POST <你的 vococo 域名>/hook/{job['id']}?key={job['schedule']['secret']}"
+            "(Web 定时任务编辑页可一键复制完整链接;链接含密钥,别外传)"
+        )
+    return _ok(msg)
 
 @tool(
     "list_cron_jobs",
