@@ -305,6 +305,12 @@ CHAT_TASK_TIMEOUT_MIN: int = int(os.environ.get("CHAT_TASK_TIMEOUT_MIN", "0"))
 # 超时兜底)。保留独立开关是因为查日志/翻代码这类任务动辄几十轮,2026-07-10 真机
 # 事故:全局 40 轮让一个查日志任务白跑 8 分钟。
 TASK_MAX_TURNS: int = int(os.environ.get("TASK_MAX_TURNS", "0"))
+# 后台任务碰到要审批的操作:推到手机等这么多秒;没人理就先跳过,记进「设置→安全→待批队列」。
+# 须明显小于 TASK_TIMEOUT_MIN,免得等审批把任务本身等超时。
+BG_APPROVAL_WAIT_SEC: int = int(os.environ.get("BG_APPROVAL_WAIT_SEC", "600"))
+# 后台审批免打扰时段(本地时间,"起-止" 小时,可跨午夜);此时段内不推送,直接进待批队列。
+# 留空 = 不设免打扰。
+BG_APPROVAL_QUIET: str = os.environ.get("BG_APPROVAL_QUIET", "23-8").strip()
 # 派活判断目前完全靠模型自己读【派活规则】临场判断,没有代码兜底——真机复盘过
 # 一次长任务(7步骤的复杂指令)险些没被当成后台任务处理(见 2026-07-09 事故复盘)。
 # 这里加一道低成本兜底:识别文本超过这个字数,就在 prompt 里额外加一句强提示,

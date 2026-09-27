@@ -270,6 +270,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                         model=ev.reply.model,
                     )
 
+    # 登记本轮属于哪个任务会话:审批闸据此把要批的操作推到 Web 任务会话、记审批记录/待批队列
+    task_session_token = danger.set_task_session(session_key)
     try:
         effective_cwd = await worktree.execution_cwd_for_task(row["cwd"], task_id)
         cwd_token = danger.set_cwd(
@@ -291,6 +293,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     finally:
         if cwd_token is not None:
             danger.reset_cwd(cwd_token)
+        danger.reset_task_session(task_session_token)
         _running.pop(task_id, None)
 
     if status == "cancelled":

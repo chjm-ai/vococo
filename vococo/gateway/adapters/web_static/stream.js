@@ -430,6 +430,16 @@ class FetchSSE {
   reconnectNow(){ if(this._closed) return; if(this._ctrl) try{this._ctrl.abort();}catch(e){} if(this._wake) this._wake(); } // 立刻断开重连(跳过退避)
   close(){ this._closed=true; this.readyState=2; if(this._ctrl) try{this._ctrl.abort();}catch(e){} if(this._wake) this._wake(); }
 }
+// 后台任务正在等的审批(见 tools/danger.py _approve_background):刷新/重连后 SSE 里的
+// choice 帧可能已不在,主动拉一次补弹,免得任务白等到超时。
+async function loadPendingBgApprovals(){
+  let list=[];
+  try{ list=(await (await api("/security/pending")).json()).pending||[]; }catch(e){ return; }
+  list.forEach(e=>{
+    S.pendingChoice[e.conv]=e;
+    if(e.conv===S.conv) renderChoice(e); else openChoiceModal(e.conv, e);
+  });
+}
 function connect(){
   if(S.es) S.es.close();
   const es = S.es = new FetchSSE("/events", S.token);
@@ -438,6 +448,7 @@ function connect(){
     // 重连补回断连期间漏掉的消息(尤其服务端自我重启后注入的系统消息)。force:重连这一刻
     // 恰是最容易出现"流式气泡卡死"的时候(断线期间 done 被环形缓冲挤掉),顺带核对一次。
     reloadHistory(true);
+    loadPendingBgApprovals();
   };
   es.onmessage = ev=>{ try{
     const d=JSON.parse(ev.data);

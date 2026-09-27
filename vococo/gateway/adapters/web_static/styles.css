@@ -483,6 +483,8 @@
   .btn.primary:hover{background:var(--accent2)}
   .btn.ghost{background:none;border-color:var(--line2)}
   .btn.sm{padding:var(--sp-2) var(--sp-4);font-size:var(--fs-sm)}
+  .secfilters{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin:var(--sp-2) 0 var(--sp-3)}
+  .srow .sacts .btn.sm + .btn.sm, .srow .sacts .btn.sm + .miniact{margin-left:var(--sp-2)}
   .setrowbtns{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}
 
   /* 数据面板(设置 → 数据):总览 + 会话明细 */

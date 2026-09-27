@@ -852,63 +852,332 @@ def clear_session_approvals(session_key: str) -> None:
     _session_approvals.pop(session_key, None)
 
 
-async def _approve(reason: str, detail: str, restrict_noninteractive: bool) -> bool:
-    """审批底座:有交互通道 → 弹「允许一次 / 本次会话都允许 / 拒绝」按钮并阻塞等。
+# ── 永久规则:「永远允许」能存成什么范围 ────────────────────────────────────
+# 只收窄不放大(见 memory/approvals.py):写入按【文件所在目录】、git push 按【仓库】、
+# 外部 MCP 写按【工具名】。进程终止、疑似密钥外带、装包、下载执行、递归删除等一律不给
+# 「永远允许」——这些每次场景都不同,批一次放一辈子风险太大,最多给「本任务都允许」。
+_RULE_FORBIDDEN_DIRS = (
+    "~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gcloud", "~/Library/LaunchAgents",
+    "~/.claude",
+)
+# git push 命令里带这些 → 实际推的可能不是当前仓库,不存规则也不匹配规则
+_GIT_OTHER_REPO = re.compile(r"(^|[\s;&|(])cd\s|\s-C\s|--git-dir|--work-tree")
 
+
+def _dir_rule_allowed(d: str) -> bool:
+    """目录是否允许存成「永远允许写入」规则:必须在家目录之下(不含家目录本身)
+    且不在凭据/自启动这类敏感目录里。"""
+    home = os.path.realpath(os.path.expanduser("~"))
+    try:
+        if os.path.commonpath([d, home]) != home or d == home:
+            return False
+        for bad in _RULE_FORBIDDEN_DIRS:
+            b = os.path.realpath(os.path.expanduser(bad))
+            if os.path.commonpath([d, b]) == b:
+                return False
+    except ValueError:
+        return False
+    return True
+
+
+def _escalate_hits(cmd: str) -> int:
+    return sum(1 for rx, _r, _x in _ESCALATE_BASH if rx.search(cmd))
+
+
+def _rule_target(
+    tool_name: str, tool_input: dict, reason: str, cwd: str | None
+) -> tuple[str, str, str] | None:
+    """这次 escalate 能不能存成永久规则;能则返回 (kind, scope, 人话说明),否则 None。"""
+    ti = tool_input or {}
+    if tool_name in _WRITE_TOOLS and reason.startswith("写工作目录外的文件"):
+        path = ti.get("file_path") or ti.get("notebook_path") or ""
+        if not path:
+            return None
+        target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
+        d = os.path.dirname(target)
+        if not _dir_rule_allowed(d):
+            return None
+        return ("write_dir", d, f"以后写入 {d} 目录(含子目录)不再询问")
+    if tool_name == "Bash" and reason.startswith("git push"):
+        cmd = ti.get("command", "") or ""
+        # 同一条命令里还夹着别的危险操作(装包/递归删除…)→ 不给规则,免得规则顺带放行它们
+        if _GIT_OTHER_REPO.search(cmd) or _escalate_hits(cmd) != 1:
+            return None
+        repo = _project_root_var.get() or cwd
+        if not repo:
+            return None
+        repo = os.path.realpath(repo)
+        return ("git_push", repo, f"以后在 {repo} 仓库 git push 不再询问")
+    if tool_name in _MCP_WRITE_TOOLS:
+        short = tool_name.split("__")[-1]
+        return ("mcp_tool", tool_name, f"以后调用 {short} 不再询问")
+    return None
+
+
+# ── 审批记录 ─────────────────────────────────────────────────────────────
+# 后台任务没有 clarify 上下文时,task_runner 用 set_task_session 登记本轮属于哪个任务会话,
+# 审批记录/待批队列据此归属。
+_task_session_var: contextvars.ContextVar = contextvars.ContextVar(
+    "vococo_task_session", default=None
+)
+
+
+def set_task_session(session_key: str | None) -> contextvars.Token:
+    """后台任务每跑一轮开头调用。顺带清掉该任务上一轮「审批等超时」的标记。"""
+    if session_key:
+        _bg_timed_out.discard(session_key)
+    return _task_session_var.set(session_key or None)
+
+
+def reset_task_session(token: contextvars.Token) -> None:
+    try:
+        _task_session_var.reset(token)
+    except (ValueError, LookupError):
+        pass
+
+
+def _current_session_key() -> str:
+    try:
+        from ..gateway import clarify
+
+        ctx = clarify.current()
+        if ctx is not None:
+            return ctx.session_key
+    except ImportError:
+        pass
+    return _task_session_var.get() or ""
+
+
+def _audit(tool: str, tier: str, reason: str, detail: str, decision: str) -> None:
+    """记一笔审批/拦截;任何异常都吞掉——记录失败绝不能影响工具本身的放行/拒绝。"""
+    try:
+        from ..memory import approvals
+
+        approvals.log(
+            session_key=_current_session_key(), tool=tool, tier=tier,
+            reason=reason, detail=redact_secrets(detail), decision=decision,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[danger] 审批记录写入失败:{exc}", flush=True)
+
+
+_OPT_ONCE = "允许一次"
+_OPT_SESSION = "本次会话都允许"
+_OPT_TASK = "本任务都允许"
+_OPT_FOREVER = "永远允许"
+_OPT_DENY = "拒绝"
+_OPT_ICONS = {_OPT_ONCE: "✅", _OPT_SESSION: "♾️", _OPT_TASK: "♾️", _OPT_FOREVER: "📌", _OPT_DENY: "🛑"}
+
+
+async def _approve(
+    reason: str,
+    detail: str,
+    restrict_noninteractive: bool,
+    *,
+    tool: str = "",
+    rule: tuple[str, str, str] | None = None,
+) -> bool:
+    """审批底座:有交互通道 → 弹「允许一次 / 本次会话都允许 / [永远允许] / 拒绝」并阻塞等。
+
+    - rule 非空(见 _rule_target):先查永久规则库,命中直接放行;弹窗多一个「永远允许」。
     - 群聊会话:一律拒绝(批准权不能落在群成员/被拉进群的陌生人手里,见审计 #4)。
     - 无交互通道(cron/eval):按 restrict_noninteractive 决定——「对外/装包/持久化」类
       默认拒绝(fail-closed,"无人可问"≠"同意"),本地操作放行。
     - 「本次会话都允许」:选中后把该类操作记进 _session_approvals,本会话后续同类
-      escalate 直接放行、不再弹窗(按 category 归类,见上)。
+      escalate 直接放行、不再弹窗(按 category 归类,见上)。后台任务会话显示为「本任务都允许」。
     - 复用 ask_user 同款 clarify 机制:回复经网关「拿锁前 resolve」解除,不会死锁。
       超时 / 发送失败 → 视为拒绝(危险操作宁可不做)。
+    每个分支的结果都记进审批记录(memory/approvals.py)。
     """
+    def done(decision: str, ok: bool) -> bool:
+        _audit(tool, "escalate", reason, detail, decision)
+        return ok
+
+    if rule is not None:
+        try:
+            from ..memory import approvals
+
+            if approvals.match_rule(rule[0], rule[1]):
+                return done("rule", True)
+        except Exception as exc:  # noqa: BLE001 —— 规则库读不了就当没规则,走正常审批
+            print(f"[danger] 永久规则查询失败:{exc}", flush=True)
+
     try:
         from ..gateway import clarify
         from ..gateway.core import Choice
     except ImportError:
-        return not restrict_noninteractive  # 无网关 → 非交互模式兜底
+        ok = not restrict_noninteractive  # 无网关 → 非交互模式兜底
+        return done("noninteractive_allow" if ok else "noninteractive_deny", ok)
 
     ctx = clarify.current()
     if ctx is None:
-        return not restrict_noninteractive
+        bg_key = _task_session_var.get()
+        if bg_key and restrict_noninteractive:
+            return await _approve_background(reason, detail, tool, rule, bg_key, done)
+        ok = not restrict_noninteractive
+        return done("noninteractive_allow" if ok else "noninteractive_deny", ok)
     if _is_group_session(ctx.session_key):
-        return False
+        return done("group_deny", False)
     cat = _category(reason)
     if _is_session_approved(ctx.session_key, cat):
-        return True  # 本会话已选「都允许」此类操作 → 免批直接放行
-    p = clarify.register(ctx.session_key, ["允许一次", "本次会话都允许", "拒绝"])
+        return done("session", True)  # 本会话已选「都允许」此类操作 → 免批直接放行
+    from ..core import tasks as _tasks
+
+    session_opt = _OPT_TASK if _tasks.task_id_from_session_key(ctx.session_key) else _OPT_SESSION
+    choices = [_OPT_ONCE, session_opt] + ([_OPT_FOREVER] if rule else []) + [_OPT_DENY]
+    p = clarify.register(ctx.session_key, choices)
     try:
-        opts = [
-            (f"/clarify {p.clarify_id} 0", "✅ 允许一次"),
-            (f"/clarify {p.clarify_id} 1", "♾️ 本次会话都允许"),
-            (f"/clarify {p.clarify_id} 2", "🛑 拒绝"),
-        ]
         prompt = f"⚠️ 需要批准:{reason}\n{detail}"
-        await ctx.adapter.present_choice(ctx.chat_id, Choice(prompt=prompt, options=opts))
+        if rule:
+            prompt += f"\n\n📌 永远允许 = {rule[2]}"
+        await ctx.adapter.present_choice(
+            ctx.chat_id, Choice(prompt=prompt, options=_choice_opts(p.clarify_id, choices))
+        )
     except Exception:
-        clarify.resolve(p.clarify_id, "拒绝")
-        return False
+        clarify.resolve(p.clarify_id, _OPT_DENY)
+        return done("error", False)
     answer = await clarify.wait(p.clarify_id, config.CLARIFY_TIMEOUT)
-    if answer == "本次会话都允许":
-        _mark_session_approved(ctx.session_key, cat)
+    return _apply_answer(answer, ctx.session_key, cat, session_opt, rule, done)
+
+
+def _choice_opts(clarify_id: str, choices: list[str]) -> list[tuple[str, str]]:
+    return [(f"/clarify {clarify_id} {i}", f"{_OPT_ICONS[c]} {c}") for i, c in enumerate(choices)]
+
+
+def _apply_answer(answer, session_key: str, cat: str, session_opt: str, rule, done) -> bool:
+    """把审批弹窗的回答落成结果:记会话允许 / 存永久规则 / 记审批记录。"""
+    if answer == session_opt:
+        _mark_session_approved(session_key, cat)
+        return done("approved_session", True)
+    if answer == _OPT_FOREVER and rule:
+        try:
+            from ..memory import approvals
+
+            approvals.add_rule(*rule)
+        except Exception as exc:  # noqa: BLE001 —— 存规则失败不影响这一次的放行
+            print(f"[danger] 永久规则保存失败:{exc}", flush=True)
+        return done("approved_forever", True)
+    if answer == _OPT_ONCE:
+        return done("approved_once", True)
+    return done("timeout" if answer is None else "denied", False)
+
+
+# ── 后台任务审批:推到 Web 任务会话等你批,超时/免打扰 → 记进待批队列 ─────────────
+# 参照 Meta Muse「任务暂停等你批,批完接着干」;夜里的 cron 不打扰你,早上在
+# 「设置→安全→待批队列」统一处理(永远允许并重跑 / 允许一次并重跑 / 忽略)。
+_bg_pending: dict[str, dict] = {}  # clarify_id → 弹窗内容,供刷新页面后补弹(/security/pending)
+_one_shot: dict[str, set[str]] = {}  # session_key → 待批队列里「允许一次并重跑」发放的一次性许可
+# 本轮已经等审批超时过一次的任务会话:同一轮后面再要批的操作不再挨个等,直接进待批队列,
+# 免得一轮里好几个操作各等 10 分钟把任务本身拖到超时(下一轮开头由 set_task_session 清掉)。
+_bg_timed_out: set[str] = set()
+
+
+def pending_background_choices() -> list[dict]:
+    return list(_bg_pending.values())
+
+
+def grant_once(session_key: str, reason: str) -> None:
+    """给某任务会话发一次性许可:下一次同类操作直接放行,用完即失效。"""
+    _one_shot.setdefault(session_key, set()).add(_category(reason))
+
+
+def _take_one_shot(session_key: str, cat: str) -> bool:
+    cats = _one_shot.get(session_key)
+    if cats and cat in cats:
+        cats.discard(cat)
         return True
-    return answer == "允许一次"
+    return False
+
+
+def _in_quiet_hours(hour: int | None = None) -> bool:
+    """当前是否处在 BG_APPROVAL_QUIET 免打扰时段("23-8" 这种,可跨午夜)。"""
+    spec = config.BG_APPROVAL_QUIET
+    if not spec:
+        return False
+    try:
+        start, end = (int(x) for x in spec.split("-", 1))
+    except ValueError:
+        return False
+    if hour is None:
+        import datetime
+
+        hour = datetime.datetime.now().hour
+    if start == end:
+        return False
+    return start <= hour < end if start < end else (hour >= start or hour < end)
+
+
+def _record_missed(session_key: str, tool: str, reason: str, detail: str, rule) -> None:
+    try:
+        from ..memory import approvals
+
+        approvals.add_missed(
+            session_key=session_key, tool=tool, reason=reason, detail=redact_secrets(detail),
+            rule_kind=rule[0] if rule else None, rule_scope=rule[1] if rule else None,
+            rule_label=rule[2] if rule else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[danger] 待批队列写入失败:{exc}", flush=True)
+
+
+async def _approve_background(reason: str, detail: str, tool: str, rule, key: str, done) -> bool:
+    cat = _category(reason)
+    if _take_one_shot(key, cat):
+        return done("approved_once", True)
+    if _is_session_approved(key, cat):
+        return done("session", True)
+    from ..gateway import clarify
+    from ..gateway.core import Choice
+
+    adapter = clarify.background_adapter()
+    if adapter is None or _in_quiet_hours() or key in _bg_timed_out:
+        _record_missed(key, tool, reason, detail, rule)
+        return done("deferred", False)
+    choices = [_OPT_ONCE, _OPT_TASK] + ([_OPT_FOREVER] if rule else []) + [_OPT_DENY]
+    p = clarify.register(key, choices)
+    opts = _choice_opts(p.clarify_id, choices)
+    wait_min = max(1, config.BG_APPROVAL_WAIT_SEC // 60)
+    prompt = f"⚠️ 后台任务需要批准:{reason}\n{detail}"
+    if rule:
+        prompt += f"\n\n📌 永远允许 = {rule[2]}"
+    prompt += f"\n\n({wait_min} 分钟内没回应就先跳过这一步,记进「设置→安全→待批队列」)"
+    _bg_pending[p.clarify_id] = {
+        "conv": key, "type": "choice", "prompt": prompt, "options": [list(o) for o in opts],
+    }
+    try:
+        await adapter.present_choice(key, Choice(prompt=prompt, options=opts))
+    except Exception:
+        _bg_pending.pop(p.clarify_id, None)
+        clarify.resolve(p.clarify_id, _OPT_DENY)
+        _record_missed(key, tool, reason, detail, rule)
+        return done("error", False)
+    try:
+        answer = await clarify.wait(p.clarify_id, config.BG_APPROVAL_WAIT_SEC)
+    finally:
+        _bg_pending.pop(p.clarify_id, None)
+    if answer is None:
+        _bg_timed_out.add(key)
+        _record_missed(key, tool, reason, detail, rule)
+    return _apply_answer(answer, key, cat, _OPT_TASK, rule, done)
 
 
 async def _ask_approval(
     tool_name: str, reason: str, tool_input: dict, restrict_noninteractive: bool = False
 ) -> bool:
     """PreToolUse 审批闸调用的入口:把工具入参渲染成一行说明后走 _approve。"""
-    return await _approve(reason, _describe(tool_name, tool_input), restrict_noninteractive)
+    rule = _rule_target(tool_name, tool_input, reason, current_cwd())
+    return await _approve(
+        reason, _describe(tool_name, tool_input), restrict_noninteractive,
+        tool=tool_name, rule=rule,
+    )
 
 
 async def require_approval(
     reason: str, detail: str, *, restrict_noninteractive: bool = True
 ) -> bool:
     """供 MCP 工具(如 cron 启用/删除)复用的审批。默认非交互通道拒绝(持久化类操作
-    不该在 cron 上下文里被 agent 静默改动)。"""
-    return await _approve(reason, detail, restrict_noninteractive)
+    不该在 cron 上下文里被 agent 静默改动)。不给「永远允许」。"""
+    return await _approve(reason, detail, restrict_noninteractive, tool="(内置工具)")
 
 
 async def pretool_guard_hook(input_data, tool_use_id, context):
@@ -923,6 +1192,7 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
     try:
         hard = _hard_guard(tool_name, tool_input, current_cwd())
         if hard:
+            _audit(tool_name, "guard", "常开防线", _describe(tool_name, tool_input), "blocked")
             return hard
         # 敏感读取:只标注不拦(见上方 _sensitive_read_target 说明)
         sensitive = _sensitive_read_target(tool_name, tool_input)
@@ -933,6 +1203,7 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
         # 安全判定异常时无法确认操作安全,按 ADR 0003 fail-closed。
         return _deny("🛑 安全判定异常,已保守拒绝此操作。请手动检查后重试。")
     if verdict == "block" and config.DANGER_GUARD:
+        _audit(tool_name, "block", reason, _describe(tool_name, tool_input), "blocked")
         return _deny(
             f"⛔ 危险命令被 {config.PERSONA_NAME} 拦截({reason})。如确需执行,请你手动在终端运行。"
         )
@@ -941,8 +1212,14 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
             approved = await _ask_approval(tool_name, reason, tool_input, restrict)
         except Exception:
             # 审批过程本身异常(而非模型正常操作)→ fail-closed:疑似危险操作宁可拒绝
+            _audit(tool_name, "escalate", reason, _describe(tool_name, tool_input), "error")
             return _deny(f"🛑 审批过程异常,已保守拒绝此操作({reason})。请手动执行或重试。")
         if not approved:
+            if _task_session_var.get() and restrict:
+                return _deny(
+                    f"🛑 后台任务里这个操作没拿到批准({reason}),已记进待批队列等主人处理。"
+                    "先跳过这一步继续做能做的部分,并在最后的总结里说明哪一步被拦了、批准后要做什么。"
+                )
             return _deny(
                 f"🛑 你未批准此操作({reason})。已跳过;如需执行请手动运行或改用更安全方式。"
             )

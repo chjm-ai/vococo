@@ -64,6 +64,39 @@ CREATE TABLE IF NOT EXISTS workbench_tasks(
   rolled TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_wb_tasks_project ON workbench_tasks(project_id);
+CREATE TABLE IF NOT EXISTS approval_rules(
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  created_at REAL NOT NULL,
+  last_used_at REAL,
+  hits INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(kind, scope)
+);
+CREATE TABLE IF NOT EXISTS audit_log(
+  id INTEGER PRIMARY KEY,
+  ts REAL NOT NULL,
+  session_key TEXT NOT NULL DEFAULT '',
+  tool TEXT NOT NULL DEFAULT '',
+  tier TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  decision TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
+CREATE TABLE IF NOT EXISTS missed_approvals(
+  id TEXT PRIMARY KEY,
+  ts REAL NOT NULL,
+  session_key TEXT NOT NULL,
+  tool TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  rule_kind TEXT,
+  rule_scope TEXT,
+  rule_label TEXT,
+  status TEXT NOT NULL DEFAULT 'pending'
+);
 """
 
 
