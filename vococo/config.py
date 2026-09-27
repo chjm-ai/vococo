@@ -305,6 +305,15 @@ CHAT_TASK_TIMEOUT_MIN: int = int(os.environ.get("CHAT_TASK_TIMEOUT_MIN", "0"))
 # 超时兜底)。保留独立开关是因为查日志/翻代码这类任务动辄几十轮,2026-07-10 真机
 # 事故:全局 40 轮让一个查日志任务白跑 8 分钟。
 TASK_MAX_TURNS: int = int(os.environ.get("TASK_MAX_TURNS", "0"))
+# 后台任务 token 预算(新鲜 token = 非缓存输入 + 缓存写入 + 输出,含子代理;缓存复读不算)。
+# 单次:cron/语音派活每跑一轮的上限,超了提前停止并推送。2026-09-28 按历史 194 次运行统计:
+#   中位 7 万、95 分位 29 万、最多 43 万 → 取 95 分位的 2 倍。定时任务可在 job 里用
+#   budget_tokens 单独覆盖。网页派出的独立会话(chat)跟 CHAT_TASK_TIMEOUT_MIN 一样默认不限。
+# 每日:cron+语音后台任务当天累计的总上限,超了当天不再起新一轮(防夜里一批任务集体跑飞)。
+#   历史 24 天:中位 47 万/天、最多 468 万/天。0 = 不设。
+TASK_TOKEN_BUDGET: int = int(os.environ.get("TASK_TOKEN_BUDGET", "600000"))
+CHAT_TASK_TOKEN_BUDGET: int = int(os.environ.get("CHAT_TASK_TOKEN_BUDGET", "0"))
+BG_DAILY_TOKEN_BUDGET: int = int(os.environ.get("BG_DAILY_TOKEN_BUDGET", "5000000"))
 # 后台任务碰到要审批的操作:推到手机等这么多秒;没人理就先跳过,记进「设置→安全→待批队列」。
 # 须明显小于 TASK_TIMEOUT_MIN,免得等审批把任务本身等超时。
 BG_APPROVAL_WAIT_SEC: int = int(os.environ.get("BG_APPROVAL_WAIT_SEC", "600"))

@@ -114,6 +114,10 @@ def _conn() -> sqlite3.Connection:
                 _DB.execute(f"ALTER TABLE tasks ADD COLUMN {ddl}")
             except sqlite3.OperationalError:
                 pass
+        # 无人值守后台任务(cron/语音派活)每天累计的新鲜 token,供每日总量上限判断
+        _DB.execute(
+            "CREATE TABLE IF NOT EXISTS bg_usage_daily(day TEXT PRIMARY KEY, tokens INTEGER NOT NULL)"
+        )
         # 已移除 SDK 任务清单到任务表的镜像。历史镜像任务没有后台执行器,
         # 启动后必须静默冻结,避免被排队器误跑或被重启孤儿回收误报失败。
         _DB.execute(
@@ -361,3 +365,27 @@ def mark_orphans_failed(exclude_ids: set[str] | frozenset[str] = frozenset()) ->
         )
         c.commit()
     return orphans
+
+
+# ── 无人值守后台任务的每日 token 用量(每日总量上限用,见 task_runner._token_budget)──
+def _today() -> str:
+    return time.strftime("%Y-%m-%d")
+
+
+def add_daily_usage(tokens: int) -> None:
+    if tokens <= 0:
+        return
+    c = _conn()
+    c.execute(
+        "INSERT INTO bg_usage_daily(day, tokens) VALUES(?,?) "
+        "ON CONFLICT(day) DO UPDATE SET tokens=tokens+excluded.tokens",
+        (_today(), int(tokens)),
+    )
+    c.commit()
+
+
+def daily_usage(day: str | None = None) -> int:
+    row = _conn().execute(
+        "SELECT tokens FROM bg_usage_daily WHERE day=?", (day or _today(),)
+    ).fetchone()
+    return int(row[0]) if row else 0

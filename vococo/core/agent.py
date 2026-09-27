@@ -359,6 +359,10 @@ class AgentReply:
     model: str = ""  # 实际使用的模型
     sdk_session_id: str = ""  # 本轮 SDK 会话 id,存回后下一轮 resume 它(真·多轮历史)
     num_turns: int = 0  # 本轮消耗的 agentic turns(ResultMessage.num_turns),用于比对 MAX_TURNS
+    # 流式累计的新鲜 token(非缓存输入 + 缓存写入 + 输出,含子代理),token 预算按它算;
+    # 被预算打断时 ResultMessage 可能不带完整 usage,这个数更可靠
+    stream_tokens: int = 0
+    budget_exceeded: bool = False  # 本轮是否因超出 token_budget 被提前停止
 
 
 def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
@@ -811,6 +815,7 @@ async def stream_turn(
     max_turns: int | None = None,
     compact_only: bool = False,
     system_prompt_extra: str = "",
+    token_budget: int = 0,
 ) -> AsyncIterator[Event]:
     """流式跑一轮,逐个 yield 事件,最后 yield Done。
 
@@ -829,6 +834,10 @@ async def stream_turn(
     场景下走 SDK/Anthropic 的 prompt cache,同样的文字只在首轮真正处理一次,后面
     轮次缓存命中;放进 user_text 则每轮都是全新内容,吃不到缓存(2026-08-22 语音
     首字延迟排查发现的优化点,见 voice/prompts.py 的稳定/动态拆分)。
+
+    token_budget:本轮新鲜 token 上限(非缓存输入+缓存写入+输出,含子代理),0=不限。
+    流式累计超过就 interrupt 提前收工,Done 里 is_error=True、budget_exceeded=True。
+    后台任务用它防跑飞(见 core/task_runner.py);前台对话不传。
 
     max_turns:单轮 agentic 轮数上限,None/0 用全局 config.MAX_TURNS(全局 0=不限,
     SDK 侧不传上限,靠 AGENT_TURN_TIMEOUT 硬超时兜底)。2026-07-10 真机事故:
@@ -988,6 +997,8 @@ async def stream_turn(
         cache_read = 0
         output_tokens = 0
         num_turns = 0
+        stream_tokens = 0  # 流式累计的新鲜 token(见 token_budget)
+        budget_hit = False
         used_model = resolved_model
         ctx_window_val = context_window(used_model)
         sess_id = use_resume or ""  # 每轮用最新 ResultMessage.session_id 覆盖,链不断
@@ -1077,6 +1088,29 @@ async def stream_turn(
                                         pending_subagents.add(tid)
                                 if not is_sdk_task_tool(name):
                                     yield ToolStarted(name, tool_id=tid, parent_id=pid)
+                        elif etype in ("message_start", "message_delta"):
+                            # 每次模型调用(含子代理)开头报输入、结尾报输出 → 累计新鲜 token。
+                            # 缓存复读不算:它便宜,且每步都会重复计入,算进来会严重虚高。
+                            if etype == "message_start":
+                                u = (ev.get("message") or {}).get("usage") or {}
+                                stream_tokens += int(u.get("input_tokens") or 0) + int(
+                                    u.get("cache_creation_input_tokens") or 0
+                                )
+                            else:
+                                u = ev.get("usage") or {}
+                                stream_tokens += int(u.get("output_tokens") or 0)
+                            if token_budget and not budget_hit and stream_tokens > token_budget:
+                                budget_hit = True
+                                print(
+                                    f"[agent] 超出 token 预算 {stream_tokens}/{token_budget},提前停止"
+                                    f"(session={session_key or '?'})",
+                                    flush=True,
+                                )
+                                try:
+                                    with anyio.move_on_after(5):
+                                        await client.interrupt()
+                                except Exception:
+                                    pass
                         elif etype == "content_block_stop":
                             # 该工具块的入参已流完 → 解析并发出 ToolInput(喂 diff/todo/审批)
                             idx = ev.get("index")
@@ -1181,6 +1215,8 @@ async def stream_turn(
                                 f" subtype={getattr(msg, 'subtype', '') or '?'})"
                             )
                         result_seen = True
+                        if budget_hit:
+                            break  # 预算打断:子代理也已被中断,不再等;clean_finish=False 不回池
                         # 真正收工:主轮 ResultMessage 到手,且没有还在跑的子代理/后台任务。
                         # 若子代理还在跑,先不收工,继续 drain——等它结果喂回主 agent、主 agent
                         # 续写综合正文,直到下一个「无 pending 的 ResultMessage」。
@@ -1281,6 +1317,12 @@ async def stream_turn(
 
         # 压缩轮没有模型对话,CLI /compact 本身也不产正文 → 空文本时给固定反馈
         reply_text = "".join(text_parts).strip()
+        if budget_hit:
+            is_error = True
+            err_detail = (
+                f"超出本次任务的 token 预算(已用约 {stream_tokens // 1000}k,"
+                f"上限 {token_budget // 1000}k),已提前停止"
+            )
         if compact_only and not reply_text:
             reply_text = "🫙 已手动压缩上下文,旧对话已摘要,可以继续聊。"
         yield Done(
@@ -1300,6 +1342,8 @@ async def stream_turn(
                 model=used_model,
                 sdk_session_id=sess_id,
                 num_turns=num_turns,
+                stream_tokens=stream_tokens,
+                budget_exceeded=budget_hit,
             )
         )
 
