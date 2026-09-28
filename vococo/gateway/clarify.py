@@ -48,6 +48,7 @@ class _Pending:
     event: anyio.Event
     response: Optional[str] = None
     awaiting_text: bool = False  # 无选项(开放式)或用户点了"其他" → 下一条文字即答案
+    notice_id: Optional[str] = None  # 对应的铃铛通知(memory/notices.py);超时后仍可事后处理
 
 
 _pending: dict[str, _Pending] = {}
@@ -143,7 +144,9 @@ def background_adapter():
 
 
 # ── 工具侧:登记 + 阻塞等 ──
-def register(session_key: str, choices: list[str]) -> _Pending:
+def register(session_key: str, choices: list[str], notice: Optional[dict] = None) -> _Pending:
+    """登记一个待答选项。notice 非空 → 同时记一条铃铛通知(kind/prompt/reason/detail/
+    tool/rule),等待结束时自动标成已回答或已超时,超时的仍能在铃铛里事后处理。"""
     p = _Pending(
         clarify_id=uuid.uuid4().hex[:10],
         session_key=session_key,
@@ -151,6 +154,19 @@ def register(session_key: str, choices: list[str]) -> _Pending:
         event=anyio.Event(),
         awaiting_text=not bool(choices),  # 开放式问题:下一条文字即答案
     )
+    if notice:
+        try:
+            from ..memory import notices
+
+            p.notice_id = notices.add(
+                session_key=session_key, kind=notice.get("kind", "ask"),
+                prompt=notice.get("prompt", ""), options=list(choices or []),
+                clarify_id=p.clarify_id, reason=notice.get("reason", ""),
+                detail=notice.get("detail", ""), tool=notice.get("tool", ""),
+                rule=notice.get("rule"),
+            )
+        except Exception as exc:  # noqa: BLE001 —— 记通知失败不影响提问本身
+            print(f"[clarify] 记录通知失败:{exc}", flush=True)
     _pending[p.clarify_id] = p
     _by_session.setdefault(session_key, []).append(p.clarify_id)
     return p
@@ -164,7 +180,33 @@ async def wait(clarify_id: str, timeout: float) -> Optional[str]:
     with anyio.move_on_after(timeout):
         await p.event.wait()
     _drop(clarify_id)
+    _settle_notice(p)
     return p.response
+
+
+def _settle_notice(p: _Pending) -> None:
+    """等待结束:有回答 → answered;超时/被清(response 为 None 或空)→ expired,留在铃铛里。"""
+    if not p.notice_id:
+        return
+    try:
+        from ..memory import notices
+
+        if p.response:
+            notices.set_status(p.notice_id, "answered", p.response)
+        else:
+            notices.set_status(p.notice_id, "expired")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[clarify] 更新通知失败:{exc}", flush=True)
+
+
+def abandon(clarify_id: str) -> None:
+    """选项没能发出去(present_choice 失败)、也没人会 wait:清掉登记,通知记为 expired
+    (你没看到,但事情还等着处理,留在铃铛里)。"""
+    p = _pending.get(clarify_id)
+    _drop(clarify_id)
+    if p is not None:
+        p.response = None
+        _settle_notice(p)
 
 
 def _drop(clarify_id: str) -> None:

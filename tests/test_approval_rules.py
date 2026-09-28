@@ -117,7 +117,7 @@ def test_no_forever_option_when_not_rule_eligible(isolated):
 
 def test_task_session_shows_task_option(isolated):
     _out, choice = _click("拒绝", "Bash", {"command": "pip install x"}, "task:abcd1234")
-    assert any("本任务都允许" in lab for _c, lab in choice.options)
+    assert any("本轮任务都允许" in lab for _c, lab in choice.options)
 
 
 def test_noninteractive_deny_is_audited(isolated):
@@ -130,10 +130,10 @@ def test_noninteractive_deny_is_audited(isolated):
     assert approvals.list_audit()[0]["decision"] == "noninteractive_deny"
 
 
-def test_task_without_channel_goes_to_missed_queue(isolated, monkeypatch):
-    """后台任务但没有 Web 审批通道(纯 CLI/TUI)→ 直接进待批队列,记在任务会话名下。"""
+def test_task_without_channel_goes_to_bell(isolated, monkeypatch):
+    """后台任务但没有 Web 审批通道(纯 CLI/TUI)→ 直接以「已超时」进铃铛,记在任务会话名下。"""
     from vococo.gateway import clarify
-    from vococo.memory import approvals
+    from vococo.memory import approvals, notices
 
     monkeypatch.setattr(clarify, "_bg_adapter", None)
     tok = danger.set_task_session("task:zz")
@@ -146,7 +146,8 @@ def test_task_without_channel_goes_to_missed_queue(isolated, monkeypatch):
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
     row = approvals.list_audit()[0]
     assert row["decision"] == "deferred" and row["session_key"] == "task:zz"
-    assert approvals.list_missed()[0]["session_key"] == "task:zz"
+    n = notices.list_open()[0]
+    assert n["session_key"] == "task:zz" and n["status"] == "expired" and n["kind"] == "approval"
 
 
 def test_block_is_audited(isolated):

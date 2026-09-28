@@ -430,16 +430,6 @@ class FetchSSE {
   reconnectNow(){ if(this._closed) return; if(this._ctrl) try{this._ctrl.abort();}catch(e){} if(this._wake) this._wake(); } // 立刻断开重连(跳过退避)
   close(){ this._closed=true; this.readyState=2; if(this._ctrl) try{this._ctrl.abort();}catch(e){} if(this._wake) this._wake(); }
 }
-// 后台任务正在等的审批(见 tools/danger.py _approve_background):刷新/重连后 SSE 里的
-// choice 帧可能已不在,主动拉一次补弹,免得任务白等到超时。
-async function loadPendingBgApprovals(){
-  let list=[];
-  try{ list=(await (await api("/security/pending")).json()).pending||[]; }catch(e){ return; }
-  list.forEach(e=>{
-    S.pendingChoice[e.conv]=e;
-    if(e.conv===S.conv) renderChoice(e); else openChoiceModal(e.conv, e);
-  });
-}
 function connect(){
   if(S.es) S.es.close();
   const es = S.es = new FetchSSE("/events", S.token);
@@ -448,7 +438,7 @@ function connect(){
     // 重连补回断连期间漏掉的消息(尤其服务端自我重启后注入的系统消息)。force:重连这一刻
     // 恰是最容易出现"流式气泡卡死"的时候(断线期间 done 被环形缓冲挤掉),顺带核对一次。
     reloadHistory(true);
-    loadPendingBgApprovals();
+    if(typeof loadNotices==="function") loadNotices();  // 铃铛:补上断线期间的待处理项
   };
   es.onmessage = ev=>{ try{
     const d=JSON.parse(ev.data);
@@ -619,6 +609,7 @@ function markLive(){
   _liveSig=sig; renderConvs();
 }
 function handleEvent(e){
+  if(e.type==="notices"){ if(typeof loadNotices==="function") loadNotices(); return; }  // 铃铛有变化
   // 服务端进程重启标识:变了说明断线期间进程重启过,环形缓冲/_live 全清空了,
   // 靠事件补发这条路救不回来 —— 主动整体核对一次(侧栏 + 当前会话历史),别等用户自己发现内容旧了。
   // 关键:重启后服务端事件编号从 0 重新数,而 S.lastId 还停在旧进程的最大编号上,

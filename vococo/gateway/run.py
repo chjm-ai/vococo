@@ -14,9 +14,9 @@ import anyio
 from .. import config
 from ..core import tasks as bg_tasks, worktree
 from ..cron.scheduler import run_scheduler
-from ..memory import session_store
+from ..memory import notices, session_store
 from ..tools import selfops
-from . import clarify, core, settings_store
+from . import clarify, core, notice_actions, settings_store
 from .adapters.base import Adapter, Incoming
 
 
@@ -104,12 +104,27 @@ class GatewayRunner:
                     clarify.mark_awaiting_text(cid)
                     await adapter.send(inc.chat_id, "好,直接打字回答就行。")
                 elif not clarify.resolve_button(cid, tok):
-                    await adapter.send(inc.chat_id, "(这个选择已过期)")
+                    await adapter.send(inc.chat_id, await self._late_click(cid, tok))
             return True
         if not text.startswith("/") and clarify.has_pending(key):
             clarify.resolve_text_for_session(key, text)
             return True
         return False
+
+    async def _late_click(self, clarify_id: str, token: str) -> str:
+        """点了已经超时的旧按钮:按铃铛的事后处理逻辑,把选择补回原会话(见 notice_actions)。"""
+        n = notices.by_clarify(clarify_id)
+        if n is None or n["status"] not in notices.OPEN_STATUSES:
+            return "(这个选择已经处理过了)"
+        if token == "other":
+            return "⏰ 这个问题已超时。直接在这里打字回答,我会带着上下文接着做。"
+        label = notice_actions.label_for_token(n, token)
+        if label is None:
+            return "(这个选择已过期)"
+        res = await notice_actions.act(n["id"], label)
+        if not res.get("ok"):
+            return f"(没处理成:{res.get('error')})"
+        return f"⏰ 这个选项已超时,已按你选的「{label}」接着处理。"
 
     async def _handle(self, adapter: Adapter, inc: Incoming) -> None:
         key = inc.session_key
@@ -118,6 +133,11 @@ class GatewayRunner:
         # 否则归档中的会话在侧边栏「工作中」过滤下不可见,续聊完也找不到
         # (见 web_static/sidebar.js buildVoiceTaskRow/buildConvRow 的 convFilter)。
         session_store.set_conv_archived(key, False)
+        if not core.is_command(inc.text):
+            try:
+                notices.close_asks_for_session(key)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[通知] 关闭旧提问失败:{exc}", flush=True)
         # DB(chosen_model)是模型选择的唯一事实源:/model 命令、Web 胶囊、switch_model
         # 工具都写它;内存 self.models 只是本进程镜像。以 DB 为准每轮刷新镜像 ——
         # 否则 switch_model 这类只写 DB 的切换,下一轮仍读到内存旧值,切了不生效。
@@ -315,6 +335,7 @@ class GatewayRunner:
         selfops.write_running_revision()
         # active_sessions 是上个进程留给外部重启脚本的尽力标记，新进程不存在那些任务。
         clarify.clear_active_sessions_after_restart()
+        notice_actions.startup()
         self._recovered_interrupted = session_store.recover_interrupted_turns()
         if self._recovered_interrupted:
             print(f"⚠️ 已收尾 {len(self._recovered_interrupted)} 条被重启中断的回复", flush=True)
@@ -350,6 +371,8 @@ class GatewayRunner:
             web_bridge.register(web_adapter.inject, self.cancel_turn)
             # 后台任务的审批弹窗走 Web 端任务会话(见 tools/danger.py _approve_background)
             clarify.register_background_adapter(web_adapter)
+            # 铃铛:通知一有变化就推一帧 SSE,前端据此刷新数字
+            notices.set_listener(lambda: web_adapter._emit({"type": "notices"}))
         from . import watchdog
 
         watchdog.start_thread()  # 假死看门狗:循环卡死 → dump 堆栈 → 自杀交 run.sh 拉起
@@ -359,6 +382,7 @@ class GatewayRunner:
                 for adapter in self.adapters.values():
                     tg.start_soon(self._serve, adapter)
                 tg.start_soon(run_scheduler, self.push)
+                tg.start_soon(notice_actions.digest_loop)
                 tg.start_soon(self._resume_after_restart)
                 tg.start_soon(selfops.mark_runtime_stable)
                 tg.start_soon(client_pool.sweep_loop)  # 定期回收空闲超时的保温 client

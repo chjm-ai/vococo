@@ -140,7 +140,7 @@ self.addEventListener("notificationclick", (event) => {
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
       for (const c of cs) {
         if ("focus" in c) {
-          c.postMessage({ type: "open", conv: data.conv || "main" });
+          c.postMessage({ type: "open", conv: data.conv || "main", url: target });
           return c.focus();
         }
       }

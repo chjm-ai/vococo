@@ -532,9 +532,17 @@ class SessionStarted:
     session_id: str
 
 
+@dataclass
+class BudgetWarning:
+    """本轮新鲜 token 用到 token_budget 的 80%(每轮只发一次),调用方据此提醒用户。"""
+
+    used: int
+    budget: int
+
+
 Event = Union[
     TextDelta, ThinkingDelta, ToolStarted, ToolInput, ToolFinished, Compacted,
-    SessionStarted, Done,
+    SessionStarted, BudgetWarning, Done,
 ]
 
 
@@ -999,6 +1007,7 @@ async def stream_turn(
         num_turns = 0
         stream_tokens = 0  # 流式累计的新鲜 token(见 token_budget)
         budget_hit = False
+        budget_warned = False
         used_model = resolved_model
         ctx_window_val = context_window(used_model)
         sess_id = use_resume or ""  # 每轮用最新 ResultMessage.session_id 覆盖,链不断
@@ -1099,6 +1108,12 @@ async def stream_turn(
                             else:
                                 u = ev.get("usage") or {}
                                 stream_tokens += int(u.get("output_tokens") or 0)
+                            if (
+                                token_budget and not budget_warned
+                                and stream_tokens >= token_budget * 0.8
+                            ):
+                                budget_warned = True
+                                yield BudgetWarning(used=stream_tokens, budget=token_budget)
                             if token_budget and not budget_hit and stream_tokens > token_budget:
                                 budget_hit = True
                                 print(

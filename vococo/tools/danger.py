@@ -66,6 +66,91 @@ def _rm_is_catastrophic(cmd: str) -> bool:
     return bool(_CATASTROPHIC_TARGET.search(cmd))
 
 
+# ── 惰性文本剥离:只当数据、不会被执行的文本不参与危险判定(2026-09-28)──────────
+# 正则扫整条命令原文,分不清「真命令」和「字符串内容」:提交信息里写了 git push、
+# 用 cat 写文件的 heredoc 正文里有 pip install / 删根示例,都会被误拦(一次会话踩了 4 次)。
+# 这里只剥两类【确定不会执行】的文本,其余一律保留(宁可误拦):
+#   ① git commit 的 -m/--message 参数;
+#   ② 喂给 cat/tee 或 git commit -F 的 heredoc 正文。
+# 双引号消息 / 未加引号定界符的 heredoc 里若出现 $( 或反引号,shell 会先执行命令替换,
+# 那就不是纯数据,不剥。交给 bash/python 等解释器执行的 heredoc 正文照样检查。
+_COMMIT_MSG = re.compile(r"""(-m|--message)(=|\s+)("(?:\\.|[^"\\])*"|'[^']*')""")
+_HEREDOC = re.compile(r"""<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1""")
+_STMT_SPLIT = re.compile(r"&&|\|\||[;&|\n(]")
+_DATA_SINKS = {"cat", "tee"}
+_RUNS_SCRIPT = re.compile(r"(^|[\s;&|(])(sh|bash|zsh|source|eval|\.)\s")
+
+
+def _last_statement(text: str) -> str:
+    return _STMT_SPLIT.split(text)[-1].strip()
+
+
+def _has_substitution(text: str) -> bool:
+    return "$(" in text or "`" in text
+
+
+def _statement_head(stmt: str) -> list[str]:
+    words = [w for w in stmt.split() if not _ASSIGNMENT.match(w)]
+    return words
+
+
+def _strip_commit_messages(cmd: str) -> str:
+    def repl(m: re.Match) -> str:
+        stmt = _last_statement(cmd[: m.start()])
+        words = _statement_head(stmt)
+        if not (words and words[0] == "git" and "commit" in words):
+            return m.group(0)
+        quoted = m.group(3)
+        if quoted.startswith('"') and _has_substitution(quoted):
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2)}''"
+
+    return _COMMIT_MSG.sub(repl, cmd)
+
+
+def _strip_data_heredocs(cmd: str) -> str:
+    lines = cmd.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        m = _HEREDOC.search(line)
+        i += 1
+        if not m:
+            continue
+        words = _statement_head(_last_statement(line[: m.start()]))
+        is_sink = bool(words) and (
+            words[0] in _DATA_SINKS or (words[0] == "git" and "commit" in words)
+        )
+        quoted_delim = bool(m.group(1))
+        delim = m.group(2)
+        body: list[str] = []
+        j = i
+        while j < len(lines) and lines[j].strip() != delim:
+            body.append(lines[j])
+            j += 1
+        if j >= len(lines):
+            continue  # 找不到结束行:不确定边界,原样保留
+        piped = "|" in line[m.end():]  # cat <<EOF | sh:正文最终被执行
+        if is_sink and not piped and (quoted_delim or not _has_substitution("\n".join(body))):
+            out.append(lines[j])  # 只留结束行,正文剥掉
+            i = j + 1
+    stripped = "\n".join(out)
+    # 同一条命令里还调了 shell/eval/source(比如先 cat 写脚本再 bash 跑它)→ 正文可能被执行,不剥
+    if stripped != cmd and _RUNS_SCRIPT.search(stripped):
+        return cmd
+    return stripped
+
+
+def _strip_inert_text(cmd: str) -> str:
+    """去掉确定不会被执行的文本(提交信息、写文件的 heredoc 正文),再交给危险判定。"""
+    try:
+        return _strip_commit_messages(_strip_data_heredocs(cmd))
+    except Exception:  # noqa: BLE001 —— 剥离出错就按原文判,宁可误拦
+        return cmd
+
+
 def is_dangerous(command: str) -> str | None:
     """返回命中的危险说明,安全则返回 None。"""
     c = (command or "").strip()
@@ -524,7 +609,7 @@ def classify(
     """
     ti = tool_input or {}
     if tool_name == "Bash":
-        cmd = ti.get("command", "") or ""
+        cmd = _strip_inert_text(ti.get("command", "") or "")
         why = is_dangerous(cmd)
         if why:
             return ("block", why, False)
@@ -855,7 +940,7 @@ def clear_session_approvals(session_key: str) -> None:
 # ── 永久规则:「永远允许」能存成什么范围 ────────────────────────────────────
 # 只收窄不放大(见 memory/approvals.py):写入按【文件所在目录】、git push 按【仓库】、
 # 外部 MCP 写按【工具名】。进程终止、疑似密钥外带、装包、下载执行、递归删除等一律不给
-# 「永远允许」——这些每次场景都不同,批一次放一辈子风险太大,最多给「本任务都允许」。
+# 「永远允许」——这些每次场景都不同,批一次放一辈子风险太大,最多给「本轮任务都允许」。
 _RULE_FORBIDDEN_DIRS = (
     "~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gcloud", "~/Library/LaunchAgents",
     "~/.claude",
@@ -899,7 +984,7 @@ def _rule_target(
             return None
         return ("write_dir", d, f"以后写入 {d} 目录(含子目录)不再询问")
     if tool_name == "Bash" and reason.startswith("git push"):
-        cmd = ti.get("command", "") or ""
+        cmd = _strip_inert_text(ti.get("command", "") or "")
         # 同一条命令里还夹着别的危险操作(装包/递归删除…)→ 不给规则,免得规则顺带放行它们
         if _GIT_OTHER_REPO.search(cmd) or _escalate_hits(cmd) != 1:
             return None
@@ -923,9 +1008,14 @@ _task_session_var: contextvars.ContextVar = contextvars.ContextVar(
 
 
 def set_task_session(session_key: str | None) -> contextvars.Token:
-    """后台任务每跑一轮开头调用。顺带清掉该任务上一轮「审批等超时」的标记。"""
+    """后台任务每跑一轮开头调用。顺带清掉该任务上一轮的「审批等超时」标记和
+    「本轮任务都允许」——后者只管当前这一轮:定时任务每天复用同一个会话,不清的话
+    一次授权会一直有效到进程重启,比按钮字面意思管得久。"""
     if session_key:
         _bg_timed_out.discard(session_key)
+        _session_approvals.pop(session_key, None)
+        for cat in _next_round.pop(session_key, ()):  # 铃铛里补批的「本轮任务都允许」
+            _mark_session_approved(session_key, cat)
     return _task_session_var.set(session_key or None)
 
 
@@ -963,7 +1053,7 @@ def _audit(tool: str, tier: str, reason: str, detail: str, decision: str) -> Non
 
 _OPT_ONCE = "允许一次"
 _OPT_SESSION = "本次会话都允许"
-_OPT_TASK = "本任务都允许"
+_OPT_TASK = "本轮任务都允许"
 _OPT_FOREVER = "永远允许"
 _OPT_DENY = "拒绝"
 _OPT_ICONS = {_OPT_ONCE: "✅", _OPT_SESSION: "♾️", _OPT_TASK: "♾️", _OPT_FOREVER: "📌", _OPT_DENY: "🛑"}
@@ -984,7 +1074,7 @@ async def _approve(
     - 无交互通道(cron/eval):按 restrict_noninteractive 决定——「对外/装包/持久化」类
       默认拒绝(fail-closed,"无人可问"≠"同意"),本地操作放行。
     - 「本次会话都允许」:选中后把该类操作记进 _session_approvals,本会话后续同类
-      escalate 直接放行、不再弹窗(按 category 归类,见上)。后台任务会话显示为「本任务都允许」。
+      escalate 直接放行、不再弹窗(按 category 归类,见上)。后台任务会话显示为「本轮任务都允许」(只管当前一轮,见 set_task_session)。
     - 复用 ask_user 同款 clarify 机制:回复经网关「拿锁前 resolve」解除,不会死锁。
       超时 / 发送失败 → 视为拒绝(危险操作宁可不做)。
     每个分支的结果都记进审批记录(memory/approvals.py)。
@@ -1019,25 +1109,35 @@ async def _approve(
     if _is_group_session(ctx.session_key):
         return done("group_deny", False)
     cat = _category(reason)
+    if _take_one_shot(ctx.session_key, cat):
+        return done("approved_once", True)  # 铃铛里事后补批发的一次性许可
     if _is_session_approved(ctx.session_key, cat):
         return done("session", True)  # 本会话已选「都允许」此类操作 → 免批直接放行
     from ..core import tasks as _tasks
 
     session_opt = _OPT_TASK if _tasks.task_id_from_session_key(ctx.session_key) else _OPT_SESSION
     choices = [_OPT_ONCE, session_opt] + ([_OPT_FOREVER] if rule else []) + [_OPT_DENY]
-    p = clarify.register(ctx.session_key, choices)
+    prompt = f"⚠️ 需要批准:{reason}\n{detail}"
+    if rule:
+        prompt += f"\n\n📌 永远允许 = {rule[2]}"
+    p = clarify.register(ctx.session_key, choices, notice=_notice(prompt, reason, detail, tool, rule))
     try:
-        prompt = f"⚠️ 需要批准:{reason}\n{detail}"
-        if rule:
-            prompt += f"\n\n📌 永远允许 = {rule[2]}"
         await ctx.adapter.present_choice(
             ctx.chat_id, Choice(prompt=prompt, options=_choice_opts(p.clarify_id, choices))
         )
     except Exception:
-        clarify.resolve(p.clarify_id, _OPT_DENY)
+        clarify.abandon(p.clarify_id)
         return done("error", False)
     answer = await clarify.wait(p.clarify_id, config.CLARIFY_TIMEOUT)
     return _apply_answer(answer, ctx.session_key, cat, session_opt, rule, done)
+
+
+def _notice(prompt: str, reason: str, detail: str, tool: str, rule) -> dict:
+    """审批弹窗对应的铃铛通知内容(见 memory/notices.py)。"""
+    return {
+        "kind": "approval", "prompt": prompt, "reason": reason,
+        "detail": redact_secrets(detail), "tool": tool, "rule": rule,
+    }
 
 
 def _choice_opts(clarify_id: str, choices: list[str]) -> list[tuple[str, str]]:
@@ -1062,22 +1162,32 @@ def _apply_answer(answer, session_key: str, cat: str, session_opt: str, rule, do
     return done("timeout" if answer is None else "denied", False)
 
 
-# ── 后台任务审批:推到 Web 任务会话等你批,超时/免打扰 → 记进待批队列 ─────────────
-# 参照 Meta Muse「任务暂停等你批,批完接着干」;夜里的 cron 不打扰你,早上在
-# 「设置→安全→待批队列」统一处理(永远允许并重跑 / 允许一次并重跑 / 忽略)。
-_bg_pending: dict[str, dict] = {}  # clarify_id → 弹窗内容,供刷新页面后补弹(/security/pending)
-_one_shot: dict[str, set[str]] = {}  # session_key → 待批队列里「允许一次并重跑」发放的一次性许可
-# 本轮已经等审批超时过一次的任务会话:同一轮后面再要批的操作不再挨个等,直接进待批队列,
+# ── 后台任务审批:推到 Web 任务会话等你批,超时/免打扰 → 留在铃铛里 ─────────────
+# 参照 Meta Muse「任务暂停等你批,批完接着干」;夜里的 cron 不打扰你,早上铃铛里
+# 统一处理(点选项 = 按你的选择补批并让任务接着跑,见 gateway/notice_actions.py)。
+_one_shot: dict[str, set[str]] = {}  # session_key → 铃铛里事后补批发的一次性许可
+# 本轮已经等审批超时过一次的任务会话:同一轮后面再要批的操作不再挨个等,直接进铃铛,
 # 免得一轮里好几个操作各等 10 分钟把任务本身拖到超时(下一轮开头由 set_task_session 清掉)。
 _bg_timed_out: set[str] = set()
 
 
-def pending_background_choices() -> list[dict]:
-    return list(_bg_pending.values())
+_next_round: dict[str, set[str]] = {}  # 任务会话 → 下一轮开头生效的「本轮任务都允许」
+
+
+def grant_round(session_key: str, reason: str) -> None:
+    """铃铛里事后选了「本轮任务都允许 / 本次会话都允许」:任务会话在续跑的那一轮生效
+    (每轮开头会清一次,所以先存着等 set_task_session 套上);普通会话直接记会话允许。"""
+    from ..core import tasks as _tasks
+
+    cat = _category(reason)
+    if _tasks.task_id_from_session_key(session_key):
+        _next_round.setdefault(session_key, set()).add(cat)
+    else:
+        _mark_session_approved(session_key, cat)
 
 
 def grant_once(session_key: str, reason: str) -> None:
-    """给某任务会话发一次性许可:下一次同类操作直接放行,用完即失效。"""
+    """给某会话发一次性许可:下一次同类操作直接放行,用完即失效。"""
     _one_shot.setdefault(session_key, set()).add(_category(reason))
 
 
@@ -1107,17 +1217,19 @@ def _in_quiet_hours(hour: int | None = None) -> bool:
     return start <= hour < end if start < end else (hour >= start or hour < end)
 
 
-def _record_missed(session_key: str, tool: str, reason: str, detail: str, rule) -> None:
+def _record_deferred(session_key: str, prompt: str, tool: str, reason: str, detail: str, rule) -> None:
+    """不弹窗、直接以「已超时」记进铃铛(免打扰 / 没有 Web 通道 / 本轮已超时过)。"""
     try:
-        from ..memory import approvals
+        from ..memory import notices
 
-        approvals.add_missed(
-            session_key=session_key, tool=tool, reason=reason, detail=redact_secrets(detail),
-            rule_kind=rule[0] if rule else None, rule_scope=rule[1] if rule else None,
-            rule_label=rule[2] if rule else None,
+        choices = [_OPT_ONCE, _OPT_TASK] + ([_OPT_FOREVER] if rule else []) + [_OPT_DENY]
+        n = _notice(prompt, reason, detail, tool, rule)
+        notices.add(
+            session_key=session_key, kind="approval", prompt=n["prompt"], options=choices,
+            status="expired", reason=reason, detail=n["detail"], tool=tool, rule=rule,
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"[danger] 待批队列写入失败:{exc}", flush=True)
+        print(f"[danger] 写入铃铛失败:{exc}", flush=True)
 
 
 async def _approve_background(reason: str, detail: str, tool: str, rule, key: str, done) -> bool:
@@ -1129,35 +1241,26 @@ async def _approve_background(reason: str, detail: str, tool: str, rule, key: st
     from ..gateway import clarify
     from ..gateway.core import Choice
 
-    adapter = clarify.background_adapter()
-    if adapter is None or _in_quiet_hours() or key in _bg_timed_out:
-        _record_missed(key, tool, reason, detail, rule)
-        return done("deferred", False)
-    choices = [_OPT_ONCE, _OPT_TASK] + ([_OPT_FOREVER] if rule else []) + [_OPT_DENY]
-    p = clarify.register(key, choices)
-    opts = _choice_opts(p.clarify_id, choices)
-    wait_min = max(1, config.BG_APPROVAL_WAIT_SEC // 60)
     prompt = f"⚠️ 后台任务需要批准:{reason}\n{detail}"
     if rule:
         prompt += f"\n\n📌 永远允许 = {rule[2]}"
-    prompt += f"\n\n({wait_min} 分钟内没回应就先跳过这一步,记进「设置→安全→待批队列」)"
-    _bg_pending[p.clarify_id] = {
-        "conv": key, "type": "choice", "prompt": prompt, "options": [list(o) for o in opts],
-    }
+    adapter = clarify.background_adapter()
+    if adapter is None or _in_quiet_hours() or key in _bg_timed_out:
+        _record_deferred(key, prompt, tool, reason, detail, rule)
+        return done("deferred", False)
+    choices = [_OPT_ONCE, _OPT_TASK] + ([_OPT_FOREVER] if rule else []) + [_OPT_DENY]
+    wait_min = max(1, config.BG_APPROVAL_WAIT_SEC // 60)
+    shown = prompt + f"\n\n({wait_min} 分钟内没回应就先跳过这一步,留在右上角铃铛里,之后补批会让任务接着跑)"
+    p = clarify.register(key, choices, notice=_notice(prompt, reason, detail, tool, rule))
+    opts = _choice_opts(p.clarify_id, choices)
     try:
-        await adapter.present_choice(key, Choice(prompt=prompt, options=opts))
+        await adapter.present_choice(key, Choice(prompt=shown, options=opts))
     except Exception:
-        _bg_pending.pop(p.clarify_id, None)
-        clarify.resolve(p.clarify_id, _OPT_DENY)
-        _record_missed(key, tool, reason, detail, rule)
+        clarify.abandon(p.clarify_id)
         return done("error", False)
-    try:
-        answer = await clarify.wait(p.clarify_id, config.BG_APPROVAL_WAIT_SEC)
-    finally:
-        _bg_pending.pop(p.clarify_id, None)
+    answer = await clarify.wait(p.clarify_id, config.BG_APPROVAL_WAIT_SEC)
     if answer is None:
-        _bg_timed_out.add(key)
-        _record_missed(key, tool, reason, detail, rule)
+        _bg_timed_out.add(key)  # 通知已由 clarify.wait 自动标成 expired,留在铃铛里
     return _apply_answer(answer, key, cat, _OPT_TASK, rule, done)
 
 
@@ -1218,11 +1321,12 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
         if not approved:
             if _task_session_var.get() and restrict:
                 return _deny(
-                    f"🛑 后台任务里这个操作没拿到批准({reason}),已记进待批队列等主人处理。"
+                    f"🛑 后台任务里这个操作没拿到批准({reason}),已留在铃铛里等主人处理。"
                     "先跳过这一步继续做能做的部分,并在最后的总结里说明哪一步被拦了、批准后要做什么。"
                 )
             return _deny(
-                f"🛑 你未批准此操作({reason})。已跳过;如需执行请手动运行或改用更安全方式。"
+                f"🛑 你未批准此操作({reason})。已跳过;如果只是没来得及点,主人可以在铃铛里补批,"
+                "补批后会作为新消息发回本会话,届时再重试这一步。"
             )
     return {}
 

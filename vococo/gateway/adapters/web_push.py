@@ -204,6 +204,7 @@ class PushManager:
         conv: str = "main",
         kind: str = "",
         tag: str | None = None,
+        url: str | None = None,
     ) -> int:
         """异步群发一条通知给所有订阅设备。返回成功送出的设备数。
 
@@ -220,7 +221,7 @@ class PushManager:
                 "conv": conv,
                 "kind": kind,
                 "tag": tag or f"vococo-{conv}-{kind or 'msg'}",
-                "url": f"/?conv={conv}",
+                "url": url or f"/?conv={conv}",
             },
             ensure_ascii=False,
         )

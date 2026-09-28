@@ -48,7 +48,7 @@ _VERSIONED_ASSETS = (
     # 2026-08-14 前端模块化:从 index.html 拆出的功能块(加载顺序即此顺序)
     "app-core.js", "mascot.js", "markdown.js", "sidebar.js", "settings.js", "stats.js",
     "workbench.js",
-    "stream.js", "composer.js", "voice.js",
+    "stream.js", "notices.js", "composer.js", "voice.js",
 )
 _DOC_PREVIEW_MAX = 3 * 1024 * 1024  # 文档预览分屏读文件上限;超过就不读,前端提示下载/自己开
 # 文档预览模糊兜底搜索用:直接拼接找不到时,按路径尾部扫一遍——AI 提到文件时经常掉了包名
@@ -1302,6 +1302,17 @@ class WebAdapter:
             return web.json_response({"error": str(exc)}, status=400)
         if job is None:
             return web.json_response({"error": "任务不存在"}, status=404)
+        return web.json_response({"job": job})
+
+    @_authed
+    @_json_body
+    async def _handle_cron_rotate_secret(self, request: web.Request, body: dict) -> web.Response:
+        """Webhook 任务重新生成密钥(旧触发链接立刻失效)。"""
+        from ...cron import scheduler
+
+        job = scheduler.rotate_webhook_secret(str((body or {}).get("id", "")))
+        if job is None:
+            return web.json_response({"error": "不是 Webhook 任务或任务不存在"}, status=404)
         return web.json_response({"job": job})
 
     @_authed
@@ -2871,7 +2882,7 @@ class WebAdapter:
         events.submit(job_id, f"Webhook 请求(Content-Type: {ctype or '无'}):\n{text or '(空)'}")
         return web.json_response({"ok": True, "queued": True}, status=202)
 
-    # ── 安全:永久审批规则 / 审批记录 / 待批队列(设置页「安全」页签)──────────
+    # ── 安全:永久审批规则 / 审批记录(设置页「安全」页签)──────────────────────
     @_authed
     async def _handle_security(self, request: web.Request) -> web.Response:
         from ...memory import approvals
@@ -2880,7 +2891,6 @@ class WebAdapter:
         return web.json_response({
             "rules": approvals.list_rules(),
             "audit": approvals.list_audit(limit=300, decision=decision),
-            "missed": approvals.list_missed(),
             "decisions": approvals.DECISIONS,
         })
 
@@ -2893,47 +2903,48 @@ class WebAdapter:
             return web.json_response({"error": "规则不存在"}, status=404)
         return web.json_response({"ok": True})
 
+    # ── 铃铛:待处理的提问/审批(见 memory/notices.py、gateway/notice_actions.py)───────
+    @_authed
+    async def _handle_notices(self, request: web.Request) -> web.Response:
+        from ...memory import notices
+        from .. import notice_actions
+
+        items = []
+        for n in notices.list_open():
+            conv = notice_actions.conv_of(n["session_key"])
+            items.append({
+                "id": n["id"], "ts": n["ts"], "kind": n["kind"], "status": n["status"],
+                "prompt": n["prompt"], "options": n["options"], "reason": n["reason"],
+                "clarify_id": n["clarify_id"] if n["status"] == "pending" else None,
+                "conv": conv,
+                "title": session_store.get_title(n["session_key"]) or (conv or n["session_key"]),
+            })
+        return web.json_response({"items": items})
+
     @_authed
     @_json_body
-    async def _handle_security_missed(self, request: web.Request, body: dict) -> web.Response:
-        """待批队列处理:forever=存规则+重跑 / once=一次性许可+重跑 / dismiss=忽略。"""
-        from ...core import task_runner, tasks
-        from ...memory import approvals
-        from ...tools import danger
+    async def _handle_notice_act(self, request: web.Request, body: dict) -> web.Response:
+        from .. import notice_actions
 
         body = body or {}
-        m = approvals.get_missed(str(body.get("id", "")))
-        if m is None:
-            return web.json_response({"error": "这条已经处理过或不存在"}, status=404)
-        action = str(body.get("action", ""))
-        if action == "dismiss":
-            approvals.set_missed_status(m["id"], "dismissed")
-            return web.json_response({"ok": True})
-        if action not in ("forever", "once"):
-            return web.json_response({"error": "未知操作"}, status=400)
-        task_id = tasks.task_id_from_session_key(m["session_key"])
-        if not task_id or tasks.get(task_id) is None:
-            return web.json_response({"error": "对应的后台任务已不存在"}, status=404)
-        if action == "forever":
-            if not m["rule_kind"]:
-                return web.json_response({"error": "这类操作不支持永远允许"}, status=400)
-            approvals.add_rule(m["rule_kind"], m["rule_scope"], m["rule_label"] or "")
-        else:
-            danger.grant_once(m["session_key"], m["reason"])
-        approvals.set_missed_status(m["id"], "approved")
-        res = await task_runner.append(
-            task_id,
-            f"之前被拦下等审批的操作已获主人批准:{m['reason']} {m['detail']}\n"
-            "请重新执行这一步,并把之前因此没做完的部分补完。",
-        )
-        return web.json_response({"ok": bool(res.get("ok")), "message": res.get("message", "")})
+        res = await notice_actions.act(str(body.get("id", "")), str(body.get("label", "")))
+        return web.json_response(res, status=200 if res.get("ok") else 400)
 
     @_authed
-    async def _handle_security_pending(self, request: web.Request) -> web.Response:
-        """后台任务正在等的审批弹窗(刷新页面后前端据此补弹)。"""
-        from ...tools import danger
+    @_json_body
+    async def _handle_notice_dismiss(self, request: web.Request, body: dict) -> web.Response:
+        from ...memory import notices
 
-        return web.json_response({"pending": danger.pending_background_choices()})
+        body = body or {}
+        if body.get("all"):
+            return web.json_response({"ok": True, "count": notices.dismiss_all()})
+        n = notices.get(str(body.get("id", "")))
+        if n is None or n["status"] not in notices.OPEN_STATUSES:
+            return web.json_response({"error": "这条已经处理过了"}, status=404)
+        if n["status"] == "pending":
+            return web.json_response({"error": "还在等你回答,选一个选项即可"}, status=400)
+        notices.set_status(n["id"], "dismissed")
+        return web.json_response({"ok": True})
 
     @_authed
     async def _handle_push_config(self, request: web.Request) -> web.Response:
@@ -3019,7 +3030,7 @@ class WebAdapter:
                 web.get("/mascot.css", self._handle_mascot_styles),
                 web.get("/tool-card.js", self._handle_tool_card_js),
                 web.get(
-                    r"/{name:(?:app-core|mascot|markdown|sidebar|settings|stats|workbench|stream|composer|voice)\.js}",
+                    r"/{name:(?:app-core|mascot|markdown|sidebar|settings|stats|workbench|stream|notices|composer|voice)\.js}",
                     self._handle_app_js,
                 ),
                 web.get("/favicon.ico", self._handle_favicon),
@@ -3029,10 +3040,12 @@ class WebAdapter:
                 web.post("/api/checkin/{name}", self._handle_checkin_post),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.post("/hook/{job_id}", self._handle_hook),
+                web.post("/cron/jobs/rotate-secret", self._handle_cron_rotate_secret),
                 web.get("/security", self._handle_security),
                 web.post("/security/rule/delete", self._handle_security_rule_delete),
-                web.post("/security/missed", self._handle_security_missed),
-                web.get("/security/pending", self._handle_security_pending),
+                web.get("/notices", self._handle_notices),
+                web.post("/notices/act", self._handle_notice_act),
+                web.post("/notices/dismiss", self._handle_notice_dismiss),
                 web.get("/push/config", self._handle_push_config),
                 web.get("/push/subs", self._handle_push_subs),
                 web.post("/push/subscribe", self._handle_push_subscribe),

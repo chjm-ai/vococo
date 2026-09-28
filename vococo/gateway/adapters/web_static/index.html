@@ -98,8 +98,9 @@ try{
           <div class="cfrow">
             <input id="cfHookUrl" readonly placeholder="保存后自动生成"/>
             <button type="button" id="cfHookCopy">复制</button>
+            <button type="button" id="cfHookRotate" title="换一把新密钥,旧链接立刻失效">重新生成</button>
           </div>
-          <div class="cfhint">用 POST 请求这个链接即可触发，请求内容会作为事件数据交给任务；链接里带密钥，别外传。</div>
+          <div class="cfhint">用 POST 请求这个链接即可触发，请求内容会作为事件数据交给任务。链接里带密钥别外传；也可以把 key 放进请求头 X-Vococo-Key，链接里只留到 /hook/任务id。怀疑泄露就点「重新生成」。</div>
         </div>
         <div id="cfWatchFields" hidden>
           <label class="cflabel">监听目录</label>
@@ -294,6 +295,7 @@ try{
           </button>
           <div id="ctxPop" hidden></div>
           <button class="hmore" id="convCronEditBtn" type="button" title="编辑任务" hidden></button>
+          <button class="hmore ntbell" id="noticeBtn" type="button" title="待处理" data-notice-bell></button>
           <button class="hmore" id="convDocsBtn" type="button" title="本会话文档"></button>
           <div id="convDocsPop" hidden></div>
           <button class="hmore" id="convCronMore" type="button" title="更多" hidden>⋯</button>
@@ -380,6 +382,8 @@ try{
     </form>
   </main>
   <!-- 核心工作台 Demo：数据与交互均在前端内存，不触达现有任务/文档同步链路。 -->
+  <!-- 铃铛弹层:聊天标题栏和工作台标题栏的铃铛共用这一个(notices.js),固定贴右上角 -->
+  <div id="noticePop" hidden></div>
   <main id="workbenchView" hidden>
     <div id="wbContent"></div>
     <!-- 移动端新建任务入口：桌面靠键盘 Space / 侧边"+"，触屏没有这些，补一个悬浮按钮——
@@ -402,6 +406,7 @@ try{
     <header id="callHead">
       <button id="backLink" title="展开侧栏"></button>
       <span class="title">主会话</span>
+      <button id="callNoticeBtn" class="ntbell" type="button" title="待处理" data-notice-bell></button>
       <button id="clearVoiceCtxBtn" title="清空主会话上下文(AI 从头开始,历史保留)"></button>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
@@ -486,6 +491,7 @@ try{
 <script src="/settings.js"></script>
 <script src="/stats.js"></script>
 <script src="/stream.js"></script>
+<script src="/notices.js"></script>
 <script>
 "use strict";
 // ── 空状态欢迎屏(新对话默认落地页,含最近对话列表)──────────────────────────
