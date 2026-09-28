@@ -26,6 +26,7 @@ from ..memory import session_store
 from ..tools import danger
 from . import task_events, tasks, worktree
 from .agent import (
+    BudgetWarning,
     Done,
     SessionStarted,
     TextDelta,
@@ -167,6 +168,19 @@ def _summarize(result_text: str) -> str:
     return text[: _SUMMARY_MAX - 1] + "…"
 
 
+async def _push_budget_warning(row: dict, session_key: str, note: str) -> None:
+    """80% 提醒推到手机(Web Push)。推送不可用/失败都不影响任务继续跑。"""
+    try:
+        from ..gateway.adapters.web_push import PUSH  # 懒加载:core 不在导入期依赖网关
+
+        await PUSH.notify(
+            title=f"后台任务快到 token 上限:{row.get('title') or '任务'}",
+            body=note, conv=session_key, kind="proactive",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[task_runner] 预算提醒推送失败:{exc}", flush=True)
+
+
 def _cron_job_budget(task_id: str) -> int | None:
     """cron 任务的 job_id 就是 task_id;job 里填了 budget_tokens 就用它覆盖全局单次上限。"""
     try:
@@ -290,6 +304,14 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                         last_progress_ts = now
                         tasks.set_progress(task_id, progress_text(ev.name, ev.tool_input))
                         _notify_activity(task_id)
+            elif isinstance(ev, BudgetWarning):
+                note = (
+                    f"⚠️ token 已用 {ev.used * 100 // ev.budget}%"
+                    f"(约 {ev.used // 10000} 万 / 上限 {ev.budget // 10000} 万),超过上限会自动停止"
+                )
+                tasks.set_progress(task_id, note)
+                _notify_activity(task_id)
+                await _push_budget_warning(row, session_key, note)
             elif isinstance(ev, Done):
                 result_text = ev.reply.text
                 sdk_session_id = ev.reply.sdk_session_id

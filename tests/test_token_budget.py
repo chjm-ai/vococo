@@ -156,3 +156,16 @@ def test_cron_job_budget_reads_job(tmp_path, monkeypatch):
     monkeypatch.setattr(scheduler, "load_jobs", lambda: [{"id": "j1", "budget_tokens": 1234}, {"id": "j2"}])
     assert task_runner._cron_job_budget("j1") == 1234
     assert task_runner._cron_job_budget("j2") is None
+
+
+@pytest.mark.anyio
+async def test_warning_at_80_percent_once(fake_clients):
+    """每次模型调用 1700,预算 5000:第 3 次调用开头(1500+1500+... 累计 ≥4000)发一次提醒。"""
+    from vococo.core.agent import BudgetWarning
+
+    warns = []
+    async for ev in agent.stream_turn([], "干活", session_key="task:w", token_budget=5000):
+        if isinstance(ev, BudgetWarning):
+            warns.append(ev)
+    assert len(warns) == 1
+    assert warns[0].budget == 5000 and warns[0].used >= 4000
