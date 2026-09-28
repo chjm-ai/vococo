@@ -54,7 +54,7 @@ function renderAppearancePane(){
   $("#setPane").innerHTML = h;
 }
 
-// ── 安全分区(永久审批规则 / 待批队列 / 审批记录)──────────────────────────────
+// ── 安全分区(永久审批规则 / 审批记录;待处理的审批在铃铛里,见 notices.js)────────
 // 数据来自 GET /security(memory/approvals.py)。审批记录可按结果筛选。
 const SEC = { filter:"" };
 const SEC_KIND = { write_dir:"写入目录", git_push:"git push", mcp_tool:"外部工具" };
@@ -77,16 +77,7 @@ async function loadSecurity(){
   catch(e){ box.innerHTML='加载失败:'+esc(e&&e.message||e); return; }
   const dec=d.decisions||{};
   let h='';
-  if((d.missed||[]).length){
-    h+='<div class="sechd">待批队列('+d.missed.length+')</div>'+
-       '<p class="shint">后台任务等审批超时被拒的操作。批准后会按选项存规则并让该任务重跑一次。</p>';
-    h+=d.missed.map(m=>settingsRow("", "", esc(m.reason),
-        esc(m.detail)+'<br>'+esc(fmtTime(m.ts))+' · '+secConvLink(m.session_key)+
-        (m.rule_label?'<br>📌 '+esc(m.rule_label):''), false,
-        (m.rule_kind?'<button class="btn ghost sm" data-missed="'+esc(m.id)+'" data-act="forever">永远允许并重跑</button>':'')+
-        '<button class="btn ghost sm" data-missed="'+esc(m.id)+'" data-act="once">允许一次并重跑</button>'+
-        '<button class="miniact" data-missed="'+esc(m.id)+'" data-act="dismiss">忽略</button>').replace('class="srow','class="srow secmissed')).join("");
-  }
+  h+='<p class="shint">等审批超时、或夜里免打扰没推送的操作,都在右上角铃铛里,点选项就能补批并让任务接着跑。</p>';
   h+='<div class="sechd">永久规则</div>';
   if(!(d.rules||[]).length) h+='<div class="setempty">还没有规则。审批弹窗里点「永远允许」会存到这里。</div>';
   else h+=d.rules.map(r=>settingsRow("", "", esc(SEC_KIND[r.kind]||r.kind)+' · '+esc(r.scope),
@@ -107,13 +98,6 @@ async function loadSecurity(){
     b.disabled=true;
     const r=await api("/security/rule/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:b.dataset.secdel})});
     if(!r.ok){ alert("删除失败"); b.disabled=false; return; }
-    loadSecurity();
-  });
-  box.querySelectorAll("[data-missed]").forEach(b=>b.onclick=async()=>{
-    box.querySelectorAll("[data-missed]").forEach(x=>x.disabled=true);
-    const r=await api("/security/missed",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({id:b.dataset.missed, action:b.dataset.act})});
-    if(!r.ok){ const j=await r.json().catch(()=>({})); alert("操作失败:"+(j.error||r.status)); }
     loadSecurity();
   });
 }
@@ -257,6 +241,7 @@ async function initPush(){
     navigator.serviceWorker.addEventListener("message", ev=>{
       const m=ev.data||{};
       if(m.type==="open" && m.conv){ try{ openConv(m.conv); }catch(e){} }
+      if(m.type==="open" && m.url && m.url.includes("notices=1")){ try{ openNoticePop(); }catch(e){} }
       if(m.type==="shell-updated"){ try{ showShellUpdated(); }catch(e){} }
     });
   }

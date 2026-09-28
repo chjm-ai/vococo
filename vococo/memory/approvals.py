@@ -1,4 +1,4 @@
-"""审批规则 + 审批记录 + 待批队列(state.db 三张表)。
+"""审批规则 + 审批记录(state.db 两张表)。
 
 - approval_rules:「永远允许」存下的规则。kind 是规则类型,scope 是生效范围:
     write_dir  → 目录绝对路径(该目录及子目录下的写入免批)
@@ -7,7 +7,7 @@
   规则只收窄不放大:判定哪些操作能存成规则、范围怎么取,在 tools/danger.py 的
   _rule_target;这里只管存取和匹配。
 - audit_log:每次需要审批 / 被直接拦下的操作记一笔(结果见 DECISIONS),保留 90 天。
-- missed_approvals:后台任务等审批超时被拒的操作,留给你事后一键「永远允许 + 重跑」。
+- 等审批超时的操作不在这里:统一进铃铛(memory/notices.py),事后可补批。
 
 2026-09-27 参照 Grok Bot / Meta Muse 的审批与 Activity log 设计新增。
 """
@@ -164,57 +164,3 @@ def list_audit(limit: int = 200, decision: str = "", session_key: str = "") -> l
         }
         for r in rows
     ]
-
-
-# ── 待批队列(后台任务审批超时被拒的操作)────────────────────────────────
-def add_missed(
-    *, session_key: str, tool: str, reason: str, detail: str,
-    rule_kind: str | None, rule_scope: str | None, rule_label: str | None,
-) -> str:
-    """登记一条错过的审批。同会话同原因同详情已有待处理的就不重复记。"""
-    c = _db.conn()
-    row = c.execute(
-        "SELECT id FROM missed_approvals WHERE session_key=? AND reason=? AND detail=? "
-        "AND status='pending'",
-        (session_key, reason, detail[:500]),
-    ).fetchone()
-    if row:
-        return row[0]
-    mid = uuid.uuid4().hex[:10]
-    c.execute(
-        "INSERT INTO missed_approvals(id, ts, session_key, tool, reason, detail, "
-        "rule_kind, rule_scope, rule_label) VALUES(?,?,?,?,?,?,?,?,?)",
-        (mid, time.time(), session_key, tool, reason, detail[:500], rule_kind, rule_scope, rule_label),
-    )
-    c.commit()
-    return mid
-
-
-def list_missed(status: str = "pending") -> list[dict]:
-    rows = _db.conn().execute(
-        "SELECT id, ts, session_key, tool, reason, detail, rule_kind, rule_scope, rule_label, status "
-        "FROM missed_approvals WHERE status=? ORDER BY ts DESC LIMIT 100",
-        (status,),
-    ).fetchall()
-    return [
-        {
-            "id": r[0], "ts": r[1], "session_key": r[2], "tool": r[3], "reason": r[4],
-            "detail": r[5], "rule_kind": r[6], "rule_scope": r[7], "rule_label": r[8],
-            "status": r[9],
-        }
-        for r in rows
-    ]
-
-
-def get_missed(mid: str) -> dict | None:
-    for m in list_missed("pending"):
-        if m["id"] == mid:
-            return m
-    return None
-
-
-def set_missed_status(mid: str, status: str) -> bool:
-    c = _db.conn()
-    cur = c.execute("UPDATE missed_approvals SET status=? WHERE id=?", (status, mid))
-    c.commit()
-    return cur.rowcount > 0

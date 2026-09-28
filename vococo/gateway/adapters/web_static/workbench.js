@@ -637,6 +637,7 @@ function renderWorkbenchHeader(){
   return '<header class="wb-toolbar">'+
     '<div class="wb-title-row"><div class="wb-title"><button class="wb-hamb" type="button" data-sidebar aria-label="打开侧边栏">'+ic("panel")+'</button><h1>工作台</h1></div>'+
       '<div class="wb-title-actions">'+
+      (typeof noticeBellHtml==="function" ? noticeBellHtml("wb-win-btn") : "")+
       '<button type="button" class="wb-win-btn'+(showDoneOn ? " is-on" : "")+'" data-toggle-show-done title="'+(showDoneOn ? "隐藏已完成任务" : "显示已完成任务")+'" aria-label="显示/隐藏已完成任务" aria-pressed="'+showDoneOn+'">'+ic("eye")+'</button>'+
       '<button type="button" class="wb-win-btn'+(notesOn ? " is-on" : "")+'" data-toggle-notes title="'+(notesOn ? "隐藏所有备注" : "显示所有备注")+'" aria-label="显示/隐藏所有备注" aria-pressed="'+notesOn+'">'+ic("doc")+'</button>'+
       '<button type="button" class="wb-win-btn'+(parentLabelsOn ? " is-on" : "")+'" data-toggle-parent-labels title="'+(parentLabelsOn ? "隐藏父任务名称" : "显示父任务名称")+'" aria-label="显示/隐藏父任务名称" aria-pressed="'+parentLabelsOn+'">'+ic("branch")+'</button>'+

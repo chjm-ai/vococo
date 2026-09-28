@@ -117,7 +117,7 @@ html.raw = s => ({__raw: s==null ? "" : String(s)});
 
 // 标题栏弹层互斥：打开任一项时，收起其余项（含「⋯」菜单），避免在窄屏上彼此遮挡。
 function closeHeaderPopovers(except){
-  for(const id of ["projPop","gitPop","ctxPop","convDocsPop"]){
+  for(const id of ["projPop","gitPop","ctxPop","convDocsPop","noticePop"]){
     const pop=$("#"+id);
     if(pop && pop!==except) pop.hidden=true;
   }

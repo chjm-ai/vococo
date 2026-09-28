@@ -1014,6 +1014,8 @@ def set_task_session(session_key: str | None) -> contextvars.Token:
     if session_key:
         _bg_timed_out.discard(session_key)
         _session_approvals.pop(session_key, None)
+        for cat in _next_round.pop(session_key, ()):  # 铃铛里补批的「本轮任务都允许」
+            _mark_session_approved(session_key, cat)
     return _task_session_var.set(session_key or None)
 
 
@@ -1107,25 +1109,35 @@ async def _approve(
     if _is_group_session(ctx.session_key):
         return done("group_deny", False)
     cat = _category(reason)
+    if _take_one_shot(ctx.session_key, cat):
+        return done("approved_once", True)  # 铃铛里事后补批发的一次性许可
     if _is_session_approved(ctx.session_key, cat):
         return done("session", True)  # 本会话已选「都允许」此类操作 → 免批直接放行
     from ..core import tasks as _tasks
 
     session_opt = _OPT_TASK if _tasks.task_id_from_session_key(ctx.session_key) else _OPT_SESSION
     choices = [_OPT_ONCE, session_opt] + ([_OPT_FOREVER] if rule else []) + [_OPT_DENY]
-    p = clarify.register(ctx.session_key, choices)
+    prompt = f"⚠️ 需要批准:{reason}\n{detail}"
+    if rule:
+        prompt += f"\n\n📌 永远允许 = {rule[2]}"
+    p = clarify.register(ctx.session_key, choices, notice=_notice(prompt, reason, detail, tool, rule))
     try:
-        prompt = f"⚠️ 需要批准:{reason}\n{detail}"
-        if rule:
-            prompt += f"\n\n📌 永远允许 = {rule[2]}"
         await ctx.adapter.present_choice(
             ctx.chat_id, Choice(prompt=prompt, options=_choice_opts(p.clarify_id, choices))
         )
     except Exception:
-        clarify.resolve(p.clarify_id, _OPT_DENY)
+        clarify.abandon(p.clarify_id)
         return done("error", False)
     answer = await clarify.wait(p.clarify_id, config.CLARIFY_TIMEOUT)
     return _apply_answer(answer, ctx.session_key, cat, session_opt, rule, done)
+
+
+def _notice(prompt: str, reason: str, detail: str, tool: str, rule) -> dict:
+    """审批弹窗对应的铃铛通知内容(见 memory/notices.py)。"""
+    return {
+        "kind": "approval", "prompt": prompt, "reason": reason,
+        "detail": redact_secrets(detail), "tool": tool, "rule": rule,
+    }
 
 
 def _choice_opts(clarify_id: str, choices: list[str]) -> list[tuple[str, str]]:
@@ -1150,22 +1162,32 @@ def _apply_answer(answer, session_key: str, cat: str, session_opt: str, rule, do
     return done("timeout" if answer is None else "denied", False)
 
 
-# ── 后台任务审批:推到 Web 任务会话等你批,超时/免打扰 → 记进待批队列 ─────────────
-# 参照 Meta Muse「任务暂停等你批,批完接着干」;夜里的 cron 不打扰你,早上在
-# 「设置→安全→待批队列」统一处理(永远允许并重跑 / 允许一次并重跑 / 忽略)。
-_bg_pending: dict[str, dict] = {}  # clarify_id → 弹窗内容,供刷新页面后补弹(/security/pending)
-_one_shot: dict[str, set[str]] = {}  # session_key → 待批队列里「允许一次并重跑」发放的一次性许可
-# 本轮已经等审批超时过一次的任务会话:同一轮后面再要批的操作不再挨个等,直接进待批队列,
+# ── 后台任务审批:推到 Web 任务会话等你批,超时/免打扰 → 留在铃铛里 ─────────────
+# 参照 Meta Muse「任务暂停等你批,批完接着干」;夜里的 cron 不打扰你,早上铃铛里
+# 统一处理(点选项 = 按你的选择补批并让任务接着跑,见 gateway/notice_actions.py)。
+_one_shot: dict[str, set[str]] = {}  # session_key → 铃铛里事后补批发的一次性许可
+# 本轮已经等审批超时过一次的任务会话:同一轮后面再要批的操作不再挨个等,直接进铃铛,
 # 免得一轮里好几个操作各等 10 分钟把任务本身拖到超时(下一轮开头由 set_task_session 清掉)。
 _bg_timed_out: set[str] = set()
 
 
-def pending_background_choices() -> list[dict]:
-    return list(_bg_pending.values())
+_next_round: dict[str, set[str]] = {}  # 任务会话 → 下一轮开头生效的「本轮任务都允许」
+
+
+def grant_round(session_key: str, reason: str) -> None:
+    """铃铛里事后选了「本轮任务都允许 / 本次会话都允许」:任务会话在续跑的那一轮生效
+    (每轮开头会清一次,所以先存着等 set_task_session 套上);普通会话直接记会话允许。"""
+    from ..core import tasks as _tasks
+
+    cat = _category(reason)
+    if _tasks.task_id_from_session_key(session_key):
+        _next_round.setdefault(session_key, set()).add(cat)
+    else:
+        _mark_session_approved(session_key, cat)
 
 
 def grant_once(session_key: str, reason: str) -> None:
-    """给某任务会话发一次性许可:下一次同类操作直接放行,用完即失效。"""
+    """给某会话发一次性许可:下一次同类操作直接放行,用完即失效。"""
     _one_shot.setdefault(session_key, set()).add(_category(reason))
 
 
@@ -1195,17 +1217,19 @@ def _in_quiet_hours(hour: int | None = None) -> bool:
     return start <= hour < end if start < end else (hour >= start or hour < end)
 
 
-def _record_missed(session_key: str, tool: str, reason: str, detail: str, rule) -> None:
+def _record_deferred(session_key: str, prompt: str, tool: str, reason: str, detail: str, rule) -> None:
+    """不弹窗、直接以「已超时」记进铃铛(免打扰 / 没有 Web 通道 / 本轮已超时过)。"""
     try:
-        from ..memory import approvals
+        from ..memory import notices
 
-        approvals.add_missed(
-            session_key=session_key, tool=tool, reason=reason, detail=redact_secrets(detail),
-            rule_kind=rule[0] if rule else None, rule_scope=rule[1] if rule else None,
-            rule_label=rule[2] if rule else None,
+        choices = [_OPT_ONCE, _OPT_TASK] + ([_OPT_FOREVER] if rule else []) + [_OPT_DENY]
+        n = _notice(prompt, reason, detail, tool, rule)
+        notices.add(
+            session_key=session_key, kind="approval", prompt=n["prompt"], options=choices,
+            status="expired", reason=reason, detail=n["detail"], tool=tool, rule=rule,
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"[danger] 待批队列写入失败:{exc}", flush=True)
+        print(f"[danger] 写入铃铛失败:{exc}", flush=True)
 
 
 async def _approve_background(reason: str, detail: str, tool: str, rule, key: str, done) -> bool:
@@ -1217,35 +1241,26 @@ async def _approve_background(reason: str, detail: str, tool: str, rule, key: st
     from ..gateway import clarify
     from ..gateway.core import Choice
 
-    adapter = clarify.background_adapter()
-    if adapter is None or _in_quiet_hours() or key in _bg_timed_out:
-        _record_missed(key, tool, reason, detail, rule)
-        return done("deferred", False)
-    choices = [_OPT_ONCE, _OPT_TASK] + ([_OPT_FOREVER] if rule else []) + [_OPT_DENY]
-    p = clarify.register(key, choices)
-    opts = _choice_opts(p.clarify_id, choices)
-    wait_min = max(1, config.BG_APPROVAL_WAIT_SEC // 60)
     prompt = f"⚠️ 后台任务需要批准:{reason}\n{detail}"
     if rule:
         prompt += f"\n\n📌 永远允许 = {rule[2]}"
-    prompt += f"\n\n({wait_min} 分钟内没回应就先跳过这一步,记进「设置→安全→待批队列」)"
-    _bg_pending[p.clarify_id] = {
-        "conv": key, "type": "choice", "prompt": prompt, "options": [list(o) for o in opts],
-    }
+    adapter = clarify.background_adapter()
+    if adapter is None or _in_quiet_hours() or key in _bg_timed_out:
+        _record_deferred(key, prompt, tool, reason, detail, rule)
+        return done("deferred", False)
+    choices = [_OPT_ONCE, _OPT_TASK] + ([_OPT_FOREVER] if rule else []) + [_OPT_DENY]
+    wait_min = max(1, config.BG_APPROVAL_WAIT_SEC // 60)
+    shown = prompt + f"\n\n({wait_min} 分钟内没回应就先跳过这一步,留在右上角铃铛里,之后补批会让任务接着跑)"
+    p = clarify.register(key, choices, notice=_notice(prompt, reason, detail, tool, rule))
+    opts = _choice_opts(p.clarify_id, choices)
     try:
-        await adapter.present_choice(key, Choice(prompt=prompt, options=opts))
+        await adapter.present_choice(key, Choice(prompt=shown, options=opts))
     except Exception:
-        _bg_pending.pop(p.clarify_id, None)
-        clarify.resolve(p.clarify_id, _OPT_DENY)
-        _record_missed(key, tool, reason, detail, rule)
+        clarify.abandon(p.clarify_id)
         return done("error", False)
-    try:
-        answer = await clarify.wait(p.clarify_id, config.BG_APPROVAL_WAIT_SEC)
-    finally:
-        _bg_pending.pop(p.clarify_id, None)
+    answer = await clarify.wait(p.clarify_id, config.BG_APPROVAL_WAIT_SEC)
     if answer is None:
-        _bg_timed_out.add(key)
-        _record_missed(key, tool, reason, detail, rule)
+        _bg_timed_out.add(key)  # 通知已由 clarify.wait 自动标成 expired,留在铃铛里
     return _apply_answer(answer, key, cat, _OPT_TASK, rule, done)
 
 
@@ -1306,11 +1321,12 @@ async def pretool_guard_hook(input_data, tool_use_id, context):
         if not approved:
             if _task_session_var.get() and restrict:
                 return _deny(
-                    f"🛑 后台任务里这个操作没拿到批准({reason}),已记进待批队列等主人处理。"
+                    f"🛑 后台任务里这个操作没拿到批准({reason}),已留在铃铛里等主人处理。"
                     "先跳过这一步继续做能做的部分,并在最后的总结里说明哪一步被拦了、批准后要做什么。"
                 )
             return _deny(
-                f"🛑 你未批准此操作({reason})。已跳过;如需执行请手动运行或改用更安全方式。"
+                f"🛑 你未批准此操作({reason})。已跳过;如果只是没来得及点,主人可以在铃铛里补批,"
+                "补批后会作为新消息发回本会话,届时再重试这一步。"
             )
     return {}
 

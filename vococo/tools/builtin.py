@@ -901,7 +901,9 @@ async def ask_user(args: dict) -> dict:
     if ctx is None:
         return _ok("(当前环境不支持交互提问,请直接在回复正文里问用户。)")
 
-    p = clarify.register(ctx.session_key, options)
+    p = clarify.register(
+        ctx.session_key, options, notice={"kind": "ask", "prompt": question},
+    )
     try:
         if options:
             from ..gateway.core import Choice
@@ -914,12 +916,15 @@ async def ask_user(args: dict) -> dict:
         else:
             await ctx.adapter.send(ctx.chat_id, f"❓ {question}\n(直接回复即可)")
     except Exception as e:
-        clarify.resolve(p.clarify_id, "")
+        clarify.abandon(p.clarify_id)
         return _ok(f"(提问没能发出去:{e};请直接在正文里问。)")
 
     answer = await clarify.wait(p.clarify_id, config.CLARIFY_TIMEOUT)
     if not answer:
-        return _ok("(用户未在时限内回答;请基于已有信息继续,或稍后再问。)")
+        return _ok(
+            "(用户未在时限内回答;问题已留在铃铛里,他之后补答会作为新消息发回本会话。"
+            "请基于已有信息继续,或先把能做的做完。)"
+        )
     return _ok(f"用户回答:{answer}")
 
 @tool(

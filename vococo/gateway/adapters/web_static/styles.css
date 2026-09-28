@@ -738,6 +738,25 @@
   #convDocsPop .cdactions{display:flex;gap:3px;flex-wrap:wrap;justify-content:flex-end;padding-top:1px}
   #convDocsPop .cdactions i{font-style:normal;font-size:var(--fs-sm);color:var(--dim);background:var(--panel2);border-radius:var(--r-sm);padding:2px var(--sp-1);white-space:nowrap}
   #convDocsPop .cdempty{padding:var(--sp-5) var(--sp-4);color:var(--dim);font-size:var(--fs-sm)}
+  /* 铃铛:待处理的提问/审批(notices.js)。按钮可能有多个(聊天/工作台标题栏),弹层只有一个,固定贴右上角 */
+  .ntbell{position:relative}
+  .ntbell .ntbadge{position:absolute;top:-3px;right:-5px;min-width:16px;height:16px;padding:0 var(--sp-1);border-radius:var(--r-pill);
+    background:var(--accent);color:var(--on-accent);font-size:var(--fs-sm);font-weight:700;line-height:16px;text-align:center;pointer-events:none}
+  .ntbell .ntbadge[hidden]{display:none}
+  #noticePop{position:fixed;top:calc(env(safe-area-inset-top) + 56px);right:12px;width:min(400px,calc(100vw - 24px));z-index:70;
+    background:var(--card);border:1px solid var(--line2);border-radius:var(--r-xl);box-shadow:var(--shadow);animation:pop .18s ease;overflow:hidden}
+  #noticePop[hidden]{display:none}
+  #noticePop .nthead{padding:var(--sp-4) var(--sp-4) var(--sp-3);font-size:var(--fs-sm);font-weight:600;color:var(--text);display:flex;align-items:center;gap:var(--sp-2)}
+  #noticePop .nthead span{font-weight:500;color:var(--dim);flex:1}
+  #noticePop .ntlist{max-height:min(460px,70vh);overflow:auto;padding:0 var(--sp-4) var(--sp-2)}
+  #noticePop .ntrow{padding:var(--sp-3) 0;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:var(--sp-1)}
+  #noticePop .ntmeta{font-size:var(--fs-sm);color:var(--dim2)}
+  #noticePop .ntstate.wait{color:var(--accent)}
+  #noticePop .nttitle{font-size:var(--fs-sm);font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #noticePop .ntprompt{font-size:var(--fs-sm);color:var(--text);max-height:120px;overflow:auto;word-break:break-word}
+  #noticePop .ntprompt p{margin:0 0 var(--sp-1)}
+  #noticePop .ntopts{display:flex;flex-wrap:wrap;gap:var(--sp-2);align-items:center;margin-top:var(--sp-1)}
+  #noticePop .ntempty{padding:var(--sp-5) 0;color:var(--dim);font-size:var(--fs-sm)}
   #hamb{display:none;width:42px;height:42px;font-size:21px;border-radius:var(--r-lg)}
   #hamb .ic{width:19px;height:19px}
 
@@ -1299,6 +1318,8 @@
   #tasksBtn .ic{width:20px;height:20px}
   /* 清空语音上下文:通话界面顶栏的橡皮擦,清的是 voice-chat:main(见 /voice/clear),
      跟聊天页各清各的——放这里因为清的正是这块语音会话的上下文 */
+  #callNoticeBtn{background:none;border:none;color:var(--dim);padding:var(--sp-1);display:inline-flex}
+  #callNoticeBtn .ic{width:20px;height:20px}
   #clearVoiceCtxBtn{background:none;border:none;color:var(--dim);padding:var(--sp-1);display:inline-flex;
     transition:color var(--t-fast) ease}
   #clearVoiceCtxBtn .ic{width:20px;height:20px}
