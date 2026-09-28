@@ -81,6 +81,25 @@ def test_rule_target_git_push(tmp_path):
         danger.reset_cwd(tok)
 
 
+def test_rule_target_git_push_leading_cd(tmp_path):
+    """从 worktree 回主仓库推送的常见写法:开头一个 cd <仓库> && git push → 规则范围 = 该仓库。"""
+    reason = "git push(推送到远端,对外)"
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "sub").mkdir()
+    (tmp_path / "plain").mkdir()
+    push = "git " + "push origin main"
+    for cmd in (f"cd {repo} && {push} 2>&1 | tail -2", f"cd '{repo}/sub' && {push}"):
+        rt = danger._rule_target("Bash", {"command": cmd}, reason, "/tmp")
+        assert rt[0] == "git_push" and rt[1] == str(repo.resolve()), cmd
+    # 相对路径按当前目录解析
+    assert danger._rule_target("Bash", {"command": f"cd repo && {push}"}, reason, str(tmp_path))[1] == str(repo.resolve())
+    # 目录不是仓库 / 后面又切目录 / 夹带别的危险操作 → 不给规则
+    assert danger._rule_target("Bash", {"command": f"cd {tmp_path}/plain && {push}"}, reason, None) is None
+    assert danger._rule_target("Bash", {"command": f"cd {repo} && cd /x && {push}"}, reason, None) is None
+    assert danger._rule_target("Bash", {"command": f"cd {repo} && npm install x && {push}"}, reason, None) is None
+
+
 def test_rule_target_forbidden_kinds():
     assert danger._rule_target("Bash", {"command": "pip install x"}, "包安装(改动环境)", None) is None
     assert danger._rule_target("Bash", {"command": "kill 1"}, "进程终止命令", None) is None

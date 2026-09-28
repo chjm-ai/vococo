@@ -947,6 +947,21 @@ _RULE_FORBIDDEN_DIRS = (
 )
 # git push 命令里带这些 → 实际推的可能不是当前仓库,不存规则也不匹配规则
 _GIT_OTHER_REPO = re.compile(r"(^|[\s;&|(])cd\s|\s-C\s|--git-dir|--work-tree")
+# 开头一个 `cd <目录> &&` 是最常见的写法(从 worktree 回主仓库推送),单独认出来,
+# 规则范围取该目录所在的 git 仓库;后面再出现 cd / -C 仍然不给规则。
+_LEADING_CD = re.compile(r"""^\s*cd\s+("[^"]+"|'[^']+'|[^\s;&|'"]+)\s*&&\s*""")
+
+
+def _git_root(d: str) -> str | None:
+    """d 所在的 git 仓库根目录(往上找 .git);不在仓库里返回 None。"""
+    d = os.path.realpath(d)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
 
 
 def _dir_rule_allowed(d: str) -> bool:
@@ -985,10 +1000,15 @@ def _rule_target(
         return ("write_dir", d, f"以后写入 {d} 目录(含子目录)不再询问")
     if tool_name == "Bash" and reason.startswith("git push"):
         cmd = _strip_inert_text(ti.get("command", "") or "")
+        repo = _project_root_var.get() or cwd
+        m = _LEADING_CD.match(cmd)
+        if m:
+            d = os.path.join(cwd or "", os.path.expanduser(m.group(1).strip("'\"")))
+            repo = _git_root(d) if os.path.isdir(d) else None
+            cmd = cmd[m.end():]
         # 同一条命令里还夹着别的危险操作(装包/递归删除…)→ 不给规则,免得规则顺带放行它们
         if _GIT_OTHER_REPO.search(cmd) or _escalate_hits(cmd) != 1:
             return None
-        repo = _project_root_var.get() or cwd
         if not repo:
             return None
         repo = os.path.realpath(repo)
