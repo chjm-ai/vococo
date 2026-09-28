@@ -973,6 +973,16 @@ async function deleteCronJob(id, title, conv){
 $("#cfPreset").onchange = ()=>{ const v=$("#cfPreset").value; if(v!=="custom") $("#cfCron").value=v; };
 $("#cfMode").onchange = syncCronMode;
 $("#cfTrigger").onchange = syncCronTrigger;
+$("#cfHookRotate").onclick = async ()=>{
+  const id=S.cronEditId; if(!id || !$("#cfHookUrl").value){ alert("保存后才会生成链接"); return; }
+  if(!confirm("重新生成密钥后,旧链接(包括快捷指令里存的)立刻失效,需要换成新链接。继续?")) return;
+  let d;
+  try{ d=await (await api("/cron/jobs/rotate-secret",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})).json(); }
+  catch(e){ alert("重新生成失败"); return; }
+  if(d.error){ alert(d.error); return; }
+  $("#cfHookUrl").value=cronHookUrl({job_id:id, schedule:d.job.schedule});
+  await loadCronSidebar();
+};
 $("#cfHookCopy").onclick = async ()=>{
   const v=$("#cfHookUrl").value; if(!v){ alert("保存后才会生成链接"); return; }
   try{ await navigator.clipboard.writeText(v); $("#cfHookCopy").textContent="已复制"; setTimeout(()=>$("#cfHookCopy").textContent="复制",1500); }

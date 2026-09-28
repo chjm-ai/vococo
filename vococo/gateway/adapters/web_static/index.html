@@ -98,8 +98,9 @@ try{
           <div class="cfrow">
             <input id="cfHookUrl" readonly placeholder="保存后自动生成"/>
             <button type="button" id="cfHookCopy">复制</button>
+            <button type="button" id="cfHookRotate" title="换一把新密钥,旧链接立刻失效">重新生成</button>
           </div>
-          <div class="cfhint">用 POST 请求这个链接即可触发，请求内容会作为事件数据交给任务；链接里带密钥，别外传。</div>
+          <div class="cfhint">用 POST 请求这个链接即可触发，请求内容会作为事件数据交给任务。链接里带密钥别外传；也可以把 key 放进请求头 X-Vococo-Key，链接里只留到 /hook/任务id。怀疑泄露就点「重新生成」。</div>
         </div>
         <div id="cfWatchFields" hidden>
           <label class="cflabel">监听目录</label>

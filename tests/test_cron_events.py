@@ -189,3 +189,14 @@ async def test_webhook_rejects_disabled_and_non_webhook(hook_app, tmp_path):
         assert (await client.post(f"/hook/{cron_job['id']}?key=whatever", data="x")).status == 404
         assert (await client.post(
             f"/hook/{hook['id']}?key={hook['schedule']['secret']}", data="x")).status == 404
+
+
+def test_rotate_webhook_secret(jobs_env):
+    job = _mk({"kind": "webhook"})
+    old = job["schedule"]["secret"]
+    new_job = scheduler.rotate_webhook_secret(job["id"])
+    assert new_job["schedule"]["secret"] != old
+    assert scheduler.load_jobs()[0]["schedule"]["secret"] == new_job["schedule"]["secret"]
+    cron = _mk({"kind": "cron", "expr": "0 8 * * *"}, name="c")
+    assert scheduler.rotate_webhook_secret(cron["id"]) is None
+    assert scheduler.rotate_webhook_secret("nope") is None

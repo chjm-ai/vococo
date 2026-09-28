@@ -215,6 +215,17 @@ def update_job(
     return job
 
 
+def rotate_webhook_secret(job_id: str) -> dict | None:
+    """给 webhook 任务换一把新密钥,旧链接立刻失效。不是 webhook 任务 / 不存在 → None。"""
+    jobs = load_jobs()
+    job = next((j for j in jobs if j.get("id") == job_id), None)
+    if job is None or (job.get("schedule") or {}).get("kind") != "webhook":
+        return None
+    job["schedule"] = {**job["schedule"], "secret": events.new_secret()}
+    save_jobs(jobs)
+    return job
+
+
 def describe_schedule(schedule: dict) -> str:
     """人类可读的调度摘要,给 list_cron_jobs 工具和管理界面共用。"""
     kind = schedule.get("kind")

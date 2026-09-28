@@ -66,6 +66,91 @@ def _rm_is_catastrophic(cmd: str) -> bool:
     return bool(_CATASTROPHIC_TARGET.search(cmd))
 
 
+# ── 惰性文本剥离:只当数据、不会被执行的文本不参与危险判定(2026-09-28)──────────
+# 正则扫整条命令原文,分不清「真命令」和「字符串内容」:提交信息里写了 git push、
+# 用 cat 写文件的 heredoc 正文里有 pip install / 删根示例,都会被误拦(一次会话踩了 4 次)。
+# 这里只剥两类【确定不会执行】的文本,其余一律保留(宁可误拦):
+#   ① git commit 的 -m/--message 参数;
+#   ② 喂给 cat/tee 或 git commit -F 的 heredoc 正文。
+# 双引号消息 / 未加引号定界符的 heredoc 里若出现 $( 或反引号,shell 会先执行命令替换,
+# 那就不是纯数据,不剥。交给 bash/python 等解释器执行的 heredoc 正文照样检查。
+_COMMIT_MSG = re.compile(r"""(-m|--message)(=|\s+)("(?:\\.|[^"\\])*"|'[^']*')""")
+_HEREDOC = re.compile(r"""<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1""")
+_STMT_SPLIT = re.compile(r"&&|\|\||[;&|\n(]")
+_DATA_SINKS = {"cat", "tee"}
+_RUNS_SCRIPT = re.compile(r"(^|[\s;&|(])(sh|bash|zsh|source|eval|\.)\s")
+
+
+def _last_statement(text: str) -> str:
+    return _STMT_SPLIT.split(text)[-1].strip()
+
+
+def _has_substitution(text: str) -> bool:
+    return "$(" in text or "`" in text
+
+
+def _statement_head(stmt: str) -> list[str]:
+    words = [w for w in stmt.split() if not _ASSIGNMENT.match(w)]
+    return words
+
+
+def _strip_commit_messages(cmd: str) -> str:
+    def repl(m: re.Match) -> str:
+        stmt = _last_statement(cmd[: m.start()])
+        words = _statement_head(stmt)
+        if not (words and words[0] == "git" and "commit" in words):
+            return m.group(0)
+        quoted = m.group(3)
+        if quoted.startswith('"') and _has_substitution(quoted):
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2)}''"
+
+    return _COMMIT_MSG.sub(repl, cmd)
+
+
+def _strip_data_heredocs(cmd: str) -> str:
+    lines = cmd.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        m = _HEREDOC.search(line)
+        i += 1
+        if not m:
+            continue
+        words = _statement_head(_last_statement(line[: m.start()]))
+        is_sink = bool(words) and (
+            words[0] in _DATA_SINKS or (words[0] == "git" and "commit" in words)
+        )
+        quoted_delim = bool(m.group(1))
+        delim = m.group(2)
+        body: list[str] = []
+        j = i
+        while j < len(lines) and lines[j].strip() != delim:
+            body.append(lines[j])
+            j += 1
+        if j >= len(lines):
+            continue  # 找不到结束行:不确定边界,原样保留
+        piped = "|" in line[m.end():]  # cat <<EOF | sh:正文最终被执行
+        if is_sink and not piped and (quoted_delim or not _has_substitution("\n".join(body))):
+            out.append(lines[j])  # 只留结束行,正文剥掉
+            i = j + 1
+    stripped = "\n".join(out)
+    # 同一条命令里还调了 shell/eval/source(比如先 cat 写脚本再 bash 跑它)→ 正文可能被执行,不剥
+    if stripped != cmd and _RUNS_SCRIPT.search(stripped):
+        return cmd
+    return stripped
+
+
+def _strip_inert_text(cmd: str) -> str:
+    """去掉确定不会被执行的文本(提交信息、写文件的 heredoc 正文),再交给危险判定。"""
+    try:
+        return _strip_commit_messages(_strip_data_heredocs(cmd))
+    except Exception:  # noqa: BLE001 —— 剥离出错就按原文判,宁可误拦
+        return cmd
+
+
 def is_dangerous(command: str) -> str | None:
     """返回命中的危险说明,安全则返回 None。"""
     c = (command or "").strip()
@@ -524,7 +609,7 @@ def classify(
     """
     ti = tool_input or {}
     if tool_name == "Bash":
-        cmd = ti.get("command", "") or ""
+        cmd = _strip_inert_text(ti.get("command", "") or "")
         why = is_dangerous(cmd)
         if why:
             return ("block", why, False)
@@ -855,7 +940,7 @@ def clear_session_approvals(session_key: str) -> None:
 # ── 永久规则:「永远允许」能存成什么范围 ────────────────────────────────────
 # 只收窄不放大(见 memory/approvals.py):写入按【文件所在目录】、git push 按【仓库】、
 # 外部 MCP 写按【工具名】。进程终止、疑似密钥外带、装包、下载执行、递归删除等一律不给
-# 「永远允许」——这些每次场景都不同,批一次放一辈子风险太大,最多给「本任务都允许」。
+# 「永远允许」——这些每次场景都不同,批一次放一辈子风险太大,最多给「本轮任务都允许」。
 _RULE_FORBIDDEN_DIRS = (
     "~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gcloud", "~/Library/LaunchAgents",
     "~/.claude",
@@ -899,7 +984,7 @@ def _rule_target(
             return None
         return ("write_dir", d, f"以后写入 {d} 目录(含子目录)不再询问")
     if tool_name == "Bash" and reason.startswith("git push"):
-        cmd = ti.get("command", "") or ""
+        cmd = _strip_inert_text(ti.get("command", "") or "")
         # 同一条命令里还夹着别的危险操作(装包/递归删除…)→ 不给规则,免得规则顺带放行它们
         if _GIT_OTHER_REPO.search(cmd) or _escalate_hits(cmd) != 1:
             return None
@@ -923,9 +1008,12 @@ _task_session_var: contextvars.ContextVar = contextvars.ContextVar(
 
 
 def set_task_session(session_key: str | None) -> contextvars.Token:
-    """后台任务每跑一轮开头调用。顺带清掉该任务上一轮「审批等超时」的标记。"""
+    """后台任务每跑一轮开头调用。顺带清掉该任务上一轮的「审批等超时」标记和
+    「本轮任务都允许」——后者只管当前这一轮:定时任务每天复用同一个会话,不清的话
+    一次授权会一直有效到进程重启,比按钮字面意思管得久。"""
     if session_key:
         _bg_timed_out.discard(session_key)
+        _session_approvals.pop(session_key, None)
     return _task_session_var.set(session_key or None)
 
 
@@ -963,7 +1051,7 @@ def _audit(tool: str, tier: str, reason: str, detail: str, decision: str) -> Non
 
 _OPT_ONCE = "允许一次"
 _OPT_SESSION = "本次会话都允许"
-_OPT_TASK = "本任务都允许"
+_OPT_TASK = "本轮任务都允许"
 _OPT_FOREVER = "永远允许"
 _OPT_DENY = "拒绝"
 _OPT_ICONS = {_OPT_ONCE: "✅", _OPT_SESSION: "♾️", _OPT_TASK: "♾️", _OPT_FOREVER: "📌", _OPT_DENY: "🛑"}
@@ -984,7 +1072,7 @@ async def _approve(
     - 无交互通道(cron/eval):按 restrict_noninteractive 决定——「对外/装包/持久化」类
       默认拒绝(fail-closed,"无人可问"≠"同意"),本地操作放行。
     - 「本次会话都允许」:选中后把该类操作记进 _session_approvals,本会话后续同类
-      escalate 直接放行、不再弹窗(按 category 归类,见上)。后台任务会话显示为「本任务都允许」。
+      escalate 直接放行、不再弹窗(按 category 归类,见上)。后台任务会话显示为「本轮任务都允许」(只管当前一轮,见 set_task_session)。
     - 复用 ask_user 同款 clarify 机制:回复经网关「拿锁前 resolve」解除,不会死锁。
       超时 / 发送失败 → 视为拒绝(危险操作宁可不做)。
     每个分支的结果都记进审批记录(memory/approvals.py)。

@@ -25,9 +25,9 @@ _PRUNE_EVERY = 200  # 每写这么多条审计记录顺手清一次过期的
 # 审批结果取值(前端据此显示中文)
 DECISIONS = {
     "rule": "命中永久规则",
-    "session": "本任务/会话已允许",
+    "session": "本轮任务/本会话已允许",
     "approved_once": "你批了一次",
-    "approved_session": "你批了本任务/会话",
+    "approved_session": "你批了本轮任务/本会话",
     "approved_forever": "你批了永远允许",
     "denied": "你拒绝了",
     "timeout": "等审批超时",

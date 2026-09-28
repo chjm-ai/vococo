@@ -1306,6 +1306,17 @@ class WebAdapter:
 
     @_authed
     @_json_body
+    async def _handle_cron_rotate_secret(self, request: web.Request, body: dict) -> web.Response:
+        """Webhook 任务重新生成密钥(旧触发链接立刻失效)。"""
+        from ...cron import scheduler
+
+        job = scheduler.rotate_webhook_secret(str((body or {}).get("id", "")))
+        if job is None:
+            return web.json_response({"error": "不是 Webhook 任务或任务不存在"}, status=404)
+        return web.json_response({"job": job})
+
+    @_authed
+    @_json_body
     async def _handle_cron_set_enabled(self, request: web.Request, body: dict) -> web.Response:
         from ...cron import scheduler
 
@@ -3029,6 +3040,7 @@ class WebAdapter:
                 web.post("/api/checkin/{name}", self._handle_checkin_post),
                 web.get(r"/{name}.png", self._handle_icon),
                 web.post("/hook/{job_id}", self._handle_hook),
+                web.post("/cron/jobs/rotate-secret", self._handle_cron_rotate_secret),
                 web.get("/security", self._handle_security),
                 web.post("/security/rule/delete", self._handle_security_rule_delete),
                 web.post("/security/missed", self._handle_security_missed),

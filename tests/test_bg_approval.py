@@ -74,7 +74,7 @@ def test_bg_forever_saves_rule(bg):
     out = _run_bg("task:t1", "永远允许", bg)
     assert out == {}
     assert bg.chat_id == "task:t1"  # 弹到任务会话
-    assert any("本任务都允许" in lab for _c, lab in bg.choice.options)
+    assert any("本轮任务都允许" in lab for _c, lab in bg.choice.options)
     assert approvals.list_rules()[0]["scope"] == TOOL
     assert danger.pending_background_choices() == []  # 答完就清掉
 

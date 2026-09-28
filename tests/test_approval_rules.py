@@ -117,7 +117,7 @@ def test_no_forever_option_when_not_rule_eligible(isolated):
 
 def test_task_session_shows_task_option(isolated):
     _out, choice = _click("拒绝", "Bash", {"command": "pip install x"}, "task:abcd1234")
-    assert any("本任务都允许" in lab for _c, lab in choice.options)
+    assert any("本轮任务都允许" in lab for _c, lab in choice.options)
 
 
 def test_noninteractive_deny_is_audited(isolated):
