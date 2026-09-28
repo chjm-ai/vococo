@@ -210,3 +210,96 @@ async def test_notice_routes(ntc_app, resumed):
         items = (await (await client.get("/notices")).json())["items"]
     assert items == []
     assert resumed and resumed[0][0] == "web:p1:c1"
+
+
+# ── 系统通知上的快捷按钮 ─────────────────────────────────────────────────
+def test_quick_labels():
+    assert notice_actions.quick_labels(
+        {"kind": "approval", "options": ["允许一次", "本轮任务都允许", "永远允许", "拒绝"]}
+    ) == ["允许一次", "拒绝"]
+    assert notice_actions.quick_labels({"kind": "ask", "options": ["A", "B", "C"]}) == ["A", "B"]
+    assert notice_actions.quick_labels({"kind": "review", "options": ["去清理"]}) == []
+
+
+@pytest.mark.anyio
+async def test_quick_route_needs_valid_sig(resumed, monkeypatch):
+    from vococo.gateway.adapters.web import WebAdapter
+
+    monkeypatch.setattr(config, "VAPID_PRIVATE_KEY", "k")
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "secret")  # 快捷按钮不走登录口令,只认签名
+    app = web.Application()
+    app.add_routes([web.post("/notices/quick", WebAdapter()._handle_notice_quick)])
+    nid = _expired_approval()
+    sig = notice_actions.quick_sig(nid)
+    async with TestClient(TestServer(app)) as client:
+        bad = await client.post("/notices/quick", json={"id": nid, "label": "允许一次", "sig": "x" * 24})
+        assert bad.status == 400
+        # 通知上没有的选项(永远允许)不能靠签名点
+        r = await client.post("/notices/quick", json={"id": nid, "label": "永远允许", "sig": sig})
+        assert r.status == 400
+        r = await client.post("/notices/quick", json={"id": nid, "label": "允许一次", "sig": sig})
+        assert r.status == 200 and (await r.json())["ok"]
+        again = await client.post("/notices/quick", json={"id": nid, "label": "允许一次", "sig": sig})
+        assert again.status == 400  # 已处理过
+    assert notices.get(nid)["status"] == "answered"
+    assert resumed and resumed[0][0] == "task:t9"
+    # 另一条通知的签名不通用
+    assert notice_actions.quick_sig(nid) != notice_actions.quick_sig(_expired_ask())
+
+
+def test_present_choice_push_carries_actions(isolated, monkeypatch):
+    from vococo.gateway.adapters import web as web_mod
+    from vococo.gateway.adapters.web import WebAdapter
+
+    sent = []
+    monkeypatch.setattr(config, "VAPID_PRIVATE_KEY", "k")
+    monkeypatch.setattr(config, "PUSH_ON_APPROVAL", True)
+    monkeypatch.setattr(web_mod.PUSH, "is_configured", staticmethod(lambda: True))
+    adapter = WebAdapter()
+    monkeypatch.setattr(adapter, "_push_notify", lambda **kw: sent.append(kw))
+    monkeypatch.setattr(adapter, "_emit", lambda ev: None)
+    nid = notices.add(session_key="task:t1", kind="approval", prompt="批吗", clarify_id="cq1",
+                      options=["允许一次", "本轮任务都允许", "拒绝"])
+    from vococo.gateway.core import Choice
+
+    choice = Choice(prompt="批吗", options=[("/clarify cq1 0", "允许一次"), ("/clarify cq1 2", "拒绝")])
+    anyio.run(adapter.present_choice, "task:t1", choice)
+    extra = sent[0]["extra"]
+    assert sent[0]["url"] == "/?notices=1" and extra["notice"] == nid
+    assert [a["title"] for a in extra["actions"]] == ["允许一次", "拒绝"]
+    assert extra["sig"] == notice_actions.quick_sig(nid)
+
+
+# ── 永久规则的定期清理提醒 ──────────────────────────────────────────────
+def test_rule_review_monthly(isolated, monkeypatch):
+    import time as _time
+
+    from vococo.memory import approvals, _db
+
+    monkeypatch.setattr(config, "BG_APPROVAL_QUIET", "23-8")
+    old = approvals.add_rule("mcp_tool", "mcp__x__send", "发邮件")
+    fresh = approvals.add_rule("mcp_tool", "mcp__x__post", "发帖")
+    c = _db.conn()
+    c.execute("UPDATE approval_rules SET created_at=? WHERE id=?", (_time.time() - 40 * 86400, old["id"]))
+    c.execute("UPDATE approval_rules SET created_at=? WHERE id=?", (_time.time() - 40 * 86400, fresh["id"]))
+    c.commit()
+    approvals.match_rule("mcp_tool", "mcp__x__post")  # 刚用过,不算久未使用
+
+    at8 = datetime.datetime.now().replace(hour=8, minute=1)
+    assert notice_actions.maybe_rule_review(at8.replace(hour=9)) == 0  # 不到点
+    assert notice_actions.maybe_rule_review(at8) == 1
+    open_ = notices.list_open()
+    assert len(open_) == 1 and open_[0]["kind"] == "review" and "mcp__x__send" in open_[0]["prompt"]
+    assert notice_actions.maybe_rule_review(at8) == 0  # 30 天内不再查
+
+    res = anyio.run(notice_actions.act, open_[0]["id"], "都保留")
+    assert res["ok"] and res["open"] is None
+    assert notice_actions.stale_rules() == []  # 点了保留:90 天内不再提
+
+
+def test_rule_review_go_clean_opens_security(isolated):
+    nid = notices.add(session_key="", kind="review", prompt="清理", status="expired",
+                      options=["去清理", "都保留"], reason="rule_review", detail="")
+    res = anyio.run(notice_actions.act, nid, "去清理")
+    assert res == {"ok": True, "message": "去清理", "conv": None, "open": "security"}
+    assert notices.get(nid)["status"] == "answered"

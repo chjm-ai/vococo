@@ -68,6 +68,7 @@ class PushManager:
         self._path: Path | None = None
         self._lock = threading.Lock()
         self._subs: list[dict] | None = None
+        self._warned_empty_at = 0.0  # 「没有订阅设备」的提醒日志限频
 
     def _ensure(self) -> None:
         if self._subs is None:
@@ -192,8 +193,10 @@ class PushManager:
             # 404/410 = 订阅已注销(用户删了 PWA / 换设备),清掉
             if status in (404, 410):
                 return sub.get("endpoint")
+            print(f"[推送] 发送失败 HTTP {status}:{sub.get('ua', '')[:40]} {e}"[:300], flush=True)
             return None
-        except Exception:
+        except Exception as e:  # noqa: BLE001
+            print(f"[推送] 发送出错:{sub.get('ua', '')[:40]} {e}"[:300], flush=True)
             return None
 
     async def notify(
@@ -205,14 +208,22 @@ class PushManager:
         kind: str = "",
         tag: str | None = None,
         url: str | None = None,
+        extra: dict | None = None,
     ) -> int:
         """异步群发一条通知给所有订阅设备。返回成功送出的设备数。
 
         kind: done | approval | proactive | error —— 前端 SW 据此决定前台是否也弹。
         tag:  同一 tag 的通知在系统里互相替换(默认按会话+场景),避免刷屏。
+        extra: 并进负载的附加字段(如通知按钮 actions / 铃铛通知 id + 签名,见 sw.js)。
         """
         self._ensure()
-        if not self.is_configured() or not self._subs:
+        if not self.is_configured():
+            return 0
+        if not self._subs:
+            # 2026-09-28:订阅列表空了近两个月没人发现(每条推送都静默丢掉)。至少在日志里留痕
+            if time.time() - self._warned_empty_at > 6 * 3600:
+                self._warned_empty_at = time.time()
+                print("[推送] 没有任何设备订阅,推送没发出去。手机上打开 设置→通知 重新开启", flush=True)
             return 0
         payload = json.dumps(
             {
@@ -222,6 +233,7 @@ class PushManager:
                 "kind": kind,
                 "tag": tag or f"vococo-{conv}-{kind or 'msg'}",
                 "url": url or f"/?conv={conv}",
+                **(extra or {}),
             },
             ensure_ascii=False,
         )
@@ -231,6 +243,8 @@ class PushManager:
             *(loop.run_in_executor(None, self._send_one, s, payload) for s in subs)
         )
         dead = {ep for ep in results if ep}
+        if dead:
+            print(f"[推送] {len(dead)} 个订阅已失效(404/410),已移除;剩 {len(subs) - len(dead)} 个", flush=True)
         self._prune(dead)
         return len(subs) - len(dead)
 

@@ -80,9 +80,12 @@ async function loadSecurity(){
   h+='<p class="shint">等审批超时、或夜里免打扰没推送的操作,都在右上角铃铛里,点选项就能补批并让任务接着跑。</p>';
   h+='<div class="sechd">永久规则</div>';
   if(!(d.rules||[]).length) h+='<div class="setempty">还没有规则。审批弹窗里点「永远允许」会存到这里。</div>';
-  else h+=d.rules.map(r=>settingsRow("", "", esc(SEC_KIND[r.kind]||r.kind)+' · '+esc(r.scope),
+  // 30 天没命中过的规则标出来(和后端每月的清理提醒同一口径,见 notice_actions.stale_rules)
+  const staleCut=Date.now()/1000-30*86400;
+  if((d.rules||[]).length) h+=d.rules.map(r=>settingsRow("", "", esc(SEC_KIND[r.kind]||r.kind)+' · '+esc(r.scope)+
+      ((r.last_used_at||r.created_at)<staleCut?'<span class="mctag">30 天没用过</span>':''),
       esc(r.label)+'<br>'+esc(fmtTime(r.created_at))+' 创建 · 命中 '+r.hits+' 次'+
-      (r.last_used_at?' · 最近 '+esc(fmtTime(r.last_used_at)):''), false,
+      (r.last_used_at?' · 最近 '+esc(fmtTime(r.last_used_at)):' · 从没用过'), false,
       '<button class="miniact danger" data-secdel="'+esc(r.id)+'">删除</button>')).join("");
   h+='<div class="sechd">审批记录</div><p class="shint">需要审批或被拦下的操作,保留 90 天。</p>';
   h+='<div class="secfilters">'+SEC_FILTERS.map(([v,l])=>
@@ -198,7 +201,7 @@ async function bindNotifyPane(){
 // ── Web Push 底座:注册 SW + 订阅 VAPID ────────────────────────────────────
 // 装了 Service Worker + 订阅公钥后,页面关了/锁屏也能收到系统通知。
 // 服务端未配 VAPID 时 /push/config 返回 enabled:false,通知 tab 显示未配置提示。
-const PUSH = { pubKey:"", enabled:false, ready:false };
+const PUSH = { pubKey:"", enabled:false, ready:false, count:null };
 function b64ToU8(base64){
   const pad="=".repeat((4-base64.length%4)%4);
   const b=(base64+pad).replace(/-/g,"+").replace(/_/g,"/");
@@ -247,9 +250,29 @@ async function initPush(){
   }
   try{
     const cfg = await (await api("/push/config")).json();
-    PUSH.enabled=!!cfg.enabled; PUSH.pubKey=cfg.vapidPublicKey||"";
+    PUSH.enabled=!!cfg.enabled; PUSH.pubKey=cfg.vapidPublicKey||""; PUSH.count=cfg.count;
   }catch(e){ return; }
   PUSH.ready=true;
+  syncPushSub();
+}
+// 2026-09-28:服务端订阅列表空了近两个月(换域名/iOS 作废订阅),而手机上一直显示「已开启」,
+// 推送全被静默丢掉。现在每次打开页面:已授权通知的设备把本机订阅重新报给服务端(按 deviceId
+// 覆盖,不会重复);本机订阅被系统作废了就静默重订一个。
+async function syncPushSub(){
+  if(!PUSH.enabled || !PUSH.pubKey || typeof Notification==="undefined" || Notification.permission!=="granted") return;
+  try{
+    const reg=await navigator.serviceWorker.ready;
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub) sub=await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:b64ToU8(PUSH.pubKey) });
+    const payload=Object.assign(sub.toJSON(), {ua:navigator.userAgent, deviceId:getDeviceId()});
+    const r=await api("/push/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(r.ok) PUSH.count=Math.max(1, PUSH.count||0);
+  }catch(e){}
+}
+function openSettingsTab(tab){
+  SET.tab=tab;
+  document.querySelectorAll(".settab").forEach(t=>t.classList.toggle("active", t.dataset.tab===tab));
+  openSettings();
 }
 async function currentSub(){
   if(!("serviceWorker" in navigator) || !("PushManager" in window)) return null;

@@ -752,6 +752,8 @@
   #noticePop{position:fixed;left:12px;bottom:calc(env(safe-area-inset-bottom) + 64px);width:min(400px,calc(100vw - 24px));z-index:70;
     background:var(--card);border:1px solid var(--line2);border-radius:var(--r-xl);box-shadow:var(--shadow);animation:pop .18s ease;overflow:hidden}
   #noticePop[hidden]{display:none}
+  #noticePop .ntwarn{padding:var(--sp-2) var(--sp-3);background:var(--err-bg);color:var(--err);font-size:var(--fs-sm)}
+  #noticePop .ntwarn a{color:inherit;text-decoration:underline;margin-left:var(--sp-1)}
   #noticePop .nthead{padding:var(--sp-4) var(--sp-4) var(--sp-3);font-size:var(--fs-sm);font-weight:600;color:var(--text);display:flex;align-items:center;gap:var(--sp-2)}
   #noticePop .nthead span{font-weight:500;color:var(--dim);flex:1}
   #noticePop .ntlist{max-height:min(460px,70vh);overflow:auto;padding:0 var(--sp-4) var(--sp-2)}

@@ -100,7 +100,8 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(cacheFallback());
 });
 
-// 后端推来的负载:{title, body, tag, conv, url, kind}
+// 后端推来的负载:{title, body, tag, conv, url, kind, [notice, sig, actions]}
+// actions = 通知上的按钮(安卓/电脑 Chrome 支持,iOS 不显示);点了凭 sig 调 /notices/quick
 self.addEventListener("push", (event) => {
   let d = {};
   try { d = event.data ? event.data.json() : {}; } catch (_) { d = {}; }
@@ -110,10 +111,12 @@ self.addEventListener("push", (event) => {
     body: d.body || "",
     tag: d.tag || "vococo",          // 同 tag 会替换旧通知,避免同一会话刷屏
     renotify: kind === "approval",   // 审批类即使替换也再次提醒
-    data: { conv: d.conv || "main", url: d.url || "/", kind },
+    data: { conv: d.conv || "main", url: d.url || "/", kind, notice: d.notice || "", sig: d.sig || "",
+            labels: Object.fromEntries((d.actions || []).map((a) => [a.action, a.title])) },
     icon: "/icon-192.png",
     badge: "/icon-192.png",
   };
+  if (d.actions && d.actions.length) options.actions = d.actions.slice(0, 2);
 
   // iOS 有条不成文规则:SW 收到 push 却不调 showNotification() 攒够几次,系统会
   // 直接把订阅作废(https://dev.to/progressier/how-to-fix-ios-push-subscriptions-being-terminated-after-3-notifications-39a7)。
@@ -131,10 +134,37 @@ self.addEventListener("push", (event) => {
   );
 });
 
+// 点通知上的按钮:不开页面,直接提交;失败(过期/网络)就退回打开铃铛
+async function quickAct(data, label) {
+  let ok = false, msg = "";
+  try {
+    const r = await fetch("/notices/quick", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: data.notice, label, sig: data.sig }),
+    });
+    const j = await r.json().catch(() => ({}));
+    ok = r.ok && j.ok; msg = j.error || j.message || "";
+  } catch (e) { msg = "网络不通"; }
+  if (ok) {
+    return self.registration.showNotification("已处理:" + label, {
+      body: msg || "任务会接着跑", tag: "vococo-quick-" + data.notice, icon: "/icon-192.png",
+    });
+  }
+  await self.registration.showNotification("没处理成:" + (msg || "未知原因"), {
+    body: "点这里打开铃铛处理", tag: "vococo-quick-" + data.notice, icon: "/icon-192.png",
+    data: { conv: data.conv, url: "/?notices=1" },
+  });
+}
+
 // 点通知:聚焦已有窗口(并让它切到对应会话),没有就新开
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const data = event.notification.data || {};
+  const label = event.action && data.labels ? data.labels[event.action] : "";
+  if (label && data.notice) {
+    event.waitUntil(quickAct(data, label));
+    return;
+  }
   const target = data.url || "/";
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
