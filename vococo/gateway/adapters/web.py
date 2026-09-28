@@ -618,6 +618,8 @@ class WebAdapter:
         conv: str,
         kind: str,
         enabled: bool,
+        url: str | None = None,
+        extra: dict | None = None,
     ) -> None:
         """按场景发一条系统推送(非阻塞:丢进后台任务,绝不拖慢 SSE)。
 
@@ -627,7 +629,7 @@ class WebAdapter:
             return
         try:
             asyncio.get_event_loop().create_task(
-                PUSH.notify(title, body, conv=conv, kind=kind)
+                PUSH.notify(title, body, conv=conv, kind=kind, url=url, extra=extra)
             )
         except RuntimeError:
             pass  # 没有运行中的事件循环(理论上不会走到),放弃这条通知
@@ -741,14 +743,39 @@ class WebAdapter:
                 "options": [[cmd, label] for cmd, label in choice.options],
             }
         )
-        # 场景②「需要审批/确认」:高优先级,SW 前台也会弹,确保不漏
+        # 场景②「需要审批/确认」:高优先级,SW 前台也会弹,确保不漏。
+        # 对应铃铛里有这条通知时:通知上带「允许一次 / 拒绝」按钮(安卓/电脑),点通知本身打开铃铛
+        url, extra = None, None
+        n = self._notice_for_choice(choice)
+        if n is not None:
+            from .. import notice_actions
+
+            url = "/?notices=1"
+            labels = notice_actions.quick_labels(n)
+            extra = {"notice": n["id"], "sig": notice_actions.quick_sig(n["id"]),
+                     "actions": [{"action": f"q{i}", "title": lab} for i, lab in enumerate(labels)]}
         self._push_notify(
             title="需要你确认",
             body=choice.prompt,
             conv=str(chat_id),
             kind="approval",
             enabled=config.PUSH_ON_APPROVAL,
+            url=url,
+            extra=extra,
         )
+
+    @staticmethod
+    def _notice_for_choice(choice: Choice) -> dict | None:
+        """按钮命令是 /clarify <id> <序号>,据 id 找铃铛里对应的通知。"""
+        from ...memory import notices
+
+        try:
+            parts = choice.options[0][0].split()
+            return notices.by_clarify(parts[1]) if parts[0] == "/clarify" else None
+        except (IndexError, AttributeError):
+            return None
+        except Exception:  # noqa: BLE001 —— 查不到就发普通推送
+            return None
 
     async def receive(self) -> AsyncIterator[Incoming]:
         await self._start_server()
@@ -2930,6 +2957,17 @@ class WebAdapter:
         res = await notice_actions.act(str(body.get("id", "")), str(body.get("label", "")))
         return web.json_response(res, status=200 if res.get("ok") else 400)
 
+    @_json_body
+    async def _handle_notice_quick(self, request: web.Request, body: dict) -> web.Response:
+        """系统通知上的按钮(Service Worker 调用,拿不到登录口令):凭推送里带的签名授权。"""
+        from .. import notice_actions
+
+        body = body or {}
+        res = await notice_actions.quick_act(
+            str(body.get("id", "")), str(body.get("label", "")), str(body.get("sig", ""))
+        )
+        return web.json_response(res, status=200 if res.get("ok") else 400)
+
     @_authed
     @_json_body
     async def _handle_notice_dismiss(self, request: web.Request, body: dict) -> web.Response:
@@ -3045,6 +3083,7 @@ class WebAdapter:
                 web.post("/security/rule/delete", self._handle_security_rule_delete),
                 web.get("/notices", self._handle_notices),
                 web.post("/notices/act", self._handle_notice_act),
+                web.post("/notices/quick", self._handle_notice_quick),
                 web.post("/notices/dismiss", self._handle_notice_dismiss),
                 web.get("/push/config", self._handle_push_config),
                 web.get("/push/subs", self._handle_push_subs),

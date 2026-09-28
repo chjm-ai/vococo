@@ -48,15 +48,15 @@ function autoPopupNewPending(){
 }
 
 function noticeItemHtml(it){
-  const state = it.status==="pending"
-    ? '<span class="ntstate wait">等你回答</span>' : '<span class="ntstate late">已超时 · 仍可处理</span>';
-  const kind = it.kind==="approval" ? "审批" : "提问";
+  const state = it.kind==="review" ? '<span class="ntstate late">每月提醒</span>'
+    : it.status==="pending" ? '<span class="ntstate wait">等你回答</span>' : '<span class="ntstate late">已超时 · 仍可处理</span>';
+  const kind = {approval:"审批", ask:"提问", review:"规则清理"}[it.kind] || "通知";
   const opts = it.options.length
     ? it.options.map(lab=>`<button class="btn sm ghost" data-ntact="${esc(it.id)}" data-label="${esc(lab)}">${NTC_ICON[lab]?NTC_ICON[lab]+" ":""}${esc(lab)}</button>`).join("")
     : `<button class="btn sm ghost" data-ntgo="${esc(it.conv||"")}">去会话里回答</button>`;
   return `<div class="ntrow">
     <div class="ntmeta">${kind} · ${state} · ${esc(fmtTime(it.ts))}</div>
-    <a href="#" class="nttitle" data-ntgo="${esc(it.conv||"")}">${esc(it.title||"会话")}</a>
+    ${it.conv?`<a href="#" class="nttitle" data-ntgo="${esc(it.conv)}">${esc(it.title||"会话")}</a>`:""}
     <div class="ntprompt">${mdToHtml(it.prompt||"")}</div>
     <div class="ntopts">${opts}${it.status==="expired"?`<button class="miniact" data-ntdismiss="${esc(it.id)}">忽略</button>`:""}</div>
   </div>`;
@@ -65,8 +65,11 @@ function noticeItemHtml(it){
 function renderNoticePop(){
   const pop = $("#noticePop"), items = NTC.items;
   const anyExpired = items.some(it=>it.status==="expired");
+  // 没有任何设备订阅推送 = 超时的事只能来这里看,提醒去开
+  const noPush = typeof PUSH!=="undefined" && PUSH.enabled && PUSH.count===0;
   pop.innerHTML = `<div class="nthead">待处理 <span>${items.length}</span>
       ${anyExpired?'<button class="miniact" id="ntDismissAll">全部忽略</button>':""}</div>
+    ${noPush?'<div class="ntwarn">手机通知没开(没有设备订阅推送),要批的事不会提醒你。<a href="#" id="ntPushGo">去开启</a></div>':""}
     <div class="ntlist">${items.length ? items.map(noticeItemHtml).join("")
       : '<div class="ntempty">没有待处理的事。提问或审批超时没来得及点,会留在这里,点选项就能让会话接着做。</div>'}</div>`;
   pop.querySelectorAll("[data-ntgo]").forEach(a=>a.onclick=e=>{
@@ -79,6 +82,8 @@ function renderNoticePop(){
     await api("/notices/dismiss",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:b.dataset.ntdismiss})}).catch(()=>{});
     loadNotices();
   });
+  const go=$("#ntPushGo");
+  if(go) go.onclick=e=>{ e.preventDefault(); pop.hidden=true; openSettingsTab("notify"); };
   const all=$("#ntDismissAll");
   if(all) all.onclick=async()=>{
     if(!confirm("忽略所有已超时的待处理项?")) return;
@@ -104,6 +109,7 @@ async function actNotice(id, label, btn){
   if(it && it.conv) delete S.pendingChoice[it.conv];
   $("#noticePop").hidden = true;
   await loadNotices();
+  if(d.open){ openSettingsTab(d.open); return; }  // 规则清理提醒 → 设置页「安全」
   const conv = d.conv || (it && it.conv);
   if(conv && label!=="拒绝") openConv(conv);  // 去看它接着干
 }
