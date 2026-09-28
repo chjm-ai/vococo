@@ -738,12 +738,18 @@
   #convDocsPop .cdactions{display:flex;gap:3px;flex-wrap:wrap;justify-content:flex-end;padding-top:1px}
   #convDocsPop .cdactions i{font-style:normal;font-size:var(--fs-sm);color:var(--dim);background:var(--panel2);border-radius:var(--r-sm);padding:2px var(--sp-1);white-space:nowrap}
   #convDocsPop .cdempty{padding:var(--sp-5) var(--sp-4);color:var(--dim);font-size:var(--fs-sm)}
-  /* 铃铛:待处理的提问/审批(notices.js)。按钮可能有多个(聊天/工作台标题栏),弹层只有一个,固定贴右上角 */
+  /* 铃铛:待处理的提问/审批(notices.js)。按钮在侧栏底部筛选旁;有未处理的显示红底数字 */
   .ntbell{position:relative}
-  .ntbell .ntbadge{position:absolute;top:-3px;right:-5px;min-width:16px;height:16px;padding:0 var(--sp-1);border-radius:var(--r-pill);
-    background:var(--accent);color:var(--on-accent);font-size:var(--fs-sm);font-weight:700;line-height:16px;text-align:center;pointer-events:none}
+  .ntbell .ntbadge{position:absolute;top:-2px;right:-4px;min-width:16px;height:16px;padding:0 var(--sp-1);border-radius:var(--r-pill);
+    background:var(--err);color:var(--on-accent);font-size:var(--fs-sm);font-weight:700;line-height:16px;text-align:center;pointer-events:none}
   .ntbell .ntbadge[hidden]{display:none}
-  #noticePop{position:fixed;top:calc(env(safe-area-inset-top) + 56px);right:12px;width:min(400px,calc(100vw - 24px));z-index:70;
+  /* 侧栏收起时(手机默认)看不到铃铛:在各视图「打开侧栏」的按钮上出小红点 */
+  body.has-notices #hamb,body.has-notices #backLink,body.has-notices .wb-hamb{position:relative}
+  body.has-notices #hamb::after,body.has-notices #backLink::after,body.has-notices .wb-hamb::after{
+    content:"";position:absolute;top:var(--sp-1);right:var(--sp-1);width:8px;height:8px;border-radius:50%;background:var(--err);pointer-events:none}
+  /* 电脑端侧栏展开时铃铛本身就看得见,不用再点红点 */
+  html:not(.device-mobile) body.has-notices:not(.sb-collapsed) :is(#hamb,#backLink,.wb-hamb)::after{display:none}
+  #noticePop{position:fixed;left:12px;bottom:calc(env(safe-area-inset-bottom) + 64px);width:min(400px,calc(100vw - 24px));z-index:70;
     background:var(--card);border:1px solid var(--line2);border-radius:var(--r-xl);box-shadow:var(--shadow);animation:pop .18s ease;overflow:hidden}
   #noticePop[hidden]{display:none}
   #noticePop .nthead{padding:var(--sp-4) var(--sp-4) var(--sp-3);font-size:var(--fs-sm);font-weight:600;color:var(--text);display:flex;align-items:center;gap:var(--sp-2)}
@@ -1318,8 +1324,6 @@
   #tasksBtn .ic{width:20px;height:20px}
   /* 清空语音上下文:通话界面顶栏的橡皮擦,清的是 voice-chat:main(见 /voice/clear),
      跟聊天页各清各的——放这里因为清的正是这块语音会话的上下文 */
-  #callNoticeBtn{background:none;border:none;color:var(--dim);padding:var(--sp-1);display:inline-flex}
-  #callNoticeBtn .ic{width:20px;height:20px}
   #clearVoiceCtxBtn{background:none;border:none;color:var(--dim);padding:var(--sp-1);display:inline-flex;
     transition:color var(--t-fast) ease}
   #clearVoiceCtxBtn .ic{width:20px;height:20px}

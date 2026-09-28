@@ -6,14 +6,9 @@
 const NTC = { items:[], seen:new Set(), loading:false };
 const NTC_ICON = { "允许一次":"✅", "本次会话都允许":"♾️", "本轮任务都允许":"♾️", "永远允许":"📌", "拒绝":"🛑" };
 
-// 铃铛按钮有多个(聊天标题栏 #noticeBtn、通话/文本首页 #callNoticeBtn、工作台标题栏由 workbench.js 渲染),都带 data-notice-bell,
-// 共用同一个固定定位的弹层 #noticePop。
-function noticeBellHtml(cls){
-  const n = NTC.items.length;
-  return `<button type="button" class="${cls} ntbell" data-notice-bell title="${n?n+" 件事等你处理":"待处理"}" aria-label="待处理">`+
-    ic("bell")+`<span class="ntbadge"${n?"":" hidden"}>${n>99?"99+":n}</span></button>`;
-}
-for(const id of ["noticeBtn","callNoticeBtn"]) $("#"+id).innerHTML = ic("bell") + '<span class="ntbadge" hidden></span>';
+// 铃铛在侧栏底部「筛选」按钮旁(#noticeBtn),有待处理时显示红底数字。手机上侧栏默认收起,
+// 所以同时给 body 挂 has-notices,各视图「打开侧栏」的按钮上出一个小红点(见 styles.css)。
+$("#noticeBtn").innerHTML = ic("bell") + '<span class="ntbadge" hidden></span>';
 
 async function loadNotices(){
   if(NTC.loading) return;
@@ -31,6 +26,7 @@ async function loadNotices(){
 
 function renderNoticeBadge(){
   const n = NTC.items.length;
+  document.body.classList.toggle("has-notices", n > 0);
   document.querySelectorAll("[data-notice-bell]").forEach(btn=>{
     const b = btn.querySelector(".ntbadge");
     if(b){ b.hidden = !n; b.textContent = n > 99 ? "99+" : String(n); }
