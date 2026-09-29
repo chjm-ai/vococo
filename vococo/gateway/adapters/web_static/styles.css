@@ -209,7 +209,7 @@
   .conv .cvact .cvpin{background:var(--accent)}
   .conv .cvact .cvdel{background:var(--err);border-radius:0 7px 7px 0}   /* 贴行右边缘,配行本身的圆角,避免被 overflow 裁出直角缺口 */
   .conv .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-base)}
-  .conv .livedot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}   /* AI 正在回复:闪烁圆点 */
+  .conv .livedot,.projgrp.agrow .livedot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}   /* AI 正在回复:闪烁圆点(Agent 行共用) */
   @keyframes livepulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
   .conv .ctime{flex-shrink:0;color:var(--dim2);font-size:var(--fs-sm);font-variant-numeric:tabular-nums;transition:opacity var(--t-fast)}  /* 会话时刻:名称右侧 */
   /* 任务行「停止」键(只出现在后台任务还在跑时):常显红方块,紧贴 ⋯ 左侧,触屏也能直接点 */
@@ -255,7 +255,7 @@
   .bubble.err{border-left:3px solid var(--err);padding-left:var(--sp-4)}
   /* 完成未读灰点:工作结束后保留,打开会话后消失。间距靠 .cvbody 的 gap:8px 统一,
      不额外加 margin——否则和 .livedot 的间距对不齐。 */
-  .conv .reviewdot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--dim2);animation:dotpop .18s ease}
+  .conv .reviewdot,.projgrp.agrow .reviewdot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--dim2);animation:dotpop .18s ease}
   @keyframes dotpop{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
   /* 跨会话审批/确认弹窗:半透明背景 + 居中紧凑卡片(不做成占满全屏的大块) */
   #choiceModal{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:var(--ov-3);padding:18px}
@@ -1553,7 +1553,6 @@
   .projgrp.agrow .pgcaret{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:var(--r-sm)}
   @media(hover:hover){ .projgrp.agrow .pgcaret:hover{background:var(--card);color:var(--text)} }
   .projgrp.agrow .pgcaret.agnone{visibility:hidden}
-  .projgrp.agrow .livedot,.projgrp.agrow .reviewdot{margin:0 -2px}
   #convAgentBtn .agav{width:17px;height:16px}
   #convAgentBtn.on{background:var(--panel2)}
 

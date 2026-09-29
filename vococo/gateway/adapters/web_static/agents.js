@@ -95,9 +95,10 @@ function renderAgentGroup(box, a, inCall){
   const main=S.convs.find(c=>c.conv===a.main_conv);
   const h=el("div","projgrp agrow"+(!inCall && S.conv===a.main_conv?" active":""));
   h.innerHTML=avatarSvg(a.avatar);
+  const nm=el("span","pgname"); nm.textContent=a.name; h.append(nm);
+  // 状态点跟在名字后面:插在头像和名字之间会把名字往右顶,这一行就和其他行对不齐了
   if(S.live[a.main_conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; h.append(dot); }
   else if((main && main.pending_review) || S.pendingReview[a.main_conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; h.append(dot); }
-  const nm=el("span","pgname"); nm.textContent=a.name; h.append(nm);
   const caret=el("span","pgcaret"+(convs.length?"":" agnone"));
   caret.append(el("span","chev"+(open?" down":"")));
   caret.title=open?"收起会话":"展开会话";
