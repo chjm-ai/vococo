@@ -24,10 +24,8 @@ from pathlib import Path
 CDP_PORT = 9228
 CHROME_BIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME_PROFILE = Path.home() / ".chrome-profiles/upwork"
-OUTPUT_DIR = Path(os.path.expanduser(
-    "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/"
-    "Wesley notes/2.重点项目/AI咨询/upwork-jobs"
-))
+# 不放 iCloud 目录(iCloud 托管目录读写可能卡住);data/ 已被 .gitignore 忽略
+OUTPUT_DIR = Path.home() / "Repos/vococo/data/upwork"
 SEEN_FILE = OUTPUT_DIR / "seen_ids.json"
 SEEN_KEEP_DAYS = 30
 
