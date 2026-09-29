@@ -336,12 +336,14 @@ try{
         <div class="skel ai2"></div>
       </div>
       <div id="empty">
-        <div class="elogo">
+        <!-- Agent 名下的空会话:换成该 Agent 自己的欢迎屏(agents.js renderAgentEmpty),下面带 dflt 的默认块隐藏 -->
+        <div id="agentEmpty"></div>
+        <div class="elogo dflt">
           <span class="voco-mascot" data-state="idle"></span>
         </div>
-        <h2>你好，我是 vococo</h2>
-        <p>你的私人 AI 助理 · 有什么需要直接说</p>
-        <div class="sugs">
+        <h2 class="dflt">你好，我是 vococo</h2>
+        <p class="dflt">你的私人 AI 助理 · 有什么需要直接说</p>
+        <div class="sugs dflt">
           <button type="button" class="sug" onclick="openCallView()">进入主会话</button>
           <button class="sug" data-s="你能做什么">你能做什么</button>
           <button class="sug" data-s="有哪些技能">有哪些技能</button>
@@ -539,26 +541,34 @@ function updateEmpty(){
   $("#empty").style.display = show ? "flex" : "none";
   if(show){
     if(!wasShown) homeRecentExpanded = false;   // 每次重新进入欢迎屏,最近对话收起回默认态
+    // Agent 名下的会话 → 换成该 Agent 的欢迎屏(头像/职责/目标 + 相关快捷操作,见 agents.js)
+    const ag = typeof agentForConv==="function" ? agentForConv(S.conv) : null;
+    $("#empty").classList.toggle("agent", !!ag);
+    if(ag) renderAgentEmpty(ag);
     renderEmptyRecent();
   }
 }
 function renderEmptyRecent(){
   const recent = $("#homeRecent");
   if(!recent) return;
-  // 收集所有会话(含语音任务),排除当前正打开的这个(避免"最近对话"里出现指向自己的空新对话)
+  // 收集所有会话(含语音任务),排除当前正打开的这个(避免"最近对话"里出现指向自己的空新对话)。
+  // Agent 名下的会话只列这个 Agent 自己的(主会话 + 子会话),不混别的 Agent
+  const ag = typeof agentForConv==="function" ? agentForConv(S.conv) : null;
+  const agConvs = ag ? new Set([ag.main_conv, ...agentConvs(ag).map(c=>c.conv)]) : null;
   const items = [];
   for(const c of S.convs){
+    if(agConvs && !agConvs.has(c.conv)) continue;
     if(c.pinned) continue;  // 主会话单独处理
     if(c.conv===S.conv) continue;
     const arch = !!c.archived;
     if(S.convFilter==="archived" && !arch) continue;
     if(S.convFilter==="active" && arch) continue;
-    items.push({conv:c.conv, title:c.title||"新对话", ts:c.last_ts, type:"chat"});
+    items.push({conv:c.conv, title:(ag && c.conv===ag.main_conv) ? "主会话" : (c.title||"新对话"), ts:c.last_ts, type:"chat"});
   }
   // 加入语音任务(侧边栏/最近列表始终全量可见;「终态满 10 分钟自动隐藏」只
   // 作用于语音界面顶部的任务状态条,见 renderTaskBar / taskBarDoneHidden)
   const vs = S.voiceSidebar;
-  if(vs && vs.tasks){
+  if(!ag && vs && vs.tasks){
     for(const t of vs.tasks){
       items.push({conv:t.conv, title:t.title||"语音任务", ts:t.last_ts, type:"voice"});
     }

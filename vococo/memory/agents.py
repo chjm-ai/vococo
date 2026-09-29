@@ -382,6 +382,27 @@ def ensure_goal_review(agent_id: str) -> dict | None:
     return job
 
 
+def _first_line(doc: str, section: str | None = None) -> str:
+    """取正文第一行(可限定某个 ## 小节),给欢迎屏当一句话简介。"""
+    if section:
+        m = re.search(rf"^## {re.escape(section)}[ \t]*\n(.*?)(?=^## |\Z)", doc or "", re.M | re.S)
+        doc = m.group(1) if m else ""
+    for line in (doc or "").splitlines():
+        s = line.strip().lstrip("-*> ").strip()
+        if s and not line.startswith("#"):
+            return s[:120]
+    return ""
+
+
+def brief(agent_id: str) -> dict:
+    """欢迎屏用的一句话:职责(AGENT.md「职责与人格」首行)、目标(GOAL.md 首行)、有没有计划。"""
+    return {
+        "summary": _first_line(read_doc(agent_id, "AGENT.md"), "职责与人格"),
+        "goal": _first_line(read_doc(agent_id, "GOAL.md")),
+        "has_plan": has_content(read_doc(agent_id, "PLAN.md")),
+    }
+
+
 def plan_prompt(agent: dict) -> str:
     return PLAN_PROMPT.format(home=agent["home"])
 
