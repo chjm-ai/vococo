@@ -43,6 +43,11 @@
     /* 过渡时长:交互反馈用 fast,位移/展开用 base */
     --t-fast:.15s; --t-base:.22s;
   }
+  /* Agent 像素头像色板(agents.js,键名与后端 AVATAR_COLORS 一致):深浅主题通用,饱和度刻意偏高 */
+  :root{
+    --av-orange:#FF8A26; --av-coral:#FF5B4F; --av-lime:#2FC75A; --av-lake:#2B95FF;
+    --av-grape:#8B5CFF; --av-pink:#FF5CA8; --av-gold:#FFC014; --av-teal:#12C2B0; --av-eye:#3D2410;
+  }
   /* ── 浅色:系统偏好浅色且用户未手动固定时 · Claude Code 暖米色 ────────── */
   @media(prefers-color-scheme:light){
     :root:not([data-theme]){
@@ -1539,6 +1544,109 @@
        (index.html)和独立窗口自己的页面(doc-preview.html)都用同一份 styles.css，
        两处一起生效。 */
     #dpWinBtn{display:none}
+  }
+  /* ── Agent(agents.js):侧栏 Agent 行 + 像素头像 + 右侧面板 + 新建弹窗 ─────────── */
+  .agav{display:block;flex-shrink:0;width:18px;height:17px}
+  .projgrp.agrow{gap:var(--sp-3);font-size:var(--fs-base);font-weight:500;color:var(--dim);margin-top:1px}
+  .projgrp.agrow.active{background:var(--panel2);color:var(--text)}
+  .projgrp.agrow .pgname{color:inherit}
+  .projgrp.agrow .pgcaret{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:var(--r-sm)}
+  @media(hover:hover){ .projgrp.agrow .pgcaret:hover{background:var(--card);color:var(--text)} }
+  .projgrp.agrow .pgcaret.agnone{visibility:hidden}
+  .projgrp.agrow .livedot,.projgrp.agrow .reviewdot{margin:0 -2px}
+  #convAgentBtn .agav{width:17px;height:16px}
+  #convAgentBtn.on{background:var(--panel2)}
+
+  #agentPanel{width:min(40vw,400px);flex-shrink:0;display:flex;flex-direction:column;
+    background:var(--bg2);border-left:1px solid var(--line2);overflow:hidden}
+  #agentPanel[hidden]{display:none}
+  #apHead{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-3) var(--sp-4);
+    padding-top:calc(var(--sp-3) + env(safe-area-inset-top));flex-shrink:0}
+  #apHead .sidetabs{flex:1;margin:0}
+  #apClose{width:28px;height:28px;border-radius:var(--r-md);color:var(--dim2);flex-shrink:0;
+    display:inline-flex;align-items:center;justify-content:center;transition:background var(--t-fast),color var(--t-fast)}
+  @media(hover:hover){ #apClose:hover{background:var(--panel2);color:var(--text)} }
+  #apBody{flex:1;overflow-y:auto;padding:var(--sp-1) var(--sp-4) var(--sp-5);display:flex;flex-direction:column;gap:2px}
+  .apempty{padding:var(--sp-4) var(--sp-1);color:var(--dim2);font-size:var(--fs-md);line-height:1.6}
+  .apsec{margin-top:var(--sp-5);padding:0 var(--sp-1) var(--sp-1);font-size:var(--fs-sm);font-weight:600;color:var(--dim2);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .apnote{padding:var(--sp-1);font-size:var(--fs-sm);color:var(--dim2)}
+  .apadd{padding:var(--sp-3) var(--sp-1);color:var(--dim2);font-size:var(--fs-md);font-weight:600;cursor:pointer;transition:color var(--t-fast)}
+  @media(hover:hover){ .apadd:hover{color:var(--text)} }
+  /* 动态 */
+  .aprun{padding:var(--sp-3);border-radius:var(--r-md);cursor:pointer;transition:background var(--t-fast)}
+  @media(hover:hover){ .aprun:hover{background:var(--panel2)} }
+  .aprhead{display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-md)}
+  .aprdot{width:6px;height:6px;border-radius:50%;background:var(--dim2);flex-shrink:0}
+  .aprdot.ok{background:var(--ok)} .aprdot.err{background:var(--err)}
+  .aprname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+  .aprtime{color:var(--dim2);font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
+  .aprtext{margin-top:2px;padding-left:12px;color:var(--dim);font-size:var(--fs-sm);line-height:1.5;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  /* 定时 / 关联 */
+  .aptask,.aplink{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3);border-radius:var(--r-md);transition:background var(--t-fast)}
+  .aptask{cursor:pointer}
+  .aptask.active{background:var(--panel2)}
+  @media(hover:hover){ .aptask:hover,.aplink:hover{background:var(--panel2)} }
+  .aptmain{flex:1;min-width:0}
+  .aptname{font-size:var(--fs-md);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .aptname.off{opacity:.5}
+  .aptsub{font-size:var(--fs-sm);color:var(--dim2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .aptsub:empty{display:none}
+  .aptask .more,.aplink .more{width:24px;height:24px;border-radius:var(--r-sm);color:var(--dim2);flex-shrink:0;
+    display:inline-flex;align-items:center;justify-content:center;transition:background var(--t-fast),color var(--t-fast)}
+  @media(hover:hover){ .aptask .more:hover,.aplink .more:hover{background:var(--card);color:var(--text)} }
+  .apwrite{display:flex;align-items:center;gap:var(--sp-1);font-size:var(--fs-sm);color:var(--dim);flex-shrink:0;cursor:pointer}
+  /* 目标 */
+  .apacts{display:flex;gap:var(--sp-2);flex-wrap:wrap;padding:var(--sp-2) 0}
+  .apbtn{padding:var(--sp-2) var(--sp-4);border-radius:var(--r-md);border:1px solid var(--line2);background:var(--panel2);
+    color:var(--text);font-size:var(--fs-md);cursor:pointer;transition:border-color var(--t-fast),background var(--t-fast)}
+  @media(hover:hover){ .apbtn:hover{border-color:var(--dim2)} }
+  .apbtn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}
+  .apbtn:disabled{opacity:.5;cursor:default}
+  #apBody > .apbtn{align-self:flex-start;margin-top:var(--sp-2)}
+  .apdoc.bubble{padding:var(--sp-2) var(--sp-1);font-size:var(--fs-md);line-height:1.65;background:none;box-shadow:none;max-width:none}
+  .apdoc h1,.apdoc h2,.apdoc h3{font-size:var(--fs-md);font-weight:600;color:var(--dim);margin:var(--sp-4) 0 var(--sp-1)}
+  .aptext{width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:var(--r-md);color:var(--text);
+    padding:var(--sp-3) var(--sp-4);font-size:var(--fs-md);font-family:inherit;line-height:1.6;resize:vertical}
+  /* 设定 */
+  .apsetup{display:flex;align-items:center;gap:var(--sp-4);padding:var(--sp-3) var(--sp-1)}
+  .apavbig .agav{width:48px;height:44px}
+  .apname{flex:1;min-width:0;background:none;border:1px solid transparent;border-radius:var(--r-md);color:var(--text);
+    padding:var(--sp-2) var(--sp-3);font-size:var(--fs-xl);font-weight:600;transition:border-color var(--t-fast)}
+  .apname:hover,.apname:focus{border-color:var(--line2);outline:none}
+  .appick{display:flex;flex-wrap:wrap;gap:var(--sp-2);padding:var(--sp-1)}
+  .apchip{width:36px;height:36px;border-radius:var(--r-md);border:1px solid transparent;background:var(--panel);
+    display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:border-color var(--t-fast)}
+  .apchip .agav{width:22px;height:20px}
+  .apchip.on{border-color:var(--accent)}
+  @media(hover:hover){ .apchip:hover{border-color:var(--line2)} .apchip.on:hover{border-color:var(--accent)} }
+  /* 文件 */
+  .apfile{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);
+    font-size:var(--fs-md);color:var(--dim);cursor:pointer;transition:background var(--t-fast),color var(--t-fast)}
+  .apfile.dir{cursor:default}
+  .apfile .ic{width:14px;height:14px;flex-shrink:0;color:var(--dim2)}
+  .apfname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  @media(hover:hover){ .apfile:not(.dir):hover{background:var(--panel2);color:var(--text)} }
+
+  #agentModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:var(--ov-3)}
+  #agentModal[hidden]{display:none}
+  #agentModal .pmbox{width:min(440px,92vw);display:flex;flex-direction:column;
+    background:var(--panel);border:1px solid var(--line2);border-radius:var(--r-xl);overflow:hidden}
+  #agentModal .pmhead{padding:var(--sp-5) 18px;font-size:var(--fs-lg);font-weight:700}
+  #agentModal .agform{padding:0 18px var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-3)}
+  #agentModal input:not([type]){flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line2);border-radius:var(--r-md);
+    color:var(--text);padding:var(--sp-3) var(--sp-4);font-size:var(--fs-md)}
+  #agentModal .agopt{display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-md);cursor:pointer}
+  #agentModal .cfrow{display:flex;gap:var(--sp-3)}
+  #agentModal .cfrow[hidden]{display:none}
+  #agentModal .cfrow button{padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);border:1px solid var(--line2);background:var(--panel2);color:var(--text);cursor:pointer;font-size:var(--fs-sm);flex-shrink:0}
+  #agentModal .cfhint{font-size:var(--fs-sm);color:var(--dim2)}
+  #agentModal .pmfoot{display:flex;gap:10px;justify-content:flex-end;padding:var(--sp-4) 18px}
+  #agentModal .pmfoot button{padding:var(--sp-3) var(--sp-5);border-radius:var(--r-md);cursor:pointer;font-size:var(--fs-md);border:1px solid var(--line2);background:var(--panel2);color:var(--text)}
+  #agentModal .pmfoot .pmok{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}
+  @media(max-width:760px){
+    #agentPanel{position:fixed;inset:0;width:100%;z-index:40;border-left:none}
   }
   #startCallBtn[hidden]{display:none}
 

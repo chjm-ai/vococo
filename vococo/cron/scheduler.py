@@ -336,6 +336,20 @@ def _run_job(
         asyncio.create_task(task_runner.append(job_id, turn_prompt))
 
 
+_push: PushFn | None = None  # run_scheduler 起来后记下推送出口,供「试跑」(run_now)用
+
+
+def run_now(job_id: str) -> dict | None:
+    """「试跑」:不改下次到点时间,立刻触发一次。任务不存在返回 None;调度器没起来抛 RuntimeError。"""
+    job = next((j for j in load_jobs() if j.get("id") == job_id), None)
+    if job is None:
+        return None
+    if _push is None:
+        raise RuntimeError("调度器没在运行")
+    _run_job(job, _push)
+    return job
+
+
 async def _push_job_result(job_id: str, status: str, text: str, push: PushFn) -> dict | None:
     """回填 job 的 last_run_at/last_status 并推送结果——Agent 任务
     (_on_task_terminal)和脚本任务(_run_script_job)收尾共用,格式/目标完全
@@ -541,6 +555,8 @@ async def run_scheduler(push: PushFn) -> None:
         await _on_task_terminal(task, push)
 
     voice_notify.register_cron_terminal_hook(_hook)
+    global _push
+    _push = push
     try:
         from . import suggestions
         n = suggestions.seed_catalog()

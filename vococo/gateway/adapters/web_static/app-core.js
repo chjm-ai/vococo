@@ -349,10 +349,11 @@ async function tryEnter(){
       .then(updateFilterBtn).catch(()=>{});
     loadVoiceSidebar();  // 不阻塞主流程,拉到即刷新侧边栏
     loadCronSidebar();   // 同上,定时任务分组
+    loadAgents();        // 同上,「Agent」Tab(agents.js)
     loadSystemTasks();   // 同上,「定时」Tab 里的本机系统任务(launchd/crontab)区块
     // 登录这一波已经把各 Tab 的数据都拉了一遍,记下时间戳,避免落地后立刻点 Tab 又空转一次请求
     const _loginTs=Date.now();
-    S.tabLastFetch.projects=_loginTs; S.tabLastFetch.pinned=_loginTs; S.tabLastFetch.recent=_loginTs; S.tabLastFetch.cron=_loginTs;
+    S.tabLastFetch.projects=_loginTs; S.tabLastFetch.pinned=_loginTs; S.tabLastFetch.recent=_loginTs; S.tabLastFetch.cron=_loginTs; S.tabLastFetch.agents=_loginTs;
     await secondary;
     initVoiceSelect();
     renderConvs();  // 项目分组数据(loadProjects)到位后再补画一次侧栏分组

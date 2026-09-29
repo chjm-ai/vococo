@@ -48,7 +48,7 @@ _VERSIONED_ASSETS = (
     # 2026-08-14 前端模块化:从 index.html 拆出的功能块(加载顺序即此顺序)
     "app-core.js", "mascot.js", "markdown.js", "sidebar.js", "settings.js", "stats.js",
     "workbench.js",
-    "stream.js", "notices.js", "composer.js", "voice.js",
+    "stream.js", "notices.js", "agents.js", "composer.js", "voice.js",
 )
 _DOC_PREVIEW_MAX = 3 * 1024 * 1024  # 文档预览分屏读文件上限;超过就不读,前端提示下载/自己开
 # 文档预览模糊兜底搜索用:直接拼接找不到时,按路径尾部扫一遍——AI 提到文件时经常掉了包名
@@ -1393,6 +1393,20 @@ class WebAdapter:
         if conv:
             session_store.delete_session(conv)
         return web.json_response({"ok": True})
+
+    @_authed
+    @_json_body
+    async def _handle_cron_run(self, request: web.Request, body: dict) -> web.Response:
+        """「试跑」:立刻触发一次,不动下次到点时间。"""
+        from ...cron import scheduler
+
+        try:
+            job = scheduler.run_now(str((body or {}).get("id") or ""))
+        except RuntimeError as exc:
+            return web.json_response({"error": str(exc)}, status=503)
+        if job is None:
+            return web.json_response({"error": "任务不存在"}, status=404)
+        return web.json_response({"ok": True, "conv": job.get("conv")})
 
     # ── 本机系统任务(只读)───────────────────────────────────────────────
     # 2026-08-15 事故:枚举/读脚本是同步阻塞 IO,直接在 handler 里跑会占住整条事件循环——
@@ -2995,11 +3009,36 @@ class WebAdapter:
         aid = str(body.get("id") or "")
         if agents.get(aid) is None:
             return web.json_response({"error": "Agent 不存在"}, status=404)
+        name = str(body.get("name") or "")
         try:
-            agents.write_doc(aid, str(body.get("name") or ""), str(body.get("text") or ""))
+            agents.write_doc(aid, name, str(body.get("text") or ""))
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
-        return web.json_response({"ok": True})
+        # 目标一写上 → 自动挂每周复盘(闭环的「复盘」一环,已挂过就不重复)
+        job = agents.ensure_goal_review(aid) if name == "GOAL.md" else None
+        return web.json_response({"ok": True, "review_job": job["id"] if job else None})
+
+    @_authed
+    async def _handle_agent_goal(self, request: web.Request) -> web.Response:
+        """「目标」面板:GOAL.md + PLAN.md + 复盘任务 + 拆解计划要发的话。"""
+        from ...cron import scheduler
+        from ...memory import agents
+
+        a = agents.get(request.query.get("id", ""))
+        if a is None:
+            return web.json_response({"error": "Agent 不存在"}, status=404)
+        job = agents.review_job(a["id"])
+        return web.json_response({
+            "goal": agents.read_doc(a["id"], "GOAL.md"),
+            "plan": agents.read_doc(a["id"], "PLAN.md"),
+            "goal_template": agents.GOAL_TEMPLATE,
+            "plan_prompt": agents.plan_prompt(a),
+            "review": {
+                "id": job["id"], "enabled": bool(job.get("enabled")),
+                "desc": scheduler.describe_schedule(job.get("schedule") or {}),
+                "last_run_at": job.get("last_run_at"),
+            } if job else None,
+        })
 
     @_authed
     async def _handle_agent_runs(self, request: web.Request) -> web.Response:
@@ -3156,7 +3195,7 @@ class WebAdapter:
                 web.get("/mascot.css", self._handle_mascot_styles),
                 web.get("/tool-card.js", self._handle_tool_card_js),
                 web.get(
-                    r"/{name:(?:app-core|mascot|markdown|sidebar|settings|stats|workbench|stream|notices|composer|voice)\.js}",
+                    r"/{name:(?:app-core|mascot|markdown|sidebar|settings|stats|workbench|stream|notices|agents|composer|voice)\.js}",
                     self._handle_app_js,
                 ),
                 web.get("/favicon.ico", self._handle_favicon),
@@ -3176,6 +3215,7 @@ class WebAdapter:
                 web.post("/agents/doc", self._handle_agent_doc_save),
                 web.get("/agents/runs", self._handle_agent_runs),
                 web.get("/agents/files", self._handle_agent_files),
+                web.get("/agents/goal", self._handle_agent_goal),
                 web.get("/notices", self._handle_notices),
                 web.post("/notices/act", self._handle_notice_act),
                 web.post("/notices/quick", self._handle_notice_quick),
@@ -3199,6 +3239,7 @@ class WebAdapter:
                 web.post("/cron/jobs/enable", self._handle_cron_set_enabled),
                 web.post("/cron/jobs/reorder", self._handle_cron_reorder),
                 web.post("/cron/jobs/delete", self._handle_cron_delete),
+                web.post("/cron/jobs/run", self._handle_cron_run),
                 web.get("/system/tasks", self._handle_system_tasks),
                 web.get("/system/tasks/detail", self._handle_system_task_detail),
                 web.get("/projects", self._handle_projects),

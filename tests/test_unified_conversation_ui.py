@@ -120,7 +120,7 @@ def test_workbench_cancel_holds_before_hiding():
 def test_service_worker_cache_version_changes_with_shell_contract():
     sw = STATIC_SW.read_text(encoding="utf-8")
 
-    assert 'const SHELL_CACHE = "vococo-shell-v8";' in sw
+    assert 'const SHELL_CACHE = "vococo-shell-v9";' in sw
 
 
 def test_startup_worktree_cleanup_is_bounded():

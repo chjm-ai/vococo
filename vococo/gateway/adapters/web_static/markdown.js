@@ -142,10 +142,12 @@ function hideDocPreviewPanel(){
 function closeDocPreview(){
   delete S.docPreview[S.conv];
   hideDocPreviewPanel();
+  if(typeof syncAgentHeader==="function") syncAgentHeader();   // Agent 面板开着的话接回来
 }
 async function openDocPreview({kind, target, title, highlight=""}){
   S.docPreview[S.conv] = {kind, target, title, highlight};
   dpRevoke();
+  if(typeof hideAgentPanel==="function") hideAgentPanel();   // 两个右侧栏不同时占位
   $("#docPreview").hidden = false;
   $("#dpTitle").textContent = title || target;
   $("#dpUrlText").textContent = target;

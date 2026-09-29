@@ -310,7 +310,9 @@ def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:
     "事件触发(和 cron / run_in_minutes 三选一):trigger='webhook' → 外部 POST 专属链接时触发"
     "(如 iPhone 快捷指令、GitHub),链接在 Web 定时任务编辑页复制;trigger='watch' + watch_path"
     "(绝对路径目录)+ 可选 watch_glob(如 '*.m4a')→ 目录里出现新文件/文件改动时触发。"
-    "事件内容会随指令一起交给任务(脚本任务经环境变量 VOCOCO_EVENT / VOCOCO_EVENT_FILES 拿到)。",
+    "事件内容会随指令一起交给任务(脚本任务经环境变量 VOCOCO_EVENT / VOCOCO_EVENT_FILES 拿到)。\n"
+    "agent_id:可选,任务归到哪个 Agent 名下(结果会进它的主会话);省略时归当前会话所属的 Agent,"
+    "传 'none' 表示不归任何 Agent。",
     {
         "type": "object",
         "properties": {
@@ -326,6 +328,7 @@ def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:
             "mode": {"type": "string", "enum": ["agent", "script"]},
             "command": {"type": "string"},
             "summarize_prompt": {"type": "string"},
+            "agent_id": {"type": "string"},
         },
         "required": ["name", "prompt"],
     },
@@ -383,8 +386,11 @@ async def add_cron_job(args: dict) -> dict:
         return _ok(err)
 
     ctx = clarify.current()
+    agent, err = _cron_agent(args.get("agent_id"), ctx.session_key if ctx else "")
+    if err:
+        return _ok(err)
     if requested_cwd is None or not requested_cwd.strip():
-        cwd = config.resolve_execution_root(
+        cwd = agent["workdir"] if agent and agent["workdir"] else config.resolve_execution_root(
             session_key=ctx.session_key if ctx else None,
         )
     else:
@@ -395,12 +401,15 @@ async def add_cron_job(args: dict) -> dict:
     # 新建是持久化类操作(被注入后可偷偷种一个定时后门),要用户点头;
     # cron/eval 上下文(无人可问)直接拒绝——复用 set_cron_job_enabled/delete_cron_job 同一套闸门。
     detail = f"「{name}」— {_sched_desc(schedule)} — 工作目录:{cwd} — 指令:{prompt[:80]}"
+    if agent:
+        detail += f" — 归属 Agent:{agent['name']}"
     if not await danger.require_approval("创建定时任务", detail):
         return _ok(f"🛑 未批准创建任务「{name}」,已跳过。")
 
     job = scheduler.create_job(
         name=name, prompt=prompt, schedule=schedule, model=model, cwd=cwd,
         mode=mode, command=command, summarize_prompt=summarize_prompt,
+        agent_id=agent["id"] if agent else None,
     )
     msg = f"✅ 已创建任务「{name}」({_sched_desc(job['schedule'])}),id={job['id']}。"
     if job["schedule"].get("kind") == "webhook":
@@ -489,7 +498,7 @@ async def delete_cron_job(args: dict) -> dict:
     "ref:必填,定位任务;name/prompt:可选,改名字/指令;cron:可选,改成新的周期性cron表达式"
     "(如 '0 9 * * *' = 每天早9点);run_in_minutes:可选,改成多少分钟后跑一次的一次性任务"
     "(cron 与 run_in_minutes 最多传一个,都不传则调度不变);model/cwd:可选;"
-    "mode='script' 时需配 command,可选 summarize_prompt。",
+    "mode='script' 时需配 command,可选 summarize_prompt;agent_id:可选,改归属 Agent('none' = 不归属)。",
     {
         "type": "object",
         "properties": {
@@ -503,6 +512,7 @@ async def delete_cron_job(args: dict) -> dict:
             "mode": {"type": "string", "enum": ["agent", "script"]},
             "command": {"type": "string"},
             "summarize_prompt": {"type": "string"},
+            "agent_id": {"type": "string"},
         },
         "required": ["ref"],
     },
@@ -553,6 +563,11 @@ async def update_cron_job(args: dict) -> dict:
     for field in ("mode", "command", "summarize_prompt"):
         if field in args:
             kwargs[field] = args.get(field)
+    if (args.get("agent_id") or "").strip():
+        agent, err = _cron_agent(args["agent_id"], "")
+        if err:
+            return _ok(err)
+        kwargs["agent_id"] = agent["id"] if agent else ""
 
     # 改定时任务是持久化类操作,和 add/delete/set_enabled 一样要用户点头;
     # cron/eval 上下文(无人可问)直接拒绝。
@@ -572,6 +587,23 @@ async def update_cron_job(args: dict) -> dict:
     if updated is None:
         return _ok(f"没找到任务「{ref}」。")
     return _ok(f"✅ 已更新任务「{updated.get('name')}」({_sched_desc(updated['schedule'])})。")
+
+def _cron_agent(ref, session_key: str) -> tuple[dict | None, str | None]:
+    """定时任务归哪个 Agent:ref 给了按 id/名字找('none' = 不归属);没给 → 当前会话所属 Agent。"""
+    from ..memory import agents
+
+    ref = (ref or "").strip() if isinstance(ref, str) else ""
+    if ref.lower() == "none":
+        return None, None
+    if not ref:
+        try:
+            return agents.agent_for_session(session_key) if session_key else None, None
+        except Exception:  # noqa: BLE001 —— 找不到归属不影响建任务
+            return None, None
+    for a in agents.list_agents():
+        if ref in (a["id"], a["name"]):
+            return a, None
+    return None, f"没找到 Agent「{ref}」。"
 
 def _resolve_workbench_project(ref: str, projects: list[dict]) -> dict | None:
     """按 id / 名字(不分大小写)解析一个工作台项目。"""
