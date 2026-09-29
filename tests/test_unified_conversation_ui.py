@@ -7,6 +7,7 @@ STATIC_INDEX = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/i
 STATIC_STYLES = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/styles.css"
 STATIC_WORKBENCH = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/workbench.js"
 STATIC_SW = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/sw.js"
+STATIC_AGENTS = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/agents.js"
 WORKTREE = Path(__file__).parents[1] / "vococo/core/worktree.py"
 GATEWAY_RUN = Path(__file__).parents[1] / "vococo/gateway/run.py"
 
@@ -173,3 +174,18 @@ def test_agent_row_status_dots_have_size_and_color():
     done = _declarations(styles, ".projgrp.agrow .reviewdot")
     assert "width:7px" in done and "height:7px" in done
     assert "background:var(--dim2)" in done
+
+
+def test_agent_row_status_dot_follows_name_so_names_stay_aligned():
+    """状态点插在头像和名字之间(或被加了 margin)会把名字往右顶,带点的 Agent 行
+    就和其他行对不齐(2026-09-29 截图反馈)。契约:渲染顺序 头像 → 名字 → 状态点,
+    且 Agent 行不给状态点加任何 margin。"""
+    js = STATIC_AGENTS.read_text(encoding="utf-8")
+    fn = js[js.index("function renderAgentGroup(") : js.index("function openAgentMain(")]
+    name_at = fn.index('el("span","pgname")')
+    assert name_at < fn.index('el("span","livedot")')
+    assert name_at < fn.index('el("span","reviewdot")')
+
+    styles = STATIC_STYLES.read_text(encoding="utf-8")
+    assert "margin" not in _declarations(styles, ".projgrp.agrow .livedot")
+    assert "margin" not in _declarations(styles, ".projgrp.agrow .reviewdot")
