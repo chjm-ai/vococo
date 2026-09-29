@@ -444,7 +444,7 @@ MODEL_CHOICES: list[tuple[str, str]] = [
     ("claude-fable-5-1", "Fable 5.1（订阅）"),
     ("claude-opus-5-5", "Opus 5.5（订阅）"),
     ("claude-opus-4-6", "Opus 4.6（订阅）"),
-    ("claude-sonnet-5", "Sonnet 5（订阅）"),
+    ("claude-sonnet-5-5", "Sonnet 5.5（订阅）"),
     ("claude-haiku-4-5", "Haiku 4.5（订阅）"),
 ]
 
