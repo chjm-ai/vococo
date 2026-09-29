@@ -12,8 +12,15 @@
 - 主会话固定为 web:p<hash>:main(通用 Agent 为全局主会话)。定时任务带 agent_id,
   跑完后结果除了落任务自己的会话,还会复制一份到所属 Agent 的主会话(record_run),
   并记进 agent_runs 表(右侧面板「动态」读它)。
-- 这个 Agent 名下的会话和定时任务,每轮都把 AGENT.md / NOTES.md / 关联清单作为
-  system_prompt_extra 带进提示词(prompt_extra_for_session)。
+- 这个 Agent 名下的会话和定时任务,每轮都把 AGENT.md / GOAL.md / PLAN.md / NOTES.md / 关联清单
+  作为 system_prompt_extra 带进提示词(prompt_extra_for_session)。
+
+目标闭环(同日追加):目标 ──拆解──> 计划 ──执行──> 采集数据 ──复盘──> 修正 ──写回目标文件
+- GOAL.md  目标 / 成功标准 / 不做(你定);「当前进展」「复盘记录」两节由复盘任务写回
+- PLAN.md  里程碑 + 任务清单(它拆、它勾)
+- runs/    每次定时任务的结果按月追加(record_run),复盘时当数据读
+- 目标一写上就自动挂一条每周「目标复盘」定时任务(ensure_goal_review),它按 REVIEW_PROMPT
+  读上面三样、写回进展和计划;目标本身只有你同意才改。
 """
 from __future__ import annotations
 
@@ -29,7 +36,7 @@ from .. import config
 from . import _db, projects
 
 GENERAL_ID = "general"
-DOC_NAMES = ("AGENT.md", "NOTES.md")
+DOC_NAMES = ("AGENT.md", "GOAL.md", "PLAN.md", "NOTES.md")
 PROMPT_MAX_CHARS = 8000  # 注入提示词的上限,超了截断(常驻上下文要小,见调研结论)
 # 系统注入轮的标记:前端遇到它渲染成居中一行灰字。与 tools/selfops.SYS_MARKER、前端 SYS_MARK 一致
 SYS_MARKER = "⚙️[系统]"
@@ -38,6 +45,21 @@ SYS_MARKER = "⚙️[系统]"
 AVATAR_SHAPES = ("xiaoyou", "ghost", "blob", "square", "cat", "drop")
 AVATAR_COLORS = ("orange", "coral", "lime", "lake", "grape", "pink", "gold", "teal")
 AVATAR_EYES = ("dot", "small", "squint")
+
+AGENT_TEMPLATE = "# {name}\n\n## 职责与人格\n\n\n## 技能范围\n\n"
+GOAL_TEMPLATE = "# 目标\n\n\n## 成功标准\n\n\n## 不做\n\n\n## 当前进展\n\n\n## 复盘记录\n\n"
+PLAN_TEMPLATE = "# 计划\n\n## 里程碑\n\n\n## 任务\n\n"
+REVIEW_CRON = "0 9 * * 1"  # 目标复盘默认每周一早 9 点
+REVIEW_ROLE = "goal_review"  # 复盘任务在 cron_jobs.json 里的 role 标记,一个 Agent 只挂一条
+REVIEW_PROMPT = """【目标复盘】给「{name}」做一次复盘,文件都在 {home}/ 下:
+1. 读 GOAL.md、PLAN.md、NOTES.md,以及 runs/ 里最近 7 天的运行记录
+2. 对照「成功标准」判断进展,用 runs 里的具体数字说话,没数据就明说缺什么数据
+3. 改写 GOAL.md 的「当前进展」一节;在「复盘记录」末尾追加一行:日期 · 进展 · 偏差 · 下步
+4. 更新 PLAN.md:勾掉做完的,补上下一步任务
+5. 「目标」「成功标准」「不做」三节不许改;觉得该改,在汇报里提建议,等我同意
+6. 最近两次复盘都没进展,直说,建议暂停或换方向
+最后用 3-5 行汇报:进展、偏差、下步、要我拍板的事。"""
+PLAN_PROMPT = """【拆解计划】按 {home}/GOAL.md 的目标和成功标准,拆成 3-5 个里程碑(各带完成标志)和最近一周要做的任务清单(- [ ] 格式),写进 {home}/PLAN.md。需要定时跑的环节,列出来问我要不要建定时任务。最后几行说清拆了什么。"""
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_runs(
@@ -155,6 +177,7 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
         "main_conv": main,
         "links": _normalize_links(meta.get("links")),
         "created_at": meta.get("created_at") or 0,
+        "home": str(home(agent_id)),
     }
 
 
@@ -243,7 +266,7 @@ def create(name: str, path: str | None = None) -> dict:
         workdir = projects.normalize_project_path(workdir)
     _write_meta(aid, {"name": name, "workdir": workdir, "created_at": time.time(),
                       "avatar": _default_avatar(aid)})
-    write_doc(aid, "AGENT.md", f"# {name}\n\n## 职责与人格\n\n\n## 目标\n\n\n## 技能范围\n\n")
+    write_doc(aid, "AGENT.md", AGENT_TEMPLATE.format(name=name))
     projects.upsert_project(workdir)
     return get(aid)  # type: ignore[return-value]
 
@@ -274,7 +297,7 @@ def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None
 # ── AGENT.md / NOTES.md ─────────────────────────────────────────────────
 def read_doc(agent_id: str, name: str) -> str:
     if name not in DOC_NAMES:
-        raise ValueError("只能读写 AGENT.md / NOTES.md")
+        raise ValueError("只能读写 " + " / ".join(DOC_NAMES))
     try:
         return (home(agent_id) / name).read_text(encoding="utf-8")
     except OSError:
@@ -283,7 +306,7 @@ def read_doc(agent_id: str, name: str) -> str:
 
 def write_doc(agent_id: str, name: str, text: str) -> None:
     if name not in DOC_NAMES:
-        raise ValueError("只能读写 AGENT.md / NOTES.md")
+        raise ValueError("只能读写 " + " / ".join(DOC_NAMES))
     d = home(agent_id)
     d.mkdir(parents=True, exist_ok=True)
     (d / name).write_text(text, encoding="utf-8")
@@ -299,7 +322,9 @@ def list_files(agent_id: str, limit: int = 200) -> dict:
     if h.is_dir():
         for p in sorted(h.rglob("*")):
             rel = p.relative_to(h)
-            if p.is_file() and not rel.parts[0].startswith(".") and rel.name != "agent.json.tmp":
+            # agent.json 是系统设置(界面上改),workspace/ 在下面「工作目录」里单独列
+            if p.is_file() and not rel.parts[0].startswith(".") and rel.parts[0] != "workspace" \
+                    and rel.name not in ("agent.json", "agent.json.tmp"):
                 own.append(str(rel))
             if len(own) >= limit:
                 break
@@ -315,6 +340,59 @@ def list_files(agent_id: str, limit: int = 200) -> dict:
         except OSError:
             pass
     return {"home": str(h), "files": own, "workdir": wd, "workdir_top": top, "links": a["links"]}
+
+
+def has_content(doc: str) -> bool:
+    """只有标题和空小节的模板不算内容。"""
+    return any(line.strip() and not line.startswith("#") for line in (doc or "").splitlines())
+
+
+def _without_section(doc: str, title: str) -> str:
+    """去掉 markdown 里「## title」那一节(到下一个 ## 为止)。"""
+    return re.sub(rf"^## {re.escape(title)}[ \t]*\n.*?(?=^## |\Z)", "", doc or "", flags=re.M | re.S).strip()
+
+
+# ── 目标闭环 ────────────────────────────────────────────────────────────
+def review_job(agent_id: str) -> dict | None:
+    from ..cron import scheduler
+
+    return next((j for j in scheduler.load_jobs()
+                 if j.get("agent_id") == agent_id and j.get("role") == REVIEW_ROLE), None)
+
+
+def ensure_goal_review(agent_id: str) -> dict | None:
+    """目标有内容、还没挂复盘任务 → 挂一条每周复盘(只建一次;之后改时间/停用都在「定时」里改)。"""
+    from ..cron import scheduler
+
+    a = get(agent_id)
+    if a is None or not has_content(read_doc(agent_id, "GOAL.md")):
+        return None
+    job = review_job(agent_id)
+    if job:
+        return job
+    job = scheduler.create_job(
+        name="目标复盘", prompt=REVIEW_PROMPT.format(name=a["name"], home=a["home"]),
+        schedule={"kind": "cron", "expr": REVIEW_CRON}, cwd=a["workdir"], agent_id=agent_id,
+    )
+    jobs = scheduler.load_jobs()
+    for j in jobs:
+        if j["id"] == job["id"]:
+            j["role"] = REVIEW_ROLE
+    scheduler.save_jobs(jobs)
+    return job
+
+
+def plan_prompt(agent: dict) -> str:
+    return PLAN_PROMPT.format(home=agent["home"])
+
+
+def _log_run(agent_id: str, name: str, status: str, text: str, ts: float) -> None:
+    """运行结果按月追加进 runs/YYYY-MM.md,复盘任务读它当数据。"""
+    d = home(agent_id) / "runs"
+    d.mkdir(parents=True, exist_ok=True)
+    t = time.localtime(ts)
+    with open(d / time.strftime("%Y-%m.md", t), "a", encoding="utf-8") as f:
+        f.write(f"\n## {time.strftime('%m-%d %H:%M', t)} · {name} · {status}\n\n{text.strip()[:4000]}\n")
 
 
 # ── 会话 ↔ Agent ───────────────────────────────────────────────────────
@@ -345,17 +423,28 @@ def prompt_extra(agent: dict | None) -> str:
     (不改动提示词,已有会话的缓存不受影响)。"""
     if not agent:
         return ""
-    doc = read_doc(agent["id"], "AGENT.md").strip()
-    # 只有标题和空小节的模板不算内容
-    if not any(line.strip() and not line.startswith("#") for line in doc.splitlines()):
-        doc = ""
-    notes = read_doc(agent["id"], "NOTES.md").strip()
+    aid = agent["id"]
+    doc = read_doc(aid, "AGENT.md").strip()
+    doc = doc if has_content(doc) else ""
+    # 复盘记录是历史,不常驻提示词(要看自己去读文件)
+    goal = _without_section(read_doc(aid, "GOAL.md"), "复盘记录")
+    goal = goal if has_content(goal) else ""
+    plan = read_doc(aid, "PLAN.md").strip()
+    plan = plan if goal and has_content(plan) else ""
+    notes = read_doc(aid, "NOTES.md").strip()
     links = agent.get("links") or []
-    if not (doc or notes or links):
+    if not (doc or goal or notes or links):
         return ""
-    parts = [f"# 当前 Agent:{agent['name']}\n以下是这个 Agent 的设定,本会话里按它办事。"]
+    parts = [f"# 当前 Agent:{agent['name']}\n以下是这个 Agent 的设定,本会话里按它办事。"
+             f"它的文件在 {agent['home']}/(GOAL.md 目标、PLAN.md 计划、NOTES.md 笔记、runs/ 运行记录)。"]
     if doc:
         parts.append(doc)
+    if goal:
+        parts.append("## 目标(GOAL.md)\n" + goal.removeprefix("# 目标").strip())
+        parts.append("## 计划(PLAN.md)\n" + (plan.removeprefix("# 计划").strip() if plan else "还没拆。"))
+        parts.append("## 目标纪律\n- 做事前对照目标和「不做」;明显和目标无关的事,先提醒我再做\n"
+                     "- 做完计划里的任务,顺手在 PLAN.md 里勾掉\n"
+                     "- 「目标」「成功标准」「不做」只有我同意才能改")
     if notes:
         parts.append("## 笔记(NOTES.md)\n" + notes)
     if links:
@@ -384,15 +473,20 @@ def record_run(agent_id: str, job: dict, status: str, text: str) -> int | None:
         return None
     key = main_session_key(agent)
     name = job.get("name") or "定时任务"
+    now = time.time()
+    try:
+        _log_run(agent_id, name, status, text, now)
+    except OSError as exc:
+        print(f"[agents] 写运行记录失败:{exc}", flush=True)
     c = _conn()
     cur = c.execute(
         "INSERT INTO turns(session_key, ts, user_text, assistant_text) VALUES (?,?,?,?)",
-        (key, time.time(), f"{SYS_MARKER} ⏰ {name}", text),
+        (key, now, f"{SYS_MARKER} ⏰ {name}", text),
     )
     turn_id = cur.lastrowid
     c.execute(
         "INSERT INTO agent_runs(agent_id, job_id, job_name, ts, status, text, turn_id) VALUES (?,?,?,?,?,?,?)",
-        (agent_id, job.get("id") or "", name, time.time(), status, text[:4000], turn_id),
+        (agent_id, job.get("id") or "", name, now, status, text[:4000], turn_id),
     )
     c.commit()
     session_store.set_pending_review(key, True)

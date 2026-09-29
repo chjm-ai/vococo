@@ -595,6 +595,27 @@ def _inside_scratch_tmp(path: str, cwd: str | None) -> bool:
         return False
 
 
+def _inside_agent_writable(path: str, cwd: str | None) -> bool:
+    """目标文件是否落在当前会话所属 Agent 的家目录或「可写」关联里(见 memory/agents.py)。"""
+    if not path:
+        return False
+    try:
+        from ..memory import agents
+
+        a = agents.agent_for_session(_current_session_key())
+        if a is None:
+            return False
+        bases = [str(agents.home(a["id"]))] + [x["path"] for x in a["links"] if x["writable"]]
+        target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
+        for b in bases:
+            base = os.path.realpath(b)
+            if os.path.commonpath([target, base]) == base:
+                return True
+    except (ValueError, OSError, ImportError):
+        return False
+    return False
+
+
 def classify(
     tool_name: str, tool_input: dict, cwd: str | None = None
 ) -> tuple[str, str, bool]:
@@ -632,6 +653,9 @@ def classify(
             return ("allow", "", False)
         # 系统临时目录:一次性草稿脚本,不持久化,不应每次弹审批
         if path and _inside_scratch_tmp(path, cwd):
+            return ("allow", "", False)
+        # 当前会话所属 Agent 的家目录 + 标了「可写」的关联:它自己的地盘,复盘/记笔记不用批
+        if path and _inside_agent_writable(path, cwd):
             return ("allow", "", False)
         if _outside_cwd(path, cwd):
             # 写工作目录外:自动化通道也拒绝(可能被注入用来落地后门/改配置)

@@ -119,7 +119,8 @@ async def test_agent_routes(env, monkeypatch):
         web.get("/agents", ad._handle_agents), web.post("/agents/create", ad._handle_agent_create),
         web.post("/agents/update", ad._handle_agent_update), web.get("/agents/doc", ad._handle_agent_doc),
         web.post("/agents/doc", ad._handle_agent_doc_save), web.get("/agents/runs", ad._handle_agent_runs),
-        web.get("/agents/files", ad._handle_agent_files),
+        web.get("/agents/files", ad._handle_agent_files), web.get("/agents/goal", ad._handle_agent_goal),
+        web.post("/cron/jobs/run", ad._handle_cron_run),
     ])
     async with TestClient(TestServer(app)) as c:
         items = (await (await c.get("/agents")).json())["agents"]
@@ -139,3 +140,49 @@ async def test_agent_routes(env, monkeypatch):
         assert (await c.get("/agents/doc?id=../../etc&name=AGENT.md")).status == 404
         assert (await c.post("/agents/doc", json={"id": "..", "name": "NOTES.md", "text": "x"})).status == 404
         assert (await c.post("/agents/update", json={"id": "../x", "name": "y"})).status == 404
+        g = await (await c.get(f"/agents/goal?id={aid}")).json()
+        assert g["review"] is None and g["goal_template"].startswith("# 目标") and aid in g["plan_prompt"] or "PLAN.md" in g["plan_prompt"]
+        r = await c.post("/agents/doc", json={"id": aid, "name": "GOAL.md", "text": "# 目标\n\n月入 1 万"})
+        rid = (await r.json())["review_job"]
+        assert rid and (await (await c.get(f"/agents/goal?id={aid}")).json())["review"]["id"] == rid
+        assert (await c.post("/cron/jobs/run", json={"id": "nope"})).status == 404
+
+
+def test_goal_loop_review_job_and_run_log(env):
+    from vococo.cron import scheduler
+
+    a = agents.create("外贸")
+    assert agents.read_doc(a["id"], "AGENT.md").count("## 目标") == 0  # 目标挪到 GOAL.md
+    assert agents.ensure_goal_review(a["id"]) is None  # 没写目标不挂复盘
+    agents.write_doc(a["id"], "GOAL.md", agents.GOAL_TEMPLATE)
+    assert agents.ensure_goal_review(a["id"]) is None  # 只有模板也不算
+    agents.write_doc(a["id"], "GOAL.md", "# 目标\n\n每月 20 个询盘\n\n## 不做\n\n周末不发\n\n## 复盘记录\n\n- 09-01 旧记录\n")
+    job = agents.ensure_goal_review(a["id"])
+    assert job and agents.ensure_goal_review(a["id"])["id"] == job["id"]  # 只挂一条
+    saved = scheduler.load_jobs()[0]
+    assert saved["role"] == agents.REVIEW_ROLE and saved["agent_id"] == a["id"]
+    assert a["home"] in saved["prompt"] and saved["schedule"]["expr"] == agents.REVIEW_CRON
+    extra = agents.prompt_extra(agents.get(a["id"]))
+    assert "每月 20 个询盘" in extra and "周末不发" in extra and "还没拆" in extra
+    assert "旧记录" not in extra  # 复盘记录不常驻提示词
+    agents.record_run(a["id"], {"id": "j1", "name": "发信"}, "success", "发了 60 封")
+    logs = list((agents.home(a["id"]) / "runs").glob("*.md"))
+    assert len(logs) == 1 and "发了 60 封" in logs[0].read_text(encoding="utf-8")
+
+
+def test_writes_in_agent_home_auto_allowed(env, monkeypatch):
+    from vococo.tools import danger
+
+    h = projects.project_hash(str(env))
+    a = agents.by_project_hash(h)
+    # 测试目录在系统临时目录下,classify 会按草稿目录放行,这里直接测判定函数
+    monkeypatch.setattr(danger, "_current_session_key", lambda: f"web:p{h}:c1")
+    cwd = str(env)
+    assert danger._inside_agent_writable(str(agents.home(a["id"]) / "PLAN.md"), cwd)
+    assert not danger._inside_agent_writable(str(agents.root_dir() / "zzz" / "x.md"), cwd)
+    ext = env.parent / "ext2"
+    ext.mkdir()
+    agents.update(a["id"], links=[{"path": str(ext), "writable": True}])
+    assert danger._inside_agent_writable(str(ext / "a.txt"), cwd)
+    monkeypatch.setattr(danger, "_current_session_key", lambda: "web:abc")
+    assert not danger._inside_agent_writable(str(agents.home(a["id"]) / "PLAN.md"), cwd)

@@ -131,6 +131,7 @@ function applyConvs(d){
   const locals = S.convs.filter(c=>String(c.conv).startsWith("local-"));
   // 全部会话(含主会话)按最近活跃排序,最新的排最前面
   S.convs = [main, ...d.conversations, ...locals].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
+  if(typeof patchAgentTitles==="function") patchAgentTitles(S.convs);   // Agent 主会话显示 Agent 名字
   renderConvs();   // 会话刷新后同步标题栏
 }
 async function loadConvs(){
@@ -345,7 +346,7 @@ const CONV_SHOW_MAX = 7;   // 每个项目分组默认最多展示的会话数,�
                           //  终态任务只在语音界面顶部状态条满 10 分钟自动隐藏(见 taskBarDoneHidden),
                           //  侧边栏/最近列表全量可见;老任务时间久了自然沉底,不霸占首屏)
 const TAB_PAGE_SIZE = 20;   // 「置顶」「最近」Tab 分页粒度:默认 20 条,点「更多」每次再加 20 条
-const SIDE_TABS = [{key:"projects",label:"项目"},{key:"cron",label:"定时"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
+const SIDE_TABS = [{key:"agents",label:"Agent"},{key:"projects",label:"项目"},{key:"cron",label:"定时"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
 // SSE 已经在有数据变更时主动 push 刷新(见 stream.js loadConvs/loadCronSidebar 调用点),
 // 这里的点击刷新只是断线/后台挂起期间(移动端切后台网络被系统冻结)的兜底,不需要很灵敏,
 // 30s 内重复点击/来回切 Tab 不重新拉取,避免抖动请求。
@@ -357,6 +358,7 @@ const SIDE_TAB_REFRESHERS = {
   pinned: () => loadConvs(),
   recent: () => Promise.all([loadConvs(), loadVoiceSidebar()]),
   cron: () => Promise.all([loadCronSidebar(), loadSystemTasks()]),
+  agents: () => Promise.all([loadConvs(), loadAgents(), loadCronSidebar()]),
 };
 function refreshSideTabIfStale(key){
   const now=Date.now();
@@ -485,7 +487,8 @@ function renderConvs(){
   // 列表区:Tab 栏固定(#sideTabs),只有分组内容(#convBody)滚动;首次渲染会清掉骨架行
   const tabs=$("#sideTabs"); tabs.innerHTML=""; renderSideTabs(tabs);
   const box=$("#convBody"); box.innerHTML="";
-  if(S.sideTab==="cron") renderCronTab(box, awayFromChat);
+  if(S.sideTab==="agents" && typeof renderAgentsTab==="function") renderAgentsTab(box, awayFromChat);
+  else if(S.sideTab==="cron") renderCronTab(box, awayFromChat);
   else if(S.sideTab==="pinned") renderPinnedTab(box, awayFromChat);
   else if(S.sideTab==="recent") renderRecentTab(box, awayFromChat);
   else renderProjectsTab(box, awayFromChat);
@@ -495,6 +498,7 @@ function renderConvs(){
   // (侧栏那行没事,因为它是整个重建的;标题栏是这里单独同步的,漏了这几个来源就会显示旧名字)。
   const activeConv=findConv(S.conv);
   if(activeConv) $("#convTitle").textContent=activeConv.title||"新对话";
+  if(typeof syncAgentHeader==="function") syncAgentHeader();   // Agent 按钮/面板跟着当前会话走(agents.js)
 }
 
 // 渲染单个项目分组(手风琴头 + 展开后的会话行);置顶节与常规节共用同一份逻辑。
@@ -629,6 +633,7 @@ async function loadCronSidebar(){
   syncMoreHeader();   // 搜索先打开任务、列表后到时,收起普通会话的旧菜单
   refillCurrentMeta();   // 同 loadVoiceSidebar:数据到位后补一次模型回填
   if(typeof syncModelLock==="function") syncModelLock();   // job 列表刚到位/编辑后刷新 → 重新锁定模型显示
+  if(typeof refreshAgentPanelIf==="function") refreshAgentPanelIf(["tasks"]);
 }
 // 「定时」Tab 里的「本机系统任务」区块:本机 launchd/crontab 里真正带调度周期的任务
 // (只读,见 web.py /system/tasks、cron/system_tasks.py 模块头的识别标准),跟上面
@@ -805,8 +810,18 @@ async function pinConv(conv, pinned){
 }
 
 // 目录浏览器弹窗
-async function openProjModal(){ $("#projModal").hidden=false; await browseTo(""); }
-function closeProjModal(){ $("#projModal").hidden=true; }
+// 同一个弹窗也给 Agent 选目录用(openDirPicker):S.dirPick 有值时「确定」交给它,不建项目
+async function openProjModal(){
+  S.dirPick=null;
+  $("#pmTitle").textContent="新建项目 · 选一个文件夹当工作目录"; $("#pmCreate").textContent="✓ 选此目录为项目";
+  $("#projModal").hidden=false; await browseTo("");
+}
+async function openDirPicker(title, okText, onPick){
+  S.dirPick=onPick;
+  $("#pmTitle").textContent=title; $("#pmCreate").textContent=okText;
+  $("#projModal").hidden=false; await browseTo("");
+}
+function closeProjModal(){ $("#projModal").hidden=true; S.dirPick=null; }
 async function browseTo(dir){
   let d;
   try{ const r=await api("/browse"+(dir?("?dir="+encodeURIComponent(dir)):"")); d=await r.json(); }
@@ -829,7 +844,12 @@ async function createProject(path){
 $("#pmGo").onclick = ()=>browseTo($("#pmPath").value.trim());
 $("#pmPath").onkeydown = e=>{ if(e.key==="Enter") browseTo($("#pmPath").value.trim()); };
 $("#pmCancel").onclick = closeProjModal;
-$("#pmCreate").onclick = ()=>createProject($("#pmPath").value);
+$("#pmCreate").onclick = ()=>{
+  const path=$("#pmPath").value.trim();
+  if(!S.dirPick){ createProject(path); return; }
+  if(!path){ alert("请先选或输入一个目录"); return; }
+  const fn=S.dirPick; closeProjModal(); fn(path);
+};
 $("#projModal").onclick = e=>{ if(e.target===$("#projModal")) closeProjModal(); };
 
 // ── 定时任务详情/编辑弹窗(点即生效,不走审批——见 cron/scheduler.py 注释)───────
@@ -858,6 +878,7 @@ async function populateCronModelSelect(selected){
   sel.value=selected || (deepseek && deepseek[0]) || (_cronModelCache[0] && _cronModelCache[0][0]) || "";
 }
 function openCronModal(job){
+  S.cronAgentId=null;   // 从 Agent 面板新建时由 agents.js 随后填上,任务挂到该 Agent 名下
   $("#cronModal").hidden=false;
   showCronForm(job);
 }
@@ -930,6 +951,7 @@ async function saveCronJob(){
   const model=$("#cfModel").value;
   const body={name, prompt, schedule, cwd, model, mode, command, summarize_prompt};
   if(editId) body.id=editId;
+  else if(S.cronAgentId) body.agent_id=S.cronAgentId;
   let d;
   try{
     const r=await api(editId?"/cron/jobs/update":"/cron/jobs/create",

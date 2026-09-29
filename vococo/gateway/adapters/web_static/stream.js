@@ -610,6 +610,7 @@ function markLive(){
 }
 function handleEvent(e){
   if(e.type==="notices"){ if(typeof loadNotices==="function") loadNotices(); return; }  // 铃铛有变化
+  if(e.type==="agent_run"){ if(typeof onAgentRun==="function") onAgentRun(e); return; }  // 定时结果写进了某 Agent 主会话
   // 服务端进程重启标识:变了说明断线期间进程重启过,环形缓冲/_live 全清空了,
   // 靠事件补发这条路救不回来 —— 主动整体核对一次(侧栏 + 当前会话历史),别等用户自己发现内容旧了。
   // 关键:重启后服务端事件编号从 0 重新数,而 S.lastId 还停在旧进程的最大编号上,

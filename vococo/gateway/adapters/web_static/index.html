@@ -53,7 +53,7 @@ try{
   <div id="backdrop"></div>
   <div id="projModal" hidden>
     <div class="pmbox">
-      <div class="pmhead">新建项目 · 选一个文件夹当工作目录</div>
+      <div class="pmhead" id="pmTitle">新建项目 · 选一个文件夹当工作目录</div>
       <div class="pmpathrow">
         <input id="pmPath" placeholder="/Users/…(可点下方进入,也可直接粘贴路径)"/>
         <button class="pmgo" id="pmGo">前往</button>
@@ -62,6 +62,27 @@ try{
       <div class="pmfoot">
         <button id="pmCancel">取消</button>
         <button class="pmok" id="pmCreate">✓ 选此目录为项目</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新建 Agent(agents.js):名字 + 目录。默认在 data/agents/<id>/workspace 新建,也可绑定已有目录 -->
+  <div id="agentModal" hidden>
+    <div class="pmbox">
+      <div class="pmhead">新建 Agent</div>
+      <div class="agform">
+        <input id="agName" placeholder="名字,如「展会跟进」" maxlength="40"/>
+        <label class="agopt"><input type="radio" name="agDir" id="agDirNew" checked> 新建目录</label>
+        <label class="agopt"><input type="radio" name="agDir" id="agDirPick"> 用已有目录</label>
+        <div class="cfrow" id="agPathRow" hidden>
+          <input id="agPath" placeholder="/Users/…"/>
+          <button type="button" id="agBrowse">选择…</button>
+        </div>
+        <div class="cfhint">建好后在对话里告诉它职责和目标。</div>
+      </div>
+      <div class="pmfoot">
+        <button id="agCancel">取消</button>
+        <button class="pmok" id="agCreate">✓ 创建</button>
       </div>
     </div>
   </div>
@@ -296,6 +317,7 @@ try{
           </button>
           <div id="ctxPop" hidden></div>
           <button class="hmore" id="convCronEditBtn" type="button" title="编辑任务" hidden></button>
+          <button class="hmore" id="convAgentBtn" type="button" title="Agent" hidden></button>
           <button class="hmore" id="convDocsBtn" type="button" title="本会话文档"></button>
           <div id="convDocsPop" hidden></div>
           <button class="hmore" id="convCronMore" type="button" title="更多" hidden>⋯</button>
@@ -477,6 +499,14 @@ try{
     </header>
     <div id="dpBody"></div>
   </aside>
+  <!-- Agent 面板(agents.js):动态 / 定时 / 目标 / 设定 / 文件,标题栏 Agent 头像按钮开关 -->
+  <aside id="agentPanel" hidden>
+    <header id="apHead">
+      <div class="sidetabs" id="apTabs"></div>
+      <button type="button" id="apClose" title="关闭">✕</button>
+    </header>
+    <div id="apBody"></div>
+  </aside>
 </div>
 
 <!-- 工具卡片渲染:纯函数声明,不在自己的顶层调用任何东西,放在主脚本前不影响执行顺序
@@ -491,6 +521,7 @@ try{
 <script src="/stats.js"></script>
 <script src="/stream.js"></script>
 <script src="/notices.js"></script>
+<script src="/agents.js"></script>
 <script>
 "use strict";
 // ── 空状态欢迎屏(新对话默认落地页,含最近对话列表)──────────────────────────
