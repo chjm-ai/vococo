@@ -40,6 +40,7 @@ _DEFAULT_PRICES: dict[str, tuple[float, float, float, float]] = {
     "claude-opus-5": (5, 25, 6.25, 0.5),
     "claude-opus-4-8": (5, 25, 6.25, 0.5),
     "claude-opus-4-6": (5, 25, 6.25, 0.5),
+    "claude-sonnet-5-5": (2, 10, 2.5, 0.2),
     "claude-sonnet-5": (2, 10, 2.5, 0.2),
     "claude-fable-5-1": (10, 50, 12.5, 0.25),
     "claude-fable-5": (10, 50, 12.5, 1),
@@ -58,7 +59,7 @@ _DEFAULT_PRICES: dict[str, tuple[float, float, float, float]] = {
     "kimi-k3": (3, 15, 3, 0.3),
     "K2.7 Code": (0.95, 4, 0.95, 0.19),
 }
-_FALLBACK_PRICE = (2.0, 10.0, 2.5, 0.2)  # 认不出的模型按 sonnet 5 档估,别当准数
+_FALLBACK_PRICE = (2.0, 10.0, 2.5, 0.2)  # 认不出的模型按 sonnet 5.5 档估,别当准数
 _PRICES_PATH = config.DATA_DIR / "model_prices.json"
 
 _LOGS_DIR = Path(os.path.expanduser("~/.claude/projects"))

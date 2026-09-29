@@ -1441,7 +1441,7 @@ async def switch_model(args: dict) -> dict:
         listing = "、".join(f"{i+1}.{mid}" for i, (mid, _l, _g) in enumerate(hits))
         return _ok(
             f"「{text}」同时匹配到多个模型:{listing}。请向用户确认要切哪一个,"
-            "或让用户说得更具体(带上系列/版本,如「opus 4.6」「sonnet 5」)。"
+            "或让用户说得更具体(带上系列/版本,如「opus 4.6」「sonnet 5.5」)。"
         )
     mid, label, _g = hits[0]
     session_store.set_chosen_model(ctx.session_key, mid)

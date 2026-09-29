@@ -482,7 +482,7 @@ _CAND = [
     ("claude-fable-5-1", "Fable 5.1(订阅)", "anthropic"),
     ("claude-opus-5-5", "Opus 5.5(订阅)", "anthropic"),
     ("claude-opus-4-6", "Opus 4.6(订阅)", "anthropic"),
-    ("claude-sonnet-5", "Sonnet 5(订阅)", "anthropic"),
+    ("claude-sonnet-5-5", "Sonnet 5.5(订阅)", "anthropic"),
     ("claude-haiku-4-5", "Haiku 4.5(订阅)", "anthropic"),
     ("kimi-k3", "kimi-k3(API)", "api"),
     ("K2.7 Code", "K2.7 Code(API)", "api"),
@@ -511,6 +511,12 @@ def test_match_spoken_name_unique():
 def test_match_fable5_uses_fable51():
     hits = providers.match_models_by_text("fable 5", _CAND)
     assert [h[0] for h in hits] == ["claude-fable-5-1"]
+
+
+def test_match_sonnet_uses_sonnet55():
+    for text in ("sonnet", "sonnet 5.5", "Sonnet5.5"):
+        hits = providers.match_models_by_text(text, _CAND)
+        assert [h[0] for h in hits] == ["claude-sonnet-5-5"]
 
 
 def test_match_short_series_name_ambiguous_keeps_order():

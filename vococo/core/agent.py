@@ -258,7 +258,7 @@ class VideoAttachment:
 
 
 # 各模型上下文窗口(token)。前缀匹配,未知默认 200k。
-# Opus 4.x/Sonnet 5/Fable 5 官方已标配 1M input;Sonnet 4.6/Haiku 4.5 仍为 200k。
+# Opus 4.x/Sonnet 5/Sonnet 5.5/Fable 5 官方已标配 1M input;Sonnet 4.6/Haiku 4.5 仍为 200k。
 # kimi-k3(2026-07-16 发布)官方标称 1M context,故一并登记;其余第三方供应商模型走默认 200k。
 # deepseek-flash(V4.1 Flash,2026-09-10 发布)官方标称 1M 上下文标配,最大输出 384K;
 # 旧名 deepseek-v4 全系(V4-Pro/V4-Flash,2026-04-24)同为 1M,故一起登记以免降级。
@@ -273,6 +273,7 @@ _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-fable-5-1": 1_000_000,
     "claude-opus-5-5": 1_000_000,
     "claude-opus-4-6": 1_000_000,
+    "claude-sonnet-5-5": 1_000_000,
     "claude-sonnet-5": 1_000_000,
     "claude-haiku-4-5": 200_000,
     "deepseek-flash": 1_000_000,
