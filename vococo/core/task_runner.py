@@ -277,10 +277,13 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                 model = ds[0]
         # 追加的标记指令只喂给模型,不进 turns 表(session_key.start_turn 存的是
         # 上面干净的 prompt_text)——收尾时从回复里抠出来,见 _split_summary_tag。
+        from ..memory import agents
+
         async for ev in stream_turn(
             [], prompt_text + _SUMMARY_TAG_INSTRUCTION, model=model, cwd=effective_cwd,
             is_explicit_project=bool(row.get("cwd_explicit")), session_key=session_key,
             resume=resume_sid, max_turns=config.TASK_MAX_TURNS, token_budget=token_budget,
+            system_prompt_extra=agents.prompt_extra_for_session(session_key),
         ):
             if isinstance(ev, SessionStarted):
                 # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮

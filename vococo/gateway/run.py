@@ -373,6 +373,10 @@ class GatewayRunner:
             clarify.register_background_adapter(web_adapter)
             # 铃铛:通知一有变化就推一帧 SSE,前端据此刷新数字
             notices.set_listener(lambda: web_adapter._emit({"type": "notices"}))
+            # Agent:定时结果复制进主会话后推一帧,前端刷新该主会话 / 动态
+            from ..memory import agents
+
+            agents.set_listener(lambda conv: web_adapter._emit({"type": "agent_run", "conv": conv}))
         from . import watchdog
 
         watchdog.start_thread()  # 假死看门狗:循环卡死 → dump 堆栈 → 自杀交 run.sh 拉起

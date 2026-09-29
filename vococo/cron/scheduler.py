@@ -16,6 +16,7 @@ job 结构:
   "mode": "script",              # 可选,不填/其它值 = 默认 Agent 任务(下面走 task_runner)
   "command": "python xxx.py",    # mode=="script" 时必填:直接跑的 shell 命令
   "summarize_prompt": "...",     # mode=="script" 可选:命令输出有信号时才用它总结
+  "agent_id": "b4f34820e8",      # 可选:所属 Agent(memory/agents.py),结果另复制一份到它的主会话
 }
 
 2026-07-29 通用化:cron 触发的每一轮执行,不再自己起一个孤立的 run_turn(无历史、
@@ -135,6 +136,7 @@ def create_job(
     *, name: str, prompt: str, schedule: dict, target: dict | None = None,
     model: str | None = None, cwd: str | None = None, mode: str | None = None,
     command: str | None = None, summarize_prompt: str | None = None,
+    agent_id: str | None = None,
 ) -> dict:
     """新建一个 cron 任务并落盘,返回该任务。接受建议(accept_suggestion)或管理界面
     直接新建都走这一个入口,不搞第二套引擎。每个任务自带一条专属会话(conv),
@@ -165,6 +167,8 @@ def create_job(
     }
     if mode == "script":
         job.update(mode=mode, command=command, summarize_prompt=summarize_prompt)
+    if agent_id:
+        job["agent_id"] = agent_id
     jobs.append(job)
     save_jobs(jobs)
     return job
@@ -175,6 +179,7 @@ def update_job(
     cwd: str | None | object = _UNSET, model: str | None | object = _UNSET,
     mode: str | None | object = _UNSET,
     command: str | None | object = _UNSET, summarize_prompt: str | None | object = _UNSET,
+    agent_id: str | None | object = _UNSET,
 ) -> dict | None:
     """编辑已有任务的名称/指令/调度/推送目标/执行方式(管理界面的「编辑」用);不改
     id/conv/enabled/统计字段。调度变了就把 next_run_at 清掉,让下一跳按新调度重算。
@@ -204,6 +209,11 @@ def update_job(
         job["cwd"] = cwd
     if model is not _UNSET:
         job["model"] = model or None
+    if agent_id is not _UNSET:
+        if agent_id:
+            job["agent_id"] = agent_id
+        else:
+            job.pop("agent_id", None)
     if next_mode == "script":
         job.update(mode=next_mode, command=next_command, summarize_prompt=next_summarize)
     else:
@@ -346,6 +356,14 @@ async def _push_job_result(job_id: str, status: str, text: str, push: PushFn) ->
     tgt = job.get("target") or {}  # 额外目标(如 web),可选,不填就只有上面这条
     if tgt.get("platform") and tgt.get("chat_id") is not None:
         await push(tgt["platform"], tgt["chat_id"], msg)
+    # 挂在某个 Agent 名下:再复制一份到它的主会话(只落库 + 刷新,不再发一次系统推送)
+    if job.get("agent_id"):
+        from ..memory import agents
+
+        try:
+            agents.record_run(job["agent_id"], job, status, text)
+        except Exception as exc:  # noqa: BLE001 —— 复制失败不影响任务本身
+            print(f"[cron] 结果复制到 Agent 主会话失败:{exc}", flush=True)
     return job
 
 

@@ -1256,6 +1256,7 @@ class WebAdapter:
                 mode=j.get("mode") or "agent",
                 command=j.get("command"),
                 summarize_prompt=j.get("summarize_prompt"),
+                agent_id=j.get("agent_id"),
             )
             rows.append(row)
         return _compressed_json({"jobs": rows})
@@ -1289,6 +1290,7 @@ class WebAdapter:
             job = scheduler.create_job(
                 name=name, prompt=prompt, schedule=schedule, target=target, cwd=cwd,
                 model=model, mode=mode, command=command, summarize_prompt=summarize_prompt,
+                agent_id=(body.get("agent_id") or None),
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
@@ -1318,7 +1320,7 @@ class WebAdapter:
             if cwd is not None and not isinstance(cwd, str):
                 return web.json_response({"error": "cwd 必须是字符串"}, status=400)
             kwargs["cwd"] = cwd
-        for field in ("model", "mode", "command", "summarize_prompt"):
+        for field in ("model", "mode", "command", "summarize_prompt", "agent_id"):
             if field in body:
                 kwargs[field] = body[field]
         try:
@@ -2930,6 +2932,92 @@ class WebAdapter:
             return web.json_response({"error": "规则不存在"}, status=404)
         return web.json_response({"ok": True})
 
+    # ── Agent(见 memory/agents.py):项目的升级版,和「项目」「定时」tab 并存 ─────────────
+    @_authed
+    async def _handle_agents(self, request: web.Request) -> web.Response:
+        from ...cron import scheduler
+        from ...memory import agents
+
+        jobs = scheduler.load_jobs()
+        items = []
+        for a in agents.list_agents():
+            a["task_count"] = sum(1 for j in jobs if j.get("agent_id") == a["id"])
+            items.append(a)
+        return _compressed_json({"agents": items})
+
+    @_authed
+    @_json_body
+    async def _handle_agent_create(self, request: web.Request, body: dict) -> web.Response:
+        from ...memory import agents
+
+        body = body or {}
+        try:
+            a = agents.create(str(body.get("name") or ""), (body.get("path") or "").strip() or None)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"agent": a})
+
+    @_authed
+    @_json_body
+    async def _handle_agent_update(self, request: web.Request, body: dict) -> web.Response:
+        from ...memory import agents
+
+        body = body or {}
+        try:
+            a = agents.update(
+                str(body.get("id") or ""),
+                name=body.get("name"), avatar=body.get("avatar"), links=body.get("links"),
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        if a is None:
+            return web.json_response({"error": "Agent 不存在"}, status=404)
+        return web.json_response({"agent": a})
+
+    @_authed
+    async def _handle_agent_doc(self, request: web.Request) -> web.Response:
+        from ...memory import agents
+
+        aid, name = request.query.get("id", ""), request.query.get("name", "AGENT.md")
+        if agents.get(aid) is None:
+            return web.json_response({"error": "Agent 不存在"}, status=404)
+        try:
+            return web.json_response({"name": name, "text": agents.read_doc(aid, name)})
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+    @_authed
+    @_json_body
+    async def _handle_agent_doc_save(self, request: web.Request, body: dict) -> web.Response:
+        from ...memory import agents
+
+        body = body or {}
+        aid = str(body.get("id") or "")
+        if agents.get(aid) is None:
+            return web.json_response({"error": "Agent 不存在"}, status=404)
+        try:
+            agents.write_doc(aid, str(body.get("name") or ""), str(body.get("text") or ""))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"ok": True})
+
+    @_authed
+    async def _handle_agent_runs(self, request: web.Request) -> web.Response:
+        from ...memory import agents
+
+        return _compressed_json({"runs": agents.recent_runs(
+            request.query.get("id", ""), job_id=request.query.get("job") or None,
+        )})
+
+    @_authed
+    async def _handle_agent_files(self, request: web.Request) -> web.Response:
+        from ...memory import agents
+
+        data = agents.list_files(request.query.get("id", ""))
+        if not data:
+            return web.json_response({"error": "Agent 不存在"}, status=404)
+        return _compressed_json(data)
+
     # ── 铃铛:待处理的提问/审批(见 memory/notices.py、gateway/notice_actions.py)───────
     @_authed
     async def _handle_notices(self, request: web.Request) -> web.Response:
@@ -3081,6 +3169,13 @@ class WebAdapter:
                 web.post("/cron/jobs/rotate-secret", self._handle_cron_rotate_secret),
                 web.get("/security", self._handle_security),
                 web.post("/security/rule/delete", self._handle_security_rule_delete),
+                web.get("/agents", self._handle_agents),
+                web.post("/agents/create", self._handle_agent_create),
+                web.post("/agents/update", self._handle_agent_update),
+                web.get("/agents/doc", self._handle_agent_doc),
+                web.post("/agents/doc", self._handle_agent_doc_save),
+                web.get("/agents/runs", self._handle_agent_runs),
+                web.get("/agents/files", self._handle_agent_files),
                 web.get("/notices", self._handle_notices),
                 web.post("/notices/act", self._handle_notice_act),
                 web.post("/notices/quick", self._handle_notice_quick),

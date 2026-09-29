@@ -270,6 +270,10 @@ async def converse(
                 )
     # 上一轮的 SDK 会话 id:非空则本轮用 resume 让 SDK 重放真·多轮历史,不再拼历史大文本
     resume_sid = session_store.get_sdk_session_id(session_key)
+    # 会话属于某个 Agent(项目会话 / 挂了 agent_id 的定时任务)→ 把它的 AGENT.md / NOTES.md 带进提示词
+    from ..memory import agents
+
+    agent_extra = agents.prompt_extra_for_session(session_key)
     # 运行中的 SDK transcript 不会在发送前自动压缩。若上轮已测得上下文逼近当前
     # 模型的真实窗口，先发 SDK 内置 /compact，再发送用户本次原话；否则这次请求会
     # 被上游直接 400 拒绝，用户只能反复点「继续」。
@@ -285,7 +289,7 @@ async def converse(
         async for ev in stream_turn(
             [], "", model=model, cwd=cwd, is_explicit_project=is_explicit_project,
             resume=resume_sid, session_key=session_key,
-            compact_only=True,
+            compact_only=True, system_prompt_extra=agent_extra,
         ):
             if isinstance(ev, Compacted):
                 await sink.compacted(ev.trigger or "preflight")
@@ -304,7 +308,7 @@ async def converse(
             history, user_text, model=model, images=images, files=files, cwd=cwd,
             is_explicit_project=is_explicit_project, resume=resume_sid,
             session_key=session_key,  # 传给保温池:同会话下一轮复用活 client,零冷启动
-            compact_only=compact,
+            compact_only=compact, system_prompt_extra=agent_extra,
         ):
             if isinstance(ev, TextDelta):
                 # 输出侧敏感内容过滤(安全评估 P0-2)第一层:对单个 delta 扫一遍。
