@@ -186,3 +186,12 @@ def test_writes_in_agent_home_auto_allowed(env, monkeypatch):
     assert danger._inside_agent_writable(str(ext / "a.txt"), cwd)
     monkeypatch.setattr(danger, "_current_session_key", lambda: "web:abc")
     assert not danger._inside_agent_writable(str(agents.home(a["id"]) / "PLAN.md"), cwd)
+
+
+def test_brief_for_welcome_screen(env):
+    a = agents.create("展会")
+    assert agents.brief(a["id"]) == {"summary": "", "goal": "", "has_plan": False}
+    agents.write_doc(a["id"], "AGENT.md", "# 展会\n\n## 职责与人格\n\n跟进展会客户,说话直接。\n\n## 技能范围\n\nemail")
+    agents.write_doc(a["id"], "GOAL.md", "# 目标\n\n10 月拿 30 张名片\n\n## 成功标准\n\n- x\n")
+    agents.write_doc(a["id"], "PLAN.md", "# 计划\n\n- [ ] 做名片\n")
+    assert agents.brief(a["id"]) == {"summary": "跟进展会客户,说话直接。", "goal": "10 月拿 30 张名片", "has_plan": True}

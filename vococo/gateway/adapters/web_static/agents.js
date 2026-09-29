@@ -46,6 +46,7 @@ async function loadAgents(){
   catch(e){}   // 失败保留上次成功列表
   patchAgentTitles(S.convs);
   renderConvs(); syncAgentHeader();
+  if(typeof updateEmpty==="function" && $("#empty").style.display==="flex") updateEmpty();   // 欢迎屏可能先按默认样子画了
 }
 function agentById(id){ return S.agents.find(a=>a.id===id) || null; }
 function agentByMainConv(conv){ return S.agents.find(a=>a.main_conv===conv) || null; }
@@ -456,6 +457,41 @@ function shortPath(p){ return String(p||"").replace(/^\/Users\/[^/]+/, "~"); }
 async function saveLinks(a, links){
   try{ await agentPost("/agents/update",{id:a.id, links}); }catch(e){ alert(e.message); return; }
   await loadAgents(); renderAgentPanel();
+}
+
+// ── 空会话欢迎屏:当前会话属于某个 Agent 时换成它自己的 ─────────────────────────
+// 头像 + 名字 + 职责一句话 + 目标一句话,快捷操作按它的状态给(没目标→设目标;没计划→拆计划;有计划→看进展)
+function openAgentPanelTab(tab){
+  S.agentPanelOn=true; S.agentPanelTab=tab; saveAgentPanelPref();
+  if(!$("#docPreview").hidden && typeof closeDocPreview==="function") closeDocPreview();
+  $("#agentPanel").dataset.agent=""; syncAgentHeader();
+}
+function renderAgentEmpty(a){
+  const box=$("#agentEmpty"); box.innerHTML="";
+  const logo=el("div","elogo"); logo.innerHTML=avatarSvg(a.avatar);
+  const h=el("h2"); h.textContent=a.name;
+  const p=el("p"); p.textContent=a.summary || "还没写职责,直接在这里告诉它要做什么";
+  box.append(logo, h, p);
+  if(a.goal){
+    const g=el("button","aggoal"); g.type="button"; g.title="看目标和计划";
+    const lb=el("span","aggl"); lb.textContent="目标";
+    const t=el("span","aggt"); t.textContent=a.goal;
+    g.append(lb, t); g.onclick=()=>openAgentPanelTab("goal");
+    box.append(g);
+  }
+  const sugs=el("div","sugs");
+  const add=(label, fn)=>{ const b=el("button","sug"); b.type="button"; b.textContent=label; b.onclick=fn; sugs.append(b); };
+  if(S.conv!==a.main_conv) add("进入主会话", ()=>openAgentMain(a));
+  if(!a.goal) add("设定目标", ()=>openAgentPanelTab("goal"));
+  else if(!a.has_plan) add("拆解计划", async()=>{
+    let g; try{ g=await (await api("/agents/goal?id="+encodeURIComponent(a.id))).json(); }catch(e){ return; }
+    openAgentMain(a); send(g.plan_prompt);
+  });
+  else add("看看进展", ()=>send("对照目标和计划,说说现在进展到哪、卡在哪、下一步做什么。"));
+  if(a.task_count) add("定时任务 · "+a.task_count, ()=>openAgentPanelTab("tasks"));
+  else add("新建定时任务", ()=>{ openCronModal(null); S.cronAgentId=a.id; if(a.workdir) $("#cfCwd").value=a.workdir; });
+  add("动态", ()=>openAgentPanelTab("feed"));
+  box.append(sugs);
 }
 
 // ── 与其它模块的衔接 ─────────────────────────────────────────────────────

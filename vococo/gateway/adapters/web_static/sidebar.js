@@ -26,7 +26,9 @@ async function fetchGitStatus(conv){
 function applyGitBtn(d){
   const btn=$("#convGit"), pbtn=$("#convProjName");
   if(!d || !d.is_project){ btn.hidden=true; pbtn.hidden=true; return; }
-  pbtn.textContent=d.name; pbtn.hidden=false;
+  // 项目就是 Agent:pill 显示 Agent 名字(文件夹名常是 workspace 这种);Agent 主会话标题已是名字,不重复
+  const ag=typeof agentForConv==="function" ? agentForConv(S.conv) : null;
+  pbtn.textContent=ag ? ag.name : d.name; pbtn.hidden=!!(ag && ag.main_conv===S.conv);
   if(!d.is_repo){ btn.hidden=false; btn.textContent="⎇ 非 git 仓库"; return; }
   btn.hidden=false; btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0));
 }
@@ -196,6 +198,8 @@ function loadExpanded(){ try{ S.expanded=new Set(JSON.parse(localStorage.getItem
 
 function projName(hash){
   if(!hash) return "默认项目";
+  const ag=(S.agents||[]).find(a=>a.project_hash===hash);   // 项目已是 Agent → 用 Agent 名字
+  if(ag) return ag.name;
   const p=(S.projects||[]).find(x=>x.hash===hash);
   return p ? p.name : "默认项目";
 }

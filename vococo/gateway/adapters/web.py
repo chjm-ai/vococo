@@ -2956,6 +2956,7 @@ class WebAdapter:
         items = []
         for a in agents.list_agents():
             a["task_count"] = sum(1 for j in jobs if j.get("agent_id") == a["id"])
+            a.update(agents.brief(a["id"]))
             items.append(a)
         return _compressed_json({"agents": items})
 
