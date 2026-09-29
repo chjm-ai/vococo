@@ -1629,6 +1629,18 @@
   .apfname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   @media(hover:hover){ .apfile:not(.dir):hover{background:var(--panel2);color:var(--text)} }
 
+  /* Agent 欢迎屏:复用 #empty 的 elogo/h2/p/sugs,默认块(.dflt)在 Agent 模式下隐藏 */
+  #agentEmpty{display:none}
+  #empty.agent #agentEmpty{display:block}
+  #empty.agent .dflt{display:none}
+  #agentEmpty .elogo{display:flex;align-items:center;justify-content:center}
+  #agentEmpty .elogo .agav{width:56px;height:52px}
+  #agentEmpty .aggoal{display:flex;align-items:baseline;gap:var(--sp-3);max-width:min(560px,100%);margin:-8px auto 20px;
+    padding:var(--sp-3) var(--sp-4);border-radius:var(--r-lg);background:var(--panel);color:var(--text);
+    font-size:var(--fs-base);text-align:left;cursor:pointer;transition:background var(--t-fast)}
+  @media(hover:hover){ #agentEmpty .aggoal:hover{background:var(--panel2)} }
+  #agentEmpty .aggl{flex-shrink:0;font-size:var(--fs-sm);font-weight:600;color:var(--accent)}
+  #agentEmpty .aggt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #agentModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:var(--ov-3)}
   #agentModal[hidden]{display:none}
   #agentModal .pmbox{width:min(440px,92vw);display:flex;flex-direction:column;
