@@ -1,4 +1,5 @@
 """统一对话入口的静态契约测试。"""
+import re
 from pathlib import Path
 
 
@@ -150,3 +151,25 @@ def test_unarchive_search_result_refreshes_active_sidebar():
     archive_fn = html[html.index("async function toggleArchive(conv){") : html.index("function dirtyBits(")]
 
     assert "if(!next) await loadConvs();" in archive_fn
+
+
+def _declarations(styles: str, selector: str) -> str:
+    """选择器列表里含 selector 的所有规则,把声明拼到一起(只做包含判断,不管层叠)。"""
+    pattern = r"[^{}]*" + re.escape(selector) + r"[^{}]*\{([^}]*)\}"
+    return ";".join(m.group(1) for m in re.finditer(pattern, styles))
+
+
+def test_agent_row_status_dots_have_size_and_color():
+    """Agent 主会话回复中=橙色闪烁点(livedot),完成未读=灰点(reviewdot)。
+
+    这两个点的样式曾只写给 .conv 行,Agent 行(.projgrp.agrow)里的点宽高为 0、透明,
+    JS 明明渲染了却什么都看不见。"""
+    styles = STATIC_STYLES.read_text(encoding="utf-8")
+
+    live = _declarations(styles, ".projgrp.agrow .livedot")
+    assert "width:7px" in live and "height:7px" in live
+    assert "background:var(--accent)" in live and "animation:livepulse" in live
+
+    done = _declarations(styles, ".projgrp.agrow .reviewdot")
+    assert "width:7px" in done and "height:7px" in done
+    assert "background:var(--dim2)" in done
