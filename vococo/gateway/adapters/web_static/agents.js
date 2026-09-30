@@ -2,7 +2,7 @@
 // 2026-09-29 Agent(项目升级版,后端见 memory/agents.py):侧栏「Agent」Tab + 右侧 Agent 面板。
 // 与「项目」「定时」Tab 并存,方案定了再下架那两个。
 // - 侧栏:每个 Agent 一行(像素头像 + 名称 + 折线箭头),点行 = 打开它的主会话(定时结果都推到这里),
-//   箭头展开它名下的独立会话,hover「＋」在它名下开新会话
+//   箭头展开它名下的独立会话,hover「＋」在它名下开新会话;状态不用圆点,直接做在头像动效上(见 agentState)
 // - 右侧面板(标题栏按钮开关):动态 / 定时 / 目标 / 设定 / 文件
 
 // ── 像素头像:风格取自 logo「小幽」——crispEdges 方块、深色眼睛、左上一格高光 ──────────
@@ -74,15 +74,28 @@ async function agentPost(path, body){
 
 // ── 侧栏「Agent」Tab ────────────────────────────────────────────────────
 // 子会话 = 该 Agent 名下的独立会话(不含主会话,主会话点 Agent 行进);通用 Agent 收不属于任何项目的会话
+function agentOwnsConv(a, conv){
+  if(conv==="main" || conv===a.main_conv) return false;
+  const h=convProject(conv);
+  return a.id==="general" ? h===null : h===a.project_hash;
+}
 function agentConvs(a){
-  const isGeneral=a.id==="general";
   return S.convs.filter(c=>{
-    if(c.conv==="main" || c.conv===a.main_conv) return false;
+    if(!agentOwnsConv(a, c.conv)) return false;
     if(S.convFilter==="archived" && !c.archived) return false;
     if(S.convFilter==="active" && c.archived) return false;
-    const h=convProject(c.conv);
-    return isGeneral ? h===null : h===a.project_hash;
+    return true;
   });
+}
+// Agent 头像的动效状态(样式见 styles.css 的 .projgrp.agrow[data-state]):
+//   working = 主会话或名下任一会话在回复(不管是收起还是展开、归档筛选怎么选,都照实反映)
+//   done    = 都不忙了,但主会话或名下会话还有没看过的完成结果(打开那个会话后消失)
+// 一份清单管两个状态:主会话和子会话走同一套判断,免得"子会话在跑但主会话不亮"这种半截状态。
+function agentState(a){
+  const mine=[S.convs.find(c=>c.conv===a.main_conv)||{conv:a.main_conv}]
+    .concat(S.convs.filter(c=>agentOwnsConv(a, c.conv)));
+  if(mine.some(c=>S.live[c.conv])) return "working";
+  return mine.some(c=>c.pending_review || S.pendingReview[c.conv]) ? "done" : "";
 }
 function agentKey(a){ return "agent:"+a.id; }
 function renderAgentsTab(box, inCall){
@@ -93,13 +106,11 @@ function renderAgentsTab(box, inCall){
 function renderAgentGroup(box, a, inCall){
   const convs=agentConvs(a);
   const k=agentKey(a), open=S.expanded.has(k);
-  const main=S.convs.find(c=>c.conv===a.main_conv);
   const h=el("div","projgrp agrow"+(!inCall && S.conv===a.main_conv?" active":""));
+  const st=agentState(a);
+  if(st){ h.dataset.state=st; h.title=st==="working"?"AI 正在回复中":"有新的完成结果"; }
   h.innerHTML=avatarSvg(a.avatar);
   const nm=el("span","pgname"); nm.textContent=a.name; h.append(nm);
-  // 状态点跟在名字后面:插在头像和名字之间会把名字往右顶,这一行就和其他行对不齐了
-  if(S.live[a.main_conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; h.append(dot); }
-  else if((main && main.pending_review) || S.pendingReview[a.main_conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; h.append(dot); }
   const caret=el("span","pgcaret"+(convs.length?"":" agnone"));
   caret.append(el("span","chev"+(open?" down":"")));
   caret.title=open?"收起会话":"展开会话";
