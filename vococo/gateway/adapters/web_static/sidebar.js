@@ -188,9 +188,6 @@ function pinnedConvs(inCall){
   const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
   return [...convItems, ...taskItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
 }
-function convsInGroup(hash){
-  return S.convs.filter(c => c.conv!=="main" && !c.pinned && convProject(c.conv)===hash);
-}
 // 分组的存储键:默认项目用固定串,项目用其 hash
 function grpKey(hash){ return hash===null ? "__default__" : hash; }
 function saveExpanded(){ try{ localStorage.setItem("vococo_expanded", JSON.stringify([...S.expanded])); }catch(e){} }
@@ -237,9 +234,6 @@ $("#projSelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#projSelPop");
   if(p.hidden){ renderProjSelPop(); p.hidden=false; } else p.hidden=true; };
 document.addEventListener("click", e=>{ const b=$("#projSel"); if(b && !b.contains(e.target)) $("#projSelPop").hidden=true; });
 
-function convsInGroup(hash){
-  return S.convs.filter(c => c.pinned ? hash===null : convProject(c.conv)===hash);
-}
 // 语音通话主行(通话入口),与主会话一起置顶在根目录最前(不属于任何分组,数据来自 /voice/sidebar)。
 // 通话视图开着时不看 S.conv(那还停在离开前的聊天会话上没变),由调用方传进来的 inCall
 // (= #callView 是否显示)决定「语音通话」这一行是否高亮成"你现在就在这儿"。
@@ -350,19 +344,18 @@ const CONV_SHOW_MAX = 7;   // 每个项目分组默认最多展示的会话数,�
                           //  终态任务只在语音界面顶部状态条满 10 分钟自动隐藏(见 taskBarDoneHidden),
                           //  侧边栏/最近列表全量可见;老任务时间久了自然沉底,不霸占首屏)
 const TAB_PAGE_SIZE = 20;   // 「置顶」「最近」Tab 分页粒度:默认 20 条,点「更多」每次再加 20 条
-const SIDE_TABS = [{key:"agents",label:"Agent"},{key:"projects",label:"项目"},{key:"cron",label:"定时"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
+const SIDE_TABS = [{key:"agents",label:"Agent"},{key:"cron",label:"定时"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
 // SSE 已经在有数据变更时主动 push 刷新(见 stream.js loadConvs/loadCronSidebar 调用点),
 // 这里的点击刷新只是断线/后台挂起期间(移动端切后台网络被系统冻结)的兜底,不需要很灵敏,
 // 30s 内重复点击/来回切 Tab 不重新拉取,避免抖动请求。
 const SIDE_TAB_REFRESH_MS = 30000;
-// 各 Tab 展示的数据分别来自哪份接口:项目/置顶两个 Tab 都是从 S.convs 里筛的,刷新即 loadConvs();
+// 各 Tab 展示的数据分别来自哪份接口:置顶是从 S.convs 里筛的,刷新即 loadConvs();
 // 「最近」还混了语音任务,一并刷 loadVoiceSidebar();「定时」是 vococo 任务 + 本机系统任务两块。
 const SIDE_TAB_REFRESHERS = {
-  projects: () => Promise.all([loadConvs(), loadProjects()]).then(renderConvs),
   pinned: () => loadConvs(),
   recent: () => Promise.all([loadConvs(), loadVoiceSidebar()]),
   cron: () => Promise.all([loadCronSidebar(), loadSystemTasks()]),
-  agents: () => Promise.all([loadConvs(), loadAgents(), loadCronSidebar()]),
+  agents: () => Promise.all([loadConvs(), loadAgents(), loadCronSidebar(), loadVoiceSidebar()]),
 };
 function refreshSideTabIfStale(key){
   const now=Date.now();
@@ -371,7 +364,7 @@ function refreshSideTabIfStale(key){
   S.tabLastFetch[key]=now;
   SIDE_TAB_REFRESHERS[key]?.();
 }
-// 侧栏第二层 Tab:项目/定时/置顶/最近,切 Tab 记住选择,不影响下方各分组自己的展开态
+// 侧栏第二层 Tab:Agent/定时/置顶/最近,切 Tab 记住选择,不影响下方各分组自己的展开态
 function renderSideTabs(box){
   const bar=el("div","sidetabs");
   for(const t of SIDE_TABS){
@@ -471,11 +464,6 @@ function renderCronTab(box, inCall){
   }
 }
 // 「项目」Tab:手风琴——默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
-function renderProjectsTab(box, inCall){
-  const groups=[{hash:null,name:"默认项目"}].concat(S.projects.map(p=>({hash:p.hash,name:p.name})));
-  for(const g of groups) renderProjGroup(box, g, inCall);
-  const addp=el("div","projgrp projadd"); addp.textContent="＋ 新建项目…"; addp.onclick=openProjModal; box.append(addp);
-}
 function renderConvs(){
   const inCall = !$("#callView").hidden;  // 统一对话视图打开时,侧栏只高亮「对话」入口
   // 工作台/通话打开期间 S.conv 还停在离开前那个会话上没变,普通会话/任务/定时行不能再按
@@ -491,11 +479,10 @@ function renderConvs(){
   // 列表区:Tab 栏固定(#sideTabs),只有分组内容(#convBody)滚动;首次渲染会清掉骨架行
   const tabs=$("#sideTabs"); tabs.innerHTML=""; renderSideTabs(tabs);
   const box=$("#convBody"); box.innerHTML="";
-  if(S.sideTab==="agents" && typeof renderAgentsTab==="function") renderAgentsTab(box, awayFromChat);
-  else if(S.sideTab==="cron") renderCronTab(box, awayFromChat);
+  if(S.sideTab==="cron") renderCronTab(box, awayFromChat);
   else if(S.sideTab==="pinned") renderPinnedTab(box, awayFromChat);
   else if(S.sideTab==="recent") renderRecentTab(box, awayFromChat);
-  else renderProjectsTab(box, awayFromChat);
+  else renderAgentsTab(box, awayFromChat);   // 「项目」Tab 2026-09-30 下架,项目都成了 Agent
   // 同步标题栏:loadConvs/loadVoiceSidebar/loadCronSidebar 刷新各自列表后都会调 renderConvs,
   // 标题(含改名)可能已更新。语音任务/定时任务会话不在 S.convs 里(那是 /conversations 拉的),
   // 查找逻辑跟 openConv 保持一致——否则在任务自己的会话里改名,顶部标题栏不会跟着刷新
@@ -503,57 +490,6 @@ function renderConvs(){
   const activeConv=findConv(S.conv);
   if(activeConv) $("#convTitle").textContent=activeConv.title||"新对话";
   if(typeof syncAgentHeader==="function") syncAgentHeader();   // Agent 按钮/面板跟着当前会话走(agents.js)
-}
-
-// 渲染单个项目分组(手风琴头 + 展开后的会话行);置顶节与常规节共用同一份逻辑。
-function renderProjGroup(box, g, inCall){
-  const convs=convsInGroup(g.hash);
-  const open=S.expanded.has(grpKey(g.hash));
-  const h=el("div","projgrp");
-  const nm=el("span","pgname"); nm.textContent=g.name; h.append(nm);
-  const caret=el("span","pgcaret chev"+(open?" down":"")); h.append(caret);   // 折线箭头,展开时旋转朝下
-  if(g.hash!==null){
-    const more=el("button","pgmore"); more.textContent="⋯"; more.title="更多";
-    more.onclick=ev=>{ ev.stopPropagation(); openProjMenu(more, g.hash); }; h.append(more);
-  }
-  const add=el("button","pgadd"); add.textContent="＋"; add.title="在此项目下新建会话";
-  add.onclick=ev=>{ ev.stopPropagation(); newChatIn(g.hash); }; h.append(add);
-  if(g.hash!==null){
-    bindProjDrag(h, g.hash);   // 默认项目/末尾「新建项目」不可拖,仅真实项目分组可排序
-  }
-  h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } toggleGroup(g.hash); };  // 拖拽落地那一下别顺带触发展开/收起
-  box.append(h);
-  if(!open) return;
-  let rows;
-  if(g.hash===null){
-    // 默认项目:语音后台任务不区分项目,统一落这里,跟普通会话按最后活跃时间混排
-    // 再截前 CONV_SHOW_MAX 条——避免"语音任务永远排最前"把新会话挤出首屏
-    // (2026-07-22 反馈:几十条老语音任务霸占默认项目前 5 条,当天新会话反而看不见)。
-    const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
-    // 已置顶的语音任务归"置顶"分组,这里要滤掉,不然置顶了还继续在默认项目里重复出现
-    const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
-    const convItems = convs.filter(c=>!c.pinned && passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
-    rows = [...taskItems, ...convItems].sort((a,b)=>b.ts-a.ts).map(it=>it.build()).filter(Boolean);
-  } else {
-    rows=[];
-    for(const c of convs){
-      if(c.pinned) continue;
-      const arch=!!c.archived;
-      if(S.convFilter==="archived"&&!arch)continue;
-      if(S.convFilter==="active"&&arch)continue;
-      rows.push(buildConvRow(c, inCall));
-    }
-  }
-  // 每组默认最多展示 CONV_SHOW_MAX 条,余下折进「展开更多」(点开后本次会话内保持展开)
-  const shown = S.moreShown.has(grpKey(g.hash)) ? rows : rows.slice(0, CONV_SHOW_MAX);
-  for(const r of shown) box.append(r);
-  if(rows.length > shown.length){
-    const k=grpKey(g.hash);
-    const more=el("div","conv ingroup convmore");
-    const mct=el("div","ct"); mct.textContent="展开更多"; more.append(mct);
-    more.onclick=()=>{ S.moreShown.add(k); renderConvs(); };
-    box.append(more);
-  }
 }
 
 // ── 项目 ─────────────────────────────────────────────────────────────────
@@ -762,19 +698,14 @@ function bindProjDrag(h, hash){
   };
 }
 function reorderProject(srcHash, targetHash){
-  const arr=S.projects;
-  const si=arr.findIndex(p=>p.hash===srcHash), ti=arr.findIndex(p=>p.hash===targetHash);
+  // 拖的是 Agent 行,顺序存回项目表(Agent 列表按项目顺序排)
+  const arr=S.agents;
+  const si=arr.findIndex(a=>a.project_hash===srcHash), ti=arr.findIndex(a=>a.project_hash===targetHash);
   if(si<0 || ti<0) return;
   const [item]=arr.splice(si,1); arr.splice(ti,0,item);
   renderConvs();
   api("/projects/reorder",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({order:arr.map(p=>p.hash)})}).catch(()=>{});
-}
-function toggleGroup(hash){
-  const k=grpKey(hash);
-  if(S.expanded.has(k)){ S.expanded.delete(k); S.moreShown.delete(k); }  // 折叠时清掉「展开更多」态,下次打开回到默认 5 条
-  else S.expanded.add(k);
-  saveExpanded(); renderConvs();
+    body:JSON.stringify({order:arr.filter(a=>a.project_hash).map(a=>a.project_hash)})}).catch(()=>{});
 }
 // 在指定项目下开新会话(顶部 ＋新对话 用当前活跃项目;分组 ＋ 用该分组)。
 // focus=false 用于 APP 启动时静默落地到一个新对话——不弹键盘打扰用户。
@@ -814,12 +745,7 @@ async function pinConv(conv, pinned){
 }
 
 // 目录浏览器弹窗
-// 同一个弹窗也给 Agent 选目录用(openDirPicker):S.dirPick 有值时「确定」交给它,不建项目
-async function openProjModal(){
-  S.dirPick=null;
-  $("#pmTitle").textContent="新建项目 · 选一个文件夹当工作目录"; $("#pmCreate").textContent="✓ 选此目录为项目";
-  $("#projModal").hidden=false; await browseTo("");
-}
+// 只给 Agent 选目录用(openDirPicker):「确定」把路径交给 S.dirPick
 async function openDirPicker(title, okText, onPick){
   S.dirPick=onPick;
   $("#pmTitle").textContent=title; $("#pmCreate").textContent=okText;
@@ -836,21 +762,12 @@ async function browseTo(dir){
   for(const e of d.entries){ const row=el("div","pmrow"); row.innerHTML=ic("folder")+" "+esc(e.name); row.onclick=()=>browseTo(e.path); box.append(row); }
   if(!d.entries.length){ const empty=el("div","pmrow pmup"); empty.textContent="(无子文件夹)"; box.append(empty); }
 }
-async function createProject(path){
-  path=(path||"").trim(); if(!path){ alert("请先选或输入一个目录"); return; }
-  try{
-    const r=await api("/projects/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path})});
-    const d=await r.json();
-    if(d.error){ alert(d.error); return; }
-    closeProjModal(); await loadProjects(); newChatIn(d.project.hash);  // 建好即在其下开一个新会话
-  }catch(e){ alert("建项目失败"); }
-}
 $("#pmGo").onclick = ()=>browseTo($("#pmPath").value.trim());
 $("#pmPath").onkeydown = e=>{ if(e.key==="Enter") browseTo($("#pmPath").value.trim()); };
 $("#pmCancel").onclick = closeProjModal;
 $("#pmCreate").onclick = ()=>{
   const path=$("#pmPath").value.trim();
-  if(!S.dirPick){ createProject(path); return; }
+  if(!S.dirPick){ closeProjModal(); return; }
   if(!path){ alert("请先选或输入一个目录"); return; }
   const fn=S.dirPick; closeProjModal(); fn(path);
 };

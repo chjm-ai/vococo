@@ -1619,6 +1619,22 @@
   .apwrite{display:flex;align-items:center;gap:var(--sp-1);font-size:var(--fs-sm);color:var(--dim);flex-shrink:0;cursor:pointer}
   /* 目标 */
   .apacts{display:flex;gap:var(--sp-2);flex-wrap:wrap;padding:var(--sp-2) 0}
+  /* 设定 → 技能 / MCP 名单:标题右边一个「自定义」开关,开了才列勾选项 */
+  .apsech{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2)}
+  .apcustom{display:flex;align-items:center;gap:var(--sp-2);font-weight:400;cursor:pointer}
+  .apnames{display:flex;flex-direction:column;gap:2px;max-height:320px;overflow-y:auto}
+  .apnrow{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);
+    cursor:pointer;transition:background var(--t-fast)}
+  @media(hover:hover){ .apnrow:hover{background:var(--panel2)} }
+  .apnrow input{flex-shrink:0;accent-color:var(--accent)}
+  .apnrow .aptname,.apnrow .aptsub{display:block}
+  .apnbar{display:flex;align-items:center;gap:var(--sp-2);padding:0 0 var(--sp-2)}
+  .apnsearch{flex:1;min-width:0;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);border:1px solid var(--line2);
+    background:var(--panel2);color:var(--text);font-size:var(--fs-sm)}
+  .apnnone{padding:var(--sp-2);color:var(--dim2);font-size:var(--fs-sm);flex-shrink:0;transition:color var(--t-fast)}
+  @media(hover:hover){ .apnnone:hover:not(:disabled){color:var(--text)} }
+  .apnnone:disabled{opacity:.5;cursor:default}
+  .apbtn.danger{color:var(--err)}
   .apbtn{padding:var(--sp-2) var(--sp-4);border-radius:var(--r-md);border:1px solid var(--line2);background:var(--panel2);
     color:var(--text);font-size:var(--fs-md);cursor:pointer;transition:border-color var(--t-fast),background var(--t-fast)}
   @media(hover:hover){ .apbtn:hover{border-color:var(--dim2)} }

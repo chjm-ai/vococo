@@ -105,26 +105,32 @@ function renderAgentsTab(box, inCall){
 }
 function renderAgentGroup(box, a, inCall){
   const convs=agentConvs(a);
+  // 语音后台任务不分项目,归总助理(原「项目」Tab 的默认项目也是这么放的),和会话按最后活跃时间混排
+  const tasks=a.id==="general" ? ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned) : [];
   const k=agentKey(a), open=S.expanded.has(k);
   const h=el("div","projgrp agrow"+(!inCall && S.conv===a.main_conv?" active":""));
   const st=agentState(a);
   if(st){ h.dataset.state=st; h.title=st==="working"?"AI 正在回复中":"有新的完成结果"; }
   h.innerHTML=avatarSvg(a.avatar);
   const nm=el("span","pgname"); nm.textContent=a.name; h.append(nm);
-  const caret=el("span","pgcaret"+(convs.length?"":" agnone"));
+  const hasRows=convs.length+tasks.length>0;
+  const caret=el("span","pgcaret"+(hasRows?"":" agnone"));
   caret.append(el("span","chev"+(open?" down":"")));
   caret.title=open?"收起会话":"展开会话";
-  caret.onclick=ev=>{ ev.stopPropagation(); if(!convs.length) return;
+  caret.onclick=ev=>{ ev.stopPropagation(); if(!hasRows) return;
     if(open){ S.expanded.delete(k); S.moreShown.delete(k); } else S.expanded.add(k);
     saveExpanded(); renderConvs(); };
   h.append(caret);
   const add=el("button","pgadd"); add.textContent="＋"; add.title="新会话";
   add.onclick=ev=>{ ev.stopPropagation(); S.expanded.add(k); newChatIn(a.project_hash||null); };
   h.append(add);
-  h.onclick=()=>openAgentMain(a);
+  if(a.project_hash) bindProjDrag(h, a.project_hash);   // 拖动排序;总助理固定在最前
+  h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } openAgentMain(a); };   // 拖拽落地那一下别顺带打开
   box.append(h);
   if(!open) return;
-  const rows=convs.map(c=>buildConvRow(c, inCall));
+  const rows=[...tasks.map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)})),
+              ...convs.map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}))]
+    .sort((x,y)=>y.ts-x.ts).map(it=>it.build()).filter(Boolean);
   const shown=S.moreShown.has(k)?rows:rows.slice(0, CONV_SHOW_MAX);
   for(const r of shown) box.append(r);
   if(rows.length>shown.length){
@@ -417,6 +423,71 @@ async function renderApSetup(body, a){
   };
   acts.append(save); body.append(acts);
   try{ const d=await (await api("/agents/doc?id="+encodeURIComponent(a.id)+"&name=AGENT.md")).json(); if(!apStale(a,"setup")) ta.value=d.text||""; }catch(e){}
+  if(apStale(a,"setup")) return;
+  if(a.id==="general"){ body.append(apSection("技能与 MCP"), apEmpty("用设置页的全局配置")); return; }
+  let cat;
+  try{ cat=await (await api("/settings")).json(); }catch(e){ return; }
+  if(apStale(a,"setup")) return;
+  const skills=(cat.skills?.items||[]).filter(x=>!x.hidden);
+  const mcps=(cat.mcp?.external||[]).filter(x=>x.enabled!==false);
+  // 自定义时的初始名单:技能从全局已开启的抄一份(免得一打开就全关),MCP 从空开始
+  renderApNames(body, a, "skills", "技能", skills.map(x=>({name:x.name, desc:x.description})),
+    ()=>skills.filter(x=>x.enabled).map(x=>x.name));
+  renderApNames(body, a, "mcp", "MCP", mcps.map(x=>({name:x.name, desc:x.url||x.command||""})), ()=>[]);
+  const rm=el("button","apbtn danger"); rm.type="button"; rm.textContent="移除 Agent";
+  rm.title="只从列表移除,文件夹和它的文件都留着,再把目录加回来就恢复";
+  rm.onclick=async()=>{
+    if(!confirm("从列表移除「"+a.name+"」?文件夹和它的文件都会保留。")) return;
+    await removeProject(a.project_hash); await loadAgents(); hideAgentPanel(); renderConvs();
+  };
+  body.append(rm);
+}
+// 技能 / MCP 名单:关 = 跟随全局;开 = 只用勾上的(MCP 勾上的每轮都挂)。
+// 改了只重画这一块,别整个面板重画——会冲掉 AGENT.md 里还没保存的输入
+function renderApNames(body, a, key, title, items, initial){
+  const box=el("div"); body.append(box);
+  let order=null, q="";   // 排序只在打开时定一次,勾选时行不跳位置;q = 搜索词
+  const draw=()=>{
+    box.innerHTML="";
+    const own=a[key];   // null = 跟随全局
+    const save=async names=>{
+      let r;
+      try{ r=await agentPost("/agents/update",{id:a.id, [key]:names}); }catch(e){ alert(e.message); draw(); return; }
+      a[key]=r.agent[key]; draw(); loadAgents();
+    };
+    const head=el("div","apsec apsech");
+    const t=el("span"); t.textContent=title;
+    const sw=el("label","apcustom"); sw.innerHTML='自定义<span class="sw"><input type="checkbox"'+(own?" checked":"")+'><span class="track"></span></span>';
+    sw.querySelector("input").onchange=ev=>save(ev.target.checked ? initial() : null);
+    head.append(t, sw); box.append(head);
+    if(!own){ order=null; box.append(apEmpty("跟随全局设置")); return; }
+    if(!items.length){ box.append(apEmpty(key==="mcp"?"还没有外部 MCP,先去设置页添加":"没有可用的技能")); return; }
+    const on=new Set(own);
+    // 勾上的排前面,一眼看到它在用什么
+    order=order||items.slice().sort((x,y)=>(on.has(y.name)?1:0)-(on.has(x.name)?1:0));
+    if(items.length>8){   // 技能动辄上百个:给个搜索和「全不选」,从零挑几个比挨个取消快
+      const bar=el("div","apnbar");
+      const inp=el("input","apnsearch"); inp.placeholder="搜索"; inp.value=q;
+      inp.oninput=()=>{ q=inp.value; const pos=inp.selectionStart; draw(); const n=box.querySelector(".apnsearch"); n.focus(); n.setSelectionRange(pos,pos); };
+      const none=el("button","apnnone"); none.type="button"; none.textContent="全不选"; none.disabled=!own.length;
+      none.onclick=()=>save([]);
+      bar.append(inp, none); box.append(bar);
+    }
+    const ql=q.trim().toLowerCase();
+    const shown=ql ? order.filter(it=>(it.name+" "+(it.desc||"")).toLowerCase().includes(ql)) : order;
+    const list=el("div","apnames");
+    if(!shown.length) list.append(apEmpty("没有匹配的"));
+    for(const it of shown){
+      const r=el("label","apnrow"); r.title=it.desc||it.name;
+      r.innerHTML='<input type="checkbox"'+(on.has(it.name)?" checked":"")+'><span class="aptmain"><span class="aptname"></span><span class="aptsub"></span></span>';
+      r.querySelector(".aptname").textContent=it.name;
+      r.querySelector(".aptsub").textContent=it.desc||"";
+      r.querySelector("input").onchange=ev=>save(ev.target.checked ? [...own, it.name] : own.filter(n=>n!==it.name));
+      list.append(r);
+    }
+    box.append(list);
+  };
+  draw();
 }
 
 // 文件:家目录(vococo 管) + 工作目录第一层 + 关联(默认只读,可写需勾选)
