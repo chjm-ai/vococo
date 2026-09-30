@@ -38,7 +38,7 @@ from claude_agent_sdk import (
 
 from .. import config, providers
 from ..gateway import clarify, settings_store
-from ..memory import session_store
+from ..memory import agents, session_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
 from . import client_pool
@@ -900,7 +900,12 @@ async def stream_turn(
         images = None
     # 外部 MCP 默认不挂；本轮明确的数据任务或当前会话的手动开关才会请求对应 server。
     # settings 的 enabled 仍是全局总开关，但任务匹配绝不会反向改它。
-    requested_external = _external_mcp_for_task(user_text, session_key)
+    # 所属 Agent 配了自己的 MCP 名单 → 名单里的每轮都挂、不再按关键词临时挂(见 memory/agents.py)
+    agent_rt = agents.runtime_for_session(session_key)
+    if agent_rt["mcp"] is not None:
+        requested_external = set(agent_rt["mcp"])
+    else:
+        requested_external = _external_mcp_for_task(user_text, session_key)
     if session_key:
         requested_external |= session_store.get_external_mcp_names(session_key)
     # MCP / skill 从运行时设置计算；这些参数在 SDK connect 时定死，兼容性哈希变化会重建 client。
@@ -919,6 +924,8 @@ async def stream_turn(
         settings_store.effective_skills(cwd, is_explicit_project=True)
         if is_explicit_project else settings_store.effective_skills(cwd)
     )
+    if agent_rt["skills"] is not None:  # 所属 Agent 的技能名单优先于全局 / 编程项目名单
+        skills = list(agent_rt["skills"])
     if isinstance(skills, list):  # 白名单模式漏不掉插件自带的 skill(见 _PLUGIN_SKILLS)
         skills = list(dict.fromkeys([*skills, *_PLUGIN_SKILLS]))
     # cwd=项目会话补注入其 AGENTS.md;cache_key=会话 id:同一 SDK 会话内冻结 append 快照,

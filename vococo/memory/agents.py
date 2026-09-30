@@ -4,7 +4,7 @@
 - Agent 与项目一一对应:每个项目自动就是一个 Agent,id 直接用项目哈希(不变);
   另有一个「通用」Agent(id=general),接住不属于任何项目的会话,它的主会话就是全局主会话。
 - 家目录 data/agents/<id>/ 由 vococo 管,不往用户的项目目录里写东西:
-    agent.json  名称 / 头像 / 工作目录 / 关联(系统要读的结构化设置)
+    agent.json  名称 / 头像 / 工作目录 / 关联 / 技能与 MCP 名单(系统要读的结构化设置)
     AGENT.md    人格、技能、目标(纯文本,你写,它每次开工都读)
     NOTES.md    它的笔记
     workspace/  新建 Agent 且没指定目录时的默认工作目录
@@ -14,6 +14,10 @@
   并记进 agent_runs 表(右侧面板「动态」读它)。
 - 这个 Agent 名下的会话和定时任务,每轮都把 AGENT.md / GOAL.md / PLAN.md / NOTES.md / 关联清单
   作为 system_prompt_extra 带进提示词(prompt_extra_for_session)。
+
+技能与 MCP(2026-09-30):agent.json 的 skills / mcp 两份名单,不写 = 跟随设置页的全局配置;
+写了(哪怕是空列表)= 这个 Agent 名下的会话和定时任务只用名单里的(runtime_for_session)。
+MCP 名单里的外部 server 每轮都挂,不再按关键词临时挂。通用 Agent 不单独配,它就是全局配置本身。
 
 目标闭环(同日追加):目标 ──拆解──> 计划 ──执行──> 采集数据 ──复盘──> 修正 ──写回目标文件
 - GOAL.md  目标 / 成功标准 / 不做(你定);「当前进展」「复盘记录」两节由复盘任务写回
@@ -159,6 +163,15 @@ def _normalize_links(links) -> list[dict]:
     return out
 
 
+def _normalize_names(names) -> list[str] | None:
+    """技能 / MCP 名单:None = 跟随全局;列表去重去空(空列表也是有效名单 = 一个都不用)。"""
+    if names is None:
+        return None
+    if not isinstance(names, list):
+        raise ValueError("名单必须是列表")
+    return list(dict.fromkeys(str(x).strip() for x in names if str(x).strip()))
+
+
 def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
     """把 agent.json + 项目信息拼成对外的 Agent 字典。"""
     if agent_id == GENERAL_ID:
@@ -176,6 +189,9 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
         "project_hash": phash,
         "main_conv": main,
         "links": _normalize_links(meta.get("links")),
+        # agent.json 可以手改,坏值当「跟随全局」,不让整个列表接口报错
+        "skills": _normalize_names(meta["skills"]) if isinstance(meta.get("skills"), list) else None,
+        "mcp": _normalize_names(meta["mcp"]) if isinstance(meta.get("mcp"), list) else None,
         "created_at": meta.get("created_at") or 0,
         "home": str(home(agent_id)),
     }
@@ -271,9 +287,14 @@ def create(name: str, path: str | None = None) -> dict:
     return get(aid)  # type: ignore[return-value]
 
 
+_UNSET = object()
+
+
 def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None,
-           links: list | None = None) -> dict | None:
-    """改名称 / 头像 / 关联。目录名用 id,不随名称变。"""
+           links: list | None = None, skills=_UNSET, mcp=_UNSET) -> dict | None:
+    """改名称 / 头像 / 关联 / 技能与 MCP 名单。目录名用 id,不随名称变。
+
+    skills / mcp 传 None = 改回跟随全局;不传 = 不动。"""
     if agent_id != GENERAL_ID and get(agent_id) is None:
         return None
     meta = _read_meta(agent_id)
@@ -290,6 +311,16 @@ def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None
         meta["avatar"] = _normalize_avatar(avatar, agent_id)
     if links is not None:
         meta["links"] = _normalize_links(links)
+    for key, val in (("skills", skills), ("mcp", mcp)):
+        if val is _UNSET:
+            continue
+        if agent_id == GENERAL_ID:
+            raise ValueError("总助理用设置页的全局配置,不单独配")
+        names = _normalize_names(val)
+        if names is None:
+            meta.pop(key, None)
+        else:
+            meta[key] = names
     _write_meta(agent_id, meta)
     return get(agent_id)
 
@@ -474,6 +505,20 @@ def prompt_extra(agent: dict | None) -> str:
             for x in links))
     text = "\n\n".join(parts)
     return text[:PROMPT_MAX_CHARS]
+
+
+def runtime_for_session(session_key: str | None) -> dict:
+    """本轮该用的技能 / MCP 名单:{"skills": list|None, "mcp": list|None},None = 跟随全局。"""
+    if not session_key:
+        return {"skills": None, "mcp": None}
+    try:
+        a = agent_for_session(session_key)
+    except Exception as exc:  # noqa: BLE001 —— 读不到就按全局走,不影响对话
+        print(f"[agents] 读取 Agent 名单失败:{exc}", flush=True)
+        a = None
+    if not a or a["id"] == GENERAL_ID:
+        return {"skills": None, "mcp": None}
+    return {"skills": a.get("skills"), "mcp": a.get("mcp")}
 
 
 def prompt_extra_for_session(session_key: str) -> str:
