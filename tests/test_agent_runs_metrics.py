@@ -94,6 +94,7 @@ def test_run_stats_and_text(env):
     agents.record_run(env["id"], {"id": "j2", "name": "巡检"}, "success", "ok", to_main=False)
     st = agents.run_stats(env["id"])
     assert (st["runs"], st["ok"], st["tokens"]) == (3, 2, 60000)
+    assert st["avg_duration"] == 90  # 没指标的那次不拉低平均
     assert st["success_rate"] == pytest.approx(0.667, abs=0.001)
     assert st["jobs"][0]["name"] == "发信"  # 按 token 花费排前面
     text = agents.stats_text(env["id"])

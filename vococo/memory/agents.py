@@ -655,11 +655,13 @@ def run_stats(agent_id: str, days: int = 7) -> dict:
         j["duration"] += float(duration or 0)
     runs = sum(j["runs"] for j in by_job.values())
     ok = sum(j["ok"] for j in by_job.values())
+    # 平均耗时只算有耗时的:脚本任务 / 老数据没有指标,记的是 0,算进分母会把平均拉低
+    timed = sum(1 for r in rows if (r[3] or 0) > 0)
     return {
         "days": days, "runs": runs, "ok": ok,
         "success_rate": round(ok / runs, 3) if runs else None,
         "tokens": sum(j["tokens"] for j in by_job.values()),
-        "avg_duration": round(sum(j["duration"] for j in by_job.values()) / runs, 1) if runs else 0,
+        "avg_duration": round(sum(j["duration"] for j in by_job.values()) / timed, 1) if timed else 0,
         "jobs": sorted(by_job.values(), key=lambda j: -j["tokens"]),
     }
 

@@ -18,6 +18,8 @@ config.py 路径/常量;providers.py 多供应商切换
 ## 约定
 文档/注释一律中文;改代码前先读懂现状,保持原风格,优先简单方案。
 系统提示三层堆叠:claude_code preset + PERSONA + 动态记忆,见 core/prompt.py。
+合并前先调 `code-reviewer` 子代理(Agent 工具,干净上下文只读评审,见 core/reviewer.py)看一遍本分支改动,
+标「确认」的问题修完再合并;纯文案/样式微调可跳过。
 改完代码直接提交并合并回 main(`zsh deploy/merge-main.sh`);若改动涉及后端(core/gateway/cron/tools 等非纯前端代码),提交合并后要询问主人是否顺便重启(`restart_self`)。
 
 **大改动合并后顺手推 GitHub**(`git push origin main`,远端 `chjm-ai/vococo`):
