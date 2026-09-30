@@ -4,8 +4,7 @@
 - Agent 与项目一一对应:每个项目自动就是一个 Agent,id 直接用项目哈希(不变);
   另有一个「通用」Agent(id=general),接住不属于任何项目的会话,它的主会话就是全局主会话。
 - 家目录 data/agents/<id>/ 由 vococo 管,不往用户的项目目录里写东西:
-    agent.json  名称 / 头像 / 工作目录 / 关联 / 能力 caps(系统要读的结构化设置)
-                caps = 默认模型 / 技能白名单 / 常驻 MCP / 禁用工具,在 core/agent.stream_turn 里硬生效
+    agent.json  名称 / 头像 / 工作目录 / 关联 / 技能与 MCP 名单 / 默认模型 / 禁用工具(系统要读的结构化设置)
     AGENT.md    人格、技能、目标(纯文本,你写,它每次开工都读)
     NOTES.md    它的笔记
     workspace/  新建 Agent 且没指定目录时的默认工作目录
@@ -15,6 +14,13 @@
   并记进 agent_runs 表(右侧面板「动态」读它)。
 - 这个 Agent 名下的会话和定时任务,每轮都把 AGENT.md / GOAL.md / PLAN.md / NOTES.md / 关联清单
   作为 system_prompt_extra 带进提示词(prompt_extra_for_session)。
+
+技能与 MCP(2026-09-30):agent.json 的 skills / mcp 两份名单,不写 = 跟随设置页的全局配置;
+写了(哪怕是空列表)= 这个 Agent 名下的会话和定时任务只用名单里的(runtime_for_session)。
+MCP 名单里的外部 server 每轮都挂,不再按关键词临时挂。通用 Agent 不单独配,它就是全局配置本身。
+同一套规则还有两项(2026-10-01):model = 名下【新会话】默认用的模型(老会话已锁定模型,不受影响),
+disallowed_tools = 硬拦的工具名(如 Bash、mcp__vococo__dispatch_session),在 core/agent.stream_turn 里生效,
+子代理也拿不到(父会话的禁用会传给子代理,实测过)。
 
 目标闭环(同日追加):目标 ──拆解──> 计划 ──执行──> 采集数据 ──复盘──> 修正 ──写回目标文件
 - GOAL.md  目标 / 成功标准 / 不做(你定);「当前进展」「复盘记录」两节由复盘任务写回
@@ -172,35 +178,22 @@ def _normalize_links(links) -> list[dict]:
     return out
 
 
-_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_\-:.*()/ ]{1,80}$")
+def _normalize_names(names) -> list[str] | None:
+    """技能 / MCP 名单:None = 跟随全局;列表去重去空(空列表也是有效名单 = 一个都不用)。"""
+    if names is None:
+        return None
+    if not isinstance(names, list):
+        raise ValueError("名单必须是列表")
+    return list(dict.fromkeys(str(x).strip() for x in names if str(x).strip()))
 
 
-def _clean_names(items, limit: int = 60) -> list[str]:
-    """名字清单(技能 / MCP / 工具名):去空去重、挡掉怪字符,顺序保留。"""
-    out: list[str] = []
-    if not isinstance(items, (list, tuple)):  # 字符串也可迭代,不挡会被拆成单个字母
-        return out
-    for x in items:
-        s = str(x or "").strip()
-        if s and _TOOL_NAME_RE.match(s) and s not in out:
-            out.append(s)
-    return out[:limit]
-
-
-def _normalize_caps(caps) -> dict:
-    """能力设定(agent.json 的 caps)—— 真正卡住 SDK 的那层,不是写给模型看的文字:
-    - model:这个 Agent 名下【新会话】默认用的模型;空=跟随全局。已经锁过模型的老会话不受影响
-    - skills:技能白名单;None=跟随全局/coding 设置,[]=一个都不挂(插件自带的照挂)
-    - mcp:外部 MCP 名,这个 Agent 的会话每轮都挂(不用等关键词命中)
-    - disallowed_tools:硬拦的工具名(如 Bash、mcp__vococo__dispatch_session)"""
-    caps = caps if isinstance(caps, dict) else {}
-    skills = caps.get("skills")
-    return {
-        "model": str(caps.get("model") or "").strip()[:80],
-        "skills": _clean_names(skills, 200) if isinstance(skills, list) else None,
-        "mcp": _clean_names(caps.get("mcp")),
-        "disallowed_tools": _clean_names(caps.get("disallowed_tools")),
-    }
+def _normalize_model(model) -> str | None:
+    """默认模型:None / 空 = 跟随全局。"""
+    if model is None:
+        return None
+    if not isinstance(model, str):
+        raise ValueError("模型必须是字符串")
+    return model.strip()[:80] or None
 
 
 def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
@@ -220,7 +213,12 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
         "project_hash": phash,
         "main_conv": main,
         "links": _normalize_links(meta.get("links")),
-        "caps": _normalize_caps(meta.get("caps")),
+        # agent.json 可以手改,坏值当「跟随全局」,不让整个列表接口报错
+        "skills": _normalize_names(meta["skills"]) if isinstance(meta.get("skills"), list) else None,
+        "mcp": _normalize_names(meta["mcp"]) if isinstance(meta.get("mcp"), list) else None,
+        "model": meta["model"].strip() or None if isinstance(meta.get("model"), str) else None,
+        "disallowed_tools": _normalize_names(meta["disallowed_tools"])
+        if isinstance(meta.get("disallowed_tools"), list) else None,
         "created_at": meta.get("created_at") or 0,
         "home": str(home(agent_id)),
     }
@@ -316,9 +314,15 @@ def create(name: str, path: str | None = None) -> dict:
     return get(aid)  # type: ignore[return-value]
 
 
+_UNSET = object()
+
+
 def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None,
-           links: list | None = None, caps: dict | None = None) -> dict | None:
-    """改名称 / 头像 / 关联 / 能力设定。目录名用 id,不随名称变。"""
+           links: list | None = None, skills=_UNSET, mcp=_UNSET, model=_UNSET,
+           disallowed_tools=_UNSET) -> dict | None:
+    """改名称 / 头像 / 关联 / 技能与 MCP 名单 / 默认模型 / 禁用工具。目录名用 id,不随名称变。
+
+    skills / mcp / model / disallowed_tools 传 None = 改回跟随全局;不传 = 不动。"""
     if agent_id != GENERAL_ID and get(agent_id) is None:
         return None
     meta = _read_meta(agent_id)
@@ -335,8 +339,18 @@ def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None
         meta["avatar"] = _normalize_avatar(avatar, agent_id)
     if links is not None:
         meta["links"] = _normalize_links(links)
-    if caps is not None:
-        meta["caps"] = _normalize_caps(caps)
+    for key, val, norm in (("skills", skills, _normalize_names), ("mcp", mcp, _normalize_names),
+                           ("model", model, _normalize_model),
+                           ("disallowed_tools", disallowed_tools, _normalize_names)):
+        if val is _UNSET:
+            continue
+        if agent_id == GENERAL_ID:
+            raise ValueError("总助理用设置页的全局配置,不单独配")
+        v = norm(val)
+        if v is None:
+            meta.pop(key, None)
+        else:
+            meta[key] = v
     _write_meta(agent_id, meta)
     return get(agent_id)
 
@@ -555,17 +569,22 @@ def prompt_extra(agent: dict | None) -> str:
     return text[:PROMPT_MAX_CHARS]
 
 
-def caps_for_session(session_key: str | None) -> dict:
-    """会话所属 Agent 的能力设定;不属于任何 Agent / 读失败 → 全空(行为同以前)。"""
-    empty = _normalize_caps(None)
+RUNTIME_KEYS = ("skills", "mcp", "model", "disallowed_tools")
+
+
+def runtime_for_session(session_key: str | None) -> dict:
+    """本轮该用的 Agent 运行设定:{"skills", "mcp", "model", "disallowed_tools"},None = 跟随全局。"""
+    empty = dict.fromkeys(RUNTIME_KEYS)
     if not session_key:
         return empty
     try:
-        agent = agent_for_session(session_key)
-    except Exception as exc:  # noqa: BLE001 —— 读不到设定不影响正常对话
-        print(f"[agents] 读取 Agent 能力设定失败:{exc}", flush=True)
+        a = agent_for_session(session_key)
+    except Exception as exc:  # noqa: BLE001 —— 读不到就按全局走,不影响对话
+        print(f"[agents] 读取 Agent 名单失败:{exc}", flush=True)
+        a = None
+    if not a or a["id"] == GENERAL_ID:
         return empty
-    return agent["caps"] if agent else empty
+    return {k: a.get(k) for k in RUNTIME_KEYS}
 
 
 def prompt_extra_for_session(session_key: str) -> str:

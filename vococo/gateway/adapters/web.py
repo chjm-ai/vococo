@@ -2979,10 +2979,11 @@ class WebAdapter:
 
         body = body or {}
         try:
+            # skills / mcp / model / disallowed_tools:键不出现 = 不动;值为 null = 改回跟随全局
+            lists = {k: body[k] for k in agents.RUNTIME_KEYS if k in body}
             a = agents.update(
                 str(body.get("id") or ""),
-                name=body.get("name"), avatar=body.get("avatar"), links=body.get("links"),
-                caps=body.get("caps"),
+                name=body.get("name"), avatar=body.get("avatar"), links=body.get("links"), **lists,
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)

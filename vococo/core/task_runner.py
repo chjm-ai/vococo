@@ -268,7 +268,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         # 其次是所属 Agent 设的默认模型(能力设定,见 memory/agents.py)
         from ..memory import agents
 
-        model = model or agents.caps_for_session(session_key)["model"] or None
+        model = model or agents.runtime_for_session(session_key)["model"] or None
         # 没显式指定模型 → 默认回退到已配置的第三方供应商,不再走官方订阅:
         # 订阅 token 被封(401 OAuth access token has been revoked)时,没设
         # model 的后台任务会一启动就失败。sidecar_env 按供应商名取 (model, env),

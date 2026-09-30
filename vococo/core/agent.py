@@ -38,7 +38,7 @@ from claude_agent_sdk import (
 
 from .. import config, providers
 from ..gateway import clarify, settings_store
-from ..memory import session_store
+from ..memory import agents, session_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
 from . import client_pool, reviewer
@@ -872,13 +872,13 @@ async def stream_turn(
     turn_tokens / 成本 / 明细仍取 ResultMessage.usage —— 那本就是本轮累计消耗,语义正确。
     """
     from . import vision  # 懒加载:vision 依赖本模块的 ImageAttachment,顶部 import 会循环引用
-    from ..memory import agents as agent_profiles
 
-    # 会话属于某个 Agent → 它的能力设定(技能白名单 / 常驻 MCP / 禁用工具)在这里硬生效,
-    # 而不是只写在 AGENT.md 里「建议」模型。模型默认值在锁定会话模型时处理(见 gateway/run.py)。
-    caps = agent_profiles.caps_for_session(session_key)
-    if caps["disallowed_tools"]:
-        disallowed_tools = list(dict.fromkeys([*(disallowed_tools or []), *caps["disallowed_tools"]]))
+    # 会话所属 Agent 的运行设定(见 memory/agents.py):技能 / MCP 名单在下面各自处理;
+    # 禁用工具在这里并进调用方给的那份——硬拦,不是写在 AGENT.md 里「建议」模型别用。
+    # 默认模型在锁定会话模型时处理(见 gateway/run.py、core/task_runner.py)。
+    agent_rt = agents.runtime_for_session(session_key)
+    if agent_rt.get("disallowed_tools"):
+        disallowed_tools = list(dict.fromkeys([*(disallowed_tools or []), *agent_rt["disallowed_tools"]]))
 
     # 供应商集成:按会话选定模型(或设置页里配置的第三方供应商)算出实际模型和
     # 要注入的 env。第三方(DeepSeek/Kimi)→注入 base_url+key;官方→env 为空走订阅。
@@ -909,10 +909,13 @@ async def stream_turn(
         images = None
     # 外部 MCP 默认不挂；本轮明确的数据任务或当前会话的手动开关才会请求对应 server。
     # settings 的 enabled 仍是全局总开关，但任务匹配绝不会反向改它。
-    requested_external = _external_mcp_for_task(user_text, session_key)
+    # 所属 Agent 配了自己的 MCP 名单 → 名单里的每轮都挂、不再按关键词临时挂(见 memory/agents.py)
+    if agent_rt["mcp"] is not None:
+        requested_external = set(agent_rt["mcp"])
+    else:
+        requested_external = _external_mcp_for_task(user_text, session_key)
     if session_key:
         requested_external |= session_store.get_external_mcp_names(session_key)
-    requested_external |= set(caps["mcp"])
     # MCP / skill 从运行时设置计算；这些参数在 SDK connect 时定死，兼容性哈希变化会重建 client。
     mcp_on = settings_store.vococo_enabled()
     external_mcp = (
@@ -929,8 +932,8 @@ async def stream_turn(
         settings_store.effective_skills(cwd, is_explicit_project=True)
         if is_explicit_project else settings_store.effective_skills(cwd)
     )
-    if caps["skills"] is not None:
-        skills = list(caps["skills"])
+    if agent_rt["skills"] is not None:  # 所属 Agent 的技能名单优先于全局 / 编程项目名单
+        skills = list(agent_rt["skills"])
     if isinstance(skills, list):  # 白名单模式漏不掉插件自带的 skill(见 _PLUGIN_SKILLS)
         skills = list(dict.fromkeys([*skills, *_PLUGIN_SKILLS]))
     # cwd=项目会话补注入其 AGENTS.md;cache_key=会话 id:同一 SDK 会话内冻结 append 快照,

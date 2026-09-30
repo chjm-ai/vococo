@@ -35,7 +35,7 @@ def test_definitions_only_for_explicit_git_project(git_dir, tmp_path):
 async def test_stream_turn_registers_reviewer(clients, monkeypatch, git_dir):  # noqa: F811
     from vococo.memory import agents
 
-    monkeypatch.setattr(agents, "caps_for_session", lambda key: agents._normalize_caps(None))
+    monkeypatch.setattr(agents, "runtime_for_session", lambda key: dict.fromkeys(agents.RUNTIME_KEYS))
     async for ev in agent.stream_turn([], "改完了", session_key="web:pabc:c1", cwd=str(git_dir),
                                       is_explicit_project=True):
         if isinstance(ev, agent.Done):

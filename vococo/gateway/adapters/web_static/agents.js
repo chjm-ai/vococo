@@ -2,7 +2,7 @@
 // 2026-09-29 Agent(项目升级版,后端见 memory/agents.py):侧栏「Agent」Tab + 右侧 Agent 面板。
 // 与「项目」「定时」Tab 并存,方案定了再下架那两个。
 // - 侧栏:每个 Agent 一行(像素头像 + 名称 + 折线箭头),点行 = 打开它的主会话(定时结果都推到这里),
-//   箭头展开它名下的独立会话,hover「＋」在它名下开新会话
+//   箭头展开它名下的独立会话,hover「＋」在它名下开新会话;状态不用圆点,直接做在头像动效上(见 agentState)
 // - 右侧面板(标题栏按钮开关):动态 / 定时 / 目标 / 设定 / 文件
 
 // ── 像素头像:风格取自 logo「小幽」——crispEdges 方块、深色眼睛、左上一格高光 ──────────
@@ -74,15 +74,28 @@ async function agentPost(path, body){
 
 // ── 侧栏「Agent」Tab ────────────────────────────────────────────────────
 // 子会话 = 该 Agent 名下的独立会话(不含主会话,主会话点 Agent 行进);通用 Agent 收不属于任何项目的会话
+function agentOwnsConv(a, conv){
+  if(conv==="main" || conv===a.main_conv) return false;
+  const h=convProject(conv);
+  return a.id==="general" ? h===null : h===a.project_hash;
+}
 function agentConvs(a){
-  const isGeneral=a.id==="general";
   return S.convs.filter(c=>{
-    if(c.conv==="main" || c.conv===a.main_conv) return false;
+    if(!agentOwnsConv(a, c.conv)) return false;
     if(S.convFilter==="archived" && !c.archived) return false;
     if(S.convFilter==="active" && c.archived) return false;
-    const h=convProject(c.conv);
-    return isGeneral ? h===null : h===a.project_hash;
+    return true;
   });
+}
+// Agent 头像的动效状态(样式见 styles.css 的 .projgrp.agrow[data-state]):
+//   working = 主会话或名下任一会话在回复(不管是收起还是展开、归档筛选怎么选,都照实反映)
+//   done    = 都不忙了,但主会话或名下会话还有没看过的完成结果(打开那个会话后消失)
+// 一份清单管两个状态:主会话和子会话走同一套判断,免得"子会话在跑但主会话不亮"这种半截状态。
+function agentState(a){
+  const mine=[S.convs.find(c=>c.conv===a.main_conv)||{conv:a.main_conv}]
+    .concat(S.convs.filter(c=>agentOwnsConv(a, c.conv)));
+  if(mine.some(c=>S.live[c.conv])) return "working";
+  return mine.some(c=>c.pending_review || S.pendingReview[c.conv]) ? "done" : "";
 }
 function agentKey(a){ return "agent:"+a.id; }
 function renderAgentsTab(box, inCall){
@@ -92,28 +105,32 @@ function renderAgentsTab(box, inCall){
 }
 function renderAgentGroup(box, a, inCall){
   const convs=agentConvs(a);
+  // 语音后台任务不分项目,归总助理(原「项目」Tab 的默认项目也是这么放的),和会话按最后活跃时间混排
+  const tasks=a.id==="general" ? ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned) : [];
   const k=agentKey(a), open=S.expanded.has(k);
-  const main=S.convs.find(c=>c.conv===a.main_conv);
   const h=el("div","projgrp agrow"+(!inCall && S.conv===a.main_conv?" active":""));
+  const st=agentState(a);
+  if(st){ h.dataset.state=st; h.title=st==="working"?"AI 正在回复中":"有新的完成结果"; }
   h.innerHTML=avatarSvg(a.avatar);
   const nm=el("span","pgname"); nm.textContent=a.name; h.append(nm);
-  // 状态点跟在名字后面:插在头像和名字之间会把名字往右顶,这一行就和其他行对不齐了
-  if(S.live[a.main_conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; h.append(dot); }
-  else if((main && main.pending_review) || S.pendingReview[a.main_conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; h.append(dot); }
-  const caret=el("span","pgcaret"+(convs.length?"":" agnone"));
+  const hasRows=convs.length+tasks.length>0;
+  const caret=el("span","pgcaret"+(hasRows?"":" agnone"));
   caret.append(el("span","chev"+(open?" down":"")));
   caret.title=open?"收起会话":"展开会话";
-  caret.onclick=ev=>{ ev.stopPropagation(); if(!convs.length) return;
+  caret.onclick=ev=>{ ev.stopPropagation(); if(!hasRows) return;
     if(open){ S.expanded.delete(k); S.moreShown.delete(k); } else S.expanded.add(k);
     saveExpanded(); renderConvs(); };
   h.append(caret);
   const add=el("button","pgadd"); add.textContent="＋"; add.title="新会话";
   add.onclick=ev=>{ ev.stopPropagation(); S.expanded.add(k); newChatIn(a.project_hash||null); };
   h.append(add);
-  h.onclick=()=>openAgentMain(a);
+  if(a.project_hash) bindProjDrag(h, a.project_hash);   // 拖动排序;总助理固定在最前
+  h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } openAgentMain(a); };   // 拖拽落地那一下别顺带打开
   box.append(h);
   if(!open) return;
-  const rows=convs.map(c=>buildConvRow(c, inCall));
+  const rows=[...tasks.map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)})),
+              ...convs.map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}))]
+    .sort((x,y)=>y.ts-x.ts).map(it=>it.build()).filter(Boolean);
   const shown=S.moreShown.has(k)?rows:rows.slice(0, CONV_SHOW_MAX);
   for(const r of shown) box.append(r);
   if(rows.length>shown.length){
@@ -429,70 +446,104 @@ async function renderApSetup(body, a){
   };
   acts.append(save); body.append(acts);
   try{ const d=await (await api("/agents/doc?id="+encodeURIComponent(a.id)+"&name=AGENT.md")).json(); if(!apStale(a,"setup")) ta.value=d.text||""; }catch(e){}
-  if(!apStale(a,"setup")) await renderApCaps(body, a);
-}
-
-// 能力:模型 / 技能白名单 / 常驻 MCP / 禁用工具 —— 后端硬生效(memory/agents.py 的 caps),不是给模型看的文字
-function apCheck(label, checked, title){
-  const lb=el("label","apcheck"); const cb=el("input"); cb.type="checkbox"; cb.checked=!!checked;
-  const sp=el("span"); sp.textContent=label; if(title) lb.title=title;
-  lb.append(cb, sp); return {lb, cb};
-}
-function splitNames(v){ return String(v||"").split(/[,，\s]+/).map(x=>x.trim()).filter(Boolean); }
-async function renderApCaps(body, a){
-  let models=[], skills=[], mcps=[];
-  try{ models=(await (await api("/models")).json()).choices||[]; }catch(e){}
-  try{ const d=await (await api("/settings")).json(); skills=(d.skills&&d.skills.items||[]).filter(x=>!x.hidden); mcps=(d.mcp&&d.mcp.external)||[]; }catch(e){}
   if(apStale(a,"setup")) return;
-  const caps=a.caps||{model:"", skills:null, mcp:[], disallowed_tools:[]};
-  body.append(apSection("能力 · 硬生效"));
-  const note=el("div","apnote"); note.textContent="这里的设置直接卡住运行时,不靠模型自觉。只影响这个 Agent 名下的会话和定时任务。"; body.append(note);
-  // 模型:只作用于新会话(老会话已锁定模型)
-  body.append(apSection("默认模型(新会话)"));
+  if(a.id==="general"){ body.append(apSection("技能与 MCP"), apEmpty("用设置页的全局配置")); return; }
+  let cat;
+  try{ cat=await (await api("/settings")).json(); }catch(e){ return; }
+  if(apStale(a,"setup")) return;
+  const skills=(cat.skills?.items||[]).filter(x=>!x.hidden);
+  const mcps=(cat.mcp?.external||[]).filter(x=>x.enabled!==false);
+  // 自定义时的初始名单:技能从全局已开启的抄一份(免得一打开就全关),MCP 从空开始
+  renderApNames(body, a, "skills", "技能", skills.map(x=>({name:x.name, desc:x.description})),
+    ()=>skills.filter(x=>x.enabled).map(x=>x.name));
+  renderApNames(body, a, "mcp", "MCP", mcps.map(x=>({name:x.name, desc:x.url||x.command||""})), ()=>[]);
+  renderApModelTools(body, a);
+  const rm=el("button","apbtn danger"); rm.type="button"; rm.textContent="移除 Agent";
+  rm.title="只从列表移除,文件夹和它的文件都留着,再把目录加回来就恢复";
+  rm.onclick=async()=>{
+    if(!confirm("从列表移除「"+a.name+"」?文件夹和它的文件都会保留。")) return;
+    await removeProject(a.project_hash); await loadAgents(); hideAgentPanel(); renderConvs();
+  };
+  body.append(rm);
+}
+// 默认模型 + 禁用工具(memory/agents.py 的 model / disallowed_tools,后端硬生效)。
+// 同样只重画自己这一块;模型清单异步拉,先占住位置,免得插到「移除 Agent」按钮后面
+function renderApModelTools(body, a){
+  const box=el("div"); body.append(box);
+  box.append(apSection("默认模型(新会话)"));
   const sel=el("select","apselect");
   const o0=el("option"); o0.value=""; o0.textContent="跟随全局默认"; sel.append(o0);
-  for(const [v,label] of models){ const o=el("option"); o.value=v; o.textContent=label||v; sel.append(o); }
-  if(caps.model && !models.some(m=>m[0]===caps.model)){ const o=el("option"); o.value=caps.model; o.textContent=caps.model+"(已不在清单)"; sel.append(o); }
-  sel.value=caps.model||""; body.append(sel);
-  // 技能:不勾「限定」=跟随全局设置
-  body.append(apSection("技能"));
-  const lim=apCheck("只挂下面勾选的技能", Array.isArray(caps.skills), "不勾 = 跟随设置页的全局 / coding 配置");
-  body.append(lim.lb);
-  const skBox=el("div","apchecks"); const skChecks=[];
-  const on=new Set(caps.skills||[]);
-  for(const sk of skills){ const c=apCheck(sk.name, on.has(sk.name), sk.description||""); skChecks.push([sk.name,c.cb]); skBox.append(c.lb); }
-  if(!skills.length) skBox.append(apEmpty("没有可选技能"));
-  const syncSk=()=>{ skBox.hidden=!lim.cb.checked; }; lim.cb.onchange=()=>{ syncSk(); dirty(); }; syncSk();
-  body.append(skBox);
-  // 常驻外部 MCP
-  body.append(apSection("常驻外部 MCP(每轮都挂)"));
-  const mcpChecks=[]; const mOn=new Set(caps.mcp||[]);
-  const mBox=el("div","apchecks");
-  for(const m of mcps){ const c=apCheck(m.name+(m.enabled===false?"(设置页已停用)":""), mOn.has(m.name)); mcpChecks.push([m.name,c.cb]); mBox.append(c.lb); }
-  if(!mcps.length) mBox.append(apEmpty("设置页还没加外部 MCP"));
-  body.append(mBox);
-  // 禁用工具
-  body.append(apSection("禁用工具"));
-  const dis=el("input","apinput"); dis.value=(caps.disallowed_tools||[]).join(", ");
+  box.append(sel);
+  box.append(apSection("禁用工具"));
+  const dis=el("input","apinput"); dis.value=(a.disallowed_tools||[]).join(", ");
   dis.placeholder="如 Bash, WebFetch, mcp__vococo__dispatch_session(逗号分隔)";
-  body.append(dis);
+  const note=el("div","apnote"); note.textContent="名下会话和定时任务里直接拦掉,子代理也用不了。模型只影响新开的会话。";
+  box.append(dis, note);
   const acts=el("div","apacts");
-  const save=el("button","apbtn primary"); save.textContent="保存能力"; save.disabled=true;
-  function dirty(){ save.disabled=false; }
-  sel.onchange=dirty; dis.oninput=dirty;
-  for(const [,cb] of [...skChecks, ...mcpChecks]) cb.addEventListener("change", dirty);
+  const save=el("button","apbtn primary"); save.type="button"; save.textContent="保存"; save.disabled=true;
+  sel.onchange=dis.oninput=()=>{ save.disabled=false; };
   save.onclick=async()=>{
-    const next={
-      model: sel.value,
-      skills: lim.cb.checked ? skChecks.filter(([,cb])=>cb.checked).map(([n])=>n) : null,
-      mcp: mcpChecks.filter(([,cb])=>cb.checked).map(([n])=>n),
-      disallowed_tools: splitNames(dis.value),
-    };
-    try{ await agentPost("/agents/update",{id:a.id, caps:next}); }catch(e){ alert(e.message); return; }
-    await loadAgents();
-    save.disabled=true; save.textContent="已保存"; setTimeout(()=>{ save.textContent="保存能力"; },1200);
+    const tools=dis.value.split(/[,，\s]+/).map(x=>x.trim()).filter(Boolean);
+    let r;
+    try{ r=await agentPost("/agents/update",{id:a.id, model:sel.value||null, disallowed_tools:tools.length?tools:null}); }
+    catch(e){ alert(e.message); return; }
+    a.model=r.agent.model; a.disallowed_tools=r.agent.disallowed_tools; loadAgents();
+    dis.value=(a.disallowed_tools||[]).join(", ");
+    save.disabled=true; save.textContent="已保存"; setTimeout(()=>{ save.textContent="保存"; },1200);
   };
-  acts.append(save); body.append(acts);
+  acts.append(save); box.append(acts);
+  api("/models").then(r=>r.json()).then(d=>{
+    for(const [v,label] of (d.choices||[])){ const o=el("option"); o.value=v; o.textContent=label||v; sel.append(o); }
+    if(a.model && ![...sel.options].some(o=>o.value===a.model)){ const o=el("option"); o.value=a.model; o.textContent=a.model+"(已不在清单)"; sel.append(o); }
+    sel.value=a.model||"";
+  }).catch(()=>{ sel.value=a.model||""; });
+}
+// 技能 / MCP 名单:关 = 跟随全局;开 = 只用勾上的(MCP 勾上的每轮都挂)。
+// 改了只重画这一块,别整个面板重画——会冲掉 AGENT.md 里还没保存的输入
+function renderApNames(body, a, key, title, items, initial){
+  const box=el("div"); body.append(box);
+  let order=null, q="";   // 排序只在打开时定一次,勾选时行不跳位置;q = 搜索词
+  const draw=()=>{
+    box.innerHTML="";
+    const own=a[key];   // null = 跟随全局
+    const save=async names=>{
+      let r;
+      try{ r=await agentPost("/agents/update",{id:a.id, [key]:names}); }catch(e){ alert(e.message); draw(); return; }
+      a[key]=r.agent[key]; draw(); loadAgents();
+    };
+    const head=el("div","apsec apsech");
+    const t=el("span"); t.textContent=title;
+    const sw=el("label","apcustom"); sw.innerHTML='自定义<span class="sw"><input type="checkbox"'+(own?" checked":"")+'><span class="track"></span></span>';
+    sw.querySelector("input").onchange=ev=>save(ev.target.checked ? initial() : null);
+    head.append(t, sw); box.append(head);
+    if(!own){ order=null; box.append(apEmpty("跟随全局设置")); return; }
+    if(!items.length){ box.append(apEmpty(key==="mcp"?"还没有外部 MCP,先去设置页添加":"没有可用的技能")); return; }
+    const on=new Set(own);
+    // 勾上的排前面,一眼看到它在用什么
+    order=order||items.slice().sort((x,y)=>(on.has(y.name)?1:0)-(on.has(x.name)?1:0));
+    if(items.length>8){   // 技能动辄上百个:给个搜索和「全不选」,从零挑几个比挨个取消快
+      const bar=el("div","apnbar");
+      const inp=el("input","apnsearch"); inp.placeholder="搜索"; inp.value=q;
+      inp.oninput=()=>{ q=inp.value; const pos=inp.selectionStart; draw(); const n=box.querySelector(".apnsearch"); n.focus(); n.setSelectionRange(pos,pos); };
+      const none=el("button","apnnone"); none.type="button"; none.textContent="全不选"; none.disabled=!own.length;
+      none.onclick=()=>save([]);
+      bar.append(inp, none); box.append(bar);
+    }
+    const ql=q.trim().toLowerCase();
+    const shown=ql ? order.filter(it=>(it.name+" "+(it.desc||"")).toLowerCase().includes(ql)) : order;
+    const list=el("div","apnames");
+    if(!shown.length) list.append(apEmpty("没有匹配的"));
+    for(const it of shown){
+      const r=el("label","apnrow"); r.title=it.desc||it.name;
+      r.innerHTML='<input type="checkbox"'+(on.has(it.name)?" checked":"")+'><span class="aptmain"><span class="aptname"></span><span class="aptsub"></span></span>';
+      r.querySelector(".aptname").textContent=it.name;
+      r.querySelector(".aptsub").textContent=it.desc||"";
+      r.querySelector("input").onchange=ev=>save(ev.target.checked ? [...own, it.name] : own.filter(n=>n!==it.name));
+      list.append(r);
+    }
+    box.append(list);
+  };
+  draw();
 }
 
 // 文件:家目录(vococo 管) + 工作目录第一层 + 关联(默认只读,可写需勾选)

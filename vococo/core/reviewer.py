@@ -7,7 +7,7 @@
 - 只读:工具只给 Read/Grep/Glob/Bash(Bash 用来跑 git diff / 测试),不给 Edit/Write;
   修不修、怎么修由主 Agent 决定,避免两个 Agent 同时改同一份代码。
   注意这是「约定只读」:Bash 理论上能写文件(sed -i 之类),靠提示词约束 + danger.py 兜底。
-  所属 Agent 的 caps 禁了 Bash 时评审员也拿不到(父会话的 disallowed_tools 会传给子代理,
+  所属 Agent 的 disallowed_tools 禁了 Bash 时评审员也拿不到(父会话的 disallowed_tools 会传给子代理,
   2026-10-01 真机实测),那时它只能用 Read/Grep/Glob 看代码。
 - 模型跟随主会话(inherit):大小模型不对称搭配效果差,也省得第三方供应商下别名对不上。
 

@@ -19,7 +19,8 @@ const S = {
   project: null,        // 「活跃」项目 hash(顶部 ＋新对话 建在此;随打开的会话联动);null=默认项目
   expanded: new Set(),  // 已展开的分组:默认项目用 "__default__",项目用其 hash
   moreShown: new Set(), // 点过「展开更多」的分组(键同 expanded):折叠该组或刷新页面即清空,回到默认 5 条
-  sideTab: localStorage.getItem("vococo_sidetab") || "projects",  // 侧栏「项目/置顶/最近」Tab,记住上次选择
+  // 侧栏「Agent/定时/置顶/最近」Tab,记住上次选择;「项目」Tab 已下架,存过的旧值落到 Agent
+  sideTab: ({projects:"agents"})[localStorage.getItem("vococo_sidetab")] || localStorage.getItem("vococo_sidetab") || "agents",
   tabShown: {pinned: 20, recent: 20},  // 「置顶」「最近」两个 Tab 各自已展示的条数,点「更多」每次 +20
   tabLastFetch: {},     // 侧栏 Tab 各自上次发起刷新请求的时间戳(ms),点击 Tab 时按此节流(见 sidebar.js refreshSideTabIfStale)
   browseDir: "",        // 目录浏览器当前所在目录

@@ -155,7 +155,7 @@ class GatewayRunner:
             # 会话属于某个 Agent 且它设了默认模型 → 优先用它(Agent 能力设定,见 memory/agents.py)
             from ..memory import agents
 
-            model = agents.caps_for_session(key)["model"]
+            model = agents.runtime_for_session(key)["model"] or ""
             if not model and inc.platform == "web":
                 model = settings_store.get_web_default_model()
             model = model or config.MODEL

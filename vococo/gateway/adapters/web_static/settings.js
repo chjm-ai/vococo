@@ -789,28 +789,6 @@ document.addEventListener("click", closeConvMenu);       // 点空白处关闭
 $("#convBody").addEventListener("scroll", closeConvMenu); // 列表滚动时关闭,避免菜单错位
 document.addEventListener("click", e=>{ if(!e.target.closest(".conv")) closeAllSwipes(); });  // 点空白处收起滑开的行
 
-// 项目分组「更多」浮层菜单(单例):点 ⋯ 弹出,「删除项目」
-let projMenuEl=null, projMenuBtn=null;
-function closeProjMenu(){
-  if(projMenuBtn){ projMenuBtn.classList.remove("on"); projMenuBtn=null; }
-  if(projMenuEl){ projMenuEl.remove(); projMenuEl=null; }
-}
-function openProjMenu(btn, hash){
-  if(projMenuBtn===btn){ closeProjMenu(); return; }   // 再点一次同一个 → 收起
-  closeProjMenu();
-  projMenuBtn=btn; btn.classList.add("on");
-  const m=el("div","convmenu"); m.style.visibility="hidden";
-  const del=el("button","cmitem danger"); del.innerHTML=ic("trash")+" 删除项目";
-  del.title="移除项目(不删文件夹,可再加回)";
-  del.onclick=ev=>{ ev.stopPropagation(); closeProjMenu(); removeProject(hash); };
-  m.append(del); document.body.append(m); projMenuEl=m;
-  const r=btn.getBoundingClientRect();
-  let top=r.bottom+4, left=r.right-m.offsetWidth;
-  if(top+m.offsetHeight>window.innerHeight) top=r.top-4-m.offsetHeight;
-  m.style.top=Math.max(6,top)+"px"; m.style.left=Math.max(6,left)+"px"; m.style.visibility="visible";
-}
-document.addEventListener("click", closeProjMenu);
-$("#convBody").addEventListener("scroll", closeProjMenu);
 $("#messages").addEventListener("scroll", ()=>{
   updateScrollBtn();
   // 滚到顶部自动按最早一轮继续取历史,函数在 index.html 主脚本中声明。

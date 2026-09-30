@@ -130,6 +130,12 @@ async def test_agent_routes(env, monkeypatch):
         assert (await c.post("/agents/create", json={"name": ""})).status == 400
         r = await c.post("/agents/update", json={"id": aid, "name": "改名", "avatar": {"shape": "drop"}})
         assert (await r.json())["agent"]["avatar"]["shape"] == "drop"
+        r = await c.post("/agents/update", json={"id": aid, "skills": ["pdf"], "mcp": ["lemlist"]})
+        assert (await r.json())["agent"]["skills"] == ["pdf"]
+        r = await c.post("/agents/update", json={"id": aid, "skills": None})  # null = 跟随全局,mcp 不动
+        got = (await r.json())["agent"]
+        assert got["skills"] is None and got["mcp"] == ["lemlist"]
+        assert (await c.post("/agents/update", json={"id": "general", "mcp": []})).status == 400
         assert (await c.post("/agents/doc", json={"id": aid, "name": "NOTES.md", "text": "笔记"})).status == 200
         assert (await (await c.get(f"/agents/doc?id={aid}&name=NOTES.md")).json())["text"] == "笔记"
         assert (await c.get(f"/agents/doc?id={aid}&name=../x")).status == 400
@@ -195,3 +201,24 @@ def test_brief_for_welcome_screen(env):
     agents.write_doc(a["id"], "GOAL.md", "# 目标\n\n10 月拿 30 张名片\n\n## 成功标准\n\n- x\n")
     agents.write_doc(a["id"], "PLAN.md", "# 计划\n\n- [ ] 做名片\n")
     assert agents.brief(a["id"]) == {"summary": "跟进展会客户,说话直接。", "goal": "10 月拿 30 张名片", "has_plan": True}
+
+
+def test_skills_and_mcp_lists(env):
+    h = projects.project_hash(str(env))
+    a = agents.by_project_hash(h)
+    key = f"web:p{h}:c1"
+    assert a["skills"] is None and a["mcp"] is None  # 默认跟随全局
+    assert agents.runtime_for_session(key) == dict.fromkeys(agents.RUNTIME_KEYS)
+    a2 = agents.update(a["id"], skills=["pdf", " pdf ", ""], mcp=[])
+    assert a2["skills"] == ["pdf"] and a2["mcp"] == []  # 去重去空;空列表 = 一个都不用
+    assert agents.runtime_for_session(key) == {**dict.fromkeys(agents.RUNTIME_KEYS), "skills": ["pdf"], "mcp": []}
+    a3 = agents.update(a["id"], name="改名")  # 不传 = 不动
+    assert a3["skills"] == ["pdf"]
+    assert agents.update(a["id"], skills=None)["skills"] is None  # None = 改回跟随全局
+    assert "skills" not in agents._read_meta(a["id"])
+    with pytest.raises(ValueError):
+        agents.update(agents.GENERAL_ID, mcp=["lemlist"])  # 总助理就是全局配置
+    with pytest.raises(ValueError):
+        agents.update(a["id"], skills="pdf")
+    assert agents.runtime_for_session("web:abc") == dict.fromkeys(agents.RUNTIME_KEYS)
+    assert agents.runtime_for_session(None) == dict.fromkeys(agents.RUNTIME_KEYS)

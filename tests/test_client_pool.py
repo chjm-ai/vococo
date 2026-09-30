@@ -393,3 +393,17 @@ async def test_safety_net_compact_drains_result_before_checkin(clients, monkeypa
     assert len(made) == 1
     assert r2.text == "回复2"
     assert fake.pending.qsize() == 0
+
+
+@pytest.mark.anyio
+async def test_agent_lists_override_skills_and_mcp(clients, monkeypatch):
+    """会话所属 Agent 配了名单:技能只用名单里的(插件 skill 照挂),MCP 名单里的每轮都挂。"""
+    monkeypatch.setattr(agent.agents, "runtime_for_session",
+                        lambda key: {"skills": ["pdf"], "mcp": ["lemlist"]})
+    monkeypatch.setattr(agent.settings_store, "effective_external_mcp",
+                        lambda names=None: {n: {"type": "stdio", "command": "x"} for n in names or ()})
+    monkeypatch.setattr(agent.session_store, "get_external_mcp_names", lambda key: set())
+    await _turn()
+    opts = clients[0].options
+    assert opts.skills == ["pdf", *agent._PLUGIN_SKILLS]
+    assert set(opts.mcp_servers) == {"lemlist"}  # 用户说的只是「hi」,也照样挂
