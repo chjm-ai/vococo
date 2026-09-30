@@ -285,14 +285,17 @@
 
   /* 项目分组(手风琴;行的内边距/圆角走上面的统一规范) */
   .projgrp{gap:6px;margin-top:2px;color:var(--dim);font-size:var(--fs-md);font-weight:600;user-select:none}
-  .projgrp:hover{color:var(--text)}
+  @media(hover:hover){ .projgrp:hover{color:var(--text)} }   /* 触屏不挂 hover,否则 Agent/项目行要点两下(见上方 .conv 注释) */
   .projgrp .pgcaret{margin-right:auto;color:var(--dim2)}  /* chevron 紧跟名称(间距走 projgrp 的 gap:6px),auto 外边距把按钮推到最右 */
   .projgrp .pgname{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2)}
   .projgrp .pgadd,.projgrp .pgmore{flex-shrink:0;opacity:0;background:none;border:none;cursor:pointer;
     color:var(--dim2);font-size:var(--fs-md);padding:1px var(--sp-2);border-radius:var(--r-sm);line-height:1}
-  .projgrp:hover .pgadd,.projgrp:hover .pgmore{opacity:.6}
-  .projgrp .pgadd:hover{opacity:1;color:var(--text);background:var(--card)}
-  .projgrp .pgmore:hover,.projgrp .pgmore.on{opacity:1;color:var(--text);background:var(--card)}
+  @media(hover:hover){
+    .projgrp:hover .pgadd,.projgrp:hover .pgmore{opacity:.6}
+    .projgrp .pgadd:hover,.projgrp .pgmore:hover{opacity:1;color:var(--text);background:var(--card)}
+  }
+  .projgrp .pgmore.on{opacity:1;color:var(--text);background:var(--card)}
+  @media(hover:none){ .projgrp .pgadd,.projgrp .pgmore{opacity:.6} }   /* 触屏没 hover:按钮常显,免得点到透明的＋误开新会话 */
   .projgrp.projadd{color:var(--dim2);font-weight:600;margin-top:4px}   /* 黑灰、无分割线、与分组同款行 */
   /* 「定时」Tab 两类任务的手风琴标题:VOCOCO 可管理任务 + 本机只读任务。 */
   .crongrp{cursor:pointer;margin-top:8px}
