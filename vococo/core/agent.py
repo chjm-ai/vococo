@@ -41,7 +41,7 @@ from ..gateway import clarify, settings_store
 from ..memory import agents, session_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
-from . import client_pool
+from . import client_pool, reviewer
 from .tasks import is_sdk_task_tool
 from .prompt import build_system_prompt
 
@@ -691,6 +691,7 @@ def _compat_base_key(
     disallowed_tools: tuple = (),
     max_turns: int = 0,
     effort: str = "",
+    subagents: tuple = (),
 ) -> str:
     """保温 client 的兼容性哈希(不含 SDK 会话 id,那个在池里单独比)。
 
@@ -718,6 +719,7 @@ def _compat_base_key(
         "disallowed_tools": disallowed_tools,
         "max_turns": max_turns,
         "effort": effort,
+        "subagents": subagents,
         "route": route,
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
@@ -871,6 +873,13 @@ async def stream_turn(
     """
     from . import vision  # 懒加载:vision 依赖本模块的 ImageAttachment,顶部 import 会循环引用
 
+    # 会话所属 Agent 的运行设定(见 memory/agents.py):技能 / MCP 名单在下面各自处理;
+    # 禁用工具在这里并进调用方给的那份——硬拦,不是写在 AGENT.md 里「建议」模型别用。
+    # 默认模型在锁定会话模型时处理(见 gateway/run.py、core/task_runner.py)。
+    agent_rt = agents.runtime_for_session(session_key)
+    if agent_rt.get("disallowed_tools"):
+        disallowed_tools = list(dict.fromkeys([*(disallowed_tools or []), *agent_rt["disallowed_tools"]]))
+
     # 供应商集成:按会话选定模型(或设置页里配置的第三方供应商)算出实际模型和
     # 要注入的 env。第三方(DeepSeek/Kimi)→注入 base_url+key;官方→env 为空走订阅。
     resolved_model, provider_env = providers.resolve(model, config.MODEL)
@@ -901,7 +910,6 @@ async def stream_turn(
     # 外部 MCP 默认不挂；本轮明确的数据任务或当前会话的手动开关才会请求对应 server。
     # settings 的 enabled 仍是全局总开关，但任务匹配绝不会反向改它。
     # 所属 Agent 配了自己的 MCP 名单 → 名单里的每轮都挂、不再按关键词临时挂(见 memory/agents.py)
-    agent_rt = agents.runtime_for_session(session_key)
     if agent_rt["mcp"] is not None:
         requested_external = set(agent_rt["mcp"])
     else:
@@ -943,6 +951,8 @@ async def stream_turn(
         sys_prompt = {**sys_prompt, "append": sys_prompt.get("append", "") + system_prompt_extra}
 
     effective_max_turns = max_turns or config.MAX_TURNS
+    # 程序化子代理:显式 Git 项目会话挂评审员(见 core/reviewer.py),其余会话不挂
+    subagents = reviewer.definitions(cwd, is_explicit_project)
 
     pooling = bool(session_key) and client_pool.enabled()
     base_key = (
@@ -952,6 +962,7 @@ async def stream_turn(
             tuple(sorted(disallowed_tools or ())),
             effective_max_turns,
             effort=effective_effort,
+            subagents=tuple(sorted(subagents or ())),
         )
         if pooling
         else ""
@@ -975,6 +986,7 @@ async def stream_turn(
             env=_turn_env(provider_env),  # 设置页供应商 base_url+key + 恒定强制前台开关(见 _turn_env)
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
             disallowed_tools=list(disallowed_tools or []),
+            agents=subagents,
             max_buffer_size=_SDK_MAX_BUFFER_SIZE,
             stderr=_cli_stderr,  # 过滤 Bun 源码刷屏,见 _cli_stderr 顶部注释
             # CLI 内置 autocompact 按它自己的模型注册表算阈值,对新扩容大窗口模型

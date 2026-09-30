@@ -248,13 +248,15 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     status = "failed"
     error_note = ""
     used_tokens = 0  # 本轮新鲜 token,收尾计入每日总量
+    tool_calls = 0  # 本轮顶层工具调用次数(子代理内部的不算),记进运行指标
+    started_at = time.monotonic()
     token_budget, over_daily = _token_budget(row)
     # 录过程时间线(工具调用 + 正文交错),跟普通文字对话(gateway/core.py converse())
     # 对齐——否则任务跑完侧边栏只看得到最后一句摘要,回溯不了 AI 到底做了什么。
     timeline = Timeline()
 
     async def _drive() -> None:
-        nonlocal result_text, last_progress_ts, error_note, sdk_session_id, used_tokens
+        nonlocal result_text, last_progress_ts, error_note, sdk_session_id, used_tokens, tool_calls
         if over_daily:
             error_note = over_daily
             return
@@ -263,6 +265,10 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         # session_meta(见 dispatch()),这里读出来传给 stream_turn;没设过就是
         # 空串,stream_turn 内部 providers.resolve(None,...) 自动落到全局默认。
         model = session_store.get_chosen_model(session_key) or None
+        # 其次是所属 Agent 设的默认模型(能力设定,见 memory/agents.py)
+        from ..memory import agents
+
+        model = model or agents.runtime_for_session(session_key)["model"] or None
         # 没显式指定模型 → 默认回退到已配置的第三方供应商,不再走官方订阅:
         # 订阅 token 被封(401 OAuth access token has been revoked)时,没设
         # model 的后台任务会一启动就失败。sidecar_env 按供应商名取 (model, env),
@@ -277,8 +283,6 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                 model = ds[0]
         # 追加的标记指令只喂给模型,不进 turns 表(session_key.start_turn 存的是
         # 上面干净的 prompt_text)——收尾时从回复里抠出来,见 _split_summary_tag。
-        from ..memory import agents
-
         async for ev in stream_turn(
             [], prompt_text + _SUMMARY_TAG_INSTRUCTION, model=model, cwd=effective_cwd,
             is_explicit_project=bool(row.get("cwd_explicit")), session_key=session_key,
@@ -295,6 +299,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                 timeline.text(danger.redact_secrets(ev.text))
             elif isinstance(ev, ToolStarted):
                 timeline.tool_started(ev.name, ev.tool_id, ev.parent_id)
+                if ev.parent_id is None:
+                    tool_calls += 1
             elif isinstance(ev, ToolFinished):
                 timeline.tool_finished(
                     ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id
@@ -367,6 +373,11 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             except Exception as exc:  # noqa: BLE001 —— 记账失败不影响任务收尾
                 print(f"[task_runner] 每日用量记账失败:{exc}", flush=True)
 
+    try:
+        tasks.set_run_metrics(task_id, used_tokens, time.monotonic() - started_at, tool_calls)
+    except Exception as exc:  # noqa: BLE001 —— 指标只是统计,写失败不影响任务收尾
+        print(f"[task_runner] 运行指标记账失败:{exc}", flush=True)
+
     if status == "cancelled":
         session_store.finish_turn(turn_id, "(任务已取消)", events=timeline.blocks, session_key=session_key)
         ok = tasks.set_status(task_id, "cancelled", progress_note="已取消")
@@ -396,9 +407,31 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             flush=True,
         )
 
+    _record_agent_run(task_id, status)
     await task_events.emit_terminal(task_id)
 
     _maybe_start_next()
+
+
+def _record_agent_run(task_id: str, status: str) -> None:
+    """从 Agent 会话派出的后台任务(非定时)跑完 → 记进该 Agent 的运行记录。
+
+    定时任务不在这里记:它们由 cron/scheduler 的终态钩子记,还会复制一份到主会话。
+    用户取消的不记——那不是一次真正的运行结果。"""
+    row = tasks.get(task_id)
+    if not row or not row.get("agent_id") or row.get("origin") == "cron" or status == "cancelled":
+        return
+    from ..memory import agents
+
+    try:
+        agents.record_run(
+            row["agent_id"], {"id": task_id, "name": row["title"]},
+            "success" if status == "done" else "error",
+            row.get("result_summary") or row.get("result_full") or "(无输出)",
+            metrics=agents.metrics_from_task(row), to_main=False,
+        )
+    except Exception as exc:  # noqa: BLE001 —— 记录失败不影响任务本身
+        print(f"[task_runner] 写 Agent 运行记录失败:{exc}", flush=True)
 
 
 def _maybe_start_next() -> None:
@@ -412,6 +445,21 @@ def _maybe_start_next() -> None:
             continue  # 状态已被别处改了(如取消排队中的任务),跳过看下一个
         _notify_activity(nxt["id"])
         _running[nxt["id"]] = asyncio.create_task(_run(nxt["id"]))
+
+
+def _source_agent_id(context_session_key: str | None) -> str | None:
+    """派发来源会话属于哪个项目 Agent → 任务也归它(拿它的设定、结果记进它的运行记录)。
+
+    通用 Agent 不算:语音/全局主会话派的活一向是「无主」的,不给它们套通用设定。"""
+    if not context_session_key:
+        return None
+    from ..memory import agents
+
+    try:
+        a = agents.agent_for_session(context_session_key)
+    except Exception:  # noqa: BLE001 —— 认不出归属就当无主,不影响派发
+        return None
+    return a["id"] if a and a["id"] != agents.GENERAL_ID else None
 
 
 def dispatch(
@@ -441,7 +489,8 @@ def dispatch(
     task = tasks.create(title=title, prompt=prompt, cwd=cwd, cwd_explicit=cwd_explicit,
                         dispatch_platform=dispatch_platform,
                         dispatch_chat_id=dispatch_chat_id,
-                        origin=origin, task_id=task_id)
+                        origin=origin, task_id=task_id,
+                        agent_id=_source_agent_id(context_session_key))
     if model:
         session_store.set_chosen_model(tasks.session_key(task["id"]), model)
     _maybe_start_next()

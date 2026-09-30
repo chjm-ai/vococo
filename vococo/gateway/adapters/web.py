@@ -2979,8 +2979,8 @@ class WebAdapter:
 
         body = body or {}
         try:
-            # skills / mcp:键不出现 = 不动;值为 null = 改回跟随全局
-            lists = {k: body[k] for k in ("skills", "mcp") if k in body}
+            # skills / mcp / model / disallowed_tools:键不出现 = 不动;值为 null = 改回跟随全局
+            lists = {k: body[k] for k in agents.RUNTIME_KEYS if k in body}
             a = agents.update(
                 str(body.get("id") or ""),
                 name=body.get("name"), avatar=body.get("avatar"), links=body.get("links"), **lists,
@@ -3047,9 +3047,11 @@ class WebAdapter:
     async def _handle_agent_runs(self, request: web.Request) -> web.Response:
         from ...memory import agents
 
-        return _compressed_json({"runs": agents.recent_runs(
-            request.query.get("id", ""), job_id=request.query.get("job") or None,
-        )})
+        aid = request.query.get("id", "")
+        return _compressed_json({
+            "runs": agents.recent_runs(aid, job_id=request.query.get("job") or None),
+            "stats": agents.run_stats(aid),
+        })
 
     @_authed
     async def _handle_agent_files(self, request: web.Request) -> web.Response:

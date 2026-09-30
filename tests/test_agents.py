@@ -208,10 +208,10 @@ def test_skills_and_mcp_lists(env):
     a = agents.by_project_hash(h)
     key = f"web:p{h}:c1"
     assert a["skills"] is None and a["mcp"] is None  # 默认跟随全局
-    assert agents.runtime_for_session(key) == {"skills": None, "mcp": None}
+    assert agents.runtime_for_session(key) == dict.fromkeys(agents.RUNTIME_KEYS)
     a2 = agents.update(a["id"], skills=["pdf", " pdf ", ""], mcp=[])
     assert a2["skills"] == ["pdf"] and a2["mcp"] == []  # 去重去空;空列表 = 一个都不用
-    assert agents.runtime_for_session(key) == {"skills": ["pdf"], "mcp": []}
+    assert agents.runtime_for_session(key) == {**dict.fromkeys(agents.RUNTIME_KEYS), "skills": ["pdf"], "mcp": []}
     a3 = agents.update(a["id"], name="改名")  # 不传 = 不动
     assert a3["skills"] == ["pdf"]
     assert agents.update(a["id"], skills=None)["skills"] is None  # None = 改回跟随全局
@@ -220,5 +220,5 @@ def test_skills_and_mcp_lists(env):
         agents.update(agents.GENERAL_ID, mcp=["lemlist"])  # 总助理就是全局配置
     with pytest.raises(ValueError):
         agents.update(a["id"], skills="pdf")
-    assert agents.runtime_for_session("web:abc") == {"skills": None, "mcp": None}
-    assert agents.runtime_for_session(None) == {"skills": None, "mcp": None}
+    assert agents.runtime_for_session("web:abc") == dict.fromkeys(agents.RUNTIME_KEYS)
+    assert agents.runtime_for_session(None) == dict.fromkeys(agents.RUNTIME_KEYS)

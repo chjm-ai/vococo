@@ -109,6 +109,12 @@ def _conn() -> sqlite3.Connection:
             ("cwd_explicit", "cwd_explicit INTEGER NOT NULL DEFAULT 0"),
             # 老数据(改名前落库的行)一律是语音派发的,默认值 'voice' 准确反映历史事实。
             ("origin", "origin TEXT NOT NULL DEFAULT 'voice'"),
+            # 所属 Agent(派发时从来源会话推出来,见 task_runner.dispatch)+ 最近一轮的运行指标
+            # (见 set_run_metrics),给 Agent 的运行记录 / 复盘当数据
+            ("agent_id", "agent_id TEXT"),
+            ("last_tokens", "last_tokens INTEGER NOT NULL DEFAULT 0"),
+            ("last_duration", "last_duration REAL NOT NULL DEFAULT 0"),
+            ("last_tool_calls", "last_tool_calls INTEGER NOT NULL DEFAULT 0"),
         ):
             try:
                 _DB.execute(f"ALTER TABLE tasks ADD COLUMN {ddl}")
@@ -142,6 +148,7 @@ def create(
     dispatch_chat_id: str | None = None,
     origin: str = "voice",
     task_id: str | None = None,
+    agent_id: str | None = None,
 ) -> dict:
     """落库一条 queued 任务,返回完整行。
 
@@ -159,9 +166,10 @@ def create(
     now = time.time()
     c.execute(
         "INSERT INTO tasks(id,title,prompt,cwd,cwd_explicit,status,progress_note,result_summary,"
-        "result_full,dispatch_platform,dispatch_chat_id,origin,created_at,updated_at) "
-        "VALUES (?,?,?,?,?,'queued','','','',?,?,?,?,?)",
-        (tid, title, prompt, cwd, int(cwd_explicit), dispatch_platform, dispatch_chat_id, origin, now, now),
+        "result_full,dispatch_platform,dispatch_chat_id,origin,agent_id,created_at,updated_at) "
+        "VALUES (?,?,?,?,?,'queued','','','',?,?,?,?,?,?)",
+        (tid, title, prompt, cwd, int(cwd_explicit), dispatch_platform, dispatch_chat_id, origin,
+         agent_id, now, now),
     )
     c.commit()
     return get(tid)
@@ -285,6 +293,17 @@ def set_progress(task_id: str, note: str) -> None:
         "UPDATE tasks SET progress_note=?, updated_at=? WHERE id=? "
         "AND status NOT IN ('done','failed','cancelled')",
         (note, time.time(), task_id),
+    )
+    c.commit()
+
+
+def set_run_metrics(task_id: str, tokens: int, duration: float, tool_calls: int) -> None:
+    """记下最近一轮的新鲜 token / 耗时(秒)/ 顶层工具调用次数。在 finish 前写,
+    终态处理器(record_run)读 tasks.get 时就能拿到。"""
+    c = _conn()
+    c.execute(
+        "UPDATE tasks SET last_tokens=?, last_duration=?, last_tool_calls=? WHERE id=?",
+        (int(tokens), round(float(duration), 1), int(tool_calls), task_id),
     )
     c.commit()
 

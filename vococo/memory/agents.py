@@ -4,7 +4,7 @@
 - Agent 与项目一一对应:每个项目自动就是一个 Agent,id 直接用项目哈希(不变);
   另有一个「通用」Agent(id=general),接住不属于任何项目的会话,它的主会话就是全局主会话。
 - 家目录 data/agents/<id>/ 由 vococo 管,不往用户的项目目录里写东西:
-    agent.json  名称 / 头像 / 工作目录 / 关联 / 技能与 MCP 名单(系统要读的结构化设置)
+    agent.json  名称 / 头像 / 工作目录 / 关联 / 技能与 MCP 名单 / 默认模型 / 禁用工具(系统要读的结构化设置)
     AGENT.md    人格、技能、目标(纯文本,你写,它每次开工都读)
     NOTES.md    它的笔记
     workspace/  新建 Agent 且没指定目录时的默认工作目录
@@ -18,6 +18,9 @@
 技能与 MCP(2026-09-30):agent.json 的 skills / mcp 两份名单,不写 = 跟随设置页的全局配置;
 写了(哪怕是空列表)= 这个 Agent 名下的会话和定时任务只用名单里的(runtime_for_session)。
 MCP 名单里的外部 server 每轮都挂,不再按关键词临时挂。通用 Agent 不单独配,它就是全局配置本身。
+同一套规则还有两项(2026-10-01):model = 名下【新会话】默认用的模型(老会话已锁定模型,不受影响),
+disallowed_tools = 硬拦的工具名(如 Bash、mcp__vococo__dispatch_session),在 core/agent.stream_turn 里生效,
+子代理也拿不到(父会话的禁用会传给子代理,实测过)。
 
 目标闭环(同日追加):目标 ──拆解──> 计划 ──执行──> 采集数据 ──复盘──> 修正 ──写回目标文件
 - GOAL.md  目标 / 成功标准 / 不做(你定);「当前进展」「复盘记录」两节由复盘任务写回
@@ -56,8 +59,9 @@ PLAN_TEMPLATE = "# 计划\n\n## 里程碑\n\n\n## 任务\n\n"
 REVIEW_CRON = "0 9 * * 1"  # 目标复盘默认每周一早 9 点
 REVIEW_ROLE = "goal_review"  # 复盘任务在 cron_jobs.json 里的 role 标记,一个 Agent 只挂一条
 REVIEW_PROMPT = """【目标复盘】给「{name}」做一次复盘,文件都在 {home}/ 下:
-1. 读 GOAL.md、PLAN.md、NOTES.md,以及 runs/ 里最近 7 天的运行记录
-2. 对照「成功标准」判断进展,用 runs 里的具体数字说话,没数据就明说缺什么数据
+1. 读 GOAL.md、PLAN.md、NOTES.md,以及 runs/ 里最近 7 天的运行记录(每条标题带 token / 耗时 / 工具次数)
+2. 对照「成功标准」判断进展,用 runs 里的具体数字和本条消息开头的【运行统计】说话,没数据就明说缺什么数据;
+   成功率低、token 花得多却没产出的任务,点名指出
 3. 改写 GOAL.md 的「当前进展」一节;在「复盘记录」末尾追加一行:日期 · 进展 · 偏差 · 下步
 4. 更新 PLAN.md:勾掉做完的,补上下一步任务
 5. 「目标」「成功标准」「不做」三节不许改;觉得该改,在汇报里提建议,等我同意
@@ -78,6 +82,12 @@ CREATE TABLE IF NOT EXISTS agent_runs(
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runs ON agent_runs(agent_id, ts);
 """
+# 运行指标列(2026-10-01 追加):老库逐列补,已存在就跳过
+_METRIC_COLUMNS = (
+    "tokens INTEGER NOT NULL DEFAULT 0",
+    "duration REAL NOT NULL DEFAULT 0",
+    "tool_calls INTEGER NOT NULL DEFAULT 0",
+)
 _ready_for = None  # 已建表的那条连接(测试会换库重连,换了就重新建表)
 _listener: Callable[[str], None] | None = None
 
@@ -87,6 +97,11 @@ def _conn():
     c = _db.conn()
     if c is not _ready_for:
         c.executescript(_SCHEMA)
+        have = {r[1] for r in c.execute("PRAGMA table_info(agent_runs)").fetchall()}
+        for ddl in _METRIC_COLUMNS:
+            if ddl.split()[0] not in have:
+                c.execute(f"ALTER TABLE agent_runs ADD COLUMN {ddl}")
+        c.commit()
         _ready_for = c
     return c
 
@@ -172,6 +187,15 @@ def _normalize_names(names) -> list[str] | None:
     return list(dict.fromkeys(str(x).strip() for x in names if str(x).strip()))
 
 
+def _normalize_model(model) -> str | None:
+    """默认模型:None / 空 = 跟随全局。"""
+    if model is None:
+        return None
+    if not isinstance(model, str):
+        raise ValueError("模型必须是字符串")
+    return model.strip()[:80] or None
+
+
 def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
     """把 agent.json + 项目信息拼成对外的 Agent 字典。"""
     if agent_id == GENERAL_ID:
@@ -192,6 +216,9 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
         # agent.json 可以手改,坏值当「跟随全局」,不让整个列表接口报错
         "skills": _normalize_names(meta["skills"]) if isinstance(meta.get("skills"), list) else None,
         "mcp": _normalize_names(meta["mcp"]) if isinstance(meta.get("mcp"), list) else None,
+        "model": meta["model"].strip() or None if isinstance(meta.get("model"), str) else None,
+        "disallowed_tools": _normalize_names(meta["disallowed_tools"])
+        if isinstance(meta.get("disallowed_tools"), list) else None,
         "created_at": meta.get("created_at") or 0,
         "home": str(home(agent_id)),
     }
@@ -291,10 +318,11 @@ _UNSET = object()
 
 
 def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None,
-           links: list | None = None, skills=_UNSET, mcp=_UNSET) -> dict | None:
-    """改名称 / 头像 / 关联 / 技能与 MCP 名单。目录名用 id,不随名称变。
+           links: list | None = None, skills=_UNSET, mcp=_UNSET, model=_UNSET,
+           disallowed_tools=_UNSET) -> dict | None:
+    """改名称 / 头像 / 关联 / 技能与 MCP 名单 / 默认模型 / 禁用工具。目录名用 id,不随名称变。
 
-    skills / mcp 传 None = 改回跟随全局;不传 = 不动。"""
+    skills / mcp / model / disallowed_tools 传 None = 改回跟随全局;不传 = 不动。"""
     if agent_id != GENERAL_ID and get(agent_id) is None:
         return None
     meta = _read_meta(agent_id)
@@ -311,16 +339,18 @@ def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None
         meta["avatar"] = _normalize_avatar(avatar, agent_id)
     if links is not None:
         meta["links"] = _normalize_links(links)
-    for key, val in (("skills", skills), ("mcp", mcp)):
+    for key, val, norm in (("skills", skills, _normalize_names), ("mcp", mcp, _normalize_names),
+                           ("model", model, _normalize_model),
+                           ("disallowed_tools", disallowed_tools, _normalize_names)):
         if val is _UNSET:
             continue
         if agent_id == GENERAL_ID:
             raise ValueError("总助理用设置页的全局配置,不单独配")
-        names = _normalize_names(val)
-        if names is None:
+        v = norm(val)
+        if v is None:
             meta.pop(key, None)
         else:
-            meta[key] = names
+            meta[key] = v
     _write_meta(agent_id, meta)
     return get(agent_id)
 
@@ -438,13 +468,40 @@ def plan_prompt(agent: dict) -> str:
     return PLAN_PROMPT.format(home=agent["home"])
 
 
-def _log_run(agent_id: str, name: str, status: str, text: str, ts: float) -> None:
+def metrics_from_task(row: dict | None) -> dict:
+    """后台任务行(core/tasks)→ 运行指标。"""
+    row = row or {}
+    return {
+        "tokens": int(row.get("last_tokens") or 0),
+        "duration": float(row.get("last_duration") or 0),
+        "tool_calls": int(row.get("last_tool_calls") or 0),
+    }
+
+
+def _fmt_tokens(n: int) -> str:
+    return f"{n / 10000:.1f} 万 token" if n >= 10000 else f"{n} token"
+
+
+def _fmt_duration(sec: float) -> str:
+    return f"{sec / 60:.1f} 分钟" if sec >= 60 else f"{sec:.0f} 秒"
+
+
+def _metrics_line(m: dict | None) -> str:
+    """「12.3 万 token · 85 秒 · 23 次工具」;没有指标(脚本任务 / 老数据)返回空串。"""
+    if not m or not (m.get("tokens") or m.get("duration") or m.get("tool_calls")):
+        return ""
+    return f"{_fmt_tokens(int(m.get('tokens') or 0))} · {_fmt_duration(float(m.get('duration') or 0))}" \
+           f" · {int(m.get('tool_calls') or 0)} 次工具"
+
+
+def _log_run(agent_id: str, name: str, status: str, text: str, ts: float, metrics: dict | None = None) -> None:
     """运行结果按月追加进 runs/YYYY-MM.md,复盘任务读它当数据。"""
     d = home(agent_id) / "runs"
     d.mkdir(parents=True, exist_ok=True)
     t = time.localtime(ts)
+    head = " · ".join(x for x in (time.strftime("%m-%d %H:%M", t), name, status, _metrics_line(metrics)) if x)
     with open(d / time.strftime("%Y-%m.md", t), "a", encoding="utf-8") as f:
-        f.write(f"\n## {time.strftime('%m-%d %H:%M', t)} · {name} · {status}\n\n{text.strip()[:4000]}\n")
+        f.write(f"\n## {head}\n\n{text.strip()[:4000]}\n")
 
 
 # ── 会话 ↔ Agent ───────────────────────────────────────────────────────
@@ -460,11 +517,16 @@ def agent_for_session(session_key: str) -> dict | None:
     if phash:
         return by_project_hash(phash)
     if session_key.startswith("task:"):
+        from ..core import tasks
         from ..cron import scheduler
 
         job = next((j for j in scheduler.load_jobs() if j.get("id") == session_key[5:]), None)
-        if job and job.get("agent_id"):
-            return get(job["agent_id"])
+        if job:
+            return get(job["agent_id"]) if job.get("agent_id") else None
+        # 不是定时任务 → 看派发时记下的归属(从 Agent 会话里派出的后台任务,见 task_runner.dispatch)
+        row = tasks.get(session_key[5:])
+        if row and row.get("agent_id"):
+            return get(row["agent_id"])
     if session_key == config.SESSION_KEY:
         return get(GENERAL_ID)
     return None
@@ -507,18 +569,22 @@ def prompt_extra(agent: dict | None) -> str:
     return text[:PROMPT_MAX_CHARS]
 
 
+RUNTIME_KEYS = ("skills", "mcp", "model", "disallowed_tools")
+
+
 def runtime_for_session(session_key: str | None) -> dict:
-    """本轮该用的技能 / MCP 名单:{"skills": list|None, "mcp": list|None},None = 跟随全局。"""
+    """本轮该用的 Agent 运行设定:{"skills", "mcp", "model", "disallowed_tools"},None = 跟随全局。"""
+    empty = dict.fromkeys(RUNTIME_KEYS)
     if not session_key:
-        return {"skills": None, "mcp": None}
+        return empty
     try:
         a = agent_for_session(session_key)
     except Exception as exc:  # noqa: BLE001 —— 读不到就按全局走,不影响对话
         print(f"[agents] 读取 Agent 名单失败:{exc}", flush=True)
         a = None
     if not a or a["id"] == GENERAL_ID:
-        return {"skills": None, "mcp": None}
-    return {"skills": a.get("skills"), "mcp": a.get("mcp")}
+        return empty
+    return {k: a.get(k) for k in RUNTIME_KEYS}
 
 
 def prompt_extra_for_session(session_key: str) -> str:
@@ -530,8 +596,13 @@ def prompt_extra_for_session(session_key: str) -> str:
 
 
 # ── 定时任务结果 → 主会话 + 动态 ─────────────────────────────────────────
-def record_run(agent_id: str, job: dict, status: str, text: str) -> int | None:
-    """把一次定时任务的结果写进该 Agent 的主会话(居中一行「⏰ 任务名」+ 结果),并记进动态。"""
+def record_run(agent_id: str, job: dict, status: str, text: str, *,
+               metrics: dict | None = None, to_main: bool = True) -> int | None:
+    """把一次运行结果记进动态(agent_runs + runs/)。
+
+    to_main=True(定时任务):再往主会话写一轮(居中一行「⏰ 任务名」+ 结果)并标未读;
+    to_main=False(从 Agent 会话派出的后台任务):用户已经在任务会话里看过了,只记数据。
+    metrics:{tokens, duration, tool_calls},复盘按它算成本和成功率。"""
     from . import session_store
 
     agent = get(agent_id)
@@ -540,21 +611,28 @@ def record_run(agent_id: str, job: dict, status: str, text: str) -> int | None:
     key = main_session_key(agent)
     name = job.get("name") or "定时任务"
     now = time.time()
+    m = metrics or {}
     try:
-        _log_run(agent_id, name, status, text, now)
+        _log_run(agent_id, name, status, text, now, m)
     except OSError as exc:
         print(f"[agents] 写运行记录失败:{exc}", flush=True)
     c = _conn()
-    cur = c.execute(
-        "INSERT INTO turns(session_key, ts, user_text, assistant_text) VALUES (?,?,?,?)",
-        (key, now, f"{SYS_MARKER} ⏰ {name}", text),
-    )
-    turn_id = cur.lastrowid
+    turn_id = None
+    if to_main:
+        cur = c.execute(
+            "INSERT INTO turns(session_key, ts, user_text, assistant_text) VALUES (?,?,?,?)",
+            (key, now, f"{SYS_MARKER} ⏰ {name}", text),
+        )
+        turn_id = cur.lastrowid
     c.execute(
-        "INSERT INTO agent_runs(agent_id, job_id, job_name, ts, status, text, turn_id) VALUES (?,?,?,?,?,?,?)",
-        (agent_id, job.get("id") or "", name, now, status, text[:4000], turn_id),
+        "INSERT INTO agent_runs(agent_id, job_id, job_name, ts, status, text, turn_id, tokens, duration, tool_calls)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (agent_id, job.get("id") or "", name, now, status, text[:4000], turn_id,
+         int(m.get("tokens") or 0), float(m.get("duration") or 0), int(m.get("tool_calls") or 0)),
     )
     c.commit()
+    if not to_main:
+        return None
     session_store.set_pending_review(key, True)
     if _listener is not None:
         try:
@@ -565,7 +643,8 @@ def record_run(agent_id: str, job: dict, status: str, text: str) -> int | None:
 
 
 def recent_runs(agent_id: str, limit: int = 50, job_id: str | None = None) -> list[dict]:
-    sql = "SELECT job_id, job_name, ts, status, text, turn_id FROM agent_runs WHERE agent_id=?"
+    sql = ("SELECT job_id, job_name, ts, status, text, turn_id, tokens, duration, tool_calls"
+           " FROM agent_runs WHERE agent_id=?")
     args: list = [agent_id]
     if job_id:
         sql += " AND job_id=?"
@@ -573,6 +652,47 @@ def recent_runs(agent_id: str, limit: int = 50, job_id: str | None = None) -> li
     sql += " ORDER BY ts DESC LIMIT ?"
     args.append(max(1, min(int(limit), 500)))
     return [
-        {"job_id": r[0], "job_name": r[1], "ts": r[2], "status": r[3], "text": r[4], "turn_id": r[5]}
+        {"job_id": r[0], "job_name": r[1], "ts": r[2], "status": r[3], "text": r[4], "turn_id": r[5],
+         "tokens": r[6], "duration": r[7], "tool_calls": r[8]}
         for r in _conn().execute(sql, args).fetchall()
     ]
+
+
+def run_stats(agent_id: str, days: int = 7) -> dict:
+    """最近 days 天:总次数 / 成功次数 / 成功率 / token 合计 / 平均耗时,外加按任务名的明细。"""
+    since = time.time() - days * 86400
+    rows = _conn().execute(
+        "SELECT job_name, status, tokens, duration FROM agent_runs WHERE agent_id=? AND ts>=?",
+        (agent_id, since),
+    ).fetchall()
+    by_job: dict[str, dict] = {}
+    for name, status, tokens, duration in rows:
+        j = by_job.setdefault(name, {"name": name, "runs": 0, "ok": 0, "tokens": 0, "duration": 0.0})
+        j["runs"] += 1
+        j["ok"] += 1 if str(status).startswith("success") else 0
+        j["tokens"] += int(tokens or 0)
+        j["duration"] += float(duration or 0)
+    runs = sum(j["runs"] for j in by_job.values())
+    ok = sum(j["ok"] for j in by_job.values())
+    # 平均耗时只算有耗时的:脚本任务 / 老数据没有指标,记的是 0,算进分母会把平均拉低
+    timed = sum(1 for r in rows if (r[3] or 0) > 0)
+    return {
+        "days": days, "runs": runs, "ok": ok,
+        "success_rate": round(ok / runs, 3) if runs else None,
+        "tokens": sum(j["tokens"] for j in by_job.values()),
+        "avg_duration": round(sum(j["duration"] for j in by_job.values()) / timed, 1) if timed else 0,
+        "jobs": sorted(by_job.values(), key=lambda j: -j["tokens"]),
+    }
+
+
+def stats_text(agent_id: str, days: int = 7) -> str:
+    """【运行统计】文字块,复盘任务每次触发时拼在指令前面(见 cron/scheduler._run_job)。"""
+    st = run_stats(agent_id, days)
+    if not st["runs"]:
+        return f"【运行统计·近 {days} 天】没有任何运行记录。"
+    lines = [f"【运行统计·近 {days} 天】共 {st['runs']} 次,成功 {st['ok']} 次"
+             f"({st['success_rate'] * 100:.0f}%),合计 {_fmt_tokens(st['tokens'])},"
+             f"平均每次 {_fmt_duration(st['avg_duration'])}"]
+    for j in st["jobs"]:
+        lines.append(f"- {j['name']}:{j['runs']} 次,成功 {j['ok']},{_fmt_tokens(j['tokens'])}")
+    return "\n".join(lines)

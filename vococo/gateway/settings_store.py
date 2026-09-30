@@ -436,7 +436,7 @@ def web_providers_raw() -> dict[str, dict]:
     return dict(_load()["web_providers"])
 
 
-def _is_git_workspace(cwd: str | None) -> bool:
+def is_git_workspace(cwd: str | None) -> bool:
     """目录或任一父目录存在 Git 元数据；兼容主仓和 linked worktree 的 .git 文件。"""
     if not cwd:
         return False
@@ -458,7 +458,7 @@ def effective_skills(
     工作区才加载 `coding` Profile；非 Git 目录和普通聊天仍走全局 Skill 配置。
     """
     d = _load()
-    if is_explicit_project and _is_git_workspace(cwd):
+    if is_explicit_project and is_git_workspace(cwd):
         profile_skills = d["skill_profiles"].get("coding")
         if isinstance(profile_skills, list):
             return list(profile_skills)

@@ -1587,6 +1587,8 @@
     display:inline-flex;align-items:center;justify-content:center;transition:background var(--t-fast),color var(--t-fast)}
   @media(hover:hover){ #apClose:hover{background:var(--panel2);color:var(--text)} }
   #apBody{flex:1;overflow-y:auto;padding:var(--sp-1) var(--sp-4) var(--sp-5);display:flex;flex-direction:column;gap:2px}
+  /* 纵向 flex 容器里子项默认会被压扁(内容一多标题/输入框就被挤成一条缝),一律不收缩、交给滚动 */
+  #apBody > *{flex-shrink:0}
   .apempty{padding:var(--sp-4) var(--sp-1);color:var(--dim2);font-size:var(--fs-md);line-height:1.6}
   .apsec{margin-top:var(--sp-5);padding:0 var(--sp-1) var(--sp-1);font-size:var(--fs-sm);font-weight:600;color:var(--dim2);
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1603,6 +1605,11 @@
   .aprtime{color:var(--dim2);font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
   .aprtext{margin-top:2px;padding-left:12px;color:var(--dim);font-size:var(--fs-sm);line-height:1.5;
     display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .aprmeta{margin-top:2px;padding-left:12px;color:var(--dim2);font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
+  .apstats{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--sp-2);padding:var(--sp-2) 0 var(--sp-3)}
+  .apstat{display:flex;flex-direction:column;gap:2px;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);background:var(--panel2);min-width:0}
+  .apstat b{font-size:var(--fs-md);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .apstat span{font-size:var(--fs-sm);color:var(--dim2)}
   /* 定时 / 关联 */
   .aptask,.aplink{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3);border-radius:var(--r-md);transition:background var(--t-fast)}
   .aptask{cursor:pointer}
@@ -1657,6 +1664,10 @@
   .apchip .agav{width:22px;height:20px}
   .apchip.on{border-color:var(--accent)}
   @media(hover:hover){ .apchip:hover{border-color:var(--line2)} .apchip.on:hover{border-color:var(--accent)} }
+  /* 设定 · 默认模型 / 禁用工具 */
+  .apselect,.apinput{width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:var(--r-md);color:var(--text);
+    padding:var(--sp-2) var(--sp-3);font-size:var(--fs-md);font-family:inherit;transition:border-color var(--t-fast)}
+  .apselect:focus,.apinput:focus{border-color:var(--dim2);outline:none}
   /* 文件 */
   .apfile{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);
     font-size:var(--fs-md);color:var(--dim);cursor:pointer;transition:background var(--t-fast),color var(--t-fast)}

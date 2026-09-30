@@ -236,11 +236,12 @@ function apStale(a, tab){ return $("#agentPanel").dataset.agent!==a.id || S.agen
 // 动态:定时任务运行结果的精简列表(完整内容在主会话里)
 async function renderApFeed(body, a){
   body.append(apEmpty("加载中…"));
-  let runs=[];
-  try{ runs=(await (await api("/agents/runs?id="+encodeURIComponent(a.id))).json()).runs||[]; }catch(e){}
+  let runs=[], stats=null;
+  try{ const d=await (await api("/agents/runs?id="+encodeURIComponent(a.id))).json(); runs=d.runs||[]; stats=d.stats||null; }catch(e){}
   if(apStale(a,"feed")) return;
   body.innerHTML="";
-  if(!runs.length){ body.append(apEmpty("还没有运行记录。定时任务跑完会出现在这里。")); return; }
+  if(!runs.length){ body.append(apEmpty("还没有运行记录。定时任务和从这里派出的后台任务跑完会出现在这里。")); return; }
+  if(stats && stats.runs) body.append(apStatsCard(stats));
   for(const r of runs){
     const row=el("div","aprun");
     const head=el("div","aprhead");
@@ -250,9 +251,31 @@ async function renderApFeed(body, a){
     head.append(dot,nm,tm);
     const tx=el("div","aprtext"); tx.textContent=(r.text||"").replace(/\s+/g," ").slice(0,160);
     row.append(head,tx);
-    row.onclick=()=>{ const j=(S.cronJobs||[]).find(x=>x.job_id===r.job_id); openConv(j?j.conv:a.main_conv); };
+    const mt=runMetricsText(r);
+    if(mt){ const m=el("div","aprmeta"); m.textContent=mt; row.append(m); }
+    // 定时任务 → 它的会话;派出的后台任务(没复制进主会话,turn_id 为空)→ 任务会话
+    row.onclick=()=>{ const j=(S.cronJobs||[]).find(x=>x.job_id===r.job_id); openConv(j?j.conv:(r.turn_id==null&&r.job_id?"task:"+r.job_id:a.main_conv)); };
     body.append(row);
   }
+}
+
+function fmtTokens(n){ n=+n||0; return n>=10000 ? (n/10000).toFixed(1)+" 万" : String(n); }
+function fmtDur(s){ s=+s||0; return s>=60 ? (s/60).toFixed(1)+" 分钟" : Math.round(s)+" 秒"; }
+function runMetricsText(r){
+  if(!(r.tokens||r.duration||r.tool_calls)) return "";
+  return fmtTokens(r.tokens)+" token · "+fmtDur(r.duration)+" · "+(r.tool_calls||0)+" 次工具";
+}
+// 动态顶部:近 7 天汇总(次数 / 成功率 / token / 平均耗时)
+function apStatsCard(st){
+  const box=el("div","apstats");
+  const cell=(v,l)=>{ const c=el("div","apstat"); const b=el("b"); b.textContent=v; const s=el("span"); s.textContent=l; c.append(b,s); return c; };
+  box.append(
+    cell(st.runs+" 次", "近 "+st.days+" 天"),
+    cell(st.success_rate==null?"—":Math.round(st.success_rate*100)+"%", "成功率"),
+    cell(fmtTokens(st.tokens), "token"),
+    cell(fmtDur(st.avg_duration), "平均耗时"),
+  );
+  return box;
 }
 
 // 定时:挂在这个 Agent 名下的任务;点行看该任务自己的会话
@@ -434,6 +457,7 @@ async function renderApSetup(body, a){
   renderApNames(body, a, "skills", "技能", skills.map(x=>({name:x.name, desc:x.description})),
     ()=>skills.filter(x=>x.enabled).map(x=>x.name));
   renderApNames(body, a, "mcp", "MCP", mcps.map(x=>({name:x.name, desc:x.url||x.command||""})), ()=>[]);
+  renderApModelTools(body, a);
   const rm=el("button","apbtn danger"); rm.type="button"; rm.textContent="移除 Agent";
   rm.title="只从列表移除,文件夹和它的文件都留着,再把目录加回来就恢复";
   rm.onclick=async()=>{
@@ -441,6 +465,38 @@ async function renderApSetup(body, a){
     await removeProject(a.project_hash); await loadAgents(); hideAgentPanel(); renderConvs();
   };
   body.append(rm);
+}
+// 默认模型 + 禁用工具(memory/agents.py 的 model / disallowed_tools,后端硬生效)。
+// 同样只重画自己这一块;模型清单异步拉,先占住位置,免得插到「移除 Agent」按钮后面
+function renderApModelTools(body, a){
+  const box=el("div"); body.append(box);
+  box.append(apSection("默认模型(新会话)"));
+  const sel=el("select","apselect");
+  const o0=el("option"); o0.value=""; o0.textContent="跟随全局默认"; sel.append(o0);
+  box.append(sel);
+  box.append(apSection("禁用工具"));
+  const dis=el("input","apinput"); dis.value=(a.disallowed_tools||[]).join(", ");
+  dis.placeholder="如 Bash, WebFetch, mcp__vococo__dispatch_session(逗号分隔)";
+  const note=el("div","apnote"); note.textContent="名下会话和定时任务里直接拦掉,子代理也用不了。模型只影响新开的会话。";
+  box.append(dis, note);
+  const acts=el("div","apacts");
+  const save=el("button","apbtn primary"); save.type="button"; save.textContent="保存"; save.disabled=true;
+  sel.onchange=dis.oninput=()=>{ save.disabled=false; };
+  save.onclick=async()=>{
+    const tools=dis.value.split(/[,，\s]+/).map(x=>x.trim()).filter(Boolean);
+    let r;
+    try{ r=await agentPost("/agents/update",{id:a.id, model:sel.value||null, disallowed_tools:tools.length?tools:null}); }
+    catch(e){ alert(e.message); return; }
+    a.model=r.agent.model; a.disallowed_tools=r.agent.disallowed_tools; loadAgents();
+    dis.value=(a.disallowed_tools||[]).join(", ");
+    save.disabled=true; save.textContent="已保存"; setTimeout(()=>{ save.textContent="保存"; },1200);
+  };
+  acts.append(save); box.append(acts);
+  api("/models").then(r=>r.json()).then(d=>{
+    for(const [v,label] of (d.choices||[])){ const o=el("option"); o.value=v; o.textContent=label||v; sel.append(o); }
+    if(a.model && ![...sel.options].some(o=>o.value===a.model)){ const o=el("option"); o.value=a.model; o.textContent=a.model+"(已不在清单)"; sel.append(o); }
+    sel.value=a.model||"";
+  }).catch(()=>{ sel.value=a.model||""; });
 }
 // 技能 / MCP 名单:关 = 跟随全局;开 = 只用勾上的(MCP 勾上的每轮都挂)。
 // 改了只重画这一块,别整个面板重画——会冲掉 AGENT.md 里还没保存的输入
