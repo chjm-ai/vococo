@@ -219,11 +219,12 @@ function apStale(a, tab){ return $("#agentPanel").dataset.agent!==a.id || S.agen
 // 动态:定时任务运行结果的精简列表(完整内容在主会话里)
 async function renderApFeed(body, a){
   body.append(apEmpty("加载中…"));
-  let runs=[];
-  try{ runs=(await (await api("/agents/runs?id="+encodeURIComponent(a.id))).json()).runs||[]; }catch(e){}
+  let runs=[], stats=null;
+  try{ const d=await (await api("/agents/runs?id="+encodeURIComponent(a.id))).json(); runs=d.runs||[]; stats=d.stats||null; }catch(e){}
   if(apStale(a,"feed")) return;
   body.innerHTML="";
-  if(!runs.length){ body.append(apEmpty("还没有运行记录。定时任务跑完会出现在这里。")); return; }
+  if(!runs.length){ body.append(apEmpty("还没有运行记录。定时任务和从这里派出的后台任务跑完会出现在这里。")); return; }
+  if(stats && stats.runs) body.append(apStatsCard(stats));
   for(const r of runs){
     const row=el("div","aprun");
     const head=el("div","aprhead");
@@ -233,9 +234,31 @@ async function renderApFeed(body, a){
     head.append(dot,nm,tm);
     const tx=el("div","aprtext"); tx.textContent=(r.text||"").replace(/\s+/g," ").slice(0,160);
     row.append(head,tx);
-    row.onclick=()=>{ const j=(S.cronJobs||[]).find(x=>x.job_id===r.job_id); openConv(j?j.conv:a.main_conv); };
+    const mt=runMetricsText(r);
+    if(mt){ const m=el("div","aprmeta"); m.textContent=mt; row.append(m); }
+    // 定时任务 → 它的会话;派出的后台任务(没复制进主会话,turn_id 为空)→ 任务会话
+    row.onclick=()=>{ const j=(S.cronJobs||[]).find(x=>x.job_id===r.job_id); openConv(j?j.conv:(r.turn_id==null&&r.job_id?"task:"+r.job_id:a.main_conv)); };
     body.append(row);
   }
+}
+
+function fmtTokens(n){ n=+n||0; return n>=10000 ? (n/10000).toFixed(1)+" 万" : String(n); }
+function fmtDur(s){ s=+s||0; return s>=60 ? (s/60).toFixed(1)+" 分钟" : Math.round(s)+" 秒"; }
+function runMetricsText(r){
+  if(!(r.tokens||r.duration||r.tool_calls)) return "";
+  return fmtTokens(r.tokens)+" token · "+fmtDur(r.duration)+" · "+(r.tool_calls||0)+" 次工具";
+}
+// 动态顶部:近 7 天汇总(次数 / 成功率 / token / 平均耗时)
+function apStatsCard(st){
+  const box=el("div","apstats");
+  const cell=(v,l)=>{ const c=el("div","apstat"); const b=el("b"); b.textContent=v; const s=el("span"); s.textContent=l; c.append(b,s); return c; };
+  box.append(
+    cell(st.runs+" 次", "近 "+st.days+" 天"),
+    cell(st.success_rate==null?"—":Math.round(st.success_rate*100)+"%", "成功率"),
+    cell(fmtTokens(st.tokens), "token"),
+    cell(fmtDur(st.avg_duration), "平均耗时"),
+  );
+  return box;
 }
 
 // 定时:挂在这个 Agent 名下的任务;点行看该任务自己的会话

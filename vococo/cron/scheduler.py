@@ -316,6 +316,15 @@ def _run_job(
         asyncio.create_task(_run_script_job(job, push, extra_env=extra_env))
         return
     turn_prompt = prompt or job["prompt"]
+    # 目标复盘:每次触发现算一遍近 7 天运行统计拼在指令前面,让复盘有数字可用
+    # (job 里存的 prompt 是创建时定死的,统计只能在触发时现拼)
+    if job.get("role") == "goal_review" and job.get("agent_id"):
+        from ..memory import agents
+
+        try:
+            turn_prompt = agents.stats_text(job["agent_id"]) + "\n\n" + turn_prompt
+        except Exception as exc:  # noqa: BLE001 —— 统计失败照常复盘
+            print(f"[cron] 复盘统计失败:{exc}", flush=True)
     # 编辑页选的模型是这条任务唯一的权威来源:每次触发都同步进任务会话的
     # chosen_model,不能只在首次 dispatch 时写一次——否则编辑页把模型改了,
     # 后续触发走 append() 不会重新传 model,会静默延续上一次(甚至用户在
@@ -350,7 +359,9 @@ def run_now(job_id: str) -> dict | None:
     return job
 
 
-async def _push_job_result(job_id: str, status: str, text: str, push: PushFn) -> dict | None:
+async def _push_job_result(
+    job_id: str, status: str, text: str, push: PushFn, metrics: dict | None = None,
+) -> dict | None:
     """回填 job 的 last_run_at/last_status 并推送结果——Agent 任务
     (_on_task_terminal)和脚本任务(_run_script_job)收尾共用,格式/目标完全
     一致(专属会话 + 可选额外目标)。任务定义已被删除时返回 None,不报错、
@@ -375,7 +386,7 @@ async def _push_job_result(job_id: str, status: str, text: str, push: PushFn) ->
         from ..memory import agents
 
         try:
-            agents.record_run(job["agent_id"], job, status, text)
+            agents.record_run(job["agent_id"], job, status, text, metrics=metrics)
         except Exception as exc:  # noqa: BLE001 —— 复制失败不影响任务本身
             print(f"[cron] 结果复制到 Agent 主会话失败:{exc}", flush=True)
     return job
@@ -388,7 +399,9 @@ async def _on_task_terminal(task: dict, push: PushFn) -> None:
     统计+推送,跟以前一样,只是现在是异步触发,不再是 _tick 同步等出来的。"""
     text = task.get("result_summary") or task.get("result_full") or "(无输出)"
     status = "error" if task["status"] == "failed" else "success"
-    await _push_job_result(task["id"], status, text, push)
+    from ..memory import agents
+
+    await _push_job_result(task["id"], status, text, push, metrics=agents.metrics_from_task(task))
 
 
 _SIGNAL_RE = re.compile(r"[ \t]*##CRON_SIGNAL:([01])##[ \t]*\n?")

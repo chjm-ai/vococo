@@ -3046,9 +3046,11 @@ class WebAdapter:
     async def _handle_agent_runs(self, request: web.Request) -> web.Response:
         from ...memory import agents
 
-        return _compressed_json({"runs": agents.recent_runs(
-            request.query.get("id", ""), job_id=request.query.get("job") or None,
-        )})
+        aid = request.query.get("id", "")
+        return _compressed_json({
+            "runs": agents.recent_runs(aid, job_id=request.query.get("job") or None),
+            "stats": agents.run_stats(aid),
+        })
 
     @_authed
     async def _handle_agent_files(self, request: web.Request) -> web.Response:

@@ -1587,6 +1587,11 @@
   .aprtime{color:var(--dim2);font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
   .aprtext{margin-top:2px;padding-left:12px;color:var(--dim);font-size:var(--fs-sm);line-height:1.5;
     display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .aprmeta{margin-top:2px;padding-left:12px;color:var(--dim2);font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
+  .apstats{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--sp-2);padding:var(--sp-2) 0 var(--sp-3)}
+  .apstat{display:flex;flex-direction:column;gap:2px;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);background:var(--panel2);min-width:0}
+  .apstat b{font-size:var(--fs-md);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .apstat span{font-size:var(--fs-sm);color:var(--dim2)}
   /* 定时 / 关联 */
   .aptask,.aplink{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3);border-radius:var(--r-md);transition:background var(--t-fast)}
   .aptask{cursor:pointer}
