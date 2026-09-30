@@ -160,32 +160,38 @@ def _declarations(styles: str, selector: str) -> str:
     return ";".join(m.group(1) for m in re.finditer(pattern, styles))
 
 
-def test_agent_row_status_dots_have_size_and_color():
-    """Agent 主会话回复中=橙色闪烁点(livedot),完成未读=灰点(reviewdot)。
-
-    这两个点的样式曾只写给 .conv 行,Agent 行(.projgrp.agrow)里的点宽高为 0、透明,
-    JS 明明渲染了却什么都看不见。"""
+def test_agent_row_state_is_animated_avatar_not_a_dot():
+    """Agent 行的状态不用圆点,做在像素头像的动效上(2026-09-29 主人定案):
+    工作中=持续弹跳,完成=隔几秒跳一下。"""
     styles = STATIC_STYLES.read_text(encoding="utf-8")
 
-    live = _declarations(styles, ".projgrp.agrow .livedot")
-    assert "width:7px" in live and "height:7px" in live
-    assert "background:var(--accent)" in live and "animation:livepulse" in live
+    live = _declarations(styles, '.projgrp.agrow[data-state="working"] .agav')
+    assert "animation:agwork" in live and "infinite" in live
+    done = _declarations(styles, '.projgrp.agrow[data-state="done"] .agav')
+    assert "animation:agdone" in done and "infinite" in done
 
-    done = _declarations(styles, ".projgrp.agrow .reviewdot")
-    assert "width:7px" in done and "height:7px" in done
-    assert "background:var(--dim2)" in done
+    # 动效只许改 transform:一旦给头像加宽高/外边距,行高和名字位置就会跟着状态变
+    for rule in ('[data-state="working"] .agav', '[data-state="done"] .agav'):
+        assert "margin" not in _declarations(styles, ".projgrp.agrow" + rule)
+
+    # 圆点样式退回只服务 .conv 行——Agent 行不再渲染圆点,别留半截选择器
+    assert ".projgrp.agrow .livedot" not in styles
+    assert ".projgrp.agrow .reviewdot" not in styles
 
 
-def test_agent_row_status_dot_follows_name_so_names_stay_aligned():
-    """状态点插在头像和名字之间(或被加了 margin)会把名字往右顶,带点的 Agent 行
-    就和其他行对不齐(2026-09-29 截图反馈)。契约:渲染顺序 头像 → 名字 → 状态点,
-    且 Agent 行不给状态点加任何 margin。"""
+def test_agent_row_state_covers_own_and_child_conversations():
+    """工作状态要含两件事:Agent 主会话在回复(working),名下的子会话在回复
+    (也复用 working)。完成未读(done)同理。契约在 agentState 一处判断。"""
     js = STATIC_AGENTS.read_text(encoding="utf-8")
-    fn = js[js.index("function renderAgentGroup(") : js.index("function openAgentMain(")]
-    name_at = fn.index('el("span","pgname")')
-    assert name_at < fn.index('el("span","livedot")')
-    assert name_at < fn.index('el("span","reviewdot")')
+    fn = js[js.index("function agentState(") : js.index("function agentKey(")]
 
-    styles = STATIC_STYLES.read_text(encoding="utf-8")
-    assert "margin" not in _declarations(styles, ".projgrp.agrow .livedot")
-    assert "margin" not in _declarations(styles, ".projgrp.agrow .reviewdot")
+    assert "agentOwnsConv(a, c.conv)" in fn          # 子会话靠它认领,不另写一套归属判断
+    assert fn.count("S.live[c.conv]") == 1           # 主会话与子会话同一次判断
+    assert "pending_review" in fn and "S.pendingReview[c.conv]" in fn
+
+    # 渲染处:挂 data-state + 悬停说明;圆点已从这一行彻底移除
+    row = js[js.index("function renderAgentGroup(") : js.index("function openAgentMain(")]
+    assert "h.dataset.state=st" in row
+    assert "agentState(a)" in row
+    assert 'el("span","livedot")' not in row
+    assert 'el("span","reviewdot")' not in row
