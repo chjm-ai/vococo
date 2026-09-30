@@ -406,6 +406,70 @@ async function renderApSetup(body, a){
   };
   acts.append(save); body.append(acts);
   try{ const d=await (await api("/agents/doc?id="+encodeURIComponent(a.id)+"&name=AGENT.md")).json(); if(!apStale(a,"setup")) ta.value=d.text||""; }catch(e){}
+  if(!apStale(a,"setup")) await renderApCaps(body, a);
+}
+
+// 能力:模型 / 技能白名单 / 常驻 MCP / 禁用工具 —— 后端硬生效(memory/agents.py 的 caps),不是给模型看的文字
+function apCheck(label, checked, title){
+  const lb=el("label","apcheck"); const cb=el("input"); cb.type="checkbox"; cb.checked=!!checked;
+  const sp=el("span"); sp.textContent=label; if(title) lb.title=title;
+  lb.append(cb, sp); return {lb, cb};
+}
+function splitNames(v){ return String(v||"").split(/[,，\s]+/).map(x=>x.trim()).filter(Boolean); }
+async function renderApCaps(body, a){
+  let models=[], skills=[], mcps=[];
+  try{ models=(await (await api("/models")).json()).choices||[]; }catch(e){}
+  try{ const d=await (await api("/settings")).json(); skills=(d.skills&&d.skills.items||[]).filter(x=>!x.hidden); mcps=(d.mcp&&d.mcp.external)||[]; }catch(e){}
+  if(apStale(a,"setup")) return;
+  const caps=a.caps||{model:"", skills:null, mcp:[], disallowed_tools:[]};
+  body.append(apSection("能力 · 硬生效"));
+  const note=el("div","apnote"); note.textContent="这里的设置直接卡住运行时,不靠模型自觉。只影响这个 Agent 名下的会话和定时任务。"; body.append(note);
+  // 模型:只作用于新会话(老会话已锁定模型)
+  body.append(apSection("默认模型(新会话)"));
+  const sel=el("select","apselect");
+  const o0=el("option"); o0.value=""; o0.textContent="跟随全局默认"; sel.append(o0);
+  for(const [v,label] of models){ const o=el("option"); o.value=v; o.textContent=label||v; sel.append(o); }
+  if(caps.model && !models.some(m=>m[0]===caps.model)){ const o=el("option"); o.value=caps.model; o.textContent=caps.model+"(已不在清单)"; sel.append(o); }
+  sel.value=caps.model||""; body.append(sel);
+  // 技能:不勾「限定」=跟随全局设置
+  body.append(apSection("技能"));
+  const lim=apCheck("只挂下面勾选的技能", Array.isArray(caps.skills), "不勾 = 跟随设置页的全局 / coding 配置");
+  body.append(lim.lb);
+  const skBox=el("div","apchecks"); const skChecks=[];
+  const on=new Set(caps.skills||[]);
+  for(const sk of skills){ const c=apCheck(sk.name, on.has(sk.name), sk.description||""); skChecks.push([sk.name,c.cb]); skBox.append(c.lb); }
+  if(!skills.length) skBox.append(apEmpty("没有可选技能"));
+  const syncSk=()=>{ skBox.hidden=!lim.cb.checked; }; lim.cb.onchange=()=>{ syncSk(); dirty(); }; syncSk();
+  body.append(skBox);
+  // 常驻外部 MCP
+  body.append(apSection("常驻外部 MCP(每轮都挂)"));
+  const mcpChecks=[]; const mOn=new Set(caps.mcp||[]);
+  const mBox=el("div","apchecks");
+  for(const m of mcps){ const c=apCheck(m.name+(m.enabled===false?"(设置页已停用)":""), mOn.has(m.name)); mcpChecks.push([m.name,c.cb]); mBox.append(c.lb); }
+  if(!mcps.length) mBox.append(apEmpty("设置页还没加外部 MCP"));
+  body.append(mBox);
+  // 禁用工具
+  body.append(apSection("禁用工具"));
+  const dis=el("input","apinput"); dis.value=(caps.disallowed_tools||[]).join(", ");
+  dis.placeholder="如 Bash, WebFetch, mcp__vococo__dispatch_session(逗号分隔)";
+  body.append(dis);
+  const acts=el("div","apacts");
+  const save=el("button","apbtn primary"); save.textContent="保存能力"; save.disabled=true;
+  function dirty(){ save.disabled=false; }
+  sel.onchange=dirty; dis.oninput=dirty;
+  for(const [,cb] of [...skChecks, ...mcpChecks]) cb.addEventListener("change", dirty);
+  save.onclick=async()=>{
+    const next={
+      model: sel.value,
+      skills: lim.cb.checked ? skChecks.filter(([,cb])=>cb.checked).map(([n])=>n) : null,
+      mcp: mcpChecks.filter(([,cb])=>cb.checked).map(([n])=>n),
+      disallowed_tools: splitNames(dis.value),
+    };
+    try{ await agentPost("/agents/update",{id:a.id, caps:next}); }catch(e){ alert(e.message); return; }
+    await loadAgents();
+    save.disabled=true; save.textContent="已保存"; setTimeout(()=>{ save.textContent="保存能力"; },1200);
+  };
+  acts.append(save); body.append(acts);
 }
 
 // 文件:家目录(vococo 管) + 工作目录第一层 + 关联(默认只读,可写需勾选)

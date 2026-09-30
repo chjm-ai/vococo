@@ -2982,6 +2982,7 @@ class WebAdapter:
             a = agents.update(
                 str(body.get("id") or ""),
                 name=body.get("name"), avatar=body.get("avatar"), links=body.get("links"),
+                caps=body.get("caps"),
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)

@@ -870,6 +870,13 @@ async def stream_turn(
     turn_tokens / 成本 / 明细仍取 ResultMessage.usage —— 那本就是本轮累计消耗,语义正确。
     """
     from . import vision  # 懒加载:vision 依赖本模块的 ImageAttachment,顶部 import 会循环引用
+    from ..memory import agents as agent_profiles
+
+    # 会话属于某个 Agent → 它的能力设定(技能白名单 / 常驻 MCP / 禁用工具)在这里硬生效,
+    # 而不是只写在 AGENT.md 里「建议」模型。模型默认值在锁定会话模型时处理(见 gateway/run.py)。
+    caps = agent_profiles.caps_for_session(session_key)
+    if caps["disallowed_tools"]:
+        disallowed_tools = list(dict.fromkeys([*(disallowed_tools or []), *caps["disallowed_tools"]]))
 
     # 供应商集成:按会话选定模型(或设置页里配置的第三方供应商)算出实际模型和
     # 要注入的 env。第三方(DeepSeek/Kimi)→注入 base_url+key;官方→env 为空走订阅。
@@ -903,6 +910,7 @@ async def stream_turn(
     requested_external = _external_mcp_for_task(user_text, session_key)
     if session_key:
         requested_external |= session_store.get_external_mcp_names(session_key)
+    requested_external |= set(caps["mcp"])
     # MCP / skill 从运行时设置计算；这些参数在 SDK connect 时定死，兼容性哈希变化会重建 client。
     mcp_on = settings_store.vococo_enabled()
     external_mcp = (
@@ -919,6 +927,8 @@ async def stream_turn(
         settings_store.effective_skills(cwd, is_explicit_project=True)
         if is_explicit_project else settings_store.effective_skills(cwd)
     )
+    if caps["skills"] is not None:
+        skills = list(caps["skills"])
     if isinstance(skills, list):  # 白名单模式漏不掉插件自带的 skill(见 _PLUGIN_SKILLS)
         skills = list(dict.fromkeys([*skills, *_PLUGIN_SKILLS]))
     # cwd=项目会话补注入其 AGENTS.md;cache_key=会话 id:同一 SDK 会话内冻结 append 快照,

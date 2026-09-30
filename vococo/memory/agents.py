@@ -4,7 +4,8 @@
 - Agent 与项目一一对应:每个项目自动就是一个 Agent,id 直接用项目哈希(不变);
   另有一个「通用」Agent(id=general),接住不属于任何项目的会话,它的主会话就是全局主会话。
 - 家目录 data/agents/<id>/ 由 vococo 管,不往用户的项目目录里写东西:
-    agent.json  名称 / 头像 / 工作目录 / 关联(系统要读的结构化设置)
+    agent.json  名称 / 头像 / 工作目录 / 关联 / 能力 caps(系统要读的结构化设置)
+                caps = 默认模型 / 技能白名单 / 常驻 MCP / 禁用工具,在 core/agent.stream_turn 里硬生效
     AGENT.md    人格、技能、目标(纯文本,你写,它每次开工都读)
     NOTES.md    它的笔记
     workspace/  新建 Agent 且没指定目录时的默认工作目录
@@ -159,6 +160,37 @@ def _normalize_links(links) -> list[dict]:
     return out
 
 
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_\-:.*()/ ]{1,80}$")
+
+
+def _clean_names(items, limit: int = 60) -> list[str]:
+    """名字清单(技能 / MCP / 工具名):去空去重、挡掉怪字符,顺序保留。"""
+    out: list[str] = []
+    if not isinstance(items, (list, tuple)):  # 字符串也可迭代,不挡会被拆成单个字母
+        return out
+    for x in items:
+        s = str(x or "").strip()
+        if s and _TOOL_NAME_RE.match(s) and s not in out:
+            out.append(s)
+    return out[:limit]
+
+
+def _normalize_caps(caps) -> dict:
+    """能力设定(agent.json 的 caps)—— 真正卡住 SDK 的那层,不是写给模型看的文字:
+    - model:这个 Agent 名下【新会话】默认用的模型;空=跟随全局。已经锁过模型的老会话不受影响
+    - skills:技能白名单;None=跟随全局/coding 设置,[]=一个都不挂(插件自带的照挂)
+    - mcp:外部 MCP 名,这个 Agent 的会话每轮都挂(不用等关键词命中)
+    - disallowed_tools:硬拦的工具名(如 Bash、mcp__vococo__dispatch_session)"""
+    caps = caps if isinstance(caps, dict) else {}
+    skills = caps.get("skills")
+    return {
+        "model": str(caps.get("model") or "").strip()[:80],
+        "skills": _clean_names(skills, 200) if isinstance(skills, list) else None,
+        "mcp": _clean_names(caps.get("mcp")),
+        "disallowed_tools": _clean_names(caps.get("disallowed_tools")),
+    }
+
+
 def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
     """把 agent.json + 项目信息拼成对外的 Agent 字典。"""
     if agent_id == GENERAL_ID:
@@ -176,6 +208,7 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
         "project_hash": phash,
         "main_conv": main,
         "links": _normalize_links(meta.get("links")),
+        "caps": _normalize_caps(meta.get("caps")),
         "created_at": meta.get("created_at") or 0,
         "home": str(home(agent_id)),
     }
@@ -272,8 +305,8 @@ def create(name: str, path: str | None = None) -> dict:
 
 
 def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None,
-           links: list | None = None) -> dict | None:
-    """改名称 / 头像 / 关联。目录名用 id,不随名称变。"""
+           links: list | None = None, caps: dict | None = None) -> dict | None:
+    """改名称 / 头像 / 关联 / 能力设定。目录名用 id,不随名称变。"""
     if agent_id != GENERAL_ID and get(agent_id) is None:
         return None
     meta = _read_meta(agent_id)
@@ -290,6 +323,8 @@ def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None
         meta["avatar"] = _normalize_avatar(avatar, agent_id)
     if links is not None:
         meta["links"] = _normalize_links(links)
+    if caps is not None:
+        meta["caps"] = _normalize_caps(caps)
     _write_meta(agent_id, meta)
     return get(agent_id)
 
@@ -474,6 +509,19 @@ def prompt_extra(agent: dict | None) -> str:
             for x in links))
     text = "\n\n".join(parts)
     return text[:PROMPT_MAX_CHARS]
+
+
+def caps_for_session(session_key: str | None) -> dict:
+    """会话所属 Agent 的能力设定;不属于任何 Agent / 读失败 → 全空(行为同以前)。"""
+    empty = _normalize_caps(None)
+    if not session_key:
+        return empty
+    try:
+        agent = agent_for_session(session_key)
+    except Exception as exc:  # noqa: BLE001 —— 读不到设定不影响正常对话
+        print(f"[agents] 读取 Agent 能力设定失败:{exc}", flush=True)
+        return empty
+    return agent["caps"] if agent else empty
 
 
 def prompt_extra_for_session(session_key: str) -> str:
