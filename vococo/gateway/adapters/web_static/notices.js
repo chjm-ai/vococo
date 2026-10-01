@@ -49,7 +49,7 @@ function autoPopupNewPending(){
 
 function noticeItemHtml(it){
   const state = it.kind==="review" ? '<span class="ntstate late">每月提醒</span>'
-    : it.status==="pending" ? '<span class="ntstate wait">等你回答</span>' : '<span class="ntstate late">已超时 · 仍可处理</span>';
+    : it.status==="pending" ? '<span class="ntstate wait">等你回答</span>' : '<span class="ntstate late">错过了 · 点选项接着做</span>';
   const kind = {approval:"审批", ask:"提问", review:"规则清理"}[it.kind] || "通知";
   const opts = it.options.length
     ? it.options.map(lab=>`<button class="btn sm ghost" data-ntact="${esc(it.id)}" data-label="${esc(lab)}">${NTC_ICON[lab]?NTC_ICON[lab]+" ":""}${esc(lab)}</button>`).join("")
@@ -71,7 +71,7 @@ function renderNoticePop(){
       ${anyExpired?'<button class="miniact" id="ntDismissAll">全部忽略</button>':""}</div>
     ${noPush?'<div class="ntwarn">手机通知没开(没有设备订阅推送),要批的事不会提醒你。<a href="#" id="ntPushGo">去开启</a></div>':""}
     <div class="ntlist">${items.length ? items.map(noticeItemHtml).join("")
-      : '<div class="ntempty">没有待处理的事。提问或审批超时没来得及点,会留在这里,点选项就能让会话接着做。</div>'}</div>`;
+      : '<div class="ntempty">没有待处理的事。提问或审批没来得及点,会留在这里,点选项就能让会话接着做。</div>'}</div>`;
   pop.querySelectorAll("[data-ntgo]").forEach(a=>a.onclick=e=>{
     e.preventDefault(); const c=a.dataset.ntgo; if(!c) return;
     pop.hidden=true; openConv(c);

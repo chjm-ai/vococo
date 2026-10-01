@@ -558,8 +558,8 @@ function finalizeStream(finalText, imgs, turnId, vids){
   if(S.stream.activeCard){ foldToGroup(S.stream, S.stream.activeCard); S.stream.activeCard=null; }
   if(S.stream.timer) clearInterval(S.stream.timer);
   S.stream.status.remove(); S.stream.thinktog.remove(); S.stream.think.remove();
-  // 回合已结束:还没点的审批按钮全部失效(点了也只会收到"已过期")
-  S.stream.bubble.querySelectorAll(".choice button").forEach(b=>{ b.disabled=true; });
+  // 回合结束时没点的审批/提问按钮保持可点:超时后再点 = 补批/补答,原会话接着做(gateway/run.py _late_click)。
+  // 2026-10-01 前这里会把按钮全禁掉,错过的审批在对话里点不动,看着像「超时作废」
   // 交错排布保持原样;只有整轮没渲出任何正文时才用 done 的全文兜底(防丢帧空泡)
   if(finalText!==undefined && !streamText(S.stream)){
     const d=segDiv(S.stream, 0); d.dataset.raw=finalText; d.innerHTML=mdToHtml(finalText);
