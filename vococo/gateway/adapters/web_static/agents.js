@@ -574,10 +574,11 @@ function editGoalIn(body, a, text, done){
 // 设置:能力(技能 / MCP / 默认模型 / 禁用工具)+ 文件与关联 + 移除。名字头像在顶部改,人格在「职责」
 async function renderApSetup(body, a){
   body.append(apEmpty("加载中…"));
-  let cat=null, files=null;
-  [cat, files]=await Promise.all([
+  let cat=null, files=null, mem=null;
+  [cat, files, mem]=await Promise.all([
     api("/settings").then(r=>r.json()).catch(()=>null),
     api("/agents/files?id="+encodeURIComponent(a.id)).then(r=>r.json()).catch(()=>null),
+    a.id==="general" ? null : api("/agents/memory_sections").then(r=>r.json()).catch(()=>null),
   ]);
   if(apStale(a,"setup")) return;
   body.innerHTML="";
@@ -591,6 +592,12 @@ async function renderApSetup(body, a){
       ()=>skills.filter(x=>x.enabled).map(x=>x.name));
     renderApNames(body, a, "mcp", "MCP", mcps.map(x=>({name:x.name, desc:x.url||x.command||""})), ()=>[]);
     renderApModelTools(body, a);
+  }
+  // 全局记忆:这个 Agent 每轮带进哪几节 AI_BRAIN/MEMORY.md(它自己攒的记忆在 NOTES.md「记忆」一节,总是带)
+  if(mem && a.id!=="general"){
+    const def=mem.default||[];
+    renderApNames(body, a, "memory_sections", "全局记忆", (mem.sections||[]).map(t=>({name:t, desc:""})),
+      ()=>def.slice(), "默认只带通用的:"+def.join("、")+"。它自己攒的记忆登记在自己的 NOTES.md 里,总是带");
   }
   if(files && !files.error) renderApFileSections(body, a, files);
   if(a.id!=="general"){
@@ -639,7 +646,7 @@ function renderApModelTools(body, a){
 }
 // 技能 / MCP 名单:关 = 跟随全局;开 = 只用勾上的(MCP 勾上的每轮都挂)。
 // 改了只重画这一块,别整个面板重画——会冲掉 AGENT.md 里还没保存的输入
-function renderApNames(body, a, key, title, items, initial){
+function renderApNames(body, a, key, title, items, initial, offText){
   const box=el("div"); body.append(box);
   let order=null, q="";   // 排序只在打开时定一次,勾选时行不跳位置;q = 搜索词
   const draw=()=>{
@@ -655,8 +662,8 @@ function renderApNames(body, a, key, title, items, initial){
     const sw=el("label","apcustom"); sw.innerHTML='自定义<span class="sw"><input type="checkbox"'+(own?" checked":"")+'><span class="track"></span></span>';
     sw.querySelector("input").onchange=ev=>save(ev.target.checked ? initial() : null);
     head.append(t, sw); box.append(head);
-    if(!own){ order=null; box.append(apEmpty("跟随全局设置")); return; }
-    if(!items.length){ box.append(apEmpty(key==="mcp"?"还没有外部 MCP,先去设置页添加":"没有可用的技能")); return; }
+    if(!own){ order=null; box.append(apEmpty(offText||"跟随全局设置")); return; }
+    if(!items.length){ box.append(apEmpty({mcp:"还没有外部 MCP,先去设置页添加", memory_sections:"读不到 AI_BRAIN/MEMORY.md 的分节(iCloud 可能卡住了),稍后再打开"}[key]||"没有可用的技能")); return; }
     const on=new Set(own);
     // 勾上的排前面,一眼看到它在用什么
     order=order||items.slice().sort((x,y)=>(on.has(y.name)?1:0)-(on.has(x.name)?1:0));
