@@ -289,11 +289,15 @@ function editApName(nm, a){
     if(save && v && v!==a.name){
       try{ await agentPost("/agents/update",{id:a.id, name:v}); }catch(e){ alert(e.message); }
       await loadAgents();
-      // 改名时后端顺手改了 AGENT.md 的一级标题;正在看「职责」就重画,显示新标题
-      if(S.agentPanelTab==="goal" && !$("#apBody .aptext")) renderAgentPanel();
+      if(!apShowing(a)) return;   // 保存期间切到了别的 Agent:别把它的顶部画成这个
+      // 改名时后端顺手改了 AGENT.md 的一级标题:编辑框开着就把框里的标题也换掉(不然保存会写回旧名),
+      // 没开着而正在看「职责」就重画
+      const ta=S.agentPanelTab==="goal" ? $("#apBody .aptext") : null;
+      if(ta && ta.value.startsWith("# ")) ta.value="# "+v+(ta.value.includes("\n") ? ta.value.slice(ta.value.indexOf("\n")) : "\n");
+      else if(S.agentPanelTab==="goal" && !ta) renderAgentPanel();
     }
-    const cur=agentById(a.id)||a;
-    renderApInfo(cur);
+    if(!apShowing(a)) return;
+    renderApInfo(agentById(a.id)||a);
   };
   inp.onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); finish(true); } else if(ev.key==="Escape"){ ev.preventDefault(); finish(false); } };
   inp.onblur=()=>finish(true);
@@ -305,20 +309,25 @@ document.addEventListener("click", ev=>{ if(avPopEl && !avPopEl.contains(ev.targ
 function openAvatarPop(btn, a){
   if(avPopEl){ closeAvatarPop(); return; }
   const pop=el("div","apavpop");
+  // 本地先记下最新头像,请求按顺序一个个发:连点「形状→颜色」时后一次不会拿旧形状把前一次盖掉
+  let avatar={...a.avatar}, queue=Promise.resolve();
   const draw=cur=>{
     pop.innerHTML="";
     for(const [title, dict, key] of [["形状", AV_SHAPES, "shape"], ["颜色", AV_COLORS, "color"], ["眼睛", AV_EYES, "eyes"]]){
       const t=el("div","apavpt"); t.textContent=title; pop.append(t);
       const row=el("div","appick");
       for(const [k,v] of Object.entries(dict)){
-        const b=el("button","apchip"+(cur.avatar[key]===k?" on":"")); b.type="button"; b.title=v.name||v;
-        b.innerHTML=avatarSvg({...cur.avatar, [key]:k});
-        b.onclick=async()=>{
-          let r;
-          try{ r=await agentPost("/agents/update",{id:cur.id, avatar:{...cur.avatar, [key]:k}}); }catch(e){ alert(e.message); return; }
-          await loadAgents();
-          const next=agentById(cur.id)||r.agent;
-          renderApInfo(next); draw(next);
+        const b=el("button","apchip"+(avatar[key]===k?" on":"")); b.type="button"; b.title=v.name||v;
+        b.innerHTML=avatarSvg({...avatar, [key]:k});
+        b.onclick=()=>{
+          avatar={...avatar, [key]:k};
+          const sent={...avatar};
+          draw(cur);
+          if(apShowing(cur)) renderApInfo({...cur, avatar:sent});
+          queue=queue.then(async()=>{
+            try{ await agentPost("/agents/update",{id:cur.id, avatar:sent}); }catch(e){ alert(e.message); return; }
+            await loadAgents();
+          });
         };
         row.append(b);
       }
@@ -326,6 +335,8 @@ function openAvatarPop(btn, a){
     }
   };
   draw(a);
+  // 浮层里的点击不冒泡到 document:点选项会先同步重画,被点的按钮已不在浮层里,会被误判成「点了外面」而关掉
+  pop.addEventListener("click", ev=>ev.stopPropagation());
   document.body.append(pop); avPopEl=pop;
   const r=btn.getBoundingClientRect();
   const left=Math.min(r.left, window.innerWidth-pop.offsetWidth-8);
@@ -345,6 +356,7 @@ function docHtml(md){
 function apEmpty(text){ const e=el("div","apempty"); e.textContent=text; return e; }
 function apSection(title){ const e=el("div","apsec"); e.textContent=title; return e; }
 // 面板异步拉数据期间可能切了 Agent/Tab:回来时对不上就丢弃
+function apShowing(a){ return !$("#agentPanel").hidden && $("#agentPanel").dataset.agent===a.id; }
 function apStale(a, tab){ return $("#agentPanel").dataset.agent!==a.id || S.agentPanelTab!==tab; }
 
 // 动态:定时任务运行结果的精简列表(完整内容在主会话里)
@@ -683,35 +695,45 @@ function renderApFileSections(body, a, d){
     if(!d.workdir_top.length) body.append(apEmpty("空"));
     for(const e of d.workdir_top) body.append(fileRow(e.name, d.workdir+"/"+e.name, e.dir));
   }
-  body.append(apSection("关联目录"));
-  const links=a.links||[];
-  if(!links.length) body.append(apEmpty("没有关联目录。关联后它知道去哪找资料,默认只读。"));
-  links.forEach((l, i)=>{
-    const r=el("div","aplink");
-    const main=el("div","aptmain");
-    const p=el("div","aptname"); p.textContent=shortPath(l.path); p.title=l.path;
-    const sub=el("div","aptsub"); sub.textContent=l.note||"";
-    main.append(p, sub);
-    const w=el("label","apwrite"); w.innerHTML='<input type="checkbox"'+(l.writable?" checked":"")+'> 可写';
-    w.title="勾上后它往这里写文件不用再批";
-    w.querySelector("input").onchange=ev=>saveLinks(a, links.map((x,j)=>j===i?{...x, writable:ev.target.checked}:x));
-    const del=el("button","more"); del.textContent="✕"; del.title="取消关联";
-    del.onclick=()=>saveLinks(a, links.filter((x,j)=>j!==i));
-    r.append(main, w, del);
-    body.append(r);
-  });
-  const add=el("div","apadd"); add.textContent="＋ 关联目录";
-  add.onclick=()=>openDirPicker("关联一个目录(默认只读)","✓ 关联", p=>{
-    const note=(prompt("备注一下这是什么(可留空)")||"").trim();
-    saveLinks(a, [...links, {path:p, note, writable:false}]);
-  });
-  body.append(add);
+  renderApLinks(body, a);
+}
+// 关联目录:改了只重画这一块——同页上面还有技能/MCP/禁用工具,整页重画会冲掉没保存的输入、跳回顶部
+function renderApLinks(body, a){
+  const box=el("div"); body.append(box);
+  let links=a.links||[];
+  const save=async next=>{
+    let r;
+    try{ r=await agentPost("/agents/update",{id:a.id, links:next}); }catch(e){ alert(e.message); return; }
+    links=r.agent.links||[]; a.links=links; draw(); loadAgents();
+  };
+  const draw=()=>{
+    box.innerHTML="";
+    box.append(apSection("关联目录"));
+    if(!links.length) box.append(apEmpty("没有关联目录。关联后它知道去哪找资料,默认只读。"));
+    links.forEach((l, i)=>{
+      const r=el("div","aplink");
+      const main=el("div","aptmain");
+      const p=el("div","aptname"); p.textContent=shortPath(l.path); p.title=l.path;
+      const sub=el("div","aptsub"); sub.textContent=l.note||"";
+      main.append(p, sub);
+      const w=el("label","apwrite"); w.innerHTML='<input type="checkbox"'+(l.writable?" checked":"")+'> 可写';
+      w.title="勾上后它往这里写文件不用再批";
+      w.querySelector("input").onchange=ev=>save(links.map((x,j)=>j===i?{...x, writable:ev.target.checked}:x));
+      const del=el("button","more"); del.textContent="✕"; del.title="取消关联";
+      del.onclick=()=>save(links.filter((x,j)=>j!==i));
+      r.append(main, w, del);
+      box.append(r);
+    });
+    const add=el("div","apadd"); add.textContent="＋ 关联目录";
+    add.onclick=()=>openDirPicker("关联一个目录(默认只读)","✓ 关联", p=>{
+      const note=(prompt("备注一下这是什么(可留空)")||"").trim();
+      save([...links, {path:p, note, writable:false}]);
+    });
+    box.append(add);
+  };
+  draw();
 }
 function shortPath(p){ return String(p||"").replace(/^\/Users\/[^/]+/, "~"); }
-async function saveLinks(a, links){
-  try{ await agentPost("/agents/update",{id:a.id, links}); }catch(e){ alert(e.message); return; }
-  await loadAgents(); renderAgentPanel();
-}
 
 // ── 空会话欢迎屏:当前会话属于某个 Agent 时换成它自己的 ─────────────────────────
 // 头像 + 名字 + 职责一句话 + 目标一句话,快捷操作按它的状态给(没目标→设目标;没计划→拆计划;有计划→看进展)
