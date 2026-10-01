@@ -3,7 +3,7 @@
 // 与「项目」「定时」Tab 并存,方案定了再下架那两个。
 // - 侧栏:每个 Agent 一行(像素头像 + 名称 + 折线箭头),点行 = 打开它的主会话(定时结果都推到这里),
 //   箭头展开(第一行固定是主会话,下面是名下独立会话),hover「＋」在它名下开新会话;状态做在头像上(见 agentWorking/agentUnread)
-// - 右侧面板(标题栏按钮开关):顶部身份卡(点头像/名字进「设定」)+ 动态 / 定时 / 目标 / 文件
+// - 右侧面板(标题栏按钮开关):顶部身份(点头像换头像、点名字改名)+ 动态 / 定时 / 职责 / 设置
 
 // ── 像素头像:风格取自 logo「小幽」——crispEdges 方块、深色眼睛、左上一格高光 ──────────
 // 形状 = 每行的实心区间 [起列, 止列];eye = 眼睛所在行。键名与后端 AVATAR_SHAPES 一致
@@ -197,7 +197,7 @@ async function createAgent(){
   closeAgentModal();
   await Promise.all([loadAgents(), loadProjects()]);
   const a=agentById(d.agent.id)||d.agent;
-  S.agentPanelOn=true; S.agentPanelTab="setup"; saveAgentPanelPref();   // 新建完直接落到「设定」,接着定人格和目标
+  S.agentPanelOn=true; S.agentPanelTab="goal"; saveAgentPanelPref();   // 新建完直接落到「职责」,接着定人格和目标
   openAgentMain(a);
 }
 $("#agDirNew").onchange=syncAgentDirMode;
@@ -223,7 +223,7 @@ function currentAgent(){
 function syncAgentHeader(){
   const a=currentAgent(), btn=$("#convAgentBtn");
   btn.hidden=!a;
-  if(a){ btn.innerHTML=avatarSvg(a.avatar); btn.title=a.name+" · 动态 / 定时 / 目标 / 文件 / 设定"; btn.classList.toggle("on", S.agentPanelOn); }
+  if(a){ btn.innerHTML=avatarSvg(a.avatar); btn.title=a.name+" · 动态 / 定时 / 职责 / 设置"; btn.classList.toggle("on", S.agentPanelOn); }
   // Agent 主会话标题 = Agent 名字(副标题标一下是主会话)
   const am=agentByMainConv(S.conv);
   if(am && S.surface==="chat") $("#convTitle").textContent=am.name;
@@ -243,10 +243,13 @@ function hideAgentPanel(){ $("#agentPanel").hidden=true; $("#agentPanel").datase
 $("#convAgentBtn").onclick=toggleAgentPanel;
 $("#apClose").onclick=()=>{ S.agentPanelOn=false; saveAgentPanelPref(); syncAgentHeader(); };
 
-// 「设定」不占标签:点顶部身份卡的头像/名字进入(S.agentPanelTab 仍记成 "setup")
-const AP_TABS=[{key:"feed",label:"动态"},{key:"tasks",label:"定时"},{key:"goal",label:"目标"},{key:"files",label:"文件"}];
+// 四个标签:动态(运行记录)/ 定时 / 职责(人格 AGENT.md + 目标 + 计划)/ 设置(能力 + 文件与关联 + 移除)。
+// 名字、头像不占标签:在顶部身份里点了直接改。key 沿用老值(goal / setup),本地存过的偏好照样能用
+const AP_TABS=[{key:"feed",label:"动态"},{key:"tasks",label:"定时"},{key:"goal",label:"职责"},{key:"setup",label:"设置"}];
+const AP_TAB_ALIAS={files:"setup"};   // 旧版「文件」标签并进了「设置」
 function renderAgentPanel(){
   const a=agentById($("#agentPanel").dataset.agent); if(!a) return;
+  S.agentPanelTab=AP_TAB_ALIAS[S.agentPanelTab]||S.agentPanelTab;
   renderApInfo(a);
   const tabs=$("#apTabs"); tabs.innerHTML="";
   for(const t of AP_TABS){
@@ -255,37 +258,89 @@ function renderAgentPanel(){
     tabs.append(b);
   }
   const body=$("#apBody"); body.innerHTML=""; body.scrollTop=0;
-  const fn={feed:renderApFeed, tasks:renderApTasks, goal:renderApGoal, setup:renderApSetup, files:renderApFiles}[S.agentPanelTab]||renderApFeed;
+  const fn={feed:renderApFeed, tasks:renderApTasks, goal:renderApGoal, setup:renderApSetup}[S.agentPanelTab]||renderApFeed;
   fn(body, a);
 }
-// 面板顶部的身份卡:子会话打开面板时,第一眼要知道它属于哪个 Agent、这个 Agent 是干什么的
+// 面板顶部的身份:头像 + 名字 + 一行职责,保持简洁。点头像弹浮层直接换,点名字原地改名
 function renderApInfo(a){
   const box=$("#apInfo"); box.innerHTML="";
-  const id=el("div","apiid"+(S.agentPanelTab==="setup"?" on":""));
-  id.title="改名字、头像、人格与能力"; id.setAttribute("role","button"); id.tabIndex=0;
-  const av=el("div","apiav"); av.innerHTML=avatarSvg(a.avatar);
+  const av=el("button","apiav"); av.type="button"; av.title="换头像"; av.innerHTML=avatarSvg(a.avatar);
+  av.onclick=ev=>{ ev.stopPropagation(); openAvatarPop(av, a); };
   const main=el("div","apimain");
-  const nm=el("div","apiname"); const nb=el("b"); nb.textContent=a.name;
-  nm.append(nb); nm.insertAdjacentHTML("beforeend", '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>');
+  const nm=el("button","apiname"); nm.type="button"; nm.title="改名字"; nm.textContent=a.name;
+  nm.onclick=()=>editApName(nm, a);
   const sub=el("div","apisub"); sub.textContent=a.summary || "还没写职责";
   main.append(nm, sub);
-  if(a.goal){
-    const g=el("button","apigoal"); g.type="button"; g.title="看目标和计划";
-    const lb=el("span","aggl"); lb.textContent="目标";
-    const t=el("span","aggt"); t.textContent=a.goal;
-    g.append(lb, t); g.onclick=ev=>{ ev.stopPropagation(); S.agentPanelTab="goal"; saveAgentPanelPref(); renderAgentPanel(); };
-    main.append(g);
-  }
-  const openSetup=()=>{ S.agentPanelTab="setup"; saveAgentPanelPref(); renderAgentPanel(); };
-  id.onclick=openSetup;
-  id.onkeydown=ev=>{ if(ev.key==="Enter"||ev.key===" "){ ev.preventDefault(); openSetup(); } };
-  id.append(av, main);
-  box.append(id);
+  box.append(av, main);
   if(S.conv!==a.main_conv){
     const go=el("button","apimainbtn"); go.type="button"; go.textContent="主会话"; go.title="回到「"+a.name+"」的主会话";
     go.onclick=()=>openAgentMain(a);
     box.append(go);
   }
+}
+// 名字原地变输入框:回车/失焦保存,Esc 取消
+function editApName(nm, a){
+  const inp=el("input","apiname apinamein"); inp.value=a.name; inp.maxLength=40;
+  nm.replaceWith(inp); inp.focus(); inp.select();
+  let done=false;
+  const finish=async save=>{
+    if(done) return; done=true;
+    const v=inp.value.trim();
+    if(save && v && v!==a.name){
+      try{ await agentPost("/agents/update",{id:a.id, name:v}); }catch(e){ alert(e.message); }
+      await loadAgents();
+      if(!apShowing(a)) return;   // 保存期间切到了别的 Agent:别把它的顶部画成这个
+      // 改名时后端顺手改了 AGENT.md 的一级标题:编辑框开着就把框里的标题也换掉(不然保存会写回旧名),
+      // 没开着而正在看「职责」就重画
+      const ta=S.agentPanelTab==="goal" ? $("#apBody .aptext") : null;
+      if(ta && ta.value.startsWith("# ")) ta.value="# "+v+(ta.value.includes("\n") ? ta.value.slice(ta.value.indexOf("\n")) : "\n");
+      else if(S.agentPanelTab==="goal" && !ta) renderAgentPanel();
+    }
+    if(!apShowing(a)) return;
+    renderApInfo(agentById(a.id)||a);
+  };
+  inp.onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); finish(true); } else if(ev.key==="Escape"){ ev.preventDefault(); finish(false); } };
+  inp.onblur=()=>finish(true);
+}
+// 头像浮层:形状 / 颜色 / 眼睛三排,点了立即生效,浮层不关(连着挑几样);点外面关
+let avPopEl=null;
+function closeAvatarPop(){ if(avPopEl){ avPopEl.remove(); avPopEl=null; } }
+document.addEventListener("click", ev=>{ if(avPopEl && !avPopEl.contains(ev.target)) closeAvatarPop(); });
+function openAvatarPop(btn, a){
+  if(avPopEl){ closeAvatarPop(); return; }
+  const pop=el("div","apavpop");
+  // 本地先记下最新头像,请求按顺序一个个发:连点「形状→颜色」时后一次不会拿旧形状把前一次盖掉
+  let avatar={...a.avatar}, queue=Promise.resolve();
+  const draw=cur=>{
+    pop.innerHTML="";
+    for(const [title, dict, key] of [["形状", AV_SHAPES, "shape"], ["颜色", AV_COLORS, "color"], ["眼睛", AV_EYES, "eyes"]]){
+      const t=el("div","apavpt"); t.textContent=title; pop.append(t);
+      const row=el("div","appick");
+      for(const [k,v] of Object.entries(dict)){
+        const b=el("button","apchip"+(avatar[key]===k?" on":"")); b.type="button"; b.title=v.name||v;
+        b.innerHTML=avatarSvg({...avatar, [key]:k});
+        b.onclick=()=>{
+          avatar={...avatar, [key]:k};
+          const sent={...avatar};
+          draw(cur);
+          if(apShowing(cur)) renderApInfo({...cur, avatar:sent});
+          queue=queue.then(async()=>{
+            try{ await agentPost("/agents/update",{id:cur.id, avatar:sent}); }catch(e){ alert(e.message); return; }
+            await loadAgents();
+          });
+        };
+        row.append(b);
+      }
+      pop.append(row);
+    }
+  };
+  draw(a);
+  // 浮层里的点击不冒泡到 document:点选项会先同步重画,被点的按钮已不在浮层里,会被误判成「点了外面」而关掉
+  pop.addEventListener("click", ev=>ev.stopPropagation());
+  document.body.append(pop); avPopEl=pop;
+  const r=btn.getBoundingClientRect();
+  const left=Math.min(r.left, window.innerWidth-pop.offsetWidth-8);
+  pop.style.top=(r.bottom+6)+"px"; pop.style.left=Math.max(8,left)+"px";
 }
 // cron 表达式 → 人话:直接借定时任务弹窗里的预设文案(「每周一早 9 点」),没命中就原样显示
 function scheduleText(sch, fallback){
@@ -301,6 +356,7 @@ function docHtml(md){
 function apEmpty(text){ const e=el("div","apempty"); e.textContent=text; return e; }
 function apSection(title){ const e=el("div","apsec"); e.textContent=title; return e; }
 // 面板异步拉数据期间可能切了 Agent/Tab:回来时对不上就丢弃
+function apShowing(a){ return !$("#agentPanel").hidden && $("#agentPanel").dataset.agent===a.id; }
 function apStale(a, tab){ return $("#agentPanel").dataset.agent!==a.id || S.agentPanelTab!==tab; }
 
 // 动态:定时任务运行结果的精简列表(完整内容在主会话里)
@@ -423,12 +479,20 @@ async function moveJobTo(j, t){
 }
 
 // 目标:GOAL.md(你定)+ PLAN.md(它拆)+ 每周复盘任务 —— 闭环见 memory/agents.py 头注释
+// 职责:它是谁(AGENT.md)+ 要干成什么(GOAL.md)+ 怎么干(PLAN.md)
 async function renderApGoal(body, a){
   body.append(apEmpty("加载中…"));
-  let g;
-  try{ g=await (await api("/agents/goal?id="+encodeURIComponent(a.id))).json(); }catch(e){ body.innerHTML=""; body.append(apEmpty("加载失败")); return; }
+  let g, role;
+  try{
+    [g, role]=await Promise.all([
+      api("/agents/goal?id="+encodeURIComponent(a.id)).then(r=>r.json()),
+      api("/agents/doc?id="+encodeURIComponent(a.id)+"&name=AGENT.md").then(r=>r.json()),
+    ]);
+  }catch(e){ body.innerHTML=""; body.append(apEmpty("加载失败")); return; }
   if(apStale(a,"goal")) return;
   body.innerHTML="";
+  renderApRole(body, a, role.text||"");
+  body.append(apSection("目标"));
   const hasGoal=/^(?!#).*\S/m.test(g.goal||"");
   if(!hasGoal){
     body.append(apEmpty("还没设目标。写清目标、成功标准和不做的事,它会拆成计划、每周复盘、把进展写回来。"));
@@ -457,6 +521,34 @@ async function renderApGoal(body, a){
   if(/^(?!#).*\S/m.test(g.plan||"")){ const pd=el("div","apdoc bubble"); pd.innerHTML=docHtml(g.plan); body.append(pd); }
   else body.append(apEmpty("还没拆。点「拆解计划」让它按目标拆。"));
 }
+// 人格与职责(AGENT.md):平时显示成文档,点「编辑」原地换成编辑框,不占一整页
+function renderApRole(body, a, text){
+  const box=el("div"); body.append(box);
+  const draw=()=>{
+    box.innerHTML="";
+    const head=el("div","apsec apsech");
+    const t=el("span"); t.textContent="人格与职责 · AGENT.md";
+    const ed=el("button","apseclink"); ed.type="button"; ed.textContent="编辑";
+    head.append(t, ed); box.append(head);
+    const hasRole=/^(?!#).*\S/m.test(text||"");
+    if(hasRole){ const d=el("div","apdoc bubble"); d.innerHTML=docHtml(text); box.append(d); }
+    else box.append(apEmpty("还没写。它是谁、怎么说话、会用哪些技能,每次开工都会读。"));
+    ed.onclick=()=>{
+      box.innerHTML=""; box.append(head); ed.hidden=true;
+      const ta=el("textarea","aptext"); ta.rows=12; ta.value=text||""; ta.placeholder="它是谁、怎么说话、会用哪些技能。每次开工都会读。";
+      const acts=el("div","apacts");
+      const cancel=el("button","apbtn"); cancel.textContent="取消"; cancel.onclick=()=>{ ed.hidden=false; draw(); };
+      const save=el("button","apbtn primary"); save.textContent="保存";
+      save.onclick=async()=>{
+        try{ await agentPost("/agents/doc",{id:a.id, name:"AGENT.md", text:ta.value}); }catch(e){ alert(e.message); return; }
+        text=ta.value; ed.hidden=false; draw();
+        loadAgents();   // 顶部那行职责取自 AGENT.md,跟着刷新
+      };
+      acts.append(cancel, save); box.append(ta, acts); ta.focus();
+    };
+  };
+  draw();
+}
 function editGoal(body, a, text){
   body.innerHTML="";
   const ta=el("textarea","aptext"); ta.value=text||""; ta.rows=18;
@@ -474,71 +566,37 @@ function editGoal(body, a, text){
   ta.focus();
 }
 
-// 设定:名称、头像、人格与技能(AGENT.md)
+// 设置:能力(技能 / MCP / 默认模型 / 禁用工具)+ 文件与关联 + 移除。名字头像在顶部改,人格在「职责」
 async function renderApSetup(body, a){
-  // 头像已在顶部身份卡里,这里只留改名输入框
-  body.append(apSection("名字"));
-  const head=el("div","apsetup");
-  const nameIn=el("input","apname"); nameIn.value=a.name; nameIn.maxLength=40;
-  if(a.id==="general") nameIn.title="通用 Agent 接住不属于任何项目的会话";
-  const saveName=async()=>{
-    const v=nameIn.value.trim();
-    if(!v || v===a.name){ nameIn.value=a.name; return; }
-    try{ await agentPost("/agents/update",{id:a.id, name:v}); }catch(e){ alert(e.message); nameIn.value=a.name; return; }
-    a.name=v;   // a 是打开设定时的那份对象,不同步的话再改回原名会被当成「没改」
-    await loadAgents();
-    // 改名时后端顺手改了 AGENT.md 的一级标题;下面编辑框没动过就重读,免得保存时把旧标题写回去
-    if(save.disabled){ try{ const d=await (await api("/agents/doc?id="+encodeURIComponent(a.id)+"&name=AGENT.md")).json(); if(!apStale(a,"setup")) ta.value=d.text||""; }catch(e){} }
-  };
-  nameIn.onblur=saveName; nameIn.onkeydown=e=>{ if(e.key==="Enter") nameIn.blur(); };
-  head.append(nameIn);
-  body.append(head);
-  const pick=(title, dict, key)=>{
-    body.append(apSection(title));
-    const rowEl=el("div","appick");
-    for(const [k,v] of Object.entries(dict)){
-      const b=el("button","apchip"+(a.avatar[key]===k?" on":"")); b.type="button"; b.title=v.name||v;
-      b.innerHTML=avatarSvg({...a.avatar, [key]:k});
-      b.onclick=async()=>{
-        try{ await agentPost("/agents/update",{id:a.id, avatar:{...a.avatar, [key]:k}}); }catch(e){ alert(e.message); return; }
-        await loadAgents(); renderAgentPanel();
-      };
-      rowEl.append(b);
-    }
-    body.append(rowEl);
-  };
-  pick("形状", AV_SHAPES, "shape"); pick("颜色", AV_COLORS, "color"); pick("眼睛", AV_EYES, "eyes");
-  body.append(apSection("人格与技能 · AGENT.md"));
-  const ta=el("textarea","aptext"); ta.rows=14; ta.placeholder="它是谁、怎么说话、会用哪些技能。每次开工都会读。";
-  body.append(ta);
-  const acts=el("div","apacts");
-  const save=el("button","apbtn primary"); save.textContent="保存"; save.disabled=true;
-  ta.oninput=()=>{ save.disabled=false; };
-  save.onclick=async()=>{
-    try{ await agentPost("/agents/doc",{id:a.id, name:"AGENT.md", text:ta.value}); }catch(e){ alert(e.message); return; }
-    save.disabled=true; save.textContent="已保存"; setTimeout(()=>{ save.textContent="保存"; },1200);
-  };
-  acts.append(save); body.append(acts);
-  try{ const d=await (await api("/agents/doc?id="+encodeURIComponent(a.id)+"&name=AGENT.md")).json(); if(!apStale(a,"setup")) ta.value=d.text||""; }catch(e){}
+  body.append(apEmpty("加载中…"));
+  let cat=null, files=null;
+  [cat, files]=await Promise.all([
+    api("/settings").then(r=>r.json()).catch(()=>null),
+    api("/agents/files?id="+encodeURIComponent(a.id)).then(r=>r.json()).catch(()=>null),
+  ]);
   if(apStale(a,"setup")) return;
-  if(a.id==="general"){ body.append(apSection("技能与 MCP"), apEmpty("用设置页的全局配置")); return; }
-  let cat;
-  try{ cat=await (await api("/settings")).json(); }catch(e){ return; }
-  if(apStale(a,"setup")) return;
-  const skills=(cat.skills?.items||[]).filter(x=>!x.hidden);
-  const mcps=(cat.mcp?.external||[]).filter(x=>x.enabled!==false);
-  // 自定义时的初始名单:技能从全局已开启的抄一份(免得一打开就全关),MCP 从空开始
-  renderApNames(body, a, "skills", "技能", skills.map(x=>({name:x.name, desc:x.description})),
-    ()=>skills.filter(x=>x.enabled).map(x=>x.name));
-  renderApNames(body, a, "mcp", "MCP", mcps.map(x=>({name:x.name, desc:x.url||x.command||""})), ()=>[]);
-  renderApModelTools(body, a);
-  const rm=el("button","apbtn danger"); rm.type="button"; rm.textContent="移除 Agent";
-  rm.title="只从列表移除,文件夹和它的文件都留着,再把目录加回来就恢复";
-  rm.onclick=async()=>{
-    if(!confirm("从列表移除「"+a.name+"」?文件夹和它的文件都会保留。")) return;
-    await removeProject(a.project_hash); await loadAgents(); hideAgentPanel(); renderConvs();
-  };
-  body.append(rm);
+  body.innerHTML="";
+  if(a.id==="general"){
+    body.append(apSection("能力"), apEmpty("技能、MCP、模型都用设置页的全局配置。"));
+  }else if(cat){
+    const skills=(cat.skills?.items||[]).filter(x=>!x.hidden);
+    const mcps=(cat.mcp?.external||[]).filter(x=>x.enabled!==false);
+    // 自定义时的初始名单:技能从全局已开启的抄一份(免得一打开就全关),MCP 从空开始
+    renderApNames(body, a, "skills", "技能", skills.map(x=>({name:x.name, desc:x.description})),
+      ()=>skills.filter(x=>x.enabled).map(x=>x.name));
+    renderApNames(body, a, "mcp", "MCP", mcps.map(x=>({name:x.name, desc:x.url||x.command||""})), ()=>[]);
+    renderApModelTools(body, a);
+  }
+  if(files && !files.error) renderApFileSections(body, a, files);
+  if(a.id!=="general"){
+    const rm=el("button","apbtn danger"); rm.type="button"; rm.textContent="移除 Agent";
+    rm.title="只从列表移除,文件夹和它的文件都留着,再把目录加回来就恢复";
+    rm.onclick=async()=>{
+      if(!confirm("从列表移除「"+a.name+"」?文件夹和它的文件都会保留。")) return;
+      await removeProject(a.project_hash); await loadAgents(); hideAgentPanel(); renderConvs();
+    };
+    body.append(rm);
+  }
 }
 // 默认模型 + 禁用工具(memory/agents.py 的 model / disallowed_tools,后端硬生效)。
 // 同样只重画自己这一块;模型清单异步拉,先占住位置,免得插到「移除 Agent」按钮后面
@@ -621,12 +679,8 @@ function renderApNames(body, a, key, title, items, initial){
 }
 
 // 文件:家目录(vococo 管) + 工作目录第一层 + 关联(默认只读,可写需勾选)
-async function renderApFiles(body, a){
-  body.append(apEmpty("加载中…"));
-  let d;
-  try{ d=await (await api("/agents/files?id="+encodeURIComponent(a.id))).json(); }catch(e){ body.innerHTML=""; body.append(apEmpty("加载失败")); return; }
-  if(apStale(a,"files")) return;
-  body.innerHTML="";
+// 文件与关联:家目录(vococo 管)+ 工作目录第一层 + 关联目录(默认只读,可写需勾选)
+function renderApFileSections(body, a, d){
   const fileRow=(name, path, isDir)=>{
     const r=el("div","apfile"); r.innerHTML=ic(isDir?"folder":"doc")+'<span class="apfname"></span>';
     r.querySelector(".apfname").textContent=name;
@@ -634,42 +688,52 @@ async function renderApFiles(body, a){
     else r.classList.add("dir");
     return r;
   };
-  body.append(apSection("它自己的 · "+shortPath(d.home)));
+  body.append(apSection("文件 · "+shortPath(d.home)));
   for(const f of d.files) body.append(fileRow(f, d.home+"/"+f, false));
   if(d.workdir){
     body.append(apSection("工作目录 · "+shortPath(d.workdir)));
     if(!d.workdir_top.length) body.append(apEmpty("空"));
     for(const e of d.workdir_top) body.append(fileRow(e.name, d.workdir+"/"+e.name, e.dir));
   }
-  body.append(apSection("关联"));
-  const links=a.links||[];
-  if(!links.length) body.append(apEmpty("没有关联目录。关联后它知道去哪找资料,默认只读。"));
-  links.forEach((l, i)=>{
-    const r=el("div","aplink");
-    const main=el("div","aptmain");
-    const p=el("div","aptname"); p.textContent=shortPath(l.path); p.title=l.path;
-    const sub=el("div","aptsub"); sub.textContent=l.note||"";
-    main.append(p, sub);
-    const w=el("label","apwrite"); w.innerHTML='<input type="checkbox"'+(l.writable?" checked":"")+'> 可写';
-    w.title="勾上后它往这里写文件不用再批";
-    w.querySelector("input").onchange=ev=>saveLinks(a, links.map((x,j)=>j===i?{...x, writable:ev.target.checked}:x));
-    const del=el("button","more"); del.textContent="✕"; del.title="取消关联";
-    del.onclick=()=>saveLinks(a, links.filter((x,j)=>j!==i));
-    r.append(main, w, del);
-    body.append(r);
-  });
-  const add=el("div","apadd"); add.textContent="＋ 关联目录";
-  add.onclick=()=>openDirPicker("关联一个目录(默认只读)","✓ 关联", p=>{
-    const note=(prompt("备注一下这是什么(可留空)")||"").trim();
-    saveLinks(a, [...links, {path:p, note, writable:false}]);
-  });
-  body.append(add);
+  renderApLinks(body, a);
+}
+// 关联目录:改了只重画这一块——同页上面还有技能/MCP/禁用工具,整页重画会冲掉没保存的输入、跳回顶部
+function renderApLinks(body, a){
+  const box=el("div"); body.append(box);
+  let links=a.links||[];
+  const save=async next=>{
+    let r;
+    try{ r=await agentPost("/agents/update",{id:a.id, links:next}); }catch(e){ alert(e.message); return; }
+    links=r.agent.links||[]; a.links=links; draw(); loadAgents();
+  };
+  const draw=()=>{
+    box.innerHTML="";
+    box.append(apSection("关联目录"));
+    if(!links.length) box.append(apEmpty("没有关联目录。关联后它知道去哪找资料,默认只读。"));
+    links.forEach((l, i)=>{
+      const r=el("div","aplink");
+      const main=el("div","aptmain");
+      const p=el("div","aptname"); p.textContent=shortPath(l.path); p.title=l.path;
+      const sub=el("div","aptsub"); sub.textContent=l.note||"";
+      main.append(p, sub);
+      const w=el("label","apwrite"); w.innerHTML='<input type="checkbox"'+(l.writable?" checked":"")+'> 可写';
+      w.title="勾上后它往这里写文件不用再批";
+      w.querySelector("input").onchange=ev=>save(links.map((x,j)=>j===i?{...x, writable:ev.target.checked}:x));
+      const del=el("button","more"); del.textContent="✕"; del.title="取消关联";
+      del.onclick=()=>save(links.filter((x,j)=>j!==i));
+      r.append(main, w, del);
+      box.append(r);
+    });
+    const add=el("div","apadd"); add.textContent="＋ 关联目录";
+    add.onclick=()=>openDirPicker("关联一个目录(默认只读)","✓ 关联", p=>{
+      const note=(prompt("备注一下这是什么(可留空)")||"").trim();
+      save([...links, {path:p, note, writable:false}]);
+    });
+    box.append(add);
+  };
+  draw();
 }
 function shortPath(p){ return String(p||"").replace(/^\/Users\/[^/]+/, "~"); }
-async function saveLinks(a, links){
-  try{ await agentPost("/agents/update",{id:a.id, links}); }catch(e){ alert(e.message); return; }
-  await loadAgents(); renderAgentPanel();
-}
 
 // ── 空会话欢迎屏:当前会话属于某个 Agent 时换成它自己的 ─────────────────────────
 // 头像 + 名字 + 职责一句话 + 目标一句话,快捷操作按它的状态给(没目标→设目标;没计划→拆计划;有计划→看进展)
