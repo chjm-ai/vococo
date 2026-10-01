@@ -1689,7 +1689,7 @@
   /* 设置 →「高级」折叠:标题沿用 .apsec,去掉浏览器默认三角,用折线箭头的意思即可 */
   .apadv > summary{cursor:pointer;list-style:none}
   .apadv > summary::-webkit-details-marker{display:none}
-  .apadv > summary::after{content:" ›";display:inline-block;transition:transform var(--t-fast)}
+  .apadv > summary::after{content:"›";display:inline-block;margin-left:var(--sp-1);transition:transform var(--t-fast)}
   .apadv[open] > summary::after{transform:rotate(90deg)}
   .apadv .apnote{margin-top:var(--sp-1)}
   /* 文件 */

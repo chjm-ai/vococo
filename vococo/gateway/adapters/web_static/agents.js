@@ -494,9 +494,19 @@ async function renderApGoal(body, a){
   renderApDoc(body, a, "NOTES.md", "笔记 · NOTES.md", notes.text||"",
     "它记下的经验、被否决的做法。它自己会写,你也可以改。");
 }
-// 目标 + 计划(GOAL.md / PLAN.md):放进自己的容器,这样后面还能接「笔记」
+// 目标 + 计划(GOAL.md / PLAN.md):放进自己的容器,这样后面还能接「笔记」。
+// 编辑目标的取消/保存只重画这一块,别整页重画——会冲掉人格、笔记里还没保存的输入
 function renderApGoalPart(parent, a, g){
   const body=el("div"); parent.append(body);
+  const redraw=async()=>{
+    let g2;
+    try{ g2=await (await api("/agents/goal?id="+encodeURIComponent(a.id))).json(); }catch(e){ g2=g; }
+    if(apStale(a,"goal")) return;
+    const holder=document.createDocumentFragment();   // 新画一份,原地替换掉这一块
+    renderApGoalPart(holder, a, g2);
+    body.replaceWith(holder);
+  };
+  const editGoal=(b, a, text)=>editGoalIn(b, a, text, redraw);
   body.append(apSection("目标"));
   const hasGoal=/^(?!#).*\S/m.test(g.goal||"");
   if(!hasGoal){
@@ -549,16 +559,16 @@ function renderApDoc(body, a, name, title, text, hint, onSaved){
   };
   draw();
 }
-function editGoal(body, a, text){
+function editGoalIn(body, a, text, done){
   body.innerHTML="";
   const ta=el("textarea","aptext"); ta.value=text||""; ta.rows=18;
   const acts=el("div","apacts");
-  const cancel=el("button","apbtn"); cancel.textContent="取消"; cancel.onclick=()=>renderAgentPanel();
+  const cancel=el("button","apbtn"); cancel.textContent="取消"; cancel.onclick=()=>done();
   const save=el("button","apbtn primary"); save.textContent="保存";
   save.onclick=async()=>{
     try{ await agentPost("/agents/doc",{id:a.id, name:"GOAL.md", text:ta.value}); }catch(e){ alert(e.message); return; }
     await loadCronSidebar();   // 第一次写目标会自动挂上每周复盘任务
-    renderAgentPanel();
+    done();
   };
   acts.append(cancel, save);
   const note=el("div","apnote"); note.textContent="「当前进展」「复盘记录」由每周复盘写回,不用手填。";
@@ -694,7 +704,7 @@ function renderApFileSections(body, a, d){
   // 人格 / 目标 / 计划 / 笔记在「职责」里看和改,这里不重复列
   const own=d.files.filter(f=>!AP_ROLE_DOCS.includes(f));
   if(own.length){
-    body.append(apSection("运行记录 · "+shortPath(d.home)));
+    body.append(apSection("它的文件 · "+shortPath(d.home)));
     for(const f of own) body.append(fileRow(f, d.home+"/"+f, false));
   }
   if(d.workdir){
