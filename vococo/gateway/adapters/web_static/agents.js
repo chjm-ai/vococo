@@ -225,6 +225,7 @@ function syncAgentHeader(){
   const panel=$("#agentPanel");
   if(!show){ panel.hidden=true; return; }
   if(panel.hidden || panel.dataset.agent!==a.id){ panel.hidden=false; panel.dataset.agent=a.id; renderAgentPanel(); }
+  else renderApInfo(a);   // 同一 Agent 下切会话(主↔子)/改了名字:只刷身份卡,别冲掉正文里没保存的输入
 }
 function toggleAgentPanel(){
   S.agentPanelOn=!S.agentPanelOn; saveAgentPanelPref();
@@ -239,6 +240,7 @@ $("#apClose").onclick=()=>{ S.agentPanelOn=false; saveAgentPanelPref(); syncAgen
 const AP_TABS=[{key:"feed",label:"动态"},{key:"tasks",label:"定时"},{key:"goal",label:"目标"},{key:"setup",label:"设定"},{key:"files",label:"文件"}];
 function renderAgentPanel(){
   const a=agentById($("#agentPanel").dataset.agent); if(!a) return;
+  renderApInfo(a);
   const tabs=$("#apTabs"); tabs.innerHTML="";
   for(const t of AP_TABS){
     const b=el("div","sidetab"+(S.agentPanelTab===t.key?" active":"")); b.textContent=t.label;
@@ -248,6 +250,28 @@ function renderAgentPanel(){
   const body=$("#apBody"); body.innerHTML=""; body.scrollTop=0;
   const fn={feed:renderApFeed, tasks:renderApTasks, goal:renderApGoal, setup:renderApSetup, files:renderApFiles}[S.agentPanelTab]||renderApFeed;
   fn(body, a);
+}
+// 面板顶部的身份卡:子会话打开面板时,第一眼要知道它属于哪个 Agent、这个 Agent 是干什么的
+function renderApInfo(a){
+  const box=$("#apInfo"); box.innerHTML="";
+  const av=el("div","apiav"); av.innerHTML=avatarSvg(a.avatar);
+  const main=el("div","apimain");
+  const nm=el("div","apiname"); nm.textContent=a.name;
+  const sub=el("div","apisub"); sub.textContent=a.summary || "还没写职责";
+  main.append(nm, sub);
+  if(a.goal){
+    const g=el("button","apigoal"); g.type="button"; g.title="看目标和计划";
+    const lb=el("span","aggl"); lb.textContent="目标";
+    const t=el("span","aggt"); t.textContent=a.goal;
+    g.append(lb, t); g.onclick=()=>{ S.agentPanelTab="goal"; saveAgentPanelPref(); renderAgentPanel(); };
+    main.append(g);
+  }
+  box.append(av, main);
+  if(S.conv!==a.main_conv){
+    const go=el("button","apimainbtn"); go.type="button"; go.textContent="主会话"; go.title="回到「"+a.name+"」的主会话";
+    go.onclick=()=>openAgentMain(a);
+    box.append(go);
+  }
 }
 // cron 表达式 → 人话:直接借定时任务弹窗里的预设文案(「每周一早 9 点」),没命中就原样显示
 function scheduleText(sch, fallback){
