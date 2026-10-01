@@ -193,10 +193,14 @@ function grpKey(hash){ return hash===null ? "__default__" : hash; }
 function saveExpanded(){ try{ localStorage.setItem("vococo_expanded", JSON.stringify([...S.expanded])); }catch(e){} }
 function loadExpanded(){ try{ S.expanded=new Set(JSON.parse(localStorage.getItem("vococo_expanded")||"[]")); }catch(e){ S.expanded=new Set(); } }
 
+// 项目对应的 Agent:默认项目归总助理(id=general),其他按项目哈希找
+function projAgent(hash){
+  return (S.agents||[]).find(a=>hash ? a.project_hash===hash : a.id==="general") || null;
+}
 function projName(hash){
-  if(!hash) return "默认项目";
-  const ag=(S.agents||[]).find(a=>a.project_hash===hash);   // 项目已是 Agent → 用 Agent 名字
+  const ag=projAgent(hash);   // 项目已是 Agent → 用 Agent 名字(默认项目 = 总助理)
   if(ag) return ag.name;
+  if(!hash) return "默认项目";
   const p=(S.projects||[]).find(x=>x.hash===hash);
   return p ? p.name : "默认项目";
 }
@@ -208,9 +212,9 @@ function renderProjSelChip(){
   box.hidden = !show;
   if(show){ $("#projSelName").textContent = projName(S.project); $("#projSelIc").innerHTML = projIcon(S.project); }
 }
-// 项目图标:已是 Agent → 用它的像素头像;普通项目/默认项目 → 文件夹图标
+// 项目图标:已是 Agent(含默认项目的总助理)→ 用它的像素头像;否则文件夹图标
 function projIcon(hash){
-  const ag=hash && (S.agents||[]).find(a=>a.project_hash===hash);
+  const ag=projAgent(hash);
   return ag ? avatarSvg(ag.avatar) : ic("folder");
 }
 function renderProjSelPop(){
