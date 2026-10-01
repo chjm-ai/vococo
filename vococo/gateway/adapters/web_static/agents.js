@@ -161,7 +161,6 @@ function buildAgentMainRow(a, inCall){
   const e=el("div","conv ingroup agmain"+(!inCall && S.conv===a.main_conv?" active":""));
   e.dataset.conv=a.main_conv;
   const body=el("div","cvbody");
-  body.innerHTML=ic("star");
   if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
   else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }
   const ct=el("div","ct"); ct.textContent="主会话"; body.append(ct);
