@@ -501,14 +501,14 @@ try{
     </header>
     <div id="dpBody"></div>
   </aside>
-  <!-- Agent 面板(agents.js):动态 / 定时 / 目标 / 设定 / 文件,标题栏 Agent 头像按钮开关 -->
+  <!-- Agent 面板(agents.js):顶部身份卡(点头像/名字进设定)+ 动态 / 定时 / 目标 / 文件,标题栏 Agent 头像按钮开关 -->
   <aside id="agentPanel" hidden>
     <header id="apHead">
-      <div class="sidetabs" id="apTabs"></div>
+      <!-- 这是谁:头像 + 名字 + 职责 + 目标;子会话里点开也一眼看到父 Agent -->
+      <div id="apInfo"></div>
       <button type="button" id="apClose" title="关闭">✕</button>
     </header>
-    <!-- 这是谁:头像 + 名字 + 职责 + 目标;子会话里点开也一眼看到父 Agent,不用去「设定」里翻 -->
-    <div id="apInfo"></div>
+    <div class="sidetabs" id="apTabs"></div>
     <div id="apBody"></div>
   </aside>
 </div>

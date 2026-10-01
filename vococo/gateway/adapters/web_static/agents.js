@@ -3,7 +3,7 @@
 // 与「项目」「定时」Tab 并存,方案定了再下架那两个。
 // - 侧栏:每个 Agent 一行(像素头像 + 名称 + 折线箭头),点行 = 打开它的主会话(定时结果都推到这里),
 //   箭头展开(第一行固定是主会话,下面是名下独立会话),hover「＋」在它名下开新会话;状态做在头像上(见 agentWorking/agentUnread)
-// - 右侧面板(标题栏按钮开关):动态 / 定时 / 目标 / 设定 / 文件
+// - 右侧面板(标题栏按钮开关):顶部身份卡(点头像/名字进「设定」)+ 动态 / 定时 / 目标 / 文件
 
 // ── 像素头像:风格取自 logo「小幽」——crispEdges 方块、深色眼睛、左上一格高光 ──────────
 // 形状 = 每行的实心区间 [起列, 止列];eye = 眼睛所在行。键名与后端 AVATAR_SHAPES 一致
@@ -223,7 +223,7 @@ function currentAgent(){
 function syncAgentHeader(){
   const a=currentAgent(), btn=$("#convAgentBtn");
   btn.hidden=!a;
-  if(a){ btn.innerHTML=avatarSvg(a.avatar); btn.title=a.name+" · 动态 / 定时 / 目标 / 设定 / 文件"; btn.classList.toggle("on", S.agentPanelOn); }
+  if(a){ btn.innerHTML=avatarSvg(a.avatar); btn.title=a.name+" · 动态 / 定时 / 目标 / 文件 / 设定"; btn.classList.toggle("on", S.agentPanelOn); }
   // Agent 主会话标题 = Agent 名字(副标题标一下是主会话)
   const am=agentByMainConv(S.conv);
   if(am && S.surface==="chat") $("#convTitle").textContent=am.name;
@@ -243,7 +243,8 @@ function hideAgentPanel(){ $("#agentPanel").hidden=true; $("#agentPanel").datase
 $("#convAgentBtn").onclick=toggleAgentPanel;
 $("#apClose").onclick=()=>{ S.agentPanelOn=false; saveAgentPanelPref(); syncAgentHeader(); };
 
-const AP_TABS=[{key:"feed",label:"动态"},{key:"tasks",label:"定时"},{key:"goal",label:"目标"},{key:"setup",label:"设定"},{key:"files",label:"文件"}];
+// 「设定」不占标签:点顶部身份卡的头像/名字进入(S.agentPanelTab 仍记成 "setup")
+const AP_TABS=[{key:"feed",label:"动态"},{key:"tasks",label:"定时"},{key:"goal",label:"目标"},{key:"files",label:"文件"}];
 function renderAgentPanel(){
   const a=agentById($("#agentPanel").dataset.agent); if(!a) return;
   renderApInfo(a);
@@ -260,19 +261,26 @@ function renderAgentPanel(){
 // 面板顶部的身份卡:子会话打开面板时,第一眼要知道它属于哪个 Agent、这个 Agent 是干什么的
 function renderApInfo(a){
   const box=$("#apInfo"); box.innerHTML="";
+  const id=el("div","apiid"+(S.agentPanelTab==="setup"?" on":""));
+  id.title="改名字、头像、人格与能力"; id.setAttribute("role","button"); id.tabIndex=0;
   const av=el("div","apiav"); av.innerHTML=avatarSvg(a.avatar);
   const main=el("div","apimain");
-  const nm=el("div","apiname"); nm.textContent=a.name;
+  const nm=el("div","apiname"); const nb=el("b"); nb.textContent=a.name;
+  nm.append(nb); nm.insertAdjacentHTML("beforeend", '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>');
   const sub=el("div","apisub"); sub.textContent=a.summary || "还没写职责";
   main.append(nm, sub);
   if(a.goal){
     const g=el("button","apigoal"); g.type="button"; g.title="看目标和计划";
     const lb=el("span","aggl"); lb.textContent="目标";
     const t=el("span","aggt"); t.textContent=a.goal;
-    g.append(lb, t); g.onclick=()=>{ S.agentPanelTab="goal"; saveAgentPanelPref(); renderAgentPanel(); };
+    g.append(lb, t); g.onclick=ev=>{ ev.stopPropagation(); S.agentPanelTab="goal"; saveAgentPanelPref(); renderAgentPanel(); };
     main.append(g);
   }
-  box.append(av, main);
+  const openSetup=()=>{ S.agentPanelTab="setup"; saveAgentPanelPref(); renderAgentPanel(); };
+  id.onclick=openSetup;
+  id.onkeydown=ev=>{ if(ev.key==="Enter"||ev.key===" "){ ev.preventDefault(); openSetup(); } };
+  id.append(av, main);
+  box.append(id);
   if(S.conv!==a.main_conv){
     const go=el("button","apimainbtn"); go.type="button"; go.textContent="主会话"; go.title="回到「"+a.name+"」的主会话";
     go.onclick=()=>openAgentMain(a);
@@ -468,18 +476,22 @@ function editGoal(body, a, text){
 
 // 设定:名称、头像、人格与技能(AGENT.md)
 async function renderApSetup(body, a){
+  // 头像已在顶部身份卡里,这里只留改名输入框
+  body.append(apSection("名字"));
   const head=el("div","apsetup");
-  const big=el("div","apavbig"); big.innerHTML=avatarSvg(a.avatar);
   const nameIn=el("input","apname"); nameIn.value=a.name; nameIn.maxLength=40;
   if(a.id==="general") nameIn.title="通用 Agent 接住不属于任何项目的会话";
   const saveName=async()=>{
     const v=nameIn.value.trim();
     if(!v || v===a.name){ nameIn.value=a.name; return; }
     try{ await agentPost("/agents/update",{id:a.id, name:v}); }catch(e){ alert(e.message); nameIn.value=a.name; return; }
+    a.name=v;   // a 是打开设定时的那份对象,不同步的话再改回原名会被当成「没改」
     await loadAgents();
+    // 改名时后端顺手改了 AGENT.md 的一级标题;下面编辑框没动过就重读,免得保存时把旧标题写回去
+    if(save.disabled){ try{ const d=await (await api("/agents/doc?id="+encodeURIComponent(a.id)+"&name=AGENT.md")).json(); if(!apStale(a,"setup")) ta.value=d.text||""; }catch(e){} }
   };
   nameIn.onblur=saveName; nameIn.onkeydown=e=>{ if(e.key==="Enter") nameIn.blur(); };
-  head.append(big, nameIn);
+  head.append(nameIn);
   body.append(head);
   const pick=(title, dict, key)=>{
     body.append(apSection(title));
