@@ -23,8 +23,7 @@ MCP 名单里的外部 server 每轮都挂,不再按关键词临时挂。通用 
 所以只有它记得自己攒了什么);scope=global 才登记进全局索引。
 全局记忆索引(AI_BRAIN/MEMORY.md)只注入 memory_sections 列出的分节,不写 = DEFAULT_MEMORY_SECTIONS 三节通用的;
 同时关掉 CLI 的 auto-memory(它会把整份索引再注一遍),见 core/agent.stream_turn、core/prompt.build_system_prompt。
-同一套规则还有两项(2026-10-01):model = 名下【新会话】默认用的模型(老会话已锁定模型,不受影响),
-disallowed_tools = 硬拦的工具名(如 Bash、mcp__vococo__dispatch_session),在 core/agent.stream_turn 里生效,
+同一套规则还有一项(2026-10-01):disallowed_tools = 硬拦的工具名(如 Bash、mcp__vococo__dispatch_session),在 core/agent.stream_turn 里生效,
 子代理也拿不到(父会话的禁用会传给子代理,实测过)。
 
 目标闭环(同日追加):目标 ──拆解──> 计划 ──执行──> 采集数据 ──复盘──> 修正 ──写回目标文件
@@ -198,15 +197,6 @@ def _normalize_names(names) -> list[str] | None:
     return list(dict.fromkeys(str(x).strip() for x in names if str(x).strip()))
 
 
-def _normalize_model(model) -> str | None:
-    """默认模型:None / 空 = 跟随全局。"""
-    if model is None:
-        return None
-    if not isinstance(model, str):
-        raise ValueError("模型必须是字符串")
-    return model.strip()[:80] or None
-
-
 def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
     """把 agent.json + 项目信息拼成对外的 Agent 字典。"""
     if agent_id == GENERAL_ID:
@@ -227,7 +217,6 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
         # agent.json 可以手改,坏值当「跟随全局」,不让整个列表接口报错
         "skills": _normalize_names(meta["skills"]) if isinstance(meta.get("skills"), list) else None,
         "mcp": _normalize_names(meta["mcp"]) if isinstance(meta.get("mcp"), list) else None,
-        "model": meta["model"].strip() or None if isinstance(meta.get("model"), str) else None,
         "disallowed_tools": _normalize_names(meta["disallowed_tools"])
         if isinstance(meta.get("disallowed_tools"), list) else None,
         "memory_sections": _normalize_names(meta["memory_sections"])
@@ -331,11 +320,11 @@ _UNSET = object()
 
 
 def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None,
-           links: list | None = None, skills=_UNSET, mcp=_UNSET, model=_UNSET,
+           links: list | None = None, skills=_UNSET, mcp=_UNSET,
            disallowed_tools=_UNSET, memory_sections=_UNSET) -> dict | None:
     """改名称 / 头像 / 关联 / 技能与 MCP 名单 / 默认模型 / 禁用工具。目录名用 id,不随名称变。
 
-    skills / mcp / model / disallowed_tools 传 None = 改回跟随全局;不传 = 不动。"""
+    skills / mcp / disallowed_tools / memory_sections 传 None = 改回跟随全局;不传 = 不动。"""
     if agent_id != GENERAL_ID and get(agent_id) is None:
         return None
     meta = _read_meta(agent_id)
@@ -353,7 +342,6 @@ def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None
     if links is not None:
         meta["links"] = _normalize_links(links)
     for key, val, norm in (("skills", skills, _normalize_names), ("mcp", mcp, _normalize_names),
-                           ("model", model, _normalize_model),
                            ("disallowed_tools", disallowed_tools, _normalize_names),
                            ("memory_sections", memory_sections, _normalize_names)):
         if val is _UNSET:
@@ -595,11 +583,11 @@ def prompt_extra(agent: dict | None) -> str:
     return text[:PROMPT_MAX_CHARS]
 
 
-RUNTIME_KEYS = ("skills", "mcp", "model", "disallowed_tools", "memory_sections")
+RUNTIME_KEYS = ("skills", "mcp", "disallowed_tools", "memory_sections")
 
 
 def runtime_for_session(session_key: str | None) -> dict:
-    """本轮该用的 Agent 运行设定:{"skills", "mcp", "model", "disallowed_tools"},None = 跟随全局。"""
+    """本轮该用的 Agent 运行设定:{"skills", "mcp", "disallowed_tools", "memory_sections"},None = 跟随全局。"""
     empty = dict.fromkeys(RUNTIME_KEYS)
     if not session_key:
         return empty

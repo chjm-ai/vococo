@@ -1683,10 +1683,10 @@
   .apchip .agav{width:22px;height:20px}
   .apchip.on{border-color:var(--accent)}
   @media(hover:hover){ .apchip:hover{border-color:var(--line2)} .apchip.on:hover{border-color:var(--accent)} }
-  /* 设定 · 默认模型 / 禁用工具 */
-  .apselect,.apinput{width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:var(--r-md);color:var(--text);
+  /* 设定 · 禁用工具 */
+  .apinput{width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:var(--r-md);color:var(--text);
     padding:var(--sp-2) var(--sp-3);font-size:var(--fs-md);font-family:inherit;transition:border-color var(--t-fast)}
-  .apselect:focus,.apinput:focus{border-color:var(--dim2);outline:none}
+  .apinput:focus{border-color:var(--dim2);outline:none}
   /* 设置 →「高级」折叠:标题沿用 .apsec,去掉浏览器默认三角,用折线箭头的意思即可 */
   .apadv > summary{cursor:pointer;list-style:none}
   .apadv > summary::-webkit-details-marker{display:none}

@@ -152,12 +152,7 @@ class GatewayRunner:
             # 锁定】为本会话的 chosen_model —— 否则默认模型一变,把已经用过模型
             # 的老会话也带跑(缓存/上下文都对不上了)。锁定后,默认模型的变化只
             # 影响真正还没用过模型的全新会话。
-            # 会话属于某个 Agent 且它设了默认模型 → 优先用它(Agent 能力设定,见 memory/agents.py)
-            from ..memory import agents
-
-            model = agents.runtime_for_session(key)["model"] or ""
-            if not model and inc.platform == "web":
-                model = settings_store.get_web_default_model()
+            model = settings_store.get_web_default_model() if inc.platform == "web" else ""
             model = model or config.MODEL
             session_store.set_chosen_model(key, model)
             self.models[key] = model
