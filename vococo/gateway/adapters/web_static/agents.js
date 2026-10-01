@@ -105,6 +105,9 @@ function agentUnread(a){
   return agentOwnItems(a).filter(c=>!c.archived && !agentItemBusy(c) && (c.pending_review || S.pendingReview[c.conv])).length;
 }
 function agentKey(a){ return "agent:"+a.id; }
+// 展开后默认只露 5 行:主会话 1 行 + 子会话 4 行,其余折进「展开更多」(2026-10-01 主人定:原来 1+7 行太长)。
+// 「项目」Tab 的分组仍用 sidebar.js 的 CONV_SHOW_MAX。
+const AGENT_CONV_SHOW_MAX = 4;
 function renderAgentsTab(box, inCall){
   if(!S.agents.length){ box.append(sideTabEmpty("加载中…")); return; }
   for(const a of S.agents) renderAgentGroup(box, a, inCall);
@@ -148,7 +151,7 @@ function renderAgentGroup(box, a, inCall){
   const rows=[...tasks.map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)})),
               ...convs.map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}))]
     .sort((x,y)=>y.ts-x.ts).map(it=>it.build()).filter(Boolean);
-  const shown=S.moreShown.has(k)?rows:rows.slice(0, CONV_SHOW_MAX);
+  const shown=S.moreShown.has(k)?rows:rows.slice(0, AGENT_CONV_SHOW_MAX);
   for(const r of shown) box.append(r);
   if(rows.length>shown.length){
     const more=el("div","conv ingroup convmore");
