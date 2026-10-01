@@ -261,7 +261,7 @@ function renderAgentPanel(){
   const fn={feed:renderApFeed, tasks:renderApTasks, goal:renderApGoal, setup:renderApSetup}[S.agentPanelTab]||renderApFeed;
   fn(body, a);
 }
-// 面板顶部的身份:头像 + 名字 + 一行职责,保持简洁。点头像弹浮层直接换,点名字原地改名
+// 面板顶部的身份:只有头像 + 名字 + 一行职责,保持简洁(回主会话走侧栏 Agent 行)。点头像弹浮层直接换,点名字原地改名
 function renderApInfo(a){
   const box=$("#apInfo"); box.innerHTML="";
   const av=el("button","apiav"); av.type="button"; av.title="换头像"; av.innerHTML=avatarSvg(a.avatar);
@@ -272,11 +272,6 @@ function renderApInfo(a){
   const sub=el("div","apisub"); sub.textContent=a.summary || "还没写职责";
   main.append(nm, sub);
   box.append(av, main);
-  if(S.conv!==a.main_conv){
-    const go=el("button","apimainbtn"); go.type="button"; go.textContent="主会话"; go.title="回到「"+a.name+"」的主会话";
-    go.onclick=()=>openAgentMain(a);
-    box.append(go);
-  }
 }
 // 名字原地变输入框:回车/失焦保存,Esc 取消
 function editApName(nm, a){
