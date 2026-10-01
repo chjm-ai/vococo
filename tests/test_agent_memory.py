@@ -192,3 +192,35 @@ def test_filter_before_clip(env, monkeypatch, tmp_path):
     out = prompt._load_memory_sections(["健康与生活"])
     assert "sleep.md" in out  # 排在超长分节后面,照样注得进来
     assert "健康与生活" in prompt.memory_section_titles()
+
+
+VOCO_INDEX = "# vococo 项目记忆索引\n\n> 说明一\n> 说明二\n\n→ old.md — 老条目\n\n## 相关但未归入本目录\n\n→ other.md — 别处的\n"
+
+
+def test_register_goes_to_auto_section_at_top(env, tmp_path):
+    from vococo.memory import deposit
+
+    d = deposit.agent_memory_dir(env)
+    d.mkdir(parents=True)
+    (d / "INDEX.md").write_text(VOCO_INDEX, encoding="utf-8")
+    deposit.note(env, "lesson", "坑一")
+    deposit.note(env, "decision", "决策一")
+    deposit.save_topic(env, "nas-x", "NAS", "摘要\n带换行", "正文")
+    text = (d / "INDEX.md").read_text(encoding="utf-8")
+    head, _, rest = text.partition("→ old.md")
+    # 三条都在开头的「自动登记」里(在原有条目和「相关但未归入」那节之前),按登记顺序,摘要换行被压平
+    assert "## 自动登记\n→ lessons.md — 踩坑记录(按日期追加)\n→ decisions.md — 决策记录(按日期追加)\n→ nas-x.md — 摘要 带换行\n" in head
+    assert head.startswith("# vococo 项目记忆索引\n\n> 说明一\n> 说明二\n\n## 自动登记")
+    assert "→ other.md — 别处的" in rest  # 原有内容不动
+    with pytest.raises(ValueError):
+        deposit.save_topic(env, "INDEX", "x", "y", "z")  # 保留名
+
+
+def test_same_folder_name_gets_suffix(env, tmp_path):
+    from vococo.memory import deposit
+
+    other = tmp_path / "elsewhere" / "proj"  # 和 env 同名的另一个项目文件夹
+    other.mkdir(parents=True)
+    b = agents.create("另一个", str(other))
+    assert deposit.agent_memory_dir(env).name == "proj"  # 先建的占名
+    assert deposit.agent_memory_dir(b).name == f"proj-{b['id'][:6]}"

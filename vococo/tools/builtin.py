@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import functools
 import re
@@ -168,7 +169,11 @@ async def save_memory(args: dict) -> dict:
         from ..memory import deposit
 
         try:
-            path = deposit.save_topic(owner, topic, title, summary, body)
+            # AI_BRAIN 在 iCloud,读写可能卡住:扔线程池限时,别冻住整个事件循环(见 gateway/watchdog.py 事故)
+            path = await asyncio.wait_for(
+                asyncio.to_thread(deposit.save_topic, owner, topic, title, summary, body), timeout=15)
+        except asyncio.TimeoutError:
+            return _ok("⚠️ 写 AI_BRAIN 超时(iCloud 可能卡住了),这条没存上,稍后再试。")
         except FileExistsError as exc:
             return _ok(f"⚠️ {exc} 已存在,未改动。要追加请用 Read+Edit 打开它,或用 note_memory。")
         except (OSError, ValueError) as exc:
@@ -222,7 +227,10 @@ async def note_memory(args: dict) -> dict:
     if (args.get("scope") or "agent").strip() != "global" and kind != "preference":
         owner = agents.owner_for_memory(danger.current_session_key())
     try:
-        path = deposit.note(owner, kind, text, label)
+        # 全局文件要整份读出再写回,AI_BRAIN 在 iCloud 可能卡住:线程池 + 限时,不冻住事件循环
+        path = await asyncio.wait_for(asyncio.to_thread(deposit.note, owner, kind, text, label), timeout=15)
+    except asyncio.TimeoutError:
+        return _ok("⚠️ 写 AI_BRAIN 超时(iCloud 可能卡住了),这条没存上,稍后再试。")
     except ValueError as exc:
         return _ok(f"note_memory 参数不对:{exc}")
     except OSError as exc:
