@@ -1683,6 +1683,12 @@
   .apselect,.apinput{width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:var(--r-md);color:var(--text);
     padding:var(--sp-2) var(--sp-3);font-size:var(--fs-md);font-family:inherit;transition:border-color var(--t-fast)}
   .apselect:focus,.apinput:focus{border-color:var(--dim2);outline:none}
+  /* 设置 →「高级」折叠:标题沿用 .apsec,去掉浏览器默认三角,用折线箭头的意思即可 */
+  .apadv > summary{cursor:pointer;list-style:none}
+  .apadv > summary::-webkit-details-marker{display:none}
+  .apadv > summary::after{content:"›";display:inline-block;margin-left:var(--sp-1);transition:transform var(--t-fast)}
+  .apadv[open] > summary::after{transform:rotate(90deg)}
+  .apadv .apnote{margin-top:var(--sp-1)}
   /* 文件 */
   .apfile{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);
     font-size:var(--fs-md);color:var(--dim);cursor:pointer;transition:background var(--t-fast),color var(--t-fast)}
