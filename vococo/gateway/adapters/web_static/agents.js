@@ -2,7 +2,7 @@
 // 2026-09-29 Agent(项目升级版,后端见 memory/agents.py):侧栏「Agent」Tab + 右侧 Agent 面板。
 // 与「项目」「定时」Tab 并存,方案定了再下架那两个。
 // - 侧栏:每个 Agent 一行(像素头像 + 名称 + 折线箭头),点行 = 打开它的主会话(定时结果都推到这里),
-//   箭头展开它名下的独立会话,hover「＋」在它名下开新会话;状态不用圆点,直接做在头像动效上(见 agentState)
+//   箭头展开(第一行固定是主会话,下面是名下独立会话),hover「＋」在它名下开新会话;状态做在头像上(见 agentWorking/agentUnread)
 // - 右侧面板(标题栏按钮开关):动态 / 定时 / 目标 / 设定 / 文件
 
 // ── 像素头像:风格取自 logo「小幽」——crispEdges 方块、深色眼睛、左上一格高光 ──────────
@@ -73,7 +73,7 @@ async function agentPost(path, body){
 }
 
 // ── 侧栏「Agent」Tab ────────────────────────────────────────────────────
-// 子会话 = 该 Agent 名下的独立会话(不含主会话,主会话点 Agent 行进);通用 Agent 收不属于任何项目的会话
+// 子会话 = 该 Agent 名下的独立会话(不含主会话——它固定在展开后第一行,见 buildAgentMainRow);通用 Agent 收不属于任何项目的会话
 function agentOwnsConv(a, conv){
   if(conv==="main" || conv===a.main_conv) return false;
   const h=convProject(conv);
@@ -87,15 +87,22 @@ function agentConvs(a){
     return true;
   });
 }
-// Agent 头像的动效状态(样式见 styles.css 的 .projgrp.agrow[data-state]):
-//   working = 主会话或名下任一会话在回复(不管是收起还是展开、归档筛选怎么选,都照实反映)
-//   done    = 都不忙了,但主会话或名下会话还有没看过的完成结果(打开那个会话后消失)
-// 一份清单管两个状态:主会话和子会话走同一套判断,免得"子会话在跑但主会话不亮"这种半截状态。
-function agentState(a){
-  const mine=[S.convs.find(c=>c.conv===a.main_conv)||{conv:a.main_conv}]
-    .concat(S.convs.filter(c=>agentOwnsConv(a, c.conv)));
-  if(mine.some(c=>S.live[c.conv])) return "working";
-  return mine.some(c=>c.pending_review || S.pendingReview[c.conv]) ? "done" : "";
+// Agent 行的两种状态提示(样式见 styles.css 的 .projgrp.agrow):
+//   工作中 = 头像弹跳:主会话、名下任一会话或(总助理名下的)语音任务在跑,收起/展开都照实反映
+//   未读   = 头像右上角红色数字:有几个会话留着没看过的完成结果(打开那个会话就减一;归档的不算)
+// 统计范围和展开后的列表一致(置顶的语音任务列表里不出,这里也不算)。已知局限:底部筛选切到「归档」时
+// 后端只回归档会话,未归档子会话不在 S.convs 里,这期间数字只剩主会话和语音任务。
+// 2026-09-30 主人定案:未读不用动效——动的东西扫一眼分不清哪行有未读,静态数字才一目了然。
+function agentOwnItems(a){
+  const main=S.convs.find(c=>c.conv===a.main_conv)||{conv:a.main_conv};
+  const tasks=a.id==="general" ? ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned) : [];
+  return [main, ...S.convs.filter(c=>agentOwnsConv(a, c.conv)), ...tasks];
+}
+const agentItemBusy=c=>S.live[c.conv] || c.task_status==="queued" || c.task_status==="running";   // 同行内显示橙色闪点的条件
+function agentWorking(a){ return agentOwnItems(a).some(agentItemBusy); }
+// 还在跑的不算未读:那一行显示的是闪点,数字跟着行走
+function agentUnread(a){
+  return agentOwnItems(a).filter(c=>!c.archived && !agentItemBusy(c) && (c.pending_review || S.pendingReview[c.conv])).length;
 }
 function agentKey(a){ return "agent:"+a.id; }
 function renderAgentsTab(box, inCall){
@@ -108,16 +115,22 @@ function renderAgentGroup(box, a, inCall){
   // 语音后台任务不分项目,归总助理(原「项目」Tab 的默认项目也是这么放的),和会话按最后活跃时间混排
   const tasks=a.id==="general" ? ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned) : [];
   const k=agentKey(a), open=S.expanded.has(k);
-  const h=el("div","projgrp agrow"+(!inCall && S.conv===a.main_conv?" active":""));
-  const st=agentState(a);
-  if(st){ h.dataset.state=st; h.title=st==="working"?"AI 正在回复中":"有新的完成结果"; }
-  h.innerHTML=avatarSvg(a.avatar);
+  // 展开时高亮落在下面的「主会话」行上,Agent 行只在收起时代它高亮
+  const h=el("div","projgrp agrow"+(!inCall && !open && S.conv===a.main_conv?" active":""));
+  const working=agentWorking(a), unread=agentUnread(a);
+  if(working) h.dataset.state="working";
+  const tips=[working?"AI 正在工作中":"", unread?unread+" 个会话有未读结果":""].filter(Boolean);
+  if(tips.length) h.title=tips.join(" · ");
+  // 头像外包一层:角标定位在它右上角,且不跟着头像的弹跳动效一起动
+  const av=el("span","agavwrap"); av.innerHTML=avatarSvg(a.avatar);
+  if(unread){ const b=el("span","agbadge"); b.textContent=unread>9?"9+":String(unread); av.append(b); }
+  h.append(av);
   const nm=el("span","pgname"); nm.textContent=a.name; h.append(nm);
-  const hasRows=convs.length+tasks.length>0;
-  const caret=el("span","pgcaret"+(hasRows?"":" agnone"));
+  // 展开后第一行永远是主会话,所以每个 Agent 都能展开
+  const caret=el("span","pgcaret");
   caret.append(el("span","chev"+(open?" down":"")));
   caret.title=open?"收起会话":"展开会话";
-  caret.onclick=ev=>{ ev.stopPropagation(); if(!hasRows) return;
+  caret.onclick=ev=>{ ev.stopPropagation();
     if(open){ S.expanded.delete(k); S.moreShown.delete(k); } else S.expanded.add(k);
     saveExpanded(); renderConvs(); };
   h.append(caret);
@@ -128,6 +141,7 @@ function renderAgentGroup(box, a, inCall){
   h.onclick=()=>{ if(S.dragMoved){ S.dragMoved=false; return; } openAgentMain(a); };   // 拖拽落地那一下别顺带打开
   box.append(h);
   if(!open) return;
+  box.append(buildAgentMainRow(a, inCall));
   const rows=[...tasks.map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)})),
               ...convs.map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}))]
     .sort((x,y)=>y.ts-x.ts).map(it=>it.build()).filter(Boolean);
@@ -139,6 +153,22 @@ function renderAgentGroup(box, a, inCall){
     more.onclick=()=>{ S.moreShown.add(k); renderConvs(); };
     box.append(more);
   }
+}
+// 展开后的第一行:主会话,和子会话列在同一层,结构上一眼看出「Agent = 主会话 + 若干子会话」。
+// 点 Agent 行本身照样进主会话,这一行只是把它摆出来;主会话不能归档/删除,所以不给 ⋯ 菜单和滑动手势。
+function buildAgentMainRow(a, inCall){
+  const c=S.convs.find(x=>x.conv===a.main_conv)||{conv:a.main_conv};
+  const e=el("div","conv ingroup agmain"+(!inCall && S.conv===a.main_conv?" active":""));
+  e.dataset.conv=a.main_conv;
+  const body=el("div","cvbody");
+  body.innerHTML=ic("star");
+  if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
+  else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }
+  const ct=el("div","ct"); ct.textContent="主会话"; body.append(ct);
+  const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }
+  e.append(body);
+  e.onclick=()=>openAgentMain(a);
+  return e;
 }
 function openAgentMain(a){
   // 主会话还没有任何记录时,/conversations 里没有它;先放一条占位,标题/项目归属才对得上

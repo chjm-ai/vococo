@@ -1550,30 +1550,26 @@
   }
   /* ── Agent(agents.js):侧栏 Agent 行 + 像素头像 + 右侧面板 + 新建弹窗 ─────────── */
   .agav{display:block;flex-shrink:0;width:18px;height:17px}
-  /* Agent 行状态:不用圆点,做在像素头像自身的动效上(2026-09-29 主人定案)。
-     working = 持续小幅弹跳(有节奏 = 在忙);done = 隔几秒跳一下(提醒有结果,但不持续抢注意力)。
-     动效只改 transform,不碰宽高和外边距,所以带状态的 Agent 行和其他行照样对齐;
-     小幽那套像素动效语言(压扁→弹起→落地)在这里沿用,只是缩小到 18px 头像的幅度。
-     关掉动效由全局 prefers-reduced-motion 兜底;缩放锚在脚底,跳起来才像站在地上。 */
+  /* Agent 行状态做在头像上(2026-09-30 主人定案):
+     工作中 = 头像持续小幅弹跳(小幽那套"压扁→弹起"动效语言,缩到 18px 的幅度;缩放锚在脚底);
+     未读   = 头像右上角红底数字,同铃铛 .ntbadge 的样式——静态,扫一眼就知道哪行有没看的结果。
+     动效只改 transform、角标绝对定位,都不占位置,带状态的行和其他行照样对齐。
+     角标挂在外层 .agavwrap 上,不跟着头像一起跳。关掉动效由全局 prefers-reduced-motion 兜底。 */
+  .projgrp.agrow .agavwrap{position:relative;display:block;flex-shrink:0}
   .projgrp.agrow .agav{transform-origin:50% 100%}
   .projgrp.agrow[data-state="working"] .agav{animation:agwork 1.1s ease-in-out infinite}
-  .projgrp.agrow[data-state="done"] .agav{animation:agdone 3.2s ease-in-out infinite}
   @keyframes agwork{
     0%,100%{transform:translateY(0) scale(1,1)}
     50%{transform:translateY(-2px) scale(.94,1.08)}
   }
-  @keyframes agdone{
-    0%,64%,100%{transform:translateY(0) scale(1,1)}
-    72%{transform:scale(1.12,.86)}
-    80%{transform:translateY(-3px) scale(.9,1.12)}
-    90%{transform:scale(1.06,.94)}
-  }
+  .projgrp.agrow .agbadge{position:absolute;top:-7px;right:-9px;min-width:14px;height:14px;padding:0 var(--sp-1);border-radius:var(--r-pill);
+    background:var(--err);color:var(--on-accent);font-size:var(--fs-sm);font-weight:700;line-height:14px;text-align:center;
+    box-shadow:0 0 0 2px var(--bg2);pointer-events:none}   /* 描一圈侧栏底色,和头像边缘分开 */
   .projgrp.agrow{gap:var(--sp-3);font-size:var(--fs-base);font-weight:500;color:var(--dim);margin-top:1px}
   .projgrp.agrow.active{background:var(--panel2);color:var(--text)}
   .projgrp.agrow .pgname{color:inherit}
   .projgrp.agrow .pgcaret{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:var(--r-sm)}
   @media(hover:hover){ .projgrp.agrow .pgcaret:hover{background:var(--card);color:var(--text)} }
-  .projgrp.agrow .pgcaret.agnone{visibility:hidden}
   #convAgentBtn .agav{width:17px;height:16px}
   #convAgentBtn.on{background:var(--panel2)}
 
