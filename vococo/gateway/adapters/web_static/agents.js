@@ -597,7 +597,7 @@ async function renderApSetup(body, a){
   if(mem && a.id!=="general"){
     const def=mem.default||[];
     renderApNames(body, a, "memory_sections", "全局记忆", (mem.sections||[]).map(t=>({name:t, desc:""})),
-      ()=>def.slice(), "默认只带通用的:"+def.join("、")+"。它自己的记忆存在自己的 NOTES.md / memory/ 里");
+      ()=>def.slice(), "默认只带通用的:"+def.join("、")+"。它自己攒的记忆登记在自己的 NOTES.md 里,总是带");
   }
   if(files && !files.error) renderApFileSections(body, a, files);
   if(a.id!=="general"){
@@ -663,7 +663,7 @@ function renderApNames(body, a, key, title, items, initial, offText){
     sw.querySelector("input").onchange=ev=>save(ev.target.checked ? initial() : null);
     head.append(t, sw); box.append(head);
     if(!own){ order=null; box.append(apEmpty(offText||"跟随全局设置")); return; }
-    if(!items.length){ box.append(apEmpty(key==="mcp"?"还没有外部 MCP,先去设置页添加":"没有可用的技能")); return; }
+    if(!items.length){ box.append(apEmpty({mcp:"还没有外部 MCP,先去设置页添加", memory_sections:"读不到 AI_BRAIN/MEMORY.md 的分节(iCloud 可能卡住了),稍后再打开"}[key]||"没有可用的技能")); return; }
     const on=new Set(own);
     // 勾上的排前面,一眼看到它在用什么
     order=order||items.slice().sort((x,y)=>(on.has(y.name)?1:0)-(on.has(x.name)?1:0));

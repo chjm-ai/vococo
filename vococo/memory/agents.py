@@ -18,8 +18,9 @@
 技能与 MCP(2026-09-30):agent.json 的 skills / mcp 两份名单,不写 = 跟随设置页的全局配置;
 写了(哪怕是空列表)= 这个 Agent 名下的会话和定时任务只用名单里的(runtime_for_session)。
 MCP 名单里的外部 server 每轮都挂,不再按关键词临时挂。通用 Agent 不单独配,它就是全局配置本身。
-记忆分区(2026-10-01):项目 Agent 的会话里 save_memory 默认存进它自己的 memory/<topic>.md,并在 NOTES.md
-「## 记忆」一节登记一行(NOTES 每轮注入,所以它记得自己攒了什么);scope=global 才进 AI_BRAIN。
+记忆分区(2026-10-01):项目 Agent 的会话里 save_memory 默认存进 AI_BRAIN/memory/agents/<id>/<topic>.md
+(仍在唯一主库里),但不登记全局 MEMORY.md,而是在它 NOTES.md「## 记忆」一节登记一行(NOTES 每轮注入,
+所以只有它记得自己攒了什么);scope=global 才登记进全局索引。
 全局记忆索引(AI_BRAIN/MEMORY.md)只注入 memory_sections 列出的分节,不写 = DEFAULT_MEMORY_SECTIONS 三节通用的;
 同时关掉 CLI 的 auto-memory(它会把整份索引再注一遍),见 core/agent.stream_turn、core/prompt.build_system_prompt。
 同一套规则还有两项(2026-10-01):model = 名下【新会话】默认用的模型(老会话已锁定模型,不受影响),
@@ -572,19 +573,25 @@ def prompt_extra(agent: dict | None) -> str:
         parts.append("## 目标纪律\n- 做事前对照目标和「不做」;明显和目标无关的事,先提醒我再做\n"
                      "- 做完计划里的任务,顺手在 PLAN.md 里勾掉\n"
                      "- 「目标」「成功标准」「不做」只有我同意才能改")
-    if notes:
-        parts.append("## 笔记(NOTES.md)\n" + notes)
     if aid != GENERAL_ID:
         parts.append("## 记忆归属\n"
-                     "- 只跟这个 Agent 相关的经验、数据、踩坑:save_memory 默认就存进它自己的 memory/,"
-                     "并登记到 NOTES.md「## 记忆」;往已有条目追加就直接改那个文件\n"
+                     "- 只跟这个 Agent 相关的经验、数据、踩坑:save_memory 默认就存进它自己的记忆"
+                     "(AI_BRAIN/memory/agents/" + aid + "/),并登记到 NOTES.md「## 记忆」;往已有条目追加就直接改那个文件\n"
                      "- 跨 Agent 都用得上的(主人的偏好、通用教训):save_memory 传 scope=\"global\" 进 AI_BRAIN\n"
                      "- 全局记忆索引这里只带了部分分节;其他分节需要时读 AI_BRAIN/MEMORY.md 或用 recall_past")
     if links:
         parts.append("## 关联目录/文件(需要时再打开)\n" + "\n".join(
             f"- {x['path']}" + (f" · {x['note']}" if x["note"] else "") + (" · 可写" if x["writable"] else " · 只读")
             for x in links))
+    # 笔记放最后,超长时只截它:「## 记忆」登记是往末尾追加的,截掉前面、留住最新的那部分;
+    # 上面的设定 / 目标 / 记忆归属规则 / 关联清单一个字都不丢
     text = "\n\n".join(parts)
+    if notes:
+        room = PROMPT_MAX_CHARS - len(text) - 40
+        if len(notes) > room:
+            notes = "…(前面省略,完整见 NOTES.md)\n" + notes[-max(room, 0):] if room > 0 else ""
+        if notes:
+            text += "\n\n## 笔记(NOTES.md)\n" + notes
     return text[:PROMPT_MAX_CHARS]
 
 
@@ -629,7 +636,7 @@ def _append_notes_index(agent_id: str, line: str) -> None:
     """在 NOTES.md 的「## 记忆」小节末尾加一行;没有这一节就在文件末尾新建。"""
     doc = read_doc(agent_id, "NOTES.md")
     head = f"## {MEMORY_NOTES_SECTION}"
-    m = re.search(rf"^{re.escape(head)}[ \t]*\n(.*?)(?=^## |\Z)", doc, flags=re.M | re.S)
+    m = re.search(rf"^{re.escape(head)}[ \t]*(?:\n|\Z)(.*?)(?=^## |\Z)", doc, flags=re.M | re.S)
     if m:
         body = m.group(1).rstrip("\n")
         new_sec = f"{head}\n{body}\n{line}\n" if body.strip() else f"{head}\n{line}\n"
@@ -640,18 +647,27 @@ def _append_notes_index(agent_id: str, line: str) -> None:
     write_doc(agent_id, "NOTES.md", doc)
 
 
+def memory_dir(agent_id: str) -> Path:
+    """Agent 自有记忆的目录:放在 AI_BRAIN 里(记忆唯一主库,Claude Code / Codex 也读得到),
+    只是不登记进全局 MEMORY.md 索引——登记在 Agent 自己的 NOTES.md,所以只有它每轮看得见。"""
+    if not valid_id(agent_id):
+        raise ValueError(f"非法 Agent id:{agent_id!r}")
+    return config.AI_BRAIN_DIR / "memory" / "agents" / agent_id
+
+
 def save_memory(agent_id: str, topic: str, title: str, summary: str, body: str) -> Path:
-    """存一条 Agent 自有记忆:memory/<topic>.md + NOTES.md 登记一行。topic 已存在则抛 FileExistsError。"""
+    """存一条 Agent 自有记忆:AI_BRAIN/memory/agents/<id>/<topic>.md + NOTES.md 登记一行。
+    topic 已存在则抛 FileExistsError。"""
     if not _TOPIC_RE.match(topic or ""):
         raise ValueError(f"topic「{topic}」非法:只允许字母、数字、下划线、短横线")
-    d = home(agent_id) / "memory"
+    d = memory_dir(agent_id)
     path = d / f"{topic}.md"
     if path.exists():
         raise FileExistsError(str(path))
     d.mkdir(parents=True, exist_ok=True)
     today = time.strftime("%Y-%m-%d")
     path.write_text(f"---\ncreated: {today}\n---\n# {title}\n\n> {summary}\n\n{body.strip()}\n", encoding="utf-8")
-    _append_notes_index(agent_id, f"- [{title}](memory/{topic}.md) — {summary}")
+    _append_notes_index(agent_id, f"- [{title}]({path}) — {summary}")
     return path
 
 

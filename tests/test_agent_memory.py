@@ -84,16 +84,18 @@ def test_save_memory_goes_to_agent_by_default(env, tmp_path):
     try:
         out = _save(ARGS)
         assert "自己的记忆" in out
-        f = agents.home(env["id"]) / "memory" / "lemlist-tips.md"
+        # 文件仍在 AI_BRAIN(唯一主库),但在 agents/<id>/ 下、不登记全局 MEMORY.md
+        f = tmp_path / "brain" / "memory" / "agents" / env["id"] / "lemlist-tips.md"
         assert "周一回复率高" in f.read_text(encoding="utf-8")
         notes = agents.read_doc(env["id"], "NOTES.md")
-        assert "## 记忆\n- [Lemlist 发信](memory/lemlist-tips.md) — 周一回复率高" in notes
-        assert not (tmp_path / "brain" / "memory" / "lemlist-tips.md").exists()  # 不进全局
+        assert f"## 记忆\n- [Lemlist 发信]({f}) — 周一回复率高" in notes
+        assert not (tmp_path / "brain" / "memory" / "lemlist-tips.md").exists()
+        assert "lemlist-tips" not in (tmp_path / "brain" / "MEMORY.md").read_text(encoding="utf-8")
         assert "已存在" in _save(ARGS)  # 不覆盖
         # 第二条追加在同一小节里
         _save({**ARGS, "topic": "seo", "title": "SEO", "summary": "内链不足"})
         notes = agents.read_doc(env["id"], "NOTES.md")
-        assert notes.count("## 记忆") == 1 and notes.index("lemlist-tips") < notes.index("seo.md")
+        assert notes.count("## 记忆") == 1 and notes.index("lemlist-tips") < notes.index("/seo.md")
         # scope=global 照旧进 AI_BRAIN
         assert "已写入" in _save({**ARGS, "topic": "pref-x", "scope": "global"})
         assert (tmp_path / "brain" / "memory" / "pref-x.md").exists()
@@ -127,3 +129,30 @@ def test_turn_env_disables_auto_memory_only_for_agents():
     # 缓存按分节分开存,None 和以前同一个 key
     assert agent._prompt_cache_key("/p") == agent._prompt_cache_key("/p", None)
     assert agent._prompt_cache_key("/p", ["a"]) != agent._prompt_cache_key("/p")
+
+
+def test_notes_index_when_heading_is_last_line(env):
+    agents.write_doc(env["id"], "NOTES.md", "- 旧笔记\n\n## 记忆")  # 网页保存常不带结尾换行
+    agents._append_notes_index(env["id"], "- 新的一条")
+    notes = agents.read_doc(env["id"], "NOTES.md")
+    assert notes.count("## 记忆") == 1 and notes.rstrip().endswith("## 记忆\n- 新的一条")
+
+
+def test_prompt_extra_trims_notes_not_rules(env, monkeypatch):
+    monkeypatch.setattr(agents, "PROMPT_MAX_CHARS", 1200)
+    agents.write_doc(env["id"], "AGENT.md", "# proj\n\n## 职责与人格\n\n管询盘")
+    agents.write_doc(env["id"], "NOTES.md", "- 很老的笔记\n" + "- 填充\n" * 400 + "## 记忆\n- [最新](x.md) — 最新一条\n")
+    agents.update(env["id"], links=[{"path": str(env["workdir"]), "note": "项目"}])
+    extra = agents.prompt_extra(agents.get(env["id"]))
+    assert len(extra) <= 1200
+    assert "## 记忆归属" in extra and "## 关联目录" in extra  # 规则和关联不被截
+    assert "最新一条" in extra and "很老的笔记" not in extra  # 笔记截前面、留最新
+
+
+def test_filter_before_clip(env, monkeypatch, tmp_path):
+    monkeypatch.setattr(prompt, "_INJECT_MAX_CHARS", 200)
+    big = MEMORY_MD.replace("## 健康与生活", "## 填充\n" + "x" * 500 + "\n\n## 健康与生活")
+    (tmp_path / "brain" / "MEMORY.md").write_text(big, encoding="utf-8")
+    out = prompt._load_memory_sections(["健康与生活"])
+    assert "sleep.md" in out  # 排在超长分节后面,照样注得进来
+    assert "健康与生活" in prompt.memory_section_titles()

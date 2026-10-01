@@ -98,12 +98,22 @@ _MEMORY_FENCE = (
 _INJECT_MAX_CHARS = 12000
 
 
-def _read_clipped(path, hint: str) -> str:
-    """读文件并按上限截断;缺失/为空返回空串。"""
+def _read_text(path) -> str:
     try:
-        text = path.read_text(encoding="utf-8").strip()
+        return path.read_text(encoding="utf-8").strip()
     except (FileNotFoundError, OSError):
         return ""
+
+
+def _clip(text: str, hint: str) -> str:
+    if len(text) > _INJECT_MAX_CHARS:
+        text = text[:_INJECT_MAX_CHARS] + f"\n…(已截断,完整内容自行读 {hint})"
+    return text
+
+
+def _read_clipped(path, hint: str) -> str:
+    """读文件并按上限截断;缺失/为空返回空串。"""
+    text = _read_text(path)
     if len(text) > _INJECT_MAX_CHARS:
         text = text[:_INJECT_MAX_CHARS] + f"\n…(已截断,完整内容自行读 {hint})"
     return text
@@ -212,7 +222,8 @@ def _section_key(title: str) -> str:
 
 def memory_section_titles() -> list[str]:
     """MEMORY.md 里所有「## 分节」的标题(归一后),给 Agent 设置页勾选用。读不到返回空列表。"""
-    text = _read_clipped(config.AI_BRAIN_DIR / "MEMORY.md", "AI_BRAIN/MEMORY.md") or ""
+    # 读全文不截断:分节清单要完整,文件再长,排在后面的分节也得能勾
+    text = _read_text(config.AI_BRAIN_DIR / "MEMORY.md")
     out: list[str] = []
     for m in re.finditer(r"(?m)^## (.+)$", text):
         t = _section_key(m.group(1))
@@ -242,12 +253,14 @@ def filter_memory_sections(text: str, sections: list[str]) -> str:
 
 def _load_memory_sections(sections: list[str]) -> str:
     """Agent 会话用:只注入相关分节的索引(CLI auto-memory 同时被关掉,见 core/agent.stream_turn)。"""
-    text = _read_clipped(config.AI_BRAIN_DIR / "MEMORY.md", "AI_BRAIN/MEMORY.md")
+    # 先过滤再截断:反过来的话文件一长,排在后面的分节勾了也注不进来
+    text = _read_text(config.AI_BRAIN_DIR / "MEMORY.md")
     if not text:
         return ""
+    filtered = _clip(filter_memory_sections(text, sections), "AI_BRAIN/MEMORY.md")
     return (
         "\n\n=== 你的长期记忆索引(只含和当前 Agent 相关的分节;需要时用 recall_past 或读对应文件展开)===\n"
-        f"<memory_index>\n{filter_memory_sections(text, sections)}\n</memory_index>"
+        f"<memory_index>\n{filtered}\n</memory_index>"
     )
 
 
