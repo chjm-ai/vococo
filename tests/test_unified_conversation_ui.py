@@ -160,38 +160,60 @@ def _declarations(styles: str, selector: str) -> str:
     return ";".join(m.group(1) for m in re.finditer(pattern, styles))
 
 
-def test_agent_row_state_is_animated_avatar_not_a_dot():
-    """Agent 行的状态不用圆点,做在像素头像的动效上(2026-09-29 主人定案):
-    工作中=持续弹跳,完成=隔几秒跳一下。"""
+def test_agent_row_working_is_avatar_bounce_and_unread_is_static_badge():
+    """Agent 行(2026-09-30 主人定案):工作中 = 头像弹跳;未读 = 头像右上角红色数字角标。
+    未读不能再用动效——动的东西扫一眼分不清哪行有未读。"""
     styles = STATIC_STYLES.read_text(encoding="utf-8")
 
     live = _declarations(styles, '.projgrp.agrow[data-state="working"] .agav')
     assert "animation:agwork" in live and "infinite" in live
-    done = _declarations(styles, '.projgrp.agrow[data-state="done"] .agav')
-    assert "animation:agdone" in done and "infinite" in done
+    assert '[data-state="done"]' not in styles and "@keyframes agdone" not in styles
 
-    # 动效只许改 transform:一旦给头像加宽高/外边距,行高和名字位置就会跟着状态变
-    for rule in ('[data-state="working"] .agav', '[data-state="done"] .agav'):
-        assert "margin" not in _declarations(styles, ".projgrp.agrow" + rule)
+    badge = _declarations(styles, ".projgrp.agrow .agbadge")
+    assert "position:absolute" in badge and "background:var(--err)" in badge
+    assert "animation" not in badge
+    # 角标挂在不参与动效的外层上,否则会跟着头像一起跳
+    assert "position:relative" in _declarations(styles, ".projgrp.agrow .agavwrap")
 
-    # 圆点样式退回只服务 .conv 行——Agent 行不再渲染圆点,别留半截选择器
+    # 圆点样式只服务 .conv 行——Agent 行本身不渲染圆点
     assert ".projgrp.agrow .livedot" not in styles
     assert ".projgrp.agrow .reviewdot" not in styles
 
 
-def test_agent_row_state_covers_own_and_child_conversations():
-    """工作状态要含两件事:Agent 主会话在回复(working),名下的子会话在回复
-    (也复用 working)。完成未读(done)同理。契约在 agentState 一处判断。"""
+def test_agent_row_state_covers_main_children_and_tasks():
+    """工作中/未读都要算上主会话 + 名下子会话(+ 总助理名下的语音任务),同一份清单判断。"""
     js = STATIC_AGENTS.read_text(encoding="utf-8")
-    fn = js[js.index("function agentState(") : js.index("function agentKey(")]
+    items = js[js.index("function agentOwnItems(") : js.index("function agentWorking(")]
+    assert "a.main_conv" in items and "agentOwnsConv(a, c.conv)" in items
+    assert "S.voiceSidebar" in items
 
-    assert "agentOwnsConv(a, c.conv)" in fn          # 子会话靠它认领,不另写一套归属判断
-    assert fn.count("S.live[c.conv]") == 1           # 主会话与子会话同一次判断
-    assert "pending_review" in fn and "S.pendingReview[c.conv]" in fn
+    busy = js[js.index("const agentItemBusy=") : js.index("function agentWorking(")]
+    assert "S.live[c.conv]" in busy and '"running"' in busy
+    working = js[js.index("function agentWorking(") : js.index("function agentUnread(")]
+    assert "agentOwnItems(a)" in working and "agentItemBusy" in working
+    assert "!t.pinned" in items   # 置顶语音任务不在展开列表里,也不能算进数字
+    unread = js[js.index("function agentUnread(") : js.index("function agentKey(")]
+    assert "agentOwnItems(a)" in unread and ".length" in unread
+    assert "!agentItemBusy(c)" in unread   # 还在跑的那行显示闪点,不算未读
+    assert "pending_review" in unread and "S.pendingReview[c.conv]" in unread
+    assert "!c.archived" in unread   # 归档的不算,否则数字对不上列表
 
-    # 渲染处:挂 data-state + 悬停说明;圆点已从这一行彻底移除
-    row = js[js.index("function renderAgentGroup(") : js.index("function openAgentMain(")]
-    assert "h.dataset.state=st" in row
-    assert "agentState(a)" in row
-    assert 'el("span","livedot")' not in row
-    assert 'el("span","reviewdot")' not in row
+    row = js[js.index("function renderAgentGroup(") : js.index("function buildAgentMainRow(")]
+    assert 'h.dataset.state="working"' in row
+    assert 'el("span","agbadge")' in row and '"9+"' in row
+    assert 'el("span","livedot")' not in row and 'el("span","reviewdot")' not in row
+
+
+def test_agent_expanded_lists_main_conversation_first():
+    """展开 Agent 后第一行固定是「主会话」,和子会话同一层(主人反馈:主会话收在父级行里看不出来)。
+    点 Agent 行本身照样进主会话;所以每个 Agent 都能展开,不再有「没子会话就藏箭头」。"""
+    js = STATIC_AGENTS.read_text(encoding="utf-8")
+    row = js[js.index("function renderAgentGroup(") : js.index("function buildAgentMainRow(")]
+    after_open = row[row.index("if(!open) return;") :]
+    assert after_open.index("buildAgentMainRow(a, inCall)") < after_open.index("buildConvRow(")
+    assert "h.onclick" in row and "openAgentMain(a)" in row
+    assert "agnone" not in js
+
+    main_row = js[js.index("function buildAgentMainRow(") : js.index("function openAgentMain(")]
+    assert '"主会话"' in main_row and "openAgentMain(a)" in main_row
+    assert "openConvMenu" not in main_row   # 主会话不能归档/删除,不给菜单
