@@ -1,4 +1,4 @@
-"""Agent 运行设定里的默认模型 / 禁用工具(技能与 MCP 名单见 test_agents.py):真正卡住运行时。"""
+"""Agent 运行设定里的禁用工具(技能与 MCP 名单见 test_agents.py):真正卡住运行时。"""
 from __future__ import annotations
 
 import pytest
@@ -19,31 +19,27 @@ def env(isolated, monkeypatch, tmp_path):
     return proj
 
 
-def test_model_and_disallowed_tools(env):
+def test_disallowed_tools(env):
     a = agents.create("编码")
-    assert a["model"] is None and a["disallowed_tools"] is None  # 默认跟随全局
-    a2 = agents.update(a["id"], model=" deepseek-flash ",
-                       disallowed_tools=["Bash", " Bash ", "", "mcp__vococo__dispatch_session"])
-    assert a2["model"] == "deepseek-flash"
+    assert a["disallowed_tools"] is None and "model" not in a  # 默认跟随全局;默认模型这一项已取消
+    a2 = agents.update(a["id"], disallowed_tools=["Bash", " Bash ", "", "mcp__vococo__dispatch_session"])
     assert a2["disallowed_tools"] == ["Bash", "mcp__vococo__dispatch_session"]
-    assert agents.update(a["id"], name="编码2")["model"] == "deepseek-flash"  # 不传 = 不动
-    a3 = agents.update(a["id"], model="", disallowed_tools=None)  # 空 / None = 改回跟随全局
-    assert a3["model"] is None and a3["disallowed_tools"] is None
-    assert "model" not in agents._read_meta(a["id"])
+    assert agents.update(a["id"], name="编码2")["disallowed_tools"] == a2["disallowed_tools"]  # 不传 = 不动
+    assert agents.update(a["id"], disallowed_tools=None)["disallowed_tools"] is None  # None = 改回跟随全局
     with pytest.raises(ValueError):
         agents.update(a["id"], disallowed_tools="Bash")  # 必须是列表
     with pytest.raises(ValueError):
-        agents.update(agents.GENERAL_ID, model="x")  # 总助理就是全局配置
+        agents.update(agents.GENERAL_ID, disallowed_tools=["Bash"])  # 总助理就是全局配置
 
 
-def test_runtime_for_session_carries_model_and_tools(env):
+def test_runtime_for_session_carries_tools(env):
     h = projects.project_hash(str(env))
     a = agents.by_project_hash(h)
-    agents.update(a["id"], model="m1", disallowed_tools=["Bash"])
+    agents.update(a["id"], disallowed_tools=["Bash"])
     rt = agents.runtime_for_session(f"web:p{h}:c1")
-    assert rt == {"skills": None, "mcp": None, "model": "m1", "disallowed_tools": ["Bash"],
-                  "memory_sections": list(agents.DEFAULT_MEMORY_SECTIONS)}
-    assert agents.runtime_for_session("web:abc")["model"] is None
+    assert rt["disallowed_tools"] == ["Bash"] and rt["skills"] is None and rt["mcp"] is None
+    assert rt["memory_sections"] == list(agents.DEFAULT_MEMORY_SECTIONS) and rt["memory_dir"].endswith("/proj")
+    assert agents.runtime_for_session("web:abc")["disallowed_tools"] is None
 
 
 # ── stream_turn 把 Agent 运行设定落到 ClaudeAgentOptions 上 ─────────────────────────
@@ -102,7 +98,7 @@ async def _turn(key: str) -> None:
 @pytest.mark.anyio
 async def test_stream_turn_applies_agent_runtime(clients, monkeypatch):
     monkeypatch.setattr(agents, "runtime_for_session", lambda key: {
-        "model": None, "skills": ["pdf"], "mcp": ["lemlist"], "disallowed_tools": ["Bash", "Write"],
+        "skills": ["pdf"], "mcp": ["lemlist"], "disallowed_tools": ["Bash", "Write"],
     })
     await _turn("web:pabc:c1")
     opts = clients[0].options

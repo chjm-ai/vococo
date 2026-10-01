@@ -591,7 +591,7 @@ async function renderApSetup(body, a){
     renderApNames(body, a, "skills", "技能", skills.map(x=>({name:x.name, desc:x.description})),
       ()=>skills.filter(x=>x.enabled).map(x=>x.name));
     renderApNames(body, a, "mcp", "MCP", mcps.map(x=>({name:x.name, desc:x.url||x.command||""})), ()=>[]);
-    renderApModelTools(body, a);
+    renderApTools(body, a);
   }
   // 全局记忆:这个 Agent 每轮带进哪几节 AI_BRAIN/MEMORY.md(它自己攒的记忆在 NOTES.md「记忆」一节,总是带)
   if(mem && a.id!=="general"){
@@ -610,21 +610,16 @@ async function renderApSetup(body, a){
     body.append(rm);
   }
 }
-// 默认模型 + 禁用工具(memory/agents.py 的 model / disallowed_tools,后端硬生效)。改了立即保存,和技能/MCP 一样。
-// 禁用工具很少用,收进默认折叠的「高级」。同样只重画自己这一块;模型清单异步拉,先占住位置
-function renderApModelTools(body, a){
+// 禁用工具(memory/agents.py 的 disallowed_tools,后端硬生效)。改了立即保存,和技能/MCP 一样。
+// 很少用,收进默认折叠的「高级」。只重画自己这一块
+function renderApTools(body, a){
   const box=el("div"); body.append(box);
   const save=async patch=>{
     let r;
     try{ r=await agentPost("/agents/update",{id:a.id, ...patch}); }catch(e){ alert(e.message); return false; }
-    a.model=r.agent.model; a.disallowed_tools=r.agent.disallowed_tools; loadAgents();
+    a.disallowed_tools=r.agent.disallowed_tools; loadAgents();
     return true;
   };
-  box.append(apSection("默认模型 · 只影响新开的会话"));
-  const sel=el("select","apselect");
-  const o0=el("option"); o0.value=""; o0.textContent="跟随全局默认"; sel.append(o0);
-  sel.onchange=async()=>{ if(!await save({model:sel.value||null})) sel.value=a.model||""; };
-  box.append(sel);
   const adv=el("details","apadv");
   const sm=el("summary","apsec"); sm.textContent="高级";
   const dis=el("input","apinput"); dis.value=(a.disallowed_tools||[]).join(", ");
@@ -638,11 +633,6 @@ function renderApModelTools(body, a){
   dis.onblur=commit; dis.onkeydown=e=>{ if(e.key==="Enter") dis.blur(); };
   adv.open=!!(a.disallowed_tools||[]).length;   // 设过就展开,别藏起来让人忘了
   adv.append(sm, dis, note); box.append(adv);
-  api("/models").then(r=>r.json()).then(d=>{
-    for(const [v,label] of (d.choices||[])){ const o=el("option"); o.value=v; o.textContent=label||v; sel.append(o); }
-    if(a.model && ![...sel.options].some(o=>o.value===a.model)){ const o=el("option"); o.value=a.model; o.textContent=a.model+"(已不在清单)"; sel.append(o); }
-    sel.value=a.model||"";
-  }).catch(()=>{ sel.value=a.model||""; });
 }
 // 技能 / MCP 名单:关 = 跟随全局;开 = 只用勾上的(MCP 勾上的每轮都挂)。
 // 改了只重画这一块,别整个面板重画——会冲掉 AGENT.md 里还没保存的输入
