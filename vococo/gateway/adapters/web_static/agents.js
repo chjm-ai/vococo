@@ -482,16 +482,21 @@ async function moveJobTo(j, t){
 // 职责:它是谁(AGENT.md)+ 要干成什么(GOAL.md)+ 怎么干(PLAN.md)
 async function renderApGoal(body, a){
   body.append(apEmpty("加载中…"));
-  let g, role;
-  try{
-    [g, role]=await Promise.all([
-      api("/agents/goal?id="+encodeURIComponent(a.id)).then(r=>r.json()),
-      api("/agents/doc?id="+encodeURIComponent(a.id)+"&name=AGENT.md").then(r=>r.json()),
-    ]);
-  }catch(e){ body.innerHTML=""; body.append(apEmpty("加载失败")); return; }
+  const doc=name=>api("/agents/doc?id="+encodeURIComponent(a.id)+"&name="+name).then(r=>r.json());
+  let g, role, notes;
+  try{ [g, role, notes]=await Promise.all([api("/agents/goal?id="+encodeURIComponent(a.id)).then(r=>r.json()), doc("AGENT.md"), doc("NOTES.md")]); }
+  catch(e){ body.innerHTML=""; body.append(apEmpty("加载失败")); return; }
   if(apStale(a,"goal")) return;
   body.innerHTML="";
-  renderApRole(body, a, role.text||"");
+  renderApDoc(body, a, "AGENT.md", "人格与职责 · AGENT.md", role.text||"",
+    "它是谁、负责什么、怎么说话。每次开工都会读。能用哪些技能和 MCP 在「设置」里管。", ()=>loadAgents());   // 顶部那行职责取自 AGENT.md
+  renderApGoalPart(body, a, g);
+  renderApDoc(body, a, "NOTES.md", "笔记 · NOTES.md", notes.text||"",
+    "它记下的经验、被否决的做法。它自己会写,你也可以改。");
+}
+// 目标 + 计划(GOAL.md / PLAN.md):放进自己的容器,这样后面还能接「笔记」
+function renderApGoalPart(parent, a, g){
+  const body=el("div"); parent.append(body);
   body.append(apSection("目标"));
   const hasGoal=/^(?!#).*\S/m.test(g.goal||"");
   if(!hasGoal){
@@ -511,38 +516,33 @@ async function renderApGoal(body, a){
     acts.append(rv);
   }
   body.append(acts);
-  if(g.review){
-    const note=el("div","apnote");
-    note.textContent="复盘:"+scheduleText({kind:"cron", expr:g.review.desc}, g.review.desc)+(g.review.enabled?"":"(已停用)")+(g.review.last_run_at?" · 上次 "+fmtTime(g.review.last_run_at):"");
-    body.append(note);
-  }
   const gd=el("div","apdoc bubble"); gd.innerHTML=docHtml(g.goal); body.append(gd);
   body.append(apSection("计划"));
   if(/^(?!#).*\S/m.test(g.plan||"")){ const pd=el("div","apdoc bubble"); pd.innerHTML=docHtml(g.plan); body.append(pd); }
   else body.append(apEmpty("还没拆。点「拆解计划」让它按目标拆。"));
 }
-// 人格与职责(AGENT.md):平时显示成文档,点「编辑」原地换成编辑框,不占一整页
-function renderApRole(body, a, text){
+// 职责页里的文档块(AGENT.md / NOTES.md):平时显示成文档,点「编辑」原地换成编辑框,不占一整页
+function renderApDoc(body, a, name, title, text, hint, onSaved){
   const box=el("div"); body.append(box);
   const draw=()=>{
     box.innerHTML="";
     const head=el("div","apsec apsech");
-    const t=el("span"); t.textContent="人格与职责 · AGENT.md";
+    const t=el("span"); t.textContent=title;
     const ed=el("button","apseclink"); ed.type="button"; ed.textContent="编辑";
     head.append(t, ed); box.append(head);
-    const hasRole=/^(?!#).*\S/m.test(text||"");
-    if(hasRole){ const d=el("div","apdoc bubble"); d.innerHTML=docHtml(text); box.append(d); }
-    else box.append(apEmpty("还没写。它是谁、怎么说话、会用哪些技能,每次开工都会读。"));
+    const has=/^(?!#).*\S/m.test(text||"");
+    if(has){ const d=el("div","apdoc bubble"); d.innerHTML=docHtml(text); box.append(d); }
+    else box.append(apEmpty("还没写。"+hint));
     ed.onclick=()=>{
       box.innerHTML=""; box.append(head); ed.hidden=true;
-      const ta=el("textarea","aptext"); ta.rows=12; ta.value=text||""; ta.placeholder="它是谁、怎么说话、会用哪些技能。每次开工都会读。";
+      const ta=el("textarea","aptext"); ta.rows=12; ta.value=text||""; ta.placeholder=hint;
       const acts=el("div","apacts");
       const cancel=el("button","apbtn"); cancel.textContent="取消"; cancel.onclick=()=>{ ed.hidden=false; draw(); };
       const save=el("button","apbtn primary"); save.textContent="保存";
       save.onclick=async()=>{
-        try{ await agentPost("/agents/doc",{id:a.id, name:"AGENT.md", text:ta.value}); }catch(e){ alert(e.message); return; }
+        try{ await agentPost("/agents/doc",{id:a.id, name, text:ta.value}); }catch(e){ alert(e.message); return; }
         text=ta.value; ed.hidden=false; draw();
-        loadAgents();   // 顶部那行职责取自 AGENT.md,跟着刷新
+        if(onSaved) onSaved();
       };
       acts.append(cancel, save); box.append(ta, acts); ta.focus();
     };
@@ -598,32 +598,34 @@ async function renderApSetup(body, a){
     body.append(rm);
   }
 }
-// 默认模型 + 禁用工具(memory/agents.py 的 model / disallowed_tools,后端硬生效)。
-// 同样只重画自己这一块;模型清单异步拉,先占住位置,免得插到「移除 Agent」按钮后面
+// 默认模型 + 禁用工具(memory/agents.py 的 model / disallowed_tools,后端硬生效)。改了立即保存,和技能/MCP 一样。
+// 禁用工具很少用,收进默认折叠的「高级」。同样只重画自己这一块;模型清单异步拉,先占住位置
 function renderApModelTools(body, a){
   const box=el("div"); body.append(box);
-  box.append(apSection("默认模型(新会话)"));
+  const save=async patch=>{
+    let r;
+    try{ r=await agentPost("/agents/update",{id:a.id, ...patch}); }catch(e){ alert(e.message); return false; }
+    a.model=r.agent.model; a.disallowed_tools=r.agent.disallowed_tools; loadAgents();
+    return true;
+  };
+  box.append(apSection("默认模型 · 只影响新开的会话"));
   const sel=el("select","apselect");
   const o0=el("option"); o0.value=""; o0.textContent="跟随全局默认"; sel.append(o0);
+  sel.onchange=async()=>{ if(!await save({model:sel.value||null})) sel.value=a.model||""; };
   box.append(sel);
-  box.append(apSection("禁用工具"));
+  const adv=el("details","apadv");
+  const sm=el("summary","apsec"); sm.textContent="高级";
   const dis=el("input","apinput"); dis.value=(a.disallowed_tools||[]).join(", ");
-  dis.placeholder="如 Bash, WebFetch, mcp__vococo__dispatch_session(逗号分隔)";
-  const note=el("div","apnote"); note.textContent="名下会话和定时任务里直接拦掉,子代理也用不了。模型只影响新开的会话。";
-  box.append(dis, note);
-  const acts=el("div","apacts");
-  const save=el("button","apbtn primary"); save.type="button"; save.textContent="保存"; save.disabled=true;
-  sel.onchange=dis.oninput=()=>{ save.disabled=false; };
-  save.onclick=async()=>{
+  dis.placeholder="禁用工具,如 Bash, WebFetch(逗号分隔)";
+  const note=el("div","apnote"); note.textContent="名下会话和定时任务里直接拦掉,子代理也用不了。整个 MCP 不让用,在上面 MCP 名单里取消勾选即可。";
+  const commit=async()=>{
     const tools=dis.value.split(/[,，\s]+/).map(x=>x.trim()).filter(Boolean);
-    let r;
-    try{ r=await agentPost("/agents/update",{id:a.id, model:sel.value||null, disallowed_tools:tools.length?tools:null}); }
-    catch(e){ alert(e.message); return; }
-    a.model=r.agent.model; a.disallowed_tools=r.agent.disallowed_tools; loadAgents();
-    dis.value=(a.disallowed_tools||[]).join(", ");
-    save.disabled=true; save.textContent="已保存"; setTimeout(()=>{ save.textContent="保存"; },1200);
+    if(tools.join(",")===(a.disallowed_tools||[]).join(",")) return;
+    if(await save({disallowed_tools:tools.length?tools:null})) dis.value=(a.disallowed_tools||[]).join(", ");
   };
-  acts.append(save); box.append(acts);
+  dis.onblur=commit; dis.onkeydown=e=>{ if(e.key==="Enter") dis.blur(); };
+  adv.open=!!(a.disallowed_tools||[]).length;   // 设过就展开,别藏起来让人忘了
+  adv.append(sm, dis, note); box.append(adv);
   api("/models").then(r=>r.json()).then(d=>{
     for(const [v,label] of (d.choices||[])){ const o=el("option"); o.value=v; o.textContent=label||v; sel.append(o); }
     if(a.model && ![...sel.options].some(o=>o.value===a.model)){ const o=el("option"); o.value=a.model; o.textContent=a.model+"(已不在清单)"; sel.append(o); }
@@ -680,6 +682,7 @@ function renderApNames(body, a, key, title, items, initial){
 
 // 文件:家目录(vococo 管) + 工作目录第一层 + 关联(默认只读,可写需勾选)
 // 文件与关联:家目录(vococo 管)+ 工作目录第一层 + 关联目录(默认只读,可写需勾选)
+const AP_ROLE_DOCS=["AGENT.md","GOAL.md","PLAN.md","NOTES.md"];
 function renderApFileSections(body, a, d){
   const fileRow=(name, path, isDir)=>{
     const r=el("div","apfile"); r.innerHTML=ic(isDir?"folder":"doc")+'<span class="apfname"></span>';
@@ -688,8 +691,12 @@ function renderApFileSections(body, a, d){
     else r.classList.add("dir");
     return r;
   };
-  body.append(apSection("文件 · "+shortPath(d.home)));
-  for(const f of d.files) body.append(fileRow(f, d.home+"/"+f, false));
+  // 人格 / 目标 / 计划 / 笔记在「职责」里看和改,这里不重复列
+  const own=d.files.filter(f=>!AP_ROLE_DOCS.includes(f));
+  if(own.length){
+    body.append(apSection("运行记录 · "+shortPath(d.home)));
+    for(const f of own) body.append(fileRow(f, d.home+"/"+f, false));
+  }
   if(d.workdir){
     body.append(apSection("工作目录 · "+shortPath(d.workdir)));
     if(!d.workdir_top.length) body.append(apEmpty("空"));

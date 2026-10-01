@@ -53,7 +53,9 @@ AVATAR_SHAPES = ("xiaoyou", "ghost", "blob", "square", "cat", "drop")
 AVATAR_COLORS = ("orange", "coral", "lime", "lake", "grape", "pink", "gold", "teal")
 AVATAR_EYES = ("dot", "small", "squint")
 
-AGENT_TEMPLATE = "# {name}\n\n## 职责与人格\n\n\n## 技能范围\n\n"
+# 「常用资源」只是给它看的提示(常用的服务器、脚本、数据源);真正能用哪些技能 / MCP 由 agent.json 的名单管,
+# 2026-10-01 前这一节叫「技能范围」,容易被当成权限限制
+AGENT_TEMPLATE = "# {name}\n\n## 职责与人格\n\n\n## 常用资源\n\n"
 GOAL_TEMPLATE = "# 目标\n\n\n## 成功标准\n\n\n## 不做\n\n\n## 当前进展\n\n\n## 复盘记录\n\n"
 PLAN_TEMPLATE = "# 计划\n\n## 里程碑\n\n\n## 任务\n\n"
 REVIEW_CRON = "0 9 * * 1"  # 目标复盘默认每周一早 9 点
