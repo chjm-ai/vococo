@@ -117,14 +117,14 @@ class GatewayRunner:
         if n is None or n["status"] not in notices.OPEN_STATUSES:
             return "(这个选择已经处理过了)"
         if token == "other":
-            return "⏰ 这个问题已超时。直接在这里打字回答,我会带着上下文接着做。"
+            return "直接在这里打字回答,我会带着上下文接着做。"
         label = notice_actions.label_for_token(n, token)
         if label is None:
             return "(这个选择已过期)"
         res = await notice_actions.act(n["id"], label)
         if not res.get("ok"):
             return f"(没处理成:{res.get('error')})"
-        return f"⏰ 这个选项已超时,已按你选的「{label}」接着处理。"
+        return f"已按你选的「{label}」接着处理。"
 
     async def _handle(self, adapter: Adapter, inc: Incoming) -> None:
         key = inc.session_key
