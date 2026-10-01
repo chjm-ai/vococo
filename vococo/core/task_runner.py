@@ -16,6 +16,7 @@ worktree、resume、通知这些主体逻辑完全共用,不因触发方分叉�
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import re
 import time
 from pathlib import Path
@@ -90,8 +91,18 @@ def _start_one(task: dict, turn_text: str | None = None) -> bool:
     # (见 web_static/sidebar.js buildVoiceTaskRow 的 convFilter 判定)。
     session_store.set_conv_archived(tasks.session_key(task_id), False)
     _notify_activity(task_id)
-    _running[task_id] = asyncio.create_task(_run(task_id, turn_text))
+    _running[task_id] = _spawn(task_id, turn_text)
     return True
+
+
+def _spawn(task_id: str, turn_text: str | None = None) -> asyncio.Task:
+    """起跑一轮任务,用【全新的】contextvars 上下文。
+
+    asyncio.create_task 默认复制调用方的上下文:网页会话里调 dispatch_session 派出的任务,
+    会把派发它那一轮的 clarify 路由(会话 key / 网页通道)也继承过去,于是任务里的审批弹窗、
+    铃铛通知、审批记录全记到【派发方会话】名下,批准后续跑的也是派发方,任务本身收不到
+    (2026-10-01 小红书审稿台任务实测)。任务要的上下文(任务会话 / cwd)由 _run 自己登记。"""
+    return asyncio.create_task(_run(task_id, turn_text), context=contextvars.Context())
 
 
 def _notify_activity(task_id: str) -> None:
@@ -442,7 +453,7 @@ def _maybe_start_next() -> None:
         if not tasks.set_status(nxt["id"], "running"):
             continue  # 状态已被别处改了(如取消排队中的任务),跳过看下一个
         _notify_activity(nxt["id"])
-        _running[nxt["id"]] = asyncio.create_task(_run(nxt["id"]))
+        _running[nxt["id"]] = _spawn(nxt["id"])
 
 
 def _source_agent_id(context_session_key: str | None) -> str | None:
