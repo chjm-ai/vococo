@@ -113,8 +113,11 @@ function renderAgentsTab(box, inCall){
 function renderAgentGroup(box, a, inCall){
   const convs=agentConvs(a);
   // 语音后台任务不分项目,归总助理(原「项目」Tab 的默认项目也是这么放的),和会话按最后活跃时间混排
-  const tasks=a.id==="general" ? ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned) : [];
-  const k=agentKey(a), open=S.expanded.has(k);
+  const tasks=a.id==="general" ? ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned
+    && (S.convFilter==="archived" ? t.archived : S.convFilter==="active" ? !t.archived : true)) : [];
+  // 名下只有主会话时不给展开:点 Agent 行就进主会话,展开出来也只有孤零零一行
+  const hasChildren=convs.length+tasks.length>0;
+  const k=agentKey(a), open=hasChildren && S.expanded.has(k);
   // 展开时高亮落在下面的「主会话」行上,Agent 行只在收起时代它高亮
   const h=el("div","projgrp agrow"+(!inCall && !open && S.conv===a.main_conv?" active":""));
   const working=agentWorking(a), unread=agentUnread(a);
@@ -126,11 +129,11 @@ function renderAgentGroup(box, a, inCall){
   if(unread){ const b=el("span","agbadge"); b.textContent=unread>9?"9+":String(unread); av.append(b); }
   h.append(av);
   const nm=el("span","pgname"); nm.textContent=a.name; h.append(nm);
-  // 展开后第一行永远是主会话,所以每个 Agent 都能展开
-  const caret=el("span","pgcaret");
+  // 箭头只在有子会话时显示;隐藏时仍占位(visibility),右侧「＋」不跟着挪
+  const caret=el("span","pgcaret"+(hasChildren?"":" agnone"));
   caret.append(el("span","chev"+(open?" down":"")));
   caret.title=open?"收起会话":"展开会话";
-  caret.onclick=ev=>{ ev.stopPropagation();
+  caret.onclick=ev=>{ ev.stopPropagation(); if(!hasChildren) return;
     if(open){ S.expanded.delete(k); S.moreShown.delete(k); } else S.expanded.add(k);
     saveExpanded(); renderConvs(); };
   h.append(caret);

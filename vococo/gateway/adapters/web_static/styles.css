@@ -1570,6 +1570,7 @@
   .projgrp.agrow .pgname{color:inherit}
   .projgrp.agrow .pgcaret{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:var(--r-sm)}
   @media(hover:hover){ .projgrp.agrow .pgcaret:hover{background:var(--card);color:var(--text)} }
+  .projgrp.agrow .pgcaret.agnone{visibility:hidden}   /* 名下只有主会话:不给展开 */
   #convAgentBtn .agav{width:17px;height:16px}
   #convAgentBtn.on{background:var(--panel2)}
 
