@@ -1583,6 +1583,21 @@
   #apClose{width:28px;height:28px;border-radius:var(--r-md);color:var(--dim2);flex-shrink:0;
     display:inline-flex;align-items:center;justify-content:center;transition:background var(--t-fast),color var(--t-fast)}
   @media(hover:hover){ #apClose:hover{background:var(--panel2);color:var(--text)} }
+  #apInfo{display:flex;align-items:flex-start;gap:var(--sp-3);padding:var(--sp-2) var(--sp-4) var(--sp-3);
+    border-bottom:1px solid var(--line2);flex-shrink:0}
+  .apiav .agav{width:36px;height:33px}
+  .apimain{flex:1;min-width:0}
+  .apiname{font-size:var(--fs-md);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .apisub{font-size:var(--fs-sm);color:var(--dim2);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;
+    -webkit-box-orient:vertical;overflow:hidden}
+  .apigoal{display:flex;align-items:baseline;gap:var(--sp-2);max-width:100%;margin-top:var(--sp-1);padding:0;
+    font-size:var(--fs-sm);color:var(--dim);text-align:left;cursor:pointer;transition:color var(--t-fast)}
+  @media(hover:hover){ .apigoal:hover{color:var(--text)} }
+  .apigoal .aggl{flex-shrink:0;font-weight:600;color:var(--accent)}
+  .apigoal .aggt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .apimainbtn{flex-shrink:0;padding:var(--sp-1) var(--sp-3);border-radius:var(--r-md);border:1px solid var(--line2);
+    background:var(--panel2);color:var(--dim);font-size:var(--fs-sm);cursor:pointer;transition:border-color var(--t-fast),color var(--t-fast)}
+  @media(hover:hover){ .apimainbtn:hover{border-color:var(--dim2);color:var(--text)} }
   #apBody{flex:1;overflow-y:auto;padding:var(--sp-1) var(--sp-4) var(--sp-5);display:flex;flex-direction:column;gap:2px}
   /* 纵向 flex 容器里子项默认会被压扁(内容一多标题/输入框就被挤成一条缝),一律不收缩、交给滚动 */
   #apBody > *{flex-shrink:0}
