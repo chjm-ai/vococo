@@ -217,3 +217,4 @@ def test_agent_expanded_lists_main_conversation_first():
     main_row = js[js.index("function buildAgentMainRow(") : js.index("function openAgentMain(")]
     assert '"主会话"' in main_row and "openAgentMain(a)" in main_row
     assert "openConvMenu" not in main_row   # 主会话不能归档/删除,不给菜单
+    assert 'ic("star")' not in main_row     # 主人定案:和子会话同款,不加星标
