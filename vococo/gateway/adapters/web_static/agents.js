@@ -212,7 +212,13 @@ $("#agentModal").onclick=e=>{ if(e.target===$("#agentModal")) closeAgentModal();
 function saveAgentPanelPref(){
   try{ localStorage.setItem("vococo_agent_panel", S.agentPanelOn?"1":"0"); localStorage.setItem("vococo_agent_tab", S.agentPanelTab); }catch(e){}
 }
-function currentAgent(){ return S.surface==="chat" ? agentForConv(S.conv) : null; }
+// 标题栏头像按钮 / 面板跟哪个 Agent:在 agentForConv 之外,不属于任何项目的会话(含后台任务)
+// 也归总助理——和侧栏 agentOwnsConv 同一规则,子会话点开就是父 Agent。
+// 欢迎屏仍只认 agentForConv:不然每个「新对话」的默认欢迎屏都会被换成总助理的
+function currentAgent(){
+  if(S.surface!=="chat" || !S.conv) return null;
+  return agentForConv(S.conv) || (convProject(S.conv) ? null : agentById("general"));
+}
 // 切会话/数据刷新后调:按钮只在 Agent 名下的会话出现;面板开着就跟到新 Agent
 function syncAgentHeader(){
   const a=currentAgent(), btn=$("#convAgentBtn");
