@@ -221,3 +221,7 @@ def test_agent_expanded_lists_main_conversation_first():
     assert '"主会话"' in main_row and "openAgentMain(a)" in main_row
     assert "openConvMenu" not in main_row   # 主会话不能归档/删除,不给菜单
     assert 'ic("star")' not in main_row     # 主人定案:和子会话同款,不加星标
+
+    # 默认露 5 行 = 主会话 + 4 个子会话,其余折进「展开更多」
+    assert "const AGENT_CONV_SHOW_MAX = 4;" in js
+    assert "rows.slice(0, AGENT_CONV_SHOW_MAX)" in row
