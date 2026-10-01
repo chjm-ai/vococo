@@ -181,11 +181,12 @@ def test_agent_row_working_is_avatar_bounce_and_unread_is_static_badge():
 
 
 def test_agent_row_state_covers_main_children_and_tasks():
-    """工作中/未读都要算上主会话 + 名下子会话(+ 总助理名下的语音任务),同一份清单判断。"""
+    """工作中/未读都要算上主会话 + 名下子会话(+ 归它的后台任务),同一份清单判断。"""
     js = STATIC_AGENTS.read_text(encoding="utf-8")
-    items = js[js.index("function agentOwnItems(") : js.index("function agentWorking(")]
+    items = js[js.index("function agentTasks(") : js.index("function agentWorking(")]
     assert "a.main_conv" in items and "agentOwnsConv(a, c.conv)" in items
-    assert "S.voiceSidebar" in items
+    assert "S.voiceSidebar" in items and "agentTasks(a)" in items
+    assert "t.agent_id===a.id" in items   # 后台任务按 agent_id 归属,无主才归总助理
 
     busy = js[js.index("const agentItemBusy=") : js.index("function agentWorking(")]
     assert "S.live[c.conv]" in busy and '"running"' in busy

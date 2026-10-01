@@ -1181,6 +1181,8 @@ class WebAdapter:
                 c["task_status"] = row["status"]
                 c["task_updated_at"] = row["updated_at"]
                 c["title"] = row["title"]
+                # 侧栏「Agent」Tab 按它把任务挂到对应 Agent 下;没有 = 无主,归总助理
+                c["agent_id"] = row.get("agent_id") or None
             elif task_id in cron_job_ids:
                 continue
             task_convs.append(c)
