@@ -1601,9 +1601,6 @@
   /* 小节标题右侧的文字按钮(如「人格与职责」的编辑) */
   .apseclink{font-size:var(--fs-sm);font-weight:400;color:var(--dim2);cursor:pointer;transition:color var(--t-fast)}
   @media(hover:hover){ .apseclink:hover{color:var(--text)} }
-  .apimainbtn{flex-shrink:0;padding:var(--sp-1) var(--sp-3);border-radius:var(--r-md);border:1px solid var(--line2);
-    background:var(--panel2);color:var(--dim);font-size:var(--fs-sm);cursor:pointer;transition:border-color var(--t-fast),color var(--t-fast)}
-  @media(hover:hover){ .apimainbtn:hover{border-color:var(--dim2);color:var(--text)} }
   #apBody{flex:1;overflow-y:auto;padding:var(--sp-1) var(--sp-4) var(--sp-5);display:flex;flex-direction:column;gap:2px}
   /* 纵向 flex 容器里子项默认会被压扁(内容一多标题/输入框就被挤成一条缝),一律不收缩、交给滚动 */
   #apBody > *{flex-shrink:0}
