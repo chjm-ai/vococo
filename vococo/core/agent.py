@@ -122,27 +122,31 @@ _prompt_load_unavailable_until = 0.0
 _prompt_refreshing: set[str] = set()
 
 
-def _prompt_cache_key(cwd: str | None) -> str:
-    return hashlib.sha256((cwd or "<default>").encode()).hexdigest()
+def _prompt_cache_key(cwd: str | None, memory_sections: list[str] | None = None) -> str:
+    # 记忆分节不同(项目 Agent 只带部分全局记忆)提示词就不同,要分开缓存;None 时 key 和以前一致
+    raw = cwd or "<default>"
+    if memory_sections is not None:
+        raw += "\0mem:" + "|".join(sorted(memory_sections))
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _prompt_cache_file(cwd: str | None) -> Path:
-    return config.DATA_DIR / "prompt_cache" / f"{_prompt_cache_key(cwd)}.json"
+def _prompt_cache_file(cwd: str | None, memory_sections: list[str] | None = None) -> Path:
+    return config.DATA_DIR / "prompt_cache" / f"{_prompt_cache_key(cwd, memory_sections)}.json"
 
 
-def _read_prompt_cache(cwd: str | None) -> dict | None:
+def _read_prompt_cache(cwd: str | None, memory_sections: list[str] | None = None) -> dict | None:
     """只读本地 data 缓存，不访问 iCloud。"""
     try:
-        data = json.loads(_prompt_cache_file(cwd).read_text(encoding="utf-8"))
+        data = json.loads(_prompt_cache_file(cwd, memory_sections).read_text(encoding="utf-8"))
         prompt = data.get("prompt")
         return prompt if isinstance(prompt, dict) and isinstance(prompt.get("append"), str) else None
     except (OSError, ValueError, TypeError):
         return None
 
 
-def _write_prompt_cache(cwd: str | None, prompt: dict) -> None:
+def _write_prompt_cache(cwd: str | None, prompt: dict, memory_sections: list[str] | None = None) -> None:
     """原子写本地快照；缓存损坏时下次自动重建。"""
-    path = _prompt_cache_file(cwd)
+    path = _prompt_cache_file(cwd, memory_sections)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
@@ -400,7 +404,9 @@ def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
     return "⚠️ 出了点问题,请重试"
 
 
-async def _read_fresh_system_prompt(cwd: str | None, resume: str | None) -> dict | None:
+async def _read_fresh_system_prompt(
+    cwd: str | None, resume: str | None, memory_sections: list[str] | None = None,
+) -> dict | None:
     """限时从来源文件生成提示词快照；超时返回 None。"""
     global _prompt_load_unavailable_until
     if time.monotonic() < _prompt_load_unavailable_until:
@@ -410,7 +416,9 @@ async def _read_fresh_system_prompt(cwd: str | None, resume: str | None) -> dict
             # abandon_on_cancel 很关键：iCloud 的同步 open() 不能被 Python 中断，
             # 默认会等线程自己返回，超时形同虚设。丢弃等待后让本轮继续启动 CLI。
             return await anyio.to_thread.run_sync(
-                functools.partial(build_system_prompt, cwd, cache_key=resume),
+                # 只在要过滤时才传 memory_sections:None 时调用形状和以前完全一样
+                functools.partial(build_system_prompt, cwd, cache_key=resume,
+                                  **({"memory_sections": memory_sections} if memory_sections is not None else {})),
                 abandon_on_cancel=True,
             )
     except TimeoutError:
@@ -422,30 +430,34 @@ async def _read_fresh_system_prompt(cwd: str | None, resume: str | None) -> dict
         return None
 
 
-async def _refresh_system_prompt_cache(cwd: str | None) -> None:
+async def _refresh_system_prompt_cache(cwd: str | None, memory_sections: list[str] | None = None) -> None:
     """后台刷新来源文件；本轮始终继续使用当前本地快照。"""
-    key = _prompt_cache_key(cwd)
+    key = _prompt_cache_key(cwd, memory_sections)
     try:
-        prompt = await _read_fresh_system_prompt(cwd, None)
+        prompt = await _read_fresh_system_prompt(cwd, None, memory_sections)
         if prompt is not None:
-            await anyio.to_thread.run_sync(_write_prompt_cache, cwd, prompt)
+            await anyio.to_thread.run_sync(_write_prompt_cache, cwd, prompt, memory_sections)
     finally:
         _prompt_refreshing.discard(key)
 
 
-async def _load_system_prompt(cwd: str | None, resume: str | None) -> dict:
-    """本地快照优先；来源有改动由后台刷新，避免 iCloud 阻塞首字。"""
-    cached = _read_prompt_cache(cwd)
-    key = _prompt_cache_key(cwd)
+async def _load_system_prompt(
+    cwd: str | None, resume: str | None, memory_sections: list[str] | None = None,
+) -> dict:
+    """本地快照优先；来源有改动由后台刷新，避免 iCloud 阻塞首字。
+
+    memory_sections:项目 Agent 只注入这几节全局记忆(None = 整份),见 core/prompt.build_system_prompt。"""
+    cached = _read_prompt_cache(cwd, memory_sections)
+    key = _prompt_cache_key(cwd, memory_sections)
     if cached is not None:
         # 下一轮之前尽力刷新。即便 iCloud 卡住，也只占后台线程，不阻断本轮模型启动。
         if key not in _prompt_refreshing and time.monotonic() >= _prompt_load_unavailable_until:
             _prompt_refreshing.add(key)
-            asyncio.create_task(_refresh_system_prompt_cache(cwd))
+            asyncio.create_task(_refresh_system_prompt_cache(cwd, memory_sections))
         return cached
-    prompt = await _read_fresh_system_prompt(cwd, resume)
+    prompt = await _read_fresh_system_prompt(cwd, resume, memory_sections)
     if prompt is not None:
-        await anyio.to_thread.run_sync(_write_prompt_cache, cwd, prompt)
+        await anyio.to_thread.run_sync(_write_prompt_cache, cwd, prompt, memory_sections)
         return prompt
     return {"type": "preset", "preset": "claude_code", "append": ""}
 
@@ -757,7 +769,7 @@ def _cli_stderr(line: str) -> None:
     print(f"[cli/stderr] {s}", flush=True)
 
 
-def _turn_env(provider_env: dict) -> dict:
+def _turn_env(provider_env: dict, no_auto_memory: bool = False) -> dict:
     """本轮传给 CLI 子进程的 env:设置页供应商 env(base_url+key)叠加恒定的强制前台开关。
 
     切换到官方模型时(provider_env 为空),显式清掉第三方环境变量——否则 CLI 子进程
@@ -775,6 +787,10 @@ def _turn_env(provider_env: dict) -> dict:
     带上,不依赖本机是否恰好登录着。danger.py 已有针对性拦截挡 curl/wget 等外带这个变量
     名的命令,是这个必要暴露面的兜底防线。"""
     env = {**provider_env, **_FORCE_FOREGROUND_ENV}
+    # 项目 Agent 会话:关掉 CLI 的 auto-memory——它按项目目录把整份 AI_BRAIN/MEMORY.md 再注一遍,
+    # 我们自己只注入和该 Agent 相关的分节(记忆分区,见 memory/agents.py)
+    if no_auto_memory:
+        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     if not provider_env:
         # 官方模型:清掉可能残留的第三方端点变量,同时显式带上订阅 token(见上方文档字符串)
         env["ANTHROPIC_BASE_URL"] = ""
@@ -943,7 +959,7 @@ async def stream_turn(
     # 软链,偶发"文件被驱逐到云端、访问要现拉"卡住同步 read_text 数秒到数分钟——若直接
     # 跑在事件循环里,这一次卡顿会冻结【所有】会话(2026-07-21/07-23 两次假死均系于此,
     # 见 gateway/watchdog.py 事故记录)。cache_key 命中时函数本身秒返回,进线程池的开销可忽略。
-    sys_prompt = await _load_system_prompt(cwd, resume)
+    sys_prompt = await _load_system_prompt(cwd, resume, agent_rt.get("memory_sections"))
     cli_cwd, cloud_project_note = _cli_working_dir(cwd)
     if cloud_project_note:
         sys_prompt = {**sys_prompt, "append": sys_prompt.get("append", "") + cloud_project_note}
@@ -983,7 +999,8 @@ async def stream_turn(
             # 不进 ~/.claude/skills,Claude Code/Codex/OpenCode 等其它工具看不到。
             plugins=[{"type": "local", "path": str(config.PLUGIN_DIR)}],
             cwd=cli_cwd,  # iCloud 项目改从稳定目录启动，实际项目路径见 system prompt
-            env=_turn_env(provider_env),  # 设置页供应商 base_url+key + 恒定强制前台开关(见 _turn_env)
+            # 设置页供应商 base_url+key + 恒定强制前台开关(见 _turn_env);项目 Agent 关 CLI auto-memory
+            env=_turn_env(provider_env, no_auto_memory=agent_rt.get("memory_sections") is not None),
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
             disallowed_tools=list(disallowed_tools or []),
             agents=subagents,

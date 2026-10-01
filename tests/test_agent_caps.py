@@ -41,7 +41,8 @@ def test_runtime_for_session_carries_model_and_tools(env):
     a = agents.by_project_hash(h)
     agents.update(a["id"], model="m1", disallowed_tools=["Bash"])
     rt = agents.runtime_for_session(f"web:p{h}:c1")
-    assert rt == {"skills": None, "mcp": None, "model": "m1", "disallowed_tools": ["Bash"]}
+    assert rt == {"skills": None, "mcp": None, "model": "m1", "disallowed_tools": ["Bash"],
+                  "memory_sections": list(agents.DEFAULT_MEMORY_SECTIONS)}
     assert agents.runtime_for_session("web:abc")["model"] is None
 
 

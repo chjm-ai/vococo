@@ -205,6 +205,52 @@ def _load_memory_index(cwd: str | None) -> str:
     )
 
 
+def _section_key(title: str) -> str:
+    """分节标题归一:去掉括号里的补充说明和首尾空白,「vococo 项目（原 …）」和「vococo 项目」算同一节。"""
+    return re.split(r"[（(]", title, maxsplit=1)[0].strip()
+
+
+def memory_section_titles() -> list[str]:
+    """MEMORY.md 里所有「## 分节」的标题(归一后),给 Agent 设置页勾选用。读不到返回空列表。"""
+    text = _read_clipped(config.AI_BRAIN_DIR / "MEMORY.md", "AI_BRAIN/MEMORY.md") or ""
+    out: list[str] = []
+    for m in re.finditer(r"(?m)^## (.+)$", text):
+        t = _section_key(m.group(1))
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def filter_memory_sections(text: str, sections: list[str]) -> str:
+    """只留 MEMORY.md 里 sections 列出的「## 分节」(加文件开头那段);其余分节只列个名字,
+    让 Agent 知道还有哪些可以按需去读,又不把整份索引塞进上下文。"""
+    want = {_section_key(x) for x in sections}
+    parts = re.split(r"(?m)^(?=## )", text)
+    kept, omitted = [parts[0]], []
+    for p in parts[1:]:
+        title = p[3:].split("\n", 1)[0].strip()
+        if _section_key(title) in want:
+            kept.append(p)
+        else:
+            omitted.append(title)
+    out = "".join(kept).rstrip()
+    if omitted:
+        out += ("\n\n(以下分节和当前 Agent 无关,没有展开;需要时读 AI_BRAIN/MEMORY.md 对应分节:"
+                + "、".join(_section_key(t) for t in omitted) + ")")
+    return out
+
+
+def _load_memory_sections(sections: list[str]) -> str:
+    """Agent 会话用:只注入相关分节的索引(CLI auto-memory 同时被关掉,见 core/agent.stream_turn)。"""
+    text = _read_clipped(config.AI_BRAIN_DIR / "MEMORY.md", "AI_BRAIN/MEMORY.md")
+    if not text:
+        return ""
+    return (
+        "\n\n=== 你的长期记忆索引(只含和当前 Agent 相关的分节;需要时用 recall_past 或读对应文件展开)===\n"
+        f"<memory_index>\n{filter_memory_sections(text, sections)}\n</memory_index>"
+    )
+
+
 # 会话内 append 快照:按 SDK 会话 id 缓存组装好的 append 文本。
 # 为什么:system prompt 在上下文最前面,会话中途 save_memory 改了 MEMORY.md 会让
 # 下一轮的前缀变化 → 整条对话的 prompt cache 全部作废(长会话一次全价重读,隐性大税)。
@@ -261,13 +307,16 @@ def _load_project_agents(cwd: str | None) -> str:
     )
 
 
-def build_system_prompt(cwd: str | None = None, cache_key: str | None = None) -> dict:
+def build_system_prompt(
+    cwd: str | None = None, cache_key: str | None = None, memory_sections: list[str] | None = None,
+) -> dict:
     """返回 SDK 的 preset system prompt(claude_code 默认 + append 人格/画像/记忆索引)。
 
     cwd:项目会话的工作根;非空时补注入该目录的 AGENTS.md(见 _load_project_agents)。
     cache_key 非空(= 本轮 resume 的 SDK 会话 id)时,append 在该会话内冻结复用;
     为空(首轮/降级)每次现读文件。同一 SDK 会话 cwd 固定,故快照无需按 cwd 分键。
     冻结复用的例外:项目 AGENTS.md 的 mtime 变了 → 快照作废重新组装(见 _agents_mtime)。
+    memory_sections:项目 Agent 会话传它要的 MEMORY.md 分节,只注入这几节;None = 整份(总助理/普通会话)。
     """
     if cache_key and cache_key in _APPEND_CACHE:
         mtime, text = _APPEND_CACHE[cache_key]
@@ -276,7 +325,8 @@ def build_system_prompt(cwd: str | None = None, cache_key: str | None = None) ->
             return {"type": "preset", "preset": "claude_code", "append": text}
         # AGENTS.md 变了 → 落到下方重新组装,并覆盖该 key 的快照
     global_agents = _load_global_agents()
-    data_blocks = _load_user_profile() + _load_memory_index(cwd)
+    memory = _load_memory_index(cwd) if memory_sections is None else _load_memory_sections(memory_sections)
+    data_blocks = _load_user_profile() + memory
     fence = f"\n\n=== 参考数据围栏 ===\n{_MEMORY_FENCE}" if data_blocks else ""
     append = PERSONA + global_agents + fence + data_blocks + _load_project_agents(cwd)
     if cache_key:

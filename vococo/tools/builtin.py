@@ -123,7 +123,9 @@ async def save_person(args: dict) -> dict:
     "topic:英文短横线 slug(如 vpn-speeedai-server);title:中文标题;"
     "summary:一句话摘要(也会写进索引);body:markdown 正文;"
     "category:索引分节名(不带 ##,如「服务器 / 基础设施」「工作偏好 / 设置」),"
-    "登记到该分节;省略则进「其他主题」。",
+    "登记到该分节;省略则进「其他主题」。\n"
+    "scope:在某个项目 Agent 的会话里,默认(agent)存进【这个 Agent 自己的】memory/ 并登记到它的 NOTES.md,"
+    "不进 AI_BRAIN;只有跨 Agent 都用得上的(主人的偏好、通用教训)才传 global。总助理/普通会话里一律进 AI_BRAIN。",
     {
         "type": "object",
         "properties": {
@@ -132,6 +134,7 @@ async def save_person(args: dict) -> dict:
             "summary": {"type": "string"},
             "body": {"type": "string"},
             "category": {"type": "string"},
+            "scope": {"type": "string", "enum": ["agent", "global"]},
         },
         "required": ["topic", "title", "summary", "body"],
     },
@@ -152,6 +155,23 @@ async def save_memory(args: dict) -> dict:
             f"summary 太长了({len(summary)} 字)。它会写进索引,请压到一句话"
             f"(≤{_SUMMARY_MAX} 字),详细内容放进 body。"
         )
+
+    # 记忆分区:项目 Agent 的会话里默认存进它自己的 memory/(见 memory/agents.py 模块说明)
+    owner = None
+    if (args.get("scope") or "agent").strip() != "global":
+        from ..memory import agents
+        from . import danger
+
+        owner = agents.owner_for_memory(danger.current_session_key())
+    if owner is not None:
+        try:
+            path = agents.save_memory(owner["id"], topic, title, summary, body)
+        except FileExistsError:
+            return _ok(f"⚠️ 「{owner['name']}」的 memory/{topic}.md 已存在,未改动。要追加请用 Read+Edit 打开它。")
+        except (OSError, ValueError) as exc:
+            return _ok(f"⚠️ 存进 Agent 记忆失败:{exc}")
+        return _ok(f"✅ 已存进「{owner['name']}」自己的记忆:{path}(已登记到它的 NOTES.md)。"
+                   "不进全局 AI_BRAIN;要全局共享请用 scope=global。")
 
     mem_dir = config.AI_BRAIN_DIR / "memory"
     path = mem_dir / f"{topic}.md"

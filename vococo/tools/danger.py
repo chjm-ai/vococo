@@ -1070,6 +1070,11 @@ def reset_task_session(token: contextvars.Token) -> None:
         pass
 
 
+def current_session_key() -> str:
+    """当前工具调用属于哪个会话:前台走 clarify 上下文,后台任务走 set_task_session 登记的那个。"""
+    return _current_session_key()
+
+
 def _current_session_key() -> str:
     try:
         from ..gateway import clarify

@@ -3054,6 +3054,19 @@ class WebAdapter:
         })
 
     @_authed
+    async def _handle_agent_memory_sections(self, request: web.Request) -> web.Response:
+        """全局记忆(AI_BRAIN/MEMORY.md)的分节清单 + 项目 Agent 默认带的那几节,给设置页勾选。
+        扔线程池限时读:AI_BRAIN 在 iCloud,偶发卡住不能拖住事件循环。"""
+        from ...core import prompt
+        from ...memory import agents
+
+        try:
+            titles = await asyncio.wait_for(asyncio.to_thread(prompt.memory_section_titles), timeout=5)
+        except asyncio.TimeoutError:
+            titles = []
+        return web.json_response({"sections": titles, "default": list(agents.DEFAULT_MEMORY_SECTIONS)})
+
+    @_authed
     async def _handle_agent_files(self, request: web.Request) -> web.Response:
         from ...memory import agents
 
@@ -3220,6 +3233,7 @@ class WebAdapter:
                 web.post("/agents/doc", self._handle_agent_doc_save),
                 web.get("/agents/runs", self._handle_agent_runs),
                 web.get("/agents/files", self._handle_agent_files),
+                web.get("/agents/memory_sections", self._handle_agent_memory_sections),
                 web.get("/agents/goal", self._handle_agent_goal),
                 web.get("/notices", self._handle_notices),
                 web.post("/notices/act", self._handle_notice_act),
