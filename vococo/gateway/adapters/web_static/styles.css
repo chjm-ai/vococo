@@ -1122,7 +1122,10 @@
   #projSelBtn{display:flex;align-items:center;gap:6px;font-size:var(--fs-sm);color:var(--dim);font-weight:500;
     padding:var(--sp-2) var(--sp-4);border-radius:var(--r-md);max-width:200px;background:var(--card);border:1px solid var(--line2);
     box-shadow:var(--shadow);transition:color var(--t-fast),background var(--t-fast),transform var(--t-fast)}
-  #projSelBtn span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #projSelName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #projSelIc,#projSelPop .mic{display:flex;align-items:center;flex-shrink:0}
+  #projSelIc .agav,#projSelPop .mic .agav{width:16px;height:15px}
+  #projSelIc .ic,#projSelPop .mic .ic{width:15px;height:15px}
   #projSelBtn:hover{color:var(--text);background:var(--panel2)}
   #projSelBtn:active{transform:scale(.96)}
   /* 往上开(bottom,不是 top):往下开会挤进输入框和键盘之间那条窄缝,列表一长就被裁掉 */
@@ -1134,6 +1137,7 @@
     text-align:left;padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);font-size:var(--fs-md);color:var(--text);transition:background var(--t-fast)}
   #projSelPop .mi:hover{background:var(--panel2)}
   #projSelPop .mi.on{color:var(--accent)}
+  #projSelPop .mi .ml{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #projSelPop .mi .mk{color:var(--accent);font-size:var(--fs-sm);flex-shrink:0}
   #pending{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
   #pending:empty{display:none}
