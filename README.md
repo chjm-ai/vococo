@@ -139,7 +139,7 @@ uv run vococo chat
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | 是* | `claude setup-token` 生成的订阅令牌(*只用第三方供应商时可空) |
 | `VOCOCO_USER_NAME` | 否 | 助理如何称呼你,默认「主人」 |
-| `VOCOCO_PERSONA_NAME` | 否 | 助理人格代号(UI/提示文案里露出),默认「Wazir」 |
+| `VOCOCO_PERSONA_NAME` | 否 | 助理人格代号(UI/提示文案里露出),默认「vococo」 |
 | `AI_BRAIN_DIR` | 否 | 长期记忆目录,默认 `~/AI_BRAIN`;不存在则记忆功能自动跳过 |
 | `AGENT_MODEL` | 否 | 默认 `claude-sonnet-5-5` |
 | `WEB_ENABLED` / `WEB_AUTH_TOKEN` | 否 | 启用手机浏览器 Web 入口;走公网必设口令 |
