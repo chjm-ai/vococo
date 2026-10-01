@@ -206,14 +206,19 @@ function renderProjSelChip(){
   const box=$("#projSel"); if(!box) return;
   const show = String(S.conv||"").startsWith("local-");
   box.hidden = !show;
-  if(show) $("#projSelName").textContent = projName(S.project);
+  if(show){ $("#projSelName").textContent = projName(S.project); $("#projSelIc").innerHTML = projIcon(S.project); }
+}
+// 项目图标:已是 Agent → 用它的像素头像;普通项目/默认项目 → 文件夹图标
+function projIcon(hash){
+  const ag=hash && (S.agents||[]).find(a=>a.project_hash===hash);
+  return ag ? avatarSvg(ag.avatar) : ic("folder");
 }
 function renderProjSelPop(){
   const pop=$("#projSelPop"), cur=S.project;
-  const items=[{hash:null,name:"默认项目"}, ...(S.projects||[])];
-  pop.innerHTML=items.map(p=>
-    '<button type="button" class="mi'+(p.hash===cur?" on":"")+'" data-h="'+esc(p.hash||"")+'">'+
-    '<span class="ml">'+esc(p.name)+'</span>'+(p.hash===cur?'<span class="mk">✓</span>':'')+'</button>'
+  const items=[null, ...(S.projects||[]).map(p=>p.hash)];
+  pop.innerHTML=items.map(h=>
+    '<button type="button" class="mi'+(h===cur?" on":"")+'" data-h="'+esc(h||"")+'">'+
+    '<span class="mic">'+projIcon(h)+'</span><span class="ml">'+esc(projName(h))+'</span>'+(h===cur?'<span class="mk">✓</span>':'')+'</button>'
   ).join("");
   pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickDraftProject(b.dataset.h||null); });
 }

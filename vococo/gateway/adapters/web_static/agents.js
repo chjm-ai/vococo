@@ -45,7 +45,7 @@ async function loadAgents(){
   try{ const r=await api("/agents"); S.agents=(await r.json()).agents||[]; }
   catch(e){}   // 失败保留上次成功列表
   patchAgentTitles(S.convs);
-  renderConvs(); syncAgentHeader();
+  renderConvs(); syncAgentHeader(); renderProjSelChip();   // 选择胶囊可能先按项目名画了
   if(typeof updateEmpty==="function" && $("#empty").style.display==="flex") updateEmpty();   // 欢迎屏可能先按默认样子画了
 }
 function agentById(id){ return S.agents.find(a=>a.id===id) || null; }
