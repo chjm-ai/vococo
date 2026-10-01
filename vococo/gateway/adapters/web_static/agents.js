@@ -238,6 +238,13 @@ function toggleAgentPanel(){
   if(S.agentPanelOn && typeof closeDocPreview==="function") closeDocPreview();   // 两个右侧栏不同时占位
   $("#agentPanel").dataset.agent="";
   syncAgentHeader();
+  if(S.agentPanelOn) refreshApTasksData();
+}
+// 「定时」页读的是 S.cronJobs 缓存;别的会话 / 后台任务 / 接口改了任务归属,这边不会收到通知
+// (2026-10-01:任务移给「小红书运营」后面板一直显示空)。进这一页时先画缓存,再后台重拉一次,
+// 拉到后 loadCronSidebar 会经 refreshAgentPanelIf 重画。只在用户进页时拉,不放进 renderApTasks,免得重画→重拉死循环
+function refreshApTasksData(){
+  if(S.agentPanelTab==="tasks" && typeof loadCronSidebar==="function") loadCronSidebar();
 }
 function hideAgentPanel(){ $("#agentPanel").hidden=true; $("#agentPanel").dataset.agent=""; }
 $("#convAgentBtn").onclick=toggleAgentPanel;
@@ -254,7 +261,7 @@ function renderAgentPanel(){
   const tabs=$("#apTabs"); tabs.innerHTML="";
   for(const t of AP_TABS){
     const b=el("div","sidetab"+(S.agentPanelTab===t.key?" active":"")); b.textContent=t.label;
-    b.onclick=()=>{ S.agentPanelTab=t.key; saveAgentPanelPref(); renderAgentPanel(); };
+    b.onclick=()=>{ S.agentPanelTab=t.key; saveAgentPanelPref(); renderAgentPanel(); refreshApTasksData(); };
     tabs.append(b);
   }
   const body=$("#apBody"); body.innerHTML=""; body.scrollTop=0;
