@@ -124,8 +124,9 @@ async def save_person(args: dict) -> dict:
     "summary:一句话摘要(也会写进索引);body:markdown 正文;"
     "category:索引分节名(不带 ##,如「服务器 / 基础设施」「工作偏好 / 设置」),"
     "登记到该分节;省略则进「其他主题」。\n"
-    "scope:在某个项目 Agent 的会话里,默认(agent)存进【这个 Agent 自己的】memory/ 并登记到它的 NOTES.md,"
-    "不进 AI_BRAIN;只有跨 Agent 都用得上的(主人的偏好、通用教训)才传 global。总助理/普通会话里一律进 AI_BRAIN。",
+    "scope:在某个项目 Agent 的会话里,默认(agent)存进【这个 Agent 自己的】记忆目录"
+    "(AI_BRAIN/memory/<项目文件夹名>/,登记在该目录 INDEX.md,不进全局 MEMORY.md);"
+    "只有跨 Agent 都用得上的才传 global。总助理/普通会话里一律进全局。往已有记忆追加踩坑/决策/偏好请用 note_memory。",
     {
         "type": "object",
         "properties": {
@@ -164,14 +165,16 @@ async def save_memory(args: dict) -> dict:
 
         owner = agents.owner_for_memory(danger.current_session_key())
     if owner is not None:
+        from ..memory import deposit
+
         try:
-            path = agents.save_memory(owner["id"], topic, title, summary, body)
-        except FileExistsError:
-            return _ok(f"⚠️ 「{owner['name']}」的 memory/{topic}.md 已存在,未改动。要追加请用 Read+Edit 打开它。")
+            path = deposit.save_topic(owner, topic, title, summary, body)
+        except FileExistsError as exc:
+            return _ok(f"⚠️ {exc} 已存在,未改动。要追加请用 Read+Edit 打开它,或用 note_memory。")
         except (OSError, ValueError) as exc:
             return _ok(f"⚠️ 存进 Agent 记忆失败:{exc}")
-        return _ok(f"✅ 已存进「{owner['name']}」自己的记忆:{path}(已登记到它的 NOTES.md)。"
-                   "不进全局 AI_BRAIN;要全局共享请用 scope=global。")
+        return _ok(f"✅ 已存进「{owner['name']}」专用记忆:{path}(登记在同目录 INDEX.md)。"
+                   "不进全局 MEMORY.md;要全局共享请用 scope=global。")
 
     mem_dir = config.AI_BRAIN_DIR / "memory"
     path = mem_dir / f"{topic}.md"
@@ -188,6 +191,45 @@ async def save_memory(args: dict) -> dict:
 
     _append_index(topic, summary, category)
     return _ok(f"✅ 已写入 memory/{topic}.md 并登记到索引「{category}」。")
+
+@tool(
+    "note_memory",
+    "往记忆里【追加】一条踩坑 / 决策 / 偏好(新建独立主题文件用 save_memory)。\n"
+    "kind:lesson(踩坑+根因+修法)/ decision(方案选择+原因)/ preference(主人的偏好、习惯)。\n"
+    "text:这一条的内容,一两句到一小段;label:可选,lesson 填场景、decision 填原因、preference 填标题。\n"
+    "scope:在项目 Agent 的会话里,agent(默认)= 写进这个 Agent 自己记忆目录的 lessons.md / decisions.md;"
+    "global = 写进 AI_BRAIN 通用的 lessons.md / tech-decisions.md。按 Agent 提示词里的「记忆归属」判定;"
+    "preference 永远进通用 preferences.md。总助理/普通会话里一律进通用。",
+    {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": ["lesson", "decision", "preference"]},
+            "text": {"type": "string"},
+            "label": {"type": "string"},
+            "scope": {"type": "string", "enum": ["agent", "global"]},
+        },
+        "required": ["kind", "text"],
+    },
+)
+async def note_memory(args: dict) -> dict:
+    from ..memory import agents, deposit
+    from . import danger
+
+    kind = (args.get("kind") or "").strip()
+    text = (args.get("text") or "").strip()
+    label = (args.get("label") or "").strip()
+    owner = None
+    if (args.get("scope") or "agent").strip() != "global" and kind != "preference":
+        owner = agents.owner_for_memory(danger.current_session_key())
+    try:
+        path = deposit.note(owner, kind, text, label)
+    except ValueError as exc:
+        return _ok(f"note_memory 参数不对:{exc}")
+    except OSError as exc:
+        return _ok(f"⚠️ 写记忆失败(AI_BRAIN 可能读不到):{exc}")
+    where = f"「{owner['name']}」专用" if owner else "通用"
+    return _ok(f"✅ 已记进{where}记忆:{path}")
+
 
 def _append_index(topic: str, summary: str, category: str) -> None:
     """把一行索引登记到 MEMORY.md 的「## <category>」分节末尾。
@@ -1512,6 +1554,7 @@ def build_mcp_servers() -> dict:
             tools=[
                 recall_past,
                 save_memory,
+                note_memory,
                 save_person,
                 suggest_automation,
                 add_cron_job,

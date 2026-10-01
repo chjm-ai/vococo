@@ -122,31 +122,32 @@ _prompt_load_unavailable_until = 0.0
 _prompt_refreshing: set[str] = set()
 
 
-def _prompt_cache_key(cwd: str | None, memory_sections: list[str] | None = None) -> str:
-    # 记忆分节不同(项目 Agent 只带部分全局记忆)提示词就不同,要分开缓存;None 时 key 和以前一致
+def _prompt_cache_key(cwd: str | None, memory: dict | None = None) -> str:
+    # memory = {"sections": [...], "own_dir": ...}:项目 Agent 只带部分全局记忆 + 自己的索引,提示词不同要分开缓存;
+    # None 时 key 和以前一致
     raw = cwd or "<default>"
-    if memory_sections is not None:
-        raw += "\0mem:" + "|".join(sorted(memory_sections))
+    if memory is not None:
+        raw += "\0mem:" + "|".join(sorted(memory["sections"])) + "\0own:" + (memory.get("own_dir") or "")
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _prompt_cache_file(cwd: str | None, memory_sections: list[str] | None = None) -> Path:
-    return config.DATA_DIR / "prompt_cache" / f"{_prompt_cache_key(cwd, memory_sections)}.json"
+def _prompt_cache_file(cwd: str | None, memory: dict | None = None) -> Path:
+    return config.DATA_DIR / "prompt_cache" / f"{_prompt_cache_key(cwd, memory)}.json"
 
 
-def _read_prompt_cache(cwd: str | None, memory_sections: list[str] | None = None) -> dict | None:
+def _read_prompt_cache(cwd: str | None, memory: dict | None = None) -> dict | None:
     """只读本地 data 缓存，不访问 iCloud。"""
     try:
-        data = json.loads(_prompt_cache_file(cwd, memory_sections).read_text(encoding="utf-8"))
+        data = json.loads(_prompt_cache_file(cwd, memory).read_text(encoding="utf-8"))
         prompt = data.get("prompt")
         return prompt if isinstance(prompt, dict) and isinstance(prompt.get("append"), str) else None
     except (OSError, ValueError, TypeError):
         return None
 
 
-def _write_prompt_cache(cwd: str | None, prompt: dict, memory_sections: list[str] | None = None) -> None:
+def _write_prompt_cache(cwd: str | None, prompt: dict, memory: dict | None = None) -> None:
     """原子写本地快照；缓存损坏时下次自动重建。"""
-    path = _prompt_cache_file(cwd, memory_sections)
+    path = _prompt_cache_file(cwd, memory)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
@@ -405,7 +406,7 @@ def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
 
 
 async def _read_fresh_system_prompt(
-    cwd: str | None, resume: str | None, memory_sections: list[str] | None = None,
+    cwd: str | None, resume: str | None, memory: dict | None = None,
 ) -> dict | None:
     """限时从来源文件生成提示词快照；超时返回 None。"""
     global _prompt_load_unavailable_until
@@ -416,9 +417,10 @@ async def _read_fresh_system_prompt(
             # abandon_on_cancel 很关键：iCloud 的同步 open() 不能被 Python 中断，
             # 默认会等线程自己返回，超时形同虚设。丢弃等待后让本轮继续启动 CLI。
             return await anyio.to_thread.run_sync(
-                # 只在要过滤时才传 memory_sections:None 时调用形状和以前完全一样
-                functools.partial(build_system_prompt, cwd, cache_key=resume,
-                                  **({"memory_sections": memory_sections} if memory_sections is not None else {})),
+                # 只在项目 Agent 时才传记忆参数:None 时调用形状和以前完全一样
+                functools.partial(build_system_prompt, cwd, cache_key=resume, **(
+                    {"memory_sections": memory["sections"], "own_memory_dir": memory.get("own_dir")}
+                    if memory is not None else {})),
                 abandon_on_cancel=True,
             )
     except TimeoutError:
@@ -430,34 +432,35 @@ async def _read_fresh_system_prompt(
         return None
 
 
-async def _refresh_system_prompt_cache(cwd: str | None, memory_sections: list[str] | None = None) -> None:
+async def _refresh_system_prompt_cache(cwd: str | None, memory: dict | None = None) -> None:
     """后台刷新来源文件；本轮始终继续使用当前本地快照。"""
-    key = _prompt_cache_key(cwd, memory_sections)
+    key = _prompt_cache_key(cwd, memory)
     try:
-        prompt = await _read_fresh_system_prompt(cwd, None, memory_sections)
+        prompt = await _read_fresh_system_prompt(cwd, None, memory)
         if prompt is not None:
-            await anyio.to_thread.run_sync(_write_prompt_cache, cwd, prompt, memory_sections)
+            await anyio.to_thread.run_sync(_write_prompt_cache, cwd, prompt, memory)
     finally:
         _prompt_refreshing.discard(key)
 
 
 async def _load_system_prompt(
-    cwd: str | None, resume: str | None, memory_sections: list[str] | None = None,
+    cwd: str | None, resume: str | None, memory: dict | None = None,
 ) -> dict:
     """本地快照优先；来源有改动由后台刷新，避免 iCloud 阻塞首字。
 
-    memory_sections:项目 Agent 只注入这几节全局记忆(None = 整份),见 core/prompt.build_system_prompt。"""
-    cached = _read_prompt_cache(cwd, memory_sections)
-    key = _prompt_cache_key(cwd, memory_sections)
+    memory:项目 Agent 的 {"sections": 要的全局记忆分节, "own_dir": 它自己的记忆目录};None = 整份全局索引。
+    见 core/prompt.build_system_prompt。"""
+    cached = _read_prompt_cache(cwd, memory)
+    key = _prompt_cache_key(cwd, memory)
     if cached is not None:
         # 下一轮之前尽力刷新。即便 iCloud 卡住，也只占后台线程，不阻断本轮模型启动。
         if key not in _prompt_refreshing and time.monotonic() >= _prompt_load_unavailable_until:
             _prompt_refreshing.add(key)
-            asyncio.create_task(_refresh_system_prompt_cache(cwd, memory_sections))
+            asyncio.create_task(_refresh_system_prompt_cache(cwd, memory))
         return cached
-    prompt = await _read_fresh_system_prompt(cwd, resume, memory_sections)
+    prompt = await _read_fresh_system_prompt(cwd, resume, memory)
     if prompt is not None:
-        await anyio.to_thread.run_sync(_write_prompt_cache, cwd, prompt, memory_sections)
+        await anyio.to_thread.run_sync(_write_prompt_cache, cwd, prompt, memory)
         return prompt
     return {"type": "preset", "preset": "claude_code", "append": ""}
 
@@ -959,7 +962,11 @@ async def stream_turn(
     # 软链,偶发"文件被驱逐到云端、访问要现拉"卡住同步 read_text 数秒到数分钟——若直接
     # 跑在事件循环里,这一次卡顿会冻结【所有】会话(2026-07-21/07-23 两次假死均系于此,
     # 见 gateway/watchdog.py 事故记录)。cache_key 命中时函数本身秒返回,进线程池的开销可忽略。
-    sys_prompt = await _load_system_prompt(cwd, resume, agent_rt.get("memory_sections"))
+    agent_memory = (
+        {"sections": agent_rt["memory_sections"], "own_dir": agent_rt.get("memory_dir")}
+        if agent_rt.get("memory_sections") is not None else None
+    )
+    sys_prompt = await _load_system_prompt(cwd, resume, agent_memory)
     cli_cwd, cloud_project_note = _cli_working_dir(cwd)
     if cloud_project_note:
         sys_prompt = {**sys_prompt, "append": sys_prompt.get("append", "") + cloud_project_note}

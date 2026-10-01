@@ -68,8 +68,16 @@ def test_runtime_sections_default_custom_general(env):
         agents.update(agents.GENERAL_ID, memory_sections=[])
 
 
+def _call(tool, args: dict) -> str:
+    return asyncio.run(tool.handler(args))["content"][0]["text"]
+
+
 def _save(args: dict) -> str:
-    return asyncio.run(builtin.save_memory.handler(args))["content"][0]["text"]
+    return _call(builtin.save_memory, args)
+
+
+def _note(args: dict) -> str:
+    return _call(builtin.note_memory, args)
 
 
 def _in_session(key: str):
@@ -77,50 +85,83 @@ def _in_session(key: str):
 
 
 ARGS = {"topic": "lemlist-tips", "title": "Lemlist 发信", "summary": "周一回复率高", "body": "细节"}
+LESSONS = "# 经验教训\n\n| 场景 | 可复用规则 |\n|---|---|\n| 验收 | 走真实路径 |\n\n## 何时查看\n\n正文\n"
+DECISIONS = "# 技术决策\n\n| 日期 | 决策 | 原因 | 项目 |\n|------|------|------|------|\n| 2026-06-01 | 老决策 | 因为 | vococo |\n"
+
+
+def test_memory_dir_follows_project_folder(env, tmp_path):
+    from vococo.memory import deposit
+
+    assert deposit.agent_memory_dir(env) == tmp_path / "brain" / "memory" / "proj"
+    ws = agents.create("新建的")  # 默认工作目录叫 workspace,不能拿来当目录名
+    assert deposit.agent_memory_dir(ws) == tmp_path / "brain" / "memory" / "agents" / ws["id"]
+    assert deposit.agent_memory_dir({**env, "workdir": "/x/people"}).parent.name == "agents"  # 撞保留目录名
 
 
 def test_save_memory_goes_to_agent_by_default(env, tmp_path):
     tok = _in_session(f"web:p{env['project_hash']}:c1")
     try:
         out = _save(ARGS)
-        assert "自己的记忆" in out
-        # 文件仍在 AI_BRAIN(唯一主库),但在 agents/<id>/ 下、不登记全局 MEMORY.md
-        f = tmp_path / "brain" / "memory" / "agents" / env["id"] / "lemlist-tips.md"
-        assert "周一回复率高" in f.read_text(encoding="utf-8")
-        notes = agents.read_doc(env["id"], "NOTES.md")
-        assert f"## 记忆\n- [Lemlist 发信]({f}) — 周一回复率高" in notes
-        assert not (tmp_path / "brain" / "memory" / "lemlist-tips.md").exists()
+        assert "专用记忆" in out
+        d = tmp_path / "brain" / "memory" / "proj"
+        assert "周一回复率高" in (d / "lemlist-tips.md").read_text(encoding="utf-8")
+        index = (d / "INDEX.md").read_text(encoding="utf-8")
+        assert index.startswith("# proj 记忆索引") and "→ lemlist-tips.md — 周一回复率高" in index
+        assert not (tmp_path / "brain" / "memory" / "lemlist-tips.md").exists()  # 不进全局
         assert "lemlist-tips" not in (tmp_path / "brain" / "MEMORY.md").read_text(encoding="utf-8")
         assert "已存在" in _save(ARGS)  # 不覆盖
-        # 第二条追加在同一小节里
-        _save({**ARGS, "topic": "seo", "title": "SEO", "summary": "内链不足"})
-        notes = agents.read_doc(env["id"], "NOTES.md")
-        assert notes.count("## 记忆") == 1 and notes.index("lemlist-tips") < notes.index("/seo.md")
-        # scope=global 照旧进 AI_BRAIN
-        assert "已写入" in _save({**ARGS, "topic": "pref-x", "scope": "global"})
+        assert "已写入" in _save({**ARGS, "topic": "pref-x", "scope": "global"})  # scope=global 照旧进全局
         assert (tmp_path / "brain" / "memory" / "pref-x.md").exists()
     finally:
         danger.reset_task_session(tok)
 
 
-def test_save_memory_keeps_existing_notes(env):
-    agents.write_doc(env["id"], "NOTES.md", "# 笔记\n\n- 手写的一条\n\n## 联系人\n\n- 张三\n")
+def test_note_memory_routes_by_scope(env, tmp_path):
+    mem = tmp_path / "brain" / "memory"
+    (mem / "lessons.md").write_text(LESSONS, encoding="utf-8")
+    (mem / "tech-decisions.md").write_text(DECISIONS, encoding="utf-8")
     tok = _in_session(f"web:p{env['project_hash']}:c1")
     try:
-        _save(ARGS)
+        assert "「proj」专用" in _note({"kind": "lesson", "text": "Lemlist 分页要带 offset", "label": "Lemlist"})
+        assert "专用" in _note({"kind": "decision", "text": "开发信改周一发"})
+        assert "通用" in _note({"kind": "lesson", "text": "统计查询别用 head 截断", "label": "日志|查询", "scope": "global"})
+        assert "通用" in _note({"kind": "decision", "text": "记忆分区", "label": "防污染", "scope": "global"})
+        assert "通用" in _note({"kind": "preference", "text": "报告先给结论", "label": "汇报"})  # 偏好不看 scope
+        assert "参数不对" in _note({"kind": "bad", "text": "x"})
     finally:
         danger.reset_task_session(tok)
-    notes = agents.read_doc(env["id"], "NOTES.md")
-    assert "- 手写的一条" in notes and "- 张三" in notes and notes.rstrip().endswith("周一回复率高")
+    d = mem / "proj"
+    assert "**Lemlist**:Lemlist 分页要带 offset" in (d / "lessons.md").read_text(encoding="utf-8")
+    assert "开发信改周一发" in (d / "decisions.md").read_text(encoding="utf-8")
+    index = (d / "INDEX.md").read_text(encoding="utf-8")
+    assert index.count("→ lessons.md") == 1 and "→ decisions.md" in index  # 首次建文件才登记,不重复
+    lessons = (mem / "lessons.md").read_text(encoding="utf-8")
+    # 插进第一张表末尾(不是文件末尾),竖线换成全角不撑坏表格
+    assert "| 验收 | 走真实路径 |\n| 日志｜查询 | 统计查询别用 head 截断 |\n\n## 何时查看" in lessons
+    assert "| 记忆分区 | 防污染 | 通用 |" in (mem / "tech-decisions.md").read_text(encoding="utf-8")
+    assert "## 汇报(" in (mem / "preferences.md").read_text(encoding="utf-8")
 
 
 def test_save_memory_plain_session_goes_global(env, tmp_path):
     tok = _in_session("web:abc")
     try:
         assert "已写入" in _save(ARGS)
+        assert "通用" in _note({"kind": "lesson", "text": "x"})
     finally:
         danger.reset_task_session(tok)
     assert (tmp_path / "brain" / "memory" / "lemlist-tips.md").exists()
+
+
+def test_own_index_injected_for_agent(env, tmp_path):
+    d = tmp_path / "brain" / "memory" / "proj"
+    d.mkdir()
+    (d / "INDEX.md").write_text("# proj 记忆索引\n\n→ a.md — 自己的东西\n", encoding="utf-8")
+    part = prompt.build_system_prompt(None, memory_sections=["经验教训"], own_memory_dir=str(d))["append"]
+    assert "自己的东西" in part and "lessons.md" in part
+    assert "自己的东西" not in prompt.build_system_prompt(None)["append"]
+    agents.write_doc(env["id"], "AGENT.md", "# proj\n\n## 职责与人格\n\n管询盘")
+    extra = agents.prompt_extra(agents.get(env["id"]))
+    assert "## 记忆归属" in extra and str(d) in extra and "note_memory" in extra
 
 
 def test_turn_env_disables_auto_memory_only_for_agents():
@@ -128,14 +169,9 @@ def test_turn_env_disables_auto_memory_only_for_agents():
     assert "CLAUDE_CODE_DISABLE_AUTO_MEMORY" not in agent._turn_env({})
     # 缓存按分节分开存,None 和以前同一个 key
     assert agent._prompt_cache_key("/p") == agent._prompt_cache_key("/p", None)
-    assert agent._prompt_cache_key("/p", ["a"]) != agent._prompt_cache_key("/p")
-
-
-def test_notes_index_when_heading_is_last_line(env):
-    agents.write_doc(env["id"], "NOTES.md", "- 旧笔记\n\n## 记忆")  # 网页保存常不带结尾换行
-    agents._append_notes_index(env["id"], "- 新的一条")
-    notes = agents.read_doc(env["id"], "NOTES.md")
-    assert notes.count("## 记忆") == 1 and notes.rstrip().endswith("## 记忆\n- 新的一条")
+    mem = {"sections": ["a"], "own_dir": "/brain/memory/p"}
+    assert agent._prompt_cache_key("/p", mem) != agent._prompt_cache_key("/p")
+    assert agent._prompt_cache_key("/p", mem) != agent._prompt_cache_key("/p", {**mem, "own_dir": "/x"})
 
 
 def test_prompt_extra_trims_notes_not_rules(env, monkeypatch):

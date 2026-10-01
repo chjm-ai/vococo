@@ -251,17 +251,33 @@ def filter_memory_sections(text: str, sections: list[str]) -> str:
     return out
 
 
-def _load_memory_sections(sections: list[str]) -> str:
-    """Agent 会话用:只注入相关分节的索引(CLI auto-memory 同时被关掉,见 core/agent.stream_turn)。"""
+_OWN_INDEX_MAX_CHARS = 6000  # Agent 自己的记忆索引上限(vococo 的 INDEX.md 现在约 7k 字,超了截尾)
+
+
+def _load_own_memory(own_dir: str | None) -> str:
+    """项目 Agent 自己的记忆索引:AI_BRAIN/memory/<项目文件夹名>/INDEX.md(见 memory/deposit.py)。"""
+    if not own_dir:
+        return ""
+    text = _read_text(Path(own_dir) / "INDEX.md")
+    if not text:
+        return (f"\n\n=== 当前 Agent 自己的记忆 ===\n还没有。专用经验会存进 {own_dir}/(note_memory / save_memory)。")
+    if len(text) > _OWN_INDEX_MAX_CHARS:
+        text = text[:_OWN_INDEX_MAX_CHARS] + f"\n…(已截断,完整索引读 {own_dir}/INDEX.md)"
+    return (f"\n\n=== 当前 Agent 自己的记忆(索引:{own_dir}/INDEX.md,文件都在这个目录里)===\n"
+            f"<agent_memory_index>\n{text}\n</agent_memory_index>")
+
+
+def _load_memory_sections(sections: list[str], own_dir: str | None = None) -> str:
+    """Agent 会话用:只注入相关分节的全局索引 + 它自己的记忆索引(CLI auto-memory 同时被关掉,见 core/agent.stream_turn)。"""
     # 先过滤再截断:反过来的话文件一长,排在后面的分节勾了也注不进来
     text = _read_text(config.AI_BRAIN_DIR / "MEMORY.md")
     if not text:
-        return ""
+        return _load_own_memory(own_dir)
     filtered = _clip(filter_memory_sections(text, sections), "AI_BRAIN/MEMORY.md")
     return (
-        "\n\n=== 你的长期记忆索引(只含和当前 Agent 相关的分节;需要时用 recall_past 或读对应文件展开)===\n"
+        "\n\n=== 你的长期记忆索引(通用部分,只含和当前 Agent 相关的分节;需要时用 recall_past 或读对应文件展开)===\n"
         f"<memory_index>\n{filtered}\n</memory_index>"
-    )
+    ) + _load_own_memory(own_dir)
 
 
 # 会话内 append 快照:按 SDK 会话 id 缓存组装好的 append 文本。
@@ -322,6 +338,7 @@ def _load_project_agents(cwd: str | None) -> str:
 
 def build_system_prompt(
     cwd: str | None = None, cache_key: str | None = None, memory_sections: list[str] | None = None,
+    own_memory_dir: str | None = None,
 ) -> dict:
     """返回 SDK 的 preset system prompt(claude_code 默认 + append 人格/画像/记忆索引)。
 
@@ -330,6 +347,7 @@ def build_system_prompt(
     为空(首轮/降级)每次现读文件。同一 SDK 会话 cwd 固定,故快照无需按 cwd 分键。
     冻结复用的例外:项目 AGENTS.md 的 mtime 变了 → 快照作废重新组装(见 _agents_mtime)。
     memory_sections:项目 Agent 会话传它要的 MEMORY.md 分节,只注入这几节;None = 整份(总助理/普通会话)。
+    own_memory_dir:项目 Agent 自己的记忆目录,其 INDEX.md 一并注入(只在 memory_sections 非 None 时有意义)。
     """
     if cache_key and cache_key in _APPEND_CACHE:
         mtime, text = _APPEND_CACHE[cache_key]
@@ -338,7 +356,8 @@ def build_system_prompt(
             return {"type": "preset", "preset": "claude_code", "append": text}
         # AGENTS.md 变了 → 落到下方重新组装,并覆盖该 key 的快照
     global_agents = _load_global_agents()
-    memory = _load_memory_index(cwd) if memory_sections is None else _load_memory_sections(memory_sections)
+    memory = (_load_memory_index(cwd) if memory_sections is None
+              else _load_memory_sections(memory_sections, own_memory_dir))
     data_blocks = _load_user_profile() + memory
     fence = f"\n\n=== 参考数据围栏 ===\n{_MEMORY_FENCE}" if data_blocks else ""
     append = PERSONA + global_agents + fence + data_blocks + _load_project_agents(cwd)
