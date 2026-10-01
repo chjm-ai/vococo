@@ -58,6 +58,8 @@ function agentForConv(conv){
   if(h) return S.agents.find(a=>a.project_hash===h) || null;
   const job=(S.cronJobs||[]).find(j=>j.conv===conv);
   if(job) return job.agent_id ? agentById(job.agent_id) : null;
+  const t=((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).find(x=>x.conv===conv);
+  if(t && t.agent_id) return agentById(t.agent_id);
   if(conv==="main") return agentById("general");
   return null;
 }
@@ -93,9 +95,15 @@ function agentConvs(a){
 // 统计范围和展开后的列表一致(置顶的语音任务列表里不出,这里也不算)。已知局限:底部筛选切到「归档」时
 // 后端只回归档会话,未归档子会话不在 S.convs 里,这期间数字只剩主会话和语音任务。
 // 2026-09-30 主人定案:未读不用动效——动的东西扫一眼分不清哪行有未读,静态数字才一目了然。
+// 后台任务(语音/会话里派发的)归属:后端记了 agent_id 就挂到那个 Agent 下,无主的归总助理;
+// agent_id 指向已不存在的 Agent 也算无主,别让任务凭空消失
+function agentTasks(a){
+  return ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned
+    && ((t.agent_id && agentById(t.agent_id)) ? t.agent_id===a.id : a.id==="general"));
+}
 function agentOwnItems(a){
   const main=S.convs.find(c=>c.conv===a.main_conv)||{conv:a.main_conv};
-  const tasks=a.id==="general" ? ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned) : [];
+  const tasks=agentTasks(a);
   return [main, ...S.convs.filter(c=>agentOwnsConv(a, c.conv)), ...tasks];
 }
 const agentItemBusy=c=>S.live[c.conv] || c.task_status==="queued" || c.task_status==="running";   // 同行内显示橙色闪点的条件
@@ -115,9 +123,8 @@ function renderAgentsTab(box, inCall){
 }
 function renderAgentGroup(box, a, inCall){
   const convs=agentConvs(a);
-  // 语音后台任务不分项目,归总助理(原「项目」Tab 的默认项目也是这么放的),和会话按最后活跃时间混排
-  const tasks=a.id==="general" ? ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned
-    && (S.convFilter==="archived" ? t.archived : S.convFilter==="active" ? !t.archived : true)) : [];
+  // 后台任务按 agent_id 归属(见 agentTasks),无主的归总助理,和会话按最后活跃时间混排
+  const tasks=agentTasks(a).filter(t=>S.convFilter==="archived" ? t.archived : S.convFilter==="active" ? !t.archived : true);
   // 名下只有主会话时不给展开:点 Agent 行就进主会话,展开出来也只有孤零零一行
   const hasChildren=convs.length+tasks.length>0;
   const k=agentKey(a), open=hasChildren && S.expanded.has(k);

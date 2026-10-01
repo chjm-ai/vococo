@@ -471,6 +471,26 @@ def _source_agent_id(context_session_key: str | None) -> str | None:
     return a["id"] if a and a["id"] != agents.GENERAL_ID else None
 
 
+def _task_agent_id(explicit_cwd: str | None, context_session_key: str | None) -> str | None:
+    """任务归哪个 Agent:显式指定的 cwd 落在某个项目 Agent 的工作目录里(本身或子目录,取最近的一层)→ 归它;
+    否则归派发来源会话的 Agent。
+
+    2026-10-01 修:原来只看来源会话,在「vococo 开发」里派去面料外贸目录干活的任务,
+    带的是 vococo 开发的设定/技能/MCP,外贸的 lemlist 等工具全拿不到。"""
+    if explicit_cwd:
+        from ..memory import agents, projects
+
+        try:
+            p = Path(projects.normalize_project_path(explicit_cwd))
+            for d in (p, *p.parents):
+                a = agents.by_project_hash(projects.project_hash(str(d)))
+                if a and a["id"] != agents.GENERAL_ID:
+                    return a["id"]
+        except Exception:  # noqa: BLE001 —— 认不出就回落来源会话
+            pass
+    return _source_agent_id(context_session_key)
+
+
 def dispatch(
     title: str,
     prompt: str,
@@ -499,7 +519,7 @@ def dispatch(
                         dispatch_platform=dispatch_platform,
                         dispatch_chat_id=dispatch_chat_id,
                         origin=origin, task_id=task_id,
-                        agent_id=_source_agent_id(context_session_key))
+                        agent_id=_task_agent_id(cwd if cwd_explicit else None, context_session_key))
     if model:
         session_store.set_chosen_model(tasks.session_key(task["id"]), model)
     _maybe_start_next()
