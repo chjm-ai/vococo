@@ -206,13 +206,16 @@ def test_agent_row_state_covers_main_children_and_tasks():
 
 def test_agent_expanded_lists_main_conversation_first():
     """展开 Agent 后第一行固定是「主会话」,和子会话同一层(主人反馈:主会话收在父级行里看不出来)。
-    点 Agent 行本身照样进主会话;所以每个 Agent 都能展开,不再有「没子会话就藏箭头」。"""
+    点 Agent 行本身照样进主会话;名下只有主会话时不给展开(藏箭头、不渲染主会话行)。"""
     js = STATIC_AGENTS.read_text(encoding="utf-8")
     row = js[js.index("function renderAgentGroup(") : js.index("function buildAgentMainRow(")]
     after_open = row[row.index("if(!open) return;") :]
     assert after_open.index("buildAgentMainRow(a, inCall)") < after_open.index("buildConvRow(")
     assert "h.onclick" in row and "openAgentMain(a)" in row
-    assert "agnone" not in js
+    assert "open=hasChildren && S.expanded.has(k)" in row
+    assert '" agnone"' in row and "if(!hasChildren) return;" in row
+    styles = STATIC_STYLES.read_text(encoding="utf-8")
+    assert "visibility:hidden" in _declarations(styles, ".projgrp.agrow .pgcaret.agnone")
 
     main_row = js[js.index("function buildAgentMainRow(") : js.index("function openAgentMain(")]
     assert '"主会话"' in main_row and "openAgentMain(a)" in main_row
