@@ -323,18 +323,17 @@ function buildVoiceTaskRow(t, inCall){
   };
   return row;
 }
-// 单条会话行(主会话与普通会话/置顶会话通用)。主会话独立置顶且不提供菜单/滑动手势;
-// 置顶会话除了所在分组不同,长相(缩进、状态灯)跟普通分组内的会话行完全一样。
+// 单条会话行(主会话与普通会话/置顶会话通用)。主会话混在「最近」列表里时长相跟别的会话一样,
+// 标题显示总助理的名字(同其他 Agent 主会话显示 Agent 名),只是不能归档/删除,所以不给菜单/滑动手势。
 function buildConvRow(c, inCall){
   const isMain=c.conv==="main";
-  const e=el("div","conv"+(isMain?"":" ingroup")+(!inCall && c.conv===S.conv?" active":""));
+  const e=el("div","conv ingroup"+(!inCall && c.conv===S.conv?" active":""));
   e.dataset.conv=c.conv;
   const body=el("div","cvbody");
-  if(isMain) body.innerHTML=ic("star");   // 主会话:左侧星标图标,跟紧邻的语音通话行(mic 图标)对齐
   if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
   else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }   // 完成未读:灰色圆点
-  const ct=el("div","ct"); ct.textContent=c.title||"新对话"; body.append(ct);
-  if(!isMain){ const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); } }   // 会话时刻:名称右侧(主会话不显示)
+  const ct=el("div","ct"); ct.textContent=(isMain && agentById("general")?.name) || c.title || "新对话"; body.append(ct);
+  const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }   // 会话时刻:名称右侧
   if(!isMain){ const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
   e.append(body);
   if(!isMain){
@@ -405,10 +404,11 @@ function renderPinnedTab(box, inCall){
 }
 // 「最近」Tab:汇总所有项目(含语音任务)的会话,按最后活跃时间混排,不看归属项目、数量不封顶,
 // 默认 20 条,点「更多」每次 +20(置顶与最近是正交维度,置顶项目若时间够新也会出现在这里)
+// 主会话(总助理)也算一条参与排序——2026-08 统一对话入口时曾因另有独立入口把它剔掉,入口下架后它就只剩 Agent Tab 能找到
 function renderRecentTab(box, inCall){
   const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
   const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
-  const convItems = S.convs.filter(c=>c.conv!=="main" && passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
+  const convItems = S.convs.filter(c=>passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
   const rows = [...taskItems, ...convItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
   if(!rows.length){ box.append(sideTabEmpty("暂无最近会话")); return; }
   const shownN=Math.min(S.tabShown.recent, rows.length);
