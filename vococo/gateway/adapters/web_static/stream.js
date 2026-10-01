@@ -430,6 +430,24 @@ class FetchSSE {
   reconnectNow(){ if(this._closed) return; if(this._ctrl) try{this._ctrl.abort();}catch(e){} if(this._wake) this._wake(); } // 立刻断开重连(跳过退避)
   close(){ this._closed=true; this.readyState=2; if(this._ctrl) try{this._ctrl.abort();}catch(e){} if(this._wake) this._wake(); }
 }
+// 页面开着时后端重启/部署了新前端:SW 的「界面已更新」只在重新打开页面时才比对(见 sw.js),
+// 一直开着的页面靠 SSE 无感重连,会继续跑旧 JS(2026-10-01 侧栏归属修复后主人仍看到旧逻辑)。
+// 每次重连拉一次 / ,比对里面 ?v= 内容哈希和当前页面加载的是否一致,不一致就弹同一个提示条。
+// 回前台/聚焦都会重连,所以限 10s 一次(只挡连续触发;限太久会把「刚聚焦完就重启」那次漏掉);
+// / 带 no-cache+ETag,没变时只回 304 空包,不重传整页。
+let _shellCheckAt=0;
+async function checkShellVersion(){
+  if(Date.now()-_shellCheckAt<10000) return;
+  _shellCheckAt=Date.now();
+  const mine=[...document.querySelectorAll("script[src*='?v='],link[href*='?v=']")].map(e=>e.getAttribute("src")||e.getAttribute("href"));
+  if(!mine.length) return;
+  try{
+    const r=await fetch("/");
+    if(!r.ok){ _shellCheckAt=0; return; }   // 隧道 502 / SW 离线 503 的错误页里没有 ?v=,别误判成新版
+    const html=await r.text();
+    if(mine.some(u=>!html.includes(u)) && typeof showShellUpdated==="function") showShellUpdated();
+  }catch(e){ _shellCheckAt=0; }   // 拉不到就下次重连再比,不打扰
+}
 function connect(){
   if(S.es) S.es.close();
   const es = S.es = new FetchSSE("/events", S.token);
@@ -439,6 +457,7 @@ function connect(){
     // 恰是最容易出现"流式气泡卡死"的时候(断线期间 done 被环形缓冲挤掉),顺带核对一次。
     reloadHistory(true);
     if(typeof loadNotices==="function") loadNotices();  // 铃铛:补上断线期间的待处理项
+    if(!firstOpen) checkShellVersion();
   };
   es.onmessage = ev=>{ try{
     const d=JSON.parse(ev.data);
