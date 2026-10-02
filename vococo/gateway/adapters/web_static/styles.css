@@ -261,7 +261,8 @@
   #choiceModal{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:var(--ov-3);padding:18px}
   #choiceModal[hidden]{display:none}
   #choiceModal .cmbox{width:min(360px,100%);max-height:80vh;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line2);border-radius:var(--r-xl);overflow:hidden;box-shadow:var(--shadow)}
-  #choiceModal .cmhead{padding:var(--sp-5) 18px var(--sp-4);border-bottom:1px solid var(--line)}
+  #choiceModal .cmhead{position:relative;padding:var(--sp-5) 18px var(--sp-4);border-bottom:1px solid var(--line)}
+  #choiceModal .cmclose{position:absolute;top:var(--sp-3);right:var(--sp-3)}
   #choiceModal .cmbadge{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-sm);font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.04em;margin-bottom:7px}
   #choiceModal .cmdot{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:livepulse 1.2s infinite}
   #choiceModal .cmtitle{font-size:var(--fs-lg);font-weight:700;color:var(--text);line-height:1.3}

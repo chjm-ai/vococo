@@ -938,8 +938,23 @@ function openChoiceModal(conv, e){
     };
     optsEl.append(btn); btns.push(btn);
   });
+  // 自由回答类提问没有选项:给个入口跳进会话里用输入框回答,否则弹窗无事可做
+  if(!btns.length){
+    const go=el("button");
+    go.innerHTML='<span class="arw">❯</span> <span class="lbl">去会话里回答</span>';
+    go.onclick=()=>{ modal.hidden=true; openConv(conv); };
+    optsEl.append(go);
+  }
+  // 关闭只收起弹窗,不清 pendingChoice:切回该会话时仍会内联补出
+  const close=()=>{ modal.hidden=true; };
+  $("#choiceModalClose").onclick=close;
+  modal.onclick=ev=>{ if(ev.target===modal) close(); };
   modal.hidden=false;
 }
+document.addEventListener("keydown", ev=>{
+  const m=$("#choiceModal");
+  if(ev.key==="Escape" && m && !m.hidden) m.hidden=true;
+});
 function renderChoice(e){
   const box=el("div","choice");
   const opts=el("div","opts"); box.append(opts);
