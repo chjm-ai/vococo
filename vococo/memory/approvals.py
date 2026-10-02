@@ -29,6 +29,7 @@ DECISIONS = {
     "approved_once": "你批了一次",
     "approved_session": "你批了本轮任务/本会话",
     "approved_forever": "你批了永远允许",
+    "full_access": "完全访问,自动放行",
     "denied": "你拒绝了",
     "timeout": "等审批超时",
     "deferred": "免打扰时段,进待批队列",

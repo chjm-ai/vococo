@@ -517,6 +517,28 @@ def flush_draft(turn_id: int, text: str, *, session_key: str | None = None) -> b
     return cur.rowcount == 1
 
 
+def set_permission(session_key: str, mode: str, until: float = 0) -> None:
+    """会话级权限覆盖:mode 空串=跟随 Agent,standard/full=覆盖;until=到期时间戳,0=不过期。"""
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta(session_key, watermark_id, perm_mode, perm_until) VALUES (?,0,?,?) "
+        "ON CONFLICT(session_key) DO UPDATE SET perm_mode=excluded.perm_mode, "
+        "perm_until=excluded.perm_until",
+        (session_key, mode or None, float(until or 0)),
+    )
+    c.commit()
+
+
+def get_permission(session_key: str) -> tuple[str, float]:
+    """(mode, until);没设过 → ("", 0)。过期判断交给调用方(core/permissions.py)。"""
+    row = _conn().execute(
+        "SELECT perm_mode, perm_until FROM session_meta WHERE session_key=?", (session_key,)
+    ).fetchone()
+    if not row:
+        return "", 0.0
+    return row[0] or "", float(row[1] or 0)
+
+
 def set_external_mcp_names(session_key: str, names: set[str]) -> None:
     """保存用户手动开启的外部 MCP；状态只属于当前会话。"""
     c = _conn()
@@ -577,7 +599,8 @@ def clear(session_key: str) -> None:
         "UPDATE session_meta SET ctx_tokens=0, total_tokens=0, "
         "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL, "
         "cache_read_total=0, input_fresh_total=0, "
-        "external_mcp_names=NULL, auto_external_mcp_names=NULL, auto_external_mcp_at=NULL "
+        "external_mcp_names=NULL, auto_external_mcp_names=NULL, auto_external_mcp_at=NULL, "
+        "perm_mode=NULL, perm_until=0 "  # 新开一段对话 = 权限回到跟随 Agent
         "WHERE session_key=?",
         (session_key,),
     )

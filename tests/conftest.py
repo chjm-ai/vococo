@@ -45,3 +45,7 @@ def _no_real_audit(monkeypatch, request):
     monkeypatch.setattr(notices, "close_asks_for_session", lambda *a, **kw: 0)
     monkeypatch.setattr(notices, "expire_all_pending", lambda *a, **kw: 0)
     monkeypatch.setattr(notices, "by_clarify", lambda *a, **kw: None)
+    from vococo.memory import session_store
+
+    # 审批闸每次都会查完全访问档位(core/permissions.py):默认别读真实库,一律当没设过
+    monkeypatch.setattr(session_store, "get_permission", lambda key: ("", 0.0))

@@ -50,20 +50,96 @@ _FIND_DELETE = re.compile(r"\bfind\b")
 _HAS_DELETE = re.compile(r"\s-delete\b")
 
 
+# 2026-10-02:原先拿 _CATASTROPHIC_TARGET 扫【整条命令】,同一条命令里只要有 rm -r,别处出现
+# 空格包着的 `*`(sed 's/lh \\* 0.95/…/')、单独的 `/` 之类就判成删根,近 30 天误拦 8 次。
+# 改成按 shell 语法切出每条 rm / find 语句,只看它【自己的参数】是不是灾难目标。
+_RM_PREFILTER = re.compile(r"\brm\b")
+_CATASTROPHIC_WORDS = {"/", "/*", "~", "~/", "~/*", "$HOME", "$HOME/", "$HOME/*",
+                       "${HOME}", "${HOME}/", "${HOME}/*", "*"}
+
+
+def _is_catastrophic_target(word: str) -> bool:
+    """单个参数是否是灾难目标:整根 / 整家目录(含绝对路径写法) / 根通配。"""
+    if word in _CATASTROPHIC_WORDS:
+        return True
+    if not word.startswith("/"):
+        return False
+    norm = os.path.normpath(word)
+    return norm in ("/", "//") or norm == os.path.normpath(os.path.expanduser("~"))
+
+
+def _rm_stage_catastrophic(stage: list[str]) -> bool:
+    """一条 rm 语句:带递归选项且参数里有灾难目标。"""
+    recursive, targets, opts_done = False, [], False
+    for w in stage[1:]:
+        if not opts_done and w == "--":
+            opts_done = True
+        elif not opts_done and w.startswith("--"):
+            recursive = recursive or w == "--recursive"
+        elif not opts_done and w.startswith("-") and len(w) > 1:
+            recursive = recursive or "r" in w or "R" in w
+        else:
+            targets.append(w)
+    return recursive and any(_is_catastrophic_target(t) for t in targets)
+
+
+def _find_stage_catastrophic(stage: list[str]) -> bool:
+    """一条 find 语句:带 -delete 且起始路径(表达式之前的参数)里有灾难目标。"""
+    if "-delete" not in stage:
+        return False
+    paths = []
+    for w in stage[1:]:
+        if w.startswith("-") or w in {"!", "(", ")"}:
+            break
+        paths.append(w)
+    return any(_is_catastrophic_target(x) for x in paths)
+
+
+def _stages_catastrophic(cmd: str, check, keyword: re.Pattern, depth: int = 0) -> bool:
+    """把命令切成语句/管道段,逐段解开 sudo/env/xargs/bash -c 后交给 check 判定。
+
+    整条解析失败(多半是 heredoc 正文里有落单引号)→ 逐行解析;某行仍解析不了,
+    才对【这一行】退回老的整行正则——宁可误拦,但不再让一处语法问题牵连整条命令。"""
+    try:
+        statements = _shell_commands(cmd)
+    except ValueError:
+        if "\n" not in cmd:
+            return bool(keyword.search(cmd) and _CATASTROPHIC_TARGET.search(cmd))
+        return any(_stages_catastrophic(line, check, keyword, depth) for line in cmd.split("\n"))
+    for words in statements:
+        for stage in _pipeline_stages(words):
+            stage = _unwrap_command(stage)
+            if stage and os.path.basename(stage[0]) == "xargs":
+                stage = _xargs_command(stage)
+            if not stage:
+                continue
+            script = _shell_script(stage)
+            if script is not None:
+                if depth < 3 and _stages_catastrophic(script, check, keyword, depth + 1):
+                    return True
+                continue
+            if check(stage):
+                return True
+    return False
+
+
 def _find_is_catastrophic(cmd: str) -> bool:
-    return bool(
-        _FIND_DELETE.search(cmd)
-        and _HAS_DELETE.search(cmd)
-        and _CATASTROPHIC_TARGET.search(cmd)
+    if not (_FIND_DELETE.search(cmd) and _HAS_DELETE.search(cmd)):
+        return False
+    return _stages_catastrophic(
+        cmd, lambda st: os.path.basename(st[0]) == "find" and _find_stage_catastrophic(st),
+        _FIND_DELETE,
     )
 
 
 def _rm_is_catastrophic(cmd: str) -> bool:
     """rm + 递归标志 + 灾难目标(整根/整家目录/根通配)才算灾难;删子目录不算。"""
-    if not re.search(r"\brm\s+(-\S*[rR])", cmd):  # 必须带递归
+    if not _RM_PREFILTER.search(cmd):
         return False
-    # 去掉 rm 及其后的选项,只看目标部分是否命中灾难目标
-    return bool(_CATASTROPHIC_TARGET.search(cmd))
+    return _stages_catastrophic(
+        cmd, lambda st: os.path.basename(st[0]) == "rm" and _rm_stage_catastrophic(st),
+        _RM_PREFILTER,
+    )
 
 
 # ── 惰性文本剥离:只当数据、不会被执行的文本不参与危险判定(2026-09-28)──────────
@@ -267,6 +343,28 @@ def _shell_commands(command: str) -> list[list[str]]:
     return [words for words in commands if words]
 
 
+def _shell_commands_tolerant(command: str) -> list[list[str]]:
+    """同 _shell_commands,但解析失败不抛异常。
+
+    heredoc 正文(python/js 代码)里常有落单引号,shlex 整条报 No closing quotation,
+    以前一路抛到 hook 里变成「安全判定异常,已保守拒绝」——正常命令被整条拒掉(2026-10-02)。
+    现在退回逐行解析;某行仍解析不了就按 ; & | 粗切再按空白切词,宁可多认出 kill,不整条拒。"""
+    try:
+        return _shell_commands(command)
+    except ValueError:
+        pass
+    out: list[list[str]] = []
+    for line in command.split("\n"):
+        try:
+            out.extend(_shell_commands(line))
+        except ValueError:
+            for part in re.split(r"[;&|]", line):
+                words = part.split()
+                if words:
+                    out.append(words)
+    return out
+
+
 def _pipeline_stages(words: list[str]) -> list[list[str]]:
     stages: list[list[str]] = [[]]
     for word in words:
@@ -436,7 +534,7 @@ def _statement_terminates_process(statement: list[str]) -> bool:
 
 def _is_process_control(command: str) -> bool:
     """是否实际调用 kill/pkill/killall 或让 xargs 执行它们。"""
-    for statement in _shell_commands(command):
+    for statement in _shell_commands_tolerant(command):
         if any(_is_process_control(cmd) for cmd in _command_substitutions(statement)):
             return True
         for stage in _pipeline_stages(statement):
@@ -450,7 +548,7 @@ def _is_process_control(command: str) -> bool:
 
 def _targets_vococo_process(command: str) -> bool:
     query_variables: set[str] = set()
-    for statement in _shell_commands(command):
+    for statement in _shell_commands_tolerant(command):
         query_variables.difference_update(_assigned_variables(statement))
         query_variables.update(_query_output_variables(statement))
         uses_query_output = query_variables & _referenced_variables(statement)
@@ -843,7 +941,7 @@ def _writes_outside_worktree(
         return None
     ti = tool_input or {}
     path = ti.get("file_path") or ti.get("notebook_path") or ""
-    if not path or _inside_ai_brain(path, cwd):
+    if not path or _inside_ai_brain(path, cwd) or _inside_agents_root(path, cwd):
         return None
     try:
         base = os.path.realpath(cwd)
@@ -858,6 +956,22 @@ def _writes_outside_worktree(
     except (ValueError, OSError):
         return None
     return None
+
+
+def _inside_agents_root(path: str, cwd: str | None) -> bool:
+    """目标是否落在 Agent 家目录总根(data/agents/)内。
+
+    这是运行时数据(不进 git),只是物理上放在主仓库目录下;worktree 会话改 Agent 的
+    AGENT.md / 笔记 / 脚本不是「绕过 worktree 改源码」,不归越界防线管(2026-10-02 误拦 2 次)。
+    放过之后仍走 classify:自己 Agent 的地盘直接放行,别的 Agent 家目录按写 cwd 外请批准。"""
+    try:
+        from ..memory import agents
+
+        target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
+        base = os.path.realpath(agents.root_dir())
+        return os.path.commonpath([target, base]) == base
+    except (ValueError, OSError, ImportError):
+        return False
 
 
 def _deny_outside_worktree(target: str, wt: str) -> dict:
@@ -1131,6 +1245,16 @@ async def _approve(
     def done(decision: str, ok: bool) -> bool:
         _audit(tool, "escalate", reason, detail, decision)
         return ok
+
+    # 完全访问档(会话或所属 Agent 开了,见 core/permissions.py):免批放行,照样留审批记录。
+    # 前台/后台/cron 一视同仁——后台任务半夜卡在「待批」正是这个档位要解决的。
+    try:
+        from ..core import permissions
+
+        if permissions.auto_allows(_current_session_key(), _category(reason)):
+            return done("full_access", True)
+    except Exception as exc:  # noqa: BLE001 —— 判定出错就走正常审批,不放宽
+        print(f"[danger] 完全访问判定失败:{exc}", flush=True)
 
     if rule is not None:
         try:
