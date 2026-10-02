@@ -152,6 +152,19 @@ def test_agent_json_write_always_asks(agent_mode, monkeypatch):
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
+def test_agent_json_case_and_symlink_still_asks(agent_mode, tmp_path):
+    from vococo import config
+
+    home = config.DATA_DIR / "agents" / "abcdef"
+    home.mkdir(parents=True)
+    (home / "agent.json").write_text("{}")
+    link = tmp_path / "a"
+    link.symlink_to(home / "agent.json")
+    for p in (home / "Agent.JSON", link):
+        assert danger.classify("Write", {"file_path": str(p)}, cwd=str(tmp_path))[1] == \
+            danger.PERMISSION_CONFIG_REASON, p
+
+
 @pytest.mark.parametrize("cmd,hit", [
     ("echo '{\"permission\":\"full\"}' > data/agents/abc/agent.json", True),
     ("sed -i '' 's/standard/full/' data/agents/abc/agent.json", True),

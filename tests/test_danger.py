@@ -724,6 +724,7 @@ def test_rm_catastrophic_no_false_positive(cmd):
     "find -H ~ -delete",
     "nohup find / -delete",
     "find / -exec rm -rf {} +",
+    "find -- / -delete",
 ])
 def test_rm_catastrophic_still_blocked(cmd):
     assert is_dangerous(cmd) is not None, f"应拦截: {cmd}"

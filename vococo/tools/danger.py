@@ -94,6 +94,9 @@ def _find_args_catastrophic(args: list[str]) -> bool:
             i += 1
         elif args[i] == "-D":
             i += 2
+        elif args[i] == "--":  # find -- / -delete:选项结束符,后面就是起始路径
+            i += 1
+            break
         else:
             break
     paths = []
@@ -323,10 +326,17 @@ def _bash_edits_permission_config(cmd: str) -> bool:
 
 
 def _is_agent_config(path: str, cwd: str | None) -> bool:
-    """目标是不是某个 Agent 家目录下的 agent.json。"""
-    if os.path.basename(path) != "agent.json":
+    """目标是不是某个 Agent 家目录下的 agent.json。
+
+    先解析软链接再比文件名,且不分大小写——macOS 文件名不分大小写(AGENT.JSON 就是
+    agent.json),软链(ln -s …/agent.json /tmp/a)也能绕过字面比较。"""
+    try:
+        target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
+    except (ValueError, OSError):
         return False
-    return _inside_agents_root(path, cwd)
+    if os.path.basename(target).lower() != "agent.json":
+        return False
+    return _inside_agents_root(target, cwd)
 
 
 _SECRET_VAR_RE = re.compile(
