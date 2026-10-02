@@ -1117,6 +1117,39 @@
   #effortPop .mi.on{color:var(--accent)}
   #effortPop .mi .mk{color:var(--accent);font-size:var(--fs-sm);flex-shrink:0}
   #effortPop .mi .ml{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* 权限档位胶囊(思考深度左侧):标准只有一把锁;完全访问用警告色高亮,开着时一眼可见 */
+  #permBox{position:relative}
+  #permBtn{display:flex;align-items:center;gap:6px;font-size:var(--fs-sm);color:var(--dim);font-weight:500;
+    padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);border:1px solid transparent;
+    transition:color var(--t-fast),background var(--t-fast),transform var(--t-fast)}
+  #permBtn #permName{display:flex;align-items:center;gap:4px;white-space:nowrap}
+  #permBtn:hover{color:var(--text);background:var(--panel2)}
+  #permBtn:active{transform:scale(.96)}
+  #permBtn:disabled{opacity:.5}
+  #permBtn .caret{opacity:.6;flex-shrink:0}
+  #permBtn.full{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);
+    border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+  #permPop{position:absolute;bottom:calc(100% + 8px);right:0;min-width:220px;max-width:280px;z-index:20;
+    background:var(--card);border:1px solid var(--line2);border-radius:var(--r-xl);padding:var(--sp-2);
+    box-shadow:var(--shadow);animation:pop .16s ease}
+  #permPop[hidden]{display:none}
+  #permPop .mi{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;
+    text-align:left;padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);font-size:var(--fs-md);color:var(--text);transition:background var(--t-fast)}
+  #permPop .mi:hover{background:var(--panel2)}
+  #permPop .mi:disabled{opacity:.5}
+  #permPop .mi.on{color:var(--accent)}
+  #permPop .mi .mk{color:var(--accent);font-size:var(--fs-sm);flex-shrink:0}
+  #permPop .pnote{padding:var(--sp-2) var(--sp-4);font-size:var(--fs-sm);color:var(--dim2);line-height:1.5}
+  /* 手机宽度:输入栏放不下文字,胶囊只留一把锁(完全访问时锁是警告色),省出发送按钮的位置 */
+  @media(max-width:480px){
+    #permBtn{padding:var(--sp-2)}
+    #permBtn .pl,#permBtn .caret{display:none}
+  }
+  /* 320 这类超窄屏:多了权限胶囊后一行放不下,三颗胶囊都收掉下拉箭头、收窄内边距 */
+  @media(max-width:360px){
+    #effortBtn,#modelBtn{padding:var(--sp-2)}
+    #effortBtn .caret,#modelBtn .caret{display:none}
+  }
   /* 新会话项目选择器:悬浮在 .inrow 左上角(position:absolute 脱离文档流,不挤占输入框布局) */
   #projSel{position:absolute;left:0;bottom:calc(100% + 8px);z-index:15}
   #projSel[hidden]{display:none}

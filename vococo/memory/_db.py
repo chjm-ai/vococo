@@ -167,6 +167,12 @@ def conn() -> sqlite3.Connection:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN auto_external_mcp_names TEXT")
         if "auto_external_mcp_at" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN auto_external_mcp_at REAL")
+        # 会话级权限覆盖(见 core/permissions.py):perm_mode 空=跟随 Agent,standard/full=覆盖;
+        # perm_until=完全访问到期时间戳,0=本会话一直有效。
+        if "perm_mode" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN perm_mode TEXT")
+        if "perm_until" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN perm_until REAL DEFAULT 0")
         # 迁移:turns 增 events 列 —— 该轮的过程时间线(文字段+工具调用)JSON,
         # 供前端刷新后完整重建"工具卡与文字交错"的画面;老行为 NULL(只有纯文本)。
         tcols = {r[1] for r in _DB.execute("PRAGMA table_info(turns)")}

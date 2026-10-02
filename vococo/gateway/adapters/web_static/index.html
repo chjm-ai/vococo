@@ -379,6 +379,13 @@ try{
               <button type="button" id="imgBtn">＋</button>
               <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
               <span class="spacer"></span>
+              <!-- 权限档位胶囊:标准只显示一把锁;完全访问高亮显示,免得忘了关(见 renderPermChip) -->
+              <div id="permBox">
+                <button type="button" id="permBtn" title="权限:标准">
+                  <span id="permName"></span><span class="caret chev down"></span>
+                </button>
+                <div id="permPop" hidden></div>
+              </div>
               <div id="effortBox">
                 <button type="button" id="effortBtn" title="思考深度">
                   <span id="effortName">auto</span><span class="caret chev down"></span>
@@ -712,6 +719,78 @@ $("#effortBtn").onclick=e=>{ e.stopPropagation(); const p=$("#effortPop");
   if(!effortState().levels.length) return;
   if(p.hidden){ renderEffortPop(); p.hidden=false; } else { p.hidden=true; } };
 document.addEventListener("click", e=>{ const b=$("#effortBox"); if(b && !b.contains(e.target)){ $("#effortPop").hidden=true; } });
+
+// ── 权限档位(标准 / 完全访问,见 core/permissions.py)────────────────────────
+// 会话设置覆盖 Agent 设置;完全访问下审批闸免批放行(删根等灾难级、密钥外带仍拦/仍问)。
+// 草稿会话(local-)还没落库,只显示它将继承的 Agent 档位,不能单独改。
+var PERM_LOCK='<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+var PERM_OPEN='<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.9-.9"/></svg>';
+function permConvId(conv){ return String(conv||"").replace(/^local-/,""); }
+function permLeft(until){
+  const min=Math.max(0, Math.ceil((until-Date.now()/1000)/60));
+  const h=Math.floor(min/60), m=min%60;
+  return h ? h+"h"+(m?m+"m":"") : m+"m";
+}
+async function refreshPerm(conv){
+  // 换了会话先清掉上一个会话的状态,别让旧的「完全访问」残留在新会话的胶囊上
+  if(S.perm && S.perm._conv!==conv){ S.perm=null; renderPermChip(); }
+  try{
+    const r=await api("/conv/perm?conv="+encodeURIComponent(permConvId(conv)));
+    if(!r.ok) return;
+    const d=await r.json();
+    if(S.conv!==conv) return;
+    d._conv=conv; S.perm=d; renderPermChip();
+  }catch(e){}
+}
+function renderPermChip(){
+  const d=S.perm||{mode:"standard"}, btn=$("#permBtn"), full=d.mode==="full";
+  const draft=String(S.conv||"").startsWith("local-");
+  btn.classList.toggle("full", full);
+  $("#permName").innerHTML = full
+    ? PERM_OPEN+'<span class="pl">完全访问'+(d.source==="session"&&d.until?" · "+permLeft(d.until):"")+'</span>'
+    : PERM_LOCK;
+  btn.title = (full ? "权限:完全访问(审批自动放行)" : "权限:标准(危险操作会先问你)")
+    + (d.source==="agent" ? " · 跟随 Agent「"+d.agent_name+"」" : "")
+    + (draft ? " · 发出第一条消息后可单独设置" : "");
+  btn.disabled = d.allowed===false;
+  if(btn.disabled) btn.title="群聊会话固定为标准权限";
+}
+function renderPermPop(){
+  const d=S.perm||{}, pop=$("#permPop"), draft=String(S.conv||"").startsWith("local-");
+  const agentLabel=(d.agent_name ? "跟随 Agent「"+esc(d.agent_name)+"」" : "跟随默认")
+    +"("+(d.agent_mode==="full"?"完全访问":"标准")+")";
+  const cur = !d.session_mode ? "" : d.session_mode==="standard" ? "standard" : (d.until ? "full2" : "full");
+  const items=[["",agentLabel],["standard","标准 · 本会话"],["full","完全访问 · 本会话"],
+    ["full2","完全访问 · 2 小时"+(cur==="full2"?"(剩 "+permLeft(d.until)+")":"")]];
+  pop.innerHTML = (draft ? '<div class="pnote">发出第一条消息后才能单独设置本会话;长期设置去 Agent 设置里改</div>' : '')
+    + items.map(function(it){
+      const on=it[0]===cur;
+      return '<button type="button" class="mi'+(on?" on":"")+'" data-p="'+it[0]+'"'+(draft?" disabled":"")+'>'+
+        '<span class="ml">'+it[1]+'</span>'+(on?'<span class="mk">✓</span>':'')+'</button>';
+    }).join("")
+    + '<div class="pnote">完全访问:审批类操作自动放行(仍记审批记录);删根等灾难操作照样拦,疑似密钥外带照样问你</div>';
+  pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickPerm(b.dataset.p); });
+}
+function pickPerm(id){
+  $("#permPop").hidden=true;
+  const conv=S.conv, mode=id==="full2"?"full":id, hours=id==="full2"?2:0;
+  const cur=S.perm && S.perm._conv===conv ? S.perm : null;   // 只认本会话已拉到的状态
+  if(mode==="full" && !(cur && cur.mode==="full")
+     && !confirm("给本会话开完全访问?\n\nAI 执行 rm -rf、git push、装包、写项目外文件等操作将不再询问你。\n删根/格式化等灾难操作仍会被拦,疑似密钥外带仍会问你。")) return;
+  api("/conv/perm", {method:"POST", headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({conv:conv, mode:mode, hours:hours})})
+    .then(function(r){ return r.json().then(function(j){ if(!r.ok) throw new Error(j.error||"设置失败"); return j; }); })
+    .then(function(d){ if(S.conv===conv){ d._conv=conv; S.perm=d; renderPermChip(); } })
+    .catch(function(e){ alert(e.message||"设置失败"); });
+}
+$("#permBtn").onclick=e=>{ e.stopPropagation(); const p=$("#permPop");
+  if(p.hidden){ renderPermPop(); p.hidden=false; } else { p.hidden=true; } };
+document.addEventListener("click", e=>{ const b=$("#permBox"); if(b && !b.contains(e.target)){ $("#permPop").hidden=true; } });
+// 限时完全访问:每分钟刷一次剩余时间,到点后重新拉状态(后端已按过期处理)
+setInterval(function(){
+  const d=S.perm; if(!d || d.source!=="session" || !d.until) return;
+  if(d.until<=Date.now()/1000) refreshPerm(S.conv); else renderPermChip();
+}, 60000);
 
 // ── 斜杠命令菜单(系统命令 + skill,两段中间一条分隔线)────────────────────
 async function loadCommands(){
@@ -1618,6 +1697,7 @@ async function openConv(conv, silentGroup){
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   syncModelLock();   // 定时任务会话 → 模型只读锁定编辑页的值 + 隐藏思考深度
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
+  refreshPerm(conv);                             // 权限胶囊:本会话 / 所属 Agent 的权限档位
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
   window.refreshTaskStatus && window.refreshTaskStatus();  // 刷新任务状态条(loadTasks 在通话视图 IIFE 内,经 window 出口调)
   const isLocal = String(conv).startsWith("local-");

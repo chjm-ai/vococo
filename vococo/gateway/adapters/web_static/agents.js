@@ -599,6 +599,7 @@ async function renderApSetup(body, a){
   ]);
   if(apStale(a,"setup")) return;
   body.innerHTML="";
+  renderApPermission(body, a);
   if(a.id==="general"){
     body.append(apSection("能力"), apEmpty("技能、MCP、模型都用设置页的全局配置。"));
   }else if(cat){
@@ -626,6 +627,31 @@ async function renderApSetup(body, a){
     };
     body.append(rm);
   }
+}
+// 权限档位:开 = 名下所有会话和后台/定时任务默认完全访问(core/permissions.py);
+// 单个会话还能在输入框的 🔒 胶囊里覆盖。只重画自己这一块
+function renderApPermission(body, a){
+  const box=el("div"); body.append(box);
+  const draw=()=>{
+    box.innerHTML="";
+    const full=a.permission==="full";
+    const head=el("div","apsec apsech");
+    const t=el("span"); t.textContent="完全访问";
+    const sw=el("label","apcustom"); sw.innerHTML='<span class="sw"><input type="checkbox"'+(full?" checked":"")+'><span class="track"></span></span>';
+    sw.querySelector("input").onchange=async ev=>{
+      const on=ev.target.checked;
+      if(on && !confirm("给「"+a.name+"」开完全访问?\n\n它名下所有会话、后台任务和定时任务里,rm -rf、git push、装包、写项目外文件等操作都不再询问你(半夜的定时任务也会直接执行)。\n删根/格式化等灾难操作仍会被拦,疑似密钥外带仍会问你。")){ ev.target.checked=false; return; }
+      let r;
+      try{ r=await agentPost("/agents/update",{id:a.id, permission:on?"full":"standard"}); }catch(e){ alert(e.message); draw(); return; }
+      a.permission=r.agent.permission; draw(); loadAgents();
+      if(typeof refreshPerm==="function") refreshPerm(S.conv);
+    };
+    head.append(t, sw); box.append(head);
+    box.append(apEmpty(full
+      ? "已开:审批类操作自动放行,照样记进「设置 → 安全」的审批记录。单个会话可在输入框的权限胶囊里改回标准。"
+      : "关:危险操作(rm -rf、git push、装包、写项目外文件…)先问你。打开后名下会话和定时任务都免批。"));
+  };
+  draw();
 }
 // 禁用工具(memory/agents.py 的 disallowed_tools,后端硬生效)。改了立即保存,和技能/MCP 一样。
 // 很少用,收进默认折叠的「高级」。只重画自己这一块

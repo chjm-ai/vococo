@@ -681,3 +681,91 @@ def test_describe_covers_every_escalatable_tool(tmp_path):
             )
             desc = _describe(name, probe_input)
             assert desc != name, f"{name} 的审批文案退化成裸 tool_name:{desc!r}"
+
+
+# ── 删根误判回归(2026-10-02):只看 rm / find 自己的参数,不再扫整条命令 ─────────
+@pytest.mark.parametrize("cmd", [
+    "rm -rf /tmp/a && sed -i '' 's/lh \\* 0.95/x/' src/a.js",
+    'rm -rf ~/"Library/Mobile Documents/03 Netease" ~/nas-staging && echo ok',
+    "cd /Users/x && rm -rf nas-staging",
+    "rm -rf /tmp/x\npython3 - <<'PY'\nprint('it's * here')\nPY",
+    "set -e\nrm -rf /tmp/e2e\nrsync -a ~/Documents/ /tmp/x/",
+    "find /tmp -name x -delete",
+])
+def test_rm_catastrophic_no_false_positive(cmd):
+    assert is_dangerous(cmd) is None, f"不该拦: {cmd}"
+
+
+@pytest.mark.parametrize("cmd", [
+    "rm -f -r /",
+    "rm --recursive --force $HOME",
+    "bash -c 'rm -rf /*'",
+    "echo hi && rm -rf ~/",
+    "find / -name x -delete",
+    # 评审给的绕过:各种命令前缀 / 复合语句 / 续行 / 命令替换
+    "nohup rm -rf /",
+    "time rm -rf ~",
+    "nice -n 5 rm -rf /",
+    "timeout 5 rm -rf /",
+    "doas rm -rf /",
+    "caffeinate rm -rf /",
+    "eval rm -rf /",
+    'eval "rm -rf /"',
+    "{ rm -rf / ; }",
+    "if true; then rm -rf / ; fi",
+    "for i in 1; do rm -rf ~ ; done",
+    "! rm -rf /",
+    "rm -rf \\\n/",
+    "echo $(rm -rf /)",
+    "echo `rm -rf /`",
+    "nohup sh -c 'rm -rf /'",
+    "echo / | xargs rm -rf",
+    "find -L / -delete",
+    "find -H ~ -delete",
+    "nohup find / -delete",
+    "find / -exec rm -rf {} +",
+    "find -- / -delete",
+])
+def test_rm_catastrophic_still_blocked(cmd):
+    assert is_dangerous(cmd) is not None, f"应拦截: {cmd}"
+
+
+def test_rm_home_absolute_path_blocked():
+    import os
+
+    assert is_dangerous(f"rm -rf {os.path.expanduser('~')}/") is not None
+
+
+def test_worktree_guard_allows_agent_home(tmp_path, monkeypatch):
+    # Agent 家目录(data/agents/)是运行时数据,worktree 会话改它不归越界防线管
+    from vococo import config
+    from vococo.tools import danger
+
+    repo = tmp_path / "repo"
+    wt = repo / "data" / "worktrees" / "h" / "sess"
+    wt.mkdir(parents=True)
+    monkeypatch.setattr(config, "DATA_DIR", repo / "data")
+    target = repo / "data" / "agents" / "abcdef" / "AGENT.md"
+    tok = danger.set_cwd(str(wt), project_root=str(repo))
+    try:
+        assert danger._writes_outside_worktree("Write", {"file_path": str(target)}, str(wt)) is None
+        assert danger._writes_outside_worktree("Write", {"file_path": str(repo / "core.py")}, str(wt))
+    finally:
+        danger.reset_cwd(tok)
+
+
+# ── heredoc 落单引号不再让判定整条抛异常(2026-10-02)──────────────────────────
+def test_unbalanced_quote_heredoc_not_fail_closed():
+    from vococo.tools import danger
+
+    cmd = "python3 - <<'PY'\nprint('it's fine')\nPY\nls"
+    assert danger._hard_guard("Bash", {"command": cmd}, "/tmp") is None
+    assert danger.classify("Bash", {"command": cmd}, cwd="/tmp")[0] == "allow"
+
+
+def test_unbalanced_quote_still_catches_kill():
+    from vococo.tools import danger
+
+    cmd = "python3 - <<'PY'\nprint('it's')\nPY\npkill -f vococo"
+    assert danger._targets_vococo_process(cmd)
+    assert danger._is_process_control("echo 'x\nkill 123")

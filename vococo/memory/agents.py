@@ -235,6 +235,8 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
         if isinstance(meta.get("disallowed_tools"), list) else None,
         "memory_sections": _normalize_names(meta["memory_sections"])
         if isinstance(meta.get("memory_sections"), list) else None,
+        # 权限档位:full = 完全访问(审批闸自动放行,见 core/permissions.py);其余值都当标准
+        "permission": "full" if meta.get("permission") == "full" else "standard",
         "created_at": meta.get("created_at") or 0,
         "home": str(home(agent_id)),
     }
@@ -335,10 +337,12 @@ _UNSET = object()
 
 def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None,
            links: list | None = None, skills=_UNSET, mcp=_UNSET,
-           disallowed_tools=_UNSET, memory_sections=_UNSET) -> dict | None:
-    """改名称 / 头像 / 关联 / 技能与 MCP 名单 / 默认模型 / 禁用工具。目录名用 id,不随名称变。
+           disallowed_tools=_UNSET, memory_sections=_UNSET,
+           permission: str | None = None) -> dict | None:
+    """改名称 / 头像 / 关联 / 技能与 MCP 名单 / 默认模型 / 禁用工具 / 权限档位。目录名用 id,不随名称变。
 
-    skills / mcp / disallowed_tools / memory_sections 传 None = 改回跟随全局;不传 = 不动。"""
+    skills / mcp / disallowed_tools / memory_sections 传 None = 改回跟随全局;不传 = 不动。
+    permission:"full" / "standard";None = 不动。总助理也能设(管主会话)。"""
     if agent_id != GENERAL_ID and get(agent_id) is None:
         return None
     meta = _read_meta(agent_id)
@@ -355,6 +359,13 @@ def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None
         meta["avatar"] = _normalize_avatar(avatar, agent_id)
     if links is not None:
         meta["links"] = _normalize_links(links)
+    if permission is not None:
+        if permission not in ("full", "standard"):
+            raise ValueError("权限只能是 full / standard")
+        if permission == "full":
+            meta["permission"] = "full"
+        else:
+            meta.pop("permission", None)
     for key, val, norm in (("skills", skills, _normalize_names), ("mcp", mcp, _normalize_names),
                            ("disallowed_tools", disallowed_tools, _normalize_names),
                            ("memory_sections", memory_sections, _normalize_names)):

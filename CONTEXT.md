@@ -33,6 +33,7 @@ _Avoid_: 把这三项当成 Risk Tier 的第四档
 - **误判剥离**:判定前先去掉确定不会执行的文本(`git commit -m` 消息、喂给 cat/tee 的 heredoc 正文);含命令替换、管道给 shell、同命令里再调 bash/source 的不剥。
 - **永久规则**(Approval Rule):「永远允许」只收窄不放大——写入按文件所在目录(家目录之下、非凭据目录)、`git push` 按仓库(命令里切目录/夹带其他危险操作不给)、外部 MCP 写按工具名;装包/进程终止/密钥外带/`curl|sh`/`rm -rf` 永不给。存 `state.db` 的 `approval_rules`。
 - **审批记录**(Audit Log):每次 escalate 的结果 + block + 常开防线拦截都记进 `audit_log`,保留 90 天,「设置→安全」可查。
+- **权限档位**(Permission Mode):「标准 / 完全访问」两档,会话设置(输入框 🔒 胶囊,可限时 2 小时)覆盖 Agent 设置(Agent「设置」页开关),默认标准。完全访问下 escalate **免批放行**(前台/后台/cron 一视同仁,内置工具的 `require_approval` 也算),审批记录记成 `full_access`;**不放开**的:`block` 灾难级、常开防线、疑似密钥外带(照样问)、群聊会话(不能开)。`/new` 清空会话时会话设置一并复位。实现见 `core/permissions.py`。
 实现见 `tools/danger.py`(判定/弹窗)+ `memory/approvals.py`(存储)。
 _Avoid_: 权限系统(它只管 escalate 这一档,不是全量权限模型)
 

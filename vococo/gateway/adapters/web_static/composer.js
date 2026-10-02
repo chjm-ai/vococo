@@ -199,7 +199,7 @@ async function send(text, display, opts){
       if(entry.wbTaskId && typeof linkWorkbenchTaskSession==="function"){ linkWorkbenchTaskSession(entry.wbTaskId, sendConv); delete entry.wbTaskId; }
     }
     if(S.conv===oldConv){
-      S.conv=sendConv; renderProjSelChip(); refreshGit(S.conv);
+      S.conv=sendConv; renderProjSelChip(); refreshGit(S.conv); refreshPerm(S.conv);
       // 消息区里已经贴出去的裸节点(乐观用户气泡、流式气泡)盖的还是 local- 那个戳,
       // 一并改成转正后的真实 id,否则 renderTurns 会把它们当"别的会话的残留"清掉。
       if(typeof retagConvNodes==="function") retagConvNodes(oldConv, sendConv);

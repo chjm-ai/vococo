@@ -1771,6 +1771,34 @@ class WebAdapter:
         return web.json_response({"ok": True})
 
     @_authed
+    async def _handle_conv_perm(self, request: web.Request) -> web.Response:
+        """GET /conv/perm?conv= — 会话当前权限档位(输入框上的 🔓 胶囊用,见 core/permissions.py)。"""
+        from ...core import permissions
+
+        conv = request.query.get("conv") or "main"
+        return web.json_response(permissions.state(config.resolve_session_key("web", conv)))
+
+    @_authed
+    @_json_body
+    async def _handle_conv_perm_set(self, request: web.Request, body: dict) -> web.Response:
+        """POST /conv/perm {conv, mode: ""|"standard"|"full", hours} — 设会话权限覆盖。
+
+        mode 空串 = 跟随 Agent;hours>0 只对完全访问有效(到点自动回到跟随 Agent)。"""
+        from ...core import permissions
+
+        conv = str(body.get("conv") or "")
+        if not conv or conv.startswith("local-"):
+            return web.json_response({"error": "会话还没开始,先发一条消息"}, status=400)
+        try:
+            hours = float(body.get("hours") or 0)
+            st = permissions.set_session(
+                config.resolve_session_key("web", conv), str(body.get("mode") or ""), hours
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(st)
+
+    @_authed
     async def _handle_models(self, request: web.Request) -> web.Response:
         # 模型清单 = 官方档 + 设置页里配好的 DeepSeek/Kimi 等(available_models);
         # label 带描述(如订阅/API 标签),前端 renderModelPop 直接展示。
@@ -2985,7 +3013,8 @@ class WebAdapter:
             lists = {k: body[k] for k in agents.RUNTIME_KEYS if k in body}
             a = agents.update(
                 str(body.get("id") or ""),
-                name=body.get("name"), avatar=body.get("avatar"), links=body.get("links"), **lists,
+                name=body.get("name"), avatar=body.get("avatar"), links=body.get("links"),
+                permission=body.get("permission"), **lists,
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
@@ -3287,6 +3316,8 @@ class WebAdapter:
                 web.post("/workbench/tasks/dispatch", self._handle_workbench_task_dispatch),
                 web.post("/workbench/tasks/link", self._handle_workbench_task_link),
                 web.post("/conv/pin", self._handle_conv_pin),
+                web.get("/conv/perm", self._handle_conv_perm),
+                web.post("/conv/perm", self._handle_conv_perm_set),
                 web.get("/models", self._handle_models),
                 web.post("/effort", self._handle_effort_switch),
                 web.get("/api/usage", self._handle_api_usage),
