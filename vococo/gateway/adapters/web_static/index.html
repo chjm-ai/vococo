@@ -732,11 +732,14 @@ function permLeft(until){
   return h ? h+"h"+(m?m+"m":"") : m+"m";
 }
 async function refreshPerm(conv){
+  // 换了会话先清掉上一个会话的状态,别让旧的「完全访问」残留在新会话的胶囊上
+  if(S.perm && S.perm._conv!==conv){ S.perm=null; renderPermChip(); }
   try{
     const r=await api("/conv/perm?conv="+encodeURIComponent(permConvId(conv)));
+    if(!r.ok) return;
     const d=await r.json();
     if(S.conv!==conv) return;
-    S.perm=d; renderPermChip();
+    d._conv=conv; S.perm=d; renderPermChip();
   }catch(e){}
 }
 function renderPermChip(){
@@ -771,12 +774,13 @@ function renderPermPop(){
 function pickPerm(id){
   $("#permPop").hidden=true;
   const conv=S.conv, mode=id==="full2"?"full":id, hours=id==="full2"?2:0;
-  if(mode==="full" && (S.perm||{}).mode!=="full"
+  const cur=S.perm && S.perm._conv===conv ? S.perm : null;   // 只认本会话已拉到的状态
+  if(mode==="full" && !(cur && cur.mode==="full")
      && !confirm("给本会话开完全访问?\n\nAI 执行 rm -rf、git push、装包、写项目外文件等操作将不再询问你。\n删根/格式化等灾难操作仍会被拦,疑似密钥外带仍会问你。")) return;
   api("/conv/perm", {method:"POST", headers:{"Content-Type":"application/json"},
     body:JSON.stringify({conv:conv, mode:mode, hours:hours})})
     .then(function(r){ return r.json().then(function(j){ if(!r.ok) throw new Error(j.error||"设置失败"); return j; }); })
-    .then(function(d){ if(S.conv===conv){ S.perm=d; renderPermChip(); } })
+    .then(function(d){ if(S.conv===conv){ d._conv=conv; S.perm=d; renderPermChip(); } })
     .catch(function(e){ alert(e.message||"设置失败"); });
 }
 $("#permBtn").onclick=e=>{ e.stopPropagation(); const p=$("#permPop");

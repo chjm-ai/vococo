@@ -8,8 +8,8 @@
 
 完全访问【不】放开的:
 - 灾难级 block(删根/格式化/fork 炸弹)与常开正确性防线(_hard_guard),它们不走审批闸;
-- KEEP_ASKING 里的类别(疑似密钥外带):一旦被网页/邮件内容注入,后果是凭据泄露,
-  这一类照旧弹窗;
+- KEEP_ASKING 里的类别:疑似密钥外带(被网页/邮件注入后果是凭据泄露)、改 agent.json /
+  会话权限字段(防 AI 自己给自己提权),照旧弹窗;
 - 群聊会话:批准权不能落在群成员手里,永远标准档。
 """
 from __future__ import annotations
@@ -20,8 +20,12 @@ FULL = "full"
 STANDARD = "standard"
 MODES = (FULL, STANDARD)
 
-# 完全访问下仍要请你批准的 escalate 类别(按 danger._category 归一后的原因匹配)
-KEEP_ASKING = frozenset({"疑似把密钥/令牌通过网络外带"})
+# 完全访问下仍要请你批准的 escalate 类别(按 danger._category 归一后的原因匹配):
+# 密钥外带(注入后果是凭据泄露)、改权限配置(防 AI 自己提权/改禁用名单)
+KEEP_ASKING = frozenset({
+    "疑似把密钥/令牌通过网络外带",
+    "改 Agent 配置或会话权限(agent.json / perm_mode)",
+})
 
 
 def _is_group(session_key: str) -> bool:

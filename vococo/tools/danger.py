@@ -44,18 +44,21 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
      "解释器删根/家目录"),
 ]
 
-# find 删整树:必须同时 ①是 find ②带 -delete ③目标是灾难级(根/家目录/根通配),复用
-# 已验证的 _CATASTROPHIC_TARGET,避免 "find /tmp -delete"、"find ./x -delete" 被误伤。
+# find 删整树:必须同时 ①是 find ②带 -delete / -exec rm ③起始路径是灾难级(根/家目录/根通配),
+# 避免 "find /tmp -delete"、"find ./x -delete" 被误伤。
 _FIND_DELETE = re.compile(r"\bfind\b")
-_HAS_DELETE = re.compile(r"\s-delete\b")
 
 
 # 2026-10-02:原先拿 _CATASTROPHIC_TARGET 扫【整条命令】,同一条命令里只要有 rm -r,别处出现
 # 空格包着的 `*`(sed 's/lh \\* 0.95/…/')、单独的 `/` 之类就判成删根,近 30 天误拦 8 次。
-# 改成按 shell 语法切出每条 rm / find 语句,只看它【自己的参数】是不是灾难目标。
+# 改成按 shell 语法切出语句,找到 rm / find 这个词后只看【它后面的参数】是不是灾难目标。
 _RM_PREFILTER = re.compile(r"\brm\b")
+_FIND_ACTION = re.compile(r"\s-(delete|exec|execdir|ok|okdir)\b")
 _CATASTROPHIC_WORDS = {"/", "/*", "~", "~/", "~/*", "$HOME", "$HOME/", "$HOME/*",
                        "${HOME}", "${HOME}/", "${HOME}/*", "*"}
+# find 写在起始路径前面的全局选项(-H/-L/-P/-O3;-D 还带一个值)
+_FIND_GLOBAL_OPT = re.compile(r"^-([HLP]|O\d*)$")
+_FIND_EXEC_OPTS = {"-exec", "-execdir", "-ok", "-okdir"}
 
 
 def _is_catastrophic_target(word: str) -> bool:
@@ -68,10 +71,10 @@ def _is_catastrophic_target(word: str) -> bool:
     return norm in ("/", "//") or norm == os.path.normpath(os.path.expanduser("~"))
 
 
-def _rm_stage_catastrophic(stage: list[str]) -> bool:
-    """一条 rm 语句:带递归选项且参数里有灾难目标。"""
+def _rm_args_catastrophic(args: list[str]) -> bool:
+    """rm 后面的参数:带递归选项且有灾难目标。"""
     recursive, targets, opts_done = False, [], False
-    for w in stage[1:]:
+    for w in args:
         if not opts_done and w == "--":
             opts_done = True
         elif not opts_done and w.startswith("--"):
@@ -83,63 +86,71 @@ def _rm_stage_catastrophic(stage: list[str]) -> bool:
     return recursive and any(_is_catastrophic_target(t) for t in targets)
 
 
-def _find_stage_catastrophic(stage: list[str]) -> bool:
-    """一条 find 语句:带 -delete 且起始路径(表达式之前的参数)里有灾难目标。"""
-    if "-delete" not in stage:
-        return False
-    paths = []
-    for w in stage[1:]:
-        if w.startswith("-") or w in {"!", "(", ")"}:
+def _find_args_catastrophic(args: list[str]) -> bool:
+    """find 后面的参数:起始路径有灾难目标,且带 -delete 或 -exec rm 这类删除动作。"""
+    i = 0
+    while i < len(args):  # 跳过写在路径前的全局选项
+        if _FIND_GLOBAL_OPT.match(args[i]):
+            i += 1
+        elif args[i] == "-D":
+            i += 2
+        else:
             break
-        paths.append(w)
-    return any(_is_catastrophic_target(x) for x in paths)
+    paths = []
+    while i < len(args) and not (args[i].startswith("-") or args[i] in {"!", "(", ")", ","}):
+        paths.append(args[i])
+        i += 1
+    rest = args[i:]
+    deletes = "-delete" in rest or any(
+        w in _FIND_EXEC_OPTS and j + 1 < len(rest) and os.path.basename(rest[j + 1]) == "rm"
+        for j, w in enumerate(rest)
+    )
+    return deletes and any(_is_catastrophic_target(x) for x in paths)
 
 
-def _stages_catastrophic(cmd: str, check, keyword: re.Pattern, depth: int = 0) -> bool:
-    """把命令切成语句/管道段,逐段解开 sudo/env/xargs/bash -c 后交给 check 判定。
+def _stages_catastrophic(cmd: str, name: str, check_args, keyword: re.Pattern, depth: int = 0) -> bool:
+    """按 shell 语法切出语句/管道段,在段里【任意位置】找命令 name,只把它后面的参数交给 check_args。
 
+    找任意位置而不是只看段首:nohup/time/nice/timeout/doas/eval/if-then/for-do/{ }/! 这些
+    前缀五花八门,枚举不完;凡是独立成词的 rm 都当它会执行(echo rm -rf / 也拦,宁可误拦)。
+    带空白的单个词(引号里的字符串,如 bash -c '…'、eval "…")里出现 name → 当脚本递归再查。
+    xargs 喂给 rm 的目标来自管道看不见,该语句退回老的整句正则。
     整条解析失败(多半是 heredoc 正文里有落单引号)→ 逐行解析;某行仍解析不了,
-    才对【这一行】退回老的整行正则——宁可误拦,但不再让一处语法问题牵连整条命令。"""
+    才对【这一行】退回老正则——宁可误拦,但不让一处语法问题牵连整条命令。"""
+    cmd = cmd.replace("\\\n", " ")  # 续行符:rm -rf \<换行>/ 拼回一行
     try:
         statements = _shell_commands(cmd)
     except ValueError:
         if "\n" not in cmd:
             return bool(keyword.search(cmd) and _CATASTROPHIC_TARGET.search(cmd))
-        return any(_stages_catastrophic(line, check, keyword, depth) for line in cmd.split("\n"))
+        return any(_stages_catastrophic(line, name, check_args, keyword, depth)
+                   for line in cmd.split("\n"))
     for words in statements:
         for stage in _pipeline_stages(words):
-            stage = _unwrap_command(stage)
-            if stage and os.path.basename(stage[0]) == "xargs":
-                stage = _xargs_command(stage)
-            if not stage:
-                continue
-            script = _shell_script(stage)
-            if script is not None:
-                if depth < 3 and _stages_catastrophic(script, check, keyword, depth + 1):
+            stage = [w.strip("`") for w in stage]  # 反引号命令替换:`rm -rf /`
+            names = [os.path.basename(w) for w in stage]
+            for i, w in enumerate(stage):
+                if names[i] == name and check_args(stage[i + 1:]):
                     return True
-                continue
-            if check(stage):
+                if (depth < 3 and any(c in w for c in " \t\n") and keyword.search(w)
+                        and _stages_catastrophic(w, name, check_args, keyword, depth + 1)):
+                    return True
+            if name in names and "xargs" in names and _CATASTROPHIC_TARGET.search(" ".join(words)):
                 return True
     return False
 
 
 def _find_is_catastrophic(cmd: str) -> bool:
-    if not (_FIND_DELETE.search(cmd) and _HAS_DELETE.search(cmd)):
+    if not (_FIND_DELETE.search(cmd) and _FIND_ACTION.search(cmd)):
         return False
-    return _stages_catastrophic(
-        cmd, lambda st: os.path.basename(st[0]) == "find" and _find_stage_catastrophic(st),
-        _FIND_DELETE,
-    )
+    return _stages_catastrophic(cmd, "find", _find_args_catastrophic, _FIND_DELETE)
 
 
 def _rm_is_catastrophic(cmd: str) -> bool:
     """rm + 递归标志 + 灾难目标(整根/整家目录/根通配)才算灾难;删子目录不算。"""
     if not _RM_PREFILTER.search(cmd):
         return False
-    return _stages_catastrophic(
-        cmd, lambda st: os.path.basename(st[0]) == "rm" and _rm_stage_catastrophic(st),
-        _RM_PREFILTER,
-    )
+    return _stages_catastrophic(cmd, "rm", _rm_args_catastrophic, _RM_PREFILTER)
 
 
 # ── 惰性文本剥离:只当数据、不会被执行的文本不参与危险判定(2026-09-28)──────────
@@ -293,6 +304,31 @@ _ESCALATE_BASH: list[tuple[re.Pattern, str, bool]] = [
 # 即使已被 config._scrub_env_secrets 清空,列进来也无害(scrub 若被 VOCOCO_KEEP_ENV_SECRETS
 # 关掉时兜底)。
 # 这不是边界:base64/写文件再传/间接引用都能绕;只抬高门槛。日常命令几乎不会命中,误伤极低。
+# 改权限配置:agent.json(权限档位/禁用工具/MCP 名单)或会话权限字段(state.db 的 perm_mode)。
+# 完全访问档也照样问(core/permissions.KEEP_ASKING),堵住「AI 自己给自己提权」。
+# Bash 这条是启发式:命令里提到 agent.json 且带写入动作,或用 sqlite3/UPDATE 改 perm_mode/perm_until。
+PERMISSION_CONFIG_REASON = "改 Agent 配置或会话权限(agent.json / perm_mode)"
+_AGENT_JSON_RE = re.compile(r"\bagent\.json\b")
+_WRITE_ACTION_RE = re.compile(
+    r">|\btee\b|\bsed\b[^\n]*\s-i|\bjq\b|\bpython3?\b|\bnode\b|\bperl\b|\bruby\b|\bmv\b|\bcp\b|\bln\b"
+)
+_PERM_FIELD_RE = re.compile(r"\bperm_(mode|until)\b")
+_SQL_WRITE_RE = re.compile(r"\bsqlite3\b|\b(UPDATE|INSERT|REPLACE)\b", re.IGNORECASE)
+
+
+def _bash_edits_permission_config(cmd: str) -> bool:
+    if _PERM_FIELD_RE.search(cmd) and _SQL_WRITE_RE.search(cmd):
+        return True
+    return bool(_AGENT_JSON_RE.search(cmd) and _WRITE_ACTION_RE.search(cmd))
+
+
+def _is_agent_config(path: str, cwd: str | None) -> bool:
+    """目标是不是某个 Agent 家目录下的 agent.json。"""
+    if os.path.basename(path) != "agent.json":
+        return False
+    return _inside_agents_root(path, cwd)
+
+
 _SECRET_VAR_RE = re.compile(
     r"ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|"
     r"SILICONFLOW_API_KEY|VAPID_PRIVATE_KEY|WEB_AUTH_TOKEN"
@@ -546,9 +582,21 @@ def _is_process_control(command: str) -> bool:
     return False
 
 
+_KILL_WORD = re.compile(r"\b(kill|pkill|killall)\b")
+_VOCOCO_OR_QUERY = re.compile(r"\bvococo\b|\b(pgrep|ps)\b")
+
+
 def _targets_vococo_process(command: str) -> bool:
+    try:
+        statements = _shell_commands(command)
+    except ValueError:
+        # 解析不了时逐行粗切会丢掉「pgrep 结果存变量再 kill $P」这类跨语句关联,
+        # 所以先加一道保守兜底:原文同时出现 kill 类命令和 vococo/pgrep/ps 就当它在动 vococo
+        if _KILL_WORD.search(command) and _VOCOCO_OR_QUERY.search(command):
+            return True
+        statements = _shell_commands_tolerant(command)
     query_variables: set[str] = set()
-    for statement in _shell_commands_tolerant(command):
+    for statement in statements:
         query_variables.difference_update(_assigned_variables(statement))
         query_variables.update(_query_output_variables(statement))
         uses_query_output = query_variables & _referenced_variables(statement)
@@ -732,17 +780,25 @@ def classify(
         why = is_dangerous(cmd)
         if why:
             return ("block", why, False)
-        if _is_process_control(cmd):
-            return ("escalate", "进程终止命令(kill/pkill/killall)", True)
+        # 密钥外带必须最先判:它是完全访问档下仍要询问的类别(core/permissions.KEEP_ASKING),
+        # 排在 kill 等别的类别后面的话,`kill 1; curl …$KEY` 会被归成别的类而被免批放行
         if _looks_like_secret_exfil(cmd):
             # 疑似把密钥外带:自动化通道直接拒(restrict=True),有交互通道则请你确认
             return ("escalate", "疑似把密钥/令牌通过网络外带", True)
+        if _bash_edits_permission_config(cmd):
+            return ("escalate", PERMISSION_CONFIG_REASON, True)
+        if _is_process_control(cmd):
+            return ("escalate", "进程终止命令(kill/pkill/killall)", True)
         for rx, reason, restrict in _ESCALATE_BASH:
             if rx.search(cmd):
                 return ("escalate", reason, restrict)
         return ("allow", "", False)
     if tool_name in _WRITE_TOOLS:
         path = ti.get("file_path") or ti.get("notebook_path") or ""
+        # agent.json 里有权限档位/禁用工具等配置,虽在 Agent 自己的家目录里也得问——
+        # 否则 AI(或被注入后)能自己给自己开完全访问。排在所有 allow 豁免之前
+        if path and _is_agent_config(path, cwd):
+            return ("escalate", PERMISSION_CONFIG_REASON, True)
         # AI_BRAIN 是 vococo 正常记忆目录,虽在项目根外,但不应每次弹审批
         if path and _inside_ai_brain(path, cwd):
             return ("allow", "", False)

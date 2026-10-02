@@ -702,6 +702,28 @@ def test_rm_catastrophic_no_false_positive(cmd):
     "bash -c 'rm -rf /*'",
     "echo hi && rm -rf ~/",
     "find / -name x -delete",
+    # 评审给的绕过:各种命令前缀 / 复合语句 / 续行 / 命令替换
+    "nohup rm -rf /",
+    "time rm -rf ~",
+    "nice -n 5 rm -rf /",
+    "timeout 5 rm -rf /",
+    "doas rm -rf /",
+    "caffeinate rm -rf /",
+    "eval rm -rf /",
+    'eval "rm -rf /"',
+    "{ rm -rf / ; }",
+    "if true; then rm -rf / ; fi",
+    "for i in 1; do rm -rf ~ ; done",
+    "! rm -rf /",
+    "rm -rf \\\n/",
+    "echo $(rm -rf /)",
+    "echo `rm -rf /`",
+    "nohup sh -c 'rm -rf /'",
+    "echo / | xargs rm -rf",
+    "find -L / -delete",
+    "find -H ~ -delete",
+    "nohup find / -delete",
+    "find / -exec rm -rf {} +",
 ])
 def test_rm_catastrophic_still_blocked(cmd):
     assert is_dangerous(cmd) is not None, f"应拦截: {cmd}"
