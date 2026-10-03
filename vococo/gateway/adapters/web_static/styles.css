@@ -798,6 +798,8 @@
   .row.sys{justify-content:center}
   .row.sys .sysnote{font-size:var(--fs-sm);color:var(--dim2);background:var(--card);
     border:1px solid var(--line);border-radius:var(--r-pill);padding:var(--sp-2) var(--sp-5);max-width:90%;text-align:center}
+  .row.sys .sysnote.link{cursor:pointer;transition:border-color var(--t-fast),color var(--t-fast)}
+  .row.sys .sysnote.link:hover,.row.sys .sysnote.link:active{border-color:var(--accent);color:var(--text)}
   .bubble{max-width:86%;padding:var(--sp-4) var(--sp-5);border-radius:var(--radius);white-space:normal;word-wrap:break-word;
     overflow-wrap:anywhere;box-shadow:var(--bubble-shadow)}
   .row.me .bubble{background:linear-gradient(135deg,var(--user1),var(--user2));color:var(--on-user);border-bottom-right-radius:6px;white-space:pre-wrap}

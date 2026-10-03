@@ -1352,8 +1352,13 @@ document.addEventListener("click", e=>{ const b=$("#convFilterBox"); if(b&&!b.co
 // ── 打开 / 切换会话 ──────────────────────────────────────────────────────
 // 把一组 turns 铺进消息区(切会话 / 缓存回填共用)
 const SYS_MARK="⚙️[系统]";   // 与后端 selfops.SYS_MARKER 一致:系统注入的轮渲染成居中系统条
-function buildSysNote(text){
+// jobId:定时任务写进 Agent 主会话的「⏰ 任务名」轮(/history 带 cron_job),点胶囊跳到该任务会话看详情
+function buildSysNote(text, jobId){
   const row=el("div","row sys"); const b=el("div","sysnote"); b.textContent=text;
+  if(jobId){
+    b.classList.add("link"); b.title="查看这个定时任务的详细过程";
+    b.onclick=()=>{ const j=(S.cronJobs||[]).find(x=>x.job_id===jobId); openConv(j?j.conv:"task:"+jobId); };
+  }
   row.append(b); return row;
 }
 // 每轮渲染成一块 <div class="turn-block" data-tid data-sig>,供 renderTurns 按轮 diff 复用 DOM。
@@ -1365,7 +1370,7 @@ function buildTurnBlock(t, conv, isLast){
   // 这里识别出来给消息打上标记样式,foot 换成醒目的「继续生成」按钮(见 buildTurnFoot)
   const interrupted=(t.events||[]).some(x=>x.type==="interrupted");
   if(interrupted) wrap.classList.add("interrupted");
-  if(t.user && t.user.startsWith(SYS_MARK)) wrap.append(buildSysNote(t.user.slice(SYS_MARK.length).trim()));
+  if(t.user && t.user.startsWith(SYS_MARK)) wrap.append(buildSysNote(t.user.slice(SYS_MARK.length).trim(), t.cron_job));
   else {
     const fileNames=(t.files||[]).map(f=>typeof f==="string"?f:(f.name||f.filename||"")).filter(Boolean);
     const fileLabel=fileNames.length ? `\n\n📎 附件：${fileNames.join("、")}` : "";
@@ -1417,7 +1422,7 @@ function turnSig(t, isLast){
           t.pending?1:0, ev.length, last?last.type+":"+JSON.stringify(last).length:"",
           (t.images||[]).length, (t.audios||[]).length, (t.ai_images||[]).length,
           (t.files||[]).length, (t.files||[]).map(f=>f.name||f.filename||f).join(","),
-          (t.videos||[]).length, (t.ai_videos||[]).length,
+          (t.videos||[]).length, (t.ai_videos||[]).length, t.cron_job||"",
           isLast?"L":""].join("|");
 }
 let _wrapConv=null;
