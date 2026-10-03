@@ -8,6 +8,8 @@ STATIC_STYLES = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/
 STATIC_WORKBENCH = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/workbench.js"
 STATIC_SW = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/sw.js"
 STATIC_AGENTS = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/agents.js"
+STATIC_SIDEBAR = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/sidebar.js"
+STATIC_APP_CORE = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/app-core.js"
 WORKTREE = Path(__file__).parents[1] / "vococo/core/worktree.py"
 GATEWAY_RUN = Path(__file__).parents[1] / "vococo/gateway/run.py"
 
@@ -165,19 +167,32 @@ def test_agent_row_working_is_avatar_bounce_and_unread_is_static_badge():
     未读不能再用动效——动的东西扫一眼分不清哪行有未读。"""
     styles = STATIC_STYLES.read_text(encoding="utf-8")
 
-    live = _declarations(styles, '.projgrp.agrow[data-state="working"] .agav')
-    assert "animation:agwork" in live and "infinite" in live
+    live = _declarations(styles, ':is(.projgrp.agrow,.conv)[data-state="working"] .agav')
+    assert "animation:agsquash" in live and "infinite" in live
     assert '[data-state="done"]' not in styles and "@keyframes agdone" not in styles
 
     badge = _declarations(styles, ".projgrp.agrow .agbadge")
     assert "position:absolute" in badge and "background:var(--err)" in badge
     assert "animation" not in badge
     # 角标挂在不参与动效的外层上,否则会跟着头像一起跳
-    assert "position:relative" in _declarations(styles, ".projgrp.agrow .agavwrap")
+    assert "position:relative" in _declarations(styles, ":is(.projgrp.agrow,.conv) .agavwrap")
 
     # 圆点样式只服务 .conv 行——Agent 行本身不渲染圆点
     assert ".projgrp.agrow .livedot" not in styles
     assert ".projgrp.agrow .reviewdot" not in styles
+
+
+def test_cron_tab_hidden_and_recent_rows_carry_agent_avatar():
+    """2026-10-03:侧栏不再出「定时」Tab(存过的选择回落 Agent);「最近」每行挂所属 Agent 头像,
+    在跑时头像动效代替橙色闪点。"""
+    sidebar = STATIC_SIDEBAR.read_text(encoding="utf-8")
+    tabs = re.search(r"const SIDE_TABS = \[(.*?)\];", sidebar).group(1)
+    assert '"cron"' not in tabs
+    assert 'cron:"agents"' in STATIC_APP_CORE.read_text(encoding="utf-8")
+
+    recent = sidebar[sidebar.index("function renderRecentTab"):sidebar.index("function buildCronGroupHeader")]
+    assert "buildVoiceTaskRow(t, inCall, true)" in recent and "buildConvRow(c, inCall, true)" in recent
+    assert "function convAgentAvatar" in STATIC_AGENTS.read_text(encoding="utf-8")
 
 
 def test_agent_row_state_covers_main_children_and_tasks():
