@@ -285,20 +285,20 @@ function bindRowSwipeActions(row, body, conv, archived){
   row.append(act);
   bindSwipe(row, body, act);
 }
-function buildVoiceTaskRow(t, inCall){
+function buildVoiceTaskRow(t, inCall, withAvatar){
   const arch=!!t.archived;
   if(S.convFilter==="archived"&&!arch) return null;
   if(S.convFilter==="active"&&arch) return null;
   const row=el("div","conv ingroup"+(!inCall && t.conv===S.conv?" active":""));
   row.dataset.conv=t.conv;
   const body=el("div","cvbody");
-  // 任务还在跑(queued/running)→ 复用普通会话行的闪烁圆点;终态未读 → 灰点,跟
+  const busy=!!S.live[t.conv] || t.task_status==="queued" || t.task_status==="running";
+  if(withAvatar) body.append(convAgentAvatar(row, t.conv, busy));
+  // 任务还在跑(queued/running)→ 复用普通会话行的闪烁圆点(带头像时由头像动效代替);终态未读 → 灰点,跟
   // 普通会话/定时任务行同一套 pending_review 语义(2026-07-29:推翻 ab77594 当时
   // "终态不挂点"的简化决定,统一三类侧栏行的完成态标记)。
-  if(S.live[t.conv]){
-    const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot);
-  } else if(t.task_status==="queued"||t.task_status==="running"){
-    const dot=el("span","livedot"); dot.title=t.task_status==="running"?"任务进行中":"排队中"; body.append(dot);
+  if(busy){
+    if(!withAvatar){ const dot=el("span","livedot"); dot.title=S.live[t.conv]?"AI 正在回复中":t.task_status==="running"?"任务进行中":"排队中"; body.append(dot); }
   } else if(t.pending_review || S.pendingReview[t.conv]){
     const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot);
   }
@@ -325,12 +325,13 @@ function buildVoiceTaskRow(t, inCall){
 }
 // 单条会话行(主会话与普通会话/置顶会话通用)。主会话混在「最近」列表里时长相跟别的会话一样,
 // 标题显示总助理的名字(同其他 Agent 主会话显示 Agent 名),只是不能归档/删除,所以不给菜单/滑动手势。
-function buildConvRow(c, inCall){
+function buildConvRow(c, inCall, withAvatar){
   const isMain=c.conv==="main";
   const e=el("div","conv ingroup"+(!inCall && c.conv===S.conv?" active":""));
   e.dataset.conv=c.conv;
   const body=el("div","cvbody");
-  if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
+  if(withAvatar) body.append(convAgentAvatar(e, c.conv, !!S.live[c.conv]));
+  if(S.live[c.conv]){ if(!withAvatar){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); } }   // 带头像时由头像动效代替
   else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }   // 完成未读:灰色圆点
   const ct=el("div","ct"); ct.textContent=(isMain && agentById("general")?.name) || c.title || "新对话"; body.append(ct);
   const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }   // 会话时刻:名称右侧
@@ -352,7 +353,9 @@ const CONV_SHOW_MAX = 7;   // 每个项目分组默认最多展示的会话数,�
                           //  终态任务只在语音界面顶部状态条满 10 分钟自动隐藏(见 taskBarDoneHidden),
                           //  侧边栏/最近列表全量可见;老任务时间久了自然沉底,不霸占首屏)
 const TAB_PAGE_SIZE = 20;   // 「置顶」「最近」Tab 分页粒度:默认 20 条,点「更多」每次再加 20 条
-const SIDE_TABS = [{key:"agents",label:"Agent"},{key:"cron",label:"定时"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
+// 2026-10-03「定时」Tab 隐藏(主人:基本没用了):定时任务已在各 Agent 面板「定时」页管理。
+// 只是不出 Tab,renderCronTab 等代码留着,恢复只需把 {key:"cron",label:"定时"} 加回来。
+const SIDE_TABS = [{key:"agents",label:"Agent"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
 // SSE 已经在有数据变更时主动 push 刷新(见 stream.js loadConvs/loadCronSidebar 调用点),
 // 这里的点击刷新只是断线/后台挂起期间(移动端切后台网络被系统冻结)的兜底,不需要很灵敏,
 // 30s 内重复点击/来回切 Tab 不重新拉取,避免抖动请求。
@@ -404,11 +407,12 @@ function renderPinnedTab(box, inCall){
 }
 // 「最近」Tab:汇总所有项目(含语音任务)的会话,按最后活跃时间混排,不看归属项目、数量不封顶,
 // 默认 20 条,点「更多」每次 +20(置顶与最近是正交维度,置顶项目若时间够新也会出现在这里)
+// 每行最前面挂所属 Agent 的头像(withAvatar),在跑时头像蹦跳 + 「···」气泡,替代橙色闪点(2026-10-03)
 // 主会话(总助理)也算一条参与排序——2026-08 统一对话入口时曾因另有独立入口把它剔掉,入口下架后它就只剩 Agent Tab 能找到
 function renderRecentTab(box, inCall){
   const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
-  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
-  const convItems = S.convs.filter(c=>passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
+  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall, true)}));
+  const convItems = S.convs.filter(c=>passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall, true)}));
   const rows = [...taskItems, ...convItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
   if(!rows.length){ box.append(sideTabEmpty("暂无最近会话")); return; }
   const shownN=Math.min(S.tabShown.recent, rows.length);
@@ -488,8 +492,7 @@ function renderConvs(){
   // 列表区:Tab 栏固定(#sideTabs),只有分组内容(#convBody)滚动;首次渲染会清掉骨架行
   const tabs=$("#sideTabs"); tabs.innerHTML=""; renderSideTabs(tabs);
   const box=$("#convBody"); box.innerHTML="";
-  if(S.sideTab==="cron") renderCronTab(box, awayFromChat);
-  else if(S.sideTab==="pinned") renderPinnedTab(box, awayFromChat);
+  if(S.sideTab==="pinned") renderPinnedTab(box, awayFromChat);
   else if(S.sideTab==="recent") renderRecentTab(box, awayFromChat);
   else renderAgentsTab(box, awayFromChat);   // 「项目」Tab 2026-09-30 下架,项目都成了 Agent
   // 同步标题栏:loadConvs/loadVoiceSidebar/loadCronSidebar 刷新各自列表后都会调 renderConvs,

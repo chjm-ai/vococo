@@ -1598,11 +1598,12 @@
              和气泡同在右上角,两个同时出现时让角标(数字信息量更大),工作中仍有蹦跳兜底。
      动效只改 transform、角标/气泡绝对定位,都不占位置,带状态的行和其他行照样对齐。
      关掉动效由全局 prefers-reduced-motion 兜底(气泡还在,静态也能认出工作中)。 */
-  .projgrp.agrow .agavwrap{position:relative;display:block;flex-shrink:0}
-  .projgrp.agrow .agjump{position:relative;display:block}
-  .projgrp.agrow .agav{transform-origin:50% 100%}
-  .projgrp.agrow[data-state="working"] .agjump{animation:agjump .9s cubic-bezier(.3,.7,.4,1) infinite}
-  .projgrp.agrow[data-state="working"] .agav{animation:agsquash .9s cubic-bezier(.3,.7,.4,1) infinite}
+  /* 「最近」Tab 的会话行(.conv)也挂同一套头像 + 工作中动效(2026-10-03),选择器两处共用 */
+  :is(.projgrp.agrow,.conv) .agavwrap{position:relative;display:block;flex-shrink:0}
+  :is(.projgrp.agrow,.conv) .agjump{position:relative;display:block}
+  :is(.projgrp.agrow,.conv) .agav{transform-origin:50% 100%}
+  :is(.projgrp.agrow,.conv)[data-state="working"] .agjump{animation:agjump .9s cubic-bezier(.3,.7,.4,1) infinite}
+  :is(.projgrp.agrow,.conv)[data-state="working"] .agav{animation:agsquash .9s cubic-bezier(.3,.7,.4,1) infinite}
   .projgrp.agrow[data-state="working"] .pgname{color:var(--text)}
   @keyframes agjump{0%,15%,70%,100%{transform:translateY(0)}45%{transform:translateY(-4px)}}
   @keyframes agsquash{
@@ -1611,11 +1612,11 @@
     45%{transform:scale(.92,1.1)}
     70%{transform:scale(1.1,.9)}
   }
-  .projgrp.agrow .agbub{position:absolute;top:-3px;right:-7px;display:flex;gap:2px;padding:2px 3px;
+  :is(.projgrp.agrow,.conv) .agbub{position:absolute;top:-3px;right:-7px;display:flex;gap:2px;padding:2px 3px;
     border-radius:var(--r-pill);background:var(--accent);box-shadow:0 0 0 1.5px var(--bg2);pointer-events:none}   /* 描一圈侧栏底色,和头像分开 */
-  .projgrp.agrow .agbub i{width:2px;height:2px;background:var(--on-accent);animation:agdot 1s infinite}
-  .projgrp.agrow .agbub i:nth-child(2){animation-delay:.15s}
-  .projgrp.agrow .agbub i:nth-child(3){animation-delay:.3s}
+  :is(.projgrp.agrow,.conv) .agbub i{width:2px;height:2px;background:var(--on-accent);animation:agdot 1s infinite}
+  :is(.projgrp.agrow,.conv) .agbub i:nth-child(2){animation-delay:.15s}
+  :is(.projgrp.agrow,.conv) .agbub i:nth-child(3){animation-delay:.3s}
   @keyframes agdot{0%,60%,100%{opacity:.45}30%{opacity:1}}
   .projgrp.agrow .agavwrap:has(.agbadge) .agbub{display:none}
   .projgrp.agrow .agbadge{position:absolute;top:-7px;right:-9px;min-width:14px;height:14px;padding:0 var(--sp-1);border-radius:var(--r-pill);

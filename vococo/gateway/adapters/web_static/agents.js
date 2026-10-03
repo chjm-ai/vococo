@@ -168,6 +168,16 @@ function renderAgentGroup(box, a, inCall){
     box.append(more);
   }
 }
+// 「最近」Tab 每行前面的 Agent 头像(sidebar.js renderRecentTab):结构同 Agent 行,工作中蹦跳 + 「···」气泡;
+// 找不到归属(无项目的普通会话、无主任务、Agent 已删)一律算总助理,和 Agent Tab 的归属口径一致
+function convAgentAvatar(row, conv, busy){
+  const a=agentForConv(conv) || agentById("general");
+  const av=el("span","agavwrap");
+  av.innerHTML='<span class="agjump">'+avatarSvg(a&&a.avatar)+(busy?'<span class="agbub"><i></i><i></i><i></i></span>':'')+'</span>';
+  if(a) av.title=a.name+(busy?" · 工作中":"");
+  if(busy) row.dataset.state="working";
+  return av;
+}
 // 展开后的第一行:主会话,和子会话列在同一层,结构上一眼看出「Agent = 主会话 + 若干子会话」。
 // 点 Agent 行本身照样进主会话,这一行只是把它摆出来;主会话不能归档/删除,所以不给 ⋯ 菜单和滑动手势。
 function buildAgentMainRow(a, inCall){
