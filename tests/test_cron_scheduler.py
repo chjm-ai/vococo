@@ -294,6 +294,32 @@ async def test_run_script_job_no_signal_skips_llm(cron_env, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_run_script_job_bare_zero_signal_is_silent(cron_env, monkeypatch):
+    """只输出 ##CRON_SIGNAL:0##、别无内容:完全静默——不落会话、不推送,只回填运行状态。"""
+    async def fake_subprocess_shell(cmd, **kw):
+        return _FakeProc(b"##CRON_SIGNAL:0##\n")
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+    events = []
+    monkeypatch.setattr(scheduler.task_events, "_bridge_event", events.append)
+    job = _make_script_job()
+    pushes = []
+
+    async def fake_push(platform, chat_id, text):
+        pushes.append(text)
+
+    await scheduler._run_script_job(job, fake_push)
+
+    assert pushes == []
+    assert session_store.load_recent(job["conv"]) == []
+    assert events[-1] == {"conv": job["conv"], "type": "done", "silent": True}
+    assert job["id"] not in scheduler._script_running
+    updated = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
+    assert updated["last_status"] == "success"
+    assert updated["last_run_at"] is not None
+
+
+@pytest.mark.anyio
 async def test_run_script_job_with_signal_calls_summarizer(cron_env, monkeypatch):
     """有信号(##CRON_SIGNAL:1##):追加一次轻量总结,总结结果替换成展示文本。"""
     raw = "共处理 3 篇笔记:更新 1 / 待确认 0 / 无人物跳过 2 / 错误 0\n  · a: 胜源\n##CRON_SIGNAL:1##\n"
