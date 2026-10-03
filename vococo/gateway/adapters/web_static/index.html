@@ -263,7 +263,7 @@ try{
     <div class="shead">
       <div class="brand">vococo</div>
       <span id="syncState" class="syncstate syncing" title="正在连接服务">同步中</span>
-      <button id="searchBtn" class="sfoicon" title="搜索会话 (⌘F)"></button>
+      <button id="searchBtn" class="sfoicon" title="搜索全部会话 (⌘⇧F)"></button>
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
     <div id="convTop">
@@ -319,11 +319,23 @@ try{
           <div id="ctxPop" hidden></div>
           <button class="hmore" id="convCronEditBtn" type="button" title="编辑任务" hidden></button>
           <button class="hmore" id="convAgentBtn" type="button" title="Agent" hidden></button>
+          <button class="hmore" id="convFindBtn" type="button" title="在本会话中查找 (⌘F)"></button>
           <button class="hmore" id="convDocsBtn" type="button" title="本会话文档"></button>
           <div id="convDocsPop" hidden></div>
           <button class="hmore" id="convCronMore" type="button" title="更多" hidden>⋯</button>
           <button class="hmore" id="convMoreBtn" type="button" title="更多" hidden>⋯</button>
         </div>
+      </div>
+      <!-- 会话内查找条(find.js):空格分隔多个词,各自一色高亮,点词条只在该词命中间跳 -->
+      <div class="findbar" id="findBar" hidden>
+        <div class="fbrow">
+          <input id="findInput" placeholder="在本会话中查找,空格分隔多个词" enterkeyhint="search" autocomplete="off">
+          <span id="findCount"></span>
+          <button class="hmore" id="findPrev" type="button" title="上一个 (⇧Enter)"></button>
+          <button class="hmore" id="findNext" type="button" title="下一个 (Enter)"></button>
+          <button class="hmore" id="findClose" type="button" title="关闭 (Esc)"></button>
+        </div>
+        <div class="fbchips" id="findChips" hidden></div>
       </div>
     </header>
     <div id="messages">
@@ -534,6 +546,7 @@ try{
 <script src="/stream.js"></script>
 <script src="/notices.js"></script>
 <script src="/agents.js"></script>
+<script src="/find.js"></script>
 <script>
 "use strict";
 // ── 空状态欢迎屏(新对话默认落地页,含最近对话列表)──────────────────────────
@@ -1852,7 +1865,8 @@ function smHl(text, q){
 }
 // 搜索命中的已归档会话可能被当前「工作中」筛选从 S.convs 排除。保留一份轻量缓存，
 // 让打开后的标题和菜单也能取到同一条会话；下次侧栏拉到该会话时由正式数据优先。
-function openSearchResult(r){
+// 正文命中的结果:打开后顺手拉起会话内查找,预填同一个词并定位到最近一处命中(find.js)
+async function openSearchResult(r, q){
   if(!r || !r.conv) return;
   if(!findConv(r.conv)){
     S.searchConvs.push({
@@ -1860,7 +1874,8 @@ function openSearchResult(r){
       last_ts:r.last_ts||null, turns:r.last_ts ? 1 : 0,
     });
   }
-  openConv(r.conv);
+  await openConv(r.conv);
+  if(q && r.match==="content" && S.conv===r.conv) openFind(q, {jump:"last", autoLoad:true});
 }
 function renderSearchResults(q){
   const box = $("#smList"); box.innerHTML = "";
@@ -1873,7 +1888,7 @@ function renderSearchResults(q){
     const tm = fmtTime(r.last_ts); if(tm){ const te=el("span","smtime"); te.textContent=tm; t.append(te); }
     row.append(t);
     if(r.snippet){ const sn=el("div","smsnip"); sn.innerHTML = smHl(r.snippet, q); row.append(sn); }
-    row.onclick = ()=>{ closeSearchModal(); openSearchResult(r); };
+    row.onclick = ()=>{ closeSearchModal(); openSearchResult(r, q); };
     box.append(row);
   });
 }
@@ -1900,7 +1915,7 @@ $("#smInput").onkeydown = e=>{
     if(selEl) selEl.scrollIntoView({block:"nearest"});
   } else if(e.key==="Enter"){
     e.preventDefault();
-    const r = SM.results[SM.sel]; if(r){ closeSearchModal(); openSearchResult(r); }
+    const r = SM.results[SM.sel]; if(r){ closeSearchModal(); openSearchResult(r, $("#smInput").value.trim()); }
   } else if(e.key==="Escape"){ closeSearchModal(); }
 };
 $("#searchModal").onclick = e=>{ if(e.target.id==="searchModal") closeSearchModal(); };
@@ -1908,10 +1923,15 @@ $("#smHead").insertAdjacentHTML("afterbegin", ic("search"));
 $("#searchBtn").innerHTML = ic("search");
 $("#searchBtn").onclick = ()=>{ closeSidebar(); openSearchModal(); };
 document.addEventListener("keydown", e=>{
-  // ⌘F/Ctrl+F 接管浏览器页内查找:登录页不响应
-  if((e.metaKey||e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key==="f"||e.key==="F")){
+  // ⌘F/Ctrl+F 接管浏览器页内查找:会话页里 = 会话内查找(find.js),其他界面 = 全局搜索;
+  // ⌘⇧F 始终是全局搜索。登录页不响应
+  if((e.metaKey||e.ctrlKey) && !e.altKey && (e.key==="f"||e.key==="F")){
     if($("#app").hidden) return;
-    e.preventDefault(); openSearchModal();
+    e.preventDefault();
+    // 新对话欢迎屏(local- 会话)没东西可搜,仍走全局搜索
+    const inChat=!e.shiftKey && S.surface==="chat" && !$("#chatMain").hidden && S.conv
+      && !String(S.conv).startsWith("local-") && $("#searchModal").hidden;
+    if(inChat) openFind(); else { closeFind(); openSearchModal(); }
   } else if(e.key==="Escape" && !$("#searchModal").hidden){ closeSearchModal(); }
 });
 

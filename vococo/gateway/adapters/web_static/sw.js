@@ -14,7 +14,7 @@ const SHELL_NETWORK_TIMEOUT_MS = 1200;  // 超过此预算网络还没回应就�
 const SHELL_PATHS = new Set([
   "/", "/styles.css", "/mascot.css", "/mascot.js", "/tool-card.js", "/manifest.json", "/favicon.ico",
   "/app-core.js", "/markdown.js", "/sidebar.js", "/settings.js", "/stats.js", "/workbench.js",
-  "/stream.js", "/composer.js", "/voice.js", "/agents.js",
+  "/stream.js", "/composer.js", "/voice.js", "/agents.js", "/find.js",
   "/vococo-mark.svg", "/icon-192.png", "/icon-512.png",
   "/icon-maskable-512.png", "/apple-touch-icon.png",
 ]);

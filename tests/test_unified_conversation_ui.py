@@ -139,9 +139,9 @@ def test_search_opened_archived_conversation_keeps_title_and_menu_state():
     html = _shell()
 
     assert "searchConvs: []" in html
-    assert "function openSearchResult(r){" in html
+    assert "async function openSearchResult(r, q){" in html
     assert "S.searchConvs.push({" in html
-    assert "openSearchResult(r);" in html
+    assert "openSearchResult(r, q);" in html
     assert "|| (S.searchConvs||[]).find(x=>x.conv===conv);" in html
     assert "? S.searchConvs" in html
     assert "const activeConv=findConv(S.conv);" in html
@@ -241,3 +241,16 @@ def test_agent_expanded_lists_main_conversation_first():
     # 默认露 5 行 = 主会话 + 4 个子会话,其余折进「展开更多」
     assert "const AGENT_CONV_SHOW_MAX = 4;" in js
     assert "rows.slice(0, AGENT_CONV_SHOW_MAX)" in row
+
+
+def test_conversation_find_bar_is_wired():
+    """会话内查找:标题栏按钮 + 查找条 + find.js 注册进版本化资源/路由/SW 外壳缓存。"""
+    html = _shell()
+    assert 'id="convFindBtn"' in html and 'id="findBar"' in html
+    assert '<script src="/find.js"></script>' in html
+    # 全局搜索正文命中点进来时预填同一个词定位
+    assert 'openFind(q, {jump:"last", autoLoad:true})' in html
+    web_py = (Path(__file__).parents[1] / "vococo/gateway/adapters/web.py").read_text(encoding="utf-8")
+    assert '"find.js"' in web_py and "|find|" in web_py
+    sw = STATIC_SW.read_text(encoding="utf-8")
+    assert '"/find.js"' in sw

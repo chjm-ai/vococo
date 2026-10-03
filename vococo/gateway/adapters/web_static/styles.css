@@ -698,6 +698,39 @@
   #barMeta{display:flex;align-items:center;gap:7px;font-size:var(--fs-sm);color:var(--dim);
     font-weight:500;font-variant-numeric:tabular-nums;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);transition:background var(--t-fast)}
   #barMeta:hover{background:var(--panel2)}
+  /* 会话内查找条(find.js):顶栏下方第二行,随顶栏一起参与 --header-h 计算,不挡第一条消息 */
+  .findbar{max-width:820px;margin:var(--sp-3) auto 0;display:flex;flex-direction:column;gap:var(--sp-2)}
+  .findbar[hidden]{display:none}
+  .findbar .fbrow{display:flex;align-items:center;gap:var(--sp-1);background:var(--panel);
+    border:1px solid var(--line2);border-radius:var(--r-lg);padding:var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-4)}
+  .findbar .fbrow:focus-within{border-color:var(--accent)}
+  #findInput{flex:1;min-width:0;background:none;border:none;outline:none;color:var(--text);font-size:var(--fs-base);
+    padding:var(--sp-1) 0}
+  #findCount{font-size:var(--fs-sm);color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;padding:0 var(--sp-2)}
+  #findCount.none{color:var(--err-fg)}
+  .findbar .hmore:disabled{opacity:.35;cursor:default;background:none}
+  .fbchips{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
+  .fbchips[hidden]{display:none}
+  .fchip{display:inline-flex;align-items:center;gap:var(--sp-1);font-size:var(--fs-sm);color:var(--dim);
+    background:var(--panel2);border:1px solid transparent;border-radius:var(--r-pill);padding:2px var(--sp-3);
+    cursor:pointer;transition:background var(--t-fast),color var(--t-fast),border-color var(--t-fast)}
+  .fchip:hover{color:var(--text)}
+  .fchip.on{color:var(--text);border-color:var(--accent)}
+  .fchip.zero{opacity:.5}
+  .fchip i{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .fchip span{font-variant-numeric:tabular-nums;color:var(--dim2)}
+  .fc-0 i{background:var(--tag-gold)} .fc-1 i{background:var(--tag-leaf)} .fc-2 i{background:var(--tag-ink)}
+  .fc-3 i{background:var(--tag-sun)} .fc-4 i{background:var(--tag-olive)}
+  .fmore{font-size:var(--fs-sm);color:var(--accent);padding:2px var(--sp-2);cursor:pointer}
+  .fmore:disabled{color:var(--dim2);cursor:default}
+  /* 命中高亮(CSS Custom Highlight API,不改 DOM):每个词一色;当前那处用正文色反白——
+     不用强调色,否则落在赤陶色的用户气泡里会完全看不出来 */
+  ::highlight(fh-0){background-color:color-mix(in srgb,var(--tag-gold) 45%,transparent)}
+  ::highlight(fh-1){background-color:color-mix(in srgb,var(--tag-leaf) 45%,transparent)}
+  ::highlight(fh-2){background-color:color-mix(in srgb,var(--tag-ink) 45%,transparent)}
+  ::highlight(fh-3){background-color:color-mix(in srgb,var(--tag-sun) 45%,transparent)}
+  ::highlight(fh-4){background-color:color-mix(in srgb,var(--tag-olive) 45%,transparent)}
+  ::highlight(fh-cur){background-color:var(--text);color:var(--bg)}
   #barMeta[hidden]{display:none}
   #barMeta .ctxring{width:20px;height:20px;flex-shrink:0}
   #barMeta .ctxring .track{fill:none;stroke:var(--panel2);stroke-width:2.5}
