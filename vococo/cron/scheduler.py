@@ -223,6 +223,7 @@ def update_job(
         job.pop("command", None)
         job.pop("summarize_prompt", None)
     job["next_run_at"] = None
+    reset_failures(job)
     save_jobs(jobs)
     return job
 
@@ -375,26 +376,81 @@ async def _push_job_result(
         return None
     job["last_run_at"] = int(time.time())
     job["last_status"] = status
+    quiet, notice = _track_failure(job, status, text)
     save_jobs(jobs)
     if silent:  # 静默收尾:只回填运行时间/状态,见 _run_script_job
         return job
     conv = job.get("conv") or f"task:{job_id}"
-    msg = f"⏰ {job.get('name','任务')}\n\n{text}"
+    msg = f"⏰ {job.get('name','任务')}\n\n{text}{notice}"
+    if quiet:  # 同一错误重复出现:不推送、不进 Agent 主会话,只记运行数据供复盘统计
+        _record_agent_run(job, status, text, metrics, to_main=False)
+        return job
     # 默认目标就是这条专属会话本身(platform=web):走 send() 会同时触发系统推送
     # (场景③"主动/cron",已覆盖 Mac/iPhone 等一切订阅了 Web Push 的设备)。
     await push("web", conv, msg)
     tgt = job.get("target") or {}  # 额外目标(如 web),可选,不填就只有上面这条
     if tgt.get("platform") and tgt.get("chat_id") is not None:
         await push(tgt["platform"], tgt["chat_id"], msg)
-    # 挂在某个 Agent 名下:再复制一份到它的主会话(只落库 + 刷新,不再发一次系统推送)
-    if job.get("agent_id"):
-        from ..memory import agents
-
-        try:
-            agents.record_run(job["agent_id"], job, status, text, metrics=metrics)
-        except Exception as exc:  # noqa: BLE001 —— 复制失败不影响任务本身
-            print(f"[cron] 结果复制到 Agent 主会话失败:{exc}", flush=True)
+    _record_agent_run(job, status, text + notice, metrics)
     return job
+
+
+# 同错抑制(2026-10-03):Upwork/猎聘这类登录态或改版坏掉的任务,会一天几次推送一模一样的
+# 报错,看多了反而淹没真问题。同一错误第 2 次起不推送;连续 FAIL_DISABLE_STREAK 次、且从第一次
+# 算起已超过 FAIL_DISABLE_SPAN_SEC 才自动停用(高频任务碰上几小时的临时故障不至于被误停)。
+FAIL_DISABLE_STREAK = 5
+FAIL_DISABLE_SPAN_SEC = 24 * 3600
+_FAIL_KEYS = ("fail_streak", "fail_digest", "fail_since")
+_DIGEST_NOISE_RE = re.compile(r"\d+")
+
+
+def _failure_digest(text: str) -> str:
+    """报错指纹:去掉数字(时间/计数/耗时每次都不同)后比较,前 300 字足够区分错误类型。"""
+    return _DIGEST_NOISE_RE.sub("#", text or "").strip()[:300]
+
+
+def reset_failures(job: dict) -> None:
+    """清掉连续失败计数:编辑 / 手动启停任务后从零算,修完试跑能正常收到推送。"""
+    for key in _FAIL_KEYS:
+        job.pop(key, None)
+
+
+def _track_failure(job: dict, status: str, text: str) -> tuple[bool, str]:
+    """更新 job 的连续失败计数,返回 (本次是否静默, 追加到推送末尾的说明)。"""
+    if status != "error":
+        reset_failures(job)
+        return False, ""
+    digest = _failure_digest(text)
+    if job.get("fail_digest") == digest:
+        streak = job.get("fail_streak", 0) + 1
+    else:
+        streak = 1
+        job["fail_since"] = int(time.time())
+    job["fail_streak"], job["fail_digest"] = streak, digest
+    span = time.time() - job.get("fail_since", time.time())
+    if streak >= FAIL_DISABLE_STREAK and span >= FAIL_DISABLE_SPAN_SEC:
+        job["enabled"] = False
+        job["next_run_at"] = None
+        reset_failures(job)  # 手动重新启用后从零算起
+        return False, f"\n\n⏸ 同一错误已连续 {streak} 次,已自动停用这个任务。修好后在「定时」里重新启用。"
+    if streak == 2:  # 第 2 次推最后一次,说清后面不再推送
+        return False, (f"\n\n🔕 同一错误连续第 2 次,之后不再推送;连续 {FAIL_DISABLE_STREAK} 次"
+                       "且持续超过一天会自动停用。")
+    return streak > 2, ""
+
+
+def _record_agent_run(
+    job: dict, status: str, text: str, metrics: dict | None, *, to_main: bool = True,
+) -> None:
+    """挂在某个 Agent 名下:记进动态;to_main 时再复制一份到它的主会话(只落库 + 刷新,不发系统推送)。"""
+    if not job.get("agent_id"):
+        return
+    from ..memory import agents
+
+    try:
+        agents.record_run(job["agent_id"], job, status, text, metrics=metrics, to_main=to_main)
+    except Exception as exc:  # noqa: BLE001 —— 复制失败不影响任务本身
+        print(f"[cron] 结果复制到 Agent 主会话失败:{exc}", flush=True)
 
 
 async def _on_task_terminal(task: dict, push: PushFn) -> None:

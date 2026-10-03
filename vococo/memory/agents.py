@@ -87,7 +87,8 @@ REVIEW_PROMPT = """【目标复盘】给「{name}」做一次复盘,文件都在
 2. 对照「成功标准」判断进展,用 runs 里的具体数字和本条消息开头的【运行统计】说话,没数据就明说缺什么数据;
    成功率低、token 花得多却没产出的任务,点名指出
 3. 改写 GOAL.md 的「当前进展」一节;在「复盘记录」末尾追加一行:日期 · 进展 · 偏差 · 下步
-4. 更新 PLAN.md:勾掉做完的,补上下一步任务
+4. 更新 PLAN.md:勾掉做完的,补上下一步任务;已完成的里程碑/任务和过期备注整段挪到 PLAN-archive.md
+   末尾(带日期标题),PLAN.md 只留进行中和未开始的——它每轮都进提示词,超 {max_chars} 字会被截断
 5. 「目标」「成功标准」「不做」三节不许改;觉得该改,在汇报里提建议,等我同意
 6. 最近两次复盘都没进展,直说,建议暂停或换方向
 最后用 3-5 行汇报:进展、偏差、下步、要我拍板的事。"""
@@ -459,7 +460,8 @@ def ensure_goal_review(agent_id: str) -> dict | None:
     if job:
         return job
     job = scheduler.create_job(
-        name="目标复盘", prompt=REVIEW_PROMPT.format(name=a["name"], home=a["home"]),
+        name="目标复盘",
+        prompt=REVIEW_PROMPT.format(name=a["name"], home=a["home"], max_chars=PROMPT_MAX_CHARS),
         schedule={"kind": "cron", "expr": REVIEW_CRON}, cwd=a["workdir"], agent_id=agent_id,
     )
     jobs = scheduler.load_jobs()
@@ -584,7 +586,7 @@ def prompt_extra(agent: dict | None) -> str:
         parts.append("## 目标(GOAL.md)\n" + goal.removeprefix("# 目标").strip())
         parts.append("## 计划(PLAN.md)\n" + (plan.removeprefix("# 计划").strip() if plan else "还没拆。"))
         parts.append("## 目标纪律\n- 做事前对照目标和「不做」;明显和目标无关的事,先提醒我再做\n"
-                     "- 做完计划里的任务,顺手在 PLAN.md 里勾掉\n"
+                     "- 做完计划里的任务,顺手在 PLAN.md 里勾掉;整段做完的挪到 PLAN-archive.md(不进提示词)\n"
                      "- 「目标」「成功标准」「不做」只有我同意才能改")
     if aid != GENERAL_ID:
         from . import deposit

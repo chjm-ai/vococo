@@ -1380,6 +1380,7 @@ class WebAdapter:
         job["enabled"] = enabled
         if not enabled:
             job["next_run_at"] = None
+        scheduler.reset_failures(job)
         scheduler.save_jobs(jobs)
         return web.json_response({"ok": True, "job": job})
 
