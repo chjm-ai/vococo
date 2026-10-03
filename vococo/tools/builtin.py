@@ -537,6 +537,7 @@ async def set_cron_job_enabled(args: dict) -> dict:
     j["enabled"] = enabled
     if not enabled:
         j["next_run_at"] = None
+    scheduler.reset_failures(j)
     scheduler.save_jobs(jobs)
     return _ok(f"{'✅ 已启用' if enabled else '⏸ 已停用'}任务「{j.get('name')}」。")
 

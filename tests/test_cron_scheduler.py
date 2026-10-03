@@ -210,6 +210,72 @@ async def test_on_task_terminal_skips_deleted_job(cron_env):
     await scheduler._on_task_terminal(task, fake_push)  # 不抛异常即通过
 
 
+@pytest.mark.anyio
+async def test_repeated_same_error_goes_quiet_then_auto_disables(cron_env, monkeypatch):
+    """同一错误:第 1、2 次推送(第 2 次带「不再推送」说明),第 3、4 次静默,第 5 次停用并推送。"""
+    monkeypatch.setattr(scheduler, "FAIL_DISABLE_SPAN_SEC", 0)
+    job = scheduler.create_job(name="扫描", prompt="p", schedule={"kind": "cron", "expr": "0 8 * * *"})
+    pushes = []
+
+    async def fake_push(platform, chat_id, text):
+        pushes.append(text)
+
+    for i in range(scheduler.FAIL_DISABLE_STREAK):
+        # 数字每次不同(耗时/计数),仍算同一错误
+        await scheduler._push_job_result(job["id"], "error", f"卡片 0 · 耗时 {i} 秒 · PARSE_FAIL", fake_push)
+
+    assert len(pushes) == 3
+    assert "不再推送" in pushes[1]
+    assert "自动停用" in pushes[2]
+    updated = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
+    assert updated["enabled"] is False
+    assert "fail_streak" not in updated
+
+
+@pytest.mark.anyio
+async def test_short_burst_of_same_error_does_not_disable(cron_env):
+    """连续次数够了但持续不到一天(高频任务碰上临时故障):保持静默,不停用。"""
+    job = scheduler.create_job(name="快扫", prompt="p", schedule={"kind": "cron", "expr": "0 8 * * *"})
+
+    async def fake_push(platform, chat_id, text):
+        pass
+
+    for _ in range(scheduler.FAIL_DISABLE_STREAK + 2):
+        await scheduler._push_job_result(job["id"], "error", "网络超时", fake_push)
+    updated = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
+    assert updated["enabled"] is True
+    assert updated["fail_streak"] == scheduler.FAIL_DISABLE_STREAK + 2
+
+
+def test_update_job_resets_failure_streak(cron_env):
+    job = scheduler.create_job(name="扫描", prompt="p", schedule={"kind": "cron", "expr": "0 8 * * *"})
+    jobs = scheduler.load_jobs()
+    jobs[0].update(fail_streak=3, fail_digest="x", fail_since=1)
+    scheduler.save_jobs(jobs)
+    scheduler.update_job(job["id"], name="扫描", prompt="p2", schedule=job["schedule"])
+    updated = scheduler.load_jobs()[0]
+    assert not any(k in updated for k in ("fail_streak", "fail_digest", "fail_since"))
+
+
+@pytest.mark.anyio
+async def test_different_error_or_success_resets_streak(cron_env):
+    job = scheduler.create_job(name="扫描", prompt="p", schedule={"kind": "cron", "expr": "0 8 * * *"})
+    pushes = []
+
+    async def fake_push(platform, chat_id, text):
+        pushes.append(text)
+
+    await scheduler._push_job_result(job["id"], "error", "BLOCKED", fake_push)
+    await scheduler._push_job_result(job["id"], "error", "PARSE_FAIL", fake_push)  # 换了错误 → 从 1 算
+    await scheduler._push_job_result(job["id"], "success", "ok", fake_push)
+    await scheduler._push_job_result(job["id"], "error", "PARSE_FAIL", fake_push)  # 成功过 → 从 1 算
+
+    assert len(pushes) == 4
+    assert not any("不再推送" in t for t in pushes)
+    updated = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
+    assert updated["fail_streak"] == 1 and updated["enabled"] is True
+
+
 # ── load_jobs:老数据迁移 ────────────────────────────────────────────────────
 
 
