@@ -90,7 +90,7 @@ function agentConvs(a){
   });
 }
 // Agent 行的两种状态提示(样式见 styles.css 的 .projgrp.agrow):
-//   工作中 = 头像弹跳:主会话、名下任一会话或(总助理名下的)语音任务在跑,收起/展开都照实反映
+//   工作中 = 头像蹦跳 + 右上角叠「···」气泡:主会话、名下任一会话或(总助理名下的)语音任务在跑,收起/展开都照实反映
 //   未读   = 头像右上角红色数字:有几个会话留着没看过的完成结果(打开那个会话就减一;归档的不算)
 // 统计范围和展开后的列表一致(置顶的语音任务列表里不出,这里也不算)。已知局限:底部筛选切到「归档」时
 // 后端只回归档会话,未归档子会话不在 S.convs 里,这期间数字只剩主会话和语音任务。
@@ -134,8 +134,9 @@ function renderAgentGroup(box, a, inCall){
   if(working) h.dataset.state="working";
   const tips=[working?"AI 正在工作中":"", unread?unread+" 个会话有未读结果":""].filter(Boolean);
   if(tips.length) h.title=tips.join(" · ");
-  // 头像外包一层:角标定位在它右上角,且不跟着头像的弹跳动效一起动
-  const av=el("span","agavwrap"); av.innerHTML=avatarSvg(a.avatar);
+  // 头像外包两层:外层 .agavwrap 挂未读角标(不跟着跳);内层 .agjump 带着头像和「···」气泡一起跳
+  const av=el("span","agavwrap");
+  av.innerHTML='<span class="agjump">'+avatarSvg(a.avatar)+(working?'<span class="agbub"><i></i><i></i><i></i></span>':'')+'</span>';
   if(unread){ const b=el("span","agbadge"); b.textContent=unread>9?"9+":String(unread); av.append(b); }
   h.append(av);
   const nm=el("span","pgname"); nm.textContent=a.name; h.append(nm);

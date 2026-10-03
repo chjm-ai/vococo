@@ -1590,18 +1590,34 @@
   }
   /* ── Agent(agents.js):侧栏 Agent 行 + 像素头像 + 右侧面板 + 新建弹窗 ─────────── */
   .agav{display:block;flex-shrink:0;width:18px;height:17px}
-  /* Agent 行状态做在头像上(2026-09-30 主人定案):
-     工作中 = 头像持续小幅弹跳(小幽那套"压扁→弹起"动效语言,缩到 18px 的幅度;缩放锚在脚底);
+  /* Agent 行状态做在头像上(2026-09-30 主人定案,2026-10-03 工作中动效加强):
+     工作中 = 头像大幅蹦跳(压扁→弹起)+ 右上角叠一个橙色「···」气泡,气泡压住头像一角、跟着一起跳;
+             原来的 2px 小跳扫一眼看不出来。位移拆两层:.agjump 只管上下,.agav 只管压扁拉长,气泡不变形;
+             跳 4px + 气泡上探 3px,第一行顶到 #convBody 边缘也不会被裁。
      未读   = 头像右上角红底数字,同铃铛 .ntbadge 的样式——静态,扫一眼就知道哪行有没看的结果。
-     动效只改 transform、角标绝对定位,都不占位置,带状态的行和其他行照样对齐。
-     角标挂在外层 .agavwrap 上,不跟着头像一起跳。关掉动效由全局 prefers-reduced-motion 兜底。 */
+             和气泡同在右上角,两个同时出现时让角标(数字信息量更大),工作中仍有蹦跳兜底。
+     动效只改 transform、角标/气泡绝对定位,都不占位置,带状态的行和其他行照样对齐。
+     关掉动效由全局 prefers-reduced-motion 兜底(气泡还在,静态也能认出工作中)。 */
   .projgrp.agrow .agavwrap{position:relative;display:block;flex-shrink:0}
+  .projgrp.agrow .agjump{position:relative;display:block}
   .projgrp.agrow .agav{transform-origin:50% 100%}
-  .projgrp.agrow[data-state="working"] .agav{animation:agwork 1.1s ease-in-out infinite}
-  @keyframes agwork{
-    0%,100%{transform:translateY(0) scale(1,1)}
-    50%{transform:translateY(-2px) scale(.94,1.08)}
+  .projgrp.agrow[data-state="working"] .agjump{animation:agjump .9s cubic-bezier(.3,.7,.4,1) infinite}
+  .projgrp.agrow[data-state="working"] .agav{animation:agsquash .9s cubic-bezier(.3,.7,.4,1) infinite}
+  .projgrp.agrow[data-state="working"] .pgname{color:var(--text)}
+  @keyframes agjump{0%,15%,70%,100%{transform:translateY(0)}45%{transform:translateY(-4px)}}
+  @keyframes agsquash{
+    0%,100%{transform:scale(1.12,.86)}
+    15%,85%{transform:scale(1,1)}
+    45%{transform:scale(.92,1.1)}
+    70%{transform:scale(1.1,.9)}
   }
+  .projgrp.agrow .agbub{position:absolute;top:-3px;right:-7px;display:flex;gap:2px;padding:2px 3px;
+    border-radius:var(--r-pill);background:var(--accent);box-shadow:0 0 0 1.5px var(--bg2);pointer-events:none}   /* 描一圈侧栏底色,和头像分开 */
+  .projgrp.agrow .agbub i{width:2px;height:2px;background:var(--on-accent);animation:agdot 1s infinite}
+  .projgrp.agrow .agbub i:nth-child(2){animation-delay:.15s}
+  .projgrp.agrow .agbub i:nth-child(3){animation-delay:.3s}
+  @keyframes agdot{0%,60%,100%{opacity:.45}30%{opacity:1}}
+  .projgrp.agrow .agavwrap:has(.agbadge) .agbub{display:none}
   .projgrp.agrow .agbadge{position:absolute;top:-7px;right:-9px;min-width:14px;height:14px;padding:0 var(--sp-1);border-radius:var(--r-pill);
     background:var(--err);color:var(--on-accent);font-size:var(--fs-sm);font-weight:700;line-height:14px;text-align:center;
     box-shadow:0 0 0 2px var(--bg2);pointer-events:none}   /* 描一圈侧栏底色,和头像边缘分开 */
