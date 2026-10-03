@@ -375,7 +375,7 @@ def _resolve_job(ref: str, jobs: list[dict]) -> dict | None:
     "(一次性,触发后自动停用);model:可选,指定用哪个模型跑;cwd:可选的任务工作目录(必须是"
     "存在的绝对路径)。应根据任务实际要操作的项目主动指定 cwd;省略时才沿用当前会话项目目录,"
     "没有项目目录则回退默认项目。固定脚本型任务优先传 mode='script' 与 command:脚本末行输出"
-    "##CRON_SIGNAL:0## 时直接展示结果、零 LLM,输出 1 时才按可选 summarize_prompt 轻量总结;"
+    "##CRON_SIGNAL:0## 时直接展示结果、零 LLM(只输出这个标记、别无内容则完全静默不推送),输出 1 时才按可选 summarize_prompt 轻量总结;"
     "需要现场分析/决策的任务不要用脚本模式。\n"
     "事件触发(和 cron / run_in_minutes 三选一):trigger='webhook' → 外部 POST 专属链接时触发"
     "(如 iPhone 快捷指令、GitHub),链接在 Web 定时任务编辑页复制;trigger='watch' + watch_path"

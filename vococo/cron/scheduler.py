@@ -37,6 +37,8 @@ _on_task_terminal,由 voice/notify.py 的 register_cron_terminal_hook 转发过�
 表示没有实质产出——原始输出直接当结果,零 LLM 调用;1(或没带标记,保守当
 "有事"防止吞掉未知格式的输出)才用 providers.sidecar_chat 顺手总结一次
 (同样不是完整 Agent 会话,没有工具/系统提示开销)。
+特例:成功退出、信号 0 且除标记外没有任何输出 → 完全静默(不落会话、不推送),
+给"没事别打扰"的高频巡检用。
 """
 from __future__ import annotations
 
@@ -361,6 +363,7 @@ def run_now(job_id: str) -> dict | None:
 
 async def _push_job_result(
     job_id: str, status: str, text: str, push: PushFn, metrics: dict | None = None,
+    silent: bool = False,
 ) -> dict | None:
     """回填 job 的 last_run_at/last_status 并推送结果——Agent 任务
     (_on_task_terminal)和脚本任务(_run_script_job)收尾共用,格式/目标完全
@@ -373,6 +376,8 @@ async def _push_job_result(
     job["last_run_at"] = int(time.time())
     job["last_status"] = status
     save_jobs(jobs)
+    if silent:  # 静默收尾:只回填运行时间/状态,见 _run_script_job
+        return job
     conv = job.get("conv") or f"task:{job_id}"
     msg = f"⏰ {job.get('name','任务')}\n\n{text}"
     # 默认目标就是这条专属会话本身(platform=web):走 send() 会同时触发系统推送
@@ -437,6 +442,7 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
     if job_id in _script_running:  # 上一轮还没跑完,这一跳先不重复触发
         return
     _script_running.add(job_id)
+    silent = False
     conv = job.get("conv") or f"task:{job_id}"
     # 脚本任务不走 task_runner,永远不会触发 on_task_activity 的 start/done 桥接
     # ——侧栏的 S.live 因此收不到事件,闪烁点永远不亮(2026-08-21 排查定位)。
@@ -467,7 +473,14 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
 
         m = _SIGNAL_RE.search(raw)
         has_signal = (m.group(1) == "1") if m else True
-        text = _SIGNAL_RE.sub("", raw).strip() or "(无输出)"
+        stripped = _SIGNAL_RE.sub("", raw).strip()
+        # 静默约定:成功 + 信号 0 + 除标记外没有任何输出 = "没事别打扰"——只回填
+        # last_run_at/last_status,不落会话、不推送(如询盘快扫无新回复时)。
+        if ok and m and not has_signal and not stripped:
+            silent = True
+            await _push_job_result(job_id, "success", "", push, silent=True)
+            return
+        text = stripped or "(无输出)"
 
         if ok and has_signal and job.get("summarize_prompt"):
             summarized = await providers.sidecar_chat(
@@ -481,7 +494,8 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
         await _push_job_result(job_id, "success" if ok else "error", text, push)
     finally:
         _script_running.discard(job_id)
-        task_events._bridge_event({"conv": conv, "type": "done"})
+        # silent:前端只熄灭闪烁点、拆掉开跑时建的空气泡,不标未读(见 stream.js)
+        task_events._bridge_event({"conv": conv, "type": "done", "silent": silent})
 
 
 def _tick(push: PushFn) -> None:
