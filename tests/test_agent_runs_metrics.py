@@ -120,3 +120,16 @@ async def test_goal_review_trigger_gets_stats_and_cron_metrics(env, monkeypatch)
     r = agents.recent_runs(env["id"])[0]
     assert (r["job_name"], r["tokens"], r["tool_calls"]) == ("目标复盘", 12345, 2)
     assert r["turn_id"] is not None  # 定时任务照旧复制进主会话
+
+
+def test_history_tags_cron_turns_with_job_id(env):
+    """主会话里「⏰ 任务名」轮带上 cron_job,前端据此把胶囊做成可点、跳任务会话。"""
+    from vococo.gateway.adapters import web
+
+    tid = agents.record_run(env["id"], {"id": "jobA", "name": "日报"}, "ok", "结果")
+    turns = session_store.load_history(agents.main_session_key(env), limit=40)
+    turns.append({"id": -1, "user": "普通消息"})
+    web._tag_cron_turns(turns)
+    tagged = {t["id"]: t.get("cron_job") for t in turns}
+    assert tagged[tid] == "jobA"
+    assert tagged[-1] is None

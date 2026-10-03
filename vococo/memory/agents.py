@@ -699,6 +699,19 @@ def record_run(agent_id: str, job: dict, status: str, text: str, *,
     return turn_id
 
 
+def job_ids_for_turns(turn_ids: list[int]) -> dict[int, tuple[str, str]]:
+    """主会话里的「⏰ 任务名」轮 → (定时任务 id, 任务名)(前端点胶囊据此跳到任务会话)。
+    带上任务名供调用方核对胶囊文字:turns.id 无 AUTOINCREMENT,删轮后 id 会被复用。"""
+    ids = [int(t) for t in turn_ids if t is not None][:500]
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    rows = _conn().execute(
+        f"SELECT turn_id, job_id, job_name FROM agent_runs WHERE turn_id IN ({marks}) AND job_id<>''", ids,
+    ).fetchall()
+    return {r[0]: (r[1], r[2]) for r in rows}
+
+
 def recent_runs(agent_id: str, limit: int = 50, job_id: str | None = None) -> list[dict]:
     sql = ("SELECT job_id, job_name, ts, status, text, turn_id, tokens, duration, tool_calls"
            " FROM agent_runs WHERE agent_id=?")

@@ -374,6 +374,26 @@ def _video_preview_url(name: str) -> str | None:
     return f"/video?name={name}&preview=1{sign_media_ticket('video', name)}"
 
 
+def _tag_cron_turns(turns: list[dict]) -> None:
+    """Agent 主会话里定时任务写进来的「⏰ 任务名」轮,就地补 cron_job=任务 id,
+    前端把那颗胶囊做成可点、跳到该任务的会话看完整过程。"""
+    from ...memory import agents
+
+    sys_ids = [t["id"] for t in turns if str(t.get("user") or "").startswith(agents.SYS_MARKER)]
+    if not sys_ids:
+        return
+    try:
+        jobs = agents.job_ids_for_turns(sys_ids)
+    except Exception as exc:  # noqa: BLE001 —— 查不到只是胶囊不能点,不影响看历史
+        print(f"[web] 查定时任务轮归属失败:{exc}", flush=True)
+        return
+    for t in turns:
+        hit = jobs.get(t["id"])
+        # 文字对得上才认:防删轮后 id 复用,把别的系统胶囊错标成可点
+        if hit and t.get("user") == f"{agents.SYS_MARKER} ⏰ {hit[1]}":
+            t["cron_job"] = hit[0]
+
+
 def _sign_history_videos(turns: list[dict]) -> list[str]:
     """把 load_history 里的裸 /video?name= 就地换成带票据的 URL(用户/AI 两侧都要),
     预览版已就绪的顺带附上 preview_url。返回还缺预览版、值得去转的文件名。"""
@@ -2119,6 +2139,7 @@ class WebAdapter:
         turns = session_store.load_history(key, limit=40, **(
             {"before_id": before_id} if before_id is not None else {}
         ))
+        _tag_cron_turns(turns)
         # 打开会话就把还缺预览版的视频排上队转,别等用户点播放才开始
         for name in _sign_history_videos(turns):
             self._spawn_video_preview(name)
