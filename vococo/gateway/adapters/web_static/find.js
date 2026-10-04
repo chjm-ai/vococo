@@ -32,6 +32,14 @@ function findVisible(node){
   if(p.checkVisibility) return p.checkVisibility();
   return p.getClientRects().length>0;
 }
+// 中英文分开匹配:中文没有词边界,按片段命中;英文/数字要整词命中,搜「AI」不该亮 email、wait 里的 ai。
+// 只看词两端:首字符是字母数字 → 前一个字符不能是字母数字;尾字符同理。中英混排(「用AI做」「AI编程」)照常命中
+const FIND_WORD = /[A-Za-z0-9_]/;
+function findBoundaryOk(text, start, end, term){
+  if(FIND_WORD.test(term[0]) && start>0 && FIND_WORD.test(text[start-1])) return false;
+  if(FIND_WORD.test(term[term.length-1]) && end<text.length && FIND_WORD.test(text[end])) return false;
+  return true;
+}
 // 扫 #wrap 里所有可见文本节点,按文档顺序收集各词命中。同一处被多个词覆盖时各记各的。
 // 先 indexOf 再判可见:绝大多数文本节点没命中,省掉逐个量布局。Range 最后只给保留的那部分建。
 function findCollect(terms){
@@ -48,7 +56,11 @@ function findCollect(terms){
     const local=[];
     lows.forEach((w,ti)=>{
       let i=low.indexOf(w);
-      while(i>=0){ local.push({node:n, start:i, end:i+w.length, term:ti}); i=low.indexOf(w, i+w.length); }
+      while(i>=0){
+        // 命中就跳过整个词(不重叠);被词边界否掉的只挪一格,别漏掉紧跟着的真命中
+        if(findBoundaryOk(low, i, i+w.length, w)){ local.push({node:n, start:i, end:i+w.length, term:ti}); i=low.indexOf(w, i+w.length); }
+        else i=low.indexOf(w, i+1);
+      }
     });
     if(!local.length || !findVisible(n)) continue;
     local.sort((a,b)=>a.start-b.start || a.term-b.term);
@@ -240,7 +252,14 @@ $("#findClose").innerHTML=ic("close");
 $("#findPrev").onclick=()=>findGo(-1);
 $("#findNext").onclick=()=>findGo(1);
 $("#findClose").onclick=closeFind;
-$("#findInput").oninput=()=>{ clearTimeout(FIND.timer); FIND.timer=setTimeout(()=>findRun({jump:"near"}), 120); };
+// 拼音输入法选字过程中框里是拼音字母(iOS 还会自动加空格,被拆成好几个英文词),这时不搜,选完字再搜
+$("#findInput").oninput=e=>{
+  if(e.isComposing) return;
+  clearTimeout(FIND.timer); FIND.timer=setTimeout(()=>findRun({jump:"near"}), 120);
+};
+$("#findInput").addEventListener("compositionend", ()=>{
+  clearTimeout(FIND.timer); FIND.timer=setTimeout(()=>findRun({jump:"near"}), 120);
+});
 $("#findInput").onkeydown=e=>{
   if(e.key==="Enter"){
     e.preventDefault();
