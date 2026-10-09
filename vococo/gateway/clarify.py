@@ -177,11 +177,19 @@ async def wait(clarify_id: str, timeout: float) -> Optional[str]:
     p = _pending.get(clarify_id)
     if p is None:
         return None
-    with anyio.move_on_after(timeout):
-        await p.event.wait()
-    _drop(clarify_id)
-    _settle_notice(p)
+    try:
+        with anyio.move_on_after(timeout):
+            await p.event.wait()
+    finally:
+        # 外层取消(任务被停 / hook 被掐)也要收尾,否则铃铛里这条永远卡在「等你回答」
+        _drop(clarify_id)
+        _settle_notice(p)
     return p.response
+
+
+def is_waiting(clarify_id: str) -> bool:
+    """这个选项本进程里还有人在等吗(没人等的 pending 通知是孤儿,应当按已超时处理)。"""
+    return clarify_id in _pending
 
 
 def _settle_notice(p: _Pending) -> None:
