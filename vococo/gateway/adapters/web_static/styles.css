@@ -143,7 +143,7 @@
     box-shadow:0 2px 12px rgba(0,0,0,.08);
     display:flex;flex-direction:column;overflow:hidden;
     transition:transform var(--t-base) cubic-bezier(.4,0,.2,1),width var(--t-base) cubic-bezier(.4,0,.2,1),margin var(--t-base) cubic-bezier(.4,0,.2,1),box-shadow var(--t-base);z-index:30}
-  #sidebar .shead{padding:var(--sp-4) var(--sp-5) var(--sp-2);padding-top:calc(12px + env(safe-area-inset-top));display:flex;align-items:center;gap:8px}
+  #sidebar .shead{padding:var(--sp-4) var(--sp-4) var(--sp-2) var(--sp-5);padding-top:calc(12px + env(safe-area-inset-top));display:flex;align-items:center;gap:var(--sp-1)}   /* 图标间距与底栏 .sfoot 统一 */
   #sidebar .shead .brand{flex:1;min-width:0;display:flex;align-items:baseline;
     font-family:Optima,"Times New Roman","Songti SC",serif;
     font-size:20px;font-weight:700;color:var(--text);cursor:pointer;
@@ -258,12 +258,12 @@
     padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);font-size:var(--fs-md);color:var(--text);transition:background var(--t-fast)}
   #convFilterPop .fmi:hover{background:var(--panel2)}
   #convFilterPop .fmi.on{color:var(--accent);font-weight:600}
-  .sfoot{padding:var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-5);border-top:1px solid var(--line);font-size:var(--fs-md);color:var(--text);display:flex;align-items:center;gap:9px}
+  .sfoot{padding:var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-5);border-top:1px solid var(--line);font-size:var(--fs-md);color:var(--text);display:flex;align-items:center;gap:var(--sp-1)}   /* 图标间距与顶栏 .shead 统一 */
   .sfoot .savatar{width:26px;height:26px;border-radius:50%;flex-shrink:0;
     background:linear-gradient(135deg,var(--accent),var(--user2));
     display:flex;align-items:center;justify-content:center;
     color:var(--on-accent);font-size:var(--fs-sm);font-weight:700;letter-spacing:0}
-  .sfoot .sfoottxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+  .sfoot .sfoottxt{flex:1;min-width:0;margin-left:var(--sp-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
   /* 出错气泡:红色左边框 */
   .bubble.err{border-left:3px solid var(--err);padding-left:var(--sp-4)}
   /* 完成未读灰点:工作结束后保留,打开会话后消失。间距靠 .cvbody 的 gap:8px 统一,
