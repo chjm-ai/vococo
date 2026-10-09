@@ -80,6 +80,11 @@ MEMORY_RULES = """## 记忆归属(沉淀时按这个判,优先于全局约定里
 - 不要直接 Edit 全局的 lessons.md / tech-decisions.md 写本项目的东西
 本 Agent 的记忆目录:{dir}/(索引 INDEX.md 每轮都在你眼前)。全局记忆索引这里只带了部分分节,
 其他分节需要时读 AI_BRAIN/MEMORY.md 或用 recall_past。"""
+# 待拍板的事统一进铃铛(2026-10-10 主人要求):复盘里写「请主人拍板」散在各 Agent 文件里,没人催就积压
+DECISION_RULES = """## 要我拍板时
+- 我不在线、也不急着当场要答案的(复盘、定时任务里攒下的):每件调一次 request_decision 放进铃铛,
+  给 2-4 个选项和你的建议;别只写在汇报或 GOAL.md 里
+- 只能我本人动手的(扫码、实名、付款)不用它,照常在汇报里列"""
 REVIEW_CRON = "0 9 * * 1"  # 目标复盘默认每周一早 9 点
 REVIEW_ROLE = "goal_review"  # 复盘任务在 cron_jobs.json 里的 role 标记,一个 Agent 只挂一条
 REVIEW_PROMPT = """【目标复盘】给「{name}」做一次复盘,文件都在 {home}/ 下:
@@ -91,7 +96,7 @@ REVIEW_PROMPT = """【目标复盘】给「{name}」做一次复盘,文件都在
    末尾(带日期标题),PLAN.md 只留进行中和未开始的——它每轮都进提示词,超 {max_chars} 字会被截断
 5. 「目标」「成功标准」「不做」三节不许改;觉得该改,在汇报里提建议,等我同意
 6. 最近两次复盘都没进展,直说,建议暂停或换方向
-最后用 3-5 行汇报:进展、偏差、下步、要我拍板的事。"""
+最后用 3-5 行汇报:进展、偏差、下步、要我拍板的事(拍板的事每件先用 request_decision 放进铃铛,汇报里一句话带过)。"""
 PLAN_PROMPT = """【拆解计划】按 {home}/GOAL.md 的目标和成功标准,拆成 3-5 个里程碑(各带完成标志)和最近一周要做的任务清单(- [ ] 格式),写进 {home}/PLAN.md。需要定时跑的环节,列出来问我要不要建定时任务。最后几行说清拆了什么。"""
 
 _SCHEMA = """
@@ -578,34 +583,67 @@ def prompt_extra(agent: dict | None) -> str:
     links = agent.get("links") or []
     if not (doc or goal or notes or links):
         return ""
-    parts = [f"# 当前 Agent:{agent['name']}\n以下是这个 Agent 的设定,本会话里按它办事。"
-             f"它的文件在 {agent['home']}/(GOAL.md 目标、PLAN.md 计划、NOTES.md 笔记、runs/ 运行记录)。"]
+    head = [f"# 当前 Agent:{agent['name']}\n以下是这个 Agent 的设定,本会话里按它办事。"
+            f"它的文件在 {agent['home']}/(GOAL.md 目标、PLAN.md 计划、NOTES.md 笔记、runs/ 运行记录)。"]
     if doc:
-        parts.append(doc)
+        head.append(doc)
     if goal:
-        parts.append("## 目标(GOAL.md)\n" + goal.removeprefix("# 目标").strip())
-        parts.append("## 计划(PLAN.md)\n" + (plan.removeprefix("# 计划").strip() if plan else "还没拆。"))
-        parts.append("## 目标纪律\n- 做事前对照目标和「不做」;明显和目标无关的事,先提醒我再做\n"
-                     "- 做完计划里的任务,顺手在 PLAN.md 里勾掉;整段做完的挪到 PLAN-archive.md(不进提示词)\n"
-                     "- 「目标」「成功标准」「不做」只有我同意才能改")
+        head.append("## 目标(GOAL.md)\n" + goal.removeprefix("# 目标").strip())
+    tail = []
+    if goal:
+        tail.append("## 目标纪律\n- 做事前对照目标和「不做」;明显和目标无关的事,先提醒我再做\n"
+                    "- 做完计划里的任务,顺手在 PLAN.md 里勾掉;整段做完的挪到 PLAN-archive.md(不进提示词)\n"
+                    "- 「目标」「成功标准」「不做」只有我同意才能改")
+    rules = ""
     if aid != GENERAL_ID:
         from . import deposit
 
-        parts.append(MEMORY_RULES.format(dir=deposit.agent_memory_dir(agent)))
+        tail.append(DECISION_RULES)
+        rules = MEMORY_RULES.format(dir=deposit.agent_memory_dir(agent))
+        tail.append(rules)
     if links:
-        parts.append("## 关联目录/文件(需要时再打开)\n" + "\n".join(
+        tail.append("## 关联目录/文件(需要时再打开)\n" + "\n".join(
             f"- {x['path']}" + (f" · {x['note']}" if x["note"] else "") + (" · 可写" if x["writable"] else " · 只读")
             for x in links))
-    # 笔记放最后,超长时只截它(截前面、留最近写的那部分);
-    # 上面的设定 / 目标 / 记忆归属规则 / 关联清单一个字都不丢
-    text = "\n\n".join(parts)
+
+    def _join(plan_text: str | None) -> str:
+        mid = [] if plan_text is None else ["## 计划(PLAN.md)\n" + plan_text]
+        return "\n\n".join(head + mid + tail)
+
+    # 超长时按这个顺序让位:先截笔记(留最近写的),再截计划(先去掉已勾掉的旧任务,还不够截尾);
+    # 设定 / 目标 / 记忆归属规则 / 关联清单一个字都不丢(2026-10-10:原来只截笔记,计划太长时
+    # 最后一刀把后面的记忆归属规则整段切掉了)
+    plan_text = None
+    if goal:
+        plan_text = plan.removeprefix("# 计划").strip() if plan else "还没拆。"
+        room = PROMPT_MAX_CHARS - len(_join(""))
+        if len(plan_text) > room:
+            plan_text = _fit_plan(plan_text, room)
+    text = _join(plan_text)
     if notes:
         room = PROMPT_MAX_CHARS - len(text) - 40
         if len(notes) > room:
             notes = "…(前面省略,完整见 NOTES.md)\n" + notes[-max(room, 0):] if room > 0 else ""
         if notes:
             text += "\n\n## 笔记(NOTES.md)\n" + notes
+    if len(text) > PROMPT_MAX_CHARS and rules:
+        # 兜底:光设定 + 目标就超了 → 截它们,记忆归属规则挪到最后原样保留
+        rest = text.replace("\n\n" + rules, "", 1)
+        return rest[:max(PROMPT_MAX_CHARS - len(rules) - 2, 0)] + "\n\n" + rules
     return text[:PROMPT_MAX_CHARS]
+
+
+_DONE_TASK_RE = re.compile(r"^\s*[-*] \[[xX]\]")
+PLAN_CUT_MARK = "\n…(后面省略,完整见 PLAN.md)"
+
+
+def _fit_plan(plan: str, room: int) -> str:
+    """计划塞不下:先删已勾掉的任务行(做完的就是旧内容),还超就截尾并注明。"""
+    plan = "\n".join(ln for ln in plan.splitlines() if not _DONE_TASK_RE.match(ln))
+    if len(plan) <= room:
+        return plan
+    keep = room - len(PLAN_CUT_MARK)
+    return plan[:keep].rstrip() + PLAN_CUT_MARK if keep > 0 else "(太长放不下,见 PLAN.md)"
 
 
 RUNTIME_KEYS = ("skills", "mcp", "disallowed_tools", "memory_sections")

@@ -9,7 +9,9 @@
   answered  已回答(按时点了,或事后补答)
   dismissed 你点了忽略
 
-kind:ask(ask_user 提问)/ approval(危险操作审批,带 reason/detail/tool 与可存规则信息)。
+kind:ask(ask_user 提问)/ approval(危险操作审批,带 reason/detail/tool 与可存规则信息)/
+decision(2026-10-10 待拍板事项:request_decision 工具登记,不阻塞任何一轮,直接以 expired 入库、
+session_key 是所属 Agent 的主会话;点选项 = 把选择发回那个主会话接着执行)/ review(规则清理提醒)。
 open = pending + expired,就是铃铛上的数字。
 """
 from __future__ import annotations
@@ -178,9 +180,11 @@ def close_asks_for_session(session_key: str) -> int:
 
 
 def dismiss_all() -> int:
+    """「全部忽略」只清错过的提问/审批;待拍板的事得一件件选或单独忽略,免得误清。"""
     c = _conn()
     cur = c.execute(
-        "UPDATE notices SET status='dismissed', updated_at=? WHERE status='expired'", (time.time(),)
+        "UPDATE notices SET status='dismissed', updated_at=? WHERE status='expired' AND kind!='decision'",
+        (time.time(),),
     )
     c.commit()
     if cur.rowcount:

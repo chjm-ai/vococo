@@ -6,6 +6,7 @@ act():在铃铛里(或点对话里已超时的旧按钮)选了一个选项——
       提问 → 以「(补答)……」作为新消息发回该会话;
       审批 → 按选项发放许可(一次性 / 下一轮都允许 / 存永久规则),再发一条消息让它重试那一步;
       审批选「拒绝」→ 只关掉通知,不打扰会话。
+  待拍板(decision)→ 不管状态,都把选择发回所属 Agent 的主会话让它按这个执行。
   后台任务会话走 task_runner.append(原地续跑),网页会话走 web_bridge(等同你在网页里发消息)。
 
 digest_loop():每天免打扰结束那个整点(BG_APPROVAL_QUIET 的结束小时,默认 8 点)检查一次,
@@ -94,6 +95,11 @@ async def act(notice_id: str, label: str) -> dict:
         text = (
             f"刚才等批准的操作,主人已批准({label}):{n['reason']}\n{n['detail']}\n"
             "请重新执行这一步,并把之前因此没做完的部分补完。"
+        )
+    elif n["kind"] == "decision":
+        text = (
+            f"(拍板)你之前请我拍板:\n{n['prompt']}\n\n我的选择:{label}\n"
+            "请按这个执行;要改 GOAL.md / PLAN.md 的照改,做完简短汇报。"
         )
     else:
         text = f"(补答)你之前问:「{n['prompt']}」\n我的回答:{label}\n请接着之前的工作继续。"
@@ -247,7 +253,7 @@ async def maybe_digest(now: datetime.datetime | None = None) -> int:
         from .adapters.web_push import PUSH
 
         await PUSH.notify(
-            title="有事等你处理", body=f"夜里攒了 {n} 件事等你处理(审批/提问),点开铃铛看看",
+            title="有事等你处理", body=f"夜里攒了 {n} 件事等你处理(审批/提问/拍板),点开铃铛看看",
             conv="main", kind="approval", url="/?notices=1",
         )
     return n

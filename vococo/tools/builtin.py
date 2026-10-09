@@ -1031,6 +1031,62 @@ async def ask_user(args: dict) -> dict:
     return _ok(f"用户回答:{answer}")
 
 @tool(
+    "request_decision",
+    "把一件【需要主人拍板、但不必当场等】的事放进铃铛面板,他之后点选项决定;不阻塞,调完接着干别的。"
+    "适合定时复盘、后台任务里攒下的待决事项(主人在线、要当场答案时用 ask_user)。"
+    "question:要拍板的事,写清背景、各选项的后果和你的建议(markdown,600 字内);"
+    "options:2-4 个互斥选项,每个 20 字内。主人选了之后,选择会作为新消息发回本 Agent 的主会话,"
+    "由它接着执行。一件事调一次,别把几件事塞进一条;只需主人本人动手(扫码、实名、付款)的事不用它。",
+    {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string"},
+            "options": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["question", "options"],
+    },
+)
+async def request_decision(args: dict) -> dict:
+    from ..memory import agents, notices
+    from . import danger
+
+    question = (args.get("question") or "").strip()
+    options = list(dict.fromkeys(str(o).strip()[:40] for o in (args.get("options") or []) if str(o).strip()))
+    if not question or not 2 <= len(options) <= 4:
+        return _ok("request_decision 需要非空 question 和 2-4 个选项。")
+    sk = danger.current_session_key()
+    try:
+        agent = agents.agent_for_session(sk) if sk else None
+    except Exception:  # noqa: BLE001 —— 认不出归属就发回当前会话
+        agent = None
+    from ..gateway import notice_actions
+
+    target = agents.main_session_key(agent) if agent else (sk or config.SESSION_KEY)
+    if notice_actions.conv_of(target) is None:  # 非网页会话选了也发不回去,改发主会话
+        target, agent = config.SESSION_KEY, None
+    where = f"「{agent['name']}」的主会话" if agent else "主会话"
+    before = {n["id"] for n in notices.list_open()}
+    nid = notices.add(
+        session_key=target, kind="decision", prompt=question[:2000], options=options,
+        status="expired", reason="decision", detail=question[:500],
+    )
+    if nid in before:  # 同一件事已经在铃铛里等着了(add 按问题去重),不重复推送
+        return _ok("这件事已经在铃铛里等主人拍板了,不用重复提;接着做别的。")
+    if not danger._in_quiet_hours():
+        try:
+            from ..gateway.adapters.web_push import PUSH
+
+            first = next((ln.strip("#*> ").strip() for ln in question.splitlines() if ln.strip()), "")
+            await PUSH.notify(
+                title="有事等你拍板", body=(f"{agent['name']}:" if agent else "") + first[:80],
+                conv=notice_actions.conv_of(target) or "main", kind="approval",
+                tag=f"decision-{nid}", url="/?notices=1",
+            )
+        except Exception as exc:  # noqa: BLE001 —— 推送失败不影响登记,铃铛里照样有
+            print(f"[request_decision] 推送失败:{exc}", flush=True)
+    return _ok(f"已放进铃铛等主人拍板。他选了之后会发回{where}继续;本轮不用等,接着做别的,汇报里一句话提到即可。")
+
+@tool(
     "send_message",
     "主动给用户发一条【独立消息】(不是本轮回复正文)。用于:单独发长内容、发进度提醒、"
     "或从后台任务 ping 用户。to:'current'(默认,当前聊天)或 'platform:chat_id'(如 web:conv1)。",
@@ -1581,6 +1637,7 @@ def build_mcp_servers() -> dict:
                 update_workbench_task,
                 delete_workbench_task,
                 ask_user,
+                request_decision,
                 send_message,
                 send_image,
                 send_video,
