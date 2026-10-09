@@ -235,6 +235,7 @@ function pickDraftProject(hash){
   const newConv = "local-"+(hash?("p"+hash+":"):"")+idPart;
   const idx = S.convs.findIndex(x=>x.conv===S.conv);
   if(idx>=0) S.convs[idx]={...S.convs[idx], conv:newConv};
+  navRetag(S.conv, newConv);
   S.project=hash; S.conv=newConv;
   S.expanded.add(grpKey(hash)); saveExpanded();
   renderConvs(); renderProjSelChip();
@@ -737,6 +738,54 @@ function newChatIn(hash, focus, expand){
   if(focus!==false) $("#ta").focus();
 }
 function newChat(){ newChatIn(S.project); }
+
+// ── 前进 / 后退:在「看过的视图」之间来回切(会话 / 工作台 / 语音通话)────────────
+// 浏览器历史不参与(PWA 没有地址栏,也不想污染系统返回手势),自己维护一条栈。
+// 入口在 openConv / openWorkbench / openCallView 里各调一次 navRecord;
+// 前进后退本身也会走这些入口,靠 NAV.replaying 挡住,不重复入栈。
+const NAV = {stack:[], idx:-1, replaying:false};
+const NAV_MAX = 50;
+function navSame(a, b){ return !!a && !!b && a.kind===b.kind && a.conv===b.conv; }
+function navRecord(entry){
+  if(NAV.replaying || navSame(NAV.stack[NAV.idx], entry)) return;
+  NAV.stack.splice(NAV.idx+1);          // 后退之后再开新视图 → 丢掉原来的「前进」分支
+  NAV.stack.push(entry);
+  if(NAV.stack.length>NAV_MAX) NAV.stack.shift();
+  NAV.idx=NAV.stack.length-1;
+  navSync();
+}
+// 草稿会话发出第一条后 local-xxx 转正成真实 id,栈里的旧 id 跟着改,否则退回去是个空草稿
+function navRetag(oldConv, newConv){
+  NAV.stack.forEach(e=>{ if(e.conv===oldConv) e.conv=newConv; });
+}
+// 会话被删:从栈里摘掉,并把相邻的重复项合并,免得退回一个已不存在的会话。
+// 指针按原位置换算:当前项被删/被合并时,落到它前面最近一个留下来的项上
+function navForget(conv){
+  const kept=[]; let idx=-1;
+  NAV.stack.forEach((e,i)=>{
+    if(e.conv!==conv && !navSame(e, kept[kept.length-1])) kept.push(e);
+    if(i===NAV.idx) idx=kept.length-1;
+  });
+  NAV.stack=kept; NAV.idx=kept.length ? Math.max(idx,0) : -1;
+  navSync();
+}
+function navGo(delta){
+  const next=NAV.idx+delta;
+  if(next<0 || next>=NAV.stack.length) return;
+  NAV.idx=next; navSync();
+  const e=NAV.stack[next];
+  NAV.replaying=true;
+  try{
+    if(e.kind==="workbench") openWorkbench();
+    else if(e.kind==="call") openCallView();
+    else openConv(e.conv);
+  }finally{ NAV.replaying=false; }   // 三个入口的入栈都在同步段里,await 之前就已跳过
+}
+function navSync(){
+  const b=$("#navBack"), f=$("#navFwd"); if(!b||!f) return;
+  b.disabled = NAV.idx<=0;
+  f.disabled = NAV.idx>=NAV.stack.length-1;
+}
 
 async function removeProject(hash){
   try{ await api("/projects/remove",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({hash})}); }

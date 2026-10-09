@@ -172,6 +172,8 @@ const ICONS = {
   eye:'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
   chevronDown:'<path d="M6 9l6 6 6-6"/>',
   chevronUp:'<path d="M18 15l-6-6-6 6"/>',
+  chevronLeft:'<path d="M15 18l-6-6 6-6"/>',
+  chevronRight:'<path d="M9 18l6-6-6-6"/>',
   more:'<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
 };
 function ic(name){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[name]||"")+'</svg>'; }
@@ -302,7 +304,11 @@ function setServiceState(state){
     cached:["缓存数据", "正在同步；当前侧边栏来自本地缓存"],
     offline:["服务不可达", "正在显示本地缓存；刷新后仍无法连接服务"],
   }[state] || ["同步中", "正在向服务同步最新数据"];
-  el.className="syncstate "+state; el.textContent=view[0]; el.title=view[1];
+  // 只剩 logo 尾巴上一颗圆点,文字收进 title/aria-label;状态没变就别重设 class,
+  // 否则每次 API 返回都会重播一遍「同步完成」的涟漪动画
+  if(el.dataset.state===state) return;
+  el.dataset.state=state;
+  el.className="syncdot "+state; el.title=view[1]; el.setAttribute("aria-label", view[0]);
 }
 // 语音通话入口只保留侧边栏根目录置顶的「语音通话」行(见 buildVoiceMainRow),
 // 不再在聊天输入框上方浮一个圆球——那个入口跟侧栏那行重复,已按用户要求去掉。

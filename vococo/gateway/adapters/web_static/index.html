@@ -261,8 +261,11 @@ try{
   </div>
   <aside id="sidebar">
     <div class="shead">
-      <div class="brand">vococo</div>
-      <span id="syncState" class="syncstate syncing" title="正在连接服务">同步中</span>
+      <div class="brand"><span class="brandtxt">vococo</span><i id="syncState" class="syncdot syncing" title="正在向服务同步最新数据" role="img" aria-label="同步中"></i></div>
+      <div class="navbtns">
+        <button id="navBack" class="sfoicon" title="后退 (⌘[)" disabled></button>
+        <button id="navFwd" class="sfoicon" title="前进 (⌘])" disabled></button>
+      </div>
       <button id="searchBtn" class="sfoicon" title="搜索全部会话 (⌘⇧F)"></button>
       <button id="collapseBtn" title="收起侧边栏"></button>
     </div>
@@ -1683,6 +1686,7 @@ async function openConv(conv, silentGroup){
   const cmodal=$("#choiceModal"); if(cmodal && !cmodal.hidden){ cmodal.hidden=true; }
   if(typeof saveComposerState==="function") saveComposerState(S.conv);
   S.conv=conv; S.stream=null;
+  navRecord({kind:"chat", conv});
   if(typeof restoreComposerState==="function") restoreComposerState(conv);
   // 文档预览面板同样按会话独立:目标会话之前打开过就重新渲染,没有就保持上面已隐藏的状态
   if(S.docPreview[conv] && typeof openDocPreview==="function") openDocPreview(S.docPreview[conv]);
@@ -1922,6 +1926,10 @@ $("#searchModal").onclick = e=>{ if(e.target.id==="searchModal") closeSearchModa
 $("#smHead").insertAdjacentHTML("afterbegin", ic("search"));
 $("#searchBtn").innerHTML = ic("search");
 $("#searchBtn").onclick = ()=>{ closeSidebar(); openSearchModal(); };
+$("#navBack").innerHTML = ic("chevronLeft");
+$("#navFwd").innerHTML = ic("chevronRight");
+$("#navBack").onclick = ()=>navGo(-1);
+$("#navFwd").onclick = ()=>navGo(1);
 document.addEventListener("keydown", e=>{
   // ⌘F/Ctrl+F 接管浏览器页内查找:会话页里 = 会话内查找(find.js),其他界面 = 全局搜索;
   // ⌘⇧F 始终是全局搜索。登录页不响应
@@ -1932,6 +1940,10 @@ document.addEventListener("keydown", e=>{
     const inChat=!e.shiftKey && S.surface==="chat" && !$("#chatMain").hidden && S.conv
       && !String(S.conv).startsWith("local-") && $("#searchModal").hidden;
     if(inChat) openFind(); else { closeFind(); openSearchModal(); }
+  } else if((e.metaKey||e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key==="["||e.key==="]")){
+    // ⌘[ / ⌘] 前进后退,跟浏览器/Finder 一致;输入框里也生效(这俩组合本来就不输入字符)
+    if($("#app").hidden) return;
+    e.preventDefault(); navGo(e.key==="[" ? -1 : 1);
   } else if(e.key==="Escape" && !$("#searchModal").hidden){ closeSearchModal(); }
 });
 

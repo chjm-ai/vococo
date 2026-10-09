@@ -144,15 +144,27 @@
     display:flex;flex-direction:column;overflow:hidden;
     transition:transform var(--t-base) cubic-bezier(.4,0,.2,1),width var(--t-base) cubic-bezier(.4,0,.2,1),margin var(--t-base) cubic-bezier(.4,0,.2,1),box-shadow var(--t-base);z-index:30}
   #sidebar .shead{padding:var(--sp-4) var(--sp-5) var(--sp-2);padding-top:calc(12px + env(safe-area-inset-top));display:flex;align-items:center;gap:8px}
-  #sidebar .shead .brand{flex:1;font-family:Optima,"Times New Roman","Songti SC",serif;
+  #sidebar .shead .brand{flex:1;min-width:0;display:flex;align-items:baseline;
+    font-family:Optima,"Times New Roman","Songti SC",serif;
     font-size:20px;font-weight:700;color:var(--text);cursor:pointer;
     transition:color var(--t-fast)}
   #sidebar .shead .brand:hover{color:var(--accent)}
-  .syncstate{flex:none;max-width:76px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-    padding:2px var(--sp-2);border:1px solid var(--line);border-radius:var(--r-pill);font-size:var(--fs-sm);line-height:14px;color:var(--muted)}
-  .syncstate.syncing,.syncstate.cached{background:var(--panel)}
-  .syncstate.online{color:var(--ok-fg);border-color:var(--ok-line);background:var(--ok-bg)}
-  .syncstate.offline{color:var(--err-fg);border-color:var(--err-line);background:var(--err-bg)}
+  /* 同步状态 = logo 末尾那颗「句点」,不带文字(说明在 title 里):
+     同步中/缓存 = 呼吸闪烁,已同步 = 绿点 + 一圈涟漪散开一次,不可达 = 红点常亮 */
+  .syncdot{position:relative;flex:none;width:6px;height:6px;margin-left:3px;border-radius:50%;
+    background:var(--dim2);transition:background var(--t-base)}
+  .syncdot::after{content:"";position:absolute;inset:0;border-radius:50%;background:inherit;opacity:0}
+  .syncdot.syncing{animation:syncbreathe 1.2s ease-in-out infinite}
+  .syncdot.cached{background:var(--warn);animation:syncbreathe 1.2s ease-in-out infinite}
+  .syncdot.online{background:var(--ok)}
+  .syncdot.online::after{animation:syncripple .9s ease-out 1}
+  .syncdot.offline{background:var(--err)}
+  @keyframes syncbreathe{0%,100%{opacity:.3;transform:scale(.75)}50%{opacity:1;transform:scale(1)}}
+  @keyframes syncripple{0%{opacity:.55;transform:scale(1)}100%{opacity:0;transform:scale(3.2)}}
+  /* 前进/后退:占原「已同步」胶囊的位置,到头时置灰 */
+  .navbtns{display:flex;flex:none}
+  .navbtns .sfoicon{width:26px}
+  .navbtns .sfoicon:disabled{opacity:.3;cursor:default;background:none;color:var(--dim);transform:none}
   /* 列表行统一规范:所有可点行(＋新对话 / 分组头 / 会话)共用同一内边距 + 圆角,
      hover 的灰底矩形尺寸与圆角完全一致 */
   /* #convList 是固定外框(Tab 栏 + 列表),只有 #convBody 滚动 */
