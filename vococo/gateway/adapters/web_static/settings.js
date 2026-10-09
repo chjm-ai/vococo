@@ -816,6 +816,7 @@ async function delConv(conv){
   const removed=list[idx], wasActive=(S.conv===conv);
   // 乐观假删:先从列表移除并立即重绘,不等服务器
   list.splice(idx,1); delete S.histCache[conv]; idbDel("hist:"+conv); delete S.live[conv]; delete S.streamSnap[conv]; markLive(); renderConvs();
+  navForget(conv);
   if(wasActive) openConv(S.convs[0]?S.convs[0].conv:"main");   // 删的是当前会话→切到最近一个
   // 纯本地会话(从未发过消息)服务端没有记录,删完即止
   if(String(conv).startsWith("local-")) return;

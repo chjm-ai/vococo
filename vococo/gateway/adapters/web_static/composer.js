@@ -191,6 +191,7 @@ async function send(text, display, opts){
     // localSent 上面是按发起时的 local- id 打的,而回显的 "user" 事件带的是转正后的真实
     // id —— 不迁移这把钥匙就对不上,新会话第一条消息会重复冒一个气泡。
     if(S.localSent[oldConv]){ delete S.localSent[oldConv]; S.localSent[sendConv]=true; }
+    navRetag(oldConv, sendConv);
     // S.convs 里那条草稿行(conv=local-xxx)原地更新成真实 id,别留一条转正前的孤儿条目——
     // 否则"新对话"复用逻辑(newChatIn)会把它当成还没发消息的草稿误重新打开
     const entry=S.convs.find(x=>x.conv===oldConv);
@@ -262,6 +263,7 @@ async function sendCmd(cmd, conv){
   const wasLocal=String(conv).startsWith("local-");
   if(wasLocal){
     conv=conv.replace("local-",""); payload.conv=conv;
+    navRetag(oldConv, conv);
     if(isCurrent){ S.conv=conv; renderProjSelChip(); }
     if(isCurrent) refreshGit(S.conv);
     const entry=S.convs.find(x=>x.conv===oldConv);

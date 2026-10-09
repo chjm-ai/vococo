@@ -2306,6 +2306,7 @@ document.addEventListener("mousedown", event => {
 
 async function openWorkbench(){
   closeCallView(); S.surface = "workbench";
+  navRecord({kind:"workbench"});
   $("#chatMain").hidden = true; $("#workbenchView").hidden = false;
   closeSidebar(); renderConvs();
   if(!WB.anchor) WB.anchor = workbenchToday();
