@@ -175,15 +175,39 @@ def test_turn_env_disables_auto_memory_only_for_agents():
 
 
 def test_prompt_extra_trims_notes_not_rules(env, monkeypatch):
-    monkeypatch.setattr(agents, "PROMPT_MAX_CHARS", 1200)
+    monkeypatch.setattr(agents, "PROMPT_MAX_CHARS", 1500)
     agents.write_doc(env["id"], "AGENT.md", "# proj\n\n## 职责与人格\n\n管询盘")
     agents.write_doc(env["id"], "NOTES.md", "- 很老的笔记\n" + "- 填充\n" * 400 + "## 记忆\n- [最新](x.md) — 最新一条\n")
     agents.update(env["id"], links=[{"path": str(env["workdir"]), "note": "项目"}])
     extra = agents.prompt_extra(agents.get(env["id"]))
-    assert len(extra) <= 1200
+    assert len(extra) <= 1500
     assert "## 记忆归属" in extra and "## 关联目录" in extra  # 规则和关联不被截
     assert "最新一条" in extra and "很老的笔记" not in extra  # 笔记截前面、留最新
 
+
+
+def test_prompt_extra_trims_done_plan_before_rules(env, monkeypatch):
+    """计划太长:先去掉已勾掉的任务,还超就截尾;记忆归属规则不被切(2026-10-10 独立产品 Agent 实测被切)。"""
+    monkeypatch.setattr(agents, "PROMPT_MAX_CHARS", 2000)
+    agents.write_doc(env["id"], "AGENT.md", "# proj\n\n## 职责与人格\n\n管询盘")
+    agents.write_doc(env["id"], "GOAL.md", "# 目标\n\n拿到询盘\n\n## 成功标准\n\n每月 20 个\n")
+    done = "".join(f"- [x] 做完的旧任务{i}\n" for i in range(150))
+    agents.write_doc(env["id"], "PLAN.md", "# 计划\n\n## 里程碑\n\nM1 上线\n\n" + done + "- [ ] 正在做的任务\n")
+    extra = agents.prompt_extra(agents.get(env["id"]))
+    assert len(extra) <= 2000
+    assert "做完的旧任务" not in extra and "正在做的任务" in extra and "M1 上线" in extra
+    assert "不要直接 Edit 全局" in extra  # 规则最后一句还在 = 整段完整
+
+    todo = "".join(f"- [ ] 没做的任务{i}\n" for i in range(200))
+    agents.write_doc(env["id"], "PLAN.md", "# 计划\n\nM1 上线\n\n" + todo)
+    extra = agents.prompt_extra(agents.get(env["id"]))
+    assert len(extra) <= 2000
+    assert "M1 上线" in extra and agents.PLAN_CUT_MARK.strip() in extra
+    assert "不要直接 Edit 全局" in extra and "## 目标纪律" in extra
+
+    agents.write_doc(env["id"], "AGENT.md", "# proj\n\n" + "很长的设定\n" * 600)  # 光设定就超
+    extra = agents.prompt_extra(agents.get(env["id"]))
+    assert len(extra) <= 2000 and extra.endswith("recall_past。")
 
 def test_filter_before_clip(env, monkeypatch, tmp_path):
     monkeypatch.setattr(prompt, "_INJECT_MAX_CHARS", 200)

@@ -3134,15 +3134,24 @@ class WebAdapter:
         from ...memory import notices
         from .. import notice_actions
 
+        from ...memory import agents
+
         items = []
         for n in notices.list_open():
             conv = notice_actions.conv_of(n["session_key"])
+            agent = None
+            if n["kind"] == "decision":  # 待拍板的事标上是哪个 Agent 提的
+                try:
+                    agent = agents.agent_for_session(n["session_key"])
+                except Exception:  # noqa: BLE001
+                    agent = None
             items.append({
                 "id": n["id"], "ts": n["ts"], "kind": n["kind"], "status": n["status"],
                 "prompt": n["prompt"], "options": n["options"], "reason": n["reason"],
                 "clarify_id": n["clarify_id"] if n["status"] == "pending" else None,
                 "conv": conv,
-                "title": session_store.get_title(n["session_key"]) or (conv or n["session_key"]),
+                "title": (agent["name"] if agent else None)
+                or session_store.get_title(n["session_key"]) or (conv or n["session_key"]),
             })
         return web.json_response({"items": items})
 

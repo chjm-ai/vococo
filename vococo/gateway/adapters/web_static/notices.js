@@ -1,5 +1,6 @@
 "use strict";
 // 2026-09-28 铃铛:所有「等你回答的提问 / 等你批的操作」汇总在标题栏右上角(后端见 memory/notices.py)。
+// 2026-10-10 加「拍板」:各 Agent 用 request_decision 放进来的待决事项,点选项 = 发回该 Agent 主会话执行。
 // 等待中的选项直接点 = 按时回答;已超时的点了 = 把选择补回原会话让它接着干(gateway/notice_actions.py)。
 // 与内联脚本同属全局作用域(无构建步骤),依赖 app-core / markdown / stream 里的 api、esc、mdToHtml、openConv 等。
 
@@ -49,8 +50,9 @@ function autoPopupNewPending(){
 
 function noticeItemHtml(it){
   const state = it.kind==="review" ? '<span class="ntstate late">每月提醒</span>'
+    : it.kind==="decision" ? '<span class="ntstate wait">等你拍板 · 选了它接着做</span>'
     : it.status==="pending" ? '<span class="ntstate wait">等你回答</span>' : '<span class="ntstate late">错过了 · 点选项接着做</span>';
-  const kind = {approval:"审批", ask:"提问", review:"规则清理"}[it.kind] || "通知";
+  const kind = {approval:"审批", ask:"提问", review:"规则清理", decision:"拍板"}[it.kind] || "通知";
   const opts = it.options.length
     ? it.options.map(lab=>`<button class="btn sm ghost" data-ntact="${esc(it.id)}" data-label="${esc(lab)}">${NTC_ICON[lab]?NTC_ICON[lab]+" ":""}${esc(lab)}</button>`).join("")
     : `<button class="btn sm ghost" data-ntgo="${esc(it.conv||"")}">去会话里回答</button>`;
@@ -64,7 +66,8 @@ function noticeItemHtml(it){
 
 function renderNoticePop(){
   const pop = $("#noticePop"), items = NTC.items;
-  const anyExpired = items.some(it=>it.status==="expired");
+  // 待拍板的事不进「全部忽略」(后端 dismiss_all 同样跳过),只能逐条选或忽略
+  const anyExpired = items.some(it=>it.status==="expired" && it.kind!=="decision");
   // 没有任何设备订阅推送 = 超时的事只能来这里看,提醒去开
   const noPush = typeof PUSH!=="undefined" && PUSH.enabled && PUSH.count===0;
   pop.innerHTML = `<div class="nthead">待处理 <span>${items.length}</span>
