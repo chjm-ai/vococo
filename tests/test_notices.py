@@ -65,6 +65,18 @@ def test_clarify_timeout_and_answer_update_notice(isolated):
     anyio.run(scenario)
 
 
+def test_cancelled_wait_still_settles_notice(isolated):
+    """等审批的那一轮被外层取消(任务被停)→ 通知也要转 expired,不能永远卡在 pending。"""
+    async def scenario():
+        p = clarify.register("task:t1", ["允许一次", "拒绝"], notice={"kind": "approval", "prompt": "批?"})
+        with anyio.move_on_after(0.01):
+            await clarify.wait(p.clarify_id, 60)
+        assert notices.get(p.notice_id)["status"] == "expired"
+        assert not clarify.is_waiting(p.clarify_id)
+
+    anyio.run(scenario)
+
+
 def test_expire_all_pending_and_close_asks(isolated):
     a = notices.add(session_key="web:c", kind="ask", prompt="q")
     b = _expired_approval("web:c")
@@ -210,6 +222,17 @@ async def test_notice_routes(ntc_app, resumed):
         items = (await (await client.get("/notices")).json())["items"]
     assert items == []
     assert resumed and resumed[0][0] == "web:p1:c1"
+
+
+@pytest.mark.anyio
+async def test_orphan_pending_turns_expired(ntc_app):
+    """库里 pending 但本进程没人在等(旧 bug 遗留)→ 列表时自愈成 expired,可以忽略。"""
+    nid = notices.add(session_key="task:gone", kind="approval", prompt="批?",
+                      options=["允许一次", "拒绝"], clarify_id="deadbeef")
+    async with TestClient(TestServer(ntc_app)) as client:
+        items = (await (await client.get("/notices")).json())["items"]
+        assert next(i for i in items if i["id"] == nid)["status"] == "expired"
+        assert (await client.post("/notices/dismiss", json={"id": nid})).status == 200
 
 
 # ── 系统通知上的快捷按钮 ─────────────────────────────────────────────────

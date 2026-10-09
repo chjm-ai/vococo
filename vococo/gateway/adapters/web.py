@@ -3136,8 +3136,14 @@ class WebAdapter:
 
         from ...memory import agents
 
+        from .. import clarify
+
         items = []
         for n in notices.list_open():
+            if n["status"] == "pending" and not (n["clarify_id"] and clarify.is_waiting(n["clarify_id"])):
+                # 孤儿:等它的那一轮已经没了(被取消/异常退出)→ 转已超时,才能忽略或事后处理
+                notices.set_status(n["id"], "expired")
+                n["status"] = "expired"
             conv = notice_actions.conv_of(n["session_key"])
             agent = None
             if n["kind"] == "decision":  # 待拍板的事标上是哪个 Agent 提的
