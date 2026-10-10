@@ -147,7 +147,19 @@ function setVideoDlLabel(btn, text){
   if(!lab){ lab=el("span","dllabel"); btn.append(lab); }
   lab.textContent=text;
 }
-async function shareVideoFile(file, filename, btn, auto){
+// 电脑端(Mac/Windows)的系统分享面板里没有"存储"项,只能投送/邮件,等于存不下来;
+// 而桌面浏览器的 <a download> 本来就正常,直接走它。iPadOS 的 Safari 冒充 Mac UA,
+// 靠多点触控区分,iPad 仍走分享面板(和 iPhone 同一个全屏预览卡死的坑)。
+const IS_DESKTOP_SAVE = !IS_MOBILE_DEVICE && !(/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+function saveVideoByLink(file, filename, url, btn){
+  const a=document.createElement("a");
+  a.href=_videoBlobUrls.get(url) || URL.createObjectURL(file);
+  a.download=filename;
+  document.body.append(a); a.click(); a.remove();
+  setVideoDlLabel(btn, "已保存到下载");
+}
+async function shareVideoFile(file, filename, btn, auto, url){
+  if(IS_DESKTOP_SAVE){ saveVideoByLink(file, filename, url, btn); return; }
   if(!navigator.share || !navigator.canShare || !navigator.canShare({files:[file]})){
     setVideoDlLabel(btn, "当前浏览器不支持保存");
     return;
@@ -163,7 +175,7 @@ async function shareVideoFile(file, filename, btn, auto){
 }
 async function onVideoDownloadClick(url, filename, btn, player){
   const cached=_videoShareCache.get(url);
-  if(cached){ shareVideoFile(cached, filename, btn, false); return; }  // 同步发起,手势有效
+  if(cached){ shareVideoFile(cached, filename, btn, false, url); return; }  // 同步发起,手势有效
   if(btn.classList.contains("busy")) return;
   btn.classList.add("busy"); setVideoDlLabel(btn, "下载中 0%");
   try{
@@ -183,7 +195,7 @@ async function onVideoDownloadClick(url, filename, btn, player){
     _videoBlobUrls.set(url, URL.createObjectURL(file));
     useLocalVideo(player, url);
     btn.classList.add("ready"); setVideoDlLabel(btn, "点此保存");
-    await shareVideoFile(file, filename, btn, true);
+    await shareVideoFile(file, filename, btn, true, url);
   }catch(e){
     setVideoDlLabel(btn, "下载失败,点击重试");
   }finally{
