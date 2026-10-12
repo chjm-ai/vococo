@@ -1191,13 +1191,13 @@ async def send_video(args: dict) -> dict:
     "已经展示，严禁在同一轮再调用 send_image 发送该图片。"
     "prompt:图片内容描述,越具体越好(主体/风格/构图/配色/氛围);"
     "size:可选 1024x1024(默认)/1024x1536(竖)/1536x1024(横);"
-    "model:可选 gpt-image-2(默认)/gpt-image-1.5。",
+    "model:当前仅支持 gpt-image-2(默认)。",
     {
         "type": "object",
         "properties": {
             "prompt": {"type": "string"},
             "size": {"type": "string"},
-            "model": {"type": "string"},
+            "model": {"type": "string", "enum": ["gpt-image-2"]},
         },
         "required": ["prompt"],
     },
@@ -1220,6 +1220,8 @@ async def generate_image(args: dict) -> dict:
     model = (args.get("model") or "gpt-image-2").strip()
     if size not in ("1024x1024", "1024x1536", "1536x1024"):
         return _ok(f"size 仅支持 1024x1024 / 1024x1536 / 1536x1024,收到:{size}")
+    if model != "gpt-image-2":
+        return _ok(f"model 当前仅支持 gpt-image-2,收到:{model}")
 
     # 1) 拿 codex-gpt 供应商配置(本地 cli-proxy-api 代理,GPT 订阅转 API)
     found = providers.sidecar_env("codex-gpt")

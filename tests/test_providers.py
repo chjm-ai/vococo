@@ -158,7 +158,7 @@ def test_extra_model_reuses_declared_provider(tmp_path, monkeypatch):
     )
 
 
-def test_gpt6_astra_is_available_through_configured_codex_proxy(tmp_path, monkeypatch):
+def test_gpt6_models_are_available_through_configured_codex_proxy(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
     settings_store.upsert_web_provider(
         "codex-gpt", {
@@ -167,18 +167,82 @@ def test_gpt6_astra_is_available_through_configured_codex_proxy(tmp_path, monkey
         },
     )
 
-    by_id = {mid: (label, group) for mid, label, group in providers.available_models([])}
+    choices = providers.available_models([])
+    by_id = {mid: (label, group) for mid, label, group in choices}
     assert by_id["gpt-6-astra"] == ("GPT-6 Astra（订阅）", "codex")
-    assert providers.resolve("gpt-6-astra", "claude-sonnet-5") == (
-        "gpt-6-astra", {
-            "ANTHROPIC_BASE_URL": "http://127.0.0.1:8317",
-            "ANTHROPIC_API_KEY": "sk-proxy",
-            "CLAUDE_CODE_OAUTH_TOKEN": "",
-            "ANTHROPIC_VISION_CAPABLE": "",
+    assert by_id["gpt-6.1-sol"] == ("GPT-6.1 Sol（订阅）", "codex")
+    assert by_id["gpt-6-luna"] == ("GPT-6 Luna（订阅）", "codex")
+    codex_ids = [mid for mid, _, group in choices if group == "codex"]
+    assert codex_ids[:3] == ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"]
+
+    expected_env = {
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:8317",
+        "ANTHROPIC_API_KEY": "sk-proxy",
+        "CLAUDE_CODE_OAUTH_TOKEN": "",
+        "ANTHROPIC_VISION_CAPABLE": "",
+    }
+    for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"):
+        assert providers.resolve(model, "claude-sonnet-5") == (model, expected_env)
+        assert providers.codex_mgmt_for_model(model) == (
+            "mgmt-secret", "http://127.0.0.1:8317"
+        )
+
+
+def test_gpt6_models_do_not_require_management_key(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "codex-gpt", {
+            "base_url": "http://127.0.0.1:8317", "model": "gpt-5.6-terra",
+            "api_key": "sk-proxy",
         },
     )
-    assert providers.codex_mgmt_for_model("gpt-6-astra") == (
-        "mgmt-secret", "http://127.0.0.1:8317"
+
+    ids = {mid for mid, _, _ in providers.available_models([])}
+    assert {"gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"} <= ids
+    resolved, env = providers.resolve("gpt-6.1-sol", "claude-sonnet-5")
+    assert resolved == "gpt-6.1-sol"
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8317"
+    assert providers.codex_mgmt_for_model("gpt-6.1-sol") is None
+
+
+def test_codex_builtin_overrides_duplicate_manual_model(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "codex-gpt", {
+            "base_url": "http://127.0.0.1:8317", "model": "gpt-5.6-terra",
+            "api_key": "sk-proxy",
+        },
+    )
+    settings_store.upsert_web_provider(
+        "openai-api", {
+            "base_url": "https://api.example.com", "model": "gpt-6.1-sol",
+            "api_key": "sk-api",
+        },
+    )
+    settings_store.upsert_web_extra_model("gpt-6.1-sol", "错误分组", group="anthropic")
+
+    choices = providers.available_models([])
+    matches = [(label, group) for mid, label, group in choices if mid == "gpt-6.1-sol"]
+    assert matches == [("GPT-6.1 Sol（订阅）", "codex")]
+    assert providers.resolve("gpt-6.1-sol", "claude-sonnet-5")[1]["ANTHROPIC_BASE_URL"] == (
+        "http://127.0.0.1:8317"
+    )
+
+
+def test_gpt6_extra_model_falls_back_to_declared_provider_without_codex(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(
+        "openai-api", {
+            "base_url": "https://api.example.com", "model": "gpt-5.6-terra",
+            "api_key": "sk-api",
+        },
+    )
+    settings_store.upsert_web_extra_model(
+        "gpt-6.1-sol", "GPT-6.1 Sol（API）", group="api", provider="openai-api"
+    )
+
+    assert providers.resolve("gpt-6.1-sol", "claude-sonnet-5")[1]["ANTHROPIC_BASE_URL"] == (
+        "https://api.example.com"
     )
 
 
