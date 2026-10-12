@@ -180,10 +180,13 @@ def close_asks_for_session(session_key: str) -> int:
 
 
 def dismiss_all() -> int:
-    """「全部忽略」只清错过的提问/审批;待拍板的事得一件件选或单独忽略,免得误清。"""
+    """「全部忽略」清掉所有已超时的项(含待拍板事项)。
+
+    2026-10-12 主人反馈:原先跳过拍板项,点了全部忽略铃铛数字纹丝不动,像没生效。
+    改为一起清,误清的风险交给前端确认框(会写明含几件拍板)。正在等回答的 pending 不动。"""
     c = _conn()
     cur = c.execute(
-        "UPDATE notices SET status='dismissed', updated_at=? WHERE status='expired' AND kind!='decision'",
+        "UPDATE notices SET status='dismissed', updated_at=? WHERE status='expired'",
         (time.time(),),
     )
     c.commit()
