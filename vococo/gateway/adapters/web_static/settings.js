@@ -106,8 +106,16 @@ async function loadSecurity(){
 }
 
 // ── 通知分区(Web Push 系统通知)──────────────────────────────────────────
+function isIOS(){
+  return /iP(hone|ad|od)/.test(navigator.userAgent);
+}
 function isIOSNonStandalone(){
-  return /iP(hone|ad|od)/.test(navigator.userAgent) && !isStandalone();
+  return isIOS() && !isStandalone();
+}
+function permissionDeniedMessage(){
+  return isIOS()
+    ? "通知权限被拒。iOS 需删掉主屏图标 + 清掉网站数据后,重新加主屏再试。"
+    : "通知权限被拒。请在浏览器或系统设置中允许 vococo 发送通知后再试。";
 }
 function renderNotifyPane(){
   let h = '<h3>'+ic("bell")+'系统通知</h3>'+
@@ -288,7 +296,7 @@ async function enableNotify(){
   let perm = Notification.permission;
   if(perm==="default") perm=await Notification.requestPermission();
   if(perm==="denied")
-    throw new Error("通知权限被拒。iOS 需删掉主屏图标 + 清掉网站数据后,重新加主屏再试。");
+    throw new Error(permissionDeniedMessage());
   if(perm!=="granted")
     throw new Error("未获得通知权限(perm="+perm+")。");
   if(!PUSH.pubKey)
