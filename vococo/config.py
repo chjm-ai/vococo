@@ -116,6 +116,12 @@ AI_BRAIN_DIR: Path = Path(
 ROOT_DIR: Path = _ROOT
 # 运行时数据目录(prompt_toolkit 历史等)
 DATA_DIR: Path = _ROOT / "data"
+# 新建 Agent 没指定目录时,默认工作目录建在这下面(<此目录>/<agent id>)。
+# 不能放进 DATA_DIR:它在 vococo 仓库里,目录会被当成 git 项目——每个会话都开一份 vococo worktree,
+# 还会注入 vococo 的开发指南(2026-10-12 Deepleaper 踩坑)。
+AGENT_WORKSPACES_DIR: Path = Path(
+    os.path.expanduser(os.environ.get("AGENT_WORKSPACES_DIR", "~/vococo-workspaces"))
+)
 # 用户发的图片落盘目录(Web 端消息里的图片,持久化后刷新页面仍可见)
 IMAGES_DIR: Path = DATA_DIR / "images"
 # 用户发的音频落盘目录(转写后仍保留原文件供回放,见 memory/audio.py)

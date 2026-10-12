@@ -31,7 +31,9 @@ def test_list_has_general_and_one_per_project(env):
 
 def test_create_default_dir_and_bind_existing(env, tmp_path):
     a = agents.create("展会跟进")
-    assert a["workdir"].endswith("/workspace") and str(agents.home(a["id"])) in a["workdir"]
+    # 默认工作目录在 AGENT_WORKSPACES_DIR 下,不进 data/(那是 vococo 仓库,会被当 git 项目开 worktree)
+    assert a["workdir"] == str((config.AGENT_WORKSPACES_DIR / a["id"]).resolve())
+    assert str(config.DATA_DIR) not in a["workdir"]
     assert a["project_hash"] in {p["hash"] for p in projects.list_projects()}
     assert agents.read_doc(a["id"], "AGENT.md").startswith("# 展会跟进")
     ext = tmp_path / "ext"

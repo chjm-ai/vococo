@@ -4,7 +4,7 @@
 - 通用:AI_BRAIN/memory/ 根下的分类文件(lessons.md / tech-decisions.md / preferences.md),登记在全局 MEMORY.md
 - Agent 专用:AI_BRAIN/memory/<项目文件夹名>/,索引是该目录的 INDEX.md(只注入这个 Agent 的提示词)。
   vococo、vocotrade 正好对上原有的 memory/vococo/、memory/vocotrade/。没有像样文件夹名的
-  (新建 Agent 默认的 workspace/)或撞上保留目录名的,落到 memory/agents/<id>/。
+  (新建 Agent 默认的 <AGENT_WORKSPACES_DIR>/<id>、旧版的 workspace/)或撞上保留目录名的,落到 memory/agents/<id>/。
 
 判定标准写在 Agent 提示词里(memory/agents.prompt_extra 的「记忆归属」),这里只管按结果落盘:
 - preference(主人的偏好)永远进通用
@@ -53,7 +53,7 @@ def agent_memory_dir(agent: dict) -> Path:
     """项目文件夹名 → AI_BRAIN/memory/<名字>/;不合适就 memory/agents/<id>/;
     和更早的 Agent 文件夹同名 → memory/<名字>-<id 前 6 位>/,免得两个 Agent 的记忆串在一起。"""
     base = os.path.basename(str(agent.get("workdir") or "").rstrip("/"))
-    if not base or base == "workspace" or base.startswith(".") or base.lower() in _RESERVED_DIRS:
+    if not base or base in ("workspace", agent["id"]) or base.startswith(".") or base.lower() in _RESERVED_DIRS:
         return brain_memory() / "agents" / agent["id"]
     if _name_taken_earlier(agent, base):
         return brain_memory() / f"{base}-{agent['id'][:6]}"
