@@ -7,7 +7,8 @@
     agent.json  名称 / 头像 / 工作目录 / 关联 / 技能与 MCP 名单 / 默认模型 / 禁用工具(系统要读的结构化设置)
     AGENT.md    人格、技能、目标(纯文本,你写,它每次开工都读)
     NOTES.md    它的笔记
-    workspace/  新建 Agent 且没指定目录时的默认工作目录
+    (新建 Agent 且没指定目录时,默认工作目录不在这里,而在 config.AGENT_WORKSPACES_DIR/<id>,
+     避开 vococo 仓库;2026-10-12 之前建的可能还留着 workspace/)
 - 工作目录 = 项目文件夹(会话 key 里的 p<hash>);子会话就是这个项目下原有的会话,不搬数据。
 - 主会话固定为 web:p<hash>:main(通用 Agent 为全局主会话)。定时任务带 agent_id,
   跑完后结果除了落任务自己的会话,还会复制一份到所属 Agent 的主会话(record_run),
@@ -310,7 +311,7 @@ def by_project_hash(phash: str) -> dict | None:
 
 
 def create(name: str, path: str | None = None) -> dict:
-    """新建 Agent。path 为空 → 在家目录下建 workspace/ 当工作目录;否则绑定指定目录。
+    """新建 Agent。path 为空 → 在 config.AGENT_WORKSPACES_DIR/<id> 建工作目录;否则绑定指定目录。
 
     绑定的目录已经是某个 Agent 的工作目录时,不重复建,直接返回那个 Agent(改个名)。"""
     name = (name or "").strip()
@@ -328,7 +329,7 @@ def create(name: str, path: str | None = None) -> dict:
         aid = uuid.uuid4().hex[:10]
     else:
         aid = uuid.uuid4().hex[:10]
-        workdir = str(home(aid) / "workspace")
+        workdir = str(config.AGENT_WORKSPACES_DIR / aid)
         Path(workdir).mkdir(parents=True, exist_ok=True)
         workdir = projects.normalize_project_path(workdir)
     _write_meta(aid, {"name": name, "workdir": workdir, "created_at": time.time(),

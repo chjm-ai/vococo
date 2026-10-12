@@ -93,7 +93,7 @@ def test_memory_dir_follows_project_folder(env, tmp_path):
     from vococo.memory import deposit
 
     assert deposit.agent_memory_dir(env) == tmp_path / "brain" / "memory" / "proj"
-    ws = agents.create("新建的")  # 默认工作目录叫 workspace,不能拿来当目录名
+    ws = agents.create("新建的")  # 默认工作目录名就是 id,不能拿来当目录名
     assert deposit.agent_memory_dir(ws) == tmp_path / "brain" / "memory" / "agents" / ws["id"]
     assert deposit.agent_memory_dir({**env, "workdir": "/x/people"}).parent.name == "agents"  # 撞保留目录名
 

@@ -21,6 +21,7 @@ def isolated(tmp_path, monkeypatch):
     from vococo.memory import _db
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "AGENT_WORKSPACES_DIR", tmp_path / "workspaces")
     monkeypatch.setattr(config, "AI_BRAIN_DIR", tmp_path / "brain")
     monkeypatch.setattr(_db, "_DB", None)
     yield tmp_path
