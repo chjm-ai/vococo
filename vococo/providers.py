@@ -22,10 +22,12 @@ _OFFICIAL_NAMES = ("claude", "official", "anthropic", "claude-official")
 # API key 入口等)一律按量计费的 API 处理。
 _SUBSCRIPTION_HOSTS = ("api.kimi.com",)  # Kimi Coding 订阅套餐
 
-# 本地 Codex OAuth 代理已配置时自动提供的模型。模型通过同一代理转发,不要求用户
-# 在设置页重复手填一个 extra model；代理本身不支持时由其返回明确错误。
+# 本地 Codex OAuth 代理已配置时自动提供的模型。只展示当前三档主力：Astra 负责
+# 极难任务，6.1 Sol 做默认主力，Luna 做轻量任务；旧型号仍可由运行时配置保留回退。
 _CODEX_BUILTIN_MODELS: tuple[tuple[str, str], ...] = (
     ("gpt-6-astra", "GPT-6 Astra（订阅）"),
+    ("gpt-6.1-sol", "GPT-6.1 Sol（订阅）"),
+    ("gpt-6-luna", "GPT-6 Luna（订阅）"),
 )
 
 # 订阅令牌探活用的模型:挑最便宜的 haiku,配 max_tokens=1,一次开销可忽略。
@@ -117,11 +119,28 @@ def _provider_entry_by_name(entries: dict[str, dict], name: str) -> tuple[str, d
     return None
 
 
+def _codex_proxy_entry(entries: dict[str, dict]) -> tuple[str, dict] | None:
+    """找 Codex OAuth 代理；mgmt_key 只管额度查询，不是模型路由必填项。"""
+    ordered = sorted(entries.items(), key=lambda item: item[0].lower() != "codex-gpt")
+    for name, entry in ordered:
+        if not _entry_field(entry, "base_url", "baseUrl"):
+            continue
+        if not _entry_field(entry, "api_key", "apiKey"):
+            continue
+        if "codex" in name.lower() or _entry_field(entry, "mgmt_key"):
+            return name, entry
+    return None
+
+
 def _provider_entry_for_model(model: str) -> tuple[str, dict] | None:
     """按模型反查供应商;额外模型可通过 provider 复用一个代理配置。"""
     from .gateway import settings_store
 
     entries = _all_web_providers()
+    if model in dict(_CODEX_BUILTIN_MODELS):
+        codex_proxy = _codex_proxy_entry(entries)
+        if codex_proxy is not None:
+            return codex_proxy
     for name, entry in entries.items():
         if _entry_field(entry, "model") == model:
             return name, entry
@@ -131,10 +150,6 @@ def _provider_entry_for_model(model: str) -> tuple[str, dict] | None:
         provider_name = extra.get("provider")
         if isinstance(provider_name, str) and provider_name.strip():
             return _provider_entry_by_name(entries, provider_name.strip())
-    if model in dict(_CODEX_BUILTIN_MODELS):
-        for name, entry in entries.items():
-            if _entry_field(entry, "mgmt_key"):
-                return name, entry
     return None
 
 
@@ -333,6 +348,8 @@ def available_models(
 
     disabled = set(settings_store.list_disabled_models())
     entries = _all_web_providers()
+    codex_proxy = _codex_proxy_entry(entries)
+    codex_builtin_ids = dict(_CODEX_BUILTIN_MODELS)
     out: list[tuple[str, str, str]] = [
         (mid, label, "anthropic")
         for mid, label in default_choices
@@ -343,6 +360,9 @@ def available_models(
         mid = extra.get("id")
         if not mid or mid in seen or (not include_disabled and mid in disabled):
             continue
+        # 手动补录过的同名型号不能压过内置定义，否则会丢掉 Codex 分组和代理路由。
+        if codex_proxy is not None and mid in codex_builtin_ids:
+            continue
         provider_name = extra.get("provider")
         if provider_name:
             if not isinstance(provider_name, str):
@@ -352,11 +372,7 @@ def available_models(
                 continue
         seen.add(mid)
         out.append((mid, extra.get("label") or mid, extra.get("group") or "anthropic"))
-    has_codex_proxy = any(
-        _entry_field(entry, "mgmt_key") and _entry_field(entry, "api_key", "apiKey")
-        for entry in entries.values()
-    )
-    if has_codex_proxy:
+    if codex_proxy is not None:
         for mid, label in _CODEX_BUILTIN_MODELS:
             if mid in seen or (not include_disabled and mid in disabled):
                 continue
@@ -384,15 +400,17 @@ def available_models(
         else:
             group = "kimi" if kind == "订阅" else "api"
         out.append((model, f"{model}（{kind}）", group))
-    # 组序 + 组内档位统一排序:GPT-6 Astra 在最前，GPT-5.6 三档按能力降序
-    # (Sol 旗舰 > Terra 均衡 > Luna 轻量)。未知 GPT 模型档位取 99 沉底，非
-    # codex 组 key 全 0 靠稳定排序保持原相对顺序。
+    # 组序 + 组内档位统一排序:当前 GPT-6 三档在前，旧 GPT-5.6 三档留作回退。
+    # 6 Sol 已被 6.1 Sol 取代，若运行时仍手动配置则排在当前三档之后。
     _GROUP_ORDER = {"anthropic": 0, "kimi": 1, "codex": 2, "api": 3}
     _GPT_TIERS = {
         "gpt-6-astra": 0,
-        "gpt-5.6-sol": 1,
-        "gpt-5.6-terra": 2,
-        "gpt-5.6-luna": 3,
+        "gpt-6.1-sol": 1,
+        "gpt-6-luna": 2,
+        "gpt-6-sol": 3,
+        "gpt-5.6-sol": 10,
+        "gpt-5.6-terra": 11,
+        "gpt-5.6-luna": 12,
     }
 
     out.sort(

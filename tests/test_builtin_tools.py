@@ -137,6 +137,13 @@ def test_gen_image_bad_size(isolated):
     assert "仅支持 1024x1024" in out
 
 
+def test_gen_image_rejects_deprecated_model(isolated):
+    from vococo.tools import builtin
+
+    out = _text(_run(builtin.generate_image.handler({"prompt": "猫", "model": "gpt-image-1.5"})))
+    assert "当前仅支持 gpt-image-2" in out
+
+
 def test_gen_image_no_provider(isolated, monkeypatch):
     from vococo.tools import builtin
 

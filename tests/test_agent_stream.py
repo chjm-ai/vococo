@@ -181,6 +181,12 @@ def test_context_window_codex_proxy_gpt_is_258k_for_all_tiers():
         assert context_window(model) == 258_400
 
 
+def test_context_window_gpt6_follows_current_proxy_limit():
+    # 官方 API 是 1.05M，但当前 Claude CLI + 本机代理只上报 200k，先按真实链路保守处理。
+    for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "gpt-6-sol"):
+        assert context_window(model) == 200_000
+
+
 def test_context_window_error_explains_recovery():
     from vococo.core.agent import describe_llm_error
 

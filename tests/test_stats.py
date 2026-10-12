@@ -82,6 +82,16 @@ def test_gpt6_astra_uses_builtin_price(isolated, monkeypatch):
     assert round(stats.overview("all")["models"][0]["cost"], 2) == 10.0
 
 
+def test_gpt6_prices_match_official_short_context_rates(isolated, monkeypatch):
+    stats, _ = _prepare(isolated, monkeypatch)
+    prices = stats._prices()
+
+    assert prices["gpt-6-astra"] == (10, 50, 10, 1)
+    assert prices["gpt-6.1-sol"] == (2, 10, 2, 0.1)
+    assert prices["gpt-6-luna"] == (0.1, 0.5, 0.1, 0.01)
+    assert prices["gpt-6-sol"] == (2, 10, 2, 0.2)
+
+
 def test_fable51_uses_builtin_price(isolated, monkeypatch):
     stats, logs = _prepare(isolated, monkeypatch)
     _write_log(
