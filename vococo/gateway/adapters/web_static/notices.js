@@ -66,8 +66,7 @@ function noticeItemHtml(it){
 
 function renderNoticePop(){
   const pop = $("#noticePop"), items = NTC.items;
-  // 待拍板的事不进「全部忽略」(后端 dismiss_all 同样跳过),只能逐条选或忽略
-  const anyExpired = items.some(it=>it.status==="expired" && it.kind!=="decision");
+  const anyExpired = items.some(it=>it.status==="expired");
   // 没有任何设备订阅推送 = 超时的事只能来这里看,提醒去开
   const noPush = typeof PUSH!=="undefined" && PUSH.enabled && PUSH.count===0;
   pop.innerHTML = `<div class="nthead">待处理 <span>${items.length}</span>
@@ -89,7 +88,8 @@ function renderNoticePop(){
   if(go) go.onclick=e=>{ e.preventDefault(); pop.hidden=true; openSettingsTab("notify"); };
   const all=$("#ntDismissAll");
   if(all) all.onclick=async()=>{
-    if(!confirm("忽略所有已超时的待处理项?")) return;
+    const nDec = NTC.items.filter(it=>it.status==="expired" && it.kind==="decision").length;
+    if(!confirm("忽略所有已超时的待处理项?"+(nDec?`\n其中 ${nDec} 件待拍板事项也会一起清掉。`:""))) return;
     await api("/notices/dismiss",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({all:true})}).catch(()=>{});
     loadNotices();
   };

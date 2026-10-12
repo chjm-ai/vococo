@@ -72,11 +72,12 @@ def test_decision_validation_and_dedup(env):
     assert len(notices.list_open()) == 1 and len(env["pushed"]) == 1  # 重复提:只留一条、不重复推
 
 
-def test_dismiss_all_keeps_decisions(env):
+def test_dismiss_all_clears_decisions_too(env):
     notices.add(session_key="web:x", kind="ask", prompt="q", options=["a"], status="expired")
+    notices.add(session_key="web:y", kind="ask", prompt="q2", options=["a"])  # pending:还在等,不动
     _call({"question": "拍板吗", "options": ["是", "否"]}, f"web:p{env['agent']['project_hash']}:main")
-    assert notices.dismiss_all() == 1
-    assert [n["kind"] for n in notices.list_open()] == ["decision"]
+    assert notices.dismiss_all() == 2
+    assert [n["status"] for n in notices.list_open()] == ["pending"]
 
 
 def test_agent_prompt_mentions_request_decision(env):
