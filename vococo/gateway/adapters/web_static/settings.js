@@ -178,7 +178,7 @@ async function bindNotifyPane(){
   const tgl=$("#notifyToggle"), desc=$("#notifyDesc"); if(!tgl) return;
   const denied = (typeof Notification!=="undefined" && Notification.permission==="denied");
   const sub = denied ? null : await currentSub();
-  if(denied){ tgl.checked=false; tgl.disabled=true; desc.textContent="浏览器已拒绝通知,去系统/浏览器设置里放行后再试"; }
+  if(denied){ tgl.checked=false; tgl.disabled=false; desc.textContent="通知权限已被浏览器拒绝。点击右侧开关查看解除步骤"; }
   else {
     tgl.checked=!!sub; tgl.disabled=false;
     desc.textContent = sub ? "已开启,本设备会收到通知"
