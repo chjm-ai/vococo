@@ -28,3 +28,10 @@ def test_permission_denied_message_only_uses_ios_recovery_for_ios(source: str) -
     assert "浏览器或系统设置" in helper
     assert 'throw new Error(permissionDeniedMessage())' in enable
     assert "iOS 需删掉主屏图标" not in enable
+
+
+def test_denied_permission_keeps_toggle_clickable(source: str) -> None:
+    """已拒绝时，开关仍应可点击以展示恢复通知权限的指引。"""
+    bind = _slice(source, "async function bindNotifyPane()", "// ── Web Push 底座")
+
+    assert "if(denied){ tgl.checked=false; tgl.disabled=false;" in bind
