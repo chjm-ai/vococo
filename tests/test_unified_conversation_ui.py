@@ -241,7 +241,7 @@ def test_search_opened_archived_conversation_keeps_title_and_menu_state():
     assert "async function openSearchResult(r, q){" in html
     assert "S.searchConvs.push({" in html
     assert "openSearchResult(r, q);" in html
-    assert "|| (S.searchConvs||[]).find(x=>x.conv===conv);" in html
+    assert "|| (S.searchConvs||[]).find(x=>x.conv===conv)" in html
     assert "? S.searchConvs" in html
     assert "const activeConv=findConv(S.conv);" in html
     assert "syncMoreHeader();   // 搜索先打开任务、列表后到时,收起普通会话的旧菜单" in html

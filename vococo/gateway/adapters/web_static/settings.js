@@ -809,7 +809,8 @@ function findConv(conv){
   return S.convs.find(x=>x.conv===conv)
     || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv)
     || (S.cronJobs||[]).find(x=>x.conv===conv)
-    || (S.searchConvs||[]).find(x=>x.conv===conv);
+    || (S.searchConvs||[]).find(x=>x.conv===conv)
+    || (S.homeConvs||[]).find(x=>x.conv===conv);
 }
 async function delConv(conv){
   // 语音/定时任务行不在 S.convs 里,从各自所在的列表里乐观移除(定时任务目前走 openConvMenu 的
@@ -818,6 +819,7 @@ async function delConv(conv){
     : (S.voiceSidebar.tasks||[]).some(x=>x.conv===conv) ? S.voiceSidebar.tasks
     : (S.cronJobs||[]).some(x=>x.conv===conv) ? S.cronJobs
     : (S.searchConvs||[]).some(x=>x.conv===conv) ? S.searchConvs
+    : (S.homeConvs||[]).some(x=>x.conv===conv) ? S.homeConvs
     : null;
   if(!list) return;
   const idx=list.findIndex(x=>x.conv===conv);
@@ -848,6 +850,11 @@ async function delConv(conv){
         list.splice(f,1); delete S.histCache[conv]; idbDel("hist:"+conv); delete S.live[conv]; delete S.streamSnap[conv]; markLive(); renderConvs();
       }
     }
+    // 独立首页缓存/搜索缓存可能还有副本，只在服务端确认删除后清理。
+    S.homeConvsVersion++;
+    if(S.homeConvs) S.homeConvs=S.homeConvs.filter(c=>c.conv!==conv);
+    S.searchConvs=S.searchConvs.filter(c=>c.conv!==conv);
+    if($("#empty").style.display==="flex") renderEmptyRecent();
   }catch(err){
     // 删除失败:回滚列表并提示(行可能已恢复,先确认不在再插,避免重复行)
     if(!list.some(x=>x.conv===conv)) list.splice(idx,0,removed);
