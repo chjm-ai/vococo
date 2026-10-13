@@ -38,10 +38,10 @@ function renderNoticeBadge(){
 // 后台任务新弹出的审批/提问,当前不在那个会话时自动弹确认窗(每条只弹一次,重连不重复弹)
 function autoPopupNewPending(){
   for(const it of NTC.items){
-    if(it.status!=="pending" || !it.clarify_id || !it.conv || NTC.seen.has(it.id)) continue;
+    if(it.status!=="pending" || !it.clarify_id || !it.conv || NTC.seen.has(it.id) || _settledChoices.has(it.clarify_id)) continue;
     NTC.seen.add(it.id);
     if(it.conv===S.conv || S.pendingChoice[it.conv]) continue;  // 当前会话里已内联显示 / 已弹过
-    const e = { conv:it.conv, type:"choice", prompt:it.prompt,
+    const e = { conv:it.conv, type:"choice", clarify_id:it.clarify_id, prompt:it.prompt,
       options: it.options.map((lab,i)=>["/clarify "+it.clarify_id+" "+i, (NTC_ICON[lab]?NTC_ICON[lab]+" ":"")+lab]) };
     S.pendingChoice[it.conv] = e;
     openChoiceModal(it.conv, e);
