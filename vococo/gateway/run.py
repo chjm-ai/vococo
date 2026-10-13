@@ -372,7 +372,7 @@ class GatewayRunner:
             # 后台任务的审批弹窗走 Web 端任务会话(见 tools/danger.py _approve_background)
             clarify.register_background_adapter(web_adapter)
             # 铃铛:通知一有变化就推一帧 SSE,前端据此刷新数字
-            notices.set_listener(lambda: web_adapter._emit({"type": "notices"}))
+            notices.set_listener(lambda change: web_adapter._emit({"type": "notices", **change}))
             # Agent:定时结果复制进主会话后推一帧,前端刷新该主会话 / 动态
             from ..memory import agents
 

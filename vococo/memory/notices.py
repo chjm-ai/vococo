@@ -24,7 +24,7 @@ from typing import Callable
 from . import _db
 
 OPEN_STATUSES = ("pending", "expired")
-_listener: Callable[[], None] | None = None
+_listener: Callable[[dict], None] | None = None
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS notices(
@@ -60,16 +60,16 @@ def _conn():
     return c
 
 
-def set_listener(fn: Callable[[], None] | None) -> None:
-    """通知有变化时的回调(Web 端据此刷新铃铛数字)。"""
+def set_listener(fn: Callable[[dict], None] | None) -> None:
+    """通知有变化时的回调(Web 端据此刷新铃铛并收起已结束的审批)。"""
     global _listener
     _listener = fn
 
 
-def _changed() -> None:
+def _changed(change: dict | None = None) -> None:
     if _listener is not None:
         try:
-            _listener()
+            _listener(change or {})
         except Exception as exc:  # noqa: BLE001 —— 刷新推送失败不影响业务
             print(f"[notices] 变更通知失败:{exc}", flush=True)
 
@@ -136,7 +136,8 @@ def set_status(nid: str, status: str, answer: str | None = None) -> bool:
     )
     c.commit()
     if cur.rowcount:
-        _changed()
+        notice = get(nid)
+        _changed({"clarify_id": notice["clarify_id"], "status": status})
     return cur.rowcount > 0
 
 

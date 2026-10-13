@@ -473,6 +473,8 @@ function connect(){
   };
   es.onmessage = ev=>{ try{
     const d=JSON.parse(ev.data);
+    // 重连先补内容快照,再补较早的通知;审批收尾幂等,不能被内容游标吞掉。
+    if(d.type==="notices"){ handleEvent(d); S.lastId=Math.max(S.lastId || 0,d.id || 0); return; }
     if(d.id){ if(d.id<=S.lastId) return; S.lastId=d.id; }  // 补发/重复的老事件直接丢弃
     handleEvent(d);
   }catch(e){} };
@@ -640,7 +642,12 @@ function markLive(){
   _liveSig=sig; renderConvs();
 }
 function handleEvent(e){
-  if(e.type==="notices"){ if(typeof loadNotices==="function") loadNotices(); return; }  // 铃铛有变化
+  if(e.type==="notices"){
+    if(e.clarify_id && ["answered","dismissed","expired"].includes(e.status)) settleChoice(e.clarify_id);
+    if(typeof loadNotices==="function") loadNotices();
+    return;
+  }
+  if(e.type==="choice" && _settledChoices.has(choiceId(e))) return;
   if(e.type==="agent_run"){ if(typeof onAgentRun==="function") onAgentRun(e); return; }  // 定时结果写进了某 Agent 主会话
   // 脚本任务静默收尾(没事别打扰,见 cron/scheduler.py):这一轮没写会话,只熄灭闪烁点、
   // 拆掉 start 时建的空气泡,不标未读、不走下面"回合结束"那一套
@@ -932,11 +939,31 @@ function playChime(){
     setTimeout(()=>ctx.close(), 500);
   }catch(e){}
 }
+// 按审批编号同步,不能按会话关闭:同一会话可能已经弹出了下一条审批。
+const _settledChoices = new Set();
+function choiceId(e){
+  if(e.clarify_id) return e.clarify_id;
+  const cmd=(e.options || []).find(([cmd])=>/^\/clarify\s+/.test(cmd));
+  return cmd ? cmd[0].split(/\s+/)[1] : "";
+}
+function settleChoice(id){
+  _settledChoices.add(id);
+  for(const [conv,e] of Object.entries(S.pendingChoice)){
+    if(choiceId(e)===id) delete S.pendingChoice[conv];
+  }
+  const modal=$("#choiceModal");
+  if(modal && modal.dataset.clarifyId===id) modal.hidden=true;
+  document.querySelectorAll(".choice[data-clarify-id]").forEach(box=>{
+    if(box.dataset.clarifyId===id) box.querySelectorAll("button").forEach(btn=>btn.disabled=true);
+  });
+}
 // 跨会话审批/确认:弹出全屏 modal,显示会话标题、问题内容和可点选项
 function openChoiceModal(conv, e){
+  if(_settledChoices.has(choiceId(e))) return;
   // 工作台独立窗口只处理任务,不能被其他会话的确认选项盖住。
   if(S.standaloneWorkbench) return;
   const modal=$("#choiceModal"); if(!modal) return;
+  modal.dataset.clarifyId=choiceId(e);
   const titleEl=$("#choiceModalTitle"); const promptEl=$("#choiceModalPrompt"); const optsEl=$("#choiceModalOpts");
   const c = S.convs.find(x=>x.conv===conv);
   titleEl.textContent = c ? (c.title || "新对话") : (conv==="main" ? "主会话" : "新对话");
@@ -975,7 +1002,9 @@ document.addEventListener("keydown", ev=>{
   if(ev.key==="Escape" && m && !m.hidden) m.hidden=true;
 });
 function renderChoice(e){
+  if(_settledChoices.has(choiceId(e))) return;
   const box=el("div","choice");
+  box.dataset.clarifyId=choiceId(e);
   const opts=el("div","opts"); box.append(opts);
   const btns=[];
   e.options.forEach(([cmd,label],i)=>{
