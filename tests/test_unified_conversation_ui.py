@@ -1,6 +1,12 @@
 """统一对话入口的静态契约测试。"""
+import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 STATIC_INDEX = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/index.html"
@@ -125,6 +131,99 @@ def test_service_worker_cache_version_changes_with_shell_contract():
     sw = STATIC_SW.read_text(encoding="utf-8")
 
     assert 'const SHELL_CACHE = "vococo-shell-v9";' in sw
+
+
+def _run_reset_label(tz: str, now: str, targets: list[str]) -> list[str]:
+    """用 Node 执行页面里的真实函数，不在 Python 里复制一份日期算法。"""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("需要 Node 执行前端日期格式化函数")
+    html = STATIC_INDEX.read_text(encoding="utf-8")
+    source = html[
+        html.index("function resetLabel(data, nowMs){") : html.index("function findRowEls(id){")
+    ]
+    script = f"""
+eval({json.dumps(source)});
+const now = new Date({json.dumps(now)}).getTime();
+const targets = {json.dumps(targets)};
+const labels = targets.map(value => resetLabel({{limits:{{five_hour:{{resets_at:value}}}}}}, now));
+process.stdout.write(JSON.stringify(labels));
+"""
+    env = os.environ.copy()
+    env["TZ"] = tz
+    result = subprocess.run([node, "-e", script], check=True, capture_output=True, text=True, env=env)
+    return json.loads(result.stdout)
+
+
+def test_model_quota_reset_time_precedes_ring_and_includes_date():
+    """模型面板标题先显示带日期的重置时间，再显示额度圆环。"""
+    html = STATIC_INDEX.read_text(encoding="utf-8")
+    meta = html[html.index('const meta = showMeta') : html.index('html += \'<div class="mgrouplabel"')]
+
+    assert meta.index('class="mreset"') < meta.index('ringSvg(gkey)')
+    assert "startQuotaResetClock();" in html
+
+
+def test_model_quota_reset_label_formats_relative_and_calendar_dates():
+    assert _run_reset_label(
+        "Asia/Shanghai",
+        "2026-09-18T12:00:00+08:00",
+        [
+            "2026-09-18T18:33:00+08:00",
+            "2026-09-19T18:33:00+08:00",
+            "2026-09-21T18:33:00+08:00",
+        ],
+    ) == ["今天 18:33 重置", "明天 18:33 重置", "09/21 18:33 重置"]
+
+
+def test_model_quota_reset_clock_refreshes_visible_dom_from_cached_data():
+    """每分钟计时器必须真正重算并更新标题，而不只是存在调用字符串。"""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("需要 Node 执行模型面板计时器")
+    html = STATIC_INDEX.read_text(encoding="utf-8")
+    source = html[
+        html.index("function resetLabel(data, nowMs){") : html.index("function fmtUSD(n){")
+    ]
+    script = f"""
+let resetNode = {{dataset:{{m:'codex'}}, textContent:''}};
+let pop = {{hidden:false, querySelectorAll(selector){{
+  return selector === '.mreset' ? [resetNode] : [];
+}}}};
+function $(selector){{ if(selector === '#modelPop') return pop; throw new Error(selector); }}
+var quotaResetClock = 0;
+var quotaGroupData = {{codex:{{limits:{{five_hour:{{resets_at:'2026-09-19T18:33:00+08:00'}}}}}}}};
+Date.now = () => new Date('2026-09-18T12:00:00+08:00').getTime();
+global.clearInterval = () => {{}};
+global.setInterval = (callback, delay) => {{
+  if(delay !== 60000) throw new Error('wrong interval '+delay);
+  callback();
+  return 7;
+}};
+eval({json.dumps(source)});
+startQuotaResetClock();
+process.stdout.write(resetNode.textContent);
+"""
+    env = os.environ.copy()
+    env["TZ"] = "Asia/Shanghai"
+    result = subprocess.run([node, "-e", script], check=True, capture_output=True, text=True, env=env)
+
+    assert result.stdout == "明天 18:33 重置"
+
+
+def test_model_quota_reset_label_handles_dst_midnight_boundaries():
+    # 2026-03-08 凌晨进入夏令时：当天午夜到次日午夜只有 23 小时。
+    assert _run_reset_label(
+        "America/New_York",
+        "2026-03-08T12:00:00-04:00",
+        ["2026-03-09T18:33:00-04:00"],
+    ) == ["明天 18:33 重置"]
+    # 2026-11-01 凌晨退出夏令时：当天午夜到次日午夜共有 25 小时。
+    assert _run_reset_label(
+        "America/New_York",
+        "2026-11-01T12:00:00-05:00",
+        ["2026-11-02T18:33:00-05:00"],
+    ) == ["明天 18:33 重置"]
 
 
 def test_startup_worktree_cleanup_is_bounded():

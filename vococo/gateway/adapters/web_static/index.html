@@ -987,6 +987,8 @@ function syncModelLock(){
 // / API(按量计费,不查额度)。分组顺序固定,组间只画一条分割线,不做折叠。
 var MODEL_GROUPS = [["anthropic","Anthropic 订阅"],["kimi","Kimi 订阅"],["codex","Codex 订阅"],["api","API"]];
 var quotaCache = {};   // 按模型名缓存 {data, ts},60s 内直接复用,不重复打接口
+var quotaGroupData = {}; // 分组标题当前额度,供面板跨午夜时只刷新日期文案、不重打接口
+var quotaResetClock = 0;
 var QUOTA_ARC = 50.27; // 2*PI*8,与 ctxRing 同值
 
 function ringSvg(id){
@@ -1012,7 +1014,7 @@ function renderModelPop(){
     // 额度是账号级、组内所有模型共用(实测过,同组各模型接口返回完全一样)——
     // 圆环+重置时间挂在分组标题上查一次,不再每行重复挂一份。
     const showMeta = gkey==="anthropic" || gkey==="kimi" || gkey==="codex";
-    const meta = showMeta ? '<span class="mgmeta">'+ringSvg(gkey)+'<span class="mreset" data-m="'+esc(gkey)+'"></span></span>' : "";
+    const meta = showMeta ? '<span class="mgmeta"><span class="mreset" data-m="'+esc(gkey)+'"></span>'+ringSvg(gkey)+'</span>' : "";
     html += '<div class="mgrouplabel"><span>'+esc(gname)+'</span>'+meta+'</div>';
     html += items.map(function(c){
       const id=c[0], label=c[1];
@@ -1034,6 +1036,7 @@ function renderModelPop(){
     ring.addEventListener("mouseleave", hideUsageTip);
   });
   loadModelQuotas(choices);
+  startQuotaResetClock();
 }
 var usageTipEl = null;
 function showUsageTip(ring){
@@ -1086,18 +1089,36 @@ function loadUsage(model, force){
     .catch(function(){ clearTimeout(timeout); delete quotaCache[model]; return null; });
 }
 // resets_at:Claude 给秒级 unix 时间戳,Kimi 给 ISO 字符串——统一转毫秒;已过期的窗口不显示。
-function resetLabel(data){
+function resetLabel(data, nowMs){
   var five = data && data.limits && data.limits.five_hour;
   if(!five || !five.resets_at) return "";
   var ts = typeof five.resets_at === "number" ? five.resets_at * 1000 : new Date(five.resets_at).getTime();
-  if(!(ts > Date.now())) return "";
-  return new Date(ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"}) + " 重置";
+  var current = nowMs == null ? Date.now() : nowMs;
+  if(!(ts > current)) return "";
+  var target = new Date(ts), now = new Date(current);
+  var targetDay = new Date(target.getFullYear(), target.getMonth(), target.getDate());
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var dayDiff = Math.round((targetDay - today) / 86400000);
+  var pad = function(n){ return String(n).padStart(2, "0"); };
+  var day = dayDiff === 0 ? "今天" : dayDiff === 1 ? "明天" : pad(target.getMonth()+1)+"/"+pad(target.getDate());
+  return day+" "+pad(target.getHours())+":"+pad(target.getMinutes())+" 重置";
 }
 function findRowEls(id){
   var ring=null, reset=null;
   $("#modelPop").querySelectorAll(".mring").forEach(function(el){ if(el.dataset.m===id) ring=el; });
   $("#modelPop").querySelectorAll(".mreset").forEach(function(el){ if(el.dataset.m===id) reset=el; });
   return {ring: ring, reset: reset};
+}
+function startQuotaResetClock(){
+  clearInterval(quotaResetClock);
+  quotaResetClock = setInterval(function(){
+    var pop = $("#modelPop");
+    if(!pop || pop.hidden){ clearInterval(quotaResetClock); quotaResetClock=0; return; }
+    Object.keys(quotaGroupData).forEach(function(id){
+      var reset = findRowEls(id).reset;
+      if(reset) reset.textContent = resetLabel(quotaGroupData[id]);
+    });
+  }, 60000);
 }
 function fmtUSD(n){ n=+n||0; return "$"+n.toFixed(2); }
 function fmtNum(n){ n=+n||0; return n.toLocaleString("en-US"); }
@@ -1191,7 +1212,7 @@ function loadModelQuotas(choices){
   ["anthropic","kimi","codex"].forEach(function(gkey){
     var rep = choices.find(function(c){ return c[2]===gkey; });
     if(!rep) return;
-    loadUsage(rep[0]).then(function(data){ applyUsageRow(gkey, data); });
+    loadUsage(rep[0]).then(function(data){ quotaGroupData[gkey]=data; applyUsageRow(gkey, data); });
   });
 }
 function metaRow(k, v, pp, cls){
