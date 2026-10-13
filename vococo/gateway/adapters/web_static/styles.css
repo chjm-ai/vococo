@@ -258,6 +258,10 @@
     padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);font-size:var(--fs-md);color:var(--text);transition:background var(--t-fast)}
   #convFilterPop .fmi:hover{background:var(--panel2)}
   #convFilterPop .fmi.on{color:var(--accent);font-weight:600}
+  .recent-main-filter{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3) var(--sp-5);flex-shrink:0;color:var(--dim);font-size:var(--fs-md);cursor:pointer}
+  .recent-main-filter[hidden]{display:none}
+  .recent-main-filter:hover{color:var(--text)}
+  .recent-main-filter input{margin:0;accent-color:var(--accent);cursor:pointer}
   .sfoot{padding:var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-5);border-top:1px solid var(--line);font-size:var(--fs-md);color:var(--text);display:flex;align-items:center;gap:var(--sp-1)}   /* 图标间距与顶栏 .shead 统一 */
   .sfoot .savatar{width:26px;height:26px;border-radius:50%;flex-shrink:0;
     background:linear-gradient(135deg,var(--accent),var(--user2));

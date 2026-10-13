@@ -294,6 +294,77 @@ def test_cron_tab_hidden_and_recent_rows_carry_agent_avatar():
     assert "function convAgentAvatar" in STATIC_AGENTS.read_text(encoding="utf-8")
 
 
+def test_recent_main_filter_is_persistent_and_only_visible_in_recent_tab():
+    core = STATIC_APP_CORE.read_text(encoding="utf-8")
+    sidebar = STATIC_SIDEBAR.read_text(encoding="utf-8")
+    html = STATIC_INDEX.read_text(encoding="utf-8")
+    styles = STATIC_STYLES.read_text(encoding="utf-8")
+
+    assert 'recentShowMain: localStorage.getItem("vococo_recent_show_main")==="1"' in core
+    assert 'id="recentMainFilter" class="recent-main-filter" hidden' in html
+    assert 'id="recentShowMain" type="checkbox"' in html
+    assert '.recent-main-filter[hidden]{display:none}' in styles
+    assert '$("#recentMainFilter").hidden=S.sideTab!=="recent";' in sidebar
+    assert '$("#recentShowMain").checked=S.recentShowMain;' in sidebar
+
+
+def test_recent_main_filter_uses_ids_before_pagination_and_toggle_restores_rows():
+    """执行真实筛选/分页函数，主会话同名的子会话和语音任务不得被过滤。"""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("需要 Node 执行侧栏筛选函数")
+    sidebar = STATIC_SIDEBAR.read_text(encoding="utf-8")
+    agents = STATIC_AGENTS.read_text(encoding="utf-8")
+    lookup = re.search(r"function agentByMainConv\(conv\)\{[^\n]+", agents).group(0)
+    source = sidebar[sidebar.index('$("#recentShowMain").onchange=') : sidebar.index("function buildCronGroupHeader")]
+    script = f"""
+const assert = require('node:assert/strict');
+const checkbox = {{}};
+const stored = {{}};
+const localStorage = {{setItem:(key, value)=>stored[key]=value}};
+const TAB_PAGE_SIZE = 20;
+const S = {{recentShowMain:false, convFilter:'active', tabShown:{{recent:20}},
+  agents:[{{main_conv:'agent:alpha'}}, {{main_conv:'agent:beta'}}],
+  voiceSidebar:{{tasks:[{{conv:'task:1', title:'主会话', last_ts:500}}]}},
+  convs:[{{conv:'main', title:'主会话', last_ts:1000}},
+    {{conv:'agent:alpha', title:'Alpha', last_ts:999}},
+    {{conv:'agent:beta', title:'Beta', last_ts:998}},
+    {{conv:'child', title:'主会话', last_ts:997}},
+    {{conv:'same-name', title:'Alpha', last_ts:996}},
+    {{conv:'archived', archived:true, last_ts:995}},
+    ...Array.from({{length:20}}, (_,i)=>({{conv:'child-'+i, last_ts:100-i}}))]}};
+const $ = ()=>checkbox;
+const el = (tag, cls)=>({{cls, append(){{}}}});
+const buildConvRow = c=>({{conv:c.conv}});
+const buildVoiceTaskRow = buildConvRow;
+const sideTabEmpty = text=>({{text}});
+let rows;
+function renderConvs(){{ rows=[]; renderRecentTab({{append:r=>rows.push(r)}}, false); }}
+{lookup}
+{source}
+renderConvs();
+const ids = ()=>rows.filter(r=>r.conv).map(r=>r.conv);
+assert.equal(ids().length, 20);
+assert.deepEqual(ids().slice(0,3), ['child','same-name','task:1']);
+assert.ok(!ids().some(id=>['main','agent:alpha','agent:beta','archived'].includes(id)));
+assert.equal(ids().at(-1), 'child-16');
+assert.ok(rows.at(-1).cls.includes('convmore'));
+rows.at(-1).onclick();
+assert.equal(ids().length, 23);
+checkbox.onchange({{target:{{checked:true}}}});
+assert.equal(stored.vococo_recent_show_main, '1');
+assert.equal(S.tabShown.recent, 20);
+assert.deepEqual(ids().slice(0,5), ['main','agent:alpha','agent:beta','child','same-name']);
+checkbox.onchange({{target:{{checked:false}}}});
+assert.equal(stored.vococo_recent_show_main, '0');
+S.convFilter='archived'; renderConvs();
+assert.deepEqual(ids(), ['archived','task:1']);
+S.convs=[]; S.voiceSidebar=null; renderConvs();
+assert.equal(rows[0].text, '暂无最近会话');
+"""
+    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+
+
 def test_agent_row_state_covers_main_children_and_tasks():
     """工作中/未读都要算上主会话 + 名下子会话(+ 归它的后台任务),同一份清单判断。"""
     js = STATIC_AGENTS.read_text(encoding="utf-8")
