@@ -134,7 +134,16 @@ function applyConvs(d){
   // 全部会话(含主会话)按最近活跃排序,最新的排最前面
   S.convs = [main, ...d.conversations, ...locals].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
   if(typeof patchAgentTitles==="function") patchAgentTitles(S.convs);   // Agent 主会话显示 Agent 名字
+  // 当前会话可能只存在于欢迎屏全量列表；刷新侧栏前保留它，避免标题和操作丢失。
+  const homeActive=(S.homeConvs||[]).find(c=>c.conv===S.conv);
+  if(homeActive && !S.convs.some(c=>c.conv===S.conv)){
+    S.searchConvs=S.searchConvs.filter(c=>c.conv!==S.conv);
+    S.searchConvs.push(homeActive);
+  }
+  S.homeConvsVersion++;
+  S.homeConvs = S.convFilter==="all" ? S.convs : null;
   renderConvs();   // 会话刷新后同步标题栏
+  if($("#empty").style.display==="flex") renderEmptyRecent();
 }
 async function loadConvs(){
   // S.convFilter 是 active/archived 时让后端只回那一半,省掉归档堆积后的
@@ -241,7 +250,7 @@ function pickDraftProject(hash){
   renderConvs(); renderProjSelChip();
 }
 $("#projSelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#projSelPop");
-  if(p.hidden){ renderProjSelPop(); p.hidden=false; } else p.hidden=true; };
+  if(p.hidden){ closeComposerPopovers(p); renderProjSelPop(); p.hidden=false; } else p.hidden=true; };
 document.addEventListener("click", e=>{ const b=$("#projSel"); if(b && !b.contains(e.target)) $("#projSelPop").hidden=true; });
 
 // 语音通话主行(通话入口),与主会话一起置顶在根目录最前(不属于任何分组,数据来自 /voice/sidebar)。

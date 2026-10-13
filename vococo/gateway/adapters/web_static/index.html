@@ -574,29 +574,44 @@ function updateEmpty(){
     renderEmptyRecent();
   }
 }
+let homeConvsRequest = null;
+function loadHomeConvs(){
+  if(homeConvsRequest) return;
+  const version=S.homeConvsVersion;
+  homeConvsRequest=(async()=>{
+    try{
+      const r=await api("/conversations");
+      if(!r.ok) return;
+      const d=await r.json();
+      if(version===S.homeConvsVersion && S.convFilter!=="all") S.homeConvs=d.conversations;
+      homeConvsRequest=null;
+      if($("#empty").style.display==="flex") renderEmptyRecent();
+    }catch(e){}  // 离线时保留当前可用列表，下次进入欢迎屏再重试
+    finally{ homeConvsRequest=null; }
+  })();
+}
 function renderEmptyRecent(){
   const recent = $("#homeRecent");
   if(!recent) return;
   // 收集所有会话(含语音任务),排除当前正打开的这个(避免"最近对话"里出现指向自己的空新对话)。
   // Agent 名下的会话只列这个 Agent 自己的(主会话 + 子会话),不混别的 Agent
   const ag = typeof agentForConv==="function" ? agentForConv(S.conv) : null;
-  const agConvs = ag ? new Set([ag.main_conv, ...agentConvs(ag).map(c=>c.conv)]) : null;
+  if(S.homeConvs===null && S.convFilter!=="all") loadHomeConvs();
+  const convs=new Map((S.homeConvs||[]).map(c=>[c.conv,c]));
+  for(const c of S.convs) convs.set(c.conv,c);
   const items = [];
-  for(const c of S.convs){
-    if(agConvs && !agConvs.has(c.conv)) continue;
+  for(const c of convs.values()){
+    if(ag && c.conv!==ag.main_conv && !agentOwnsConv(ag,c.conv)) continue;
     if(c.pinned) continue;  // 主会话单独处理
     if(c.conv===S.conv) continue;
-    const arch = !!c.archived;
-    if(S.convFilter==="archived" && !arch) continue;
-    if(S.convFilter==="active" && arch) continue;
-    items.push({conv:c.conv, title:(ag && c.conv===ag.main_conv) ? "主会话" : (c.title||"新对话"), ts:c.last_ts, type:"chat"});
+    items.push({conv:c.conv, title:(ag && c.conv===ag.main_conv) ? "主会话" : (c.title||"新对话"), ts:c.last_ts, archived:!!c.archived, type:"chat"});
   }
   // 加入语音任务(侧边栏/最近列表始终全量可见;「终态满 10 分钟自动隐藏」只
   // 作用于语音界面顶部的任务状态条,见 renderTaskBar / taskBarDoneHidden)
   const vs = S.voiceSidebar;
   if(!ag && vs && vs.tasks){
     for(const t of vs.tasks){
-      items.push({conv:t.conv, title:t.title||"语音任务", ts:t.last_ts, type:"voice"});
+      items.push({conv:t.conv, title:t.title||"语音任务", ts:t.last_ts, archived:!!t.archived, type:"voice"});
     }
   }
   // 按时间降序,最多保留 15 条;默认只画前 5 条,点"展开更多"才画剩下的
@@ -613,7 +628,7 @@ function renderEmptyRecent(){
     row.className = "home-item";
     const iconType = it.type==="voice" ? "voice" : "chat";
     const iconChar = it.type==="voice" ? "🎤" : "💬";
-    const timeStr = it.ts ? fmtTime(it.ts) : "";
+    const timeStr = [it.archived ? "已归档" : "", it.ts ? fmtTime(it.ts) : ""].filter(Boolean).join(" · ");
     row.innerHTML = '<div class="home-item-icon '+iconType+'">'+iconChar+'</div>' +
       '<div class="home-item-body"><span class="home-item-title">'+esc(it.title)+'</span>' +
       '<span class="home-item-time">'+esc(timeStr)+'</span></div>';
@@ -733,7 +748,7 @@ function pickEffort(id){
 }
 $("#effortBtn").onclick=e=>{ e.stopPropagation(); const p=$("#effortPop");
   if(!effortState().levels.length) return;
-  if(p.hidden){ renderEffortPop(); p.hidden=false; } else { p.hidden=true; } };
+  if(p.hidden){ closeComposerPopovers(p); renderEffortPop(); p.hidden=false; } else { p.hidden=true; } };
 document.addEventListener("click", e=>{ const b=$("#effortBox"); if(b && !b.contains(e.target)){ $("#effortPop").hidden=true; } });
 
 // ── 权限档位(标准 / 完全访问,见 core/permissions.py)────────────────────────
@@ -800,7 +815,7 @@ function pickPerm(id){
     .catch(function(e){ alert(e.message||"设置失败"); });
 }
 $("#permBtn").onclick=e=>{ e.stopPropagation(); const p=$("#permPop");
-  if(p.hidden){ renderPermPop(); p.hidden=false; } else { p.hidden=true; } };
+  if(p.hidden){ closeComposerPopovers(p); renderPermPop(); p.hidden=false; } else { p.hidden=true; } };
 document.addEventListener("click", e=>{ const b=$("#permBox"); if(b && !b.contains(e.target)){ $("#permPop").hidden=true; } });
 // 限时完全访问:每分钟刷一次剩余时间,到点后重新拉状态(后端已按过期处理)
 setInterval(function(){
@@ -937,6 +952,7 @@ function renderCmdPop(){
   pop.querySelectorAll(".ci").forEach(b=>{ b.onclick=()=>pickCmd(+b.dataset.i); });
 }
 function openCmdMenu(prefix){
+  closeComposerPopovers($("#cmdPop"));
   S.cmd.items=cmdMatches(prefix); S.cmd.active=0; S.cmd.open=true;
   renderCmdPop(); $("#cmdPop").hidden=false;
 }
@@ -1071,7 +1087,7 @@ function pickModel(id){
     body:JSON.stringify({conv:S.conv, model:id})}).catch(()=>{});
 }
 $("#modelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#modelPop");
-  if(p.hidden){ renderModelPop(); p.hidden=false; } else { p.hidden=true; hideUsageTip(); } };
+  if(p.hidden){ closeComposerPopovers(p); renderModelPop(); p.hidden=false; } else { p.hidden=true; hideUsageTip(); } };
 document.addEventListener("click", e=>{ const b=$("#modelBox"); if(b && !b.contains(e.target)){ $("#modelPop").hidden=true; hideUsageTip(); } });
 
 // 模型面板里的订阅额度(重置时间 + 圆环 + hover 详情)
