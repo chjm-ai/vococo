@@ -409,11 +409,20 @@ function renderPinnedTab(box, inCall){
 // 「最近」Tab:汇总所有项目(含语音任务)的会话,按最后活跃时间混排,不看归属项目、数量不封顶,
 // 默认 20 条,点「更多」每次 +20(置顶与最近是正交维度,置顶项目若时间够新也会出现在这里)
 // 每行最前面挂所属 Agent 的头像(withAvatar),在跑时头像蹦跳 + 「···」气泡,替代橙色闪点(2026-10-03)
-// 主会话(总助理)也算一条参与排序——2026-08 统一对话入口时曾因另有独立入口把它剔掉,入口下架后它就只剩 Agent Tab 能找到
+// 默认隐藏总助理与各 Agent 主会话,仍可从 Agent Tab 进入。
+$("#recentShowMain").onchange=e=>{
+  S.recentShowMain=e.target.checked;
+  try{ localStorage.setItem("vococo_recent_show_main", S.recentShowMain?"1":"0"); }catch(e){}
+  S.tabShown.recent=TAB_PAGE_SIZE;
+  renderConvs();
+};
+function isRecentMainConv(c){
+  return c.conv==="main" || !!agentByMainConv(c.conv);
+}
 function renderRecentTab(box, inCall){
   const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
   const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall, true)}));
-  const convItems = S.convs.filter(c=>passesArchFilter(!!c.archived)).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall, true)}));
+  const convItems = S.convs.filter(c=>passesArchFilter(!!c.archived) && (S.recentShowMain || !isRecentMainConv(c))).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall, true)}));
   const rows = [...taskItems, ...convItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
   if(!rows.length){ box.append(sideTabEmpty("暂无最近会话")); return; }
   const shownN=Math.min(S.tabShown.recent, rows.length);
@@ -492,6 +501,8 @@ function renderConvs(){
   const workbench=buildWorkbenchRow(); if(workbench) top.append(workbench);
   // 列表区:Tab 栏固定(#sideTabs),只有分组内容(#convBody)滚动;首次渲染会清掉骨架行
   const tabs=$("#sideTabs"); tabs.innerHTML=""; renderSideTabs(tabs);
+  $("#recentMainFilter").hidden=S.sideTab!=="recent";
+  $("#recentShowMain").checked=S.recentShowMain;
   const box=$("#convBody"); box.innerHTML="";
   if(S.sideTab==="pinned") renderPinnedTab(box, awayFromChat);
   else if(S.sideTab==="recent") renderRecentTab(box, awayFromChat);
