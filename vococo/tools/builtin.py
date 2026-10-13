@@ -1184,6 +1184,52 @@ async def send_video(args: dict) -> dict:
     return _ok(err or "已发送到当前聊天。")
 
 
+_MAX_REF_IMAGES = 6  # 一次最多带几张参考图(够铺一页产品;再多模型压不住,上传也慢)
+_MAX_REF_BYTES = 10 * 1024 * 1024  # 单张参考图大小上限
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def _load_reference_images(value) -> tuple[list[tuple[str, str, bytes]], str]:
+    """读参考图,返回 ([(content_type, 文件名, 字节)], 错误说明)。
+
+    只认真正的图片文件(按 magic bytes 判断,不看后缀):这个工具会把读到的字节
+    上传给第三方生图接口。这是挡「误传」的边界,不是防恶意——文件头可以伪造,
+    真要防人得有沙箱,这点别在注释里吹大。
+    """
+    from pathlib import Path
+
+    if not value:
+        return [], ""
+    if not isinstance(value, list):
+        return [], "reference_images 需要是本地图片路径数组。"
+    if len(value) > _MAX_REF_IMAGES:
+        return [], f"参考图最多 {_MAX_REF_IMAGES} 张,收到 {len(value)} 张。"
+    out: list[tuple[str, str, bytes]] = []
+    for item in value:
+        path = Path(str(item)).expanduser()
+        try:
+            if not path.is_file():
+                return [], f"参考图不存在或不是文件:{path}"
+            # 先看大小再读:误把几 GB 的视频/镜像路径填进来时,整读会顶爆内存并卡住事件循环
+            if path.stat().st_size > _MAX_REF_BYTES:
+                return [], f"参考图过大(上限 {_MAX_REF_BYTES // 1024 // 1024}MB):{path.name}"
+            raw = path.read_bytes()
+        except OSError as e:
+            return [], f"读参考图失败 {path}:{e}"
+        ctype = next((c for magic, c in _IMAGE_MAGIC if raw.startswith(magic)), "")
+        if not ctype and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            ctype = "image/webp"
+        if not ctype:
+            return [], f"不是图片文件(按内容判断,不看后缀):{path}"
+        out.append((ctype, path.name, raw))
+    return out, ""
+
+
 @tool(
     "generate_image",
     "根据文字描述生成一张图片(走 codex-gpt 供应商的 gpt-image 模型),保存到本地,"
@@ -1191,13 +1237,17 @@ async def send_video(args: dict) -> dict:
     "已经展示，严禁在同一轮再调用 send_image 发送该图片。"
     "prompt:图片内容描述,越具体越好(主体/风格/构图/配色/氛围);"
     "size:可选 1024x1024(默认)/1024x1536(竖)/1536x1024(横);"
-    "model:当前仅支持 gpt-image-2(默认)。",
+    "model:当前仅支持 gpt-image-2(默认);"
+    "reference_images:可选,本地图片路径数组(最多 6 张),会一并发给生图模型当参考——"
+    "需要把用户自己的素材/产品图原样画进画面时【必须】传它,否则模型只会凭空编一个"
+    "相似的东西。带参考图时走 edits 接口,能较好保持素材原貌;路径写绝对路径。",
     {
         "type": "object",
         "properties": {
             "prompt": {"type": "string"},
             "size": {"type": "string"},
             "model": {"type": "string", "enum": ["gpt-image-2"]},
+            "reference_images": {"type": "array", "items": {"type": "string"}},
         },
         "required": ["prompt"],
     },
@@ -1223,6 +1273,10 @@ async def generate_image(args: dict) -> dict:
     if model != "gpt-image-2":
         return _ok(f"model 当前仅支持 gpt-image-2,收到:{model}")
 
+    refs, ref_err = _load_reference_images(args.get("reference_images"))
+    if ref_err:
+        return _ok(ref_err)
+
     # 1) 拿 codex-gpt 供应商配置(本地 cli-proxy-api 代理,GPT 订阅转 API)
     found = providers.sidecar_env("codex-gpt")
     if not found:
@@ -1236,18 +1290,35 @@ async def generate_image(args: dict) -> dict:
     if not base_url or not api_key:
         return _ok("codex-gpt 供应商缺 base_url 或 api_key,请到设置页检查。")
 
-    # 2) 调代理的 OpenAI 兼容 images 端点(生图耗时,超时放宽到 5 分钟)
+    # 2) 调代理的 OpenAI 兼容 images 端点(生图耗时,超时放宽到 5 分钟):
+    #    带参考图走 edits(多图上传,素材按原貌进画面);不带走 generations。
+    timeout = aiohttp.ClientTimeout(total=300)
+    headers = {"Authorization": f"Bearer {api_key}"}
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{base_url}/v1/images/generations",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={"model": model, "prompt": prompt, "size": size, "n": 1},
-                timeout=aiohttp.ClientTimeout(total=300),
-            ) as resp:
+            if refs:
+                form = aiohttp.FormData()
+                form.add_field("model", model)
+                form.add_field("prompt", prompt)
+                form.add_field("size", size)
+                form.add_field("n", "1")
+                for ctype, name, raw in refs:
+                    # 字段名固定 image[](OpenAI edits 的多图约定),别改成 image
+                    form.add_field("image[]", raw, filename=name, content_type=ctype)
+                req = session.post(
+                    f"{base_url}/v1/images/edits",
+                    headers=headers,
+                    data=form,
+                    timeout=timeout,
+                )
+            else:
+                req = session.post(
+                    f"{base_url}/v1/images/generations",
+                    headers={**headers, "Content-Type": "application/json"},
+                    json={"model": model, "prompt": prompt, "size": size, "n": 1},
+                    timeout=timeout,
+                )
+            async with req as resp:
                 if resp.status != 200:
                     body = (await resp.text())[:300]
                     return _ok(f"生图失败 HTTP {resp.status}: {body}")

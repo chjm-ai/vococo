@@ -152,6 +152,159 @@ def test_gen_image_no_provider(isolated, monkeypatch):
     assert "未配置 codex-gpt" in out
 
 
+# === generate_image 的参考图读取 ===
+_PNG_STUB = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+
+def test_ref_images_reads_real_png(tmp_path):
+    from vococo.tools import builtin
+
+    f = tmp_path / "a.png"
+    f.write_bytes(_PNG_STUB)
+    refs, err = builtin._load_reference_images([str(f)])
+    assert err == ""
+    assert refs[0][0] == "image/png" and refs[0][1] == "a.png"
+
+
+def test_ref_images_rejects_non_image_by_content(tmp_path):
+    """后缀是 .png 但内容是文本 —— 按内容判断必须拦下,防任意文件外传。"""
+    from vococo.tools import builtin
+
+    f = tmp_path / "fake.png"
+    f.write_text("PRIVATE KEY", encoding="utf-8")
+    refs, err = builtin._load_reference_images([str(f)])
+    assert refs == [] and "不是图片文件" in err
+
+
+def test_ref_images_rejects_missing_path(tmp_path):
+    from vococo.tools import builtin
+
+    refs, err = builtin._load_reference_images([str(tmp_path / "nope.png")])
+    assert refs == [] and "不存在" in err
+
+
+def test_ref_images_caps_count(tmp_path):
+    from vococo.tools import builtin
+
+    paths = []
+    for i in range(builtin._MAX_REF_IMAGES + 1):
+        f = tmp_path / f"{i}.png"
+        f.write_bytes(_PNG_STUB)
+        paths.append(str(f))
+    refs, err = builtin._load_reference_images(paths)
+    assert refs == [] and "最多" in err
+
+
+def test_ref_images_rejects_oversize_before_reading(tmp_path, monkeypatch):
+    """先看大小再读文件:超限的文件不能先进内存。"""
+    from vococo.tools import builtin
+
+    monkeypatch.setattr(builtin, "_MAX_REF_BYTES", 8)
+    f = tmp_path / "big.png"
+    f.write_bytes(_PNG_STUB)
+    refs, err = builtin._load_reference_images([str(f)])
+    assert refs == [] and "过大" in err
+
+
+def test_ref_images_rejects_non_list():
+    from vococo.tools import builtin
+
+    refs, err = builtin._load_reference_images("a.png")
+    assert refs == [] and "数组" in err
+
+
+def _patch_session(monkeypatch, calls: list):
+    """换掉 aiohttp.ClientSession:记录请求参数,回一张假图。"""
+    import base64
+
+    import aiohttp
+
+    class FakeResp:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def json(self):
+            return {"data": [{"b64_json": base64.b64encode(_PNG_STUB).decode()}]}
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return FakeResp()
+
+    monkeypatch.setattr(aiohttp, "ClientSession", FakeSession)
+
+
+def _fake_provider(monkeypatch):
+    monkeypatch.setattr(
+        "vococo.providers.sidecar_env",
+        lambda name: (
+            "gpt-6.1-sol",
+            {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9", "ANTHROPIC_API_KEY": "k"},
+        ),
+    )
+
+
+def test_gen_image_with_refs_goes_to_edits(tmp_path, monkeypatch, isolated):
+    """带参考图必须走 /v1/images/edits 的 multipart,字段名固定 image[]。"""
+    from vococo import config
+    from vococo.tools import builtin
+
+    ref = tmp_path / "box.png"
+    ref.write_bytes(_PNG_STUB)
+    monkeypatch.setattr(config, "IMAGES_DIR", tmp_path / "images")
+    _fake_provider(monkeypatch)
+    calls: list = []
+    _patch_session(monkeypatch, calls)
+
+    out = _text(_run(builtin.generate_image.handler(
+        {"prompt": "摆三个盒子", "reference_images": [str(ref)]}
+    )))
+
+    url, kwargs = calls[0]
+    assert url.endswith("/v1/images/edits")
+    # aiohttp 3.14 的 _fields 元素是 (<MultiDict('name': ...)>, headers, value),
+    # 老版本第一位直接是字符串 —— 两种都认,免得升个依赖测试就红
+    def field_name(field) -> str:
+        head = field[0]
+        return head["name"] if hasattr(head, "get") else head
+
+    names = [field_name(f) for f in kwargs["data"]._fields]
+    assert "image[]" in names, "字段名只能是 image[](OpenAI 多图约定)"
+    assert {"model", "prompt", "size", "n"} <= set(names)
+    assert "已生成图片" in out
+
+
+def test_gen_image_without_refs_keeps_generations(tmp_path, monkeypatch, isolated):
+    """不带参考图的老路径不能改坏。"""
+    from vococo import config
+    from vococo.tools import builtin
+
+    monkeypatch.setattr(config, "IMAGES_DIR", tmp_path / "images")
+    _fake_provider(monkeypatch)
+    calls: list = []
+    _patch_session(monkeypatch, calls)
+
+    _run(builtin.generate_image.handler({"prompt": "猫"}))
+
+    url, kwargs = calls[0]
+    assert url.endswith("/v1/images/generations")
+    assert kwargs["json"]["model"] == "gpt-image-2"
+
+
 def test_send_image_rejects_same_turn_auto_generated_image(tmp_path, monkeypatch):
     """generate_image 已自动展示的文件，send_image 必须拒绝重复发送。"""
     from vococo.gateway import clarify
