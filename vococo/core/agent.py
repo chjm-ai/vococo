@@ -273,8 +273,8 @@ class VideoAttachment:
 # 按 200k 保守兜底。
 # gpt-5.6 三档(Sol/Terra/Luna)官方 API 直连可达 1.05M input / 128k output；但当前
 # Codex 本机模型目录均标 272k，并要求预留 5% 自动压缩空间，实际可用 258,400。
-# GPT-6 官方同为 1.05M / 128k，但 2026-10-12 通过当前 Claude CLI + 本机代理实测只
-# 上报 200k / 32k，先按真实链路保守登记；未做长上下文压力测试前不能照搬官方上限。
+# GPT-6 官方同为 1.05M / 128k；当前代理没有上下文元数据，先按 500k 逐步放量，
+# 自动压缩会在 65%（325k）触发。有超窗错误再回退，实测稳定后再考虑继续提高。
 _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-fable-5-1": 1_000_000,
     "claude-opus-5-5": 1_000_000,
@@ -285,7 +285,7 @@ _CONTEXT_WINDOWS: dict[str, int] = {
     "deepseek-flash": 1_000_000,
     "deepseek-v4": 1_000_000,
     "kimi-k3": 1_000_000,
-    "gpt-6": 200_000,
+    "gpt-6": 500_000,
     "gpt-5.6": 258_400,
 }
 
@@ -293,7 +293,8 @@ _CONTEXT_WINDOWS: dict[str, int] = {
 def context_window(model: str) -> int:
     m = (model or "").lower()
     for prefix, win in _CONTEXT_WINDOWS.items():
-        if m.startswith(prefix):
+        suffix = m[len(prefix):] if m.startswith(prefix) else ""
+        if m == prefix or suffix.startswith(("-", ".")):
             return win
     return 200_000
 
