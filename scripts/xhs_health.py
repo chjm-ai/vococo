@@ -17,13 +17,34 @@ PUBLISH_JOB = "b98cda06"
 now = datetime.datetime.now()
 today = now.date().isoformat()
 
-# 失败日志里的关键字 → 人话原因 + 怎么处理
+# 具体错误优先于 check-login 等步骤名,步骤失败本身不能证明登录过期。
 HINTS = [
-    ("check-login", "9333 端口的 Chrome 页面卡死或小红书登录过期", "关掉 9333 端口那个 Chrome 让预检重开;还不行就扫码重登"),
-    ("exit IP", "8:30 时网络不通(电脑睡眠或断网)", "确认电脑没睡眠、网络正常,可手动重跑 scripts/daily.sh"),
-    ("安全中心", "触发了小红书风控", "人工打开浏览器过验证,当天别重跑"),
-    ("captcha", "触发了验证码", "人工打开浏览器过验证,当天别重跑"),
+    ("账号不存在", "账号配置错误", "核对预检的 --account 与已注册账号,不要因此关闭浏览器或重登"),
+    ("配置错误", "账号或启动参数配置错误", "按原始错误核对账号配置和命令参数"),
+    ("不能安全复用", "Chrome CDP 端口被未知或其他账号占用", "核对账号、Profile 和端口绑定;人工确认占用实例,不要批量关闭 Chrome"),
+    ("安全中心", "触发了小红书风控", "人工打开对应账号浏览器过验证,当天别重跑"),
+    ("captcha", "触发了验证码", "人工打开对应账号浏览器过验证,当天别重跑"),
+    ("chrome cdp still unhealthy", "Chrome CDP 连接异常", "检查对应账号的浏览器和端口,不要关闭其他账号的浏览器"),
+    ("xhs not logged in", "小红书未登录", "在对应账号浏览器扫码登录"),
+    ("cannot get exit IP", "网络出口检测失败", "检查网络和出口 IP 检测服务,不能仅据此认定电脑睡眠"),
+    ("timeout(", "整轮爬虫超过运行时限", "查看 daily.log 和 crawl 日志定位卡住的步骤"),
+    ("exit=143", "预检步骤被终止或超时", "查看预检原始错误,核对该步骤的耗时和终止原因"),
+    ("exit=137", "预检步骤被强制终止", "查看预检原始错误,核对资源和终止原因"),
+    ("check-login", "登录检查执行失败(原因未确定)", "查看预检原始错误,不要直接认定浏览器卡死或登录过期"),
+    ("smoke search-feeds", "搜索冒烟测试失败(原因未确定)", "查看搜索测试原始错误,确认主站登录态及搜索页面"),
 ]
+
+
+def crawler_failure(lines: list[str]) -> str:
+    text = "\n".join(lines)
+    detail = next((x.split("] ", 1)[-1] for x in lines
+                   if "配置错误" in x or "账号不存在" in x or "不能安全复用" in x), None)
+    if detail is None:
+        detail = next((x.split("] ", 1)[-1] for x in lines if "FAIL" in x), "跑了但没写完成标记")
+    for key, why, fix in HINTS:
+        if key in text:
+            return f"爬虫失败:{why}。原始信息:{detail}。处理:{fix}(细节看 logs/daily.log)"
+    return f"爬虫失败:{detail}(细节看 logs/daily.log)"
 
 
 def crawler() -> tuple[list[str], list[str], datetime.datetime | None]:
@@ -32,6 +53,10 @@ def crawler() -> tuple[list[str], list[str], datetime.datetime | None]:
         return [], ["爬虫日志不存在:" + str(log)], None
     lines = log.read_text(encoding="utf-8", errors="ignore").splitlines()[-600:]
     todays = [x for x in lines if x.startswith(f"[{today}")]
+    # 补跑后只判断最新一轮,避免旧错误覆盖新错误或旧完成标记掩盖新失败。
+    start = next((i for i in range(len(todays) - 1, -1, -1)
+                  if "=== daily.sh start ===" in todays[i]), 0)
+    todays = todays[start:]
     done = next((x for x in todays if "=== daily.sh done ===" in x), None)
     if done:
         ts = datetime.datetime.fromisoformat(done[1:20])
@@ -40,12 +65,7 @@ def crawler() -> tuple[list[str], list[str], datetime.datetime | None]:
         return ["爬虫还在跑或未到检查时间"], [], None
     if not todays:
         return [], ["爬虫今天没开跑(电脑睡眠或 launchd 没触发);可手动跑 ~/Repos/linxai-xhs-research/scripts/daily.sh"], None
-    text = "\n".join(todays)
-    for key, why, fix in HINTS:
-        if key in text:
-            return [], [f"爬虫失败:{why}。处理:{fix}"], None
-    fail = next((x.split("] ", 1)[-1] for x in todays if "FAIL" in x), "跑了但没写完成标记")
-    return [], [f"爬虫失败:{fail}(细节看 logs/daily.log)"], None
+    return [], [crawler_failure(todays)], None
 
 
 def analysis(crawl_done: datetime.datetime | None) -> tuple[list[str], list[str]]:
