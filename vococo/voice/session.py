@@ -62,8 +62,10 @@ def _model_candidates(chosen_model: str | None) -> list[str]:
     _, primary_env = providers.resolve(primary, config.MODEL)
     if not primary_env:
         active = providers.load_active()
-        if active and not active.is_official and active.model and active.model not in candidates:
-            candidates.append(active.model)
+        if active and not active.is_official and active.model:
+            fallback = providers._selection_id(active)
+            if fallback not in candidates:
+                candidates.append(fallback)
     return candidates
 
 

@@ -283,9 +283,9 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         # 优先 DeepSeek(便宜且稳定);没配 DeepSeek 就兜任意已配置第三方
         # (如 Codex OAuth 代理的 GPT 系),仍不落官方订阅。
         if model is None:
-            ds = providers.sidecar_env("deepseek")
+            ds = providers.sidecar_env("deepseek", selection_id=True)
             if ds is None:
-                ds = providers.sidecar_env("")
+                ds = providers.sidecar_env("", selection_id=True)
             if ds is not None:
                 model = ds[0]
         # 追加的标记指令只喂给模型,不进 turns 表(session_key.start_turn 存的是

@@ -274,29 +274,6 @@ async def converse(
     from ..memory import agents
 
     agent_extra = agents.prompt_extra_for_session(session_key)
-    # 运行中的 SDK transcript 不会在发送前自动压缩。若上轮已测得上下文逼近当前
-    # 模型的真实窗口，先发 SDK 内置 /compact，再发送用户本次原话；否则这次请求会
-    # 被上游直接 400 拒绝，用户只能反复点「继续」。
-    chosen_model = model or session_store.get_chosen_model(session_key) or config.MODEL
-    resolved_model, _ = providers.resolve(chosen_model, config.MODEL)
-    used_tokens = int(session_store.session_summary(session_key).get("ctx_tokens", 0) or 0)
-    needs_preflight_compact = (
-        not compact
-        and bool(resume_sid)
-        and used_tokens >= int(context_window(resolved_model) * 0.65)
-    )
-    if needs_preflight_compact:
-        async for ev in stream_turn(
-            [], "", model=model, cwd=cwd, is_explicit_project=is_explicit_project,
-            resume=resume_sid, session_key=session_key,
-            compact_only=True, system_prompt_extra=agent_extra,
-        ):
-            if isinstance(ev, Compacted):
-                await sink.compacted(ev.trigger or "preflight")
-            elif isinstance(ev, Done):
-                if ev.reply.sdk_session_id:
-                    resume_sid = ev.reply.sdk_session_id
-                    session_store.set_sdk_session_id(session_key, resume_sid)
     reply: AgentReply | None = None
     timeline = Timeline()  # 录过程时间线,轮末随正文落库(刷新可重建工具卡)
     # 流式进行中:节流把当前全文写进 turns.draft_text,供前端刷新后兜底恢复
@@ -308,6 +285,28 @@ async def converse(
     source_token = None
     try:
         source_token = clarify.bind_turn(session_key, turn_id)
+        # 模型解析和预压缩也可能失败，必须走同一套落库与 cwd 清理。
+        # 上轮窗口逼近上限时，先 /compact 再发原问题，避免上游直接返回 400。
+        chosen_model = model or session_store.get_chosen_model(session_key) or config.MODEL
+        resolved_model, _ = providers.resolve(chosen_model, config.MODEL)
+        used_tokens = int(session_store.session_summary(session_key).get("ctx_tokens", 0) or 0)
+        needs_preflight_compact = (
+            not compact
+            and bool(resume_sid)
+            and used_tokens >= int(context_window(resolved_model) * 0.65)
+        )
+        if needs_preflight_compact:
+            async for ev in stream_turn(
+                [], "", model=model, cwd=cwd, is_explicit_project=is_explicit_project,
+                resume=resume_sid, session_key=session_key,
+                compact_only=True, system_prompt_extra=agent_extra,
+            ):
+                if isinstance(ev, Compacted):
+                    await sink.compacted(ev.trigger or "preflight")
+                elif isinstance(ev, Done):
+                    if ev.reply.sdk_session_id:
+                        resume_sid = ev.reply.sdk_session_id
+                        session_store.set_sdk_session_id(session_key, resume_sid)
         async for ev in stream_turn(
             history, user_text, model=model, images=images, files=files, cwd=cwd,
             is_explicit_project=is_explicit_project, resume=resume_sid,

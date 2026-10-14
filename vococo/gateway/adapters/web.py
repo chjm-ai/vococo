@@ -1919,7 +1919,7 @@ class WebAdapter:
         choices = providers.available_models(MODEL_CHOICES)
         # default = web 端上次选定的模型;没设过才回落到 config.MODEL
         active_model = settings_store.get_web_default_model() \
-            or providers.resolve(None, config.MODEL)[0]
+            or config.MODEL
         efforts = {}
         for model, _, _ in choices:
             levels = providers.effort_levels_for_model(model)
@@ -1947,7 +1947,7 @@ class WebAdapter:
         if not model:
             # 兼容更新前缓存住的 Web 页面：旧客户端没传 model 时按当前默认模型落库。
             model = settings_store.get_web_default_model() \
-                or providers.resolve(None, config.MODEL)[0]
+                or config.MODEL
         available = {item[0] for item in providers.available_models(MODEL_CHOICES)}
         if model not in available:
             return web.json_response({"error": "模型不可用"}, status=400)
@@ -2541,7 +2541,7 @@ class WebAdapter:
         """设置页初始快照:技能清单 + MCP(内置 vococo + 外部)+ 记忆/AGENTS 文件列表。"""
         # active = 当前实际在用的模型,算法跟 _handle_models 的 default 保持一致
         active_model = settings_store.get_web_default_model() \
-            or providers.resolve(None, config.MODEL)[0]
+            or config.MODEL
         disabled = set(settings_store.list_disabled_models())
         # 设置页的显示开关必须和聊天模型面板同源；include_disabled 让已隐藏模型仍可恢复。
         model_choices = [

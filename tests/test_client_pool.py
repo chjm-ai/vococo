@@ -172,6 +172,50 @@ async def test_effort_change_rebuilds_warm_client(clients, monkeypatch):
     assert clients[1].options.effort == "xhigh"
 
 
+@pytest.mark.anyio
+async def test_claude_alias_effort_and_pool_identity(clients, monkeypatch):
+    upstream = "claude-sonnet-5-5"
+    first = f"cheapcoding-sonnet/{upstream}"
+    second = f"another-sonnet/{upstream}"
+    env = {"ANTHROPIC_BASE_URL": "https://cheapcoding.cc", "ANTHROPIC_API_KEY": "test",
+           "CLAUDE_CODE_OAUTH_TOKEN": "", "DISABLE_PROMPT_CACHING": "1"}
+    monkeypatch.setattr(agent.providers, "resolve", lambda chosen, default: (upstream, env if chosen != upstream else {}))
+    saved = {upstream: "low", first: "max", second: "max"}
+    monkeypatch.setattr(agent.settings_store, "get_web_effort", lambda model: saved[model])
+    for selection in (upstream, first, second):
+        async for _ in agent.stream_turn([], "hi", model=selection, session_key="web:alias", resume="sid-1"):
+            pass
+    assert len(clients) == 3
+    assert [client.options.model for client in clients] == [upstream] * 3
+    assert [client.options.effort for client in clients] == ["low", "max", "max"]
+    assert clients[0].options.env["DISABLE_PROMPT_CACHING"] == ""
+    assert clients[1].options.env["DISABLE_PROMPT_CACHING"] == "1"
+    assert clients[0].disconnected and clients[1].disconnected
+
+
+@pytest.mark.anyio
+async def test_title_sidecar_uses_cache_policy_without_leaking_to_official(monkeypatch):
+    import claude_agent_sdk
+    from vococo.core import title
+    seen = []
+    async def query(*, prompt, options):
+        seen.append(options)
+        yield _result_msg("title")
+    monkeypatch.setattr(claude_agent_sdk, "query", query)
+    monkeypatch.setenv("DISABLE_PROMPT_CACHING", "1")
+    await title._ask("标题", "claude-sonnet-5-5", {"DISABLE_PROMPT_CACHING": "1"})
+    await title._ask("标题", "claude-haiku-4-5", {})
+    assert seen[0].env["DISABLE_PROMPT_CACHING"] == "1"
+    assert seen[1].env["DISABLE_PROMPT_CACHING"] == ""
+
+
+def test_turn_env_clears_inherited_cache_policy(monkeypatch):
+    monkeypatch.setenv("DISABLE_PROMPT_CACHING", "1")
+    assert agent._turn_env({})["DISABLE_PROMPT_CACHING"] == ""
+    assert agent._turn_env({"ANTHROPIC_API_KEY": "other"})["DISABLE_PROMPT_CACHING"] == ""
+    assert agent._turn_env({"DISABLE_PROMPT_CACHING": "1"})["DISABLE_PROMPT_CACHING"] == "1"
+
+
 async def _turn_with_effort(clients, monkeypatch, effort: str):
     monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("deepseek-flash", {"K": "v"}))
     monkeypatch.setattr(agent.providers, "effort_levels_for_model", lambda *a: (effort,))

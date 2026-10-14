@@ -95,6 +95,23 @@ async def test_overfull_session_compacts_before_sending_user_message(isolated, m
 
 
 @pytest.mark.anyio
+async def test_missing_provider_alias_finishes_turn_and_cleans_cwd(isolated, monkeypatch):
+    from vococo.core import worktree
+    from vococo.gateway import settings_store
+    from vococo.tools import danger
+    monkeypatch.setattr(worktree, "execution_cwd", _default_cwd)
+    monkeypatch.setattr(settings_store, "web_providers_raw", lambda: {})
+    key = "web:missing-provider"
+    alias = "missing/claude-sonnet-5-5"
+    session_store.set_chosen_model(key, alias)
+    previous_cwd = danger.current_cwd()
+    reply = await core.converse(key, "继续", alias, Sink())
+    assert reply and reply.is_error and "供应商" in reply.error
+    assert len(session_store.load_recent(key)) == 1
+    assert danger.current_cwd() == previous_cwd
+
+
+@pytest.mark.anyio
 async def test_cancel_interrupts_sdk_client(monkeypatch):
     """手动取消时应调用 client.interrupt() 通知 CLI 子进程停止生成。"""
     from claude_agent_sdk import StreamEvent

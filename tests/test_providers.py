@@ -18,6 +18,158 @@ def _point_settings_to(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
 
 
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"])
+def test_claude_provider_alias_is_independent(tmp_path, monkeypatch, model):
+    _point_settings_to(monkeypatch, tmp_path)
+    name = "cheapcoding-" + model.split("-")[1]
+    alias = f"{name}/{model}"
+    settings_store.upsert_web_provider(name, {
+        "base_url": "https://cheapcoding.cc/anthropic", "model": model, "api_key": "test-key",
+    })
+    choices = providers.available_models([(model, "官方")])
+    assert (model, "官方", "anthropic") in choices
+    assert any(mid == alias and name in label and group == "api" for mid, label, group in choices)
+    assert providers.resolve(model, model) == (model, {})
+    assert providers.lookup_provider_by_model(model) is None
+    upstream, env = providers.resolve(alias, model)
+    assert upstream == model
+    assert env["DISABLE_PROMPT_CACHING"] == "1"
+    assert providers.resolve(None, alias) == (upstream, env)
+    assert providers._provider_for_model(alias).model == model
+    assert providers.lookup_provider_by_model(alias)["model"] == model
+    assert providers.sidecar_env(name) == (model, env)
+    assert providers.sidecar_env(name, selection_id=True) == (alias, env)
+    settings_store.set_web_effort("low", model=model)
+    settings_store.set_web_effort("max", model=alias)
+    assert settings_store.get_web_effort(model) == "low"
+    assert settings_store.get_web_effort(alias) == "max"
+    assert "low" in providers.effort_levels_for_model(model)
+    assert "low" not in providers.effort_levels_for_model(alias)
+    settings_store.set_model_disabled(alias, True)
+    assert [mid for mid, _, _ in providers.available_models([(model, "官方")])] == [model]
+    assert alias in {mid for mid, _, _ in providers.available_models([(model, "官方")], True)}
+    settings_store.set_model_disabled(alias, False)
+    settings_store.set_model_disabled(model, True)
+    assert [mid for mid, _, _ in providers.available_models([(model, "官方")])] == [alias]
+
+
+def test_extra_claude_model_is_namespaced_and_routes_upstream(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    sonnet, opus = "claude-sonnet-5-5", "claude-opus-5-5"
+    settings_store.upsert_web_provider("relay", {
+        "base_url": "https://cheapcoding.cc", "api_key": "test", "model": sonnet,
+    })
+    settings_store.upsert_web_extra_model(opus, "额外 Opus", group="api", provider="relay")
+    defaults = [(sonnet, "官方 Sonnet"), (opus, "官方 Opus")]
+    choices = providers.available_models(defaults)
+    assert (opus, "官方 Opus", "anthropic") in choices
+    assert any(mid == f"relay/{opus}" and "relay" in label and group == "api" for mid, label, group in choices)
+    assert providers.resolve(opus, sonnet) == (opus, {})
+    upstream, env = providers.resolve(f"relay/{opus}", sonnet)
+    assert upstream == opus and env["DISABLE_PROMPT_CACHING"] == "1"
+    assert providers.lookup_provider_by_model(f"relay/{opus}")["model"] == opus
+    settings_store.set_model_disabled(opus, True)
+    assert f"relay/{opus}" in {mid for mid, _, _ in providers.available_models(defaults)}
+    settings_store.remove_web_extra_model(opus)
+    with pytest.raises(ValueError, match="供应商"):
+        providers.resolve(f"relay/{opus}", sonnet)
+
+
+def test_provider_name_starting_claude_routes_generated_alias(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    model = "claude-sonnet-5-5"
+    alias = f"claude-relay/{model}"
+    settings_store.upsert_web_provider("claude-relay", {
+        "base_url": "https://cheapcoding.cc", "api_key": "test", "model": model,
+    })
+    assert alias in {mid for mid, _, _ in providers.available_models([])}
+    resolved, env = providers.resolve(alias, model)
+    assert resolved == model and env["ANTHROPIC_API_KEY"] == "test"
+    assert providers.resolve(model, model) == (model, {})
+
+
+@pytest.mark.parametrize("extra", [False, True])
+@pytest.mark.parametrize("upstream", ["anthropic/claude-sonnet-5-5", "claude-vendor/claude-sonnet-5-5"])
+def test_real_slash_claude_model_keeps_existing_route(tmp_path, monkeypatch, extra, upstream):
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider("openrouter", {
+        "base_url": "https://openrouter.example", "api_key": "test",
+        "model": "ordinary-model" if extra else upstream,
+    })
+    if extra:
+        settings_store.upsert_web_extra_model(upstream, "OpenRouter Claude", provider="openrouter", group="api")
+    resolved, env = providers.resolve(upstream, "claude-sonnet-5-5")
+    assert resolved == upstream
+    assert env["ANTHROPIC_BASE_URL"] == "https://openrouter.example"
+    assert providers.lookup_provider_by_model(upstream)["model"] == upstream
+    assert upstream in {mid for mid, _, _ in providers.available_models([])}
+    assert "DISABLE_PROMPT_CACHING" not in env
+
+
+def test_three_claude_tiers_coexist_with_official(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    models = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]
+    aliases = []
+    for model in models:
+        name = "cheapcoding-" + model.split("-")[1]
+        settings_store.upsert_web_provider(name, {
+            "base_url": "https://cheapcoding.cc", "api_key": "test", "model": model,
+        })
+        aliases.append(f"{name}/{model}")
+    choices = providers.available_models([(model, model) for model in models])
+    assert {mid for mid, _, group in choices if group == "anthropic"} == set(models)
+    assert {mid for mid, _, group in choices if group == "api"} == set(aliases)
+    for model, alias in zip(models, aliases):
+        assert providers.resolve(model, model) == (model, {})
+        assert providers.resolve(alias, model)[0] == model
+
+
+@pytest.mark.parametrize("url,disabled", [
+    ("https://cheapcoding.cc:443/anthropic", True),
+    ("https://cheapcoding.cc.evil.example", False),
+    ("https://other.example/cheapcoding.cc", False),
+    ("https://api.anthropic.com", False),
+])
+def test_cache_policy_depends_on_exact_host(url, disabled):
+    env = providers._env_for(providers.ActiveProvider("cheapcoding", url, "test", "claude-sonnet-5-5"))
+    assert (env.get("DISABLE_PROMPT_CACHING") == "1") is disabled
+
+
+def test_missing_claude_alias_fails_without_breaking_slash_models(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="供应商"):
+        providers.resolve("missing/claude-sonnet-5-5", "claude-sonnet-5-5")
+    settings_store.upsert_web_provider("other", {
+        "base_url": "https://other.example", "api_key": "test", "model": "org/ordinary-model",
+    })
+    assert providers.resolve("org/ordinary-model", "claude-sonnet-5-5")[0] == "org/ordinary-model"
+    assert providers.resolve("org/unknown-model", "claude-sonnet-5-5") == ("org/unknown-model", {})
+
+
+@pytest.mark.parametrize("entry", [
+    {"model": "claude-opus-5-5", "api_key": "test", "base_url": "https://cheapcoding.cc"},
+    {"model": "claude-sonnet-5-5", "api_key": "", "base_url": "https://cheapcoding.cc"},
+    {"model": "claude-sonnet-5-5", "api_key": "test", "base_url": "file:///tmp"},
+])
+def test_invalid_claude_alias_never_falls_back_to_official(tmp_path, monkeypatch, entry):
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider("cheapcoding-sonnet", entry)
+    with pytest.raises(ValueError, match="供应商"):
+        providers.resolve("cheapcoding-sonnet/claude-sonnet-5-5", "claude-sonnet-5-5")
+
+
+@pytest.mark.anyio
+async def test_usage_default_keeps_provider_alias(tmp_path, monkeypatch):
+    from vococo import config
+    _point_settings_to(monkeypatch, tmp_path)
+    model = "claude-sonnet-5-5"
+    settings_store.upsert_web_provider("cheapcoding-sonnet", {
+        "base_url": "https://cheapcoding.cc", "api_key": "test", "model": model,
+    })
+    monkeypatch.setattr(config, "MODEL", f"cheapcoding-sonnet/{model}")
+    assert await providers.usage_for_model(None) == ({"provider": "api", "type": "api"}, 200)
+
+
 # ── 基础 resolve / load_active / has_active_third_party ──────────────
 def test_resolve_default_model_when_no_providers(tmp_path, monkeypatch):
     _point_settings_to(monkeypatch, tmp_path)
