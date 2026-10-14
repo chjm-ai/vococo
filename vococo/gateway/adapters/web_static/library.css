@@ -1,5 +1,5 @@
-/* 沿用 Library Demo 的右侧筛选、三列卡片与详情抽屉；限定作用域，不覆盖现有 APP。 */
-#libraryView{flex:1;min-width:0;overflow:auto;background:var(--bg2)}
+/* 沿用工作台的内容列与控件密度；限定作用域，不覆盖现有 APP。 */
+#libraryView{flex:1;min-width:0;overflow-y:scroll;scrollbar-gutter:stable;background:var(--bg2)}
 #libraryView[hidden]{display:none}
 .library-ui{color:var(--text);font-family:inherit;font-size:var(--fs-base);line-height:1.6}
 .library-ui *{box-sizing:border-box}
@@ -9,16 +9,16 @@
 .library-ui button:disabled{cursor:wait;opacity:.5}
 .library-ui :is(button,input,select):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .library-ui :is(h1,h2,h3,p){margin:0}
-.lib-content{max-width:1600px;margin-inline:auto;padding:clamp(var(--sp-5),3vw,calc(var(--sp-5) * 2.5))}
+.lib-content{width:min(820px,100%);margin-inline:auto;padding:var(--sp-5) calc(var(--sp-5) * 2) calc(var(--sp-5) * 3)}
 .lib-heading,.lib-title,.lib-actions,.lib-filters,.lib-results,.lib-card-meta{display:flex;align-items:center;gap:var(--sp-4)}
 .lib-heading,.lib-results{justify-content:space-between}
 .lib-heading{flex-wrap:wrap}
 .lib-title{min-width:0}
-.lib-title h1{font-size:28px;font-weight:600;letter-spacing:-.04em}
-.lib-title h1 span{font:var(--fs-xl)/1.4 Optima,"Songti SC",serif;color:var(--dim);letter-spacing:.02em;margin-left:var(--sp-3)}
+.lib-title h1{font-size:var(--fs-xl);font-weight:700;line-height:1.3}
+.lib-title h1 span{font-size:var(--fs-sm);font-weight:400;color:var(--dim2);margin-left:var(--sp-3)}
 .lib-actions{flex-wrap:wrap;gap:var(--sp-3)}
 .lib-intro{color:var(--dim);margin-top:var(--sp-4)!important}
-.lib-button{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);min-height:calc(var(--sp-5) * 2.5);padding:var(--sp-3) var(--sp-4);border:1px solid var(--line2);border-radius:var(--r-md);background:var(--bg);font-size:var(--fs-md)!important;transition:background var(--t-fast),color var(--t-fast)}
+.lib-button{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);min-height:calc(var(--sp-5) * 2);padding:var(--sp-2) var(--sp-4);border:1px solid var(--line2);border-radius:var(--r-md);background:var(--bg);font-size:var(--fs-md)!important;transition:background var(--t-fast),color var(--t-fast)}
 .lib-button .ic{width:var(--sp-5);height:var(--sp-5);flex-shrink:0}
 .lib-button[aria-pressed="true"]{color:var(--accent);background:color-mix(in srgb,var(--accent) 9%,var(--bg))}
 .lib-filters{align-items:flex-start;flex-direction:column;gap:var(--sp-4);margin-block:var(--sp-5)}
@@ -34,21 +34,21 @@
 .lib-search input{border:0;background:transparent;width:100%}
 .lib-results{margin-block:var(--sp-4);color:var(--dim);font-size:var(--fs-sm)}
 #libraryMessage{color:var(--dim);margin-bottom:var(--sp-4)}
-.lib-works{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:calc(var(--sp-5) * 1.5) var(--sp-5)}
+.lib-works{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,calc(var(--sp-5) * 12)),1fr));gap:var(--sp-4)}
 .lib-card{position:relative;min-width:0;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--card);overflow:hidden;transition:border-color var(--t-fast),box-shadow var(--t-fast)}
 .lib-card-open{display:block;width:100%;padding:0;border:0;text-align:left;background:transparent}
-.lib-cover{position:relative;aspect-ratio:1.4;overflow:hidden;border-bottom:1px solid var(--line);background:var(--panel);display:flex;align-items:center;justify-content:center;color:var(--dim)}
+.lib-cover{position:relative;aspect-ratio:16/9;overflow:hidden;border-bottom:1px solid var(--line);background:var(--panel);display:flex;align-items:center;justify-content:center;color:var(--dim)}
 .lib-cover img{width:100%;height:100%;object-fit:contain}
 .lib-cover>span{padding:var(--sp-4);overflow-wrap:anywhere;font-size:var(--fs-sm)}
-.lib-website{display:flex;flex-direction:column;align-items:stretch;justify-content:space-between;padding:var(--sp-5);color:var(--text);background:color-mix(in srgb,var(--tag-leaf) 12%,var(--panel))}
+.lib-website{display:flex;flex-direction:column;align-items:stretch;justify-content:space-between;padding:var(--sp-4);color:var(--text);background:color-mix(in srgb,var(--tag-leaf) 12%,var(--panel))}
 .lib-website span{padding:0;color:var(--dim)}
-.lib-website strong{font-family:Optima,"Songti SC",serif;font-size:28px;line-height:1.3;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.lib-website strong{font-size:var(--fs-xl);line-height:1.3;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .lib-website .ic{width:var(--sp-5);height:var(--sp-5);vertical-align:middle}
-.lib-card-copy{padding:var(--sp-4) var(--sp-5) var(--sp-5)}
+.lib-card-copy{padding:var(--sp-3) var(--sp-4) var(--sp-4)}
 .lib-card-copy h3{font-size:var(--fs-lg);font-weight:600;overflow-wrap:anywhere}
 .lib-card-copy p{margin-top:var(--sp-2);color:var(--dim);font-size:var(--fs-sm)}
 .lib-card-meta{justify-content:space-between;flex-wrap:wrap;margin-top:var(--sp-4);color:var(--dim);font-size:var(--fs-sm)}
-.lib-card-actions{display:flex;flex-wrap:wrap;gap:var(--sp-2);padding:0 var(--sp-5) var(--sp-4)}
+.lib-card-actions{display:flex;flex-wrap:wrap;gap:var(--sp-2);padding:0 var(--sp-4) var(--sp-3)}
 .lib-card-actions .lib-button{min-height:calc(var(--sp-5) * 2);padding:var(--sp-2) var(--sp-3)}
 .lib-footnote,.lib-subtle{color:var(--dim);font-size:var(--fs-sm);margin-block:var(--sp-4)!important}
 .lib-detail{position:fixed;inset:0 0 0 auto;width:min(600px,100%);max-width:100%;height:100dvh;max-height:100dvh;margin:0;padding:0;border:1px solid var(--line);border-radius:var(--r-xl) 0 0 var(--r-xl);overflow:auto;overscroll-behavior:contain;background:var(--bg);box-shadow:var(--shadow)}
@@ -70,7 +70,6 @@
 .library-ref-chip span{overflow-wrap:anywhere;padding-right:var(--sp-5)}
 .library-ref-chip .x{position:static!important;flex-shrink:0}
 @media(hover:hover){.library-ui .lib-button:hover{background:var(--panel2)}.lib-card:hover{border-color:var(--line2);box-shadow:var(--bubble-shadow)}}
-@media(max-width:1100px){.lib-works{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:760px){.lib-content{padding:var(--sp-5)}.lib-title h1{font-size:24px}.lib-heading{gap:var(--sp-5)}.lib-drawer-top,.lib-detail-body{padding:var(--sp-5)}.lib-detail-cover{padding:var(--sp-5) var(--sp-5) 0}}
-@media(max-width:480px){.lib-works{grid-template-columns:minmax(0,1fr);gap:var(--sp-5)}.lib-status{width:100%;display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.lib-status .lib-button{padding-inline:var(--sp-2)}.lib-search{max-width:none}.lib-heading>.lib-actions{width:100%}.lib-heading>.lib-actions .lib-button{flex:1}}
+@media(max-width:760px){.lib-content{padding:var(--sp-5)}.lib-heading{gap:var(--sp-4)}.lib-drawer-top,.lib-detail-body{padding:var(--sp-5)}.lib-detail-cover{padding:var(--sp-5) var(--sp-5) 0}}
+@media(max-width:480px){.lib-status{width:100%;display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.lib-status .lib-button{padding-inline:var(--sp-2)}.lib-search{max-width:none}.lib-heading>.lib-actions{width:100%}.lib-heading>.lib-actions .lib-button{flex:1}}
 @media(prefers-reduced-motion:reduce){.library-ui *{transition:none!important}}
