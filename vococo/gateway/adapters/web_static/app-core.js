@@ -10,7 +10,7 @@ const S = {
   // 白名单 "/",query 串不影响命中,会被当成 "/" 走网络优先超时退回缓存那条特殊逻辑,
   // 全新 URL 缓存未命中时直接 503,慢网络下独立窗口会打开一片空白(见 web.py 路由注释)。
   standaloneWorkbench: location.pathname === "/workbench/window",
-  surface: "chat",  // chat | call | workbench：当前主视图，仅供前端切换与侧栏高亮
+  surface: "chat",  // chat | call | workbench | library：当前主视图，仅供前端切换与侧栏高亮
   conv: "main",
   callReturnConv: "main", // 进入主会话前的普通会话;挂断后恢复,避免刷新错读语音会话历史
   convs: [],            // [{conv,title,turns,last_ts,pinned}]
@@ -27,6 +27,7 @@ const S = {
   tabShown: {pinned: 20, recent: 20},  // 「置顶」「最近」两个 Tab 各自已展示的条数,点「更多」每次 +20
   tabLastFetch: {},     // 侧栏 Tab 各自上次发起刷新请求的时间戳(ms),点击 Tab 时按此节流(见 sidebar.js refreshSideTabIfStale)
   browseDir: "",        // 目录浏览器当前所在目录
+  libraryRefs: [],      // {id,title,kind}:按会话隔离的作品引用，发送时只传稳定 ID
   images: [],           // {data,media_type,url}
   audios: [],           // {id,filename,text,mediaType,url,status}:status = uploading|done|error
   files: [],            // {id,filename,mediaType,status}:通用文件，类型不设前端白名单

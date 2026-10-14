@@ -3415,6 +3415,7 @@
   }
 
   window.openCallView = function(){
+    if(typeof closeLibrary==="function") closeLibrary();
     closeWorkbench();
     S.surface = "call";
     navRecord({kind:"call"});

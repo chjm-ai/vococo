@@ -34,6 +34,34 @@ _SUMMARY_MAX = 120  # summary 会写进索引,须一句话;详细内容放 body
 def _ok(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}]}
 
+
+def _library_context() -> dict:
+    from ..gateway import clarify
+    from . import danger
+
+    ctx = clarify.get_context()
+    return {"session_key": danger.current_session_key(), "turn_id": getattr(ctx, "turn_id", None)}
+
+
+def _library_receipt(kind: str, registration: dict) -> dict:
+    """产出已成功时只补记账；失败回执可直接交给 collect_library_item 重试。"""
+    try:
+        from ..memory import library
+
+        register = library.register_image if kind == "image" else library.register_website
+        item = register(**registration)
+        return {"library_id": item["id"], "library_status": "collected"}
+    except Exception as exc:
+        return {"library_status": "failed", "library_error": str(exc),
+                "message": "产出成功、收录失败；仅用 collect_library_item 补记账，不要重新生成或发布。",
+                "retry": {"kind": kind, **registration}}
+
+
+def _library_result(text: str, receipt: dict) -> dict:
+    import json
+
+    return _ok(text + "\n" + json.dumps(receipt, ensure_ascii=False))
+
 @tool(
     "recall_past",
     "检索跨会话的历史对话记录(当前会话之外、可能已被 /new 归档的旧对话)。"
@@ -1122,12 +1150,14 @@ async def send_message(args: dict) -> dict:
     "把一张本地图片文件(截图或已有文件)发送到当前 Web 聊天里显示。仅 Web 端支持,"
     "其他渠道会提示不支持。注意:本轮 generate_image 成功后的图片已经自动显示,"
     "严禁再用本工具发送同一路径,否则会重复发图。path:本地图片文件的绝对路径"
-    "(png/jpg/jpeg/gif/webp);caption:可选,作为图片说明文字一并显示。",
+    "(png/jpg/jpeg/gif/webp);caption:可选。purpose 默认 output，发送成功自动收录；"
+    "reference/debug 不收录。收录失败只补记账，不要重复发送。",
     {
         "type": "object",
         "properties": {
             "path": {"type": "string"},
             "caption": {"type": "string"},
+            "purpose": {"type": "string", "enum": ["output", "reference", "debug"]},
         },
         "required": ["path"],
     },
@@ -1142,6 +1172,9 @@ async def send_image(args: dict) -> dict:
     caption = (args.get("caption") or "").strip()
     if not path:
         return _ok("send_image 需要非空 path。")
+    purpose = args.get("purpose", "output")
+    if purpose not in {"output", "reference", "debug"}:
+        return _ok("purpose 仅支持 output / reference / debug。")
     image_path = Path(path).expanduser().resolve()
     ctx = clarify.current()
     if ctx is None or not isinstance(ctx.adapter, WebAdapter):
@@ -1149,7 +1182,14 @@ async def send_image(args: dict) -> dict:
     if str(image_path) in ctx.auto_sent_image_paths:
         return _ok("该图片已由 generate_image 自动发送到当前聊天，本轮禁止重复发送。")
     err = await ctx.adapter.send_image(ctx.chat_id, image_path, caption)
-    return _ok(err or "已发送到当前聊天。")
+    if err or purpose != "output":
+        return _ok(err or "已发送到当前聊天（参考/调试图片不收录）。")
+    import uuid
+
+    receipt = _library_receipt("image", {"path": str(image_path), "title": caption,
+        "action": "sent", "metadata": {"purpose": purpose},
+        "event_key": f"sent:{uuid.uuid4().hex}", **_library_context()})
+    return _library_result("已发送到当前聊天。", receipt)
 
 @tool(
     "send_video",
@@ -1338,17 +1378,24 @@ async def generate_image(args: dict) -> dict:
     path = img_dir / f"gen_{stamp}_{uuid.uuid4().hex[:6]}{ext}"
     path.write_bytes(raw)
 
-    # 4) 当前是 Web 渠道 → 自动发图显示，并登记路径拦住本轮的重复 send_image。
+    receipt = _library_receipt("image", {"path": str(path), "title": prompt[:80],
+        "action": "generated", "metadata": {"prompt": prompt, "model": model, "size": size},
+        "event_key": f"generated:{uuid.uuid4().hex}", **_library_context()})
+
+    # 收录与展示独立；收录失败不能让调用方再次生图。
     sent = ""
     ctx = clarify.current()
     if ctx is not None and isinstance(ctx.adapter, WebAdapter):
-        err = await ctx.adapter.send_image(ctx.chat_id, path, f"{model} · {prompt[:40]}")
+        try:
+            err = await ctx.adapter.send_image(ctx.chat_id, path, f"{model} · {prompt[:40]}")
+        except Exception as exc:
+            err = str(exc)
         if err:
-            sent = f"(自动发送失败:{err})"
+            sent = f"(自动发送失败:{err}；图片已产出，不要重新生成)"
         else:
             ctx.auto_sent_image_paths.add(str(path.resolve()))
             sent = "(已自动发送到当前聊天；本轮不要再调用 send_image)"
-    return _ok(f"✅ 已生成图片并保存:{path} {sent}")
+    return _library_result(f"已生成图片并保存:{path} {sent}", receipt)
 
 @tool(
     "dispatch_session",
@@ -1684,6 +1731,126 @@ async def switch_model(args: dict) -> dict:
     )
 
 
+@tool(
+    "search_library", "搜索作品库，不扫描文件目录。返回作品元信息；需要原件时使用 get_library_item。",
+    {"type": "object", "properties": {
+        "kind": {"type": "string", "enum": ["", "image", "website"]},
+        "agent_id": {"type": "string"}, "state": {"type": "string", "enum": ["visible", "hidden", "all"]},
+        "search": {"type": "string"}, "limit": {"type": "integer"}, "offset": {"type": "integer"}}},
+)
+async def search_library(args: dict) -> dict:
+    import json
+    from ..memory import library
+
+    try:
+        items = library.list_items(kind=args.get("kind", ""), agent_id=args.get("agent_id", ""),
+            state=args.get("state", "visible"), search=args.get("search", ""),
+            limit=max(1, min(100, int(args.get("limit", 60)))), offset=max(0, int(args.get("offset", 0))))
+        return _ok(json.dumps(items, ensure_ascii=False, default=str))
+    except Exception as exc:
+        return _ok(f"作品库查询失败：{exc}")
+
+
+@tool(
+    "get_library_item", "按作品 ID 取详情。图片返回受控原件路径，可交 send_image 引用；网站返回正式 URL。",
+    {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+)
+async def get_library_item(args: dict) -> dict:
+    import json
+    from ..memory import library
+
+    try:
+        item = library.get_item(args["id"])
+        if not item:
+            return _ok("作品不存在。")
+        result = dict(item)
+        if item.get("kind") == "image":
+            result["path"] = str(library.image_file(item["id"]))
+        return _ok(json.dumps(result, ensure_ascii=False, default=str))
+    except Exception as exc:
+        return _ok(f"读取作品失败：{exc}")
+
+
+def _collection_registration(args: dict) -> tuple[str, dict]:
+    import uuid
+    from pathlib import Path
+    from urllib.parse import urlsplit
+
+    kind = args.get("kind", "")
+    registration = {key: args[key] for key in ("title", "metadata", "event_key", "session_key", "turn_id") if key in args}
+    for key, value in _library_context().items():
+        registration.setdefault(key, value)
+    registration.setdefault("event_key", f"collected:{uuid.uuid4().hex}")
+    if kind == "image":
+        path = Path(args.get("path", "")).expanduser()
+        if not path.is_absolute() or not path.is_file() or path.is_symlink():
+            raise ValueError("只接受已有本地图片的绝对路径，不接受下载地址或软链接")
+        with path.open("rb") as stream:
+            signature = stream.read(12)
+        valid = signature.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a"))
+        if not valid and not (signature[:4] == b"RIFF" and signature[8:12] == b"WEBP"):
+            raise ValueError("文件不是受支持的图片（PNG/JPEG/GIF/WebP）")
+        registration.update(path=str(path.resolve()), action=args.get("action", "collected"))
+    elif kind == "website":
+        url = args.get("url", "")
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("只接受无账号密码的已有 http(s) 链接；本工具不会抓取链接")
+        registration.update(url=url, title=args.get("title", ""), source_key=args.get("source_key") or f"url:{url}")
+    else:
+        raise ValueError("kind 仅支持 image / website")
+    return kind, registration
+
+
+@tool(
+    "collect_library_item", "收藏已有本地图片或已有 http(s) 网站链接，不下载远端文件。"
+    "也接受生成/发送/发布回执中的 retry 参数，只重新登记，不重新产出或发布。",
+    {"type": "object", "properties": {
+        "kind": {"type": "string", "enum": ["image", "website"]}, "path": {"type": "string"},
+        "url": {"type": "string"}, "title": {"type": "string"}, "source_key": {"type": "string"},
+        "action": {"type": "string"}, "metadata": {"type": "object"}, "event_key": {"type": "string"},
+        "session_key": {"type": "string"}, "turn_id": {"type": ["integer", "null"]}}, "required": ["kind"]},
+)
+async def collect_library_item(args: dict) -> dict:
+    try:
+        kind, registration = _collection_registration(args)
+        receipt = _library_receipt(kind, registration)
+        return _library_result("登记完成。" if receipt.get("library_id") else "仅登记失败，未重新产出。", receipt)
+    except Exception as exc:
+        return _ok(f"收藏失败：{exc}")
+
+
+@tool(
+    "publish_website", "统一网站发布入口：激活成功后自动收录作品库，不要手写 rsync/SSH。"
+    "target 白名单 local/kimmy/site；支持 local/kimmy static，site及后端类型明确未支持。"
+    "source_dir 是含 index.html 的干净静态目录绝对路径。需要危险审批；拒绝覆盖未登记改动。"
+    "local不是私密空间：/pub/无需登录，绑定外网或有隧道时可能公开访问。"
+    "Kimmy复用原deploy.sh，检查远端git/内容变更并备份后发布；回执区分激活与HTTP验活。"
+    "收录失败用 collect_library_item 补记账，激活unknown不能盲目重新发布。",
+    {"type": "object", "properties": {
+        "target": {"type": "string", "enum": ["local", "kimmy", "site"]},
+        "slug": {"type": "string"}, "source_dir": {"type": "string"}, "title": {"type": "string"},
+        "type": {"type": "string", "enum": ["static", "node", "python"]}},
+     "required": ["target", "slug", "source_dir", "title", "type"]},
+)
+async def publish_website(args: dict) -> dict:
+    from . import publishing
+
+    try:
+        published = await publishing.publish(args)
+    except Exception as exc:
+        return _ok(f"发布未完成：{exc}")
+    if published["activation"] != "succeeded":
+        text = "激活结果未知；可能已部署，先核对回执与备份，不要重新发布。" if published["activation"] == "unknown" else "发布未完成。"
+        return _library_result(text, published)
+    registration = {key: published[key] for key in ("url", "source_key", "metadata", "event_key")}
+    registration.update(title=args.get("title", ""), **_library_context())
+    receipt = _library_receipt("website", registration)
+    verification = published["metadata"]["http_verification"]
+    status = "HTTP 验活通过。" if verification == "verified" else "访问待验证；激活成功不等于公网可访问。"
+    return _library_result(f"站点已激活；{status}", {**published, **receipt})
+
+
 def build_mcp_servers() -> dict:
     """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
     return {
@@ -1715,6 +1882,10 @@ def build_mcp_servers() -> dict:
                 send_image,
                 send_video,
                 generate_image,
+                search_library,
+                get_library_item,
+                collect_library_item,
+                publish_website,
                 dispatch_session,
                 restart_self,
                 list_mcp_servers,

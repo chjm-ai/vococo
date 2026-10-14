@@ -739,6 +739,8 @@ def _compat_base_key(
         "effort": effort,
         "subagents": subagents,
         "route": route,
+        # MCP 连接快照工具上下文，跨轮复用会把作品记到上一轮。
+        "source_turn_id": getattr(clarify.get_context(), "turn_id", None),
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
 

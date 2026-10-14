@@ -1,0 +1,127 @@
+/* 从现有 styles.css 复制：主题令牌、侧栏壳与导航行。独立快照，不加载正式应用。 */
+  /* ── 深色(默认)· Claude Code 暖炭灰 + 赤陶橙 ────────────────────────── */
+  :root{
+    --bg:#181716; --bg2:#1c1b19; --panel:#252320; --panel2:#302f2c; --card:#2b2a27;
+    --line:#3a3934; --line2:#4a4941;
+    --text:#ecebe3; --dim:#a5a094; --dim2:#716d61;
+    --accent:#d97757; --accent2:#c8613f;
+    --user1:#d97757; --user2:#c25f3c; --on-user:#fff;
+    --ok:#5aa469; --err:#d1674a; --radius:16px;
+    --bar-bg:rgba(28,27,25,.72);
+    --login-bg:radial-gradient(120% 90% at 50% -10%,#252320 0%,#1c1b19 60%);
+    --code-bg:#22211e; --code-fg:#d4d0c4; --code-inline:rgba(180,170,150,.15);
+    --scroll:#3a3934; --scroll-h:#4a4941;
+    --bubble-shadow:0 1px 2px rgba(0,0,0,.24);
+    --shadow:0 10px 34px rgba(0,0,0,.45);
+    --focus-ring:rgba(217,119,87,.2);
+    --glow1:rgba(217,119,87,.4); --glow2:rgba(194,95,60,.4);
+    /* 语义状态色:成功/错误/警告的 前景·边框·底色 三件套 */
+    --ok-fg:#8dc9a8; --ok-line:#3d6b52; --ok-bg:#1f2c25;
+    --err-fg:#e5aaaa; --err-line:#6b3d3d; --err-bg:#2c1f1f;
+    --warn:#e8a84c;
+    --danger:#e05050; --danger2:#c03030;   /* 停止按钮:比 --err 更红更醒目 */
+    --on-accent:#fff;                      /* 强调色/彩色底上的前景文字 */
+    /* 代码差异色:沿用 GitHub 标准值,饱和度刻意高于 --ok/--err,不并入语义色 */
+    --diff-add:#3fb950; --diff-del:#f85149;
+    /* 项目标签分类色:互相区分用,不做合并 */
+    --tag-sun:#df977b; --tag-copper:#d4a474; --tag-leaf:#87ad80; --tag-ink:#a8b5d4;
+    --tag-olive:#a5b87d; --tag-gold:#d4b051;
+    /* 遮罩与叠加:半透明黑/白,深浅主题通用 */
+    --ov-1:rgba(0,0,0,.12); --ov-2:rgba(0,0,0,.32); --ov-3:rgba(0,0,0,.5); --ov-4:rgba(0,0,0,.88);
+    --wh-1:rgba(255,255,255,.14); --wh-2:rgba(255,255,255,.28); --wh-3:rgba(255,255,255,.85);
+    --sbw:9px;   /* 滚动条宽度,和下面 ::-webkit-scrollbar 保持一致 */
+  }
+  /* ── 尺寸设计令牌(与主题无关,不随深浅色变化)─────────────────────────
+     写新样式时一律用这些变量,不要再手写字号/圆角/间距/过渡时长。
+     字号下限 12px:再小在移动端读不清,已统一上调。 */
+  :root{
+    /* 字号阶梯 */
+    --fs-sm:12px; --fs-md:13px; --fs-base:14px; --fs-lg:15px; --fs-xl:16px;
+    /* 间距阶梯 */
+    --sp-1:4px; --sp-2:6px; --sp-3:8px; --sp-4:12px; --sp-5:16px;
+    /* 圆角阶梯(50% 圆形与 0 直角不在此列,按需直写) */
+    --r-sm:6px; --r-md:9px; --r-lg:12px; --r-xl:16px; --r-pill:999px;
+    /* 过渡时长:交互反馈用 fast,位移/展开用 base */
+    --t-fast:.15s; --t-base:.22s;
+  }
+  /* Agent 像素头像色板(agents.js,键名与后端 AVATAR_COLORS 一致):深浅主题通用,饱和度刻意偏高 */
+  :root{
+    --av-orange:#FF8A26; --av-coral:#FF5B4F; --av-lime:#2FC75A; --av-lake:#2B95FF;
+    --av-grape:#8B5CFF; --av-pink:#FF5CA8; --av-gold:#FFC014; --av-teal:#12C2B0; --av-eye:#3D2410;
+  }
+  /* ── 浅色:系统偏好浅色且用户未手动固定时 · Claude Code 暖米色 ────────── */
+  @media(prefers-color-scheme:light){
+    :root:not([data-theme]){
+      --bg:#ffffff; --bg2:#ffffff; --panel:#f7f7f7; --panel2:#eeeeee; --card:#ffffff;
+      --line:#e5e5e5; --line2:#d8d8d8;
+      --text:#29261f; --dim:#6d6757; --dim2:#9a9482;
+      --accent:#bd5d3a; --accent2:#a84e2f;
+      --user1:#d97757; --user2:#c25f3c; --on-user:#fff;
+      --bar-bg:rgba(255,255,255,.8);
+      --login-bg:radial-gradient(120% 90% at 50% -10%,#f5f5f5 0%,#ffffff 60%);
+      --code-bg:#f5f5f5; --code-fg:#3a362c; --code-inline:rgba(0,0,0,.06);
+      --scroll:#d8d8d8; --scroll-h:#c4c4c4;
+      --bubble-shadow:0 1px 2px rgba(0,0,0,.05);
+      --shadow:0 10px 34px rgba(0,0,0,.08);
+      --focus-ring:rgba(189,93,58,.16);
+      --glow1:rgba(217,119,87,.3); --glow2:rgba(189,93,58,.28);
+      --ok-fg:#347a58; --ok-line:#8dc9a8; --ok-bg:#eef9f2;
+      --err-fg:#ad4e4e; --err-line:#e5aaaa; --err-bg:#fff2f2;
+      --warn:#c98a2e;
+      --danger:#d94040; --danger2:#b82828;
+      --on-accent:#fff;
+      --diff-add:#1a7f37; --diff-del:#cf222e;
+      --tag-sun:#c2765a; --tag-copper:#a87d4f; --tag-leaf:#5f8a58; --tag-ink:#6b7ba8;
+      --tag-olive:#7d9155; --tag-gold:#a8862c;
+    }
+  }
+  /* ── 手动固定浅色 ────────────────────────────────────────────────────── */
+  :root[data-theme="light"]{
+    --bg:#ffffff; --bg2:#ffffff; --panel:#f7f7f7; --panel2:#eeeeee; --card:#ffffff;
+    --line:#e5e5e5; --line2:#d8d8d8;
+    --text:#29261f; --dim:#6d6757; --dim2:#9a9482;
+    --accent:#bd5d3a; --accent2:#a84e2f;
+    --user1:#d97757; --user2:#c25f3c; --on-user:#fff;
+    --bar-bg:rgba(255,255,255,.8);
+    --login-bg:radial-gradient(120% 90% at 50% -10%,#f5f5f5 0%,#ffffff 60%);
+    --code-bg:#f5f5f5; --code-fg:#3a362c; --code-inline:rgba(0,0,0,.06);
+    --scroll:#d8d8d8; --scroll-h:#c4c4c4;
+    --bubble-shadow:0 1px 2px rgba(0,0,0,.05);
+    --shadow:0 10px 34px rgba(0,0,0,.08);
+    --focus-ring:rgba(189,93,58,.16);
+    --glow1:rgba(217,119,87,.3); --glow2:rgba(189,93,58,.28);
+    --ok-fg:#347a58; --ok-line:#8dc9a8; --ok-bg:#eef9f2;
+    --err-fg:#ad4e4e; --err-line:#e5aaaa; --err-bg:#fff2f2;
+    --warn:#c98a2e;
+    --danger:#d94040; --danger2:#b82828;
+    --on-accent:#fff;
+    --diff-add:#1a7f37; --diff-del:#cf222e;
+    --tag-sun:#c2765a; --tag-copper:#a87d4f; --tag-leaf:#5f8a58; --tag-ink:#6b7ba8;
+    --tag-olive:#7d9155; --tag-gold:#a8862c;
+  }
+  /* data-theme="dark" 用根默认值即可,无需重复 */
+  #app{display:flex;overflow:hidden;
+    position:fixed;top:var(--app-top,0);left:0;right:0;bottom:0;height:var(--app-h,auto)}
+  #sidebar{width:280px;flex-shrink:0;background:var(--bg2);
+    border:1px solid var(--line);border-radius:var(--r-xl);
+    margin:8px 0 8px 8px;
+    box-shadow:0 2px 12px rgba(0,0,0,.08);
+    display:flex;flex-direction:column;overflow:hidden;
+    transition:transform var(--t-base) cubic-bezier(.4,0,.2,1),width var(--t-base) cubic-bezier(.4,0,.2,1),margin var(--t-base) cubic-bezier(.4,0,.2,1),box-shadow var(--t-base);z-index:30}
+  #sidebar .shead{padding:var(--sp-4) var(--sp-4) var(--sp-2) var(--sp-5);padding-top:calc(12px + env(safe-area-inset-top));display:flex;align-items:center;gap:var(--sp-1)}   /* 图标间距与底栏 .sfoot 统一 */
+  #sidebar .shead .brand{flex:1;min-width:0;display:flex;align-items:baseline;
+    font-family:Optima,"Times New Roman","Songti SC",serif;
+    font-size:20px;font-weight:700;color:var(--text);cursor:pointer;
+    transition:color var(--t-fast)}
+  #sidebar .shead .brand:hover{color:var(--accent)}
+  .projgrp,.conv{padding:var(--sp-2) var(--sp-4);border-radius:var(--r-sm);display:flex;align-items:center;
+    cursor:pointer;transition:background var(--t-fast),color var(--t-fast)}
+  .conv.active{background:var(--panel2)}
+  /* :hover 只在真有 hover 能力的设备生效——触屏上元素自身样式随 :hover 变化,
+     会撞上 iOS 经典坑:第一下点击只用来"结算" hover 态,第二下才真正触发 click */
+  @media(hover:hover){ .projgrp:hover,.conv:hover{background:var(--panel2)} }
+  .conv{margin-bottom:1px;gap:8px;color:var(--dim);position:relative;overflow:hidden;touch-action:pan-y}
+  /* 新对话、主会话、工作台属于同一固定入口组，使用普通行间距。 */
+  #convTopRows .conv{margin-bottom:1px}
+  .conv.active{color:var(--text)}
+  @media(hover:hover){ .conv:hover{color:var(--text)} }

@@ -303,7 +303,11 @@ async def converse(
     _draft_full = ""       # 当前轮已输出的所有正文(每段全文覆盖)
     _draft_last_ts = 0.0   # 上次 flush 的时刻(0=还没写过)
     _err_msg = ""           # 流式期间抛出的异常消息
+    from . import clarify
+
+    source_token = None
     try:
+        source_token = clarify.bind_turn(session_key, turn_id)
         async for ev in stream_turn(
             history, user_text, model=model, images=images, files=files, cwd=cwd,
             is_explicit_project=is_explicit_project, resume=resume_sid,
@@ -370,6 +374,8 @@ async def converse(
     except Exception as exc:
         _err_msg = str(exc)
     finally:
+        if source_token is not None:
+            clarify.unbind_turn(session_key, turn_id, source_token)
         danger.reset_cwd(cwd_token)
     # 流式异常(SDK/进程层面,连 ResultMessage 都没拿到)→ 构造一条错误回复,
     # 确保 sink.done() 始终能发(前端不会空泡)
