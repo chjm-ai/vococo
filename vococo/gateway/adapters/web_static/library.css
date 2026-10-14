@@ -70,6 +70,13 @@
   .library-ui .lib-button:hover{background:var(--panel2)}
   .lib-card:hover{border-color:var(--line2)}
 }
-@media(max-width:760px){.lib-content{padding:var(--sp-5)}.lib-heading{gap:var(--sp-4)}.lib-drawer-top,.lib-detail-body{padding:var(--sp-5)}.lib-detail-cover{padding:var(--sp-5) var(--sp-5) 0}}
+@media(max-width:760px){
+  /* 同工作台：iOS PWA 顶到状态栏下，只在内容顶部和独立详情顶栏各补一层安全区。 */
+  .lib-content{padding:var(--sp-5);padding-top:calc(var(--sp-5) + env(safe-area-inset-top,0px))}
+  .lib-heading{gap:var(--sp-4)}
+  .lib-drawer-top,.lib-detail-body{padding:var(--sp-5)}
+  .lib-drawer-top{padding-top:calc(var(--sp-5) + env(safe-area-inset-top,0px))}
+  .lib-detail-cover{padding:var(--sp-5) var(--sp-5) 0}
+}
 @media(max-width:480px){.lib-search{max-width:none}}
 @media(prefers-reduced-motion:reduce){.library-ui *{transition:none!important}}

@@ -130,6 +130,23 @@ async def test_real_browser_page_and_real_library_api(running_library, isolated)
     print(f"真实页面截图：{screenshot}")
 
 
+@pytest.mark.anyio
+async def test_browser_library_mobile_safe_area():
+    assert shutil.which("node"), "安全区回归需要 Node"
+    process = await asyncio.create_subprocess_exec(
+        "node", str(Path(__file__).with_name("library_safe_area_browser.cjs")),
+        env=_browser_environment(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=90)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        raise
+    assert process.returncode == 0, stderr.decode() + stdout.decode()
+    print(stdout.decode().strip())
+
+
 def _register_loading_works(directory, origin):
     # 每张图只改一个像素，既保留可测压缩差异，又避免作品按内容去重。
     pixels = Image.frombytes("RGB", (640, 480), os.urandom(640 * 480 * 3))
