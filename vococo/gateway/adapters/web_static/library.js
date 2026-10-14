@@ -23,7 +23,14 @@ function initLibrary(){
   detail.setAttribute("aria-labelledby","libraryDetailTitle");
   detail.innerHTML=`<header class="lib-drawer-top"><span>作品详情</span>${libraryButton("close","关闭","close")}</header><p id="libraryDetailMessage" role="status"></p><div id="libraryDetailBody"></div>`;
   document.body.append(detail);
-  view.addEventListener("click", libraryClick); detail.addEventListener("click", libraryClick);
+  const viewer=el("dialog","library-viewer"); viewer.id="libraryViewer";
+  viewer.innerHTML=`<button type="button" class="lib-viewer-close" data-lib-action="viewer-close" aria-label="关闭">${ic("close")}</button><img alt="作品原图">`;
+  document.body.append(viewer);
+  viewer.addEventListener("close",()=>{
+    if(viewer.dataset.objectUrl) URL.revokeObjectURL(viewer.dataset.objectUrl);
+    viewer.querySelector("img").removeAttribute("src"); delete viewer.dataset.objectUrl;
+  });
+  view.addEventListener("click", libraryClick); detail.addEventListener("click", libraryClick); viewer.addEventListener("click",libraryClick);
   detail.addEventListener("close",()=>{
     // close 事件异步派发；旧弹窗已重新打开时不能清掉新的详情。
     if(detail.open) return;
@@ -100,14 +107,15 @@ function libraryCover(item,detail=false){
   return `<div class="lib-cover lib-website" aria-label="暂无封面">${ic("external")}</div>`;
 }
 function libraryCard(item){
-  const id=`data-id="${libraryText(item.id)}"`;
-  return `<article class="lib-card"><button class="lib-card-open" type="button" data-lib-action="detail" ${id} aria-haspopup="dialog">${libraryCover(item)}<div class="lib-card-copy"><h3>${libraryText(item.title||"未命名作品")}</h3></div></button></article>`;
+  const id=`data-id="${libraryText(item.id)}"`, isWebsite=item.kind==="website";
+  const source=(item.sources||[]).find(entry=>librarySourceConv(entry));
+  return `<article class="lib-card"><button class="lib-card-open" type="button" data-lib-action="${isWebsite ? "website" : "preview"}" ${id}>${libraryCover(item)}<div class="lib-card-copy"><h3>${libraryText(item.title||"未命名作品")}</h3></div></button>${source ? libraryButton("source","查看会话","external",`data-conv="${libraryText(librarySourceConv(source))}" ${id} aria-label="查看来源会话"`) : ""}</article>`;
 }
 function renderLibrary(more=false){
   $("#libraryMore").hidden=!LIB.hasMore;
   $("#libraryMessage").textContent=LIB.items.length ? "" : "暂无匹配作品。";
   const works=$("#libraryWorks");
-  const rendered=new Set([...works.querySelectorAll('[data-lib-action="detail"]')].map(button=>button.dataset.id));
+  const rendered=new Set([...works.querySelectorAll('.lib-card-open')].map(button=>button.dataset.id));
   const markup=LIB.items.filter(item=>!more || !rendered.has(String(item.id))).map(libraryCard).join("");
   if(more) works.insertAdjacentHTML("beforeend",markup); else works.innerHTML=markup;
   $("#libraryState").value=LIB.filters.state;
@@ -325,6 +333,13 @@ async function libraryPatch(item, changes){
   await loadLibrary();
   if(LIB.selected) libraryLoadImages($("#libraryDetail"));
 }
+async function libraryPreview(item){
+  const blob=await libraryFile(item.id), url=URL.createObjectURL(blob), viewer=$("#libraryViewer"), image=viewer.querySelector("img");
+  image.src=url; viewer.dataset.objectUrl=url; viewer.showModal();
+}
+function closeLibraryViewer(){
+  const viewer=$("#libraryViewer"); if(viewer.open) viewer.close();
+}
 async function libraryDownload(item){
   const blob=await libraryFile(item.id), url=URL.createObjectURL(blob);
   const link=el("a"); link.href=url;
@@ -355,9 +370,11 @@ async function libraryClick(event){
 async function libraryAction(action,button,item){
   if(action==="sidebar") return expandSidebarResponsive();
   if(action==="close") return $("#libraryDetail").close();
+  if(action==="viewer-close") return closeLibraryViewer();
   if(action==="more") return loadLibrary(true);
   if(action==="source"){ $("#libraryDetail").close(); return openConv(button.dataset.conv); }
   if(action==="detail") return openLibraryDetail(button.dataset.id);
+  if(action==="preview") return libraryPreview(item);
   if(!item) return;
   if(action==="pin") return libraryPatch(item,{pinned:!item.pinned});
   if(action==="hide") return libraryPatch(item,{hidden:!item.hidden});
