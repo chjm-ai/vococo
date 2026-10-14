@@ -16,6 +16,14 @@ def run_tool(args):
     return text, json.loads(text.split("\n", 1)[1])
 
 
+@pytest.fixture(autouse=True)
+def isolate_cover_network(monkeypatch):
+    from vococo.tools import website_preview
+    async def capture(*args):
+        raise RuntimeError("隔离测试不连接公网")
+    monkeypatch.setattr(website_preview, '_capture', capture)
+
+
 @pytest.fixture
 def source(isolated):
     directory = isolated / "static"

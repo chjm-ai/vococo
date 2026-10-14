@@ -43,6 +43,16 @@ CREATE TABLE IF NOT EXISTS library_sources (
  metadata TEXT NOT NULL, event_key TEXT UNIQUE, created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS library_sources_item ON library_sources(item_id);
+CREATE TABLE IF NOT EXISTS website_preview_attempts (
+ item_id TEXT PRIMARY KEY REFERENCES library_items(id), generation INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS website_publications (
+ source_key TEXT PRIMARY KEY, version TEXT NOT NULL, event_key TEXT NOT NULL, url TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS website_previews (
+ item_id TEXT PRIMARY KEY REFERENCES library_items(id), source_key TEXT NOT NULL,
+ version TEXT NOT NULL, status TEXT NOT NULL, details TEXT NOT NULL DEFAULT '{}'
+);
 """
 
 
@@ -159,6 +169,13 @@ def _save_registration(connection, kind, identity, title, agent_id, url, storage
     try:
         item_id = _upsert(connection, kind, identity, title, agent_id, url, storage_key)
         _source(connection, item_id, action, session_key, turn_id, encoded, event_key)
+        if kind == 'website':
+            publication = connection.execute(
+                "SELECT * FROM website_publications WHERE source_key=? AND event_key=? AND url=?",
+                (identity.removeprefix('website:'), event_key, url),
+            ).fetchone()
+            if publication:
+                _track_publication(connection, item_id, publication['source_key'], publication['version'])
         if data is not None:
             created_file = _preserve(data, storage_key)
         item = _item(connection, item_id)
@@ -227,6 +244,78 @@ def register_website(url, title, source_key, session_key='', turn_id=None,
                      session_key, turn_id, "published", metadata, event_key, cover_path=cover_path)
 
 
+def remember_website_publication(receipt: dict) -> None:
+    """发布器成功后先保留可信回执，登记失败仍可仅补登记/封面。"""
+    with _connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "INSERT INTO website_publications VALUES (?,?,?,?) ON CONFLICT(source_key) "
+            "DO UPDATE SET version=excluded.version,event_key=excluded.event_key,url=excluded.url",
+            (receipt['source_key'], receipt['metadata']['version'], receipt['event_key'], receipt['url']),
+        )
+        row = connection.execute("SELECT id FROM library_items WHERE identity=? AND kind='website'",
+                                 (f"website:{receipt['source_key']}",)).fetchone()
+        if row:
+            _track_publication(connection, row['id'], receipt['source_key'], receipt['metadata']['version'])
+
+
+def _track_publication(connection, item_id, source_key, version):
+    connection.execute(
+        "INSERT INTO website_previews VALUES (?,?,?,'pending','{}') "
+        "ON CONFLICT(item_id) DO UPDATE SET source_key=excluded.source_key, "
+        "version=excluded.version,status='pending',details='{}'",
+        (item_id, source_key, version),
+    )
+
+
+def website_preview_record(item_id: str) -> dict | None:
+    with _connect() as connection:
+        row = connection.execute("SELECT * FROM website_previews WHERE item_id=?", (item_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def begin_website_cover(item_id: str, expected_version: str) -> int | None:
+    """领取单调任务序号，使同一发布版本中的旧截图也失效。"""
+    with _connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT version FROM website_previews WHERE item_id=?", (item_id,)).fetchone()
+        if not row or row['version'] != expected_version:
+            return None
+        connection.execute(
+            "INSERT INTO website_preview_attempts VALUES (?,1) ON CONFLICT(item_id) "
+            "DO UPDATE SET generation=generation+1", (item_id,),
+        )
+        connection.execute("UPDATE website_previews SET status='pending',details='{}' WHERE item_id=?",
+                           (item_id,))
+        return connection.execute("SELECT generation FROM website_preview_attempts WHERE item_id=?",
+                                  (item_id,)).fetchone()['generation']
+
+
+def update_website_cover(item_id: str, expected_version: str, cover_path,
+                         status: str, details: dict, *, expected_generation: int) -> bool:
+    """发布版本、任务序号与保留原件同一事务；不新增来源或改变归属。"""
+    if status not in {'ready', 'pending'} or (status == 'ready') != (cover_path is not None):
+        raise ValueError("封面状态与图片不匹配")
+    encoded = json.dumps(details, ensure_ascii=False, allow_nan=False)
+    with _connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT p.version,a.generation FROM website_previews p "
+            "JOIN website_preview_attempts a ON a.item_id=p.item_id WHERE p.item_id=?",
+            (item_id,),
+        ).fetchone()
+        if not row or row['version'] != expected_version or row['generation'] != expected_generation:
+            return False
+        if cover_path is not None:
+            data, storage_key = _read_cover(cover_path)
+            _preserve(data, storage_key)
+            connection.execute("UPDATE library_items SET storage_key=?,updated_at=? WHERE id=?",
+                               (storage_key, time.time(), item_id))
+        connection.execute("UPDATE website_previews SET status=?,details=? WHERE item_id=?",
+                           (status, encoded, item_id))
+        return True
+
+
 def _read_cover(cover_path) -> tuple[bytes, str]:
     if not isinstance(cover_path, (str, Path)) or not str(cover_path).strip():
         raise ValueError("网站封面路径必须是非空字符串或 Path")
@@ -257,6 +346,11 @@ def _item(connection, item_id) -> dict | None:
     item["sources"] = [dict(source) for source in sources]
     for source in item["sources"]:
         source["metadata"] = json.loads(source["metadata"])
+    preview = connection.execute("SELECT version,status,details FROM website_previews WHERE item_id=?",
+                                 (item_id,)).fetchone()
+    if preview:
+        item.update(cover_status=preview['status'], cover_version=preview['version'],
+                    cover_details=json.loads(preview['details']))
     return item
 
 
