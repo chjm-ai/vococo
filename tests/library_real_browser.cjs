@@ -6,7 +6,8 @@ const assert=require('node:assert/strict');
   const browser=await chromium.launch({headless:true,
     ...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
   try{
-    const page=await browser.newPage(),errors=[],requests=[];
+    const page=await browser.newPage(),errors=[],requests=[],transfers=[];
+    page.on('response',response=>{ if(response.url().includes('/library/thumbnail?')) transfers.push({url:response.url(),bytes:Number(response.headers()['content-length'])}); });
     page.on('pageerror',error=>errors.push(error.message));
     page.on('request',request=>requests.push(request.url()));
     await page.goto(origin);
@@ -16,9 +17,12 @@ const assert=require('node:assert/strict');
     await page.evaluate(()=>openLibrary());
     await page.waitForFunction(()=>!LIB.loading && LIB.items.length===2);
     assert.equal(await page.locator('.lib-card').count(),2);
+    assert.equal(await page.locator('.lib-card-actions,.lib-card-meta,.lib-card-copy p').count(),0);
     assert.equal(await page.locator('#libraryCount,#libraryHistory,#libraryView [data-lib-action="reset"],#libraryView [data-lib-action="refresh"],#libraryView [data-lib-action="history"]').count(),0);
     assert.equal(await page.locator('#libraryView h1').innerText(),'作品库');
     await page.waitForFunction(()=>$('#libraryWorks img')?.src.startsWith('blob:'));
+    assert.ok(requests.some(url=>url.includes('/library/thumbnail?id=')),'列表使用真实后端缩略图');
+    assert.equal(requests.filter(url=>/\/library\/(file|cover)\?/.test(url)).length,0,'打开详情前不读原件');
     await page.selectOption('#libraryState','pinned');
     await page.waitForFunction(()=>!LIB.loading && LIB.filters.state==='pinned' && LIB.items.length===1);
     assert.equal(await page.locator('.lib-card').count(),1);
@@ -64,6 +68,6 @@ const assert=require('node:assert/strict');
     assert.ok(requests.some(url=>url.includes('/library/file?id=')));
     assert.ok(requests.filter(url=>url.includes('/library')).every(url=>!url.includes('token=')));
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({ok:true,screenshot,requests:requests.filter(url=>url.includes('/library'))}));
+    console.log(JSON.stringify({ok:true,screenshot,thumbnailTransfers:transfers,thumbnailBytes:transfers.reduce((sum,item)=>sum+item.bytes,0),requests:requests.filter(url=>url.includes('/library'))}));
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

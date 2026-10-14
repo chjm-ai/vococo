@@ -21,16 +21,19 @@ def _endpoint(handler):
     async def wrapped(request):
         denied = check_web_auth(request)
         if denied is not None:
+            denied.headers["Cache-Control"] = "private, no-store"
             return denied
         try:
-            return await handler(request)
+            response = await handler(request)
         except (KeyError, FileNotFoundError) as exc:
-            return web.json_response({"error": str(exc)}, status=404)
+            response = web.json_response({"error": str(exc)}, status=404)
         except (ValueError, TypeError) as exc:
-            return web.json_response({"error": str(exc)}, status=400)
+            response = web.json_response({"error": str(exc)}, status=400)
         except Exception:
             request.app.logger.exception("作品库请求失败")
-            return web.json_response({"error": "作品库读取或保存失败，请重试"}, status=500)
+            response = web.json_response({"error": "作品库读取或保存失败，请重试"}, status=500)
+        response.headers.setdefault("Cache-Control", "private, no-store")
+        return response
     return wrapped
 
 
@@ -124,12 +127,41 @@ async def cover(request):
     return await _image_response(request, library.cover_file)
 
 
+def _matches_etag(request, etag):
+    values = request.headers.get("If-None-Match", "").split(",")
+    return any(value.strip().removeprefix("W/") in {etag, "*"} for value in values)
+
+
+def _image_headers(etag, max_age=0):
+    return {"Cache-Control": f"private, max-age={max_age}, must-revalidate",
+            "ETag": etag, "Vary": "X-Auth-Token, Cookie",
+            "X-Content-Type-Options": "nosniff"}
+
+
+@_endpoint
+async def thumbnail(request):
+    try:
+        data, version = await asyncio.to_thread(
+            library.thumbnail_data, _id(request), request.query.get("v"))
+    except library.ThumbnailVersionError as exc:
+        return web.json_response({"error": str(exc)}, status=409,
+                                 headers={"Cache-Control": "private, no-store"})
+    headers = _image_headers(f'"{version}"', 86400 if "v" in request.query else 0)
+    if _matches_etag(request, headers["ETag"]):
+        return web.Response(status=304, headers=headers)
+    return web.Response(body=data, content_type="image/webp", headers=headers)
+
+
 async def _image_response(request, resolve_file):
     path = await asyncio.to_thread(resolve_file, _id(request))
+    stat = await asyncio.to_thread(path.stat)
+    # 与 aiohttp FileResponse 的自动 ETag 一致，条件请求无需重读完整原件。
+    headers = _image_headers(f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"')
+    if _matches_etag(request, headers["ETag"]):
+        return web.Response(status=304, headers=headers)
     _, _, media_type = await asyncio.to_thread(library._read_image, path)
-    return web.FileResponse(path, headers={"Content-Type": media_type,
-                                         "Cache-Control": "private, no-store",
-                                         "X-Content-Type-Options": "nosniff"})
+    headers["Content-Type"] = media_type
+    return web.FileResponse(path, headers=headers)
 
 
 def resolve_refs(refs) -> tuple[list[ImageAttachment], list[str]]:
@@ -212,6 +244,6 @@ def register_routes(app: web.Application) -> None:
     app.add_routes([
         web.get("/library/items", items), web.get("/library/item", item),
         web.patch("/library/item", patch_item), web.get("/library/file", file),
-        web.get("/library/cover", cover),
+        web.get("/library/cover", cover), web.get("/library/thumbnail", thumbnail),
         web.post("/library/history/preview", history_preview),
     ])
