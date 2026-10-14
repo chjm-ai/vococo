@@ -35,6 +35,10 @@ def image(tmp_path):
 @pytest.fixture
 def publish_dirs(isolated, monkeypatch):
     from vococo import config
+    from vococo.tools import website_preview
+    async def isolated_capture(*args):
+        raise RuntimeError("隔离测试不连接真实服务")
+    monkeypatch.setattr(website_preview, "_capture", isolated_capture)
     source = isolated / "site"
     source.mkdir()
     (source / "index.html").write_text("hello", encoding="utf-8")

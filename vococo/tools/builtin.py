@@ -1854,10 +1854,45 @@ async def publish_website(args: dict) -> dict:
         return _library_result(text, published)
     registration = {key: published[key] for key in ("url", "source_key", "metadata", "event_key")}
     registration.update(title=args.get("title", ""), **_library_context())
+    from ..memory import library
+    publication_error = ""
+    try:
+        library.remember_website_publication(published)
+    except Exception as exc:
+        publication_error = str(exc)
     receipt = _library_receipt("website", registration)
+    cover = {"cover_status": "pending", "cover_error": "登记成功后才能生成封面"}
+    if receipt.get("library_id"):
+        from ..memory import library
+        from . import website_preview
+        try:
+            version = published["metadata"]["version"]
+            if publication_error:
+                raise RuntimeError(f"可信发布回执保存失败：{publication_error}")
+            cover = await website_preview.generate_cover(receipt["library_id"], version)
+        except asyncio.CancelledError:
+            cover = {"cover_status": "pending", "cover_error": "截图已取消，封面待生成",
+                     "cover_retry": {"id": receipt["library_id"]}}
+        except Exception as exc:
+            cover = {"cover_status": "pending", "cover_error": str(exc),
+                     "cover_retry": {"id": receipt["library_id"]}}
     verification = published["metadata"]["http_verification"]
     status = "HTTP 验活通过。" if verification == "verified" else "访问待验证；激活成功不等于公网可访问。"
-    return _library_result(f"站点已激活；{status}", {**published, **receipt})
+    cover_text = "封面已更新。" if cover["cover_status"] == "ready" else "封面待生成；不会重新发布。"
+    return _library_result(f"站点已激活；{status}{cover_text}", {**published, **receipt, **cover})
+
+
+@tool(
+    "retry_website_cover", "仅重试受控 local/kimmy 已发布网站的封面；不重新发布、不新增来源，保留旧封面。只接受作品 ID，不接受 URL 或 metadata。",
+    {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+)
+async def retry_website_cover(args: dict) -> dict:
+    from . import website_preview
+    try:
+        receipt = await website_preview.generate_cover(args["id"])
+        return _library_result("仅处理网站封面，未重新发布。", receipt)
+    except Exception as exc:
+        return _ok(f"封面待生成：{exc}；未重新发布。")
 
 
 def build_mcp_servers() -> dict:
@@ -1895,6 +1930,7 @@ def build_mcp_servers() -> dict:
                 get_library_item,
                 collect_library_item,
                 publish_website,
+                retry_website_cover,
                 dispatch_session,
                 restart_self,
                 list_mcp_servers,
