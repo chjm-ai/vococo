@@ -39,6 +39,28 @@ def _no_web_auth(monkeypatch):
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
 
 
+@pytest.mark.anyio
+async def test_web_default_fallback_keeps_claude_alias(models_app, tmp_path, monkeypatch):
+    from vococo import config
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
+    upstream = "claude-sonnet-5-5"
+    alias = f"cheapcoding-sonnet/{upstream}"
+    monkeypatch.setattr(config, "MODEL", alias)
+    settings_store.upsert_web_provider("cheapcoding-sonnet", {
+        "base_url": "https://cheapcoding.cc", "api_key": "test", "model": upstream,
+    })
+    settings_store.set_web_effort("low", model=upstream)
+    async with TestClient(TestServer(models_app)) as client:
+        response = await client.get("/models")
+        data = await response.json()
+        assert data["default"] == alias
+        response = await client.post("/effort", json={"effort": "max"})
+        assert response.status == 200
+        assert (await response.json())["model"] == alias
+    assert settings_store.get_web_effort(alias) == "max"
+    assert settings_store.get_web_effort(upstream) == "low"
+
+
 @pytest.fixture
 def model_settings(monkeypatch):
     choices = [

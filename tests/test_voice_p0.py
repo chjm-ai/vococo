@@ -626,6 +626,19 @@ def _parse_sse(body: str) -> list[tuple[str, dict]]:
     return out
 
 
+def test_voice_claude_fallback_keeps_provider_alias(monkeypatch, tmp_path):
+    from vococo.gateway import settings_store
+    from vococo.voice import session
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
+    model = "claude-sonnet-5-5"
+    settings_store.upsert_web_provider("cheapcoding-sonnet", {
+        "base_url": "https://cheapcoding.cc", "api_key": "test", "model": model,
+    })
+    alias = f"cheapcoding-sonnet/{model}"
+    assert session._model_candidates(model) == [model, alias]
+    assert session._model_candidates(alias) == [alias]
+
+
 @pytest.mark.anyio
 async def test_voice_session_fallback_when_official_blocked(voice_db, monkeypatch):
     """Claude 官方模型在起点就失败时,语音通话应自动切到已配置的第三方供应商。"""

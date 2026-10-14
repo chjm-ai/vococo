@@ -41,13 +41,14 @@ def _clean(raw: str) -> str:
 async def _ask(text: str, model: str, env: dict[str, str]) -> str:
     """SDK 一次性 query:无工具无 MCP,纯文本问答,取 ResultMessage.result。"""
     from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+    from .agent import _turn_env
 
     options = ClaudeAgentOptions(
         model=model,
         max_turns=1,
         tools=[],  # 标题任务不需要任何工具,顺带把 schema 瘦到最小
         system_prompt="你是标题生成器,只输出标题文本,别的什么都不说。",
-        env=env,
+        env=_turn_env(env),
     )
     out = ""
     async for msg in query(prompt=_PROMPT.format(text=text[:500]), options=options):

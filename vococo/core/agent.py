@@ -710,6 +710,7 @@ def _compat_base_key(
     max_turns: int = 0,
     effort: str = "",
     subagents: tuple = (),
+    selection_model: str = "",
 ) -> str:
     """保温 client 的兼容性哈希(不含 SDK 会话 id,那个在池里单独比)。
 
@@ -727,6 +728,7 @@ def _compat_base_key(
     )
     payload = {
         "model": resolved_model,
+        "selection_model": selection_model,
         "env": sorted(provider_env.items()),
         "prompt": sys_prompt,
         "skills": skills,
@@ -794,7 +796,7 @@ def _turn_env(provider_env: dict, no_auto_memory: bool = False) -> dict:
     .env 里配置的长效订阅令牌(claude setup-token 生成,专为无人值守场景设计),这里显式
     带上,不依赖本机是否恰好登录着。danger.py 已有针对性拦截挡 curl/wget 等外带这个变量
     名的命令,是这个必要暴露面的兜底防线。"""
-    env = {**provider_env, **_FORCE_FOREGROUND_ENV}
+    env = {"DISABLE_PROMPT_CACHING": "", **provider_env, **_FORCE_FOREGROUND_ENV}
     # 项目 Agent 会话:关掉 CLI 的 auto-memory——它按项目目录把整份 AI_BRAIN/MEMORY.md 再注一遍,
     # 我们自己只注入和该 Agent 相关的分节(记忆分区,见 memory/agents.py)
     if no_auto_memory:
@@ -909,9 +911,10 @@ async def stream_turn(
     resolved_model, provider_env = providers.resolve(model, config.MODEL)
     # 思考深度按模型分别保存。老版本/手改配置可能为该模型留了不支持的档位，
     # 此处宁可不传、交给供应商默认，也不能把未知参数发到第三方端点。
-    saved_effort = settings_store.get_web_effort(resolved_model)
+    selection_model = model or config.MODEL
+    saved_effort = settings_store.get_web_effort(selection_model)
     effective_effort = (
-        saved_effort if saved_effort in providers.effort_levels_for_model(resolved_model) else ""
+        saved_effort if saved_effort in providers.effort_levels_for_model(selection_model) else ""
     )
     # 少数档位(见 providers._EXTRA_BODY_EFFORTS)CLI 的 --effort 传不出去,只能靠这个
     # 请求体合并环境变量注入。注入时 effort 必须留空:CLI 收到不认识的值只会警告+回退默认,
@@ -991,6 +994,7 @@ async def stream_turn(
             effective_max_turns,
             effort=effective_effort,
             subagents=tuple(sorted(subagents or ())),
+            selection_model=selection_model,
         )
         if pooling
         else ""

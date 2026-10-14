@@ -96,7 +96,7 @@ def _env_for(provider: ActiveProvider) -> dict[str, str]:
     if scheme not in ("http", "https"):
         print(f"⚠️ 供应商 {provider.name} 的 base_url 非 http(s),已拒绝注入:{provider.base_url}")
         return {}
-    return {
+    env = {
         "ANTHROPIC_BASE_URL": provider.base_url,
         # Claude Code CLI / claude-agent-sdk 只认 ANTHROPIC_API_KEY 作为第三方
         # Anthropic-compatible 端点的鉴权,ANTHROPIC_AUTH_TOKEN 不被识别,会
@@ -109,6 +109,22 @@ def _env_for(provider: ActiveProvider) -> dict[str, str]:
         # 自定义变量,原样透传无副作用(见 core/vision.py is_vision_capable)。
         "ANTHROPIC_VISION_CAPABLE": "1" if provider.vision else "",
     }
+    if (urlsplit(provider.base_url).hostname or "").lower() == "cheapcoding.cc":
+        env["DISABLE_PROMPT_CACHING"] = "1"
+    return env
+
+
+def _claude_alias_parts(model: str) -> tuple[str, str] | None:
+    name, separator, upstream = model.rpartition("/")
+    if separator and name and upstream.startswith("claude-"):
+        return name, upstream
+    return None
+
+
+def _selection_id(provider: ActiveProvider) -> str:
+    if provider.model.startswith("claude-") and "/" not in provider.model and not provider.is_official:
+        return f"{provider.name}/{provider.model}"
+    return provider.model
 
 
 def _provider_entry_by_name(entries: dict[str, dict], name: str) -> tuple[str, dict] | None:
@@ -132,24 +148,57 @@ def _codex_proxy_entry(entries: dict[str, dict]) -> tuple[str, dict] | None:
     return None
 
 
-def _provider_entry_for_model(model: str) -> tuple[str, dict] | None:
-    """按模型反查供应商;额外模型可通过 provider 复用一个代理配置。"""
+def _provider_entry_for_extra(entries: dict[str, dict], model: str) -> tuple[str, dict] | None:
     from .gateway import settings_store
 
-    entries = _all_web_providers()
-    if model in dict(_CODEX_BUILTIN_MODELS):
-        codex_proxy = _codex_proxy_entry(entries)
-        if codex_proxy is not None:
-            return codex_proxy
-    for name, entry in entries.items():
-        if _entry_field(entry, "model") == model:
-            return name, entry
     for extra in settings_store.list_web_extra_models():
         if extra.get("id") != model:
             continue
         provider_name = extra.get("provider")
         if isinstance(provider_name, str) and provider_name.strip():
-            return _provider_entry_by_name(entries, provider_name.strip())
+            found = _provider_entry_by_name(entries, provider_name.strip())
+            if found:
+                name, entry = found
+                return name, {**entry, "model": model}
+    return None
+
+
+def _provider_entry_for_alias(entries: dict[str, dict], model: str) -> tuple[str, dict]:
+    name, upstream = _claude_alias_parts(model)
+    entry = entries.get(name)
+    extra = _provider_entry_for_extra(entries, upstream)
+    is_extra = extra is not None and extra[0] == name
+    if entry is None or (_entry_field(entry, "model") != upstream and not is_extra):
+        raise ValueError(f"模型 {model} 对应的供应商不存在或模型已变更")
+    provider = ActiveProvider(
+        name, _entry_field(entry, "base_url", "baseUrl"),
+        _entry_field(entry, "api_key", "apiKey"), upstream,
+    )
+    if provider.is_official or not _env_for(provider):
+        raise ValueError(f"模型 {model} 对应的供应商配置不可用")
+    return name, {**entry, "model": upstream}
+
+
+def _provider_entry_for_model(model: str) -> tuple[str, dict] | None:
+    """按模型反查供应商;额外模型可通过 provider 复用一个代理配置。"""
+    entries = _all_web_providers()
+    # 裸 Claude ID 始终保留给官方，第三方只能通过独立选择 ID 路由。
+    if model.startswith("claude-") and "/" not in model:
+        return None
+    if model in dict(_CODEX_BUILTIN_MODELS):
+        codex_proxy = _codex_proxy_entry(entries)
+        if codex_proxy is not None:
+            name, entry = codex_proxy
+            return name, {**entry, "model": model}
+    # 已配置的真实 ID（如 anthropic/claude-*）优先，不能被当成自动别名拆开。
+    for name, entry in entries.items():
+        if _entry_field(entry, "model") == model:
+            return name, entry
+    extra = _provider_entry_for_extra(entries, model)
+    if extra is not None:
+        return extra
+    if _claude_alias_parts(model):
+        return _provider_entry_for_alias(entries, model)
     return None
 
 
@@ -163,7 +212,7 @@ def _provider_for_model(model: str) -> ActiveProvider | None:
         name=name,
         base_url=_entry_field(entry, "base_url", "baseUrl"),
         api_key=_entry_field(entry, "api_key", "apiKey"),
-        model=model,
+        model=_entry_field(entry, "model"),
         vision=_entry_vision(entry),
     )
 
@@ -176,30 +225,24 @@ def resolve(chosen_model: str | None, default_model: str) -> tuple[str, dict[str
          连带注入其 base_url + key,否则按官方(走订阅)。
       2. 没显式选 → default_model(= config.MODEL) + 订阅。
 
-    注意:不再支持 cc-switch 的"默认激活供应商"概念。当前只用 Claude 为主、第三方
-    靠 /model 显式切;若以后需要"默认走第三方",得在 settings_store 里加 active_provider。
+    第三方 Claude 选择 ID 为供应商名/真实模型；返回模型只用于发给上游，
+    保存选择、查思考深度和用量时仍须保留原选择 ID。默认模型同样支持第三方选择 ID。
     """
-    if chosen_model:
-        found = _provider_for_model(chosen_model)
-        if found and not found.is_official:
-            return chosen_model, _env_for(found)
-        return chosen_model, {}
-    # 默认模型同样反查:若属于第三方供应商(如 .env 的 AGENT_MODEL 直接配
-    # deepseek-flash),也注入其 base_url + key,否则按官方(走订阅)。
-    # 2026-08-04:Claude 官方订阅账号被封后,主服务默认模型切第三方必需此分支。
-    found = _provider_for_model(default_model)
+    selection = chosen_model or default_model
+    found = _provider_for_model(selection)
     if found and not found.is_official:
-        return default_model, _env_for(found)
-    return default_model, {}
+        return found.model, _env_for(found)
+    return selection, {}
 
 
-def sidecar_env(name: str) -> tuple[str, dict[str, str]] | None:
+def sidecar_env(name: str, *, selection_id: bool = False) -> tuple[str, dict[str, str]] | None:
     """按供应商名取 (model, 注入env),给标题总结这类轻量辅助调用做兜底。
 
     名字不区分大小写、允许子串匹配(配置里叫 deepseek / DeepSeek 都能命中);
     传空串 = 匹配任意第一个可用第三方(后台任务没配 DeepSeek、想兜到
     Codex/GPT 代理这类供应商时用);
     未配置 / 缺 key / 是官方端点(官方走订阅不用它兜底)→ None。
+    selection_id=True 供稍后重新调用 resolve 的后台任务保留供应商身份。
     """
     want = name.lower()
     entries = _all_web_providers()
@@ -218,7 +261,8 @@ def sidecar_env(name: str) -> tuple[str, dict[str, str]] | None:
         )
         if provider.is_official or not provider.api_key or not provider.model:
             continue
-        return provider.model, _env_for(provider)
+        model = _selection_id(provider) if selection_id else provider.model
+        return model, _env_for(provider)
     return None
 
 
@@ -330,6 +374,30 @@ def _billing_kind(base_url: str) -> str:
     return "订阅" if host in _SUBSCRIPTION_HOSTS else "API"
 
 
+def _extra_model_choice(extra: dict, entries: dict[str, dict]) -> tuple[str, str, str] | None:
+    upstream = extra.get("id")
+    if not upstream:
+        return None
+    label, group = extra.get("label") or upstream, extra.get("group") or "anthropic"
+    provider_name = extra.get("provider")
+    if not provider_name:
+        return upstream, label, group
+    if not isinstance(provider_name, str):
+        return None
+    found = _provider_entry_by_name(entries, provider_name)
+    if found is None or not _entry_field(found[1], "api_key", "apiKey"):
+        return None
+    name, entry = found
+    provider = ActiveProvider(
+        name, _entry_field(entry, "base_url", "baseUrl"),
+        _entry_field(entry, "api_key", "apiKey"), upstream,
+    )
+    selection = _selection_id(provider)
+    if selection != upstream:
+        return selection, f"{label} · {name}（API）", "api"
+    return selection, label, group
+
+
 def available_models(
     default_choices: list[tuple[str, str]], include_disabled: bool = False,
 ) -> list[tuple[str, str, str]]:
@@ -340,7 +408,7 @@ def available_models(
     时供设置页列出完整名单并恢复已隐藏的模型。
     web_extra_models(设置页手动补录,见 gateway.settings_store)紧随其后——未指定
     provider 时按官方订阅处理;指定 provider 时复用对应第三方的连接配置。
-    标签只留"模型名（订阅/API）",不带供应商名,免得面板换行/信息过载。
+    第三方 Claude 自动生成供应商名/模型的独立选择 ID，标签带供应商名以区分官方。
     第三个元素是分组:anthropic(官方订阅) / kimi(Kimi 订阅) / api(按量计费),
     供 WebUI 模型面板分组展示 + 决定要不要查订阅额度。
     """
@@ -357,21 +425,17 @@ def available_models(
     ]
     seen = {mid for mid, _, _ in out}
     for extra in settings_store.list_web_extra_models():
-        mid = extra.get("id")
-        if not mid or mid in seen or (not include_disabled and mid in disabled):
-            continue
         # 手动补录过的同名型号不能压过内置定义，否则会丢掉 Codex 分组和代理路由。
-        if codex_proxy is not None and mid in codex_builtin_ids:
+        if codex_proxy is not None and extra.get("id") in codex_builtin_ids:
             continue
-        provider_name = extra.get("provider")
-        if provider_name:
-            if not isinstance(provider_name, str):
-                continue
-            found = _provider_entry_by_name(entries, provider_name)
-            if found is None or not _entry_field(found[1], "api_key", "apiKey"):
-                continue
+        choice = _extra_model_choice(extra, entries)
+        if choice is None:
+            continue
+        mid = choice[0]
+        if mid in seen or (not include_disabled and mid in disabled):
+            continue
         seen.add(mid)
-        out.append((mid, extra.get("label") or mid, extra.get("group") or "anthropic"))
+        out.append(choice)
     if codex_proxy is not None:
         for mid, label in _CODEX_BUILTIN_MODELS:
             if mid in seen or (not include_disabled and mid in disabled):
@@ -381,7 +445,12 @@ def available_models(
     for name, entry in entries.items():
         if name.lower() in _OFFICIAL_NAMES:
             continue
-        model = _entry_field(entry, "model")
+        upstream = _entry_field(entry, "model")
+        base_url = _entry_field(entry, "base_url", "baseUrl")
+        provider = ActiveProvider(name, base_url, _entry_field(entry, "api_key", "apiKey"), upstream)
+        if provider.is_official:
+            continue
+        model = _selection_id(provider)
         if (
             not model
             or model in seen
@@ -399,7 +468,8 @@ def available_models(
             kind = "订阅"
         else:
             group = "kimi" if kind == "订阅" else "api"
-        out.append((model, f"{model}（{kind}）", group))
+        label = f"{upstream} · {name}（{kind}）" if model != upstream else f"{model}（{kind}）"
+        out.append((model, label, group))
     # 组序 + 组内档位统一排序:当前 GPT-6 三档在前，旧 GPT-5.6 三档留作回退。
     # 6 Sol 已被 6.1 Sol 取代，若运行时仍手动配置则排在当前三档之后。
     _GROUP_ORDER = {"anthropic": 0, "kimi": 1, "codex": 2, "api": 3}
@@ -464,7 +534,7 @@ def lookup_provider_by_model(model: str) -> dict | None:
     if found is None:
         return None
     _, entry = found
-    return {**entry, "model": model}
+    return dict(entry)
 
 
 def is_subscription_host(base_url: str) -> bool:
@@ -729,7 +799,7 @@ async def usage_for_model(model: str | None) -> tuple[dict, int]:
 
     model = (model or "").strip()
     if not model:
-        model = resolve(None, config.MODEL)[0]
+        model = config.MODEL
 
     # Kimi 订阅(api.kimi.com);web_providers 条目的 snake_case/camelCase 归一化
     # 已在 subscription_api_key_for_model 内做完,这里拿到的就是规整好的 api_key。
