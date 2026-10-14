@@ -79,18 +79,18 @@ async def generate_cover(item_id: str, expected_version: str | None = None) -> d
         with tempfile.TemporaryDirectory(prefix="vococo-cover-") as temporary:
             output = Path(temporary).resolve() / "cover.png"
             details = await _capture(preview_url(record["source_key"]), output)
-            applied = library.update_website_cover(item_id, version, output, "ready", details,
-                                                   expected_generation=generation)
+            applied = await asyncio.to_thread(library.update_website_cover, item_id, version, output,
+                                              "ready", details, expected_generation=generation)
             return {"cover_status": "ready" if applied else "stale", **details}
     except asyncio.CancelledError:
-        library.update_website_cover(item_id, version, None, "pending", {"error": "截图已取消"},
-                                     expected_generation=generation)
+        await asyncio.to_thread(library.update_website_cover, item_id, version, None,
+                                "pending", {"error": "截图已取消"}, expected_generation=generation)
         raise
     except Exception as exc:
         result["cover_error"] = str(exc)
         try:
-            if not library.update_website_cover(item_id, version, None, "pending", {"error": str(exc)},
-                                                expected_generation=generation):
+            if not await asyncio.to_thread(library.update_website_cover, item_id, version, None,
+                                           "pending", {"error": str(exc)}, expected_generation=generation):
                 result["cover_status"] = "stale"
         except Exception as state_error:
             result["cover_state_error"] = str(state_error)

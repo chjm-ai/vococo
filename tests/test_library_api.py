@@ -39,6 +39,65 @@ AUTH = {"X-Auth-Token": "test-library-token"}
 
 
 @pytest.mark.anyio
+async def test_unpublished_item_all_routes_and_refs_are_inaccessible(env, isolated, monkeypatch):
+    from vococo.tools import publishing
+
+    async def approve(*args):
+        return True
+    monkeypatch.setattr(publishing.danger, 'require_approval', approve)
+    monkeypatch.setattr(publishing, '_LOCKS', {})
+    source = isolated / 'site'
+    source.mkdir()
+    (source / 'index.html').write_text('test')
+    args = {'target': 'local', 'slug': 'api-demo', 'source_dir': str(source)}
+    receipt = await publishing.publish(args)
+    library.remember_website_publication(receipt)
+    row = library.register_website(receipt['url'], '站点', receipt['source_key'],
+                                   event_key=receipt['event_key'], cover_path=env)
+    await publishing.unpublish(args)
+    adapter = WebAdapter()
+    async with TestClient(TestServer(app_for(adapter))) as client:
+        for route in ('item', 'file', 'cover', 'thumbnail'):
+            url = f"/library/{route}?id={row['id']}"
+            assert (await client.get(url)).status == 401
+            response = await client.get(url, headers=AUTH)
+            assert response.status == 404
+        listing = await client.get('/library/items?state=all', headers=AUTH)
+        assert (await listing.json())['items'] == []
+        response = await client.post('/send', headers=AUTH,
+                                     json={'text': '引用', 'library_refs': [row['id']]})
+        assert response.status == 404
+        assert adapter._inbox.empty()
+
+
+@pytest.mark.anyio
+async def test_list_removal_race_returns_empty_200_not_null_or_400(env, isolated, monkeypatch):
+    import asyncio
+    from vococo.tools import publishing
+
+    async def approve(*args):
+        return True
+    monkeypatch.setattr(publishing.danger, 'require_approval', approve)
+    monkeypatch.setattr(publishing, '_LOCKS', {})
+    source = isolated / 'racing-site'
+    source.mkdir()
+    (source / 'index.html').write_text('test')
+    args = {'target': 'local', 'slug': 'racing-api', 'source_dir': str(source)}
+    receipt = await publishing.publish(args)
+    library.remember_website_publication(receipt)
+    library.register_website(receipt['url'], '', receipt['source_key'], event_key=receipt['event_key'])
+    original = library._item
+    def remove_before_item(connection, item_id):
+        assert asyncio.run(publishing.unpublish(args))['deactivation'] == 'succeeded'
+        return original(connection, item_id)
+    monkeypatch.setattr(library, '_item', remove_before_item)
+    async with TestClient(TestServer(app_for())) as client:
+        response = await client.get('/library/items?state=all', headers=AUTH)
+        assert response.status == 200
+        assert (await response.json())['items'] == []
+
+
+@pytest.mark.anyio
 async def test_api_list_detail_patch_file_and_errors(env):
     row = library.register_image(env, "蓝色图片")
     async with TestClient(TestServer(app_for())) as client:

@@ -146,7 +146,12 @@ async def thumbnail(request):
     except library.ThumbnailVersionError as exc:
         return web.json_response({"error": str(exc)}, status=409,
                                  headers={"Cache-Control": "private, no-store"})
-    headers = _image_headers(f'"{version}"', 86400 if "v" in request.query else 0)
+    row = await asyncio.to_thread(library.get_item, _id(request))
+    if row is None:
+        raise KeyError("作品不存在或已下线")
+    # 网站可随时下线；即使版本未变，也必须回源核对可用状态。
+    max_age = 86400 if "v" in request.query and row['kind'] == 'image' else 0
+    headers = _image_headers(f'"{version}"', max_age)
     if _matches_etag(request, headers["ETag"]):
         return web.Response(status=304, headers=headers)
     return web.Response(body=data, content_type="image/webp", headers=headers)
