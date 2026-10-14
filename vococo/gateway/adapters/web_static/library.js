@@ -13,13 +13,12 @@ function libraryButton(action, label, icon, extra=""){
 }
 function initLibrary(){
   const view=el("main","library-ui"); view.id="libraryView"; view.hidden=true;
-  view.innerHTML=`<div class="lib-content"><header class="lib-heading"><div class="lib-title"><button type="button" class="wb-hamb" data-lib-action="sidebar" aria-label="展开侧栏">${ic("panel")}</button><h1>作品库</h1></div><div class="lib-actions">${libraryButton("refresh","刷新","refresh")}${libraryButton("history","历史候选预览","eye")}</div></header>
-    <div class="lib-filters"><div class="lib-status" role="group" aria-label="作品状态">${[["visible","全部可见"],["pinned","已置顶"],["hidden","已隐藏"]].map(([state,label])=>libraryButton("state",label,"",`data-state="${state}" aria-pressed="${state==="visible"}"`)).join("")}</div>
-    <label class="lib-agent">Agent <select id="libraryAgent" aria-label="筛选 Agent"><option value="">全部 Agent</option></select></label></div>
-    <div class="lib-type" role="group" aria-label="作品类型">${[["","全部作品"],["image","图片"],["website","网站"]].map(([kind,label])=>libraryButton("kind",label,"",`data-kind="${kind}" aria-pressed="${!kind}"`)).join("")}</div>
+  view.innerHTML=`<div class="lib-content"><header class="lib-heading"><div class="lib-title"><button type="button" class="wb-hamb" data-lib-action="sidebar" aria-label="展开侧栏">${ic("panel")}</button><h1>作品库</h1></div></header>
+    <div class="lib-filters"><select id="libraryState" aria-label="作品状态"><option value="visible">全部可见</option><option value="pinned">已置顶</option><option value="hidden">已隐藏</option></select>
+    <select id="libraryAgent" aria-label="筛选 Agent"><option value="">全部 Agent</option></select>
+    <select id="libraryKind" aria-label="作品类型"><option value="">全部作品</option><option value="image">图片</option><option value="website">网站</option></select></div>
     <label class="lib-search">${ic("search")}<input id="librarySearch" type="search" placeholder="搜索作品" aria-label="搜索作品"></label>
-    <div class="lib-results"><span id="libraryCount" aria-live="polite"></span>${libraryButton("reset","清除筛选","")}</div><p id="libraryMessage" role="status"></p><div id="libraryWorks" class="lib-works"></div><div class="lib-results">${libraryButton("more","加载更多","",'id="libraryMore" hidden')}</div>
-    <p class="lib-footnote">隐藏仅移出日常列表，不删除原件，也不撤下网站。图片原件需要登录才能查看。</p><section id="libraryHistory" hidden aria-live="polite"></section></div>`;
+    <p id="libraryMessage" role="status"></p><div id="libraryWorks" class="lib-works"></div><div class="lib-results">${libraryButton("more","加载更多","",'id="libraryMore" hidden')}</div></div>`;
   $("#app").append(view);
   const detail=el("dialog","library-ui lib-detail"); detail.id="libraryDetail";
   detail.setAttribute("aria-labelledby","libraryDetailTitle");
@@ -31,7 +30,9 @@ function initLibrary(){
     if(detail.open) return;
     LIB.selected=null; LIB.detailVersion++; libraryReleaseImages(); libraryLoadImages(view);
   });
-  $("#libraryAgent").onchange=e=>{ LIB.filters.agent_id=e.target.value; loadLibrary(); };
+  for(const [id,key] of [["libraryState","state"],["libraryAgent","agent_id"],["libraryKind","kind"]]){
+    $("#"+id).onchange=e=>{ LIB.filters[key]=e.target.value; loadLibrary(); };
+  }
   let timer; $("#librarySearch").oninput=e=>{
     LIB.filters.search=e.target.value; clearTimeout(timer); resetLibraryPage();
     timer=setTimeout(loadLibrary,250);
@@ -73,7 +74,7 @@ async function loadLibrary(more=false){
 }
 function resetLibraryPage(){
   LIB.version++; LIB.items=[]; LIB.offset=0; LIB.hasMore=false; LIB.total=null; LIB.loading=false;
-  $("#libraryWorks").replaceChildren(); $("#libraryCount").textContent=""; $("#libraryMore").hidden=true;
+  $("#libraryWorks").replaceChildren(); $("#libraryMore").hidden=true;
   libraryReleaseImages();
 }
 function applyLibraryPage(data,more){
@@ -101,17 +102,14 @@ function libraryCard(item){
   return `<article class="lib-card"><button class="lib-card-open" type="button" data-lib-action="detail" ${id} aria-haspopup="dialog">${libraryCover(item)}<div class="lib-card-copy"><h3>${libraryText(item.title||"未命名作品")}</h3><p>${libraryText(libraryAgent(item.agent_id))}</p><div class="lib-card-meta"><span>${item.kind==="image" ? "图片" : "网站"}${item.hidden ? " · 已隐藏" : ""}</span><time>${libraryDate(item.updated_at||item.created_at)}</time></div></div></button><div class="lib-card-actions">${libraryButton("pin",item.pinned ? "取消置顶" : "置顶","pin",`${id} aria-pressed="${!!item.pinned}"`)}${libraryButton("hide",item.hidden ? "恢复" : "隐藏","eye",id)}</div></article>`;
 }
 function renderLibrary(more=false){
-  $("#libraryCount").textContent=`已加载 ${LIB.items.length} 件作品`+(LIB.total===null ? "" : ` · 筛选总数 ${LIB.total} 件`);
   $("#libraryMore").hidden=!LIB.hasMore;
-  $("#libraryMessage").textContent=LIB.items.length ? "" : "暂无匹配作品。可调整筛选，或预览支持范围内的历史候选。";
+  $("#libraryMessage").textContent=LIB.items.length ? "" : "暂无匹配作品。";
   const works=$("#libraryWorks");
   const rendered=new Set([...works.querySelectorAll('[data-lib-action="detail"]')].map(button=>button.dataset.id));
   const markup=LIB.items.filter(item=>!more || !rendered.has(String(item.id))).map(libraryCard).join("");
   if(more) works.insertAdjacentHTML("beforeend",markup); else works.innerHTML=markup;
-  $("#libraryView").querySelectorAll("[data-state], [data-kind]").forEach(button=>{
-    const key=button.dataset.state===undefined ? "kind" : "state";
-    button.setAttribute("aria-pressed",String(button.dataset[key]===LIB.filters[key]));
-  });
+  $("#libraryState").value=LIB.filters.state;
+  $("#libraryKind").value=LIB.filters.kind;
   libraryLoadImages($("#libraryView"));
 }
 function libraryReleaseImages(){
@@ -223,32 +221,20 @@ async function referenceLibraryItem(item, conv){
   if(!S.libraryRefs.some(reference=>reference.id===item.id)) S.libraryRefs.push({id:item.id,title:item.title,kind:item.kind});
   saveComposerAttachments(); renderThumbs(); $("#ta").focus();
 }
-async function previewLibraryHistory(){
-  const section=$("#libraryHistory"); section.hidden=false; section.textContent="正在预览支持范围内的历史候选…";
-  const data=await libraryJson("/library/history/preview",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
-  section.innerHTML='<h3>历史候选预览</h3><p>仅预览，没有导入；不代表历史全量。</p>';
-  const pre=el("pre"); pre.textContent=JSON.stringify(data,null,2); section.append(pre);
-}
 async function libraryClick(event){
   const button=event.target.closest("[data-lib-action]"); if(!button || button.disabled) return;
   const action=button.dataset.libAction, item=button.dataset.id ? LIB.items.find(entry=>String(entry.id)===button.dataset.id) : LIB.selected;
   button.disabled=true;
   try{ await libraryAction(action,button,item); }
   catch(error){
-    const message=$("#libraryDetail").open ? $("#libraryDetailMessage") : action==="history" ? $("#libraryHistory") : $("#libraryMessage");
+    const message=$("#libraryDetail").open ? $("#libraryDetailMessage") : $("#libraryMessage");
     message.textContent=error.message;
   }finally{ button.disabled=false; }
 }
 async function libraryAction(action,button,item){
   if(action==="sidebar") return expandSidebarResponsive();
   if(action==="close") return $("#libraryDetail").close();
-  if(action==="refresh") return loadLibrary();
   if(action==="more") return loadLibrary(true);
-  if(action==="history") return previewLibraryHistory();
-  if(action==="state" || action==="kind"){ LIB.filters[action]=button.dataset[action]; return loadLibrary(); }
-  if(action==="reset"){
-    Object.assign(LIB.filters,{kind:"",agent_id:"",state:"visible",search:""}); $("#librarySearch").value=""; return loadLibrary();
-  }
   if(action==="source"){ $("#libraryDetail").close(); return openConv(button.dataset.conv); }
   if(action==="detail") return openLibraryDetail(button.dataset.id);
   if(!item) return;
