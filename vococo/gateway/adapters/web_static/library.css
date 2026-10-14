@@ -44,6 +44,8 @@
 .lib-viewer{position:fixed;inset:0;width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;padding:var(--sp-5);border:0;background:var(--ov-4);overflow:hidden}
 .lib-viewer::backdrop{background:var(--ov-4)}
 .lib-viewer img{display:block;width:100%;height:100%;object-fit:contain}
+.lib-viewer-loading{display:none;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);padding:var(--sp-3) var(--sp-4);border-radius:var(--r-pill);background:var(--wh-1);color:var(--on-accent);font-size:var(--fs-md);white-space:nowrap}
+.lib-viewer.is-loading .lib-viewer-loading{display:block}
 .lib-viewer-close{position:absolute;top:var(--sp-4);right:var(--sp-4);z-index:1;display:grid;place-items:center;width:calc(var(--sp-5) * 2);height:calc(var(--sp-5) * 2);border:1px solid var(--wh-2);border-radius:var(--r-pill);background:var(--wh-1);color:var(--on-accent)}
 .lib-viewer-close .ic{width:var(--sp-5);height:var(--sp-5)}
 .lib-subtle{color:var(--dim);font-size:var(--fs-sm);margin-block:var(--sp-4)!important}

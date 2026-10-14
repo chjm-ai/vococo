@@ -24,12 +24,9 @@ function initLibrary(){
   detail.innerHTML=`<header class="lib-drawer-top"><span>作品详情</span>${libraryButton("close","关闭","close")}</header><p id="libraryDetailMessage" role="status"></p><div id="libraryDetailBody"></div>`;
   document.body.append(detail);
   const viewer=el("dialog","library-viewer"); viewer.id="libraryViewer";
-  viewer.innerHTML=`<button type="button" class="lib-viewer-close" data-lib-action="viewer-close" aria-label="关闭">${ic("close")}</button><img alt="作品原图">`;
+  viewer.innerHTML=`<button type="button" class="lib-viewer-close" data-lib-action="viewer-close" aria-label="关闭">${ic("close")}</button><img alt="作品原图"><span class="lib-viewer-loading" role="status">正在加载原图…</span>`;
   document.body.append(viewer);
-  viewer.addEventListener("close",()=>{
-    if(viewer.dataset.objectUrl) URL.revokeObjectURL(viewer.dataset.objectUrl);
-    viewer.querySelector("img").removeAttribute("src"); delete viewer.dataset.objectUrl;
-  });
+  viewer.addEventListener("cancel",event=>{ event.preventDefault(); closeLibraryViewer(); });
   view.addEventListener("click", libraryClick); detail.addEventListener("click", libraryClick); viewer.addEventListener("click",libraryClick);
   detail.addEventListener("close",()=>{
     // close 事件异步派发；旧弹窗已重新打开时不能清掉新的详情。
@@ -333,12 +330,27 @@ async function libraryPatch(item, changes){
   await loadLibrary();
   if(LIB.selected) libraryLoadImages($("#libraryDetail"));
 }
-async function libraryPreview(item){
-  const blob=await libraryFile(item.id), url=URL.createObjectURL(blob), viewer=$("#libraryViewer"), image=viewer.querySelector("img");
-  image.src=url; viewer.dataset.objectUrl=url; viewer.showModal();
+async function libraryPreview(item,button){
+  const viewer=$("#libraryViewer"), image=viewer.querySelector("img"), thumb=button.querySelector(".lib-cover img");
+  if(viewer.dataset.objectUrl) URL.revokeObjectURL(viewer.dataset.objectUrl);
+  delete viewer.dataset.objectUrl;
+  viewer.dataset.itemId=String(item.id); viewer.dataset.previewVersion=String(Number(viewer.dataset.previewVersion||0)+1);
+  const version=viewer.dataset.previewVersion;
+  viewer.querySelector(".lib-viewer-loading").textContent="正在加载原图…";
+  image.src=thumb?.getAttribute("src")||""; viewer.classList.add("is-loading"); viewer.showModal();
+  try{
+    const blob=await libraryFile(item.id);
+    if(!viewer.open || viewer.dataset.previewVersion!==version) return;
+    const url=URL.createObjectURL(blob); viewer.dataset.objectUrl=url; image.src=url; viewer.classList.remove("is-loading");
+  }catch(error){
+    if(viewer.open && viewer.dataset.previewVersion===version){ viewer.querySelector(".lib-viewer-loading").textContent="原图加载失败："+error.message; viewer.classList.remove("is-loading"); }
+  }
 }
 function closeLibraryViewer(){
-  const viewer=$("#libraryViewer"); if(viewer.open) viewer.close();
+  const viewer=$("#libraryViewer"); if(!viewer.open) return;
+  if(viewer.dataset.objectUrl) URL.revokeObjectURL(viewer.dataset.objectUrl);
+  delete viewer.dataset.objectUrl; viewer.dataset.previewVersion=String(Number(viewer.dataset.previewVersion||0)+1);
+  viewer.querySelector("img").removeAttribute("src"); viewer.classList.remove("is-loading"); viewer.close();
 }
 async function libraryDownload(item){
   const blob=await libraryFile(item.id), url=URL.createObjectURL(blob);
@@ -374,7 +386,7 @@ async function libraryAction(action,button,item){
   if(action==="more") return loadLibrary(true);
   if(action==="source"){ $("#libraryDetail").close(); return openConv(button.dataset.conv); }
   if(action==="detail") return openLibraryDetail(button.dataset.id);
-  if(action==="preview") return libraryPreview(item);
+  if(action==="preview") return libraryPreview(item,button);
   if(!item) return;
   if(action==="pin") return libraryPatch(item,{pinned:!item.pinned});
   if(action==="hide") return libraryPatch(item,{hidden:!item.hidden});
