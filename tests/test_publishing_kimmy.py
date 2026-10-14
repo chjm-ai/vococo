@@ -78,6 +78,56 @@ def test_kimmy_requires_approval_and_registers_even_when_http_pending(isolated, 
         assert receipt["metadata"]["local_cleanup_warning"]["error"] == "read-only staging"
 
 
+def test_kimmy_upload_with_system_rsync_preserves_public_modes_and_source(source, monkeypatch, tmp_path):
+    import stat
+    import subprocess
+
+    if shutil.which("rsync") is None:
+        pytest.skip("系统未安装 rsync")
+    source.chmod(0o700)
+    source.joinpath("index.html").chmod(0o600)
+    nested = source / "assets"
+    nested.mkdir(mode=0o700)
+    asset = nested / "app.js"
+    asset.write_text("test")
+    asset.chmod(0o700)
+    (source / "empty").mkdir(mode=0o700)
+    original_modes = {path: stat.S_IMODE(path.stat().st_mode)
+                      for path in [source, *source.rglob("*")]}
+    destination = tmp_path / "uploaded"
+    calls = []
+    async def remote(phase, slug, version, upload_manifest=None):
+        calls.append(phase)
+        if phase == "prepare":
+            return {"stage": f"/opt/deploy/vococo-staging/{slug}-{version}"}
+        if phase == "activate":
+            return {"activation": "succeeded", "backup_path": "/test/backup"}
+        return {"state": {}}
+    async def command(argv, stdin=None):
+        calls.append("upload")
+        # 只替换 SSH 传输；权限参数仍由系统 rsync 实际解析和执行。
+        local = list(argv)
+        local.remove("--rsync-path=sudo -n rsync")
+        transport = local.index("-e")
+        del local[transport:transport + 2]
+        local[-1] = str(destination) + "/"
+        result = subprocess.run(local, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+    async def verify(url):
+        return {"http_verification": "verified"}
+    monkeypatch.setattr(kimmy, "_remote", remote)
+    monkeypatch.setattr(kimmy, "_command", command)
+    monkeypatch.setattr(kimmy, "_verify", verify)
+    result = asyncio.run(kimmy.publish(source, "sample", publishing._manifest(source)))
+    assert result["activation"] == "succeeded"
+    assert calls == ["inspect", "prepare", "upload", "activate"]
+    assert publishing._manifest(destination) == publishing._manifest(source)
+    for path in [destination, *destination.rglob("*")]:
+        assert stat.S_IMODE(path.stat().st_mode) == (0o755 if path.is_dir() else 0o644)
+    assert all(stat.S_IMODE(path.stat().st_mode) == mode for path, mode in original_modes.items())
+
+
 def test_kimmy_denied_does_not_connect(isolated, params, monkeypatch):
     async def deny(*args): return False
     async def remote(*args): pytest.fail("审批拒绝不能连接SSH")

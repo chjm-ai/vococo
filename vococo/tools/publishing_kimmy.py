@@ -202,6 +202,10 @@ async def publish(source: Path, slug: str, approved_manifest: dict) -> dict:
         shutil.copytree(source, stage, dirs_exist_ok=True, symlinks=True)
         if _manifest(stage) != approved_manifest:
             raise ValueError("来源目录在审批期间发生改动，请核对后重新发布")
+        # openrsync 的 --chmod 兼容性不可靠；只规范临时副本，再由 -a 保留权限。
+        stage.chmod(0o755)
+        for path in stage.rglob("*"):
+            path.chmod(0o755 if path.is_dir() else 0o644)
         await _remote("inspect", slug, version)
         prepared = await _remote("prepare", slug, version, approved_manifest)
         expected_stage = f"/opt/deploy/vococo-staging/{slug}-{version}"
@@ -209,7 +213,7 @@ async def publish(source: Path, slug: str, approved_manifest: dict) -> dict:
             raise ValueError("远端临时目录回执不符合白名单")
         # 上传到全新私有临时目录，不对正在服务的站点做盲目 --delete。
         # sudo 创建的临时目录由固定 sudo rsync 接收，不扩大来源或目标路径。
-        await _command(["rsync", "-az", "--chmod=D755,F644", "--rsync-path=sudo -n rsync",
+        await _command(["rsync", "-az", "--rsync-path=sudo -n rsync",
                         "-e", "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10",
                         str(stage) + "/", f"Kimmy:{expected_stage}/site/"])
         try:
