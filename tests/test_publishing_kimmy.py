@@ -210,6 +210,8 @@ def remote_tree(isolated, monkeypatch, capsys):
     def subprocess_run(argv, **kwargs):
         if argv[0] == "git":
             return SimpleNamespace(returncode=0, stdout=git_status[0], stderr="")
+        if argv in (["nginx", "-t"], ["systemctl", "reload", "nginx"]):
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
         assert argv == ["bash", str(deploy / "deploy.sh"), slug, "static"]
         deployed.append(argv)
         destination = live_root / slug
@@ -219,8 +221,8 @@ def remote_tree(isolated, monkeypatch, capsys):
         (snippets / (slug + ".conf")).write_text("static nginx")
         return SimpleNamespace(returncode=0, stdout="deployed", stderr="")
     monkeypatch.setattr(subprocess, "run", subprocess_run)
-    def execute(phase, upload_manifest=None):
-        monkeypatch.setattr(sys, "argv", ["python", phase, slug, version])
+    def execute(phase, upload_manifest=None, operation_version=None):
+        monkeypatch.setattr(sys, "argv", ["python", phase, slug, operation_version or version])
         namespace = {}
         try:
             exec(compile(script.replace("UPLOAD_MANIFEST", repr(upload_manifest)), "isolated_remote", "exec"), namespace)
@@ -249,6 +251,111 @@ def test_remote_new_publish_and_backup_then_known_updates(remote_tree):
     assert tree.live.joinpath("index.html").read_text() == "new"
     assert tree.execute("inspect")["state"]["live"] == manifest
     assert len(tree.deployed) == 1
+
+
+def controlled_remote(tree):
+    manifest = {'index.html': hashlib.sha256(b'controlled').hexdigest()}
+    tree.execute('prepare', manifest)
+    write_site(tree.stage / 'site', 'controlled')
+    assert tree.execute('activate')['activation'] == 'succeeded'
+
+
+def test_remote_unpublish_moves_live_incoming_nginx_and_is_idempotent(remote_tree):
+    tree = remote_tree
+    controlled_remote(tree)
+    token = 'b' * 32
+    result = tree.execute('unpublish', operation_version=token)
+    assert result['deactivation'] == 'succeeded'
+    backup = Path(result['backup_path'])
+    assert not tree.live.exists() and not tree.incoming.exists() and not tree.snippet.exists()
+    assert (backup / 'live/index.html').read_text() == 'controlled'
+    assert (backup / 'nginx.conf').read_text() == 'static nginx'
+    assert tree.execute('unpublish', operation_version='c' * 32) == result
+    assert tree.execute('inspect')['state'] == {'incoming': None, 'live': None, 'snippet': None}
+
+
+@pytest.mark.parametrize('tamper', ['', 'record', 'backup', 'recreated'])
+def test_remote_offline_receipt_repairs_failed_publish_ledger_only_when_proven(remote_tree, monkeypatch, tamper):
+    import os
+    tree = remote_tree
+    controlled_remote(tree)
+    record = tree.root / 'vococo-state/sample.json'
+    original_replace = os.replace
+    fail = True
+    def replace(source, destination):
+        if fail and Path(destination) == record:
+            raise OSError('模拟下线后发布账本写失败')
+        return original_replace(source, destination)
+    monkeypatch.setattr(os, 'replace', replace)
+    result = tree.execute('unpublish', operation_version='b' * 32)
+    assert result['deactivation'] == 'unknown'
+    assert not tree.live.exists()
+    offline = json.loads((tree.root / 'vococo-offline/sample.json').read_text())
+    assert offline['deactivation'] == 'succeeded'
+    assert json.loads(record.read_text())['live'] is not None
+    fail = False
+    if tamper == 'record':
+        record.write_text(json.dumps({'incoming': None, 'live': {'foreign': 'hash'}, 'snippet': None}))
+    elif tamper == 'backup':
+        (Path(offline['backup_path']) / 'live/index.html').write_text('changed backup')
+    elif tamper == 'recreated':
+        write_site(tree.live, 'unregistered live')
+    retried = tree.execute('unpublish', operation_version='c' * 32)
+    if tamper:
+        assert retried['deactivation'] != 'succeeded'
+        assert 'error' in retried
+    else:
+        assert retried == offline
+        assert json.loads(record.read_text()) == {'incoming': None, 'live': None, 'snippet': None}
+        assert tree.execute('inspect')['state']['live'] is None
+        assert not (tree.root / ('vococo-backups/sample/' + 'c' * 32)).exists()
+
+
+def test_remote_republish_invalidates_old_offline_receipt_even_for_identical_content(remote_tree):
+    tree = remote_tree
+    controlled_remote(tree)
+    assert tree.execute('unpublish', operation_version='b' * 32)['deactivation'] == 'succeeded'
+    version = 'd' * 32
+    manifest = {'index.html': hashlib.sha256(b'controlled').hexdigest()}
+    tree.execute('prepare', manifest, operation_version=version)
+    write_site(tree.root / 'vococo-staging' / ('sample-' + version) / 'site', 'controlled')
+    assert tree.execute('activate', operation_version=version)['activation'] == 'succeeded'
+    assert not (tree.root / 'vococo-offline/sample.json').exists()
+    shutil.rmtree(tree.live)
+    shutil.rmtree(tree.incoming)
+    tree.snippet.unlink()
+    assert '未登记改动' in tree.execute('inspect')['error']
+    assert tree.execute('unpublish', operation_version='e' * 32)['deactivation'] != 'succeeded'
+
+
+@pytest.mark.parametrize('change', ['content', 'nginx', 'unmanaged', 'symlink'])
+def test_remote_unpublish_refuses_unknown_changes(remote_tree, change):
+    tree = remote_tree
+    controlled_remote(tree)
+    if change == 'content':
+        (tree.live / 'index.html').write_text('unregistered')
+    elif change == 'nginx':
+        tree.snippet.write_text('unregistered')
+    elif change == 'unmanaged':
+        (tree.root / 'vococo-state/sample.json').unlink()
+    else:
+        tree.snippet.rename(tree.snippet.with_suffix('.original'))
+        tree.snippet.symlink_to(tree.snippet.with_suffix('.original'))
+    result = tree.execute('unpublish', operation_version='b' * 32)
+    assert result['deactivation'] != 'succeeded'
+    assert tree.live.is_dir() and tree.snippet.exists()
+
+
+def test_remote_unpublish_ignores_attacker_fixed_temporary_symlinks(remote_tree):
+    tree = remote_tree
+    controlled_remote(tree)
+    victim = tree.root / 'victim'
+    victim.write_text('must stay')
+    (tree.root / 'vococo-state/sample.next').symlink_to(victim)
+    (tree.root / 'vococo-offline').mkdir()
+    (tree.root / 'vococo-offline/sample.next').symlink_to(victim)
+    assert tree.execute('unpublish', operation_version='b' * 32)['deactivation'] == 'succeeded'
+    assert victim.read_text() == 'must stay'
 
 
 def test_remote_first_takeover_refuses_divergent_server_files(remote_tree):

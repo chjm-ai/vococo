@@ -64,6 +64,12 @@ def _connect():
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.executescript(_SCHEMA)
+        if 'inactive' not in {row[1] for row in connection.execute('PRAGMA table_info(library_items)')}:
+            try:
+                connection.execute("ALTER TABLE library_items ADD COLUMN inactive INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                if 'inactive' not in {row[1] for row in connection.execute('PRAGMA table_info(library_items)')}:
+                    raise
         with connection:
             yield connection
     finally:
@@ -174,6 +180,15 @@ def _save_registration(connection, kind, identity, title, agent_id, url, storage
                 "SELECT * FROM website_publications WHERE source_key=? AND event_key=? AND url=?",
                 (identity.removeprefix('website:'), event_key, url),
             ).fetchone()
+            if not publication:
+                from ..tools.publishing import publication_state
+                state = publication_state(identity.removeprefix('website:'))
+                trusted = state.get('receipt') if state and state.get('status') == 'active' else None
+                if trusted and trusted['event_key'] == event_key and trusted['url'] == url:
+                    publication = {'source_key': trusted['source_key'], 'version': trusted['metadata']['version']}
+                    connection.execute(
+                        'INSERT OR REPLACE INTO website_publications VALUES (?,?,?,?)',
+                        (trusted['source_key'], publication['version'], event_key, url))
             if publication:
                 _track_publication(connection, item_id, publication['source_key'], publication['version'])
         if data is not None:
@@ -196,6 +211,8 @@ def _register(kind, identity, title, url, storage_key, session_key, turn_id,
     owner = agents.agent_for_session(session_key) if session_key else None
     with _connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        if kind == 'website' and not _publication_allowed(identity.removeprefix('website:'), event_key or '', url):
+            raise ValueError('站点已下线或发布回执已失效；不能通过收藏恢复')
         if event_key is not None:
             prior = connection.execute(
                 "SELECT s.item_id,i.identity,s.action FROM library_sources s "
@@ -235,6 +252,48 @@ def validate_url(url: str) -> str:
     return url
 
 
+def _publication_allowed(source_key: str, event_key=None, url=None, *, preview=False) -> bool:
+    from ..tools.publishing import publication_state
+
+    state = publication_state(source_key)
+    if state is None:
+        return True  # 老发布记录按原契约兼容。
+    if state.get('status') == 'publishing':
+        previous = state.get('previous')
+        return event_key is None and not preview and (previous is None or previous.get('status') == 'active')
+    if state.get('status') != 'active':
+        return False
+    receipt = state['receipt']
+    return ((event_key is None or receipt['event_key'] == event_key)
+            and (url is None or receipt['url'] == url))
+
+
+def _available(row, *, preview=False) -> bool:
+    return bool(row and not row['inactive'] and _publication_allowed(
+        row['identity'].removeprefix('website:'), preview=preview))
+
+
+def deactivate_website(source_key: str, token: str) -> None:
+    """仅接受发布器私有状态中的成功下线凭据，不信任 metadata。"""
+    from ..tools.publishing import publication_state
+
+    state = publication_state(source_key)
+    if not state or state.get('status') != 'inactive' or state.get('token') != token:
+        raise ValueError('没有可信下线凭据，拒绝移除作品')
+    with _connect() as connection:
+        connection.execute('BEGIN IMMEDIATE')
+        row = connection.execute('SELECT * FROM library_items WHERE identity=?',
+                                 (f'website:{source_key}',)).fetchone()
+        connection.execute('DELETE FROM website_publications WHERE source_key=?', (source_key,))
+        if not row or row['inactive']:
+            return
+        connection.execute('UPDATE library_items SET inactive=1,updated_at=? WHERE id=?', (time.time(), row['id']))
+        connection.execute('DELETE FROM website_previews WHERE item_id=?', (row['id'],))
+        connection.execute('UPDATE website_preview_attempts SET generation=generation+1 WHERE item_id=?', (row['id'],))
+        _source(connection, row['id'], 'unpublished', '', None,
+                json.dumps({'source_key': source_key, 'backup_path': state['backup_path']}), f'unpublish:{token}')
+
+
 def register_website(url, title, source_key, session_key='', turn_id=None,
                      metadata=None, event_key=None, cover_path=None) -> dict:
     validate_url(url)
@@ -246,8 +305,15 @@ def register_website(url, title, source_key, session_key='', turn_id=None,
 
 def remember_website_publication(receipt: dict) -> None:
     """发布器成功后先保留可信回执，登记失败仍可仅补登记/封面。"""
+    from ..tools.publishing import publication_state
+
     with _connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        state = publication_state(receipt['source_key'])
+        if not _publication_allowed(receipt['source_key'], receipt['event_key'], receipt['url']):
+            raise ValueError('发布回执已失效，不能恢复已下线站点')
+        if state and state['receipt']['metadata']['version'] != receipt['metadata']['version']:
+            raise ValueError('发布版本已失效')
         connection.execute(
             "INSERT INTO website_publications VALUES (?,?,?,?) ON CONFLICT(source_key) "
             "DO UPDATE SET version=excluded.version,event_key=excluded.event_key,url=excluded.url",
@@ -260,6 +326,7 @@ def remember_website_publication(receipt: dict) -> None:
 
 
 def _track_publication(connection, item_id, source_key, version):
+    connection.execute('UPDATE library_items SET inactive=0 WHERE id=?', (item_id,))
     connection.execute(
         "INSERT INTO website_previews VALUES (?,?,?,'pending','{}') "
         "ON CONFLICT(item_id) DO UPDATE SET source_key=excluded.source_key, "
@@ -268,16 +335,31 @@ def _track_publication(connection, item_id, source_key, version):
     )
 
 
+def _cover_version_allowed(connection, item_id: str, version: str) -> bool:
+    from ..tools.publishing import publication_state
+
+    item = connection.execute('SELECT * FROM library_items WHERE id=?', (item_id,)).fetchone()
+    if not _available(item, preview=True):
+        return False
+    state = publication_state(item['identity'].removeprefix('website:'))
+    return state is None or state['receipt']['metadata']['version'] == version
+
+
 def website_preview_record(item_id: str) -> dict | None:
     with _connect() as connection:
+        item = connection.execute('SELECT * FROM library_items WHERE id=?', (item_id,)).fetchone()
+        if not _available(item, preview=True):
+            return None
         row = connection.execute("SELECT * FROM website_previews WHERE item_id=?", (item_id,)).fetchone()
-        return dict(row) if row else None
+        return dict(row) if row and _cover_version_allowed(connection, item_id, row['version']) else None
 
 
 def begin_website_cover(item_id: str, expected_version: str) -> int | None:
     """领取单调任务序号，使同一发布版本中的旧截图也失效。"""
     with _connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        if not _cover_version_allowed(connection, item_id, expected_version):
+            return None
         row = connection.execute("SELECT version FROM website_previews WHERE item_id=?", (item_id,)).fetchone()
         if not row or row['version'] != expected_version:
             return None
@@ -293,12 +375,29 @@ def begin_website_cover(item_id: str, expected_version: str) -> int | None:
 
 def update_website_cover(item_id: str, expected_version: str, cover_path,
                          status: str, details: dict, *, expected_generation: int) -> bool:
+    """先取站点文件锁，再开数据库写事务，与激活/下线使用同一顺序。"""
+    from ..tools.publishing import publication_guard
+
+    with _connect() as connection:
+        row = connection.execute('SELECT identity FROM library_items WHERE id=?', (item_id,)).fetchone()
+    if row is None:
+        return False
+    # 取文件锁时已释放读连接，不能让发布器等待一个反向持有的数据库锁。
+    with publication_guard(row['identity'].removeprefix('website:')):
+        return _update_website_cover(item_id, expected_version, cover_path, status, details,
+                                     expected_generation=expected_generation)
+
+
+def _update_website_cover(item_id: str, expected_version: str, cover_path,
+                          status: str, details: dict, *, expected_generation: int) -> bool:
     """发布版本、任务序号与保留原件同一事务；不新增来源或改变归属。"""
     if status not in {'ready', 'pending'} or (status == 'ready') != (cover_path is not None):
         raise ValueError("封面状态与图片不匹配")
     encoded = json.dumps(details, ensure_ascii=False, allow_nan=False)
     with _connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        if not _cover_version_allowed(connection, item_id, expected_version):
+            return False
         row = connection.execute(
             "SELECT p.version,a.generation FROM website_previews p "
             "JOIN website_preview_attempts a ON a.item_id=p.item_id WHERE p.item_id=?",
@@ -330,7 +429,7 @@ def _read_cover(cover_path) -> tuple[bytes, str]:
 
 def _item(connection, item_id) -> dict | None:
     row = connection.execute("SELECT * FROM library_items WHERE id=?", (item_id,)).fetchone()
-    if row is None:
+    if not _available(row):
         return None
     item = {key: row[key] for key in ("id", "kind", "title", "agent_id", "url",
                                     "created_at", "updated_at")}
@@ -364,7 +463,7 @@ def list_items(kind='', agent_id='', state='visible', search='', limit=60, offse
         raise ValueError("作品类型或状态无效")
     if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or offset < 0:
         raise ValueError("分页参数无效")
-    clauses, values = [], []
+    clauses, values = ['inactive=0'], []
     for column, value in (("kind", kind), ("agent_id", agent_id)):
         if value:
             clauses.append(f"{column}=?")
@@ -379,10 +478,10 @@ def list_items(kind='', agent_id='', state='visible', search='', limit=60, offse
         values.extend([search, search])
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     with _connect() as connection:
-        rows = connection.execute("SELECT id FROM library_items" + where +
-                                  " ORDER BY pinned DESC,updated_at DESC,id LIMIT ? OFFSET ?",
-                                  [*values, limit, offset]).fetchall()
-        return [_item(connection, row["id"]) for row in rows]
+        rows = connection.execute("SELECT * FROM library_items" + where +
+                                  " ORDER BY pinned DESC,updated_at DESC,id", values).fetchall()
+        available = [row for row in rows if _available(row)][offset:offset + limit]
+        return [item for row in available if (item := _item(connection, row['id'])) is not None]
 
 
 def update_item(id, **fields) -> dict:
@@ -396,6 +495,8 @@ def update_item(id, **fields) -> dict:
     if fields.get("agent_id") and agents.get(fields["agent_id"]) is None:
         raise ValueError("Agent 不存在")
     with _connect() as connection:
+        if not _available(connection.execute('SELECT * FROM library_items WHERE id=?', (id,)).fetchone()):
+            raise KeyError('作品不存在或已下线')
         assignments = ",".join(f"{key}=?" for key in fields)
         cursor = connection.execute(f"UPDATE library_items SET {assignments},updated_at=? WHERE id=?",
                                     [*fields.values(), time.time(), id])
@@ -509,8 +610,8 @@ def cover_file(id) -> Path:
 
 def _stored_file(id, kind) -> Path:
     with _connect() as connection:
-        row = connection.execute("SELECT kind,storage_key FROM library_items WHERE id=?", (id,)).fetchone()
-    if row is None:
+        row = connection.execute("SELECT * FROM library_items WHERE id=?", (id,)).fetchone()
+    if not _available(row):
         raise KeyError("作品不存在")
     if row["kind"] != kind:
         raise ValueError("该作品不是图片" if kind == "image" else "该作品不是网站")

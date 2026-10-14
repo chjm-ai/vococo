@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shlex
 import shutil
 import tempfile
@@ -14,10 +15,10 @@ from .. import config
 # 2026-10-13 只读核对过的脚本；远端更新脚本后必须重新审计，不能静默执行新契约。
 _DEPLOY_SHA256 = "da143a46b9b576b501c895f837e01dda5e34d00bdfc36b5c741bf681510d8e7f"
 _REMOTE = r'''
-import fcntl, hashlib, json, os, re, shutil, subprocess, sys
+import fcntl, hashlib, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 phase, slug, version = sys.argv[1:]
-if phase not in {"inspect", "prepare", "activate"} or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug) or not re.fullmatch(r"[a-f0-9]{32}", version):
+if phase not in {"inspect", "prepare", "activate", "unpublish"} or len(slug) > 64 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug) or not re.fullmatch(r"[a-f0-9]{32}", version):
     raise ValueError("非法发布参数")
 root = Path("/opt/deploy")
 incoming, live = root / "incoming" / slug, Path("/var/www") / slug
@@ -28,6 +29,15 @@ snippet = Path("/etc/nginx/snippets/pub.chjm.cc") / (slug + ".conf")
 script = root / "deploy.sh"
 expected_hash = "DEPLOY_HASH"
 upload_expected = UPLOAD_MANIFEST
+
+def atomic_json(path, value):
+    descriptor, temporary = tempfile.mkstemp(prefix='.vococo-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            json.dump(value, stream)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 def contract():
     if hashlib.sha256(script.read_bytes()).hexdigest() != expected_hash:
@@ -84,6 +94,8 @@ def inspect():
              "snippet": hashlib.sha256(snippet.read_bytes()).hexdigest() if snippet.is_file() else None}
     if record.is_symlink():
         raise ValueError("发布记账文件不能是软链接")
+    if recover_offline(state):
+        return state
     if record.exists():
         baseline = json.loads(record.read_text())
         if state != baseline:
@@ -92,12 +104,87 @@ def inspect():
         raise ValueError("首次接管站点的 incoming 与在线文件不一致，不能确认服务器更新，拒绝覆盖")
     return state
 
+def recover_offline(state):
+    empty = {"incoming": None, "live": None, "snippet": None}
+    offline = root / "vococo-offline" / (slug + ".json")
+    if state != empty or not offline.exists():
+        return False
+    if any(path.exists() or path.is_symlink() for path in (incoming, live, snippet)):
+        raise ValueError('下线后出现未知站点路径，拒绝对账')
+    if any(p.is_symlink() for p in (offline, *offline.parents)):
+        raise ValueError("下线凭据不能包含软链接")
+    prior = json.loads(offline.read_text())
+    token = prior.get('token', '')
+    saved = root / 'vococo-backups' / slug / token
+    if (prior.get('deactivation') != 'succeeded' or not re.fullmatch(r'[a-f0-9]{32}', token)
+            or prior.get('backup_path') != str(saved)):
+        raise ValueError('下线凭据路径不受控，拒绝对账')
+    if (any(p.is_symlink() for p in (saved, *saved.parents))
+            or any((saved / name).is_symlink() for name in ('before.json', 'nginx.conf'))):
+        raise ValueError('下线备份不能包含软链接')
+    before = json.loads((saved / 'before.json').read_text())
+    actual = {'incoming': manifest(saved / 'incoming'), 'live': manifest(saved / 'live'),
+              'snippet': hashlib.sha256((saved / 'nginx.conf').read_bytes()).hexdigest()}
+    if actual != before or actual['live'] is None or not record.is_file():
+        raise ValueError('下线备份与可信登记不匹配，拒绝对账')
+    baseline = json.loads(record.read_text())
+    if baseline not in (before, empty):
+        raise ValueError('下线后出现未登记的发布记录，拒绝对账')
+    if baseline != empty:
+        atomic_json(record, empty)
+    return True
+
 try:
     lock_dir = root / "vococo-locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    lock = (lock_dir / (slug + ".lock")).open("a")
+    if any(p.is_symlink() for p in (lock_dir, *lock_dir.parents)):
+        raise ValueError("发布锁目录不能包含软链接")
+    lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock = os.fdopen(os.open(lock_dir / (slug + ".lock"), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), 'a')
     fcntl.flock(lock, fcntl.LOCK_EX)
-    if phase == "inspect":
+    if phase == "unpublish":
+        if any(p.is_symlink() for path in (root, incoming, live, record, snippet, backup)
+               for p in (path, *path.parents)):
+            raise ValueError("下线路径不能包含软链接")
+        if not record.is_file():
+            raise ValueError("站点没有受控发布记账，拒绝下线")
+        state = inspect()
+        offline = root / "vococo-offline" / (slug + ".json")
+        if offline.is_symlink() or offline.parent.is_symlink():
+            raise ValueError("下线记账不能是软链接")
+        empty = {"incoming": None, "live": None, "snippet": None}
+        if state == empty:
+            if not offline.is_file():
+                raise ValueError("站点不存在且没有可信下线记录")
+            prior = json.loads(offline.read_text())
+            print(json.dumps(prior))
+        else:
+            if state['live'] is None or state['snippet'] is None:
+                raise ValueError("在线目录或固定 nginx 配置缺失，拒绝下线")
+            backup.mkdir(parents=True, mode=0o700)
+            (backup / "before.json").write_text(json.dumps(state))
+            moved = []
+            try:
+                for name, path in (("nginx.conf", snippet), ("incoming", incoming), ("live", live)):
+                    if path.exists():
+                        path.rename(backup / name)
+                        moved.append((name, path))
+                checked = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
+                if checked.returncode:
+                    raise ValueError("nginx 配置检查失败，已尝试恢复站点")
+                reloaded = subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, text=True)
+                if reloaded.returncode:
+                    raise ValueError("nginx 重载失败，已尝试恢复站点")
+            except Exception:
+                for name, path in reversed(moved):
+                    (backup / name).rename(path)
+                subprocess.run(["systemctl", "reload", "nginx"], capture_output=True)
+                raise
+            result = {"deactivation": "succeeded", "token": version, "backup_path": str(backup)}
+            offline.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            atomic_json(offline, result)
+            atomic_json(record, empty)
+            print(json.dumps(result))
+    elif phase == "inspect":
         print(json.dumps({"state": inspect()}))
     elif phase == "prepare":
         state = inspect()
@@ -125,6 +212,11 @@ try:
         (backup / "before.json").write_text(json.dumps(expected))
         if inspect() != expected:
             raise ValueError("远端在备份期间发生变更，拒绝覆盖")
+        # 新一代激活开始前作废旧下线凭据，不能用它解释后来未知的目录删除。
+        offline = root / 'vococo-offline' / (slug + '.json')
+        if any(p.is_symlink() for p in (offline, *offline.parents)):
+            raise ValueError('旧下线凭据路径不能包含软链接')
+        offline.unlink(missing_ok=True)
         incoming.parent.mkdir(parents=True, exist_ok=True)
         if incoming.exists():
             incoming.rename(backup / "incoming-original")
@@ -141,14 +233,13 @@ try:
             warning = ""
             try:
                 record.parent.mkdir(parents=True, exist_ok=True)
-                temporary = record.with_suffix(".json.next")
-                temporary.write_text(json.dumps(after))
-                temporary.replace(record)
+                atomic_json(record, after)
             except OSError as exc:
                 warning = str(exc)
             print(json.dumps({"activation": "succeeded", "backup_path": str(backup), "manifest_warning": warning}))
 except Exception as exc:
-    print(json.dumps({"activation": "unknown" if phase == "activate" else "failed", "error": str(exc),
+    print(json.dumps({("deactivation" if phase == "unpublish" else "activation"):
+                      "unknown" if phase in {"activate", "unpublish"} else "failed", "error": str(exc),
                       "backup_path": str(backup) if backup.exists() else ""}))
 '''.replace("DEPLOY_HASH", _DEPLOY_SHA256)
 
@@ -173,9 +264,26 @@ async def _remote(phase: str, slug: str, version: str, upload_manifest: dict | N
                              "-o", "ConnectTimeout=10", "Kimmy", command],
                              _REMOTE.replace("UPLOAD_MANIFEST", repr(upload_manifest)).encode())
     result = json.loads(output)
-    if result.get("error") and phase != "activate":
+    if result.get("error") and phase not in {"activate", "unpublish"}:
         raise ValueError(result["error"])
     return result
+
+
+async def unpublish(slug: str) -> dict:
+    from .publishing import _SLUG
+
+    if not isinstance(slug, str) or len(slug) > 64 or not _SLUG.fullmatch(slug):
+        raise ValueError("下线 slug 无效")
+    try:
+        result = await _remote("unpublish", slug, uuid.uuid4().hex)
+        if result.get('deactivation') == 'succeeded':
+            token = result.get('token', '')
+            if (not re.fullmatch(r'[a-f0-9]{32}', token)
+                    or result.get('backup_path') != f'/opt/deploy/vococo-backups/{slug}/{token}'):
+                raise ValueError('远端下线备份回执不符合白名单')
+        return result
+    except Exception as exc:
+        return {'deactivation': 'unknown', 'error': f'下线回执未知：{exc}；不要盲目重试，请核对远端备份'}
 
 
 async def _verify(url: str) -> dict:
@@ -191,14 +299,14 @@ async def _verify(url: str) -> dict:
 
 
 async def publish(source: Path, slug: str, approved_manifest: dict) -> dict:
-    from .publishing import _manifest
+    from .publishing import ActivationNotStartedCancelledError, ActivationNotStartedError, _manifest
 
     version = uuid.uuid4().hex
-    staging = config.DATA_DIR / "publish_staging"
-    staging.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix=f"kimmy-{slug}-", dir=staging))
-    result = None
+    stage, result, activation_started = None, None, False
     try:
+        staging = config.DATA_DIR / "publish_staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(prefix=f"kimmy-{slug}-", dir=staging))
         shutil.copytree(source, stage, dirs_exist_ok=True, symlinks=True)
         if _manifest(stage) != approved_manifest:
             raise ValueError("来源目录在审批期间发生改动，请核对后重新发布")
@@ -216,6 +324,7 @@ async def publish(source: Path, slug: str, approved_manifest: dict) -> dict:
         await _command(["rsync", "-az", "--rsync-path=sudo -n rsync",
                         "-e", "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10",
                         str(stage) + "/", f"Kimmy:{expected_stage}/site/"])
+        activation_started = True
         try:
             activated = await _remote("activate", slug, version)
         except Exception as exc:
@@ -234,9 +343,18 @@ async def publish(source: Path, slug: str, approved_manifest: dict) -> dict:
         result = {"url": f"https://pub.chjm.cc/{slug}/", "source_key": f"publish:kimmy:{slug}",
                   "activation": "succeeded", "metadata": metadata, "event_key": f"publish:{version}"}
         return result
+    except asyncio.CancelledError as exc:
+        if not activation_started:
+            raise ActivationNotStartedCancelledError(*exc.args) from exc
+        raise
+    except Exception as exc:
+        if not activation_started:
+            raise ActivationNotStartedError(str(exc)) from exc
+        raise
     finally:
         try:
-            shutil.rmtree(stage)
+            if stage is not None:
+                shutil.rmtree(stage)
         except OSError as exc:
             # 清理不影响已成功的发布和登记；保留路径供后续清理，绝不重新部署。
             warning = {"path": str(stage), "error": str(exc)}

@@ -1883,6 +1883,25 @@ async def publish_website(args: dict) -> dict:
 
 
 @tool(
+    "unpublish_website", "下线受控 local/kimmy 静态站点：危险审批后核对登记内容，移入非公开备份，成功后停用作品库记录。"
+    "拒绝未知或有未登记改动的站点。retry 中 sync_token 仅同步作品库，不会再次下线。",
+    {"type": "object", "properties": {
+        "target": {"type": "string", "enum": ["local", "kimmy"]}, "slug": {"type": "string"},
+        "sync_token": {"type": "string", "description": "仅接受下线成功但库同步失败回执中的重试凭据"}},
+     "required": ["target", "slug"]},
+)
+async def unpublish_website(args: dict) -> dict:
+    from . import publishing
+
+    try:
+        receipt = await publishing.unpublish(args)
+        text = "站点已移入非公开备份。" if receipt.get('deactivation') == 'succeeded' else "下线未完成，未移除作品库记录。"
+        return _library_result(text, receipt)
+    except Exception as exc:
+        return _ok(f"下线未完成：{exc}；未移除作品库记录。")
+
+
+@tool(
     "retry_website_cover", "仅重试受控 local/kimmy 已发布网站的封面；不重新发布、不新增来源，保留旧封面。只接受作品 ID，不接受 URL 或 metadata。",
     {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
 )
@@ -1930,6 +1949,7 @@ def build_mcp_servers() -> dict:
                 get_library_item,
                 collect_library_item,
                 publish_website,
+                unpublish_website,
                 retry_website_cover,
                 dispatch_session,
                 restart_self,
