@@ -1150,8 +1150,8 @@ async def send_message(args: dict) -> dict:
     "把一张本地图片文件(截图或已有文件)发送到当前 Web 聊天里显示。仅 Web 端支持,"
     "其他渠道会提示不支持。注意:本轮 generate_image 成功后的图片已经自动显示,"
     "严禁再用本工具发送同一路径,否则会重复发图。path:本地图片文件的绝对路径"
-    "(png/jpg/jpeg/gif/webp);caption:可选。purpose 默认 output，发送成功自动收录；"
-    "reference/debug 不收录。收录失败只补记账，不要重复发送。",
+    "(png/jpg/jpeg/gif/webp);caption:可选。purpose 默认 output，可选 reference/debug。"
+    "所有用途均只展示、不自动收录作品库；用户明确收藏时另用 collect_library_item。",
     {
         "type": "object",
         "properties": {
@@ -1182,14 +1182,7 @@ async def send_image(args: dict) -> dict:
     if str(image_path) in ctx.auto_sent_image_paths:
         return _ok("该图片已由 generate_image 自动发送到当前聊天，本轮禁止重复发送。")
     err = await ctx.adapter.send_image(ctx.chat_id, image_path, caption)
-    if err or purpose != "output":
-        return _ok(err or "已发送到当前聊天（参考/调试图片不收录）。")
-    import uuid
-
-    receipt = _library_receipt("image", {"path": str(image_path), "title": caption,
-        "action": "sent", "metadata": {"purpose": purpose},
-        "event_key": f"sent:{uuid.uuid4().hex}", **_library_context()})
-    return _library_result("已发送到当前聊天。", receipt)
+    return _ok(err or "已发送到当前聊天（不自动收录作品库）。")
 
 @tool(
     "send_video",
@@ -1273,7 +1266,8 @@ def _load_reference_images(value) -> tuple[list[tuple[str, str, bytes]], str]:
 @tool(
     "generate_image",
     "根据文字描述生成一张图片(走 codex-gpt 供应商的 gpt-image 模型),保存到本地,"
-    "并自动发到当前 Web 聊天显示(非 Web 渠道只保存,返回路径)。Web 渠道生成成功后图片"
+    "生成成功后自动收录作品库（所有渠道），并自动发到当前 Web 聊天显示"
+    "(非 Web 渠道保存并收录,返回路径)。Web 渠道生成成功后图片"
     "已经展示，严禁在同一轮再调用 send_image 发送该图片。"
     "prompt:图片内容描述,越具体越好(主体/风格/构图/配色/氛围);"
     "size:可选 1024x1024(默认)/1024x1536(竖)/1536x1024(横);"
@@ -1771,9 +1765,24 @@ async def get_library_item(args: dict) -> dict:
         return _ok(f"读取作品失败：{exc}")
 
 
+def _collection_image_path(value: str) -> str:
+    from pathlib import Path
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("只接受已有本地图片的绝对路径，不接受下载地址或软链接")
+    path = Path(value).expanduser()
+    if not path.is_absolute() or not path.is_file() or any(part.is_symlink() for part in (path, *path.parents)):
+        raise ValueError("只接受已有本地图片的绝对路径，不接受下载地址或软链接")
+    with path.open("rb") as stream:
+        signature = stream.read(12)
+    valid = signature.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a"))
+    if not valid and not (signature[:4] == b"RIFF" and signature[8:12] == b"WEBP"):
+        raise ValueError("文件不是受支持的图片（PNG/JPEG/GIF/WebP）")
+    return str(path.resolve())
+
+
 def _collection_registration(args: dict) -> tuple[str, dict]:
     import uuid
-    from pathlib import Path
     from urllib.parse import urlsplit
 
     kind = args.get("kind", "")
@@ -1782,21 +1791,17 @@ def _collection_registration(args: dict) -> tuple[str, dict]:
         registration.setdefault(key, value)
     registration.setdefault("event_key", f"collected:{uuid.uuid4().hex}")
     if kind == "image":
-        path = Path(args.get("path", "")).expanduser()
-        if not path.is_absolute() or not path.is_file() or path.is_symlink():
-            raise ValueError("只接受已有本地图片的绝对路径，不接受下载地址或软链接")
-        with path.open("rb") as stream:
-            signature = stream.read(12)
-        valid = signature.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a"))
-        if not valid and not (signature[:4] == b"RIFF" and signature[8:12] == b"WEBP"):
-            raise ValueError("文件不是受支持的图片（PNG/JPEG/GIF/WebP）")
-        registration.update(path=str(path.resolve()), action=args.get("action", "collected"))
+        registration.update(path=_collection_image_path(args.get("path", "")),
+                            action=args.get("action", "collected"))
     elif kind == "website":
         url = args.get("url", "")
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
             raise ValueError("只接受无账号密码的已有 http(s) 链接；本工具不会抓取链接")
         registration.update(url=url, title=args.get("title", ""), source_key=args.get("source_key") or f"url:{url}")
+        if "cover_path" in args:
+            # 后端先按事件查重，再读取新封面；重试不依赖仍存在的源截图。
+            registration["cover_path"] = args["cover_path"]
     else:
         raise ValueError("kind 仅支持 image / website")
     return kind, registration
@@ -1804,10 +1809,14 @@ def _collection_registration(args: dict) -> tuple[str, dict]:
 
 @tool(
     "collect_library_item", "收藏已有本地图片或已有 http(s) 网站链接，不下载远端文件。"
-    "也接受生成/发送/发布回执中的 retry 参数，只重新登记，不重新产出或发布。",
+    "仅在用户明确要求收藏时登记已有图片；也接受生成/发布回执中的 retry 参数，"
+    "只重新登记，不重新产出或发布。网站可传 cover_path：已有本地截图的绝对路径，"
+    "不接受软链接，只作为网站封面，不另建图片作品；不要放进 metadata。",
     {"type": "object", "properties": {
         "kind": {"type": "string", "enum": ["image", "website"]}, "path": {"type": "string"},
-        "url": {"type": "string"}, "title": {"type": "string"}, "source_key": {"type": "string"},
+        "url": {"type": "string"},
+        "cover_path": {"type": "string", "description": "仅网站：已有本地截图绝对路径，作为网站封面，不另建图片作品"},
+        "title": {"type": "string"}, "source_key": {"type": "string"},
         "action": {"type": "string"}, "metadata": {"type": "object"}, "event_key": {"type": "string"},
         "session_key": {"type": "string"}, "turn_id": {"type": ["integer", "null"]}}, "required": ["kind"]},
 )
