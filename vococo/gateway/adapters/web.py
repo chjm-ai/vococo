@@ -41,10 +41,14 @@ from ..web_auth import check_media_ticket, check_web_auth, sign_media_ticket
 from .web_push import PUSH
 
 _STATIC = Path(__file__).resolve().parent / "web_static"
+_SEND_RECEIPT_TTL = 60 * 60
+_SEND_RECEIPT_LIMIT = 2000
+_SEND_PENDING_LIMIT = 16
+_SEND_REQUEST_TIMEOUT = 300
 
 # index.html 引用的可版本化静态资源:_handle_index 把 "/name" 引用改写成 "?v=内容哈希"
 _VERSIONED_ASSETS = (
-    "styles.css", "mascot.css", "tool-card.js",
+    "styles.css", "mascot.css", "library.css", "library.js", "tool-card.js",
     # 2026-08-14 前端模块化:从 index.html 拆出的功能块(加载顺序即此顺序)
     "app-core.js", "mascot.js", "markdown.js", "sidebar.js", "settings.js", "stats.js",
     "workbench.js",
@@ -507,6 +511,9 @@ class WebAdapter:
         # 视频同理:体积最大,更不能走 /send 的 JSON+base64,只在「选择 → 发送」之间暂存。
         # id -> (bytes, filename, media_type, 存入时刻)
         self._pending_videos: dict[str, tuple[bytes, str, str, float]] = {}
+        # 回执只留小对象，不保留图片正文；重试必须在同会话内复用同一请求 ID。
+        self._send_receipts: dict[tuple[str, str], tuple] = {}
+        self._send_pending: dict[tuple[str, str], tuple[str, asyncio.Task]] = {}
         self._runner: web.AppRunner | None = None
         self._cancel_callback: Callable[[str], bool] | None = None
         self._cancel_and_wait_callback: Callable[[str], Awaitable[tuple[bool, bool]]] | None = None
@@ -940,9 +947,68 @@ class WebAdapter:
             self._clients.discard(q)
         return resp
 
+    def _prune_send_receipts(self) -> None:
+        cutoff = time.monotonic() - _SEND_RECEIPT_TTL
+        while self._send_receipts:
+            first = next(iter(self._send_receipts))
+            if len(self._send_receipts) <= _SEND_RECEIPT_LIMIT and self._send_receipts[first][1] > cutoff:
+                return
+            self._send_receipts.pop(first)
+
+    async def _run_send_request(self, request, body, key, fingerprint) -> tuple:
+        try:
+            try:
+                response = await asyncio.wait_for(self._handle_send_once(request, body), _SEND_REQUEST_TIMEOUT)
+            except asyncio.TimeoutError:
+                response = web.json_response({"error": "发送处理超时，请使用同一请求 ID 重试"}, status=504)
+            except Exception as exc:
+                print(f"[web] 发送处理失败:{exc}", flush=True)
+                response = web.json_response({"error": "发送处理失败，请重试"}, status=500)
+            receipt = (response.status, response.body, dict(response.headers))
+            if 200 <= response.status < 300:
+                self._send_receipts[key] = (fingerprint, time.monotonic(), receipt)
+                self._prune_send_receipts()
+            return receipt
+        finally:
+            self._send_pending.pop(key, None)
+
+    async def _send_with_id(self, request, body, key, fingerprint) -> web.Response:
+        self._prune_send_receipts()
+        cached = self._send_receipts.get(key)
+        pending = self._send_pending.get(key)
+        previous_fingerprint = cached[0] if cached else pending[0] if pending else None
+        if previous_fingerprint is not None and previous_fingerprint != fingerprint:
+            return web.json_response({"error": "同一请求 ID 不能用于不同消息"}, status=409)
+        if cached:
+            status, data, headers = cached[2]
+            return web.Response(status=status, body=data, headers=headers)
+        if pending is None:
+            if len(self._send_pending) >= _SEND_PENDING_LIMIT:
+                return web.json_response({"error": "发送请求过多，请稍后重试"}, status=429)
+            task = asyncio.create_task(self._run_send_request(request, body, key, fingerprint))
+            pending = (fingerprint, task)
+            self._send_pending[key] = pending
+        # HTTP 连接断开不能取消已经开始的入队操作，其他重试继续等同一个结果。
+        status, data, headers = await asyncio.shield(pending[1])
+        return web.Response(status=status, body=data, headers=headers)
+
     @_authed
     @_json_body
     async def _handle_send(self, request: web.Request, body: dict) -> web.Response:
+        request_id = body.get("client_request_id", "")
+        if not isinstance(request_id, str) or len(request_id) > 128:
+            return web.json_response({"error": "client_request_id 必须是不超过 128 字的字符串"}, status=400)
+        if not request_id:
+            return await self._handle_send_once(request, body)
+        conv = str(body.get("conv") or "main")
+        if len(conv) > 256:
+            return web.json_response({"error": "会话 ID 过长"}, status=400)
+        fingerprint = await asyncio.to_thread(
+            lambda: hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        )
+        return await self._send_with_id(request, body, (conv, request_id), fingerprint)
+
+    async def _handle_send_once(self, request: web.Request, body: dict) -> web.Response:
         conv = str(body.get("conv") or "main")
         text = (body.get("text") or "").strip()
         client_request_id = str(body.get("client_request_id") or "")
@@ -953,6 +1019,24 @@ class WebAdapter:
             for i in (body.get("images") or [])
             if i.get("data")
         ]
+        from .. import library_api
+
+        try:
+            ref_images, ref_links = await asyncio.to_thread(
+                library_api.resolve_refs, body.get("library_refs", [])
+            )
+        except (KeyError, FileNotFoundError) as exc:
+            return web.json_response({"error": str(exc)}, status=404)
+        except (ValueError, TypeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("作品引用读取失败")
+            return web.json_response({"error": "作品引用读取失败，请重试"}, status=500)
+        images.extend(ref_images)
+        if ref_links:
+            text += "\n\n" + "\n".join(ref_links)
         requested_file_ids = [str(item.get("id") or "") for item in body.get("files") or []]
         missing_file_ids = [file_id for file_id in requested_file_ids if file_id not in self._pending_files]
         if missing_file_ids:
@@ -960,25 +1044,33 @@ class WebAdapter:
                 {"error": "文件附件上传已失效，请重新上传后再发送"}, status=400
             )
         audios: list[AudioAttachment] = []
-        for a in body.get("audios") or []:
-            pending = self._pending_audio.pop(a.get("id") or "", None)
-            if pending is None:
-                continue  # id 不存在/已消费/已过期(见 _prune_pending_audio):静默跳过这条
-            data, filename, media_type, transcript, _ts = pending
-            if not transcript:
-                # 上传时只存文件;转写在这里现场做,做完才进对话流(短音频 1~2s,
-                # 会议录音 ≥40 分钟走 paraformer 说话人分离,可能要几分钟)。
-                # 转写失败不丢消息:错误文本拼进 transcript,模型回复里自然说明。
-                from ...voice import stt as voice_stt
+        consumed_audio = {}
+        try:
+            for a in body.get("audios") or []:
+                audio_id = a.get("id") or ""
+                pending = self._pending_audio.pop(audio_id, None)
+                if pending is None:
+                    continue  # id 不存在/已消费/已过期(见 _prune_pending_audio):静默跳过这条
+                consumed_audio[audio_id] = pending
+                data, filename, media_type, transcript, _ts = pending
+                if not transcript:
+                    # 上传时只存文件;转写在这里现场做,做完才进对话流(短音频 1~2s,
+                    # 会议录音 ≥40 分钟走 paraformer 说话人分离,可能要几分钟)。
+                    # 转写失败不丢消息:错误文本拼进 transcript,模型回复里自然说明。
+                    from ...voice import stt as voice_stt
 
-                transcript, t_err = await voice_stt.transcribe_attachment(
-                    data, filename, media_type, host=request.host, timeout_sec=180
-                )
-                if transcript is None:
-                    transcript = f"(音频转写失败:{t_err},请重新上传)"
-            audios.append(AudioAttachment(
-                data=data, media_type=media_type, filename=filename, transcript=transcript,
-            ))
+                    transcript, t_err = await voice_stt.transcribe_attachment(
+                        data, filename, media_type, host=request.host, timeout_sec=180
+                    )
+                    if transcript is None:
+                        transcript = f"(音频转写失败:{t_err},请重新上传)"
+                audios.append(AudioAttachment(
+                    data=data, media_type=media_type, filename=filename, transcript=transcript,
+                ))
+        except (asyncio.CancelledError, Exception):
+            # 转写尚未入队，取消/异常时恢复本次全部音频供同一请求重试。
+            self._pending_audio.update(consumed_audio)
+            raise
         files: list[FileAttachment] = []
         for file_id in requested_file_ids:
             data, filename, media_type, _ts = self._pending_files.pop(file_id)
@@ -2827,6 +2919,9 @@ class WebAdapter:
         # 小幽像素组件样式和主样式同走版本化缓存，避免 PWA 缓存到旧页面后 404。
         return self._versioned_static(request, "mascot.css", "text/css")
 
+    async def _handle_library_styles(self, request: web.Request) -> web.Response:
+        return self._versioned_static(request, "library.css", "text/css")
+
     async def _handle_tool_card_js(self, request: web.Request) -> web.Response:
         # 2026-07-23 从 index.html 内联 <script> 拆出(工具卡片渲染那一段)
         return self._versioned_static(request, "tool-card.js", "text/javascript")
@@ -3279,9 +3374,10 @@ class WebAdapter:
                 web.get("/sw.js", self._handle_sw),
                 web.get("/styles.css", self._handle_styles),
                 web.get("/mascot.css", self._handle_mascot_styles),
+                web.get("/library.css", self._handle_library_styles),
                 web.get("/tool-card.js", self._handle_tool_card_js),
                 web.get(
-                    r"/{name:(?:app-core|mascot|markdown|sidebar|settings|stats|workbench|stream|notices|agents|find|composer|voice)\.js}",
+                    r"/{name:(?:app-core|mascot|markdown|sidebar|settings|stats|workbench|stream|notices|agents|find|composer|voice|library)\.js}",
                     self._handle_app_js,
                 ),
                 web.get("/favicon.ico", self._handle_favicon),
@@ -3397,9 +3493,10 @@ class WebAdapter:
                 web.get("/doc-preview.html", self._handle_doc_preview_page),
             ]
         )
-        from ...gateway import task_routes
+        from ...gateway import library_api, task_routes
 
         task_routes.register_routes(app)
+        library_api.register_routes(app)
         if config.VOICE_ENABLED:  # 实验性语音伴聊模式,见 vococo/voice/
             from ...voice import register_routes as _voice_register_routes
 

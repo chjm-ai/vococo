@@ -1,6 +1,7 @@
 """Web 通用文件附件：类型不设白名单，由模型/API 决定是否可读取。"""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,67 @@ async def test_send_user_event_carries_client_request_id(file_app, adapter, monk
 
 
 @pytest.mark.anyio
+async def test_send_timeout_restores_audio_and_same_request_retry_enqueues_once(
+    file_app, adapter, isolated, monkeypatch,
+):
+    """第二段转写超时也要恢复第一段，重试及重复回执只入队一次。"""
+    pending_audio = {
+        "first": (b"first bytes", "first.mp3", "audio/mpeg", "第一段", 0.0),
+        "second": (b"second bytes", "second.wav", "audio/wav", "", 0.0),
+    }
+    adapter._pending_audio.update(pending_audio)
+    cancelled = asyncio.Event()
+    transcribe_calls = []
+
+    async def transcribe(data, filename, media_type, **kwargs):
+        transcribe_calls.append((data, filename, media_type))
+        if len(transcribe_calls) == 1:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        return "第二段", ""
+
+    monkeypatch.setattr("vococo.voice.stt.transcribe_attachment", transcribe)
+    monkeypatch.setattr("vococo.gateway.adapters.web._SEND_REQUEST_TIMEOUT", 0.05)
+    body = {
+        "conv": "main", "text": "听这两段", "client_request_id": "audio-timeout-retry",
+        "audios": [{"id": "first"}, {"id": "second"}],
+    }
+    events = []
+    monkeypatch.setattr(adapter, "_emit", events.append)
+    async with TestClient(TestServer(file_app)) as client:
+        resp = await client.post("/send", json=body)
+        assert resp.status == 504
+        assert cancelled.is_set()
+        assert adapter._pending_audio == pending_audio
+        assert not adapter._send_pending
+        assert not adapter._send_receipts
+        assert adapter._inbox.empty()
+        assert not events
+
+        resp = await client.post("/send", json=body)
+        assert resp.status == 200
+        assert await resp.json() == {"ok": True}
+        assert not adapter._pending_audio
+        assert adapter._inbox.qsize() == 1
+        incoming = adapter._inbox.get_nowait()
+        assert incoming.text == body["text"]
+        assert [(a.data, a.filename, a.media_type, a.transcript) for a in incoming.audios] == [
+            (b"first bytes", "first.mp3", "audio/mpeg", "第一段"),
+            (b"second bytes", "second.wav", "audio/wav", "第二段"),
+        ]
+
+        resp = await client.post("/send", json=body)
+        assert resp.status == 200
+        assert await resp.json() == {"ok": True}
+        assert adapter._inbox.empty()
+        assert len(events) == 1
+        assert events[0]["client_request_id"] == body["client_request_id"]
+        assert len(transcribe_calls) == 2
+
+
+@pytest.mark.anyio
 async def test_send_reports_expired_uploaded_file_instead_of_silently_dropping(file_app, adapter):
     async with TestClient(TestServer(file_app)) as client:
         resp = await client.post(
@@ -147,20 +209,15 @@ def test_sent_bubble_lists_file_even_when_message_has_text():
     assert 'addBubble("me", (shown||fallback)+fileLabel, imgs, auds, true, vids)' in html
 
 
-def test_unsent_attachments_are_isolated_by_conversation():
-    static = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static"
-    composer = (static / "composer.js").read_text(encoding="utf-8")
-    index = (static / "index.html").read_text(encoding="utf-8")
+def _check_composer_state(scenario):
+    import subprocess
 
-    assert "function saveComposerAttachments(conv=S.conv)" in composer
-    assert "S.composerAttachments[conv]={images:S.images,audios:S.audios,files:S.files}" in composer
-    assert "function restoreComposerAttachments(conv)" in composer
-    assert "function saveComposerState(conv=S.conv)" in composer
-    assert "function restoreComposerState(conv)" in composer
-    assert "if(S.sending[conv]){" in composer
-    assert "S.images=[]; S.audios=[]; S.files=[]; renderThumbs();" in composer
-    assert "saveComposerState(S.conv);" in index
-    assert "restoreComposerState(conv);" in index
+    script = Path(__file__).with_name("composer_library_state.cjs")
+    subprocess.run(["node", str(script), scenario], check=True, capture_output=True, text=True, timeout=15)
+
+
+def test_unsent_attachments_are_isolated_by_conversation():
+    _check_composer_state("isolation")
 
 
 def test_file_drop_reuses_upload_validation_and_reports_unsupported_formats():
@@ -176,14 +233,7 @@ def test_file_drop_reuses_upload_validation_and_reports_unsupported_formats():
 
 
 def test_send_failure_keeps_file_attachment_for_retry():
-    composer = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/composer.js").read_text(
-        encoding="utf-8"
-    )
-
-    assert "if(!r.ok)" in composer
-    assert "S.images=sendImages; S.audios=sendAudios; S.files=sendFiles;" in composer
-    assert "S.composerAttachments[oldConv]={images:sendImages,audios:sendAudios,files:sendFiles};" in composer
-    assert "附件已保留，可重试" in composer
+    _check_composer_state("retry")
 
 
 def test_send_uses_matching_sse_ack_when_http_receipt_is_lost():
@@ -211,19 +261,7 @@ def test_history_replays_file_and_audio_names():
 
 
 def test_send_clears_visible_composer_and_keeps_background_retry_snapshot():
-    composer = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/composer.js").read_text(
-        encoding="utf-8"
-    )
-    core = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/app-core.js").read_text(
-        encoding="utf-8"
-    )
-
-    assert "sending: {}," in core
-    assert "inflightComposer: {}," in core
-    assert "S.inflightComposer[sendConv]={text, images:sendImages, audios:sendAudios, files:sendFiles};" in composer
-    assert "clearComposerVisible();" in composer
-    assert "S.inflightComposer[oldConv]" in composer
-    assert composer.index("clearComposerVisible();") < composer.index("await api(\"/send\"")
+    _check_composer_state("background")
 
 
 @pytest.mark.anyio

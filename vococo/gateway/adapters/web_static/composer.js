@@ -8,8 +8,8 @@ function saveComposerAttachments(conv=S.conv){
   if(!conv) return;
   // 发送中的内容已经从界面移走,不能因为切会话时看到空数组而覆盖后台快照。
   if(S.sending[conv] && S.inflightComposer[conv]) return;
-  if(S.images.length || S.audios.length || S.files.length){
-    S.composerAttachments[conv]={images:S.images,audios:S.audios,files:S.files};
+  if(S.images.length || S.audios.length || S.files.length || S.libraryRefs.length){
+    S.composerAttachments[conv]={images:S.images,audios:S.audios,files:S.files,libraryRefs:S.libraryRefs};
   }else delete S.composerAttachments[conv];
 }
 function restoreComposerAttachments(conv){
@@ -17,14 +17,15 @@ function restoreComposerAttachments(conv){
   S.images=attachments.images||[];
   S.audios=attachments.audios||[];
   S.files=attachments.files||[];
+  S.libraryRefs=attachments.libraryRefs||[];
   renderThumbs();
 }
 function clearComposerAttachments(conv=S.conv){
   if(conv) delete S.composerAttachments[conv];
-  if(conv===S.conv){ S.images=[]; S.audios=[]; S.files=[]; }
+  if(conv===S.conv){ S.images=[]; S.audios=[]; S.files=[]; S.libraryRefs=[]; }
 }
 function clearComposerVisible(){
-  S.images=[]; S.audios=[]; S.files=[];
+  S.images=[]; S.audios=[]; S.files=[]; S.libraryRefs=[];
   renderThumbs();
   $("#ta").value=""; autoGrow();
 }
@@ -39,7 +40,7 @@ function restoreComposerState(conv){
   restoreDraft(conv);
   if(S.sending[conv]){
     // 发送中的内容已经在发送入口处清空,切回来也保持这个"已发出"的表面状态。
-    S.images=[]; S.audios=[]; S.files=[]; renderThumbs();
+    S.images=[]; S.audios=[]; S.files=[]; S.libraryRefs=[]; renderThumbs();
     return;
   }
   restoreComposerAttachments(conv);
@@ -80,17 +81,17 @@ async function send(text, display, opts){
   opts=opts||{};
   closeCmdMenu();
   if(!$("#callView").hidden && !opts.forceMain) return window.sendCallText(text);
-  text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length && !S.files.length) return;
+  text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length && !S.files.length && !S.libraryRefs.length) return;
   // 发送目标钉死在发起时的会话/附件快照:下面等上传的 await 期间用户可能已经切走,
   // S.conv/S.images 等全局状态会变成新会话的——不钉死就会把这条消息、气泡、回执错投过去。
   let sendConv=S.conv;
   const isCurrent=()=>S.conv===sendConv;
-  const sendImages=S.images.slice(), sendAudios=S.audios.slice(), sendFiles=S.files.slice();
+  const sendImages=S.images.slice(), sendAudios=S.audios.slice(), sendFiles=S.files.slice(), sendLibraryRefs=S.libraryRefs.slice();
   // 先把本轮内容放进内存快照,再立即清空界面。切会话时只切换到空的编辑态,
   // 失败时再从快照恢复,让用户看到的反馈和「已发出」一致。
   if(S.sending[sendConv]) return;
   S.sending[sendConv]=true;
-  S.inflightComposer[sendConv]={text, images:sendImages, audios:sendAudios, files:sendFiles};
+  S.inflightComposer[sendConv]={text, images:sendImages, audios:sendAudios, files:sendFiles, libraryRefs:sendLibraryRefs};
   delete S.composerAttachments[sendConv];
   clearDraft(sendConv);
   clearComposerVisible();
@@ -103,7 +104,8 @@ async function send(text, display, opts){
   const files=sendFiles.filter(x=>x.kind!=="video").map(x=>x.filename);
   const vids=sendFiles.filter(x=>x.kind==="video")
     .map(x=>({url:x.url, filename:x.filename, media_type:x.mediaType}));
-  const shown=(display!=null)?display:text;
+  const referenceLabel=sendLibraryRefs.length ? "\n\n作品引用："+sendLibraryRefs.map(reference=>reference.title||reference.id).join("、") : "";
+  const shown=((display!=null)?display:text)+referenceLabel;
   const fileLabel=files.length ? `\n\n📎 附件：${files.join("、")}` : "";
   let meRow=null;
   if(!opts.reuseBubble && isCurrent() && (shown || imgs.length || auds.length || files.length || vids.length)){
@@ -131,10 +133,10 @@ async function send(text, display, opts){
     const pending=S.inflightComposer[sendConv];
     delete S.sending[sendConv]; delete S.inflightComposer[sendConv];
     if(pending){
-      S.composerAttachments[sendConv]={images:pending.images,audios:pending.audios,files:pending.files};
+      S.composerAttachments[sendConv]={images:pending.images,audios:pending.audios,files:pending.files,libraryRefs:pending.libraryRefs};
       saveDraft(sendConv,pending.text);
       if(isCurrent()){
-        S.images=pending.images; S.audios=pending.audios; S.files=pending.files;
+        S.images=pending.images; S.audios=pending.audios; S.files=pending.files; S.libraryRefs=pending.libraryRefs||[];
         renderThumbs(); $("#ta").value=pending.text; autoGrow();
       }
     }
@@ -151,14 +153,14 @@ async function send(text, display, opts){
   if(S.stream && !opts.forceSend && isCurrent()){
     if(meRow) meRow.remove();
     if(S.audioLoading) S.audioLoading=null;
-    const queued=queuePending(text, sendImages, sendAudios, sendFiles);
+    const queued=queuePending(text, sendImages, sendAudios, sendFiles, sendLibraryRefs);
     const pending=S.inflightComposer[sendConv];
     delete S.sending[sendConv]; delete S.inflightComposer[sendConv];
     if(queued){
       clearComposerAttachments(sendConv); renderThumbs(); $("#ta").value=""; autoGrow(); clearDraft(sendConv);
     }else if(pending){
-      S.composerAttachments[sendConv]={images:pending.images,audios:pending.audios,files:pending.files};
-      S.images=pending.images; S.audios=pending.audios; S.files=pending.files;
+      S.composerAttachments[sendConv]={images:pending.images,audios:pending.audios,files:pending.files,libraryRefs:pending.libraryRefs};
+      S.images=pending.images; S.audios=pending.audios; S.files=pending.files; S.libraryRefs=pending.libraryRefs||[];
       renderThumbs(); $("#ta").value=pending.text; autoGrow(); saveDraft(sendConv,pending.text);
     }
     return;
@@ -177,6 +179,7 @@ async function send(text, display, opts){
     audios:sendAudios.map(x=>({id:x.id})),
     files:sendFiles.filter(x=>x.kind!=="video").map(x=>({id:x.id})),
     videos:sendFiles.filter(x=>x.kind==="video").map(x=>({id:x.id})),
+    library_refs:sendLibraryRefs.map(reference=>reference.id),
     client_request_id:clientRequestId,
   };
   // 新会话:发出第一条后,把本地临时会话转正。转正不能依赖当前仍停在哪个会话,
@@ -226,7 +229,7 @@ async function send(text, display, opts){
     // 服务端确认后才丢弃后台快照。可见输入框早已在发送入口清空,
     // 用户若在上传或发送期间切会话,回来仍保持「已发出」的表面状态。
     const hasNewContent=isCurrent() &&
-      (!!$("#ta").value || S.images.length || S.audios.length || S.files.length);
+      (!!$("#ta").value || S.images.length || S.audios.length || S.files.length || S.libraryRefs.length);
     delete S.sending[oldConv]; delete S.sending[sendConv];
     delete S.inflightComposer[oldConv]; delete S.inflightComposer[sendConv];
     clearDraft(oldConv);
@@ -243,12 +246,12 @@ async function send(text, display, opts){
   delete S.sendAcks[clientRequestId];
   // /send 失败时不能把附件和文字一起吞掉,否则用户只能重新选择文件,且误以为已发送。
   // 当前已切到别的会话时,也要把失败态写回原会话缓存,切回后才能重试。
-  S.composerAttachments[oldConv]={images:sendImages,audios:sendAudios,files:sendFiles};
-  S.composerAttachments[sendConv]={images:sendImages,audios:sendAudios,files:sendFiles};
+  S.composerAttachments[oldConv]={images:sendImages,audios:sendAudios,files:sendFiles, libraryRefs:sendLibraryRefs};
+  S.composerAttachments[sendConv]={images:sendImages,audios:sendAudios,files:sendFiles, libraryRefs:sendLibraryRefs};
   saveDraft(oldConv,text); saveDraft(sendConv,text);
   if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }  // 发送失败,停掉 loading
   if(isCurrent()){
-    S.images=sendImages; S.audios=sendAudios; S.files=sendFiles;
+    S.images=sendImages; S.audios=sendAudios; S.files=sendFiles; S.libraryRefs=sendLibraryRefs;
     saveComposerAttachments(); renderThumbs();
     $("#ta").value=text; autoGrow();
     addBubble("ai","⚠️ 发送失败:"+sendError.message+"，附件已保留，可重试。" );
@@ -331,11 +334,11 @@ function restoreTaskStopped(conv, prev){
   renderTaskBar();
 }
 // ── 待发送队列 ────────────────────────────────────────────────────────────
-function queuePending(text, images, audios, files){
-  if(!text && !(images||[]).length && !(audios||[]).length && !(files||[]).length) return;
+function queuePending(text, images, audios, files, libraryRefs){
+  if(!text && !(images||[]).length && !(audios||[]).length && !(files||[]).length && !(libraryRefs||[]).length) return;
   const q = S.pending[S.conv] || (S.pending[S.conv]=[]);
   if(q.length>=3){ pendFull(); return false; }  // 满 3 条不再排队,抖一下提示
-  q.push({id:++S.pendId, text, images:images||[], audios:audios||[], files:files||[]});
+  q.push({id:++S.pendId, text, images:images||[], audios:audios||[], files:files||[], libraryRefs:libraryRefs||[]});
   drawPending();
   return true;
 }
@@ -351,10 +354,16 @@ function drawPending(){
     const row=el("div","pi");
     const clk=el("span","clock"); clk.textContent="⏳";
     const tx=el("span","ptext");
-    tx.textContent=it.text||((it.audios||[]).length ? "(语音/音频)" : (it.files||[]).length ? "(附件)" : "(图片)");
+    tx.textContent=it.text||((it.libraryRefs||[]).length ? "(作品引用)" : (it.audios||[]).length ? "(语音/音频)" : (it.files||[]).length ? "(附件)" : "(图片)");
     const del=el("button","pdel"); del.type="button"; del.title="删除"; del.textContent="×";
     del.onclick=()=>removePending(it.id);
-    row.append(clk,tx,del); box.append(row);
+    row.append(clk,tx,del);
+    if(it.error){
+      tx.textContent+=" · 发送失败："+it.error;
+      const retry=el("button","pdel"); retry.type="button"; retry.textContent="重试";
+      retry.onclick=()=>flushPending(S.conv,true); row.append(retry);
+    }
+    box.append(row);
   }
 }
 function removePending(id){
@@ -363,25 +372,43 @@ function removePending(id){
   q.splice(i,1); if(!q.length) delete S.pending[S.conv]; drawPending();
 }
 // 任务完成 → 发出该会话待发送队列的第一条(逐条发:发一条,等它 done 再发下一条)
-function flushPending(conv){
-  const q=S.pending[conv]; if(!q || !q.length) return;
+async function flushPending(conv, retry=false){
+  const q=S.pending[conv]; if(!q?.length || (q[0].error && !retry)) return;
+  S.pendingSending=S.pendingSending||{};
+  if(S.pendingSending[conv]){ S.pendingSending[conv].flushRequested=true; return; }
   const item=q.shift(); if(!q.length) delete S.pending[conv];
-  if(conv===S.conv){
-    drawPending();
-    S.images=(item.images||[]).slice(); S.audios=(item.audios||[]).slice();
-    S.files=(item.files||[]).slice(); saveComposerAttachments(); renderThumbs();
-    send(item.text, null, {forceSend:true});
-    return;
+  S.pendingSending[conv]={flushRequested:false};
+  if(conv===S.conv) drawPending();
+  // 只发送队列快照，不借用可见 composer；新草稿和新引用必须原样留下。
+  try{ await sendPendingSnapshot(conv,item); }
+  catch(error){
+    item.error=error.message;
+    (S.pending[conv]||(S.pending[conv]=[])).unshift(item);
+    if(conv===S.conv) drawPending();
+  }finally{
+    const flushRequested=S.pendingSending[conv].flushRequested;
+    delete S.pendingSending[conv];
+    if(flushRequested) await flushPending(conv);
   }
-  // 后台会话:直接发,不渲染,靠 SSE 缓冲在切回时重建
+}
+async function sendPendingSnapshot(conv,item){
+  const requestId=item.clientRequestId||(item.clientRequestId=newClientRequestId());
+  S.sendAcks[requestId]=false;
   const payload={
-    conv, text:item.text,
+    conv, text:item.text, client_request_id:requestId,
+    library_refs:(item.libraryRefs||[]).map(reference=>reference.id),
     images:(item.images||[]).map(x=>({data:x.data,media_type:x.media_type})),
     audios:(item.audios||[]).map(x=>({id:x.id})),
     files:(item.files||[]).filter(x=>x.kind!=="video").map(x=>({id:x.id})),
     videos:(item.files||[]).filter(x=>x.kind==="video").map(x=>({id:x.id})),
   };
-  api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(loadConvs).catch(()=>{});
+  try{
+    const response=await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(!response.ok){ const error=new Error("请求失败（"+response.status+"）"); error.httpStatus=response.status; throw error; }
+    loadConvs();
+  }catch(error){
+    if((error.httpStatus && error.httpStatus<500) || !await waitForSendAck(requestId)) throw error;
+  }finally{ delete S.sendAcks[requestId]; }
 }
 $("#composer").onsubmit = e=>{ e.preventDefault(); send($("#ta").value); };
 $("#ta").addEventListener("keydown", e=>{
@@ -527,6 +554,13 @@ $("#ta").addEventListener("paste", e=>{
 });
 function renderThumbs(){
   const box=$("#thumbs"); box.innerHTML="";
+  S.libraryRefs.forEach((reference,idx)=>{
+    const chip=el("div","t library-ref-chip"), label=el("span"), remove=el("button","x");
+    label.textContent="作品引用 · "+(reference.title||reference.id);
+    remove.type="button"; remove.textContent="×"; remove.setAttribute("aria-label","移除作品引用");
+    remove.onclick=()=>{ S.libraryRefs.splice(idx,1); saveComposerAttachments(); renderThumbs(); };
+    chip.append(label,remove); box.append(chip);
+  });
   S.images.forEach((im,idx)=>{ const w=el("div","t"); const g=el("img"); g.src=im.url; const x=el("button","x"); x.textContent="×"; x.onclick=()=>{S.images.splice(idx,1);renderThumbs();}; w.append(g,x); box.append(w); });
   S.audios.forEach((au,idx)=>{
     const w=el("div","t audiochip "+(au.status||"done"));

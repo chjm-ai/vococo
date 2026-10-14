@@ -30,6 +30,7 @@ class _Ctx:
     session_key: str
     adapter: object  # 有 present_choice / send 的 adapter
     chat_id: object
+    turn_id: int | None = None
     # generate_image 在 Web 渠道已自动展示的文件。本轮内 send_image 不得重复发送。
     auto_sent_image_paths: set[str] = field(default_factory=set)
 
@@ -56,8 +57,9 @@ _by_session: dict[str, list[str]] = {}
 
 
 # ── 轮上下文(网关侧设置)──
-def set_current(session_key: str, adapter: object, chat_id: object) -> contextvars.Token:
-    return _current.set(_Ctx(session_key, adapter, chat_id))
+def set_current(session_key: str, adapter: object, chat_id: object,
+                turn_id: int | None = None) -> contextvars.Token:
+    return _current.set(_Ctx(session_key, adapter, chat_id, turn_id))
 
 
 def reset_current(token: contextvars.Token) -> None:
@@ -67,8 +69,35 @@ def reset_current(token: contextvars.Token) -> None:
         pass
 
 
+_source_current: contextvars.ContextVar[Optional[_Ctx]] = contextvars.ContextVar(
+    "vococo_library_source", default=None
+)
+
+
+def get_context() -> Optional[_Ctx]:
+    return _source_current.get() or _current.get()
+
+
 def current() -> Optional[_Ctx]:
-    return _current.get()
+    ctx = _current.get()
+    if ctx is None:
+        return None
+    source = get_context()
+    return source if source and source.session_key == ctx.session_key else ctx
+
+
+def bind_turn(session_key: str, turn_id: int) -> contextvars.Token:
+    ctx = current()
+    adapter = ctx.adapter if ctx and ctx.session_key == session_key else background_adapter()
+    chat_id = ctx.chat_id if ctx and ctx.session_key == session_key else session_key
+    return _source_current.set(_Ctx(session_key, adapter, chat_id, turn_id))
+
+
+def unbind_turn(session_key: str, turn_id: int, token: contextvars.Token) -> None:
+    source = _source_current.get()
+    if source is not None and source.session_key == session_key and source.turn_id == turn_id:
+        source.turn_id = None
+    _source_current.reset(token)
 
 
 # ── 全局在跑会话登记 —— 供"重启会不会连坐其他会话"这类检查用 ──────────────────

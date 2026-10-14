@@ -268,6 +268,16 @@ function buildVoiceMainRow(inCall){
   mainRow.onclick=()=>{ openCallView(); };
   return mainRow;
 }
+function buildLibraryRow(){
+  const row=el("div","conv"+(S.surface==="library" ? " active" : ""));
+  const body=el("div","cvbody"); body.innerHTML=ic("book");
+  const title=el("div","ct"); title.textContent="作品库"; body.append(title);
+  row.append(body); row.onclick=()=>{
+    if(typeof openLibrary==="function") openLibrary();
+    else alert("作品库模块未加载，请刷新或完成静态资源接入。");
+  };
+  return row;
+}
 function buildWorkbenchRow(){
   const row=el("div","conv"+(S.surface==="workbench"?" active":""));
   const body=el("div","cvbody"); body.innerHTML=ic("grid");
@@ -500,7 +510,7 @@ function renderConvs(){
   const inCall = !$("#callView").hidden;  // 统一对话视图打开时,侧栏只高亮「对话」入口
   // 工作台/通话打开期间 S.conv 还停在离开前那个会话上没变,普通会话/任务/定时行不能再按
   // c.conv===S.conv 高亮——否则会跟工作台/通话入口的高亮同时出现(2026-08-21 反馈的双重高亮)。
-  const awayFromChat = inCall || S.surface==="workbench";
+  const awayFromChat = inCall || S.surface==="workbench" || S.surface==="library";
   // 顶部固定区只保留新对话按钮和统一对话入口,不再显示重复的主会话行。
   const isDraft = !awayFromChat && String(S.conv||"").startsWith("local-");   // 当前正停在一个还没发出第一条消息的新对话草稿上
   $("#newBtn").innerHTML = '<div class="cvbody">'+ic("edit")+'<div class="ct">新对话</div></div>';
@@ -508,6 +518,7 @@ function renderConvs(){
   const top=$("#convTopRows"); top.innerHTML="";
   const vm=buildVoiceMainRow(inCall); if(vm) top.append(vm);
   const workbench=buildWorkbenchRow(); if(workbench) top.append(workbench);
+  top.append(buildLibraryRow());
   // 列表区:Tab 栏固定(#sideTabs),只有分组内容(#convBody)滚动;首次渲染会清掉骨架行
   const tabs=$("#sideTabs"); tabs.innerHTML=""; renderSideTabs(tabs);
   $("#recentMainFilter").hidden=S.sideTab!=="recent";
@@ -796,7 +807,8 @@ function navGo(delta){
   const e=NAV.stack[next];
   NAV.replaying=true;
   try{
-    if(e.kind==="workbench") openWorkbench();
+    if(e.kind==="library") openLibrary();
+    else if(e.kind==="workbench") openWorkbench();
     else if(e.kind==="call") openCallView();
     else openConv(e.conv);
   }finally{ NAV.replaying=false; }   // 三个入口的入栈都在同步段里,await 之前就已跳过

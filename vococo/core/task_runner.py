@@ -353,7 +353,11 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
 
     # 登记本轮属于哪个任务会话:审批闸据此把要批的操作推到 Web 任务会话、记审批记录/待批队列
     task_session_token = danger.set_task_session(session_key)
+    from ..gateway import clarify
+
+    source_token = None
     try:
+        source_token = clarify.bind_turn(session_key, turn_id)
         effective_cwd = await worktree.execution_cwd_for_task(row["cwd"], task_id)
         cwd_token = danger.set_cwd(
             effective_cwd,
@@ -372,6 +376,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     except Exception as exc:  # noqa: BLE001 —— 兜底:任何异常都要走到终态收尾,不留 running 僵尸
         error_note = f"执行出错:{exc}"
     finally:
+        if source_token is not None:
+            clarify.unbind_turn(session_key, turn_id, source_token)
         if cwd_token is not None:
             danger.reset_cwd(cwd_token)
         danger.reset_task_session(task_session_token)

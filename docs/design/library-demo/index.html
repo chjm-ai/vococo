@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>作品库 Library · vococo 独立 Demo</title>
+  <link rel="stylesheet" href="./base.css">
+  <link rel="stylesheet" href="./demo.css">
+  <script src="./demo.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到作品库</a>
+  <div id="app">
+    <div id="sidebar-slot">
+      <aside id="sidebar" aria-label="应用与作品库导航">
+        <div class="shead">
+          <span class="brand">vococo</span>
+          <span class="shell-label">个人空间</span>
+          <button id="close-nav" class="icon-button mobile-only" type="button" aria-label="关闭导航" data-icon="close"></button>
+        </div>
+        <nav id="convTop" aria-label="应用导航">
+          <div id="convTopRows">
+            <button class="conv" type="button" disabled title="原型不含新对话功能"><span data-icon="plus"></span><span class="cvbody">新对话</span></button>
+            <button class="conv" type="button" disabled title="原型不含工作台功能"><span data-icon="board"></span><span class="cvbody">工作台</span></button>
+            <button id="library-nav" class="conv active" type="button" aria-current="page"><span data-icon="library"></span><span class="cvbody">作品库</span><span class="nav-dot" aria-hidden="true"></span></button>
+          </div>
+        </nav>
+        <div class="sidebar-foot"><span class="owner-mark" aria-hidden="true">W</span><div>我的空间<small>vococo</small></div></div>
+      </aside>
+    </div>
+    <main id="main" tabindex="-1">
+      <header class="page-header">
+        <div class="wb-title-row">
+          <div class="title-group">
+            <button id="open-nav" class="icon-button mobile-only" type="button" aria-label="打开导航与筛选" aria-haspopup="dialog" data-icon="menu"></button>
+            <h1 class="wb-switch">作品库 <span class="library-word">Library</span></h1>
+            <span class="demo-badge">Demo</span>
+          </div>
+          <button id="theme-toggle" class="icon-button" type="button" aria-label="切换为深色主题" aria-pressed="false" title="主题跟随系统"></button>
+        </div>
+        <div class="intro-row">
+          <p class="intro">图片、网页与文件，都在这里。</p>
+          <div class="header-actions">
+            <button id="simulate-add" class="button" type="button"><span data-icon="plus"></span>模拟新作品</button>
+            <button id="collect-link" class="button primary" type="button" aria-haspopup="dialog"><span data-icon="link"></span>收录链接</button>
+          </div>
+        </div>
+      </header>
+      <div class="demo-notice" role="note"><span class="notice-dot" aria-hidden="true"></span><span>示例数据 · 刷新后重置 · 未接入自动收录</span></div>
+      <section class="collection" aria-labelledby="results-heading">
+        <div class="library-filters">
+          <div id="status-filters" class="nav-stack" role="group" aria-label="收藏状态（单选）">
+            <button class="filter-row" type="button" data-state="all" aria-pressed="true"><span data-icon="layers"></span><span>全部作品</span><span class="nav-count" data-count-state="all">8</span></button>
+            <button class="filter-row" type="button" data-state="pinned" aria-pressed="false"><span data-icon="pin"></span><span>已置顶</span><span class="nav-count" data-count-state="pinned">2</span></button>
+            <button class="filter-row" type="button" data-state="hidden" aria-pressed="false"><span data-icon="eyeOff"></span><span>已隐藏</span><span class="nav-count" data-count-state="hidden">2</span></button>
+          </div>
+          <div class="agent-filter-row">
+            <span id="agents-heading" class="nav-heading">Agent</span>
+            <div id="agent-filters" class="nav-stack" role="group" aria-labelledby="agents-heading"></div>
+          </div>
+        </div>
+        <div class="filter-bar">
+          <div id="type-tabs" class="type-tabs" role="group" aria-label="作品类型（单选）">
+            <button type="button" data-type="all" aria-pressed="true">全部 <span data-count-type="all">8</span></button>
+            <button type="button" data-type="web" aria-pressed="false">网页 <span data-count-type="web">3</span></button>
+            <button type="button" data-type="image" aria-pressed="false">图片 <span data-count-type="image">2</span></button>
+            <button type="button" data-type="video" aria-pressed="false">视频 <span data-count-type="video">1</span></button>
+            <button type="button" data-type="document" aria-pressed="false">文档 <span data-count-type="document">2</span></button>
+          </div>
+          <div class="view-switch" role="group" aria-label="展示方式">
+            <button id="view-grid" class="icon-button" type="button" data-view="grid" aria-label="网格视图" aria-pressed="true" data-icon="grid"></button>
+            <button id="view-list" class="icon-button" type="button" data-view="list" aria-label="列表视图" aria-pressed="false" data-icon="list"></button>
+          </div>
+        </div>
+        <div class="search-row">
+          <label class="search-field"><span data-icon="search"></span><span class="sr-only">搜索作品名、Agent 或标签</span><input id="search" type="search" placeholder="搜索作品名、Agent 或标签" autocomplete="off"></label>
+          <label class="sort-field"><span class="sr-only">作品排序</span><select id="sort"><option value="recent">最近更新 · 置顶优先</option><option value="oldest">最早更新</option><option value="name">名称排序</option></select></label>
+        </div>
+        <div class="results-meta">
+          <h2 id="results-heading" tabindex="-1">全部作品</h2>
+          <span id="result-count" role="status" aria-live="polite" aria-atomic="true"></span>
+          <button id="clear-filters" class="text-button" type="button">清除筛选</button>
+        </div>
+        <div id="works" class="works" data-layout="grid"></div>
+        <div id="empty-state" class="empty-state" hidden>
+          <span class="empty-symbol" data-icon="search"></span><h3>这里还没有匹配的作品</h3>
+          <p>换个关键词，或清除类型、Agent 与收藏状态筛选。</p>
+          <button id="empty-clear" class="button" type="button">清除所有筛选</button>
+        </div>
+        <p class="collection-footnote">封面均为排版示意，不是真实历史作品。网页不嵌入，视频不播放。</p>
+      </section>
+      <footer class="page-footer"><span>一份创作的私人索引</span><span>vococo / Library</span></footer>
+    </main>
+  </div>
+  <dialog id="nav-dialog" aria-label="作品库导航与筛选"></dialog>
+  <dialog id="detail-dialog" class="detail-dialog" aria-labelledby="detail-title">
+    <div class="drawer-top"><span>作品详情 <span class="subtle">/ 本地示例</span></span><button id="close-detail" class="icon-button" type="button" aria-label="关闭作品详情" data-icon="close" autofocus></button></div>
+    <div id="detail-cover" class="detail-cover"></div>
+    <div class="detail-body">
+      <p id="detail-kind" class="eyebrow"></p><h2 id="detail-title"></h2><p id="detail-description" class="detail-description"></p>
+      <dl class="detail-facts">
+        <div><dt>归属 Agent</dt><dd><label><span class="sr-only">更换归属 Agent（仅本地示例）</span><select id="detail-agent"></select></label></dd></div>
+        <div><dt>更新时间</dt><dd id="detail-date"></dd></div>
+        <div><dt>标签</dt><dd id="detail-tags" class="tag-row"></dd></div>
+        <div><dt>样本文件名</dt><dd id="detail-filename"></dd></div>
+      </dl>
+      <div class="detail-actions"><button id="detail-pin" class="button" type="button"></button><button id="detail-hide" class="button" type="button"></button></div>
+      <p class="help-text">更换归属仅影响本地示例；隐藏不会删除原文件，恢复后会重新出现在全部作品中。</p>
+      <section id="detail-link-section" class="detail-section" hidden aria-label="收录的链接">
+        <h3>收录链接</h3><p id="detail-url" class="link-text"></p>
+        <div class="detail-actions"><a id="open-link" class="button" target="_blank" rel="noopener noreferrer">打开链接<span data-icon="external"></span></a><button id="copy-link" class="button" type="button">复制链接</button></div>
+        <div id="copy-fallback" hidden><label for="copy-text">自动复制不可用，请选择并手动复制</label><textarea id="copy-text" rows="3" readonly></textarea><button id="select-link" class="text-button" type="button">选中链接文本</button></div>
+        <p class="help-text">未抓取或验证目标网页，仅在你点击后打开外部链接。</p>
+      </section>
+      <section class="detail-section" aria-label="示例来源与引用">
+        <button id="source-toggle" class="text-button" type="button" aria-expanded="false" aria-controls="source-note">查看来源会话（示例）<span data-icon="arrow"></span></button>
+        <p id="source-note" class="source-note" hidden></p>
+        <button id="reference-work" class="button primary reference-button" type="button" aria-expanded="false" aria-controls="demo-composer"><span data-icon="chat"></span>引用到对话 · 演示</button>
+        <form id="demo-composer" class="demo-composer" hidden>
+          <div class="composer-heading">演示对话 <span class="demo-badge">不连接真实会话</span></div>
+          <div id="attachment-chip" class="attachment-chip"></div>
+          <label for="composer-input">想继续做什么？</label><textarea id="composer-input" rows="3" maxlength="2000" placeholder="例如：以这份作品为基础，再做一个方向。" required></textarea>
+          <button id="composer-send" class="button primary" type="submit">演示发送</button><p id="composer-result" role="status"></p>
+        </form>
+      </section>
+    </div>
+  </dialog>
+  <dialog id="link-dialog" class="link-dialog" aria-labelledby="link-dialog-title">
+    <div class="dialog-heading"><div><p class="eyebrow">ADD TO LIBRARY</p><h2 id="link-dialog-title">收录一个链接</h2></div><button id="close-link" class="icon-button" type="button" aria-label="关闭链接收录" data-icon="close"></button></div>
+    <p class="help-text">只加入本页示例，不抓取网页，不保存到正式作品库。</p>
+    <form id="link-form">
+      <label for="link-title">作品标题</label><input id="link-title" name="title" type="text" maxlength="100" placeholder="为这个作品起个名字" required autofocus>
+      <label for="link-url">HTTP(S) 网址</label><input id="link-url" name="url" type="url" maxlength="2048" placeholder="https://example.com" pattern="[Hh][Tt][Tt][Pp][Ss]?://.+" required aria-describedby="link-error">
+      <label for="link-agent">归属 Agent</label><select id="link-agent" name="agent"></select>
+      <p id="link-error" class="error-text" role="alert"></p>
+      <div class="form-actions"><button id="cancel-link" class="button" type="button">取消</button><button id="submit-link" class="button primary" type="submit">加入本页示例</button></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" hidden><span id="toast-message" role="status" aria-live="polite" aria-atomic="true"></span><button id="undo" class="text-button" type="button" hidden>撤销</button><button id="dismiss-toast" class="icon-button" type="button" aria-label="关闭提示" data-icon="close"></button></div>
+  <noscript>此独立 Demo 需要启用 JavaScript；不会连接后端。</noscript>
+</body>
+</html>

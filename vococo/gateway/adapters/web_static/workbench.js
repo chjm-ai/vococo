@@ -2305,6 +2305,7 @@ document.addEventListener("mousedown", event => {
 });
 
 async function openWorkbench(){
+  if(typeof closeLibrary==="function") closeLibrary();
   closeCallView(); S.surface = "workbench";
   navRecord({kind:"workbench"});
   $("#chatMain").hidden = true; $("#workbenchView").hidden = false;
