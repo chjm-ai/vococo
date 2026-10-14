@@ -107,35 +107,9 @@ async function verifyLibraryLayout(page,holdList,setFailure){
   await page.evaluate(()=>{ closeSidebar(); setSidebarCollapsed(false); });
 }
 async function verifyCardActions(page){
-  const card=page.locator('.lib-card').first(), actions=card.locator('.lib-card-actions');
-  await page.mouse.move(0,0);
-  await page.evaluate(()=>document.activeElement.blur());
-  await page.waitForTimeout(200);
-  assert.equal(await actions.evaluate(node=>getComputedStyle(node).opacity),'0','桌面非悬停隐藏操作');
-  const height=await card.evaluate(node=>node.getBoundingClientRect().height);
-  await card.hover();
-  await page.waitForTimeout(200);
-  assert.equal(await actions.evaluate(node=>getComputedStyle(node).opacity),'1','悬停显示操作');
-  await page.mouse.move(0,0);
-  await card.locator('.lib-card-open').focus();
-  await page.keyboard.press('Tab');
-  assert.equal(await actions.locator('button').first().evaluate(node=>node===document.activeElement),true,'键盘可进入操作');
-  await page.waitForTimeout(200);
-  assert.equal(await actions.evaluate(node=>getComputedStyle(node).opacity),'1','focus-within 显示操作');
-  assert.equal(await card.evaluate(node=>node.getBoundingClientRect().height),height,'操作显隐不改变高度');
-}
-async function verifyTouchActions(browser){
-  const context=await browser.newContext({hasTouch:true,isMobile:true,viewport:{width:390,height:844}});
-  const page=await context.newPage();
-  try{
-    await page.setContent('<style>'+fs.readFileSync(path.join(root,'styles.css'),'utf8')+fs.readFileSync(path.join(root,'library.css'),'utf8')+'</style><main class="library-ui"><article class="lib-card"><div class="lib-card-actions"><button class="lib-button">置顶</button></div></article></main>');
-    assert.equal(await page.evaluate(()=>matchMedia('(hover:none)').matches),true,'真实触屏媒体条件');
-    const button=page.locator('button');
-    assert.equal(await button.evaluate(node=>getComputedStyle(node.parentElement).opacity),'1','触屏操作常显');
-    await button.evaluate(node=>node.onclick=()=>node.dataset.tapped='true');
-    await button.tap();
-    assert.equal(await button.getAttribute('data-tapped'),'true','触屏可直接点操作');
-  }finally{ await context.close(); }
+  assert.equal(await page.locator('.lib-card-actions,.lib-card-meta,.lib-card-copy p').count(),0);
+  assert.equal(await page.locator('.lib-card').first().locator('button').count(),1,'整卡仅详情入口');
+  assert.equal(await page.locator('.lib-card').first().innerText(),'真实图片');
 }
 (async()=>{
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {channel:'chrome'})});
@@ -249,7 +223,6 @@ async function verifyTouchActions(browser){
     assert.equal(await page.locator('[data-id="bad-site"] .lib-website').count(),1,'无封面显示简洁网站占位');
     assert.equal(await page.locator('[data-id="bad-site"] img').count(),0,'无封面不误加载原图');
     await verifyCardActions(page);
-    await verifyTouchActions(browser);
     await page.selectOption('#libraryState','pinned');
     await page.waitForFunction(()=>!LIB.loading && LIB.items.length===1);
     await resetLibraryFilters(page);

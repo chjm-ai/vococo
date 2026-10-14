@@ -10,7 +10,7 @@
 .library-ui :is(button,input,select):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .library-ui :is(h1,h2,h3,p){margin:0}
 .lib-content{width:min(1200px,100%);margin-inline:auto;padding:var(--sp-5) calc(var(--sp-5) * 2) calc(var(--sp-5) * 3)}
-.lib-heading,.lib-title,.lib-actions,.lib-filters,.lib-results,.lib-card-meta{display:flex;align-items:center;gap:var(--sp-4)}
+.lib-heading,.lib-title,.lib-actions,.lib-filters,.lib-results{display:flex;align-items:center;gap:var(--sp-4)}
 .lib-heading,.lib-results{justify-content:space-between}
 .lib-heading{flex-wrap:wrap}
 .lib-title{min-width:0}
@@ -39,10 +39,6 @@
 .lib-website .ic{width:calc(var(--sp-5) * 1.5);height:calc(var(--sp-5) * 1.5)}
 .lib-card-copy{padding:var(--sp-3) var(--sp-4) var(--sp-4)}
 .lib-card-copy h3{font-size:var(--fs-base);font-weight:600;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.lib-card-copy p{margin-top:var(--sp-2);color:var(--dim);font-size:var(--fs-sm)}
-.lib-card-meta{justify-content:space-between;flex-wrap:wrap;margin-top:var(--sp-4);color:var(--dim);font-size:var(--fs-sm)}
-.lib-card-actions{display:flex;flex-wrap:wrap;gap:var(--sp-2);padding:0 var(--sp-4) var(--sp-3)}
-.lib-card-actions .lib-button{min-height:calc(var(--sp-5) * 2);padding:var(--sp-2) var(--sp-3)}
 .lib-subtle{color:var(--dim);font-size:var(--fs-sm);margin-block:var(--sp-4)!important}
 .lib-detail{position:fixed;inset:0 0 0 auto;width:min(600px,100%);max-width:100%;height:100dvh;max-height:100dvh;margin:0;padding:0;border:1px solid var(--line);border-radius:var(--r-xl) 0 0 var(--r-xl);overflow:auto;overscroll-behavior:contain;background:var(--bg);box-shadow:var(--shadow)}
 .lib-detail::backdrop{background:var(--ov-3)}
@@ -61,14 +57,10 @@
 .library-ref-chip{height:auto!important;max-width:100%;min-height:calc(var(--sp-5) * 2);display:flex!important;align-items:center;gap:var(--sp-3);padding:var(--sp-3) var(--sp-4)!important;border:1px solid var(--line);border-radius:var(--r-md);background:var(--panel);font-size:var(--fs-sm)}
 .library-ref-chip span{overflow-wrap:anywhere;padding-right:var(--sp-5)}
 .library-ref-chip .x{position:static!important;flex-shrink:0}
-/* 桌面按钮浮在封面上，不留空白占位；触屏恢复常显操作行。 */
 @media(hover:hover) and (pointer:fine){
   .library-ui .lib-button:hover{background:var(--panel2)}
   .lib-card:hover{border-color:var(--line2)}
-  .lib-card-actions{position:absolute;top:var(--sp-3);right:var(--sp-3);max-width:calc(100% - var(--sp-5));padding:0;justify-content:flex-end;opacity:0;pointer-events:none;transition:opacity var(--t-fast)}
-  .lib-card:hover .lib-card-actions,.lib-card:focus-within .lib-card-actions{opacity:1;pointer-events:auto}
 }
-@media(any-pointer:coarse){.lib-card-actions{position:static;max-width:none;padding:0 var(--sp-4) var(--sp-3);justify-content:flex-start;opacity:1;pointer-events:auto}}
 @media(max-width:760px){.lib-content{padding:var(--sp-5)}.lib-heading{gap:var(--sp-4)}.lib-drawer-top,.lib-detail-body{padding:var(--sp-5)}.lib-detail-cover{padding:var(--sp-5) var(--sp-5) 0}}
 @media(max-width:480px){.lib-search{max-width:none}}
 @media(prefers-reduced-motion:reduce){.library-ui *{transition:none!important}}

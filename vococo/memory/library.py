@@ -10,15 +10,24 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import time
+import threading
 from urllib.parse import urlsplit
 import uuid
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .. import config
 from . import agents
 
 IMAGE_MAX_BYTES = 20 * 1024 * 1024
+THUMBNAIL_SIZE = 480
+_THUMBNAIL_PARAMETERS = f"webp:{THUMBNAIL_SIZE}:quality=80:exif-transpose:first-frame:v1"
+_THUMBNAIL_LOCKS = [threading.Lock() for _ in range(32)]
+
+
+class ThumbnailVersionError(ValueError):
+    """请求版本已过期，客户端需重新读取作品列表。"""
+
 _IMAGE_FORMATS = {"PNG": ("png", "image/png"), "JPEG": ("jpg", "image/jpeg"),
                   "GIF": ("gif", "image/gif"), "WEBP": ("webp", "image/webp")}
 _SCHEMA = """
@@ -239,7 +248,9 @@ def _item(connection, item_id) -> dict | None:
     item.update(pinned=bool(row["pinned"]), hidden=bool(row["hidden"]),
                 file_url=f"/library/file?id={item_id}" if row["kind"] == "image" else "",
                 cover_url=f"/library/cover?id={item_id}" if row["kind"] == "website"
-                and row["storage_key"] else "")
+                and row["storage_key"] else "",
+                thumbnail_url=(f"/library/thumbnail?id={item_id}&v={_thumbnail_version(row['storage_key'])}"
+                               if row["storage_key"] else ""))
     sources = connection.execute(
         "SELECT * FROM library_sources WHERE item_id=? ORDER BY created_at,id", (item_id,)
     ).fetchall()
@@ -297,6 +308,101 @@ def update_item(id, **fields) -> dict:
         if not cursor.rowcount:
             raise KeyError("作品不存在")
         return _item(connection, id)
+
+
+def _thumbnail_version(storage_key: str) -> str:
+    # 列表只读文件属性，不读取或解码原件；异常原件仍由图片接口明确报错。
+    fingerprint = storage_key
+    try:
+        directory = _storage_directory()
+        path = directory / storage_key
+        if Path(storage_key).name == storage_key and not path.is_symlink():
+            stat = path.stat()
+            fingerprint += f":{stat.st_mtime_ns}:{stat.st_ctime_ns}:{stat.st_size}:{stat.st_ino}"
+    except (OSError, ValueError):
+        pass
+    return hashlib.sha256(f"{fingerprint}:{_THUMBNAIL_PARAMETERS}".encode()).hexdigest()
+
+
+def _thumbnail_directory() -> Path:
+    directory = _storage_directory().parent / "thumbnails"
+    if directory.is_symlink():
+        raise ValueError("缩略图缓存目录不能是符号链接")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return directory
+
+
+def _cached_thumbnail(path: Path) -> bytes | None:
+    if path.is_symlink():
+        raise ValueError("缩略图缓存路径不能是符号链接")
+    if not path.exists():
+        return None
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(1024 * 1024 + 1)
+        if len(data) > 1024 * 1024:
+            return None
+        with Image.open(io.BytesIO(data)) as image:
+            if image.format != "WEBP" or max(image.size) > THUMBNAIL_SIZE:
+                return None
+            image.load()
+        return data
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return None
+
+
+def _encode_thumbnail(path: Path) -> bytes:
+    data, _, _ = _read_image(path)
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.seek(0)
+            image = ImageOps.exif_transpose(image)
+            image.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE), Image.Resampling.LANCZOS)
+            image = image.convert("RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB")
+            output = io.BytesIO()
+            image.save(output, format="WEBP", quality=80)
+            return output.getvalue()
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
+        raise ValueError("图片内容无效") from exc
+
+
+def _write_thumbnail(path: Path, data: bytes) -> None:
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def _thumbnail_source(item_id: str) -> tuple[Path, str]:
+    with _connect() as connection:
+        row = connection.execute("SELECT kind FROM library_items WHERE id=?", (item_id,)).fetchone()
+    if row is None:
+        raise KeyError("作品不存在")
+    path = _stored_file(item_id, row["kind"])
+    return path, _thumbnail_version(path.name)
+
+
+def thumbnail_data(item_id: str, version: str | None = None) -> tuple[bytes, str]:
+    if version is not None and (len(version) != 64 or any(c not in "0123456789abcdef" for c in version)):
+        raise ValueError("缩略图版本无效")
+    source, current = _thumbnail_source(item_id)
+    if version is not None and version != current:
+        raise ThumbnailVersionError("缩略图版本已更新，请刷新作品列表")
+    lock = _THUMBNAIL_LOCKS[int(current[:8], 16) % len(_THUMBNAIL_LOCKS)]
+    with lock:
+        path = _thumbnail_directory() / f"{current}.webp"
+        data = _cached_thumbnail(path)
+        if data is None:
+            data = _encode_thumbnail(source)
+            if _thumbnail_source(item_id) != (source, current):
+                raise ThumbnailVersionError("缩略图版本已更新，请刷新作品列表")
+            _write_thumbnail(path, data)
+        if _thumbnail_source(item_id) != (source, current):
+            raise ThumbnailVersionError("缩略图版本已更新，请刷新作品列表")
+        return data, current
 
 
 def image_file(id) -> Path:

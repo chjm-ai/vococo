@@ -54,7 +54,7 @@ async def test_api_list_detail_patch_file_and_errors(env):
         assert (await patched.json())["pinned"] is True
         image = await client.get(row["file_url"], headers=AUTH)
         assert await image.read() == env.read_bytes()
-        assert image.headers["Cache-Control"] == "private, no-store"
+        assert image.headers["Cache-Control"] == "private, max-age=0, must-revalidate"
         missing = await client.get("/library/item?id=missing", headers=AUTH)
         assert missing.status == 404
         bad = await client.patch(f"/library/item?id={row['id']}", json={"url": "x"}, headers=AUTH)
@@ -202,7 +202,7 @@ async def test_website_cover_auth_list_detail_and_link_only_reference(env):
         response = await client.get(site["cover_url"], headers=AUTH)
         assert response.status == 200 and await response.read() == data
         assert response.headers["Content-Type"] == "image/png"
-        assert response.headers["Cache-Control"] == "private, no-store"
+        assert response.headers["Cache-Control"] == "private, max-age=0, must-revalidate"
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         for endpoint in ["/library/items", f"/library/item?id={site['id']}"]:
             body = await (await client.get(endpoint, headers=AUTH)).json()
@@ -246,3 +246,91 @@ def test_refs_deduplicate_and_enforce_total_size(env, monkeypatch):
     monkeypatch.setattr(library, "IMAGE_MAX_BYTES", max_size)
     with pytest.raises(ValueError, match="总大小"):
         library_api.resolve_refs([first["id"], second["id"]])
+
+
+@pytest.mark.anyio
+async def test_thumbnail_http_contract_private_cache_auth_and_304(env, monkeypatch):
+    row = library.register_image(env)
+    async with TestClient(TestServer(app_for())) as client:
+        for endpoint in ["/library/items", f"/library/item?id={row['id']}"]:
+            body = await (await client.get(endpoint, headers=AUTH)).json()
+            item = body["items"][0] if "items" in body else body
+            assert item["thumbnail_url"] == row["thumbnail_url"]
+        response = await client.get(row["thumbnail_url"], headers=AUTH)
+        assert response.status == 200 and await response.read()
+        assert response.headers["Content-Type"] == "image/webp"
+        assert response.headers["Cache-Control"] == "private, max-age=86400, must-revalidate"
+        assert "immutable" not in response.headers["Cache-Control"]
+        etag = response.headers["ETag"]
+        conditional = {**AUTH, "If-None-Match": '"other", W/' + etag}
+        monkeypatch.setattr(library, "_encode_thumbnail", lambda _: pytest.fail("重复请求不能重新编码"))
+        response = await client.get(row["thumbnail_url"], headers=conditional)
+        assert response.status == 304 and await response.read() == b""
+        assert response.headers["ETag"] == etag
+        for headers in [{"If-None-Match": etag}, {"X-Auth-Token": "wrong", "If-None-Match": "*"}]:
+            denied = await client.get(row["thumbnail_url"], headers=headers)
+            assert denied.status == 401 and "no-store" in denied.headers["Cache-Control"]
+        no_version = await client.get(f"/library/thumbnail?id={row['id']}", headers=AUTH)
+        assert no_version.status == 200
+        assert no_version.headers["Cache-Control"] == "private, max-age=0, must-revalidate"
+        for url, status in [("/library/thumbnail", 400), ("/library/thumbnail?id=missing", 404),
+                            (row["thumbnail_url"].split("&v=")[0] + "&v=../bad", 400),
+                            (row["thumbnail_url"].split("&v=")[0] + "&v=" + "0" * 64, 409)]:
+            assert (await client.get(url, headers=AUTH)).status == status
+
+
+@pytest.mark.anyio
+async def test_original_and_cover_conditional_requests_auth_before_304(env, monkeypatch):
+    rows = [library.register_image(env), library.register_website(
+        "https://example.com", "网站", "etag-site", cover_path=env)]
+    async with TestClient(TestServer(app_for())) as client:
+        for row in rows:
+            url = row["file_url"] or row["cover_url"]
+            response = await client.get(url, headers=AUTH)
+            assert response.status == 200
+            await response.read()
+            etag = response.headers["ETag"]
+            with monkeypatch.context() as patch:
+                patch.setattr(library, "_read_image", lambda _: pytest.fail("304 不读原件"))
+                response = await client.get(url, headers={**AUTH, "If-None-Match": etag})
+                assert response.status == 304
+                denied = await client.get(url, headers={"If-None-Match": etag})
+                assert denied.status == 401
+            assert response.headers["Cache-Control"].startswith("private,")
+
+
+@pytest.mark.anyio
+async def test_old_thumbnail_url_never_serves_updated_cover(env):
+    row = library.register_website("https://example.com", "网站", "version-site", cover_path=env)
+    async with TestClient(TestServer(app_for())) as client:
+        first = await client.get(row["thumbnail_url"], headers=AUTH)
+        etag = first.headers["ETag"]
+        Image.new("RGB", (5, 5), "red").save(env)
+        updated = library.register_website("https://example.com", "网站", "version-site", cover_path=env)
+        stale = await client.get(row["thumbnail_url"], headers={**AUTH, "If-None-Match": etag})
+        assert stale.status == 409 and "no-store" in stale.headers["Cache-Control"]
+        fresh = await client.get(updated["thumbnail_url"], headers=AUTH)
+        assert fresh.status == 200 and fresh.headers["ETag"] != etag
+
+
+@pytest.mark.anyio
+async def test_thumbnail_cpu_work_runs_in_worker_and_parallel_http_encodes_once(env, monkeypatch):
+    import asyncio
+    import threading
+    Image.effect_noise((1000, 800), 50).convert("RGB").save(env)
+    row = library.register_image(env)
+    event_thread = threading.get_ident()
+    worker_threads = []
+    encode = library._encode_thumbnail
+    def checked(path):
+        worker_threads.append(threading.get_ident())
+        assert worker_threads[-1] != event_thread
+        return encode(path)
+    monkeypatch.setattr(library, "_encode_thumbnail", checked)
+    async with TestClient(TestServer(app_for())) as client:
+        responses = await asyncio.gather(*[
+            client.get(row["thumbnail_url"], headers=AUTH) for _ in range(8)])
+        bodies = await asyncio.gather(*[response.read() for response in responses])
+        assert all(response.status == 200 for response in responses)
+        assert all(body == bodies[0] for body in bodies)
+        assert len(worker_threads) == 1

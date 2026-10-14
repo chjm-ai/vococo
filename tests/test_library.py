@@ -300,3 +300,135 @@ def test_image_size_limit_and_metadata_validation(image_path, monkeypatch):
         library.register_image(image_path)
     with pytest.raises(ValueError, match="metadata"):
         library.register_image(image_path, metadata=[])
+
+
+def test_thumbnail_is_small_cached_and_concurrent(image_path, monkeypatch):
+    Image.effect_noise((2000, 1400), 80).convert("RGB").save(image_path)
+    row = library.register_image(image_path)
+    original = library.image_file(row["id"]).read_bytes()
+    calls = []
+    encode = library._encode_thumbnail
+    def counted(path):
+        calls.append(path)
+        return encode(path)
+    monkeypatch.setattr(library, "_encode_thumbnail", counted)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: library.thumbnail_data(row["id"]), range(16)))
+    assert len(calls) == 1 and all(result == results[0] for result in results)
+    data, version = results[0]
+    assert len(data) < len(original) / 10
+    import io
+    with Image.open(io.BytesIO(data)) as thumb:
+        assert thumb.size == (480, 336) and thumb.format == "WEBP"
+    assert library.image_file(row["id"]).read_bytes() == original
+    assert len(library.list_items()) == 1
+    assert row["thumbnail_url"].endswith("&v=" + version)
+    monkeypatch.setattr(library, "_read_image", lambda _: pytest.fail("缓存命中不得读取原件"))
+    assert library.thumbnail_data(row["id"], version) == results[0]
+
+
+def test_thumbnail_corrupt_cache_recovers_and_paths_are_controlled(image_path):
+    row = library.register_image(image_path)
+    expected, version = library.thumbnail_data(row["id"])
+    cache = library._thumbnail_directory() / f"{version}.webp"
+    cache.write_bytes(b"broken")
+    assert library.thumbnail_data(row["id"]) == (expected, version)
+    cache.unlink()
+    cache.symlink_to(image_path)
+    with pytest.raises(ValueError, match="符号链接"):
+        library.thumbnail_data(row["id"])
+    cache.unlink()
+    cache.parent.rmdir()
+    cache.parent.symlink_to(image_path.parent, target_is_directory=True)
+    with pytest.raises(ValueError, match="符号链接"):
+        library.thumbnail_data(row["id"])
+
+
+def test_thumbnail_cover_versions_and_no_cover(image_path):
+    site = library.register_website("https://example.com", "网站", "thumb-site", cover_path=image_path)
+    _, first_version = library.thumbnail_data(site["id"])
+    Image.new("RGB", (4, 4), "blue").save(image_path)
+    updated = library.register_website("https://example.com", "网站", "thumb-site", cover_path=image_path)
+    _, second_version = library.thumbnail_data(site["id"])
+    assert first_version != second_version and site["thumbnail_url"] != updated["thumbnail_url"]
+    with pytest.raises(library.ThumbnailVersionError):
+        library.thumbnail_data(site["id"], first_version)
+    empty = library.register_website("https://example.com/empty", "无封面", "empty")
+    assert empty["thumbnail_url"] == ""
+    with pytest.raises(FileNotFoundError):
+        library.thumbnail_data(empty["id"])
+    assert library.list_items(kind="image") == []
+
+
+@pytest.mark.parametrize("version", ["", "../escape", "a" * 65, "Z" * 64])
+def test_thumbnail_rejects_invalid_version(image_path, version):
+    row = library.register_image(image_path)
+    with pytest.raises(ValueError, match="版本无效"):
+        library.thumbnail_data(row["id"], version)
+
+
+def test_thumbnail_handles_exif_and_animation_first_frame(image_path):
+    import io
+    exif = Image.Exif()
+    exif[274] = 6
+    Image.new("RGB", (900, 600), "red").save(image_path, format="JPEG", exif=exif)
+    row = library.register_image(image_path)
+    data, _ = library.thumbnail_data(row["id"])
+    with Image.open(io.BytesIO(data)) as thumb:
+        assert thumb.size == (320, 480)
+    Image.new("RGB", (40, 20), "red").save(
+        image_path, format="GIF", save_all=True,
+        append_images=[Image.new("RGB", (40, 20), "blue")], duration=100, loop=0)
+    row = library.register_image(image_path)
+    data, _ = library.thumbnail_data(row["id"])
+    with Image.open(io.BytesIO(data)) as thumb:
+        assert not getattr(thumb, "is_animated", False)
+        red, green, blue = thumb.convert("RGB").getpixel((0, 0))
+        assert red > 200 and blue < 20
+
+
+def test_thumbnail_revalidates_changed_original_and_pixel_limit(image_path):
+    row = library.register_image(image_path)
+    _, version = library.thumbnail_data(row["id"])
+    path = library.image_file(row["id"])
+    Image.new("RGB", (6400, 6300), "red").save(path)
+    assert library.get_item(row["id"])["thumbnail_url"] != row["thumbnail_url"]
+    with pytest.raises(library.ThumbnailVersionError):
+        library.thumbnail_data(row["id"], version)
+    with pytest.raises(ValueError, match="像素"):
+        library.thumbnail_data(row["id"])
+
+
+def test_thumbnail_rejects_source_changed_during_encoding(image_path, monkeypatch):
+    row = library.register_image(image_path)
+    encode = library._encode_thumbnail
+    def change_source(path):
+        data = encode(path)
+        Image.new("RGB", (5, 5), "blue").save(path)
+        return data
+    monkeypatch.setattr(library, "_encode_thumbnail", change_source)
+    with pytest.raises(library.ThumbnailVersionError):
+        library.thumbnail_data(row["id"])
+    assert list(library._thumbnail_directory().iterdir()) == []
+
+
+def test_thumbnail_cache_does_not_bypass_missing_or_symlink_original(image_path):
+    row = library.register_image(image_path)
+    library.thumbnail_data(row["id"])
+    path = library.image_file(row["id"])
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        library.thumbnail_data(row["id"])
+    path.symlink_to(image_path)
+    with pytest.raises(ValueError, match="路径"):
+        library.thumbnail_data(row["id"])
+
+
+def test_thumbnail_transparency_and_small_image_are_preserved(image_path):
+    import io
+    Image.new("RGBA", (12, 8), (255, 0, 0, 0)).save(image_path)
+    row = library.register_image(image_path)
+    data, _ = library.thumbnail_data(row["id"])
+    with Image.open(io.BytesIO(data)) as thumb:
+        assert thumb.size == (12, 8)
+        assert thumb.convert("RGBA").getpixel((0, 0))[3] == 0

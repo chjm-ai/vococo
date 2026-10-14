@@ -128,3 +128,45 @@ async def test_real_browser_page_and_real_library_api(running_library, isolated)
     assert base64.b64decode(incoming.images[0].data) == image_path.read_bytes()
     assert site["url"] in incoming.text
     print(f"真实页面截图：{screenshot}")
+
+
+def _register_loading_works(directory, origin):
+    # 每张图只改一个像素，既保留可测压缩差异，又避免作品按内容去重。
+    pixels = Image.frombytes("RGB", (640, 480), os.urandom(640 * 480 * 3))
+    path = directory / "loading-original.png"
+    for index in range(59):
+        pixels.putpixel((0, 0), (index, 70, 120))
+        pixels.save(path)
+        library.register_image(path, f"加载测试图片 {index}")
+        library.register_website(
+            origin + f"/pub/library-smoke/?work={index}",
+            f"加载测试网站 {index}", f"loading-site:{index}", cover_path=path,
+        )
+
+
+@pytest.mark.anyio
+async def test_real_browser_thumbnail_loading_and_cache(running_library, isolated):
+    # 这个入口必须真的执行浏览器；缺依赖就失败，不以 skip 冒充通过。
+    assert shutil.which("node"), "真实缩略图测试需要 Node"
+    _, origin, _, _, _ = running_library
+    _register_loading_works(isolated, origin)
+    script = Path(__file__).with_name("library_loading_browser.cjs")
+    screenshot = isolated / "library-loading-real.png"
+    process = await asyncio.create_subprocess_exec(
+        "node", str(script), "--real", origin, config.WEB_AUTH_TOKEN, "120", str(screenshot),
+        env=_browser_environment(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        raise
+    assert process.returncode == 0, stderr.decode() + stdout.decode()
+    report = json.loads(stdout)
+    assert report["ok"] and report["mode"] == "real-WebAdapter"
+    assert report["items"] == 120 and screenshot.is_file()
+    assert 0 < report["firstScreenRequests"] < 60
+    assert report["refreshExtraRequests"] == 0 and report["maxConcurrent"] <= 4
+    assert report["sampleThumbnailBytes"] < report["sampleOriginalBytes"]
+    print("真实缩略图加载结果：" + json.dumps(report, ensure_ascii=False))
