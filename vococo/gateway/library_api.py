@@ -116,7 +116,16 @@ async def patch_item(request):
 
 @_endpoint
 async def file(request):
-    path = await asyncio.to_thread(library.image_file, _id(request))
+    return await _image_response(request, library.image_file)
+
+
+@_endpoint
+async def cover(request):
+    return await _image_response(request, library.cover_file)
+
+
+async def _image_response(request, resolve_file):
+    path = await asyncio.to_thread(resolve_file, _id(request))
     _, _, media_type = await asyncio.to_thread(library._read_image, path)
     return web.FileResponse(path, headers={"Content-Type": media_type,
                                          "Cache-Control": "private, no-store",
@@ -203,5 +212,6 @@ def register_routes(app: web.Application) -> None:
     app.add_routes([
         web.get("/library/items", items), web.get("/library/item", item),
         web.patch("/library/item", patch_item), web.get("/library/file", file),
+        web.get("/library/cover", cover),
         web.post("/library/history/preview", history_preview),
     ])

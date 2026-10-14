@@ -11,7 +11,7 @@ async function libraryBounds(page){
     const selectors=['#libraryView','.lib-content','.lib-heading','.lib-status','.lib-type','.lib-search','#libraryWorks'];
     const bounds=selectors.map(selector=>{
       const node=document.querySelector(selector), box=node.getBoundingClientRect();
-      return {selector,x:box.x,width:box.width,overflow:node.scrollWidth>node.clientWidth+1};
+      return {selector,x:box.x,width:box.width,clientWidth:node.clientWidth,overflow:node.scrollWidth>node.clientWidth+1};
     });
     const cards=[...document.querySelectorAll('.lib-card')].map(node=>{
       const box=node.getBoundingClientRect(),cover=node.querySelector('.lib-cover').getBoundingClientRect();
@@ -33,9 +33,10 @@ async function clickLibraryFilter(page,selector,count){
   await page.waitForFunction(count=>!LIB.loading && LIB.items.length===count,count);
 }
 function assertCompactCards(layout,label){
-  assert.ok(layout.bounds[1].width<=820,label+' 沿用工作台内容列');
+  assert.ok(layout.bounds[1].width<=1200,label+' 内容最大宽度 1200');
+  assert.ok(Math.abs(layout.bounds[1].width-Math.min(1200,layout.bounds[0].clientWidth))<1,label+' 内容显式宽度不随作品数收缩');
   const gridWidth=layout.bounds.at(-1).width;
-  assert.equal(layout.columns,Math.max(1,Math.floor((gridWidth+12)/(192+12))),label+' 按实际空间填充列数');
+  assert.equal(layout.columns,Math.max(1,Math.floor((gridWidth+12)/(160+12))),label+' 按实际空间填充更多小卡列');
   assert.ok(layout.cards[0].height<360,label+' 卡片收紧');
   assert.ok(layout.cards[0].coverHeight/layout.cards[0].coverWidth<.6,label+' 封面收紧');
 }
@@ -66,7 +67,7 @@ async function verifyLayoutStates(page,label,holdList,setFailure){
 }
 async function verifyLibraryLayout(page,holdList,setFailure){
   const results=[];
-  for(const theme of ['light','dark']) for(const width of [320,375,390,768,1280]) for(const collapsed of [false,true]){
+  for(const theme of ['light','dark']) for(const width of [320,375,390,768,1280,1600]) for(const collapsed of [false,true]){
     await page.setViewportSize({width,height:900});
     await page.evaluate(({theme,collapsed})=>{
       document.documentElement.dataset.theme=theme;
@@ -76,7 +77,8 @@ async function verifyLibraryLayout(page,holdList,setFailure){
     await page.waitForTimeout(300); // 等待侧栏原有过渡结束再量边界。
     const label=`${theme} ${width} 侧栏${collapsed?'收起':'展开'}`;
     const layout=await verifyLayoutStates(page,label,holdList,setFailure);
-    assert.ok(layout.cards[0].width<=360,label+' 卡片宽度上限');
+    assert.ok(layout.cards[0].width<=320,label+' 小卡宽度上限');
+    if(width===1600) assert.equal(layout.bounds[1].width,1200,label+' 宽屏达到最大内容宽度');
     results.push({theme,width,collapsed,contentWidth:layout.bounds[1].width,columns:layout.columns,cardWidth:layout.cards[0].width});
     if(process.env.LIBRARY_SCREENSHOT_DIR){
       await clickLibraryFilter(page,'[data-lib-action="reset"]',43);
@@ -86,11 +88,43 @@ async function verifyLibraryLayout(page,holdList,setFailure){
   console.log('作品库布局矩阵：'+JSON.stringify(results));
   await page.evaluate(()=>{ closeSidebar(); setSidebarCollapsed(false); });
 }
+async function verifyCardActions(page){
+  const card=page.locator('.lib-card').first(), actions=card.locator('.lib-card-actions');
+  await page.mouse.move(0,0);
+  await page.evaluate(()=>document.activeElement.blur());
+  await page.waitForTimeout(200);
+  assert.equal(await actions.evaluate(node=>getComputedStyle(node).opacity),'0','桌面非悬停隐藏操作');
+  const height=await card.evaluate(node=>node.getBoundingClientRect().height);
+  await card.hover();
+  await page.waitForTimeout(200);
+  assert.equal(await actions.evaluate(node=>getComputedStyle(node).opacity),'1','悬停显示操作');
+  await page.mouse.move(0,0);
+  await card.locator('.lib-card-open').focus();
+  await page.keyboard.press('Tab');
+  assert.equal(await actions.locator('button').first().evaluate(node=>node===document.activeElement),true,'键盘可进入操作');
+  await page.waitForTimeout(200);
+  assert.equal(await actions.evaluate(node=>getComputedStyle(node).opacity),'1','focus-within 显示操作');
+  assert.equal(await card.evaluate(node=>node.getBoundingClientRect().height),height,'操作显隐不改变高度');
+}
+async function verifyTouchActions(browser){
+  const context=await browser.newContext({hasTouch:true,isMobile:true,viewport:{width:390,height:844}});
+  const page=await context.newPage();
+  try{
+    await page.setContent('<style>'+fs.readFileSync(path.join(root,'styles.css'),'utf8')+fs.readFileSync(path.join(root,'library.css'),'utf8')+'</style><main class="library-ui"><article class="lib-card"><div class="lib-card-actions"><button class="lib-button">置顶</button></div></article></main>');
+    assert.equal(await page.evaluate(()=>matchMedia('(hover:none)').matches),true,'真实触屏媒体条件');
+    const button=page.locator('button');
+    assert.equal(await button.evaluate(node=>getComputedStyle(node.parentElement).opacity),'1','触屏操作常显');
+    await button.evaluate(node=>node.onclick=()=>node.dataset.tapped='true');
+    await button.tap();
+    assert.equal(await button.getAttribute('data-tapped'),'true','触屏可直接点操作');
+  }finally{ await context.close(); }
+}
 (async()=>{
-  const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {})});
+  const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {channel:'chrome'})});
   try{
     const page=await browser.newPage(), errors=[], sends=[], queries=[], downloads=[];
-    let failList=false, failPatch=false, failSend=false, previewCalls=0, listGate;
+    let failList=false, failPatch=false, failSend=false, failCover=false, previewCalls=0, listGate;
+    const coverRequests=[];
     function holdList(){
       let markEntered,release;
       const entered=new Promise(resolve=>{ markEntered=resolve; });
@@ -107,7 +141,7 @@ async function verifyLibraryLayout(page,holdList,setFailure){
     const agents=[{id:'design',name:'AI 设计'},{id:'dev',name:'开发'}];
     const items=[
       {id:'img-1',kind:'image',title:'真实图片',agent_id:'design',pinned:false,hidden:false,file_url:'https://untrusted.invalid/image?token=bad',created_at:'2026-10-12',sources:[{session_key:'web:one',conv:'one',can_open:true,turn_id:12,action:'generate_image',metadata:{prompt:'<script>不执行</script>'}}]},
-      {id:'site-1',kind:'website',title:'品牌网站',url:'https://example.com/site/',agent_id:'dev',pinned:true,hidden:false,sources:[]},
+      {id:'site-1',kind:'website',title:'品牌网站',url:'https://example.com/site/',cover_url:'/library/cover?id=site-1',agent_id:'dev',pinned:true,hidden:false,sources:[]},
       {id:'hidden-1',kind:'image',title:'隐藏图片',agent_id:null,pinned:false,hidden:true,sources:[{session_key:'web:deleted',metadata:{deleted:true}}]},
       {id:'bad-site',kind:'website',title:'无效链接',url:'javascript:alert(1)',agent_id:null,pinned:false,hidden:false,sources:[]}
     ];
@@ -149,7 +183,16 @@ async function verifyLibraryLayout(page,holdList,setFailure){
         }
         data=item;
       }
+      if(url.pathname==='/library/cover'){
+        assert.equal(request.headers()['x-auth-token'],'test-secret','网站封面需要鉴权');
+        assert.equal(url.searchParams.has('token'),false,'封面 URL 不携带口令');
+        assert.equal(url.searchParams.get('id'),'site-1','封面用作品 ID 构造受控路径');
+        coverRequests.push(request.url());
+        if(failCover) return route.fulfill({status:404,json:{error:'无封面'}});
+        return route.fulfill({body:image,contentType:'image/png'});
+      }
       if(url.pathname==='/library/file'){
+        assert.notEqual(url.searchParams.get('id'),'site-1','网站截图不能走原图接口');
         assert.equal(request.headers()['x-auth-token'],'test-secret');
         assert.equal(url.searchParams.has('token'),false);
         return route.fulfill({body:image,contentType:'image/png'});
@@ -179,6 +222,12 @@ async function verifyLibraryLayout(page,holdList,setFailure){
     assert.equal(await page.locator('.lib-card').count(),3);
     await page.waitForFunction(()=>$('#libraryWorks img')?.src.startsWith('blob:'));
     assert.equal(await page.locator('[src*="token="]').count(),0);
+    await page.waitForFunction(()=>$('[data-library-cover]')?.src.startsWith('blob:'));
+    assert.ok(coverRequests.length>0,'列表加载网站封面');
+    assert.equal(await page.locator('[data-id="bad-site"] .lib-website').count(),1,'无封面显示简洁网站占位');
+    assert.equal(await page.locator('[data-id="bad-site"] img').count(),0,'无封面不误加载原图');
+    await verifyCardActions(page);
+    await verifyTouchActions(browser);
     await page.locator('[data-state="pinned"]').click();
     await page.waitForFunction(()=>$('#libraryCount').textContent==='已加载 1 件作品');
     await page.locator('[data-lib-action="reset"]').click();
@@ -233,6 +282,15 @@ async function verifyLibraryLayout(page,holdList,setFailure){
     await page.waitForFunction(()=>$('#libraryCount').textContent==='已加载 2 件作品');
     await page.locator('[data-lib-action="detail"][data-id="site-1"]').click();
     await page.waitForSelector('#libraryTarget');
+    await page.waitForFunction(()=>$('#libraryDetail [data-library-cover]')?.src.startsWith('blob:'));
+    assert.equal(await page.locator('#libraryDetail [data-lib-action="download"]').count(),0,'网站详情不提供原图下载');
+    failCover=true;
+    await page.evaluate(()=>{ libraryReleaseImages(); renderLibraryDetail(); });
+    await page.waitForFunction(()=>$('#libraryDetail .lib-cover span').textContent==='网站封面暂不可用');
+    assert.equal(await page.locator('#libraryDetail img').isVisible(),false,'封面失败不会显示破图');
+    failCover=false;
+    await page.evaluate(()=>{ libraryReleaseImages(); renderLibraryDetail(); });
+    await page.waitForFunction(()=>$('#libraryDetail [data-library-cover]')?.src.startsWith('blob:'));
     await page.evaluate(()=>{ window.__opened=[]; window.open=(...args)=>window.__opened.push(args); });
     await page.locator('[data-lib-action="website"]').click();
     assert.deepEqual(await page.evaluate(()=>window.__opened[0]),['https://example.com/site/','_blank','noopener,noreferrer']);

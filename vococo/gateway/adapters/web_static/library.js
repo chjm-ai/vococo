@@ -13,8 +13,7 @@ function libraryButton(action, label, icon, extra=""){
 }
 function initLibrary(){
   const view=el("main","library-ui"); view.id="libraryView"; view.hidden=true;
-  view.innerHTML=`<div class="lib-content"><header class="lib-heading"><div class="lib-title"><button type="button" class="wb-hamb" data-lib-action="sidebar" aria-label="展开侧栏">${ic("panel")}</button><h1>作品库 <span>Library</span></h1></div><div class="lib-actions">${libraryButton("refresh","刷新","refresh")}${libraryButton("history","历史候选预览","eye")}</div></header>
-    <p class="lib-intro">持续保留产出，让作品回到下一次对话。</p>
+  view.innerHTML=`<div class="lib-content"><header class="lib-heading"><div class="lib-title"><button type="button" class="wb-hamb" data-lib-action="sidebar" aria-label="展开侧栏">${ic("panel")}</button><h1>作品库</h1></div><div class="lib-actions">${libraryButton("refresh","刷新","refresh")}${libraryButton("history","历史候选预览","eye")}</div></header>
     <div class="lib-filters"><div class="lib-status" role="group" aria-label="作品状态">${[["visible","全部可见"],["pinned","已置顶"],["hidden","已隐藏"]].map(([state,label])=>libraryButton("state",label,"",`data-state="${state}" aria-pressed="${state==="visible"}"`)).join("")}</div>
     <label class="lib-agent">Agent <select id="libraryAgent" aria-label="筛选 Agent"><option value="">全部 Agent</option></select></label></div>
     <div class="lib-type" role="group" aria-label="作品类型">${[["","全部作品"],["image","图片"],["website","网站"]].map(([kind,label])=>libraryButton("kind",label,"",`data-kind="${kind}" aria-pressed="${!kind}"`)).join("")}</div>
@@ -93,8 +92,9 @@ function renderLibraryAgents(){
   select.value=LIB.filters.agent_id;
 }
 function libraryCover(item){
-  if(item.kind==="image") return `<div class="lib-cover"><span>正在读取图片…</span><img data-library-image="${libraryText(item.id)}" alt="${libraryText(item.title)}" hidden></div>`;
-  return `<div class="lib-cover lib-website"><span>${ic("external")} 网站 · 非网页截图</span><strong>${libraryText(item.title)}</strong><span>${libraryText(libraryWebsiteUrl(item.open_url || item.url) || "链接不可用")}</span></div>`;
+  if(item.kind==="image" || item.cover_url) return `<div class="lib-cover${item.kind==="website" ? " lib-screenshot" : ""}"><span>${item.kind==="image" ? "正在读取图片…" : "正在读取封面…"}</span><img data-library-image="${libraryText(item.id)}" ${item.kind==="website" ? 'data-library-cover="true"' : ""} alt="${libraryText(item.title)}" hidden></div>`;
+  const url=libraryWebsiteUrl(item.open_url || item.url);
+  return `<div class="lib-cover lib-website">${ic("external")}<span>${libraryText(url ? new URL(url).hostname : "链接不可用")}</span></div>`;
 }
 function libraryCard(item){
   const id=`data-id="${libraryText(item.id)}"`;
@@ -120,9 +120,9 @@ function libraryReleaseImages(){
   LIB.blobs.clear();
   document.querySelectorAll('img[data-library-image]').forEach(image=>delete image.dataset.loading);
 }
-async function libraryFile(id){
-  // 只信同源受控文件接口，不把服务端 file_url 或登录口令写进 DOM/URL。
-  const response=await api("/library/file?id="+encodeURIComponent(id),{redirect:"error",cache:"no-store"});
+async function libraryFile(id, cover=false){
+  // 仅从作品 ID 构造同源接口；封面不能变成原图下载，也不信服务端任意 URL。
+  const response=await api((cover ? "/library/cover?id=" : "/library/file?id=")+encodeURIComponent(id),{redirect:"error",cache:"no-store"});
   if(!response.ok) throw new Error(`原件读取失败（${response.status}）`);
   const blob=await response.blob();
   if(!blob.type.startsWith("image/")) throw new Error("原件不是可预览的图片");
@@ -134,11 +134,11 @@ async function libraryLoadImages(root){
     if(image.getAttribute("src") || image.dataset.loading) continue;
     image.dataset.loading="1";
     try{
-      const blob=await libraryFile(image.dataset.libraryImage);
+      const blob=await libraryFile(image.dataset.libraryImage,image.dataset.libraryCover==="true");
       if(version!==LIB.imageVersion || !image.isConnected || root.hidden) return;
       const url=URL.createObjectURL(blob); LIB.blobs.set(image,url);
       image.src=url; image.hidden=false; image.previousElementSibling.hidden=true;
-    }catch(error){ if(version===LIB.imageVersion && image.isConnected) image.previousElementSibling.textContent=error.message; }
+    }catch(error){ if(version===LIB.imageVersion && image.isConnected) image.previousElementSibling.textContent=image.dataset.libraryCover ? "网站封面暂不可用" : error.message; }
   }
 }
 function libraryWebsiteUrl(value){

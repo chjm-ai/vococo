@@ -160,6 +160,140 @@ def test_symlink_storage_directory_is_rejected(image_path):
     assert library.list_items() == []
 
 
+@pytest.mark.parametrize("image_format", ["PNG", "JPEG", "GIF", "WEBP"])
+def test_website_cover_is_preserved_without_image_work(image_path, image_format):
+    Image.new("RGB", (4, 4), "blue").save(image_path, format=image_format)
+    data = image_path.read_bytes()
+    row = library.register_website("https://example.com", "网站", "cover-site", cover_path=image_path)
+    assert row["cover_url"] == f"/library/cover?id={row['id']}"
+    assert row["file_url"] == ""
+    image_path.unlink()
+    assert library.cover_file(row["id"]).read_bytes() == data
+    assert library.list_items(kind="image") == []
+    assert len(library.list_items()) == 1
+    with pytest.raises(ValueError, match="不是图片"):
+        library.image_file(row["id"])
+
+
+def test_website_cover_updates_and_missing_argument_keeps_cover(image_path):
+    first = library.register_website("https://example.com/v1", "原标题", "site", cover_path=image_path)
+    old_path = library.cover_file(first["id"])
+    library.update_item(first["id"], hidden=True, pinned=True)
+    without_cover = library.register_website("https://example.com/v2", "新标题", "site")
+    assert without_cover["cover_url"] == first["cover_url"]
+    assert library.cover_file(first["id"]) == old_path
+    Image.new("RGB", (4, 4), "blue").save(image_path)
+    updated = library.register_website("https://example.com/v3", "新标题", "site", cover_path=image_path)
+    assert updated["id"] == first["id"] and updated["url"].endswith("v3")
+    assert updated["title"] == "原标题" and updated["hidden"] and updated["pinned"]
+    assert library.cover_file(first["id"]) != old_path
+    assert library.cover_file(first["id"]).read_bytes() == image_path.read_bytes()
+
+
+def test_failed_website_cover_update_preserves_previous_version(image_path, monkeypatch):
+    row = library.register_website("https://example.com/v1", "网站", "site", cover_path=image_path)
+    original = library.cover_file(row["id"])
+    Image.new("RGB", (4, 4), "blue").save(image_path)
+    def fail_item(*args):
+        raise RuntimeError("保存失败")
+    with monkeypatch.context() as patch:
+        patch.setattr(library, "_item", fail_item)
+        with pytest.raises(RuntimeError):
+            library.register_website("https://example.com/v2", "网站", "site", cover_path=image_path)
+    assert library.get_item(row["id"]) == row
+    assert list(original.parent.iterdir()) == [original]
+
+
+def test_bad_website_cover_update_and_event_conflict_leave_no_orphan(image_path):
+    row = library.register_website("https://example.com/v1", "网站", "site",
+                                   cover_path=image_path, event_key="cover-event")
+    original = library.cover_file(row["id"])
+    image_path.write_bytes(b"not an image")
+    with pytest.raises(ValueError, match="无效"):
+        library.register_website("https://example.com/v2", "网站", "site", cover_path=image_path)
+    Image.new("RGB", (4, 4), "blue").save(image_path)
+    with pytest.raises(ValueError, match="event_key"):
+        library.register_website("https://example.com/v2", "网站", "other",
+                                 cover_path=image_path, event_key="cover-event")
+    assert library.get_item(row["id"]) == row
+    assert list(original.parent.iterdir()) == [original]
+
+
+def test_website_cover_paths_and_storage_are_controlled(image_path):
+    link = image_path.parent / "link.png"
+    link.symlink_to(image_path)
+    for invalid in [link, image_path.parent, image_path.parent / "missing.png"]:
+        with pytest.raises(ValueError, match="路径"):
+            library.register_website("https://example.com", "网站", "site", cover_path=invalid)
+    row = library.register_website("https://example.com", "网站", "site", cover_path=image_path)
+    original = library.cover_file(row["id"])
+    original.unlink()
+    with pytest.raises(FileNotFoundError):
+        library.cover_file(row["id"])
+    original.symlink_to(image_path)
+    with pytest.raises(ValueError, match="路径"):
+        library.cover_file(row["id"])
+    for key in [str(image_path), "../output.png"]:
+        with library._connect() as connection:
+            connection.execute("UPDATE library_items SET storage_key=? WHERE id=?", (key, row["id"]))
+        with pytest.raises(ValueError, match="路径"):
+            library.cover_file(row["id"])
+
+
+def test_old_website_without_cover_is_compatible(image_path):
+    with library._connect() as connection:
+        connection.execute(
+            "INSERT INTO library_items (id,kind,identity,title,url,created_at,updated_at) "
+            "VALUES ('legacy','website','website:old-site','旧网站','https://example.com',1,1)"
+        )
+    row = library.get_item("legacy")
+    assert row["cover_url"] == ""
+    assert library.list_items()[0]["cover_url"] == ""
+    with pytest.raises(FileNotFoundError, match="没有封面"):
+        library.cover_file(row["id"])
+    covered = library.register_website("https://example.com", "旧网站", "old-site", cover_path=image_path)
+    assert covered["id"] == row["id"] and covered["cover_url"]
+    image = library.register_image(image_path)
+    with pytest.raises(ValueError, match="不是网站"):
+        library.cover_file(image["id"])
+
+
+def test_concurrent_website_cover_registration_is_idempotent(image_path):
+    def register(_):
+        return library.register_website("https://example.com", "网站", "site",
+                                        cover_path=image_path, event_key="cover-event")
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        rows = list(pool.map(register, range(8)))
+    assert all(row == rows[0] for row in rows)
+    assert len(rows[0]["sources"]) == 1
+    assert len(list(library.cover_file(rows[0]["id"]).parent.iterdir())) == 1
+
+
+def test_website_cover_retry_survives_deleted_source(image_path):
+    row = library.register_website("https://example.com", "网站", "site",
+                                   cover_path=image_path, event_key="cover-event")
+    data = image_path.read_bytes()
+    image_path.unlink()
+    retry = library.register_website("https://example.com", "网站", "site",
+                                    cover_path=image_path, event_key="cover-event")
+    assert retry == row
+    assert library.cover_file(row["id"]).read_bytes() == data
+    with pytest.raises(ValueError, match="event_key"):
+        library.register_website("https://example.com", "网站", "different",
+                                 cover_path=image_path, event_key="cover-event")
+
+
+def test_website_cover_rejects_symlink_storage_directory(image_path):
+    outside = image_path.parent / "outside"
+    outside.mkdir()
+    config.DATA_DIR.mkdir()
+    (config.DATA_DIR / "library").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="符号链接"):
+        library.register_website("https://example.com", "网站", "site", cover_path=image_path)
+    assert list(outside.iterdir()) == []
+    assert library.list_items() == []
+
+
 def test_image_size_limit_and_metadata_validation(image_path, monkeypatch):
     monkeypatch.setattr(library, "IMAGE_MAX_BYTES", 10)
     with pytest.raises(ValueError, match="上限"):

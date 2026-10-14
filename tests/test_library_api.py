@@ -69,6 +69,7 @@ async def test_all_library_routes_require_header_auth(env):
     async with TestClient(TestServer(app_for(WebAdapter()))) as client:
         for method, url in [("get", "/library/items"), ("get", "/library/item"),
                             ("patch", "/library/item"), ("get", row["file_url"]),
+                            ("get", "/library/cover"),
                             ("post", "/library/history/preview"), ("post", "/send")]:
             response = await getattr(client, method)(url, json={})
             assert response.status == 401
@@ -185,6 +186,55 @@ async def test_only_explicit_local_pub_urls_get_same_origin_open_url(env, url, t
             assert item.get("open_url") == expected
             assert item["url"] == url
     assert library.get_item(row["id"])["url"] == url
+
+
+@pytest.mark.anyio
+async def test_website_cover_auth_list_detail_and_link_only_reference(env):
+    site = library.register_website("https://example.com", "网站", "covered-site", cover_path=env)
+    data = env.read_bytes()
+    env.unlink()
+    async with TestClient(TestServer(app_for())) as client:
+        for headers in [{}, {"X-Auth-Token": "wrong"}]:
+            response = await client.get(site["cover_url"], headers=headers)
+            assert response.status == 401
+        response = await client.get(site["cover_url"] + "&token=test-library-token")
+        assert response.status == 401
+        response = await client.get(site["cover_url"], headers=AUTH)
+        assert response.status == 200 and await response.read() == data
+        assert response.headers["Content-Type"] == "image/png"
+        assert response.headers["Cache-Control"] == "private, no-store"
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+        for endpoint in ["/library/items", f"/library/item?id={site['id']}"]:
+            body = await (await client.get(endpoint, headers=AUTH)).json()
+            row = body["items"][0] if "items" in body else body
+            assert row["cover_url"] == site["cover_url"] and row["file_url"] == ""
+        response = await client.get(f"/library/file?id={site['id']}", headers=AUTH)
+        assert response.status == 400
+    assert library_api.resolve_refs([site["id"]]) == ([], [site["url"]])
+
+
+@pytest.mark.anyio
+async def test_cover_errors_for_old_items_bad_paths_and_corrupted_files(env):
+    old = library.register_website("https://example.com", "旧网站", "old-site")
+    site = library.register_website("https://example.com", "网站", "site", cover_path=env)
+    image = library.register_image(env)
+    async with TestClient(TestServer(app_for())) as client:
+        for item_id, status in [(old["id"], 404), ("missing", 404), ("/etc/passwd", 404),
+                                (image["id"], 400)]:
+            response = await client.get("/library/cover", params={"id": item_id}, headers=AUTH)
+            assert response.status == status
+        response = await client.get("/library/cover", headers=AUTH)
+        assert response.status == 400
+        path = library.cover_file(site["id"])
+        path.write_bytes(b"<script>bad</script>")
+        response = await client.get(site["cover_url"], headers=AUTH)
+        assert response.status == 400
+        path.unlink()
+        response = await client.get(site["cover_url"], headers=AUTH)
+        assert response.status == 404
+        path.symlink_to(env)
+        response = await client.get(site["cover_url"], headers=AUTH)
+        assert response.status == 400
 
 
 def test_refs_deduplicate_and_enforce_total_size(env, monkeypatch):

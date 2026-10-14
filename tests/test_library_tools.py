@@ -75,6 +75,111 @@ def test_collect_url_does_not_fetch(isolated, monkeypatch):
     assert output["library_id"]
 
 
+def test_collect_website_cover_is_validated_and_passed_separately(isolated, image, monkeypatch):
+    from vococo.memory import library
+    original = library.register_website
+    calls = []
+    def register(**kwargs):
+        calls.append(kwargs)
+        return original(**kwargs)
+    monkeypatch.setattr(library, "register_website", register)
+    monkeypatch.setattr(library, "register_image", lambda **kw: pytest.fail("网站封面不能另建图片作品"))
+    output = payload(run(builtin.collect_library_item, {
+        "kind": "website", "url": "https://example.com/demo/", "cover_path": str(image),
+        "metadata": {"note": "网站截图"}}))
+    assert output["library_id"]
+    assert calls[0]["cover_path"] == str(image.resolve())
+    assert calls[0]["metadata"] == {"note": "网站截图"}
+    assert len(library.list_items(kind="website")) == 1
+    assert library.get_item(output["library_id"])["cover_url"] == f"/library/cover?id={output['library_id']}"
+    assert not library.list_items(kind="image")
+
+
+@pytest.mark.parametrize("invalid", ["relative", "url", "missing", "directory", "symlink", "parent-symlink", "fake", "empty"])
+def test_collect_website_new_event_rejects_invalid_cover(isolated, image, monkeypatch, invalid):
+    from vococo.memory import library
+    cover = str(image)
+    if invalid == "relative":
+        monkeypatch.chdir(image.parent)
+        cover = image.name
+    elif invalid == "url":
+        cover = "https://example.com/image.png"
+    elif invalid == "missing":
+        cover = str(image.with_name("missing.png"))
+    elif invalid == "directory":
+        cover = str(image.parent)
+    elif invalid == "symlink":
+        link = isolated / "cover.png"
+        link.symlink_to(image)
+        cover = str(link)
+    elif invalid == "parent-symlink":
+        link = isolated / "cover-dir"
+        link.symlink_to(image.parent, target_is_directory=True)
+        cover = str(link / image.name)
+    elif invalid == "fake":
+        image.write_bytes(b"not an image")
+    elif invalid == "empty":
+        cover = ""
+    receipt = payload(run(builtin.collect_library_item, {
+        "kind": "website", "url": "https://example.com/demo/", "cover_path": cover,
+        "event_key": "website:new-invalid-cover"}))
+    assert receipt["library_status"] == "failed"
+    assert receipt["library_error"]
+    assert not library.list_items()
+
+
+@pytest.mark.parametrize("format", ["PNG", "JPEG", "GIF", "WEBP"])
+def test_collect_website_cover_accepts_supported_signatures(isolated, image, format):
+    from vococo.memory import library
+    stream = io.BytesIO()
+    Image.new("RGB", (2, 2), "red").save(stream, format=format)
+    image.write_bytes(stream.getvalue())
+    receipt = payload(run(builtin.collect_library_item, {
+        "kind": "website", "url": "https://example.com/", "cover_path": str(image)}))
+    assert receipt["library_status"] == "collected"
+    assert library.get_item(receipt["library_id"])["cover_url"]
+    assert not library.list_items(kind="image")
+
+
+def test_collect_website_cover_retry_preserves_top_level_path(isolated, image, monkeypatch):
+    from vococo.memory import library
+    monkeypatch.setattr(library, "register_website", lambda **kw: (_ for _ in ()).throw(OSError("disk")))
+    receipt = payload(run(builtin.collect_library_item, {
+        "kind": "website", "url": "https://example.com/", "cover_path": str(image)}))
+    assert receipt["library_status"] == "failed"
+    assert receipt["retry"]["cover_path"] == str(image.resolve())
+    assert "cover_path" not in receipt["retry"].get("metadata", {})
+    calls = []
+    def register(**kwargs):
+        calls.append(kwargs)
+        return {"id": "website-test"}
+    monkeypatch.setattr(library, "register_website", register)
+    assert payload(run(builtin.collect_library_item, receipt["retry"]))["library_id"] == "website-test"
+    assert calls[0]["cover_path"] == str(image.resolve())
+    assert calls[0]["event_key"] == receipt["retry"]["event_key"]
+
+
+def test_collect_website_same_event_retries_after_source_cover_deleted(isolated, image):
+    from vococo.memory import library
+    args = {"kind": "website", "url": "https://example.com/demo/",
+            "cover_path": str(image), "event_key": "website:cover-retry"}
+    first = payload(run(builtin.collect_library_item, args))
+    assert first["library_status"] == "collected"
+    image.unlink()
+    second = payload(run(builtin.collect_library_item, args))
+    assert second["library_status"] == "collected"
+    assert second["library_id"] == first["library_id"]
+    stored = library.get_item(first["library_id"])
+    assert stored["cover_url"] == f"/library/cover?id={first['library_id']}"
+    assert len(stored["sources"]) == 1
+    assert len(library.list_items()) == 1
+    assert not library.list_items(kind="image")
+    new_event = payload(run(builtin.collect_library_item, {
+        **args, "event_key": "website:new-event-missing-cover"}))
+    assert new_event["library_status"] == "failed"
+    assert len(library.get_item(first["library_id"])["sources"]) == 1
+
+
 def test_collect_rejects_fake_image_and_symlink(isolated, image):
     link = isolated / "link.png"
     link.symlink_to(image)
@@ -96,22 +201,29 @@ def test_image_failed_collection_receipt_can_retry_without_production(isolated, 
     assert len(library.get_item(first["library_id"])["sources"]) == 1
 
 
-@pytest.mark.parametrize("purpose,expected", [("output", 1), ("reference", 0), ("debug", 0)])
-def test_send_image_only_outputs_are_collected(isolated, image, monkeypatch, purpose, expected):
+@pytest.mark.parametrize("purpose", [None, "output", "reference", "debug"])
+def test_send_image_all_purposes_display_without_collection(isolated, image, monkeypatch, purpose):
     from vococo.gateway import clarify
     from vococo.gateway.adapters import web
     from vococo.memory import library
+    calls = []
     class Adapter:
         async def send_image(self, *args):
+            calls.append(args)
             return None
     monkeypatch.setattr(web, "WebAdapter", Adapter)
+    monkeypatch.setattr(library, "register_image", lambda **kw: pytest.fail("普通发图不能收录"))
     token = clarify.set_current("web:test", Adapter(), "test")
     try:
-        text = run(builtin.send_image, {"path": str(image), "purpose": purpose})
+        args = {"path": str(image), "caption": "截图"}
+        if purpose is not None:
+            args["purpose"] = purpose
+        text = run(builtin.send_image, args)
     finally:
         clarify.reset_current(token)
     assert "已发送" in text
-    assert len(library.list_items()) == expected
+    assert calls == [("test", image.resolve(), "截图")]
+    assert not library.list_items()
 
 
 def test_send_image_failure_does_not_collect(isolated, image, monkeypatch):
@@ -176,7 +288,11 @@ def test_generate_registers_before_auto_send_and_never_repeats(isolated, monkeyp
             path = next(iter(clarify.current().auto_sent_image_paths))
             assert "禁止重复发送" in run(builtin.send_image, {"path": path})
         assert calls.count("generate") == 1
+        assert calls.count("register") == 1
         assert calls.count("send") == int(web_channel)
+        assert len(library.list_items(kind="image")) == int(not fail_registration)
+        if not fail_registration:
+            assert library.get_item(receipt["library_id"])["sources"][0]["action"] == "generated"
     finally:
         if token is not None:
             clarify.reset_current(token)

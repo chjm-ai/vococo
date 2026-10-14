@@ -127,8 +127,11 @@ def _upsert(connection, kind, identity, title, agent_id, url, storage_key) -> st
     ).fetchone()
     now = time.time()
     if existing:
-        connection.execute("UPDATE library_items SET url=?, updated_at=? WHERE id=?",
-                           (url, now, existing["id"]))
+        connection.execute(
+            "UPDATE library_items SET url=?, updated_at=?, "
+            "storage_key=CASE WHEN ?='' THEN storage_key ELSE ? END WHERE id=?",
+            (url, now, storage_key, storage_key, existing["id"]),
+        )
         return existing["id"]
     item_id = uuid.uuid4().hex
     connection.execute(
@@ -140,7 +143,9 @@ def _upsert(connection, kind, identity, title, agent_id, url, storage_key) -> st
 
 
 def _save_registration(connection, kind, identity, title, agent_id, url, storage_key,
-                       session_key, turn_id, action, encoded, event_key, data) -> dict:
+                       session_key, turn_id, action, encoded, event_key, data, cover_path=None) -> dict:
+    if cover_path is not None:
+        data, storage_key = _read_cover(cover_path)
     created_file = False
     try:
         item_id = _upsert(connection, kind, identity, title, agent_id, url, storage_key)
@@ -158,7 +163,7 @@ def _save_registration(connection, kind, identity, title, agent_id, url, storage
 
 
 def _register(kind, identity, title, url, storage_key, session_key, turn_id,
-              action, metadata, event_key, data=None) -> dict:
+              action, metadata, event_key, data=None, cover_path=None) -> dict:
     if not isinstance(title, str) or len(title) > 1000:
         raise ValueError("标题必须是字符串，且不超过 1000 字")
     encoded = _validate_source(session_key, turn_id, metadata, event_key)
@@ -175,7 +180,8 @@ def _register(kind, identity, title, url, storage_key, session_key, turn_id,
                     raise ValueError("event_key 已用于其他作品或动作")
                 return _item(connection, prior["item_id"])
         return _save_registration(connection, kind, identity, title, owner["id"] if owner else "",
-                                  url, storage_key, session_key, turn_id, action, encoded, event_key, data)
+                                  url, storage_key, session_key, turn_id, action, encoded, event_key,
+                                  data, cover_path)
 
 
 def register_image(path, title='', session_key='', turn_id=None, action='sent',
@@ -204,12 +210,24 @@ def validate_url(url: str) -> str:
 
 
 def register_website(url, title, source_key, session_key='', turn_id=None,
-                     metadata=None, event_key=None) -> dict:
+                     metadata=None, event_key=None, cover_path=None) -> dict:
     validate_url(url)
     if not isinstance(source_key, str) or not source_key.strip():
         raise ValueError("网站 source_key 不能为空")
     return _register("website", f"website:{source_key}", title, url, "",
-                     session_key, turn_id, "published", metadata, event_key)
+                     session_key, turn_id, "published", metadata, event_key, cover_path=cover_path)
+
+
+def _read_cover(cover_path) -> tuple[bytes, str]:
+    if not isinstance(cover_path, (str, Path)) or not str(cover_path).strip():
+        raise ValueError("网站封面路径必须是非空字符串或 Path")
+    path = Path(cover_path)
+    if not path.is_absolute():
+        raise ValueError("网站封面路径必须是绝对路径")
+    if any(part.is_symlink() for part in (path, *path.parents)) or not path.is_file():
+        raise ValueError("网站封面路径必须是已有的普通图片文件，不能包含符号链接")
+    data, extension, _ = _read_image(path)
+    return data, f"cover-{hashlib.sha256(data).hexdigest()}.{extension}"
 
 
 def _item(connection, item_id) -> dict | None:
@@ -219,7 +237,9 @@ def _item(connection, item_id) -> dict | None:
     item = {key: row[key] for key in ("id", "kind", "title", "agent_id", "url",
                                     "created_at", "updated_at")}
     item.update(pinned=bool(row["pinned"]), hidden=bool(row["hidden"]),
-                file_url=f"/library/file?id={item_id}" if row["kind"] == "image" else "")
+                file_url=f"/library/file?id={item_id}" if row["kind"] == "image" else "",
+                cover_url=f"/library/cover?id={item_id}" if row["kind"] == "website"
+                and row["storage_key"] else "")
     sources = connection.execute(
         "SELECT * FROM library_sources WHERE item_id=? ORDER BY created_at,id", (item_id,)
     ).fetchall()
@@ -280,12 +300,22 @@ def update_item(id, **fields) -> dict:
 
 
 def image_file(id) -> Path:
+    return _stored_file(id, "image")
+
+
+def cover_file(id) -> Path:
+    return _stored_file(id, "website")
+
+
+def _stored_file(id, kind) -> Path:
     with _connect() as connection:
         row = connection.execute("SELECT kind,storage_key FROM library_items WHERE id=?", (id,)).fetchone()
     if row is None:
         raise KeyError("作品不存在")
-    if row["kind"] != "image":
-        raise ValueError("该作品不是图片")
+    if row["kind"] != kind:
+        raise ValueError("该作品不是图片" if kind == "image" else "该作品不是网站")
+    if kind == "website" and not row["storage_key"]:
+        raise FileNotFoundError("网站没有封面")
     directory = _storage_directory()
     key = row["storage_key"]
     path = directory / key
