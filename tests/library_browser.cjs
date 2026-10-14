@@ -8,10 +8,10 @@ const origin='http://localhost:8401';
 const image=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS9sAAAAASUVORK5CYII=','base64');
 async function libraryBounds(page){
   return page.evaluate(()=>{
-    const selectors=['#libraryView','.lib-content','.lib-heading','.lib-status','.lib-type','.lib-search','#libraryWorks'];
+    const selectors=['#libraryView','.lib-content','.lib-heading','.lib-filters','#libraryState','#libraryAgent','#libraryKind','.lib-search','#libraryWorks'];
     const bounds=selectors.map(selector=>{
       const node=document.querySelector(selector), box=node.getBoundingClientRect();
-      return {selector,x:box.x,width:box.width,clientWidth:node.clientWidth,overflow:node.scrollWidth>node.clientWidth+1};
+      return {selector,x:box.x,y:box.y,height:box.height,width:box.width,clientWidth:node.clientWidth,overflow:node.scrollWidth>node.clientWidth+1};
     });
     const cards=[...document.querySelectorAll('.lib-card')].map(node=>{
       const box=node.getBoundingClientRect(),cover=node.querySelector('.lib-cover').getBoundingClientRect();
@@ -27,10 +27,25 @@ function assertStableLayout(actual,baseline,label){
     assert.ok(Math.abs(box.width-baseline.bounds[index].width)<1,label+' '+box.selector+' 宽度稳定');
   }
 }
-async function clickLibraryFilter(page,selector,count){
-  // 窄屏侧栏是遮罩浮层；触发原按钮事件，不改 CSS 或内容布局。
-  await page.locator(selector).evaluate(button=>button.click());
+async function resetLibraryFilters(page){
+  await page.selectOption('#libraryState','visible');
+  await page.selectOption('#libraryAgent','');
+  await page.selectOption('#libraryKind','');
+  await page.fill('#librarySearch','');
+  await page.evaluate(()=>loadLibrary());
+}
+async function selectLibraryFilter(page,selector,value,count){
+  await page.selectOption(selector,value);
   await page.waitForFunction(count=>!LIB.loading && LIB.items.length===count,count);
+}
+function assertFilterRow(layout,label){
+  const controls=layout.bounds.filter(box=>['#libraryState','#libraryAgent','#libraryKind'].includes(box.selector));
+  for(const box of controls){
+    assert.ok(Math.abs(box.y-controls[0].y)<1,label+' 三个筛选同排');
+    assert.ok(Math.abs(box.height-controls[0].height)<1,label+' 三个筛选同高');
+    assert.ok(box.width>0 && box.x>=layout.bounds[0].x,label+' 控件在内容区内');
+    assert.ok(box.x+box.width<=layout.bounds[0].x+layout.bounds[0].width+1,label+' 控件不越界');
+  }
 }
 function assertCompactCards(layout,label){
   assert.ok(layout.bounds[1].width<=1200,label+' 内容最大宽度 1200');
@@ -41,25 +56,27 @@ function assertCompactCards(layout,label){
   assert.ok(layout.cards[0].coverHeight/layout.cards[0].coverWidth<.6,label+' 封面收紧');
 }
 async function verifyLayoutStates(page,label,holdList,setFailure){
-  await clickLibraryFilter(page,'[data-lib-action="reset"]',43);
+  await resetLibraryFilters(page);
+  await page.waitForFunction(()=>!LIB.loading && LIB.items.length===43);
   await page.waitForFunction(()=>$('#libraryWorks img')?.src.startsWith('blob:'));
   const baseline=await libraryBounds(page);
   assertStableLayout(baseline,baseline,label+' 多件');
   assertCompactCards(baseline,label);
-  await clickLibraryFilter(page,'[data-state="pinned"]',1);
+  assertFilterRow(baseline,label);
+  await selectLibraryFilter(page,'#libraryState','pinned',1);
   const single=await libraryBounds(page);
   assertStableLayout(single,baseline,label+' 单件');
   assert.ok(Math.abs(single.cards[0].width-baseline.cards[0].width)<1,label+' 单件不放大');
-  await clickLibraryFilter(page,'[data-state="hidden"]',0);
+  await selectLibraryFilter(page,'#libraryState','hidden',0);
   assertStableLayout(await libraryBounds(page),baseline,label+' 空态');
   const held=holdList();
-  await page.locator('[data-lib-action="reset"]').evaluate(button=>button.click());
+  await page.selectOption('#libraryState','visible');
   await held.entered;
   try{ assertStableLayout(await libraryBounds(page),baseline,label+' 加载中'); }
   finally{ held.release(); }
   await page.waitForFunction(()=>!LIB.loading && LIB.items.length===43);
   setFailure(true);
-  await page.locator('[data-lib-action="refresh"]').evaluate(button=>button.click());
+  await page.selectOption('#libraryState','visible');
   await page.waitForFunction(()=>!LIB.loading && $('#libraryMessage').textContent.includes('读取失败'));
   assertStableLayout(await libraryBounds(page),baseline,label+' 请求失败');
   setFailure(false);
@@ -81,7 +98,8 @@ async function verifyLibraryLayout(page,holdList,setFailure){
     if(width===1600) assert.equal(layout.bounds[1].width,1200,label+' 宽屏达到最大内容宽度');
     results.push({theme,width,collapsed,contentWidth:layout.bounds[1].width,columns:layout.columns,cardWidth:layout.cards[0].width});
     if(process.env.LIBRARY_SCREENSHOT_DIR){
-      await clickLibraryFilter(page,'[data-lib-action="reset"]',43);
+      await resetLibraryFilters(page);
+      await page.waitForFunction(()=>!LIB.loading && LIB.items.length===43);
       await page.screenshot({path:path.join(process.env.LIBRARY_SCREENSHOT_DIR,`${theme}-${width}-${collapsed?'closed':'open'}.png`)});
     }
   }
@@ -220,6 +238,10 @@ async function verifyTouchActions(browser){
     await page.evaluate(()=>openLibrary());
     assert.equal(await page.locator('#convTopRows .ct').filter({hasText:'作品库'}).count(),1);
     assert.equal(await page.locator('.lib-card').count(),3);
+    assert.equal(await page.locator('#libraryView h1').innerText(),'作品库');
+    assert.equal(await page.locator('#libraryView .lib-filters select').count(),3);
+    assert.equal(await page.locator('#libraryCount,#libraryHistory,.lib-intro,.lib-footnote,.lib-status,.lib-type,#libraryView [data-lib-action="refresh"],#libraryView [data-lib-action="history"],#libraryView [data-lib-action="reset"]').count(),0,'删除区域不再进入 UI');
+    assert.doesNotMatch(await page.locator('#libraryView').innerText(),/Library|历史候选|清除筛选|筛选总数|隐藏仅移出/);
     await page.waitForFunction(()=>$('#libraryWorks img')?.src.startsWith('blob:'));
     assert.equal(await page.locator('[src*="token="]').count(),0);
     await page.waitForFunction(()=>$('[data-library-cover]')?.src.startsWith('blob:'));
@@ -228,15 +250,21 @@ async function verifyTouchActions(browser){
     assert.equal(await page.locator('[data-id="bad-site"] img').count(),0,'无封面不误加载原图');
     await verifyCardActions(page);
     await verifyTouchActions(browser);
-    await page.locator('[data-state="pinned"]').click();
-    await page.waitForFunction(()=>$('#libraryCount').textContent==='已加载 1 件作品');
-    await page.locator('[data-lib-action="reset"]').click();
+    await page.selectOption('#libraryState','pinned');
+    await page.waitForFunction(()=>!LIB.loading && LIB.items.length===1);
+    await resetLibraryFilters(page);
+    await page.selectOption('#libraryKind','image');
+    await page.waitForFunction(()=>!LIB.loading && LIB.items.length===1);
+    assert.equal(queries.at(-1).kind,'image');
+    assert.equal(await page.locator('.lib-card h3').innerText(),'真实图片');
+    await page.selectOption('#libraryAgent','dev');
+    await page.waitForFunction(()=>!LIB.loading && LIB.items.length===0);
     await page.selectOption('#libraryAgent','design');
-    await page.waitForFunction(()=>$('#libraryCount').textContent==='已加载 1 件作品');
+    await page.waitForFunction(()=>!LIB.loading && LIB.items.length===1);
     assert.equal(queries.at(-1).agent_id,'design');
     await page.fill('#librarySearch','没有这个标题');
-    await page.waitForFunction(()=>$('#libraryCount').textContent==='已加载 0 件作品');
-    await page.locator('[data-lib-action="reset"]').click();
+    await page.waitForFunction(()=>!LIB.loading && LIB.items.length===0);
+    await resetLibraryFilters(page);
     await page.locator('[data-lib-action="detail"][data-id="img-1"]').click();
     await page.waitForSelector('#libraryTitle');
     assert.match(await page.locator('.lib-source pre').textContent(),/<script>不执行<\/script>/);
@@ -278,8 +306,8 @@ async function verifyTouchActions(browser){
     assert.deepEqual(sends.at(-1).library_refs,['img-1']);
     assert.equal(await page.locator('.library-ref-chip').count(),0);
     await page.evaluate(()=>{ S.stream=null; return openLibrary(); });
-    await page.locator('[data-kind="website"]').click();
-    await page.waitForFunction(()=>$('#libraryCount').textContent==='已加载 2 件作品');
+    await page.selectOption('#libraryKind','website');
+    await page.waitForFunction(()=>!LIB.loading && LIB.items.length===2);
     await page.locator('[data-lib-action="detail"][data-id="site-1"]').click();
     await page.waitForSelector('#libraryTarget');
     await page.waitForFunction(()=>$('#libraryDetail [data-library-cover]')?.src.startsWith('blob:'));
@@ -308,29 +336,28 @@ async function verifyTouchActions(browser){
     await page.locator('.library-ref-chip button').click();
     assert.equal(await page.evaluate(()=>S.libraryRefs.length),0);
     await page.evaluate(()=>openLibrary());
-    await page.locator('[data-lib-action="reset"]').click();
-    await page.locator('[data-state="hidden"]').click();
+    await resetLibraryFilters(page);
+    await page.selectOption('#libraryState','hidden');
     await page.waitForSelector('[data-lib-action="detail"][data-id="hidden-1"]');
     await page.locator('[data-lib-action="detail"][data-id="hidden-1"]').click();
     await page.waitForSelector('#libraryTarget');
     assert.match(await page.locator('.lib-source').innerText(),/来源已删除/);
     await page.locator('#libraryDetail [data-lib-action="hide"]').click();
-    await page.waitForFunction(()=>$('#libraryCount').textContent==='已加载 0 件作品');
+    await page.waitForFunction(()=>!LIB.loading && LIB.items.length===0);
     assert.equal(items[2].hidden,false);
     await page.locator('[data-lib-action="close"]').click();
-    await page.locator('[data-lib-action="history"]').click();
-    await page.waitForFunction(()=>$('#libraryHistory').textContent.includes('candidates'));
-    assert.equal(previewCalls,1);
-    assert.match(await page.locator('#libraryHistory').innerText(),/没有导入.*不代表历史全量/);
+    const preview=await page.evaluate(()=>libraryJson('/library/history/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}));
+    assert.equal(previewCalls,1,'保留后端历史预览接口覆盖，不保留 UI 入口');
+    assert.equal(preview.candidates,3);
     failList=true;
-    await page.locator('[data-lib-action="refresh"]').click();
+    await page.selectOption('#libraryState','visible');
     await page.waitForFunction(()=>$('#libraryMessage').textContent.includes('读取失败'));
     failList=false;
-    await page.locator('[data-lib-action="reset"]').click();
+    await resetLibraryFilters(page);
     extraItems=Array.from({length:119},(_,index)=>({id:'extra-'+index,kind:'website',title:'分页网站 '+index,url:'https://example.com/'+index,agent_id:'dev',pinned:false,hidden:false,sources:[]}));
-    await page.locator('[data-lib-action="reset"]').click();
+    await resetLibraryFilters(page);
     await page.waitForFunction(()=>LIB.items.length===60);
-    assert.equal(await page.locator('#libraryCount').innerText(),'已加载 60 件作品','旧API无总数字段时不冒称总数');
+    assert.equal(await page.evaluate(()=>LIB.total),null,'旧API无总数字段时不冒称总数');
     assert.equal(queries.at(-1).limit,'60'); assert.equal(queries.at(-1).offset,'0');
     await page.locator('#libraryMore').click();
     await page.waitForFunction(()=>LIB.items.length===120);
@@ -341,8 +368,8 @@ async function verifyTouchActions(browser){
     assert.equal(await page.locator('#libraryMore').isVisible(),false);
     assert.equal(await page.locator('.lib-card').count(),123,'第61件及后续页面可浏览');
     paginationMeta=true;
-    await page.locator('[data-lib-action="reset"]').click();
-    await page.waitForFunction(()=>$('#libraryCount').textContent==='已加载 60 件作品 · 筛选总数 123 件');
+    await resetLibraryFilters(page);
+    await page.waitForFunction(()=>!LIB.loading && LIB.items.length===60 && LIB.total===123);
     delayMore=true;
     await page.evaluate(()=>{ window.__moreRequest=loadLibrary(true); });
     await moreEntered;
@@ -353,13 +380,13 @@ async function verifyTouchActions(browser){
     assert.equal(await page.locator('.lib-card').count(),1,'旧翻页响应不混入新筛选');
     assert.equal(await page.evaluate(()=>LIB.offset),1);
     extraItems=[]; paginationMeta=false;
-    await page.locator('[data-lib-action="reset"]').click();
+    await resetLibraryFilters(page);
     await page.waitForFunction(()=>LIB.items.length===4);
     extraItems=Array.from({length:39},(_,index)=>({id:'layout-'+index,kind:'website',title:'布局作品 '+index,url:'https://example.com/'+index,agent_id:'dev',pinned:false,hidden:false,sources:[]}));
     items[0].pinned=false;
     await verifyLibraryLayout(page,holdList,value=>{ failList=value; });
     items[0].pinned=true; extraItems=[];
-    await page.locator('[data-lib-action="reset"]').click();
+    await resetLibraryFilters(page);
     await page.waitForFunction(()=>!LIB.loading && LIB.items.length===4);
     await page.evaluate(()=>openLibraryDetail('img-1'));
     delayImageDetail=true;
@@ -420,6 +447,6 @@ async function verifyTouchActions(browser){
     assert.equal(await page.locator('#libraryView').isVisible(),false);
     assert.equal(await page.evaluate(()=>S.surface),'call');
     assert.deepEqual(errors,[]);
-    console.log('Library 前端测试通过：筛选、详情、鉴权图片、修改失败、恢复、引用隔离/发送失败/移除、下载、预览、主题/屏宽与导航。');
+    console.log('Library 前端测试通过：筛选、详情、鉴权图片、修改失败、恢复、引用隔离/发送失败/移除、下载、后端预览、删除区域、三下拉、24组主题/屏宽/侧栏与五态布局、导航。');
   }finally{ await browser.close(); }
 })().catch(error=>{console.error(error);process.exitCode=1;});
