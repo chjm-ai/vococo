@@ -9,10 +9,10 @@
 .library-ui button:disabled{cursor:wait;opacity:.5}
 .library-ui :is(button,input,select):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .library-ui :is(h1,h2,h3,p){margin:0}
-.lib-content{width:min(1200px,100%);margin-inline:auto;padding:var(--sp-5) calc(var(--sp-5) * 2) calc(var(--sp-5) * 3)}
+.lib-content{width:min(1200px,100%);margin-inline:auto;padding:0 calc(var(--sp-5) * 2) calc(var(--sp-5) * 3)}
 .lib-heading,.lib-title,.lib-actions,.lib-filters,.lib-results{display:flex;align-items:center;gap:var(--sp-4)}
 .lib-heading,.lib-results{justify-content:space-between}
-.lib-heading{flex-wrap:wrap}
+.lib-heading{position:sticky;top:0;z-index:8;flex-wrap:wrap;margin-inline:calc(var(--sp-5) * -2);padding:var(--sp-5) calc(var(--sp-5) * 2);background:var(--bg2)}
 .lib-title{min-width:0}
 .lib-title h1{font-size:var(--fs-xl);font-weight:700;line-height:1.3}
 .lib-actions{flex-wrap:wrap;gap:var(--sp-3)}
@@ -71,9 +71,9 @@
   .lib-card:hover{border-color:var(--line2)}
 }
 @media(max-width:760px){
-  /* 同工作台：iOS PWA 顶到状态栏下，只在内容顶部和独立详情顶栏各补一层安全区。 */
-  .lib-content{padding:var(--sp-5);padding-top:calc(var(--sp-5) + env(safe-area-inset-top,0px))}
-  .lib-heading{gap:var(--sp-4)}
+  /* 同工作台：安全区由固定顶栏承担，父容器不重复留白，滚动后仍能避开状态栏。 */
+  .lib-content{padding:0 var(--sp-5) var(--sp-5)}
+  .lib-heading{gap:var(--sp-4);margin-inline:calc(var(--sp-5) * -1);padding-inline:var(--sp-5);padding-top:calc(var(--sp-5) + env(safe-area-inset-top,0px))}
   .lib-drawer-top,.lib-detail-body{padding:var(--sp-5)}
   .lib-drawer-top{padding-top:calc(var(--sp-5) + env(safe-area-inset-top,0px))}
   .lib-detail-cover{padding:var(--sp-5) var(--sp-5) 0}
