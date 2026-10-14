@@ -6,11 +6,98 @@ const assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'../vococo/gateway/adapters/web_static');
 const origin='http://localhost:8401';
 const image=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS9sAAAAASUVORK5CYII=','base64');
+async function libraryBounds(page){
+  return page.evaluate(()=>{
+    const selectors=['#libraryView','.lib-content','.lib-heading','.lib-status','.lib-type','.lib-search','#libraryWorks'];
+    const bounds=selectors.map(selector=>{
+      const node=document.querySelector(selector), box=node.getBoundingClientRect();
+      return {selector,x:box.x,width:box.width,overflow:node.scrollWidth>node.clientWidth+1};
+    });
+    const cards=[...document.querySelectorAll('.lib-card')].map(node=>{
+      const box=node.getBoundingClientRect(),cover=node.querySelector('.lib-cover').getBoundingClientRect();
+      return {width:box.width,height:box.height,coverWidth:cover.width,coverHeight:cover.height};
+    });
+    return {bounds,cards,columns:getComputedStyle(document.querySelector('#libraryWorks')).gridTemplateColumns.split(' ').length};
+  });
+}
+function assertStableLayout(actual,baseline,label){
+  for(const [index,box] of actual.bounds.entries()){
+    assert.ok(!box.overflow,label+' '+box.selector+' 无横向溢出');
+    assert.ok(Math.abs(box.x-baseline.bounds[index].x)<1,label+' '+box.selector+' 左边界稳定');
+    assert.ok(Math.abs(box.width-baseline.bounds[index].width)<1,label+' '+box.selector+' 宽度稳定');
+  }
+}
+async function clickLibraryFilter(page,selector,count){
+  // 窄屏侧栏是遮罩浮层；触发原按钮事件，不改 CSS 或内容布局。
+  await page.locator(selector).evaluate(button=>button.click());
+  await page.waitForFunction(count=>!LIB.loading && LIB.items.length===count,count);
+}
+function assertCompactCards(layout,label){
+  assert.ok(layout.bounds[1].width<=820,label+' 沿用工作台内容列');
+  const gridWidth=layout.bounds.at(-1).width;
+  assert.equal(layout.columns,Math.max(1,Math.floor((gridWidth+12)/(192+12))),label+' 按实际空间填充列数');
+  assert.ok(layout.cards[0].height<360,label+' 卡片收紧');
+  assert.ok(layout.cards[0].coverHeight/layout.cards[0].coverWidth<.6,label+' 封面收紧');
+}
+async function verifyLayoutStates(page,label,holdList,setFailure){
+  await clickLibraryFilter(page,'[data-lib-action="reset"]',43);
+  await page.waitForFunction(()=>$('#libraryWorks img')?.src.startsWith('blob:'));
+  const baseline=await libraryBounds(page);
+  assertStableLayout(baseline,baseline,label+' 多件');
+  assertCompactCards(baseline,label);
+  await clickLibraryFilter(page,'[data-state="pinned"]',1);
+  const single=await libraryBounds(page);
+  assertStableLayout(single,baseline,label+' 单件');
+  assert.ok(Math.abs(single.cards[0].width-baseline.cards[0].width)<1,label+' 单件不放大');
+  await clickLibraryFilter(page,'[data-state="hidden"]',0);
+  assertStableLayout(await libraryBounds(page),baseline,label+' 空态');
+  const held=holdList();
+  await page.locator('[data-lib-action="reset"]').evaluate(button=>button.click());
+  await held.entered;
+  try{ assertStableLayout(await libraryBounds(page),baseline,label+' 加载中'); }
+  finally{ held.release(); }
+  await page.waitForFunction(()=>!LIB.loading && LIB.items.length===43);
+  setFailure(true);
+  await page.locator('[data-lib-action="refresh"]').evaluate(button=>button.click());
+  await page.waitForFunction(()=>!LIB.loading && $('#libraryMessage').textContent.includes('读取失败'));
+  assertStableLayout(await libraryBounds(page),baseline,label+' 请求失败');
+  setFailure(false);
+  return baseline;
+}
+async function verifyLibraryLayout(page,holdList,setFailure){
+  const results=[];
+  for(const theme of ['light','dark']) for(const width of [320,375,390,768,1280]) for(const collapsed of [false,true]){
+    await page.setViewportSize({width,height:900});
+    await page.evaluate(({theme,collapsed})=>{
+      document.documentElement.dataset.theme=theme;
+      closeSidebar(); setSidebarCollapsed(collapsed);
+      if(!collapsed) expandSidebarResponsive();
+    },{theme,collapsed});
+    await page.waitForTimeout(300); // 等待侧栏原有过渡结束再量边界。
+    const label=`${theme} ${width} 侧栏${collapsed?'收起':'展开'}`;
+    const layout=await verifyLayoutStates(page,label,holdList,setFailure);
+    assert.ok(layout.cards[0].width<=360,label+' 卡片宽度上限');
+    results.push({theme,width,collapsed,contentWidth:layout.bounds[1].width,columns:layout.columns,cardWidth:layout.cards[0].width});
+    if(process.env.LIBRARY_SCREENSHOT_DIR){
+      await clickLibraryFilter(page,'[data-lib-action="reset"]',43);
+      await page.screenshot({path:path.join(process.env.LIBRARY_SCREENSHOT_DIR,`${theme}-${width}-${collapsed?'closed':'open'}.png`)});
+    }
+  }
+  console.log('作品库布局矩阵：'+JSON.stringify(results));
+  await page.evaluate(()=>{ closeSidebar(); setSidebarCollapsed(false); });
+}
 (async()=>{
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {})});
   try{
     const page=await browser.newPage(), errors=[], sends=[], queries=[], downloads=[];
-    let failList=false, failPatch=false, failSend=false, previewCalls=0;
+    let failList=false, failPatch=false, failSend=false, previewCalls=0, listGate;
+    function holdList(){
+      let markEntered,release;
+      const entered=new Promise(resolve=>{ markEntered=resolve; });
+      const response=new Promise(resolve=>{ release=resolve; });
+      listGate={markEntered,response};
+      return {entered,release};
+    }
     let delayImageDetail=false, releaseDetail, markDetailEntered;
     const detailEntered=new Promise(resolve=>{ markDetailEntered=resolve; });
     let delaySendResponse=false, releaseSend, markSendEntered;
@@ -33,6 +120,9 @@ const image=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
       let data={};
       if(url.pathname==='/library/items'){
         queries.push(Object.fromEntries(url.searchParams));
+        if(listGate){
+          const gate=listGate; listGate=null; gate.markEntered(); await gate.response;
+        }
         if(failList) return route.fulfill({status:500,json:{error:'失败'}});
         const state=url.searchParams.get('state'),kind=url.searchParams.get('kind'),agent=url.searchParams.get('agent_id'),search=url.searchParams.get('search');
         const matches=[...items,...extraItems].filter(item=>(state==='hidden'?item.hidden:state==='pinned'?item.pinned&&!item.hidden:state==='all'||!item.hidden)&&(!kind||item.kind===kind)&&(!agent||item.agent_id===agent)&&(!search||item.title.includes(search)));
@@ -207,13 +297,12 @@ const image=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
     extraItems=[]; paginationMeta=false;
     await page.locator('[data-lib-action="reset"]').click();
     await page.waitForFunction(()=>LIB.items.length===4);
-    for(const theme of ['light','dark']) for(const width of [320,375,390,768,1280]){
-      await page.setViewportSize({width,height:900});
-      await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
-      const box=await page.locator('#libraryView').boundingBox();
-      assert.ok(box.width>0);
-      assert.equal(await page.evaluate(()=>$('#libraryView').scrollWidth<=$('#libraryView').clientWidth+1),true,theme+' '+width+' 无横向溢出');
-    }
+    extraItems=Array.from({length:39},(_,index)=>({id:'layout-'+index,kind:'website',title:'布局作品 '+index,url:'https://example.com/'+index,agent_id:'dev',pinned:false,hidden:false,sources:[]}));
+    items[0].pinned=false;
+    await verifyLibraryLayout(page,holdList,value=>{ failList=value; });
+    items[0].pinned=true; extraItems=[];
+    await page.locator('[data-lib-action="reset"]').click();
+    await page.waitForFunction(()=>!LIB.loading && LIB.items.length===4);
     await page.evaluate(()=>openLibraryDetail('img-1'));
     delayImageDetail=true;
     await page.locator('#libraryDetail [data-lib-action="pin"]').click();
