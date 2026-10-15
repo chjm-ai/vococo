@@ -28,7 +28,7 @@ def test_claude_provider_alias_is_independent(tmp_path, monkeypatch, model):
     })
     choices = providers.available_models([(model, "官方")])
     assert (model, "官方", "anthropic") in choices
-    assert any(mid == alias and name in label and group == "api" for mid, label, group in choices)
+    assert any(mid == alias and "Cheapcoding" in label and group == "api" for mid, label, group in choices)
     assert providers.resolve(model, model) == (model, {})
     assert providers.lookup_provider_by_model(model) is None
     upstream, env = providers.resolve(alias, model)
@@ -104,6 +104,25 @@ def test_real_slash_claude_model_keeps_existing_route(tmp_path, monkeypatch, ext
     assert providers.lookup_provider_by_model(upstream)["model"] == upstream
     assert upstream in {mid for mid, _, _ in providers.available_models([])}
     assert "DISABLE_PROMPT_CACHING" not in env
+
+
+@pytest.mark.parametrize("name,model,label,expected", [
+    ("yesvg-opus", "claude-opus-5-5", "", "Opus 5.5 · YesVG"),
+    ("cheapcoding-sonnet", "claude-sonnet-5-5", "", "Sonnet 5.5 · Cheapcoding"),
+    ("cheapcoding-fable", "claude-fable-5-1", "", "Fable 5.1 · Cheapcoding"),
+    ("my-relay", "claude-opus-5-5", "自定义档位（API）", "自定义档位 · my-relay"),
+    ("my-relay", "claude-new-model", "", "claude-new-model · my-relay"),
+])
+def test_third_party_claude_labels_are_short(tmp_path, monkeypatch, name, model, label, expected):
+    _point_settings_to(monkeypatch, tmp_path)
+    settings_store.upsert_web_provider(name, {
+        "base_url": "https://relay.example", "api_key": "test", "model": model,
+    })
+    if label:
+        settings_store.upsert_web_extra_model(model, label, provider=name, group="api")
+    choices = {mid: (text, group) for mid, text, group in providers.available_models([])}
+    assert choices[f"{name}/{model}"] == (expected, "api")
+    assert providers.resolve(f"{name}/{model}", model)[0] == model
 
 
 def test_three_claude_tiers_coexist_with_official(tmp_path, monkeypatch):

@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 # 兜底默认模型;与 config.MODEL 的默认保持一致。
@@ -374,6 +375,20 @@ def _billing_kind(base_url: str) -> str:
     return "订阅" if host in _SUBSCRIPTION_HOSTS else "API"
 
 
+def _claude_choice_label(model: str, name: str, label: str = "") -> str:
+    match = re.fullmatch(r"claude-(opus|sonnet|fable|haiku)-(\d+)-(\d+)(?:-\d{8})?", model)
+    if not label or label == model:
+        label = f"{match[1].title()} {match[2]}.{match[3]}" if match else model
+    label = re.sub(r"\s*[（(](?:API|订阅)[）)]\s*$", "", label).strip()
+    # 仅折叠已知渠道的重复档位后缀，未知供应商保留原名以免混淆。
+    brands = {"yesvg": "YesVG", "cheapcoding": "Cheapcoding"}
+    for brand, title in brands.items():
+        if name.lower() == brand or (match and name.lower() == f"{brand}-{match[1]}"):
+            name = title
+            break
+    return f"{label} · {name}"
+
+
 def _extra_model_choice(extra: dict, entries: dict[str, dict]) -> tuple[str, str, str] | None:
     upstream = extra.get("id")
     if not upstream:
@@ -394,7 +409,7 @@ def _extra_model_choice(extra: dict, entries: dict[str, dict]) -> tuple[str, str
     )
     selection = _selection_id(provider)
     if selection != upstream:
-        return selection, f"{label} · {name}（API）", "api"
+        return selection, _claude_choice_label(upstream, name, label), "api"
     return selection, label, group
 
 
@@ -468,7 +483,7 @@ def available_models(
             kind = "订阅"
         else:
             group = "kimi" if kind == "订阅" else "api"
-        label = f"{upstream} · {name}（{kind}）" if model != upstream else f"{model}（{kind}）"
+        label = _claude_choice_label(upstream, name) if model != upstream else f"{model}（{kind}）"
         out.append((model, label, group))
     # 组序 + 组内档位统一排序:当前 GPT-6 三档在前，旧 GPT-5.6 三档留作回退。
     # 6 Sol 已被 6.1 Sol 取代，若运行时仍手动配置则排在当前三档之后。
