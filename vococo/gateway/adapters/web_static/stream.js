@@ -527,7 +527,7 @@ function ensureStream(t0){
   bubble.append(thinktog,think,flow,status);  // 状态行(工作中…)放气泡底部,像 TG 的打字指示
   row.append(bubble); tagConvNode(row, null, true); $("#wrap").append(row); updateEmpty();
   thinktog.onclick=()=>{ const on=think.classList.toggle("show"); tcv.classList.toggle("down", on); };
-  S.stream={row,bubble,status,think,thinktog,flow,segs:{},tools:[],cards:{},subs:{},activeCard:null,tgroup:null,toolCount:0,t0:t0||Date.now(),lastEvt:Date.now()};
+  S.stream={row,bubble,status,think,thinktog,flow,segs:{},tools:[],cards:{},subs:{},activeCard:null,tgroup:null,toolCount:0,t0:t0||Date.now(),lastEvt:Date.now(),retry:null,lastContentSeq:0};
   resumeStreamTimer(S.stream);  // 状态行的耗时计数每秒走字;流被任何路径丢弃(完成/切会话)都会自行停表,不泄漏
   renderStatus();  // 初始即显示"💭 思考中…"动画
   updateSendBtn();
@@ -573,6 +573,21 @@ function renderSeg(d){
     dirtySegs.clear(); scrollDown(); });
 }
 const DOTS='<span class="dots"><i></i><i></i><i></i></span>';
+// 上游报错重试中的文案:「上游 503 · 重试 3/10 · 18s 后重试」。倒计时不另设定时器,
+// 由 renderStatus 每秒重算(流式状态行本来就每秒走字),退避等多久用户看得见。
+// 字段可能缺(CLI 换过字段名,见 core/agent.py:_upstream_retry),缺哪段就不显示哪段。
+function retryLabel(rt){
+  const parts=[];
+  if(rt.status) parts.push("上游 "+rt.status);
+  parts.push(rt.attempt?(rt.max?("重试 "+rt.attempt+"/"+rt.max):("重试 "+rt.attempt)):"重试中");
+  if(rt.delay){
+    const left=Math.max(0, Math.round(((rt.at||0)+rt.delay-Date.now())/1000));
+    parts.push(left>0?(left+"s 后重试"):"请求中");
+  }
+  return parts.join(" · ");
+}
+// 有真实进展(正文/思考/工具)进来 = 那次重试已经过去,清掉重试状态回归常规文案
+function clearUpstreamRetry(s){ if(s && s.retry) s.retry=null; }
 function renderStatus(){
   if(!S.stream) return;
   const t=S.stream.tools, hasBody=!!streamText(S.stream);
@@ -581,8 +596,11 @@ function renderStatus(){
   const tick=secs>=1?(" · "+(secs>=60?Math.floor(secs/60)+"m"+(secs%60)+"s":secs+"s")):"";
   // 有正文 或 有工具在跑 → 工作中;纯思考(啥都没出)→ 思考中(始终带动画,像 TG)
   const working = hasBody || t.some(x=>!x.done);
-  const label = S.stream.audioPending ? "音频转写中" : (working ? "工作中" : "思考中");
-  S.stream.status.innerHTML = '<span class="chip live">'+label+DOTS+esc(tick)+'</span>'
+  // 上游在退避重试(CLI 内部行为,这期间一条正文/工具事件都没有)→ 优先说明为什么
+  // 没动静。没有这层,连续重试几分钟就是干转的「思考中」,用户以为卡死了(2026-10-15)。
+  const rt=S.stream.retry, rl=rt?retryLabel(rt):"";
+  const label = S.stream.audioPending ? "音频转写中" : (rl || (working ? "工作中" : "思考中"));
+  S.stream.status.innerHTML = '<span class="chip live'+(rl?' warn':'')+'">'+esc(label)+DOTS+esc(tick)+'</span>'
     + '<button type="button" class="statusstop" title="停止回复" aria-label="停止回复"><span class="sq"></span></button>';
 }
 function finalizeStream(finalText, imgs, turnId, vids){
@@ -619,7 +637,7 @@ function finalizeStream(finalText, imgs, turnId, vids){
   S.stream=null; updateSendBtn(); scrollDown();
 }
 // 构成一个"进行中回合"的流式事件类型(可重放以重建气泡)。done/message/choice 不在此列。
-const STREAMY = ["user","start","thinking","text","tool_start","tool_input","tool_end","compact"];
+const STREAMY = ["user","start","thinking","text","tool_start","tool_input","tool_end","compact","upstream_retry"];
 // 每会话缓冲进行中回合的事件;text/thinking 是全量快照:thinking 全局只留最后一条,
 // text 按段(seg)各留最后一条 —— 段的先后顺序就是与工具卡交错的顺序,不能压掉。
 function bufPush(conv, e){
@@ -828,6 +846,15 @@ function foldToGroup(s, card){
     grp._label.textContent = "已执行 " + s.toolCount + " 条命令";
   }
 }
+// 有真实进展的帧(模型出了思考/正文,或工具动了)。它们同时干两件事:
+// ①记下服务端编号 —— 重放(切回会话/断线补发)时帧序会被 bufPush 的同型原位替换打乱,
+//   一条比重试帧更新的内容帧可能排在它后面被先应用;靠编号大小认出过期重试帧(见下);
+// ②清掉重试状态 —— 有内容产出就说明那次重试已经过去了,状态行回归常规文案。
+const CONTENT_EVENTS = new Set(["thinking","text","tool_start","tool_input","tool_end","message","compact"]);
+function noteContent(s, e){
+  if(e.id) s.lastContentSeq=e.id;
+  clearUpstreamRetry(s);
+}
 // 把单个流式事件落到 DOM(供前台实时渲染 + 切回会话时按缓冲重放两用)
 function applyStreamEvent(e){
   // 停止回复后的防重建短窗,见 stopReply 的注释:窗口内该会话的旧帧在流已收掉
@@ -839,6 +866,7 @@ function applyStreamEvent(e){
       else if(!S.stream) return;                    // 窗口内、无流 → 在途旧帧,丢弃
     }
   }
+  if(S.stream && e.id && CONTENT_EVENTS.has(e.type)) noteContent(S.stream, e);
   switch(e.type){
     case "user":
       if(S.localSent[e.conv]){ delete S.localSent[e.conv]; break; }  // 本客户端发的,气泡已在 send() 里加了
@@ -881,6 +909,16 @@ function applyStreamEvent(e){
     case "compact": { const s=ensureStream();
       const d=el("div","compactline"); d.textContent=e.trigger==="manual"?"已手动压缩上下文,对话继续":"上下文已自动压缩,对话继续";
       s.flow.append(d); scrollDown(); break; }
+    case "upstream_retry": { const s=ensureStream();
+      // 上游报错、CLI 正在退避重试:只换状态行文案(见 retryLabel),不进 flow——
+      // 它是瞬时状态不是对话内容,重试成功后会被下一条正文/工具事件清掉。
+      // 重放路径要防过期帧:bufPush 对 thinking/text 是原位替换,数组顺序不等于时间顺序,
+      // 一条比重试更新的内容帧可能排在它后面 —— 那说明这次重试早就过去了,不能把状态行
+      // 改回「重试中」(编号兜住,见 noteContent)。
+      if(e.id && s.lastContentSeq && e.id < s.lastContentSeq) break;
+      s.retry={status:e.status||0, attempt:e.attempt||0, max:e.max_retries||0,
+               delay:e.delay_ms||0, at:Date.now()};
+      renderStatus(); break; }
     case "message": { // mid_turn 图片/视频消息(send_image / send_video),本轮回复过程中途出现
       const s=ensureStream();
       if(e.text){ const d=el("div","seg"); d.innerHTML=mdToHtml(e.text); s.flow.append(d); }
@@ -902,6 +940,12 @@ function maybeReplayStream(conv){
   delete S.streamSnap[conv];
   if(snap && snap.asOf<=buf.length){
     S.stream=snap.state;
+    // 离开期间若对旧槽位(thinking / 同一段 text)做了原位替换,它不在下面的增量里,
+    // 但编号更大 —— 先把水位垫到整段缓冲里最新的内容帧,重试帧的过期判定才准。
+    for(let i=0;i<buf.length;i++){
+      const e=buf[i];
+      if(e.id && CONTENT_EVENTS.has(e.type)) S.stream.lastContentSeq=Math.max(S.stream.lastContentSeq||0, e.id);
+    }
     $("#wrap").append(S.stream.row);
     resumeStreamTimer(S.stream);
     for(let i=snap.asOf;i<buf.length;i++){         // 只补离开期间新增的事件,已建好的工具卡不重建

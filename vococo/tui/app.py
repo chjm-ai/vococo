@@ -44,6 +44,7 @@ class RichSink(core.Sink):
         super().__init__()  # thinking_buf / answer / tools 由基类聚合
         self.console = console
         self.reply: AgentReply | None = None
+        self.retry = ""  # 上游重试中的一行提示(空=没有在重试)
         self.live = Live(self._render(), console=console, refresh_per_second=12)
 
     def __enter__(self):
@@ -55,6 +56,10 @@ class RichSink(core.Sink):
 
     def _render(self):
         parts = []
+        if self.retry:
+            # 上游报错、CLI 正在退避重试:这期间没有正文/工具事件,不写出来的话
+            # 屏幕只剩「思考中」,分不清是在等还是已经死了(见 core.agent.UpstreamRetry)
+            parts.append(Text(f"⚠️ {self.retry}", style="yellow"))
         if self.thinking_buf and not self.answer:
             parts.append(
                 Panel(
@@ -83,8 +88,36 @@ class RichSink(core.Sink):
         # 思考/正文/工具状态全由基类聚合,这里只负责刷新 rich.Live
         self.live.update(self._render())
 
+    async def upstream_retry(
+        self, status: int = 0, attempt: int = 0, max_retries: int = 0,
+        delay_ms: int = 0, reason: str = "",
+    ) -> None:
+        # TUI 没有每秒重绘的倒计时(Web 端状态行靠走字),退避时长直接写成静态文字
+        bits = [f"上游 {status}" if status else "上游报错"]
+        if attempt:
+            bits.append(f"重试 {attempt}/{max_retries}" if max_retries else f"重试 {attempt}")
+        else:
+            bits.append("重试中")
+        if delay_ms:
+            bits.append(f"{round(delay_ms / 1000)}s 后重试")
+        self.retry = " · ".join(bits)
+        await self.render()
+
+    async def thinking(self, text: str) -> None:
+        self.retry = ""  # 有真实进展 = 那次重试过去了
+        await super().thinking(text)
+
+    async def text(self, text: str) -> None:
+        self.retry = ""
+        await super().text(text)
+
+    async def tool_started(self, name: str, tool_id: str = "", parent_id: str | None = None) -> None:
+        self.retry = ""
+        await super().tool_started(name, tool_id, parent_id)
+
     async def done(self, reply: AgentReply, turn_id: int | None = None) -> None:
         self.reply = reply
+        self.retry = ""  # 收工必清:重试打到上限彻底失败那轮,别让重试行和错误说明叠着留屏
         await super().done(reply, turn_id)  # 写入 answer 并 render
 
 
