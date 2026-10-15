@@ -254,6 +254,31 @@ class _WebSink(Sink):
             self._text = ""
         self.a._emit({"conv": self.conv, "type": "compact", "trigger": trigger})
 
+    async def upstream_retry(
+        self,
+        status: int = 0,
+        attempt: int = 0,
+        max_retries: int = 0,
+        delay_ms: int = 0,
+        reason: str = "",
+    ) -> None:
+        # 上游报错、CLI 自己在退避重试。这段最长能安静地占几分钟(10 次重试 + 逐步
+        # 拉长的退避),以前完全不透传,前端一直只显示「思考中」,看着就是卡死。
+        # 推个瞬时状态:前端把状态行换成「上游 503 · 重试 3/10 · 18s 后重试」,
+        # 有正文/工具事件进来时自动清掉(见 stream.js 的 clearUpstreamRetry)。
+        # 不落 timeline:重试是给"正盯着看"的人看的,历史回看不该留一堆重试痕迹。
+        self.a._emit(
+            {
+                "conv": self.conv,
+                "type": "upstream_retry",
+                "status": status,
+                "attempt": attempt,
+                "max_retries": max_retries,
+                "delay_ms": delay_ms,
+                "reason": reason,
+            }
+        )
+
     async def cancelled(self) -> None:
         # 用户手动取消:清理「进行中」快照,避免刷新页面后重放旧内容。
         self.a._live.pop(self.conv, None)
@@ -634,6 +659,8 @@ class WebAdapter:
             st["phase"] = f"执行 {payload.get('name') or '工具'}"
             st["frames"].append((seq, payload))
         elif t == "compact":  # 压缩标记按序保留,刷新重放时系统条不丢
+            st["frames"].append((seq, payload))
+        elif t == "upstream_retry":  # 上游重试状态:整页刷新/断线重连回来也能看到「为什么没动静」
             st["frames"].append((seq, payload))
 
     # ── Web Push 系统通知 ────────────────────────────────────────────────

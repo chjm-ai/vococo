@@ -858,6 +858,8 @@
   .status{font-size:var(--fs-sm);color:var(--dim);margin:0;display:flex;flex-wrap:wrap;gap:4px 12px}
   .status .chip{display:inline-flex;align-items:center}
   .status .chip.live{color:var(--accent)}
+  /* 上游报错重试中:黄色警示而非平时的强调色,一眼区分「在等」和「正常干活」 */
+  .status .chip.warn{color:var(--warn)}
   .status .statusstop{margin-left:auto;flex-shrink:0;width:24px;height:24px;border-radius:50%;
     background:var(--err);color:var(--on-accent);font-size:var(--fs-sm);line-height:1;display:inline-flex;
     align-items:center;justify-content:center;cursor:pointer;border:none}

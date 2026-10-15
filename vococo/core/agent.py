@@ -532,6 +532,23 @@ class Compacted:
 
 
 @dataclass
+class UpstreamRetry:
+    """上游 API 报错、CLI 正在自动重试(CLI 默认最多 10 次,退避可到十几秒)。
+
+    2026-10-15 事故:这段重试完全发生在 CLI 内部,期间没有任何正文/思考/工具事件,
+    前端只剩「思考中…」在转;连续重试能安静地占掉几分钟,用户以为卡死了,实际还在
+    正常重试(或已经重试到上限彻底失败)。透传出来让各端把「上游 503 · 重试 3/10 ·
+    18s 后重试」显示出来,把"在等"和"死了"区分开。
+    """
+
+    status: int = 0  # 上游 HTTP 状态码(503/429/…),取不到为 0
+    attempt: int = 0  # 第几次重试(1 起)
+    max_retries: int = 0  # 重试上限,取不到为 0
+    delay_ms: int = 0  # 本次退避多久后重试
+    reason: str = ""  # 上游给的错误简述,如 server_error
+
+
+@dataclass
 class Done:
     """本轮结束,带最终回复。"""
 
@@ -561,7 +578,7 @@ class BudgetWarning:
 
 Event = Union[
     TextDelta, ThinkingDelta, ToolStarted, ToolInput, ToolFinished, Compacted,
-    SessionStarted, BudgetWarning, Done,
+    UpstreamRetry, SessionStarted, BudgetWarning, Done,
 ]
 
 
@@ -581,6 +598,44 @@ def assemble_tool_input(raw: str) -> dict:
     except (json.JSONDecodeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _upstream_retry(data: dict) -> UpstreamRetry:
+    """把 CLI 的 api_retry / api_error 系统消息压成 UpstreamRetry。
+
+    字段名有两套,都按真实数据认(2026-10-15):
+    - stdout 流形态 api_retry:attempt / max_retries / retry_delay_ms / error_status / error(字符串);
+    - transcript 形态 api_error(实测 ~/.claude/projects 下 624 条记录):retryAttempt /
+      maxRetries / retryInMs,且 status 与 message 是嵌在 error 对象里的。
+    识别不出的字段一律留 0/空,前端只显示拿到的那部分,不编。
+    """
+    def num(*keys: str) -> int:
+        for k in keys:
+            v = data.get(k)
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
+        return 0
+
+    def num_in(d: dict, key: str) -> int:
+        v = d.get(key)
+        return int(v) if isinstance(v, (int, float)) and v > 0 else 0
+
+    err = data.get("error")
+    if isinstance(err, dict):  # transcript 形态:细节全在 error 里
+        nested_status = num_in(err, "status")
+        reason = err.get("message") or err.get("formatted") or ""
+    else:
+        nested_status = 0
+        reason = err if isinstance(err, str) else ""
+        if not reason:
+            reason = data.get("error_type") or ""
+    return UpstreamRetry(
+        status=num("error_status", "errorStatus", "status") or nested_status,
+        attempt=num("attempt", "retryAttempt", "retry_attempt"),
+        max_retries=num("max_retries", "maxRetries", "retry_max_attempts"),
+        delay_ms=num("retry_delay_ms", "retryInMs", "retry_in_ms", "delay_ms"),
+        reason=reason.strip()[:80] if isinstance(reason, str) else "",
+    )
 
 
 def _compose_prompt(history: list[Turn], user_text: str) -> str:
@@ -1221,6 +1276,11 @@ async def stream_turn(
                                 else str(meta.get("trigger", "") or "")
                             )
                             yield Compacted(trigger=trigger)
+                        elif getattr(msg, "subtype", "") in ("api_retry", "api_error"):
+                            # 上游报错、CLI 自己在退避重试。CLI 默认最多重试 10 次,
+                            # 连续重试期间一条正文/工具事件都没有,不透传的话前端只剩
+                            # 「思考中」,分不清是在等还是已经死了(见 UpstreamRetry)。
+                            yield _upstream_retry(getattr(msg, "data", None) or {})
                         elif getattr(msg, "subtype", "") == "init":
                             # 开局的 init 消息里就带了本轮 session_id(实测早于任何
                             # AssistantMessage/ResultMessage),提前更新 sess_id 并

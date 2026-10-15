@@ -24,6 +24,7 @@ from ..core.agent import (
     ToolFinished,
     ToolInput,
     ToolStarted,
+    UpstreamRetry,
     VideoAttachment,
     context_window,
     stream_turn,
@@ -138,6 +139,20 @@ class Sink:
 
     async def compacted(self, trigger: str = "") -> None:
         """CLI 自动压缩了上下文。基类只刷新;Web 子类覆盖以推专门事件。"""
+        await self.render()
+
+    async def upstream_retry(
+        self,
+        status: int = 0,
+        attempt: int = 0,
+        max_retries: int = 0,
+        delay_ms: int = 0,
+        reason: str = "",
+    ) -> None:
+        """上游报错、CLI 正在退避重试。基类只刷新;Web 子类覆盖以推专门事件。
+
+        重试期间没有任何正文/工具事件,不告诉用户就会被当成卡死(见 core.agent.UpstreamRetry)。
+        """
         await self.render()
 
     async def done(self, reply: AgentReply, turn_id: int | None = None) -> None:
@@ -347,6 +362,12 @@ async def converse(
             elif isinstance(ev, Compacted):
                 timeline.compacted(ev.trigger)
                 await sink.compacted(ev.trigger)
+            elif isinstance(ev, UpstreamRetry):
+                # 只发给渲染层,不进 timeline:重试是瞬时状态,正文落库/历史重放时
+                # 摆一堆「重试过 6 次」对回看没有意义,只对"正盯着看"的人有意义。
+                await sink.upstream_retry(
+                    ev.status, ev.attempt, ev.max_retries, ev.delay_ms, ev.reason
+                )
             elif isinstance(ev, Done):
                 reply = ev.reply
     except asyncio.CancelledError:
