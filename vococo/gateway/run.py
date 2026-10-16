@@ -378,7 +378,7 @@ class GatewayRunner:
 
             agents.set_listener(lambda conv: web_adapter._emit({"type": "agent_run", "conv": conv}))
         from . import watchdog
-        from ..core import proxy_health
+        from ..core import proxy_health, token_health
 
         watchdog.start_thread()  # 假死看门狗:循环卡死 → dump 堆栈 → 自杀交 run.sh 拉起
         try:
@@ -394,6 +394,8 @@ class GatewayRunner:
                 tg.start_soon(watchdog.beat_loop)  # 在循环里刷心跳,供看门狗线程判卡死
                 # 本地 GPT 代理体检:清单缺档/掉线就重启它,救不回来发系统推送(见模块头)
                 tg.start_soon(proxy_health.patrol_loop)
+                # 订阅令牌探活:被吊销了官方模型全线不可用,以前要等人自己发现
+                tg.start_soon(token_health.patrol_loop)
         finally:
             # serve 停止(Ctrl-C/异常):收掉全部保温的 CLI 子进程,不留孤儿
             with anyio.CancelScope(shield=True):
