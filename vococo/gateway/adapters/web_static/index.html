@@ -1483,6 +1483,7 @@ function turnSig(t, isLast){
           isLast?"L":""].join("|");
 }
 let _wrapConv=null;
+let _convOpenSeq=0, _chatAnchor=null;
 // 清空消息区的唯一入口:DOM 和 _wrapConv 这个"消息区现在装的是哪个会话"的记号必须同步改,
 // 谁也别单独动其中一半(见 renderTurns / openConv 里的说明)。
 function clearWrap(conv){ $("#wrap").innerHTML=""; _wrapConv=(conv!==undefined?conv:null); }
@@ -1504,7 +1505,7 @@ function mergeLatestHistory(current, incoming){
 }
 function renderTurns(turns, conv, opts={}){
   const wrap=$("#wrap");
-  const preserveScroll=!!opts.preserveScroll;
+  const preserveScroll=!!opts.preserveScroll || _chatAnchor?.conv===conv;
   const oldAnchor=preserveScroll ? wrap.firstElementChild : null;
   const oldAnchorTop=oldAnchor ? oldAnchor.getBoundingClientRect().top : 0;
   let changed=(conv!==_wrapConv);
@@ -1588,9 +1589,11 @@ async function loadEarlierHistory(){
   const first=current[0];
   if(!first || first.id==null) return;
   const state=S.histPaging[conv]||(S.histPaging[conv]={loading:false,hasMore:true});
-  if(state.loading || state.hasMore===false) return;
+  if(state.loading) return state.promise;
+  if(state.hasMore===false) return;
   state.loading=true;
   setEarlierHistoryLoading(true);
+  state.promise=(async()=>{
   try{
     const r=await api("/history?conv="+encodeURIComponent(conv)+"&before="+encodeURIComponent(first.id));
     const d=await r.json();
@@ -1607,6 +1610,8 @@ async function loadEarlierHistory(){
     state.loading=false;
     setEarlierHistoryLoading(Boolean(S.histPaging[S.conv]?.loading));
   }
+  })();
+  return state.promise;
 }
 
 // 工具卡片懒加载:整轮 events 只在用户点开这一轮里任意一张卡片时才拉一次(见 wireLazyToolCard)
@@ -1708,7 +1713,55 @@ function renderEventsFlow(events, ctx){
 
   return flow;
 }
+function chatAnchorActive(conv, turnId, seq){
+  return seq===_convOpenSeq && S.conv===conv && _chatAnchor?.conv===conv && _chatAnchor.turnId===turnId;
+}
+async function openConvAtTurn(conv, turnId, ts){
+  const opening=openConv(conv);
+  const seq=_convOpenSeq;
+  _chatAnchor={conv, turnId};
+  await opening;
+  if(!chatAnchorActive(conv, turnId, seq)) return;
+  if(!Number.isSafeInteger(turnId) || turnId<=0){
+    _chatAnchor=null;
+    alert("对应聊天记录已清空或不存在");
+    return;
+  }
+  await seekChatTurn(conv, turnId, ts, seq);
+}
+async function seekChatTurn(conv, turnId, ts, seq){
+  for(let page=0;page<200;page++){
+    if(!chatAnchorActive(conv, turnId, seq)) return;
+    const turns=S.histCache[conv]||[];
+    const turn=turns.find(t=>t.id===turnId);
+    if(turn){
+      if(ts!=null && turn.ts!==ts) break;
+      await new Promise(resolve=>requestAnimationFrame(resolve));
+      if(!chatAnchorActive(conv, turnId, seq)) return;
+      const node=$("#wrap").querySelector('[data-tid="'+turnId+'"]');
+      if(node){ revealChatTurn(node); return; }
+      break;
+    }
+    if(!turns.length || turns[0].id<turnId || S.histPaging[conv]?.hasMore===false) break;
+    const firstId=turns[0].id;
+    await loadEarlierHistory();
+    if((S.histCache[conv]||[])[0]?.id===firstId) break;
+  }
+  if(!chatAnchorActive(conv, turnId, seq)) return;
+  _chatAnchor=null;
+  alert("未能定位聊天记录：记录可能已清空，或历史加载失败，请重试。");
+}
+function revealChatTurn(node){
+  const messages=$("#messages");
+  messages.scrollTop+=node.getBoundingClientRect().top-messages.getBoundingClientRect().top-messages.clientHeight/4;
+  for(const previous of $("#wrap").querySelectorAll(".chat-anchor")) previous.classList.remove("chat-anchor");
+  node.classList.add("chat-anchor");
+  setTimeout(()=>node.classList.remove("chat-anchor"), 2400);
+  updateScrollBtn();
+}
 async function openConv(conv, silentGroup){
+  const openSeq=++_convOpenSeq;
+  _chatAnchor=null;
   if(typeof closeLibrary==="function") closeLibrary();
   closeWorkbench();
   closeCallView();  // 切到别的会话就等于离开通话;没在通话视图里时这行是空操作
@@ -1768,7 +1821,7 @@ async function openConv(conv, silentGroup){
   let cached = S.histCache[conv];
   if(!cached && !isLocal){
     cached = await idbGet("hist:"+conv);        // 内存没有(刷新页面后的第一次打开)→ 试磁盘
-    if(S.conv!==conv) return;                    // 等磁盘的功夫用户切走了 → 丢弃,避免内容错乱
+    if(S.conv!==conv || openSeq!==_convOpenSeq) return;  // 丢弃切走或同会话重复打开的旧请求
     if(cached) histCacheSet(conv, cached);
   }
   const hasMsgs = c && c.turns > 0;             // 侧栏记录里该会话有历史消息
@@ -1792,7 +1845,7 @@ async function openConv(conv, silentGroup){
     S.histLoading=conv;
     try{
       const r=await api("/history?conv="+encodeURIComponent(conv)); const d=await r.json();
-      if(S.conv!==conv) return;   // 拉取期间已切到别的会话 → 丢弃过期结果,避免内容错乱
+      if(S.conv!==conv || openSeq!==_convOpenSeq) return;  // 连点同会话锚点也只接受最新一次
       $("#convLoading").classList.remove("on");
       const state=S.histPaging[conv]||(S.histPaging[conv]={loading:false,hasMore:true});
       const turns=mergeLatestHistory(S.histCache[conv], d.turns);

@@ -943,6 +943,7 @@
     color:var(--on-accent);background:var(--accent);opacity:1;border-radius:var(--r-md);margin-left:4px}
   .turnfoot .tfbtn.tfrgen-resume:hover{background:var(--accent2);opacity:1}
   .turn-block.interrupted .bubble{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .turn-block.chat-anchor{border-radius:var(--r-lg);background:var(--panel2);box-shadow:0 0 0 2px var(--accent);transition:background var(--t-base)}
 
   /* 图片大图查看器:点聊天里的图放大,支持上/下一张与关闭 */
   #imgViewer{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:var(--ov-4)}

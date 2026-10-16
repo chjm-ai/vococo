@@ -367,6 +367,7 @@ async function loadAuthedImg(im, url, thumb){
 function scrollDown(force){
   const m=$("#messages");
   requestAnimationFrame(()=>{
+    if(_chatAnchor?.conv===S.conv) return;
     if(force){ m.scrollTop=m.scrollHeight; updateScrollBtn(); return; }
     const dist=m.scrollHeight - m.scrollTop - m.clientHeight;
     if(dist < 80) m.scrollTop = m.scrollHeight;  // 距底<80px 才跟滚,否则用户在阅读历史
@@ -381,6 +382,7 @@ function updateScrollBtn(){
 }
 // 点↓按钮:平滑滚到底(流式跟滚仍用瞬时,否则追不上不断增长的内容)
 function scrollDownSmooth(){
+  _chatAnchor=null;
   const m=$("#messages");
   m.scrollTo({top:m.scrollHeight, behavior:"smooth"});
 }

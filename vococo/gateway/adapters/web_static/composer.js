@@ -90,6 +90,7 @@ async function send(text, display, opts){
   // 先把本轮内容放进内存快照,再立即清空界面。切会话时只切换到空的编辑态,
   // 失败时再从快照恢复,让用户看到的反馈和「已发出」一致。
   if(S.sending[sendConv]) return;
+  _chatAnchor=null;
   S.sending[sendConv]=true;
   S.inflightComposer[sendConv]={text, images:sendImages, audios:sendAudios, files:sendFiles, libraryRefs:sendLibraryRefs};
   delete S.composerAttachments[sendConv];
