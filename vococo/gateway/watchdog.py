@@ -88,4 +88,23 @@ def _watch() -> None:
                 f.close()
             except OSError as exc:
                 print(f"[watchdog] 无法写入退出日志: {exc}", flush=True)
+            _alert_hang(lag)
             os._exit(70)
+
+
+def _alert_hang(lag: float) -> None:
+    """自杀前报一条系统推送:服务假死重启这件事,人在外面也该知道(全局报错出口)。
+
+    此刻事件循环已经死透,所以用 alert_blocking 在看门狗这个线程里另起循环发;
+    发不出去(没网/没配推送)也照常退出,绝不因为报错本身卡住。"""
+    try:
+        from ..core import alerts
+
+        alerts.alert_blocking(
+            "vococo-loop-hang",
+            "⚠️ vococo 服务假死,已自动重启",
+            f"事件循环无响应 {lag:.0f} 秒,已按看门狗规则退出交给 run.sh 拉起;"
+            f"堆栈见 {config.WATCHDOG_LOG_PATH}。",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[watchdog] 告警发送失败: {exc}", flush=True)

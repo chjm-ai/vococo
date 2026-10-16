@@ -67,9 +67,10 @@ def _cmd_serve() -> None:
 
 
 def _cmd_doctor() -> None:
-    """自检:配置 / 认证 / DB / AI_BRAIN / 进程。有 ❌ 则退出码 1。"""
+    """自检:配置 / 认证 / DB / AI_BRAIN / 进程 / 本地 GPT 代理。有 ❌ 则退出码 1。"""
     import os
     import subprocess
+    from functools import partial
 
     oks: list[str] = []
     warns: list[str] = []
@@ -163,6 +164,24 @@ def _cmd_doctor() -> None:
     (oks if running else warns).append(
         "serve 常驻进程在跑" if running else "serve 未在跑(bash deploy/run.sh 启动)"
     )
+
+    # 5) 本地 GPT 代理:该在它上面的档位在不在(只查不修——修交给 serve 里的常驻巡检)
+    try:
+        from .core import proxy_health
+
+        health = anyio.run(partial(proxy_health.check, heal=False))
+        if not health["configured"]:
+            pass  # 没配本地 GPT 代理,不占一行
+        elif health["ok"]:
+            oks.append(f"本地 GPT 代理档位齐({'、'.join(health['want'])})")
+        else:
+            errs.append(
+                f"本地 GPT 代理缺档:{'、'.join(health['missing'])}({health['detail']})"
+                "—— 面板里这些档会 502;serve 的常驻巡检会自动重启代理,"
+                "持续不好看 data/logs/proxy_health.log"
+            )
+    except Exception as e:  # noqa: BLE001 —— 查不动只提醒,不挡其它诊断
+        warns.append(f"本地 GPT 代理核对失败:{e}")
 
     for s in oks:
         print(f"✅ {s}")
