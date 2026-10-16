@@ -87,6 +87,15 @@ MAX_TURNS: int = int(os.environ.get("AGENT_MAX_TURNS", "0"))
 PERMISSION_MODE: str = os.environ.get("AGENT_PERMISSION_MODE", "bypassPermissions").strip()
 # 单轮硬超时(秒):卡死也能恢复。clarify 等用户回复会占用本轮,故放宽到 10 分钟。
 AGENT_TURN_TIMEOUT: int = int(os.environ.get("AGENT_TURN_TIMEOUT", "3600"))
+# 「静默看门狗」(秒):正在等上游、当前又没有工具在跑时,允许的最长静默(一条消息都没有)。
+# 超过就判连接挂死——中断本轮、明确报错,而不是无限「思考中」。2026-10-15 实测过一次
+# 连接挂了 26 分钟、连 CLI 自带的流空闲看门狗都没触发(见 core/agent.py 的 idle_killed)。
+# 工具在跑期间不算(长命令、子代理的静默都属正常,由 AGENT_TURN_TIMEOUT 兜底);
+# 上游重试期间有 api_retry 事件持续续命,也不会被误杀。
+# 为什么默认给到 600s 而不是更短:压缩(autocompact)期间 CLI 可能长时间没有可流出的内容,
+# 本机 166 个 compact_boundary 样本里,距上一条记录 >300s 的有 8 个、最长 475.9s
+# (2026-10-16 实测),300s 会误杀正常压缩。嫌久可用 STREAM_IDLE_TIMEOUT 调小。
+STREAM_IDLE_TIMEOUT: int = int(os.environ.get("STREAM_IDLE_TIMEOUT", "600"))
 # 组装 system prompt 时读取 AI_BRAIN/iCloud 文件的最长等待时间。iCloud 文件被驱逐时
 # open() 可能无限挂起；超时后本轮跳过画像/记忆，不能把整条对话卡在“思考中”。
 PROMPT_LOAD_TIMEOUT: float = float(os.environ.get("PROMPT_LOAD_TIMEOUT", "1.5"))

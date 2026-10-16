@@ -374,6 +374,10 @@ class AgentReply:
     budget_exceeded: bool = False  # 本轮是否因超出 token_budget 被提前停止
 
 
+# 「静默看门狗」收尾说明的开头。describe_llm_error 按它认这句话,不再套「出了点问题」的泛化前缀
+_IDLE_KILL_PREFIX = "上游静默"
+
+
 def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
     """把一轮报错翻译成用户能看懂的提示,并标明是不是模型服务商那边的问题。
 
@@ -389,6 +393,10 @@ def describe_llm_error(api_error_status: int | None, detail: str = "") -> str:
         return f"⚠️ Claude 官方服务出错(状态码 {api_error_status}),不是咱们这边的问题,稍等再试"
     if api_error_status in (401, 403):
         return f"⚠️ 调用被拒绝(状态码 {api_error_status}),八成是密钥/权限配置问题,请联系维护者"
+    if detail.startswith(_IDLE_KILL_PREFIX):
+        # 静默看门狗触发的收尾(见 _stream_once 的 idle_killed):detail 本身就是一句
+        # 完整解释,再套「出了点问题」反而读不出"上游根本没回"这件事
+        return f"⚠️ {detail}"
     dl = detail.lower()
     if "context window" in dl or "input exceeds" in dl:
         return "⚠️ 当前会话上下文超出模型窗口；系统将先自动压缩再继续本次请求。"
@@ -1144,19 +1152,49 @@ async def stream_turn(
                     )
                 pending_subagents: set[str] = set()  # Agent/Task 调用 id,未拿到结果 = 子代理还在跑
                 active_tasks: set[str] = set()  # 后台任务 task_id,未见终态 = 还在跑
+                live_tools: set[str] = set()  # 已见 tool_use、还没等到 tool_result 的调用 id
                 result_seen = False
+                idle_killed = False
                 msgs = client.receive_messages()
                 while True:
                     try:
-                        # 主轮 ResultMessage 到来前不设超时(模型可能长思考);之后进入 drain,
-                        # 给 idle 超时兜底,防子代理异常时永远读不到收尾而挂死。
+                        # 主轮 ResultMessage 到来前:等着上游回话时可以长,但不能无限——
+                        # 真正"本该有动静"的就是这段(模型在算却没有一个字下来)。工具在跑
+                        # (长命令、子代理自己调的工具)时不设上限,其余情况按
+                        # STREAM_IDLE_TIMEOUT 判挂死,见 idle_killed。
+                        # 重试风暴会持续吐 api_retry 事件,每来一条就重新开表,不会误杀。
+                        # ResultMessage 之后进入 drain,给 idle 超时兜底,防子代理异常时
+                        # 永远读不到收尾而挂死。
+                        # 注:后台任务(active_tasks)没算进豁免——Task* 消息是 SystemMessage
+                        # 子类,被下面的 isinstance(msg, SystemMessage) 先截胡,那两条分支
+                        # 是死的、active_tasks 恒为空(2026-10-16 评审发现,属既有问题)。
                         if result_seen:
                             msg = await asyncio.wait_for(msgs.__anext__(), timeout=300)
-                        else:
+                        elif live_tools:
                             msg = await msgs.__anext__()
+                        else:
+                            msg = await asyncio.wait_for(
+                                msgs.__anext__(), timeout=config.STREAM_IDLE_TIMEOUT
+                            )
                     except StopAsyncIteration:
                         break
                     except asyncio.TimeoutError:
+                        if not result_seen:
+                            # 静默看门狗:一个 STREAM_IDLE_TIMEOUT 内连一条消息都没有(连
+                            # 重试事件都没有)= 连接半死,CLI 自己那层看门狗不一定管用
+                            # (2026-10-15 实测挂过 26 分钟)。中断子进程收工,别再让前端
+                            # 无限「思考中」;clean_finish 保持 False,client 不回池。
+                            idle_killed = True
+                            print(
+                                f"[agent] 静默看门狗:{config.STREAM_IDLE_TIMEOUT}s 没等到任何消息,"
+                                f"中断本轮(session={session_key or '?'})",
+                                flush=True,
+                            )
+                            try:
+                                with anyio.move_on_after(5):
+                                    await client.interrupt()
+                            except Exception:
+                                pass
                         break
 
                     if isinstance(msg, StreamEvent):
@@ -1193,6 +1231,11 @@ async def stream_turn(
                                 tid = cb.get("id", "")
                                 if tid:
                                     tool_name_by_id[tid] = name
+                                    # 记进「在跑」集(静默看门狗据此放宽时限)。Agent/Task
+                                    # 本身除外:它要等整个子代理跑完才回结果,记进去等于
+                                    # 子代理期间全程免检;子代理自己调的工具按各自 tid 记账。
+                                    if name not in _SUBAGENT_TOOLS:
+                                        live_tools.add(tid)
                                 idx = ev.get("index")
                                 if isinstance(idx, int):
                                     key = (pid or "", idx)
@@ -1249,6 +1292,7 @@ async def stream_turn(
                         pid = getattr(msg, "parent_tool_use_id", None)
                         for b in msg.content:
                             if isinstance(b, ToolResultBlock):
+                                live_tools.discard(b.tool_use_id)  # 工具回来了,静默看门狗恢复计时
                                 name = tool_name_by_id.get(b.tool_use_id, "工具")
                                 # 子代理的结果回来了 → 从「在跑」集移除(它的 tool_id 就是 Agent 调用 id)
                                 if b.tool_use_id in pending_subagents:
@@ -1348,6 +1392,7 @@ async def stream_turn(
                         # 真正收工:主轮 ResultMessage 到手,且没有还在跑的子代理/后台任务。
                         # 若子代理还在跑,先不收工,继续 drain——等它结果喂回主 agent、主 agent
                         # 续写综合正文,直到下一个「无 pending 的 ResultMessage」。
+                        # (active_tasks 恒空,这里实际只等子代理——原因见循环开头的注释)
                         if not pending_subagents and not active_tasks:
                             clean_finish = True  # 流已读到头,无残留消息,可回池
                             break
@@ -1366,9 +1411,14 @@ async def stream_turn(
 
             # 收工、会话尚未断开 —— 此刻问 SDK 当前窗口的真实占用
             # (等价 CLI /context)。失败(旧 CLI 不支持等)则静默保留兜底值。
-            cu, total, ctx_window_val, cli_window_stale = await _query_context_usage(
-                client, used_model
-            )
+            # 静默看门狗刚判过死的连接不再问:control 请求同样可能石沉大海——刚出狼窝
+            # 又入虎口,收尾这一步不能把看门狗救回来的时间再赔进去。
+            if idle_killed:
+                cu, total, cli_window_stale = None, 0, False
+            else:
+                cu, total, ctx_window_val, cli_window_stale = await _query_context_usage(
+                    client, used_model
+                )
             if total:
                 context_tokens = total
 
@@ -1450,6 +1500,16 @@ async def stream_turn(
             err_detail = (
                 f"超出本次任务的 token 预算(已用约 {stream_tokens // 1000}k,"
                 f"上限 {token_budget // 1000}k),已提前停止"
+            )
+        if idle_killed:
+            # 静默看门狗收尾:这一轮不是"内容有问题",是上游一个字都没回。提示里要把
+            # 这一点说清楚,并给出下一步(重发),别让人以为是自己问错了。
+            is_error = True
+            mins = max(1, round(config.STREAM_IDLE_TIMEOUT / 60))
+            err_detail = (
+                f"{_IDLE_KILL_PREFIX} {mins} 分钟:一直没等到上游的任何回应(连重试提示都没有),"
+                f"已中断本轮。多半是那条连接半死不活,不是这轮内容的问题——"
+                f"把刚才那条消息重发一次,一般就能接着走。"
             )
         if compact_only and not reply_text:
             reply_text = "🫙 已手动压缩上下文,旧对话已摘要,可以继续聊。"
