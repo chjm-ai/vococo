@@ -118,6 +118,7 @@ _METRIC_COLUMNS = (
     "tokens INTEGER NOT NULL DEFAULT 0",
     "duration REAL NOT NULL DEFAULT 0",
     "tool_calls INTEGER NOT NULL DEFAULT 0",
+    "source_turn_id INTEGER",
 )
 _ready_for = None  # 已建表的那条连接(测试会换库重连,换了就重新建表)
 _listener: Callable[[str], None] | None = None
@@ -695,7 +696,8 @@ def prompt_extra_for_session(session_key: str) -> str:
 
 # ── 定时任务结果 → 主会话 + 动态 ─────────────────────────────────────────
 def record_run(agent_id: str, job: dict, status: str, text: str, *,
-               metrics: dict | None = None, to_main: bool = True) -> int | None:
+               metrics: dict | None = None, to_main: bool = True,
+               source_turn_id: int | None = None) -> int | None:
     """把一次运行结果记进动态(agent_runs + runs/)。
 
     to_main=True(定时任务):再往主会话写一轮(居中一行「⏰ 任务名」+ 结果)并标未读;
@@ -723,10 +725,10 @@ def record_run(agent_id: str, job: dict, status: str, text: str, *,
         )
         turn_id = cur.lastrowid
     c.execute(
-        "INSERT INTO agent_runs(agent_id, job_id, job_name, ts, status, text, turn_id, tokens, duration, tool_calls)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO agent_runs(agent_id, job_id, job_name, ts, status, text, turn_id, tokens, duration, tool_calls, source_turn_id)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (agent_id, job.get("id") or "", name, now, status, text[:4000], turn_id,
-         int(m.get("tokens") or 0), float(m.get("duration") or 0), int(m.get("tool_calls") or 0)),
+         int(m.get("tokens") or 0), float(m.get("duration") or 0), int(m.get("tool_calls") or 0), source_turn_id),
     )
     c.commit()
     if not to_main:
@@ -754,7 +756,7 @@ def job_ids_for_turns(turn_ids: list[int]) -> dict[int, tuple[str, str]]:
 
 
 def recent_runs(agent_id: str, limit: int = 50, job_id: str | None = None) -> list[dict]:
-    sql = ("SELECT job_id, job_name, ts, status, text, turn_id, tokens, duration, tool_calls"
+    sql = ("SELECT job_id, job_name, ts, status, text, turn_id, tokens, duration, tool_calls, source_turn_id"
            " FROM agent_runs WHERE agent_id=?")
     args: list = [agent_id]
     if job_id:
@@ -762,11 +764,30 @@ def recent_runs(agent_id: str, limit: int = 50, job_id: str | None = None) -> li
         args.append(job_id)
     sql += " ORDER BY ts DESC LIMIT ?"
     args.append(max(1, min(int(limit), 500)))
-    return [
-        {"job_id": r[0], "job_name": r[1], "ts": r[2], "status": r[3], "text": r[4], "turn_id": r[5],
-         "tokens": r[6], "duration": r[7], "tool_calls": r[8]}
-        for r in _conn().execute(sql, args).fetchall()
-    ]
+    agent = get(agent_id)
+    runs = []
+    for r in _conn().execute(sql, args).fetchall():
+        run = {"job_id": r[0], "job_name": r[1], "ts": r[2], "status": r[3], "text": r[4], "turn_id": r[5],
+               "tokens": r[6], "duration": r[7], "tool_calls": r[8]}
+        run.update(_run_anchor(agent, run, r[9]))
+        runs.append(run)
+    return runs
+
+
+def _run_anchor(agent: dict | None, run: dict, source_turn_id: int | None) -> dict:
+    """锚点带时间戳,避免删除后的轮次 ID 复用把动态指向别的消息。"""
+    if run["turn_id"] is not None and agent:
+        return {"target_conv": agent["main_conv"], "target_turn_id": run["turn_id"], "target_ts": run["ts"]}
+    conv = "task:" + run["job_id"] if run["job_id"] else None
+    # 后台任务不复制到主会话;旧记录也可从原任务结果找回锚点,但不能猜测最近一轮。
+    clause = "id=?" if source_turn_id is not None else "substr(assistant_text,1,4000)=?"
+    row = _conn().execute(
+        "SELECT id, ts FROM turns WHERE session_key=? AND ts<=? "
+        f"AND {clause} ORDER BY id DESC LIMIT 1",
+        (conv, run["ts"], source_turn_id if source_turn_id is not None else run["text"]),
+    ).fetchone() if conv else None
+    return {"target_conv": conv, "target_turn_id": row[0] if row else None,
+            "target_ts": row[1] if row else None}
 
 
 def run_stats(agent_id: str, days: int = 7) -> dict:

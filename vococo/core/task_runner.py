@@ -422,13 +422,13 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             flush=True,
         )
 
-    _record_agent_run(task_id, status)
+    _record_agent_run(task_id, status, turn_id)
     await task_events.emit_terminal(task_id)
 
     _maybe_start_next()
 
 
-def _record_agent_run(task_id: str, status: str) -> None:
+def _record_agent_run(task_id: str, status: str, turn_id: int) -> None:
     """从 Agent 会话派出的后台任务(非定时)跑完 → 记进该 Agent 的运行记录。
 
     定时任务不在这里记:它们由 cron/scheduler 的终态钩子记,还会复制一份到主会话。
@@ -443,7 +443,7 @@ def _record_agent_run(task_id: str, status: str) -> None:
             row["agent_id"], {"id": task_id, "name": row["title"]},
             "success" if status == "done" else "error",
             row.get("result_summary") or row.get("result_full") or "(无输出)",
-            metrics=agents.metrics_from_task(row), to_main=False,
+            metrics=agents.metrics_from_task(row), to_main=False, source_turn_id=turn_id,
         )
     except Exception as exc:  # noqa: BLE001 —— 记录失败不影响任务本身
         print(f"[task_runner] 写 Agent 运行记录失败:{exc}", flush=True)

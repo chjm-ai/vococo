@@ -68,6 +68,9 @@ async def test_task_from_agent_session_is_owned_and_recorded(env, monkeypatch):
     r = runs[0]
     assert (r["job_name"], r["status"], r["tokens"], r["tool_calls"]) == ("查询盘", "success", 12345, 2)
     assert r["turn_id"] is None  # 派出的任务不复制进主会话
+    original = session_store.load_history(f"task:{task['id']}")[-1]
+    assert (r["target_conv"], r["target_turn_id"], r["target_ts"]) == (
+        f"task:{task['id']}", original["id"], original["ts"])
     assert session_store.load_recent(agents.main_session_key(env)) == []
     log = next((agents.home(env["id"]) / "runs").glob("*.md")).read_text(encoding="utf-8")
     assert "查询盘 · success · 1.2 万 token" in log and "2 次工具" in log
@@ -133,3 +136,30 @@ def test_history_tags_cron_turns_with_job_id(env):
     tagged = {t["id"]: t.get("cron_job") for t in turns}
     assert tagged[tid] == "jobA"
     assert tagged[-1] is None
+
+
+def test_run_anchor_points_to_main_copy_and_original_task(env):
+    tid = agents.record_run(env["id"], {"id": "cron", "name": "日报"}, "success", "结果")
+    run = agents.recent_runs(env["id"])[0]
+    assert (run["target_conv"], run["target_turn_id"], run["target_ts"]) == (
+        env["main_conv"], tid, run["ts"])
+    task_tid = session_store.start_turn("task:background", "执行")
+    session_store.finish_turn(task_tid, "后台结果", session_key="task:background")
+    agents.record_run(env["id"], {"id": "background"}, "success", "独立摘要", to_main=False,
+                      source_turn_id=task_tid)
+    run = agents.recent_runs(env["id"])[0]
+    assert (run["target_conv"], run["target_turn_id"]) == ("task:background", task_tid)
+    # 后续人工追问不能把已完成的运行锚点挪到新一轮。
+    later = session_store.start_turn("task:background", "继续")
+    session_store.finish_turn(later, "后台结果", session_key="task:background")
+    assert agents.recent_runs(env["id"])[0]["target_turn_id"] == task_tid
+
+
+def test_run_anchor_missing_or_unrelated_task_does_not_guess(env):
+    tid = session_store.start_turn("task:background", "执行")
+    session_store.finish_turn(tid, "无关结果", session_key="task:background")
+    agents.record_run(env["id"], {"id": "background"}, "error", "未执行", to_main=False)
+    run = agents.recent_runs(env["id"])[0]
+    assert run["target_conv"] == "task:background"
+    assert run["target_turn_id"] is None
+    assert run["target_ts"] is None

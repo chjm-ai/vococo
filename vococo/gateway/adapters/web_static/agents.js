@@ -402,8 +402,10 @@ async function renderApFeed(body, a){
     row.append(head,tx);
     const mt=runMetricsText(r);
     if(mt){ const m=el("div","aprmeta"); m.textContent=mt; row.append(m); }
-    // 定时任务 → 它的会话;派出的后台任务(没复制进主会话,turn_id 为空)→ 任务会话
-    row.onclick=()=>{ const j=(S.cronJobs||[]).find(x=>x.job_id===r.job_id); openConv(j?j.conv:(r.turn_id==null&&r.job_id?"task:"+r.job_id:a.main_conv)); };
+    row.onclick=()=>{
+      S.agentPanelOn=false; saveAgentPanelPref(); hideAgentPanel();
+      openConvAtTurn(r.target_conv||a.main_conv, r.target_turn_id, r.target_ts);
+    };
     body.append(row);
   }
 }
