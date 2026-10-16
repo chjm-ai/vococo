@@ -19,6 +19,7 @@ base_url 是回环地址),不另抄一份模型名,免得两边不同步。
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import os
 import time
@@ -34,7 +35,7 @@ INTERVAL = 15 * 60          # 两次巡检的间隔(秒)
 FIRST_DELAY = 90            # 启动后先等一等:代理自己也要启动、拉清单
 PROBE_TIMEOUT = 10          # HTTP 探测超时(放线程里跑,不卡事件循环)
 BOOT_WAIT = 10              # 重启后每轮核对的间隔
-BOOT_TRIES = 8              # 最多核对 8 轮(约 80 秒;代理起来约 60 秒后才开始拉清单)
+BOOT_TRIES = 12             # 最多核对 12 轮(约 120 秒;代理起来约 60 秒后才拉清单,留够余量)
 RESTART_COOLDOWN = 30 * 60  # 两次自动重启至少隔 30 分钟
 GIVE_UP_AFTER = 3           # 代理在线但连着几次重启都缺档 → 不再自动重启(不像刷新抖动)
 STRIKE_RESET = 6 * 3600     # 这么久没再动过手,旧账清零,重新给机会
@@ -44,6 +45,9 @@ SERVICE = f"gui/{os.getuid()}/com.wesley.cli-proxy-api"
 ALERT_KEY = "gpt-proxy"  # 全局报错出口的节流键(这类故障共用一条,免得换着花样刷屏)
 _STATE_PATH = config.DATA_DIR / "proxy_health.json"
 _LOG_PATH = config.DATA_DIR / "logs" / "proxy_health.log"
+# 回环地址的探测必须绕开 http_proxy:本机 shell 里有 http_proxy=127.0.0.1:7890(VPN),
+# 走它的话连"端口没人听"都会被它答成 HTTP 502,判据全乱。
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _log(msg: str) -> None:
@@ -98,21 +102,45 @@ def target() -> tuple[list[str], str, str]:
     return [m for m, _b, _k in mine], base_url, mine[0][2]
 
 
-def _fetch_sync(base_url: str, api_key: str) -> tuple[list[str] | None, str, int]:
-    """同步问代理要模型清单(实跑在线程里)。返回(清单或 None, 失败原因, HTTP 状态码或 0)。"""
+def _fetch_sync(base_url: str, api_key: str) -> dict:
+    """同步问代理要模型清单(实跑在线程里)。
+
+    返回 {listed, why, code, answered}:answered = 代理应答了(哪怕答的是 500 或
+    一段看不懂的 JSON)——进程活着。这个区分是判断"重启有没有意义"的关键:
+    应答了还不行,多半是凭据/地址/上游的问题,踢它没用;连应答都没有,才值得重启。
+    """
     req = urllib.request.Request(
         base_url.rstrip("/") + "/v1/models", headers={"Authorization": "Bearer " + api_key}
     )
     try:
-        with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT) as resp:
-            data = json.loads(resp.read())
+        with _OPENER.open(req, timeout=PROBE_TIMEOUT) as resp:
+            body = resp.read()
     except urllib.error.HTTPError as exc:
-        return None, f"HTTP {exc.code}", exc.code
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        return None, f"连不上({type(exc).__name__})", 0
+        return {"listed": None, "why": f"HTTP {exc.code}", "code": exc.code, "answered": True}
+    except (urllib.error.URLError, OSError) as exc:
+        return {"listed": None, "why": f"连不上({type(exc).__name__})", "code": 0, "answered": False}
+    except http.client.HTTPException as exc:  # 答到一半就断(如 IncompleteRead):它还活着
+        return {"listed": None, "why": f"响应被截断({type(exc).__name__})", "code": 0,
+                "answered": True}
+    # 解析单独一段:JSONDecodeError 也是 ValueError,混进上面那组会被当成"连不上",
+    # 于是掉线分支每轮把 strikes 清零 → 对活着的代理无限踢下去。
+    try:
+        data = json.loads(body)
+    except ValueError as exc:
+        return {"listed": None, "why": f"返回不是 JSON({type(exc).__name__})", "code": 0,
+                "answered": True}
     if not isinstance(data, dict) or not isinstance(data.get("data"), list):
-        return None, "返回格式不认识", 0
-    return [str(m.get("id")) for m in data["data"] if isinstance(m, dict)], "", 0
+        return {"listed": None, "why": "返回格式不认识", "code": 0, "answered": True}
+    listed = [str(m.get("id")) for m in data["data"] if isinstance(m, dict)]
+    return {"listed": listed, "why": "", "code": 0, "answered": True}
+
+
+def _int(value, default: int = 0) -> int:
+    """状态文件里的数字(可能被人手改坏 / 被别的版本写成字符串)。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 async def _diagnose() -> dict:
@@ -120,13 +148,14 @@ async def _diagnose() -> dict:
     want, base_url, api_key = target()
     if not want or not base_url or not api_key:
         return {"configured": False, "ok": True, "want": [], "missing": [], "listed": None,
-                "code": 0, "detail": "没配本地 GPT 代理(或档位都被隐藏了)"}
-    listed, why, code = await asyncio.to_thread(_fetch_sync, base_url, api_key)
+                "code": 0, "answered": True, "detail": "没配本地 GPT 代理(或档位都被隐藏了)"}
+    got = await asyncio.to_thread(_fetch_sync, base_url, api_key)
+    listed = got["listed"]
     missing = want if listed is None else [m for m in want if m not in listed]
     return {
         "configured": True, "ok": not missing, "want": want, "missing": missing,
-        "listed": listed, "code": code, "base_url": base_url,
-        "detail": (f"代理{'在线' if listed is not None else '不在线'}:" + (why or "")).strip(":"),
+        "listed": listed, "code": got["code"], "answered": got["answered"], "base_url": base_url,
+        "detail": (f"代理{'在线' if listed is not None else '没给清单'}:" + (got["why"] or "")).strip(":"),
     }
 
 
@@ -164,11 +193,10 @@ async def check(*, heal: bool = True) -> dict:
     if not heal:
         return r
 
-    online = r["listed"] is not None
-    want, listed, missing = r["want"], r["listed"], r["missing"]
-    if not online and 400 <= r["code"] < 500:
-        # 代理在、只是不给清单(401/404/500):重启救不了——它能应答说明进程活着,
-        # 不认的是凭据或地址;而且白踢一次会掐断正好在飞的 GPT 请求。
+    answered, want, listed, missing = r["answered"], r["want"], r["listed"], r["missing"]
+    if answered and r["code"] and r["code"] < 500:
+        # 代理在、只是 4xx 拒了清单请求:重启救不了——它能应答说明进程活着,不认的是
+        # 凭据或地址;而且白踢一次会掐断正好在飞的 GPT 请求。
         r["action"] = "rejected"
         r["alert"] = (
             "⚠️ GPT 代理拒绝了模型清单请求(重启没用)",
@@ -178,20 +206,24 @@ async def check(*, heal: bool = True) -> dict:
         )
         return r
 
-    strikes = int(state.get("strikes") or 0) if online else 0
-    if online and now - float(state.get("last_restart") or 0) > STRIKE_RESET:
+    # 只有"代理应答了"才累计放弃计数:应答了还不行(缺档/5xx/格式不认)踢几次就算了,
+    # 免得每 15 分钟空转;整个连不上时永远值得救,而且顺手把旧账清零——都掉过一次了,
+    # 说明不是"上游把档下线"。
+    strikes = _int(state.get("strikes")) if answered else 0
+    last_restart = float(_int(state.get("last_restart")))
+    if answered and now - last_restart > STRIKE_RESET:
         strikes = 0  # 隔了这么久,旧账清零
-    if online and strikes >= GIVE_UP_AFTER:
+    if answered and strikes >= GIVE_UP_AFTER:
         r["action"] = "given-up"
         r["alert"] = (
-            "⚠️ GPT 代理缺档,已停止自动重启",
-            f"连着 {strikes} 次重启都没恢复,不像刷新抖动,更像上游真把这些档下线了。"
-            f"缺的档:{'、'.join(missing)};代理当前清单:{'、'.join(listed or [])}。"
-            "看 /tmp/cli-proxy-api.log 里的 model refresh;确属下线就去设置页摘掉对应档位"
+            "⚠️ GPT 代理不对(缺档 / 响应异常),已停止自动重启",
+            f"连着 {strikes} 次重启都没恢复,不像刷新抖动,更像上游真把这些档下线了"
+            f"或代理本身出了问题。缺的档:{'、'.join(missing) or '(全都没拿到)'};{r['detail']}。"
+            "看 /tmp/cli-proxy-api.log 里的 model refresh;确属档位下线就去设置页摘掉"
             "(摘完自愈,这条就不再报)。",
         )
         return r
-    if now - float(state.get("last_restart") or 0) < RESTART_COOLDOWN:
+    if now - last_restart < RESTART_COOLDOWN:
         r["action"] = "cooling"  # 刚重启过,给代理时间,这一轮不打扰人
         return r
 
@@ -203,14 +235,13 @@ async def check(*, heal: bool = True) -> dict:
         r["action"] = "restart-failed"
         r["alert"] = (
             "⚠️ GPT 代理有问题,而且自动重启没能执行",
-            f"缺的档:{'、'.join(missing)};{r['detail']}。重启失败原因:{reason}。"
+            f"缺的档:{'、'.join(missing) or '(全都没拿到)'};{r['detail']}。重启失败原因:{reason}。"
             f"终端跑 launchctl print {SERVICE} 看服务在不在,急着用就先手动起代理。",
         )
         return r
 
-    # 重启执行成功:掉线时顺手把缺档旧账清零——都掉过一次了,说明不是"上游把档下线"。
     state["last_restart"] = now
-    state["strikes"] = strikes + 1 if online else 0
+    state["strikes"] = strikes + 1 if answered else 0
     _save_state(state)
     _log(f"清单缺档({'、'.join(missing)}),已重启代理,等它重新拉清单")
 
@@ -244,6 +275,14 @@ async def patrol_loop() -> None:
             r = await check(heal=True)
             if r.get("alert"):
                 await alerts.alert(ALERT_KEY, r["alert"][0], r["alert"][1])
-        except Exception as exc:  # noqa: BLE001 —— 巡检自己出错不能拖垮这个循环
+        except Exception as exc:  # noqa: BLE001 —— 巡检自己出错不能拖垮这个循环……
             print(f"[代理体检] 出错:{type(exc).__name__}: {exc}", flush=True)
+            try:  # ……但也不能静默:它坏了就再没人盯代理了(按小时节流)
+                await alerts.alert(
+                    "proxy-patrol-broken", "⚠️ GPT 代理巡检自己出错了",
+                    f"{type(exc).__name__}: {exc}。巡检每 15 分钟一跑,这条每小时最多报一次;"
+                    "期间 GPT 档位如果出问题(502)不会再自动重启,要手动看。",
+                )
+            except Exception:  # noqa: BLE001
+                pass
         await anyio.sleep(INTERVAL)

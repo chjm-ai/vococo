@@ -92,19 +92,34 @@ def _watch() -> None:
             os._exit(70)
 
 
+_ALERT_WAIT = 10  # 发送告警最多等这么久,到点照常自杀
+
+
 def _alert_hang(lag: float) -> None:
     """自杀前报一条系统推送:服务假死重启这件事,人在外面也该知道(全局报错出口)。
 
-    此刻事件循环已经死透,所以用 alert_blocking 在看门狗这个线程里另起循环发;
-    发不出去(没网/没配推送)也照常退出,绝不因为报错本身卡住。"""
-    try:
-        from ..core import alerts
+    此刻事件循环已经死透,只能在看门狗线程里另起一个循环发,所以整件事丢给 daemon
+    线程、只等 _ALERT_WAIT 秒:推送链路卡住(DNS 不通、网关不响应)时,报错本身绝不
+    能把"自杀重启"堵死——重启才是这个看门狗存在的意义,通知只是顺带。
 
-        alerts.alert_blocking(
-            "vococo-loop-hang",
-            "⚠️ vococo 服务假死,已自动重启",
-            f"事件循环无响应 {lag:.0f} 秒,已按看门狗规则退出交给 run.sh 拉起;"
-            f"堆栈见 {config.WATCHDOG_LOG_PATH}。",
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"[watchdog] 告警发送失败: {exc}", flush=True)
+    另:asyncio.run 收尾时还会等默认执行器里的推送线程退出,所以即使超时取消了协程,
+    它也可能多耗一会儿——daemon 线程 + join 超时正是为了兜住这种情况:
+    进程 os._exit 时它跟着一起死,不影响重启。
+    """
+    def _send() -> None:
+        try:
+            from ..core import alerts
+
+            alerts.alert_blocking(
+                "vococo-loop-hang",
+                "⚠️ vococo 服务假死,已自动重启",
+                f"事件循环无响应 {lag:.0f} 秒,已按看门狗规则退出交给 run.sh 拉起;"
+                f"堆栈见 {config.WATCHDOG_LOG_PATH}。",
+                timeout=_ALERT_WAIT - 2,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[watchdog] 告警发送失败: {exc}", flush=True)
+
+    t = threading.Thread(target=_send, daemon=True, name="hang-alert")
+    t.start()
+    t.join(_ALERT_WAIT)
