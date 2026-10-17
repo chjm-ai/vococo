@@ -64,6 +64,7 @@ def on_task_activity(task: dict) -> None:
             "updated_at": task["updated_at"],
             "dispatch_chat_id": task.get("dispatch_chat_id"),
             "origin": task.get("origin"),
+            "kind": task.get("kind", "chat"),
         },
     )
     if task["status"] != "running" or task["id"] in _started_tasks:

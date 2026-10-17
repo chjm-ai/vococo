@@ -33,7 +33,8 @@
 - **多渠道，一个会话** — TUI / CLI / Web（自建 PWA，手机浏览器直达）；全端共享同一主会话
 - **Web 自建 UI** — 多会话侧边栏、工具调用卡片、模型面板 + 限额环、设置页全在线改
 - **语音优先** — 按住说话（STT）、TTS 朗读、Omni 实时免提通话（可打断）
-- **后台任务引擎** — 语音派活 / cron / 独立新会话共用一套引擎，任务跑在独立 git worktree
+- **后台任务引擎** — 语音派活 / cron / 独立新会话共用一套引擎，代码任务跑在独立 git worktree
+- **原生深度研究** — 规划、搜集、复核、报告四阶段；只读网页工具、来源证据账本、有限预算与阶段恢复，报告在任务会话中查看
 - **长期记忆** — 启动注入 `~/AI_BRAIN`；`save_memory` 沉淀、`recall_past` 召回，纯 Markdown
 - **多供应商热切换** — DeepSeek / Kimi / 任意 Anthropic 兼容中转，设置页添加即生效
 - **运行数据面板** — 设置页「数据」:工作强度日历、各模型用量与花费、缓存命中/工具成功率，逐个会话可下钻
@@ -83,6 +84,37 @@ Web 入口:`serve` 时设 `WEB_ENABLED=1` 即在同进程起网页服务(默认�
 管理界面直接添加(base_url + key + model),**每轮自动生效,无需重启**;会话里
 `/model <模型名>` 可临时覆盖。只用第三方时,`.env` 里的订阅 token 可留空。
 认证细节见 [REQUIREMENTS.md](REQUIREMENTS.md) §6。
+
+## 深度研究
+
+在聊天中说「对 XX 做一次深度研究，比较官方资料并给出带来源的结论」，助手通过
+`start_research` 创建独立任务。简单查事实仍走普通搜索，不启动研究流程。
+
+- 四阶段：规划 → 搜集资料 → 复核与补查 → 报告；阶段和来源保存在 `data/research.db`。
+- 默认预算：创建起 300 秒、12 次搜索、18 次抓取、180000 新鲜 token；可在发起时指定
+  `budget`（`seconds/searches/fetches/tokens/max_turns`）。次数执行前扣除，失败重试也计数。
+  token 依 SDK 用量事件超限打断，可能单次响应超调，不是精确费用封顶。
+- 模型固定为发起时显式选择／来源会话选择／全局默认，不自动换便宜模型。所选供应商
+  必须实际支持网页工具；认证、工具不可用时如实失败，不用模型常识冒充联网研究。
+- 研究仅能使用获准网页工具与证据登记工具，不加载个人记忆、项目文件或通用 MCP。
+- 任务完成后在侧边栏查看报告；明确要求恢复时调用 `resume_research`，保留全部用量和
+  原截止时间。服务重启只恢复有已提交阶段且仍有预算的运行任务，取消的任务不自动重开。
+- 引文逐字匹配的是工具提取内容（可能摘要/截断），不等于原始网页存档或事实核验。
+  公共地址校验不控制 SDK 内部重定向，不应把研究执行器视为完整网络沙箱。
+
+受现有 Web 登录认证保护的接口：
+
+| 接口 | 用途 |
+|---|---|
+| `POST /research?session_key=<聊天ID>` | JSON：`title`、`prompt`，可选 `model`、`budget` |
+| `GET /tasks/<id>/research` | 阶段、预算、来源证据和检查点 |
+| `POST /tasks/<id>/resume` | 在原额度内恢复失败／取消的研究 |
+| `GET /tasks/<id>/report` | 下载 Markdown 报告，未完成返回 409 |
+| `POST /tasks/<id>/stop` | 复用已有取消入口 |
+
+验收：`uv run pytest tests/test_research*.py -q`；真实联网验收脚本为
+`tests/manual/research_smoke.py`（需显式传 `--env-file`，可选只读 `--settings-file` 与 `--model`；
+结果写入独立的 `data/research-validation/`，不改生产数据库）。
 
 ## 常驻(macOS)
 

@@ -11,7 +11,7 @@ import json
 
 from aiohttp import web
 
-from ..core import task_events, task_runner, tasks
+from ..core import research, task_events, task_runner, tasks
 from .web_auth import check_web_auth
 
 
@@ -106,6 +106,57 @@ async def handle_tasks_stream(request: web.Request) -> web.StreamResponse:
     return resp
 
 
+async def handle_research_start(request: web.Request) -> web.Response:
+    if (guard := _guard(request)) is not None:
+        return guard
+    from ..tools.research_tools import request_options
+
+    try:
+        options = request_options(await request.json())
+        chat_id = _dispatch_chat_id(request)
+        if chat_id and tasks.task_id_from_session_key(chat_id):
+            raise ValueError("请从主聊天发起研究，不要在后台任务中派生任务")
+        row = task_runner.dispatch_research(
+            **options, dispatch_platform="web", dispatch_chat_id=chat_id,
+            context_session_key=f"web:{chat_id}" if chat_id else None,
+        )
+    except (ValueError, TypeError, RuntimeError) as error:
+        return web.json_response({"error": str(error)}, status=400)
+    return web.json_response(row, status=202)
+
+
+async def handle_research_detail(request: web.Request) -> web.Response:
+    if (guard := _guard(request)) is not None:
+        return guard
+    state = research.get(request.match_info["task_id"])
+    if state is None:
+        return web.json_response({"error": "研究不存在"}, status=404)
+    state["task_status"] = (tasks.get(state["id"]) or {}).get("status")
+    return _json(state)
+
+
+async def handle_research_resume(request: web.Request) -> web.Response:
+    if (guard := _guard(request)) is not None:
+        return guard
+    result = await task_runner.resume_research(request.match_info["task_id"])
+    return web.json_response(result, status=202 if result["ok"] else 409)
+
+
+async def handle_research_report(request: web.Request) -> web.Response:
+    if (guard := _guard(request)) is not None:
+        return guard
+    state = research.get(request.match_info["task_id"])
+    if state is None:
+        return web.json_response({"error": "研究不存在"}, status=404)
+    if not state["report"]:
+        return web.json_response({"error": "报告尚未完成", "stage": state["stage"]}, status=409)
+    return web.Response(
+        text=state["report"], content_type="text/markdown", charset="utf-8",
+        headers={"Content-Disposition": f'attachment; filename="research-{state["id"]}.md"',
+                 "Cache-Control": "no-store"},
+    )
+
+
 def register_routes(app: web.Application) -> None:
     """注册中性任务 API,不依赖 VOICE_ENABLED。"""
     app.add_routes(
@@ -114,5 +165,9 @@ def register_routes(app: web.Application) -> None:
             web.get("/tasks/stream", handle_tasks_stream),
             web.get("/tasks/{task_id}", handle_task_detail),
             web.post("/tasks/{task_id}/stop", handle_task_stop),
+            web.post("/research", handle_research_start),
+            web.get("/tasks/{task_id}/research", handle_research_detail),
+            web.post("/tasks/{task_id}/resume", handle_research_resume),
+            web.get("/tasks/{task_id}/report", handle_research_report),
         ]
     )

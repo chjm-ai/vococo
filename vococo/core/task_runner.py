@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import re
+import secrets
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -25,7 +26,7 @@ from urllib.parse import urlparse
 from .. import config, providers
 from ..memory import session_store
 from ..tools import danger
-from . import task_events, tasks, worktree
+from . import research, task_events, tasks, worktree
 from .agent import (
     BudgetWarning,
     Done,
@@ -102,7 +103,31 @@ def _spawn(task_id: str, turn_text: str | None = None) -> asyncio.Task:
     会把派发它那一轮的 clarify 路由(会话 key / 网页通道)也继承过去,于是任务里的审批弹窗、
     铃铛通知、审批记录全记到【派发方会话】名下,批准后续跑的也是派发方,任务本身收不到
     (2026-10-01 小红书审稿台任务实测)。任务要的上下文(任务会话 / cwd)由 _run 自己登记。"""
-    return asyncio.create_task(_run(task_id, turn_text), context=contextvars.Context())
+    spawned = asyncio.create_task(_run(task_id, turn_text), context=contextvars.Context())
+    row = tasks.get(task_id)
+    if row and row.get("kind") == "research":
+        spawned.add_done_callback(lambda finished: _research_run_done(task_id, finished))
+    return spawned
+
+
+def _research_run_done(task_id: str, finished: asyncio.Task) -> None:
+    """覆盖协程首次调度前取消、会话初始化/收尾异常，避免占住并发槽。"""
+    error = None if finished.cancelled() else finished.exception()
+    current = _running.get(task_id)
+    if current is not None and current is not finished:
+        return  # 旧轮次通知尚未结束时任务已恢复，不能污染新的执行器。
+    row = tasks.get(task_id)
+    if not row or row["status"] != "running":
+        return
+    if _running.get(task_id) is finished:
+        _running.pop(task_id, None)
+    if finished.cancelled():
+        tasks.set_status(task_id, "cancelled", progress_note="已取消")
+    else:
+        tasks.fail_research(task_id, f"研究执行器中断:{error or '未写入终态'}")
+    _notify_activity(task_id)
+    asyncio.create_task(task_events.emit_terminal(task_id))
+    _maybe_start_next()
 
 
 def _notify_activity(task_id: str) -> None:
@@ -243,6 +268,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     row = tasks.get(task_id)
     if row is None:
         return
+    is_research = row.get("kind") == "research"
+    research_start_tokens = (research.get(task_id) or {}).get("usage", {}).get("tokens", 0) if is_research else 0
     prompt_text = turn_text if turn_text is not None else row["prompt"]
     # 派发的这一轮对话也落进跟普通文字对话共用的 session_store(不只是 voice.db 里的
     # result_full 摘要)——这样任务完成后用户能在侧边栏"后台任务"分组里看到完整对话,
@@ -261,15 +288,90 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     used_tokens = 0  # 本轮新鲜 token,收尾计入每日总量
     tool_calls = 0  # 本轮顶层工具调用次数(子代理内部的不算),记进运行指标
     started_at = time.monotonic()
+    if is_research:
+        _reconcile_research_usage(row)
     token_budget, over_daily = _token_budget(row)
     # 录过程时间线(工具调用 + 正文交错),跟普通文字对话(gateway/core.py converse())
     # 对齐——否则任务跑完侧边栏只看得到最后一句摘要,回溯不了 AI 到底做了什么。
     timeline = Timeline()
 
+    async def _observe(ev) -> None:
+        nonlocal result_text, last_progress_ts, error_note, sdk_session_id, used_tokens, tool_calls
+        if isinstance(ev, SessionStarted) and not is_research:
+            # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮
+            # 之后被 append 打断(CancelledError,永远走不到 Done),下一轮追问
+            # 依然能 resume 回同一条 SDK 会话,不会丢上下文重开对话。
+            sdk_session_id = ev.session_id
+            session_store.set_sdk_session_id(session_key, sdk_session_id)
+        elif isinstance(ev, TextDelta):
+            timeline.text(danger.redact_secrets(ev.text))
+        elif isinstance(ev, ToolStarted):
+            timeline.tool_started(ev.name, ev.tool_id, ev.parent_id)
+            if ev.parent_id is None:
+                tool_calls += 1
+        elif isinstance(ev, ToolFinished):
+            timeline.tool_finished(
+                ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id
+            )
+        elif isinstance(ev, ToolInput):
+            timeline.tool_input(ev.tool_id, ev.tool_input, ev.parent_id)
+            if ev.parent_id is None and not is_research:
+                now = time.monotonic()
+                if now - last_progress_ts >= _PROGRESS_THROTTLE_SEC:
+                    last_progress_ts = now
+                    tasks.set_progress(task_id, progress_text(ev.name, ev.tool_input))
+                    _notify_activity(task_id)
+        elif isinstance(ev, BudgetWarning):
+            note = (
+                f"⚠️ token 已用 {ev.used * 100 // ev.budget}%"
+                f"(约 {ev.used // 10000} 万 / 上限 {ev.budget // 10000} 万),超过上限会自动停止"
+            )
+            tasks.set_progress(task_id, note)
+            _notify_activity(task_id)
+            await _push_budget_warning(row, session_key, note)
+        elif isinstance(ev, Done):
+            if not is_research:
+                result_text = ev.reply.text
+                sdk_session_id = ev.reply.sdk_session_id
+                used_tokens = max(ev.reply.stream_tokens, ev.reply.turn_tokens)
+            if ev.reply.is_error:
+                error_note = ev.reply.error or "模型返回了错误"
+            # 跟普通文字对话(gateway/core.py converse())对齐:记一笔 token 用量,
+            # 否则 session_meta 的 ctx_tokens/total_tokens 永远是 0,Web UI 右上角
+            # 的上下文用量图标会把这条会话误判成"全新会话"而一直不显示。
+            if ev.reply.context_tokens or ev.reply.turn_tokens:
+                session_store.record_usage(
+                    session_key,
+                    ev.reply.context_tokens,
+                    ev.reply.turn_tokens,
+                    window=ev.reply.context_window,
+                    last_in=ev.reply.input_fresh,
+                    last_cache=ev.reply.cache_read,
+                    last_out=ev.reply.output_tokens,
+                    model=ev.reply.model,
+                )
+        if is_research:
+            state = research.get(task_id)
+            used_tokens = state["usage"]["tokens"] - research_start_tokens
+            _reconcile_research_usage(row, state)
+            _research_progress(task_id, state)
+            if (_counts_daily(row) and config.BG_DAILY_TOKEN_BUDGET
+                    and tasks.daily_usage() >= config.BG_DAILY_TOKEN_BUDGET):
+                raise research.ResearchLimitError("今天后台任务的 token 总量已达上限")
+
     async def _drive() -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id, used_tokens, tool_calls
+        if is_research:
+            state = research.get(task_id)
+            if state["status"] == "done" and state["report"]:
+                result_text = state["report"]
+                return
         if over_daily:
             error_note = over_daily
+            return
+        if is_research:
+            _research_progress(task_id, state)
+            result_text = await research.execute(task_id, stream_fn=_observe)
             return
         resume_sid = session_store.get_sdk_session_id(session_key)
         # 会话选定的模型——派发/追问时(dispatch 的 model 参数)已经提前写进
@@ -298,58 +400,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             resume=resume_sid, max_turns=config.TASK_MAX_TURNS, token_budget=token_budget,
             system_prompt_extra=agents.prompt_extra_for_session(session_key),
         ):
-            if isinstance(ev, SessionStarted):
-                # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮
-                # 之后被 append 打断(CancelledError,永远走不到 Done),下一轮追问
-                # 依然能 resume 回同一条 SDK 会话,不会丢上下文重开对话。
-                sdk_session_id = ev.session_id
-                session_store.set_sdk_session_id(session_key, sdk_session_id)
-            elif isinstance(ev, TextDelta):
-                timeline.text(danger.redact_secrets(ev.text))
-            elif isinstance(ev, ToolStarted):
-                timeline.tool_started(ev.name, ev.tool_id, ev.parent_id)
-                if ev.parent_id is None:
-                    tool_calls += 1
-            elif isinstance(ev, ToolFinished):
-                timeline.tool_finished(
-                    ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id
-                )
-            elif isinstance(ev, ToolInput):
-                timeline.tool_input(ev.tool_id, ev.tool_input, ev.parent_id)
-                if ev.parent_id is None:
-                    now = time.monotonic()
-                    if now - last_progress_ts >= _PROGRESS_THROTTLE_SEC:
-                        last_progress_ts = now
-                        tasks.set_progress(task_id, progress_text(ev.name, ev.tool_input))
-                        _notify_activity(task_id)
-            elif isinstance(ev, BudgetWarning):
-                note = (
-                    f"⚠️ token 已用 {ev.used * 100 // ev.budget}%"
-                    f"(约 {ev.used // 10000} 万 / 上限 {ev.budget // 10000} 万),超过上限会自动停止"
-                )
-                tasks.set_progress(task_id, note)
-                _notify_activity(task_id)
-                await _push_budget_warning(row, session_key, note)
-            elif isinstance(ev, Done):
-                result_text = ev.reply.text
-                sdk_session_id = ev.reply.sdk_session_id
-                used_tokens = max(ev.reply.stream_tokens, ev.reply.turn_tokens)
-                if ev.reply.is_error:
-                    error_note = ev.reply.error or "模型返回了错误"
-                # 跟普通文字对话(gateway/core.py converse())对齐:记一笔 token 用量,
-                # 否则 session_meta 的 ctx_tokens/total_tokens 永远是 0,Web UI 右上角
-                # 的上下文用量图标会把这条会话误判成"全新会话"而一直不显示。
-                if ev.reply.context_tokens or ev.reply.turn_tokens:
-                    session_store.record_usage(
-                        session_key,
-                        ev.reply.context_tokens,
-                        ev.reply.turn_tokens,
-                        window=ev.reply.context_window,
-                        last_in=ev.reply.input_fresh,
-                        last_cache=ev.reply.cache_read,
-                        last_out=ev.reply.output_tokens,
-                        model=ev.reply.model,
-                    )
+            await _observe(ev)
 
     # 登记本轮属于哪个任务会话:审批闸据此把要批的操作推到 Web 任务会话、记审批记录/待批队列
     task_session_token = danger.set_task_session(session_key)
@@ -358,12 +409,15 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     source_token = None
     try:
         source_token = clarify.bind_turn(session_key, turn_id)
-        effective_cwd = await worktree.execution_cwd_for_task(row["cwd"], task_id)
+        if is_research:
+            effective_cwd = str(config.DATA_DIR / "research" / task_id)
+        else:
+            effective_cwd = await worktree.execution_cwd_for_task(row["cwd"], task_id)
         cwd_token = danger.set_cwd(
             effective_cwd,
-            project_root=row["cwd"] if effective_cwd != row["cwd"] else None,
+            project_root=row["cwd"] if not is_research and effective_cwd != row["cwd"] else None,
         )
-        timeout_min = _timeout_min(row)
+        timeout_min = 0 if is_research else _timeout_min(row)
         if timeout_min > 0:
             await asyncio.wait_for(_drive(), timeout=timeout_min * 60)
         else:
@@ -372,7 +426,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     except asyncio.CancelledError:
         status = "cancelled"
     except asyncio.TimeoutError:
-        error_note = f"超时(超过 {timeout_min} 分钟)"
+        error_note = "研究时间预算已用尽" if is_research else f"超时(超过 {timeout_min} 分钟)"
     except Exception as exc:  # noqa: BLE001 —— 兜底:任何异常都要走到终态收尾,不留 running 僵尸
         error_note = f"执行出错:{exc}"
     finally:
@@ -382,7 +436,12 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             danger.reset_cwd(cwd_token)
         danger.reset_task_session(task_session_token)
         _running.pop(task_id, None)
-        if used_tokens and _counts_daily(row):
+        if is_research:
+            state = research.get(task_id)
+            if state:
+                used_tokens = max(0, state["usage"]["tokens"] - research_start_tokens)
+                _reconcile_research_usage(row, state)
+        if not is_research and used_tokens and _counts_daily(row):
             try:
                 tasks.add_daily_usage(used_tokens)
             except Exception as exc:  # noqa: BLE001 —— 记账失败不影响任务收尾
@@ -397,7 +456,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         session_store.finish_turn(turn_id, "(任务已取消)", events=timeline.blocks, session_key=session_key)
         ok = tasks.set_status(task_id, "cancelled", progress_note="已取消")
     elif status == "done":
-        clean_text, tag_summary = _split_summary_tag(result_text)
+        clean_text, tag_summary = (result_text, None) if is_research else _split_summary_tag(result_text)
         session_store.finish_turn(turn_id, clean_text, events=timeline.blocks, session_key=session_key)
         if sdk_session_id:
             session_store.set_sdk_session_id(session_key, sdk_session_id)
@@ -497,6 +556,66 @@ def _task_agent_id(explicit_cwd: str | None, context_session_key: str | None) ->
     return _source_agent_id(context_session_key)
 
 
+def _reconcile_research_usage(row: dict, state: dict | None = None) -> None:
+    if not _counts_daily(row):
+        return
+    state = state if state is not None else research.get(row["id"])
+    if state:
+        tasks.reconcile_research_usage(row["id"], state["usage"]["tokens"])
+
+
+def _research_progress(task_id: str, state: dict) -> None:
+    stage = {"plan": "制定计划", "collect": "搜集资料", "review": "复核证据", "report": "撰写报告"}
+    note = (f"{stage.get(state['stage'], state['stage'])} · {len(state['sources'])}个来源 · "
+            f"{state['usage']['searches']}/{state['budget']['searches']}次搜索")
+    tasks.set_progress(task_id, note)
+    _notify_activity(task_id)
+
+
+def dispatch_research(
+    title: str, prompt: str, model: str | None = None, budget: dict | None = None,
+    dispatch_platform: str | None = None, dispatch_chat_id: str | None = None,
+    context_session_key: str | None = None,
+) -> dict:
+    """先完整保存研究，再发布 queued 行；模型在派发时固定，不使用后台模型回退。"""
+    chosen_model = model or (session_store.get_chosen_model(context_session_key)
+                             if context_session_key else None) or config.MODEL
+    task_id = secrets.token_hex(8)
+    research.initialize(task_id, prompt, chosen_model, budget)
+    # 即使后面的会话元信息写入失败，也不能留下会被调度的残缺 queued 行。
+    session_store.set_chosen_model(tasks.session_key(task_id), chosen_model)
+    task = tasks.create(
+        title=title, prompt=prompt, task_id=task_id, kind="research",
+        cwd=str(config.DATA_DIR / "research" / task_id),
+        origin="chat" if dispatch_platform in (None, "web") else "voice",
+        dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
+        agent_id=_source_agent_id(context_session_key),
+    )
+    _maybe_start_next()
+    _notify_activity(task_id)
+    return tasks.get(task["id"])
+
+
+async def resume_research(task_id: str) -> dict:
+    """明确恢复失败/取消研究，重新排队而不是绕过统一并发上限。"""
+    row = tasks.get(task_id)
+    if not row or row.get("kind") != "research":
+        return {"ok": False, "message": "研究任务不存在", "task": row}
+    if row["status"] not in {"failed", "cancelled"} or task_id in _running:
+        return {"ok": False, "message": "只有失败或取消的研究才能恢复，已完成研究不能恢复", "task": row}
+    try:
+        _reconcile_research_usage(row)
+        research.prepare_resume(task_id)
+    except Exception as error:
+        return {"ok": False, "message": str(error), "task": row}
+    if not tasks.requeue_research(task_id, row["status"]):
+        return {"ok": False, "message": "任务状态已改变，恢复失败", "task": tasks.get(task_id)}
+    session_store.set_conv_archived(tasks.session_key(task_id), False)
+    _maybe_start_next()
+    _notify_activity(task_id)
+    return {"ok": True, "message": "研究已恢复并进入统一队列", "task": tasks.get(task_id)}
+
+
 def dispatch(
     title: str,
     prompt: str,
@@ -551,6 +670,9 @@ async def append(task_id: str, instruction: str) -> dict:
     row = tasks.get(task_id)
     if row is None:
         return {"ok": False, "message": f"任务不存在(id={task_id})", "task": None}
+
+    if row.get("kind") == "research":
+        return {"ok": False, "message": "研究不支持普通续聊，请明确调用 resume_research 恢复", "task": row}
 
     if row["status"] == "queued":
         merged = f"{row['prompt']}\n\n--- 追加指令 ---\n{instruction}"
@@ -620,7 +742,45 @@ async def cancel_and_wait(task_id: str, timeout: float = 10.0) -> None:
         await asyncio.wait({t}, timeout=timeout)
 
 
+def _recover_research(row: dict) -> None:
+    task_id = row["id"]
+    state = research.get(task_id)
+    if not state:
+        raise ValueError("研究记录缺失，无法恢复")
+    if state["status"] == "done" and state["report"]:
+        # 报告已提交但 task 尚未收尾：走原执行器补会话、指标与终态通知。
+        if row["status"] == "running":
+            tasks.requeue_research(task_id, "running")
+        return
+    if row["status"] == "running" and not state["checkpoints"]:
+        raise ValueError("服务重启，研究没有可恢复的检查点")
+    if row["status"] == "queued" and state["status"] != "ready":
+        raise ValueError("研究排队记录不是 ready 状态，无法安全恢复")
+    research.prepare_resume(task_id)
+    if row["status"] == "running":
+        tasks.requeue_research(task_id, "running")
+
+
 async def heal_after_restart() -> None:
-    """serve 重启后调用一次:把残留 queued/running 标失败并广播终态。"""
-    for row in tasks.mark_orphans_failed(exclude_ids=set(_running)):
+    """普通任务仍标失败；研究校验预算/检查点后恢复，取消任务绝不自动重开。"""
+    records = tasks.list_research()
+    protected = set(_running)
+    research.recover(protected)
+    for row in records:
+        task_id = row["id"]
+        if task_id in _running:
+            continue
+        try:
+            # 终态也可能因上次账本故障漏记，但只能补账，绝不自动重开。
+            _reconcile_research_usage(row)
+            if row["status"] in {"queued", "running"}:
+                _recover_research(row)
+        except Exception as error:
+            if tasks.fail_research(task_id, f"研究恢复失败:{error}"):
+                await task_events.emit_terminal(task_id)
+            else:
+                print(f"[task_runner] 研究 {task_id} 对账失败:{error}", flush=True)
+        protected.add(task_id)
+    for row in tasks.mark_orphans_failed(exclude_ids=protected):
         await task_events.emit_terminal(row["id"])
+    _maybe_start_next()
