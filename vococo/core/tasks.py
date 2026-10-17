@@ -109,6 +109,7 @@ def _conn() -> sqlite3.Connection:
             ("cwd_explicit", "cwd_explicit INTEGER NOT NULL DEFAULT 0"),
             # 老数据(改名前落库的行)一律是语音派发的,默认值 'voice' 准确反映历史事实。
             ("origin", "origin TEXT NOT NULL DEFAULT 'voice'"),
+            ("kind", "kind TEXT NOT NULL DEFAULT 'chat'"),
             # 所属 Agent(派发时从来源会话推出来,见 task_runner.dispatch)+ 最近一轮的运行指标
             # (见 set_run_metrics),给 Agent 的运行记录 / 复盘当数据
             ("agent_id", "agent_id TEXT"),
@@ -123,6 +124,10 @@ def _conn() -> sqlite3.Connection:
         # 无人值守后台任务(cron/语音派活)每天累计的新鲜 token,供每日总量上限判断
         _DB.execute(
             "CREATE TABLE IF NOT EXISTS bg_usage_daily(day TEXT PRIMARY KEY, tokens INTEGER NOT NULL)"
+        )
+        _DB.execute(
+            "CREATE TABLE IF NOT EXISTS bg_research_usage("
+            "task_id TEXT PRIMARY KEY, tokens INTEGER NOT NULL, accounted_day TEXT NOT NULL)"
         )
         # 已移除 SDK 任务清单到任务表的镜像。历史镜像任务没有后台执行器,
         # 启动后必须静默冻结,避免被排队器误跑或被重启孤儿回收误报失败。
@@ -149,6 +154,7 @@ def create(
     origin: str = "voice",
     task_id: str | None = None,
     agent_id: str | None = None,
+    kind: str = "chat",
 ) -> dict:
     """落库一条 queued 任务,返回完整行。
 
@@ -166,13 +172,45 @@ def create(
     now = time.time()
     c.execute(
         "INSERT INTO tasks(id,title,prompt,cwd,cwd_explicit,status,progress_note,result_summary,"
-        "result_full,dispatch_platform,dispatch_chat_id,origin,agent_id,created_at,updated_at) "
-        "VALUES (?,?,?,?,?,'queued','','','',?,?,?,?,?,?)",
+        "result_full,dispatch_platform,dispatch_chat_id,origin,agent_id,kind,created_at,updated_at) "
+        "VALUES (?,?,?,?,?,'queued','','','',?,?,?,?,?,?,?)",
         (tid, title, prompt, cwd, int(cwd_explicit), dispatch_platform, dispatch_chat_id, origin,
-         agent_id, now, now),
+         agent_id, kind, now, now),
     )
     c.commit()
     return get(tid)
+
+
+def requeue_research(task_id: str, expected_status: str) -> bool:
+    """研究专用 CAS，不改变普通任务的终态迁移规则。"""
+    if expected_status not in {"running", "failed", "cancelled"}:
+        return False
+    connection = _conn()
+    changed = connection.execute(
+        "UPDATE tasks SET status='queued', progress_note='等待继续研究', updated_at=? "
+        "WHERE id=? AND kind='research' AND status=?",
+        (time.time(), task_id, expected_status),
+    ).rowcount
+    connection.commit()
+    return bool(changed)
+
+
+def fail_research(task_id: str, reason: str) -> bool:
+    """重启校验不通过的研究即使还在排队也必须明确失败，不能留下悬空任务。"""
+    connection = _conn()
+    changed = connection.execute(
+        "UPDATE tasks SET status='failed', progress_note=?, result_summary=?, updated_at=? "
+        "WHERE id=? AND kind='research' AND status IN ('queued','running')",
+        (reason, reason, time.time(), task_id),
+    ).rowcount
+    connection.commit()
+    return bool(changed)
+
+
+def list_research() -> list[dict]:
+    return [_row(row) for row in _conn().execute(
+        "SELECT * FROM tasks WHERE kind='research'"
+    ).fetchall()]
 
 
 def update_prompt(task_id: str, new_prompt: str) -> None:
@@ -401,6 +439,34 @@ def add_daily_usage(tokens: int) -> None:
         (_today(), int(tokens)),
     )
     c.commit()
+
+
+def reconcile_research_usage(task_id: str, total_tokens: int) -> int:
+    """研究累计检查点与每日账本原子对账，重复回调/恢复只补差额。
+
+    检查点只有累计用量、没有逐日明细：无法确定日期的未记账差额保守归本次对账日。
+    已入账的旧日用量不会搬到今天，普通任务仍使用 add_daily_usage。
+    """
+    connection, day = _conn(), _today()
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT tokens FROM bg_research_usage WHERE task_id=?", (task_id,),
+        ).fetchone()
+        accounted = int(row[0]) if row else 0
+        delta = max(0, int(total_tokens) - accounted)
+        if not delta:
+            return 0
+        connection.execute(
+            "INSERT INTO bg_usage_daily(day,tokens) VALUES(?,?) "
+            "ON CONFLICT(day) DO UPDATE SET tokens=tokens+excluded.tokens", (day, delta),
+        )
+        connection.execute(
+            "INSERT INTO bg_research_usage(task_id,tokens,accounted_day) VALUES(?,?,?) "
+            "ON CONFLICT(task_id) DO UPDATE SET tokens=excluded.tokens, accounted_day=excluded.accounted_day",
+            (task_id, int(total_tokens), day),
+        )
+    return delta
 
 
 def daily_usage(day: str | None = None) -> int:
