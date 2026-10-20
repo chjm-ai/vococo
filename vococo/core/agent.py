@@ -1451,7 +1451,13 @@ async def stream_turn(
                         cache_read = cache_r  # 缓存命中(便宜的复读)
                         output_tokens = out_t
                         turn_tokens = input_fresh + out_t  # 本轮新鲜吞吐,累计即消耗(不含缓存复读)
-                        report_usage(max(stream_tokens, turn_tokens))
+                        try:
+                            report_usage(max(stream_tokens, turn_tokens))
+                        except Exception as usage_error:
+                            # 终态已明确失败时，预算收束等回调异常不能掩盖真实服务错误。
+                            if is_error and tool_guard is not None:
+                                raise RuntimeError(err_detail or "研究模型执行失败") from usage_error
+                            raise
                         # 上下文占用只信 get_context_usage 的真实值(下面覆盖);这里不再拿
                         # input_fresh+cache_read 兜底——那是本轮跨工具调用的累计吞吐量,跟"当前
                         # 窗口占用"不是一回事,工具调用一多能滚到远超窗口本身(2026-08-20 真机

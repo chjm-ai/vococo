@@ -125,14 +125,17 @@ async def on_task_terminal(task_id: str) -> None:
     # 通知链静默消失)——单独 try,失败只丢侧栏未读点。
     try:
         if task["status"] != "cancelled":
-            session_store.set_pending_review(tasks.session_key(task_id), True)
+            conv = task.get("source_session_key") if tasks.is_inline_research(task) else tasks.session_key(task_id)
+            if conv:
+                session_store.set_pending_review(conv, True)
     except Exception:
         pass
     # 先桥接 done 事件到主 SSE:让侧栏小红点熄灭(在播报/推送之前推,别让侧栏
     # 一直亮在已结束的任务上,也别卡住后面的异步推送路径)——这一步跟 origin
     # 无关,任何来源的任务都要让侧栏及时刷新。
     _started_tasks.discard(task_id)  # 清状态锁,支持后续续跑重新亮 dot
-    _bridge_event({"conv": tasks.session_key(task_id), "type": "done"})
+    if not tasks.is_inline_research(task):
+        _bridge_event({"conv": tasks.session_key(task_id), "type": "done"})
 
     origin = task.get("origin") or "voice"
     if origin == "cron":
@@ -177,7 +180,7 @@ async def on_task_terminal(task_id: str) -> None:
     from ..gateway.adapters.web_push import PUSH
 
     body = task["result_summary"] or task["progress_note"] or "任务已结束"
-    session_key = tasks.session_key(task_id)
+    session_key = tasks.conversation_id(task)
     # 标题按状态区分——以前一律"任务完成",失败/取消的任务推一条"任务完成"会误导。
     title_prefix = {"done": "任务完成", "failed": "任务失败", "cancelled": "任务取消"}.get(
         task["status"], "任务结束"
@@ -194,12 +197,15 @@ async def on_task_terminal(task_id: str) -> None:
         pass  # Web Push 网关抽风时静默降级,不影响已发出的 SSE 播报
 
     # ── 平台推送:发给任务的派发者(如果 Web Push 不可配或任务有 dispatch 上下文) ──
-    if _platform_push is not None and task.get("dispatch_platform") and task.get("dispatch_chat_id"):
+    # Web 已通过 research_result 落库和展示；再走 Gateway.push 会发 message 并截断主回复。
+    platform_delivery = not (tasks.is_inline_research(task) and task.get("dispatch_platform") == "web")
+    if platform_delivery and _platform_push is not None and task.get("dispatch_platform") and task.get("dispatch_chat_id"):
         try:
             await _platform_push(
                 task["dispatch_platform"],
                 task["dispatch_chat_id"],
-                _platform_text(task),
+                task["result_full"] if tasks.is_inline_research(task) and task["status"] == "done"
+                else _platform_text(task),
             )
         except Exception:
             pass  # 平台推送失败不影响主流程

@@ -394,6 +394,23 @@ def append(session_key: str, user_text: str, assistant_text: str) -> None:
     c.commit()
 
 
+def append_external(session_key: str, assistant_text: str, event_key: str) -> int:
+    """外部后台结果幂等入库；标识与正文同一条 INSERT 提交，重启重试不重复。"""
+    connection = _conn()
+    events = json.dumps([{"type": "external_result", "key": event_key}], ensure_ascii=False)
+    connection.execute(
+        "INSERT INTO turns(session_key,ts,user_text,assistant_text,events) "
+        "SELECT ?,?,'',?,? WHERE NOT EXISTS "
+        "(SELECT 1 FROM turns WHERE session_key=? AND events=?)",
+        (session_key, time.time(), assistant_text, events, session_key, events),
+    )
+    connection.commit()
+    return connection.execute(
+        "SELECT id FROM turns WHERE session_key=? AND events=? ORDER BY id LIMIT 1",
+        (session_key, events),
+    ).fetchone()[0]
+
+
 def start_turn(session_key: str, user_text: str) -> int:
     """入库进行中 turn(assistant_text 留空);返回 row id 供 finish_turn/cancel_turn 配对。"""
     c = _conn()

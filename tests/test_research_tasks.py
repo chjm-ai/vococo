@@ -49,6 +49,149 @@ async def settle():
     raise AssertionError("执行器没有收尾")
 
 
+@pytest.mark.anyio
+async def test_research_returns_to_source_without_touching_active_reply(environment, monkeypatch):
+    source = "web:source"
+    active_turn = session_store.start_turn(source, "正在回复的问题")
+    events = []
+    task_events.register_main_event_bridge(events.append)
+    async def execute(task_id, stream_fn=None):
+        await stream_fn(TextDelta("不是最终报告的阶段草稿"))
+        return await completed(task_id)
+    monkeypatch.setattr(research, "execute", execute)
+    row = runner.dispatch_research("研究", "问题", context_session_key=source)
+    await settle()
+    assert row["source_session_key"] == source
+    assert session_store.load_history(tasks.session_key(row["id"])) == []
+    history = session_store.load_history(source)
+    assert history[-1]["assistant"] == "完整研究报告"
+    assert "阶段草稿" not in str(history)
+    assert all(event["type"] not in {"start", "done", "message"} for event in events)
+    assert any(event["type"] == "research_update" for event in events)
+    assert any(event["type"] == "research_result" for event in events)
+    assert session_store.finish_turn(active_turn, "原回复正常收尾", session_key=source)
+    assert session_store.load_history(source)[0]["assistant"] == "原回复正常收尾"
+
+
+@pytest.mark.anyio
+async def test_partial_executor_output_is_not_completed_report(environment, monkeypatch):
+    async def partial(task_id, stream_fn=None):
+        return "阶段文本，不是报告"
+    monkeypatch.setattr(research, "execute", partial)
+    row = runner.dispatch_research("研究", "问题", context_session_key="web:source")
+    await settle()
+    assert tasks.get(row["id"])["status"] == "failed"
+    assert tasks.get(row["id"])["result_full"] == ""
+    assert "未产出已完成的报告" in session_store.load_history("web:source")[-1]["assistant"]
+
+
+@pytest.mark.anyio
+async def test_inline_cancel_resume_and_restart_keep_source(environment, monkeypatch):
+    started = asyncio.Event()
+    async def blocked(task_id, stream_fn=None):
+        research_store.update(task_id, lambda state: state.update(
+            status="running", checkpoints={"plan": "计划"}))
+        started.set()
+        await asyncio.Event().wait()
+    monkeypatch.setattr(research, "execute", blocked)
+    row = runner.dispatch_research("研究", "问题", context_session_key="web:source")
+    await started.wait()
+    await runner.cancel_and_wait(row["id"])
+    assert "已取消" in session_store.load_history("web:source")[-1]["assistant"]
+    monkeypatch.setattr(research, "execute", completed)
+    assert (await runner.resume_research(row["id"]))["ok"]
+    await settle()
+    assert session_store.load_history("web:source")[-1]["assistant"] == "完整研究报告"
+    count = len(session_store.load_history("web:source"))
+    await runner.heal_after_restart()
+    assert len(session_store.load_history("web:source")) == count
+    assert session_store.load_history(tasks.session_key(row["id"])) == []
+
+
+@pytest.mark.anyio
+async def test_inline_delivery_failure_does_not_block_queue_and_retries_on_restart(environment, monkeypatch):
+    original = session_store.append_external
+    def broken(*a, **k):
+        raise RuntimeError("模拟会话库暂不可写")
+    monkeypatch.setattr(session_store, "append_external", broken)
+    monkeypatch.setattr(research, "execute", completed)
+    first = runner.dispatch_research("研究一", "问题", context_session_key="web:source")
+    second = runner.dispatch_research("研究二", "问题", context_session_key="web:source")
+    await settle()
+    assert tasks.get(first["id"])["status"] == "done"
+    assert tasks.get(second["id"])["status"] == "done"
+    assert not tasks.get(first["id"])["research_delivered_at"]
+    monkeypatch.setattr(session_store, "append_external", original)
+    await runner.heal_after_restart()
+    assert len(session_store.load_history("web:source")) == 2
+    await runner.heal_after_restart()
+    assert len(session_store.load_history("web:source")) == 2
+
+
+@pytest.mark.anyio
+async def test_delivery_retries_after_append_succeeded_without_duplicate(environment, monkeypatch):
+    original = session_store.set_pending_review
+    def broken(*a, **k):
+        raise RuntimeError("模拟写完报告后失败")
+    monkeypatch.setattr(session_store, "set_pending_review", broken)
+    monkeypatch.setattr(research, "execute", completed)
+    row = runner.dispatch_research("研究", "问题", context_session_key="web:source")
+    await settle()
+    assert len(session_store.load_history("web:source")) == 1
+    assert not tasks.get(row["id"])["research_delivered_at"]
+    monkeypatch.setattr(session_store, "set_pending_review", original)
+    await runner.heal_after_restart()
+    assert len(session_store.load_history("web:source")) == 1
+    assert tasks.get(row["id"])["research_delivered_at"]
+
+
+@pytest.mark.anyio
+async def test_research_notify_links_source_and_sends_full_report(environment, monkeypatch):
+    from vococo.voice import notify
+    from vococo.gateway.adapters.web_push import PUSH
+    pushed, platform, events = [], [], []
+    async def push(**kwargs):
+        pushed.append(kwargs)
+    async def send(*args):
+        platform.append(args)
+    monkeypatch.setattr(PUSH, "notify", push)
+    monkeypatch.setattr(notify, "_platform_push", send)
+    task_events.register_main_event_bridge(events.append)
+    monkeypatch.setattr(research, "execute", completed)
+    row = runner.dispatch_research("研究", "问题", context_session_key="web:source",
+                                   dispatch_platform="web", dispatch_chat_id="source")
+    await settle()
+    await notify.on_task_terminal(row["id"])
+    assert pushed[-1]["conv"] == "source"
+    assert platform == []  # Web 不可再走会结束主回复的通用 message 推送。
+    tasks._conn().execute("UPDATE tasks SET dispatch_platform='telegram' WHERE id=?", (row["id"],))
+    tasks._conn().commit()
+    await notify.on_task_terminal(row["id"])
+    assert platform[-1] == ("telegram", "source", "完整研究报告")
+    assert not any(event["type"] in {"start", "done"} for event in events)
+    assert session_store.load_history(tasks.session_key(row["id"])) == []
+
+
+@pytest.mark.anyio
+async def test_custom_main_session_research_routes_to_frontend_main(environment, monkeypatch):
+    from vococo.voice import notify
+    from vococo.gateway.adapters.web_push import PUSH
+    monkeypatch.setattr(config, "SESSION_KEY", "shared-session")
+    monkeypatch.setattr(research, "execute", completed)
+    events, pushes = [], []
+    task_events.register_main_event_bridge(events.append)
+    async def push(**kwargs):
+        pushes.append(kwargs)
+    monkeypatch.setattr(PUSH, "notify", push)
+    row = runner.dispatch_research("研究", "问题", context_session_key="shared-session")
+    await settle()
+    await notify.on_task_terminal(row["id"])
+    assert events and all(event["conv"] == "main" for event in events)
+    assert pushes[-1]["conv"] == "main"
+    assert session_store.load_history("shared-session")[-1]["assistant"] == "完整研究报告"
+    assert session_store.load_history("web:shared-session") == []
+
+
 async def completed(task_id, stream_fn=None):
     research_store.update(task_id, lambda state: state.update(status="done", report="完整研究报告"))
     return "完整研究报告"
@@ -83,7 +226,8 @@ async def test_dispatch_fixed_model_no_sidecar(environment, monkeypatch, explici
     row = runner.dispatch_research("研究", "问题", model=explicit, context_session_key="web:source")
     session_store.set_chosen_model("web:source", "changed-later")
     assert row["kind"] == "research"
-    assert session_store.get_chosen_model(tasks.session_key(row["id"])) == expected
+    assert session_store.get_chosen_model(tasks.session_key(row["id"])) == ""
+    assert research.get(row["id"])["model"] == expected
     await settle()
     assert observed == [expected]
     assert tasks.get(row["id"])["result_full"] == "完整研究报告"
@@ -145,12 +289,12 @@ async def test_cancel_before_first_coroutine_step_frees_queue(environment, monke
     assert tasks.get(second["id"])["status"] == "done"
 
 
-@pytest.mark.parametrize("failure", ["initialize", "metadata", "create"])
+@pytest.mark.parametrize("failure", ["initialize", "create"])
 def test_dispatch_failure_never_leaves_queued_row(environment, monkeypatch, failure):
     def broken(*a, **k):
         raise ValueError("模拟创建失败")
     target, name = {
-        "initialize": (research, "initialize"), "metadata": (session_store, "set_chosen_model"),
+        "initialize": (research, "initialize"),
         "create": (tasks, "create"),
     }[failure]
     monkeypatch.setattr(target, name, broken)
@@ -177,7 +321,8 @@ async def test_failure_and_progress_metrics_use_common_finish(environment, monke
                                        is_error=False, turn_tokens=37)))
         raise RuntimeError("研究阶段失败")
     monkeypatch.setattr(research, "execute", execute)
-    row = runner.dispatch_research("研究", "问题", dispatch_platform="telegram")
+    row = runner.dispatch_research("研究", "问题", dispatch_platform="telegram",
+                                   context_session_key="telegram:source")
     await settle()
     result = tasks.get(row["id"])
     assert result["status"] == "failed"
@@ -192,7 +337,10 @@ async def test_failure_and_progress_metrics_use_common_finish(environment, monke
         assert payload["kind"] == "research"
     assert "搜集资料 · 2个来源 · 3/12次搜索" in notes
     turns = session_store.load_history(tasks.session_key(row["id"]))
-    assert turns and "阶段正文" in str(turns)
+    assert turns == []
+    source_turns = session_store.load_history("telegram:source")
+    assert "研究阶段失败" in source_turns[-1]["assistant"]
+    assert "阶段正文" not in str(source_turns)
 
 
 @pytest.mark.anyio
@@ -347,8 +495,9 @@ async def test_session_initialization_failure_still_frees_slot(environment, monk
         raise RuntimeError("会话库失败")
     monkeypatch.setattr(session_store, "start_turn", broken)
     monkeypatch.setattr(research, "execute", completed)
-    first = runner.dispatch_research("研究一", "问题")
-    second = runner.dispatch_research("研究二", "问题")
+    first = queued_research("legacy-one")
+    second = queued_research("legacy-two")
+    runner._maybe_start_next()
     await settle()
     assert tasks.get(first["id"])["status"] == "failed"
     assert tasks.get(second["id"])["status"] == "failed"

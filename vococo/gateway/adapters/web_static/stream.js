@@ -700,6 +700,31 @@ function handleEvent(e){
   // 非 web 入口(cron/语音任务等)驱动的会话有新动静,见 core/task_events.py 主事件桥:
   // 那边没有 start/thinking 流式过程可镜像,直接拼气泡容易出现"回复凭空冒出来,
   // 缺前面那句提问"的错位画面——干脆让浏览器去核对真实数据最省心。
+  if(e.type==="research_update" || e.type==="research_result"){
+    // 研究不参与聊天的 start/done 状态机，不能结束或替换 S.stream。
+    if(e.type==="research_result"){
+      delete S.histCache[e.conv]; idbDel("hist:"+e.conv); loadConvs();
+    }
+    if(e.conv!==S.conv) return;
+    if(S.histLoading===e.conv){
+      S.researchPending=S.researchPending||{};
+      S.researchPending[e.task_id]=e;
+      return;
+    }
+    if(e.type==="research_result" && $("#wrap").querySelector('[data-tid="'+e.turn_id+'"]')) return;
+    const previous=Array.from($("#wrap").querySelectorAll("[data-research-id]"))
+      .find(node=>node.dataset.researchId===e.task_id);
+    if(previous) previous.remove();
+    if(e.type==="research_result"){
+      const bubble=addBubble("ai", e.text, null, null, true);
+      bubble.closest(".row").dataset.researchId=e.task_id;
+    }else{
+      const bubble=addBubble("ai", "", null, null, true);
+      bubble.textContent="研究「"+e.title+"」："+(e.progress_note || e.status);
+      bubble.closest(".row").dataset.researchId=e.task_id;
+    }
+    return;
+  }
   if(e.type==="sync"){ loadConvs(); if(e.conv===S.conv) reloadHistory(true); return; }
   // send_image 工具中途发的图(mid_turn):这一轮还没结束,后面还会有正文/工具事件。
   // 按 STREAMY 事件一样只挂进气泡/回放缓冲,不能走下面"回合结束"那一套(未读标记/

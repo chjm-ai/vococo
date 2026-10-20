@@ -67,6 +67,11 @@ def on_task_activity(task: dict) -> None:
             "kind": task.get("kind", "chat"),
         },
     )
+    if tasks.is_inline_research(task):
+        _bridge_event({"conv": tasks.conversation_id(task), "type": "research_update",
+                       "task_id": task["id"], "title": task["title"], "status": task["status"],
+                       "progress_note": task["progress_note"]})
+        return
     if task["status"] != "running" or task["id"] in _started_tasks:
         return
     _started_tasks.add(task["id"])
@@ -81,12 +86,42 @@ def register_terminal_handler(
         _terminal_handlers.append(handler)
 
 
+def _deliver_research(task: dict) -> None:
+    """另加一条完整消息，不结束来源会话正在运行的 turn。"""
+    from ..memory import session_store
+
+    source = task["source_session_key"]
+    if task.get("research_delivered_at"):
+        return
+    if not source:
+        tasks.mark_research_delivered(task["id"])
+        return
+    if task["status"] == "done":
+        text = task["result_full"]
+    elif task["status"] == "cancelled":
+        text = f"研究「{task['title']}」已取消；已保存的证据和检查点保留。"
+    else:
+        text = f"研究「{task['title']}」失败：{task['result_summary'] or task['progress_note']}"
+    turn_id = session_store.append_external(source, text, f"research:{task['id']}:{task['updated_at']}")
+    session_store.set_pending_review(source, True)
+    tasks.mark_research_delivered(task["id"])
+    _bridge_event({"conv": tasks.conversation_id(task), "type": "research_result", "task_id": task["id"],
+                   "title": task["title"], "status": task["status"], "text": text,
+                   "turn_id": turn_id})
+
+
 async def emit_terminal(task_id: str) -> None:
     """通知所有终态处理器,处理器失败不阻塞其他处理器。"""
     # 任务进入终态即解除 start 去重:同一任务被续接/追问重新激活(running)时,
     # on_task_activity 的 start 桥接要能再次触发,前端侧边栏才会补拉最新状态
     # (2026-08-17 修复:续接老任务后侧边栏/状态条停在"已完成"不刷新)。
     _started_tasks.discard(task_id)
+    task = tasks.get(task_id)
+    if task and tasks.is_inline_research(task) and task["status"] in tasks.TERMINAL_STATUSES:
+        try:
+            _deliver_research(task)
+        except Exception as error:
+            print(f"[task_events] 研究 {task_id} 回传失败，重启后重试:{error}", flush=True)
     for handler in tuple(_terminal_handlers):
         try:
             await handler(task_id)

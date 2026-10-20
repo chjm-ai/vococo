@@ -19,7 +19,8 @@ async def main(arguments):
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
     from vococo import config
-    from vococo.core import research, task_runner, tasks
+    from vococo.core import research, task_events, task_runner, tasks
+    from vococo.memory import session_store
     from vococo.gateway import settings_store, task_routes
 
     if arguments.settings_file:
@@ -32,15 +33,19 @@ async def main(arguments):
     config.AGENT_WORKSPACES_DIR = target / "workspaces"
     config.WEB_AUTH_TOKEN = ""
     tasks._DB = None
+    bridge_events = []
+    task_events.register_main_event_bridge(bridge_events.append)
+    question = Path(arguments.question_file).read_text() if arguments.question_file else arguments.question
     app = web.Application()
     task_routes.register_routes(app)
     start = time.monotonic()
     async with TestClient(TestServer(app)) as client:
         response = await client.post("/research?session_key=smoke", json={
             "title": "研究能力真实验收", "model": arguments.model,
-            "prompt": arguments.question,
-            "budget": {"seconds": 600, "searches": 8, "fetches": 12,
-                       "tokens": 180000, "max_turns": 20},
+            "prompt": question,
+            "budget": {"seconds": arguments.seconds, "searches": arguments.searches,
+                       "fetches": arguments.fetches, "tokens": arguments.tokens,
+                       "max_turns": arguments.max_turns},
         })
         row = await response.json()
         if response.status != 202:
@@ -72,6 +77,18 @@ async def main(arguments):
         print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
         if row["status"] != "done":
             raise RuntimeError("真实研究未通过，详见隔离输出目录")
+        # 统一执行器标终态和投递报告之间可能有一次事件循环调度。
+        await asyncio.sleep(0.1)
+        conn = session_store._conn()
+        turns = conn.execute("SELECT session_key, assistant_text FROM turns").fetchall()
+        assert not any(turn[0].startswith("task:") for turn in turns)
+        assert any(turn[0] == "web:smoke" and state["report"] == turn[1] for turn in turns)
+        assert any(ev["type"] == "research_result" and ev["conv"] == "smoke"
+                   and ev["status"] == "done" for ev in bridge_events)
+        assert not any(ev["type"] in {"start", "done", "message"} for ev in bridge_events)
+        summary["source_session_report_verified"] = True
+        (target / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
+        print("当前会话报告投递通过；未创建 task: 会话", flush=True)
 
 
 if __name__ == "__main__":
@@ -79,6 +96,12 @@ if __name__ == "__main__":
     parser.add_argument("--env-file", required=True)
     parser.add_argument("--settings-file", help="只读供应商配置文件；不会复制或改写其中密钥")
     parser.add_argument("--model", default="claude-sonnet-5-5")
+    parser.add_argument("--question-file", help="本地UTF-8问题文件；用于复现原始失败问题")
+    parser.add_argument("--seconds", type=int, default=600)
+    parser.add_argument("--searches", type=int, default=8)
+    parser.add_argument("--fetches", type=int, default=12)
+    parser.add_argument("--tokens", type=int, default=180000)
+    parser.add_argument("--max-turns", type=int, default=20)
     parser.add_argument("--question", default=(
         "比较 GPT Researcher 与 DeerFlow 当前项目定位和许可证，评估为一个已有 Python "
         "Claude Agent SDK 个人助手增加深度研究，选嵌入研究组件还是引入整套平台。"
