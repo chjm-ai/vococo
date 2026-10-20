@@ -51,10 +51,11 @@ def normal_model(monkeypatch):
         kwargs["usage_callback"](8)
         if stage == "collect":
             arguments = {"url": "https://example.com/page", "prompt": "摘录"}
-            assert allow(await kwargs["tool_guard"](
-                {"tool_name": "WebFetch", "tool_input": arguments}, "f1", None))
-            yield ToolInput("WebFetch", "f1", arguments)
-            yield ToolFinished("WebFetch", True, "摘要", "f1", "证据：研究结论需谨慎")
+            decision = await kwargs["tool_guard"](
+                {"tool_name": "WebFetch", "tool_input": arguments}, "f1", None)
+            if allow(decision):
+                yield ToolInput("WebFetch", "f1", arguments)
+                yield ToolFinished("WebFetch", True, "摘要", "f1", "证据：研究结论需谨慎")
         text = "结论需谨慎 [S1]，缺口：未覆盖全部来源" if stage == "report" else f"{stage}：待核对反例"
         yield reply(text)
     monkeypatch.setattr(research, "stream_turn", model)
@@ -82,6 +83,24 @@ def test_misleading_markdown_citation_rejected(isolated_research, text):
     asyncio.run(fetch(research._Stage("r1", "collect")))
     with pytest.raises(ValueError):
         research._checkpoint("r1", "collect", text)
+
+
+@pytest.mark.parametrize("label", ["S1—S3", "S1-S3", "S1–S3", "S1, S3", "S1、S2"])
+def test_real_grouped_citations_accept_only_all_known_sources(isolated_research, label):
+    start()
+    for index in range(1, 4):
+        research._save_page("r1", f"https://example.com/{index}", "证据", f"f{index}")
+    research._checkpoint("r1", "report", f"多来源支持 [{label}]")
+    assert research.get("r1")["status"] == "done"
+
+
+@pytest.mark.parametrize("label", ["S1—S999", "S1, S999", "S3—S1", "S1—S999999999999999999999"])
+def test_grouped_citations_cannot_hide_unknown_or_reversed_ids(isolated_research, label):
+    start()
+    research._save_page("r1", "https://example.com/1", "证据", "f1")
+    with pytest.raises(ValueError):
+        research._checkpoint("r1", "report", f"错误引用 [{label}]")
+    assert research.get("r1")["status"] != "done"
 
 
 def test_normal_execution_persistence_and_fixed_model(isolated_research, normal_model):
@@ -327,10 +346,15 @@ def test_stage_token_limit_crosses_stages_without_reset(isolated_research, norma
     with pytest.raises(research.ResearchLimitError):
         asyncio.run(research.execute("r1"))
     state = research.get("r1")
-    assert state["usage"]["tokens"] == 20
-    assert list(state["checkpoints"]) == ["plan", "collect"]
+    # 极小预算在搜集开始前即到收束线；没有来源必须失败，不能假报告成功。
+    assert state["usage"]["tokens"] == 10
+    assert list(state["checkpoints"]) == ["plan"]
     assert state["status"] == "interrupted"
-    assert [kwargs["token_budget"] for _, kwargs in normal_model] == [20, 10]
+    assert [kwargs["token_budget"] for _, kwargs in normal_model] == [20]
+    research._Stage("r1", "report").usage(10)
+    with pytest.raises(research.ResearchLimitError):
+        research._Stage("r1", "report").usage(1)
+    assert research.get("r1")["usage"]["tokens"] == 21
 
 
 def test_search_leads_cannot_be_recorded_as_page_source(isolated_research):

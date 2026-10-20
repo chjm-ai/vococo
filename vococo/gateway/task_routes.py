@@ -11,6 +11,7 @@ import json
 
 from aiohttp import web
 
+from .. import config
 from ..core import research, task_events, task_runner, tasks
 from .web_auth import check_web_auth
 
@@ -118,7 +119,7 @@ async def handle_research_start(request: web.Request) -> web.Response:
             raise ValueError("请从主聊天发起研究，不要在后台任务中派生任务")
         row = task_runner.dispatch_research(
             **options, dispatch_platform="web", dispatch_chat_id=chat_id,
-            context_session_key=f"web:{chat_id}" if chat_id else None,
+            context_session_key=config.resolve_session_key("web", chat_id or "main"),
         )
     except (ValueError, TypeError, RuntimeError) as error:
         return web.json_response({"error": str(error)}, status=400)

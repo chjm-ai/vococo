@@ -33,7 +33,7 @@ def _result(data: dict, *, error: bool = False) -> dict:
 @tool(
     "start_research",
     "用户要求深度研究、deep research、多来源行业/竞品/技术调研时使用；简单事实查询不要用。"
-    "创建独立研究任务，固定模型、有限预算、保存证据和阶段，完成后可在侧边栏查看报告。"
+    "创建研究任务，固定模型、有限预算、保存证据和阶段；不新建会话，过程和最终报告返回当前会话。"
     "prompt 必须自包含，仅研究公共资料，不包含凭据或未授权外发的私有信息。"
     "预算可设 seconds/searches/fetches/tokens/max_turns；token 是超限打断，不是精确费用封顶。",
     {"type": "object", "properties": {
@@ -53,8 +53,8 @@ async def start_research(arguments: dict) -> dict:
             dispatch_chat_id=str(context.chat_id) if context else None,
         )
         return _result({"id": row["id"], "status": row["status"],
-                        "conversation": tasks.session_key(row["id"]),
-                        "message": "独立研究已排队；最终报告在任务会话中展示，请勿宣称已完成",
+                        "conversation": tasks.conversation_id(row) or None,
+                        "message": "研究已排队；过程和最终报告返回当前会话，请勿把阶段文本当成完成报告",
                         "report_url": f"/tasks/{row['id']}/report"})
     except (ValueError, RuntimeError) as error:
         return _result({"error": str(error)}, error=True)

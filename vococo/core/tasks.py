@@ -110,6 +110,8 @@ def _conn() -> sqlite3.Connection:
             # 老数据(改名前落库的行)一律是语音派发的,默认值 'voice' 准确反映历史事实。
             ("origin", "origin TEXT NOT NULL DEFAULT 'voice'"),
             ("kind", "kind TEXT NOT NULL DEFAULT 'chat'"),
+            ("source_session_key", "source_session_key TEXT"),
+            ("research_delivered_at", "research_delivered_at REAL"),
             # 所属 Agent(派发时从来源会话推出来,见 task_runner.dispatch)+ 最近一轮的运行指标
             # (见 set_run_metrics),给 Agent 的运行记录 / 复盘当数据
             ("agent_id", "agent_id TEXT"),
@@ -155,6 +157,7 @@ def create(
     task_id: str | None = None,
     agent_id: str | None = None,
     kind: str = "chat",
+    source_session_key: str | None = None,
 ) -> dict:
     """落库一条 queued 任务,返回完整行。
 
@@ -172,13 +175,32 @@ def create(
     now = time.time()
     c.execute(
         "INSERT INTO tasks(id,title,prompt,cwd,cwd_explicit,status,progress_note,result_summary,"
-        "result_full,dispatch_platform,dispatch_chat_id,origin,agent_id,kind,created_at,updated_at) "
-        "VALUES (?,?,?,?,?,'queued','','','',?,?,?,?,?,?,?)",
+        "result_full,dispatch_platform,dispatch_chat_id,origin,agent_id,kind,source_session_key,created_at,updated_at) "
+        "VALUES (?,?,?,?,?,'queued','','','',?,?,?,?,?,?,?,?)",
         (tid, title, prompt, cwd, int(cwd_explicit), dispatch_platform, dispatch_chat_id, origin,
-         agent_id, kind, now, now),
+         agent_id, kind, source_session_key, now, now),
     )
     c.commit()
     return get(tid)
+
+
+def is_inline_research(task: dict) -> bool:
+    # NULL 是旧任务；空串表示新任务缺少来源，也不能再新建 task: 会话。
+    return task.get("kind") == "research" and task.get("source_session_key") is not None
+
+
+def conversation_id(task: dict) -> str:
+    """前端会话标识；来源存储键可能是自定义主会话名。"""
+    key = task.get("source_session_key") if is_inline_research(task) else session_key(task["id"])
+    if key == config.SESSION_KEY:
+        return "main"
+    return (key or "").removeprefix("web:")
+
+
+def mark_research_delivered(task_id: str) -> None:
+    connection = _conn()
+    connection.execute("UPDATE tasks SET research_delivered_at=? WHERE id=?", (time.time(), task_id))
+    connection.commit()
 
 
 def requeue_research(task_id: str, expected_status: str) -> bool:
@@ -187,7 +209,7 @@ def requeue_research(task_id: str, expected_status: str) -> bool:
         return False
     connection = _conn()
     changed = connection.execute(
-        "UPDATE tasks SET status='queued', progress_note='等待继续研究', updated_at=? "
+        "UPDATE tasks SET status='queued', progress_note='等待继续研究', research_delivered_at=NULL, updated_at=? "
         "WHERE id=? AND kind='research' AND status=?",
         (time.time(), task_id, expected_status),
     ).rowcount

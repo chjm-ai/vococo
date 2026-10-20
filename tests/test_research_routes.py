@@ -38,12 +38,14 @@ def _payload():
 
 
 @pytest.mark.anyio
-async def test_start_detail_and_pending_report(client):
+async def test_start_detail_and_pending_report(client, monkeypatch):
+    monkeypatch.setattr(config, "SESSION_KEY", "shared-session")
     response = await client.post("/research?session_key=main", json=_payload())
     assert response.status == 202
     row = await response.json()
     assert row["kind"] == "research" and row["status"] == "queued"
     assert row["dispatch_chat_id"] == "main"
+    assert row["source_session_key"] == "shared-session"
     state = await (await client.get(f"/tasks/{row['id']}/research")).json()
     assert state["stage"] == "plan" and state["budget"]["searches"] == 12
     pending = await client.get(f"/tasks/{row['id']}/report")

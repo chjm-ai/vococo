@@ -90,7 +90,8 @@ def _start_one(task: dict, turn_text: str | None = None) -> bool:
     # 任务重新激活(追问/续接/cron 再次触发)时自动取消归档——归档只在任务静默时
     # 才有意义,重新开跑必须回到侧边栏可见,否则前端「工作中」过滤会藏掉它
     # (见 web_static/sidebar.js buildVoiceTaskRow 的 convFilter 判定)。
-    session_store.set_conv_archived(tasks.session_key(task_id), False)
+    if not tasks.is_inline_research(task):
+        session_store.set_conv_archived(tasks.session_key(task_id), False)
     _notify_activity(task_id)
     _running[task_id] = _spawn(task_id, turn_text)
     return True
@@ -275,7 +276,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     # result_full 摘要)——这样任务完成后用户能在侧边栏"后台任务"分组里看到完整对话,
     # 并且能继续用文字追问(续聊直接走 web 发消息路径的 converse(),见 web.py)。
     session_key = tasks.session_key(task_id)
-    turn_id = session_store.start_turn(session_key, prompt_text)
+    inline_research = tasks.is_inline_research(row)
+    turn_id = None if inline_research else session_store.start_turn(session_key, prompt_text)
     sdk_session_id: str | None = None
     # Git 项目任务必须在专属 worktree + 分支(vococo/<task_id>)执行;创建失败就让任务失败,
     # 绝不能回退 row["cwd"] 的主检出目录。非 Git 目录仍可原样执行资料类任务。
@@ -339,7 +341,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             # 跟普通文字对话(gateway/core.py converse())对齐:记一笔 token 用量,
             # 否则 session_meta 的 ctx_tokens/total_tokens 永远是 0,Web UI 右上角
             # 的上下文用量图标会把这条会话误判成"全新会话"而一直不显示。
-            if ev.reply.context_tokens or ev.reply.turn_tokens:
+            if not inline_research and (ev.reply.context_tokens or ev.reply.turn_tokens):
                 session_store.record_usage(
                     session_key,
                     ev.reply.context_tokens,
@@ -371,7 +373,11 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             return
         if is_research:
             _research_progress(task_id, state)
-            result_text = await research.execute(task_id, stream_fn=_observe)
+            await research.execute(task_id, stream_fn=_observe)
+            final_state = research.get(task_id)
+            if final_state["status"] != "done" or not final_state["report"]:
+                raise RuntimeError("研究未产出已完成的报告")
+            result_text = final_state["report"]
             return
         resume_sid = session_store.get_sdk_session_id(session_key)
         # 会话选定的模型——派发/追问时(dispatch 的 model 参数)已经提前写进
@@ -408,7 +414,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
 
     source_token = None
     try:
-        source_token = clarify.bind_turn(session_key, turn_id)
+        if turn_id is not None:
+            source_token = clarify.bind_turn(session_key, turn_id)
         if is_research:
             effective_cwd = str(config.DATA_DIR / "research" / task_id)
         else:
@@ -453,19 +460,22 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         print(f"[task_runner] 运行指标记账失败:{exc}", flush=True)
 
     if status == "cancelled":
-        session_store.finish_turn(turn_id, "(任务已取消)", events=timeline.blocks, session_key=session_key)
+        if turn_id is not None:
+            session_store.finish_turn(turn_id, "(任务已取消)", events=timeline.blocks, session_key=session_key)
         ok = tasks.set_status(task_id, "cancelled", progress_note="已取消")
     elif status == "done":
         clean_text, tag_summary = (result_text, None) if is_research else _split_summary_tag(result_text)
-        session_store.finish_turn(turn_id, clean_text, events=timeline.blocks, session_key=session_key)
+        if turn_id is not None:
+            session_store.finish_turn(turn_id, clean_text, events=timeline.blocks, session_key=session_key)
         if sdk_session_id:
             session_store.set_sdk_session_id(session_key, sdk_session_id)
         ok = tasks.finish(task_id, "done", clean_text, tag_summary or _summarize(clean_text))
     else:
-        session_store.finish_turn(
-            turn_id, result_text or f"(执行失败:{error_note})", events=timeline.blocks,
-            session_key=session_key,
-        )
+        if turn_id is not None:
+            session_store.finish_turn(
+                turn_id, result_text or f"(执行失败:{error_note})", events=timeline.blocks,
+                session_key=session_key,
+            )
         if sdk_session_id:
             session_store.set_sdk_session_id(session_key, sdk_session_id)
         ok = tasks.finish(task_id, "failed", result_text, _humanize_error(error_note) if error_note else "执行失败")
@@ -582,14 +592,13 @@ def dispatch_research(
                              if context_session_key else None) or config.MODEL
     task_id = secrets.token_hex(8)
     research.initialize(task_id, prompt, chosen_model, budget)
-    # 即使后面的会话元信息写入失败，也不能留下会被调度的残缺 queued 行。
-    session_store.set_chosen_model(tasks.session_key(task_id), chosen_model)
     task = tasks.create(
         title=title, prompt=prompt, task_id=task_id, kind="research",
         cwd=str(config.DATA_DIR / "research" / task_id),
         origin="chat" if dispatch_platform in (None, "web") else "voice",
         dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
         agent_id=_source_agent_id(context_session_key),
+        source_session_key=context_session_key or "",
     )
     _maybe_start_next()
     _notify_activity(task_id)
@@ -610,7 +619,8 @@ async def resume_research(task_id: str) -> dict:
         return {"ok": False, "message": str(error), "task": row}
     if not tasks.requeue_research(task_id, row["status"]):
         return {"ok": False, "message": "任务状态已改变，恢复失败", "task": tasks.get(task_id)}
-    session_store.set_conv_archived(tasks.session_key(task_id), False)
+    if not tasks.is_inline_research(row):
+        session_store.set_conv_archived(tasks.session_key(task_id), False)
     _maybe_start_next()
     _notify_activity(task_id)
     return {"ok": True, "message": "研究已恢复并进入统一队列", "task": tasks.get(task_id)}
@@ -775,6 +785,8 @@ async def heal_after_restart() -> None:
             _reconcile_research_usage(row)
             if row["status"] in {"queued", "running"}:
                 _recover_research(row)
+            elif tasks.is_inline_research(row) and not row.get("research_delivered_at"):
+                await task_events.emit_terminal(task_id)
         except Exception as error:
             if tasks.fail_research(task_id, f"研究恢复失败:{error}"):
                 await task_events.emit_terminal(task_id)

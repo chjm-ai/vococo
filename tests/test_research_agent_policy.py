@@ -128,6 +128,29 @@ async def test_research_configuration_never_loads_private_runtime(sdk, monkeypat
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("failed", [True, False])
+async def test_failed_result_is_not_hidden_by_stage_convergence(sdk, failed):
+    from vococo.core.research import _StageConverged
+    result = _result(50)
+    result.is_error = failed
+    result.result = "HTTP 500" if failed else "完成"
+    sdk.messages = [result]
+    usage = []
+    def converge(total):
+        usage.append(total)
+        raise _StageConverged("阶段已收束")
+    if failed:
+        with pytest.raises(RuntimeError, match="HTTP 500") as error:
+            await _run(tool_guard=_allow, usage_callback=converge)
+        assert not isinstance(error.value, _StageConverged)
+    else:
+        with pytest.raises(_StageConverged):
+            await _run(tool_guard=_allow, usage_callback=converge)
+    assert usage == [50]
+    sdk.discard.assert_awaited_once()
+
+
+@pytest.mark.anyio
 async def test_guard_is_bound_to_each_new_client(sdk):
     guards = [AsyncMock(return_value=_decision()), AsyncMock(return_value=_decision("deny"))]
     for guard in guards:

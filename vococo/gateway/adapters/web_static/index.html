@@ -1426,9 +1426,10 @@ function buildTurnBlock(t, conv, isLast){
   // 服务重启打断的回复:服务端收尾时在 events 里写了 interrupted 标记(/history 透传),
   // 这里识别出来给消息打上标记样式,foot 换成醒目的「继续生成」按钮(见 buildTurnFoot)
   const interrupted=(t.events||[]).some(x=>x.type==="interrupted");
+  const externalResult=(t.events||[]).some(x=>x.type==="external_result");
   if(interrupted) wrap.classList.add("interrupted");
   if(t.user && t.user.startsWith(SYS_MARK)) wrap.append(buildSysNote(t.user.slice(SYS_MARK.length).trim(), t.cron_job));
-  else {
+  else if(!externalResult) {
     const fileNames=(t.files||[]).map(f=>typeof f==="string"?f:(f.name||f.filename||"")).filter(Boolean);
     const fileLabel=fileNames.length ? `\n\n📎 附件：${fileNames.join("、")}` : "";
     wrap.append(buildBubble("me", t.user+fileLabel, t.images, t.audios, t.videos).row);
@@ -1448,7 +1449,7 @@ function buildTurnBlock(t, conv, isLast){
     appendImgs(b, t.ai_images);
     // AI 主动发的视频(send_video)同理,单独存在 t.ai_videos
     appendVids(b, t.ai_videos);
-    b.append(buildTurnFoot(conv, t.id, t.assistant, t.ts, isLast, interrupted));
+    b.append(buildTurnFoot(conv, externalResult ? null : t.id, t.assistant, t.ts, isLast, interrupted));
     wrap.append(row);
   }else if(t.draft){
     // 进行中但后端正流式写 draft:用部分内容起底兜底,避免刷新后空白;
@@ -1855,7 +1856,11 @@ async function openConv(conv, silentGroup){
       // renderTurns 内部按轮 diff,没变的轮直接跳过——不用再在这里整包比对一次
       renderTurns(turns, conv);
     }catch(e){ $("#convLoading").classList.remove("on"); }
-    finally{ if(S.histLoading===conv) S.histLoading=null; }
+    finally{
+      if(S.histLoading===conv) S.histLoading=null;
+      const pendingResearch=Object.values(S.researchPending||{}).filter(e=>e.conv===conv);
+      for(const event of pendingResearch){ delete S.researchPending[event.task_id]; handleEvent(event); }
+    }
     maybeReplayStream(conv);   // 该会话仍在流式 → 用缓冲在历史下方重建流式气泡(切换不中断)
     if(S.conv===conv && S.pendingChoice[conv]) renderChoice(S.pendingChoice[conv]);  // 切回带待审批的会话 → 补出按钮
     return;
@@ -1883,7 +1888,8 @@ async function reloadHistory(force){
       // 气泡还没收到任何服务端内容(无文字、无工具)= 刚建的,服务端可能还没创建
       // pending turn;用此刻拿到的历史(不含该 turn)来判定它"过时"会误杀。
       if(!streamText(S.stream) && S.stream.tools.length===0){ S.stream.lastEvt=Date.now(); return; }
-      const last=d.turns[d.turns.length-1];
+      // 后台研究报告可以排在正在回复的聊天后面，不能只看历史最后一条。
+      const last=d.turns.find(t=>t.pending) || d.turns[d.turns.length-1];
       if(!last || last.pending){
         // 服务端也还在跑,别用整包重绘打断流式气泡;但若 draft_text 已经领先本地画面
         // (本地这条 SSE 连接静默失活、没收到新 text 事件),把落后的尾巴追上来,不然
