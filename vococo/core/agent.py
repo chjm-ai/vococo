@@ -44,7 +44,7 @@ from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
 from . import client_pool, reviewer
 from .tasks import is_sdk_task_tool
-from .prompt import build_system_prompt
+from .prompt import build_system_prompt, reply_style_reminder
 
 
 # vococo 专属 skill 插件(config.PLUGIN_DIR):每轮都挂,不受设置页 skill 白名单影响。
@@ -713,10 +713,12 @@ def _build_prompt(
     user_text: str,
     images: list[ImageAttachment],
     files: list[FileAttachment],
+    *,
+    reminder: str = "",
 ) -> str | AsyncIterator[dict[str, Any]]:
     text = _compose_prompt(history, user_text)
     if not images and not files:
-        return text
+        return f"{text}\n\n{reminder}" if reminder else text
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
     for idx, img in enumerate(images, start=1):
         if img.local_path:
@@ -758,6 +760,8 @@ def _build_prompt(
                 "title": file.filename,
             }
         )
+    if reminder:
+        content.append({"type": "text", "text": reminder})
     return _attachment_prompt_stream(content)
 
 
@@ -1229,7 +1233,10 @@ async def stream_turn(
                     await client.query("/compact")
                 else:
                     await client.query(
-                        _build_prompt(prompt_history, user_text, images or [], files or [])
+                        _build_prompt(
+                            prompt_history, user_text, images or [], files or [],
+                            reminder="" if research else reply_style_reminder(resolved_model),
+                        )
                     )
                 pending_subagents: set[str] = set()  # Agent/Task 调用 id,未拿到结果 = 子代理还在跑
                 active_tasks: set[str] = set()  # 后台任务 task_id,未见终态 = 还在跑

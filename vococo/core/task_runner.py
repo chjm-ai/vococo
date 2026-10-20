@@ -286,6 +286,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     inline_research = tasks.is_inline_research(row)
     turn_id = None if inline_research else session_store.start_turn(session_key, prompt_text)
     sdk_session_id: str | None = None
+    chosen_at_start = ""
     # Git 项目任务必须在专属 worktree + 分支(vococo/<task_id>)执行;创建失败就让任务失败,
     # 绝不能回退 row["cwd"] 的主检出目录。非 Git 目录仍可原样执行资料类任务。
     effective_cwd = row["cwd"]
@@ -313,7 +314,9 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             # 之后被 append 打断(CancelledError,永远走不到 Done),下一轮追问
             # 依然能 resume 回同一条 SDK 会话,不会丢上下文重开对话。
             sdk_session_id = ev.session_id
-            session_store.set_sdk_session_id(session_key, sdk_session_id)
+            session_store.set_sdk_session_id(
+                session_key, sdk_session_id, expected_model=chosen_at_start,
+            )
         elif isinstance(ev, TextDelta):
             timeline.text(danger.redact_secrets(ev.text))
         elif isinstance(ev, ToolStarted):
@@ -373,6 +376,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
 
     async def _drive() -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id, used_tokens, tool_calls
+        nonlocal chosen_at_start
         if is_research:
             state = research.get(task_id)
             if state["status"] == "done" and state["report"]:
@@ -393,7 +397,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         # 会话选定的模型——派发/追问时(dispatch 的 model 参数)已经提前写进
         # session_meta(见 dispatch()),这里读出来传给 stream_turn;没设过就是
         # 空串,stream_turn 内部 providers.resolve(None,...) 自动落到全局默认。
-        model = session_store.get_chosen_model(session_key) or None
+        chosen_at_start = session_store.get_chosen_model(session_key)
+        model = chosen_at_start or None
         # 没显式指定模型 → 默认回退到已配置的第三方供应商,不再走官方订阅:
         # 订阅 token 被封(401 OAuth access token has been revoked)时,没设
         # model 的后台任务会一启动就失败。sidecar_env 按供应商名取 (model, env),
@@ -480,7 +485,9 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         if turn_id is not None:
             session_store.finish_turn(turn_id, clean_text, events=timeline.blocks, session_key=session_key)
         if sdk_session_id:
-            session_store.set_sdk_session_id(session_key, sdk_session_id)
+            session_store.set_sdk_session_id(
+                session_key, sdk_session_id, expected_model=chosen_at_start,
+            )
         ok = tasks.finish(task_id, "done", clean_text, tag_summary or _summarize(clean_text))
     else:
         if turn_id is not None:
@@ -489,7 +496,9 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                 session_key=session_key,
             )
         if sdk_session_id:
-            session_store.set_sdk_session_id(session_key, sdk_session_id)
+            session_store.set_sdk_session_id(
+                session_key, sdk_session_id, expected_model=chosen_at_start,
+            )
         ok = tasks.finish(task_id, "failed", result_text, _humanize_error(error_note) if error_note else "执行失败")
     if not ok:
         # 收尾写库被状态机拒绝 = 任务状态被别处改过(误标/竞态)。响亮记录,

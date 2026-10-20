@@ -9,7 +9,8 @@ import pytest
 
 from vococo.core import task_runner
 from vococo.core import tasks as bg_tasks
-from vococo.core.agent import AgentReply, Done
+from vococo.core.agent import AgentReply, Done, SessionStarted
+from vococo.memory import session_store
 from vococo.gateway import clarify
 from vococo.tools import danger
 from vococo.voice import notify
@@ -58,3 +59,33 @@ async def test_dispatched_task_runs_under_its_own_session(env, monkeypatch):
 
     assert seen["clarify"] is None
     assert seen["key"] == f"task:{task['id']}"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("is_error", [False, True])
+@pytest.mark.parametrize("switch_early", [False, True])
+@pytest.mark.parametrize("target", ["claude-sonnet-5-5", "gpt-6.1-sol"])
+async def test_task_model_switch_keeps_old_sdk_session_cleared(
+    env, isolated, monkeypatch, is_error, switch_early, target,
+):
+    async def fake_stream_turn(*args, session_key=None, **kwargs):
+        assert kwargs["model"] == "gpt-6.1-sol"
+        if switch_early:
+            session_store.set_chosen_model(session_key, target)
+        yield SessionStarted(session_id="gpt-started")
+        if not switch_early:
+            session_store.set_chosen_model(session_key, target)
+        yield Done(AgentReply(text="完成", tool_calls=[], cost_usd=None,
+                              is_error=is_error, sdk_session_id="gpt-finished"))
+
+    monkeypatch.setattr(task_runner, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop)
+    task = task_runner.dispatch(title="模型隔离", prompt="任务", origin="chat",
+                                model="gpt-6.1-sol", cwd=str(isolated))
+    await task_runner._running[task["id"]]
+    key = bg_tasks.session_key(task["id"])
+    assert bg_tasks.get(task["id"])["status"] == ("failed" if is_error else "done")
+    assert session_store.get_chosen_model(key) == target
+    assert session_store.get_sdk_session_id(key) == (
+        "gpt-finished" if target == "gpt-6.1-sol" else None
+    )

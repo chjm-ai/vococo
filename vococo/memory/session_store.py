@@ -889,11 +889,11 @@ def set_chosen_model(session_key: str, model: str) -> None:
     """
     c = _conn()
     row = c.execute(
-        "SELECT chosen_model FROM session_meta WHERE session_key=? AND chosen_model IS NOT NULL",
+        "SELECT chosen_model FROM session_meta WHERE session_key=?",
         (session_key,),
     ).fetchone()
-    if row and row[0] and row[0] != model:
-        # 模型切换:旧 SDK 会话不能再 resume
+    if row and row[0] != model:
+        # 老会话没记模型时也不能确认旧 transcript 的身份，保守地走历史恢复。
         c.execute(
             "UPDATE session_meta SET sdk_session_id=NULL WHERE session_key=?",
             (session_key,),
@@ -935,8 +935,10 @@ def get_sdk_session_id(session_key: str) -> str | None:
     return (row[0] if row else None) or None
 
 
-def set_sdk_session_id(session_key: str, sid: str) -> None:
-    """记住本轮 SDK 会话 id(每轮结束用最新值覆盖,链就不会断);upsert,不动其余字段。"""
+def set_sdk_session_id(session_key: str, sid: str, *, expected_model: str | None = None) -> None:
+    """记住本轮 SDK 会话 id；传入开跑时的模型选择，避免轮中切换后写回旧会话。"""
+    if expected_model is not None and get_chosen_model(session_key) != expected_model:
+        return
     c = _conn()
     c.execute(
         "INSERT INTO session_meta(session_key, watermark_id, sdk_session_id) VALUES (?,0,?) "
