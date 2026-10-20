@@ -223,6 +223,7 @@ async def converse(
 
     from ..core import worktree  # 懒加载
 
+    chosen_at_start = session_store.get_chosen_model(session_key)
     history = session_store.load_recent(session_key)
     # 具体项目优先,未匹配到时落默认项目;后台任务续聊再以任务落库的原始 cwd 为准。
     root = config.execution_project_root_for(session_key)
@@ -321,7 +322,9 @@ async def converse(
                 elif isinstance(ev, Done):
                     if ev.reply.sdk_session_id:
                         resume_sid = ev.reply.sdk_session_id
-                        session_store.set_sdk_session_id(session_key, resume_sid)
+                        session_store.set_sdk_session_id(
+                            session_key, resume_sid, expected_model=chosen_at_start,
+                        )
         async for ev in stream_turn(
             history, user_text, model=model, images=images, files=files, cwd=cwd,
             is_explicit_project=is_explicit_project, resume=resume_sid,
@@ -387,7 +390,9 @@ async def converse(
             # 通常取消发生在拿到 ResultMessage 前(reply 为 None、无 sdk_session_id);
             # 万一已拿到就存回,让下一轮仍能 resume 接上真·多轮历史。
             if reply is not None and reply.sdk_session_id:
-                session_store.set_sdk_session_id(session_key, reply.sdk_session_id)
+                session_store.set_sdk_session_id(
+                    session_key, reply.sdk_session_id, expected_model=chosen_at_start,
+                )
             # 通知渲染层本轮已被人为取消(Web 端可据此清理进行中快照,防止刷新后重放旧内容)
             await sink.cancelled()
         raise  # 原样抛出;cwd 由 finally 统一 reset
@@ -437,7 +442,9 @@ async def converse(
         session_store.set_last_error(session_key, bool(reply.is_error))
         # 存回本轮 SDK 会话 id,下一轮 resume 它接上真·多轮历史(每轮覆盖,链不断)
         if reply.sdk_session_id:
-            session_store.set_sdk_session_id(session_key, reply.sdk_session_id)
+            session_store.set_sdk_session_id(
+                session_key, reply.sdk_session_id, expected_model=chosen_at_start,
+            )
         if reply.context_tokens or reply.turn_tokens:
             session_store.record_usage(
                 session_key,

@@ -45,6 +45,7 @@ class FakeClient:
     def __init__(self, options=None, *, registry: list):
         self.options = options
         self.queries = 0
+        self.prompts = []
         self.connected = False
         self.disconnected = False
         self.interrupted = False
@@ -59,7 +60,8 @@ class FakeClient:
     async def disconnect(self):
         self.disconnected = True
 
-    async def query(self, *args, **kwargs):
+    async def query(self, prompt, **kwargs):
+        self.prompts.append(prompt if isinstance(prompt, str) else [msg async for msg in prompt])
         if self.fail_next_query:
             raise RuntimeError("CLI 子进程已死")
         self.queries += 1
@@ -451,3 +453,90 @@ async def test_agent_lists_override_skills_and_mcp(clients, monkeypatch):
     opts = clients[0].options
     assert opts.skills == ["pdf", *agent._PLUGIN_SKILLS]
     assert set(opts.mcp_servers) == {"lemlist"}  # 用户说的只是「hi」,也照样挂
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("selected,resolved,expected", [
+    ("gpt-6.1-sol", "gpt-6.1-sol", True),
+    ("自定义显示名", "GPT-6-astra", True),
+    ("gpt-looking-label", "claude-sonnet-5-5", False),
+    ("deepseek-flash", "deepseek-flash", False),
+])
+async def test_style_uses_resolved_model(clients, isolated, monkeypatch, selected, resolved, expected):
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: (resolved, {}))
+    async for _ in agent.stream_turn([], "解释一下", model=selected, session_key="web:style"):
+        pass
+    payload = clients[0].prompts[0]
+    assert ("[本轮表达提醒" in payload) is expected
+    assert "[本轮表达提醒" not in str(clients[0].options.system_prompt)
+
+
+@pytest.mark.anyio
+async def test_style_not_duplicated_on_warm_or_retry(clients, isolated, monkeypatch):
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("gpt-6.1-sol", {}))
+    await _turn()
+    await _turn(resume="sid-1")
+    assert len(clients) == 1
+    clients[0].fail_next_query = True
+    await _turn(resume="sid-1")
+    assert len(clients) == 2
+    for client in clients:
+        for payload in client.prompts:
+            assert payload.count("[本轮表达提醒") == 1
+            assert payload.startswith("hi\n\n")
+
+
+@pytest.mark.anyio
+async def test_style_resume_failure_rebuilds_clean_payload(clients, isolated, monkeypatch):
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("gpt-6.1-sol", {}))
+
+    def make_client(options=None):
+        client = FakeClient(options, registry=clients)
+        client.fail_next_query = bool(options.resume)
+        return client
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", make_client)
+    history = [agent.Turn(user="历史问题", assistant="历史回复")]
+    async for _ in agent.stream_turn(history, "继续", resume="missing-sid"):
+        pass
+    assert len(clients) == 2
+    assert "历史问题" not in clients[0].prompts[0]
+    assert "历史问题" in clients[1].prompts[0]
+    assert all(client.prompts[0].count("[本轮表达提醒") == 1 for client in clients)
+    assert history[0].user == "历史问题"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("compact,research", [(True, False), (False, True)])
+async def test_style_skips_compaction_and_isolated_research(clients, isolated, monkeypatch, compact, research):
+    from vococo.tools.danger import build_hooks
+
+    monkeypatch.setattr(agent, "build_hooks", build_hooks)
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("gpt-6.1-sol", {}))
+    async for _ in agent.stream_turn(
+        [], "完整研究任务", model="gpt-6.1-sol", compact_only=compact,
+        tool_guard=(lambda *a: None) if research else None,
+    ):
+        pass
+    assert clients[0].prompts == ["/compact" if compact else "完整研究任务"]
+
+
+@pytest.mark.anyio
+async def test_style_not_stored_or_carried_to_non_gpt(clients, isolated, monkeypatch):
+    from vococo.gateway import core
+    from vococo.memory import session_store
+
+    monkeypatch.setattr(agent.providers, "resolve", lambda chosen, default: (chosen or default, {}))
+    key = "web:style-switch"
+    session_store.set_chosen_model(key, "gpt-6.1-sol")
+    await core.converse(key, "原始问题", "gpt-6.1-sol", core.Sink(),
+                        cwd_override=str(isolated), is_explicit_project_override=False)
+    assert "[本轮表达提醒" in clients[0].prompts[0]
+    assert session_store.load_recent(key)[0].user == "原始问题"
+    session_store.set_chosen_model(key, "claude-sonnet-5-5")
+    await core.converse(key, "继续", "claude-sonnet-5-5", core.Sink(),
+                        cwd_override=str(isolated), is_explicit_project_override=False)
+    assert len(clients) == 2 and clients[0].disconnected
+    assert clients[1].options.resume is None
+    assert "原始问题" in clients[1].prompts[0]
+    assert "[本轮表达提醒" not in clients[1].prompts[0]
