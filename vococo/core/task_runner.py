@@ -20,6 +20,7 @@ import contextvars
 import re
 import secrets
 import time
+import traceback
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -114,6 +115,10 @@ def _spawn(task_id: str, turn_text: str | None = None) -> asyncio.Task:
 def _research_run_done(task_id: str, finished: asyncio.Task) -> None:
     """覆盖协程首次调度前取消、会话初始化/收尾异常，避免占住并发槽。"""
     error = None if finished.cancelled() else finished.exception()
+    if error is not None:
+        # 取出 exception 后 asyncio 不再打印；必须保留初始化/收尾故障的原始位置。
+        detail = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        print(danger.redact_secrets(f"[task_runner] 研究执行器 {task_id} 异常:\n{detail}"), flush=True)
     current = _running.get(task_id)
     if current is not None and current is not finished:
         return  # 旧轮次通知尚未结束时任务已恢复，不能污染新的执行器。

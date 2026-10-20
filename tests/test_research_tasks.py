@@ -348,6 +348,35 @@ async def test_cancel_before_first_coroutine_step_frees_queue(environment, monke
     assert tasks.get(second["id"])["status"] == "done"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("already_failed", [False, True])
+async def test_executor_database_failure_keeps_traceback(environment, monkeypatch, capsys, already_failed):
+    def open_missing_database():
+        sqlite3.connect(environment / "missing" / "probe.db")
+
+    async def broken(task_id, turn_text=None):
+        if already_failed:
+            tasks.fail_research(task_id, "先前失败")
+        open_missing_database()
+
+    monkeypatch.setattr(runner, "_run", broken)
+    row = runner.dispatch_research("研究", "问题")
+    finished = runner._running[row["id"]]
+    await asyncio.wait({finished})
+    await asyncio.sleep(0)
+    if already_failed:
+        runner._running.pop(row["id"], None)
+    output = capsys.readouterr().out
+    assert f"研究执行器 {row['id']} 异常" in output
+    assert "Traceback (most recent call last)" in output
+    assert "open_missing_database" in output
+    assert "sqlite3.OperationalError: unable to open database file" in output
+    assert tasks.get(row["id"])["status"] == "failed"
+    if not already_failed:
+        assert not runner._running
+        assert "研究执行器中断" in tasks.get(row["id"])["result_summary"]
+
+
 @pytest.mark.parametrize("failure", ["initialize", "create"])
 def test_dispatch_failure_never_leaves_queued_row(environment, monkeypatch, failure):
     def broken(*a, **k):
