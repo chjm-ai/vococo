@@ -1,4 +1,4 @@
-"""研究入口使用真实临时数据库，模型执行由独立核心测试覆盖。"""
+"""研究入口移除后，历史数据仍通过受认证保护的接口读取。"""
 from __future__ import annotations
 
 import json
@@ -6,11 +6,12 @@ import json
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from mcp.types import ListToolsRequest
 
 from vococo import config
 from vococo.core import research, research_store, task_runner, tasks
-from vococo.gateway import clarify, task_routes
-from vococo.tools import research_tools
+from vococo.gateway import task_routes
+from vococo.tools import builtin
 
 
 @pytest.fixture
@@ -32,26 +33,23 @@ async def client(db):
         yield client
 
 
-def _payload():
-    return {"title": "技术选型", "prompt": "比较 Python 的任务队列，引用官方资料",
-            "model": "claude-sonnet-5-5"}
+def _historical_research():
+    row = tasks.create("技术选型", "比较 Python 的任务队列", kind="research")
+    research.initialize(row["id"], row["prompt"], "claude-sonnet-5-5")
+    return row
 
 
 @pytest.mark.anyio
-async def test_start_detail_and_pending_report(client, monkeypatch):
-    monkeypatch.setattr(config, "SESSION_KEY", "shared-session")
-    response = await client.post("/research?session_key=main", json=_payload())
-    assert response.status == 202
-    row = await response.json()
-    assert row["kind"] == "research" and row["status"] == "queued"
-    assert row["dispatch_chat_id"] == "main"
-    assert row["source_session_key"] == "shared-session"
+async def test_historical_detail_and_pending_report(client):
+    row = _historical_research()
     state = await (await client.get(f"/tasks/{row['id']}/research")).json()
     assert state["stage"] == "plan" and state["budget"]["searches"] == 12
     pending = await client.get(f"/tasks/{row['id']}/report")
     assert pending.status == 409
     assert (await client.get("/tasks/missing/research")).status == 404
     assert (await client.get("/tasks/missing/report")).status == 404
+    detail = await (await client.get(f"/tasks/{row['id']}")).json()
+    assert detail["kind"] == "research"
 
 
 @pytest.mark.anyio
@@ -77,19 +75,24 @@ async def test_task_summary_and_activity_share_normalized_conversation(client, m
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("patch", [
-    {"prompt": ""}, {"title": []}, {"model": 1}, {"budget": {"tokens": 0}},
-    {"budget": {"seconds": True}}, {"budget": {"unknown": 1}},
+@pytest.mark.parametrize("body", [
+    {"title": "研究", "prompt": "问题"}, {}, {"budget": {"tokens": 0}}, "not-json",
 ])
-async def test_invalid_start_does_not_queue(client, patch):
-    response = await client.post("/research", json={**_payload(), **patch})
-    assert response.status == 400
-    assert tasks.list_queued() == []
+async def test_removed_start_never_dispatches(client, monkeypatch, body):
+    def forbidden(*args, **kwargs):
+        pytest.fail("移除后的 HTTP 入口不能派发研究")
+    monkeypatch.setattr(task_runner, "dispatch_research", forbidden)
+    response = await client.post("/research?session_key=main", data=json.dumps(body),
+                                 headers={"Content-Type": "application/json"})
+    assert response.status == 410
+    assert "已移除" in (await response.json())["error"]
+    assert tasks.list_research() == []
+    assert not list(config.DATA_DIR.glob("research*"))
 
 
 @pytest.mark.anyio
 async def test_progress_is_slim_and_compatible_with_old_state(client):
-    row = await (await client.post("/research", json=_payload())).json()
+    row = _historical_research()
     task_id = row["id"]
     def legacy(state):
         state.pop("activity", None)
@@ -110,57 +113,53 @@ async def test_progress_is_slim_and_compatible_with_old_state(client):
                                     "fetched_at": 123, "claims_count": 1}]
     assert not {"report", "search_results", "question", "error"} & progress.keys()
     assert "网页全文" not in json.dumps(progress, ensure_ascii=False)
+    detail = await (await client.get(f"/tasks/{task_id}/research")).json()
+    assert detail["sources"][0]["extracts"][0]["text"] == "网页全文"
     assert (await client.get("/tasks/missing/research/progress")).status == 404
-    monkey_task = tasks.create("普通任务", "问题")
-    assert (await client.get(f"/tasks/{monkey_task['id']}/research/progress")).status == 404
+    ordinary = tasks.create("普通任务", "问题")
+    assert (await client.get(f"/tasks/{ordinary['id']}/research/progress")).status == 404
 
 
 @pytest.mark.anyio
-async def test_invalid_json_and_nested_dispatch(client):
-    response = await client.post("/research", data="not-json", headers={"Content-Type": "application/json"})
-    assert response.status == 400
-    response = await client.post("/research?session_key=task:parent", json=_payload())
-    assert response.status == 400
-    assert tasks.list_queued() == []
-
-
-@pytest.mark.anyio
-async def test_reports_download_and_resume_preserves_usage(client):
-    row = await (await client.post("/research", json=_payload())).json()
+@pytest.mark.parametrize("status", ["queued", "running", "failed", "cancelled", "done", "missing"])
+async def test_removed_resume_does_not_change_historical_data(client, monkeypatch, status):
+    row = _historical_research()
     task_id = row["id"]
-    tasks.set_status(task_id, "running")
-    tasks.finish(task_id, "failed", "", "中断")
+    tasks.set_status(task_id, status if status != "missing" else "failed")
     research_store.update(task_id, lambda state: state.update(
         status="interrupted", usage={"searches": 2, "fetches": 1, "tokens": 500}))
-    response = await client.post(f"/tasks/{task_id}/resume")
-    assert response.status == 202
-    assert research.get(task_id)["usage"]["tokens"] == 500
-    response = await client.post(f"/tasks/{task_id}/resume")
-    assert response.status == 409
+    before_task, before_state = tasks.get(task_id), research.get(task_id)
+    async def forbidden(*args, **kwargs):
+        pytest.fail("移除后的 HTTP 入口不能恢复研究")
+    monkeypatch.setattr(task_runner, "resume_research", forbidden)
+    target = "missing" if status == "missing" else task_id
+    response = await client.post(f"/tasks/{target}/resume")
+    assert response.status == 410
+    assert "已移除" in (await response.json())["error"]
+    assert tasks.get(task_id) == before_task
+    assert research.get(task_id) == before_state
+
+
+@pytest.mark.anyio
+async def test_historical_report_download_and_cancel(client):
+    row = _historical_research()
+    task_id = row["id"]
     research_store.update(task_id, lambda state: state.update(status="done", report="# 测试报告\n引用 [S1]"))
     response = await client.get(f"/tasks/{task_id}/report")
     assert response.status == 200
     assert "attachment" in response.headers["Content-Disposition"]
     assert "测试报告" in await response.text()
     assert response.headers["Content-Type"].startswith("text/markdown")
-
-
-@pytest.mark.anyio
-async def test_expired_research_cannot_resume(client):
-    row = await (await client.post("/research", json=_payload())).json()
-    tasks.set_status(row["id"], "running")
-    tasks.finish(row["id"], "failed", "", "中断")
-    research_store.update(row["id"], lambda state: state.update(deadline=0))
-    response = await client.post(f"/tasks/{row['id']}/resume")
-    assert response.status == 409
-    assert tasks.get(row["id"])["status"] == "failed"
+    assert (await (await client.post(f"/tasks/{task_id}/stop")).json())["ok"]
+    assert tasks.get(task_id)["status"] == "cancelled"
+    assert research.get(task_id)["report"] == "# 测试报告\n引用 [S1]"
 
 
 @pytest.mark.anyio
 async def test_all_research_routes_require_auth(client, monkeypatch):
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "secret")
     for method, path in (("post", "/research"), ("get", "/tasks/id/research"),
-                         ("get", "/tasks/id/research/progress"),
+                         ("get", "/tasks/id/research/progress"), ("post", "/tasks/id/stop"),
                          ("post", "/tasks/id/resume"), ("get", "/tasks/id/report")):
         response = await getattr(client, method)(path)
         assert response.status == 401
@@ -168,24 +167,9 @@ async def test_all_research_routes_require_auth(client, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_tools_launch_query_and_reject_nested_dispatch(db):
-    result = await research_tools.start_research.handler(_payload())
-    assert not result["isError"]
-    data = json.loads(result["content"][0]["text"])
-    state = await research_tools.get_research.handler({"id": data["id"]})
-    assert json.loads(state["content"][0]["text"])["stage"] == "plan"
-    result = await research_tools.resume_research.handler({"id": data["id"]})
-    assert result["isError"]
-    token = clarify.bind_turn("task:parent", 1)
-    try:
-        result = await research_tools.start_research.handler(_payload())
-        assert result["isError"]
-        assert len(tasks.list_queued()) == 1
-    finally:
-        clarify.unbind_turn("task:parent", 1, token)
-
-
-@pytest.mark.parametrize("data", [None, [], {"title": "a"}, {"title": "x" * 81, "prompt": "b"}])
-def test_tool_input_validation(data):
-    with pytest.raises(ValueError):
-        research_tools.request_options(data)
+async def test_mcp_list_excludes_removed_research_tools(db):
+    server = builtin.build_mcp_servers()["vococo"]["instance"]
+    result = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
+    names = {tool.name for tool in result.root.tools}
+    assert not {"start_research", "get_research", "resume_research"} & names
+    assert {"dispatch_session", "recall_past", "send_message"} <= names

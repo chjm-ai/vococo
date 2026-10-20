@@ -77,6 +77,11 @@ def _humanize_error(error_note: str) -> str:
 _running: dict[str, asyncio.Task] = {}
 
 
+def _ensure_research_execution_available() -> None:
+    """旧执行器仅保留兼容代码，不再允许进入运行队列。"""
+    raise RuntimeError("原生深度研究已移除，不能新建、恢复或执行研究任务")
+
+
 def _start_one(task: dict, turn_text: str | None = None) -> bool:
     """内部:立刻起跑一条任务(跳过排队队列),用于首次派发之外的重开场景
     (追问/cron 再次触发打断续接 / 原地续聊)。turn_text 非空时作为这一轮实际发给
@@ -86,6 +91,11 @@ def _start_one(task: dict, turn_text: str | None = None) -> bool:
     若 set_status 失败(状态已被别处改了),什么都不做,返回 False。
     """
     task_id = task["id"]
+    if task.get("kind") == "research":
+        try:
+            _ensure_research_execution_available()
+        except RuntimeError:
+            return False
     if not tasks.set_status(task_id, "running"):
         return False
     # 任务重新激活(追问/续接/cron 再次触发)时自动取消归档——归档只在任务静默时
@@ -105,8 +115,10 @@ def _spawn(task_id: str, turn_text: str | None = None) -> asyncio.Task:
     会把派发它那一轮的 clarify 路由(会话 key / 网页通道)也继承过去,于是任务里的审批弹窗、
     铃铛通知、审批记录全记到【派发方会话】名下,批准后续跑的也是派发方,任务本身收不到
     (2026-10-01 小红书审稿台任务实测)。任务要的上下文(任务会话 / cwd)由 _run 自己登记。"""
-    spawned = asyncio.create_task(_run(task_id, turn_text), context=contextvars.Context())
     row = tasks.get(task_id)
+    if row and row.get("kind") == "research":
+        _ensure_research_execution_available()
+    spawned = asyncio.create_task(_run(task_id, turn_text), context=contextvars.Context())
     if row and row.get("kind") == "research":
         spawned.add_done_callback(lambda finished: _research_run_done(task_id, finished))
     return spawned
@@ -546,6 +558,13 @@ def _maybe_start_next() -> None:
         if not queued:
             return
         nxt = queued[0]
+        if nxt.get("kind") == "research":
+            try:
+                _ensure_research_execution_available()
+            except RuntimeError as error:
+                tasks.fail_research(nxt["id"], str(error))
+                _notify_activity(nxt["id"])
+                continue
         if not tasks.set_status(nxt["id"], "running"):
             continue  # 状态已被别处改了(如取消排队中的任务),跳过看下一个
         _notify_activity(nxt["id"])
@@ -613,7 +632,8 @@ def dispatch_research(
     dispatch_platform: str | None = None, dispatch_chat_id: str | None = None,
     context_session_key: str | None = None,
 ) -> dict:
-    """先完整保存研究，再发布 queued 行；模型在派发时固定，不使用后台模型回退。"""
+    """保留旧调用签名，但不再创建研究。"""
+    _ensure_research_execution_available()
     chosen_model = model or (session_store.get_chosen_model(context_session_key)
                              if context_session_key else None) or config.MODEL
     task_id = secrets.token_hex(8)
@@ -632,8 +652,12 @@ def dispatch_research(
 
 
 async def resume_research(task_id: str) -> dict:
-    """明确恢复失败/取消研究，重新排队而不是绕过统一并发上限。"""
+    """保留旧调用签名，但不再恢复研究。"""
     row = tasks.get(task_id)
+    try:
+        _ensure_research_execution_available()
+    except RuntimeError as error:
+        return {"ok": False, "message": str(error), "task": row}
     if not row or row.get("kind") != "research":
         return {"ok": False, "message": "研究任务不存在", "task": row}
     if row["status"] not in {"failed", "cancelled"} or task_id in _running:
@@ -708,7 +732,7 @@ async def append(task_id: str, instruction: str) -> dict:
         return {"ok": False, "message": f"任务不存在(id={task_id})", "task": None}
 
     if row.get("kind") == "research":
-        return {"ok": False, "message": "研究不支持普通续聊，请明确调用 resume_research 恢复", "task": row}
+        return {"ok": False, "message": "原生深度研究已移除，历史研究不支持续聊或恢复", "task": row}
 
     if row["status"] == "queued":
         merged = f"{row['prompt']}\n\n--- 追加指令 ---\n{instruction}"
@@ -778,30 +802,11 @@ async def cancel_and_wait(task_id: str, timeout: float = 10.0) -> None:
         await asyncio.wait({t}, timeout=timeout)
 
 
-def _recover_research(row: dict) -> None:
-    task_id = row["id"]
-    state = research.get(task_id)
-    if not state:
-        raise ValueError("研究记录缺失，无法恢复")
-    if state["status"] == "done" and state["report"]:
-        # 报告已提交但 task 尚未收尾：走原执行器补会话、指标与终态通知。
-        if row["status"] == "running":
-            tasks.requeue_research(task_id, "running")
-        return
-    if row["status"] == "running" and not state["checkpoints"]:
-        raise ValueError("服务重启，研究没有可恢复的检查点")
-    if row["status"] == "queued" and state["status"] != "ready":
-        raise ValueError("研究排队记录不是 ready 状态，无法安全恢复")
-    research.prepare_resume(task_id)
-    if row["status"] == "running":
-        tasks.requeue_research(task_id, "running")
-
-
 async def heal_after_restart() -> None:
-    """普通任务仍标失败；研究校验预算/检查点后恢复，取消任务绝不自动重开。"""
+    """保留历史研究与补账，但不再恢复执行；普通任务沿用原有清理逻辑。"""
     records = tasks.list_research()
     protected = set(_running)
-    research.recover(protected)
+    terminal_ids = []
     for row in records:
         task_id = row["id"]
         if task_id in _running:
@@ -810,15 +815,18 @@ async def heal_after_restart() -> None:
             # 终态也可能因上次账本故障漏记，但只能补账，绝不自动重开。
             _reconcile_research_usage(row)
             if row["status"] in {"queued", "running"}:
-                _recover_research(row)
+                tasks.fail_research(task_id, "原生深度研究已移除，不再自动恢复")
+                terminal_ids.append(task_id)
             elif tasks.is_inline_research(row) and not row.get("research_delivered_at"):
-                await task_events.emit_terminal(task_id)
+                terminal_ids.append(task_id)
         except Exception as error:
             if tasks.fail_research(task_id, f"研究恢复失败:{error}"):
-                await task_events.emit_terminal(task_id)
+                terminal_ids.append(task_id)
             else:
                 print(f"[task_runner] 研究 {task_id} 对账失败:{error}", flush=True)
         protected.add(task_id)
-    for row in tasks.mark_orphans_failed(exclude_ids=protected):
-        await task_events.emit_terminal(row["id"])
+    terminal_ids.extend(row["id"] for row in tasks.mark_orphans_failed(exclude_ids=protected))
+    # 通知会让出事件循环；必须先清空旧队列，避免此时派发普通任务又拉起旧研究。
+    for task_id in terminal_ids:
+        await task_events.emit_terminal(task_id)
     _maybe_start_next()

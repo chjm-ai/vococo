@@ -38,6 +38,13 @@ def environment(isolated, monkeypatch):
         tasks._DB = None
 
 
+@pytest.fixture
+def legacy_environment(environment, monkeypatch):
+    """仅对保留的旧执行器做单元测试；生产入口与重启测试不绕过移除闸。"""
+    monkeypatch.setattr(runner, "_ensure_research_execution_available", lambda: None)
+    return environment
+
+
 async def settle():
     """等待明确可控的本地 asyncio 执行器收尾，不接触网络或 SDK。"""
     for _ in range(100):
@@ -50,7 +57,7 @@ async def settle():
 
 
 @pytest.mark.anyio
-async def test_research_returns_to_source_without_touching_active_reply(environment, monkeypatch):
+async def test_research_returns_to_source_without_touching_active_reply(legacy_environment, monkeypatch):
     source = "web:source"
     active_turn = session_store.start_turn(source, "正在回复的问题")
     events = []
@@ -74,7 +81,7 @@ async def test_research_returns_to_source_without_touching_active_reply(environm
 
 
 @pytest.mark.anyio
-async def test_progress_events_include_checkpoints_without_delta_spam(environment, monkeypatch):
+async def test_progress_events_include_checkpoints_without_delta_spam(legacy_environment, monkeypatch):
     events = []
     task_events.register_main_event_bridge(events.append)
     async def execute(task_id, stream_fn=None):
@@ -102,7 +109,7 @@ async def test_progress_events_include_checkpoints_without_delta_spam(environmen
 
 
 @pytest.mark.anyio
-async def test_real_research_cancel_publishes_closed_activity(environment, monkeypatch):
+async def test_real_research_cancel_publishes_closed_activity(legacy_environment, monkeypatch):
     started = asyncio.Event()
     events = []
     task_events.register_main_event_bridge(events.append)
@@ -133,7 +140,7 @@ async def test_real_research_cancel_publishes_closed_activity(environment, monke
 
 
 @pytest.mark.anyio
-async def test_partial_executor_output_is_not_completed_report(environment, monkeypatch):
+async def test_partial_executor_output_is_not_completed_report(legacy_environment, monkeypatch):
     async def partial(task_id, stream_fn=None):
         return "阶段文本，不是报告"
     monkeypatch.setattr(research, "execute", partial)
@@ -145,7 +152,7 @@ async def test_partial_executor_output_is_not_completed_report(environment, monk
 
 
 @pytest.mark.anyio
-async def test_inline_cancel_resume_and_restart_keep_source(environment, monkeypatch):
+async def test_inline_cancel_resume_and_restart_keep_source(legacy_environment, monkeypatch):
     started = asyncio.Event()
     async def blocked(task_id, stream_fn=None):
         research_store.update(task_id, lambda state: state.update(
@@ -168,7 +175,7 @@ async def test_inline_cancel_resume_and_restart_keep_source(environment, monkeyp
 
 
 @pytest.mark.anyio
-async def test_inline_delivery_failure_does_not_block_queue_and_retries_on_restart(environment, monkeypatch):
+async def test_inline_delivery_failure_does_not_block_queue_and_retries_on_restart(legacy_environment, monkeypatch):
     original = session_store.append_external
     def broken(*a, **k):
         raise RuntimeError("模拟会话库暂不可写")
@@ -188,7 +195,7 @@ async def test_inline_delivery_failure_does_not_block_queue_and_retries_on_resta
 
 
 @pytest.mark.anyio
-async def test_delivery_retries_after_append_succeeded_without_duplicate(environment, monkeypatch):
+async def test_delivery_retries_after_append_succeeded_without_duplicate(legacy_environment, monkeypatch):
     original = session_store.set_pending_review
     def broken(*a, **k):
         raise RuntimeError("模拟写完报告后失败")
@@ -205,7 +212,7 @@ async def test_delivery_retries_after_append_succeeded_without_duplicate(environ
 
 
 @pytest.mark.anyio
-async def test_research_notify_links_source_and_sends_full_report(environment, monkeypatch):
+async def test_research_notify_links_source_and_sends_full_report(legacy_environment, monkeypatch):
     from vococo.voice import notify
     from vococo.gateway.adapters.web_push import PUSH
     pushed, platform, events = [], [], []
@@ -232,7 +239,7 @@ async def test_research_notify_links_source_and_sends_full_report(environment, m
 
 
 @pytest.mark.anyio
-async def test_custom_main_session_research_routes_to_frontend_main(environment, monkeypatch):
+async def test_custom_main_session_research_routes_to_frontend_main(legacy_environment, monkeypatch):
     from vococo.voice import notify
     from vococo.gateway.adapters.web_push import PUSH
     monkeypatch.setattr(config, "SESSION_KEY", "shared-session")
@@ -273,7 +280,7 @@ def queued_research(task_id, status="queued", checkpoint=False, research_status=
     ("explicit", "source-model", "explicit"),
     (None, "source-model", "source-model"), (None, "", "fixed-default"),
 ])
-async def test_dispatch_fixed_model_no_sidecar(environment, monkeypatch, explicit, source, expected):
+async def test_dispatch_fixed_model_no_sidecar(legacy_environment, monkeypatch, explicit, source, expected):
     session_store.set_chosen_model("web:source", source)
     monkeypatch.setattr(providers, "sidecar_env", lambda *a, **k: pytest.fail("研究不能模型回退"))
     observed = []
@@ -293,7 +300,7 @@ async def test_dispatch_fixed_model_no_sidecar(environment, monkeypatch, explici
 
 
 @pytest.mark.anyio
-async def test_research_queue_and_resume_share_concurrency(environment, monkeypatch):
+async def test_research_queue_and_resume_share_concurrency(legacy_environment, monkeypatch):
     started, release = asyncio.Event(), asyncio.Event()
     seen = []
     async def execute(task_id, stream_fn=None):
@@ -317,7 +324,7 @@ async def test_research_queue_and_resume_share_concurrency(environment, monkeypa
 
 
 @pytest.mark.anyio
-async def test_cancel_running_then_resume_preserves_checkpoint(environment, monkeypatch):
+async def test_cancel_running_then_resume_preserves_checkpoint(legacy_environment, monkeypatch):
     started = asyncio.Event()
     async def blocked(task_id, stream_fn=None):
         research_store.update(task_id, lambda state: state.update(
@@ -338,7 +345,7 @@ async def test_cancel_running_then_resume_preserves_checkpoint(environment, monk
 
 
 @pytest.mark.anyio
-async def test_cancel_before_first_coroutine_step_frees_queue(environment, monkeypatch):
+async def test_cancel_before_first_coroutine_step_frees_queue(legacy_environment, monkeypatch):
     monkeypatch.setattr(research, "execute", completed)
     first = runner.dispatch_research("一", "问题")
     second = runner.dispatch_research("二", "问题")
@@ -350,9 +357,9 @@ async def test_cancel_before_first_coroutine_step_frees_queue(environment, monke
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("already_failed", [False, True])
-async def test_executor_database_failure_keeps_traceback(environment, monkeypatch, capsys, already_failed):
+async def test_executor_database_failure_keeps_traceback(legacy_environment, monkeypatch, capsys, already_failed):
     def open_missing_database():
-        sqlite3.connect(environment / "missing" / "probe.db")
+        sqlite3.connect(legacy_environment / "missing" / "probe.db")
 
     async def broken(task_id, turn_text=None):
         if already_failed:
@@ -378,7 +385,7 @@ async def test_executor_database_failure_keeps_traceback(environment, monkeypatc
 
 
 @pytest.mark.parametrize("failure", ["initialize", "create"])
-def test_dispatch_failure_never_leaves_queued_row(environment, monkeypatch, failure):
+def test_dispatch_failure_never_leaves_queued_row(legacy_environment, monkeypatch, failure):
     def broken(*a, **k):
         raise ValueError("模拟创建失败")
     target, name = {
@@ -392,7 +399,7 @@ def test_dispatch_failure_never_leaves_queued_row(environment, monkeypatch, fail
 
 
 @pytest.mark.anyio
-async def test_failure_and_progress_metrics_use_common_finish(environment, monkeypatch):
+async def test_failure_and_progress_metrics_use_common_finish(legacy_environment, monkeypatch):
     terminal = []
     async def terminal_handler(task_id):
         terminal.append(tasks.get(task_id))
@@ -433,8 +440,10 @@ async def test_failure_and_progress_metrics_use_common_finish(environment, monke
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("status,research_status,checkpoint,expired,expected", [
-    ("running", "running", True, False, "done"),
-    ("queued", "ready", False, False, "done"),
+    ("running", "running", True, False, "failed"),
+    ("queued", "ready", False, False, "failed"),
+    ("done", "done", True, False, "done"),
+    ("failed", "interrupted", True, False, "failed"),
     ("running", "running", False, False, "failed"),
     ("running", "running", True, True, "failed"),
     ("queued", "ready", False, True, "failed"),
@@ -446,18 +455,52 @@ async def test_restart_handles_all_research_states(environment, monkeypatch, sta
     queued_research("restore", status, checkpoint, research_status)
     if expired:
         research_store.update("restore", lambda state: state.update(deadline=time.time() - 1))
-    monkeypatch.setattr(research, "execute", completed)
+    before = research.get("restore")
+    def forbidden(*args, **kwargs):
+        pytest.fail("移除后的研究不能恢复或执行")
+    monkeypatch.setattr(research, "execute", forbidden)
+    monkeypatch.setattr(research, "recover", forbidden)
+    monkeypatch.setattr(research, "prepare_resume", forbidden)
     await runner.heal_after_restart()
     await settle()
     row = tasks.get("restore")
     assert row["status"] == expected
-    if expected == "failed":
-        assert row["progress_note"]
+    if status in {"queued", "running"}:
+        assert "已移除" in row["progress_note"]
+    assert research.get("restore") == before
     assert tasks.list_queued() == []
 
 
 @pytest.mark.anyio
-async def test_restart_uses_saved_report_even_if_expired_or_daily_full(environment, monkeypatch):
+async def test_restart_clears_all_research_before_notification_can_dispatch(environment, monkeypatch):
+    queued_research("old-first")
+    queued_research("old-second")
+    started, notified = [], []
+    async def run(task_id, turn_text=None):
+        started.append(task_id)
+        assert tasks.get(task_id)["kind"] != "research"
+        tasks.finish(task_id, "done", "普通任务结果", "完成")
+        runner._running.pop(task_id, None)
+    async def notify(task_id):
+        notified.append(task_id)
+        if len(notified) == 1:
+            assert tasks.get("old-second")["status"] == "failed"
+            runner.dispatch("通知期间派发的普通任务", "问题", origin="chat")
+            await asyncio.sleep(0)
+    monkeypatch.setattr(runner, "_run", run)
+    monkeypatch.setattr(task_events, "emit_terminal", notify)
+    monkeypatch.setattr(config, "resolve_execution_root", lambda **k: str(environment))
+    monkeypatch.setattr(runner, "_task_agent_id", lambda *args: None)
+    await runner.heal_after_restart()
+    await settle()
+    assert notified == ["old-first", "old-second"]
+    assert len(started) == 1
+    assert tasks.get(started[0])["status"] == "done"
+    assert tasks.list_queued() == []
+
+
+@pytest.mark.anyio
+async def test_restart_preserves_saved_report_without_reopening_executor(environment, monkeypatch):
     queued_research("saved", "running", True, "done")
     research_store.update("saved", lambda state: state.update(report="已保存的报告", deadline=0))
     monkeypatch.setattr(config, "BG_DAILY_TOKEN_BUDGET", 1)
@@ -469,12 +512,12 @@ async def test_restart_uses_saved_report_even_if_expired_or_daily_full(environme
     monkeypatch.setattr(research, "execute", forbidden)
     await runner.heal_after_restart()
     await settle()
-    assert tasks.get("saved")["status"] == "done"
-    assert tasks.get("saved")["result_full"] == "已保存的报告"
+    assert tasks.get("saved")["status"] == "failed"
+    assert research.get("saved")["report"] == "已保存的报告"
 
 
 @pytest.mark.anyio
-async def test_resume_limits_missing_and_append_do_not_change_prompt(environment):
+async def test_resume_limits_missing_and_append_do_not_change_prompt(legacy_environment):
     queued_research("failed", "failed")
     research_store.update("failed", lambda state: state.update(deadline=0))
     assert not (await runner.resume_research("failed"))["ok"]
@@ -486,7 +529,7 @@ async def test_resume_limits_missing_and_append_do_not_change_prompt(environment
 
 
 @pytest.mark.anyio
-async def test_daily_limit_rejects_before_execute(environment, monkeypatch):
+async def test_daily_limit_rejects_before_execute(legacy_environment, monkeypatch):
     monkeypatch.setattr(config, "BG_DAILY_TOKEN_BUDGET", 10)
     tasks.add_daily_usage(10)
     async def forbidden(*a, **k):
@@ -499,7 +542,7 @@ async def test_daily_limit_rejects_before_execute(environment, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_research_bypasses_worktree_and_chat_task_budget(environment, monkeypatch):
+async def test_research_bypasses_worktree_and_chat_task_budget(legacy_environment, monkeypatch):
     monkeypatch.setattr(config, "CHAT_TASK_TOKEN_BUDGET", 1)
     async def forbidden(*a, **k):
         pytest.fail("研究不能创建项目 worktree")
@@ -512,7 +555,7 @@ async def test_research_bypasses_worktree_and_chat_task_budget(environment, monk
 
 
 @pytest.mark.anyio
-async def test_old_terminal_callback_cannot_fail_resumed_run(environment, monkeypatch):
+async def test_old_terminal_callback_cannot_fail_resumed_run(legacy_environment, monkeypatch):
     old_notification, release_old = asyncio.Event(), asyncio.Event()
     resumed, release_new = asyncio.Event(), asyncio.Event()
     calls = 0
@@ -547,7 +590,7 @@ async def test_old_terminal_callback_cannot_fail_resumed_run(environment, monkey
 
 
 @pytest.mark.anyio
-async def test_usage_limit_during_research_counts_tokens_and_finishes(environment, monkeypatch):
+async def test_usage_limit_during_research_counts_tokens_and_finishes(legacy_environment, monkeypatch):
     monkeypatch.setattr(config, "BG_DAILY_TOKEN_BUDGET", 10)
     async def execute(task_id, stream_fn=None):
         research_store.update(task_id, lambda state: state["usage"].update(tokens=10))
@@ -571,14 +614,14 @@ async def test_restart_missing_record_and_exhausted_tokens_fail(environment, mon
     monkeypatch.setattr(research, "execute", forbidden)
     await runner.heal_after_restart()
     assert tasks.get("missing")["status"] == "failed"
-    assert "研究记录缺失" in tasks.get("missing")["progress_note"]
+    assert "已移除" in tasks.get("missing")["progress_note"]
     assert tasks.get("exhausted")["status"] == "failed"
-    assert "token 预算" in tasks.get("exhausted")["progress_note"]
+    assert "已移除" in tasks.get("exhausted")["progress_note"]
     assert tasks.list_queued() == []
 
 
 @pytest.mark.anyio
-async def test_session_initialization_failure_still_frees_slot(environment, monkeypatch):
+async def test_session_initialization_failure_still_frees_slot(legacy_environment, monkeypatch):
     def broken(*a, **k):
         raise RuntimeError("会话库失败")
     monkeypatch.setattr(session_store, "start_turn", broken)
@@ -635,22 +678,16 @@ async def test_restart_reconciles_prior_tokens_without_double_counting(environme
     research_store.update("recover-usage", lambda state: state["usage"].update(tokens=90))
     if already_accounted:
         tasks.reconcile_research_usage("recover-usage", 90)
-    async def execute(task_id, stream_fn=None):
-        assert tasks.daily_usage() == 90  # 启动前必须已经补记崩溃前的消耗。
-        research_store.update(task_id, lambda state: state["usage"].update(tokens=100))
-        await stream_fn(TextDelta("恢复后的结果"))
-        assert tasks.daily_usage() == 100  # 无需等待收尾，流式回调已对账。
-        await stream_fn(TextDelta("重复事件"))
-        assert tasks.daily_usage() == 100
-        return await completed(task_id)
-    monkeypatch.setattr(research, "execute", execute)
+    async def forbidden(*args, **kwargs):
+        pytest.fail("重启只补记历史用量，不能产生新消耗")
+    monkeypatch.setattr(research, "execute", forbidden)
     await runner.heal_after_restart()
     await settle()
-    assert tasks.get("recover-usage")["status"] == "done"
-    assert tasks.get("recover-usage")["last_tokens"] == 10
-    assert tasks.daily_usage() == 100
+    assert tasks.get("recover-usage")["status"] == "failed"
+    assert research.get("recover-usage")["usage"]["tokens"] == 90
+    assert tasks.daily_usage() == 90
     await runner.heal_after_restart()
-    assert tasks.daily_usage() == 100
+    assert tasks.daily_usage() == 90
 
 
 @pytest.mark.anyio
@@ -661,12 +698,12 @@ async def test_restart_reconciles_terminal_task_after_accounting_failure(environ
         "BEGIN SELECT RAISE(ABORT, '模拟账本失败'); END"
     )
     connection.commit()
-    async def execute(task_id, stream_fn=None):
-        research_store.update(task_id, lambda state: state["usage"].update(tokens=90))
-        await stream_fn(TextDelta("已耗90"))
-    monkeypatch.setattr(research, "execute", execute)
-    row = runner.dispatch_research("研究", "问题", dispatch_platform="telegram")
-    await settle()
+    row = queued_research("failed-accounting", "failed", True, "interrupted")
+    tasks._conn().execute("UPDATE tasks SET origin='voice' WHERE id=?", (row["id"],))
+    tasks._conn().commit()
+    research_store.update(row["id"], lambda state: state["usage"].update(tokens=90))
+    with pytest.raises(sqlite3.IntegrityError, match="模拟账本失败"):
+        runner._reconcile_research_usage(tasks.get(row["id"]))
     assert tasks.get(row["id"])["status"] == "failed"
     assert tasks.daily_usage() == 0
     connection.execute("DROP TRIGGER fail_research_accounting")
@@ -692,11 +729,11 @@ async def test_restart_reconciliation_enforces_daily_limit_before_execution(envi
     await settle()
     assert tasks.get("over-cap")["status"] == "failed"
     assert tasks.daily_usage() == 90
-    assert "总量已达上限" in tasks.get("over-cap")["result_summary"]
+    assert "已移除" in tasks.get("over-cap")["result_summary"]
 
 
 @pytest.mark.anyio
-async def test_explicit_resume_reconciles_previous_run_tokens(environment, monkeypatch):
+async def test_explicit_resume_reconciles_previous_run_tokens(legacy_environment, monkeypatch):
     queued_research("resume-usage", "cancelled", True, "interrupted")
     tasks._conn().execute("UPDATE tasks SET origin='voice' WHERE id='resume-usage'")
     tasks._conn().commit()
@@ -712,6 +749,53 @@ async def test_explicit_resume_reconciles_previous_run_tokens(environment, monke
     await settle()
     assert tasks.daily_usage() == 100
     assert tasks.get("resume-usage")["last_tokens"] == 10
+
+
+def test_removed_dispatch_rejects_before_creating_data(environment):
+    with pytest.raises(RuntimeError, match="已移除"):
+        runner.dispatch_research("研究", "问题")
+    assert tasks.list_research() == []
+    assert not list(config.DATA_DIR.glob("research*"))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", ["queued", "running", "failed", "cancelled", "done"])
+async def test_removed_core_resume_and_start_leave_history_unchanged(environment, status):
+    row = queued_research("history", status, True, "interrupted")
+    before_task, before_state = tasks.get(row["id"]), research.get(row["id"])
+    result = await runner.resume_research(row["id"])
+    assert not result["ok"] and "已移除" in result["message"]
+    assert not runner._start_one(row)
+    with pytest.raises(RuntimeError, match="已移除"):
+        runner._spawn(row["id"])
+    assert tasks.get(row["id"]) == before_task
+    assert research.get(row["id"]) == before_state
+    assert not runner._running
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("origin", ["chat", "cron"])
+async def test_ordinary_dispatch_before_heal_never_starts_old_research(environment, monkeypatch, origin):
+    queued_research("old-before-heal")
+    before = research.get("old-before-heal")
+    started = []
+    async def run(task_id, turn_text=None):
+        started.append(task_id)
+        assert tasks.get(task_id)["kind"] == "chat"
+        tasks.finish(task_id, "done", "普通任务结果", "完成")
+        runner._running.pop(task_id, None)
+    monkeypatch.setattr(runner, "_run", run)
+    monkeypatch.setattr(config, "resolve_execution_root", lambda **k: str(environment))
+    monkeypatch.setattr(runner, "_task_agent_id", lambda *args: None)
+    row = runner.dispatch("普通任务", "问题", origin=origin)
+    await settle()
+    assert started == [row["id"]]
+    assert tasks.get("old-before-heal")["status"] == "failed"
+    assert "已移除" in tasks.get("old-before-heal")["progress_note"]
+    assert research.get("old-before-heal") == before
+    await runner.heal_after_restart()
+    assert started == [row["id"]]
+    assert tasks.get(row["id"])["status"] == "done"
 
 
 @pytest.mark.anyio
