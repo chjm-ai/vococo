@@ -91,6 +91,7 @@ Web 入口:`serve` 时设 `WEB_ENABLED=1` 即在同进程起网页服务(默认�
 `start_research` 创建研究任务；进度和完整报告回到发起会话，不再另开会话。简单查事实仍走普通搜索，不启动研究流程。
 
 - 四阶段：规划 → 搜集资料 → 复核与补查 → 报告；阶段和来源保存在 `data/research.db`。
+- 当前会话显示一张可展开研究卡：真实搜索词、抓取网页、操作成败、已取得来源、已提交阶段产出及预算用量；不再在底栏重复展示。刷新可恢复过程，报告独立显示，不暴露内部推理或未提交草稿。
 - 默认预算：创建起 300 秒、12 次搜索、18 次抓取、180000 新鲜 token；可在发起时指定
   `budget`（`seconds/searches/fetches/tokens/max_turns`）。次数执行前扣除，失败重试也计数。
   token 依 SDK 用量事件超限打断，可能单次响应超调，不是精确费用封顶。
@@ -110,6 +111,7 @@ Web 入口:`serve` 时设 `WEB_ENABLED=1` 即在同进程起网页服务(默认�
 |---|---|
 | `POST /research?session_key=<聊天ID>` | JSON：`title`、`prompt`，可选 `model`、`budget` |
 | `GET /tasks/<id>/research` | 阶段、预算、来源证据和检查点 |
+| `GET /tasks/<id>/research/progress` | 公开操作、来源与已提交产出的轻量快照，不含网页正文或草稿 |
 | `POST /tasks/<id>/resume` | 在原额度内恢复失败／取消的研究 |
 | `GET /tasks/<id>/report` | 下载 Markdown 报告，未完成返回 409 |
 | `POST /tasks/<id>/stop` | 复用已有取消入口 |

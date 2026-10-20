@@ -65,12 +65,17 @@ def on_task_activity(task: dict) -> None:
             "dispatch_chat_id": task.get("dispatch_chat_id"),
             "origin": task.get("origin"),
             "kind": task.get("kind", "chat"),
+            "source_session_key": task.get("source_session_key"),
+            "conversation_id": tasks.conversation_id(task),
         },
     )
     if tasks.is_inline_research(task):
+        from . import research
+
         _bridge_event({"conv": tasks.conversation_id(task), "type": "research_update",
                        "task_id": task["id"], "title": task["title"], "status": task["status"],
-                       "progress_note": task["progress_note"]})
+                       "progress_note": task["progress_note"],
+                       "progress": research.progress(task["id"], task)})
         return
     if task["status"] != "running" or task["id"] in _started_tasks:
         return
@@ -118,6 +123,7 @@ async def emit_terminal(task_id: str) -> None:
     _started_tasks.discard(task_id)
     task = tasks.get(task_id)
     if task and tasks.is_inline_research(task) and task["status"] in tasks.TERMINAL_STATUSES:
+        on_task_activity(task)
         try:
             _deliver_research(task)
         except Exception as error:

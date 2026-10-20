@@ -54,6 +54,7 @@ async def handle_tasks_list(request: web.Request) -> web.Response:
     # 请求。只标 has_full,前端列表出来后空闲时再逐条走 /tasks/{id} 预取详情。
     for row in rows:
         row["has_full"] = bool(row.pop("result_full", ""))
+        row["conversation_id"] = tasks.conversation_id(row)
     return _json(rows)
 
 
@@ -136,6 +137,18 @@ async def handle_research_detail(request: web.Request) -> web.Response:
     return _json(state)
 
 
+async def handle_research_progress(request: web.Request) -> web.Response:
+    if (guard := _guard(request)) is not None:
+        return guard
+    task_id = request.match_info["task_id"]
+    snapshot = research.progress(task_id, tasks.get(task_id))
+    if snapshot is None:
+        return web.json_response({"error": "研究不存在"}, status=404)
+    response = _json(snapshot)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 async def handle_research_resume(request: web.Request) -> web.Response:
     if (guard := _guard(request)) is not None:
         return guard
@@ -168,6 +181,7 @@ def register_routes(app: web.Application) -> None:
             web.post("/tasks/{task_id}/stop", handle_task_stop),
             web.post("/research", handle_research_start),
             web.get("/tasks/{task_id}/research", handle_research_detail),
+            web.get("/tasks/{task_id}/research/progress", handle_research_progress),
             web.post("/tasks/{task_id}/resume", handle_research_resume),
             web.get("/tasks/{task_id}/report", handle_research_report),
         ]

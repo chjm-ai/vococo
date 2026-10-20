@@ -122,6 +122,8 @@ def _research_run_done(task_id: str, finished: asyncio.Task) -> None:
         return
     if _running.get(task_id) is finished:
         _running.pop(task_id, None)
+    if research.get(task_id):
+        research.interrupt(task_id)
     if finished.cancelled():
         tasks.set_status(task_id, "cancelled", progress_note="已取消")
     else:
@@ -284,6 +286,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     effective_cwd = row["cwd"]
     cwd_token = None
     last_progress_ts = 0.0
+    last_research_progress = None
     result_text = ""
     status = "failed"
     error_note = ""
@@ -299,6 +302,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
 
     async def _observe(ev) -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id, used_tokens, tool_calls
+        nonlocal last_research_progress
         if isinstance(ev, SessionStarted) and not is_research:
             # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮
             # 之后被 append 打断(CancelledError,永远走不到 Done),下一轮追问
@@ -356,7 +360,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             state = research.get(task_id)
             used_tokens = state["usage"]["tokens"] - research_start_tokens
             _reconcile_research_usage(row, state)
-            _research_progress(task_id, state)
+            if isinstance(ev, (research.ProgressChanged, ToolInput, ToolFinished, Done)):
+                last_research_progress = _research_progress(task_id, state, last_research_progress)
             if (_counts_daily(row) and config.BG_DAILY_TOKEN_BUDGET
                     and tasks.daily_usage() >= config.BG_DAILY_TOKEN_BUDGET):
                 raise research.ResearchLimitError("今天后台任务的 token 总量已达上限")
@@ -446,6 +451,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         if is_research:
             state = research.get(task_id)
             if state:
+                if status != "done":
+                    research.interrupt(task_id)
                 used_tokens = max(0, state["usage"]["tokens"] - research_start_tokens)
                 _reconcile_research_usage(row, state)
         if not is_research and used_tokens and _counts_daily(row):
@@ -574,12 +581,17 @@ def _reconcile_research_usage(row: dict, state: dict | None = None) -> None:
         tasks.reconcile_research_usage(row["id"], state["usage"]["tokens"])
 
 
-def _research_progress(task_id: str, state: dict) -> None:
+def _research_progress(task_id: str, state: dict, previous: dict | None = None) -> dict:
+    snapshot = research.progress(task_id)
+    signature = {key: value for key, value in snapshot.items() if key != "updated_at"}
+    if signature == previous:
+        return signature
     stage = {"plan": "制定计划", "collect": "搜集资料", "review": "复核证据", "report": "撰写报告"}
     note = (f"{stage.get(state['stage'], state['stage'])} · {len(state['sources'])}个来源 · "
             f"{state['usage']['searches']}/{state['budget']['searches']}次搜索")
     tasks.set_progress(task_id, note)
     _notify_activity(task_id)
+    return signature
 
 
 def dispatch_research(

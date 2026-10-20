@@ -74,6 +74,65 @@ async def test_research_returns_to_source_without_touching_active_reply(environm
 
 
 @pytest.mark.anyio
+async def test_progress_events_include_checkpoints_without_delta_spam(environment, monkeypatch):
+    events = []
+    task_events.register_main_event_bridge(events.append)
+    async def execute(task_id, stream_fn=None):
+        research_store.update(task_id, lambda state: state.update(status="running"))
+        for _ in range(30):
+            await stream_fn(TextDelta("不能公开的草稿"))
+        before = len(events)
+        research._checkpoint(task_id, "plan", "公开的已提交计划")
+        await stream_fn(research.ProgressChanged())
+        await stream_fn(research.ProgressChanged())
+        updates = [event for event in events[before:] if event["type"] == "research_update"]
+        assert len(updates) == 1
+        assert updates[0]["progress"]["checkpoints"] == {"plan": "公开的已提交计划"}
+        assert updates[0]["progress"]["title"] == "进度研究"
+        return await completed(task_id)
+    monkeypatch.setattr(research, "execute", execute)
+    row = runner.dispatch_research("进度研究", "问题", context_session_key="web:source")
+    await settle()
+    updates = [event for event in events if event["type"] == "research_update"]
+    assert len(updates) <= 5
+    assert all("progress" in event for event in updates)
+    assert "不能公开的草稿" not in str(events)
+    assert updates[-1]["progress"]["task_status"] == "done"
+    assert tasks.get(row["id"])["status"] == "done"
+
+
+@pytest.mark.anyio
+async def test_real_research_cancel_publishes_closed_activity(environment, monkeypatch):
+    started = asyncio.Event()
+    events = []
+    task_events.register_main_event_bridge(events.append)
+    async def model(**kwargs):
+        if "当前阶段：plan。" in kwargs["user_text"]:
+            yield Done(AgentReply(text="已提交计划", tool_calls=[], cost_usd=None, is_error=False))
+            return
+        args = {"query": "公开搜索词"}
+        await kwargs["tool_guard"]({"tool_name": "WebSearch", "tool_input": args}, "q", None)
+        yield ToolInput("WebSearch", "q", args)
+        started.set()
+        await asyncio.Event().wait()
+    monkeypatch.setattr(research, "stream_turn", model)
+    row = runner.dispatch_research("取消研究", "问题", context_session_key="web:source")
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        updates = [event["progress"] for event in events if event["type"] == "research_update"]
+        assert updates[-1]["activity"][0]["status"] == "running"
+        assert updates[-1]["checkpoints"] == {"plan": "已提交计划"}
+    finally:
+        runner.cancel(row["id"])
+        await settle()
+    progress = [event["progress"] for event in events if event["type"] == "research_update"][-1]
+    assert progress["task_status"] == "cancelled"
+    assert progress["activity"][0]["status"] == "failed"
+    assert progress["activity"][0]["finished_at"]
+    assert progress["activity"] == research.get(row["id"])["activity"]
+
+
+@pytest.mark.anyio
 async def test_partial_executor_output_is_not_completed_report(environment, monkeypatch):
     async def partial(task_id, stream_fn=None):
         return "阶段文本，不是报告"

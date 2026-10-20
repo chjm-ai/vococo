@@ -54,6 +54,45 @@ def _digest(name: str) -> str:
 
 
 @pytest.mark.anyio
+async def test_research_script_is_served_by_real_server_routes(isolated, monkeypatch):
+    from aiohttp import ClientSession
+    from vococo import config
+    from vococo.core import task_runner
+    from vococo.memory import session_store
+
+    async def no_recovery():
+        pass
+    monkeypatch.setattr(config, "WEB_HOST", "127.0.0.1")
+    monkeypatch.setattr(config, "WEB_PORT", 0)
+    monkeypatch.setattr(config, "VOICE_ENABLED", False)
+    monkeypatch.setattr(task_runner, "heal_after_restart", no_recovery)
+    monkeypatch.setattr(session_store, "backfill_thumbs", lambda: None)
+    adapter = WebAdapter()
+    try:
+        await adapter._start_server()
+        port = adapter._runner.addresses[0][1]
+        async with ClientSession(base_url=f"http://127.0.0.1:{port}") as client:
+            response = await client.get("/")
+            html = await response.text()
+            response = await client.get("/research.js")
+            assert response.status == 200
+            assert response.headers["Content-Type"].startswith("text/javascript")
+            assert await response.read() == (web_mod._STATIC / "research.js").read_bytes()
+            assert response.headers["Cache-Control"] == "no-cache"
+            response = await client.get(f"/research.js?v={_digest('research.js')}")
+            assert response.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+            etag = response.headers["ETag"]
+            response = await client.get("/research.js", headers={"If-None-Match": etag})
+            assert response.status == 304
+            assert f'"/research.js?v={_digest("research.js")}"' in html
+            assert html.index('"/research.js?') < html.index('"/stream.js?')
+            assert web_mod._VERSIONED_ASSETS.index("research.js") < web_mod._VERSIONED_ASSETS.index("stream.js")
+    finally:
+        if adapter._runner:
+            await adapter._runner.cleanup()
+
+
+@pytest.mark.anyio
 async def test_index_injects_asset_versions(static_app):
     status, body, _ = await _get(static_app, "/")
     assert status == 200

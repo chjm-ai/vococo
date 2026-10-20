@@ -1446,6 +1446,27 @@
      活跃任务与已完成任务分区:已完成默认折叠;活跃任务默认最多 5 条,超出显示"显示更多"。 */
   #chatTaskBar{padding:0 0 var(--sp-2);display:flex;flex-direction:column;cursor:pointer}
   #chatTaskBar[hidden]{display:none}
+  .research-card{box-sizing:border-box;min-width:0;max-width:100%;margin:var(--sp-4) 0;
+    padding:var(--sp-4);border:1px solid var(--line2);border-radius:var(--r-lg);background:var(--panel);font-size:var(--fs-base);overflow-wrap:anywhere}
+  .research-card summary{cursor:pointer;list-style:none;display:flex;flex-wrap:wrap;gap:var(--sp-3);align-items:baseline}
+  .research-card summary::-webkit-details-marker{display:none}
+  .research-title{flex:1;min-width:0;font-size:var(--fs-base)}
+  .research-status{color:var(--accent);font-size:var(--fs-sm)}
+  .research-steps{flex-basis:100%;display:flex;flex-wrap:wrap;gap:var(--sp-2) var(--sp-4);list-style:none;padding:0;margin:var(--sp-1) 0;color:var(--dim);font-size:var(--fs-sm)}
+  .research-steps .current{color:var(--text)}
+  .research-current,.research-metrics,.research-expand{flex-basis:100%;min-width:0}
+  .research-metrics,.research-muted,.research-expand{color:var(--dim);font-size:var(--fs-sm)}
+  .research-expand{color:var(--accent)}
+  .research-body{margin-top:var(--sp-4);border-top:1px solid var(--line);padding-top:var(--sp-3)}
+  .research-section{margin-bottom:var(--sp-4)}
+  .research-card h4,.research-card h5,.research-card p{margin:var(--sp-2) 0;font-size:inherit}
+  .research-operation{padding:var(--sp-2) 0}
+  .research-card a{color:var(--accent);text-decoration:underline}
+  .research-checkpoint{white-space:pre-wrap}
+  .research-warning{color:var(--warn)}
+  .research-cancel{margin-top:var(--sp-3);padding:var(--sp-2) var(--sp-4);border:1px solid var(--line2);
+    border-radius:var(--r-sm);background:var(--panel2);color:var(--text);font-size:var(--fs-sm);cursor:pointer}
+  .research-card summary:focus-visible,.research-cancel:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
   .chat-taskbar-box{background:color-mix(in srgb, var(--panel2) 55%, transparent);
     border:1px solid color-mix(in srgb, var(--line2) 55%, transparent);border-radius:var(--r-xl);
     padding:var(--sp-3) var(--sp-4) var(--sp-2);display:flex;flex-direction:column;gap:7px}
