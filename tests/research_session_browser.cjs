@@ -41,9 +41,11 @@ const origin='http://research-fixture.local';
     });
     histories.source=[{id:101,ts:1,user:'请继续回答当前问题',assistant:'',pending:true,draft:'主回复仍在生成中',events:[]}];
     await page.evaluate(()=>{
-      handleEvent({type:'research_update',conv:'source',task_id:'fixture-research',title:'隔离研究',status:'running',progress_note:'搜集资料 · 2个来源',id:3});
+      handleEvent({type:'research_update',conv:'source',task_id:'fixture-research',title:'隔离研究',status:'running',progress_note:'搜集资料 · 2个来源',id:3,
+        progress:{id:'fixture-research',title:'隔离研究',stage:'collect',status:'running',task_status:'running',usage:{searches:3,fetches:2},budget:{searches:12,fetches:8},checkpoints:{},sources:[],activity:[]}});
     });
-    await page.getByText('研究「隔离研究」：搜集资料 · 2个来源',{exact:true}).waitFor();
+    await page.locator('.research-card').waitFor();
+    assert.match(await page.locator('.research-card').innerText(),/抓取 2\/8/);
     const report={id:202,ts:2,user:'',assistant:'隔离研究最终报告：证据核验完成。',pending:false,events:[{type:'external_result',key:'research:fixture-research:2'}]};
     histories.source.push(report);
     await page.evaluate(report=>{

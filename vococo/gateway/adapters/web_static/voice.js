@@ -959,6 +959,7 @@
       // 切会话时上一个请求可能后到;不能让旧会话任务覆盖当前输入框状态条。
       if(sessionKey !== taskSessionKey()) return;
       renderTasks(rows);
+      researchProgress.tasks(rows);
       scheduleTaskPrefetch(rows);  // 列表先出,详情等页面空闲后再逐条预取
       // 顺带全量校准状态条;接口只补漏,不覆盖 SSE 已经收到的更新。
       for(const t of rows){
@@ -994,7 +995,7 @@
   function upsertTaskBar(t){
     if(!isCurrentConversationTask(t)) return;
     if(t.deleted){ barTasks.delete(t.id); renderTaskBar(); return; }
-    barTasks.set(t.id, t);
+    barTasks.set(t.id, {...barTasks.get(t.id), ...t});
     renderTaskBar();
   }
 
@@ -1016,8 +1017,9 @@
     const inCall = !$("#callView").hidden;
 
     renderBar($("#taskBar"), inCall ? rows.slice(0, TASKBAR_MAX) : []);
-    const active = rows.filter(t=>!isTaskDone(t));
-    const done = rows.filter(t=>isTaskDone(t));
+    const chatRows=rows.filter(t=>!researchProgress.represented(t));
+    const active = chatRows.filter(t=>!isTaskDone(t));
+    const done = chatRows.filter(t=>isTaskDone(t));
     renderChatTaskBar(inCall ? [] : active, inCall ? [] : done);
     scheduleDoneHide();
   }

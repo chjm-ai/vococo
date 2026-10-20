@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import inspect
 import ipaddress
 import json
 from pathlib import Path
 import re
+import secrets
 import socket
 import time
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -24,6 +26,25 @@ EVIDENCE_BOUNDARY = (
     "公共地址检查仅覆盖请求时 DNS；SDK 内部重定向和远端 DNS 不由本执行器控制。"
 )
 _RUNNING: set[str] = set()
+
+
+@dataclass(frozen=True)
+class ProgressChanged:
+    """公开检查点或阶段改变；不是模型文本事件。"""
+
+
+def _close_activity(state: dict, summary: str = "操作中断") -> None:
+    for item in state.get("activity", []):
+        if item["status"] == "running":
+            item.update(status="failed", finished_at=time.time(), summary=summary)
+
+
+def interrupt(task_id: str) -> None:
+    def mutate(state):
+        _close_activity(state)
+        if state["status"] == "running":
+            state.update(status="interrupted")
+    store.update(task_id, mutate)
 
 
 class ResearchLimitError(RuntimeError):
@@ -73,13 +94,44 @@ def initialize(task_id: str, question: str, model: str, budget: dict | None = No
         "id": task_id, "task_id": task_id, "question": question.strip(), "model": model,
         "budget": values, "usage": {"searches": 0, "fetches": 0, "tokens": 0},
         "deadline": now + values["seconds"], "created_at": now, "updated_at": now,
-        "stage": "plan", "status": "ready", "checkpoints": {}, "sources": [],
+        "stage": "plan", "status": "ready", "checkpoints": {}, "sources": [], "activity": [],
         "search_results": [], "report": "", "error": "", "evidence_boundary": EVIDENCE_BOUNDARY,
     })
 
 
 def get(task_id: str) -> dict | None:
     return store.get(task_id)
+
+
+def progress(task_id: str, task: dict | None = None) -> dict | None:
+    """只公开已提交产出与操作元数据，绝不携带模型流或网页正文。"""
+    state = get(task_id)
+    if state is None:
+        return None
+    task = task or {}
+    snapshot = {key: state.get(key) for key in (
+        "id", "status", "stage", "created_at", "updated_at", "deadline", "usage", "budget")}
+    snapshot.update(
+        title=task.get("title", state.get("title", "研究")),
+        task_status=task.get("status", {"ready": "queued", "interrupted": "failed"}.get(
+            state["status"], state["status"])),
+        updated_at=max(state["updated_at"], task.get("updated_at", 0)),
+        limited_stages=list(state.get("limited_stages", [])),
+        checkpoints={key: value for key, value in state.get("checkpoints", {}).items()
+                     if key in {"plan", "collect", "review"}},
+        sources=[_source_progress(source) for source in state.get("sources", [])],
+        activity=[{key: value for key, value in item.items() if key in {
+            "id", "tool", "stage", "query", "url", "status", "started_at", "finished_at", "summary"}}
+            for item in state.get("activity", [])],
+    )
+    return snapshot
+
+
+def _source_progress(source: dict) -> dict:
+    return {"id": source["id"], "title": source.get("title", ""), "url": source.get("url", ""),
+            "fetched_at": source.get("fetched_at") or max(
+                (item.get("fetched_at", 0) for item in source.get("extracts", [])), default=0),
+            "claims_count": len(source.get("claims", []))}
 
 
 def close() -> None:
@@ -109,6 +161,7 @@ def prepare_resume(task_id: str) -> None:
             raise ValueError("已完成研究不能恢复")
         _check_limits(state)
         _repair_checkpoints(state)
+        _close_activity(state)
         state.update(status="ready", error="")
     store.update(task_id, mutate)
 
@@ -134,7 +187,8 @@ def recover(exclude_ids: set) -> list[str]:
         task_id = state["id"]
         if task_id in exclude_ids or task_id in _RUNNING or state["status"] != "running":
             continue
-        store.update(task_id, lambda item: item.update(status="interrupted", error="进程中断"))
+        interrupt(task_id)
+        store.update(task_id, lambda item: item.update(error="进程中断"))
         try:
             _check_limits(state)
         except ResearchLimitError:
@@ -199,8 +253,9 @@ def _save_page(task_id: str, url: str, detail: str, tool_id: str) -> None:
                       "title": urlsplit(url).hostname, "extracts": [], "claims": [],
                       "evidence_type": "tool_extracted_content", "boundary": EVIDENCE_BOUNDARY}
             state["sources"].append(source)
+        source["fetched_at"] = time.time()
         if not any(item["text"] == detail for item in source["extracts"]):
-            source["extracts"].append({"tool_id": tool_id, "text": detail, "fetched_at": time.time()})
+            source["extracts"].append({"tool_id": tool_id, "text": detail, "fetched_at": source["fetched_at"]})
     store.update(task_id, mutate)
 
 
@@ -262,7 +317,9 @@ def _check_network_reserve(state: dict, stage: str) -> None:
 
 
 class _Stage:
-    def __init__(self, task_id: str, stage: str):
+    def __init__(self, task_id: str, stage: str, stream_fn=None):
+        self.stream_fn = stream_fn
+        self.activity_ids: dict[str, str] = {}
         self.task_id = task_id
         self.stage = stage
         self.inputs: dict[str, dict] = {}
@@ -294,13 +351,35 @@ class _Stage:
                 return self._decision("allow")
             if name not in {"WebSearch", "WebFetch"} or self.stage not in {"collect", "review"}:
                 raise ValueError("研究模式禁止此工具或此阶段联网")
+            if tool_use_id in self.activity_ids:
+                previous = self.authorized.get(tool_use_id)
+                return self._decision("allow" if previous and previous[:2] == (name, arguments) else "deny")
             _check_network_reserve(_required(self.task_id), self.stage)
             url = await _public_url(arguments.get("url", "")) if name == "WebFetch" else ""
             _consume(self.task_id, "fetches" if name == "WebFetch" else "searches")
             self.authorized[tool_use_id] = (name, dict(arguments), url)
+            self._start_activity(tool_use_id, name, arguments, url)
+            await _emit(self.stream_fn, ProgressChanged())
             return self._decision("allow")
         except (ValueError, OSError, ResearchLimitError) as error:
             return self._decision("deny", str(error))
+
+    def _start_activity(self, tool_id: str, name: str, arguments: dict, url: str) -> None:
+        activity_id = secrets.token_hex(12)
+        item = {"id": activity_id, "tool": name, "stage": self.stage,
+                "status": "running", "started_at": time.time(), "finished_at": None}
+        item.update({"url": url} if name == "WebFetch" else {"query": arguments.get("query", "")})
+        store.update(self.task_id, lambda state: state.setdefault("activity", []).append(item))
+        self.activity_ids[tool_id] = activity_id
+
+    def _finish_activity(self, tool_id: str, ok: bool) -> None:
+        activity_id = self.activity_ids.get(tool_id)
+        def mutate(state):
+            item = next((entry for entry in state.get("activity", []) if entry["id"] == activity_id), None)
+            if item and item["status"] == "running":
+                item.update(status="done" if ok else "failed", finished_at=time.time(),
+                            summary="操作完成" if ok else "操作失败或结果无法确认")
+        store.update(self.task_id, mutate)
 
     @staticmethod
     def _decision(behavior: str, reason: str = "") -> dict:
@@ -321,10 +400,12 @@ class _Stage:
     def _finished(self, event: ToolFinished) -> None:
         authorized = self.authorized.pop(event.tool_id, None)
         incoming = self.inputs.pop(event.tool_id, None)
-        if not event.ok or authorized is None or incoming is None:
+        if authorized is None:
             return
         name, arguments, url = authorized
-        if event.name != name or incoming != {"name": name, "input": arguments}:
+        matched = event.name == name and incoming == {"name": name, "input": arguments}
+        self._finish_activity(event.tool_id, event.ok and matched)
+        if not event.ok or not matched:
             return
         if name == "WebFetch":
             _save_page(self.task_id, url, event.detail, event.tool_id)
@@ -372,7 +453,7 @@ async def _run_stage(state: dict, stage: str, cwd: Path, stream_fn) -> str:
             _check_network_reserve(state, stage)
         except ResearchLimitError:
             return _converged_checkpoint(state["id"], stage)
-    run = _Stage(state["id"], stage)
+    run = _Stage(state["id"], stage, stream_fn)
     method = Path(__file__).with_name("research_method.md").read_text(encoding="utf-8")
     events = stream_turn(
         history=[], user_text=_prompt(state, stage), model=state["model"], cwd=str(cwd),
@@ -388,7 +469,10 @@ async def _run_stage(state: dict, stage: str, cwd: Path, stream_fn) -> str:
     except _StageConverged:
         return _converged_checkpoint(state["id"], stage)
     finally:
-        await events.aclose()
+        try:
+            await events.aclose()
+        finally:
+            store.update(state["id"], _close_activity)
     if run.reply is None or run.reply.is_error or run.reply.budget_exceeded:
         raise RuntimeError(getattr(run.reply, "error", "") or "研究阶段未正常完成")
     if not run.reply.text.strip():
@@ -481,8 +565,10 @@ async def execute(task_id: str, stream_fn=None) -> str:
                     continue
                 _check_limits(state)
                 store.update(task_id, lambda item: item.update(stage=stage))
+                await _emit(stream_fn, ProgressChanged())
                 text = await _run_stage(state, stage, cwd, stream_fn)
                 _checkpoint(task_id, stage, text)
+                await _emit(stream_fn, ProgressChanged())
         return _required(task_id)["report"]
     except BaseException as error:
         store.update(task_id, lambda item: item.update(

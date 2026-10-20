@@ -702,27 +702,27 @@ function handleEvent(e){
   // 缺前面那句提问"的错位画面——干脆让浏览器去核对真实数据最省心。
   if(e.type==="research_update" || e.type==="research_result"){
     // 研究不参与聊天的 start/done 状态机，不能结束或替换 S.stream。
+    researchProgress.event(e);
+    if(e.type==="research_update") return;
     if(e.type==="research_result"){
       delete S.histCache[e.conv]; idbDel("hist:"+e.conv); loadConvs();
     }
     if(e.conv!==S.conv) return;
+    const deliveryKey=JSON.stringify([e.task_id,e.turn_id ?? e.id ?? e.text]);
     if(S.histLoading===e.conv){
       S.researchPending=S.researchPending||{};
-      S.researchPending[e.task_id]=e;
+      S.researchPending[deliveryKey]=e;
       return;
     }
-    if(e.type==="research_result" && $("#wrap").querySelector('[data-tid="'+e.turn_id+'"]')) return;
+    if(e.turn_id!=null && $("#wrap").querySelector('[data-tid="'+e.turn_id+'"]')) return;
     const previous=Array.from($("#wrap").querySelectorAll("[data-research-id]"))
-      .find(node=>node.dataset.researchId===e.task_id);
-    if(previous) previous.remove();
-    if(e.type==="research_result"){
-      const bubble=addBubble("ai", e.text, null, null, true);
-      bubble.closest(".row").dataset.researchId=e.task_id;
-    }else{
-      const bubble=addBubble("ai", "", null, null, true);
-      bubble.textContent="研究「"+e.title+"」："+(e.progress_note || e.status);
-      bubble.closest(".row").dataset.researchId=e.task_id;
-    }
+      .find(node=>node.dataset.researchDelivery===deliveryKey);
+    if(previous) return;
+    const bubble=addBubble("ai", e.text, null, null, true);
+    const row=bubble.closest(".row");
+    row.dataset.researchId=e.task_id;
+    row.dataset.researchDelivery=deliveryKey;
+    if(e.turn_id!=null) row.dataset.tid=String(e.turn_id);
     return;
   }
   if(e.type==="sync"){ loadConvs(); if(e.conv===S.conv) reloadHistory(true); return; }

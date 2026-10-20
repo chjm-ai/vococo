@@ -550,6 +550,7 @@ try{
 <script src="/workbench.js"></script>
 <script src="/settings.js"></script>
 <script src="/stats.js"></script>
+<script src="/research.js"></script>
 <script src="/stream.js"></script>
 <script src="/notices.js"></script>
 <script src="/agents.js"></script>
@@ -1574,6 +1575,7 @@ function renderTurns(turns, conv, opts={}){
     if(delta) $("#messages").scrollTop += delta;
     updateScrollBtn();
   }
+  researchProgress.render();
   maybeAutoResume(conv, turns);  // 最新一条是重启中断的回复 → 自动继续生成(幂等,见 stream.js)
 }
 
@@ -1858,8 +1860,9 @@ async function openConv(conv, silentGroup){
     }catch(e){ $("#convLoading").classList.remove("on"); }
     finally{
       if(S.histLoading===conv) S.histLoading=null;
-      const pendingResearch=Object.values(S.researchPending||{}).filter(e=>e.conv===conv);
-      for(const event of pendingResearch){ delete S.researchPending[event.task_id]; handleEvent(event); }
+      researchProgress.render();
+      const pendingResearch=Object.entries(S.researchPending||{}).filter(([,e])=>e.conv===conv);
+      for(const [key,event] of pendingResearch){ delete S.researchPending[key]; handleEvent(event); }
     }
     maybeReplayStream(conv);   // 该会话仍在流式 → 用缓冲在历史下方重建流式气泡(切换不中断)
     if(S.conv===conv && S.pendingChoice[conv]) renderChoice(S.pendingChoice[conv]);  // 切回带待审批的会话 → 补出按钮

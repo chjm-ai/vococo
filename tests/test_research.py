@@ -175,7 +175,9 @@ def test_fetched_sources_quote_binding_and_dedup(isolated_research):
     with pytest.raises(ValueError, match="未成功抓取"):
         research.record_source("r1", "https://example.com/page", "标题", "证据", "论断")
     asyncio.run(fetch(run, "https://example.com/page?utm_source=x#part"))
+    first_fetched_at = research.progress("r1")["sources"][0]["fetched_at"]
     asyncio.run(fetch(run, "https://example.com/page", tool_id="f2"))
+    assert research.progress("r1")["sources"][0]["fetched_at"] > first_fetched_at
     result = research.record_source("r1", "https://example.com/page", "标题", "证据内容", "论断")
     assert result == {"source_id": "S1", "quote_matched": True, "claim_verified": False}
     research.record_source("r1", "https://example.com/page", "标题", "证据内容", "论断")
@@ -422,6 +424,63 @@ def test_resume_repairs_earliest_bad_checkpoint_preserves_budget(
     assert after["usage"]["tokens"] == 17 + 10 * len(expected_stages)
     assert after["deadline"] == original["deadline"]
     assert after["usage"]["fetches"] >= before["usage"]["fetches"]
+
+
+def test_public_activity_persists_start_finish_and_deduplicates(isolated_research):
+    start()
+    run = research._Stage("r1", "collect")
+    args = {"query": "真实搜索词", "extra": "不可公开"}
+    async def scenario():
+        assert allow(await run.guard({"tool_name": "WebSearch", "tool_input": args}, "q", None))
+        assert allow(await run.guard({"tool_name": "WebSearch", "tool_input": args}, "q", None))
+        running = research.progress("r1")["activity"]
+        assert len(running) == 1 and running[0]["status"] == "running"
+        assert running[0]["query"] == "真实搜索词" and running[0]["started_at"]
+        run.observe(ToolInput("WebSearch", "q", args))
+        event = ToolFinished("WebSearch", True, "不公开预览", "q", "不公开全文")
+        run.observe(event)
+        run.observe(event)
+        await fetch(run, tool_id="f")
+        bad = {"url": "https://example.com/fail", "prompt": "不公开提示词"}
+        await run.guard({"tool_name": "WebFetch", "tool_input": bad}, "bad", None)
+        run.observe(ToolInput("WebFetch", "bad", bad))
+        run.observe(ToolFinished("WebFetch", False, "不公开报错正文", "bad", "不公开详情"))
+    asyncio.run(scenario())
+    research.close()
+    state = research.get("r1")
+    assert state["usage"]["searches"] == 1
+    public = research.progress("r1")
+    assert [item["status"] for item in public["activity"]] == ["done", "done", "failed"]
+    assert len({item["id"] for item in public["activity"]}) == 3
+    assert all(item["finished_at"] >= item["started_at"] for item in public["activity"])
+    assert "不公开" not in str(public) and "不可公开" not in str(public)
+
+
+@pytest.mark.parametrize("failure", [asyncio.CancelledError, RuntimeError, TimeoutError])
+def test_interruption_closes_running_public_activity(isolated_research, monkeypatch, failure):
+    start()
+    research._checkpoint("r1", "plan", "已提交计划")
+    async def interrupted(**kwargs):
+        args = {"query": "中断前搜索"}
+        await kwargs["tool_guard"]({"tool_name": "WebSearch", "tool_input": args}, "q", None)
+        yield ToolInput("WebSearch", "q", args)
+        raise failure()
+    monkeypatch.setattr(research, "stream_turn", interrupted)
+    with pytest.raises(failure):
+        asyncio.run(research.execute("r1"))
+    activity = research.progress("r1")["activity"]
+    assert len(activity) == 1 and activity[0]["status"] == "failed"
+    assert activity[0]["finished_at"]
+    assert research.get("r1")["status"] == "interrupted"
+
+
+def test_recovery_closes_old_running_activity(isolated_research):
+    start()
+    run = research._Stage("r1", "collect")
+    asyncio.run(run.guard({"tool_name": "WebSearch", "tool_input": {"query": "待完成"}}, "q", None))
+    research_store.update("r1", lambda state: state.update(status="running"))
+    research.recover(set())
+    assert research.progress("r1")["activity"][0]["status"] == "failed"
 
 
 def test_source_mcp_construction(isolated_research):
