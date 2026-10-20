@@ -11,7 +11,6 @@ import json
 
 from aiohttp import web
 
-from .. import config
 from ..core import research, task_events, task_runner, tasks
 from .web_auth import check_web_auth
 
@@ -111,20 +110,7 @@ async def handle_tasks_stream(request: web.Request) -> web.StreamResponse:
 async def handle_research_start(request: web.Request) -> web.Response:
     if (guard := _guard(request)) is not None:
         return guard
-    from ..tools.research_tools import request_options
-
-    try:
-        options = request_options(await request.json())
-        chat_id = _dispatch_chat_id(request)
-        if chat_id and tasks.task_id_from_session_key(chat_id):
-            raise ValueError("请从主聊天发起研究，不要在后台任务中派生任务")
-        row = task_runner.dispatch_research(
-            **options, dispatch_platform="web", dispatch_chat_id=chat_id,
-            context_session_key=config.resolve_session_key("web", chat_id or "main"),
-        )
-    except (ValueError, TypeError, RuntimeError) as error:
-        return web.json_response({"error": str(error)}, status=400)
-    return web.json_response(row, status=202)
+    return web.json_response({"error": "原生深度研究已移除，不能新建研究任务"}, status=410)
 
 
 async def handle_research_detail(request: web.Request) -> web.Response:
@@ -152,8 +138,7 @@ async def handle_research_progress(request: web.Request) -> web.Response:
 async def handle_research_resume(request: web.Request) -> web.Response:
     if (guard := _guard(request)) is not None:
         return guard
-    result = await task_runner.resume_research(request.match_info["task_id"])
-    return web.json_response(result, status=202 if result["ok"] else 409)
+    return web.json_response({"error": "原生深度研究已移除，不能恢复研究任务"}, status=410)
 
 
 async def handle_research_report(request: web.Request) -> web.Response:

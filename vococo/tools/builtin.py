@@ -1916,8 +1916,6 @@ async def retry_website_cover(args: dict) -> dict:
 
 def build_mcp_servers() -> dict:
     """返回挂给 ClaudeAgentOptions.mcp_servers 的 server 表。"""
-    from .research_tools import TOOLS as research_tools
-
     return {
         "vococo": create_sdk_mcp_server(
             "vococo",
@@ -1954,7 +1952,6 @@ def build_mcp_servers() -> dict:
                 unpublish_website,
                 retry_website_cover,
                 dispatch_session,
-                *research_tools,
                 restart_self,
                 list_mcp_servers,
                 add_mcp_server,
