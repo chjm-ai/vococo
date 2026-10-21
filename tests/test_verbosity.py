@@ -6,7 +6,6 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from vococo import config, providers
-from vococo.core.prompt import reply_style_reminder
 from vococo.gateway import settings_store
 from vococo.gateway.adapters.web import WebAdapter
 
@@ -99,12 +98,14 @@ def test_verbosity_merges_with_effort_without_disabling_it():
     }
 
 
-def test_selected_detail_does_not_keep_concise_instruction():
-    assert "表达上请克制" in reply_style_reminder("gpt-6.1-sol", "low")
-    assert "表达上请克制" not in reply_style_reminder("gpt-6.1-sol", "high")
-    assert "详细" in reply_style_reminder("gpt-6.1-sol", "high")
-    assert "兼顾" in reply_style_reminder("gpt-6.1-sol", "medium")
-    assert reply_style_reminder("claude-sonnet-5-5", "high") == ""
+@pytest.mark.parametrize("model", ["gpt-6.1-sol", "GPT-6-astra"])
+@pytest.mark.parametrize("verbosity", ["", "low", "medium", "high"])
+def test_all_verbosity_levels_use_native_parameters_only(model, verbosity):
+    body = providers.extra_body_for_model(model, "", verbosity)
+    if verbosity:
+        assert json.loads(body) == {"text": {"verbosity": verbosity}}
+    else:
+        assert body == ""
 
 
 def test_summary_saved_separately_and_reset(verbosity_settings):

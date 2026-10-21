@@ -12,25 +12,6 @@ from pathlib import Path
 
 from .. import config
 
-# 只在发送本轮用户消息时追加，不进入共享 system prompt 或聊天记录。
-_GPT_REPLY_STYLE = """[本轮表达提醒，仅用于当前 GPT 回复]
-表达上请克制：我不需要你把所有相关知识都讲出来，也不需要铺垫、扩展、总结和主动邀请。
-像正常聊天一样，把问题直接回答清楚，说清楚就停；不要把回答写成文章或教程，除非我明确要求。
-别因为我是新手就反复解释同一个概念。必要条件、风险、失败及我明确要求的内容不能省略。
-不设字数、条数或固定格式。"""
-
-
-def reply_style_reminder(resolved_model: str, verbosity: str = "") -> str:
-    """按解析后的实际模型识别，不能用供应商名称或展示别名判断。"""
-    if not resolved_model.lower().startswith("gpt-"):
-        return ""
-    if verbosity in ("medium", "high"):
-        style = "兼顾必要细节与简洁" if verbosity == "medium" else "提供详细解释、依据和必要示例"
-        return (f"[本轮表达提醒，仅用于当前 GPT 回复]\n{style}。"
-                "用户明确要求简洁或展开时以本轮要求为准，必要条件、风险和失败不能省略。")
-    return _GPT_REPLY_STYLE
-
-
 PERSONA = f"""
 
 === 你的身份(vococo)===
