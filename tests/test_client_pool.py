@@ -456,23 +456,58 @@ async def test_agent_lists_override_skills_and_mcp(clients, monkeypatch):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("selected,resolved,expected", [
+@pytest.mark.parametrize("selected,resolved,supported", [
     ("gpt-6.1-sol", "gpt-6.1-sol", True),
     ("自定义显示名", "GPT-6-astra", True),
     ("gpt-looking-label", "claude-sonnet-5-5", False),
     ("deepseek-flash", "deepseek-flash", False),
 ])
-async def test_style_uses_resolved_model(clients, isolated, monkeypatch, selected, resolved, expected):
-    monkeypatch.setattr(agent.providers, "resolve", lambda *a: (resolved, {}))
-    async for _ in agent.stream_turn([], "解释一下", model=selected, session_key="web:style"):
+@pytest.mark.parametrize("verbosity", ["", "low", "medium", "high"])
+async def test_native_verbosity_uses_resolved_model_without_prompt_injection(
+    clients, isolated, monkeypatch, selected, resolved, supported, verbosity,
+):
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: (resolved, {"ANTHROPIC_API_KEY": "fake"}))
+    monkeypatch.setattr(agent.settings_store, "get_web_verbosity", lambda *a: verbosity)
+    monkeypatch.setattr(agent.settings_store, "get_web_summary", lambda *a: "")
+    async for _ in agent.stream_turn([], "解释一下", model=selected, session_key="web:native-verbosity"):
         pass
-    payload = clients[0].prompts[0]
-    assert ("[本轮表达提醒" in payload) is expected
-    assert "[本轮表达提醒" not in str(clients[0].options.system_prompt)
+    client = clients[0]
+    assert client.prompts == ["解释一下"]
+    assert "[本轮表达提醒" not in str(client.options.system_prompt)
+    if supported and verbosity:
+        assert json.loads(client.options.env["CLAUDE_CODE_EXTRA_BODY"]) == {"text": {"verbosity": verbosity}}
+    else:
+        assert "CLAUDE_CODE_EXTRA_BODY" not in client.options.env
 
 
 @pytest.mark.anyio
-async def test_style_not_duplicated_on_warm_or_retry(clients, isolated, monkeypatch):
+@pytest.mark.parametrize("verbosity", ["", "low", "medium", "high"])
+async def test_attachment_retry_keeps_native_controls_without_prompt_injection(clients, isolated, monkeypatch, verbosity):
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("gpt-6.1-sol", {"ANTHROPIC_API_KEY": "fake"}))
+    monkeypatch.setattr(agent.settings_store, "get_web_verbosity", lambda *a: verbosity)
+    monkeypatch.setattr(agent.settings_store, "get_web_summary", lambda *a: "concise")
+    monkeypatch.setattr(agent.settings_store, "get_web_effort", lambda *a: "high")
+    files = [agent.FileAttachment(b"hello", "text/plain", "test.txt")]
+    await _turn()
+    clients[0].fail_next_query = True
+    async for _ in agent.stream_turn([], "看看附件", files=files, session_key="web:pool-test", resume="sid-1"):
+        pass
+    assert len(clients) == 2 and clients[0].disconnected
+    assert clients[0].prompts[-1] == clients[1].prompts[0]
+    content = clients[1].prompts[0][0]["message"]["content"]
+    assert content == [{"type": "text", "text": "看看附件"},
+                       {"type": "text", "text": "[文件附件: test.txt]\nhello"}]
+    for client in clients:
+        assert "[本轮表达提醒" not in str(client.prompts)
+        assert client.options.effort == "high"
+        expected = {"reasoning": {"summary": "concise"}}
+        if verbosity:
+            expected["text"] = {"verbosity": verbosity}
+        assert json.loads(client.options.env["CLAUDE_CODE_EXTRA_BODY"]) == expected
+
+
+@pytest.mark.anyio
+async def test_original_text_unchanged_on_warm_or_retry(clients, isolated, monkeypatch):
     monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("gpt-6.1-sol", {}))
     await _turn()
     await _turn(resume="sid-1")
@@ -482,12 +517,12 @@ async def test_style_not_duplicated_on_warm_or_retry(clients, isolated, monkeypa
     assert len(clients) == 2
     for client in clients:
         for payload in client.prompts:
-            assert payload.count("[本轮表达提醒") == 1
-            assert payload.startswith("hi\n\n")
+            assert payload == "hi"
+            assert "[本轮表达提醒" not in payload
 
 
 @pytest.mark.anyio
-async def test_style_resume_failure_rebuilds_clean_payload(clients, isolated, monkeypatch):
+async def test_resume_failure_restores_history_without_prompt_injection(clients, isolated, monkeypatch):
     monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("gpt-6.1-sol", {}))
 
     def make_client(options=None):
@@ -500,15 +535,16 @@ async def test_style_resume_failure_rebuilds_clean_payload(clients, isolated, mo
     async for _ in agent.stream_turn(history, "继续", resume="missing-sid"):
         pass
     assert len(clients) == 2
-    assert "历史问题" not in clients[0].prompts[0]
-    assert "历史问题" in clients[1].prompts[0]
-    assert all(client.prompts[0].count("[本轮表达提醒") == 1 for client in clients)
-    assert history[0].user == "历史问题"
+    assert clients[0].prompts == ["继续"]
+    assert clients[1].prompts == [agent._compose_prompt(history, "继续")]
+    assert clients[1].prompts[0].count("历史问题") == 1
+    assert all("[本轮表达提醒" not in client.prompts[0] for client in clients)
+    assert history == [agent.Turn(user="历史问题", assistant="历史回复")]
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("compact,research", [(True, False), (False, True)])
-async def test_style_skips_compaction_and_isolated_research(clients, isolated, monkeypatch, compact, research):
+async def test_compaction_and_isolated_research_keep_original_payload(clients, isolated, monkeypatch, compact, research):
     from vococo.tools.danger import build_hooks
 
     monkeypatch.setattr(agent, "build_hooks", build_hooks)
@@ -522,7 +558,7 @@ async def test_style_skips_compaction_and_isolated_research(clients, isolated, m
 
 
 @pytest.mark.anyio
-async def test_style_not_stored_or_carried_to_non_gpt(clients, isolated, monkeypatch):
+async def test_model_switch_isolates_sdk_session_and_restores_original_history(clients, isolated, monkeypatch):
     from vococo.gateway import core
     from vococo.memory import session_store
 
@@ -531,7 +567,7 @@ async def test_style_not_stored_or_carried_to_non_gpt(clients, isolated, monkeyp
     session_store.set_chosen_model(key, "gpt-6.1-sol")
     await core.converse(key, "原始问题", "gpt-6.1-sol", core.Sink(),
                         cwd_override=str(isolated), is_explicit_project_override=False)
-    assert "[本轮表达提醒" in clients[0].prompts[0]
+    assert clients[0].prompts == ["原始问题"]
     assert session_store.load_recent(key)[0].user == "原始问题"
     session_store.set_chosen_model(key, "claude-sonnet-5-5")
     await core.converse(key, "继续", "claude-sonnet-5-5", core.Sink(),
@@ -558,7 +594,7 @@ async def test_verbosity_change_reconnects_and_keeps_effort(clients, monkeypatch
     await _turn(resume="sid-1")
     assert len(clients) == 2 and first.disconnected
     assert json.loads(clients[1].options.env["CLAUDE_CODE_EXTRA_BODY"])["text"]["verbosity"] == "high"
-    assert "表达上请克制" not in clients[1].prompts[0]
+    assert clients[1].prompts == ["hi"]
     selected["value"] = ""
     await _turn(resume="sid-1")
     assert len(clients) == 3

@@ -1,4 +1,4 @@
-"""GPT 当轮表达提醒：只加工发送载荷，换模型不能续用旧提醒。"""
+"""移除逐轮表达提醒后的回归：原始载荷不变，模型切换仍隔离 SDK 会话。"""
 from __future__ import annotations
 
 import asyncio
@@ -6,7 +6,6 @@ import asyncio
 import pytest
 
 from vococo.core import agent
-from vococo.core.prompt import reply_style_reminder
 from vococo.gateway import core
 from vococo.memory import session_store
 
@@ -16,43 +15,33 @@ def anyio_backend():
     return "asyncio"
 
 
-@pytest.mark.parametrize("model,enabled", [
-    ("gpt-6.1-sol", True), ("GPT-6-astra", True),
-    ("claude-sonnet-5-5", False), ("deepseek-flash", False),
-    ("gemini-pro", False), ("codex-provider", False), ("", False),
-])
-def test_reply_style_model_boundary(model, enabled):
-    reminder = reply_style_reminder(model)
-    assert bool(reminder) is enabled
-    if enabled:
-        assert "不设字数、条数或固定格式" in reminder
-        assert "我明确要求的内容不能省略" in reminder
-
-
-def test_plain_prompt_appends_once_without_mutating_history():
+def test_plain_prompt_preserves_text_and_history_on_rebuild():
     history = [agent.Turn(user="原始问题", assistant="原始回答")]
-    reminder = reply_style_reminder("gpt-6.1-sol")
-    expected = agent._compose_prompt(history, "继续") + "\n\n" + reminder
-    assert agent._build_prompt(history, "继续", [], [], reminder=reminder) == expected
-    assert agent._build_prompt(history, "继续", [], [], reminder=reminder) == expected
-    assert history[0].user == "原始问题"
-    assert agent._build_prompt(history, "继续", [], []) == agent._compose_prompt(history, "继续")
+    expected = agent._compose_prompt(history, "继续")
+    assert agent._build_prompt(history, "继续", [], []) == expected
+    assert agent._build_prompt(history, "继续", [], []) == expected
+    assert "[本轮表达提醒" not in expected
+    assert history == [agent.Turn(user="原始问题", assistant="原始回答")]
+    assert agent._build_prompt([], "  原始问题\n", [], []) == "  原始问题\n"
 
 
 @pytest.mark.anyio
-async def test_reminder_after_all_attachments():
+async def test_attachments_keep_original_order_without_trailing_reminder():
     images = [agent.ImageAttachment("QUJD", "image/png", "/tmp/test.png")]
     files = [agent.FileAttachment(b"hello", "text/plain", "test.txt"),
              agent.FileAttachment(b"\0\xff", "application/pdf", "test.pdf")]
-    reminder = reply_style_reminder("gpt-6.1-sol")
-    payload = agent._build_prompt([], "看看附件", images, files, reminder=reminder)
+    payload = agent._build_prompt([], "看看附件", images, files)
     message = await anext(payload)
     content = message["message"]["content"]
-    assert content[0] == {"type": "text", "text": "看看附件"}
-    assert content[-2]["type"] == "document"
-    assert content[-1] == {"type": "text", "text": reminder}
-    assert sum(reminder in block.get("text", "") for block in content) == 1
-    assert any(block["type"] == "image" for block in content)
+    assert content == [
+        {"type": "text", "text": "看看附件"},
+        {"type": "text", "text": "[聊天图片附件 1，可用 Read 工具读取]\n本机文件：/tmp/test.png"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}},
+        {"type": "text", "text": "[文件附件: test.txt]\nhello"},
+        {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "AP8="},
+         "title": "test.pdf"},
+    ]
+    assert "[本轮表达提醒" not in str(content)
     with pytest.raises(StopAsyncIteration):
         await anext(payload)
 
