@@ -1043,8 +1043,9 @@ async def stream_turn(
     # 少数档位(见 providers._EXTRA_BODY_EFFORTS)CLI 的 --effort 传不出去,只能靠这个
     # 请求体合并环境变量注入。注入时 effort 必须留空:CLI 收到不认识的值只会警告+回退默认,
     # 发了也是白发。2026-09-11 真机 A/B 验证过注入后 DeepSeek 确实按该档位走。
-    extra_body = providers.extra_body_for_effort(effective_effort)
-    cli_effort = "" if extra_body else effective_effort
+    verbosity = settings_store.get_web_verbosity(selection_model)
+    extra_body = providers.extra_body_for_model(resolved_model, effective_effort, verbosity)
+    cli_effort = "" if providers.extra_body_for_effort(effective_effort) else effective_effort
     if extra_body and provider_env:
         provider_env = {**provider_env, "CLAUDE_CODE_EXTRA_BODY": extra_body}
     # 图片旁路:第三方非视觉模型(如 DeepSeek)不收 image block,硬传直接报错 →
@@ -1235,7 +1236,7 @@ async def stream_turn(
                     await client.query(
                         _build_prompt(
                             prompt_history, user_text, images or [], files or [],
-                            reminder="" if research else reply_style_reminder(resolved_model),
+                            reminder="" if research else reply_style_reminder(resolved_model, verbosity),
                         )
                     )
                 pending_subagents: set[str] = set()  # Agent/Task 调用 id,未拿到结果 = 子代理还在跑

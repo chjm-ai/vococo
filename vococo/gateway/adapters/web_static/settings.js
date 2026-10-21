@@ -427,6 +427,37 @@ async function saveMcpForm(){
 }
 
 // ── 模型分区(模型面板同源显示/隐藏,自定义模型/服务商可增改删,改完下一轮/刷新即生效)──
+function verbositySettingsHtml(md){
+  const states=md.verbosities||{}, choices=md.choices||md.builtin||[];
+  let rows="";
+  choices.forEach(model=>{
+    const state=states[model.id]; if(!state) return;
+    const options=state.levels.map(([value,label])=>'<option value="'+esc(value)+'"'+
+      (state.value===value?' selected':'')+'>'+esc(label)+'</option>').join("");
+    rows+='<div class="fld"><label>'+esc(model.label||model.id)+'</label>'+
+      '<select data-verbosity="'+esc(model.id)+'" aria-label="'+esc(model.label||model.id)+' 输出详细程度">'+options+'</select></div>';
+  });
+  if(!rows) return "";
+  return '<div class="sechd">输出详细程度</div><p class="shint">按 GPT 模型分别保存，下一条消息生效；低更简洁，中兼顾细节，高更详细。思考强度独立设置。</p>'+
+    '<div class="mcpform">'+rows+'<div class="mcperr" data-verbosity-error role="status"></div></div>';
+}
+function bindVerbositySettings(){
+  const pane=$("#setPane"), error=pane.querySelector("[data-verbosity-error]");
+  pane.querySelectorAll("[data-verbosity]").forEach(select=>{
+    select.onchange=async()=>{
+      const model=select.dataset.verbosity, state=SET.data.models.verbosities[model], old=state.value;
+      select.disabled=true; error.textContent="";
+      try{
+        const response=await api("/verbosity",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({model,verbosity:select.value})});
+        const result=await response.json();
+        if(!response.ok) throw new Error(result.error||"保存失败");
+        state.value=result.verbosity;
+      }catch(e){ select.value=old; error.textContent=e.message||"保存失败"; }
+      finally{ select.disabled=false; }
+    };
+  });
+}
 function renderModelsPane(){
   const md = SET.data.models || {active:"", choices:[], builtin:[], custom:[], providers:[]};
   const curTag = ' <span class="mctag cur">当前</span>';
@@ -434,6 +465,7 @@ function renderModelsPane(){
     '<p class="shint">"当前"标的是这个会话正在用的模型。新模型发布但代码还没跟上时,先在下面手动补一档;'+
     '第三方服务商(DeepSeek/Kimi/中转等)也可以直接在这加,保存后刷新模型面板即生效,不用重启。</p>';
 
+  h += verbositySettingsHtml(md);
   h += '<div class="sechd">模型面板显示</div>'+
     '<p class="shint" style="margin:2px 0 6px">这里和聊天页模型面板完全一致；关闭后从面板隐藏，随时可恢复。</p>';
   (md.choices||md.builtin||[]).forEach(m=>{
@@ -499,6 +531,7 @@ function providerFormHtml(){
   '</div>';
 }
 function bindModelsPane(){
+  bindVerbositySettings();
   $("#setPane").querySelectorAll("[data-modeltgl]").forEach(inp=>{
     inp.onchange = async()=>{
       const id=inp.dataset.modeltgl, disabled=!inp.checked;

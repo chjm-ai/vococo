@@ -1,0 +1,122 @@
+diff --git a/internal/translator/codex/claude/codex_claude_request.go b/internal/translator/codex/claude/codex_claude_request.go
+index 2a44ad0..cc2a997 100644
+--- a/internal/translator/codex/claude/codex_claude_request.go
++++ b/internal/translator/codex/claude/codex_claude_request.go
+@@ -456,6 +456,17 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool,
+ 	}
+ 	template = translatorcommon.SetRawArrayItems(template, "input", inputItems)
+ 
++	// vococo: preserve per-request GPT output detail across the Claude adapter.
++	if strings.HasPrefix(strings.ToLower(modelName), "gpt-") {
++		v := rootResult.Get("text.verbosity")
++		if v.Type == gjson.String {
++			switch v.String() {
++			case "low", "medium", "high":
++				template, _ = sjson.SetBytes(template, "text.verbosity", v.String())
++			}
++		}
++	}
++
+ 	return template, drops.Err()
+ }
+ 
+diff --git a/internal/translator/codex/claude/vococo_verbosity_test.go b/internal/translator/codex/claude/vococo_verbosity_test.go
+new file mode 100644
+index 0000000..4d8b318
+--- /dev/null
++++ b/internal/translator/codex/claude/vococo_verbosity_test.go
+@@ -0,0 +1,33 @@
++package claude
++
++import (
++	"github.com/tidwall/gjson"
++	"testing"
++)
++
++func TestVococoVerbosity(t *testing.T) {
++	for _, value := range []string{"low", "medium", "high", "", "invalid"} {
++		input := []byte(`{"messages":[{"role":"user","content":"hi"}],"text":{"verbosity":"` + value + `"},"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`)
++		output, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", input, true)
++		if err != nil {
++			t.Fatal(err)
++		}
++		want := value
++		if value == "invalid" {
++			want = ""
++		}
++		if got := gjson.GetBytes(output, "text.verbosity").String(); got != want {
++			t.Fatalf("verbosity=%q: got %q, want %q", value, got, want)
++		}
++		if value == "" && gjson.GetBytes(output, "text.verbosity").Exists() {
++			t.Fatal("default must omit verbosity")
++		}
++		output, err = ConvertClaudeRequestToCodex("deepseek-flash", input, true)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if gjson.GetBytes(output, "text.verbosity").Exists() {
++			t.Fatal("non-GPT received verbosity")
++		}
++	}
++}
+diff --git a/internal/translator/openai/claude/openai_claude_request.go b/internal/translator/openai/claude/openai_claude_request.go
+index 813be7e..c79f8b3 100644
+--- a/internal/translator/openai/claude/openai_claude_request.go
++++ b/internal/translator/openai/claude/openai_claude_request.go
+@@ -430,6 +430,17 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream
+ 		out, _ = sjson.SetBytes(out, "user", user.String())
+ 	}
+ 
++	// vococo: preserve per-request GPT output detail across the Claude adapter.
++	if strings.HasPrefix(strings.ToLower(modelName), "gpt-") {
++		v := root.Get("text.verbosity")
++		if v.Type == gjson.String {
++			switch v.String() {
++			case "low", "medium", "high":
++				out, _ = sjson.SetBytes(out, "verbosity", v.String())
++			}
++		}
++	}
++
+ 	return out, drops.Err()
+ }
+ 
+diff --git a/internal/translator/openai/claude/vococo_verbosity_test.go b/internal/translator/openai/claude/vococo_verbosity_test.go
+new file mode 100644
+index 0000000..4571493
+--- /dev/null
++++ b/internal/translator/openai/claude/vococo_verbosity_test.go
+@@ -0,0 +1,33 @@
++package claude
++
++import (
++	"github.com/tidwall/gjson"
++	"testing"
++)
++
++func TestVococoVerbosity(t *testing.T) {
++	for _, value := range []string{"low", "medium", "high", "", "invalid"} {
++		input := []byte(`{"messages":[{"role":"user","content":"hi"}],"text":{"verbosity":"` + value + `"},"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`)
++		output, err := ConvertClaudeRequestToOpenAI("gpt-6.1-sol", input, true)
++		if err != nil {
++			t.Fatal(err)
++		}
++		want := value
++		if value == "invalid" {
++			want = ""
++		}
++		if got := gjson.GetBytes(output, "verbosity").String(); got != want {
++			t.Fatalf("verbosity=%q: got %q, want %q", value, got, want)
++		}
++		if value == "" && gjson.GetBytes(output, "verbosity").Exists() {
++			t.Fatal("default must omit verbosity")
++		}
++		output, err = ConvertClaudeRequestToOpenAI("deepseek-flash", input, true)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if gjson.GetBytes(output, "verbosity").Exists() {
++			t.Fatal("non-GPT received verbosity")
++		}
++	}
++}
