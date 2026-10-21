@@ -1,0 +1,229 @@
+diff --git a/internal/thinking/summary.go b/internal/thinking/summary.go
+--- a/internal/thinking/summary.go
++++ b/internal/thinking/summary.go
+@@ -61,6 +61,12 @@
+ 			return config
+ 		}
+ 	case "claude":
++		// Preserve GPT summary detail before falling back to Claude display intent.
++		if strings.HasPrefix(strings.ToLower(gjson.GetBytes(body, "model").String()), "gpt-") {
++			if config, ok := responsesSummaryConfig(body, "reasoning.summary"); ok {
++				return config
++			}
++		}
+ 		// Anthropic only accepts display alongside active adaptive/manual thinking.
+ 		if !claudeThinkingAcceptsDisplay(body) {
+ 			return SummaryConfig{}
+diff --git a/internal/translator/codex/claude/codex_claude_request.go b/internal/translator/codex/claude/codex_claude_request.go
+--- a/internal/translator/codex/claude/codex_claude_request.go
++++ b/internal/translator/codex/claude/codex_claude_request.go
+@@ -359,6 +359,17 @@
+ 	}
+ 	template = translatorcommon.SetRawArrayItems(template, "input", inputItems)
+ 
++	// Preserve per-request GPT output detail across the Claude adapter.
++	if strings.HasPrefix(strings.ToLower(modelName), "gpt-") {
++		v := rootResult.Get("text.verbosity")
++		if v.Type == gjson.String {
++			switch v.String() {
++			case "low", "medium", "high":
++				template, _ = sjson.SetBytes(template, "text.verbosity", v.String())
++			}
++		}
++	}
++
+ 	return template
+ }
+ 
+diff --git a/internal/translator/openai/claude/openai_claude_request.go b/internal/translator/openai/claude/openai_claude_request.go
+--- a/internal/translator/openai/claude/openai_claude_request.go
++++ b/internal/translator/openai/claude/openai_claude_request.go
+@@ -336,6 +336,17 @@
+ 	// Handle user parameter (for tracking)
+ 	if user := root.Get("user"); user.Exists() {
+ 		out, _ = sjson.SetBytes(out, "user", user.String())
++	}
++
++	// OpenAI Chat uses top-level verbosity rather than Responses text.verbosity.
++	if strings.HasPrefix(strings.ToLower(modelName), "gpt-") {
++		v := root.Get("text.verbosity")
++		if v.Type == gjson.String {
++			switch v.String() {
++			case "low", "medium", "high":
++				out, _ = sjson.SetBytes(out, "verbosity", v.String())
++			}
++		}
+ 	}
+ 
+ 	return out
+diff --git a/internal/runtime/executor/vococo_output_controls_test.go b/internal/runtime/executor/vococo_output_controls_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/runtime/executor/vococo_output_controls_test.go
+@@ -0,0 +1,166 @@
++package executor
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
++	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
++	"github.com/tidwall/gjson"
++)
++
++type vococoOutputCase struct {
++	name, model, fields, verbosity, summary string
++}
++
++func vococoOutputCases() []vococoOutputCase {
++	return []vococoOutputCase{
++		{"low-auto", "gpt-5.4", `"text":{"verbosity":"low"},"reasoning":{"summary":"auto"}`, "low", "auto"},
++		{"medium-concise", "gpt-5.4", `"text":{"verbosity":"medium"},"reasoning":{"summary":"concise"}`, "medium", "concise"},
++		{"high-detailed", "gpt-5.4", `"text":{"verbosity":"high"},"reasoning":{"summary":"detailed"}`, "high", "detailed"},
++		{"null-disables-display", "gpt-5.4", `"text":{"verbosity":"low"},"reasoning":{"summary":null}`, "low", ""},
++		{"none-alias", "gpt-5.4", `"reasoning":{"summary":"none"}`, "", ""},
++		{"default-display", "gpt-5.4", `"unused":true`, "", "auto"},
++		{"invalid", "gpt-5.4", `"text":{"verbosity":"invalid"},"reasoning":{"summary":"invalid"}`, "", "auto"},
++		{"empty", "gpt-5.4", `"text":{"verbosity":""},"reasoning":{"summary":""}`, "", "auto"},
++		{"number", "gpt-5.4", `"text":{"verbosity":1},"reasoning":{"summary":1}`, "", "auto"},
++		{"null-verbosity", "gpt-5.4", `"text":{"verbosity":null}`, "", "auto"},
++		{"case-sensitive-verbosity", "gpt-5.4", `"text":{"verbosity":"LOW"}`, "", "auto"},
++		{"boolean", "gpt-5.4", `"text":{"verbosity":true},"reasoning":{"summary":false}`, "", "auto"},
++		{"object", "gpt-5.4", `"text":{"verbosity":{}},"reasoning":{"summary":{}}`, "", "auto"},
++		{"array", "gpt-5.4", `"text":{"verbosity":[]},"reasoning":{"summary":[]}`, "", "auto"},
++		{"non-gpt", "deepseek-flash", `"text":{"verbosity":"low"},"reasoning":{"summary":"detailed"}`, "", "auto"},
++		{"non-gpt-null", "deepseek-flash", `"text":{"verbosity":"low"},"reasoning":{"summary":null}`, "", "auto"},
++	}
++}
++
++func vococoSource(tc vococoOutputCase) []byte {
++	return []byte(fmt.Sprintf(`{"model":%q,"max_tokens":128,"messages":[{"role":"user","content":"synthetic test"}],"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"high"},%s}`, tc.model, tc.fields))
++}
++
++func vococoAssertField(t *testing.T, body []byte, path, want string) {
++	t.Helper()
++	got := gjson.GetBytes(body, path)
++	if want == "" {
++		if got.Exists() {
++			t.Fatalf("%s must be absent: %s", path, body)
++		}
++		return
++	}
++	if got.Type != gjson.String || got.String() != want {
++		t.Fatalf("%s = %s, want %q: %s", path, got.Raw, want, body)
++	}
++}
++
++func TestVococoOutputControlsRegistryAndThinking(t *testing.T) {
++	for _, tc := range vococoOutputCases() {
++		for _, target := range []string{"codex", "openai"} {
++			t.Run(tc.name+"/"+target, func(t *testing.T) {
++				source := vococoSource(tc)
++				body := sdktranslator.TranslateRequest(sdktranslator.FormatClaude, sdktranslator.FromString(target), tc.model, source, true)
++				check := func(body []byte) {
++					if target == "codex" {
++						vococoAssertField(t, body, "text.verbosity", tc.verbosity)
++						vococoAssertField(t, body, "reasoning.summary", tc.summary)
++						vococoAssertField(t, body, "reasoning.effort", "high")
++					} else {
++						vococoAssertField(t, body, "verbosity", tc.verbosity)
++						vococoAssertField(t, body, "text.verbosity", "")
++						vococoAssertField(t, body, "reasoning.summary", "")
++						vococoAssertField(t, body, "reasoning_effort", "high")
++					}
++				}
++				check(body)
++				body, err := helps.ApplyThinkingWithSourcePayload(body, source, source, tc.model, "claude", target, target)
++				if err != nil {
++					t.Fatal(err)
++				}
++				check(body)
++			})
++		}
++	}
++}
++
++func TestVococoOutputControlsCodexFinalHTTP(t *testing.T) {
++	for _, tc := range vococoOutputCases() {
++		for _, stream := range []bool{false, true} {
++			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
++				captured := make(chan []byte, 1)
++				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					body, _ := io.ReadAll(r.Body)
++					captured <- body
++					if r.URL.Path != "/responses" {
++						t.Errorf("unexpected path %s", r.URL.Path)
++					}
++					w.Header().Set("Content-Type", "text/event-stream")
++					_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"synthetic\",\"object\":\"response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
++				}))
++				defer server.Close()
++				executor := NewCodexExecutor(&config.Config{})
++				auth := &cliproxyauth.Auth{Attributes: map[string]string{"base_url": server.URL, "api_key": "synthetic-only"}}
++				req := cliproxyexecutor.Request{Model: tc.model, Payload: vococoSource(tc)}
++				opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, Stream: stream, OriginalRequest: req.Payload}
++				if stream {
++					result, err := executor.ExecuteStream(context.Background(), auth, req, opts)
++					if err != nil {
++						t.Fatal(err)
++					}
++					for chunk := range result.Chunks {
++						if chunk.Err != nil {
++							t.Fatal(chunk.Err)
++						}
++					}
++				} else if _, err := executor.Execute(context.Background(), auth, req, opts); err != nil {
++					t.Fatal(err)
++				}
++				body := <-captured
++				vococoAssertField(t, body, "text.verbosity", tc.verbosity)
++				vococoAssertField(t, body, "reasoning.summary", tc.summary)
++				vococoAssertField(t, body, "reasoning.effort", "high")
++			})
++		}
++	}
++}
++
++func TestVococoOutputControlsNoImplicitSummary(t *testing.T) {
++	for _, model := range []string{"gpt-5.4", "deepseek-flash"} {
++		for _, fields := range []string{`"unused":true`, `"reasoning":{"summary":123}`, `"reasoning":{"summary":"invalid"}`, `"reasoning":{"summary":null}`} {
++			source := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"synthetic"}],%s}`, model, fields))
++			body := sdktranslator.TranslateRequest(sdktranslator.FormatClaude, sdktranslator.FormatCodex, model, source, false)
++			var err error
++			body, err = helps.ApplyThinkingWithSourcePayload(body, source, source, model, "claude", "codex", "codex")
++			if err != nil {
++				t.Fatal(err)
++			}
++			vococoAssertField(t, body, "reasoning.summary", "")
++			vococoAssertField(t, body, "text.verbosity", "")
++		}
++	}
++}
++
++func TestVococoOutputControlsEffortIndependent(t *testing.T) {
++	for _, effort := range []string{"low", "medium", "high"} {
++		for _, summary := range []any{"auto", "concise", "detailed", nil} {
++			rawSummary, _ := json.Marshal(summary)
++			source := []byte(fmt.Sprintf(`{"model":"gpt-5.4","messages":[],"thinking":{"type":"adaptive"},"output_config":{"effort":%q},"text":{"verbosity":"low"},"reasoning":{"summary":%s}}`, effort, rawSummary))
++			body := sdktranslator.TranslateRequest(sdktranslator.FormatClaude, sdktranslator.FormatCodex, "gpt-5.4", source, true)
++			body, err := helps.ApplyThinkingWithSourcePayload(body, source, source, "gpt-5.4", "claude", "codex", "codex")
++			if err != nil {
++				t.Fatal(err)
++			}
++			vococoAssertField(t, body, "reasoning.effort", effort)
++			vococoAssertField(t, body, "text.verbosity", "low")
++			want, _ := summary.(string)
++			vococoAssertField(t, body, "reasoning.summary", want)
++		}
++	}
++}
