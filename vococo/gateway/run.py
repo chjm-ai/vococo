@@ -402,8 +402,28 @@ class GatewayRunner:
                 await client_pool.close_all()
 
 
+def _raise_fd_limit(target: int = 8192) -> None:
+    """把文件句柄软上限抬到 target(硬限更小就以硬限为准)。
+
+    背景(2026-10-21):launchd 拉起的进程默认软上限只有 256,网络抖动引发重连时
+    直接 EMFILE——连 cron_jobs.json 都打不开,侧栏整块 500。硬限是 unlimited,
+    启动时抬软限即可,子进程(claude CLI)也会继承。
+    """
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        want = target if hard == resource.RLIM_INFINITY else min(target, hard)
+        if soft != resource.RLIM_INFINITY and soft < want:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+            print(f"[serve] 文件句柄软上限 {soft} → {want}(硬限 {hard})", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[serve] 提升文件句柄上限失败: {exc}", flush=True)
+
+
 async def run_serve() -> None:
     """组装并启动 gateway(Web + 调度器,按配置挂载)。"""
+    _raise_fd_limit()
     adapters: list[Adapter] = []
     if config.WEB_ENABLED:
         from .adapters.web import WebAdapter
