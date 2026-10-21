@@ -1044,7 +1044,8 @@ async def stream_turn(
     # 请求体合并环境变量注入。注入时 effort 必须留空:CLI 收到不认识的值只会警告+回退默认,
     # 发了也是白发。2026-09-11 真机 A/B 验证过注入后 DeepSeek 确实按该档位走。
     verbosity = settings_store.get_web_verbosity(selection_model)
-    extra_body = providers.extra_body_for_model(resolved_model, effective_effort, verbosity)
+    summary = settings_store.get_web_summary(selection_model)
+    extra_body = providers.extra_body_for_model(resolved_model, effective_effort, verbosity, summary)
     cli_effort = "" if providers.extra_body_for_effort(effective_effort) else effective_effort
     if extra_body and provider_env:
         provider_env = {**provider_env, "CLAUDE_CODE_EXTRA_BODY": extra_body}

@@ -105,3 +105,48 @@ def test_selected_detail_does_not_keep_concise_instruction():
     assert "详细" in reply_style_reminder("gpt-6.1-sol", "high")
     assert "兼顾" in reply_style_reminder("gpt-6.1-sol", "medium")
     assert reply_style_reminder("claude-sonnet-5-5", "high") == ""
+
+
+def test_summary_saved_separately_and_reset(verbosity_settings):
+    settings_store.set_web_verbosity('low', model='gpt-6.1-sol')
+    settings_store.set_web_summary('detailed', model='gpt-6.1-sol')
+    settings_store.set_web_summary('none', model='gpt-6-astra')
+    assert settings_store.get_web_summary('gpt-6.1-sol') == 'detailed'
+    assert settings_store.get_web_summary('gpt-6-astra') == 'none'
+    assert settings_store.get_web_verbosity('gpt-6.1-sol') == 'low'
+    settings_store.set_web_summary('', model='gpt-6.1-sol')
+    assert settings_store.get_web_summary('gpt-6.1-sol') == ''
+    for value in ('bad', [], None, 1):
+        with pytest.raises(ValueError):
+            settings_store.set_web_summary(value, model='gpt-6-astra')
+    assert settings_store.get_web_summary('gpt-6-astra') == 'none'
+
+
+@pytest.mark.parametrize('summary', ['auto', 'concise', 'detailed', 'none', ''])
+def test_summary_payload_keeps_verbosity_and_effort(summary):
+    body = json.loads(providers.extra_body_for_model('gpt-6.1-sol', 'ultra', 'low', summary))
+    assert body['text'] == {'verbosity': 'low'}
+    assert body['output_config'] == {'effort': 'ultra'}
+    if summary:
+        assert body['reasoning'] == {'summary': None if summary == 'none' else summary}
+    else:
+        assert 'reasoning' not in body
+    assert providers.extra_body_for_model('claude-sonnet-5-5', '', '', summary) == ''
+
+
+@pytest.mark.anyio
+async def test_summary_http_persistence_and_validation(verbosity_settings):
+    adapter = WebAdapter()
+    app = web.Application()
+    app.add_routes([web.get('/settings', adapter._handle_settings),
+                    web.post('/reasoning-summary', adapter._handle_summary_switch)])
+    async with TestClient(TestServer(app)) as client:
+        for value in ('auto', 'concise', 'detailed', 'none', ''):
+            response = await client.post('/reasoning-summary', json={'model':'gpt-6.1-sol','summary':value})
+            assert response.status == 200
+            data = await (await client.get('/settings')).json()
+            assert data['models']['summaries']['gpt-6.1-sol']['value'] == value
+        for body in ({'model':'gpt-6.1-sol','summary':[]}, {'model':'unknown','summary':'auto'},
+                     {'model':'claude-sonnet-5-5','summary':'auto'}, {'model':'gpt-6.1-sol'},
+                     {'model':'gpt-6.1-sol','summary':'low'}):
+            assert (await client.post('/reasoning-summary',json=body)).status == 400

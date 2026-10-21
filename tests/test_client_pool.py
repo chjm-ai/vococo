@@ -563,3 +563,23 @@ async def test_verbosity_change_reconnects_and_keeps_effort(clients, monkeypatch
     await _turn(resume="sid-1")
     assert len(clients) == 3
     assert "CLAUDE_CODE_EXTRA_BODY" not in clients[2].options.env
+
+
+@pytest.mark.anyio
+async def test_summary_change_reconnects_without_changing_effort_or_verbosity(clients, monkeypatch, tmp_path):
+    monkeypatch.setattr(agent.settings_store, '_PATH', tmp_path / 'settings.json')
+    monkeypatch.setattr(agent.providers, 'resolve', lambda *a: (
+        'gpt-6.1-sol', {'ANTHROPIC_BASE_URL':'http://127.0.0.1:8317','ANTHROPIC_API_KEY':'fake'}))
+    monkeypatch.setattr(agent.settings_store, 'get_web_effort', lambda *a: 'high')
+    agent.settings_store.set_web_verbosity('low', model=config.MODEL)
+    agent.settings_store.set_web_summary('concise', model=config.MODEL)
+    await _turn()
+    assert clients[0].options.effort == 'high'
+    body = json.loads(clients[0].options.env['CLAUDE_CODE_EXTRA_BODY'])
+    assert body == {'text':{'verbosity':'low'},'reasoning':{'summary':'concise'}}
+    agent.settings_store.set_web_summary('none', model=config.MODEL)
+    await _turn(resume='sid-1')
+    assert len(clients) == 2 and clients[0].disconnected
+    assert clients[1].options.effort == 'high'
+    body = json.loads(clients[1].options.env['CLAUDE_CODE_EXTRA_BODY'])
+    assert body == {'text':{'verbosity':'low'},'reasoning':{'summary':None}}
