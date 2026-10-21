@@ -2002,6 +2002,21 @@ class WebAdapter:
         return web.json_response({"ok": True, "model": model, "verbosity": verbosity})
 
     @_authed
+    @_json_body
+    async def _handle_summary_switch(self, request: web.Request, body: dict) -> web.Response:
+        model, summary = body.get("model"), body.get("summary")
+        if not isinstance(model, str) or not isinstance(summary, str):
+            return web.json_response({"error": "模型和思考摘要必须是字符串"}, status=400)
+        available = {item[0] for item in providers.available_models(MODEL_CHOICES, True)}
+        if model not in available:
+            return web.json_response({"error": "模型不可用"}, status=400)
+        levels = providers.summary_choices_for_model(model)
+        if summary not in tuple(level for level, _ in levels):
+            return web.json_response({"error": "此模型不支持该思考摘要设置"}, status=400)
+        settings_store.set_web_summary(summary, model=model)
+        return web.json_response({"ok": True, "model": model, "summary": summary})
+
+    @_authed
     async def _handle_commands(self, request: web.Request) -> web.Response:
         # 斜杠命令清单 = COMMAND_LIST(单一来源,和 TG /help、setMyCommands 共用),
         # 供输入框 "/" 触发的快捷菜单渲染 + 前缀过滤。
@@ -2603,6 +2618,10 @@ class WebAdapter:
                 },
                 "models": {
                     "active": active_model,
+                    "summaries": {
+                        item["id"]: providers.summary_state(item["id"])
+                        for item in model_choices if providers.summary_choices_for_model(item["id"])
+                    },
                     "verbosities": {
                         item["id"]: providers.verbosity_state(item["id"])
                         for item in model_choices if providers.verbosity_choices_for_model(item["id"])
@@ -3500,6 +3519,7 @@ class WebAdapter:
                 web.get("/models", self._handle_models),
                 web.post("/effort", self._handle_effort_switch),
                 web.post("/verbosity", self._handle_verbosity_switch),
+                web.post("/reasoning-summary", self._handle_summary_switch),
                 web.get("/api/usage", self._handle_api_usage),
                 web.get("/stats", self._handle_stats),
                 web.get("/commands", self._handle_commands),

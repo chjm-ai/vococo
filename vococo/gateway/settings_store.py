@@ -41,6 +41,7 @@ _DEFAULTS: dict = {
     "external_mcp": {},         # name -> {type,command,args,env,url,headers,enabled}
     "web_default_model": "",    # web 端上次选定的模型;新会话没显式选就用它(空=回落 config.MODEL)
     "web_effort": "",           # 旧版全局思考深度,作为 web_efforts 未设时的兼容回落
+    "web_summaries": {},        # 模型 -> 思考摘要；空=模型默认
     "web_verbosities": {},      # 模型 -> 输出详细程度；空=模型默认
     "web_efforts": {},           # 模型 -> 思考深度;不同模型分别记住自己的选择
     "web_extra_models": [],     # 设置页手动加的模型档位:[{id,label,group?,provider?}]
@@ -67,7 +68,7 @@ def _load() -> dict:
     # mutate(如 list.append/dict[k]=v)就把模块级默认值永久污染了。
     for key in ("skills_enabled", "skills_hidden", "web_extra_models", "disabled_models", "disabled_builtin_models"):
         data[key] = list(data[key]) if isinstance(data.get(key), list) else []
-    for key in ("external_mcp", "web_providers", "web_efforts", "web_verbosities", "skill_profiles"):
+    for key in ("external_mcp", "web_providers", "web_efforts", "web_verbosities", "web_summaries", "skill_profiles"):
         data[key] = dict(data[key]) if isinstance(data.get(key), dict) else {}
     return data
 
@@ -324,6 +325,28 @@ def set_web_verbosity(verbosity: str, *, model: str) -> None:
             data["web_verbosities"][model] = verbosity
         else:
             data["web_verbosities"].pop(model, None)
+        _save(data)
+
+
+_WEB_SUMMARIES = ("", "auto", "concise", "detailed", "none")
+
+
+def get_web_summary(model: str) -> str:
+    value = _load()["web_summaries"].get(model, "")
+    return value if isinstance(value, str) and value in _WEB_SUMMARIES else ""
+
+
+def set_web_summary(summary: str, *, model: str) -> None:
+    if not isinstance(summary, str) or summary not in _WEB_SUMMARIES:
+        raise ValueError("思考摘要仅支持 默认/auto/concise/detailed/none")
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("缺少模型")
+    with _LOCK:
+        data = _load()
+        if summary:
+            data["web_summaries"][model] = summary
+        else:
+            data["web_summaries"].pop(model, None)
         _save(data)
 
 

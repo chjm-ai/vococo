@@ -7,8 +7,9 @@ const start = source.indexOf('function verbositySettingsHtml(');
 assert.ok(start >= 0, '设置页缺少输出详细程度控件');
 const select = {dataset:{verbosity:'gpt-6.1-sol'}, value:'low', disabled:false};
 const error = {textContent:''};
+const summary = {value:'auto',levels:[['','模型默认'],['auto','自动'],['concise','简短'],['detailed','详细'],['none','关闭']]};
 const model = {value:'low',levels:[['','模型默认'],['low','低'],['medium','中'],['high','高']]};
-const SET = {data:{models:{verbosities:{'gpt-6.1-sol':model}, choices:[{id:'gpt-6.1-sol',label:'GPT <Sol>'}]}}};
+const SET = {data:{models:{summaries:{'gpt-6.1-sol':summary}, verbosities:{'gpt-6.1-sol':model}, choices:[{id:'gpt-6.1-sol',label:'GPT <Sol>'}]}}};
 let requests=[], fail=false, release;
 const context = vm.createContext({SET,console,
   esc:x=>String(x).replaceAll('<','&lt;').replaceAll('"','&quot;'),
@@ -16,7 +17,7 @@ const context = vm.createContext({SET,console,
   api:async(url,options)=>{requests.push([url,JSON.parse(options.body)]);
     if(fail) return {ok:false,json:async()=>({error:'保存失败'})};
     await new Promise(resolve=>release=resolve);
-    return {ok:true,json:async()=>({verbosity:requests.at(-1)[1].verbosity})};}
+    return {ok:true,json:async()=>({...requests.at(-1)[1]})};}
 });
 vm.runInContext(source.slice(start,source.indexOf('function renderModelsPane()',start)),context);
 (async()=>{
@@ -35,5 +36,12 @@ vm.runInContext(source.slice(start,source.indexOf('function renderModelsPane()',
   fail=false; select.value=''; const reset=select.onchange(); release(); await reset;
   assert.equal(model.value,'');
   assert.equal(requests.at(-1)[1].verbosity,'');
+  select.dataset={summary:'gpt-6.1-sol'};
+  context.bindSummarySettings();
+  select.value='none'; const disabled=select.onchange(); release(); await disabled;
+  assert.equal(requests.at(-1)[0],'/reasoning-summary');
+  assert.equal(requests.at(-1)[1].summary,'none');
+  assert.equal(summary.value,'none');
+  assert.ok(context.summarySettingsHtml(SET.data.models).includes('思考摘要'));
   console.log('通过：输出详细程度渲染、保存、失败回滚和恢复默认');
 })().catch(error=>{console.error(error);process.exitCode=1;});

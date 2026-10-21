@@ -687,12 +687,29 @@ def verbosity_state(model: str) -> dict:
             "value": settings_store.get_web_verbosity(model)}
 
 
-def extra_body_for_model(resolved_model: str, effort: str, verbosity: str) -> str:
+def summary_choices_for_model(model: str) -> tuple[tuple[str, str], ...]:
+    if not verbosity_choices_for_model(model):
+        return ()
+    return (("", "模型默认"), ("auto", "自动"), ("concise", "简短"),
+            ("detailed", "详细"), ("none", "关闭"))
+
+
+def summary_state(model: str) -> dict:
+    from .gateway import settings_store
+
+    return {"levels": summary_choices_for_model(model),
+            "value": settings_store.get_web_summary(model)}
+
+
+def extra_body_for_model(resolved_model: str, effort: str, verbosity: str, summary: str = "") -> str:
     import json
 
     body = json.loads(extra_body_for_effort(effort) or "{}")
     if supports_verbosity(resolved_model) and verbosity in ("low", "medium", "high"):
         body["text"] = {"verbosity": verbosity}
+    if supports_verbosity(resolved_model) and summary in ("auto", "concise", "detailed", "none"):
+        # null 是给兼容代理的显式关闭标记；代理转发到 OpenAI 时须移除 summary 字段。
+        body["reasoning"] = {"summary": None if summary == "none" else summary}
     return json.dumps(body) if body else ""
 
 

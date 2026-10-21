@@ -16,7 +16,8 @@ def anyio_backend():
 
 
 @pytest.mark.anyio
-async def test_real_cli_sends_verbosity_and_effort_to_proxy(tmp_path):
+@pytest.mark.parametrize('summary', ['concise', 'detailed', 'none'])
+async def test_real_cli_sends_verbosity_and_effort_to_proxy(tmp_path, summary):
     received = []
 
     async def messages(request):
@@ -48,7 +49,7 @@ async def test_real_cli_sends_verbosity_and_effort_to_proxy(tmp_path):
             env={"ANTHROPIC_BASE_URL": str(server.make_url("/")).rstrip("/"),
                  "ANTHROPIC_API_KEY": "fake-local-only", "CLAUDE_CODE_OAUTH_TOKEN": "",
                  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-                 "CLAUDE_CODE_EXTRA_BODY": providers.extra_body_for_model("gpt-6.1-sol", "high", "low")},
+                 "CLAUDE_CODE_EXTRA_BODY": providers.extra_body_for_model("gpt-6.1-sol", "high", "low", summary)},
         )
         async with asyncio.timeout(30):
             async with ClaudeSDKClient(options=options) as client:
@@ -58,3 +59,5 @@ async def test_real_cli_sends_verbosity_and_effort_to_proxy(tmp_path):
     assert received, "CLI 没有发送模型请求"
     assert received[-1]["text"]["verbosity"] == "low"
     assert received[-1]["output_config"]["effort"] == "high"
+
+    assert received[-1]["reasoning"]["summary"] == (None if summary == "none" else summary)
