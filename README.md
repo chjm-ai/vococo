@@ -174,3 +174,56 @@ uv run vococo chat
 
 [MIT](LICENSE)。这是个人自用助理框架,fork 后请生成属于自己的凭据
 (Claude / VAPID),别把 `.env`、`data/` 提交进仓库(默认已 gitignore)。
+
+### GPT 输出详细程度
+
+在 **设置 → 模型 → 输出详细程度** 为每个 GPT 模型选择「模型默认 / 低 / 中 / 高」。
+保存后下一条消息生效，思考强度不受影响。「模型默认」不传参数，保留原有表达提示。
+明确选择中/高时会替换原有的简洁提醒；所有档位均以本轮用户明确要求为准。
+
+vococo 使用 Claude Agent SDK，请求通过 Anthropic 兼容端点进入代理。
+`CLAUDE_CODE_EXTRA_BODY` 携带 `text.verbosity`，但 CLIProxyAPI 原版的
+Claude→Codex / OpenAI 转换会丢弃该字段。仓库提供经过回归测试的兼容补丁：
+
+```bash
+bash deploy/patch-codex-verbosity.sh /path/to/CLIProxyAPI
+```
+
+脚本只修改代理源码并运行测试，不替换二进制或重启服务；重复执行不会重复打补丁。
+补丁基于 CLIProxyAPI `20c9095cac089c6a8e40554debe4dd8a19d4c14f`，版本不匹配时停止。
+按代理原有流程构建、部署后，GPT 请求才会收到原生详细程度参数；部署前仍有当轮表达提示生效。
+它控制回答详略，不保证固定字数，也不使用输出 token 上限截断回答。
+
+验证（不需要真实模型密钥）：
+
+```bash
+uv run pytest tests/test_verbosity.py tests/test_verbosity_wire.py tests/test_client_pool.py -q
+node tests/verbosity_settings.cjs
+```
+
+`test_verbosity_wire.py` 使用真实 SDK/CLI 向本地 HTTP 服务发请求，验证最终请求参数，
+不访问真实 GPT。代理补丁自带 Go 测试，验证最终 Codex Responses 的 `text.verbosity`
+和 OpenAI Chat Completions 的顶层 `verbosity`，不向其他模型透传。
+
+### GPT 思考摘要与真实效果测试
+
+在 **设置 → 模型 → 思考摘要** 按模型选择「模型默认 / 自动 / 简短 / 详细 / 关闭」。
+它只控制返回的摘要文字，不控制最终回答长短，也不会关闭模型思考；简单问题可能没有摘要。
+设置保存后下一轮生效，修改摘要不会改动思考强度或输出详细程度。
+
+上面的 `patch-codex-verbosity.sh` 现在同时应用两个补丁：详细程度透传 + 摘要档位保留。
+已打过旧补丁时直接重跑脚本即可。摘要仅由 Codex Responses 链路支持；
+普通 OpenAI Chat Completions 不提供这个摘要选项。关闭时 vococo 发兼容标记
+`reasoning.summary: null`，代理将其转成省略字段，不把 null 发给 GPT。
+
+真实模型效果测试（会使用本机现有 Codex 订阅额度，不打印或保存认证令牌）：
+
+```bash
+uv run python scripts/eval_gpt_output.py --model gpt-6.1-sol --repeats 2 --output /tmp/gpt-output-comparison.json
+```
+
+测试共 26 次请求：3 道问题 × 3 档详细程度 × 2 次重复，加 4 档摘要 × 2 次重复。
+每组只变一个参数，不加固定字数要求、不设置输出 token 上限。记录模型与参数回显、
+完整回答和摘要、去空白字符数、用时及 token 用量；失败或截断的回答不会计入有效样本。
+结果是同名 JSON + TXT 文件。此测试直连原生 Responses，不能替代部署后 vococo 的端到端验证；
+小样本不能保证每个问题的低档回答都更短，空摘要也不能证明摘要详略控制有效。
