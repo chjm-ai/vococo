@@ -15,6 +15,7 @@ run.sh 守护循环只能兜"进程退出"这一种死法,兜不住"活着但不
 """
 from __future__ import annotations
 
+import errno
 import faulthandler
 import os
 import threading
@@ -54,6 +55,51 @@ def _log(msg: str) -> "object":
     return f
 
 
+_FD_WARN_CAP = 1024  # 大上限(8192)时的固定警戒线;小上限按软限的 75% 算
+_FD_WARN_COOLDOWN = 600  # 同一轮超限最多 10 分钟记一条,避免刷屏
+_last_fd_warn = float("-inf")  # 初次必定可记;用 0.0 会让刚开机的前 10 分钟静默
+
+
+def _fd_warn_line() -> int:
+    """按当前软上限算警戒线:setrlimit 失败仍是 256 时按 75% 算,大上限固定 1024。"""
+    try:
+        import resource
+
+        soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ImportError, OSError):
+        return _FD_WARN_CAP
+    if soft == resource.RLIM_INFINITY:
+        return _FD_WARN_CAP
+    return min(_FD_WARN_CAP, max(32, soft * 3 // 4))
+
+
+def _fd_count() -> int:
+    """当前进程打开的句柄数;列目录都失败于句柄耗尽(EMFILE/ENFILE)返回 -2,其他 -1。"""
+    try:
+        return len(os.listdir("/dev/fd"))
+    except OSError as exc:
+        return -2 if exc.errno in (errno.EMFILE, errno.ENFILE) else -1
+
+
+def _check_fds(now: float) -> None:
+    """每轮采样 fd 数;越过警戒线写一条证据(2026-10-21 EMFILE 事故当时没有现场可看)。"""
+    global _last_fd_warn
+    count = _fd_count()
+    line = _fd_warn_line()
+    exhausted = count == -2  # 连列目录都开不了句柄 = 已经耗尽,不看阈值
+    if not exhausted and count < line:
+        return
+    if now - _last_fd_warn < _FD_WARN_COOLDOWN:
+        return
+    _last_fd_warn = now
+    detail = "已耗尽(os.listdir /dev/fd 报 EMFILE)" if exhausted else f"{count} 个"
+    try:
+        f = _log(f"打开文件句柄{detail}(警戒线 {line}),留意连接是否堆积")
+        f.close()
+    except OSError as exc:
+        print(f"[watchdog] 打开文件句柄{detail},写日志失败: {exc}", flush=True)
+
+
 def _watch() -> None:
     dumped = False
     last_check = time.monotonic()
@@ -66,6 +112,7 @@ def _watch() -> None:
             last_check = now
             continue
         last_check = now
+        _check_fds(now)
         lag = now - _last_beat
         if lag < config.WATCHDOG_DUMP_SEC:
             dumped = False
