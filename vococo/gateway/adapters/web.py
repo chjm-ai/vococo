@@ -1987,6 +1987,21 @@ class WebAdapter:
         return web.json_response({"ok": True, "model": model, "effort": effort})
 
     @_authed
+    @_json_body
+    async def _handle_verbosity_switch(self, request: web.Request, body: dict) -> web.Response:
+        model, verbosity = body.get("model"), body.get("verbosity")
+        if not isinstance(model, str) or not isinstance(verbosity, str):
+            return web.json_response({"error": "模型和输出详细程度必须是字符串"}, status=400)
+        available = {item[0] for item in providers.available_models(MODEL_CHOICES, True)}
+        if model not in available:
+            return web.json_response({"error": "模型不可用"}, status=400)
+        levels = providers.verbosity_choices_for_model(model)
+        if verbosity not in tuple(level for level, _ in levels):
+            return web.json_response({"error": "此模型不支持该输出详细程度"}, status=400)
+        settings_store.set_web_verbosity(verbosity, model=model)
+        return web.json_response({"ok": True, "model": model, "verbosity": verbosity})
+
+    @_authed
     async def _handle_commands(self, request: web.Request) -> web.Response:
         # 斜杠命令清单 = COMMAND_LIST(单一来源,和 TG /help、setMyCommands 共用),
         # 供输入框 "/" 触发的快捷菜单渲染 + 前缀过滤。
@@ -2588,6 +2603,10 @@ class WebAdapter:
                 },
                 "models": {
                     "active": active_model,
+                    "verbosities": {
+                        item["id"]: providers.verbosity_state(item["id"])
+                        for item in model_choices if providers.verbosity_choices_for_model(item["id"])
+                    },
                     "choices": model_choices,
                     # 旧前端缓存仍读取 builtin，保留同一份全量名单直到缓存自然更新。
                     "builtin": model_choices,
@@ -3480,6 +3499,7 @@ class WebAdapter:
                 web.post("/conv/perm", self._handle_conv_perm_set),
                 web.get("/models", self._handle_models),
                 web.post("/effort", self._handle_effort_switch),
+                web.post("/verbosity", self._handle_verbosity_switch),
                 web.get("/api/usage", self._handle_api_usage),
                 web.get("/stats", self._handle_stats),
                 web.get("/commands", self._handle_commands),

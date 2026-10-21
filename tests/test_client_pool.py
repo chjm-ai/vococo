@@ -540,3 +540,26 @@ async def test_style_not_stored_or_carried_to_non_gpt(clients, isolated, monkeyp
     assert clients[1].options.resume is None
     assert "原始问题" in clients[1].prompts[0]
     assert "[本轮表达提醒" not in clients[1].prompts[0]
+
+
+@pytest.mark.anyio
+async def test_verbosity_change_reconnects_and_keeps_effort(clients, monkeypatch, tmp_path):
+    monkeypatch.setattr(agent.settings_store, "_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: (
+        "gpt-6.1-sol", {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8317", "ANTHROPIC_API_KEY": "fake"}))
+    monkeypatch.setattr(agent.settings_store, "get_web_effort", lambda *a: "high")
+    selected = {"value": "low"}
+    monkeypatch.setattr(agent.settings_store, "get_web_verbosity", lambda *a: selected["value"])
+    await _turn()
+    first = clients[0]
+    assert json.loads(first.options.env["CLAUDE_CODE_EXTRA_BODY"])["text"]["verbosity"] == "low"
+    assert first.options.effort == "high"
+    selected["value"] = "high"
+    await _turn(resume="sid-1")
+    assert len(clients) == 2 and first.disconnected
+    assert json.loads(clients[1].options.env["CLAUDE_CODE_EXTRA_BODY"])["text"]["verbosity"] == "high"
+    assert "表达上请克制" not in clients[1].prompts[0]
+    selected["value"] = ""
+    await _turn(resume="sid-1")
+    assert len(clients) == 3
+    assert "CLAUDE_CODE_EXTRA_BODY" not in clients[2].options.env

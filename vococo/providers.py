@@ -668,6 +668,34 @@ def extra_body_for_effort(effort: str) -> str:
     return _EXTRA_BODY_EFFORTS.get(effort, "")
 
 
+def supports_verbosity(resolved_model: str) -> bool:
+    # 老 GPT 和开源 GPT-OSS 没有这个参数，不能仅按 gpt- 前缀开启。
+    return re.match(r"^gpt-[56](?:[.-]|$)", resolved_model.lower()) is not None
+
+
+def verbosity_choices_for_model(model: str) -> tuple[tuple[str, str], ...]:
+    resolved_model, _ = resolve(model, model)
+    if not supports_verbosity(resolved_model):
+        return ()
+    return (("", "模型默认"), ("low", "低"), ("medium", "中"), ("high", "高"))
+
+
+def verbosity_state(model: str) -> dict:
+    from .gateway import settings_store
+
+    return {"levels": verbosity_choices_for_model(model),
+            "value": settings_store.get_web_verbosity(model)}
+
+
+def extra_body_for_model(resolved_model: str, effort: str, verbosity: str) -> str:
+    import json
+
+    body = json.loads(extra_body_for_effort(effort) or "{}")
+    if supports_verbosity(resolved_model) and verbosity in ("low", "medium", "high"):
+        body["text"] = {"verbosity": verbosity}
+    return json.dumps(body) if body else ""
+
+
 def effort_levels_for_model(model: str) -> tuple[str, ...]:
     """只返回可用档位 id，供运行时校验已持久化的选择。"""
     return tuple(level for level, _ in effort_choices_for_model(model))
