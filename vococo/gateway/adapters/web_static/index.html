@@ -1901,11 +1901,7 @@ async function reloadHistory(force){
         if(last && last.draft){
           const local=streamText(S.stream);
           if(last.draft.length>local.length && last.draft.startsWith(local)){
-            const keys=Object.keys(S.stream.segs).map(Number);
-            const nextSeg=keys.length?Math.max(...keys)+1:0;
-            const seg=segDiv(S.stream, nextSeg);
-            seg.dataset.raw=last.draft.slice(local.length);
-            renderSeg(seg);
+            syncDraftTail(S.stream, last.draft);
           }
         }
         S.stream.lastEvt=Date.now();

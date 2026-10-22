@@ -547,6 +547,24 @@ function segDiv(s, seg){
   if(!d){ d=el("div","seg"); d.dataset.raw=""; s.segs[seg]=d; s.flow.append(d); }
   return d;
 }
+// 历史草稿没有 seg 边界，只能暂显尾部，不能伪造一个会与后续全文重叠的段。
+function syncDraftTail(s, draft){
+  if(draft!==undefined) s.draftText=draft;
+  if(!s.draftText) return;
+  const text=streamText(s);
+  const tail=s.draftText.startsWith(text)?s.draftText.slice(text.length):"";
+  if(!tail){
+    if(s.draftTail) s.draftTail.remove();
+    s.draftTail=null; s.draftText=null;
+    return;
+  }
+  if(!s.draftTail){ s.draftTail=el("div","seg"); s.flow.append(s.draftTail); }
+  const last=Object.values(s.segs).at(-1);
+  // 只有新的真实文字段越过暂显尾部时才挪动；收尾不能把它挪到后来到达的工具后。
+  if(last && (s.draftTail.compareDocumentPosition(last)&Node.DOCUMENT_POSITION_FOLLOWING)) last.after(s.draftTail);
+  s.draftTail.dataset.raw=tail;
+  renderPreviewMarkdown(s.draftTail,tail,true);
+}
 // 全部文字段拼起来(判断"这轮有没有正文"用)
 function streamText(s){
   return Object.keys(s.segs).sort((a,b)=>a-b).map(k=>s.segs[k].dataset.raw).join("");
@@ -611,6 +629,14 @@ function finalizeStream(finalText, imgs, turnId, vids){
   if(S.stream.activeCard){ foldToGroup(S.stream, S.stream.activeCard); S.stream.activeCard=null; }
   if(S.stream.timer) clearInterval(S.stream.timer);
   S.stream.status.remove(); S.stream.thinktog.remove(); S.stream.think.remove();
+  if(S.stream.draftText){
+    syncDraftTail(S.stream, finalText!==undefined ? finalText : S.stream.draftText);
+    if(S.stream.draftTail){
+      const next=Math.max(-1,...Object.keys(S.stream.segs).map(Number))+1;
+      S.stream.segs[next]=S.stream.draftTail;
+      S.stream.draftTail=null; S.stream.draftText=null;
+    }
+  }
   // 回合结束时没点的审批/提问按钮保持可点:超时后再点 = 补批/补答,原会话接着做(gateway/run.py _late_click)。
   // 2026-10-01 前这里会把按钮全禁掉,错过的审批在对话里点不动,看着像「超时作废」
   // 交错排布保持原样;只有整轮没渲出任何正文时才用 done 的全文兜底(防丢帧空泡)
@@ -907,7 +933,7 @@ function applyStreamEvent(e){
       if(S.stream) S.stream.audioPending = false;  // 转写完成,状态行恢复正常文案
       ensureStream(e._t0); break;
     case "thinking": { const s=ensureStream(); s.thinktog.style.display="flex"; s.think.textContent=e.text; renderStatus(); break; }
-    case "text": { const s=ensureStream(); const d=segDiv(s, e.seg); d.dataset.raw=e.text; renderSeg(d); if(s.activeCard){ foldToGroup(s, s.activeCard); s.activeCard=null; s.tgroup=null; s.toolCount=0; } renderStatus(); break; }
+    case "text": { const s=ensureStream(); const d=segDiv(s, e.seg); d.dataset.raw=e.text; renderSeg(d); syncDraftTail(s); if(s.activeCard){ foldToGroup(s, s.activeCard); s.activeCard=null; s.tgroup=null; s.toolCount=0; } renderStatus(); break; }
     case "tool_start": { const s=ensureStream();
       if(e.parent){ subUpsert(s, e.parent, {name:e.name, id:e.tool_id, done:false, ok:true}); }
       else s.tools.push({name:e.name, id:e.tool_id, done:false, ok:true, subN:0});
@@ -975,6 +1001,13 @@ function maybeReplayStream(conv){
     }
     $("#wrap").append(S.stream.row);
     resumeStreamTimer(S.stream);
+    // text/thinking 在缓冲中原位替换，长度水位看不到这些更新；只同步正文，不重放工具副作用。
+    for(const e of buf.slice(0,snap.asOf)){
+      if(e.type==="text"){
+        const d=segDiv(S.stream,e.seg); d.dataset.raw=e.text; renderSeg(d);
+      }else if(e.type==="thinking") S.stream.think.textContent=e.text;
+    }
+    syncDraftTail(S.stream);
     for(let i=snap.asOf;i<buf.length;i++){         // 只补离开期间新增的事件,已建好的工具卡不重建
       const e=buf[i]; if(e.type==="user") continue;
       applyStreamEvent(e);
