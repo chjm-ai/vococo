@@ -199,10 +199,13 @@ async function ensurePreviewShare(state,source,token,isCurrent){
   state.share=share; state.shareSource=source; state.shareToken=token;
   return share;
 }
+function previewShareURL(share){
+  return new URL(share.path,"https://vococo.chjm.cc").href;
+}
 async function copyPreviewShareURL(sharePromise,isCurrent){
   const text=sharePromise.then(share=>{
     if(!isCurrent() || !share) throw new Error("会话已切换");
-    return new URL(share.path,location.origin).href;
+    return previewShareURL(share);
   });
   // WebKit 要求点击时就调用剪贴板 API，网络结果通过延迟数据交付。
   if(navigator.clipboard.write && typeof ClipboardItem!=="undefined"){
@@ -231,7 +234,7 @@ async function usePreviewShare(node,action){
     const copied=action==="copy"?copyPreviewShareURL(pending,isCurrent).then(()=>null,error=>error):null;
     const share=await pending;
     if(!isCurrent() || !share){popup?.close();return;}
-    const url=new URL(share.path,location.origin).href;
+    const url=previewShareURL(share);
     if(popup) popup.location.replace(url);
     else{const error=await copied;if(error) throw error;}
     if(isCurrent()) previewShareNote(node,action==="copy"?"已复制URL；持有链接即可访问，快照7天有效。":"已打开静态快照，7天有效；后续编辑不会改变此链接内容。");

@@ -3,7 +3,22 @@ const assert=require('node:assert/strict');
 const path=require('node:path');
 (async()=>{
   const [origin,token,screenshots]=process.argv.slice(2),browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
+  const publicOrigin='https://vococo.chjm.cc',localhostOrigin=origin.replace('127.0.0.1','localhost');
+  // 固定域名只代理到隔离服务，所有其他外网请求一律阻断，绝不触达生产。
+  const isolateNetwork=async context=>context.route('**/*',async route=>{
+    const request=route.request(),url=new URL(request.url());
+    if([origin,localhostOrigin].includes(url.origin))return route.continue();
+    if(url.origin!==publicOrigin)return route.abort();
+    assert(['/preview-share','/preview-share/content'].includes(url.pathname));
+    assert(!request.headers()['x-auth-token']&&!request.headers().cookie,'公开分享不能携带主站凭据');
+    const response=await context.request.fetch(origin+url.pathname+url.search,{
+      method:request.method(),headers:{'Content-Type':'application/json'},
+      data:request.postData()??undefined,maxRedirects:0,
+    });
+    await route.fulfill({response});
+  });
   const context=await browser.newContext({permissions:['clipboard-read','clipboard-write']});
+  await isolateNetwork(context);
   const page=await context.newPage(),errors=[];
   page.on('pageerror',e=>errors.push(e.message));
   try{
@@ -36,7 +51,8 @@ const path=require('node:path');
     await page.evaluate(()=>{window.realOpen=window.open;window.open=()=>{throw new Error('复制不应开窗')};});
     await copy.click();await card.getByText('已复制URL；', {exact:false}).waitFor();
     const shareURL=await page.evaluate(()=>navigator.clipboard.readText());
-    assert.match(shareURL,/\/preview-share#/);
+    assert.match(shareURL,/^https:\/\/vococo\.chjm\.cc\/preview-share#[\w-]{43}$/);
+    assert.equal(shareURL,publicOrigin+await card.evaluate(n=>n._preview.share.path),'复制必须完整保留密钥 fragment');
     assert.equal((await shares()).length,1);
     await copy.click();await copy.waitFor({state:'visible'});
     await page.waitForFunction(()=>!document.querySelector('.chat-preview')._preview.shareBusy);
@@ -51,7 +67,9 @@ const path=require('node:path');
     assert.equal(await popup.evaluate(()=>opener),null);
     assert.equal(popup.url(),shareURL,'打开与复制使用相同快照');
     assert.equal((await shares()).length,1);
-    const stranger=await browser.newContext(),other=await stranger.newPage(),publicRequests=[];
+    const stranger=await browser.newContext();
+    await isolateNetwork(stranger);
+    const other=await stranger.newPage(),publicRequests=[];
     other.on('request',request=>publicRequests.push({url:request.url(),headers:request.headers()}));
     await other.goto(shareURL);
     await other.frameLocator('iframe').getByRole('heading',{name:'跨设备静态快照'}).waitFor();
@@ -146,11 +164,20 @@ const path=require('node:path');
     await page.evaluate(()=>{fetch=window._oldFetch;addBubble('ai','```html\n<h1>新会话</h1>\n```');});
     assert.equal(await page.getByRole('button',{name:/管理|撤销|删除/}).count(),0);
     const mobileContext=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,
+      permissions:['clipboard-read','clipboard-write'],
       userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1'});
-    const mobile=await mobileContext.newPage();await mobile.goto(origin);await mobile.fill('#pw',token);await mobile.click('#loginBtn');
+    await isolateNetwork(mobileContext);
+    const mobile=await mobileContext.newPage();await mobile.goto(localhostOrigin);await mobile.fill('#pw',token);await mobile.click('#loginBtn');
     await mobile.waitForFunction(()=>!$('#app').hidden);
     await mobile.evaluate(async source=>{await openConv('share-mobile');$('#wrap').replaceChildren();closeSidebar();setSidebarCollapsed(true);addBubble('ai','```html\n'+source+'\n```');},source);
     await mobile.locator('.chat-preview iframe').waitFor();
+    await mobile.getByRole('button',{name:'复制URL',exact:false}).click();
+    await mobile.getByText('已复制URL；',{exact:false}).waitFor();
+    const localhostURL=await mobile.evaluate(()=>navigator.clipboard.readText());
+    assert.match(localhostURL,/^https:\/\/vococo\.chjm\.cc\/preview-share#[\w-]{43}$/);
+    assert.equal(localhostURL,publicOrigin+await mobile.locator('.chat-preview').evaluate(n=>n._preview.share.path),'localhost 复制也必须保留完整密钥并使用固定域名');
+    await other.goto(localhostURL);
+    await other.frameLocator('iframe').getByRole('heading',{name:'跨设备静态快照'}).waitFor();
     for(const width of [320,375,390]){
       await mobile.setViewportSize({width,height:844});
       assert(await mobile.locator('.preview-toolbar').evaluate(n=>{const r=n.getBoundingClientRect();return [...n.children].every(c=>c.getBoundingClientRect().right<=r.right+1)}));
