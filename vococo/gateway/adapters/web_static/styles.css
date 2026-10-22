@@ -46,7 +46,7 @@
   .chat-preview{border:1px solid var(--line);border-radius:var(--r-md);margin-block:var(--sp-4);overflow:hidden;max-width:100%;min-width:0;background:var(--panel)}
   .preview-toolbar{display:flex;align-items:center;flex-wrap:nowrap;gap:var(--sp-1);padding:var(--sp-2) var(--sp-3);border-bottom:1px solid var(--line);font-size:var(--fs-sm);color:var(--dim)}
   .preview-title{display:inline-flex;align-items:center;gap:var(--sp-2);font-weight:600;white-space:nowrap;color:var(--text)}
-  .preview-title>.ic{color:var(--accent)}
+  .preview-status+button{margin-inline-start:auto}
   .preview-toolbar .ic{display:block;width:var(--sp-5);height:var(--sp-5);flex-shrink:0}
   .preview-toolbar button{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:calc(var(--sp-5)*2);height:calc(var(--sp-5)*2);padding:0;font:inherit;color:var(--dim);background:transparent;border:1px solid transparent;border-radius:var(--r-sm);cursor:pointer;transition:background var(--t-fast),color var(--t-fast),border-color var(--t-fast)}
   .preview-toolbar button:hover{background:var(--panel2);color:var(--text)}
@@ -61,7 +61,8 @@
   @keyframes preview-spin{to{transform:rotate(360deg)}}
   @media(prefers-reduced-motion:reduce){.preview-status[data-state="busy"]>.ic{animation:none}}
   .preview-frame{display:block;width:100%;height:clamp(16rem,40vh,30rem);border:0;background:var(--on-accent)}
-  .preview-diagram{height:clamp(10rem,22vh,18rem)}
+  .preview-view{overflow-x:auto;min-width:0}
+  .preview-diagram{background:var(--bg2);max-width:none}
   .preview-source{max-height:30rem;overflow:auto;font-size:var(--fs-md);padding:var(--sp-4);color:var(--code-fg);background:var(--code-bg)}
   .chat-preview [hidden]{display:none!important}
   /* Agent 像素头像色板(agents.js,键名与后端 AVATAR_COLORS 一致):深浅主题通用,饱和度刻意偏高 */

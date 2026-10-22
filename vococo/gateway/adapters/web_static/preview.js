@@ -21,16 +21,113 @@ function makeSafePreviewFrame(source){
   frame.srcdoc = safePreviewHtml(source);
   return frame;
 }
+function previewDiagramTheme(){
+  const css=getComputedStyle(document.documentElement),tokens={};
+  for(const name of ["bg2","panel","panel2","text","dim","line2","accent","fs-sm","fs-base","sp-3","sp-4","sp-5","r-sm"])
+    tokens[name]=css.getPropertyValue("--"+name).trim();
+  const value=name=>tokens[name],size=name=>parseFloat(value(name));
+  const variables={background:value("bg2"),primaryColor:value("panel"),primaryTextColor:value("text"),
+    primaryBorderColor:value("line2"),secondaryColor:value("panel2"),secondaryTextColor:value("text"),
+    secondaryBorderColor:value("line2"),tertiaryColor:value("bg2"),tertiaryTextColor:value("text"),
+    tertiaryBorderColor:value("line2"),lineColor:value("dim"),textColor:value("text"),
+    mainBkg:value("panel"),nodeBorder:value("line2"),clusterBkg:value("panel2"),clusterBorder:value("line2"),
+    edgeLabelBackground:value("bg2"),actorBkg:value("panel"),actorBorder:value("accent"),
+    actorTextColor:value("text"),actorLineColor:value("line2"),signalColor:value("dim"),signalTextColor:value("text"),
+    labelBoxBkgColor:value("panel2"),labelBoxBorderColor:value("line2"),labelTextColor:value("text"),
+    loopTextColor:value("dim"),noteBkgColor:value("panel2"),noteTextColor:value("text"),noteBorderColor:value("line2"),
+    activationBkgColor:value("panel2"),activationBorderColor:value("accent"),
+    fontFamily:'-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif',fontSize:value("fs-base")};
+  return {key:JSON.stringify(tokens),tokens,variables,padding:size("sp-5"),font:size("fs-base"),minFont:size("fs-sm"),
+    gap:size("sp-4"),radius:size("r-sm")};
+}
+function initializePreviewMermaid(engine,theme){
+  engine.initialize({startOnLoad:false,securityLevel:"strict",suppressErrorRendering:true,htmlLabels:false,
+    theme:"base",themeVariables:theme.variables,maxTextSize:PREVIEW_LIMIT,maxEdges:300,
+    flowchart:{htmlLabels:false,padding:theme.padding,nodeSpacing:theme.padding*2,rankSpacing:theme.padding*3},
+    sequence:{useMaxWidth:true,actorMargin:theme.padding*2,boxMargin:theme.gap,noteMargin:theme.gap,
+      messageMargin:theme.padding*2,actorFontSize:theme.font,noteFontSize:theme.font,messageFontSize:theme.font},
+    secure:["securityLevel","startOnLoad","maxTextSize","maxEdges","suppressErrorRendering"]});
+}
+function addPreviewLoopBackgrounds(svg,theme){
+  // 循环框本身只有边线；把底色放在 SVG 最底层，避免盖住先绘制的消息与生命线。
+  const groups=new Set([...svg.querySelectorAll(".loopLine")].map(line=>line.parentNode));
+  for(const group of groups){
+    const lines=[...group.querySelectorAll(":scope > .loopLine")],xs=[],ys=[];
+    for(const line of lines) for(const end of ["1","2"]){
+      xs.push(Number(line.getAttribute("x"+end))); ys.push(Number(line.getAttribute("y"+end)));
+    }
+    if(!xs.length || ![...xs,...ys].every(Number.isFinite)) continue;
+    const rect=svg.ownerDocument.createElementNS("http://www.w3.org/2000/svg","rect");
+    for(const [name,value] of Object.entries({x:Math.min(...xs),y:Math.min(...ys),width:Math.max(...xs)-Math.min(...xs),
+      height:Math.max(...ys)-Math.min(...ys),rx:theme.radius,fill:theme.tokens.panel2,"fill-opacity":0.4})) rect.setAttribute(name,value);
+    rect.setAttribute("class","preview-loop-background"); svg.prepend(rect);
+  }
+}
+function previewDiagramMinScale(svg,theme){
+  // 部分图种（如甘特图）有独立的小字号，不能只按主题的正文字号估算缩放下限。
+  const sizes=[theme.font];
+  for(const node of svg.querySelectorAll("style,[style],[font-size]")){
+    const css=node.localName==="style"?node.textContent:node.getAttribute("style")||"";
+    for(const match of css.matchAll(/font-size\s*:\s*(\d+(?:\.\d+)?)px/g)) if(Number(match[1])>0) sizes.push(Number(match[1]));
+    const attribute=parseFloat(node.getAttribute("font-size"));
+    if(attribute>0) sizes.push(attribute);
+  }
+  return theme.minFont/Math.min(...sizes);
+}
+function preparePreviewDiagram(source,theme){
+  const doc=new DOMParser().parseFromString(source,"image/svg+xml"),svg=doc.documentElement;
+  const box=svg.viewBox.baseVal,width=box.width,height=box.height;
+  if(!Number.isFinite(width) || !Number.isFinite(height) || width<=0 || height<=0) throw new Error("无效的图表尺寸");
+  const minScale=previewDiagramMinScale(svg,theme),maxScale=Math.max(1,minScale);
+  svg.setAttribute("style","display:block;width:100%;height:auto;margin:auto;max-width:"+width*maxScale+"px");
+  svg.removeAttribute("height"); svg.setAttribute("width","100%");
+  for(const rect of svg.querySelectorAll(".node rect,rect.actor")){
+    rect.setAttribute("rx",theme.radius); rect.setAttribute("ry",theme.radius);
+  }
+  addPreviewLoopBackgrounds(svg,theme);
+  const ink=theme.tokens.text,muted=theme.tokens.dim,line=theme.tokens.line2,surface=theme.tokens.panel2;
+  const style=doc.createElementNS("http://www.w3.org/2000/svg","style");
+  const scope="#"+svg.id;
+  style.textContent=`${scope} text{font-family:${theme.variables.fontFamily};fill:${ink}}
+    ${scope} .nodeLabel{font-weight:500} ${scope} .actor-line{stroke:${line};stroke-width:1}
+    ${scope} .messageLine0,${scope} .messageLine1{stroke:${muted};stroke-width:1.5}
+    ${scope} .flowchart-link{stroke:${muted};stroke-width:1.5}
+    ${scope} .loopLine{stroke:${line};stroke-width:1;stroke-dasharray:${theme.gap/3} ${theme.gap/3}}
+    ${scope} .labelBox{fill:${surface};stroke:${line}}`;
+  for(const text of svg.querySelectorAll("text.actor")) text.style.fontWeight="500";
+  svg.append(style);
+  const padding=theme.padding;
+  return {source:'<style>html,body{margin:0;background:'+theme.tokens.bg2+'}body{padding:'+padding+'px;box-sizing:border-box}</style>'+svg.outerHTML,
+    geometry:{width,height,padding,minScale,maxScale}};
+}
+function sizePreviewDiagram(node){
+  const state=node?._preview,geometry=state?.geometry,frame=state?.view.querySelector(".preview-diagram");
+  if(!geometry || !frame || !node.isConnected) return;
+  const available=state.view.clientWidth;
+  if(!available) return;
+  const {width,height,padding,minScale,maxScale}=geometry;
+  // 宽图保留最小可读字号，滚动放在父页面；沙箱内既不测量 DOM，也不运行脚本。
+  const frameWidth=Math.max(available,Math.ceil(width*minScale+padding*2));
+  const scale=Math.min(maxScale,(frameWidth-padding*2)/width);
+  frame.style.width=frameWidth+"px";
+  frame.style.height=Math.ceil(height*scale+padding*2)+"px";
+}
+const previewResizeObserver=new ResizeObserver(entries=>{
+  for(const entry of entries) sizePreviewDiagram(entry.target.closest(".chat-preview"));
+});
+function refreshPreviewThemes(){
+  for(const node of document.querySelectorAll('.chat-preview[data-lang="mermaid"]')) scheduleChatPreview(node);
+}
+const previewThemeObserver=new MutationObserver(refreshPreviewThemes);
+previewThemeObserver.observe(document.documentElement,{attributes:true,attributeFilter:["data-theme"]});
+matchMedia("(prefers-color-scheme:light)").addEventListener("change",()=>{
+  if(!document.documentElement.hasAttribute("data-theme")) refreshPreviewThemes();
+});
 function loadPreviewMermaid(){
   if(previewMermaidPromise) return previewMermaidPromise;
   previewMermaidPromise = new Promise((resolve,reject)=>{
     const script = document.createElement("script"); script.src = "/mermaid-11.12.2.min.js";
-    script.onload = ()=>{
-      mermaid.initialize({startOnLoad:false,securityLevel:"strict",suppressErrorRendering:true,htmlLabels:false,
-        maxTextSize:PREVIEW_LIMIT,maxEdges:300,flowchart:{htmlLabels:false},
-        secure:["securityLevel","startOnLoad","maxTextSize","maxEdges","suppressErrorRendering"]});
-      resolve(mermaid);
-    };
+    script.onload = ()=>resolve(mermaid);
     script.onerror = ()=>{ previewMermaidPromise=null; script.remove(); reject(new Error("图表组件加载失败")); };
     document.head.append(script);
   });
@@ -69,15 +166,18 @@ async function copyPreviewSource(state, button){
 }
 function setupChatPreview(node){
   if(node._preview){
-    if(node.isConnected && !node._preview.queued && node._preview.needsResume) scheduleChatPreview(node);
+    const state=node._preview;
+    if(node.isConnected) previewResizeObserver.observe(state.view);
+    sizePreviewDiagram(node);
+    const staleTheme=node.dataset.lang==="mermaid" && state.renderTheme!==previewDiagramTheme().key;
+    if(node.isConnected && !state.queued && (state.needsResume || staleTheme)) scheduleChatPreview(node);
     return;
   }
   const source=node.querySelector("code").textContent;
   const state=node._preview={source,closed:node.dataset.live!=="true",fencedClosed:node.dataset.closed==="true",version:0,lastAt:0};
   const bar=document.createElement("div"); bar.className="preview-toolbar";
   const label=document.createElement("span"); label.className="preview-title";
-  label.innerHTML=previewIcon(node.dataset.lang==="mermaid"?"branch":"panel");
-  label.append(node.dataset.lang.toUpperCase());
+  label.textContent=node.dataset.lang.toUpperCase();
   state.status=document.createElement("span"); state.status.className="preview-status";
   state.status.setAttribute("role","status"); state.status.setAttribute("aria-atomic","true");
   const toggle=document.createElement("button"); toggle.type="button"; toggle.setAttribute("aria-pressed","false");
@@ -91,7 +191,9 @@ function setupChatPreview(node){
   bar.append(label,state.status,toggle,copy);
   state.note=document.createElement("div"); state.note.className="preview-note"; state.note.hidden=true;
   state.view=document.createElement("div"); state.view.className="preview-view";
-  node.prepend(bar,state.note,state.view); scheduleChatPreview(node);
+  node.prepend(bar,state.note,state.view);
+  if(node.isConnected) previewResizeObserver.observe(state.view);
+  scheduleChatPreview(node);
 }
 function scheduleChatPreview(node){
   const state=node._preview; clearTimeout(state.timer); state.version++; state.needsResume=true;
@@ -111,22 +213,27 @@ async function updateChatPreview(node){
   if(source.length>PREVIEW_LIMIT){ setPreviewStatus(state,"内容过大，已停止自动预览，请查看源码","warning"); return; }
   if(!state.closed && !state.fencedClosed) source=source.slice(0,source.lastIndexOf("\n")+1);
   if(!source.trim()){ setPreviewStatus(state,state.closed?"内容为空":"生成中，等待完整内容…",state.closed?"warning":"busy"); return; }
-  if(source===state.rendered){ finishPreviewStatus(state); return; }
-  const input=source;
+  const theme=node.dataset.lang==="mermaid"?previewDiagramTheme():null;
+  if(source===state.rendered && theme?.key===state.renderTheme){ finishPreviewStatus(state); return; }
+  const input=source; let geometry;
   try{
     if(node.dataset.lang==="mermaid"){
       // 禁止模型通过初始化指令/前置配置覆盖严格模式，或加载动态图表模块。
       if(/%%\{|^\s*---|\b(?:click|href)\b|\bimg\s*:|\b(?:url|image-set)\s*\(|@(?:import|font-face)|\\|<\s*[a-z]|&(?:lt|#0*60|#x0*3c);|(?:https?:|data:|blob:|file:|\/\/)/i.test(source)) throw new Error("不支持交互或自定义配置");
       const engine=await loadPreviewMermaid();
+      initializePreviewMermaid(engine,theme);
       const result=await engine.render("chatdiagram"+(++previewSequence),source);
-      source=result.svg;
+      const diagram=preparePreviewDiagram(result.svg,theme);
+      source=diagram.source; geometry=diagram.geometry;
+      if(theme.key!==previewDiagramTheme().key) return;
     }
     // 新 token 仍在追加时也提交成功的旧快照，避免持续输出使预览一直饿死。
     if(version!==state.version && !state.source.startsWith(input)) return;
     if(!node.isConnected){state.needsResume=true;return;}
     const frame=makeSafePreviewFrame(source);
     if(node.dataset.lang==="mermaid") frame.classList.add("preview-diagram");
-    state.view.replaceChildren(frame); state.rendered=input;
+    state.view.replaceChildren(frame); state.rendered=input; state.renderTheme=theme?.key; state.geometry=geometry;
+    sizePreviewDiagram(node);
     if(state.closed && state.source===input) finishPreviewStatus(state);
     else setPreviewStatus(state,"生成中，预览逐步更新…");
   }catch(error){
@@ -160,8 +267,13 @@ function renderPreviewMarkdown(target, source, streaming=false){
 }
 // 历史、文档分屏、后台消息均经过 mdToHtml；只处理新增的预览节点，不重扫整页。
 const chatPreviewObserver=new MutationObserver(records=>{
+  for(const record of records) for(const removed of record.removedNodes){
+    if(removed.nodeType!==1 || removed.isConnected) continue;
+    const cards=removed.matches(".chat-preview")?[removed]:removed.querySelectorAll(".chat-preview");
+    for(const card of cards) if(card._preview) previewResizeObserver.unobserve(card._preview.view);
+  }
   for(const record of records) for(const node of record.addedNodes){
-    if(node.nodeType!==1) continue;
+    if(node.nodeType!==1 || !node.isConnected) continue;
     if(node.matches(".chat-preview")) setupChatPreview(node);
     node.querySelectorAll(".chat-preview").forEach(setupChatPreview);
   }
