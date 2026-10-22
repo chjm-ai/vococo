@@ -571,7 +571,7 @@ function renderSeg(d){
     // 用户在选文字时不替换 innerHTML(会销毁选中 DOM,使 iOS 选择菜单闪退),
     // dirtySegs 不清,下次收到 text 事件会继续尝试。
     if(userSelecting()){ renderPending=true; return; }
-    for(const x of dirtySegs) x.innerHTML=mdToHtml(x.dataset.raw);
+    for(const x of dirtySegs) renderPreviewMarkdown(x,x.dataset.raw,!!x.closest(".row")?.querySelector(".status"));
     dirtySegs.clear(); scrollDown(); });
 }
 const DOTS='<span class="dots"><i></i><i></i><i></i></span>';
@@ -615,9 +615,9 @@ function finalizeStream(finalText, imgs, turnId, vids){
   // 2026-10-01 前这里会把按钮全禁掉,错过的审批在对话里点不动,看着像「超时作废」
   // 交错排布保持原样;只有整轮没渲出任何正文时才用 done 的全文兜底(防丢帧空泡)
   if(finalText!==undefined && !streamText(S.stream)){
-    const d=segDiv(S.stream, 0); d.dataset.raw=finalText; d.innerHTML=mdToHtml(finalText);
+    const d=segDiv(S.stream, 0); d.dataset.raw=finalText; renderPreviewMarkdown(d,finalText);
   }else{
-    for(const k in S.stream.segs){ const d=S.stream.segs[k]; d.innerHTML=mdToHtml(d.dataset.raw); }
+    for(const k in S.stream.segs){ const d=S.stream.segs[k]; dirtySegs.delete(d); renderPreviewMarkdown(d,d.dataset.raw); }
   }
   appendImgs(S.stream.bubble, imgs);
   appendVids(S.stream.bubble, vids);

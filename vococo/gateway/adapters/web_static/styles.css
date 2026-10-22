@@ -43,6 +43,16 @@
     /* 过渡时长:交互反馈用 fast,位移/展开用 base */
     --t-fast:.15s; --t-base:.22s;
   }
+  .chat-preview{border:1px solid var(--line);border-radius:var(--r-md);margin-block:var(--sp-4);overflow:hidden;max-width:100%;min-width:0;background:var(--panel)}
+  .preview-toolbar{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--line);font-size:var(--fs-sm);color:var(--dim)}
+  .preview-toolbar span{margin-right:auto}
+  .preview-toolbar button{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-sm);padding:var(--sp-2) var(--sp-3);cursor:pointer}
+  .preview-toolbar button:hover{background:var(--card)}
+  .preview-status{font-size:var(--fs-sm);color:var(--dim);padding:var(--sp-3) var(--sp-4);overflow-wrap:anywhere}
+  .preview-frame{display:block;width:100%;height:clamp(16rem,40vh,30rem);border:0;background:var(--on-accent)}
+  .preview-diagram{height:clamp(10rem,22vh,18rem)}
+  .preview-source{max-height:30rem;overflow:auto;font-size:var(--fs-md);padding:var(--sp-4);color:var(--code-fg);background:var(--code-bg)}
+  .chat-preview [hidden]{display:none!important}
   /* Agent 像素头像色板(agents.js,键名与后端 AVATAR_COLORS 一致):深浅主题通用,饱和度刻意偏高 */
   :root{
     --av-orange:#FF8A26; --av-coral:#FF5B4F; --av-lime:#2FC75A; --av-lake:#2B95FF;
