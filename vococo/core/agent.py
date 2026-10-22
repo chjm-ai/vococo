@@ -1197,12 +1197,13 @@ async def stream_turn(
         if delegation_task:
             delegation.constrain(options, delegation_task)
         if mcp_on and "vococo" in options.mcp_servers:
+            policy_error = ""
             try:
                 policy = delegation.snapshot(options, agent_rt, session_key)
-            except ValueError:
-                policy = None  # 普通会话继续工作，但委托入口会明确拒绝。
+            except ValueError as exc:
+                policy, policy_error = None, str(exc)
             delegation_tools = delegation.build_tools(
-                session_key, list(options.disallowed_tools or []), policy) if session_key else []
+                session_key, list(options.disallowed_tools or []), policy, policy_error) if session_key else []
             options.mcp_servers["vococo"] = build_mcp_servers(
                 subagent_tool=None if delegation_task else child_tool,
                 delegation_tools=delegation_tools)["vococo"]
