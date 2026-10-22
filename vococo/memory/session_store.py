@@ -442,12 +442,21 @@ def sync_external_context(session_key: str, sdk_id: str, revision: int) -> None:
     c.commit()
 
 
-def start_turn(session_key: str, user_text: str) -> int:
+def active_source_access(session_key: str) -> dict:
+    """只有当前执行轮的服务端来源有效；真人新轮次不继承自动派单权限。"""
+    row = _conn().execute(
+        "SELECT source_access, assistant_text FROM turns WHERE session_key=? AND user_text!='' ORDER BY id DESC LIMIT 1",
+        (session_key,),
+    ).fetchone()
+    return json.loads(row[0]) if row and row[0] and not row[1] else {}
+
+
+def start_turn(session_key: str, user_text: str, *, source_access: dict | None = None) -> int:
     """入库进行中 turn(assistant_text 留空);返回 row id 供 finish_turn/cancel_turn 配对。"""
     c = _conn()
     cur = c.execute(
-        "INSERT INTO turns(session_key, ts, user_text, assistant_text) VALUES (?,?,?,'')",
-        (session_key, time.time(), user_text),
+        "INSERT INTO turns(session_key, ts, user_text, assistant_text, source_access) VALUES (?,?,?,'',?)",
+        (session_key, time.time(), user_text, json.dumps(source_access) if source_access else None),
     )
     c.commit()
     return cur.lastrowid  # type: ignore[return-value]

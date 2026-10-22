@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+from contextlib import asynccontextmanager
+
+import anyio
 import re
 import secrets
 import time
@@ -75,6 +78,43 @@ def _humanize_error(error_note: str) -> str:
 
 # task_id -> 对应的 asyncio task,供 cancel() 取消一个正在跑的任务
 _running: dict[str, asyncio.Task] = {}
+_foreground_scopes: dict[asyncio.Task, anyio.CancelScope] = {}
+
+
+@asynccontextmanager
+async def foreground_execution(task_id: str | None):
+    """前台只登记本轮取消句柄，等待的是本轮收尾，不是整个网关调用者。"""
+    if not task_id or not tasks.get(task_id):
+        yield
+        return
+    await cancel_and_wait(task_id)
+    row = tasks.get(task_id)
+    if row["status"] == "queued":
+        tasks.set_status(task_id, "cancelled")
+    if not tasks.set_status(task_id, "running"):
+        raise RuntimeError("上一轮尚未结束，不能开始新轮次")
+    finished = asyncio.Event()
+    owner = asyncio.create_task(finished.wait())
+    scope = anyio.CancelScope()
+    _running[task_id] = owner
+    _foreground_scopes[owner] = scope
+    try:
+        with scope:
+            yield
+    finally:
+        try:
+            if _running.get(task_id) is owner:
+                row = tasks.get(task_id)
+                if row and row["status"] == "running":
+                    tasks.finish(task_id, "cancelled" if scope.cancel_called else "failed", "", "前台轮次中断")
+                    with anyio.CancelScope(shield=True):
+                        await task_events.emit_terminal(task_id)
+        finally:
+            if _running.get(task_id) is owner:
+                _running.pop(task_id, None)
+            _foreground_scopes.pop(owner, None)
+            finished.set()
+            _maybe_start_next()
 
 
 def _ensure_research_execution_available() -> None:
@@ -91,8 +131,6 @@ def _start_one(task: dict, turn_text: str | None = None) -> bool:
     若 set_status 失败(状态已被别处改了),什么都不做,返回 False。
     """
     task_id = task["id"]
-    if delegation.get(task_id):
-        return False  # 委托是一次性预算，不能通过续接重置。
     if task.get("kind") == "research":
         try:
             _ensure_research_execution_available()
@@ -123,18 +161,21 @@ def _spawn(task_id: str, turn_text: str | None = None) -> asyncio.Task:
     spawned = asyncio.create_task(_run(task_id, turn_text), context=contextvars.Context())
     if row and row.get("kind") == "research":
         spawned.add_done_callback(lambda finished: _research_run_done(task_id, finished))
-    elif delegation.get(task_id):
-        spawned.add_done_callback(lambda finished: _delegation_run_done(task_id, finished))
+    else:
+        spawned.add_done_callback(lambda finished: _ordinary_run_done(task_id, finished))
     return spawned
 
 
-def _delegation_run_done(task_id: str, finished: asyncio.Task) -> None:
+def _ordinary_run_done(task_id: str, finished: asyncio.Task) -> None:
     """覆盖尚未进入协程就取消、初始化失败等没有常规收尾的情况。"""
     error = None if finished.cancelled() else finished.exception()
     row = tasks.get(task_id)
-    if not row or row["status"] != "running" or _running.get(task_id) not in (None, finished):
+    if _running.get(task_id) is not finished:
         return
     _running.pop(task_id, None)
+    if not row or row["status"] != "running":
+        _maybe_start_next()
+        return
     if finished.cancelled():
         tasks.set_status(task_id, "cancelled", progress_note="已取消")
     else:
@@ -315,7 +356,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     # 并且能继续用文字追问(续聊直接走 web 发消息路径的 converse(),见 web.py)。
     session_key = tasks.session_key(task_id)
     inline_research = tasks.is_inline_research(row)
-    turn_id = None if inline_research else session_store.start_turn(session_key, prompt_text)
+    turn_id = None if inline_research else session_store.start_turn(
+        session_key, prompt_text, source_access=tasks.automatic_access(row))
     sdk_session_id: str | None = None
     chosen_at_start = ""
     # Git 项目任务必须在专属 worktree + 分支(vococo/<task_id>)执行;创建失败就让任务失败,
@@ -446,7 +488,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         # 上面干净的 prompt_text)——收尾时从回复里抠出来,见 _split_summary_tag。
         from ..memory import agents
 
-        execution = delegation.execution(task_id) if delegation.get(task_id) else {
+        execution = {
             "token_budget": token_budget,
             "system_prompt_extra": agents.prompt_extra_for_session(session_key),
         }
@@ -467,12 +509,6 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             source_token = clarify.bind_turn(session_key, turn_id)
         if is_research:
             effective_cwd = str(config.DATA_DIR / "research" / task_id)
-        elif delegation.get(task_id):
-            effective_cwd = await worktree.execution_cwd_for_task(row["cwd"], task_id)
-            if effective_cwd == row["cwd"]:
-                # 非 Git 资料目录不能创建 worktree；独立启动目录，资料仍可按原路径读取。
-                effective_cwd = str(config.DATA_DIR / "delegation_workspaces" / task_id)
-                Path(effective_cwd).mkdir(parents=True, exist_ok=True)
         else:
             effective_cwd = await worktree.execution_cwd_for_task(row["cwd"], task_id)
         cwd_token = danger.set_cwd(
@@ -480,10 +516,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             project_root=row["cwd"] if not is_research and effective_cwd != row["cwd"] else None,
         )
         timeout_min = 0 if is_research else _timeout_min(row)
-        delegated = delegation.get(task_id)
-        if delegated:
-            await delegation.run_with_deadline(task_id, _drive)
-        elif timeout_min > 0:
+        if timeout_min > 0:
             await asyncio.wait_for(_drive(), timeout=timeout_min * 60)
         else:
             await _drive()
@@ -491,8 +524,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     except asyncio.CancelledError:
         status = "cancelled"
     except asyncio.TimeoutError:
-        error_note = ("委托时长预算耗尽（含排队时间）" if delegation.get(task_id) else
-                      "研究时间预算已用尽" if is_research else f"超时(超过 {timeout_min} 分钟)")
+        error_note = ("研究时间预算已用尽" if is_research else f"超时(超过 {timeout_min} 分钟)")
     except Exception as exc:  # noqa: BLE001 —— 兜底:任何异常都要走到终态收尾,不留 running 僵尸
         error_note = f"执行出错:{exc}"
     finally:
@@ -501,7 +533,6 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         if cwd_token is not None:
             danger.reset_cwd(cwd_token)
         danger.reset_task_session(task_session_token)
-        _running.pop(task_id, None)
         if is_research:
             state = research.get(task_id)
             if state:
@@ -557,6 +588,9 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         )
 
     _record_agent_run(task_id, status, turn_id)
+    # 终态真正落库后才交出所有权；收尾异常仍由本轮 done callback 兜底。
+    if _running.get(task_id) is asyncio.current_task():
+        _running.pop(task_id, None)
     await task_events.emit_terminal(task_id)
 
     _maybe_start_next()
@@ -730,13 +764,22 @@ def dispatch(
     context_session_key:当前对话 key;cwd 未指定时按该会话匹配具体项目,匹配不到回落
     默认项目。最终落库的是项目根,执行时再由 _run() 创建任务专属 worktree。
     """
+    from ..gateway import clarify
+
+    source = clarify.get_context()
+    context_session_key = source.session_key if source else context_session_key
     cwd_explicit = bool((cwd or "").strip())
     cwd = config.resolve_execution_root(session_key=context_session_key, cwd=cwd)
-    task = tasks.create(title=title, prompt=prompt, cwd=cwd, cwd_explicit=cwd_explicit,
-                        dispatch_platform=dispatch_platform,
-                        dispatch_chat_id=dispatch_chat_id,
-                        origin=origin, task_id=task_id,
-                        agent_id=_task_agent_id(cwd if cwd_explicit else None, context_session_key))
+    options = {"cwd": cwd, "cwd_explicit": cwd_explicit,
+               "dispatch_platform": dispatch_platform, "dispatch_chat_id": dispatch_chat_id,
+               "origin": origin, "task_id": task_id,
+               "agent_id": _task_agent_id(cwd if cwd_explicit else None, context_session_key)}
+    access = tasks.capture_source_access(context_session_key) if context_session_key else {}
+    if access.get("chain_session"):
+        task = delegation.create_related_task(context_session_key, title, prompt, **options)
+    else:
+        task = tasks.create(title, prompt, source_session_key=context_session_key,
+                            source_access=access, **options)
     if model:
         session_store.set_chosen_model(tasks.session_key(task["id"]), model)
     _maybe_start_next()
@@ -763,8 +806,6 @@ async def append(task_id: str, instruction: str) -> dict:
     if row is None:
         return {"ok": False, "message": f"任务不存在(id={task_id})", "task": None}
 
-    if delegation.get(task_id):
-        return {"ok": False, "message": "委托预算不能重置，请由用户新开轮次派发", "task": row}
     if row.get("kind") == "research":
         return {"ok": False, "message": "原生深度研究已移除，历史研究不支持续聊或恢复", "task": row}
 
@@ -818,7 +859,11 @@ def cancel(task_id: str) -> bool:
     if row["status"] == "running":
         t = _running.get(task_id)
         if t is not None:
-            t.cancel()
+            scope = _foreground_scopes.get(t)
+            if scope is not None:
+                scope.cancel()
+            else:
+                t.cancel()
             return True
     return False
 

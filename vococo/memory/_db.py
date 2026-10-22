@@ -109,6 +109,8 @@ def conn() -> sqlite3.Connection:
         )
         _DB.execute("PRAGMA journal_mode=WAL")
         _DB.executescript(_SCHEMA)
+        if "source_access" not in {r[1] for r in _DB.execute("PRAGMA table_info(turns)")}:
+            _DB.execute("ALTER TABLE turns ADD COLUMN source_access TEXT")
         # 迁移:session_meta 增列(老库平滑升级)
         cols = {r[1] for r in _DB.execute("PRAGMA table_info(session_meta)")}
         if "title" not in cols:  # Web 会话列表用

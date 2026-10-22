@@ -961,7 +961,6 @@ async def stream_turn(
     token_budget: int = 0,
     tool_guard: Callable[[dict, str | None, Any], Awaitable[dict]] | None = None,
     usage_callback: Callable[[int], None] | None = None,
-    delegation_task: str | None = None,
 ) -> AsyncIterator[Event]:
     """流式跑一轮,逐个 yield 事件,最后 yield Done。
 
@@ -1024,12 +1023,8 @@ async def stream_turn(
         if compact_only:
             raise ValueError("研究模式不支持 compact_only")
     agent_rt = {} if research else agents.runtime_for_session(session_key)
-    if delegation_task:
-        from . import delegation
-
-        policy = json.loads(delegation.get(delegation_task)["policy"])
-        agent_rt["memory_sections"] = delegation._intersect_skills(
-            policy.get("memory_sections"), agent_rt.get("memory_sections"))
+    source_access = session_store.active_source_access(session_key) if session_key and not research else {}
+    disallowed_tools = list(dict.fromkeys([*(disallowed_tools or []), *source_access.get("denied", [])]))
     if agent_rt.get("disallowed_tools"):
         disallowed_tools = list(dict.fromkeys([*(disallowed_tools or []), *agent_rt["disallowed_tools"]]))
 
@@ -1122,7 +1117,7 @@ async def stream_turn(
     # 程序化子代理:显式 Git 项目会话挂评审员(见 core/reviewer.py),其余会话不挂
     subagents = None if research else reviewer.definitions(cwd, is_explicit_project)
 
-    pooling = not research and not delegation_task and bool(session_key) and client_pool.enabled()
+    pooling = not research and bool(session_key) and client_pool.enabled()
     base_key = (
         _compat_base_key(
             resolved_model, provider_env, sys_prompt, skills, cwd, mcp_on, external_mcp,
@@ -1194,19 +1189,11 @@ async def stream_turn(
             options.mcp_servers = {**build_mcp_servers(subagent_tool=child_tool), **mcp_servers}
         from . import delegation
 
-        if delegation_task:
-            delegation.constrain(options, delegation_task)
         if mcp_on and "vococo" in options.mcp_servers:
-            policy_error = ""
-            try:
-                policy = delegation.snapshot(options, agent_rt, session_key)
-            except ValueError as exc:
-                policy, policy_error = None, str(exc)
             delegation_tools = delegation.build_tools(
-                session_key, list(options.disallowed_tools or []), policy, policy_error) if session_key else []
+                session_key, list(options.disallowed_tools or [])) if session_key else []
             options.mcp_servers["vococo"] = build_mcp_servers(
-                subagent_tool=None if delegation_task else child_tool,
-                delegation_tools=delegation_tools)["vococo"]
+                subagent_tool=child_tool, delegation_tools=delegation_tools)["vococo"]
         return options
 
     async def _stream_once(
