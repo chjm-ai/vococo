@@ -239,6 +239,32 @@ def test_search_sessions_excludes_deleted_and_foreign_keys(isolated):
     assert session_store.search_sessions("名古屋") == []
 
 
+def test_search_sessions_empty_query_lists_recent_archived(isolated):
+    """空词只列归档，覆盖普通/任务会话，按最近消息排序并遵守上限。"""
+    from vococo.memory import session_store
+
+    for key in ("web:old", "task:new", "web:active", "cli:foreign", "web:deleted"):
+        session_store.set_title(key, key)
+        session_store.append(key, "你好", "好")
+        session_store.set_conv_archived(key, key != "web:active")
+    session_store.delete_session("web:deleted")
+    session_store._conn().execute("UPDATE turns SET ts=100 WHERE session_key='web:old'")
+    session_store._conn().execute("UPDATE turns SET ts=200 WHERE session_key='task:new'")
+    session_store._conn().commit()
+
+    results = session_store.search_sessions("")
+    assert [r["key"] for r in results] == ["task:new", "web:old"]
+    assert all(r["archived"] and not r["snippet"] for r in results)
+    assert session_store.search_sessions("   ", limit=1) == results[:1]
+
+
+def test_search_sessions_empty_archive_list(isolated):
+    from vococo.memory import session_store
+
+    session_store.set_title("web:active", "未归档")
+    assert session_store.search_sessions("") == []
+
+
 def test_search_sessions_like_escape(isolated):
     """用户输入里的 % _ 按字面匹配,不当 LIKE 通配符。"""
     from vococo.memory import session_store

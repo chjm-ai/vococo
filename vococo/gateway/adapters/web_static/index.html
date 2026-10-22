@@ -1956,15 +1956,19 @@ function setSidebarCollapsed(v){
 // 标题命中排前、正文其次,含归档会话;删除的会话已物理删除,天然搜不到。
 // 输入 200ms 防抖走 /conv/search(个人规模 LIKE 全表扫描毫秒级,见 session_store)。
 const SM = { seq:0, timer:null, results:[], sel:-1 };
-const SM_HINT = '<div class="smempty">输入关键词,搜索所有会话的标题与内容(含已归档)</div>';
 function openSearchModal(){
+  clearTimeout(SM.timer);
   $("#searchModal").hidden = false;
   const inp = $("#smInput");
   inp.value = ""; SM.results = []; SM.sel = -1;
-  $("#smList").innerHTML = SM_HINT;
+  $("#smList").innerHTML = '<div class="smempty">正在加载最近归档的会话…</div>';
   inp.focus();
+  runConvSearch();
 }
-function closeSearchModal(){ $("#searchModal").hidden = true; }
+function closeSearchModal(){
+  clearTimeout(SM.timer); ++SM.seq;
+  $("#searchModal").hidden = true;
+}
 // 手动拼 HTML:先转义再把命中段包 <b>,避免把会话内容当 HTML 注入
 function smHl(text, q){
   const i = text.toLowerCase().indexOf(q.toLowerCase());
@@ -1987,7 +1991,7 @@ async function openSearchResult(r, q){
 }
 function renderSearchResults(q){
   const box = $("#smList"); box.innerHTML = "";
-  if(!SM.results.length){ box.innerHTML = '<div class="smempty">没有匹配的会话</div>'; return; }
+  if(!SM.results.length){ box.innerHTML = '<div class="smempty">' + (q ? '没有匹配的会话' : '暂无已归档会话') + '</div>'; return; }
   SM.results.forEach((r, i)=>{
     const row = el("div","smrow" + (i===SM.sel?" sel":""));
     const t = el("div","smtitle");
@@ -2003,16 +2007,25 @@ function renderSearchResults(q){
 async function runConvSearch(){
   const q = $("#smInput").value.trim();
   const seq = ++SM.seq;   // 迟到的旧响应按序号丢弃,避免快速输入时结果错乱
-  if(!q){ SM.results=[]; SM.sel=-1; $("#smList").innerHTML = SM_HINT; return; }
+  SM.results=[]; SM.sel=-1;
   try{
     const r = await api("/conv/search?q="+encodeURIComponent(q));
+    if(!r.ok) throw new Error("search failed");
     const d = await r.json();
     if(seq !== SM.seq) return;
     SM.results = d.results||[]; SM.sel = SM.results.length ? 0 : -1;
     renderSearchResults(q);
-  }catch(e){}
+  }catch(e){
+    if(seq !== SM.seq) return;
+    $("#smList").innerHTML = '<div class="smempty">加载失败，请重新打开搜索重试</div>';
+  }
 }
-$("#smInput").oninput = ()=>{ clearTimeout(SM.timer); SM.timer = setTimeout(runConvSearch, 200); };
+$("#smInput").oninput = ()=>{
+  clearTimeout(SM.timer); ++SM.seq;
+  SM.results=[]; SM.sel=-1;
+  $("#smList").innerHTML = '<div class="smempty">正在加载…</div>';
+  SM.timer = setTimeout(runConvSearch, 200);
+};
 $("#smInput").onkeydown = e=>{
   if(e.key==="ArrowDown" || e.key==="ArrowUp"){
     e.preventDefault();
