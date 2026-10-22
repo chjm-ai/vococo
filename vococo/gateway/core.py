@@ -221,7 +221,10 @@ async def converse(
 
     from ..tools import danger  # 懒加载,避免 config↔tools 循环
 
-    from ..core import worktree  # 懒加载
+    from ..core import delegation, tasks as bg_tasks, worktree  # 懒加载
+
+    if session_key.startswith(bg_tasks.SESSION_KEY_PREFIX) and delegation.get(bg_tasks.task_id_from_session_key(session_key)):
+        raise ValueError("委托会话不支持续聊，请回来源会话重新派单")
 
     chosen_at_start = session_store.get_chosen_model(session_key)
     history = session_store.load_recent(session_key)

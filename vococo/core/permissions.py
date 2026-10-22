@@ -55,6 +55,13 @@ def state(session_key: str, now: float | None = None) -> dict:
            "agent_mode": STANDARD, "agent_name": "", "allowed": not _is_group(session_key)}
     if not session_key or not out["allowed"]:
         return out
+    # 委托永远取标准档上限；目标 full 和事后会话提权都不能扩大来源快照。
+    from . import tasks, delegation
+
+    task_id = tasks.task_id_from_session_key(session_key)
+    if task_id and delegation.get(task_id):
+        out.update(source="delegation", allowed=False)
+        return out
     try:
         from ..memory import agents
 

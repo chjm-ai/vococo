@@ -158,6 +158,7 @@ def create(
     agent_id: str | None = None,
     kind: str = "chat",
     source_session_key: str | None = None,
+    commit: bool = True,
 ) -> dict:
     """落库一条 queued 任务,返回完整行。
 
@@ -180,7 +181,8 @@ def create(
         (tid, title, prompt, cwd, int(cwd_explicit), dispatch_platform, dispatch_chat_id, origin,
          agent_id, kind, source_session_key, now, now),
     )
-    c.commit()
+    if commit:
+        c.commit()
     return get(tid)
 
 

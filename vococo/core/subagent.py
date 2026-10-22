@@ -153,16 +153,16 @@ def _deny(reason: str) -> dict:
     }}
 
 
-def protect_entry(hooks: dict | None) -> dict:
+def protect_entry(hooks: dict | None, tool_name: str = TOOL_NAME) -> dict:
     """原生子代理可能有更窄的权限，不能用主会话快照再次派发。"""
     async def guard(data, _tool_id, _context):
         if data.get("agent_id"):
-            return _deny("同步子代理只允许主会话调用，不能从原生子代理再次派发。")
+            return _deny("派发工具只允许绑定的主执行者调用，不能从原生子代理再次派发。")
         return {}
 
     return {**(hooks or {}), "PreToolUse": [
         *((hooks or {}).get("PreToolUse", [])),
-        HookMatcher(matcher=f"^{TOOL_NAME}$", hooks=[guard]),
+        HookMatcher(matcher=f"^{re.escape(tool_name)}$", hooks=[guard]),
     ]}
 
 
