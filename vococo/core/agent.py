@@ -42,7 +42,7 @@ from ..gateway import clarify, settings_store
 from ..memory import agents, session_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
-from . import client_pool, reviewer
+from . import client_pool, reviewer, subagent
 from .tasks import is_sdk_task_tool
 from .prompt import build_system_prompt
 
@@ -1073,8 +1073,7 @@ async def stream_turn(
         settings_store.effective_external_mcp(requested_external) if requested_external else {}
     )
     mcp_servers: dict = {}
-    if mcp_on:
-        mcp_servers.update(build_mcp_servers())  # 内置 vococo(记忆/定时/发消息等)
+    # 内置 MCP 延后到 options 齐备再构造，给同步子代理绑定完整父轮权限快照。
     mcp_servers.update(external_mcp)
     if extra_mcp_servers:  # P1 语音任务板注入的三个工具,默认 None 对现有调用零影响
         mcp_servers.update(extra_mcp_servers)
@@ -1144,8 +1143,8 @@ async def stream_turn(
                 raise
             reported_tokens = total
 
-    def _make_options(use_resume: str | None) -> ClaudeAgentOptions:
-        return ClaudeAgentOptions(
+    def _make_options(use_resume: str | None, child_usage: subagent.Usage) -> ClaudeAgentOptions:
+        options = ClaudeAgentOptions(
             model=resolved_model,
             system_prompt=sys_prompt,
             max_turns=effective_max_turns or None,  # 0=不限,SDK 不传上限
@@ -1179,6 +1178,14 @@ async def stream_turn(
             **({"tools": ["WebSearch", "WebFetch"], "setting_sources": [],
                 "strict_mcp_config": True} if research else {}),
         )
+        if mcp_on:
+            child_tool = subagent.build_tool(options, child_usage)
+            options.hooks = subagent.protect_entry(options.hooks)
+            options.mcp_servers = {
+                **build_mcp_servers(subagent_tool=child_tool),
+                **mcp_servers,
+            }
+        return options
 
     async def _stream_once(
         use_resume: str | None, warm: ClaudeSDKClient | None = None
@@ -1217,13 +1224,23 @@ async def stream_turn(
         # "Stream closed"),主 agent 也拿不到子代理结果去综合 → 用户只看到"已发起稍等"。
         # 改法:用 receive_messages 一直读,直到【某个 ResultMessage 到来时,没有在跑的子代理/
         # 后台任务】才真正收工;子代理跑完会把结果喂回主 agent,主 agent 续写的综合正文也能被收进来。
+        # 工具闭包随保温 client 存活，但用量/预算属于当前轮；每次 checkout 都重新绑定。
+        child_usage = getattr(warm, "_vococo_child_usage", None) or subagent.Usage()
+        child_usage.reset(token_budget, lambda: report_usage(child_usage.parent_tokens + child_usage.tokens))
+
+        def report_parent_usage(total: int) -> None:
+            child_usage.parent_tokens = max(child_usage.parent_tokens, total)
+            child_usage.notify()
+
         client = warm
         if client is None:
-            client = ClaudeSDKClient(options=_make_options(use_resume))
-            await client.connect()  # 冷启动:起 CLI 子进程(resume 则先重放 transcript)
+            client = ClaudeSDKClient(options=_make_options(use_resume, child_usage))
+            client._vococo_child_usage = child_usage
         clean_finish = False  # 干净收工(见到无 pending 的 ResultMessage)才允许回池
         pooled = False
         try:
+            if warm is None:
+                await client.connect()  # 初始化中途异常/取消也必须进入 finally 清理。
             try:
                 if compact_only:
                     # 手动压缩轮:不经过模型,直接让 CLI 压缩当前会话上下文。
@@ -1280,6 +1297,15 @@ async def stream_turn(
                                 pass
                         break
 
+                    if child_usage.callback_error:
+                        raise child_usage.callback_error
+                    if child_usage.exceeded and not budget_hit:
+                        budget_hit = True
+                        try:
+                            with anyio.move_on_after(5):
+                                await client.interrupt()
+                        except Exception:
+                            pass
                     if isinstance(msg, StreamEvent):
                         # 子代理的流式事件带 parent_tool_use_id=所属 Agent 调用的 id
                         pid = getattr(msg, "parent_tool_use_id", None)
@@ -1342,14 +1368,14 @@ async def stream_turn(
                             else:
                                 u = ev.get("usage") or {}
                                 stream_tokens += int(u.get("output_tokens") or 0)
-                            report_usage(stream_tokens)
+                            report_parent_usage(stream_tokens)
                             if (
                                 token_budget and not budget_warned
-                                and stream_tokens >= token_budget * 0.8
+                                and stream_tokens + child_usage.tokens >= token_budget * 0.8
                             ):
                                 budget_warned = True
-                                yield BudgetWarning(used=stream_tokens, budget=token_budget)
-                            if token_budget and not budget_hit and stream_tokens > token_budget:
+                                yield BudgetWarning(used=stream_tokens + child_usage.tokens, budget=token_budget)
+                            if not budget_hit and child_usage.exceeded:
                                 budget_hit = True
                                 print(
                                     f"[agent] 超出 token 预算 {stream_tokens}/{token_budget},提前停止"
@@ -1454,7 +1480,8 @@ async def stream_turn(
                         output_tokens = out_t
                         turn_tokens = input_fresh + out_t  # 本轮新鲜吞吐,累计即消耗(不含缓存复读)
                         try:
-                            report_usage(max(stream_tokens, turn_tokens))
+                            report_parent_usage(max(stream_tokens, turn_tokens))
+                            budget_hit = budget_hit or child_usage.exceeded
                         except Exception as usage_error:
                             # 终态已明确失败时，预算收束等回调异常不能掩盖真实服务错误。
                             if is_error and tool_guard is not None:
@@ -1558,7 +1585,7 @@ async def stream_turn(
                                         )
                                     elif event.get("type") == "message_delta":
                                         compact_tokens += int((event.get("usage") or {}).get("output_tokens") or 0)
-                                    report_usage(compact_base + compact_tokens)
+                                    report_parent_usage(compact_base + compact_tokens)
                                 if (
                                     isinstance(msg, SystemMessage)
                                     and getattr(msg, "subtype", "") == "compact_boundary"
@@ -1576,7 +1603,7 @@ async def stream_turn(
                                         compact_total = sum(int(usage.get(key) or 0) for key in (
                                             "input_tokens", "cache_creation_input_tokens", "output_tokens",
                                         ))
-                                        report_usage(compact_base + max(compact_tokens, compact_total))
+                                        report_parent_usage(compact_base + max(compact_tokens, compact_total))
                                     compact_result_seen = True
                                     break
                         if not compact_result_seen:
@@ -1594,17 +1621,36 @@ async def stream_turn(
                             raise
                         clean_finish = False  # /compact 半途出错,流状态不明,同样禁止回池
 
+            # 子任务尚未结束的终态不能回池：先封入口并收尸，避免下一轮重置仍在用的账本。
+            if await child_usage.close():
+                clean_finish = False
             # 干净收工 → 回池保温,同会话下一轮零冷启动(哈希/sid 对不上会被池拒收)
             if pooling and clean_finish and sess_id:
                 await client_pool.checkin(session_key, client, base_key, sess_id)
                 pooled = True
         finally:
-            if not pooled:
-                # 未回池(池未启用/取消/异常/收工不干净):关掉 client,防残留的半截
-                # 消息流污染下一轮。shield:取消退栈时普通 await 会被立刻再取消。
-                with anyio.CancelScope(shield=True):
-                    await client_pool.discard(client)
+            async def cleanup_turn():
+                try:
+                    # SDK 的 disconnect 只 cancel MCP worker，不等待其独立子 client 清理。
+                    # 必须在释放父轮/会话锁或重试前等待本轮所有子任务真正结束。
+                    await child_usage.close()
+                finally:
+                    if not pooled:
+                        await client_pool.discard(client)
 
+            await subagent.wait_cleanup(cleanup_turn())
+
+        if child_usage.callback_error:
+            raise child_usage.callback_error
+        # 独立 SDK 的消耗不会出现在父 ResultMessage，必须合并到后台日预算和会话用量。
+        stream_tokens += child_usage.tokens
+        turn_tokens += child_usage.tokens
+        input_fresh += child_usage.input_fresh
+        output_tokens += child_usage.output_tokens
+        cache_read += child_usage.cache_read
+        if child_usage.cost_usd:
+            cost_usd = (cost_usd or 0.0) + child_usage.cost_usd
+        budget_hit = budget_hit or child_usage.exceeded
         # 压缩轮没有模型对话,CLI /compact 本身也不产正文 → 空文本时给固定反馈
         reply_text = "".join(text_parts).strip()
         if budget_hit:
