@@ -91,6 +91,18 @@ def test_prompt_forbids_duplicate_image_send():
     assert "不得再对该图片调用" in out
 
 
+def test_prompt_balances_direct_work_and_delegation():
+    out = build_system_prompt(None)["append"]
+    assert "默认自己推进任务" in out
+    assert "文件位置不确定、任务有多个步骤或存在匹配的代理类型" in out
+    assert "不必等用户点名" in out
+    assert "可以主动委派" in out
+    assert "项目要求的独立代码评审照常执行" in out
+    assert "已委派的工作不要重复跑" in out
+    assert "阻塞同步" in out
+    assert "必须在本轮继续把它办完" in out
+
+
 def test_cache_invalidated_on_agents_mtime_change(tmp_path: Path):
     """同一 cache_key 下 AGENTS.md 修改后,冻结快照自动失效重装。
 
