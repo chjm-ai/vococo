@@ -278,7 +278,11 @@ async function testPreviewThemeLayout(browser,origin,token,screenshots){
         assert.equal(await status.innerText(),'','状态文本不占行');
         assert.equal(await card.locator('.preview-note').isVisible(),false);
         assert.equal(await bar.locator('.preview-title > svg').count(),0);
-        assert.equal(await bar.locator('button').count(),await card.getAttribute('data-lang')==='html'?4:2);
+        assert.equal(await bar.locator('button').count(),await card.getAttribute('data-lang')==='html'?3:2);
+        if(await card.getAttribute('data-lang')==='html'){
+          assert.equal(await bar.getByRole('button',{name:'复制URL',exact:false}).count(),1);
+          assert.equal(await bar.getByRole('button',{name:/复制源码|管理|撤销|删除/}).count(),0);
+        }
         for(const button of await bar.getByRole('button').all()){
           assert.ok(await button.getAttribute('aria-label'));
           assert.equal(await button.getAttribute('title'),await button.getAttribute('aria-label'));

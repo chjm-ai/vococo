@@ -178,76 +178,67 @@ function previewShareNote(node,message){
 function addPreviewShareButtons(node,bar){
   const state=node._preview;
   state.shareNote=document.createElement("div");state.shareNote.className="preview-share-note";state.shareNote.hidden=true;
-  const open=document.createElement("button"),copy=document.createElement("button"),revoke=document.createElement("button");
-  for(const button of [open,copy,revoke]) button.type="button";
+  state.shareNote.setAttribute("role","status");
+  const open=document.createElement("button"),copy=document.createElement("button");
+  for(const button of [copy,open]) button.type="button";
   setPreviewButton(open,"external","在浏览器打开（创建7天静态快照）");
-  setPreviewButton(copy,"copy","复制分享链接（持有链接即可访问）");
-  setPreviewButton(revoke,"trash","管理与撤销限时分享");
-  copy.hidden=true;
-  open.onclick=()=>openPreviewShare(node,{open,copy,revoke});
-  copy.onclick=async()=>{
-    const conv=S.conv;
-    try{await navigator.clipboard.writeText(new URL(state.share.path,location.origin).href);
-      if(S.conv===conv) previewShareNote(node,"已复制；链接持有者可访问，此快照7天后过期。");
-    }catch(error){if(S.conv===conv) previewShareNote(node,"复制失败，请重试。");}
-  };
-  revoke.onclick=()=>managePreviewShares(node,{open,copy,revoke});
-  copy.textContent="复制分享链接";
-  state.shareButtons={open,copy,revoke};
-  bar.append(open,revoke);
+  setPreviewButton(copy,"copy","复制URL（7天有效，持有链接即可访问）");
+  open.onclick=()=>usePreviewShare(node,"open");
+  copy.onclick=()=>usePreviewShare(node,"copy");
+  state.shareButtons={open,copy};
+  bar.append(copy,open);
 }
-async function managePreviewShares(node,buttons){
-  const conv=S.conv,token=S.token,state=node._preview;
-  try{
-    const result=await previewShareRequest('/api/preview-shares','GET',token);
-    if(!node.isConnected || S.conv!==conv) return;
-    previewShareNote(node,result.shares.length?"全部限时分享（包含其他会话）；撤销后无法恢复：":"暂无有效分享。");
-    if(state.share?.path){buttons.copy.hidden=false;state.shareNote.append(buttons.copy);}
-    for(const share of result.shares){
-      const row=document.createElement("div"),button=document.createElement("button");
-      row.textContent=(share.id===state.share?.id?"当前快照 · ":"快照 "+share.id.slice(0,8)+" · ")+new Date(share.expires*1000).toLocaleString()+" 到期 ";
-      button.textContent="撤销"; button.type="button";
-      button.onclick=async()=>{
-        button.disabled=true;
-        try{await previewShareRequest('/api/preview-shares/'+share.id,'DELETE',token);row.remove();
-          for(const card of document.querySelectorAll('.chat-preview')){
-            const cached=card._preview;
-            if(cached?.share?.id!==share.id) continue;
-            cached.share=null; cached.shareButtons.copy.hidden=true;
-            setPreviewButton(cached.shareButtons.open,"external","在浏览器打开（创建7天静态快照）");
-          }
-          if(node.isConnected && S.conv===conv && !state.shareNote.querySelector('button')) previewShareNote(node,"分享已撤销；已下载的内容无法收回。");
-        }catch(error){button.disabled=false;button.textContent="失败，重试撤销";}
-      };
-      row.append(button);state.shareNote.append(row);
-    }
-  }catch(error){if(S.conv===conv) previewShareNote(node,"读取分享列表失败，请重试。");}
+async function ensurePreviewShare(state,source,token,isCurrent){
+  if(state.share && state.shareSource===source && state.shareToken===token && state.share.expires*1000>Date.now()){
+    const current=await previewShareRequest('/api/preview-shares','GET',token);
+    if(current.shares.some(share=>share.id===state.share.id)) return state.share;
+  }
+  if(!isCurrent()) return null;
+  const share=await previewShareRequest('/api/preview-shares','POST',token,{html:source});
+  if(!isCurrent()) return null;
+  state.share=share; state.shareSource=source; state.shareToken=token;
+  return share;
 }
-async function openPreviewShare(node,buttons){
+async function copyPreviewShareURL(sharePromise,isCurrent){
+  const text=sharePromise.then(share=>{
+    if(!isCurrent() || !share) throw new Error("会话已切换");
+    return new URL(share.path,location.origin).href;
+  });
+  // WebKit 要求点击时就调用剪贴板 API，网络结果通过延迟数据交付。
+  if(navigator.clipboard.write && typeof ClipboardItem!=="undefined"){
+    const data=text.then(url=>new Blob([url],{type:"text/plain"}));
+    // 剪贴板可能先拒绝而不再消费数据；仍须接住后到的网络失败。
+    data.catch(()=>{});
+    return navigator.clipboard.write([new ClipboardItem({"text/plain":data})]);
+  }
+  return navigator.clipboard.writeText(await text);
+}
+async function usePreviewShare(node,action){
   const state=node._preview,conv=S.conv,source=state.source,token=S.token;
+  if(state.shareBusy) return;
   if(location.protocol!=="https:" && !["localhost","127.0.0.1","[::1]"].includes(location.hostname)){
     previewShareNote(node,"请通过主站 HTTPS 地址打开后再创建跨设备分享。");return;
   }
-  // 必须在点击事件内同步开窗，否则移动浏览器会拦截异步弹窗。
-  const popup=window.open('about:blank','_blank');
-  if(!popup){previewShareNote(node,"新窗口被拦截，请允许弹窗后重试。");return;}
-  popup.opener=null; buttons.open.disabled=true;
+  // 打开仍在点击事件内同步开窗；复制绝不创建窗口。
+  const popup=action==="open"?window.open('about:blank','_blank'):null;
+  if(action==="open" && !popup){previewShareNote(node,"新窗口被拦截，请允许弹窗后重试。");return;}
+  if(popup) popup.opener=null;
+  state.shareBusy=true;
+  for(const button of Object.values(state.shareButtons)) button.disabled=true;
+  const isCurrent=()=>node.isConnected && S.conv===conv && S.token===token;
   try{
-    if(state.share){
-      const current=await previewShareRequest('/api/preview-shares','GET',token);
-      if(!current.shares.some(share=>share.id===state.share.id)) state.share=null;
-    }
-    if(!state.share || state.share.expires*1000<=Date.now())
-      state.share=await previewShareRequest('/api/preview-shares','POST',token,{html:source});
-    if(!node.isConnected || S.conv!==conv){popup.close();return;}
-    popup.location.replace(new URL(state.share.path,location.origin).href);
-    buttons.copy.hidden=false; buttons.revoke.hidden=false;
-    setPreviewButton(buttons.open,"external","打开已分享快照（内容更新需先撤销再创建）");
-    previewShareNote(node,"已分享点击时的静态快照，7天有效；后续编辑不会更新链接。撤销请用右侧管理图标。");
-    state.shareNote.append(buttons.copy);
-  }catch(error){popup.close();if(S.conv===conv) previewShareNote(node,"打开失败："+error.message+"，请重试。");}
-  finally{buttons.open.disabled=false;}
+    const pending=ensurePreviewShare(state,source,token,isCurrent);
+    const copied=action==="copy"?copyPreviewShareURL(pending,isCurrent).then(()=>null,error=>error):null;
+    const share=await pending;
+    if(!isCurrent() || !share){popup?.close();return;}
+    const url=new URL(share.path,location.origin).href;
+    if(popup) popup.location.replace(url);
+    else{const error=await copied;if(error) throw error;}
+    if(isCurrent()) previewShareNote(node,action==="copy"?"已复制URL；持有链接即可访问，快照7天有效。":"已打开静态快照，7天有效；后续编辑不会改变此链接内容。");
+  }catch(error){popup?.close();if(isCurrent()) previewShareNote(node,(action==="copy"?"复制URL失败：":"打开失败：")+error.message+"，请重试。");}
+  finally{state.shareBusy=false;for(const button of Object.values(state.shareButtons)) button.disabled=false;}
 }
+
 function setupChatPreview(node){
   if(node._preview){
     const state=node._preview;
@@ -272,8 +263,9 @@ function setupChatPreview(node){
   };
   const copy=document.createElement("button"); copy.type="button"; setPreviewButton(copy,"copy","复制源码");
   copy.onclick=()=>copyPreviewSource(state,copy);
-  bar.append(label,state.status,toggle,copy);
+  bar.append(label,state.status,toggle);
   if(node.dataset.lang==="html") addPreviewShareButtons(node,bar);
+  else bar.append(copy);
   state.note=document.createElement("div"); state.note.className="preview-note"; state.note.hidden=true;
   state.view=document.createElement("div"); state.view.className="preview-view";
   node.prepend(bar,state.note,state.view);

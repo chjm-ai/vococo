@@ -20,16 +20,37 @@ const path=require('node:path');
     await page.route('**/api/preview-shares',route=>route.request().method()==='POST'?route.fulfill({status:503,contentType:'application/json',body:'{"error":"测试失败"}'}):route.continue());
     await card.getByRole('button',{name:'在浏览器打开',exact:false}).click();
     await card.locator('.preview-share-note').filter({hasText:'打开失败'}).waitFor();
+    await card.getByRole('button',{name:'复制URL',exact:false}).click();
+    await card.getByText('复制URL失败：测试失败', {exact:false}).waitFor();
+    await page.evaluate(()=>{window.deniedWrite=navigator.clipboard.write;navigator.clipboard.write=()=>Promise.reject(new Error('先拒绝剪贴板'));});
+    await card.getByRole('button',{name:'复制URL',exact:false}).click();
+    await page.waitForFunction(()=>!document.querySelector('.chat-preview')._preview.shareBusy);
+    await page.evaluate(()=>navigator.clipboard.write=window.deniedWrite);
+    assert.deepEqual(errors,[],'剪贴板先拒绝、接口后失败也不能产生未捕获异常');
     await page.unroute('**/api/preview-shares');
+    assert.equal(await card.locator('.preview-toolbar button').count(),3);
+    assert.equal(await card.getByRole('button',{name:/管理|撤销|删除|复制源码|复制分享链接/}).count(),0);
+    const copy=card.getByRole('button',{name:'复制URL',exact:false});
+    const shares=async()=>(await (await context.request.get(origin+'/api/preview-shares',{headers:{'X-Auth-Token':token}})).json()).shares;
+    // 不先打开页面，复制即可创建；复制动作不能调用 window.open。
+    await page.evaluate(()=>{window.realOpen=window.open;window.open=()=>{throw new Error('复制不应开窗')};});
+    await copy.click();await card.getByText('已复制URL；', {exact:false}).waitFor();
+    const shareURL=await page.evaluate(()=>navigator.clipboard.readText());
+    assert.match(shareURL,/\/preview-share#/);
+    assert.equal((await shares()).length,1);
+    await copy.click();await copy.waitFor({state:'visible'});
+    await page.waitForFunction(()=>!document.querySelector('.chat-preview')._preview.shareBusy);
+    assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),shareURL);
+    assert.equal((await shares()).length,1,'重复复制应复用');
+    await page.evaluate(()=>window.open=window.realOpen);
     const popupPromise=page.waitForEvent('popup');
     await card.getByRole('button',{name:'在浏览器打开',exact:false}).click();
     const popup=await popupPromise;
     await popup.waitForURL('**/preview-share#*');
     await popup.frameLocator('iframe').getByRole('heading',{name:'跨设备静态快照'}).waitFor();
     assert.equal(await popup.evaluate(()=>opener),null);
-    const shareURL=popup.url();
-    await card.getByRole('button',{name:'复制分享链接',exact:false}).click();
-    assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),shareURL);
+    assert.equal(popup.url(),shareURL,'打开与复制使用相同快照');
+    assert.equal((await shares()).length,1);
     const stranger=await browser.newContext(),other=await stranger.newPage(),publicRequests=[];
     other.on('request',request=>publicRequests.push({url:request.url(),headers:request.headers()}));
     await other.goto(shareURL);
@@ -46,29 +67,38 @@ const path=require('node:path');
       assert(rects.buttons.every(right=>right<=rects.right+1),'标题栏图标不应越界 '+JSON.stringify(rects));
       if(width===390)await card.screenshot({path:path.join(screenshots,'preview-share-mobile.png')});
     }
-    await card.getByRole('button',{name:'管理与撤销限时分享'}).click();
-    await card.getByRole('button',{name:'撤销',exact:true}).click();
+    // 内容更新自动创建新快照；同时点击复制和打开只能创建一次。
+    await page.evaluate(()=>{window.clipboardCalls=0;window.originalWrite=navigator.clipboard.write.bind(navigator.clipboard);navigator.clipboard.write=(...args)=>{clipboardCalls++;return originalWrite(...args)};});
+    let posts=0;
+    await page.route('**/api/preview-shares',async route=>{
+      if(route.request().method()==='POST'){posts++;await new Promise(r=>setTimeout(r,200));}
+      await route.continue();
+    });
+    await page.evaluate(()=>{const buttons=document.querySelector('.chat-preview')._preview.shareButtons;buttons.copy.click();buttons.open.click();buttons.copy.click();});
+    assert.equal(await page.evaluate(()=>clipboardCalls),1,'点击内立即调用剪贴板API，兼容WebKit点击授权');
+    await page.waitForFunction(()=>!document.querySelector('.chat-preview')._preview.shareBusy);
+    assert.equal(posts,1);assert.equal((await shares()).length,2);
+    const updatedURL=await page.evaluate(()=>navigator.clipboard.readText());
+    assert.notEqual(updatedURL,shareURL);
+    await other.goto(updatedURL);await other.frameLocator('iframe').getByRole('heading',{name:'编辑后的内容'}).waitFor();
+    await page.unroute('**/api/preview-shares');
+    // 剪贴板拒绝要明确反馈，重试复用已创建快照。
+    await page.evaluate(()=>{window.realWrite=navigator.clipboard.write;navigator.clipboard.write=()=>Promise.reject(new Error('剪贴板权限被拒绝'));});
+    await copy.click();await card.getByText('复制URL失败：剪贴板权限被拒绝', {exact:false}).waitFor();
+    await page.evaluate(()=>navigator.clipboard.write=window.realWrite);
+    await copy.click();await page.waitForFunction(()=>!document.querySelector('.chat-preview')._preview.shareBusy);
+    assert.equal((await shares()).length,2);
+    // 前端无撤销入口，鉴权 API 撤销依旧即时生效。
+    const revoke=async id=>{const response=await context.request.delete(origin+'/api/preview-shares/'+id,{headers:{'X-Auth-Token':token}});assert.equal(response.status(),200);};
+    await revoke((await page.evaluate(()=>document.querySelector('.chat-preview')._preview.share)).id);
     await other.reload();await other.getByText('分享不存在、已撤销或已过期').waitFor();
+    await copy.click();await page.waitForFunction(()=>!document.querySelector('.chat-preview')._preview.shareBusy);
+    assert.notEqual(await page.evaluate(()=>navigator.clipboard.readText()),updatedURL,'API撤销后缓存必须失效');
+    // 原始设备也必须在轮询后移除已撤销快照。
+    for(const share of await shares()) await revoke(share.id);
     await popup.getByText('分享不存在、已撤销或已过期').waitFor({timeout:15000});
-    assert.equal(await popup.locator('iframe').count(),0,'已打开设备应在下次校验时移除内容');
-    // 从另一卡片撤销必须同步清除原卡片缓存，并可再次创建。
-    const original=page.locator('.chat-preview').first();
-    let reopened=page.waitForEvent('popup');
-    await original.getByRole('button',{name:'在浏览器打开',exact:false}).click();
-    let reopenedPage=await reopened;await reopenedPage.waitForURL('**/preview-share#*');
-    await page.evaluate(()=>addBubble('ai','```html\n<h1>另一张卡片</h1>\n```'));
-    const manager=page.locator('.chat-preview').last();
-    await manager.getByRole('button',{name:'管理与撤销限时分享'}).click();
-    await manager.getByRole('button',{name:'撤销',exact:true}).click();
-    await original.getByRole('button',{name:'在浏览器打开',exact:false}).waitFor();
-    reopened=page.waitForEvent('popup');
-    await original.getByRole('button',{name:'在浏览器打开',exact:false}).click();
-    reopenedPage=await reopened;await reopenedPage.waitForURL('**/preview-share#*');
-    await reopenedPage.frameLocator('iframe').getByRole('heading',{name:'编辑后的内容'}).waitFor();
-    await original.getByRole('button',{name:'管理与撤销限时分享'}).click();
-    await original.getByRole('button',{name:'撤销',exact:true}).click();
-    await page.evaluate(()=>document.querySelectorAll('.chat-preview')[1].remove());
-    // 重新加载主站后仍有管理入口，可撤销丢失了原始密钥的分享。
+    assert.equal(await popup.locator('iframe').count(),0);
+    // 恶意快照继续通过后端安全与撤销链路验证。
     const hostile=`<meta http-equiv="refresh" content="0;url=https://evil.example/refresh"><base href="https://evil.example"><script>fetch('https://evil.example/script');localStorage.setItem('stolen','yes')</script><style>@import 'https://evil.example/import';body{background-image:url(https://evil.example/css)}</style><img src="https://evil.example/img" onerror="alert(1)"><form action="/send"><button>发送</button></form><a href="https://evil.example/click" ping="https://evil.example/ping">导航链接</a><svg><a href="https://evil.example/svg"><text>SVG</text></a></svg><iframe src="/">bad</iframe><h1>安全隔离</h1>`;
     const created=await context.request.post(origin+'/api/preview-shares',{headers:{'X-Auth-Token':token},data:{html:hostile}});
     const hostileShare=await created.json(),attempted=[],dialogs=[],network=[],failed=[],finished=[],responses=[],csp=[];
@@ -105,14 +135,16 @@ const path=require('node:path');
     await other.screenshot({path:path.join(screenshots,'preview-share-security.png')});
     // 会话切换期间完成的请求不能打开旧内容或污染新会话。
     await page.evaluate(()=>{window._oldFetch=fetch;window.fetch=async(...args)=>{if(args[0]==='/api/preview-shares'&&args[1]?.method==='POST')await new Promise(r=>setTimeout(r,400));return window._oldFetch(...args)};});
+    const pendingPopup=page.waitForEvent('popup');
     await card.getByRole('button',{name:'在浏览器打开',exact:false}).click();
+    const abandoned=await pendingPopup;
     await page.evaluate(()=>{S.conv='another-session';$('#wrap').replaceChildren();addBubble('ai','新会话');});
     await page.waitForTimeout(700);
     assert.equal(await page.locator('.preview-share-note').count(),0);
-    await page.evaluate(()=>{fetch=window._oldFetch;addBubble('ai','```html\n<h1>管理</h1>\n```');});
-    await page.getByRole('button',{name:'管理与撤销限时分享'}).click();
-    await page.waitForFunction(()=>document.querySelectorAll('.preview-share-note button').length===2);
-    assert.equal(await page.getByRole('button',{name:'撤销',exact:true}).count(),2);
+    assert.equal(abandoned.isClosed(),true,'切会话应关闭此次请求的空白窗口');
+    assert.equal(popup.isClosed(),false,'已有独立页面不受切会话影响');
+    await page.evaluate(()=>{fetch=window._oldFetch;addBubble('ai','```html\n<h1>新会话</h1>\n```');});
+    assert.equal(await page.getByRole('button',{name:/管理|撤销|删除/}).count(),0);
     const mobileContext=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,
       userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1'});
     const mobile=await mobileContext.newPage();await mobile.goto(origin);await mobile.fill('#pw',token);await mobile.click('#loginBtn');
@@ -126,7 +158,7 @@ const path=require('node:path');
     }
     await mobileContext.close();
     assert.deepEqual(errors,[]);
-    console.log('PASS: 真实页面打开/复制/撤销、独立无登录context、快照、手机宽度、恶意HTML、失败恢复与切会话隔离');
+    console.log('PASS: 复制URL创建/复用/更新、并发防重、API撤销、独立无登录context、手机宽度、恶意HTML、失败恢复与切会话隔离');
     await stranger.close();
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exit(1);});
