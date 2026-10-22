@@ -71,13 +71,33 @@ const path=require('node:path');
     // 重新加载主站后仍有管理入口，可撤销丢失了原始密钥的分享。
     const hostile=`<meta http-equiv="refresh" content="0;url=https://evil.example/refresh"><base href="https://evil.example"><script>fetch('https://evil.example/script');localStorage.setItem('stolen','yes')</script><style>@import 'https://evil.example/import';body{background-image:url(https://evil.example/css)}</style><img src="https://evil.example/img" onerror="alert(1)"><form action="/send"><button>发送</button></form><a href="https://evil.example/click" ping="https://evil.example/ping">导航链接</a><svg><a href="https://evil.example/svg"><text>SVG</text></a></svg><iframe src="/">bad</iframe><h1>安全隔离</h1>`;
     const created=await context.request.post(origin+'/api/preview-shares',{headers:{'X-Auth-Token':token},data:{html:hostile}});
-    const hostileShare=await created.json(),blocked=[],dialogs=[];
-    other.on('request',r=>{if(r.url().startsWith('https://evil.example'))blocked.push(r.url());});
+    const hostileShare=await created.json(),attempted=[],dialogs=[],network=[],failed=[],finished=[],responses=[],csp=[];
+    // request 也可能上报被 CSP 拦截的尝试；网络路由才是外连检测信号。
+    await stranger.route('https://evil.example/**',route=>{network.push(route.request().url());return route.fulfill({body:'blocked test endpoint'});});
+    // 用无 CSP 的页面验证路由探针有效；fulfill 保证测试本身不访问外网。
+    const probe=await stranger.newPage();
+    await probe.goto('https://evil.example/route-probe');
+    assert.deepEqual(network,['https://evil.example/route-probe']);
+    await probe.close();network.length=0;
+    other.on('request',r=>{if(r.url().startsWith('https://evil.example'))attempted.push(r.url());});
+    other.on('requestfailed',r=>{if(r.url().startsWith('https://evil.example'))failed.push({url:r.url(),error:r.failure()?.errorText});});
+    other.on('requestfinished',r=>{if(r.url().startsWith('https://evil.example'))finished.push(r.url());});
+    other.on('response',r=>{if(r.url().startsWith('https://evil.example'))responses.push(r.url());});
+    other.on('console',message=>{if(/Content Security Policy/i.test(message.text()))csp.push(message.text());});
     other.on('dialog',d=>{dialogs.push(d.message());d.dismiss();});
     await other.goto(origin+hostileShare.path);
     const safe=other.frameLocator('iframe');await safe.getByRole('heading',{name:'安全隔离'}).waitFor();
     await safe.getByText('导航链接').click();await other.waitForTimeout(500);
-    assert.deepEqual(blocked,[]);assert.deepEqual(dialogs,[]);
+    assert.deepEqual(network,[],'恶意资源不能到达网络路由');
+    assert.deepEqual(responses,[],'恶意资源不能收到响应');
+    assert.deepEqual(finished,[],'恶意资源不能成功完成请求');
+    // Chromium 可能不发出 requestfailed；一旦上报，必须确认是 CSP 而非网络故障。
+    assert(failed.every(request=>request.error==='csp'),'请求失败原因必须是 CSP：'+JSON.stringify(failed));
+    for(const resource of ['import','css']){
+      assert(csp.some(message=>message.includes('https://evil.example/'+resource)&&message.includes('has been blocked')),'缺少资源的 CSP 拦截证据：'+resource);
+    }
+    console.log('CSP evidence: '+JSON.stringify({attempted,network,failed,finished,responses,csp}));
+    assert.deepEqual(dialogs,[]);
     assert(other.url().includes('/preview-share#'));
     const frame=other.frames()[1];
     assert.equal(await frame.evaluate(()=>{try{return localStorage.length}catch(e){return e.name}}),'SecurityError');
