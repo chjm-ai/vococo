@@ -684,6 +684,110 @@ async def test_receipt_ack_is_per_sdk_and_only_successful_rounds(env):
     assert not original  # 另一个 SDK 的确认不会覆盖本 SDK 的进度。
 
 
+def local_settings(path, *, matcher="Write", hooks=None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"permissions": {"allow": sorted(d._NATIVE)}, "hooks": hooks if hooks is not None else {
+        "PreToolUse": [{"matcher": matcher, "hooks": [{"type": "command", "command": "true",
+            "timeout": 10, "statusMessage": "检查记忆目录写入规则"}]}]}}
+    path.write_text(json.dumps(data))
+
+
+async def source_dispatch(env):
+    responses = []
+    async def source(client):
+        listed = await call(client, "list_delegate_agents", {})
+        assert any(item["id"] == env.b["id"] for item in listed)
+        responses.append(await call(client, "delegate_to_agent", {
+            "agent": env.b["id"], "title": "保护配置任务", "prompt": "完整背景",
+            "token_budget": 24000, "timeout_seconds": 180}))
+    env.source_behavior = source
+    async for event in agent.stream_turn([], "派给 B", session_key=env.source, cwd=env.a["workdir"]):
+        if isinstance(event, agent.Done):
+            assert not event.reply.is_error
+    await settle()
+    return responses[0]
+
+
+@pytest.mark.anyio
+async def test_write_protection_hook_real_stream_dispatch_and_receipt(env, monkeypatch):
+    import os
+    local_settings(Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json")
+    agents.update(env.a["id"], mcp=["business"])
+    agents.update(env.b["id"], mcp=["business"])
+    agents.update(env.c["id"], mcp=["business"])
+    monkeypatch.setattr(settings_store, "effective_external_mcp", lambda names: {n: {} for n in names})
+    checks = []
+    async def execute(client):
+        assert await guard_tool(client, "Read")
+        assert await guard_tool(client, "mcp__business__lookup")
+        for name in ["Write", "Edit", "Bash", "Skill", "mcp__business__lookupWriteCustomer"]:
+            assert not await guard_tool(client, name), name
+        checks.append(True)
+        if client.row["title"] == "保护配置任务":
+            child = await call(client, "delegate_to_agent", {
+                "agent": env.c["id"], "title": "下级保护配置任务", "prompt": "完整背景",
+                "token_budget": 1000, "timeout_seconds": 5})
+            assert "task_id" in child, child
+    env.behavior.update({"保护配置任务": execute, "下级保护配置任务": execute})
+    result = await source_dispatch(env)
+    assert "task_id" in result, result
+    assert checks == [True, True]
+    assert tasks.get(result["task_id"])["status"] == "done"
+    assert len(receipts(env.source)) == 1
+    assert "检查记忆目录" not in d.get(result["task_id"])["policy"]
+    assert "command" not in d.get(result["task_id"])["policy"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("hooks,reason", [
+    ({"PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": "secret-command"}]}]}, "matcher"),
+    ({"PreToolUse": [{"matcher": "Unknown", "hooks": [{"type": "command", "command": "secret-command"}]}]}, "matcher"),
+    ({"PreToolUse": [{"matcher": ".*Write.*|Read", "hooks": [{"type": "command", "command": "secret-command"}]}]}, "matcher"),
+    ({"Stop": [{"hooks": [{"type": "command", "command": "secret-command"}]}]}, "事件"),
+    ({"PreToolUse": [{"matcher": "Write", "hooks": "secret-command"}]}, "结构"),
+])
+async def test_source_hook_rejection_is_diagnostic_without_breaking_chat(env, hooks, reason):
+    import os
+    local_settings(Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json", hooks=hooks)
+    result = await source_dispatch(env)
+    assert "来源" in result["error"] and reason in result["error"], result
+    assert "secret-command" not in result["error"]
+    assert "缺少来源实际执行权限快照" not in result["error"]
+    assert not tasks._conn().execute("SELECT 1 FROM tasks").fetchone()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("matcher", ["Read", "Write"])
+async def test_target_local_hook_policy_is_checked(env, matcher):
+    import subprocess
+    root = Path(env.b["workdir"])
+    local_settings(root / ".claude/settings.json", matcher=matcher)
+    for args in [("init",), ("add", "."),
+                 ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture")]:
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+    result = await source_dispatch(env)
+    assert "task_id" in result, result
+    row = tasks.get(result["task_id"])
+    assert row["status"] == ("failed" if matcher == "Read" else "done")
+    if matcher == "Read":
+        assert "目标" in row["result_summary"] and "matcher" in row["result_summary"]
+    assert len(receipts(env.source)) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("skills,sources,expected", [(None, None, True), ([], None, True),
+    (None, [], False), ([], [], False)])
+async def test_sdk_default_setting_sources_preserve_denials(env, skills, sources, expected):
+    import os
+    path = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"permissions": {"deny": ["Read"], "ask": ["WebFetch"]}}))
+    options = ClaudeAgentOptions(skills=skills, setting_sources=sources)
+    policy = d.snapshot(options)
+    assert ("Read" in policy["denied"]) == expected
+    assert ("WebFetch" in policy["denied"]) == expected
+
+
 @pytest.mark.anyio
 async def test_local_denials_and_unknown_hooks_fail_closed(env, monkeypatch):
     import os

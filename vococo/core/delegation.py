@@ -32,11 +32,43 @@ def _server_identity(server: dict) -> str:
     return hashlib.sha256(json.dumps(server, sort_keys=True, default=repr).encode()).hexdigest()
 
 
-def _settings_denials(options) -> list[str]:
-    """CLI 本地 deny/ask 不能因委托禁加载配置而丢失；不认识的策略拒绝。"""
+def _hook_denials(hooks) -> list[str]:
+    """不重放命令；仅将已禁止入口的保护钩子收紧为永久拒绝。"""
+    if not isinstance(hooks, dict):
+        raise ValueError("本地 hooks 结构无法求交集")
+    denied = []
+    for event, groups in hooks.items():
+        if event != "PreToolUse":
+            raise ValueError("本地 hooks 事件无法求交集")
+        if not isinstance(groups, list):
+            raise ValueError("本地 hooks 结构无法求交集")
+        for group in groups:
+            denied.append(_hook_group_denial(group))
+    return denied
+
+
+def _hook_group_denial(group) -> str:
+    if not isinstance(group, dict) or set(group) - {"matcher", "hooks"}:
+        raise ValueError("本地 hooks 结构无法求交集")
+    matcher, commands = group.get("matcher"), group.get("hooks")
+    if not isinstance(commands, list) or not commands:
+        raise ValueError("本地 hooks 结构无法求交集")
+    for command in commands:
+        if (not isinstance(command, dict) or command.get("type") != "command"
+                or not isinstance(command.get("command"), str)
+                or set(command) - {"type", "command", "timeout", "statusMessage"}):
+            raise ValueError("本地 hooks 结构无法求交集")
+    if not isinstance(matcher, str) or matcher not in {
+            "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "Skill", "Agent", "Task"}:
+        raise ValueError("本地 hooks matcher 无法求交集")
+    # CLI matcher 是正则子串匹配；同时禁用含该片段的 MCP，不能只封原生工具。
+    return f"*{matcher}*"
+
+
+def _settings_paths(options) -> list[Path]:
     sources = options.setting_sources
     if sources is None:
-        sources = ["user", "project"] if options.skills is not None else []
+        sources = ["user", "project", "local"]
     if any(source not in {"user", "project", "local"} for source in sources):
         raise ValueError("未知的配置来源，无法求交集")
     paths = []
@@ -48,26 +80,30 @@ def _settings_denials(options) -> list[str]:
             paths.append(Path(options.cwd) / ".claude/settings.json")
         if "local" in sources or "project" in sources:
             paths.append(Path(options.cwd) / ".claude/settings.local.json")
+    return paths
+
+
+def _settings_denials(options) -> list[str]:
+    """CLI 本地 deny/ask 不能因委托禁加载配置而丢失；不认识的策略拒绝。"""
     denied = []
-    for path in paths:
+    for path in _settings_paths(options):
         try:
             if not path.exists():
                 continue
             data = json.loads(path.read_text())
-            if not isinstance(data, dict):
-                raise ValueError("本地配置格式未知")
-            if data.get("hooks"):
-                raise ValueError("本地 hooks 无法持久化求交集")
-            permissions = data.get("permissions") or {}
-            if not isinstance(permissions, dict):
-                raise ValueError("本地权限格式未知")
-            for field in ("deny", "ask"):
-                rules = permissions.get(field, [])
-                if not isinstance(rules, list) or not all(isinstance(r, str) for r in rules):
-                    raise ValueError("本地权限规则格式未知")
-                denied.extend(rules)
         except (OSError, ValueError, TypeError) as exc:
-            raise ValueError("本地权限配置无法求交集，不能委托") from exc
+            raise ValueError("本地权限配置无法读取或解析，不能求交集") from exc
+        if not isinstance(data, dict):
+            raise ValueError("本地配置格式未知，无法求交集")
+        denied.extend(_hook_denials(data.get("hooks", {})))
+        permissions = data.get("permissions") or {}
+        if not isinstance(permissions, dict):
+            raise ValueError("本地权限格式未知，无法求交集")
+        for field in ("deny", "ask"):
+            rules = permissions.get(field, [])
+            if not isinstance(rules, list) or not all(isinstance(r, str) for r in rules):
+                raise ValueError("本地权限规则格式未知，无法求交集")
+            denied.extend(rules)
     return denied
 
 
@@ -314,7 +350,7 @@ def query(session: str, task_id: str) -> dict:
         "receipt_delivered": bool(row["delivered"]), "token_budget": row["tokens"]}
 
 
-def build_tools(session: str, denied: list[str], policy: dict | None = None):
+def build_tools(session: str, denied: list[str], policy: dict | None = None, policy_error: str = ""):
     # 工具闭包只接受目标/任务；来源及权限不在模型可写参数里。
     @tool("list_delegate_agents", "列出可委托的持久 Agent（非同步子代理），名称重名请用 ID。", {})
     async def list_agents(_args):
@@ -325,6 +361,8 @@ def build_tools(session: str, denied: list[str], policy: dict | None = None):
     })
     async def dispatch(args):
         try:
+            if policy_error:
+                raise ValueError(f"来源权限快照拒绝委托：{policy_error}")
             row = delegate(session, denied, args["agent"], args["title"], args["prompt"],
                            args.get("token_budget", 24_000), args.get("timeout_seconds", 180), policy=policy)
             return _ok({"task_id": row["id"], "message": "已派发，完成/失败/取消后自动回执"})
@@ -368,7 +406,11 @@ def constrain(options, task_id: str) -> None:
     policy = json.loads(row["policy"])
     if options.permission_mode != policy.get("sdk_permission_mode"):
         raise ValueError("来源与目标 SDK 权限模式不同，无法安全求交集")
-    denied = list(set(options.disallowed_tools + json.loads(row["denied"]) + _settings_denials(options)))
+    try:
+        target_denied = _settings_denials(options)
+    except ValueError as exc:
+        raise ValueError(f"目标权限配置拒绝委托：{exc}") from exc
+    denied = list(set(options.disallowed_tools + json.loads(row["denied"]) + target_denied))
     native = _NATIVE.intersection(policy["native"])
     options.skills = _intersect_skills(policy["skills"], options.skills)
     if options.skills is not None:
