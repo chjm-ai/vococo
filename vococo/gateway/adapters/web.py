@@ -3558,8 +3558,9 @@ class WebAdapter:
                 web.get("/doc-preview.html", self._handle_doc_preview_page),
             ]
         )
-        from ...gateway import library_api, task_routes
+        from ...gateway import library_api, task_routes, preview_shares
 
+        preview_shares.register_routes(app)
         task_routes.register_routes(app)
         library_api.register_routes(app)
         if config.VOICE_ENABLED:  # 实验性语音伴聊模式,见 vococo/voice/

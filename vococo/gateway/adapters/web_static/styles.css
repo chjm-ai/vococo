@@ -57,7 +57,8 @@
   .preview-status[data-state="busy"]>.ic{animation:preview-spin calc(var(--t-fast)*8) linear infinite}
   .preview-status[data-state="done"],.preview-toolbar button[data-feedback="done"]{color:var(--ok-fg)}
   .preview-status[data-state="warning"],.preview-toolbar button[data-feedback="warning"]{color:var(--warn)}
-  .preview-note{font-size:var(--fs-sm);color:var(--warn);padding:var(--sp-3) var(--sp-4);overflow-wrap:anywhere}
+  .preview-note,.preview-share-note{font-size:var(--fs-sm);color:var(--warn);padding:var(--sp-3) var(--sp-4);overflow-wrap:anywhere}
+  .preview-share-note button{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-sm);padding:var(--sp-1) var(--sp-3);margin:var(--sp-1);cursor:pointer}
   @keyframes preview-spin{to{transform:rotate(360deg)}}
   @media(prefers-reduced-motion:reduce){.preview-status[data-state="busy"]>.ic{animation:none}}
   .preview-frame{display:block;width:100%;height:clamp(16rem,40vh,30rem);border:0;background:var(--on-accent)}
