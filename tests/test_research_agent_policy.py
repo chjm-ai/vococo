@@ -294,7 +294,7 @@ def ordinary(monkeypatch):
     monkeypatch.setattr(agent.settings_store, "effective_external_mcp", lambda names: {"external": {}})
     monkeypatch.setattr(agent.settings_store, "effective_skills", lambda *a, **kw: ["global"])
     monkeypatch.setattr(agent.session_store, "get_external_mcp_names", lambda key: set())
-    monkeypatch.setattr(agent, "build_mcp_servers", lambda: {"vococo": {}})
+    monkeypatch.setattr(agent, "build_mcp_servers", lambda **kw: {"vococo": {}})
     monkeypatch.setattr(agent, "_load_system_prompt", AsyncMock(return_value={"append": "个人提示"}))
     monkeypatch.setattr(agent, "_cli_working_dir", lambda cwd: (cwd, ""))
     monkeypatch.setattr(agent.reviewer, "definitions", lambda *a: {"reviewer": object()})
