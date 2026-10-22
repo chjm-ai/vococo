@@ -17,7 +17,10 @@ def anyio_backend():
 
 
 @pytest.mark.anyio
-async def test_chat_preview_real_browser(isolated, monkeypatch):
+@pytest.mark.parametrize("scenario", [
+    "existing", "sequence-height-dark", "sequence-height-light", "sequence-theme-layout", "sequence-stream-theme",
+])
+async def test_chat_preview_real_browser(isolated, monkeypatch, scenario):
     monkeypatch.setattr(config, "WEB_HOST", "127.0.0.1")
     monkeypatch.setattr(config, "WEB_PORT", 0)
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "preview-isolated-test")
@@ -36,7 +39,7 @@ async def test_chat_preview_real_browser(isolated, monkeypatch):
         screenshot_dir.mkdir(parents=True, exist_ok=True)
         process = await asyncio.create_subprocess_exec(
             "node", str(Path(__file__).with_name("chat_preview_browser.cjs")),
-            origin, config.WEB_AUTH_TOKEN, str(screenshot_dir), env=_browser_environment(),
+            origin, config.WEB_AUTH_TOKEN, str(screenshot_dir), scenario, env=_browser_environment(),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         try:

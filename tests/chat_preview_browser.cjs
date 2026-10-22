@@ -1,10 +1,266 @@
 const {chromium}=require('playwright');
 const assert=require('node:assert/strict');
 const path=require('node:path');
+const fs=require('node:fs');
+
+// 用户报告的示例②，保留 loop 和最后一条消息，不用更短流程图替代。
+const sequenceSource=`sequenceDiagram
+    participant U as 用户
+    participant V as Vococo
+    participant M as 模型
+    U->>V: 发送消息
+    V->>M: 提交请求
+    loop 逐步生成
+        M-->>V: 返回新内容
+        V-->>U: 更新图表预览
+    end
+    V-->>U: 完成定稿`;
+
+async function testSequenceHeight(browser,origin,token,screenshots,theme){
+  const measurements=[],errors=[];
+  for(const device of [
+    {name:'desktop',width:1280,height:1000},
+    {name:'mobile',width:390,height:844,mobile:true},
+    {name:'mobile-small',width:320,height:740,mobile:true},
+  ]){
+    const page=await browser.newPage({viewport:{width:device.width,height:device.height},
+      ...(device.mobile?{isMobile:true,hasTouch:true,userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1'}:{})});
+    page.on('pageerror',e=>errors.push(e.message));
+    await page.goto(origin);await page.fill('#pw',token);await page.click('#loginBtn');
+    await page.waitForFunction(()=>!$('#app').hidden);
+    await page.evaluate(async theme=>{document.documentElement.dataset.theme=theme;await openConv('sequence-height-test');$('#wrap').replaceChildren();closeSidebar();setSidebarCollapsed(true);},theme);
+    const measure=async (name,expectedSource)=>{
+      const card=page.locator('.chat-preview').last(),iframe=card.locator('iframe');
+      const frame=await (await iframe.elementHandle()).contentFrame();
+      await frame.locator('svg').waitFor({state:'visible'});
+      await frame.evaluate(()=>document.fonts.ready);
+      const sample={device:device.name,theme,phase:name,viewport:page.viewportSize(),
+        outer:await iframe.evaluate(n=>({clientHeight:n.clientHeight,scrollHeight:n.scrollHeight,
+          width:n.getBoundingClientRect().width,height:n.getBoundingClientRect().height,
+          cssHeight:getComputedStyle(n).height,sandbox:n.getAttribute('sandbox')})),
+        inner:await frame.evaluate(()=>{
+          const svg=document.querySelector('svg'),vb=svg.viewBox.baseVal;
+          const rect=n=>{const r=n.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom};};
+          const last=[...svg.querySelectorAll('text')].find(n=>n.textContent.includes('完成定稿'));
+          return {clientHeight:document.documentElement.clientHeight,scrollHeight:document.documentElement.scrollHeight,
+            bodyClientHeight:document.body.clientHeight,bodyScrollHeight:document.body.scrollHeight,
+            scrollY,svg:rect(svg),svgAttributes:{width:svg.getAttribute('width'),height:svg.getAttribute('height'),
+              viewBox:svg.getAttribute('viewBox'),style:svg.getAttribute('style'),preserveAspectRatio:svg.getAttribute('preserveAspectRatio')},
+            viewBox:{x:vb.x,y:vb.y,width:vb.width,height:vb.height},bbox:(()=>{const b=svg.getBBox();return {x:b.x,y:b.y,width:b.width,height:b.height};})(),
+            svgCss:{height:getComputedStyle(svg).height,width:getComputedStyle(svg).width,maxWidth:getComputedStyle(svg).maxWidth},
+            bodyMargin:getComputedStyle(document.body).margin,lastMessage:last?rect(last):null,
+            background:getComputedStyle(document.body).backgroundColor,
+            minTextSize:Math.min(...[...svg.querySelectorAll('text')].map(n=>parseFloat(getComputedStyle(n).fontSize)*svg.getBoundingClientRect().width/vb.width)),
+            overflow:document.documentElement.scrollHeight-document.documentElement.clientHeight};
+        })};
+      assert.equal((await card.locator('.preview-source code').textContent()).trimEnd(),expectedSource,'必须渲染完整原始示例');
+      measurements.push(sample);
+      await card.screenshot({path:path.join(screenshots,`sequence-height-${theme}-${device.name}-${name}.png`)});
+      return sample;
+    };
+    // 正常对照：已有短流程图应完整落在同一个 iframe 容器内。
+    await page.evaluate(()=>addBubble('ai','```mermaid\nflowchart LR\n A[开始] --> B[完成]\n```'));
+    await page.waitForFunction(()=>document.querySelector('.preview-status')?.dataset.state==='done');
+    await measure('flowchart-control','flowchart LR\n A[开始] --> B[完成]');
+    await page.evaluate(()=>$('#wrap').replaceChildren());
+    // 真正走 applyStreamEvent → finalizeStream；先保留未结束 loop 的成功快照。
+    const partial=sequenceSource.slice(0,sequenceSource.indexOf('    V-->>U: 完成定稿'));
+    await page.evaluate(text=>applyStreamEvent({type:'text',conv:S.conv,text,seg:0}),'```mermaid\n'+partial);
+    await page.waitForSelector('.chat-preview iframe');
+    await page.evaluate(text=>applyStreamEvent({type:'text',conv:S.conv,text,seg:0}),'```mermaid\n'+sequenceSource+'\n```');
+    await page.evaluate(()=>finalizeStream(undefined,undefined,200));
+    await page.waitForFunction(()=>document.querySelector('.preview-status')?.dataset.state==='done');
+    await measure('stream-final',sequenceSource);
+    await page.evaluate(source=>{
+      $('#wrap').replaceChildren();
+      $('#wrap').append(buildTurnBlock({id:201,user:'示例②时序图',assistant:'```mermaid\n'+source+'\n```'},S.conv,false));
+    },sequenceSource);
+    await page.waitForFunction(()=>document.querySelector('.preview-status')?.dataset.state==='done');
+    await measure('history',sequenceSource);
+    // 不重新渲染源码，单靠 ResizeObserver 应处理视口、分屏和源码切换后的尺寸。
+    for(const width of [320,768,1280]){
+      await page.setViewportSize({width,height:1000});await page.waitForTimeout(100);
+      await measure('resize-'+width,sequenceSource);
+    }
+    const card=page.locator('.chat-preview'),toggle=card.getByRole('button',{name:'显示源码',exact:true});
+    await toggle.click();await page.setViewportSize({width:390,height:844});
+    await card.getByRole('button',{name:'显示预览',exact:true}).click();await page.waitForTimeout(100);
+    await measure('source-restored',sequenceSource);
+    await card.locator('.preview-view').evaluate(n=>n.style.width='75%');await page.waitForTimeout(100);
+    await measure('split-width',sequenceSource);
+    await page.close();
+  }
+  // 全部尺寸采集完才断言，失败也留下完整的手机/桌面证据。
+  fs.writeFileSync(path.join(screenshots,`sequence-height-${theme}-metrics.json`),JSON.stringify({measurements,errors},null,2));
+  console.log(JSON.stringify({metrics:path.join(screenshots,`sequence-height-${theme}-metrics.json`),
+    samples:measurements.map(m=>({device:m.device,phase:m.phase,clientHeight:m.inner.clientHeight,
+      scrollHeight:m.inner.scrollHeight,svgHeight:m.inner.svg.height,overflow:m.inner.overflow})),errors}));
+  assert.deepEqual(errors,[]);
+  for(const sample of measurements){
+    assert.equal(sample.outer.sandbox,'','不能放松沙箱');
+    assert.ok(sample.inner.minTextSize>=11.9,'图表文字实际显示尺寸不能低于 12px');
+  }
+  const clipped=measurements.filter(m=>m.inner.svg.bottom>m.inner.clientHeight+1 || m.inner.overflow>1);
+  assert.deepEqual(clipped.map(m=>({device:m.device,phase:m.phase,clientHeight:m.inner.clientHeight,
+    scrollHeight:m.inner.scrollHeight,svgBottom:m.inner.svg.bottom,lastMessage:m.inner.lastMessage})),[],
+    '图表初始视图应完整显示，不应要求用户在沙箱 iframe 内另行纵向滚动');
+}
+
+async function testStreamTheme(browser,origin,token,screenshots){
+  const page=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true}),errors=[];
+  page.on('pageerror',e=>errors.push(e.message));
+  await page.goto(origin);await page.fill('#pw',token);await page.click('#loginBtn');
+  await page.waitForFunction(()=>!$('#app').hidden);
+  await page.evaluate(async()=>{await openConv('sequence-stream-theme');$('#wrap').replaceChildren();closeSidebar();setSidebarCollapsed(true);setTheme('light');});
+  const stream=async text=>page.evaluate(text=>applyStreamEvent({type:'text',conv:S.conv,text,seg:0}),text);
+  await stream('```mermaid\n'+sequenceSource.slice(0,sequenceSource.indexOf('    V-->>U: 完成定稿')));
+  await page.waitForSelector('.chat-preview iframe');
+  const card=page.locator('.chat-preview');
+  await page.evaluate(()=>setTheme('dark'));
+  await stream('```mermaid\n'+sequenceSource+'\n');
+  const settled=()=>page.waitForFunction(()=>{
+    const state=document.querySelector('.chat-preview')._preview;
+    return state.renderTheme===previewDiagramTheme().key && state.rendered?.includes('完成定稿');
+  });
+  await settled();assert.equal(await card.locator('.preview-status').getAttribute('data-state'),'busy');
+  await card.getByRole('button',{name:'显示源码',exact:true}).click();
+  await page.evaluate(()=>setTheme('light'));await page.setViewportSize({width:768,height:1000});
+  await settled();await card.getByRole('button',{name:'显示预览',exact:true}).click();
+  await stream('```mermaid\n'+sequenceSource+'\n```');
+  await page.evaluate(()=>finalizeStream(undefined,undefined,300));
+  await page.waitForFunction(()=>document.querySelector('.preview-status').dataset.state==='done');
+  await settled();await page.waitForTimeout(100);
+  assert.equal(await card.locator('iframe').count(),1);
+  const frame=await (await card.locator('iframe').elementHandle()).contentFrame();
+  assert.equal(await frame.evaluate(()=>document.documentElement.scrollHeight<=document.documentElement.clientHeight+1),true);
+  assert.equal(await card.locator('iframe').getAttribute('sandbox'),'');
+  assert.match(await card.locator('.preview-source').textContent(),/完成定稿/);
+  await card.screenshot({path:path.join(screenshots,'preview-refined-stream-theme-final.png')});
+  assert.deepEqual(errors,[]);await page.close();
+}
+
+async function testPreviewThemeLayout(browser,origin,token,screenshots){
+  const page=await browser.newPage({viewport:{width:1280,height:1300}}),errors=[];
+  page.on('pageerror',e=>errors.push(e.message));
+  await page.goto(origin);await page.fill('#pw',token);await page.click('#loginBtn');
+  await page.waitForFunction(()=>!$('#app').hidden);
+  await page.evaluate(async source=>{
+    await openConv('sequence-theme-layout');$('#wrap').replaceChildren();closeSidebar();setSidebarCollapsed(true);
+    addBubble('ai','```mermaid\n'+source+'\n```');
+    addBubble('ai','```mermaid\nflowchart LR\n A[发送消息] --> B[生成预览] --> C[完成定稿]\n```');
+    addBubble('ai','```html\n<h2>HTML 独立布局</h2><p>不套图表比例</p>\n```');
+  },sequenceSource);
+  const diagrams=page.locator('.chat-preview[data-lang="mermaid"]'),html=page.locator('.chat-preview[data-lang="html"] iframe');
+  await page.waitForFunction(()=>document.querySelectorAll('.preview-status[data-state="done"]').length===3);
+  const htmlBefore=await html.getAttribute('srcdoc');
+  await html.evaluate(n=>window.htmlTestFrame=n);
+  const verify=async (theme,label)=>{
+    await page.waitForFunction(()=>[...document.querySelectorAll('.chat-preview[data-lang="mermaid"]')].every(n=>
+      n._preview.renderTheme===previewDiagramTheme().key && n.querySelector('.preview-status').dataset.state==='done'));
+    const expected=await page.evaluate(()=>{
+      const css=getComputedStyle(document.documentElement),canvas=document.createElement('canvas').getContext('2d');
+      const color=name=>{canvas.fillStyle=css.getPropertyValue(name).trim();return canvas.fillStyle;};
+      return {background:color('--bg2'),text:color('--text'),actor:color('--accent'),surface:color('--panel')};
+    });
+    for(let i=0;i<2;i++){
+      const card=diagrams.nth(i),frame=await (await card.locator('iframe').elementHandle()).contentFrame();
+      await frame.locator('svg').waitFor({state:'visible'});
+      const colors=await frame.evaluate(()=>{
+        const normalize=value=>{const ctx=document.createElement('canvas').getContext('2d');ctx.fillStyle=value;return ctx.fillStyle;};
+        const svg=document.querySelector('svg'),node=svg.querySelector('rect.actor,.node rect');
+        return {background:normalize(getComputedStyle(document.body).backgroundColor),
+          text:normalize(getComputedStyle(svg.querySelector('text tspan')||svg.querySelector('text')).fill),
+          fill:normalize(getComputedStyle(node).fill),border:normalize(getComputedStyle(node).stroke),
+          radius:node.getAttribute('rx'),loop:svg.querySelectorAll('.preview-loop-background').length,
+          overflow:document.documentElement.scrollHeight-document.documentElement.clientHeight};
+      });
+      assert.equal(colors.background,expected.background);assert.equal(colors.text,expected.text);
+      assert.equal(colors.fill,expected.surface);assert.ok(Number(colors.radius)>0);
+      if(i===0){assert.equal(colors.border,expected.actor);assert.equal(colors.loop,1);}
+      assert.ok(colors.overflow<=1,'主题切换后也不应纵向溢出');
+      const bar=card.locator('.preview-toolbar');
+      assert.equal(await bar.locator('.preview-title svg').count(),0);
+      assert.equal(await bar.locator('.preview-title').innerText(),'MERMAID');
+      assert.equal(await bar.evaluate(n=>{
+        const r=n.getBoundingClientRect(),[title,status,source,copy]=[...n.children].map(n=>n.getBoundingClientRect());
+        return status.left-title.right<=16 && r.right-copy.right<=9 && source.left>=status.right &&
+          [title,status,source,copy].every(p=>p.top>=r.top && p.bottom<=r.bottom);
+      }),true,'左右分组与单行布局');
+      await card.screenshot({path:path.join(screenshots,`preview-refined-${label}-${theme}-${i===0?'sequence':'flow'}.png`)});
+      if(label==='mobile' && i===0){
+        const view=card.locator('.preview-view');await view.evaluate(n=>n.scrollLeft=n.scrollWidth);
+        await card.screenshot({path:path.join(screenshots,`preview-refined-mobile-${theme}-sequence-right.png`)});
+        await view.evaluate(n=>n.scrollLeft=0);
+      }
+    }
+    assert.equal(await html.getAttribute('srcdoc'),htmlBefore,'HTML 不受 Mermaid 主题重渲染影响');
+    assert.equal(await html.evaluate(n=>n===window.htmlTestFrame && !n.style.height && !n.style.width),true,'HTML 保留独立尺寸规则');
+  };
+  for(const device of [{name:'desktop',width:1280,height:1300},{name:'mobile',width:390,height:844}]){
+    await page.setViewportSize({width:device.width,height:device.height});
+    for(const theme of ['dark','light']){
+      await page.evaluate(theme=>setTheme(theme),theme);await verify(theme,device.name);
+    }
+  }
+  // 自动跟随系统也更新；手动固定主题时不跟系统变色。
+  await page.evaluate(()=>setTheme('auto'));
+  await page.emulateMedia({colorScheme:'dark'});await verify('dark','auto');
+  await page.emulateMedia({colorScheme:'light'});await verify('light','auto');
+  await page.evaluate(()=>setTheme('dark'));await verify('dark','fixed');
+  const before=await diagrams.first().locator('iframe').getAttribute('srcdoc');
+  await page.emulateMedia({colorScheme:'dark'});await page.waitForTimeout(100);
+  assert.equal(await diagrams.first().locator('iframe').getAttribute('srcdoc'),before);
+  // 快速切换在串行队列里最终收敛到最新主题，不能混入旧全局配置。
+  await page.evaluate(()=>{setTheme('light');setTheme('dark');setTheme('light');});await verify('light','rapid');
+  const view=diagrams.first().locator('.preview-view');
+  assert.equal(await view.evaluate(n=>n.scrollWidth>n.clientWidth),true,'手机宽图通过外层横向滚动保留字号');
+  await view.evaluate(n=>n.scrollLeft=n.scrollWidth);
+  assert.ok(await view.evaluate(n=>n.scrollLeft)>0,'横向滚动可达右侧参与者');
+  // 缓存 DOM 离开页面期间没有收到主题通知，重新挂回时仍须刷新到当前主题。
+  await page.evaluate(()=>{
+    window.parkedPreview=document.querySelector('.chat-preview');window.parkedParent=window.parkedPreview.parentNode;
+    window.parkedPreview.remove();setTheme('dark');
+  });
+  await page.waitForTimeout(50);
+  await page.evaluate(()=>window.parkedParent.append(window.parkedPreview));await verify('dark','resumed');
+  // 独立图种可能自带 10/11px 标签，也必须按实际最小字号决定缩放下限。
+  await page.evaluate(()=>addBubble('ai','```mermaid\ngantt\n title 发布计划\n dateFormat YYYY-MM-DD\n section 开发\n 实现预览 :a, 2026-10-01, 3d\n 回归验证 :after a, 2d\n```'));
+  const gantt=page.locator('.chat-preview').last();
+  await page.waitForFunction(()=>[...document.querySelectorAll('.preview-status')].at(-1).dataset.state==='done');
+  const ganttFrame=await (await gantt.locator('iframe').elementHandle()).contentFrame();
+  const minGanttText=await ganttFrame.evaluate(()=>{
+    const svg=document.querySelector('svg'),scale=svg.getBoundingClientRect().width/svg.viewBox.baseVal.width;
+    return Math.min(...[...svg.querySelectorAll('text')].map(n=>parseFloat(getComputedStyle(n).fontSize)*scale));
+  });
+  assert.ok(minGanttText>=11.9,'甘特图也保持最小 12px 标签');
+  // 真实观察器加一层计数包装，检查同步添加/移除不会重新订阅已离页节点。
+  await page.evaluate(()=>{
+    window.observedPreviewViews=new Set();
+    window.realPreviewObserve=previewResizeObserver.observe.bind(previewResizeObserver);
+    window.realPreviewUnobserve=previewResizeObserver.unobserve.bind(previewResizeObserver);
+    previewResizeObserver.observe=n=>{observedPreviewViews.add(n);realPreviewObserve(n);};
+    previewResizeObserver.unobserve=n=>{observedPreviewViews.delete(n);realPreviewUnobserve(n);};
+    const n=document.createElement('div');$('#wrap').append(n);window.transientPreview=n;
+    renderPreviewMarkdown(n,'```mermaid\nflowchart LR\n A --> B\n```');n.remove();
+  });
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(()=>observedPreviewViews.size),0);
+  await page.evaluate(()=>$('#wrap').append(transientPreview));
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(()=>observedPreviewViews.size),1);
+  await page.evaluate(()=>transientPreview.remove());await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(()=>observedPreviewViews.size),0);
+  await page.evaluate(()=>{previewResizeObserver.observe=realPreviewObserve;previewResizeObserver.unobserve=realPreviewUnobserve;});
+  assert.deepEqual(errors,[]);await page.close();
+}
+
 (async()=>{
-  const [origin,token,screenshots]=process.argv.slice(2);
+  const [origin,token,screenshots,scenario]=process.argv.slice(2);
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
   try{
+    if(scenario?.startsWith('sequence-height-')) return await testSequenceHeight(browser,origin,token,screenshots,scenario.split('-').at(-1));
+    if(scenario==='sequence-theme-layout') return await testPreviewThemeLayout(browser,origin,token,screenshots);
+    if(scenario==='sequence-stream-theme') return await testStreamTheme(browser,origin,token,screenshots);
     const page=await browser.newPage({viewport:{width:1280,height:1000}}),errors=[], external=[];
     page.on('pageerror',e=>errors.push(e.message));
     // CSP 拦截也会产生 request/requestfailed；只有到达网络路由才算泄漏。
@@ -21,7 +277,7 @@ const path=require('node:path');
         assert.equal(await status.getAttribute('title'),await status.getAttribute('aria-label'));
         assert.equal(await status.innerText(),'','状态文本不占行');
         assert.equal(await card.locator('.preview-note').isVisible(),false);
-        assert.equal(await bar.locator('.preview-title > svg[aria-hidden="true"]').count(),1);
+        assert.equal(await bar.locator('.preview-title > svg').count(),0);
         assert.equal(await bar.locator('button').count(),2);
         for(const button of await bar.getByRole('button').all()){
           assert.ok(await button.getAttribute('aria-label'));
@@ -34,8 +290,9 @@ const path=require('node:path');
           const rect=n.getBoundingClientRect(),parts=[...n.children].map(n=>n.getBoundingClientRect());
           return parts.every(r=>r.top>=rect.top && r.bottom<=rect.bottom && r.left>=rect.left && r.right<=rect.right)
             && Math.max(...parts.map(r=>r.top))<Math.min(...parts.map(r=>r.bottom))
-            && rect.height<=48 && parts.at(-1).right-parts[0].left<=260;
-        }),true,'标题、状态、按钮紧邻且单行');
+            && rect.height<=48 && parts[1].left-parts[0].right<=16
+            && rect.right-parts.at(-1).right<=9 && parts[2].left>=parts[1].right;
+        }),true,'文字和状态在左、操作在右且保持单行');
       }
     };
     await stream('```mermaid\n');
