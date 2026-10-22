@@ -545,6 +545,7 @@ try{
 <script src="/mascot.js"></script>
 <script src="/tool-card.js"></script>
 <script src="/app-core.js"></script>
+<script src="/preview.js"></script>
 <script src="/markdown.js"></script>
 <script src="/sidebar.js"></script>
 <script src="/workbench.js"></script>
@@ -1456,7 +1457,7 @@ function buildTurnBlock(t, conv, isLast){
     // 进行中但后端正流式写 draft:用部分内容起底兜底,避免刷新后空白;
     // SSE 恢复后 maybeReplayStream 会用同 seg 全文覆盖无缝续上
     const {row,b}=buildBubble("ai","");
-    b.innerHTML=mdToHtml(t.draft);
+    renderPreviewMarkdown(b,t.draft,true);
     const st=el("div","status"); st.textContent="回复中…"; b.append(st);
     wrap.append(row);
   }

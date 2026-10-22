@@ -62,14 +62,27 @@ function inlineMd(t){
   t = t.replace(/\u0000(\d+)\u0000/g,(m,i)=>parts[+i]);   // 还原 markdown 链接 / 反引号代码
   return t;
 }
-function mdToHtml(src){
+function fencedMarkdown(src, codes, streaming){
+  const lines=src.split("\n"), output=[];
+  for(let i=0;i<lines.length;i++){
+    const opening=lines[i].match(/^ {0,3}(`{3,}|~{3,})([^\n]*)$/);
+    if(!opening){ output.push(lines[i]); continue; }
+    const fence=opening[1], lang=opening[2].trim().toLowerCase(), body=[];
+    const end=new RegExp("^ {0,3}"+fence[0]+"{"+fence.length+",}[ \\t]*$");
+    let closed=false;
+    while(++i<lines.length){ if(end.test(lines[i])){closed=true;break;} body.push(lines[i]); }
+    const source=body.join("\n");
+    if(lang==="mermaid" || lang==="html") codes.push(previewCodeHtml(lang,source,closed,streaming));
+    else codes.push('<div class="codeblock"><button class="codecopy" onclick="copyCodeBlock(this)" title="复制代码">'+ic("copy")+
+      '</button><pre class="code"><code>'+esc(source.replace(/\n$/,""))+"</code></pre></div>");
+    output.push(" C"+(codes.length-1)+" ");
+  }
+  return output.join("\n");
+}
+function mdToHtml(src, streaming=false){
   src = (src||"").replace(/\r\n/g,"\n");
   const codes=[];
-  src = src.replace(/```(\w*)\n?([\s\S]*?)```/g,(m,lang,code)=>{
-    codes.push('<div class="codeblock"><button class="codecopy" onclick="copyCodeBlock(this)" title="复制代码">'+ic("copy")+
-      '</button><pre class="code"><code>'+esc(code.replace(/\n$/,""))+"</code></pre></div>");
-    return " C"+(codes.length-1)+" ";
-  });
+  src = fencedMarkdown(src,codes,streaming);
   const L = src.split("\n"); let out=""; let i=0; let para=[];
   const flush=()=>{ if(para.length){ out+="<p>"+para.map(inlineMd).join("<br>")+"</p>"; para=[]; } };
   const sepRe=/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$/;
@@ -250,6 +263,8 @@ function renderDocBlob(blob, target, highlight=""){
   const textExts=["txt","json","log","py","js","jsx","ts","tsx","sh","yml","yaml","css","xml","csv","ini"];
   if(isMd){
     blob.text().then(txt=>{ body.innerHTML='<div class="dp-md bubble">'+mdToHtml(txt)+'</div>'; highlightPreviewText(body, highlight); });
+  } else if(ctype==="text/html"||ext==="html"||ext==="htm"){
+    blob.text().then(txt=>{ body.replaceChildren(makeSafePreviewFrame(txt)); });
   } else if(ctype.startsWith("text/")||textExts.includes(ext)){
     blob.text().then(txt=>{ body.innerHTML=""; const pre=el("pre","dp-text"); pre.textContent=txt; body.append(pre); highlightPreviewText(body, highlight); });
   } else if(ctype.startsWith("image/")||/^(png|jpe?g|gif|webp|svg)$/.test(ext)){
@@ -258,10 +273,6 @@ function renderDocBlob(blob, target, highlight=""){
     // Safari 对 <iframe src="blob:...">渲染 PDF 是已知 WebKit 老毛病,整页空白(2026-08-25 排查确认);
     // <embed> 走插件式渲染路径,Safari/Chrome/Firefox 都认,换掉 iframe 即可。
     DP.objUrl=URL.createObjectURL(blob); body.innerHTML='<embed class="dp-frame" type="application/pdf" src="'+DP.objUrl+'">';
-  } else if(ctype==="text/html"||ext==="html"||ext==="htm"){
-    // 沙箱只放行弹窗,不给 allow-scripts+allow-same-origin(会让 blob 里的脚本拿到跟主站同源的能力,
-    // 等于把鉴权 token 所在的页面上下文让给了一份 AI 写的、未经审查的 HTML)——预览允许有损,不允许有洞。
-    DP.objUrl=URL.createObjectURL(blob); body.innerHTML='<iframe class="dp-frame" sandbox="allow-popups" src="'+DP.objUrl+'"></iframe>';
   } else {
     body.innerHTML='<div class="dp-err">这种文件类型暂不支持预览,点右上角下载看</div>';
   }
