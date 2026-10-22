@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 from .. import config, providers
 from ..memory import session_store
 from ..tools import danger
-from . import research, task_events, tasks, worktree
+from . import delegation, research, task_events, tasks, worktree
 from .agent import (
     BudgetWarning,
     Done,
@@ -91,6 +91,8 @@ def _start_one(task: dict, turn_text: str | None = None) -> bool:
     若 set_status 失败(状态已被别处改了),什么都不做,返回 False。
     """
     task_id = task["id"]
+    if delegation.get(task_id):
+        return False  # 委托是一次性预算，不能通过续接重置。
     if task.get("kind") == "research":
         try:
             _ensure_research_execution_available()
@@ -121,7 +123,24 @@ def _spawn(task_id: str, turn_text: str | None = None) -> asyncio.Task:
     spawned = asyncio.create_task(_run(task_id, turn_text), context=contextvars.Context())
     if row and row.get("kind") == "research":
         spawned.add_done_callback(lambda finished: _research_run_done(task_id, finished))
+    elif delegation.get(task_id):
+        spawned.add_done_callback(lambda finished: _delegation_run_done(task_id, finished))
     return spawned
+
+
+def _delegation_run_done(task_id: str, finished: asyncio.Task) -> None:
+    """覆盖尚未进入协程就取消、初始化失败等没有常规收尾的情况。"""
+    error = None if finished.cancelled() else finished.exception()
+    row = tasks.get(task_id)
+    if not row or row["status"] != "running" or _running.get(task_id) not in (None, finished):
+        return
+    _running.pop(task_id, None)
+    if finished.cancelled():
+        tasks.set_status(task_id, "cancelled", progress_note="已取消")
+    else:
+        tasks.finish(task_id, "failed", "", danger.redact_secrets(f"执行器中断：{error or '未写入终态'}"))
+    asyncio.create_task(task_events.emit_terminal(task_id))
+    _maybe_start_next()
 
 
 def _research_run_done(task_id: str, finished: asyncio.Task) -> None:
@@ -427,11 +446,14 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         # 上面干净的 prompt_text)——收尾时从回复里抠出来,见 _split_summary_tag。
         from ..memory import agents
 
+        execution = delegation.execution(task_id) if delegation.get(task_id) else {
+            "token_budget": token_budget,
+            "system_prompt_extra": agents.prompt_extra_for_session(session_key),
+        }
         async for ev in stream_turn(
             [], prompt_text + _SUMMARY_TAG_INSTRUCTION, model=model, cwd=effective_cwd,
             is_explicit_project=bool(row.get("cwd_explicit")), session_key=session_key,
-            resume=resume_sid, max_turns=config.TASK_MAX_TURNS, token_budget=token_budget,
-            system_prompt_extra=agents.prompt_extra_for_session(session_key),
+            resume=resume_sid, max_turns=config.TASK_MAX_TURNS, **execution,
         ):
             await _observe(ev)
 
@@ -445,6 +467,12 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             source_token = clarify.bind_turn(session_key, turn_id)
         if is_research:
             effective_cwd = str(config.DATA_DIR / "research" / task_id)
+        elif delegation.get(task_id):
+            effective_cwd = await worktree.execution_cwd_for_task(row["cwd"], task_id)
+            if effective_cwd == row["cwd"]:
+                # 非 Git 资料目录不能创建 worktree；独立启动目录，资料仍可按原路径读取。
+                effective_cwd = str(config.DATA_DIR / "delegation_workspaces" / task_id)
+                Path(effective_cwd).mkdir(parents=True, exist_ok=True)
         else:
             effective_cwd = await worktree.execution_cwd_for_task(row["cwd"], task_id)
         cwd_token = danger.set_cwd(
@@ -452,7 +480,10 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             project_root=row["cwd"] if not is_research and effective_cwd != row["cwd"] else None,
         )
         timeout_min = 0 if is_research else _timeout_min(row)
-        if timeout_min > 0:
+        delegated = delegation.get(task_id)
+        if delegated:
+            await delegation.run_with_deadline(task_id, _drive)
+        elif timeout_min > 0:
             await asyncio.wait_for(_drive(), timeout=timeout_min * 60)
         else:
             await _drive()
@@ -460,7 +491,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     except asyncio.CancelledError:
         status = "cancelled"
     except asyncio.TimeoutError:
-        error_note = "研究时间预算已用尽" if is_research else f"超时(超过 {timeout_min} 分钟)"
+        error_note = ("委托时长预算耗尽（含排队时间）" if delegation.get(task_id) else
+                      "研究时间预算已用尽" if is_research else f"超时(超过 {timeout_min} 分钟)")
     except Exception as exc:  # noqa: BLE001 —— 兜底:任何异常都要走到终态收尾,不留 running 僵尸
         error_note = f"执行出错:{exc}"
     finally:
@@ -731,6 +763,8 @@ async def append(task_id: str, instruction: str) -> dict:
     if row is None:
         return {"ok": False, "message": f"任务不存在(id={task_id})", "task": None}
 
+    if delegation.get(task_id):
+        return {"ok": False, "message": "委托预算不能重置，请由用户新开轮次派发", "task": row}
     if row.get("kind") == "research":
         return {"ok": False, "message": "原生深度研究已移除，历史研究不支持续聊或恢复", "task": row}
 
@@ -829,4 +863,8 @@ async def heal_after_restart() -> None:
     # 通知会让出事件循环；必须先清空旧队列，避免此时派发普通任务又拉起旧研究。
     for task_id in terminal_ids:
         await task_events.emit_terminal(task_id)
+    delegation.wake()  # 包括上次已终态但回执尚未确认的任务。
     _maybe_start_next()
+
+
+task_events.register_terminal_handler(delegation.on_terminal)

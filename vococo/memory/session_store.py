@@ -411,6 +411,37 @@ def append_external(session_key: str, assistant_text: str, event_key: str) -> in
     ).fetchone()[0]
 
 
+def external_context_state(session_key: str, sdk_id: str | None) -> tuple[int, list[dict]]:
+    """读取指定 SDK 会话尚未吸收的回执快照，不改变原会话上下文。"""
+    c = _conn()
+    c.execute("CREATE TABLE IF NOT EXISTS sdk_external_context("
+              "session_key TEXT NOT NULL, sdk_id TEXT NOT NULL, revision INTEGER NOT NULL, "
+              "PRIMARY KEY(session_key,sdk_id))")
+    watermark = _watermark(c, session_key)
+    revision = c.execute(
+        "SELECT COALESCE(MAX(id),0) FROM turns WHERE session_key=? AND id>? "
+        "AND events LIKE '%\"type\": \"external_result\"%'",
+        (session_key, watermark),
+    ).fetchone()[0]
+    saved = c.execute("SELECT revision FROM sdk_external_context WHERE session_key=? AND sdk_id=?",
+                      (session_key, sdk_id)).fetchone() if sdk_id else None
+    since = max(watermark, saved[0] if saved else 0)
+    rows = c.execute(
+        "SELECT id,assistant_text FROM turns WHERE session_key=? AND id>? AND id<=? "
+        "AND events LIKE '%\"type\": \"external_result\"%' ORDER BY id",
+        (session_key, since, revision),
+    ).fetchall()
+    return revision, [{"id": row[0], "text": row[1]} for row in rows]
+
+
+def sync_external_context(session_key: str, sdk_id: str, revision: int) -> None:
+    """仅成功轮次确认已发送快照，不吞掉轮次执行期间新来的回执。"""
+    c = _conn()
+    c.execute("INSERT INTO sdk_external_context VALUES (?,?,?) ON CONFLICT(session_key,sdk_id) DO UPDATE SET "
+              "revision=MAX(revision,excluded.revision)", (session_key, sdk_id, revision))
+    c.commit()
+
+
 def start_turn(session_key: str, user_text: str) -> int:
     """入库进行中 turn(assistant_text 留空);返回 row id 供 finish_turn/cancel_turn 配对。"""
     c = _conn()
