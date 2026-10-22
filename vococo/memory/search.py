@@ -55,6 +55,7 @@ def _snippet(text: str, q: str, radius: int = 36) -> str:
 def search_sessions(q: str, limit: int = 50) -> list[dict]:
     """侧边栏全局搜索:标题命中排前,其次正文命中;归档会话照常返回
     (archived 字段带回给前端标注),被删除的会话已物理删除,天然搜不到。
+    空关键词只返回最近活跃的归档会话，作为打开搜索时的默认列表。
 
     返回 [{key, title, archived, last_ts, match, snippet}];match 为
     "title"/"content"。个人规模(几千轮/约 1MB 文本)LIKE 全表扫描毫秒级,
@@ -67,6 +68,19 @@ def search_sessions(q: str, limit: int = 50) -> list[dict]:
         ["session_key LIKE ?"] * len(_SEARCH_PREFIXES) + ["session_key = ?"]
     ) + ")"
     key_params = [p + "%" for p in _SEARCH_PREFIXES] + [config.SESSION_KEY]
+    if not q.strip():
+        rows = c.execute(
+            "SELECT session_key, title, "
+            "  (SELECT MAX(ts) FROM turns t WHERE t.session_key=session_meta.session_key) "
+            f"FROM session_meta WHERE archived=1 AND {key_where} "
+            "ORDER BY 3 DESC, session_key LIMIT ?",
+            (*key_params, limit),
+        ).fetchall()
+        return [
+            {"key": key, "title": title or "新对话", "archived": True,
+             "last_ts": ts, "match": "title", "snippet": ""}
+            for key, title, ts in rows
+        ]
     out: list[dict] = []
     seen: set[str] = set()
     # 1) 标题命中(last_ts 用该会话最近一轮时间,供前端排序展示)

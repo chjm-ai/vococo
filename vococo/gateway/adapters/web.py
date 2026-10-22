@@ -1262,8 +1262,6 @@ class WebAdapter:
         """侧边栏全局搜索(⌘F):标题优先、正文其次,含归档会话;被删除的
         会话已物理删除,天然不在结果里。"""
         q = (request.query.get("q") or "").strip()
-        if not q:
-            return web.json_response({"results": []})
         from ...core import tasks as bg_tasks  # 懒加载,同 _handle_voice_sidebar
 
         # 全表 LIKE 扫描,数据涨到 9000 轮后要 60~100ms,放线程里别卡住其他请求
