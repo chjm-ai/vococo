@@ -17,6 +17,7 @@ voice 包、session_key 前缀从 voice-task: 改成中性的 task:,并加 origi
 """
 from __future__ import annotations
 
+import json
 import secrets
 import sqlite3
 import time
@@ -111,6 +112,8 @@ def _conn() -> sqlite3.Connection:
             ("origin", "origin TEXT NOT NULL DEFAULT 'voice'"),
             ("kind", "kind TEXT NOT NULL DEFAULT 'chat'"),
             ("source_session_key", "source_session_key TEXT"),
+            ("source_access", "source_access TEXT"),
+            ("run_version", "run_version INTEGER NOT NULL DEFAULT 0"),
             ("research_delivered_at", "research_delivered_at REAL"),
             # 所属 Agent(派发时从来源会话推出来,见 task_runner.dispatch)+ 最近一轮的运行指标
             # (见 set_run_metrics),给 Agent 的运行记录 / 复盘当数据
@@ -123,6 +126,13 @@ def _conn() -> sqlite3.Connection:
                 _DB.execute(f"ALTER TABLE tasks ADD COLUMN {ddl}")
             except sqlite3.OperationalError:
                 pass
+        # 旧委托只迁移来源信任元数据，执行不再依赖旧权限快照或预算。
+        if _DB.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_delegations'").fetchone():
+            for row in _DB.execute("SELECT d.* FROM agent_delegations d JOIN tasks t ON t.id=d.task_id "
+                                   "WHERE t.source_access IS NULL").fetchall():
+                access = {"session": row["source_session"], "denied": json.loads(row["denied"]),
+                          "mode": "standard", "chain_session": session_key(row["task_id"])}
+                _DB.execute("UPDATE tasks SET source_access=? WHERE id=?", (json.dumps(access), row["task_id"]))
         # 无人值守后台任务(cron/语音派活)每天累计的新鲜 token,供每日总量上限判断
         _DB.execute(
             "CREATE TABLE IF NOT EXISTS bg_usage_daily(day TEXT PRIMARY KEY, tokens INTEGER NOT NULL)"
@@ -159,6 +169,7 @@ def create(
     kind: str = "chat",
     source_session_key: str | None = None,
     commit: bool = True,
+    source_access: dict | None = None,
 ) -> dict:
     """落库一条 queued 任务,返回完整行。
 
@@ -176,14 +187,34 @@ def create(
     now = time.time()
     c.execute(
         "INSERT INTO tasks(id,title,prompt,cwd,cwd_explicit,status,progress_note,result_summary,"
-        "result_full,dispatch_platform,dispatch_chat_id,origin,agent_id,kind,source_session_key,created_at,updated_at) "
-        "VALUES (?,?,?,?,?,'queued','','','',?,?,?,?,?,?,?,?)",
+        "result_full,dispatch_platform,dispatch_chat_id,origin,agent_id,kind,source_session_key,source_access,created_at,updated_at) "
+        "VALUES (?,?,?,?,?,'queued','','','',?,?,?,?,?,?,?,?,?)",
         (tid, title, prompt, cwd, int(cwd_explicit), dispatch_platform, dispatch_chat_id, origin,
-         agent_id, kind, source_session_key, now, now),
+         agent_id, kind, source_session_key, json.dumps(source_access) if source_access else None, now, now),
     )
     if commit:
         c.commit()
     return get(tid)
+
+
+def capture_source_access(source: str, denied=()) -> dict:
+    """服务端捕获来源；替代派发入口也不能丢掉上游禁用项或审批档位。"""
+    from ..memory import agents, session_store
+    from . import permissions
+
+    inherited = session_store.active_source_access(source)
+    runtime = agents.runtime_for_session(source)
+    return {**inherited, "session": source,
+            "denied": sorted(set([*denied, *inherited.get("denied", []),
+                                  *(runtime.get("disallowed_tools") or [])])),
+            "mode": permissions.state(source)["mode"]}
+
+
+def automatic_access(task: dict) -> dict:
+    if task.get("source_access"):
+        return json.loads(task["source_access"])
+    source = task.get("source_session_key")
+    return capture_source_access(source) if source else {}
 
 
 def is_inline_research(task: dict) -> bool:
@@ -334,13 +365,13 @@ def set_status(task_id: str, status: str, progress_note: str | None = None) -> b
     c = _conn()
     if progress_note is None:
         c.execute(
-            "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
-            (status, time.time(), task_id),
+            "UPDATE tasks SET status=?, updated_at=?, run_version=run_version+? WHERE id=?",
+            (status, time.time(), int(status == "running"), task_id),
         )
     else:
         c.execute(
-            "UPDATE tasks SET status=?, progress_note=?, updated_at=? WHERE id=?",
-            (status, progress_note, time.time(), task_id),
+            "UPDATE tasks SET status=?, progress_note=?, updated_at=?, run_version=run_version+? WHERE id=?",
+            (status, progress_note, time.time(), int(status == "running"), task_id),
         )
     c.commit()
     return True

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, StreamEvent
+from claude_agent_sdk import ResultMessage, StreamEvent
 from mcp.types import CallToolRequest, CallToolRequestParams
 
 from vococo import config
@@ -59,8 +59,10 @@ async def env(isolated, monkeypatch):
 
         async def query(self, prompt):
             self.prompt = prompt
-            tid = Path(self.options.cwd or "fixture-source").name
-            row = tasks.get(tid)
+            ctx = clarify.get_context()
+            tid = tasks.task_id_from_session_key(ctx.session_key) if ctx else None
+            row = tasks.get(tid) if tid else None
+            self.context.append(str(prompt))
             if row:
                 self.row = row
                 callback = state.behavior.get(row["title"])
@@ -69,7 +71,7 @@ async def env(isolated, monkeypatch):
             else:
                 self.row = None
                 state.summary_calls += 1
-                self.text = "自动汇总"
+                self.text = "普通回复"
                 if self.options.tools is None:
                     self.context.append(str(prompt))
                     state.sdk_transcripts["fixture-session"] = list(self.context)
@@ -104,14 +106,7 @@ async def env(isolated, monkeypatch):
     state.b = agents.create("B")
     state.c = agents.create("C")
     state.source = f"web:p{state.a['project_hash']}:main"
-    state.source_options = ClaudeAgentOptions(mcp_servers={"vococo": {}}, skills=[],
-                                              permission_mode=config.PERMISSION_MODE)
-    def delegate(session, denied, *args, **kw):
-        parent = next((c for c in state.clients if getattr(c, "row", None)
-                       and tasks.session_key(c.row["id"]) == session), None)
-        policy = d.snapshot(parent.options if parent else state.source_options)
-        return d.delegate(session, denied, *args, policy=policy, **kw)
-    state.delegate = delegate
+    state.delegate = d.delegate
     state.turn = session_store.start_turn(state.source, "委托任务")
     session_store.set_chosen_model(state.source, "fixture-model")
     yield state
@@ -128,6 +123,8 @@ async def env(isolated, monkeypatch):
 
 async def call(client, name, args):
     full_name = f"mcp__vococo__{name}"
+    if d._blocked(full_name, client.options.disallowed_tools):
+        return {"error": "工具拒绝"}
     for matcher in client.options.hooks["PreToolUse"]:
         for hook in matcher.hooks:
             result = await hook({"tool_name": full_name, "tool_input": args}, "call", {})
@@ -158,508 +155,11 @@ def receipts(session):
 
 
 @pytest.mark.anyio
-async def test_real_a_b_c_execution_and_isolated_summary(env):
-    session_store.append(f"web:p{env.b['project_hash']}:main", "目标主会话秘密", "不得读取")
-
-    async def forward(client):
-        result = await call(client, "delegate_to_agent", {
-            "agent": env.c["id"], "title": "C任务", "prompt": "给 C 的完整背景", "token_budget": 5000,
-            "timeout_seconds": 30, "source_agent": "伪造身份"})
-        assert "task_id" in result, result
-        env.children.append(result["task_id"])
-    env.behavior["B任务"] = forward
-    root = dispatch(env, tokens=60_000, seconds=300)
-    await settle()
-    child = d.get(env.children[0])
-    assert child["source_agent"] == env.b["id"] and child["target_agent"] == env.c["id"]
-    assert child["parent_id"] == root["id"] and child["depth"] == 2
-    assert child["chain_id"] == d.get(root["id"])["chain_id"]
-    assert tasks.get(root["id"])["status"] == "done"
-    assert len(receipts(env.source)) == len(receipts(tasks.session_key(root["id"]))) == 1
-    assert any(e["type"] == "agent_run" and e["conv"] == env.source.removeprefix("web:") for e in env.events)
-    assert env.summary_calls == 2 and d.get(root["id"])["summary_used"] == 110
-    assert d.query(env.source, env.children[0])["status"] == "done"
-    summaries = [c for c in env.clients if c.row is None]
-    assert "Agent 回执" in str(summaries[-1].prompt) and env.children[0] in str(summaries[-1].prompt)
-    for client in env.clients:
-        options = client.options
-        assert options.tools == (["WebSearch", "WebFetch"] if client.row is None
-                                 else sorted(d._NATIVE - {"Skill"}))
-        assert options.setting_sources == [] and options.strict_mcp_config
-        assert not options.skills and not options.plugins and options.agents is None
-        assert options.resume is None and "目标主会话秘密" not in str(client.prompt)
-        if client.row is None:
-            assert options.mcp_servers == {}
-            for matcher in options.hooks["PreToolUse"]:
-                result = await matcher.hooks[0]({"tool_name": "mcp__vococo__delegate_to_agent"}, "x", {})
-                assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-
-@pytest.mark.anyio
-async def test_cycle_depth_and_reserved_budget_rejections(env):
-    async def forward(client):
-        source = tasks.session_key(client.row["id"])
-        for ref in [env.a["id"], env.b["id"]]:
-            with pytest.raises(ValueError, match="祖先"):
-                env.delegate(source, [], ref, "循环", "背景", 1000, 5)
-        with pytest.raises(ValueError, match="token"):
-            env.delegate(source, [], env.c["id"], "过量", "背景", 60_000, 5)
-        with pytest.raises(ValueError, match="时长"):
-            env.delegate(source, [], env.c["id"], "过量", "背景", 1000, 300)
-        child = env.delegate(source, [], env.c["id"], "C任务", "背景", 1000, 5)
-        env.children.append(child["id"])
-
-    async def too_deep(client):
-        with pytest.raises(ValueError, match="两层"):
-            env.delegate(tasks.session_key(client.row["id"]), [], agents.GENERAL_ID, "三层", "背景", 1000, 5)
-    env.behavior.update({"B任务": forward, "C任务": too_deep})
-    root = dispatch(env, tokens=60_000, seconds=300)
-    await settle()
-    assert tasks.get(root["id"])["status"] == "done"
-    assert d.get(root["id"])["reserved_tokens"] == 9000
-
-
-@pytest.mark.anyio
-async def test_five_tasks_and_root_budgets_cannot_be_reset(env, monkeypatch):
-    monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 0)
-    for _ in range(5):
-        dispatch(env, tokens=1000, seconds=5)
-    with pytest.raises(ValueError, match="五"):
-        dispatch(env, tokens=1000, seconds=5)
-    session_store.finish_turn(env.turn, "结束", session_key=env.source)
-    with pytest.raises(ValueError, match="用户轮次"):
-        dispatch(env)
-    session_store.start_turn(env.source, "新的用户请求")
-    dispatch(env, tokens=1_000_000, seconds=700)
-    dispatch(env, tokens=2_000_000, seconds=5)
-    with pytest.raises(ValueError, match="时长"):
-        dispatch(env, tokens=1000, seconds=61)
-
-
-@pytest.mark.anyio
-async def test_permissions_full_target_cannot_widen_source(env):
-    agents.update(env.b["id"], permission="full", disallowed_tools=["WebFetch"])
-    root = env.delegate(env.source, ["WebSearch", "mcp__vococo__get_agent_delegation"],
-                      env.b["id"], "B任务", "背景")
-    await settle()
-    client = next(c for c in env.clients if c.row)
-    hook = client.options.hooks["PreToolUse"][0].hooks[0]
-    for name in ["Bash", "Write", "Skill", "Agent", "Task", "WebFetch", "WebSearch",
-                 "mcp__vococo__save_memory", "mcp__vococo__ask_user", "mcp__vococo__dispatch_session",
-                 "mcp__vococo__get_agent_delegation", "mcp__other__delegate_to_agent"]:
-        result = await hook({"tool_name": name, "tool_input": {}}, "x", {})
-        assert result["hookSpecificOutput"]["permissionDecision"] == "deny", name
-    assert tasks.get(root["id"])["status"] == "done"
-    with pytest.raises(ValueError, match="禁止"):
-        env.delegate(env.source, ["mcp__vococo__delegate*"], env.b["id"], "拒绝", "背景")
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("status", ["done", "failed", "cancelled"])
-async def test_terminal_receipts_idempotent_and_restart_redelivery(env, monkeypatch, status):
-    if status == "failed":
-        env.errors.add("B任务")
-    if status == "cancelled":
-        monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 0)
-    row = dispatch(env)
-    if status == "cancelled":
-        assert runner.cancel(row["id"])
-    await settle()
-    assert tasks.get(row["id"])["status"] == status
-    assert len(receipts(env.source)) == 1
-    await asyncio.gather(task_events.emit_terminal(row["id"]), task_events.emit_terminal(row["id"]))
-    await asyncio.gather(d.drain(), d.drain())
-    assert len(receipts(env.source)) == 1
-    count = env.summary_calls
-    # 模拟消息已提交、确认标记尚未写入时崩溃；重新打开真实 sqlite 补投。
-    tasks._conn().execute("UPDATE agent_delegations SET delivered=0 WHERE task_id=?", (row["id"],))
-    tasks._conn().commit()
-    tasks._DB.close()
-    tasks._DB = None
-    await runner.heal_after_restart()
-    await d.drain()
-    assert d.get(row["id"])["delivered"] and len(receipts(env.source)) == 1
-    assert env.summary_calls == count
-
-
-@pytest.mark.anyio
-async def test_busy_source_and_pending_question_never_interrupted_or_answered(env, monkeypatch):
-    clarify.mark_active(env.source)
-    pending = clarify.register(env.source, [])
-    monkeypatch.setattr(runner, "append", AsyncMock(side_effect=AssertionError("不能中断来源")))
-    row = dispatch(env)
-    await settle()
-    assert tasks.get(row["id"])["status"] == "done"
-    assert not receipts(env.source) and not pending.response
-    clarify.mark_inactive(env.source)
-    await d.drain()
-    assert not receipts(env.source) and clarify.has_pending(env.source)
-    clarify.abandon(pending.clarify_id)
-    await d.drain()
-    assert len(receipts(env.source)) == 1
-    assert session_store._conn().execute("SELECT assistant_text FROM turns WHERE id=?", (env.turn,)).fetchone()[0] == ""
-
-
-@pytest.mark.anyio
-async def test_running_cancel_and_cancel_before_first_schedule(env):
-    started = asyncio.Event()
-    async def hang(_client):
-        started.set()
-        await asyncio.Event().wait()
-    env.behavior["B任务"] = hang
-    row = dispatch(env)
-    await asyncio.wait_for(started.wait(), 2)
-    await runner.cancel_and_wait(row["id"])
-    await settle()
-    assert tasks.get(row["id"])["status"] == "cancelled"
-    early = dispatch(env, title="尚未调度")
-    assert runner.cancel(early["id"])
-    await settle()
-    assert tasks.get(early["id"])["status"] == "cancelled"
-    assert len(receipts(env.source)) == 2
-
-
-@pytest.mark.anyio
-async def test_unknown_duplicate_identity_and_query_access(env, monkeypatch):
-    agents.update(env.c["id"], name="B")
-    with pytest.raises(ValueError, match="重名"):
-        d.resolve("B")
-    with pytest.raises(ValueError):
-        d.resolve("../outside")
-    monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 0)
-    row = dispatch(env)
-    assert d.query(env.source, row["id"])["status"] == "queued"
-    with pytest.raises(ValueError, match="不属于"):
-        d.query("web:other", row["id"])
-    result = await runner.append(row["id"], "重新获得预算")
-    assert not result["ok"]
-    ordinary = tasks.create("旧任务", "背景", cwd=str(config.DATA_DIR))
-    with pytest.raises(ValueError, match="普通后台"):
-        env.delegate(tasks.session_key(ordinary["id"]), [], env.b["id"], "绕过", "背景")
-
-
-@pytest.mark.anyio
-async def test_token_limit_is_enforced_on_actual_result_usage(env):
-    env.usage = 2000
-    row = dispatch(env, tokens=1000, seconds=5)
-    await settle()
-    assert tasks.get(row["id"])["status"] == "failed"
-    assert d.get(row["id"])["used"] == 2010
-    assert "预算" in tasks.get(row["id"])["result_summary"]
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("tokens,expected", [(0, "done"), (24_000, "failed")])
-async def test_stream_tool_rounds_over_old_root_cap_and_optional_limit(env, tokens, expected):
-    env.round_usage = [16_000] * 9
-    env.usage = 144_000
-    row = dispatch(env, **({"tokens": tokens} if tokens else {}))
-    assert d.execution(row["id"])["token_budget"] == tokens
-    await settle()
-    state = d.query(env.source, row["id"])
-    assert state["status"] == expected
-    assert state["used_tokens"] > (120_000 if tokens == 0 else tokens)
-    assert len(receipts(env.source)) == 1
-    if tokens == 0:
-        assert state["summary_reserved"] == 0
-        assert state["summary_tokens"] == 144_010
-        assert "自动汇总" in d.get(row["id"])["receipt"]
-    else:
-        assert state["summary_reserved"] == 8000
-        assert "预算" in tasks.get(row["id"])["result_summary"]
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("tokens,child_tokens,expected", [
-    (0, 0, 0), (0, 1_000_000, 1_000_000),
-    (60_000, 0, 51_999), (60_000, 5000, 5000),
-])
-async def test_nested_optional_budget_and_parent_reservations(env, tokens, child_tokens, expected):
-    async def forward(client):
-        result = await call(client, "delegate_to_agent", {
-            "agent": env.c["id"], "title": "C任务", "prompt": "完整背景",
-            "token_budget": child_tokens, "timeout_seconds": 5})
-        assert "task_id" in result, result
-        env.children.append(result["task_id"])
-    env.behavior["B任务"] = forward
-    root = dispatch(env, tokens=tokens, seconds=300)
-    await settle()
-    child = d.get(env.children[0])
-    assert child["tokens"] == expected
-    assert tasks.get(child["task_id"])["status"] == "done"
-    parent = d.get(root["id"])
-    cost = expected + (8000 if expected else 0)
-    assert parent["reserved_tokens"] == cost
-    assert parent["reserved_seconds"] == 50
-    assert tasks.get(root["id"])["status"] == ("failed" if tokens and child_tokens == 0 else "done")
-    if tokens:
-        assert cost < tokens
-        with pytest.raises(RuntimeError, match="token"):
-            d.observe(root["id"], tokens - cost)
-    else:
-        d.observe(root["id"], 2_000_000)
-        assert d.execution(root["id"])["token_budget"] == 0
-
-
-@pytest.mark.anyio
-async def test_zero_child_budget_rejected_when_finite_parent_cannot_reserve_summary(env):
-    async def forward(client):
-        result = await call(client, "delegate_to_agent", {
-            "agent": env.c["id"], "title": "C任务", "prompt": "背景",
-            "token_budget": 0, "timeout_seconds": 5})
-        assert "token 预算不足" in result["error"]
-    env.behavior["B任务"] = forward
-    root = dispatch(env, tokens=8001)
-    await settle()
-    assert tasks.get(root["id"])["status"] == "done"
-    assert d.get(root["id"])["reserved_tokens"] == 0
-    assert tasks._conn().execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("token_args", [{}, {"token_budget": 0}, {"token_budget": 1},
-    {"token_budget": 1_000_000}])
-async def test_tool_default_zero_and_positive_budgets_are_valid(env, monkeypatch, token_args):
-    monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 0)
-    dispatch_tool = d.build_tools(env.source, [], policy=d.snapshot(env.source_options))[1]
-    assert "默认推荐填 0" in dispatch_tool.description
-    response = await dispatch_tool.handler({"agent": env.b["id"], "title": "任务", "prompt": "背景",
-                                            "timeout_seconds": 5, **token_args})
-    task_id = json.loads(response["content"][0]["text"])["task_id"]
-    assert d.get(task_id)["tokens"] == token_args.get("token_budget", 0)
-
-
-@pytest.mark.anyio
-async def test_finite_summary_still_uses_reserved_budget_and_fallback(env):
-    env.usage = 9000
-    row = dispatch(env, tokens=24_000)
-    await settle()
-    state = d.query(env.source, row["id"])
-    assert state["status"] == "done"
-    assert state["summary_reserved"] == 8000 and state["summary_tokens"] == 9010
-    assert "自动汇总" not in d.get(row["id"])["receipt"]
-    assert len(receipts(env.source)) == 1
-
-
-@pytest.mark.anyio
-async def test_restart_orphan_and_failed_delivery_retry(env, monkeypatch):
-    monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 0)
-    row = dispatch(env)
-    original = session_store.append_external
-    monkeypatch.setattr(session_store, "append_external", lambda *a: (_ for _ in ()).throw(OSError("暂时不可写")))
-    await runner.heal_after_restart()
-    await d.drain()
-    assert tasks.get(row["id"])["status"] == "failed" and not d.get(row["id"])["delivered"]
-    monkeypatch.setattr(session_store, "append_external", original)
-    await d.drain()
-    assert len(receipts(env.source)) == 1
-
-
-@pytest.mark.anyio
-async def test_web_followup_and_direct_converse_cannot_escape_isolation(env, monkeypatch):
-    from vococo.gateway import core
-    from vococo.gateway.adapters.base import Incoming
-    from vococo.gateway.run import GatewayRunner
-
-    monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 0)
-    row = dispatch(env)
-    key = tasks.session_key(row["id"])
-    sink = SimpleNamespace()
-    with pytest.raises(ValueError, match="不支持续聊"):
-        await core.converse(key, "写入目标项目", None, sink)
-    adapter = SimpleNamespace(platform="web", send=AsyncMock(),
-                              make_sink=lambda *_: (_ for _ in ()).throw(AssertionError("不能创建模型轮次")))
-    inc = Incoming(platform="web", chat_id=key, text="写入目标项目")
-    assert inc.session_key == key
-    await GatewayRunner([adapter])._dispatch(adapter, inc)
-    assert "不能续聊" in adapter.send.await_args.args[1]
-    assert not env.clients and tasks.get(row["id"])["status"] == "queued"
-
-
-@pytest.mark.anyio
-async def test_delayed_child_is_included_before_parent_receipt(env):
-    started, release = asyncio.Event(), asyncio.Event()
-    async def forward(client):
-        response = await call(client, "delegate_to_agent", {
-            "agent": env.c["id"], "title": "C任务", "prompt": "背景", "token_budget": 1000, "timeout_seconds": 5})
-        env.children.append(response["task_id"])
-    async def child(client):
-        started.set()
-        await release.wait()
-        client.text = "下级独有结果"
-    env.behavior.update({"B任务": forward, "C任务": child})
-    root = dispatch(env, tokens=60_000, seconds=300)
-    await asyncio.wait_for(started.wait(), 2)
-    for _ in range(100):
-        if tasks.get(root["id"])["status"] == "done":
-            break
-        await asyncio.sleep(.01)
-    await d.drain()
-    assert not receipts(env.source)
-    assert not d.get(root["id"])["summary_started"]
-    release.set()
-    await settle()
-    assert len(receipts(env.source)) == 1
-    assert d.query(env.source, env.children[0])["result_full"] == "下级独有结果", d.query(env.source, env.children[0])
-    assert any("下级独有结果" in str(c.prompt) for c in env.clients if c.row is None)
-
-
-@pytest.mark.anyio
-async def test_dynamic_parent_deadline_interrupts_idle_model(env):
-    started = asyncio.Event()
-    async def hang(client):
-        tid = client.row["id"]
-        started.set()
-        c = tasks._conn()
-        c.execute("UPDATE agent_delegations SET deadline=? WHERE task_id=?", (d.time.time() + .05, tid))
-        c.commit()
-        await asyncio.Event().wait()
-    env.behavior["B任务"] = hang
-    row = dispatch(env)
-    await asyncio.wait_for(started.wait(), 2)
-    await settle()
-    assert tasks.get(row["id"])["status"] == "failed"
-    assert "时长预算" in tasks.get(row["id"])["result_summary"]
-    assert env.clients[0].interrupt.await_count == 1
-
-
-@pytest.mark.anyio
-async def test_expired_queued_task_never_queries_model(env, monkeypatch):
-    monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 0)
-    row = dispatch(env)
-    c = tasks._conn()
-    c.execute("UPDATE agent_delegations SET deadline=0 WHERE task_id=?", (row["id"],))
-    c.commit()
-    monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 1)
-    runner._maybe_start_next()
-    await settle()
-    assert tasks.get(row["id"])["status"] == "failed" and not env.clients
-    assert len(receipts(env.source)) == 1
-
-
-@pytest.mark.anyio
-async def test_transaction_rolls_back_task_and_reserved_budget(env, monkeypatch):
-    monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 0)
-    create = tasks.create
-    def fail_after_insert(*args, **kwargs):
-        create(*args, **kwargs)
-        raise OSError("模拟落库中断")
-    monkeypatch.setattr(tasks, "create", fail_after_insert)
-    with pytest.raises(OSError):
-        dispatch(env)
-    assert tasks._conn().execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
-    assert tasks._conn().execute("SELECT COUNT(*) FROM agent_delegations").fetchone()[0] == 0
-
-
-@pytest.mark.anyio
-async def test_summary_crash_marker_uses_fallback_without_second_paid_run(env):
-    clarify.mark_active(env.source)
-    row = dispatch(env)
-    await settle()
-    c = tasks._conn()
-    c.execute("UPDATE agent_delegations SET summary_started=1 WHERE task_id=?", (row["id"],))
-    c.commit()
-    clarify.mark_inactive(env.source)
-    await d.drain()
-    assert len(receipts(env.source)) == 1 and env.summary_calls == 0
-    assert d.get(row["id"])["delivered"]
-
-
-async def guard_tool(client, name, args=None):
-    result = {}
-    for matcher in client.options.hooks["PreToolUse"]:
-        for callback in matcher.hooks:
-            result = await callback({"tool_name": name, "tool_input": args or {}}, "test", {})
-            if result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny":
-                return False
-    return True
-
-
-@pytest.mark.anyio
-async def test_actual_source_snapshot_target_files_business_mcp_and_standard_cap(env, monkeypatch):
-    import subprocess
-    from claude_agent_sdk import create_sdk_mcp_server, tool
-    from vococo.core import permissions
-
-    # 真实临时 Git 项目，不操作生产仓库；执行器必须创建并绑定独立 worktree。
-    root = Path(env.b["workdir"])
-    (root / "客户资料.txt").write_text("目标客户资料")
-    for args in [("init",), ("add", "."),
-                 ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture")]:
-        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
-    agents.write_doc(env.b["id"], "AGENT.md", "B 的业务职责")
-    agents.update(env.a["id"], mcp=["business", "source_only"], skills=["shared", "source_skill"],
-                  disallowed_tools=["WebSearch"], memory_sections=["用户偏好"])
-    agents.update(env.b["id"], mcp=["business", "target_only"], skills=["shared", "target_skill"],
-                  disallowed_tools=["WebFetch"], permission="full", memory_sections=["用户偏好", "技术决策"])
-    config.AI_BRAIN_DIR.mkdir(parents=True, exist_ok=True)
-    (config.AI_BRAIN_DIR / "MEMORY.md").write_text(
-        "## 用户偏好\n共同可见经验\n## 技术决策\n不可扩大的全局分区\n")
-    from vococo.memory import deposit
-    own = deposit.agent_memory_dir(env.b)
-    own.mkdir(parents=True, exist_ok=True)
-    (own / "INDEX.md").write_text("目标独有经验")
-    calls = []
-    @tool("lookup_customer", "读取本地业务夹具", {})
-    async def lookup(_args):
-        calls.append("business")
-        return {"content": [{"type": "text", "text": "业务客户结果"}]}
-    server = create_sdk_mcp_server("business", tools=[lookup])
-    monkeypatch.setattr(settings_store, "effective_external_mcp",
-                        lambda names: {name: server for name in names})
-    monkeypatch.setattr(settings_store, "vococo_enabled", lambda: True)
-    checks = []
-    async def execute(client):
-        assert Path(client.options.cwd) != root
-        assert session_store.get_worktree(tasks.session_key(client.row["id"])) == client.options.cwd
-        path = Path(client.options.cwd) / "客户资料.txt"
-        assert await guard_tool(client, "Read", {"file_path": str(path)})
-        assert path.read_text() == "目标客户资料"
-        assert client.options.skills == ["shared"]
-        assert set(client.options.mcp_servers) == {"business", "vococo"}
-        assert "B 的业务职责" in str(client.options.system_prompt)
-        assert "目标独有经验" in str(client.options.system_prompt)
-        assert "共同可见经验" in str(client.options.system_prompt)
-        assert "不可扩大的全局分区" not in str(client.options.system_prompt)
-        assert not permissions.is_full(tasks.session_key(client.row["id"]))
-        assert await guard_tool(client, "mcp__business__lookup_customer")
-        response = await server["instance"].request_handlers[CallToolRequest](CallToolRequest(
-            method="tools/call", params=CallToolRequestParams(name="lookup_customer", arguments={})))
-        assert response.root.content[0].text == "业务客户结果"
-        for name in ["WebSearch", "WebFetch", "Bash", "Write", "Agent", "Task", "Workflow",
-                     "mcp__target_only__lookup", "mcp__source_only__lookup", "mcp__business__dispatch_session",
-                     "mcp__vococo__run_subagent", "mcp__vococo__dispatch_session",
-                     "mcp__vococo__voice_dispatch_task", "mcp__vococo__add_cron_job",
-                     "mcp__vococo__create_workbench_task", "mcp__vococo__set_external_mcp"]:
-            assert not await guard_tool(client, name), name
-        checks.append(True)
-    env.behavior["真实权限任务"] = execute
-    async def source(client):
-        entry = client.options.hooks["PreToolUse"][-1].hooks[0]
-        blocked = await entry({"tool_name": "mcp__vococo__delegate_to_agent", "agent_id": "native-child"}, "x", {})
-        assert blocked["hookSpecificOutput"]["permissionDecision"] == "deny"
-        response = await call(client, "delegate_to_agent", {
-            "agent": env.b["id"], "title": "真实权限任务", "prompt": "完整背景",
-            "token_budget": 24000, "timeout_seconds": 180})
-        env.children.append(response["task_id"])
-    env.source_behavior = source
-    async for _ in agent.stream_turn([], "给 B 派任务", session_key=env.source, cwd=env.a["workdir"]):
-        pass
-    await settle()
-    assert checks == [True] and calls == ["business"], tasks.get(env.children[0])["result_summary"]
-    assert tasks.get(env.children[0])["status"] == "done"
-    policy = json.loads(d.get(env.children[0])["policy"])
-    assert "WebSearch" in policy["denied"] and "source_only" in policy["mcp"]
-    assert policy["source_permission"] == "standard"
-
-
-@pytest.mark.anyio
 async def test_delegation_danger_gate_still_denies_without_background_approval(env, monkeypatch):
     from vococo.tools import danger
     from vococo.core import permissions
 
     agents.update(env.b["id"], permission="full")
-    env.source_options.mcp_servers["business"] = {}
     agents.update(env.b["id"], mcp=["business"])
     monkeypatch.setattr(settings_store, "effective_external_mcp", lambda names: {n: {} for n in names})
     monkeypatch.setattr(config, "APPROVAL_GATE", True)
@@ -679,43 +179,6 @@ async def test_delegation_danger_gate_still_denies_without_background_approval(e
     row = dispatch(env)
     await settle()
     assert approved == [True] and tasks.get(row["id"])["status"] == "done"
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("warm", [True, False])
-async def test_receipt_next_real_turn_incrementally_syncs_warm_and_resume_once(env, warm):
-    async for event in agent.stream_turn([], "初始轮次", session_key=env.source):
-        if isinstance(event, agent.Done):
-            session_store.set_sdk_session_id(env.source, event.reply.sdk_session_id)
-    first = env.clients[-1]
-    row = dispatch(env)
-    await settle()
-    receipt = d.get(row["id"])["receipt"]
-    session_store.append_external(env.source, receipt, f"agent-receipt:{row['id']}")
-    if not warm:
-        agent.client_pool._pool.clear()  # 模拟重启后仅剩 SDK transcript。
-    async def follow(text):
-        async for event in agent.stream_turn([], text, session_key=env.source,
-                                             resume=session_store.get_sdk_session_id(env.source)):
-            if isinstance(event, agent.Done):
-                session_store.set_sdk_session_id(env.source, event.reply.sdk_session_id)
-    clients_before = len(env.clients)
-    await follow("刚才的结果是什么")
-    latest = agent.client_pool._pool[env.source].client
-    assert (latest is first) == warm
-    assert len(env.clients) == clients_before + (not warm)
-    if not warm:
-        assert latest.options.resume == "fixture-session"
-    encoded_receipt = json.dumps(receipt, ensure_ascii=False)
-    assert str(latest.prompt).count(encoded_receipt) == 1
-    assert "不可信数据" in str(latest.prompt) and "```json" in str(latest.prompt)
-    assert len(receipts(env.source)) == 1
-    assert "初始轮次" in str(latest.context)
-    await follow("继续")
-    assert agent.client_pool._pool[env.source].client is latest
-    assert encoded_receipt not in str(latest.prompt)
-    assert "外部回执增量" not in str(latest.prompt)
-    assert "继续" in str(latest.prompt)
 
 
 @pytest.mark.anyio
@@ -785,210 +248,406 @@ async def test_receipt_ack_is_per_sdk_and_only_successful_rounds(env):
     assert not original  # 另一个 SDK 的确认不会覆盖本 SDK 的进度。
 
 
-def local_settings(path, *, matcher="Write", hooks=None):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = {"permissions": {"allow": sorted(d._NATIVE)}, "hooks": hooks if hooks is not None else {
-        "PreToolUse": [{"matcher": matcher, "hooks": [{"type": "command", "command": "true",
-            "timeout": 10, "statusMessage": "检查记忆目录写入规则"}]}]}}
-    path.write_text(json.dumps(data))
 
-
-async def source_dispatch(env):
-    responses = []
-    async def source(client):
-        listed = await call(client, "list_delegate_agents", {})
-        assert any(item["id"] == env.b["id"] for item in listed)
-        responses.append(await call(client, "delegate_to_agent", {
-            "agent": env.b["id"], "title": "保护配置任务", "prompt": "完整背景",
-            "token_budget": 24000, "timeout_seconds": 180}))
-    env.source_behavior = source
-    async for event in agent.stream_turn([], "派给 B", session_key=env.source, cwd=env.a["workdir"]):
-        if isinstance(event, agent.Done):
-            assert not event.reply.is_error
-    await settle()
-    return responses[0]
+async def guard_tool(client, name, args=None):
+    if d._blocked(name, client.options.disallowed_tools):
+        return False
+    import re
+    for matcher in client.options.hooks["PreToolUse"]:
+        if matcher.matcher and not re.search(matcher.matcher, name):
+            continue
+        for hook in matcher.hooks:
+            result = await hook({"tool_name": name, "tool_input": args or {}}, "tool", {})
+            if result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny":
+                return False
+    return True
 
 
 @pytest.mark.anyio
-async def test_write_protection_hook_real_stream_dispatch_and_receipt(env, monkeypatch):
-    import os
-    local_settings(Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json")
-    agents.update(env.a["id"], mcp=["business"])
-    agents.update(env.b["id"], mcp=["business"])
-    agents.update(env.c["id"], mcp=["business"])
+async def test_regular_runner_target_tools_mcp_skills_and_nested_receipts(env, monkeypatch):
+    agents.update(env.b["id"], skills=["test-skill"], mcp=["business"])
     monkeypatch.setattr(settings_store, "effective_external_mcp", lambda names: {n: {} for n in names})
-    checks = []
-    async def execute(client):
-        assert await guard_tool(client, "Read")
-        assert await guard_tool(client, "mcp__business__lookup")
-        for name in ["Write", "Edit", "Bash", "Skill", "mcp__business__lookupWriteCustomer"]:
-            assert not await guard_tool(client, name), name
-        checks.append(True)
-        if client.row["title"] == "保护配置任务":
-            child = await call(client, "delegate_to_agent", {
-                "agent": env.c["id"], "title": "下级保护配置任务", "prompt": "完整背景",
-                "token_budget": 1000, "timeout_seconds": 5})
-            assert "task_id" in child, child
-    env.behavior.update({"保护配置任务": execute, "下级保护配置任务": execute})
-    result = await source_dispatch(env)
-    assert "task_id" in result, result
-    assert checks == [True, True]
-    assert tasks.get(result["task_id"])["status"] == "done"
-    assert len(receipts(env.source)) == 1
-    assert "检查记忆目录" not in d.get(result["task_id"])["policy"]
-    assert "command" not in d.get(result["task_id"])["policy"]
+    session_store.append(f"web:p{env.b['project_hash']}:main", "目标主会话秘密", "不得继承")
+
+    async def forward(client):
+        assert client.options.tools is None
+        assert client.options.setting_sources is None
+        assert client.options.plugins
+        assert "business" in client.options.mcp_servers
+        assert "test-skill" in client.options.skills
+        assert "目标主会话秘密" not in str(client.prompt)
+        for name in ("Write", "Edit", "Skill", "mcp__business__lookup"):
+            args = {"file_path": str(Path(client.options.cwd) / "fixture.txt"), "content": "隔离"}
+            assert await guard_tool(client, name, args), name
+        child = await call(client, "delegate_to_agent", {
+            "agent": env.c["id"], "title": "C任务", "prompt": "完整背景", "source_agent": "伪造"})
+        assert "task_id" in child, child
+        env.children.append(child["task_id"])
+    env.behavior["B任务"] = forward
+    row = dispatch(env, tokens=1, seconds=-1)  # 兼容参数不改变普通执行规则。
+    await settle()
+    assert tasks.get(row["id"])["status"] == "done"
+    child = d.get(env.children[0])
+    assert child["source_agent"] == env.b["id"] and child["parent_id"] == row["id"]
+    assert child["depth"] == 2
+    assert len(receipts(env.source)) == len(receipts(tasks.session_key(row["id"]))) == 1
+    assert env.children[0] in d.get(row["id"])["receipt"]
+    assert env.summary_calls == 0  # 不另起付费摘要模型。
+    assert d.query(env.source, env.children[0])["status"] == "done"
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("hooks,reason", [
-    ({"PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": "secret-command"}]}]}, "matcher"),
-    ({"PreToolUse": [{"matcher": "Unknown", "hooks": [{"type": "command", "command": "secret-command"}]}]}, "matcher"),
-    ({"PreToolUse": [{"matcher": ".*Write.*|Read", "hooks": [{"type": "command", "command": "secret-command"}]}]}, "matcher"),
-    ({"Stop": [{"hooks": [{"type": "command", "command": "secret-command"}]}]}, "事件"),
-    ({"PreToolUse": [{"matcher": "Write", "hooks": "secret-command"}]}, "结构"),
-])
-async def test_source_hook_rejection_is_diagnostic_without_breaking_chat(env, hooks, reason):
-    import os
-    local_settings(Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json", hooks=hooks)
-    result = await source_dispatch(env)
-    assert "来源" in result["error"] and reason in result["error"], result
-    assert "secret-command" not in result["error"]
-    assert "缺少来源实际执行权限快照" not in result["error"]
-    assert not tasks._conn().execute("SELECT 1 FROM tasks").fetchone()
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("matcher", ["Read", "Write"])
-async def test_target_local_hook_policy_is_checked(env, matcher):
-    import subprocess
-    root = Path(env.b["workdir"])
-    local_settings(root / ".claude/settings.json", matcher=matcher)
-    for args in [("init",), ("add", "."),
-                 ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture")]:
-        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
-    result = await source_dispatch(env)
-    assert "task_id" in result, result
-    row = tasks.get(result["task_id"])
-    assert row["status"] == ("failed" if matcher == "Read" else "done")
-    if matcher == "Read":
-        assert "目标" in row["result_summary"] and "matcher" in row["result_summary"]
-    assert len(receipts(env.source)) == 1
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("skills,sources,expected", [(None, None, True), ([], None, True),
-    (None, [], False), ([], [], False)])
-async def test_sdk_default_setting_sources_preserve_denials(env, skills, sources, expected):
-    import os
-    path = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
-    path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"permissions": {"deny": ["Read"], "ask": ["WebFetch"]}}))
-    options = ClaudeAgentOptions(skills=skills, setting_sources=sources)
-    policy = d.snapshot(options)
-    assert ("Read" in policy["denied"]) == expected
-    assert ("WebFetch" in policy["denied"]) == expected
-
-
-@pytest.mark.anyio
-async def test_local_denials_and_unknown_hooks_fail_closed(env, monkeypatch):
-    import os
-    settings = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
-    settings.parent.mkdir(parents=True)
-    settings.write_text(json.dumps({"permissions": {"deny": ["Read(/private/*)"],
-                                                   "ask": ["mcp__vococo__get_agent_delegation"]}}))
-    async def execute(client):
-        assert not await guard_tool(client, "Read", {"file_path": "/tmp/test"})
-        assert not await guard_tool(client, "mcp__vococo__get_agent_delegation")
-    env.behavior["B任务"] = execute
+async def test_automatic_depth_cycle_ancestor_and_five_limit(env, monkeypatch):
+    async def nested(client):
+        source = tasks.session_key(client.row["id"])
+        for ref in (env.a["id"], env.b["id"]):
+            with pytest.raises(ValueError, match="祖先"):
+                d.delegate(source, [], ref, "循环", "背景")
+        child = d.delegate(source, [], env.c["id"], "C任务", "背景")
+        env.children.append(child["id"])
+    async def third(client):
+        with pytest.raises(ValueError, match="两层"):
+            d.delegate(tasks.session_key(client.row["id"]), [], agents.GENERAL_ID, "三层", "背景")
+    env.behavior.update({"B任务": nested, "C任务": third})
     row = dispatch(env)
     await settle()
     assert tasks.get(row["id"])["status"] == "done"
-    settings.write_text(json.dumps({"hooks": {"PreToolUse": [{"command": "unknown"}]}}))
-    with pytest.raises(ValueError, match="交集"):
+    assert tasks.get(env.children[0])["status"] == "done"
+    monkeypatch.setattr(runner, "_maybe_start_next", lambda: None)
+    for _ in range(3):
         dispatch(env)
+    with pytest.raises(ValueError, match="五个"):
+        dispatch(env)
+    assert tasks._conn().execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 5
 
 
 @pytest.mark.anyio
-async def test_same_name_mcp_with_different_configuration_is_not_mounted(env, monkeypatch):
-    env.source_options.mcp_servers["business"] = {"type": "http", "url": "https://source.invalid"}
-    agents.update(env.b["id"], mcp=["business"])
-    monkeypatch.setattr(settings_store, "effective_external_mcp", lambda names:
-                        {name: {"type": "http", "url": "https://target.invalid"} for name in names})
-    checks = []
-    async def execute(client):
-        assert "business" not in client.options.mcp_servers
-        assert not await guard_tool(client, "mcp__business__lookup_customer")
-        checks.append(True)
-    env.behavior["B任务"] = execute
+@pytest.mark.parametrize("status", ["done", "failed", "cancelled"])
+async def test_terminal_append_keeps_history_and_delivers_new_version(env, status):
     row = dispatch(env)
     await settle()
-    assert checks == [True] and tasks.get(row["id"])["status"] == "done"
+    key = tasks.session_key(row["id"])
+    sid = session_store.get_sdk_session_id(key)
+    old_turn = d._version(row["id"])
+    c = tasks._conn()
+    c.execute("UPDATE tasks SET status=?, progress_note='旧预算耗尽' WHERE id=?", (status, row["id"]))
+    c.execute("UPDATE agent_delegations SET tokens=1, used=999999, deadline=0, policy=NULL WHERE task_id=?", (row["id"],))
+    c.commit()
+    env.behavior["B任务"] = lambda client: set_reply(client, "续聊的新结果")
+    result = await runner.append(row["id"], "继续")
+    assert result["ok"]
+    await settle()
+    assert tasks.get(row["id"])["status"] == "done"
+    history = session_store.load_history(key)
+    assert [h["user"] for h in history] == ["完整任务背景", "继续"]
+    assert history[0]["assistant"] == "执行结果"
+    assert session_store.get_sdk_session_id(key) == sid
+    assert d._version(row["id"]) > old_turn
+    assert len(receipts(env.source)) == 2
+    assert "续聊的新结果" in receipts(env.source)[-1][4]
+    assert "续聊的新结果" not in receipts(env.source)[0][4]
+    await runner.heal_after_restart()
+    await d.drain()
+    assert len(receipts(env.source)) == 2
+
+
+async def set_reply(client, text):
+    client.text = text
 
 
 @pytest.mark.anyio
-async def test_many_external_receipts_and_mid_turn_delivery_are_not_lost(env):
-    text = "轮次执行中收到的外部结果"
-    async def source(client):
-        session_store.append_external(env.source, text, "mid-turn")
-    env.source_behavior = source
-    async for event in agent.stream_turn([], "真实用户请求", session_key=env.source):
-        if isinstance(event, agent.Done):
-            session_store.set_sdk_session_id(env.source, event.reply.sdk_session_id)
-    old = env.clients[-1]
-    for index in range(45):
-        session_store.append_external(env.source, f"回执{index}", f"event-{index}")
-    async for _ in agent.stream_turn([], "追问", session_key=env.source,
-                                     resume=session_store.get_sdk_session_id(env.source)):
-        pass
-    latest = agent.client_pool._pool[env.source].client
-    assert latest is old and str(latest.prompt).count(text) == 1
-    assert '"text": "回执0"' in str(latest.prompt) and '"text": "回执44"' in str(latest.prompt)
-    revision, pending = session_store.external_context_state(env.source, "fixture-session")
-    assert revision and not pending
+async def test_failed_receipt_delivery_restart_and_busy_source(env, monkeypatch):
+    row = dispatch(env)
+    clarify._active_sessions.add(env.source)
+    await settle()
+    assert not receipts(env.source)
+    clarify._active_sessions.clear()
+    original = session_store.append_external
+    def interrupted(*args):
+        original(*args)
+        raise RuntimeError("落库后崩溃")
+    monkeypatch.setattr(session_store, "append_external", interrupted)
+    await d.drain()
+    assert len(receipts(env.source)) == 1 and d.get(row["id"])["delivered_turn"] == -1
+    monkeypatch.setattr(session_store, "append_external", original)
+    await runner.heal_after_restart()
+    await d.drain()
+    assert len(receipts(env.source)) == 1
+    assert d.query(env.source, row["id"])["receipt_delivered"]
 
 
 @pytest.mark.anyio
-async def test_sdk_permission_mode_mismatch_fails_before_model_execution(env):
-    env.source_options.permission_mode = "plan"
+async def test_receipts_never_answer_clarify_or_approval(env, monkeypatch):
+    from vococo.gateway.run import GatewayRunner
+    monkeypatch.setattr(GatewayRunner, "_dispatch", AsyncMock(side_effect=AssertionError("不能注入真人输入")))
+    monkeypatch.setattr(clarify, "resolve_text_for_session", lambda *_: pytest.fail("不能回答提问"))
+    pending = clarify._Pending("question", env.source, ["允许", "拒绝"], asyncio.Event())
+    clarify._pending["question"] = pending
+    clarify._by_session[env.source] = ["question"]
+    row = dispatch(env)
+    await settle()
+    assert not receipts(env.source) and pending.response is None
+    clarify._pending.clear()
+    clarify._by_session.clear()
+    await d.drain()
+    assert len(receipts(env.source)) == 1 and pending.response is None
+    assert d.get(row["id"])["delivered"]
+
+
+@pytest.mark.anyio
+async def test_source_denials_survive_target_full_and_nested(env):
+    from vococo.core import permissions
+    agents.update(env.b["id"], permission="full")
+    agents.update(env.c["id"], permission="full")
+    async def parent(client):
+        assert "Read" in client.options.disallowed_tools
+        assert not await guard_tool(client, "Read")
+        assert not permissions.is_full(tasks.session_key(client.row["id"]))
+        result = await call(client, "delegate_to_agent", {"agent": env.c["id"], "title": "C任务", "prompt": "背景"})
+        env.children.append(result["task_id"])
+    async def child(client):
+        assert "Read" in client.options.disallowed_tools
+        assert not permissions.is_full(tasks.session_key(client.row["id"]))
+    env.behavior.update({"B任务": parent, "C任务": child})
+    row = d.delegate(env.source, ["Read"], env.b["id"], "B任务", "背景")
+    await settle()
+    assert tasks.get(row["id"])["status"] == "done"
+    assert tasks.get(env.children[0])["status"] == "done"
+    with pytest.raises(ValueError, match="禁止"):
+        d.delegate(env.source, ["mcp__vococo__delegate*"], env.b["id"], "拒绝", "背景")
+    with pytest.raises(ValueError, match="来源"):
+        d.delegate("unknown", [], env.b["id"], "拒绝", "背景")
+
+
+@pytest.mark.anyio
+async def test_tool_schema_old_arguments_optional(env):
+    tools = d.build_tools(env.source, [])
+    schema = next(t.input_schema for t in tools if t.name == "delegate_to_agent")
+    assert schema["required"] == ["agent", "title", "prompt"]
+    assert "token_budget" in schema["properties"]
+    row = dispatch(env, tokens=1, seconds=1)
+    env.usage = 150000
+    await settle()
+    assert tasks.get(row["id"])["status"] == "done"
+    assert tasks.get(row["id"])["kind"] == "chat"
+
+
+@pytest.mark.anyio
+async def test_gateway_continue_legacy_failed_normal_permissions_and_new_receipt(env, monkeypatch):
+    monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 1)
+    from vococo.core import permissions
+    from vococo.gateway.run import GatewayRunner
+    from vococo.gateway.adapters.base import Incoming
+    agents.update(env.b["id"], permission="full", skills=["target-skill"])
+    row = d.delegate(env.source, ["Read"], env.b["id"], "B任务", "保留历史")
+    await settle()
+    key = tasks.session_key(row["id"])
+    tasks._conn().execute("UPDATE tasks SET status='failed' WHERE id=?", (row["id"],))
+    tasks._conn().execute("UPDATE agent_delegations SET depth=2, tokens=1, used=999999, deadline=0, policy=NULL WHERE task_id=?", (row["id"],))
+    tasks._conn().commit()
+    checked = []
+    async def continued(client):
+        assert "Read" not in client.options.disallowed_tools
+        assert "target-skill" in client.options.skills
+        assert permissions.is_full(key)
+        assert not session_store.active_source_access(key)
+        for name in ("Edit", "Write", "Skill"):
+            assert await guard_tool(client, name, {"file_path": str(Path(client.options.cwd) / "test.txt")})
+        # 真人新轮次可以重新发起自动链，不继承旧任务的 depth=2。
+        child = await call(client, "delegate_to_agent", {"agent": env.a["id"], "title": "真人新派单", "prompt": "背景"})
+        assert "task_id" in child, child
+        assert d.get(child["task_id"])["depth"] == 1
+        checked.append(True)
+        client.text = "正常继续完成"
+    env.behavior["B任务"] = continued
+    class Adapter:
+        platform = "web"
+        async def send(self, *args):
+            pytest.fail(str(args))
+        def make_sink(self, _):
+            return Sink()
+    class Sink:
+        def __getattr__(self, _):
+            return AsyncMock()
+    adapter = Adapter()
+    gateway = GatewayRunner([adapter])
+    incoming = Incoming(platform="web", chat_id=key, text="继续")
+    assert incoming.session_key == key
+    await gateway._dispatch(adapter, incoming)
+    await settle()
+    assert checked == [True]
+    assert tasks.get(row["id"])["status"] == "done"
+    assert [h["user"] for h in session_store.load_history(key) if h["user"]] == ["保留历史", "继续"]
+    assert len(receipts(env.source)) == 2
+    assert "正常继续完成" in receipts(env.source)[-1][4]
+
+
+@pytest.mark.anyio
+async def test_alternative_dispatch_cannot_reset_chain_or_bypass_source(env):
+    agents.update(env.c["id"], permission="full")
+    async def parent(client):
+        # SDK 自动执行没有前台 current，但服务器仍能绑定来源。
+        assert clarify.current() is None
+        with pytest.raises(ValueError, match="祖先"):
+            runner.dispatch("同 Agent 派生", "不能借新会话重置", origin="chat")
+        child = runner.dispatch("普通派发到 C", "完整背景", cwd=env.c["workdir"], origin="chat")
+        env.children.append(child["id"])
+        assert d.get(child["id"])["depth"] == 2
+        assert json.loads(child["source_access"])["mode"] == "standard"
+        assert "Read" in json.loads(child["source_access"])["denied"]
+    async def child(client):
+        from vococo.core import permissions
+        assert not permissions.is_full(tasks.session_key(client.row["id"]))
+        assert "Read" in client.options.disallowed_tools
+        with pytest.raises(ValueError, match="两层"):
+            d.delegate(tasks.session_key(client.row["id"]), [], agents.GENERAL_ID, "第三层", "背景")
+    env.behavior.update({"B任务": parent, "普通派发到 C": child})
+    row = d.delegate(env.source, ["Read"], env.b["id"], "B任务", "背景")
+    await settle()
+    assert tasks.get(row["id"])["status"] == "done"
+    assert len(env.children) == 1
+    assert tasks.get(env.children[0])["status"] == "done"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("before_start", [True, False])
+async def test_cancellation_uses_normal_task_finalization(env, before_start):
+    started = asyncio.Event()
+    async def waiting(client):
+        started.set()
+        await asyncio.Event().wait()
+    env.behavior["B任务"] = waiting
+    row = dispatch(env)
+    if not before_start:
+        await asyncio.wait_for(started.wait(), 2)
+    assert runner.cancel(row["id"])
+    await settle()
+    assert tasks.get(row["id"])["status"] == "cancelled"
+    assert len(receipts(env.source)) == 1
+    assert "cancelled" in receipts(env.source)[0][4]
+
+
+@pytest.mark.anyio
+async def test_legacy_metadata_migrates_without_old_policy_execution(env):
+    row = d.delegate(env.source, ["Read"], env.b["id"], "B任务", "旧任务")
+    await settle()
+    c = tasks._conn()
+    c.execute("UPDATE tasks SET source_access=NULL WHERE id=?", (row["id"],))
+    c.execute("UPDATE agent_delegations SET policy=NULL, tokens=1, used=999999, deadline=0 WHERE task_id=?", (row["id"],))
+    c.commit()
+    c.close()
+    tasks._DB = None
+    access = tasks.automatic_access(tasks.get(row["id"]))
+    assert "Read" in access["denied"] and access["mode"] == "standard"
+    assert access["chain_session"] == tasks.session_key(row["id"])
+    env.behavior["B任务"] = lambda client: set_reply(client, "已恢复")
+    assert (await runner.append(row["id"], "继续"))["ok"]
+    await settle()
+    assert tasks.get(row["id"])["status"] == "done"
+    assert len(receipts(env.source)) == 2
+
+
+class _TurnSink:
+    def __getattr__(self, _name):
+        return AsyncMock()
+
+
+@pytest.mark.anyio
+async def test_old_background_done_callback_cannot_fail_gateway_new_turn(env, monkeypatch):
+    from vococo.gateway import core
+
+    notifying, release_old, generating, release_new = (asyncio.Event() for _ in range(4))
+    original = task_events.emit_terminal
+    async def delayed_notify(task_id):
+        notifying.set()
+        await release_old.wait()
+        await original(task_id)
+    monkeypatch.setattr(task_events, "emit_terminal", delayed_notify)
+    row = dispatch(env)
+    old_owner = runner._running[row["id"]]
+    await asyncio.wait_for(notifying.wait(), 2)
+    async def waiting(client):
+        generating.set()
+        await release_new.wait()
+    env.behavior["B任务"] = waiting
+    foreground = asyncio.create_task(core.converse(
+        tasks.session_key(row["id"]), "真人继续", None, _TurnSink(), cwd_override=row["cwd"]))
+    try:
+        await asyncio.wait_for(generating.wait(), 2)
+        release_old.set()
+        await old_owner
+        await asyncio.sleep(0)  # 强制旧 done callback 在真人新轮次仍生成时触发。
+        assert tasks.get(row["id"])["status"] == "running"
+        assert not foreground.done()
+    finally:
+        release_old.set()
+        release_new.set()
+        await asyncio.gather(foreground, return_exceptions=True)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["cancel", "append"])
+async def test_gateway_turn_uses_normal_task_cancel_and_append_ownership(env, operation):
+    from vococo.gateway import core
+
+    row = dispatch(env)
+    await settle()
+    generating, release = asyncio.Event(), asyncio.Event()
+    async def waiting(client):
+        if "真人继续" in str(client.prompt):
+            generating.set()
+            await release.wait()
+    env.behavior["B任务"] = waiting
+    foreground = asyncio.create_task(core.converse(
+        tasks.session_key(row["id"]), "真人继续", None, _TurnSink(), cwd_override=row["cwd"]))
+    try:
+        await asyncio.wait_for(generating.wait(), 2)
+        assert runner._running[row["id"]] is not foreground
+        if operation == "cancel":
+            assert runner.cancel(row["id"])
+            await asyncio.wait_for(foreground, 2)
+            assert tasks.get(row["id"])["status"] == "cancelled"
+        else:
+            result = await runner.append(row["id"], "后台追加")
+            assert result["ok"], result
+            await asyncio.wait_for(foreground, 2)
+            await settle()
+            assert tasks.get(row["id"])["status"] == "done"
+            assert session_store.load_history(tasks.session_key(row["id"]))[-1]["user"] == "后台追加"
+    finally:
+        release.set()
+        await asyncio.gather(foreground, return_exceptions=True)
+
+
+@pytest.mark.anyio
+async def test_each_cancel_before_first_schedule_has_distinct_persisted_receipt_version(env):
+    row = dispatch(env)
+    assert runner.cancel(row["id"])
+    await settle()
+    first_version = d.get(row["id"])["delivered_turn"]
+    assert len(receipts(env.source)) == 1
+    assert (await runner.append(row["id"], "第二次尝试"))["ok"]
+    assert runner.cancel(row["id"])
+    await settle()
+    assert tasks.get(row["id"])["status"] == "cancelled"
+    assert len(receipts(env.source)) == 2
+    version = tasks.get(row["id"])["run_version"]
+    assert d.get(row["id"])["delivered_turn"] > first_version
+    tasks._DB.close()
+    tasks._DB = None
+    assert tasks.get(row["id"])["run_version"] == version
+    await runner.heal_after_restart()
+    await d.drain()
+    assert len(receipts(env.source)) == 2
+
+
+@pytest.mark.anyio
+async def test_background_finish_turn_error_keeps_owner_for_terminal_fallback(env, monkeypatch):
+    def broken_finish(*args, **kwargs):
+        raise RuntimeError("模拟会话数据库锁异常")
+    monkeypatch.setattr(session_store, "finish_turn", broken_finish)
     row = dispatch(env)
     await settle()
     assert tasks.get(row["id"])["status"] == "failed"
-    assert "权限模式" in tasks.get(row["id"])["result_summary"]
-    assert not any(getattr(client, "row", None) for client in env.clients)
-
-
-@pytest.mark.anyio
-async def test_missing_or_unrepresentable_source_policy_fails_closed(env):
-    with pytest.raises(ValueError, match="快照"):
-        d.delegate(env.source, [], env.b["id"], "无快照", "背景")
-    env.source_options.can_use_tool = AsyncMock()
-    with pytest.raises(ValueError, match="交集"):
-        env.delegate(env.source, [], env.b["id"], "不支持的权限", "背景")
-    assert not tasks._conn().execute("SELECT 1 FROM tasks").fetchone()
-
-
-@pytest.mark.anyio
-async def test_source_read_denial_survives_target_and_nested_delegation(env):
-    env.source_options.disallowed_tools = ["Read(/private/*)", "mcp__vococo__run_subagent"]
-    checks = []
-    async def execute(client):
-        assert not await guard_tool(client, "Read", {"file_path": "/tmp/anywhere"})
-        checks.append(client.row["title"])
-        if client.row["title"] == "B任务":
-            response = await call(client, "delegate_to_agent", {
-                "agent": env.c["id"], "title": "C任务", "prompt": "背景",
-                "token_budget": 1000, "timeout_seconds": 5})
-            assert "task_id" in response
-    env.behavior.update({"B任务": execute, "C任务": execute})
-    row = dispatch(env, tokens=60000, seconds=300)
-    await settle()
-    assert checks == ["B任务", "C任务"] and tasks.get(row["id"])["status"] == "done"
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("tokens,seconds", [(True, 5), (False, 5), (-1, 5), (1.5, 5),
-    ("0", 5), (1000, 0), (1000, True), (1000, 5.5), (1000, 856)])
-async def test_bad_budgets_are_rejected_without_tasks(env, tokens, seconds):
-    with pytest.raises(ValueError):
-        dispatch(env, tokens=tokens, seconds=seconds)
-    assert tasks._conn().execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    assert row["id"] not in runner._running
+    assert len(receipts(env.source)) == 1

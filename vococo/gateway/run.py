@@ -128,12 +128,6 @@ class GatewayRunner:
 
     async def _handle(self, adapter: Adapter, inc: Incoming) -> None:
         key = inc.session_key
-        if key.startswith(bg_tasks.SESSION_KEY_PREFIX):
-            from ..core import delegation
-
-            if delegation.get(bg_tasks.task_id_from_session_key(key)):
-                await adapter.send(inc.chat_id, "委托会话为一次性只读任务，不能续聊或重置预算。请回来源会话重新派单。")
-                return
         # 人工续聊链路:用户手动给这个会话发消息 = 重新激活它(归档只该滤掉静默
         # 会话)——自动取消归档,任何会话(web: 普通对话 / task: 后台任务)一视同仁,
         # 否则归档中的会话在侧边栏「工作中」过滤下不可见,续聊完也找不到

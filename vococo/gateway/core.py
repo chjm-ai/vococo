@@ -201,6 +201,30 @@ async def converse(
     is_explicit_project_override: bool | None = None,
     compact: bool = False,
 ) -> AgentReply | None:
+    from ..core import task_runner, tasks
+
+    task_id = tasks.task_id_from_session_key(session_key) if not compact else None
+    async with task_runner.foreground_execution(task_id):
+        return await _converse(
+            session_key, user_text, model, sink, images, audios, files, videos,
+            store_user, cwd_override, is_explicit_project_override, compact,
+        )
+
+
+async def _converse(
+    session_key: str,
+    user_text: str,
+    model: str | None,
+    sink: Sink,
+    images: list[ImageAttachment] | None = None,
+    audios: list[AudioAttachment] | None = None,
+    files: list[FileAttachment] | None = None,
+    videos: list[VideoAttachment] | None = None,
+    store_user: str | None = None,
+    cwd_override: str | None = None,
+    is_explicit_project_override: bool | None = None,
+    compact: bool = False,
+) -> AgentReply | None:
     """跑一轮:载入历史 → 流式 → 喂 sink → 落库。
 
     compact:只压缩上下文不对话(/compact 命令)。同样走流式/落库/保温池全流程,
@@ -221,10 +245,10 @@ async def converse(
 
     from ..tools import danger  # 懒加载,避免 config↔tools 循环
 
-    from ..core import delegation, tasks as bg_tasks, worktree  # 懒加载
+    from ..core import tasks as bg_tasks, worktree  # 懒加载
 
-    if session_key.startswith(bg_tasks.SESSION_KEY_PREFIX) and delegation.get(bg_tasks.task_id_from_session_key(session_key)):
-        raise ValueError("委托会话不支持续聊，请回来源会话重新派单")
+    task_id = bg_tasks.task_id_from_session_key(session_key)
+    task = bg_tasks.get(task_id) if task_id else None
 
     chosen_at_start = session_store.get_chosen_model(session_key)
     history = session_store.load_recent(session_key)
@@ -397,6 +421,8 @@ async def converse(
                     session_key, reply.sdk_session_id, expected_model=chosen_at_start,
                 )
             # 通知渲染层本轮已被人为取消(Web 端可据此清理进行中快照,防止刷新后重放旧内容)
+            if not compact:
+                await _finish_task_turn(task_id, "cancelled", partial)
             await sink.cancelled()
         raise  # 原样抛出;cwd 由 finally 统一 reset
     except Exception as exc:
@@ -459,10 +485,29 @@ async def converse(
                 last_out=reply.output_tokens,
                 model=reply.model,
             )
+        if not compact:
+            await _finish_task_turn(task_id, "failed" if reply.is_error else "done", reply.text)
         await sink.done(reply, turn_id)
     else:
         session_store.cancel_turn(turn_id, session_key=session_key)
+        if not compact:
+            await _finish_task_turn(task_id, "cancelled", "")
     return reply
+
+
+async def _finish_task_turn(task_id: str | None, status: str, text: str) -> None:
+    """真人续聊和后台执行共用任务终态通知，来源关系不参与执行判定。"""
+    from ..core import task_events, task_runner, tasks
+
+    if not task_id or not tasks.get(task_id):
+        return
+    clean, summary = task_runner._split_summary_tag(text)
+    if tasks.finish(task_id, status, clean, summary or task_runner._summarize(clean)):
+        import anyio
+
+        with anyio.CancelScope(shield=True):
+            await task_events.emit_terminal(task_id)
+            task_runner._maybe_start_next()
 
 
 # === 命令注册表(单一来源:TG 菜单 setMyCommands 和 /help 都从这生成)===

@@ -1,4 +1,28 @@
-# Agent 分层委托通讯（2026-10-22，已实现并通过隔离验收）
+# 当前实施：委托收敛为普通会话（2026-10-22，已实施并通过隔离验收，待重启）
+
+1. 删除委托专用执行、预算/摘要模型、冷目录、权限快照交集和续聊拒绝；统一使用普通 chat task 执行、超时、队列、取消和恢复。
+2. 只保留服务端来源、自动链两层/五次/防祖先、最小来源权限与禁用工具继承；真人续聊使用目标正常权限，不受自动链限制。
+3. 终态使用普通任务持久递增执行版本生成回执，复用普通结果摘要；重启补投、子先父后、忙时排队、不进入用户审批/提问通道。
+4. 替换旧特殊机制测试，隔离验证 gateway/continue/append/runner、SDK 工具权限、回执和相关回归；更新 README。
+5. 不改生产数据库、用户配置或外部服务，不调用付费模型；通过评审后按项目规范提交合并、推送，重启前询问用户。
+
+## 本次实现与验收
+
+- 委托核心从 613 行降至约 330 行，删除 snapshot/constrain、设置策略解析/指纹交集、工具白名单、专用预算计数/deadline/摘要模型与冷目录；runner._run/_start_one/append 不再识别委托。
+- 来源关系表保留兼容列，增加执行回执版本；普通任务/轮次记录最小来源信任元数据（来源、禁用项、审批档位和自动链引用），真人新轮次不继承自动限制。
+- gateway 普通 task 续聊更新统一终态并通知，补齐排队唤醒；替代自动派发入口继承相同来源账本，不借新会话重置权限/层级/数量。
+- 回执使用普通 result_summary 和任务引用，不额外调用模型；子先父后、忙时排队、持久执行版本幂等、重启补投和下一次 query 增量上下文保留。
+- 测试：`uv run --extra dev python -m pytest tests/test_delegation.py -q` → 25 passed。
+- 相关回归（同一 `uv run --extra dev python -m pytest ... -q` 命令）：test_delegation、test_subagent、test_permissions、test_bg_approval、test_agent_stream、test_client_pool、test_session_store、test_task_spawn_context、test_task_events、test_task_routes、test_voice_p1、test_voice_task_worktree、test_converse_audio/cancel/file、test_research_tasks/agent_policy/routes、test_agents、test_agent_memory、test_builtin_tools、test_web_turn_regenerate、test_web_session_delete、test_library_context、test_restart_auto_resend、test_token_budget → **499 passed**。
+- 独立只读 code-reviewer 确认的来源派生丢约束、续聊后不唤醒队列两项已修复，定向复核未发现需修问题。
+- 追加精确失败回归：旧后台通知回调污染前台新轮次、前台无法 cancel/append、两轮调度前取消回执碰撞共四项先失败；修后通过。前台通过本轮取消句柄共用普通任务取消入口，不取消整个网关调用者；版本在进入 running 时持久递增，重开数据库后验证不重复投递。
+- 补修只读评审又确认后台 finish_turn 异常因提前移除句柄无法兜底；新增回归先失败，再将所有权保留至终态落库。五项新增回归与相关测试通过，评审复核未发现需修问题。
+- 边界：仅临时数据库、本地 SDK/MCP 传输夹具；未验证线上付费模型/真实外部业务接口。普通权限闸不是系统沙箱；已取消专用额度，成本遵循普通任务设置。
+- 主线程最终复跑上述 499 项测试通过（50.74 秒），独立 code-reviewer 最终复核通过。没有改依赖、用户设置、Agent 配置或生产数据库。旧计划只作历史，不代表仍生效。
+
+## 历史计划（以下不再作为当前执行规则）
+
+# Agent 分层委托通讯（旧实现，已被本次方案取代）
 
 ## 目标与范围
 - 支持「总助理 → 领域负责人 → 专项 Agent」，复用独立任务执行器，不做自由群聊，不创建实际业务 Agent。
