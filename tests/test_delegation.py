@@ -81,6 +81,15 @@ async def env(isolated, monkeypatch):
             return {"totalTokens": 100, "rawMaxTokens": 200_000}
 
         async def receive_messages(self):
+            # 模拟真实模型→工具→模型往返，走原 stream_turn 的逐次用量累计。
+            if self.row and getattr(state, "round_usage", None):
+                for index, usage in enumerate(state.round_usage):
+                    yield StreamEvent(uuid=f"usage-{index}", session_id="fixture-session", event={
+                        "type": "message_start", "message": {"usage": {"input_tokens": usage}}})
+                    listed = await call(self, "list_delegate_agents", {})
+                    assert any(item["id"] == state.b["id"] for item in listed)
+                    yield StreamEvent(uuid=f"output-{index}", session_id="fixture-session", event={
+                        "type": "message_delta", "usage": {"output_tokens": 10}})
             failed = bool((self.row and self.row["title"] in state.errors)
                           or (self.options.tools is None and getattr(state, "fail_source", False)))
             yield StreamEvent(uuid="fixture-event", session_id="fixture-session", event={
@@ -221,11 +230,10 @@ async def test_five_tasks_and_root_budgets_cannot_be_reset(env, monkeypatch):
     with pytest.raises(ValueError, match="用户轮次"):
         dispatch(env)
     session_store.start_turn(env.source, "新的用户请求")
-    dispatch(env, tokens=100_000, seconds=800)
-    with pytest.raises(ValueError, match="token"):
-        dispatch(env, tokens=20_000, seconds=5)
+    dispatch(env, tokens=1_000_000, seconds=700)
+    dispatch(env, tokens=2_000_000, seconds=5)
     with pytest.raises(ValueError, match="时长"):
-        dispatch(env, tokens=1000, seconds=60)
+        dispatch(env, tokens=1000, seconds=61)
 
 
 @pytest.mark.anyio
@@ -338,6 +346,99 @@ async def test_token_limit_is_enforced_on_actual_result_usage(env):
     assert tasks.get(row["id"])["status"] == "failed"
     assert d.get(row["id"])["used"] == 2010
     assert "预算" in tasks.get(row["id"])["result_summary"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("tokens,expected", [(0, "done"), (24_000, "failed")])
+async def test_stream_tool_rounds_over_old_root_cap_and_optional_limit(env, tokens, expected):
+    env.round_usage = [16_000] * 9
+    env.usage = 144_000
+    row = dispatch(env, **({"tokens": tokens} if tokens else {}))
+    assert d.execution(row["id"])["token_budget"] == tokens
+    await settle()
+    state = d.query(env.source, row["id"])
+    assert state["status"] == expected
+    assert state["used_tokens"] > (120_000 if tokens == 0 else tokens)
+    assert len(receipts(env.source)) == 1
+    if tokens == 0:
+        assert state["summary_reserved"] == 0
+        assert state["summary_tokens"] == 144_010
+        assert "自动汇总" in d.get(row["id"])["receipt"]
+    else:
+        assert state["summary_reserved"] == 8000
+        assert "预算" in tasks.get(row["id"])["result_summary"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("tokens,child_tokens,expected", [
+    (0, 0, 0), (0, 1_000_000, 1_000_000),
+    (60_000, 0, 51_999), (60_000, 5000, 5000),
+])
+async def test_nested_optional_budget_and_parent_reservations(env, tokens, child_tokens, expected):
+    async def forward(client):
+        result = await call(client, "delegate_to_agent", {
+            "agent": env.c["id"], "title": "C任务", "prompt": "完整背景",
+            "token_budget": child_tokens, "timeout_seconds": 5})
+        assert "task_id" in result, result
+        env.children.append(result["task_id"])
+    env.behavior["B任务"] = forward
+    root = dispatch(env, tokens=tokens, seconds=300)
+    await settle()
+    child = d.get(env.children[0])
+    assert child["tokens"] == expected
+    assert tasks.get(child["task_id"])["status"] == "done"
+    parent = d.get(root["id"])
+    cost = expected + (8000 if expected else 0)
+    assert parent["reserved_tokens"] == cost
+    assert parent["reserved_seconds"] == 50
+    assert tasks.get(root["id"])["status"] == ("failed" if tokens and child_tokens == 0 else "done")
+    if tokens:
+        assert cost < tokens
+        with pytest.raises(RuntimeError, match="token"):
+            d.observe(root["id"], tokens - cost)
+    else:
+        d.observe(root["id"], 2_000_000)
+        assert d.execution(root["id"])["token_budget"] == 0
+
+
+@pytest.mark.anyio
+async def test_zero_child_budget_rejected_when_finite_parent_cannot_reserve_summary(env):
+    async def forward(client):
+        result = await call(client, "delegate_to_agent", {
+            "agent": env.c["id"], "title": "C任务", "prompt": "背景",
+            "token_budget": 0, "timeout_seconds": 5})
+        assert "token 预算不足" in result["error"]
+    env.behavior["B任务"] = forward
+    root = dispatch(env, tokens=8001)
+    await settle()
+    assert tasks.get(root["id"])["status"] == "done"
+    assert d.get(root["id"])["reserved_tokens"] == 0
+    assert tasks._conn().execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("token_args", [{}, {"token_budget": 0}, {"token_budget": 1},
+    {"token_budget": 1_000_000}])
+async def test_tool_default_zero_and_positive_budgets_are_valid(env, monkeypatch, token_args):
+    monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 0)
+    dispatch_tool = d.build_tools(env.source, [], policy=d.snapshot(env.source_options))[1]
+    assert "默认推荐填 0" in dispatch_tool.description
+    response = await dispatch_tool.handler({"agent": env.b["id"], "title": "任务", "prompt": "背景",
+                                            "timeout_seconds": 5, **token_args})
+    task_id = json.loads(response["content"][0]["text"])["task_id"]
+    assert d.get(task_id)["tokens"] == token_args.get("token_budget", 0)
+
+
+@pytest.mark.anyio
+async def test_finite_summary_still_uses_reserved_budget_and_fallback(env):
+    env.usage = 9000
+    row = dispatch(env, tokens=24_000)
+    await settle()
+    state = d.query(env.source, row["id"])
+    assert state["status"] == "done"
+    assert state["summary_reserved"] == 8000 and state["summary_tokens"] == 9010
+    assert "自动汇总" not in d.get(row["id"])["receipt"]
+    assert len(receipts(env.source)) == 1
 
 
 @pytest.mark.anyio
@@ -885,7 +986,8 @@ async def test_source_read_denial_survives_target_and_nested_delegation(env):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("tokens,seconds", [(True, 5), (0, 5), (1000, 0), (1000, True), (120000, 5)])
+@pytest.mark.parametrize("tokens,seconds", [(True, 5), (False, 5), (-1, 5), (1.5, 5),
+    ("0", 5), (1000, 0), (1000, True), (1000, 5.5), (1000, 856)])
 async def test_bad_budgets_are_rejected_without_tasks(env, tokens, seconds):
     with pytest.raises(ValueError):
         dispatch(env, tokens=tokens, seconds=seconds)
