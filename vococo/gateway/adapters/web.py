@@ -304,6 +304,7 @@ class _WebSink(Sink):
                 # 这轮落库的 turn id:前端刚说完就能就地挂"复制/重新生成"按钮,
                 # 不用等下次打开会话才从 /history 里补——见 _handle_turn_regenerate。
                 "turn_id": turn_id,
+                "html_previews": session_store.turn_html_previews(key, turn_id),
                 "ctx_tokens": meta.get("ctx_tokens", 0),
                 "total_tokens": meta.get("total_tokens", 0),
                 "ctx_window": meta.get("ctx_window", 0),
@@ -703,6 +704,29 @@ class WebAdapter:
             kind="error" if is_err else "proactive",
             enabled=config.PUSH_ON_ERROR if is_err else config.PUSH_ON_PROACTIVE,
         )
+
+    async def show_html(self, chat_id: object, session_key: str, turn_id: int,
+                        source: str, title: str = "") -> str | None:
+        import hashlib
+        from ...tools.danger import redact_secrets
+        from ...tools.html_preview import MAX_BYTES
+
+        if session_key != config.resolve_session_key("web", str(chat_id)):
+            return "会话路由不匹配，未展示 HTML。"
+        if len(source.encode("utf-8")) > MAX_BYTES or redact_secrets(source + title) != source + title:
+            return "HTML 过大或含疑似秘密，未展示。"
+        entry = {"id": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                 "html": source, "title": title}
+        try:
+            added = session_store.append_html_preview(session_key, turn_id, entry)
+        except ValueError as exc:
+            return str(exc)
+        if not added:
+            return "此 HTML 快照已展示，本轮不重复发送。"
+        self._emit({"conv": str(chat_id), "type": "message", "text": "",
+                    "html_previews": [entry], "turn_id": turn_id, "mid_turn": True})
+        session_store.set_pending_review(session_key, True)
+        return None
 
     async def send_image(self, chat_id: int | str, src_path: Path, caption: str = "") -> str | None:
         """把本地图片文件复制进 IMAGES_DIR 并作为一条 assistant 气泡推给前端;返回错误信息(None=成功)。

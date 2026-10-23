@@ -1425,6 +1425,7 @@ function buildSysNote(text, jobId){
 // 删中间历史会打乱后续轮次的上下文连续性。
 function buildTurnBlock(t, conv, isLast){
   const wrap=el("div","turn-block");
+  wrap.dataset.pending=String(!!t.pending);
   // 服务重启打断的回复:服务端收尾时在 events 里写了 interrupted 标记(/history 透传),
   // 这里识别出来给消息打上标记样式,foot 换成醒目的「继续生成」按钮(见 buildTurnFoot)
   const interrupted=(t.events||[]).some(x=>x.type==="interrupted");
@@ -1451,13 +1452,15 @@ function buildTurnBlock(t, conv, isLast){
     appendImgs(b, t.ai_images);
     // AI 主动发的视频(send_video)同理,单独存在 t.ai_videos
     appendVids(b, t.ai_videos);
+    appendHtmlPreviews(b, t.html_previews);
     b.append(buildTurnFoot(conv, externalResult ? null : t.id, t.assistant, t.ts, isLast, interrupted));
     wrap.append(row);
-  }else if(t.draft){
+  }else if(t.draft || t.html_previews?.length){
     // 进行中但后端正流式写 draft:用部分内容起底兜底,避免刷新后空白;
     // SSE 恢复后 maybeReplayStream 会用同 seg 全文覆盖无缝续上
     const {row,b}=buildBubble("ai","");
-    renderPreviewMarkdown(b,t.draft,true);
+    renderPreviewMarkdown(b,t.draft||"",true);
+    appendHtmlPreviews(b,t.html_previews);
     const st=el("div","status"); st.textContent="回复中…"; b.append(st);
     wrap.append(row);
   }
@@ -1481,6 +1484,7 @@ function turnSig(t, isLast){
   return [t.id, t.ts||0, (t.user||"").length, (t.assistant||"").length, (t.draft||"").length,
           t.pending?1:0, ev.length, last?last.type+":"+JSON.stringify(last).length:"",
           (t.images||[]).length, (t.audios||[]).length, (t.ai_images||[]).length,
+          (t.html_previews||[]).map(p=>p.id).join(","),
           (t.files||[]).length, (t.files||[]).map(f=>f.name||f.filename||f).join(","),
           (t.videos||[]).length, (t.ai_videos||[]).length, t.cron_job||"",
           isLast?"L":""].join("|");

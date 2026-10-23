@@ -138,6 +138,18 @@ function previewCodeHtml(lang, source, closed, streaming){
   if(limited) source=source.slice(0,200000)+"\n[源码过大，显示前 200000 字符；完整内容请复制整条消息]";
   return '<section class="chat-preview" data-lang="'+lang+'" data-closed="'+closed+'" data-live="'+streaming+'"><pre class="preview-source" hidden><code>'+esc(source)+'</code></pre></section>';
 }
+function appendHtmlPreviews(target, entries){
+  for(const entry of entries||[]){
+    if(typeof entry.id!=="string" || typeof entry.html!=="string" || entry.html.length>200000) continue;
+    // done 带全量快照兜底；中途帧重放或历史补帧不能再建同一卡片。
+    if([...target.querySelectorAll('[data-html-preview]')].some(n=>n.dataset.htmlPreview===entry.id)) continue;
+    const holder=document.createElement("div");
+    holder.innerHTML=previewCodeHtml("html",entry.html,true,false);
+    const card=holder.firstElementChild;
+    card.dataset.htmlPreview=entry.id; card.dataset.title=entry.title||"HTML";
+    target.append(card); setupChatPreview(card);
+  }
+}
 function previewIcon(name){
   return ic(name).replace('<svg ', '<svg aria-hidden="true" focusable="false" ');
 }
@@ -255,7 +267,7 @@ function setupChatPreview(node){
   const state=node._preview={source,closed:node.dataset.live!=="true",fencedClosed:node.dataset.closed==="true",version:0,lastAt:0};
   const bar=document.createElement("div"); bar.className="preview-toolbar";
   const label=document.createElement("span"); label.className="preview-title";
-  label.textContent=node.dataset.lang.toUpperCase();
+  label.textContent=node.dataset.title || node.dataset.lang.toUpperCase();
   state.status=document.createElement("span"); state.status.className="preview-status";
   state.status.setAttribute("role","status"); state.status.setAttribute("aria-atomic","true");
   const toggle=document.createElement("button"); toggle.type="button"; toggle.setAttribute("aria-pressed","false");
@@ -291,7 +303,7 @@ function scheduleChatPreview(node){
 async function updateChatPreview(node){
   const state=node._preview, version=state.version; state.needsResume=false;
   let source=state.source;
-  if(source.length>PREVIEW_LIMIT){ setPreviewStatus(state,"内容过大，已停止自动预览，请查看源码","warning"); return; }
+  if(source.length>(node.dataset.lang==="html"?200000:PREVIEW_LIMIT)){ setPreviewStatus(state,"内容过大，已停止自动预览，请查看源码","warning"); return; }
   if(!state.closed && !state.fencedClosed) source=source.slice(0,source.lastIndexOf("\n")+1);
   if(!source.trim()){ setPreviewStatus(state,state.closed?"内容为空":"生成中，等待完整内容…",state.closed?"warning":"busy"); return; }
   const theme=node.dataset.lang==="mermaid"?previewDiagramTheme():null;

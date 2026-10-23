@@ -202,6 +202,9 @@ def conn() -> sqlite3.Connection:
         # (见 memory/videos.py),这一列纯粹是为了刷新后历史气泡里还能播。
         if "videos" not in tcols:
             _DB.execute("ALTER TABLE turns ADD COLUMN videos TEXT")
+        # HTML 是有界静态快照，不提供文件路径路由；随回合复制/删除。
+        if "html_previews" not in tcols:
+            _DB.execute("ALTER TABLE turns ADD COLUMN html_previews TEXT")
         # sort_order: 侧边栏项目分组的手动拖拽顺序(升序);老库里全是 NULL,
         # 用 -last_used 补一次初值,让升级后的默认顺序等价于原来的"最近使用在前"。
         pcols = {r[1] for r in _DB.execute("PRAGMA table_info(projects)")}

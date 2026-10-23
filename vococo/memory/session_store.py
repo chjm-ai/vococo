@@ -192,13 +192,13 @@ def load_history(
         params.append(before_id)
     params.append(limit)
     rows = c.execute(
-        "SELECT id, ts, user_text, assistant_text, events, draft_text, images, audios, files, videos "
+        "SELECT id, ts, user_text, assistant_text, events, draft_text, images, audios, files, videos, html_previews "
         "FROM turns "
         f"{where} ORDER BY id DESC LIMIT ?",
         params,
     ).fetchall()
     out: list[dict] = []
-    for tid, ts, u, a, ev, draft, imgs, auds, files, vids in reversed(rows):
+    for tid, ts, u, a, ev, draft, imgs, auds, files, vids, htmls in reversed(rows):
         try:
             events = json.loads(ev) if ev else []
         except (json.JSONDecodeError, ValueError):
@@ -270,8 +270,38 @@ def load_history(
             entry["videos"] = user_vids
         if ai_vids:
             entry["ai_videos"] = ai_vids
+        if htmls:
+            entry["html_previews"] = _loads_list(htmls)
         out.append(entry)
     return out
+
+
+def turn_html_previews(session_key: str, turn_id: int | None) -> list:
+    row = _conn().execute(
+        "SELECT html_previews FROM turns WHERE id=? AND session_key=?",
+        (turn_id, session_key),
+    ).fetchone()
+    return _loads_list(row[0]) if row else []
+
+
+def append_html_preview(session_key: str, turn_id: int, entry: dict) -> bool:
+    c = _conn()
+    row = c.execute(
+        "SELECT html_previews FROM turns WHERE id=? AND session_key=? AND assistant_text=''",
+        (turn_id, session_key),
+    ).fetchone()
+    if row is None:
+        raise ValueError("执行回合已结束或不属于当前会话。")
+    entries = _loads_list(row[0])
+    if any(item["id"] == entry["id"] for item in entries):
+        return False
+    # 防止模型循环调用把单轮撑成无限大的附件包。
+    if len(entries) >= 10:
+        raise ValueError("每轮最多展示 10 个 HTML 快照。")
+    c.execute("UPDATE turns SET html_previews=? WHERE id=? AND session_key=?",
+              (json.dumps([*entries, entry], ensure_ascii=False), turn_id, session_key))
+    c.commit()
+    return True
 
 
 def has_history_before(session_key: str, before_id: int) -> bool:
@@ -682,18 +712,20 @@ def duplicate_session(src_key: str, dst_key: str, title: str) -> None:
     """
     c = _conn()
     rows = c.execute(
-        "SELECT user_text, assistant_text, draft_text, events, images, audios, files, videos "
+        "SELECT user_text, assistant_text, draft_text, events, images, audios, files, videos, html_previews "
         "FROM turns WHERE session_key=? ORDER BY id",
         (src_key,),
     ).fetchall()
     now = time.time()
-    for user_text, assistant_text, draft, events, imgs, auds, fs, vids in rows:
+    for user_text, assistant_text, draft, events, imgs, auds, fs, vids, htmls in rows:
         cur = c.execute(
             "INSERT INTO turns(session_key, ts, user_text, assistant_text, "
             "draft_text, events) VALUES (?,?,?,?,?,?)",
             (dst_key, now, user_text, assistant_text, draft, events),
         )
         new_id = cur.lastrowid
+        if htmls:
+            c.execute("UPDATE turns SET html_previews=? WHERE id=?", (htmls, new_id))
         # 附件本体复制到以新 turn_id 命名的文件,让副本完全独立于原会话
         new_imgs = clone_turn_images(new_id, _loads_list(imgs))
         new_auds = clone_turn_audio(new_id, _loads_list(auds))
