@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .. import config
 from ..memory import session_store
+from .execution import policy_for_session
 
 _GIT_TIMEOUT_SEC = 8
 
@@ -183,8 +184,10 @@ class WorktreeIsolationError(RuntimeError):
 
 
 async def ensure_worktree(session_key: str) -> str | None:
-    """确保一次会话有独立 worktree;非 Git 目录返回 None。"""
-    root = config.execution_project_root_for(session_key)
+    """确保开发会话有独立 worktree；业务 Agent 和非 Git 目录返回 None。"""
+    if policy_for_session(session_key) is not None:
+        return None
+    root = config.resolve_execution_root(session_key=session_key)
     if not root:
         return None
     # 项目哈希按真实根目录计算:默认项目没有 web:p<hash> 会话 key。
@@ -194,12 +197,12 @@ async def ensure_worktree(session_key: str) -> str | None:
 
 
 async def ensure_worktree_for_task(root: str, task_id: str) -> str | None:
-    """给后台任务开独立 worktree;非 Git 目录返回 None。"""
-    if not root:
-        return None
+    """给开发后台任务开独立 worktree；业务 Agent 忽略历史绑定，不清除它。"""
     from . import tasks as bg_tasks  # 懒加载,避免非任务场景也引入这块
 
     session_key = bg_tasks.session_key(task_id)
+    if policy_for_session(session_key, root) is not None or not root:
+        return None
     phash = session_store.project_hash(root)
     slug = _slug(task_id)
     return await _ensure_worktree_impl(session_key, root, phash, slug)
@@ -217,18 +220,26 @@ async def _execution_cwd(root: str, session_key: str, candidate: str | None) -> 
 
 
 async def execution_cwd(session_key: str) -> str:
-    """普通会话的实际 cwd;Git 项目必须成功绑定 worktree。"""
-    root = config.execution_project_root_for(session_key)
+    """业务会话从 workspace 启动；开发 Git 项目必须成功绑定 worktree。"""
+    policy = policy_for_session(session_key)
+    if policy is not None:
+        return str(policy.workspace)
+    root = config.resolve_execution_root(session_key=session_key)
     wt = await ensure_worktree(session_key)
     return await _execution_cwd(root, session_key, wt)
 
 
 async def execution_cwd_for_task(root: str, task_id: str) -> str:
-    """后台任务的实际 cwd;Git 项目必须成功绑定 worktree。"""
-    wt = await ensure_worktree_for_task(root, task_id)
+    """业务任务无视历史 cwd；开发任务保留显式项目及 worktree 隔离。"""
     from . import tasks as bg_tasks  # 懒加载,避免非任务场景也引入这块
 
-    return await _execution_cwd(root, bg_tasks.session_key(task_id), wt)
+    session_key = bg_tasks.session_key(task_id)
+    policy = policy_for_session(session_key, root)
+    if policy is not None:
+        return str(policy.workspace)
+    root = config.resolve_execution_root(session_key=session_key, cwd=root)
+    wt = await ensure_worktree_for_task(root, task_id)
+    return await _execution_cwd(root, session_key, wt)
 
 
 async def _ensure_worktree_impl(session_key: str, root: str, phash: str, slug: str) -> str | None:

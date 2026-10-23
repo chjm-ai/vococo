@@ -469,9 +469,17 @@ def execution_project_root_for(session_key: str | None = None) -> str:
 def resolve_execution_root(
     *, session_key: str | None = None, cwd: str | None = None
 ) -> str:
-    """解析子任务/后台任务的工作根目录:显式 cwd 优先,其次当前项目,最后默认项目。"""
+    """解析任务来源目录：显式 cwd 优先，其次所属 Agent 原目录，最后当前项目。"""
     explicit = (cwd or "").strip()
-    return explicit or execution_project_root_for(session_key)
+    if explicit:
+        return explicit
+    if session_key:
+        from .memory import agents
+
+        agent = agents.agent_for_session(session_key)
+        if agent and agent["id"] != agents.GENERAL_ID and agent.get("workdir"):
+            return agent["workdir"]
+    return execution_project_root_for(session_key)
 
 
 def project_cwd_for(session_key: str) -> str | None:
@@ -481,6 +489,11 @@ def project_cwd_for(session_key: str) -> str | None:
     各在各的分支 —— cwd 从「按项目」升级为「按会话」,这是隔离的关键一步。
     worktree 还没建(会话没发过消息)或已被清理 → 回退项目根,行为同旧版。
     """
+    from .core.execution import policy_for_session
+
+    policy = policy_for_session(session_key)
+    if policy is not None:
+        return str(policy.workspace)
     root = project_root_for(session_key)
     if root is None:
         return None

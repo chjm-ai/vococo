@@ -65,12 +65,15 @@ def test_trade_mcp_only_for_explicit_data_task():
     assert _external_mcp_for_task("查 lemlist 的 campaign 回复", "web:notes") == {"lemlist"}
 
 
-def test_cloud_project_uses_stable_cli_cwd():
+def test_cloud_project_uses_stable_cli_cwd(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "AGENT_WORKSPACES_DIR", tmp_path / "workspaces")
     cloud = "/Users/wesley/Library/Mobile Documents/iCloud~md~obsidian/Documents/Wesley notes"
     cli_cwd, note = _cli_working_dir(cloud)
 
-    assert cli_cwd == str(config.ROOT_DIR)
+    assert cli_cwd.startswith(str(config.AGENT_WORKSPACES_DIR))
+    assert cli_cwd != str(config.ROOT_DIR)
     assert cloud in note
+    assert _cli_working_dir(cloud)[0] == cli_cwd
 
 
 def test_prompt_cache_is_local_and_persistent(monkeypatch, tmp_path):
