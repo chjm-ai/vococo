@@ -913,8 +913,10 @@
   .bubble p:first-child{margin-top:0}.bubble p:last-child{margin-bottom:0}
   .bubble h1,.bubble h2,.bubble h3,.bubble h4{margin:.7em 0 .4em;line-height:1.3}
   .bubble h1{font-size:1.35em}.bubble h2{font-size:1.2em}.bubble h3{font-size:1.08em}
-  .bubble ul,.bubble ol{margin:.4em 0;padding-left:1.3em}
-  .bubble li{margin:.2em 0}
+  .bubble ul,.bubble ol{margin:var(--sp-2) 0;padding-inline-start:calc(var(--sp-5) + var(--sp-3))}
+  .bubble li{margin:var(--sp-1) 0}
+  .bubble li > ul,.bubble li > ol{margin:var(--sp-1) 0}
+  .bubble li > p{margin:var(--sp-1) 0}
   .bubble code{background:var(--code-inline);padding:.12em .4em;border-radius:var(--r-sm);font-size:.9em;
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   .row.me code{background:rgba(255,255,255,.2)}
