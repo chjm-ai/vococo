@@ -8,6 +8,7 @@ Path.home() 也打桩到隔离目录:不打桩的话"HOME 边界"这条新逻辑
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -265,3 +266,85 @@ async def test_fuzzy_search_prefers_shallowest_match(doc_app, doc_root):
 
     assert status == 200
     assert body.decode("utf-8") == "shallow"
+
+
+async def _html_card(app, path, conv="x"):
+    from urllib.parse import urlencode
+    return await _get(app, "/doc/preview?" + urlencode({"conv": conv, "path": path, "format": "html-card"}))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("style", ["absolute", "relative", "dot", "file", "tilde"])
+async def test_html_card_local_paths(doc_app, doc_root, style, monkeypatch):
+    monkeypatch.setenv("HOME", str(doc_root.parent))
+    target = doc_root / "中文 demo.html"
+    target.write_text("<h1>本地文件</h1>")
+    paths = {"absolute": str(target), "relative": target.name, "dot": "./" + target.name,
+             "file": target.as_uri(), "tilde": "~/project/" + target.name}
+    status, body, headers = await _html_card(doc_app, paths[style])
+    assert status == 200
+    assert json.loads(body)["html"] == "<h1>本地文件</h1>"
+    assert headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("path", ["https://example.com/a.html", "file://remote/a.html", "//remote/a.html",
+                                  "file:////remote/a.html", "file:///tmp/a.html?x=1", "../a.html",
+                                  "file:///%2fremote/a.html", "a.txt", "a.html\x00", ".hidden/a.html"])
+async def test_html_card_rejects_nonlocal_or_invalid_paths(doc_app, path):
+    status, _body, _headers = await _html_card(doc_app, path)
+    assert status == 422
+
+
+@pytest.mark.anyio
+async def test_html_card_outside_cwd_never_approves_or_reads_home(doc_app, doc_root, fake_home, monkeypatch):
+    from vococo.tools import danger
+    async def no_approval(*args):
+        pytest.fail("历史链接点击不得触发目录外审批")
+    monkeypatch.setattr(danger, "require_approval", no_approval)
+    target = fake_home / "outside.html"
+    target.write_text("<p>不应读取</p>")
+    status, body, _headers = await _html_card(doc_app, str(target))
+    assert status == 403 and "无权" in json.loads(body)["error"]
+    status, _body, _headers = await _html_card(doc_app, target.name)
+    assert status == 404  # 不搜索 HOME，也不做模糊匹配。
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["missing", "large", "encoding", "symlink", "hardlink", "secret"])
+async def test_html_card_file_validation(doc_app, doc_root, kind):
+    import os
+    target = doc_root / "page.html"
+    if kind == "large":
+        target.write_bytes(b"x" * 200001)
+    elif kind == "encoding":
+        target.write_bytes(b"\xff\xfe")
+    elif kind == "secret":
+        target.write_text("sk-ant-api03-" + "x" * 90)
+    elif kind in {"symlink", "hardlink"}:
+        source = doc_root / "source.html"
+        source.write_text("<p>链接文件</p>")
+        if kind == "symlink":
+            target.symlink_to(source)
+        else:
+            os.link(source, target)
+    status, _body, _headers = await _html_card(doc_app, str(target))
+    assert status == {"missing": 404, "large": 422, "encoding": 422, "symlink": 403,
+                      "hardlink": 422, "secret": 422}[kind]
+
+
+@pytest.mark.anyio
+async def test_html_card_uses_only_selected_conversation(doc_app, doc_root, fake_home, monkeypatch):
+    other = fake_home / "other"
+    other.mkdir()
+    (doc_root / "page.html").write_text("<p>会话一</p>")
+    (other / "page.html").write_text("<p>会话二</p>")
+    roots = {"first": str(doc_root), "second": str(other)}
+    monkeypatch.setattr(WebAdapter, "_conv_cwd", lambda self, conv: roots.get(conv))
+    for conv, text in [("first", "会话一"), ("second", "会话二")]:
+        status, body, _headers = await _html_card(doc_app, "page.html", conv)
+        assert status == 200 and text in json.loads(body)["html"]
+    status, _body, _headers = await _html_card(doc_app, str(doc_root / "page.html"), "second")
+    assert status == 403
+    status, _body, _headers = await _html_card(doc_app, "page.html", "unknown")
+    assert status == 403

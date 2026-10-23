@@ -2904,8 +2904,33 @@ class WebAdapter:
                 return found
         return None
 
+    async def _local_html_card(self, request: web.Request) -> web.Response:
+        from ...tools.html_preview import local_html_path, read_snapshot
+
+        root = self._conv_cwd(request.query.get("conv", ""))
+        if not root:
+            return web.json_response({"error": "当前会话没有可用工作目录，无法读取 HTML。"}, status=403)
+        try:
+            path = local_html_path(request.query.get("path", ""))
+            source = await read_snapshot(path, cwd=root, allow_external=False)
+        except FileNotFoundError:
+            return web.json_response({"error": "HTML 文件不存在，请确认文件位置后重试。"}, status=404)
+        except PermissionError as exc:
+            return web.json_response({"error": str(exc) or "无权读取 HTML 文件。"}, status=403)
+        except UnicodeError:
+            return web.json_response({"error": "HTML 必须是 UTF-8 文本。"}, status=422)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=422)
+        except OSError:
+            return web.json_response({"error": "HTML 读取失败：文件不可读或路径包含软链接。"}, status=403)
+        return web.json_response({"id": hashlib.sha256(source.encode()).hexdigest(),
+                                  "html": source, "title": Path(path).name},
+                                 headers={"Cache-Control": "no-store"})
+
     @_authed
     async def _handle_doc_preview(self, request: web.Request) -> web.Response:
+        if request.query.get("format") == "html-card":
+            return await self._local_html_card(request)
         root = self._conv_cwd(request.query.get("conv", "")) or os.getcwd()
         # 模糊兜底可能要 os.walk 扫大几千个文件(_DOC_SEARCH_MAX_SCAN),丢进线程池——
         # 这是单进程 server,同一个 event loop 还扛着其他会话的 SSE 长连接,同步扫盘会

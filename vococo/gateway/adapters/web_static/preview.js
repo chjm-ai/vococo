@@ -154,6 +154,77 @@ function appendHtmlPreviews(target, entries){
     target.append(card); setupChatPreview(card);
   }
 }
+async function openLocalHtmlPreview(anchor,path,title){
+  if(!anchor){
+    anchor=[...$("#wrap").querySelectorAll("a[data-doc-path]")].find(node=>node.dataset.docPath===path);
+    if(!anchor){anchor=document.createElement("a");anchor.className="doclink";anchor.dataset.docPath=path;anchor.textContent=title||path;$("#wrap").append(anchor);}
+  }
+  let holder=anchor._localHtml;
+  if(holder && holder.dataset.localHtml!==path){holder.remove();holder=null;anchor._localHtml=null;}
+  if(!holder){
+    holder=document.createElement("span"); holder.dataset.localHtml=path;
+    anchor._localHtml=holder;anchor.after(holder);
+  }
+  if(holder._loading || holder.querySelector(".chat-preview")) return;
+  holder._loading=true; holder.textContent="正在读取 HTML…";
+  const conv=S.conv,token=S.token;
+  const isCurrent=()=>holder.isConnected && anchor.isConnected && anchor._localHtml===holder &&
+    anchor.dataset.docPath===path && holder.dataset.localHtml===path && S.conv===conv && S.token===token;
+  try{
+    const response=await api("/doc/preview?"+new URLSearchParams({conv:conv||"",path,format:"html-card"}));
+    const result=await response.json();
+    if(!isCurrent()) return;
+    if(!response.ok) throw new Error(result.error||"HTML 预览失败");
+    holder.replaceChildren(); appendHtmlPreviews(holder,[result]);
+  }catch(error){
+    if(!isCurrent()) return;
+    holder.textContent="HTML 未展示："+error.message+" ";
+    const retry=document.createElement("button");retry.type="button";retry.textContent="重试";
+    retry.onclick=()=>openLocalHtmlPreview(anchor,path,title);holder.append(retry);
+  }finally{holder._loading=false;}
+}
+function preserveLocalHtmlLinks(target,holder){
+  const previous=[...target.querySelectorAll("a.doclink[data-doc-path]")];
+  holder.querySelectorAll("a.doclink[data-doc-path]").forEach(next=>{
+    const index=previous.findIndex(old=>old.dataset.docPath===next.dataset.docPath);
+    if(index<0) return;
+    const old=previous.splice(index,1)[0];
+    if(!old._localHtml) return;
+    next._reuseLink=old;
+    let before=old,after=next;
+    while(before.parentNode!==target) before=before.parentNode;
+    while(after.parentNode!==holder) after=after.parentNode;
+    if(before.nodeName===after.nodeName && [...target.childNodes].indexOf(before)===[...holder.childNodes].indexOf(after)) after._reuseLocal=before;
+  });
+}
+function patchLocalHtmlContent(current,next){
+  let cursor=current.firstChild;
+  const keep=new Set();
+  for(const desired of [...next.childNodes]){
+    let node=desired._reuseLink;
+    // 带卡片的链接只能按路径身份复用，不能把 A 的节点/缓存改名给 C。
+    if(!node && !cursor?._localHtml && !cursor?.dataset?.localHtml &&
+       cursor?.nodeType===desired.nodeType && cursor.nodeName===desired.nodeName) node=cursor;
+    if(!node){node=desired.cloneNode(true);current.insertBefore(node,cursor);}
+    else{
+      if(node!==cursor) current.insertBefore(node,cursor);
+      if(node.nodeType===Node.TEXT_NODE) node.textContent=desired.textContent;
+      else{
+        for(const attr of [...node.attributes]) if(!desired.hasAttribute(attr.name)) node.removeAttribute(attr.name);
+        for(const attr of desired.attributes) node.setAttribute(attr.name,attr.value);
+        patchLocalHtmlContent(node,desired);
+      }
+    }
+    // 原 iframe 始终留在已连接的消息里；即使短暂搬到离线 DOM 也会丢失滚动状态。
+    keep.add(node);
+    if(node._localHtml){
+      keep.add(node._localHtml);
+      if(node.nextSibling!==node._localHtml) node.after(node._localHtml);
+    }
+    cursor=node._localHtml?node._localHtml.nextSibling:node.nextSibling;
+  }
+  for(const child of [...current.childNodes]) if(!keep.has(child)) child.remove();
+}
 function previewIcon(name){
   return ic(name).replace('<svg ', '<svg aria-hidden="true" focusable="false" ');
 }
@@ -394,7 +465,8 @@ async function updateChatPreview(node){
 // 流式正文仍沿用原 Markdown 解析，只转移同序号预览节点，避免每帧销毁 iframe。
 function renderPreviewMarkdown(target, source, streaming=false){
   const holder=document.createElement("div"); holder.innerHTML=mdToHtml(source,streaming);
-  const previous=[...target.querySelectorAll(".chat-preview")];
+  preserveLocalHtmlLinks(target,holder);
+  const previous=[...target.querySelectorAll(".chat-preview")].filter(node=>!node.closest("[data-local-html]"));
   holder.querySelectorAll(".chat-preview").forEach((next,index)=>{
     const old=previous[index];
     if(!old?._preview || old.dataset.lang!==next.dataset.lang) return;
@@ -406,6 +478,9 @@ function renderPreviewMarkdown(target, source, streaming=false){
     }
     next._reuse=old;
   });
+  for(const next of holder.childNodes){
+    if(next._reuseLocal){patchLocalHtmlContent(next._reuseLocal,next);next._reuse=next._reuseLocal;}
+  }
   const nodes=[...holder.childNodes].map(n=>n._reuse||n);
   for(const child of [...target.childNodes]) if(!nodes.includes(child)) child.remove();
   let cursor=target.firstChild;
