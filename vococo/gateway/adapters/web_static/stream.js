@@ -623,7 +623,18 @@ function renderStatus(){
   S.stream.status.innerHTML = '<span class="chip live'+(rl?' warn':'')+'">'+esc(label)+DOTS+esc(tick)+'</span>'
     + '<button type="button" class="statusstop" title="停止回复" aria-label="停止回复"><span class="sq"></span></button>';
 }
-function finalizeStream(finalText, imgs, turnId, vids){
+function discardStream(){
+  const stream=S.stream;
+  if(!stream) return;
+  clearInterval(stream.timer);
+  for(const segment of Object.values(stream.segs)) dirtySegs.delete(segment);
+  if(stream.draftTail) dirtySegs.delete(stream.draftTail);
+  stream.row.querySelectorAll('video,audio').forEach(player=>player.pause());
+  stream.row.querySelectorAll('img').forEach(image=>_imgLazyObserver.unobserve(image));
+  stream.row.remove(); S.stream=null;
+  updateSendBtn(); updateEmpty();
+}
+function finalizeStream(finalText, imgs, turnId, vids, htmls){
   if(!S.stream) return;
   // 末尾那条普通命令以前等不到下一段正文/命令,会永久散落在过程区;收工时也要归组。
   if(S.stream.activeCard){ foldToGroup(S.stream, S.stream.activeCard); S.stream.activeCard=null; }
@@ -647,6 +658,7 @@ function finalizeStream(finalText, imgs, turnId, vids){
   }
   appendImgs(S.stream.bubble, imgs);
   appendVids(S.stream.bubble, vids);
+  appendHtmlPreviews(S.stream.bubble, htmls);
   // 刚说完就地挂时间/复制/重新生成——不用等用户切走再切回、走 /history 重绘才补出来。
   // turnId 只有 done 事件(常规对话轮)才带,命令回复/cron 推送(message 事件)没有,
   // 此时不挂重新生成按钮(见 buildTurnFoot)。ts 用本地时间近似,跟服务端落库时刻
@@ -826,8 +838,18 @@ function handleEvent(e){
   }
   switch(e.type){
     case "done": {
-      const errBubble = S.stream ? S.stream.bubble : null;
-      finalizeStream(e.text, undefined, e.turn_id);
+      // /history 可能比 SSE 的完成帧先到；也可能重复收到同一 done，不能再造一个回合。
+      const completed=e.turn_id==null?null:[...$("#wrap").querySelectorAll('.turn-block[data-pending="false"],.row.ai[data-tid]')]
+        .find(n=>n.dataset.tid===String(e.turn_id));
+      const errBubble=completed?(completed.querySelector('.row.ai .bubble')||completed.querySelector('.bubble')):S.stream?.bubble;
+      if(completed){
+        // 迟到的任意媒体帧也可能重新建了流式气泡；历史已完成时整颗丢弃，不能只去重 HTML。
+        discardStream();
+        appendHtmlPreviews(errBubble,e.html_previews);
+      }else{
+        if(!S.stream && e.html_previews?.length) ensureStream();
+        finalizeStream(e.text, undefined, e.turn_id, undefined, e.html_previews);
+      }
       if(e.is_error){
         if(errBubble) errBubble.classList.add("err");
         // 有 api_error_status(429/529/5xx等)= 后端已确认是模型服务商那边的错,
@@ -977,6 +999,7 @@ function applyStreamEvent(e){
       if(e.text){ const d=el("div","seg"); d.innerHTML=mdToHtml(e.text); s.flow.append(d); }
       appendImgs(s.flow, e.images);
       appendVids(s.flow, e.videos);
+      appendHtmlPreviews(s.flow, e.html_previews);
       renderStatus(); scrollDown(); break; }
   }
 }

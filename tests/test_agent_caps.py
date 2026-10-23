@@ -108,6 +108,15 @@ async def test_stream_turn_applies_agent_runtime(clients, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_stream_turn_keeps_html_preview_disabled(clients, monkeypatch):
+    monkeypatch.setattr(agents, "runtime_for_session", lambda key: {
+        **dict.fromkeys(agents.RUNTIME_KEYS), "disallowed_tools": ["mcp__vococo__show_html"],
+    })
+    await _turn("web:html-denied")
+    assert "mcp__vococo__show_html" in clients[0].options.disallowed_tools
+
+
+@pytest.mark.anyio
 async def test_stream_turn_without_agent_unchanged(clients, monkeypatch):
     monkeypatch.setattr(agents, "runtime_for_session", lambda key: dict.fromkeys(agents.RUNTIME_KEYS))
     await _turn("web:plain")

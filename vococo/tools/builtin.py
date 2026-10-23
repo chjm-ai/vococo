@@ -1185,6 +1185,39 @@ async def send_image(args: dict) -> dict:
     return _ok(err or "已发送到当前聊天（不自动收录作品库）。")
 
 @tool(
+    "show_html",
+    "把已落盘的本地 .html/.htm 文件作为静态预览卡片展示到当前 Web 聊天。"
+    "为用户生成静态网页、HTML 流程图或可视化并写入文件后调用，无需重复输出 HTML 代码围栏。"
+    "普通编程项目文件、临时文件不自动展示；用户只要求写文件时不强制预览。"
+    "path 相对当前任务工作目录或为绝对路径；目录外需原审批，拒绝软链、秘密文件，UTF-8，≤200KB。"
+    "title 可选。脚本不执行、外链资源不加载；不自动公开或收录作品库。仅 Web 支持，返回短回执。",
+    {"type": "object", "properties": {"path": {"type": "string"}, "title": {"type": "string"}},
+     "required": ["path"]},
+)
+async def show_html(args: dict) -> dict:
+    from ..gateway import clarify
+    from ..gateway.adapters.web import WebAdapter
+    from .html_preview import read_snapshot
+
+    ctx = clarify.current()
+    if ctx is None or not isinstance(ctx.adapter, WebAdapter):
+        return _ok("当前渠道不支持 HTML 预览（仅 Web 端支持）；未展示。")
+    title = args.get("title", "")
+    if not isinstance(title, str) or len(title) > 120:
+        return _ok("title 必须是 120 字以内的文字。")
+    if ctx.turn_id is None:
+        return _ok("当前没有绑定的执行回合；未展示。")
+    try:
+        source = await read_snapshot(args.get("path", ""))
+        err = await ctx.adapter.show_html(ctx.chat_id, ctx.session_key, ctx.turn_id, source, title)
+    except (OSError, UnicodeError):
+        return _ok("HTML 未展示：文件不可读、并非普通文件、存在软链或不是 UTF-8。")
+    except ValueError as exc:
+        return _ok(f"HTML 未展示：{exc}")
+    return _ok(err or "HTML 已展示到当前聊天（静态快照；未公开、未收录作品库）。")
+
+
+@tool(
     "send_video",
     "把一个本地视频文件发送到当前 Web 聊天里、直接内嵌播放器显示。仅 Web 端支持。"
     "只收浏览器能直接播的格式(mp4/mov/m4v/webm/ogv),mkv/avi 等请先用 ffmpeg 转成 "
@@ -1944,6 +1977,7 @@ def build_mcp_servers(*, subagent_tool=None, delegation_tools=()) -> dict:
                 send_message,
                 send_image,
                 send_video,
+                show_html,
                 generate_image,
                 search_library,
                 get_library_item,
