@@ -6,7 +6,7 @@
 // 顶栏那颗 ⎇ 按钮:仅项目会话显示;点开弹层看改动明细
 function gitDotClass(d){ return (d.dirty>0||d.unmerged>0) ? "gdot-warn" : "gdot-ok"; }
 function gitBtnLabel(d){
-  let s='<span class="gdot '+gitDotClass(d)+'"></span>⎇ '+esc(d.branch);
+  let s='<span class="gdot '+gitDotClass(d)+'"></span>⎇ '+esc(d.branch.replace(/^vococo\//, ""));
   if(d.unmerged) s+=' <span class="gahb">↑'+d.unmerged+'</span>';   // 未合并提交(相对 main):标题栏直接可见
   if(d.dirty) s+=' •'+d.dirty;
   if(d.added||d.removed){
@@ -26,9 +26,7 @@ async function fetchGitStatus(conv){
 function applyGitBtn(d){
   const btn=$("#convGit"), pbtn=$("#convProjName");
   if(!d || !d.is_project){ btn.hidden=true; pbtn.hidden=true; return; }
-  // 项目就是 Agent:pill 显示 Agent 名字(文件夹名常是 workspace 这种);Agent 主会话标题已是名字,不重复
-  const ag=typeof agentForConv==="function" ? agentForConv(S.conv) : null;
-  pbtn.textContent=ag ? ag.name : d.name; pbtn.hidden=!!(ag && ag.main_conv===S.conv);
+  pbtn.textContent=d.name; pbtn.hidden=false;
   if(!d.is_repo){ btn.hidden=false; btn.textContent="⎇ 非 git 仓库"; return; }
   btn.hidden=false; btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0));
 }
