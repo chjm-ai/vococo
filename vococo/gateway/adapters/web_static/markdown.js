@@ -65,30 +65,69 @@ function inlineMd(t){
 function fencedMarkdown(src, codes, streaming){
   const lines=src.split("\n"), output=[];
   for(let i=0;i<lines.length;i++){
-    const opening=lines[i].match(/^ {0,3}(`{3,}|~{3,})([^\n]*)$/);
+    const opening=lines[i].match(/^ *(`{3,}|~{3,})([^\n]*)$/);
     if(!opening){ output.push(lines[i]); continue; }
+    const indent=lines[i].match(/^ */)[0];
     const fence=opening[1], lang=opening[2].trim().toLowerCase(), body=[];
-    const end=new RegExp("^ {0,3}"+fence[0]+"{"+fence.length+",}[ \\t]*$");
+    const end=new RegExp("^ {0,"+(indent.length+3)+"}"+fence[0]+"{"+fence.length+",}[ \\t]*$");
     let closed=false;
     while(++i<lines.length){ if(end.test(lines[i])){closed=true;break;} body.push(lines[i]); }
-    const source=body.join("\n");
+    const source=body.map(line=>line.startsWith(indent)?line.slice(indent.length):line).join("\n");
     if(lang==="mermaid" || lang==="html") codes.push(previewCodeHtml(lang,source,closed,streaming));
     else codes.push('<div class="codeblock"><button class="codecopy" onclick="copyCodeBlock(this)" title="复制代码">'+ic("copy")+
       '</button><pre class="code"><code>'+esc(source.replace(/\n$/,""))+"</code></pre></div>");
-    output.push(" C"+(codes.length-1)+" ");
+    output.push(indent+" C"+(codes.length-1)+" ");
   }
   return output.join("\n");
 }
-function mdToHtml(src, streaming=false){
+function listMarker(line){
+  const match=line.match(/^( *)([-*+]|\d+[.)]) +(.*)$/);
+  if(!match) return null;
+  return {indent:match[1].length, tag:/\d/.test(match[2])?"ol":"ul",
+    start:parseInt(match[2],10), width:match[0].length-match[3].length, text:match[3]};
+}
+function collectListItem(lines, index, marker){
+  const body=[marker.text]; let i=index+1;
+  while(i<lines.length){
+    if(!lines[i].trim()){
+      let next=i+1; while(next<lines.length&&!lines[next].trim()) next++;
+      const sibling=listMarker(lines[next]||"");
+      if(next===lines.length || (!sibling && !/^ +\S/.test(lines[next]))) break;
+      if(sibling && sibling.indent<=marker.indent) break;
+      if(lines[next].search(/\S/)<=marker.indent) break;
+      body.push(""); i++; continue;
+    }
+    if(lines[i].search(/\S/)<=marker.indent) break;
+    // 保留子列表的相对缩进,不能 trim 后当作父项的普通续行。
+    body.push(lines[i].slice(Math.min(marker.width,lines[i].search(/\S/)))); i++;
+  }
+  return {body:body.join("\n"), next:i};
+}
+function renderList(lines, index, codes){
+  const first=listMarker(lines[index]); let html="", i=index;
+  while(i<lines.length){
+    const marker=listMarker(lines[i]);
+    if(!marker || marker.indent!==first.indent || marker.tag!==first.tag) break;
+    const item=collectListItem(lines,i,marker);
+    const content=mdToHtml(item.body,false,codes).replace(/^<p>([\s\S]*?)<\/p>/,"$1");
+    html+="<li>"+content+"</li>"; i=item.next;
+    let next=i; while(next<lines.length&&!lines[next].trim()) next++;
+    const sibling=listMarker(lines[next]||"");
+    if(sibling && sibling.indent===first.indent && sibling.tag===first.tag) i=next;
+  }
+  const start=first.tag==="ol"&&first.start!==1?' start="'+first.start+'"':"";
+  return {html:"<"+first.tag+start+">"+html+"</"+first.tag+">", next:i};
+}
+function mdToHtml(src, streaming=false, listCodes=null){
   src = (src||"").replace(/\r\n/g,"\n");
-  const codes=[];
-  src = fencedMarkdown(src,codes,streaming);
+  const codes=listCodes||[];
+  if(!listCodes) src = fencedMarkdown(src,codes,streaming);
   const L = src.split("\n"); let out=""; let i=0; let para=[];
   const flush=()=>{ if(para.length){ out+="<p>"+para.map(inlineMd).join("<br>")+"</p>"; para=[]; } };
   const sepRe=/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$/;
   while(i<L.length){
     let ln=L[i];
-    const cm=ln.match(/^ C(\d+) $/);
+    const cm=ln.match(/^ +C(\d+) $/);
     if(cm){ flush(); out+=codes[+cm[1]]; i++; continue; }
     if(!ln.trim()){ flush(); i++; continue; }
     let m;
@@ -105,30 +144,10 @@ function mdToHtml(src, streaming=false){
       out+=t+"</tbody></table>"; continue;
     }
     if(m=ln.match(/^\s*>\s?(.*)$/)){ flush(); const q=[]; while(i<L.length&&(m=L[i].match(/^\s*>\s?(.*)$/))){ q.push(m[1]); i++; } out+="<blockquote>"+q.map(inlineMd).join("<br>")+"</blockquote>"; continue; }
-    // 列表项常跨多行:AI 输出习惯"N. 标题" + 缩进续行(标题后两个空格换行接说明),
-    // 项之间还会夹空行(CommonMark 松散列表)。原来的收集循环只认"这一行本身是不是
-    // 列表项",一遇到缩进续行或空行就当列表结束,把一条列表拆成好几个各自从 1 开始
-    // 编号的独立 <ul>/<ol>,页面上序号全变 1(2026-08-21 踩过)。collectList 把"缩进
-    // 续行"并入上一个 <li>,把"空行后仍是列表项"当作同一列表延续,才不会被拆散。
-    const collectList = markerRe => {
-      const items=[]; let mm;
-      while(i<L.length){
-        if(mm=L[i].match(markerRe)){ items.push([mm[1]]); i++; continue; }
-        if(items.length && /^\s+\S/.test(L[i])){ items[items.length-1].push(L[i].trim()); i++; continue; }
-        if(!L[i].trim()){ let j=i+1; while(j<L.length&&!L[j].trim())j++; if(j<L.length&&markerRe.test(L[j])){ i=j; continue; } }
-        break;
-      }
-      return items;
-    };
-    if(/^\s*[-*+]\s+/.test(ln)){
+    if(listMarker(ln)){
       flush();
-      const items=collectList(/^\s*[-*+]\s+(.*)$/);
-      out+="<ul>"+items.map(lines=>"<li>"+lines.map(inlineMd).join(" ")+"</li>").join("")+"</ul>"; continue;
-    }
-    if(/^\s*\d+\.\s+/.test(ln)){
-      flush();
-      const items=collectList(/^\s*\d+\.\s+(.*)$/);
-      out+="<ol>"+items.map(lines=>"<li>"+lines.map(inlineMd).join(" ")+"</li>").join("")+"</ol>"; continue;
+      const list=renderList(L,i,codes);
+      out+=list.html; i=list.next; continue;
     }
     para.push(ln); i++;
   }
