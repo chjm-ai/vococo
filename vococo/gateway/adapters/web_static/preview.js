@@ -113,7 +113,11 @@ function sizePreviewDiagram(node){
   frame.style.height=Math.ceil(height*scale+padding*2)+"px";
 }
 const previewResizeObserver=new ResizeObserver(entries=>{
-  for(const entry of entries) sizePreviewDiagram(entry.target.closest(".chat-preview"));
+  for(const entry of entries){
+    const node=entry.target.closest(".chat-preview");
+    sizePreviewDiagram(node);
+    if(node?._preview.handle) syncPreviewHeightLabel(node._preview);
+  }
 });
 function refreshPreviewThemes(){
   for(const node of document.querySelectorAll('.chat-preview[data-lang="mermaid"]')) scheduleChatPreview(node);
@@ -254,6 +258,58 @@ async function usePreviewShare(node,action){
   finally{state.shareBusy=false;for(const button of Object.values(state.shareButtons)) button.disabled=false;}
 }
 
+const PREVIEW_MIN_HEIGHT=120, PREVIEW_MAX_HEIGHT=1200;
+function syncPreviewHeightLabel(state){
+  const height=state.manualHeight ?? Math.round(state.view.getBoundingClientRect().height);
+  state.handle.setAttribute("aria-valuenow",String(Math.max(PREVIEW_MIN_HEIGHT,Math.min(PREVIEW_MAX_HEIGHT,height))));
+  state.handle.setAttribute("aria-valuetext",state.manualHeight?height+" 像素":"自动高度");
+}
+function setPreviewHeight(node,height){
+  const state=node._preview,manual=height!==null;
+  state.manualHeight=manual?Math.round(Math.max(PREVIEW_MIN_HEIGHT,Math.min(PREVIEW_MAX_HEIGHT,height))):null;
+  node.classList.toggle("preview-manual-height",manual);
+  for(const pane of [state.view,node.querySelector("pre")]) pane.style.height=manual?state.manualHeight+"px":"";
+  sizePreviewDiagram(node); syncPreviewHeightLabel(state);
+}
+function finishPreviewResize(node){
+  const state=node._preview,drag=state.drag;
+  if(!drag) return;
+  state.drag=null; node.classList.remove("preview-resizing");
+  if(state.handle.hasPointerCapture(drag.id)) state.handle.releasePointerCapture(drag.id);
+}
+function startPreviewResize(node,event){
+  const state=node._preview;
+  if(state.drag || !event.isPrimary || event.button!==0) return;
+  event.preventDefault(); state.handle.focus({preventScroll:true});
+  const pane=state.view.hidden?node.querySelector("pre"):state.view;
+  state.handle.setPointerCapture(event.pointerId);
+  state.drag={id:event.pointerId,y:event.clientY,height:pane.getBoundingClientRect().height};
+  node.classList.add("preview-resizing");
+}
+function addPreviewResizeHandle(node){
+  const state=node._preview,handle=state.handle=document.createElement("div");
+  handle.className="preview-resize-handle"; handle.tabIndex=0;
+  handle.setAttribute("role","separator"); handle.setAttribute("aria-orientation","horizontal");
+  handle.setAttribute("aria-label","调整预览高度");
+  handle.setAttribute("aria-valuemin",String(PREVIEW_MIN_HEIGHT)); handle.setAttribute("aria-valuemax",String(PREVIEW_MAX_HEIGHT));
+  handle.title="上下拖动调整高度；方向键调整，双击或 Home 恢复自动高度";
+  handle.onpointerdown=event=>startPreviewResize(node,event);
+  handle.onpointermove=event=>{
+    if(state.drag?.id!==event.pointerId) return;
+    event.preventDefault(); setPreviewHeight(node,state.drag.height+event.clientY-state.drag.y);
+  };
+  for(const name of ["onpointerup","onpointercancel","onlostpointercapture"]) handle[name]=event=>{
+    if(state.drag?.id===event.pointerId) finishPreviewResize(node);
+  };
+  handle.ondblclick=()=>setPreviewHeight(node,null);
+  handle.onkeydown=event=>{
+    if(!["ArrowUp","ArrowDown","Home"].includes(event.key)) return;
+    event.preventDefault();
+    const pane=state.view.hidden?node.querySelector("pre"):state.view;
+    setPreviewHeight(node,event.key==="Home"?null:(state.manualHeight??pane.getBoundingClientRect().height)+(event.key==="ArrowUp"?-24:24));
+  };
+  node.append(handle); syncPreviewHeightLabel(state);
+}
 function setupChatPreview(node){
   if(node._preview){
     const state=node._preview;
@@ -285,6 +341,7 @@ function setupChatPreview(node){
   state.view=document.createElement("div"); state.view.className="preview-view";
   node.prepend(bar,state.note,state.view);
   if(state.shareNote) node.insertBefore(state.shareNote,state.view);
+  addPreviewResizeHandle(node);
   if(node.isConnected) previewResizeObserver.observe(state.view);
   scheduleChatPreview(node);
 }
@@ -363,7 +420,10 @@ const chatPreviewObserver=new MutationObserver(records=>{
   for(const record of records) for(const removed of record.removedNodes){
     if(removed.nodeType!==1 || removed.isConnected) continue;
     const cards=removed.matches(".chat-preview")?[removed]:removed.querySelectorAll(".chat-preview");
-    for(const card of cards) if(card._preview) previewResizeObserver.unobserve(card._preview.view);
+    for(const card of cards) if(card._preview){
+      finishPreviewResize(card);
+      previewResizeObserver.unobserve(card._preview.view);
+    }
   }
   for(const record of records) for(const node of record.addedNodes){
     if(node.nodeType!==1 || !node.isConnected) continue;

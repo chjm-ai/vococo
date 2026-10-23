@@ -6,7 +6,10 @@ const path=require('node:path');
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
   const page=await browser.newPage({viewport:{width:1280,height:1000}}), errors=[], remote=[];
   page.on('pageerror',e=>errors.push(e.message));
-  page.on('request',r=>{if(r.url().includes('html-preview-blocked.invalid'))remote.push(r.url());});
+  // CSP 拒绝也会产生 request 事件；只记录实际到达网络层的请求。
+  await page.route('https://html-preview-blocked.invalid/**',route=>{
+    remote.push(route.request().url());return route.fulfill({body:'blocked test endpoint'});
+  });
   try{
     await page.goto(origin);await page.fill('#pw',token);await page.click('#loginBtn');
     await page.waitForFunction(()=>!$('#app').hidden);
@@ -29,6 +32,21 @@ const path=require('node:path');
     await card.getByRole('button',{name:'显示源码',exact:true}).click();
     assert.equal(await card.locator('pre').isVisible(),true);
     await card.getByRole('button',{name:'显示预览',exact:true}).click();
+    const resize=card.getByRole('separator');await resize.scrollIntoViewIfNeeded();
+    const bounds=await resize.boundingBox(),initial=await card.locator('iframe').evaluate(n=>n.clientHeight);
+    await page.mouse.move(bounds.x+bounds.width/2,bounds.y+bounds.height/2);await page.mouse.down();
+    await page.mouse.move(bounds.x+bounds.width/2,bounds.y+bounds.height/2-100,{steps:10});await page.mouse.up();
+    assert.equal(await card.locator('iframe').evaluate(n=>n.clientHeight),initial-100,'HTML 文件卡片支持真实鼠标拖动');
+    const frame=await (await card.locator('iframe').elementHandle()).contentFrame();
+    assert.equal(await frame.evaluate(()=>{scrollTo(0,document.body.scrollHeight);return scrollY>0;}),true,'缩小后的 HTML 内容仍可滚动');
+    await resize.focus();await page.keyboard.press('ArrowDown');
+    assert.equal(await card.locator('iframe').evaluate(n=>n.clientHeight),initial-76);
+    await card.getByRole('button',{name:'显示源码',exact:true}).click();
+    assert.equal(await card.locator('pre').evaluate(n=>n.clientHeight),initial-76);
+    await card.getByRole('button',{name:'显示预览',exact:true}).click();
+    await resize.focus();await page.keyboard.press('Home');
+    assert.equal(await card.locator('iframe').evaluate(n=>n.clientHeight),initial,'HTML 恢复原自动高度');
+    assert.equal(await card.locator('iframe').getAttribute('sandbox'),'');
     await page.screenshot({path:path.join(screenshots,'show-html-midturn.png')});
     // 刷新仍在生成的页面：真实 /history + SSE 快照恢复。
     await page.reload();await page.waitForFunction(()=>!$('#app').hidden);

@@ -254,6 +254,94 @@ async function testPreviewThemeLayout(browser,origin,token,screenshots){
   assert.deepEqual(errors,[]);await page.close();
 }
 
+async function testManualHeight(browser,origin,token,screenshots){
+  for(const mobile of [false,true]){
+    const page=await browser.newPage({viewport:{width:mobile?390:1280,height:1000},isMobile:mobile,hasTouch:mobile});
+    const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    await page.goto(origin);await page.fill('#pw',token);await page.click('#loginBtn');
+    await page.waitForFunction(()=>!$('#app').hidden);
+    await page.evaluate(async()=>{await openConv('manual-height');$('#wrap').replaceChildren();closeSidebar();setSidebarCollapsed(true);});
+    const stream=text=>page.evaluate(text=>applyStreamEvent({type:'text',conv:S.conv,text,seg:0}),text);
+    await stream('```mermaid\n'+sequenceSource+'\n');
+    const card=page.locator('.chat-preview').first(),view=card.locator('.preview-view'),handle=card.getByRole('separator');
+    await card.locator('iframe').waitFor();await handle.scrollIntoViewIfNeeded();
+    const auto=await view.evaluate(n=>n.clientHeight);
+    if(!mobile) await card.screenshot({path:path.join(screenshots,'preview-resize-before.png')});
+    const box=await handle.boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2;
+    const scroll=await page.locator('#messages').evaluate(n=>n.scrollTop);
+    let cdp;
+    if(mobile){
+      cdp=await page.context().newCDPSession(page);
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x,y}]});
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x,y:y-180}]});
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    }else{
+      await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x,y-180,{steps:12});await page.mouse.up();
+    }
+    const manual=await view.evaluate(n=>n.clientHeight);
+    assert.ok(Math.abs(manual-(auto-180))<=2,'真实鼠标/触摸拖动改变高度');
+    assert.equal(await page.locator('#messages').evaluate(n=>n.scrollTop),scroll,'拖动不能滚动页面');
+    assert.equal(await view.evaluate(n=>n.scrollHeight>n.clientHeight),true);
+    await view.evaluate(n=>n.scrollTop=n.scrollHeight);
+    assert.ok(await view.evaluate(n=>n.scrollTop)>0,'缩小后可以滚到图表末尾');
+    if(!mobile) await card.screenshot({path:path.join(screenshots,'preview-resize-after.png')});
+    await page.evaluate(()=>setTheme('light'));
+    await stream('```mermaid\n'+sequenceSource.replace('完成定稿','保留高度')+'\n```');
+    await page.evaluate(()=>finalizeStream(undefined,undefined,400));
+    await page.waitForFunction(()=>{const s=document.querySelector('.chat-preview')._preview;return s.rendered?.includes('保留高度') && s.renderTheme===previewDiagramTheme().key;});
+    await page.setViewportSize({width:mobile?375:768,height:1000});
+    await card.getByRole('button',{name:'显示源码',exact:true}).click();
+    assert.equal(await card.locator('pre').evaluate(n=>n.clientHeight),manual);
+    await card.getByRole('button',{name:'显示预览',exact:true}).click();
+    assert.equal(await view.evaluate(n=>n.clientHeight),manual,'主题、流式、宽度和源码切换保留高度');
+    await handle.focus();await page.keyboard.press('ArrowDown');
+    assert.equal(await view.evaluate(n=>n.clientHeight),manual+24);
+    await page.keyboard.press('ArrowUp');
+    assert.equal(await view.evaluate(n=>n.clientHeight),manual);
+    for(let i=0;i<60;i++) await page.keyboard.press('ArrowUp');
+    assert.equal(await view.evaluate(n=>n.clientHeight),120);
+    for(let i=0;i<60;i++) await page.keyboard.press('ArrowDown');
+    assert.equal(await view.evaluate(n=>n.clientHeight),1200);
+    await page.keyboard.press('Home');
+    assert.equal(await view.getAttribute('style'),'');
+    assert.equal(await handle.getAttribute('aria-valuetext'),'自动高度');
+    await page.keyboard.press('ArrowUp');await handle.dblclick();
+    assert.equal(await view.evaluate(n=>n.style.height),'');
+    await handle.scrollIntoViewIfNeeded();
+    const end=await handle.boundingBox(),point={x:end.x+end.width/2,y:end.y+end.height/2};
+    if(mobile){
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[point]});
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:point.x,y:point.y-40}]});
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchCancel',touchPoints:[]});
+    }else{
+      await page.mouse.move(point.x,point.y);await page.mouse.down();
+      await card.evaluate(n=>{window.detachedHeightCard=n;n.remove();});await page.mouse.up();
+      await page.evaluate(()=>$('#wrap').append(detachedHeightCard));
+    }
+    assert.equal(await card.evaluate(n=>!!n._preview.drag || n.classList.contains('preview-resizing')),false,'取消/移除必须释放拖动状态');
+    await page.evaluate(()=>{const n=document.createElement('div');n.id='independent-height';$('#wrap').append(n);renderPreviewMarkdown(n,'```mermaid\n'+document.querySelector('.chat-preview')._preview.source+'\n```\n```python\nprint(1)\n```');});
+    assert.equal(await page.locator('#independent-height .chat-preview').evaluate(n=>n._preview.manualHeight??null),null,'相同源码新卡片不共享高度');
+    assert.equal(await page.locator('#independent-height .codeblock .preview-resize-handle').count(),0);
+    assert.equal(await card.locator('iframe').getAttribute('sandbox'),'');
+    if(mobile){
+      await page.evaluate(()=>{const n=document.createElement('div');n.id='touch-html';$('#wrap').prepend(n);renderPreviewMarkdown(n,'```html\n'+('<p>手机 HTML 长内容</p>'.repeat(40))+'\n```');});
+      const html=page.locator('#touch-html .chat-preview'),grip=html.getByRole('separator');
+      await html.locator('iframe').waitFor();await grip.scrollIntoViewIfNeeded();
+      const b=await grip.boundingBox(),p={x:b.x+b.width/2,y:b.y+b.height/2};
+      const before=await html.locator('iframe').evaluate(n=>n.clientHeight);
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[p]});
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:p.x,y:p.y-80}]});
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+      assert.equal(await html.locator('iframe').evaluate(n=>n.clientHeight),before-80,'HTML 手机触摸拖拽');
+      await html.evaluate(n=>renderPreviewMarkdown(n.parentNode,'```html\n<p>流式更新后</p>\n```'));
+      await html.frameLocator('iframe').getByText('流式更新后').waitFor();
+      assert.equal(await html.locator('iframe').evaluate(n=>n.clientHeight),before-80,'HTML 重渲染保留高度');
+      assert.equal(await html.locator('iframe').getAttribute('sandbox'),'');
+    }
+    assert.deepEqual(errors,[]);await page.close();
+  }
+}
+
 (async()=>{
   const [origin,token,screenshots,scenario]=process.argv.slice(2);
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
@@ -261,6 +349,7 @@ async function testPreviewThemeLayout(browser,origin,token,screenshots){
     if(scenario?.startsWith('sequence-height-')) return await testSequenceHeight(browser,origin,token,screenshots,scenario.split('-').at(-1));
     if(scenario==='sequence-theme-layout') return await testPreviewThemeLayout(browser,origin,token,screenshots);
     if(scenario==='sequence-stream-theme') return await testStreamTheme(browser,origin,token,screenshots);
+    if(scenario==='manual-height') return await testManualHeight(browser,origin,token,screenshots);
     const page=await browser.newPage({viewport:{width:1280,height:1000}}),errors=[], external=[];
     page.on('pageerror',e=>errors.push(e.message));
     // CSP 拦截也会产生 request/requestfailed；只有到达网络路由才算泄漏。
