@@ -11,8 +11,19 @@ function isDocUrl(url){
   if(/^https?:\/\//i.test(url)) return DOC_EXT_RE.test(url) || /\/pub\//.test(url);
   return DOC_EXT_RE.test(url);
 }
+function isLocalDocPath(target){
+  if(target.includes("\\\\") || target.startsWith("//")) return false;
+  if(/^file:/i.test(target)){
+    try{const uri=new URL(target);return !uri.host && !uri.search && !uri.hash && /^file:\/\/\//i.test(target);}catch(e){return false;}
+  }
+  return !/^[a-z][a-z0-9+.-]*:/i.test(target);
+}
+function isLocalHtmlPath(target){
+  return isLocalDocPath(target) && /\.html?$/i.test(target);
+}
 function docLinkHtml(txt, target){
   const isHttp = /^https?:\/\//i.test(target);
+  if(!isHttp && !isLocalDocPath(target)) return txt;
   const attr = isHttp ? 'data-doc-url="'+target+'"' : 'data-doc-path="'+target+'"';
   // href 留着当兜底:点击处理器(见 initDocPreview)正常都会 preventDefault 走站内预览,
   // 万一 JS 没跑起来,http 链接至少还能退化成新标签页打开;本地路径不写 href——
@@ -47,6 +58,7 @@ function inlineMd(t){
     if(DOC_EXT_RE.test(c) && c.includes("/")) return hold(docLinkHtml(c,c));
     return hold("<code>"+c+"</code>");
   });
+  t = t.replace(/(^|[\s(])(file:\/\/\/[^\s<>()`"'&]+\.html?)/gi,(m,pre,p)=>pre+hold(docLinkHtml(p,p)));
   t = t.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
   t = t.replace(/\*([^*\n]+)\*/g,"<em>$1</em>");
   t = t.replace(/(https?:\/\/[^\s<]+[^\s<.,)])/g,(m,url)=>isDocUrl(url)?docLinkHtml(url,url):'<a href="'+url+'" target="_blank" rel="noopener">'+url+'</a>');
@@ -158,6 +170,7 @@ function closeDocPreview(){
   if(typeof syncAgentHeader==="function") syncAgentHeader();   // Agent 面板开着的话接回来
 }
 async function openDocPreview({kind, target, title, highlight=""}){
+  if(kind==="path" && isLocalHtmlPath(target) && $("#wrap")) return openLocalHtmlPreview(null,target,title);
   S.docPreview[S.conv] = {kind, target, title, highlight};
   dpRevoke();
   if(typeof hideAgentPanel==="function") hideAgentPanel();   // 两个右侧栏不同时占位
@@ -291,6 +304,7 @@ function initDocPreview(){
     e.preventDefault();
     const url=a.dataset.docUrl, path=a.dataset.docPath, title=a.textContent.trim();
     if(url) openDocPreview({kind:"url", target:url, title});
+    else if(path && isLocalHtmlPath(path)) openLocalHtmlPreview(a,path,title);
     else if(path) openDocPreview({kind:"path", target:path, title});
   });
 }
