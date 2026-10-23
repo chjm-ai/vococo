@@ -65,6 +65,15 @@
   .preview-view{overflow-x:auto;min-width:0}
   .preview-diagram{background:var(--bg2);max-width:none}
   .preview-source{max-height:30rem;overflow:auto;font-size:var(--fs-md);padding:var(--sp-4);color:var(--code-fg);background:var(--code-bg)}
+  .preview-manual-height .preview-view,.preview-manual-height .preview-source{box-sizing:border-box;max-height:none;overflow:auto;overscroll-behavior:contain;overflow-anchor:none}
+  .preview-manual-height .preview-frame:not(.preview-diagram){height:100%}
+  .preview-resize-handle{display:flex;align-items:center;justify-content:center;height:calc(var(--sp-4)*2);border-top:1px solid var(--line);background:var(--panel);cursor:ns-resize;touch-action:none;user-select:none;transition:background var(--t-fast)}
+  .preview-resize-handle::before{content:"";width:calc(var(--sp-5)*3);height:var(--sp-1);border-radius:var(--r-pill);background:var(--dim2);transition:background var(--t-fast)}
+  .preview-resize-handle:hover,.preview-resize-handle:focus-visible,.preview-resizing .preview-resize-handle{background:var(--panel2)}
+  .preview-resize-handle:hover::before,.preview-resize-handle:focus-visible::before,.preview-resizing .preview-resize-handle::before{background:var(--accent)}
+  .preview-resize-handle:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .preview-resizing{user-select:none}
+  .preview-resizing iframe{pointer-events:none}
   .chat-preview [hidden]{display:none!important}
   /* Agent 像素头像色板(agents.js,键名与后端 AVATAR_COLORS 一致):深浅主题通用,饱和度刻意偏高 */
   :root{

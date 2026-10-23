@@ -31,7 +31,8 @@ async def test_show_html_real_tool_browser(isolated, monkeypatch):
     source = ('<!doctype html><h1>工具 HTML 快照</h1><p>```不是围栏</p>'
               '<script>parent.HTML_PREVIEW_ATTACK=1</script>'
               '<img src="https://html-preview-blocked.invalid/image">'
-              '<style>@import "https://html-preview-blocked.invalid/style";</style>' + ' ' * 32000)
+              '<style>@import "https://html-preview-blocked.invalid/style";</style>'
+              + '<p>可滚动的文件内容</p>' * 30 + ' ' * 32000)
     file = isolated / "page.html"
     file.write_text(source)
 
