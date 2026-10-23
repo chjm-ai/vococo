@@ -228,11 +228,17 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
         phash = projects.project_hash(workdir) if workdir else None
         name = meta.get("name") or (os.path.basename(workdir or "") or agent_id)
         main = f"p{phash}:main" if phash else "main"
+    from ..core.execution import execution_mode
+
     return {
         "id": agent_id,
         "name": name,
+        "execution_mode": "project" if agent_id == GENERAL_ID else execution_mode(
+            workdir, meta.get("execution_mode"),
+        ),
         "avatar": _normalize_avatar(meta.get("avatar"), agent_id),
         "workdir": workdir,
+        "output_dir": meta.get("output_dir") or workdir,
         "project_hash": phash,
         "main_conv": main,
         "links": _normalize_links(meta.get("links")),
@@ -557,9 +563,9 @@ def agent_for_session(session_key: str) -> dict | None:
         from ..cron import scheduler
 
         job = next((j for j in scheduler.load_jobs() if j.get("id") == session_key[5:]), None)
-        if job:
-            return get(job["agent_id"]) if job.get("agent_id") else None
-        # 不是定时任务 → 看派发时记下的归属(从 Agent 会话里派出的后台任务,见 task_runner.dispatch)
+        if job and job.get("agent_id"):
+            return get(job["agent_id"])
+        # 定时配置没有归属时，继续查任务表中派发时记下的 Agent，兼容历史任务。
         row = tasks.get(session_key[5:])
         if row and row.get("agent_id"):
             return get(row["agent_id"])
@@ -664,6 +670,14 @@ def runtime_for_session(session_key: str | None) -> dict:
     if not a or a["id"] == GENERAL_ID:
         return empty
     rt = {k: a.get(k) for k in RUNTIME_KEYS}
+    # 业务执行目录已不再是项目目录；保留原 Git 目录的技能匹配，显式 Agent 名单仍优先。
+    if a["execution_mode"] == "workspace" and rt["skills"] is None:
+        from ..gateway import settings_store
+
+        if settings_store.is_git_workspace(a["workdir"]):
+            skills = settings_store.effective_skills(a["workdir"], is_explicit_project=True)
+            if isinstance(skills, list):
+                rt["skills"] = skills
     # 项目 Agent 一律分区:没自定义就带默认那几节通用的(None 只留给总助理/普通会话 = 整份索引)
     if rt["memory_sections"] is None:
         rt["memory_sections"] = list(DEFAULT_MEMORY_SECTIONS)

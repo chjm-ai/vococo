@@ -40,6 +40,22 @@
 - **运行数据面板** — 设置页「数据」:工作强度日历、各模型用量与花费、缓存命中/工具成功率，逐个会话可下钻
 - **安全模型 + 自我运维** — 危险三档闸、手机审批；`vococo doctor` 自检、`restart_self` 安全重启、看门狗防假死
 
+## 业务文件隔离
+
+Agent 的 `workdir` 保留项目身份及规则来源；`execution_mode=workspace` 时，从仓库外
+`~/vococo-workspaces/<id>/` 运行，正式成果写 `output_dir`（默认原 workdir，可为 iCloud）。
+iCloud/非 Git 目录默认 workspace，开发 Git 项目默认 project；总助理不变。
+业务文件工具限制可写目录，Bash/同步子代理继承系统文件沙箱，禁止关闭；Agent 配置不可自改。
+成果目录和可写关联不得位于 Git 仓库，iCloud 失败明确报错，不自动改存源码目录。
+业务会话不能自行注册/切换 MCP 或创建/修改未沙箱化的脚本 cron；已配置 MCP 与已有固定脚本是主人管理的受信任自动化，不受这次 Bash 沙箱保护。固定脚本保持原目录。
+
+迁移先预览，带 `--apply` 才更新并备份；不会移动历史产物或修改固定脚本：
+```sh
+uv run python scripts/migrate_business_workspaces.py --data-dir /实际/data目录
+# 单个嵌套技能 Agent 可另指定仓库外成果目录：--workspace-agent ID=/绝对/iCloud目录
+```
+离线命令级验收：`uv run python eval/check_business_sandbox.py`（本机假模型，不使用真实模型额度）。
+
 ## 架构
 
 ```
