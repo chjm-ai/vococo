@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""让普通 SSH 与 Git SSH 共用 SDK 沙箱的 SOCKS 代理，不绕过文件隔离。"""
+import os
+import shlex
+import sys
+
+
+if __name__ == "__main__":
+    command = shlex.split(os.environ.get("GIT_SSH_COMMAND", ""))
+    if command and command[0] not in ("ssh", "/usr/bin/ssh"):
+        sys.exit("沙箱 SSH 只支持系统 ssh，请使用 SDK 的默认 GIT_SSH_COMMAND")
+    # 不用 shell/eval；固定系统路径，避免经 PATH 再次调用自身。
+    os.execv("/usr/bin/ssh", ["/usr/bin/ssh", *command[1:], *sys.argv[1:]])

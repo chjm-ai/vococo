@@ -54,7 +54,13 @@ iCloud/非 Git 目录默认 workspace，开发 Git 项目默认 project；总助
 uv run python scripts/migrate_business_workspaces.py --data-dir /实际/data目录
 # 单个嵌套技能 Agent 可另指定仓库外成果目录：--workspace-agent ID=/绝对/iCloud目录
 ```
-离线命令级验收：`uv run python eval/check_business_sandbox.py`（本机假模型，不使用真实模型额度）。
+网络兼容：已有无认证本机 HTTP 代理（`http_proxy`/`HTTP_PROXY`，其次 HTTPS 对应变量）复用原端口；
+普通 `ssh`（包括 Python 子进程调用）自动使用 SDK SOCKS 代理，文件隔离保持不变。
+不放开全部本机端口；显式 `/usr/bin/ssh` 或自行覆盖 PATH 的脚本需要自行使用 SDK 的代理参数。
+
+离线命令级验收（本机假模型，不使用真实模型额度）：
+- `uv run python eval/check_business_sandbox.py`：文件写入边界。
+- `uv run python eval/check_business_network.py`：显式 HTTP 代理、普通 SSH 握手与文件写入边界。
 
 ## 架构
 

@@ -1,7 +1,9 @@
 """集中解析 Agent 的执行目录，成果目录与项目身份保持不变。"""
 from __future__ import annotations
 
+import os
 import subprocess
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -80,6 +82,30 @@ def prompt_note(policy: ExecutionPolicy) -> str:
     )
 
 
+def network_settings() -> dict:
+    """复用已有本机 HTTP 代理；普通 TCP 仍经 SDK 的 SOCKS 代理。"""
+    network = {"allowedDomains": ["*"]}
+    proxy = next((os.environ[name] for name in
+                  ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY")
+                  if os.environ.get(name)), "")
+    try:
+        url = urlsplit(proxy)
+        if (url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1")
+                and not url.username and not url.password):
+            port = url.port if url.port is not None else 80
+            if port > 0:
+                network["httpProxyPort"] = port
+    except ValueError:
+        pass  # 无法复用时仍保留 SDK 默认代理，不放宽网络或文件边界。
+    return network
+
+
+def shell_env() -> dict[str, str]:
+    """脚本内 subprocess 调用 ssh 时也使用 SDK 注入的代理参数。"""
+    adapters = Path(__file__).parent / "sandbox_bin"
+    return {"PATH": str(adapters) + os.pathsep + os.environ.get("PATH", os.defpath)}
+
+
 def sandbox_settings(policy: ExecutionPolicy) -> dict:
     """让 shell 及其 Python/子进程共用系统写入边界，而非猜测命令字符串。"""
     import tempfile
@@ -97,5 +123,5 @@ def sandbox_settings(policy: ExecutionPolicy) -> dict:
             "denyWrite": [str(agents.home(policy.agent_id).resolve() / "agent.json"),
                           str(config.CRON_JOBS_PATH.resolve())],
         },
-        "network": {"allowedDomains": ["*"]},
+        "network": network_settings(),
     }
