@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""在业务沙箱中用 OpenSSH askpass 代替 sshpass 的本机伪终端。"""
+import os
+from pathlib import Path
+import sys
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    env = dict(os.environ)
+    if len(args) >= 3 and args[0] == "-p":
+        env["SSHPASS"] = args[1]
+        command = args[2:]
+    elif len(args) >= 2 and args[0] == "-e" and "SSHPASS" in env:
+        command = args[1:]
+    else:
+        sys.exit("业务沙箱 sshpass 仅支持 -p 密码 ssh 或 -e ssh")
+    if command[0] != "ssh":
+        sys.exit("业务沙箱 sshpass 必须调用 ssh，以继承沙箱代理")
+    env.update(SSH_ASKPASS=str(Path(__file__).with_name("ssh_askpass")),
+               SSH_ASKPASS_REQUIRE="force")
+    # 保留 stdin，NAS 脚本仍可通过它传递远端 sudo 输入；不创建终端或密码文件。
+    os.execvpe(command[0], command, env)

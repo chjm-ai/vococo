@@ -73,6 +73,49 @@ def test_child_model_switch_keeps_network_adapter(monkeypatch, selection):
         assert child.env["CLAUDE_CODE_EXTRA_BODY"] != "old-provider"
 
 
+@pytest.mark.parametrize("mode", ["-p", "-e"])
+def test_sshpass_uses_askpass_without_pseudo_terminal(monkeypatch, mode):
+    monkeypatch.setenv("SSHPASS", "offline-test-password")
+    args = ["sshpass", mode]
+    if mode == "-p":
+        args.append("offline-test-password")
+    monkeypatch.setattr("sys.argv", [*args, "ssh", "nas", "echo ok"])
+    script = Path(execution.__file__).parent / "sandbox_bin" / "sshpass"
+    with patch("os.execvpe") as execute:
+        runpy.run_path(str(script), run_name="__main__")
+    name, args, env = execute.call_args.args
+    assert name == "ssh" and args == ["ssh", "nas", "echo ok"]
+    assert env["SSHPASS"] == "offline-test-password"
+    assert env["SSH_ASKPASS_REQUIRE"] == "force"
+    assert Path(env["SSH_ASKPASS"]).name == "ssh_askpass"
+    assert os.access(env["SSH_ASKPASS"], os.X_OK)
+
+
+@pytest.mark.parametrize("args", [["-d", "0", "ssh"], ["-p", "secret", "sh"]])
+def test_sshpass_rejects_unsupported_calls_without_echoing_password(monkeypatch, args):
+    monkeypatch.setattr("sys.argv", ["sshpass", *args])
+    script = Path(execution.__file__).parent / "sandbox_bin" / "sshpass"
+    with patch("os.execvpe") as execute, pytest.raises(SystemExit) as error:
+        runpy.run_path(str(script), run_name="__main__")
+    assert "secret" not in str(error.value)
+    execute.assert_not_called()
+
+
+@pytest.mark.parametrize("prompt,allowed", [("nas password:", True), ("PassWord:", True),
+                                            ("Are you sure (yes/no)?", False)])
+def test_askpass_answers_only_password_prompts(monkeypatch, capsys, prompt, allowed):
+    monkeypatch.setenv("SSHPASS", "offline-test-password")
+    monkeypatch.setattr("sys.argv", ["ssh_askpass", prompt])
+    script = Path(execution.__file__).parent / "sandbox_bin" / "ssh_askpass"
+    if allowed:
+        runpy.run_path(str(script), run_name="__main__")
+        assert capsys.readouterr().out == "offline-test-password\n"
+    else:
+        with pytest.raises(SystemExit):
+            runpy.run_path(str(script), run_name="__main__")
+        assert capsys.readouterr().out == ""
+
+
 def test_ssh_adapter_rejects_non_ssh_commands(monkeypatch):
     monkeypatch.setenv("GIT_SSH_COMMAND", "sh -c 'echo must-not-execute'")
     script = Path(execution.__file__).parent / "sandbox_bin" / "ssh"
