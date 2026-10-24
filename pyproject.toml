@@ -53,7 +53,7 @@ build-backend = "setuptools.build_meta"
 include = ["vococo*"]
 
 [tool.setuptools.package-data]
-"vococo.core" = ["research_method.md"]
+"vococo.core" = ["research_method.md", "sandbox_bin/ssh"]
 "vococo.tools" = ["*.cjs"]
 "vococo.voice" = [
     "static/*.html",

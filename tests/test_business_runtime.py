@@ -68,12 +68,14 @@ async def test_stream_uses_workspace_but_loads_output_rules(isolated, monkeypatc
     assert "原业务执行规则不能丢失" in options.system_prompt["append"]
     assert str(output) in options.system_prompt["append"]
     assert "正式成果保存在业务目录" in options.system_prompt["append"]
+    assert options.env["PATH"] == execution.shell_env()["PATH"]
     assert options.sandbox["enabled"] and not options.sandbox["allowUnsandboxedCommands"]
     assert str(output) in options.sandbox["filesystem"]["allowWrite"]
     serialized = json.loads(SubprocessCLITransport(prompt="test", options=options)._build_settings_value())
     assert serialized["sandbox"] == options.sandbox
     child = subagent._child_options(options, None)
     assert child.sandbox == options.sandbox and child.sandbox is not options.sandbox
+    assert child.env["PATH"] == options.env["PATH"]
 
 
 def test_business_output_cannot_grant_source_repository(isolated):
