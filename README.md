@@ -56,11 +56,13 @@ uv run python scripts/migrate_business_workspaces.py --data-dir /实际/data目�
 ```
 网络兼容：已有无认证本机 HTTP 代理（`http_proxy`/`HTTP_PROXY`，其次 HTTPS 对应变量）复用原端口；
 普通 `ssh`（包括 Python 子进程调用）自动使用 SDK SOCKS 代理，文件隔离保持不变。
+`sshpass -p 密码 ssh …` / `sshpass -e ssh …` 在业务空间改用 OpenSSH 密码助手，
+不创建沙箱禁止的伪终端，也不写密码文件；其他 sshpass 参数明确报不支持。
 不放开全部本机端口；显式 `/usr/bin/ssh` 或自行覆盖 PATH 的脚本需要自行使用 SDK 的代理参数。
 
 离线命令级验收（本机假模型，不使用真实模型额度）：
 - `uv run python eval/check_business_sandbox.py`：文件写入边界。
-- `uv run python eval/check_business_network.py`：显式 HTTP 代理、普通 SSH 握手与文件写入边界。
+- `uv run python eval/check_business_network.py`：显式 HTTP 代理、sshpass→SSH 握手与文件写入边界（不代表真实密码认证已验收）。
 
 ## 架构
 

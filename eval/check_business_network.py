@@ -60,7 +60,7 @@ def command_for(base, proxy_port, ssh_port):
         f"op=urllib.request.build_opener(urllib.request.ProxyHandler({{'http':'http://127.0.0.1:{proxy_port}'}}))\n"
         "assert json.load(op.open('http://sandbox-probe.invalid/test',timeout=5))['probe']=='ok'\n"
         "print('HTTP_PROXY_OK')\n"
-        "r=subprocess.run(['ssh','-F','/dev/null','-o','BatchMode=yes','-o','ConnectTimeout=5',"
+        "r=subprocess.run(['sshpass','-p','offline-test-password','ssh','-F','/dev/null','-o','BatchMode=yes','-o','ConnectTimeout=5',"
         f"'-p','{ssh_port}','127.0.0.1','true'],capture_output=True,text=True,timeout=10)\n"
         "assert 'Operation not permitted' not in r.stderr, r.stderr\n"
         f"Path({str(base / 'output/report.txt')!r}).write_text('ok')\n"
@@ -104,13 +104,14 @@ async def probe(base):
                 async for _ in client.receive_response():
                     pass
         results = json.dumps(handler.results, ensure_ascii=False)
+        assert handler.results and all(not item.get("is_error") for item in handler.results), results
         assert "HTTP_PROXY_OK" in results, results
         assert SSH.handshake.is_set(), results
         assert "FILE_BOUNDARY_OK" in results, results
         assert not (base / "source/blocked.txt").exists()
         assert protected.read_text() == "original"
         assert (base / "output/report.txt").read_text() == "ok"
-        print("PASS：真实沙箱中显式 HTTP 代理成功、普通 subprocess SSH 完成握手；成果可写，源码与执行配置不可写。")
+        print("PASS：真实沙箱中显式 HTTP 代理成功、subprocess sshpass→SSH 完成握手；成果可写，源码与执行配置不可写。")
 
 
 if __name__ == "__main__":

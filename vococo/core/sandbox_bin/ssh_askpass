@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""密码只通过 OpenSSH 创建的管道返回，不输出其他提示或落盘。"""
+import os
+import sys
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2 or "password" not in sys.argv[1].lower():
+        sys.exit(1)
+    password = os.environ.get("SSHPASS")
+    if password is None:
+        sys.exit(1)
+    print(password)
