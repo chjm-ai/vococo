@@ -928,6 +928,7 @@ async function sendVoice(blob, ext, conv){
       if(here && st && st.bubble){
         // 还在原会话:文字回填占位气泡,再复用它自动发给 Claude(不重复冒泡)
         st.bubble.classList.remove("voicebub"); st.bubble.textContent=d.text;
+        appendUserFoot(st.bubble.closest(".row"), d.text);
         await send(d.text, null, {reuseBubble:true, forceSend:true});
       }else{
         // 已切到别的会话:占位气泡早被清空,直接发到后台会话,靠历史/SSE 缓冲在切回时补出来;

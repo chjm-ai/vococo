@@ -1435,7 +1435,7 @@ function buildTurnBlock(t, conv, isLast){
   else if(!externalResult) {
     const fileNames=(t.files||[]).map(f=>typeof f==="string"?f:(f.name||f.filename||"")).filter(Boolean);
     const fileLabel=fileNames.length ? `\n\n📎 附件：${fileNames.join("、")}` : "";
-    wrap.append(buildBubble("me", t.user+fileLabel, t.images, t.audios, t.videos).row);
+    wrap.append(buildBubble("me", t.user+fileLabel, t.images, t.audios, t.videos, t.ts).row);
   }
   if(!t.pending){
     const {row,b}=buildBubble("ai","");
