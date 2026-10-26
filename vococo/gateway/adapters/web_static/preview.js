@@ -187,7 +187,7 @@ async function downloadArtifact(entry,conv,button,status){
   }catch(error){status.textContent=error.name==="AbortError"?"已取消保存，可重试":error.name==="NotAllowedError"?"文件已就绪，请再点下载以保存":error.message;}
   finally{button.disabled=false;}
 }
-function appendHtmlPreviews(target, entries){
+function appendHtmlPreviews(target, entries, conv=S.conv){
   for(const entry of entries||[]){
     if(typeof entry.id!=="string" || typeof entry.html!=="string" || entry.html.length>200000) continue;
     // done 带全量快照兜底；中途帧重放或历史补帧不能再建同一卡片。
@@ -197,6 +197,14 @@ function appendHtmlPreviews(target, entries){
     const card=holder.firstElementChild;
     card.dataset.htmlPreview=entry.id; card.dataset.title=entry.title||"HTML";
     target.append(card); setupChatPreview(card);
+    if(entry.artifact){
+      const existing=[...target.querySelectorAll('[data-artifact]')].find(n=>n.dataset.artifact===entry.artifact.id);
+      if(existing) card.prepend(existing);
+      else{
+        const header=document.createElement("div");
+        appendArtifacts(header,[entry.artifact],conv); card.prepend(header);
+      }
+    }
   }
 }
 async function openLocalHtmlPreview(anchor,path,title){

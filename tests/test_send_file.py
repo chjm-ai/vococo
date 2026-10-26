@@ -284,9 +284,10 @@ async def test_exact_64mb_limit_and_per_turn_count(context):
         stream.truncate(artifacts.MAX_BYTES)
     assert "已交付" in await call(file)
     assert session_store.turn_artifacts(key, tid)[0]["size"] == artifacts.MAX_BYTES
-    file.write_text("small")
-    for _ in range(9):
+    for index in range(9):
+        file.write_text(f"small {index}")
         assert "已交付" in await call(file)
+    file.write_text("eleventh")
     assert "最多" in await call(file)
     assert len(events) == 10
 

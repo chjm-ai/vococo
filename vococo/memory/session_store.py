@@ -270,8 +270,9 @@ def load_history(
             entry["videos"] = user_vids
         if ai_vids:
             entry["ai_videos"] = ai_vids
-        if htmls:
-            entry["html_previews"] = _loads_list(htmls)
+        previews = turn_html_previews(session_key, tid)
+        if previews:
+            entry["html_previews"] = previews
         artifacts = turn_artifacts(session_key, tid)
         if artifacts:
             entry["artifacts"] = artifacts
@@ -301,6 +302,12 @@ def append_artifact(session_key: str, turn_id: int, filename: str, title: str, c
                            (turn_id, session_key)).fetchone()
         if not active:
             raise ValueError("执行回合已结束或不属于当前会话。")
+        existing = c.execute(
+            "SELECT id,filename,title,size FROM artifacts WHERE session_key=? AND turn_id=? AND filename=? AND content=?",
+            (session_key, turn_id, filename, content),
+        ).fetchone()
+        if existing:
+            return dict(zip(("id", "filename", "title", "size"), existing))
         entries = turn_artifacts(session_key, turn_id)
         if len(entries) >= 10 or sum(e["size"] for e in entries) + len(content) > MAX_BYTES * 2:
             raise ValueError("每轮最多 10 个成果、合计不超过 128MB。")
@@ -318,31 +325,60 @@ def artifact_content(session_key: str, artifact_id: str) -> tuple | None:
     ).fetchone()
 
 
+def _artifact_html_previews(session_key: str, turn_id: int | None) -> list:
+    from ..tools.html_preview import MAX_BYTES, snapshot_id, validate_source
+
+    rows = _conn().execute(
+        "SELECT id,filename,title,content FROM artifacts WHERE session_key=? AND turn_id=? "
+        "AND size<=? AND (lower(filename) LIKE '%.html' OR lower(filename) LIKE '%.htm')",
+        (session_key, turn_id, MAX_BYTES),
+    ).fetchall()
+    entries = []
+    for artifact_id, filename, title, content in rows:
+        try:
+            source = validate_source(content)
+        except (ValueError, UnicodeError):
+            continue
+        entries.append({"id": snapshot_id(filename, content),
+                        "html": source, "title": title, "artifact": {
+                            "id": artifact_id, "filename": filename, "title": title, "size": len(content)}})
+    return entries
+
+
 def turn_html_previews(session_key: str, turn_id: int | None) -> list:
     row = _conn().execute(
         "SELECT html_previews FROM turns WHERE id=? AND session_key=?",
         (turn_id, session_key),
     ).fetchone()
-    return _loads_list(row[0]) if row else []
+    entries = _loads_list(row[0]) if row else []
+    for entry in _artifact_html_previews(session_key, turn_id):
+        existing = next((item for item in entries if item["id"] == entry["id"]), None)
+        if existing is None:
+            entries.append(entry)
+        else:
+            existing["artifact"] = entry["artifact"]
+    return entries
 
 
-def append_html_preview(session_key: str, turn_id: int, entry: dict) -> bool:
-    c = _conn()
-    row = c.execute(
-        "SELECT html_previews FROM turns WHERE id=? AND session_key=? AND assistant_text=''",
+def append_html_preview(session_key: str, turn_id: int, entry: dict,
+                        filename: str = "preview.html", content: bytes | None = None) -> bool:
+    from ..tools.html_preview import validate_source
+
+    data = content if content is not None else entry["html"].encode("utf-8")
+    if validate_source(data) != entry["html"]:
+        raise ValueError("HTML 快照与原文件不一致。")
+    active = _conn().execute(
+        "SELECT 1 FROM turns WHERE id=? AND session_key=? AND assistant_text=''",
         (turn_id, session_key),
     ).fetchone()
-    if row is None:
+    if not active:
         raise ValueError("执行回合已结束或不属于当前会话。")
-    entries = _loads_list(row[0])
+    entries = turn_html_previews(session_key, turn_id)
     if any(item["id"] == entry["id"] for item in entries):
         return False
-    # 防止模型循环调用把单轮撑成无限大的附件包。
     if len(entries) >= 10:
         raise ValueError("每轮最多展示 10 个 HTML 快照。")
-    c.execute("UPDATE turns SET html_previews=? WHERE id=? AND session_key=?",
-              (json.dumps([*entries, entry], ensure_ascii=False), turn_id, session_key))
-    c.commit()
+    append_artifact(session_key, turn_id, filename, entry.get("title", ""), data)
     return True
 
 
