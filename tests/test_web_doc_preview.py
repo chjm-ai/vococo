@@ -78,6 +78,48 @@ async def test_reads_absolute_path_inside_cwd(doc_app, doc_root):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("name", ["signed.txt", "会议纪要 空格.md", "literal%20.txt"])
+async def test_reads_local_file_uri(doc_app, doc_root, name):
+    from urllib.parse import urlencode
+
+    path = doc_root / name
+    path.write_text("文档正文", encoding="utf-8")
+    query = urlencode({"conv": "x", "path": path.as_uri()})
+
+    status, body, _headers = await _get(doc_app, "/doc/preview?" + query)
+
+    assert status == 200
+    assert body.decode("utf-8") == "文档正文"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("value", [
+    "file://remote/a.txt", "file:////remote/a.txt", "file:///%2Fremote/a.txt",
+    "file:relative.txt", "file:///tmp/a.txt?x=1", "file:///tmp/a.txt#section",
+    "file:///tmp/%FF.txt", "file:///tmp/a%00.txt", "file:///tmp/a%5Cb.txt",
+])
+async def test_rejects_nonlocal_or_invalid_file_uri(doc_app, value):
+    from urllib.parse import urlencode
+
+    status, _body, _headers = await _get(
+        doc_app, "/doc/preview?" + urlencode({"conv": "x", "path": value}))
+
+    assert status == 404
+
+
+@pytest.mark.anyio
+async def test_file_uri_cannot_escape_existing_bounds(doc_app, isolated):
+    from urllib.parse import urlencode
+
+    path = isolated / "outside.txt"
+    path.write_text("不可读取", encoding="utf-8")
+    status, _body, _headers = await _get(
+        doc_app, "/doc/preview?" + urlencode({"conv": "x", "path": path.as_uri()}))
+
+    assert status == 404
+
+
+@pytest.mark.anyio
 async def test_rejects_path_traversal(doc_app, doc_root):
     secret = doc_root.parent / "secret.txt"
     secret.write_text("do not leak", encoding="utf-8")

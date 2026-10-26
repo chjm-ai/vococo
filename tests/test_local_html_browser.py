@@ -26,6 +26,8 @@ async def test_local_html_links_browser(isolated, monkeypatch):
     (root / "large.html").write_bytes(b"x" * 200001)
     (root / "bad.html").write_bytes(b"\xff")
     (root / "notes.md").write_text("# 普通文档")
+    (root / "会议纪要 空格.md").write_text("# 会议纪要正文")
+    (root / "signed.txt").write_text("署名逐字稿正文")
     (isolated / "outside.html").write_text("<p>目录外</p>")
     monkeypatch.setattr(WebAdapter, "_conv_cwd", lambda self, conv: str(root) if conv == "html-link-e2e" else None)
     key = config.resolve_session_key("web", "html-link-e2e")

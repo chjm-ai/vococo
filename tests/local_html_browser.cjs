@@ -96,6 +96,12 @@ const path=require('node:path');
     await render('notes.md');await page.locator('#local-link-test .doclink').click();
     await page.locator('#dpBody h1').getByText('普通文档').waitFor();
     await page.evaluate(()=>closeDocPreview());
+    for(const [name,selector,text] of [['会议纪要 空格.md','#dpBody h1','会议纪要正文'],['signed.txt','#dpBody pre','署名逐字稿正文']]){
+      await render('file://'+root+'/'+encodeURIComponent(name));
+      await page.locator('#local-link-test .doclink').click();
+      await page.locator(selector).getByText(text).waitFor();
+      await page.evaluate(()=>closeDocPreview());
+    }
     await render('https://example.com/page.html');
     assert.equal(await page.locator('#local-link-test .doclink').getAttribute('href'),'https://example.com/page.html');
     await page.evaluate(()=>{window.renderDocUrl=target=>{window.externalDocTarget=target;};});
