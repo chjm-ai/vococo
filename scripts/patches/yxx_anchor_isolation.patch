@@ -1,0 +1,26 @@
+--- a/yxx_auto.py
++++ b/yxx_auto.py
+@@ -4,7 +4,7 @@
+ 子命令(全部给 vococo 脚本任务用,末行输出 ##CRON_SIGNAL:0/1##):
+   daily [YYYY-MM-DD] [--fabric-only]
+                        每日巡检:lemlist 全部 running campaign + Gmail 快扫补漏 + 待发池预测
+-                       --fabric-only 只隐藏陶纤报告,共享巡检与指标存储保持不变
++                       --fabric-only 隐藏隔热报告并隔离其指标落盘,共享安全巡检保持不变
+                        + 滚动退信熔断(超阈值自动暂停面料 campaign)+ 写指标台账
+   scan                 询盘快扫:lex@ 收件箱新邮件分类,真人回复转发搭档 + 记询盘台账
+   seo [YYYY-MM-DD]     官网/Ads/日更日报:GA4 + Google Ads + Oris 日更与题库余量
+@@ -467,9 +467,11 @@
+         for a in s["day_replies"]:
+             campaign_out.append(f"  💬 lemlist 回复:{a.get('leadEmail') or a.get('leadId')} {a.get('leadCompanyName') or ''}")
+             alert = True
+-        metrics["campaigns"][s["name"]] = {k: s[k] for k in
+-                                           ("leads", "reviewed", "sent", "bounced", "replied", "opened", "day_sent",
+-                                            "day_new", "win_new", "win_bounced", "pace")}
++        # 隔热线由独立巡检记录；fabric-only 不再往面料指标台账混写 ANCHOR。
++        if not (fabric_only and is_anchor):
++            metrics["campaigns"][s["name"]] = {k: s[k] for k in
++                                               ("leads", "reviewed", "sent", "bounced", "replied", "opened", "day_sent",
++                                                "day_new", "win_new", "win_bounced", "pace")}
+
+     # Gmail:先补扫(快扫漏掉的也能接住),再按台账汇总昨天
+     out.append(f"\n## 邮箱回复(lex@,{lab})")
