@@ -436,12 +436,19 @@ async function updateChatPreview(node){
   if(!source.trim()){ setPreviewStatus(state,state.closed?"内容为空":"生成中，等待完整内容…",state.closed?"warning":"busy"); return; }
   const theme=node.dataset.lang==="mermaid"?previewDiagramTheme():null;
   if(source===state.rendered && theme?.key===state.renderTheme){ finishPreviewStatus(state); return; }
-  const input=source; let geometry;
+  const input=source; let geometry, failure="无法预览：图表语法错误，请切换源码检查";
   try{
     if(node.dataset.lang==="mermaid"){
       // 禁止模型通过初始化指令/前置配置覆盖严格模式，或加载动态图表模块。
-      if(/%%\{|^\s*---|\b(?:click|href)\b|\bimg\s*:|\b(?:url|image-set)\s*\(|@(?:import|font-face)|\\|<\s*[a-z]|&(?:lt|#0*60|#x0*3c);|(?:https?:|data:|blob:|file:|\/\/)/i.test(source)) throw new Error("不支持交互或自定义配置");
+      // 只豁免无属性 br；统一拼写交给 Mermaid 生成多行 SVG 文本，仍禁用 HTML 标签渲染。
+      source=source.replace(/<br\s*\/?>/gi,"<br/>");
+      if(/%%\{|^\s*---|\b(?:click|href)\b|\bimg\s*:|\b(?:url|image-set)\s*\(|@(?:import|font-face)|\\|<\s*\/?\s*[a-z!]|&(?:lt|#0*60|#x0*3c);|(?:https?:|data:|blob:|file:|\/\/)/i.test(source.replace(/<br\/>/g,""))){
+        failure="无法预览：安全限制，不支持其他 HTML 标签、交互、外部资源或自定义配置";
+        throw new Error(failure);
+      }
+      failure="无法预览：图表组件加载失败，请稍后重试";
       const engine=await loadPreviewMermaid();
+      failure="无法预览：图表语法错误，请切换源码检查";
       initializePreviewMermaid(engine,theme);
       const result=await engine.render("chatdiagram"+(++previewSequence),source);
       const diagram=preparePreviewDiagram(result.svg,theme);
@@ -459,7 +466,7 @@ async function updateChatPreview(node){
     else setPreviewStatus(state,"生成中，预览逐步更新…");
   }catch(error){
     if(version!==state.version) return;
-    setPreviewStatus(state,state.closed?"无法预览，请切换源码检查语法或安全限制":"生成中，等待完整语法（保留上次预览）…",state.closed?"warning":"busy");
+    setPreviewStatus(state,state.closed?failure:"生成中，等待完整语法（保留上次预览）…",state.closed?"warning":"busy");
   }
 }
 // 流式正文仍沿用原 Markdown 解析，只转移同序号预览节点，避免每帧销毁 iframe。

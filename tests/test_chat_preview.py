@@ -18,7 +18,7 @@ def anyio_backend():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("scenario", [
-    "existing", "sequence-height-dark", "sequence-height-light", "sequence-theme-layout", "sequence-stream-theme", "manual-height",
+    "existing", "mermaid-breaks", "sequence-height-dark", "sequence-height-light", "sequence-theme-layout", "sequence-stream-theme", "manual-height",
 ])
 async def test_chat_preview_real_browser(isolated, monkeypatch, scenario):
     monkeypatch.setattr(config, "WEB_HOST", "127.0.0.1")
