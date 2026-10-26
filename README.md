@@ -71,11 +71,13 @@ Keychain/DPoP/TLS，不在业务 Bash 内运行 `lark-cli`，不关闭沙箱或�
 写入必须审批，仅接受纯 Markdown 正文；不接收本机路径、XML/HTML、图片或附件，
 不支持表格、权限管理或登录。调用串行，取消回收自有子进程组；超时不自动重试写入。
 读取受 CLI 自身文档权限限制，宿主代理不是每个 Agent 独立的飞书账号隔离。
+旧会话若仍直接执行 `lark-cli docs +fetch/+create/+update`，业务钩子在执行前拒绝并明确提示
+改用 `mcp__vococo__lark_document`，不再等 TLS 失败后让用户手动重试；本地技能阅读、校验及开发会话不受影响。
 
 离线命令级验收（本机假模型，不使用真实模型额度）：
 - `uv run python eval/check_business_sandbox.py`：文件写入边界。
 - `uv run python eval/check_business_network.py`：显式 HTTP 代理、sshpass→SSH 握手与文件写入边界（不代表真实密码认证已验收）。
-- `uv run python eval/check_lark_documents.py 文档token`：真实 SDK 业务沙箱经 MCP 宿主代理读取现有飞书目录（使用本机授权，只读联网；不强制刷新或创建文档）。
+- `uv run python eval/check_lark_documents.py 文档token`：真实 SDK 业务沙箱经 MCP 宿主代理读取现有飞书目录（使用本机授权，只读联网；不强制刷新或创建文档）。加 `--legacy-first` 可验证旧命令拒绝提示及后续 MCP 读取（本机脚本模型按预定步骤调用，不代表已验证真实模型的自主选择）。
 
 ## 架构
 

@@ -135,6 +135,37 @@ def test_policy_failure_denies_instead_of_falling_back(business, monkeypatch, to
     assert_denied(call(tool, "file.md", command="pwd", dangerouslyDisableSandbox=True), "安全判定异常")
 
 
+@pytest.mark.parametrize("command", [
+    "lark-cli docs +fetch --doc TPgPddUPzoubkgx0LNVcgMAQndd --detail with-ids --as user",
+    "env LANG=zh_CN.UTF-8 /usr/local/bin/lark-cli docs +create --content -",
+    "cd /tmp; lark-cli docs +update --doc abc --command overwrite --content -",
+    "zsh -c 'lark-cli docs +fetch --doc abc'",
+])
+def test_business_legacy_lark_docs_redirected_before_execution(business, monkeypatch, command):
+    monkeypatch.setattr(config, "DANGER_GUARD", False)
+    monkeypatch.setattr(config, "APPROVAL_GATE", False)
+    monkeypatch.setattr(permissions, "auto_allows", lambda *args: True)
+    assert_denied(call("Bash", command=command), "mcp__vococo__lark_document")
+    assert call("mcp__vococo__lark_document", operation="fetch", doc="abc") == {}
+
+
+@pytest.mark.parametrize("command", [
+    "lark-cli skills read lark-doc",
+    "lark-cli docs +validate --content -",
+    "printf '%s' 'lark-cli docs +fetch --doc abc'",
+    "echo lark-cli docs +fetch --doc abc",
+    "cat <<'EOF'\nlark-cli docs +fetch --doc abc\nEOF",
+    "cat > guide.md <<'EOF'\nlark-cli docs +fetch --doc abc\nEOF",
+])
+def test_lark_local_help_and_quoted_examples_not_redirected(business, command):
+    assert call("Bash", command=command) == {}
+
+
+def test_developer_lark_cli_not_redirected(monkeypatch):
+    monkeypatch.setattr(danger, "_business_policy", lambda cwd: None)
+    assert danger._hard_guard("Bash", {"command": "lark-cli docs +fetch --doc abc"}, "/tmp") is None
+
+
 def test_business_cannot_disable_shell_sandbox(business, monkeypatch):
     monkeypatch.setattr(config, "DANGER_GUARD", False)
     monkeypatch.setattr(config, "APPROVAL_GATE", False)
