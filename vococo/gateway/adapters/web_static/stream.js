@@ -708,6 +708,19 @@ function markLive(){
   _liveSig=sig; renderConvs();
 }
 function handleEvent(e){
+  // 必须先拦再写 S.live，否则即使 DOM 不重建，侧栏黄点仍会重新亮起。
+  if(S.stopping?.[e.conv]){
+    if(["user","done","cancelled"].includes(e.type) || (e.type==="message" && !e.mid_turn)) delete S.stopping[e.conv];
+    else if(STREAMY.includes(e.type) || (e.type==="message" && e.mid_turn)) return;
+  }
+  if(e.type==="cancelled"){
+    delete S.live[e.conv]; delete S.streamSnap[e.conv]; markLive();
+    delete S.histCache[e.conv]; idbDel("hist:"+e.conv);
+    delete S.pendingChoice[e.conv];
+    if(e.conv===S.conv) finalizeStream();
+    flushPending(e.conv);
+    return;
+  }
   if(e.type==="notices"){
     if(e.clarify_id && ["answered","dismissed","expired"].includes(e.status)) settleChoice(e.clarify_id);
     if(typeof loadNotices==="function") loadNotices();
@@ -940,15 +953,6 @@ function noteContent(s, e){
 }
 // 把单个流式事件落到 DOM(供前台实时渲染 + 切回会话时按缓冲重放两用)
 function applyStreamEvent(e){
-  // 停止回复后的防重建短窗,见 stopReply 的注释:窗口内该会话的旧帧在流已收掉
-  // 时不重建气泡(避免「点了还出现,要点第二次」);到期或命中后自动解除。
-  const g = S.stopGuard;
-  if(g){
-    if(g.conv === e.conv){
-      if(Date.now() > g.until) S.stopGuard = null;  // 窗口到期,恢复正常
-      else if(!S.stream) return;                    // 窗口内、无流 → 在途旧帧,丢弃
-    }
-  }
   if(S.stream && e.id && CONTENT_EVENTS.has(e.type)) noteContent(S.stream, e);
   switch(e.type){
     case "user":
