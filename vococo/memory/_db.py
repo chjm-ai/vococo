@@ -24,6 +24,20 @@ CREATE TABLE IF NOT EXISTS turns(
   draft_text TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_key, id);
+CREATE TABLE IF NOT EXISTS artifacts(
+  id TEXT PRIMARY KEY,
+  session_key TEXT NOT NULL,
+  turn_id INTEGER NOT NULL,
+  filename TEXT NOT NULL,
+  title TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  content BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_turn ON artifacts(session_key, turn_id);
+CREATE TRIGGER IF NOT EXISTS delete_turn_artifacts AFTER DELETE ON turns
+BEGIN
+  DELETE FROM artifacts WHERE turn_id=OLD.id AND session_key=OLD.session_key;
+END;
 CREATE TABLE IF NOT EXISTS session_meta(
   session_key TEXT PRIMARY KEY,
   watermark_id INTEGER NOT NULL DEFAULT 0

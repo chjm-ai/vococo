@@ -11,6 +11,7 @@ data/
 *.db-wal
 *.db-shm
 logs/
+output/
 
 # Python
 __pycache__/

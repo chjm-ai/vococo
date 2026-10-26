@@ -142,6 +142,43 @@ function previewCodeHtml(lang, source, closed, streaming){
   if(limited) source=source.slice(0,200000)+"\n[源码过大，显示前 200000 字符；完整内容请复制整条消息]";
   return '<section class="chat-preview" data-lang="'+lang+'" data-closed="'+closed+'" data-live="'+streaming+'"><pre class="preview-source" hidden><code>'+esc(source)+'</code></pre></section>';
 }
+function appendArtifacts(target, entries, conv=S.conv){
+  if(!target) return;
+  for(const entry of entries||[]){
+    if(!/^[A-Za-z0-9_-]{43}$/.test(entry.id) || typeof entry.filename!=="string") continue;
+    if([...target.querySelectorAll('[data-artifact]')].some(n=>n.dataset.artifact===entry.id)) continue;
+    const card=document.createElement("section"); card.className="artifact-card"; card.dataset.artifact=entry.id;
+    const name=document.createElement("strong"); name.textContent=entry.title||entry.filename;
+    const meta=document.createElement("span"); meta.textContent=entry.filename+" · "+(entry.size/1024/1024).toFixed(2)+" MB";
+    const button=document.createElement("button"); button.type="button"; button.textContent="下载文件";
+    const status=document.createElement("span"); status.setAttribute("role","status");
+    button.onclick=()=>downloadArtifact(entry,conv,button,status);
+    card.append(name,meta,button,status); target.append(card);
+  }
+}
+async function downloadArtifact(entry,conv,button,status){
+  button.disabled=true; status.textContent="正在下载…";
+  try{
+    let file=button._artifactFile;
+    if(!file){
+      const response=await api("/artifacts/"+encodeURIComponent(entry.id)+"/download?"+new URLSearchParams({conv:conv||""}));
+      if(!response.ok) throw new Error(response.status===401?"请重新登录":response.status===404?"附件不存在或不属于当前会话":"下载失败，请重试");
+      const blob=await response.blob();
+      file=new File([blob],entry.filename,{type:blob.type});
+    }
+    if(!IS_DESKTOP_SAVE){
+      if(!navigator.canShare?.({files:[file]})) throw new Error("当前浏览器不支持保存附件，请使用桌面浏览器");
+      button._artifactFile=file;
+      await navigator.share({files:[file]});
+    }else{
+      const url=URL.createObjectURL(file),anchor=document.createElement("a");
+      anchor.href=url; anchor.download=entry.filename; document.body.append(anchor); anchor.click(); anchor.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),60000);
+    }
+    status.textContent="文件已交给浏览器保存";
+  }catch(error){status.textContent=error.name==="AbortError"?"已取消保存，可重试":error.name==="NotAllowedError"?"文件已就绪，请再点下载以保存":error.message;}
+  finally{button.disabled=false;}
+}
 function appendHtmlPreviews(target, entries){
   for(const entry of entries||[]){
     if(typeof entry.id!=="string" || typeof entry.html!=="string" || entry.html.length>200000) continue;

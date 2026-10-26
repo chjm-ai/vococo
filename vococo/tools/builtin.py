@@ -1185,6 +1185,41 @@ async def send_image(args: dict) -> dict:
     return _ok(err or "已发送到当前聊天（不自动收录作品库）。")
 
 @tool(
+    "send_file",
+    "把已生成的本地成果作为可下载附件交付当前 Web 会话。支持 PPTX、PDF、DOCX、XLSX、"
+    "文本、图片、音视频及可安全检查的 ZIP，单个不超过 64MB。path 为当前工作目录内的"
+    "相对或绝对路径；业务 Agent 另允许正式 output_dir。拒绝软链、凭据、目录逃逸及"
+    "其他会话文件；不可用于任意 HOME 文件读取。title 可选，120字以内。"
+    "保存私有快照，刷新仍可下载；不公开发布、不收录图片作品库。仅 Web 支持。",
+    {"type": "object", "properties": {"path": {"type": "string"}, "title": {"type": "string"}},
+     "required": ["path"]},
+)
+async def send_file(args: dict) -> dict:
+    from ..gateway import clarify
+    from ..gateway.adapters.web import WebAdapter
+    from .artifacts import snapshot
+
+    ctx = clarify.current()
+    if ctx is None or not isinstance(ctx.adapter, WebAdapter):
+        return _ok("当前渠道不支持文件附件（仅 Web 支持）；未交付。") | {"isError": True}
+    title = args.get("title", "")
+    if not isinstance(title, str) or len(title) > 120:
+        return _ok("文件未交付：title 必须是 120 字以内的文字。") | {"isError": True}
+    if ctx.turn_id is None:
+        return _ok("当前没有绑定的执行回合；文件未交付。") | {"isError": True}
+    try:
+        if ctx.session_key != config.resolve_session_key("web", str(ctx.chat_id)):
+            return _ok("会话路由不匹配；文件未交付。") | {"isError": True}
+        filename, content = await snapshot(args.get("path", ""), ctx.session_key)
+        await ctx.adapter.send_file(ctx.chat_id, ctx.session_key, ctx.turn_id, filename, title, content)
+    except (ValueError, OSError) as exc:
+        return _ok(f"文件未交付：{exc}") | {"isError": True}
+    except Exception:
+        return _ok("文件交付失败：无法保存或推送附件，请刷新检查后重试；不要声称已成功交付。") | {"isError": True}
+    return _ok("文件已交付当前聊天（认证下载、私有快照；未公开、未收录作品库）。")
+
+
+@tool(
     "show_html",
     "把已落盘的本地 .html/.htm 文件作为静态预览卡片展示到当前 Web 聊天。"
     "为用户生成静态网页、HTML 流程图或可视化并写入文件后调用，无需重复输出 HTML 代码围栏。"
@@ -1978,6 +2013,7 @@ def build_mcp_servers(*, subagent_tool=None, delegation_tools=()) -> dict:
                 request_decision,
                 send_message,
                 send_image,
+                send_file,
                 send_video,
                 show_html,
                 generate_image,
