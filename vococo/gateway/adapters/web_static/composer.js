@@ -290,14 +290,9 @@ async function stopReply(){
   // 收尾含最多 5 秒 CLI interrupt + 写库,SSE 终态要晚几秒才到,干等会让
   // 用户以为没停住、反复点。SSE 终态到达后差量渲染覆盖成同一结果,无跳变。
   const optimistic = markTaskStopped(conv);
-  // 防重建(点两次的根因):取消指令发出前已在途的旧帧(取消瞬间 SDK 最后吐的
-  // 文本/工具事件)会在 finalizeStream 之后才到达,而 applyStreamEvent 对
-  // streamy 事件一律 ensureStream——不拦会把已收掉的气泡重新拉起来,让用户
-  // 以为没停住、要点第二次。短窗内该会话的 streamy 事件且当前无流时一律丢弃,
-  // 窗口过后自动解除;用户手动发的新消息必在窗口之后,不受影响。
-  S.stopGuard = {conv, until: Date.now() + 2000};
-  clearTimeout(S.stopGuardTimer);
-  S.stopGuardTimer = setTimeout(()=>{ if(S.stopGuard) S.stopGuard = null; }, 2500);
+  // 收尾耗时不固定，按会话拦住旧帧，直到终态或下一条用户消息，不能只等两秒。
+  S.stopping = S.stopping || {};
+  S.stopping[conv] = true;
   // 顺手清掉该会话的进行中缓冲:done 到达时本来也会清,提前清掉更稳——
   // 避免切走再切回时 maybeReplayStream 把已停止回合的旧帧重放成新的流式气泡
   // (侧栏「正在回复」橙点也随之熄灭,由 markLive 重绘)。
@@ -305,17 +300,23 @@ async function stopReply(){
   finalizeStream(); // 立即结束前端流式气泡,保留已有部分文字
   try{
     const r = await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
-    if(r.ok){
-      const j = await r.json();
-      if(!j.stopped){
-        if(optimistic) restoreTaskStopped(conv, optimistic);  // 停失败,恢复原状态
-        // 停不住 = 流的源头(轮次/任务)其实已经结束,比如 SSE 缓冲重放的历史流。
-        // 明说一句,免得用户以为按钮没反应、反复点。
-        addMsg("ai", "已停止(当前没有正在运行的回复或任务)");
-      }
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    const j = await r.json();
+    if(!j.stopped){
+      delete S.stopping[conv];
+      if(optimistic) restoreTaskStopped(conv, optimistic);  // 停失败,恢复原状态
+      // 停不住 = 流的源头(轮次/任务)其实已经结束,比如 SSE 缓冲重放的历史流。
+      // 明说一句,免得用户以为按钮没反应、反复点。
+      if(S.conv===conv) addMsg("ai", "已停止(当前没有正在运行的回复或任务)");
+      flushPending(conv);
     }
-  }catch(e){ /* 网络异常忽略,前端已处理 */ }
-  flushPending(conv); // 手动中止不会触发 done/message 事件,需主动补发排队中的下一条
+  }catch(e){
+    delete S.stopping[conv];
+    if(optimistic) restoreTaskStopped(conv, optimistic);
+    if(S.conv===conv){ addMsg("ai", "⚠️ 停止请求失败，请重试"); reloadHistory(true); }
+    return;
+  }
+  // 找到运行轮次时由 cancelled/done 事件推进队列，HTTP 回执不能再推进一次。
 }
 // 乐观停止:任务会话(task:<id>)点停止,本地先把任务行置「已取消」给即时反馈。
 // 返回原状态供停失败时恢复;非任务会话/任务已终态返回 null。
