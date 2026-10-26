@@ -27,6 +27,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
+from urllib.parse import unquote, urlsplit
 
 from aiohttp import web
 
@@ -2914,6 +2915,17 @@ class WebAdapter:
         rel = (rel or "").strip()
         if not rel:
             return None
+        # 聊天里的 file URI 不是磁盘路径；只解码一次，再走原有边界校验。
+        if rel.lower().startswith("file:"):
+            try:
+                uri = urlsplit(rel)
+                if not rel.lower().startswith("file:///") or uri.netloc or uri.query or uri.fragment:
+                    return None
+                rel = unquote(uri.path, errors="strict")
+            except (ValueError, UnicodeError):
+                return None
+            if not rel.startswith("/") or rel.startswith("//") or "\\" in rel or "\x00" in rel:
+                return None
         bounds = self._doc_preview_bounds(conv_root)
         p = Path(rel)
         if p.is_absolute():
