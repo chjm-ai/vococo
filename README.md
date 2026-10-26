@@ -66,9 +66,16 @@ uv run python scripts/migrate_business_workspaces.py --data-dir /实际/data目�
 不创建沙箱禁止的伪终端，也不写密码文件；其他 sshpass 参数明确报不支持。
 不放开全部本机端口；显式 `/usr/bin/ssh` 或自行覆盖 PATH 的脚本需要自行使用 SDK 的代理参数。
 
+飞书文档使用内置 `lark_document`（fetch/create/update），由宿主官方 CLI 管理凭据续期与
+Keychain/DPoP/TLS，不在业务 Bash 内运行 `lark-cli`，不关闭沙箱或证书验证。
+写入必须审批，仅接受纯 Markdown 正文；不接收本机路径、XML/HTML、图片或附件，
+不支持表格、权限管理或登录。调用串行，取消回收自有子进程组；超时不自动重试写入。
+读取受 CLI 自身文档权限限制，宿主代理不是每个 Agent 独立的飞书账号隔离。
+
 离线命令级验收（本机假模型，不使用真实模型额度）：
 - `uv run python eval/check_business_sandbox.py`：文件写入边界。
 - `uv run python eval/check_business_network.py`：显式 HTTP 代理、sshpass→SSH 握手与文件写入边界（不代表真实密码认证已验收）。
+- `uv run python eval/check_lark_documents.py 文档token`：真实 SDK 业务沙箱经 MCP 宿主代理读取现有飞书目录（使用本机授权，只读联网；不强制刷新或创建文档）。
 
 ## 架构
 
