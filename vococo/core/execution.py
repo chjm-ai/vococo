@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import config
+from . import business_repositories
+from .business_repositories import RepositoryCopy, prepare_repositories
 
 
 def execution_mode(workdir: str | None, explicit: str | None = None) -> str:
@@ -39,6 +41,7 @@ class ExecutionPolicy:
     output_dir: Path
     writable_roots: tuple[Path, ...]
     source_dir: Path | None = None
+    repositories: tuple[RepositoryCopy, ...] = ()
 
 
 def policy_for_session(
@@ -64,9 +67,11 @@ def policy_for_session(
     for path in roots:
         if path != own_home and any((p / ".git").exists() for p in (path, *path.parents)):
             raise ValueError(f"业务可写目录不能位于代码仓库，请配置仓库外的成果目录：{path}")
+    repositories = business_repositories.copies_for_session(agent, session_key)
+    roots.extend(binding.checkout for binding in repositories)
     (workspace / "tmp").mkdir(parents=True, exist_ok=True)
     return ExecutionPolicy(agent["id"], workspace, output_dir, tuple(dict.fromkeys(roots)),
-                           Path(agent["workdir"]).expanduser().resolve())
+                           Path(agent["workdir"]).expanduser().resolve(), repositories)
 
 
 def prompt_note(policy: ExecutionPolicy) -> str:
@@ -78,8 +83,7 @@ def prompt_note(policy: ExecutionPolicy) -> str:
         "原规则中的 scripts/ 等相对命令必须改用原资源目录的绝对路径，不要从运行目录猜测。"
         "报告、表格等正式成果必须用绝对路径写到正式成果目录；相对路径仅用于临时文件。"
         "成果目录不可读写时明确报错，不得改存源码仓库或把临时副本报告成已交付。"
-        "需要修改代码仓库请交由对应开发 Agent，不要关闭沙箱。"
-    )
+    ) + business_repositories.prompt_note(policy.repositories)
 
 
 def network_settings() -> dict:
@@ -121,7 +125,8 @@ def sandbox_settings(policy: ExecutionPolicy) -> dict:
         "filesystem": {
             "allowWrite": [str(p) for p in dict.fromkeys(roots)],
             "denyWrite": [str(agents.home(policy.agent_id).resolve() / "agent.json"),
-                          str(config.CRON_JOBS_PATH.resolve())],
+                          str(config.CRON_JOBS_PATH.resolve()),
+                          *(str(binding.source) for binding in policy.repositories)],
         },
         "network": network_settings(),
     }

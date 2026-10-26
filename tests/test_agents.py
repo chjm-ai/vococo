@@ -138,6 +138,17 @@ async def test_agent_routes(env, monkeypatch):
         got = (await r.json())["agent"]
         assert got["skills"] is None and got["mcp"] == ["lemlist"]
         assert (await c.post("/agents/update", json={"id": "general", "mcp": []})).status == 400
+        import subprocess
+
+        repository = env.parent / "website"
+        subprocess.run(["git", "init", str(repository)], check=True, capture_output=True)
+        r = await c.post("/agents/update", json={"id": aid, "repositories": [str(repository)]})
+        assert r.status == 200
+        assert (await r.json())["agent"]["repositories"] == [str(repository)]
+        assert (await c.post("/agents/update", json={"id": aid, "repositories": [str(env)]})).status == 400
+        assert agents.get(aid)["repositories"] == [str(repository)]
+        r = await c.post("/agents/update", json={"id": aid, "repositories": []})
+        assert (await r.json())["agent"]["repositories"] == []
         assert (await c.post("/agents/doc", json={"id": aid, "name": "NOTES.md", "text": "笔记"})).status == 200
         assert (await (await c.get(f"/agents/doc?id={aid}&name=NOTES.md")).json())["text"] == "笔记"
         assert (await c.get(f"/agents/doc?id={aid}&name=../x")).status == 400

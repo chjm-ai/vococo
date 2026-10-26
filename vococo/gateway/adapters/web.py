@@ -3240,8 +3240,10 @@ class WebAdapter:
         try:
             # skills / mcp / model / disallowed_tools:键不出现 = 不动;值为 null = 改回跟随全局
             lists = {k: body[k] for k in agents.RUNTIME_KEYS if k in body}
-            a = agents.update(
-                str(body.get("id") or ""),
+            if "repositories" in body:
+                lists["repositories"] = body["repositories"]
+            a = await asyncio.to_thread(
+                agents.update, str(body.get("id") or ""),
                 name=body.get("name"), avatar=body.get("avatar"), links=body.get("links"),
                 permission=body.get("permission"), **lists,
             )

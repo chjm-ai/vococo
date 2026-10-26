@@ -761,6 +761,33 @@ function renderApFileSections(body, a, d){
     for(const e of d.workdir_top) body.append(fileRow(e.name, d.workdir+"/"+e.name, e.dir));
   }
   renderApLinks(body, a);
+  if(a.execution_mode==="workspace") renderApRepositories(body, a);
+}
+function renderApRepositories(body, a){
+  const box=el("div"); body.append(box);
+  let repositories=a.repositories||[];
+  const save=async next=>{
+    let result;
+    try{ result=await agentPost("/agents/update",{id:a.id, repositories:next}); }catch(e){ alert(e.message); return; }
+    repositories=result.agent.repositories||[]; a.repositories=repositories; draw(); loadAgents();
+  };
+  const draw=()=>{
+    box.innerHTML="";
+    box.append(apSection("代码仓库"));
+    box.append(apEmpty("仅会话独立副本可写，原仓库只读；推送、发布仍需审批。"));
+    repositories.forEach((path, i)=>{
+      const row=el("div","aplink"), main=el("div","aptmain");
+      const name=el("div","aptname"); name.textContent=shortPath(path); name.title=path;
+      main.append(name);
+      const remove=el("button","more"); remove.textContent="✕"; remove.title="解除仓库绑定（下一轮生效，保留已有副本）";
+      remove.onclick=()=>{ if(confirm("解除仓库绑定？下一轮生效，已有副本和改动保留；当前执行中的命令不会强行中断。")) save(repositories.filter((_,j)=>j!==i)); };
+      row.append(main, remove); box.append(row);
+    });
+    const add=el("div","apadd"); add.textContent="＋ 绑定代码仓库";
+    add.onclick=()=>openDirPicker("选择 Git 仓库根目录","✓ 绑定", path=>save([...repositories, path]));
+    box.append(add);
+  };
+  draw();
 }
 // 关联目录:改了只重画这一块——同页上面还有技能/MCP/禁用工具,整页重画会冲掉没保存的输入、跳回顶部
 function renderApLinks(body, a){
