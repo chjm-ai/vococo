@@ -7,8 +7,16 @@ function safePreviewHtml(source){
   const doc = new DOMParser().parseFromString(source, "text/html");
   doc.querySelectorAll("script,iframe,frame,frameset,object,embed,base,meta,link,form,animate,set,animateMotion,animateTransform,discard,svg foreignObject").forEach(n=>n.remove());
   for(const node of doc.querySelectorAll("*")){
+    // CSS 的 data URL（包括转义拼写）不能绕过位图白名单加载另一个 SVG 文档。
+    if(node.localName==="style" && /\\|data\s*:/i.test(node.textContent)){node.remove();continue;}
     for(const attr of [...node.attributes]){
-      if(/^on/i.test(attr.name) || /^(href|xlink:href|src|srcset|action|formaction|target|ping|download|autofocus|srcdoc)$/i.test(attr.name)) node.removeAttribute(attr.name);
+      // 只恢复静态位图地址；SVG 文档、外链和其他 URL 属性仍不能进入沙箱。
+      const raster=/^data:image\/(?:png|jpeg|webp|gif);base64,[a-z0-9+/]+={0,2}$/i.test(attr.value);
+      const image=node.namespaceURI==="http://www.w3.org/2000/svg"?node.localName==="image":node.localName==="img";
+      if(image && raster && /^(src|href|xlink:href)$/i.test(attr.name) &&
+          (node.localName==="img"?attr.name==="src":attr.name!=="src")) continue;
+      if(/\\|data\s*:/i.test(attr.value) ||
+          /^on/i.test(attr.name) || /^(href|xlink:href|src|srcset|action|formaction|target|ping|download|autofocus|srcdoc|poster|background)$/i.test(attr.name)) node.removeAttribute(attr.name);
     }
   }
   const policy = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; media-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";

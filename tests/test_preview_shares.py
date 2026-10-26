@@ -32,6 +32,49 @@ async def server(isolated, monkeypatch):
     await adapter._runner.cleanup()
 
 
+@pytest.mark.parametrize('css', [
+    'background:url(data:image/svg+xml;base64,YQ==)',
+    r'background:url(d\61ta:image/svg+xml,test)',
+    'background:image-set("data:image/svg+xml,test")',
+])
+def test_css_cannot_bypass_raster_image_whitelist(css):
+    result = shares.sanitize(f'<style>div{{{css}}}</style><div style="{css.replace(chr(34), chr(39))}">安全</div>')
+    assert css not in result
+    assert '<style></style>' in result
+    assert '<div>安全</div>' in result
+
+
+def test_legacy_share_is_filtered_before_serving(tmp_path):
+    store = shares.ShareStore(tmp_path / 'shares.sqlite3')
+    created = store.create('<h1>原快照</h1>')
+    token = created['path'].split('#')[1]
+    legacy = '<style>div{background:url(data:image/svg+xml;base64,YQ==)}</style><h1>旧快照</h1>'
+    with store.connect() as db:
+        db.execute('UPDATE shares SET content = ?', (legacy,))
+    assert store.read(token) == shares.sanitize(legacy)
+    assert 'data:image/svg' not in store.read(token)
+    assert store.read(token, check=True) == 1
+
+
+def test_static_svg_keeps_geometry_but_rejects_active_content():
+    source = ('<svg viewBox="0 0 300 100" onload="alert(1)">'
+              '<rect x="10" y="20" width="30" height="40"/>'
+              '<text x="10" y="80">静态文本</text>'
+              '<image xlink:href="data:image/png;base64,YQ==" width="10"/>'
+              '<image href="data:image/svg+xml;base64,YQ=="/>'
+              '<image href="https://evil.example/image"/>'
+              '<animate attributeName="href" to="javascript:alert(1)"/>'
+              '<foreignObject><iframe src="/"></iframe></foreignObject>'
+              '<use href="https://evil.example/use"/></svg>')
+    result = shares.sanitize(source)
+    assert 'viewBox="0 0 300 100"' in result
+    assert '<rect x="10" y="20" width="30" height="40">' in result
+    assert '<text x="10" y="80">静态文本</text>' in result
+    assert 'href="data:image/png;base64,YQ=="' in result
+    for forbidden in ('onload', 'animate', 'foreignObject', 'iframe', 'javascript:', 'https://evil', 'image/svg+xml'):
+        assert forbidden not in result
+
+
 @pytest.mark.anyio
 async def test_share_http_auth_hash_expiry_limits(server, monkeypatch):
     auth = {'X-Auth-Token': config.WEB_AUTH_TOKEN}
