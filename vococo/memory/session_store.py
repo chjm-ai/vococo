@@ -272,8 +272,50 @@ def load_history(
             entry["ai_videos"] = ai_vids
         if htmls:
             entry["html_previews"] = _loads_list(htmls)
+        artifacts = turn_artifacts(session_key, tid)
+        if artifacts:
+            entry["artifacts"] = artifacts
         out.append(entry)
     return out
+
+
+def turn_artifacts(session_key: str, turn_id: int | None) -> list:
+    rows = _conn().execute(
+        "SELECT a.id, a.filename, a.title, a.size FROM artifacts a "
+        "JOIN turns t ON t.id=a.turn_id AND t.session_key=a.session_key "
+        "WHERE a.session_key=? AND a.turn_id=? ORDER BY a.rowid",
+        (session_key, turn_id),
+    ).fetchall()
+    return [dict(zip(("id", "filename", "title", "size"), row)) for row in rows]
+
+
+def append_artifact(session_key: str, turn_id: int, filename: str, title: str, content: bytes) -> dict:
+    import secrets
+    from ..tools.artifacts import MAX_BYTES
+
+    if not 0 < len(content) <= MAX_BYTES:
+        raise ValueError("成果不能为空，且单个不能超过 64MB。")
+    c = _conn()
+    with c:
+        active = c.execute("SELECT 1 FROM turns WHERE id=? AND session_key=? AND assistant_text=''",
+                           (turn_id, session_key)).fetchone()
+        if not active:
+            raise ValueError("执行回合已结束或不属于当前会话。")
+        entries = turn_artifacts(session_key, turn_id)
+        if len(entries) >= 10 or sum(e["size"] for e in entries) + len(content) > MAX_BYTES * 2:
+            raise ValueError("每轮最多 10 个成果、合计不超过 128MB。")
+        entry = {"id": secrets.token_urlsafe(32), "filename": filename, "title": title, "size": len(content)}
+        c.execute("INSERT INTO artifacts(id,session_key,turn_id,filename,title,size,content) VALUES(?,?,?,?,?,?,?)",
+                  (entry["id"], session_key, turn_id, filename, title, len(content), content))
+    return entry
+
+
+def artifact_content(session_key: str, artifact_id: str) -> tuple | None:
+    return _conn().execute(
+        "SELECT a.filename, a.content FROM artifacts a "
+        "JOIN turns t ON t.id=a.turn_id AND t.session_key=a.session_key "
+        "WHERE a.id=? AND a.session_key=?", (artifact_id, session_key),
+    ).fetchone()
 
 
 def turn_html_previews(session_key: str, turn_id: int | None) -> list:
@@ -699,8 +741,22 @@ def clear(session_key: str) -> None:
 # 下面这几个 helper 让前端能列出/命名/删除会话,TG/CLI 不受影响。
 
 
+def _clone_artifacts(c, source_key: str, source_turn: int, target_key: str, target_turn: int) -> None:
+    import secrets
+
+    rows = c.execute("SELECT id FROM artifacts WHERE session_key=? AND turn_id=? ORDER BY rowid",
+                     (source_key, source_turn)).fetchall()
+    for (artifact_id,) in rows:
+        # 不共享下载 ID 或生命周期；在数据库内复制，避免把大附件再载入 Python 内存。
+        c.execute(
+            "INSERT INTO artifacts(id,session_key,turn_id,filename,title,size,content) "
+            "SELECT ?,?,?,filename,title,size,content FROM artifacts WHERE id=? AND session_key=?",
+            (secrets.token_urlsafe(32), target_key, target_turn, artifact_id, source_key),
+        )
+
+
 def duplicate_session(src_key: str, dst_key: str, title: str) -> None:
-    """复制会话:全部轮次(含 images/audios/files/events)搬到新 key,标题用新标题。
+    """复制会话:全部轮次(含 images/audios/files/events/artifacts)搬到新 key,标题用新标题。
 
     ts 统一刷新为当前时间 —— 侧边栏按 MAX(t.ts) 倒序,新副本要顶到列表最前
     (保持原 ts 会沉到原会话旁边,用户复制完找不到)。
@@ -712,18 +768,19 @@ def duplicate_session(src_key: str, dst_key: str, title: str) -> None:
     """
     c = _conn()
     rows = c.execute(
-        "SELECT user_text, assistant_text, draft_text, events, images, audios, files, videos, html_previews "
+        "SELECT id, user_text, assistant_text, draft_text, events, images, audios, files, videos, html_previews "
         "FROM turns WHERE session_key=? ORDER BY id",
         (src_key,),
     ).fetchall()
     now = time.time()
-    for user_text, assistant_text, draft, events, imgs, auds, fs, vids, htmls in rows:
+    for old_id, user_text, assistant_text, draft, events, imgs, auds, fs, vids, htmls in rows:
         cur = c.execute(
             "INSERT INTO turns(session_key, ts, user_text, assistant_text, "
             "draft_text, events) VALUES (?,?,?,?,?,?)",
             (dst_key, now, user_text, assistant_text, draft, events),
         )
         new_id = cur.lastrowid
+        _clone_artifacts(c, src_key, old_id, dst_key, new_id)
         if htmls:
             c.execute("UPDATE turns SET html_previews=? WHERE id=?", (htmls, new_id))
         # 附件本体复制到以新 turn_id 命名的文件,让副本完全独立于原会话

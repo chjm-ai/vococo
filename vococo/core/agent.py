@@ -50,7 +50,7 @@ from .prompt import build_system_prompt
 # vococo 专属 skill 插件(config.PLUGIN_DIR):每轮都挂,不受设置页 skill 白名单影响。
 # 插件里加新 skill 时,这里也加一行「plugin名:skill名」,否则用户在设置页切到白名单模式会把
 # 它连带隐藏(_scan_skills 只扫 ~/.claude/skills,看不到插件里的 skill,没法在设置页单独管)。
-_PLUGIN_SKILLS = ["vococo-internal:vococo-web-publish"]
+_PLUGIN_SKILLS = ["vococo-internal:vococo-web-publish", "vococo-internal:editable-pptx"]
 
 # ── 外部 MCP 按任务加载 ──────────────────────────────────────────────────
 # Lemlist 等工具 schema 很大，默认不挂。只在用户明确要求查询/操作对应外部数据时，

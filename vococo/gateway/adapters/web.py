@@ -305,6 +305,7 @@ class _WebSink(Sink):
                 # 不用等下次打开会话才从 /history 里补——见 _handle_turn_regenerate。
                 "turn_id": turn_id,
                 "html_previews": session_store.turn_html_previews(key, turn_id),
+                "artifacts": session_store.turn_artifacts(key, turn_id),
                 "ctx_tokens": meta.get("ctx_tokens", 0),
                 "total_tokens": meta.get("total_tokens", 0),
                 "ctx_window": meta.get("ctx_window", 0),
@@ -704,6 +705,38 @@ class WebAdapter:
             kind="error" if is_err else "proactive",
             enabled=config.PUSH_ON_ERROR if is_err else config.PUSH_ON_PROACTIVE,
         )
+
+    async def send_file(self, chat_id: object, session_key: str, turn_id: int,
+                        filename: str, title: str, content: bytes) -> None:
+        from ...tools.danger import redact_secrets
+
+        if session_key != config.resolve_session_key("web", str(chat_id)):
+            raise ValueError("会话路由不匹配。")
+        if redact_secrets(filename + title) != filename + title:
+            raise ValueError("文件名或标题含疑似密钥。")
+        entry = session_store.append_artifact(session_key, turn_id, filename, title, content)
+        self._emit({"conv": str(chat_id), "type": "message", "text": "",
+                    "artifacts": [entry], "turn_id": turn_id, "mid_turn": True})
+        session_store.set_pending_review(session_key, True)
+
+    @_authed
+    async def _handle_artifact_download(self, request: web.Request) -> web.Response:
+        from urllib.parse import quote
+
+        conv = request.query.get("conv", "")
+        artifact_id = request.match_info.get("artifact_id", "")
+        if not conv or not re.fullmatch(r"[A-Za-z0-9_-]{43}", artifact_id):
+            raise web.HTTPNotFound()
+        key = config.resolve_session_key("web", conv)
+        row = session_store.artifact_content(key, artifact_id)
+        if row is None:
+            raise web.HTTPNotFound(text="附件不存在或不属于当前会话。")
+        filename, content = row
+        return web.Response(body=content, content_type="application/octet-stream", headers={
+            "Content-Disposition": "attachment; filename=download; filename*=UTF-8''" + quote(filename, safe=""),
+            "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+        })
 
     async def show_html(self, chat_id: object, session_key: str, turn_id: int,
                         source: str, title: str = "") -> str | None:
@@ -3605,6 +3638,7 @@ class WebAdapter:
                 web.post("/settings/provider", self._handle_settings_provider),
                 web.get("/file/read", self._handle_file_read),
                 web.post("/file/save", self._handle_file_save),
+                web.get("/artifacts/{artifact_id}/download", self._handle_artifact_download),
                 web.get("/doc/preview", self._handle_doc_preview),
                 web.get("/doc-preview.html", self._handle_doc_preview_page),
             ]

@@ -55,6 +55,15 @@ include = ["vococo*"]
 [tool.setuptools.package-data]
 "vococo.core" = ["research_method.md", "sandbox_bin/ssh", "sandbox_bin/sshpass", "sandbox_bin/ssh_askpass"]
 "vococo.tools" = ["*.cjs"]
+"vococo" = [
+    "plugin/.claude-plugin/*.json",
+    "plugin/skills/*/SKILL.md",
+    "plugin/skills/editable-pptx/package*.json",
+    "plugin/skills/editable-pptx/scripts/*.cjs",
+    "plugin/skills/editable-pptx/scripts/*.py",
+    "plugin/skills/editable-pptx/examples/*.json",
+    "plugin/skills/editable-pptx/references/*.md",
+]
 "vococo.voice" = [
     "static/*.html",
     "static/*.js",

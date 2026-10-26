@@ -149,6 +149,26 @@ Web 入口:`serve` 时设 `WEB_ENABLED=1` 即在同进程起网页服务(默认�
 模型传输与外部 MCP 使用本地夹具，实际经过 gateway、执行器、`stream_turn`、SDK 钩子、
 内置 MCP 和临时 SQLite；不调用付费模型、不操作生产数据。
 
+## 可编辑 PowerPoint 与私有文件成果
+
+- “做一份可编辑 PPT”触发内置 `editable-pptx` 技能。PptxGenJS 生成原生文字、形状、表格和数据图表，保留内容 JSON 便于改稿；不是整页截图。
+- 首期为 16:9 基础版式及本地 PNG/JPEG；不含任意模板导入、动画或网页内 PPT 编辑器。
+- 维护者首次安装生成依赖（需要 Node.js/npm；固定 PptxGenJS 4.0.1，缓存与 worktree 无关）：
+
+  ```sh
+  python3 vococo/plugin/skills/editable-pptx/scripts/setup.py
+  node vococo/plugin/skills/editable-pptx/scripts/generate.cjs 内容.json 演示-v1.pptx
+  python3 vococo/plugin/skills/editable-pptx/scripts/check.py 演示-v1.pptx
+  # 有 LibreOffice + Poppler 时，用实际 PPT 渲染检查，不以 HTML 替代：
+  python3 vococo/plugin/skills/editable-pptx/scripts/check.py 演示-v1.pptx --render 预览-v1
+  ```
+
+  生成不联网、不自动装包、不覆盖旧文件。可通过 `VOCOCO_PPTX_HOME` 指定依赖缓存位置。
+  缺字体/渲染器时明确报告未验证 Office 排版，不把结构检查当视觉验收。
+- Web 由 `send_file` 交付持久下载卡片：当前工作目录/业务成果目录内文件、单个 ≤64MB、私有快照、会话绑定、认证下载；拒绝越界、软硬链、敏感文件/不安全压缩包，不公开发布、不进入图片作品库。快照存 SQLite，删除回合同步删除记录，但数据库体积不会自动缩小。
+- CLI/TUI 暂无文件卡片；需明确本机文件位置。PowerPoint/WPS 的实际打开和编辑仍需用户验收。
+- 示例与格式见 `vococo/plugin/skills/editable-pptx/`；回归 `uv run --extra dev python -m pytest tests/test_editable_pptx.py tests/test_send_file.py tests/test_send_file_browser.py -q`。
+
 ## 历史研究
 
 原生深度研究已移除，不再提供助手研究工具，也不在重启后恢复未完成研究。

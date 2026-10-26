@@ -12,7 +12,7 @@ const original=JSON.parse(JSON.stringify({images:S.images,audios:S.audios,files:
 const drafts={};
 const noop=()=>{};
 let payload,release;
-const context=vm.createContext({S,console,setTimeout,clearTimeout,Promise,
+const context=vm.createContext({S,console,setTimeout,clearTimeout,Promise,_chatAnchor:null,
   $:selector=>selector==='#ta'?input:callView,renderThumbs:noop,autoGrow:noop,closeCmdMenu:noop,
   saveDraft:(conv,text)=>drafts[conv]=text??input.value,restoreDraft:conv=>input.value=drafts[conv]||'',
   clearDraft:conv=>delete drafts[conv],ensureStream:()=>S.stream={},
