@@ -97,9 +97,43 @@ const path=require('node:path');
     await page.waitForFunction(()=>window.copiedPreview);
     assert.ok((await page.evaluate(()=>window.copiedPreview)).startsWith('https://vococo.chjm.cc/'));
     assert.equal((await shares()).length,1);
+    // 在开窗前拦截首个请求；只把主站域名回送本地隔离实例，绝不访问公网。
+    await page.context().route('https://vococo.chjm.cc/**',async route=>{
+      const url=new URL(route.request().url());
+      const request=route.request();
+      await route.fulfill({response:await page.context().request.fetch(origin+url.pathname+url.search,{
+        method:request.method(),headers:{'Content-Type':'application/json'},data:request.postData()??undefined,
+      })});
+    });
     const popupPromise=page.waitForEvent('popup');
     await card.getByRole('button',{name:'在浏览器打开（创建7天静态快照）',exact:true}).click();
-    const popup=await popupPromise;await popup.close();
+    const popup=await popupPromise;
+    await popup.waitForURL('https://vococo.chjm.cc/preview-share**');
+    const shared=popup.frameLocator('iframe');
+    await shared.getByRole('heading',{name:'工具 HTML 快照'}).waitFor();
+    const inspect=async frame=>frame.evaluate(async()=>{
+      const images=[...document.querySelectorAll('img.raster')];
+      await Promise.all(images.map(n=>n.decode().catch(()=>{})));
+      const rect=document.querySelector('#drawing rect'),text=[...document.querySelectorAll('#drawing text')];
+      const layout=document.querySelector('#layout').getBoundingClientRect(),positioned=document.querySelector('#positioned').getBoundingClientRect();
+      return {images:images.map(n=>n.naturalWidth),rect:!!rect && rect.getBoundingClientRect().width>0,
+        text:text.length===2 && text[1].getBoundingClientRect().y>text[0].getBoundingClientRect().y,
+        svgImage:!!document.querySelector('#drawing image')?.getAttribute('href'),
+        position:[positioned.x-layout.x,positioned.y-layout.y],
+        unsafe:!!document.querySelector('#unsafe-data[src],#unsafe-url[src],[onerror],script'),
+        cssImages:['css-block','css-inline','css-escaped'].map(id=>getComputedStyle(document.getElementById(id)).backgroundImage)};
+    });
+    const sharedFrame=await (await popup.locator('iframe').elementHandle()).contentFrame();
+    const expected={images:[24,24,24],rect:true,text:true,svgImage:true,position:[80,30],unsafe:false,cssImages:['none','none','none']};
+    const cardFrame=await (await card.locator('iframe').elementHandle()).contentFrame();
+    const observed={card:await inspect(cardFrame),share:await inspect(sharedFrame)};
+    console.log('实际卡片/独立预览渲染：'+JSON.stringify(observed));
+    assert.deepEqual(observed,{card:expected,share:expected});
+    await cardFrame.locator('#drawing').screenshot({path:path.join(screenshots,'show-html-card-svg.png')});
+    await sharedFrame.locator('#drawing').screenshot({path:path.join(screenshots,'show-html-share-svg.png')});
+    await popup.screenshot({path:path.join(screenshots,'show-html-independent.png')});
+    assert.deepEqual(remote,[],'独立预览也不能加载外链');
+    await popup.close();
     await page.screenshot({path:path.join(screenshots,'show-html-history.png')});
     // done 丢中途帧的兜底、重复帧去重，不通过 Markdown 代码围栏拼接。
     await page.evaluate(source=>{
