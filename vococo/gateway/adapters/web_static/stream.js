@@ -241,7 +241,7 @@ function appendVids(container, vids){
   }
   container.append(g);
 }
-function buildBubble(who, text, imgs, auds, vids){
+function buildBubble(who, text, imgs, auds, vids, ts){
   const row=el("div","row "+(who==="me"?"me":"ai"));
   const b=el("div","bubble");
   if(who==="me"){ b.textContent=text; } else { b.innerHTML = text?mdToHtml(text):""; }
@@ -249,6 +249,9 @@ function buildBubble(who, text, imgs, auds, vids){
   appendImgs(b, imgs);
   appendAuds(b, auds);
   appendVids(b, vids);
+  if(who==="me" && (text || imgs?.length || auds?.length || vids?.length)){
+    appendUserFoot(row, text, ts);
+  }
   return {row, b};
 }
 // eph=true:这颗气泡的内容服务端也会落库,权威历史重绘后它就是多余的(见 tagConvNode)。
@@ -296,6 +299,11 @@ function buildTurnFoot(conv, turnId, text, ts, isLast, interrupted){
     foot.append(rg);
   }
   return foot;
+}
+function appendUserFoot(row, text, ts){
+  const foot=buildTurnFoot(null, null, text, ts ?? Date.now()/1000, false);
+  foot.classList.add("userfoot");
+  row.append(foot);
 }
 function copyMsgText(btn, text){
   if(!text || !navigator.clipboard) return;
