@@ -1097,6 +1097,22 @@ def _deny_workflow() -> dict:
     )
 
 
+def _legacy_lark_document_command(command: str, depth: int = 0) -> bool:
+    """旧会话可能沿用技能中的 CLI 操作；在执行前给出可恢复的工具迁移提示。"""
+    if depth > 4:
+        return False
+    for statement in _shell_commands_tolerant(_strip_inert_text(command)):
+        for stage in _pipeline_stages(statement):
+            words = _unwrap_command(stage)
+            if (len(words) >= 3 and os.path.basename(words[0]) == "lark-cli"
+                    and words[1] == "docs" and words[2] in {"+fetch", "+create", "+update"}):
+                return True
+            script = _shell_script(words)
+            if script and _legacy_lark_document_command(script, depth + 1):
+                return True
+    return False
+
+
 def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | None:
     """常开正确性防线:正式进程控制等错误操作命中后直接返回 deny。
 
@@ -1125,11 +1141,21 @@ def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | Non
         "mcp__vococo__add_mcp_server", "mcp__vococo__remove_mcp_server",
         "mcp__vococo__set_external_mcp",
     }
-    needs_policy = tool_name in _WRITE_TOOLS or schedules_script or configures_mcp or (
+    legacy_lark = tool_name == "Bash" and _legacy_lark_document_command((tool_input or {}).get("command", "") or "")
+    needs_policy = tool_name in _WRITE_TOOLS or schedules_script or configures_mcp or legacy_lark or (
         tool_name == "Bash" and (tool_input or {}).get("dangerouslyDisableSandbox")
     )
     policy = _business_policy(cwd) if needs_policy else None
     if policy is not None:
+        if legacy_lark:
+            return _deny(
+                "此旧飞书 CLI 命令未执行：业务沙箱不能访问系统证书/凭据服务。"
+                "请在本轮立即改用 mcp__vococo__lark_document，operation=fetch/create/update；"
+                "fetch 传 doc、detail、scope，写入传纯 Markdown content（不是文件路径）。"
+                "这不是凭据过期，不要重复登录或让用户手动执行。"
+                "XML/HTML、图像附件和 block_* 编辑暂不支持，不得静默替换成整篇覆盖；"
+                "需要改变排版或修改范围时先向用户说明限制。"
+            )
         if configures_mcp:
             return _deny("业务会话不能注册、移除或切换 MCP 执行入口，请由主人在管理界面配置；已配置的业务 MCP 仍可使用。")
         if schedules_script and ((tool_input or {}).get("mode") == "script" or (tool_input or {}).get("command")):
