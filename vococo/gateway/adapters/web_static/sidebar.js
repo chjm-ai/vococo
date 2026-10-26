@@ -322,13 +322,6 @@ function buildVoiceTaskRow(t, inCall, withAvatar){
   }
   const ct=el("div","ct"); ct.textContent=t.title||"新对话"; body.append(ct);
   const tm=fmtTime(t.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }
-  // 任务还在跑(queued/running)→ 行内直接给「停止」按钮,点一下真停(调 /voice/tasks/cancel,
-  // 跟语音喊停 voice_cancel_task 同一套逻辑);终态任务不显示
-  if(t.task_status==="queued"||t.task_status==="running"){
-    const stop=el("button","cvstop"); stop.innerHTML=ic("stop"); stop.title="停止任务";
-    stop.onclick=ev=>{ev.stopPropagation();stopVoiceTask(t);};
-    body.append(stop);
-  }
   const more=el("button","more"); more.textContent="⋯"; more.title="更多";
   more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,t.conv);}; body.append(more);
   row.append(body);
@@ -587,16 +580,6 @@ async function loadVoiceSidebar(){
   renderConvs();
   if($("#empty").style.display==="flex") renderEmptyRecent();  // 欢迎屏正开着 → 语音任务到位后补一次最近对话
   refillCurrentMeta();   // 打开中的会话可能是语音主会话/任务:数据到位后补一次模型回填
-}
-// 侧边栏「语音任务」行上的停止按钮:调 /voice/tasks/cancel(跟语音喊停
-// voice_cancel_task 同一套 cancel 逻辑),排队中/运行中都能停,停完刷新侧栏状态点
-async function stopVoiceTask(t){
-  if(!confirm(`确定要停止任务「${t.title||""}」吗?已做完的部分不会丢,只是不再继续。`)) return;
-  let j;
-  try{ const r=await api("/voice/tasks/cancel",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv:t.conv})}); j=await r.json(); }
-  catch(e){ alert("操作失败"); return; }
-  if(!j.ok){ alert(j.message||"取消失败"); return; }
-  await loadVoiceSidebar();  // 停掉后状态点/停止按钮随之消失
 }
 // SSE task_update → 同步侧边栏任务行的状态点:状态没变(纯进度文案)不重绘,
 // 新派发的任务侧栏还没有这行则整个重拉一次
