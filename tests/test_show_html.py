@@ -58,7 +58,12 @@ async def test_snapshot_tool_midturn_done_history_and_duplicate(context):
     assert session_store.load_history(key)[0]["html_previews"] == [entry]
     assert "html_previews" not in session_store.load_history("web:other")
     session_store.duplicate_session(key, "web:copy-html", "副本")
-    assert session_store.load_history("web:copy-html")[0]["html_previews"] == [entry]
+    copied = session_store.load_history("web:copy-html")[0]["html_previews"][0]
+    assert copied["html"] == entry["html"] and copied["id"] == entry["id"]
+    assert copied["artifact"]["id"] != entry["artifact"]["id"]
+    assert session_store.artifact_content("web:copy-html", entry["artifact"]["id"]) is None
+    session_store.delete_session(key)
+    assert session_store.artifact_content("web:copy-html", copied["artifact"]["id"]) == (file.name, source.encode())
 
 
 @pytest.mark.anyio
@@ -209,3 +214,73 @@ def test_prompt_registration_disabled_tools_and_child_isolation(monkeypatch):
     assert "show_html" in prompt.PERSONA
     assert "show_html" not in subagent._NATIVE_TOOLS
     assert "脚本不执行" in builtin.show_html.description
+
+
+@pytest.mark.anyio
+async def test_html_original_bytes_use_shared_attachment_and_cross_tool_dedup(context):
+    from vococo.memory import _db
+    _, key, tid, events, root = context
+    raw = b"\xef\xbb\xbf<h1>original</h1>\r\n"
+    file = root / "original.html"
+    file.write_bytes(raw)
+    assert "已展示" in await call(file)
+    entry = session_store.turn_html_previews(key, tid)[0]
+    artifact = entry["artifact"]
+    assert session_store.artifact_content(key, artifact["id"]) == (file.name, raw)
+    assert _db.conn().execute("SELECT html_previews FROM turns WHERE id=?", (tid,)).fetchone()[0] in (None, "", "[]")
+    result = await builtin.send_file.handler({"path": str(file)})
+    assert not result.get("isError")
+    assert len(session_store.turn_artifacts(key, tid)) == 1
+    assert len(session_store.turn_html_previews(key, tid)) == 1
+    assert events[-1]["html_previews"] == [entry]
+
+
+@pytest.mark.anyio
+async def test_send_file_html_gets_preview_but_invalid_or_large_html_only_downloads(context):
+    _, key, tid, _, root = context
+    for name, content in [("ok.html", b"<p>ok</p>"), ("binary.html", b"\xff"),
+                          ("large.html", b"a" * 200001)]:
+        file = root / name
+        file.write_bytes(content)
+        result = await builtin.send_file.handler({"path": str(file)})
+        assert not result.get("isError")
+    assert len(session_store.turn_artifacts(key, tid)) == 3
+    assert len(session_store.turn_html_previews(key, tid)) == 1
+    assert "不重复" in await call(root / "ok.html")
+
+
+@pytest.mark.anyio
+async def test_legacy_inline_preview_survives_without_migration(context):
+    import json
+    from vococo.memory import _db
+    _, key, tid, _, _ = context
+    legacy = {"id": "old-hash", "html": "<p>legacy</p>", "title": "旧卡片"}
+    _db.conn().execute("UPDATE turns SET html_previews=? WHERE id=?", (json.dumps([legacy]), tid))
+    _db.conn().commit()
+    assert session_store.turn_html_previews(key, tid) == [legacy]
+    assert session_store.load_history(key)[0]["html_previews"] == [legacy]
+    assert not session_store.turn_artifacts(key, tid)
+
+
+@pytest.mark.anyio
+async def test_secret_filename_never_persists_html_attachment(context):
+    _, key, tid, events, root = context
+    file = root / "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ12345.html"
+    file.write_text("<p>safe body</p>")
+    assert "未展示" in await call(file)
+    assert not events and not session_store.turn_artifacts(key, tid)
+
+
+@pytest.mark.anyio
+async def test_html_bom_change_creates_new_original_byte_snapshot(context):
+    _, key, tid, _, root = context
+    file = root / "version.html"
+    source = b"<p>same visible text</p>"
+    file.write_bytes(source)
+    assert "已展示" in await call(file)
+    file.write_bytes(b"\xef\xbb\xbf" + source)
+    assert "已展示" in await call(file)
+    entries = session_store.turn_html_previews(key, tid)
+    assert len(entries) == 2 and entries[0]["id"] != entries[1]["id"]
+    for entry, raw in zip(entries, [source, b"\xef\xbb\xbf" + source]):
+        assert session_store.artifact_content(key, entry["artifact"]["id"]) == (file.name, raw)

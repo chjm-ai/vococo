@@ -17,7 +17,13 @@ def test_adapter_uses_upstream_design_and_keeps_host_delivery_boundaries():
     entry = (ADAPTER / "SKILL.md").read_text()
     reference = (ADAPTER / "references/ppt-master.md").read_text()
     assert "默认交给共享安装的 **PPT Master**" in entry
-    assert "不是默认流程" in entry
+    assert "不自建设计工作流、模板生成器或原生编辑工作台" in entry
+    assert "不切换自建生成器" in entry
+    assert "scripts/check.py" in entry and "--render" in entry
+    assert "解释器与校验" in reference and "import pptx, PIL" in reference
+    assert "native-api.md" not in entry + reference
+    assert "pptx_workspace.py" not in entry + reference
+    assert "generate.cjs" not in entry + reference
     assert "确认关口必须等待用户" in entry
     assert "VOCOCO_PPT_MASTER_DIR" in reference
     assert "不静默" in reference or "不切换自建生成器" in reference

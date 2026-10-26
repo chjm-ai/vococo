@@ -1,15 +1,14 @@
-"""私有文件成果快照；来源边界与文档预览完全独立。"""
+"""私有文件成果快照；与 HTML 预览共用文件读取及会话附件存储。"""
 from __future__ import annotations
 
 import asyncio
 import io
-import os
 import stat
 import zipfile
 from pathlib import Path
 
 from . import danger
-from .html_preview import _check_parts
+from .file_snapshot import check_parts as _check_parts, read_regular
 
 MAX_BYTES = 64 * 1024 * 1024
 # 只交付成果格式，不把代码、数据库、密钥容器当成通用下载入口。
@@ -39,26 +38,7 @@ def _roots(session_key: str, cwd: str) -> tuple[Path, ...]:
 
 
 def _read_source(root: Path, parts: tuple[str, ...]) -> bytes:
-    # 从磁盘根逐级 NOFOLLOW，拒绝中间目录换链；FIFO 不得挂死工具。
-    fd = os.open(root.anchor, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        for part in (*root.parts[1:], *parts[:-1]):
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-            os.close(fd)
-            fd = child
-        file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
-        with os.fdopen(file_fd, "rb") as source:
-            info = os.fstat(source.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise ValueError("仅支持普通文件，不接受软链或硬链接。")
-            if not 0 < info.st_size <= MAX_BYTES:
-                raise ValueError("成果不能为空，且单个不能超过 64MB。")
-            data = source.read(MAX_BYTES + 1)
-    finally:
-        os.close(fd)
-    if not 0 < len(data) <= MAX_BYTES:
-        raise ValueError("成果不能为空，且单个不能超过 64MB。")
-    return data
+    return read_regular(root, parts, MAX_BYTES)
 
 
 def _check_secrets(data: bytes) -> None:

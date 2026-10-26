@@ -717,7 +717,8 @@ class WebAdapter:
             raise ValueError("文件名或标题含疑似密钥。")
         entry = session_store.append_artifact(session_key, turn_id, filename, title, content)
         self._emit({"conv": str(chat_id), "type": "message", "text": "",
-                    "artifacts": [entry], "turn_id": turn_id, "mid_turn": True})
+                    "artifacts": [entry], "html_previews": session_store.turn_html_previews(session_key, turn_id),
+                    "turn_id": turn_id, "mid_turn": True})
         session_store.set_pending_review(session_key, True)
 
     @_authed
@@ -740,23 +741,27 @@ class WebAdapter:
         })
 
     async def show_html(self, chat_id: object, session_key: str, turn_id: int,
-                        source: str, title: str = "") -> str | None:
-        import hashlib
+                        source: str, title: str = "", *, filename: str = "preview.html",
+                        content: bytes | None = None) -> str | None:
         from ...tools.danger import redact_secrets
-        from ...tools.html_preview import MAX_BYTES
+        from ...tools.html_preview import MAX_BYTES, snapshot_id
 
         if session_key != config.resolve_session_key("web", str(chat_id)):
             return "会话路由不匹配，未展示 HTML。"
-        if len(source.encode("utf-8")) > MAX_BYTES or redact_secrets(source + title) != source + title:
+        metadata = source + title + filename
+        if len(source.encode("utf-8")) > MAX_BYTES or redact_secrets(metadata) != metadata:
             return "HTML 过大或含疑似秘密，未展示。"
-        entry = {"id": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        data = content if content is not None else source.encode("utf-8")
+        entry = {"id": snapshot_id(filename, data),
                  "html": source, "title": title}
         try:
-            added = session_store.append_html_preview(session_key, turn_id, entry)
+            added = session_store.append_html_preview(session_key, turn_id, entry, filename, content)
         except ValueError as exc:
             return str(exc)
         if not added:
             return "此 HTML 快照已展示，本轮不重复发送。"
+        entry = next(item for item in session_store.turn_html_previews(session_key, turn_id)
+                     if item["id"] == entry["id"])
         self._emit({"conv": str(chat_id), "type": "message", "text": "",
                     "html_previews": [entry], "turn_id": turn_id, "mid_turn": True})
         session_store.set_pending_review(session_key, True)

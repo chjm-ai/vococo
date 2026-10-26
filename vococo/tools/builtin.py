@@ -1190,7 +1190,8 @@ async def send_image(args: dict) -> dict:
     "文本、图片、音视频及可安全检查的 ZIP，单个不超过 64MB。path 为当前工作目录内的"
     "相对或绝对路径；业务 Agent 另允许正式 output_dir。拒绝软链、凭据、目录逃逸及"
     "其他会话文件；不可用于任意 HOME 文件读取。title 可选，120字以内。"
-    "保存私有快照，刷新仍可下载；不公开发布、不收录图片作品库。仅 Web 支持。",
+    "保存私有快照，刷新仍可下载；有效 UTF-8 HTML（≤200KB）附带静态预览。"
+    "不公开发布、不收录图片作品库。仅 Web 支持。",
     {"type": "object", "properties": {"path": {"type": "string"}, "title": {"type": "string"}},
      "required": ["path"]},
 )
@@ -1227,14 +1228,15 @@ async def send_file(args: dict) -> dict:
     "本地路径仅为可选文件位置；公开 URL 由卡片复制/打开按钮按需创建，禁止编造。"
     "普通编程项目文件、临时文件不自动展示；用户只要求写文件时不强制预览。"
     "path 相对当前任务工作目录或为绝对路径；目录外需原审批，拒绝软链、秘密文件，UTF-8，≤200KB。"
-    "title 可选。脚本不执行、外链资源不加载；不自动公开或收录作品库。仅 Web 支持，返回短回执。",
+    "title 可选。共用私有附件快照，卡片可下载原 HTML；脚本不执行、外链资源不加载；"
+    "不自动公开或收录作品库。仅 Web 支持，返回短回执。",
     {"type": "object", "properties": {"path": {"type": "string"}, "title": {"type": "string"}},
      "required": ["path"]},
 )
 async def show_html(args: dict) -> dict:
     from ..gateway import clarify
     from ..gateway.adapters.web import WebAdapter
-    from .html_preview import read_snapshot
+    from .html_preview import read_file_snapshot, validate_source
 
     ctx = clarify.current()
     if ctx is None or not isinstance(ctx.adapter, WebAdapter):
@@ -1245,8 +1247,11 @@ async def show_html(args: dict) -> dict:
     if ctx.turn_id is None:
         return _ok("当前没有绑定的执行回合；未展示。")
     try:
-        source = await read_snapshot(args.get("path", ""))
-        err = await ctx.adapter.show_html(ctx.chat_id, ctx.session_key, ctx.turn_id, source, title)
+        if ctx.session_key != config.resolve_session_key("web", str(ctx.chat_id)):
+            return _ok("会话路由不匹配；未展示。")
+        filename, content = await read_file_snapshot(args.get("path", ""))
+        err = await ctx.adapter.show_html(ctx.chat_id, ctx.session_key, ctx.turn_id,
+                                          validate_source(content), title, filename=filename, content=content)
     except (OSError, UnicodeError):
         return _ok("HTML 未展示：文件不可读、并非普通文件、存在软链或不是 UTF-8。")
     except ValueError as exc:
