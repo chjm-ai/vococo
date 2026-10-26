@@ -787,6 +787,13 @@ def _business_write_allowed(tool_input: dict, cwd: str | None, policy) -> bool:
     if not os.path.isabs(os.path.expanduser(path)) and not cwd:
         return False
     target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
+    if any(os.path.commonpath([target, str(binding.source)]) == str(binding.source)
+           for binding in policy.repositories):
+        return False
+    repository_base = os.path.realpath(config.AGENT_WORKSPACES_DIR / ".repositories")
+    if os.path.commonpath([target, repository_base]) == repository_base:
+        return any(os.path.commonpath([target, str(binding.checkout)]) == str(binding.checkout)
+                   for binding in policy.repositories)
     if _inside_ai_brain(path, cwd) or _inside_scratch_tmp(path, cwd):
         return True
     return any(
@@ -1134,8 +1141,8 @@ def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | Non
             return _deny("业务会话禁止关闭 Bash 沙箱。请去掉 dangerouslyDisableSandbox 参数。")
         if tool_name in _WRITE_TOOLS and not _business_write_allowed(tool_input or {}, cwd, policy):
             return _deny(
-                "业务会话只能写自己的工作区、成果目录、可写关联、AI_BRAIN 和系统临时目录。"
-                "目标超出业务可写范围；修改代码或其他目录请使用开发会话。"
+                "业务会话只能写自己的工作区、成果目录、可写关联、绑定仓库的会话副本、AI_BRAIN 和系统临时目录。"
+                "目标超出业务可写范围；已绑定仓库请使用提示词中的可写副本路径，未绑定仓库请由主人在 Agent 设置中绑定，或交由开发会话执行。"
             )
     else:
         # 业务策略允许的成果可能在主仓库/iCloud 内，不套用开发 worktree 防线。

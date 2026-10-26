@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -242,6 +243,7 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
         "project_hash": phash,
         "main_conv": main,
         "links": _normalize_links(meta.get("links")),
+        "repositories": meta.get("repositories") if isinstance(meta.get("repositories"), list) else [],
         # agent.json 可以手改,坏值当「跟随全局」,不让整个列表接口报错
         "skills": _normalize_names(meta["skills"]) if isinstance(meta.get("skills"), list) else None,
         "mcp": _normalize_names(meta["mcp"]) if isinstance(meta.get("mcp"), list) else None,
@@ -347,10 +349,21 @@ def create(name: str, path: str | None = None) -> dict:
 
 
 _UNSET = object()
+_UPDATE_LOCK = threading.RLock()
 
 
-def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None,
-           links: list | None = None, skills=_UNSET, mcp=_UNSET,
+def update(agent_id: str, *, repositories=_UNSET, **kwargs) -> dict | None:
+    """慢速仓库校验不持锁；保存时重读最新配置，避免并发请求恢复已撤销的权限。"""
+    if repositories is not _UNSET:
+        from ..core.business_repositories import normalize_repositories
+
+        repositories = normalize_repositories(repositories)
+    with _UPDATE_LOCK:
+        return _update(agent_id, repositories=repositories, **kwargs)
+
+
+def _update(agent_id: str, *, name: str | None = None, avatar: dict | None = None,
+           links: list | None = None, repositories=_UNSET, skills=_UNSET, mcp=_UNSET,
            disallowed_tools=_UNSET, memory_sections=_UNSET,
            permission: str | None = None) -> dict | None:
     """改名称 / 头像 / 关联 / 技能与 MCP 名单 / 默认模型 / 禁用工具 / 权限档位。目录名用 id,不随名称变。
@@ -373,6 +386,8 @@ def update(agent_id: str, *, name: str | None = None, avatar: dict | None = None
         meta["avatar"] = _normalize_avatar(avatar, agent_id)
     if links is not None:
         meta["links"] = _normalize_links(links)
+    if repositories is not _UNSET:
+        meta["repositories"] = repositories
     if permission is not None:
         if permission not in ("full", "standard"):
             raise ValueError("权限只能是 full / standard")

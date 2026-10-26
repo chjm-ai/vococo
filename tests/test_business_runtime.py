@@ -21,12 +21,19 @@ def anyio_backend():
 
 
 @pytest.mark.anyio
-async def test_stream_uses_workspace_but_loads_output_rules(isolated, monkeypatch):
+@pytest.mark.parametrize("with_repository", [False, True])
+async def test_stream_uses_workspace_but_loads_output_rules(isolated, monkeypatch, with_repository):
     output = isolated / "iCloud 成果"
     output.mkdir()
     (output / "CLAUDE.md").write_text("正式成果保存在业务目录")
     owner = agents.create("业务", str(output))
     key = agents.main_session_key(owner)
+    if with_repository:
+        import subprocess
+
+        repository = isolated / "website"
+        subprocess.run(["git", "init", str(repository)], check=True, capture_output=True)
+        agents.update(owner["id"], repositories=[str(repository)])
     source = isolated / "original-rules"
     source.mkdir()
     (source / "AGENTS.md").write_text("原业务执行规则不能丢失")
@@ -71,6 +78,12 @@ async def test_stream_uses_workspace_but_loads_output_rules(isolated, monkeypatc
     assert options.env["PATH"] == execution.shell_env()["PATH"]
     assert options.sandbox["enabled"] and not options.sandbox["allowUnsandboxedCommands"]
     assert str(output) in options.sandbox["filesystem"]["allowWrite"]
+    if with_repository:
+        copy = policy.repositories[0].checkout
+        assert (copy / ".git").is_dir()
+        assert str(copy) in options.sandbox["filesystem"]["allowWrite"]
+        assert str(repository) in options.sandbox["filesystem"]["denyWrite"]
+        assert str(copy) in options.system_prompt["append"]
     serialized = json.loads(SubprocessCLITransport(prompt="test", options=options)._build_settings_value())
     assert serialized["sandbox"] == options.sandbox
     child = subagent._child_options(options, None)

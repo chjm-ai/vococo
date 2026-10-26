@@ -47,6 +47,12 @@ Agent 的 `workdir` 保留项目身份及规则来源；`execution_mode=workspac
 iCloud/非 Git 目录默认 workspace，开发 Git 项目默认 project；总助理不变。
 业务文件工具限制可写目录，Bash/同步子代理继承系统文件沙箱，禁止关闭；Agent 配置不可自改。
 成果目录和可写关联不得位于 Git 仓库，iCloud 失败明确报错，不自动改存源码目录。
+业务 Agent 可在「设置 → 代码仓库」绑定多个 Git 根目录（`repositories`）。每会话自动在
+`~/vococo-workspaces/.repositories/<agent>/<会话哈希>/<仓库哈希>/` 建独立克隆与分支，
+不共享 Git 元数据；原仓库只读。修改、构建和本地提交均使用提示词提供的副本路径，推送/发布保留原有审批。
+副本不含未提交修改、忽略的 `.env` 或依赖，不自动拉取远端；取消绑定从下一轮生效，
+不强行中断当前命令、不删除已有副本。初始化可用 `scripts/bind_business_repositories.py
+--data-dir /实际/data目录 --bind AGENT_ID=/仓库根目录`，默认预览，`--apply` 备份配置并准备主会话副本。
 业务会话不能自行注册/切换 MCP 或创建/修改未沙箱化的脚本 cron；已配置 MCP 与已有固定脚本是主人管理的受信任自动化，不受这次 Bash 沙箱保护。固定脚本保持原目录。
 
 迁移先预览，带 `--apply` 才更新并备份；不会移动历史产物或修改固定脚本：
