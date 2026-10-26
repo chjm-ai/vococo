@@ -149,6 +149,25 @@ def test_real_pptx_passes_private_artifact_safety_scan(node, tmp_path, content, 
     assert name == output.name and data == output.read_bytes()
 
 
+def test_full_pptxgenjs_api_is_not_limited_by_legacy_layout_schema(node, tmp_path):
+    output = tmp_path / "native.pptx"
+    script = r'''
+const fs = require('node:fs');
+const PptxGenJS = require(process.argv[1]).library();
+const p = new PptxGenJS(); p.layout = 'LAYOUT_WIDE';
+const slide = p.addSlide();
+slide.addText('自由换行\\n' + '不受32字标题限制'.repeat(8), {x:.5,y:.5,w:12,h:2,fontSize:20});
+slide.addShape(p.ShapeType.hexagon, {x:1,y:3,w:2,h:2,fill:{color:'1677FF'}});
+p.write({outputType:'nodebuffer'}).then(data => fs.writeFileSync(process.argv[2],data,{flag:'wx'}));
+'''
+    result = subprocess.run([node, "-e", script, str(GENERATE), str(output)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert checker.inspect(output)["slide_count"] == 1
+    with zipfile.ZipFile(output) as archive:
+        content = archive.read("ppt/slides/slide1.xml").decode()
+        assert "hexagon" in content and "不受32字标题限制" in content
+
+
 def test_internal_skill_available_even_with_skill_whitelist():
     from vococo.core.agent import _PLUGIN_SKILLS
     assert "vococo-internal:editable-pptx" in _PLUGIN_SKILLS

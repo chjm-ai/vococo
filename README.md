@@ -151,20 +151,22 @@ Web 入口:`serve` 时设 `WEB_ENABLED=1` 即在同进程起网页服务(默认�
 
 ## 可编辑 PowerPoint 与私有文件成果
 
-- “做一份可编辑 PPT”触发内置 `editable-pptx` 技能。PptxGenJS 生成原生文字、形状、表格和数据图表，保留内容 JSON 便于改稿；不是整页截图。
-- 首期为 16:9 基础版式及本地 PNG/JPEG；不含任意模板导入、动画或网页内 PPT 编辑器。
-- 维护者首次安装生成依赖（需要 Node.js/npm；固定 PptxGenJS 4.0.1，缓存与 worktree 无关）：
+- “做一份可编辑 PPT / 修改这份 PPT”触发内置 `editable-pptx` 技能。AI 直接编写原生 API 脚本，自主构图、读取现有稿、逐对象编辑，再渲染实际文件迭代；不是套固定版式或把整页截图放进 PPT。
+- python-pptx 完整 API 随项目安装；辅助工作台提供对象检查、稳定 slide_id/shape_id 定位、页面/图层调整和拒覆盖另存。PptxGenJS 完整 API 可直接用于新建；六版式 JSON 生成器仅保留旧稿兼容，不是新稿能力边界。
+- 不含网页内 PPT 编辑器；任意第三方动画/SmartArt/扩展不保证无损，先在副本验证。原生操作文档见 `vococo/plugin/skills/editable-pptx/references/native-api.md`。
+- 维护者安装依赖（业务生成期间不自动装包；PptxGenJS 缓存与 worktree 无关）：
 
   ```sh
+  uv sync --extra dev  # 包含锁定的 python-pptx
+  uv run python vococo/plugin/skills/editable-pptx/scripts/pptx_workspace.py 原稿.pptx
+  # AI 在用户工作区编写原生 API 编辑脚本，用安装环境的 Python 执行并另存新版本。
+  uv run python vococo/plugin/skills/editable-pptx/scripts/check.py 演示-v2.pptx --render 预览-v2
+  # 可选的新建库：
   python3 vococo/plugin/skills/editable-pptx/scripts/setup.py
-  node vococo/plugin/skills/editable-pptx/scripts/generate.cjs 内容.json 演示-v1.pptx
-  python3 vococo/plugin/skills/editable-pptx/scripts/check.py 演示-v1.pptx
-  # 有 LibreOffice + Poppler 时，用实际 PPT 渲染检查，不以 HTML 替代：
-  python3 vococo/plugin/skills/editable-pptx/scripts/check.py 演示-v1.pptx --render 预览-v1
   ```
 
   生成不联网、不自动装包、不覆盖旧文件。可通过 `VOCOCO_PPTX_HOME` 指定依赖缓存位置。
-  缺字体/渲染器时明确报告未验证 Office 排版，不把结构检查当视觉验收。
+  实际预览需要本机 LibreOffice + Poppler（pdftoppm/pdfinfo），核对真实页数并输出逐页 PNG；AI 查看图片、修正后再渲染。输入须在当前工作区；外部获准成果目录可作为 cwd 执行。缺字体/渲染器时明确报告未验证 Office 排版，不把结构检查或另画 HTML 当视觉验收。
 - Web 由 `send_file` 交付持久下载卡片：当前工作目录/业务成果目录内文件、单个 ≤64MB、私有快照、会话绑定、认证下载；拒绝越界、软硬链、敏感文件/不安全压缩包，不公开发布、不进入图片作品库。快照存 SQLite，删除回合同步删除记录，但数据库体积不会自动缩小。
 - CLI/TUI 暂无文件卡片；需明确本机文件位置。PowerPoint/WPS 的实际打开和编辑仍需用户验收。
 - 示例与格式见 `vococo/plugin/skills/editable-pptx/`；回归 `uv run --extra dev python -m pytest tests/test_editable_pptx.py tests/test_send_file.py tests/test_send_file_browser.py -q`。

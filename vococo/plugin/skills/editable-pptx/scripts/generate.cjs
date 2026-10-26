@@ -190,4 +190,5 @@ async function main(args) {
   console.log(JSON.stringify(await generate(data, output, path.dirname(input)), null, 2));
 }
 if (require.main === module) main(process.argv.slice(2)).catch(error => {console.error(`PPT 生成失败：${error.message}`); process.exitCode = 1;});
-module.exports = {validate, generate};
+// AI 可直接取得完整原生 API；固定 JSON 生成器仅保留旧稿兼容。
+module.exports = {validate, generate, library};
