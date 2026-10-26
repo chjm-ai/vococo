@@ -151,8 +151,9 @@ Web 入口:`serve` 时设 `WEB_ENABLED=1` 即在同进程起网页服务(默认�
 
 ## 可编辑 PowerPoint 与私有文件成果
 
-- “做一份可编辑 PPT / 修改这份 PPT”触发内置 `editable-pptx` 技能。AI 直接编写原生 API 脚本，自主构图、读取现有稿、逐对象编辑，再渲染实际文件迭代；不是套固定版式或把整页截图放进 PPT。
-- python-pptx 完整 API 随项目安装；辅助工作台提供对象检查、稳定 slide_id/shape_id 定位、页面/图层调整和拒覆盖另存。PptxGenJS 完整 API 可直接用于新建；六版式 JSON 生成器仅保留旧稿兼容，不是新稿能力边界。
+- “做一份可编辑 PPT / 修改这份 PPT”触发内置 `editable-pptx` 适配入口，默认加载成熟的 **PPT Master**，由上游负责设计、原生 PPTX 生成和编辑；vococo 只补权限、真实 PPT 渲染与私有交付，不再自建默认设计流程。
+- PPT Master（MIT）独立完整安装在 `~/Desktop/Repos/AI_Skills/ppt-master/`，也可用 `VOCOCO_PPT_MASTER_DIR` 指定；当前核验 6.7.3 / `78759bf62e9a1ef43e926ff9e50afa4cfe9a63cb`，不捆入 vococo wheel。缺安装/校验失败会明确停止，不静默回退。安装边界、路由和可选依赖见 `vococo/plugin/skills/editable-pptx/references/ppt-master.md`。
+- python-pptx 完整 API 随项目安装，工作台和 PptxGenJS 仅作为明确选择的补充操作；六版式 JSON 生成器只保留旧稿兼容。
 - 不含网页内 PPT 编辑器；任意第三方动画/SmartArt/扩展不保证无损，先在副本验证。原生操作文档见 `vococo/plugin/skills/editable-pptx/references/native-api.md`。
 - 维护者安装依赖（业务生成期间不自动装包；PptxGenJS 缓存与 worktree 无关）：
 
@@ -165,7 +166,7 @@ Web 入口:`serve` 时设 `WEB_ENABLED=1` 即在同进程起网页服务(默认�
   python3 vococo/plugin/skills/editable-pptx/scripts/setup.py
   ```
 
-  生成不联网、不自动装包、不覆盖旧文件。可通过 `VOCOCO_PPTX_HOME` 指定依赖缓存位置。
+  适配层的本地 API/渲染不联网、不自动装包、不覆盖旧文件；上游联网搜图、生图或 TTS 须另获授权，不代表整个上游流程天然离线。可通过 `VOCOCO_PPTX_HOME` 指定 PptxGenJS 依赖缓存位置。
   实际预览需要本机 LibreOffice + Poppler（pdftoppm/pdfinfo），核对真实页数并输出逐页 PNG；AI 查看图片、修正后再渲染。输入须在当前工作区；外部获准成果目录可作为 cwd 执行。缺字体/渲染器时明确报告未验证 Office 排版，不把结构检查或另画 HTML 当视觉验收。
 - Web 由 `send_file` 交付持久下载卡片：当前工作目录/业务成果目录内文件、单个 ≤64MB、私有快照、会话绑定、认证下载；拒绝越界、软硬链、敏感文件/不安全压缩包，不公开发布、不进入图片作品库。快照存 SQLite，删除回合同步删除记录，但数据库体积不会自动缩小。
 - CLI/TUI 暂无文件卡片；需明确本机文件位置。PowerPoint/WPS 的实际打开和编辑仍需用户验收。
