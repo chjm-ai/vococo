@@ -365,6 +365,44 @@ assert.equal(rows[0].text, '暂无最近会话');
     subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
 
 
+def test_sidebar_task_rows_never_show_stop_button():
+    """真实任务行构建函数：各状态均不显示停止入口，保留状态点、菜单与跳转。"""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("需要 Node 执行侧栏任务行函数")
+    sidebar = STATIC_SIDEBAR.read_text(encoding="utf-8")
+    source = sidebar[sidebar.index("function buildVoiceTaskRow(") : sidebar.index("function buildConvRow(")]
+    script = f"""
+const assert = require('node:assert/strict');
+const S = {{convFilter:'active', conv:'task:1', live:{{}}, pendingReview:{{}}}};
+const el = (tag, cls)=>({{tag, cls, dataset:{{}}, children:[],
+  append(...items){{this.children.push(...items)}}, classList:{{add(){{}}, contains(){{return false}}}}}});
+const ic = name=>name;
+const fmtTime = ()=> '14:26';
+const convAgentAvatar = ()=>el('span','avatar');
+const bindRowSwipeActions = ()=>{{}};
+let opened, menus=0;
+const openConv = conv=>opened=conv;
+const openConvMenu = ()=>menus++;
+{source}
+for(const status of ['queued','running','done','failed','cancelled',undefined]){{
+  for(const withAvatar of [false,true]){{
+    const row=buildVoiceTaskRow({{conv:'task:1', title:'任务', task_status:status}}, false, withAvatar);
+    const children=row.children[0].children;
+    assert.ok(!children.some(c=>c.cls==='cvstop'), '侧栏不应显示停止按钮：'+status);
+    assert.equal(children.some(c=>c.cls==='livedot'), !withAvatar && ['queued','running'].includes(status));
+    children.find(c=>c.cls==='more').onclick({{stopPropagation(){{}}}});
+    row.onclick();
+    assert.equal(opened,'task:1');
+  }}
+}}
+assert.equal(menus,12);
+S.convFilter='archived';
+assert.equal(buildVoiceTaskRow({{conv:'task:1'}},false),null);
+"""
+    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+
+
 def test_agent_row_state_covers_main_children_and_tasks():
     """工作中/未读都要算上主会话 + 名下子会话(+ 归它的后台任务),同一份清单判断。"""
     js = STATIC_AGENTS.read_text(encoding="utf-8")
