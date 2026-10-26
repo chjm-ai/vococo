@@ -342,6 +342,83 @@ async function testManualHeight(browser,origin,token,screenshots){
   }
 }
 
+async function testMermaidBreaks(browser,origin,token,screenshots){
+  let page=await browser.newPage({viewport:{width:1280,height:1100}});
+  const external=[],errors=[];
+  page.on('pageerror',error=>errors.push(error.message));
+  await page.route('**/*',route=>{
+    if(!route.request().url().startsWith(origin+'/')){external.push(route.request().url());return route.abort();}
+    return route.continue();
+  });
+  await page.goto(origin);await page.fill('#pw',token);await page.click('#loginBtn');
+  await page.waitForFunction(()=>!$('#app').hidden);
+  await page.evaluate(async()=>{await openConv('mermaid-breaks');$('#wrap').replaceChildren();closeSidebar();setSidebarCollapsed(true);});
+  const show=async(source,streaming=false)=>{
+    await page.evaluate(({source,streaming})=>{
+      let host=document.querySelector('#break-test');
+      if(!host){host=document.createElement('div');host.id='break-test';$('#wrap').append(host);}
+      renderPreviewMarkdown(host,'```mermaid\n'+source+(streaming?'\n':'\n```'),streaming);
+    },{source,streaming});
+    await page.waitForFunction(()=>{const s=document.querySelector('#break-test .chat-preview')._preview;return !s.needsResume && !s.queued;});
+    await page.evaluate(()=>previewSerial);
+    return page.locator('#break-test .chat-preview');
+  };
+  const flow=br=>`flowchart TD
+ A["进入真实项目"] --> B["查看阶段与适用要求"]
+ B --> C["现在需要准备什么？${br}已有资料、需更新、待补或待核"]
+ C --> D{资料完整？}
+ D -->|是| E[进入执行]
+ D -->|否| F[补充或核实]
+ F --> B`;
+  for(const br of ['<br/>','<br>','<br />','<BR/>']){
+    const card=await show(flow(br));
+    await card.screenshot({path:path.join(screenshots,'mermaid-breaks-'+(br==='<br/>'?'before-or-after':br==='<br>'?'plain':br==='<br />'?'spaced':'uppercase')+'.png')});
+    assert.equal(await card.locator('.preview-status').getAttribute('data-state'),'done','安全换行应成功渲染 '+br);
+    const frame=await (await card.locator('iframe').elementHandle()).contentFrame();
+    await frame.locator('svg').waitFor();
+    const lines=await frame.evaluate(()=>[...document.querySelectorAll('.node text')].filter(n=>n.textContent.includes('现在需要准备什么')).map(n=>({text:n.textContent,ys:[...n.querySelectorAll('tspan')].filter(t=>t.textContent.trim()).map(t=>Math.round(t.getBoundingClientRect().y))})));
+    assert.equal(lines.length,1);assert.match(lines[0].text,/已有资料、需更新、待补或待核/);
+    assert.ok(new Set(lines[0].ys).size>=2,'SVG 必须有真实多行文字');
+    assert.ok(!lines[0].text.includes('<br'),'不显示字面 HTML');
+    assert.equal(await frame.locator('foreignObject,script,a').count(),0);
+    assert.equal(await card.locator('iframe').getAttribute('sandbox'),'');
+  }
+  for(const source of ['flowchart LR\n A --> B',sequenceSource]){
+    const card=await show(source);assert.equal(await card.locator('.preview-status').getAttribute('data-state'),'done');
+  }
+  for(const attack of ['<b>标签</b>','<br onmouseover="alert(1)">','<BR style="color:red"/>','<script>alert(1)</script>','&lt;img src=x&gt;','</text><image href="x">']){
+    const card=await show('flowchart TD\n A["安全<br/>'+attack+'"]');
+    assert.match(await card.locator('.preview-note').innerText(),/安全限制/);
+    assert.equal(await card.locator('.preview-note *').count(),0);
+  }
+  for(const attack of ['%%{init: {"securityLevel":"loose"}}%%\nflowchart LR\n A-->B','---\nconfig: {}\n---\nflowchart LR\n A-->B','flowchart LR\n A-->B\n click A "https://preview-attacker.invalid/"','flowchart LR\n A@{img: "https://preview-attacker.invalid/x"}','flowchart LR\n A["x"]\n style A fill:url(https://preview-attacker.invalid/x)']){
+    const card=await show(attack);assert.match(await card.locator('.preview-note').innerText(),/安全限制/);
+  }
+  const syntax=await show('flowchart TD\n A[未完成');
+  assert.match(await syntax.locator('.preview-note').innerText(),/语法错误/);
+  await show('flowchart TD\n A --> B');
+  const previous=await syntax.locator('iframe').getAttribute('srcdoc');
+  await show('flowchart TD\n A[未完成',true);
+  assert.equal(await syntax.locator('.preview-status').getAttribute('data-state'),'busy');
+  assert.equal(await syntax.locator('.preview-note').isVisible(),false);
+  assert.equal(await syntax.locator('iframe').getAttribute('srcdoc'),previous);
+  // 新上下文禁用缓存 Worker；此页仅测试加载失败，不创建沙箱 iframe。
+  await page.close();
+  page=await browser.newPage({serviceWorkers:'block'});
+  page.on('pageerror',error=>errors.push(error.message));
+  let blockedLoads=0;
+  await page.route('**/mermaid-11.12.2.min.js',route=>{blockedLoads++;return route.abort();});
+  await page.goto(origin);await page.fill('#pw',token);await page.click('#loginBtn');
+  await page.waitForFunction(()=>!$('#app').hidden);
+  await page.evaluate(async()=>{await openConv('mermaid-load-failure');$('#wrap').replaceChildren();});
+  const failed=await show('flowchart LR\n A --> B');
+  assert.equal(blockedLoads,1,'必须真实阻断组件网络请求');
+  assert.match(await failed.locator('.preview-note').innerText(),/组件加载失败/);
+  assert.deepEqual(external,[]);assert.deepEqual(errors,[]);
+  console.log(JSON.stringify({ok:true,scenario:'mermaid-breaks',external,errors,screenshots}));
+  await page.close();
+}
+
 (async()=>{
   const [origin,token,screenshots,scenario]=process.argv.slice(2);
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
@@ -350,6 +427,7 @@ async function testManualHeight(browser,origin,token,screenshots){
     if(scenario==='sequence-theme-layout') return await testPreviewThemeLayout(browser,origin,token,screenshots);
     if(scenario==='sequence-stream-theme') return await testStreamTheme(browser,origin,token,screenshots);
     if(scenario==='manual-height') return await testManualHeight(browser,origin,token,screenshots);
+    if(scenario==='mermaid-breaks') return await testMermaidBreaks(browser,origin,token,screenshots);
     const page=await browser.newPage({viewport:{width:1280,height:1000}}),errors=[], external=[];
     page.on('pageerror',e=>errors.push(e.message));
     // CSP 拦截也会产生 request/requestfailed；只有到达网络路由才算泄漏。
@@ -483,7 +561,7 @@ async function testManualHeight(browser,origin,token,screenshots){
     });
     await page.waitForFunction(()=>document.querySelector('#edgeCases .preview-status').getAttribute('aria-label').includes('无法预览'));
     assert.equal(await page.locator('#edgeCases .preview-status').getAttribute('data-state'),'warning');
-    assert.match(await page.locator('#edgeCases .preview-note').innerText(),/切换源码检查语法或安全限制/);
+    assert.match(await page.locator('#edgeCases .preview-note').innerText(),/语法错误，请切换源码检查/);
     // 放到消息区顶部，避免短异常卡片落在固定输入框下面。
     await page.locator('#edgeCases').evaluate(n=>{n.parentNode.prepend(n);document.querySelector('#messages').scrollTop=0;});
     await page.locator('#edgeCases .chat-preview').screenshot({path:path.join(screenshots,'chat-preview-error.png')});
