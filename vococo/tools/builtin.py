@@ -1900,7 +1900,9 @@ async def collect_library_item(args: dict) -> dict:
 
 
 @tool(
-    "publish_website", "统一网站发布入口：激活成功后自动收录作品库，不要手写 rsync/SSH。"
+    "publish_website", "仅用于临时 HTML 文件、报告材料、HTML PPT、独立 Demo 的分享发布，成功后自动收录作品库。"
+    "业务仓库既有部署脚本、CI/CD 不受本工具限制，沿用仓库流程及原有审批。"
+    "只有本工具管理的临时作品禁止手写 rsync/SSH 绕过发布审批及登记。"
     "target 白名单 local/kimmy/site；支持 local/kimmy static，site及后端类型明确未支持。"
     "source_dir 是含 index.html 的干净静态目录绝对路径。需要危险审批；拒绝覆盖未登记改动。"
     "local不是私密空间：/pub/无需登录，绑定外网或有隧道时可能公开访问。"
