@@ -29,6 +29,7 @@ dependencies = [
     "pyyaml>=6.0",
     "claude-monitor>=4.0.0",
     "pillow>=10.0",
+    "python-pptx==1.0.2",
 ]
 
 [project.optional-dependencies]

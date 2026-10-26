@@ -1,4 +1,6 @@
-# 内容 JSON
+# 旧稿兼容：内容 JSON
+
+此接口只保留既有稿件兼容，不用于限制新稿。默认使用 [原生 PPT API](native-api.md) 自主设计与逐对象编辑；以下字数、版式和图片限制仅属于此旧生成器。
 
 顶层：`title`（必填，120 字符内）、`author`（可选）、`theme`（可选）、`slides`（1–50 页）。
 `theme` 可设置 `font`、`background`、`ink`、`accent`；颜色用无 # 的六位 RGB。
