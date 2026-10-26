@@ -17,6 +17,7 @@ const assert=require('node:assert/strict');
     await page.waitForFunction(()=>!$('#app').hidden);
     await page.evaluate(async()=>{await openConv('main');});
     for(const width of [320,375,390,768,1280]){
+      console.error('验证屏宽',width);
       await page.setViewportSize({width,height:900});
       await page.evaluate(()=>{
         $('#wrap').replaceChildren(buildTurnBlock({id:123,user:'已发送内容\n第二行',assistant:'回复',ts:1700000000},'main',true));
@@ -39,6 +40,20 @@ const assert=require('node:assert/strict');
       assert.ok(await bubble.evaluate(n=>n.getBoundingClientRect().right<=innerWidth),'窄屏气泡不能越界');
       await foot.locator('button').focus(); await page.waitForTimeout(200);
       assert.equal(await foot.evaluate(n=>getComputedStyle(n).opacity),'1','键盘聚焦时可见');
+      const aiRow=page.locator('#wrap .row.ai'), aiFoot=aiRow.locator('.turnfoot');
+      assert.equal(await aiFoot.evaluate(n=>getComputedStyle(n).opacity),'0','未悬浮的 AI 底栏隐藏');
+      await aiRow.hover();
+      await page.waitForFunction(n=>getComputedStyle(n).opacity==='1',await aiFoot.elementHandle());
+      assert.equal(await aiFoot.evaluate(n=>getComputedStyle(n).opacity),'1','悬浮 AI 回复时底栏显示');
+      assert.equal(await aiFoot.locator('button').count(),2,'保留复制和重新生成');
+      await aiFoot.locator('button[aria-label="复制"]').click();
+      assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),'回复');
+      await bubble.click(); await page.mouse.move(0,0);
+      await page.waitForFunction(n=>getComputedStyle(n).opacity==='0',await aiFoot.elementHandle());
+      assert.equal(await aiFoot.evaluate(n=>getComputedStyle(n).opacity),'0','离开 AI 回复后底栏隐藏');
+      await aiFoot.locator('button').first().focus();
+      await page.waitForFunction(()=>getComputedStyle(document.querySelector('#wrap .row.ai .turnfoot')).opacity==='1');
+      assert.equal(await aiRow.evaluate(n=>n.matches(':focus-within')),true,'AI 底栏支持键盘聚焦');
     }
     await page.evaluate(()=>{
       $('#wrap').replaceChildren();

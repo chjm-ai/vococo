@@ -23,7 +23,7 @@ async def test_user_message_footer_in_browser(running_library):
     )
     communication = asyncio.create_task(process.communicate())
     try:
-        stdout, stderr = await asyncio.wait_for(asyncio.shield(communication), timeout=60)
+        stdout, stderr = await asyncio.wait_for(asyncio.shield(communication), timeout=120)
     except TimeoutError:
         process.kill()
         stdout, stderr = await communication
