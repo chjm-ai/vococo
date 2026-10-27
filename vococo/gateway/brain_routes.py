@@ -11,7 +11,7 @@ from aiohttp import web
 
 from .. import config
 from ..core import task_runner, tasks
-from ..memory import agents, session_store
+from ..memory import agents, projects, session_store
 from ..tools import danger
 
 AGENT_ID = "286d3c1abf"
@@ -28,8 +28,8 @@ _FIELDS = {
     "create_task": ({"title", "prompt", "idempotency_key"}, set()),
     "get_task": ({"id"}, {"offset", "length"}),
     "cancel_task": ({"id"}, set()),
-    "list_agents": (set(), {"offset", "limit"}),
-    "list_sessions": (set(), {"agent_id", "all_agents", "offset", "limit"}),
+    "list_agents": (set(), {"offset", "limit", "query"}),
+    "list_sessions": (set(), {"agent_id", "all_agents", "offset", "limit", "query"}),
     "read_session": ({"key"}, {"agent_id", "before_id", "turn_id", "offset", "length"}),
 }
 # 只读接口允许访问的 Agent:这里出现即代表本连接可见。派单仍只绑固定开发 Agent。
@@ -234,37 +234,134 @@ def _cancel_task(data: dict, _agent: dict, _connection: str = "") -> dict:
     return _task_view(_owned_task(task["id"]), {})
 
 
-def _history_agents() -> list[dict]:
-    """合并 Agent 目录与全部项目(含隐藏历史),不补写元数据。"""
+def _history_agents(light: bool = False) -> list[dict]:
+    """合并 Agent 目录与全部项目(含隐藏历史),不补写元数据。
+
+    light=True 给只读枚举用:agents.get 会对每个 Agent 跑一次 git 判断执行目录,
+    25 个 Agent 就要约 1 秒;列 Agent/会话只要 id、名称和归属,用不到执行目录。"""
     found: dict[str, dict] = {}
     root = agents.root_dir()
     if root.is_dir():
         for path in sorted(root.iterdir()):
-            if not path.is_dir() or not agents.valid_id(path.name) or not agents._read_meta(path.name).get("workdir"):
+            meta = agents._read_meta(path.name) if path.is_dir() and agents.valid_id(path.name) else {}
+            if not meta.get("workdir"):
                 continue
-            agent = agents.get(path.name)
-            if agent:
-                found[agent["id"]] = agent
-    found.setdefault(agents.GENERAL_ID, agents.get(agents.GENERAL_ID))
+            if light:
+                found[path.name] = _light_meta(path.name)
+            else:
+                agent = agents.get(path.name)
+                if agent:
+                    found[agent["id"]] = agent
+    found.setdefault(agents.GENERAL_ID, _light_meta(agents.GENERAL_ID) if light else agents.get(agents.GENERAL_ID))
     by_hash = {agent["project_hash"]: agent for agent in found.values() if agent.get("project_hash")}
     # 隐藏只影响侧栏,不撤销历史权限；从项目表补旧项目,避免只读枚举创建 agent.json。
     rows = session_store._conn().execute("SELECT hash,path FROM projects ORDER BY hash").fetchall()
-    for phash, path in rows:
-        agent = by_hash.get(phash) or agents._build(phash, agents._read_meta(phash), path)
-        found.setdefault(agent["id"], agent)
+    for phash, workdir_path in rows:
+        agent = by_hash.get(phash) or agents._build(phash, agents._read_meta(phash), workdir_path)
+        found.setdefault(agent["id"], _light(agent) if light else agent)
     return list(found.values())
+
+
+def _light(agent: dict) -> dict:
+    """只读枚举用到的字段子集。"""
+    return {"id": agent["id"], "name": agent["name"], "project_hash": agent.get("project_hash"),
+            "main_conv": agent.get("main_conv")}
+
+
+def _light_meta(agent_id: str) -> dict:
+    """不跑 git/建目录的轻量版 agents.get,只给只读枚举用。
+
+    命名与归属规则照搬 agents._build:通用 Agent 无项目,其余按工作目录取项目哈希。"""
+    if agent_id == agents.GENERAL_ID:
+        name, phash, main = agents._read_meta(agent_id).get("name") or "通用", None, "main"
+    else:
+        meta = agents._read_meta(agent_id)
+        workdir = meta.get("workdir")
+        if not workdir:
+            return {}
+        phash = projects.project_hash(workdir)
+        name = meta.get("name") or os.path.basename(workdir) or agent_id
+        main = f"p{phash}:main" if phash else "main"
+    return {"id": agent_id, "name": name, "project_hash": phash, "main_conv": main}
 
 
 def _visible_agents() -> list[dict]:
     """单主人 OAuth 账号的可读范围,不是多租户授权机制。显式空白名单表示全部拒绝。"""
     allowed = {item.strip() for item in os.environ.get(READABLE_AGENTS, "").split(",") if item.strip()}
     out = []
-    for agent in _history_agents():
+    for agent in _history_agents(light=True):
         if READABLE_AGENTS in os.environ and agent["id"] not in allowed:
             continue
         out.append({"agent_id": agent["id"], "name": _clean(agent["name"])[:100],
                     "task_dispatch": agent["id"] == AGENT_ID})
     return sorted(out, key=lambda item: item["agent_id"])
+
+
+def _agent_index() -> tuple[dict[str, dict], dict[str, dict]]:
+    """一次备好两套归属映射,避免每个会话都重扫 Agent 目录。
+
+    - by_hash:项目哈希 → Agent,给 web:p<hash> 会话用
+    - by_task:定时任务 id → Agent,给 task: 会话用(先查任务表,兼容未归属的旧任务)
+    归属规则与 agents.agent_for_session 相同,只是不逐条重扫磁盘。"""
+    found = _history_agents(light=True)
+    by_hash = {agent["project_hash"]: agent for agent in found if agent.get("project_hash")}
+    from ..cron import scheduler
+
+    by_task = {}
+    light_agents: dict[str, dict] = {}
+
+    def light_get(agent_id: str | None) -> dict | None:
+        if not agent_id or not agents.valid_id(agent_id):
+            return None
+        if agent_id not in light_agents:
+            light_agents[agent_id] = _light_meta(agent_id)
+        return light_agents[agent_id] or None
+
+    for job in scheduler.load_jobs():
+        agent = light_get(job.get("agent_id")) if job.get("id") else None
+        if agent:
+            by_task.setdefault(job["id"], agent)
+    # 兼容任务表建表更早的库:没有 agent_id 列就只靠 cron 配置归属
+    try:
+        rows = session_store._conn().execute(
+            "SELECT id,agent_id FROM tasks WHERE agent_id IS NOT NULL AND agent_id != ''").fetchall()
+    except Exception:
+        rows = []
+    for task_id, agent_id in rows:
+        agent = light_get(agent_id)
+        if agent:
+            by_task.setdefault(task_id, agent)
+    return by_hash, by_task
+
+
+def _owner_map(by_hash: dict[str, dict], by_task: dict[str, dict]) -> dict[str, dict]:
+    """会话 key → Agent,一次算完;查不到归属的 key(含隐藏旧项目)仍走原逐条判定。"""
+    out: dict[str, dict] = {}
+    for key, _last_id in _session_rows():
+        owner = _fast_owner(key, by_hash, by_task, _history_owner)
+        if owner:
+            out[key] = owner
+    return out
+
+
+def _fast_owner(session_key: str, by_hash: dict[str, dict], by_task: dict[str, dict],
+                legacy) -> dict | None:
+    phash = config.project_hash_from_key(session_key)
+    if phash:
+        return by_hash.get(phash) or legacy(session_key)
+    if session_key.startswith("task:"):
+        return by_task.get(session_key[5:]) or legacy(session_key)
+    return legacy(session_key)
+
+
+def _query(data: dict) -> str:
+    """可选关键词:大小写不敏感,匹配会话标题 / Agent 名称。空串表示不过滤。"""
+    value = data.get("query")
+    if value is None:
+        return ""
+    if not isinstance(value, str) or len(value) > 100:
+        _reject(400, "query 必须是最多 100 字符的文本")
+    return value.strip().casefold()
 
 
 def _agent_visibility() -> dict[str, dict]:
@@ -296,33 +393,75 @@ def _owns_session(key: str, agent_id: str) -> bool:
 
 
 def _list_agents(data: dict, _agent: dict, _connection: str = "") -> dict:
+    """Agent 目录;query 按名称/agent_id 模糊筛。每项附 session_count,列表本身就是分组视图。"""
     offset = _number(data, "offset", 0, 2**63 - 1)
     limit = _number(data, "limit", 50, 100, 1)
-    items = _visible_agents()
+    query = _query(data)
+    counts = _session_counts()
+    items = [{**item, "session_count": counts.get(item["agent_id"], 0)} for item in _visible_agents()]
+    if query:
+        items = [item for item in items
+                 if query in item["name"].casefold() or query in item["agent_id"].casefold()]
     end = offset + limit
     return {"agents": items[offset:end], "next_offset": end if end < len(items) else None,
             "pagination": "Agent 列表随项目增删变化,非快照"}
 
 
+def _session_rows() -> list[tuple[str, int]]:
+    """全部有轮次的会话,按最后轮次倒序。"""
+    return session_store._conn().execute(
+        "SELECT session_key,MAX(id) AS last_turn_id FROM turns GROUP BY session_key ORDER BY MAX(id) DESC"
+    ).fetchall()
+
+
+def _session_counts() -> dict[str, int]:
+    """各 Agent 名下的会话数(与 list_sessions 同一归属与可见性口径)。"""
+    visibility = _agent_visibility()
+    by_hash, by_task = _agent_index()
+    counts: dict[str, int] = {}
+    owners = _owner_map(by_hash, by_task)
+    for owner in owners.values():
+        if owner["id"] in visibility:
+            counts[owner["id"]] = counts.get(owner["id"], 0) + 1
+    return counts
+
+
 def _list_sessions(data: dict, _agent: dict, _connection: str = "") -> dict:
+    """按 Agent 分组/筛选列出会话。
+
+    - 省略 agent_id 与 all_agents:只列固定开发 Agent
+    - agent_id:只列该 Agent
+    - all_agents=true:跨全部可读 Agent,每条带 agent_id 和 agent_name
+    - query:可选关键词,大小写不敏感,匹配会话标题或所属 Agent 名称
+    """
     offset = _number(data, "offset", 0, 2**63 - 1)
     limit = _number(data, "limit", 20, 100, 1)
     all_agents = data.get("all_agents", False)
     if type(all_agents) is not bool or (all_agents and data.get("agent_id") is not None):
         _reject(400, "all_agents 必须是布尔值,且不能与 agent_id 同时指定")
+    query = _query(data)
     visibility = _agent_visibility()
     target = None if all_agents else _resolve_agent(data, visibility)
+    # 关键词先匹配 Agent 名称:命中的 Agent 名下会话整组保留,其余 Agent 一律排除;
+    # 都不命中时才逐条按会话标题筛。
+    matched = {aid for aid, item in visibility.items() if query in item["name"].casefold()}
+    keywords = None if matched or not query else query
+    by_hash, by_task = _agent_index()
+    owners = _owner_map(by_hash, by_task)
     owned = []
-    rows = session_store._conn().execute(
-        "SELECT session_key,MAX(id) AS last_turn_id FROM turns GROUP BY session_key ORDER BY MAX(id) DESC"
-    ).fetchall()
-    for key, last_id in rows:
-        owner = _history_owner(key)
+    for key, last_id in _session_rows():
+        owner = owners.get(key)
         # 明确指定 agent_id 时,没有归属的会话(通用对话、CLI)不属于任何 Agent,不返回
         if owner is None or owner["id"] not in visibility or (target and owner["id"] != target):
             continue
-        owned.append({"agent_id": owner["id"], "key": key, "last_turn_id": last_id,
-                      "title": _clean(session_store.get_title(key) or "新对话")[:200]})
+        if matched and owner["id"] not in matched:
+            continue
+        title = _clean(session_store.get_title(key) or "新对话")[:200]
+        agent_name = visibility[owner["id"]]["name"]
+        if keywords and keywords not in title.casefold():
+            continue
+        owned.append({"agent_id": owner["id"], "agent_name": agent_name, "key": key,
+                      "last_turn_id": last_id, "title": title})
     end = offset + limit
     return {"sessions": owned[offset:end], "next_offset": end if end < len(owned) else None,
             "pagination": "非快照；新增或删除会话可能导致分页重复或遗漏"}

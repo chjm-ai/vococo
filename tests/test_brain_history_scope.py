@@ -51,7 +51,7 @@ async def test_hidden_legacy_project_without_agent_metadata_is_readable(client, 
     tid = turn("历史问题", "历史回答", key)
     assert not (agents.root_dir() / aid / "agent.json").exists()
     visible = (await post(client, "list_agents", {}))["agents"]
-    assert {"agent_id": aid, "name": "旧项目", "task_dispatch": False} in visible
+    assert {"agent_id": aid, "name": "旧项目", "task_dispatch": False, "session_count": 1} in visible
     assert not (agents.root_dir() / aid / "agent.json").exists()
     assert (await post(client, "list_sessions", {"agent_id": aid}))["sessions"][0]["key"] == key
     assert (await post(client, "read_session", {"agent_id": aid, "key": key}))["turn"]["id"] == tid

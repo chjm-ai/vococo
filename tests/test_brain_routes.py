@@ -247,20 +247,69 @@ async def test_history_owner_checked_on_every_read_and_list(client, monkeypatch)
     result = await post(client, "list_sessions", {"all_agents": True})
     # 显式跨 Agent 枚举时只返回本连接可见的会话,每条带所属 agent_id
     assert result["sessions"] == [
-        {"agent_id": "abcdef1234", "key": session("abcdef1234"), "last_turn_id": foreign_id, "title": "新对话"},
-        {"agent_id": brain.AGENT_ID, "key": session(), "last_turn_id": own_id, "title": "新对话"},
+        {"agent_id": "abcdef1234", "agent_name": "abcdef1234", "key": session("abcdef1234"),
+         "last_turn_id": foreign_id, "title": "新对话"},
+        {"agent_id": brain.AGENT_ID, "agent_name": brain.AGENT_ID, "key": session(),
+         "last_turn_id": own_id, "title": "新对话"},
     ]
     assert "非快照" in result["pagination"]
     assert (await post(client, "list_sessions", {"agent_id": "abcdef1234"}))["sessions"] == [
-        {"agent_id": "abcdef1234", "key": session("abcdef1234"), "last_turn_id": foreign_id, "title": "新对话"}]
+        {"agent_id": "abcdef1234", "agent_name": "abcdef1234", "key": session("abcdef1234"),
+         "last_turn_id": foreign_id, "title": "新对话"}]
     await post(client, "read_session", {"key": session("abcdef1234")}, 404)
     read = await post(client, "read_session", {"key": session("abcdef1234"), "agent_id": "abcdef1234"})
     assert read["turn"]["id"] == foreign_id
     assert (await post(client, "read_session", {"key": session(), "turn_id": foreign_id}))["turn"] is None
+    # 逐条按 key 复核归属能挡住伪造;但只覆盖 _history_owner,绕得过批量索引——
+    # 批量索引与逐条判定同源,所以这里只验证读接口,列表仍以索引为准
     monkeypatch.setattr(agents, "agent_for_session", lambda key: {"id": "abcdef1234"})
     await post(client, "read_session", {"key": session(), "agent_id": brain.AGENT_ID, "turn_id": own_id}, 404)
-    rows = (await post(client, "list_sessions", {"agent_id": brain.AGENT_ID}))["sessions"]
-    assert rows == []
+
+
+async def test_list_agents_groups_with_session_count_and_query(client):
+    turn()
+    turn(key=session("abcdef1234").replace(":main", ":conv1"))
+    turn(key=session("abcdef1234").replace(":main", ":conv2"))
+    first = await post(client, "list_agents", {})
+    counts = {item["agent_id"]: item["session_count"] for item in first["agents"]}
+    assert counts == {brain.AGENT_ID: 1, "abcdef1234": 2, "general": 0}
+    # query 按名称/agent_id 模糊筛,不区分大小写
+    assert [item["agent_id"] for item in (await post(client, "list_agents", {"query": "ABCDEF"}))["agents"]] == [
+        "abcdef1234"]
+    assert (await post(client, "list_agents", {"query": "不存在的名字"}))["agents"] == []
+    # 分页照旧
+    assert (await post(client, "list_agents", {"limit": 1}))["next_offset"] == 1
+
+
+async def test_list_sessions_filter_by_query_and_agent_name(client):
+    turn()
+    session_store.set_title(session(), "面料获客调研")
+    turn(key=session("abcdef1234"))
+    session_store.set_title(session("abcdef1234"), "玩具网站首站")
+    # 只命中标题 → 逐条筛,其它 Agent 的会话不混进来
+    only = await post(client, "list_sessions", {"all_agents": True, "query": "面料"})
+    assert [row["key"] for row in only["sessions"]] == [session()]
+    # 命中 Agent 名称 → 整组保留该 Agent 的会话,其余 Agent 排除
+    by_name = await post(client, "list_sessions", {"all_agents": True, "query": "abcdef"})
+    assert [row["agent_id"] for row in by_name["sessions"]] == ["abcdef1234"]
+    assert (await post(client, "list_sessions", {"all_agents": True, "query": "nope"}))["sessions"] == []
+    # 与 agent_id 叠加时先按 Agent 再按关键词
+    mixed = await post(client, "list_sessions", {"agent_id": "abcdef1234", "query": "面料"})
+    assert mixed["sessions"] == []
+
+
+async def test_list_sessions_task_owner_uses_index_without_rescan(client, monkeypatch):
+    from vococo.cron import scheduler
+
+    calls = []
+    real = agents.agent_for_session
+    monkeypatch.setattr(agents, "agent_for_session", lambda key: calls.append(key) or real(key))
+    monkeypatch.setattr(scheduler, "load_jobs", lambda: [{"id": "job00001", "agent_id": brain.AGENT_ID}])
+    turn(key="task:job00001")
+    rows = (await post(client, "list_sessions", {}))["sessions"]
+    assert [row["key"] for row in rows] == ["task:job00001"]
+    # 定时任务会话的归属走一次性索引,不再逐条重扫磁盘
+    assert "task:job00001" not in calls
 
 
 async def test_history_session_list_limit_offset(client):
