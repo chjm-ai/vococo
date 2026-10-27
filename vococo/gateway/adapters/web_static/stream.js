@@ -244,7 +244,7 @@ function appendVids(container, vids){
 function buildBubble(who, text, imgs, auds, vids, ts){
   const row=el("div","row "+(who==="me"?"me":"ai"));
   const b=el("div","bubble");
-  if(who==="me"){ b.textContent=text; } else { b.innerHTML = text?mdToHtml(text):""; }
+  if(who==="me"){ b.textContent=text; b.classList.add("user-message-collapsed"); } else { b.innerHTML = text?mdToHtml(text):""; }
   row.append(b);
   appendImgs(b, imgs);
   appendAuds(b, auds);
@@ -303,6 +303,15 @@ function buildTurnFoot(conv, turnId, text, ts, isLast, interrupted){
 function appendUserFoot(row, text, ts){
   const foot=buildTurnFoot(null, null, text, ts ?? Date.now()/1000, false);
   foot.classList.add("userfoot");
+  const toggle=el("button","tfbtn user-message-toggle");
+  toggle.type="button"; toggle.textContent="展开"; toggle.setAttribute("aria-expanded","false");
+  toggle.onclick=()=>{
+    const bubble=row.querySelector(".bubble");
+    const isExpanded=bubble.classList.toggle("user-message-collapsed");
+    toggle.textContent=isExpanded?"展开":"折叠";
+    toggle.setAttribute("aria-expanded",String(!isExpanded));
+  };
+  foot.append(toggle);
   row.append(foot);
 }
 function copyMsgText(btn, text){
