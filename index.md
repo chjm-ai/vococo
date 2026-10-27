@@ -1,6 +1,6 @@
 ---
 title: vococo 文档路由
-last_updated: 2026-10-26
+last_updated: 2026-10-27
 ---
 
 # 文档路由
@@ -18,5 +18,7 @@ last_updated: 2026-10-26
 | 运维排障 | [OPERATIONS.md](OPERATIONS.md) | 部署、重启与排障 |
 | 前端样式 | [DESIGN.md](DESIGN.md) | 设计令牌与视觉规范 |
 | 未立项设想 | [docs/roadmap.md](docs/roadmap.md) | 设想入口 |
-| ChatGPT 调用 vococo | [docs/chatgpt-vococo-rfc.md](docs/chatgpt-vococo-rfc.md) | Issue #1 的需求、平台限制、只读探针及测速结果；完整任务桥未实施 |
+| ChatGPT 接入步骤 | [docs/chatgpt-mcp-connect.md](docs/chatgpt-mcp-connect.md) | 固定地址、OAuth 授权、本机口令、真机测试步骤 |
+| ChatGPT 调用 vococo | [docs/chatgpt-vococo-rfc.md](docs/chatgpt-vococo-rfc.md) | Issue #1 需求、边界、任务桥与生产公网验收 |
+| MCP 生产验收 | [scripts/check_brain_live.py](scripts/check_brain_live.py) | 公网 OAuth、真实派单/查询/取消及历史读取；显式运行才操作生产 |
 | MCP 链路测速 | [scripts/check_mcp_probe.py](scripts/check_mcp_probe.py) | 小样本耗时、延迟非阻塞和长回复完整性验收脚本 |

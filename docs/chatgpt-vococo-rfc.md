@@ -176,7 +176,7 @@ ChatGPT 自定义 MCP App
 
 主人已确认先做探针，再开发真实派单及历史读取，首期限定「Vococo 开发」，危险审批回 vococo；固定域名和 OAuth 口令方案已确认，不再作为开工待拍板项。真实客户端语音行为仍需本人账号实测。
 
-初评之后的探针与任务桥实现、隔离验收边界见下节；生产部署尚未实施，Issue 尚未远程改写。
+初评之后的探针与任务桥实现、隔离验收边界见下节；生产部署与公网验收现已完成（§10.4），Issue 尚未远程改写。
 
 ### 10.1 已实现的连接探针 MVP
 
@@ -249,11 +249,11 @@ uv run python scripts/check_mcp_probe.py https://实际测试域名/mcp
 
 ### 10.3 真实任务桥与历史读取（2026-10-27）
 
-**代码及隔离验收完成；固定公网入口尚未部署。** 不把此状态当成 GPT 已经能调用生产任务。
+**代码及隔离验收完成；后续生产部署与公网验收已完成，见§10.4。** 本节保留实现和隔离测试边界，不替代本人 ChatGPT 账号/语音验收。
 
 ```text
-目标 https://mcp.chjm.cc/mcp
-  → 独立命名隧道（待部署，不改已有共享隧道）
+固定 https://mcp.chjm.cc/mcp
+  → 独立命名隧道（已部署，不改已有共享隧道）
   → mcp-auth-proxy v2.10.2，127.0.0.1:8853（成熟 OAuth 口令登录）
   → brain_mcp，127.0.0.1:8852（独立上游共享凭据）
   → 原 gateway，127.0.0.1:8848/internal/brain/{operation}（独立桥凭据）
@@ -287,7 +287,17 @@ VOCOCO_MCP_AUTH_TEST_BINARY="$PWD/data/mcp-auth-verify/mcp-auth-proxy-darwin-amd
 
 结果：**348 passed**。任务/历史测试用临时库与假调度，不执行真实模型；官方 MCP 客户端通过真实 HTTP 桥验证派单幂等、取消、文本分页和来源权限。真实认证代理测试只在回环运行，以测试传输映射 HTTPS origin，不是公网 TLS/Cloudflare 验收：验证 discovery、DCR、错误口令、登录与授权确认、S256 PKCE（含错误 verifier）、MCP 调用、refresh、重启后 token/客户端持久化。登出后旧 token 仍有效；停代理后切换全新 OAuth 数据和密钥目录，旧 access/refresh 被拒绝，证明的是**全部授权重置**，不是标准单客户端撤销。测试结束回收全部自建进程。
 
-准备脚本与上线清单见 [认证部署说明](../deploy/mcp-auth/README.md)。仍未完成：主人本地设置登录口令、生产桥 token 配置、提交合并/重启、正式 DNS/独立隧道/常驻 MCP 前端、边缘登录限流以及真实 ChatGPT OAuth/语音回执。不会为赶进度无认证开放真实能力或继续更换 Quick Tunnel 地址。
+准备脚本与上线清单见 [认证部署说明](../deploy/mcp-auth/README.md)。部署后的状态见下一节，不再更换 Quick Tunnel 地址。
+
+### 10.4 生产上线验收（2026-10-27）
+
+固定入口 **https://mcp.chjm.cc/mcp** 已启用。生产已提交合并并重启；正式 CNAME 指向专用命名隧道，认证代理/前端/隧道三个 launchd 服务运行。口令在本机随机生成，私有目录700、配置和口令600，不在 Git 或聊天中输出。原 gateway 继续承担唯一任务执行器。
+
+公网 OAuth 登录、授权确认、S256 PKCE 和官方 MCP 客户端发现5工具通过。真实无工具/无文件写入模型任务 `0e428f10` 达到 `done` 并匹配 `MCP_LIVE_OK_87b69a155853`；另一任务 `aeac8028` 达到 `cancelled`；自测任务历史轮次 `12742` 可读。创建/完成/取消回执分别为 `37bff3bc53af448885177593f5e58491`、`ef492694762846dbb9303664a8385fa4`、`d0b6a3855a9b41d78df028ea139f5213`。
+
+公网 MCP 无 token 401，本机桥无 token 401。Cloudflare 登录 POST 限流每IP每10秒5次，实际5次错误400后429；等待12秒正确口令POST恢复302。验收脚本 `scripts/check_brain_live.py` 已独立评审修复异常清理和POST恢复验证，4项失败路径回归通过。
+
+本机直连新域名 DNS 曾失败，公网验收通过既有环境代理进行，TLS 校验保持开启。这不是所有网络路径可达的保证。以上是官方 MCP 客户端真实公网协议验收，**不是本人 ChatGPT UI 或实时语音验收**；后两项仍待本人操作。接入步骤见 [ChatGPT 接入说明](chatgpt-mcp-connect.md)。
 
 ## 11. 资料与证据边界
 
@@ -297,4 +307,4 @@ VOCOCO_MCP_AUTH_TEST_BINARY="$PWD/data/mcp-auth-verify/mcp-auth-proxy-darwin-amd
 - [OpenAI：Authentication](https://developers.openai.com/apps-sdk/build/auth)：正文抓取成功；OAuth 2.1、PKCE、资源发现与 token 校验。
 - [OpenAI：Apps in ChatGPT](https://help.openai.com/en/articles/11487775-connectors-in-chatgpt)：正文抓取 403；搜索摘要称语音暂不支持 Apps，作为风险证据，不冒充本账号实测。
 - [OpenAI：Developer mode and MCP apps](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt)：正文抓取 403；套餐/客户端开放条件待账号核实，不据搜索摘要编造具体支持矩阵。
-- 本文源码行号基于本次 worktree 阅读，仅定位参考；完整任务桥尚未实现，已实现的只读探针及其实测范围以§10.1–10.2为准。
+- 本文源码行号基于本次 worktree 阅读，仅定位参考；早期只读探针及测速以§10.1–10.2为准；真实任务桥实现见§10.3，生产公网验收见§10.4，不与本人 ChatGPT 真机验收混算。

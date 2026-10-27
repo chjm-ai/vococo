@@ -1,5 +1,6 @@
 # 当前工作
 
-- 2026-10-27：[Issue #1](https://github.com/chjm-ai/vococo/issues/1) GPT 外置大脑代码完成：派单/状态结果/取消、固定 Agent 历史列表与分页、远程来源审批、OAuth 代理准备脚本。348项定向回归通过，含官方代理真实二进制的本机授权/刷新/持久化/全授权重置测试；独立评审确认问题已修。详情只维护在 [RFC §10.3](docs/chatgpt-vococo-rfc.md#103-真实任务桥与历史读取2026-10-27)。
-- **未生产上线**：未提交合并、未重启、未配置正式 DNS/隧道/登录限流或主人口令。固定目标 `https://mcp.chjm.cc/mcp` 尚未启用；不提供新的临时地址。真实 ChatGPT 登录及语音调用仍待本人操作和回执验收。
-- 既有功能实施记录见 [PLAN.md](PLAN.md)，本次不改写其他工作的进展。
+- 2026-10-27：[Issue #1](https://github.com/chjm-ai/vococo/issues/1) GPT 外置大脑已部署，固定入口 **https://mcp.chjm.cc/mcp**。代码已提交合并，生产已重启；正式 DNS、专用持久隧道、三个 launchd 服务、本机私有口令与桥凭据均已配置。
+- 公网实测通过：OAuth 登录/授权/PKCE、5 个工具发现、真实任务 `0e428f10` 完成且标记一致、任务 `aeac8028` 实际取消、测试任务历史读取。无凭据公网 MCP/本机桥均 401。登录限流触发 429，等待后正确口令登录恢复 302。
+- **待本人真机验收**：ChatGPT 自定义应用授权、文本工具调用、实时语音支持情况。官方 MCP 客户端公网验收不等于 ChatGPT 账号或语音已通过。
+- 接入步骤见 [ChatGPT 接入说明](docs/chatgpt-mcp-connect.md)；技术与测试边界见 [RFC §10.4](docs/chatgpt-vococo-rfc.md#104-生产上线验收2026-10-27)。既有功能记录保留在 [PLAN.md](PLAN.md)。
