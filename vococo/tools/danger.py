@@ -1351,6 +1351,27 @@ _OPT_DENY = "拒绝"
 _OPT_ICONS = {_OPT_ONCE: "✅", _OPT_SESSION: "♾️", _OPT_TASK: "♾️", _OPT_FOREVER: "📌", _OPT_DENY: "🛑"}
 
 
+async def _approve_remote_brain(reason: str, detail: str, tool: str, done) -> bool | None:
+    """远程来源不能借用本机完全访问、永久规则或交互上下文。"""
+    try:
+        from ..core import tasks
+        from ..memory import session_store
+
+        key = _current_session_key()
+        access = session_store.active_source_access(key) if key else {}
+        task_id = tasks.task_id_from_session_key(key)
+        task = tasks.get(task_id) if task_id else None
+        task_access = tasks.automatic_access(task) if task else {}
+        if not (access.get("remote_brain") or task_access.get("remote_brain")):
+            return None
+        if not key:
+            return done("remote_missing_session", False)
+        # 不展示“永远允许”，只沿现有后台一次性/本轮审批链。
+        return await _approve_background(reason, detail, tool, None, key, done)
+    except Exception:
+        return done("remote_check_error", False)
+
+
 async def _approve(
     reason: str,
     detail: str,
@@ -1374,6 +1395,10 @@ async def _approve(
     def done(decision: str, ok: bool) -> bool:
         _audit(tool, "escalate", reason, detail, decision)
         return ok
+
+    remote = await _approve_remote_brain(reason, detail, tool, done)
+    if remote is not None:
+        return remote
 
     # 完全访问档(会话或所属 Agent 开了,见 core/permissions.py):免批放行,照样留审批记录。
     # 前台/后台/cron 一视同仁——后台任务半夜卡在「待批」正是这个档位要解决的。

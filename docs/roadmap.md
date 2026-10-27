@@ -8,5 +8,6 @@
 - 信息简报聚合
 - 可选向量记忆
 - Web 仪表板
+- ChatGPT 调用 vococo（[Issue #1](https://github.com/chjm-ai/vococo/issues/1)）：[需求与实现评估草案](chatgpt-vococo-rfc.md)，只读 MCP 探针已实现并通过公网调用，待本人 ChatGPT 实时语音验收；完整任务桥未实施。
 
 立项其中任何一项时:先把它从这里移到 REQUIREMENTS.md 并补验收标准,再动工。
