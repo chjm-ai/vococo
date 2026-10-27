@@ -928,7 +928,7 @@ async function sendVoice(blob, ext, conv){
     if(r.ok && d.text){
       if(here && st && st.bubble){
         // 还在原会话:文字回填占位气泡,再复用它自动发给 Claude(不重复冒泡)
-        st.bubble.classList.remove("voicebub"); st.bubble.textContent=d.text;
+        st.bubble.classList.remove("voicebub"); setUserBubbleText(st.bubble, d.text);
         appendUserFoot(st.bubble.closest(".row"), d.text);
         await send(d.text, null, {reuseBubble:true, forceSend:true});
       }else{

@@ -892,7 +892,8 @@
   .bubble{max-width:86%;padding:var(--sp-4) var(--sp-5);border-radius:var(--radius);white-space:normal;word-wrap:break-word;
     overflow-wrap:anywhere;box-shadow:var(--bubble-shadow)}
   .row.me .bubble{background:linear-gradient(135deg,var(--user1),var(--user2));color:var(--on-user);border-bottom-right-radius:6px;white-space:pre-wrap}
-  .row.me .bubble.user-message-collapsed{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+  .user-message-text{line-height:1.5}
+  .user-message-text.user-message-collapsed{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
   .row.ai .bubble{background:transparent;border-radius:var(--radius);max-width:100%;margin:4px 0 10px;display:block;box-shadow:none;padding:0}
   .bubble.pending{color:var(--dim)}
   .status{font-size:var(--fs-sm);color:var(--dim);margin:0;display:flex;flex-wrap:wrap;gap:4px 12px}
@@ -973,7 +974,10 @@
   .turnfoot{display:flex;align-items:center;gap:2px;margin-top:4px;min-height:24px}
   .turnfoot{opacity:0;pointer-events:none;transition:opacity var(--t-fast)}
   .row:hover .turnfoot,.row:focus-within .turnfoot{opacity:1;pointer-events:auto}
-  .row.me .userfoot{opacity:1;pointer-events:auto}
+  @media(hover:none){
+    .row.me .userfoot{opacity:1;pointer-events:auto}
+    .row.me .userfoot .tftime{display:none}
+  }
   .turnfoot .tftime{font-size:var(--fs-sm);color:var(--dim2);margin-right:2px;font-variant-numeric:tabular-nums;user-select:none}
   .turnfoot .tfbtn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;
     border-radius:var(--r-sm);color:var(--dim);cursor:pointer;opacity:.6;flex-shrink:0;border:none;background:none;
