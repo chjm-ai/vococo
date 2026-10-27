@@ -1566,16 +1566,12 @@ class WebAdapter:
 
         job_id = (body.get("id") or "").strip()
         enabled = bool(body.get("enabled"))
-        with scheduler.JOBS_LOCK:
-            jobs = scheduler.load_jobs()
-            job = next((j for j in jobs if j.get("id") == job_id), None)
-            if job is None:
-                return web.json_response({"error": "任务不存在"}, status=404)
-            job["enabled"] = enabled
-            if not enabled:
-                job["next_run_at"] = None
-            scheduler.reset_failures(job)
-            scheduler.save_jobs(jobs)
+        try:
+            job = scheduler.set_job_enabled(job_id, enabled)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        if job is None:
+            return web.json_response({"error": "任务不存在"}, status=404)
         return web.json_response({"ok": True, "job": job})
 
     @_authed
@@ -1621,6 +1617,8 @@ class WebAdapter:
 
         try:
             job = scheduler.run_now(str((body or {}).get("id") or ""))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
         except RuntimeError as exc:
             return web.json_response({"error": str(exc)}, status=503)
         if job is None:
@@ -1755,8 +1753,17 @@ class WebAdapter:
     @_authed
     @_json_body
     async def _handle_project_remove(self, request: web.Request, body: dict) -> web.Response:
-        """软移除项目:仅从列表隐藏,文件夹与会话历史都不动。"""
+        """兼容旧入口:有 Agent 的项目必须走完整删除链路。"""
+        from ...memory import agents
+
         h = (body.get("hash") or "").strip()
+        agent = agents.by_project_hash(h) if h else None
+        if agent and agent["id"] != agents.GENERAL_ID:
+            try:
+                result = await agents.delete_and_stop(agent["id"])
+            except ValueError as exc:
+                return web.json_response({"error": str(exc)}, status=400)
+            return web.json_response({"ok": True, **result})
         if h:
             session_store.hide_project(h)
         return web.json_response({"ok": True})
@@ -3327,7 +3334,7 @@ class WebAdapter:
 
         body = body or {}
         try:
-            result = await asyncio.to_thread(agents.delete, str(body.get("id") or ""))
+            result = await agents.delete_and_stop(str(body.get("id") or ""))
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response({"ok": True, **result})

@@ -341,6 +341,20 @@ def list_recent_for_source(
     return [_row(row) for row in rows]
 
 
+def active_for_agent(agent_id: str, job_ids: list[str]) -> list[dict]:
+    """关联任务不设条数上限;旧 cron 行可能没有正确保存 agent_id。"""
+    clauses = ["agent_id=?"]
+    params = [agent_id]
+    if job_ids:
+        clauses.append(f"id IN ({','.join('?' for _ in job_ids)})")
+        params.extend(job_ids)
+    rows = _conn().execute(
+        "SELECT * FROM tasks WHERE status IN ('queued','running') AND ("
+        + " OR ".join(clauses) + ")", params,
+    ).fetchall()
+    return [_row(row) for row in rows]
+
+
 def list_queued() -> list[dict]:
     rows = _conn().execute(
         "SELECT * FROM tasks WHERE status='queued' ORDER BY created_at ASC"

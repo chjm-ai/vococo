@@ -93,6 +93,8 @@ async def foreground_execution(task_id: str | None):
         return
     await cancel_and_wait(task_id)
     row = tasks.get(task_id)
+    if not _owner_available(row):
+        raise RuntimeError("所属 Agent 已删除,不能继续执行此任务")
     if row["status"] == "queued":
         tasks.set_status(task_id, "cancelled")
     if not tasks.set_status(task_id, "running"):
@@ -126,6 +128,24 @@ def _ensure_research_execution_available() -> None:
     raise RuntimeError("原生深度研究已移除，不能新建、恢复或执行研究任务")
 
 
+def task_owner_id(task: dict) -> str | None:
+    """cron 配置是当前归属的权威来源,不能用历史任务行误伤已转移的任务。"""
+    if task.get("origin") == "cron":
+        from ..cron import scheduler
+
+        job = next((j for j in scheduler.load_jobs() if j["id"] == task["id"]), None)
+        if job is not None:
+            return job.get("agent_id")
+    return task.get("agent_id")
+
+
+def _owner_available(task: dict) -> bool:
+    from ..memory import agents
+
+    agent_id = task_owner_id(task)
+    return not agent_id or agents.get(agent_id) is not None
+
+
 def _start_one(task: dict, turn_text: str | None = None) -> bool:
     """内部:立刻起跑一条任务(跳过排队队列),用于首次派发之外的重开场景
     (追问/cron 再次触发打断续接 / 原地续聊)。turn_text 非空时作为这一轮实际发给
@@ -135,6 +155,8 @@ def _start_one(task: dict, turn_text: str | None = None) -> bool:
     若 set_status 失败(状态已被别处改了),什么都不做,返回 False。
     """
     task_id = task["id"]
+    if not _owner_available(task):
+        return False
     if task.get("kind") == "research":
         try:
             _ensure_research_execution_available()
@@ -704,6 +726,10 @@ def _maybe_start_next() -> None:
         if not queued:
             return
         nxt = queued[0]
+        if not _owner_available(nxt):
+            tasks.set_status(nxt["id"], "cancelled", progress_note="所属 Agent 已删除")
+            _notify_activity(nxt["id"])
+            continue
         if nxt.get("kind") == "research":
             try:
                 _ensure_research_execution_available()
