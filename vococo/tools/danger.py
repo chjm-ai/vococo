@@ -1104,8 +1104,19 @@ def _legacy_lark_document_command(command: str, depth: int = 0) -> bool:
     for statement in _shell_commands_tolerant(_strip_inert_text(command)):
         for stage in _pipeline_stages(statement):
             words = _unwrap_command(stage)
+            if words and os.path.basename(words[0]) == "lark-cli":
+                words = list(words)
+                while len(words) > 1 and words[1].startswith("--profile"):
+                    if words[1] == "--profile" and len(words) > 2:
+                        del words[1:3]
+                    elif words[1].startswith("--profile="):
+                        del words[1]
+                    else:
+                        break
             if (len(words) >= 3 and os.path.basename(words[0]) == "lark-cli"
                     and words[1] == "docs" and words[2] in {"+fetch", "+create", "+update"}):
+                if words[3:] in (["--help"], ["-h"]):
+                    continue
                 return True
             script = _shell_script(words)
             if script and _legacy_lark_document_command(script, depth + 1):
@@ -1149,12 +1160,11 @@ def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | Non
     if policy is not None:
         if legacy_lark:
             return _deny(
-                "此旧飞书 CLI 命令未执行：业务沙箱不能访问系统证书/凭据服务。"
-                "请在本轮立即改用 mcp__vococo__lark_document，operation=fetch/create/update；"
-                "fetch 传 doc、detail、scope，写入传纯 Markdown content（不是文件路径）。"
-                "这不是凭据过期，不要重复登录或让用户手动执行。"
-                "XML/HTML、图像附件和 block_* 编辑暂不支持，不得静默替换成整篇覆盖；"
-                "需要改变排版或修改范围时先向用户说明限制。"
+                "此旧飞书 CLI 命令被入口策略拒绝，未执行；这不能证明凭据过期或TLS故障。"
+                "请改用 mcp__vococo__lark_document，operation=fetch/create/update/insert_image。"
+                "fetch 传 doc、detail、scope；update 传 Markdown content，可用 str_replace 或 block_insert_after。"
+                "insert_image 传 doc、image_path、block_id，可选 caption/width/height；文件限当前工作目录/正式成果目录。"
+                "上传和写入仍需审批。任意XML、附件、画板编辑尚未接入，不能静默改成整篇覆盖。"
             )
         if configures_mcp:
             return _deny("业务会话不能注册、移除或切换 MCP 执行入口，请由主人在管理界面配置；已配置的业务 MCP 仍可使用。")

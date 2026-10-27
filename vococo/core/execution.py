@@ -83,7 +83,9 @@ def prompt_note(policy: ExecutionPolicy) -> str:
         "原规则中的 scripts/ 等相对命令必须改用原资源目录的绝对路径，不要从运行目录猜测。"
         "报告、表格等正式成果必须用绝对路径写到正式成果目录；相对路径仅用于临时文件。"
         "成果目录不可读写时明确报错，不得改存源码仓库或把临时副本报告成已交付。"
-        "飞书文档读写必须用 lark_document 工具（宿主代理），不要在 Bash 调 lark-cli。"
+        "飞书文档读写必须用 lark_document 工具（宿主代理）；图片用 insert_image，局部文字用 str_replace/block_insert_after。"
+        "不要在 Bash 执行文档读写；lark-cli 的只读帮助和技能参考可以查阅。"
+        "Drive/Sheets/Base/Wiki管理及画板编辑尚无宿主入口，不代表官方CLI不支持；不能绕过沙箱/审批或要求全面放行。"
         "沙箱内凭据写盘、钥匙串或 TLS 失败不等于授权过期，不要因此反复登录或关闭证书校验。"
     ) + business_repositories.prompt_note(policy.repositories)
 
