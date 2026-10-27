@@ -156,7 +156,10 @@ async def check_mcp(client, token):
         async with ClientSession(streams[0], streams[1]) as session:
             await session.initialize()
             tools = (await session.list_tools()).tools
-            assert len(tools) == 5
+            assert {tool.name for tool in tools} == {
+                "vococo_create_task", "vococo_get_task", "vococo_cancel_task",
+                "vococo_list_agents", "vococo_list_sessions", "vococo_read_session",
+            }
             result = await session.call_tool("vococo_list_sessions", {})
             assert not result.isError and result.structuredContent["sessions"] == []
     del client.headers["Authorization"]
@@ -195,7 +198,7 @@ async def run_proxy_test(binary, bridge_port, directory, seen):
             await check_mcp(client, tokens["access_token"])
             await stop_owned(proxy)
             refreshed = await check_restart(binary, proxy_port, frontend_port, directory, client, metadata, tokens)
-            assert seen == [{"offset": 0, "limit": 20}] * 4
+            assert seen == [{"all_agents": False, "offset": 0, "limit": 20}] * 4
             await check_reset(binary, proxy_port, frontend_port, directory, client, metadata, tokens, refreshed)
     finally:
         await stop_owned(proxy)

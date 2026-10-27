@@ -242,14 +242,25 @@ async def test_task_result_pages_rebuild_sanitized_text(client):
 
 async def test_history_owner_checked_on_every_read_and_list(client, monkeypatch):
     own_id, foreign_id = turn(), turn(key=session("abcdef1234"))
-    result = await post(client, "list_sessions", {})
-    assert result["sessions"] == [{"key": session(), "last_turn_id": own_id, "title": "新对话"}]
+    legacy = await post(client, "list_sessions", {})
+    assert [row["agent_id"] for row in legacy["sessions"]] == [brain.AGENT_ID]
+    result = await post(client, "list_sessions", {"all_agents": True})
+    # 显式跨 Agent 枚举时只返回本连接可见的会话,每条带所属 agent_id
+    assert result["sessions"] == [
+        {"agent_id": "abcdef1234", "key": session("abcdef1234"), "last_turn_id": foreign_id, "title": "新对话"},
+        {"agent_id": brain.AGENT_ID, "key": session(), "last_turn_id": own_id, "title": "新对话"},
+    ]
     assert "非快照" in result["pagination"]
+    assert (await post(client, "list_sessions", {"agent_id": "abcdef1234"}))["sessions"] == [
+        {"agent_id": "abcdef1234", "key": session("abcdef1234"), "last_turn_id": foreign_id, "title": "新对话"}]
     await post(client, "read_session", {"key": session("abcdef1234")}, 404)
+    read = await post(client, "read_session", {"key": session("abcdef1234"), "agent_id": "abcdef1234"})
+    assert read["turn"]["id"] == foreign_id
     assert (await post(client, "read_session", {"key": session(), "turn_id": foreign_id}))["turn"] is None
     monkeypatch.setattr(agents, "agent_for_session", lambda key: {"id": "abcdef1234"})
-    await post(client, "read_session", {"key": session(), "turn_id": own_id}, 404)
-    assert (await post(client, "list_sessions", {}))["sessions"] == []
+    await post(client, "read_session", {"key": session(), "agent_id": brain.AGENT_ID, "turn_id": own_id}, 404)
+    rows = (await post(client, "list_sessions", {"agent_id": brain.AGENT_ID}))["sessions"]
+    assert rows == []
 
 
 async def test_history_session_list_limit_offset(client):
@@ -309,7 +320,9 @@ async def test_secrets_attachments_urls_base64_are_not_returned(client, monkeypa
 
 @pytest.mark.parametrize("operation,payload", [
     ("get_task", {"id": "x", "length": 8001}),
-    ("list_sessions", {"limit": 21}), ("list_sessions", {"offset": -1}),
+    ("list_sessions", {"limit": 101}), ("list_sessions", {"offset": -1}),
+    ("list_agents", {"limit": 0}), ("list_agents", {"offset": True}),
+    ("list_sessions", {"agent_id": 123}),
     ("list_sessions", {"limit": True}),
     ("read_session", {"length": 8001}), ("read_session", {"offset": 1}),
     ("read_session", {"turn_id": 1, "before_id": 2}),
