@@ -267,10 +267,13 @@ uv run python scripts/check_mcp_probe.py https://实际测试域名/mcp
 | `vococo_create_task(title,prompt,idempotency_key)` | 立即返回排队任务；同键同内容返回原任务，同键不同内容409；固定 Agent `286d3c1abf` 和其执行目录 |
 | `vococo_get_task(id,offset,length)` | 仅本连接账本登记任务；最多8000字符结果片段，返回 next_offset |
 | `vococo_cancel_task(id)` | 仅本连接任务；cancel_requested 不代表已停，不能回滚既有动作 |
-| `vococo_list_sessions(offset,limit)` | 固定 Agent 历史 key/脱敏标题/最后轮次；最多20条，非快照分页 |
-| `vococo_read_session(key,before_id,turn_id,offset,length)` | 每次读一轮纯文本，含压缩前历史；最多8000字符，两角色合计，next_offset 续本轮，next_before_id 读更早轮次 |
+| `vococo_list_agents(offset,limit)` | 主人账号可读全部 Agent 的稳定 id/名称/是否可派单；最多100条 |
+| `vococo_list_sessions(offset,limit,agent_id,all_agents)` | 默认固定开发 Agent；可指定 Agent 或跨 Agent 枚举；每条带归属,最多100条，非快照分页 |
+| `vococo_read_session(key,before_id,turn_id,offset,length,agent_id)` | 默认固定开发 Agent,显式 id 时校验 id/key 归属；每次读一轮纯文本，含压缩前历史；最多8000字符，两角色合计，next_offset 续本轮，next_before_id 读更早轮次 |
 
-内部桥不接受调用方指定 Agent/目录/来源/权限；拒绝公网 peer、代理/Cloudflare/Origin 头以及未知或重复字段。MCP 进程只通过受限 HTTP 调用，不加载生产任务库，不启动第二个 runner。原 gateway 管理接口没有原样开放。
+2026-10-27 扩展只读范围：用户明确授权读取全部 Agent。OAuth 仍是单主人账号,共享凭据不携带逐用户/租户身份,不得部署为多用户数据服务。gateway 可用 `VOCOCO_BRAIN_READABLE_AGENT_IDS` 限制可读 id；未设置表示全部,空值表示全部拒绝,每次分页重新校验。派单/取消/任务账本边界不变。连接刷新与完整示例见 [接入说明](chatgpt-mcp-connect.md)。
+
+内部桥写操作不接受调用方指定 Agent/目录/来源/权限；拒绝公网 peer、代理/Cloudflare/Origin 头以及未知或重复字段。MCP 进程只通过受限 HTTP 调用，不加载生产任务库，不启动第二个 runner。原 gateway 管理接口没有原样开放。
 
 远程 source_access 固定 standard 并标记 remote_brain；危险操作在完全访问/永久规则之前进入原有后台审批，没有可信通道或检测失败则拒绝。禁再次派单、子代理、cron、改权限/配置及全局 recall_past。独立评审用临时数据复现 recall_past 跨 Agent 检索，已关闭该工具并复核。限制不是针对恶意编码任务的完整操作系统隔离，不能把 Agent 的通用编码能力宣传为不可绕过的多租户沙箱。
 

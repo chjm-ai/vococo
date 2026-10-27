@@ -27,9 +27,12 @@ _FIELDS = {
     "create_task": ({"title", "prompt", "idempotency_key"}, set()),
     "get_task": ({"id"}, {"offset", "length"}),
     "cancel_task": ({"id"}, set()),
-    "list_sessions": (set(), {"offset", "limit"}),
-    "read_session": ({"key"}, {"before_id", "turn_id", "offset", "length"}),
+    "list_agents": (set(), {"offset", "limit"}),
+    "list_sessions": (set(), {"agent_id", "all_agents", "offset", "limit"}),
+    "read_session": ({"key"}, {"agent_id", "before_id", "turn_id", "offset", "length"}),
 }
+# 只读接口允许访问的 Agent:这里出现即代表本连接可见。派单仍只绑固定开发 Agent。
+READABLE_AGENTS = "VOCOCO_BRAIN_READABLE_AGENT_IDS"  # 逗号分隔;省略=全部 Agent
 _PROXY_HEADERS = {"forwarded", "origin", "via", "x-real-ip", "true-client-ip",
                   "x-original-url", "x-rewrite-url"}
 
@@ -230,20 +233,84 @@ def _cancel_task(data: dict, _agent: dict, _connection: str = "") -> dict:
     return _task_view(_owned_task(task["id"]), {})
 
 
-def _owns_session(key: str) -> bool:
+def _history_agents() -> list[dict]:
+    """合并 Agent 目录与全部项目(含隐藏历史),不补写元数据。"""
+    found: dict[str, dict] = {}
+    root = agents.root_dir()
+    if root.is_dir():
+        for path in sorted(root.iterdir()):
+            if not path.is_dir() or not agents.valid_id(path.name) or not agents._read_meta(path.name).get("workdir"):
+                continue
+            agent = agents.get(path.name)
+            if agent:
+                found[agent["id"]] = agent
+    found.setdefault(agents.GENERAL_ID, agents.get(agents.GENERAL_ID))
+    by_hash = {agent["project_hash"]: agent for agent in found.values() if agent.get("project_hash")}
+    # 隐藏只影响侧栏,不撤销历史权限；从项目表补旧项目,避免只读枚举创建 agent.json。
+    rows = session_store._conn().execute("SELECT hash,path FROM projects ORDER BY hash").fetchall()
+    for phash, path in rows:
+        agent = by_hash.get(phash) or agents._build(phash, agents._read_meta(phash), path)
+        found.setdefault(agent["id"], agent)
+    return list(found.values())
+
+
+def _visible_agents() -> list[dict]:
+    """单主人 OAuth 账号的可读范围,不是多租户授权机制。显式空白名单表示全部拒绝。"""
+    allowed = {item.strip() for item in os.environ.get(READABLE_AGENTS, "").split(",") if item.strip()}
+    out = []
+    for agent in _history_agents():
+        if READABLE_AGENTS in os.environ and agent["id"] not in allowed:
+            continue
+        out.append({"agent_id": agent["id"], "name": _clean(agent["name"])[:100],
+                    "task_dispatch": agent["id"] == AGENT_ID})
+    return sorted(out, key=lambda item: item["agent_id"])
+
+
+def _agent_visibility() -> dict[str, dict]:
+    return {item["agent_id"]: item for item in _visible_agents()}
+
+
+def _resolve_agent(data: dict, visibility: dict[str, dict]) -> str:
+    """按 agent_id 定位;省略/null = 固定开发 Agent。不可见与不存在一样回 404。"""
+    agent_id = AGENT_ID if data.get("agent_id") is None else _text(data, "agent_id", 128)
+    if agent_id not in visibility:
+        _reject(404, "Agent 不存在或无权访问")
+    return agent_id
+
+
+def _owns_session(key: str, agent_id: str) -> bool:
     owner = agents.agent_for_session(key)
-    return bool(owner and owner["id"] == AGENT_ID)
+    return bool(owner and owner["id"] == agent_id)
+
+
+def _list_agents(data: dict, _agent: dict) -> dict:
+    offset = _number(data, "offset", 0, 2**63 - 1)
+    limit = _number(data, "limit", 50, 100, 1)
+    items = _visible_agents()
+    end = offset + limit
+    return {"agents": items[offset:end], "next_offset": end if end < len(items) else None,
+            "pagination": "Agent 列表随项目增删变化,非快照"}
 
 
 def _list_sessions(data: dict, _agent: dict, _connection: str = "") -> dict:
     offset = _number(data, "offset", 0, 2**63 - 1)
-    limit = _number(data, "limit", 20, 20, 1)
+    limit = _number(data, "limit", 20, 100, 1)
+    all_agents = data.get("all_agents", False)
+    if type(all_agents) is not bool or (all_agents and data.get("agent_id") is not None):
+        _reject(400, "all_agents 必须是布尔值,且不能与 agent_id 同时指定")
+    visibility = _agent_visibility()
+    target = None if all_agents else _resolve_agent(data, visibility)
+    owned = []
     rows = session_store._conn().execute(
         "SELECT session_key,MAX(id) AS last_turn_id FROM turns GROUP BY session_key ORDER BY MAX(id) DESC"
     ).fetchall()
-    owned = [{"key": key, "last_turn_id": last_id,
-              "title": _clean(session_store.get_title(key) or "新对话")[:200]}
-             for key, last_id in rows if _owns_session(key)]
+    for key, last_id in rows:
+        owner = agents.agent_for_session(key)
+        # 明确指定 agent_id 时,没有归属的会话(通用对话、CLI)不属于任何 Agent,不返回
+        if owner is None or owner["id"] not in visibility or (target and owner["id"] != target):
+            continue
+        owned.append({"agent_id": owner["id"], "key": key, "last_turn_id": last_id,
+                      "title": _clean(session_store.get_title(key) or "新对话")[:200]})
     end = offset + limit
     return {"sessions": owned[offset:end], "next_offset": end if end < len(owned) else None,
             "pagination": "非快照；新增或删除会话可能导致分页重复或遗漏"}
@@ -267,8 +334,9 @@ def _turn_row(data: dict, key: str):
 
 def _read_session(data: dict, _agent: dict, _connection: str = "") -> dict:
     key = _text(data, "key", 512)
-    if not _owns_session(key):
-        _reject(404, "会话不存在或不属于固定 Agent")
+    # 带 agent_id 时按「这个 Agent 名下」定位,防止同名/key 串到别的 Agent;省略则沿用固定开发 Agent
+    if not _owns_session(key, _resolve_agent(data, _agent_visibility())):
+        _reject(404, "会话不存在或不属于该 Agent")
     offset = _number(data, "offset", 0, 2**63 - 1)
     length = _number(data, "length", 8000, 8000, 1)
     row = _turn_row(data, key)
@@ -285,7 +353,7 @@ def _read_session(data: dict, _agent: dict, _connection: str = "") -> dict:
 
 
 _HANDLERS = {"create_task": _create_task, "get_task": _get_task, "cancel_task": _cancel_task,
-             "list_sessions": _list_sessions, "read_session": _read_session}
+             "list_agents": _list_agents, "list_sessions": _list_sessions, "read_session": _read_session}
 
 
 async def handle_brain(request: web.Request) -> web.Response:
