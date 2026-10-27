@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+umask 077
+set -a
+. @FRONTEND_ENV@
+set +a
+exec @PYTHON@ -m vococo.gateway.brain_mcp --port 8852 --bridge-port 8848
