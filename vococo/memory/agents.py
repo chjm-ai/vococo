@@ -324,33 +324,39 @@ def get(agent_id: str) -> dict | None:
 
 
 def delete(agent_id: str) -> dict:
-    """删 Agent(软删:不真删文件,可回滚)。
-
-    1) 它名下的定时任务停用(先留记录,不删任务本身)
-    2) 对应项目记录隐藏(hide_project),侧边栏和会话列表不再出现
-    3) 家目录 data/agents/<id> 改名挪到 data/agents/.deleted/<id>-<时间戳>
-    之后 list_agents / list_delegate_agents 都扫不到它。通用 Agent 不许删。"""
+    """停用任务、隐藏项目、归档配置;工作目录与会话历史保留。"""
     from ..cron import scheduler
 
-    a = get(agent_id)
-    if a is None:
-        raise ValueError("Agent 不存在")
-    if a["id"] == GENERAL_ID:
-        raise ValueError("通用 Agent 不能删除")
-    projects.hide_project(a["project_hash"])
-    all_jobs = scheduler.load_jobs()
-    jobs = [j for j in all_jobs if j.get("agent_id") == a["id"] and j.get("enabled", True)]
-    if jobs:
-        for job in jobs:
-            job["enabled"] = False
-        scheduler.save_jobs(all_jobs)
-    # 家目录真的在才挪;项目哈希型 id 可能从来没落过目录
-    d = home(a["id"])
-    if d.is_dir():
-        archive = root_dir() / DELETED_DIR / f"{a['id']}-{time.strftime('%Y%m%d%H%M%S')}"
-        archive.parent.mkdir(parents=True, exist_ok=True)
+    with _UPDATE_LOCK, scheduler.JOBS_LOCK:
+        if agent_id == GENERAL_ID:
+            raise ValueError("通用 Agent 不能删除")
+        # 删除只接受真实配置 id,不能用项目哈希临时补建另一个 Agent。
+        meta = _read_meta(agent_id)
+        if not meta.get("workdir"):
+            raise ValueError("Agent 不存在")
+        a = _build(agent_id, meta, meta["workdir"])
+        if Path(a["workdir"]).resolve() == home(agent_id).resolve():
+            raise ValueError("工作目录与配置目录重合,请先迁移工作目录")
+        jobs = scheduler.disable_agent_jobs(agent_id)
+        projects.hide_project(a["project_hash"])
+        _archive_home(a)
+        return {"id": agent_id, "name": a["name"],
+                "disabled_jobs": [j.get("name") or j.get("id") for j in jobs]}
+
+
+def _archive_home(agent: dict) -> None:
+    """旧版工作目录可能在家目录内,必须原地保留而不是跟配置一起搬走。"""
+    d = home(agent["id"])
+    archive = root_dir() / DELETED_DIR / f"{agent['id']}-{time.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    workdir = Path(agent["workdir"]).resolve()
+    if not workdir.is_relative_to(d.resolve()):
         d.rename(archive)
-    return {"id": a["id"], "name": a["name"], "disabled_jobs": [j.get("name") or j.get("id") for j in jobs]}
+        return
+    archive.mkdir()
+    for child in d.iterdir():
+        if not workdir.is_relative_to(child.resolve()):
+            child.rename(archive / child.name)
 
 
 def by_project_hash(phash: str) -> dict | None:
@@ -517,7 +523,15 @@ def review_job(agent_id: str) -> dict | None:
 
 
 def ensure_goal_review(agent_id: str) -> dict | None:
-    """目标有内容、还没挂复盘任务 → 挂一条每周复盘(只建一次;之后改时间/停用都在「定时」里改)。"""
+    """查重、创建和补角色共用任务配置锁,不让并发操作覆盖新配置。"""
+    from ..cron import scheduler
+
+    with scheduler.JOBS_LOCK:
+        return _ensure_goal_review(agent_id)
+
+
+def _ensure_goal_review(agent_id: str) -> dict | None:
+    """目标有内容、还没挂复盘任务 → 挂一条每周复盘(只建一次)。"""
     from ..cron import scheduler
 
     a = get(agent_id)

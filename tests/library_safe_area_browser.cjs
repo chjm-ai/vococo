@@ -14,8 +14,11 @@ async function verifyStickyHeading(page,label){
   const after=await page.locator('#libraryView h1').boundingBox();
   assert.ok(Math.abs(after.y-before.y)<1,label+' 滚动后标题固定在顶部');
   const heading=await page.locator('.lib-heading').boundingBox();
-  const hit=await page.evaluate(({x,y})=>!!document.elementFromPoint(x,y)?.closest('.lib-heading'),{x:heading.x+heading.width/2,y:heading.y+heading.height/2});
-  assert.ok(hit,label+' 顶栏覆盖滚动内容，不被卡片遮挡');
+  const hit=await page.evaluate(({x,y})=>{
+    const node=document.elementFromPoint(x,y);
+    return {heading:!!node?.closest('.lib-heading'),element:node&&{tag:node.tagName,id:node.id,class:node.className}};
+  },{x:heading.x+heading.width/2,y:heading.y+heading.height/2});
+  assert.ok(hit.heading,label+' 顶栏覆盖滚动内容，不被卡片遮挡：'+JSON.stringify(hit));
   await page.locator('#libraryView').evaluate(node=>{node.scrollTop=0;});
 }
 async function verifySafeArea(page,width,inset){
@@ -24,6 +27,8 @@ async function verifySafeArea(page,width,inset){
     closeSidebar(); document.documentElement.style.setProperty('--test-safe-area-top',inset+'px');
     $('#libraryView').scrollTop=0;
   },inset);
+  // 切换桌面/窄屏会触发侧栏退场；只等它结束，不跳过真正的顶栏遮挡检查。
+  await page.locator('#sidebar').evaluate(node=>Promise.all(node.getAnimations().map(animation=>animation.finished)));
   const label=`${width}/${inset}`;
   await verifyStickyHeading(page,label);
   const top=await page.locator('.lib-content').evaluate(node=>parseFloat(getComputedStyle(node).paddingTop));

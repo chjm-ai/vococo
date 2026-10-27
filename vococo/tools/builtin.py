@@ -562,11 +562,17 @@ async def set_cron_job_enabled(args: dict) -> dict:
     verb = "启用" if enabled else "停用"
     if not await danger.require_approval(f"{verb}定时任务", f"任务「{j.get('name')}」"):
         return _ok(f"🛑 未批准{verb}任务「{j.get('name')}」,已跳过。")
-    j["enabled"] = enabled
-    if not enabled:
-        j["next_run_at"] = None
-    scheduler.reset_failures(j)
-    scheduler.save_jobs(jobs)
+    job_id = j["id"]
+    with scheduler.JOBS_LOCK:
+        jobs = scheduler.load_jobs()
+        j = next((job for job in jobs if job["id"] == job_id), None)
+        if j is None:
+            return _ok("任务已被删除。")
+        j["enabled"] = enabled
+        if not enabled:
+            j["next_run_at"] = None
+        scheduler.reset_failures(j)
+        scheduler.save_jobs(jobs)
     return _ok(f"{'✅ 已启用' if enabled else '⏸ 已停用'}任务「{j.get('name')}」。")
 
 @tool(
@@ -586,8 +592,14 @@ async def delete_cron_job(args: dict) -> dict:
     # 删任务不可恢复,且可用于破坏,要用户点头;cron/eval 上下文直接拒绝(见 2-2)。
     if not await danger.require_approval("删除定时任务", f"任务「{j.get('name')}」(不可恢复)"):
         return _ok(f"🛑 未批准删除任务「{j.get('name')}」,已跳过。")
-    jobs.remove(j)
-    scheduler.save_jobs(jobs)
+    job_id = j["id"]
+    with scheduler.JOBS_LOCK:
+        jobs = scheduler.load_jobs()
+        j = next((job for job in jobs if job["id"] == job_id), None)
+        if j is None:
+            return _ok("任务已被删除。")
+        jobs.remove(j)
+        scheduler.save_jobs(jobs)
     return _ok(f"🗑 已删除任务「{j.get('name')}」。")
 
 @tool(

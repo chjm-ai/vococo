@@ -1553,15 +1553,16 @@ class WebAdapter:
 
         job_id = (body.get("id") or "").strip()
         enabled = bool(body.get("enabled"))
-        jobs = scheduler.load_jobs()
-        job = next((j for j in jobs if j.get("id") == job_id), None)
-        if job is None:
-            return web.json_response({"error": "任务不存在"}, status=404)
-        job["enabled"] = enabled
-        if not enabled:
-            job["next_run_at"] = None
-        scheduler.reset_failures(job)
-        scheduler.save_jobs(jobs)
+        with scheduler.JOBS_LOCK:
+            jobs = scheduler.load_jobs()
+            job = next((j for j in jobs if j.get("id") == job_id), None)
+            if job is None:
+                return web.json_response({"error": "任务不存在"}, status=404)
+            job["enabled"] = enabled
+            if not enabled:
+                job["next_run_at"] = None
+            scheduler.reset_failures(job)
+            scheduler.save_jobs(jobs)
         return web.json_response({"ok": True, "job": job})
 
     @_authed
@@ -1573,11 +1574,12 @@ class WebAdapter:
         order = body.get("order")
         if not isinstance(order, list):
             return web.json_response({"error": "order 必须是数组"}, status=400)
-        jobs = scheduler.load_jobs()
-        by_id = {j["id"]: j for j in jobs}
-        reordered = [by_id[jid] for jid in order if jid in by_id]
-        remaining = [j for j in jobs if j["id"] not in set(order)]
-        scheduler.save_jobs(reordered + remaining)
+        with scheduler.JOBS_LOCK:
+            jobs = scheduler.load_jobs()
+            by_id = {j["id"]: j for j in jobs}
+            reordered = [by_id[jid] for jid in order if jid in by_id]
+            remaining = [j for j in jobs if j["id"] not in set(order)]
+            scheduler.save_jobs(reordered + remaining)
         return web.json_response({"ok": True})
 
     @_authed
@@ -1586,12 +1588,13 @@ class WebAdapter:
         from ...cron import scheduler
 
         job_id = (body.get("id") or "").strip()
-        jobs = scheduler.load_jobs()
-        job = next((j for j in jobs if j.get("id") == job_id), None)
-        if job is None:
-            return web.json_response({"error": "任务不存在"}, status=404)
-        jobs.remove(job)
-        scheduler.save_jobs(jobs)
+        with scheduler.JOBS_LOCK:
+            jobs = scheduler.load_jobs()
+            job = next((j for j in jobs if j.get("id") == job_id), None)
+            if job is None:
+                return web.json_response({"error": "任务不存在"}, status=404)
+            jobs.remove(job)
+            scheduler.save_jobs(jobs)
         conv = job.get("conv")
         if conv:
             session_store.delete_session(conv)
