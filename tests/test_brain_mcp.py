@@ -124,7 +124,8 @@ async def test_mcp_lists_and_reads_other_agents_with_explicit_agent_id(environme
     async with session_for(app) as session:
         ids = {item["agent_id"]: item for item in (await call(session, "vococo_list_agents", {}))["agents"]}
         assert ids[brain_routes.AGENT_ID]["task_dispatch"] is True
-        assert ids["d1ee9a7e2b"] == {"agent_id": "d1ee9a7e2b", "name": "DeepLeaper", "task_dispatch": False}
+        assert ids["d1ee9a7e2b"] == {"agent_id": "d1ee9a7e2b", "name": "DeepLeaper", "task_dispatch": False,
+                                    "session_count": 1}
         legacy = await call(session, "vococo_list_sessions", {"limit": 20})
         assert {row["agent_id"] for row in legacy["sessions"]} == {brain_routes.AGENT_ID}
         everything = await call(session, "vococo_list_sessions", {"limit": 100, "all_agents": True})
