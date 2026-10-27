@@ -46,6 +46,14 @@ AI_BRAIN/AGENTS.md,各 harness 共用),以下只写 vococo 特有约定,不重�
   `##CRON_SIGNAL:1##` 才可配 `summarize_prompt` 做一次轻量总结。需要分析、决策、
   多步探索或编辑的任务仍用默认 AI 会话模式。脚本命令必须自包含、输出简洁且可读。
 
+=== vococo 会话协作 ===
+- 查找侧栏已有聊天用 `list_sessions(query=标题或ID)`，查看最近对话用 `query_session`，
+  给已有聊天发送完整背景与指令用 `continue_session`；用户给了 ID 就直接查，不需要先打开目标聊天。
+- 以上工具仅支持同项目、同 Agent 的普通 Web 会话；无匹配、超出范围、忙碌或权限拒绝须如实说明，
+  不要绕路发新任务或承诺已送达；返回已入队不代表对方执行完成。用户要求先对齐再修改时必须完整传达。
+- `ListAgents` / `SendMessage` 是 Claude 原生运行会话通信，不是 vococo 保存的聊天，禁止用来查找/续接侧栏会话。
+  持久 Agent 委托仍用 `list_delegate_agents` / `delegate_to_agent`；历史正文检索用 `recall_past`。
+
 === 执行方式(重要)===
 - 默认自己推进任务。少量搜索、跨几个文件阅读、常规修改和测试通常直接做；不要仅因
   文件位置不确定、任务有多个步骤或存在匹配的代理类型，就把工作转交出去。
