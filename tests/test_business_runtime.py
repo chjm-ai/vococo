@@ -75,23 +75,21 @@ async def test_stream_uses_workspace_but_loads_output_rules(isolated, monkeypatc
     assert "原业务执行规则不能丢失" in options.system_prompt["append"]
     assert str(output) in options.system_prompt["append"]
     assert "正式成果保存在业务目录" in options.system_prompt["append"]
-    assert options.env["PATH"] == execution.shell_env()["PATH"]
-    assert options.sandbox["enabled"] and not options.sandbox["allowUnsandboxedCommands"]
-    assert str(output) in options.sandbox["filesystem"]["allowWrite"]
+    assert options.env.get("PATH") != execution.shell_env()["PATH"]
+    assert options.sandbox == {"enabled": False}
+    assert "所有 Agent 均可编写和修改代码" in options.system_prompt["append"]
     if with_repository:
         copy = policy.repositories[0].checkout
         assert (copy / ".git").is_dir()
-        assert str(copy) in options.sandbox["filesystem"]["allowWrite"]
-        assert str(repository) in options.sandbox["filesystem"]["denyWrite"]
         assert str(copy) in options.system_prompt["append"]
     serialized = json.loads(SubprocessCLITransport(prompt="test", options=options)._build_settings_value())
     assert serialized["sandbox"] == options.sandbox
     child = subagent._child_options(options, None)
     assert child.sandbox == options.sandbox and child.sandbox is not options.sandbox
-    assert child.env["PATH"] == options.env["PATH"]
+    assert child.env.get("PATH") == options.env.get("PATH")
 
 
-def test_business_output_cannot_grant_source_repository(isolated):
+def test_business_output_can_be_inside_repository(isolated):
     source = isolated / "source"
     source.mkdir()
     (source / ".git").mkdir()
@@ -99,8 +97,9 @@ def test_business_output_cannot_grant_source_repository(isolated):
     meta = agents._read_meta(owner["id"])
     meta["execution_mode"] = "workspace"
     agents._write_meta(owner["id"], meta)
-    with pytest.raises(ValueError, match="代码仓库"):
-        execution.policy_for_session(agents.main_session_key(owner))
+    policy = execution.policy_for_session(agents.main_session_key(owner))
+    assert policy.output_dir == source
+    assert source in policy.writable_roots
 
 
 def test_migration_preview_backup_and_idempotence(isolated):

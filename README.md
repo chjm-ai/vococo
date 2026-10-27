@@ -40,44 +40,42 @@
 - **运行数据面板** — 设置页「数据」:工作强度日历、各模型用量与花费、缓存命中/工具成功率，逐个会话可下钻
 - **安全模型 + 自我运维** — 危险三档闸、手机审批；`vococo doctor` 自检、`restart_self` 安全重启、看门狗防假死
 
-## 业务文件隔离
+## Agent 工作目录与权限
 
 Agent 的 `workdir` 保留项目身份及规则来源；`execution_mode=workspace` 时，从仓库外
 `~/vococo-workspaces/<id>/` 运行，正式成果写 `output_dir`（默认原 workdir，可为 iCloud）。
 iCloud/非 Git 目录默认 workspace，开发 Git 项目默认 project；总助理不变。
-业务文件工具限制可写目录，Bash/同步子代理继承系统文件沙箱，禁止关闭；Agent 配置不可自改。
-成果目录和可写关联不得位于 Git 仓库，iCloud 失败明确报错，不自动改存源码目录。
+所有 Agent 都支持写代码和设置 AI/脚本定时任务，不再按业务/开发身份强制启用文件或网络沙箱。
+工作区、成果目录及可写关联沿用直接写入豁免；其他目录使用常规审批，不再直接拒绝。
+推送、发布等危险操作保留审批，直接修改 Agent 权限配置仍拦截；iCloud 失败明确报错，不自动改存源码目录。
+注意：审批钩子不是系统级隔离，Bash 子进程不具备强制文件边界；仅运行可信任务与脚本。
 业务 Agent 可在「设置 → 代码仓库」绑定多个 Git 根目录（`repositories`）。每会话自动在
 `~/vococo-workspaces/.repositories/<agent>/<会话哈希>/<仓库哈希>/` 建独立克隆与分支，
-不共享 Git 元数据；原仓库只读。修改、构建和本地提交均使用提示词提供的副本路径，推送/发布保留原有审批。
+不共享 Git 元数据；默认使用副本避免相互覆盖。修改、构建和本地提交优先使用提示词提供的副本路径，推送/发布保留原有审批。
 副本不含未提交修改、忽略的 `.env` 或依赖，不自动拉取远端；取消绑定从下一轮生效，
 不强行中断当前命令、不删除已有副本。初始化可用 `scripts/bind_business_repositories.py
 --data-dir /实际/data目录 --bind AGENT_ID=/仓库根目录`，默认预览，`--apply` 备份配置并准备主会话副本。
-业务会话不能自行注册/切换 MCP 或创建/修改未沙箱化的脚本 cron；已配置 MCP 与已有固定脚本是主人管理的受信任自动化，不受这次 Bash 沙箱保护。固定脚本保持原目录。
+业务会话仍不能自行注册/切换 MCP；AI 和脚本 cron 均可通过内置工具管理，创建仍需主人当场批准，后台不能自行创建。固定脚本保持原目录。
 
 迁移先预览，带 `--apply` 才更新并备份；不会移动历史产物或修改固定脚本：
 ```sh
 uv run python scripts/migrate_business_workspaces.py --data-dir /实际/data目录
 # 单个嵌套技能 Agent 可另指定仓库外成果目录：--workspace-agent ID=/绝对/iCloud目录
 ```
-网络兼容：已有无认证本机 HTTP 代理（`http_proxy`/`HTTP_PROXY`，其次 HTTPS 对应变量）复用原端口；
-普通 `ssh`（包括 Python 子进程调用）自动使用 SDK SOCKS 代理，文件隔离保持不变。
-`sshpass -p 密码 ssh …` / `sshpass -e ssh …` 在业务空间改用 OpenSSH 密码助手，
-不创建沙箱禁止的伪终端，也不写密码文件；其他 sshpass 参数明确报不支持。
-不放开全部本机端口；显式 `/usr/bin/ssh` 或自行覆盖 PATH 的脚本需要自行使用 SDK 的代理参数。
+Bash 与同步子代理使用正常系统网络和命令，不再注入业务沙箱专用 SSH/sshpass 适配器。
+旧适配器及其离线测试保留供兼容排查，不代表当前会话仍受沙箱保护。
 
 飞书文档使用内置 `lark_document`（fetch/create/update），由宿主官方 CLI 管理凭据续期与
-Keychain/DPoP/TLS，不在业务 Bash 内运行 `lark-cli`，不关闭沙箱或证书验证。
+Keychain/DPoP/TLS，不在业务 Bash 内运行文档读写 `lark-cli`，不关闭证书验证。
 写入必须审批，仅接受纯 Markdown 正文；不接收本机路径、XML/HTML、图片或附件，
 不支持表格、权限管理或登录。调用串行，取消回收自有子进程组；超时不自动重试写入。
 读取受 CLI 自身文档权限限制，宿主代理不是每个 Agent 独立的飞书账号隔离。
 旧会话若仍直接执行 `lark-cli docs +fetch/+create/+update`，业务钩子在执行前拒绝并明确提示
 改用 `mcp__vococo__lark_document`，不再等 TLS 失败后让用户手动重试；本地技能阅读、校验及开发会话不受影响。
 
-离线命令级验收（本机假模型，不使用真实模型额度）：
-- `uv run python eval/check_business_sandbox.py`：文件写入边界。
-- `uv run python eval/check_business_network.py`：显式 HTTP 代理、sshpass→SSH 握手与文件写入边界（不代表真实密码认证已验收）。
-- `uv run python eval/check_lark_documents.py 文档token`：真实 SDK 业务沙箱经 MCP 宿主代理读取现有飞书目录（使用本机授权，只读联网；不强制刷新或创建文档）。加 `--legacy-first` 可验证旧命令拒绝提示及后续 MCP 读取（本机脚本模型按预定步骤调用，不代表已验证真实模型的自主选择）。
+权限回归：`uv run pytest tests/test_business_runtime.py tests/test_business_write_guard.py -q`。
+`eval/check_business_sandbox.py` 与 `eval/check_business_network.py` 是旧隔离方案验收脚本，
+不再适用于当前策略；飞书宿主入口可用 `eval/check_lark_documents.py` 单独检查。
 
 ## 架构
 

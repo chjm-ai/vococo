@@ -38,6 +38,15 @@ def owner_with_repository(isolated):
     return owner, source, agents.main_session_key(owner)
 
 
+def test_unbound_agent_can_code_without_binding():
+    note = execution.prompt_note(execution.ExecutionPolicy(
+        "business", Path("/workspace"), Path("/output"), (),
+    ))
+    assert "可按任务操作未绑定的仓库" in note
+    assert "请先由主人" not in note
+    assert "不要关闭沙箱" not in note
+
+
 def test_repository_binding_validates_and_deduplicates(isolated):
     owner, source, _ = owner_with_repository(isolated)
     updated = agents.update(owner["id"], repositories=[str(source), str(source)])
@@ -77,7 +86,7 @@ async def test_copies_are_isolated_and_source_stays_readonly(isolated):
     await execution.prepare_repositories(second)
     assert second.repositories[0].checkout != copy
     assert not danger._business_write_allowed({"file_path": str(copy / "article.md")}, str(second.workspace), second)
-    assert str(source) not in execution.sandbox_settings(policy)["filesystem"]["allowWrite"]
+    assert execution.sandbox_settings(policy) == {"enabled": False}
     note = execution.prompt_note(policy)
     assert str(copy) in note and "推送" in note
 
@@ -128,11 +137,12 @@ def test_initialization_previews_without_writing_and_backs_up(isolated):
     assert changes(agents.root_dir(), bindings)[0][1] == meta
 
 
-def test_writable_link_cannot_bypass_repository_isolation(isolated):
+def test_writable_repository_link_does_not_prevent_business_execution(isolated):
     owner, source, key = owner_with_repository(isolated)
     agents.update(owner["id"], links=[{"path": str(source), "writable": True}])
-    with pytest.raises(ValueError, match="代码仓库"):
-        execution.policy_for_session(key)
+    policy = execution.policy_for_session(key)
+    assert source in policy.writable_roots
+    assert policy.repositories[0].source == source
 
 
 def test_slow_binding_update_does_not_restore_revoked_permissions(isolated, monkeypatch):

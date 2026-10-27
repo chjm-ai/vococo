@@ -1198,8 +1198,7 @@ async def stream_turn(
             cwd=cli_cwd,
             sandbox=execution.sandbox_settings(business_policy) if business_policy else None,
             # 设置页供应商 base_url+key + 恒定强制前台开关(见 _turn_env);项目 Agent 关 CLI auto-memory
-            env={**_turn_env(provider_env, no_auto_memory=research or agent_rt.get("memory_sections") is not None),
-                 **(execution.shell_env() if business_policy else {})},
+            env=_turn_env(provider_env, no_auto_memory=research or agent_rt.get("memory_sections") is not None),
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
             disallowed_tools=list(disallowed_tools or []),
             agents=subagents,

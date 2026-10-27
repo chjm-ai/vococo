@@ -329,3 +329,31 @@ def test_add_cron_job_validation(sugg_env):
     out = _text(asyncio.run(builtin.add_cron_job.handler(
         {"name": "x", "prompt": "y", "cron": "not-a-cron"})))
     assert "不合法" in out
+
+
+def test_script_cron_approval_shows_actual_command(sugg_env, monkeypatch):
+    from unittest.mock import AsyncMock
+    from vococo.cron import scheduler
+    from vococo.tools import builtin, danger
+
+    approve = AsyncMock(return_value=True)
+    monkeypatch.setattr(danger, "require_approval", approve)
+    command = "python3 check_service.py --verbose"
+    args = {"name": "服务巡检", "prompt": "检查状态", "cron": "0 8 * * *",
+            "mode": "script", "command": command}
+    assert "已创建" in _text(asyncio.run(builtin.add_cron_job.handler(args)))
+    assert command in approve.await_args.args[1]
+    assert scheduler.load_jobs()[0]["command"] == command
+
+    updated_command = "python3 check_service.py --all"
+    assert "已更新" in _text(asyncio.run(builtin.update_cron_job.handler({
+        "ref": "服务巡检", "command": updated_command,
+    })))
+    assert updated_command in approve.await_args.args[1]
+    assert scheduler.load_jobs()[0]["command"] == updated_command
+
+    approve.return_value = False
+    assert "未批准" in _text(asyncio.run(builtin.update_cron_job.handler({
+        "ref": "服务巡检", "command": "python3 other.py",
+    })))
+    assert scheduler.load_jobs()[0]["command"] == updated_command
