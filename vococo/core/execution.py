@@ -63,10 +63,6 @@ def policy_for_session(
     output_dir = Path(agent.get("output_dir") or agent["workdir"]).expanduser().resolve()
     roots = [workspace, output_dir, agents.home(agent["id"]).resolve()]
     roots.extend(Path(link["path"]).resolve() for link in agent["links"] if link["writable"])
-    own_home = agents.home(agent["id"]).resolve()
-    for path in roots:
-        if path != own_home and any((p / ".git").exists() for p in (path, *path.parents)):
-            raise ValueError(f"业务可写目录不能位于代码仓库，请配置仓库外的成果目录：{path}")
     repositories = business_repositories.copies_for_session(agent, session_key)
     roots.extend(binding.checkout for binding in repositories)
     (workspace / "tmp").mkdir(parents=True, exist_ok=True)
@@ -79,14 +75,15 @@ def prompt_note(policy: ExecutionPolicy) -> str:
     return (
         "\n\n## 业务文件目录\n"
         f"运行目录：{policy.workspace}\n临时文件：{policy.workspace / 'tmp'}\n"
-        f"正式成果目录：{policy.output_dir}\n原项目/技能资源目录（只作读取来源）：{policy.source_dir or policy.output_dir}\n"
+        f"正式成果目录：{policy.output_dir}\n原项目/技能资源目录：{policy.source_dir or policy.output_dir}\n"
         "原规则中的 scripts/ 等相对命令必须改用原资源目录的绝对路径，不要从运行目录猜测。"
         "报告、表格等正式成果必须用绝对路径写到正式成果目录；相对路径仅用于临时文件。"
         "成果目录不可读写时明确报错，不得改存源码仓库或把临时副本报告成已交付。"
         "飞书文档读写必须用 lark_document 工具（宿主代理）；图片用 insert_image，局部文字用 str_replace/block_insert_after。"
         "不要在 Bash 执行文档读写；lark-cli 的只读帮助和技能参考可以查阅。"
-        "Drive/Sheets/Base/Wiki管理及画板编辑尚无宿主入口，不代表官方CLI不支持；不能绕过沙箱/审批或要求全面放行。"
-        "沙箱内凭据写盘、钥匙串或 TLS 失败不等于授权过期，不要因此反复登录或关闭证书校验。"
+        "所有 Agent 均可编写和修改代码、创建和修改 AI 或脚本定时任务，不按业务/开发身份限制能力。"
+        "写入其他目录、推送、发布等操作仍遵循危险操作审批；定时任务通过内置工具设置。"
+        "凭据写盘、钥匙串或 TLS 失败不等于授权过期，不要因此反复登录或关闭证书校验。"
     ) + business_repositories.prompt_note(policy.repositories)
 
 
@@ -115,22 +112,8 @@ def shell_env() -> dict[str, str]:
 
 
 def sandbox_settings(policy: ExecutionPolicy) -> dict:
-    """让 shell 及其 Python/子进程共用系统写入边界，而非猜测命令字符串。"""
-    import tempfile
-    from ..memory import agents
+    """业务 Agent 与开发 Agent 使用同一审批模型，不再强制启用文件/网络沙箱。
 
-    roots = [*policy.writable_roots, config.AI_BRAIN_DIR.resolve(),
-             Path(tempfile.gettempdir()).resolve(), Path('/tmp').resolve()]
-    return {
-        "enabled": True,
-        "autoAllowBashIfSandboxed": True,
-        "allowUnsandboxedCommands": False,
-        "excludedCommands": [],
-        "filesystem": {
-            "allowWrite": [str(p) for p in dict.fromkeys(roots)],
-            "denyWrite": [str(agents.home(policy.agent_id).resolve() / "agent.json"),
-                          str(config.CRON_JOBS_PATH.resolve()),
-                          *(str(binding.source) for binding in policy.repositories)],
-        },
-        "network": network_settings(),
-    }
+    显式关闭以覆盖旧会话或本机设置遗留的沙箱开关；危险操作仍由 hook 审批。
+    """
+    return {"enabled": False}

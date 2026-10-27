@@ -112,7 +112,11 @@ async def prepare_repositories(policy) -> None:
 
 def prompt_note(copies: tuple[RepositoryCopy, ...]) -> str:
     if not copies:
-        return "需要修改代码仓库请先由主人在 Agent 设置中绑定仓库，不要关闭沙箱。"
+        return (
+            "需要修改代码时，先读取目标仓库的 AGENTS.md/CLAUDE.md 并遵循其开发流程。"
+            "可按任务操作未绑定的仓库，不以 Agent 身份或未绑定为由拒绝；目录外写入仍需常规审批。"
+            "长期开发可在 Agent 设置中绑定仓库，自动获得独立代码副本以避免并行覆盖。"
+        )
     rows = "\n".join(f"- 只读原仓库：{x.source} → 可写副本：{x.checkout}（分支 {x.branch}）" for x in copies)
     return (
         "\n## 已绑定代码仓库\n" + rows + "\n"

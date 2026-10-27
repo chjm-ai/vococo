@@ -1,4 +1,4 @@
-"""业务写边界独立于风险开关和完全访问权限。"""
+"""业务 Agent 使用常规审批，不再按目录直接拒绝代码或脚本定时任务。"""
 import os
 from unittest.mock import AsyncMock
 
@@ -71,7 +71,7 @@ def test_all_business_roots_allowed(business, tool):
 
 
 @pytest.mark.parametrize("guard,gate", [(False, False), (True, False), (False, True), (True, True)])
-def test_external_write_denied_even_full_access(business, monkeypatch, guard, gate):
+def test_external_write_allowed_after_approval(business, monkeypatch, guard, gate):
     policy, _, _ = business
     monkeypatch.setattr(config, "DANGER_GUARD", guard)
     monkeypatch.setattr(config, "APPROVAL_GATE", gate)
@@ -84,23 +84,32 @@ def test_external_write_denied_even_full_access(business, monkeypatch, guard, ga
         config.OBSIDIAN_VAULT_DIR / "other.md",
         policy.writable_roots[2].parent / "another-agent" / "file.md",
     ):
-        assert_denied(call("Write", path), "开发会话")
-    approve.assert_not_called()
+        assert call("Write", path) == {}
+    assert approve.await_count == (3 if gate else 0)
 
 
-def test_realpath_prevents_traversal_and_symlink_escape(business):
+def test_external_write_uses_approval_and_resolves_symlinks(business, monkeypatch):
     policy, _, scratch = business
     outside = policy.workspace.parent / "outside"
     outside.mkdir()
     (policy.workspace / "escape").symlink_to(outside, target_is_directory=True)
     (scratch / "escape").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(config, "DANGER_GUARD", True)
+    monkeypatch.setattr(config, "APPROVAL_GATE", True)
+    monkeypatch.setattr(permissions, "auto_allows", lambda *args: False)
+    approve = AsyncMock(return_value=False)
+    monkeypatch.setattr(danger, "_ask_approval", approve)
     for path in ("../outside/file.md", "escape/new/file.md", scratch / "escape" / "file.md"):
-        assert_denied(call("Write", path), "业务可写范围")
+        assert_denied(call("Write", path), "未批准")
+    assert approve.await_count == 3
+    approve.return_value = True
+    assert call("Write", "../outside/source.py") == {}
     alias = outside / "output-link"
     alias.symlink_to(policy.output_dir, target_is_directory=True)
     assert call("Write", alias / "file.md") == {}
     (policy.workspace / "file-link").symlink_to(outside / "not-created.md")
-    assert_denied(call("Edit", "file-link"), "业务可写范围")
+    approve.return_value = False
+    assert_denied(call("Edit", "file-link"), "未批准")
 
 
 def test_business_output_bypasses_old_worktree_guard(business):
@@ -166,18 +175,27 @@ def test_developer_lark_cli_not_redirected(monkeypatch):
     assert danger._hard_guard("Bash", {"command": "lark-cli docs +fetch --doc abc"}, "/tmp") is None
 
 
-def test_business_cannot_disable_shell_sandbox(business, monkeypatch):
+def test_business_shell_not_forced_into_sandbox(business, monkeypatch):
     monkeypatch.setattr(config, "DANGER_GUARD", False)
     monkeypatch.setattr(config, "APPROVAL_GATE", False)
     monkeypatch.setattr(permissions, "auto_allows", lambda *args: True)
-    assert_denied(call("Bash", command="pwd", dangerouslyDisableSandbox=True), "禁止关闭 Bash 沙箱")
+    assert call("Bash", command="pwd", dangerouslyDisableSandbox=True) == {}
     assert call("Bash", command="pwd", dangerouslyDisableSandbox=False) == {}
 
 
 @pytest.mark.parametrize("tool", ["mcp__vococo__add_cron_job", "mcp__vococo__update_cron_job", "mcp__vococo__suggest_automation"])
-def test_business_cannot_schedule_unsandboxed_shell(business, monkeypatch, tool):
+@pytest.mark.parametrize("mode", ["agent", "script"])
+def test_business_can_schedule_ai_and_script_tasks(business, monkeypatch, tool, mode):
     monkeypatch.setattr(config, "APPROVAL_GATE", False)
-    assert_denied(call(tool, mode="script", command="python3 external.py"), "脚本定时任务")
+    args = {"mode": mode}
+    if mode == "script":
+        args["command"] = "python3 external.py"
+    assert call(tool, **args) == {}
+
+
+@pytest.mark.parametrize("tool", ["mcp__vococo__add_cron_job", "mcp__vococo__update_cron_job", "mcp__vococo__suggest_automation"])
+def test_business_script_cron_cannot_schedule_destructive_command(business, tool):
+    assert_denied(call(tool, mode="script", command="rm -rf /"), "危险命令")
 
 
 @pytest.mark.parametrize("tool", ["mcp__vococo__add_mcp_server", "mcp__vococo__remove_mcp_server", "mcp__vococo__set_external_mcp"])
@@ -186,8 +204,9 @@ def test_business_cannot_create_unsandboxed_mcp_entry(business, monkeypatch, too
     assert_denied(call(tool, name="local-command", type="stdio", command="python3"), "MCP 执行入口")
 
 
-def test_missing_write_path_fails_closed(business):
-    assert_denied(call("Write"), "业务可写范围")
+def test_business_dangerous_shell_still_blocked(business, monkeypatch):
+    monkeypatch.setattr(config, "DANGER_GUARD", True)
+    assert_denied(call("Bash", command="rm -rf /"), "危险命令")
 
 
 @pytest.mark.parametrize("session_key", ["web:developer", "web:general", ""])

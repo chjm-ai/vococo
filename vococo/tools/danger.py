@@ -1152,16 +1152,20 @@ def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | Non
     orphan = _creates_orphan_memory_file(tool_name, tool_input)
     if orphan:
         return _deny_orphan_memory(orphan)
-    schedules_script = tool_name in {
+    if tool_name in {
         "mcp__vococo__add_cron_job", "mcp__vococo__update_cron_job",
         "mcp__vococo__suggest_automation",
-    }
+    }:
+        command = (tool_input or {}).get("command", "") or ""
+        why = is_dangerous(_strip_inert_text(command))
+        if why:
+            return _deny(f"脚本定时任务包含危险命令: {why}")
     configures_mcp = tool_name in {
         "mcp__vococo__add_mcp_server", "mcp__vococo__remove_mcp_server",
         "mcp__vococo__set_external_mcp",
     }
     legacy_lark = tool_name == "Bash" and _legacy_lark_document_command((tool_input or {}).get("command", "") or "")
-    needs_policy = tool_name in _WRITE_TOOLS or schedules_script or configures_mcp or legacy_lark or (
+    needs_policy = tool_name in _WRITE_TOOLS or configures_mcp or legacy_lark or (
         tool_name == "Bash" and (tool_input or {}).get("dangerouslyDisableSandbox")
     )
     policy = _business_policy(cwd) if needs_policy else None
@@ -1176,18 +1180,10 @@ def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | Non
             )
         if configures_mcp:
             return _deny("业务会话不能注册、移除或切换 MCP 执行入口，请由主人在管理界面配置；已配置的业务 MCP 仍可使用。")
-        if schedules_script and ((tool_input or {}).get("mode") == "script" or (tool_input or {}).get("command")):
-            return _deny("业务会话不能创建或修改未受沙箱隔离的脚本定时任务，请由主人在管理界面配置。")
         path = (tool_input or {}).get("file_path") or (tool_input or {}).get("notebook_path")
         if tool_name in _WRITE_TOOLS and path and _is_agent_config(path, cwd):
             return _deny("业务会话禁止修改 Agent 权限或执行策略配置，请由主人在管理界面修改。")
-        if tool_name == "Bash" and (tool_input or {}).get("dangerouslyDisableSandbox"):
-            return _deny("业务会话禁止关闭 Bash 沙箱。请去掉 dangerouslyDisableSandbox 参数。")
-        if tool_name in _WRITE_TOOLS and not _business_write_allowed(tool_input or {}, cwd, policy):
-            return _deny(
-                "业务会话只能写自己的工作区、成果目录、可写关联、绑定仓库的会话副本、AI_BRAIN 和系统临时目录。"
-                "目标超出业务可写范围；已绑定仓库请使用提示词中的可写副本路径，未绑定仓库请由主人在 Agent 设置中绑定，或交由开发会话执行。"
-            )
+        # 其他目录交给 classify() 的常规审批，不再按业务身份直接拒绝。
     else:
         # 业务策略允许的成果可能在主仓库/iCloud 内，不套用开发 worktree 防线。
         outside = _writes_outside_worktree(tool_name, tool_input, cwd)

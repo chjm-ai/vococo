@@ -501,6 +501,8 @@ async def add_cron_job(args: dict) -> dict:
     detail = f"「{name}」— {_sched_desc(schedule)} — 工作目录:{cwd} — 指令:{prompt[:80]}"
     if agent:
         detail += f" — 归属 Agent:{agent['name']}"
+    if mode == "script":
+        detail += f"\n脚本命令:\n{command}"
     if not await danger.require_approval("创建定时任务", detail):
         return _ok(f"🛑 未批准创建任务「{name}」,已跳过。")
 
@@ -676,9 +678,17 @@ async def update_cron_job(args: dict) -> dict:
             return _ok(err)
         kwargs["agent_id"] = agent["id"] if agent else ""
 
+    mode, command, _, err = scheduler.normalize_execution(
+        kwargs.get("mode", job.get("mode")), kwargs.get("command", job.get("command")),
+        kwargs.get("summarize_prompt", job.get("summarize_prompt")),
+    )
+    if err:
+        return _ok(err)
     # 改定时任务是持久化类操作,和 add/delete/set_enabled 一样要用户点头;
     # cron/eval 上下文(无人可问)直接拒绝。
     detail = f"「{job.get('name')}」— 改为 {_sched_desc(schedule)}"
+    if mode == "script":
+        detail += f"\n工作目录:{kwargs.get('cwd', job.get('cwd'))}\n脚本命令:\n{command}"
     if name != job.get("name"):
         detail += f" — 改名为「{name}」"
     if not await danger.require_approval("修改定时任务", detail):
