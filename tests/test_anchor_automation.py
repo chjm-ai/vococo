@@ -3,6 +3,7 @@ import ast
 import base64
 import importlib.util
 import json
+import sys
 from datetime import date
 from email import message_from_bytes
 from pathlib import Path
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 
 
 def load_script(name):
@@ -45,12 +47,19 @@ class FakeGmail:
 
     def ids(self, query):
         self.calls.append(query)
-        if "rfc822msgid" in query:
+        if "rfc822msgid:anchor-" in query:
             return ["receipt"] if self.reconciled else []
+        if "rfc822msgid:original@example.test" in query:
+            return ["outbound"]
         return list(self.messages)
 
     def get(self, path, **params):
         mid = path.rsplit("/", 1)[-1]
+        if mid == "outbound":
+            original = message(self.timestamp, From=self.address, To="buyer@example.test",
+                               **{"Message-ID": "<original@example.test>"})
+            original["labelIds"] = ["SENT"]
+            return original
         if mid in self.fail:
             raise gmail.ScanError("模拟读取失败")
         if params.get("format") == "raw":
@@ -94,7 +103,7 @@ def test_metadata_failure_is_retained_across_watermark(tmp_path):
     assert gmail.scan(client, path, now)["coverage"] == "partial"
     assert json.loads(path.read_text())["messages"]["new"] == "retry"
     client.fail.clear()
-    client.ids = lambda query: []
+    client.ids = lambda query: ["outbound"] if "rfc822msgid:original@example.test" in query else []
     assert gmail.scan(client, path, now + 7200)["coverage"] == "ok"
     assert len(client.sent) == 1
 
@@ -256,7 +265,7 @@ def test_wrapper_runs_each_chain_once_and_combines_failure(monkeypatch, capsys):
     calls = []
     def run(command, **kwargs):
         calls.append(command)
-        return SimpleNamespace(stdout="##CRON_SIGNAL:1##\n", returncode=1)
+        return SimpleNamespace(stdout="##CRON_SIGNAL:1##\n", stderr="模拟失败", returncode=1)
     monkeypatch.setattr(checks.subprocess, "run", run)
     assert checks.main() == 1
     assert len(calls) == 3
