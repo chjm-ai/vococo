@@ -2,7 +2,6 @@
 import base64
 import importlib.util
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,6 +9,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 import pytest
+from pptx import Presentation
+from pptx.util import Inches
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "vococo/plugin/skills/editable-pptx"
@@ -230,20 +231,27 @@ def test_cli_failure_keeps_structure_report_without_visual_success(deck, fake_to
     assert "renderer" not in report
 
 
+@pytest.fixture
+def native_deck(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    presentation = Presentation()
+    for number in range(1, 7):
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(1)).text = f"真实渲染测试 {number}"
+    source = tmp_path / "真实原稿.pptx"
+    presentation.save(source)
+    return source
+
+
 @pytest.mark.parametrize("reorder_and_drop", [False, True])
-def test_real_libreoffice_render_when_dependencies_are_installed(tmp_path, monkeypatch, reorder_and_drop):
+def test_real_libreoffice_render_when_dependencies_are_installed(native_deck, reorder_and_drop):
     try:
         checker.office_command()
     except ValueError:
         pytest.skip("未安装 LibreOffice；测试不会安装")
-    node = shutil.which("node")
-    cache = Path(os.environ.get("VOCOCO_PPTX_HOME", Path.home() / ".cache/vococo-pptx/4.0.1"))
-    if not all(shutil.which(tool) for tool in ("pdftoppm", "pdfinfo")) or not node or not (cache / "node_modules/pptxgenjs").is_dir():
-        pytest.skip("缺少本地生成/渲染依赖；测试不安装、不联网")
-    monkeypatch.chdir(tmp_path)
-    source = tmp_path / "真实原稿.pptx"
-    subprocess.run([node, str(SKILL / "scripts/generate.cjs"), str(SKILL / "examples/six-slides.json"), str(source)],
-                   check=True, capture_output=True, timeout=45)
+    if not all(shutil.which(tool) for tool in ("pdftoppm", "pdfinfo")):
+        pytest.skip("缺少本地渲染依赖；测试不安装、不联网")
+    source = native_deck
     if reorder_and_drop:
         with zipfile.ZipFile(source) as archive:
             entries = [(entry, archive.read(entry)) for entry in archive.infolist()]
@@ -257,7 +265,7 @@ def test_real_libreoffice_render_when_dependencies_are_installed(tmp_path, monke
                 archive.writestr(entry, data)
     expected = 5 if reorder_and_drop else 6
     original = source.read_bytes()
-    report = checker.render(source, tmp_path / "preview")
+    report = checker.render(source, source.parent / "preview")
     assert report["renderer"] == "LibreOffice" and report["page_count"] == expected
     assert len(report["images"]) == expected and Path(report["pdf"]).stat().st_size > 0
     assert all(Path(image).stat().st_size > 24 for image in report["images"])

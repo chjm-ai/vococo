@@ -2,34 +2,22 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import re
-import stat
 from pathlib import Path
 
 from . import danger
+from .file_snapshot import check_parts as _check_parts, read_regular
 
 MAX_BYTES = 200_000
 
 
-def _read_regular(root: Path, parts: tuple[str, ...]) -> str:
-    # 逐级 openat + NOFOLLOW，防止检查后目录/文件被换成软链；非阻塞避免 FIFO 挂死。
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        for part in parts[:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-            os.close(fd)
-            fd = child
-        file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
-        with os.fdopen(file_fd, "rb") as source:
-            info = os.fstat(source.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise ValueError("仅支持普通文件，不接受硬链接。")
-            if info.st_size > MAX_BYTES:
-                raise ValueError("HTML 超过 200KB 上限。")
-            data = source.read(MAX_BYTES + 1)
-    finally:
-        os.close(fd)
+def snapshot_id(filename: str, data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(filename.encode("utf-8") + b"\0" + data).hexdigest()
+
+
+def validate_source(data: bytes) -> str:
     if len(data) > MAX_BYTES:
         raise ValueError("HTML 超过 200KB 上限。")
     text = data.decode("utf-8-sig")
@@ -40,13 +28,7 @@ def _read_regular(root: Path, parts: tuple[str, ...]) -> str:
     return text
 
 
-def _check_parts(parts: tuple[str, ...]) -> None:
-    sensitive = re.compile(r"(?:^|[._-])(?:credentials?|secrets?|passwords?|tokens?|private[-_]keys?)(?:[._-]|$)", re.I)
-    if not parts or any(part.startswith(".") or sensitive.search(part) for part in parts):
-        raise ValueError("不支持隐藏目录、凭据目录或秘密文件。")
-
-
-async def read_snapshot(path: str, *, cwd: str | None = None, allow_external: bool = True) -> str:
+async def read_file_snapshot(path: str, *, cwd: str | None = None, allow_external: bool = True) -> tuple[str, bytes]:
     cwd = cwd or danger.current_cwd()
     if not cwd:
         raise ValueError("当前任务没有工作目录，无法安全展示 HTML。")
@@ -68,7 +50,14 @@ async def read_snapshot(path: str, *, cwd: str | None = None, allow_external: bo
         if not await danger.require_approval("展示工作目录外的 HTML", str(candidate)):
             raise ValueError("未获批准，未读取或展示工作目录外的文件。")
     _check_parts(parts)
-    return await asyncio.to_thread(_read_regular, root, parts)
+    data = await asyncio.to_thread(read_regular, root, parts, MAX_BYTES)
+    validate_source(data)
+    return candidate.name, data
+
+
+async def read_snapshot(path: str, *, cwd: str | None = None, allow_external: bool = True) -> str:
+    _, data = await read_file_snapshot(path, cwd=cwd, allow_external=allow_external)
+    return validate_source(data)
 
 
 def local_html_path(value: str) -> str:

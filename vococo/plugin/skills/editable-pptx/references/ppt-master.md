@@ -8,7 +8,15 @@
 - 共享安装：`~/Desktop/Repos/AI_Skills/ppt-master/`。可通过 `VOCOCO_PPT_MASTER_DIR` 显式指定另一完整安装；该变量是路径，不是安装或外发授权。
 - 本仓库只带适配层，不捆绑约 78MB 的上游素材和脚本。没有安装的机器应明确报缺失，由维护者从官方固定提交安装；业务会话不临时联网下载。
 
-先用 vococo 安装环境的 Python 执行适配层校验（先按 [原生操作](native-api.md) 解析 `$PY`）：
+## 解释器与校验
+
+`适配技能绝对目录` 指当前适配入口 `SKILL.md` 所在目录，不是上游目录。保持 cwd 在用户工作区，不切到技能源码目录。
+
+- `$PY` 使用实际安装 vococo 的 Python 解释器。源码安装时，技能位于 `安装目录/vococo/plugin/skills/editable-pptx/`，解释器通常为 `安装目录/.venv/bin/python`；先确认该文件存在，并执行 `"$PY" -c 'import pptx, PIL; print(pptx.__version__)'` 验证依赖。
+- 非源码安装使用实际安装 vococo 的解释器绝对路径，不凭 `python3` 名称猜测环境；找不到就明确报告，不搜索凭据、不擅自安装。
+- `python-pptx` 保留为项目锁定依赖，供上游原生导出及最终文件验收使用；不随旧生成链路一起删除。维护者可在 vococo 源码安装目录运行 `uv sync` 安装项目依赖，业务任务不自动执行。
+
+解释器确认后执行适配层校验：
 
 ```sh
 "$PY" "适配技能绝对目录/scripts/ppt_master_check.py"
@@ -20,7 +28,7 @@
 
 ## 环境与权限
 
-- 核心原生导出可复用 vococo 已安装的 Python 环境（含 python-pptx/Pillow）；先按 [原生操作](native-api.md) 解析解释器，不假定系统 python3 已装依赖。运行上游命令时用此解释器替换示例中的 python3。
+- 核心原生导出可复用 vococo 已安装的 Python 环境（含 python-pptx/Pillow）；先按上文“解释器与校验”解析 `$PY`，不假定系统 python3 已装依赖。运行上游命令时用此解释器替换示例中的 python3。
 - 不整包安装上游 requirements：生图、TTS、PDF、布尔形状、浏览器服务各有可选依赖，只在实际触发且获得审批后安装。PyMuPDF 另有 AGPL/商业许可，不能当 MIT 依赖随便打包。
 - 客户材料默认仅在本机工作区处理；外部生图、联网搜图、TTS 或研究会外发提示词/材料，必须先明确发送内容并获授权。真实产品截图不交生图重画。
 - 不自动运行 `update_repo.py`、pip、浏览器安装、后台/常驻本地编辑器或确认服务器。上游确认需要本地网页而当前渠道打不开时，停在关口说明限制，不伪造确认，不擅自改用 Quick。

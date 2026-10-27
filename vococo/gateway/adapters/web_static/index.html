@@ -1452,7 +1452,7 @@ function buildTurnBlock(t, conv, isLast){
     appendImgs(b, t.ai_images);
     // AI 主动发的视频(send_video)同理,单独存在 t.ai_videos
     appendVids(b, t.ai_videos);
-    appendHtmlPreviews(b, t.html_previews);
+    appendHtmlPreviews(b, t.html_previews, conv);
     appendArtifacts(b, t.artifacts, conv);
     b.append(buildTurnFoot(conv, externalResult ? null : t.id, t.assistant, t.ts, isLast, interrupted));
     wrap.append(row);
@@ -1461,7 +1461,7 @@ function buildTurnBlock(t, conv, isLast){
     // SSE 恢复后 maybeReplayStream 会用同 seg 全文覆盖无缝续上
     const {row,b}=buildBubble("ai","");
     renderPreviewMarkdown(b,t.draft||"",true);
-    appendHtmlPreviews(b,t.html_previews);
+    appendHtmlPreviews(b,t.html_previews,conv);
     appendArtifacts(b,t.artifacts,conv);
     const st=el("div","status"); st.textContent="回复中…"; b.append(st);
     wrap.append(row);

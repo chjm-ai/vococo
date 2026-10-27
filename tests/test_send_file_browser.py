@@ -12,7 +12,7 @@ from vococo.gateway.adapters.web import WebAdapter
 from vococo.memory import session_store
 from vococo.tools import builtin, danger
 from test_library_integration import _browser_environment
-from test_editable_pptx import content, generate, node
+from pptx import Presentation
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def anyio_backend():
 
 
 @pytest.mark.anyio
-async def test_file_tool_card_history_and_browser_download(isolated, monkeypatch, node, content):
+async def test_file_tool_card_history_and_browser_download(isolated, monkeypatch):
     monkeypatch.setattr(config, "WEB_HOST", "127.0.0.1")
     monkeypatch.setattr(config, "WEB_PORT", 0)
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "file-browser-test-auth")
@@ -29,8 +29,10 @@ async def test_file_tool_card_history_and_browser_download(isolated, monkeypatch
     adapter = WebAdapter()
     root = isolated / "project"
     root.mkdir()
-    generated, file = generate(node, root, content, "可编辑演示")
-    assert generated.returncode == 0, generated.stderr
+    file = root / "可编辑演示.pptx"
+    deck = Presentation()
+    deck.slides.add_slide(deck.slide_layouts[6])
+    deck.save(file)
     content = file.read_bytes()
 
     async def drive_tool():
