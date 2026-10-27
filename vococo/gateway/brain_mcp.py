@@ -31,6 +31,7 @@ _CANCEL = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHi
 Offset = Annotated[int, Field(strict=True, ge=0, le=2**63 - 1)]
 Length = Annotated[int, Field(strict=True, ge=1, le=8000)]
 Identifier = Annotated[str, Field(min_length=1, max_length=128)]
+MAX_RPC_BODY = 1024 * 1024  # 读进内存做协议识别的请求体上限
 
 
 def _tokens() -> tuple[str, str]:
@@ -164,6 +165,9 @@ class EventsBridge:
             chunks.append(message.get("body", b""))
             more = message.get("more_body", False)
         body = b"".join(chunks)
+        if len(body) > MAX_RPC_BODY:
+            return await _json_response(scope, receive, send, {"jsonrpc": "2.0", "id": None, "error": {
+                "code": -32600, "message": "请求体过大"}}, status_code=413)  # 读进内存前就挡掉
         replay = False
 
         async def replay_receive() -> dict:
@@ -220,8 +224,9 @@ class EventsBridge:
         await mcp_events.EventsService(self.session).loop()
 
 
-async def _json_response(scope: Scope, receive: Receive, send: Send, payload: dict) -> None:
-    response = JSONResponse(payload, headers={"Cache-Control": "no-store"})
+async def _json_response(scope: Scope, receive: Receive, send: Send, payload: dict,
+                         status_code: int = 200) -> None:
+    response = JSONResponse(payload, status_code=status_code, headers={"Cache-Control": "no-store"})
     await response(scope, receive, send)
 
 

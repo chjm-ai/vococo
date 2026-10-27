@@ -112,7 +112,7 @@ async def rpc(frontend, method: str, params: dict | None = None, extra: dict | N
     return await _asgi_call(frontend, request, token)
 
 
-async def _asgi_call(app, request: dict, token: str) -> dict:
+async def _asgi_call(app, request: dict, token: str, status: bool = False):
     scope = {"type": "http", "http_version": "1.1", "method": "POST", "scheme": "http", "path": "/mcp",
              "raw_path": b"/mcp", "query_string": b"", "root_path": "",
              "headers": [(b"authorization", f"Bearer {token}".encode())],
@@ -129,7 +129,9 @@ async def _asgi_call(app, request: dict, token: str) -> dict:
 
     await app(scope, receive, send)
     payload = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
-    return json.loads(payload) if payload else {}
+    code = next(m["status"] for m in sent if m["type"] == "http.response.start")
+    parsed = json.loads(payload) if payload else {}
+    return (code, parsed) if status else parsed
 
 
 def dispatch(frontend, key: str = "request-0001") -> dict:
@@ -383,3 +385,11 @@ async def test_only_bridge_tasks_emit(env):
     assert tasks.finish(local["id"], "done", "本地结果", "本地结果")
     await task_events.emit_terminal(local["id"])
     assert mcp_events.connect().execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 0
+
+
+async def test_oversized_request_rejected(env):
+    """请求体先读进内存再做协议识别,必须有上限,否则可被超大 POST 打爆内存。"""
+    _backend, frontend, _receiver, _url, _port = env
+    request = {"jsonrpc": "2.0", "id": 1, "method": "events/list", "params": {"pad": "x" * (brain_mcp.MAX_RPC_BODY + 10)}}
+    status, payload = await _asgi_call(frontend, request, UPSTREAM, status=True)
+    assert status == 413 and payload["error"]["code"] == -32600
