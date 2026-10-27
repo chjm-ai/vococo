@@ -2,7 +2,7 @@ const {chromium}=require('playwright');
 const assert=require('node:assert/strict');
 const path=require('node:path');
 (async()=>{
-  const [origin,token,root,screenshots]=process.argv.slice(2);
+  const [origin,token,root,screenshots,taskConv]=process.argv.slice(2);
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
   const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],remote=[];
   page.on('pageerror',e=>errors.push(e.message));
@@ -113,6 +113,15 @@ const path=require('node:path');
     for(const target of ['file://remote/page.html','//remote/page.html','javascript:page.html']){
       await render(target);assert.equal(await page.locator('#local-link-test .doclink').count(),0);
     }
+    await page.evaluate(conv=>openConv(conv),taskConv);
+    await page.locator('#wrap .doclink').getByText('实验结果').click();
+    await page.locator('#dpBody h1').getByText('正式实验结果').waitFor();
+    await page.evaluate(()=>closeDocPreview());
+    await page.reload();await page.waitForFunction(()=>!$('#app').hidden);
+    await page.evaluate(conv=>openConv(conv),taskConv);
+    await page.locator('#wrap .doclink').getByText('实验结果').click();
+    await page.locator('#dpBody h1').getByText('正式实验结果').waitFor();
+    await page.evaluate(async()=>{closeDocPreview();await openConv('html-link-e2e');});
     // 延迟真实服务端响应，切会话后不能把旧内容写进新会话。
     let release;const gate=new Promise(resolve=>release=resolve);
     await page.route('**/doc/preview?**',async route=>{const response=await route.fetch();await gate;await route.fulfill({response});});

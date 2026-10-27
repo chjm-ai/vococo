@@ -67,6 +67,75 @@ async def test_reads_text_file_in_conv_cwd(doc_app, doc_root):
     assert "text" in headers["Content-Type"]
 
 
+@pytest.fixture(params=[False, True], ids=["workdir", "custom-output"])
+def preview_agent(isolated, monkeypatch, request):
+    from vococo.core import tasks
+    from vococo.memory import agents
+
+    monkeypatch.setattr(tasks, "_DB", None)
+    source = isolated / "业务资料"
+    source.mkdir()
+    agent = agents.create("业务 Agent", str(source))
+    output = isolated / "正式成果" if request.param else source
+    output.mkdir(exist_ok=True)
+    if request.param:
+        meta = agents._read_meta(agent["id"])
+        meta["output_dir"] = str(output)
+        agents._write_meta(agent["id"], meta)
+    tasks.create("实验", "生成结果", task_id="preview-task", agent_id=agent["id"])
+    return agent, output
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("session_kind", ["task", "agent"])
+async def test_reads_relative_document_from_agent_output(preview_agent, monkeypatch, session_kind):
+    from urllib.parse import urlencode
+
+    agent, output = preview_agent
+    key = "task:preview-task" if session_kind == "task" else agent["main_conv"]
+    relative = "项目/知识库与Skill实验（20261027）/结果对照/结果对比.md"
+    path = output / relative
+    path.parent.mkdir(parents=True)
+    path.write_text("# 正式实验结果", encoding="utf-8")
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+    searches = []
+    monkeypatch.setattr(WebAdapter, "_fuzzy_doc_path", lambda *args: searches.append(args))
+    adapter = WebAdapter()
+    assert adapter._conv_cwd(key) != str(output)
+    app = web.Application()
+    app.add_routes([web.get("/doc/preview", adapter._handle_doc_preview)])
+
+    status, body, _headers = await _get(app, "/doc/preview?" + urlencode({"conv": key, "path": relative}))
+
+    assert status == 200
+    assert body.decode("utf-8") == "# 正式实验结果"
+    assert searches == [], "正式成果应精确匹配，不应全盘搜索"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("path_kind", ["unowned", "traversal", "absolute-outside"])
+async def test_agent_output_keeps_path_boundaries(preview_agent, monkeypatch, path_kind):
+    from urllib.parse import urlencode
+
+    _agent, output = preview_agent
+    (output / "private.md").write_text("不应读取", encoding="utf-8")
+    outside = output.parent / "outside.md"
+    outside.write_text("目录外", encoding="utf-8")
+    conv, path = {
+        "unowned": ("task:unknown", str(output / "private.md")),
+        "traversal": ("task:preview-task", "../outside.md"),
+        "absolute-outside": ("task:preview-task", str(outside)),
+    }[path_kind]
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+    monkeypatch.setattr(WebAdapter, "_fuzzy_doc_path", lambda *args: None)
+    app = web.Application()
+    app.add_routes([web.get("/doc/preview", WebAdapter()._handle_doc_preview)])
+
+    status, _body, _headers = await _get(app, "/doc/preview?" + urlencode({"conv": conv, "path": path}))
+
+    assert status == 404
+
+
 @pytest.mark.anyio
 async def test_reads_absolute_path_inside_cwd(doc_app, doc_root):
     (doc_root / "notes.txt").write_text("hi", encoding="utf-8")
