@@ -9,6 +9,7 @@ import re
 
 from aiohttp import web
 
+from .. import config
 from ..core import task_runner, tasks
 from ..memory import agents, session_store
 from ..tools import danger
@@ -278,12 +279,23 @@ def _resolve_agent(data: dict, visibility: dict[str, dict]) -> str:
     return agent_id
 
 
-def _owns_session(key: str, agent_id: str) -> bool:
+def _history_owner(key: str) -> dict | None:
     owner = agents.agent_for_session(key)
+    if owner:
+        return owner
+    # 隐藏旧项目可能从未配置过 Agent,只读查历史时不应补建/复活配置。
+    phash = config.project_hash_from_key(key)
+    if phash:
+        return next((agent for agent in _history_agents() if agent.get("project_hash") == phash), None)
+    return None
+
+
+def _owns_session(key: str, agent_id: str) -> bool:
+    owner = _history_owner(key)
     return bool(owner and owner["id"] == agent_id)
 
 
-def _list_agents(data: dict, _agent: dict) -> dict:
+def _list_agents(data: dict, _agent: dict, _connection: str = "") -> dict:
     offset = _number(data, "offset", 0, 2**63 - 1)
     limit = _number(data, "limit", 50, 100, 1)
     items = _visible_agents()
@@ -305,7 +317,7 @@ def _list_sessions(data: dict, _agent: dict, _connection: str = "") -> dict:
         "SELECT session_key,MAX(id) AS last_turn_id FROM turns GROUP BY session_key ORDER BY MAX(id) DESC"
     ).fetchall()
     for key, last_id in rows:
-        owner = agents.agent_for_session(key)
+        owner = _history_owner(key)
         # 明确指定 agent_id 时,没有归属的会话(通用对话、CLI)不属于任何 Agent,不返回
         if owner is None or owner["id"] not in visibility or (target and owner["id"] != target):
             continue

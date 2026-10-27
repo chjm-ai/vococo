@@ -55,6 +55,7 @@ async def test_hidden_legacy_project_without_agent_metadata_is_readable(client, 
     assert not (agents.root_dir() / aid / "agent.json").exists()
     assert (await post(client, "list_sessions", {"agent_id": aid}))["sessions"][0]["key"] == key
     assert (await post(client, "read_session", {"agent_id": aid, "key": key}))["turn"]["id"] == tid
+    assert not (agents.root_dir() / aid / "agent.json").exists()
 
 
 async def test_other_agent_text_pages_and_older_turns(client):
