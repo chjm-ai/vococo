@@ -12,6 +12,8 @@ import time
 from collections import Counter
 from contextlib import contextmanager
 from email import message_from_bytes
+from email.header import decode_header, make_header
+from email.utils import getaddresses
 from email.mime.message import MIMEMessage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -70,7 +72,7 @@ class Gmail:
         return response.json()
 
     def ids(self, query):
-        token, found = None, []
+        token, found, pages = None, [], set()
         while True:
             params = {"q": query, "maxResults": 100, "includeSpamTrash": True}
             if token:
@@ -79,7 +81,10 @@ class Gmail:
             found.extend(row["id"] for row in page.get("messages", []))
             token = page.get("nextPageToken")
             if not token:
-                return found
+                return list(dict.fromkeys(found))
+            if token in pages:
+                raise ScanError("Gmail 列表重复分页，拒绝推进水位")
+            pages.add(token)
 
     def send(self, raw):
         try:
@@ -94,10 +99,71 @@ class Gmail:
 
 
 def headers_of(message):
-    return {row["name"].lower(): row["value"] for row in message.get("payload", {}).get("headers", [])}
+    headers = {}
+    for row in message.get("payload", {}).get("headers", []):
+        name = row["name"].lower()
+        value = str(make_header(decode_header(row["value"])))
+        headers[name] = headers.get(name, "") + " " + value if name in headers else value
+    return headers
 
 
-def is_reply(message):
+def is_warmup(message):
+    headers = headers_of(message)
+    # 只认产品标记/专用头，不把 warm、warmup、故事板等普通客户用语拉黑。
+    if re.search(r"\blemwarmup\s+[a-z0-9]{6,}\b", headers.get("subject", ""), re.I):
+        return True
+    return any(name.startswith(("x-lemwarm", "x-lem-warm")) for name in headers)
+
+
+def reference_ids(message):
+    headers = headers_of(message)
+    return list(dict.fromkeys(re.findall(r"<[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+>",
+                                         headers.get("in-reply-to", "") + " " + headers.get("references", ""))))
+
+
+def payload_text(payload):
+    data = payload.get("body", {}).get("data", "")
+    text = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4)).decode("utf-8", errors="replace")
+    return text + "\n" + "\n".join(payload_text(part) for part in payload.get("parts", [])
+                                   if not part.get("filename"))
+
+
+def outbound_source(client, original, reference):
+    headers = headers_of(original)
+    if "SENT" not in original.get("labelIds", []) or headers.get("message-id") != reference:
+        return "manual"
+    if is_warmup(original):
+        return "excluded"
+    sender = parseaddr(headers.get("from", ""))[1].lower()
+    recipients = getaddresses([headers.get("to", ""), headers.get("cc", "")])
+    external = [addr for _, addr in recipients if "@" in addr and addr.rsplit("@", 1)[-1].lower() not in OWN_DOMAINS]
+    if sender != client.address or not external or headers.get("x-anchor-forward"):
+        return "identity_conflict"
+    # 已发邮件本身仍可能身份串线；不把面料签名的外发认成隔热开发信。
+    if re.search(r"yxx\s*fabric|yxxfabric\.", payload_text(original.get("payload", {})), re.I):
+        return "identity_conflict"
+    return "customer"
+
+
+def classify(client, message):
+    if is_warmup(message) or not is_reply(message, require_reference=False):
+        return "excluded"
+    related, conflict = False, False
+    for reference in reference_ids(message):
+        # reference 格式被限制，不能注入 Gmail 查询条件；再核对返回 Message-ID 和 SENT。
+        for mid in client.ids(f"in:sent rfc822msgid:{reference[1:-1]}"):
+            original = client.get(f"/messages/{mid}", format="full")
+            source = outbound_source(client, original, reference)
+            if source == "excluded":
+                return "excluded"
+            related |= source == "customer"
+            conflict |= source == "identity_conflict"
+    return "customer" if related and not conflict else "manual"
+
+
+def is_reply(message, require_reference=True):
+    if is_warmup(message):
+        return False
     headers = headers_of(message)
     address = parseaddr(headers.get("from", ""))[1].lower()
     if not address or "@" not in address or "SENT" in message.get("labelIds", []):
@@ -113,7 +179,13 @@ def is_reply(message):
         return False
     if AUTO_SUBJECT.search(headers.get("subject", "")):
         return False
-    return bool(headers.get("in-reply-to") or headers.get("references"))
+    return not require_reference or bool(reference_ids(message))
+
+
+def message_summary(message):
+    headers = headers_of(message)
+    return {"from": headers.get("from", ""), "subject": headers.get("subject", ""),
+            "thread_id": message.get("threadId"), "note": "引用关联不证明采购意向"}
 
 
 def forward_id(address, mid):
@@ -152,7 +224,7 @@ def locked(path):
 def process_message(client, mid, state, path, now):
     marker = forward_id(client.address, mid)
     status = state["messages"].get(mid)
-    if status in ("sent", "excluded", "old"):
+    if status in ("sent", "excluded", "old", "manual"):
         return status
     if status in ("sending", "uncertain"):
         if client.ids(f"in:sent rfc822msgid:{marker}"):
@@ -162,11 +234,12 @@ def process_message(client, mid, state, path, now):
         # Gmail 索引有延迟，始终不盲目重发，留给人工核对。
         raise ScanError("转发结果不明：已保留待核对，未重复发送")
     message = client.get(f"/messages/{mid}", format="full")
+    state.setdefault("details", {})[mid] = message_summary(message)
     if int(message["internalDate"]) / 1000 < state["enabled_at"]:
         state["messages"][mid] = "old"
-    elif not is_reply(message):
-        state["messages"][mid] = "excluded"
     else:
+        state["messages"][mid] = classify(client, message)
+    if state["messages"][mid] == "customer":
         raw = forward_raw(client, mid, marker)
         state["messages"][mid] = "sending"
         save(path, state)  # 外发前持久化，进程崩溃也不能无条件重发。
@@ -188,9 +261,9 @@ def scan(client, path, now):
         save(path, state)
     start = max(state["enabled_at"], state["last_ts"] - 3600)
     ids = client.ids(f"after:{int(start) - 1} before:{int(now) + 1} -in:sent -in:drafts -in:trash")
-    pending = [mid for mid, status in state["messages"].items() if status not in ("sent", "excluded", "old")]
+    pending = [mid for mid, status in state["messages"].items() if status not in ("sent", "excluded", "old", "manual")]
     candidates = [mid for mid in dict.fromkeys(ids + pending)
-                  if state["messages"].get(mid) not in ("sent", "excluded", "old")]
+                  if state["messages"].get(mid) not in ("sent", "excluded", "old", "manual")]
     # 先持久化整页候选，单封元数据失败也不会因水位推进丢失。
     for mid in candidates:
         state["messages"].setdefault(mid, "retry")
@@ -203,8 +276,11 @@ def scan(client, path, now):
             errors.append(str(exc) if isinstance(exc, ScanError) else type(exc).__name__)
     state["last_ts"] = now
     save(path, state)
-    return {"coverage": "partial" if errors or counts["retry"] or counts["uncertain"] else "ok",
-            "counts": dict(counts), "errors": errors, "enabled_at": state["enabled_at"]}
+    manual = [mid for mid, status in state["messages"].items() if status == "manual"]
+    return {"coverage": "partial" if errors or counts["retry"] or counts["uncertain"] or manual else "ok",
+            "counts": dict(counts), "manual_review_ids": manual,
+            "manual_review": {mid: state.get("details", {}).get(mid, {}) for mid in manual},
+            "errors": errors, "enabled_at": state["enabled_at"]}
 
 
 def run_mailbox(address, credential, apply, state_dir=STATE_DIR):
