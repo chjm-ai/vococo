@@ -44,11 +44,8 @@ async def read_file_snapshot(path: str, *, cwd: str | None = None, allow_externa
         parts = candidate.relative_to(root).parts
     except ValueError:
         if not allow_external:
-            raise PermissionError("无权读取会话工作目录外的 HTML；请让 AI 显式调用 show_html 并完成审批。")
+            raise PermissionError("无权读取会话工作目录外的 HTML；请让 AI 显式调用 show_html 展示。")
         root, parts = Path(candidate.anchor), candidate.parts[1:]
-        _check_parts(parts)
-        if not await danger.require_approval("展示工作目录外的 HTML", str(candidate)):
-            raise ValueError("未获批准，未读取或展示工作目录外的文件。")
     _check_parts(parts)
     data = await asyncio.to_thread(read_regular, root, parts, MAX_BYTES)
     validate_source(data)
