@@ -125,24 +125,28 @@ def _registry():
     return connection
 
 
-def _access(agent: dict) -> dict:
+def _access(agent: dict, connection: str = "") -> dict:
     source = agents.main_session_key(agent)
     runtime = agents.runtime_for_session(source)
     denied = sorted(set([*DENIED, *(runtime.get("disallowed_tools") or [])]))
-    return {"session": source, "mode": "standard", "remote_brain": True, "denied": denied}
+    access = {"session": source, "mode": "standard", "remote_brain": True, "denied": denied}
+    if connection:
+        # 连接身份(MCP 前端已按上游凭据哈希):任务终态事件只投给同一连接。
+        access["connection"] = connection[:64]
+    return access
 
 
-def _create_atomic(data: dict, agent: dict) -> dict:
+def _create_atomic(data: dict, agent: dict, connection: str = "") -> dict:
     title, prompt = _text(data, "title", 100), _text(data, "prompt", 60000)
     key = _text(data, "idempotency_key", 128)
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", key):
         _reject(400, "idempotency_key 必须是 8..128 位 ASCII 安全字符")
     payload = json.dumps([title, prompt], ensure_ascii=True)
-    access = _access(agent)
-    connection = _registry()
-    with connection:
-        connection.execute("BEGIN IMMEDIATE")
-        old = connection.execute(
+    access = _access(agent, connection)
+    conn = _registry()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        old = conn.execute(
             "SELECT task_id,payload FROM brain_bridge_tasks WHERE agent_id=? AND idempotency_key=?",
             (AGENT_ID, key),
         ).fetchone()
@@ -155,7 +159,7 @@ def _create_atomic(data: dict, agent: dict) -> dict:
             dispatch_platform="web", dispatch_chat_id=agent["main_conv"], agent_id=AGENT_ID,
             source_session_key=access["session"], source_access=access, commit=False,
         )
-        connection.execute(
+        conn.execute(
             "INSERT INTO brain_bridge_tasks(task_id,agent_id,idempotency_key,payload,source_session_key) VALUES (?,?,?,?,?)",
             (task["id"], AGENT_ID, key, payload, access["session"]),
         )
@@ -205,18 +209,18 @@ def _task_view(task: dict, data: dict) -> dict:
             "cancel_requested": bool(task.get("cancel_requested"))}
 
 
-def _create_task(data: dict, agent: dict) -> dict:
-    task = _create_atomic(data, agent)
+def _create_task(data: dict, agent: dict, connection: str = "") -> dict:
+    task = _create_atomic(data, agent, connection)
     task_runner._maybe_start_next()
     task_runner._notify_activity(task["id"])
     return _task_view(_owned_task(task["id"]), {})
 
 
-def _get_task(data: dict, _agent: dict) -> dict:
+def _get_task(data: dict, _agent: dict, _connection: str = "") -> dict:
     return _task_view(_owned_task(_text(data, "id", 128)), data)
 
 
-def _cancel_task(data: dict, _agent: dict) -> dict:
+def _cancel_task(data: dict, _agent: dict, _connection: str = "") -> dict:
     task = _owned_task(_text(data, "id", 128))
     accepted = task_runner.cancel(task["id"])
     if accepted:
@@ -231,7 +235,7 @@ def _owns_session(key: str) -> bool:
     return bool(owner and owner["id"] == AGENT_ID)
 
 
-def _list_sessions(data: dict, _agent: dict) -> dict:
+def _list_sessions(data: dict, _agent: dict, _connection: str = "") -> dict:
     offset = _number(data, "offset", 0, 2**63 - 1)
     limit = _number(data, "limit", 20, 20, 1)
     rows = session_store._conn().execute(
@@ -261,7 +265,7 @@ def _turn_row(data: dict, key: str):
     ).fetchone()
 
 
-def _read_session(data: dict, _agent: dict) -> dict:
+def _read_session(data: dict, _agent: dict, _connection: str = "") -> dict:
     key = _text(data, "key", 512)
     if not _owns_session(key):
         _reject(404, "会话不存在或不属于固定 Agent")
@@ -290,10 +294,19 @@ async def handle_brain(request: web.Request) -> web.Response:
     if operation not in _FIELDS:
         _reject(404, "操作不存在")
     agent = _agent()
+    # 连接身份由本机 MCP 前端(已过 OAuth)按上游凭据哈希写入;缺失只是老版本前端,不影响派单本身。
+    connection = request.headers.get("X-Vococo-Connection", "")
+    if connection and not re.fullmatch(r"[A-Za-z0-9]{8,64}", connection):
+        _reject(400, "连接身份格式无效")
     data = await _payload(request, operation)
-    result = _HANDLERS[operation](data, agent)
+    result = _HANDLERS[operation](data, agent, connection)
     return web.json_response(result, headers={"Cache-Control": "no-store"})
 
 
 def register_routes(app: web.Application) -> None:
+    from . import mcp_events
+
     app.router.add_post("/internal/brain/{operation}", handle_brain)
+    # 远程任务终态 → 事件箱(带签名的 webhook 通知),由本机 MCP 前端投递。
+    mcp_events.register_terminal_hook()
+    app.on_startup.append(mcp_events.start_scanner)
