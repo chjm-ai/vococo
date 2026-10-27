@@ -20,7 +20,7 @@ const assert=require('node:assert/strict');
       console.error('验证屏宽',width);
       await page.setViewportSize({width,height:900});
       await page.evaluate(()=>{
-        $('#wrap').replaceChildren(buildTurnBlock({id:123,user:'已发送内容\n第二行',assistant:'回复',ts:1700000000},'main',true));
+        $('#wrap').replaceChildren(buildTurnBlock({id:123,user:'已发送内容\n第二行\n第三行',assistant:'回复',ts:1700000000},'main',true));
       });
       await page.mouse.move(0,0);
       const row=page.locator('#wrap .row.me'), foot=row.locator('.userfoot');
@@ -35,7 +35,7 @@ const assert=require('node:assert/strict');
       assert.equal(await foot.evaluate(n=>getComputedStyle(n).opacity),'1');
       const before=await row.boundingBox();
       await foot.locator('button[aria-label="复制"]').click();
-      assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),'已发送内容\n第二行');
+      assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),'已发送内容\n第二行\n第三行');
       const toggle=foot.locator('.user-message-toggle');
       await toggle.click();
       assert.equal(await message.evaluate(n=>n.classList.contains('user-message-collapsed')),false,'展开只移除文字折叠');
@@ -65,6 +65,15 @@ const assert=require('node:assert/strict');
     }
     await page.setViewportSize({width:320,height:900});
     await page.evaluate(()=>{
+      const {row}=buildBubble('me','响应式展开按钮测试'.repeat(16));
+      $('#wrap').replaceChildren(row);
+    });
+    await page.waitForTimeout(100);
+    assert.equal(await page.locator('.user-message-toggle').isVisible(),true,'窄屏溢出时显示展开按钮');
+    await page.setViewportSize({width:1280,height:900}); await page.waitForTimeout(100);
+    assert.equal(await page.locator('.user-message-toggle').isVisible(),false,'宽屏能完整显示时隐藏展开按钮');
+    await page.setViewportSize({width:320,height:900});
+    await page.evaluate(()=>{
       const {row}=buildBubble('me','很长的消息'.repeat(100),['data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='],[{url:'data:audio/wav;base64,'}],null);
       $('#wrap').replaceChildren(row);
     });
@@ -83,6 +92,8 @@ const assert=require('node:assert/strict');
     });
     assert.equal(await page.locator('.userfoot').count(),1,'空的转写占位不显示底栏');
     assert.ok(await page.locator('.userfoot .tftime').innerText(),'新发送消息具有时间');
+    await page.waitForTimeout(100);
+    assert.equal(await page.locator('.user-message-toggle').isVisible(),false,'两行以内的消息不显示展开按钮');
     await page.evaluate(()=>{
       const b=$('#wrap .row.me:nth-child(2) .bubble');
       setUserBubbleText(b,'语音转写内容');

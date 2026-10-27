@@ -987,6 +987,7 @@
   .turnfoot .tfbtn:disabled{opacity:.3;cursor:default}
   .turnfoot .tfbtn .ic{width:14px;height:14px}
   .turnfoot .user-message-toggle{width:auto;padding:0 var(--sp-2);font-size:var(--fs-sm)}
+  .turnfoot .user-message-toggle[hidden]{display:none}
   .turnfoot .tfregen:disabled .ic{animation:spin .8s linear infinite}
   /* 重启中断的回复:「继续生成」按钮(见 buildTurnFoot interrupted=true)要高亮醒目 */
   .turnfoot .tfbtn.tfrgen-resume{width:auto;padding:0 var(--sp-4);height:26px;font-size:var(--fs-sm);font-weight:600;

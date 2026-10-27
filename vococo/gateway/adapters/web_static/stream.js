@@ -306,6 +306,24 @@ function buildTurnFoot(conv, turnId, text, ts, isLast, interrupted){
   }
   return foot;
 }
+let _userMessageToggleFrame=0;
+function updateUserMessageToggle(toggle){
+  const message=toggle.closest(".row").querySelector(".user-message-text");
+  const wasExpanded=!message.classList.contains("user-message-collapsed");
+  if(wasExpanded) message.classList.add("user-message-collapsed");
+  toggle.hidden=message.scrollHeight<=message.clientHeight+1;
+  if(wasExpanded) message.classList.remove("user-message-collapsed");
+}
+function scheduleUserMessageToggleUpdate(){
+  if(_userMessageToggleFrame) return;
+  _userMessageToggleFrame=requestAnimationFrame(()=>{
+    _userMessageToggleFrame=0;
+    document.querySelectorAll("#wrap .row.me .user-message-toggle").forEach(updateUserMessageToggle);
+  });
+}
+window.addEventListener("resize",scheduleUserMessageToggleUpdate);
+const _userMessageLayoutObserver=new ResizeObserver(scheduleUserMessageToggleUpdate);
+_userMessageLayoutObserver.observe($("#messages"));
 function appendUserFoot(row, text, ts){
   const foot=buildTurnFoot(null, null, text, ts ?? Date.now()/1000, false);
   foot.classList.add("userfoot");
@@ -324,6 +342,7 @@ function appendUserFoot(row, text, ts){
     foot.append(toggle);
   }
   row.append(foot);
+  scheduleUserMessageToggleUpdate();
 }
 function copyMsgText(btn, text){
   if(!text || !navigator.clipboard) return;
