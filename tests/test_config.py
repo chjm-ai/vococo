@@ -1,6 +1,10 @@
 """配置解析:skill 白名单 / 会话键统一 / 布尔解析。"""
 from __future__ import annotations
 
+import subprocess
+
+import pytest
+
 
 def test_parse_skills():
     from vococo import config
@@ -85,15 +89,19 @@ def test_execution_project_root_falls_back_to_default(isolated, monkeypatch, tmp
     assert config.resolve_execution_root(cwd="/tmp/explicit") == "/tmp/explicit"
 
 
-def test_project_cwd_for(isolated, tmp_path):
+@pytest.mark.parametrize("is_git", [True, False])
+def test_project_cwd_for(isolated, tmp_path, is_git):
     from vococo import config
     from vococo.memory import session_store
 
     d = tmp_path / "repo"
     d.mkdir()
+    if is_git:
+        subprocess.run(["git", "init", str(d)], check=True, capture_output=True)
     h = session_store.upsert_project(str(d))["hash"]
-    # 项目会话:web:p<hash>:<conv> → 该文件夹
-    assert config.project_cwd_for(f"web:p{h}:c1") == str(d.resolve())
+    # Git 项目沿用源码目录;非 Git 业务项目使用独立执行空间。
+    expected = d.resolve() if is_git else (config.AGENT_WORKSPACES_DIR / h).resolve()
+    assert config.project_cwd_for(f"web:p{h}:c1") == str(expected)
     # 非项目会话都回落到 None(进程默认目录)
     assert config.project_cwd_for("web:legacyconv") is None
     assert config.project_cwd_for("main") is None

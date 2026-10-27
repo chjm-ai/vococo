@@ -22,11 +22,16 @@ def env(isolated, monkeypatch, tmp_path):
 def test_list_has_general_and_one_per_project(env):
     items = agents.list_agents()
     assert items[0]["id"] == agents.GENERAL_ID and items[0]["main_conv"] == "main"
-    a = items[1]
     h = projects.project_hash(str(env))
-    assert a["id"] == h and a["name"] == "proj" and a["main_conv"] == f"p{h}:main"
-    assert (agents.home(h) / "agent.json").exists()  # 项目第一次出现就落了 agent.json
+    # 2026-10-27 起:项目登记了但没有名字也没有 AGENT.md 的空壳不再出现在列表里
+    assert [x["id"] for x in items] == [agents.GENERAL_ID]
+    assert not agents.home(h).exists()
+    agents.create("proj", str(env))  # 显式建 Agent(或写过 AGENT.md)才算
+    a = agents.by_project_hash(h)
+    assert a["name"] == "proj" and a["main_conv"] == f"p{h}:main"
+    assert (agents.home(a["id"]) / "agent.json").exists() and (agents.home(a["id"]) / "AGENT.md").exists()
     assert a["avatar"]["shape"] in agents.AVATAR_SHAPES
+    assert [x["id"] for x in agents.list_agents()] == [agents.GENERAL_ID, a["id"]]
 
 
 def test_create_default_dir_and_bind_existing(env, tmp_path):
@@ -123,8 +128,11 @@ async def test_agent_routes(env, monkeypatch):
         web.post("/agents/doc", ad._handle_agent_doc_save), web.get("/agents/runs", ad._handle_agent_runs),
         web.get("/agents/files", ad._handle_agent_files), web.get("/agents/goal", ad._handle_agent_goal),
         web.post("/cron/jobs/run", ad._handle_cron_run),
+        web.post("/agents/delete", ad._handle_agent_delete),
     ])
     async with TestClient(TestServer(app)) as c:
+        # 测试项目是空壳(没名字没 AGENT.md),先建一个 Agent 验证列表第二项
+        agents.create("proj", str(env))
         items = (await (await c.get("/agents")).json())["agents"]
         assert [x["id"] for x in items][0] == "general" and items[1]["task_count"] == 0
         r = await c.post("/agents/create", json={"name": "新 Agent"})
@@ -165,6 +173,14 @@ async def test_agent_routes(env, monkeypatch):
         rid = (await r.json())["review_job"]
         assert rid and (await (await c.get(f"/agents/goal?id={aid}")).json())["review"]["id"] == rid
         assert (await c.post("/cron/jobs/run", json={"id": "nope"})).status == 404
+        for invalid in ("general", "nope", "../x", ""):
+            assert (await c.post("/agents/delete", json={"id": invalid})).status == 400
+        r = await c.post("/agents/delete", json={"id": aid})
+        deleted = await r.json()
+        assert r.status == 200 and deleted["ok"] and deleted["id"] == aid
+        assert "目标复盘" in deleted["disabled_jobs"]
+        assert aid not in {a["id"] for a in (await (await c.get("/agents")).json())["agents"]}
+        assert (await c.post("/agents/delete", json={"id": aid})).status == 400
 
 
 def test_goal_loop_review_job_and_run_log(env):
@@ -261,3 +277,72 @@ def test_dispatch_explicit_cwd_belongs_to_that_agent(env, tmp_path):
     assert task_runner._task_agent_id(str(stray), src_key) == src["id"]
     # 来源是全局主会话、cwd 也不指向 Agent → 无主
     assert task_runner._task_agent_id(None, config.SESSION_KEY) is None
+
+
+def test_delete_agent_archives_and_hides(env):
+    """删除 = 软删:名下定时任务停用、项目隐藏、家目录归档进 .deleted/,
+    list_agents / list_delegate_agents 都查不到,其他 Agent 不受影响。"""
+    from vococo.core import delegation
+    from vococo.cron import scheduler
+
+    keep = agents.create("留着")
+    gone = agents.create("要删的")
+    job = scheduler.create_job(name="巡检", prompt="p", schedule={"kind": "cron", "expr": "0 9 * * *"},
+                               agent_id=gone["id"])
+    home = agents.home(gone["id"])
+    assert home.is_dir()
+    workfile = config.AGENT_WORKSPACES_DIR / gone["id"] / "keep.txt"
+    workfile.write_text("工作数据不动", encoding="utf-8")
+
+    out = agents.delete(gone["id"])
+    assert out["id"] == gone["id"] and "巡检" in out["disabled_jobs"]
+
+    assert agents.get(gone["id"]) is None
+    assert gone["id"] not in {a["id"] for a in agents.list_agents()}
+    assert gone["id"] not in {a["id"] for a in delegation.discover()}
+    assert keep["id"] in {a["id"] for a in agents.list_agents()}
+    # 家目录归档,不真删
+    assert not home.exists()
+    assert workfile.read_text(encoding="utf-8") == "工作数据不动"
+    archived = list((agents.root_dir() / agents.DELETED_DIR).glob(f"{gone['id']}-*"))
+    assert len(archived) == 1 and (archived[0] / "agent.json").exists() and (archived[0] / "AGENT.md").exists()
+    # 项目记录隐藏,原工作目录不会被自动补回列表
+    assert gone["project_hash"] not in {p["hash"] for p in projects.list_projects()}
+    assert gone["id"] not in {a["id"] for a in agents.list_agents()}
+    # 定时任务停用但保留
+    saved = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
+    assert saved["enabled"] is False and saved["agent_id"] == gone["id"]
+
+
+def test_delete_accepts_project_hash_id(env):
+    """项目哈希型 Agent(id = 项目哈希)也能删:隐藏项目 + 归档目录。"""
+    h = projects.project_hash(str(env))
+    a = agents.by_project_hash(h)
+    assert a["id"] == h and agents.home(h).is_dir()
+    agents.delete(h)
+    assert h not in {p["hash"] for p in projects.list_projects()}
+    assert h not in {x["id"] for x in agents.list_agents()}
+    assert not agents.home(h).exists()
+    assert list((agents.root_dir() / agents.DELETED_DIR).glob(f"{h}-*"))
+    assert agents.get(h) is None
+    assert agents.by_project_hash(h) is None
+    assert not agents.home(h).exists()
+
+
+def test_delete_rejects_general_and_unknown(env):
+    with pytest.raises(ValueError):
+        agents.delete(agents.GENERAL_ID)
+    with pytest.raises(ValueError):
+        agents.delete("nope")
+    with pytest.raises(ValueError):
+        agents.delete("../x")
+
+
+def test_list_skips_orphan_project_without_name_or_doc(env, tmp_path):
+    """项目没有任何 agent.json 也没有 AGENT.md 时,list_agents 不再自动补建空壳。"""
+    orphan = tmp_path / "orphan"
+    orphan.mkdir()
+    p = projects.upsert_project(str(orphan))
+    ids = {a["id"] for a in agents.list_agents()}
+    assert p["hash"] not in ids
+    assert not agents.home(p["hash"]).exists()

@@ -3304,6 +3304,19 @@ class WebAdapter:
         return web.json_response({"agent": a})
 
     @_authed
+    @_json_body
+    async def _handle_agent_delete(self, request: web.Request, body: dict) -> web.Response:
+        """删 Agent:名下定时任务停用、项目记录隐藏、家目录归档到 .deleted/(软删,可回滚)。"""
+        from ...memory import agents
+
+        body = body or {}
+        try:
+            result = await asyncio.to_thread(agents.delete, str(body.get("id") or ""))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"ok": True, **result})
+
+    @_authed
     async def _handle_agent_doc(self, request: web.Request) -> web.Response:
         from ...memory import agents
 
@@ -3557,6 +3570,7 @@ class WebAdapter:
                 web.get("/agents", self._handle_agents),
                 web.post("/agents/create", self._handle_agent_create),
                 web.post("/agents/update", self._handle_agent_update),
+                web.post("/agents/delete", self._handle_agent_delete),
                 web.get("/agents/doc", self._handle_agent_doc),
                 web.post("/agents/doc", self._handle_agent_doc_save),
                 web.get("/agents/runs", self._handle_agent_runs),

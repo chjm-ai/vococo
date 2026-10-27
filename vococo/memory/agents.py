@@ -173,6 +173,10 @@ def _default_avatar(agent_id: str) -> dict:
     }
 
 
+# 删掉的 Agent 家目录挪进这里,不真删(可回滚);所有扫家目录的枚举都要跳过它
+DELETED_DIR = ".deleted"
+
+
 def _read_meta(agent_id: str) -> dict:
     try:
         return json.loads((home(agent_id) / "agent.json").read_text(encoding="utf-8"))
@@ -261,15 +265,19 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
 def list_agents() -> list[dict]:
     """通用 Agent + 每个可见项目各一个(按项目排序)。
 
-    项目还没有 agent.json 的,这里顺手建一个(id = 项目哈希),以后改名/换头像都落在它上面。
+    只有配置过名称或存在 AGENT.md 的项目才列出,不自动补建空壳。
     新建 Agent 时 id 不是项目哈希(见 create),所以另按工作目录反查一遍。"""
     out = [_build(GENERAL_ID, _read_meta(GENERAL_ID), None)]
     by_hash = _agents_by_project_hash()
     for p in projects.list_projects():
-        aid = by_hash.get(p["hash"])
-        if aid is None:
-            aid = p["hash"]
-            meta = {"workdir": p["path"], "created_at": time.time()}
+        aid = by_hash.get(p["hash"], p["hash"])
+        # 已落 agent.json 的历史空壳也要跳过,不能只检查未建目录的项目
+        if not _read_meta(aid).get("name") and not (home(aid) / "AGENT.md").is_file():
+            continue
+        if p["hash"] not in by_hash:
+            meta = _read_meta(aid)
+            meta.update(workdir=p["path"])
+            meta.setdefault("created_at", time.time())
             _write_meta(aid, meta)
             by_hash[p["hash"]] = aid
         out.append(_build(aid, _read_meta(aid), p["path"]))
@@ -283,7 +291,7 @@ def _agents_by_project_hash() -> dict[str, str]:
     if not r.is_dir():
         return out
     for d in r.iterdir():
-        if not d.is_dir() or d.name == GENERAL_ID or not valid_id(d.name):
+        if not d.is_dir() or d.name == GENERAL_ID or d.name == DELETED_DIR or not valid_id(d.name):
             continue
         wd = _read_meta(d.name).get("workdir")
         if wd:
@@ -292,13 +300,14 @@ def _agents_by_project_hash() -> dict[str, str]:
 
 
 def _materialize(phash: str) -> dict:
-    """项目还没有 agent.json → 以项目哈希为 id 落一份(和 list_agents 里的自动补建同一规则)。"""
+    """显式访问可见项目时按项目哈希落配置;隐藏项目不能补建,避免删除后复活。"""
     meta = _read_meta(phash)
     if not meta.get("workdir"):
-        path = projects.path_for_hash(phash)
+        path = next((p["path"] for p in projects.list_projects() if p["hash"] == phash), None)
         if not path:
             return {}
-        meta = {"workdir": path, "created_at": time.time()}
+        meta.update(workdir=path)
+        meta.setdefault("created_at", time.time())
         _write_meta(phash, meta)
     return meta
 
@@ -312,6 +321,36 @@ def get(agent_id: str) -> dict | None:
     if not meta.get("workdir"):
         return None
     return _build(agent_id, meta, meta["workdir"])
+
+
+def delete(agent_id: str) -> dict:
+    """删 Agent(软删:不真删文件,可回滚)。
+
+    1) 它名下的定时任务停用(先留记录,不删任务本身)
+    2) 对应项目记录隐藏(hide_project),侧边栏和会话列表不再出现
+    3) 家目录 data/agents/<id> 改名挪到 data/agents/.deleted/<id>-<时间戳>
+    之后 list_agents / list_delegate_agents 都扫不到它。通用 Agent 不许删。"""
+    from ..cron import scheduler
+
+    a = get(agent_id)
+    if a is None:
+        raise ValueError("Agent 不存在")
+    if a["id"] == GENERAL_ID:
+        raise ValueError("通用 Agent 不能删除")
+    projects.hide_project(a["project_hash"])
+    all_jobs = scheduler.load_jobs()
+    jobs = [j for j in all_jobs if j.get("agent_id") == a["id"] and j.get("enabled", True)]
+    if jobs:
+        for job in jobs:
+            job["enabled"] = False
+        scheduler.save_jobs(all_jobs)
+    # 家目录真的在才挪;项目哈希型 id 可能从来没落过目录
+    d = home(a["id"])
+    if d.is_dir():
+        archive = root_dir() / DELETED_DIR / f"{a['id']}-{time.strftime('%Y%m%d%H%M%S')}"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        d.rename(archive)
+    return {"id": a["id"], "name": a["name"], "disabled_jobs": [j.get("name") or j.get("id") for j in jobs]}
 
 
 def by_project_hash(phash: str) -> dict | None:
