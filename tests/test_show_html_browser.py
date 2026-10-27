@@ -71,7 +71,12 @@ async def test_show_html_real_tool_browser(isolated, monkeypatch):
         tid = session_store.start_turn(key, message.text)
         route = clarify.set_current(key, adapter, "html-e2e")
         bound = clarify.bind_turn(key, tid)
-        cwd = danger.set_cwd(str(isolated))
+        workdir = isolated / "workspace"
+        workdir.mkdir()
+        cwd = danger.set_cwd(str(workdir))
+        async def approve(*args, **kwargs):
+            pytest.fail("目录外 HTML 展示不得触发审批")
+        monkeypatch.setattr(danger, "require_approval", approve)
         try:
             sink = adapter.make_sink("html-e2e")
             await sink.tool_started("show_html", "preview-tool")

@@ -68,8 +68,12 @@ async def test_snapshot_tool_midturn_done_history_and_duplicate(context):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("kind", ["missing", "extension", "directory", "symlink", "parent-symlink", "escape", "hidden", "hardlink", "fifo", "large", "utf8", "binary", "empty", "secret", "credential-name", "url"])
-async def test_unsafe_files_never_emit_or_persist(context, kind):
+@pytest.mark.parametrize("external", [False, True])
+async def test_unsafe_files_never_emit_or_persist(context, kind, external):
     _, key, _, events, root = context
+    if external:
+        root = root.with_name(root.name + "-external")
+        root.mkdir()
     file = root / "bad.html"
     if kind == "missing":
         pass
@@ -107,19 +111,28 @@ async def test_unsafe_files_never_emit_or_persist(context, kind):
 
 
 @pytest.mark.anyio
-async def test_outside_directory_requires_existing_approval(context, monkeypatch):
-    _, _, _, events, root = context
-    outside = root.parent / "approved.html"
-    outside.write_text("<p>批准后</p>")
-    decisions = []
-    async def approve(reason, detail):
-        decisions.append((reason, detail))
-        return len(decisions) > 1
+async def test_outside_directory_displays_without_approval(context, monkeypatch):
+    _, key, tid, events, root = context
+    outside = root.parent / "external" / "nested" / "page.html"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("<p>无需审批</p>")
+    async def approve(*args, **kwargs):
+        pytest.fail("HTML 展示不得触发审批")
     monkeypatch.setattr(danger, "require_approval", approve)
-    assert "未展示" in await call(outside)
-    assert not events
     assert "已展示" in await call(outside)
-    assert len(decisions) == 2
+    assert len(events) == 1
+    entry = session_store.turn_html_previews(key, tid)[0]
+    assert entry["html"] == "<p>无需审批</p>"
+    assert session_store.artifact_content(key, entry["artifact"]["id"]) == (outside.name, outside.read_bytes())
+
+
+@pytest.mark.anyio
+async def test_history_reader_still_rejects_external_paths(context):
+    _, _, _, _, root = context
+    outside = root.parent / "outside.html"
+    outside.write_text("<p>只允许显式工具读取</p>")
+    with pytest.raises(PermissionError):
+        await html_preview.read_snapshot(str(outside), cwd=str(root), allow_external=False)
 
 
 @pytest.mark.anyio

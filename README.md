@@ -176,7 +176,7 @@ Web 入口:`serve` 时设 `WEB_ENABLED=1` 即在同进程起网页服务(默认�
   实际预览需要本机 LibreOffice + Poppler（pdftoppm/pdfinfo），核对真实页数并输出逐页 PNG；AI 查看图片、修正后再渲染。输入须在当前工作区；外部获准成果目录可作为 cwd 执行。缺字体/渲染器时明确报告未验证 Office 排版，不把结构检查或另画 HTML 当视觉验收。
 - Web 由 `send_file` 交付持久下载卡片：当前工作目录/业务成果目录内文件、单个 ≤64MB、私有快照、会话绑定、认证下载；拒绝越界、软硬链、敏感文件/不安全压缩包，不公开发布、不进入图片作品库。快照存 SQLite，删除回合同步删除记录，但数据库体积不会自动缩小。
 - 文件交付不依赖 PPT：`send_file` 与 `show_html` 共用受控读取、私有附件存储、会话生命周期和下载卡片。同一轮相同文件名/字节复用快照；HTML 下载保留原字节（含 BOM/换行），不是净化后的预览副本。
-- ≤200KB 的有效 UTF-8 HTML 附件附带静态沙箱预览，禁止脚本和外链；更大或非 UTF-8 HTML 通过 `send_file` 时只提供下载。`show_html` 仍严格拒绝不符合预览条件的文件，目录外读取仍须原审批，不扩大普通附件来源权限。旧 HTML 历史记录继续读取，无需改写生产数据；新 HTML 只在附件表保存一份原文件。
+- ≤200KB 的有效 UTF-8 HTML 附件附带静态沙箱预览，禁止脚本和外链；更大或非 UTF-8 HTML 通过 `send_file` 时只提供下载。`show_html` 展示无需单独审批（含目录外文件），仍严格拒绝不符合预览条件的文件；历史链接点击仍限会话工作目录，不扩大普通附件来源权限。旧 HTML 历史记录继续读取，无需改写生产数据；新 HTML 只在附件表保存一份原文件。
 - CLI/TUI 暂无文件卡片；需明确本机文件位置。PowerPoint/WPS 的实际打开和编辑仍需用户验收。
 - 适配与验收说明见 `vococo/plugin/skills/editable-pptx/`；PPT 定向回归 `uv run --extra dev python -m pytest tests/test_editable_pptx.py tests/test_pptx_render.py tests/test_ppt_master_integration.py -q`。
 
