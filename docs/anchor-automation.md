@@ -15,7 +15,7 @@
 - 时间分开列检查时间、指标抓取时间与北京时间统计日；发送事件包含跟进，不是新增人数。累计回复不等于有效询盘。扫描缺失/partial/blocked、非零退出、统计缺字段、存档失败均返回非零，其他成功段继续展示，不把失败填零。
 - 新两箱 `counts.manual` 是本次新转人工，缺键显示未知而不补零；`manual_review_ids` 是存量待核查，重复巡检不累加。转发记录可能包含上轮发送、本轮才通过已发送邮件核实的项目，不称本次新发，也不称对方已收到；主题带 lemwarmup 只在展示中警示「不可算客户询盘」，不据此改变分类/转发。陶纤仍仅描述回执，不提升为全量覆盖结论。
 - stdout 最后一行恒为 `##CRON_SIGNAL:0##`；退出码独立控制 cron success/error。调度器的 sidecar 总结仅在「成功且信号1（或无信号）且配置总结」时执行。测试用真实调度执行器＋入口 fixture，正常/partial、旧总结配置保留/无总结配置四种组合均禁止 sidecar 与 Agent 派发。
-- 本次尝试原地清空 13f146ce 的 summarize_prompt，被审批拒绝，配置未改；不能说已移除 AI 总结配置。新入口的信号 0 使旧配置不再触发，异常也直出；后续可另经批准清空该字段。未新建任务、未改 command/频率/模型/发送设置。
+- 13f146ce 的 summarize_prompt 最初被审批拒绝；主人补充批准后，已原地清空，回读为 null。mode=script、command、23 8-22/2 * * * 频率、model=null、enabled=true 均保持原值。配置无 AI 总结＋入口恒信号 0 双重保障，异常也直出；未新建任务、未改发送设置。
 
 无邮件/网络副作用验收（fixture 文件结构为 ceramic/gmail/monitor 各含 stdout、stderr、returncode；stdout 为各段 JSON 原回执及可选信号）：
 
