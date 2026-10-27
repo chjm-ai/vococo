@@ -636,7 +636,7 @@ async function renderApSetup(body, a){
     rm.title="归档它的配置和记忆,并从列表移除;工作目录里的文件不动";
     rm.onclick=async()=>{
       if(!confirm("删除「"+a.name+"」?\n\n会归档该 Agent 的配置和记忆(人格/目标/笔记),它名下的定时任务会停用,"
-        +"并从 Agent 列表、会话侧栏里消失。工作目录里的文件不会动。")) return;
+        +"排队及运行中的后台任务会取消,并从 Agent 列表、会话侧栏里消失。工作目录里的文件不会动。")) return;
       let r;
       try{ r=await agentPost("/agents/delete",{id:a.id}); }catch(e){ alert("删除失败:"+e.message); return; }
       // 被删的项目立刻从侧栏收起(刷新后 loadProjects 也不再返回它)
@@ -645,7 +645,8 @@ async function renderApSetup(body, a){
       const activeGone = h && convProject(S.conv)===h;   // 当前会话属于被删的 Agent → 回落主会话
       await Promise.all([loadAgents(), loadProjects()]); hideAgentPanel();
       if(activeGone){ openConv("main"); } else { renderConvs(); }
-      if(r.disabled_jobs?.length) alert("已停用它的定时任务:"+r.disabled_jobs.join("、"));
+      if(r.pending_tasks?.length) alert("Agent 已移除,但以下任务尚未确认停止:"+r.pending_tasks.join("、")+"。请检查任务状态。");
+      else if(r.disabled_jobs?.length) alert("已停用它的定时任务:"+r.disabled_jobs.join("、"));
     };
     body.append(rm);
   }

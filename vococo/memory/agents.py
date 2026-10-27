@@ -36,6 +36,7 @@ MCP 名单里的外部 server 每轮都挂,不再按关键词临时挂。通用 
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -341,7 +342,49 @@ def delete(agent_id: str) -> dict:
         projects.hide_project(a["project_hash"])
         _archive_home(a)
         return {"id": agent_id, "name": a["name"],
-                "disabled_jobs": [j.get("name") or j.get("id") for j in jobs]}
+                "disabled_jobs": [j.get("name") or j.get("id") for j in jobs],
+                "job_ids": [j["id"] for j in scheduler.load_jobs() if j.get("agent_id") == agent_id]}
+
+
+def _cancel_agent_work(agent_id: str) -> set[asyncio.Task]:
+    from ..core import task_runner, tasks
+    from ..cron import scheduler
+
+    waiting = set()
+    with scheduler.JOBS_LOCK:
+        # 删除在线程里完成后,任务可能已转交给别的 Agent;取消前重读,不能沿用旧快照。
+        job_ids = [j["id"] for j in scheduler.load_jobs() if j.get("agent_id") == agent_id]
+        active = [row for row in tasks.active_for_agent(agent_id, job_ids)
+                  if task_runner.task_owner_id(row) == agent_id]
+        for row in active:
+            task_runner.cancel(row["id"])
+            running = task_runner._running.get(row["id"])
+            if running is not None:
+                waiting.add(running)
+        for job_id in job_ids:
+            script = scheduler._script_tasks.get(job_id)
+            if script is not None:
+                script.cancel()
+                waiting.add(script)
+    return waiting
+
+
+async def delete_and_stop(agent_id: str) -> dict:
+    """先封住新派发,再在事件循环里取消旧任务;超时必须告知调用方。"""
+    from ..core import task_runner, tasks
+    from ..cron import scheduler
+
+    result = await asyncio.to_thread(delete, agent_id)
+    waiting = _cancel_agent_work(agent_id)
+    pending = set()
+    if waiting:
+        _, pending = await asyncio.wait(waiting, timeout=10)
+    result["pending_tasks"] = [row["id"] for row in tasks.active_for_agent(agent_id, result["job_ids"])
+                               if task_runner.task_owner_id(row) == agent_id]
+    result["pending_tasks"].extend(j["id"] for j in scheduler.load_jobs()
+                                   if j.get("agent_id") == agent_id
+                                   and scheduler._script_tasks.get(j["id"]) in pending)
+    return result
 
 
 def _archive_home(agent: dict) -> None:

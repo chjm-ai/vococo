@@ -563,16 +563,12 @@ async def set_cron_job_enabled(args: dict) -> dict:
     if not await danger.require_approval(f"{verb}定时任务", f"任务「{j.get('name')}」"):
         return _ok(f"🛑 未批准{verb}任务「{j.get('name')}」,已跳过。")
     job_id = j["id"]
-    with scheduler.JOBS_LOCK:
-        jobs = scheduler.load_jobs()
-        j = next((job for job in jobs if job["id"] == job_id), None)
-        if j is None:
-            return _ok("任务已被删除。")
-        j["enabled"] = enabled
-        if not enabled:
-            j["next_run_at"] = None
-        scheduler.reset_failures(j)
-        scheduler.save_jobs(jobs)
+    try:
+        j = scheduler.set_job_enabled(job_id, enabled)
+    except ValueError as exc:
+        return _ok(str(exc))
+    if j is None:
+        return _ok("任务已被删除。")
     return _ok(f"{'✅ 已启用' if enabled else '⏸ 已停用'}任务「{j.get('name')}」。")
 
 @tool(

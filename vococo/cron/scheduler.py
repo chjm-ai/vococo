@@ -81,6 +81,31 @@ def _with_jobs_lock(fn):
     return locked
 
 
+def require_job_agent(job: dict) -> None:
+    """失效归属必须显式转移或解除,不能静默回退到全局能力。"""
+    from ..memory import agents
+
+    agent_id = job.get("agent_id")
+    if agent_id and agents.get(agent_id) is None:
+        raise ValueError("所属 Agent 已删除,请先重新指定任务归属")
+
+
+@_with_jobs_lock
+def set_job_enabled(job_id: str, enabled: bool) -> dict | None:
+    jobs = load_jobs()
+    job = next((j for j in jobs if j.get("id") == job_id), None)
+    if job is None:
+        return None
+    if enabled:
+        require_job_agent(job)
+    job["enabled"] = enabled
+    if not enabled:
+        job["next_run_at"] = None
+    reset_failures(job)
+    save_jobs(jobs)
+    return job
+
+
 def disable_agent_jobs(agent_id: str) -> list[dict]:
     """停用 Agent 名下任务,返回本次停用的任务,供删除入口展示回执。"""
     with JOBS_LOCK:
@@ -337,6 +362,7 @@ def _write_heartbeat() -> None:
     config.HEARTBEAT_PATH.write_text(str(int(time.time())), encoding="utf-8")
 
 
+@_with_jobs_lock
 def _run_job(
     job: dict, push: PushFn, *, prompt: str | None = None, extra_env: dict | None = None,
 ) -> None:
@@ -348,9 +374,13 @@ def _run_job(
 
     prompt / extra_env:事件触发(cron/events.py)时传入——Agent 任务这一轮用 prompt
     (原指令 + 事件数据)代替 job["prompt"],脚本任务把 extra_env 并进子进程环境变量。"""
+    require_job_agent(job)
     job_id = job["id"]
     if job.get("mode") == "script":
-        asyncio.create_task(_run_script_job(job, push, extra_env=extra_env))
+        if job_id not in _script_tasks:
+            script = asyncio.create_task(_run_script_job(job, push, extra_env=extra_env))
+            _script_tasks[job_id] = script
+            script.add_done_callback(lambda done: _script_tasks.pop(job_id, None))
         return
     turn_prompt = prompt or job["prompt"]
     # 目标复盘:每次触发现算一遍近 7 天运行统计拼在指令前面,让复盘有数字可用
@@ -390,6 +420,7 @@ def run_now(job_id: str) -> dict | None:
     job = next((j for j in load_jobs() if j.get("id") == job_id), None)
     if job is None:
         return None
+    require_job_agent(job)
     if _push is None:
         raise RuntimeError("调度器没在运行")
     _run_job(job, _push)
@@ -502,24 +533,45 @@ async def _on_task_terminal(task: dict, push: PushFn) -> None:
 
 _SIGNAL_RE = re.compile(r"[ \t]*##CRON_SIGNAL:([01])##[ \t]*\n?")
 _script_running: set[str] = set()  # 脚本任务正在跑的 job_id,防同一任务并发触发
+_script_tasks: dict[str, asyncio.Task] = {}  # 包含尚未进入协程的脚本,删除时也能取消
 
 
 async def _terminate_script_process(proc: asyncio.subprocess.Process) -> None:
-    """超时后终止整个脚本进程组,避免 shell 的子进程遗留到下一次调度。"""
-    if proc.returncode is not None:
-        return
+    """shell 退出不代表子进程结束,必须检查整个独立进程组。"""
     try:
         os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:  # 恰好自然结束
+    except ProcessLookupError:
+        await proc.wait()
         return
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=5)
-    except asyncio.TimeoutError:
+    deadline = asyncio.get_running_loop().time() + 5
+    while asyncio.get_running_loop().time() < deadline:
+        try:
+            os.killpg(proc.pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    else:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
-            return
-        await proc.wait()
+            pass
+    await proc.wait()
+
+
+async def _start_script_process(job: dict, extra_env: dict | None):
+    # 取消不能丢掉刚创建的子进程句柄,否则删除恰好撞上启动时会留下孤儿。
+    spawn = asyncio.create_task(asyncio.create_subprocess_shell(
+        job["command"], cwd=job.get("cwd") or None,
+        env={**os.environ, **extra_env} if extra_env else None,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
+    ))
+    try:
+        return await asyncio.shield(spawn)
+    except asyncio.CancelledError:
+        proc = await spawn
+        await _terminate_script_process(proc)
+        raise
 
 
 async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None) -> None:
@@ -529,6 +581,7 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
     调用;1(或没带标记,保守当"有事")才用 job 可选的 summarize_prompt 通过
     providers.sidecar_chat 追加一次轻量总结,失败/未配置就原样回退到脚本输出,
     不阻塞主流程。"""
+    require_job_agent(job)
     job_id = job["id"]
     if job_id in _script_running:  # 上一轮还没跑完,这一跳先不重复触发
         return
@@ -543,17 +596,16 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
         proc: asyncio.subprocess.Process | None = None
         try:
             # 独立进程组:超时后能连同 shell 拉起的子进程一起收回。
-            proc = await asyncio.create_subprocess_shell(
-                job["command"], cwd=job.get("cwd") or None,
-                env={**os.environ, **extra_env} if extra_env else None,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,
-            )
+            proc = await _start_script_process(job, extra_env)
             out, _ = await asyncio.wait_for(
                 proc.communicate(), timeout=config.TASK_TIMEOUT_MIN * 60
             )
             raw = out.decode("utf-8", errors="replace").strip()
             ok = proc.returncode == 0
+        except asyncio.CancelledError:
+            if proc is not None:
+                await _terminate_script_process(proc)
+            raise
         except asyncio.TimeoutError:
             if proc is not None:
                 await _terminate_script_process(proc)
