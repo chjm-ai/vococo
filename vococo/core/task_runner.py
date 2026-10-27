@@ -327,9 +327,26 @@ def _token_budget(row: dict) -> tuple[int, str]:
     if remaining <= 0:
         return 0, (
             f"今天后台任务的 token 总量已达上限({cap // 10000} 万),这一轮没有启动;"
-            "明天自动恢复,急用可在 .env 调大 BG_DAILY_TOKEN_BUDGET"
+            "明日额度恢复，但本轮不会因此自动续跑。请先核对已有结果，再安排未完成项；"
+            "定时任务仍按原计划触发。急用需确认后调整 BG_DAILY_TOKEN_BUDGET，不能靠压缩恢复额度"
         )
     return (min(per_run, remaining) if per_run else remaining), ""
+
+
+def _budget_recovery_note(used: int, budget: int) -> str:
+    """不用额外模型调用收尾；压缩不能恢复额度，也不能保证外部操作可安全重放。"""
+    return (
+        f"⚠️ 本轮 token 预算已用尽（已用 {used:,} / 上限 {budget:,}），已停止，未自动续跑。\n\n"
+        "已保留已有输出和工具记录；中断不代表已执行的外部操作被撤销。\n\n"
+        "**处理方案**\n"
+        "1. 先核对工具记录与发信、导入等外部回执，区分已完成、未完成和结果待核实项；"
+        "结果未核实前不要重复提交。\n"
+        "2. 需要续接时，可在本会话要求“先只读核对已完成项，列出未完成项及续接计划”；"
+        "确认计划后仅处理未完成项，对外写操作仍须遵循原有授权。\n"
+        "3. 上下文接近窗口上限时可先压缩，但压缩不恢复 token 预算；"
+        "单次工作过大应拆成小批，确有需要再确认调高该任务预算。"
+        "当天后台总额度耗尽则等额度恢复，不自动重试、不清零用量。"
+    )
 
 
 def _timeout_min(row: dict) -> int:
@@ -370,6 +387,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     status = "failed"
     error_note = ""
     used_tokens = 0  # 本轮新鲜 token,收尾计入每日总量
+    budget_exceeded = False
     tool_calls = 0  # 本轮顶层工具调用次数(子代理内部的不算),记进运行指标
     started_at = time.monotonic()
     if is_research:
@@ -381,7 +399,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
 
     async def _observe(ev) -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id, used_tokens, tool_calls
-        nonlocal last_research_progress
+        nonlocal last_research_progress, budget_exceeded
         if isinstance(ev, SessionStarted) and not is_research:
             # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮
             # 之后被 append 打断(CancelledError,永远走不到 Done),下一轮追问
@@ -421,6 +439,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                 result_text = ev.reply.text
                 sdk_session_id = ev.reply.sdk_session_id
                 used_tokens = max(ev.reply.stream_tokens, ev.reply.turn_tokens)
+                budget_exceeded = ev.reply.budget_exceeded
             if ev.reply.is_error:
                 error_note = ev.reply.error or "模型返回了错误"
             # 跟普通文字对话(gateway/core.py converse())对齐:记一笔 token 用量,
@@ -550,6 +569,18 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         tasks.set_run_metrics(task_id, used_tokens, time.monotonic() - started_at, tool_calls)
     except Exception as exc:  # noqa: BLE001 —— 指标只是统计,写失败不影响任务收尾
         print(f"[task_runner] 运行指标记账失败:{exc}", flush=True)
+
+    if budget_exceeded and status != "cancelled":
+        status = "failed"
+        note = _budget_recovery_note(used_tokens, token_budget)
+        clean_text, _ = _split_summary_tag(result_text)
+        result_text = f"{clean_text}\n\n{note}".strip()
+        timeline.text(f"\n\n{note}")
+        error_note = "本轮 token 预算已用尽，未自动续跑；先核对外部回执，再拆分未完成项续接；压缩不恢复额度"
+
+    if over_daily and not result_text:
+        result_text = over_daily
+        timeline.text(over_daily)
 
     if status == "cancelled":
         if turn_id is not None:

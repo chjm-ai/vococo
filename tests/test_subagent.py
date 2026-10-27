@@ -406,6 +406,53 @@ def test_usage_result_only_adds_missing_tokens():
     assert usage.output_tokens == 5
 
 
+def test_usage_cached_input_is_confirmed_before_charging_parent_budget():
+    from claude_agent_sdk import StreamEvent
+
+    usage = subagent.Usage(limit=1000)
+    observe = subagent._usage_observer(usage)
+    observe(StreamEvent(uuid="a", session_id="child", event={
+        "type": "message_start", "message": {"usage": {"input_tokens": 5842}},
+    }))
+    assert not usage.exceeded and usage.tokens == 0
+    observe(StreamEvent(uuid="b", session_id="child", event={
+        "type": "message_delta", "usage": {
+            "input_tokens": 208, "output_tokens": 5, "cache_read_input_tokens": 5632,
+        },
+    }))
+    observe(None)
+    assert usage.tokens == 213 and usage.cache_read == 5632
+    assert not usage.exceeded
+
+
+def test_usage_missing_result_usage_keeps_interrupted_input_estimate():
+    from claude_agent_sdk import StreamEvent
+
+    usage = subagent.Usage()
+    observe = subagent._usage_observer(usage)
+    observe(StreamEvent(uuid="a", session_id="child", event={
+        "type": "message_start", "message": {"usage": {"input_tokens": 25}},
+    }))
+    result = _done()
+    result.usage = None
+    observe(result)
+    observe(None)
+    assert usage.tokens == 25
+
+
+def test_usage_final_result_supersedes_unconfirmed_start_on_cleanup():
+    from claude_agent_sdk import StreamEvent
+
+    usage = subagent.Usage(limit=1000)
+    observe = subagent._usage_observer(usage)
+    observe(StreamEvent(uuid="a", session_id="child", event={
+        "type": "message_start", "message": {"usage": {"input_tokens": 5842}},
+    }))
+    observe(_done())
+    observe(None)
+    assert usage.tokens == 15 and not usage.exceeded
+
+
 @pytest.mark.anyio
 async def test_result_fallback_and_size_bound(sdk):
     sdk.messages = [AssistantMessage(content=[TextBlock(text="最终答复")], model="test"), _done(None)]
