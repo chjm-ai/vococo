@@ -24,7 +24,10 @@ const path=require('node:path');
     await card.waitFor();await card.locator('iframe').waitFor();
     assert.equal(await card.count(),1);
     assert.ok(await page.evaluate(()=>!!S.stream),'中途附件不能结束流式回合');
-    assert.equal(await card.locator('.preview-title').textContent(),'工具快照');
+    assert.equal(await card.locator('.preview-title').textContent(),'page.html');
+    assert.equal(await card.locator('.preview-toolbar').count(),1);
+    assert.equal(await card.locator('.artifact-card').count(),0,'不能嵌套附件框');
+    assert.equal(await card.locator('.preview-title').count(),1,'文件名仅出现一次');
     assert.equal(await card.locator('iframe').getAttribute('sandbox'),'');
     await card.frameLocator('iframe').getByRole('heading',{name:'工具 HTML 快照'}).waitFor();
     const source=await card.locator('code').textContent();
@@ -53,6 +56,17 @@ const path=require('node:path');
     assert.equal(await card.locator('iframe').evaluate(n=>n.clientHeight),initial,'HTML 恢复原自动高度');
     assert.equal(await card.locator('iframe').getAttribute('sandbox'),'');
     await page.screenshot({path:path.join(screenshots,'show-html-midturn.png')});
+    for(const theme of ['dark','light']){
+      await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+      for(const width of [320,390,1280]){
+        await page.setViewportSize({width,height:1000});
+        assert.equal(await card.evaluate(n=>n.scrollWidth<=n.clientWidth),true,'单行工具栏窄屏不溢出');
+        assert.equal(await card.locator('.preview-toolbar').evaluate(n=>n.scrollWidth<=n.clientWidth),true);
+        await card.screenshot({path:path.join(screenshots,'artifact-a-'+theme+'-'+width+'.png')});
+      }
+    }
+    await page.evaluate(()=>document.documentElement.dataset.theme='dark');
+    assert.equal(await card.locator('.preview-status').isVisible(),false,'成功状态不常驻显示');
     // 刷新仍在生成的页面：真实 /history + SSE 快照恢复。
     await page.reload();await page.waitForFunction(()=>!$('#app').hidden);
     await page.evaluate(()=>openConv('html-e2e'));
@@ -98,6 +112,7 @@ const path=require('node:path');
     const shares=()=>page.evaluate(async()=> (await (await fetch('/api/preview-shares',{headers:{'X-Auth-Token':S.token}})).json()).shares);
     assert.equal((await shares()).length,0);
     await page.evaluate(()=>{navigator.clipboard.writeText=async value=>{window.copiedPreview=value;};navigator.clipboard.write=undefined;});
+    await card.getByRole('button',{name:'更多操作',exact:true}).click();
     await card.getByRole('button',{name:'复制URL（7天有效，持有链接即可访问）',exact:true}).click();
     await page.waitForFunction(()=>window.copiedPreview);
     assert.ok((await page.evaluate(()=>window.copiedPreview)).startsWith('https://vococo.chjm.cc/'));

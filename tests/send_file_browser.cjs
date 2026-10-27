@@ -19,7 +19,11 @@ const crypto=require('node:crypto');
     await send('deliver');
     const card=page.locator('[data-artifact]');await card.waitFor();
     assert.equal(await card.count(),1);
-    assert.equal(await card.locator('strong').textContent(),'可编辑成果');
+    assert.equal(await card.locator('.preview-title').textContent(),'可编辑演示.pptx');
+    assert.equal(await card.locator('.preview-toolbar').count(),1);
+    assert.equal(await card.locator('.artifact-card').count(),0);
+    assert.equal(await card.getByRole('button',{name:'下载文件',exact:true}).textContent(),'');
+    assert.deepEqual(await page.evaluate(()=>[artifactSize(256),artifactSize(1234),artifactSize(2516582)]),['256 B','1.2 KB','2.4 MB']);
     const id=await card.getAttribute('data-artifact');
     const download=async()=>{
       const ready=page.waitForEvent('download');await card.getByRole('button',{name:'下载文件',exact:true}).click();
@@ -28,6 +32,8 @@ const crypto=require('node:crypto');
       assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(output,'download.pptx'))).digest('hex'),digest);
     };
     await download();
+    await page.waitForFunction(()=>!document.querySelector('[data-artifact] button[aria-busy]'));
+    assert.equal(await card.locator('.artifact-note').isVisible(),false,'成功下载不常驻提示');
     // pending 刷新依赖真实数据库，不依赖工具事件。
     await page.reload();await page.waitForFunction(()=>!$('#app').hidden);
     await page.evaluate(()=>openConv('file-e2e'));await card.waitFor();assert.equal(await card.count(),1);
@@ -44,10 +50,14 @@ const crypto=require('node:crypto');
       for(let i=0;i<2;i++) handleEvent({type:'done',conv:S.conv,text:turn.assistant,turn_id:turn.id,artifacts:turn.artifacts});
     });
     assert.equal(await card.count(),1,'重复 done 不得复制成果卡片');
+    await card.locator('.preview-title').evaluate(node=>node.textContent='特别长的项目方案文件名'.repeat(10)+'.pptx');
     for(const width of [320,375,390,768,1280]){
       await page.setViewportSize({width,height:900});
-      assert.equal(await card.evaluate(node=>node.scrollWidth<=node.clientWidth),true,'卡片不能横向溢出');
+      assert.equal(await card.evaluate(node=>node.scrollWidth<=node.clientWidth),true,'长文件名卡片不能横向溢出');
+      assert.equal(await card.locator('.preview-toolbar').evaluate(node=>node.scrollWidth<=node.clientWidth),true);
+      assert.equal(await card.getByRole('button',{name:'下载文件',exact:true}).isVisible(),true);
     }
+    await card.locator('.preview-title').evaluate(node=>node.textContent='可编辑演示.pptx');
     await page.screenshot({path:path.join(output,'send-file-history.png')});
     // 手工粘贴另一会话的成果 ID，认证通过也不能跨会话下载。
     await page.evaluate(async id=>{

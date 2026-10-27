@@ -150,22 +150,37 @@ function previewCodeHtml(lang, source, closed, streaming){
   if(limited) source=source.slice(0,200000)+"\n[源码过大，显示前 200000 字符；完整内容请复制整条消息]";
   return '<section class="chat-preview" data-lang="'+lang+'" data-closed="'+closed+'" data-live="'+streaming+'"><pre class="preview-source" hidden><code>'+esc(source)+'</code></pre></section>';
 }
+function artifactSize(bytes){
+  if(bytes<1024) return bytes+" B";
+  const unit=bytes<1024*1024?1024:1024*1024;
+  return (bytes/unit).toFixed(1).replace(/\.0$/,"")+(unit===1024?" KB":" MB");
+}
+function artifactHeading(bar,entry){
+  const icon=document.createElement("span"); icon.className="artifact-icon"; icon.innerHTML=previewIcon("doc");
+  const name=document.createElement("span"); name.className="preview-title";
+  name.textContent=entry.filename; name.title=entry.title?entry.title+" · "+entry.filename:entry.filename;
+  const size=document.createElement("span"); size.className="artifact-size"; size.textContent=artifactSize(entry.size);
+  bar.append(icon,name,size);
+}
+function artifactDownload(node,bar,entry,conv){
+  const button=document.createElement("button"); button.type="button"; setPreviewButton(button,"download","下载文件");
+  const status=document.createElement("div"); status.className="artifact-note";
+  status.setAttribute("role","status"); status.hidden=true;
+  button.onclick=()=>downloadArtifact(entry,conv,button,status);
+  bar.append(button); node.append(status);
+}
 function appendArtifacts(target, entries, conv=S.conv){
   if(!target) return;
   for(const entry of entries||[]){
     if(!/^[A-Za-z0-9_-]{43}$/.test(entry.id) || typeof entry.filename!=="string") continue;
     if([...target.querySelectorAll('[data-artifact]')].some(n=>n.dataset.artifact===entry.id)) continue;
     const card=document.createElement("section"); card.className="artifact-card"; card.dataset.artifact=entry.id;
-    const name=document.createElement("strong"); name.textContent=entry.title||entry.filename;
-    const meta=document.createElement("span"); meta.textContent=entry.filename+" · "+(entry.size/1024/1024).toFixed(2)+" MB";
-    const button=document.createElement("button"); button.type="button"; button.textContent="下载文件";
-    const status=document.createElement("span"); status.setAttribute("role","status");
-    button.onclick=()=>downloadArtifact(entry,conv,button,status);
-    card.append(name,meta,button,status); target.append(card);
+    const bar=document.createElement("div"); bar.className="preview-toolbar";
+    artifactHeading(bar,entry); card.append(bar); artifactDownload(card,bar,entry,conv); target.append(card);
   }
 }
 async function downloadArtifact(entry,conv,button,status){
-  button.disabled=true; status.textContent="正在下载…";
+  button.disabled=true; button.setAttribute("aria-busy","true"); status.textContent=""; status.hidden=true;
   try{
     let file=button._artifactFile;
     if(!file){
@@ -183,9 +198,9 @@ async function downloadArtifact(entry,conv,button,status){
       anchor.href=url; anchor.download=entry.filename; document.body.append(anchor); anchor.click(); anchor.remove();
       setTimeout(()=>URL.revokeObjectURL(url),60000);
     }
-    status.textContent="文件已交给浏览器保存";
+    status.textContent="";
   }catch(error){status.textContent=error.name==="AbortError"?"已取消保存，可重试":error.name==="NotAllowedError"?"文件已就绪，请再点下载以保存":error.message;}
-  finally{button.disabled=false;}
+  finally{button.disabled=false; button.removeAttribute("aria-busy"); status.hidden=!status.textContent;}
 }
 function appendHtmlPreviews(target, entries, conv=S.conv){
   for(const entry of entries||[]){
@@ -196,15 +211,13 @@ function appendHtmlPreviews(target, entries, conv=S.conv){
     holder.innerHTML=previewCodeHtml("html",entry.html,true,false);
     const card=holder.firstElementChild;
     card.dataset.htmlPreview=entry.id; card.dataset.title=entry.title||"HTML";
-    target.append(card); setupChatPreview(card);
     if(entry.artifact){
       const existing=[...target.querySelectorAll('[data-artifact]')].find(n=>n.dataset.artifact===entry.artifact.id);
-      if(existing) card.prepend(existing);
-      else{
-        const header=document.createElement("div");
-        appendArtifacts(header,[entry.artifact],conv); card.prepend(header);
-      }
+      existing?.remove();
+      card.dataset.artifact=entry.artifact.id; card._artifact={entry:entry.artifact,conv};
+      card.classList.add("artifact-preview");
     }
+    target.append(card); setupChatPreview(card);
   }
 }
 async function openLocalHtmlPreview(anchor,path,title){
@@ -382,6 +395,33 @@ async function usePreviewShare(node,action){
   finally{state.shareBusy=false;for(const button of Object.values(state.shareButtons)) button.disabled=false;}
 }
 
+function closeArtifactMenus(event){
+  if(event.type==="keydown" && event.key!=="Escape") return;
+  for(const panel of document.querySelectorAll('.artifact-menu-panel:not([hidden])')){
+    const menu=panel.parentNode, toggle=menu.firstElementChild;
+    if(event.type==="pointerdown" && menu.contains(event.target)) continue;
+    panel.hidden=true; toggle.setAttribute("aria-expanded","false");
+    if(event.type==="keydown" && menu.contains(document.activeElement)) toggle.focus();
+  }
+}
+document.addEventListener("pointerdown",closeArtifactMenus);
+document.addEventListener("keydown",closeArtifactMenus);
+function addArtifactMenu(node,bar){
+  const menu=document.createElement("div"); menu.className="artifact-menu";
+  const toggle=document.createElement("button"); toggle.type="button";
+  setPreviewButton(toggle,"more","更多操作"); toggle.setAttribute("aria-expanded","false");
+  const panel=document.createElement("div"); panel.className="artifact-menu-panel"; panel.hidden=true;
+  toggle.onclick=()=>{panel.hidden=!panel.hidden;toggle.setAttribute("aria-expanded",String(!panel.hidden));};
+  menu.onkeydown=event=>{if(event.key==="Escape"){panel.hidden=true;toggle.setAttribute("aria-expanded","false");toggle.focus();}};
+  menu.onfocusout=event=>{if(!menu.contains(event.relatedTarget)){panel.hidden=true;toggle.setAttribute("aria-expanded","false");}};
+  addPreviewShareButtons(node,panel);
+  for(const button of Object.values(node._preview.shareButtons)){
+    const text=document.createElement("span"); text.textContent=button===node._preview.shareButtons.copy?"复制链接":"在浏览器打开";
+    button.append(text);
+  }
+  menu.append(toggle,panel); bar.append(menu);
+}
+
 const PREVIEW_MIN_HEIGHT=120, PREVIEW_MAX_HEIGHT=1200;
 function syncPreviewHeightLabel(state){
   const height=state.manualHeight ?? Math.round(state.view.getBoundingClientRect().height);
@@ -434,17 +474,8 @@ function addPreviewResizeHandle(node){
   };
   node.append(handle); syncPreviewHeightLabel(state);
 }
-function setupChatPreview(node){
-  if(node._preview){
-    const state=node._preview;
-    if(node.isConnected) previewResizeObserver.observe(state.view);
-    sizePreviewDiagram(node);
-    const staleTheme=node.dataset.lang==="mermaid" && state.renderTheme!==previewDiagramTheme().key;
-    if(node.isConnected && !state.queued && (state.needsResume || staleTheme)) scheduleChatPreview(node);
-    return;
-  }
-  const source=node.querySelector("code").textContent;
-  const state=node._preview={source,closed:node.dataset.live!=="true",fencedClosed:node.dataset.closed==="true",version:0,lastAt:0};
+function buildPreviewToolbar(node){
+  const state=node._preview;
   const bar=document.createElement("div"); bar.className="preview-toolbar";
   const label=document.createElement("span"); label.className="preview-title";
   label.textContent=node.dataset.title || node.dataset.lang.toUpperCase();
@@ -458,9 +489,29 @@ function setupChatPreview(node){
   };
   const copy=document.createElement("button"); copy.type="button"; setPreviewButton(copy,"copy","复制源码");
   copy.onclick=()=>copyPreviewSource(state,copy);
-  bar.append(label,state.status,toggle);
-  if(node.dataset.lang==="html") addPreviewShareButtons(node,bar);
-  else bar.append(copy);
+  if(node._artifact){
+    artifactHeading(bar,node._artifact.entry); bar.append(state.status,toggle);
+    artifactDownload(node,bar,node._artifact.entry,node._artifact.conv);
+    addArtifactMenu(node,bar);
+  }else{
+    bar.append(label,state.status,toggle);
+    if(node.dataset.lang==="html") addPreviewShareButtons(node,bar);
+    else bar.append(copy);
+  }
+  return bar;
+}
+function setupChatPreview(node){
+  if(node._preview){
+    const state=node._preview;
+    if(node.isConnected) previewResizeObserver.observe(state.view);
+    sizePreviewDiagram(node);
+    const staleTheme=node.dataset.lang==="mermaid" && state.renderTheme!==previewDiagramTheme().key;
+    if(node.isConnected && !state.queued && (state.needsResume || staleTheme)) scheduleChatPreview(node);
+    return;
+  }
+  const source=node.querySelector("code").textContent;
+  const state=node._preview={source,closed:node.dataset.live!=="true",fencedClosed:node.dataset.closed==="true",version:0,lastAt:0};
+  const bar=buildPreviewToolbar(node);
   state.note=document.createElement("div"); state.note.className="preview-note"; state.note.hidden=true;
   state.view=document.createElement("div"); state.view.className="preview-view";
   node.prepend(bar,state.note,state.view);
