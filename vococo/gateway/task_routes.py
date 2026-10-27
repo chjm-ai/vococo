@@ -158,6 +158,9 @@ async def handle_research_report(request: web.Request) -> web.Response:
 
 def register_routes(app: web.Application) -> None:
     """注册中性任务 API,不依赖 VOICE_ENABLED。"""
+    from . import brain_routes
+
+    brain_routes.register_routes(app)
     app.add_routes(
         [
             web.get("/tasks", handle_tasks_list),

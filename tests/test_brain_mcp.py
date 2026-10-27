@@ -1,0 +1,147 @@
+"""官方 MCP 客户端 → 真实 HTTP 受限桥 → 临时数据；不启动真实模型。"""
+from contextlib import asynccontextmanager
+from unittest.mock import Mock
+
+import httpx
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+
+from vococo import config
+from vococo.core import task_runner, tasks
+from vococo.gateway import brain_mcp, brain_routes, settings_store
+from vococo.memory import agents, session_store
+
+pytestmark = pytest.mark.anyio
+UPSTREAM = "public-test-upstream-" + "u" * 40
+BRIDGE = "private-test-bridge-" + "b" * 40
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture
+async def environment(isolated, monkeypatch):
+    monkeypatch.setattr(tasks, "_DB", None)
+    monkeypatch.setattr(config, "CRON_JOBS_PATH", isolated / "cron.json")
+    monkeypatch.setattr(settings_store, "_PATH", isolated / "settings.json")
+    monkeypatch.setattr(task_runner, "_maybe_start_next", Mock())
+    monkeypatch.setenv("VOCOCO_MCP_UPSTREAM_TOKEN", UPSTREAM)
+    monkeypatch.setenv("VOCOCO_BRAIN_BRIDGE_TOKEN", BRIDGE)
+    monkeypatch.setenv("VOCOCO_BRAIN_AGENT_ID", brain_routes.AGENT_ID)
+    workdir = isolated / "project"
+    workdir.mkdir()
+    agents._write_meta(brain_routes.AGENT_ID, {"name": "开发", "workdir": str(workdir),
+                                               "execution_mode": "project"})
+    app = web.Application()
+    brain_routes.register_routes(app)
+    async with TestServer(app) as backend:
+        server = brain_mcp.create_server(bridge_port=backend.port)
+        yield brain_mcp.create_app(server), workdir
+    if tasks._DB is not None:
+        tasks._DB.close()
+        tasks._DB = None
+
+
+@asynccontextmanager
+async def session_for(app, token=UPSTREAM, headers=None):
+    headers = {"Authorization": f"Bearer {token}", **(headers or {})}
+    async with app.app.router.lifespan_context(app.app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), headers=headers) as http:
+            async with streamable_http_client("http://127.0.0.1:8852/mcp", http_client=http) as streams:
+                async with ClientSession(streams[0], streams[1]) as session:
+                    await session.initialize()
+                    yield session
+
+
+async def call(session, name, args):
+    result = await session.call_tool(name, args)
+    assert not result.isError, result.content
+    return result.structuredContent
+
+
+async def test_official_mcp_client_dispatch_idempotency_result_and_cancel(environment):
+    app, workdir = environment
+    async with session_for(app) as session:
+        tools = (await session.list_tools()).tools
+        assert {tool.name for tool in tools} == {"vococo_create_task", "vococo_get_task",
+            "vococo_cancel_task", "vococo_list_sessions", "vococo_read_session"}
+        assert next(t for t in tools if t.name == "vococo_create_task").annotations.readOnlyHint is False
+        args = {"title": "隔离派单", "prompt": "只运行测试任务", "idempotency_key": "request-test-001"}
+        created = await call(session, "vococo_create_task", args)
+        repeated = await call(session, "vococo_create_task", args)
+        assert created["id"] == repeated["id"] and created["receipt"] != repeated["receipt"]
+        row = tasks.get(created["id"])
+        assert row["cwd"] == str(workdir) and tasks.automatic_access(row)["remote_brain"] is True
+        assert "mcp__vococo__recall_past" in tasks.automatic_access(row)["denied"]
+        queried = await call(session, "vococo_get_task", {"id": created["id"]})
+        assert queried["status"] == "queued" and "prompt" not in queried and "source_access" not in queried
+        cancelled = await call(session, "vococo_cancel_task", {"id": created["id"]})
+        assert cancelled["cancel_requested"] and cancelled["status"] == "cancelled"
+        assert (await session.call_tool("vococo_create_task", {**args, "prompt": "不同任务"})).isError
+
+
+async def test_mcp_history_pagination_rebuilds_text_and_no_tool_events(environment):
+    app, _ = environment
+    key = agents.main_session_key(agents.get(brain_routes.AGENT_ID))
+    session_store.set_title(key, "实际历史标题")
+    turn = session_store.start_turn(key, "问题" * 5000)
+    session_store.finish_turn(turn, "回答" * 6000)
+    async with session_for(app) as session:
+        listed = await call(session, "vococo_list_sessions", {})
+        assert listed["sessions"][0]["title"] == "实际历史标题"
+        user, assistant, args = "", "", {"key": key, "length": 7999}
+        while True:
+            page = await call(session, "vococo_read_session", args)
+            user += page["turn"]["user_text"]
+            assistant += page["turn"]["assistant_text"]
+            assert "events" not in page["turn"]
+            if page["next_offset"] is None:
+                break
+            args.update(turn_id=turn, offset=page["next_offset"])
+        assert user == "问题" * 5000 and assistant == "回答" * 6000
+        assert (await session.call_tool("vococo_read_session", {"key": "web:other-agent"})).isError
+
+
+@pytest.mark.parametrize("token", ["", "wrong-token", BRIDGE])
+async def test_oauth_upstream_secret_is_required(environment, token):
+    app, _ = environment
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+        response = await client.post("http://127.0.0.1:8852/mcp", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 401
+    assert "no-store" in response.headers["cache-control"]
+
+
+async def test_mcp_bounds_backend_errors_and_no_secret_logging(environment, monkeypatch, caplog):
+    app, _ = environment
+    async with session_for(app) as session:
+        assert (await session.call_tool("vococo_get_task", {"id": "not-owned"})).isError
+        for args in ({"limit": 21}, {"offset": True}, {"offset": -1}, {"limit": "2"}):
+            assert (await session.call_tool("vococo_list_sessions", args)).isError
+        monkeypatch.setenv("VOCOCO_BRAIN_BRIDGE_TOKEN", "changed-secret-" + "n" * 32)
+        result = await session.call_tool("vococo_list_sessions", {})
+        assert result.isError and "本机桥认证失败" in str(result.content)
+        assert UPSTREAM not in caplog.text and BRIDGE not in caplog.text
+
+
+@pytest.mark.parametrize("upstream,bridge", [("", BRIDGE), (UPSTREAM, "x"), (BRIDGE, BRIDGE),
+                                            (UPSTREAM, "带中文" * 20), (UPSTREAM, "x " * 32)])
+async def test_weak_or_shared_secrets_refuse_startup(monkeypatch, upstream, bridge):
+    monkeypatch.setenv("VOCOCO_MCP_UPSTREAM_TOKEN", upstream)
+    monkeypatch.setenv("VOCOCO_BRAIN_BRIDGE_TOKEN", bridge)
+    with pytest.raises(ValueError):
+        brain_mcp.create_server()
+
+
+async def test_mcp_error_does_not_follow_redirects_or_reveal_backend_error(monkeypatch):
+    async def redirect(_request):
+        return web.Response(status=302, headers={"Location": "https://example.com/leak"}, text="sensitive")
+    app = web.Application()
+    app.router.add_post("/internal/brain/list_sessions", redirect)
+    async with TestServer(app) as backend:
+        with pytest.raises(ValueError, match="本机桥异常"):
+            await brain_mcp._call(backend.port, BRIDGE, "list_sessions", {})
