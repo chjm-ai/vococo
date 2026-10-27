@@ -241,10 +241,16 @@ function appendVids(container, vids){
   }
   container.append(g);
 }
+function setUserBubbleText(bubble, text){
+  const message=el("div","user-message-text user-message-collapsed");
+  message.textContent=text; bubble.replaceChildren(message);
+}
 function buildBubble(who, text, imgs, auds, vids, ts){
   const row=el("div","row "+(who==="me"?"me":"ai"));
   const b=el("div","bubble");
-  if(who==="me"){ b.textContent=text; b.classList.add("user-message-collapsed"); } else { b.innerHTML = text?mdToHtml(text):""; }
+  if(who==="me"){
+    if(text) setUserBubbleText(b, text);
+  } else { b.innerHTML = text?mdToHtml(text):""; }
   row.append(b);
   appendImgs(b, imgs);
   appendAuds(b, auds);
@@ -303,15 +309,20 @@ function buildTurnFoot(conv, turnId, text, ts, isLast, interrupted){
 function appendUserFoot(row, text, ts){
   const foot=buildTurnFoot(null, null, text, ts ?? Date.now()/1000, false);
   foot.classList.add("userfoot");
-  const toggle=el("button","tfbtn user-message-toggle");
-  toggle.type="button"; toggle.textContent="展开"; toggle.setAttribute("aria-expanded","false");
-  toggle.onclick=()=>{
-    const bubble=row.querySelector(".bubble");
-    const isExpanded=bubble.classList.toggle("user-message-collapsed");
-    toggle.textContent=isExpanded?"展开":"折叠";
-    toggle.setAttribute("aria-expanded",String(!isExpanded));
-  };
-  foot.append(toggle);
+  if(text){
+    const toggle=el("button","tfbtn user-message-toggle");
+    toggle.type="button"; toggle.textContent="展开"; toggle.title="展开已发送消息";
+    toggle.setAttribute("aria-label","展开已发送消息"); toggle.setAttribute("aria-expanded","false");
+    toggle.onclick=()=>{
+      const message=row.querySelector(".user-message-text");
+      const isExpanded=message.classList.toggle("user-message-collapsed");
+      toggle.textContent=isExpanded?"展开":"折叠";
+      toggle.title=isExpanded?"展开已发送消息":"折叠已发送消息";
+      toggle.setAttribute("aria-label",toggle.title);
+      toggle.setAttribute("aria-expanded",String(!isExpanded));
+    };
+    foot.append(toggle);
+  }
   row.append(foot);
 }
 function copyMsgText(btn, text){
