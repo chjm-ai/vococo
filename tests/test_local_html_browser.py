@@ -29,7 +29,21 @@ async def test_local_html_links_browser(isolated, monkeypatch):
     (root / "会议纪要 空格.md").write_text("# 会议纪要正文")
     (root / "signed.txt").write_text("署名逐字稿正文")
     (isolated / "outside.html").write_text("<p>目录外</p>")
-    monkeypatch.setattr(WebAdapter, "_conv_cwd", lambda self, conv: str(root) if conv == "html-link-e2e" else None)
+    from vococo.core import tasks
+    from vococo.memory import agents
+
+    monkeypatch.setattr(tasks, "_DB", None)
+    output = isolated / "业务成果"
+    report = output / "项目/知识库与Skill实验（20261027）/结果对照/结果对比.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("# 正式实验结果", encoding="utf-8")
+    agent = agents.create("实验 Agent", str(output))
+    task = tasks.create("知识实验", "生成报告", agent_id=agent["id"])
+    task_conv = tasks.session_key(task["id"])
+    task_turn = session_store.start_turn(task_conv, "查看结果")
+    session_store.finish_turn(task_turn, "[实验结果](项目/知识库与Skill实验（20261027）/结果对照/结果对比.md)")
+    original_cwd = WebAdapter._conv_cwd
+    monkeypatch.setattr(WebAdapter, "_conv_cwd", lambda self, conv: str(root) if conv == "html-link-e2e" else original_cwd(self, conv))
     key = config.resolve_session_key("web", "html-link-e2e")
     tid = session_store.start_turn(key, "生成 HTML")
     session_store.finish_turn(tid, f"[历史 HTML]({root / 'page.html'})")
@@ -42,7 +56,7 @@ async def test_local_html_links_browser(isolated, monkeypatch):
         origin = f"http://127.0.0.1:{adapter._runner.addresses[0][1]}"
         process = await asyncio.create_subprocess_exec(
             "node", str(Path(__file__).with_name("local_html_browser.cjs")),
-            origin, config.WEB_AUTH_TOKEN, str(root), str(screenshots), env=_browser_environment(),
+            origin, config.WEB_AUTH_TOKEN, str(root), str(screenshots), task_conv, env=_browser_environment(),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(process.communicate(), 100)

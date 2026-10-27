@@ -2885,15 +2885,23 @@ class WebAdapter:
         return web.json_response({"ok": True})
 
     # ── 文档预览分屏(右侧滑出,见 web_static/index.html 的 openDocPreview)──────
-    def _doc_preview_bounds(self, conv_root: str) -> list[Path]:
-        """/doc/preview 允许读取的边界目录:HOME 兜底,而不是死磕会话 cwd/AI_BRAIN 这种
+    def _doc_preview_bounds(self, conv_root: str, conv: str = "") -> list[Path]:
+        """/doc/preview 按会话运行目录、所属 Agent 成果目录、HOME/AI_BRAIN 兜底。
+        HOME 兜底,而不是死磕会话 cwd/AI_BRAIN 这种
         短名单——这台机器是单用户私人助理,agent 本来就能用 Bash/Write 碰到 HOME 下任何
         文件(Desktop/Documents/随便哪个项目),白名单卡太窄只会把大多数真实路径挡在外面,
         误报成"文件不存在"(2026-07-30 用户反馈基本没有能预览成功的例子)。这里加一道
         "不能越出 HOME"就是全部的额外防护,不是也没必要比 agent 自身权限更严。
         AI_BRAIN 单独列进来是防它被配到 HOME 之外(.env 里 AI_BRAIN_DIR 覆盖成别处)。
         """
-        bounds = [Path(conv_root).resolve(), Path.home().resolve(), config.AI_BRAIN_DIR.resolve()]
+        from ...memory import agents
+
+        roots = [Path(conv_root)]
+        agent = agents.agent_for_session(config.resolve_session_key("web", conv)) if conv else None
+        # 业务运行目录与正式成果目录分离，相对交付链接必须精确尝试所属 Agent 的成果目录。
+        if agent and agent["id"] != agents.GENERAL_ID:
+            roots.append(Path(agent.get("output_dir") or agent["workdir"]).expanduser())
+        bounds = [p.resolve() for p in [*roots, Path.home(), config.AI_BRAIN_DIR]]
         seen: set[Path] = set()
         out: list[Path] = []
         for b in bounds:
@@ -2927,7 +2935,7 @@ class WebAdapter:
                     best_depth = len(parts)
         return best
 
-    def _resolve_doc_path(self, conv_root: str, rel: str) -> Path | None:
+    def _resolve_doc_path(self, conv_root: str, rel: str, conv: str = "") -> Path | None:
         """把前端传的路径(相对或绝对)解析成真实文件路径,越界(见 _doc_preview_bounds)拒绝。
         相对路径依次按候选根目录展开,哪个真存在就用哪个——AI 给的相对路径可能是相对会话
         cwd,也可能是相对 AI_BRAIN(比如 "00-inbox/x.md" 这种收件箱惯例)。直接拼接全部落空
@@ -2947,7 +2955,7 @@ class WebAdapter:
                 return None
             if not rel.startswith("/") or rel.startswith("//") or "\\" in rel or "\x00" in rel:
                 return None
-        bounds = self._doc_preview_bounds(conv_root)
+        bounds = self._doc_preview_bounds(conv_root, conv)
         p = Path(rel)
         if p.is_absolute():
             try:
@@ -3001,7 +3009,8 @@ class WebAdapter:
         # 模糊兜底可能要 os.walk 扫大几千个文件(_DOC_SEARCH_MAX_SCAN),丢进线程池——
         # 这是单进程 server,同一个 event loop 还扛着其他会话的 SSE 长连接,同步扫盘会
         # 把大伙都卡住(实测最坏情况 1.6s+,足够让人感觉到卡顿)。
-        target = await asyncio.to_thread(self._resolve_doc_path, root, request.query.get("path", ""))
+        target = await asyncio.to_thread(
+            self._resolve_doc_path, root, request.query.get("path", ""), request.query.get("conv", ""))
         if target is None or not target.is_file():
             return web.json_response({"error": "文件不存在或路径越界"}, status=404)
         try:
