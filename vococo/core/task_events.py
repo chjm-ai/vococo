@@ -7,11 +7,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..gateway.core import Sink
+    from .agent import AgentReply
 
 from . import tasks
 
 _subscribers: set[asyncio.Queue] = set()
 _main_event_bridge: Callable[[dict], None] | None = None
+_stream_sink_factory: Callable[[str], Sink] | None = None
 _started_tasks: set[str] = set()
 _terminal_handlers: list[Callable[[str], Awaitable[None]]] = []
 
@@ -20,6 +26,16 @@ def register_main_event_bridge(fn: Callable[[dict], None] | None) -> None:
     """注册主会话事件桥接,供 Web SSE 显示任务状态。"""
     global _main_event_bridge
     _main_event_bridge = fn
+
+
+def register_stream_sink_factory(factory: Callable[[str], Sink] | None) -> None:
+    """任务与普通聊天共用展示层，不在执行器里另造一套 SSE 协议。"""
+    global _stream_sink_factory
+    _stream_sink_factory = factory
+
+
+def create_stream_sink(session_key: str) -> Sink | None:
+    return _stream_sink_factory(session_key) if _stream_sink_factory else None
 
 
 def _bridge_event(payload: dict) -> None:
@@ -115,13 +131,31 @@ def _deliver_research(task: dict) -> None:
                    "turn_id": turn_id})
 
 
-async def emit_terminal(task_id: str) -> None:
+async def _finish_stream(task: dict, sink, reply, turn_id: int | None) -> None:
+    if sink is not None and reply is not None:
+        try:
+            await sink.done(reply, turn_id)
+            return
+        except Exception as error:
+            print(f"[task_events] 任务 {task['id']} 实时收尾失败:{error}", flush=True)
+    _bridge_event({"conv": tasks.session_key(task["id"]), "type": "done",
+                   "text": reply.text if reply else task.get("result_full", ""),
+                   "turn_id": turn_id, "is_error": task["status"] == "failed"})
+
+
+async def emit_terminal(
+    task_id: str, *, sink: Sink | None = None,
+    reply: AgentReply | None = None, turn_id: int | None = None,
+    emit_session: bool = True,
+) -> None:
     """通知所有终态处理器,处理器失败不阻塞其他处理器。"""
     # 任务进入终态即解除 start 去重:同一任务被续接/追问重新激活(running)时,
     # on_task_activity 的 start 桥接要能再次触发,前端侧边栏才会补拉最新状态
     # (2026-08-17 修复:续接老任务后侧边栏/状态条停在"已完成"不刷新)。
     _started_tasks.discard(task_id)
     task = tasks.get(task_id)
+    if emit_session and task and not tasks.is_inline_research(task):
+        await _finish_stream(task, sink, reply, turn_id)
     if task and tasks.is_inline_research(task) and task["status"] in tasks.TERMINAL_STATUSES:
         on_task_activity(task)
         try:

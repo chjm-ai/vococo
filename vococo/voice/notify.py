@@ -134,8 +134,7 @@ async def on_task_terminal(task_id: str) -> None:
     # 一直亮在已结束的任务上,也别卡住后面的异步推送路径)——这一步跟 origin
     # 无关,任何来源的任务都要让侧栏及时刷新。
     _started_tasks.discard(task_id)  # 清状态锁,支持后续续跑重新亮 dot
-    if not tasks.is_inline_research(task):
-        _bridge_event({"conv": tasks.session_key(task_id), "type": "done"})
+    # 会话终态由 task_events.emit_terminal 统一发送，避免空 done 重复收尾。
 
     origin = task.get("origin") or "voice"
     if origin == "cron":
