@@ -4,9 +4,27 @@
 
 - `scripts/anchor_monitor.py`：固定三个 ANCHOR campaign，只读 Lemlist。复用外部 `面料外贸/scripts/yxx_auto.py` 的连接与 reviewed CSV 导出，不调用 daily、scan、验证、暂停或导入逻辑。
 - `scripts/anchor_gmail_scan.py`：只覆盖过滤管、微孔板两个新箱；默认只读核查，`--apply` 才允许转发到 `ray.chen@anchorgd.com`。
-- `scripts/anchor_checks.py`：原地供任务 `13f146ce` 调用，依次执行仓库内陶纤扫描、新两箱扫描、隔热统计。单段失败继续检查其他段，最后统一失败信号。没有新增 cron，没有自动重启。
+- `scripts/anchor_checks.py`：原地供任务 `13f146ce` 调用，依次执行仓库内陶纤扫描、新两箱扫描、隔热统计。单段失败继续检查其他段，最后统一非零退出码；信号恒为 0（包括异常），只控制零 LLM 直出，不代表巡检成功。没有新增 cron，没有自动重启。
 - `scripts/anchor_ceramic_scan.py --scan`：替代旧 `/Users/wesley/scripts/raychen_gmail_daily.py --scan` 的执行位置，复用原 `~/.gmail-raychen.json` 和 `~/scripts/.raychen_scan_state.json`。不清空 forwarded_ids/pending/last_ts；保留 60 秒重叠、INBOX 范围与首次不追历史。原状态增补 delivery/details 字段，持久化所有候选、未知来源及结果不明状态；不再裁掉 200 条去重记录。损坏状态拒绝重置，列表失败不推进水位，单封读取/明确发送拒绝下轮重试。旧版 pending 没有发送凭证，可能实际已发，迁移为 legacy_uncertain 保留 pending 与原主题/发件人，持续告警而不自动重发；本轮线上 pending 核实为零。
 - 旧外部脚本未覆盖、未删除，**不含本次修复，禁止再手动执行它发信**。本轮检索现有 vococo cron 配置没有任务直接引用它；13f146ce 命令仍是 main 的 anchor_checks.py，但内部调用已改为仓库受控实现，不能靠更新外部脚本来部署。合并 main 即供下次调度加载，不需重启 vococo。
+
+## 固定模板直出（2026-10-27）
+
+- `anchor_report.py` 仅用 Python 标准库生成「结论＋三线数据表＋异常事项」；不导入供应商或模型模块。原扫描与分类/转发逻辑不变。
+- 包装入口捕获三段 stdout/stderr/退出码，先保存至 `~/.local/state/anchor-mail/reports/<UTC时间>-<PID>.json`（目录初建 0700、文件 0600），中文通知只展示可读表格与排错文件路径，不拼接 JSON。此目录含邮件主题等信息，不公开分享；暂未自动清理。
+- 时间分开列检查时间、指标抓取时间与北京时间统计日；发送事件包含跟进，不是新增人数。累计回复不等于有效询盘。扫描缺失/partial/blocked、非零退出、统计缺字段、存档失败均返回非零，其他成功段继续展示，不把失败填零。
+- 新两箱 `counts.manual` 是本次新转人工，缺键显示未知而不补零；`manual_review_ids` 是存量待核查，重复巡检不累加。转发记录可能包含上轮发送、本轮才通过已发送邮件核实的项目，不称本次新发，也不称对方已收到；主题带 lemwarmup 只在展示中警示「不可算客户询盘」，不据此改变分类/转发。陶纤仍仅描述回执，不提升为全量覆盖结论。
+- stdout 最后一行恒为 `##CRON_SIGNAL:0##`；退出码独立控制 cron success/error。调度器的 sidecar 总结仅在「成功且信号1（或无信号）且配置总结」时执行。测试用真实调度执行器＋入口 fixture，正常/partial、旧总结配置保留/无总结配置四种组合均禁止 sidecar 与 Agent 派发。
+- 本次尝试原地清空 13f146ce 的 summarize_prompt，被审批拒绝，配置未改；不能说已移除 AI 总结配置。新入口的信号 0 使旧配置不再触发，异常也直出；后续可另经批准清空该字段。未新建任务、未改 command/频率/模型/发送设置。
+
+无邮件/网络副作用验收（fixture 文件结构为 ceramic/gmail/monitor 各含 stdout、stderr、returncode；stdout 为各段 JSON 原回执及可选信号）：
+
+```sh
+python3 scripts/anchor_checks.py --fixture /path/to/fixture.json --raw-dir /tmp/anchor-fixture-raw
+uv run pytest tests/test_anchor_report.py tests/test_anchor_automation.py tests/test_anchor_mail_safety.py tests/test_anchor_reply_association.py tests/test_cron_scheduler.py -q
+```
+
+fixture 分支不加载 Gmail、Lemlist 或业务脚本，不启动子扫描。生产入口仍沿原 cron 命令运行，**不带 fixture 会实际执行既有扫描/转发**，不可用它做发送测试。
 
 ## 统计口径
 
