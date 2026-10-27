@@ -32,8 +32,12 @@ from ..memory import session_store
 from ..tools import danger
 from . import delegation, research, task_events, tasks, worktree
 from .agent import (
+    AgentReply,
     BudgetWarning,
+    Compacted,
     Done,
+    ThinkingDelta,
+    UpstreamRetry,
     SessionStarted,
     TextDelta,
     ToolFinished,
@@ -356,6 +360,25 @@ def _timeout_min(row: dict) -> int:
     return config.TASK_TIMEOUT_MIN
 
 
+async def _stream_event(sink, ev) -> None:
+    if sink is None:
+        return
+    if isinstance(ev, TextDelta):
+        await sink.text(danger.redact_secrets(ev.text))
+    elif isinstance(ev, ThinkingDelta):
+        await sink.thinking(danger.redact_secrets(ev.text))
+    elif isinstance(ev, ToolStarted):
+        await sink.tool_started(ev.name, ev.tool_id, ev.parent_id)
+    elif isinstance(ev, ToolInput):
+        await sink.tool_input(ev.name, ev.tool_id, ev.tool_input, ev.parent_id)
+    elif isinstance(ev, ToolFinished):
+        await sink.tool_finished(ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id)
+    elif isinstance(ev, Compacted):
+        await sink.compacted(ev.trigger)
+    elif isinstance(ev, UpstreamRetry):
+        await sink.upstream_retry(ev.status, ev.attempt, ev.max_retries, ev.delay_ms, ev.reason)
+
+
 async def _run(task_id: str, turn_text: str | None = None) -> None:
     """跑一个任务的一轮对话。turn_text 为 None(首次派发)用 row['prompt'];
     非 None(追问/cron 再次触发)则是这一轮实际发给模型的文本——历史靠 resume 接,
@@ -396,10 +419,15 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     # 录过程时间线(工具调用 + 正文交错),跟普通文字对话(gateway/core.py converse())
     # 对齐——否则任务跑完侧边栏只看得到最后一句摘要,回溯不了 AI 到底做了什么。
     timeline = Timeline()
+    sink = None
+    draft_text = ""
+    last_draft_ts = 0.0
+    final_reply = None
 
     async def _observe(ev) -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id, used_tokens, tool_calls
-        nonlocal last_research_progress, budget_exceeded
+        nonlocal last_research_progress, draft_text, last_draft_ts, final_reply, budget_exceeded
+        await _stream_event(sink, ev)
         if isinstance(ev, SessionStarted) and not is_research:
             # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮
             # 之后被 append 打断(CancelledError,永远走不到 Done),下一轮追问
@@ -409,7 +437,15 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                 session_key, sdk_session_id, expected_model=chosen_at_start,
             )
         elif isinstance(ev, TextDelta):
-            timeline.text(danger.redact_secrets(ev.text))
+            text = danger.redact_secrets(ev.text)
+            timeline.text(text)
+            draft_text += text
+            now = time.monotonic()
+            if turn_id is not None and now - last_draft_ts >= 0.7:
+                session_store.flush_draft(turn_id, draft_text, session_key=session_key)
+                last_draft_ts = now
+        elif isinstance(ev, Compacted):
+            timeline.compacted(ev.trigger)
         elif isinstance(ev, ToolStarted):
             timeline.tool_started(ev.name, ev.tool_id, ev.parent_id)
             if ev.parent_id is None:
@@ -435,6 +471,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             _notify_activity(task_id)
             await _push_budget_warning(row, session_key, note)
         elif isinstance(ev, Done):
+            final_reply = ev.reply
             if not is_research:
                 result_text = ev.reply.text
                 sdk_session_id = ev.reply.sdk_session_id
@@ -524,6 +561,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
 
     source_token = None
     try:
+        if not is_research:
+            sink = task_events.create_stream_sink(session_key)
         if turn_id is not None:
             source_token = clarify.bind_turn(session_key, turn_id)
         if is_research:
@@ -570,6 +609,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     except Exception as exc:  # noqa: BLE001 —— 指标只是统计,写失败不影响任务收尾
         print(f"[task_runner] 运行指标记账失败:{exc}", flush=True)
 
+    result_text = result_text or draft_text
     if budget_exceeded and status != "cancelled":
         status = "failed"
         note = _budget_recovery_note(used_tokens, token_budget)
@@ -582,12 +622,16 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         result_text = over_daily
         timeline.text(over_daily)
 
+    result_text = danger.redact_secrets(result_text)
+    stored_text = result_text
     if status == "cancelled":
+        stored_text = (result_text + "\n\n" if result_text else "") + "(任务已取消)"
         if turn_id is not None:
-            session_store.finish_turn(turn_id, "(任务已取消)", events=timeline.blocks, session_key=session_key)
+            session_store.finish_turn(turn_id, stored_text, events=timeline.blocks, session_key=session_key)
         ok = tasks.set_status(task_id, "cancelled", progress_note="已取消")
     elif status == "done":
         clean_text, tag_summary = (result_text, None) if is_research else _split_summary_tag(result_text)
+        stored_text = clean_text
         if turn_id is not None:
             session_store.finish_turn(turn_id, clean_text, events=timeline.blocks, session_key=session_key)
         if sdk_session_id:
@@ -596,9 +640,10 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             )
         ok = tasks.finish(task_id, "done", clean_text, tag_summary or _summarize(clean_text))
     else:
+        stored_text = result_text or f"(执行失败:{error_note})"
         if turn_id is not None:
             session_store.finish_turn(
-                turn_id, result_text or f"(执行失败:{error_note})", events=timeline.blocks,
+                turn_id, stored_text, events=timeline.blocks,
                 session_key=session_key,
             )
         if sdk_session_id:
@@ -622,7 +667,11 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     # 终态真正落库后才交出所有权；收尾异常仍由本轮 done callback 兜底。
     if _running.get(task_id) is asyncio.current_task():
         _running.pop(task_id, None)
-    await task_events.emit_terminal(task_id)
+    reply = final_reply or AgentReply(text="", tool_calls=[], cost_usd=None, is_error=False)
+    reply.text = stored_text
+    reply.is_error = status == "failed"
+    reply.error = danger.redact_secrets(error_note or reply.error)
+    await task_events.emit_terminal(task_id, sink=sink, reply=reply, turn_id=turn_id)
 
     _maybe_start_next()
 

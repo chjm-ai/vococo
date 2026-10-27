@@ -708,6 +708,10 @@ function markLive(){
   if(sig===_liveSig) return;
   _liveSig=sig; renderConvs();
 }
+function flushHistoryRefresh(conv, required=false){
+  if(conv!==S.conv || S.stream) return;
+  if(required || S.historyRefreshPending?.[conv]) reloadHistory();
+}
 function handleEvent(e){
   // 必须先拦再写 S.live，否则即使 DOM 不重建，侧栏黄点仍会重新亮起。
   if(S.stopping?.[e.conv]){
@@ -719,6 +723,7 @@ function handleEvent(e){
     delete S.histCache[e.conv]; idbDel("hist:"+e.conv);
     delete S.pendingChoice[e.conv];
     if(e.conv===S.conv) finalizeStream();
+    flushHistoryRefresh(e.conv);
     flushPending(e.conv);
     return;
   }
@@ -887,7 +892,9 @@ function handleEvent(e){
           else setRateStatus("err", "", e.error);
         }
       }else{ setRateStatus("ok","",""); }
-      setMeta(e); loadConvs(); flushPending(e.conv); break; }
+      setMeta(e); loadConvs();
+      flushHistoryRefresh(e.conv, String(e.conv).startsWith("task:"));
+      flushPending(e.conv); break; }
     case "message": // 命令回复 / 报错 / cron 推送(AI 主动发图走 mid_turn 分支,不会到这里)
       if(S.stream && !streamText(S.stream)){ finalizeStream(e.text, e.images, undefined, e.videos); }
       else { S.stream=null; addBubble("ai", e.text, e.images, null, true, e.videos); }
@@ -897,7 +904,7 @@ function handleEvent(e){
         if(/rate|429|quota|limit|overloaded/i.test(el2)) setRateStatus("warn", "最近遇到限额/过载", e.text);
         else setRateStatus("err", "", e.text);
       }
-      loadConvs(); flushPending(e.conv); break;
+      loadConvs(); flushHistoryRefresh(e.conv); flushPending(e.conv); break;
     case "choice": delete S.pendingChoice[e.conv]; renderChoice(e); break;
   }
 }

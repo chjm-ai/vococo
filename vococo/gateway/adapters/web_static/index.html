@@ -1889,7 +1889,10 @@ async function openConv(conv, silentGroup){
 async function reloadHistory(force){
   const conv=S.conv;
   if(!conv || String(conv).startsWith("local-")) return;  // 只在非本地会话拉
-  if(S.stream && !force) return;  // 正在流式输出中 → 别用全量重绘冲掉流式气泡
+  if(S.stream && !force){
+    (S.historyRefreshPending||(S.historyRefreshPending={}))[conv]=true;
+    return;  // 不打断流式输出，收尾后补拉，不能丢掉外部写入的结果。
+  }
   const fetchT0=Date.now();
   try{
     const r=await api("/history?conv="+encodeURIComponent(conv));
@@ -1927,6 +1930,7 @@ async function reloadHistory(force){
     histCacheSet(conv, turns);
     idbSetHist(conv, turns);
     renderTurns(turns, conv);  // 内部按轮 diff,没变的轮直接跳过
+    if(S.historyRefreshPending) delete S.historyRefreshPending[conv];
   }catch(e){}
 }
 

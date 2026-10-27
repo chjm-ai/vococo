@@ -69,7 +69,32 @@ const assert=require('node:assert/strict');
       assert.equal(await page.locator('#wrap .row.ai').count(),1,scenario.name);
       if(scenario.tool) assert.deepEqual(await page.evaluate(()=>[...$('#wrap .flow').children].map(n=>n.classList.contains('seg')?n.dataset.raw:'工具')),['甲','乙','工具'],'快照恢复及收尾保持正文与工具顺序');
     }
+    // 主会话正在输出时收到定时结果：不能打断输出，也不能永久漏刷。
+    for(const terminal of ['done','cancelled']){
+      let finished=false;
+      await page.route('**/history?conv=agent-feed',route=>route.fulfill({json:{turns:[
+        {id:601,user:'当前问题',pending:!finished,assistant:finished?'当前回答':'',draft:finished?'':'当前'},
+        {id:602,user:'',pending:false,assistant:'定时结果已到达'},
+      ],has_more:false}}));
+      await page.evaluate(async()=>{
+        await openConv('local-switch-b');
+        S.conv='agent-feed'; S.stream=null; $('#wrap').replaceChildren();
+        handleEvent({type:'start',conv:S.conv});
+        handleEvent({type:'text',conv:S.conv,seg:0,text:'当前'});
+        handleEvent({type:'agent_run',conv:S.conv});
+      });
+      assert.equal(await page.evaluate(()=>streamText(S.stream)),'当前','外部结果不能打断当前输出');
+      assert.equal(await page.evaluate(()=>S.historyRefreshPending?.['agent-feed']),true);
+      // 强制核对仍在运行的历史，也不能丢掉待补刷标记。
+      await page.evaluate(()=>reloadHistory(true));
+      assert.equal(await page.evaluate(()=>S.historyRefreshPending?.['agent-feed']),true);
+      finished=true;
+      await page.evaluate(type=>handleEvent({type,conv:S.conv,turn_id:601,text:'当前回答'}),terminal);
+      await page.waitForFunction(()=>$('#wrap').textContent.includes('定时结果已到达'));
+      assert.equal(await page.evaluate(()=>S.historyRefreshPending?.['agent-feed']),undefined);
+      await page.unroute('**/history?conv=agent-feed');
+    }
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({ok:true,scenarios:7}));
+    console.log(JSON.stringify({ok:true,scenarios:9}));
   }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1);});

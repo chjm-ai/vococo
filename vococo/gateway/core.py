@@ -506,7 +506,8 @@ async def _finish_task_turn(task_id: str | None, status: str, text: str) -> None
         import anyio
 
         with anyio.CancelScope(shield=True):
-            await task_events.emit_terminal(task_id)
+            # 前台这一轮由调用方的 sink 收尾，任务通知不能再发一条 done。
+            await task_events.emit_terminal(task_id, emit_session=False)
             task_runner._maybe_start_next()
 
 

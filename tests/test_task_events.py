@@ -61,3 +61,28 @@ async def test_emit_terminal_calls_all_handlers_even_if_one_fails(clean_task_eve
     await task_events.emit_terminal("task-2")
 
     assert calls == ["failed", "task-2"]
+
+
+@pytest.mark.anyio
+async def test_stream_failure_does_not_skip_terminal_handlers(clean_task_events, monkeypatch):
+    from vococo.core.agent import AgentReply
+
+    class BrokenSink:
+        async def done(self, reply, turn_id):
+            raise RuntimeError("展示层故障")
+
+    events, calls = [], []
+    task_events.register_main_event_bridge(events.append)
+    monkeypatch.setattr(task_events.tasks, "get", lambda _: {
+        "id": "broken", "status": "done", "kind": "chat", "result_full": "完成",
+    })
+
+    async def handler(task_id):
+        calls.append(task_id)
+
+    task_events.register_terminal_handler(handler)
+    await task_events.emit_terminal("broken", sink=BrokenSink(),
+                                    reply=AgentReply("完成", [], None, False), turn_id=7)
+    assert calls == ["broken"]
+    assert events == [{"conv": "task:broken", "type": "done", "text": "完成",
+                       "turn_id": 7, "is_error": False}]

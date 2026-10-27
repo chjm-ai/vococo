@@ -158,8 +158,9 @@ class _WebSink(Sink):
     这才是 Claude Code 那种"说一句、跑个工具、接着说"的画面。
     """
 
-    def __init__(self, adapter: "WebAdapter", conv: str):
+    def __init__(self, adapter: "WebAdapter", conv: str, *, notify_done: bool = True):
         super().__init__()
+        self._notify_done = notify_done
         self.a = adapter
         self.conv = conv
         self._seg = 0  # 当前文字段序号
@@ -189,11 +190,17 @@ class _WebSink(Sink):
             {"conv": self.conv, "type": "text", "seg": self._seg, "text": self._text}
         )
 
+    def _flush_text(self) -> None:
+        # 切段前补齐限流期间攒下的尾字，否则工具前一句会在实时画面里缺字。
+        if self._text:
+            self.a._emit({"conv": self.conv, "type": "text", "seg": self._seg, "text": self._text})
+
     async def tool_started(
         self, name: str, tool_id: str = "", parent_id: str | None = None
     ) -> None:
         # 顶层工具启动且当前段已有文字 → 切段,之后的正文进新文字块(交错排布)
         if not parent_id and self._text:
+            self._flush_text()
             self._seg += 1
             self._text = ""
         # parent 非空 = 子代理(Task)内部的工具,前端嵌进对应 Task 卡片
@@ -251,6 +258,7 @@ class _WebSink(Sink):
     async def compacted(self, trigger: str = "") -> None:
         # CLI 自动压缩了上下文:压缩点之后正文进新段(旧段已定格),前端插系统条
         if self._text:
+            self._flush_text()
             self._seg += 1
             self._text = ""
         self.a._emit({"conv": self.conv, "type": "compact", "trigger": trigger})
@@ -319,6 +327,8 @@ class _WebSink(Sink):
                 "input_fresh_total": meta.get("input_fresh_total", 0),
             }
         )
+        if not self._notify_done:
+            return  # 后台任务已有独立的通知及未读处理，不能重复推送。
         # 场景①「回复完成」:人不在页面时弹系统通知(前台由 SW 自行抑制)
         title = "主会话" if self.conv == "main" else (
             session_store.get_title(key) or config.PERSONA_NAME
@@ -552,8 +562,11 @@ class WebAdapter:
         self._boot_id = f"{int(time.time() * 1000)}-{os.getpid()}"
         # 注册后台任务桥接:task: 状态变化经主 SSE 推给前端,让侧栏小红点闪烁。
         # 懒加载避免非语音场景循环依赖;bridge 本身只要 _emit,不依赖 voice 包的其他模块。
-        from ...voice import notify as _voice_notify
-        _voice_notify.register_main_event_bridge(self._emit)
+        from ...core import task_events
+        task_events.register_main_event_bridge(self._emit)
+        task_events.register_stream_sink_factory(
+            lambda key: _WebSink(self, _conv_id_for_key(key), notify_done=False)
+        )
 
     def set_cancel_callback(self, cb: Callable[[str], bool]) -> None:
         self._cancel_callback = cb
