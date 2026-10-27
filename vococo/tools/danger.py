@@ -1133,6 +1133,14 @@ def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | Non
     「我知道风险,别再问我」,不该连带关掉这几条「关了程序就会错」的防线。
     CONTEXT.md「危险分级(Risk Tier)」条目描述的三档模型专指 classify() 的输出。
     """
+    if tool_name in {"ListAgents", "SendMessage"}:
+        return _deny(
+            "Claude 原生通信工具不能查询或续接 vococo 保存的聊天。请改用 "
+            "mcp__vococo__list_sessions 按标题/ID 查找、query_session 查对话、"
+            "continue_session 发送指令；这些工具只支持同项目、同 Agent 的普通 Web 会话。"
+            "持久 Agent 委托请用 list_delegate_agents / delegate_to_agent。"
+            "原生列表为空不代表聊天不存在，不能据此要求用户先启动会话。"
+        )
     if tool_name == "Workflow":
         return _deny_workflow()
     if tool_name == "Bash" and _targets_vococo_process(

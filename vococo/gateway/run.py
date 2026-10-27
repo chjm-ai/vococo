@@ -72,6 +72,18 @@ class GatewayRunner:
         self.models[session_key] = model
 
     async def _dispatch(self, adapter: Adapter, inc: Incoming) -> None:
+        from ..tools import sessions
+
+        try:
+            # 入队后也可能出现待答问题，跨会话指令不能变成审批/提问的答案。
+            if sessions.is_queued_instruction(inc.session_key, inc.text) and clarify.has_pending(inc.session_key):
+                await adapter.send(inc.chat_id, "跨会话指令未执行：目标正在等待用户回答，请处理后重试。")
+                return
+            await self._dispatch_one(adapter, inc)
+        finally:
+            sessions.dispatch_finished(inc.session_key, inc.text)
+
+    async def _dispatch_one(self, adapter: Adapter, inc: Incoming) -> None:
         # clarify 回复必须在【拿锁前】拦截:发起 ask_user 的那一轮还占着会话锁、
         # 阻塞等回答,若这里再去抢同一把锁就死锁。
         if await self._try_clarify(adapter, inc):

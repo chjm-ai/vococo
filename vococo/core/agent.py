@@ -1230,8 +1230,13 @@ async def stream_turn(
         if mcp_on and "vococo" in options.mcp_servers:
             delegation_tools = delegation.build_tools(
                 session_key, list(options.disallowed_tools or [])) if session_key else []
+            from ..tools import sessions
+
+            session_tools = sessions.build_tools(
+                session_key, list(options.disallowed_tools or [])) if session_key and session_key.startswith("web:") else []
             options.mcp_servers["vococo"] = build_mcp_servers(
-                subagent_tool=child_tool, delegation_tools=delegation_tools)["vococo"]
+                subagent_tool=child_tool, delegation_tools=delegation_tools,
+                session_tools=session_tools)["vococo"]
         return options
 
     async def _stream_once(

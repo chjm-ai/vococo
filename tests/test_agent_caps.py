@@ -124,3 +124,26 @@ async def test_stream_turn_without_agent_unchanged(clients, monkeypatch):
     assert "global-skill" in opts.skills
     assert opts.mcp_servers == {}
     assert opts.disallowed_tools == ["Write"]
+
+
+@pytest.mark.anyio
+async def test_web_session_tools_reach_sdk_with_bound_source(clients, env, monkeypatch):
+    from vococo.tools import builtin
+
+    captured = []
+    def server(name, tools):
+        captured.append(tools)
+        return {}
+
+    monkeypatch.setattr(agent.settings_store, "vococo_enabled", lambda: True)
+    monkeypatch.setattr(builtin, "create_sdk_mcp_server", server)
+    monkeypatch.setattr(agent, "build_mcp_servers", builtin.build_mcp_servers)
+    source = "web:bound-source"
+    agent.session_store.start_turn(source, "查找已有会话")
+    await _turn(source)
+    assert "vococo" in clients[0].options.mcp_servers
+    tools = {t.name: t for t in captured[-1]}
+    assert {"list_sessions", "query_session", "continue_session"} <= tools.keys()
+    result = await tools["list_sessions"].handler({})
+    import json
+    assert json.loads(result["content"][0]["text"])["source_session"] == source
