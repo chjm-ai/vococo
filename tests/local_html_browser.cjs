@@ -87,10 +87,12 @@ const path=require('node:path');
     assert.match(await page.locator('#local-link-test').textContent(),/不存在/);
     const count=requests;await page.locator('#local-link-test').getByRole('button',{name:'重试',exact:true}).click();
     await page.waitForTimeout(100);assert.equal(requests,count+1);
-    for(const [target,message] of [['large.html','200KB'],['bad.html','UTF-8'],[path.dirname(root)+'/outside.html','无权']]){
+    // 共用快照读取器按字节报告限制；这里验证拒绝原因，不绑定旧版 200KB 文案。
+    for(const [target,message] of [['large.html','200000 字节'],['bad.html','UTF-8'],[path.dirname(root)+'/outside.html','无权']]){
       await render(target);await page.locator('#local-link-test .doclink').click();
       await page.locator('#local-link-test').getByRole('button',{name:'重试',exact:true}).waitFor();
-      assert.ok((await page.locator('#local-link-test').textContent()).includes(message));
+      const actual=await page.locator('#local-link-test').textContent();
+      assert.ok(actual.includes(message),`${target} 应显示 ${message}，实际为 ${actual}`);
     }
     await page.screenshot({path:path.join(screenshots,'local-html-permission-error.png')});
     await render('notes.md');await page.locator('#local-link-test .doclink').click();
