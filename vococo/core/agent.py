@@ -44,6 +44,7 @@ from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
 from . import client_pool, reviewer, subagent
 from .tasks import is_sdk_task_tool
+from .token_usage import StreamUsage
 from .prompt import build_system_prompt
 
 
@@ -1272,6 +1273,8 @@ async def stream_turn(
         output_tokens = 0
         num_turns = 0
         stream_tokens = 0  # 流式累计的新鲜 token(见 token_budget)
+        stream_usage = StreamUsage()
+        input_usage_confirmed = False
         budget_hit = False
         budget_warned = False
         used_model = resolved_model
@@ -1417,17 +1420,11 @@ async def stream_turn(
                                         pending_subagents.add(tid)
                                 if not is_sdk_task_tool(name):
                                     yield ToolStarted(name, tool_id=tid, parent_id=pid)
-                        elif etype in ("message_start", "message_delta"):
-                            # 每次模型调用(含子代理)开头报输入、结尾报输出 → 累计新鲜 token。
-                            # 缓存复读不算:它便宜,且每步都会重复计入,算进来会严重虚高。
+                        elif etype in ("message_start", "message_delta", "message_stop"):
                             if etype == "message_start":
-                                u = (ev.get("message") or {}).get("usage") or {}
-                                stream_tokens += int(u.get("input_tokens") or 0) + int(
-                                    u.get("cache_creation_input_tokens") or 0
-                                )
-                            else:
-                                u = ev.get("usage") or {}
-                                stream_tokens += int(u.get("output_tokens") or 0)
+                                input_usage_confirmed = False
+                            stream_usage.observe(ev, pid)
+                            stream_tokens = stream_usage.tokens
                             report_parent_usage(stream_tokens)
                             if (
                                 token_budget and not budget_warned
@@ -1530,6 +1527,7 @@ async def stream_turn(
                         sess_id = getattr(msg, "session_id", None) or sess_id
                         num_turns = int(getattr(msg, "num_turns", 0) or 0)
                         u = getattr(msg, "usage", None) or {}
+                        input_usage_confirmed = "input_tokens" in u
                         in_t = int(u.get("input_tokens", 0) or 0)
                         out_t = int(u.get("output_tokens", 0) or 0)
                         cache_r = int(u.get("cache_read_input_tokens", 0) or 0)
@@ -1634,17 +1632,13 @@ async def stream_turn(
                         compact_result_seen = False
                         compact_base = max(stream_tokens, turn_tokens)
                         compact_tokens = 0
+                        compact_usage = StreamUsage()
                         with anyio.move_on_after(120):
                             async for msg in msgs:
                                 if usage_callback is not None and isinstance(msg, StreamEvent):
                                     event = msg.event if isinstance(msg.event, dict) else {}
-                                    if event.get("type") == "message_start":
-                                        usage = (event.get("message") or {}).get("usage") or {}
-                                        compact_tokens += int(usage.get("input_tokens") or 0) + int(
-                                            usage.get("cache_creation_input_tokens") or 0
-                                        )
-                                    elif event.get("type") == "message_delta":
-                                        compact_tokens += int((event.get("usage") or {}).get("output_tokens") or 0)
+                                    compact_usage.observe(event, getattr(msg, "parent_tool_use_id", None))
+                                    compact_tokens = compact_usage.tokens
                                     report_parent_usage(compact_base + compact_tokens)
                                 if (
                                     isinstance(msg, SystemMessage)
@@ -1690,13 +1684,21 @@ async def stream_turn(
                 pooled = True
         finally:
             async def cleanup_turn():
+                nonlocal stream_tokens
                 try:
-                    # SDK 的 disconnect 只 cancel MCP worker，不等待其独立子 client 清理。
-                    # 必须在释放父轮/会话锁或重试前等待本轮所有子任务真正结束。
-                    await child_usage.close()
+                    if not input_usage_confirmed:
+                        stream_usage.finish()
+                        stream_tokens = stream_usage.tokens
+                        if not usage_callback_failed:
+                            report_parent_usage(stream_tokens)
                 finally:
-                    if not pooled:
-                        await client_pool.discard(client)
+                    try:
+                        # SDK 的 disconnect 只 cancel MCP worker，不等待其独立子 client 清理。
+                        # 必须在释放父轮/会话锁或重试前等待本轮所有子任务真正结束。
+                        await child_usage.close()
+                    finally:
+                        if not pooled:
+                            await client_pool.discard(client)
 
             await subagent.wait_cleanup(cleanup_turn())
 

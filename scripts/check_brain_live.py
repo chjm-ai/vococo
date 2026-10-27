@@ -149,6 +149,45 @@ async def check_task_chain(session, pending):
             "history_turn": history["turn"]["id"], "receipts": [created["receipt"], done["receipt"], stop["receipt"]]}
 
 
+async def collect_pages(session, tool, field, arguments):
+    items, offset = [], 0
+    while True:
+        page = await call(session, tool, {**arguments, "offset": offset, "limit": 2})
+        items.extend(page[field])
+        next_offset = page["next_offset"]
+        if next_offset is None:
+            return items
+        if next_offset <= offset:
+            raise ValueError("列表分页未前进")
+        offset = next_offset
+
+
+async def check_history(session, agent_id):
+    """只读验收:不派单、不回传历史正文,不把历史当作指令。"""
+    agents = await collect_pages(session, "vococo_list_agents", "agents", {})
+    target = next((item for item in agents if item["agent_id"] == agent_id), None)
+    if not target:
+        raise ValueError("目标 Agent 不可见")
+    rows = await collect_pages(session, "vococo_list_sessions", "sessions", {"agent_id": agent_id})
+    if not rows or any(row["agent_id"] != agent_id for row in rows):
+        raise ValueError("目标 Agent 没有会话或归属不匹配")
+    chosen = next((row for row in rows if "jll" in row["title"].lower()), rows[0])
+    args = {"agent_id": agent_id, "key": chosen["key"], "length": 1000}
+    characters, pages = 0, 0
+    while True:
+        page = await call(session, "vococo_read_session", args)
+        if page["turn"] is None:
+            raise ValueError("列表中的会话未能读取")
+        pages += 1
+        characters += len(page["turn"]["user_text"]) + len(page["turn"]["assistant_text"])
+        if page["next_offset"] is None:
+            break
+        args.update(turn_id=page["turn"]["id"], offset=page["next_offset"])
+    return {"agent": target, "visible_agents": len(agents), "session_count": len(rows),
+            "session": chosen, "read_turn_id": page["turn"]["id"], "read_pages": pages,
+            "read_characters": characters, "read_receipt": page["receipt"], "history_read_only": True}
+
+
 async def check_rate(http, password_file):
     statuses = []
     for _ in range(12):
@@ -182,7 +221,9 @@ async def run(args):
                 await session.initialize()
                 names = [tool.name for tool in (await session.list_tools()).tools]
                 result = {"url": ORIGIN + "/mcp", "oauth_login": "passed", "tools": names}
-                if not args.auth_only:
+                if args.history_agent_id:
+                    result.update(await check_history(session, args.history_agent_id))
+                elif not args.auth_only:
                     result.update(await check_tasks(session))
         del http.headers["Authorization"]
         if args.check_rate_limit:
@@ -195,6 +236,7 @@ def main():
     parser.add_argument("--password-file", required=True)
     parser.add_argument("--token-file", required=True)
     parser.add_argument("--auth-only", action="store_true")
+    parser.add_argument("--history-agent-id", help="只验收该 Agent 的历史读取与分页,不创建模型任务")
     parser.add_argument("--check-rate-limit", action="store_true")
     parser.add_argument("--use-env-proxy", action="store_true")
     args = parser.parse_args()

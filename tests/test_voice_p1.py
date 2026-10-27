@@ -290,6 +290,64 @@ async def test_dispatch_runs_immediately_and_writes_done(voice_db, monkeypatch):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("partial", ["", "已检查三个发件箱，发送结果待核实。"])
+async def test_budget_stop_preserves_output_and_explains_safe_continuation(voice_db, monkeypatch, partial):
+    calls = []
+
+    async def fake_stream_turn(*args, **kwargs):
+        calls.append(kwargs)
+        yield Done(AgentReply(
+            text=partial, tool_calls=[], cost_usd=None, is_error=True,
+            error="超出本次任务的 token 预算", budget_exceeded=True,
+            stream_tokens=2001, turn_tokens=2001, sdk_session_id="budget-sdk",
+        ))
+
+    monkeypatch.setattr(executor, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(executor, "_cron_job_budget", lambda _: None)
+    monkeypatch.setattr(config, "TASK_TOKEN_BUDGET", 2000)
+    monkeypatch.setattr(config, "BG_DAILY_TOKEN_BUDGET", 5000)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+    task = executor.dispatch("预算测试", "只处理未完成项", origin="voice")
+    await executor._running[task["id"]]
+
+    row = tasks.get(task["id"])
+    assert row["status"] == "failed"
+    assert partial in row["result_full"]
+    assert "处理方案" in row["result_full"]
+    assert "压缩不恢复" in row["result_full"]
+    assert "外部回执" in row["result_full"]
+    assert "未自动续跑" in row["result_summary"]
+    key = tasks.session_key(task["id"])
+    assert session_store.get_sdk_session_id(key) == "budget-sdk"
+    turn = session_store.load_recent(key)[-1]
+    assert "处理方案" in turn.assistant
+    assert tasks.daily_usage() == 2001
+    assert len(calls) == 1
+    assert executor._token_budget(row) == (2000, "")
+
+
+@pytest.mark.anyio
+async def test_daily_budget_stop_explains_recovery_without_calling_model(voice_db, monkeypatch):
+    async def unexpected_stream(*args, **kwargs):
+        pytest.fail("当天额度耗尽时不能启动模型或业务工具")
+        yield  # noqa: B018
+
+    monkeypatch.setattr(executor, "stream_turn", unexpected_stream)
+    monkeypatch.setattr(config, "BG_DAILY_TOKEN_BUDGET", 5000)
+    monkeypatch.setattr(notify, "on_task_terminal", _noop_coro)
+    tasks.add_daily_usage(5000)
+    task = executor.dispatch("每日预算测试", "不要重放业务", origin="voice")
+    await executor._running[task["id"]]
+    row = tasks.get(task["id"])
+    assert row["status"] == "failed"
+    assert "本轮不会因此自动续跑" in row["result_full"]
+    assert "核对已有结果" in row["result_full"]
+    assert "不能靠压缩恢复额度" in row["result_full"]
+    assert tasks.daily_usage() == 5000
+    assert "本轮不会因此自动续跑" in session_store.load_recent(tasks.session_key(task["id"]))[-1].assistant
+
+
+@pytest.mark.anyio
 async def test_dispatch_persists_full_conversation_to_shared_session_store(
     voice_db, monkeypatch
 ):

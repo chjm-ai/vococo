@@ -115,6 +115,56 @@ async def test_zero_budget_means_unlimited(fake_clients):
     assert not reply.budget_exceeded and not fake_clients[0].interrupted
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("start, deltas, budget, expected, exceeded", [
+    # Codex 开头只有整段输入估计，结尾才报告缓存命中和实际新鲜输入。
+    ({"input_tokens": 100_000}, [{"input_tokens": 1000, "cache_read_input_tokens": 99_000,
+                                  "output_tokens": 200}], 2000, 1200, False),
+    ({"input_tokens": 0}, [{"input_tokens": 1000, "output_tokens": 200}], 1100, 1200, True),
+    # 原生 Anthropic 的输出用量是消息内累计快照，不是每次 delta 的增量。
+    ({"input_tokens": 1000, "cache_creation_input_tokens": 500, "cache_read_input_tokens": 9999},
+     [{"output_tokens": 100}, {"output_tokens": 200}], 1800, 1700, False),
+])
+async def test_usage_snapshots_do_not_charge_cached_estimates(
+    fake_clients, monkeypatch, start, deltas, budget, expected, exceeded,
+):
+    class SnapshotClient(BudgetFakeClient):
+        async def query(self, *args, **kwargs):
+            self.pending.put_nowait(_ev({"type": "message_start", "message": {"usage": start}}))
+            for usage in deltas:
+                self.pending.put_nowait(_ev({"type": "message_delta", "usage": usage}))
+            self.pending.put_nowait(_result())
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", lambda options=None: SnapshotClient(options, registry=fake_clients))
+    reply = await _run(budget)
+    assert reply.stream_tokens == expected
+    assert reply.budget_exceeded is exceeded
+    assert fake_clients[-1].interrupted is exceeded
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("missing_result", [True, False])
+async def test_unconfirmed_input_is_not_lost_when_stream_ends(fake_clients, monkeypatch, missing_result):
+    class BrokenClient(BudgetFakeClient):
+        def receive_messages(self):
+            async def messages():
+                yield _ev({"type": "message_start", "message": {"usage": {"input_tokens": 25}}})
+                if not missing_result:
+                    result = _result()
+                    result.usage = None
+                    yield result
+            return messages()
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", lambda options=None: BrokenClient(options, registry=fake_clients))
+    recorded = []
+    events = [ev async for ev in agent.stream_turn(
+        [], "测试断流", session_key="task:broken-budget", token_budget=100,
+        usage_callback=recorded.append,
+    )]
+    assert events[-1].reply.stream_tokens == 25
+    assert recorded == [25]
+
+
 # ── task_runner 取预算 ──────────────────────────────────────────────────
 @pytest.fixture
 def task_db(tmp_path, monkeypatch):

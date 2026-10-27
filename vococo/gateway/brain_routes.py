@@ -9,6 +9,7 @@ import re
 
 from aiohttp import web
 
+from .. import config
 from ..core import task_runner, tasks
 from ..memory import agents, session_store
 from ..tools import danger
@@ -27,9 +28,12 @@ _FIELDS = {
     "create_task": ({"title", "prompt", "idempotency_key"}, set()),
     "get_task": ({"id"}, {"offset", "length"}),
     "cancel_task": ({"id"}, set()),
-    "list_sessions": (set(), {"offset", "limit"}),
-    "read_session": ({"key"}, {"before_id", "turn_id", "offset", "length"}),
+    "list_agents": (set(), {"offset", "limit"}),
+    "list_sessions": (set(), {"agent_id", "all_agents", "offset", "limit"}),
+    "read_session": ({"key"}, {"agent_id", "before_id", "turn_id", "offset", "length"}),
 }
+# 只读接口允许访问的 Agent:这里出现即代表本连接可见。派单仍只绑固定开发 Agent。
+READABLE_AGENTS = "VOCOCO_BRAIN_READABLE_AGENT_IDS"  # 逗号分隔;省略=全部 Agent
 _PROXY_HEADERS = {"forwarded", "origin", "via", "x-real-ip", "true-client-ip",
                   "x-original-url", "x-rewrite-url"}
 
@@ -125,24 +129,28 @@ def _registry():
     return connection
 
 
-def _access(agent: dict) -> dict:
+def _access(agent: dict, connection: str = "") -> dict:
     source = agents.main_session_key(agent)
     runtime = agents.runtime_for_session(source)
     denied = sorted(set([*DENIED, *(runtime.get("disallowed_tools") or [])]))
-    return {"session": source, "mode": "standard", "remote_brain": True, "denied": denied}
+    access = {"session": source, "mode": "standard", "remote_brain": True, "denied": denied}
+    if connection:
+        # 连接身份(MCP 前端已按上游凭据哈希):任务终态事件只投给同一连接。
+        access["connection"] = connection[:64]
+    return access
 
 
-def _create_atomic(data: dict, agent: dict) -> dict:
+def _create_atomic(data: dict, agent: dict, connection: str = "") -> dict:
     title, prompt = _text(data, "title", 100), _text(data, "prompt", 60000)
     key = _text(data, "idempotency_key", 128)
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", key):
         _reject(400, "idempotency_key 必须是 8..128 位 ASCII 安全字符")
     payload = json.dumps([title, prompt], ensure_ascii=True)
-    access = _access(agent)
-    connection = _registry()
-    with connection:
-        connection.execute("BEGIN IMMEDIATE")
-        old = connection.execute(
+    access = _access(agent, connection)
+    conn = _registry()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        old = conn.execute(
             "SELECT task_id,payload FROM brain_bridge_tasks WHERE agent_id=? AND idempotency_key=?",
             (AGENT_ID, key),
         ).fetchone()
@@ -155,7 +163,7 @@ def _create_atomic(data: dict, agent: dict) -> dict:
             dispatch_platform="web", dispatch_chat_id=agent["main_conv"], agent_id=AGENT_ID,
             source_session_key=access["session"], source_access=access, commit=False,
         )
-        connection.execute(
+        conn.execute(
             "INSERT INTO brain_bridge_tasks(task_id,agent_id,idempotency_key,payload,source_session_key) VALUES (?,?,?,?,?)",
             (task["id"], AGENT_ID, key, payload, access["session"]),
         )
@@ -205,18 +213,18 @@ def _task_view(task: dict, data: dict) -> dict:
             "cancel_requested": bool(task.get("cancel_requested"))}
 
 
-def _create_task(data: dict, agent: dict) -> dict:
-    task = _create_atomic(data, agent)
+def _create_task(data: dict, agent: dict, connection: str = "") -> dict:
+    task = _create_atomic(data, agent, connection)
     task_runner._maybe_start_next()
     task_runner._notify_activity(task["id"])
     return _task_view(_owned_task(task["id"]), {})
 
 
-def _get_task(data: dict, _agent: dict) -> dict:
+def _get_task(data: dict, _agent: dict, _connection: str = "") -> dict:
     return _task_view(_owned_task(_text(data, "id", 128)), data)
 
 
-def _cancel_task(data: dict, _agent: dict) -> dict:
+def _cancel_task(data: dict, _agent: dict, _connection: str = "") -> dict:
     task = _owned_task(_text(data, "id", 128))
     accepted = task_runner.cancel(task["id"])
     if accepted:
@@ -226,20 +234,95 @@ def _cancel_task(data: dict, _agent: dict) -> dict:
     return _task_view(_owned_task(task["id"]), {})
 
 
-def _owns_session(key: str) -> bool:
+def _history_agents() -> list[dict]:
+    """合并 Agent 目录与全部项目(含隐藏历史),不补写元数据。"""
+    found: dict[str, dict] = {}
+    root = agents.root_dir()
+    if root.is_dir():
+        for path in sorted(root.iterdir()):
+            if not path.is_dir() or not agents.valid_id(path.name) or not agents._read_meta(path.name).get("workdir"):
+                continue
+            agent = agents.get(path.name)
+            if agent:
+                found[agent["id"]] = agent
+    found.setdefault(agents.GENERAL_ID, agents.get(agents.GENERAL_ID))
+    by_hash = {agent["project_hash"]: agent for agent in found.values() if agent.get("project_hash")}
+    # 隐藏只影响侧栏,不撤销历史权限；从项目表补旧项目,避免只读枚举创建 agent.json。
+    rows = session_store._conn().execute("SELECT hash,path FROM projects ORDER BY hash").fetchall()
+    for phash, path in rows:
+        agent = by_hash.get(phash) or agents._build(phash, agents._read_meta(phash), path)
+        found.setdefault(agent["id"], agent)
+    return list(found.values())
+
+
+def _visible_agents() -> list[dict]:
+    """单主人 OAuth 账号的可读范围,不是多租户授权机制。显式空白名单表示全部拒绝。"""
+    allowed = {item.strip() for item in os.environ.get(READABLE_AGENTS, "").split(",") if item.strip()}
+    out = []
+    for agent in _history_agents():
+        if READABLE_AGENTS in os.environ and agent["id"] not in allowed:
+            continue
+        out.append({"agent_id": agent["id"], "name": _clean(agent["name"])[:100],
+                    "task_dispatch": agent["id"] == AGENT_ID})
+    return sorted(out, key=lambda item: item["agent_id"])
+
+
+def _agent_visibility() -> dict[str, dict]:
+    return {item["agent_id"]: item for item in _visible_agents()}
+
+
+def _resolve_agent(data: dict, visibility: dict[str, dict]) -> str:
+    """按 agent_id 定位;省略/null = 固定开发 Agent。不可见与不存在一样回 404。"""
+    agent_id = AGENT_ID if data.get("agent_id") is None else _text(data, "agent_id", 128)
+    if agent_id not in visibility:
+        _reject(404, "Agent 不存在或无权访问")
+    return agent_id
+
+
+def _history_owner(key: str) -> dict | None:
     owner = agents.agent_for_session(key)
-    return bool(owner and owner["id"] == AGENT_ID)
+    if owner:
+        return owner
+    # 隐藏旧项目可能从未配置过 Agent,只读查历史时不应补建/复活配置。
+    phash = config.project_hash_from_key(key)
+    if phash:
+        return next((agent for agent in _history_agents() if agent.get("project_hash") == phash), None)
+    return None
 
 
-def _list_sessions(data: dict, _agent: dict) -> dict:
+def _owns_session(key: str, agent_id: str) -> bool:
+    owner = _history_owner(key)
+    return bool(owner and owner["id"] == agent_id)
+
+
+def _list_agents(data: dict, _agent: dict, _connection: str = "") -> dict:
     offset = _number(data, "offset", 0, 2**63 - 1)
-    limit = _number(data, "limit", 20, 20, 1)
+    limit = _number(data, "limit", 50, 100, 1)
+    items = _visible_agents()
+    end = offset + limit
+    return {"agents": items[offset:end], "next_offset": end if end < len(items) else None,
+            "pagination": "Agent 列表随项目增删变化,非快照"}
+
+
+def _list_sessions(data: dict, _agent: dict, _connection: str = "") -> dict:
+    offset = _number(data, "offset", 0, 2**63 - 1)
+    limit = _number(data, "limit", 20, 100, 1)
+    all_agents = data.get("all_agents", False)
+    if type(all_agents) is not bool or (all_agents and data.get("agent_id") is not None):
+        _reject(400, "all_agents 必须是布尔值,且不能与 agent_id 同时指定")
+    visibility = _agent_visibility()
+    target = None if all_agents else _resolve_agent(data, visibility)
+    owned = []
     rows = session_store._conn().execute(
         "SELECT session_key,MAX(id) AS last_turn_id FROM turns GROUP BY session_key ORDER BY MAX(id) DESC"
     ).fetchall()
-    owned = [{"key": key, "last_turn_id": last_id,
-              "title": _clean(session_store.get_title(key) or "新对话")[:200]}
-             for key, last_id in rows if _owns_session(key)]
+    for key, last_id in rows:
+        owner = _history_owner(key)
+        # 明确指定 agent_id 时,没有归属的会话(通用对话、CLI)不属于任何 Agent,不返回
+        if owner is None or owner["id"] not in visibility or (target and owner["id"] != target):
+            continue
+        owned.append({"agent_id": owner["id"], "key": key, "last_turn_id": last_id,
+                      "title": _clean(session_store.get_title(key) or "新对话")[:200]})
     end = offset + limit
     return {"sessions": owned[offset:end], "next_offset": end if end < len(owned) else None,
             "pagination": "非快照；新增或删除会话可能导致分页重复或遗漏"}
@@ -261,10 +344,11 @@ def _turn_row(data: dict, key: str):
     ).fetchone()
 
 
-def _read_session(data: dict, _agent: dict) -> dict:
+def _read_session(data: dict, _agent: dict, _connection: str = "") -> dict:
     key = _text(data, "key", 512)
-    if not _owns_session(key):
-        _reject(404, "会话不存在或不属于固定 Agent")
+    # 带 agent_id 时按「这个 Agent 名下」定位,防止同名/key 串到别的 Agent;省略则沿用固定开发 Agent
+    if not _owns_session(key, _resolve_agent(data, _agent_visibility())):
+        _reject(404, "会话不存在或不属于该 Agent")
     offset = _number(data, "offset", 0, 2**63 - 1)
     length = _number(data, "length", 8000, 8000, 1)
     row = _turn_row(data, key)
@@ -281,7 +365,7 @@ def _read_session(data: dict, _agent: dict) -> dict:
 
 
 _HANDLERS = {"create_task": _create_task, "get_task": _get_task, "cancel_task": _cancel_task,
-             "list_sessions": _list_sessions, "read_session": _read_session}
+             "list_agents": _list_agents, "list_sessions": _list_sessions, "read_session": _read_session}
 
 
 async def handle_brain(request: web.Request) -> web.Response:
@@ -290,10 +374,19 @@ async def handle_brain(request: web.Request) -> web.Response:
     if operation not in _FIELDS:
         _reject(404, "操作不存在")
     agent = _agent()
+    # 连接身份由本机 MCP 前端(已过 OAuth)按上游凭据哈希写入;缺失只是老版本前端,不影响派单本身。
+    connection = request.headers.get("X-Vococo-Connection", "")
+    if connection and not re.fullmatch(r"[A-Za-z0-9]{8,64}", connection):
+        _reject(400, "连接身份格式无效")
     data = await _payload(request, operation)
-    result = _HANDLERS[operation](data, agent)
+    result = _HANDLERS[operation](data, agent, connection)
     return web.json_response(result, headers={"Cache-Control": "no-store"})
 
 
 def register_routes(app: web.Application) -> None:
+    from . import mcp_events
+
     app.router.add_post("/internal/brain/{operation}", handle_brain)
+    # 远程任务终态 → 事件箱(带签名的 webhook 通知),由本机 MCP 前端投递。
+    mcp_events.register_terminal_hook()
+    app.on_startup.append(mcp_events.start_scanner)

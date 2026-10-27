@@ -18,6 +18,7 @@ from claude_agent_sdk import (
 from .. import config, providers
 from ..gateway import settings_store
 from ..tools import danger
+from .token_usage import StreamUsage
 
 TOOL_NAME = "mcp__vococo__run_subagent"
 # 白名单兼任递归防线：不提供 Skill、MCP、Agent/Task、Workflow、后台或会话控制入口。
@@ -84,20 +85,25 @@ class Usage:
 def _usage_observer(usage: Usage):
     # 每个子调用单独去重，父轮总账共享，不能拿每个 ResultMessage 覆盖并发兄弟的用量。
     fresh = output = cached = 0
+    stream_usage = StreamUsage()
+    result_seen = False
 
     def observe(message) -> None:
-        nonlocal fresh, output, cached
+        nonlocal fresh, output, cached, result_seen
+        if message is None and result_seen:
+            return
         before = fresh, output, cached
-        if isinstance(message, StreamEvent):
-            event = message.event
-            if event.get("type") == "message_start":
-                data = (event.get("message") or {}).get("usage") or {}
-                fresh += int(data.get("input_tokens") or 0) + int(data.get("cache_creation_input_tokens") or 0)
-                cached += int(data.get("cache_read_input_tokens") or 0)
-            elif event.get("type") == "message_delta":
-                output += int((event.get("usage") or {}).get("output_tokens") or 0)
+        if message is None or isinstance(message, StreamEvent):
+            if message is None:
+                stream_usage.finish()
+            else:
+                stream_usage.observe(message.event, getattr(message, "parent_tool_use_id", None))
+            fresh = max(fresh, stream_usage.input_fresh)
+            output = max(output, stream_usage.output_tokens)
+            cached = max(cached, stream_usage.cache_read)
         elif isinstance(message, ResultMessage):
             data = message.usage or {}
+            result_seen = "input_tokens" in data
             fresh = max(fresh, int(data.get("input_tokens") or 0) + int(data.get("cache_creation_input_tokens") or 0))
             output = max(output, int(data.get("output_tokens") or 0))
             cached = max(cached, int(data.get("cache_read_input_tokens") or 0))
@@ -262,18 +268,21 @@ def _child_options(parent: ClaudeAgentOptions, selection: str | None, usage: Usa
 async def _receive(client, usage: Usage) -> dict:
     observe = _usage_observer(usage)
     last_text = ""
-    async for message in client.receive_response():
-        observe(message)
-        if usage.exceeded:
-            return _result("子代理已耗尽父轮 token 预算，已停止。", True)
-        if isinstance(message, AssistantMessage):
-            last_text = "\n".join(block.text for block in message.content if isinstance(block, TextBlock))
-        elif isinstance(message, ResultMessage):
-            text = message.result or last_text
-            if message.is_error:
-                return _result(f"子代理未完成（{message.subtype}）：\n{text}", True)
-            return _result(text or "子代理完成，但没有返回正文。", not bool(text))
-    return _result("子代理消息流提前结束，没有完成回执。", True)
+    try:
+        async for message in client.receive_response():
+            observe(message)
+            if usage.exceeded:
+                return _result("子代理已耗尽父轮 token 预算，已停止。", True)
+            if isinstance(message, AssistantMessage):
+                last_text = "\n".join(block.text for block in message.content if isinstance(block, TextBlock))
+            elif isinstance(message, ResultMessage):
+                text = message.result or last_text
+                if message.is_error:
+                    return _result(f"子代理未完成（{message.subtype}）：\n{text}", True)
+                return _result(text or "子代理完成，但没有返回正文。", not bool(text))
+        return _result("子代理消息流提前结束，没有完成回执。", True)
+    finally:
+        observe(None)
 
 
 async def _run(parent: ClaudeAgentOptions, prompt: str, selection: str | None, timeout: int,

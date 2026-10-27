@@ -130,7 +130,8 @@ def test_workbench_cancel_holds_before_hiding():
 def test_service_worker_cache_version_changes_with_shell_contract():
     sw = STATIC_SW.read_text(encoding="utf-8")
 
-    assert 'const SHELL_CACHE = "vococo-shell-v9";' in sw
+    version = re.search(r'const SHELL_CACHE = "vococo-shell-v(\d+)";', sw)
+    assert version and int(version.group(1)) >= 10
 
 
 def _run_reset_label(tz: str, now: str, targets: list[str]) -> list[str]:
@@ -268,7 +269,8 @@ def test_agent_row_working_is_avatar_bounce_and_unread_is_static_badge():
 
     live = _declarations(styles, ':is(.projgrp.agrow,.conv)[data-state="working"] .agav')
     assert "animation:agsquash" in live and "infinite" in live
-    assert '[data-state="done"]' not in styles and "@keyframes agdone" not in styles
+    done = _declarations(styles, ':is(.projgrp.agrow,.conv)[data-state="done"] .agav')
+    assert "animation" not in done and "@keyframes agdone" not in styles
 
     badge = _declarations(styles, ".projgrp.agrow .agbadge")
     assert "position:absolute" in badge and "background:var(--err)" in badge

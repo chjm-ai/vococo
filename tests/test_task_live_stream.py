@@ -128,7 +128,9 @@ async def test_task_live_stream_in_browser(isolated, monkeypatch):
 
     from vococo import config
     from test_library_integration import _browser_environment
+    from vococo.gateway import mcp_events
 
+    monkeypatch.setattr(mcp_events, "_task_registered", None)
     monkeypatch.setattr(config, "WEB_HOST", "127.0.0.1")
     monkeypatch.setattr(config, "WEB_PORT", 0)
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "task-live-test")

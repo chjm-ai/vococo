@@ -68,8 +68,8 @@ async def test_official_mcp_client_dispatch_idempotency_result_and_cancel(enviro
     app, workdir = environment
     async with session_for(app) as session:
         tools = (await session.list_tools()).tools
-        assert {tool.name for tool in tools} == {"vococo_create_task", "vococo_get_task",
-            "vococo_cancel_task", "vococo_list_sessions", "vococo_read_session"}
+        assert {tool.name for tool in tools} == {"vococo_create_task", "vococo_get_task", "vococo_cancel_task",
+            "vococo_list_agents", "vococo_list_sessions", "vococo_read_session"}
         assert next(t for t in tools if t.name == "vococo_create_task").annotations.readOnlyHint is False
         args = {"title": "隔离派单", "prompt": "只运行测试任务", "idempotency_key": "request-test-001"}
         created = await call(session, "vococo_create_task", args)
@@ -107,6 +107,62 @@ async def test_mcp_history_pagination_rebuilds_text_and_no_tool_events(environme
         assert (await session.call_tool("vococo_read_session", {"key": "web:other-agent"})).isError
 
 
+async def test_mcp_lists_and_reads_other_agents_with_explicit_agent_id(environment):
+    app, workdir = environment
+    other_dir = workdir.parent / "other"
+    other_dir.mkdir()
+    agents._write_meta("d1ee9a7e2b", {"name": "DeepLeaper", "workdir": str(other_dir),
+                                     "execution_mode": "project"})
+    other = agents.get("d1ee9a7e2b")
+    other_key = agents.main_session_key(other)
+    session_store.set_title(other_key, "JLL 项目")
+    turn = session_store.start_turn(other_key, "看看 JLL")
+    session_store.finish_turn(turn, "建议若干")
+    dev_key = agents.main_session_key(agents.get(brain_routes.AGENT_ID))
+    session_store.set_title(dev_key, "开发会话")
+    session_store.start_turn(dev_key, "开发问题")
+    async with session_for(app) as session:
+        ids = {item["agent_id"]: item for item in (await call(session, "vococo_list_agents", {}))["agents"]}
+        assert ids[brain_routes.AGENT_ID]["task_dispatch"] is True
+        assert ids["d1ee9a7e2b"] == {"agent_id": "d1ee9a7e2b", "name": "DeepLeaper", "task_dispatch": False}
+        legacy = await call(session, "vococo_list_sessions", {"limit": 20})
+        assert {row["agent_id"] for row in legacy["sessions"]} == {brain_routes.AGENT_ID}
+        everything = await call(session, "vococo_list_sessions", {"limit": 100, "all_agents": True})
+        assert {row["agent_id"] for row in everything["sessions"]} >= {brain_routes.AGENT_ID, "d1ee9a7e2b"}
+        only_other = await call(session, "vococo_list_sessions", {"agent_id": "d1ee9a7e2b"})
+        assert [row["key"] for row in only_other["sessions"]] == [other_key]
+        # 老调用(不带 agent_id)仍按固定开发 Agent 校验归属
+        assert (await session.call_tool("vococo_read_session", {"key": other_key})).isError
+        assert await call(session, "vococo_read_session", {"key": dev_key}) is not None
+        page = await call(session, "vococo_read_session", {"key": other_key, "agent_id": "d1ee9a7e2b"})
+        assert page["turn"]["user_text"] == "看看 JLL" and page["turn"]["assistant_text"] == "建议若干"
+        # agent_id 与 key 不匹配时不串读
+        assert (await session.call_tool("vococo_read_session",
+                                        {"key": dev_key, "agent_id": "d1ee9a7e2b"})).isError
+        assert (await session.call_tool("vococo_read_session",
+                                        {"key": other_key, "agent_id": "b" * 12})).isError
+        assert (await session.call_tool("vococo_list_sessions", {"agent_id": "b" * 12})).isError
+
+
+async def test_mcp_readable_agents_allowlist(environment, monkeypatch):
+    app, workdir = environment
+    other_dir = workdir.parent / "other"
+    other_dir.mkdir()
+    agents._write_meta("d1ee9a7e2b", {"name": "DeepLeaper", "workdir": str(other_dir),
+                                     "execution_mode": "project"})
+    other_key = agents.main_session_key(agents.get("d1ee9a7e2b"))
+    session_store.start_turn(other_key, "私有问题")
+    monkeypatch.setenv(brain_routes.READABLE_AGENTS, brain_routes.AGENT_ID)
+    async with session_for(app) as session:
+        listed = await call(session, "vococo_list_agents", {})
+        assert [item["agent_id"] for item in listed["agents"]] == [brain_routes.AGENT_ID]
+        assert (await session.call_tool("vococo_list_sessions", {"agent_id": "d1ee9a7e2b"})).isError
+        assert (await session.call_tool("vococo_read_session",
+                                        {"key": other_key, "agent_id": "d1ee9a7e2b"})).isError
+        rows = await call(session, "vococo_list_sessions", {"limit": 100, "all_agents": True})
+        assert all(row["agent_id"] == brain_routes.AGENT_ID for row in rows["sessions"])
+
+
 @pytest.mark.parametrize("token", ["", "wrong-token", BRIDGE])
 async def test_oauth_upstream_secret_is_required(environment, token):
     app, _ = environment
@@ -120,7 +176,8 @@ async def test_mcp_bounds_backend_errors_and_no_secret_logging(environment, monk
     app, _ = environment
     async with session_for(app) as session:
         assert (await session.call_tool("vococo_get_task", {"id": "not-owned"})).isError
-        for args in ({"limit": 21}, {"offset": True}, {"offset": -1}, {"limit": "2"}):
+        for args in ({"limit": 101}, {"offset": True}, {"offset": -1}, {"limit": "2"},
+                     {"agent_id": "b" * 12}):
             assert (await session.call_tool("vococo_list_sessions", args)).isError
         monkeypatch.setenv("VOCOCO_BRAIN_BRIDGE_TOKEN", "changed-secret-" + "n" * 32)
         result = await session.call_tool("vococo_list_sessions", {})

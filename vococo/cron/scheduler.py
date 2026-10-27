@@ -48,8 +48,10 @@ import json
 import os
 import re
 import signal
+import threading
 import time
 import uuid
+from functools import wraps
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -65,7 +67,35 @@ from . import events
 PushFn = Callable[[str, object, str], Awaitable[None]]  # (platform, chat_id, text)
 _UNSET = object()
 
+# 只保护同一进程内的线程;外部读改写入口也必须从 load 到 save 全程持锁。
+# RLock 允许事务内嵌套调用 load_jobs 的迁移和 save_jobs,禁止跨 await 持有。
+JOBS_LOCK = threading.RLock()
 
+
+def _with_jobs_lock(fn):
+    """仅用于同步函数,锁住完整事务而非单次写盘。"""
+    @wraps(fn)
+    def locked(*args, **kwargs):
+        with JOBS_LOCK:
+            return fn(*args, **kwargs)
+    return locked
+
+
+def disable_agent_jobs(agent_id: str) -> list[dict]:
+    """停用 Agent 名下任务,返回本次停用的任务,供删除入口展示回执。"""
+    with JOBS_LOCK:
+        jobs = load_jobs()
+        disabled = [j for j in jobs if j.get("agent_id") == agent_id and j.get("enabled", True)]
+        for job in jobs:
+            if job.get("agent_id") == agent_id:
+                job["enabled"] = False
+                job["next_run_at"] = None
+        if any(j.get("agent_id") == agent_id for j in jobs):
+            save_jobs(jobs)
+        return disabled
+
+
+@_with_jobs_lock
 def load_jobs() -> list[dict]:
     try:
         jobs = json.loads(config.CRON_JOBS_PATH.read_text(encoding="utf-8"))
@@ -87,6 +117,7 @@ def load_jobs() -> list[dict]:
     return jobs
 
 
+@_with_jobs_lock
 def save_jobs(jobs: list[dict]) -> None:
     config.CRON_JOBS_PATH.parent.mkdir(parents=True, exist_ok=True)
     config.CRON_JOBS_PATH.write_text(
@@ -134,6 +165,7 @@ def normalize_execution(
     return "script", command.strip(), (summarize_prompt or "").strip() or None, None
 
 
+@_with_jobs_lock
 def create_job(
     *, name: str, prompt: str, schedule: dict, target: dict | None = None,
     model: str | None = None, cwd: str | None = None, mode: str | None = None,
@@ -176,6 +208,7 @@ def create_job(
     return job
 
 
+@_with_jobs_lock
 def update_job(
     job_id: str, *, name: str, prompt: str, schedule: dict, target: dict | None = None,
     cwd: str | None | object = _UNSET, model: str | None | object = _UNSET,
@@ -228,6 +261,7 @@ def update_job(
     return job
 
 
+@_with_jobs_lock
 def rotate_webhook_secret(job_id: str) -> dict | None:
     """给 webhook 任务换一把新密钥,旧链接立刻失效。不是 webhook 任务 / 不存在 → None。"""
     jobs = load_jobs()
@@ -370,14 +404,15 @@ async def _push_job_result(
     (_on_task_terminal)和脚本任务(_run_script_job)收尾共用,格式/目标完全
     一致(专属会话 + 可选额外目标)。任务定义已被删除时返回 None,不报错、
     不推送(只是一次孤立的收尾)。"""
-    jobs = load_jobs()
-    job = next((j for j in jobs if j.get("id") == job_id), None)
-    if job is None:
-        return None
-    job["last_run_at"] = int(time.time())
-    job["last_status"] = status
-    quiet, notice = _track_failure(job, status, text)
-    save_jobs(jobs)
+    with JOBS_LOCK:
+        jobs = load_jobs()
+        job = next((j for j in jobs if j.get("id") == job_id), None)
+        if job is None:
+            return None
+        job["last_run_at"] = int(time.time())
+        job["last_status"] = status
+        quiet, notice = _track_failure(job, status, text)
+        save_jobs(jobs)
     if silent:  # 静默收尾:只回填运行时间/状态,见 _run_script_job
         return job
     conv = job.get("conv") or f"task:{job_id}"
@@ -554,6 +589,7 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
         task_events._bridge_event({"conv": conv, "type": "done", "silent": silent})
 
 
+@_with_jobs_lock
 def _tick(push: PushFn) -> None:
     """检查到期任务并触发——本身是同步/瞬时的(触发只是把任务丢给后台引擎,不等
     它跑完),不会因为某个任务耗时长而拖住心跳/其它到期任务(2026-07-29 前这里

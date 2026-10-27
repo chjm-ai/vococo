@@ -173,6 +173,10 @@ def _default_avatar(agent_id: str) -> dict:
     }
 
 
+# 删掉的 Agent 家目录挪进这里,不真删(可回滚);所有扫家目录的枚举都要跳过它
+DELETED_DIR = ".deleted"
+
+
 def _read_meta(agent_id: str) -> dict:
     try:
         return json.loads((home(agent_id) / "agent.json").read_text(encoding="utf-8"))
@@ -261,15 +265,19 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
 def list_agents() -> list[dict]:
     """通用 Agent + 每个可见项目各一个(按项目排序)。
 
-    项目还没有 agent.json 的,这里顺手建一个(id = 项目哈希),以后改名/换头像都落在它上面。
+    只有配置过名称或存在 AGENT.md 的项目才列出,不自动补建空壳。
     新建 Agent 时 id 不是项目哈希(见 create),所以另按工作目录反查一遍。"""
     out = [_build(GENERAL_ID, _read_meta(GENERAL_ID), None)]
     by_hash = _agents_by_project_hash()
     for p in projects.list_projects():
-        aid = by_hash.get(p["hash"])
-        if aid is None:
-            aid = p["hash"]
-            meta = {"workdir": p["path"], "created_at": time.time()}
+        aid = by_hash.get(p["hash"], p["hash"])
+        # 已落 agent.json 的历史空壳也要跳过,不能只检查未建目录的项目
+        if not _read_meta(aid).get("name") and not (home(aid) / "AGENT.md").is_file():
+            continue
+        if p["hash"] not in by_hash:
+            meta = _read_meta(aid)
+            meta.update(workdir=p["path"])
+            meta.setdefault("created_at", time.time())
             _write_meta(aid, meta)
             by_hash[p["hash"]] = aid
         out.append(_build(aid, _read_meta(aid), p["path"]))
@@ -283,7 +291,7 @@ def _agents_by_project_hash() -> dict[str, str]:
     if not r.is_dir():
         return out
     for d in r.iterdir():
-        if not d.is_dir() or d.name == GENERAL_ID or not valid_id(d.name):
+        if not d.is_dir() or d.name == GENERAL_ID or d.name == DELETED_DIR or not valid_id(d.name):
             continue
         wd = _read_meta(d.name).get("workdir")
         if wd:
@@ -292,13 +300,14 @@ def _agents_by_project_hash() -> dict[str, str]:
 
 
 def _materialize(phash: str) -> dict:
-    """项目还没有 agent.json → 以项目哈希为 id 落一份(和 list_agents 里的自动补建同一规则)。"""
+    """显式访问可见项目时按项目哈希落配置;隐藏项目不能补建,避免删除后复活。"""
     meta = _read_meta(phash)
     if not meta.get("workdir"):
-        path = projects.path_for_hash(phash)
+        path = next((p["path"] for p in projects.list_projects() if p["hash"] == phash), None)
         if not path:
             return {}
-        meta = {"workdir": path, "created_at": time.time()}
+        meta.update(workdir=path)
+        meta.setdefault("created_at", time.time())
         _write_meta(phash, meta)
     return meta
 
@@ -312,6 +321,42 @@ def get(agent_id: str) -> dict | None:
     if not meta.get("workdir"):
         return None
     return _build(agent_id, meta, meta["workdir"])
+
+
+def delete(agent_id: str) -> dict:
+    """停用任务、隐藏项目、归档配置;工作目录与会话历史保留。"""
+    from ..cron import scheduler
+
+    with _UPDATE_LOCK, scheduler.JOBS_LOCK:
+        if agent_id == GENERAL_ID:
+            raise ValueError("通用 Agent 不能删除")
+        # 删除只接受真实配置 id,不能用项目哈希临时补建另一个 Agent。
+        meta = _read_meta(agent_id)
+        if not meta.get("workdir"):
+            raise ValueError("Agent 不存在")
+        a = _build(agent_id, meta, meta["workdir"])
+        if Path(a["workdir"]).resolve() == home(agent_id).resolve():
+            raise ValueError("工作目录与配置目录重合,请先迁移工作目录")
+        jobs = scheduler.disable_agent_jobs(agent_id)
+        projects.hide_project(a["project_hash"])
+        _archive_home(a)
+        return {"id": agent_id, "name": a["name"],
+                "disabled_jobs": [j.get("name") or j.get("id") for j in jobs]}
+
+
+def _archive_home(agent: dict) -> None:
+    """旧版工作目录可能在家目录内,必须原地保留而不是跟配置一起搬走。"""
+    d = home(agent["id"])
+    archive = root_dir() / DELETED_DIR / f"{agent['id']}-{time.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    workdir = Path(agent["workdir"]).resolve()
+    if not workdir.is_relative_to(d.resolve()):
+        d.rename(archive)
+        return
+    archive.mkdir()
+    for child in d.iterdir():
+        if not workdir.is_relative_to(child.resolve()):
+            child.rename(archive / child.name)
 
 
 def by_project_hash(phash: str) -> dict | None:
@@ -478,7 +523,15 @@ def review_job(agent_id: str) -> dict | None:
 
 
 def ensure_goal_review(agent_id: str) -> dict | None:
-    """目标有内容、还没挂复盘任务 → 挂一条每周复盘(只建一次;之后改时间/停用都在「定时」里改)。"""
+    """查重、创建和补角色共用任务配置锁,不让并发操作覆盖新配置。"""
+    from ..cron import scheduler
+
+    with scheduler.JOBS_LOCK:
+        return _ensure_goal_review(agent_id)
+
+
+def _ensure_goal_review(agent_id: str) -> dict | None:
+    """目标有内容、还没挂复盘任务 → 挂一条每周复盘(只建一次)。"""
     from ..cron import scheduler
 
     a = get(agent_id)

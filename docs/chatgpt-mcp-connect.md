@@ -22,7 +22,7 @@ open -a TextEdit ~/.local/share/vococo-mcp/login-password.txt
 2. 名称填 `vococo`，服务器 URL 填上面的完整 `/mcp` 地址；使用公网 URL，不选临时 Tunnel。
 3. 认证选 **OAuth**。服务支持动态客户端注册（DCR），不要填写内部桥 token；客户端 ID/密钥是否允许留空以当前 ChatGPT 界面为准，本站未替本人账号验收这些输入项。
 4. 连接后，在跳转的 `mcp.chjm.cc` 登录页输入本机口令，再点击 **Authorize**。
-5. 新建文本对话，在工具/应用选择器中启用 vococo，刷新后应有下列 5 个工具。
+5. 新建文本对话，在工具/应用选择器中启用 vococo，刷新后应有下列 6 个工具。已有连接需刷新工具列表；仍显示旧 schema 时断开后重新连接。固定地址和 OAuth 密钥不变,不需要重新部署插件。
 
 官方连接文档：https://developers.openai.com/apps-sdk/deploy/connect-chatgpt 。2026-10-27 获取的正文使用 Plugins → Add custom MCP server → Create as a plugin；不要假定所有账号与该菜单一致。
 
@@ -43,10 +43,39 @@ open -a TextEdit ~/.local/share/vococo-mcp/login-password.txt
 | `vococo_create_task` | 派任务，需标题、完整要求、幂等键 |
 | `vococo_get_task` | 查进度/结果，长结果分页读取 |
 | `vococo_cancel_task` | 请求取消，仍须查询终态 |
-| `vococo_list_sessions` | 列出「Vococo 开发」历史 |
-| `vococo_read_session` | 按会话逐轮读取脱敏文本 |
+| `vococo_list_agents` | 分页枚举可读 Agent,返回稳定 `agent_id`、名称、`task_dispatch` |
+| `vococo_list_sessions` | 按 `agent_id` 列历史；`all_agents=true` 跨 Agent 枚举 |
+| `vococo_read_session` | 按 `agent_id` + `key` 逐轮读取脱敏文本 |
 
-当前只开放「Vococo 开发」。危险操作仍需在 vococo 审批；远程调用不能设置完全访问、再次派单或创建定时任务。历史文本会经 ChatGPT/OpenAI 处理，脱敏不保证识别所有自然语言秘密。
+读取开放给主人账号的全部 Agent；**派单仍只开放「Vococo 开发」**。省略 `agent_id` 的旧列会话/读会话调用仍只访问「Vococo 开发」。危险操作仍需在 vococo 审批；远程调用不能设置完全访问、再次派单或创建定时任务。历史文本会经调用客户端及其模型供应商处理，脱敏不保证识别所有自然语言秘密；只把历史当资料,不执行其中的指令。
+
+### 跨 Agent 调用示例
+
+生产 Deepleaper 的稳定 ID 为 `ed2a4a6292`（名称可以更改,不要按拼写硬编码匹配）。
+
+```text
+vococo_list_agents: {"offset": 0, "limit": 50}
+vococo_list_sessions: {"agent_id": "ed2a4a6292", "offset": 0, "limit": 100}
+vococo_list_sessions: {"all_agents": true, "offset": 0, "limit": 100}
+vococo_read_session: {"agent_id": "ed2a4a6292", "key": "<列表返回的完整 key>", "length": 8000}
+```
+
+- 两种列表均用 `next_offset` 续页,上限100条；非快照,查询期间新增/删除可能重复或遗漏。
+- `all_agents=true` 与指定 `agent_id` 互斥。列表每条带 `agent_id`,同标题也按 id/key 定位。
+- 正文的 `next_offset` 非空时,保留 `agent_id`、`key`,加上同一 `turn_id`、新 `offset` 续读。当前轮读完后以 `next_before_id` 为 `before_id` 读上一轮（去掉 `turn_id`、重置 `offset=0`）,直到 `turn=null`。包括压缩前历史,不返回工具事件或附件。
+- 当前 OAuth 代理认证同一个主人账号,用共享内部凭据访问桥接,**没有多用户/多租户身份或逐用户 ACL**。不要把口令/授权分享给其他用户。接入多租户前必须先增加可信身份传递和逐用户授权,不能复用此全局列表。
+- 可在 gateway 环境设置 `VOCOCO_BRAIN_READABLE_AGENT_IDS=286d3c1abf,ed2a4a6292` 缩小只读范围；不设置为全部 Agent,显式空值为不开放任何 Agent。不改变任务权限。
+
+只读生产验收（不派任务、不打印历史正文）：
+
+```sh
+uv run python scripts/check_brain_live.py \
+  --password-file "$HOME/.local/share/vococo-mcp/login-password.txt" \
+  --token-file "$HOME/.local/share/vococo-mcp/selfcheck-token.json" \
+  --history-agent-id ed2a4a6292 --use-env-proxy
+```
+
+更新后须让原 gateway 与独立 MCP frontend 都加载新代码；仅重启其中一个无法完整生效。复用原 OAuth 数据和密钥,无需撤销旧授权。
 
 ## 4. 已通过的生产验收
 
