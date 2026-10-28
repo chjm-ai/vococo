@@ -190,13 +190,14 @@ function closeDocPreview(){
 }
 async function openDocPreview({kind, target, title, highlight=""}){
   if(kind==="path" && isLocalHtmlPath(target) && $("#wrap")) return openLocalHtmlPreview(null,target,title);
-  S.docPreview[S.conv] = {kind, target, title, highlight};
+  const conv=S.conv, state={kind, target, title, highlight};
+  S.docPreview[conv] = state;
   dpRevoke();
   if(typeof hideAgentPanel==="function") hideAgentPanel();   // 两个右侧栏不同时占位
   $("#docPreview").hidden = false;
   $("#dpTitle").textContent = title || target;
-  $("#dpUrlText").textContent = target;
-  $("#dpCopyBtn").hidden = !target;
+  $("#dpUrlText").textContent = kind==="artifact" ? title : target;
+  $("#dpCopyBtn").hidden = !target || kind==="artifact";
   $("#dpCopyBtn").onclick = ()=>{
     if(!target) return;
     navigator.clipboard.writeText(target).then(()=>{
@@ -221,15 +222,21 @@ async function openDocPreview({kind, target, title, highlight=""}){
   $("#dpDlBtn").hidden = true;
   if(kind==="url"){ renderDocUrl(target, highlight); return; }
   try{
-    const resp = await api("/doc/preview?conv="+encodeURIComponent(S.conv||"")+"&path="+encodeURIComponent(target));
+    const endpoint=kind==="artifact"
+      ? "/artifacts/"+encodeURIComponent(target)+"/download?"+new URLSearchParams({conv:conv||""})
+      : "/doc/preview?"+new URLSearchParams({conv:conv||"",path:target});
+    const resp = await api(endpoint);
+    const blob=resp.ok ? await resp.blob() : null;
+    if(S.conv!==conv || S.docPreview[conv]!==state || $("#docPreview").hidden) return;
     if(!resp.ok){
       let msg = "预览失败("+resp.status+")";
       try{ const j=await resp.json(); if(j.error) msg=j.error; }catch(e){}
       body.innerHTML = '<div class="dp-err">'+esc(msg)+'</div>';
       return;
     }
-    renderDocBlob(await resp.blob(), target, highlight);
+    renderDocBlob(blob, kind==="artifact" ? title : target, highlight);
   }catch(e){
+    if(S.conv!==conv || S.docPreview[conv]!==state || $("#docPreview").hidden) return;
     body.innerHTML = '<div class="dp-err">加载失败,检查一下网络</div>';
   }
 }
@@ -300,6 +307,8 @@ function renderDocBlob(blob, target, highlight=""){
   } else if(ctype.startsWith("text/")||textExts.includes(ext)){
     blob.text().then(txt=>{ body.innerHTML=""; const pre=el("pre","dp-text"); pre.textContent=txt; body.append(pre); highlightPreviewText(body, highlight); });
   } else if(ctype.startsWith("image/")||/^(png|jpe?g|gif|webp|svg)$/.test(ext)){
+    // 附件下载固定为二进制类型，SVG 作为图片加载时需要明确 MIME。
+    if(ext==="svg") blob=blob.slice(0,blob.size,"image/svg+xml");
     DP.objUrl=URL.createObjectURL(blob); body.innerHTML='<img class="dp-img" src="'+DP.objUrl+'">';
   } else if(ctype==="application/pdf"||ext==="pdf"){
     // Safari 对 <iframe src="blob:...">渲染 PDF 是已知 WebKit 老毛病,整页空白(2026-08-25 排查确认);

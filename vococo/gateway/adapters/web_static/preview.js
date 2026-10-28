@@ -176,7 +176,11 @@ function appendArtifacts(target, entries, conv=S.conv){
     if([...target.querySelectorAll('[data-artifact]')].some(n=>n.dataset.artifact===entry.id)) continue;
     const card=document.createElement("section"); card.className="artifact-card"; card.dataset.artifact=entry.id;
     const bar=document.createElement("div"); bar.className="preview-toolbar";
-    artifactHeading(bar,entry); card.append(bar); artifactDownload(card,bar,entry,conv); target.append(card);
+    const open=document.createElement("button"); open.type="button"; open.className="artifact-open";
+    open.setAttribute("aria-label","预览文件 "+entry.filename);
+    artifactHeading(open,entry);
+    open.onclick=()=>{ if(conv===S.conv) openDocPreview({kind:"artifact",target:entry.id,title:entry.filename}); };
+    bar.append(open); card.append(bar); artifactDownload(card,bar,entry,conv); target.append(card);
   }
 }
 async function downloadArtifact(entry,conv,button,status){

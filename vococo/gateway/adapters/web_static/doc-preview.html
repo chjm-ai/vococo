@@ -52,7 +52,7 @@
   // 不为了一个字符串常量拖进整个 stream.js(那份文件是给主页面的会话流式渲染用的)。
   window.DOTS = '<span class="dots"><i></i><i></i><i></i></span>';
   const qs = new URLSearchParams(location.search);
-  const kind = qs.get("kind") === "url" ? "url" : "path";
+  const kind = ["url","artifact"].includes(qs.get("kind")) ? qs.get("kind") : "path";
   const target = qs.get("target") || "";
   const title = qs.get("title") || target;
   const highlight = qs.get("highlight") || "";
