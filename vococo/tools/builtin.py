@@ -2075,6 +2075,7 @@ async def retry_website_cover(args: dict) -> dict:
 
 def build_mcp_servers(*, subagent_tool=None, delegation_tools=(), session_tools=()) -> dict:
     """返回 server 表；同步子代理由父轮绑定权限后传入，离线调用不暴露入口。"""
+    from .agent_management import create_agent, update_agent
     from .lark_documents import lark_document
 
     return {
@@ -2117,6 +2118,8 @@ def build_mcp_servers(*, subagent_tool=None, delegation_tools=(), session_tools=
                 retry_website_cover,
                 dispatch_session,
                 restart_self,
+                create_agent,
+                update_agent,
                 list_mcp_servers,
                 add_mcp_server,
                 remove_mcp_server,
