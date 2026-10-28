@@ -266,7 +266,9 @@ async def test_task_result_pages_rebuild_sanitized_text(client):
 
 async def test_history_owner_checked_on_every_read_and_list(client, monkeypatch):
     own_id, foreign_id = turn(), turn(key=session("abcdef1234"))
-    legacy = await post(client, "list_sessions", {})
+    default = await post(client, "list_sessions", {})
+    assert {row["agent_id"] for row in default["sessions"]} == {brain.AGENT_ID, "abcdef1234"}
+    legacy = await post(client, "list_sessions", {"all_agents": False})
     assert [row["agent_id"] for row in legacy["sessions"]] == [brain.AGENT_ID]
     result = await post(client, "list_sessions", {"all_agents": True})
     # 显式跨 Agent 枚举时只返回本连接可见的会话,每条带所属 agent_id
