@@ -76,6 +76,30 @@ def turn(user="问题", assistant="回复", key=None):
     return tid
 
 
+async def test_search_history_filters_agents_paginates_and_cleans(client, monkeypatch):
+    own = turn("关键词 100%", "链接 https://example.com/private", session())
+    other = turn("关键词 other", "回复", session("abcdef1234"))
+    first = await post(client, "search_history", {"query": "关键词", "limit": 1})
+    assert first["results"][0]["turn_id"] == other
+    second = await post(client, "search_history", {"query": "关键词", "before_id": first["next_before_id"]})
+    assert second["results"][0]["turn_id"] == own
+    assert "https://" not in second["results"][0]["assistant_text"]
+    assert len((await post(client, "search_history", {"query": "100%"}))["results"]) == 1
+    assert not (await post(client, "search_history", {"query": "100_"}))["results"]
+    turn("ß" * 200 + "独特检索词", "", session())
+    snippet = (await post(client, "search_history", {"query": "独特检索词"}))["results"][0]["user_text"]
+    assert "独特检索词" in snippet
+    turn("token=confidential-needle", "", session())
+    assert not (await post(client, "search_history", {"query": "confidential-needle"}))["results"]
+    monkeypatch.setenv(brain.READABLE_AGENTS, brain.AGENT_ID)
+    hidden = await post(client, "search_history", {"query": "other"})
+    assert hidden["results"] == [] and hidden["next_before_id"] is None
+    assert [r["turn_id"] for r in (await post(client, "search_history", {"query": "关键词"}))["results"]] == [own]
+    await post(client, "search_history", {"query": "关键词", "agent_id": "abcdef1234"}, 404)
+    await post(client, "search_history", {"query": " "}, 400)
+    await post(client, "search_history", {"query": "x", "limit": 21}, 400)
+
+
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer web-token"},
                                      {"Authorization": "bearer " + TOKEN}])
 async def test_bridge_token_required_even_with_web_auth(client, headers, monkeypatch):

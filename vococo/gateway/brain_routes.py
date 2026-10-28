@@ -1,6 +1,7 @@
 """仅供本机独立 MCP 前端调用的受限后台任务桥。"""
 from __future__ import annotations
 
+import asyncio
 import hmac
 import ipaddress
 import json
@@ -31,6 +32,7 @@ _FIELDS = {
     "list_agents": (set(), {"offset", "limit", "query"}),
     "list_sessions": (set(), {"agent_id", "all_agents", "offset", "limit", "query"}),
     "read_session": ({"key"}, {"agent_id", "before_id", "turn_id", "offset", "length"}),
+    "search_history": ({"query"}, {"agent_id", "before_id", "limit"}),
 }
 # 只读接口允许访问的 Agent:这里出现即代表本连接可见。派单仍只绑固定开发 Agent。
 READABLE_AGENTS = "VOCOCO_BRAIN_READABLE_AGENT_IDS"  # 逗号分隔;省略=全部 Agent
@@ -467,6 +469,41 @@ def _list_sessions(data: dict, _agent: dict, _connection: str = "") -> dict:
             "pagination": "非快照；新增或删除会话可能导致分页重复或遗漏"}
 
 
+def _search_snippet(text: str, terms: list[str]) -> str:
+    text = _clean(text)
+    matches = [match.start() for term in terms if (match := re.search(re.escape(term), text, re.IGNORECASE))]
+    start = max(0, min(matches, default=0) - 100)
+    return text[start:start + 500]
+
+
+def _search_history(data: dict, _agent: dict, _connection: str = "") -> dict:
+    query = _text(data, "query", 100)
+    terms = query.split()
+    limit = _number(data, "limit", 8, 20, 1)
+    before = _number(data, "before_id", 2**63 - 1, 2**63 - 1, 1)
+    visibility = _agent_visibility()
+    target = _resolve_agent(data, visibility) if data.get("agent_id") is not None else None
+    owners = _owner_map(*_agent_index())
+    rows = session_store._conn().execute(
+        "SELECT id,session_key,ts,user_text,assistant_text FROM turns WHERE id<? ORDER BY id DESC", (before,),
+    )
+    results = []
+    for tid, key, timestamp, user, assistant in rows:
+        owner = owners.get(key)
+        if not owner or owner["id"] not in visibility or (target and owner["id"] != target):
+            continue
+        user, assistant = _clean(user), _clean(assistant)
+        if not any(re.search(re.escape(term), user, re.IGNORECASE) or
+                   re.search(re.escape(term), assistant, re.IGNORECASE) for term in terms):
+            continue
+        if len(results) == limit:
+            return {"results": results, "next_before_id": results[-1]["turn_id"], "pagination": "按轮次倒序，非快照"}
+        results.append({"agent_id": owner["id"], "agent_name": visibility[owner["id"]]["name"],
+                        "key": key, "turn_id": tid, "ts": timestamp,
+                        "user_text": _search_snippet(user, terms), "assistant_text": _search_snippet(assistant, terms)})
+    return {"results": results, "next_before_id": None, "pagination": "按轮次倒序，非快照"}
+
+
 def _turn_row(data: dict, key: str):
     if "turn_id" in data:
         if "before_id" in data:
@@ -504,7 +541,8 @@ def _read_session(data: dict, _agent: dict, _connection: str = "") -> dict:
 
 
 _HANDLERS = {"create_task": _create_task, "get_task": _get_task, "cancel_task": _cancel_task,
-             "list_agents": _list_agents, "list_sessions": _list_sessions, "read_session": _read_session}
+             "list_agents": _list_agents, "list_sessions": _list_sessions, "read_session": _read_session,
+             "search_history": _search_history}
 
 
 async def handle_brain(request: web.Request) -> web.Response:
@@ -518,7 +556,10 @@ async def handle_brain(request: web.Request) -> web.Response:
     if connection and not re.fullmatch(r"[A-Za-z0-9]{8,64}", connection):
         _reject(400, "连接身份格式无效")
     data = await _payload(request, operation)
-    result = _HANDLERS[operation](data, agent, connection)
+    if operation == "search_history":
+        result = await asyncio.to_thread(_HANDLERS[operation], data, agent, connection)
+    else:
+        result = _HANDLERS[operation](data, agent, connection)
     return web.json_response(result, headers={"Cache-Control": "no-store"})
 
 
