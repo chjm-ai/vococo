@@ -426,7 +426,32 @@ async function saveMcpForm(){
   renderMcpPane();
 }
 
-// ── 模型分区(模型面板同源显示/隐藏,自定义模型/服务商可增改删,改完下一轮/刷新即生效)──
+// ── 模型分区(模型面板同源显示/隐藏,保存配置不切换当前会话模型)───────────────
+function modelConfig(id){
+  const md=SET.data.models, choices=md.choices||md.builtin||[];
+  const choice=choices.find(m=>m.id===id)||{};
+  const configId=choice.config_id||id;
+  const custom=(md.custom||[]).find(m=>m.id===configId)||{};
+  // 第三方 Claude 的面板 ID 带供应商前缀，编辑时仍须更新原始配置记录。
+  return {...custom,...choice,id:configId,label:custom.label??choice.label};
+}
+async function modelSettingsRequest(url, body){
+  const response=await api(url, body ? {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)} : undefined);
+  const result=await response.json().catch(()=>{ throw new Error("服务器返回无效数据(HTTP "+response.status+")"); });
+  if(!response.ok || result.error) throw new Error(result.error||"请求失败(HTTP "+response.status+")");
+  return result;
+}
+async function refreshChatModelList(){
+  const previous=S.models;
+  await loadModels();
+  // loadModels 自己吞掉网络异常，在这里补回设置面板的失败提示。
+  if(S.models===previous || !Array.isArray(S.models&&S.models.choices))
+    throw new Error("配置已保存，但聊天页模型列表刷新失败，请重试");
+}
+async function refreshModelSettings(){
+  await refreshChatModelList();
+  SET.data=await modelSettingsRequest("/settings");
+}
 function verbositySettingsHtml(md){
   return modelOutputSettingsHtml(md,"verbosities","verbosity","输出详细程度",
     "按 GPT 模型分别保存，下一条消息生效；低更简洁，中兼顾细节，高更详细。思考强度独立设置。");
@@ -473,7 +498,8 @@ function renderModelsPane(){
   const curTag = ' <span class="mctag cur">当前</span>';
   let h = '<h3>'+ic("bot")+'模型 & 服务商</h3>'+
     '<p class="shint">"当前"标的是这个会话正在用的模型。新模型发布但代码还没跟上时,先在下面手动补一档;'+
-    '第三方服务商(DeepSeek/Kimi/中转等)也可以直接在这加,保存后刷新模型面板即生效,不用重启。</p>';
+    '第三方服务商(DeepSeek/Kimi/中转等)也可以直接在这加。名称、排序和显示开关保存后立即更新列表，不切换当前会话模型。</p>'+
+    '<div class="mcperr" id="modelsErr" role="status"></div>';
 
   h += verbositySettingsHtml(md);
   h += summarySettingsHtml(md);
@@ -481,7 +507,8 @@ function renderModelsPane(){
     '<p class="shint" style="margin:2px 0 6px">这里和聊天页模型面板完全一致；关闭后从面板隐藏，随时可恢复。</p>';
   (md.choices||md.builtin||[]).forEach(m=>{
     const cur = m.id===md.active ? curTag : '';
-    const acts = '<label class="sw"><input type="checkbox" data-modeltgl="'+esc(m.id)+'"'+(m.disabled?'':' checked')+'><span class="track"></span></label>';
+    const acts = '<button class="miniact" data-mdedit="'+esc(m.id)+'">编辑</button>'+
+      '<label class="sw"><input type="checkbox" data-modeltgl="'+esc(m.id)+'"'+(m.disabled?'':' checked')+'><span class="track"></span></label>';
     h += settingsRow("data-modelrow", m.id, esc(m.label)+cur, esc(m.id), !!m.disabled, acts);
   });
 
@@ -518,12 +545,19 @@ function renderModelsPane(){
 }
 function modelFormHtml(){
   const editing = SET.modelEditing;
-  const cur = editing ? (SET.data.models.custom.find(m=>m.id===editing)||{}) : {};
+  const cur = editing ? modelConfig(editing) : {};
+  const providers=SET.data.models.providers||[];
+  let options='<option value="">官方订阅</option>';
+  providers.forEach(p=>{ options+='<option value="'+esc(p.name)+'"'+(cur.provider===p.name?' selected':'')+'>'+esc(p.label||p.name)+'</option>'; });
+  if(cur.provider && !providers.some(p=>p.name===cur.provider))
+    options+='<option value="'+esc(cur.provider)+'" selected>'+esc(cur.provider)+'（未配置）</option>';
   return '<div class="mcpform" id="mdForm">'+
     '<div class="fld"><label>模型 id(填 API 认的那个模型名)</label>'+
       '<input id="mdId" placeholder="claude-opus-5-5" value="'+esc(cur.id||"")+'"'+(editing?' readonly':'')+'></div>'+
     '<div class="fld"><label>显示名(可空,默认用 id)</label><input id="mdLabel" placeholder="Opus 5.5（订阅）" value="'+esc(cur.label||"")+'"></div>'+
-    '<div class="mcperr" id="mdErr"></div>'+
+    '<div class="fld"><label>供应商'+(cur.builtin?'（内置模型路由不可修改）':'')+'</label><select id="mdProvider"'+(cur.builtin?' disabled':'')+'>'+options+'</select></div>'+
+    '<div class="fld"><label>分组内排序（-1000000 到 1000000，越小越靠前）</label><input id="mdOrder" type="number" step="1" value="'+esc(String(cur.order??1000))+'"></div>'+
+    '<div class="mcperr" id="mdErr" role="status"></div>'+
     '<div class="setrowbtns"><button class="btn primary sm" id="mdSave">保存</button><button class="btn ghost sm" id="mdCancel">取消</button></div>'+
   '</div>';
 }
@@ -547,11 +581,17 @@ function bindModelsPane(){
   $("#setPane").querySelectorAll("[data-modeltgl]").forEach(inp=>{
     inp.onchange = async()=>{
       const id=inp.dataset.modeltgl, disabled=!inp.checked;
-      inp.closest(".srow").classList.toggle("off", disabled);
-      const r=await api("/settings/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"toggle", id, disabled})});
-      if(!r.ok){ inp.checked=!disabled; inp.closest(".srow").classList.toggle("off", !disabled); return; }
-      const choices=SET.data.models.choices||SET.data.models.builtin||[];
-      const m=choices.find(x=>x.id===id); if(m) m.disabled=disabled;
+      const err=$("#modelsErr"); err.textContent=""; inp.disabled=true;
+      let saved=false;
+      try{
+        await modelSettingsRequest("/settings/model",{action:"toggle", id, disabled});
+        saved=true;
+        const choices=SET.data.models.choices||SET.data.models.builtin||[];
+        const m=choices.find(x=>x.id===id); if(m) m.disabled=disabled;
+        inp.closest(".srow").classList.toggle("off", disabled);
+        await refreshChatModelList();
+      }catch(e){ if(!saved) inp.checked=disabled; err.textContent=e.message||"保存失败"; }
+      finally{ inp.disabled=false; }
     };
   });
   $("#setPane").querySelectorAll("[data-mdedit]").forEach(b=>{
@@ -560,10 +600,15 @@ function bindModelsPane(){
   $("#setPane").querySelectorAll("[data-mddel]").forEach(b=>{
     b.onclick = async()=>{
       const id=b.dataset.mddel;
-      if(!confirm("删除模型档位「"+id+"」?")) return;
-      await api("/settings/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"remove", id})});
-      SET.data.models.custom = SET.data.models.custom.filter(m=>m.id!==id);
-      renderModelsPane();
+      if(!confirm("删除模型档位配置「"+id+"」?内置或供应商已有模型只会恢复默认显示。")) return;
+      const err=$("#modelsErr"); err.textContent=""; b.disabled=true;
+      try{
+        await modelSettingsRequest("/settings/model",{action:"remove", id});
+        await refreshModelSettings();
+        if(SET.modelEditing===id){ SET.modelFormOpen=false; SET.modelEditing=null; }
+        renderModelsPane();
+      }catch(e){ err.textContent=e.message||"删除失败"; }
+      finally{ b.disabled=false; }
     };
   });
   $("#setPane").querySelectorAll("[data-pvedit]").forEach(b=>{
@@ -573,9 +618,14 @@ function bindModelsPane(){
     b.onclick = async()=>{
       const name=b.dataset.pvdel;
       if(!confirm("删除服务商「"+name+"」?")) return;
-      await api("/settings/provider",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"remove", name})});
-      SET.data.models.providers = SET.data.models.providers.filter(p=>p.name!==name);
-      renderModelsPane();
+      const err=$("#modelsErr"); err.textContent=""; b.disabled=true;
+      try{
+        await modelSettingsRequest("/settings/provider",{action:"remove", name});
+        await refreshModelSettings();
+        if(SET.providerEditing===name){ SET.providerFormOpen=false; SET.providerEditing=null; }
+        renderModelsPane();
+      }catch(e){ err.textContent=e.message||"删除失败"; }
+      finally{ b.disabled=false; }
     };
   });
   const mdAdd=$("#mdAddBtn"); if(mdAdd) mdAdd.onclick=()=>{ SET.modelEditing=null; SET.modelFormOpen=true; renderModelsPane(); };
@@ -589,13 +639,19 @@ async function saveModelForm(){
   const err=$("#mdErr"); err.textContent="";
   const id=$("#mdId").value.trim();
   if(!id){ err.textContent="请填模型 id"; return; }
-  const label=$("#mdLabel").value.trim();
-  const r=await api("/settings/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"add", id, label})});
-  const d=await r.json();
-  if(d.error){ err.textContent=d.error; return; }
-  SET.modelFormOpen=false; SET.modelEditing=null;
-  const rr=await api("/settings"); SET.data=await rr.json();
-  renderModelsPane();
+  const orderText=$("#mdOrder").value.trim(), order=orderText===""?1000:Number(orderText);
+  if($("#mdOrder").validity.badInput || !Number.isSafeInteger(order)){ err.textContent="排序必须是整数"; return; }
+  const body={action:"add", id, label:$("#mdLabel").value.trim(), order};
+  // 新增表单也可能填入已有内置 ID，不能借此改掉它的路由。
+  if(!modelConfig(id).builtin) body.provider=$("#mdProvider").value;
+  const btn=$("#mdSave"); btn.disabled=true;
+  try{
+    await modelSettingsRequest("/settings/model",body);
+    await refreshModelSettings();
+    SET.modelFormOpen=false; SET.modelEditing=null;
+    renderModelsPane();
+  }catch(e){ err.textContent=e.message||"保存失败"; }
+  finally{ btn.disabled=false; }
 }
 async function saveProviderForm(){
   const err=$("#pvErr"); err.textContent="";
@@ -605,12 +661,14 @@ async function saveProviderForm(){
   const model=$("#pvModel").value.trim();
   if(!base_url||!model){ err.textContent="base_url 和 model 都要填"; return; }
   const body={action:"add", name, base_url, model, api_key:$("#pvKey").value.trim(), label:$("#pvLabel").value.trim(), vision:($("#pvVision")&&$("#pvVision").checked)?"1":"", mgmt_key:$("#pvMgmt")?$("#pvMgmt").value.trim():""};
-  const r=await api("/settings/provider",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  const d=await r.json();
-  if(d.error){ err.textContent=d.error; return; }
-  SET.providerFormOpen=false; SET.providerEditing=null;
-  const rr=await api("/settings"); SET.data=await rr.json();
-  renderModelsPane();
+  const btn=$("#pvSave"); btn.disabled=true;
+  try{
+    await modelSettingsRequest("/settings/provider",body);
+    await refreshModelSettings();
+    SET.providerFormOpen=false; SET.providerEditing=null;
+    renderModelsPane();
+  }catch(e){ err.textContent=e.message||"保存失败"; }
+  finally{ btn.disabled=false; }
 }
 
 // ── 技能分区 ──────────────────────────────────────────────────────────────

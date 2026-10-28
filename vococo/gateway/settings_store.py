@@ -357,35 +357,33 @@ def list_web_extra_models() -> list[dict]:
 
 
 def upsert_web_extra_model(
-    model_id: str, label: str, *, group: str = "", provider: str = ""
+    model_id: str, label: str, *, group: str = "", provider: str | None = None,
+    order: int | None = None,
 ) -> str | None:
     """新增/编辑模型档位;可选复用已有第三方服务商的连接配置。"""
-    model_id = (model_id or "").strip()
-    if not model_id:
+    if not isinstance(model_id, str) or not model_id.strip():
         return "缺少模型 id"
-    label = (label or "").strip() or model_id
-    group = (group or "").strip()
-    provider = (provider or "").strip()
+    if not isinstance(label, str) or not isinstance(group, str):
+        return "模型名称和分组必须是字符串"
+    if provider is not None and not isinstance(provider, str):
+        return "供应商必须是字符串"
+    if order is not None and (type(order) is not int or abs(order) > 1_000_000):
+        return "排序必须是 -1000000 到 1000000 的整数"
+    model_id = model_id.strip()
+    fields = {"label": label.strip() or model_id}
+    if group:
+        fields["group"] = group.strip()
+    if provider is not None:
+        fields["provider"] = provider.strip()
+    if order is not None:
+        fields["order"] = order
     with _LOCK:
         d = _load()
-        models = d["web_extra_models"]
-        for m in models:
-            if m.get("id") != model_id:
-                continue
-            m["label"] = label
-            if group:
-                m["group"] = group
-            if provider:
-                m["provider"] = provider
-            break
-        else:
-            extra = {"id": model_id, "label": label}
-            if group:
-                extra["group"] = group
-            if provider:
-                extra["provider"] = provider
-            models.append(extra)
-        d["web_extra_models"] = models
+        extra = next((m for m in d["web_extra_models"] if m.get("id") == model_id), None)
+        if extra is None:
+            extra = {"id": model_id}
+            d["web_extra_models"].append(extra)
+        extra.update(fields)
         _save(d)
     return None
 
