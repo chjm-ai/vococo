@@ -378,8 +378,8 @@
   .sidetab.active{background:var(--card);color:var(--text);font-weight:600}
   .tabempty{padding:var(--sp-5) var(--sp-4);color:var(--dim2);font-size:var(--fs-md);text-align:center}
 
-  /* 新建项目弹窗(服务端目录浏览器) */
-  #projModal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:var(--ov-3)}
+  /* 目录浏览器可从新建 Agent 弹窗打开,层级必须高于普通弹窗。 */
+  #projModal{position:fixed;inset:0;z-index:61;display:flex;align-items:center;justify-content:center;background:var(--ov-3)}
   #projModal[hidden]{display:none}   /* id+attr 优先级压过上面的 display:flex,hidden 才真生效 */
   #projModal .pmbox{width:min(560px,92vw);max-height:82vh;display:flex;flex-direction:column;
     background:var(--panel);border:1px solid var(--line2);border-radius:var(--r-xl);overflow:hidden}
