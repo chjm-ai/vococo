@@ -894,7 +894,7 @@
     overflow-wrap:anywhere;box-shadow:var(--bubble-shadow)}
   .row.me .bubble{background:linear-gradient(135deg,var(--user1),var(--user2));color:var(--on-user);border-bottom-right-radius:6px;white-space:pre-wrap}
   .user-message-text{line-height:1.5}
-  .user-message-text.user-message-collapsed{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
+  .user-message-text.user-message-collapsed{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;line-clamp:4;overflow:hidden}
   .row.ai .bubble{background:transparent;border-radius:var(--radius);max-width:100%;margin:4px 0 10px;display:block;box-shadow:none;padding:0}
   .bubble.pending{color:var(--dim)}
   .status{font-size:var(--fs-sm);color:var(--dim);margin:0;display:flex;flex-wrap:wrap;gap:4px 12px}
