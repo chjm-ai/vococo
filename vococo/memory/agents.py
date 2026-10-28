@@ -407,7 +407,15 @@ def by_project_hash(phash: str) -> dict | None:
     return get(aid) if aid else get(phash)
 
 
+_UPDATE_LOCK = threading.RLock()
+
+
 def create(name: str, path: str | None = None) -> dict:
+    with _UPDATE_LOCK:
+        return _create(name, path)
+
+
+def _create(name: str, path: str | None = None) -> dict:
     """新建 Agent。path 为空 → 在 config.AGENT_WORKSPACES_DIR/<id> 建工作目录;否则绑定指定目录。
 
     绑定的目录已经是某个 Agent 的工作目录时,不重复建,直接返回那个 Agent(改个名)。"""
@@ -437,7 +445,6 @@ def create(name: str, path: str | None = None) -> dict:
 
 
 _UNSET = object()
-_UPDATE_LOCK = threading.RLock()
 
 
 def update(agent_id: str, *, repositories=_UNSET, **kwargs) -> dict | None:
