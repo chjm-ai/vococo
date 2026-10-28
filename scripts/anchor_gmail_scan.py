@@ -110,7 +110,7 @@ def headers_of(message):
 def is_warmup(message):
     headers = headers_of(message)
     # 只认产品标记/专用头，不把 warm、warmup、故事板等普通客户用语拉黑。
-    if re.search(r"\blemwarmup\s+[a-z0-9]{6,}\b", headers.get("subject", ""), re.I):
+    if re.search(r"(?:^|\s)-\s*lemwarmup(?:\s+[a-z0-9]{6,})?\s*$", headers.get("subject", ""), re.I):
         return True
     return any(name.startswith(("x-lemwarm", "x-lem-warm")) for name in headers)
 
@@ -213,6 +213,38 @@ def save(path, state):
     temporary.replace(path)
 
 
+def backup_state(path):
+    backup = path.with_name(f"{path.name}.manual-warmup-{time.time_ns()}.bak")
+    with backup.open("xb") as stream:
+        backup.chmod(0o600)
+        stream.write(path.read_bytes())
+    return str(backup)
+
+
+def reclassify_manual(client, state, path, key):
+    # 只复核人工队列，不触碰已发送、旧信或发送结果不明的记录。
+    verified, errors = {}, []
+    for mid, status in state[key].items():
+        if status != "manual":
+            continue
+        try:
+            message = client.get(f"/messages/{mid}", format="full")
+            if is_warmup(message):
+                verified[mid] = message_summary(message)
+        except Exception as exc:
+            errors.append(f"{mid}: {str(exc) if isinstance(exc, ScanError) else type(exc).__name__}")
+    backup = backup_state(path) if verified else None
+    for mid, summary in verified.items():
+        state[key][mid] = "excluded"
+        state.setdefault("details", {})[mid] = summary
+        state.setdefault("manual_reclassifications", {})[mid] = {
+            "from": "manual", "to": "excluded", "reason": "lemwarm_product_marker",
+            "backup": backup}
+    if verified:
+        save(path, state)
+    return {"reclassified_manual_ids": list(verified), "manual_migration_backup": backup}, errors
+
+
 @contextmanager
 def locked(path):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -261,6 +293,7 @@ def scan(client, path, now):
         save(path, state)
     start = max(state["enabled_at"], state["last_ts"] - 3600)
     ids = client.ids(f"after:{int(start) - 1} before:{int(now) + 1} -in:sent -in:drafts -in:trash")
+    migration, errors = reclassify_manual(client, state, path, "messages")
     pending = [mid for mid, status in state["messages"].items() if status not in ("sent", "excluded", "old", "manual")]
     candidates = [mid for mid in dict.fromkeys(ids + pending)
                   if state["messages"].get(mid) not in ("sent", "excluded", "old", "manual")]
@@ -268,7 +301,7 @@ def scan(client, path, now):
     for mid in candidates:
         state["messages"].setdefault(mid, "retry")
     save(path, state)
-    counts, errors = Counter(), []
+    counts = Counter()
     for mid in candidates:
         try:
             counts[process_message(client, mid, state, path, now)] += 1
@@ -280,7 +313,7 @@ def scan(client, path, now):
     return {"coverage": "partial" if errors or counts["retry"] or counts["uncertain"] or manual else "ok",
             "counts": dict(counts), "manual_review_ids": manual,
             "manual_review": {mid: state.get("details", {}).get(mid, {}) for mid in manual},
-            "errors": errors, "enabled_at": state["enabled_at"]}
+            "errors": errors, "enabled_at": state["enabled_at"], **migration}
 
 
 def run_mailbox(address, credential, apply, state_dir=STATE_DIR):

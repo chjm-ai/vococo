@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from anchor_gmail_scan import (Gmail, ScanError, classify, forward_id, forward_raw,
-                               locked, save, message_summary)
+                               locked, save, message_summary, reclassify_manual)
 
 ADDRESS = "ray.chen@anchor-ceramicsfiber.com"
 CREDENTIAL = Path.home() / ".gmail-raychen.json"
@@ -71,6 +71,7 @@ def process_candidates(client, ids, state, path):
 def scan(client, path, now):
     state = load_state(path, now)
     ids = client.ids(f"in:inbox after:{int(state['last_ts']) - 60}") if path.exists() else []
+    migration, migration_errors = reclassify_manual(client, state, path, "delivery")
     pending = [p["mid"] for p in state["pending"]]
     candidates = [mid for mid in dict.fromkeys(ids + pending)
                   if mid not in state["forwarded_ids"] and state["delivery"].get(mid) not in TERMINAL]
@@ -79,6 +80,7 @@ def scan(client, path, now):
         state["delivery"].setdefault(mid, "retry")
     save(path, state)  # 元数据失败也必须留下候选，下轮不依赖重叠窗口。
     errors, submitted = process_candidates(client, candidates, state, path)
+    errors = migration_errors + errors
     state["pending"] = [{"mid": mid} for mid in candidates if state["delivery"][mid] not in TERMINAL]
     state["last_ts"] = now
     save(path, state)
@@ -87,7 +89,7 @@ def scan(client, path, now):
             "submitted_forward_ids": submitted, "manual_review_ids": manual,
             "submitted_forwards": {mid: state.get("details", {}).get(mid, {}) for mid in submitted},
             "manual_review": {mid: state.get("details", {}).get(mid, {}) for mid in manual},
-            "pending": state["pending"], "errors": errors, "last_ts": now}
+            "pending": state["pending"], "errors": errors, "last_ts": now, **migration}
 
 
 def read_only(client, path):
