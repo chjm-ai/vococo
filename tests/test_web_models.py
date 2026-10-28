@@ -26,6 +26,7 @@ def settings_models_app():
     app = web.Application()
     app.add_routes([
         web.get("/settings", adapter._handle_settings),
+        web.get("/models", adapter._handle_models),
         web.post("/settings/model", adapter._handle_settings_model),
     ])
     return app
@@ -178,6 +179,7 @@ async def test_settings_models_match_panel_choices_and_can_hide_kimi(
         choices = (await before.json())["models"]["choices"]
         assert {item["id"]: item for item in choices}["kimi-k3"] == {
             "id": "kimi-k3", "label": "kimi-k3（订阅）", "group": "kimi", "disabled": False,
+            "provider": "kimi", "order": 1000, "builtin": False, "config_id": "kimi-k3",
         }
 
         hidden = await client.post(
@@ -190,3 +192,86 @@ async def test_settings_models_match_panel_choices_and_can_hide_kimi(
         choices = (await after.json())["models"]["choices"]
 
     assert {item["id"]: item["disabled"] for item in choices}["kimi-k3"] is True
+
+
+@pytest.mark.anyio
+async def test_model_configuration_hot_reload_preserves_default(settings_models_app, monkeypatch, tmp_path):
+    from vococo import providers
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
+    monkeypatch.setattr(settings_store, "list_skills", lambda: [])
+    settings_store.upsert_web_provider("codex-gpt", {
+        "base_url": "http://127.0.0.1:8317", "api_key": "test", "model": "gpt-6.1-sol",
+    })
+    settings_store.set_web_default_model("gpt-6.1-sol")
+    model = "gpt-new-test"
+    async with TestClient(TestServer(settings_models_app)) as client:
+        response = await client.post("/settings/model", json={
+            "id": model, "label": "新 GPT", "provider": "codex-gpt", "order": 1,
+        })
+        assert response.status == 200
+        data = await (await client.get("/models")).json()
+        assert data["default"] == "gpt-6.1-sol"
+        codex = [m for m in data["choices"] if m[2] == "codex"]
+        assert codex[0][:2] == [model, "新 GPT"]
+        assert providers.resolve(model, "claude-sonnet-5-5")[1]["ANTHROPIC_API_KEY"] == "test"
+        response = await client.post("/settings/model", json={
+            "id": "gpt-6.1-terra", "label": "Terra 自定义", "order": 0,
+        })
+        assert response.status == 200
+        choices = (await (await client.get("/settings")).json())["models"]["choices"]
+        terra = next(m for m in choices if m["id"] == "gpt-6.1-terra")
+        assert terra == {"id": "gpt-6.1-terra", "label": "Terra 自定义", "group": "codex",
+                         "provider": "codex-gpt", "order": 0, "builtin": True, "disabled": False,
+                         "config_id": "gpt-6.1-terra"}
+        data = await (await client.get("/models")).json()
+        assert next(m for m in data["choices"] if m[2] == "codex")[0] == "gpt-6.1-terra"
+        for disabled in (True, False):
+            response = await client.post("/settings/model", json={"action": "toggle", "id": model, "disabled": disabled})
+            assert response.status == 200
+            data = await (await client.get("/models")).json()
+            assert (model in {m[0] for m in data["choices"]}) is not disabled
+        response = await client.post("/settings/model", json={"action": "remove", "id": model})
+        assert response.status == 200
+        data = await (await client.get("/models")).json()
+        assert model not in {m[0] for m in data["choices"]}
+        assert data["default"] == "gpt-6.1-sol"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("body", [
+    {"id": "gpt-new", "provider": "missing"},
+    {"id": "gpt-new", "provider": ""},
+    {"id": "gpt-new", "provider": []},
+    {"id": "gpt-6.1-terra", "provider": "other"},
+    {"id": "claude-sonnet-5-5", "provider": "codex-gpt"},
+    {"id": "claude-new", "label": []},
+    {"id": "claude-new", "order": True},
+    {"id": "claude-new", "order": 1.5},
+    {"id": "claude-new", "order": 1_000_001},
+    {"id": []}, {"id": "claude-new", "action": "unknown"},
+])
+async def test_model_configuration_rejects_invalid_input(settings_models_app, monkeypatch, tmp_path, body):
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
+    settings_store.upsert_web_provider("codex-gpt", {
+        "base_url": "http://127.0.0.1:8317", "api_key": "test", "model": "gpt-6.1-sol",
+    })
+    async with TestClient(TestServer(settings_models_app)) as client:
+        response = await client.post("/settings/model", json=body)
+        assert response.status == 400
+        assert (await response.json())["error"]
+    assert settings_store.list_web_extra_models() == []
+
+
+@pytest.mark.anyio
+async def test_custom_model_can_change_provider_and_group(settings_models_app, monkeypatch, tmp_path):
+    from vococo import providers
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
+    for name, url in (("codex-gpt", "http://127.0.0.1:8317"), ("other", "https://api.example.com")):
+        settings_store.upsert_web_provider(name, {"base_url": url, "api_key": name, "model": "configured-model"})
+    async with TestClient(TestServer(settings_models_app)) as client:
+        for provider, group in (("codex-gpt", "codex"), ("other", "api")):
+            response = await client.post("/settings/model", json={"id": "gpt-custom", "provider": provider, "order": -1})
+            assert response.status == 200
+            assert providers.resolve("gpt-custom", "claude-sonnet-5-5")[1]["ANTHROPIC_API_KEY"] == provider
+            choices = providers.available_models([])
+            assert ("gpt-custom", "gpt-custom", group) in choices

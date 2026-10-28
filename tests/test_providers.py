@@ -417,7 +417,8 @@ def test_codex_builtin_overrides_duplicate_manual_model(tmp_path, monkeypatch):
 
     choices = providers.available_models([])
     matches = [(label, group) for mid, label, group in choices if mid == "gpt-6.1-sol"]
-    assert matches == [("GPT-6.1 Sol（订阅）", "codex")]
+    # 内置模型可热改显示名，但手填分组不能覆盖真实 Codex 路由。
+    assert matches == [("错误分组", "codex")]
     assert providers.resolve("gpt-6.1-sol", "claude-sonnet-5")[1]["ANTHROPIC_BASE_URL"] == (
         "http://127.0.0.1:8317"
     )

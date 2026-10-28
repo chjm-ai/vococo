@@ -160,7 +160,9 @@ def _provider_entry_for_extra(entries: dict[str, dict], model: str) -> tuple[str
             found = _provider_entry_by_name(entries, provider_name.strip())
             if found:
                 name, entry = found
-                return name, {**entry, "model": model}
+                alias = _claude_alias_parts(model)
+                upstream = alias[1] if alias and alias[0] == name else model
+                return name, {**entry, "model": upstream}
     return None
 
 
@@ -403,6 +405,9 @@ def _extra_model_choice(extra: dict, entries: dict[str, dict]) -> tuple[str, str
     if found is None or not _entry_field(found[1], "api_key", "apiKey"):
         return None
     name, entry = found
+    alias = _claude_alias_parts(upstream)
+    if alias and alias[0] == name:
+        upstream = alias[1]
     provider = ActiveProvider(
         name, _entry_field(entry, "base_url", "baseUrl"),
         _entry_field(entry, "api_key", "apiKey"), upstream,
@@ -410,7 +415,74 @@ def _extra_model_choice(extra: dict, entries: dict[str, dict]) -> tuple[str, str
     selection = _selection_id(provider)
     if selection != upstream:
         return selection, _claude_choice_label(upstream, name, label), "api"
+    if not extra.get("group"):
+        kind = _billing_kind(provider.base_url)
+        is_codex = "codex" in name.lower() or _entry_field(entry, "mgmt_key")
+        group = "codex" if is_codex else ("kimi" if kind == "订阅" else "api")
     return selection, label, group
+
+
+def model_choice_for_provider(model: str, provider: str) -> tuple[str, str, str] | None:
+    return _extra_model_choice({"id": model, "provider": provider}, _all_web_providers())
+
+
+def _model_display_overrides(entries: dict[str, dict]) -> dict[str, dict]:
+    from .gateway import settings_store
+
+    overrides = {}
+    for extra in settings_store.list_web_extra_models():
+        choice = _extra_model_choice(extra, entries)
+        selection = choice[0] if choice else extra["id"]
+        overrides[selection] = {**extra, "label": choice[1]} if choice and selection != extra["id"] else extra
+    return overrides
+
+
+def _model_order(extra: dict) -> int:
+    order = extra.get("order", 1000)
+    return order if type(order) is int and abs(order) <= 1_000_000 else 1000
+
+
+def model_configuration(model: str, default_choices: list[tuple[str, str]]) -> dict:
+    """设置页编辑元信息；路由仍由实际供应商决定，不相信手填的分组。"""
+    extra = _model_display_overrides(_all_web_providers()).get(model, {})
+    found = _provider_entry_for_model(model)
+    builtin = model in dict(default_choices) or (
+        model in dict(_CODEX_BUILTIN_MODELS) and _codex_proxy_entry(_all_web_providers()) is not None
+    )
+    return {"provider": found[0] if found else "", "order": _model_order(extra),
+            "builtin": builtin, "config_id": extra.get("id", model)}
+
+
+def validate_model_provider(model: str, provider: str | None, default_choices: list[tuple[str, str]]) -> str | None:
+    """拒绝无效路由，避免新增 GPT 不小心沿用官方 Claude 订阅。"""
+    if provider is not None and not isinstance(provider, str):
+        return "供应商必须是字符串"
+    current = _provider_entry_for_model(model)
+    builtin = model_configuration(model, default_choices)["builtin"]
+    fixed_ids = {
+        _selection_id(ActiveProvider(name, _entry_field(entry, "base_url", "baseUrl"),
+                                    _entry_field(entry, "api_key", "apiKey"), _entry_field(entry, "model")))
+        for name, entry in _all_web_providers().items()
+    }
+    if builtin or model in fixed_ids:
+        if provider is not None and provider.strip() != (current[0] if current else ""):
+            return "此模型的供应商路由已固定；只能修改名称和排序"
+        return None
+    if provider is None:
+        provider = current[0] if current else ""
+    if not provider.strip():
+        return None if model.startswith("claude-") else "非 Claude 模型请选择供应商"
+    found = _provider_entry_by_name(_all_web_providers(), provider.strip())
+    if not found:
+        return "供应商不存在"
+    name, entry = found
+    configured = ActiveProvider(name, _entry_field(entry, "base_url", "baseUrl"),
+                                _entry_field(entry, "api_key", "apiKey"), model)
+    if configured.is_official or not _env_for(configured):
+        return "供应商连接配置不可用"
+    if "/" in model and _claude_alias_parts(model) and _claude_alias_parts(model)[0] != name:
+        return "模型别名与供应商不匹配"
+    return None
 
 
 def available_models(
@@ -499,9 +571,13 @@ def available_models(
         "gpt-5.6-luna": 12,
     }
 
+    extras = _model_display_overrides(entries)
+    # 内置条目只锁路由和分组；用户配置的显示名与顺序仍需热生效。
+    out = [(mid, extras.get(mid, {}).get("label") or label, group) for mid, label, group in out]
     out.sort(
         key=lambda item: (
             _GROUP_ORDER.get(item[2], 9),
+            _model_order(extras.get(item[0], {})),
             _GPT_TIERS.get(item[0].lower(), 99) if item[2] == "codex" else 0,
         )
     )

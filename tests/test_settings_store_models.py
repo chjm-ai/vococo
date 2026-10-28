@@ -32,6 +32,15 @@ def test_extra_model_can_reuse_provider_and_preserves_metadata(monkeypatch, tmp_
     }]
 
 
+def test_extra_model_order_and_explicit_provider_reset(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    assert settings_store.upsert_web_extra_model("claude-new", "自定义", provider="relay", order=-10) is None
+    assert settings_store.upsert_web_extra_model("claude-new", "官方", provider="") is None
+    assert settings_store.list_web_extra_models() == [{
+        "id": "claude-new", "label": "官方", "provider": "", "order": -10,
+    }]
+
+
 def test_add_extra_model_no_label_falls_back_to_id(monkeypatch, tmp_path):
     _point_to(monkeypatch, tmp_path)
     settings_store.upsert_web_extra_model("claude-opus-5-5", "")

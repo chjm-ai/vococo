@@ -2686,7 +2686,8 @@ class WebAdapter:
         disabled = set(settings_store.list_disabled_models())
         # 设置页的显示开关必须和聊天模型面板同源；include_disabled 让已隐藏模型仍可恢复。
         model_choices = [
-            {"id": model_id, "label": label, "group": group, "disabled": model_id in disabled}
+            {"id": model_id, "label": label, "group": group, "disabled": model_id in disabled,
+             **providers.model_configuration(model_id, MODEL_CHOICES)}
             for model_id, label, group in providers.available_models(MODEL_CHOICES, True)
         ]
         return web.json_response(
@@ -2788,10 +2789,13 @@ class WebAdapter:
         Kimi/Codex 等第三方模型一视同仁。旧客户端的 toggle_builtin 继续兼容。
         不用改代码、不用重启，下一次拉 /models(即刷新页面/切模型面板)就带上。
         """
-        action = (body.get("action") or "add").strip()
-        model_id = (body.get("id") or "").strip()
-        if not model_id:
+        action = body.get("action", "add")
+        model_id = body.get("id")
+        if not isinstance(action, str) or action not in {"add", "remove", "toggle", "toggle_builtin"}:
+            return web.json_response({"error": "不支持的模型操作"}, status=400)
+        if not isinstance(model_id, str) or not model_id.strip():
             return web.json_response({"error": "缺少 id"}, status=400)
+        model_id = model_id.strip()
         if action in {"toggle", "toggle_builtin"}:
             available = {
                 item[0] for item in providers.available_models(MODEL_CHOICES, True)
@@ -2803,10 +2807,27 @@ class WebAdapter:
         if action == "remove":
             settings_store.remove_web_extra_model(model_id)
             return web.json_response({"ok": True})
-        err = settings_store.upsert_web_extra_model(model_id, body.get("label") or "")
+        err = self._save_model_configuration(model_id, body)
         if err:
             return web.json_response({"error": err}, status=400)
         return web.json_response({"ok": True})
+
+    @staticmethod
+    def _save_model_configuration(model_id: str, body: dict) -> str | None:
+        provider = body.get("provider")
+        try:
+            err = providers.validate_model_provider(model_id, provider, MODEL_CHOICES)
+        except ValueError as exc:
+            return str(exc)
+        if err:
+            return err
+        group = ""
+        if provider is not None:
+            choice = providers.model_choice_for_provider(model_id, provider)
+            group = choice[2] if choice else "anthropic"
+        return settings_store.upsert_web_extra_model(
+            model_id, body.get("label", ""), provider=provider, group=group, order=body.get("order"),
+        )
 
     @_authed
     @_json_body
