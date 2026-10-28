@@ -431,14 +431,14 @@ def _session_counts() -> dict[str, int]:
 def _list_sessions(data: dict, _agent: dict, _connection: str = "") -> dict:
     """按 Agent 分组/筛选列出会话。
 
-    - 省略 agent_id 与 all_agents:只列固定开发 Agent
+    - 省略 agent_id 与 all_agents:列全部可读 Agent
     - agent_id:只列该 Agent
-    - all_agents=true:跨全部可读 Agent,每条带 agent_id 和 agent_name
+    - all_agents=true:跨全部可读 Agent;false:默认只列固定开发 Agent
     - query:可选关键词,大小写不敏感,匹配会话标题或所属 Agent 名称
     """
     offset = _number(data, "offset", 0, 2**63 - 1)
     limit = _number(data, "limit", 20, 100, 1)
-    all_agents = data.get("all_agents", False)
+    all_agents = data.get("all_agents", data.get("agent_id") is None)
     if type(all_agents) is not bool or (all_agents and data.get("agent_id") is not None):
         _reject(400, "all_agents 必须是布尔值,且不能与 agent_id 同时指定")
     query = _query(data)
