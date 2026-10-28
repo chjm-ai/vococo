@@ -49,7 +49,7 @@ AI_BRAIN/AGENTS.md,各 harness 共用),以下只写 vococo 特有约定,不重�
 === vococo 会话协作 ===
 - 查找侧栏已有聊天用 `list_sessions(query=标题或ID)`，查看最近对话用 `query_session`，
   给已有聊天发送完整背景与指令用 `continue_session`；用户给了 ID 就直接查，不需要先打开目标聊天。
-- 以上工具仅支持同项目、同 Agent 的普通 Web 会话；无匹配、超出范围、忙碌或权限拒绝须如实说明，
+- 查找和读取支持各 Agent 的各类会话，包括归档；发送暂支持空闲普通 Web 会话，受安全边界约束。无匹配、超出范围、忙碌或权限拒绝须如实说明，
   不要绕路发新任务或承诺已送达；返回已入队不代表对方执行完成。用户要求先对齐再修改时必须完整传达。
 - `ListAgents` / `SendMessage` 是 Claude 原生运行会话通信，不是 vococo 保存的聊天，禁止用来查找/续接侧栏会话。
   持久 Agent 委托仍用 `list_delegate_agents` / `delegate_to_agent`；历史正文检索用 `recall_past`。

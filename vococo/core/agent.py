@@ -1232,7 +1232,7 @@ async def stream_turn(
             from ..tools import sessions
 
             session_tools = sessions.build_tools(
-                session_key, list(options.disallowed_tools or [])) if session_key and session_key.startswith("web:") else []
+                session_key, list(options.disallowed_tools or [])) if session_key else []
             options.mcp_servers["vococo"] = build_mcp_servers(
                 subagent_tool=child_tool, delegation_tools=delegation_tools,
                 session_tools=session_tools)["vococo"]

@@ -45,7 +45,7 @@ async def test_title_search_finds_old_session_before_limiting(chat):
     result = await call(source, "list_sessions", {"query": "早期方案", "limit": 1})
     assert result["total"] == 1
     assert result["truncated"] is False
-    assert result["sessions"][0]["session_id"] == target.removeprefix("web:")
+    assert result["sessions"][0]["session_id"] == target
     assert result["source_session"] == source
 
 
@@ -79,7 +79,7 @@ async def test_query_returns_recent_bounded_turns_for_both_ids(chat, full_id):
     reference = target if full_id else target.removeprefix("web:")
     result = await call(source, "query_session", {"session_id": reference, "limit": 2})
     assert result["source_session"] == source
-    assert result["session_id"] == target.removeprefix("web:")
+    assert result["session_id"] == target
     assert result["turns"] == [{"user": "问题6", "assistant": "回答6"},
                                {"user": "问题7", "assistant": "回答7"}]
     assert result["truncated"] is True
@@ -133,7 +133,12 @@ async def test_target_guards(chat, method, kind):
         target = "task:123" if kind == "task" else "voice-chat:main"
         session_store.append(target, "秘密", "不能泄露")
     result = await call(source, method, {"session_id": target, "instruction": "继续"})
-    assert "error" in result and "turns" not in result
+    if method == "query_session" and kind in {"project", "agent", "task", "voice"}:
+        assert result["turns"] == [{"user": "秘密", "assistant": "不能泄露"}]
+    elif method == "query_session" and kind == "archived":
+        assert result["turns"] == [{"user": "旧问题", "assistant": "旧回答"}]
+    else:
+        assert "error" in result and "turns" not in result
 
 
 @pytest.mark.anyio
@@ -154,7 +159,10 @@ async def test_all_tools_require_real_web_source(chat, source_kind):
         session_store.append(source, "问", "答")
     for method in ("list_sessions", "query_session", "continue_session"):
         result = await call(source, method, {"session_id": target, "instruction": "继续"})
-        assert "error" in result
+        if source_kind in {"archived", "task", "orphan"} and method != "continue_session":
+            assert "error" not in result
+        elif source_kind not in {"archived", "task", "orphan"}:
+            assert "error" in result
 
 
 @pytest.mark.anyio
@@ -166,8 +174,26 @@ async def test_list_excludes_other_scopes_current_archived_and_orphan(chat):
         session_store.append(key, "秘密", "不能泄露")
     session_store.set_conv_archived(target + "archived", True)
     result = await call(source, "list_sessions")
-    assert result["total"] == 1
-    assert result["sessions"][0]["session_id"] == target.removeprefix("web:")
+    assert result["total"] == 7
+    assert {row["session_id"] for row in result["sessions"]} == {
+        target, "web:unscoped", "web:pdeadbeef:orphan", f"web:p{other['project_hash']}:x",
+        target + "archived", "task:123", "voice-chat:main",
+    }
+
+
+@pytest.mark.anyio
+async def test_restricted_source_cannot_read_other_sessions(chat):
+    for method in ("list_sessions", "query_session"):
+        result = await call(chat[1], method, {"session_id": chat[2]}, denied=["Read"])
+        assert "error" in result
+
+
+@pytest.mark.anyio
+async def test_non_unified_platform_session_is_readable(chat):
+    source, target = chat[1], "cli:example"
+    session_store.append(target, "命令行问题", "命令行回答")
+    assert (await call(source, "query_session", {"session_id": target}))["turns"]
+    assert any(row["session_id"] == target for row in (await call(source, "list_sessions"))["sessions"])
 
 
 @pytest.fixture
@@ -268,7 +294,8 @@ async def test_query_bounds_text_and_skips_incomplete_turns(chat):
     _, source, target = chat
     session_store.append(target, "问" * 5000, "答" * 5000)
     session_store.start_turn(target, "还未回答")
-    result = await call(source, "query_session", {"session_id": target, "limit": 1})
+    result = await call(source, "query_session", {"session_id": target, "limit": 2})
+    assert result["turns"][1] == {"user": "还未回答", "assistant": ""}
     assert len(result["turns"][0]["user"]) == 4000
     assert len(result["turns"][0]["assistant"]) == 4000
     assert result["truncated"]
@@ -370,8 +397,8 @@ async def test_general_web_sessions_and_resolution_are_supported(isolated, monke
     monkeypatch.setattr(config, "SESSION_KEY", "main")
     session_store.append("main", "主会话秘密", "不能泄露")
     session_store.append("web:main", "伪别名", "不能泄露")
-    for reference in ("main", "web:main"):
-        assert "error" in await call(source, "query_session", {"session_id": reference})
+    assert (await call(source, "query_session", {"session_id": "main"}))["turns"]
+    assert "error" in await call(source, "query_session", {"session_id": "web:main"})
 
 
 def test_tool_names_and_source_not_exposed_in_schema(chat):
