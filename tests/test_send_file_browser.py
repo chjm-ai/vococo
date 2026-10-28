@@ -21,7 +21,8 @@ def anyio_backend():
 
 
 @pytest.mark.anyio
-async def test_file_tool_card_history_and_browser_download(isolated, monkeypatch):
+@pytest.mark.parametrize("filename", ["可编辑演示.pptx", "report.md", "evidence.txt", "diagram.svg"])
+async def test_file_tool_card_history_and_browser_download(isolated, monkeypatch, filename):
     monkeypatch.setattr(config, "WEB_HOST", "127.0.0.1")
     monkeypatch.setattr(config, "WEB_PORT", 0)
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "file-browser-test-auth")
@@ -29,10 +30,15 @@ async def test_file_tool_card_history_and_browser_download(isolated, monkeypatch
     adapter = WebAdapter()
     root = isolated / "project"
     root.mkdir()
-    file = root / "可编辑演示.pptx"
-    deck = Presentation()
-    deck.slides.add_slide(deck.slide_layouts[6])
-    deck.save(file)
+    file = root / filename
+    if file.suffix == ".pptx":
+        deck = Presentation()
+        deck.slides.add_slide(deck.slide_layouts[6])
+        deck.save(file)
+    elif file.suffix == ".svg":
+        file.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40"/></svg>')
+    else:
+        file.write_text("# 附件快照\n\n原文件删除后仍能预览。", encoding="utf-8")
     content = file.read_bytes()
 
     async def drive_tool():
@@ -62,7 +68,7 @@ async def test_file_tool_card_history_and_browser_download(isolated, monkeypatch
         task = asyncio.create_task(drive_tool())
         process = await asyncio.create_subprocess_exec(
             "node", str(Path(__file__).with_name("send_file_browser.cjs")), origin,
-            config.WEB_AUTH_TOKEN, str(isolated), hashlib.sha256(content).hexdigest(),
+            config.WEB_AUTH_TOKEN, str(isolated), hashlib.sha256(content).hexdigest(), filename,
             env=_browser_environment(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(process.communicate(), 120)

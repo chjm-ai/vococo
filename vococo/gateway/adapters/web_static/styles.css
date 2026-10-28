@@ -57,6 +57,7 @@
   .preview-status+button{margin-inline-start:auto}
   .preview-toolbar .ic{display:block;width:var(--sp-5);height:var(--sp-5);flex-shrink:0}
   .preview-toolbar button{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:calc(var(--sp-5)*2);height:calc(var(--sp-5)*2);padding:0;font:inherit;color:var(--dim);background:transparent;border:1px solid transparent;border-radius:var(--r-sm);cursor:pointer;transition:background var(--t-fast),color var(--t-fast),border-color var(--t-fast)}
+  .preview-toolbar .artifact-open{flex:1;min-width:0;width:auto;justify-content:flex-start;gap:var(--sp-1);text-align:start}
   .preview-toolbar button:hover{background:var(--panel2);color:var(--text)}
   .preview-toolbar button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .preview-toolbar button[aria-pressed="true"]{color:var(--accent);background:var(--panel2);border-color:var(--line)}
@@ -1692,6 +1693,7 @@
   #dpHead #dpCopyBtn{width:22px;height:22px;border-radius:var(--r-sm);flex-shrink:0;color:var(--dim2);
     display:inline-flex;align-items:center;justify-content:center;transition:background var(--t-fast),color var(--t-fast)}
   #dpHead #dpCopyBtn .ic{width:13px;height:13px}
+  #dpHead button[hidden],#dpHead #dpCopyBtn[hidden]{display:none}
   #dpHead button{width:32px;height:32px;border-radius:var(--r-md);flex-shrink:0;color:var(--dim);
     display:inline-flex;align-items:center;justify-content:center;transition:background var(--t-fast),color var(--t-fast)}
   @media(hover:hover){ #dpHead button:hover{background:var(--panel2);color:var(--text)} }
