@@ -23,11 +23,11 @@ _OFFICIAL_NAMES = ("claude", "official", "anthropic", "claude-official")
 # API key 入口等)一律按量计费的 API 处理。
 _SUBSCRIPTION_HOSTS = ("api.kimi.com",)  # Kimi Coding 订阅套餐
 
-# 本地 Codex OAuth 代理已配置时自动提供的模型。只展示当前三档主力：Astra 负责
-# 极难任务，6.1 Sol 做默认主力，Luna 做轻量任务；旧型号仍可由运行时配置保留回退。
+# 本地 Codex OAuth 代理已配置时自动提供的模型；旧型号仍可由运行时配置保留回退。
 _CODEX_BUILTIN_MODELS: tuple[tuple[str, str], ...] = (
     ("gpt-6-astra", "GPT-6 Astra（订阅）"),
     ("gpt-6.1-sol", "GPT-6.1 Sol（订阅）"),
+    ("gpt-6.1-terra", "GPT-6.1 Terra（订阅）"),
     ("gpt-6-luna", "GPT-6 Luna（订阅）"),
 )
 
@@ -485,14 +485,15 @@ def available_models(
             group = "kimi" if kind == "订阅" else "api"
         label = _claude_choice_label(upstream, name) if model != upstream else f"{model}（{kind}）"
         out.append((model, label, group))
-    # 组序 + 组内档位统一排序:当前 GPT-6 三档在前，旧 GPT-5.6 三档留作回退。
-    # 6 Sol 已被 6.1 Sol 取代，若运行时仍手动配置则排在当前三档之后。
+    # 组序 + 组内档位统一排序:当前 GPT-6 系列在前，旧 GPT-5.6 三档留作回退。
+    # 6 Sol 已被 6.1 Sol 取代，若运行时仍手动配置则排在当前型号之后。
     _GROUP_ORDER = {"anthropic": 0, "kimi": 1, "codex": 2, "api": 3}
     _GPT_TIERS = {
         "gpt-6-astra": 0,
         "gpt-6.1-sol": 1,
-        "gpt-6-luna": 2,
-        "gpt-6-sol": 3,
+        "gpt-6.1-terra": 2,
+        "gpt-6-luna": 3,
+        "gpt-6-sol": 4,
         "gpt-5.6-sol": 10,
         "gpt-5.6-terra": 11,
         "gpt-5.6-luna": 12,

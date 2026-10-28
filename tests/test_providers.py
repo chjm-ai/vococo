@@ -342,9 +342,10 @@ def test_gpt6_models_are_available_through_configured_codex_proxy(tmp_path, monk
     by_id = {mid: (label, group) for mid, label, group in choices}
     assert by_id["gpt-6-astra"] == ("GPT-6 Astra（订阅）", "codex")
     assert by_id["gpt-6.1-sol"] == ("GPT-6.1 Sol（订阅）", "codex")
+    assert by_id["gpt-6.1-terra"] == ("GPT-6.1 Terra（订阅）", "codex")
     assert by_id["gpt-6-luna"] == ("GPT-6 Luna（订阅）", "codex")
     codex_ids = [mid for mid, _, group in choices if group == "codex"]
-    assert codex_ids[:3] == ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"]
+    assert codex_ids[:4] == ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"]
 
     expected_env = {
         "ANTHROPIC_BASE_URL": "http://127.0.0.1:8317",
@@ -352,11 +353,33 @@ def test_gpt6_models_are_available_through_configured_codex_proxy(tmp_path, monk
         "CLAUDE_CODE_OAUTH_TOKEN": "",
         "ANTHROPIC_VISION_CAPABLE": "",
     }
-    for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"):
+    for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"):
         assert providers.resolve(model, "claude-sonnet-5") == (model, expected_env)
         assert providers.codex_mgmt_for_model(model) == (
             "mgmt-secret", "http://127.0.0.1:8317"
         )
+
+
+def test_terra_availability_and_settings_follow_codex_proxy(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    model = "gpt-6.1-terra"
+    assert model not in {mid for mid, _, _ in providers.available_models([])}
+    settings_store.upsert_web_provider(
+        "codex-gpt", {
+            "base_url": "http://127.0.0.1:8317", "model": "gpt-6.1-sol",
+            "api_key": "sk-proxy",
+        },
+    )
+    resolved, env = providers.resolve(model, "claude-sonnet-5-5")
+    assert resolved == model
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8317"
+    assert providers.codex_mgmt_for_model(model) is None
+    assert providers.effort_choices_for_model(model) == providers.effort_choices_for_model("gpt-6.1-sol")
+    assert providers.verbosity_choices_for_model(model) == providers.verbosity_choices_for_model("gpt-6.1-sol")
+    assert providers.summary_choices_for_model(model) == providers.summary_choices_for_model("gpt-6.1-sol")
+    settings_store.set_model_disabled(model, True)
+    assert model not in {mid for mid, _, _ in providers.available_models([])}
+    assert model in {mid for mid, _, _ in providers.available_models([], include_disabled=True)}
 
 
 def test_gpt6_models_do_not_require_management_key(tmp_path, monkeypatch):

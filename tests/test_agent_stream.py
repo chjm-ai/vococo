@@ -186,7 +186,7 @@ def test_context_window_codex_proxy_gpt_is_258k_for_all_tiers():
 
 def test_context_window_gpt6_uses_staged_500k_limit():
     # 官方 API 是 1.05M；当前代理不报窗口元数据，先放到 500k 观察真实长会话表现。
-    for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "gpt-6-sol"):
+    for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol"):
         assert context_window(model) == 500_000
     # 只匹配 GPT-6 家族，不能把恰好同前缀的未来/自定义型号误判成 500k。
     assert context_window("gpt-60-small") == 200_000
