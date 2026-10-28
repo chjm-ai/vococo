@@ -1,4 +1,4 @@
-"""普通 Web 聊天的同范围查询；来源由服务端闭包绑定。"""
+"""会话查询与续接；来源由服务端闭包绑定。"""
 from __future__ import annotations
 
 import json
@@ -17,6 +17,8 @@ _queued: dict[str, tuple[int, str]] = {}
 def _key(reference: str) -> str:
     if not isinstance(reference, str) or not reference.strip():
         raise ValueError("会话 ID 必须是非空文本")
+    if reference == config.SESSION_KEY or (not reference.startswith("web:") and session_store.find_session(reference)):
+        return reference
     conv = reference.removeprefix("web:")
     key = config.resolve_session_key("web", conv)
     if (not key.startswith("web:") or not conv
@@ -41,11 +43,11 @@ def _scope(key: str) -> tuple:
 
 
 def _source(key: str) -> tuple:
-    if not isinstance(key, str) or not key.startswith("web:") or _key(key) != key:
-        raise ValueError("来源必须是真实普通 Web 会话")
-    if not session_store.find_session(key) or _archived(key):
-        raise ValueError("来源会话不存在或已归档")
-    return _scope(key)
+    if not isinstance(key, str) or _key(key) != key:
+        raise ValueError("来源必须是真实会话")
+    if not session_store.find_session(key):
+        raise ValueError("来源会话不存在")
+    return ()
 
 
 def _limit(value, maximum: int) -> int:
@@ -55,22 +57,22 @@ def _limit(value, maximum: int) -> int:
 
 
 def _list(source: str, query: str, limit: int) -> dict:
-    scope = _source(source)
+    _source(source)
     limit = _limit(limit, 50)
     if not isinstance(query, str):
         raise ValueError("query 必须是文本")
     query = query.strip().casefold()
     rows = []
-    for row in session_store.list_sessions("web:", archived=False):
+    for row in session_store.list_sessions(""):
         key = row["key"]
         if key == source or (query and query not in key.casefold() and query not in row["title"].casefold()):
             continue
         try:
-            if _key(key) != key or _scope(key) != scope:
+            if _key(key) != key:
                 continue
         except ValueError:
             continue
-        rows.append({"session_id": key.removeprefix("web:"), "title": row["title"],
+        rows.append({"session_id": key, "title": row["title"], "archived": row["archived"],
                      "turns": row["turns"], "last_ts": row["last_ts"]})
     truncated = len(rows) > limit
     return {"source_session": source, "sessions": rows[:limit], "total": len(rows),
@@ -78,29 +80,30 @@ def _list(source: str, query: str, limit: int) -> dict:
 
 
 def _target(source: str, reference: str) -> tuple[str, dict]:
-    scope = _source(source)
+    _source(source)
     key = _key(reference)
     if key == source:
         raise ValueError("不能操作当前会话自身")
     row = session_store.find_session(key)
-    if not row or _archived(key):
-        raise ValueError("目标会话不存在或已归档")
-    if _scope(key) != scope:
-        raise ValueError("目标必须属于同项目、同 Agent")
+    if not row:
+        raise ValueError("目标会话不存在")
     return key, row
 
 
 def _query(source: str, reference: str, limit: int) -> dict:
     key, row = _target(source, reference)
     limit = _limit(limit, 10)
-    recent = session_store.load_recent(key, limit + 1)
-    turns = [{"user": turn.user[:4000], "assistant": turn.assistant[:4000]}
-             for turn in recent[-limit:]]
+    recent = session_store._conn().execute(
+        "SELECT user_text, assistant_text FROM turns WHERE session_key=? "
+        "ORDER BY id DESC LIMIT ?", (key, limit + 1),
+    ).fetchall()
+    turns = [{"user": (user or "")[:4000], "assistant": (assistant or "")[:4000]}
+             for user, assistant in reversed(recent[:limit])]
     truncated = len(recent) > limit or any(
-        len(turn.user) > 4000 or len(turn.assistant) > 4000 for turn in recent[-limit:])
-    return {"source_session": source, "session_id": key.removeprefix("web:"),
+        len(user or "") > 4000 or len(assistant or "") > 4000 for user, assistant in recent[:limit])
+    return {"source_session": source, "session_id": key,
             "title": row["title"], "turns": turns, "truncated": truncated,
-            "message": "仅返回最近已完成对话；每条文本最多 4000 字符"}
+            "message": "包含重置前的历史对话，进行中的回答可能为空；每条文本最多 4000 字符"}
 
 
 def _send_access(source: str, target: str, denied: tuple) -> None:
@@ -162,6 +165,9 @@ async def _continue(source: str, denied: tuple, reference: str, instruction: str
     if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 60_000:
         raise ValueError("instruction 必须是非空文本且不超过 60000 字符")
     _send_access(source, key, denied)
+    _scope(key)
+    if not key.startswith("web:") or _archived(key):
+        raise ValueError("暂不支持向此类型或已归档会话发送指令")
     if key in clarify._active_sessions or clarify.has_pending(key) or _waiting_for_queue(key):
         raise ValueError("目标忙碌或正在等待用户回答，未发送且不会打断")
     if not web_bridge.available():
@@ -179,27 +185,34 @@ def _reply(value: dict) -> dict:
 
 def build_tools(session_key: str, denied: list[str]):
     denied = tuple(denied)
-    @tool("list_sessions", "查找同项目、同 Agent 的普通 Web 会话，排除当前会话和归档；query 匹配标题或 ID，total 为匹配总数。", {
+
+    def check_read_access():
+        if denied or session_store.active_source_access(session_key) or agents.runtime_for_session(session_key).get("disallowed_tools"):
+            raise ValueError("受限来源不能读取其他会话")
+
+    @tool("list_sessions", "查找各 Agent 的会话，包括归档会话，排除当前会话；query 匹配标题或 ID，total 为匹配总数。", {
         "type": "object", "properties": {"query": {"type": "string"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 50}},
     })
     async def list_sessions(args):
         try:
+            check_read_access()
             return _reply(_list(session_key, args.get("query", ""), args.get("limit", 10)))
         except ValueError as exc:
             return _reply({"error": str(exc)})
 
-    @tool("query_session", "查询同项目、同 Agent 普通 Web 会话最近少量已完成对话，支持裸 ID 或完整 web: ID。", {
+    @tool("query_session", "查询各 Agent 会话最近少量对话，支持裸 ID 或完整 web: ID。", {
         "type": "object", "properties": {"session_id": {"type": "string"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 10}}, "required": ["session_id"],
     })
     async def query_session(args):
         try:
+            check_read_access()
             return _reply(_query(session_key, args["session_id"], args.get("limit", 3)))
         except (ValueError, KeyError) as exc:
             return _reply({"error": str(exc)})
 
-    @tool("continue_session", "向同项目、同 Agent 的空闲普通 Web 会话发送完整指令；仅入队，不代表执行完成。不创建会话，不打断，不代答。", {
+    @tool("continue_session", "向空闲普通 Web 会话发送完整指令；仅入队，不代表执行完成。不创建会话，不打断，不代答。", {
         "type": "object", "properties": {"session_id": {"type": "string"},
         "instruction": {"type": "string"}}, "required": ["session_id", "instruction"],
     })

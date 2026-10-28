@@ -1137,7 +1137,7 @@ def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | Non
         return _deny(
             "Claude 原生通信工具不能查询或续接 vococo 保存的聊天。请改用 "
             "mcp__vococo__list_sessions 按标题/ID 查找、query_session 查对话、"
-            "continue_session 发送指令；这些工具只支持同项目、同 Agent 的普通 Web 会话。"
+            "continue_session 发送指令；查询支持各类会话，发送暂支持空闲普通 Web 会话。"
             "持久 Agent 委托请用 list_delegate_agents / delegate_to_agent。"
             "原生列表为空不代表聊天不存在，不能据此要求用户先启动会话。"
         )
