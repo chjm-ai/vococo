@@ -69,7 +69,7 @@ async def test_official_mcp_client_dispatch_idempotency_result_and_cancel(enviro
     async with session_for(app) as session:
         tools = (await session.list_tools()).tools
         assert {tool.name for tool in tools} == {"vococo_create_task", "vococo_get_task", "vococo_cancel_task",
-            "vococo_list_agents", "vococo_list_sessions", "vococo_read_session"}
+            "vococo_list_agents", "vococo_list_sessions", "vococo_read_session", "vococo_search_history"}
         assert next(t for t in tools if t.name == "vococo_create_task").annotations.readOnlyHint is False
         args = {"title": "隔离派单", "prompt": "只运行测试任务", "idempotency_key": "request-test-001"}
         created = await call(session, "vococo_create_task", args)
@@ -132,6 +132,9 @@ async def test_mcp_lists_and_reads_other_agents_with_explicit_agent_id(environme
         assert {row["agent_id"] for row in everything["sessions"]} >= {brain_routes.AGENT_ID, "d1ee9a7e2b"}
         only_other = await call(session, "vococo_list_sessions", {"agent_id": "d1ee9a7e2b"})
         assert [row["key"] for row in only_other["sessions"]] == [other_key]
+        search = await call(session, "vococo_search_history", {"query": "JLL"})
+        assert [(row["agent_id"], row["key"], row["turn_id"]) for row in search["results"]] == [
+            ("d1ee9a7e2b", other_key, turn)]
         # 老调用(不带 agent_id)仍按固定开发 Agent 校验归属
         assert (await session.call_tool("vococo_read_session", {"key": other_key})).isError
         assert await call(session, "vococo_read_session", {"key": dev_key}) is not None
@@ -162,6 +165,9 @@ async def test_mcp_readable_agents_allowlist(environment, monkeypatch):
                                         {"key": other_key, "agent_id": "d1ee9a7e2b"})).isError
         rows = await call(session, "vococo_list_sessions", {"limit": 100, "all_agents": True})
         assert all(row["agent_id"] == brain_routes.AGENT_ID for row in rows["sessions"])
+        found = await call(session, "vococo_search_history", {"query": "私有问题"})
+        assert found["results"] == []
+        assert (await session.call_tool("vococo_search_history", {"query": "私有", "agent_id": "d1ee9a7e2b"})).isError
 
 
 @pytest.mark.parametrize("token", ["", "wrong-token", BRIDGE])

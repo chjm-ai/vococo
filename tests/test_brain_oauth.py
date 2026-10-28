@@ -158,7 +158,7 @@ async def check_mcp(client, token):
             tools = (await session.list_tools()).tools
             assert {tool.name for tool in tools} == {
                 "vococo_create_task", "vococo_get_task", "vococo_cancel_task",
-                "vococo_list_agents", "vococo_list_sessions", "vococo_read_session",
+                "vococo_list_agents", "vococo_list_sessions", "vococo_read_session", "vococo_search_history",
             }
             result = await session.call_tool("vococo_list_sessions", {})
             assert not result.isError and result.structuredContent["sessions"] == []
