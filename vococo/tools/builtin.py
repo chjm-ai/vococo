@@ -860,11 +860,55 @@ async def move_workbench_task(args: dict) -> dict:
         return _ok("迁移失败:目标项目、父任务或任务层级无效。")
     return _ok(f"✅ 已将任务「{moved['title']}」迁入「{project['name']}」。")
 
+_WORKBENCH_STATUS_LABEL = {
+    "todo": "待办", "done": "已完成", "focus": "本轮重点", "block": "受阻", "cancelled": "已取消",
+}
+
+
+def _workbench_date_filter(tasks: list[dict], ref: str) -> list[dict]:
+    """按日期区间筛任务(只认排了 date 的;today/overdue/本周/本月/YYYY-MM-DD 起止)。"""
+    today = datetime.date.today()
+    ref = ref.strip().lower()
+    if ref == "today":
+        lo = hi = today.isoformat()
+    elif ref == "overdue":
+        keep = [t for t in tasks if t.get("date") and t["date"] < today.isoformat()
+                and t["status"] not in ("done", "cancelled")]
+        return keep
+    elif ref in ("week", "this-week"):
+        lo = (today - datetime.timedelta(days=today.weekday())).isoformat()
+        hi = (today - datetime.timedelta(days=today.weekday()) + datetime.timedelta(days=6)).isoformat()
+    elif ref in ("month", "this-month"):
+        lo = today.isoformat()[:7] + "-01"
+        hi = today.isoformat()[:8] + "31"
+    elif "/" in ref:
+        lo, _, hi_part = ref.partition("/")
+        try:
+            lo = datetime.date.fromisoformat(lo.strip()).isoformat()
+            hi = datetime.date.fromisoformat(hi_part.strip()).isoformat()
+        except ValueError:
+            return tasks
+    else:
+        try:
+            lo = hi = datetime.date.fromisoformat(ref).isoformat()
+        except ValueError:
+            return tasks
+    return [t for t in tasks if t.get("date") and lo <= t["date"] <= hi]
+
+
 @tool(
     "list_workbench_tasks",
-    "列出工作台任务(GTD 待办)。project:可选,按项目 id/名字过滤,不传返回全部。"
-    "用户问「今天/这周有什么任务」「工作台上有什么」时用,自己按返回的 date 字段筛日期。",
-    {"type": "object", "properties": {"project": {"type": "string"}}},
+    "列出工作台任务(GTD 待办)。project:可选,项目 id/名字;status:可选,todo/done/focus/block/"
+    "cancelled;date:可选,today/overdue/week/month/YYYY-MM-DD/起止(YYYY-MM-DD/YYYY-MM-DD);"
+    "date: 留空则返回全部。可组合使用。",
+    {
+        "type": "object",
+        "properties": {
+            "project": {"type": "string"},
+            "status": {"type": "string", "enum": ["todo", "done", "focus", "block", "cancelled"]},
+            "date": {"type": "string"},
+        },
+    },
 )
 async def list_workbench_tasks(args: dict) -> dict:
     ref = (args.get("project") or "").strip()
@@ -874,9 +918,17 @@ async def list_workbench_tasks(args: dict) -> dict:
         if not project:
             return _ok(f"没找到项目「{ref}」。用 list_workbench_projects 看列表。")
         tasks = [t for t in tasks if t["project"] == project["id"]]
+    status_ref = (args.get("status") or "").strip()
+    if status_ref:
+        if status_ref not in workbench._STATUSES:
+            return _ok(f"未知状态「{status_ref}」,只能是 todo/done/focus/block/cancelled。")
+        tasks = [t for t in tasks if t["status"] == status_ref]
+    date_ref = (args.get("date") or "").strip()
+    if date_ref:
+        tasks = _workbench_date_filter(tasks, date_ref)
     if not tasks:
         return _ok("没有符合条件的工作台任务。")
-    status_label = {"todo": "待办", "done": "已完成", "focus": "本轮重点", "block": "受阻", "cancelled": "已取消"}
+    status_label = _WORKBENCH_STATUS_LABEL
 
     by_id = {t["id"]: t for t in tasks}
     children: dict[str | None, list[dict]] = {}
@@ -963,7 +1015,8 @@ async def create_workbench_task(args: dict) -> dict:
     "update_workbench_task",
     "更新工作台任务的状态/标题/备注/日期/父任务(按 id/序号/标题 定位)。"
     "status 取值:todo(待办)/done(完成)/focus(本轮重点)/block(受阻)/cancelled(已取消)。"
-    "parent:父任务 id 或标题,传空字符串可解除父任务变顶级。"
+    "parent:父任务 id 或标题,传空字符串可解除父任务变顶级;"
+    "project:项目 id 或名字,可改所属项目;assignee:ai/human,标记 AI 还是人工执行。"
     "用户说「把 X 标记完成/挪到明天/改成重点/取消/移到 Y 下面」时用。",
     {
         "type": "object",
@@ -974,6 +1027,8 @@ async def create_workbench_task(args: dict) -> dict:
             "detail": {"type": "string"},
             "date": {"type": "string"},
             "parent": {"type": "string"},
+            "project": {"type": "string"},
+            "assignee": {"type": "string", "enum": ["ai", "human"]},
         },
         "required": ["task"],
     },
@@ -986,9 +1041,15 @@ async def update_workbench_task(args: dict) -> dict:
     if not t:
         return _ok(f"没找到任务「{ref}」。用 list_workbench_tasks 看列表。")
     fields: dict = {}
-    for key in ("status", "title", "detail"):
+    for key in ("status", "title", "detail", "assignee"):
         if key in args:
             fields[key] = args[key]
+    if "project" in args:
+        project_ref = (args.get("project") or "").strip()
+        project = _resolve_workbench_project(project_ref, workbench.list_projects())
+        if not project:
+            return _ok(f"没找到项目「{project_ref}」。用 list_workbench_projects 看列表。")
+        fields["project"] = project["id"]
     if "date" in args:
         date = (args.get("date") or "").strip() or None
         fields["date"] = date
@@ -1006,7 +1067,10 @@ async def update_workbench_task(args: dict) -> dict:
     updated = workbench.update_task(t["id"], **fields)
     if updated is None:
         return _ok("更新失败,字段无效。")
-    return _ok(f"✅ 已更新任务「{updated['title']}」。")
+    changed = "、".join(
+        {"project": "项目", "parentId": "父任务", "assignee": "执行者"}.get(k, k) for k in fields
+    ) or "无"
+    return _ok(f"✅ 已更新任务「{updated['title']}」(改动:{changed})。")
 
 @tool(
     "delete_workbench_task",
