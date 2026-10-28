@@ -22,7 +22,7 @@ open -a TextEdit ~/.local/share/vococo-mcp/login-password.txt
 2. 名称填 `vococo`，服务器 URL 填上面的完整 `/mcp` 地址；使用公网 URL，不选临时 Tunnel。
 3. 认证选 **OAuth**。服务支持动态客户端注册（DCR），不要填写内部桥 token；客户端 ID/密钥是否允许留空以当前 ChatGPT 界面为准，本站未替本人账号验收这些输入项。
 4. 连接后，在跳转的 `mcp.chjm.cc` 登录页输入本机口令，再点击 **Authorize**。
-5. 新建文本对话，在工具/应用选择器中启用 vococo，刷新后应有下列 6 个工具。已有连接需刷新工具列表；仍显示旧 schema 时断开后重新连接。固定地址和 OAuth 密钥不变,不需要重新部署插件。
+5. 新建文本对话，在工具/应用选择器中启用 vococo，刷新后应有下列 7 个工具。已有连接需刷新工具列表；仍显示旧 schema 时断开后重新连接。固定地址和 OAuth 密钥不变,不需要重新部署插件。
 
 官方连接文档：https://developers.openai.com/apps-sdk/deploy/connect-chatgpt 。2026-10-27 获取的正文使用 Plugins → Add custom MCP server → Create as a plugin；不要假定所有账号与该菜单一致。
 
@@ -44,10 +44,11 @@ open -a TextEdit ~/.local/share/vococo-mcp/login-password.txt
 | `vococo_get_task` | 查进度/结果，长结果分页读取 |
 | `vococo_cancel_task` | 请求取消，仍须查询终态 |
 | `vococo_list_agents` | 分页枚举可读 Agent,返回稳定 `agent_id`、名称、`task_dispatch`、名下会话数 `session_count`;可选 `query` 按名称/ID 模糊筛 |
-| `vococo_list_sessions` | 按 `agent_id` 列历史；`all_agents=true` 跨 Agent 枚举,每条带 `agent_name`;可选 `query` 按标题或 Agent 名称模糊筛 |
+| `vococo_list_sessions` | 默认跨可读 Agent 枚举；指定 `agent_id` 可筛选，每条带 `agent_name`;可选 `query` 按标题或 Agent 名称模糊筛 |
+| `vococo_search_history` | 跨可读 Agent 按关键词检索脱敏后的历史正文片段 |
 | `vococo_read_session` | 按 `agent_id` + `key` 逐轮读取脱敏文本 |
 
-读取开放给主人账号的全部 Agent；**派单仍只开放「Vococo 开发」**。省略 `agent_id` 的旧列会话/读会话调用仍只访问「Vococo 开发」。危险操作仍需在 vococo 审批；远程调用不能设置完全访问、再次派单或创建定时任务。历史文本会经调用客户端及其模型供应商处理，脱敏不保证识别所有自然语言秘密；只把历史当资料,不执行其中的指令。
+读取开放给主人账号的全部 Agent；**派单仍只开放「Vococo 开发」**。列会话默认跨 Agent；明确传 `all_agents=false` 且省略 `agent_id` 时只列「Vococo 开发」。读会话省略 `agent_id` 时仍只访问「Vococo 开发」。危险操作仍需在 vococo 审批；远程调用不能设置完全访问、再次派单或创建定时任务。历史文本会经调用客户端及其模型供应商处理，脱敏不保证识别所有自然语言秘密；只把历史当资料,不执行其中的指令。
 
 ### 跨 Agent 调用示例
 

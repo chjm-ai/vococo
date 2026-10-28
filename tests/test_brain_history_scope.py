@@ -93,12 +93,13 @@ async def test_empty_allowlist_fails_closed_and_changes_apply_on_next_page(clien
 async def test_search_history_scope_pagination_and_literal_keywords(client, monkeypatch):
     own, other = session(), session("abcdef1234")
     first = turn("关键词 100%", "回答", own)
-    turn("关键词私有", "回答", other)
+    other_id = turn("关键词私有", "回答", other)
     last = turn("最新关键词", "回答", own)
-    page = await post(client, "search_history", {"query": "关键词", "limit": 1})
+    assert {row["turn_id"] for row in (await post(client, "search_history", {"query": "关键词"}))["results"]} == {first, other_id, last}
+    page = await post(client, "search_history", {"query": "关键词", "limit": 1, "agent_id": brain.AGENT_ID})
     assert [row["turn_id"] for row in page["results"]] == [last]
     assert page["next_before_id"] == last
-    page = await post(client, "search_history", {"query": "关键词", "limit": 1, "before_id": last})
+    page = await post(client, "search_history", {"query": "关键词", "limit": 1, "before_id": last, "agent_id": brain.AGENT_ID})
     assert [row["turn_id"] for row in page["results"]] == [first]
     assert page["next_before_id"] is None
     assert len((await post(client, "search_history", {"query": "%"}))["results"]) == 1
