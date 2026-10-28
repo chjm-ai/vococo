@@ -69,7 +69,7 @@ async def test_official_mcp_client_dispatch_idempotency_result_and_cancel(enviro
     async with session_for(app) as session:
         tools = (await session.list_tools()).tools
         assert {tool.name for tool in tools} == {"vococo_create_task", "vococo_get_task", "vococo_cancel_task",
-            "vococo_list_agents", "vococo_list_sessions", "vococo_read_session"}
+            "vococo_list_agents", "vococo_list_sessions", "vococo_read_session", "vococo_search_history"}
         assert next(t for t in tools if t.name == "vococo_create_task").annotations.readOnlyHint is False
         args = {"title": "隔离派单", "prompt": "只运行测试任务", "idempotency_key": "request-test-001"}
         created = await call(session, "vococo_create_task", args)
@@ -94,6 +94,9 @@ async def test_mcp_history_pagination_rebuilds_text_and_no_tool_events(environme
     async with session_for(app) as session:
         listed = await call(session, "vococo_list_sessions", {})
         assert listed["sessions"][0]["title"] == "实际历史标题"
+        found = await call(session, "vococo_search_history", {"query": "问题"})
+        assert found["results"][0]["turn_id"] == turn and found["results"][0]["key"] == key
+        assert (await session.call_tool("vococo_search_history", {"query": "   "})).isError
         user, assistant, args = "", "", {"key": key, "length": 7999}
         while True:
             page = await call(session, "vococo_read_session", args)

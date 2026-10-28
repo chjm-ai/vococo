@@ -90,6 +90,27 @@ async def test_empty_allowlist_fails_closed_and_changes_apply_on_next_page(clien
     await post(client, "read_session", {"key": key, "agent_id": aid, "turn_id": tid, "offset": 10}, 404)
 
 
+async def test_search_history_scope_pagination_and_literal_keywords(client, monkeypatch):
+    own, other = session(), session("abcdef1234")
+    first = turn("关键词 100%", "回答", own)
+    turn("关键词私有", "回答", other)
+    last = turn("最新关键词", "回答", own)
+    page = await post(client, "search_history", {"query": "关键词", "limit": 1})
+    assert [row["turn_id"] for row in page["results"]] == [last]
+    assert page["next_before_id"] == last
+    page = await post(client, "search_history", {"query": "关键词", "limit": 1, "before_id": last})
+    assert [row["turn_id"] for row in page["results"]] == [first]
+    assert page["next_before_id"] is None
+    assert len((await post(client, "search_history", {"query": "%"}))["results"]) == 1
+    turn("password: mysecretvalue", "无关", own)
+    assert (await post(client, "search_history", {"query": "mysecretvalue"}))["results"] == []
+    assert len((await post(client, "search_history", {"query": "关键词", "agent_id": "abcdef1234"}))["results"]) == 1
+    monkeypatch.setenv(brain.READABLE_AGENTS, brain.AGENT_ID)
+    await post(client, "search_history", {"query": "关键词", "agent_id": "abcdef1234"}, 404)
+    await post(client, "search_history", {"query": "   "}, 400)
+    await post(client, "search_history", {"query": "关键词"}, 401, headers={})
+
+
 @pytest.mark.parametrize("operation,payload", [
     ("list_sessions", {"all_agents": "true"}),
     ("list_sessions", {"all_agents": 1}),
