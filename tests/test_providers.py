@@ -70,7 +70,7 @@ def test_extra_claude_model_is_namespaced_and_routes_upstream(tmp_path, monkeypa
     assert providers.lookup_provider_by_model(f"relay/{opus}")["model"] == opus
     settings_store.set_model_disabled(opus, True)
     assert f"relay/{opus}" in {mid for mid, _, _ in providers.available_models(defaults)}
-    settings_store.remove_web_extra_model(opus)
+    settings_store.remove_web_extra_model(f"relay/{opus}")
     with pytest.raises(ValueError, match="供应商"):
         providers.resolve(f"relay/{opus}", sonnet)
 
@@ -487,6 +487,21 @@ def test_effort_choices_follow_model_provider_capability(tmp_path, monkeypatch):
     assert providers.extra_body_for_effort("off") == '{"thinking": {"type": "disabled"}}'
     assert providers.extra_body_for_effort("ultra") == '{"output_config": {"effort": "ultra"}}'
     assert providers.extra_body_for_effort("max") == ""
+
+
+def test_model_capabilities_override_and_reset(tmp_path, monkeypatch):
+    _point_settings_to(monkeypatch, tmp_path)
+    model = "claude-custom"
+    default = providers.effort_choices_for_model(model)
+    settings_store.upsert_web_extra_model(model, "自定义", context_window=123456, effort_levels=["off", "ultra"])
+    assert providers.model_configuration(model, [])["context_window"] == 123456
+    assert providers.model_configuration(model, [])["effort_levels"] == ["off", "ultra"]
+    assert providers.effort_choices_for_model(model) == (("off", "关闭"), ("ultra", "ultra"))
+    assert providers.effort_choices_for_model("claude-other") == default
+    settings_store.upsert_web_extra_model(model, "自定义", effort_levels=[])
+    assert providers.effort_choices_for_model(model) == ()
+    settings_store.upsert_web_extra_model(model, "自定义", effort_levels=None)
+    assert providers.effort_choices_for_model(model) == default
 
 
 def test_available_models_hides_extra_when_declared_provider_missing(tmp_path, monkeypatch):

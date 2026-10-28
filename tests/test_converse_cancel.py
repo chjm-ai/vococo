@@ -76,7 +76,7 @@ async def test_overfull_session_compacts_before_sending_user_message(isolated, m
     calls = []
 
     async def fake_stream(history, user_text, **kwargs):
-        calls.append((user_text, kwargs["resume"], kwargs["compact_only"]))
+        calls.append((user_text, kwargs["resume"], kwargs["compact_only"], kwargs["model"]))
         if kwargs["compact_only"]:
             yield Compacted(trigger="preflight")
             yield Done(AgentReply("", [], None, False, sdk_session_id="compacted-sdk"))
@@ -89,9 +89,103 @@ async def test_overfull_session_compacts_before_sending_user_message(isolated, m
 
     assert reply and reply.text == "恢复了"
     assert calls == [
-        ("", "old-sdk-session", True),
-        ("继续", "compacted-sdk", False),
+        ("", "old-sdk-session", True, "gpt-5.6-luna"),
+        ("继续", "compacted-sdk", False, "gpt-5.6-luna"),
     ]
+
+
+@pytest.mark.anyio
+async def test_explicit_model_override_controls_compact_and_request(isolated, monkeypatch):
+    from vococo.core import worktree
+
+    monkeypatch.setattr(worktree, "execution_cwd", _default_cwd)
+    key = "web:explicit-model"
+    session_store.set_chosen_model(key, "gpt-6-luna")
+    session_store.set_sdk_session_id(key, "old-sdk-session")
+    session_store.record_usage(key, 180_000, 0, window=500_000)
+    alias = "proxy/claude-haiku-4-5"
+    monkeypatch.setattr(core.providers, "resolve", lambda chosen, default: ("claude-haiku-4-5", {}))
+    calls = []
+
+    async def fake_stream(history, user_text, **kwargs):
+        calls.append((kwargs["compact_only"], kwargs["model"]))
+        yield Done(AgentReply("完成", [], None, False))
+
+    monkeypatch.setattr(core, "stream_turn", fake_stream)
+    await core.converse(key, "继续", alias, Sink())
+    assert calls == [(True, alias), (False, alias)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tokens", "resume", "compact", "expected"),
+    [
+        (64_999, "old-sdk", False, [False]),
+        (65_000, "old-sdk", False, [True, False]),
+        (65_000, None, False, [False]),
+        (65_000, "old-sdk", True, [True]),
+    ],
+)
+async def test_preflight_uses_configured_alias_window_at_boundary(
+    isolated, monkeypatch, tokens, resume, compact, expected,
+):
+    from vococo.core import worktree
+    from vococo.gateway import settings_store
+
+    monkeypatch.setattr(worktree, "execution_cwd", _default_cwd)
+    alias = "proxy/custom-model"
+    key = "web:configured-window"
+    session_store.set_chosen_model(key, alias)
+    if resume:
+        session_store.set_sdk_session_id(key, resume)
+    session_store.record_usage(key, tokens, 0, window=200_000)
+    monkeypatch.setattr(core.providers, "resolve", lambda chosen, default: ("unknown-model", {}))
+    monkeypatch.setattr(settings_store, "list_web_extra_models", lambda: [
+        {"id": alias, "context_window": 100_000},
+        {"id": "unknown-model", "context_window": 200_000},
+    ])
+    calls = []
+
+    async def fake_stream(history, user_text, **kwargs):
+        calls.append((kwargs["compact_only"], kwargs["model"], user_text))
+        yield Done(AgentReply("完成", [], None, False))
+
+    monkeypatch.setattr(core, "stream_turn", fake_stream)
+    await core.converse(key, "继续", None, Sink(), compact=compact)
+    assert [call[0] for call in calls] == expected
+    assert all(call[1] == alias for call in calls)
+    assert calls[-1][2] == "继续"
+    if len(calls) == 2:
+        assert calls[0][2] == ""
+
+
+@pytest.mark.anyio
+async def test_preflight_keeps_initial_model_when_selection_changes(isolated, monkeypatch):
+    from vococo.core import worktree
+
+    monkeypatch.setattr(worktree, "execution_cwd", _default_cwd)
+    key = "web:model-changed-during-compact"
+    session_store.set_chosen_model(key, "gpt-5.6-luna")
+    session_store.set_sdk_session_id(key, "old-sdk")
+    session_store.record_usage(key, 180_000, 0, window=258_400)
+    calls = []
+
+    async def fake_stream(history, user_text, **kwargs):
+        calls.append((kwargs["compact_only"], kwargs["model"], kwargs["resume"]))
+        if kwargs["compact_only"]:
+            session_store.set_chosen_model(key, "gpt-6-luna")
+            yield Done(AgentReply("", [], None, False, sdk_session_id="compacted-sdk"))
+        else:
+            yield Done(AgentReply("完成", [], None, False))
+
+    monkeypatch.setattr(core, "stream_turn", fake_stream)
+    await core.converse(key, "继续", None, Sink())
+    assert calls == [
+        (True, "gpt-5.6-luna", "old-sdk"),
+        (False, "gpt-5.6-luna", "compacted-sdk"),
+    ]
+    assert session_store.get_chosen_model(key) == "gpt-6-luna"
+    assert session_store.get_sdk_session_id(key) != "compacted-sdk"
 
 
 @pytest.mark.anyio

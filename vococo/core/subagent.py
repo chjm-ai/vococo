@@ -206,7 +206,7 @@ def _child_hooks(parent: ClaudeAgentOptions, tools: list[str], usage: Usage | No
 
 
 def _child_options(parent: ClaudeAgentOptions, selection: str | None, usage: Usage | None = None) -> ClaudeAgentOptions:
-    from .agent import _turn_env, context_window
+    from .agent import _turn_env, _window_ratio, effective_context_window
 
     denied = list(parent.disallowed_tools)
     # 带参数的禁用规则也保守禁掉整个工具，避免自制解析器误放行。
@@ -233,6 +233,10 @@ def _child_options(parent: ClaudeAgentOptions, selection: str | None, usage: Usa
         # 不继承父进程可能残留的模型特有请求体。
         env.setdefault("CLAUDE_CODE_EXTRA_BODY", "")
         effort = None if providers.extra_body_for_effort(effective) else effective or None
+    # 未指定模型时继承父轮已冻结的阈值，保留父模型选择别名的配置。
+    compact = (parent.extra_args or {}).get("autocompact") if selection is None else None
+    if compact is None:
+        compact = str(_window_ratio(effective_context_window(selection, model), 0.65))
     env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     note = (
         "\n你是同步子代理，只完成本次明确交办的任务，最后返回结果。你没有父对话历史。"
@@ -261,7 +265,7 @@ def _child_options(parent: ClaudeAgentOptions, selection: str | None, usage: Usa
         max_budget_usd=parent.max_budget_usd,
         max_buffer_size=parent.max_buffer_size,
         extra_args={"no-session-persistence": None,
-                    "autocompact": str(int(context_window(model or "") * 0.65))},
+                    "autocompact": compact},
     )
 
 

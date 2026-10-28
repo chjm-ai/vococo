@@ -163,6 +163,18 @@ async def test_compat_change_rebuilds(clients, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_window_change_rebuilds_warm_client(clients, monkeypatch):
+    records = [{"id": "claude-sonnet-4", "context_window": 300_000}]
+    monkeypatch.setattr(agent.settings_store, "list_web_extra_models", lambda: records)
+    await _turn()
+    assert clients[0].options.extra_args["autocompact"] == "195000"
+    records[0]["context_window"] = 500_000
+    await _turn(resume="sid-1")
+    assert len(clients) == 2 and clients[0].disconnected
+    assert clients[1].options.extra_args["autocompact"] == "325000"
+
+
+@pytest.mark.anyio
 async def test_effort_change_rebuilds_warm_client(clients, monkeypatch):
     """思考深度在 connect 时固定，切换后必须丢弃保温 client，下一轮才会真生效。"""
     await _turn()

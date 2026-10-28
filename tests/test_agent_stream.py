@@ -6,6 +6,7 @@ assemble_tool_input 把累积的 input_json_delta 片段解析成 dict;
 from __future__ import annotations
 
 import anyio
+import pytest
 
 from vococo import config
 from vococo.core.agent import (
@@ -192,6 +193,57 @@ def test_context_window_gpt6_uses_staged_500k_limit():
     assert context_window("gpt-60-small") == 200_000
 
 
+def test_configured_window_does_not_cross_claude_providers(monkeypatch):
+    from vococo.core import agent
+
+    records = [{"id": "claude-sonnet-5-5", "provider": "relay", "context_window": 300_000}]
+    monkeypatch.setattr(agent.settings_store, "list_web_extra_models", lambda: records)
+    assert agent.configured_context_window("claude-sonnet-5-5", "claude-sonnet-5-5") is None
+    assert agent.configured_context_window("relay/claude-sonnet-5-5", "claude-sonnet-5-5") == 300_000
+    assert agent.configured_context_window("other/claude-sonnet-5-5", "claude-sonnet-5-5") is None
+
+
+def test_configured_window_prefers_selection_then_resolved(monkeypatch):
+    from vococo.core import agent
+
+    records = [
+        {"id": "alias", "context_window": 300_000},
+        {"id": "actual", "context_window": 700_000},
+    ]
+    monkeypatch.setattr(agent.settings_store, "list_web_extra_models", lambda: records)
+    assert agent.effective_context_window("alias", "actual") == 300_000
+    assert agent.effective_context_window("missing", "actual") == 700_000
+    assert agent.effective_context_window(None, "actual") == 700_000
+
+
+@pytest.mark.parametrize("invalid", [None, 0, -1, True, False, 1.5, "300000"])
+def test_invalid_configured_window_falls_back(monkeypatch, invalid):
+    from vococo.core import agent
+
+    records = [
+        {"id": "alias", "context_window": invalid},
+        {"id": "deepseek-flash", "context_window": invalid},
+    ]
+    monkeypatch.setattr(agent.settings_store, "list_web_extra_models", lambda: records)
+    assert agent.configured_context_window("alias", "deepseek-flash") is None
+    assert agent.effective_context_window("alias", "deepseek-flash") == 1_000_000
+    records[1]["context_window"] = 450_000
+    assert agent.effective_context_window("alias", "deepseek-flash") == 450_000
+
+
+def test_large_window_threshold_does_not_overflow():
+    assert _compact_threshold(10**310, 0.65, 0, False) == 65 * 10**308
+
+
+def test_pool_compatibility_changes_with_context_window():
+    from vococo.core.agent import _compat_base_key
+
+    args = ("actual", {}, {}, [], "/tmp", True, {})
+    first = _compat_base_key(*args, selection_model="alias", window=300_000)
+    assert first == _compat_base_key(*args, selection_model="alias", window=300_000)
+    assert first != _compat_base_key(*args, selection_model="alias", window=700_000)
+
+
 def test_context_window_error_explains_recovery():
     from vococo.core.agent import describe_llm_error
 
@@ -274,6 +326,21 @@ def test_query_context_usage_detects_stale_cli_window():
     )
     assert ctx_window_val == 1_000_000
     assert stale is True
+
+
+@pytest.mark.parametrize("raw,stale", [(200_000, True), (300_000, False), (2_000_000, True), (0, False)])
+def test_query_context_usage_configured_window_overrides_sdk(raw, stale):
+    client = _StubClient({"totalTokens": 500, "rawMaxTokens": raw})
+    cu, total, window, actual_stale = anyio.run(
+        _query_context_usage, client, "claude-sonnet-5", 300_000
+    )
+    assert cu["rawMaxTokens"] == raw
+    assert (total, window, actual_stale) == (500, 300_000, stale)
+
+
+def test_query_context_usage_error_preserves_configured_window():
+    result = anyio.run(_query_context_usage, _StubClient(raises=True), "unknown", 300_000)
+    assert result == (None, 0, 300_000, False)
 
 
 def test_query_context_usage_falls_back_on_error():

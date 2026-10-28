@@ -964,9 +964,9 @@ def _usage_fields(vals) -> dict:
     # 会话显示，不必等下一轮成功请求覆盖数据库残值。
     effective_model = chosen or model or ""
     if effective_model.lower().startswith("gpt-5.6"):
-        from ..core.agent import context_window
+        from ..core.agent import effective_context_window
 
-        window = context_window(effective_model)
+        window = effective_context_window(effective_model, model)
     return {
         "ctx_tokens": ctx or 0,
         "total_tokens": total or 0,
