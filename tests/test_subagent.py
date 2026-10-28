@@ -154,6 +154,46 @@ async def test_cross_provider_isolated_env(sdk, model, expected, url, key):
     assert parent.model == "gpt-6.1-sol" and parent.env["ANTHROPIC_API_KEY"] == "parent-key"
 
 
+def test_child_compact_inherits_frozen_parent_threshold():
+    parent = _parent(extra_args={"autocompact": "12345", "other": "keep"})
+    settings_store.upsert_web_extra_model("gpt-6.1-sol", "Sol", context_window=400_000)
+
+    child = subagent._child_options(parent, None)
+
+    assert child.extra_args["autocompact"] == "12345"
+    assert parent.extra_args == {"autocompact": "12345", "other": "keep"}
+
+
+@pytest.mark.parametrize("parent_args,configured,expected", [
+    ({}, 400_000, "260000"),
+    ({"autocompact": None}, 400_000, "260000"),
+    ({}, None, "325000"),
+])
+def test_child_compact_without_parent_threshold_uses_model_window(parent_args, configured, expected):
+    if configured is not None:
+        settings_store.upsert_web_extra_model("gpt-6.1-sol", "Sol", context_window=configured)
+    child = subagent._child_options(_parent(extra_args=parent_args), None)
+    assert child.extra_args["autocompact"] == expected
+
+
+def test_child_compact_explicit_model_prefers_selection_over_resolved():
+    settings_store.upsert_web_extra_model("relay/claude-sonnet-5-5", "别名", context_window=300_000)
+    settings_store.upsert_web_extra_model("claude-sonnet-5-5", "模型", context_window=500_000)
+    parent = _parent(extra_args={"autocompact": "12345"})
+
+    child = subagent._child_options(parent, "relay/claude-sonnet-5-5")
+
+    assert child.model == "claude-sonnet-5-5"
+    assert child.extra_args["autocompact"] == "195000"
+    assert parent.extra_args["autocompact"] == "12345"
+
+
+def test_child_compact_does_not_use_other_provider_window():
+    settings_store.upsert_web_extra_model("claude-sonnet-5-5", "模型", context_window=500_000)
+    child = subagent._child_options(_parent(extra_args={"autocompact": "12345"}), "relay/claude-sonnet-5-5")
+    assert child.extra_args["autocompact"] == "650000"
+
+
 @pytest.mark.anyio
 async def test_model_settings_use_selection_id(sdk):
     settings_store.set_web_effort("low", model="gpt-6-luna")

@@ -94,6 +94,18 @@ def test_gpt56_summary_normalizes_stale_context_window(isolated):
     assert session_store.list_sessions("web:gpt")[0]["ctx_window"] == 258_400
 
 
+def test_gpt56_summary_uses_configured_context_window(isolated, monkeypatch, tmp_path):
+    from vococo.gateway import settings_store
+    from vococo.memory import session_store
+
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "settings.json")
+    settings_store.upsert_web_extra_model("gpt-5.6-luna", "Luna", context_window=400_000)
+    session_store.append("web:gpt-config", "你好", "你好")
+    session_store.set_chosen_model("web:gpt-config", "gpt-5.6-luna")
+    session_store.record_usage("web:gpt-config", 100_000, 0, window=400_000)
+    assert session_store.session_summary("web:gpt-config")["ctx_window"] == 400_000
+
+
 def test_record_usage_zero_ctx_tokens_keeps_previous_value(isolated):
     """真实 get_context_usage 查询失败时 agent.py 传 0 进来，不能让它把上一轮的
     真实占用冲成 0（2026-08-20 真机事故：查询失败又用不可靠的累计值兜底，

@@ -36,9 +36,10 @@ def test_extra_model_order_and_explicit_provider_reset(monkeypatch, tmp_path):
     _point_to(monkeypatch, tmp_path)
     assert settings_store.upsert_web_extra_model("claude-new", "自定义", provider="relay", order=-10) is None
     assert settings_store.upsert_web_extra_model("claude-new", "官方", provider="") is None
-    assert settings_store.list_web_extra_models() == [{
-        "id": "claude-new", "label": "官方", "provider": "", "order": -10,
-    }]
+    assert settings_store.list_web_extra_models() == [
+        {"id": "relay/claude-new", "label": "自定义", "provider": "relay", "order": -10},
+        {"id": "claude-new", "label": "官方", "provider": ""},
+    ]
 
 
 def test_add_extra_model_no_label_falls_back_to_id(monkeypatch, tmp_path):
@@ -59,6 +60,39 @@ def test_upsert_extra_model_same_id_overwrites_label(monkeypatch, tmp_path):
     err = settings_store.upsert_web_extra_model("claude-opus-5-5", "改过的名字")
     assert err is None
     assert settings_store.list_web_extra_models() == [{"id": "claude-opus-5-5", "label": "改过的名字"}]
+
+
+def test_model_capabilities_validate_preserve_and_reset(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    assert settings_store.upsert_web_extra_model("claude-new", "旧", context_window=123, effort_levels=["off", "ultra"]) is None
+    assert settings_store.upsert_web_extra_model("claude-new", "新") is None
+    saved = settings_store.list_web_extra_models()[0]
+    assert saved["context_window"] == 123 and saved["effort_levels"] == ["off", "ultra"]
+    for kwargs in ({"context_window": True}, {"context_window": 0}, {"context_window": 1.5},
+                   {"effort_levels": "high"}, {"effort_levels": ["bad"]},
+                   {"effort_levels": [[]]}, {"effort_levels": ["low", "low"]}):
+        assert settings_store.upsert_web_extra_model("claude-new", "错误", **kwargs)
+        assert settings_store.list_web_extra_models()[0] == saved
+    assert settings_store.upsert_web_extra_model("claude-new", "新", context_window=None, effort_levels=None) is None
+    assert settings_store.list_web_extra_models()[0]["context_window"] is None
+    assert settings_store.list_web_extra_models()[0]["effort_levels"] is None
+
+
+def test_legacy_and_explicit_selection_records_do_not_lose_values(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store._PATH.write_text('''{"web_extra_models": [
+        {"id": "claude-new", "provider": "relay", "context_window": 123},
+        {"id": "relay/claude-new", "provider": "relay", "context_window": 456},
+        {"id": "claude-new", "context_window": 789}
+    ]}''', encoding="utf-8")
+    records = {m["id"]: m for m in settings_store.list_web_extra_models()}
+    assert records["relay/claude-new"]["context_window"] == 456
+    assert records["claude-new"]["context_window"] == 789
+    settings_store.upsert_web_extra_model("relay/claude-new", "编辑", effort_levels=[])
+    records = {m["id"]: m for m in settings_store.list_web_extra_models()}
+    assert records["relay/claude-new"]["context_window"] == 456
+    assert records["relay/claude-new"]["effort_levels"] == []
+    assert records["claude-new"]["context_window"] == 789
 
 
 def test_remove_extra_model(monkeypatch, tmp_path):

@@ -2815,6 +2815,11 @@ class WebAdapter:
     @staticmethod
     def _save_model_configuration(model_id: str, body: dict) -> str | None:
         provider = body.get("provider")
+        if (isinstance(provider, str) and provider and model_id.startswith("claude-")
+                and model_id not in dict(MODEL_CHOICES)):
+            choice = providers.model_choice_for_provider(model_id, provider)
+            if choice:
+                model_id = choice[0]
         try:
             err = providers.validate_model_provider(model_id, provider, MODEL_CHOICES)
         except ValueError as exc:
@@ -2827,6 +2832,7 @@ class WebAdapter:
             group = choice[2] if choice else "anthropic"
         return settings_store.upsert_web_extra_model(
             model_id, body.get("label", ""), provider=provider, group=group, order=body.get("order"),
+            **{key: body[key] for key in ("context_window", "effort_levels") if key in body},
         )
 
     @_authed

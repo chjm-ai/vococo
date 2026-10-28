@@ -26,7 +26,8 @@ from ..core.agent import (
     ToolStarted,
     UpstreamRetry,
     VideoAttachment,
-    context_window,
+    effective_context_window,
+    _window_ratio,
     stream_turn,
 )
 import time
@@ -330,17 +331,17 @@ async def _converse(
         source_token = clarify.bind_turn(session_key, turn_id)
         # 模型解析和预压缩也可能失败，必须走同一套落库与 cwd 清理。
         # 上轮窗口逼近上限时，先 /compact 再发原问题，避免上游直接返回 400。
-        chosen_model = model or session_store.get_chosen_model(session_key) or config.MODEL
+        chosen_model = model or chosen_at_start or config.MODEL
         resolved_model, _ = providers.resolve(chosen_model, config.MODEL)
         used_tokens = int(session_store.session_summary(session_key).get("ctx_tokens", 0) or 0)
         needs_preflight_compact = (
             not compact
             and bool(resume_sid)
-            and used_tokens >= int(context_window(resolved_model) * 0.65)
+            and used_tokens >= _window_ratio(effective_context_window(chosen_model, resolved_model), 0.65)
         )
         if needs_preflight_compact:
             async for ev in stream_turn(
-                [], "", model=model, cwd=cwd, is_explicit_project=is_explicit_project,
+                [], "", model=chosen_model, cwd=cwd, is_explicit_project=is_explicit_project,
                 resume=resume_sid, session_key=session_key,
                 compact_only=True, system_prompt_extra=agent_extra,
             ):
@@ -353,7 +354,7 @@ async def _converse(
                             session_key, resume_sid, expected_model=chosen_at_start,
                         )
         async for ev in stream_turn(
-            history, user_text, model=model, images=images, files=files, cwd=cwd,
+            history, user_text, model=chosen_model, images=images, files=files, cwd=cwd,
             is_explicit_project=is_explicit_project, resume=resume_sid,
             session_key=session_key,  # 传给保温池:同会话下一轮复用活 client,零冷启动
             compact_only=compact, system_prompt_extra=agent_extra,
