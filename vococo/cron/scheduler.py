@@ -429,7 +429,7 @@ def run_now(job_id: str) -> dict | None:
 
 async def _push_job_result(
     job_id: str, status: str, text: str, push: PushFn, metrics: dict | None = None,
-    silent: bool = False,
+    silent: bool = False, run_id: str | None = None,
 ) -> dict | None:
     """回填 job 的 last_run_at/last_status 并推送结果——Agent 任务
     (_on_task_terminal)和脚本任务(_run_script_job)收尾共用,格式/目标完全
@@ -442,6 +442,8 @@ async def _push_job_result(
             return None
         job["last_run_at"] = int(time.time())
         job["last_status"] = status
+        if run_id is not None:
+            job["last_run_id"] = run_id
         quiet, notice = _track_failure(job, status, text)
         save_jobs(jobs)
     if silent:  # 静默收尾:只回填运行时间/状态,见 _run_script_job
@@ -453,6 +455,9 @@ async def _push_job_result(
         return job
     # 默认目标就是这条专属会话本身(platform=web):走 send() 会同时触发系统推送
     # (场景③"主动/cron",已覆盖 Mac/iPhone 等一切订阅了 Web Push 的设备)。
+    runner = getattr(push, "__self__", None)
+    if run_id and hasattr(runner, "adapters") and "web" not in runner.adapters:
+        raise RuntimeError("巡检通知通道不可用，保留未确认运行")
     await push("web", conv, msg)
     tgt = job.get("target") or {}  # 额外目标(如 web),可选,不填就只有上面这条
     if tgt.get("platform") and tgt.get("chat_id") is not None:
@@ -483,7 +488,8 @@ def reset_failures(job: dict) -> None:
 
 def _track_failure(job: dict, status: str, text: str) -> tuple[bool, str]:
     """更新 job 的连续失败计数,返回 (本次是否静默, 追加到推送末尾的说明)。"""
-    if status != "error":
+    if (status != "error" or job.get("id") == "f4a2a099"
+            or (job.get("id") == "13f146ce" and job.get("mode") == "script")):
         reset_failures(job)
         return False, ""
     digest = _failure_digest(text)
@@ -574,6 +580,20 @@ async def _start_script_process(job: dict, extra_env: dict | None):
         raise
 
 
+def _ack_script_runs(job_id: str, run_id: str, acknowledged: list[str]) -> None:
+    with JOBS_LOCK:
+        jobs = load_jobs()
+        job = next((item for item in jobs if item.get("id") == job_id), None)
+        if job is None:
+            return
+        job["pending_run_ids"] = [item for item in job.get("pending_run_ids", []) if item not in acknowledged]
+        if not job["pending_run_ids"]:
+            job.pop("pending_run_ids")
+        if job.get("running_run_id") == run_id:
+            job.pop("running_run_id", None)
+        save_jobs(jobs)
+
+
 async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None) -> None:
     """脚本任务模式(mode=="script",见模块头说明):直接跑 job["command"],不进
     Agent 会话——没有系统提示/工具定义的打包成本。命令输出末尾若带
@@ -593,6 +613,23 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
     # 这里手动补一次同样的 SSE 事件,跟 Agent 任务共用同一套侧栏渲染逻辑。
     task_events._bridge_event({"conv": conv, "type": "start"})
     try:
+        run_id = None
+        if job_id == "13f146ce" and job.get("mode") == "script":
+            run_id = uuid.uuid4().hex
+            with JOBS_LOCK:
+                jobs = load_jobs()
+                current = next((item for item in jobs if item.get("id") == job_id), None)
+                if current is None:
+                    return
+                pending = list(current.get("pending_run_ids", []))
+                previous_running = current.get("running_run_id")
+                if previous_running and previous_running not in pending:
+                    pending.append(previous_running)
+                current["pending_run_ids"] = pending + [run_id]
+                current["running_run_id"] = run_id
+                save_jobs(jobs)
+            extra_env = {**(extra_env or {}), "VOCOCO_CRON_RUN_ID": run_id,
+                         "VOCOCO_CRON_PENDING_RUN_IDS": json.dumps(pending)}
         proc: asyncio.subprocess.Process | None = None
         try:
             # 独立进程组:超时后能连同 shell 拉起的子进程一起收回。
@@ -617,11 +654,17 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
         m = _SIGNAL_RE.search(raw)
         has_signal = (m.group(1) == "1") if m else True
         stripped = _SIGNAL_RE.sub("", raw).strip()
+        replayed = "## 上次通知未确认，保守重播" in stripped
+        if run_id and pending and not replayed:
+            warning = "上次巡检结果未确认送达，未能重播，请人工核查：" + ", ".join(pending)
+            stripped = warning + ("\n\n" + stripped if stripped else "")
         # 静默约定:成功 + 信号 0 + 除标记外没有任何输出 = "没事别打扰"——只回填
         # last_run_at/last_status,不落会话、不推送(如询盘快扫无新回复时)。
         if ok and m and not has_signal and not stripped:
             silent = True
-            await _push_job_result(job_id, "success", "", push, silent=True)
+            await _push_job_result(job_id, "success", "", push, silent=True, run_id=run_id)
+            if run_id:
+                _ack_script_runs(job_id, run_id, [run_id])
             return
         text = stripped or "(无输出)"
 
@@ -634,7 +677,9 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
 
         turn_id = session_store.start_turn(conv, f"[脚本任务] {job.get('name','')}")
         session_store.finish_turn(turn_id, text, session_key=conv)
-        await _push_job_result(job_id, "success" if ok else "error", text, push)
+        delivered = await _push_job_result(job_id, "success" if ok else "error", text, push, run_id=run_id)
+        if run_id and delivered is not None:
+            _ack_script_runs(job_id, run_id, (pending if replayed else []) + [run_id])
     finally:
         _script_running.discard(job_id)
         # silent:前端只熄灭闪烁点、拆掉开跑时建的空气泡,不标未读(见 stream.js)

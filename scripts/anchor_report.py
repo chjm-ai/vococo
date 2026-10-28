@@ -45,8 +45,11 @@ def scan_row(payload, ceramic):
         sent = count(counts.get("sent")) if isinstance(counts, dict) else None
         manual = count(counts.get("manual")) if isinstance(counts, dict) else None
         summary = f"{cell(coverage)}；本次提交/核实转发记录 {cell(sent)}，本次转人工 {cell(manual)}"
-        if isinstance(counts, dict) and any(counts.get(key) for key in ("retry", "uncertain", "sending")):
-            issues.append("存在重试/转发结果不明，不能称已转发")
+        if isinstance(counts, dict):
+            if any(count(value) is None for value in counts.values()):
+                issues.append("扫描计数格式错误，不能确认转发状态")
+            if any(counts.get(key) for key in ("retry", "uncertain", "sending")):
+                issues.append("存在重试/转发结果不明，不能称已转发")
     manual_summary, manual_issues = manual_review(payload)
     return summary + manual_summary, issues + manual_issues, bool(issues or manual_issues)
 
