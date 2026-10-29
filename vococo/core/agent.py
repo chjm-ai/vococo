@@ -1099,7 +1099,10 @@ async def stream_turn(
     # 发了也是白发。2026-09-11 真机 A/B 验证过注入后 DeepSeek 确实按该档位走。
     verbosity = settings_store.get_web_verbosity(selection_model)
     summary = settings_store.get_web_summary(selection_model)
-    extra_body = providers.extra_body_for_model(resolved_model, effective_effort, verbosity, summary)
+    extra_body = providers.extra_body_for_model(
+        resolved_model, effective_effort, verbosity, summary,
+        settings_store.get_web_service_tier(selection_model), selection_model=selection_model,
+    )
     cli_effort = "" if providers.extra_body_for_effort(effective_effort) else effective_effort
     if extra_body and provider_env:
         provider_env = {**provider_env, "CLAUDE_CODE_EXTRA_BODY": extra_body}

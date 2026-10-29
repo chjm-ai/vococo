@@ -631,3 +631,21 @@ async def test_summary_change_reconnects_without_changing_effort_or_verbosity(cl
     assert clients[1].options.effort == 'high'
     body = json.loads(clients[1].options.env['CLAUDE_CODE_EXTRA_BODY'])
     assert body == {'text':{'verbosity':'low'},'reasoning':{'summary':None}}
+
+
+@pytest.mark.anyio
+async def test_priority_change_reconnects_next_turn(clients, monkeypatch, tmp_path):
+    monkeypatch.setattr(agent.settings_store, "_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: (
+        "gpt-6.1-sol", {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8317", "ANTHROPIC_API_KEY": "fake"}))
+    monkeypatch.setattr(agent.providers, "codex_mgmt_for_model", lambda *a: ("fake", "http://127.0.0.1:8317"))
+    await _turn()
+    assert "CLAUDE_CODE_EXTRA_BODY" not in clients[0].options.env
+    agent.settings_store.set_web_service_tier("priority", model=config.MODEL)
+    await _turn(resume="sid-1")
+    assert len(clients) == 2 and clients[0].disconnected
+    assert json.loads(clients[1].options.env["CLAUDE_CODE_EXTRA_BODY"]) == {"service_tier": "priority"}
+    agent.settings_store.set_web_service_tier("", model=config.MODEL)
+    await _turn(resume="sid-1")
+    assert len(clients) == 3 and clients[1].disconnected
+    assert "CLAUDE_CODE_EXTRA_BODY" not in clients[2].options.env

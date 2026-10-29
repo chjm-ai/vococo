@@ -729,6 +729,7 @@ function renderEffortChip(){
   $("#effortName").textContent=effortShort(state.value, state.levels);
   btn.disabled=!enabled;
   btn.title=enabled ? "思考深度" : "此模型使用服务商默认思考深度";
+  if(!$("#effortPop").hidden) renderEffortPop();
 }
 function renderEffortPop(){
   const pop=$("#effortPop"), state=effortState(), cur=state.value;
@@ -738,6 +739,42 @@ function renderEffortPop(){
       '<span class="ml">'+esc(e[1])+'</span>'+(on?'<span class="mk">✓</span>':'')+'</button>';
   }).join("");
   pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickEffort(b.dataset.e); });
+  renderPrioritySwitch(pop);
+}
+const priorityPending=new Set();
+function renderPrioritySwitch(pop){
+  const model=curModel(), tier=((S.models&&S.models.service_tiers)||{})[model];
+  if(!tier || !tier.supported) return;
+  pop.insertAdjacentHTML("beforeend", '<div class="priority-tier">'+
+    '<label class="priority-label" for="prioritySwitch">⚡2x</label>'+
+    '<label class="sw"><input id="prioritySwitch" type="checkbox" role="switch" aria-label="GPT 优先档">'+
+    '<span class="track"></span></label></div><div class="priority-error" role="alert" hidden></div>');
+  const input=pop.querySelector("#prioritySwitch");
+  input.checked=tier.value==="priority";
+  input.disabled=priorityPending.has(model);
+  input.closest(".priority-tier").title="优先处理，不保证两倍速度；订阅内含额度可能按 2.5 倍消耗，购买额度按 2 倍消耗。下一条消息生效。";
+  input.onchange=()=>pickServiceTier(input, model);
+}
+async function pickServiceTier(input, model){
+  const tier=input.checked?"priority":"";
+  if(priorityPending.has(model)) return;
+  priorityPending.add(model); input.disabled=true;
+  let error="";
+  try{
+    const r=await api("/service-tier", {method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({model:model, tier:tier})});
+    if(!r.ok) throw new Error("优先档保存失败，请重试");
+    const result=await r.json(), saved=((S.models&&S.models.service_tiers)||{})[model];
+    if(saved) saved.value=result.tier;
+  }catch(e){ error="优先档保存失败，请重试"; }
+  finally{
+    priorityPending.delete(model);
+    if(!$("#effortPop").hidden){
+      renderEffortPop();
+      const notice=$("#effortPop .priority-error");
+      if(error && curModel()===model && notice){ notice.textContent=error; notice.hidden=false; }
+    }
+  }
 }
 function pickEffort(id){
   const state=effortState(), old=state.value, saved=((S.models&&S.models.efforts)||{})[state.model];

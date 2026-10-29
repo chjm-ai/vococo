@@ -17,7 +17,15 @@ def anyio_backend():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('summary', ['concise', 'detailed', 'none'])
-async def test_real_cli_sends_verbosity_and_effort_to_proxy(tmp_path, summary):
+@pytest.mark.parametrize('tier', ['', 'priority'])
+async def test_real_cli_sends_verbosity_and_effort_to_proxy(tmp_path, monkeypatch, summary, tier):
+    from vococo.gateway import settings_store
+
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "settings.json")
+    settings_store.upsert_web_provider("codex-gpt", {
+        "base_url": "http://127.0.0.1:8317", "api_key": "fake-local-only",
+        "mgmt_key": "fake-management", "model": "gpt-6.1-sol",
+    })
     received = []
 
     async def messages(request):
@@ -49,7 +57,7 @@ async def test_real_cli_sends_verbosity_and_effort_to_proxy(tmp_path, summary):
             env={"ANTHROPIC_BASE_URL": str(server.make_url("/")).rstrip("/"),
                  "ANTHROPIC_API_KEY": "fake-local-only", "CLAUDE_CODE_OAUTH_TOKEN": "",
                  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-                 "CLAUDE_CODE_EXTRA_BODY": providers.extra_body_for_model("gpt-6.1-sol", "high", "low", summary)},
+                 "CLAUDE_CODE_EXTRA_BODY": providers.extra_body_for_model("gpt-6.1-sol", "high", "low", summary, tier)},
         )
         async with asyncio.timeout(30):
             async with ClaudeSDKClient(options=options) as client:
@@ -57,6 +65,10 @@ async def test_real_cli_sends_verbosity_and_effort_to_proxy(tmp_path, summary):
                 async for _ in client.receive_response():
                     pass
     assert received, "CLI 没有发送模型请求"
+    if tier:
+        assert received[-1]["service_tier"] == tier
+    else:
+        assert "service_tier" not in received[-1]
     assert received[-1]["text"]["verbosity"] == "low"
     assert received[-1]["output_config"]["effort"] == "high"
 
