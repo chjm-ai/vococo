@@ -6,7 +6,7 @@ import json
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from mcp.types import ListToolsRequest
+from claude_agent_sdk._internal.sdk_mcp_bridge import SdkMcpBridge
 
 from vococo import config
 from vococo.core import research, research_store, task_runner, tasks
@@ -169,7 +169,16 @@ async def test_all_research_routes_require_auth(client, monkeypatch):
 @pytest.mark.anyio
 async def test_mcp_list_excludes_removed_research_tools(db):
     server = builtin.build_mcp_servers()["vococo"]["instance"]
-    result = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
-    names = {tool.name for tool in result.root.tools}
+    bridge = SdkMcpBridge("vococo", server)
+    try:
+        initialized = await bridge.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1"}}})
+        assert "result" in initialized
+        await bridge.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        result = await bridge.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        names = {tool["name"] for tool in result["result"]["tools"]}
+    finally:
+        await bridge.aclose()
     assert not {"start_research", "get_research", "resume_research"} & names
     assert {"dispatch_session", "recall_past", "send_message"} <= names

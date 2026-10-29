@@ -12,7 +12,7 @@ import anyio
 import pytest
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher, ResultMessage, TextBlock
 from claude_agent_sdk._internal.transport import Transport
-from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest
+from claude_agent_sdk._internal.sdk_mcp_bridge import SdkMcpBridge
 
 from vococo import config, providers
 from vococo.core import agent, client_pool, subagent
@@ -543,18 +543,23 @@ async def test_stream_turn_registers_real_mcp_tool_with_agent_runtime(sdk, monke
 
         async def receive_messages(self):
             server = self.options.mcp_servers["vococo"]["instance"]
-            listed = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
-            assert "run_subagent" in {tool.name for tool in listed.root.tools}
-            request = CallToolRequest(method="tools/call", params=CallToolRequestParams(
-                name="run_subagent", arguments={"prompt": "完整子任务", "model": "Luna"},
-            ))
-            # 用独立 worker context 调真实 MCP handler，验证捕获的不是 MCP worker 上下文。
-            result = await asyncio.create_task(server.request_handlers[CallToolRequest](request), context=contextvars.Context())
-            if budget:
-                assert "预算" in result.root.content[0].text and result.root.isError
-            else:
-                assert result.root.content[0].text == "子任务结果"
-                assert not result.root.isError
+            async def exercise():
+                bridge = SdkMcpBridge("vococo", server)
+                try:
+                    await _initialize_bridge(bridge)
+                    listed = await bridge.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+                    assert "run_subagent" in {tool["name"] for tool in listed["result"]["tools"]}
+                    result = await bridge.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
+                        "name": "run_subagent", "arguments": {"prompt": "完整子任务", "model": "Luna"}}})
+                    if budget:
+                        assert "预算" in result["result"]["content"][0]["text"] and result["result"]["isError"]
+                    else:
+                        assert result["result"]["content"][0]["text"] == "子任务结果"
+                        assert not result["result"].get("isError", False)
+                finally:
+                    await bridge.aclose()
+            # MCP worker 使用独立上下文，验证父上下文已经正确捕获。
+            await asyncio.create_task(exercise(), context=contextvars.Context())
             yield _done("父结果")
 
     outer_options = options
@@ -601,6 +606,15 @@ async def test_stream_turn_registers_real_mcp_tool_with_agent_runtime(sdk, monke
     assert sdk.clients[0].options.model == "gpt-6-luna"
 
 
+async def _initialize_bridge(bridge):
+    result = await bridge.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-11-25", "capabilities": {},
+        "clientInfo": {"name": "test", "version": "1"},
+    }})
+    assert "result" in result
+    await bridge.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+
 class _MemoryTransport(Transport):
     """只替换 CLI 的线缆；client、Query、MCP 分发和取消链全部使用真实 SDK。"""
 
@@ -612,6 +626,7 @@ class _MemoryTransport(Transport):
         self.closed = False
         self.hold_close = hold_close
         self.on_prompt = on_prompt
+        self.on_control_response = None
         self.connect_error = connect_error
         self.connect_task = self.close_task = None
 
@@ -626,6 +641,8 @@ class _MemoryTransport(Transport):
             self.incoming.put_nowait({"type": "control_response", "response": {
                 "subtype": "success", "request_id": message["request_id"], "response": {},
             }})
+        elif message["type"] == "control_response" and self.on_control_response:
+            self.on_control_response(message["response"])
         elif message["type"] == "user":
             self.started.set()
             if self.on_prompt:
@@ -709,13 +726,27 @@ async def test_parent_waits_for_real_sdk_mcp_children(monkeypatch, ending):
             assert all(t.closed for t in [*children, *parents])
         transport = _MemoryTransport(connect_error=ending == "connect_error")
         parents.append(transport)
+        def control(request_id, message):
+            transport.incoming.put_nowait({"type": "control_request", "request_id": request_id,
+                "request": {"subtype": "mcp_message", "server_name": "vococo", "message": message}})
+
+        def on_response(response):
+            if response["request_id"] == "mcp-init":
+                assert response["subtype"] == "success" and "result" in response["response"]["mcp_response"]
+                control("mcp-ready", {"jsonrpc": "2.0", "method": "notifications/initialized"})
+            elif response["request_id"] == "mcp-ready":
+                for index in range(2):
+                    transport.incoming.put_nowait(_mcp_call(index))
+
         def on_prompt():
             if len(parents) > 1:
                 transport.incoming.put_nowait({"type": "result", **asdict(_done())})
             else:
-                for index in range(2):
-                    transport.incoming.put_nowait(_mcp_call(index))
+                control("mcp-init", {"jsonrpc": "2.0", "id": 100, "method": "initialize", "params": {
+                    "protocolVersion": "2025-11-25", "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"}}})
         transport.on_prompt = on_prompt
+        transport.on_control_response = on_response
         client = ClaudeSDKClient(options=options, transport=transport)
         clients.append(client)
         return client
@@ -772,10 +803,14 @@ async def test_parent_waits_for_real_sdk_mcp_children(monkeypatch, ending):
                 usage.reset(10, lambda: None)
             # 清理期间拒绝迟到的 MCP 调用，不生成第三个子 client。
             server = clients[0].options.mcp_servers["vococo"]["instance"]
-            late = await server.request_handlers[CallToolRequest](CallToolRequest(
-                method="tools/call", params=CallToolRequestParams(name="run_subagent", arguments={"prompt": "迟到任务"}),
-            ))
-            assert late.root.isError and len(children) == 2
+            bridge = SdkMcpBridge("late", server)
+            try:
+                await _initialize_bridge(bridge)
+                late = await bridge.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                    "name": "run_subagent", "arguments": {"prompt": "迟到任务"}}})
+                assert late["result"]["isError"] and len(children) == 2
+            finally:
+                await bridge.aclose()
     finally:
         for transport in children:
             transport.release.set()

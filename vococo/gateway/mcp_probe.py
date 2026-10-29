@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer as FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -55,13 +55,9 @@ def create_server(port: int = 8852, origin: str | None = None) -> FastMCP:
         canonical = public_origin(origin)
         hosts.append(urlsplit(canonical).netloc)
         origins.append(canonical)
-    server = FastMCP(
-        "vococo-probe", host="127.0.0.1", port=port,
-        stateless_http=True, json_response=True,
-        transport_security=TransportSecuritySettings(
-            allowed_hosts=hosts, allowed_origins=origins,
-        ),
-    )
+    server = FastMCP("vococo-probe")
+    server._vococo_port = port
+    server._vococo_security = TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins)
     _register_probe(server)
     _register_delay(server)
     _register_long_reply(server)
@@ -127,7 +123,8 @@ def main() -> None:
         server = create_server(args.port, args.public_origin)
     except ValueError as error:
         parser.error(str(error))
-    server.run(transport="streamable-http")
+    server.run(transport="streamable-http", host="127.0.0.1", port=args.port, stateless_http=True,
+               json_response=True, transport_security=server._vococo_security)
 
 
 if __name__ == "__main__":

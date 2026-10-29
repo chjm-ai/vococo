@@ -8,7 +8,7 @@ import json
 import statistics
 import time
 
-import httpx
+import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -21,9 +21,9 @@ async def _call(session: ClientSession, name: str, arguments: dict) -> tuple[dic
     started = time.perf_counter()
     response = await session.call_tool(name, arguments)
     elapsed = _milliseconds(started)
-    if response.isError or not response.structuredContent:
+    if response.is_error or not response.structured_content:
         raise RuntimeError(f"{name} 未返回有效结构化结果: {response.content}")
-    return response.structuredContent, elapsed
+    return response.structured_content, elapsed
 
 
 def _validate_text(result: dict, characters: int) -> None:
@@ -74,8 +74,8 @@ async def _measure_nonblocking(session: ClientSession) -> dict:
 
 async def check(url: str, samples: int = 5, use_env_proxy: bool = False) -> dict:
     started = time.perf_counter()
-    async with httpx.AsyncClient(timeout=30, trust_env=use_env_proxy) as http:
-        async with streamable_http_client(url, http_client=http) as (read, write, _):
+    async with httpx2.AsyncClient(timeout=30, trust_env=use_env_proxy) as http:
+        async with streamable_http_client(url, http_client=http) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 initialized_ms = _milliseconds(started)
