@@ -726,7 +726,8 @@ function effortShort(id, levels){
 }
 function renderEffortChip(){
   const state=effortState(), btn=$("#effortBtn"), enabled=state.levels.length>0;
-  $("#effortName").textContent=effortShort(state.value, state.levels);
+  const tier=((S.models&&S.models.service_tiers)||{})[curModel()];
+  $("#effortName").textContent=effortShort(state.value, state.levels)+(tier && tier.supported && tier.value==="priority" ? "⚡2x" : "");
   btn.disabled=!enabled;
   btn.title=enabled ? "思考深度" : "此模型使用服务商默认思考深度";
   if(!$("#effortPop").hidden) renderEffortPop();
@@ -769,8 +770,8 @@ async function pickServiceTier(input, model){
   }catch(e){ error="优先档保存失败，请重试"; }
   finally{
     priorityPending.delete(model);
+    renderEffortChip();
     if(!$("#effortPop").hidden){
-      renderEffortPop();
       const notice=$("#effortPop .priority-error");
       if(error && curModel()===model && notice){ notice.textContent=error; notice.hidden=false; }
     }
