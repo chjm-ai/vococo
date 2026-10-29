@@ -10,12 +10,14 @@ const S={conv:'one',images:[{data:'image',media_type:'image/png'}],audios:[{id:'
   sending:{},inflightComposer:{},localSent:{},sendAcks:{},convs:[],stream:null};
 const original=JSON.parse(JSON.stringify({images:S.images,audios:S.audios,files:S.files,libraryRefs:S.libraryRefs}));
 const drafts={};
+const ownership={agent_id:'general',project_hash:null};
 const noop=()=>{};
 let payload,release;
 const context=vm.createContext({S,console,setTimeout,clearTimeout,Promise,_chatAnchor:null,
   $:selector=>selector==='#ta'?input:callView,renderThumbs:noop,autoGrow:noop,closeCmdMenu:noop,
   saveDraft:(conv,text)=>drafts[conv]=text??input.value,restoreDraft:conv=>input.value=drafts[conv]||'',
   clearDraft:conv=>delete drafts[conv],ensureStream:()=>S.stream={},
+  convOwnership:conv=>{assert.equal(conv,'one');return ownership;},
   addBubble:()=>({closest:()=>({remove:noop}),append:noop}),
   api:async(url,options)=>{payload=JSON.parse(options.body);return await new Promise(resolve=>release=resolve);}
 });
@@ -39,6 +41,9 @@ const plain=value=>JSON.parse(JSON.stringify(value));
       {images:[],audios:[],files:[],libraryRefs:[]});
     assert.equal(input.value,'');
     assert.deepEqual(plain(S.inflightComposer.one),{text:'原草稿',...original});
+    assert.equal(payload.conv,'one');
+    assert.equal(payload.agent_id,ownership.agent_id);
+    assert.equal(payload.project_hash,ownership.project_hash);
     assert.deepEqual(payload.files,[{id:'file'}]);
     assert.deepEqual(payload.library_refs,['art']);
     if(scenario==='background'){

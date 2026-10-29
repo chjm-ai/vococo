@@ -163,7 +163,7 @@ async def test_dispatch_related_title_blocked_with_candidate_hint(voice_db, monk
     out = await task_tools.voice_dispatch_task.handler({"title": "查完资料写报告", "prompt": "接着写"})
     text = out["content"][0]["text"]
     assert "检测到可能有承接关系的既有任务" in text
-    assert old["id"] in text
+    assert f"session_id={tasks.session_key(old['id'])}" in text
     assert "voice_continue_session" in text
     # 确实没派出去:任务板上还是只有那一条
     assert [t["id"] for t in tasks.list_recent(20, origin="voice")] == [old["id"]]
@@ -352,7 +352,7 @@ async def test_dispatch_persists_full_conversation_to_shared_session_store(
     voice_db, monkeypatch
 ):
     """任务的完整对话(不只是 result_full 摘要)要落进跟普通对话共用的
-    session_store,session_key=task:{id}——这样侧边栏"语音任务"分组才能
+    session_store,通过 tasks.session_key 定位统一会话——这样侧边栏"语音任务"分组才能
     像回看普通对话一样回看它。"""
 
     async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
@@ -369,7 +369,8 @@ async def test_dispatch_persists_full_conversation_to_shared_session_store(
     task = executor.dispatch("标题", "帮我查一下天气")
     await executor._running[task["id"]]
 
-    session_key = f"task:{task['id']}"
+    session_key = tasks.session_key(task["id"])
+    assert session_key == task["session_key"] and session_key.startswith("session:")
     history = session_store.load_recent(session_key)
     assert len(history) == 1
     assert history[0].user == "帮我查一下天气"
@@ -397,7 +398,8 @@ async def test_task_session_stays_conversable_after_terminal_status(voice_db, mo
     await executor._running[task["id"]]
     assert tasks.get(task["id"])["status"] == "done"  # 已是终态
 
-    session_key = f"task:{task['id']}"
+    session_key = tasks.session_key(task["id"])
+    assert session_key == task["session_key"] and session_key.startswith("session:")
 
     async def fake_stream_turn_followup(history, user_text, **kw):
         assert len(history) == 1  # 续聊能读到派发那一轮的历史
@@ -562,7 +564,8 @@ async def test_append_on_running_task_interrupts_and_resumes_same_session(voice_
     task = executor.dispatch("标题", "先做 A")
     await started.wait()
 
-    session_key = f"task:{task['id']}"
+    session_key = tasks.session_key(task["id"])
+    assert session_key == task["session_key"] and session_key.startswith("session:")
     assert session_store.get_sdk_session_id(session_key) == "sdk-mid-flight"
 
     seen_resume = []
@@ -949,7 +952,7 @@ async def test_notify_terminal_marks_pending_review_for_done_not_cancelled(voice
     tasks.set_status(done_task["id"], "running")
     tasks.finish(done_task["id"], "done", "结果", "摘要")
     await notify.on_task_terminal(done_task["id"])
-    rows = {r["key"]: r for r in session_store.list_sessions(tasks.SESSION_KEY_PREFIX)}
+    rows = {r["key"]: r for r in session_store.list_sessions("")}
     assert rows[tasks.session_key(done_task["id"])]["pending_review"] is True
 
     cancelled_task = tasks.create("cancelled", "p")
@@ -957,7 +960,7 @@ async def test_notify_terminal_marks_pending_review_for_done_not_cancelled(voice
     tasks.set_status(cancelled_task["id"], "running")
     tasks.finish(cancelled_task["id"], "cancelled", "", "已取消")
     await notify.on_task_terminal(cancelled_task["id"])
-    rows = {r["key"]: r for r in session_store.list_sessions(tasks.SESSION_KEY_PREFIX)}
+    rows = {r["key"]: r for r in session_store.list_sessions("")}
     assert rows[tasks.session_key(cancelled_task["id"])]["pending_review"] is False
 
 
@@ -1172,7 +1175,7 @@ async def test_append_reactivates_archived_task_clears_archived(voice_db, monkey
     # 用户归档这个任务会话(前端 /conv/archive 干的事)
     key = tasks.session_key(task["id"])
     session_store.set_conv_archived(key, True)
-    assert session_store.list_sessions("task:")[0]["archived"] is True
+    assert {row["key"]: row for row in session_store.list_sessions("")}[key]["archived"] is True
 
     queue = task_events.subscribe()
     try:
@@ -1180,7 +1183,7 @@ async def test_append_reactivates_archived_task_clears_archived(voice_db, monkey
         assert result["ok"] is True
         assert tasks.get(task["id"])["status"] == "running"
         # 归档被自动取消
-        assert session_store.list_sessions("task:")[0]["archived"] is False
+        assert {row["key"]: row for row in session_store.list_sessions("")}[key]["archived"] is False
         # 前端能实时感知状态变化
         event, payload = await asyncio.wait_for(queue.get(), timeout=5)
         assert event == "task_update"
@@ -1193,7 +1196,7 @@ async def test_append_reactivates_archived_task_clears_archived(voice_db, monkey
 @pytest.mark.anyio
 async def test_web_manual_message_to_archived_task_clears_archived(voice_db, monkeypatch):
     """人工链路:web 界面手动给已归档的任务会话发消息 → 自动取消归档
-    (走 GatewayRunner._handle 的 task: 分支,等价于用户点开任务会话发消息)。"""
+    (走 GatewayRunner._handle 的任务映射,等价于用户点开统一任务会话发消息)。"""
     from vococo.gateway.adapters.base import Incoming
     from vococo.gateway.run import GatewayRunner
 
@@ -1208,7 +1211,7 @@ async def test_web_manual_message_to_archived_task_clears_archived(voice_db, mon
     key = tasks.session_key(t["id"])
     session_store.start_turn(key, "第一轮对话")
     session_store.set_conv_archived(key, True)
-    assert session_store.list_sessions("task:")[0]["archived"] is True
+    assert {row["key"]: row for row in session_store.list_sessions("")}[key]["archived"] is True
 
     class StubAdapter:
         platform = "web"
@@ -1223,7 +1226,7 @@ async def test_web_manual_message_to_archived_task_clears_archived(voice_db, mon
     inc = Incoming(platform="web", chat_id=key, text="接着做")
     await runner._handle(StubAdapter(), inc)
 
-    assert session_store.list_sessions("task:")[0]["archived"] is False
+    assert {row["key"]: row for row in session_store.list_sessions("")}[key]["archived"] is False
 
 
 @pytest.mark.anyio
@@ -1270,7 +1273,9 @@ def test_reopen_after_terminal_reenables_start_bridge(voice_db):
         t = tasks.create("任务", "p")
         tasks.set_status(t["id"], "running")
         task_events.on_task_activity(tasks.get(t["id"]))
-        assert bridges == [{"conv": f"task:{t['id']}", "type": "start"}]
+        assert bridges == [{"conv": tasks.conversation_id(t), "type": "start",
+                            "task_id": t["id"], "job_id": None,
+                            "conversation_id": tasks.session_key(t["id"])}]
 
         # 终态 → 重开:start 桥接要再次触发
         tasks.finish(t["id"], "done", "r", "s")
@@ -1278,6 +1283,8 @@ def test_reopen_after_terminal_reenables_start_bridge(voice_db):
         bridges.clear()
         tasks.set_status(t["id"], "running")
         task_events.on_task_activity(tasks.get(t["id"]))
-        assert bridges == [{"conv": f"task:{t['id']}", "type": "start"}]
+        assert bridges == [{"conv": tasks.conversation_id(t), "type": "start",
+                            "task_id": t["id"], "job_id": None,
+                            "conversation_id": tasks.session_key(t["id"])}]
     finally:
         task_events.register_main_event_bridge(None)

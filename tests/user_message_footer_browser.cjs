@@ -68,9 +68,10 @@ const assert=require('node:assert/strict');
       const {row}=buildBubble('me','响应式展开按钮测试'.repeat(16));
       $('#wrap').replaceChildren(row);
     });
-    await page.waitForTimeout(100);
+    await page.waitForFunction(()=>document.querySelector('.user-message-toggle').hidden===false);
     assert.equal(await page.locator('.user-message-toggle').isVisible(),true,'窄屏溢出时显示展开按钮');
-    await page.setViewportSize({width:1280,height:900}); await page.waitForTimeout(100);
+    await page.setViewportSize({width:1280,height:900});
+    await page.waitForFunction(()=>document.querySelector('.user-message-toggle').hidden===true);
     assert.equal(await page.locator('.user-message-toggle').isVisible(),false,'宽屏能完整显示时隐藏展开按钮');
     await page.setViewportSize({width:320,height:900});
     await page.evaluate(()=>{
@@ -92,7 +93,8 @@ const assert=require('node:assert/strict');
     });
     assert.equal(await page.locator('.userfoot').count(),1,'空的转写占位不显示底栏');
     assert.ok(await page.locator('.userfoot .tftime').innerText(),'新发送消息具有时间');
-    await page.waitForTimeout(100);
+    // 显隐由下一帧测量决定；等待具体结果，不能假定并发浏览器会在 100ms 内完成布局。
+    await page.waitForFunction(()=>document.querySelector('.user-message-toggle').hidden===true);
     assert.equal(await page.locator('.user-message-toggle').isVisible(),false,'四行以内的消息不显示展开按钮');
     await page.evaluate(()=>{
       const b=$('#wrap .row.me:nth-child(2) .bubble');

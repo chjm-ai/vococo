@@ -165,6 +165,7 @@ class _WebSink(Sink):
         self.conv = conv
         self._seg = 0  # 当前文字段序号
         self._text = ""  # 当前段累积正文,每次发该段全文
+        self._sent_text = ""  # 当前段最后一次发出的快照,切段时只补未发送尾字
         self._think = ""  # 累积思考
         # SSE 限流:150ms 内 text/thinking 合并为一次发出,大幅减少跨境小包数
         self._last_think_ts = 0.0
@@ -186,13 +187,15 @@ class _WebSink(Sink):
         if now - last < 0.15:
             return
         self._last_text_ts[self._seg] = now
+        self._sent_text = self._text
         self.a._emit(
             {"conv": self.conv, "type": "text", "seg": self._seg, "text": self._text}
         )
 
     def _flush_text(self) -> None:
         # 切段前补齐限流期间攒下的尾字，否则工具前一句会在实时画面里缺字。
-        if self._text:
+        if self._text and self._text != self._sent_text:
+            self._sent_text = self._text
             self.a._emit({"conv": self.conv, "type": "text", "seg": self._seg, "text": self._text})
 
     async def tool_started(
@@ -203,6 +206,7 @@ class _WebSink(Sink):
             self._flush_text()
             self._seg += 1
             self._text = ""
+            self._sent_text = ""
         # parent 非空 = 子代理(Task)内部的工具,前端嵌进对应 Task 卡片
         self.a._emit(
             {
@@ -261,6 +265,7 @@ class _WebSink(Sink):
             self._flush_text()
             self._seg += 1
             self._text = ""
+            self._sent_text = ""
         self.a._emit({"conv": self.conv, "type": "compact", "trigger": trigger})
 
     async def upstream_retry(
@@ -355,9 +360,49 @@ def _conv_id_for_key(key: str) -> str:
     """
     if key == config.SESSION_KEY:
         return "main"
-    if key.startswith("web:"):
-        return key[len("web:"):]
-    return key
+    return config.conversation_id_for_key(key)
+
+
+def _session_metadata(row: dict) -> dict:
+    from ...core import tasks
+    from ...memory import agents
+
+    key = row["key"]
+    binding = session_store.session_binding(key)
+    if not binding and not key.startswith("session:"):
+        owner = agents.agent_for_session(key)
+        binding = {"agent_id": owner["id"] if owner else "general",
+                   "project_hash": config.project_hash_from_key(key)}
+    task = tasks.task_for_session(key)
+    row.update(binding)
+    row.setdefault("agent_id", None)
+    row.setdefault("project_hash", None)
+    row.update(conv=_conv_id_for_key(key), conversation_id=_conv_id_for_key(key),
+               task_id=task["id"] if task else None, job_id=task.get("job_id") if task else None)
+    return row
+
+
+def _bind_browser_session(key: str, ownership: dict | None, *, bind: bool = True) -> None:
+    from ...memory import agents
+
+    if not key.startswith("session:") or session_store.session_binding(key):
+        return  # 已绑定的会话不采纳浏览器传来的归属。
+    try:
+        uuid.UUID(key.removeprefix("session:"))
+    except ValueError:
+        raise ValueError("无效的会话 ID") from None
+    if ownership is None:
+        raise ValueError("新会话必须显式指定 Agent")
+    aid, phash = ownership.get("agent_id"), ownership.get("project_hash")
+    if not isinstance(aid, str) or (phash is not None and not isinstance(phash, str)):
+        raise ValueError("无效的会话归属")
+    owner = agents.get(aid)
+    if owner is None or (owner.get("project_hash") or None) != phash:
+        raise ValueError("项目与 Agent 不匹配")
+    if phash and not session_store.path_for_hash(phash):
+        raise ValueError("项目不存在")
+    if bind:
+        session_store.bind_session(key, agent_id=aid, project_hash=phash)
 
 
 def _rows_with_conv(prefix: str, *, archived: bool | None = None) -> list[dict]:
@@ -374,7 +419,7 @@ def _rows_with_conv(prefix: str, *, archived: bool | None = None) -> list[dict]:
     """
     rows = session_store.list_sessions(prefix, archived=archived)
     for r in rows:
-        r["conv"] = _conv_id_for_key(r["key"])
+        _session_metadata(r)
     return rows
 
 
@@ -1114,6 +1159,11 @@ class WebAdapter:
     async def _handle_send_once(self, request: web.Request, body: dict) -> web.Response:
         conv = str(body.get("conv") or "main")
         text = (body.get("text") or "").strip()
+        ownership = {"agent_id": body.get("agent_id"), "project_hash": body.get("project_hash")}
+        try:
+            _bind_browser_session(config.resolve_session_key("web", conv), ownership, bind=False)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
         client_request_id = str(body.get("client_request_id") or "")
         images = [
             ImageAttachment(
@@ -1199,7 +1249,7 @@ class WebAdapter:
                 text = "(图片,无文字说明,看看图里是什么)"
         await self._ingest(
             conv, text, images=images, audios=audios, files=files, videos=videos,
-            client_request_id=client_request_id,
+            client_request_id=client_request_id, ownership=ownership,
         )
         return web.json_response({"ok": True})
 
@@ -1213,10 +1263,13 @@ class WebAdapter:
         videos: list[VideoAttachment] | None = None,
         client_request_id: str = "",
         source_access: dict | None = None,
+        ownership: dict | None = None,
     ) -> None:
         """把一条消息塞进指定会话的处理流水线——浏览器发送(_handle_send)和外部注入
         (语音跨端续聊,见 inject()/gateway/web_bridge.py)共用同一份逻辑,保证标题
         占位/项目 touch/用户气泡广播/入队 dispatch 完全一致的行为,不会两边走岔。"""
+        session_key = config.resolve_session_key("web", conv)
+        _bind_browser_session(session_key, ownership)
         images = images or []
         audios = audios or []
         files = files or []
@@ -1231,8 +1284,9 @@ class WebAdapter:
                     self._summarize_title(conv, session_key, text, placeholder)
                 )
         # 项目会话(conv = p<hash>:<convid>)→ 刷新项目最近使用时间,好让侧边栏排序
-        if conv.startswith("p") and ":" in conv:
-            session_store.touch_project(conv[1:].split(":", 1)[0])
+        phash = config.project_hash_from_key(session_key)
+        if phash:
+            session_store.touch_project(phash)
         # 广播用户消息让其他客户端(如桌面端)能实时渲染用户气泡。图片这时还没走到
         # save_turn_images(在 core.py 的轮次处理里,晚于本次广播),没法给 /image?name=
         # 这种服务端引用,所以跟本地发送方一样直接带 dataURL——不然其他客户端这条
@@ -1307,9 +1361,10 @@ class WebAdapter:
         from ...core import tasks as bg_tasks  # 懒加载,同 _handle_voice_sidebar
         from ...core import task_runner as bg_task_runner
 
-        task_id = bg_tasks.task_id_from_session_key(session_key)
+        row = bg_tasks.task_for_session(session_key)
+        task_id = row["id"] if row else bg_tasks.task_id_from_session_key(session_key)
         if task_id is not None:
-            row = bg_tasks.get(task_id)
+            row = row or bg_tasks.get(task_id)
             if row is not None and row["status"] not in bg_tasks.TERMINAL_STATUSES:
                 ok = bg_task_runner.cancel(task_id)
                 if not ok and row["status"] == "queued":
@@ -1328,10 +1383,16 @@ class WebAdapter:
         # 那部分——不带该参数(如首屏用户偏好还没加载出来前那次)则保持全量,
         # 见 sidebar.js loadConvs()/app-core.js tryEnter() 里的调用方注释。
         archived = {"active": False, "archived": True}.get(request.query.get("filter"))
-        convs = _rows_with_conv("web:", archived=archived)
+        from ...cron import scheduler
+
+        cron_keys = {j.get("conv") or f"task:{j['id']}" for j in scheduler.load_jobs()}
+        convs = [c for prefix in ("web:", "session:")
+                 for c in _rows_with_conv(prefix, archived=archived)
+                 if not c["task_id"] and c["key"] not in cron_keys]
         # 主会话(与 TG/CLI 共享的统一会话)固定置顶,conv id 用 "main"
         main = session_store.session_summary(config.resolve_session_key("web", "main"))
-        main.update(key="main", title="主会话", pinned=True, conv="main")
+        main.update(key=config.SESSION_KEY, title="主会话", pinned=True, conv="main")
+        _session_metadata(main)
         return _compressed_json({"main": main, "conversations": convs})
 
     @_authed
@@ -1343,9 +1404,15 @@ class WebAdapter:
 
         # 全表 LIKE 扫描,数据涨到 9000 轮后要 60~100ms,放线程里别卡住其他请求
         items = await asyncio.to_thread(session_store.search_sessions, q, limit=50)
+        from ...cron import scheduler
+
+        jobs = {config.resolve_session_key("web", j.get("conv") or f"task:{j['id']}"): j
+                for j in scheduler.load_jobs()}
         for it in items:
             key = it["key"]
-            it["conv"] = _conv_id_for_key(key)
+            _session_metadata(it)
+            if key in jobs:
+                it["job_id"] = jobs[key]["id"]
             if key == config.SESSION_KEY:
                 it["title"] = "主会话"
             task_id = bg_tasks.task_id_from_session_key(key)
@@ -1382,24 +1449,23 @@ class WebAdapter:
         from ...core import tasks as bg_tasks  # 懒加载,避免非任务场景也引入这块
         from ...cron import scheduler as cron_scheduler
 
-        cron_job_ids = {job["id"] for job in cron_scheduler.load_jobs()}
+        jobs = cron_scheduler.load_jobs()
+        cron_keys = {job.get("conv") or f"task:{job['id']}" for job in jobs}
         main = session_store.session_summary("voice-chat:main")
         main.update(key="voice-chat:main", conv="voice-chat:main", title="语音通话", pinned=True)
+        _session_metadata(main)
         task_convs = []
-        for c in _rows_with_conv(bg_tasks.SESSION_KEY_PREFIX):
-            task_id = bg_tasks.task_id_from_session_key(c["key"]) or c["key"]
-            row = bg_tasks.get(task_id)
-            if row is not None:
-                if row.get("origin", "voice") not in ("voice", "chat", "workbench"):
+        for prefix in ("task:", "session:"):
+            for c in _rows_with_conv(prefix):
+                row = bg_tasks.task_for_session(c["key"])
+                if c["key"] in cron_keys or (row and (row.get("job_id") or row.get("origin") == "cron")):
                     continue
-                c["task_status"] = row["status"]
-                c["task_updated_at"] = row["updated_at"]
-                c["title"] = row["title"]
-                # 侧栏「Agent」Tab 按它把任务挂到对应 Agent 下;没有 = 无主,归总助理
-                c["agent_id"] = row.get("agent_id") or None
-            elif task_id in cron_job_ids:
-                continue
-            task_convs.append(c)
+                if row is None and prefix == "session:":
+                    continue
+                if row:
+                    c.update(task_status=row["status"], task_updated_at=row["updated_at"],
+                             title=row["title"], agent_id=c.get("agent_id") or row.get("agent_id"))
+                task_convs.append(c)
         return _compressed_json({"main": main, "tasks": task_convs})
 
     @_authed
@@ -1412,8 +1478,10 @@ class WebAdapter:
         from ...core import tasks as bg_tasks
 
         conv = str(body.get("conv") or "")
-        task_id = bg_tasks.task_id_from_session_key(conv) or conv
-        row = bg_tasks.get(task_id)
+        key = config.resolve_session_key("web", conv)
+        row = bg_tasks.task_for_session(key)
+        task_id = row["id"] if row else bg_tasks.task_id_from_session_key(key) or conv
+        row = row or bg_tasks.get(task_id)
         if row is None:
             return web.json_response({"ok": False, "reason": "not_found", "message": "任务不存在"})
         if row["status"] in bg_tasks.TERMINAL_STATUSES:
@@ -1450,18 +1518,21 @@ class WebAdapter:
         # session_summary() 不带 pending_review(那是 list_sessions 的字段),这里单独查一遍
         # 补上,否则任务跑完了侧边栏也不会冒未读灰点(见 _pending_map 的说明)。task: 前缀
         # 现在也装着语音/chat 触发的任务,但下面只按 jobs 自己的 conv 精确取值,不会串。
-        pending_by_conv = _pending_map("task:")
+        pending_by_conv = {**_pending_map("task:"), **_pending_map("session:")}
         rows = []
         for j in jobs:
             conv = j.get("conv") or f"task:{j['id']}"
-            row = session_store.session_summary(conv)
+            key = config.resolve_session_key("web", conv)
+            row = session_store.session_summary(key)
+            row["key"] = key
+            _session_metadata(row)
             row.update(
                 conv=conv,
                 job_id=j["id"],
                 title=j.get("name") or "定时任务",
                 schedule_desc=scheduler.describe_schedule(j.get("schedule", {})),
                 enabled=bool(j.get("enabled")),
-                pending_review=pending_by_conv.get(conv, False),
+                pending_review=pending_by_conv.get(key, False),
                 last_status=j.get("last_status"),
                 # 下面三个字段是给管理界面「编辑」表单回填用的原始数据
                 prompt=j.get("prompt"),
@@ -1598,17 +1669,38 @@ class WebAdapter:
         from ...cron import scheduler
 
         job_id = (body.get("id") or "").strip()
-        with scheduler.JOBS_LOCK:
-            jobs = scheduler.load_jobs()
-            job = next((j for j in jobs if j.get("id") == job_id), None)
-            if job is None:
-                return web.json_response({"error": "任务不存在"}, status=404)
-            jobs.remove(job)
-            scheduler.save_jobs(jobs)
-        conv = job.get("conv")
-        if conv:
-            session_store.delete_session(conv)
-        return web.json_response({"ok": True})
+        job = next((j for j in scheduler.load_jobs() if j.get("id") == job_id), None)
+        if job is None:
+            return web.json_response({"error": "任务不存在"}, status=404)
+        key = config.resolve_session_key("web", job.get("conv") or f"task:{job_id}")
+        from ...core import tasks, task_runner
+
+        if not scheduler.begin_job_delete(job_id):
+            return web.json_response({"error": "定时任务正在删除，请稍后再试"}, status=409)
+        try:
+            if not await scheduler.stop_script_job(job_id):
+                return web.json_response({"error": "脚本仍在停止，请稍后再试"}, status=409)
+            if self._cancel_and_wait_callback is not None:
+                running, stopped = await self._cancel_and_wait_callback(key)
+                if running and not stopped:
+                    return web.json_response({"error": "回复仍在停止，请稍后再试"}, status=409)
+            task = tasks.task_for_session(key)
+            if task:
+                await task_runner.cancel_and_wait(task["id"])
+                current = tasks.get(task["id"])
+                if current and current["status"] not in tasks.TERMINAL_STATUSES:
+                    return web.json_response({"error": "任务仍在停止，请稍后再试"}, status=409)
+            with scheduler.JOBS_LOCK:
+                jobs = scheduler.load_jobs()
+                current_job = next((j for j in jobs if j.get("id") == job_id), None)
+                if current_job != job:
+                    return web.json_response({"error": "定时任务已变化，请刷新后重试"}, status=409)
+                jobs.remove(current_job)
+                scheduler.save_jobs(jobs)
+            session_store.delete_session(key)
+            return web.json_response({"ok": True})
+        finally:
+            scheduler.end_job_delete(job_id)
 
     @_authed
     @_json_body
@@ -2499,8 +2591,7 @@ class WebAdapter:
     async def _handle_conv_duplicate(self, request: web.Request) -> web.Response:
         """POST /conv/duplicate  {conv}  复制会话:内容全量搬到新会话,标题加「副本」。
 
-        新 conv 只保留原会话的项目前缀(p<hash>:...),其余一律新生成纯 id ——
-        任务/语音会话(task:/voice-chat:)复制出来是独立普通 web 会话,不会撞 key。
+        副本使用独立 session ID，继承归属，不继承后台任务或定时配置身份。
         返回 {conv: 新会话id, title: 新标题};前端据此刷新列表并打开副本。
         """
         body = await request.json()
@@ -2508,16 +2599,17 @@ class WebAdapter:
         if not conv:
             return web.json_response({"error": "missing conv"}, status=400)
         src_key = config.resolve_session_key("web", conv)
-        # 原 conv 形如 p<项目hash>:<id> 则副本留在同一项目下,否则纯 id
-        prefix = ""
-        if conv.startswith("p") and ":" in conv:
-            prefix = conv.split(":", 1)[0] + ":"
-        new_id = f"{int(time.time() * 1000):x}{uuid.uuid4().hex[:6]}"
-        new_conv = prefix + new_id
-        dst_key = config.resolve_session_key("web", new_conv)
+        source = _session_metadata({"key": src_key})
+        if not source["agent_id"]:
+            return web.json_response({"error": "原会话未绑定有效 Agent，无法复制"}, status=409)
+        dst_key = config.new_session_key()
         title = session_store.get_title(src_key) or "新对话"
+        # duplicate_session 自己插入 session_meta，复制完再绑定，附件仍走原有独立克隆。
         session_store.duplicate_session(src_key, dst_key, title + "副本")
-        return web.json_response({"conv": new_conv, "title": title + "副本"})
+        session_store.bind_session(dst_key, agent_id=source["agent_id"],
+                                   project_hash=source["project_hash"])
+        result = _session_metadata({"key": dst_key, "title": title + "副本"})
+        return web.json_response(result)
 
     @_authed
     async def _handle_delete(self, request: web.Request) -> web.Response:
@@ -2526,6 +2618,11 @@ class WebAdapter:
         force = bool(body.get("force", False))
         if conv and conv != "main":
             key = config.resolve_session_key("web", conv)
+            from ...cron import scheduler
+
+            if any(config.resolve_session_key("web", j.get("conv") or f"task:{j['id']}") == key
+                   for j in scheduler.load_jobs()):
+                return web.json_response({"ok": False, "error": "会话仍绑定定时任务，请从定时任务入口删除"}, status=409)
             # 普通 web 会话与后台任务同样必须先停再删。否则旧 Agent 持有的
             # turn_id 会在 SQLite 复用后串写进新会话；超时则拒绝删除，不能假装已停。
             if self._cancel_and_wait_callback is not None:
@@ -2536,13 +2633,17 @@ class WebAdapter:
                     )
             from ...core import tasks as bg_tasks  # 懒加载
 
-            task_id = bg_tasks.task_id_from_session_key(conv)
+            row = bg_tasks.task_for_session(key)
+            task_id = row["id"] if row else bg_tasks.task_id_from_session_key(key)
             if task_id is not None:
                 from ...core import task_runner  # 懒加载
 
                 # 任务还在排队/运行时先取消并等收尾写完,否则收尾 finish_turn
                 # 会把刚删掉的会话又写回来(侧边栏出现"复活"的空壳任务)
                 await task_runner.cancel_and_wait(task_id)
+                current = bg_tasks.get(task_id)
+                if current and current["status"] not in bg_tasks.TERMINAL_STATUSES:
+                    return web.json_response({"ok": False, "error": "任务仍在停止，请稍后再试"}, status=409)
             from ...core import worktree  # 懒加载
 
             # 有未提交改动/独立提交:先提示,用户确认(force)后才真删——删 worktree

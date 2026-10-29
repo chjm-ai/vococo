@@ -6,33 +6,44 @@ import threading
 import pytest
 
 from vococo.cron import scheduler
+from vococo.memory import agents
 
 
 @pytest.fixture
 def cron_path(isolated, tmp_path, monkeypatch):
     path = tmp_path / "cron_jobs.json"
+    from vococo.core import tasks as task_store
+
+    monkeypatch.setattr(task_store, "_DB", None)
     monkeypatch.setattr(scheduler.config, "CRON_JOBS_PATH", path)
-    return path
+    for aid in ("dead000001", "beef000002"):
+        workdir = tmp_path / aid
+        workdir.mkdir()
+        agents._write_meta(aid, {"name": aid, "workdir": str(workdir)})
+    yield path
+    if task_store._DB is not None:
+        task_store._DB.close()
+        task_store._DB = None
 
 
 def test_disable_agent_jobs_preserves_other_agents_and_is_idempotent(cron_path):
     scheduler.save_jobs([
-        {"id": "enabled", "agent_id": "deleted", "enabled": True, "next_run_at": 123},
-        {"id": "legacy", "agent_id": "deleted"},
-        {"id": "disabled", "agent_id": "deleted", "enabled": False, "next_run_at": 123},
-        {"id": "other", "agent_id": "kept", "enabled": True, "next_run_at": 456},
+        {"id": "enabled", "agent_id": "dead000001", "enabled": True, "next_run_at": 123},
+        {"id": "legacy", "agent_id": "dead000001"},
+        {"id": "disabled", "agent_id": "dead000001", "enabled": False, "next_run_at": 123},
+        {"id": "other", "agent_id": "beef000002", "enabled": True, "next_run_at": 456},
     ])
-    assert [j["id"] for j in scheduler.disable_agent_jobs("deleted")] == ["enabled", "legacy"]
+    assert [j["id"] for j in scheduler.disable_agent_jobs("dead000001")] == ["enabled", "legacy"]
     jobs = scheduler.load_jobs()
     assert all(j["enabled"] is False and j["next_run_at"] is None for j in jobs[:3])
     assert jobs[-1]["enabled"] is True
     assert jobs[-1]["next_run_at"] == 456
-    assert scheduler.disable_agent_jobs("deleted") == []
+    assert scheduler.disable_agent_jobs("dead000001") == []
     assert scheduler.disable_agent_jobs("missing") == []
 
 
 def test_tick_does_not_restore_agent_jobs_from_old_snapshot(cron_path, monkeypatch):
-    scheduler.create_job(name="定时任务", prompt="x", agent_id="deleted",
+    scheduler.create_job(name="定时任务", prompt="x", agent_id="dead000001",
                          schedule={"kind": "interval", "minutes": 1})
     snapshot_loaded = threading.Event()
     release_tick = threading.Event()
@@ -47,7 +58,7 @@ def test_tick_does_not_restore_agent_jobs_from_old_snapshot(cron_path, monkeypat
 
     def disable():
         disable_started.set()
-        result = scheduler.disable_agent_jobs("deleted")
+        result = scheduler.disable_agent_jobs("dead000001")
         disable_finished.set()
         return result
 
@@ -89,7 +100,7 @@ def _race_writer_with_disable(writer, monkeypatch, hook):
 
     def disable():
         disable_started.set()
-        result = scheduler.disable_agent_jobs("deleted")
+        result = scheduler.disable_agent_jobs("dead000001")
         disable_finished.set()
         return result
 
@@ -109,15 +120,16 @@ def _race_writer_with_disable(writer, monkeypatch, hook):
 
 @pytest.mark.parametrize("operation", ["create", "update", "rotate", "result", "migration"])
 def test_config_writers_do_not_restore_disabled_agent(cron_path, monkeypatch, operation):
-    job = scheduler.create_job(name="原任务", prompt="x", agent_id="deleted",
+    job = scheduler.create_job(name="原任务", prompt="x", agent_id="dead000001",
                                schedule={"kind": "webhook"})
+    original_conv = job["conv"]
     secret = job["schedule"]["secret"]
     if operation == "migration":
         # 保留旧格式,让 load_jobs 自身的迁移回写也参与竞争。
         job.pop("conv")
         scheduler.save_jobs([job])
     writers = {
-        "create": lambda: scheduler.create_job(name="新任务", prompt="y", agent_id="kept",
+        "create": lambda: scheduler.create_job(name="新任务", prompt="y", agent_id="beef000002",
                                                 schedule={"kind": "interval", "minutes": 1}),
         "update": lambda: scheduler.update_job(job["id"], name="新名称", prompt="x",
                                                 schedule=job["schedule"]),
@@ -132,7 +144,7 @@ def test_config_writers_do_not_restore_disabled_agent(cron_path, monkeypatch, op
     saved = next(j for j in jobs if j["id"] == job["id"])
     assert saved["enabled"] is False
     assert saved["next_run_at"] is None
-    assert saved["conv"] == f"task:{job['id']}"
+    assert saved["conv"] == (f"task:{job['id']}" if operation == "migration" else original_conv)
     if operation == "create":
         assert len(jobs) == 2 and jobs[-1]["enabled"] is True
     elif operation == "update":
@@ -145,14 +157,14 @@ def test_config_writers_do_not_restore_disabled_agent(cron_path, monkeypatch, op
 
 
 def test_result_push_releases_lock_before_await(cron_path):
-    job = scheduler.create_job(name="结果", prompt="x", agent_id="deleted",
+    job = scheduler.create_job(name="结果", prompt="x", agent_id="dead000001",
                                schedule={"kind": "interval", "minutes": 1})
 
     def disable_during_push():
         if not scheduler.JOBS_LOCK.acquire(timeout=2):
             return None
         try:
-            return scheduler.disable_agent_jobs("deleted")
+            return scheduler.disable_agent_jobs("dead000001")
         finally:
             scheduler.JOBS_LOCK.release()
 

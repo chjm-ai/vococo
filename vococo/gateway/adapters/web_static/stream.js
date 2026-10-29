@@ -853,9 +853,10 @@ function handleEvent(e){
     // 和状态要等这一轮 done 才刷新——期间侧栏一直显示旧数据,长任务尤其明显。
     // 都是廉价的 GET,不必省这一次:start 无条件刷新对应侧栏。
     if(e.type==="start"){
-      if(String(e.conv).startsWith("task:")) loadVoiceSidebar();
+      if(isTaskConv(e.conv)) loadVoiceSidebar();
       else if("elapsed" in e) loadConvsSoon();  // 连上时补发的进行中会话,见 loadConvsSoon
       else loadConvs();
+      if(String(e.conv).startsWith("session:")){ loadVoiceSidebar(); loadCronSidebar(); }
     }
   }
   if(e.type==="done"||e.type==="message"){
@@ -865,7 +866,7 @@ function handleEvent(e){
     // /conversations 里,得单独拉 /cron/sidebar)。task: 前缀现在是语音/cron/chat
     // 三种后台任务共用的(2026-07-29 统一),前缀本身分不出是哪一种,索性都刷新一遍
     // ——都是廉价的 GET,刷新一个用不上的列表没有实际代价。
-    const isTaskConv = String(e.conv).startsWith("task:");
+    const taskConv = isTaskConv(e.conv) || String(e.conv).startsWith("session:");
     if(e.conv===S.conv){
       S.pendingReview[e.conv]=false; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=false;
       delete S.live[e.conv]; delete S.streamSnap[e.conv]; markLive();
@@ -881,9 +882,10 @@ function handleEvent(e){
       S.pendingReview[e.conv]=true; const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=true;
       delete S.live[e.conv]; delete S.streamSnap[e.conv]; markLive();
       // 后台任务行来自 /voice/sidebar(非 /conversations),done 后刷新 task_status
-      if(isTaskConv){ loadVoiceSidebar(); } else { loadConvs(); }
+      loadConvs();
+      if(taskConv) loadVoiceSidebar();
     }
-    if(isTaskConv) loadCronSidebar();
+    if(taskConv) loadCronSidebar();
   }
 
   if(e.conv!==S.conv){ // 别的会话在后台的事件 → 不打断当前视图(已缓冲,圆点已更新)
@@ -932,7 +934,7 @@ function handleEvent(e){
         }
       }else{ setRateStatus("ok","",""); }
       setMeta(e); loadConvs();
-      flushHistoryRefresh(e.conv, String(e.conv).startsWith("task:"));
+      flushHistoryRefresh(e.conv, isTaskConv(e.conv));
       flushPending(e.conv); break; }
     case "message": // 命令回复 / 报错 / cron 推送(AI 主动发图走 mid_turn 分支,不会到这里)
       if(S.stream && !streamText(S.stream)){ finalizeStream(e.text, e.images, undefined, e.videos); }
@@ -1017,6 +1019,13 @@ function applyStreamEvent(e){
     case "thinking": { const s=ensureStream(); s.thinktog.style.display="flex"; s.think.textContent=e.text; renderStatus(); break; }
     case "text": { const s=ensureStream(); const d=segDiv(s, e.seg); d.dataset.raw=e.text; renderSeg(d); syncDraftTail(s); if(s.activeCard){ foldToGroup(s, s.activeCard); s.activeCard=null; s.tgroup=null; s.toolCount=0; } renderStatus(); break; }
     case "tool_start": { const s=ensureStream();
+      // 工具事件同步显示，正文却按帧合并；切段时先补齐尾字，不能让工具越过尚未绘制的正文。
+      if(!e.parent && !userSelecting()){
+        for(const d of Object.values(s.segs)){
+          if(!dirtySegs.delete(d)) continue;
+          renderPreviewMarkdown(d,d.dataset.raw);
+        }
+      }
       if(e.parent){ subUpsert(s, e.parent, {name:e.name, id:e.tool_id, done:false, ok:true}); }
       else s.tools.push({name:e.name, id:e.tool_id, done:false, ok:true, subN:0});
       renderStatus(); break; }

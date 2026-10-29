@@ -1,7 +1,7 @@
 """定时任务管理界面的接口:/cron/sidebar、/cron/jobs/create|update|enable|delete。
 
 只测新接口本身(数据模型见 vococo/cron/scheduler.py 的 job 结构注释:
-每个任务一条专属会话 conv=task:<id>(job_id 复用为 task_id),创建/启停/删除都不经过 danger 审批——
+每个任务一条专属会话 conv=session:<uuid>(独立于 job_id 和 task_id),创建/启停/删除都不经过 danger 审批——
 这是用户在管理界面上的直接操作,不是 agent 代为执行,见与用户的设计讨论)。
 """
 from __future__ import annotations
@@ -22,6 +22,9 @@ def anyio_backend():
 
 @pytest.fixture
 def cron_web_app(isolated, monkeypatch):
+    from vococo.core import tasks as task_store
+
+    monkeypatch.setattr(task_store, "_DB", None)
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
     data = isolated / "data"
     data.mkdir(parents=True, exist_ok=True)
@@ -37,7 +40,10 @@ def cron_web_app(isolated, monkeypatch):
             web.post("/cron/jobs/delete", adapter._handle_cron_delete),
         ]
     )
-    return app
+    yield app
+    if task_store._DB is not None:
+        task_store._DB.close()
+        task_store._DB = None
 
 
 @pytest.mark.anyio
@@ -56,7 +62,8 @@ async def test_sidebar_empty_then_create_shows_job(cron_web_app):
         )
         assert resp.status == 200
         job = (await resp.json())["job"]
-        assert job["conv"] == f"task:{job['id']}"
+        assert job["conv"].startswith("session:")
+        assert session_store.session_binding(job["conv"]) == {"agent_id": "general", "project_hash": None}
         assert job["enabled"] is True
 
         resp = await client.get("/cron/sidebar")

@@ -19,9 +19,15 @@ def anyio_backend():
 
 @pytest.fixture
 def env(isolated, monkeypatch, tmp_path):
+    from vococo.core import tasks as task_store
+
+    monkeypatch.setattr(task_store, "_DB", None)
     monkeypatch.setattr(config, "CRON_JOBS_PATH", tmp_path / "cron_jobs.json")
     monkeypatch.setattr(config, "ROOT_DIR", tmp_path / "vococo")
-    return tmp_path
+    yield tmp_path
+    if task_store._DB is not None:
+        task_store._DB.close()
+        task_store._DB = None
 
 
 def _git(path, *args):
@@ -162,8 +168,8 @@ def test_task_keeps_memory_and_skills_owner(env):
     agents.update(agent["id"], skills=["nas-movie-butler"], mcp=[])
     tasks.create("任务", "巡检", task_id="runtime", agent_id=agent["id"])
     before = agents.runtime_for_session(key)
-    execution.policy_for_session("task:runtime")
-    assert agents.runtime_for_session("task:runtime") == before
+    execution.policy_for_session(tasks.session_key("runtime"))
+    assert agents.runtime_for_session(tasks.session_key("runtime")) == before
     assert before["skills"] == ["nas-movie-butler"]
     assert Path(before["memory_dir"]).name == "业务目录"
     assert agents.get(agent["id"])["project_hash"] == agent["project_hash"]
@@ -182,10 +188,10 @@ def test_workspace_keeps_original_git_skill_profile(env, monkeypatch):
     })
     assert agents.runtime_for_session(key)["skills"] == ["nas-movie-butler"]
     tasks.create("任务", "巡检", task_id="profile", agent_id=agent["id"])
-    execution.policy_for_session("task:profile")
-    assert agents.runtime_for_session("task:profile")["skills"] == ["nas-movie-butler"]
+    execution.policy_for_session(tasks.session_key("profile"))
+    assert agents.runtime_for_session(tasks.session_key("profile"))["skills"] == ["nas-movie-butler"]
     agents.update(agent["id"], skills=["xlsx"])
-    assert agents.runtime_for_session("task:profile")["skills"] == ["xlsx"]
+    assert agents.runtime_for_session(tasks.session_key("profile"))["skills"] == ["xlsx"]
 
 
 def test_mode_falls_back_to_workspace_when_git_cannot_run(env, monkeypatch):

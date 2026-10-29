@@ -36,7 +36,7 @@ def web_app(isolated, monkeypatch):
 async def test_voice_sidebar_returns_main_pinned_first_and_task_rows(web_app):
     session_store.append("voice-chat:main", "你好", "你好呀")
     task = tasks.create("查天气", "帮我查一下今天天气")
-    session_store.append(f"task:{task['id']}", "帮我查一下今天天气", "晴天")
+    session_store.append(tasks.session_key(task["id"]), "帮我查一下今天天气", "晴天")
 
     async with TestClient(TestServer(web_app)) as client:
         resp = await client.get("/voice/sidebar")
@@ -48,7 +48,7 @@ async def test_voice_sidebar_returns_main_pinned_first_and_task_rows(web_app):
     assert data["main"]["pinned"] is True
     assert len(data["tasks"]) == 1
     row = data["tasks"][0]
-    assert row["conv"] == f"task:{task['id']}"
+    assert row["conv"] == tasks.session_key(task["id"])
     assert row["task_status"] == "queued"
     assert row["title"] == "查天气"
     assert row["task_updated_at"] > 0
@@ -59,7 +59,7 @@ async def test_voice_sidebar_compresses_large_json_when_browser_accepts_gzip(web
     """侧边栏首次加载会走隧道，大 JSON 必须协商压缩。"""
     for i in range(30):
         task = tasks.create(f"任务{i}", "很长的任务说明" * 20)
-        session_store.append(f"task:{task['id']}", "问", "答" * 100)
+        session_store.append(tasks.session_key(task["id"]), "问", "答" * 100)
 
     async with TestClient(TestServer(web_app)) as client:
         resp = await client.get("/voice/sidebar", headers={"Accept-Encoding": "gzip"})
@@ -73,7 +73,7 @@ async def test_voice_sidebar_task_row_carries_done_timestamp(web_app):
     做「终态任务显示满 10 分钟自动隐藏」(voiceTaskHidden)——新完成的 10 分钟内
     要正常显示,满 10 分钟才不再出现,隐藏不是删除。"""
     task = tasks.create("查天气", "帮我查一下今天天气")
-    session_store.append(f"task:{task['id']}", "帮我查一下今天天气", "晴天")
+    session_store.append(tasks.session_key(task["id"]), "帮我查一下今天天气", "晴天")
     assert tasks.set_status(task["id"], "running")
     assert tasks.finish(task["id"], "done", "晴天", "晴天")
 
@@ -91,8 +91,8 @@ async def test_voice_sidebar_task_row_carries_pending_review(web_app):
     """2026-07-29:语音任务行统一接上 pending_review(跟 web/cron-task 一样的完成态
     未读标记),不再是 ab77594 当时"终态不挂点"的特例。"""
     task = tasks.create("查天气", "帮我查一下今天天气")
-    session_store.append(f"task:{task['id']}", "帮我查一下今天天气", "晴天")
-    session_store.set_pending_review(f"task:{task['id']}", True)
+    session_store.append(tasks.session_key(task["id"]), "帮我查一下今天天气", "晴天")
+    session_store.set_pending_review(tasks.session_key(task["id"]), True)
 
     async with TestClient(TestServer(web_app)) as client:
         resp = await client.get("/voice/sidebar")

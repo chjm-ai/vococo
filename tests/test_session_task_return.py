@@ -23,6 +23,7 @@ def task_chat(isolated, monkeypatch):
     monkeypatch.setattr(tasks, "_DB", None)
     monkeypatch.setattr(sessions, "_queued", {})
     monkeypatch.setattr(web_bridge, "_dispatch_fn", None)
+    monkeypatch.setattr(web_bridge, "_cancel_fn", None)
     agent = agents.create("回传测试")
     parent = f"web:p{agent['project_hash']}:parent"
     session_store.append(parent, "研究后回来汇总", "已派发")
@@ -80,7 +81,42 @@ async def test_task_return_preserves_access_through_real_gateway(task_chat, monk
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("invalid", ["other_target", "missing_task", "no_access", "wrong_origin"])
+async def test_human_new_turn_in_task_session_can_send_through_real_gateway(task_chat, monkeypatch):
+    from vococo.gateway.adapters.base import Incoming
+
+    source, parent, adapter = task_chat
+    task = tasks.task_for_session(source)
+    assert task["source_access"]
+    assert session_store.active_source_access(source)["session"] == parent
+    seen = {}
+
+    async def cwd(*args):
+        return str(config.ROOT_DIR)
+
+    async def stream(*args, **kwargs):
+        seen["access"] = session_store.active_source_access(source)
+        seen["result"] = await send(source, parent)
+        yield Done(AgentReply(text="已发送", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(worktree, "execution_cwd_for_task", cwd)
+    monkeypatch.setattr(core, "stream_turn", stream)
+    incoming = Incoming(platform="web", chat_id=source, text="真人接着问，请发回原会话")
+    assert incoming.source_access is None
+    await GatewayRunner([])._dispatch(adapter, incoming)
+    assert seen["access"] == {}
+    assert seen["result"]["status"] == "queued"
+    assert seen["result"]["source_session"] == source
+    assert seen["result"]["session_id"] == parent.removeprefix("web:")
+    forwarded = adapter._inbox.get_nowait()
+    assert forwarded.session_key == parent
+    assert forwarded.source_access is None
+    assert "用户完整指令" in forwarded.text and "任务结果回传" not in forwarded.text
+    assert session_store.load_recent(source)[-1].assistant == "已发送"
+    assert tasks.get(task["id"])["source_access"] == task["source_access"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("invalid", ["other_target", "missing_task", "missing_origin", "wrong_origin"])
 async def test_task_return_cannot_forge_parent(task_chat, invalid):
     source, parent, adapter = task_chat
     if invalid == "other_target":
@@ -89,8 +125,8 @@ async def test_task_return_cannot_forge_parent(task_chat, invalid):
     elif invalid == "missing_task":
         tasks._conn().execute("DELETE FROM tasks WHERE id=?", (tasks.task_id_from_session_key(source),))
         tasks._conn().commit()
-    elif invalid == "no_access":
-        session_store.start_turn(source, "无来源任务")
+    elif invalid == "missing_origin":
+        session_store.start_turn(source, "自动来源缺少会话", source_access={"denied": ["Bash"]})
     else:
         session_store.start_turn(source, "伪来源", source_access={"session": "web:other"})
     result = await send(source, parent)
@@ -112,5 +148,6 @@ async def test_task_return_obeys_target_guards(task_chat, monkeypatch, state):
         session_store.set_conv_archived(parent, True)
     else:
         monkeypatch.setattr(web_bridge, "_dispatch_fn", None)
+    monkeypatch.setattr(web_bridge, "_cancel_fn", None)
     assert "error" in await send(source, parent)
     assert adapter._inbox.empty()
