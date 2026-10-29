@@ -241,7 +241,8 @@ async def test_html_original_bytes_use_shared_attachment_and_cross_tool_dedup(co
     artifact = entry["artifact"]
     assert session_store.artifact_content(key, artifact["id"]) == (file.name, raw)
     assert _db.conn().execute("SELECT html_previews FROM turns WHERE id=?", (tid,)).fetchone()[0] in (None, "", "[]")
-    result = await builtin.send_file.handler({"path": str(file)})
+    import hashlib
+    result = await builtin.send_file.handler({"path": str(file), "reviewed_sha256": hashlib.sha256(raw).hexdigest()})
     assert not result.get("isError")
     assert len(session_store.turn_artifacts(key, tid)) == 1
     assert len(session_store.turn_html_previews(key, tid)) == 1
@@ -250,12 +251,13 @@ async def test_html_original_bytes_use_shared_attachment_and_cross_tool_dedup(co
 
 @pytest.mark.anyio
 async def test_send_file_html_gets_preview_but_invalid_or_large_html_only_downloads(context):
+    import hashlib
     _, key, tid, _, root = context
     for name, content in [("ok.html", b"<p>ok</p>"), ("binary.html", b"\xff"),
                           ("large.html", b"a" * 200001)]:
         file = root / name
         file.write_bytes(content)
-        result = await builtin.send_file.handler({"path": str(file)})
+        result = await builtin.send_file.handler({"path": str(file), "reviewed_sha256": hashlib.sha256(content).hexdigest()})
         assert not result.get("isError")
     assert len(session_store.turn_artifacts(key, tid)) == 3
     assert len(session_store.turn_html_previews(key, tid)) == 1

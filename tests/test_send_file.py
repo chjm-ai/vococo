@@ -116,7 +116,7 @@ async def test_duplicate_session_clones_artifacts_with_independent_ids_and_lifet
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("kind", ["missing", "symlink", "directory-link", "hardlink", "fifo", "directory", "escape",
-                                  "outside", "hidden", "credentials", "secret", "key", "extension", "large", "empty", "url", "runtime"])
+                                  "outside", "hidden", "credentials", "secret", "key", "large", "empty", "url", "runtime"])
 async def test_rejects_unsafe_source_without_event_or_snapshot(context, kind):
     _, key, tid, events, root = context
     file = root / "result.txt"
@@ -172,6 +172,156 @@ async def test_rejects_unsafe_archive(context, entry, payload):
         archive.writestr(entry, payload)
     assert "未交付" in await call(file)
     assert not context[3]
+
+
+@pytest.mark.anyio
+async def test_arbitrary_format_and_archive_are_delivered(context):
+    root = context[-1]
+    project = root / "project.mkcd"
+    project.write_bytes(b"binary project content")
+    assert "已交付" in await call(project)
+    bundle = root / "bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("project.mkcd", b"binary project content")
+    assert "已交付" in await call(bundle)
+
+
+@pytest.mark.anyio
+async def test_code_requires_review_of_exact_snapshot(context):
+    root = context[-1]
+    source = root / "script.py"
+    source.write_text("print('hello')")
+    result = await call(source)
+    assert "审核" in result and "未交付" in result
+    import hashlib
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    assert digest in result
+    source.write_text("print('changed')")
+    assert "未交付" in await call(source, reviewed_sha256=digest)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    assert "已交付" in await call(source, reviewed_sha256=digest)
+
+
+@pytest.mark.anyio
+async def test_archive_code_requires_review(context):
+    import hashlib
+    file = context[-1] / "bundle.zip"
+    with zipfile.ZipFile(file, "w") as archive:
+        archive.writestr("src/app.js", "console.log('hello')")
+    result = await call(file)
+    assert "未交付" in result and "src/app.js" in result
+    assert "已交付" in await call(file, reviewed_sha256=hashlib.sha256(file.read_bytes()).hexdigest())
+
+
+@pytest.mark.anyio
+async def test_nested_zip_code_and_secret_checks_ignore_extension(context):
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w") as archive:
+        archive.writestr("script.py", "print('hello')")
+    file = context[-1] / "bundle.mcpack"
+    with zipfile.ZipFile(file, "w") as archive:
+        archive.writestr("nested.zip", nested.getvalue())
+    result = await call(file)
+    assert "未交付" in result and "nested.zip → script.py" in result
+    with zipfile.ZipFile(file, "w") as archive:
+        archive.writestr("secret.py", "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ12345")
+    assert "未交付" in await call(file)
+
+
+@pytest.mark.anyio
+async def test_prefixed_zip_and_unsupported_compression_are_checked(context):
+    import gzip
+    root = context[-1]
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("credentials.txt", "sensitive")
+    file = root / "file.bin"
+    file.write_bytes(b"prefix" + archive.getvalue())
+    assert "未交付" in await call(file)
+    compressed = gzip.compress(b"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ12345")
+    file.write_bytes(compressed)
+    assert "未交付" in await call(file)
+    safe_zip = io.BytesIO()
+    with zipfile.ZipFile(safe_zip, "w") as bundle:
+        bundle.writestr("safe.txt", "safe")
+    polyglot = compressed + safe_zip.getvalue()
+    file.write_bytes(polyglot)
+    assert "压缩格式" in await call(file)
+    with zipfile.ZipFile(file, "w") as bundle:
+        bundle.writestr("nested.bin", polyglot)
+    assert "压缩格式" in await call(file)
+    source = root / "app.mjs"
+    source.write_text("console.log('hello')")
+    assert "审核" in await call(source)
+    source = root / "script.bat"
+    source.write_text("@echo off")
+    assert "审核" in await call(source)
+    file.write_bytes("-----BEGIN PRIVATE KEY-----abc".encode("utf-16"))
+    assert "未交付" in await call(file)
+    import tarfile
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        info = tarfile.TarInfo("credentials.txt")
+        info.size = 6
+        tar.addfile(info, io.BytesIO(b"secret"))
+    old_tar = bytearray(archive.getvalue())
+    old_tar[257:265] = b"\0" * 8
+    old_tar[148:156] = b" " * 8
+    old_tar[148:156] = f"{sum(old_tar[:512]):06o}\0 ".encode()
+    file.write_bytes(old_tar)
+    assert "未交付" in await call(file)
+
+
+@pytest.mark.anyio
+async def test_damaged_compressed_archive_fails_with_clear_reason(context):
+    file = context[-1] / "broken.zip"
+    with zipfile.ZipFile(file, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("report.txt", "hello" * 100)
+    data = bytearray(file.read_bytes())
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        entry = archive.infolist()[0]
+        offset = entry.header_offset + 30 + len(entry.filename.encode()) + len(entry.extra)
+    data[offset] = 0xff
+    file.write_bytes(data)
+    assert "压缩包无法安全检查" in await call(file)
+
+
+@pytest.mark.anyio
+async def test_key_containers_and_lz4_are_rejected(context):
+    root = context[-1]
+    key = root / "identity.der"
+    key.write_bytes(b"binary key")
+    assert "密钥容器" in await call(key)
+    bundle = root / "bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("keys/identity.der", b"binary key")
+    assert "密钥容器" in await call(bundle)
+    data = root / "renamed.bin"
+    data.write_bytes(b"\x04\x22\x4d\x18" + b"compressed data")
+    assert "压缩格式" in await call(data)
+    data.write_bytes(b"\x50\x2a\x4d\x18" + b"compressed data")
+    assert "压缩格式" in await call(data)
+    data.write_bytes(b"\x30\x03\x02\x01\x00")
+    assert "DER" in await call(data)
+    data.write_bytes(b"SQLite format 3\x00" + b"database")
+    assert "数据库" in await call(data)
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("renamed.bin", data.read_bytes())
+    assert "数据库" in await call(bundle)
+
+
+@pytest.mark.anyio
+async def test_invalid_lzma_zip_reports_error(context):
+    file = context[-1] / "broken-lzma.zip"
+    with zipfile.ZipFile(file, "w", compression=zipfile.ZIP_LZMA) as archive:
+        archive.writestr("report.txt", "hello" * 100)
+    data = bytearray(file.read_bytes())
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        entry = archive.infolist()[0]
+        offset = entry.header_offset + 30 + len(entry.filename.encode()) + len(entry.extra)
+    data[offset + 4] = 0xff
+    file.write_bytes(data)
+    assert "压缩包无法安全检查" in await call(file)
 
 
 @pytest.mark.anyio
