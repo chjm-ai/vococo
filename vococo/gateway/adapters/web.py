@@ -2677,6 +2677,12 @@ class WebAdapter:
         if not conv:
             return web.json_response({"error": "缺少 conv"}, status=400)
         session_key = config.resolve_session_key("web", conv)
+        if "through_turn_id" in body:
+            turn_id = body["through_turn_id"]
+            if type(turn_id) is not int or turn_id < 0:
+                return web.json_response({"error": "无效的已读消息编号"}, status=400)
+            cleared = session_store.clear_pending_review_through(session_key, turn_id)
+            return web.json_response({"ok": True, "cleared": cleared})
         session_store.set_pending_review(session_key, False)
         return web.json_response({"ok": True})
 

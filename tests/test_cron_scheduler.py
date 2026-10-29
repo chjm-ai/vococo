@@ -43,6 +43,74 @@ async def _noop_coro(*_a, **_k) -> None:
     return None
 
 
+# ── 内置记忆复盘:通知前先保存到实际目标会话 ──────────────────────────────
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("conv", ["main", "reflection-target"])
+async def test_reflect_persists_before_notifying(cron_env, monkeypatch, conv):
+    from vococo.gateway.adapters.web import WebAdapter
+    from vococo.gateway.run import GatewayRunner
+
+    monkeypatch.setattr(scheduler.config, "REFLECT_TARGET", f"web:{conv}")
+    session_store.append(scheduler.config.SESSION_KEY, "记住这个", "已记住")
+
+    async def fake_run(*args, **kwargs):
+        return AgentReply(text="已整理一条长期记忆", tool_calls=[], cost_usd=None, is_error=False)
+
+    monkeypatch.setattr(scheduler, "run_turn", fake_run)
+    adapter = WebAdapter()
+    emitted = []
+    key = scheduler.config.resolve_session_key("web", conv)
+
+    def capture(event):
+        history = session_store.load_history(key)
+        assert history[-1]["assistant"] == event["text"], "发通知时必须已经能从历史读到"
+        assert history[-1]["events"][0]["type"] == "external_result"
+        emitted.append(event)
+
+    monkeypatch.setattr(adapter, "_emit", capture)
+    monkeypatch.setattr(adapter, "_push_notify", lambda **kw: None)
+    await scheduler._reflect(GatewayRunner([adapter]).push)
+    assert emitted[0]["conv"] == conv
+    assert "记忆复盘" in emitted[0]["text"]
+    assert next(r for r in session_store.list_sessions("") if r["key"] == key)["pending_review"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("summary,target", [("", "web:main"), ("摘要", "")])
+async def test_reflect_without_output_or_target_does_not_append(cron_env, monkeypatch, summary, target):
+    session_store.append(scheduler.config.SESSION_KEY, "问题", "回复")
+    monkeypatch.setattr(scheduler.config, "REFLECT_TARGET", target)
+
+    async def fake_run(*args, **kwargs):
+        return AgentReply(text=summary, tool_calls=[], cost_usd=None, is_error=False)
+
+    async def unexpected_push(*args):
+        raise AssertionError("无输出或无目标不应推送")
+
+    monkeypatch.setattr(scheduler, "run_turn", fake_run)
+    await scheduler._reflect(unexpected_push)
+    assert len(session_store.load_history(scheduler.config.SESSION_KEY)) == 1
+
+
+@pytest.mark.anyio
+async def test_reflect_push_failure_keeps_saved_message(cron_env, monkeypatch):
+    monkeypatch.setattr(scheduler.config, "REFLECT_TARGET", "web:main")
+    session_store.append(scheduler.config.SESSION_KEY, "问题", "回复")
+
+    async def fake_run(*args, **kwargs):
+        return AgentReply(text="可找回的摘要", tool_calls=[], cost_usd=None, is_error=False)
+
+    async def failed_push(*args):
+        raise RuntimeError("通知暂时不可用")
+
+    monkeypatch.setattr(scheduler, "run_turn", fake_run)
+    with pytest.raises(RuntimeError, match="通知暂时不可用"):
+        await scheduler._reflect(failed_push)
+    assert session_store.load_history(scheduler.config.SESSION_KEY)[-1]["assistant"].endswith("可找回的摘要")
+
+
 # ── _run_job:触发后落进专属会话,job_id 复用为 task_id ───────────────────────
 
 
