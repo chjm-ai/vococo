@@ -127,7 +127,7 @@ async def test_mcp_history_pagination_rebuilds_text_and_no_tool_events(environme
         assert listed["sessions"][0]["title"] == "实际历史标题"
         found = await call(session, "vococo_search_history", {"query": "问题"})
         assert found["results"][0]["turn_id"] == turn and found["results"][0]["key"] == key
-        assert (await session.call_tool("vococo_search_history", {"query": "   "})).isError
+        assert (await session.call_tool("vococo_search_history", {"query": "   "})).is_error
         user, assistant, args = "", "", {"key": key, "length": 7999}
         while True:
             page = await call(session, "vococo_read_session", args)
