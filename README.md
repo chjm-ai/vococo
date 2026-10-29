@@ -264,6 +264,8 @@ uv run vococo chat
 
 其余变量(安全闸、语音、Web Push、多供应商…)在 `.env.example` 里逐条有注释。
 
+人脉扫描的本人姓名及别名可放在 `AI_BRAIN_DIR/people-profile-owner.json`，格式为字符串数组（如 `["本人姓名", "本人别名"]`），不进入代码仓库。缺少文件时使用 `VOCOCO_USER_NAME`；显式空数组表示不排除任何姓名，文件损坏或读取失败时停止处理且不推进相应笔记水位。工作台新数据库默认为空，不再自动导入个人示例任务；已有项目和任务保持不变。
+
 ## 设计要点
 
 设计原则、非目标红线、与原版 Hermes 的差异对照见 [REQUIREMENTS.md](REQUIREMENTS.md)

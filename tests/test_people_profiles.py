@@ -13,6 +13,11 @@ import pytest
 from vococo.memory import people_profiles as pp
 
 
+@pytest.fixture(autouse=True)
+def isolate_brain(tmp_path, monkeypatch):
+    monkeypatch.setattr(pp.config, "AI_BRAIN_DIR", tmp_path)
+
+
 # ── 笔记日期解析 ────────────────────────────────────────────────────────────
 def test_note_date_prefers_frontmatter(tmp_path):
     p = tmp_path / "260814-随便什么.md"
@@ -83,6 +88,113 @@ async def test_scan_skips_unchanged_files_via_watermark(tmp_path, monkeypatch):
     assert calls == ["250101 老笔记"]  # 第一次扫描:处理
     await pp.scan_obsidian_notes()
     assert calls == ["250101 老笔记"]  # 第二次:mtime 没变,水位挡住,不重复处理
+
+
+@pytest.mark.anyio
+async def test_scan_retries_failed_note_without_advancing_watermark(tmp_path, monkeypatch):
+    note = tmp_path / "笔记.md"
+    note.write_text("内容", encoding="utf-8")
+    monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
+    monkeypatch.setattr(pp, "_iter_candidate_notes", lambda: [(note, True)])
+    monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "wm.json")
+    calls = []
+
+    async def fail(*args):
+        calls.append(1)
+        return {"status": "error", "reason": "配置错误"}
+
+    monkeypatch.setattr(pp, "process_note", fail)
+    await pp.scan_obsidian_notes()
+    await pp.scan_obsidian_notes()
+    assert len(calls) == 2
+    assert pp._load_obsidian_watermark() == {}
+
+
+@pytest.mark.anyio
+async def test_scan_reports_missing_directories_but_allows_empty_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", ["笔记"])
+    monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "wm.json")
+    assert (await pp.scan_obsidian_notes())[0]["status"] == "error"
+    (tmp_path / "笔记").mkdir()
+    assert await pp.scan_obsidian_notes() == []
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", ["笔记", "缺失目录"])
+    result = await pp.scan_obsidian_notes()
+    assert result == [{"note": "缺失目录", "status": "error", "reason": "配置的笔记目录不可用"}]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", ["read", "process"])
+async def test_scan_reports_errors_without_advancing_watermark(tmp_path, monkeypatch, failure):
+    note = tmp_path / "笔记.md"
+    note.write_text("内容", encoding="utf-8")
+    monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
+    monkeypatch.setattr(pp, "_iter_candidate_notes", lambda: [(note, True)])
+    monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "wm.json")
+    async def read(_):
+        return None if failure == "read" else "内容"
+    async def process(*_):
+        raise RuntimeError("敏感内容")
+    monkeypatch.setattr(pp, "_safe_read_text", read)
+    monkeypatch.setattr(pp, "process_note", process)
+    result = await pp.scan_obsidian_notes()
+    assert result[0]["status"] == "error"
+    assert "敏感内容" not in result[0]["reason"]
+    assert pp._load_obsidian_watermark() == {}
+
+
+@pytest.mark.anyio
+async def test_scan_reports_invalid_utf8_and_continues(tmp_path, monkeypatch):
+    folder = tmp_path / "思考"
+    folder.mkdir()
+    bad = folder / "损坏.md"
+    bad.write_bytes(b"\xff")
+    good = folder / "正常.md"
+    good.write_text("内容", encoding="utf-8")
+    monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", ["思考"])
+    monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "wm.json")
+
+    async def process(*_):
+        return {"status": "skipped"}
+
+    monkeypatch.setattr(pp, "process_note", process)
+    result = await pp.scan_obsidian_notes()
+    assert any(s["status"] == "error" and "损坏.md" in s["note"] for s in result)
+    assert any(s["status"] == "skipped" and "正常.md" in s["note"] for s in result)
+    assert "思考/损坏.md" not in pp._load_obsidian_watermark()
+
+
+@pytest.mark.anyio
+async def test_scan_reports_watermark_write_failure(tmp_path, monkeypatch):
+    note = tmp_path / "笔记.md"
+    note.write_text("内容", encoding="utf-8")
+    monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", [])
+    monkeypatch.setattr(pp, "_iter_candidate_notes", lambda: [(note, False)])
+    monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "missing" / "wm.json")
+
+    async def process(*_):
+        return {"status": "skipped"}
+
+    monkeypatch.setattr(pp, "process_note", process)
+    result = await pp.scan_obsidian_notes()
+    assert {"note": "扫描水位", "status": "error", "reason": "水位保存失败"} in result
+
+
+def test_watermark_replace_failure_preserves_original(tmp_path, monkeypatch):
+    path = tmp_path / "wm.json"
+    path.write_text('{"原笔记": 1}', encoding="utf-8")
+    monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: path)
+
+    def fail_replace(*_):
+        raise OSError("写入失败")
+
+    monkeypatch.setattr(pp.os, "replace", fail_replace)
+    with pytest.raises(OSError):
+        pp._save_obsidian_watermark({"新笔记": 2})
+    assert pp._load_obsidian_watermark() == {"原笔记": 1}
+    assert list(tmp_path.iterdir()) == [path]
 
 
 @pytest.mark.anyio
@@ -473,12 +585,71 @@ def test_junk_name_filter():
     assert pp._is_junk_name("雅恩食品客户")
     assert pp._is_junk_name("大牛")
     assert pp._is_junk_name("Open-CLAW")
-    assert pp._is_junk_name("Wesley")
+    assert not pp._is_junk_name("Wesley")  # 未配置时不猜
     # 拿不准的放行(宁可人工删,不误杀真人物)
     assert not pp._is_junk_name("张老板")      # 称呼式但有实质信息
     assert not pp._is_junk_name("Traster")     # 英文长名,真人
     assert not pp._is_junk_name("小飞")
     assert not pp._is_junk_name("胜源")
+
+
+@pytest.mark.anyio
+async def test_owner_names_are_isolated_by_brain_directory(tmp_path, monkeypatch):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "people-profile-owner.json").write_text('["小明", "别名甲"]', encoding="utf-8")
+    (second / "people-profile-owner.json").write_text('["小红"]', encoding="utf-8")
+
+    async def fake_analyze(*args):
+        return {"people": [{"name": "小明", "interaction": "聊天"}]}
+
+    monkeypatch.setattr(pp, "analyze", fake_analyze)
+    monkeypatch.setattr(pp, "_resolve_name_merges", lambda names, people: _empty_merge())
+    monkeypatch.setattr(pp.config, "AI_BRAIN_DIR", first)
+    assert (await pp.process_note("小明", "笔记", "2026-01-01"))["status"] == "skipped"
+    assert not (first / "memory/people/小明.md").exists()
+    monkeypatch.setattr(pp.config, "AI_BRAIN_DIR", second)
+    assert (await pp.process_note("小明", "笔记", "2026-01-01"))["updated"]
+    assert (second / "memory/people/小明.md").exists()
+    assert "小红" in await pp._owner_names()
+
+
+@pytest.mark.anyio
+async def test_existing_install_without_owner_file_still_processes_notes(tmp_path, monkeypatch):
+    monkeypatch.setattr(pp.config, "USER_NAME", "小明")
+
+    async def analyze(*_):
+        return {"people": [{"name": "小明", "interaction": "聊天"},
+                           {"name": "小红", "interaction": "聊天"}]}
+
+    monkeypatch.setattr(pp, "analyze", analyze)
+    monkeypatch.setattr(pp, "_resolve_name_merges", lambda *_: _empty_merge())
+    result = await pp.process_note("小明和小红聊天", "笔记", "2026-01-01")
+    assert result["status"] == "done"
+    assert not (tmp_path / "memory/people/小明.md").exists()
+    assert (tmp_path / "memory/people/小红.md").exists()
+    assert not (tmp_path / "people-profile-owner.json").exists()
+
+
+async def _empty_merge():
+    return {}
+
+
+@pytest.mark.anyio
+async def test_owner_names_missing_invalid_and_aliases(tmp_path, monkeypatch):
+    path = tmp_path / "people-profile-owner.json"
+    monkeypatch.setattr(pp.config, "USER_NAME", " 小明 ")
+    assert await pp._owner_names() == {"小明"}
+    path.write_text('{"names": ["小明"]}', encoding="utf-8")
+    with pytest.raises(ValueError):
+        await pp._owner_names()
+    path.write_text('[" 小明 ", "别名甲"]', encoding="utf-8")
+    assert await pp._owner_names() == {"小明", "别名甲"}
+    path.write_text('无效 JSON', encoding="utf-8")
+    with pytest.raises(ValueError):
+        await pp._owner_names()
 
 
 # ── 引用核验降级:名字出现在正文即通过,格式差异不误杀 ───────────────────────

@@ -39,12 +39,12 @@ def owner_with_repository(isolated):
     return owner, source, agents.main_session_key(owner)
 
 
-def test_unbound_agent_can_code_without_binding():
+def test_unbound_agent_requests_repository_before_coding():
     note = execution.prompt_note(execution.ExecutionPolicy(
         "business", Path("/workspace"), Path("/output"), (),
     ))
-    assert "可按任务操作未绑定的仓库" in note
-    assert "请先由主人" not in note
+    assert "先请主人在 Agent 设置中添加并绑定 Git 仓库" in note
+    assert "没有交互通道时报告缺少绑定" in note
     assert "不要关闭沙箱" not in note
 
 
@@ -92,6 +92,7 @@ async def test_copies_are_isolated_and_source_stays_readonly(isolated):
     assert execution.sandbox_settings(policy) == {"enabled": False}
     note = execution.prompt_note(policy)
     assert str(copy) in note and "推送" in note
+    assert "代码开发默认由当前 Agent 自行完成" in note
 
 
 @pytest.mark.anyio

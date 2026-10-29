@@ -79,7 +79,7 @@ def main() -> int:
     # cron 脚本任务模式(scheduler._run_script_job)解析这行判断要不要调 LLM 总结,
     # 见其 ##CRON_SIGNAL## 约定;打印在最后一行,前面的人话统计原样保留。
     print(f"##CRON_SIGNAL:{1 if has_signal else 0}##")
-    return 0
+    return int(any(summary.get("status") == "error" for summary in summaries))
 
 
 if __name__ == "__main__":

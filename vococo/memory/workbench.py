@@ -1,13 +1,4 @@
-"""工作台(GTD 待办看板)—— 项目/任务 CRUD,SQLite 存储。
-
-工作台前端(gateway/adapters/web_static/workbench.js)最早是一份纯前端 demo,数据
-写死在 WORKBENCH_DEMO 常量里。_seed_if_empty() 把那份已经维护好的真实任务清单原样
-迁进 state.db,只在库是空的(首次启动)时插一次,不让切后端这一刀把内容丢了;
-此后前端改走 /workbench/* 接口读写,不再改这份种子。
-
-project_id/task_id 新建时用 uuid4 短串(种子数据例外,沿用 demo 里本来的可读 id,
-方便肉眼核对迁移是否走样)。
-"""
+"""工作台(GTD 待办看板)—— 项目/任务 CRUD,SQLite 存储。"""
 from __future__ import annotations
 
 import base64
@@ -25,60 +16,6 @@ _STATUSES = {"todo", "done", "focus", "block", "cancelled"}
 _ASSIGNEES = {"human", "ai"}
 _IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _EXT_STRIP_RE = re.compile(r"[^a-z0-9]")
-
-_OBSIDIAN_ROOT = (
-    "/Users/wesley/Library/Mobile Documents/iCloud~md~obsidian/Documents/Wesley notes"
-)
-
-_SEED_PROJECTS = [
-    {"id": "consulting", "name": "AI 咨询"},
-    {"id": "vocotrade", "name": "VocoTrade"},
-    {"id": "fabric", "name": "面料外贸"},
-    {"id": "transition", "name": "离职过渡"},
-]
-_SEED_TASKS = [
-    {"id": "talk-script", "project": "consulting", "title": "约人话术准备", "status": "done", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-18"},
-    {"id": "meet-network", "project": "consulting", "title": "约见第一梯队：胜源、喆铭", "status": "focus", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-20"},
-    {"id": "case-page", "project": "consulting", "title": "案例单页初稿（vococo + VocoTrade）", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None},
-    {"id": "agent-wrap", "project": "vocotrade", "title": "邮件获客 agent 收口", "status": "focus", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-20"},
-    {"id": "video-path", "project": "vocotrade", "title": "研究 AI 剪辑宣传视频链路", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None},
-    {"id": "material-direction", "project": "vocotrade", "title": "确定宣传素材的第一版方向", "status": "todo", "month": "2026-08", "week": None, "date": None},
-    {"id": "crawler-plan", "project": "fabric", "title": "确认 B12–B16 爬虫排产的下一步", "status": "block", "month": "2026-08", "week": "2026-08-17", "date": None},
-    {"id": "difs", "project": "fabric", "title": "DIFS 展会预热：核对 B 批补发", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-21"},
-    {"id": "lemlist", "project": "fabric", "title": "跟踪 BD-Knit-01 回复与退信", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None},
-    {"id": "contract", "project": "transition", "title": "确认竞业协议条款原文", "status": "focus", "month": "2026-08", "week": "2026-08-17", "date": "2026-08-20"},
-    {"id": "family-talk", "project": "transition", "title": "跟小雯同步创业计划与对外说法", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None},
-    {"id": "mortgage", "project": "transition", "title": "房贷延期材料咨询", "status": "todo", "month": "2026-08", "week": "2026-08-17", "date": None},
-]
-
-def _seed_if_empty() -> None:
-    """首次(workbench_projects 表为空)把 demo 内容当种子导入,此后不再触碰。
-
-    按次查 COUNT 而非缓存一个「已跑过」标记:后者在 DB 被重置(如测试用例的
-    isolated fixture、_db.reset())后仍会误判「已种过」从而漏种,COUNT 本身在
-    这么小的表上代价可忽略,按次查更稳妥。
-    """
-    c = _db.conn()
-    if c.execute("SELECT COUNT(*) FROM workbench_projects").fetchone()[0] > 0:
-        return
-    now = time.time()
-    c.executemany(
-        "INSERT INTO workbench_projects(id, name, sort_order, archived) VALUES (?,?,?,0)",
-        [(p["id"], p["name"], i) for i, p in enumerate(_SEED_PROJECTS)],
-    )
-    c.executemany(
-        "INSERT INTO workbench_tasks(id, project_id, title, detail, status, date, month, week, "
-        "images, sort_order, created_at, updated_at, deleted_at, completed_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        [
-            (t["id"], t["project"], t["title"], "", t["status"], t["date"], t["month"], t["week"],
-             "[]", i, now, now, None,
-             now if t["status"] == "done" else None)
-            for i, t in enumerate(_SEED_TASKS)
-        ],
-    )
-    c.commit()
-
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
@@ -125,7 +62,6 @@ _TASK_COLUMNS = (
 # ── 项目 ────────────────────────────────────────────────────────────────
 
 def list_projects() -> list[dict]:
-    _seed_if_empty()
     rows = _db.conn().execute(
         "SELECT id, name, sort_order FROM workbench_projects WHERE archived=0 ORDER BY sort_order ASC"
     ).fetchall()
@@ -136,7 +72,6 @@ def create_project(name: str) -> dict | None:
     name = name.strip()
     if not name:
         return None
-    _seed_if_empty()
     c = _db.conn()
     max_order = c.execute("SELECT COALESCE(MAX(sort_order), -1) FROM workbench_projects").fetchone()[0]
     project_id = _new_id("wp")
@@ -305,7 +240,6 @@ def list_tasks() -> list[dict]:
     """全量任务(个人规模全量拉取即可;按日/周/月分组、按项目筛选交给前端)。
     不含已软删除(回收站)的任务,那份数据走 list_deleted_tasks() 单独懒加载。
     """
-    _seed_if_empty()
     _roll_overdue_tasks()
     rows = _db.conn().execute(
         f"SELECT {_TASK_COLUMNS} FROM workbench_tasks WHERE deleted_at IS NULL ORDER BY sort_order ASC"

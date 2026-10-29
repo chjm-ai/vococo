@@ -1,17 +1,30 @@
-"""工作台(GTD 待办看板):种子导入 / 项目 CRUD / 任务 CRUD / 图片落盘。"""
+"""工作台(GTD 待办看板):空库 / 项目 CRUD / 任务 CRUD / 图片落盘。"""
 from __future__ import annotations
 
 import base64
 import datetime
 
 
-def test_first_access_seeds_demo_data(isolated):
-    from vococo.memory import workbench
+def test_empty_database_has_no_implicit_data(isolated):
+    from vococo.memory import _db, workbench
 
-    projects = workbench.list_projects()
-    assert {p["name"] for p in projects} == {"AI 咨询", "VocoTrade", "面料外贸", "离职过渡"}
-    tasks = workbench.list_tasks()
-    assert len(tasks) == 12
+    assert workbench.list_tasks() == []
+    assert workbench.list_projects() == []
+    project = workbench.create_project("示例项目")
+    assert workbench.list_projects() == [project]
+    assert workbench.list_tasks() == []
+    assert _db.conn().execute("SELECT COUNT(*) FROM workbench_projects").fetchone()[0] == 1
+    assert _db.conn().execute("SELECT COUNT(*) FROM workbench_tasks").fetchone()[0] == 0
+
+
+def test_existing_data_remains_after_reopening(isolated):
+    from vococo.memory import _db, workbench
+
+    project = workbench.create_project("示例项目")
+    task = workbench.create_task(project["id"], "示例任务")
+    _db.reset()
+    assert workbench.list_projects() == [project]
+    assert workbench.list_tasks() == [task]
 
 
 def test_create_project_not_hardcoded(isolated):
@@ -39,7 +52,7 @@ def test_rename_and_archive_project(isolated):
 def test_reorder_projects(isolated):
     from vococo.memory import workbench
 
-    ids = [p["id"] for p in workbench.list_projects()]
+    ids = [workbench.create_project(name)["id"] for name in ("项目甲", "项目乙", "项目丙")]
     new_order = list(reversed(ids))
     workbench.reorder_projects(new_order)
     assert [p["id"] for p in workbench.list_projects()] == new_order
@@ -119,7 +132,7 @@ def test_move_task_only_reorders_affected_siblings(isolated):
     b1 = workbench.create_task(project["id"], "B的子任务1", parent_id=parent_b["id"])
     b2 = workbench.create_task(project["id"], "B的子任务2", parent_id=parent_b["id"])
 
-    # 模拟"网页标签页没刷新":client 手里的全量顺序(含种子数据),把 B 的两个
+    # 模拟"网页标签页没刷新":client 手里的全量顺序把 B 的两个
     # 子任务顺序也颠倒了,但这次操作只是把 A 的子任务反过来拖拽,跟 B 无关。
     stale_order = [task["id"] for task in workbench.list_tasks()]
     stale_order.remove(b1["id"])

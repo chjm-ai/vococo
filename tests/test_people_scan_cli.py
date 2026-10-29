@@ -24,6 +24,17 @@ def test_errors_alone_have_no_signal():
     assert _print_summary(summaries) is False
 
 
+def test_scan_error_returns_failure(monkeypatch, capsys):
+    from vococo.memory import people_scan_cli
+
+    monkeypatch.setattr("sys.argv", ["people_scan_cli", "--scan"])
+    monkeypatch.setattr(people_scan_cli.anyio, "run", lambda _: [
+        {"note": "示例", "status": "error", "reason": "本人姓名配置缺失"},
+    ])
+    assert people_scan_cli.main() == 1
+    assert "本人姓名配置缺失" in capsys.readouterr().out
+
+
 def test_update_has_signal(capsys):
     summaries = [{"note": "a", "status": "done", "updated": ["胜源"]}]
     assert _print_summary(summaries) is True
