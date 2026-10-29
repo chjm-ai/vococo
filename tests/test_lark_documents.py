@@ -137,4 +137,10 @@ def test_registered_tool_and_business_guidance():
     assert lark.lark_document.name == "lark_document"
     from pathlib import Path
     policy = execution.ExecutionPolicy("test", Path("/tmp/work"), Path("/tmp/out"), ())
-    assert "lark_document" in execution.prompt_note(policy)
+    note = execution.prompt_note(policy)
+    assert "官方 lark-cli 的完整原生能力" in note
+    assert "按需发现" in note
+    assert "必须用 lark_document" not in note
+    description = lark.lark_document.description
+    assert "不代表飞书完整能力" in description
+    assert "尚无宿主入口" not in description
