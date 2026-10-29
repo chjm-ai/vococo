@@ -91,12 +91,30 @@ def test_prompt_forbids_duplicate_image_send():
     assert "不得再对该图片调用" in out
 
 
-def test_prompt_balances_direct_work_and_delegation():
+def test_prompt_defaults_to_direct_work_across_delegation_tools():
     out = build_system_prompt(None)["append"]
-    assert "默认自己推进任务" in out
+    assert "默认自己完成任务，不派子代理" in out
+    assert "Agent/Task、run_subagent 和自动调用 delegate_to_agent" in out
     assert "文件位置不确定、任务有多个步骤或存在匹配的代理类型" in out
-    assert "不必等用户点名" in out
-    assert "可以主动委派" in out
+    assert "不必等用户点名" not in out
+    assert "可以主动委派" not in out
+    assert "拿不准收益时自己做" in out
+
+
+def test_prompt_limits_delegation_to_explicit_exceptions():
+    out = build_system_prompt(None)["append"]
+    assert "只有以下情况才派发" in out
+    assert "用户明确要求委派或多模型复核" in out
+    assert "项目规则要求独立评审" in out
+    assert "大量原始资料会明显挤占主上下文" in out
+    assert "可并行且上下文独立，预期节省的时间明显大于启动和交接成本" in out
+    assert "需要频繁补背景、串联交接或共同修改同一文件时，留在主循环" in out
+    assert "同一轮工具调用能解决的事，不为并行而派发" in out
+
+
+def test_prompt_preserves_delegation_evidence_and_completion_rules():
+    out = build_system_prompt(None)["append"]
+    assert "结论、证据位置和未完成项" in out
     assert "项目要求的独立代码评审照常执行" in out
     assert "已委派的工作不要重复跑" in out
     assert "阻塞同步" in out
