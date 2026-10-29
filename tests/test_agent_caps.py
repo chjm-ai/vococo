@@ -89,8 +89,9 @@ def clients(monkeypatch):
     return made
 
 
-async def _turn(key: str) -> None:
-    async for ev in agent.stream_turn([], "你好", session_key=key, disallowed_tools=["Write"]):
+async def _turn(key: str, denied=None) -> None:
+    async for ev in agent.stream_turn([], "你好", session_key=key,
+                                      disallowed_tools=["Write"] if denied is None else denied):
         if isinstance(ev, Done):
             return
 
@@ -140,7 +141,7 @@ async def test_web_session_tools_reach_sdk_with_bound_source(clients, env, monke
     monkeypatch.setattr(agent, "build_mcp_servers", builtin.build_mcp_servers)
     source = "web:bound-source"
     agent.session_store.start_turn(source, "查找已有会话")
-    await _turn(source)
+    await _turn(source, denied=[])
     assert "vococo" in clients[0].options.mcp_servers
     tools = {t.name: t for t in captured[-1]}
     assert {"list_sessions", "query_session", "continue_session"} <= tools.keys()

@@ -11,7 +11,7 @@ import secrets
 import socket
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
+import httpx2 as httpx
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
@@ -161,7 +161,7 @@ async def check_mcp(client, token):
                 "vococo_list_agents", "vococo_list_sessions", "vococo_read_session", "vococo_search_history",
             }
             result = await session.call_tool("vococo_list_sessions", {})
-            assert not result.isError and result.structuredContent["sessions"] == []
+            assert not result.is_error and result.structured_content["sessions"] == []
     del client.headers["Authorization"]
 
 

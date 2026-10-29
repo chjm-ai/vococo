@@ -14,7 +14,8 @@ import uuid
 from typing import Annotated, Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer as FastMCP
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -66,6 +67,10 @@ def connection_id(upstream: str) -> str:
     return hashlib.sha256(upstream.encode()).hexdigest()
 
 
+class BridgeError(ToolError, ValueError):
+    """桥接失败只返回安全的错误信息。"""
+
+
 async def _call(port: int, bridge: str, operation: str, data: dict) -> dict[str, Any]:
     receipt, started = uuid.uuid4().hex, time.perf_counter()
     headers = {"Authorization": f"Bearer {bridge}", "X-Vococo-Connection": connection_id(os.environ.get("VOCOCO_MCP_UPSTREAM_TOKEN", ""))}
@@ -75,11 +80,11 @@ async def _call(port: int, bridge: str, operation: str, data: dict) -> dict[str,
                                          json={key: value for key, value in data.items() if value is not None},
                                          headers=headers)
     except httpx.HTTPError:
-        raise ValueError("vococo 本机桥暂不可用；创建请求请保持原幂等键重试") from None
+        raise BridgeError("vococo 本机桥暂不可用；创建请求请保持原幂等键重试") from None
     errors = {400: "参数无效", 401: "本机桥认证失败", 403: "来源被拒绝", 404: "不存在或无权访问",
               409: "幂等键已用于不同任务", 503: "本机桥尚未配置"}
     if response.status_code != 200:
-        raise ValueError(errors.get(response.status_code, "vococo 本机桥异常"))
+        raise BridgeError(errors.get(response.status_code, "vococo 本机桥异常"))
     result = response.json()
     if not isinstance(result, dict):
         raise ValueError("vococo 本机桥返回格式错误")
@@ -165,11 +170,8 @@ def create_server(port: int = 8852, bridge_port: int = 8848) -> FastMCP:
     if not all(type(value) is int and 1 <= value <= 65535 for value in (port, bridge_port)):
         raise ValueError("端口必须在1..65535之间")
     upstream, bridge = _tokens()
-    server = FastMCP("vococo-brain", host="127.0.0.1", port=port, stateless_http=True,
-                     json_response=True, transport_security=TransportSecuritySettings(
-                         allowed_hosts=[f"127.0.0.1:{port}", f"localhost:{port}", "mcp.chjm.cc"],
-                         allowed_origins=["https://mcp.chjm.cc"],
-                     ))
+    server = FastMCP("vococo-brain")
+    server._vococo_port = port
     _register_tasks(server, bridge_port, bridge)
     _register_history(server, bridge_port, bridge)
     return server
@@ -281,7 +283,11 @@ def _lifespan(inner, frontend: EventsBridge):
 
 def create_app(server: FastMCP):
     upstream, _bridge = _tokens()
-    inner = server.streamable_http_app()
+    port = server._vococo_port
+    inner = server.streamable_http_app(stateless_http=True, json_response=True,
+        transport_security=TransportSecuritySettings(
+            allowed_hosts=[f"127.0.0.1:{port}", f"localhost:{port}", "mcp.chjm.cc"],
+            allowed_origins=["https://mcp.chjm.cc"]))
     frontend = EventsBridge(inner, upstream)
     # 在原 MCP app 的 lifespan(启停 session manager)之外,同生共死地跑事件投递循环。
     original = inner.router.lifespan_context
