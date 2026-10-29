@@ -58,6 +58,22 @@ def test_unknown_input_is_deferred_but_not_lost_on_interruption():
     assert usage.tokens == 25
 
 
+def test_context_is_latest_main_message_not_cumulative_or_child_usage():
+    usage = StreamUsage()
+    usage.observe(_start({"input_tokens": 100_000}))
+    assert usage.context_tokens == 0  # 未确认的中转估计不展示。
+    usage.observe(_delta({"output_tokens": 1}))
+    assert usage.context_tokens == 0
+    usage.observe(_delta({"input_tokens": 10, "cache_read_input_tokens": 90, "output_tokens": 2}))
+    assert usage.context_tokens == 102
+    usage.observe(_start({"input_tokens": 900, "cache_read_input_tokens": 0}), "child")
+    assert usage.context_tokens == 102
+    usage.observe(_start({"input_tokens": 20, "cache_read_input_tokens": 100}))
+    assert usage.context_tokens == 120  # 下一次模型调用覆盖，而非跨调用累加。
+    usage.observe({"type": "message_stop"})
+    assert usage.context_tokens == 120
+
+
 def test_each_model_call_has_its_own_snapshot():
     usage = StreamUsage()
     for _ in range(3):

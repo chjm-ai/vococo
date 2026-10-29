@@ -43,6 +43,7 @@ const assert=require('node:assert/strict');
     assert.equal(await page.inputValue('#ta'),'统一会话浏览器验收');
     await page.click('#sendBtn');
     await page.waitForFunction(()=>!S.stream && $('#wrap').textContent.includes('普通会话回复'));
+    await page.waitForFunction(()=>!$('#barMeta').hidden && $('#ctxPct').textContent==='10%');
     assert.equal(await page.evaluate(()=>S.conv),normal,'首次发送不能换 ID');
     assert.equal(sends[0].conv,normal);
     assert.equal(sends[0].agent_id,agent); assert.equal(sends[0].project_hash,project);
@@ -64,6 +65,17 @@ const assert=require('node:assert/strict');
     await page.evaluate(conv=>openConv(conv),completed);
     await page.waitForFunction(()=>S.stream && streamText(S.stream).includes('执行中'));
     assert.equal(await page.evaluate(()=>S.stream.tools.length),1,'刷新恢复工具过程');
+    await page.waitForFunction(()=>!$('#barMeta').hidden && $('#ctxPct').textContent==='17%');
+    assert.equal(await page.evaluate(()=>{
+      setMeta({}); refillCurrentMeta(); return !$('#barMeta').hidden;
+    }),true,'侧栏延迟到达必须补回上下文圈');
+    const usageTitle=await page.evaluate(conv=>{
+      const row=S.voiceSidebar.tasks.find(x=>x.conv===conv), title=row.title;
+      handleEvent({type:'usage',conv,title:null,ctx_tokens:36000,ctx_window:200000,total_tokens:0});
+      return {title:row.title,expected:title,pct:$('#ctxPct').textContent};
+    },completed);
+    assert.equal(usageTitle.title,usageTitle.expected,'用量更新不能覆盖历史任务名称');
+    assert.equal(usageTitle.pct,'18%','运行中用量事件应立即更新进度圈');
     await page.evaluate(conv=>openConv(conv),stopped);
     await page.waitForFunction(()=>S.stream && streamText(S.stream).includes('执行中'));
     const abort=page.waitForResponse(response=>new URL(response.url()).pathname==='/abort');

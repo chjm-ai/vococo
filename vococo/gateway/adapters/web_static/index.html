@@ -701,7 +701,21 @@ function refillCurrentMeta(){
     || (S.voiceSidebar.main && S.voiceSidebar.main.conv===conv ? S.voiceSidebar.main : null)
     || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv)
     || (S.cronJobs||[]).find(x=>x.conv===conv);
-  if(c && c.chosen_model) setModel(c.chosen_model);
+  if(c && (!S.meta || (!S.meta.ctx && !S.meta.total))) setMeta(c);
+  else if(c && c.chosen_model) setModel(c.chosen_model);
+}
+function updateUsageMeta(d){
+  const meta={};
+  for(const name of ['ctx_tokens','total_tokens','ctx_window','last_in','last_cache','last_out',
+                     'model','chosen_model','cache_read_total','input_fresh_total']){
+    if(name in d) meta[name]=d[name];
+  }
+  for(const rows of [S.convs,S.voiceSidebar.tasks||[],S.cronJobs||[]]){
+    const row=rows.find(x=>x.conv===d.conv);
+    if(row) Object.assign(row,meta);
+  }
+  if(S.voiceSidebar.main && S.voiceSidebar.main.conv===d.conv) Object.assign(S.voiceSidebar.main,meta);
+  if(d.conv===S.conv) setMeta(meta);
 }
 
 // ── 模型选择器 ────────────────────────────────────────────────────────────

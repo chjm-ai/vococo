@@ -493,6 +493,20 @@ def new_session(session_key: str) -> None:
     c.commit()
 
 
+def update_context(session_key: str, tokens: int, window: int, model: str) -> None:
+    """运行中的窗口快照，不累加消耗、不改写上一轮计费明细。"""
+    if tokens <= 0 or window <= 0:
+        return
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta(session_key,watermark_id,ctx_tokens,ctx_window,model) "
+        "VALUES (?,0,?,?,?) ON CONFLICT(session_key) DO UPDATE SET "
+        "ctx_tokens=excluded.ctx_tokens,ctx_window=excluded.ctx_window,model=excluded.model",
+        (session_key, tokens, window, model),
+    )
+    c.commit()
+
+
 def record_usage(
     session_key: str,
     ctx_tokens: int,

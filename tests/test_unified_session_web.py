@@ -239,6 +239,8 @@ function projAgent(hash){return S.agents.find(a=>(a.project_hash||null)===(hash|
 function grpKey(hash){return hash||'default';}
 function openConv(conv){S.conv=conv;}
 function saveExpanded(){} function renderConvs(){} function renderProjSelChip(){}
+let metadataRefills=0;
+function refillCurrentMeta(){metadataRefills++;}
 """ + "\n".join(functions) + """
 newChatIn(null,false);
 const key=S.conv;
@@ -256,6 +258,7 @@ applyConvs({main:{},conversations:[{conv:key,agent_id:'agent',project_hash:'abc'
 assert.equal(S.convs.filter(c=>c.conv===key).length,1);
 pickDraftProject(null);
 assert.equal(convProject(key),'abc');
+assert.equal(metadataRefills,2,'普通侧栏刷新也要补回元数据');
 """
     subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
 

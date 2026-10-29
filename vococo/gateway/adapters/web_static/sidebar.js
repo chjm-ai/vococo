@@ -141,6 +141,7 @@ function applyConvs(d){
   S.homeConvsVersion++;
   S.homeConvs = S.convFilter==="all" ? S.convs : null;
   renderConvs();   // 会话刷新后同步标题栏
+  refillCurrentMeta();
   if($("#empty").style.display==="flex") renderEmptyRecent();
 }
 async function loadConvs(){

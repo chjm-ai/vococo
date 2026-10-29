@@ -8,7 +8,7 @@ import pytest
 from test_library_integration import _browser_environment
 from vococo import config
 from vococo.core import task_events, task_runner, tasks
-from vococo.core.agent import AgentReply, Done, TextDelta, ToolFinished, ToolInput, ToolStarted
+from vococo.core.agent import AgentReply, ContextUsage, Done, TextDelta, ToolFinished, ToolInput, ToolStarted
 from vococo.gateway import core, mcp_events, settings_store
 from vococo.gateway.adapters.web import WebAdapter, _WebSink
 from vococo.memory import agents, session_store
@@ -43,10 +43,12 @@ async def test_unified_session_in_real_browser(isolated, monkeypatch, mobile):
     release = asyncio.Event()
 
     async def foreground(*args, **kwargs):
+        yield ContextUsage(20000, 200000, "fixture-model")
         yield TextDelta("普通会话回复")
-        yield Done(AgentReply("普通会话回复", [], None, False))
+        yield Done(AgentReply("普通会话回复", [], None, False, context_tokens=20000, turn_tokens=100))
 
     async def background(*args, **kwargs):
+        yield ContextUsage(34000, 200000, "fixture-model")
         yield TextDelta("先检查")
         yield TextDelta("代码")
         yield ToolStarted("Read", "read-browser")
@@ -55,7 +57,7 @@ async def test_unified_session_in_real_browser(isolated, monkeypatch, mobile):
         yield TextDelta("执行中")
         await release.wait()
         yield TextDelta("全部完成")
-        yield Done(AgentReply("先检查代码执行中全部完成", [], None, False))
+        yield Done(AgentReply("先检查代码执行中全部完成", [], None, False, context_tokens=34000, turn_tokens=200))
 
     monkeypatch.setattr(core, "stream_turn", foreground)
     monkeypatch.setattr(task_runner, "stream_turn", background)
