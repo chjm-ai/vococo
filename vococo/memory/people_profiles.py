@@ -47,7 +47,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import tempfile
 import time
 from pathlib import Path
 
@@ -171,7 +173,7 @@ def known_people() -> list[dict]:
 
     只收录【文件真实存在】的人物:索引行可能残留"幽灵"——人物文件被清理(合并/
     删除)后索引行没同步删,下次扫描会把幽灵当已知人物直接写文件重建(真实踩坑:
-    清理 10 个假人物文件后重跑,Open-CLAW/Wesley/大牛等又全部被"新建"回来)。
+    清理假人物文件后重跑,工具代号和敬称等又被新建回来)。
     """
     pd = people_dir()
     files = {f.stem for f in pd.glob("*.md")} if pd.is_dir() else set()
@@ -209,8 +211,8 @@ def _known_name_index(people: list[dict]) -> dict[str, str]:
 
 _MERGE_PROMPT = """你是私人助理。以下「候选人物」来自同一篇笔记的提取结果,「已有名单」是
 主人的长期人脉库。请判断:候选中的名字,是否有与已有名单中的某人是【同一人】的(判断依据:
-同音/近音异写如 思源=胜源、盛元=胜源、喆铭=黄喆铭(带姓不带姓)、阿盛=阿胜、湘伟=相伟;
-或明显的转写错误)。只合并你有把握的;不确定的一律不合并。
+同音/近音异写、带姓与不带姓的写法,或明显的转写错误)。仅凭名字相似不足以
+确认是同一人;只合并有充分依据的,不确定的一律不合并。
 
 【已有名单】(标准名 | 别名):
 {people_list}
@@ -267,18 +269,30 @@ _JUNK_TITLES = (
 _JUNK_PRAISES = ("大牛", "大佬", "大神", "牛人", "小姐姐", "小哥哥", "大V")
 
 
-def _is_junk_name(name: str) -> bool:
-    """名单外的新名字,先做程序侧过滤,别让 LLM 把指代/称谓/代号建成画像。
+async def _owner_names() -> set[str]:
+    """异步读取本人姓名配置；读取失败或格式错误时停止扫描，避免误建画像。"""
+    path = config.AI_BRAIN_DIR / "people-profile-owner.json"
+    try:
+        with anyio.fail_after(3):
+            text = await anyio.to_thread.run_sync(lambda: path.read_text(encoding="utf-8"), abandon_on_cancel=True)
+    except FileNotFoundError:
+        # 兼容尚未配置别名的旧安装；显式配置损坏时仍停止扫描。
+        return {config.USER_NAME.strip().casefold()} - {""}
+    except (OSError, UnicodeError, TimeoutError) as exc:
+        raise ValueError("本人姓名配置读取失败") from exc
+    try:
+        names = json.loads(text)
+        if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+            raise ValueError("需要字符串数组")
+    except ValueError as exc:
+        raise ValueError("本人姓名配置格式错误") from exc
+    return {name.strip().casefold() for name in names if name.strip()}
 
-    2026-08-14 全量扫描教训:新建了「化工校友会副会长」「字节背景女生」「服装
-    老板」「酒店咨询朋友」(称谓指代)、「大牛」(敬称)、「Open-CLAW」(工具代号)、
-    「Wesley」(主人自己)这类非人脉条目。规则只拦"明显是"的,拿不准的放行
-    (宁可多一条让人工删,不误杀真人物如"张老板""Traster")。
-    """
+
+def _is_junk_name(name: str) -> bool:
+    """过滤明显的称谓和代号。"""
     if not name:
         return True
-    if name == "Wesley":
-        return True  # 主人自己(工作坊/演示笔记里自称)
     if "-" in name or "_" in name:
         return True  # 代号/机器名,如 Open-CLAW
     if name in _JUNK_PRAISES:
@@ -301,8 +315,7 @@ _ANALYZE_PROMPT = """从下面这篇笔记里提取人物互动信息,输出 JSO
 【已知人物库】(名字 | 别名 | 关系 | 标签):
 {people_list}
 
-【标题点名】笔记标题经常直接点名了对话对象(如"251029 胜源 关于化工出海"说明
-这次对话对象是胜源、"Chat with 喆铭"说明聊天对象是喆铭),但正文常用"发言人1/
+【标题点名】笔记标题经常直接点名对话对象,但正文常用"发言人1/
 发言人2/两位发言人"这类匿名指代,压根不会再提一次名字——这种情况下标题点名的
 人物【必须提取】,依据正文归纳出实际互动内容,evidence 留空即可(程序会用
 "名字是否出现在标题里"这条更简单的规则单独核实,不要求正文再出现一次字面引用)。
@@ -310,20 +323,20 @@ _ANALYZE_PROMPT = """从下面这篇笔记里提取人物互动信息,输出 JSO
 【任务】
 1. 笔记里出现了哪些人物的【新事实信息】?提取对象是"信息",不是"名字":
    - 与主人直接对话/通话/见面的人(含标题点名、正文匿名指代的情况,见上)
-   - 主人提到的某人近况/身份/合作/互动("小玉帮我找场地""她叔叔是华工校友会副会长")
+   - 主人提到的某人近况、身份、合作或互动
    不是提取对象:AI 工具名(OpenClaw/Open-CLAW 这类工具/项目代号)、电影角色、
    泛指人群("老板们""同学们")、泛指敬称("那位大牛""这个大佬")——指代没名没姓
    的人("化工校友会副会长""字节背景女生""服装老板""酒店咨询朋友")不是人名,
    不得建新人物;纯身份称谓("叔叔""副会长""总经理""那个女生")不是人名;
-   笔记里主人自称("Wesley""我叫Wesley")不算人物互动,不提取;
-   名人作为类比/举例的对象(如"像张雪峰那样""像'得到'一样")不是互动,不提取;
+   笔记里主人的自称不算人物互动,不提取;
+   名人作为类比/举例的对象不是互动,不提取;
    服务器/主机/项目/产品的代号不是人物,拿不准就不提取。
 2. 对每个提取到的人物:
    - evidence:从笔记正文里【逐字复制】一段 10~30 字、能证明这个人物确实被提到的
      原句片段(必须是原文真实存在的连续字符,不能转述、不能概括、不能编造——
      程序会核对这段文字是否真的出现在正文里,核对不通过这条提取会被整条丢弃;
      标题点名的人物这里可以留空,见上面【标题点名】说明)
-   - 先在已知库匹配(注意同音/近音异写,如 思源/圣源/胜源、喆铭=黄喆铭;按读音归并到已知库标准名)
+   - 先在已知库匹配;同音、近音或带姓与不带姓不一定是同一人,需有充分依据才归并
    - interaction:这次互动/提及的一句话摘要(40字内,写清事实:一起做了什么/聊了什么/对方近况)
    - dynamics:该人物新出现的动态(最近在做什么/新情况),没有就空数组
    - occupation:明确的职业信息(如"华工校友会副会长"这类身份也算),没有就省略
@@ -752,6 +765,10 @@ async def process_note(text: str, note_title: str, note_date: str) -> dict:
     """处理一篇笔记正文:分析 + 更新画像。返回结果摘要(不含 flag_pending 判断,
     由调用方 scan_obsidian_notes 决定要不要为零人物结果记待确认项)。
     """
+    try:
+        owner_names = await _owner_names()
+    except ValueError as exc:
+        return {"status": "error", "reason": str(exc)}
     result = await analyze(text, note_title, note_date)
     if result is None:
         return {"status": "error", "reason": "LLM 分析失败"}
@@ -771,7 +788,8 @@ async def process_note(text: str, note_title: str, note_date: str) -> dict:
         if not name:
             continue
         std = merge_map.get(name, name)
-        if std not in {k["name"] for k in people_known} and _is_junk_name(std):
+        if (name.casefold() in owner_names or std.casefold() in owner_names
+                or (std not in {k["name"] for k in people_known} and _is_junk_name(std))):
             # 名单外且明显是指代/称谓/代号/主人自称 → 丢弃,不建画像
             print(f"[people_profiles] 过滤非人物条目: {std}(来自「{note_title}」)", flush=True)
             continue
@@ -781,6 +799,8 @@ async def process_note(text: str, note_title: str, note_date: str) -> dict:
         # 画像可能新增了互动记录 → 同步刷新索引第 5 列的互动次数
         _refresh_index_count(std)
         updated.append(change + (" · " + registered if registered else ""))
+    if not updated:
+        return {"status": "skipped", "reason": "未找到可更新的人物"}
     return {"status": "done", "updated": updated}
 
 
@@ -796,7 +816,7 @@ async def _safe_read_text(path: Path, timeout: float = 3.0) -> str | None:
             return await anyio.to_thread.run_sync(
                 lambda: path.read_text(encoding="utf-8"), abandon_on_cancel=True,
             )
-    except (TimeoutError, FileNotFoundError, OSError):
+    except (TimeoutError, OSError, UnicodeError):
         return None
 
 
@@ -841,12 +861,16 @@ def _load_obsidian_watermark() -> dict[str, float]:
 
 
 def _save_obsidian_watermark(wm: dict[str, float]) -> None:
+    path = _obsidian_watermark_path()
+    temp_path = None
     try:
-        _obsidian_watermark_path().write_text(
-            json.dumps(wm, ensure_ascii=False), encoding="utf-8"
-        )
-    except OSError:
-        pass
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as f:
+            temp_path = Path(f.name)
+            json.dump(wm, f, ensure_ascii=False)
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def _pending_path() -> Path:
@@ -896,26 +920,33 @@ async def scan_obsidian_notes() -> list[dict]:
     """
     watermark = _load_obsidian_watermark()
     candidates = _iter_candidate_notes()
+    missing = [folder for folder in config.PEOPLE_PROFILES_OBSIDIAN_FOLDERS
+               if not (config.OBSIDIAN_VAULT_DIR / folder).is_dir()]
+    summaries: list[dict] = [
+        {"note": folder, "status": "error", "reason": "配置的笔记目录不可用"}
+        for folder in missing
+    ]
     if not candidates:
         print(
             f"[people_profiles] 未在配置目录下找到笔记(vault={config.OBSIDIAN_VAULT_DIR},"
             f"目录={config.PEOPLE_PROFILES_OBSIDIAN_FOLDERS})",
             flush=True,
         )
-        return []
-    summaries: list[dict] = []
+        return summaries
     processed = 0
     for path, should_have_people in candidates:
         try:
             mtime = path.stat().st_mtime
         except OSError:
+            summaries.append({"note": path.name, "status": "error", "reason": "无法读取笔记状态"})
             continue
         rel_path = str(path.relative_to(config.OBSIDIAN_VAULT_DIR))
         if watermark.get(rel_path) == mtime:
             continue  # 没变过,跳过
         text = await _safe_read_text(path)
         if text is None:
-            continue  # 读取超时/失败(可能是 iCloud 驱逐),这轮跳过,下次水位没推进会再试
+            summaries.append({"note": rel_path, "status": "error", "reason": "笔记读取失败或超时"})
+            continue  # 水位不推进,下次再试
         text = text.strip()
         if not text:
             watermark[rel_path] = mtime
@@ -925,7 +956,11 @@ async def scan_obsidian_notes() -> list[dict]:
         try:
             r = await process_note(text, note_title, note_date)
         except Exception as e:  # noqa: BLE001——单篇失败不拖垮整轮扫描
-            print(f"[people_profiles] 笔记「{note_title}」处理失败: {e}", flush=True)
+            print(f"[people_profiles] 笔记「{note_title}」处理失败: {type(e).__name__}", flush=True)
+            summaries.append({"note": rel_path, "status": "error", "reason": f"处理失败: {type(e).__name__}"})
+            continue
+        if r.get("status") == "error":
+            summaries.append({"note": rel_path, "date": note_date, **r})
             continue
         processed += 1
         watermark[rel_path] = mtime
@@ -933,7 +968,10 @@ async def scan_obsidian_notes() -> list[dict]:
             _note_pending(rel_path, note_date)
             r = {**r, "status": "pending"}
         summaries.append({"note": rel_path, "date": note_date, **r})
-    _save_obsidian_watermark(watermark)
+    try:
+        _save_obsidian_watermark(watermark)
+    except OSError:
+        summaries.insert(0, {"note": "扫描水位", "status": "error", "reason": "水位保存失败"})
     print(
         f"[people_profiles] 扫描 {len(candidates)} 篇笔记,新/改动 {processed} 篇,"
         f"产出 {sum(1 for s in summaries if s.get('status') == 'done')} 条更新",

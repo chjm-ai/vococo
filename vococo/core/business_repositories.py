@@ -113,13 +113,14 @@ async def prepare_repositories(policy) -> None:
 def prompt_note(copies: tuple[RepositoryCopy, ...]) -> str:
     if not copies:
         return (
-            "需要修改代码时，先读取目标仓库的 AGENTS.md/CLAUDE.md 并遵循其开发流程。"
-            "可按任务操作未绑定的仓库，不以 Agent 身份或未绑定为由拒绝；目录外写入仍需常规审批。"
-            "长期开发可在 Agent 设置中绑定仓库，自动获得独立代码副本以避免并行覆盖。"
+            "需要编写或修改项目代码时，先请主人在 Agent 设置中添加并绑定 Git 仓库；"
+            "没有现成仓库时请主人确定仓库目录并初始化，不得擅自把正式代码写入临时目录。"
+            "没有交互通道时报告缺少绑定并暂停代码修改，不得绕过权限或自动转派。"
         )
     rows = "\n".join(f"- 只读原仓库：{x.source} → 可写副本：{x.checkout}（分支 {x.branch}）" for x in copies)
     return (
         "\n## 已绑定代码仓库\n" + rows + "\n"
+        "代码开发默认由当前 Agent 自行完成，不仅因涉及代码就委派其他 Agent。"
         "修改前先读取对应副本的 AGENTS.md/CLAUDE.md，规则仅用于该仓库。"
         "修改、构建、本地提交必须在上述可写副本操作；任务给出的原仓库路径也要换成副本路径。"
         "不要写原仓库、不要直接操作原仓库主分支。副本只含已提交内容，不带原目录的未提交修改、"

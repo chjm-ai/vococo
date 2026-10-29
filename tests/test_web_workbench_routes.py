@@ -52,12 +52,12 @@ def workbench_web_app(isolated, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_workbench_bundle_is_seeded_on_first_load(workbench_web_app):
+async def test_workbench_bundle_is_empty_on_first_load(workbench_web_app):
     async with TestClient(TestServer(workbench_web_app)) as client:
         resp = await client.get("/workbench")
         data = await resp.json()
-        assert {p["name"] for p in data["projects"]} == {"AI 咨询", "VocoTrade", "面料外贸", "离职过渡"}
-        assert len(data["tasks"]) == 12
+        assert data["projects"] == []
+        assert data["tasks"] == []
 
 
 @pytest.mark.anyio
@@ -111,8 +111,8 @@ async def test_rename_and_archive_project_via_http(workbench_web_app):
 @pytest.mark.anyio
 async def test_update_and_delete_task_via_http(workbench_web_app):
     async with TestClient(TestServer(workbench_web_app)) as client:
-        resp = await client.get("/workbench")
-        project_id = (await resp.json())["projects"][0]["id"]
+        resp = await client.post("/workbench/projects/create", json={"name": "测试项目"})
+        project_id = (await resp.json())["project"]["id"]
 
         resp = await client.post(
             "/workbench/tasks/create", json={"project": project_id, "title": "待更新任务"}
@@ -137,8 +137,8 @@ async def test_rollover_dismiss_via_http_clears_dot(workbench_web_app):
     import datetime
 
     async with TestClient(TestServer(workbench_web_app)) as client:
-        resp = await client.get("/workbench")
-        project_id = (await resp.json())["projects"][0]["id"]
+        resp = await client.post("/workbench/projects/create", json={"name": "测试项目"})
+        project_id = (await resp.json())["project"]["id"]
 
         last_week = (datetime.date.today() - datetime.timedelta(days=14)).isoformat()
         resp = await client.post(
@@ -167,8 +167,8 @@ async def test_rollover_dismiss_via_http_clears_dot(workbench_web_app):
 @pytest.mark.anyio
 async def test_move_task_via_http_keeps_child_order(workbench_web_app):
     async with TestClient(TestServer(workbench_web_app)) as client:
-        resp = await client.get("/workbench")
-        project_id = (await resp.json())["projects"][0]["id"]
+        resp = await client.post("/workbench/projects/create", json={"name": "测试项目"})
+        project_id = (await resp.json())["project"]["id"]
         resp = await client.post(
             "/workbench/tasks/create", json={"project": project_id, "title": "父任务"}
         )
@@ -205,8 +205,8 @@ async def test_move_task_via_http_keeps_child_order(workbench_web_app):
 @pytest.mark.anyio
 async def test_trash_lifecycle_via_http(workbench_web_app):
     async with TestClient(TestServer(workbench_web_app)) as client:
-        resp = await client.get("/workbench")
-        project_id = (await resp.json())["projects"][0]["id"]
+        resp = await client.post("/workbench/projects/create", json={"name": "测试项目"})
+        project_id = (await resp.json())["project"]["id"]
 
         resp = await client.post(
             "/workbench/tasks/create", json={"project": project_id, "title": "要删的任务"}
@@ -247,8 +247,8 @@ async def test_trash_lifecycle_via_http(workbench_web_app):
 @pytest.mark.anyio
 async def test_empty_trash_via_http(workbench_web_app):
     async with TestClient(TestServer(workbench_web_app)) as client:
-        resp = await client.get("/workbench")
-        project_id = (await resp.json())["projects"][0]["id"]
+        resp = await client.post("/workbench/projects/create", json={"name": "测试项目"})
+        project_id = (await resp.json())["project"]["id"]
 
         resp = await client.post(
             "/workbench/tasks/create", json={"project": project_id, "title": "会被清空的任务"}
@@ -267,8 +267,8 @@ async def test_empty_trash_via_http(workbench_web_app):
 @pytest.mark.anyio
 async def test_task_image_add_and_remove_via_http(workbench_web_app):
     async with TestClient(TestServer(workbench_web_app)) as client:
-        resp = await client.get("/workbench")
-        project_id = (await resp.json())["projects"][0]["id"]
+        resp = await client.post("/workbench/projects/create", json={"name": "测试项目"})
+        project_id = (await resp.json())["project"]["id"]
         resp = await client.post(
             "/workbench/tasks/create", json={"project": project_id, "title": "带图任务"}
         )
@@ -293,8 +293,8 @@ async def test_task_image_add_and_remove_via_http(workbench_web_app):
 @pytest.mark.anyio
 async def test_task_link_session_via_http(workbench_web_app):
     async with TestClient(TestServer(workbench_web_app)) as client:
-        resp = await client.get("/workbench")
-        project_id = (await resp.json())["projects"][0]["id"]
+        resp = await client.post("/workbench/projects/create", json={"name": "测试项目"})
+        project_id = (await resp.json())["project"]["id"]
         resp = await client.post(
             "/workbench/tasks/create", json={"project": project_id, "title": "待关联任务"}
         )

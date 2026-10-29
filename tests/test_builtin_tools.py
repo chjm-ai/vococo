@@ -351,13 +351,17 @@ def test_move_workbench_task_moves_task_tree_to_project(isolated):
     from vococo.memory import workbench
     from vococo.tools import builtin
 
-    projects = {project["name"]: project["id"] for project in workbench.list_projects()}
+    source = workbench.create_project("源项目")
+    target = workbench.create_project("目标项目")
+    task = workbench.create_task(source["id"], "示例任务")
+    child = workbench.create_task(source["id"], "示例子任务", parent_id=task["id"])
     out = _text(_run(builtin.move_workbench_task.handler({
-        "task": "crawler-plan", "project": "VocoTrade",
+        "task": task["id"], "project": "目标项目",
     })))
 
     assert "已将任务" in out
-    assert workbench.get_task("crawler-plan")["project"] == projects["VocoTrade"]
+    assert workbench.get_task(task["id"])["project"] == target["id"]
+    assert workbench.get_task(child["id"])["project"] == target["id"]
 
 
 # === switch_model(自然语言切模型) ===
