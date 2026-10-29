@@ -946,7 +946,7 @@ async function delConv(conv){
   navForget(conv);
   if(wasActive) openConv(S.convs[0]?S.convs[0].conv:"main");   // 删的是当前会话→切到最近一个
   // 纯本地会话(从未发过消息)服务端没有记录,删完即止
-  if(String(conv).startsWith("local-")) return;
+  if(removed.draft || String(conv).startsWith("local-")) return;
   try{
     const r=await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
     const j=await r.json().catch(()=>({}));
@@ -1001,7 +1001,7 @@ async function renameConv(conv){
   c.title=title; renderConvs();   // 乐观更新,立即重绘
   // 纯本地会话(从未发过消息)服务端没有记录,改名只停在本地——发出第一条消息后
   // conv 会转正成新 key(见 composer.js sendMsg 的 wasLocal 分支),这里存了也白存
-  if(String(conv).startsWith("local-")) return;
+  if(isDraftConv(conv)) return;
   try{
     const r=await api("/conv/rename",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,title})});
     const j=await r.json().catch(()=>({}));

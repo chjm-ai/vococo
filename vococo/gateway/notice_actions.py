@@ -39,8 +39,8 @@ def conv_of(session_key: str) -> str | None:
     if session_key == config.SESSION_KEY:
         return "main"
     if session_key.startswith("web:"):
-        return session_key[4:]
-    if session_key.startswith(("task:", "voice-chat:")):
+        return config.conversation_id_for_key(session_key)
+    if session_key.startswith(("session:", "task:", "voice-chat:")):
         return session_key
     return None
 

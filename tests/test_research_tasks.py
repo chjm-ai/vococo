@@ -29,7 +29,7 @@ def environment(isolated, monkeypatch):
     monkeypatch.setattr(config, "TASK_MAX_CONCURRENCY", 1)
     monkeypatch.setattr(config, "BG_DAILY_TOKEN_BUDGET", 0)
     monkeypatch.setattr(config, "MODEL", "fixed-default")
-    monkeypatch.setattr(providers, "resolve", lambda *a, **k: None)
+    monkeypatch.setattr(providers, "resolve", lambda *a, **k: ("fixed-default", {}))
     monkeypatch.setattr(runner, "_source_agent_id", lambda key: None)
     yield isolated
     assert not runner._running

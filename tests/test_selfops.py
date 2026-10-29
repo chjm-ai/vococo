@@ -336,7 +336,7 @@ def test_gateway_and_voice_exit_paths_use_the_shared_safe_exit():
     from vococo.gateway.run import GatewayRunner
     from vococo.voice import routes
 
-    gateway_source = inspect.getsource(GatewayRunner._dispatch)
+    gateway_source = inspect.getsource(GatewayRunner._dispatch_one)
     voice_source = inspect.getsource(routes._handle_send)
     assert "exit_for_restart(adapter, inc.chat_id, inc.session_key)" in gateway_source
     assert "await selfops.exit_for_restart(" in voice_source

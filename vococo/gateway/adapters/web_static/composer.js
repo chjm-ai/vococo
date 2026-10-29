@@ -86,6 +86,7 @@ async function send(text, display, opts){
   // S.conv/S.images 等全局状态会变成新会话的——不钉死就会把这条消息、气泡、回执错投过去。
   let sendConv=S.conv;
   const isCurrent=()=>S.conv===sendConv;
+  const ownership=convOwnership(sendConv);
   const sendImages=S.images.slice(), sendAudios=S.audios.slice(), sendFiles=S.files.slice(), sendLibraryRefs=S.libraryRefs.slice();
   // 先把本轮内容放进内存快照,再立即清空界面。切会话时只切换到空的编辑态,
   // 失败时再从快照恢复,让用户看到的反馈和「已发出」一致。
@@ -175,7 +176,7 @@ async function send(text, display, opts){
   const clientRequestId=newClientRequestId();
   S.sendAcks[clientRequestId]=false;
   const payload={
-    conv:sendConv, text,
+    conv:sendConv, text, ...ownership,
     images:sendImages.map(x=>({data:x.data,media_type:x.media_type})),
     audios:sendAudios.map(x=>({id:x.id})),
     files:sendFiles.filter(x=>x.kind!=="video").map(x=>({id:x.id})),
@@ -227,6 +228,15 @@ async function send(text, display, opts){
   }
   if(!sendError){
     delete S.sendAcks[clientRequestId];
+    const entry=S.convs.find(x=>x.conv===sendConv);
+    if(entry){
+      entry.draft=false; entry.turns=Math.max(1,entry.turns||0);
+      if(entry.wbTaskId && typeof linkWorkbenchTaskSession==="function"){
+        linkWorkbenchTaskSession(entry.wbTaskId, sendConv); delete entry.wbTaskId;
+      }
+    }
+    if(isCurrent()) renderProjSelChip();
+    loadConvsSoon();
     // 服务端确认后才丢弃后台快照。可见输入框早已在发送入口清空,
     // 用户若在上传或发送期间切会话,回来仍保持「已发出」的表面状态。
     const hasNewContent=isCurrent() &&
@@ -262,7 +272,7 @@ async function send(text, display, opts){
 async function sendCmd(cmd, conv){
   conv = conv || S.conv;
   const isCurrent = conv===S.conv;
-  const payload={conv:conv, text:cmd, images:[]};
+  const payload={conv:conv, text:cmd, images:[], ...convOwnership(conv)};
   const oldConv=conv;
   const wasLocal=String(conv).startsWith("local-");
   if(wasLocal){
@@ -274,7 +284,11 @@ async function sendCmd(cmd, conv){
     if(entry){ entry.conv=conv; entry.turns=1; }
   }
   try{
-    await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    const response=await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(!response.ok) throw new Error((await response.json()).error||"发送失败");
+    const entry=S.convs.find(x=>x.conv===conv); if(entry) entry.draft=false;
+    if(isCurrent) renderProjSelChip();
+    loadConvsSoon();
     if(wasLocal) setTimeout(loadConvs, 400);
   }catch(err){ addBubble("ai","⚠️ 发送失败:"+err.message); }
 }
@@ -321,8 +335,8 @@ async function stopReply(){
 // 乐观停止:任务会话(task:<id>)点停止,本地先把任务行置「已取消」给即时反馈。
 // 返回原状态供停失败时恢复;非任务会话/任务已终态返回 null。
 function markTaskStopped(conv){
-  if(!conv.startsWith("task:")) return null;
-  const t = barTasks.get(conv.slice(5));
+  const c=findConv(conv);
+  const t = barTasks.get(c && c.task_id) || [...barTasks.values()].find(x=>x.session_key===conv);
   if(!t || (t.status !== "queued" && t.status !== "running")) return null;
   const prev = {status: t.status, progress_note: t.progress_note};
   t.status = "cancelled"; t.progress_note = "已停止";
@@ -330,7 +344,8 @@ function markTaskStopped(conv){
   return prev;
 }
 function restoreTaskStopped(conv, prev){
-  const t = barTasks.get(conv.slice(5));
+  const c=findConv(conv);
+  const t = barTasks.get(c && c.task_id) || [...barTasks.values()].find(x=>x.session_key===conv);
   if(!t) return;
   t.status = prev.status; t.progress_note = prev.progress_note;
   renderTaskBar();

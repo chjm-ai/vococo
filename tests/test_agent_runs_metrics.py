@@ -52,11 +52,14 @@ async def test_task_from_agent_session_is_owned_and_recorded(env, monkeypatch):
     monkeypatch.setattr(task_runner, "stream_turn", _fake_turn(seen))
     monkeypatch.setattr(notify, "on_task_terminal", _noop)
     agents.write_doc(env["id"], "AGENT.md", "# proj\n\n## 职责与人格\n\n管询盘")
-    src = f"web:p{env['project_hash']}:c1"
+    src = config.new_session_key()
+    session_store.bind_session(src, agent_id=env["id"], project_hash=env["project_hash"])
     task = task_runner.dispatch(title="查询盘", prompt="查一下", origin="chat", context_session_key=src)
     assert task["agent_id"] == env["id"]
+    key = bg_tasks.session_key(task["id"])
+    assert key.startswith("session:") and key != f"session:{task['id']}"
     # 任务会话认得自己的 Agent → 拿到 Agent 设定
-    assert agents.agent_for_session(f"task:{task['id']}")["id"] == env["id"]
+    assert agents.agent_for_session(key)["id"] == env["id"]
     await task_runner._running[task["id"]]
     assert "管询盘" in seen[0]["extra"]
 
@@ -68,24 +71,37 @@ async def test_task_from_agent_session_is_owned_and_recorded(env, monkeypatch):
     r = runs[0]
     assert (r["job_name"], r["status"], r["tokens"], r["tool_calls"]) == ("查询盘", "success", 12345, 2)
     assert r["turn_id"] is None  # 派出的任务不复制进主会话
-    original = session_store.load_history(f"task:{task['id']}")[-1]
+    original = session_store.load_history(key)[-1]
     assert (r["target_conv"], r["target_turn_id"], r["target_ts"]) == (
-        f"task:{task['id']}", original["id"], original["ts"])
+        key, original["id"], original["ts"])
     assert session_store.load_recent(agents.main_session_key(env)) == []
     log = next((agents.home(env["id"]) / "runs").glob("*.md")).read_text(encoding="utf-8")
     assert "查询盘 · success · 1.2 万 token" in log and "2 次工具" in log
 
 
 @pytest.mark.anyio
-async def test_task_from_plain_session_has_no_agent(env, monkeypatch):
+async def test_task_from_plain_session_is_owned_by_general_agent(env, monkeypatch):
     monkeypatch.setattr(task_runner, "stream_turn", _fake_turn([], is_error=True))
     monkeypatch.setattr(notify, "on_task_terminal", _noop)
-    # 普通会话 / 全局主会话(通用 Agent)派的活都不归属
-    for src in ("web:abc", config.SESSION_KEY, None):
-        t = task_runner.dispatch(title="x", prompt="y", origin="chat", context_session_key=src)
-        assert t["agent_id"] is None
+    src_key = config.new_session_key()
+    session_store.bind_session(src_key, agent_id=agents.GENERAL_ID)
+    # 普通会话 / 全局主会话 / 无来源任务均显式归属通用 Agent。
+    for src in (src_key, config.SESSION_KEY, None):
+        if src is None:
+            # 无来源也无项目目录，直接验证新任务的默认归属。
+            t = bg_tasks.create(title="x", prompt="y", origin="chat")
+            assert task_runner._start_one(t)
+        else:
+            t = task_runner.dispatch(title="x", prompt="y", origin="chat", context_session_key=src)
+        assert t["agent_id"] == agents.GENERAL_ID
+        key = bg_tasks.session_key(t["id"])
+        assert key.startswith("session:")
+        assert session_store.session_binding(key)["agent_id"] == agents.GENERAL_ID
         await task_runner._running[t["id"]]
     assert agents.recent_runs(env["id"]) == []
+    runs = agents.recent_runs(agents.GENERAL_ID)
+    assert len(runs) == 3
+    assert all((r["status"], r["tokens"], r["tool_calls"]) == ("error", 12345, 2) for r in runs)
 
 
 def test_run_stats_and_text(env):
@@ -114,12 +130,15 @@ async def test_goal_review_trigger_gets_stats_and_cron_metrics(env, monkeypatch)
     agents.write_doc(env["id"], "GOAL.md", "# 目标\n\n每月 20 个询盘\n")
     job = agents.ensure_goal_review(env["id"])
     scheduler._run_job(scheduler.load_jobs()[0], _noop)
-    await task_runner._running[job["id"]]
+    task = bg_tasks.task_for_job(job["id"])
+    assert task["id"] != job["id"]
+    assert bg_tasks.session_key(task["id"]) == job["conv"]
+    await task_runner._running[task["id"]]
     assert seen[0]["prompt"].startswith("【运行统计·近 7 天】")
     assert "【目标复盘】" in seen[0]["prompt"]
 
     # cron 终态钩子把任务行上的指标带进运行记录
-    await scheduler._on_task_terminal(bg_tasks.get(job["id"]), _noop)
+    await scheduler._on_task_terminal(bg_tasks.get(task["id"]), _noop)
     r = agents.recent_runs(env["id"])[0]
     assert (r["job_name"], r["tokens"], r["tool_calls"]) == ("目标复盘", 12345, 2)
     assert r["turn_id"] is not None  # 定时任务照旧复制进主会话
@@ -143,23 +162,27 @@ def test_run_anchor_points_to_main_copy_and_original_task(env):
     run = agents.recent_runs(env["id"])[0]
     assert (run["target_conv"], run["target_turn_id"], run["target_ts"]) == (
         env["main_conv"], tid, run["ts"])
-    task_tid = session_store.start_turn("task:background", "执行")
-    session_store.finish_turn(task_tid, "后台结果", session_key="task:background")
-    agents.record_run(env["id"], {"id": "background"}, "success", "独立摘要", to_main=False,
+    task = bg_tasks.create(title="后台", prompt="执行", agent_id=env["id"])
+    key = bg_tasks.session_key(task["id"])
+    task_tid = session_store.start_turn(key, "执行")
+    session_store.finish_turn(task_tid, "后台结果", session_key=key)
+    agents.record_run(env["id"], {"id": task["id"]}, "success", "独立摘要", to_main=False,
                       source_turn_id=task_tid)
     run = agents.recent_runs(env["id"])[0]
-    assert (run["target_conv"], run["target_turn_id"]) == ("task:background", task_tid)
+    assert (run["target_conv"], run["target_turn_id"]) == (key, task_tid)
     # 后续人工追问不能把已完成的运行锚点挪到新一轮。
-    later = session_store.start_turn("task:background", "继续")
-    session_store.finish_turn(later, "后台结果", session_key="task:background")
+    later = session_store.start_turn(key, "继续")
+    session_store.finish_turn(later, "后台结果", session_key=key)
     assert agents.recent_runs(env["id"])[0]["target_turn_id"] == task_tid
 
 
 def test_run_anchor_missing_or_unrelated_task_does_not_guess(env):
-    tid = session_store.start_turn("task:background", "执行")
-    session_store.finish_turn(tid, "无关结果", session_key="task:background")
-    agents.record_run(env["id"], {"id": "background"}, "error", "未执行", to_main=False)
+    task = bg_tasks.create(title="后台", prompt="执行", agent_id=env["id"])
+    key = bg_tasks.session_key(task["id"])
+    tid = session_store.start_turn(key, "执行")
+    session_store.finish_turn(tid, "无关结果", session_key=key)
+    agents.record_run(env["id"], {"id": task["id"]}, "error", "未执行", to_main=False)
     run = agents.recent_runs(env["id"])[0]
-    assert run["target_conv"] == "task:background"
+    assert run["target_conv"] == key
     assert run["target_turn_id"] is None
     assert run["target_ts"] is None

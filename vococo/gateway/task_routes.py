@@ -11,6 +11,7 @@ import json
 
 from aiohttp import web
 
+from .. import config
 from ..core import research, task_events, task_runner, tasks
 from .web_auth import check_web_auth
 
@@ -22,9 +23,7 @@ def _guard(request: web.Request, *, allow_query_token: bool = False) -> web.Resp
 
 def _dispatch_chat_id(request: web.Request) -> str | None:
     value = (request.query.get("session_key") or request.query.get("conv") or "").strip()
-    if value.startswith("web:"):
-        return value[4:]
-    return value or None
+    return config.conversation_id_for_key(value) if value else None
 
 
 def _json(data: dict | list) -> web.Response:
@@ -63,6 +62,7 @@ async def handle_task_detail(request: web.Request) -> web.Response:
     task = tasks.get(request.match_info["task_id"])
     if task is None:
         return web.json_response({"error": "not found"}, status=404)
+    task["conversation_id"] = tasks.conversation_id(task)
     return _json(task)
 
 

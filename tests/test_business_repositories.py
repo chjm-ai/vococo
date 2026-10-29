@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from vococo.core import execution
-from vococo.memory import agents
+from vococo import config
+from vococo.memory import agents, session_store
 from vococo.tools import danger
 
 
@@ -81,8 +82,10 @@ async def test_copies_are_isolated_and_source_stays_readonly(isolated):
     assert (copy / "article.md").read_text() == "仅修改副本\n"
     assert (source / "article.md").read_text() == "原文\n"
     assert git(source, "status", "--porcelain") == ""
-    second_key = key.rsplit(":", 1)[0] + ":second"
+    second_key = config.new_session_key()
+    session_store.bind_session(second_key, agent_id=owner["id"])
     second = execution.policy_for_session(second_key)
+    assert second.agent_id == owner["id"]
     await execution.prepare_repositories(second)
     assert second.repositories[0].checkout != copy
     assert not danger._business_write_allowed({"file_path": str(copy / "article.md")}, str(second.workspace), second)

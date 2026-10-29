@@ -395,6 +395,18 @@ UNIFY_SESSIONS: bool = _parse_bool(os.environ.get("UNIFY_SESSIONS", ""), True)
 SESSION_KEY: str = os.environ.get("SESSION_KEY", "main").strip() or "main"
 
 
+def new_session_key() -> str:
+    """会话身份独立于执行、定时配置和所属项目。"""
+    from uuid import uuid4
+
+    return f"session:{uuid4().hex}"
+
+
+def conversation_id_for_key(key: str) -> str:
+    """仅旧 Web 存储键需要去掉渠道前缀。"""
+    return key.removeprefix("web:")
+
+
 def resolve_session_key(platform: str, chat_id: object) -> str:
     """各入口统一经此取会话键。
 
@@ -411,6 +423,8 @@ def resolve_session_key(platform: str, chat_id: object) -> str:
     openConv()/发消息面板打开,不用专门另写一套路由逻辑。这些前缀是保留字,
     不会跟现有项目哈希形态的 conv_id 冲突。
     """
+    if isinstance(chat_id, str) and chat_id.startswith("session:"):
+        return chat_id
     if platform == "web":
         if chat_id == "main":
             return SESSION_KEY
@@ -431,6 +445,10 @@ def project_hash_from_key(session_key: str) -> str | None:
       见 index.html newChatIn;发出首条消息后后端仍原样落库,key 不带去前缀)
     其余(main/默认项目的老 web:<conv>/CLI/task:)都不带项目哈希。
     """
+    if session_key.startswith("session:"):
+        from .memory import session_store
+
+        return session_store.session_binding(session_key).get("project_hash")
     parts = session_key.split(":")
     if len(parts) >= 3 and parts[0] == "web":
         head = parts[1]

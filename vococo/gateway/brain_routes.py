@@ -409,6 +409,9 @@ def _owner_map(by_hash: dict[str, dict], by_task: dict[str, dict]) -> dict[str, 
 
 def _fast_owner(session_key: str, by_hash: dict[str, dict], by_task: dict[str, dict],
                 legacy) -> dict | None:
+    binding = session_store.session_binding(session_key)
+    if binding or session_key.startswith("session:"):
+        return legacy(session_key)
     phash = config.project_hash_from_key(session_key)
     if phash:
         return by_hash.get(phash) or legacy(session_key)
@@ -440,7 +443,10 @@ def _resolve_agent(data: dict, visibility: dict[str, dict]) -> str:
 
 
 def _history_owner(key: str) -> dict | None:
-    owner = agents.agent_for_session(key)
+    try:
+        owner = agents.agent_for_session(key)
+    except ValueError:
+        return None
     if owner:
         return owner
     # 隐藏旧项目可能从未配置过 Agent,只读查历史时不应补建/复活配置。

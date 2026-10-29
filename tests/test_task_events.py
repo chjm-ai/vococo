@@ -21,7 +21,7 @@ def clean_task_events():
     task_events.register_main_event_bridge(old_bridge)
 
 
-def test_task_activity_broadcasts_and_bridges_only_first_start(clean_task_events):
+def test_legacy_task_activity_broadcasts_and_bridges_only_first_start(clean_task_events):
     events = []
     queue = task_events.subscribe()
     task_events.register_main_event_bridge(events.append)
@@ -40,7 +40,8 @@ def test_task_activity_broadcasts_and_bridges_only_first_start(clean_task_events
     task_events.on_task_activity(task)
 
     assert queue.qsize() == 2
-    assert events == [{"conv": "task:task-1", "type": "start"}]
+    assert events == [{"conv": "task:task-1", "type": "start", "task_id": "task-1",
+                       "job_id": None, "conversation_id": "task:task-1"}]
     task_events.unsubscribe(queue)
 
 
@@ -85,4 +86,5 @@ async def test_stream_failure_does_not_skip_terminal_handlers(clean_task_events,
                                     reply=AgentReply("完成", [], None, False), turn_id=7)
     assert calls == ["broken"]
     assert events == [{"conv": "task:broken", "type": "done", "text": "完成",
+                       "task_id": "broken", "job_id": None, "conversation_id": "task:broken",
                        "turn_id": 7, "is_error": False}]
