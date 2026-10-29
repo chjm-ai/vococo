@@ -105,7 +105,6 @@ def delegate(session: str, denied: list[str], reference: str, title: str, prompt
     target = resolve(reference)
     record = _lineage(session, denied, target)
     access = tasks.capture_source_access(session, json.loads(record["denied"]))
-    access["chain_session"] = tasks.session_key(record["task_id"])
     task = _create_task(target, record, title, prompt, access)
     model = session_store.get_chosen_model(session) or config.MODEL
     session_store.set_chosen_model(tasks.session_key(task["id"]), model)
@@ -147,11 +146,13 @@ def create_related_task(source: str, title: str, prompt: str, **options) -> dict
     record = _lineage(source, [], target)
     record["task_id"] = options.pop("task_id", None) or record["task_id"]
     access = tasks.capture_source_access(source, json.loads(record["denied"]))
-    access["chain_session"] = tasks.session_key(record["task_id"])
     return _create_task(target, record, title, prompt, access, **options)
 
 
 def _create_task(target: dict, record: dict, title: str, prompt: str, access: dict, **task_options) -> dict:
+    key = task_options.get("session_key") or config.new_session_key()
+    task_options["session_key"] = key
+    access["chain_session"] = key
     c = _conn()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -301,7 +302,7 @@ def _deliver(row: dict, text: str, version: int) -> None:
               (version, row["task_id"]))
     c.commit()
     if turn_id is not None:
-        conv = "main" if source == config.SESSION_KEY else source.removeprefix("web:")
+        conv = "main" if source == config.SESSION_KEY else config.conversation_id_for_key(source)
         # 复用现有 Agent 结果通知，不参与用户输入/start/done 状态机。
         task_events._bridge_event({"conv": conv, "type": "agent_run", "turn_id": turn_id, "text": text})
 

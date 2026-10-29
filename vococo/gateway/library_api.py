@@ -45,14 +45,11 @@ def _id(request) -> str:
 
 
 def _source_conv(session_key: str) -> str:
-    if session_key == config.resolve_session_key("web", "main"):
-        return "main"
-    if session_key.startswith("web:"):
-        candidate = session_key[4:]
-    elif session_key.startswith(("task:", "voice-chat:")):
-        candidate = session_key
-    else:
+    if not (session_key == config.SESSION_KEY or session_key.startswith(
+        ("session:", "web:", "task:", "voice-chat:")
+    )):
         return ""
+    candidate = "main" if session_key == config.SESSION_KEY else config.conversation_id_for_key(session_key)
     return candidate if candidate and config.resolve_session_key("web", candidate) == session_key else ""
 
 

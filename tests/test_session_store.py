@@ -77,6 +77,8 @@ def test_find_session_matches_turn_or_title_visibility(isolated):
         "key": "web:turn-only",
         "title": "新对话",
         "last_error": True,
+        "agent_id": None,
+        "project_hash": None,
     }
     assert session_store.find_session("web:title-only")["title"] == "等首轮回复"
     assert session_store.find_session("web:missing") is None

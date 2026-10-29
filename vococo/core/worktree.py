@@ -204,7 +204,7 @@ async def ensure_worktree_for_task(root: str, task_id: str) -> str | None:
     if policy_for_session(session_key, root) is not None or not root:
         return None
     phash = session_store.project_hash(root)
-    slug = _slug(task_id)
+    slug = _slug(session_key.split(":")[-1])
     return await _ensure_worktree_impl(session_key, root, phash, slug)
 
 

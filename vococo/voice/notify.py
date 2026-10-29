@@ -145,6 +145,9 @@ async def on_task_terminal(task_id: str) -> None:
     announce_text = _announce_text(task)
     payload = {
         "id": task["id"],
+        "task_id": task["id"],
+        "job_id": task.get("job_id"),
+        "conversation_id": tasks.conversation_id(task),
         "title": task["title"],
         "status": task["status"],
         "result_summary": task["result_summary"],

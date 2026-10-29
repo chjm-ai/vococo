@@ -1589,9 +1589,13 @@ async def dispatch_session(args: dict) -> dict:
         dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
         origin="chat", context_session_key=ctx.session_key if ctx else None,
     )
+    from ..core import tasks
+
+    key = tasks.session_key(task["id"])
+    conv = config.conversation_id_for_key(key)
     return _ok(
-        f"已派发一条独立新会话,session_id={task['id']},标题「{title}」,"
-        f"状态:{task['status']}。跑完会推送通知;也可以直接告诉用户 conv=task:{task['id']}"
+        f"已派发一条独立新会话,session_id={key},task_id={task['id']},标题「{title}」,"
+        f"状态:{task['status']}。跑完会推送通知;也可以直接告诉用户 conv={conv}。"
         "这个新会话已经开始跑,用户可以在网页端搜索这个 id 找到它。"
     )
 

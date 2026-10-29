@@ -21,9 +21,9 @@ def _key(reference: str) -> str:
         return reference
     conv = reference.removeprefix("web:")
     key = config.resolve_session_key("web", conv)
-    if (not key.startswith("web:") or not conv
-            or conv.startswith(("task:", "voice-chat:", "web:"))):
-        raise ValueError("只支持普通 Web 会话，不支持任务或语音会话")
+    if (not key.startswith(("web:", "session:", "task:")) or not conv
+            or conv.startswith(("voice-chat:", "web:"))):
+        raise ValueError("不支持此会话地址")
     return key
 
 
@@ -125,11 +125,12 @@ def _task_return_access(source: str, target: str, denied: tuple, capabilities: d
     from ..core import tasks
 
     access = session_store.active_source_access(source)
-    if not source.startswith("task:"):
+    task = tasks.task_for_session(source)
+    if not task:
         return {}
     if not access:
-        raise ValueError("任务缺少自动来源权限，不能跨会话发送")
-    task = tasks.get(tasks.task_id_from_session_key(source))
+        # 真人在同一会话新发的一轮，不继承历史自动来源。
+        return {}
     if (not task or task.get("source_session_key") != target or access.get("session") != target
             or _waiting_for_queue(source) or session_store.active_source_access(target)):
         raise ValueError("自动任务只能向原派发会话回传结果")
@@ -194,9 +195,12 @@ async def _continue(source: str, denied: tuple, reference: str, instruction: str
     if not access:
         _send_access(source, key, denied)
     _scope(key)
-    if not key.startswith("web:") or _archived(key):
+    if not (key == config.SESSION_KEY or key.startswith(("web:", "session:", "task:"))) or _archived(key):
         raise ValueError("暂不支持向此类型或已归档会话发送指令")
-    if key in clarify._active_sessions or clarify.has_pending(key) or _waiting_for_queue(key):
+    from ..core import task_runner
+
+    if (key in clarify._active_sessions or clarify.has_pending(key)
+            or _waiting_for_queue(key) or task_runner.session_busy(key)):
         raise ValueError("目标忙碌或正在等待用户回答，未发送且不会打断")
     if not web_bridge.available():
         raise ValueError("网页桥接不可用，指令未入队")
@@ -245,7 +249,7 @@ def build_tools(session_key: str, denied: list[str], capabilities: dict | None =
         except (ValueError, KeyError) as exc:
             return _reply({"error": str(exc)})
 
-    @tool("continue_session", "向空闲普通 Web 会话发送完整指令；自动任务仅可向原派发会话回传结果并保留权限。仅入队，不代表执行完成。不创建会话，不打断，不代答。", {
+    @tool("continue_session", "向空闲会话发送完整指令，支持普通聊天与附带任务执行的会话；自动任务仅可向原派发会话回传结果并保留权限。仅入队，不代表执行完成。不创建会话，不打断，不代答。", {
         "type": "object", "properties": {"session_id": {"type": "string"},
         "instruction": {"type": "string"}}, "required": ["session_id", "instruction"],
     })

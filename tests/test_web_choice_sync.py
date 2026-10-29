@@ -49,7 +49,8 @@ function makeWindow(){
     append(...xs){this.children.push(...xs);},querySelectorAll(){return this.children;},
     set innerHTML(v){this.children=[];},get innerHTML(){return '';}};}
   const ctx={S:{conv:'other',convs:[],pendingChoice:{}},window:{addEventListener(){}},
-    IntersectionObserver:class{observe(){} unobserve(){}},setInterval(){},setTimeout(){},
+    IntersectionObserver:class{observe(){} unobserve(){}},
+    ResizeObserver:class{observe(){} unobserve(){}},setInterval(){},setTimeout(){},
     IS_MOBILE_DEVICE:false,navigator:{userAgent:''},URLSearchParams,location:{search:''},
     document:{addEventListener(){},querySelectorAll(){return choices;}},
     $:s=>nodes[s]||(nodes[s]=element()),el:()=>element(),mdToHtml:s=>s,esc:s=>s,

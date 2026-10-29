@@ -45,7 +45,7 @@ from .agent import (
     ToolStarted,
     stream_turn,
 )
-from .timeline import Timeline
+from .session_execution import SharedTurn, stream_run
 
 _PROGRESS_THROTTLE_SEC = 5
 _SUMMARY_MAX = 50
@@ -85,13 +85,28 @@ _running: dict[str, asyncio.Task] = {}
 _foreground_scopes: dict[asyncio.Task, anyio.CancelScope] = {}
 
 
+def session_busy(session_key: str) -> bool:
+    """会话有排队/运行执行或尚未释放的执行句柄时，不接受跨会话打断。"""
+    row = tasks.task_for_session(session_key)
+    if row and (row["status"] in {"queued", "running"} or row["id"] in _running):
+        return True
+    if any(tasks.session_key(task_id) == session_key for task_id in _running):
+        return True
+    from ..cron import scheduler
+
+    return scheduler.script_session_busy(session_key)
+
+
 @asynccontextmanager
-async def foreground_execution(task_id: str | None):
+async def foreground_execution(task_id: str | None, *, interrupt: bool = True):
     """前台只登记本轮取消句柄，等待的是本轮收尾，不是整个网关调用者。"""
     if not task_id or not tasks.get(task_id):
         yield
         return
-    await cancel_and_wait(task_id)
+    if not interrupt and session_busy(tasks.session_key(task_id)):
+        raise RuntimeError("跨会话指令未执行：目标忙碌，不会打断，请稍后重试")
+    if interrupt:
+        await cancel_and_wait(task_id)
     row = tasks.get(task_id)
     if not _owner_available(row):
         raise RuntimeError("所属 Agent 已删除,不能继续执行此任务")
@@ -129,12 +144,16 @@ def _ensure_research_execution_available() -> None:
 
 
 def task_owner_id(task: dict) -> str | None:
-    """cron 配置是当前归属的权威来源,不能用历史任务行误伤已转移的任务。"""
+    """执行属于启动时的会话；规则转移不能追溯改变旧执行的归属。"""
+    key = task.get("session_key") or tasks.session_key(task["id"])
+    binding = session_store.session_binding(key)
+    if binding:
+        return binding.get("agent_id")
     if task.get("origin") == "cron":
         from ..cron import scheduler
 
-        job = next((j for j in scheduler.load_jobs() if j["id"] == task["id"]), None)
-        if job is not None:
+        job = next((j for j in scheduler.load_jobs() if j["id"] == task.get("job_id")), None)
+        if job is not None and job.get("conv") == key:
             return job.get("agent_id")
     return task.get("agent_id")
 
@@ -146,7 +165,7 @@ def _owner_available(task: dict) -> bool:
     return not agent_id or agents.get(agent_id) is not None
 
 
-def _start_one(task: dict, turn_text: str | None = None) -> bool:
+def _start_one(task: dict, turn_text: str | None = None, *, fresh: bool = False) -> bool:
     """内部:立刻起跑一条任务(跳过排队队列),用于首次派发之外的重开场景
     (追问/cron 再次触发打断续接 / 原地续聊)。turn_text 非空时作为这一轮实际发给
     模型的文本(而不是 row['prompt']),配合 resume 续同一条 SDK 会话。
@@ -170,7 +189,7 @@ def _start_one(task: dict, turn_text: str | None = None) -> bool:
     if not tasks.is_inline_research(task):
         session_store.set_conv_archived(tasks.session_key(task_id), False)
     _notify_activity(task_id)
-    _running[task_id] = _spawn(task_id, turn_text)
+    _running[task_id] = _spawn(task_id, turn_text, fresh=True) if fresh else _spawn(task_id, turn_text)
     return True
 
 
@@ -188,7 +207,7 @@ def start_claimed(task: dict, turn_text: str) -> None:
         raise
 
 
-def _spawn(task_id: str, turn_text: str | None = None) -> asyncio.Task:
+def _spawn(task_id: str, turn_text: str | None = None, *, fresh: bool = False) -> asyncio.Task:
     """起跑一轮任务,用【全新的】contextvars 上下文。
 
     asyncio.create_task 默认复制调用方的上下文:网页会话里调 dispatch_session 派出的任务,
@@ -198,7 +217,8 @@ def _spawn(task_id: str, turn_text: str | None = None) -> asyncio.Task:
     row = tasks.get(task_id)
     if row and row.get("kind") == "research":
         _ensure_research_execution_available()
-    spawned = asyncio.create_task(_run(task_id, turn_text), context=contextvars.Context())
+    run = _run(task_id, turn_text, fresh=True) if fresh else _run(task_id, turn_text)
+    spawned = asyncio.create_task(run, context=contextvars.Context())
     if row and row.get("kind") == "research":
         spawned.add_done_callback(lambda finished: _research_run_done(task_id, finished))
     else:
@@ -337,13 +357,13 @@ async def _push_budget_warning(row: dict, session_key: str, note: str) -> None:
         print(f"[task_runner] 预算提醒推送失败:{exc}", flush=True)
 
 
-def _cron_job_budget(task_id: str) -> int | None:
-    """cron 任务的 job_id 就是 task_id;job 里填了 budget_tokens 就用它覆盖全局单次上限。"""
+def _cron_job_budget(job_id: str | None) -> int | None:
+    """按调度配置身份读取预算，不把执行 id 当作 job_id。"""
     try:
         from ..cron import scheduler  # 懒加载:cron 包依赖本模块,顶部 import 会循环
 
         for job in scheduler.load_jobs():
-            if job.get("id") == task_id and job.get("budget_tokens"):
+            if job.get("id") == job_id and job.get("budget_tokens"):
                 return int(job["budget_tokens"])
     except Exception:  # noqa: BLE001 —— 读不到 job 就用全局默认
         pass
@@ -359,7 +379,7 @@ def _token_budget(row: dict) -> tuple[int, str]:
     """本轮 token 上限 + 超每日总量时的拒跑原因(空串=可以跑)。0=不限。"""
     if row.get("origin") == "chat":
         return config.CHAT_TASK_TOKEN_BUDGET, ""
-    per_run = _cron_job_budget(row["id"]) or config.TASK_TOKEN_BUDGET
+    per_run = _cron_job_budget(row.get("job_id")) or config.TASK_TOKEN_BUDGET
     cap = config.BG_DAILY_TOKEN_BUDGET
     if not cap:
         return per_run, ""
@@ -396,26 +416,7 @@ def _timeout_min(row: dict) -> int:
     return config.TASK_TIMEOUT_MIN
 
 
-async def _stream_event(sink, ev) -> None:
-    if sink is None:
-        return
-    if isinstance(ev, TextDelta):
-        await sink.text(danger.redact_secrets(ev.text))
-    elif isinstance(ev, ThinkingDelta):
-        await sink.thinking(danger.redact_secrets(ev.text))
-    elif isinstance(ev, ToolStarted):
-        await sink.tool_started(ev.name, ev.tool_id, ev.parent_id)
-    elif isinstance(ev, ToolInput):
-        await sink.tool_input(ev.name, ev.tool_id, ev.tool_input, ev.parent_id)
-    elif isinstance(ev, ToolFinished):
-        await sink.tool_finished(ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id)
-    elif isinstance(ev, Compacted):
-        await sink.compacted(ev.trigger)
-    elif isinstance(ev, UpstreamRetry):
-        await sink.upstream_retry(ev.status, ev.attempt, ev.max_retries, ev.delay_ms, ev.reason)
-
-
-async def _run(task_id: str, turn_text: str | None = None) -> None:
+async def _run(task_id: str, turn_text: str | None = None, *, fresh: bool = False) -> None:
     """跑一个任务的一轮对话。turn_text 为 None(首次派发)用 row['prompt'];
     非 None(追问/cron 再次触发)则是这一轮实际发给模型的文本——历史靠 resume 接,
     不用每次都把全部历史重新拼进 prompt(见 append())。"""
@@ -454,50 +455,28 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     token_budget, over_daily = _token_budget(row)
     # 录过程时间线(工具调用 + 正文交错),跟普通文字对话(gateway/core.py converse())
     # 对齐——否则任务跑完侧边栏只看得到最后一句摘要,回溯不了 AI 到底做了什么。
-    timeline = Timeline()
+    shared = SharedTurn(session_key, turn_id,
+                        fresh=fresh or (row.get("origin") == "cron" and turn_text is None))
+    timeline = shared.timeline
     sink = None
     draft_text = ""
-    last_draft_ts = 0.0
     final_reply = None
 
     async def _observe(ev) -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id, used_tokens, tool_calls
-        nonlocal last_research_progress, draft_text, last_draft_ts, final_reply, budget_exceeded
-        await _stream_event(sink, ev)
-        if isinstance(ev, SessionStarted) and not is_research:
-            # 尽早存回 session_store,而不是等整轮跑完的 Done——这样哪怕这一轮
-            # 之后被 append 打断(CancelledError,永远走不到 Done),下一轮追问
-            # 依然能 resume 回同一条 SDK 会话,不会丢上下文重开对话。
-            sdk_session_id = ev.session_id
-            session_store.set_sdk_session_id(
-                session_key, sdk_session_id, expected_model=chosen_at_start,
-            )
-        elif isinstance(ev, TextDelta):
-            text = danger.redact_secrets(ev.text)
-            timeline.text(text)
-            draft_text += text
+        nonlocal last_research_progress, draft_text, final_reply, budget_exceeded
+        if not is_research:
+            await shared.observe(ev)
+            draft_text = shared.draft
+            sdk_session_id = shared.resume
+        if isinstance(ev, ToolStarted) and ev.parent_id is None:
+            tool_calls += 1
+        elif isinstance(ev, ToolInput) and ev.parent_id is None and not is_research:
             now = time.monotonic()
-            if turn_id is not None and now - last_draft_ts >= 0.7:
-                session_store.flush_draft(turn_id, draft_text, session_key=session_key)
-                last_draft_ts = now
-        elif isinstance(ev, Compacted):
-            timeline.compacted(ev.trigger)
-        elif isinstance(ev, ToolStarted):
-            timeline.tool_started(ev.name, ev.tool_id, ev.parent_id)
-            if ev.parent_id is None:
-                tool_calls += 1
-        elif isinstance(ev, ToolFinished):
-            timeline.tool_finished(
-                ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id
-            )
-        elif isinstance(ev, ToolInput):
-            timeline.tool_input(ev.tool_id, ev.tool_input, ev.parent_id)
-            if ev.parent_id is None and not is_research:
-                now = time.monotonic()
-                if now - last_progress_ts >= _PROGRESS_THROTTLE_SEC:
-                    last_progress_ts = now
-                    tasks.set_progress(task_id, progress_text(ev.name, ev.tool_input))
-                    _notify_activity(task_id)
+            if now - last_progress_ts >= _PROGRESS_THROTTLE_SEC:
+                last_progress_ts = now
+                tasks.set_progress(task_id, progress_text(ev.name, ev.tool_input))
+                _notify_activity(task_id)
         elif isinstance(ev, BudgetWarning):
             note = (
                 f"⚠️ token 已用 {ev.used * 100 // ev.budget}%"
@@ -511,24 +490,10 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             if not is_research:
                 result_text = ev.reply.text
                 sdk_session_id = ev.reply.sdk_session_id
-                used_tokens = max(ev.reply.stream_tokens, ev.reply.turn_tokens)
+                used_tokens = max(used_tokens, ev.reply.stream_tokens, ev.reply.turn_tokens)
                 budget_exceeded = ev.reply.budget_exceeded
             if ev.reply.is_error:
                 error_note = ev.reply.error or "模型返回了错误"
-            # 跟普通文字对话(gateway/core.py converse())对齐:记一笔 token 用量,
-            # 否则 session_meta 的 ctx_tokens/total_tokens 永远是 0,Web UI 右上角
-            # 的上下文用量图标会把这条会话误判成"全新会话"而一直不显示。
-            if not inline_research and (ev.reply.context_tokens or ev.reply.turn_tokens):
-                session_store.record_usage(
-                    session_key,
-                    ev.reply.context_tokens,
-                    ev.reply.turn_tokens,
-                    window=ev.reply.context_window,
-                    last_in=ev.reply.input_fresh,
-                    last_cache=ev.reply.cache_read,
-                    last_out=ev.reply.output_tokens,
-                    model=ev.reply.model,
-                )
         if is_research:
             state = research.get(task_id)
             used_tokens = state["usage"]["tokens"] - research_start_tokens
@@ -558,11 +523,10 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                 raise RuntimeError("研究未产出已完成的报告")
             result_text = final_state["report"]
             return
-        resume_sid = session_store.get_sdk_session_id(session_key)
         # 会话选定的模型——派发/追问时(dispatch 的 model 参数)已经提前写进
         # session_meta(见 dispatch()),这里读出来传给 stream_turn;没设过就是
         # 空串,stream_turn 内部 providers.resolve(None,...) 自动落到全局默认。
-        chosen_at_start = session_store.get_chosen_model(session_key)
+        chosen_at_start = shared.chosen_model
         model = chosen_at_start or None
         # 没显式指定模型 → 默认回退到已配置的第三方供应商,不再走官方订阅:
         # 订阅 token 被封(401 OAuth access token has been revoked)时,没设
@@ -578,18 +542,17 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
                 model = ds[0]
         # 追加的标记指令只喂给模型,不进 turns 表(session_key.start_turn 存的是
         # 上面干净的 prompt_text)——收尾时从回复里抠出来,见 _split_summary_tag。
-        from ..memory import agents
+        def track_usage(tokens):
+            nonlocal used_tokens
+            used_tokens = max(used_tokens, tokens)
 
-        execution = {
-            "token_budget": token_budget,
-            "system_prompt_extra": agents.prompt_extra_for_session(session_key),
-        }
+        execution = {"token_budget": token_budget, "usage_callback": track_usage}
         if turn_text is not None and tasks.automatic_access(row).get("remote_brain") is True:
             execution["require_resume"] = True
-        async for ev in stream_turn(
-            [], prompt_text + _SUMMARY_TAG_INSTRUCTION, model=model, cwd=effective_cwd,
+        async for ev in stream_run(
+            shared, prompt_text + _SUMMARY_TAG_INSTRUCTION, stream_fn=stream_turn, model=model, cwd=effective_cwd,
             is_explicit_project=bool(row.get("cwd_explicit")), session_key=session_key,
-            resume=resume_sid, max_turns=config.TASK_MAX_TURNS, **execution,
+            max_turns=config.TASK_MAX_TURNS, **execution,
         ):
             await _observe(ev)
 
@@ -601,6 +564,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     try:
         if not is_research:
             sink = task_events.create_stream_sink(session_key)
+            shared.sink = sink
         if turn_id is not None:
             source_token = clarify.bind_turn(session_key, turn_id)
         if is_research:
@@ -647,6 +611,7 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
     except Exception as exc:  # noqa: BLE001 —— 指标只是统计,写失败不影响任务收尾
         print(f"[task_runner] 运行指标记账失败:{exc}", flush=True)
 
+    shared.flush_draft()
     result_text = result_text or draft_text
     if budget_exceeded and status != "cancelled":
         status = "failed"
@@ -672,10 +637,6 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
         stored_text = clean_text
         if turn_id is not None:
             session_store.finish_turn(turn_id, clean_text, events=timeline.blocks, session_key=session_key)
-        if sdk_session_id:
-            session_store.set_sdk_session_id(
-                session_key, sdk_session_id, expected_model=chosen_at_start,
-            )
         ok = tasks.finish(task_id, "done", clean_text, tag_summary or _summarize(clean_text))
     else:
         stored_text = result_text or f"(执行失败:{error_note})"
@@ -683,10 +644,6 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             session_store.finish_turn(
                 turn_id, stored_text, events=timeline.blocks,
                 session_key=session_key,
-            )
-        if sdk_session_id:
-            session_store.set_sdk_session_id(
-                session_key, sdk_session_id, expected_model=chosen_at_start,
             )
         ok = tasks.finish(task_id, "failed", result_text, _humanize_error(error_note) if error_note else "执行失败")
     if not ok:
@@ -701,6 +658,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             flush=True,
         )
 
+    if final_reply is not None and not is_research:
+        shared.record_usage(final_reply)
     _record_agent_run(task_id, status, turn_id)
     # 终态真正落库后才交出所有权；收尾异常仍由本轮 done callback 兜底。
     if _running.get(task_id) is asyncio.current_task():
@@ -874,6 +833,8 @@ def dispatch(
     origin: str = "voice",
     task_id: str | None = None,
     context_session_key: str | None = None,
+    session_key: str | None = None,
+    job_id: str | None = None,
 ) -> dict:
     """落库 + 尝试立即起跑(并发满则排队)。立即返回任务行,不等待执行。
 
@@ -882,7 +843,7 @@ def dispatch(
     model:指定要用哪个模型跑这个任务(如 claude-opus-5-5),不传就用当前全局默认——
     必须在 _maybe_start_next() 真正起跑前写进 session_meta.chosen_model,
     _run()/_drive() 才能读到(见 _drive 里的 get_chosen_model)。
-    origin/task_id 透传给 tasks.create()(见其文档:cron 复用 job_id 当 task_id)。
+    origin/task_id/session_key/job_id 透传给 tasks.create()；规则、任务和会话身份独立。
     context_session_key:当前对话 key;cwd 未指定时按该会话匹配具体项目,匹配不到回落
     默认项目。最终落库的是项目根,执行时再由 _run() 创建任务专属 worktree。
     """
@@ -895,6 +856,7 @@ def dispatch(
     options = {"cwd": cwd, "cwd_explicit": cwd_explicit,
                "dispatch_platform": dispatch_platform, "dispatch_chat_id": dispatch_chat_id,
                "origin": origin, "task_id": task_id,
+               "session_key": session_key, "job_id": job_id,
                "agent_id": _task_agent_id(cwd if cwd_explicit else None, context_session_key)}
     access = tasks.capture_source_access(context_session_key) if context_session_key else {}
     if access.get("chain_session"):
@@ -911,7 +873,7 @@ def dispatch(
     return task
 
 
-async def append(task_id: str, instruction: str) -> dict:
+async def append(task_id: str, instruction: str, *, fresh: bool = False) -> dict:
     """给一个已有后台任务追加一轮指令——原地续在同一个 task_id 上,自始至终只有
     一条任务/一条 SDK 会话/一个 worktree,不再派生新任务:
 
@@ -940,7 +902,7 @@ async def append(task_id: str, instruction: str) -> dict:
 
     if row["status"] == "running":
         await cancel_and_wait(task_id)  # 等 _run 真正收尾(sdk_session_id 已提前存好)
-        started = _start_one(tasks.get(task_id), turn_text=instruction)
+        started = _start_one(tasks.get(task_id), turn_text=instruction, fresh=fresh)
         if not started:
             return {"ok": False, "message": "任务状态被别处改过,追加失败",
                     "task": tasks.get(task_id)}
@@ -949,7 +911,7 @@ async def append(task_id: str, instruction: str) -> dict:
                 "task": tasks.get(task_id)}
 
     # 终态:done / failed / cancelled —— 原地续聊
-    started = _start_one(row, turn_text=instruction)
+    started = _start_one(row, turn_text=instruction, fresh=fresh)
     if not started:
         return {"ok": False, "message": "任务状态被别处改过,追加失败",
                 "task": tasks.get(task_id)}

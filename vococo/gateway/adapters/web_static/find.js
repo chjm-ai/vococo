@@ -101,7 +101,7 @@ function findRenderBar(){
   const counts=FIND.terms.map(()=>0);
   FIND.hits.forEach(h=>counts[h.term]++);
   const conv=S.conv, st=S.histPaging[conv];
-  const more = FIND.terms.length && conv && !String(conv).startsWith("local-") && (!st || st.hasMore!==false)
+  const more = FIND.terms.length && conv && !isDraftConv(conv) && (!st || st.hasMore!==false)
     && (S.histCache[conv]||[]).length>=40;
   // 内容没变就不重建:流式期间会频繁重扫,每次都换掉按钮会吞掉用户正按着的那次点击
   const sig=JSON.stringify([FIND.terms, counts, FIND.hits.length, FIND.focus, !!more, FIND.loadingAll]);

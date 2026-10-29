@@ -65,7 +65,7 @@ def _ok(text: str) -> dict:
 
 
 def _describe_task(task: dict) -> str:
-    parts = [f"任务「{task['title']}」(session_id={task['id']}):{status_word(task['status'])}"]
+    parts = [f"任务「{task['title']}」(session_id={tasks.session_key(task['id'])}):{status_word(task['status'])}"]
     if task["status"] == "running" and task["progress_note"]:
         task_words.flag_if_reversed_direction(task["progress_note"], "task_tools._describe_task(running)")
         parts.append(f"当前进展:{task['progress_note']}")
@@ -76,9 +76,12 @@ def _describe_task(task: dict) -> str:
 
 
 def _web_conv(session_key: str) -> str:
-    """web: 前缀的 session_key → 纯 conv id(去掉前缀)。"""
-    prefix = "web:"
-    return session_key[len(prefix):] if session_key.startswith(prefix) else session_key
+    """兼容旧 Web 键,新会话标识原样返回。"""
+    return config.conversation_id_for_key(session_key)
+
+
+def _find_task(session_id: str) -> dict | None:
+    return tasks.task_for_session(config.resolve_session_key("web", session_id)) or tasks.get(session_id)
 
 
 def _find_web_session(session_id: str) -> dict | None:
@@ -147,7 +150,7 @@ async def voice_dispatch_task(args: dict) -> dict:
         origin="voice", context_session_key=ctx.session_key if ctx else None,
     )
     model_note = f",模型:{model}" if model else ""
-    return _ok(f"已派发,session_id={task['id']},标题「{title}」{model_note},状态:{status_word(task['status'])}。")
+    return _ok(f"已派发,session_id={tasks.session_key(task['id'])},标题「{title}」{model_note},状态:{status_word(task['status'])}。")
 
 
 @tool(
@@ -173,7 +176,9 @@ async def voice_list_sessions(args: dict) -> dict:
             return _ok("当前没有任何后台任务。")
         return _ok("\n".join(_describe_task(t) for t in rows))
     if origin == "web":
-        rows = session_store.list_sessions("web:")[:10]
+        rows = [row for row in session_store.list_sessions("")
+                if row["key"].startswith(("web:", "session:"))
+                and tasks.task_for_session(row["key"]) is None][:10]
         if not rows:
             return _ok("当前没有任何网页端对话。")
         lines = []
@@ -201,7 +206,7 @@ async def voice_query_session(args: dict) -> dict:
         if not latest:
             return _ok("没有找到任务(还从没派发过任务)。")
         return _ok(_describe_task(latest[0]))
-    task = tasks.get(session_id)
+    task = _find_task(session_id)
     if task is not None:
         return _ok(_describe_task(task))
     web_row = _find_web_session(session_id)
@@ -229,10 +234,11 @@ async def voice_cancel_task(args: dict) -> dict:
         if not latest:
             return _ok("没有找到任务(还从没派发过任务)。")
         session_id = latest[0]["id"]
-    task = tasks.get(session_id)
+    task = _find_task(session_id)
     if task is None:
         # 不是后台任务:可能是网页对话 conv,那边有自己的 abort 机制,不归这里管。
         return _ok(f"没有找到 session_id={session_id} 对应的后台任务。")
+    session_id = task["id"]
     if task["status"] in tasks.TERMINAL_STATUSES:
         return _ok(f"任务「{task['title']}」已经结束了({status_word(task['status'])}),不用再停。")
     if task["status"] == "running":
@@ -277,15 +283,15 @@ async def voice_continue_session(args: dict) -> dict:
     if not (session_id and instruction):
         return _ok("voice_continue_session 需要 session_id 和 instruction 都非空。")
 
-    task = tasks.get(session_id)
+    task = _find_task(session_id)
     if task is not None:
-        result = await task_runner.append(session_id, instruction)
+        result = await task_runner.append(task["id"], instruction)
         if not result["ok"]:
             return _ok(f"追加失败:{result['message']}")
         parts = [f"✅ {result['message']}"]
         if result.get("task"):
             t = result["task"]
-            parts.append(f"session_id={t['id']},标题「{t['title']}」,状态:{status_word(t['status'])}")
+            parts.append(f"session_id={tasks.session_key(t['id'])},标题「{t['title']}」,状态:{status_word(t['status'])}")
         return _ok("。".join(parts))
 
     # 不是后台任务的 session_id,当成网页对话 conv 处理。

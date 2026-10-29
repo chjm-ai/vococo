@@ -92,7 +92,9 @@ async def test_reads_relative_document_from_agent_output(preview_agent, monkeypa
     from urllib.parse import urlencode
 
     agent, output = preview_agent
-    key = "task:preview-task" if session_kind == "task" else agent["main_conv"]
+    from vococo.core import tasks
+
+    key = tasks.session_key("preview-task") if session_kind == "task" else agent["main_conv"]
     relative = "项目/知识库与Skill实验（20261027）/结果对照/结果对比.md"
     path = output / relative
     path.parent.mkdir(parents=True)
