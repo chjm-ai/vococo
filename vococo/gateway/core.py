@@ -201,6 +201,7 @@ async def converse(
     cwd_override: str | None = None,
     is_explicit_project_override: bool | None = None,
     compact: bool = False,
+    source_access: dict | None = None,
 ) -> AgentReply | None:
     from ..core import task_runner, tasks
 
@@ -208,7 +209,7 @@ async def converse(
     async with task_runner.foreground_execution(task_id):
         return await _converse(
             session_key, user_text, model, sink, images, audios, files, videos,
-            store_user, cwd_override, is_explicit_project_override, compact,
+            store_user, cwd_override, is_explicit_project_override, compact, source_access,
         )
 
 
@@ -225,6 +226,7 @@ async def _converse(
     cwd_override: str | None = None,
     is_explicit_project_override: bool | None = None,
     compact: bool = False,
+    source_access: dict | None = None,
 ) -> AgentReply | None:
     """跑一轮:载入历史 → 流式 → 喂 sink → 落库。
 
@@ -274,7 +276,7 @@ async def _converse(
         cwd = await worktree.execution_cwd(session_key)
     cwd_token = danger.set_cwd(cwd, project_root=root)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
     stored_user = store_user if store_user is not None else user_text
-    turn_id = session_store.start_turn(session_key, stored_user)
+    turn_id = session_store.start_turn(session_key, stored_user, source_access=source_access)
     # 图片落盘 + 文件名入库:让刷新页面后历史里仍能显示这些图(仅落盘,不影响喂模型的 in-memory 版本)
     if images:
         session_store.save_turn_images(turn_id, images)

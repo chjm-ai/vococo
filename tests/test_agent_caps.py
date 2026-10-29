@@ -128,6 +128,55 @@ async def test_stream_turn_without_agent_unchanged(clients, monkeypatch):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("target_skills", [["pdf", "new-skill"], None])
+async def test_return_caps_apply_at_execution_after_target_changes(clients, env, monkeypatch, target_skills):
+    monkeypatch.setattr(agents, "runtime_for_session", lambda key: {
+        "skills": target_skills, "mcp": ["lemlist", "new-server"], "disallowed_tools": ["Edit"],
+    })
+    monkeypatch.setattr(agent.session_store, "get_external_mcp_names", lambda key: {"session-only"})
+    key = "web:return-caps"
+    agent.session_store.start_turn(key, "回传", source_access={
+        "session": "task:source", "denied": ["Bash"], "mode": "standard",
+        "capabilities": {"skills": ["pdf"], "mcp": ["lemlist"]},
+    })
+    await _turn(key)
+    opts = clients[0].options
+    assert opts.skills == (["pdf"] if target_skills else [])
+    assert set(opts.mcp_servers) == {"lemlist"}
+    assert set(opts.disallowed_tools) == {"Bash", "Write", "Edit"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source_skills", [None, "all", ["pdf"]])
+async def test_return_snapshot_freezes_all_skills_before_target_changes(clients, env, monkeypatch, source_skills):
+    from vococo.tools import builtin, sessions
+
+    snapshots = []
+    build = sessions.build_tools
+
+    def capture(key, denied, capabilities=None):
+        snapshots.append(capabilities)
+        return build(key, denied, capabilities)
+
+    monkeypatch.setattr(sessions, "build_tools", capture)
+    monkeypatch.setattr(agent.settings_store, "vococo_enabled", lambda: True)
+    monkeypatch.setattr(builtin, "create_sdk_mcp_server", lambda name, tools: {})
+    monkeypatch.setattr(agent, "build_mcp_servers", builtin.build_mcp_servers)
+    monkeypatch.setattr(agent.settings_store, "list_skills", lambda: [{"name": "pdf"}])
+    monkeypatch.setattr(agent.settings_store, "effective_skills", lambda *a, **kw: source_skills)
+    await _turn("web:source-all")
+    snapshot = snapshots[0]
+    assert isinstance(snapshot["skills"], list) and "pdf" in snapshot["skills"]
+    monkeypatch.setattr(agent.settings_store, "effective_skills", lambda *a, **kw: ["pdf", "new-skill"])
+    agent.session_store.start_turn("web:target-all", "自动回传", source_access={
+        "session": "task:source", "mode": "standard", "capabilities": snapshot,
+    })
+    await _turn("web:target-all")
+    assert "pdf" in clients[-1].options.skills
+    assert "new-skill" not in clients[-1].options.skills
+
+
+@pytest.mark.anyio
 async def test_web_session_tools_reach_sdk_with_bound_source(clients, env, monkeypatch):
     from vococo.tools import builtin
 
