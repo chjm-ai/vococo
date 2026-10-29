@@ -793,7 +793,26 @@ def summary_state(model: str) -> dict:
             "value": settings_store.get_web_summary(model)}
 
 
-def extra_body_for_model(resolved_model: str, effort: str, verbosity: str, summary: str = "") -> str:
+def supports_priority_tier(model: str) -> bool:
+    # 只开放已验证的本地 Codex 代理；同名 GPT 经远程中转不代表支持此参数。
+    if codex_mgmt_for_model(model) is None:
+        return False
+    resolved_model, _ = resolve(model, model)
+    return supports_verbosity(resolved_model)
+
+
+def priority_state(model: str) -> dict:
+    from .gateway import settings_store
+
+    supported = supports_priority_tier(model)
+    return {"supported": supported,
+            "value": settings_store.get_web_service_tier(model) if supported else ""}
+
+
+def extra_body_for_model(
+    resolved_model: str, effort: str, verbosity: str, summary: str = "",
+    service_tier: str = "", *, selection_model: str = "",
+) -> str:
     import json
 
     body = json.loads(extra_body_for_effort(effort) or "{}")
@@ -802,6 +821,8 @@ def extra_body_for_model(resolved_model: str, effort: str, verbosity: str, summa
     if supports_verbosity(resolved_model) and summary in ("auto", "concise", "detailed", "none"):
         # null 是给兼容代理的显式关闭标记；代理转发到 OpenAI 时须移除 summary 字段。
         body["reasoning"] = {"summary": None if summary == "none" else summary}
+    if service_tier == "priority" and supports_priority_tier(selection_model or resolved_model):
+        body["service_tier"] = "priority"
     return json.dumps(body) if body else ""
 
 
