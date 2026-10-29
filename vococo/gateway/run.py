@@ -219,7 +219,7 @@ class GatewayRunner:
                             videos=inc.videos,
                             store_user=inc.store_text, cwd_override=cwd_override,
                             is_explicit_project_override=is_explicit_project_override,
-                            compact=compact_flag,
+                            compact=compact_flag, source_access=inc.source_access,
                         )
                 except TimeoutError:
                     pass  # 超时静默处理,不向用户发送错误消息

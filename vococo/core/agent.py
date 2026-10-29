@@ -1129,6 +1129,9 @@ async def stream_turn(
         requested_external = _external_mcp_for_task(user_text, session_key)
     if session_key and not research:
         requested_external |= session_store.get_external_mcp_names(session_key)
+    capabilities = source_access.get("capabilities", {})
+    if "mcp" in capabilities:
+        requested_external.intersection_update(capabilities["mcp"])
     # MCP / skill 从运行时设置计算；这些参数在 SDK connect 时定死，兼容性哈希变化会重建 client。
     mcp_on = False if research else settings_store.vococo_enabled()
     external_mcp = (
@@ -1148,6 +1151,9 @@ async def stream_turn(
         skills = list(agent_rt["skills"])
     if not research and isinstance(skills, list):  # 白名单模式漏不掉插件自带的 skill(见 _PLUGIN_SKILLS)
         skills = list(dict.fromkeys([*skills, *_PLUGIN_SKILLS]))
+    if "skills" in capabilities:
+        allowed_skills = capabilities["skills"] if isinstance(capabilities["skills"], list) else []
+        skills = [name for name in skills if name in allowed_skills] if isinstance(skills, list) else allowed_skills
     # cwd=项目会话补注入其 AGENTS.md;cache_key=会话 id:同一 SDK 会话内冻结 append 快照,
     # 防中途 save_memory 改 MEMORY.md 打爆整条对话的 prompt cache —— 也让保温池的兼容性
     # 哈希在会话内保持稳定(中途存记忆不至于误杀保温 client)。/new 换 sid → 自然读到最新。
@@ -1274,8 +1280,11 @@ async def stream_turn(
                 session_key, list(options.disallowed_tools or [])) if session_key else []
             from ..tools import sessions
 
+            skill_snapshot = options.skills if isinstance(options.skills, list) else sorted(
+                {item["name"] for item in settings_store.list_skills()} | set(_PLUGIN_SKILLS))
             session_tools = sessions.build_tools(
-                session_key, list(options.disallowed_tools or [])) if session_key else []
+                session_key, list(options.disallowed_tools or []),
+                {"skills": skill_snapshot, "mcp": list(external_mcp)}) if session_key else []
             options.mcp_servers["vococo"] = build_mcp_servers(
                 subagent_tool=child_tool, delegation_tools=delegation_tools,
                 session_tools=session_tools)["vococo"]

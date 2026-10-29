@@ -1212,6 +1212,7 @@ class WebAdapter:
         files: list[FileAttachment] | None = None,
         videos: list[VideoAttachment] | None = None,
         client_request_id: str = "",
+        source_access: dict | None = None,
     ) -> None:
         """把一条消息塞进指定会话的处理流水线——浏览器发送(_handle_send)和外部注入
         (语音跨端续聊,见 inject()/gateway/web_bridge.py)共用同一份逻辑,保证标题
@@ -1250,13 +1251,13 @@ class WebAdapter:
             Incoming(
                 self.platform, conv, text,
                 images=images, audios=audios, files=files, videos=videos,
+                source_access=source_access,
             )
         )
 
-    async def inject(self, conv: str, text: str) -> None:
-        """语音跨端续聊的公开入口:把一句话当成这个网页会话的下一轮发送——
-        跟用户自己在浏览器里发消息完全等价(见 gateway/web_bridge.py)。"""
-        await self._ingest(conv, text)
+    async def inject(self, conv: str, text: str, *, source_access: dict | None = None) -> None:
+        """服务端续聊入口；任务回传必须把来源权限传到实际执行轮。"""
+        await self._ingest(conv, text, source_access=source_access)
 
     @_authed
     @_json_body
