@@ -65,13 +65,14 @@ uv run python scripts/migrate_business_workspaces.py --data-dir /实际/data目�
 Bash 与同步子代理使用正常系统网络和命令，不再注入业务沙箱专用 SSH/sshpass 适配器。
 旧适配器及其离线测试保留供兼容排查，不代表当前会话仍受沙箱保护。
 
-飞书文档使用内置 `lark_document`（fetch/create/update），由宿主官方 CLI 管理凭据续期与
-Keychain/DPoP/TLS，不在业务 Bash 内运行文档读写 `lark-cli`，不关闭证书验证。
-写入必须审批，仅接受纯 Markdown 正文；不接收本机路径、XML/HTML、图片或附件，
-不支持表格、权限管理或登录。调用串行，取消回收自有子进程组；超时不自动重试写入。
-读取受 CLI 自身文档权限限制，宿主代理不是每个 Agent 独立的飞书账号隔离。
-旧会话若仍直接执行 `lark-cli docs +fetch/+create/+update`，业务钩子在执行前拒绝并明确提示
-改用 `mcp__vococo__lark_document`，不再等 TLS 失败后让用户手动重试；本地技能阅读、校验及开发会话不受影响。
+飞书通过 Bash 使用官方 `lark-cli` 的完整原生能力，不再按业务身份强制跳转到有限的文档包装。
+用 `lark-cli --help`、`<domain> --help`、`schema`、`skills read` 按需发现命令；
+文档、画板、表格、附件、权限等功能与后续新增命令均以官方 CLI 和账号授权为准。
+原生实际调用统一走常规审批（含读取，保守处理），纯帮助/schema/内嵌技能阅读免批；
+拒绝不执行，后台标准档拒绝，完全访问及审批闸开关沿用既有规则。禁用 Bash 的 Agent 不因此获得 Bash 权限。
+内置 `lark_document` 保留兼容和便捷操作，不代表飞书能力上限；其原有文件快照、串行及审批保护不变。
+官方 CLI 管理认证，不关闭证书验证，不因 TLS/钥匙串错误反复登录；写入不确定时先读回而非重试。
+此接入不新增每个 Agent 的独立飞书账号隔离，实际可访问范围取决于当前 CLI 账号及飞书授权。
 
 权限回归：`uv run pytest tests/test_business_runtime.py tests/test_business_write_guard.py -q`。
 `eval/check_business_sandbox.py` 与 `eval/check_business_network.py` 是旧隔离方案验收脚本，

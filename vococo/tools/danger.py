@@ -830,6 +830,8 @@ def classify(
             return ("escalate", PERMISSION_CONFIG_REASON, True)
         if _is_process_control(cmd):
             return ("escalate", "进程终止命令(kill/pkill/killall)", True)
+        if _lark_requires_approval(cmd):
+            return ("escalate", "飞书原生 CLI 操作(可能读取、发送或修改数据)", True)
         for rx, reason, restrict in _ESCALATE_BASH:
             if rx.search(cmd):
                 return ("escalate", reason, restrict)
@@ -1097,31 +1099,57 @@ def _deny_workflow() -> dict:
     )
 
 
-def _legacy_lark_document_command(command: str, depth: int = 0) -> bool:
-    """旧会话可能沿用技能中的 CLI 操作；在执行前给出可恢复的工具迁移提示。"""
-    if depth > 4:
+def _lark_discovery(args: list[str]) -> bool:
+    """仅豁免本地能力发现，不维护远端功能白名单。"""
+    args = list(args)
+    while args and args[0].startswith("--profile"):
+        if args[0] == "--profile" and len(args) > 1:
+            del args[:2]
+        elif args[0].startswith("--profile="):
+            del args[0]
+        else:
+            return False
+    if not args or args in (["--version"], ["-v"]):
+        return True
+    if args[-1] in {"--help", "-h"}:
+        return all(re.fullmatch(r"[A-Za-z0-9_+.][A-Za-z0-9_+.-]*", word) for word in args[:-1])
+    if len(args) == 2 and args[0] == "schema":
+        return bool(re.fullmatch(r"[A-Za-z0-9_.]+", args[1]))
+    return args == ["skills", "list"] or (
+        len(args) == 3 and args[:2] == ["skills", "read"]
+        and bool(re.fullmatch(r"[A-Za-z0-9_./-]+", args[2]))
+    )
+
+
+def _lark_stage_requires_approval(stage: list[str], depth: int) -> bool:
+    words = _unwrap_command(stage)
+    while words and words[0] in {"if", "then", "elif", "else", "while", "until", "do", "!", "{", "time"}:
+        words = _unwrap_command(words[1:])
+    if words and os.path.basename(words[0]) == "xargs":
+        # xargs 会从 stdin 追加操作，不能把空参数或 --help 当成最终调用。
+        invoked = _xargs_command(words)
+        if invoked and os.path.basename(invoked[0]) == "lark-cli":
+            return True
+        words = invoked
+    if words and os.path.basename(words[0]) == "lark-cli":
+        return not _lark_discovery(words[1:])
+    script = _shell_script(words)
+    return bool(script and _lark_requires_approval(script, depth + 1))
+
+
+def _lark_requires_approval(command: str, depth: int = 0) -> bool:
+    """全域原生调用走统一审批，未知/新增命令也不静默放行。"""
+    command = _strip_inert_text(command)
+    if "lark-cli" not in command:
         return False
-    for statement in _shell_commands_tolerant(_strip_inert_text(command)):
-        for stage in _pipeline_stages(statement):
-            words = _unwrap_command(stage)
-            if words and os.path.basename(words[0]) == "lark-cli":
-                words = list(words)
-                while len(words) > 1 and words[1].startswith("--profile"):
-                    if words[1] == "--profile" and len(words) > 2:
-                        del words[1:3]
-                    elif words[1].startswith("--profile="):
-                        del words[1]
-                    else:
-                        break
-            if (len(words) >= 3 and os.path.basename(words[0]) == "lark-cli"
-                    and words[1] == "docs" and words[2] in {"+fetch", "+create", "+update"}):
-                if words[3:] in (["--help"], ["-h"]):
-                    continue
-                return True
-            script = _shell_script(words)
-            if script and _legacy_lark_document_command(script, depth + 1):
-                return True
-    return False
+    # 不尝试把任意 shell 解释成安全子集；有动态执行时保守审批。
+    if depth > 4 or "$(" in command or "`" in command:
+        return True
+    return any(
+        _lark_stage_requires_approval(stage, depth)
+        for statement in _shell_commands_tolerant(command)
+        for stage in _pipeline_stages(statement)
+    )
 
 
 def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | None:
@@ -1164,20 +1192,11 @@ def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | Non
         "mcp__vococo__add_mcp_server", "mcp__vococo__remove_mcp_server",
         "mcp__vococo__set_external_mcp",
     }
-    legacy_lark = tool_name == "Bash" and _legacy_lark_document_command((tool_input or {}).get("command", "") or "")
-    needs_policy = tool_name in _WRITE_TOOLS or configures_mcp or legacy_lark or (
+    needs_policy = tool_name in _WRITE_TOOLS or configures_mcp or (
         tool_name == "Bash" and (tool_input or {}).get("dangerouslyDisableSandbox")
     )
     policy = _business_policy(cwd) if needs_policy else None
     if policy is not None:
-        if legacy_lark:
-            return _deny(
-                "此旧飞书 CLI 命令被入口策略拒绝，未执行；这不能证明凭据过期或TLS故障。"
-                "请改用 mcp__vococo__lark_document，operation=fetch/create/update/insert_image。"
-                "fetch 传 doc、detail、scope；update 传 Markdown content，可用 str_replace 或 block_insert_after。"
-                "insert_image 传 doc、image_path、block_id，可选 caption/width/height；文件限当前工作目录/正式成果目录。"
-                "上传和写入仍需审批。任意XML、附件、画板编辑尚未接入，不能静默改成整篇覆盖。"
-            )
         if configures_mcp:
             return _deny("业务会话不能注册、移除或切换 MCP 执行入口，请由主人在管理界面配置；已配置的业务 MCP 仍可使用。")
         path = (tool_input or {}).get("file_path") or (tool_input or {}).get("notebook_path")
