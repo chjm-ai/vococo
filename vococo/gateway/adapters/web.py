@@ -2045,6 +2045,7 @@ class WebAdapter:
                 "default": active_model,
                 "effort": efforts.get(active_model, {}).get("value", ""),  # 兼容旧 Web 客户端
                 "efforts": efforts,
+                "service_tiers": {model: providers.priority_state(model) for model, _, _ in choices},
                 "choices": [[v, label, group] for v, label, group in choices],
             }
         )
@@ -2069,6 +2070,21 @@ class WebAdapter:
             )
         settings_store.set_web_effort(effort, model=model)
         return web.json_response({"ok": True, "model": model, "effort": effort})
+
+    @_authed
+    @_json_body
+    async def _handle_service_tier_switch(self, request: web.Request, body: dict) -> web.Response:
+        model, tier = body.get("model"), body.get("tier")
+        if not isinstance(model, str) or not isinstance(tier, str):
+            return web.json_response({"error": "模型和优先档必须是字符串"}, status=400)
+        available = {item[0] for item in providers.available_models(MODEL_CHOICES)}
+        if model not in available or not providers.supports_priority_tier(model):
+            return web.json_response({"error": "此模型不支持优先档"}, status=400)
+        try:
+            settings_store.set_web_service_tier(tier, model=model)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"ok": True, "model": model, "tier": tier})
 
     @_authed
     @_json_body
@@ -3690,6 +3706,7 @@ class WebAdapter:
                 web.post("/conv/perm", self._handle_conv_perm_set),
                 web.get("/models", self._handle_models),
                 web.post("/effort", self._handle_effort_switch),
+                web.post("/service-tier", self._handle_service_tier_switch),
                 web.post("/verbosity", self._handle_verbosity_switch),
                 web.post("/reasoning-summary", self._handle_summary_switch),
                 web.get("/api/usage", self._handle_api_usage),

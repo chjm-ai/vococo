@@ -223,6 +223,7 @@ def _child_options(parent: ClaudeAgentOptions, selection: str | None, usage: Usa
         body = providers.extra_body_for_model(
             model, effective, settings_store.get_web_verbosity(selection),
             settings_store.get_web_summary(selection),
+            settings_store.get_web_service_tier(selection), selection_model=selection,
         )
         if body and provider_env:
             provider_env = {**provider_env, "CLAUDE_CODE_EXTRA_BODY": body}
