@@ -76,6 +76,176 @@ def turn(user="问题", assistant="回复", key=None):
     return tid
 
 
+async def test_continue_owned_task_once_and_reject_busy(client, monkeypatch):
+    created = await create(client)
+    task_id = created["id"]
+    payload = {"id": task_id, "instruction": "继续处理第二个需求", "idempotency_key": "continue-0001"}
+    start = Mock(return_value=True)
+    monkeypatch.setattr(task_runner, "start_claimed", start)
+    await post(client, "continue_task", payload, 409)
+    start.assert_not_called()
+    assert tasks.set_status(task_id, "running")
+    assert tasks.set_status(task_id, "done")
+    await post(client, "continue_task", payload, 409)  # 无法恢复上下文时不假装续接
+    session_store.set_sdk_session_id(tasks.session_key(task_id), "sdk-test-session")
+    result = await post(client, "continue_task", payload)
+    assert result["id"] == task_id and result["continuation"] == "accepted"
+    assert start.call_count == 1 and start.call_args.args[1] == payload["instruction"]
+    await post(client, "continue_task", payload)
+    assert start.call_count == 1
+    await post(client, "continue_task", {**payload, "instruction": "不同需求"}, 409)
+    await post(client, "continue_task", {**payload, "id": "not-owned"}, 404)
+
+
+async def test_continue_respects_capacity_and_hides_old_result(client, monkeypatch):
+    task_id = (await create(client))["id"]
+    assert tasks.set_status(task_id, "running")
+    assert tasks.finish(task_id, "done", "上一轮结果", "上一轮结果")
+    session_store.set_sdk_session_id(tasks.session_key(task_id), "sdk-test-session")
+    start = Mock(return_value=True)
+    monkeypatch.setattr(task_runner, "start_claimed", start)
+    monkeypatch.setattr(tasks, "count_running", lambda: config.TASK_MAX_CONCURRENCY)
+    payload = {"id": task_id, "instruction": "继续", "idempotency_key": "capacity-0001"}
+    await post(client, "continue_task", payload, 409)
+    start.assert_not_called()
+    assert tasks.set_status(task_id, "running")
+    assert (await post(client, "get_task", {"id": task_id}))["result"] == ""
+
+
+async def test_cancelled_continuation_does_not_return_old_result(client, monkeypatch):
+    task_id = (await create(client))["id"]
+    assert tasks.set_status(task_id, "running")
+    assert tasks.finish(task_id, "done", "上一轮结果", "上一轮结果")
+    session_store.set_sdk_session_id(tasks.session_key(task_id), "sdk-test-session")
+    monkeypatch.setattr(task_runner, "start_claimed", Mock())
+    await post(client, "continue_task", {
+        "id": task_id, "instruction": "继续", "idempotency_key": "cancel-old-result-1"})
+    assert tasks.set_status(task_id, "cancelled")
+    result = await post(client, "get_task", {"id": task_id})
+    assert result["status"] == "cancelled" and result["result"] == ""
+
+
+async def test_continue_starts_same_task_with_original_sdk_session(client, monkeypatch):
+    task_id = (await create(client))["id"]
+    assert tasks.set_status(task_id, "running") and tasks.set_status(task_id, "done")
+    session_store.set_sdk_session_id(tasks.session_key(task_id), "sdk-test-session")
+    spawn = Mock(return_value=object())
+    monkeypatch.setattr(task_runner, "_running", {})
+    monkeypatch.setattr(task_runner, "_spawn", spawn)
+    monkeypatch.setattr(task_runner, "_notify_activity", Mock())
+    result = await post(client, "continue_task", {
+        "id": task_id, "instruction": "第二个需求", "idempotency_key": "continue-real-01"})
+    assert result["id"] == task_id and result["status"] == "running"
+    assert session_store.get_sdk_session_id(tasks.session_key(task_id)) == "sdk-test-session"
+    spawn.assert_called_once_with(task_id, "第二个需求")
+    await post(client, "continue_task", {
+        "id": task_id, "instruction": "第三个需求", "idempotency_key": "continue-real-02"}, 409)
+    spawn.assert_called_once()
+
+
+async def test_continue_runs_with_original_sdk_session(client, monkeypatch):
+    from vococo.core.agent import AgentReply, Done
+    from vococo import providers
+
+    task_id = (await create(client))["id"]
+    assert tasks.set_status(task_id, "running") and tasks.set_status(task_id, "done")
+    session_store.set_sdk_session_id(tasks.session_key(task_id), "original-sdk-session")
+    calls = []
+
+    async def execute(history, prompt, **kwargs):
+        calls.append((history, prompt, kwargs))
+        yield Done(AgentReply(text="续接结果", tool_calls=[], cost_usd=None, is_error=False))
+
+    async def cwd(root, task_id):
+        return root
+
+    monkeypatch.setattr(task_runner, "stream_turn", execute)
+    monkeypatch.setattr(task_runner.worktree, "execution_cwd_for_task", cwd)
+    monkeypatch.setattr(providers, "sidecar_env", lambda *a, **k: None)
+    monkeypatch.setattr(task_runner, "_running", {})
+    result = await post(client, "continue_task", {
+        "id": task_id, "instruction": "第二个需求", "idempotency_key": "continue-run-01"})
+    assert result["id"] == task_id
+    running = task_runner._running.get(task_id)
+    if running is not None:
+        await asyncio.wait_for(running, timeout=10)
+    assert tasks.get(task_id)["status"] == "done"
+    assert calls[0][1].startswith("第二个需求")
+    assert calls[0][2]["resume"] == "original-sdk-session"
+    assert calls[0][2]["require_resume"] is True
+
+
+async def test_continue_unknown_outcome_cannot_run_twice(client, monkeypatch):
+    task_id = (await create(client))["id"]
+    assert tasks.set_status(task_id, "running") and tasks.set_status(task_id, "done")
+    session_store.set_sdk_session_id(tasks.session_key(task_id), "sdk-test-session")
+    monkeypatch.setattr(session_store, "set_conv_archived", Mock(side_effect=RuntimeError("启动时异常")))
+    payload = {"id": task_id, "instruction": "继续", "idempotency_key": "continue-0002"}
+    response = await client.post("/internal/brain/continue_task", json=payload, headers=AUTH)
+    assert response.status == 500
+    result = await post(client, "continue_task", payload)
+    assert result["continuation"] == "accepted" and result["status"] == "failed"
+    assert tasks.get(task_id)["status"] == "failed"
+
+
+async def test_continue_failure_after_start_never_repeats(client, monkeypatch):
+    task_id = (await create(client))["id"]
+    assert tasks.set_status(task_id, "running") and tasks.set_status(task_id, "done")
+    session_store.set_sdk_session_id(tasks.session_key(task_id), "sdk-test-session")
+
+    def start_then_fail(task, instruction):
+        assert tasks.get(task["id"])["status"] == "running"
+        raise RuntimeError("提交后异常")
+
+    start = Mock(side_effect=start_then_fail)
+    monkeypatch.setattr(task_runner, "start_claimed", start)
+    payload = {"id": task_id, "instruction": "继续", "idempotency_key": "after-start-01"}
+    response = await client.post("/internal/brain/continue_task", json=payload, headers=AUTH)
+    assert response.status == 500
+    assert (await post(client, "continue_task", payload))["status"] == "running"
+    start.assert_called_once()
+
+
+async def test_old_continuation_key_does_not_return_new_round(client, monkeypatch):
+    task_id = (await create(client))["id"]
+    assert tasks.set_status(task_id, "running") and tasks.set_status(task_id, "done")
+    session_store.set_sdk_session_id(tasks.session_key(task_id), "sdk-test-session")
+    monkeypatch.setattr(task_runner, "start_claimed", Mock())
+    first = {"id": task_id, "instruction": "第一轮续接", "idempotency_key": "old-round-01"}
+    assert (await post(client, "continue_task", first))["continuation_instruction"] == "第一轮续接"
+    assert tasks.finish(task_id, "done", "第一轮结果", "第一轮结果")
+    second = {**first, "instruction": "第二轮续接", "idempotency_key": "new-round-01"}
+    await post(client, "continue_task", second)
+    await post(client, "continue_task", first, 409)
+    row = brain._registry().execute(
+        "SELECT instruction FROM brain_bridge_continuations WHERE idempotency_key=?", (first["idempotency_key"],)
+    ).fetchone()
+    assert row["instruction"] == "第一轮续接"
+
+
+async def test_continue_reservation_rolls_back_if_claim_fails(client, monkeypatch):
+    task_id = (await create(client))["id"]
+    assert tasks.set_status(task_id, "running") and tasks.set_status(task_id, "done")
+    session_store.set_sdk_session_id(tasks.session_key(task_id), "sdk-test-session")
+    payload = {"id": task_id, "instruction": "继续", "idempotency_key": "claim-fail-01"}
+    observed = []
+
+    def fail_after_reservation():
+        observed.append(bool(brain._registry().execute(
+            "SELECT 1 FROM brain_bridge_continuations WHERE idempotency_key=?", (payload["idempotency_key"],)
+        ).fetchone()))
+        raise RuntimeError("事务中失败")
+
+    monkeypatch.setattr(tasks, "count_running", fail_after_reservation)
+    response = await client.post("/internal/brain/continue_task", json=payload, headers=AUTH)
+    assert response.status == 500
+    assert observed == [True]
+    assert brain._registry().execute(
+        "SELECT 1 FROM brain_bridge_continuations WHERE idempotency_key=?", (payload["idempotency_key"],)
+    ).fetchone() is None
+    assert tasks.get(task_id)["status"] == "done"
+
+
 async def test_search_history_filters_agents_paginates_and_cleans(client, monkeypatch):
     own = turn("关键词 100%", "链接 https://example.com/private", session())
     other = turn("关键词 other", "回复", session("abcdef1234"))

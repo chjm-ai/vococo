@@ -174,6 +174,20 @@ def _start_one(task: dict, turn_text: str | None = None) -> bool:
     return True
 
 
+def start_claimed(task: dict, turn_text: str) -> None:
+    """启动已由调用方原子抢占为 running 的任务，启动失败时释放并发槽。"""
+    task_id = task["id"]
+    try:
+        if not tasks.is_inline_research(task):
+            session_store.set_conv_archived(tasks.session_key(task_id), False)
+        _notify_activity(task_id)
+        _running[task_id] = _spawn(task_id, turn_text)
+    except Exception:
+        tasks.finish(task_id, "failed", "", "续接启动失败，未执行")
+        _maybe_start_next()
+        raise
+
+
 def _spawn(task_id: str, turn_text: str | None = None) -> asyncio.Task:
     """起跑一轮任务,用【全新的】contextvars 上下文。
 
@@ -570,6 +584,8 @@ async def _run(task_id: str, turn_text: str | None = None) -> None:
             "token_budget": token_budget,
             "system_prompt_extra": agents.prompt_extra_for_session(session_key),
         }
+        if turn_text is not None and tasks.automatic_access(row).get("remote_brain") is True:
+            execution["require_resume"] = True
         async for ev in stream_turn(
             [], prompt_text + _SUMMARY_TAG_INSTRUCTION, model=model, cwd=effective_cwd,
             is_explicit_project=bool(row.get("cwd_explicit")), session_key=session_key,

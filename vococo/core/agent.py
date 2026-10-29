@@ -1015,6 +1015,7 @@ async def stream_turn(
     token_budget: int = 0,
     tool_guard: Callable[[dict, str | None, Any], Awaitable[dict]] | None = None,
     usage_callback: Callable[[int], None] | None = None,
+    require_resume: bool = False,
 ) -> AsyncIterator[Event]:
     """流式跑一轮,逐个 yield 事件,最后 yield Done。
 
@@ -1812,6 +1813,8 @@ async def stream_turn(
             )
         )
 
+    if require_resume and not resume:
+        raise RuntimeError("原模型会话不可恢复，已停止续接")
     # 三级链:保温命中 → resume 冷启动 → 历史 blob。保温 client 半途坏死(进程被杀/
     # 管道断)且尚未吐出可见内容 → 自动降级冷启动;已吐出内容则原样抛(重跑会重复渲染)。
     if pooling:
@@ -1837,8 +1840,8 @@ async def stream_turn(
                 yield ev
             return
         except Exception:
-            if emitted or usage_callback_failed:
-                raise  # 已经流出内容或记账失败,不能重跑(会重复渲染)——原样抛出
+            if emitted or usage_callback_failed or require_resume:
+                raise  # 严格续接不能退回没有原上下文的空会话
             # 还没产出可见内容 → 落到下面用历史 blob 重跑这一轮
     async for ev in _stream_once(None):
         yield ev

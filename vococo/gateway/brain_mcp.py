@@ -82,7 +82,7 @@ async def _call(port: int, bridge: str, operation: str, data: dict) -> dict[str,
     except httpx.HTTPError:
         raise BridgeError("vococo 本机桥暂不可用；创建请求请保持原幂等键重试") from None
     errors = {400: "参数无效", 401: "本机桥认证失败", 403: "来源被拒绝", 404: "不存在或无权访问",
-              409: "幂等键已用于不同任务", 503: "本机桥尚未配置"}
+              409: "任务忙、无可恢复上下文、幂等键冲突或续接状态不确定；请查询原任务，不要换键盲目重试", 503: "本机桥尚未配置"}
     if response.status_code != 200:
         raise BridgeError(errors.get(response.status_code, "vococo 本机桥异常"))
     result = response.json()
@@ -95,7 +95,9 @@ async def _call(port: int, bridge: str, operation: str, data: dict) -> dict[str,
 
 def _register_tasks(server: FastMCP, port: int, bridge: str) -> None:
     @server.tool(annotations=_CREATE, description=(
-        "派 Vococo 开发执行任务并立即返回任务ID；不等待完成。必须给完整背景。"
+        "仅当没有明确关联的已有任务时新建。先检查当前对话的任务ID，必要时搜索历史并读取相关会话；"
+        "明确属于同一任务时优先 vococo_continue_task，多个候选或关系不明确时先问用户。"
+        "派 Vococo 开发执行并立即返回任务ID，不等待完成；必须给完整背景。"
         "同一次派单用同一个 idempotency_key 重试，避免重复执行。危险操作需在 vococo 审批。"))
     async def vococo_create_task(
         title: Annotated[str, Field(min_length=1, max_length=100)],
@@ -103,6 +105,18 @@ def _register_tasks(server: FastMCP, port: int, bridge: str) -> None:
         idempotency_key: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.:-]{8,128}$")],
     ) -> dict[str, Any]:
         return await _call(port, bridge, "create_task", {"title": title, "prompt": prompt,
+                           "idempotency_key": idempotency_key})
+
+    @server.tool(annotations=_CREATE, description=(
+        "明确关联同一事项时，续接此前通过此 MCP 创建、已结束的任务；传原任务ID，原会话和上下文不变。"
+        "搜索历史会话时 task: 后是任务ID，但只能续接本 MCP 派发的任务。任务运行或排队中会拒绝，不会打断。"
+        "同一次续接必须使用同一个 idempotency_key；遇到状态不确定先查询原任务，不要换键重复发送。"
+        "关系不明确或多个候选时先询问用户，不要猜测。"))
+    async def vococo_continue_task(
+        id: Identifier, instruction: Annotated[str, Field(min_length=1, max_length=60000)],
+        idempotency_key: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.:-]{8,128}$")],
+    ) -> dict[str, Any]:
+        return await _call(port, bridge, "continue_task", {"id": id, "instruction": instruction,
                            "idempotency_key": idempotency_key})
 
     @server.tool(annotations=_READ, description="查询本连接创建的任务状态及结果。next_offset 非空时继续分页；queued/running 不代表完成。")

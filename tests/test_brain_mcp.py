@@ -75,7 +75,8 @@ async def test_chatgpt_new_protocol_discovers_tools(environment):
                     "io.modelcontextprotocol/protocolVersion": "2026-07-28",
                     "io.modelcontextprotocol/clientCapabilities": {}}}})
     assert response.status_code == 200, response.text
-    assert "vococo_search_history" in {tool["name"] for tool in response.json()["result"]["tools"]}
+    assert {"vococo_search_history", "vococo_continue_task"} <= {
+        tool["name"] for tool in response.json()["result"]["tools"]}
 
 
 async def test_chatgpt_new_protocol_calls_read_only_tool(environment):
@@ -99,7 +100,7 @@ async def test_official_mcp_client_dispatch_idempotency_result_and_cancel(enviro
     app, workdir = environment
     async with session_for(app) as session:
         tools = (await session.list_tools()).tools
-        assert {tool.name for tool in tools} == {"vococo_create_task", "vococo_get_task", "vococo_cancel_task",
+        assert {tool.name for tool in tools} == {"vococo_create_task", "vococo_continue_task", "vococo_get_task", "vococo_cancel_task",
             "vococo_list_agents", "vococo_list_sessions", "vococo_read_session", "vococo_search_history"}
         assert next(t for t in tools if t.name == "vococo_create_task").annotations.read_only_hint is False
         args = {"title": "隔离派单", "prompt": "只运行测试任务", "idempotency_key": "request-test-001"}
@@ -114,6 +115,23 @@ async def test_official_mcp_client_dispatch_idempotency_result_and_cancel(enviro
         cancelled = await call(session, "vococo_cancel_task", {"id": created["id"]})
         assert cancelled["cancel_requested"] and cancelled["status"] == "cancelled"
         assert (await session.call_tool("vococo_create_task", {**args, "prompt": "不同任务"})).is_error
+
+
+async def test_mcp_continues_owned_task_once(environment, monkeypatch):
+    app, _ = environment
+    start = Mock(return_value=True)
+    monkeypatch.setattr(task_runner, "start_claimed", start)
+    async with session_for(app) as session:
+        created = await call(session, "vococo_create_task", {
+            "title": "续接测试", "prompt": "第一条需求", "idempotency_key": "create-test-01"})
+        task_id = created["id"]
+        assert tasks.set_status(task_id, "running") and tasks.set_status(task_id, "done")
+        session_store.set_sdk_session_id(tasks.session_key(task_id), "sdk-test-session")
+        args = {"id": task_id, "instruction": "第二条需求", "idempotency_key": "continue-test-01"}
+        assert (await call(session, "vococo_continue_task", args))["id"] == task_id
+        assert (await call(session, "vococo_continue_task", args))["continuation"] == "accepted"
+        assert start.call_count == 1
+        assert (await session.call_tool("vococo_continue_task", {**args, "id": "not-owned"})).is_error
 
 
 async def test_mcp_history_pagination_rebuilds_text_and_no_tool_events(environment):
