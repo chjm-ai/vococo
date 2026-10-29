@@ -214,6 +214,70 @@ async def test_business_output_and_workspace_not_source_or_other_links(context, 
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["workspace", "project"])
+async def test_writable_links_share_write_and_private_delivery_authorization(context, mode):
+    from vococo.memory import agents
+
+    adapter, _, _, events, root = context
+    writable, readonly = root.parent / "writable", root.parent / "readonly"
+    for folder in (writable, readonly):
+        folder.mkdir()
+        (folder / "report.txt").write_text("授权目录的成果")
+    agent = agents.create("交付授权测试", str(root))
+    meta = agents._read_meta(agent["id"])
+    meta["execution_mode"] = mode
+    agents._write_meta(agent["id"], meta)
+    agents.update(agent["id"], links=[{"path": str(writable), "writable": True},
+                                     {"path": str(readonly), "writable": False}])
+    key = agents.main_session_key(agent)
+    tid = session_store.start_turn(key, "生成并交付")
+    route = clarify.set_current(key, adapter, agent["main_conv"], tid)
+    try:
+        assert danger.classify("Write", {"file_path": str(writable / "report.txt")}, str(root))[0] == "allow"
+        assert "已交付" in await call(writable / "report.txt")
+        entry = session_store.turn_artifacts(key, tid)[0]
+        assert session_store.artifact_content(key, entry["id"]) == ("report.txt", "授权目录的成果".encode())
+        assert "未交付" in await call(readonly / "report.txt")
+        (writable / "credentials.txt").write_text("content")
+        assert "未交付" in await call(writable / "credentials.txt")
+        (writable / "link.txt").symlink_to(writable / "report.txt")
+        assert "未交付" in await call(writable / "link.txt")
+        assert len(events) == 1
+        agents.update(agent["id"], links=[])
+        assert "未交付" in await call(writable / "report.txt")
+        assert len(events) == 1
+    finally:
+        clarify.reset_current(route)
+    # 同一文件不能借其他会话交付。
+    assert "未交付" in await call(writable / "report.txt")
+
+
+@pytest.mark.anyio
+async def test_unsafe_link_does_not_block_normal_delivery_or_expose_runtime(context):
+    from vococo.core import execution
+    from vococo.memory import agents
+
+    adapter, _, _, _, root = context
+    agent = agents.create("关联目录测试", str(root))
+    agents.update(agent["id"], links=[{"path": str(config.DATA_DIR), "writable": True},
+                                     {"path": str(root.parent / ".ssh"), "writable": True}])
+    key = agents.main_session_key(agent)
+    assert config.DATA_DIR.resolve() in execution.linked_file_roots(key)
+    assert artifacts._delivery_links(key) == ()
+    file = root / "normal.txt"
+    file.write_text("普通成果")
+    runtime = config.DATA_DIR / "other.txt"
+    runtime.write_text("其他会话文件")
+    tid = session_store.start_turn(key, "交付")
+    route = clarify.set_current(key, adapter, agent["main_conv"], tid)
+    try:
+        assert "已交付" in await call(file)
+        assert "未交付" in await call(runtime)
+    finally:
+        clarify.reset_current(route)
+
+
+@pytest.mark.anyio
 async def test_context_closed_turn_failure_and_no_home_fallback(context, monkeypatch):
     adapter, key, tid, events, root = context
     file = root / "report.txt"

@@ -21,6 +21,7 @@ _Avoid_: 未分类
 
 **Risk Tier(危险分级)**:
 每次工具调用被 `classify()`(`tools/danger.py`)判成三档 —— `allow`(放行)/ `escalate`(请用户批准)/ `block`(直接拦)。灾难级(删整根、格式化磁盘、覆写裸盘、fork 炸弹)→ `block`;5 类危险操作(写**项目 cwd 外**的文件、`git push`/`git reset --hard`、`rm -rf`、包安装、`curl|sh`)→ `escalate`;其余 `allow`。「写 cwd 外」有两处豁免不弹审批:AI_BRAIN 记忆目录、系统临时目录(`/tmp`、`$TMPDIR`)——前者是正常记忆读写,后者是一次性草稿脚本,都不构成「注入落地后门」的持久化风险。`escalate`/`block` 分别受 `APPROVAL_GATE`/`DANGER_GUARD` 开关控制。
+- **项目依赖免批**：cwd 有 `package.json` 的 npm/pnpm/yarn 安装，cwd 有 `pyproject.toml` 的 `uv sync/add`，以及显式 `.venv/bin/pip` 或 `.venv/bin/python -m pip install`，去向明确时直接执行，前台/后台一致。全局/系统安装、普通 PATH 上的 pip、sudo、改安装位置、动态或混合命令仍审批。不新增权限档位；安装脚本仍可执行代码，此豁免是减少交互，不是文件沙箱或供应链担保。
 _Avoid_: 白名单/黑名单(这是三档而非二元)
 
 **Hard Guard(常开正确性防线)**:
@@ -30,6 +31,8 @@ _Avoid_: 把这三项当成 Risk Tier 的第四档
 **Approval Gate(审批闸)**:
 对 `escalate` 的操作,在**有交互通道时**(Web)弹「允许一次 / 本次会话(本任务)都允许 / 永远允许 / 拒绝」请用户拍板;超时或发送失败视为拒绝。这是「远程编码:动手前对齐」的安全阀。
 - **后台任务**(cron/语音派活/独立会话):对外/装包类操作弹到 Web 任务会话 + 手机推送,等 `BG_APPROVAL_WAIT_SEC`(默认 10 分钟);超时或处在免打扰时段 `BG_APPROVAL_QUIET`(默认 23-8)→ 先跳过,留在**铃铛**里(见 Notice)。本地操作(递归删除子目录、`reset --hard`)后台照旧放行。「本轮任务都允许」只管当前这一轮。
+- **同任务跨入口授权**：飞书原生 CLI 与便捷文档写操作共用 `lark_data` 类别；用户选择「本次会话/本轮任务都允许」后，换入口不重复批准。允许一次不升级为任务授权，不跨会话、后台轮次或远程来源继承。
+- **关联目录授权**：Agent 显式可写关联同时授权写入与当前会话的私有成果交付；只读关联、运行数据、凭据、软硬链仍不能交付，公开发布另走原审批。系统临时目录与记忆写入豁免不自动扩大交付范围。
 - **误判剥离**:判定前先去掉确定不会执行的文本(`git commit -m` 消息、喂给 cat/tee 的 heredoc 正文);含命令替换、管道给 shell、同命令里再调 bash/source 的不剥。
 - **永久规则**(Approval Rule):「永远允许」只收窄不放大——写入按文件所在目录(家目录之下、非凭据目录)、`git push` 按仓库(命令里切目录/夹带其他危险操作不给)、外部 MCP 写按工具名;装包/进程终止/密钥外带/`curl|sh`/`rm -rf` 永不给。存 `state.db` 的 `approval_rules`。
 - **审批记录**(Audit Log):每次 escalate 的结果 + block + 常开防线拦截都记进 `audit_log`,保留 90 天,「设置→安全」可查。

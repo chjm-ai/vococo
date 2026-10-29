@@ -18,11 +18,29 @@ EXTENSIONS = {".pptx", ".docx", ".xlsx", ".pdf", ".txt", ".md", ".csv", ".tsv",
 ARCHIVES = {".zip", ".pptx", ".docx", ".xlsx"}
 
 
+def _delivery_links(session_key: str) -> tuple[Path, ...]:
+    from .. import config
+    from ..core.execution import linked_file_roots
+
+    safe = []
+    for root in linked_file_roots(session_key):
+        # 运行状态、Agent 配置及其他会话不能因一次关联授权变成下载源。
+        if root.is_relative_to(config.DATA_DIR.resolve()) or Path.home().resolve().is_relative_to(root):
+            continue
+        try:
+            _check_parts(root.parts[1:])
+        except ValueError:
+            continue
+        safe.append(root)
+    return tuple(safe)
+
+
 def _roots(session_key: str, cwd: str) -> tuple[Path, ...]:
     from ..core.execution import policy_for_session
 
     policy = policy_for_session(session_key, cwd)
     roots = (policy.workspace, policy.output_dir) if policy else (Path(cwd),)
+    roots = tuple(dict.fromkeys((*roots, *_delivery_links(session_key))))
     safe = []
     for root in roots:
         root = root.expanduser().resolve()

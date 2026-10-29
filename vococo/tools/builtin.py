@@ -1270,7 +1270,7 @@ async def send_image(args: dict) -> dict:
     "send_file",
     "把已生成的本地成果作为可下载附件交付当前 Web 会话。支持 PPTX、PDF、DOCX、XLSX、"
     "文本、图片、音视频及可安全检查的 ZIP，单个不超过 64MB。path 为当前工作目录内的"
-    "相对或绝对路径；业务 Agent 另允许正式 output_dir。拒绝软链、凭据、目录逃逸及"
+    "相对或绝对路径；另允许业务正式 output_dir 和当前 Agent 已配置的可写关联目录。拒绝软链、凭据、目录逃逸及"
     "其他会话文件；不可用于任意 HOME 文件读取。title 可选，120字以内。"
     "保存私有快照，刷新仍可下载；有效 UTF-8 HTML（≤200KB）附带静态预览。"
     "不公开发布、不收录图片作品库。仅 Web 支持。",

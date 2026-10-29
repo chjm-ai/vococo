@@ -70,6 +70,21 @@ def policy_for_session(
                            Path(agent["workdir"]).expanduser().resolve(), repositories)
 
 
+def linked_file_roots(session_key: str | None) -> tuple[Path, ...]:
+    """主人显式标为可写的关联同时允许私有成果交付；不包含只读关联与 Agent 配置目录。"""
+    if not session_key:
+        return ()
+    from ..memory import agents
+
+    agent = agents.agent_for_session(session_key)
+    if not agent:
+        return ()
+    return tuple(dict.fromkeys(
+        Path(link["path"]).expanduser().resolve()
+        for link in agent["links"] if link["writable"]
+    ))
+
+
 def prompt_note(policy: ExecutionPolicy) -> str:
     """成果目录是显式目的地，不让相对路径草稿冒充已交付成果。"""
     return (

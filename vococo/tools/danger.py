@@ -15,10 +15,13 @@ fork 炸弹等),宁可漏放也别误伤日常操作——`rm -rf ./build` 这�
 from __future__ import annotations
 
 import contextvars
+import json
 import os
 import re
 import shlex
 import tempfile
+import tomllib
+from pathlib import Path
 
 from .. import config
 
@@ -290,8 +293,9 @@ _ESCALATE_BASH: list[tuple[re.Pattern, str, bool]] = [
     (re.compile(r"\brm\s+-\S*[rR]"), "rm -rf(递归删除)", False),
     (
         re.compile(
-            r"\b(pip3?|pipx|uv|npm|pnpm|yarn|brew|apt|apt-get|gem|cargo|go)\s+"
-            r"(install|add|get|i)\b"
+            r"\b(?:pip3?|pipx|uv(?:\s+pip)?|npm|pnpm|yarn|brew|apt|apt-get|gem|cargo|go|"
+            r"python[\d.]*(?:\s+-m\s+pip))\s+"
+            r"(?:-[^\s]+\s+)*(install|add|get|i|sync|ci)\b"
         ),
         "包安装(改动环境)",
         True,
@@ -761,7 +765,9 @@ def _inside_agent_writable(path: str, cwd: str | None) -> bool:
         a = agents.agent_for_session(_current_session_key())
         if a is None:
             return False
-        bases = [str(agents.home(a["id"]))] + [x["path"] for x in a["links"] if x["writable"]]
+        from ..core.execution import linked_file_roots
+
+        bases = [str(agents.home(a["id"]))] + list(linked_file_roots(_current_session_key()))
         target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
         for b in bases:
             base = os.path.realpath(b)
@@ -803,6 +809,124 @@ def _business_write_allowed(tool_input: dict, cwd: str | None, policy) -> bool:
     )
 
 
+# 只免批常见且不改变安装范围的参数；未知参数（包括缩写）回到正常审批，不继续补黑名单。
+_PROJECT_INSTALL_FLAGS = {
+    "--extra", "--all-extras", "--dev", "--no-dev", "--group", "--all-groups",
+    "--frozen", "--locked", "--offline", "--dry-run", "--no-progress", "--quiet", "-q",
+    "--save", "--save-dev", "--save-exact", "-D", "-S", "-E", "--no-audit", "--no-fund",
+    "--ignore-scripts", "--frozen-lockfile", "--immutable", "--upgrade", "-U", "-r", "--requirement",
+}
+
+
+_INSTALL_LOCATION_KEYS = {
+    "global", "prefix", "target", "root", "user", "location", "workspace", "workspaces",
+    "modulesdir", "modulesfolder", "globalfolder", "virtualstoredir", "storedir",
+    "projectenvironment", "configfile", "userconfig", "globalconfig", "directory", "project", "active",
+}
+
+
+def _location_key(key: str) -> bool:
+    return key.lower().replace("-", "").replace("_", "") in _INSTALL_LOCATION_KEYS
+
+
+def _config_changes_install_location(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    if path.stat().st_size > 128 * 1024:
+        return True
+    # 只读配置项名，不记录值；registry、索引与认证配置不应造成普通安装反复审批。
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"\s*([\w-]+)\s*(?:[:=]|$)", line)
+        if match and _location_key(match[1]):
+            return True
+    return False
+
+
+def _installer_overrides(cwd: Path, manager: str) -> bool:
+    """额外配置改变安装范围时交回审批；免批不是安装脚本的沙箱。"""
+    prefixes = ("npm_config_", "pnpm_", "yarn_") if manager in {"npm", "pnpm", "yarn"} else (
+        ("uv_",) if manager == "uv" else ("pip_",)
+    )
+    if any(_location_key(key[len(prefix):]) for key in os.environ for prefix in prefixes
+           if key.lower().startswith(prefix)):
+        return True
+    home = Path.home()
+    if manager in {"npm", "pnpm", "yarn"}:
+        configs = [base / name for base in (cwd, *cwd.parents, home)
+                   for name in (".npmrc", ".yarnrc", ".yarnrc.yml")]
+        configs += [Path(base) / "npmrc" for base in ("/etc", "/usr/local/etc", "/opt/homebrew/etc")]
+    elif manager == "uv":
+        configs = [base / "uv.toml" for base in (cwd, *cwd.parents, home / ".config/uv", Path("/etc/uv"))]
+    else:
+        configs = [Path("/etc/pip.conf"), home / ".config/pip/pip.conf", home / ".pip/pip.conf",
+                   home / "Library/Application Support/pip/pip.conf", cwd / ".venv/pip.conf"]
+    return any(_config_changes_install_location(path) for path in configs)
+
+
+def _parent_workspace(cwd: Path, manager: str) -> bool:
+    """安装器会向上找工作区；不能把成员目录误当作实际安装范围。"""
+    for parent in cwd.parents:
+        if manager == "uv":
+            manifest = parent / "pyproject.toml"
+            if manifest.is_file():
+                data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+                if "workspace" in data.get("tool", {}).get("uv", {}):
+                    return True
+        else:
+            if (parent / "pnpm-workspace.yaml").is_file():
+                return True
+            manifest = parent / "package.json"
+            if manifest.is_file() and json.loads(manifest.read_text(encoding="utf-8")).get("workspaces"):
+                return True
+    return False
+
+
+def _local_install_words(words: list[str], cwd: Path) -> bool:
+    """只豁免去向明确的项目安装；不是通用 shell 或供应链安全检查。"""
+    if len(words) < 2:
+        return False
+    executable, action = words[0], words[1]
+    args = words[4:] if words[1:4] == ["-m", "pip", "install"] else words[2:]
+    if any(word.startswith("-") and word.split("=", 1)[0] not in _PROJECT_INSTALL_FLAGS for word in args):
+        return False
+    if _installer_overrides(cwd, executable):
+        return False
+    if executable in {"npm", "pnpm", "yarn"}:
+        return (action in {"install", "i", "add", "ci"} and (cwd / "package.json").is_file()
+                and not _parent_workspace(cwd, executable))
+    if executable == "uv":
+        return (action in {"sync", "add"} and (cwd / "pyproject.toml").is_file()
+                and not (cwd / ".venv").is_symlink() and not _parent_workspace(cwd, executable))
+    # 不相信 PATH 上的 pip 或激活状态：必须明确调用当前项目的虚拟环境。
+    binary = Path(executable).expanduser()
+    binary = binary if binary.is_absolute() else cwd / binary
+    if binary.parent.resolve() != (cwd / ".venv" / "bin").resolve():
+        return False
+    if not (cwd / ".venv" / "pyvenv.cfg").is_file() or (cwd / ".venv").is_symlink():
+        return False
+    if binary.name in {"pip", "pip3"}:
+        return action == "install"
+    return bool(re.fullmatch(r"python[\d.]*", binary.name) and words[1:4] == ["-m", "pip", "install"])
+
+
+def _project_dependency_install(command: str, cwd: str | None) -> bool:
+    if not cwd or re.search(r"[$`<>|&;\n]", command.replace("&&", "")):
+        return False
+    base = Path(cwd).expanduser().resolve()
+    try:
+        statements = _shell_commands(command)
+        if statements and statements[0][:1] == ["cd"]:
+            if len(statements[0]) != 2 or len(statements) != 2:
+                return False
+            target = (base / os.path.expanduser(statements.pop(0)[1])).resolve()
+            if not target.is_relative_to(base):
+                return False
+            base = target
+        return bool(statements) and all(_local_install_words(words, base) for words in statements)
+    except (ValueError, OSError):
+        return False
+
+
 def classify(
     tool_name: str, tool_input: dict, cwd: str | None = None
 ) -> tuple[str, str, bool]:
@@ -834,6 +958,8 @@ def classify(
             return ("escalate", "飞书原生 CLI 操作(可能读取、发送或修改数据)", True)
         for rx, reason, restrict in _ESCALATE_BASH:
             if rx.search(cmd):
+                if reason == "包安装(改动环境)" and _project_dependency_install(cmd, cwd):
+                    continue
                 return ("escalate", reason, restrict)
         return ("allow", "", False)
     if tool_name in _WRITE_TOOLS:
@@ -1247,6 +1373,8 @@ def _category(reason: str) -> str:
     """把审批原因归一成稳定类别键(供「本次会话都允许」按类记忆)。"""
     if reason.startswith("写工作目录外的文件"):
         return "write_outside_cwd"
+    if reason in {"写入飞书文档", "飞书原生 CLI 操作(可能读取、发送或修改数据)"}:
+        return "lark_data"
     return reason
 
 
