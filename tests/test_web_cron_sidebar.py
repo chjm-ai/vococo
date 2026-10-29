@@ -34,6 +34,7 @@ def cron_web_app(isolated, monkeypatch):
     app.add_routes(
         [
             web.get("/cron/sidebar", adapter._handle_cron_sidebar),
+            web.post("/conv/read", adapter._handle_conv_read),
             web.post("/cron/jobs/create", adapter._handle_cron_create),
             web.post("/cron/jobs/update", adapter._handle_cron_update),
             web.post("/cron/jobs/enable", adapter._handle_cron_set_enabled),
@@ -44,6 +45,40 @@ def cron_web_app(isolated, monkeypatch):
     if task_store._DB is not None:
         task_store._DB.close()
         task_store._DB = None
+
+
+@pytest.mark.anyio
+async def test_late_read_cannot_clear_newer_result(cron_web_app):
+    key = config.resolve_session_key("web", "read-race")
+    first = session_store.append_external(key, "先到的结果", "first")
+    latest = session_store.append_external(key, "后来未看的结果", "second")
+    session_store.set_pending_review(key, True)
+    async with TestClient(TestServer(cron_web_app)) as client:
+        response = await client.post("/conv/read", json={"conv": "read-race", "through_turn_id": first})
+        assert (await response.json())["cleared"] is False
+        assert next(r for r in session_store.list_sessions("web:") if r["key"] == key)["pending_review"]
+        response = await client.post("/conv/read", json={"conv": "read-race", "through_turn_id": latest})
+        assert (await response.json())["cleared"] is True
+        assert not next(r for r in session_store.list_sessions("web:") if r["key"] == key)["pending_review"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("turn_id", [-1, "1", True, None])
+async def test_read_rejects_invalid_message_number(cron_web_app, turn_id):
+    async with TestClient(TestServer(cron_web_app)) as client:
+        response = await client.post("/conv/read", json={"conv": "main", "through_turn_id": turn_id})
+        assert response.status == 400
+
+
+@pytest.mark.anyio
+async def test_read_without_message_number_remains_compatible(cron_web_app):
+    key = config.resolve_session_key("web", "main")
+    session_store.append(key, "问题", "回复")
+    session_store.set_pending_review(key, True)
+    async with TestClient(TestServer(cron_web_app)) as client:
+        response = await client.post("/conv/read", json={"conv": "main"})
+        assert (await response.json())["ok"]
+    assert not next(r for r in session_store.list_sessions("") if r["key"] == key)["pending_review"]
 
 
 @pytest.mark.anyio

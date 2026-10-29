@@ -877,7 +877,11 @@ async def _reflect(push: PushFn) -> None:
     target = config.REFLECT_TARGET
     if summary and ":" in target:
         platform, _, chat_id = target.partition(":")
-        await push(platform.strip(), chat_id.strip(), f"🧠 记忆复盘\n\n{summary}")
+        platform, chat_id = platform.strip(), chat_id.strip()
+        text = f"🧠 记忆复盘\n\n{summary}"
+        # 即时通知不会落历史，必须先保存，点击推送或刷新后才能找回。
+        session_store.append_external(config.resolve_session_key(platform, chat_id), text, f"reflection:{uuid.uuid4().hex}")
+        await push(platform, chat_id, text)
     else:
         print(f"[反思] {summary or '(无输出)'}")
 

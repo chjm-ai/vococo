@@ -883,10 +883,24 @@ function refreshAgentPanelIf(tabs){
   if(!$("#agentPanel").hidden && tabs.includes(S.agentPanelTab)) renderAgentPanel();
 }
 // 服务端推 agent_run:某 Agent 的主会话刚写进一条定时结果
-function onAgentRun(e){
+const agentRunRevisions={};
+async function onAgentRun(e){
+  const revision=agentRunRevisions[e.conv]=(agentRunRevisions[e.conv]||0)+1;
   delete S.histCache[e.conv]; idbDel("hist:"+e.conv);
-  if(S.conv===e.conv && typeof reloadHistory==="function") reloadHistory();
-  else S.pendingReview[e.conv]=true;
+  S.pendingReview[e.conv]=true;
+  if(S.conv===e.conv && S.surface==="chat" && typeof reloadHistory==="function"){
+    const displayed=await reloadHistory();
+    if(displayed?.lastTurnId!=null && S.conv===e.conv && S.surface==="chat" && agentRunRevisions[e.conv]===revision){
+      // 服务端按已展示的消息编号清未读；迟到的响应也不能覆盖新事件的本地标记。
+      const result=await api("/conv/read",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({conv:e.conv,through_turn_id:displayed.lastTurnId})})
+        .then(r=>r.ok?r.json():null).catch(()=>null);
+      if(result?.cleared && agentRunRevisions[e.conv]===revision){
+        S.pendingReview[e.conv]=false;
+        const c=S.convs.find(x=>x.conv===e.conv); if(c) c.pending_review=false;
+      }
+    }
+  }
   loadConvs();
   const a=currentAgent();
   if(a && a.main_conv===e.conv && !$("#agentPanel").hidden && S.agentPanelTab==="feed") renderAgentPanel();

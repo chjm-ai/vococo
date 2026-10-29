@@ -1968,6 +1968,7 @@ async function reloadHistory(force){
     idbSetHist(conv, turns);
     renderTurns(turns, conv);  // 内部按轮 diff,没变的轮直接跳过
     if(S.historyRefreshPending) delete S.historyRefreshPending[conv];
+    return {lastTurnId:d.turns[d.turns.length-1]?.id};  // 已读请求只能覆盖确实展示过的消息。
   }catch(e){}
 }
 

@@ -1066,6 +1066,18 @@ def set_pending_review(session_key: str, pending: bool) -> None:
     c.commit()
 
 
+def clear_pending_review_through(session_key: str, turn_id: int) -> bool:
+    """仅在没有更新消息时清未读，避免迟到的已读请求吞掉新结果。"""
+    c = _conn()
+    cur = c.execute(
+        "UPDATE session_meta SET pending_review=0 WHERE session_key=? "
+        "AND NOT EXISTS (SELECT 1 FROM turns WHERE session_key=? AND id>?)",
+        (session_key, session_key, turn_id),
+    )
+    c.commit()
+    return cur.rowcount > 0
+
+
 def set_conv_pinned(session_key: str, pinned: bool) -> None:
     """置顶/取消置顶:侧边栏顶部\"置顶\"分组的开关。"""
     c = _conn()
