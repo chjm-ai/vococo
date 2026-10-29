@@ -19,6 +19,12 @@ async function switchState(page,checked){
     return input && !input.disabled && input.checked===expected;
   },checked);
   assert.equal(await page.locator('#prioritySwitch').isChecked(),checked);
+  const name=await page.locator('#effortName').innerText();
+  assert.equal(name.endsWith('⚡2x'),checked);
+  assert.equal(name.replace(/⚡2x$/, ''),await page.evaluate(()=>{
+    const state=effortState();
+    return effortShort(state.value,state.levels);
+  }));
 }
 
 async function savedTier(page,token,tier){
@@ -108,6 +114,7 @@ async function exercise(page,origin,token){
     await pickModel(page,model);
     assert.equal(await page.locator('#prioritySwitch').count(),0);
     assert.equal(await page.locator('.priority-label').count(),0);
+    assert.doesNotMatch(await page.locator('#effortName').innerText(),/⚡2x/);
     await savedTier(page,token,'priority');
   }
   await pickModel(page,GPT);
