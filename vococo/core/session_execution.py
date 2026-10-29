@@ -7,7 +7,7 @@ from .. import config, providers
 from ..memory import agents, session_store
 from ..tools import danger
 from .agent import (
-    Compacted, Done, SessionStarted, TextDelta, ThinkingDelta,
+    Compacted, ContextUsage, Done, SessionStarted, TextDelta, ThinkingDelta,
     ToolFinished, ToolInput, ToolStarted, UpstreamRetry,
     effective_context_window, _window_ratio,
 )
@@ -67,6 +67,10 @@ class SharedTurn:
     async def observe(self, event) -> None:
         if isinstance(event, SessionStarted):
             self.save_session(event.session_id)
+        elif isinstance(event, ContextUsage):
+            if self.alive():
+                session_store.update_context(self.session_key, event.tokens, event.window, event.model)
+                await self.send("context_usage")
         elif isinstance(event, TextDelta):
             text = danger.redact_secrets(event.text)
             self.timeline.text(text)

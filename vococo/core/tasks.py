@@ -60,6 +60,31 @@ def task_for_session(key: str) -> dict | None:
     return _row(row) if row else None
 
 
+def conversation_title(key: str, fallback: str = "新对话") -> str:
+    """会话标题优先；未写会话标题的历史任务才回退到执行名。"""
+    from ..memory import session_store
+
+    title = session_store.get_title(key)
+    if title:
+        return title
+    task = task_for_session(key)
+    return task["title"] if task else fallback
+
+
+def legacy_title_matches(query: str) -> list[str]:
+    """只补查尚无会话标题的历史任务，不让旧执行名命中已重命名会话。"""
+    from ..memory import session_store
+
+    if not query.strip():
+        return []
+    rows = _conn().execute(
+        "SELECT DISTINCT session_key FROM tasks WHERE instr(lower(title),?)>0 "
+        "AND NOT (kind='research' AND source_session_key IS NOT NULL)", (query.casefold(),),
+    ).fetchall()
+    return [key for (key,) in rows if not session_store.get_title(key)
+            and query.casefold() in conversation_title(key).casefold()]
+
+
 def task_for_job(job_id: str) -> dict | None:
     row = _conn().execute(
         "SELECT * FROM tasks WHERE job_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
@@ -216,6 +241,10 @@ def create(
     key = session_key or (f"task:{tid}" if inline else config.new_session_key())
     if not inline:
         agent_id = _bind_task_session(key, agent_id, cwd, source_session_key)
+        from ..memory import session_store
+
+        if not session_store.get_title(key):
+            session_store.set_title(key, title)
     now = time.time()
     c.execute(
         "INSERT INTO tasks(id,title,prompt,cwd,cwd_explicit,status,progress_note,result_summary,"

@@ -829,6 +829,8 @@ function handleEvent(e){
     if(e.turn_id!=null) row.dataset.tid=String(e.turn_id);
     return;
   }
+  if(e.type==="usage"){ updateUsageMeta(e); return; }
+  if(e.type==="done" && "ctx_tokens" in e) updateUsageMeta(e);
   if(e.type==="sync"){ loadConvs(); if(e.conv===S.conv) reloadHistory(true); return; }
   // send_image 工具中途发的图(mid_turn):这一轮还没结束,后面还会有正文/工具事件。
   // 按 STREAMY 事件一样只挂进气泡/回放缓冲,不能走下面"回合结束"那一套(未读标记/

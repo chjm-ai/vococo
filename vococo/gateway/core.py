@@ -52,6 +52,9 @@ class Sink:
         self.tools: list[dict] = []
 
     # --- 事件入口(子类一般不覆盖,只覆盖 render)---
+    async def context_usage(self) -> None:
+        """窗口快照已保存，支持用量展示的平台可覆盖。"""
+
     async def thinking(self, text: str) -> None:
         self.thinking_buf += text
         await self.render()

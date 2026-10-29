@@ -628,6 +628,15 @@ class SessionStarted:
 
 
 @dataclass
+class ContextUsage:
+    """主模型最近一次请求的已确认用量；结束时再由 /context 校准。"""
+
+    tokens: int
+    window: int
+    model: str
+
+
+@dataclass
 class BudgetWarning:
     """本轮新鲜 token 用到 token_budget 的 80%(每轮只发一次),调用方据此提醒用户。"""
 
@@ -637,7 +646,7 @@ class BudgetWarning:
 
 Event = Union[
     TextDelta, ThinkingDelta, ToolStarted, ToolInput, ToolFinished, Compacted,
-    UpstreamRetry, SessionStarted, BudgetWarning, Done,
+    UpstreamRetry, SessionStarted, ContextUsage, BudgetWarning, Done,
 ]
 
 
@@ -1330,6 +1339,8 @@ async def stream_turn(
         num_turns = 0
         stream_tokens = 0  # 流式累计的新鲜 token(见 token_budget)
         stream_usage = StreamUsage()
+        last_context = 0
+        last_context_ts = 0.0
         input_usage_confirmed = False
         budget_hit = False
         budget_warned = False
@@ -1480,6 +1491,12 @@ async def stream_turn(
                             if etype == "message_start":
                                 input_usage_confirmed = False
                             stream_usage.observe(ev, pid)
+                            current_context = stream_usage.context_tokens
+                            now = time.monotonic()
+                            if (not pid and current_context and current_context != last_context
+                                    and (etype == "message_start" or now - last_context_ts >= 1)):
+                                last_context, last_context_ts = current_context, now
+                                yield ContextUsage(current_context, ctx_window_val, used_model)
                             stream_tokens = stream_usage.tokens
                             report_parent_usage(stream_tokens)
                             if (

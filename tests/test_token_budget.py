@@ -84,6 +84,16 @@ def fake_clients(monkeypatch):
     return made
 
 
+@pytest.mark.anyio
+async def test_live_context_events_are_per_main_request_then_final_sdk_calibrates(fake_clients):
+    events = [ev async for ev in agent.stream_turn([], "执行", session_key="task:context-test")]
+    usage = [ev for ev in events if isinstance(ev, agent.ContextUsage)]
+    assert usage and usage[0].tokens == 101500
+    assert all(ev.tokens < 102000 for ev in usage)  # 三次请求不能累加成三倍窗口。
+    assert events.index(usage[0]) < next(i for i, ev in enumerate(events) if isinstance(ev, agent.TextDelta))
+    assert events[-1].reply.context_tokens == 100  # 最后以 SDK /context 为准。
+
+
 async def _run(budget: int) -> agent.AgentReply:
     done = None
     async for ev in agent.stream_turn([], "干活", session_key="task:budget-test", token_budget=budget):

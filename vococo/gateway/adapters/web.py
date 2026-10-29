@@ -298,6 +298,10 @@ class _WebSink(Sink):
         self.a._live.pop(self.conv, None)
         self.a._emit({"conv": self.conv, "type": "cancelled"})
 
+    async def context_usage(self) -> None:
+        key = config.resolve_session_key("web", self.conv)
+        self.a._emit({**session_store.session_summary(key), "conv": self.conv, "type": "usage"})
+
     async def done(self, reply: AgentReply, turn_id: int | None = None) -> None:
         # 发 done 前先输出最终全文快照,补全限流可能漏掉的尾巴,确保重连缓冲里有完整版
         if self._think:
@@ -374,12 +378,26 @@ def _session_metadata(row: dict) -> dict:
         binding = {"agent_id": owner["id"] if owner else "general",
                    "project_hash": config.project_hash_from_key(key)}
     task = tasks.task_for_session(key)
+    row["title"] = tasks.conversation_title(key, row.get("title") or "新对话")
     row.update(binding)
     row.setdefault("agent_id", None)
     row.setdefault("project_hash", None)
     row.update(conv=_conv_id_for_key(key), conversation_id=_conv_id_for_key(key),
                task_id=task["id"] if task else None, job_id=task.get("job_id") if task else None)
     return row
+
+
+def _search_session_rows(query: str) -> list[dict]:
+    from ...core import tasks
+
+    rows = {row["key"]: row for row in session_store.search_sessions(query, limit=50)}
+    for key in tasks.legacy_title_matches(query):
+        row = next((row for row in session_store.list_sessions(key) if row["key"] == key), None)
+        if row is not None:
+            rows[key] = {**row, "title": tasks.conversation_title(key), "match": "title", "snippet": ""}
+    return sorted(rows.values(), key=lambda row: (
+        row.get("match") != "title", -float(row.get("last_ts") or 0),
+    ))[:50]
 
 
 def _bind_browser_session(key: str, ownership: dict | None, *, bind: bool = True) -> None:
@@ -1400,10 +1418,8 @@ class WebAdapter:
         """侧边栏全局搜索(⌘F):标题优先、正文其次,含归档会话;被删除的
         会话已物理删除,天然不在结果里。"""
         q = (request.query.get("q") or "").strip()
-        from ...core import tasks as bg_tasks  # 懒加载,同 _handle_voice_sidebar
-
         # 全表 LIKE 扫描,数据涨到 9000 轮后要 60~100ms,放线程里别卡住其他请求
-        items = await asyncio.to_thread(session_store.search_sessions, q, limit=50)
+        items = await asyncio.to_thread(_search_session_rows, q)
         from ...cron import scheduler
 
         jobs = {config.resolve_session_key("web", j.get("conv") or f"task:{j['id']}"): j
@@ -1415,11 +1431,6 @@ class WebAdapter:
                 it["job_id"] = jobs[key]["id"]
             if key == config.SESSION_KEY:
                 it["title"] = "主会话"
-            task_id = bg_tasks.task_id_from_session_key(key)
-            if task_id is not None:
-                row = bg_tasks.get(task_id)
-                if row is not None:
-                    it["title"] = row["title"]
         return _compressed_json({"results": items})
 
     @_authed
@@ -1464,7 +1475,7 @@ class WebAdapter:
                     continue
                 if row:
                     c.update(task_status=row["status"], task_updated_at=row["updated_at"],
-                             title=row["title"], agent_id=c.get("agent_id") or row.get("agent_id"))
+                             agent_id=c.get("agent_id") or row.get("agent_id"))
                 task_convs.append(c)
         return _compressed_json({"main": main, "tasks": task_convs})
 
@@ -2603,7 +2614,9 @@ class WebAdapter:
         if not source["agent_id"]:
             return web.json_response({"error": "原会话未绑定有效 Agent，无法复制"}, status=409)
         dst_key = config.new_session_key()
-        title = session_store.get_title(src_key) or "新对话"
+        from ...core import tasks
+
+        title = tasks.conversation_title(src_key)
         # duplicate_session 自己插入 session_meta，复制完再绑定，附件仍走原有独立克隆。
         session_store.duplicate_session(src_key, dst_key, title + "副本")
         session_store.bind_session(dst_key, agent_id=source["agent_id"],

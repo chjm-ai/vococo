@@ -6,7 +6,7 @@ import json
 from claude_agent_sdk import tool
 
 from .. import config
-from ..core import permissions
+from ..core import permissions, tasks
 from ..gateway import clarify, web_bridge
 from ..memory import agents, session_store
 
@@ -65,6 +65,7 @@ def _list(source: str, query: str, limit: int) -> dict:
     rows = []
     for row in session_store.list_sessions(""):
         key = row["key"]
+        row["title"] = tasks.conversation_title(key, row["title"])
         if key == source or (query and query not in key.casefold() and query not in row["title"].casefold()):
             continue
         try:
@@ -102,7 +103,7 @@ def _query(source: str, reference: str, limit: int) -> dict:
     truncated = len(recent) > limit or any(
         len(user or "") > 4000 or len(assistant or "") > 4000 for user, assistant in recent[:limit])
     return {"source_session": source, "session_id": key,
-            "title": row["title"], "turns": turns, "truncated": truncated,
+            "title": tasks.conversation_title(key, row["title"]), "turns": turns, "truncated": truncated,
             "message": "包含重置前的历史对话，进行中的回答可能为空；每条文本最多 4000 字符"}
 
 

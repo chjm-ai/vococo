@@ -9,6 +9,7 @@ class _Snapshot:
     usage: dict = field(default_factory=dict)
     confirmed: bool = False
     counted: tuple[int, int, int] = (0, 0, 0)
+    context_confirmed: bool = False
 
 
 @dataclass
@@ -16,6 +17,7 @@ class StreamUsage:
     input_fresh: int = 0
     output_tokens: int = 0
     cache_read: int = 0
+    context_tokens: int = 0
     _active: dict[str, _Snapshot] = field(default_factory=dict)
 
     @property
@@ -30,15 +32,21 @@ class StreamUsage:
             usage = (event.get("message") or {}).get("usage") or {}
             # Codex 中转的开头只有整段输入估计，缓存明细在结尾才返回。
             confirmed = "cache_read_input_tokens" in usage or "cache_creation_input_tokens" in usage
-            self._active[scope] = _Snapshot(dict(usage), confirmed)
+            self._active[scope] = _Snapshot(dict(usage), confirmed, context_confirmed=confirmed)
             self._update(self._active[scope])
         elif kind == "message_delta":
             snapshot = self._active.setdefault(scope, _Snapshot())
-            snapshot.usage.update(event.get("usage") or {})
+            delta = event.get("usage") or {}
+            snapshot.usage.update(delta)
+            snapshot.context_confirmed |= "input_tokens" in delta
             snapshot.confirmed = True
             self._update(snapshot)
         elif kind == "message_stop":
             self._finish(scope)
+        snapshot = self._active.get(scope)
+        if not scope and snapshot and snapshot.context_confirmed and "input_tokens" in snapshot.usage:
+            # 只取主模型最近一次请求，不把跨工具调用吞吐或子代理窗口相加。
+            self.context_tokens = sum(snapshot.counted)
 
     def finish(self) -> None:
         """流被中断、没有最终用量时，保守记录尚未确认的输入估计。"""
