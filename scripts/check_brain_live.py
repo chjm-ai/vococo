@@ -13,6 +13,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -94,9 +95,9 @@ async def consent(http, response, state):
 
 async def call(session, name, arguments):
     response = await session.call_tool(name, arguments)
-    if response.isError or not isinstance(response.structuredContent, dict):
+    if response.is_error or not isinstance(response.structured_content, dict):
         raise ValueError("MCP 工具调用失败：" + name)
-    return response.structuredContent
+    return response.structured_content
 
 
 async def wait_terminal(session, task_id):
@@ -215,17 +216,20 @@ async def run(args):
             raise ValueError("issuer 错误")
         auth = await authorize(http, metadata, Path(args.password_file))
         private_save(Path(args.token_file), auth)
-        http.headers["Authorization"] = "Bearer " + auth["access_token"]
-        async with streamable_http_client(ORIGIN + "/mcp", http_client=http) as streams:
-            async with ClientSession(streams[0], streams[1]) as session:
-                await session.initialize()
-                names = [tool.name for tool in (await session.list_tools()).tools]
-                result = {"url": ORIGIN + "/mcp", "oauth_login": "passed", "tools": names}
-                if args.history_agent_id:
-                    result.update(await check_history(session, args.history_agent_id))
-                elif not args.auth_only:
-                    result.update(await check_tasks(session))
-        del http.headers["Authorization"]
+        async with httpx2.AsyncClient(trust_env=args.use_env_proxy, timeout=30,
+                                      headers={"Authorization": "Bearer " + auth["access_token"]}) as mcp_http:
+            async with streamable_http_client(ORIGIN + "/mcp", http_client=mcp_http) as streams:
+                async with ClientSession(streams[0], streams[1]) as session:
+                    initialized = await session.initialize()
+                    names = [tool.name for tool in (await session.list_tools()).tools]
+                    agents = await call(session, "vococo_list_agents", {"limit": 1})
+                    result = {"url": ORIGIN + "/mcp", "oauth_login": "passed", "tools": names,
+                              "protocol_version": initialized.protocol_version,
+                              "read_only_call": "passed", "visible_agent_sample": len(agents["agents"])}
+                    if args.history_agent_id:
+                        result.update(await check_history(session, args.history_agent_id))
+                    elif not args.auth_only:
+                        result.update(await check_tasks(session))
         if args.check_rate_limit:
             result["rate_limit"] = await check_rate(http, Path(args.password_file))
         print(json.dumps(result, ensure_ascii=False, indent=2))

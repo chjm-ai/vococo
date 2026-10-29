@@ -175,11 +175,11 @@ def test_normalization_strips_metadata_and_trailing_payload():
 
 
 @pytest.mark.parametrize("prefix", ["lark-cli", "lark-cli --profile test", "lark-cli --profile=test"])
-def test_help_allowed_but_profile_cannot_bypass_document_routing(prefix):
-    assert not lark.danger._legacy_lark_document_command(prefix + " docs +update --help")
-    assert lark.danger._legacy_lark_document_command(prefix + " docs +update --doc abc --content -")
+def test_help_allowed_but_profile_cannot_bypass_native_approval(prefix):
+    assert not lark.danger._lark_requires_approval(prefix + " docs +update --help")
+    assert lark.danger._lark_requires_approval(prefix + " docs +update --doc abc --content -")
     # 内容中的 --help 不是只读帮助。
-    assert lark.danger._legacy_lark_document_command(prefix + " docs +update --doc abc --content --help")
+    assert lark.danger._lark_requires_approval(prefix + " docs +update --doc abc --content --help")
 
 
 def test_phone_photo_orientation_survives_metadata_removal():

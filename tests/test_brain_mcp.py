@@ -60,17 +60,49 @@ async def session_for(app, token=UPSTREAM, headers=None):
 
 async def call(session, name, args):
     result = await session.call_tool(name, args)
-    assert not result.isError, result.content
-    return result.structuredContent
+    assert not result.is_error, result.content
+    return result.structured_content
+
+
+async def test_chatgpt_new_protocol_discovers_tools(environment):
+    app, _ = environment
+    headers = {"Authorization": f"Bearer {UPSTREAM}", "MCP-Protocol-Version": "2026-07-28",
+               "Accept": "application/json, text/event-stream", "MCP-Method": "tools/list"}
+    async with app.app.router.lifespan_context(app.app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), headers=headers) as client:
+            response = await client.post("http://127.0.0.1:8852/mcp", json={
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {}}}})
+    assert response.status_code == 200, response.text
+    assert {"vococo_search_history", "vococo_continue_task"} <= {
+        tool["name"] for tool in response.json()["result"]["tools"]}
+
+
+async def test_chatgpt_new_protocol_calls_read_only_tool(environment):
+    app, _ = environment
+    headers = {"Authorization": f"Bearer {UPSTREAM}", "MCP-Protocol-Version": "2026-07-28",
+               "Accept": "application/json, text/event-stream", "MCP-Method": "tools/call",
+               "MCP-Name": "vococo_list_agents"}
+    async with app.app.router.lifespan_context(app.app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), headers=headers) as client:
+            response = await client.post("http://127.0.0.1:8852/mcp", json={
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                    "name": "vococo_list_agents", "arguments": {}, "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {}}}})
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert not result.get("isError") and result["structuredContent"]["agents"]
 
 
 async def test_official_mcp_client_dispatch_idempotency_result_and_cancel(environment):
     app, workdir = environment
     async with session_for(app) as session:
         tools = (await session.list_tools()).tools
-        assert {tool.name for tool in tools} == {"vococo_create_task", "vococo_get_task", "vococo_cancel_task",
-            "vococo_list_agents", "vococo_list_sessions", "vococo_read_session"}
-        assert next(t for t in tools if t.name == "vococo_create_task").annotations.readOnlyHint is False
+        assert {tool.name for tool in tools} == {"vococo_create_task", "vococo_continue_task", "vococo_get_task", "vococo_cancel_task",
+            "vococo_list_agents", "vococo_list_sessions", "vococo_read_session", "vococo_search_history"}
+        assert next(t for t in tools if t.name == "vococo_create_task").annotations.read_only_hint is False
         args = {"title": "隔离派单", "prompt": "只运行测试任务", "idempotency_key": "request-test-001"}
         created = await call(session, "vococo_create_task", args)
         repeated = await call(session, "vococo_create_task", args)
@@ -82,7 +114,24 @@ async def test_official_mcp_client_dispatch_idempotency_result_and_cancel(enviro
         assert queried["status"] == "queued" and "prompt" not in queried and "source_access" not in queried
         cancelled = await call(session, "vococo_cancel_task", {"id": created["id"]})
         assert cancelled["cancel_requested"] and cancelled["status"] == "cancelled"
-        assert (await session.call_tool("vococo_create_task", {**args, "prompt": "不同任务"})).isError
+        assert (await session.call_tool("vococo_create_task", {**args, "prompt": "不同任务"})).is_error
+
+
+async def test_mcp_continues_owned_task_once(environment, monkeypatch):
+    app, _ = environment
+    start = Mock(return_value=True)
+    monkeypatch.setattr(task_runner, "start_claimed", start)
+    async with session_for(app) as session:
+        created = await call(session, "vococo_create_task", {
+            "title": "续接测试", "prompt": "第一条需求", "idempotency_key": "create-test-01"})
+        task_id = created["id"]
+        assert tasks.set_status(task_id, "running") and tasks.set_status(task_id, "done")
+        session_store.set_sdk_session_id(tasks.session_key(task_id), "sdk-test-session")
+        args = {"id": task_id, "instruction": "第二条需求", "idempotency_key": "continue-test-01"}
+        assert (await call(session, "vococo_continue_task", args))["id"] == task_id
+        assert (await call(session, "vococo_continue_task", args))["continuation"] == "accepted"
+        assert start.call_count == 1
+        assert (await session.call_tool("vococo_continue_task", {**args, "id": "not-owned"})).is_error
 
 
 async def test_mcp_history_pagination_rebuilds_text_and_no_tool_events(environment):
@@ -94,6 +143,9 @@ async def test_mcp_history_pagination_rebuilds_text_and_no_tool_events(environme
     async with session_for(app) as session:
         listed = await call(session, "vococo_list_sessions", {})
         assert listed["sessions"][0]["title"] == "实际历史标题"
+        found = await call(session, "vococo_search_history", {"query": "问题"})
+        assert found["results"][0]["turn_id"] == turn and found["results"][0]["key"] == key
+        assert (await session.call_tool("vococo_search_history", {"query": "   "})).is_error
         user, assistant, args = "", "", {"key": key, "length": 7999}
         while True:
             page = await call(session, "vococo_read_session", args)
@@ -104,7 +156,7 @@ async def test_mcp_history_pagination_rebuilds_text_and_no_tool_events(environme
                 break
             args.update(turn_id=turn, offset=page["next_offset"])
         assert user == "问题" * 5000 and assistant == "回答" * 6000
-        assert (await session.call_tool("vococo_read_session", {"key": "web:other-agent"})).isError
+        assert (await session.call_tool("vococo_read_session", {"key": "web:other-agent"})).is_error
 
 
 async def test_mcp_lists_and_reads_other_agents_with_explicit_agent_id(environment):
@@ -126,23 +178,28 @@ async def test_mcp_lists_and_reads_other_agents_with_explicit_agent_id(environme
         assert ids[brain_routes.AGENT_ID]["task_dispatch"] is True
         assert ids["d1ee9a7e2b"] == {"agent_id": "d1ee9a7e2b", "name": "DeepLeaper", "task_dispatch": False,
                                     "session_count": 1}
-        legacy = await call(session, "vococo_list_sessions", {"limit": 20})
+        default = await call(session, "vococo_list_sessions", {"limit": 20})
+        assert {row["agent_id"] for row in default["sessions"]} == {brain_routes.AGENT_ID, "d1ee9a7e2b"}
+        legacy = await call(session, "vococo_list_sessions", {"all_agents": False})
         assert {row["agent_id"] for row in legacy["sessions"]} == {brain_routes.AGENT_ID}
         everything = await call(session, "vococo_list_sessions", {"limit": 100, "all_agents": True})
         assert {row["agent_id"] for row in everything["sessions"]} >= {brain_routes.AGENT_ID, "d1ee9a7e2b"}
         only_other = await call(session, "vococo_list_sessions", {"agent_id": "d1ee9a7e2b"})
         assert [row["key"] for row in only_other["sessions"]] == [other_key]
+        search = await call(session, "vococo_search_history", {"query": "JLL"})
+        assert [(row["agent_id"], row["key"], row["turn_id"]) for row in search["results"]] == [
+            ("d1ee9a7e2b", other_key, turn)]
         # 老调用(不带 agent_id)仍按固定开发 Agent 校验归属
-        assert (await session.call_tool("vococo_read_session", {"key": other_key})).isError
+        assert (await session.call_tool("vococo_read_session", {"key": other_key})).is_error
         assert await call(session, "vococo_read_session", {"key": dev_key}) is not None
         page = await call(session, "vococo_read_session", {"key": other_key, "agent_id": "d1ee9a7e2b"})
         assert page["turn"]["user_text"] == "看看 JLL" and page["turn"]["assistant_text"] == "建议若干"
         # agent_id 与 key 不匹配时不串读
         assert (await session.call_tool("vococo_read_session",
-                                        {"key": dev_key, "agent_id": "d1ee9a7e2b"})).isError
+                                        {"key": dev_key, "agent_id": "d1ee9a7e2b"})).is_error
         assert (await session.call_tool("vococo_read_session",
-                                        {"key": other_key, "agent_id": "b" * 12})).isError
-        assert (await session.call_tool("vococo_list_sessions", {"agent_id": "b" * 12})).isError
+                                        {"key": other_key, "agent_id": "b" * 12})).is_error
+        assert (await session.call_tool("vococo_list_sessions", {"agent_id": "b" * 12})).is_error
 
 
 async def test_mcp_readable_agents_allowlist(environment, monkeypatch):
@@ -157,11 +214,16 @@ async def test_mcp_readable_agents_allowlist(environment, monkeypatch):
     async with session_for(app) as session:
         listed = await call(session, "vococo_list_agents", {})
         assert [item["agent_id"] for item in listed["agents"]] == [brain_routes.AGENT_ID]
-        assert (await session.call_tool("vococo_list_sessions", {"agent_id": "d1ee9a7e2b"})).isError
+        assert (await session.call_tool("vococo_list_sessions", {"agent_id": "d1ee9a7e2b"})).is_error
         assert (await session.call_tool("vococo_read_session",
-                                        {"key": other_key, "agent_id": "d1ee9a7e2b"})).isError
+                                        {"key": other_key, "agent_id": "d1ee9a7e2b"})).is_error
         rows = await call(session, "vococo_list_sessions", {"limit": 100, "all_agents": True})
         assert all(row["agent_id"] == brain_routes.AGENT_ID for row in rows["sessions"])
+        default = await call(session, "vococo_list_sessions", {})
+        assert all(row["agent_id"] == brain_routes.AGENT_ID for row in default["sessions"])
+        found = await call(session, "vococo_search_history", {"query": "私有问题"})
+        assert found["results"] == []
+        assert (await session.call_tool("vococo_search_history", {"query": "私有", "agent_id": "d1ee9a7e2b"})).is_error
 
 
 @pytest.mark.parametrize("token", ["", "wrong-token", BRIDGE])
@@ -176,13 +238,13 @@ async def test_oauth_upstream_secret_is_required(environment, token):
 async def test_mcp_bounds_backend_errors_and_no_secret_logging(environment, monkeypatch, caplog):
     app, _ = environment
     async with session_for(app) as session:
-        assert (await session.call_tool("vococo_get_task", {"id": "not-owned"})).isError
+        assert (await session.call_tool("vococo_get_task", {"id": "not-owned"})).is_error
         for args in ({"limit": 101}, {"offset": True}, {"offset": -1}, {"limit": "2"},
                      {"agent_id": "b" * 12}):
-            assert (await session.call_tool("vococo_list_sessions", args)).isError
+            assert (await session.call_tool("vococo_list_sessions", args)).is_error
         monkeypatch.setenv("VOCOCO_BRAIN_BRIDGE_TOKEN", "changed-secret-" + "n" * 32)
         result = await session.call_tool("vococo_list_sessions", {})
-        assert result.isError and "本机桥认证失败" in str(result.content)
+        assert result.is_error and "本机桥认证失败" in str(result.content)
         assert UPSTREAM not in caplog.text and BRIDGE not in caplog.text
 
 

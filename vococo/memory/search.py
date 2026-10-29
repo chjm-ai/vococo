@@ -9,7 +9,7 @@ from . import _db
 
 # 侧边栏全局搜索(⌘F)覆盖的会话前缀:普通 Web 会话 + 统一后台任务(语音/cron/chat
 # 三种触发方共用的 task: 前缀,2026-07-29 起 voice-task:/cron-task: 合并于此)。
-_SEARCH_PREFIXES = ("web:", "task:")
+_SEARCH_PREFIXES = ("web:", "task:", "session:")
 
 
 def search(text: str, limit: int = 10) -> list[tuple[str, str, str]]:
@@ -61,6 +61,8 @@ def search_sessions(q: str, limit: int = 50) -> list[dict]:
     "title"/"content"。个人规模(几千轮/约 1MB 文本)LIKE 全表扫描毫秒级,
     与 search() 同理不上 FTS(FTS5 默认分词器切不开中文)。
     """
+    from .session_store import _ownership_fields
+
     c = _db.conn()
     like = f"%{_like_escape(q)}%"
     # 主会话(SESSION_KEY,与 TG/CLI 共享)也参与搜索,按完整 key 精确匹配
@@ -78,7 +80,7 @@ def search_sessions(q: str, limit: int = 50) -> list[dict]:
         ).fetchall()
         return [
             {"key": key, "title": title or "新对话", "archived": True,
-             "last_ts": ts, "match": "title", "snippet": ""}
+             "last_ts": ts, "match": "title", "snippet": "", **_ownership_fields(key)}
             for key, title, ts in rows
         ]
     out: list[dict] = []
@@ -121,4 +123,6 @@ def search_sessions(q: str, limit: int = 50) -> list[dict]:
             "match": "content",
             "snippet": _snippet(u, q) or _snippet(a, q),
         })
+    for item in out:
+        item.update(_ownership_fields(item["key"]))
     return out[:limit]

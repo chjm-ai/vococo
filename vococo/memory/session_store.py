@@ -79,6 +79,49 @@ def _conn():
     return _db.conn()
 
 
+def bind_session(key: str, *, agent_id: str | None = None,
+                 project_hash: str | None = None) -> None:
+    """首次绑定归属；重复同值幂等，新会话的归属不可修改。"""
+    if key.startswith("session:") and not agent_id:
+        raise ValueError("新会话必须显式绑定 Agent")
+    c = _conn()
+    with c:
+        c.execute(
+            "INSERT INTO session_meta(session_key,agent_id,project_hash,bound_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(session_key) DO UPDATE SET agent_id=excluded.agent_id, "
+            "project_hash=excluded.project_hash,bound_at=excluded.bound_at "
+            "WHERE session_meta.bound_at IS NULL",
+            (key, agent_id, project_hash, time.time()),
+        )
+        existing = session_binding(key)
+        if existing != {"agent_id": agent_id, "project_hash": project_hash}:
+            raise ValueError("会话已绑定其他归属")
+
+
+def session_binding(key: str) -> dict:
+    """只读持久绑定；尚未绑定（包括历史会话）返回空字典。"""
+    row = _conn().execute(
+        "SELECT agent_id,project_hash FROM session_meta WHERE session_key=? AND bound_at IS NOT NULL",
+        (key,),
+    ).fetchone()
+    return dict(zip(("agent_id", "project_hash"), row)) if row else {}
+
+
+def _ownership_fields(key: str) -> dict:
+    from .. import config
+
+    binding = session_binding(key)
+    if binding:
+        return binding
+    if key.startswith("session:"):
+        return {"agent_id": None, "project_hash": None}
+    from . import agents
+
+    agent = agents.agent_for_session(key)
+    return {"agent_id": agent["id"] if agent else None,
+            "project_hash": config.project_hash_from_key(key)}
+
+
 def _watermark(c, session_key: str) -> int:
     row = c.execute(
         "SELECT watermark_id FROM session_meta WHERE session_key=?", (session_key,)
@@ -898,7 +941,7 @@ def list_sessions(prefix: str, *, archived: bool | None = None) -> list[dict]:
         "  SELECT session_key FROM turns WHERE session_key LIKE ?"
         "  UNION"
         "  SELECT session_key FROM session_meta "
-        "  WHERE session_key LIKE ? AND title IS NOT NULL AND title != ''"
+        "  WHERE session_key LIKE ? AND ((title IS NOT NULL AND title != '') OR bound_at IS NOT NULL)"
         ") "
         # 还没 turn 的新会话用「当前时间」兜底,好让它在等首条回复期间稳定
         # 排在列表最前(前端按 last_ts 倒序);回复落库后自然换成真实 turn 时间。
@@ -928,6 +971,7 @@ def list_sessions(prefix: str, *, archived: bool | None = None) -> list[dict]:
         item["pending_review"] = bool(row[14])
         item["pinned"] = bool(row[15])
         item["last_error"] = bool(row[16])
+        item.update(_ownership_fields(key))
         out.append(item)
     return out
 
@@ -941,17 +985,18 @@ def find_session(session_key: str) -> dict | None:
     """
     row = _conn().execute(
         "SELECT EXISTS(SELECT 1 FROM turns WHERE session_key=?), "
-        "m.title, COALESCE(m.last_error, 0) "
+        "m.title, COALESCE(m.last_error, 0), m.bound_at "
         "FROM (SELECT ? AS session_key) AS k "
         "LEFT JOIN session_meta AS m ON m.session_key=k.session_key",
         (session_key, session_key),
     ).fetchone()
-    if not row or (not row[0] and not row[1]):
+    if not row or (not row[0] and not row[1] and row[3] is None):
         return None
     return {
         "key": session_key,
         "title": row[1] or "新对话",
         "last_error": bool(row[2]),
+        **_ownership_fields(session_key),
     }
 
 
@@ -964,9 +1009,9 @@ def _usage_fields(vals) -> dict:
     # 会话显示，不必等下一轮成功请求覆盖数据库残值。
     effective_model = chosen or model or ""
     if effective_model.lower().startswith("gpt-5.6"):
-        from ..core.agent import context_window
+        from ..core.agent import effective_context_window
 
-        window = context_window(effective_model)
+        window = effective_context_window(effective_model, model)
     return {
         "ctx_tokens": ctx or 0,
         "total_tokens": total or 0,
@@ -1006,6 +1051,7 @@ def session_summary(session_key: str) -> dict:
         "last_ts": last_ts,
     }
     out.update(_usage_fields(trow if trow else (0, 0, 0, 0, 0, 0, "", "", 0, 0)))
+    out.update(_ownership_fields(session_key))
     return out
 
 
@@ -1018,6 +1064,18 @@ def set_pending_review(session_key: str, pending: bool) -> None:
         (session_key, 1 if pending else 0),
     )
     c.commit()
+
+
+def clear_pending_review_through(session_key: str, turn_id: int) -> bool:
+    """仅在没有更新消息时清未读，避免迟到的已读请求吞掉新结果。"""
+    c = _conn()
+    cur = c.execute(
+        "UPDATE session_meta SET pending_review=0 WHERE session_key=? "
+        "AND NOT EXISTS (SELECT 1 FROM turns WHERE session_key=? AND id>?)",
+        (session_key, session_key, turn_id),
+    )
+    c.commit()
+    return cur.rowcount > 0
 
 
 def set_conv_pinned(session_key: str, pinned: bool) -> None:

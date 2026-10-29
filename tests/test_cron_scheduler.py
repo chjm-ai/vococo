@@ -1,7 +1,7 @@
 """cron 调度器的测试(2026-07-29 随统一后台任务引擎改写)。
 
 _run_job 现在只是"触发"——真正跑一轮走 core/task_runner.py 那套语音/cron/chat
-三方共用的引擎(job_id 复用为 task_id),跑完后异步触发 _on_task_terminal 做
+三方共用的引擎(job_id 与 task_id 独立映射),跑完后异步触发 _on_task_terminal 做
 回填统计 + 推送,不再像以前那样在 _run_job 里同步等 run_turn 跑完再处理。
 
 创建/管理走 web 接口(见 test_web_cron_sidebar.py);这里测两段:
@@ -43,7 +43,75 @@ async def _noop_coro(*_a, **_k) -> None:
     return None
 
 
-# ── _run_job:触发后落进专属会话,job_id 复用为 task_id ───────────────────────
+# ── 内置记忆复盘:通知前先保存到实际目标会话 ──────────────────────────────
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("conv", ["main", "reflection-target"])
+async def test_reflect_persists_before_notifying(cron_env, monkeypatch, conv):
+    from vococo.gateway.adapters.web import WebAdapter
+    from vococo.gateway.run import GatewayRunner
+
+    monkeypatch.setattr(scheduler.config, "REFLECT_TARGET", f"web:{conv}")
+    session_store.append(scheduler.config.SESSION_KEY, "记住这个", "已记住")
+
+    async def fake_run(*args, **kwargs):
+        return AgentReply(text="已整理一条长期记忆", tool_calls=[], cost_usd=None, is_error=False)
+
+    monkeypatch.setattr(scheduler, "run_turn", fake_run)
+    adapter = WebAdapter()
+    emitted = []
+    key = scheduler.config.resolve_session_key("web", conv)
+
+    def capture(event):
+        history = session_store.load_history(key)
+        assert history[-1]["assistant"] == event["text"], "发通知时必须已经能从历史读到"
+        assert history[-1]["events"][0]["type"] == "external_result"
+        emitted.append(event)
+
+    monkeypatch.setattr(adapter, "_emit", capture)
+    monkeypatch.setattr(adapter, "_push_notify", lambda **kw: None)
+    await scheduler._reflect(GatewayRunner([adapter]).push)
+    assert emitted[0]["conv"] == conv
+    assert "记忆复盘" in emitted[0]["text"]
+    assert next(r for r in session_store.list_sessions("") if r["key"] == key)["pending_review"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("summary,target", [("", "web:main"), ("摘要", "")])
+async def test_reflect_without_output_or_target_does_not_append(cron_env, monkeypatch, summary, target):
+    session_store.append(scheduler.config.SESSION_KEY, "问题", "回复")
+    monkeypatch.setattr(scheduler.config, "REFLECT_TARGET", target)
+
+    async def fake_run(*args, **kwargs):
+        return AgentReply(text=summary, tool_calls=[], cost_usd=None, is_error=False)
+
+    async def unexpected_push(*args):
+        raise AssertionError("无输出或无目标不应推送")
+
+    monkeypatch.setattr(scheduler, "run_turn", fake_run)
+    await scheduler._reflect(unexpected_push)
+    assert len(session_store.load_history(scheduler.config.SESSION_KEY)) == 1
+
+
+@pytest.mark.anyio
+async def test_reflect_push_failure_keeps_saved_message(cron_env, monkeypatch):
+    monkeypatch.setattr(scheduler.config, "REFLECT_TARGET", "web:main")
+    session_store.append(scheduler.config.SESSION_KEY, "问题", "回复")
+
+    async def fake_run(*args, **kwargs):
+        return AgentReply(text="可找回的摘要", tool_calls=[], cost_usd=None, is_error=False)
+
+    async def failed_push(*args):
+        raise RuntimeError("通知暂时不可用")
+
+    monkeypatch.setattr(scheduler, "run_turn", fake_run)
+    with pytest.raises(RuntimeError, match="通知暂时不可用"):
+        await scheduler._reflect(failed_push)
+    assert session_store.load_history(scheduler.config.SESSION_KEY)[-1]["assistant"].endswith("可找回的摘要")
+
+
+# ── _run_job:触发后落进专属会话,job_id 与 task_id 独立映射 ───────────────────────
 
 
 @pytest.mark.anyio
@@ -58,9 +126,11 @@ async def test_run_job_dispatches_and_persists_to_own_conv(cron_env, monkeypatch
         name="晨间简报", prompt="汇总今天安排", schedule={"kind": "cron", "expr": "0 8 * * *"}
     )
     scheduler._run_job(job, _noop_coro)
-    await task_runner._running[job["id"]]
+    await task_runner._running[bg_tasks.task_for_job(job["id"])["id"]]
 
-    row = bg_tasks.get(job["id"])
+    row = bg_tasks.task_for_job(job["id"])
+    assert row["id"] != job["id"]
+    assert row["session_key"] == job["conv"]
     assert row["origin"] == "cron"
     assert row["status"] == "done"
 
@@ -73,7 +143,7 @@ async def test_run_job_dispatches_and_persists_to_own_conv(cron_env, monkeypatch
 @pytest.mark.anyio
 async def test_run_job_second_trigger_appends_same_task_no_new_row(cron_env, monkeypatch):
     """cron 到点第二次触发同一个 job:不产生新任务行,是对同一个 task 原地续接一轮
-    (job_id 复用为 task_id 的设计,见 core/tasks.py 模块头说明)。"""
+    (job_id 与 task_id 独立映射 的设计,见 core/tasks.py 模块头说明)。"""
     calls = []
 
     async def fake_stream_turn(history, prompt, cwd=None, session_key=None, **kw):
@@ -87,14 +157,14 @@ async def test_run_job_second_trigger_appends_same_task_no_new_row(cron_env, mon
         name="晨间简报", prompt="汇总今天安排", schedule={"kind": "cron", "expr": "0 8 * * *"}
     )
     scheduler._run_job(job, _noop_coro)
-    await task_runner._running[job["id"]]
+    await task_runner._running[bg_tasks.task_for_job(job["id"])["id"]]
 
     # 第二次触发落在"终态续聊"分支,_run_job 内部用 asyncio.create_task 包了一层
-    # append()(不阻塞 _tick),要先让出一次事件循环,_running[job_id] 才会被
+    # append()(不阻塞 _tick),要先让出一次事件循环,_running[task_id] 才会被
     # append() 内部的 _start_one 填上。
     scheduler._run_job(job, _noop_coro)
     await asyncio.sleep(0)
-    await task_runner._running[job["id"]]
+    await task_runner._running[bg_tasks.task_for_job(job["id"])["id"]]
 
     assert len(bg_tasks.list_recent()) == 1  # 没有产生第二条任务行
     # 实际发给模型的文本会带上摘要标记指令(见 task_runner._SUMMARY_TAG_INSTRUCTION),
@@ -108,8 +178,10 @@ async def test_cron_second_trigger_starts_fresh_no_resume(cron_env, monkeypatch)
     """cron 自动触发每次从零开始:第二次触发不 resume 上一次的 SDK session,
     避免上下文无限膨胀。用户手动消息(走 converse)不受影响。"""
     resume_args = []
+    histories = []
 
     async def fake_stream_turn(history, prompt, cwd=None, session_key=None, resume=None, **kw):
+        histories.append(list(history))
         resume_args.append(resume)
         yield SessionStarted(session_id=f"sid-{len(resume_args)}")
         yield Done(AgentReply(text=f"第{len(resume_args)}次", tool_calls=[], cost_usd=None, is_error=False))
@@ -123,24 +195,43 @@ async def test_cron_second_trigger_starts_fresh_no_resume(cron_env, monkeypatch)
 
     # 第一次触发(dispatch):没有 resume
     scheduler._run_job(job, _noop_coro)
-    await task_runner._running[job["id"]]
+    await task_runner._running[bg_tasks.task_for_job(job["id"])["id"]]
     assert resume_args[0] is None
 
     # 第一次跑完后 SDK session id 应已存入
-    sk = bg_tasks.session_key(job["id"])
+    sk = bg_tasks.session_key(bg_tasks.task_for_job(job["id"])["id"])
     assert session_store.get_sdk_session_id(sk) == "sid-1"
 
     # 第二次触发(append):我们的改动应清掉 sdk_session_id,使 resume=None
     scheduler._run_job(job, _noop_coro)
     await asyncio.sleep(0)
-    await task_runner._running[job["id"]]
+    await task_runner._running[bg_tasks.task_for_job(job["id"])["id"]]
     assert resume_args[1] is None, "cron 第二次触发不应 resume,应从零开始"
+    assert histories == [[], []], "定时独立执行不能重新注入上轮历史"
 
     # 跑完后新的 sdk_session_id 仍会存回去(供用户手动排查时 resume)
     assert session_store.get_sdk_session_id(sk) == "sid-2"
 
+    # 语音/通知等入口人工续聊走 append，不按 cron 来源误清空上下文。
+    assert (await task_runner.append(bg_tasks.task_for_job(job["id"])["id"], "人工追问"))["ok"]
+    await task_runner._running[bg_tasks.task_for_job(job["id"])["id"]]
+    assert resume_args[2] == "sid-2"
+    assert histories[2]
 
-# ── _on_task_terminal:回填统计 + 推送(不依赖真的跑一轮,直接构造终态 task) ──
+
+# ── _on_task_terminal:回填统计 + 推送(真实任务映射,不启动执行进程) ──
+
+
+def _terminal_task(job, status="done", text=""):
+    task = bg_tasks.create(
+        title=job["name"], prompt=job["prompt"], origin="cron",
+        job_id=job["id"], session_key=job["conv"], agent_id=job.get("agent_id"),
+    )
+    assert task["id"] != job["id"]
+    assert bg_tasks.session_key(task["id"]) == job["conv"]
+    assert bg_tasks.set_status(task["id"], "running")
+    assert bg_tasks.finish(task["id"], status, text, text)
+    return bg_tasks.get(task["id"])
 
 
 @pytest.mark.anyio
@@ -153,10 +244,7 @@ async def test_on_task_terminal_persists_status_and_pushes_web(cron_env):
     async def fake_push(platform, chat_id, text):
         pushes.append((platform, chat_id, text))
 
-    task = {
-        "id": job["id"], "status": "done",
-        "result_summary": "今天没什么特别的", "result_full": "今天没什么特别的",
-    }
+    task = _terminal_task(job, text="今天没什么特别的")
     await scheduler._on_task_terminal(task, fake_push)
 
     updated = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
@@ -178,7 +266,7 @@ async def test_on_task_terminal_also_pushes_extra_target(cron_env):
     async def fake_push(platform, chat_id, text):
         pushes.append((platform, chat_id))
 
-    task = {"id": job["id"], "status": "done", "result_summary": "本周进展良好", "result_full": "本周进展良好"}
+    task = _terminal_task(job, text="本周进展良好")
     await scheduler._on_task_terminal(task, fake_push)
 
     assert pushes == [("web", job["conv"]), ("web", "conv1")]
@@ -193,7 +281,7 @@ async def test_on_task_terminal_marks_failed_status(cron_env):
     async def fake_push(platform, chat_id, text):
         pass
 
-    task = {"id": job["id"], "status": "failed", "result_summary": "", "result_full": ""}
+    task = _terminal_task(job, status="failed")
     await scheduler._on_task_terminal(task, fake_push)
 
     updated = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
@@ -206,8 +294,13 @@ async def test_on_task_terminal_skips_deleted_job(cron_env):
     async def fake_push(platform, chat_id, text):
         raise AssertionError("job 已删除不该推送")
 
-    task = {"id": "ghost-job", "status": "done", "result_summary": "x", "result_full": "x"}
+    job = scheduler.create_job(
+        name="已删除任务", prompt="p", schedule={"kind": "cron", "expr": "0 8 * * *"}
+    )
+    task = _terminal_task(job, text="x")
+    scheduler.save_jobs([])
     await scheduler._on_task_terminal(task, fake_push)  # 不抛异常即通过
+    assert scheduler.load_jobs() == []
 
 
 @pytest.mark.anyio
@@ -230,6 +323,117 @@ async def test_repeated_same_error_goes_quiet_then_auto_disables(cron_env, monke
     updated = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
     assert updated["enabled"] is False
     assert "fail_streak" not in updated
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("job_id", ["13f146ce", "f4a2a099"])
+async def test_special_script_repeated_errors_always_push_and_remain_enabled(cron_env, monkeypatch, job_id):
+    monkeypatch.setattr(scheduler, "FAIL_DISABLE_SPAN_SEC", 0)
+
+    async def fake_subprocess_shell(cmd, **kw):
+        return _FakeProc(b"script failed", returncode=1)
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+    job = _make_script_job(id=job_id, fail_streak=4, fail_digest="old", fail_since=1)
+    pushes = []
+
+    async def fake_push(platform, chat_id, text):
+        pushes.append(text)
+
+    for _ in range(scheduler.FAIL_DISABLE_STREAK + 1):
+        await scheduler._run_script_job(job, fake_push)
+        updated = scheduler.load_jobs()[0]
+        assert updated["last_status"] == "error"
+        assert updated["last_run_at"] is not None
+        assert updated["enabled"] is True
+
+    assert len(pushes) == scheduler.FAIL_DISABLE_STREAK + 1
+    assert all("script failed" in text for text in pushes)
+    assert all("不再推送" not in text and "自动停用" not in text for text in pushes)
+    assert not any(key in updated for key in ("fail_streak", "fail_digest", "fail_since"))
+
+
+@pytest.mark.anyio
+async def test_special_script_run_ids_are_unique_and_running_is_persisted(cron_env, monkeypatch):
+    seen = []
+
+    async def fake_subprocess_shell(cmd, **kw):
+        run_id = kw["env"]["VOCOCO_CRON_RUN_ID"]
+        assert scheduler.load_jobs()[0]["running_run_id"] == run_id
+        assert kw["env"]["EXTRA_TEST"] == "yes"
+        seen.append(run_id)
+        return _FakeProc(b"##CRON_SIGNAL:0##", returncode=0)
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+    job = _make_script_job(id="13f146ce")
+    for _ in range(2):
+        await scheduler._run_script_job(job, _noop_coro, extra_env={"EXTRA_TEST": "yes", "VOCOCO_CRON_RUN_ID": "wrong"})
+        saved = scheduler.load_jobs()[0]
+        assert saved["last_run_id"] == seen[-1]
+        assert "running_run_id" not in saved
+    assert len(set(seen)) == 2
+
+
+@pytest.mark.anyio
+async def test_pending_run_survives_push_failure_and_is_acknowledged_after_delivery(cron_env, monkeypatch):
+    import json
+    seen = []
+
+    async def fake_subprocess_shell(cmd, **kw):
+        seen.append(json.loads(kw["env"]["VOCOCO_CRON_PENDING_RUN_IDS"]))
+        output = "## 上次通知未确认，保守重播\nreport\n##CRON_SIGNAL:0##".encode()
+        return _FakeProc(output, returncode=0)
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+    job = _make_script_job(id="13f146ce")
+    async def fail(*args):
+        raise RuntimeError("channel down")
+    with pytest.raises(RuntimeError, match="channel down"):
+        await scheduler._run_script_job(job, fail)
+    first = scheduler.load_jobs()[0]["running_run_id"]
+    assert scheduler.load_jobs()[0]["pending_run_ids"] == [first]
+    async def push(*args):
+        assert first in scheduler.load_jobs()[0]["pending_run_ids"]
+    await scheduler._run_script_job(job, push)
+    assert seen == [[], [first]]
+    assert "pending_run_ids" not in scheduler.load_jobs()[0]
+    assert "running_run_id" not in scheduler.load_jobs()[0]
+
+
+@pytest.mark.anyio
+async def test_failed_replay_warns_and_keeps_old_run_pending(cron_env, monkeypatch):
+    async def fake_subprocess_shell(cmd, **kw):
+        return _FakeProc(b"##CRON_SIGNAL:0##", returncode=0)
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+    job = _make_script_job(id="13f146ce", pending_run_ids=["old"])
+    pushes = []
+    async def push(platform, chat_id, text):
+        pushes.append(text)
+    await scheduler._run_script_job(job, push)
+    assert "未能重播" in pushes[0] and "old" in pushes[0]
+    assert scheduler.load_jobs()[0]["pending_run_ids"] == ["old"]
+
+
+@pytest.mark.anyio
+async def test_special_id_agent_job_still_auto_disables(cron_env, monkeypatch):
+    monkeypatch.setattr(scheduler, "FAIL_DISABLE_SPAN_SEC", 0)
+    job = scheduler.create_job(name="Agent", prompt="p", schedule={"kind": "cron", "expr": "0 8 * * *"})
+    job["id"] = "13f146ce"
+    scheduler.save_jobs([job])
+    for _ in range(scheduler.FAIL_DISABLE_STREAK):
+        await scheduler._push_job_result(job["id"], "error", "失败", _noop_coro)
+    assert scheduler.load_jobs()[0]["enabled"] is False
+
+
+@pytest.mark.anyio
+async def test_f4_agent_repeated_failures_remain_enabled(cron_env, monkeypatch):
+    monkeypatch.setattr(scheduler, "FAIL_DISABLE_SPAN_SEC", 0)
+    job = scheduler.create_job(name="Agent", prompt="p", schedule={"kind": "cron", "expr": "0 8 * * *"})
+    job["id"] = "f4a2a099"
+    scheduler.save_jobs([job])
+    for _ in range(scheduler.FAIL_DISABLE_STREAK + 1):
+        await scheduler._push_job_result(job["id"], "error", "失败", _noop_coro)
+    assert scheduler.load_jobs()[0]["enabled"] is True
 
 
 @pytest.mark.anyio
@@ -378,7 +582,8 @@ async def test_run_script_job_bare_zero_signal_is_silent(cron_env, monkeypatch):
 
     assert pushes == []
     assert session_store.load_recent(job["conv"]) == []
-    assert events[-1] == {"conv": job["conv"], "type": "done", "silent": True}
+    assert events[-1] == {"conv": job["conv"], "type": "done", "silent": True,
+                           "task_id": None, "job_id": job["id"], "conversation_id": job["conv"]}
     assert job["id"] not in scheduler._script_running
     updated = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
     assert updated["last_status"] == "success"

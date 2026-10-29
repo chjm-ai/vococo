@@ -696,7 +696,7 @@ function setMeta(d){
 // chosen_model 时写,不把 S.model 清回空。
 function refillCurrentMeta(){
   const conv=S.conv;
-  if(!conv || String(conv).startsWith("local-")) return;
+  if(!conv || isDraftConv(conv)) return;
   const c=S.convs.find(x=>x.conv===conv)
     || (S.voiceSidebar.main && S.voiceSidebar.main.conv===conv ? S.voiceSidebar.main : null)
     || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv)
@@ -726,9 +726,11 @@ function effortShort(id, levels){
 }
 function renderEffortChip(){
   const state=effortState(), btn=$("#effortBtn"), enabled=state.levels.length>0;
-  $("#effortName").textContent=effortShort(state.value, state.levels);
+  const tier=((S.models&&S.models.service_tiers)||{})[curModel()];
+  $("#effortName").textContent=effortShort(state.value, state.levels)+(tier && tier.supported && tier.value==="priority" ? "⚡2x" : "");
   btn.disabled=!enabled;
   btn.title=enabled ? "思考深度" : "此模型使用服务商默认思考深度";
+  if(!$("#effortPop").hidden) renderEffortPop();
 }
 function renderEffortPop(){
   const pop=$("#effortPop"), state=effortState(), cur=state.value;
@@ -738,6 +740,42 @@ function renderEffortPop(){
       '<span class="ml">'+esc(e[1])+'</span>'+(on?'<span class="mk">✓</span>':'')+'</button>';
   }).join("");
   pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickEffort(b.dataset.e); });
+  renderPrioritySwitch(pop);
+}
+const priorityPending=new Set();
+function renderPrioritySwitch(pop){
+  const model=curModel(), tier=((S.models&&S.models.service_tiers)||{})[model];
+  if(!tier || !tier.supported) return;
+  pop.insertAdjacentHTML("beforeend", '<div class="priority-tier">'+
+    '<label class="priority-label" for="prioritySwitch">⚡2x</label>'+
+    '<label class="sw"><input id="prioritySwitch" type="checkbox" role="switch" aria-label="GPT 优先档">'+
+    '<span class="track"></span></label></div><div class="priority-error" role="alert" hidden></div>');
+  const input=pop.querySelector("#prioritySwitch");
+  input.checked=tier.value==="priority";
+  input.disabled=priorityPending.has(model);
+  input.closest(".priority-tier").title="优先处理，不保证两倍速度；订阅内含额度可能按 2.5 倍消耗，购买额度按 2 倍消耗。下一条消息生效。";
+  input.onchange=()=>pickServiceTier(input, model);
+}
+async function pickServiceTier(input, model){
+  const tier=input.checked?"priority":"";
+  if(priorityPending.has(model)) return;
+  priorityPending.add(model); input.disabled=true;
+  let error="";
+  try{
+    const r=await api("/service-tier", {method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({model:model, tier:tier})});
+    if(!r.ok) throw new Error("优先档保存失败，请重试");
+    const result=await r.json(), saved=((S.models&&S.models.service_tiers)||{})[model];
+    if(saved) saved.value=result.tier;
+  }catch(e){ error="优先档保存失败，请重试"; }
+  finally{
+    priorityPending.delete(model);
+    renderEffortChip();
+    if(!$("#effortPop").hidden){
+      const notice=$("#effortPop .priority-error");
+      if(error && curModel()===model && notice){ notice.textContent=error; notice.hidden=false; }
+    }
+  }
 }
 function pickEffort(id){
   const state=effortState(), old=state.value, saved=((S.models&&S.models.efforts)||{})[state.model];
@@ -781,7 +819,7 @@ async function refreshPerm(conv){
 }
 function renderPermChip(){
   const d=S.perm||{mode:"standard"}, btn=$("#permBtn"), full=d.mode==="full";
-  const draft=String(S.conv||"").startsWith("local-");
+  const draft=isDraftConv(S.conv);
   btn.classList.toggle("full", full);
   $("#permName").innerHTML = full
     ? PERM_OPEN+'<span class="pl">完全访问'+(d.source==="session"&&d.until?" · "+permLeft(d.until):"")+'</span>'
@@ -793,7 +831,7 @@ function renderPermChip(){
   if(btn.disabled) btn.title="群聊会话固定为标准权限";
 }
 function renderPermPop(){
-  const d=S.perm||{}, pop=$("#permPop"), draft=String(S.conv||"").startsWith("local-");
+  const d=S.perm||{}, pop=$("#permPop"), draft=isDraftConv(S.conv);
   const agentLabel=(d.agent_name ? "跟随 Agent「"+esc(d.agent_name)+"」" : "跟随默认")
     +"("+(d.agent_mode==="full"?"完全访问":"标准")+")";
   const cur = !d.session_mode ? "" : d.session_mode==="standard" ? "standard" : (d.until ? "full2" : "full");
@@ -1416,7 +1454,7 @@ function buildSysNote(text, jobId){
   const row=el("div","row sys"); const b=el("div","sysnote"); b.textContent=text;
   if(jobId){
     b.classList.add("link"); b.title="查看这个定时任务的详细过程";
-    b.onclick=()=>{ const j=(S.cronJobs||[]).find(x=>x.job_id===jobId); openConv(j?j.conv:"task:"+jobId); };
+    b.onclick=()=>{ const j=(S.cronJobs||[]).find(x=>x.job_id===jobId); if(j) openConv(j.conv); };
   }
   row.append(b); return row;
 }
@@ -1595,7 +1633,7 @@ function setEarlierHistoryLoading(on){
 }
 async function loadEarlierHistory(){
   const conv=S.conv;
-  if(!conv || String(conv).startsWith("local-")) return;
+  if(!conv || isDraftConv(conv)) return;
   const current=S.histCache[conv]||[];
   const first=current[0];
   if(!first || first.id==null) return;
@@ -1801,7 +1839,7 @@ async function openConv(conv, silentGroup){
   // 里找——否则只清了 S.pendingReview 这半份缓存,行对象自己的 pending_review 字段
   // 仍是 true,渲染时 "t.pending_review || S.pendingReview[t.conv]" 这个 || 判断
   // 依然为真,灰点点了不消失,得等下次 loadVoiceSidebar()/loadCronJobs() 重拉才会清。
-  if(!String(conv).startsWith("local-")){
+  if(!isDraftConv(conv)){
     S.pendingReview[conv]=false;
     const citem=S.convs.find(x=>x.conv===conv)
       || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv)
@@ -1828,7 +1866,7 @@ async function openConv(conv, silentGroup){
   refreshPerm(conv);                             // 权限胶囊:本会话 / 所属 Agent 的权限档位
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
   window.refreshTaskStatus && window.refreshTaskStatus();  // 刷新任务状态条(loadTasks 在通话视图 IIFE 内,经 window 出口调)
-  const isLocal = String(conv).startsWith("local-");
+  const isLocal = isDraftConv(conv);
   let cached = S.histCache[conv];
   if(!cached && !isLocal){
     cached = await idbGet("hist:"+conv);        // 内存没有(刷新页面后的第一次打开)→ 试磁盘
@@ -1888,7 +1926,7 @@ async function openConv(conv, silentGroup){
 // 权威历史重绘;服务端也认为还在跑就不整包打断,但会用 draft_text 把落后的画面追平。
 async function reloadHistory(force){
   const conv=S.conv;
-  if(!conv || String(conv).startsWith("local-")) return;  // 只在非本地会话拉
+  if(!conv || isDraftConv(conv)) return;  // 只在非本地会话拉
   if(S.stream && !force){
     (S.historyRefreshPending||(S.historyRefreshPending={}))[conv]=true;
     return;  // 不打断流式输出，收尾后补拉，不能丢掉外部写入的结果。
@@ -1931,6 +1969,7 @@ async function reloadHistory(force){
     idbSetHist(conv, turns);
     renderTurns(turns, conv);  // 内部按轮 diff,没变的轮直接跳过
     if(S.historyRefreshPending) delete S.historyRefreshPending[conv];
+    return {lastTurnId:d.turns[d.turns.length-1]?.id};  // 已读请求只能覆盖确实展示过的消息。
   }catch(e){}
 }
 
@@ -2063,7 +2102,7 @@ document.addEventListener("keydown", e=>{
     e.preventDefault();
     // 新对话欢迎屏(local- 会话)没东西可搜,仍走全局搜索
     const inChat=!e.shiftKey && S.surface==="chat" && !$("#chatMain").hidden && S.conv
-      && !String(S.conv).startsWith("local-") && $("#searchModal").hidden;
+      && !isDraftConv(S.conv) && $("#searchModal").hidden;
     if(inChat) openFind(); else { closeFind(); openSearchModal(); }
   } else if((e.metaKey||e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key==="["||e.key==="]")){
     // ⌘[ / ⌘] 前进后退,跟浏览器/Finder 一致;输入框里也生效(这俩组合本来就不输入字符)

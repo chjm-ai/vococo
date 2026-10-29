@@ -41,6 +41,7 @@ _DEFAULTS: dict = {
     "external_mcp": {},         # name -> {type,command,args,env,url,headers,enabled}
     "web_default_model": "",    # web 端上次选定的模型;新会话没显式选就用它(空=回落 config.MODEL)
     "web_effort": "",           # 旧版全局思考深度,作为 web_efforts 未设时的兼容回落
+    "web_service_tiers": {},    # 模型 -> 优先档；空=不申请优先处理
     "web_summaries": {},        # 模型 -> 思考摘要；空=模型默认
     "web_verbosities": {},      # 模型 -> 输出详细程度；空=模型默认
     "web_efforts": {},           # 模型 -> 思考深度;不同模型分别记住自己的选择
@@ -68,7 +69,7 @@ def _load() -> dict:
     # mutate(如 list.append/dict[k]=v)就把模块级默认值永久污染了。
     for key in ("skills_enabled", "skills_hidden", "web_extra_models", "disabled_models", "disabled_builtin_models"):
         data[key] = list(data[key]) if isinstance(data.get(key), list) else []
-    for key in ("external_mcp", "web_providers", "web_efforts", "web_verbosities", "web_summaries", "skill_profiles"):
+    for key in ("external_mcp", "web_providers", "web_efforts", "web_verbosities", "web_summaries", "web_service_tiers", "skill_profiles"):
         data[key] = dict(data[key]) if isinstance(data.get(key), dict) else {}
     return data
 
@@ -305,6 +306,25 @@ def set_web_effort(effort: str, *, model: str = "") -> None:
         _save(d)
 
 
+def get_web_service_tier(model: str) -> str:
+    value = _load()["web_service_tiers"].get(model, "")
+    return value if isinstance(value, str) and value == "priority" else ""
+
+
+def set_web_service_tier(tier: str, *, model: str) -> None:
+    if not isinstance(tier, str) or tier not in ("", "priority"):
+        raise ValueError("优先档仅支持关闭或 priority")
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("缺少模型")
+    with _LOCK:
+        data = _load()
+        if tier:
+            data["web_service_tiers"][model] = tier
+        else:
+            data["web_service_tiers"].pop(model, None)
+        _save(data)
+
+
 # 输出详细程度独立于思考强度，不复用 web_efforts。
 _WEB_VERBOSITIES = ("", "low", "medium", "high")
 
@@ -351,14 +371,32 @@ def set_web_summary(summary: str, *, model: str) -> None:
 
 
 # ── 设置页手动加的模型档位 ────────────────────────────────────────────────
+def model_record_id(record: dict) -> str:
+    model_id = record.get("id", "")
+    provider = record.get("provider", "")
+    if isinstance(model_id, str) and model_id.startswith("claude-") and "/" not in model_id and isinstance(provider, str) and provider:
+        return f"{provider}/{model_id}"
+    return model_id
+
+
 def list_web_extra_models() -> list[dict]:
-    """给设置页/available_models 用:[{id,label,group?,provider?}]。"""
-    return list(_load()["web_extra_models"])
+    """旧第三方 Claude 记录按选择 ID 读取，显式选择 ID 优先。"""
+    records = _load()["web_extra_models"]
+    result = {}
+    for record in records:
+        key = model_record_id(record)
+        if key not in result or record.get("id") == key:
+            result[key] = {**record, "id": key}
+    return list(result.values())
+
+
+_UNSET = object()
 
 
 def upsert_web_extra_model(
     model_id: str, label: str, *, group: str = "", provider: str | None = None,
-    order: int | None = None,
+    order: int | None = None, context_window: object = _UNSET,
+    effort_levels: object = _UNSET,
 ) -> str | None:
     """新增/编辑模型档位;可选复用已有第三方服务商的连接配置。"""
     if not isinstance(model_id, str) or not model_id.strip():
@@ -369,8 +407,22 @@ def upsert_web_extra_model(
         return "供应商必须是字符串"
     if order is not None and (type(order) is not int or abs(order) > 1_000_000):
         return "排序必须是 -1000000 到 1000000 的整数"
+    if context_window is not _UNSET and context_window is not None and (
+        type(context_window) is not int or context_window <= 0
+    ):
+        return "上下文窗口必须是正整数或 null"
+    if effort_levels is not _UNSET and effort_levels is not None and (
+        not isinstance(effort_levels, list)
+        or any(not isinstance(level, str) or level not in _WEB_EFFORTS for level in effort_levels)
+        or len(set(effort_levels)) != len(effort_levels)
+    ):
+        return "思考深度必须是不重复的有效档位列表或 null"
     model_id = model_id.strip()
     fields = {"label": label.strip() or model_id}
+    if context_window is not _UNSET:
+        fields["context_window"] = context_window
+    if effort_levels is not _UNSET:
+        fields["effort_levels"] = effort_levels
     if group:
         fields["group"] = group.strip()
     if provider is not None:
@@ -379,10 +431,14 @@ def upsert_web_extra_model(
         fields["order"] = order
     with _LOCK:
         d = _load()
-        extra = next((m for m in d["web_extra_models"] if m.get("id") == model_id), None)
+        extra = next((m for m in d["web_extra_models"] if m.get("id") == model_id
+                      and model_record_id(m) == model_id), None)
+        if extra is None:
+            extra = next((m for m in d["web_extra_models"] if model_record_id(m) == model_id), None)
         if extra is None:
             extra = {"id": model_id}
             d["web_extra_models"].append(extra)
+        extra["id"] = model_id
         extra.update(fields)
         _save(d)
     return None
@@ -391,7 +447,7 @@ def upsert_web_extra_model(
 def remove_web_extra_model(model_id: str) -> None:
     with _LOCK:
         d = _load()
-        d["web_extra_models"] = [m for m in d["web_extra_models"] if m.get("id") != model_id]
+        d["web_extra_models"] = [m for m in d["web_extra_models"] if model_record_id(m) != model_id]
         _save(d)
 
 

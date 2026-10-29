@@ -1,11 +1,14 @@
 """仅供本机独立 MCP 前端调用的受限后台任务桥。"""
 from __future__ import annotations
 
+import asyncio
 import hmac
+import hashlib
 import ipaddress
 import json
 import os
 import re
+import time
 
 from aiohttp import web
 
@@ -28,9 +31,11 @@ _FIELDS = {
     "create_task": ({"title", "prompt", "idempotency_key"}, set()),
     "get_task": ({"id"}, {"offset", "length"}),
     "cancel_task": ({"id"}, set()),
+    "continue_task": ({"id", "instruction", "idempotency_key"}, set()),
     "list_agents": (set(), {"offset", "limit", "query"}),
     "list_sessions": (set(), {"agent_id", "all_agents", "offset", "limit", "query"}),
     "read_session": ({"key"}, {"agent_id", "before_id", "turn_id", "offset", "length"}),
+    "search_history": ({"query"}, {"agent_id", "before_id", "limit"}),
 }
 # 只读接口允许访问的 Agent:这里出现即代表本连接可见。派单仍只绑固定开发 Agent。
 READABLE_AGENTS = "VOCOCO_BRAIN_READABLE_AGENT_IDS"  # 逗号分隔;省略=全部 Agent
@@ -126,6 +131,16 @@ def _registry():
         "idempotency_key TEXT NOT NULL,payload TEXT NOT NULL,source_session_key TEXT NOT NULL,"
         "cancel_requested INTEGER NOT NULL DEFAULT 0,UNIQUE(agent_id,idempotency_key))"
     )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS brain_bridge_continuations("
+        "idempotency_key TEXT PRIMARY KEY,task_id TEXT NOT NULL,content_hash TEXT NOT NULL,"
+        "state TEXT NOT NULL, instruction TEXT NOT NULL DEFAULT '', run_version INTEGER NOT NULL DEFAULT -1)"
+    )
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(brain_bridge_continuations)")}
+    if "instruction" not in columns:
+        connection.execute("ALTER TABLE brain_bridge_continuations ADD COLUMN instruction TEXT NOT NULL DEFAULT ''")
+    if "run_version" not in columns:
+        connection.execute("ALTER TABLE brain_bridge_continuations ADD COLUMN run_version INTEGER NOT NULL DEFAULT -1")
     return connection
 
 
@@ -205,7 +220,8 @@ def _clean(text: str) -> str:
 def _task_view(task: dict, data: dict) -> dict:
     offset = _number(data, "offset", 0, 2**63 - 1)
     length = _number(data, "length", 8000, 8000, 1)
-    result = _clean(task.get("result_full") or task.get("result_summary") or "")
+    result = _clean((task.get("result_full") or task.get("result_summary") or "")
+                    if task["status"] in tasks.TERMINAL_STATUSES else "")
     end = offset + length
     return {"id": task["id"], "title": _clean(task["title"]), "status": task["status"],
             "progress": _clean(task.get("progress_note", ""))[:8000], "result": result[offset:end],
@@ -232,6 +248,53 @@ def _cancel_task(data: dict, _agent: dict, _connection: str = "") -> dict:
         with connection:
             connection.execute("UPDATE brain_bridge_tasks SET cancel_requested=1 WHERE task_id=?", (task["id"],))
     return _task_view(_owned_task(task["id"]), {})
+
+
+def _continue_task(data: dict, _agent: dict, _connection: str = "") -> dict:
+    task = _owned_task(_text(data, "id", 128))
+    instruction = _text(data, "instruction", 60000)
+    key = _text(data, "idempotency_key", 128)
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", key):
+        _reject(400, "idempotency_key 必须是 8..128 位 ASCII 安全字符")
+    digest = hashlib.sha256(instruction.encode()).hexdigest()
+    conn = _registry()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        old = conn.execute("SELECT task_id,content_hash,state,run_version FROM brain_bridge_continuations "
+                           "WHERE idempotency_key=?", (key,)).fetchone()
+        if old:
+            if old["task_id"] != task["id"] or old["content_hash"] != digest:
+                _reject(409, "相同幂等键的内容不同")
+            if old["state"] != "accepted":
+                _reject(409, "续接状态不确定，请检查原任务，不要更换幂等键重试")
+            current = _owned_task(task["id"])
+            if old["run_version"] != current["run_version"]:
+                _reject(409, "任务已进入其他轮次，请查看原会话历史")
+            return {**_task_view(current, {}), "continuation": "accepted",
+                    "continuation_instruction": _clean(instruction)}
+        current = tasks.get(task["id"])
+        conn.execute(
+            "INSERT INTO brain_bridge_continuations "
+            "(idempotency_key,task_id,content_hash,state,instruction,run_version) VALUES (?, ?, ?, ?, ?, ?)",
+            (key, task["id"], digest, "accepted", instruction, current["run_version"] + 1),
+        )
+        if current["status"] not in tasks.TERMINAL_STATUSES or task["id"] in task_runner._running:
+            _reject(409, "任务仍在运行或排队，不会打断，请稍后查询")
+        if tasks.count_running() >= config.TASK_MAX_CONCURRENCY:
+            _reject(409, "任务并发已满，请稍后重试")
+        if not session_store.get_sdk_session_id(tasks.session_key(task["id"])):
+            _reject(409, "原任务没有可恢复的模型会话，不能保证延续上下文")
+        changed = conn.execute(
+            "UPDATE tasks SET status='running', run_version=run_version+1, updated_at=?, "
+            "result_full='', result_summary='', progress_note='' WHERE id=? AND status=? AND run_version=?",
+            (time.time(), task["id"], current["status"], current["run_version"]),
+        ).rowcount
+        if not changed:
+            _reject(409, "任务状态已改变，请稍后查询")
+        conn.execute("UPDATE brain_bridge_tasks SET cancel_requested=0 WHERE task_id=?", (task["id"],))
+    task_runner.start_claimed(task, instruction)
+    return {**_task_view(_owned_task(task["id"]), {}), "continuation": "accepted",
+            "continuation_instruction": _clean(instruction)}
 
 
 def _history_agents(light: bool = False) -> list[dict]:
@@ -346,6 +409,9 @@ def _owner_map(by_hash: dict[str, dict], by_task: dict[str, dict]) -> dict[str, 
 
 def _fast_owner(session_key: str, by_hash: dict[str, dict], by_task: dict[str, dict],
                 legacy) -> dict | None:
+    binding = session_store.session_binding(session_key)
+    if binding or session_key.startswith("session:"):
+        return legacy(session_key)
     phash = config.project_hash_from_key(session_key)
     if phash:
         return by_hash.get(phash) or legacy(session_key)
@@ -377,7 +443,10 @@ def _resolve_agent(data: dict, visibility: dict[str, dict]) -> str:
 
 
 def _history_owner(key: str) -> dict | None:
-    owner = agents.agent_for_session(key)
+    try:
+        owner = agents.agent_for_session(key)
+    except ValueError:
+        return None
     if owner:
         return owner
     # 隐藏旧项目可能从未配置过 Agent,只读查历史时不应补建/复活配置。
@@ -429,14 +498,14 @@ def _session_counts() -> dict[str, int]:
 def _list_sessions(data: dict, _agent: dict, _connection: str = "") -> dict:
     """按 Agent 分组/筛选列出会话。
 
-    - 省略 agent_id 与 all_agents:只列固定开发 Agent
+    - 省略 agent_id 与 all_agents:列全部可读 Agent
     - agent_id:只列该 Agent
-    - all_agents=true:跨全部可读 Agent,每条带 agent_id 和 agent_name
+    - all_agents=true:跨全部可读 Agent;false:默认只列固定开发 Agent
     - query:可选关键词,大小写不敏感,匹配会话标题或所属 Agent 名称
     """
     offset = _number(data, "offset", 0, 2**63 - 1)
     limit = _number(data, "limit", 20, 100, 1)
-    all_agents = data.get("all_agents", False)
+    all_agents = data.get("all_agents", data.get("agent_id") is None)
     if type(all_agents) is not bool or (all_agents and data.get("agent_id") is not None):
         _reject(400, "all_agents 必须是布尔值,且不能与 agent_id 同时指定")
     query = _query(data)
@@ -465,6 +534,41 @@ def _list_sessions(data: dict, _agent: dict, _connection: str = "") -> dict:
     end = offset + limit
     return {"sessions": owned[offset:end], "next_offset": end if end < len(owned) else None,
             "pagination": "非快照；新增或删除会话可能导致分页重复或遗漏"}
+
+
+def _search_snippet(text: str, terms: list[str]) -> str:
+    text = _clean(text)
+    matches = [match.start() for term in terms if (match := re.search(re.escape(term), text, re.IGNORECASE))]
+    start = max(0, min(matches, default=0) - 100)
+    return text[start:start + 500]
+
+
+def _search_history(data: dict, _agent: dict, _connection: str = "") -> dict:
+    query = _text(data, "query", 100)
+    terms = query.split()
+    limit = _number(data, "limit", 8, 20, 1)
+    before = _number(data, "before_id", 2**63 - 1, 2**63 - 1, 1)
+    visibility = _agent_visibility()
+    target = _resolve_agent(data, visibility) if data.get("agent_id") is not None else None
+    owners = _owner_map(*_agent_index())
+    rows = session_store._conn().execute(
+        "SELECT id,session_key,ts,user_text,assistant_text FROM turns WHERE id<? ORDER BY id DESC", (before,),
+    )
+    results = []
+    for tid, key, timestamp, user, assistant in rows:
+        owner = owners.get(key)
+        if not owner or owner["id"] not in visibility or (target and owner["id"] != target):
+            continue
+        user, assistant = _clean(user), _clean(assistant)
+        if not any(re.search(re.escape(term), user, re.IGNORECASE) or
+                   re.search(re.escape(term), assistant, re.IGNORECASE) for term in terms):
+            continue
+        if len(results) == limit:
+            return {"results": results, "next_before_id": results[-1]["turn_id"], "pagination": "按轮次倒序，非快照"}
+        results.append({"agent_id": owner["id"], "agent_name": visibility[owner["id"]]["name"],
+                        "key": key, "turn_id": tid, "ts": timestamp,
+                        "user_text": _search_snippet(user, terms), "assistant_text": _search_snippet(assistant, terms)})
+    return {"results": results, "next_before_id": None, "pagination": "按轮次倒序，非快照"}
 
 
 def _turn_row(data: dict, key: str):
@@ -504,7 +608,9 @@ def _read_session(data: dict, _agent: dict, _connection: str = "") -> dict:
 
 
 _HANDLERS = {"create_task": _create_task, "get_task": _get_task, "cancel_task": _cancel_task,
-             "list_agents": _list_agents, "list_sessions": _list_sessions, "read_session": _read_session}
+             "continue_task": _continue_task,
+             "list_agents": _list_agents, "list_sessions": _list_sessions, "read_session": _read_session,
+             "search_history": _search_history}
 
 
 async def handle_brain(request: web.Request) -> web.Response:
@@ -518,7 +624,10 @@ async def handle_brain(request: web.Request) -> web.Response:
     if connection and not re.fullmatch(r"[A-Za-z0-9]{8,64}", connection):
         _reject(400, "连接身份格式无效")
     data = await _payload(request, operation)
-    result = _HANDLERS[operation](data, agent, connection)
+    if operation == "search_history":
+        result = await asyncio.to_thread(_HANDLERS[operation], data, agent, connection)
+    else:
+        result = _HANDLERS[operation](data, agent, connection)
     return web.json_response(result, headers={"Cache-Control": "no-store"})
 
 

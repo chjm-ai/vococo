@@ -62,6 +62,38 @@ async def test_web_default_fallback_keeps_claude_alias(models_app, tmp_path, mon
     assert settings_store.get_web_effort(upstream) == "low"
 
 
+@pytest.mark.anyio
+async def test_settings_keep_same_name_claude_capabilities_separate(settings_models_app, tmp_path, monkeypatch):
+    from vococo import providers
+    from vococo.core.agent import configured_context_window
+
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
+    model = "claude-sonnet-5-5"
+    alias = f"relay/{model}"
+    settings_store.upsert_web_provider("relay", {
+        "base_url": "https://relay.example", "api_key": "test", "model": model,
+    })
+    # 模拟升级前的裸 ID 记录，编辑官方模型不能覆盖它。
+    settings_store.upsert_web_extra_model(model, "旧中转", provider="relay", context_window=123, effort_levels=["low"])
+    async with TestClient(TestServer(settings_models_app)) as client:
+        for model_id, window, levels in [(model, 456, ["high"]), (alias, 789, ["max"])]:
+            response = await client.post("/settings/model", json={
+                "id": model_id, "label": model_id, "context_window": window, "effort_levels": levels,
+            })
+            assert response.status == 200, await response.text()
+        response = await client.get("/settings")
+        data = await response.json()
+        choices = {m["id"]: m for m in data["models"]["choices"]}
+        assert choices[model]["context_window"] == 456
+        assert choices[alias]["context_window"] == 789
+        assert choices[alias]["config_id"] == alias
+        assert (await client.post("/settings/model", json={"action": "remove", "id": model})).status == 200
+    assert configured_context_window(alias, model) == 789
+    assert configured_context_window(model, model) is None
+    assert providers.effort_levels_for_model(alias) == ("max",)
+    assert settings_store.list_web_extra_models()[0]["id"] == alias
+
+
 @pytest.fixture
 def model_settings(monkeypatch):
     choices = [
@@ -180,6 +212,7 @@ async def test_settings_models_match_panel_choices_and_can_hide_kimi(
         assert {item["id"]: item for item in choices}["kimi-k3"] == {
             "id": "kimi-k3", "label": "kimi-k3（订阅）", "group": "kimi", "disabled": False,
             "provider": "kimi", "order": 1000, "builtin": False, "config_id": "kimi-k3",
+            "context_window": None, "effort_levels": None,
         }
 
         hidden = await client.post(
@@ -207,6 +240,7 @@ async def test_model_configuration_hot_reload_preserves_default(settings_models_
     async with TestClient(TestServer(settings_models_app)) as client:
         response = await client.post("/settings/model", json={
             "id": model, "label": "新 GPT", "provider": "codex-gpt", "order": 1,
+            "context_window": 999999, "effort_levels": ["off", "high"],
         })
         assert response.status == 200
         data = await (await client.get("/models")).json()
@@ -214,6 +248,10 @@ async def test_model_configuration_hot_reload_preserves_default(settings_models_
         codex = [m for m in data["choices"] if m[2] == "codex"]
         assert codex[0][:2] == [model, "新 GPT"]
         assert providers.resolve(model, "claude-sonnet-5-5")[1]["ANTHROPIC_API_KEY"] == "test"
+        configured = next(m for m in (await (await client.get("/settings")).json())["models"]["choices"] if m["id"] == model)
+        assert configured["context_window"] == 999999
+        assert configured["effort_levels"] == ["off", "high"]
+        assert providers.effort_levels_for_model(model) == ("off", "high")
         response = await client.post("/settings/model", json={
             "id": "gpt-6.1-terra", "label": "Terra 自定义", "order": 0,
         })
@@ -222,7 +260,7 @@ async def test_model_configuration_hot_reload_preserves_default(settings_models_
         terra = next(m for m in choices if m["id"] == "gpt-6.1-terra")
         assert terra == {"id": "gpt-6.1-terra", "label": "Terra 自定义", "group": "codex",
                          "provider": "codex-gpt", "order": 0, "builtin": True, "disabled": False,
-                         "config_id": "gpt-6.1-terra"}
+                         "config_id": "gpt-6.1-terra", "context_window": None, "effort_levels": None}
         data = await (await client.get("/models")).json()
         assert next(m for m in data["choices"] if m[2] == "codex")[0] == "gpt-6.1-terra"
         for disabled in (True, False):
@@ -248,6 +286,8 @@ async def test_model_configuration_hot_reload_preserves_default(settings_models_
     {"id": "claude-new", "order": True},
     {"id": "claude-new", "order": 1.5},
     {"id": "claude-new", "order": 1_000_001},
+    {"id": "claude-new", "context_window": False},
+    {"id": "claude-new", "effort_levels": ["invalid"]},
     {"id": []}, {"id": "claude-new", "action": "unknown"},
 ])
 async def test_model_configuration_rejects_invalid_input(settings_models_app, monkeypatch, tmp_path, body):

@@ -25,6 +25,7 @@ MODES = (FULL, STANDARD)
 KEEP_ASKING = frozenset({
     "疑似把密钥/令牌通过网络外带",
     "改 Agent 配置或会话权限(agent.json / perm_mode)",
+    "创建或配置 Agent",
 })
 
 

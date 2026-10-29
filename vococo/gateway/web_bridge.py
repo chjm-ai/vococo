@@ -13,12 +13,12 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable
 
-_dispatch_fn: Callable[[str, str], Awaitable[None]] | None = None
+_dispatch_fn: Callable[..., Awaitable[None]] | None = None
 _cancel_fn: Callable[[str], bool] | None = None
 
 
 def register(
-    dispatch_fn: Callable[[str, str], Awaitable[None]],
+    dispatch_fn: Callable[..., Awaitable[None]],
     cancel_fn: Callable[[str], bool],
 ) -> None:
     """由 GatewayRunner.run() 在起好 WebAdapter 后调用一次。"""
@@ -42,9 +42,12 @@ def cancel_if_running(session_key: str) -> bool:
     return bool(_cancel_fn and _cancel_fn(session_key))
 
 
-async def continue_session(conv: str, text: str) -> None:
+async def continue_session(conv: str, text: str, *, source_access: dict | None = None) -> None:
     """往 web:<conv> 会话注入一条消息,走跟浏览器发送完全相同的处理流水线
     (标题占位/项目 touch/用户气泡广播/入队 dispatch,见 WebAdapter.inject)。
     未注册(纯语音模式)时静默跳过——调用方应先用 available() 判断。"""
     if _dispatch_fn is not None:
-        await _dispatch_fn(conv, text)
+        if source_access:
+            await _dispatch_fn(conv, text, source_access=source_access)
+        else:
+            await _dispatch_fn(conv, text)

@@ -12,11 +12,17 @@ from vococo.memory import agents, projects, session_store
 
 @pytest.fixture
 def env(isolated, monkeypatch, tmp_path):
+    from vococo.core import tasks as task_store
+
+    monkeypatch.setattr(task_store, "_DB", None)
     monkeypatch.setattr(config, "CRON_JOBS_PATH", tmp_path / "data" / "cron_jobs.json")
     proj = tmp_path / "proj"
     proj.mkdir()
     projects.upsert_project(str(proj))
-    return proj
+    yield proj
+    if task_store._DB is not None:
+        task_store._DB.close()
+        task_store._DB = None
 
 
 def test_list_has_general_and_one_per_project(env):
@@ -28,7 +34,8 @@ def test_list_has_general_and_one_per_project(env):
     assert not agents.home(h).exists()
     agents.create("proj", str(env))  # 显式建 Agent(或写过 AGENT.md)才算
     a = agents.by_project_hash(h)
-    assert a["name"] == "proj" and a["main_conv"] == f"p{h}:main"
+    assert a["name"] == "proj" and a["main_conv"].startswith("session:")
+    assert session_store.session_binding(a["main_conv"]) == {"agent_id": a["id"], "project_hash": h}
     assert (agents.home(a["id"]) / "agent.json").exists() and (agents.home(a["id"]) / "AGENT.md").exists()
     assert a["avatar"]["shape"] in agents.AVATAR_SHAPES
     assert [x["id"] for x in agents.list_agents()] == [agents.GENERAL_ID, a["id"]]
@@ -81,7 +88,7 @@ def test_agent_for_session_and_prompt_extra(env):
     assert "当前 Agent:proj" in extra and "每月 20 个询盘" in extra and "周一回复率高" in extra
     # 定时任务会话按 job 的 agent_id 找 Agent
     job = scheduler.create_job(name="巡检", prompt="p", schedule={"kind": "cron", "expr": "0 9 * * *"}, agent_id=a["id"])
-    assert agents.agent_for_session(f"task:{job['id']}")["id"] == a["id"]
+    assert agents.agent_for_session(job["conv"])["id"] == a["id"]
     assert scheduler.update_job(job["id"], name="巡检", prompt="p", schedule=job["schedule"], agent_id="")
     assert "agent_id" not in scheduler.load_jobs()[0]
 
@@ -101,7 +108,7 @@ def test_cron_result_mirrors_into_agent_main(env):
         anyio.run(scheduler._push_job_result, job["id"], "success", "发了 60 封", push)
     finally:
         agents.set_listener(None)
-    assert pushed == [f"task:{job['id']}"]  # 系统推送只发一次(任务自己的会话)
+    assert pushed == [job["conv"]]  # 系统推送只发一次(任务自己的会话)
     assert seen == [a["main_conv"]]
     turns = session_store.load_recent(agents.main_session_key(a))
     assert any("发了 60 封" in str(t) for t in turns)

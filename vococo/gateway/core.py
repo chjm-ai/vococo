@@ -26,12 +26,12 @@ from ..core.agent import (
     ToolStarted,
     UpstreamRetry,
     VideoAttachment,
-    context_window,
+    effective_context_window,
+    _window_ratio,
     stream_turn,
 )
-import time
 
-from ..core.timeline import Timeline
+from ..core.session_execution import SharedTurn, stream_run
 from ..memory import session_store
 from .. import providers
 
@@ -200,14 +200,18 @@ async def converse(
     cwd_override: str | None = None,
     is_explicit_project_override: bool | None = None,
     compact: bool = False,
+    source_access: dict | None = None,
 ) -> AgentReply | None:
     from ..core import task_runner, tasks
 
+    from ..tools import sessions
+
     task_id = tasks.task_id_from_session_key(session_key) if not compact else None
-    async with task_runner.foreground_execution(task_id):
+    interrupt = not sessions.is_queued_instruction(session_key, user_text)
+    async with task_runner.foreground_execution(task_id, interrupt=interrupt):
         return await _converse(
             session_key, user_text, model, sink, images, audios, files, videos,
-            store_user, cwd_override, is_explicit_project_override, compact,
+            store_user, cwd_override, is_explicit_project_override, compact, source_access,
         )
 
 
@@ -224,6 +228,7 @@ async def _converse(
     cwd_override: str | None = None,
     is_explicit_project_override: bool | None = None,
     compact: bool = False,
+    source_access: dict | None = None,
 ) -> AgentReply | None:
     """跑一轮:载入历史 → 流式 → 喂 sink → 落库。
 
@@ -250,8 +255,6 @@ async def _converse(
     task_id = bg_tasks.task_id_from_session_key(session_key)
     task = bg_tasks.get(task_id) if task_id else None
 
-    chosen_at_start = session_store.get_chosen_model(session_key)
-    history = session_store.load_recent(session_key)
     # 具体项目优先,未匹配到时落默认项目;后台任务续聊再以任务落库的原始 cwd 为准。
     root = config.execution_project_root_for(session_key)
     # 普通聊天也会回落到默认项目根；只有项目会话或调用方显式覆写 cwd 才算项目上下文。
@@ -260,12 +263,8 @@ async def _converse(
         if is_explicit_project_override is not None
         else config.project_root_for(session_key) is not None or cwd_override is not None
     )
-    if session_key.startswith("task:"):
-        from ..core import tasks as bg_tasks
-
-        task = bg_tasks.get(session_key[len("task:"):])
-        if task and task.get("cwd"):
-            root = task["cwd"]
+    if task and task.get("cwd"):
+        root = task["cwd"]
     if cwd_override is not None:
         cwd = cwd_override
     else:
@@ -273,7 +272,7 @@ async def _converse(
         cwd = await worktree.execution_cwd(session_key)
     cwd_token = danger.set_cwd(cwd, project_root=root)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
     stored_user = store_user if store_user is not None else user_text
-    turn_id = session_store.start_turn(session_key, stored_user)
+    turn_id = session_store.start_turn(session_key, stored_user, source_access=source_access)
     # 图片落盘 + 文件名入库:让刷新页面后历史里仍能显示这些图(仅落盘,不影响喂模型的 in-memory 版本)
     if images:
         session_store.save_turn_images(turn_id, images)
@@ -311,102 +310,29 @@ async def _converse(
                     "到临时目录再 Read 那几张图;需要听内容就抽出音轨再转写。"
                     "用户没要求分析内容时不必自作主张跑这些。)"
                 )
-    # 上一轮的 SDK 会话 id:非空则本轮用 resume 让 SDK 重放真·多轮历史,不再拼历史大文本
-    resume_sid = session_store.get_sdk_session_id(session_key)
-    # 会话属于某个 Agent(项目会话 / 挂了 agent_id 的定时任务)→ 把它的 AGENT.md / NOTES.md 带进提示词
-    from ..memory import agents
-
-    agent_extra = agents.prompt_extra_for_session(session_key)
+    shared = SharedTurn(session_key, turn_id, sink)
     reply: AgentReply | None = None
-    timeline = Timeline()  # 录过程时间线,轮末随正文落库(刷新可重建工具卡)
-    # 流式进行中:节流把当前全文写进 turns.draft_text,供前端刷新后兜底恢复
-    _draft_full = ""       # 当前轮已输出的所有正文(每段全文覆盖)
-    _draft_last_ts = 0.0   # 上次 flush 的时刻(0=还没写过)
+    timeline = shared.timeline
     _err_msg = ""           # 流式期间抛出的异常消息
     from . import clarify
 
     source_token = None
     try:
         source_token = clarify.bind_turn(session_key, turn_id)
-        # 模型解析和预压缩也可能失败，必须走同一套落库与 cwd 清理。
-        # 上轮窗口逼近上限时，先 /compact 再发原问题，避免上游直接返回 400。
-        chosen_model = model or session_store.get_chosen_model(session_key) or config.MODEL
-        resolved_model, _ = providers.resolve(chosen_model, config.MODEL)
-        used_tokens = int(session_store.session_summary(session_key).get("ctx_tokens", 0) or 0)
-        needs_preflight_compact = (
-            not compact
-            and bool(resume_sid)
-            and used_tokens >= int(context_window(resolved_model) * 0.65)
-        )
-        if needs_preflight_compact:
-            async for ev in stream_turn(
-                [], "", model=model, cwd=cwd, is_explicit_project=is_explicit_project,
-                resume=resume_sid, session_key=session_key,
-                compact_only=True, system_prompt_extra=agent_extra,
-            ):
-                if isinstance(ev, Compacted):
-                    await sink.compacted(ev.trigger or "preflight")
-                elif isinstance(ev, Done):
-                    if ev.reply.sdk_session_id:
-                        resume_sid = ev.reply.sdk_session_id
-                        session_store.set_sdk_session_id(
-                            session_key, resume_sid, expected_model=chosen_at_start,
-                        )
-        async for ev in stream_turn(
-            history, user_text, model=model, images=images, files=files, cwd=cwd,
-            is_explicit_project=is_explicit_project, resume=resume_sid,
-            session_key=session_key,  # 传给保温池:同会话下一轮复用活 client,零冷启动
-            compact_only=compact, system_prompt_extra=agent_extra,
+        async for ev in stream_run(
+            shared, user_text, stream_fn=stream_turn, model=model,
+            images=images, files=files, cwd=cwd,
+            is_explicit_project=is_explicit_project, compact=compact,
         ):
-            if isinstance(ev, TextDelta):
-                # 输出侧敏感内容过滤(安全评估 P0-2)第一层:对单个 delta 扫一遍。
-                # 已知密钥字面值通常是一个不含空格的连续 token,一次 delta 里出现
-                # 的概率很高,这一层基本能兜住"自己的密钥被读出来又说出去"。
-                # 多行的 PEM 私钥块大概率会被流式拆成好几个 delta、这里扫不全,
-                # 靠下面 reply.text 落库前的第二层兜底(那时全文已完整)。
-                delta_text = danger.redact_secrets(ev.text)
-                timeline.text(delta_text)
-                await sink.text(delta_text)
-                # 节流:每 ~0.7s 把【当前累计全文】刷进 draft_text,供刷新兜底。
-                # ev.text 是 token 增量 → 必须累加;直接覆盖会让 draft 只剩最后一个 token。
-                _draft_full += delta_text
-                now = time.monotonic()
-                if now - _draft_last_ts > 0.7:
-                    session_store.flush_draft(turn_id, _draft_full, session_key=session_key)
-                    _draft_last_ts = now
-            elif isinstance(ev, ThinkingDelta):
-                await sink.thinking(ev.text)
-            elif isinstance(ev, ToolStarted):
-                timeline.tool_started(ev.name, ev.tool_id, ev.parent_id)
-                await sink.tool_started(ev.name, ev.tool_id, ev.parent_id)
-            elif isinstance(ev, ToolInput):
-                timeline.tool_input(ev.tool_id, ev.tool_input, ev.parent_id)
-                await sink.tool_input(ev.name, ev.tool_id, ev.tool_input, ev.parent_id)
-            elif isinstance(ev, ToolFinished):
-                timeline.tool_finished(
-                    ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id
-                )
-                await sink.tool_finished(
-                    ev.name, ev.ok, ev.preview, ev.tool_id, ev.detail, ev.parent_id
-                )
-            elif isinstance(ev, Compacted):
-                timeline.compacted(ev.trigger)
-                await sink.compacted(ev.trigger)
-            elif isinstance(ev, UpstreamRetry):
-                # 只发给渲染层,不进 timeline:重试是瞬时状态,正文落库/历史重放时
-                # 摆一堆「重试过 6 次」对回看没有意义,只对"正盯着看"的人有意义。
-                await sink.upstream_retry(
-                    ev.status, ev.attempt, ev.max_retries, ev.delay_ms, ev.reason
-                )
-            elif isinstance(ev, Done):
-                reply = ev.reply
+            await shared.observe(ev)
+        reply = shared.reply
     except asyncio.CancelledError:
         # 用户手动取消(/abort → scope.cancel())。CancelledError 继承 BaseException,
         # 上面的 except Exception 抓不到,若不在此拦下,后面的落库逻辑一行都不会跑 →
         # 这一轮的 turn 行永远停在 assistant_text='',被 load_recent 跳过,用户的提问
         # 凭空消失,下一轮完全没上下文(第一轮被取消时=彻底失忆)。
         # 这里把「提问 + 已产出的部分回复」补落库,再原样抛出让 CancelScope 正常收尾。
-        partial = (_draft_full or "").strip()
+        partial = danger.redact_secrets(shared.draft).strip()
         persisted = session_store.finish_turn(
             turn_id, partial or "(上一条回复已被取消)", events=timeline.blocks,
             session_key=session_key,
@@ -414,12 +340,8 @@ async def _converse(
         # 会话已被删除时,旧请求的 turn id 可能已被新会话复用。归属校验失败即停止:
         # 不能重建 session_meta,也不能再向客户端推被删会话的终态事件。
         if persisted:
-            # 通常取消发生在拿到 ResultMessage 前(reply 为 None、无 sdk_session_id);
-            # 万一已拿到就存回,让下一轮仍能 resume 接上真·多轮历史。
-            if reply is not None and reply.sdk_session_id:
-                session_store.set_sdk_session_id(
-                    session_key, reply.sdk_session_id, expected_model=chosen_at_start,
-                )
+            if shared.reply is not None:
+                shared.record_usage(shared.reply)
             # 通知渲染层本轮已被人为取消(Web 端可据此清理进行中快照,防止刷新后重放旧内容)
             if not compact:
                 await _finish_task_turn(task_id, "cancelled", partial)
@@ -456,9 +378,7 @@ async def _converse(
         # 用的都是这之后的 reply.text,保证「最终定格」的版本(历史记录 + TG 编辑
         # 后的最终消息)是干净的,即便直播过程中曾有一瞬间的原始分片。
         reply.text = danger.redact_secrets(reply.text)
-        # 最后一刷:确保 refresh 前最后 0.7s 内输出的内容也进 draft
-        if _draft_full:
-            session_store.flush_draft(turn_id, _draft_full, session_key=session_key)
+        shared.flush_draft()
         persisted = session_store.finish_turn(
             turn_id, reply.text, events=timeline.blocks, session_key=session_key
         )
@@ -469,22 +389,7 @@ async def _converse(
         # 记下这一轮是不是以报错收尾(限流/超时等)——语音端靠这个字段找出"卡住
         # 等续聊"的网页会话,不用去猜最后一条回复文本是不是错误提示。
         session_store.set_last_error(session_key, bool(reply.is_error))
-        # 存回本轮 SDK 会话 id,下一轮 resume 它接上真·多轮历史(每轮覆盖,链不断)
-        if reply.sdk_session_id:
-            session_store.set_sdk_session_id(
-                session_key, reply.sdk_session_id, expected_model=chosen_at_start,
-            )
-        if reply.context_tokens or reply.turn_tokens:
-            session_store.record_usage(
-                session_key,
-                reply.context_tokens,
-                reply.turn_tokens,
-                window=reply.context_window,
-                last_in=reply.input_fresh,
-                last_cache=reply.cache_read,
-                last_out=reply.output_tokens,
-                model=reply.model,
-            )
+        shared.record_usage(reply)
         if not compact:
             await _finish_task_turn(task_id, "failed" if reply.is_error else "done", reply.text)
         await sink.done(reply, turn_id)

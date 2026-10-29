@@ -169,7 +169,7 @@ def _provider_entry_for_extra(entries: dict[str, dict], model: str) -> tuple[str
 def _provider_entry_for_alias(entries: dict[str, dict], model: str) -> tuple[str, dict]:
     name, upstream = _claude_alias_parts(model)
     entry = entries.get(name)
-    extra = _provider_entry_for_extra(entries, upstream)
+    extra = _provider_entry_for_extra(entries, model)
     is_extra = extra is not None and extra[0] == name
     if entry is None or (_entry_field(entry, "model") != upstream and not is_extra):
         raise ValueError(f"模型 {model} 对应的供应商不存在或模型已变更")
@@ -433,7 +433,7 @@ def _model_display_overrides(entries: dict[str, dict]) -> dict[str, dict]:
     for extra in settings_store.list_web_extra_models():
         choice = _extra_model_choice(extra, entries)
         selection = choice[0] if choice else extra["id"]
-        overrides[selection] = {**extra, "label": choice[1]} if choice and selection != extra["id"] else extra
+        overrides[selection] = {**extra, "label": choice[1]} if choice else extra
     return overrides
 
 
@@ -450,15 +450,24 @@ def model_configuration(model: str, default_choices: list[tuple[str, str]]) -> d
         model in dict(_CODEX_BUILTIN_MODELS) and _codex_proxy_entry(_all_web_providers()) is not None
     )
     return {"provider": found[0] if found else "", "order": _model_order(extra),
-            "builtin": builtin, "config_id": extra.get("id", model)}
+            "builtin": builtin, "config_id": extra.get("id", model),
+            "context_window": extra.get("context_window"), "effort_levels": extra.get("effort_levels")}
 
 
 def validate_model_provider(model: str, provider: str | None, default_choices: list[tuple[str, str]]) -> str | None:
     """拒绝无效路由，避免新增 GPT 不小心沿用官方 Claude 订阅。"""
     if provider is not None and not isinstance(provider, str):
         return "供应商必须是字符串"
-    current = _provider_entry_for_model(model)
-    builtin = model_configuration(model, default_choices)["builtin"]
+    try:
+        current = _provider_entry_for_model(model)
+    except ValueError:
+        alias = _claude_alias_parts(model)
+        if not alias or not provider or alias[0] != provider.strip():
+            raise
+        current = None
+    builtin = model in dict(default_choices) or (
+        model in dict(_CODEX_BUILTIN_MODELS) and _codex_proxy_entry(_all_web_providers()) is not None
+    )
     fixed_ids = {
         _selection_id(ActiveProvider(name, _entry_field(entry, "base_url", "baseUrl"),
                                     _entry_field(entry, "api_key", "apiKey"), _entry_field(entry, "model")))
@@ -727,6 +736,12 @@ def effort_choices_for_model(model: str) -> tuple[tuple[str, str], ...]:
     收到其未声明支持的 low/medium/xhigh 参数；只有实测过的 DeepSeek 官方端点
     才多给一档「关闭」。
     """
+    from .gateway import settings_store
+
+    extra = _model_display_overrides(_all_web_providers()).get(model, {})
+    levels = extra.get("effort_levels")
+    if isinstance(levels, list) and all(isinstance(level, str) and level in settings_store._WEB_EFFORTS for level in levels):
+        return tuple((level, "关闭" if level == "off" else level) for level in levels)
     provider = _provider_for_model(model)
     if (
         provider is None
@@ -778,7 +793,26 @@ def summary_state(model: str) -> dict:
             "value": settings_store.get_web_summary(model)}
 
 
-def extra_body_for_model(resolved_model: str, effort: str, verbosity: str, summary: str = "") -> str:
+def supports_priority_tier(model: str) -> bool:
+    # 只开放已验证的本地 Codex 代理；同名 GPT 经远程中转不代表支持此参数。
+    if codex_mgmt_for_model(model) is None:
+        return False
+    resolved_model, _ = resolve(model, model)
+    return supports_verbosity(resolved_model)
+
+
+def priority_state(model: str) -> dict:
+    from .gateway import settings_store
+
+    supported = supports_priority_tier(model)
+    return {"supported": supported,
+            "value": settings_store.get_web_service_tier(model) if supported else ""}
+
+
+def extra_body_for_model(
+    resolved_model: str, effort: str, verbosity: str, summary: str = "",
+    service_tier: str = "", *, selection_model: str = "",
+) -> str:
     import json
 
     body = json.loads(extra_body_for_effort(effort) or "{}")
@@ -787,6 +821,8 @@ def extra_body_for_model(resolved_model: str, effort: str, verbosity: str, summa
     if supports_verbosity(resolved_model) and summary in ("auto", "concise", "detailed", "none"):
         # null 是给兼容代理的显式关闭标记；代理转发到 OpenAI 时须移除 summary 字段。
         body["reasoning"] = {"summary": None if summary == "none" else summary}
+    if service_tier == "priority" and supports_priority_tier(selection_model or resolved_model):
+        body["service_tier"] = "priority"
     return json.dumps(body) if body else ""
 
 

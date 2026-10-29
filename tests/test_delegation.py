@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from claude_agent_sdk import ResultMessage, StreamEvent
-from mcp.types import CallToolRequest, CallToolRequestParams
+from claude_agent_sdk._internal.sdk_mcp_bridge import SdkMcpBridge
 
 from vococo import config
 from vococo.core import agent, delegation as d, task_events, task_runner as runner, tasks
@@ -131,9 +131,18 @@ async def call(client, name, args):
             if result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny":
                 return {"error": "工具拒绝"}
     server = client.options.mcp_servers["vococo"]["instance"]
-    result = await server.request_handlers[CallToolRequest](CallToolRequest(
-        method="tools/call", params=CallToolRequestParams(name=name, arguments=args)))
-    return json.loads(result.root.content[0].text)
+    bridge = SdkMcpBridge("vococo", server)
+    try:
+        initialized = await bridge.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1"}}})
+        assert "result" in initialized
+        await bridge.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        result = await bridge.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                      "params": {"name": name, "arguments": args}})
+        return json.loads(result["result"]["content"][0]["text"])
+    finally:
+        await bridge.aclose()
 
 
 def dispatch(env, **kw):
@@ -558,10 +567,10 @@ async def test_old_background_done_callback_cannot_fail_gateway_new_turn(env, mo
 
     notifying, release_old, generating, release_new = (asyncio.Event() for _ in range(4))
     original = task_events.emit_terminal
-    async def delayed_notify(task_id):
+    async def delayed_notify(task_id, **kwargs):
         notifying.set()
         await release_old.wait()
-        await original(task_id)
+        await original(task_id, **kwargs)
     monkeypatch.setattr(task_events, "emit_terminal", delayed_notify)
     row = dispatch(env)
     old_owner = runner._running[row["id"]]

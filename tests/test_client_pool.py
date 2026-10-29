@@ -163,6 +163,18 @@ async def test_compat_change_rebuilds(clients, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_window_change_rebuilds_warm_client(clients, monkeypatch):
+    records = [{"id": "claude-sonnet-4", "context_window": 300_000}]
+    monkeypatch.setattr(agent.settings_store, "list_web_extra_models", lambda: records)
+    await _turn()
+    assert clients[0].options.extra_args["autocompact"] == "195000"
+    records[0]["context_window"] = 500_000
+    await _turn(resume="sid-1")
+    assert len(clients) == 2 and clients[0].disconnected
+    assert clients[1].options.extra_args["autocompact"] == "325000"
+
+
+@pytest.mark.anyio
 async def test_effort_change_rebuilds_warm_client(clients, monkeypatch):
     """思考深度在 connect 时固定，切换后必须丢弃保温 client，下一轮才会真生效。"""
     await _turn()
@@ -543,6 +555,23 @@ async def test_resume_failure_restores_history_without_prompt_injection(clients,
 
 
 @pytest.mark.anyio
+async def test_strict_resume_never_retries_without_original_session(clients, isolated, monkeypatch):
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("gpt-6.1-sol", {}))
+
+    def make_client(options=None):
+        client = FakeClient(options, registry=clients)
+        client.fail_next_query = bool(options.resume)
+        return client
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", make_client)
+    with pytest.raises(Exception):
+        async for _ in agent.stream_turn([], "继续", resume="missing-sid", require_resume=True):
+            pass
+    assert len(clients) == 1
+    assert clients[0].options.resume == "missing-sid"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("compact,research", [(True, False), (False, True)])
 async def test_compaction_and_isolated_research_keep_original_payload(clients, isolated, monkeypatch, compact, research):
     from vococo.tools.danger import build_hooks
@@ -619,3 +648,21 @@ async def test_summary_change_reconnects_without_changing_effort_or_verbosity(cl
     assert clients[1].options.effort == 'high'
     body = json.loads(clients[1].options.env['CLAUDE_CODE_EXTRA_BODY'])
     assert body == {'text':{'verbosity':'low'},'reasoning':{'summary':None}}
+
+
+@pytest.mark.anyio
+async def test_priority_change_reconnects_next_turn(clients, monkeypatch, tmp_path):
+    monkeypatch.setattr(agent.settings_store, "_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: (
+        "gpt-6.1-sol", {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8317", "ANTHROPIC_API_KEY": "fake"}))
+    monkeypatch.setattr(agent.providers, "codex_mgmt_for_model", lambda *a: ("fake", "http://127.0.0.1:8317"))
+    await _turn()
+    assert "CLAUDE_CODE_EXTRA_BODY" not in clients[0].options.env
+    agent.settings_store.set_web_service_tier("priority", model=config.MODEL)
+    await _turn(resume="sid-1")
+    assert len(clients) == 2 and clients[0].disconnected
+    assert json.loads(clients[1].options.env["CLAUDE_CODE_EXTRA_BODY"]) == {"service_tier": "priority"}
+    agent.settings_store.set_web_service_tier("", model=config.MODEL)
+    await _turn(resume="sid-1")
+    assert len(clients) == 3 and clients[1].disconnected
+    assert "CLAUDE_CODE_EXTRA_BODY" not in clients[2].options.env

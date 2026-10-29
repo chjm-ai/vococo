@@ -77,6 +77,8 @@ def test_find_session_matches_turn_or_title_visibility(isolated):
         "key": "web:turn-only",
         "title": "新对话",
         "last_error": True,
+        "agent_id": None,
+        "project_hash": None,
     }
     assert session_store.find_session("web:title-only")["title"] == "等首轮回复"
     assert session_store.find_session("web:missing") is None
@@ -92,6 +94,18 @@ def test_gpt56_summary_normalizes_stale_context_window(isolated):
 
     assert session_store.session_summary("web:gpt")["ctx_window"] == 258_400
     assert session_store.list_sessions("web:gpt")[0]["ctx_window"] == 258_400
+
+
+def test_gpt56_summary_uses_configured_context_window(isolated, monkeypatch, tmp_path):
+    from vococo.gateway import settings_store
+    from vococo.memory import session_store
+
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "settings.json")
+    settings_store.upsert_web_extra_model("gpt-5.6-luna", "Luna", context_window=400_000)
+    session_store.append("web:gpt-config", "你好", "你好")
+    session_store.set_chosen_model("web:gpt-config", "gpt-5.6-luna")
+    session_store.record_usage("web:gpt-config", 100_000, 0, window=400_000)
+    assert session_store.session_summary("web:gpt-config")["ctx_window"] == 400_000
 
 
 def test_record_usage_zero_ctx_tokens_keeps_previous_value(isolated):

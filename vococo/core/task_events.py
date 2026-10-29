@@ -73,6 +73,8 @@ def on_task_activity(task: dict) -> None:
         "task_update",
         {
             "id": task["id"],
+            "task_id": task["id"],
+            "job_id": task.get("job_id"),
             "title": task["title"],
             "status": task["status"],
             "progress_note": task["progress_note"],
@@ -96,7 +98,9 @@ def on_task_activity(task: dict) -> None:
     if task["status"] != "running" or task["id"] in _started_tasks:
         return
     _started_tasks.add(task["id"])
-    _bridge_event({"conv": tasks.session_key(task["id"]), "type": "start"})
+    _bridge_event({"conv": tasks.conversation_id(task), "type": "start",
+                   "task_id": task["id"], "job_id": task.get("job_id"),
+                   "conversation_id": tasks.conversation_id(task)})
 
 
 def register_terminal_handler(
@@ -138,7 +142,9 @@ async def _finish_stream(task: dict, sink, reply, turn_id: int | None) -> None:
             return
         except Exception as error:
             print(f"[task_events] 任务 {task['id']} 实时收尾失败:{error}", flush=True)
-    _bridge_event({"conv": tasks.session_key(task["id"]), "type": "done",
+    _bridge_event({"conv": tasks.conversation_id(task), "type": "done",
+                   "task_id": task["id"], "job_id": task.get("job_id"),
+                   "conversation_id": tasks.conversation_id(task),
                    "text": reply.text if reply else task.get("result_full", ""),
                    "turn_id": turn_id, "is_error": task["status"] == "failed"})
 

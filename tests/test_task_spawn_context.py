@@ -58,7 +58,9 @@ async def test_dispatched_task_runs_under_its_own_session(env, monkeypatch):
     await task_runner._running[task["id"]]
 
     assert seen["clarify"] is None
-    assert seen["key"] == f"task:{task['id']}"
+    assert seen["key"] == bg_tasks.session_key(task["id"]) == task["session_key"]
+    assert seen["key"].startswith("session:")
+    assert seen["key"] != "web:dispatcher"
 
 
 @pytest.mark.anyio

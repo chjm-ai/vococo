@@ -150,17 +150,21 @@ def test_policy_failure_denies_instead_of_falling_back(business, monkeypatch, to
     "cd /tmp; lark-cli docs +update --doc abc --command overwrite --content -",
     "zsh -c 'lark-cli docs +fetch --doc abc'",
 ])
-def test_business_legacy_lark_docs_redirected_before_execution(business, monkeypatch, command):
+def test_business_native_lark_available_without_legacy_redirect(business, monkeypatch, command):
     monkeypatch.setattr(config, "DANGER_GUARD", False)
     monkeypatch.setattr(config, "APPROVAL_GATE", False)
     monkeypatch.setattr(permissions, "auto_allows", lambda *args: True)
-    assert_denied(call("Bash", command=command), "mcp__vococo__lark_document")
+    assert call("Bash", command=command) == {}
     assert call("mcp__vococo__lark_document", operation="fetch", doc="abc") == {}
 
 
 @pytest.mark.parametrize("command", [
     "lark-cli skills read lark-doc",
-    "lark-cli docs +validate --content -",
+    "lark-cli --help",
+    "lark-cli docs --help",
+    "lark-cli whiteboard +update --help",
+    "lark-cli schema drive.files.list",
+    "lark-cli skills list",
     "printf '%s' 'lark-cli docs +fetch --doc abc'",
     "echo lark-cli docs +fetch --doc abc",
     "cat <<'EOF'\nlark-cli docs +fetch --doc abc\nEOF",
@@ -168,6 +172,47 @@ def test_business_legacy_lark_docs_redirected_before_execution(business, monkeyp
 ])
 def test_lark_local_help_and_quoted_examples_not_redirected(business, command):
     assert call("Bash", command=command) == {}
+
+
+@pytest.mark.parametrize("command", [
+    "lark-cli docs +update --doc abc --command block_delete --block-id xyz",
+    "lark-cli whiteboard +update --whiteboard-id abc --code 'flowchart LR; A-->B'",
+    "lark-cli sheets +update --spreadsheet-token abc",
+    "lark-cli drive file delete --file-token abc --yes",
+    "lark-cli im +send --receive-id abc --content hi",
+    "lark-cli future-domain +future-action --payload '{}'",
+    "lark-cli api POST /open-apis/new/v1/resource --data '{}'",
+    "lark-cli docs +fetch --doc abc",
+    "env LANG=C /usr/local/bin/lark-cli --profile test docs +update --doc abc --content -",
+    "zsh -c 'lark-cli whiteboard +update --whiteboard-id abc'",
+    "printf abc | xargs lark-cli drive file delete --file-token",
+    "printf 'drive file delete --file-token abc --yes' | xargs lark-cli",
+    "if true; then lark-cli drive file delete --file-token abc --yes; fi",
+    "if lark-cli docs +fetch --doc abc; then true; fi",
+    "for doc in abc; do lark-cli drive file delete --file-token $doc --yes; done",
+    'echo "$(lark-cli drive file delete --file-token abc --yes)"',
+    "echo `lark-cli drive file delete --file-token abc --yes`",
+])
+def test_native_lark_all_domains_use_approval_not_capability_whitelist(business, monkeypatch, command):
+    monkeypatch.setattr(config, "DANGER_GUARD", True)
+    monkeypatch.setattr(config, "APPROVAL_GATE", True)
+    monkeypatch.setattr(permissions, "auto_allows", lambda *args: False)
+    approve = AsyncMock(return_value=False)
+    monkeypatch.setattr(danger, "_ask_approval", approve)
+    assert danger.classify("Bash", {"command": command}) == (
+        "escalate", "飞书原生 CLI 操作(可能读取、发送或修改数据)", True,
+    )
+    assert_denied(call("Bash", command=command), "未批准")
+    approve.assert_awaited_once()
+    approve.return_value = True
+    assert call("Bash", command=command) == {}
+    assert approve.await_count == 2
+
+
+def test_native_lark_full_access_uses_existing_permission_model(business, monkeypatch):
+    monkeypatch.setattr(config, "APPROVAL_GATE", True)
+    monkeypatch.setattr(permissions, "auto_allows", lambda *args: True)
+    assert call("Bash", command="lark-cli whiteboard +update --whiteboard-id abc") == {}
 
 
 def test_developer_lark_cli_not_redirected(monkeypatch):

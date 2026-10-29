@@ -126,9 +126,9 @@ var _convsFetchedAt = 0, _convsSoonTimer = null;
 function applyConvs(d){
   _convsFetchedAt = Date.now();
   const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
-  // 新建但还没发出第一条消息的本地会话(conv=local-xxx)后端还不认识,不在返回列表里;
+  // 新建但还没发出第一条消息的草稿会话后端还不认识,不在返回列表里;
   // 合并时保留它,否则录音/转写等待期间只要有别的会话触发这次刷新,这条新会话就会被冲没
-  const locals = S.convs.filter(c=>String(c.conv).startsWith("local-"));
+  const locals = S.convs.filter(c=>isDraftConv(c.conv) && !d.conversations.some(x=>x.conv===c.conv));
   // 全部会话(含主会话)按最近活跃排序,最新的排最前面
   S.convs = [main, ...d.conversations, ...locals].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
   if(typeof patchAgentTitles==="function") patchAgentTitles(S.convs);   // Agent 主会话显示 Agent 名字
@@ -181,8 +181,26 @@ async function prefetchHistories(){
     }catch(e){ break; }                        // 网络不给力就收手,下次刷新再预热
   }
 }
-// 从 conv id 解析它属于哪个项目:p<hash>:<convid> → hash;否则 null(默认项目)
+// 新会话按显式元数据归属；旧项目 key 保留解析兼容。
+function isDraftConv(conv){
+  const c=(S.convs||[]).find(x=>x.conv===conv);
+  return !!(c && c.draft) || String(conv||"").startsWith("local-");
+}
+function convOwnership(conv){
+  const c=findConv(conv);
+  if(c && c.agent_id) return {agent_id:c.agent_id, project_hash:c.project_hash||null};
+  const a=(S.agents||[]).find(x=>x.main_conv===conv) || projAgent(convProject(conv));
+  return {agent_id:a ? a.id : "general", project_hash:a ? a.project_hash||null : convProject(conv)};
+}
+function isTaskConv(conv){
+  const c=findConv(conv);
+  return !!(c && (c.task_id || c.job_id)) || String(conv||"").startsWith("task:");
+}
 function convProject(conv){
+  const c=findConv(conv);
+  if(c && Object.prototype.hasOwnProperty.call(c,"project_hash")) return c.project_hash||null;
+  const a=(S.agents||[]).find(x=>x.main_conv===conv);
+  if(a) return a.project_hash||null;
   const m = String(conv).replace(/^local-/,"").match(/^p([0-9a-f]+):/);
   return m ? m[1] : null;
 }
@@ -211,11 +229,10 @@ function projName(hash){
   const p=(S.projects||[]).find(x=>x.hash===hash);
   return p ? p.name : "默认项目";
 }
-// 项目选择胶囊只在草稿态(local- 会话,还没发过消息)出现:发出第一条后这会话已归属到
-// 侧栏对应项目分组,不再需要重复标记(见 send()/sendCmd() 里转正后的 renderProjSelChip 调用)
+// 只有未绑定的草稿可选项目，发送后归属固定。
 function renderProjSelChip(){
   const box=$("#projSel"); if(!box) return;
-  const show = String(S.conv||"").startsWith("local-");
+  const show = isDraftConv(S.conv) && !S.sending[S.conv] && !S.live[S.conv];
   box.hidden = !show;
   if(show){ $("#projSelName").textContent = projName(S.project); $("#projSelIc").innerHTML = projIcon(S.project); }
 }
@@ -233,17 +250,15 @@ function renderProjSelPop(){
   ).join("");
   pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickDraftProject(b.dataset.h||null); });
 }
-// 切换草稿会话归属的项目:conv id 里的 p<hash>: 前缀重新拼一遍,内容(时间戳+随机串)不变
+// 选项目只改归属，保留草稿 ID、输入和附件。
 function pickDraftProject(hash){
   $("#projSelPop").hidden=true;
-  if(!String(S.conv||"").startsWith("local-")) return;  // 安全兜底:已转正的会话不可切项目
+  if(!isDraftConv(S.conv) || S.sending[S.conv] || S.live[S.conv]) return;
   if(hash===S.project) return;
-  const idPart = S.conv.replace(/^local-(?:p[0-9a-f]+:)?/, "");
-  const newConv = "local-"+(hash?("p"+hash+":"):"")+idPart;
-  const idx = S.convs.findIndex(x=>x.conv===S.conv);
-  if(idx>=0) S.convs[idx]={...S.convs[idx], conv:newConv};
-  navRetag(S.conv, newConv);
-  S.project=hash; S.conv=newConv;
+  const entry=S.convs.find(x=>x.conv===S.conv), owner=projAgent(hash);
+  if(!entry || !owner) return;
+  entry.project_hash=hash; entry.agent_id=owner.id;
+  S.project=hash;
   S.expanded.add(grpKey(hash)); saveExpanded();
   renderConvs(); renderProjSelChip();
 }
@@ -503,7 +518,7 @@ function renderConvs(){
   // c.conv===S.conv 高亮——否则会跟工作台/通话入口的高亮同时出现(2026-08-21 反馈的双重高亮)。
   const awayFromChat = inCall || S.surface==="workbench" || S.surface==="library";
   // 顶部固定区只保留新对话按钮和统一对话入口,不再显示重复的主会话行。
-  const isDraft = !awayFromChat && String(S.conv||"").startsWith("local-");   // 当前正停在一个还没发出第一条消息的新对话草稿上
+  const isDraft = !awayFromChat && isDraftConv(S.conv);   // 当前正停在一个还没发出第一条消息的新对话草稿上
   $("#newBtn").innerHTML = '<div class="cvbody">'+ic("edit")+'<div class="ct">新对话</div></div>';
   $("#newBtn").classList.toggle("active", isDraft);
   const top=$("#convTopRows"); top.innerHTML="";
@@ -584,7 +599,7 @@ async function loadVoiceSidebar(){
 // SSE task_update → 同步侧边栏任务行的状态点:状态没变(纯进度文案)不重绘,
 // 新派发的任务侧栏还没有这行则整个重拉一次
 function syncSidebarTaskStatus(t){
-  const row=(S.voiceSidebar.tasks||[]).find(x=>x.conv==="task:"+t.id);
+  const row=(S.voiceSidebar.tasks||[]).find(x=>x.task_id===t.id || x.conv===t.session_key);
   if(!row){ loadVoiceSidebar(); return; }
   if(row.task_status===t.status) return;
   row.task_status=t.status; renderConvs();
@@ -738,14 +753,15 @@ function reorderProject(srcHash, targetHash){
 function newChatIn(hash, focus, expand){
   S.project=hash;
   if(expand!==false){ S.expanded.add(grpKey(hash)); saveExpanded(); }
-  // 同项目下若已有一个还没发出第一条消息的草稿会话(local-xxx,turns=0),直接复用它
+  // 同项目下若已有一个还没发出第一条消息的草稿会话(draft=true,turns=0),直接复用它
   // (连同它在 localStorage 里存的输入框草稿一起带回来),不再另起一个空会话——
   // 否则"新对话→打几个字→切走→再点新对话"每次都会把刚才的草稿会话晾在一边。
-  const existing = S.convs.find(c=>String(c.conv).startsWith("local-") && c.turns===0 && convProject(c.conv)===hash);
+  const existing = S.convs.find(c=>isDraftConv(c.conv) && c.turns===0 && convProject(c.conv)===hash);
   if(existing){ openConv(existing.conv, expand===false); if(focus!==false) $("#ta").focus(); return; }
-  const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-  const conv="local-"+(hash?("p"+hash+":"):"")+id;
-  S.convs.unshift({conv,title:"新对话",turns:0,last_ts:null});
+  const conv="session:"+crypto.randomUUID().replaceAll("-", "");
+  const owner=projAgent(hash);
+  S.convs.unshift({conv,title:"新对话",turns:0,last_ts:null,draft:true,
+    project_hash:hash||null,agent_id:owner ? owner.id : (hash ? null : "general")});
   openConv(conv, expand===false);
   if(focus!==false) $("#ta").focus();
 }

@@ -246,7 +246,7 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
         "workdir": workdir,
         "output_dir": meta.get("output_dir") or workdir,
         "project_hash": phash,
-        "main_conv": main,
+        "main_conv": meta.get("main_conv") or main,
         "links": _normalize_links(meta.get("links")),
         "repositories": meta.get("repositories") if isinstance(meta.get("repositories"), list) else [],
         # agent.json 可以手改,坏值当「跟随全局」,不让整个列表接口报错
@@ -361,9 +361,8 @@ def _cancel_agent_work(agent_id: str) -> set[asyncio.Task]:
             running = task_runner._running.get(row["id"])
             if running is not None:
                 waiting.add(running)
-        for job_id in job_ids:
-            script = scheduler._script_tasks.get(job_id)
-            if script is not None:
+        for job_id, script in list(scheduler._script_tasks.items()):
+            if scheduler.script_owner_id(job_id) == agent_id:
                 script.cancel()
                 waiting.add(script)
     return waiting
@@ -381,9 +380,8 @@ async def delete_and_stop(agent_id: str) -> dict:
         _, pending = await asyncio.wait(waiting, timeout=10)
     result["pending_tasks"] = [row["id"] for row in tasks.active_for_agent(agent_id, result["job_ids"])
                                if task_runner.task_owner_id(row) == agent_id]
-    result["pending_tasks"].extend(j["id"] for j in scheduler.load_jobs()
-                                   if j.get("agent_id") == agent_id
-                                   and scheduler._script_tasks.get(j["id"]) in pending)
+    result["pending_tasks"].extend(job_id for job_id, script in scheduler._script_tasks.items()
+                                   if script in pending)
     return result
 
 
@@ -407,7 +405,15 @@ def by_project_hash(phash: str) -> dict | None:
     return get(aid) if aid else get(phash)
 
 
+_UPDATE_LOCK = threading.RLock()
+
+
 def create(name: str, path: str | None = None) -> dict:
+    with _UPDATE_LOCK:
+        return _create(name, path)
+
+
+def _create(name: str, path: str | None = None) -> dict:
     """新建 Agent。path 为空 → 在 config.AGENT_WORKSPACES_DIR/<id> 建工作目录;否则绑定指定目录。
 
     绑定的目录已经是某个 Agent 的工作目录时,不重复建,直接返回那个 Agent(改个名)。"""
@@ -429,15 +435,18 @@ def create(name: str, path: str | None = None) -> dict:
         workdir = str(config.AGENT_WORKSPACES_DIR / aid)
         Path(workdir).mkdir(parents=True, exist_ok=True)
         workdir = projects.normalize_project_path(workdir)
+    from . import session_store
+
+    main = config.new_session_key()
+    session_store.bind_session(main, agent_id=aid, project_hash=projects.project_hash(workdir))
     _write_meta(aid, {"name": name, "workdir": workdir, "created_at": time.time(),
-                      "avatar": _default_avatar(aid)})
+                      "avatar": _default_avatar(aid), "main_conv": main})
     write_doc(aid, "AGENT.md", AGENT_TEMPLATE.format(name=name))
     projects.upsert_project(workdir)
     return get(aid)  # type: ignore[return-value]
 
 
 _UNSET = object()
-_UPDATE_LOCK = threading.RLock()
 
 
 def update(agent_id: str, *, repositories=_UNSET, **kwargs) -> dict | None:
@@ -666,23 +675,32 @@ def agent_for_session(session_key: str) -> dict | None:
     """会话属于哪个 Agent:项目会话按项目哈希;定时任务会话按 job 的 agent_id;其余 None。
 
     通用 Agent 不自动套到普通会话上——它的 AGENT.md 默认是空的,真写了内容再按需接。"""
+    from . import session_store
+
+    binding = session_store.session_binding(session_key)
+    if session_key.startswith("session:") or binding:
+        owner = get(binding["agent_id"]) if binding.get("agent_id") else None
+        if owner is None:
+            raise ValueError(f"会话未绑定有效 Agent: {session_key}")
+        return owner
     phash = config.project_hash_from_key(session_key)
     if phash:
         return by_project_hash(phash)
-    if session_key.startswith("task:"):
-        from ..core import tasks
-        from ..cron import scheduler
+    from ..core import tasks
 
-        job = next((j for j in scheduler.load_jobs() if j.get("id") == session_key[5:]), None)
-        if job and job.get("agent_id"):
-            return get(job["agent_id"])
-        # 定时配置没有归属时，继续查任务表中派发时记下的 Agent，兼容历史任务。
-        row = tasks.get(session_key[5:])
-        if row and row.get("agent_id"):
-            return get(row["agent_id"])
-    if session_key == config.SESSION_KEY:
-        return get(GENERAL_ID)
-    return None
+    if session_key.startswith("task:"):
+        return _legacy_task_owner(tasks.task_for_session(session_key), session_key)
+    return get(GENERAL_ID) if session_key == config.SESSION_KEY else None
+
+
+def _legacy_task_owner(row: dict | None, session_key: str) -> dict | None:
+    from ..cron import scheduler
+
+    job_id = row.get("job_id") if row else session_key.removeprefix("task:")
+    job = next((j for j in scheduler.load_jobs() if j.get("id") == job_id), None) if job_id else None
+    if job and job.get("agent_id"):
+        return get(job["agent_id"])
+    return get(row["agent_id"]) if row and row.get("agent_id") else None
 
 
 def prompt_extra(agent: dict | None) -> str:
@@ -775,7 +793,9 @@ def runtime_for_session(session_key: str | None) -> dict:
         return empty
     try:
         a = agent_for_session(session_key)
-    except Exception as exc:  # noqa: BLE001 —— 读不到就按全局走,不影响对话
+    except Exception as exc:  # noqa: BLE001 —— 旧会话保留历史降级行为
+        if session_key.startswith("session:"):
+            raise
         print(f"[agents] 读取 Agent 名单失败:{exc}", flush=True)
         a = None
     if not a or a["id"] == GENERAL_ID:
@@ -806,7 +826,9 @@ def owner_for_memory(session_key: str | None) -> dict | None:
         return None
     try:
         a = agent_for_session(session_key)
-    except Exception:  # noqa: BLE001 —— 认不出就当全局
+    except Exception:  # noqa: BLE001 —— 新会话不能把归属失败当全局记忆
+        if session_key.startswith("session:"):
+            raise
         return None
     return a if a and a["id"] != GENERAL_ID else None
 
@@ -814,7 +836,9 @@ def owner_for_memory(session_key: str | None) -> dict | None:
 def prompt_extra_for_session(session_key: str) -> str:
     try:
         return prompt_extra(agent_for_session(session_key))
-    except Exception as exc:  # noqa: BLE001 —— 读不到设定不影响正常对话
+    except Exception as exc:  # noqa: BLE001 —— 新会话必须确认身份后才能执行
+        if session_key.startswith("session:"):
+            raise
         print(f"[agents] 读取 Agent 设定失败:{exc}", flush=True)
         return ""
 
@@ -903,14 +927,28 @@ def _run_anchor(agent: dict | None, run: dict, source_turn_id: int | None) -> di
     """锚点带时间戳,避免删除后的轮次 ID 复用把动态指向别的消息。"""
     if run["turn_id"] is not None and agent:
         return {"target_conv": agent["main_conv"], "target_turn_id": run["turn_id"], "target_ts": run["ts"]}
-    conv = "task:" + run["job_id"] if run["job_id"] else None
+    from ..core import tasks
+
+    from ..cron import scheduler
+
+    task = tasks.task_for_job(run["job_id"]) or tasks.get(run["job_id"]) if run["job_id"] else None
+    job = next((j for j in scheduler.load_jobs() if j["id"] == run["job_id"]), None) if run["job_id"] else None
+    key = tasks.session_key(task["id"]) if task else (job or {}).get("conv")
+    key = key or ("task:" + run["job_id"] if run["job_id"] else None)
+    # 脚本没有执行行；来源轮仍可精确定位转移归属前的历史会话。
+    source = _conn().execute(
+        "SELECT session_key FROM turns WHERE id=? AND ts<=? AND substr(assistant_text,1,4000)=?",
+        (source_turn_id, run["ts"], run["text"]),
+    ).fetchone() if source_turn_id is not None else None
+    key = source[0] if source else key
+    conv = config.conversation_id_for_key(key) if key else None
     # 后台任务不复制到主会话;旧记录也可从原任务结果找回锚点,但不能猜测最近一轮。
     clause = "id=?" if source_turn_id is not None else "substr(assistant_text,1,4000)=?"
     row = _conn().execute(
         "SELECT id, ts FROM turns WHERE session_key=? AND ts<=? "
         f"AND {clause} ORDER BY id DESC LIMIT 1",
-        (conv, run["ts"], source_turn_id if source_turn_id is not None else run["text"]),
-    ).fetchone() if conv else None
+        (key, run["ts"], source_turn_id if source_turn_id is not None else run["text"]),
+    ).fetchone() if key else None
     return {"target_conv": conv, "target_turn_id": row[0] if row else None,
             "target_ts": row[1] if row else None}
 

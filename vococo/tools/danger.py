@@ -15,10 +15,13 @@ fork 炸弹等),宁可漏放也别误伤日常操作——`rm -rf ./build` 这�
 from __future__ import annotations
 
 import contextvars
+import json
 import os
 import re
 import shlex
 import tempfile
+import tomllib
+from pathlib import Path
 
 from .. import config
 
@@ -290,8 +293,9 @@ _ESCALATE_BASH: list[tuple[re.Pattern, str, bool]] = [
     (re.compile(r"\brm\s+-\S*[rR]"), "rm -rf(递归删除)", False),
     (
         re.compile(
-            r"\b(pip3?|pipx|uv|npm|pnpm|yarn|brew|apt|apt-get|gem|cargo|go)\s+"
-            r"(install|add|get|i)\b"
+            r"\b(?:pip3?|pipx|uv(?:\s+pip)?|npm|pnpm|yarn|brew|apt|apt-get|gem|cargo|go|"
+            r"python[\d.]*(?:\s+-m\s+pip))\s+"
+            r"(?:-[^\s]+\s+)*(install|add|get|i|sync|ci)\b"
         ),
         "包安装(改动环境)",
         True,
@@ -761,7 +765,9 @@ def _inside_agent_writable(path: str, cwd: str | None) -> bool:
         a = agents.agent_for_session(_current_session_key())
         if a is None:
             return False
-        bases = [str(agents.home(a["id"]))] + [x["path"] for x in a["links"] if x["writable"]]
+        from ..core.execution import linked_file_roots
+
+        bases = [str(agents.home(a["id"]))] + list(linked_file_roots(_current_session_key()))
         target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
         for b in bases:
             base = os.path.realpath(b)
@@ -803,6 +809,124 @@ def _business_write_allowed(tool_input: dict, cwd: str | None, policy) -> bool:
     )
 
 
+# 只免批常见且不改变安装范围的参数；未知参数（包括缩写）回到正常审批，不继续补黑名单。
+_PROJECT_INSTALL_FLAGS = {
+    "--extra", "--all-extras", "--dev", "--no-dev", "--group", "--all-groups",
+    "--frozen", "--locked", "--offline", "--dry-run", "--no-progress", "--quiet", "-q",
+    "--save", "--save-dev", "--save-exact", "-D", "-S", "-E", "--no-audit", "--no-fund",
+    "--ignore-scripts", "--frozen-lockfile", "--immutable", "--upgrade", "-U", "-r", "--requirement",
+}
+
+
+_INSTALL_LOCATION_KEYS = {
+    "global", "prefix", "target", "root", "user", "location", "workspace", "workspaces",
+    "modulesdir", "modulesfolder", "globalfolder", "virtualstoredir", "storedir",
+    "projectenvironment", "configfile", "userconfig", "globalconfig", "directory", "project", "active",
+}
+
+
+def _location_key(key: str) -> bool:
+    return key.lower().replace("-", "").replace("_", "") in _INSTALL_LOCATION_KEYS
+
+
+def _config_changes_install_location(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    if path.stat().st_size > 128 * 1024:
+        return True
+    # 只读配置项名，不记录值；registry、索引与认证配置不应造成普通安装反复审批。
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"\s*([\w-]+)\s*(?:[:=]|$)", line)
+        if match and _location_key(match[1]):
+            return True
+    return False
+
+
+def _installer_overrides(cwd: Path, manager: str) -> bool:
+    """额外配置改变安装范围时交回审批；免批不是安装脚本的沙箱。"""
+    prefixes = ("npm_config_", "pnpm_", "yarn_") if manager in {"npm", "pnpm", "yarn"} else (
+        ("uv_",) if manager == "uv" else ("pip_",)
+    )
+    if any(_location_key(key[len(prefix):]) for key in os.environ for prefix in prefixes
+           if key.lower().startswith(prefix)):
+        return True
+    home = Path.home()
+    if manager in {"npm", "pnpm", "yarn"}:
+        configs = [base / name for base in (cwd, *cwd.parents, home)
+                   for name in (".npmrc", ".yarnrc", ".yarnrc.yml")]
+        configs += [Path(base) / "npmrc" for base in ("/etc", "/usr/local/etc", "/opt/homebrew/etc")]
+    elif manager == "uv":
+        configs = [base / "uv.toml" for base in (cwd, *cwd.parents, home / ".config/uv", Path("/etc/uv"))]
+    else:
+        configs = [Path("/etc/pip.conf"), home / ".config/pip/pip.conf", home / ".pip/pip.conf",
+                   home / "Library/Application Support/pip/pip.conf", cwd / ".venv/pip.conf"]
+    return any(_config_changes_install_location(path) for path in configs)
+
+
+def _parent_workspace(cwd: Path, manager: str) -> bool:
+    """安装器会向上找工作区；不能把成员目录误当作实际安装范围。"""
+    for parent in cwd.parents:
+        if manager == "uv":
+            manifest = parent / "pyproject.toml"
+            if manifest.is_file():
+                data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+                if "workspace" in data.get("tool", {}).get("uv", {}):
+                    return True
+        else:
+            if (parent / "pnpm-workspace.yaml").is_file():
+                return True
+            manifest = parent / "package.json"
+            if manifest.is_file() and json.loads(manifest.read_text(encoding="utf-8")).get("workspaces"):
+                return True
+    return False
+
+
+def _local_install_words(words: list[str], cwd: Path) -> bool:
+    """只豁免去向明确的项目安装；不是通用 shell 或供应链安全检查。"""
+    if len(words) < 2:
+        return False
+    executable, action = words[0], words[1]
+    args = words[4:] if words[1:4] == ["-m", "pip", "install"] else words[2:]
+    if any(word.startswith("-") and word.split("=", 1)[0] not in _PROJECT_INSTALL_FLAGS for word in args):
+        return False
+    if _installer_overrides(cwd, executable):
+        return False
+    if executable in {"npm", "pnpm", "yarn"}:
+        return (action in {"install", "i", "add", "ci"} and (cwd / "package.json").is_file()
+                and not _parent_workspace(cwd, executable))
+    if executable == "uv":
+        return (action in {"sync", "add"} and (cwd / "pyproject.toml").is_file()
+                and not (cwd / ".venv").is_symlink() and not _parent_workspace(cwd, executable))
+    # 不相信 PATH 上的 pip 或激活状态：必须明确调用当前项目的虚拟环境。
+    binary = Path(executable).expanduser()
+    binary = binary if binary.is_absolute() else cwd / binary
+    if binary.parent.resolve() != (cwd / ".venv" / "bin").resolve():
+        return False
+    if not (cwd / ".venv" / "pyvenv.cfg").is_file() or (cwd / ".venv").is_symlink():
+        return False
+    if binary.name in {"pip", "pip3"}:
+        return action == "install"
+    return bool(re.fullmatch(r"python[\d.]*", binary.name) and words[1:4] == ["-m", "pip", "install"])
+
+
+def _project_dependency_install(command: str, cwd: str | None) -> bool:
+    if not cwd or re.search(r"[$`<>|&;\n]", command.replace("&&", "")):
+        return False
+    base = Path(cwd).expanduser().resolve()
+    try:
+        statements = _shell_commands(command)
+        if statements and statements[0][:1] == ["cd"]:
+            if len(statements[0]) != 2 or len(statements) != 2:
+                return False
+            target = (base / os.path.expanduser(statements.pop(0)[1])).resolve()
+            if not target.is_relative_to(base):
+                return False
+            base = target
+        return bool(statements) and all(_local_install_words(words, base) for words in statements)
+    except (ValueError, OSError):
+        return False
+
+
 def classify(
     tool_name: str, tool_input: dict, cwd: str | None = None
 ) -> tuple[str, str, bool]:
@@ -830,8 +954,12 @@ def classify(
             return ("escalate", PERMISSION_CONFIG_REASON, True)
         if _is_process_control(cmd):
             return ("escalate", "进程终止命令(kill/pkill/killall)", True)
+        if _lark_requires_approval(cmd):
+            return ("escalate", "飞书原生 CLI 操作(可能读取、发送或修改数据)", True)
         for rx, reason, restrict in _ESCALATE_BASH:
             if rx.search(cmd):
+                if reason == "包安装(改动环境)" and _project_dependency_install(cmd, cwd):
+                    continue
                 return ("escalate", reason, restrict)
         return ("allow", "", False)
     if tool_name in _WRITE_TOOLS:
@@ -1097,31 +1225,57 @@ def _deny_workflow() -> dict:
     )
 
 
-def _legacy_lark_document_command(command: str, depth: int = 0) -> bool:
-    """旧会话可能沿用技能中的 CLI 操作；在执行前给出可恢复的工具迁移提示。"""
-    if depth > 4:
+def _lark_discovery(args: list[str]) -> bool:
+    """仅豁免本地能力发现，不维护远端功能白名单。"""
+    args = list(args)
+    while args and args[0].startswith("--profile"):
+        if args[0] == "--profile" and len(args) > 1:
+            del args[:2]
+        elif args[0].startswith("--profile="):
+            del args[0]
+        else:
+            return False
+    if not args or args in (["--version"], ["-v"]):
+        return True
+    if args[-1] in {"--help", "-h"}:
+        return all(re.fullmatch(r"[A-Za-z0-9_+.][A-Za-z0-9_+.-]*", word) for word in args[:-1])
+    if len(args) == 2 and args[0] == "schema":
+        return bool(re.fullmatch(r"[A-Za-z0-9_.]+", args[1]))
+    return args == ["skills", "list"] or (
+        len(args) == 3 and args[:2] == ["skills", "read"]
+        and bool(re.fullmatch(r"[A-Za-z0-9_./-]+", args[2]))
+    )
+
+
+def _lark_stage_requires_approval(stage: list[str], depth: int) -> bool:
+    words = _unwrap_command(stage)
+    while words and words[0] in {"if", "then", "elif", "else", "while", "until", "do", "!", "{", "time"}:
+        words = _unwrap_command(words[1:])
+    if words and os.path.basename(words[0]) == "xargs":
+        # xargs 会从 stdin 追加操作，不能把空参数或 --help 当成最终调用。
+        invoked = _xargs_command(words)
+        if invoked and os.path.basename(invoked[0]) == "lark-cli":
+            return True
+        words = invoked
+    if words and os.path.basename(words[0]) == "lark-cli":
+        return not _lark_discovery(words[1:])
+    script = _shell_script(words)
+    return bool(script and _lark_requires_approval(script, depth + 1))
+
+
+def _lark_requires_approval(command: str, depth: int = 0) -> bool:
+    """全域原生调用走统一审批，未知/新增命令也不静默放行。"""
+    command = _strip_inert_text(command)
+    if "lark-cli" not in command:
         return False
-    for statement in _shell_commands_tolerant(_strip_inert_text(command)):
-        for stage in _pipeline_stages(statement):
-            words = _unwrap_command(stage)
-            if words and os.path.basename(words[0]) == "lark-cli":
-                words = list(words)
-                while len(words) > 1 and words[1].startswith("--profile"):
-                    if words[1] == "--profile" and len(words) > 2:
-                        del words[1:3]
-                    elif words[1].startswith("--profile="):
-                        del words[1]
-                    else:
-                        break
-            if (len(words) >= 3 and os.path.basename(words[0]) == "lark-cli"
-                    and words[1] == "docs" and words[2] in {"+fetch", "+create", "+update"}):
-                if words[3:] in (["--help"], ["-h"]):
-                    continue
-                return True
-            script = _shell_script(words)
-            if script and _legacy_lark_document_command(script, depth + 1):
-                return True
-    return False
+    # 不尝试把任意 shell 解释成安全子集；有动态执行时保守审批。
+    if depth > 4 or "$(" in command or "`" in command:
+        return True
+    return any(
+        _lark_stage_requires_approval(stage, depth)
+        for statement in _shell_commands_tolerant(command)
+        for stage in _pipeline_stages(statement)
+    )
 
 
 def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | None:
@@ -1164,20 +1318,11 @@ def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | Non
         "mcp__vococo__add_mcp_server", "mcp__vococo__remove_mcp_server",
         "mcp__vococo__set_external_mcp",
     }
-    legacy_lark = tool_name == "Bash" and _legacy_lark_document_command((tool_input or {}).get("command", "") or "")
-    needs_policy = tool_name in _WRITE_TOOLS or configures_mcp or legacy_lark or (
+    needs_policy = tool_name in _WRITE_TOOLS or configures_mcp or (
         tool_name == "Bash" and (tool_input or {}).get("dangerouslyDisableSandbox")
     )
     policy = _business_policy(cwd) if needs_policy else None
     if policy is not None:
-        if legacy_lark:
-            return _deny(
-                "此旧飞书 CLI 命令被入口策略拒绝，未执行；这不能证明凭据过期或TLS故障。"
-                "请改用 mcp__vococo__lark_document，operation=fetch/create/update/insert_image。"
-                "fetch 传 doc、detail、scope；update 传 Markdown content，可用 str_replace 或 block_insert_after。"
-                "insert_image 传 doc、image_path、block_id，可选 caption/width/height；文件限当前工作目录/正式成果目录。"
-                "上传和写入仍需审批。任意XML、附件、画板编辑尚未接入，不能静默改成整篇覆盖。"
-            )
         if configures_mcp:
             return _deny("业务会话不能注册、移除或切换 MCP 执行入口，请由主人在管理界面配置；已配置的业务 MCP 仍可使用。")
         path = (tool_input or {}).get("file_path") or (tool_input or {}).get("notebook_path")
@@ -1228,6 +1373,8 @@ def _category(reason: str) -> str:
     """把审批原因归一成稳定类别键(供「本次会话都允许」按类记忆)。"""
     if reason.startswith("写工作目录外的文件"):
         return "write_outside_cwd"
+    if reason in {"写入飞书文档", "飞书原生 CLI 操作(可能读取、发送或修改数据)"}:
+        return "lark_data"
     return reason
 
 

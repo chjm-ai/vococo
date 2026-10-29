@@ -83,6 +83,8 @@ def test_invalid_mode_rejected(isolated):
 def test_background_escalate_blocked_in_standard(agent_mode):
     out = _hook_as_task(MCP_WRITE, {"to": "a@b.c"})
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    out = _hook_as_task("Bash", {"command": "lark-cli drive file delete --file-token abc --yes"})
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_background_escalate_auto_allowed_in_full(agent_mode):
@@ -91,6 +93,7 @@ def test_background_escalate_auto_allowed_in_full(agent_mode):
     agent_mode["permission"] = "full"
     assert _hook_as_task(MCP_WRITE, {"to": "a@b.c"}) == {}
     assert _hook_as_task("Bash", {"command": "git push origin main"}) == {}
+    assert _hook_as_task("Bash", {"command": "lark-cli whiteboard +update --whiteboard-id abc"}) == {}
     decisions = [r["decision"] for r in approvals.list_audit()]
     assert decisions and set(decisions) == {"full_access"}
 

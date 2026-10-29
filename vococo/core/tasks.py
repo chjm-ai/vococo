@@ -30,14 +30,11 @@ _DB: sqlite3.Connection | None = None
 
 TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled"})
 
-# 后台任务的 session_key 就是这个前缀 + 任务 id(见 core/worktree.py、core/task_runner.py、
-# voice/notify.py 的构造侧,gateway/run.py、gateway/adapters/web.py 的解析侧)——统一经
-# session_key()/task_id_from_session_key() 两个函数读写,不再各处手写字符串拼接/split,
-# 避免约定改了却漏改某个调用点(2026-07-23 架构复盘;2026-07-29 从 voice-task: 改名)。
+# 仅旧任务使用 task:<id>；新任务显式关联 session:<id>，执行 id 不再编码会话身份。
+# 调用方统一使用 session_key()/task_id_from_session_key()，不得手写拼接或截前缀。
 SESSION_KEY_PREFIX = "task:"
 
-# 触发方枚举:UI/通知按这个字段分组,不再靠 session_key 前缀猜(2026-07-29 起前缀
-# 统一成 task:,以前 voice-task:/cron-task: 两个前缀各自为政的年代已经结束)。
+# 触发方枚举：UI/通知按来源及显式关联分组，不靠会话前缀猜。
 ORIGINS = frozenset({"voice", "cron", "chat"})
 _SDK_TASK_TOOL_NAMES = frozenset({"TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskDelete"})
 
@@ -49,14 +46,37 @@ def is_sdk_task_tool(name: str) -> bool:
 
 def session_key(task_id: str) -> str:
     """任务 id → 该任务对应的会话 key。"""
-    return f"{SESSION_KEY_PREFIX}{task_id}"
+    row = get(task_id)
+    return (row or {}).get("session_key") or f"{SESSION_KEY_PREFIX}{task_id}"
+
+
+def task_for_session(key: str) -> dict | None:
+    """按映射找独立执行，内联研究不占用来源会话的任务身份。"""
+    row = _conn().execute(
+        "SELECT * FROM tasks WHERE session_key=? "
+        "AND NOT (kind='research' AND source_session_key IS NOT NULL) "
+        "ORDER BY created_at DESC, rowid DESC LIMIT 1", (key,),
+    ).fetchone()
+    return _row(row) if row else None
+
+
+def task_for_job(job_id: str) -> dict | None:
+    row = _conn().execute(
+        "SELECT * FROM tasks WHERE job_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (job_id,),
+    ).fetchone()
+    return _row(row) if row else None
 
 
 def task_id_from_session_key(key: str) -> str | None:
-    """会话 key → 任务 id;不是本模块的 session_key() 前缀则返回 None。"""
+    row = task_for_session(key) if key else None
+    if row:
+        return row["id"]
     if not key or not key.startswith(SESSION_KEY_PREFIX):
         return None
-    return key[len(SESSION_KEY_PREFIX):]
+    tid = key[len(SESSION_KEY_PREFIX):]
+    # 只兼容尚无任务记录的旧键，不能把新任务伪装成旧会话。
+    return tid if tid and get(tid) is None else None
 
 _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "queued": frozenset({"running", "cancelled"}),
@@ -118,6 +138,8 @@ def _conn() -> sqlite3.Connection:
             # 所属 Agent(派发时从来源会话推出来,见 task_runner.dispatch)+ 最近一轮的运行指标
             # (见 set_run_metrics),给 Agent 的运行记录 / 复盘当数据
             ("agent_id", "agent_id TEXT"),
+            ("session_key", "session_key TEXT"),
+            ("job_id", "job_id TEXT"),
             ("last_tokens", "last_tokens INTEGER NOT NULL DEFAULT 0"),
             ("last_duration", "last_duration REAL NOT NULL DEFAULT 0"),
             ("last_tool_calls", "last_tool_calls INTEGER NOT NULL DEFAULT 0"),
@@ -126,12 +148,17 @@ def _conn() -> sqlite3.Connection:
                 _DB.execute(f"ALTER TABLE tasks ADD COLUMN {ddl}")
             except sqlite3.OperationalError:
                 pass
+        _DB.execute("UPDATE tasks SET session_key='task:' || id WHERE session_key IS NULL")
+        _DB.execute("UPDATE tasks SET job_id=id WHERE origin='cron' AND job_id IS NULL "
+                    "AND session_key='task:' || id")
+        _DB.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_key)")
+        _DB.execute("CREATE INDEX IF NOT EXISTS idx_tasks_job ON tasks(job_id)")
         # 旧委托只迁移来源信任元数据，执行不再依赖旧权限快照或预算。
         if _DB.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_delegations'").fetchone():
-            for row in _DB.execute("SELECT d.* FROM agent_delegations d JOIN tasks t ON t.id=d.task_id "
+            for row in _DB.execute("SELECT d.*, t.session_key AS task_session FROM agent_delegations d JOIN tasks t ON t.id=d.task_id "
                                    "WHERE t.source_access IS NULL").fetchall():
                 access = {"session": row["source_session"], "denied": json.loads(row["denied"]),
-                          "mode": "standard", "chain_session": session_key(row["task_id"])}
+                          "mode": "standard", "chain_session": row["task_session"]}
                 _DB.execute("UPDATE tasks SET source_access=? WHERE id=?", (json.dumps(access), row["task_id"]))
         # 无人值守后台任务(cron/语音派活)每天累计的新鲜 token,供每日总量上限判断
         _DB.execute(
@@ -170,31 +197,63 @@ def create(
     source_session_key: str | None = None,
     commit: bool = True,
     source_access: dict | None = None,
+    session_key: str | None = None,
+    job_id: str | None = None,
 ) -> dict:
     """落库一条 queued 任务,返回完整行。
 
-    task_id 不传则随机生成 8 位短随机串(碰撞概率可忽略);cron 定时任务传显式
-    task_id=job_id——定时任务是"反复触发同一个身份",直接复用 job 自己的 id 作为
-    task id,让每次到点触发天然映射成"对同一个任务 append 一轮"(见 task_runner.append),
-    不必每次触发都另开一行。
+    新独立任务生成会话身份并持久绑定归属。cron 旧调用传的 task_id 视为 job_id，
+    执行 id 始终独立生成；其他调用保留显式 task_id 兼容。内联研究复用来源会话。
 
     dispatch_platform/dispatch_chat_id: 任务是从哪个平台、哪个会话派来的——终态
     通知时靠它们回推该发给谁(见 voice/notify.py)。origin 标记触发方,必须是
     ORIGINS 之一。
     """
     c = _conn()
-    tid = task_id or secrets.token_hex(4)
+    tid = secrets.token_hex(4) if origin == "cron" else task_id or secrets.token_hex(4)
+    job_id = job_id or (task_id if origin == "cron" else None)
+    inline = kind == "research" and source_session_key is not None
+    key = session_key or (f"task:{tid}" if inline else config.new_session_key())
+    if not inline:
+        agent_id = _bind_task_session(key, agent_id, cwd, source_session_key)
     now = time.time()
     c.execute(
         "INSERT INTO tasks(id,title,prompt,cwd,cwd_explicit,status,progress_note,result_summary,"
-        "result_full,dispatch_platform,dispatch_chat_id,origin,agent_id,kind,source_session_key,source_access,created_at,updated_at) "
-        "VALUES (?,?,?,?,?,'queued','','','',?,?,?,?,?,?,?,?,?)",
+        "result_full,dispatch_platform,dispatch_chat_id,origin,agent_id,kind,source_session_key,source_access,"
+        "session_key,job_id,created_at,updated_at) "
+        "VALUES (?,?,?,?,?,'queued','','','',?,?,?,?,?,?,?,?,?,?,?)",
         (tid, title, prompt, cwd, int(cwd_explicit), dispatch_platform, dispatch_chat_id, origin,
-         agent_id, kind, source_session_key, json.dumps(source_access) if source_access else None, now, now),
+         agent_id, kind, source_session_key, json.dumps(source_access) if source_access else None,
+         key, job_id, now, now),
     )
     if commit:
         c.commit()
     return get(tid)
+
+
+def _bind_task_session(key: str, agent_id: str | None, cwd: str | None,
+                       source: str | None) -> str:
+    from ..memory import agents, session_store
+
+    binding = session_store.session_binding(key)
+    if binding:
+        owner = agents.get(binding.get("agent_id")) if binding.get("agent_id") else None
+        if owner is None:
+            raise ValueError("会话所属 Agent 不存在")
+        # 已绑定的 None 也代表明确归属，不能再按执行目录重新推断项目。
+        return owner["id"]
+    owner = agents.get(agent_id) if agent_id else None
+    if agent_id and owner is None:
+        raise ValueError("任务所属 Agent 不存在")
+    if owner is None and source:
+        owner = agents.agent_for_session(source)
+    phash = session_store.upsert_project(cwd)["hash"] if cwd else None
+    if owner is None and phash:
+        owner = agents.by_project_hash(phash)
+    owner = owner or agents.get(agents.GENERAL_ID)
+    phash = phash or owner.get("project_hash")
+    session_store.bind_session(key, agent_id=owner["id"], project_hash=phash)
+    return owner["id"]
 
 
 def capture_source_access(source: str, denied=()) -> dict:
@@ -227,7 +286,7 @@ def conversation_id(task: dict) -> str:
     key = task.get("source_session_key") if is_inline_research(task) else session_key(task["id"])
     if key == config.SESSION_KEY:
         return "main"
-    return (key or "").removeprefix("web:")
+    return config.conversation_id_for_key(key or "")
 
 
 def mark_research_delivered(task_id: str) -> None:
@@ -343,16 +402,17 @@ def list_recent_for_source(
 
 def active_for_agent(agent_id: str, job_ids: list[str]) -> list[dict]:
     """关联任务不设条数上限;旧 cron 行可能没有正确保存 agent_id。"""
-    clauses = ["agent_id=?"]
-    params = [agent_id]
-    if job_ids:
-        clauses.append(f"id IN ({','.join('?' for _ in job_ids)})")
-        params.extend(job_ids)
-    rows = _conn().execute(
-        "SELECT * FROM tasks WHERE status IN ('queued','running') AND ("
-        + " OR ".join(clauses) + ")", params,
-    ).fetchall()
-    return [_row(row) for row in rows]
+    from ..memory import session_store
+
+    rows = _conn().execute("SELECT * FROM tasks WHERE status IN ('queued','running')").fetchall()
+    result = []
+    for row in rows:
+        task = _row(row)
+        binding = session_store.session_binding(task["session_key"])
+        owner = binding.get("agent_id") if binding else task.get("agent_id")
+        if owner == agent_id or (not binding and not owner and task.get("job_id") in job_ids):
+            result.append(task)
+    return result
 
 
 def list_queued() -> list[dict]:
@@ -378,17 +438,17 @@ def set_status(task_id: str, status: str, progress_note: str | None = None) -> b
         return False
     c = _conn()
     if progress_note is None:
-        c.execute(
-            "UPDATE tasks SET status=?, updated_at=?, run_version=run_version+? WHERE id=?",
-            (status, time.time(), int(status == "running"), task_id),
-        )
+        changed = c.execute(
+            "UPDATE tasks SET status=?, updated_at=?, run_version=run_version+? WHERE id=? AND status=? AND run_version=?",
+            (status, time.time(), int(status == "running"), task_id, cur["status"], cur["run_version"]),
+        ).rowcount
     else:
-        c.execute(
-            "UPDATE tasks SET status=?, progress_note=?, updated_at=?, run_version=run_version+? WHERE id=?",
-            (status, progress_note, time.time(), int(status == "running"), task_id),
-        )
+        changed = c.execute(
+            "UPDATE tasks SET status=?, progress_note=?, updated_at=?, run_version=run_version+? WHERE id=? AND status=? AND run_version=?",
+            (status, progress_note, time.time(), int(status == "running"), task_id, cur["status"], cur["run_version"]),
+        ).rowcount
     c.commit()
-    return True
+    return bool(changed)
 
 
 def set_progress(task_id: str, note: str) -> None:

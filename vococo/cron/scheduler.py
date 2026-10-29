@@ -8,7 +8,7 @@ job 结构:
   "id": "morning", "name": "晨间简报", "prompt": "...",
   "schedule": {"kind": "cron", "expr": "0 8 * * *"}        # 或 {"kind":"interval","minutes":60} / {"kind":"once","run_at": <epoch>}
   # 事件触发(见 cron/events.py):{"kind":"webhook","secret":"..."} / {"kind":"watch","path":"/目录","glob":"*.m4a"}
-  "conv": "task:morning",   # 该任务专属会话,历次运行结果落在这里(侧栏可点开看)
+  "conv": "session:<uuid>",   # 该任务专属会话,历次运行结果落在这里(侧栏可点开看)
   "target": {"platform": "web", "chat_id": "conv1"},  # 额外推送目标(可选,不填就只落会话+系统推送)
   "cwd": "/path/to/project",  # 项目根目录;执行时若为 git 仓库会开专属 worktree
   "model": null, "enabled": true,
@@ -21,8 +21,8 @@ job 结构:
 
 2026-07-29 通用化:cron 触发的每一轮执行,不再自己起一个孤立的 run_turn(无历史、
 无 worktree、无并发上限),改走 core/task_runner.py 那套语音/cron/chat 三方共用的
-统一后台任务引擎——job_id 本身就复用作 task_id(见 core/tasks.py 的 origin 字段
-说明):第一次触发 dispatch,以后每次到点都是对同一个 task 再 append 一轮,天然
+统一后台任务引擎——job_id、task_id、会话 key 独立,通过任务映射关联:
+第一次触发 dispatch,以后每次到点都是对同一个 task 再 append 一轮,天然
 获得 resume(job 记得上次跑过什么)/worktree(能安全改文件)/并发上限(慢任务不再
 卡住整个调度循环)。真正的「回填统计 + 推送」在任务跑完后异步触发(见
 _on_task_terminal,由 voice/notify.py 的 register_cron_terminal_hook 转发过来),
@@ -132,9 +132,7 @@ def load_jobs() -> list[dict]:
             job["conv"] = f"task:{job['id']}"
             changed = True
         elif job["conv"].startswith("cron-task:"):
-            # 2026-07-29 前缀统一迁移:cron-task: → task:(见模块头说明)。会话历史本身
-            # 在 memory/_db.py 里跟着 session_key 一起搬,这里只是把 job 定义里记的
-            # conv 字段同步改过来,两边对不上号的话下次触发会写去一个"新"会话。
+            # 历史会话在数据库层同步迁移，配置必须指向同一个旧会话。
             job["conv"] = f"task:{job['id']}"
             changed = True
     if changed:
@@ -215,7 +213,7 @@ def create_job(
         "name": name,
         "prompt": prompt,
         "schedule": schedule,
-        "conv": f"task:{job_id}",
+        "conv": config.new_session_key(),
         "target": target,
         "model": model,
         "cwd": cwd,
@@ -228,9 +226,31 @@ def create_job(
         job.update(mode=mode, command=command, summarize_prompt=summarize_prompt)
     if agent_id:
         job["agent_id"] = agent_id
+    _bind_job_session(job)
     jobs.append(job)
     save_jobs(jobs)
     return job
+
+
+def _bind_job_session(job: dict, *, require_owner: bool = True) -> None:
+    """新规则先持久绑定,脚本即使不创建执行记录也有明确归属。"""
+    if not job.get("conv", "").startswith(("session:", "task:")):
+        return
+    from ..memory import agents
+
+    binding = session_store.session_binding(job["conv"])
+    if binding:
+        if require_owner and agents.get(binding.get("agent_id")) is None:
+            raise ValueError("会话所属 Agent 不存在")
+        return
+    owner = agents.get(job.get("agent_id") or agents.GENERAL_ID)
+    if owner is None:
+        if require_owner:
+            raise ValueError("任务所属 Agent 不存在")
+        # 仅转移时保留已删除归属的历史身份，绝不用于恢复旧 Agent 执行。
+        owner = {"id": job["agent_id"], "project_hash": None}
+    phash = session_store.upsert_project(job["cwd"])["hash"] if job.get("cwd") else owner.get("project_hash")
+    session_store.bind_session(job["conv"], agent_id=owner["id"], project_hash=phash)
 
 
 @_with_jobs_lock
@@ -248,6 +268,7 @@ def update_job(
     job = next((j for j in jobs if j.get("id") == job_id), None)
     if job is None:
         return None
+    previous_job = dict(job)
     next_mode = job.get("mode") if mode is _UNSET else mode
     next_command = job.get("command") if command is _UNSET else command
     next_summarize = job.get("summarize_prompt") if summarize_prompt is _UNSET else summarize_prompt
@@ -269,11 +290,20 @@ def update_job(
         job["cwd"] = cwd
     if model is not _UNSET:
         job["model"] = model or None
+    previous_owner = job.get("agent_id")
+    ownership_changed = ((agent_id is not _UNSET and agent_id != previous_owner)
+                         or job.get("cwd") != previous_job.get("cwd"))
+    if ownership_changed:
+        _bind_job_session(previous_job, require_owner=False)
     if agent_id is not _UNSET:
         if agent_id:
             job["agent_id"] = agent_id
         else:
             job.pop("agent_id", None)
+    if ownership_changed:
+        # 会话归属不可修改；转移 Agent 或目录时新建会话，保留旧历史与运行。
+        job["conv"] = config.new_session_key()
+        _bind_job_session(job)
     if next_mode == "script":
         job.update(mode=next_mode, command=next_command, summarize_prompt=next_summarize)
     else:
@@ -367,20 +397,24 @@ def _run_job(
     job: dict, push: PushFn, *, prompt: str | None = None, extra_env: dict | None = None,
 ) -> None:
     """触发一次 job 执行,不等它跑完。mode=="script" 直接丢给 _run_script_job
-    (脚本任务,见模块头说明);默认走统一后台任务引擎——job_id 本身复用作
-    task_id(见模块头说明):首次触发 dispatch,以后每次到点都是对同一个 task
+    (脚本任务,见模块头说明);默认走统一后台任务引擎——按 job_id 找执行记录:
+    首次触发 dispatch,以后每次到点都是对同一个 task
     再 append 一轮。Agent 任务的回填统计(last_run_at/last_status)和推送在
     _on_task_terminal 里,任务跑完后异步触发。
 
     prompt / extra_env:事件触发(cron/events.py)时传入——Agent 任务这一轮用 prompt
     (原指令 + 事件数据)代替 job["prompt"],脚本任务把 extra_env 并进子进程环境变量。"""
-    require_job_agent(job)
     job_id = job["id"]
+    if not _job_can_run(job_id):
+        return
+    require_job_agent(job)
+    _bind_job_session(job)
     if job.get("mode") == "script":
-        if job_id not in _script_tasks:
+        if job_id not in _script_tasks and job_id not in _script_processes:
+            _script_sessions[job_id] = job["conv"]
             script = asyncio.create_task(_run_script_job(job, push, extra_env=extra_env))
             _script_tasks[job_id] = script
-            script.add_done_callback(lambda done: _script_tasks.pop(job_id, None))
+            script.add_done_callback(lambda done: _script_finished(job_id))
         return
     turn_prompt = prompt or job["prompt"]
     # 目标复盘:每次触发现算一遍近 7 天运行统计拼在指令前面,让复盘有数字可用
@@ -397,19 +431,21 @@ def _run_job(
     # 后续触发走 append() 不会重新传 model,会静默延续上一次(甚至用户在
     # 任务会话里手动切过的)旧模型,跟编辑页显示的对不上。
     if job.get("model"):
-        session_store.set_chosen_model(bg_tasks.session_key(job_id), job["model"])
-    if bg_tasks.get(job_id) is None:
+        session_store.set_chosen_model(job["conv"], job["model"])
+    task = bg_tasks.task_for_job(job_id)
+    if task is None or bg_tasks.session_key(task["id"]) != job["conv"]:
         task_runner.dispatch(
             title=job.get("name") or "定时任务", prompt=turn_prompt,
-            cwd=job.get("cwd"), model=job.get("model"), origin="cron", task_id=job_id,
+            cwd=job.get("cwd"), model=job.get("model"), origin="cron",
+            session_key=job["conv"], job_id=job_id,
         )
     else:
         # cron 自动触发不续接上次上下文——prompt 本身是完整指令,不依赖历史;
         # 清掉 sdk_session_id 让下一轮从零开始,避免上下文无限膨胀。
         # 用户通过 web UI 手动发消息走 gateway/core.py converse(),
         # 仍会 resume 最近一次运行的 SDK session,可用于排查。
-        session_store.set_sdk_session_id(bg_tasks.session_key(job_id), None)
-        asyncio.create_task(task_runner.append(job_id, turn_prompt))
+        session_store.set_sdk_session_id(bg_tasks.session_key(task["id"]), None)
+        asyncio.create_task(task_runner.append(task["id"], turn_prompt, fresh=True))
 
 
 _push: PushFn | None = None  # run_scheduler 起来后记下推送出口,供「试跑」(run_now)用
@@ -429,7 +465,7 @@ def run_now(job_id: str) -> dict | None:
 
 async def _push_job_result(
     job_id: str, status: str, text: str, push: PushFn, metrics: dict | None = None,
-    silent: bool = False,
+    silent: bool = False, run_id: str | None = None, session_key: str | None = None,
 ) -> dict | None:
     """回填 job 的 last_run_at/last_status 并推送结果——Agent 任务
     (_on_task_terminal)和脚本任务(_run_script_job)收尾共用,格式/目标完全
@@ -438,10 +474,13 @@ async def _push_job_result(
     with JOBS_LOCK:
         jobs = load_jobs()
         job = next((j for j in jobs if j.get("id") == job_id), None)
-        if job is None:
+        if job is None or (session_key is not None and job.get("conv") != session_key):
+            # 归属已转移：旧结果留在原会话，不覆盖新规则统计，也不投给新 Agent。
             return None
         job["last_run_at"] = int(time.time())
         job["last_status"] = status
+        if run_id is not None:
+            job["last_run_id"] = run_id
         quiet, notice = _track_failure(job, status, text)
         save_jobs(jobs)
     if silent:  # 静默收尾:只回填运行时间/状态,见 _run_script_job
@@ -453,6 +492,9 @@ async def _push_job_result(
         return job
     # 默认目标就是这条专属会话本身(platform=web):走 send() 会同时触发系统推送
     # (场景③"主动/cron",已覆盖 Mac/iPhone 等一切订阅了 Web Push 的设备)。
+    runner = getattr(push, "__self__", None)
+    if run_id and hasattr(runner, "adapters") and "web" not in runner.adapters:
+        raise RuntimeError("巡检通知通道不可用，保留未确认运行")
     await push("web", conv, msg)
     tgt = job.get("target") or {}  # 额外目标(如 web),可选,不填就只有上面这条
     if tgt.get("platform") and tgt.get("chat_id") is not None:
@@ -483,7 +525,8 @@ def reset_failures(job: dict) -> None:
 
 def _track_failure(job: dict, status: str, text: str) -> tuple[bool, str]:
     """更新 job 的连续失败计数,返回 (本次是否静默, 追加到推送末尾的说明)。"""
-    if status != "error":
+    if (status != "error" or job.get("id") == "f4a2a099"
+            or (job.get("id") == "13f146ce" and job.get("mode") == "script")):
         reset_failures(job)
         return False, ""
     digest = _failure_digest(text)
@@ -528,12 +571,89 @@ async def _on_task_terminal(task: dict, push: PushFn) -> None:
     status = "error" if task["status"] == "failed" else "success"
     from ..memory import agents
 
-    await _push_job_result(task["id"], status, text, push, metrics=agents.metrics_from_task(task))
+    if task.get("job_id"):
+        await _push_job_result(task["job_id"], status, text, push,
+                               metrics=agents.metrics_from_task(task),
+                               session_key=bg_tasks.session_key(task["id"]))
 
 
 _SIGNAL_RE = re.compile(r"[ \t]*##CRON_SIGNAL:([01])##[ \t]*\n?")
 _script_running: set[str] = set()  # 脚本任务正在跑的 job_id,防同一任务并发触发
 _script_tasks: dict[str, asyncio.Task] = {}  # 包含尚未进入协程的脚本,删除时也能取消
+_script_processes: dict[str, asyncio.subprocess.Process] = {}
+_script_sessions: dict[str, str] = {}  # 启动时的会话；编辑规则不改变正在运行的归属
+_deleting_jobs: set[str] = set()
+
+
+def script_session_busy(session_key: str) -> bool:
+    active = _script_running | set(_script_tasks)
+    current = {job["id"]: job.get("conv") for job in load_jobs()}
+    return any(_script_sessions.get(job_id, current.get(job_id)) == session_key for job_id in active)
+
+
+def script_owner_id(job_id: str) -> str | None:
+    key = _script_sessions.get(job_id)
+    if key:
+        return session_store.session_binding(key).get("agent_id")
+    job = next((job for job in load_jobs() if job["id"] == job_id), None)
+    return job.get("agent_id") if job else None
+
+
+def _script_finished(job_id: str) -> None:
+    _script_tasks.pop(job_id, None)
+    _script_sessions.pop(job_id, None)
+
+
+def _job_can_run(job_id: str) -> bool:
+    with JOBS_LOCK:
+        return job_id not in _deleting_jobs and any(j.get("id") == job_id for j in load_jobs())
+
+
+def begin_job_delete(job_id: str) -> bool:
+    with JOBS_LOCK:
+        if job_id in _deleting_jobs:
+            return False
+        _deleting_jobs.add(job_id)
+        return True
+
+
+def end_job_delete(job_id: str) -> None:
+    with JOBS_LOCK:
+        _deleting_jobs.discard(job_id)
+
+
+async def stop_script_job(job_id: str, timeout: float = 10) -> bool:
+    """等待清理完成；超时不再次取消清理协程,也不允许删除数据。"""
+    task = _script_tasks.get(job_id)
+    if task is not None:
+        if not task.done() and not task.cancelling():
+            task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+        if not done:
+            return False
+        if not task.cancelled() and task.exception() is not None:
+            return False
+    proc = _script_processes.get(job_id)
+    if proc is not None:
+        try:
+            await _terminate_script_process(proc)
+        except (OSError, asyncio.TimeoutError):
+            return False
+        _script_processes.pop(job_id, None)
+    return True
+
+
+async def _wait_script_group_exit(proc: asyncio.subprocess.Process) -> None:
+    await proc.wait()
+    deadline = asyncio.get_running_loop().time() + 1
+    while True:
+        try:
+            os.killpg(proc.pid, 0)
+        except ProcessLookupError:
+            return
+        if asyncio.get_running_loop().time() >= deadline:
+            raise asyncio.TimeoutError("脚本子进程组仍未退出")
+        await asyncio.sleep(0.05)
 
 
 async def _terminate_script_process(proc: asyncio.subprocess.Process) -> None:
@@ -555,7 +675,7 @@ async def _terminate_script_process(proc: asyncio.subprocess.Process) -> None:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-    await proc.wait()
+    await _wait_script_group_exit(proc)
 
 
 async def _start_script_process(job: dict, extra_env: dict | None):
@@ -574,6 +694,20 @@ async def _start_script_process(job: dict, extra_env: dict | None):
         raise
 
 
+def _ack_script_runs(job_id: str, run_id: str, acknowledged: list[str]) -> None:
+    with JOBS_LOCK:
+        jobs = load_jobs()
+        job = next((item for item in jobs if item.get("id") == job_id), None)
+        if job is None:
+            return
+        job["pending_run_ids"] = [item for item in job.get("pending_run_ids", []) if item not in acknowledged]
+        if not job["pending_run_ids"]:
+            job.pop("pending_run_ids")
+        if job.get("running_run_id") == run_id:
+            job.pop("running_run_id", None)
+        save_jobs(jobs)
+
+
 async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None) -> None:
     """脚本任务模式(mode=="script",见模块头说明):直接跑 job["command"],不进
     Agent 会话——没有系统提示/工具定义的打包成本。命令输出末尾若带
@@ -581,31 +715,50 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
     调用;1(或没带标记,保守当"有事")才用 job 可选的 summarize_prompt 通过
     providers.sidecar_chat 追加一次轻量总结,失败/未配置就原样回退到脚本输出,
     不阻塞主流程。"""
-    require_job_agent(job)
     job_id = job["id"]
+    if not _job_can_run(job_id):
+        return
+    require_job_agent(job)
+    _bind_job_session(job)
     if job_id in _script_running:  # 上一轮还没跑完,这一跳先不重复触发
         return
     _script_running.add(job_id)
     silent = False
     conv = job.get("conv") or f"task:{job_id}"
+    _script_sessions[job_id] = conv
     # 脚本任务不走 task_runner,永远不会触发 on_task_activity 的 start/done 桥接
     # ——侧栏的 S.live 因此收不到事件,闪烁点永远不亮(2026-08-21 排查定位)。
     # 这里手动补一次同样的 SSE 事件,跟 Agent 任务共用同一套侧栏渲染逻辑。
-    task_events._bridge_event({"conv": conv, "type": "start"})
+    task_events._bridge_event({"conv": conv, "type": "start", "task_id": None,
+                               "job_id": job_id, "conversation_id": conv})
     try:
+        run_id = None
+        if job_id == "13f146ce" and job.get("mode") == "script":
+            run_id = uuid.uuid4().hex
+            with JOBS_LOCK:
+                jobs = load_jobs()
+                current = next((item for item in jobs if item.get("id") == job_id), None)
+                if current is None:
+                    return
+                pending = list(current.get("pending_run_ids", []))
+                previous_running = current.get("running_run_id")
+                if previous_running and previous_running not in pending:
+                    pending.append(previous_running)
+                current["pending_run_ids"] = pending + [run_id]
+                current["running_run_id"] = run_id
+                save_jobs(jobs)
+            extra_env = {**(extra_env or {}), "VOCOCO_CRON_RUN_ID": run_id,
+                         "VOCOCO_CRON_PENDING_RUN_IDS": json.dumps(pending)}
         proc: asyncio.subprocess.Process | None = None
         try:
             # 独立进程组:超时后能连同 shell 拉起的子进程一起收回。
             proc = await _start_script_process(job, extra_env)
+            _script_processes[job_id] = proc
             out, _ = await asyncio.wait_for(
                 proc.communicate(), timeout=config.TASK_TIMEOUT_MIN * 60
             )
             raw = out.decode("utf-8", errors="replace").strip()
             ok = proc.returncode == 0
-        except asyncio.CancelledError:
-            if proc is not None:
-                await _terminate_script_process(proc)
-            raise
         except asyncio.TimeoutError:
             if proc is not None:
                 await _terminate_script_process(proc)
@@ -617,11 +770,17 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
         m = _SIGNAL_RE.search(raw)
         has_signal = (m.group(1) == "1") if m else True
         stripped = _SIGNAL_RE.sub("", raw).strip()
+        replayed = "## 上次通知未确认，保守重播" in stripped
+        if run_id and pending and not replayed:
+            warning = "上次巡检结果未确认送达，未能重播，请人工核查：" + ", ".join(pending)
+            stripped = warning + ("\n\n" + stripped if stripped else "")
         # 静默约定:成功 + 信号 0 + 除标记外没有任何输出 = "没事别打扰"——只回填
         # last_run_at/last_status,不落会话、不推送(如询盘快扫无新回复时)。
         if ok and m and not has_signal and not stripped:
             silent = True
-            await _push_job_result(job_id, "success", "", push, silent=True)
+            await _push_job_result(job_id, "success", "", push, silent=True, run_id=run_id, session_key=conv)
+            if run_id:
+                _ack_script_runs(job_id, run_id, [run_id])
             return
         text = stripped or "(无输出)"
 
@@ -632,13 +791,27 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
             if summarized:
                 text = summarized
 
+        if not _job_can_run(job_id):
+            return
         turn_id = session_store.start_turn(conv, f"[脚本任务] {job.get('name','')}")
         session_store.finish_turn(turn_id, text, session_key=conv)
-        await _push_job_result(job_id, "success" if ok else "error", text, push)
+        delivered = await _push_job_result(job_id, "success" if ok else "error", text, push,
+                                           run_id=run_id, session_key=conv)
+        if run_id and delivered is not None:
+            _ack_script_runs(job_id, run_id, (pending if replayed else []) + [run_id])
     finally:
-        _script_running.discard(job_id)
-        # silent:前端只熄灭闪烁点、拆掉开跑时建的空气泡,不标未读(见 stream.js)
-        task_events._bridge_event({"conv": conv, "type": "done", "silent": silent})
+        try:
+            proc = _script_processes.get(job_id)
+            if proc is not None and asyncio.current_task().cancelling():
+                await _terminate_script_process(proc)
+            _script_processes.pop(job_id, None)
+        finally:
+            _script_running.discard(job_id)
+            if job_id not in _script_tasks:
+                _script_sessions.pop(job_id, None)
+            # silent:前端只熄灭闪烁点、拆掉开跑时建的空气泡,不标未读(见 stream.js)
+            task_events._bridge_event({"conv": conv, "type": "done", "silent": silent,
+                                       "task_id": None, "job_id": job_id, "conversation_id": conv})
 
 
 @_with_jobs_lock
@@ -704,7 +877,11 @@ async def _reflect(push: PushFn) -> None:
     target = config.REFLECT_TARGET
     if summary and ":" in target:
         platform, _, chat_id = target.partition(":")
-        await push(platform.strip(), chat_id.strip(), f"🧠 记忆复盘\n\n{summary}")
+        platform, chat_id = platform.strip(), chat_id.strip()
+        text = f"🧠 记忆复盘\n\n{summary}"
+        # 即时通知不会落历史，必须先保存，点击推送或刷新后才能找回。
+        session_store.append_external(config.resolve_session_key(platform, chat_id), text, f"reflection:{uuid.uuid4().hex}")
+        await push(platform, chat_id, text)
     else:
         print(f"[反思] {summary or '(无输出)'}")
 

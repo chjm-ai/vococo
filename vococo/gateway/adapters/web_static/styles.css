@@ -1224,6 +1224,12 @@
   #effortPop .mi.on{color:var(--accent)}
   #effortPop .mi .mk{color:var(--accent);font-size:var(--fs-sm);flex-shrink:0}
   #effortPop .mi .ml{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #effortPop .priority-tier{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);
+    margin-top:var(--sp-2);padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--line2)}
+  #effortPop .priority-label{font-size:var(--fs-md);color:var(--text);cursor:pointer;white-space:nowrap}
+  #effortPop .sw input:focus-visible + .track{outline:2px solid var(--focus-ring);outline-offset:2px}
+  #effortPop .sw input:disabled + .track{opacity:.5;cursor:wait}
+  #effortPop .priority-error{padding:var(--sp-2) var(--sp-4);color:var(--err);font-size:var(--fs-sm)}
   /* 权限档位胶囊(思考深度左侧):标准只有一把锁;完全访问用警告色高亮,开着时一眼可见 */
   #permBox{position:relative}
   #permBtn{display:flex;align-items:center;gap:6px;font-size:var(--fs-sm);color:var(--dim);font-weight:500;

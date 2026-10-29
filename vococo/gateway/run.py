@@ -76,8 +76,13 @@ class GatewayRunner:
 
         try:
             # 入队后也可能出现待答问题，跨会话指令不能变成审批/提问的答案。
-            if sessions.is_queued_instruction(inc.session_key, inc.text) and clarify.has_pending(inc.session_key):
-                await adapter.send(inc.chat_id, "跨会话指令未执行：目标正在等待用户回答，请处理后重试。")
+            from ..core import task_runner
+
+            if (sessions.is_queued_instruction(inc.session_key, inc.text)
+                    and (clarify.has_pending(inc.session_key)
+                         or inc.session_key in clarify._active_sessions
+                         or task_runner.session_busy(inc.session_key))):
+                await adapter.send(inc.chat_id, "跨会话指令未执行：目标忙碌或正在等待用户回答，请处理后重试。")
                 return
             await self._dispatch_one(adapter, inc)
         finally:
@@ -196,12 +201,10 @@ class GatewayRunner:
         # 无法建 worktree 会直接中止，不能把续聊回退到任务原始项目根。
         cwd_override = None
         is_explicit_project_override = None
-        if key.startswith(bg_tasks.SESSION_KEY_PREFIX):
-            row = bg_tasks.get(bg_tasks.task_id_from_session_key(key))
-            if row is not None:
-                task_id = bg_tasks.task_id_from_session_key(key)
-                cwd_override = await worktree.execution_cwd_for_task(row["cwd"], task_id)
-                is_explicit_project_override = bool(row.get("cwd_explicit"))
+        row = bg_tasks.task_for_session(key)
+        if row is not None:
+            cwd_override = await worktree.execution_cwd_for_task(row["cwd"], row["id"])
+            is_explicit_project_override = bool(row.get("cwd_explicit"))
         # 设置本轮路由上下文(供 ask_user 工具反问时找到该发给谁),随 contextvar 传入工具
         token = clarify.set_current(key, adapter, inc.chat_id)
         clarify.mark_active(key)  # 全局登记"我在跑了",供 restart_self 等查"还有谁没结束"
@@ -219,7 +222,7 @@ class GatewayRunner:
                             videos=inc.videos,
                             store_user=inc.store_text, cwd_override=cwd_override,
                             is_explicit_project_override=is_explicit_project_override,
-                            compact=compact_flag,
+                            compact=compact_flag, source_access=inc.source_access,
                         )
                 except TimeoutError:
                     pass  # 超时静默处理,不向用户发送错误消息

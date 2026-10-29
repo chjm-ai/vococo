@@ -51,10 +51,14 @@ async def test_title_search_finds_old_session_before_limiting(chat):
 
 @pytest.mark.anyio
 async def test_list_reports_total_truncation_empty_and_id_match(chat):
-    _, source, target = chat
+    agent, source, target = chat
     session_store.append(target + "2", "问", "答")
     result = await call(source, "list_sessions", {"limit": 1})
-    assert result["total"] == 2
+    assert result["total"] == 3
+    all_rows = await call(source, "list_sessions")
+    assert {row["session_id"] for row in all_rows["sessions"]} == {
+        target, target + "2", agents.main_session_key(agent),
+    }
     assert len(result["sessions"]) == 1
     assert result["truncated"] and "query" in result["message"]
     empty = await call(source, "list_sessions", {"query": "不可能匹配"})
@@ -166,19 +170,58 @@ async def test_all_tools_require_real_web_source(chat, source_kind):
 
 
 @pytest.mark.anyio
-async def test_list_excludes_other_scopes_current_archived_and_orphan(chat):
-    _, source, target = chat
+async def test_list_includes_other_scopes_archived_orphan_and_bound_main(chat):
+    agent, source, target = chat
     other = agents.create("其他")
     for key in ("web:unscoped", "web:pdeadbeef:orphan", f"web:p{other['project_hash']}:x",
                 target + "archived", "task:123", "voice-chat:main"):
         session_store.append(key, "秘密", "不能泄露")
     session_store.set_conv_archived(target + "archived", True)
     result = await call(source, "list_sessions")
-    assert result["total"] == 7
+    assert result["total"] == 9
     assert {row["session_id"] for row in result["sessions"]} == {
         target, "web:unscoped", "web:pdeadbeef:orphan", f"web:p{other['project_hash']}:x",
         target + "archived", "task:123", "voice-chat:main",
+        agents.main_session_key(agent), agents.main_session_key(other),
     }
+    assert source not in {row["session_id"] for row in result["sessions"]}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_task_session_can_be_searched_queried_and_continued(chat, monkeypatch, legacy):
+    from vococo.core import tasks
+    from vococo.gateway.adapters.web import WebAdapter
+
+    agent, source, _ = chat
+    monkeypatch.setattr(tasks, "_DB", None)
+    try:
+        task = tasks.create("可续接任务", "检查", agent_id=agent["id"],
+                            session_key="task:legacy" if legacy else None)
+        key = tasks.session_key(task["id"])
+        assert key == task["session_key"]
+        assert key == "task:legacy" if legacy else key.startswith("session:")
+        session_store.append(key, "任务问题", "任务结果")
+        tasks.set_status(task["id"], "running")
+        tasks.finish(task["id"], "done", "任务结果", "任务结果")
+        session_store.set_title(key, "可续接任务")
+        found = await call(source, "list_sessions", {"query": key})
+        assert found["total"] == 1
+        assert found["sessions"][0]["session_id"] == key
+        queried = await call(source, "query_session", {"session_id": key})
+        assert queried["turns"] == [{"user": "任务问题", "assistant": "任务结果"}]
+        adapter = WebAdapter()
+        monkeypatch.setattr(adapter, "_emit", lambda event: None)
+        web_bridge.register(adapter.inject, lambda _: pytest.fail("不允许打断任务"))
+        result = await call(source, "continue_session", {"session_id": key, "instruction": "继续检查"})
+        assert result["status"] == "queued" and result["session_id"] == key
+        incoming = adapter._inbox.get_nowait()
+        assert incoming.session_key == key and incoming.text.endswith("继续检查")
+        assert incoming.source_access is None
+    finally:
+        if tasks._DB is not None:
+            tasks._DB.close()
+            tasks._DB = None
 
 
 @pytest.mark.anyio
