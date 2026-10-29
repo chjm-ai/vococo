@@ -372,14 +372,18 @@ def test_list_workbench_tasks_filters(isolated):
     from vococo.tools import builtin
 
     today = datetime.date.today().isoformat()
-    workbench.create_task("consulting", "今天的活", date=today)
-    workbench.create_task("consulting", "很久以前", date="2020-01-01", status="done")
+    source = workbench.create_project("项目甲")
+    other = workbench.create_project("项目乙")
+    workbench.create_task(source["id"], "今天的活", date=today)
+    workbench.create_task(source["id"], "很久以前", date="2020-01-01", status="done")
+    workbench.create_task(source["id"], "重点任务", status="focus")
+    workbench.create_task(other["id"], "展会预热")
 
     by_status = _text(_run(builtin.list_workbench_tasks.handler({"status": "focus"})))
-    assert "约见第一梯队" in by_status and "今天的活" not in by_status
+    assert "重点任务" in by_status and "今天的活" not in by_status
 
-    by_project = _text(_run(builtin.list_workbench_tasks.handler({"project": "面料外贸"})))
-    assert "DIFS 展会预热" in by_project and "今天的活" not in by_project
+    by_project = _text(_run(builtin.list_workbench_tasks.handler({"project": "项目乙"})))
+    assert "展会预热" in by_project and "今天的活" not in by_project
 
     by_today = _text(_run(builtin.list_workbench_tasks.handler({"date": "today"})))
     assert "今天的活" in by_today and "很久以前" not in by_today
@@ -395,8 +399,10 @@ def test_create_and_update_workbench_task_roundtrip(isolated):
     from vococo.memory import workbench
     from vococo.tools import builtin
 
+    workbench.create_project("项目甲")
+    target = workbench.create_project("项目乙")
     out = _text(_run(builtin.create_workbench_task.handler({
-        "project": "AI 咨询", "title": "写周报", "detail": "提纲", "date": "2026-11-05",
+        "project": "项目甲", "title": "写周报", "detail": "提纲", "date": "2026-11-05",
         "assignee": "ai",
     })))
     assert "新建任务" in out and "写周报" in out
@@ -404,12 +410,12 @@ def test_create_and_update_workbench_task_roundtrip(isolated):
     assert task["week"] == "2026-11-02" and task["month"] == "2026-11" and task["assignee"] == "ai"
 
     upd = _text(_run(builtin.update_workbench_task.handler({
-        "task": "写周报", "status": "done", "project": "VocoTrade", "title": "写双周报",
+        "task": "写周报", "status": "done", "project": "项目乙", "title": "写双周报",
     })))
     assert "已更新" in upd
     task = workbench.get_task(task["id"])
     assert task["status"] == "done" and task["completedAt"] is not None
-    assert task["project"] == "vocotrade" and task["title"] == "写双周报"
+    assert task["project"] == target["id"] and task["title"] == "写双周报"
 
     miss = _text(_run(builtin.update_workbench_task.handler({"task": "写双周报", "project": "不存在"})))
     assert "没找到项目" in miss
