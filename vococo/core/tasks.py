@@ -378,17 +378,17 @@ def set_status(task_id: str, status: str, progress_note: str | None = None) -> b
         return False
     c = _conn()
     if progress_note is None:
-        c.execute(
-            "UPDATE tasks SET status=?, updated_at=?, run_version=run_version+? WHERE id=?",
-            (status, time.time(), int(status == "running"), task_id),
-        )
+        changed = c.execute(
+            "UPDATE tasks SET status=?, updated_at=?, run_version=run_version+? WHERE id=? AND status=? AND run_version=?",
+            (status, time.time(), int(status == "running"), task_id, cur["status"], cur["run_version"]),
+        ).rowcount
     else:
-        c.execute(
-            "UPDATE tasks SET status=?, progress_note=?, updated_at=?, run_version=run_version+? WHERE id=?",
-            (status, progress_note, time.time(), int(status == "running"), task_id),
-        )
+        changed = c.execute(
+            "UPDATE tasks SET status=?, progress_note=?, updated_at=?, run_version=run_version+? WHERE id=? AND status=? AND run_version=?",
+            (status, progress_note, time.time(), int(status == "running"), task_id, cur["status"], cur["run_version"]),
+        ).rowcount
     c.commit()
-    return True
+    return bool(changed)
 
 
 def set_progress(task_id: str, note: str) -> None:

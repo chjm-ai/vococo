@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import hashlib
 import ipaddress
 import json
 import os
 import re
+import time
 
 from aiohttp import web
 
@@ -29,6 +31,7 @@ _FIELDS = {
     "create_task": ({"title", "prompt", "idempotency_key"}, set()),
     "get_task": ({"id"}, {"offset", "length"}),
     "cancel_task": ({"id"}, set()),
+    "continue_task": ({"id", "instruction", "idempotency_key"}, set()),
     "list_agents": (set(), {"offset", "limit", "query"}),
     "list_sessions": (set(), {"agent_id", "all_agents", "offset", "limit", "query"}),
     "read_session": ({"key"}, {"agent_id", "before_id", "turn_id", "offset", "length"}),
@@ -128,6 +131,16 @@ def _registry():
         "idempotency_key TEXT NOT NULL,payload TEXT NOT NULL,source_session_key TEXT NOT NULL,"
         "cancel_requested INTEGER NOT NULL DEFAULT 0,UNIQUE(agent_id,idempotency_key))"
     )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS brain_bridge_continuations("
+        "idempotency_key TEXT PRIMARY KEY,task_id TEXT NOT NULL,content_hash TEXT NOT NULL,"
+        "state TEXT NOT NULL, instruction TEXT NOT NULL DEFAULT '', run_version INTEGER NOT NULL DEFAULT -1)"
+    )
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(brain_bridge_continuations)")}
+    if "instruction" not in columns:
+        connection.execute("ALTER TABLE brain_bridge_continuations ADD COLUMN instruction TEXT NOT NULL DEFAULT ''")
+    if "run_version" not in columns:
+        connection.execute("ALTER TABLE brain_bridge_continuations ADD COLUMN run_version INTEGER NOT NULL DEFAULT -1")
     return connection
 
 
@@ -207,7 +220,8 @@ def _clean(text: str) -> str:
 def _task_view(task: dict, data: dict) -> dict:
     offset = _number(data, "offset", 0, 2**63 - 1)
     length = _number(data, "length", 8000, 8000, 1)
-    result = _clean(task.get("result_full") or task.get("result_summary") or "")
+    result = _clean((task.get("result_full") or task.get("result_summary") or "")
+                    if task["status"] in tasks.TERMINAL_STATUSES else "")
     end = offset + length
     return {"id": task["id"], "title": _clean(task["title"]), "status": task["status"],
             "progress": _clean(task.get("progress_note", ""))[:8000], "result": result[offset:end],
@@ -234,6 +248,53 @@ def _cancel_task(data: dict, _agent: dict, _connection: str = "") -> dict:
         with connection:
             connection.execute("UPDATE brain_bridge_tasks SET cancel_requested=1 WHERE task_id=?", (task["id"],))
     return _task_view(_owned_task(task["id"]), {})
+
+
+def _continue_task(data: dict, _agent: dict, _connection: str = "") -> dict:
+    task = _owned_task(_text(data, "id", 128))
+    instruction = _text(data, "instruction", 60000)
+    key = _text(data, "idempotency_key", 128)
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", key):
+        _reject(400, "idempotency_key 必须是 8..128 位 ASCII 安全字符")
+    digest = hashlib.sha256(instruction.encode()).hexdigest()
+    conn = _registry()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        old = conn.execute("SELECT task_id,content_hash,state,run_version FROM brain_bridge_continuations "
+                           "WHERE idempotency_key=?", (key,)).fetchone()
+        if old:
+            if old["task_id"] != task["id"] or old["content_hash"] != digest:
+                _reject(409, "相同幂等键的内容不同")
+            if old["state"] != "accepted":
+                _reject(409, "续接状态不确定，请检查原任务，不要更换幂等键重试")
+            current = _owned_task(task["id"])
+            if old["run_version"] != current["run_version"]:
+                _reject(409, "任务已进入其他轮次，请查看原会话历史")
+            return {**_task_view(current, {}), "continuation": "accepted",
+                    "continuation_instruction": _clean(instruction)}
+        current = tasks.get(task["id"])
+        conn.execute(
+            "INSERT INTO brain_bridge_continuations "
+            "(idempotency_key,task_id,content_hash,state,instruction,run_version) VALUES (?, ?, ?, ?, ?, ?)",
+            (key, task["id"], digest, "accepted", instruction, current["run_version"] + 1),
+        )
+        if current["status"] not in tasks.TERMINAL_STATUSES or task["id"] in task_runner._running:
+            _reject(409, "任务仍在运行或排队，不会打断，请稍后查询")
+        if tasks.count_running() >= config.TASK_MAX_CONCURRENCY:
+            _reject(409, "任务并发已满，请稍后重试")
+        if not session_store.get_sdk_session_id(tasks.session_key(task["id"])):
+            _reject(409, "原任务没有可恢复的模型会话，不能保证延续上下文")
+        changed = conn.execute(
+            "UPDATE tasks SET status='running', run_version=run_version+1, updated_at=?, "
+            "result_full='', result_summary='', progress_note='' WHERE id=? AND status=? AND run_version=?",
+            (time.time(), task["id"], current["status"], current["run_version"]),
+        ).rowcount
+        if not changed:
+            _reject(409, "任务状态已改变，请稍后查询")
+        conn.execute("UPDATE brain_bridge_tasks SET cancel_requested=0 WHERE task_id=?", (task["id"],))
+    task_runner.start_claimed(task, instruction)
+    return {**_task_view(_owned_task(task["id"]), {}), "continuation": "accepted",
+            "continuation_instruction": _clean(instruction)}
 
 
 def _history_agents(light: bool = False) -> list[dict]:
@@ -541,6 +602,7 @@ def _read_session(data: dict, _agent: dict, _connection: str = "") -> dict:
 
 
 _HANDLERS = {"create_task": _create_task, "get_task": _get_task, "cancel_task": _cancel_task,
+             "continue_task": _continue_task,
              "list_agents": _list_agents, "list_sessions": _list_sessions, "read_session": _read_session,
              "search_history": _search_history}
 
