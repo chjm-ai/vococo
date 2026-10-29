@@ -555,6 +555,23 @@ async def test_resume_failure_restores_history_without_prompt_injection(clients,
 
 
 @pytest.mark.anyio
+async def test_strict_resume_never_retries_without_original_session(clients, isolated, monkeypatch):
+    monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("gpt-6.1-sol", {}))
+
+    def make_client(options=None):
+        client = FakeClient(options, registry=clients)
+        client.fail_next_query = bool(options.resume)
+        return client
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", make_client)
+    with pytest.raises(Exception):
+        async for _ in agent.stream_turn([], "继续", resume="missing-sid", require_resume=True):
+            pass
+    assert len(clients) == 1
+    assert clients[0].options.resume == "missing-sid"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("compact,research", [(True, False), (False, True)])
 async def test_compaction_and_isolated_research_keep_original_payload(clients, isolated, monkeypatch, compact, research):
     from vococo.tools.danger import build_hooks
