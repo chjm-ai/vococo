@@ -289,13 +289,25 @@ OBSIDIAN_VAULT_DIR: Path = (
     Path(_obsidian_vault_env) if _obsidian_vault_env else AI_BRAIN_DIR.resolve().parent
 )
 # 扫描目录(相对 vault 根,逗号分隔):个人思考(按年分文件夹)+ 一对一沟通记录 +
-# 线下活动/会议笔记(个人向 + AI 咨询项目向两处)。
+# 线下活动/会议笔记。注意 vault 是用户自己的,目录名会随整理变化:这里只放
+# 已知的候选位置,扫描时自动跳过不存在的(vault 少一个目录不代表扫描出错);
+# 必需目录用 PEOPLE_PROFILES_REQUIRED_FOLDERS 单独声明,缺了才报错。
 PEOPLE_PROFILES_OBSIDIAN_FOLDERS: list[str] = [
     f.strip() for f in os.environ.get(
         "PEOPLE_PROFILES_OBSIDIAN_FOLDERS",
-        "1.个人/思考,1.个人/社交/聊天,1.个人/社交/线下活动,2.重点项目/AI咨询/07-线下活动",
+        "1.个人/思考,1.个人/社交/聊天,1.个人/社交/线下活动",
     ).split(",") if f.strip()
 ]
+# 缺了必须当错误报出的扫描目录(默认没有:候选目录都可缺)。
+PEOPLE_PROFILES_REQUIRED_FOLDERS: list[str] = [
+    f.strip() for f in os.environ.get(
+        "PEOPLE_PROFILES_REQUIRED_FOLDERS", ""
+    ).split(",") if f.strip()
+]
+# vault 根本身不存在 = 挂载/路径配置坏了,必须报错,不能当成"没有目录"静默成功。
+PEOPLE_PROFILES_REQUIRE_VAULT: bool = _parse_bool(
+    os.environ.get("PEOPLE_PROFILES_REQUIRE_VAULT", ""), True
+)
 
 
 # === 语音伴聊模式(实验性,见 docs/design/voice-companion/)===

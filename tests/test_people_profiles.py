@@ -16,6 +16,10 @@ from vococo.memory import people_profiles as pp
 @pytest.fixture(autouse=True)
 def isolate_brain(tmp_path, monkeypatch):
     monkeypatch.setattr(pp.config, "AI_BRAIN_DIR", tmp_path)
+    # 扫描目录配置不泄漏本机 .env/环境变量(默认扫描列表指向真实 vault)
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", [])
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_REQUIRED_FOLDERS", [])
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_REQUIRE_VAULT", False)
 
 
 # ── 笔记日期解析 ────────────────────────────────────────────────────────────
@@ -111,16 +115,43 @@ async def test_scan_retries_failed_note_without_advancing_watermark(tmp_path, mo
 
 
 @pytest.mark.anyio
-async def test_scan_reports_missing_directories_but_allows_empty_folder(tmp_path, monkeypatch):
-    monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
+async def test_scan_fails_when_vault_root_missing(tmp_path, monkeypatch):
+    """vault 根不存在(没挂载/路径配错)= 整轮报错,不能静默当成没笔记。"""
+    vault = tmp_path / "不存在的vault"
+    monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", vault)
     monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", ["笔记"])
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_REQUIRE_VAULT", True)  # 显式开(默认也是开)
     monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "wm.json")
-    assert (await pp.scan_obsidian_notes())[0]["status"] == "error"
+    assert await pp.scan_obsidian_notes() == [
+        {"note": str(vault), "status": "error", "reason": "vault 根目录不可用"}
+    ]
+
+
+@pytest.mark.anyio
+async def test_scan_skips_absent_optional_folders_and_allows_empty_folder(tmp_path, monkeypatch):
+    """候选目录缺失(用户整理/改名)只跳过,不算错误;空目录也不算错误。"""
+    monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_REQUIRE_VAULT", True)
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_REQUIRED_FOLDERS", [])
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", ["笔记", "缺失目录"])
+    monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "wm.json")
     (tmp_path / "笔记").mkdir()
     assert await pp.scan_obsidian_notes() == []
-    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", ["笔记", "缺失目录"])
+    # 只剩缺失目录也一样:正常返回、零错误(另一个目录仍被正常扫描)
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", ["缺失目录"])
+    assert await pp.scan_obsidian_notes() == []
+
+
+@pytest.mark.anyio
+async def test_scan_reports_required_folder_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_REQUIRE_VAULT", True)
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", ["笔记", "必需目录"])
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_REQUIRED_FOLDERS", ["必需目录"])
+    monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "wm.json")
+    (tmp_path / "笔记").mkdir()
     result = await pp.scan_obsidian_notes()
-    assert result == [{"note": "缺失目录", "status": "error", "reason": "配置的笔记目录不可用"}]
+    assert result == [{"note": "必需目录", "status": "error", "reason": "必需的笔记目录不可用"}]
 
 
 @pytest.mark.anyio
