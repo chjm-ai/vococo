@@ -88,7 +88,8 @@ def preview_agent(isolated, monkeypatch, request):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("session_kind", ["task", "agent"])
-async def test_reads_relative_document_from_agent_output(preview_agent, monkeypatch, session_kind):
+@pytest.mark.parametrize("path_style", ["relative", "project-prefixed"])
+async def test_reads_relative_document_from_agent_output(preview_agent, monkeypatch, session_kind, path_style):
     from urllib.parse import urlencode
 
     agent, output = preview_agent
@@ -107,7 +108,8 @@ async def test_reads_relative_document_from_agent_output(preview_agent, monkeypa
     app = web.Application()
     app.add_routes([web.get("/doc/preview", adapter._handle_doc_preview)])
 
-    status, body, _headers = await _get(app, "/doc/preview?" + urlencode({"conv": key, "path": relative}))
+    target = f"{output.name}/{relative}" if path_style == "project-prefixed" else relative
+    status, body, _headers = await _get(app, "/doc/preview?" + urlencode({"conv": key, "path": target}))
 
     assert status == 200
     assert body.decode("utf-8") == "# 正式实验结果"
@@ -134,6 +136,52 @@ async def test_agent_output_keeps_path_boundaries(preview_agent, monkeypatch, pa
     app.add_routes([web.get("/doc/preview", WebAdapter()._handle_doc_preview)])
 
     status, _body, _headers = await _get(app, "/doc/preview?" + urlencode({"conv": conv, "path": path}))
+
+    assert status == 404
+
+
+@pytest.mark.anyio
+async def test_project_prefix_keeps_exact_path_priority(doc_app, doc_root):
+    (doc_root / "notes.md").write_text("根目录版本", encoding="utf-8")
+    exact = doc_root / doc_root.name / "notes.md"
+    exact.parent.mkdir()
+    exact.write_text("同名子目录版本", encoding="utf-8")
+
+    status, body, _headers = await _get(doc_app, f"/doc/preview?conv=x&path={doc_root.name}/notes.md")
+
+    assert status == 200
+    assert body.decode("utf-8") == "同名子目录版本"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("path_kind", ["traversal", "symlink", "wrong-prefix"])
+async def test_project_prefix_does_not_escape_root(doc_app, doc_root, isolated, monkeypatch, path_kind):
+    outside = isolated / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("不可读取", encoding="utf-8")
+    (doc_root / "linked").symlink_to(outside, target_is_directory=True)
+    (doc_root / "notes.md").write_text("正文", encoding="utf-8")
+    relative = {
+        "traversal": f"{doc_root.name}/../../outside/secret.md",
+        "symlink": f"{doc_root.name}/linked/secret.md",
+        "wrong-prefix": "other/notes.md",
+    }[path_kind]
+    monkeypatch.setattr(WebAdapter, "_fuzzy_doc_path", lambda *args: None)
+
+    status, _body, _headers = await _get(doc_app, f"/doc/preview?conv=x&path={relative}")
+
+    assert status == 404
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("root_kind", ["home", "brain"])
+async def test_project_prefix_does_not_alias_global_roots(doc_app, fake_home, monkeypatch, root_kind):
+    root = fake_home if root_kind == "home" else config.AI_BRAIN_DIR
+    root.mkdir(exist_ok=True)
+    (root / "notes.md").write_text("不是项目成果", encoding="utf-8")
+    monkeypatch.setattr(WebAdapter, "_fuzzy_doc_path", lambda *args: None)
+
+    status, _body, _headers = await _get(doc_app, f"/doc/preview?conv=x&path={root.name}/notes.md")
 
     assert status == 404
 

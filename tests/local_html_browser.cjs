@@ -116,11 +116,15 @@ const path=require('node:path');
     await page.evaluate(conv=>openConv(conv),taskConv);
     await page.locator('#wrap .doclink').getByText('实验结果').click();
     await page.locator('#dpBody h1').getByText('正式实验结果').waitFor();
+    await page.locator('#wrap .doclink').filter({hasText:'业务成果/客户/Minecraft教育英语'}).click();
+    await page.locator('#dpBody h1').getByText('客户前期评估').waitFor();
     await page.evaluate(()=>closeDocPreview());
     await page.reload();await page.waitForFunction(()=>!$('#app').hidden);
     await page.evaluate(conv=>openConv(conv),taskConv);
     await page.locator('#wrap .doclink').getByText('实验结果').click();
     await page.locator('#dpBody h1').getByText('正式实验结果').waitFor();
+    await page.locator('#wrap .doclink').filter({hasText:'业务成果/客户/Minecraft教育英语'}).click();
+    await page.locator('#dpBody h1').getByText('客户前期评估').waitFor();
     await page.evaluate(async()=>{closeDocPreview();await openConv('html-link-e2e');});
     // 延迟真实服务端响应，切会话后不能把旧内容写进新会话。
     let release;const gate=new Promise(resolve=>release=resolve);
