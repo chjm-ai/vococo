@@ -122,7 +122,7 @@ async function loadPrefs(){
 }
 // 用一份 /conversations 响应数据重建 S.convs(供 loadConvs() 与登录时的首次拉取共用,
 // 登录那次不用再多打一次 /conversations)。
-var _convsFetchedAt = 0, _convsSoonTimer = null;
+var _convsFetchedAt = 0, _convsSoonTimer = null, _convsRequestId = 0;
 function applyConvs(d){
   _convsFetchedAt = Date.now();
   const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
@@ -149,7 +149,9 @@ async function loadConvs(){
   // 传输量(隧道带宽有限,见 prefetchHistories 上面那段注释);"all"/未知值
   // 不加参数,保持全量。
   const qs = (S.convFilter==="active"||S.convFilter==="archived") ? ("?filter="+S.convFilter) : "";
+  const requestId = ++_convsRequestId;
   const r = await api("/conversations"+qs); const d = await r.json();
+  if(requestId !== _convsRequestId) return;
   applyConvs(d);
   idbSet("convs", d);
   prefetchHistories();
@@ -599,9 +601,11 @@ function scheduleDoneHide(){
     _doneHideTimer=setTimeout(()=>{ window.refreshTaskBar?.(); }, Math.max(1000, soonest*1000));
   }
 }
+var _voiceSidebarRequestId = 0;
 async function loadVoiceSidebar(){
-  try{ const r=await api("/voice/sidebar"); S.voiceSidebar=await r.json(); }
-  catch(e){}  // 不能把旧数据清空伪装成“服务端没有任务”
+  const requestId=++_voiceSidebarRequestId;
+  try{ const r=await api("/voice/sidebar"); const d=await r.json(); if(requestId!==_voiceSidebarRequestId) return; S.voiceSidebar=d; }
+  catch(e){ if(requestId!==_voiceSidebarRequestId) return; }  // 不能把旧数据清空伪装成“服务端没有任务”
   S.voiceSidebarLoaded=true;   // 拉完(成功/失败)都算到位,「语音通话」骨架行退场
   renderConvs();
   if($("#empty").style.display==="flex") renderEmptyRecent();  // 欢迎屏正开着 → 语音任务到位后补一次最近对话
@@ -616,9 +620,11 @@ function syncSidebarTaskStatus(t){
   row.task_status=t.status; renderConvs();
 }
 // ── 定时任务:侧边栏固定分组(每个任务一条专属会话)────────────────────────────
+var _cronSidebarRequestId = 0;
 async function loadCronSidebar(){
-  try{ const r=await api("/cron/sidebar"); S.cronJobs=(await r.json()).jobs||[]; }
-  catch(e){}  // 请求失败时保留上次成功列表，并由“服务不可达”状态说明
+  const requestId=++_cronSidebarRequestId;
+  try{ const r=await api("/cron/sidebar"); const d=await r.json(); if(requestId!==_cronSidebarRequestId) return; S.cronJobs=d.jobs||[]; }
+  catch(e){ if(requestId!==_cronSidebarRequestId) return; }  // 请求失败时保留上次成功列表，并由“服务不可达”状态说明
   renderConvs();
   syncCronHeader();   // 正开着某条任务会话时,启停开关的状态要跟上最新数据
   syncMoreHeader();   // 搜索先打开任务、列表后到时,收起普通会话的旧菜单

@@ -172,6 +172,9 @@ class _WebSink(Sink):
         self._last_text_ts: dict[int, float] = {}
         self.a._emit({"conv": conv, "type": "start"})
 
+    async def turn_saved(self) -> None:
+        self.a._emit({"conv": self.conv, "type": "sidebar_refresh"})
+
     async def thinking(self, text: str) -> None:
         self._think += text
         now = time.time()
