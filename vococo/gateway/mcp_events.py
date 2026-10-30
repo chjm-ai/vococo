@@ -13,6 +13,7 @@ import contextlib
 import hashlib
 import hmac
 import ipaddress
+import io
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ import secrets
 import socket
 import ssl
 import time
+from http.client import HTTPResponse
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -349,42 +351,67 @@ def validate_url(url: Any) -> str:
     return url
 
 
-def _pinned_send(conn: ssl.SSLSocket, body: bytes, headers: dict[str, str], path: str) -> tuple[int, bytes]:
+class _DeadlineReader(io.RawIOBase):
+    """每次实际读 socket 都检查总截止时间,防缓慢响应占住工作线程。"""
+
+    def __init__(self, conn, deadline: float):
+        self.conn, self.deadline = conn, deadline
+
+    def readable(self) -> bool:
+        return True
+
+    def makefile(self, mode):
+        return io.BufferedReader(self)
+
+    def readinto(self, buffer):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("callback response deadline exceeded")
+        self.conn.settimeout(remaining)
+        return self.conn.recv_into(buffer)
+
+
+def _pinned_send(conn: ssl.SSLSocket, body: bytes, headers: dict[str, str], path: str,
+                 deadline: float | None = None, with_body: bool = True) -> tuple[int, bytes]:
     lines = [f"POST {path or '/'} HTTP/1.1", f"Host: {conn.server_hostname}"]
     lines += [f"{name}: {value}" for name, value in headers.items()]
     lines += [f"Content-Length: {len(body)}", "Connection: close", "", ""]
     conn.sendall("\r\n".join(lines).encode("latin-1") + body)
-    data = b""
-    while len(data) < 8192:
-        chunk = conn.recv(4096)
-        if not chunk:
-            break
-        data += chunk
-        if b"\r\n\r\n" in data:
-            break
-    head, _, rest = data.partition(b"\r\n\r\n")
-    status_line = head.split(b"\r\n", 1)[0].decode("latin-1", "replace")
-    match = re.match(r"HTTP/\d(?:\.\d)? (\d{3})", status_line)
-    return (int(match.group(1)) if match else 0), rest[:4096]
+    # TCP 分段和 chunked 都可能让响应头先于 challenge 到达,交给标准 HTTP 解析器。
+    deadline = deadline if deadline is not None else time.monotonic() + DELIVERY_TIMEOUT
+    with HTTPResponse(_DeadlineReader(conn, deadline)) as response:
+        response.begin()
+        if not with_body:
+            return response.status, b""
+        body = response.read(4097)
+        if len(body) > 4096:
+            raise CallbackError("response_too_large")
+        return response.status, body
 
 
 def _post_pinned_impl(url: str, body: bytes, headers: dict[str, str], timeout: float = DELIVERY_TIMEOUT,
                       with_body: bool = False):
     """解析 → 校验全部 IP 都是公网 → 直连校验过的 IP(TLS 校验仍针对原主机名)→ 不跟随重定向。"""
+    deadline = time.monotonic() + timeout
     parts = urlsplit(url)
     host = parts.hostname or ""
     addresses = _resolve(host, 443)
     context = ssl.create_default_context()
     last_error: Exception | None = None
     for addr in addresses:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CallbackError("timeout")
         raw = socket.socket(socket.AF_INET6 if ":" in addr else socket.AF_INET, socket.SOCK_STREAM)
-        raw.settimeout(timeout)
+        raw.settimeout(remaining)
         try:
             raw.connect((addr, 443))
+            raw.settimeout(max(0.001, deadline - time.monotonic()))
             conn = context.wrap_socket(raw, server_hostname=host)
             try:
-                path = parts.path or "/" + (f"?{parts.query}" if parts.query else "")
-                status, received = _pinned_send(conn, body, headers, path)
+                path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+                conn.settimeout(max(0.001, deadline - time.monotonic()))
+                status, received = _pinned_send(conn, body, headers, path, deadline=deadline, with_body=with_body)
                 return (status, received) if with_body else status
             finally:
                 conn.close()
@@ -435,12 +462,28 @@ async def verify_callback(url: str, session: str, secret: str, sub_id: str) -> N
         raise CallbackError("timeout") from None
     except CallbackError:
         raise
-    except Exception:  # noqa: BLE001 —— 网络类异常统一按挑战失败处理
-        _LOG.info("回调验证异常", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 —— 不把可能含回调凭据的异常原文写入日志
+        _LOG.info("mcp_callback_verification subscription_id=%s error=%s", sub_id, type(exc).__name__)
         raise CallbackError("challenge_failed") from None
-    if status != 200 or not hmac.compare_digest(received.strip(), challenge.encode()):
+    if not 200 <= status < 300 or not _matches_challenge(received, challenge):
         raise CallbackError("challenge_failed" if status else "callback_unreachable")
     _verified[key] = _now() + VERIFY_CACHE_SEC
+    _LOG.info("mcp_callback_verified subscription_id=%s http_status=%s", sub_id, status)
+
+
+def _matches_challenge(received: bytes, challenge: str) -> bool:
+    try:
+        payload = json.loads(received)
+    except (ValueError, UnicodeError, RecursionError):
+        # 兼容旧接收端的纯文本回显;ChatGPT 官方返回 JSON 对象。
+        return hmac.compare_digest(received.strip(), challenge.encode())
+    echoed = payload.get("challenge") if isinstance(payload, dict) else None
+    if not isinstance(echoed, str):
+        return False
+    try:
+        return hmac.compare_digest(echoed.encode(), challenge.encode())
+    except UnicodeError:
+        return False
 
 
 async def deliver_once(url: str, secret: str, sub_id: str, event_id: str, body: bytes) -> int:
@@ -680,18 +723,23 @@ class EventsService:
         if not row:
             return  # 订阅已在投递间隙到期
         attempts = int(event["attempts"]) + 1
-        status, error = "error", ""
+        status, error = 0, ""
         try:
             status = await deliver_once(row["url"], row["secret"], row["id"], event["event_id"], body)
         except CallbackError as exc:
             error = exc.reason
         except Exception as exc:  # noqa: BLE001 —— 单次投递失败不影响其他订阅
-            error = str(exc)[:200]
+            error = type(exc).__name__
         now = _now()
-        if status in (410, 413) or attempts >= MAX_ATTEMPTS:
+        if 200 <= status < 300:
+            outcome = "delivered"
+        elif status in (410, 413) or attempts >= MAX_ATTEMPTS:
             outcome = "gone" if status == 410 else "permanent_error"
         else:
-            outcome = "delivered" if 200 <= status < 300 else "error"
+            outcome = "error"
+        error = error or ("" if outcome == "delivered" else f"http_{status}" if status else "no_2xx")
+        _LOG.info("mcp_event_delivery event_id=%s subscription_id=%s outcome=%s http_status=%s attempts=%s error=%s",
+                  event["event_id"], row["id"], outcome, status, attempts, error)
         conn = connect()
         try:
             conn.execute(
