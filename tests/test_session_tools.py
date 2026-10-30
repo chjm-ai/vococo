@@ -18,6 +18,7 @@ def anyio_backend():
 def chat(isolated, monkeypatch):
     monkeypatch.setattr(sessions, "_queued", {})
     monkeypatch.setattr(web_bridge, "_dispatch_fn", None)
+    monkeypatch.setattr(web_bridge, "_inject_key_fn", None)
     monkeypatch.setattr(web_bridge, "_cancel_fn", None)
     monkeypatch.setattr(clarify, "_active_sessions", {})
     monkeypatch.setattr(clarify, "_by_session", {})
@@ -98,7 +99,7 @@ async def test_continue_really_injects_into_existing_session(chat, monkeypatch, 
     adapter = WebAdapter()
     events = []
     monkeypatch.setattr(adapter, "_emit", events.append)
-    web_bridge.register(adapter.inject, lambda _: pytest.fail("不允许打断目标"))
+    web_bridge.register(adapter.inject, lambda _: pytest.fail("不允许打断目标"), adapter.inject_by_key)
     before = session_store.list_sessions("web:")
     instruction = "  /继续\n完整保留指令、换行和末尾空格  "
     result = await call(source, "continue_session", {
@@ -212,7 +213,7 @@ async def test_task_session_can_be_searched_queried_and_continued(chat, monkeypa
         assert queried["turns"] == [{"user": "任务问题", "assistant": "任务结果"}]
         adapter = WebAdapter()
         monkeypatch.setattr(adapter, "_emit", lambda event: None)
-        web_bridge.register(adapter.inject, lambda _: pytest.fail("不允许打断任务"))
+        web_bridge.register(adapter.inject, lambda _: pytest.fail("不允许打断任务"), adapter.inject_by_key)
         result = await call(source, "continue_session", {"session_id": key, "instruction": "继续检查"})
         assert result["status"] == "queued" and result["session_id"] == key
         incoming = adapter._inbox.get_nowait()
@@ -246,7 +247,8 @@ def bridge(chat):
     async def dispatch(conv, text):
         calls.append((conv, text))
 
-    web_bridge.register(dispatch, lambda _: pytest.fail("不能取消会话"))
+    with_key = lambda key, text, **kw: calls.append((key.removeprefix("web:"), text))
+    web_bridge.register(dispatch, lambda _: pytest.fail("不能取消会话"), with_key)
     return calls
 
 
@@ -296,7 +298,7 @@ async def test_continue_refuses_busy_pending_or_unavailable_bridge(chat, bridge,
     elif state == "pending":
         clarify.register(target, ["确认", "取消"])
     else:
-        web_bridge._dispatch_fn = None
+        web_bridge._inject_key_fn = None
     result = await call(source, "continue_session", {"session_id": target, "instruction": "继续"})
     assert "error" in result
     assert not bridge
@@ -352,10 +354,10 @@ async def test_exact_query_does_not_scan_all_sessions(chat, monkeypatch):
 
 @pytest.mark.anyio
 async def test_bridge_failure_never_claims_queued(chat):
-    async def fail_dispatch(conv, text):
+    def fail_dispatch(conv, text, **kw):
         raise RuntimeError("桥接入队失败")
 
-    web_bridge.register(fail_dispatch, lambda _: False)
+    web_bridge.register(fail_dispatch, lambda _: False, fail_dispatch)
     result = await call(chat[1], "continue_session", {"session_id": chat[2], "instruction": "继续"})
     assert "error" in result and "status" not in result
 
@@ -375,14 +377,15 @@ async def test_injected_turn_cannot_send_another_cross_session_instruction(chat,
 
 @pytest.mark.anyio
 async def test_failed_dispatch_can_be_retried(chat, bridge):
-    async def fail_dispatch(conv, text):
+    def fail_dispatch(conv, text, **kw):
         raise RuntimeError("入队失败")
 
     original_dispatch = web_bridge._dispatch_fn
-    web_bridge.register(fail_dispatch, lambda _: False)
+    original_key_dispatch = web_bridge._inject_key_fn
+    web_bridge.register(fail_dispatch, lambda _: False, fail_dispatch)
     args = {"session_id": chat[2], "instruction": "继续"}
     assert "error" in await call(chat[1], "continue_session", args)
-    web_bridge.register(original_dispatch, lambda _: False)
+    web_bridge.register(original_dispatch, lambda _: False, original_key_dispatch)
     assert (await call(chat[1], "continue_session", args))["status"] == "queued"
     assert len(bridge) == 1
 
@@ -393,11 +396,10 @@ async def test_concurrent_dispatch_reserves_target_before_await(chat):
 
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def dispatch(conv, text):
+    def dispatch(conv, text, **kw):
         entered.set()
-        await release.wait()
 
-    web_bridge.register(dispatch, lambda _: pytest.fail("不允许打断"))
+    web_bridge.register(dispatch, lambda _: pytest.fail("不允许打断"), dispatch)
     args = {"session_id": chat[2], "instruction": "继续"}
     first = asyncio.create_task(call(chat[1], "continue_session", args))
     try:
@@ -462,7 +464,7 @@ async def test_gateway_releases_queue_even_without_persisted_answer(chat, monkey
     _, source, target = chat
     adapter = WebAdapter()
     monkeypatch.setattr(adapter, "_emit", lambda event: None)
-    web_bridge.register(adapter.inject, lambda _: False)
+    web_bridge.register(adapter.inject, lambda _: False, adapter.inject_by_key)
     args = {"session_id": target, "instruction": "先对齐思路，确认后再修改"}
     assert (await call(source, "continue_session", args))["status"] == "queued"
     incoming = adapter._inbox.get_nowait()

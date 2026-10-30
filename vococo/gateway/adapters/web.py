@@ -1331,6 +1331,17 @@ class WebAdapter:
         """服务端续聊入口；任务回传必须把来源权限传到实际执行轮。"""
         await self._ingest(conv, text, source_access=source_access)
 
+    def inject_by_key(self, session_key: str, text: str, *, source_access: dict | None = None) -> None:
+        """按完整 session_key 投递到该会话的收件箱(不补标题、不猜 conv)。
+
+        外部 MCP 续接要投递的可能是 task:/session: 会话,侧栏里看到的就是这些 key;
+        它们经 web adapter 的路由交给 GatewayRunner._dispatch,与真人发消息同一条
+        执行链(锁/审批/clarify/落库一致)。
+        同步(只 put_nowait):调用方要「忙碌判定 → 登记 → 投递」无 await 空档地完成。"""
+        conv = _conv_id_for_key(session_key)
+        self._emit({"conv": conv, "type": "user", "text": text, "images": []})
+        self._inbox.put_nowait(Incoming(self.platform, conv, text, source_access=source_access))
+
     @_authed
     @_json_body
     async def _handle_model_switch(self, request: web.Request, body: dict) -> web.Response:

@@ -76,12 +76,13 @@ class GatewayRunner:
 
         try:
             # 入队后也可能出现待答问题，跨会话指令不能变成审批/提问的答案。
+            # 判定与释放都按本条文本取标记:同目标先后两条续接时,先到的不会把后到的当自己。
             from ..core import task_runner
 
-            if (sessions.is_queued_instruction(inc.session_key, inc.text)
-                    and (clarify.has_pending(inc.session_key)
-                         or inc.session_key in clarify._active_sessions
-                         or task_runner.session_busy(inc.session_key))):
+            queued = sessions.is_queued_instruction(inc.session_key, inc.text)
+            if queued and (clarify.has_pending(inc.session_key)
+                           or inc.session_key in clarify._active_sessions
+                           or task_runner.session_busy(inc.session_key)):
                 await adapter.send(inc.chat_id, "跨会话指令未执行：目标忙碌或正在等待用户回答，请处理后重试。")
                 return
             await self._dispatch_one(adapter, inc)
@@ -383,7 +384,7 @@ class GatewayRunner:
                 web_adapter.set_model_switch_callback(self.update_model_cache)
             from . import web_bridge
 
-            web_bridge.register(web_adapter.inject, self.cancel_turn)
+            web_bridge.register(web_adapter.inject, self.cancel_turn, web_adapter.inject_by_key)
             # 后台任务的审批弹窗走 Web 端任务会话(见 tools/danger.py _approve_background)
             clarify.register_background_adapter(web_adapter)
             # 铃铛:通知一有变化就推一帧 SSE,前端据此刷新数字

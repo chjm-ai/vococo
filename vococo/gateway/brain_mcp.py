@@ -29,6 +29,7 @@ _LOG = logging.getLogger("vococo.brain_mcp")
 _READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 _CREATE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 _CANCEL = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
+_CONTINUE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True)
 Offset = Annotated[int, Field(strict=True, ge=0, le=2**63 - 1)]
 Length = Annotated[int, Field(strict=True, ge=1, le=8000)]
 Identifier = Annotated[str, Field(min_length=1, max_length=128)]
@@ -107,17 +108,24 @@ def _register_tasks(server: FastMCP, port: int, bridge: str) -> None:
         return await _call(port, bridge, "create_task", {"title": title, "prompt": prompt,
                            "idempotency_key": idempotency_key})
 
-    @server.tool(annotations=_CREATE, description=(
-        "明确关联同一事项时，续接此前通过此 MCP 创建、已结束的任务；传原任务ID，原会话和上下文不变。"
-        "搜索历史会话时 task: 后是任务ID，但只能续接本 MCP 派发的任务。任务运行或排队中会拒绝，不会打断。"
-        "同一次续接必须使用同一个 idempotency_key；遇到状态不确定先查询原任务，不要换键重复发送。"
-        "关系不明确或多个候选时先询问用户，不要猜测。"))
+    @server.tool(annotations=_CONTINUE, description=(
+        "在已有的原会话里接着执行，不新建会话，原上下文不变。两种目标："
+        "①本 MCP 派发的任务 ID（任务已结束才可续，运行/排队中拒绝，不打断）；"
+        "②任意可读 Agent 名下空闲的历史会话 key（web:/task:/session: 原样传，或列表里的裸 conv ID；"
+        "跨 Agent 须带该会话所属 agent_id，省略按 Vococo 开发校验归属）。"
+        "目标正在生成、待答问题、排队或执行中会拒绝，不会打断；已归档或不支持的会话拒绝。"
+        "保留目标 Agent 与上下文，但本轮沿用远端标准权限和禁用工具，不授予目标额外技能或外部 MCP。"
+        "历史会话结果用 vococo_read_session 查询，通知沿用网页入口，不产生新任务或任务终态回调。"
+        "只表示已入队，不代表执行完成。同一次续接必须使用同一个 idempotency_key，"
+        "遇到状态不确定先查会话历史，不要换键重复发送。关系不明确或多个候选时先询问用户。"))
     async def vococo_continue_task(
-        id: Identifier, instruction: Annotated[str, Field(min_length=1, max_length=60000)],
+        id: Annotated[str, Field(min_length=1, max_length=512)],
+        instruction: Annotated[str, Field(min_length=1, max_length=60000)],
         idempotency_key: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.:-]{8,128}$")],
+        agent_id: Identifier | None = None,
     ) -> dict[str, Any]:
         return await _call(port, bridge, "continue_task", {"id": id, "instruction": instruction,
-                           "idempotency_key": idempotency_key})
+                           "idempotency_key": idempotency_key, "agent_id": agent_id})
 
     @server.tool(annotations=_READ, description="查询本连接创建的任务状态及结果。next_offset 非空时继续分页；queued/running 不代表完成。")
     async def vococo_get_task(id: Identifier, offset: Offset = 0, length: Length = 8000) -> dict[str, Any]:
