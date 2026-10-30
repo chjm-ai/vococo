@@ -41,7 +41,11 @@ async def test_local_html_links_browser(isolated, monkeypatch):
     task = tasks.create("知识实验", "生成报告", agent_id=agent["id"])
     task_conv = tasks.session_key(task["id"])
     task_turn = session_store.start_turn(task_conv, "查看结果")
-    session_store.finish_turn(task_turn, "[实验结果](项目/知识库与Skill实验（20261027）/结果对照/结果对比.md)")
+    customer = output / "客户/Minecraft教育英语（客户待确认）/现状.md"
+    customer.parent.mkdir(parents=True)
+    customer.write_text("# 客户前期评估", encoding="utf-8")
+    session_store.finish_turn(task_turn, "[实验结果](项目/知识库与Skill实验（20261027）/结果对照/结果对比.md)\n\n"
+                              "`业务成果/客户/Minecraft教育英语（客户待确认）/现状.md`")
     original_cwd = WebAdapter._conv_cwd
     monkeypatch.setattr(WebAdapter, "_conv_cwd", lambda self, conv: str(root) if conv == "html-link-e2e" else original_cwd(self, conv))
     key = config.resolve_session_key("web", "html-link-e2e")

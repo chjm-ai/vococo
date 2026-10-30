@@ -3129,6 +3129,22 @@ class WebAdapter:
                     best_depth = len(parts)
         return best
 
+    def _project_prefixed_doc_path(self, bounds: list[Path], rel: Path) -> Path | None:
+        """兼容 AI 把成果根目录名也写进相对链接，不向根目录外查找。"""
+        if len(rel.parts) < 2 or ".." in rel.parts:
+            return None
+        fallback_roots = {Path.home().resolve(), config.AI_BRAIN_DIR.resolve()}
+        for base in bounds:
+            if base in fallback_roots or rel.parts[0] != base.name:
+                continue
+            try:
+                target = base.joinpath(*rel.parts[1:]).resolve()
+                if base in target.parents and target.is_file():
+                    return target
+            except (OSError, ValueError):
+                continue
+        return None
+
     def _resolve_doc_path(self, conv_root: str, rel: str, conv: str = "") -> Path | None:
         """把前端传的路径(相对或绝对)解析成真实文件路径,越界(见 _doc_preview_bounds)拒绝。
         相对路径依次按候选根目录展开,哪个真存在就用哪个——AI 给的相对路径可能是相对会话
@@ -3166,6 +3182,10 @@ class WebAdapter:
                 continue  # rel 里带 ../.. 跳出了这个候选根,换下一个候选根试
             if target.is_file():
                 return target
+        # 完整相对路径全部落空后才兼容项目前缀，避免覆盖真实同名子目录里的文件。
+        prefixed = self._project_prefixed_doc_path(bounds, p)
+        if prefixed is not None:
+            return prefixed
         for base in bounds:
             found = self._fuzzy_doc_path(base, p.parts)
             if found is not None:
