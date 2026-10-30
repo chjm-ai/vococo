@@ -187,30 +187,28 @@ async def test_arbitrary_format_and_archive_are_delivered(context):
 
 
 @pytest.mark.anyio
-async def test_code_requires_review_of_exact_snapshot(context):
-    root = context[-1]
-    source = root / "script.py"
-    source.write_text("print('hello')")
-    result = await call(source)
-    assert "审核" in result and "未交付" in result
-    import hashlib
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
-    assert digest in result
-    source.write_text("print('changed')")
-    assert "未交付" in await call(source, reviewed_sha256=digest)
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
-    assert "已交付" in await call(source, reviewed_sha256=digest)
+async def test_script_map_delivers_without_review(context):
+    _, key, tid, events, root = context
+    file = root / "classroom.mcworld"
+    with zipfile.ZipFile(file, "w") as archive:
+        archive.writestr("behavior_packs/classroom/scripts/main.js", "console.log('hello')")
+    assert "已交付" in await call(file)
+    assert session_store.artifact_content(key, events[0]["artifacts"][0]["id"]) == (file.name, file.read_bytes())
 
 
 @pytest.mark.anyio
-async def test_archive_code_requires_review(context):
-    import hashlib
+async def test_code_file_delivers_without_review(context):
+    source = context[-1] / "script.py"
+    source.write_text("print('hello')")
+    assert "已交付" in await call(source)
+
+
+@pytest.mark.anyio
+async def test_archive_code_delivers_without_review(context):
     file = context[-1] / "bundle.zip"
     with zipfile.ZipFile(file, "w") as archive:
         archive.writestr("src/app.js", "console.log('hello')")
-    result = await call(file)
-    assert "未交付" in result and "src/app.js" in result
-    assert "已交付" in await call(file, reviewed_sha256=hashlib.sha256(file.read_bytes()).hexdigest())
+    assert "已交付" in await call(file)
 
 
 @pytest.mark.anyio
@@ -221,8 +219,7 @@ async def test_nested_zip_code_and_secret_checks_ignore_extension(context):
     file = context[-1] / "bundle.mcpack"
     with zipfile.ZipFile(file, "w") as archive:
         archive.writestr("nested.zip", nested.getvalue())
-    result = await call(file)
-    assert "未交付" in result and "nested.zip → script.py" in result
+    assert "已交付" in await call(file)
     with zipfile.ZipFile(file, "w") as archive:
         archive.writestr("secret.py", "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ12345")
     assert "未交付" in await call(file)
@@ -252,10 +249,10 @@ async def test_prefixed_zip_and_unsupported_compression_are_checked(context):
     assert "压缩格式" in await call(file)
     source = root / "app.mjs"
     source.write_text("console.log('hello')")
-    assert "审核" in await call(source)
+    assert "已交付" in await call(source)
     source = root / "script.bat"
     source.write_text("@echo off")
-    assert "审核" in await call(source)
+    assert "已交付" in await call(source)
     file.write_bytes("-----BEGIN PRIVATE KEY-----abc".encode("utf-16"))
     assert "未交付" in await call(file)
     import tarfile
