@@ -48,6 +48,17 @@ def test_unbound_agent_requests_repository_before_coding():
     assert "不要关闭沙箱" not in note
 
 
+def test_output_directory_prompt_respects_explicit_writable_link():
+    note = execution.prompt_note(execution.ExecutionPolicy(
+        "business", Path("/workspace"), Path("/output"),
+        (Path("/workspace"), Path("/output"), Path("/linked")),
+    ))
+    assert "默认写到正式成果目录" in note
+    assert "主人明确指定的可写关联目录" in note
+    assert "只读关联目录不能写入" in note
+    assert "正式成果必须用绝对路径写到正式成果目录" not in note
+
+
 def test_repository_binding_validates_and_deduplicates(isolated):
     owner, source, _ = owner_with_repository(isolated)
     updated = agents.update(owner["id"], repositories=[str(source), str(source)])
