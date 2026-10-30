@@ -4,7 +4,9 @@
 - 1.个人/思考/          个人思考(按年分文件夹)
 - 1.个人/社交/聊天/      一对一沟通/通话记录
 - 1.个人/社交/线下活动/   线下活动/会议笔记
-- 2.重点项目/AI咨询/07-线下活动/  项目相关线下活动笔记
+
+候选目录缺失(用户整理 vault 时改名/移走)只跳过不报错;vault 根不可用或
+PEOPLE_PROFILES_REQUIRED_FOLDERS 里声明的目录缺失才记错误(别静默当成功)。
 
 注意:数据源不是 vococo 自己的聊天/语音记录(state.db 的 turns 表)——最早版本
 错误地从 turns 表提取,生成的互动记录 wikilink 全是编造的假笔记标题(笔记根本
@@ -919,13 +921,20 @@ async def scan_obsidian_notes() -> list[dict]:
     mtime 会更新,下次扫描会重新分析,这样后续修订也能被追加进画像)。
     """
     watermark = _load_obsidian_watermark()
-    candidates = _iter_candidate_notes()
-    missing = [folder for folder in config.PEOPLE_PROFILES_OBSIDIAN_FOLDERS
-               if not (config.OBSIDIAN_VAULT_DIR / folder).is_dir()]
+    vault = config.OBSIDIAN_VAULT_DIR
+    # vault 根本身就不可用(没挂载/路径配错)→ 整轮报错,绝不当成"没笔记"静默成功
+    if config.PEOPLE_PROFILES_REQUIRE_VAULT and not vault.is_dir():
+        print(f"[people_profiles] vault 根目录不可用: {vault}", flush=True)
+        return [{"note": str(vault), "status": "error", "reason": "vault 根目录不可用"}]
+    # 候选目录缺失只跳过(用户的 vault 会整理改名,某目录不在不代表扫描失败);
+    # 只有显式声明为必需的目录缺失才记为错误。
+    required = {folder.rstrip("/") for folder in config.PEOPLE_PROFILES_REQUIRED_FOLDERS}
     summaries: list[dict] = [
-        {"note": folder, "status": "error", "reason": "配置的笔记目录不可用"}
-        for folder in missing
+        {"note": folder, "status": "error", "reason": "必需的笔记目录不可用"}
+        for folder in sorted(required)
+        if not (vault / folder).is_dir()
     ]
+    candidates = _iter_candidate_notes()
     if not candidates:
         print(
             f"[people_profiles] 未在配置目录下找到笔记(vault={config.OBSIDIAN_VAULT_DIR},"

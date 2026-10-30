@@ -16,11 +16,6 @@ from .file_snapshot import check_parts as _check_parts, read_regular
 MAX_BYTES = 64 * 1024 * 1024
 ARCHIVES = {".zip", ".pptx", ".docx", ".xlsx"}
 KEY_CONTAINERS = {".key", ".pem", ".der", ".p12", ".pfx", ".p8", ".jks", ".keystore", ".kdbx"}
-CODE_EXTENSIONS = {".py", ".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx", ".sh", ".bash", ".zsh",
-                   ".go", ".rs", ".c", ".h", ".cpp", ".java", ".rb", ".php",
-                   ".swift", ".kt", ".ps1", ".sql", ".lua", ".vue", ".svelte",
-                   ".html", ".htm", ".css", ".cs", ".m", ".mm", ".r", ".pl",
-                   ".bat", ".cmd", ".psm1", ".psd1", ".vbs", ".vb", ".fish"}
 
 
 def _delivery_links(session_key: str) -> tuple[Path, ...]:
@@ -129,8 +124,7 @@ def _archive_parts(entry: zipfile.ZipInfo) -> None:
         raise ValueError("不接受软链或加密压缩包。")
 
 
-def _check_archive(data: bytes, depth: int = 0, budget: list[int] | None = None,
-                   code_paths: list[str] | None = None, prefix: str = "") -> None:
+def _check_archive(data: bytes, depth: int = 0, budget: list[int] | None = None) -> None:
     budget = budget if budget is not None else [0, 0]
     if depth > 2:
         raise ValueError("压缩嵌套过深，无法安全检查。")
@@ -147,13 +141,10 @@ def _check_archive(data: bytes, depth: int = 0, budget: list[int] | None = None,
                     continue
                 payload = archive.read(entry)
                 _check_secrets(payload)
-                name = f"{prefix}{entry.filename}"
-                if code_paths is not None and (Path(entry.filename).suffix.lower() in CODE_EXTENSIONS or payload.startswith(b"#!")):
-                    code_paths.append(name)
                 _check_unsupported_archive(entry.filename, payload)
                 # PPT 图表嵌入 XLSX 是正常成果，同样递归检查并共用解压预算。
                 if _is_zip(payload) or payload.startswith(b"PK\x03\x04"):
-                    _check_archive(payload, depth + 1, budget, code_paths, name + " → ")
+                    _check_archive(payload, depth + 1, budget)
     except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, lzma.LZMAError, EOFError) as exc:
         raise ValueError("压缩包无法安全检查。") from exc
 
@@ -182,16 +173,6 @@ def _snapshot(path: str, session_key: str, cwd: str) -> tuple[str, bytes]:
                 _check_archive(data)
             return candidate.name, data
     raise ValueError("文件不在当前会话工作目录或正式成果目录内，未读取。")
-
-
-def code_files(filename: str, data: bytes) -> list[str]:
-    """识别常见源代码供模型审核；不能保证识别所有格式。"""
-    paths = []
-    if Path(filename).suffix.lower() in CODE_EXTENSIONS or data.startswith(b"#!"):
-        paths.append(filename)
-    if Path(filename).suffix.lower() in ARCHIVES or data.startswith(b"PK\x03\x04") or _is_zip(data):
-        _check_archive(data, code_paths=paths)
-    return paths
 
 
 async def snapshot(path: str, session_key: str) -> tuple[str, bytes]:

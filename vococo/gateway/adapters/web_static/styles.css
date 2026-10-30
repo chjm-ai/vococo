@@ -1276,7 +1276,9 @@
   #projSelBtn:hover{color:var(--text);background:var(--panel2)}
   #projSelBtn:active{transform:scale(.96)}
   /* 往上开(bottom,不是 top):往下开会挤进输入框和键盘之间那条窄缝,列表一长就被裁掉 */
-  #projSelPop{position:absolute;bottom:calc(100% + 6px);left:0;min-width:200px;z-index:20;
+  #projSelPop{position:absolute;bottom:calc(100% + var(--sp-2));left:0;min-width:200px;z-index:20;
+    max-height:max(0px,calc(var(--proj-menu-space,100dvh) - var(--sp-2) - var(--sp-5)));
+    overflow-y:auto;overscroll-behavior:contain;
     background:var(--card);border:1px solid var(--line2);border-radius:var(--r-xl);padding:var(--sp-2);
     box-shadow:var(--shadow);animation:pop .16s ease}
   #projSelPop[hidden]{display:none}

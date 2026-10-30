@@ -11,6 +11,7 @@ import logging
 import os
 import time
 import uuid
+from logging.handlers import RotatingFileHandler
 from typing import Annotated, Any
 
 import httpx
@@ -23,6 +24,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Router
 from starlette.types import Receive, Scope, Send
 
+from .. import config
 from . import mcp_events
 
 _LOG = logging.getLogger("vococo.brain_mcp")
@@ -200,7 +202,7 @@ def create_server(port: int = 8852, bridge_port: int = 8848) -> FastMCP:
 
 
 class EventsBridge:
-    """在 MCP 端点上补三件事:记录初始化、session/discover、events 方法。
+    """在 MCP 端点上补三件事:记录初始化、server/discover、events 方法。
 
     危险操作审批与工具运行时都不在这里,这里只是同一认证端点上的协议层附加能力。
     """
@@ -238,6 +240,8 @@ class EventsBridge:
         except ValueError:
             request = None
         method = request.get("method") if isinstance(request, dict) else None
+        if method in ("initialize", "server/discover", "events/list", "events/subscribe", "events/unsubscribe"):
+            _LOG.info("mcp_protocol method=%s connection=%s", method, self.session[:12])
         if method == "initialize":
             await self._record_session(scope)
         elif method == "server/discover":
@@ -258,6 +262,10 @@ class EventsBridge:
                 result = service.unsubscribe(params)
             else:
                 result = mcp_events._rpc_error(-32601, f"未知方法:{method}")
+            error = result.get("error", {})
+            _LOG.info("mcp_subscription method=%s connection=%s subscription_id=%s code=%s reason=%s",
+                      method, self.session[:12], result.get("id", ""), error.get("code", 0),
+                      error.get("data", {}).get("reason", ""))
             if "error" not in result:
                 result = {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
             else:
@@ -318,6 +326,20 @@ def create_app(server: FastMCP):
     return UpstreamAuth(frontend, upstream)
 
 
+def _configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO)
+    directory = config.DATA_DIR / "logs"
+    directory.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(directory / "mcp-events.log", maxBytes=2 * 1024 * 1024,
+                                  backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    # launchd 可能把标准输出丢弃;单独持久化协议/投递日志,不记录请求体、回调 URL 或签名密钥。
+    for name in ("vococo.brain_mcp", "vococo.mcp_events"):
+        logger = logging.getLogger(name)
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+
+
 def main() -> None:
     import uvicorn
 
@@ -326,7 +348,7 @@ def main() -> None:
     parser.add_argument("--bridge-port", type=int, default=8848)
     args = parser.parse_args()
     server = create_server(args.port, args.bridge_port)
-    logging.basicConfig(level=logging.INFO)
+    _configure_logging()
     uvicorn.run(create_app(server), host="127.0.0.1", port=args.port, access_log=False)
 
 

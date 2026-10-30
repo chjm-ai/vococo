@@ -37,8 +37,44 @@ const assert=require('node:assert/strict');
     const normal=await page.evaluate(()=>S.conv);
     assert.match(normal,/^session:[a-f0-9]{32}$/);
     await page.fill('#ta','统一会话浏览器验收');
+    const order=await page.evaluate(()=>S.agents.filter(a=>a.project_hash).map(a=>a.project_hash));
+    const reordered=page.waitForResponse(response=>new URL(response.url()).pathname==='/projects/reorder');
+    await page.evaluate(order=>reorderProject(order[1],order[0]),order);
+    assert.equal((await reordered).status(),200);
+    const expected=['',order[1],order[0],...order.slice(2)];
+    assert.deepEqual(await page.evaluate(async()=>{
+      const {agents}=await (await api('/agents')).json();
+      return agents.map(a=>a.project_hash||'');
+    }),expected,'手动顺序应持久化');
     await page.click('#projSelBtn');
+    const choices=await page.locator('#projSelPop .mi').evaluateAll(rows=>rows.map(row=>row.dataset.h));
+    assert.deepEqual(choices,expected,'只显示 Agent，且立即跟随手动顺序，不依赖旧项目列表刷新');
+    assert.equal(await page.locator('#projSelPop .mi.on').getAttribute('data-h'),'');
+    const originalViewport=page.viewportSize();
+    for(const viewport of [originalViewport,{width:320,height:480},{width:375,height:480},{width:390,height:480},{width:768,height:480},{width:1280,height:480}]){
+      await page.setViewportSize(viewport);
+      await page.waitForTimeout(100);
+      const bounds=await page.locator('#projSelPop').evaluate(pop=>{
+        const rect=pop.getBoundingClientRect(), vv=window.visualViewport;
+        return {top:rect.top,bottom:rect.bottom,viewTop:vv?.offsetTop||0,
+          viewBottom:(vv?.offsetTop||0)+(vv?.height||innerHeight),
+          height:pop.clientHeight,total:pop.scrollHeight,overflow:getComputedStyle(pop).overflowY};
+      });
+      assert.ok(bounds.top>=bounds.viewTop,JSON.stringify({viewport,bounds}));
+      assert.ok(bounds.bottom<=bounds.viewBottom,JSON.stringify({viewport,bounds}));
+      assert.ok(bounds.total>bounds.height,'长列表应限制高度');
+      assert.equal(bounds.overflow,'auto');
+      await page.locator('#projSelPop').evaluate(pop=>{pop.scrollTop=pop.scrollHeight;});
+      assert.ok(await page.locator('#projSelPop').evaluate(pop=>{
+        const rect=pop.getBoundingClientRect(), last=pop.lastElementChild.getBoundingClientRect();
+        return pop.scrollTop>0 && last.top>=rect.top && last.bottom<=rect.bottom;
+      }),'列表内部可滚动到最后一项');
+    }
+    await page.setViewportSize(originalViewport);
     await page.click('#projSelPop .mi[data-h="'+project+'"]');
+    await page.click('#projSelBtn');
+    assert.equal(await page.locator('#projSelPop .mi.on').getAttribute('data-h'),project);
+    await page.click('#projSelBtn');
     assert.equal(await page.evaluate(()=>S.conv),normal,'切换项目不能换 ID');
     assert.equal(await page.inputValue('#ta'),'统一会话浏览器验收');
     await page.click('#sendBtn');
