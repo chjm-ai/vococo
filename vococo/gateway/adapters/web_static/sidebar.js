@@ -263,8 +263,18 @@ function pickDraftProject(hash){
   S.expanded.add(grpKey(hash)); saveExpanded();
   renderConvs(); renderProjSelChip();
 }
+function fitProjSelPop(){
+  const pop=$("#projSelPop"); if(pop.hidden) return;
+  const top=window.visualViewport?.offsetTop||0;
+  pop.style.setProperty("--proj-menu-space",Math.max(0,$("#projSel").getBoundingClientRect().top-top)+"px");
+}
+const scheduleProjSelFit=()=>requestAnimationFrame(fitProjSelPop);
+window.addEventListener("resize",scheduleProjSelFit);
+window.visualViewport?.addEventListener("resize",scheduleProjSelFit);
+window.visualViewport?.addEventListener("scroll",scheduleProjSelFit);
+new ResizeObserver(scheduleProjSelFit).observe($("#composer"));
 $("#projSelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#projSelPop");
-  if(p.hidden){ closeComposerPopovers(p); renderProjSelPop(); p.hidden=false; } else p.hidden=true; };
+  if(p.hidden){ closeComposerPopovers(p); renderProjSelPop(); p.hidden=false; fitProjSelPop(); } else p.hidden=true; };
 document.addEventListener("click", e=>{ const b=$("#projSel"); if(b && !b.contains(e.target)) $("#projSelPop").hidden=true; });
 
 // 语音通话主行(通话入口),与主会话一起置顶在根目录最前(不属于任何分组,数据来自 /voice/sidebar)。

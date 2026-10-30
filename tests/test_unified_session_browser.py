@@ -41,6 +41,8 @@ async def test_unified_session_in_real_browser(isolated, monkeypatch, mobile):
     monkeypatch.setattr(mcp_events, "_task_registered", None)
     owner = agents.create("浏览器验收项目")
     agents.create("排序验收项目")
+    for index in range(24):
+        agents.create(f"长列表验收 Agent {index}")
     for name in ("e95b6c980b", "boss-zhipin-scraper", "scripts", "ba82ebb8a877473a9a6198d6e9011cda", "audio-processor"):
         session_store.upsert_project(str(isolated / name))
     release = asyncio.Event()
