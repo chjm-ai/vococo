@@ -314,8 +314,8 @@ _ESCALATE_BASH: list[tuple[re.Pattern, str, bool]] = [
 # 改权限配置:agent.json(权限档位/禁用工具/MCP 名单)或会话权限字段(state.db 的 perm_mode)。
 # 完全访问档也照样问(core/permissions.KEEP_ASKING),堵住「AI 自己给自己提权」。
 # Bash 这条是启发式:命令里提到 agent.json 且带写入动作,或用 sqlite3/UPDATE 改 perm_mode/perm_until。
-PERMISSION_CONFIG_REASON = "改 Agent 配置或会话权限(agent.json / perm_mode)"
-_AGENT_JSON_RE = re.compile(r"\bagent\.json\b")
+PERMISSION_CONFIG_REASON = "改 Agent/实例配置或会话权限(agent.json / instance_config.json / perm_mode)"
+_AGENT_JSON_RE = re.compile(r"\b(?:agent|instance_config)\.json\b")
 _WRITE_ACTION_RE = re.compile(
     r">|\btee\b|\bsed\b[^\n]*\s-i|\bjq\b|\bpython3?\b|\bnode\b|\bperl\b|\bruby\b|\bmv\b|\bcp\b|\bln\b"
 )
@@ -338,6 +338,8 @@ def _is_agent_config(path: str, cwd: str | None) -> bool:
         target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
     except (ValueError, OSError):
         return False
+    if target.lower() == os.path.realpath(config.DATA_DIR / "instance_config.json").lower():
+        return True
     if os.path.basename(target).lower() != "agent.json":
         return False
     return _inside_agents_root(target, cwd)

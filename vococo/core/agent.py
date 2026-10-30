@@ -61,18 +61,18 @@ _MCP_ACTION_WORDS = (
     "找", "筛", "发送", "回复", "创建", "管理", "report", "query", "analyze",
 )
 _MCP_CONTINUE_WORDS = ("继续", "接着", "刚才", "上一步", "再查", "再看")
-_MCP_TASK_KEYWORDS = {
-    "lemlist": (
-        "lemlist", "拓客", "获客", "cold email", "coldemail", "邮件营销", "邮件序列",
-        "潜在客户", "客户开发", "leads", "campaign", "退订", "unsubscribe", "收件箱",
-        "inbox", "lemleads", "people database", "enrich", "邮箱验证", "找客户",
-    ),
-    "dataforseo": (
-        "dataforseo", "backlink", "反链", "搜索量", "search volume", "域名分析",
-        "关键词排名", "关键词数据",
-    ),
-    "analytics-mcp": ("ga4", "google analytics", "网站流量", "访问量", "转化数据"),
-}
+def _mcp_task_keywords() -> dict[str, list[str]]:
+    from ..instance_config import section
+
+    keywords = section("mcp").get("task_keywords", {})
+    if not isinstance(keywords, dict) or not all(
+        isinstance(name, str) and name and isinstance(words, list)
+        and all(isinstance(word, str) and word.strip() for word in words)
+        for name, words in keywords.items()
+    ):
+        raise ValueError("mcp.task_keywords 必须是工具名称到关键词列表的映射")
+    return keywords
+
 
 
 def _external_mcp_for_task(user_text: str, session_key: str | None = None) -> set[str]:
@@ -82,7 +82,7 @@ def _external_mcp_for_task(user_text: str, session_key: str | None = None) -> se
         return set()
     is_action = any(word in text for word in _MCP_ACTION_WORDS)
     names = {
-        name for name, keywords in _MCP_TASK_KEYWORDS.items()
+        name for name, keywords in _mcp_task_keywords().items()
         if is_action and any(keyword in text for keyword in keywords)
     }
     if names:

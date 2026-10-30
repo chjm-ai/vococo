@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import anyio
 import pytest
+from instance_fixture import instance_preferences
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -246,7 +247,7 @@ def test_skills_and_mcp_lists(env):
     assert a["skills"] is None and a["mcp"] is None  # 默认跟随全局
     from vococo.memory import deposit
 
-    default_rt = {**dict.fromkeys(agents.RUNTIME_KEYS), "memory_sections": list(agents.DEFAULT_MEMORY_SECTIONS),
+    default_rt = {**dict.fromkeys(agents.RUNTIME_KEYS), "memory_sections": agents.default_memory_sections(),
                   "memory_dir": str(deposit.agent_memory_dir(a))}
     assert agents.runtime_for_session(key) == default_rt  # 项目 Agent 默认只带通用记忆分节
     a2 = agents.update(a["id"], skills=["pdf", " pdf ", ""], mcp=[])

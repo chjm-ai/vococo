@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from instance_fixture import instance_preferences
 
 from vococo.core import agent
 from vococo.gateway import clarify, settings_store
@@ -84,3 +85,28 @@ def test_manual_switch_only_changes_current_session(monkeypatch, cfg):
     assert "当前会话" in out
     assert active == {"lemlist"}
     assert _load()["external_mcp"]["lemlist"]["enabled"] is True
+
+
+@pytest.mark.parametrize(("members", "expected"), [
+    (["lemlist", "analytics-mcp"], {"lemlist", "analytics-mcp"}),
+    ("all", {"lemlist", "analytics-mcp", "dataforseo"}),
+    (["not-registered"], set()),
+    (True, set()),
+])
+def test_configured_groups_never_enable_unlisted_servers(monkeypatch, cfg, instance_preferences, members, expected):
+    instance_preferences["mcp"]["groups"] = {"测试工具组": members}
+    active = set()
+    monkeypatch.setattr(builtin.session_store, "get_external_mcp_names", lambda _: set(active))
+    monkeypatch.setattr(builtin.session_store, "set_external_mcp_names", lambda _, names: active.update(names))
+    token = clarify._current.set(SimpleNamespace(session_key="web:group"))
+    try:
+        _run(builtin.set_external_mcp.handler({"name": "测试工具组", "enabled": True}))
+    finally:
+        clarify._current.reset(token)
+    assert active == expected
+
+
+def test_matching_keywords_can_be_replaced(instance_preferences):
+    instance_preferences["mcp"]["task_keywords"] = {"private-tool": ["测试指标"]}
+    assert agent._external_mcp_for_task("查测试指标") == {"private-tool"}
+    assert agent._external_mcp_for_task("查 lemlist campaign") == set()

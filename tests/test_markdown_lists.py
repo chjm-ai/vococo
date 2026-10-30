@@ -3,10 +3,11 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from instance_fixture import instance_preferences
 
 from vococo import config
 from vococo.gateway.adapters.web import WebAdapter
-from vococo.core.prompt import PERSONA
+from vococo.core.prompt import build_system_prompt
 from test_library_integration import _browser_environment
 
 
@@ -16,8 +17,9 @@ def anyio_backend():
 
 
 def test_output_prompt_preserves_list_hierarchy():
-    assert "多层有序、无序或混合列表" in PERSONA
-    assert "子项的列表标记对齐父项正文起点" in PERSONA
+    content = build_system_prompt()["append"]
+    assert "多层有序、无序或混合列表" in content
+    assert "子项的列表标记对齐父项正文起点" in content
 
 
 @pytest.mark.anyio

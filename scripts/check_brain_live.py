@@ -17,7 +17,7 @@ import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-ORIGIN = "https://mcp.chjm.cc"
+ORIGIN = None
 REDIRECT = "http://127.0.0.1:9899/callback"
 
 
@@ -207,6 +207,9 @@ async def check_rate(http, password_file):
 
 
 async def run(args):
+    global ORIGIN
+    from vococo.deployment_settings import brain_origin
+    ORIGIN = brain_origin()
     async with httpx.AsyncClient(trust_env=args.use_env_proxy, follow_redirects=False, timeout=30) as http:
         discovery = await http.get(ORIGIN + "/.well-known/oauth-authorization-server")
         if discovery.status_code != 200:

@@ -3631,7 +3631,7 @@ class WebAdapter:
             titles = await asyncio.wait_for(asyncio.to_thread(prompt.memory_section_titles), timeout=5)
         except asyncio.TimeoutError:
             titles = []
-        return web.json_response({"sections": titles, "default": list(agents.DEFAULT_MEMORY_SECTIONS)})
+        return web.json_response({"sections": titles, "default": agents.default_memory_sections()})
 
     @_authed
     async def _handle_agent_files(self, request: web.Request) -> web.Response:

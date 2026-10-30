@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const path=require('node:path');
 (async()=>{
   const [origin,token,screenshots]=process.argv.slice(2),browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
-  const publicOrigin='https://vococo.chjm.cc',localhostOrigin=origin.replace('127.0.0.1','localhost');
+  const publicOrigin='https://share.example.com',localhostOrigin=origin.replace('127.0.0.1','localhost');
   // 固定域名只代理到隔离服务，所有其他外网请求一律阻断，绝不触达生产。
   const isolateNetwork=async context=>context.route('**/*',async route=>{
     const request=route.request(),url=new URL(request.url());
@@ -51,7 +51,7 @@ const path=require('node:path');
     await page.evaluate(()=>{window.realOpen=window.open;window.open=()=>{throw new Error('复制不应开窗')};});
     await copy.click();await card.getByText('已复制URL；', {exact:false}).waitFor();
     const shareURL=await page.evaluate(()=>navigator.clipboard.readText());
-    assert.match(shareURL,/^https:\/\/vococo\.chjm\.cc\/preview-share#[\w-]{43}$/);
+    assert.match(shareURL,/^https:\/\/share\.example\.com\/preview-share#[\w-]{43}$/);
     assert.equal(shareURL,publicOrigin+await card.evaluate(n=>n._preview.share.path),'复制必须完整保留密钥 fragment');
     assert.equal((await shares()).length,1);
     await copy.click();await copy.waitFor({state:'visible'});
@@ -174,7 +174,7 @@ const path=require('node:path');
     await mobile.getByRole('button',{name:'复制URL',exact:false}).click();
     await mobile.getByText('已复制URL；',{exact:false}).waitFor();
     const localhostURL=await mobile.evaluate(()=>navigator.clipboard.readText());
-    assert.match(localhostURL,/^https:\/\/vococo\.chjm\.cc\/preview-share#[\w-]{43}$/);
+    assert.match(localhostURL,/^https:\/\/share\.example\.com\/preview-share#[\w-]{43}$/);
     assert.equal(localhostURL,publicOrigin+await mobile.locator('.chat-preview').evaluate(n=>n._preview.share.path),'localhost 复制也必须保留完整密钥并使用固定域名');
     await other.goto(localhostURL);
     await other.frameLocator('iframe').getByRole('heading',{name:'跨设备静态快照'}).waitFor();

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from instance_fixture import instance_preferences
 
 from vococo import config
 from vococo.core import agent, prompt
@@ -59,7 +60,7 @@ def test_section_titles_and_build_prompt(env):
 
 def test_runtime_sections_default_custom_general(env):
     key = f"web:p{env['project_hash']}:c1"
-    assert agents.runtime_for_session(key)["memory_sections"] == list(agents.DEFAULT_MEMORY_SECTIONS)
+    assert agents.runtime_for_session(key)["memory_sections"] == agents.default_memory_sections()
     agents.update(env["id"], memory_sections=["健康与生活"])
     assert agents.runtime_for_session(key)["memory_sections"] == ["健康与生活"]
     assert agents.runtime_for_session(config.SESSION_KEY)["memory_sections"] is None  # 总助理 = 整份

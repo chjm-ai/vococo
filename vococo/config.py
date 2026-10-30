@@ -292,12 +292,13 @@ OBSIDIAN_VAULT_DIR: Path = (
 # 线下活动/会议笔记。注意 vault 是用户自己的,目录名会随整理变化:这里只放
 # 已知的候选位置,扫描时自动跳过不存在的(vault 少一个目录不代表扫描出错);
 # 必需目录用 PEOPLE_PROFILES_REQUIRED_FOLDERS 单独声明,缺了才报错。
-PEOPLE_PROFILES_OBSIDIAN_FOLDERS: list[str] = [
-    f.strip() for f in os.environ.get(
-        "PEOPLE_PROFILES_OBSIDIAN_FOLDERS",
-        "1.个人/思考,1.个人/社交/聊天,1.个人/社交/线下活动",
-    ).split(",") if f.strip()
-]
+from .instance_config import strings as _instance_strings
+
+PEOPLE_PROFILES_OBSIDIAN_FOLDERS: list[str] = (
+    [f.strip() for f in os.environ["PEOPLE_PROFILES_OBSIDIAN_FOLDERS"].split(",") if f.strip()]
+    if "PEOPLE_PROFILES_OBSIDIAN_FOLDERS" in os.environ
+    else _instance_strings("preferences", "people_folders")
+)
 # 缺了必须当错误报出的扫描目录(默认没有:候选目录都可缺)。
 PEOPLE_PROFILES_REQUIRED_FOLDERS: list[str] = [
     f.strip() for f in os.environ.get(

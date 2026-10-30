@@ -13,6 +13,7 @@ def live():
         "brain_live", Path(__file__).parents[1] / "scripts/check_brain_live.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.ORIGIN = "https://mcp.example.com"
     return module
 
 

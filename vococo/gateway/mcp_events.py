@@ -218,9 +218,12 @@ def scan_once() -> int:
 
 
 def _bridge_agent_id() -> str:
-    from .brain_routes import AGENT_ID
+    from .brain_routes import bridge_agent_id
 
-    return AGENT_ID
+    try:
+        return bridge_agent_id()
+    except (ValueError, OSError):
+        return ""
 
 
 def register_terminal_hook() -> None:

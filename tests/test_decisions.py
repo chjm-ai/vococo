@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from instance_fixture import instance_preferences
 
 from vococo import config
 from vococo.gateway import notice_actions

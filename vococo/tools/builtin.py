@@ -1790,8 +1790,8 @@ async def remove_mcp_server(args: dict) -> dict:
     "改完【下一条消息即生效】,新会话默认不继承。外部 MCP 工具体积很大，"
     "日常闲聊不应常驻；明确做外贸拓客/SEO/GA 分析等多轮任务时再开，用完关闭。"
     "name:要开关的 server 名(用 list_mcp_servers 查看全部及其当前状态);"
-    "enabled:true=挂载 / false=停挂。也可以一次开全套外贸工具(lemlist+dataforseo+"
-    "analytics-mcp):name 传「外贸工具包」,enabled 按需。",
+    "enabled:true=挂载 / false=停挂。也可传实例配置 mcp.groups 中的工具组名称，"
+    "组内成员按实例配置处理，不内置固定工具组合。",
     {
         "type": "object",
         "properties": {
@@ -1813,10 +1813,22 @@ async def set_external_mcp(args: dict) -> dict:
     if not name:
         return _ok("name 不能为空。")
     all_items = list_external()
-    if name == "外贸工具包":
-        targets = {s["name"] for s in all_items if s["type"] in ("http", "stdio", "sse")}
-        if not targets:
-            return _ok("当前没有任何外部 MCP 可开关。")
+    from ..instance_config import section
+
+    groups = section("mcp").get("groups", {})
+    if not isinstance(groups, dict):
+        return _ok("mcp.groups 配置必须是对象。")
+    if name in groups:
+        members = groups[name]
+        available = {s["name"] for s in all_items if s["type"] in ("http", "stdio", "sse")}
+        if members == "all":
+            targets = available
+        elif isinstance(members, list) and all(isinstance(item, str) for item in members):
+            targets = set(members)
+            if not targets <= available:
+                return _ok("工具组含未注册的 MCP，未改动开关。")
+        else:
+            return _ok("工具组必须是名称列表或 all，未改动开关。")
     else:
         found = next((s for s in all_items if s["name"] == name), None)
         if not found:
@@ -1826,7 +1838,7 @@ async def set_external_mcp(args: dict) -> dict:
     active.update(targets) if enabled else active.difference_update(targets)
     session_store.set_external_mcp_names(ctx.session_key, active)
     act = "开启" if enabled else "关闭"
-    scope = "全部外部 MCP" if name == "外贸工具包" else f"外部 MCP「{name}」"
+    scope = f"工具组「{name}」" if name in groups else f"外部 MCP「{name}」"
     return _ok(f"✅ 已为当前会话{act}{scope}。下一条消息即生效，其他会话不受影响。")
 
 

@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 import pytest
+from deployment_fixture import deployment_config
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "setup_mcp_auth.py"
 spec = importlib.util.spec_from_file_location("setup_mcp_auth", SCRIPT)
@@ -22,7 +23,7 @@ TOKEN = "test-upstream-token-" + "a" * 32
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
-    monkeypatch.setattr(setup, "check_service", lambda: None)
+    monkeypatch.setattr(setup, "check_service", lambda *args: None)
     monkeypatch.setattr(setup, "password_hash", lambda: HASH)
     monkeypatch.setattr(setup, "hidden_input", lambda prompt: TOKEN)
     monkeypatch.setattr(setup.platform, "system", lambda: "Darwin")
@@ -51,16 +52,16 @@ def test_prepare_private_fixed_configuration_and_secret_free_plist(root):
     assert (root / "data").stat().st_mode & 0o777 == 0o700
     assert all(p.stat().st_mode & 0o777 == 0o600 for p in root.iterdir() if p.is_file())
     env = (root / "proxy.env").read_text()
-    for setting in ["EXTERNAL_URL=https://mcp.chjm.cc\n", "NO_AUTO_TLS=true\n",
+    for setting in ["EXTERNAL_URL=https://mcp.example.com\n", "NO_AUTO_TLS=true\n",
                     "LISTEN=127.0.0.1:8853\n", "REPOSITORY_BACKEND=local\n",
                     "PROXY_FORWARD_AUTHORIZATION=false\n", str(root / "data"), HASH, TOKEN]:
         assert setting in env
     assert "PASSWORD=" not in env and "JWT_PRIVATE_KEY=" not in env
-    plist = plistlib.loads((root / "cc.chjm.mcp-auth.plist").read_bytes())
+    plist = plistlib.loads((root / "org.vococo.mcp-auth.plist").read_bytes())
     assert plist["ProgramArguments"][:3] == ["/usr/bin/env", "-i", "PATH=/usr/bin:/bin:/usr/sbin:/sbin"]
     assert plist["Umask"] == 0o077
     assert "EnvironmentVariables" not in plist
-    for name in ["cc.chjm.mcp-auth.plist", "run-proxy.sh", "prepared.json"]:
+    for name in ["org.vococo.mcp-auth.plist", "run-proxy.sh", "prepared.json"]:
         assert HASH not in (root / name).read_text()
         assert TOKEN not in (root / name).read_text()
     assert not (root / setup.BINARY).exists()
@@ -78,7 +79,7 @@ def test_repeat_does_not_prompt_or_rotate_persistent_data(root, monkeypatch):
     assert before == {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before}
 
 
-@pytest.mark.parametrize("changed", ["proxy.env", "run-proxy.sh", "cc.chjm.mcp-auth.plist"])
+@pytest.mark.parametrize("changed", ["proxy.env", "run-proxy.sh", "org.vococo.mcp-auth.plist"])
 def test_changed_existing_config_is_never_overwritten(root, changed):
     setup.prepare(root)
     target = root / changed
@@ -90,7 +91,7 @@ def test_changed_existing_config_is_never_overwritten(root, changed):
 
 def test_unknown_existing_service_or_partial_directory_not_overwritten(root, monkeypatch):
     root.mkdir(mode=0o700)
-    target = root / "cc.chjm.mcp-auth.plist"
+    target = root / "org.vococo.mcp-auth.plist"
     target.write_bytes(b"existing service")
     monkeypatch.setattr(setup, "password_hash", lambda: pytest.fail("不可读取新口令"))
     with pytest.raises((OSError, setup.SetupError)):
@@ -313,14 +314,30 @@ def test_runner_shell_quotes_paths_and_preserves_mcp_path(root, monkeypatch):
     stub = b'''#!/bin/sh
 [ "$#" = 1 ] && [ "$1" = http://127.0.0.1:8852 ] || exit 11
 [ "$LISTEN" = 127.0.0.1:8853 ] || exit 12
-[ "$EXTERNAL_URL" = https://mcp.chjm.cc ] || exit 13
+[ "$EXTERNAL_URL" = https://mcp.example.com ] || exit 13
 [ -z "${PASSWORD+x}" ] && [ -z "${JWT_PRIVATE_KEY+x}" ] || exit 14
 [ "$PROXY_FORWARD_AUTHORIZATION" = false ] || exit 15
 '''
     setup.write_private(root / setup.BINARY, stub)
     (root / setup.BINARY).chmod(0o700)
-    plist = plistlib.loads((root / "cc.chjm.mcp-auth.plist").read_bytes())
+    plist = plistlib.loads((root / "org.vococo.mcp-auth.plist").read_bytes())
     result = subprocess.run(plist["ProgramArguments"], cwd=root, capture_output=True,
                             env={"PASSWORD": "must-not-inherit", "JWT_PRIVATE_KEY": "bad-key"})
     assert result.returncode == 0
     assert not result.stdout and not result.stderr
+
+
+def test_custom_and_legacy_labels_are_preserved_without_rotating_files(root):
+    assert setup.prepare(root, label='org.example.legacy-mcp')
+    before = {p: p.read_bytes() for p in root.iterdir() if p.is_file()}
+    assert not setup.prepare(root)
+    setup.verify_prepared(root)
+    assert all(p.read_bytes() == content for p, content in before.items())
+    plist = plistlib.loads((root / 'org.example.legacy-mcp.plist').read_bytes())
+    assert plist['Label'] == 'org.example.legacy-mcp'
+
+
+def test_bad_label_never_creates_directory(root):
+    with pytest.raises(setup.SetupError):
+        setup.prepare(root, label='../bad-label')
+    assert not root.exists()

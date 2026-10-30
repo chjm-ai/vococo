@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import anyio
 import pytest
+from instance_fixture import instance_preferences
 
 from vococo import config
 from vococo.core.agent import (

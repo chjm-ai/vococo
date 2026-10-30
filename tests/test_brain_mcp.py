@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import httpx
 import pytest
+from deployment_fixture import deployment_config
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 from mcp import ClientSession
@@ -32,10 +33,10 @@ async def environment(isolated, monkeypatch):
     monkeypatch.setattr(task_runner, "_maybe_start_next", Mock())
     monkeypatch.setenv("VOCOCO_MCP_UPSTREAM_TOKEN", UPSTREAM)
     monkeypatch.setenv("VOCOCO_BRAIN_BRIDGE_TOKEN", BRIDGE)
-    monkeypatch.setenv("VOCOCO_BRAIN_AGENT_ID", brain_routes.AGENT_ID)
+    monkeypatch.setenv("VOCOCO_BRAIN_AGENT_ID", "123456abcd")
     workdir = isolated / "project"
     workdir.mkdir()
-    agents._write_meta(brain_routes.AGENT_ID, {"name": "开发", "workdir": str(workdir),
+    agents._write_meta("123456abcd", {"name": "开发", "workdir": str(workdir),
                                                "execution_mode": "project"})
     app = web.Application()
     brain_routes.register_routes(app)
@@ -168,7 +169,7 @@ async def test_mcp_continues_existing_cross_agent_session(environment, monkeypat
 
 async def test_mcp_history_pagination_rebuilds_text_and_no_tool_events(environment):
     app, _ = environment
-    key = agents.main_session_key(agents.get(brain_routes.AGENT_ID))
+    key = agents.main_session_key(agents.get("123456abcd"))
     session_store.set_title(key, "实际历史标题")
     turn = session_store.start_turn(key, "问题" * 5000)
     session_store.finish_turn(turn, "回答" * 6000)
@@ -202,20 +203,20 @@ async def test_mcp_lists_and_reads_other_agents_with_explicit_agent_id(environme
     session_store.set_title(other_key, "JLL 项目")
     turn = session_store.start_turn(other_key, "看看 JLL")
     session_store.finish_turn(turn, "建议若干")
-    dev_key = agents.main_session_key(agents.get(brain_routes.AGENT_ID))
+    dev_key = agents.main_session_key(agents.get("123456abcd"))
     session_store.set_title(dev_key, "开发会话")
     session_store.start_turn(dev_key, "开发问题")
     async with session_for(app) as session:
         ids = {item["agent_id"]: item for item in (await call(session, "vococo_list_agents", {}))["agents"]}
-        assert ids[brain_routes.AGENT_ID]["task_dispatch"] is True
+        assert ids["123456abcd"]["task_dispatch"] is True
         assert ids["d1ee9a7e2b"] == {"agent_id": "d1ee9a7e2b", "name": "DeepLeaper", "task_dispatch": False,
                                     "session_count": 1}
         default = await call(session, "vococo_list_sessions", {"limit": 20})
-        assert {row["agent_id"] for row in default["sessions"]} == {brain_routes.AGENT_ID, "d1ee9a7e2b"}
+        assert {row["agent_id"] for row in default["sessions"]} == {"123456abcd", "d1ee9a7e2b"}
         legacy = await call(session, "vococo_list_sessions", {"all_agents": False})
-        assert {row["agent_id"] for row in legacy["sessions"]} == {brain_routes.AGENT_ID}
+        assert {row["agent_id"] for row in legacy["sessions"]} == {"123456abcd"}
         everything = await call(session, "vococo_list_sessions", {"limit": 100, "all_agents": True})
-        assert {row["agent_id"] for row in everything["sessions"]} >= {brain_routes.AGENT_ID, "d1ee9a7e2b"}
+        assert {row["agent_id"] for row in everything["sessions"]} >= {"123456abcd", "d1ee9a7e2b"}
         only_other = await call(session, "vococo_list_sessions", {"agent_id": "d1ee9a7e2b"})
         assert [row["key"] for row in only_other["sessions"]] == [other_key]
         search = await call(session, "vococo_search_history", {"query": "JLL"})
@@ -242,17 +243,17 @@ async def test_mcp_readable_agents_allowlist(environment, monkeypatch):
                                      "execution_mode": "project"})
     other_key = agents.main_session_key(agents.get("d1ee9a7e2b"))
     session_store.start_turn(other_key, "私有问题")
-    monkeypatch.setenv(brain_routes.READABLE_AGENTS, brain_routes.AGENT_ID)
+    monkeypatch.setenv(brain_routes.READABLE_AGENTS, "123456abcd")
     async with session_for(app) as session:
         listed = await call(session, "vococo_list_agents", {})
-        assert [item["agent_id"] for item in listed["agents"]] == [brain_routes.AGENT_ID]
+        assert [item["agent_id"] for item in listed["agents"]] == ["123456abcd"]
         assert (await session.call_tool("vococo_list_sessions", {"agent_id": "d1ee9a7e2b"})).is_error
         assert (await session.call_tool("vococo_read_session",
                                         {"key": other_key, "agent_id": "d1ee9a7e2b"})).is_error
         rows = await call(session, "vococo_list_sessions", {"limit": 100, "all_agents": True})
-        assert all(row["agent_id"] == brain_routes.AGENT_ID for row in rows["sessions"])
+        assert all(row["agent_id"] == "123456abcd" for row in rows["sessions"])
         default = await call(session, "vococo_list_sessions", {})
-        assert all(row["agent_id"] == brain_routes.AGENT_ID for row in default["sessions"])
+        assert all(row["agent_id"] == "123456abcd" for row in default["sessions"])
         found = await call(session, "vococo_search_history", {"query": "私有问题"})
         assert found["results"] == []
         assert (await session.call_tool("vococo_search_history", {"query": "私有", "agent_id": "d1ee9a7e2b"})).is_error

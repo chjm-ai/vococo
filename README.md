@@ -79,6 +79,32 @@ Bash 与同步子代理使用正常系统网络和命令，不再注入业务沙
 `eval/check_business_sandbox.py` 与 `eval/check_business_network.py` 是旧隔离方案验收脚本，
 不再适用于当前策略；飞书宿主入口可用 `eval/check_lark_documents.py` 单独检查。
 
+## 私有实例配置
+
+个人值放在 `data/instance_config.json`（`version: 1`，Git 忽略），不再作为源码默认值。
+
+| 分组 | 内容 |
+|---|---|
+| `brain` | `agent_id`：任务桥绑定的 Agent；`origin`：MCP 的 HTTPS 来源地址 |
+| `publishing` | `share_origin`：分享地址；`kimmy`：SSH 主机、发布目录、域名和部署脚本校验契约 |
+| `preferences` | `persona`、`memory_sections`、`memory_rules`（`{dir}` 为记忆目录）、`decision_rules`、`people_folders` |
+| `mcp` | `task_keywords`：工具名到关键词列表；`groups`：组名到工具名列表，`"all"` 表示所有已注册外部 MCP |
+
+旧安装升级前，从**改动前的提交**提取原值，只新建权限为 `0600` 的文件，不覆盖、不联网：
+
+```sh
+python3 scripts/migrate_instance_config.py --source-ref <旧提交> --output /绝对/正式/data/instance_config.json
+```
+
+必须写入正式运行目录，不只是开发 worktree。新安装可从 `{"version":1}` 开始按需配置；
+未配置的任务桥、公开分享和远端发布拒绝执行，偏好/工具组合为空，不猜个人目标。
+`VOCOCO_BRAIN_AGENT_ID`、`PEOPLE_PROFILES_OBSIDIAN_FOLDERS` 环境变量仍优先；后者显式空值表示不扫描。
+远端目标 `kimmy` 必须包含 `ssh_host`、`public_origin`、`deploy_root`、`web_root`、`snippet_root`、
+`script_sha256` 和完整的 `contract_lines`（DOMAIN、URL_MODE、SSL_CERT、SSL_KEY），详见 `vococo/deployment_settings.py` 校验。
+迁移时记录的 `legacy_kimmy_fingerprint` 仅兼容旧目标；换目标后不能把旧站当成新目标操作。
+修改此文件与 Agent 权限一样需要审批；修改偏好后新会话读取，已有会话仍沿用提示词快照。
+密钥继续由原环境变量/认证存储管理，不搬进此文件。
+
 ## 架构
 
 ```

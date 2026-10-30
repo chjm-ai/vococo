@@ -25,7 +25,7 @@ VERSION = "v2.10.2"
 ASSET = "mcp-auth-proxy-darwin-amd64"
 RELEASE_API = f"repos/sigbit/mcp-auth-proxy/releases/tags/{VERSION}"
 ASSET_URL = f"https://github.com/sigbit/mcp-auth-proxy/releases/download/{VERSION}/{ASSET}"
-LABEL = "cc.chjm.mcp-auth"
+LABEL = "org.vococo.mcp-auth"
 BINARY = "mcp-auth-proxy"
 BCRYPT = re.compile(r"\$2[aby]\$12\$[./A-Za-z0-9]{53}")
 MAX_BINARY = 128 * 1024 * 1024
@@ -69,11 +69,11 @@ def digest_file(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def check_service() -> None:
+def check_service(label: str = LABEL) -> None:
     if platform.system() != "Darwin":
         return
     result = subprocess.run(
-        ["/bin/launchctl", "print", f"gui/{os.getuid()}/{LABEL}"],
+        ["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"],
         capture_output=True, check=False,
     )
     if result.returncode == 0:
@@ -114,12 +114,14 @@ def htpasswd_hash(password: str) -> str:
 
 
 def make_env(root: Path) -> bytes:
+    from vococo.deployment_settings import brain_origin
+    origin = brain_origin()
     hashed = password_hash()
     token = hidden_input("输入已为 MCP frontend 配置的共享 bearer token（不会自动改上游）: ")
     if not re.fullmatch(r"[A-Za-z0-9._~+/\-]{32,4096}=*", token):
         raise SetupError("共享 token 必须至少32字符，且符合 bearer token 字符集")
     values = {
-        "EXTERNAL_URL": "https://mcp.chjm.cc", "NO_AUTO_TLS": "true",
+        "EXTERNAL_URL": origin, "NO_AUTO_TLS": "true",
         "LISTEN": "127.0.0.1:8853", "PASSWORD_HASH": hashed,
         "DATA_PATH": str(root / "data"), "REPOSITORY_BACKEND": "local",
         "PROXY_BEARER_TOKEN": token, "PROXY_FORWARD_AUTHORIZATION": "false",
@@ -127,15 +129,21 @@ def make_env(root: Path) -> bytes:
     return "".join(f"{key}={shlex.quote(value)}\n" for key, value in values.items()).encode()
 
 
-def render_files(root: Path, env: bytes) -> dict[str, bytes]:
+def render_files(root: Path, env: bytes, label: str = LABEL) -> dict[str, bytes]:
     runner = (TEMPLATES / "run-proxy.sh.in").read_text()
     for name, value in {"ENV": root / "proxy.env", "BINARY": root / BINARY}.items():
         runner = runner.replace(f"@{name}@", shlex.quote(str(value)))
-    plist = plistlib.loads((TEMPLATES / "cc.chjm.mcp-auth.plist.in").read_bytes())
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", label):
+        raise SetupError("launchd 标签格式无效")
+    templates = list(TEMPLATES.glob("*.plist.in"))
+    if len(templates) != 1:
+        raise SetupError("需要唯一的 MCP launchd 模板")
+    plist = plistlib.loads(templates[0].read_bytes())
+    plist["Label"] = label
     plist["ProgramArguments"][-1] = str(root / "run-proxy.sh")
     plist["WorkingDirectory"] = str(root)
     return {"proxy.env": env, "run-proxy.sh": runner.encode(),
-            "cc.chjm.mcp-auth.plist": plistlib.dumps(plist)}
+            label + ".plist": plistlib.dumps(plist)}
 
 
 def verify_prepared(root: Path) -> None:
@@ -143,25 +151,32 @@ def verify_prepared(root: Path) -> None:
     check_private(root / "data", directory=True)
     check_private(root / "prepared.json")
     manifest = json.loads((root / "prepared.json").read_text())
-    names = {"proxy.env", "run-proxy.sh", "cc.chjm.mcp-auth.plist"}
+    names = set(manifest.get('files', {}))
+    plists = [name for name in names if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]*\.plist', name)]
+    if len(plists) != 1 or names != {'proxy.env', 'run-proxy.sh', plists[0]}:
+        raise SetupError('准备目录的文件清单无效')
+    label = plists[0].removesuffix('.plist')
     if manifest.get("version") != VERSION or set(manifest.get("files", {})) != names:
         raise SetupError("不是完整的固定版本准备目录；拒绝覆盖")
     for name, expected in manifest["files"].items():
         check_private(root / name)
         if digest_file(root / name) != expected:
             raise SetupError("已有配置发生变更；拒绝覆盖凭据或服务文件")
-    expected = render_files(root, (root / "proxy.env").read_bytes())
+    expected = render_files(root, (root / "proxy.env").read_bytes(), label)
     if any((root / name).read_bytes() != content for name, content in expected.items()):
         raise SetupError("模板或路径发生变更；请人工审核，脚本不自动更新服务")
 
 
-def prepare(root: Path) -> bool:
-    check_service()
+def prepare(root: Path, label: str = LABEL) -> bool:
     if root.exists():
         verify_prepared(root)
+        manifest = json.loads((root / 'prepared.json').read_text())
+        existing = next(name.removesuffix('.plist') for name in manifest['files'] if name.endswith('.plist'))
+        check_service(existing)
         return False
+    check_service(label)
     # 获取并验证输入后再创建目录，避免口令错误留下半成品。
-    files = render_files(root, make_env(root))
+    files = render_files(root, make_env(root), label)
     root.mkdir(mode=0o700)
     (root / "data").mkdir(mode=0o700)
     for name, content in files.items():
@@ -243,10 +258,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["prepare", "download"])
     parser.add_argument("--private-dir", required=True, help="仓库外私有目录；无默认HOME写入")
+    parser.add_argument("--label", default=LABEL, help="launchd 标签；旧准备目录保留原标签")
     args = parser.parse_args(argv)
     try:
         root = checked_root(args.private_dir)
-        changed = prepare(root) if args.action == "prepare" else download_verified(root)
+        changed = prepare(root, args.label) if args.action == "prepare" else download_verified(root)
     except SetupError as error:
         print(f"准备失败：{error}", file=sys.stderr)
         return 1

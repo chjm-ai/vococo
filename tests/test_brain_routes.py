@@ -33,9 +33,9 @@ def bridge_db(isolated, monkeypatch):
     monkeypatch.setattr(config, "CRON_JOBS_PATH", isolated / "cron.json")
     monkeypatch.setattr(settings_store, "_PATH", isolated / "settings.json")
     monkeypatch.setenv("VOCOCO_BRAIN_BRIDGE_TOKEN", TOKEN)
-    monkeypatch.setenv("VOCOCO_BRAIN_AGENT_ID", brain.AGENT_ID)
+    monkeypatch.setenv("VOCOCO_BRAIN_AGENT_ID", "123456abcd")
     monkeypatch.setattr(task_runner, "_maybe_start_next", Mock())
-    for aid in (brain.AGENT_ID, "abcdef1234"):
+    for aid in ("123456abcd", "abcdef1234"):
         workdir = isolated / aid
         workdir.mkdir()
         agents._write_meta(aid, {"name": aid, "workdir": str(workdir), "permission": "full",
@@ -65,7 +65,7 @@ async def create(client, **changes):
     return await post(client, "create_task", {**CREATE, **changes})
 
 
-def session(aid=brain.AGENT_ID):
+def session(aid="123456abcd"):
     return agents.main_session_key(agents.get(aid))
 
 
@@ -277,7 +277,7 @@ async def test_search_history_filters_agents_paginates_and_cleans(client, monkey
     assert "独特检索词" in snippet
     turn("token=confidential-needle", "", session())
     assert not (await post(client, "search_history", {"query": "confidential-needle"}))["results"]
-    monkeypatch.setenv(brain.READABLE_AGENTS, brain.AGENT_ID)
+    monkeypatch.setenv(brain.READABLE_AGENTS, "123456abcd")
     hidden = await post(client, "search_history", {"query": "other"})
     assert hidden["results"] == [] and hidden["next_before_id"] is None
     assert [r["turn_id"] for r in (await post(client, "search_history", {"query": "关键词"}))["results"]] == [own]
@@ -318,11 +318,12 @@ async def test_weak_server_token_disabled(client, monkeypatch, token):
     await post(client, "create_task", CREATE, 503)
 
 
-async def test_agent_configuration_cannot_target_another_agent(client, monkeypatch):
+async def test_admin_configuration_changes_binding_but_client_cannot(client, monkeypatch):
     monkeypatch.setenv("VOCOCO_BRAIN_AGENT_ID", "abcdef1234")
+    result = await create(client)
+    assert tasks.get(result["id"])["agent_id"] == "abcdef1234"
+    monkeypatch.setenv("VOCOCO_BRAIN_AGENT_ID", "")
     await post(client, "create_task", CREATE, 503)
-    monkeypatch.delenv("VOCOCO_BRAIN_AGENT_ID")
-    assert (await create(client))["status"] == "queued"
 
 
 @pytest.mark.parametrize("field", ["cwd", "source", "session", "permissions", "agent_id",
@@ -357,8 +358,8 @@ async def test_create_maximum_unicode_and_runtime_access(client):
     result = await create(client, title="题" * 100, prompt="答" * 60000, idempotency_key="x" * 128)
     assert set(result) == PUBLIC
     row = tasks.get(result["id"])
-    agent = agents.get(brain.AGENT_ID)
-    assert (row["agent_id"], row["cwd"], row["origin"]) == (brain.AGENT_ID, agent["workdir"], "chat")
+    agent = agents.get("123456abcd")
+    assert (row["agent_id"], row["cwd"], row["origin"]) == ("123456abcd", agent["workdir"], "chat")
     assert row["dispatch_platform"] == "web" and row["dispatch_chat_id"] == agent["main_conv"]
     access = tasks.automatic_access(row)
     assert access["mode"] == "standard" and access["remote_brain"] is True
@@ -392,7 +393,7 @@ async def test_task_and_idempotency_record_rollback_together(client, monkeypatch
         raise RuntimeError("注入事务失败")
     monkeypatch.setattr(tasks, "create", fail_after_insert)
     with pytest.raises(RuntimeError):
-        brain._create_atomic(CREATE, agents.get(brain.AGENT_ID))
+        brain._create_atomic(CREATE, agents.get("123456abcd"))
     assert tasks._conn().execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
     assert tasks._conn().execute("SELECT COUNT(*) FROM brain_bridge_tasks").fetchone()[0] == 0
     monkeypatch.setattr(tasks, "create", original)
@@ -401,7 +402,7 @@ async def test_task_and_idempotency_record_rollback_together(client, monkeypatch
 
 @pytest.mark.parametrize("operation", ["get_task", "cancel_task"])
 async def test_foreign_and_nonbridge_tasks_are_not_accessible(client, operation):
-    local = tasks.create("本地", "提示词", agent_id=brain.AGENT_ID, origin="chat")
+    local = tasks.create("本地", "提示词", agent_id="123456abcd", origin="chat")
     await post(client, operation, {"id": local["id"]}, 404)
     task = await create(client)
     connection = tasks._conn()
@@ -414,7 +415,7 @@ async def test_foreign_and_nonbridge_tasks_are_not_accessible(client, operation)
         await post(client, operation, {"id": task["id"]}, 404)
         with connection:
             connection.execute("UPDATE tasks SET agent_id=?,origin='chat',source_session_key=?,source_access=? WHERE id=?",
-                               (brain.AGENT_ID, session(), json.dumps(brain._access(agents.get(brain.AGENT_ID))), task["id"]))
+                               ("123456abcd", session(), json.dumps(brain._access(agents.get("123456abcd"))), task["id"]))
 
 
 async def test_cancel_acknowledges_request_not_completion(client, monkeypatch):
@@ -453,15 +454,15 @@ async def test_task_result_pages_rebuild_sanitized_text(client):
 async def test_history_owner_checked_on_every_read_and_list(client, monkeypatch):
     own_id, foreign_id = turn(), turn(key=session("abcdef1234"))
     default = await post(client, "list_sessions", {})
-    assert {row["agent_id"] for row in default["sessions"]} == {brain.AGENT_ID, "abcdef1234"}
+    assert {row["agent_id"] for row in default["sessions"]} == {"123456abcd", "abcdef1234"}
     legacy = await post(client, "list_sessions", {"all_agents": False})
-    assert [row["agent_id"] for row in legacy["sessions"]] == [brain.AGENT_ID]
+    assert [row["agent_id"] for row in legacy["sessions"]] == ["123456abcd"]
     result = await post(client, "list_sessions", {"all_agents": True})
     # 显式跨 Agent 枚举时只返回本连接可见的会话,每条带所属 agent_id
     assert result["sessions"] == [
         {"agent_id": "abcdef1234", "agent_name": "abcdef1234", "key": session("abcdef1234"),
          "last_turn_id": foreign_id, "title": "新对话"},
-        {"agent_id": brain.AGENT_ID, "agent_name": brain.AGENT_ID, "key": session(),
+        {"agent_id": "123456abcd", "agent_name": "123456abcd", "key": session(),
          "last_turn_id": own_id, "title": "新对话"},
     ]
     assert "非快照" in result["pagination"]
@@ -475,7 +476,7 @@ async def test_history_owner_checked_on_every_read_and_list(client, monkeypatch)
     # 逐条按 key 复核归属能挡住伪造;但只覆盖 _history_owner,绕得过批量索引——
     # 批量索引与逐条判定同源,所以这里只验证读接口,列表仍以索引为准
     monkeypatch.setattr(agents, "agent_for_session", lambda key: {"id": "abcdef1234"})
-    await post(client, "read_session", {"key": session(), "agent_id": brain.AGENT_ID, "turn_id": own_id}, 404)
+    await post(client, "read_session", {"key": session(), "agent_id": "123456abcd", "turn_id": own_id}, 404)
 
 
 async def test_list_agents_groups_with_session_count_and_query(client):
@@ -484,7 +485,7 @@ async def test_list_agents_groups_with_session_count_and_query(client):
     turn(key=session("abcdef1234").replace(":main", ":conv2"))
     first = await post(client, "list_agents", {})
     counts = {item["agent_id"]: item["session_count"] for item in first["agents"]}
-    assert counts == {brain.AGENT_ID: 1, "abcdef1234": 2, "general": 0}
+    assert counts == {"123456abcd": 1, "abcdef1234": 2, "general": 0}
     # query 按名称/agent_id 模糊筛,不区分大小写
     assert [item["agent_id"] for item in (await post(client, "list_agents", {"query": "ABCDEF"}))["agents"]] == [
         "abcdef1234"]
@@ -516,7 +517,7 @@ async def test_list_sessions_task_owner_uses_index_without_rescan(client, monkey
     calls = []
     real = agents.agent_for_session
     monkeypatch.setattr(agents, "agent_for_session", lambda key: calls.append(key) or real(key))
-    monkeypatch.setattr(scheduler, "load_jobs", lambda: [{"id": "job00001", "agent_id": brain.AGENT_ID}])
+    monkeypatch.setattr(scheduler, "load_jobs", lambda: [{"id": "job00001", "agent_id": "123456abcd"}])
     turn(key="task:job00001")
     rows = (await post(client, "list_sessions", {}))["sessions"]
     assert [row["key"] for row in rows] == ["task:job00001"]
@@ -657,7 +658,7 @@ async def test_remote_without_background_adapter_is_denied(client, monkeypatch):
 
 # ---- 历史会话通用续接(不新建平行会话) ----
 
-def history_session(aid=brain.AGENT_ID, conv="mvt8qtgdps2j", user="研究进度", assistant="已完成一半"):
+def history_session(aid="123456abcd", conv="mvt8qtgdps2j", user="研究进度", assistant="已完成一半"):
     from vococo.memory import projects
 
     workdir = agents.get(aid)["workdir"]
@@ -688,7 +689,7 @@ async def test_continue_history_session_in_place_once(client, monkeypatch):
     delivery = fake_web(monkeypatch)
     payload = {"id": key, "instruction": "只确认收到，不要改研究计划", "idempotency_key": "hist-session-01"}
     first = await post(client, "continue_task", payload)
-    assert (first["id"], first["continuation"]) == (key, "accepted") and first["agent_id"] == brain.AGENT_ID
+    assert (first["id"], first["continuation"]) == (key, "accepted") and first["agent_id"] == "123456abcd"
     assert delivery == [(key, delivery[0][1])] and delivery[0][1].endswith(payload["instruction"])
     assert "跨会话指令" in delivery[0][1]
     # 同键重放不再投递,也不报错
@@ -711,7 +712,7 @@ async def test_continue_history_session_accepts_bare_and_prefix_keys(client, mon
                                          "idempotency_key": "hist-bare-0001"})
     # 绑定到该 Agent 的统一会话只写裸 slug,也应能按整 key/后缀解析到
     bare_key = "mvt8qtgdps2j-unify"
-    session_store.bind_session(f"web:{bare_key}", agent_id=brain.AGENT_ID)
+    session_store.bind_session(f"web:{bare_key}", agent_id="123456abcd")
     tid = session_store.start_turn(f"web:{bare_key}", "统一会话")
     session_store.finish_turn(tid, "在")
     await post(client, "continue_task", {"id": bare_key, "instruction": "继续",
@@ -778,7 +779,7 @@ async def test_continue_history_preserves_remote_permissions(client, monkeypatch
     access = deliveries[0][2]["source_access"]
     assert access["remote_brain"] is True and access["mode"] == "standard"
     assert set(brain.DENIED) <= set(access["denied"])
-    assert access["session"] == agents.main_session_key(agents.get(brain.AGENT_ID))
+    assert access["session"] == agents.main_session_key(agents.get("123456abcd"))
     assert access["capabilities"] == {"skills": [], "mcp": []}
     turn = session_store.start_turn(key, deliveries[0][1], source_access=access)
     assert permissions.state(key)["mode"] == "standard"
@@ -890,3 +891,16 @@ async def test_continuation_table_upgrades_old_rows(bridge_db):
     assert not conn.in_transaction
     conn.execute("BEGIN IMMEDIATE")
     conn.rollback()
+
+
+@pytest.mark.anyio
+async def test_binding_change_during_payload_keeps_request_snapshot(client, monkeypatch):
+    original = brain._payload
+    async def change(request, operation):
+        data = await original(request, operation)
+        monkeypatch.setenv("VOCOCO_BRAIN_AGENT_ID", "abcdef1234")
+        return data
+    monkeypatch.setattr(brain, "_payload", change)
+    result = await create(client)
+    assert tasks.get(result["id"])["agent_id"] == "123456abcd"
+    assert brain.bridge_agent_id() == "abcdef1234"
