@@ -10,6 +10,7 @@ from unittest.mock import Mock
 
 import httpx
 import pytest
+from deployment_fixture import deployment_config
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
@@ -67,13 +68,13 @@ async def env(isolated, monkeypatch):
     monkeypatch.setattr(task_runner, "_maybe_start_next", Mock())
     monkeypatch.setenv("VOCOCO_MCP_UPSTREAM_TOKEN", UPSTREAM)
     monkeypatch.setenv("VOCOCO_BRAIN_BRIDGE_TOKEN", BRIDGE)
-    monkeypatch.setenv("VOCOCO_BRAIN_AGENT_ID", brain_routes.AGENT_ID)
+    monkeypatch.setenv("VOCOCO_BRAIN_AGENT_ID", "123456abcd")
     # 事件箱与任务/桥登记放同一个库:桥在写事务里登记,另一个连接读会等锁。
     monkeypatch.setenv("VOCOCO_MCP_EVENTS_DB", str(config.DATA_DIR / "voice" / "voice.db"))
     mcp_events._verified.clear()  # 验证缓存在进程级,用例之间不共享
     workdir = isolated / "project"
     workdir.mkdir()
-    agents._write_meta(brain_routes.AGENT_ID, {"name": "开发", "workdir": str(workdir),
+    agents._write_meta("123456abcd", {"name": "开发", "workdir": str(workdir),
                                                "execution_mode": "project"})
     app = web.Application()
     brain_routes.register_routes(app)
@@ -144,16 +145,16 @@ def dispatch(frontend, key: str = "request-0001") -> dict:
     """
     from vococo.gateway import brain_routes
 
-    agent = agents.get(brain_routes.AGENT_ID)
+    agent = agents.get("123456abcd")
     access = brain_routes._access(agent)
     access["connection"] = hashlib.sha256(UPSTREAM.encode()).hexdigest()  # 生产由桥按请求凭据写入
     task = tasks.create("查资料", "整理资料", cwd=agent["workdir"], cwd_explicit=True, origin="chat",
-                        dispatch_platform="web", dispatch_chat_id=agent["main_conv"], agent_id=brain_routes.AGENT_ID,
+                        dispatch_platform="web", dispatch_chat_id=agent["main_conv"], agent_id="123456abcd",
                         source_session_key=access["session"], source_access=access)
     connection = brain_routes._registry()
     connection.execute(
         "INSERT INTO brain_bridge_tasks(task_id,agent_id,idempotency_key,payload,source_session_key) VALUES (?,?,?,?,?)",
-        (task["id"], brain_routes.AGENT_ID, key, json.dumps(["查资料", "整理资料"]), access["session"]))
+        (task["id"], "123456abcd", key, json.dumps(["查资料", "整理资料"]), access["session"]))
     connection.commit()
     return task
 

@@ -38,7 +38,7 @@ description: >-
 
 4. 工具会先走内置危险审批，再激活站点并自动登记作品库。不需要再调用独立收藏步骤。
 5. 按回执回复：`activation=succeeded` 表示部署激活，`http_verification=verified` 才表示 HTTP 200 验活。
-   Kimmy 固定发布到 `https://pub.chjm.cc/<slug>/`，验活超时/非200表示“已部署、访问待验证”，不要重新部署。
+   `kimmy` 发布到实例配置 `publishing.kimmy.public_origin` 下的 `/<slug>/`，验活超时/非200表示“已部署、访问待验证”，不要重新部署。
    `local` 返回回环 URL，仅表示本机文件激活、未验活；`/pub/` 本身不要求登录，若绑定外网或有公网隧道，
    站点可能已对外公开。`local` 不是私密空间，也不可擅自用来替代用户要求的公网发布。
 
@@ -47,7 +47,9 @@ description: >-
 - 同一目标和 slug 更新同一作品。工具保留上一版文件。
 - 发现已有发布目录含未登记的改动，或并非此发布器管理时，拒绝覆盖。
   先保留/核对现有内容，或经用户确认使用新 slug；禁止为了继续发布盲目 `--delete`。
-- Kimmy 使用固定 SSH 别名 `Kimmy`，原 `/opt/deploy/deploy.sh <slug> static`，不更换系统。
+- `kimmy` 使用 `data/instance_config.json` 中经审计的 SSH 主机、目录、脚本指纹及四行配置契约，
+  调用配置目录内的 `deploy.sh <slug> static`，不更换系统；缺配置或契约不完整时拒绝发布。
+  发布记录绑定完整配置指纹，配置变化或旧记录未迁移绑定时拒绝更新、下线和截图。
   工具检查远端脚本指纹/配置、git未提交与未跟踪改动、incoming/在线目录/配置片段是否偏离登记快照。
   首次接管已有站点仅当 incoming 与在线文件一致才允许；不一致时拒绝覆盖，不猜哪边是最新版。
 - 上传只进全新临时目录；上传摘要必须符合审批快照；激活前备份 incoming、在线文件及 nginx片段，

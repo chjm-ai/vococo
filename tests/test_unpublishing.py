@@ -4,9 +4,11 @@ import json
 from pathlib import Path
 
 import pytest
+from deployment_fixture import deployment_config
 from PIL import Image
 
 from vococo import config
+from vococo.deployment_settings import kimmy_target, target_fingerprint
 from vococo.memory import library
 from vococo.tools import builtin, publishing, publishing_kimmy as kimmy, website_preview
 
@@ -203,9 +205,13 @@ def test_publish_unpublish_share_lock_and_late_receipt_cannot_revive(environment
 
 @pytest.mark.parametrize('status', ['denied', 'failed', 'unknown'])
 def test_kimmy_non_success_keeps_library_record(environment, monkeypatch, status):
-    item = library.register_website('https://pub.chjm.cc/demo/', '站点', 'publish:kimmy:demo')
-    async def remote(*args):
+    item = library.register_website('https://pub.example.com/demo/', '站点', 'publish:kimmy:demo')
+    async def remote(*args, **kwargs):
         return {'deactivation': status, 'error': '模拟失败'}
+    publishing._write_state('kimmy', 'demo', {'status': 'active',
+        'deployment_fingerprint': target_fingerprint(kimmy_target()),
+        'receipt': {'metadata': {'version': 'a'}, 'url': 'https://pub.example.com/demo/',
+                    'event_key': 'publish:a'}})
     monkeypatch.setattr(kimmy, 'unpublish', remote)
     result = offline({**environment, 'target': 'kimmy'})
     assert result['deactivation'] == status
@@ -218,19 +224,19 @@ def test_kimmy_fixed_ssh_and_receipt_whitelist(environment, monkeypatch):
     async def command(argv, stdin=None):
         commands.append((argv, stdin.decode()))
         return json.dumps({'deactivation': 'succeeded', 'token': token,
-                           'backup_path': f'/opt/deploy/vococo-backups/demo/{token}'})
+                           'backup_path': f'/srv/fake-deploy/vococo-backups/demo/{token}'})
     monkeypatch.setattr(kimmy, '_command', command)
     result = asyncio.run(kimmy.unpublish('demo'))
     assert result['deactivation'] == 'succeeded'
     argv, script = commands[0]
     assert argv[:2] == ['ssh', '-T'] and 'StrictHostKeyChecking=yes' in argv
-    assert argv[-2] == 'Kimmy' and 'unpublish demo ' in argv[-1]
-    assert '/etc/nginx/snippets/pub.chjm.cc' in script and 'record.is_file()' in script
+    assert argv[-2] == 'fake-publisher' and 'unpublish demo ' in argv[-1]
+    assert '/srv/fake-snippets' in argv[-1] and 'record.is_file()' in script
     for slug in ['../x', 'x/y', 'x;id', '-x', 'a' * 65]:
         with pytest.raises(ValueError):
             asyncio.run(kimmy.unpublish(slug))
     async def bad(*args, **kwargs):
-        return json.dumps({'deactivation': 'succeeded', 'token': token, 'backup_path': '/var/www/demo'})
+        return json.dumps({'deactivation': 'succeeded', 'token': token, 'backup_path': '/srv/fake-www/demo'})
     monkeypatch.setattr(kimmy, '_command', bad)
     assert asyncio.run(kimmy.unpublish('demo'))['deactivation'] == 'unknown'
 
@@ -348,15 +354,15 @@ def test_waiting_cover_never_holds_db_lock_needed_by_unpublish(environment, isol
 @pytest.mark.parametrize('phase', ['inspect', 'prepare', 'upload', 'activate'])
 def test_kimmy_transport_failure_restores_only_before_activation(environment, monkeypatch, phase):
     key = 'publish:kimmy:demo'
-    receipt = {'source_key': key, 'event_key': 'publish:original', 'url': 'https://pub.chjm.cc/demo/',
-               'metadata': {'version': 'original'}}
+    receipt = {'source_key': key, 'event_key': 'publish:original', 'url': 'https://pub.example.com/demo/',
+               'metadata': {'version': 'original', 'deployment_fingerprint': target_fingerprint(kimmy_target())}}
     publishing._write_state('kimmy', 'demo', {'status': 'active', 'receipt': receipt})
     library.remember_website_publication(receipt)
     item = library.register_website(receipt['url'], '', key, event_key=receipt['event_key'])
-    async def remote(current, slug, version, *args):
+    async def remote(current, slug, version, *args, **kwargs):
         if current == phase:
             raise RuntimeError('模拟 SSH 断开')
-        return {'stage': f'/opt/deploy/vococo-staging/{slug}-{version}'}
+        return {'stage': f'/srv/fake-deploy/vococo-staging/{slug}-{version}'}
     async def command(*args, **kwargs):
         if phase == 'upload':
             raise RuntimeError('模拟上传失败')
@@ -381,8 +387,8 @@ def test_kimmy_transport_failure_restores_only_before_activation(environment, mo
 def test_kimmy_cancel_restores_only_before_activation_and_still_propagates(environment, monkeypatch,
                                                                            phase, repeat_cancel):
     key = 'publish:kimmy:demo'
-    receipt = {'source_key': key, 'event_key': 'publish:original', 'url': 'https://pub.chjm.cc/demo/',
-               'metadata': {'version': 'original'}}
+    receipt = {'source_key': key, 'event_key': 'publish:original', 'url': 'https://pub.example.com/demo/',
+               'metadata': {'version': 'original', 'deployment_fingerprint': target_fingerprint(kimmy_target())}}
     publishing._write_state('kimmy', 'demo', {'status': 'active', 'receipt': receipt})
     library.remember_website_publication(receipt)
     item = library.register_website(receipt['url'], '', key, event_key=receipt['event_key'])
@@ -399,11 +405,11 @@ def test_kimmy_cancel_restores_only_before_activation_and_still_propagates(envir
                     # 模拟 SSH/上传在取消清理期间再次收到取消；不吞掉任一次取消。
                     await never.wait()
                 raise
-        async def remote(current, slug, version, *args):
+        async def remote(current, slug, version, *args, **kwargs):
             phases.append(current)
             if current == phase:
                 await wait_for_cancel()
-            return {'stage': f'/opt/deploy/vococo-staging/{slug}-{version}'}
+            return {'stage': f'/srv/fake-deploy/vococo-staging/{slug}-{version}'}
         async def command(*args, **kwargs):
             phases.append('upload')
             if phase == 'upload':

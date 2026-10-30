@@ -58,9 +58,12 @@ function fetchResource(url, address) {
   });
 }
 
-async function capture(raw, output) {
+async function capture(raw, output, publicOrigin) {
   const base = new URL(raw);
-  if (!/^https:\/\/pub\.chjm\.cc\/[a-z0-9]+(?:-[a-z0-9]+)*\/$/.test(raw) &&
+  const publicTarget = typeof publicOrigin === 'string' && /^https:\/\/[A-Za-z0-9.-]+$/.test(publicOrigin) &&
+    base.origin === publicOrigin && /^\/[a-z0-9]+(?:-[a-z0-9]+)*\/$/.test(base.pathname) &&
+    raw === publicOrigin + base.pathname;
+  if (!publicTarget &&
       !/^http:\/\/127\.0\.0\.1:\d+\/pub\/[a-z0-9]+(?:-[a-z0-9]+)*\/$/.test(raw))
     throw new Error('非法截图目标');
   const address = await addressFor(base);
@@ -97,6 +100,6 @@ async function capture(raw, output) {
 }
 
 module.exports = {allowed, addressFor, fetchResource, capture};
-if (require.main === module) capture(process.argv[2], process.argv[3])
+if (require.main === module) capture(process.argv[2], process.argv[3], process.argv[4])
   .then(result => process.stdout.write(JSON.stringify(result)))
   .catch(error => { console.error(error.message); process.exitCode = 1; });

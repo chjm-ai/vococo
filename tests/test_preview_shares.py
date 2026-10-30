@@ -8,6 +8,7 @@ import time
 
 from aiohttp import ClientSession
 import pytest
+from deployment_fixture import deployment_config
 
 from vococo import config
 from vococo.gateway.adapters.web import WebAdapter
@@ -93,6 +94,7 @@ async def test_share_http_auth_hash_expiry_limits(server, monkeypatch):
             assert result.status == 200
             created = await result.json()
             assert result.headers['Cache-Control'] == 'no-store'
+        assert created['url'] == 'https://share.example.com' + created['path']
         token = created['path'].split('#')[1]
         assert len(token) == 43 and config.WEB_AUTH_TOKEN not in created['path']
         assert time.time() + shares.TTL - 10 < created['expires'] <= time.time() + shares.TTL

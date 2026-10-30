@@ -11,6 +11,7 @@ import signal
 import tempfile
 
 from .. import config
+from ..deployment_settings import kimmy_target, require_target_binding
 from ..memory import library
 
 TIMEOUT = 35
@@ -21,7 +22,15 @@ def preview_url(source_key: str) -> str:
     match = re.fullmatch(r"publish:(local|kimmy):([a-z0-9]+(?:-[a-z0-9]+)*)", source_key)
     if not match or len(match[2]) > 64:
         raise ValueError("只支持受控 local/kimmy 发布记录")
-    origin = f"http://127.0.0.1:{config.WEB_PORT}/pub" if match[1] == "local" else "https://pub.chjm.cc"
+    origin = f"http://127.0.0.1:{config.WEB_PORT}/pub"
+    if match[1] == 'kimmy':
+        from .publishing import publication_state
+        target = kimmy_target()
+        state = publication_state(source_key)
+        if not state:
+            raise ValueError('截图缺少绑定当前部署目标的可信记录')
+        require_target_binding(state, target)
+        origin = target['public_origin']
     return f"{origin}/{match[2]}/"
 
 
@@ -46,7 +55,8 @@ async def _capture(url: str, output: Path) -> dict:
     browser_temporary.mkdir(mode=0o700, exist_ok=True)
     environment['TMPDIR'] = str(browser_temporary)
     process = await asyncio.create_subprocess_exec(
-        node, str(_SCRIPT), url, str(output), env=environment,
+        node, str(_SCRIPT), url, str(output),
+        kimmy_target()["public_origin"] if url.startswith("https://") else "", env=environment,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )

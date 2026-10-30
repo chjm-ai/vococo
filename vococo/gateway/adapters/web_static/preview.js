@@ -357,7 +357,11 @@ async function ensurePreviewShare(state,source,token,isCurrent){
   return share;
 }
 function previewShareURL(share){
-  return new URL(share.path,"https://vococo.chjm.cc").href;
+  if(typeof share.url!=="string") throw new Error("服务端未配置公开分享地址");
+  const url=new URL(share.url);
+  if(url.protocol!=="https:" || url.username || url.password || url.pathname!=="/preview-share" || !/^#[A-Za-z0-9_-]{43}$/.test(url.hash))
+    throw new Error("无效分享回执");
+  return url.href;
 }
 async function copyPreviewShareURL(sharePromise,isCurrent){
   const text=sharePromise.then(share=>{

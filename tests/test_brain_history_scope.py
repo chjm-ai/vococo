@@ -96,17 +96,17 @@ async def test_search_history_scope_pagination_and_literal_keywords(client, monk
     other_id = turn("关键词私有", "回答", other)
     last = turn("最新关键词", "回答", own)
     assert {row["turn_id"] for row in (await post(client, "search_history", {"query": "关键词"}))["results"]} == {first, other_id, last}
-    page = await post(client, "search_history", {"query": "关键词", "limit": 1, "agent_id": brain.AGENT_ID})
+    page = await post(client, "search_history", {"query": "关键词", "limit": 1, "agent_id": "123456abcd"})
     assert [row["turn_id"] for row in page["results"]] == [last]
     assert page["next_before_id"] == last
-    page = await post(client, "search_history", {"query": "关键词", "limit": 1, "before_id": last, "agent_id": brain.AGENT_ID})
+    page = await post(client, "search_history", {"query": "关键词", "limit": 1, "before_id": last, "agent_id": "123456abcd"})
     assert [row["turn_id"] for row in page["results"]] == [first]
     assert page["next_before_id"] is None
     assert len((await post(client, "search_history", {"query": "%"}))["results"]) == 1
     turn("password: mysecretvalue", "无关", own)
     assert (await post(client, "search_history", {"query": "mysecretvalue"}))["results"] == []
     assert len((await post(client, "search_history", {"query": "关键词", "agent_id": "abcdef1234"}))["results"]) == 1
-    monkeypatch.setenv(brain.READABLE_AGENTS, brain.AGENT_ID)
+    monkeypatch.setenv(brain.READABLE_AGENTS, "123456abcd")
     await post(client, "search_history", {"query": "关键词", "agent_id": "abcdef1234"}, 404)
     await post(client, "search_history", {"query": "   "}, 400)
     await post(client, "search_history", {"query": "关键词"}, 401, headers={})
@@ -115,7 +115,7 @@ async def test_search_history_scope_pagination_and_literal_keywords(client, monk
 @pytest.mark.parametrize("operation,payload", [
     ("list_sessions", {"all_agents": "true"}),
     ("list_sessions", {"all_agents": 1}),
-    ("list_sessions", {"all_agents": True, "agent_id": brain.AGENT_ID}),
+    ("list_sessions", {"all_agents": True, "agent_id": "123456abcd"}),
     ("read_session", {"key": "x", "agent_id": 123}),
     ("create_task", {"title": "不应创建", "prompt": "不执行", "idempotency_key": "readonly-001", "agent_id": "abcdef1234"}),
     ("cancel_task", {"id": "x", "agent_id": "abcdef1234"}),

@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 
 import pytest
+from deployment_fixture import deployment_config
 from PIL import Image
 
 from vococo.memory import library
@@ -372,10 +373,10 @@ for (const url of ['http://127.0.0.1:8848/api/token', 'http://127.0.0.1:8848/pub
 (async () => {
  for (const ip of ['127.0.0.1','10.1.1.1','169.254.169.254','100.64.0.1','192.168.1.1','::1']) {
   dns.resolve4 = async () => [ip];
-  await assert.rejects(p.addressFor(new URL('https://pub.chjm.cc/demo/')));
+  await assert.rejects(p.addressFor(new URL('https://pub.example.com/demo/')));
  }
  dns.resolve4 = async () => ['8.8.8.8'];
- assert.equal(await p.addressFor(new URL('https://pub.chjm.cc/demo/')), '8.8.8.8');
+ assert.equal(await p.addressFor(new URL('https://pub.example.com/demo/')), '8.8.8.8');
 })().catch(error => {console.error(error); process.exitCode=1;});
 '''
     subprocess.run([node, '-e', code, str(preview._SCRIPT)], env=environment,

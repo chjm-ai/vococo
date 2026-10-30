@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from .. import config
+from ..deployment_settings import kimmy_target, require_target_binding, target_fingerprint
 from . import danger
 
 _LOCKS: dict[str, asyncio.Lock] = {}
@@ -150,6 +151,11 @@ async def unpublish(args: dict) -> dict:
     _state_path(target, slug)
     async with _site_lock(target, slug):
         state = publication_state(f"publish:{target}:{slug}")
+        deployment = kimmy_target() if target == "kimmy" else None
+        if deployment is not None:
+            if state is None:
+                raise ValueError("缺少绑定当前部署目标的发布记录，拒绝下线")
+            require_target_binding(state, deployment)
         token = args.get("sync_token")
         if token is not None:
             if not state or state.get("status") != "inactive" or token != state.get("token"):
@@ -164,10 +170,11 @@ async def unpublish(args: dict) -> dict:
             state = _offline_local(slug, state)
         else:
             from . import publishing_kimmy
-            result = await publishing_kimmy.unpublish(slug)
+            result = await publishing_kimmy.unpublish(slug, target=deployment)
             if result.get("deactivation") != "succeeded":
                 return result
-            state = {"status": "inactive", "token": result["token"], "backup_path": result["backup_path"]}
+            state = {"status": "inactive", "token": result["token"], "backup_path": result["backup_path"],
+                     "deployment_fingerprint": target_fingerprint(deployment)}
         return _finish_offline(target, slug, state)
 
 
@@ -305,10 +312,10 @@ def _restore_state(target: str, slug: str, previous: dict | None) -> None:
         _write_state(target, slug, previous)
 
 
-async def _publish_receipt(source: Path, target: str, slug: str, approved_manifest: dict) -> dict:
+async def _publish_receipt(source: Path, target: str, slug: str, approved_manifest: dict, deployment: dict | None = None) -> dict:
     if target == 'kimmy':
         from . import publishing_kimmy
-        return await publishing_kimmy.publish(source, slug, approved_manifest)
+        return await publishing_kimmy.publish(source, slug, approved_manifest, target=deployment)
     version = uuid.uuid4().hex
     try:
         metadata = await _activate_local(source, slug, version, approved_manifest)
@@ -333,7 +340,8 @@ async def publish(args: dict) -> dict:
     approved_manifest = _manifest(source)
     if source == config.PUBLISHED_DIR.resolve() or source.is_relative_to(config.PUBLISHED_DIR.resolve()):
         raise ValueError("source_dir 不能位于发布目录内")
-    channel = ("Kimmy SSH + rsync 上传 + /opt/deploy/deploy.sh；公开地址 https://pub.chjm.cc/"
+    deployment = kimmy_target() if target == "kimmy" else None
+    channel = (f"{deployment['ssh_host']} SSH + rsync 上传 + {deployment['deploy_root']}/deploy.sh；公开地址 {deployment['public_origin']}/"
                if target == "kimmy" else "本机 /pub/（不要求登录，绑定外网或隧道时可公开访问）")
     detail = f"目标 {target}；站点 {slug}；来源 {source}；{channel}；先备份，拒绝覆盖未登记/未提交改动"
     if not await danger.require_approval("发布网站(SSH/上传/公开文件/覆盖站点)", detail):
@@ -342,9 +350,15 @@ async def publish(args: dict) -> dict:
         previous = publication_state(f'publish:{target}:{slug}')
         if previous and previous.get('status') == 'publishing':
             previous = previous.get('previous')
-        _write_state(target, slug, {'status': 'publishing', 'previous': previous})
+        binding = {}
+        if deployment is not None:
+            if kimmy_target() != deployment:
+                raise ValueError('审批期间部署配置已改变，请重新审批')
+            require_target_binding(previous, deployment)
+            binding['deployment_fingerprint'] = target_fingerprint(deployment)
+        _write_state(target, slug, {'status': 'publishing', 'previous': previous, **binding})
         try:
-            receipt = await _publish_receipt(source, target, slug, approved_manifest)
+            receipt = await _publish_receipt(source, target, slug, approved_manifest, deployment)
         except (ActivationNotStartedError, ActivationNotStartedCancelledError):
             # 仅恢复已确认未进入激活阶段的失败或取消，随后原样向上传播。
             _restore_state(target, slug, previous)

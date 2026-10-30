@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import hmac
 import hashlib
 import ipaddress
@@ -17,7 +18,22 @@ from ..core import task_runner, tasks
 from ..memory import agents, projects, session_store
 from ..tools import danger
 
-AGENT_ID = "286d3c1abf"
+_request_agent_id: ContextVar[str | None] = ContextVar("brain_request_agent_id", default=None)
+
+
+def bridge_agent_id() -> str:
+    from ..instance_config import text
+
+    snapshot = _request_agent_id.get()
+    if snapshot is not None:
+        return snapshot
+    agent_id = os.environ.get("VOCOCO_BRAIN_AGENT_ID")
+    if agent_id is None:
+        agent_id = text("brain", "agent_id")
+    if not agents.valid_id(agent_id):
+        raise ValueError("未配置有效的 brain.agent_id，任务桥已停用")
+    return agent_id
+
 _BLOCKED = (
     "delegate_to_agent", "dispatch_session", "run_subagent", "add_cron_job",
     "update_cron_job", "delete_cron_job", "set_cron_job_enabled", "list_cron_jobs", "suggest_automation",
@@ -72,9 +88,11 @@ def _authenticate(request: web.Request) -> None:
 
 
 def _agent() -> dict:
-    if os.environ.get("VOCOCO_BRAIN_AGENT_ID", AGENT_ID) != AGENT_ID:
-        _reject(503, "桥只能绑定固定 Agent")
-    agent = agents.get(AGENT_ID)
+    try:
+        agent_id = bridge_agent_id()
+    except (ValueError, OSError) as exc:
+        _reject(503, str(exc))
+    agent = agents.get(agent_id)
     if not agent or not agent.get("workdir"):
         _reject(503, "固定 Agent 不可用")
     return agent
@@ -178,7 +196,7 @@ def _create_atomic(data: dict, agent: dict, connection: str = "") -> dict:
         conn.execute("BEGIN IMMEDIATE")
         old = conn.execute(
             "SELECT task_id,payload FROM brain_bridge_tasks WHERE agent_id=? AND idempotency_key=?",
-            (AGENT_ID, key),
+            (bridge_agent_id(), key),
         ).fetchone()
         if old:
             if old["payload"] != payload:
@@ -186,22 +204,22 @@ def _create_atomic(data: dict, agent: dict, connection: str = "") -> dict:
             return _owned_task(old["task_id"])
         task = tasks.create(
             title, prompt, cwd=agent["workdir"], cwd_explicit=True, origin="chat",
-            dispatch_platform="web", dispatch_chat_id=agent["main_conv"], agent_id=AGENT_ID,
+            dispatch_platform="web", dispatch_chat_id=agent["main_conv"], agent_id=bridge_agent_id(),
             source_session_key=access["session"], source_access=access, commit=False,
         )
         conn.execute(
             "INSERT INTO brain_bridge_tasks(task_id,agent_id,idempotency_key,payload,source_session_key) VALUES (?,?,?,?,?)",
-            (task["id"], AGENT_ID, key, payload, access["session"]),
+            (task["id"], bridge_agent_id(), key, payload, access["session"]),
         )
     return task
 
 
 def _owned_task(task_id: str) -> dict:
     record = _registry().execute(
-        "SELECT * FROM brain_bridge_tasks WHERE task_id=? AND agent_id=?", (task_id, AGENT_ID)
+        "SELECT * FROM brain_bridge_tasks WHERE task_id=? AND agent_id=?", (task_id, bridge_agent_id())
     ).fetchone()
     task = tasks.get(task_id)
-    if not record or not task or task["agent_id"] != AGENT_ID or task["origin"] != "chat":
+    if not record or not task or task["agent_id"] != bridge_agent_id() or task["origin"] != "chat":
         _reject(404, "外部任务不存在")
     access = tasks.automatic_access(task)
     if (access.get("remote_brain") is not True or task["source_session_key"] != access.get("session")
@@ -319,7 +337,7 @@ def _continue_dispatched_task(target: str, instruction: str, key: str) -> dict:
             "INSERT INTO brain_bridge_continuations "
             "(idempotency_key,target_id,kind,agent_id,task_id,content_hash,state,instruction,run_version) "
             "VALUES (?, ?, 'task', ?, ?, ?, 'accepted', ?, ?)",
-            (key, task["id"], AGENT_ID, task["id"], digest, instruction, current["run_version"] + 1),
+            (key, task["id"], bridge_agent_id(), task["id"], digest, instruction, current["run_version"] + 1),
         )
         if current["status"] not in tasks.TERMINAL_STATUSES or task["id"] in task_runner._running:
             _reject(409, "任务仍在运行或排队，不会打断，请稍后查询")
@@ -430,7 +448,7 @@ def _continue_history_session(data: dict, agent: dict, target: str, instruction:
     result = {"id": session_key, "agent_id": agent_id, "continuation": "accepted",
               "continuation_instruction": _clean(instruction)}
     digest = hashlib.sha256(instruction.encode()).hexdigest()
-    text = f"【跨会话指令 · 来源 MCP:{AGENT_ID}】\n以下为用户完整指令：\n{instruction}"
+    text = f"【跨会话指令 · 来源 MCP:{bridge_agent_id()}】\n以下为用户完整指令：\n{instruction}"
     conn = _registry()
     with conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -511,7 +529,7 @@ def _visible_agents() -> list[dict]:
         if READABLE_AGENTS in os.environ and agent["id"] not in allowed:
             continue
         out.append({"agent_id": agent["id"], "name": _clean(agent["name"])[:100],
-                    "task_dispatch": agent["id"] == AGENT_ID})
+                    "task_dispatch": agent["id"] == bridge_agent_id()})
     return sorted(out, key=lambda item: item["agent_id"])
 
 
@@ -591,7 +609,7 @@ def _agent_visibility() -> dict[str, dict]:
 
 def _resolve_agent(data: dict, visibility: dict[str, dict]) -> str:
     """按 agent_id 定位;省略/null = 固定开发 Agent。不可见与不存在一样回 404。"""
-    agent_id = AGENT_ID if data.get("agent_id") is None else _text(data, "agent_id", 128)
+    agent_id = bridge_agent_id() if data.get("agent_id") is None else _text(data, "agent_id", 128)
     if agent_id not in visibility:
         _reject(404, "Agent 不存在或无权访问")
     return agent_id
@@ -778,12 +796,17 @@ async def handle_brain(request: web.Request) -> web.Response:
     connection = request.headers.get("X-Vococo-Connection", "")
     if connection and not re.fullmatch(r"[A-Za-z0-9]{8,64}", connection):
         _reject(400, "连接身份格式无效")
-    data = await _payload(request, operation)
-    if operation == "search_history":
-        result = await asyncio.to_thread(_HANDLERS[operation], data, agent, connection)
-    else:
-        result = _HANDLERS[operation](data, agent, connection)
-    return web.json_response(result, headers={"Cache-Control": "no-store"})
+    # 正文读取和历史检索会让出执行权；一次请求只认入口确认过的同一个 Agent。
+    token = _request_agent_id.set(agent["id"])
+    try:
+        data = await _payload(request, operation)
+        if operation == "search_history":
+            result = await asyncio.to_thread(_HANDLERS[operation], data, agent, connection)
+        else:
+            result = _HANDLERS[operation](data, agent, connection)
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+    finally:
+        _request_agent_id.reset(token)
 
 
 def register_routes(app: web.Application) -> None:

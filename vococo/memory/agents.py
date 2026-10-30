@@ -21,8 +21,8 @@
 MCP 名单里的外部 server 每轮都挂,不再按关键词临时挂。通用 Agent 不单独配,它就是全局配置本身。
 记忆分区(2026-10-01):项目 Agent 的经验存进 AI_BRAIN/memory/<项目文件夹名>/(仍在唯一主库里,
 目录规则和落盘见 memory/deposit.py),索引是该目录的 INDEX.md,只注入这个 Agent 的提示词;
-沉淀时按 MEMORY_RULES 判专用还是通用(note_memory / save_memory 的 scope)。
-全局记忆索引(AI_BRAIN/MEMORY.md)只注入 memory_sections 列出的分节,不写 = DEFAULT_MEMORY_SECTIONS 三节通用的;
+沉淀时按实例的记忆规则判专用还是通用(note_memory / save_memory 的 scope)。
+全局记忆索引(AI_BRAIN/MEMORY.md)只注入 memory_sections 列出的分节,不写 = 实例配置的默认分节;
 同时关掉 CLI 的 auto-memory(它会把整份索引再注一遍),见 core/agent.stream_turn、core/prompt.build_system_prompt。
 同一套规则还有一项(2026-10-01):disallowed_tools = 硬拦的工具名(如 Bash、mcp__vococo__dispatch_session),在 core/agent.stream_turn 里生效,
 子代理也拿不到(父会话的禁用会传给子代理,实测过)。
@@ -65,29 +65,12 @@ AVATAR_EYES = ("dot", "small", "squint")
 AGENT_TEMPLATE = "# {name}\n\n## 职责与人格\n\n\n## 常用资源\n\n"
 GOAL_TEMPLATE = "# 目标\n\n\n## 成功标准\n\n\n## 不做\n\n\n## 当前进展\n\n\n## 复盘记录\n\n"
 PLAN_TEMPLATE = "# 计划\n\n## 里程碑\n\n\n## 任务\n\n"
-# 项目 Agent 默认带进提示词的全局记忆分节(MEMORY.md 的「## 标题」):跨 Agent 通用的那几节,
-# 其余(某个项目/服务器/个人事务)要它自己在「设置 → 全局记忆」里勾
-DEFAULT_MEMORY_SECTIONS = ("用户偏好", "经验教训", "工作偏好 / 设置")
-# 项目 Agent 的「记忆归属」规则:沉淀时先判定专用还是通用。优先于全局约定(AI_BRAIN/AGENTS.md)
-# 里「任务收尾沉淀」那张表——那张表不分 Agent,照它走项目经验全会漏进全局
-MEMORY_RULES = """## 记忆归属(沉淀时按这个判,优先于全局约定里的「任务收尾沉淀」表)
-按顺序问,第一个「是」决定去向:
-1. 主语是主人本人(偏好、习惯、身份、家人、健康)? → 通用
-2. 涉及具体路径 / 命令 / 服务器 / 账号 / 客户 / 数值? → 本 Agent 专用
-3. 去掉项目名,这条规则还成立? → 通用,只写一行可迁移的规则
-4. 都不是或拿不准 → 本 Agent 专用(存错专用代价小,存错通用会污染所有 Agent)
-两边都沾的拆两条:完整经过(坑、根因、修法、路径)存专用,通用只留一行规则。
-怎么存:
-- 追加踩坑 / 决策 / 偏好 → note_memory(kind, text, label, scope);scope 默认 agent,通用传 global;偏好永远通用
-- 新的独立主题(某服务器 / 工具的完整说明)→ save_memory,scope 同上
-- 不要直接 Edit 全局的 lessons.md / tech-decisions.md 写本项目的东西
-本 Agent 的记忆目录:{dir}/(索引 INDEX.md 每轮都在你眼前)。全局记忆索引这里只带了部分分节,
-其他分节需要时读 AI_BRAIN/MEMORY.md 或用 recall_past。"""
-# 待拍板的事统一进铃铛(2026-10-10 主人要求):复盘里写「请主人拍板」散在各 Agent 文件里,没人催就积压
-DECISION_RULES = """## 要我拍板时
-- 我不在线、也不急着当场要答案的(复盘、定时任务里攒下的):每件调一次 request_decision 放进铃铛,
-  给 2-4 个选项和你的建议;别只写在汇报或 GOAL.md 里
-- 只能我本人动手的(扫码、实名、付款)不用它,照常在汇报里列"""
+def default_memory_sections() -> list[str]:
+    from ..instance_config import strings
+
+    return strings("preferences", "memory_sections")
+
+
 REVIEW_CRON = "0 9 * * 1"  # 目标复盘默认每周一早 9 点
 REVIEW_ROLE = "goal_review"  # 复盘任务在 cron_jobs.json 里的 role 标记,一个 Agent 只挂一条
 REVIEW_PROMPT = """【目标复盘】给「{name}」做一次复盘,文件都在 {home}/ 下:
@@ -735,8 +718,10 @@ def prompt_extra(agent: dict | None) -> str:
     if aid != GENERAL_ID:
         from . import deposit
 
-        tail.append(DECISION_RULES)
-        rules = MEMORY_RULES.format(dir=deposit.agent_memory_dir(agent))
+        from ..instance_config import text
+
+        tail.append(text("preferences", "decision_rules"))
+        rules = text("preferences", "memory_rules").replace("{dir}", str(deposit.agent_memory_dir(agent)))
         tail.append(rules)
     if links:
         tail.append("## 关联目录/文件(需要时再打开)\n" + "\n".join(
@@ -811,7 +796,7 @@ def runtime_for_session(session_key: str | None) -> dict:
                 rt["skills"] = skills
     # 项目 Agent 一律分区:没自定义就带默认那几节通用的(None 只留给总助理/普通会话 = 整份索引)
     if rt["memory_sections"] is None:
-        rt["memory_sections"] = list(DEFAULT_MEMORY_SECTIONS)
+        rt["memory_sections"] = default_memory_sections()
     # 它自己的记忆目录(不是配置项,按项目文件夹名推出来,见 memory/deposit.py),其 INDEX.md 进提示词
     from . import deposit
 

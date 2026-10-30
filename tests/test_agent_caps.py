@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from instance_fixture import instance_preferences
 from claude_agent_sdk import ResultMessage
 
 from vococo import config
@@ -38,7 +39,7 @@ def test_runtime_for_session_carries_tools(env):
     agents.update(a["id"], disallowed_tools=["Bash"])
     rt = agents.runtime_for_session(f"web:p{h}:c1")
     assert rt["disallowed_tools"] == ["Bash"] and rt["skills"] is None and rt["mcp"] is None
-    assert rt["memory_sections"] == list(agents.DEFAULT_MEMORY_SECTIONS) and rt["memory_dir"].endswith("/proj")
+    assert rt["memory_sections"] == agents.default_memory_sections() and rt["memory_dir"].endswith("/proj")
     assert agents.runtime_for_session("web:abc")["disallowed_tools"] is None
 
 

@@ -19,9 +19,7 @@ PERSONA = f"""
 沟通风格、中立纪律、记忆沉淀规范等全局约定来自注入的用户全局指令(源头是
 AI_BRAIN/AGENTS.md,各 harness 共用),以下只写 vococo 特有约定,不重复全局内容。
 - 需要时主动调用合适的 skill 帮他把事办了。
-- 回复使用 Markdown；有父子关系时可用多层有序、无序或混合列表，不要把子项压成同级。
-  子项的列表标记对齐父项正文起点（无序通常缩进 2 个空格，有序通常 3 个）；同级保持
-  相同缩进，续行也对齐该项正文。不要用全角空格或代码块模拟列表缩进。
+
 
 === 记忆工具(全局「任务收尾沉淀」在 vococo 侧怎么落地)===
 长期记忆落在 ~/AI_BRAIN(可用 AI_BRAIN_DIR 配置):
@@ -56,16 +54,6 @@ AI_BRAIN/AGENTS.md,各 harness 共用),以下只写 vococo 特有约定,不重�
   持久 Agent 委托仍用 `list_delegate_agents` / `delegate_to_agent`；历史正文检索用 `recall_past`。
 
 === 执行方式(重要)===
-- 默认自己完成任务，不派子代理。此规则适用于 Agent/Task、run_subagent 和自动调用 delegate_to_agent；
-  用户直接在某个持久 Agent 的会话中工作不算派发。少量搜索、跨几个文件阅读、常规修改和测试直接做，
-  不要仅因文件位置不确定、任务有多个步骤或存在匹配的代理类型，就把工作转交出去。
-- 只有以下情况才派发：①用户明确要求委派或多模型复核；②项目规则要求独立评审；
-  ③子任务能一次交代清楚、独立完成，并至少满足一项：大量原始资料会明显挤占主上下文；
-  可并行且上下文独立，预期节省的时间明显大于启动和交接成本。拿不准收益时自己做。
-- 需要频繁补背景、串联交接或共同修改同一文件时，留在主循环；同一轮工具调用能解决的事，不为并行而派发。
-  不按搜索、规划、实现、测试等步骤机械拆 Agent，不额外安排泛泛的第二轮复核。
-- 确需派发时只拆最少的独立子任务，给清楚目标、必要背景，要求返回结论、证据位置和未完成项；
-  已委派的工作不要重复跑，主 Agent 核实关键证据并完成交付。项目要求的独立代码评审照常执行。
 - 以下这条专指 Agent 子代理工具:本 harness 每轮是一次性会话,调用 Agent 子代理时
   【不支持后台任务】,也没有"完成后通知你"的机制(语音模式的 voice_dispatch_task
   是另一套真·独立后台会话机制,不受这条约束,派发后台任务后该怎么口头确认见语音
@@ -392,7 +380,10 @@ def build_system_prompt(
               else _load_memory_sections(memory_sections, own_memory_dir))
     data_blocks = _load_user_profile() + memory
     fence = f"\n\n=== 参考数据围栏 ===\n{_MEMORY_FENCE}" if data_blocks else ""
-    append = PERSONA + global_agents + fence + data_blocks + _load_project_agents(cwd)
+    from ..instance_config import text
+
+    preferences = text("preferences", "persona")
+    append = PERSONA + "\n\n" + preferences + global_agents + fence + data_blocks + _load_project_agents(cwd)
     if cache_key:
         _APPEND_CACHE[cache_key] = (_agents_mtime(cwd), append)
         while len(_APPEND_CACHE) > _APPEND_CACHE_MAX:

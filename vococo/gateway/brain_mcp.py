@@ -312,12 +312,16 @@ def _lifespan(inner, frontend: EventsBridge):
 
 
 def create_app(server: FastMCP):
+    from ..deployment_settings import brain_origin
+    from urllib.parse import urlsplit
+
+    origin = brain_origin()
     upstream, _bridge = _tokens()
     port = server._vococo_port
     inner = server.streamable_http_app(stateless_http=True, json_response=True,
         transport_security=TransportSecuritySettings(
-            allowed_hosts=[f"127.0.0.1:{port}", f"localhost:{port}", "mcp.chjm.cc"],
-            allowed_origins=["https://mcp.chjm.cc"]))
+            allowed_hosts=[f"127.0.0.1:{port}", f"localhost:{port}", urlsplit(origin).netloc],
+            allowed_origins=[origin]))
     frontend = EventsBridge(inner, upstream)
     # 在原 MCP app 的 lifespan(启停 session manager)之外,同生共死地跑事件投递循环。
     original = inner.router.lifespan_context

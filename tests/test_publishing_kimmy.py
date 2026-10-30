@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from deployment_fixture import deployment_config
 
 from vococo.tools import builtin, publishing, publishing_kimmy as kimmy
 
@@ -43,24 +44,24 @@ def test_kimmy_requires_approval_and_registers_even_when_http_pending(isolated, 
     calls = []
     async def approve(reason, detail):
         calls.append("approval")
-        assert "SSH" in reason and "Kimmy" in detail
+        assert "SSH" in reason and "fake-publisher" in detail
         return True
-    async def remote(phase, slug, version, upload_manifest=None):
+    async def remote(phase, slug, version, upload_manifest=None, **kwargs):
         assert calls[0] == "approval"
         calls.append(phase)
         if phase == "prepare":
             assert upload_manifest["index.html"]
-            return {"stage": f"/opt/deploy/vococo-staging/{slug}-{version}"}
+            return {"stage": f"/srv/fake-deploy/vococo-staging/{slug}-{version}"}
         if phase == "activate":
-            return {"activation": "succeeded", "backup_path": "/opt/deploy/vococo-backups/sample/v"}
+            return {"activation": "succeeded", "backup_path": f"/srv/fake-deploy/vococo-backups/{slug}/{version}"}
         return {"state": {}}
     async def command(argv, stdin=None):
         calls.append("upload")
         assert argv[0] == "rsync" and "--delete" not in argv
-        assert argv[-1].startswith("Kimmy:/opt/deploy/vococo-staging/sample-")
+        assert argv[-1].startswith("fake-publisher:/srv/fake-deploy/vococo-staging/sample-")
         return ""
     async def verify(url):
-        assert url == "https://pub.chjm.cc/sample/"
+        assert url == "https://pub.example.com/sample/"
         return {"http_verification": http}
     monkeypatch.setattr(publishing.danger, "require_approval", approve)
     monkeypatch.setattr(kimmy, "_remote", remote)
@@ -78,7 +79,7 @@ def test_kimmy_requires_approval_and_registers_even_when_http_pending(isolated, 
     assert receipt["library_id"]
     assert receipt["metadata"]["http_verification"] == http
     assert receipt["source_key"] == "publish:kimmy:sample"
-    assert library.get_item(receipt["library_id"])["url"] == "https://pub.chjm.cc/sample/"
+    assert library.get_item(receipt["library_id"])["url"] == "https://pub.example.com/sample/"
     if http == "pending":
         assert "访问待验证" in text
     if cleanup_fails:
@@ -104,12 +105,12 @@ def test_kimmy_upload_with_system_rsync_preserves_public_modes_and_source(source
                       for path in [source, *source.rglob("*")]}
     destination = tmp_path / "uploaded"
     calls = []
-    async def remote(phase, slug, version, upload_manifest=None):
+    async def remote(phase, slug, version, upload_manifest=None, **kwargs):
         calls.append(phase)
         if phase == "prepare":
-            return {"stage": f"/opt/deploy/vococo-staging/{slug}-{version}"}
+            return {"stage": f"/srv/fake-deploy/vococo-staging/{slug}-{version}"}
         if phase == "activate":
-            return {"activation": "succeeded", "backup_path": "/test/backup"}
+            return {"activation": "succeeded", "backup_path": f"/srv/fake-deploy/vococo-backups/{slug}/{version}"}
         return {"state": {}}
     async def command(argv, stdin=None):
         calls.append("upload")
@@ -138,7 +139,7 @@ def test_kimmy_upload_with_system_rsync_preserves_public_modes_and_source(source
 
 def test_kimmy_denied_does_not_connect(isolated, params, monkeypatch):
     async def deny(*args): return False
-    async def remote(*args): pytest.fail("审批拒绝不能连接SSH")
+    async def remote(*args, **kwargs): pytest.fail("审批拒绝不能连接SSH")
     monkeypatch.setattr(publishing.danger, "require_approval", deny)
     monkeypatch.setattr(kimmy, "_remote", remote)
     _, receipt = run_tool(params)
@@ -148,8 +149,8 @@ def test_kimmy_denied_does_not_connect(isolated, params, monkeypatch):
 def test_kimmy_unknown_activation_does_not_register_or_claim_failure_safe_to_repeat(isolated, params, monkeypatch):
     from vococo.memory import library
     async def approve(*args): return True
-    async def remote(phase, slug, version, upload_manifest=None):
-        if phase == "prepare": return {"stage": f"/opt/deploy/vococo-staging/{slug}-{version}"}
+    async def remote(phase, slug, version, upload_manifest=None, **kwargs):
+        if phase == "prepare": return {"stage": f"/srv/fake-deploy/vococo-staging/{slug}-{version}"}
         if phase == "activate": raise OSError("SSH lost")
         return {"state": {}}
     async def command(*args): return ""
@@ -170,13 +171,13 @@ def test_http_verification_never_follows_redirects(monkeypatch, status):
         async def __aexit__(self, *args): pass
     class Session(Response):
         def get(self, url, **kwargs):
-            assert url == "https://pub.chjm.cc/sample/"
+            assert url == "https://pub.example.com/sample/"
             assert kwargs["allow_redirects"] is False
             response = Response()
             response.status = status
             return response
     monkeypatch.setattr(aiohttp, "ClientSession", Session)
-    result = asyncio.run(kimmy._verify("https://pub.chjm.cc/sample/"))
+    result = asyncio.run(kimmy._verify("https://pub.example.com/sample/"))
     assert result["http_verification"] == ("verified" if status == 200 else "pending")
 
 
@@ -184,7 +185,7 @@ def test_http_timeout_is_pending_not_activation_failure(monkeypatch):
     import aiohttp
     def fail(): raise TimeoutError("timeout")
     monkeypatch.setattr(aiohttp, "ClientSession", fail)
-    assert asyncio.run(kimmy._verify("https://pub.chjm.cc/sample/"))["http_verification"] == "pending"
+    assert asyncio.run(kimmy._verify("https://pub.example.com/sample/"))["http_verification"] == "pending"
 
 
 @pytest.fixture
@@ -195,16 +196,15 @@ def remote_tree(isolated, monkeypatch, capsys):
     deploy.mkdir()
     content = b"audited-deploy-script"
     (deploy / "deploy.sh").write_bytes(content)
-    (deploy / "config").write_text("DOMAIN=pub.chjm.cc\nURL_MODE=path\nSSL_CERT=/etc/letsencrypt/live/site.speeedai.com/fullchain.pem\nSSL_KEY=/etc/letsencrypt/live/site.speeedai.com/privkey.pem\n")
+    (deploy / "config").write_text("DOMAIN=pub.example.com\nURL_MODE=path\nSSL_CERT=/etc/letsencrypt/live/example.com/fullchain.pem\nSSL_KEY=/etc/letsencrypt/live/example.com/privkey.pem\n")
     nginx = isolated / "nginx"
     nginx.write_text("nginx")
     live_root, snippets = isolated / "www", isolated / "snippets"
     slug, version = "sample", "a" * 32
-    script = kimmy._REMOTE.replace('Path("/opt/deploy")', f"Path({str(deploy)!r})")
-    script = script.replace('Path("/var/www")', f"Path({str(live_root)!r})")
-    script = script.replace('Path("/etc/nginx/snippets/pub.chjm.cc")', f"Path({str(snippets)!r})")
-    script = script.replace('Path("/usr/sbin/nginx")', f"Path({str(nginx)!r})")
-    script = script.replace(kimmy._DEPLOY_SHA256, hashlib.sha256(content).hexdigest())
+    settings = kimmy.kimmy_target()
+    settings.update(deploy_root=str(deploy), web_root=str(live_root), snippet_root=str(snippets),
+                    script_sha256=hashlib.sha256(content).hexdigest())
+    script = kimmy._REMOTE.replace('Path("/usr/sbin/nginx")', f"Path({str(nginx)!r})")
     deployed = []
     git_status = [""]
     def subprocess_run(argv, **kwargs):
@@ -222,10 +222,10 @@ def remote_tree(isolated, monkeypatch, capsys):
         return SimpleNamespace(returncode=0, stdout="deployed", stderr="")
     monkeypatch.setattr(subprocess, "run", subprocess_run)
     def execute(phase, upload_manifest=None, operation_version=None):
-        monkeypatch.setattr(sys, "argv", ["python", phase, slug, operation_version or version])
+        monkeypatch.setattr(sys, "argv", ["python", phase, slug, operation_version or version, json.dumps(settings), json.dumps(upload_manifest)])
         namespace = {}
         try:
-            exec(compile(script.replace("UPLOAD_MANIFEST", repr(upload_manifest)), "isolated_remote", "exec"), namespace)
+            exec(compile(script, "isolated_remote", "exec"), namespace)
         finally:
             if "lock" in namespace:
                 namespace["lock"].close()

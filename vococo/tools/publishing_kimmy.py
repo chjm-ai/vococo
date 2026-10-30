@@ -12,23 +12,24 @@ from pathlib import Path
 
 from .. import config
 
-# 2026-10-13 只读核对过的脚本；远端更新脚本后必须重新审计，不能静默执行新契约。
-_DEPLOY_SHA256 = "da143a46b9b576b501c895f837e01dda5e34d00bdfc36b5c741bf681510d8e7f"
+from ..deployment_settings import kimmy_target, target_fingerprint
+
 _REMOTE = r'''
 import fcntl, hashlib, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
-phase, slug, version = sys.argv[1:]
+phase, slug, version, settings_json, manifest_json = sys.argv[1:]
+settings = json.loads(settings_json)
 if phase not in {"inspect", "prepare", "activate", "unpublish"} or len(slug) > 64 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug) or not re.fullmatch(r"[a-f0-9]{32}", version):
     raise ValueError("非法发布参数")
-root = Path("/opt/deploy")
-incoming, live = root / "incoming" / slug, Path("/var/www") / slug
+root = Path(settings["deploy_root"])
+incoming, live = root / "incoming" / slug, Path(settings["web_root"]) / slug
 stage = root / "vococo-staging" / (slug + "-" + version)
 record = root / "vococo-state" / (slug + ".json")
 backup = root / "vococo-backups" / slug / version
-snippet = Path("/etc/nginx/snippets/pub.chjm.cc") / (slug + ".conf")
+snippet = Path(settings["snippet_root"]) / (slug + ".conf")
 script = root / "deploy.sh"
-expected_hash = "DEPLOY_HASH"
-upload_expected = UPLOAD_MANIFEST
+expected_hash = settings["script_sha256"]
+upload_expected = json.loads(manifest_json)
 
 def atomic_json(path, value):
     descriptor, temporary = tempfile.mkstemp(prefix='.vococo-', dir=path.parent)
@@ -43,9 +44,7 @@ def contract():
     if hashlib.sha256(script.read_bytes()).hexdigest() != expected_hash:
         raise ValueError("部署脚本已变更，须重新审计契约")
     lines = (root / "config").read_text().splitlines()
-    expected = {"DOMAIN=pub.chjm.cc", "URL_MODE=path",
-                "SSL_CERT=/etc/letsencrypt/live/site.speeedai.com/fullchain.pem",
-                "SSL_KEY=/etc/letsencrypt/live/site.speeedai.com/privkey.pem"}
+    expected = set(settings["contract_lines"])
     if set(lines) != expected or len(lines) != len(expected):
         raise ValueError("发布配置已变更或含未审计指令")
     if not Path("/usr/sbin/nginx").is_file() and not Path("/usr/bin/nginx").is_file():
@@ -241,7 +240,7 @@ except Exception as exc:
     print(json.dumps({("deactivation" if phase == "unpublish" else "activation"):
                       "unknown" if phase in {"activate", "unpublish"} else "failed", "error": str(exc),
                       "backup_path": str(backup) if backup.exists() else ""}))
-'''.replace("DEPLOY_HASH", _DEPLOY_SHA256)
+'''
 
 
 async def _command(argv: list[str], stdin: bytes | None = None) -> str:
@@ -258,28 +257,30 @@ async def _command(argv: list[str], stdin: bytes | None = None) -> str:
     return stdout.decode()
 
 
-async def _remote(phase: str, slug: str, version: str, upload_manifest: dict | None = None) -> dict:
-    command = shlex.join(["sudo", "-n", "python3", "-", phase, slug, version])
+async def _remote(phase: str, slug: str, version: str, upload_manifest: dict | None = None, *, target: dict | None = None) -> dict:
+    target = target if target is not None else kimmy_target()
+    command = shlex.join(["sudo", "-n", "python3", "-", phase, slug, version,
+                          json.dumps(target), json.dumps(upload_manifest)])
     output = await _command(["ssh", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-                             "-o", "ConnectTimeout=10", "Kimmy", command],
-                             _REMOTE.replace("UPLOAD_MANIFEST", repr(upload_manifest)).encode())
+                             "-o", "ConnectTimeout=10", target["ssh_host"], command], _REMOTE.encode())
     result = json.loads(output)
     if result.get("error") and phase not in {"activate", "unpublish"}:
         raise ValueError(result["error"])
     return result
 
 
-async def unpublish(slug: str) -> dict:
+async def unpublish(slug: str, *, target: dict | None = None) -> dict:
     from .publishing import _SLUG
 
     if not isinstance(slug, str) or len(slug) > 64 or not _SLUG.fullmatch(slug):
         raise ValueError("下线 slug 无效")
+    target = target if target is not None else kimmy_target()
     try:
-        result = await _remote("unpublish", slug, uuid.uuid4().hex)
+        result = await _remote("unpublish", slug, uuid.uuid4().hex, target=target)
         if result.get('deactivation') == 'succeeded':
             token = result.get('token', '')
             if (not re.fullmatch(r'[a-f0-9]{32}', token)
-                    or result.get('backup_path') != f'/opt/deploy/vococo-backups/{slug}/{token}'):
+                    or result.get('backup_path') != f'{target["deploy_root"]}/vococo-backups/{slug}/{token}'):
                 raise ValueError('远端下线备份回执不符合白名单')
         return result
     except Exception as exc:
@@ -298,9 +299,10 @@ async def _verify(url: str) -> dict:
         return {"http_verification": "pending", "http_error": str(exc)}
 
 
-async def publish(source: Path, slug: str, approved_manifest: dict) -> dict:
+async def publish(source: Path, slug: str, approved_manifest: dict, *, target: dict | None = None) -> dict:
     from .publishing import ActivationNotStartedCancelledError, ActivationNotStartedError, _manifest
 
+    target = target if target is not None else kimmy_target()
     version = uuid.uuid4().hex
     stage, result, activation_started = None, None, False
     try:
@@ -314,33 +316,36 @@ async def publish(source: Path, slug: str, approved_manifest: dict) -> dict:
         stage.chmod(0o755)
         for path in stage.rglob("*"):
             path.chmod(0o755 if path.is_dir() else 0o644)
-        await _remote("inspect", slug, version)
-        prepared = await _remote("prepare", slug, version, approved_manifest)
-        expected_stage = f"/opt/deploy/vococo-staging/{slug}-{version}"
+        await _remote("inspect", slug, version, target=target)
+        prepared = await _remote("prepare", slug, version, approved_manifest, target=target)
+        expected_stage = f"{target['deploy_root']}/vococo-staging/{slug}-{version}"
         if prepared.get("stage") != expected_stage:
             raise ValueError("远端临时目录回执不符合白名单")
         # 上传到全新私有临时目录，不对正在服务的站点做盲目 --delete。
         # sudo 创建的临时目录由固定 sudo rsync 接收，不扩大来源或目标路径。
         await _command(["rsync", "-az", "--rsync-path=sudo -n rsync",
                         "-e", "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10",
-                        str(stage) + "/", f"Kimmy:{expected_stage}/site/"])
+                        str(stage) + "/", f"{target['ssh_host']}:{expected_stage}/site/"])
         activation_started = True
         try:
-            activated = await _remote("activate", slug, version)
+            activated = await _remote("activate", slug, version, target=target)
         except Exception as exc:
             activated = {"activation": "unknown", "error": str(exc),
-                         "backup_path": f"/opt/deploy/vococo-backups/{slug}/{version}",
+                         "backup_path": f"{target['deploy_root']}/vococo-backups/{slug}/{version}",
                          "message": "激活回执中断，可能已部署；先核对状态和备份，不要自动重新发布"}
         if activated.get("activation") != "succeeded":
-            result = {**activated, "url": f"https://pub.chjm.cc/{slug}/", "event_key": f"publish:{version}"}
+            result = {**activated, "url": f"{target['public_origin']}/{slug}/", "event_key": f"publish:{version}"}
             return result
+        if activated.get("backup_path") != f"{target['deploy_root']}/vococo-backups/{slug}/{version}":
+            raise ValueError("远端激活备份回执不符合白名单")
         metadata = {"target": "kimmy", "slug": slug, "version": version,
                     "activation": "succeeded", "http_verification": "not_checked",
-                    "backup_path": activated["backup_path"], "script_sha256": _DEPLOY_SHA256}
+                    "backup_path": activated["backup_path"], "script_sha256": target["script_sha256"],
+                    "deployment_fingerprint": target_fingerprint(target)}
         if activated.get("manifest_warning"):
             metadata["manifest_warning"] = activated["manifest_warning"]
-        metadata.update(await _verify(f"https://pub.chjm.cc/{slug}/"))
-        result = {"url": f"https://pub.chjm.cc/{slug}/", "source_key": f"publish:kimmy:{slug}",
+        metadata.update(await _verify(f"{target['public_origin']}/{slug}/"))
+        result = {"url": f"{target['public_origin']}/{slug}/", "source_key": f"publish:kimmy:{slug}",
                   "activation": "succeeded", "metadata": metadata, "event_key": f"publish:{version}"}
         return result
     except asyncio.CancelledError as exc:

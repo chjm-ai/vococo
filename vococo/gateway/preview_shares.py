@@ -180,6 +180,12 @@ def register_routes(app):
         denied = check_web_auth(request)
         if denied is not None:
             return denied
+        from ..deployment_settings import share_origin
+
+        try:
+            origin = share_origin()
+        except ValueError as exc:
+            return web.json_response({'error': str(exc)}, status=503, headers=HEADERS)
         source = (await body(request)).get('html')
         if not valid_source(source):
             return web.json_response({'error': 'HTML 为空或超过 200KB'}, status=400, headers=HEADERS)
@@ -187,6 +193,7 @@ def register_routes(app):
             result = store.create(source)
         except ValueError as error:
             return web.json_response({'error': str(error)}, status=429, headers=HEADERS)
+        result['url'] = origin + result['path']
         return web.json_response(result, headers=HEADERS)
 
     async def listing(request):
