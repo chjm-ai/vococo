@@ -244,7 +244,7 @@ function projIcon(hash){
 }
 function renderProjSelPop(){
   const pop=$("#projSelPop"), cur=S.project;
-  const items=[null, ...(S.projects||[]).map(p=>p.hash)];
+  const items=[null, ...(S.projects||[]).filter(p=>projAgent(p.hash)).map(p=>p.hash)];
   pop.innerHTML=items.map(h=>
     '<button type="button" class="mi'+(h===cur?" on":"")+'" data-h="'+esc(h||"")+'">'+
     '<span class="mic">'+projIcon(h)+'</span><span class="ml">'+esc(projName(h))+'</span>'+(h===cur?'<span class="mk">✓</span>':'')+'</button>'

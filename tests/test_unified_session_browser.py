@@ -40,6 +40,8 @@ async def test_unified_session_in_real_browser(isolated, monkeypatch, mobile):
     monkeypatch.setattr(task_runner, "_running", {})
     monkeypatch.setattr(mcp_events, "_task_registered", None)
     owner = agents.create("浏览器验收项目")
+    for name in ("e95b6c980b", "boss-zhipin-scraper", "scripts", "ba82ebb8a877473a9a6198d6e9011cda", "audio-processor"):
+        session_store.upsert_project(str(isolated / name))
     release = asyncio.Event()
 
     async def foreground(*args, **kwargs):
