@@ -233,7 +233,7 @@ async def _continue(source: str, denied: tuple, reference: str, instruction: str
     from ..core import task_runner
 
     if (key in clarify._active_sessions or clarify.has_pending(key)
-            or claim_pending(key) or task_runner.session_busy(key)):
+            or claim_pending(key) or task_runner.session_busy(key) or web_bridge.session_busy(key)):
         raise BusyError("目标忙碌或正在等待用户回答，未发送且不会打断")
     if not web_bridge.keyed_available():
         raise ValueError("网页桥接不可用，指令未入队")

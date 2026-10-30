@@ -18,18 +18,21 @@ _cancel_fn: Callable[[str], bool] | None = None
 # 按完整 session_key 投递(web:<conv>/task:<id>/session:* 都经 web adapter 的收件箱)。
 # 与 _dispatch_fn 不同,它不做 web: 去前缀,也不替浏览器会话补标题。
 _inject_key_fn: Callable[..., None] | None = None
+_busy_fn: Callable[[str], bool] | None = None
 
 
 def register(
     dispatch_fn: Callable[..., Awaitable[None]],
     cancel_fn: Callable[[str], bool],
     inject_key_fn: Callable[..., None] | None = None,
+    busy_fn: Callable[[str], bool] | None = None,
 ) -> None:
     """由 GatewayRunner.run() 在起好 WebAdapter 后调用一次。"""
-    global _dispatch_fn, _cancel_fn, _inject_key_fn
+    global _dispatch_fn, _cancel_fn, _inject_key_fn, _busy_fn
     _dispatch_fn = dispatch_fn
     _cancel_fn = cancel_fn
     _inject_key_fn = inject_key_fn
+    _busy_fn = busy_fn
 
 
 def available() -> bool:
@@ -39,6 +42,11 @@ def available() -> bool:
 def keyed_available() -> bool:
     """能否按完整 session_key 投递(web:/task:/session:);只作续接会话的前置判断。"""
     return _inject_key_fn is not None
+
+
+def session_busy(session_key: str) -> bool:
+    """包含收件箱、待调度和已持锁准备阶段，不能只看模型 active 状态。"""
+    return bool(_busy_fn and _busy_fn(session_key))
 
 
 def cancel_if_running(session_key: str) -> bool:

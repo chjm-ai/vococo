@@ -24,7 +24,7 @@ import os
 import re
 import time
 import uuid
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
 from urllib.parse import unquote, urlsplit
@@ -591,6 +591,7 @@ class WebAdapter:
 
     def __init__(self) -> None:
         self._inbox: asyncio.Queue[Incoming] = asyncio.Queue()
+        self._queued_sessions: Counter[str] = Counter()
         # 每个浏览器 SSE 连接一个队列,元素是 (事件编号, JSON 串)
         self._clients: set[asyncio.Queue[tuple[int, str]]] = set()
         self._seq = 0  # 全局单调递增的事件编号
@@ -970,10 +971,21 @@ class WebAdapter:
         except Exception:  # noqa: BLE001 —— 查不到就发普通推送
             return None
 
+    def _queue_incoming(self, incoming: Incoming) -> None:
+        self._inbox.put_nowait(incoming)
+        self._queued_sessions[incoming.session_key] += 1
+
+    def has_queued(self, session_key: str) -> bool:
+        return self._queued_sessions[session_key] > 0
+
     async def receive(self) -> AsyncIterator[Incoming]:
         await self._start_server()
         while True:
-            yield await self._inbox.get()
+            incoming = await self._inbox.get()
+            self._queued_sessions.subtract([incoming.session_key])
+            if self._queued_sessions[incoming.session_key] <= 0:
+                self._queued_sessions.pop(incoming.session_key, None)
+            yield incoming
 
     # ── HTTP 路由 ────────────────────────────────────────────────────────
     @staticmethod
@@ -1319,7 +1331,7 @@ class WebAdapter:
             if client_request_id:
                 event["client_request_id"] = client_request_id
             self._emit(event)
-        self._inbox.put_nowait(
+        self._queue_incoming(
             Incoming(
                 self.platform, conv, text,
                 images=images, audios=audios, files=files, videos=videos,
@@ -1340,7 +1352,7 @@ class WebAdapter:
         同步(只 put_nowait):调用方要「忙碌判定 → 登记 → 投递」无 await 空档地完成。"""
         conv = _conv_id_for_key(session_key)
         self._emit({"conv": conv, "type": "user", "text": text, "images": []})
-        self._inbox.put_nowait(Incoming(self.platform, conv, text, source_access=source_access))
+        self._queue_incoming(Incoming(self.platform, conv, text, source_access=source_access))
 
     @_authed
     @_json_body

@@ -150,6 +150,8 @@ def _registry():
         connection.execute("ALTER TABLE brain_bridge_continuations ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'")
     if "agent_id" not in columns:
         connection.execute("ALTER TABLE brain_bridge_continuations ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''")
+    if "target_id" not in columns:
+        connection.commit()  # 回填旧目标会隐式开启事务，必须在处理首条续接前结束。
     return connection
 
 
@@ -282,8 +284,8 @@ def _continue_task(data: dict, agent: dict, _connection: str = "") -> dict:
     # 完整会话 key 一律按历史会话处理(非法形态由解析处报 400),不当作派发任务。
     if target.startswith(("web:", "task:", "session:")):
         return _continue_history_session(data, agent, target, instruction, key, _connection)
-    known = [key for key in _session_candidate_keys(target) if _existing_owned(key)]
-    record = None if known else _registry().execute(
+    # 裸派单 ID 保持旧契约；同名历史会话需显式传完整 key，不能抢走任务路由。
+    record = _registry().execute(
         "SELECT 1 FROM brain_bridge_tasks WHERE task_id=?", (target,)).fetchone()
     if record:
         return _continue_dispatched_task(target, instruction, key)
@@ -345,7 +347,7 @@ def _session_candidate_keys(target: str) -> list[str]:
     统一会话又是复用的 web:<slug> 形态,所以裸 ID 两种都认。"""
     if target.startswith(("web:", "task:", "session:")):
         return [target] if re.fullmatch(r"(?:web:\S+|task:[A-Za-z0-9_-]+|session:\S+)", target) else []
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", target):
+    if not re.fullmatch(r"(?:p[0-9a-f]{10}:)?[A-Za-z0-9_.-]{1,128}", target):
         return []
     # 项目会话后缀、真实存储的裸 slug 会话、按当前会话配置解析出的 key。
     keys = [key for key, _ in _session_rows() if key.endswith(f":{target}")]
@@ -404,7 +406,7 @@ def _claim_history_delivery(conn, session_key: str, agent_id: str, key: str,
     if not web_bridge.keyed_available():
         _reject(503, "网页入口未启动，指令未入队")
     if (session_key in clarify._active_sessions or clarify.has_pending(session_key)
-            or task_runner.session_busy(session_key)):
+            or task_runner.session_busy(session_key) or web_bridge.session_busy(session_key)):
         _reject(409, "目标忙碌或正在等待用户回答，未发送且不会打断")
     try:
         sessions._scope(session_key)

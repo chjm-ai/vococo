@@ -25,6 +25,7 @@ class GatewayRunner:
         self.adapters: dict[str, Adapter] = {a.platform: a for a in adapters}
         self.models: dict[str, str] = {}  # 每会话模型覆盖(/model 切换)
         self._locks: dict[str, anyio.Lock] = {}  # 每会话一把锁:同会话串行
+        self._pending_dispatch: dict[str, int] = {}
         self._tg: anyio.abc.TaskGroup | None = None  # nursery,用于并发派发
         self._cancel_scopes: dict[str, anyio.CancelScope] = {}  # 每会话当前轮 CancelScope
         self._turn_finished: dict[str, anyio.Event] = {}  # 当前轮收尾信号,删除会话时等待它退出
@@ -41,6 +42,12 @@ class GatewayRunner:
             lock = anyio.Lock()
             self._locks[key] = lock
         return lock
+
+    def session_busy(self, session_key: str) -> bool:
+        lock = self._locks.get(session_key)
+        web_adapter = self.adapters.get("web")
+        return bool((lock and lock.locked()) or self._pending_dispatch.get(session_key)
+                    or (web_adapter and getattr(web_adapter, "has_queued", lambda _: False)(session_key)))
 
     def cancel_turn(self, session_key: str) -> bool:
         """取消某会话当前正在进行的 AI 回复轮次;返回是否找到并取消了。"""
@@ -74,6 +81,11 @@ class GatewayRunner:
     async def _dispatch(self, adapter: Adapter, inc: Incoming) -> None:
         from ..tools import sessions
 
+        pending = self._pending_dispatch.get(inc.session_key, 0) - 1
+        if pending > 0:
+            self._pending_dispatch[inc.session_key] = pending
+        else:
+            self._pending_dispatch.pop(inc.session_key, None)
         try:
             # 入队后也可能出现待答问题，跨会话指令不能变成审批/提问的答案。
             # 判定与释放都按本条文本取标记:同目标先后两条续接时,先到的不会把后到的当自己。
@@ -82,7 +94,8 @@ class GatewayRunner:
             queued = sessions.is_queued_instruction(inc.session_key, inc.text)
             if queued and (clarify.has_pending(inc.session_key)
                            or inc.session_key in clarify._active_sessions
-                           or task_runner.session_busy(inc.session_key)):
+                           or task_runner.session_busy(inc.session_key)
+                           or self._lock_for(inc.session_key).locked()):
                 await adapter.send(inc.chat_id, "跨会话指令未执行：目标忙碌或正在等待用户回答，请处理后重试。")
                 return
             await self._dispatch_one(adapter, inc)
@@ -243,6 +256,7 @@ class GatewayRunner:
                 async for inc in adapter.receive():
                     # 并发派发:慢会话不再卡住同平台其它会话(同会话串行仍由 per-session 锁保证)
                     if self._tg is not None:
+                        self._pending_dispatch[inc.session_key] = self._pending_dispatch.get(inc.session_key, 0) + 1
                         self._tg.start_soon(self._dispatch, adapter, inc)
                     else:
                         await self._dispatch(adapter, inc)
@@ -384,7 +398,7 @@ class GatewayRunner:
                 web_adapter.set_model_switch_callback(self.update_model_cache)
             from . import web_bridge
 
-            web_bridge.register(web_adapter.inject, self.cancel_turn, web_adapter.inject_by_key)
+            web_bridge.register(web_adapter.inject, self.cancel_turn, web_adapter.inject_by_key, self.session_busy)
             # 后台任务的审批弹窗走 Web 端任务会话(见 tools/danger.py _approve_background)
             clarify.register_background_adapter(web_adapter)
             # 铃铛:通知一有变化就推一帧 SSE,前端据此刷新数字
