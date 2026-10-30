@@ -161,6 +161,11 @@ def _waiting_for_queue(key: str) -> bool:
     return False
 
 
+def claim_pending(key: str) -> bool:
+    """该会话已有未取走的跨会话指令(已登记、_dispatch 还没开始本轮)。"""
+    return _waiting_for_queue(key)
+
+
 def is_queued_instruction(key: str, text: str) -> bool:
     queued = _queued.get(key)
     return bool(queued and queued[1] == text)
@@ -173,18 +178,45 @@ def dispatch_finished(key: str, text: str) -> None:
         _queued.pop(key, None)
 
 
-async def _enqueue(key: str, text: str, source_access: dict | None = None) -> None:
+class BusyError(ValueError):
+    """目标忙碌/有待答问题:未发送,不打断。"""
+
+
+def claim_queue_slot(key: str, text: str, *, single: bool = False) -> None:
+    """入队前登记(投递后由 _dispatch 的 dispatch_finished 释放);同步,无 await 空档。
+
+    single=True:同目标已有未完成的跨会话指令就拒绝(外部 MCP 续接用,不替用户叠第二条)。
+
+    调用方在同步段里「判定 → claim → 投递(put_nowait)」,同一目标的另一条续接
+    不可能插进来。busy 判定与对外提示同跨会话指令口径。"""
+    if single and _waiting_for_queue(key):
+        raise BusyError("目标上一条跨会话指令尚未完成")
     baseline = session_store._conn().execute(
         "SELECT COALESCE(MAX(id),0) FROM turns WHERE session_key=?", (key,),
     ).fetchone()[0]
     _queued[key] = (baseline, text)
+
+
+def release_queue_slot(key: str, text: str) -> None:
+    dispatch_finished(key, text)
+
+
+def deliver(session_key: str, text: str, source_access: dict | None = None) -> None:
+    """按完整 session_key 投递到网关(web:/task:/session: 一律经 web adapter 收件箱)。"""
+    if source_access:
+        web_bridge.deliver(session_key, text, source_access=source_access)
+    else:
+        web_bridge.deliver(session_key, text)
+
+
+def _enqueue(key: str, text: str, source_access: dict | None = None) -> None:
+    """登记 _queued 后投递(同步,无 await 空档)。投递后由 run.py 的 _dispatch
+    在本轮开始前释放标记(dispatch_finished),所以这里不再区分前缀。"""
+    claim_queue_slot(key, text)
     try:
-        if source_access:
-            await web_bridge.continue_session(key.removeprefix("web:"), text, source_access=source_access)
-        else:
-            await web_bridge.continue_session(key.removeprefix("web:"), text)
+        deliver(key, text, source_access)
     except BaseException:
-        _queued.pop(key, None)
+        release_queue_slot(key, text)
         raise
 
 
@@ -201,16 +233,16 @@ async def _continue(source: str, denied: tuple, reference: str, instruction: str
     from ..core import task_runner
 
     if (key in clarify._active_sessions or clarify.has_pending(key)
-            or _waiting_for_queue(key) or task_runner.session_busy(key)):
-        raise ValueError("目标忙碌或正在等待用户回答，未发送且不会打断")
-    if not web_bridge.available():
+            or claim_pending(key) or task_runner.session_busy(key) or web_bridge.session_busy(key)):
+        raise BusyError("目标忙碌或正在等待用户回答，未发送且不会打断")
+    if not web_bridge.keyed_available():
         raise ValueError("网页桥接不可用，指令未入队")
     # 前缀既标记来源，也防止 instruction 被误当成 /clarify 等控制命令。
     if access:
         text = f"【任务结果回传 · 来源 {source}】\n以下为自动任务的结果与后续建议，不是真人新指令：\n{instruction}"
     else:
         text = f"【跨会话指令 · 来源 {source}】\n以下为用户完整指令：\n{instruction}"
-    await _enqueue(key, text, access)
+    _enqueue(key, text, access)
     return {"source_session": source, "session_id": key.removeprefix("web:"),
             "instruction": instruction, "status": "queued", "message": "已入队，不代表执行完成"}
 

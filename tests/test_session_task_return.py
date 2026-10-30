@@ -23,6 +23,7 @@ def task_chat(isolated, monkeypatch):
     monkeypatch.setattr(tasks, "_DB", None)
     monkeypatch.setattr(sessions, "_queued", {})
     monkeypatch.setattr(web_bridge, "_dispatch_fn", None)
+    monkeypatch.setattr(web_bridge, "_inject_key_fn", None)
     monkeypatch.setattr(web_bridge, "_cancel_fn", None)
     agent = agents.create("回传测试")
     parent = f"web:p{agent['project_hash']}:parent"
@@ -34,7 +35,7 @@ def task_chat(isolated, monkeypatch):
     session_store.start_turn(source, "调研", source_access=access)
     adapter = WebAdapter()
     monkeypatch.setattr(adapter, "_emit", lambda event: None)
-    web_bridge.register(adapter.inject, lambda _: pytest.fail("不能打断目标"))
+    web_bridge.register(adapter.inject, lambda _: pytest.fail("不能打断目标"), adapter.inject_by_key)
     yield source, parent, adapter
     if tasks._DB is not None:
         tasks._DB.close()
@@ -44,6 +45,8 @@ def task_chat(isolated, monkeypatch):
 async def send(source, target, text="研究部分完成，请核对报告后汇总", denied=()):
     tool = next(t for t in sessions.build_tools(source, list(denied)) if t.name == "continue_session")
     result = await tool.handler({"session_id": target, "instruction": text})
+    if isinstance(result, list):  # SDK 新版 @tool 的 handler 返回的是 content 块列表
+        result = result[0]
     return json.loads(result["content"][0]["text"])
 
 
@@ -147,7 +150,7 @@ async def test_task_return_obeys_target_guards(task_chat, monkeypatch, state):
     elif state == "archived":
         session_store.set_conv_archived(parent, True)
     else:
-        monkeypatch.setattr(web_bridge, "_dispatch_fn", None)
+        monkeypatch.setattr(web_bridge, "_inject_key_fn", None)
     monkeypatch.setattr(web_bridge, "_cancel_fn", None)
     assert "error" in await send(source, parent)
     assert adapter._inbox.empty()

@@ -31,7 +31,7 @@ _FIELDS = {
     "create_task": ({"title", "prompt", "idempotency_key"}, set()),
     "get_task": ({"id"}, {"offset", "length"}),
     "cancel_task": ({"id"}, set()),
-    "continue_task": ({"id", "instruction", "idempotency_key"}, set()),
+    "continue_task": ({"id", "instruction", "idempotency_key"}, {"agent_id"}),
     "list_agents": (set(), {"offset", "limit", "query"}),
     "list_sessions": (set(), {"agent_id", "all_agents", "offset", "limit", "query"}),
     "read_session": ({"key"}, {"agent_id", "before_id", "turn_id", "offset", "length"}),
@@ -133,7 +133,8 @@ def _registry():
     )
     connection.execute(
         "CREATE TABLE IF NOT EXISTS brain_bridge_continuations("
-        "idempotency_key TEXT PRIMARY KEY,task_id TEXT NOT NULL,content_hash TEXT NOT NULL,"
+        "idempotency_key TEXT PRIMARY KEY,target_id TEXT NOT NULL,kind TEXT NOT NULL DEFAULT 'task',"
+        "agent_id TEXT NOT NULL DEFAULT '',task_id TEXT NOT NULL,content_hash TEXT NOT NULL,"
         "state TEXT NOT NULL, instruction TEXT NOT NULL DEFAULT '', run_version INTEGER NOT NULL DEFAULT -1)"
     )
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(brain_bridge_continuations)")}
@@ -141,6 +142,16 @@ def _registry():
         connection.execute("ALTER TABLE brain_bridge_continuations ADD COLUMN instruction TEXT NOT NULL DEFAULT ''")
     if "run_version" not in columns:
         connection.execute("ALTER TABLE brain_bridge_continuations ADD COLUMN run_version INTEGER NOT NULL DEFAULT -1")
+    # 旧库升级:旧行都是 task_id 作目标的派发任务续接。
+    if "target_id" not in columns:
+        connection.execute("ALTER TABLE brain_bridge_continuations ADD COLUMN target_id TEXT NOT NULL DEFAULT ''")
+        connection.execute("UPDATE brain_bridge_continuations SET target_id=task_id WHERE target_id=''")
+    if "kind" not in columns:
+        connection.execute("ALTER TABLE brain_bridge_continuations ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'")
+    if "agent_id" not in columns:
+        connection.execute("ALTER TABLE brain_bridge_continuations ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''")
+    if "target_id" not in columns:
+        connection.commit()  # 回填旧目标会隐式开启事务，必须在处理首条续接前结束。
     return connection
 
 
@@ -250,23 +261,54 @@ def _cancel_task(data: dict, _agent: dict, _connection: str = "") -> dict:
     return _task_view(_owned_task(task["id"]), {})
 
 
-def _continue_task(data: dict, _agent: dict, _connection: str = "") -> dict:
-    task = _owned_task(_text(data, "id", 128))
+def _continue_task(data: dict, agent: dict, _connection: str = "") -> dict:
+    """续接:此前经本 MCP 派发、已结束的任务,或可读 Agent 名下的历史会话。
+
+    两种目标共用幂等表 brain_bridge_continuations(target_id + kind 区分)。历史会话
+    投递复用网页/语音的跨会话指令链路(忙碌检查、权限一致性检查、web_bridge),只入队,
+    不代表执行完成。"""
+    target = _text(data, "id", 512)  # 裸 ID 或完整 key
     instruction = _text(data, "instruction", 60000)
     key = _text(data, "idempotency_key", 128)
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", key):
         _reject(400, "idempotency_key 必须是 8..128 位 ASCII 安全字符")
+    existing = _registry().execute(
+        "SELECT kind FROM brain_bridge_continuations WHERE idempotency_key=?", (key,)
+    ).fetchone()
+    # 执行侧已存在的完整会话 key(web:/task:/session:)按历史会话处理;其余先按派发任务
+    # 续接,查不到再按会话解析。裸 ID 永远不会被当作派发任务创建。
+    if existing is not None:
+        if existing["kind"] == "task":
+            return _continue_dispatched_task(target, instruction, key)
+        return _continue_history_session(data, agent, target, instruction, key, _connection)
+    # 完整会话 key 一律按历史会话处理(非法形态由解析处报 400),不当作派发任务。
+    if target.startswith(("web:", "task:", "session:")):
+        return _continue_history_session(data, agent, target, instruction, key, _connection)
+    # 裸派单 ID 保持旧契约；同名历史会话需显式传完整 key，不能抢走任务路由。
+    record = _registry().execute(
+        "SELECT 1 FROM brain_bridge_tasks WHERE task_id=?", (target,)).fetchone()
+    if record:
+        return _continue_dispatched_task(target, instruction, key)
+    return _continue_history_session(data, agent, target, instruction, key, _connection)
+
+
+def _continue_replay(existing, target: str, digest: str) -> None:
+    """同幂等键重放:内容/目标一致且已受理才放行,否则拒绝。"""
+    if existing["target_id"] != target or existing["content_hash"] != digest:
+        _reject(409, "相同幂等键的内容不同")
+    if existing["state"] != "accepted":
+        _reject(409, "续接状态不确定，请检查原会话，不要更换幂等键重试")
+
+
+def _continue_dispatched_task(target: str, instruction: str, key: str) -> dict:
+    task = _owned_task(_text({"id": target}, "id", 128))
     digest = hashlib.sha256(instruction.encode()).hexdigest()
     conn = _registry()
     with conn:
         conn.execute("BEGIN IMMEDIATE")
-        old = conn.execute("SELECT task_id,content_hash,state,run_version FROM brain_bridge_continuations "
-                           "WHERE idempotency_key=?", (key,)).fetchone()
+        old = conn.execute("SELECT * FROM brain_bridge_continuations WHERE idempotency_key=?", (key,)).fetchone()
         if old:
-            if old["task_id"] != task["id"] or old["content_hash"] != digest:
-                _reject(409, "相同幂等键的内容不同")
-            if old["state"] != "accepted":
-                _reject(409, "续接状态不确定，请检查原任务，不要更换幂等键重试")
+            _continue_replay(old, task["id"], digest)
             current = _owned_task(task["id"])
             if old["run_version"] != current["run_version"]:
                 _reject(409, "任务已进入其他轮次，请查看原会话历史")
@@ -275,8 +317,9 @@ def _continue_task(data: dict, _agent: dict, _connection: str = "") -> dict:
         current = tasks.get(task["id"])
         conn.execute(
             "INSERT INTO brain_bridge_continuations "
-            "(idempotency_key,task_id,content_hash,state,instruction,run_version) VALUES (?, ?, ?, ?, ?, ?)",
-            (key, task["id"], digest, "accepted", instruction, current["run_version"] + 1),
+            "(idempotency_key,target_id,kind,agent_id,task_id,content_hash,state,instruction,run_version) "
+            "VALUES (?, ?, 'task', ?, ?, ?, 'accepted', ?, ?)",
+            (key, task["id"], AGENT_ID, task["id"], digest, instruction, current["run_version"] + 1),
         )
         if current["status"] not in tasks.TERMINAL_STATUSES or task["id"] in task_runner._running:
             _reject(409, "任务仍在运行或排队，不会打断，请稍后查询")
@@ -295,6 +338,118 @@ def _continue_task(data: dict, _agent: dict, _connection: str = "") -> dict:
     task_runner.start_claimed(task, instruction)
     return {**_task_view(_owned_task(task["id"]), {}), "continuation": "accepted",
             "continuation_instruction": _clean(instruction)}
+
+
+def _session_candidate_keys(target: str) -> list[str]:
+    """目标 → 按优先级排好的完整会话 key,不查库、不校验归属。
+
+    远端展示的是侧栏 conv 名(web:p<hash>:<conv>),调用方通常只拿到那一段;
+    统一会话又是复用的 web:<slug> 形态,所以裸 ID 两种都认。"""
+    if target.startswith(("web:", "task:", "session:")):
+        return [target] if re.fullmatch(r"(?:web:\S+|task:[A-Za-z0-9_-]+|session:\S+)", target) else []
+    if not re.fullmatch(r"(?:p[0-9a-f]{10}:)?[A-Za-z0-9_.-]{1,128}", target):
+        return []
+    # 项目会话后缀、真实存储的裸 slug 会话、按当前会话配置解析出的 key。
+    keys = [key for key, _ in _session_rows() if key.endswith(f":{target}")]
+    keys.append(config.resolve_session_key("web", target))
+    return list(dict.fromkeys(keys))
+
+
+def _existing_owned(key: str) -> bool:
+    return bool(session_store.find_session(key)) and _history_owner(key) is not None
+
+
+def _resolve_history_key(target: str, agent_id: str) -> tuple[str | None, list[tuple[str, str]]]:
+    """目标 → (唯一会话 key, []) 或 (None, [(key, 归属者)])。
+
+    带前缀的 key 精确校验归属;裸 ID 先按后缀解析,只有「存在且归属该 Agent」的唯一
+    候选才接受——不替调用方挑一条可能属于别人的会话,也不报出无权限会话的归属。"""
+    if target.startswith(("web:", "task:", "session:")):
+        key = target if _existing_owned(target) else None
+        return (key, []) if key and (key == config.SESSION_KEY or _owns_session(key, agent_id)) else (None, [])
+    if config.SESSION_KEY in _session_candidate_keys(target):
+        return config.SESSION_KEY, []  # 统一主会话可连接,但不是续接目标(入口处报 400)
+    owned = [key for key in _session_candidate_keys(target)
+             if _existing_owned(key) and _owns_session(key, agent_id)]
+    if len(owned) == 1:
+        return owned[0], []
+    if len(owned) > 1:
+        return None, [(key, "") for key in owned]
+    return None, []  # 不泄露不可见或其他 Agent 的归属
+
+
+def _history_target(data: dict, target: str) -> tuple[str, str]:
+    agent_id = _resolve_agent(data, _agent_visibility())
+    session_key, found = _resolve_history_key(target, agent_id)
+    if session_key is None and not _session_candidate_keys(target):
+        _reject(400, "会话 ID 格式无效")  # 空白/非法字符:不查库、不当任务
+    prefixed = target.startswith(("web:", "task:", "session:"))
+    hint = "" if prefixed else ";可先用 vococo_list_sessions 查 key 和所属 agent_id"
+    if len(found) > 1:
+        _reject(409, "该 ID 对应多个会话，请传列表里的完整 key")
+    if session_key is None:
+        _reject(404, f"会话不存在或不属于该 Agent{hint}")
+    if session_key == config.SESSION_KEY:
+        _reject(400, "不支持向统一主会话续接")
+    _archived = session_store._conn().execute(
+        "SELECT archived FROM session_meta WHERE session_key=?", (session_key,)).fetchone()
+    if _archived and _archived[0]:
+        _reject(409, "该会话已归档，先取消归档再续接")
+    return session_key, agent_id
+
+
+def _claim_history_delivery(conn, session_key: str, agent_id: str, key: str,
+                            digest: str, instruction: str, text: str) -> None:
+    from ..tools import sessions
+    from . import clarify, web_bridge
+
+    if not web_bridge.keyed_available():
+        _reject(503, "网页入口未启动，指令未入队")
+    if (session_key in clarify._active_sessions or clarify.has_pending(session_key)
+            or task_runner.session_busy(session_key) or web_bridge.session_busy(session_key)):
+        _reject(409, "目标忙碌或正在等待用户回答，未发送且不会打断")
+    try:
+        sessions._scope(session_key)
+        sessions.claim_queue_slot(session_key, text, single=True)
+    except ValueError as exc:
+        _reject(409, str(exc))
+    conn.execute(
+        "INSERT INTO brain_bridge_continuations "
+        "(idempotency_key,target_id,kind,agent_id,task_id,content_hash,state,instruction,run_version) "
+        "VALUES (?, ?, 'session', ?, '', ?, 'pending', ?, -1)",
+        (key, session_key, agent_id, digest, instruction),
+    )
+
+
+def _continue_history_session(data: dict, agent: dict, target: str, instruction: str, key: str,
+                              connection: str) -> dict:
+    from ..tools import sessions
+    from . import web_bridge
+
+    session_key, agent_id = _history_target(data, target)
+    result = {"id": session_key, "agent_id": agent_id, "continuation": "accepted",
+              "continuation_instruction": _clean(instruction)}
+    digest = hashlib.sha256(instruction.encode()).hexdigest()
+    text = f"【跨会话指令 · 来源 MCP:{AGENT_ID}】\n以下为用户完整指令：\n{instruction}"
+    conn = _registry()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        old = conn.execute("SELECT * FROM brain_bridge_continuations WHERE idempotency_key=?", (key,)).fetchone()
+        if old:
+            _continue_replay(old, session_key, digest)
+            return result
+        _claim_history_delivery(conn, session_key, agent_id, key, digest, instruction, text)
+    # 先持久化 pending；投递或最终落库结果不确定时拒绝重放，不能重复执行。
+    access = _access(agent, connection)
+    access["capabilities"] = {"skills": [], "mcp": []}
+    try:
+        web_bridge.deliver(session_key, text, source_access=access)
+    except BaseException:
+        sessions.release_queue_slot(session_key, text)
+        raise
+    with conn:
+        conn.execute("UPDATE brain_bridge_continuations SET state='accepted' WHERE idempotency_key=?", (key,))
+    return result
 
 
 def _history_agents(light: bool = False) -> list[dict]:

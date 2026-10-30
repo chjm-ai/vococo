@@ -97,6 +97,22 @@ async def test_continue_owned_task_once_and_reject_busy(client, monkeypatch):
     await post(client, "continue_task", {**payload, "id": "not-owned"}, 404)
 
 
+async def test_continue_legacy_task_id_keeps_get_task_contract(client, monkeypatch):
+    task_id = (await create(client))["id"]
+    legacy_key = f"task:{task_id}"
+    tasks._conn().execute("UPDATE tasks SET session_key=? WHERE id=?", (legacy_key, task_id))
+    tasks._conn().commit()
+    session_store.append(legacy_key, "旧任务问题", "旧任务结果")
+    session_store.set_sdk_session_id(legacy_key, "legacy-sdk")
+    assert tasks.set_status(task_id, "running") and tasks.set_status(task_id, "done")
+    start = Mock()
+    monkeypatch.setattr(task_runner, "start_claimed", start)
+    result = await post(client, "continue_task", {"id": task_id, "instruction": "补充",
+                                                "idempotency_key": "legacy-contract-01"})
+    assert result["id"] == task_id and start.call_count == 1
+    assert (await post(client, "get_task", {"id": result["id"]}))["status"] == "running"
+
+
 async def test_continue_respects_capacity_and_hides_old_result(client, monkeypatch):
     task_id = (await create(client))["id"]
     assert tasks.set_status(task_id, "running")
@@ -637,3 +653,240 @@ async def test_remote_without_background_adapter_is_denied(client, monkeypatch):
     finally:
         danger.reset_task_session(token)
     danger._record_deferred.assert_called_once()
+
+
+# ---- 历史会话通用续接(不新建平行会话) ----
+
+def history_session(aid=brain.AGENT_ID, conv="mvt8qtgdps2j", user="研究进度", assistant="已完成一半"):
+    from vococo.memory import projects
+
+    workdir = agents.get(aid)["workdir"]
+    phash = projects.project_hash(workdir)
+    key = f"web:p{phash}:{conv}"
+    tid = session_store.start_turn(key, user)
+    session_store.finish_turn(tid, assistant)
+    return key, phash
+
+
+def fake_web(monkeypatch):
+    from vococo.gateway import web_bridge
+
+    from vococo.tools import sessions
+
+    calls = []
+
+    def deliver(key, text, **kw):
+        calls.append((key, text))
+
+    monkeypatch.setattr(web_bridge, "_inject_key_fn", deliver)
+    sessions._queued.clear()
+    return calls
+
+
+async def test_continue_history_session_in_place_once(client, monkeypatch):
+    key, phash = history_session()
+    delivery = fake_web(monkeypatch)
+    payload = {"id": key, "instruction": "只确认收到，不要改研究计划", "idempotency_key": "hist-session-01"}
+    first = await post(client, "continue_task", payload)
+    assert (first["id"], first["continuation"]) == (key, "accepted") and first["agent_id"] == brain.AGENT_ID
+    assert delivery == [(key, delivery[0][1])] and delivery[0][1].endswith(payload["instruction"])
+    assert "跨会话指令" in delivery[0][1]
+    # 同键重放不再投递,也不报错
+    assert (await post(client, "continue_task", payload))["continuation"] == "accepted"
+    assert len(delivery) == 1
+    await post(client, "continue_task", {**payload, "instruction": "换内容"}, 409)
+    # 目标上一轮尚未收尾时拒绝叠加第二条,不打断、不排队
+    await post(client, "continue_task", {**payload, "idempotency_key": "hist-session-02",
+                                         "instruction": "再发一次"}, 409)
+    assert len(delivery) == 1
+
+
+@pytest.mark.parametrize("project_prefix", [False, True])
+async def test_continue_history_session_accepts_bare_and_prefix_keys(client, monkeypatch, project_prefix):
+    key, phash = history_session()
+    helper_task_id = (await create(client))["id"]
+    delivery = fake_web(monkeypatch)
+    target = key.removeprefix("web:") if project_prefix else "mvt8qtgdps2j"
+    await post(client, "continue_task", {"id": target, "instruction": "确认",
+                                         "idempotency_key": "hist-bare-0001"})
+    # 绑定到该 Agent 的统一会话只写裸 slug,也应能按整 key/后缀解析到
+    bare_key = "mvt8qtgdps2j-unify"
+    session_store.bind_session(f"web:{bare_key}", agent_id=brain.AGENT_ID)
+    tid = session_store.start_turn(f"web:{bare_key}", "统一会话")
+    session_store.finish_turn(tid, "在")
+    await post(client, "continue_task", {"id": bare_key, "instruction": "继续",
+                                         "idempotency_key": "hist-bare-0002"})
+    assert delivery[1][0] == f"web:{bare_key}"
+    # 会话归哪条任务由 task: id 查任务表决定:任务结束后该会话可经历史会话链路续接。
+    task_key = tasks.session_key(helper_task_id)
+    from vococo.tools import sessions
+
+    sessions.dispatch_finished(key, delivery[0][1])
+    # 派出的任务还没被 worker 领走(queued):task: 会话按任务闸拒绝,不插话
+    await post(client, "continue_task", {"id": task_key, "instruction": "补充",
+                                         "idempotency_key": "hist-task-0000"}, 409)
+    tasks._conn().execute("UPDATE tasks SET status='done' WHERE id=?", (helper_task_id,))
+    tasks._conn().commit()
+    tid = session_store.start_turn(task_key, "后台任务")
+    session_store.finish_turn(tid, "完成")
+    await post(client, "continue_task", {"id": task_key, "instruction": "补充",
+                                         "idempotency_key": "hist-task-0001"})
+    assert delivery[2][0] == task_key
+
+
+async def test_continue_history_session_scope_and_validation(client, monkeypatch):
+    key, _ = history_session()
+    delivery = fake_web(monkeypatch)
+    await post(client, "continue_task", {"id": key, "instruction": "x", "idempotency_key": "scope-0000001",
+                                         "agent_id": "abcdef1234"}, 404)  # 不是该 Agent 的会话
+    await post(client, "continue_task", {"id": "web:nope", "instruction": "x", "idempotency_key": "scope-0000002"}, 404)
+    await post(client, "continue_task", {"id": "main", "instruction": "x", "idempotency_key": "scope-0000003"}, 400)
+    await post(client, "continue_task", {"id": "web:a b", "instruction": "x", "idempotency_key": "scope-0000004"}, 400)
+    await post(client, "continue_task", {"id": key, "instruction": "x", "idempotency_key": "scope-0000005",
+                                         "agent_id": "nobody"}, 404)
+    assert delivery == []
+
+
+async def test_continue_history_session_rejects_busy_without_sending(client, monkeypatch):
+    from vococo.gateway import clarify
+
+    key, _ = history_session()
+    delivery = fake_web(monkeypatch)
+    monkeypatch.setattr(clarify, "_active_sessions", {key})
+    assert clarify.has_pending(key) is False
+    payload = {"id": key, "instruction": "不要在生成时插话", "idempotency_key": "busy-00000001"}
+    await post(client, "continue_task", payload, 409)
+    assert delivery == []
+    # 忙碌不算已受理:同一个键可以在空闲后原样重试
+    clarify._active_sessions.discard(key)
+    await post(client, "continue_task", payload)
+    assert len(delivery) == 1
+
+
+async def test_continue_history_preserves_remote_permissions(client, monkeypatch):
+    from vococo.gateway import web_bridge
+    from vococo.core import permissions
+
+    other = agents.create("研究协调")
+    key, _ = history_session(other["id"])
+    session_store.set_permission(key, "full")
+    deliveries = []
+    monkeypatch.setattr(web_bridge, "_inject_key_fn", lambda k, text, **kw: deliveries.append((k, text, kw)))
+    payload = {"id": key, "agent_id": other["id"], "instruction": "只确认收到",
+               "idempotency_key": "remote-access-01"}
+    await post(client, "continue_task", payload)
+    access = deliveries[0][2]["source_access"]
+    assert access["remote_brain"] is True and access["mode"] == "standard"
+    assert set(brain.DENIED) <= set(access["denied"])
+    assert access["session"] == agents.main_session_key(agents.get(brain.AGENT_ID))
+    assert access["capabilities"] == {"skills": [], "mcp": []}
+    turn = session_store.start_turn(key, deliveries[0][1], source_access=access)
+    assert permissions.state(key)["mode"] == "standard"
+    assert (await post(client, "continue_task", payload))["continuation"] == "accepted"
+    session_store.finish_turn(turn, "已收到")
+    assert len(deliveries) == 1
+
+
+@pytest.mark.parametrize("state", ["locked", "inbox", "scheduled"])
+async def test_continue_refuses_gateway_preparation_and_queued_messages(client, monkeypatch, state):
+    from vococo.gateway import web_bridge
+    from vococo.gateway.adapters.web import WebAdapter
+    from vococo.gateway.run import GatewayRunner
+
+    key, _ = history_session()
+    adapter = WebAdapter()
+    monkeypatch.setattr(adapter, "_emit", lambda _: None)
+    runner = GatewayRunner([adapter])
+    monkeypatch.setattr(web_bridge, "_inject_key_fn", adapter.inject_by_key)
+    monkeypatch.setattr(web_bridge, "_busy_fn", runner.session_busy)
+    lock = runner._lock_for(key)
+    if state == "locked":
+        await lock.acquire()
+    elif state == "inbox":
+        adapter.inject_by_key(key, "真人消息尚未处理")
+    else:
+        runner._pending_dispatch[key] = 1
+    try:
+        before = adapter._inbox.qsize()
+        await post(client, "continue_task", {"id": key, "instruction": "不可插话",
+                                            "idempotency_key": "preparation-busy-01"}, 409)
+        assert adapter._inbox.qsize() == before
+    finally:
+        if lock.locked():
+            lock.release()
+
+
+async def test_continue_history_replay_while_busy_is_not_resent(client, monkeypatch):
+    from vococo.gateway import clarify
+
+    key, _ = history_session()
+    delivery = fake_web(monkeypatch)
+    payload = {"id": key, "instruction": "确认", "idempotency_key": "replay-busy-01"}
+    await post(client, "continue_task", payload)
+    monkeypatch.setattr(clarify, "_active_sessions", {key: "正在执行"})
+    assert (await post(client, "continue_task", payload))["continuation"] == "accepted"
+    assert len(delivery) == 1
+
+
+@pytest.mark.parametrize("delivered", [False, True])
+async def test_continue_history_uncertain_delivery_never_repeats(client, monkeypatch, delivered):
+    from vococo.gateway import web_bridge
+    from vococo.tools import sessions
+
+    key, _ = history_session()
+    calls = []
+
+    def fail(target, text, **kw):
+        if delivered:
+            calls.append((target, text))
+        raise RuntimeError("投递结果未知")
+
+    monkeypatch.setattr(web_bridge, "_inject_key_fn", fail)
+    monkeypatch.setattr(sessions, "_queued", {})
+    payload = {"id": key, "instruction": "确认", "idempotency_key": "uncertain-session-01"}
+    response = await client.post("/internal/brain/continue_task", json=payload, headers=AUTH)
+    assert response.status == 500
+    await post(client, "continue_task", payload, 409)
+    assert len(calls) == int(delivered)
+    assert brain._registry().execute(
+        "SELECT state FROM brain_bridge_continuations WHERE idempotency_key=?",
+        (payload["idempotency_key"],)).fetchone()[0] == "pending"
+
+
+async def test_continue_history_session_unavailable_web_entry(client, monkeypatch):
+    from vococo.gateway import web_bridge
+
+    key, _ = history_session()
+    monkeypatch.setattr(web_bridge, "_inject_key_fn", None)
+    await post(client, "continue_task", {"id": key, "instruction": "x", "idempotency_key": "nobridge-0001"}, 503)
+    row = brain._registry().execute(
+        "SELECT 1 FROM brain_bridge_continuations WHERE idempotency_key='nobridge-0001'").fetchone()
+    assert row is None
+
+
+async def test_continue_dispatched_task_ignores_agent_id(client, monkeypatch):
+    task_id = (await create(client))["id"]
+    assert tasks.set_status(task_id, "running") and tasks.set_status(task_id, "done")
+    session_store.set_sdk_session_id(tasks.session_key(task_id), "sdk-test-session")
+    start = Mock()
+    monkeypatch.setattr(task_runner, "start_claimed", start)
+    result = await post(client, "continue_task", {"id": task_id, "instruction": "继续", "agent_id": "abcdef1234",
+                                                  "idempotency_key": "task-agent-01"})
+    assert result["id"] == task_id and start.call_count == 1
+
+
+async def test_continuation_table_upgrades_old_rows(bridge_db):
+    conn = brain._registry()
+    conn.execute("DROP TABLE brain_bridge_continuations")
+    conn.execute("CREATE TABLE brain_bridge_continuations(idempotency_key TEXT PRIMARY KEY,task_id TEXT NOT NULL,"
+                 "content_hash TEXT NOT NULL,state TEXT NOT NULL,instruction TEXT NOT NULL DEFAULT '',"
+                 "run_version INTEGER NOT NULL DEFAULT -1)")
+    conn.execute("INSERT INTO brain_bridge_continuations VALUES ('old-key-0001','t1','h','accepted','旧',0)")
+    conn.commit()
+    conn = brain._registry()
+    row = conn.execute("SELECT kind,target_id,agent_id FROM brain_bridge_continuations").fetchone()
+    assert (row["kind"], row["target_id"]) == ("task", "t1")
+    # 升级后的第一条真实请求也要能 BEGIN IMMEDIATE，不能遗留隐式写事务。
+    assert not conn.in_transaction
+    conn.execute("BEGIN IMMEDIATE")
+    conn.rollback()

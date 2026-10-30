@@ -134,6 +134,38 @@ async def test_mcp_continues_owned_task_once(environment, monkeypatch):
         assert (await session.call_tool("vococo_continue_task", {**args, "id": "not-owned"})).is_error
 
 
+@pytest.mark.parametrize("prefix", ["web:", "session:", "task:"])
+async def test_mcp_continues_existing_cross_agent_session(environment, monkeypatch, prefix):
+    from vococo.gateway import web_bridge
+    from vococo.gateway.adapters.web import WebAdapter
+    from vococo.tools import sessions
+
+    app, _ = environment
+    other = agents.create("研究协调")
+    key = prefix + "existing-research"
+    session_store.bind_session(key, agent_id=other["id"])
+    session_store.append(key, "原始研究", "已有结论")
+    session_store.set_sdk_session_id(key, "original-sdk-context")
+    adapter = WebAdapter()
+    monkeypatch.setattr(adapter, "_emit", lambda _: None)
+    monkeypatch.setattr(web_bridge, "_inject_key_fn", adapter.inject_by_key)
+    monkeypatch.setattr(sessions, "_queued", {})
+    async with session_for(app) as session:
+        tool = next(t for t in (await session.list_tools()).tools if t.name == "vococo_continue_task")
+        assert "agent_id" in tool.input_schema["properties"] and "web:/task:/session:" in tool.description
+        args = {"id": key, "agent_id": other["id"], "instruction": "只确认收到，不研究",
+                "idempotency_key": "existing-session-01"}
+        assert (await call(session, "vococo_continue_task", args))["id"] == key
+        assert (await call(session, "vococo_continue_task", args))["continuation"] == "accepted"
+    incoming = adapter._inbox.get_nowait()
+    assert incoming.session_key == key and incoming.text.endswith(args["instruction"])
+    assert incoming.source_access["remote_brain"] is True
+    assert incoming.source_access["connection"] == brain_mcp.connection_id(UPSTREAM)
+    assert adapter._inbox.empty() and tasks.list_recent() == []
+    assert session_store.get_sdk_session_id(key) == "original-sdk-context"
+    assert session_store._conn().execute("SELECT COUNT(*) FROM turns WHERE session_key=?", (key,)).fetchone()[0] == 1
+
+
 async def test_mcp_history_pagination_rebuilds_text_and_no_tool_events(environment):
     app, _ = environment
     key = agents.main_session_key(agents.get(brain_routes.AGENT_ID))

@@ -47,7 +47,7 @@ def env(isolated, monkeypatch):
     session_store.append(source, "请继续检查", "等待结果")
     adapter = WebAdapter()
     monkeypatch.setattr(adapter, "_emit", lambda event: None)
-    web_bridge.register(adapter.inject, lambda _: pytest.fail("不能打断目标"))
+    web_bridge.register(adapter.inject, lambda _: pytest.fail("不能打断目标"), adapter.inject_by_key)
     state = SimpleNamespace(owner=owner, source=source, adapter=adapter,
                             runner=GatewayRunner([]), calls=[], root=str(isolated))
     install_fake_model(state, monkeypatch)
