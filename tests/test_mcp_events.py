@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
 from unittest.mock import Mock
 
@@ -36,6 +37,7 @@ class Receiver:
         self.calls: list[dict] = []
         self.status = 200
         self.reply_challenge = True
+        self.verification_status = 200
         self.secrets: dict[str, str] = {}
 
     def handle(self, url: str, body: bytes, headers: dict[str, str], timeout: float,
@@ -47,8 +49,9 @@ class Receiver:
         signed = mcp_events.verify(secret, low["webhook-id"], low["webhook-timestamp"],
                                    low["webhook-signature"], body)
         if record["json"].get("type") == "verification":
-            status, reply = 200, (record["json"]["challenge"].encode() if self.reply_challenge and signed else b"nope")
-            return (status, reply) if with_body else status
+            challenge = record["json"]["challenge"] if self.reply_challenge and signed else "wrong-challenge"
+            reply = json.dumps({"challenge": challenge}).encode()
+            return (self.verification_status, reply) if with_body else self.verification_status
         return self.status if not with_body else (self.status, b"ok")
 
     def events(self) -> list[dict]:
@@ -241,6 +244,26 @@ def test_url_validation_blocks_private_dns():
     assert error.value.reason == "blocked_address"
 
 
+@pytest.mark.parametrize("reply,expected", [
+    (b'{"challenge":"expected"}', True), (b"expected", True),
+    (b'{"challenge":"wrong"}', False), (b'{"challenge":123}', False),
+    (b'{}', False), (b'[]', False), (b'"expected"', False), (b'\xff', False),
+])
+def test_challenge_response_format(reply, expected):
+    assert mcp_events._matches_challenge(reply, "expected") is expected
+
+
+@pytest.mark.parametrize("status", [200, 201, 202, 299])
+async def test_official_json_challenge_accepts_any_2xx(env, public_dns, status):
+    _backend, frontend, receiver, url, _port = env
+    receiver.verification_status = status
+    result = await rpc(frontend, "events/subscribe", {
+        "name": mcp_events.EVENT_NAME, "arguments": {},
+        "delivery": {"mode": "webhook", "url": url, "secret": mcp_events.new_secret()},
+    })
+    assert "result" in result, result
+
+
 async def test_challenge_failure_refuses_subscription(env, public_dns):
     _backend, frontend, receiver, url, _port = env
     mcp_events.forget_verified(frontend_service().session, url)  # 别吃到其他用例的验证缓存
@@ -393,3 +416,167 @@ async def test_oversized_request_rejected(env):
     request = {"jsonrpc": "2.0", "id": 1, "method": "events/list", "params": {"pad": "x" * (brain_mcp.MAX_RPC_BODY + 10)}}
     status, payload = await _asgi_call(frontend, request, UPSTREAM, status=True)
     assert status == 413 and payload["error"]["code"] == -32600
+
+
+class SocketReply:
+    """分开返回响应头与正文,避免测试把 TCP 误当成完整消息传输。"""
+
+    server_hostname = "chatgpt.example.com"
+
+    def __init__(self, chunks):
+        self.chunks = list(chunks)
+        self.request = b""
+
+    def sendall(self, request):
+        self.request = request
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def recv_into(self, buffer):
+        if not self.chunks:
+            return 0
+        chunk = self.chunks[0][:len(buffer)]
+        self.chunks[0] = self.chunks[0][len(chunk):]
+        if not self.chunks[0]:
+            self.chunks.pop(0)
+        buffer[:len(chunk)] = chunk
+        return len(chunk)
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_callback_response_reads_body_after_headers(chunked):
+    body = b'{"challenge":"expected"}'
+    if chunked:
+        headers = b"Transfer-Encoding: chunked\r\n"
+        wire = f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n"
+    else:
+        headers = f"Content-Length: {len(body)}\r\n".encode()
+        wire = body
+    conn = SocketReply([b"HTTP/1.1 202 Accepted\r\n" + headers + b"\r\n", wire])
+    assert mcp_events._pinned_send(conn, b"{}", {}, "/hook?token=test") == (202, body)
+    assert conn.request.startswith(b"POST /hook?token=test HTTP/1.1\r\n")
+
+
+@pytest.mark.parametrize("path", ["/hook?key=public-test", "/?key=public-test", "/hook"])
+def test_pinned_callback_preserves_query(monkeypatch, path):
+    monkeypatch.setattr(mcp_events, "_resolve", lambda *args: [PUBLIC_IP])
+    monkeypatch.setattr(mcp_events.socket, "socket", lambda *args: Mock())
+    monkeypatch.setattr(mcp_events.ssl, "create_default_context", lambda: Mock())
+    send = Mock(return_value=(200, b"ok"))
+    monkeypatch.setattr(mcp_events, "_pinned_send", send)
+    mcp_events._post_pinned_impl("https://chatgpt.example.com" + path, b"{}", {})
+    assert send.call_args.args[3] == path
+
+
+async def test_callback_network_failure_is_recorded_without_crashing(env, public_dns, monkeypatch, caplog):
+    _backend, frontend, receiver, url, _port = env
+    await rpc(frontend, "events/subscribe", {
+        "name": mcp_events.EVENT_NAME, "arguments": {},
+        "delivery": {"mode": "webhook", "url": url, "secret": mcp_events.new_secret()},
+    })
+    task = dispatch(frontend)
+    finish(task["id"])
+    mcp_events.scan_once()
+
+    def unreachable(*args, **kwargs):
+        raise mcp_events.CallbackError("callback_unreachable")
+
+    monkeypatch.setattr(mcp_events, "_post_pinned_impl", unreachable)
+    with caplog.at_level("INFO", logger="vococo.mcp_events"):
+        await frontend_service().deliver_due()
+    conn = mcp_events.connect()
+    try:
+        row = conn.execute("SELECT * FROM deliveries").fetchone()
+        assert row["status"] == "error" and row["last_error"] == "callback_unreachable"
+        assert row["event_id"] in caplog.text
+    finally:
+        conn.close()
+
+
+async def test_success_on_last_delivery_attempt_counts_as_delivered(env, public_dns):
+    _backend, frontend, receiver, url, _port = env
+    await rpc(frontend, "events/subscribe", {
+        "name": mcp_events.EVENT_NAME, "arguments": {},
+        "delivery": {"mode": "webhook", "url": url, "secret": mcp_events.new_secret()},
+    })
+    task = dispatch(frontend)
+    finish(task["id"])
+    mcp_events.scan_once()
+    conn = mcp_events.connect()
+    try:
+        event = dict(conn.execute("SELECT * FROM outbox").fetchone())
+        sub = conn.execute("SELECT * FROM subscriptions").fetchone()
+        event["attempts"] = mcp_events.MAX_ATTEMPTS - 1
+        await frontend_service()._deliver_to(event, sub, b"{}")
+        assert conn.execute("SELECT status FROM deliveries").fetchone()[0] == "delivered"
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("reply", [b'{"challenge":"\\ud800"}', b'[' * 1500 + b']' * 1500])
+async def test_malformed_challenge_returns_protocol_error(env, public_dns, monkeypatch, reply):
+    _backend, frontend, _receiver, url, _port = env
+    monkeypatch.setattr(mcp_events, "_post_pinned_verbose", lambda *args: (200, reply))
+    result = await rpc(frontend, "events/subscribe", {
+        "name": mcp_events.EVENT_NAME, "arguments": {},
+        "delivery": {"mode": "webhook", "url": url, "secret": mcp_events.new_secret()},
+    })
+    assert result["error"]["code"] == -32015
+    assert result["error"]["data"]["reason"] == "challenge_failed"
+
+
+def test_slow_callback_reads_obey_total_deadline(monkeypatch):
+    clock = iter([0.0, 2.0])
+    monkeypatch.setattr(mcp_events.time, "monotonic", lambda: next(clock))
+    conn = SocketReply([b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n", b"slow"])
+    with pytest.raises(TimeoutError, match="deadline exceeded"):
+        mcp_events._pinned_send(conn, b"{}", {}, "/hook", deadline=1.0)
+    assert conn.timeout == 1.0
+    assert conn.chunks == [b"slow"]
+
+
+def test_delivery_ack_does_not_wait_for_response_body():
+    conn = SocketReply([b"HTTP/1.1 202 Accepted\r\nContent-Length: 99999\r\n\r\n"])
+    assert mcp_events._pinned_send(conn, b"{}", {}, "/hook", with_body=False) == (202, b"")
+
+
+def test_callback_response_body_is_bounded():
+    conn = SocketReply([b"HTTP/1.1 200 OK\r\nContent-Length: 4097\r\n\r\n", b"x" * 4097])
+    with pytest.raises(mcp_events.CallbackError, match="response_too_large"):
+        mcp_events._pinned_send(conn, b"{}", {}, "/hook")
+
+
+async def test_protocol_logs_persist_without_callback_credentials(env, public_dns):
+    _backend, frontend, receiver, url, _port = env
+    secret = mcp_events.new_secret()
+    url += "?credential=private-test-value"
+    loggers = [logging.getLogger(name) for name in ("vococo.brain_mcp", "vococo.mcp_events")]
+    original = [(list(logger.handlers), logger.level) for logger in loggers]
+    try:
+        brain_mcp._configure_logging()
+        await rpc(frontend, "server/discover")
+        await rpc(frontend, "events/list")
+        result = await rpc(frontend, "events/subscribe", {
+            "name": mcp_events.EVENT_NAME, "arguments": {},
+            "delivery": {"mode": "webhook", "url": url, "secret": secret},
+        })
+        assert "result" in result
+        task = dispatch(frontend)
+        finish(task["id"])
+        mcp_events.scan_once()
+        await frontend_service().deliver_due()
+        text = (config.DATA_DIR / "logs" / "mcp-events.log").read_text()
+        for marker in ("server/discover", "events/list", "events/subscribe", "mcp_callback_verified",
+                       result["result"]["id"], "outcome=delivered", receiver.events()[0]["json"]["eventId"]):
+            assert marker in text
+        for private in (url, "private-test-value", secret, UPSTREAM, BRIDGE,
+                        receiver.calls[0]["json"]["challenge"]):
+            assert private not in text
+    finally:
+        for logger, (handlers, level) in zip(loggers, original):
+            for handler in logger.handlers[:]:
+                if handler not in handlers:
+                    logger.removeHandler(handler)
+                    handler.close()
+            logger.setLevel(level)
