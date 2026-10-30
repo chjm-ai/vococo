@@ -52,6 +52,9 @@ class Sink:
         self.tools: list[dict] = []
 
     # --- 事件入口(子类一般不覆盖,只覆盖 render)---
+    async def turn_saved(self) -> None:
+        """用户消息已入库，支持实时更新的平台可覆盖。"""
+
     async def context_usage(self) -> None:
         """窗口快照已保存，支持用量展示的平台可覆盖。"""
 
@@ -276,6 +279,7 @@ async def _converse(
     cwd_token = danger.set_cwd(cwd, project_root=root)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
     stored_user = store_user if store_user is not None else user_text
     turn_id = session_store.start_turn(session_key, stored_user, source_access=source_access)
+    await sink.turn_saved()
     # 图片落盘 + 文件名入库:让刷新页面后历史里仍能显示这些图(仅落盘,不影响喂模型的 in-memory 版本)
     if images:
         session_store.save_turn_images(turn_id, images)

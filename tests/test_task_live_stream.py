@@ -91,6 +91,36 @@ async def test_task_streams_before_completion_and_finishes_once(isolated, monkey
 
 
 @pytest.mark.anyio
+async def test_foreground_message_refreshes_sidebar_after_pending_turn_is_saved(isolated, monkeypatch):
+    from vococo.gateway import core
+    from vococo.gateway.adapters.web import _WebSink
+
+    adapter = WebAdapter()
+    snapshots = []
+    key = "web:ordering-test"
+    session_store.append(key, "旧问题", "旧回答")
+    old_ts = session_store.list_sessions("web:ordering-test")[0]["last_ts"]
+
+    def capture(event):
+        if event["type"] in {"start", "sidebar_refresh"}:
+            snapshots.append((event["type"], session_store.list_sessions(key)[0]["last_ts"]))
+
+    monkeypatch.setattr(adapter, "_emit", capture)
+    monkeypatch.setattr(adapter, "_push_notify", lambda **kw: None)
+
+    during_stream = []
+
+    async def stream(*args, **kwargs):
+        during_stream.extend(snapshots)
+        yield Done(AgentReply("完成", [], None, False))
+
+    monkeypatch.setattr(core, "stream_turn", stream)
+    await core.converse(key, "新指令", None, _WebSink(adapter, "ordering-test"), cwd_override=str(isolated))
+    assert during_stream[0] == ("start", old_ts)
+    assert any(kind == "sidebar_refresh" and ts > old_ts for kind, ts in during_stream)
+
+
+@pytest.mark.anyio
 async def test_foreground_task_followup_emits_only_one_done(isolated, monkeypatch):
     from vococo.gateway import core
     from vococo.gateway.adapters.web import _WebSink
