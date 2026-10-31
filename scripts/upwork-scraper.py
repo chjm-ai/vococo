@@ -21,30 +21,42 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 # ── 配置 ──────────────────────────────────────────────────
-CDP_PORT = 9228
-CHROME_BIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-CHROME_PROFILE = Path.home() / ".chrome-profiles/upwork"
-# 不放 iCloud 目录(iCloud 托管目录读写可能卡住);data/ 已被 .gitignore 忽略
-OUTPUT_DIR = Path.home() / "Repos/vococo/data/upwork"
-SEEN_FILE = OUTPUT_DIR / "seen_ids.json"
+# 默认读脚本所属安装的私有配置；独立 cron 不依赖助理登录令牌。
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from vococo.instance_config import section
+
 SEEN_KEEP_DAYS = 30
+
+
+def configure(path=None):
+    """先验证全部个人配置，再启用；缺配置不启动浏览器、不写去重文件。"""
+    global CDP_PORT, CHROME_BIN, CHROME_PROFILE, OUTPUT_DIR, SEEN_FILE
+    global SEARCH_QUERIES, MATCH_KEYWORDS
+    if path is None:
+        path = Path(os.environ.get("VOCOCO_INSTANCE_CONFIG") or
+                    Path(__file__).resolve().parents[1] / "data/instance_config.json")
+    values = section("upwork", path=Path(path))
+    port = values.get("cdp_port")
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("upwork.cdp_port 必须是 1–65535 的整数")
+    paths = {}
+    for key in ("chrome_bin", "chrome_profile", "output_dir"):
+        value = values.get(key)
+        if not isinstance(value, str) or not value.strip() or not Path(value).expanduser().is_absolute():
+            raise ValueError(f"upwork.{key} 必须是绝对路径")
+        paths[key] = Path(value).expanduser()
+    for key in ("search_queries", "match_keywords"):
+        items = values.get(key)
+        if not isinstance(items, list) or not all(isinstance(x, str) and x.strip() for x in items):
+            raise ValueError(f"upwork.{key} 必须是文本列表")
+    CDP_PORT, CHROME_BIN = port, str(paths["chrome_bin"])
+    CHROME_PROFILE, OUTPUT_DIR = paths["chrome_profile"], paths["output_dir"]
+    SEEN_FILE = OUTPUT_DIR / "seen_ids.json"
+    SEARCH_QUERIES, MATCH_KEYWORDS = values["search_queries"], values["match_keywords"]
 
 FEEDS = [
     ("best-matches", "https://www.upwork.com/nx/find-work/best-matches"),
     ("most-recent", "https://www.upwork.com/nx/find-work/most-recent"),
-]
-
-SEARCH_QUERIES = [
-    "AI agent automation",
-    "Claude Code",
-    "n8n AI workflow automation",
-]
-
-# 和 Wesley 方向相关的词,命中越多星越多(只是粗筛,细判交给总结 AI)
-MATCH_KEYWORDS = [
-    "claude", "agent", "automation", "automate", "n8n", "make.com", "zapier",
-    "workflow", "lead gen", "lead generation", "prospecting", "outreach",
-    "scrap", "crawl", "mcp", "rag", "chatbot", "llm", "openai", "gpt",
 ]
 
 # ── Chrome / CDP ─────────────────────────────────────────
@@ -227,13 +239,19 @@ def write_outputs(new_jobs, all_jobs, status):
 
 
 HINTS = {
-    "BLOCKED": "被 Cloudflare 拦截 → 在 9228 那个 Chrome 窗口里手动打开该页过一次验证",
-    "LOGGED_OUT": "Upwork 登录已失效 → 在 9228 那个 Chrome 窗口里重新登录",
+    "BLOCKED": "被 Cloudflare 拦截 → 在专用 Chrome 窗口里手动打开该页过一次验证",
+    "LOGGED_OUT": "Upwork 登录已失效 → 在专用 Chrome 窗口里重新登录",
     "PARSE_FAIL": "页面正常但一张岗位卡片都没解析到 → Upwork 可能改版,需要改 EXTRACT_JS",
 }
 
 
 def main():
+    try:
+        configure()
+    except (OSError, ValueError) as exc:
+        print("##CRON_SIGNAL:1##")
+        print(f"Upwork 配置不可用，本次未启动浏览器、未写文件：{exc}")
+        sys.exit(1)
     with_search = "--search" in sys.argv
 
     ws_url = ensure_chrome(CDP_PORT)

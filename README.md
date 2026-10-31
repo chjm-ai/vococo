@@ -89,12 +89,25 @@ Bash 与同步子代理使用正常系统网络和命令，不再注入业务沙
 | `publishing` | `share_origin`：分享地址；`kimmy`：SSH 主机、发布目录、域名和部署脚本校验契约 |
 | `preferences` | `persona`、`memory_sections`、`memory_rules`（`{dir}` 为记忆目录）、`decision_rules`、`people_folders` |
 | `mcp` | `task_keywords`：工具名到关键词列表；`groups`：组名到工具名列表，`"all"` 表示所有已注册外部 MCP |
+| `local_services` | `display_names`：launchd 标签到显示名；`proxy_launchd_label`：本机代理标签，不含 `gui/UID/`；未配置则不自动重启 |
+| `upwork` | `cdp_port`、`chrome_bin`、`chrome_profile`、`output_dir`、`search_queries`、`match_keywords`；路径为绝对路径，关键词列表可为空 |
 
 旧安装升级前，从**改动前的提交**提取原值，只新建权限为 `0600` 的文件，不覆盖、不联网：
 
 ```sh
 python3 scripts/migrate_instance_config.py --source-ref <旧提交> --output /绝对/正式/data/instance_config.json
 ```
+
+本机服务和 Upwork 升级使用追加迁移（必须指定这两项改动前的提交）：
+
+```sh
+python3 scripts/migrate_local_preferences.py --source-ref <旧提交> --output /绝对/正式/data/instance_config.json
+# 检查通过后，同一命令加 --apply：先备份，再原子追加；已有不同值则拒绝覆盖。
+```
+
+Upwork 默认读取脚本所属安装的 `data/instance_config.json`，可用 `VOCOCO_INSTANCE_CONFIG` 指定其他配置文件。
+运行前先验证配置，不需要助理登录令牌；配置不全则报错退出，不启动 Chrome、不写去重历史。
+保留原 `output_dir` 就会继续使用原有 `seen_ids.json`；不会自动复制或重置历史。
 
 必须写入正式运行目录，不只是开发 worktree。新安装可从 `{"version":1}` 开始按需配置；
 未配置的任务桥、公开分享和远端发布拒绝执行，偏好/工具组合为空，不猜个人目标。

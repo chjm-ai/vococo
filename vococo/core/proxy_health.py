@@ -22,6 +22,7 @@ import asyncio
 import http.client
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -40,8 +41,8 @@ RESTART_COOLDOWN = 30 * 60  # 两次自动重启至少隔 30 分钟
 GIVE_UP_AFTER = 3           # 代理在线但连着几次重启都缺档 → 不再自动重启(不像刷新抖动)
 STRIKE_RESET = 6 * 3600     # 这么久没再动过手,旧账清零,重新给机会
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
-# launchd 标签写死:launchd 没有"按二进制反查服务"的正路,改名就跟着改这一行。
-SERVICE = f"gui/{os.getuid()}/com.wesley.cli-proxy-api"
+# 只接受标签，不接受其他用户域、路径或 launchctl 参数。
+_LAUNCHD_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}")
 ALERT_KEY = "gpt-proxy"  # 全局报错出口的节流键(这类故障共用一条,免得换着花样刷屏)
 _STATE_PATH = config.DATA_DIR / "proxy_health.json"
 _LOG_PATH = config.DATA_DIR / "logs" / "proxy_health.log"
@@ -161,13 +162,19 @@ async def _diagnose() -> dict:
 
 async def _kickstart() -> tuple[bool, str]:
     """重启代理。返回(有没有执行成功, 失败原因)。"""
+    from ..instance_config import text
+
     try:
+        label = text("local_services", "proxy_launchd_label")
+        if not _LAUNCHD_LABEL.fullmatch(label):
+            return False, "未配置有效的 local_services.proxy_launchd_label，未执行重启"
+        service = f"gui/{os.getuid()}/{label}"
         proc = await asyncio.create_subprocess_exec(
-            "launchctl", "kickstart", "-k", SERVICE,
+            "launchctl", "kickstart", "-k", service,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
-    except (OSError, asyncio.TimeoutError) as exc:
+    except (OSError, ValueError, asyncio.TimeoutError) as exc:
         return False, f"{type(exc).__name__}: {exc}"
     if proc.returncode != 0:
         return False, out.decode("utf-8", "replace").strip()[:200]
@@ -219,7 +226,7 @@ async def check(*, heal: bool = True) -> dict:
             "⚠️ GPT 代理不对(缺档 / 响应异常),已停止自动重启",
             f"连着 {strikes} 次重启都没恢复,不像刷新抖动,更像上游真把这些档下线了"
             f"或代理本身出了问题。缺的档:{'、'.join(missing) or '(全都没拿到)'};{r['detail']}。"
-            "看 /tmp/cli-proxy-api.log 里的 model refresh;确属档位下线就去设置页摘掉"
+            "看 代理日志 里的 model refresh;确属档位下线就去设置页摘掉"
             "(摘完自愈,这条就不再报)。",
         )
         return r
@@ -236,7 +243,7 @@ async def check(*, heal: bool = True) -> dict:
         r["alert"] = (
             "⚠️ GPT 代理有问题,而且自动重启没能执行",
             f"缺的档:{'、'.join(missing) or '(全都没拿到)'};{r['detail']}。重启失败原因:{reason}。"
-            f"终端跑 launchctl print {SERVICE} 看服务在不在,急着用就先手动起代理。",
+            "检查实例配置中的代理服务标签及对应 launchd 服务,急着用就先手动起代理。",
         )
         return r
 
@@ -260,7 +267,7 @@ async def check(*, heal: bool = True) -> dict:
         "⚠️ GPT 代理缺档,重启后仍不行",
         f"缺的档:{'、'.join(r['missing'])};{r['detail']}。重启执行成功但起来后清单还是不对。"
         "可能:①拉清单的网络还没通(它只在启动时拉一次,失败就退回内置旧表,3 小时后再试)"
-        " ②上游真把这档下线了。细节看 /tmp/cli-proxy-api.log 的 model refresh。",
+        " ②上游真把这档下线了。细节看 代理日志 的 model refresh。",
     )
     return r
 
