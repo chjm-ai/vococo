@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 
-def section(name: str) -> dict:
-    from . import config
+def section(name: str, *, path: Path | None = None) -> dict:
+    # 独立脚本可指定配置路径，不加载主程序的登录配置。
+    if path is None:
+        from . import config
 
-    path = config.DATA_DIR / "instance_config.json"
+        path = config.DATA_DIR / "instance_config.json"
     try:
         with path.open(encoding="utf-8") as stream:
             raw = stream.read(256_001)

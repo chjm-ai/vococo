@@ -22,6 +22,9 @@ def _write_plist(dir_, filename, data):
 
 @pytest.fixture
 def fake_env(tmp_path, monkeypatch):
+    from vococo import config
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     home = tmp_path / "home"
     launch_dir = home / "Library" / "LaunchAgents"
     launch_dir.mkdir(parents=True)
@@ -30,6 +33,22 @@ def fake_env(tmp_path, monkeypatch):
     monkeypatch.setattr(st, "_read_launchctl_text", lambda: "")
     monkeypatch.setattr(st, "_read_crontab_text", lambda: "")
     return home, launch_dir
+
+
+def test_launchd_configured_display_name_and_unknown_fallback(fake_env, monkeypatch):
+    import json
+    from vococo import config
+
+    home, launch_dir = fake_env
+    (config.DATA_DIR / "instance_config.json").write_text(json.dumps({
+        "version": 1, "local_services": {"display_names": {"org.example.custom": "个人显示名"}},
+    }))
+    for label in ("org.example.custom", "org.example.unknown"):
+        _write_plist(launch_dir, label + ".plist", {
+            "Label": label, "ProgramArguments": [str(home / "scripts/job.sh")], "KeepAlive": True,
+        })
+    names = {task["id"]: task["name"] for task in st.list_tasks()}
+    assert names == {"launchd:org.example.custom": "个人显示名", "launchd:org.example.unknown": "org.example.unknown"}
 
 
 # ── launchd ──────────────────────────────────────────────────────────────
