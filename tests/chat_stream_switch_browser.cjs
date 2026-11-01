@@ -4,7 +4,7 @@ const assert=require('node:assert/strict');
   const [origin,token]=process.argv.slice(2);
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
   try{
-    const page=await browser.newPage(), errors=[];
+    const page=await browser.newPage({serviceWorkers:'block'}), errors=[];
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto(origin); await page.fill('#pw',token); await page.click('#loginBtn');
     await page.waitForFunction(()=>!$('#app').hidden);
