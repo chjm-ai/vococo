@@ -1320,6 +1320,9 @@
     background:transparent;color:var(--dim);font-size:var(--fs-lg);line-height:1;display:inline-flex;
     align-items:center;justify-content:center}
   #pending .pi .pdel:hover{background:var(--err);color:var(--on-accent)}
+  #pending .pi .pnow:hover{background:var(--panel2);color:var(--accent)}
+  #pending .pi .pnow svg{width:var(--sp-5);height:var(--sp-5)}
+  #pending .pi .pnow:disabled{opacity:.5;cursor:wait}
   /* 没图片时也保留这 3px:输入框 focus 态的外发光阴影要靠这点余量,
      不然贴着上边界会被裁掉一截 */
   #thumbs{display:flex;gap:8px;margin-bottom:3px;flex-wrap:wrap}

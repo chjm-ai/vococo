@@ -298,7 +298,7 @@ function updateSendBtn(){
   btn.textContent="↑"; btn.classList.remove("stop-mode");
 }
 async function stopReply(){
-  if(!S.stream) return;
+  if(!S.stream && !S.live[S.conv]) return;
   const conv=S.conv;
   // 乐观更新:任务会话先本地把任务行置「已停止」,不等后端收尾落库——
   // 收尾含最多 5 秒 CLI interrupt + 写库,SSE 终态要晚几秒才到,干等会让
@@ -312,6 +312,7 @@ async function stopReply(){
   // (侧栏「正在回复」橙点也随之熄灭,由 markLive 重绘)。
   delete S.live[conv]; delete S.streamSnap[conv]; markLive();
   finalizeStream(); // 立即结束前端流式气泡,保留已有部分文字
+  drawPending();
   try{
     const r = await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
     if(!r.ok) throw new Error("HTTP "+r.status);
@@ -321,13 +322,13 @@ async function stopReply(){
       if(optimistic) restoreTaskStopped(conv, optimistic);  // 停失败,恢复原状态
       // 停不住 = 流的源头(轮次/任务)其实已经结束,比如 SSE 缓冲重放的历史流。
       // 明说一句,免得用户以为按钮没反应、反复点。
-      if(S.conv===conv) addMsg("ai", "已停止(当前没有正在运行的回复或任务)");
+      if(S.conv===conv) addBubble("ai", "已停止(当前没有正在运行的回复或任务)");
       flushPending(conv);
     }
   }catch(e){
     delete S.stopping[conv];
     if(optimistic) restoreTaskStopped(conv, optimistic);
-    if(S.conv===conv){ addMsg("ai", "⚠️ 停止请求失败，请重试"); reloadHistory(true); }
+    if(S.conv===conv){ drawPending(); addBubble("ai", "⚠️ 停止请求失败，请重试"); reloadHistory(true); }
     return;
   }
   // 找到运行轮次时由 cancelled/done 事件推进队列，HTTP 回执不能再推进一次。
@@ -374,7 +375,11 @@ function drawPending(){
     tx.textContent=it.text||((it.libraryRefs||[]).length ? "(作品引用)" : (it.audios||[]).length ? "(语音/音频)" : (it.files||[]).length ? "(附件)" : "(图片)");
     const del=el("button","pdel"); del.type="button"; del.title="删除"; del.textContent="×";
     del.onclick=()=>removePending(it.id);
-    row.append(clk,tx,del);
+    const now=el("button","pdel pnow"); now.type="button";
+    now.title="停止当前回复并立即发送"; now.setAttribute("aria-label",now.title); now.innerHTML=ic("pin");
+    now.disabled=!!(S.stopping?.[S.conv] || S.pendingSending?.[S.conv]);
+    now.onclick=()=>sendPendingNow(it.id);
+    row.append(clk,tx,now,del);
     if(it.error){
       tx.textContent+=" · 发送失败："+it.error;
       const retry=el("button","pdel"); retry.type="button"; retry.textContent="重试";
@@ -382,6 +387,16 @@ function drawPending(){
     }
     box.append(row);
   }
+}
+async function sendPendingNow(id){
+  const conv=S.conv, q=S.pending[conv];
+  if(!q?.length || S.stopping?.[conv] || S.pendingSending?.[conv]) return;
+  const index=q.findIndex(item=>item.id===id); if(index<0) return;
+  const [item]=q.splice(index,1); delete item.error; q.unshift(item);
+  drawPending();
+  // 由取消终态推进一次队列，不在停止 HTTP 回执后重复发送。
+  if(S.stream || S.live[conv]) await stopReply();
+  else await flushPending(conv,true);
 }
 function removePending(id){
   const q=S.pending[S.conv]; if(!q) return;
@@ -405,10 +420,25 @@ async function flushPending(conv, retry=false){
   }finally{
     const flushRequested=S.pendingSending[conv].flushRequested;
     delete S.pendingSending[conv];
+    if(conv===S.conv) drawPending();
     if(flushRequested) await flushPending(conv);
   }
 }
+function showPendingMessage(conv,item){
+  if(conv!==S.conv || (item.text||"").startsWith("/")) return null;
+  const files=(item.files||[]).filter(x=>x.kind!=="video").map(x=>x.filename);
+  const videos=(item.files||[]).filter(x=>x.kind==="video").map(x=>({url:x.url,filename:x.filename,media_type:x.mediaType}));
+  const references=(item.libraryRefs||[]).map(x=>x.title||x.id);
+  const text=(item.text||"(附件)")+(files.length?"\n\n📎 附件："+files.join("、"):"")+
+    (references.length?"\n\n作品引用："+references.join("、"):"");
+  const bubble=addBubble("me",text,(item.images||[]).map(x=>x.url),item.audios||[],true,videos);
+  const row=bubble.closest(".row");
+  S.localSent[conv]=true;
+  const stream=ensureStream(); stream.userRow=row;
+  return {row,stream};
+}
 async function sendPendingSnapshot(conv,item){
+  const visible=showPendingMessage(conv,item);
   const requestId=item.clientRequestId||(item.clientRequestId=newClientRequestId());
   S.sendAcks[requestId]=false;
   const payload={
@@ -424,7 +454,13 @@ async function sendPendingSnapshot(conv,item){
     if(!response.ok){ const error=new Error("请求失败（"+response.status+"）"); error.httpStatus=response.status; throw error; }
     loadConvs();
   }catch(error){
-    if((error.httpStatus && error.httpStatus<500) || !await waitForSendAck(requestId)) throw error;
+    if((error.httpStatus && error.httpStatus<500) || !await waitForSendAck(requestId)){
+      if(visible){
+        visible.row.remove(); delete S.localSent[conv];
+        if(conv===S.conv && S.stream===visible.stream) discardStream();
+      }
+      throw error;
+    }
   }finally{ delete S.sendAcks[requestId]; }
 }
 $("#composer").onsubmit = e=>{ e.preventDefault(); send($("#ta").value); };

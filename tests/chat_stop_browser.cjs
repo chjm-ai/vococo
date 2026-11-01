@@ -4,7 +4,7 @@ const assert=require('node:assert/strict');
   const [origin,token]=process.argv.slice(2);
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
   try{
-    const page=await browser.newPage(), errors=[];
+    const page=await browser.newPage({serviceWorkers:'block'}), errors=[];
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto(origin); await page.fill('#pw',token); await page.click('#loginBtn');
     await page.waitForFunction(()=>!$('#app').hidden);
@@ -18,6 +18,7 @@ const assert=require('node:assert/strict');
     });
     await page.locator('#wrap .statusstop').click();
     await page.waitForFunction(()=>!S.stream);
+    assert.deepEqual(errors,[]);
     // 取消期间已经在途的帧，先到缓冲，再到 DOM。
     await page.evaluate(()=>handleEvent({type:'thinking',conv:S.conv,text:'迟到的思考'}));
     assert.equal(await page.evaluate(()=>!!S.live[S.conv]),false,'点一次停止后，迟到帧不能重新点亮侧栏黄点');
@@ -71,12 +72,75 @@ const assert=require('node:assert/strict');
     await page.evaluate(()=>handleEvent({type:'cancelled',conv:S.conv}));
     await page.waitForFunction(()=>!S.pendingSending[S.conv]);
     assert.deepEqual(sent,['排队一']);
+    await page.evaluate(()=>handleEvent({type:'user',conv:S.conv,text:'排队一'}));
+    assert.equal(await page.locator('#wrap .row.me').filter({hasText:'排队一'}).count(),1,'停止后队列发送的消息必须立即显示，无需刷新');
     releaseAbort();
     await page.waitForTimeout(300);
     assert.deepEqual(sent,['排队一'],'停止回执不得重复推进队列');
     await page.evaluate(()=>handleEvent({type:'done',conv:S.conv,text:'第一条完成'}));
     await page.waitForFunction(()=>!S.pendingSending[S.conv]);
     assert.deepEqual(sent,['排队一','排队二']);
+    await page.evaluate(()=>handleEvent({type:'done',conv:S.conv,text:'第二条完成'}));
+    // 点第二条的置顶按钮，必须先停当前回复，再只发选中的一条。
+    let immediateAborts=0;
+    await page.unroute('**/abort');
+    await page.route('**/abort',route=>{immediateAborts++; return route.fulfill({json:{ok:true,stopped:true}});});
+    await page.evaluate(()=>{
+      handleEvent({type:'start',conv:S.conv});
+      queuePending('仍然排队'); queuePending('优先发送');
+      $('#ta').value='未发送的新草稿';
+    });
+    await page.getByRole('button',{name:'停止当前回复并立即发送'}).nth(1).click();
+    await page.waitForFunction(()=>!!S.stopping[S.conv]);
+    assert.deepEqual(sent,['排队一','排队二'],'取消确认之前不能发送');
+    assert.equal(await page.locator('#pending .pnow:disabled').count(),2);
+    await page.evaluate(()=>handleEvent({type:'cancelled',conv:S.conv}));
+    await page.waitForFunction(()=>!S.pendingSending[S.conv]);
+    assert.deepEqual(sent,['排队一','排队二','优先发送']);
+    assert.equal(immediateAborts,1);
+    assert.equal(await page.locator('#wrap .row.me').filter({hasText:'优先发送'}).count(),1);
+    await page.evaluate(()=>handleEvent({type:'user',conv:S.conv,text:'优先发送'}));
+    assert.equal(await page.locator('#wrap .row.me').filter({hasText:'优先发送'}).count(),1,'服务端回显不能重复创建气泡');
+    assert.equal(await page.locator('#ta').inputValue(),'未发送的新草稿');
+    assert.deepEqual(await page.evaluate(()=>S.pending[S.conv].map(x=>x.text)),['仍然排队']);
+    // 小屏幕和长文本也能点击，不挤出行边界。
+    await page.setViewportSize({width:375,height:812});
+    await page.evaluate(()=>{S.pending[S.conv][0].text='很长的待发送消息'.repeat(30); drawPending();});
+    const fits=await page.locator('#pending .pnow').evaluate(button=>{
+      const row=button.closest('.pi').getBoundingClientRect(), box=button.getBoundingClientRect();
+      return box.left>=row.left && box.right<=row.right;
+    });
+    assert.ok(fits);
+    // 切回会话但历史还在加载：S.stream 暂时为空，也必须先停止后台运行。
+    await page.route('**/history?conv=stop-switch-active',route=>route.fulfill({json:{turns:[]}}));
+    await page.evaluate(async()=>{
+      await openConv('stop-switch-active');
+      handleEvent({type:'start',conv:S.conv}); queuePending('切回后优先发送');
+      await openConv('local-switch-away');
+    });
+    await page.unroute('**/history?conv=stop-switch-active');
+    let releaseHistory;
+    const historyGate=new Promise(resolve=>{releaseHistory=resolve;});
+    await page.route('**/history?conv=stop-switch-active',async route=>{await historyGate; await route.fulfill({json:{turns:[]}});});
+    await page.evaluate(()=>{window.switchBack=openConv('stop-switch-active');});
+    await page.waitForFunction(()=>S.histLoading===S.conv && !S.stream);
+    await page.getByRole('button',{name:'停止当前回复并立即发送'}).click();
+    await page.waitForFunction(()=>!!S.stopping[S.conv]);
+    assert.equal(immediateAborts,2,'不能因为流式 DOM 尚未恢复就绕过停止');
+    assert.deepEqual(sent,['排队一','排队二','优先发送']);
+    releaseHistory(); await page.evaluate(()=>window.switchBack);
+    await page.evaluate(()=>handleEvent({type:'cancelled',conv:S.conv}));
+    await page.waitForFunction(()=>!S.pendingSending[S.conv]);
+    assert.equal(sent.at(-1),'切回后优先发送');
+    // 明确发送失败，队列内容可重试，不能留下冒充成功的用户气泡。
+    await page.evaluate(()=>{delete S.pending[S.conv]; drawPending(); handleEvent({type:'done',conv:S.conv,text:'完成'});});
+    await page.unroute('**/send');
+    await page.route('**/send',route=>route.fulfill({status:400,json:{error:'测试拒绝'}}));
+    await page.evaluate(async()=>{queuePending('失败应保留'); await sendPendingNow(S.pending[S.conv][0].id);});
+    assert.equal(await page.locator('#wrap .row.me').filter({hasText:'失败应保留'}).count(),0);
+    assert.equal(await page.evaluate(()=>S.pending[S.conv][0].text),'失败应保留');
+    assert.ok(await page.evaluate(()=>!!S.pending[S.conv][0].error));
+    assert.equal(await page.locator('#pending .pnow:disabled').count(),0);
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({ok:true,aborts}));
   }finally{await browser.close();}
