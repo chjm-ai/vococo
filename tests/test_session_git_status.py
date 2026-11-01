@@ -169,6 +169,84 @@ async def test_new_repository_without_commits_can_show_staged_lines(isolated):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("writable", [True, False])
+async def test_linked_git_directory_is_shown_without_repository_binding(isolated, monkeypatch, writable):
+    source = repository(isolated / "linked-repo")
+    (source / "file.txt").write_text("linked change\n")
+    documents = isolated / "documents"
+    documents.mkdir()
+    owner = agents.create("业务")
+    agents.update(owner["id"], links=[{"path": str(source), "writable": writable},
+                                     {"path": str(documents), "writable": False}])
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+    app = web.Application()
+    app.add_routes([web.get("/conv/git", WebAdapter()._handle_conv_git)])
+    before = git(source, "status", "--porcelain=v1")
+    index_stamp = (source / ".git" / "index").stat().st_mtime_ns
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get("/conv/git", params={"conv": owner["main_conv"]})
+        assert response.status == 200
+        result = await response.json()
+    assert result["is_project"] is True
+    assert result["repo_count"] == result["dirty"] == 1
+    row, = result["repositories"]
+    assert row["scope"] == "shared"
+    assert row["path"] == row["project_path"] == str(source)
+    assert row["state"] == "ready"
+    assert (source / ".git" / "index").stat().st_mtime_ns == index_stamp
+    assert git(source, "status", "--porcelain=v1") == before
+    assert not (config.AGENT_WORKSPACES_DIR / ".repositories").exists()
+
+
+@pytest.mark.anyio
+async def test_linked_subdirectory_and_alias_are_deduplicated(isolated):
+    source = repository(isolated / "source")
+    nested = source / "nested"
+    nested.mkdir()
+    alias = isolated / "alias"
+    alias.symlink_to(source, target_is_directory=True)
+    owner = agents.create("业务")
+    agents.update(owner["id"], links=[{"path": str(path), "writable": True}
+                                     for path in (source, nested, alias)])
+    result = await git_status.session_repository_status(agents.main_session_key(owner))
+    assert result["repo_count"] == 1
+    assert result["repositories"][0]["path"] == str(source)
+
+
+@pytest.mark.anyio
+async def test_bound_session_copy_takes_priority_over_linked_source(isolated):
+    owner, sources, key = owner_with_repositories(isolated)
+    agents.update(owner["id"], links=[{"path": str(sources[0]), "writable": True}])
+    policy = execution.policy_for_session(key)
+    await execution.prepare_repositories(policy)
+    (sources[0] / "source-only.txt").write_text("不混入会话副本\n")
+    linked = repository(isolated / "extra-linked")
+    (linked / "file.txt").write_text("shared\n")
+    agents.update(owner["id"], links=[{"path": str(path), "writable": True}
+                                     for path in (sources[0], linked)])
+    result = await git_status.session_repository_status(key)
+    assert result["repo_count"] == 4
+    assert result["dirty"] == 1
+    assert result["repositories"][0]["scope"] == "session"
+    assert result["repositories"][-1]["scope"] == "shared"
+
+
+@pytest.mark.anyio
+async def test_broken_linked_repository_does_not_hide_healthy_link(isolated):
+    source, healthy = repository(isolated / "broken"), repository(isolated / "healthy")
+    owner = agents.create("业务")
+    agents.update(owner["id"], links=[{"path": str(path), "writable": True}
+                                     for path in (source, healthy)])
+    (source / ".git" / "index").write_text("损坏索引\n")
+    (healthy / "file.txt").write_text("healthy\n")
+    result = await git_status.session_repository_status(agents.main_session_key(owner))
+    assert result["repo_count"] == 2
+    assert result["unavailable"] == result["dirty"] == 1
+    assert result["repositories"][0]["scope"] == "shared"
+    assert result["repositories"][0]["state"] == "error"
+
+
+@pytest.mark.anyio
 async def test_conv_git_endpoint_returns_multi_repo_summary(isolated, monkeypatch):
     owner, _, _ = owner_with_repositories(isolated)
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")

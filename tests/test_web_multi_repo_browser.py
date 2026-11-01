@@ -85,6 +85,18 @@ const server=http.createServer((req,res)=>{
     assert.match(await page.locator('#gitPop').innerText(),/工作区干净/);
     await page.setViewportSize({width:320,height:850});
     assert.ok(await page.locator('#gitPop').evaluate(el=>el.scrollWidth<=el.clientWidth));
+    data={...data,repo_count:2,dirty:1,changed_repos:1,unavailable:1,
+      repositories:[repo('shared',1,{scope:'shared',path:'/repos/shared'}),
+        repo('failed-shared',0,{scope:'shared',state:'error'})]};
+    await page.evaluate(()=>refreshGitQuiet('test'));
+    assert.match(await page.locator('.grepo').first().innerText(),/共享目录/);
+    assert.match(await page.locator('#gitPop').innerText(),/共享目录可能包含其他会话的改动/);
+    assert.match(await page.locator('#convGit').getAttribute('title'),/含共享目录/);
+    await page.locator('.grepo').first().locator('summary').click();
+    assert.match(await page.locator('.grepo').first().innerText(),/src\/<unsafe>.py/);
+    assert.ok(!(await page.locator('.grepo').first().innerText()).includes('会话副本：'));
+    await page.locator('.grepo').nth(1).locator('summary').click();
+    assert.match(await page.locator('.grepo').nth(1).innerText(),/无法读取共享目录，未计入汇总/);
     await page.mouse.click(10,800);
     assert.equal(await page.locator('#gitPop').isVisible(),false);
     assert.deepEqual(errors,[]);
