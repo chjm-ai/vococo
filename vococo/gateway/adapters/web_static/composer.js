@@ -376,7 +376,7 @@ function drawPending(){
     const del=el("button","pdel"); del.type="button"; del.title="删除"; del.textContent="×";
     del.onclick=()=>removePending(it.id);
     const now=el("button","pdel pnow"); now.type="button";
-    now.title="停止当前回复并立即发送"; now.setAttribute("aria-label",now.title); now.innerHTML=ic("pin");
+    now.title="停止当前回复并立即发送"; now.setAttribute("aria-label",now.title); now.innerHTML=ic("arrowUpToLine");
     now.disabled=!!(S.stopping?.[S.conv] || S.pendingSending?.[S.conv]);
     now.onclick=()=>sendPendingNow(it.id);
     row.append(clk,tx,now,del);

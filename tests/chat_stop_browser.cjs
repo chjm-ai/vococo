@@ -81,7 +81,7 @@ const assert=require('node:assert/strict');
     await page.waitForFunction(()=>!S.pendingSending[S.conv]);
     assert.deepEqual(sent,['排队一','排队二']);
     await page.evaluate(()=>handleEvent({type:'done',conv:S.conv,text:'第二条完成'}));
-    // 点第二条的置顶按钮，必须先停当前回复，再只发选中的一条。
+    // 点第二条的立即发送按钮，必须先停当前回复，再只发选中的一条。
     let immediateAborts=0;
     await page.unroute('**/abort');
     await page.route('**/abort',route=>{immediateAborts++; return route.fulfill({json:{ok:true,stopped:true}});});
@@ -90,6 +90,7 @@ const assert=require('node:assert/strict');
       queuePending('仍然排队'); queuePending('优先发送');
       $('#ta').value='未发送的新草稿';
     });
+    assert.deepEqual(await page.locator('#pending .pnow').nth(1).locator('svg path').evaluateAll(paths=>paths.map(p=>p.getAttribute('d'))),['M5 3h14','m18 13-6-6-6 6','M12 7v14'],'立即发送使用向上箭头加顶部横线，不使用图钉');
     await page.getByRole('button',{name:'停止当前回复并立即发送'}).nth(1).click();
     await page.waitForFunction(()=>!!S.stopping[S.conv]);
     assert.deepEqual(sent,['排队一','排队二'],'取消确认之前不能发送');
