@@ -699,7 +699,11 @@
   header.bar .title #convTitle{font-size:var(--fs-lg);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   header.bar .title .tsub{display:flex;align-items:center;gap:8px;min-width:0}
   #projBox{position:relative;flex-shrink:1;min-width:0}
-  #gitBox{position:relative;flex-shrink:0}
+  #gitBox{position:relative;flex-shrink:1;min-width:0}
+  .tagent{flex-shrink:0;max-width:min(calc(var(--sp-5)*9),50%);overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;font-size:var(--fs-sm);color:var(--dim)}
+  #convGit{max-width:min(190px,100%)}
+  #convGit.multi-repo{max-width:min(calc(var(--sp-5)*17),100%)}
   .tgit{font-size:var(--fs-sm);color:var(--dim);font-weight:500;font-variant-numeric:tabular-nums;
     background:var(--panel2);border-radius:var(--r-sm);padding:1.5px var(--sp-2);max-width:190px;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:background var(--t-fast),color var(--t-fast)}

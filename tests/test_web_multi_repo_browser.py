@@ -22,6 +22,8 @@ const fs=require('fs'), http=require('http'), assert=require('assert');
 const header=fs.readFileSync(STATIC+'/index.html','utf8').match(/<header class="bar">[\s\S]*?<\/header>/)[0];
 const css=fs.readFileSync(STATIC+'/styles.css','utf8');
 const source=fs.readFileSync(STATIC+'/sidebar.js','utf8').split('// ── 会话列表')[0];
+const agentsSource=fs.readFileSync(STATIC+'/agents.js','utf8');
+const agentHeader=agentsSource.slice(agentsSource.indexOf('function syncAgentHeader(){'),agentsSource.indexOf('function toggleAgentPanel(){'));
 const repo=(name,dirty,extra={})=>({name,project_path:'/repos/'+name,path:'/copies/'+name,
   branch:'vococo/session-long-branch',state:'ready',dirty,unmerged:0,ahead:0,behind:0,
   added:dirty?6:0,removed:dirty?2:0,files:dirty?[{x:' M',path:'src/<unsafe>.py'}]:[],...extra});
@@ -30,7 +32,7 @@ let data={is_project:true,name:'开发',repo_count:4,changed_repos:1,dirty:1,add
   unmerged:2,unavailable:2,repositories:[repo('clean',0),dirty,
     repo('未初始化',0,{state:'uninitialized'}),repo('出错',0,{state:'error'})]};
 const html='<!doctype html><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+
-  '<style>'+css+'</style><main id="chatMain">'+header+'<div id="outside">会话内容</div></main>';
+  '<style>'+css+'</style><main id="chatMain">'+header+'<div id="outside">会话内容</div><div id="agentPanel" hidden></div></main>';
 const server=http.createServer((req,res)=>{
   if(req.url.startsWith('/conv/git')){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(data));}
   else{res.setHeader('Content-Type','text/html');res.end(html);}
@@ -43,13 +45,18 @@ const server=http.createServer((req,res)=>{
     const errors=[];page.on('pageerror',e=>errors.push(String(e)));
     await page.goto('http://127.0.0.1:'+server.address().port);
     await page.addScriptTag({content:`
-      var S={conv:'test'};
+      var S={conv:'test',surface:'chat',agentPanelOn:false};
+      var testAgent={name:'AI 咨询获客',id:'test'};
+      var currentAgent=()=>testAgent, agentByMainConv=()=>null, avatarSvg=()=>'';
       var $=s=>document.querySelector(s);
       var esc=s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
       var api=url=>fetch(url);
       function closeHeaderPopovers(except){for(const id of ['projPop','gitPop']){const p=$('#'+id);if(p!==except)p.hidden=true;}}
-    `+source});
+    `+source+agentHeader});
+    await page.evaluate(()=>syncAgentHeader());
+    assert.equal(await page.locator('#convAgentName').innerText(),'AI 咨询获客');
     await page.evaluate(()=>refreshGit('test'));
+    assert.equal(await page.locator('#convAgentName').isVisible(),true);
     assert.match(await page.locator('#convGit').innerText(),/4 仓库 · 1 文件/);
     assert.match(await page.locator('#convGit').innerText(),/2 待查/);
     assert.equal(await page.locator('#convProjName').isVisible(),false);
@@ -75,6 +82,9 @@ const server=http.createServer((req,res)=>{
         assert.ok(box.x>=0&&box.x+box.width<=width,`弹层溢出 ${theme} ${width}: ${JSON.stringify(box)}`);
         const button=await page.locator('#convGit').boundingBox();
         assert.ok(button.x>=0&&button.x+button.width<=width,`标题栏溢出 ${width}`);
+        const name=await page.locator('#convAgentName').boundingBox();
+        assert.ok(name.width>0&&name.x+name.width<=button.x,`Agent 名称与汇总重叠 ${width}`);
+        assert.ok(Math.abs(name.y-button.y)<10,`Agent 名称与汇总换行 ${width}`);
       }
     }
     data={...data,repo_count:1,changed_repos:0,dirty:0,added:0,removed:0,unmerged:0,
@@ -99,6 +109,18 @@ const server=http.createServer((req,res)=>{
     assert.match(await page.locator('.grepo').nth(1).innerText(),/无法读取共享目录，未计入汇总/);
     await page.mouse.click(10,800);
     assert.equal(await page.locator('#gitPop').isVisible(),false);
+    await page.evaluate(()=>{testAgent={id:'other',name:'另一个很长的 Agent 名称'.repeat(8)};syncAgentHeader();});
+    assert.match(await page.locator('#convAgentName').getAttribute('title'),/另一个很长的 Agent 名称/);
+    assert.ok(await page.locator('#convAgentName').evaluate(el=>el.scrollWidth>el.clientWidth),'长名称应截断');
+    data={is_project:false};
+    await page.evaluate(()=>refreshGitQuiet('test'));
+    assert.equal(await page.locator('#convGit').isVisible(),false);
+    assert.equal(await page.locator('#convAgentName').isVisible(),true,'无仓库也保留 Agent 名称');
+    await page.evaluate(()=>{api=()=>new Promise(resolve=>window.resolveGit=resolve);window.gitLoading=refreshGit('test');});
+    assert.equal(await page.locator('#convAgentName').isVisible(),true,'Git 加载时名称不闪退');
+    await page.evaluate(async()=>{resolveGit({json:async()=>({is_project:false})});await gitLoading;});
+    await page.evaluate(()=>{testAgent=null;syncAgentHeader();});
+    assert.equal(await page.locator('#convAgentName').isVisible(),false,'无归属时清除旧 Agent 名称');
     assert.deepEqual(errors,[]);
     console.log('通过：真实点击、刷新保留展开、错误状态、长文本、5 档宽度、深浅主题');
   }finally{await browser.close();server.close();}
