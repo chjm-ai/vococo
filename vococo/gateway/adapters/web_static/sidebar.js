@@ -4,8 +4,16 @@
 
 // ── 项目 Git 状态 ─────────────────────────────────────────────────────────
 // 顶栏那颗 ⎇ 按钮:仅项目会话显示;点开弹层看改动明细
-function gitDotClass(d){ return (d.dirty>0||d.unmerged>0) ? "gdot-warn" : "gdot-ok"; }
+function gitDotClass(d){ return (d.dirty>0||d.unmerged>0||d.unavailable>0) ? "gdot-warn" : "gdot-ok"; }
+function gitTotalsLabel(d){
+  let s='<span class="gdot '+gitDotClass(d)+'"></span>⎇ '+d.repo_count+' 仓库 · '+d.dirty+' 文件';
+  if(d.added||d.removed) s+=' <span class="gadd">+'+d.added+'</span> <span class="gdel">-'+d.removed+'</span>';
+  if(d.unmerged) s+=' <span class="gahb">↑'+d.unmerged+'</span>';
+  if(d.unavailable) s+=' <span class="gwarn">· '+d.unavailable+' 待查</span>';
+  return s;
+}
 function gitBtnLabel(d){
+  if(d.repositories) return gitTotalsLabel(d);
   let s='<span class="gdot '+gitDotClass(d)+'"></span>⎇ '+esc(d.branch.replace(/^vococo\//, ""));
   if(d.unmerged) s+=' <span class="gahb">↑'+d.unmerged+'</span>';   // 未合并提交(相对 main):标题栏直接可见
   if(d.dirty) s+=' •'+d.dirty;
@@ -26,9 +34,11 @@ async function fetchGitStatus(conv){
 function applyGitBtn(d){
   const btn=$("#convGit"), pbtn=$("#convProjName");
   if(!d || !d.is_project){ btn.hidden=true; pbtn.hidden=true; return; }
-  pbtn.textContent=d.name; pbtn.hidden=false;
-  if(!d.is_repo){ btn.hidden=false; btn.textContent="⎇ 非 git 仓库"; return; }
-  btn.hidden=false; btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0));
+  pbtn.textContent=d.name; pbtn.hidden=!!d.repositories;
+  btn.classList.toggle("multi-repo", !!d.repositories);
+  btn.title=d.repositories ? '当前会话代码变化：'+d.repo_count+' 个仓库，'+d.dirty+' 个文件，'+d.unmerged+' 个未合并提交'+(d.unavailable?'，'+d.unavailable+' 个仓库未计入汇总':'') : '项目 Git 状态';
+  if(!d.repositories && (!d.is_repo||d.error)){ btn.hidden=false; btn.textContent=d.error?'⎇ 读取失败':'⎇ 非 git 仓库'; return; }
+  btn.hidden=false; btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0)||(d.unavailable>0));
 }
 // 切会话专用:先把按钮重置成加载态、收起弹层,再整份刷新
 async function refreshGit(conv){
@@ -76,9 +86,41 @@ function renderGitFiles(d){
   if(hidden>0) html+='<div class="gmore">另有 '+hidden+' 个文件未显示</div>';
   return html;
 }
+function gitRepoState(d){
+  if(d.state==='uninitialized') return '未初始化';
+  if(d.state!=='ready') return '读取失败';
+  if(!d.dirty&&!d.unmerged) return '无变化';
+  return d.dirty+' 文件'+(d.unmerged?' · '+d.unmerged+' 提交未合并':'');
+}
+function renderGitRepository(d, open){
+  const ready=d.state==='ready';
+  const branch=ready?'<span class="grepo-branch">⎇ '+esc(d.branch)+'</span>':'';
+  const lines=ready&&(d.added||d.removed)?'<span class="gadd">+'+d.added+'</span> <span class="gdel">-'+d.removed+'</span>':'';
+  const status=ready?'': ' gwarn';
+  const detail=ready ? renderGitFiles(d) : '<div class="gempty gwarn">'+(d.state==='uninitialized'?'当前会话副本尚未初始化，未计入汇总':'无法读取当前会话副本，未计入汇总')+'</div>';
+  const commits=ready&&d.unmerged?'<div class="gmore">'+d.unmerged+' 个提交未合并</div>':'';
+  const upstream=ready&&(d.ahead||d.behind)?'<div class="gmore">相对上游 ↑'+d.ahead+' ↓'+d.behind+'</div>':'';
+  return '<details class="grepo" data-repo="'+esc(d.project_path)+'"'+(open?' open':'')+'><summary>'+
+    '<span class="grepo-name">'+esc(d.name)+branch+'</span><span class="grepo-stat'+status+'">'+gitRepoState(d)+(lines?'<br>'+lines:'')+'</span></summary>'+
+    '<div class="grepo-body"><div class="gsub">'+esc(d.project_path)+'</div>'+
+    (d.path?'<div class="gsub">会话副本：'+esc(d.path)+'</div>':'')+detail+commits+upstream+'</div></details>';
+}
+function renderGitRepositories(d, pop){
+  const hadList=!!pop.querySelector('.grepos');
+  const expanded=new Set(Array.from(pop.querySelectorAll('details[open]'), node=>node.dataset.repo));
+  const changed=row=>row.dirty>0||row.unmerged>0;
+  const rows=[...d.repositories].sort((a,b)=>Number(changed(b))-Number(changed(a)));
+  pop.innerHTML='<div class="gph"><span class="gbr">代码变化</span><span class="gah">'+d.changed_repos+' / '+d.repo_count+' 仓库有变化</span></div>'+
+    (d.unavailable?'<div class="gmore gwarn">'+d.unavailable+' 个仓库未计入汇总</div>':'')+
+    '<div class="grepos">'+rows.map((row,i)=>renderGitRepository(row,hadList?expanded.has(row.project_path):i===0&&changed(row))).join('')+'</div>'+
+    '<div class="gmore">当前会话副本 · 增删行数不含未跟踪文件</div>';
+}
 function renderGitPop(){
   const d=S.git, pop=$("#gitPop");
   if(!d || !d.is_project){ pop.hidden=true; return; }
+  pop.classList.toggle('multi-repo', !!d.repositories);
+  if(d.repositories){ renderGitRepositories(d,pop); return; }
+  if(d.error){ pop.innerHTML='<div class="gempty gwarn">Git 状态读取失败</div>'; return; }
   if(!d.is_repo){ pop.innerHTML='<div class="gph"><span class="gbr">'+esc(d.name)+'</span></div>'+
     '<div class="gempty">该项目目录不是 git 仓库</div>'; return; }
   const ah=[]; if(d.ahead) ah.push("↑"+d.ahead); if(d.behind) ah.push("↓"+d.behind);

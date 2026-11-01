@@ -734,6 +734,26 @@
   #gitPop .gf .gp{color:var(--text);word-break:break-all}
   #gitPop .gmore{font-size:var(--fs-sm);color:var(--dim);padding-top:var(--sp-2)}
   #gitPop .gempty{font-size:var(--fs-sm);color:var(--dim)}
+  .gadd{color:var(--ok-fg)}
+  .gdel{color:var(--err-fg)}
+  #gitPop .gwarn,.tgit .gwarn{color:var(--warn)}
+  .tgit.multi-repo{max-width:calc(var(--sp-5)*17)}
+  #gitPop.multi-repo{width:min(420px,calc(100vw - var(--sp-5)*2));max-height:70dvh;overflow:auto}
+  #gitPop .grepos{margin-top:var(--sp-3)}
+  #gitPop .grepo+ .grepo{border-top:1px solid var(--line)}
+  #gitPop .grepo summary{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-4) 0;cursor:pointer;list-style:none}
+  #gitPop .grepo summary::-webkit-details-marker{display:none}
+  #gitPop .grepo summary::before{content:'›';color:var(--dim)}
+  #gitPop .grepo[open] summary::before{content:'⌄'}
+  #gitPop .grepo summary:focus-visible{outline:2px solid var(--accent);border-radius:var(--r-sm)}
+  #gitPop .grepo-name{flex:1;min-width:0;font-size:var(--fs-md);overflow-wrap:anywhere}
+  #gitPop .grepo-branch{display:block;font-size:var(--fs-sm);color:var(--dim);overflow-wrap:anywhere}
+  #gitPop .grepo-stat{text-align:right;font-size:var(--fs-sm);flex-shrink:0;font-variant-numeric:tabular-nums}
+  #gitPop .grepo-body{padding-bottom:var(--sp-4)}
+  @media(max-width:600px){
+    #gitPop.multi-repo{position:fixed;left:var(--sp-4);right:var(--sp-4);top:calc(var(--sp-5)*5);width:auto}
+    .tgit.multi-repo{max-width:calc(100vw - var(--sp-5)*6)}
+  }
   .gdot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok-fg);flex-shrink:0}
   .gdot-warn{background:var(--warn)}
   .gdot-err{background:var(--err-fg)}
