@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""隔热三线只读统计；复用面料 API 连接，不执行其 daily/scan 或写面料台账。"""
+"""隔热三线只读统计；显式调用本地共享读取器，不加载其它业务脚本。"""
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import sys
+from types import SimpleNamespace
 import json
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,8 @@ from pathlib import Path
 
 CN = timezone(timedelta(hours=8))
 BUSINESS = Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents/Wesley notes/2.重点项目"
-SOURCE = BUSINESS / "面料外贸/scripts/yxx_auto.py"
+CONFIG = Path.home() / ".config/anchor-mail/monitor.json"
+SHARED = Path.home() / "Desktop/Repos/AI_Skills/lemlist-readonly-stats/src"
 OUTPUT = BUSINESS / "隔热材料外贸/邮件获客/数据/自动化"
 CAMPAIGNS = {
     "陶纤": "cam_nqmKP7cQcuBgWG9Pc",
@@ -20,11 +22,37 @@ CAMPAIGNS = {
 }
 
 
-def load_source(path=SOURCE):
-    spec = importlib.util.spec_from_file_location("anchor_existing_api", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def load_cfg(path=CONFIG):
+    if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077:
+        raise ValueError("隔热独立配置缺失或权限不安全；不借用其它业务配置")
+    cfg = json.loads(path.read_text())
+    if cfg.get("version") != 1 or cfg.get("business") != "anchor":
+        raise ValueError("隔热配置版本或业务无效")
+    for key in ("bounce_window_days", "bounce_min_sample"):
+        if type(cfg.get(key)) is not int or cfg[key] <= 0:
+            raise ValueError("隔热窗口或最小样本无效")
+    threshold = cfg.get("anchor_alert_threshold")
+    if type(threshold) not in (int, float) or not 0 <= threshold <= 1:
+        raise ValueError("隔热告警阈值无效")
+    return {key: cfg[key] for key in ("bounce_window_days", "bounce_min_sample", "anchor_alert_threshold")}
+
+
+def load_source():
+    cfg = load_cfg()
+    package = SHARED / "lemlist_shared"
+    if not (package / "__init__.py").is_file():
+        raise ValueError("共享只读源码缺失；不回退其它业务脚本")
+    for name, module in tuple(sys.modules.items()):
+        if name == "lemlist_shared" or name.startswith("lemlist_shared."):
+            origin = getattr(module, "__file__", None)
+            if not origin or not Path(origin).resolve().is_relative_to(package.resolve()):
+                raise ValueError("共享只读模块来源冲突")
+    if str(SHARED) not in sys.path:
+        sys.path.insert(0, str(SHARED))
+    from lemlist_shared.services.lemlist_campaign import CampaignReader
+    reader = CampaignReader(account="隔热", campaigns=tuple(CAMPAIGNS.values()))
+    return SimpleNamespace(campaign=reader.campaign, leads=reader.leads, lem_acts=reader.activities,
+                           export_leads=reader.export_leads, load_cfg=lambda: dict(cfg))
 
 
 def fetch_pages(api, path, size):
@@ -77,19 +105,16 @@ def rolling_bounce(acts, end, cfg):
 
 
 def campaign_snapshot(api, cid, day):
-    info = api.lem("GET", f"/campaigns/{cid}")
+    info = api.campaign(cid)
     if not isinstance(info, dict) or info.get("_id") != cid:
         raise ValueError("campaign 读取失败或 ID 不匹配")
-    leads = fetch_pages(api, f"/campaigns/{cid}/leads", 500)
-    acts = {kind: fetch_pages(api, f"/activities?campaignId={cid}&type={kind}", 100)
-            for kind in ("emailsSent", "emailsBounced", "emailsReplied")}
+    leads = api.leads(cid)
+    acts = {kind: api.lem_acts(cid, kind) for kind in ('emailsSent', 'emailsBounced', 'emailsReplied')}
+    if any(rows is None for rows in acts.values()):
+        raise ValueError('共享事件读取失败，覆盖未知')
     sendable = api.export_leads(cid, "reviewed")
     start = datetime.combine(day, datetime.min.time(), CN)
-    result = {"id": cid, "name": info.get("name"), "status": info.get("status", info.get("state")),
-              "lead_states": dict(Counter(row.get("state") for row in leads)), "leads": len(leads),
-              "reviewed_state": sum(row.get("state") == "reviewed" for row in leads),
-              "sendable_export": len(sendable) if sendable is not None else None,
-              "warnings": []}
+    result = {'id': cid, 'name': info.get('name'), 'status': info.get('status', info.get('state')), 'lead_states': dict(Counter((row.get('state') for row in leads))), 'leads': len(leads), 'reviewed_state': sum((row.get('state') == 'reviewed' for row in leads)), 'sendable_export': len(sendable) if sendable is not None else None, 'warnings': [], 'activity_coverage': {kind: rows.coverage for kind, rows in acts.items()}}
     for kind, rows in acts.items():
         result[kind] = {"events_all": len(rows), "leads_all": len(unique_leads(rows)),
                         "events_day": daily_count(rows, start, start + timedelta(days=1))}

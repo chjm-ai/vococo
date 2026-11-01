@@ -185,7 +185,13 @@ def fake_monitor_api():
         if "/leads?" in path:
             return [{"state": "reviewed"}]
         return {"_id": path.rsplit("/", 1)[-1], "status": "running", "name": "ANCHOR-test"}
-    return SimpleNamespace(lem=lem, export_leads=lambda *a: [{}], load_cfg=lambda: cfg)
+    class Events(list):
+        coverage = {"coverage": "unverified", "continuity": "unverified"}
+    api = SimpleNamespace(lem=lem, export_leads=lambda *a: [{}], load_cfg=lambda: cfg,
+                          lem_acts=lambda *args: Events())
+    api.campaign = lambda cid: api.lem("GET", f"/campaigns/{cid}")
+    api.leads = lambda cid: monitor.fetch_pages(api, f"/campaigns/{cid}/leads", 500)
+    return api
 
 
 def test_running_and_reviewed_are_not_sends_and_only_anchor_is_collected(tmp_path):
@@ -273,9 +279,11 @@ def test_wrapper_runs_each_chain_once_and_combines_failure(monkeypatch, capsys, 
 
 
 def test_installed_fabric_daily_isolates_metrics_without_changing_shared_checks(tmp_path):
-    if not monitor.SOURCE.exists():
+    source = (Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents/Wesley notes/"
+              "2.重点项目/面料外贸/scripts/yxx_auto.py")
+    if not source.exists():
         pytest.skip("仅部署机验收外部共享脚本；CI 无该业务文件")
-    tree = ast.parse(monitor.SOURCE.read_text())
+    tree = ast.parse(source.read_text())
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "cmd_daily")
     called = []
     campaigns = [{"_id": cid, "name": "ANCHOR-" + name, "status": "running"}
