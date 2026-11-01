@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from pathlib import Path
 
@@ -16,6 +17,7 @@ async def run_git(cwd: str, *args: str) -> tuple[int, str, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
             "git", *args, cwd=cwd,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -128,9 +130,43 @@ def _session_repositories(session_key: str, agent: dict) -> list[dict]:
     return repositories
 
 
+async def _linked_repository(link: dict) -> dict | None:
+    """只检查显式关联目录，不递归搜索，也不把普通资料目录当仓库。"""
+    path = Path(link["path"]).expanduser().resolve()
+    code, root, _ = await run_git(str(path), "rev-parse", "--show-toplevel")
+    if code != 0:
+        if not (path / ".git").exists():
+            return None
+        return {"project_path": str(path), "path": str(path), "scope": "shared", "state": "error"}
+    root = str(Path(root.strip()).resolve())
+    return {"project_path": root, "path": root, "scope": "shared"}
+
+
+async def _linked_repositories(agent: dict, repositories: list[dict]) -> list[dict]:
+    semaphore = asyncio.Semaphore(4)
+
+    async def discover(link):
+        async with semaphore:
+            try:
+                return await _linked_repository(link)
+            except (OSError, ValueError):
+                return {"project_path": link["path"], "path": link["path"],
+                        "scope": "shared", "state": "error"}
+
+    linked = await asyncio.gather(*(discover(link) for link in agent.get("links", [])))
+    sources = {row["project_path"] for row in repositories}
+    result = []
+    for row in linked:
+        # 已绑定副本时保持原来的会话隔离口径，同源关联和目录别名不重复计数。
+        if row is not None and row["project_path"] not in sources:
+            sources.add(row["project_path"])
+            result.append(row)
+    return result
+
+
 async def _repository_status(repository: dict) -> dict:
     source, cwd = repository["project_path"], repository["path"]
-    row = {**repository, "name": Path(source).name}
+    row = {"scope": "session", **repository, "name": Path(source).name}
     if row.get("state") == "error":
         return row
     # 展示状态不能隐式初始化副本，更不能回退去读取业务主检出。
@@ -152,13 +188,14 @@ def _aggregate_repositories(repositories: list[dict], name: str) -> dict:
 
 
 async def session_repository_status(session_key: str) -> dict | None:
-    """只统计所属 Agent 的当前会话副本；旧的普通会话由调用方兼容处理。"""
+    """汇总会话副本与显式关联的共享仓库；旧的普通会话由调用方兼容处理。"""
     from ..memory import agents
 
     agent = agents.agent_for_session(session_key)
     if not agent or agent["id"] == agents.GENERAL_ID:
         return None
     repositories = _session_repositories(session_key, agent)
+    repositories.extend(await _linked_repositories(agent, repositories))
     if not repositories:
         return {"is_project": False}
     # 限制同时运行的 Git 进程数，多个仓库故障时也不会无限阻塞标题栏。

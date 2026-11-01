@@ -36,7 +36,7 @@ function applyGitBtn(d){
   if(!d || !d.is_project){ btn.hidden=true; pbtn.hidden=true; return; }
   pbtn.textContent=d.name; pbtn.hidden=!!d.repositories;
   btn.classList.toggle("multi-repo", !!d.repositories);
-  btn.title=d.repositories ? '当前会话代码变化：'+d.repo_count+' 个仓库，'+d.dirty+' 个文件，'+d.unmerged+' 个未合并提交'+(d.unavailable?'，'+d.unavailable+' 个仓库未计入汇总':'') : '项目 Git 状态';
+  btn.title=d.repositories ? '代码变化：'+d.repo_count+' 个仓库，'+d.dirty+' 个文件，'+d.unmerged+' 个未合并提交'+(d.unavailable?'，'+d.unavailable+' 个仓库未计入汇总':'')+(d.repositories.some(row=>row.scope==='shared')?'；含共享目录，可能包含其他会话改动':'') : '项目 Git 状态';
   if(!d.repositories && (!d.is_repo||d.error)){ btn.hidden=false; btn.textContent=d.error?'⎇ 读取失败':'⎇ 非 git 仓库'; return; }
   btn.hidden=false; btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0)||(d.unavailable>0));
 }
@@ -94,16 +94,17 @@ function gitRepoState(d){
 }
 function renderGitRepository(d, open){
   const ready=d.state==='ready';
-  const branch=ready?'<span class="grepo-branch">⎇ '+esc(d.branch)+'</span>':'';
+  const scope=d.scope==='shared'?'共享目录':'当前会话副本';
+  const branch='<span class="grepo-branch">'+scope+(ready?' · ⎇ '+esc(d.branch):'')+'</span>';
   const lines=ready&&(d.added||d.removed)?'<span class="gadd">+'+d.added+'</span> <span class="gdel">-'+d.removed+'</span>':'';
   const status=ready?'': ' gwarn';
-  const detail=ready ? renderGitFiles(d) : '<div class="gempty gwarn">'+(d.state==='uninitialized'?'当前会话副本尚未初始化，未计入汇总':'无法读取当前会话副本，未计入汇总')+'</div>';
+  const detail=ready ? renderGitFiles(d) : '<div class="gempty gwarn">'+(d.state==='uninitialized'?scope+'尚未初始化，未计入汇总':'无法读取'+scope+'，未计入汇总')+'</div>';
   const commits=ready&&d.unmerged?'<div class="gmore">'+d.unmerged+' 个提交未合并</div>':'';
   const upstream=ready&&(d.ahead||d.behind)?'<div class="gmore">相对上游 ↑'+d.ahead+' ↓'+d.behind+'</div>':'';
   return '<details class="grepo" data-repo="'+esc(d.project_path)+'"'+(open?' open':'')+'><summary>'+
     '<span class="grepo-name">'+esc(d.name)+branch+'</span><span class="grepo-stat'+status+'">'+gitRepoState(d)+(lines?'<br>'+lines:'')+'</span></summary>'+
     '<div class="grepo-body"><div class="gsub">'+esc(d.project_path)+'</div>'+
-    (d.path?'<div class="gsub">会话副本：'+esc(d.path)+'</div>':'')+detail+commits+upstream+'</div></details>';
+    (d.path&&d.scope!=='shared'?'<div class="gsub">会话副本：'+esc(d.path)+'</div>':'')+detail+commits+upstream+'</div></details>';
 }
 function renderGitRepositories(d, pop){
   const hadList=!!pop.querySelector('.grepos');
@@ -113,7 +114,8 @@ function renderGitRepositories(d, pop){
   pop.innerHTML='<div class="gph"><span class="gbr">代码变化</span><span class="gah">'+d.changed_repos+' / '+d.repo_count+' 仓库有变化</span></div>'+
     (d.unavailable?'<div class="gmore gwarn">'+d.unavailable+' 个仓库未计入汇总</div>':'')+
     '<div class="grepos">'+rows.map((row,i)=>renderGitRepository(row,hadList?expanded.has(row.project_path):i===0&&changed(row))).join('')+'</div>'+
-    '<div class="gmore">当前会话副本 · 增删行数不含未跟踪文件</div>';
+    (d.repositories.some(row=>row.scope==='shared')?'<div class="gmore gwarn">共享目录可能包含其他会话的改动</div>':'')+
+    '<div class="gmore">增删行数不含未跟踪文件</div>';
 }
 function renderGitPop(){
   const d=S.git, pop=$("#gitPop");
