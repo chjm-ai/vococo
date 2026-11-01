@@ -95,6 +95,16 @@ const assert=require('node:assert/strict');
     await page.waitForFunction(()=>!!S.stopping[S.conv]);
     assert.deepEqual(sent,['排队一','排队二'],'取消确认之前不能发送');
     assert.equal(await page.locator('#pending .pnow:disabled').count(),2);
+    const busyRow=page.locator('#pending .pi[aria-busy="true"]');
+    assert.equal(await busyRow.count(),1);
+    assert.equal(await busyRow.locator('.ptext').innerText(),'正在停止并发送…');
+    assert.equal(await busyRow.locator('.pdel:disabled').count(),2,'等待期间不能重复发送或删除该消息');
+    assert.equal(await busyRow.locator('.pnow svg').evaluate(svg=>getComputedStyle(svg).animationName),'spin');
+    await page.emulateMedia({reducedMotion:'reduce'});
+    assert.equal(await busyRow.locator('.pnow svg').evaluate(svg=>getComputedStyle(svg).animationName),'none');
+    await page.emulateMedia({reducedMotion:'no-preference'});
+    await page.waitForTimeout(250);
+    assert.equal(await busyRow.count(),1,'停止回执先到，取消终态未到时仍保持 loading');
     await page.evaluate(()=>handleEvent({type:'cancelled',conv:S.conv}));
     await page.waitForFunction(()=>!S.pendingSending[S.conv]);
     assert.deepEqual(sent,['排队一','排队二','优先发送']);
@@ -104,14 +114,19 @@ const assert=require('node:assert/strict');
     assert.equal(await page.locator('#wrap .row.me').filter({hasText:'优先发送'}).count(),1,'服务端回显不能重复创建气泡');
     assert.equal(await page.locator('#ta').inputValue(),'未发送的新草稿');
     assert.deepEqual(await page.evaluate(()=>S.pending[S.conv].map(x=>x.text)),['仍然排队']);
-    // 小屏幕和长文本也能点击，不挤出行边界。
-    await page.setViewportSize({width:375,height:812});
+    assert.equal(await page.locator('#pending .pi[aria-busy="true"]').count(),0);
+    // 各档屏宽的长文本不挤出行边界，字号和点击区域均已放大。
     await page.evaluate(()=>{S.pending[S.conv][0].text='很长的待发送消息'.repeat(30); drawPending();});
-    const fits=await page.locator('#pending .pnow').evaluate(button=>{
-      const row=button.closest('.pi').getBoundingClientRect(), box=button.getBoundingClientRect();
-      return box.left>=row.left && box.right<=row.right;
-    });
-    assert.ok(fits);
+    for(const width of [320,375,390,768,1280]){
+      await page.setViewportSize({width,height:812});
+      const sizes=await page.locator('#pending .pnow').evaluate(button=>{
+        const row=button.closest('.pi'), box=button.getBoundingClientRect(), bounds=row.getBoundingClientRect();
+        return {fits:box.left>=bounds.left && box.right<=bounds.right,width:box.width,height:bounds.height,
+          font:parseFloat(getComputedStyle(row).fontSize),icon:button.querySelector('svg').getBoundingClientRect().width};
+      });
+      assert.ok(sizes.fits); assert.equal(sizes.width,40); assert.ok(sizes.height>=56);
+      assert.equal(sizes.font,15); assert.equal(sizes.icon,24);
+    }
     // 切回会话但历史还在加载：S.stream 暂时为空，也必须先停止后台运行。
     await page.route('**/history?conv=stop-switch-active',route=>route.fulfill({json:{turns:[]}}));
     await page.evaluate(async()=>{
@@ -142,6 +157,17 @@ const assert=require('node:assert/strict');
     assert.equal(await page.evaluate(()=>S.pending[S.conv][0].text),'失败应保留');
     assert.ok(await page.evaluate(()=>!!S.pending[S.conv][0].error));
     assert.equal(await page.locator('#pending .pnow:disabled').count(),0);
+    // 停止失败：退出 loading，保留原需求，不误发。
+    await page.unroute('**/abort');
+    await page.route('**/abort',route=>route.fulfill({status:500,json:{error:'停止失败'}}));
+    await page.evaluate(async()=>{
+      await openConv('local-stop-error'); handleEvent({type:'start',conv:S.conv}); queuePending('停止失败保留');
+      await sendPendingNow(S.pending[S.conv][0].id);
+    });
+    assert.equal(await page.locator('#pending .pi[aria-busy="true"]').count(),0);
+    assert.equal(await page.locator('#pending .ptext').innerText(),'停止失败保留');
+    assert.equal(await page.locator('#pending .pnow:disabled').count(),0);
+    assert.equal(sent.at(-1),'切回后优先发送');
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({ok:true,aborts}));
   }finally{await browser.close();}
