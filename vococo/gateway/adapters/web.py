@@ -2713,8 +2713,11 @@ class WebAdapter:
 
     @_authed
     async def _handle_conv_git(self, request: web.Request) -> web.Response:
-        """会话对应项目的 git 状态;非项目会话回退到 serve 进程 cwd。"""
+        """优先汇总 Agent 当前会话的仓库副本，兼容旧项目会话。"""
         key = config.resolve_session_key("web", request.query.get("conv", ""))
+        repositories = await git_status.session_repository_status(key)
+        if repositories is not None:
+            return web.json_response(repositories)
         # task: 等非项目 key 认不出项目 hash,补 get_worktree 兜底(与 core.py 一致)
         cwd = config.project_cwd_for(key) or session_store.get_worktree(key)
         bound = cwd is not None
