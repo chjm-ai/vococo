@@ -375,8 +375,13 @@ function drawPending(){
     tx.textContent=it.text||((it.libraryRefs||[]).length ? "(作品引用)" : (it.audios||[]).length ? "(语音/音频)" : (it.files||[]).length ? "(附件)" : "(图片)");
     const del=el("button","pdel"); del.type="button"; del.title="删除"; del.textContent="×";
     del.onclick=()=>removePending(it.id);
+    const busy=!!S.stopping?.[S.conv] && it===S.pending[S.conv][0];
+    row.setAttribute("aria-busy",String(busy));
+    tx.title=tx.textContent;
+    if(busy){ tx.textContent="正在停止并发送…"; del.disabled=true; }
     const now=el("button","pdel pnow"); now.type="button";
-    now.title="停止当前回复并立即发送"; now.setAttribute("aria-label",now.title); now.innerHTML=ic("arrowUpToLine");
+    now.title=busy?"正在停止并发送":"停止当前回复并立即发送";
+    now.setAttribute("aria-label",now.title); now.innerHTML=ic(busy?"refresh":"arrowUpToLine");
     now.disabled=!!(S.stopping?.[S.conv] || S.pendingSending?.[S.conv]);
     now.onclick=()=>sendPendingNow(it.id);
     row.append(clk,tx,now,del);

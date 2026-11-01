@@ -1288,21 +1288,26 @@
   #projSelPop .mi.on{color:var(--accent)}
   #projSelPop .mi .ml{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #projSelPop .mi .mk{color:var(--accent);font-size:var(--fs-sm);flex-shrink:0}
-  #pending{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
+  #pending{display:flex;flex-direction:column;gap:var(--sp-3);margin-bottom:var(--sp-3)}
   #pending:empty{display:none}
   #pending.shake{animation:shake .3s}
   @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}
-  #pending .pi{display:flex;align-items:center;gap:8px;padding:var(--sp-2) var(--sp-4);border-radius:var(--r-md);
-    background:var(--card);border:1px solid var(--line2);font-size:var(--fs-md);color:var(--dim)}
-  #pending .pi .clock{flex-shrink:0}
+  #pending .pi{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);
+    background:var(--card);border:1px solid var(--line2);font-size:var(--fs-lg);color:var(--dim)}
+  #pending .pi .clock{flex-shrink:0;font-size:calc(var(--fs-xl) + var(--sp-1))}
   #pending .pi .ptext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #pending .pi .pdel{flex-shrink:0;width:20px;height:20px;border-radius:50%;border:none;cursor:pointer;
-    background:transparent;color:var(--dim);font-size:var(--fs-lg);line-height:1;display:inline-flex;
+  #pending .pi .pdel{flex-shrink:0;width:calc(var(--sp-5)*2 + var(--sp-3));height:calc(var(--sp-5)*2 + var(--sp-3));border-radius:var(--r-sm);border:none;cursor:pointer;
+    background:transparent;color:var(--dim);font-size:calc(var(--fs-xl) + var(--sp-1));line-height:1;display:inline-flex;
     align-items:center;justify-content:center}
   #pending .pi .pdel:hover{background:var(--err);color:var(--on-accent)}
   #pending .pi .pnow:hover{background:var(--panel2);color:var(--accent)}
-  #pending .pi .pnow svg{width:var(--sp-5);height:var(--sp-5)}
-  #pending .pi .pnow:disabled{opacity:.5;cursor:wait}
+  #pending .pi .pnow svg{width:calc(var(--sp-5) + var(--sp-3));height:calc(var(--sp-5) + var(--sp-3))}
+  #pending .pi .pdel:disabled{opacity:.5;cursor:wait}
+  #pending .pi[aria-busy="true"] .ptext{color:var(--accent)}
+  #pending .pi[aria-busy="true"] .pnow{opacity:1;color:var(--accent)}
+  #pending .pi[aria-busy="true"] .pnow svg{animation:spin calc(var(--t-base)*4) linear infinite}
+  #pending .pi .pdel:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  @media(prefers-reduced-motion:reduce){#pending .pi[aria-busy="true"] .pnow svg{animation:none}}
   /* 没图片时也保留这 3px:输入框 focus 态的外发光阴影要靠这点余量,
      不然贴着上边界会被裁掉一截 */
   #thumbs{display:flex;gap:8px;margin-bottom:3px;flex-wrap:wrap}
