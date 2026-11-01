@@ -247,7 +247,8 @@ function currentAgent(){
 }
 // 切会话/数据刷新后调:按钮只在 Agent 名下的会话出现;面板开着就跟到新 Agent
 function syncAgentHeader(){
-  const a=currentAgent(), btn=$("#convAgentBtn");
+  const a=currentAgent(), btn=$("#convAgentBtn"), name=$("#convAgentName");
+  name.textContent=a ? a.name : ""; name.title=a ? a.name : ""; name.hidden=!a;
   btn.hidden=!a;
   if(a){ btn.innerHTML=avatarSvg(a.avatar); btn.title=a.name+" · 动态 / 定时 / 职责 / 设置"; btn.classList.toggle("on", S.agentPanelOn); }
   // Agent 主会话标题 = Agent 名字(副标题标一下是主会话)
