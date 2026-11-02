@@ -754,8 +754,7 @@ function renderApNames(body, a, key, title, items, initial, offText){
   draw();
 }
 
-// 文件:家目录(vococo 管) + 工作目录第一层 + 关联(默认只读,可写需勾选)
-// 文件与关联:家目录(vococo 管)+ 工作目录第一层 + 关联目录(默认只读,可写需勾选)
+// 文件与关联:家目录(vococo 管)+ 工作目录第一层 + 统一授权的关联目录
 const AP_ROLE_DOCS=["AGENT.md","GOAL.md","PLAN.md","NOTES.md"];
 function renderApFileSections(body, a, d){
   const fileRow=(name, path, isDir)=>{
@@ -777,33 +776,6 @@ function renderApFileSections(body, a, d){
     for(const e of d.workdir_top) body.append(fileRow(e.name, d.workdir+"/"+e.name, e.dir));
   }
   renderApLinks(body, a);
-  if(a.execution_mode==="workspace") renderApRepositories(body, a);
-}
-function renderApRepositories(body, a){
-  const box=el("div"); body.append(box);
-  let repositories=a.repositories||[];
-  const save=async next=>{
-    let result;
-    try{ result=await agentPost("/agents/update",{id:a.id, repositories:next}); }catch(e){ alert(e.message); return; }
-    repositories=result.agent.repositories||[]; a.repositories=repositories; draw(); loadAgents();
-  };
-  const draw=()=>{
-    box.innerHTML="";
-    box.append(apSection("代码仓库"));
-    box.append(apEmpty("仅会话独立副本可写，原仓库只读；推送、发布仍需审批。"));
-    repositories.forEach((path, i)=>{
-      const row=el("div","aplink"), main=el("div","aptmain");
-      const name=el("div","aptname"); name.textContent=shortPath(path); name.title=path;
-      main.append(name);
-      const remove=el("button","more"); remove.textContent="✕"; remove.title="解除仓库绑定（下一轮生效，保留已有副本）";
-      remove.onclick=()=>{ if(confirm("解除仓库绑定？下一轮生效，已有副本和改动保留；当前执行中的命令不会强行中断。")) save(repositories.filter((_,j)=>j!==i)); };
-      row.append(main, remove); box.append(row);
-    });
-    const add=el("div","apadd"); add.textContent="＋ 绑定代码仓库";
-    add.onclick=()=>openDirPicker("选择 Git 仓库根目录","✓ 绑定", path=>save([...repositories, path]));
-    box.append(add);
-  };
-  draw();
 }
 // 关联目录:改了只重画这一块——同页上面还有技能/MCP/禁用工具,整页重画会冲掉没保存的输入、跳回顶部
 function renderApLinks(body, a){
@@ -817,25 +789,22 @@ function renderApLinks(body, a){
   const draw=()=>{
     box.innerHTML="";
     box.append(apSection("关联目录"));
-    if(!links.length) box.append(apEmpty("没有关联目录。关联后它知道去哪找资料,默认只读。"));
+    box.append(apEmpty("关联即授权读写；标准权限写其他目录需授权，完全访问无需关联。Git 仓库自动识别，开发默认使用会话独立副本。"));
     links.forEach((l, i)=>{
       const r=el("div","aplink");
       const main=el("div","aptmain");
       const p=el("div","aptname"); p.textContent=shortPath(l.path); p.title=l.path;
       const sub=el("div","aptsub"); sub.textContent=l.note||"";
       main.append(p, sub);
-      const w=el("label","apwrite"); w.innerHTML='<input type="checkbox"'+(l.writable?" checked":"")+'> 可写';
-      w.title="勾上后它往这里写文件不用再批";
-      w.querySelector("input").onchange=ev=>save(links.map((x,j)=>j===i?{...x, writable:ev.target.checked}:x));
       const del=el("button","more"); del.textContent="✕"; del.title="取消关联";
       del.onclick=()=>save(links.filter((x,j)=>j!==i));
-      r.append(main, w, del);
+      r.append(main, del);
       box.append(r);
     });
     const add=el("div","apadd"); add.textContent="＋ 关联目录";
-    add.onclick=()=>openDirPicker("关联一个目录(默认只读)","✓ 关联", p=>{
+    add.onclick=()=>openDirPicker("关联目录并授权读写","✓ 关联", p=>{
       const note=(prompt("备注一下这是什么(可留空)")||"").trim();
-      save([...links, {path:p, note, writable:false}]);
+      save([...links, {path:p, note}]);
     });
     box.append(add);
   };

@@ -43,8 +43,9 @@ def test_unbound_agent_requests_repository_before_coding():
     note = execution.prompt_note(execution.ExecutionPolicy(
         "business", Path("/workspace"), Path("/output"), (),
     ))
-    assert "先请主人在 Agent 设置中添加并绑定 Git 仓库" in note
-    assert "没有交互通道时报告缺少绑定" in note
+    assert "Git 仓库无需单独绑定" in note
+    assert "完全访问无需绑定或重复审批" in note
+    assert "先请主人在 Agent 设置中添加并绑定" not in note
     assert "不要关闭沙箱" not in note
 
 
@@ -54,8 +55,9 @@ def test_output_directory_prompt_respects_explicit_writable_link():
         (Path("/workspace"), Path("/output"), Path("/linked")),
     ))
     assert "默认写到正式成果目录" in note
-    assert "主人明确指定的可写关联目录" in note
-    assert "只读关联目录不能写入" in note
+    assert "关联目录也可作为成果目的地" in note
+    assert "标准权限可直接读写关联目录" in note
+    assert "只读关联目录不能写入" not in note
     assert "正式成果必须用绝对路径写到正式成果目录" not in note
 
 
@@ -85,7 +87,7 @@ async def test_copies_are_isolated_and_source_stays_readonly(isolated):
     assert not (copy / ".git/objects/info/alternates").exists()
     assert not git(copy, "remote")  # 没有发布地址时不保留指向主检出的 origin。
     assert danger._business_write_allowed({"file_path": str(copy / "article.md")}, str(policy.workspace), policy)
-    assert not danger._business_write_allowed({"file_path": str(source / "article.md")}, str(policy.workspace), policy)
+    assert danger._business_write_allowed({"file_path": str(source / "article.md")}, str(policy.workspace), policy)
     (copy / "article.md").write_text("仅修改副本\n")
     git(copy, "add", ".")
     git(copy, "-c", "user.name=测试", "-c", "user.email=test@example.invalid", "commit", "-m", "副本修改")

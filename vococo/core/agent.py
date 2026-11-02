@@ -1196,6 +1196,14 @@ async def stream_turn(
                 cloud_project_note += await _business_project_rules(str(business_policy.output_dir))
         else:
             cli_cwd, cloud_project_note = _cli_working_dir(cwd)
+            from . import business_repositories
+
+            owner = agents.agent_for_session(session_key) if session_key else None
+            if owner:
+                copies = await asyncio.to_thread(business_repositories.copies_for_session, owner, session_key)
+                for binding in copies:
+                    await asyncio.to_thread(business_repositories._prepare_copy, binding)
+                cloud_project_note += business_repositories.prompt_note(copies)
         if cloud_project_note:
             sys_prompt = {**sys_prompt, "append": sys_prompt.get("append", "") + cloud_project_note}
         if system_prompt_extra:

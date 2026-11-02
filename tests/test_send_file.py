@@ -384,15 +384,16 @@ async def test_writable_links_share_write_and_private_delivery_authorization(con
         assert "已交付" in await call(writable / "report.txt")
         entry = session_store.turn_artifacts(key, tid)[0]
         assert session_store.artifact_content(key, entry["id"]) == ("report.txt", "授权目录的成果".encode())
-        assert "未交付" in await call(readonly / "report.txt")
+        assert danger.classify("Write", {"file_path": str(readonly / "report.txt")}, str(root))[0] == "allow"
+        assert "已交付" in await call(readonly / "report.txt")
         (writable / "credentials.txt").write_text("content")
         assert "未交付" in await call(writable / "credentials.txt")
         (writable / "link.txt").symlink_to(writable / "report.txt")
         assert "未交付" in await call(writable / "link.txt")
-        assert len(events) == 1
+        assert len(events) == 2
         agents.update(agent["id"], links=[])
         assert "未交付" in await call(writable / "report.txt")
-        assert len(events) == 1
+        assert len(events) == 2
     finally:
         clarify.reset_current(route)
     # 同一文件不能借其他会话交付。

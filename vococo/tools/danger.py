@@ -721,24 +721,6 @@ def _inside_ai_brain(path: str, cwd: str | None) -> bool:
         return False
 
 
-def _inside_obsidian_vault(path: str, cwd: str | None) -> bool:
-    """目标文件是否落在 Obsidian vault 根内(含符号链接解析)。
-
-    vault 根取 config.OBSIDIAN_VAULT_DIR:默认是 AI_BRAIN_DIR 真实路径的父目录
-    (AI_BRAIN 软链指向 vault 内 "AI_Brain" 文件夹,iCloud 同步),也可用环境变量
-    OBSIDIAN_VAULT_DIR 显式覆盖——与 AI_BRAIN 同属业务笔记目录,后台任务
-    (无交互通道)也应能直接写入,不应每次被 escalate 拒绝。
-    """
-    if not path:
-        return False
-    try:
-        target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
-        vault_base = os.path.realpath(config.OBSIDIAN_VAULT_DIR)
-        return os.path.commonpath([target, vault_base]) == vault_base
-    except (ValueError, OSError):
-        return False
-
-
 def _inside_scratch_tmp(path: str, cwd: str | None) -> bool:
     """目标文件是否落在系统临时目录内(/tmp、$TMPDIR)。
 
@@ -771,6 +753,11 @@ def _inside_agent_writable(path: str, cwd: str | None) -> bool:
 
         bases = [str(agents.home(a["id"]))] + list(linked_file_roots(_current_session_key()))
         target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
+        repository_base = os.path.realpath(config.AGENT_WORKSPACES_DIR / ".repositories")
+        if os.path.commonpath([target, repository_base]) == repository_base:
+            from ..core.business_repositories import copies_for_session
+
+            bases.extend(binding.checkout for binding in copies_for_session(a, _current_session_key()))
         for b in bases:
             base = os.path.realpath(b)
             if os.path.commonpath([target, base]) == base:
@@ -795,9 +782,6 @@ def _business_write_allowed(tool_input: dict, cwd: str | None, policy) -> bool:
     if not os.path.isabs(os.path.expanduser(path)) and not cwd:
         return False
     target = os.path.realpath(os.path.join(cwd or "", os.path.expanduser(path)))
-    if any(os.path.commonpath([target, str(binding.source)]) == str(binding.source)
-           for binding in policy.repositories):
-        return False
     repository_base = os.path.realpath(config.AGENT_WORKSPACES_DIR / ".repositories")
     if os.path.commonpath([target, repository_base]) == repository_base:
         return any(os.path.commonpath([target, str(binding.checkout)]) == str(binding.checkout)
@@ -975,9 +959,6 @@ def classify(
             return ("allow", "", False)
         # AI_BRAIN 是 vococo 正常记忆目录,虽在项目根外,但不应每次弹审批
         if path and _inside_ai_brain(path, cwd):
-            return ("allow", "", False)
-        # Obsidian vault(含 AI_Brain 在内)同属业务笔记目录,后台任务也应能直写
-        if path and _inside_obsidian_vault(path, cwd):
             return ("allow", "", False)
         # 系统临时目录:一次性草稿脚本,不持久化,不应每次弹审批
         if path and _inside_scratch_tmp(path, cwd):
@@ -1335,7 +1316,13 @@ def _hard_guard(tool_name: str, tool_input: dict, cwd: str | None) -> dict | Non
         # 业务策略允许的成果可能在主仓库/iCloud 内，不套用开发 worktree 防线。
         outside = _writes_outside_worktree(tool_name, tool_input, cwd)
         if outside:
-            return _deny_outside_worktree(*outside)
+            from ..core.permissions import is_full
+            from ..memory import agents
+
+            # Agent 的未关联写入交给下方审批，不把并发隔离错误地解释成权限拒绝。
+            owner = agents.agent_for_session(_current_session_key())
+            if not (owner or is_full(_current_session_key())):
+                return _deny_outside_worktree(*outside)
     return None
 
 
