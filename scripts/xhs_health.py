@@ -2,18 +2,46 @@
 """小红书运营 · 链路健康检查(脚本定时任务,零 token,挂在「小红书运营」Agent 名下)。
 
 检查三段:爬虫(launchd「每日8点30分-小红书爬虫」,不在 vococo 里)→ 分析(vococo 任务,监听爬虫报告目录触发)
-→ 队列发布(vococo 脚本任务 b98cda06)。全部正常输出 ##CRON_SIGNAL:0##(不打扰);有问题列出原因和处理建议。
+→ 队列发布(配置指定的 vococo 脚本任务)。全部正常输出 ##CRON_SIGNAL:0##(不打扰);有问题列出原因和处理建议。
 
 2026-10-01 建:当天发现爬虫 09-30(断网)、10-01(9333 端口 Chrome 页面卡死)连续两天失败,没人知道。
 """
 import datetime
 import json
+import os
 import pathlib
+import re
+import sys
 
-HOME = pathlib.Path.home()
-CRAWL = HOME / "Repos/linxai-xhs-research"
-CRON_JOBS = HOME / "Repos/vococo/data/cron_jobs.json"  # 读主仓的(worktree 里跑也看线上任务状态)
-PUBLISH_JOB = "b98cda06"
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from vococo.instance_config import section
+
+CRAWL = CRON_JOBS = None
+PUBLISH_JOB = PUBLISH_LOG = ""
+
+
+def configure(path=None) -> None:
+    global CRAWL, CRON_JOBS, PUBLISH_JOB, PUBLISH_LOG
+    if path is None:
+        path = pathlib.Path(os.environ.get("VOCOCO_INSTANCE_CONFIG") or
+                            pathlib.Path(__file__).resolve().parents[1] / "data/instance_config.json")
+    values = section("xhs_health", path=pathlib.Path(path))
+    paths = {}
+    for key in ("crawl_dir", "cron_jobs_path"):
+        value = values.get(key)
+        if not isinstance(value, str) or not value.strip() or not pathlib.Path(value).expanduser().is_absolute():
+            raise ValueError(f"xhs_health.{key} 必须是绝对路径")
+        paths[key] = pathlib.Path(value).expanduser()
+    job_id = values.get("publish_job_id")
+    if not isinstance(job_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", job_id):
+        raise ValueError("xhs_health.publish_job_id 必须是有效的任务编号")
+    log = values.get("publish_log_path")
+    if not isinstance(log, str) or not log.strip() or any(c in log for c in "\r\n\x00"):
+        raise ValueError("xhs_health.publish_log_path 必须是非空日志位置文本")
+    CRAWL, CRON_JOBS = paths["crawl_dir"], paths["cron_jobs_path"]
+    PUBLISH_JOB, PUBLISH_LOG = job_id, log
+
+
 now = datetime.datetime.now()
 today = now.date().isoformat()
 
@@ -64,7 +92,7 @@ def crawler() -> tuple[list[str], list[str], datetime.datetime | None]:
     if now.hour < 10:  # 8:30 开跑,正常 15 分钟内完成;10 点前不算失败
         return ["爬虫还在跑或未到检查时间"], [], None
     if not todays:
-        return [], ["爬虫今天没开跑(电脑睡眠或 launchd 没触发);可手动跑 ~/Repos/linxai-xhs-research/scripts/daily.sh"], None
+        return [], [f"爬虫今天没开跑(电脑睡眠或 launchd 没触发);可手动跑 {CRAWL / 'scripts/daily.sh'}"], None
     return [], [crawler_failure(todays)], None
 
 
@@ -88,11 +116,17 @@ def publish() -> tuple[list[str], list[str]]:
     last = job.get("last_run_at") or 0
     recent = (now.timestamp() - last) < 26 * 3600
     if recent and job.get("last_status") == "error":
-        return [], ["队列发布上一轮失败:先看远程机 ~/Library/Logs/linxai-xhs-publish.log(失败项不会隔天自动补发)"]
+        return [], [f"队列发布上一轮失败:先看远程机 {PUBLISH_LOG}(失败项不会隔天自动补发)"]
     return (["发布正常"] if recent else ["发布今天没轮到"]), []
 
 
 def main() -> None:
+    try:
+        configure()
+    except (OSError, ValueError) as exc:
+        print(f"⚠️ 小红书巡检配置不可用，未检查任何业务目标：{exc}")
+        print("##CRON_SIGNAL:1##")
+        sys.exit(1)
     ok, bad, done_at = crawler()
     for part in (analysis(done_at), publish()):
         ok += part[0]

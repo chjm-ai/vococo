@@ -91,6 +91,7 @@ Bash 与同步子代理使用正常系统网络和命令，不再注入业务沙
 | `mcp` | `task_keywords`：工具名到关键词列表；`groups`：组名到工具名列表，`"all"` 表示所有已注册外部 MCP |
 | `local_services` | `display_names`：launchd 标签到显示名；`proxy_launchd_label`：本机代理标签，不含 `gui/UID/`；未配置则不自动重启 |
 | `upwork` | `cdp_port`、`chrome_bin`、`chrome_profile`、`output_dir`、`search_queries`、`match_keywords`；路径为绝对路径，关键词列表可为空 |
+| `xhs_health` | `crawl_dir`：爬虫项目绝对路径；`cron_jobs_path`：正式任务 JSON 绝对路径；`publish_job_id`：发布任务编号；`publish_log_path`：远程发布日志位置（仅用于提示，不读取或执行） |
 
 旧安装升级前，从**改动前的提交**提取原值，只新建权限为 `0600` 的文件，不覆盖、不联网：
 
@@ -108,6 +109,14 @@ python3 scripts/migrate_local_preferences.py --source-ref <旧提交> --output /
 Upwork 默认读取脚本所属安装的 `data/instance_config.json`，可用 `VOCOCO_INSTANCE_CONFIG` 指定其他配置文件。
 运行前先验证配置，不需要助理登录令牌；配置不全则报错退出，不启动 Chrome、不写去重历史。
 保留原 `output_dir` 就会继续使用原有 `seen_ids.json`；不会自动复制或重置历史。
+
+小红书巡检同样支持 `VOCOCO_INSTANCE_CONFIG`，缺配置时输出异常信号并退出，不猜目录或任务。
+从小红书配置外置前的提交追加原值（不执行巡检、不改任务启停状态）：
+
+```sh
+python3 scripts/migrate_local_preferences.py --section xhs_health --source-ref <旧提交> --output /绝对/正式/data/instance_config.json
+# 检查通过后，同一命令加 --apply；旧配置先备份，其他配置节保持不变。
+```
 
 必须写入正式运行目录，不只是开发 worktree。新安装可从 `{"version":1}` 开始按需配置；
 未配置的任务桥、公开分享和远端发布拒绝执行，偏好/工具组合为空，不猜个人目标。
