@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""陶纤旧扫描的仓库受控接替；原状态、60 秒重叠和首次不追历史保持不变。"""
+"""已冻结：命令行入口停用；仅供离线测试，正式扫描归 anchor-mail-ops Skill。"""
 import argparse
 import json
 import time
 from pathlib import Path
 
+from anchor_legacy import refuse_legacy_run
 from anchor_gmail_scan import (Gmail, ScanError, classify, forward_id, forward_raw,
                                locked, save, message_summary, reclassify_manual)
 
@@ -102,24 +103,9 @@ def read_only(client, path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scan", action="store_true", help="沿用旧定时入口参数，允许实际转发")
-    args = parser.parse_args()
-    try:
-        client = Gmail(CREDENTIAL, ADDRESS)
-        if args.scan:
-            from anchor_gmail_scan import SEND_SCOPES
-            if not client.scopes & SEND_SCOPES:
-                raise ScanError("未确认转发 scope，拒绝运行")
-            with locked(STATE.with_suffix(".lock")):
-                result = scan(client, STATE, int(time.time()))
-        else:
-            result = read_only(client, STATE)
-    except Exception as exc:
-        result = {"coverage": "blocked", "error": str(exc) if isinstance(exc, ScanError) else type(exc).__name__}
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    failed = result["coverage"] not in ("ok", "read_only")
-    print(f"##CRON_SIGNAL:{int(failed or bool(result.get('submitted_forward_ids')))}##")
-    return int(failed)
+    parser.add_argument("--scan", action="store_true", help="旧参数，入口已停用")
+    parser.parse_args()
+    return refuse_legacy_run()
 
 
 if __name__ == "__main__":

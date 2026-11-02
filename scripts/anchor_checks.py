@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""原地接替 13f146ce；固定中文模板直出，异常也不调用模型。"""
+"""已冻结：仅允许 --fixture 离线验收；正式巡检归 anchor-mail-ops Skill。"""
 import argparse
 import json
 import os
@@ -9,6 +9,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from anchor_legacy import refuse_legacy_run
 from anchor_report import LINES, event, report
 
 ROOT = Path(__file__).resolve().parent
@@ -127,6 +128,8 @@ def main(argv=None):
     parser.add_argument("--fixture", type=Path, help="只读回执文件；不启动任何扫描、网络或邮件操作")
     parser.add_argument("--raw-dir", type=Path)
     args = parser.parse_args(argv)
+    if not args.fixture:
+        return refuse_legacy_run()
     if args.fixture:
         raw = args.raw_dir.resolve() if args.raw_dir else None
         production = RAW_DIR.resolve()
@@ -137,7 +140,7 @@ def main(argv=None):
     replay = ""
     try:
         replay = replay_pending(args.raw_dir)
-        results = json.loads(args.fixture.read_text()) if args.fixture else collect_results()
+        results = json.loads(args.fixture.read_text())
         results = {stage: parse_result(results.get(stage, {})) for stage in ("ceramic", "gmail", "monitor")}
         alerts = bounce_alerts(results, args.raw_dir)
         try:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""隔热两新箱独立扫描。默认只读；--apply 才转发；不借用其他箱的 OAuth。"""
+"""已冻结：命令行入口停用；仅供离线测试，正式扫描归 anchor-mail-ops Skill。"""
 from __future__ import annotations
 
 import argparse
@@ -21,6 +21,8 @@ from email.utils import parseaddr
 from pathlib import Path
 
 import requests
+
+from anchor_legacy import refuse_legacy_run
 
 GM = "https://gmail.googleapis.com/gmail/v1/users/me"
 DESTINATION = "ray.chen@anchorgd.com"
@@ -334,14 +336,8 @@ def run_mailbox(address, credential, apply, state_dir=STATE_DIR):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true")
-    args = parser.parse_args()
-    results = {address: run_mailbox(address, credential, args.apply)
-               for address, credential in MAILBOXES.items()}
-    print(json.dumps(results, ensure_ascii=False, indent=2))
-    failed = any(row["coverage"] not in ("ok", "read_only") for row in results.values())
-    forwarded = any(row.get("counts", {}).get("sent", 0) for row in results.values())
-    print(f"##CRON_SIGNAL:{int(failed or forwarded)}##")
-    return int(failed)
+    parser.parse_args()
+    return refuse_legacy_run()
 
 
 if __name__ == "__main__":

@@ -181,9 +181,10 @@ def test_missing_pending_receipt_warns_instead_of_silence(tmp_path, monkeypatch,
 
 
 def test_archive_failure_keeps_available_data(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(checks, "collect_results", sample)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps(sample()))
     monkeypatch.setattr(checks, "save_raw", lambda *a: (_ for _ in ()).throw(OSError()))
-    assert checks.main(["--raw-dir", str(tmp_path)]) == 1
+    assert checks.main(["--fixture", str(fixture), "--raw-dir", str(tmp_path / "raw")]) == 1
     text = capsys.readouterr().out
     assert "14 / 0 / 0" in text and "存档失败" in text
 
