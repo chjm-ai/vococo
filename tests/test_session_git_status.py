@@ -225,7 +225,7 @@ async def test_bound_session_copy_takes_priority_over_linked_source(isolated):
     agents.update(owner["id"], links=[{"path": str(path), "writable": True}
                                      for path in (sources[0], linked)])
     result = await git_status.session_repository_status(key)
-    assert result["repo_count"] == 4
+    assert result["repo_count"] == 2  # 关联列表是完整配置，取消的旧仓库不会复活。
     assert result["dirty"] == 1
     assert result["repositories"][0]["scope"] == "session"
     assert result["repositories"][-1]["scope"] == "shared"

@@ -1,4 +1,4 @@
-"""业务仓库绑定：主检出只读，每会话使用不共享 Git 元数据的独立副本。"""
+"""关联目录自动识别 Git 仓库，每会话使用独立副本避免并发覆盖。"""
 from __future__ import annotations
 
 import asyncio
@@ -34,11 +34,30 @@ def normalize_repositories(value) -> list[str]:
     return paths
 
 
+def repository_sources(agent: dict) -> list[str]:
+    """只识别关联目录本身，不递归扫描；保留旧仓库配置的兼容读取。"""
+    roots = list(agent.get("repositories", []))
+    for link in agent.get("links", []):
+        path = Path(link["path"]).expanduser().resolve()
+        if not path.is_dir():
+            continue
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=2,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue  # 目录授权不依赖 Git 是否可用；状态面板单独报告仓库故障。
+        if result.returncode == 0:
+            roots.append(str(Path(result.stdout.strip()).resolve()))
+    return list(dict.fromkeys(roots))
+
+
 def copies_for_session(agent: dict, session_key: str) -> tuple[RepositoryCopy, ...]:
     session = hashlib.sha256(session_key.encode()).hexdigest()[:20]
     base = config.AGENT_WORKSPACES_DIR.expanduser().resolve() / ".repositories" / agent["id"] / session
     copies = []
-    for source in agent.get("repositories", []):
+    for source in repository_sources(agent):
         root = Path(source).expanduser().resolve()
         digest = hashlib.sha256(str(root).encode()).hexdigest()[:12]
         checkout = base / digest
@@ -111,23 +130,20 @@ async def prepare_repositories(policy) -> None:
 
 
 def prompt_note(copies: tuple[RepositoryCopy, ...]) -> str:
+    guidance = (
+        "代码开发默认由当前 Agent 自行完成。Git 仓库无需单独绑定，关联目录会自动识别。"
+        "没有关联目录不代表禁止开发：标准权限下写未关联目录需授权，完全访问无需绑定或重复审批。"
+        "并发开发默认使用当前会话的独立副本；未列出的仓库也应先建立独立副本，不能把开发隔离当作权限拒绝。"
+        "修改前读取目标仓库的 AGENTS.md/CLAUDE.md，保留已有未提交修改。"
+        "业务部署沿用仓库部署脚本或 CI/CD；独立 HTML 报告分享仍走 publish_website。"
+        "推送、发布按当前有效权限处理，不能一律宣称需要审批。"
+    )
     if not copies:
-        return (
-            "需要编写或修改项目代码时，先请主人在 Agent 设置中添加并绑定 Git 仓库；"
-            "没有现成仓库时请主人确定仓库目录并初始化，不得擅自把正式代码写入临时目录。"
-            "没有交互通道时报告缺少绑定并暂停代码修改，不得绕过权限或自动转派。"
-        )
-    rows = "\n".join(f"- 只读原仓库：{x.source} → 可写副本：{x.checkout}（分支 {x.branch}）" for x in copies)
+        return guidance
+    rows = "\n".join(f"- 原目录：{x.source} → 会话副本：{x.checkout}（分支 {x.branch}）" for x in copies)
     return (
-        "\n## 已绑定代码仓库\n" + rows + "\n"
-        "代码开发默认由当前 Agent 自行完成，不仅因涉及代码就委派其他 Agent。"
-        "修改前先读取对应副本的 AGENTS.md/CLAUDE.md，规则仅用于该仓库。"
-        "修改、构建、本地提交必须在上述可写副本操作；任务给出的原仓库路径也要换成副本路径。"
-        "不要写原仓库、不要直接操作原仓库主分支。副本只含已提交内容，不带原目录的未提交修改、"
-        ".env 或 node_modules；缺少依赖或部署配置时先说明，不得猜测或外发凭据。"
-        "业务网站/应用上线沿用仓库既有部署脚本或 CI/CD，此时临时作品发布工具 publish_website 不适用；"
-        "不能因该工具不支持业务域名而拒绝执行仓库部署流程。"
-        "仓库内的临时 HTML 报告、材料、PPT 若只是独立分享，仍走 publish_website，按发布目的判断。"
-        "副本不会自动同步远端，继续开发前先检查分支和远端状态。推送、发布仍走原有审批，"
-        "无人批准就停在本地提交，不得因绑定仓库跳过审批。"
+        "\n## 关联目录中的 Git 仓库\n" + rows + "\n" + guidance
+        + "修改、构建及本地提交默认在会话副本进行，这不是原目录只读的权限限制。"
+        "副本只含已提交内容，不带原目录未提交修改、.env 或 node_modules，也不会自动同步远端。"
+        "缺少依赖或部署配置先说明，不得猜测或外发凭据。"
     )

@@ -91,7 +91,7 @@ def test_policy_creates_only_local_workspace_and_tmp(env):
     assert (policy.workspace / "tmp").is_dir()
     assert policy.output_dir == output.resolve()
     assert {policy.workspace, output, agents.home(aid), writable} <= set(policy.writable_roots)
-    assert readonly not in policy.writable_roots
+    assert readonly in policy.writable_roots  # 旧只读开关不再覆盖关联授权。
     assert not output.exists() and not writable.exists() and not readonly.exists()
     assert sorted(p.name for p in policy.workspace.iterdir()) == ["tmp"]
     assert config.resolve_execution_root(session_key=key) == str(output)
