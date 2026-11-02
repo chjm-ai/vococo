@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""隔热三线只读统计；显式调用本地共享读取器，不加载其它业务脚本。"""
+"""已冻结：命令行入口停用；仅供离线测试，正式统计归 anchor-mail-ops Skill。"""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +9,8 @@ import json
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from anchor_legacy import refuse_legacy_run
 
 CN = timezone(timedelta(hours=8))
 BUSINESS = Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents/Wesley notes/2.重点项目"
@@ -152,19 +154,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--day", type=lambda value: datetime.strptime(value, "%Y-%m-%d").date())
     parser.add_argument("--read-only", action="store_true", help="不落盘，只读核查")
-    args = parser.parse_args()
-    day = args.day or datetime.now(CN).date() - timedelta(days=1)
-    try:
-        result = collect(load_source(), day)
-        if not args.read_only:
-            record(result, OUTPUT)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        failed = any(row.get("error") or row.get("warnings") for row in result["campaigns"].values())
-    except Exception as exc:
-        print(f"隔热统计未覆盖：{type(exc).__name__}")
-        failed = True
-    print(f"##CRON_SIGNAL:{int(failed)}##")
-    return int(failed)
+    parser.parse_args()
+    return refuse_legacy_run()
 
 
 if __name__ == "__main__":

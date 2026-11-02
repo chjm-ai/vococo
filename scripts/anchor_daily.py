@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""只读取最近三线巡检原始回执，不执行扫描或网络操作。"""
+"""已冻结：命令行入口停用；仅供离线测试，正式日报归 anchor-mail-ops Skill。"""
 import argparse
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from anchor_legacy import refuse_legacy_run
 from anchor_checks import RAW_DIR
 from anchor_report import report
 
@@ -41,14 +42,8 @@ def latest_report(directory, now, jobs_path=JOBS_PATH):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw-dir", type=Path, default=RAW_DIR)
-    args = parser.parse_args()
-    try:
-        text, failed = latest_report(args.raw_dir, datetime.now(timezone.utc))
-    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
-        print(f"日报无法确认近期三箱覆盖：{exc}；请查看巡检异常，不得报告零询盘。")
-        return 1
-    print(text)
-    return int(failed)
+    parser.parse_args()
+    return refuse_legacy_run()
 
 
 if __name__ == "__main__":

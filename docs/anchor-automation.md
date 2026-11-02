@@ -1,6 +1,26 @@
-# 隔热三线巡检与两新箱转发
+# 隔热业务迁移指引与冻结历史
 
-## 范围与入口
+## 当前入口（2026-11-02）
+
+- 唯一维护源是独立 `anchor-mail-ops` Skill；正式操作以其 `SKILL.md` 与 `references/migration.md` 为准，不使用本仓库旧脚本。
+- vococo 只负责调度、审批、通知。现有正式任务已迁移；本次不改新 Skill、任务配置、邮箱状态或邮件。
+- 本仓库六个旧业务脚本保留作历史参考与离线回归，不删除。五个带 CLI 的旧入口默认均非零拒绝运行，输出停用提示与 `##CRON_SIGNAL:1##`；包括旧只读参数也不能运行。不自动跳转新 Skill，不读取业务状态，不发信、不落业务台账。
+- `anchor_checks.py` 仅保留显式 `--fixture` 离线验收；必须指定与生产回执目录独立、互不包含的 `--raw-dir`。只读取指定 fixture 和该独立目录、写入测试回执，不启动扫描或网络。fixture 最后一行仍为信号 0，错误仍以非零退出码报告。
+- `anchor_report.py` 模板函数和其余旧库函数仅为离线测试保留，并非生产支持入口；导入旧函数不构成运行真实业务的授权。
+- `scripts/patches/yxx_anchor_isolation.patch` 仅保留历史，不应重新应用到已迁移业务。旧副本不得直接恢复生产；回退需另行核验和授权。
+
+离线验收示例（fixture 必须是测试数据，不用真实邮箱验证）：
+
+```sh
+python3 scripts/anchor_checks.py --fixture /path/to/test-fixture.json --raw-dir /tmp/anchor-fixture-raw
+uv run python -m pytest tests/test_anchor_legacy.py tests/test_anchor_report.py tests/test_anchor_automation.py tests/test_anchor_mail_safety.py tests/test_anchor_reply_association.py tests/test_anchor_warmup_migration.py -q
+```
+
+## 以下仅为历史记录，不代表当前行为或配置
+
+下列 2026-10-27 的生产命令、授权状态、任务编号及验收数据均已过时，**禁止照此操作**。旧默认扫描、转发和读取入口现在全部拒绝执行；历史副本也未同步新 Skill 的后续业务修复。
+
+## 历史：范围与入口
 
 - `scripts/anchor_monitor.py`：固定三个 ANCHOR campaign，只读 Lemlist。复用外部 `面料外贸/scripts/yxx_auto.py` 的连接与 reviewed CSV 导出，不调用 daily、scan、验证、暂停或导入逻辑。
 - `scripts/anchor_gmail_scan.py`：只覆盖过滤管、微孔板两个新箱；默认只读核查，`--apply` 才允许转发到 `ray.chen@anchorgd.com`。
@@ -70,7 +90,7 @@ python3 scripts/anchor_gmail_scan.py
 
 测试中外发均用内存替身；真实接口核查只有 Lemlist GET/CSV 导出及 Gmail OAuth/读取。不要运行整条生产 wrapper 来“测试”，因为其包含已授权的真实回复转发。
 
-正式调度命令（13f146ce 本轮已核实配置为下列命令；本次保持频率、模型和命令不变，合并 main 生效）：
+历史调度命令（已失效，禁止执行；不是当前任务配置）：
 
 ```sh
 python3 /Users/wesley/Repos/vococo/scripts/anchor_checks.py

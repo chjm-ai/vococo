@@ -266,7 +266,7 @@ def test_overlapping_scan_lock_is_rejected(tmp_path):
                 pytest.fail("不应允许同箱并发")
 
 
-def test_wrapper_runs_each_chain_once_and_combines_failure(monkeypatch, capsys, tmp_path):
+def test_frozen_wrapper_never_starts_scans(monkeypatch, capsys, tmp_path):
     checks = load_script("anchor_checks")
     calls = []
     def run(command, **kwargs):
@@ -274,8 +274,12 @@ def test_wrapper_runs_each_chain_once_and_combines_failure(monkeypatch, capsys, 
         return SimpleNamespace(stdout="##CRON_SIGNAL:1##\n", stderr="模拟失败", returncode=1)
     monkeypatch.setattr(checks.subprocess, "run", run)
     assert checks.main(["--raw-dir", str(tmp_path)]) == 1
-    assert len(calls) == 3
-    assert capsys.readouterr().out.count("##CRON_SIGNAL:") == 1
+    assert calls == []
+    text = capsys.readouterr().out
+    assert "已停用" in text and "anchor-mail-ops" in text
+    assert text.count("##CRON_SIGNAL:") == 1
+    assert "##CRON_SIGNAL:1##" in text
+    assert not list(tmp_path.iterdir())
 
 
 def test_installed_fabric_daily_isolates_metrics_without_changing_shared_checks(tmp_path):
