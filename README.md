@@ -92,6 +92,7 @@ Bash 与同步子代理使用正常系统网络和命令，不再注入业务沙
 | `local_services` | `display_names`：launchd 标签到显示名；`proxy_launchd_label`：本机代理标签，不含 `gui/UID/`；未配置则不自动重启 |
 | `upwork` | `cdp_port`、`chrome_bin`、`chrome_profile`、`output_dir`、`search_queries`、`match_keywords`；路径为绝对路径，关键词列表可为空 |
 | `xhs_health` | `crawl_dir`：爬虫项目绝对路径；`cron_jobs_path`：正式任务 JSON 绝对路径；`publish_job_id`：发布任务编号；`publish_log_path`：远程发布日志位置（仅用于提示，不读取或执行） |
+| `cron_job_defaults` | 按现有任务编号补入 `failure_policy`、`track_script_runs`；仅补缺失字段，不覆盖已有策略、不创建任务 |
 
 旧安装升级前，从**改动前的提交**提取原值，只新建权限为 `0600` 的文件，不覆盖、不联网：
 
@@ -277,6 +278,12 @@ agent 派生的 `claude` 子进程会同步阻塞冻住事件循环。所以用 
 Agent。脚本末行输出 `##CRON_SIGNAL:0##` 时原样展示结果、零 LLM 调用;输出
 `##CRON_SIGNAL:1##` 时才按可选 `summarize_prompt` 做一次轻量总结。
 也可以直接对它说「每天早上 8 点给我发 XX」——它会用 `add_cron_job` 建好等你确认。
+
+任务数据可携带两项策略，调度器不识别任何特定业务编号：
+- `failure_policy`：省略或 `default` 保持同错抑制/自动停用；`always_notify` 每次失败均提醒且不自动停用；`always_notify_script` 仅在脚本模式下使用后一行为。
+- `track_script_runs`：布尔值，默认 `false`；设为 `true` 时，脚本模式注入 `VOCOCO_CRON_RUN_ID` 与 `VOCOCO_CRON_PENDING_RUN_IDS`，保留运行编号、未确认通知及原补播协议。脚本必须支持该协议；只开配置不能替不兼容脚本补播。
+
+旧安装升级时，可在私有 `instance_config.json` 的 `cron_job_defaults` 按任务编号准备上述两字段；新代码首次读取任务时，在调度器持锁事务内补入 `cron_jobs.json`，不从外部覆盖正在更新的任务文件。不改命令、调度、启停、历史或在途运行字段；已有策略优先，未知策略或错误类型报错，不静默降级。补入后移除 defaults 不会清除任务上的策略；改策略需在任务数据中显式设值，管理界面普通编辑会保留它们。
 
 ## 快速开始
 

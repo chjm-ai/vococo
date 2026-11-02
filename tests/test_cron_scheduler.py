@@ -326,15 +326,15 @@ async def test_repeated_same_error_goes_quiet_then_auto_disables(cron_env, monke
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("job_id", ["13f146ce", "f4a2a099"])
-async def test_special_script_repeated_errors_always_push_and_remain_enabled(cron_env, monkeypatch, job_id):
+@pytest.mark.parametrize("policy", ["always_notify_script", "always_notify"])
+async def test_policy_script_repeated_errors_always_push_and_remain_enabled(cron_env, monkeypatch, policy):
     monkeypatch.setattr(scheduler, "FAIL_DISABLE_SPAN_SEC", 0)
 
     async def fake_subprocess_shell(cmd, **kw):
         return _FakeProc(b"script failed", returncode=1)
 
     monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
-    job = _make_script_job(id=job_id, fail_streak=4, fail_digest="old", fail_since=1)
+    job = _make_script_job(failure_policy=policy, fail_streak=4, fail_digest="old", fail_since=1)
     pushes = []
 
     async def fake_push(platform, chat_id, text):
@@ -354,7 +354,26 @@ async def test_special_script_repeated_errors_always_push_and_remain_enabled(cro
 
 
 @pytest.mark.anyio
-async def test_special_script_run_ids_are_unique_and_running_is_persisted(cron_env, monkeypatch):
+@pytest.mark.parametrize("job_id", ["13f146ce", "f4a2a099", "ordinary"])
+async def test_unconfigured_ids_use_standard_policy_without_run_tracking(cron_env, monkeypatch, job_id):
+    monkeypatch.setattr(scheduler, "FAIL_DISABLE_SPAN_SEC", 0)
+
+    async def fake_subprocess_shell(cmd, **kw):
+        assert "VOCOCO_CRON_RUN_ID" not in (kw["env"] or {})
+        assert "VOCOCO_CRON_PENDING_RUN_IDS" not in (kw["env"] or {})
+        return _FakeProc(b"script failed", returncode=1)
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+    job = _make_script_job(id=job_id)
+    for _ in range(scheduler.FAIL_DISABLE_STREAK):
+        await scheduler._run_script_job(job, _noop_coro)
+    saved = scheduler.load_jobs()[0]
+    assert saved["enabled"] is False
+    assert not any(key in saved for key in ("last_run_id", "running_run_id", "pending_run_ids"))
+
+
+@pytest.mark.anyio
+async def test_tracked_script_run_ids_are_unique_and_running_is_persisted(cron_env, monkeypatch):
     seen = []
 
     async def fake_subprocess_shell(cmd, **kw):
@@ -365,7 +384,7 @@ async def test_special_script_run_ids_are_unique_and_running_is_persisted(cron_e
         return _FakeProc(b"##CRON_SIGNAL:0##", returncode=0)
 
     monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
-    job = _make_script_job(id="13f146ce")
+    job = _make_script_job(track_script_runs=True)
     for _ in range(2):
         await scheduler._run_script_job(job, _noop_coro, extra_env={"EXTRA_TEST": "yes", "VOCOCO_CRON_RUN_ID": "wrong"})
         saved = scheduler.load_jobs()[0]
@@ -385,7 +404,7 @@ async def test_pending_run_survives_push_failure_and_is_acknowledged_after_deliv
         return _FakeProc(output, returncode=0)
 
     monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
-    job = _make_script_job(id="13f146ce")
+    job = _make_script_job(track_script_runs=True)
     async def fail(*args):
         raise RuntimeError("channel down")
     with pytest.raises(RuntimeError, match="channel down"):
@@ -401,11 +420,42 @@ async def test_pending_run_survives_push_failure_and_is_acknowledged_after_deliv
 
 
 @pytest.mark.anyio
+async def test_suppressed_failure_keeps_pending_until_actual_delivery(cron_env, monkeypatch):
+    import time
+
+    text = "## 上次通知未确认，保守重播\nsame error"
+    job = _make_script_job(track_script_runs=True, pending_run_ids=["old"],
+                           failure_policy="default", fail_streak=2,
+                           fail_digest=scheduler._failure_digest(text), fail_since=int(time.time()))
+    code = 1
+
+    async def fake_subprocess_shell(cmd, **kw):
+        return _FakeProc((text + "\n##CRON_SIGNAL:0##").encode(), returncode=code)
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+    pushes = []
+
+    async def push(*args):
+        pushes.append(args)
+
+    await scheduler._run_script_job(job, push)
+    saved = scheduler.load_jobs()[0]
+    assert pushes == []
+    assert saved["pending_run_ids"] == ["old", saved["running_run_id"]]
+    assert saved["last_run_id"] == saved["running_run_id"]
+    code = 0
+    await scheduler._run_script_job(saved, push)
+    assert len(pushes) == 1
+    assert not scheduler.load_jobs()[0].get("pending_run_ids")
+    assert "running_run_id" not in scheduler.load_jobs()[0]
+
+
+@pytest.mark.anyio
 async def test_failed_replay_warns_and_keeps_old_run_pending(cron_env, monkeypatch):
     async def fake_subprocess_shell(cmd, **kw):
         return _FakeProc(b"##CRON_SIGNAL:0##", returncode=0)
     monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
-    job = _make_script_job(id="13f146ce", pending_run_ids=["old"])
+    job = _make_script_job(track_script_runs=True, pending_run_ids=["old"])
     pushes = []
     async def push(platform, chat_id, text):
         pushes.append(text)
@@ -415,10 +465,10 @@ async def test_failed_replay_warns_and_keeps_old_run_pending(cron_env, monkeypat
 
 
 @pytest.mark.anyio
-async def test_special_id_agent_job_still_auto_disables(cron_env, monkeypatch):
+async def test_script_only_failure_policy_does_not_apply_to_agent(cron_env, monkeypatch):
     monkeypatch.setattr(scheduler, "FAIL_DISABLE_SPAN_SEC", 0)
     job = scheduler.create_job(name="Agent", prompt="p", schedule={"kind": "cron", "expr": "0 8 * * *"})
-    job["id"] = "13f146ce"
+    job["failure_policy"] = "always_notify_script"
     scheduler.save_jobs([job])
     for _ in range(scheduler.FAIL_DISABLE_STREAK):
         await scheduler._push_job_result(job["id"], "error", "失败", _noop_coro)
@@ -426,10 +476,10 @@ async def test_special_id_agent_job_still_auto_disables(cron_env, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_f4_agent_repeated_failures_remain_enabled(cron_env, monkeypatch):
+async def test_always_notify_agent_repeated_failures_remain_enabled(cron_env, monkeypatch):
     monkeypatch.setattr(scheduler, "FAIL_DISABLE_SPAN_SEC", 0)
     job = scheduler.create_job(name="Agent", prompt="p", schedule={"kind": "cron", "expr": "0 8 * * *"})
-    job["id"] = "f4a2a099"
+    job["failure_policy"] = "always_notify"
     scheduler.save_jobs([job])
     for _ in range(scheduler.FAIL_DISABLE_STREAK + 1):
         await scheduler._push_job_result(job["id"], "error", "失败", _noop_coro)
