@@ -16,6 +16,8 @@ job 结构:
   "mode": "script",              # 可选,不填/其它值 = 默认 Agent 任务(下面走 task_runner)
   "command": "python xxx.py",    # mode=="script" 时必填:直接跑的 shell 命令
   "summarize_prompt": "...",     # mode=="script" 可选:命令输出有信号时才用它总结
+  "failure_policy": "default",   # default / always_notify / always_notify_script
+  "track_script_runs": false,    # 脚本运行编号、未确认通知与补播协议；脚本需配合
   "agent_id": "b4f34820e8",      # 可选:所属 Agent(memory/agents.py),结果另复制一份到它的主会话
 }
 
@@ -59,6 +61,7 @@ import anyio
 from croniter import croniter
 
 from .. import config, providers
+from ..instance_config import section as instance_section
 from ..core import task_events, task_runner, tasks as bg_tasks
 from ..core.agent import run_turn
 from ..memory import session_store
@@ -120,13 +123,41 @@ def disable_agent_jobs(agent_id: str) -> list[dict]:
         return disabled
 
 
+def _validate_job_policy(job: dict) -> None:
+    policy = job.get("failure_policy", "default")
+    if not isinstance(policy, str) or policy not in ("default", "always_notify", "always_notify_script"):
+        raise ValueError("failure_policy 必须为 default、always_notify 或 always_notify_script")
+    if type(job.get("track_script_runs", False)) is not bool:
+        raise ValueError("track_script_runs 必须为布尔值")
+
+
+def _apply_job_defaults(jobs: list[dict]) -> bool:
+    # 由调度器持锁补入任务数据，避免外部迁移脚本覆盖正在更新的运行状态。
+    defaults = instance_section("cron_job_defaults")
+    for job_id, fields in defaults.items():
+        if not isinstance(job_id, str) or not job_id.strip() or not isinstance(fields, dict):
+            raise ValueError("cron_job_defaults 必须按任务编号配置对象")
+        if fields.keys() - {"failure_policy", "track_script_runs"}:
+            raise ValueError("cron_job_defaults 只能补入通知与脚本运行策略")
+        _validate_job_policy(fields)
+    for job in jobs:
+        _validate_job_policy(job)
+    changed = False
+    for job in jobs:
+        for key, value in defaults.get(job.get("id"), {}).items():
+            if key not in job:
+                job[key] = value
+                changed = True
+    return changed
+
+
 @_with_jobs_lock
 def load_jobs() -> list[dict]:
     try:
         jobs = json.loads(config.CRON_JOBS_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return []
-    changed = False
+    changed = _apply_job_defaults(jobs)
     for job in jobs:
         if not job.get("conv"):  # 老数据补一个专属会话 id(灰度迁移,见模块头 job 结构注释)
             job["conv"] = f"task:{job['id']}"
@@ -489,7 +520,7 @@ async def _push_job_result(
     msg = f"⏰ {job.get('name','任务')}\n\n{text}{notice}"
     if quiet:  # 同一错误重复出现:不推送、不进 Agent 主会话,只记运行数据供复盘统计
         _record_agent_run(job, status, text, metrics, to_main=False)
-        return job
+        return None  # 未投递不能确认运行；开启补播的任务仍保留待确认编号。
     # 默认目标就是这条专属会话本身(platform=web):走 send() 会同时触发系统推送
     # (场景③"主动/cron",已覆盖 Mac/iPhone 等一切订阅了 Web Push 的设备)。
     runner = getattr(push, "__self__", None)
@@ -525,8 +556,9 @@ def reset_failures(job: dict) -> None:
 
 def _track_failure(job: dict, status: str, text: str) -> tuple[bool, str]:
     """更新 job 的连续失败计数,返回 (本次是否静默, 追加到推送末尾的说明)。"""
-    if (status != "error" or job.get("id") == "f4a2a099"
-            or (job.get("id") == "13f146ce" and job.get("mode") == "script")):
+    policy = job.get("failure_policy", "default")
+    if (status != "error" or policy == "always_notify"
+            or (policy == "always_notify_script" and job.get("mode") == "script")):
         reset_failures(job)
         return False, ""
     digest = _failure_digest(text)
@@ -733,7 +765,7 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
                                "job_id": job_id, "conversation_id": conv})
     try:
         run_id = None
-        if job_id == "13f146ce" and job.get("mode") == "script":
+        if job.get("track_script_runs") is True and job.get("mode") == "script":
             run_id = uuid.uuid4().hex
             with JOBS_LOCK:
                 jobs = load_jobs()

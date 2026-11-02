@@ -264,7 +264,8 @@ async def test_real_scheduler_fixture_never_calls_llm(isolated, monkeypatch, par
     command = shlex.join([sys.executable, str(ROOT / "scripts/anchor_checks.py"), "--fixture", str(fixture),
                           "--raw-dir", str(isolated / "raw")])
     job = scheduler.create_job(name="三线fixture", prompt="离线", schedule={"kind": "cron", "expr": "23 8-22/2 * * *"})
-    job.update(id="13f146ce", mode="script", command=command, summarize_prompt=summary)
+    job.update(id="13f146ce", mode="script", command=command, summarize_prompt=summary,
+               failure_policy="always_notify_script", track_script_runs=True)
     scheduler.save_jobs([job])
     async def push(*args):
         pass
