@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从改动前的 Git 提交提取本机服务和 Upwork 配置，备份后仅追加缺失字段。"""
+"""从改动前的 Git 提交提取个人配置，备份后仅追加缺失字段。"""
 from __future__ import annotations
 
 import argparse
@@ -7,6 +7,7 @@ import ast
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -66,6 +67,33 @@ def extract(ref: str) -> dict:
     }
 
 
+def extract_xhs_health(ref: str) -> dict:
+    text = source(ref, "scripts/xhs_health.py")
+    if ast.unparse(assignment(text, "HOME")) != "pathlib.Path.home()":
+        raise ValueError("旧 HOME 表达式变化，须人工核对")
+    values = {}
+    for old, new in (("CRAWL", "crawl_dir"), ("CRON_JOBS", "cron_jobs_path")):
+        node = assignment(text, old)
+        if (not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Div)
+                or not isinstance(node.left, ast.Name) or node.left.id != "HOME"):
+            raise ValueError(f"旧 {old} 表达式变化，须人工核对")
+        suffix = ast.literal_eval(node.right)
+        if not isinstance(suffix, str):
+            raise ValueError(f"旧 {old} 不是文本路径")
+        values[new] = str(Path.home() / suffix)
+    values["publish_job_id"] = ast.literal_eval(assignment(text, "PUBLISH_JOB"))
+    logs = []
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            match = re.fullmatch(r"队列发布上一轮失败:先看远程机 (.+)\(失败项不会隔天自动补发\)", node.value)
+            if match:
+                logs.append(match[1])
+    if len(logs) != 1:
+        raise ValueError("旧发布日志提示格式变化，须人工核对")
+    values["publish_log_path"] = logs[0]
+    return {"xhs_health": values}
+
+
 def merged_config(path: Path, additions: dict) -> tuple[bytes, dict]:
     if not path.is_absolute() or any(p.is_symlink() for p in (path, *path.parents)):
         raise ValueError("配置须为不含软链接的绝对路径")
@@ -121,10 +149,12 @@ def main() -> None:
     parser.add_argument("--source-ref", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--apply", action="store_true", help="实际追加；默认只检查")
+    parser.add_argument("--section", choices=("local_preferences", "xhs_health"), default="local_preferences")
     args = parser.parse_args()
-    backup = append_config(args.output, extract(args.source_ref), apply=args.apply)
+    extract_section = extract_xhs_health if args.section == "xhs_health" else extract
+    backup = append_config(args.output, extract_section(args.source_ref), apply=args.apply)
     if backup:
-        print(f"已追加本机服务与 Upwork 配置；原文件备份：{backup}")
+        print(f"已追加 {args.section} 配置；原文件备份：{backup}")
     else:
         print("配置检查通过，未写文件（只检查或内容已一致）")
 
