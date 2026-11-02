@@ -14,6 +14,27 @@ open -a TextEdit ~/.local/share/vococo-mcp/login-password.txt
 
 只在 `mcp.chjm.cc` 的浏览器登录页输入。不要把 `proxy.env`、`frontend.env`、`bridge.env` 或生产 `.env` 里的内部 token 填给 ChatGPT。
 
+## 可选：静态 Token 接入（不走 OAuth）
+
+适用于支持自定义 HTTP 请求头的 MCP 客户端；原 `/mcp` OAuth 入口不变。
+
+1. 在仓库外、权限600的 `frontend.env` 配置 `VOCOCO_MCP_STATIC_TOKEN`：使用密码管理器生成至少32字符的随机 ASCII Token，无空白；必须与两个内部 token 不同。不要写入聊天、Git、URL 或命令参数。
+2. 重启独立 MCP frontend 加载环境变量（仅重启 gateway 不生效）。未配置或空值时入口关闭；配置不合法则拒绝启动。
+3. 在 Cloudflare Tunnel ingress 中，在原整域名规则**之前**增加精确路径规则：
+
+   ```yaml
+   - hostname: mcp.chjm.cc
+     path: ^/mcp/token$
+     service: http://127.0.0.1:8852
+   # 原整域名到 8853 的 OAuth 规则保留在后面。
+   ```
+
+   只把此路径直连 frontend，不能把整个域名或原 `/mcp` 改指8852。监听仍仅本机；不公开内部 token。
+4. 客户端 URL 填 `https://mcp.chjm.cc/mcp/token`，请求头设置 `Authorization: Bearer <静态 Token>`，选择静态认证而非 OAuth。
+5. 验收无凭据/错误 Token 返回401，正确 Token 能初始化并发现工具；同时验证原 OAuth 客户端仍可用。新增代码或本机测试通过不等于公网已启用。
+
+静态 Token 与 OAuth 共用同一主人身份、可读范围和任务归属，**没有逐客户端隔离或到期机制**。持有者可读取已开放历史、派单和续接；不要分享给其他用户。撤销/轮换时修改或清空该环境变量并重启 frontend；不影响 OAuth 授权。旧静态 Token 随即失效，已执行操作不会回滚。
+
 ## 2. 在 ChatGPT 添加
 
 不同账号菜单可能显示 Apps、应用、连接器或 Plugins，以实际界面为准：

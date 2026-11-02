@@ -49,11 +49,11 @@ async def environment(isolated, monkeypatch):
 
 
 @asynccontextmanager
-async def session_for(app, token=UPSTREAM, headers=None):
+async def session_for(app, token=UPSTREAM, headers=None, path="/mcp"):
     headers = {"Authorization": f"Bearer {token}", **(headers or {})}
     async with app.app.router.lifespan_context(app.app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), headers=headers) as http:
-            async with streamable_http_client("http://127.0.0.1:8852/mcp", http_client=http) as streams:
+            async with streamable_http_client(f"http://127.0.0.1:8852{path}", http_client=http) as streams:
                 async with ClientSession(streams[0], streams[1]) as session:
                     await session.initialize()
                     yield session
@@ -63,6 +63,57 @@ async def call(session, name, args):
     result = await session.call_tool(name, args)
     assert not result.is_error, result.content
     return result.structured_content
+
+
+STATIC = "public-test-static-" + "s" * 40
+
+
+async def test_static_token_official_client_and_oauth_coexist(environment, monkeypatch):
+    original, workdir = environment
+    monkeypatch.setenv("VOCOCO_MCP_STATIC_TOKEN", STATIC)
+    app = brain_mcp.UpstreamAuth(original.app, UPSTREAM, brain_mcp._static_token(UPSTREAM, BRIDGE))
+    async with session_for(app, token=STATIC, path="/mcp/token") as session:
+        assert len((await session.list_tools()).tools) == 8
+        assert (await call(session, "vococo_list_agents", {}))["agents"]
+        created = await call(session, "vococo_create_task", {
+            "title": "静态认证测试", "prompt": "不执行模型", "idempotency_key": "static-create-01"})
+        assert tasks.get(created["id"])["cwd"] == str(workdir)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                headers={"Authorization": f"Bearer {UPSTREAM}"}) as http:
+            async with streamable_http_client("http://127.0.0.1:8852/mcp", http_client=http) as streams:
+                async with ClientSession(streams[0], streams[1]) as oauth:
+                    await oauth.initialize()
+                    assert (await call(oauth, "vococo_get_task", {"id": created["id"]}))["status"] == "queued"
+
+
+@pytest.mark.parametrize("enabled,path,tokens", [
+    (False, "/mcp/token", [STATIC]),
+    (True, "/mcp/token", []),
+    (True, "/mcp/token", ["wrong"]),
+    (True, "/mcp/token", [UPSTREAM]),
+    (True, "/mcp/token", [BRIDGE]),
+    (True, "/mcp/token", [STATIC, STATIC]),
+    (True, "/mcp", [STATIC]),
+    (True, "/mcp/token/", [STATIC]),
+])
+async def test_static_token_rejects_missing_wrong_duplicate_or_internal_credentials(
+        environment, monkeypatch, enabled, path, tokens):
+    monkeypatch.setenv("VOCOCO_MCP_STATIC_TOKEN", STATIC if enabled else "")
+    app = brain_mcp.create_app(brain_mcp.create_server())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+        response = await client.post(f"http://127.0.0.1:8852{path}",
+            headers=[("Authorization", f"Bearer {token}") for token in tokens])
+    assert response.status_code == 401
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["www-authenticate"] == "Bearer"
+    assert STATIC not in response.text
+
+
+@pytest.mark.parametrize("token", ["short", "s" * 31, "s" * 32 + " ", "中" * 32, UPSTREAM, BRIDGE])
+async def test_static_token_invalid_configuration_fails_closed(environment, monkeypatch, token):
+    monkeypatch.setenv("VOCOCO_MCP_STATIC_TOKEN", token)
+    with pytest.raises(ValueError, match="静态 token"):
+        brain_mcp.create_app(brain_mcp.create_server())
 
 
 async def test_chatgpt_new_protocol_discovers_tools(environment):
