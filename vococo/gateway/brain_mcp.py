@@ -49,19 +49,34 @@ def _tokens() -> tuple[str, str]:
     return upstream, bridge
 
 
-class UpstreamAuth:
-    """仅验证本机 OAuth 代理的共享凭据，不承担终端用户认证。"""
+def _static_token(upstream: str, bridge: str) -> str:
+    token = os.environ.get("VOCOCO_MCP_STATIC_TOKEN", "")
+    if not token:
+        return ""
+    if (len(token) < 32 or not token.isascii() or any(char.isspace() for char in token)
+            or token in (upstream, bridge)):
+        raise ValueError("静态 token 必须是独立的至少32字符的无空白 ASCII 字符串")
+    return token
 
-    def __init__(self, app, token: str):
+
+class UpstreamAuth:
+    """OAuth 内部入口与可选的静态凭据入口分开认证，共用主人权限。"""
+
+    def __init__(self, app, token: str, static_token: str = ""):
         self.app, self.expected = app, f"Bearer {token}".encode()
+        self.static_expected = f"Bearer {static_token}".encode() if static_token else None
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             headers = [value for name, value in scope.get("headers", []) if name.lower() == b"authorization"]
-            if len(headers) != 1 or not hmac.compare_digest(headers[0], self.expected):
-                response = JSONResponse({"error": "upstream authentication required"}, status_code=401,
-                                        headers={"Cache-Control": "no-store"})
+            is_static = scope.get("path") == "/mcp/token"
+            expected = self.static_expected if is_static else self.expected
+            if expected is None or len(headers) != 1 or not hmac.compare_digest(headers[0], expected):
+                response = JSONResponse({"error": "authentication required"}, status_code=401,
+                                        headers={"Cache-Control": "no-store", "WWW-Authenticate": "Bearer"})
                 return await response(scope, receive, send)
+            if is_static:
+                scope = {**scope, "path": "/mcp", "raw_path": b"/mcp"}
         await self.app(scope, receive, send)
 
 
@@ -316,7 +331,8 @@ def create_app(server: FastMCP):
     from urllib.parse import urlsplit
 
     origin = brain_origin()
-    upstream, _bridge = _tokens()
+    upstream, bridge = _tokens()
+    static_token = _static_token(upstream, bridge)
     port = server._vococo_port
     inner = server.streamable_http_app(stateless_http=True, json_response=True,
         transport_security=TransportSecuritySettings(
@@ -327,7 +343,7 @@ def create_app(server: FastMCP):
     original = inner.router.lifespan_context
     inner.router = Router(inner.routes, lifespan=_lifespan(original, frontend),
                           redirect_slashes=inner.router.redirect_slashes)
-    return UpstreamAuth(frontend, upstream)
+    return UpstreamAuth(frontend, upstream, static_token)
 
 
 def _configure_logging() -> None:
