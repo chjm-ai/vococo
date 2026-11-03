@@ -1,10 +1,13 @@
 """核对共享技能与本次审核的完整上游源码一致；不安装、不更新。"""
 import hashlib
-import os
 from pathlib import Path
 import subprocess
 import sys
 
+
+ROOT = Path(__file__).resolve().parents[5]
+sys.path.insert(0, str(ROOT))
+from vococo.instance_config import local_path
 
 UPSTREAM_COMMIT = "78759bf62e9a1ef43e926ff9e50afa4cfe9a63cb"
 EXPECTED_DIGEST = "a3f7525001426b54af1dc553493e84b68d66129a84699c34171c06f1094aebfd"
@@ -35,12 +38,16 @@ def verify(root):
     return root / "SKILL.md"
 
 
+def configured_root():
+    root = local_path("ppt_master", "install_dir", root=ROOT, env="VOCOCO_PPT_MASTER_DIR")
+    if root is None:
+        raise ValueError("请配置 ppt_master.install_dir 或 VOCOCO_PPT_MASTER_DIR")
+    return root.resolve()
+
+
 def main():
-    root = Path(os.environ.get(
-        "VOCOCO_PPT_MASTER_DIR", "~/Desktop/Repos/AI_Skills/ppt-master"
-    )).expanduser().resolve()
     try:
-        entry = verify(root)
+        entry = verify(configured_root())
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
