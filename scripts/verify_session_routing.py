@@ -5,29 +5,40 @@ import argparse
 import asyncio
 import json
 import tempfile
+import sys
 from pathlib import Path
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, ToolUseBlock, create_sdk_mcp_server
 from dotenv import load_dotenv
 
-# worktree 没有供应商配置；仅复用主仓库认证，不输出凭据。
 ROOT = Path(__file__).resolve().parents[1]
-if not (ROOT / ".env").exists():
-    load_dotenv(Path.home() / "Repos/vococo/.env", override=False)
+sys.path.insert(0, str(ROOT))
+from vococo.instance_config import local_path
 
-from vococo import config, providers
-from vococo.gateway import settings_store
-from vococo.core.agent import _turn_env
-from vococo.core.prompt import PERSONA
-from vococo.gateway import web_bridge
-from vococo.gateway.adapters.web import WebAdapter
-from vococo.memory import _db, agents, session_store
-from vococo.tools import danger, sessions
+
+def load_runtime_env(root=ROOT):
+    # 本安装的 .env 优先；worktree 仅复用显式配置的认证文件，不猜其他安装。
+    if (root / ".env").is_file():
+        return
+    path = local_path("session_routing", "env_file", root=root, env="VOCOCO_SESSION_ENV_FILE")
+    if path is None:
+        return  # 仍允许使用进程已有认证环境。
+    if not path.is_file():
+        raise ValueError("会话验收认证文件不存在，请核对 session_routing.env_file / VOCOCO_SESSION_ENV_FILE")
+    load_dotenv(path, override=False)
 
 INSTRUCTION = "不改变 PM 工作节奏，以周例会驱动分析与更新；先跟我对齐思路，得到我确认后再修改。"
 
 
 async def scenario(model: str, provider_env: dict, by_id: bool, root: Path) -> dict:
+    from vococo import config
+    from vococo.core.agent import _turn_env
+    from vococo.core.prompt import PERSONA
+    from vococo.gateway import web_bridge
+    from vococo.gateway.adapters.web import WebAdapter
+    from vococo.memory import _db, agents, session_store
+    from vococo.tools import danger, sessions
+
     config.DATA_DIR = root / "data"
     config.AGENT_WORKSPACES_DIR = root / "workspaces"
     config.AI_BRAIN_DIR = root / "brain"
@@ -92,6 +103,11 @@ async def scenario(model: str, provider_env: dict, by_id: bool, root: Path) -> d
 
 
 async def main(model: str, settings: str | None):
+    load_runtime_env()
+    from vococo import config, providers
+    from vococo.gateway import settings_store
+    from vococo.memory import _db
+
     if settings:
         settings_store._PATH = Path(settings).expanduser().resolve(strict=True)
     model, provider_env = providers.resolve(model, config.MODEL)

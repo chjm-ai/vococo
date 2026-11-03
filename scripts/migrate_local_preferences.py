@@ -94,6 +94,29 @@ def extract_xhs_health(ref: str) -> dict:
     return {"xhs_health": values}
 
 
+def extract_tool_paths(ref: str) -> dict:
+    video = source(ref, "vococo/plugin/skills/video-assets/scripts/manage.py")
+    ppt = source(ref, "vococo/plugin/skills/editable-pptx/scripts/ppt_master_check.py")
+    routing = source(ref, "scripts/verify_session_routing.py")
+    defaults = [node.args[1] for node in ast.walk(ast.parse(ppt))
+                if isinstance(node, ast.Call) and ast.unparse(node.func) == "os.environ.get"
+                and len(node.args) == 2 and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "VOCOCO_PPT_MASTER_DIR"]
+    env_files = [node.args[0] for node in ast.walk(ast.parse(routing))
+                 if isinstance(node, ast.Call) and ast.unparse(node.func) == "load_dotenv"
+                 and node.args]
+    if len(defaults) != 1 or len(env_files) != 1:
+        raise ValueError("旧工具路径表达式变化，须人工核对")
+    install = ast.literal_eval(defaults[0])
+    if not isinstance(install, str) or not install.strip() or not Path(install).expanduser().is_absolute():
+        raise ValueError("旧 PPT Master 安装路径无效")
+    return {
+        "video_assets": {"library_dir": str(home_path(assignment(video, "LIBRARY")))},
+        "ppt_master": {"install_dir": str(Path(install).expanduser())},
+        "session_routing": {"env_file": str(home_path(env_files[0]))},
+    }
+
+
 def merged_config(path: Path, additions: dict) -> tuple[bytes, dict]:
     if not path.is_absolute() or any(p.is_symlink() for p in (path, *path.parents)):
         raise ValueError("配置须为不含软链接的绝对路径")
@@ -149,9 +172,10 @@ def main() -> None:
     parser.add_argument("--source-ref", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--apply", action="store_true", help="实际追加；默认只检查")
-    parser.add_argument("--section", choices=("local_preferences", "xhs_health"), default="local_preferences")
+    extractors = {"local_preferences": extract, "xhs_health": extract_xhs_health, "tool_paths": extract_tool_paths}
+    parser.add_argument("--section", choices=tuple(extractors), default="local_preferences")
     args = parser.parse_args()
-    extract_section = extract_xhs_health if args.section == "xhs_health" else extract
+    extract_section = extractors[args.section]
     backup = append_config(args.output, extract_section(args.source_ref), apply=args.apply)
     if backup:
         print(f"已追加 {args.section} 配置；原文件备份：{backup}")

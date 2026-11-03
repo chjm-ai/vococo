@@ -1,5 +1,4 @@
 """共享上游技能的离线集成验收；未安装时跳过，不联网安装。"""
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -64,13 +63,16 @@ def _run(script, *arguments):
 
 
 def test_installed_upstream_exports_native_editable_text_without_network(tmp_path):
-    skill = Path(os.environ.get(
-        "VOCOCO_PPT_MASTER_DIR", "~/Desktop/Repos/AI_Skills/ppt-master"
-    )).expanduser()
+    checker = runpy.run_path(str(ADAPTER / "scripts/ppt_master_check.py"))
+    try:
+        skill = checker["configured_root"]()
+    except ValueError as exc:
+        if str(exc).startswith("请配置"):
+            pytest.skip("未配置共享 PPT Master；测试不联网安装")
+        raise
     if not (skill / "SKILL.md").is_file():
         pytest.skip("未安装共享 PPT Master；测试不联网安装")
-    checker = runpy.run_path(str(ADAPTER / "scripts/ppt_master_check.py"))
-    checker["verify"](skill.resolve())
+    checker["verify"](skill)
     scripts = skill / "scripts"
     source = tmp_path / "svg_output"
     source.mkdir()

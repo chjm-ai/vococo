@@ -12,8 +12,12 @@ description: >-
 
 ## 库位置与结构
 
+库根目录由所属 vococo 安装的 `data/instance_config.json` 中 `video_assets.library_dir` 指定。
+可用 `VOCOCO_VIDEO_ASSETS_DIR` 覆盖库目录，或用 `VOCOCO_INSTANCE_CONFIG` 指定其他实例配置文件；路径展开后必须为绝对路径。
+缺失或无效时停止，不猜个人目录，不新建空库代替旧库。配置变更不会搬动素材或复制索引，沿用旧库时必须保留原目录。
+
 ```
-~/Media/video-assets/
+<配置的库根目录>/
 ├── index.json          # 主索引（所有元数据）
 └── clips/              # 所有素材平铺存放
 ```

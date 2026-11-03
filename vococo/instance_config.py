@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 
@@ -30,6 +31,25 @@ def section(name: str, *, path: Path | None = None) -> dict:
     if not isinstance(value, dict):
         raise ValueError(f"实例配置 {name} 必须是对象")
     return value
+
+
+def local_path(name: str, key: str, *, root: Path, env: str) -> Path | None:
+    """独立工具的本机路径；环境变量优先，不导入认证配置。"""
+    if env in os.environ:
+        value = os.environ[env]
+    else:
+        config_path = Path(os.environ.get("VOCOCO_INSTANCE_CONFIG") or root / "data/instance_config.json").expanduser()
+        if not config_path.is_absolute():
+            raise ValueError("VOCOCO_INSTANCE_CONFIG 必须是绝对路径")
+        values = section(name, path=config_path)
+        if key not in values:
+            return None
+        value = values[key]
+    if (not isinstance(value, str) or not value.strip()
+            or any(char in value for char in "\r\n\x00")
+            or not Path(value).expanduser().is_absolute()):
+        raise ValueError(f"{name}.{key} / {env} 必须是非空绝对路径")
+    return Path(value).expanduser()
 
 
 def text(name: str, key: str, default: str = "") -> str:

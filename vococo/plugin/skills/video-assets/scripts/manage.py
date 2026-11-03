@@ -12,15 +12,24 @@
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-LIBRARY = Path.home() / "Media" / "video-assets"
-INDEX = LIBRARY / "index.json"
-CLIPS = LIBRARY / "clips"
+ROOT = Path(__file__).resolve().parents[5]
+sys.path.insert(0, str(ROOT))
+from vococo.instance_config import local_path
+
+LIBRARY = INDEX = CLIPS = None
+
+
+def configure():
+    global LIBRARY, INDEX, CLIPS
+    library = local_path("video_assets", "library_dir", root=ROOT, env="VOCOCO_VIDEO_ASSETS_DIR")
+    if library is None:
+        raise ValueError("请配置 video_assets.library_dir 或 VOCOCO_VIDEO_ASSETS_DIR")
+    LIBRARY, INDEX, CLIPS = library, library / "index.json", library / "clips"
 
 
 def load_index():
@@ -285,6 +294,11 @@ def main():
     p_info.add_argument("id")
 
     args = parser.parse_args()
+    if args.cmd:
+        try:
+            configure()
+        except (OSError, ValueError) as exc:
+            parser.error(f"素材库配置不可用：{exc}")
     if args.cmd == "add":
         cmd_add(args)
     elif args.cmd == "batch":
