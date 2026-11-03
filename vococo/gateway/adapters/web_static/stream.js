@@ -1095,6 +1095,7 @@ function maybeReplayStream(conv){
   delete S.streamSnap[conv];
   if(snap && snap.asOf<=buf.length){
     S.stream=snap.state;
+    if(S.stream.checklistItems) upsertChecklist(S.stream,S.stream.checklistItems);
     // 离开期间若对旧槽位(thinking / 同一段 text)做了原位替换,它不在下面的增量里,
     // 但编号更大 —— 先把水位垫到整段缓冲里最新的内容帧,重试帧的过期判定才准。
     for(let i=0;i<buf.length;i++){
