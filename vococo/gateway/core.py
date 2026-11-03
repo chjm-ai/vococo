@@ -143,6 +143,9 @@ class Sink:
             )
         await self.render()
 
+    async def checklist(self, items: list[dict]) -> None:
+        """聊天内执行清单；非 Web 通道不额外输出。"""
+
     async def compacted(self, trigger: str = "") -> None:
         """CLI 自动压缩了上下文。基类只刷新;Web 子类覆盖以推专门事件。"""
         await self.render()

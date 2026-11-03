@@ -262,6 +262,9 @@ class _WebSink(Sink):
             }
         )
 
+    async def checklist(self, items: list[dict]) -> None:
+        self.a._emit({"conv": self.conv, "type": "checklist", "items": items})
+
     async def compacted(self, trigger: str = "") -> None:
         # CLI 自动压缩了上下文:压缩点之后正文进新段(旧段已定格),前端插系统条
         if self._text:
@@ -740,6 +743,9 @@ class WebAdapter:
             st["frames"].append((seq, payload))
         elif t in ("tool_start", "tool_input", "tool_end"):
             st["phase"] = f"执行 {payload.get('name') or '工具'}"
+            st["frames"].append((seq, payload))
+        elif t == "checklist":
+            st["frames"] = [(s, p) for s, p in st["frames"] if p.get("type") != "checklist"]
             st["frames"].append((seq, payload))
         elif t == "compact":  # 压缩标记按序保留,刷新重放时系统条不丢
             st["frames"].append((seq, payload))

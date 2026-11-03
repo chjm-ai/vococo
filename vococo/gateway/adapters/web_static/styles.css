@@ -1084,6 +1084,13 @@
   .todo li{padding:var(--sp-1) 0;display:flex;gap:8px;align-items:flex-start;line-height:1.45}
   .todo li.done{opacity:.5;text-decoration:line-through}
   .todo li.doing{font-weight:600;color:var(--accent)}
+  .execution-checklist{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-4) var(--sp-5);margin-bottom:var(--sp-4);min-width:0}
+  .execution-checklist summary{cursor:pointer;font-size:var(--fs-base);color:var(--text);overflow-wrap:anywhere}
+  .execution-checklist summary:focus-visible{outline:2px solid var(--focus-ring);border-radius:var(--r-sm)}
+  .checklist-counts{font-size:var(--fs-md);color:var(--dim);margin-left:var(--sp-3)}
+  .execution-checklist .todo{margin-top:var(--sp-3);color:var(--dim)}
+  .execution-checklist .todo li{gap:var(--sp-3);overflow-wrap:anywhere}
+  .checklist-mark{flex-shrink:0;color:var(--dim2)}
   .plan{font-size:var(--fs-md);line-height:1.6}
   .plan h1,.plan h2,.plan h3{font-size:var(--fs-base);margin:.5em 0 .3em}
   /* 工具结果:折进展开区里的输出块(不再单独占一行) */

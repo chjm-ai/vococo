@@ -12,6 +12,7 @@ from .agent import (
     effective_context_window, _window_ratio,
 )
 from .timeline import Timeline
+from .checklist import ChecklistUpdated
 
 
 class SharedTurn:
@@ -83,6 +84,12 @@ class SharedTurn:
             await self.send("thinking", danger.redact_secrets(event.text))
         elif isinstance(event, (ToolStarted, ToolInput, ToolFinished)):
             await self.observe_tool(event)
+        elif isinstance(event, ChecklistUpdated):
+            items = [{**item, "subject": danger.redact_secrets(item["subject"])} for item in event.items]
+            self.timeline.checklist(items, event.session_id)
+            if self.turn_id is not None:
+                session_store.flush_events(self.session_key, self.turn_id, self.timeline.blocks)
+            await self.send("checklist", items)
         elif isinstance(event, Compacted):
             self.timeline.compacted(event.trigger)
             await self.send("compacted", event.trigger)

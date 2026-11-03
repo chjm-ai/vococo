@@ -40,7 +40,7 @@ _SDK_TASK_TOOL_NAMES = frozenset({"TaskCreate", "TaskGet", "TaskList", "TaskUpda
 
 
 def is_sdk_task_tool(name: str) -> bool:
-    """SDK 待办清单工具只用于同步输入框状态条,不属于执行过程。"""
+    """SDK 待办工具不进入命令过程；聊天清单通过独立快照事件展示。"""
     return name in _SDK_TASK_TOOL_NAMES
 
 

@@ -1730,12 +1730,14 @@ function wireLazyToolCard(card, ctx, blk){
 function renderEventsFlow(events, ctx){
   const flow=el("div","flow");
   let toolCards=[];
+  const checklistState={flow};
   function flushTools(){
     if(!toolCards.length) return;
     flow.append(makeToolGroup(toolCards, toolCards.length));
     toolCards=[];
   }
   for(const blk of events){
+    if(blk.type==="checklist"){ upsertChecklist(checklistState,blk.items||[],false); continue; }
     if(blk.type==="text"){
       flushTools();  // 正文前的指令卡先收组,保持穿插顺序
       if(!blk.text) continue;

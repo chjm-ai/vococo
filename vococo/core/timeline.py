@@ -53,6 +53,15 @@ class Timeline:
         if block is not None:
             block["input"] = tool_input
 
+    def checklist(self, items: list[dict], session_id: str) -> None:
+        snapshot = {"type": "checklist", "items": items, "session_id": session_id}
+        # 一轮只留最新快照，清单更新不挤占工具过程的预算。
+        for index, block in enumerate(self.blocks):
+            if block["type"] == "checklist":
+                self.blocks[index] = snapshot
+                return
+        self.blocks.append(snapshot)
+
     def compacted(self, trigger: str) -> None:
         """记一个压缩标记块;前端历史重放据此显示「上下文已自动压缩」系统条。"""
         if len(self.blocks) < self.MAX_BLOCKS:

@@ -43,7 +43,7 @@ from ..memory import agents, session_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
 from . import client_pool, reviewer, subagent
-from .tasks import is_sdk_task_tool
+from .checklist import CHECKLIST_TOOLS, ChecklistTracker, ChecklistUpdated
 from .token_usage import StreamUsage
 from .prompt import build_system_prompt
 
@@ -646,7 +646,7 @@ class BudgetWarning:
 
 Event = Union[
     TextDelta, ThinkingDelta, ToolStarted, ToolInput, ToolFinished, Compacted,
-    UpstreamRetry, SessionStarted, ContextUsage, BudgetWarning, Done,
+    UpstreamRetry, SessionStarted, ContextUsage, BudgetWarning, ChecklistUpdated, Done,
 ]
 
 
@@ -1331,6 +1331,8 @@ async def stream_turn(
         text_parts: list[str] = []
         tool_calls: list[str] = []
         tool_name_by_id: dict[str, str] = {}
+        checklist = ChecklistTracker(session_store.load_checklist(session_key, use_resume)
+                                     if session_key and use_resume else [])
         # 主代理和各子代理的流各有自己的块索引,单用 idx 会撞车 → 键统一为 (parent_id, idx)
         tool_json: dict[tuple[str, int], str] = {}  # 累积的入参 JSON 片段
         tool_meta: dict[tuple[str, int], tuple[str, str]] = {}  # -> (tool_id, name)
@@ -1493,7 +1495,7 @@ async def stream_turn(
                                     # 主 agent 起了个子代理 → 记进「在跑」集,收工要等它结束
                                     if name in _SUBAGENT_TOOLS and tid:
                                         pending_subagents.add(tid)
-                                if not is_sdk_task_tool(name):
+                                if name not in CHECKLIST_TOOLS:
                                     yield ToolStarted(name, tool_id=tid, parent_id=pid)
                         elif etype in ("message_start", "message_delta", "message_stop"):
                             if etype == "message_start":
@@ -1532,7 +1534,8 @@ async def stream_turn(
                             if key is not None and key in tool_meta:
                                 tid, name = tool_meta.pop(key)
                                 parsed = assemble_tool_input(tool_json.pop(key, ""))
-                                if not is_sdk_task_tool(name):
+                                checklist.remember(tid, name, parsed, pid)
+                                if name not in CHECKLIST_TOOLS:
                                     yield ToolInput(
                                         name=name, tool_id=tid, tool_input=parsed, parent_id=pid
                                     )
@@ -1542,10 +1545,14 @@ async def stream_turn(
                             if isinstance(b, ToolResultBlock):
                                 live_tools.discard(b.tool_use_id)  # 工具回来了,静默看门狗恢复计时
                                 name = tool_name_by_id.get(b.tool_use_id, "工具")
+                                if not pid:
+                                    items = checklist.finish(b.tool_use_id, _result_text(b.content), bool(b.is_error))
+                                    if items is not None:
+                                        yield ChecklistUpdated(items=items, session_id=sess_id)
                                 # 子代理的结果回来了 → 从「在跑」集移除(它的 tool_id 就是 Agent 调用 id)
                                 if b.tool_use_id in pending_subagents:
                                     pending_subagents.discard(b.tool_use_id)
-                                if not is_sdk_task_tool(name):
+                                if name not in CHECKLIST_TOOLS:
                                     yield ToolFinished(
                                         name=name,
                                         ok=not bool(b.is_error),
@@ -1579,6 +1586,7 @@ async def stream_turn(
                             # 广播出去,而不是死等 ResultMessage——见 SessionStarted。
                             sid = (getattr(msg, "data", None) or {}).get("session_id")
                             if sid and sid != sess_id:
+                                checklist = ChecklistTracker()
                                 sess_id = sid
                                 yield SessionStarted(session_id=sess_id)
                     elif isinstance(msg, RateLimitEvent):
