@@ -2535,7 +2535,8 @@ class WebAdapter:
         # 重会话一包 JSON 有 300~500KB(gzip 后 70~145KB),跨境隧道 ~50KB/s 一趟要好几秒;
         # 而切会话大多是"回看",内容根本没变——加 ETag/304 协商,没变只回空包。
         # 前端零改动:fetch 走浏览器 HTTP 缓存,自动带 If-None-Match、304 时透明取缓存正文。
-        body = json.dumps({"turns": turns, "has_more": has_more}, ensure_ascii=False).encode("utf-8")
+        checklist = session_store.load_checklist(key, session_store.get_sdk_session_id(key) or "")
+        body = json.dumps({"turns": turns, "has_more": has_more, "checklist": checklist}, ensure_ascii=False).encode("utf-8")
         etag = f'"{hashlib.md5(body).hexdigest()}"'
         headers = {"Cache-Control": "no-cache", "ETag": etag}
         if request.headers.get("If-None-Match") == etag:

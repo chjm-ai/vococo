@@ -26,9 +26,11 @@ function checklistCard(items, live=false){
   }
   card.append(ul); return card;
 }
+const checklistSnapshots=new Map();
 function upsertChecklist(state, items, live=true){
   const dock=$("#checklistDock"), previous=dock.firstElementChild;
   state.checklistItems=items;
+  if(state===S.stream) checklistSnapshots.set(S.conv,items);
   dock.hidden=!items.length;
   if(!items.length){ dock.replaceChildren(); return; }
   const focused=previous?.contains(document.activeElement);
@@ -37,8 +39,13 @@ function upsertChecklist(state, items, live=true){
   dock.replaceChildren(card);
   if(focused) card.querySelector("summary").focus({preventScroll:true});
 }
-function restoreHistoryChecklist(turns){
+function restoreHistoryChecklist(turns, snapshot){
   if(S.stream?.checklistItems) return;
+  if(Array.isArray(snapshot)) checklistSnapshots.set(S.conv,snapshot);
+  if(checklistSnapshots.has(S.conv)){
+    upsertChecklist({},checklistSnapshots.get(S.conv),false);
+    return;
+  }
   let latest=[];
   for(const turn of turns){
     for(const block of turn.events||[]){

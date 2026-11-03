@@ -12,7 +12,7 @@ const items=[{id:'1',subject:'分析访谈纪要，提炼核心洞察（测试�
   const browser=await chromium.launch({headless:true,channel:'chrome'});
   const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[];
   page.on('pageerror',error=>errors.push(error.message));
-  let histories={source:[],other:[]};
+  let histories={source:[],other:[]},snapshots={},tasks=[];
   await page.addInitScript(()=>{window.EventSource=class extends EventTarget{close(){}};});
   await page.route('**/*',async route=>{
     const url=new URL(route.request().url());
@@ -21,8 +21,8 @@ const items=[{id:'1',subject:'分析访谈纪要，提炼核心洞察（测试�
     if(file.startsWith(root+path.sep)&&fs.existsSync(file)&&fs.statSync(file).isFile())
       return route.fulfill({body:fs.readFileSync(file),contentType:file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':'text/html'});
     let data={};
-    if(url.pathname==='/history')data={turns:histories[url.searchParams.get('conv')]||[],has_more:false};
-    if(url.pathname==='/tasks')data=[];
+    if(url.pathname==='/history')data={turns:histories[url.searchParams.get('conv')]||[],has_more:false,checklist:snapshots[url.searchParams.get('conv')]};
+    if(url.pathname==='/tasks')data=tasks;
     if(url.pathname==='/conversations')data={main:{},conversations:[{conv:'source',title:'执行清单测试'},{conv:'other',title:'其他聊天'}]};
     if(url.pathname==='/conv/perm')data={mode:'standard'};
     return route.fulfill({json:data});
@@ -74,6 +74,36 @@ const items=[{id:'1',subject:'分析访谈纪要，提炼核心洞察（测试�
       if(width===390)await page.screenshot({path:path.join(output,'checklist-expanded-390.png'),fullPage:true});
       await page.locator('.execution-checklist summary').click();
     }
+    tasks=[{id:'fixture-background',origin:'chat',dispatch_chat_id:'source',title:'后台独立任务',status:'running',progress_note:'测试任务执行中',created_at:Date.now()/1000}];
+    await page.evaluate(()=>{
+      window.refreshTaskStatus();
+      S.pending.source=[{id:'queued-fixture',text:'下一条待发送消息'}];drawPending();
+      S.files=[{filename:'测试附件.pdf',status:'done'}];renderThumbs();
+    });
+    await page.locator('#chatTaskBar .ctb-row').waitFor();
+    for(const width of [320,390,1280]){
+      await page.setViewportSize({width,height:900});await page.waitForTimeout(500);
+      for(const expanded of [false,true]){
+        await page.locator('.execution-checklist').evaluate((node,open)=>node.open=open,expanded);
+        await page.waitForTimeout(100);
+        const selectors=['#chatTaskBar','#checklistDock','#pending','#thumbs','.inrow'];
+        const boxes=await Promise.all(selectors.map(selector=>page.locator(selector).boundingBox()));
+        for(let i=1;i<boxes.length;i++)assert.ok(boxes[i].y>=boxes[i-1].y+boxes[i-1].height-1,`${width} 输入区组件不重叠`);
+        assert.ok(boxes[0].y>=0,`${width} 顶部组件不被挤出屏幕`);
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'共存无横向溢出');
+      }
+      if(width===390)await page.screenshot({path:path.join(output,'checklist-coexist-390.png'),fullPage:true});
+    }
+    await page.evaluate(()=>{
+      $('#callView').hidden=false;$('#chatMain').hidden=true;$('#callTextPanel').hidden=false;
+      $('#callTextPanel').append($('#composer'));
+    });
+    assert.equal(await page.locator('#checklistDock').isVisible(),false,'通话文本模式不带入聊天清单');
+    await page.evaluate(()=>{
+      $('#chatMain').append($('#composer'));$('#callView').hidden=true;$('#chatMain').hidden=false;
+      S.pending.source=[];drawPending();S.files=[];renderThumbs();
+    });
+    assert.equal(await page.locator('#checklistDock').isVisible(),true,'返回聊天恢复清单');
     const hostile=[{id:'1',subject:'<img src=x onerror=alert(1)>'+('长标题'.repeat(60)),status:'in_progress'}];
     await emit({type:'checklist',items:hostile,id:7});
     assert.equal(await page.locator('.execution-checklist img').count(),0,'标题只当文本');
@@ -91,12 +121,19 @@ const items=[{id:'1',subject:'分析访谈纪要，提炼核心洞察（测试�
     assert.match(await page.locator('.execution-checklist summary').innerText(),/0\/4/);
     await page.evaluate(()=>{
       const newer={id:102,events:[{type:'checklist',items:[]}]};
-      restoreHistoryChecklist([...S.histCache.source,newer]);
+      restoreHistoryChecklist([...S.histCache.source,newer],[]);
     });
     assert.equal(await page.locator('.execution-checklist').count(),0,'最新空快照不复活旧清单');
-    await page.evaluate(()=>restoreHistoryChecklist(S.histCache.source));
+    await page.evaluate(()=>restoreHistoryChecklist(S.histCache.source,S.histCache.source[0].events[0].items));
     await page.evaluate(()=>document.documentElement.dataset.theme='dark');
     await page.screenshot({path:path.join(output,'checklist-dark.png'),fullPage:true});
+    histories.source=Array.from({length:40},(_,i)=>({id:200+i,user:'后续聊天',assistant:'回复',events:[]}));
+    snapshots.source=items;
+    await page.reload();await boot();
+    assert.equal(await page.locator('.execution-checklist').count(),1,'历史超过40轮仍从独立快照恢复');
+    await page.evaluate(()=>restoreHistoryChecklist([{events:[{type:'checklist',items:[]}]}]));
+    assert.equal(await page.locator('.execution-checklist').count(),1,'加载较老分页不覆盖当前快照');
+    delete snapshots.source;
     const smokePath=process.env.CHECKLIST_SMOKE_ARTIFACT;
     if(smokePath){
       const smoke=JSON.parse(fs.readFileSync(smokePath,'utf8'));

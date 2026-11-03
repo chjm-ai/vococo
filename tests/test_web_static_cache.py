@@ -255,7 +255,7 @@ async def test_sw_etag_304_roundtrip(static_app):
 
 
 @pytest.mark.anyio
-async def test_history_etag_304_roundtrip(monkeypatch):
+async def test_history_etag_304_roundtrip(isolated, monkeypatch):
     """/history:重会话 JSON 一包几百 KB,内容没变时必须走 304 空包(切会话大多是回看)。"""
     from vococo.memory import session_store
 
@@ -278,7 +278,7 @@ async def test_history_etag_304_roundtrip(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_history_cursor_loads_earlier_page(monkeypatch):
+async def test_history_cursor_loads_earlier_page(isolated, monkeypatch):
     from vococo.memory import session_store
 
     adapter = WebAdapter()
@@ -318,3 +318,32 @@ async def test_index_etag_tracks_asset_changes(static_app, monkeypatch, tmp_path
 
     assert h1["ETag"] != h2["ETag"]
     assert f'?v={_digest("styles.css")}' in body2.decode("utf-8")
+
+
+@pytest.mark.anyio
+async def test_history_includes_checklist_outside_page_and_invalidates_etag(isolated):
+    from vococo.memory import session_store
+
+    adapter = WebAdapter()
+    adapter._guard = lambda request: None
+    session_store.set_sdk_session_id("main", "sdk-checklist")
+    turn_id = session_store.start_turn("main", "开始")
+    items = [{"id": "1", "subject": "尚未完成", "status": "in_progress"}]
+    snapshot = {"type": "checklist", "items": items, "session_id": "sdk-checklist"}
+    session_store.flush_events("main", turn_id, [snapshot])
+    session_store.finish_turn(turn_id, "继续", events=[snapshot], session_key="main")
+    for _ in range(45):
+        tid = session_store.start_turn("main", "后续聊天")
+        session_store.finish_turn(tid, "回复", session_key="main")
+    app = web.Application()
+    app.add_routes([web.get("/history", adapter._handle_history)])
+    status, body, headers = await _get(app, "/history?conv=main")
+    payload = json.loads(body)
+    assert status == 200
+    assert len(payload["turns"]) == 40
+    assert all(t["id"] != turn_id for t in payload["turns"])
+    assert payload["checklist"] == items
+    session_store.set_sdk_session_id("main", "different-sdk")
+    status, body, _ = await _get(app, "/history?conv=main", {"If-None-Match": headers["ETag"]})
+    assert status == 200
+    assert json.loads(body)["checklist"] == []
