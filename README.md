@@ -93,6 +93,9 @@ Bash 与同步子代理使用正常系统网络和命令，不再注入业务沙
 | `upwork` | `cdp_port`、`chrome_bin`、`chrome_profile`、`output_dir`、`search_queries`、`match_keywords`；路径为绝对路径，关键词列表可为空 |
 | `xhs_health` | `crawl_dir`：爬虫项目绝对路径；`cron_jobs_path`：正式任务 JSON 绝对路径；`publish_job_id`：发布任务编号；`publish_log_path`：远程发布日志位置（仅用于提示，不读取或执行） |
 | `cron_job_defaults` | 按现有任务编号补入 `failure_policy`、`track_script_runs`；仅补缺失字段，不覆盖已有策略、不创建任务 |
+| `video_assets` | `library_dir`：视频素材库绝对路径；`VOCOCO_VIDEO_ASSETS_DIR` 可覆盖 |
+| `ppt_master` | `install_dir`：完整 PPT Master 安装绝对路径；`VOCOCO_PPT_MASTER_DIR` 可覆盖，仍需通过原有完整源码校验 |
+| `session_routing` | `env_file`：开发验收复用的认证文件绝对路径；`VOCOCO_SESSION_ENV_FILE` 可覆盖，仅在本安装没有 `.env` 时使用 |
 
 旧安装升级前，从**改动前的提交**提取原值，只新建权限为 `0600` 的文件，不覆盖、不联网：
 
@@ -118,6 +121,18 @@ Upwork 默认读取脚本所属安装的 `data/instance_config.json`，可用 `V
 python3 scripts/migrate_local_preferences.py --section xhs_health --source-ref <旧提交> --output /绝对/正式/data/instance_config.json
 # 检查通过后，同一命令加 --apply；旧配置先备份，其他配置节保持不变。
 ```
+
+素材库、PPT 安装和开发验收路径也通过追加迁移保留旧值（选这三项改动前的提交）：
+
+```sh
+python3 scripts/migrate_local_preferences.py --section tool_paths --source-ref <旧提交> --output /绝对/正式/data/instance_config.json
+# 同样先检查，再加 --apply；只存路径，不读取认证内容、不搬动素材、不运行工具。
+```
+
+这三个独立工具默认读所属安装的私有实例配置，支持 `VOCOCO_INSTANCE_CONFIG` 指定其他配置文件。
+路径可用 `~`，展开后必须为绝对路径；对应环境变量优先，显式空值或错误类型报错，不猜其他目录。
+素材库与 PPT 缺配置拒绝执行；会话验收没有本地 `.env`、也未指定备用文件时仅使用进程已有认证环境，指定的备用文件不存在则报错。
+备用认证不覆盖已有环境变量。配置文件只记录认证文件位置，不能存令牌；`--help` 不读取认证、不调用模型。
 
 必须写入正式运行目录，不只是开发 worktree。新安装可从 `{"version":1}` 开始按需配置；
 未配置的任务桥、公开分享和远端发布拒绝执行，偏好/工具组合为空，不猜个人目标。
