@@ -35,22 +35,38 @@ def _delivery_links(session_key: str) -> tuple[Path, ...]:
     return tuple(safe)
 
 
+def _repository_checkouts(session_key: str, policy) -> set[Path]:
+    if policy:
+        return {binding.checkout for binding in getattr(policy, "repositories", ())}
+    from ..core.business_repositories import copies_for_session
+    from ..memory import agents
+
+    owner = agents.agent_for_session(session_key)
+    return {binding.checkout for binding in copies_for_session(owner, session_key)} if owner else set()
+
+
 def _roots(session_key: str, cwd: str) -> tuple[Path, ...]:
     from ..core.execution import policy_for_session
 
     policy = policy_for_session(session_key, cwd)
+    checkouts = _repository_checkouts(session_key, policy)
     roots = (policy.workspace, policy.output_dir) if policy else (Path(cwd),)
-    roots = tuple(dict.fromkeys((*roots, *_delivery_links(session_key))))
+    roots = tuple(dict.fromkeys((*roots, *_delivery_links(session_key), *sorted(checkouts))))
     safe = []
     for root in roots:
         root = root.expanduser().resolve()
         # HOME 及其祖先不是项目；即使错误配置也不能变成任意文件下载。
         if Path.home().resolve().is_relative_to(root) or root == Path(root.anchor):
+            from ..core.permissions import is_full
+
+            if is_full(session_key):
+                continue  # 完全访问按具体目标读取，不把 HOME 或磁盘根登记为交付来源。
             raise ValueError("工作目录过宽，不能安全交付文件。")
         parts = root.parts[1:]
         # SDK 开发 worktree 位于 .claude/worktrees；这不是读取 .claude 凭据的授权。
         _check_parts(tuple(part for i, part in enumerate(parts)
-                           if not (part == ".claude" and parts[i + 1:i + 2] == ("worktrees",))))
+                           if not (part == ".claude" and parts[i + 1:i + 2] == ("worktrees",))
+                           and not (part == ".repositories" and root in checkouts)))
         safe.append(root)
     return tuple(safe)
 
@@ -158,8 +174,16 @@ def _snapshot(path: str, session_key: str, cwd: str) -> tuple[str, bytes]:
         raise ValueError("不接受目录逃逸。")
     from .. import config
 
+    from ..core.permissions import is_full
+
     runtime = config.DATA_DIR.resolve()
-    for root in _roots(session_key, cwd):
+    roots = _roots(session_key, cwd)
+    if (is_full(session_key) and not candidate.resolve().is_relative_to(runtime)
+            and not any(candidate.is_relative_to(root) for root in roots)):
+        # 完全访问只放宽来源目录；秘密检查、NOFOLLOW 和运行数据保护仍然生效。
+        _check_parts(candidate.parts[1:])
+        roots = (*roots, candidate.parent)
+    for root in roots:
         if candidate.is_relative_to(root):
             parts = candidate.relative_to(root).parts
             _check_parts(parts)

@@ -62,7 +62,7 @@ def policy_for_session(
     workspace = (config.AGENT_WORKSPACES_DIR / agent["id"]).expanduser().resolve()
     output_dir = Path(agent.get("output_dir") or agent["workdir"]).expanduser().resolve()
     roots = [workspace, output_dir, agents.home(agent["id"]).resolve()]
-    roots.extend(Path(link["path"]).resolve() for link in agent["links"] if link["writable"])
+    roots.extend(Path(link["path"]).resolve() for link in agent["links"])
     repositories = business_repositories.copies_for_session(agent, session_key)
     roots.extend(binding.checkout for binding in repositories)
     (workspace / "tmp").mkdir(parents=True, exist_ok=True)
@@ -71,7 +71,7 @@ def policy_for_session(
 
 
 def linked_file_roots(session_key: str | None) -> tuple[Path, ...]:
-    """主人显式标为可写的关联同时允许私有成果交付；不包含只读关联与 Agent 配置目录。"""
+    """关联即授权读写和私有交付；Agent 配置目录不作为交付来源。"""
     if not session_key:
         return ()
     from ..memory import agents
@@ -81,7 +81,7 @@ def linked_file_roots(session_key: str | None) -> tuple[Path, ...]:
         return ()
     return tuple(dict.fromkeys(
         Path(link["path"]).expanduser().resolve()
-        for link in agent["links"] if link["writable"]
+        for link in agent["links"]
     ))
 
 
@@ -92,8 +92,9 @@ def prompt_note(policy: ExecutionPolicy) -> str:
         f"运行目录：{policy.workspace}\n临时文件：{policy.workspace / 'tmp'}\n"
         f"正式成果目录：{policy.output_dir}\n原项目/技能资源目录：{policy.source_dir or policy.output_dir}\n"
         "原规则中的 scripts/ 等相对命令必须改用原资源目录的绝对路径，不要从运行目录猜测。"
-        "报告、表格等正式成果默认写到正式成果目录；主人明确指定的可写关联目录也可作为成果目的地，"
-        "使用绝对路径，相对路径仅用于临时文件。只读关联目录不能写入；其他目录按实际权限及审批规则处理。"
+        "报告、表格等正式成果默认写到正式成果目录，关联目录也可作为成果目的地。"
+        "使用绝对路径，相对路径仅用于临时文件。标准权限可直接读写关联目录，写未关联目录需授权；"
+        "完全访问可读写操作系统允许的目录，无需关联或重复审批。仍遵守禁用工具及安全保护。"
         "指定的成果目的地不可读写时明确报错，不得擅自换目录或把临时副本报告成已交付。"
         "飞书使用官方 lark-cli 的完整原生能力，通过 Bash 调用，不限于 lark_document 的便捷操作。"
         "先用 lark-cli --help、<domain> --help、schema 或 skills read 按需发现命令和参数；"

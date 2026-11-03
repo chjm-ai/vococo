@@ -191,10 +191,13 @@ def _normalize_links(links) -> list[dict]:
     for x in links or []:
         if not isinstance(x, dict) or not str(x.get("path") or "").strip():
             continue
+        path = projects.normalize_project_path(str(x["path"]).strip())
+        if any(item["path"] == path for item in out):
+            continue
         out.append({
-            "path": projects.normalize_project_path(str(x["path"]).strip()),
+            "path": path,
             "note": str(x.get("note") or "").strip()[:80],
-            "writable": bool(x.get("writable")),
+            "writable": True,  # 关联即授权读写；兼容旧字段，但不再提供第二个权限开关。
         })
     return out
 
@@ -230,7 +233,10 @@ def _build(agent_id: str, meta: dict, workdir: str | None) -> dict:
         "output_dir": meta.get("output_dir") or workdir,
         "project_hash": phash,
         "main_conv": meta.get("main_conv") or main,
-        "links": _normalize_links(meta.get("links")),
+        "links": _normalize_links([
+            *(meta.get("links") or []),
+            *({"path": p} for p in meta.get("repositories", []) if isinstance(p, str)),
+        ]),
         "repositories": meta.get("repositories") if isinstance(meta.get("repositories"), list) else [],
         # agent.json 可以手改,坏值当「跟随全局」,不让整个列表接口报错
         "skills": _normalize_names(meta["skills"]) if isinstance(meta.get("skills"), list) else None,
@@ -466,6 +472,7 @@ def _update(agent_id: str, *, name: str | None = None, avatar: dict | None = Non
         meta["avatar"] = _normalize_avatar(avatar, agent_id)
     if links is not None:
         meta["links"] = _normalize_links(links)
+        meta.pop("repositories", None)  # 统一入口保存后，删除旧仓库配置，避免取消关联后复活。
     if repositories is not _UNSET:
         meta["repositories"] = repositories
     if permission is not None:
@@ -725,7 +732,7 @@ def prompt_extra(agent: dict | None) -> str:
         tail.append(rules)
     if links:
         tail.append("## 关联目录/文件(需要时再打开)\n" + "\n".join(
-            f"- {x['path']}" + (f" · {x['note']}" if x["note"] else "") + (" · 可写" if x["writable"] else " · 只读")
+            f"- {x['path']}" + (f" · {x['note']}" if x["note"] else "") + " · 已授权读写"
             for x in links))
 
     def _join(plan_text: str | None) -> str:

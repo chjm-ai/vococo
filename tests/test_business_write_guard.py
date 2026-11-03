@@ -85,7 +85,7 @@ def test_external_write_allowed_after_approval(business, monkeypatch, guard, gat
         policy.writable_roots[2].parent / "another-agent" / "file.md",
     ):
         assert call("Write", path) == {}
-    assert approve.await_count == (3 if gate else 0)
+    assert approve.await_count == (4 if gate else 0)
 
 
 def test_external_write_uses_approval_and_resolves_symlinks(business, monkeypatch):
