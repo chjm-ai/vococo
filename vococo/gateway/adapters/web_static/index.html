@@ -382,6 +382,7 @@ try{
         <div class="cwrap">
           <!-- 聊天视图后台任务状态条:有排队/进行中任务时显示在输入框顶部,与通话视图的 #taskBar 共享数据 -->
           <div id="chatTaskBar" hidden></div>
+          <div id="checklistDock" hidden></div>
           <div id="pending"></div>
           <div id="thumbs"></div>
           <div class="inrow">
@@ -1636,6 +1637,7 @@ function renderTurns(turns, conv, opts={}){
     if(delta) $("#messages").scrollTop += delta;
     updateScrollBtn();
   }
+  restoreHistoryChecklist(turns,opts.checklist);
   researchProgress.render();
   maybeAutoResume(conv, turns);  // 最新一条是重启中断的回复 → 自动继续生成(幂等,见 stream.js)
 }
@@ -1736,6 +1738,7 @@ function renderEventsFlow(events, ctx){
     toolCards=[];
   }
   for(const blk of events){
+    if(blk.type==="checklist") continue;
     if(blk.type==="text"){
       flushTools();  // 正文前的指令卡先收组,保持穿插顺序
       if(!blk.text) continue;
@@ -1844,6 +1847,7 @@ async function openConv(conv, silentGroup){
   // 切到目标会话时,若全局审批弹窗正开着则关闭(用户选择进去处理)
   const cmodal=$("#choiceModal"); if(cmodal && !cmodal.hidden){ cmodal.hidden=true; }
   if(typeof saveComposerState==="function") saveComposerState(S.conv);
+  if(S.conv!==conv) upsertChecklist({},[],false);
   S.conv=conv; S.stream=null;
   navRecord({kind:"chat", conv});
   if(typeof restoreComposerState==="function") restoreComposerState(conv);
@@ -1917,7 +1921,7 @@ async function openConv(conv, silentGroup){
       histCacheSet(conv, turns);
       idbSetHist(conv, turns);  // 落盘,下次刷新页面这个会话也能秒开
       // renderTurns 内部按轮 diff,没变的轮直接跳过——不用再在这里整包比对一次
-      renderTurns(turns, conv);
+      renderTurns(turns, conv, {checklist:d.checklist});
     }catch(e){ $("#convLoading").classList.remove("on"); }
     finally{
       if(S.histLoading===conv) S.histLoading=null;

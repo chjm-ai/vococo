@@ -683,6 +683,7 @@ function discardStream(){
 }
 function finalizeStream(finalText, imgs, turnId, vids, htmls, artifacts){
   if(!S.stream) return;
+  if(S.stream.checklistItems) upsertChecklist(S.stream,S.stream.checklistItems,false);
   // 末尾那条普通命令以前等不到下一段正文/命令,会永久散落在过程区;收工时也要归组。
   if(S.stream.activeCard){ foldToGroup(S.stream, S.stream.activeCard); S.stream.activeCard=null; }
   if(S.stream.timer) clearInterval(S.stream.timer);
@@ -725,7 +726,7 @@ function finalizeStream(finalText, imgs, turnId, vids, htmls, artifacts){
   S.stream=null; updateSendBtn(); scrollDown();
 }
 // 构成一个"进行中回合"的流式事件类型(可重放以重建气泡)。done/message/choice 不在此列。
-const STREAMY = ["user","start","thinking","text","tool_start","tool_input","tool_end","compact","upstream_retry"];
+const STREAMY = ["user","start","thinking","text","tool_start","tool_input","tool_end","checklist","compact","upstream_retry"];
 // 每会话缓冲进行中回合的事件;text/thinking 是全量快照:thinking 全局只留最后一条,
 // text 按段(seg)各留最后一条 —— 段的先后顺序就是与工具卡交错的顺序,不能压掉。
 function bufPush(conv, e){
@@ -1003,7 +1004,7 @@ function foldToGroup(s, card){
 // ①记下服务端编号 —— 重放(切回会话/断线补发)时帧序会被 bufPush 的同型原位替换打乱,
 //   一条比重试帧更新的内容帧可能排在它后面被先应用;靠编号大小认出过期重试帧(见下);
 // ②清掉重试状态 —— 有内容产出就说明那次重试已经过去了,状态行回归常规文案。
-const CONTENT_EVENTS = new Set(["thinking","text","tool_start","tool_input","tool_end","message","compact"]);
+const CONTENT_EVENTS = new Set(["thinking","text","tool_start","tool_input","tool_end","checklist","message","compact"]);
 function noteContent(s, e){
   if(e.id) s.lastContentSeq=e.id;
   clearUpstreamRetry(s);
@@ -1057,6 +1058,7 @@ function applyStreamEvent(e){
       attachResult(s, e);
       // 呼吸灯不因工具结束而停——持续到下条指令或正文出现才移除
       renderStatus(); break; }
+    case "checklist": { const s=ensureStream(); upsertChecklist(s,e.items||[]); scrollDown(); break; }
     case "compact": { const s=ensureStream();
       const d=el("div","compactline"); d.textContent=e.trigger==="manual"?"已手动压缩上下文,对话继续":"上下文已自动压缩,对话继续";
       s.flow.append(d); scrollDown(); break; }
@@ -1093,6 +1095,7 @@ function maybeReplayStream(conv){
   delete S.streamSnap[conv];
   if(snap && snap.asOf<=buf.length){
     S.stream=snap.state;
+    if(S.stream.checklistItems) upsertChecklist(S.stream,S.stream.checklistItems);
     // 离开期间若对旧槽位(thinking / 同一段 text)做了原位替换,它不在下面的增量里,
     // 但编号更大 —— 先把水位垫到整段缓冲里最新的内容帧,重试帧的过期判定才准。
     for(let i=0;i<buf.length;i++){

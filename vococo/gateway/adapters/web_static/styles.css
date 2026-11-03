@@ -1084,6 +1084,20 @@
   .todo li{padding:var(--sp-1) 0;display:flex;gap:8px;align-items:flex-start;line-height:1.45}
   .todo li.done{opacity:.5;text-decoration:line-through}
   .todo li.doing{font-weight:600;color:var(--accent)}
+  #checklistDock{display:flex;justify-content:center;padding-bottom:var(--sp-3)}
+  #checklistDock[hidden]{display:none}
+  .execution-checklist{width:max-content;max-width:100%;min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg)}
+  .execution-checklist summary{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3) var(--sp-4);cursor:pointer;font-size:var(--fs-md);color:var(--dim);list-style:none}
+  .execution-checklist summary::-webkit-details-marker{display:none}
+  .execution-checklist summary:hover{color:var(--text)}
+  .execution-checklist summary:focus-visible{outline:2px solid var(--focus-ring);border-radius:var(--r-lg)}
+  .checklist-title{min-width:0;max-width:36ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .checklist-counts{flex-shrink:0;color:var(--dim2);font-variant-numeric:tabular-nums}
+  .execution-checklist[open] summary .chev{transform:rotate(45deg)}
+  .execution-checklist .todo{padding:0 var(--sp-4) var(--sp-3);color:var(--dim);max-height:30dvh;overflow-y:auto}
+  .execution-checklist .todo li{gap:var(--sp-3);overflow-wrap:anywhere}
+  .execution-checklist .todo li>span:last-child{min-width:0}
+  .checklist-mark{flex-shrink:0;color:var(--dim2)}
   .plan{font-size:var(--fs-md);line-height:1.6}
   .plan h1,.plan h2,.plan h3{font-size:var(--fs-base);margin:.5em 0 .3em}
   /* 工具结果:折进展开区里的输出块(不再单独占一行) */
@@ -1492,6 +1506,7 @@
   #callVoicePanel[hidden],#callTextPanel[hidden]{display:none}
   #callTextPanel > #composer{position:relative;left:auto;right:auto;bottom:auto;z-index:0}
   #callTextPanel > #composer::before{display:none}
+  #callTextPanel #checklistDock{display:none}
   #callVoicePanel #callFoot{position:relative;left:auto;right:auto;bottom:auto}
   #callView #callBody{padding-bottom:calc(180px + env(safe-area-inset-bottom));
     scroll-padding-bottom:calc(180px + env(safe-area-inset-bottom))}

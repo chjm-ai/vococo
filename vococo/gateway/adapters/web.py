@@ -262,6 +262,9 @@ class _WebSink(Sink):
             }
         )
 
+    async def checklist(self, items: list[dict]) -> None:
+        self.a._emit({"conv": self.conv, "type": "checklist", "items": items})
+
     async def compacted(self, trigger: str = "") -> None:
         # CLI 自动压缩了上下文:压缩点之后正文进新段(旧段已定格),前端插系统条
         if self._text:
@@ -740,6 +743,9 @@ class WebAdapter:
             st["frames"].append((seq, payload))
         elif t in ("tool_start", "tool_input", "tool_end"):
             st["phase"] = f"执行 {payload.get('name') or '工具'}"
+            st["frames"].append((seq, payload))
+        elif t == "checklist":
+            st["frames"] = [(s, p) for s, p in st["frames"] if p.get("type") != "checklist"]
             st["frames"].append((seq, payload))
         elif t == "compact":  # 压缩标记按序保留,刷新重放时系统条不丢
             st["frames"].append((seq, payload))
@@ -2529,7 +2535,8 @@ class WebAdapter:
         # 重会话一包 JSON 有 300~500KB(gzip 后 70~145KB),跨境隧道 ~50KB/s 一趟要好几秒;
         # 而切会话大多是"回看",内容根本没变——加 ETag/304 协商,没变只回空包。
         # 前端零改动:fetch 走浏览器 HTTP 缓存,自动带 If-None-Match、304 时透明取缓存正文。
-        body = json.dumps({"turns": turns, "has_more": has_more}, ensure_ascii=False).encode("utf-8")
+        checklist = session_store.load_checklist(key, session_store.get_sdk_session_id(key) or "")
+        body = json.dumps({"turns": turns, "has_more": has_more, "checklist": checklist}, ensure_ascii=False).encode("utf-8")
         etag = f'"{hashlib.md5(body).hexdigest()}"'
         headers = {"Cache-Control": "no-cache", "ETag": etag}
         if request.headers.get("If-None-Match") == etag:

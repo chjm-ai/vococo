@@ -4,6 +4,57 @@
 // (定义在 index.html 主脚本里,靠同页多个 <script> 共享同一全局作用域读取,
 // 不需要模块系统)。不碰语音通话 IIFE 的闭包状态。
 
+function checklistCard(items, live=false){
+  const card=el("details","execution-checklist");
+  const summary=el("summary");
+  const title=el("span","checklist-title");
+  const current=items.find(t=>t.status==="in_progress")||items.find(t=>t.status==="pending");
+  title.textContent=current ? current.subject : "已完成";
+  const counts=el("span","checklist-counts");
+  const done=items.filter(t=>t.status==="completed").length;
+  counts.textContent=done+"/"+items.length;
+  counts.title="已完成 "+done+" 项，共 "+items.length+" 项";
+  const mark=el("span","checklist-mark");
+  mark.textContent=current ? (live&&current.status==="in_progress"?"◐":"•") : "✓";
+  summary.append(mark,title,counts,el("span","chev")); card.append(summary);
+  const ul=el("ul","todo");
+  for(const item of items){
+    const status=item.status, li=el("li",status==="completed"?"done":status==="in_progress"&&live?"doing":"");
+    const mark=el("span","checklist-mark"), text=el("span");
+    mark.textContent=status==="completed"?"✓":status==="in_progress"?"◐":"•";
+    text.textContent=item.subject; li.append(mark,text); ul.append(li);
+  }
+  card.append(ul); return card;
+}
+const checklistSnapshots=new Map();
+function upsertChecklist(state, items, live=true){
+  const dock=$("#checklistDock"), previous=dock.firstElementChild;
+  state.checklistItems=items;
+  if(state===S.stream) checklistSnapshots.set(S.conv,items);
+  dock.hidden=!items.length;
+  if(!items.length){ dock.replaceChildren(); return; }
+  const focused=previous?.contains(document.activeElement);
+  const card=checklistCard(items,live);
+  if(previous) card.open=previous.open;
+  dock.replaceChildren(card);
+  if(focused) card.querySelector("summary").focus({preventScroll:true});
+}
+function restoreHistoryChecklist(turns, snapshot){
+  if(S.stream?.checklistItems) return;
+  if(Array.isArray(snapshot)) checklistSnapshots.set(S.conv,snapshot);
+  if(checklistSnapshots.has(S.conv)){
+    upsertChecklist({},checklistSnapshots.get(S.conv),false);
+    return;
+  }
+  let latest=[];
+  for(const turn of turns){
+    for(const block of turn.events||[]){
+      if(block.type==="checklist") latest=block.items||[];
+    }
+  }
+  upsertChecklist({},latest,false);
+}
+
 function toolCardShell(title, pathText, bodyEl, collapsed, docPath){
   const card=el("div","toolcard");
   const head=el("div","tc-head");

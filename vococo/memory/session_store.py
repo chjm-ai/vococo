@@ -204,6 +204,39 @@ def _strip_tool_block(blk: dict) -> dict:
     return light
 
 
+def load_checklist(session_key: str, sdk_session_id: str) -> list[dict]:
+    """只续接同一 SDK 会话的最新快照，换模型/重开会话不串清单。"""
+    row = _conn().execute(
+        "SELECT checklist_json FROM session_meta WHERE session_key=?", (session_key,),
+    ).fetchone()
+    try:
+        snapshot = json.loads(row[0]) if row and row[0] else {}
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(snapshot, dict) or snapshot.get("session_id") != sdk_session_id:
+        return []
+    from ..core.checklist import normalize_items
+    return normalize_items(snapshot.get("items", []))
+
+
+def flush_events(session_key: str, turn_id: int, events: list) -> None:
+    """清单确认后立即存检查点，进程中断也不依赖内存事件流恢复。"""
+    c = _conn()
+    cursor = c.execute(
+        "UPDATE turns SET events=? WHERE session_key=? AND id=? AND assistant_text=''",
+        (json.dumps(events, ensure_ascii=False), session_key, turn_id),
+    )
+    snapshots = [block for block in events if block.get("type") == "checklist"]
+    if cursor.rowcount and snapshots:
+        # 重新生成会删除 turn，但 SDK 内部任务不会随之删除。
+        c.execute(
+            "INSERT INTO session_meta(session_key, checklist_json) VALUES (?,?) "
+            "ON CONFLICT(session_key) DO UPDATE SET checklist_json=excluded.checklist_json",
+            (session_key, json.dumps(snapshots[-1], ensure_ascii=False)),
+        )
+    c.commit()
+
+
 def _strip_events(events: list) -> list:
     return [_strip_tool_block(b) if b.get("type") == "tool" else b for b in events]
 
@@ -486,7 +519,7 @@ def new_session(session_key: str) -> None:
         "VALUES (?,?,0,0) "
         "ON CONFLICT(session_key) DO UPDATE SET "
         "watermark_id=excluded.watermark_id, ctx_tokens=0, total_tokens=0, "
-        "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL, "
+        "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL, checklist_json=NULL, "
         "cache_read_total=0, input_fresh_total=0",
         (session_key, row[0]),
     )
@@ -696,6 +729,16 @@ def delete_last_turn(session_key: str, turn_id: int) -> str | None:
     return row[1]
 
 
+def _interrupted_events(raw: str | None) -> str:
+    try:
+        events = json.loads(raw) if raw else []
+    except (ValueError, TypeError):
+        events = []
+    snapshots = [block for block in (events if isinstance(events, list) else [])
+                 if isinstance(block, dict) and block.get("type") == "checklist"]
+    return json.dumps(snapshots[-1:] + [{"type": "interrupted"}], ensure_ascii=False)
+
+
 def recover_interrupted_turns() -> list[dict]:
     """将进程重启遗留的进行中回合收尾，避免前端永久显示加载中。
 
@@ -708,16 +751,14 @@ def recover_interrupted_turns() -> list[dict]:
     """
     c = _conn()
     rows = c.execute(
-        "SELECT id, session_key, user_text FROM turns WHERE assistant_text=''"
+        "SELECT id, session_key, user_text, events FROM turns WHERE assistant_text=''"
     ).fetchall()
     if not rows:
         return []
     message = "⚠️ 服务重启导致本轮回复中断，请重新发送。"
-    marker = json.dumps([{"type": "interrupted"}], ensure_ascii=False)
-    c.execute(
-        "UPDATE turns SET assistant_text=?, events=?, draft_text='', ts=? "
-        "WHERE assistant_text=''",
-        (message, marker, time.time()),
+    c.executemany(
+        "UPDATE turns SET assistant_text=?, events=?, draft_text='', ts=? WHERE id=?",
+        [(message, _interrupted_events(row[3]), time.time(), row[0]) for row in rows],
     )
     c.commit()
     return [
@@ -819,7 +860,7 @@ def clear(session_key: str) -> None:
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute(
         "UPDATE session_meta SET ctx_tokens=0, total_tokens=0, "
-        "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL, "
+        "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL, checklist_json=NULL, "
         "cache_read_total=0, input_fresh_total=0, "
         "external_mcp_names=NULL, auto_external_mcp_names=NULL, auto_external_mcp_at=NULL, "
         "perm_mode=NULL, perm_until=0 "  # 新开一段对话 = 权限回到跟随 Agent

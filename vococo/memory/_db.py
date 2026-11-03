@@ -162,6 +162,8 @@ def conn() -> sqlite3.Connection:
         # (后者会让模型误判自己"记不住/被压缩")。NULL=还没有,起新会话。
         if "sdk_session_id" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN sdk_session_id TEXT")
+        if "checklist_json" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN checklist_json TEXT")
         if "archived" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN archived INTEGER DEFAULT 0")
         # worktree_path=该会话独占的 git worktree 目录(每会话一分支的物理隔离);
