@@ -22,7 +22,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import threading
 from pathlib import Path
 
@@ -76,9 +78,15 @@ def _load() -> dict:
 
 def _save(data: dict) -> None:
     _PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(_PATH)  # 原子替换,避免读到写一半的半截 JSON
+    # 随机临时文件以 600 创建,防止写入密钥时短暂可读或跟随预置软链接。
+    fd, name = tempfile.mkstemp(prefix=f"{_PATH.name}.", suffix=".tmp", dir=_PATH.parent)
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+        tmp.replace(_PATH)  # 原子替换也保留临时文件的私有权限。
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 # ── 技能扫描 ────────────────────────────────────────────────────────────

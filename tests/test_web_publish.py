@@ -90,3 +90,46 @@ async def test_publish_rejects_hidden_paths(published_app):
     status, _text, _headers = await _get(published_app, "/pub/.env")
 
     assert status == 404
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("request_path", ["/pub/demo/", "/pub/demo/index.html", "/pub/"])
+async def test_publish_rejects_symlinked_index(published_app, request_path):
+    config.PUBLISHED_DIR.mkdir(parents=True)
+    secret = config.PUBLISHED_DIR.parent / "secret.txt"
+    secret.write_text("do not leak", encoding="utf-8")
+    site = config.PUBLISHED_DIR if request_path == "/pub/" else config.PUBLISHED_DIR / "demo"
+    site.mkdir(exist_ok=True)
+    (site / "index.html").symlink_to(secret)
+
+    status, text, _headers = await _get(published_app, request_path)
+
+    assert status == 404
+    assert "do not leak" not in text
+
+
+@pytest.mark.anyio
+async def test_publish_rejects_symlinked_directory(published_app):
+    site = config.PUBLISHED_DIR / "real"
+    site.mkdir(parents=True)
+    (site / "index.html").write_text("home", encoding="utf-8")
+    (config.PUBLISHED_DIR / "alias").symlink_to(site, target_is_directory=True)
+
+    status, _text, _headers = await _get(published_app, "/pub/alias/")
+
+    assert status == 404
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("name", ["food-log.html", "workshop-checkin-20260802.html"])
+@pytest.mark.parametrize("directory", ["", "demo", "ai-radar"])
+async def test_publish_app_trust_uses_exact_root_path(published_app, name, directory):
+    site = config.PUBLISHED_DIR / directory
+    site.mkdir(parents=True)
+    (site / name).write_text("<h1>app</h1>", encoding="utf-8")
+    path = "/pub/" + (f"{directory}/" if directory else "") + name
+
+    status, _text, headers = await _get(published_app, path)
+
+    assert status == 200
+    assert ("sandbox" in headers["Content-Security-Policy"]) == (directory == "demo")

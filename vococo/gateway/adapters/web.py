@@ -103,12 +103,12 @@ _PUBLISH_CSP = (
     + _CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
 )
 
-# 应用型发布页白名单(精确文件名):这类页面需要浏览器直连外部 API(用户在前端自填 Key,
+# 应用型发布页白名单(相对发布根目录的精确路径):这类页面需要直连外部 API(用户自填 Key,
 # 服务端不保存不转发)和 localStorage/IndexedDB 持久化,sandbox 会同时杀掉这两者,所以
 # 对白名单页用宽松 CSP:去掉 sandbox(同源存储/请求恢复),connect-src 只放行白名单里
-# 写明的外部域,其余指令沿用站点默认 _CSP 的收紧。只按文件名精确匹配,其它 /pub 页面
-# 维持 _PUBLISH_CSP 沙箱不动——不要往这里加"页面内容不可信"的东西。
-_APP_PUBLISH_NAMES = {"food-log.html", "workshop-checkin-20260802.html"}
+# 写明的外部域,其余指令沿用站点默认 _CSP 的收紧。子目录同名文件不能继承信任,
+# 其它 /pub 页面维持 _PUBLISH_CSP 沙箱不动——不要往这里加不可信内容。
+_APP_PUBLISH_PATHS = {"food-log.html", "workshop-checkin-20260802.html"}
 # 目录级白名单(相对于 PUBLISHED_DIR 的目录前缀):该目录下所有文件都走宽松 CSP。
 # 用途:多文件小站点(如 ai-radar)的 index.html 需 fetch 同目录 data.json,sandbox 的
 # opaque origin 会让相对路径 fetch 变成跨域被拦;这些站点是我们自己的可信内容,不是用
@@ -3398,13 +3398,20 @@ class WebAdapter:
             return None  # 挡隐藏文件(.env 之类误放进去也取不到)
         root = config.PUBLISHED_DIR.resolve()
         try:
-            target = (root / rel).resolve()
-        except (OSError, ValueError):
+            target = root
+            for part in Path(rel).parts:
+                target = target / part
+                if target.is_symlink():
+                    return None
+            if target.is_dir():
+                target = target / "index.html"
+            if target.is_symlink():
+                return None
+            target = target.resolve()
+        except (OSError, ValueError, RuntimeError):
             return None
         if target != root and root not in target.parents:
-            return None  # 目录穿越,拒
-        if target.is_dir():
-            target = target / "index.html"
+            return None  # 补首页后仍需校验,不能借软链接越过发布边界。
         return target
 
     async def _handle_publish(self, request: web.Request) -> web.StreamResponse:
@@ -3415,7 +3422,7 @@ class WebAdapter:
         target = self._safe_published_path(request.match_info.get("path", ""))
         if target is None or not target.is_file():
             return web.Response(status=404, text="not found")
-        # 判断是否走宽松 CSP:文件名精确命中 _APP_PUBLISH_NAMES,或目录前缀命中
+        # 判断是否走宽松 CSP:相对路径精确命中 _APP_PUBLISH_PATHS,或目录前缀命中
         # _APP_PUBLISH_DIRS(多文件站点需要 fetch 同目录资源,sandbox opaque origin 会拦)。
         pub_root = config.PUBLISHED_DIR.resolve()
         try:
@@ -3423,7 +3430,7 @@ class WebAdapter:
         except ValueError:
             rel = ()
         use_app_csp = (
-            target.name in _APP_PUBLISH_NAMES
+            "/".join(rel) in _APP_PUBLISH_PATHS
             or (len(rel) >= 2 and rel[0] in _APP_PUBLISH_DIRS)
         )
         return web.FileResponse(

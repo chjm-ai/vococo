@@ -6,11 +6,50 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from vococo.gateway import settings_store
 
 
 def _point_to(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
+
+
+def test_save_settings_keeps_secrets_private(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    path = settings_store._PATH
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0o644)
+
+    settings_store._save({"private": "test-value"})
+
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert settings_store._load()["private"] == "test-value"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_save_settings_does_not_follow_old_temp_symlink(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    victim = tmp_path / "untouched.txt"
+    victim.write_text("unchanged", encoding="utf-8")
+    settings_store._PATH.with_suffix(".json.tmp").symlink_to(victim)
+
+    settings_store._save({"private": "test-value"})
+
+    assert victim.read_text(encoding="utf-8") == "unchanged"
+    assert settings_store._PATH.stat().st_mode & 0o777 == 0o600
+
+
+def test_save_settings_failure_preserves_original_and_cleans_temp(monkeypatch, tmp_path):
+    _point_to(monkeypatch, tmp_path)
+    settings_store._save({"private": "original"})
+
+    with pytest.raises(TypeError):
+        settings_store._save({"invalid": object()})
+
+    assert settings_store._load()["private"] == "original"
+    assert settings_store._PATH.stat().st_mode & 0o777 == 0o600
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_add_and_list_extra_model(monkeypatch, tmp_path):
