@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from vococo.core.agent import AgentReply, AudioAttachment, Done, TextDelta
+from vococo.core.agent import AgentReply, AudioAttachment, Done, TextDelta, _build_prompt
 from vococo.gateway import core
 from vococo.gateway.core import Sink
 from vococo.memory import session_store
@@ -32,7 +32,8 @@ async def test_audio_transcript_injected_into_prompt_not_stored_text(isolated, m
     seen = {}
 
     async def fake_stream(history, user_text, **kwargs):
-        seen["prompt"] = user_text
+        message = await anext(_build_prompt(history, user_text, [], kwargs["files"]))
+        seen["prompt"] = str(message["message"]["content"])
         yield TextDelta("好的,已听完")
         yield Done(AgentReply(text="好的,已听完", tool_calls=[], cost_usd=None, is_error=False))
 

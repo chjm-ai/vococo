@@ -303,7 +303,8 @@ async def test_image_attachment_includes_persisted_local_path():
     """图片既作为视觉内容传入，也要告诉模型受控落盘路径。"""
     prompt = agent._build_prompt(
         [], "用这张图做头像",
-        [ImageAttachment("QUJD", "image/png", "/tmp/chat-images/12_0.png")], [],
+        [ImageAttachment("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC",
+                         "image/png", "/tmp/chat-images/12_0.png")], [],
     )
     message = await anext(prompt)
 
@@ -421,16 +422,15 @@ async def test_file_attachment_prompt_carries_local_path():
         "type": "text",
         "text": "[文件附件: 方案.md]\n本机文件（可直接读取/处理）：/tmp/f/9_0.md\n# hi",
     }
-    assert content[2] == {
-        "type": "text",
-        "text": "[文件附件: 报价.pdf]\n本机文件（可直接读取/处理）：/tmp/f/9_1.pdf",
-    }
-    assert content[3]["type"] == "document"  # 二进制正文仍照旧走 document block
+    assert content[2]["type"] == "text"
+    assert "/tmp/f/9_1.pdf" in content[2]["text"]
+    assert "PDF 分页" in content[2]["text"]
+    assert len(content) == 3  # 不再盲传二进制 document block
 
 
 @pytest.mark.anyio
-async def test_binary_file_attachment_becomes_document_content_block():
-    """二进制文件维持 document block，交由上游判断是否支持。"""
+async def test_binary_file_without_local_path_reports_unreadable():
+    """未知二进制没有路径时明确报缺失，不能盲传给上游。"""
     prompt = agent._build_prompt(
         [], "读取这个文件", [],
         [FileAttachment(b"\0\xff", "application/x-nd", "sample.nd")],
@@ -438,10 +438,7 @@ async def test_binary_file_attachment_becomes_document_content_block():
     message = await anext(prompt)
     document = message["message"]["content"][1]
 
-    assert document["type"] == "document"
-    assert document["title"] == "sample.nd"
-    assert document["source"] == {
-        "type": "base64",
-        "media_type": "application/x-nd",
-        "data": "AP8=",
-    }
+    assert document["type"] == "text"
+    assert "sample.nd" in document["text"]
+    assert "无法读取" in document["text"]
+    assert "重新上传" in document["text"]

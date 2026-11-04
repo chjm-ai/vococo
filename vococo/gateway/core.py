@@ -289,6 +289,7 @@ async def _converse(
     # 音频落盘 + 转写文字入库(供回放/历史展示);喂给模型的文字另外拼,不进 stored_user——
     # 道理跟图片一样:附件不该塞进"给人看的那句话"里,只是这次没有原生 block 能装,
     # 只能退化成文字拼接(见 AudioAttachment 类注释)。
+    prompt_files = list(files or [])
     if audios:
         session_store.save_turn_audio(turn_id, audios)
         for au in audios:
@@ -297,7 +298,10 @@ async def _converse(
             # 时,模型只有原始文件名的话在磁盘上根本找不到,只会去猜"是不是没同步"
             if getattr(au, "local_path", ""):
                 user_text += f"\n本机文件(可直接读取/处理):{au.local_path}"
-            user_text += f"\n转写文字稿:\n{au.transcript}"
+            prompt_files.append(FileAttachment(
+                data=au.transcript.encode("utf-8"), media_type="text/plain",
+                filename=f"{au.filename} 转写文字稿.txt", local_path=au.transcript_path,
+            ))
     if files:
         session_store.save_turn_files(turn_id, files)
     # 视频落盘 + 元信息入库。喂模型的只有【路径 + 元信息】,视频本体一个字节都不进
@@ -331,7 +335,7 @@ async def _converse(
         source_token = clarify.bind_turn(session_key, turn_id)
         async for ev in stream_run(
             shared, user_text, stream_fn=stream_turn, model=model,
-            images=images, files=files, cwd=cwd,
+            images=images, files=prompt_files, cwd=cwd,
             is_explicit_project=is_explicit_project, compact=compact,
         ):
             await shared.observe(ev)

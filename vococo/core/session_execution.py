@@ -11,6 +11,7 @@ from .agent import (
     ToolFinished, ToolInput, ToolStarted, UpstreamRetry,
     effective_context_window, _window_ratio,
 )
+from . import attachment_policy
 from .timeline import Timeline
 from .checklist import ChecklistUpdated
 
@@ -124,8 +125,12 @@ async def stream_run(turn: SharedTurn, user_text: str, *, stream_fn, model=None,
     options = dict(execution, model=model, session_key=turn.session_key,
                    system_prompt_extra=turn.prompt_extra)
     preflight_tokens = 0
+    window = effective_context_window(model, resolved_model)
+    incoming = attachment_policy.incoming_units(
+        options.get("images") or [], options.get("files") or [], window=window,
+    )
     if (not compact and turn.resume
-            and used >= _window_ratio(effective_context_window(model, resolved_model), 0.65)):
+            and used + incoming >= _window_ratio(window, 0.65)):
         compact_options = {k: v for k, v in options.items() if k not in ("images", "files")}
         async for event in stream_fn([], "", resume=turn.resume, compact_only=True, **compact_options):
             if isinstance(event, Done):

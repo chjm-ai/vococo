@@ -107,6 +107,50 @@ def client_factory(monkeypatch):
     return made
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("native_vision", [False, True])
+async def test_image_routing_reaches_sdk_with_budgeted_content(client_factory, monkeypatch, native_vision, tmp_path):
+    import base64
+    from vococo.core import vision
+
+    monkeypatch.setattr(agent.config, "IMAGES_DIR", tmp_path)
+    original = tmp_path / "1_0.png"
+
+    env = {} if native_vision else {"ANTHROPIC_BASE_URL": "https://example.invalid/anthropic"}
+    monkeypatch.setattr(agent.providers, "resolve", lambda *_: ("claude-sonnet-5", env))
+    captured = {}
+    original_query = CompactFakeClient.query
+
+    async def query(self, prompt=None, *args, **kwargs):
+        message = await anext(prompt)
+        captured["blocks"] = message["message"]["content"]
+        await original_query(self, "received")
+
+    async def convert(images):
+        assert len(images) == 1 and images[0].local_path == str(original)
+        captured["converted"] = True
+        return "识别文字" * 20_000, ""
+
+    monkeypatch.setattr(CompactFakeClient, "query", query)
+    monkeypatch.setattr(vision, "convert_images", convert)
+    png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+    original.write_bytes(base64.b64decode(png))
+    images = [agent.ImageAttachment(png, "image/png", str(original))]
+    events = [event async for event in agent.stream_turn([], "分析图片", images=images,
+                                                         session_key=f"web:image-routing-{native_vision}")]
+    assert not events[-1].reply.is_error
+    blocks = captured["blocks"]
+    assert any(block["type"] == "image" for block in blocks) == native_vision
+    assert captured.get("converted", False) != native_vision
+    assert str(original) in str(blocks)
+    assert len(str(blocks).encode("utf-8")) < 26_000
+    if not native_vision:
+        description = original.with_name(original.name + ".vision.txt")
+        assert description.read_text() == "识别文字" * 20_000
+        assert str(description) in str(blocks)
+        assert "正文未内联" in str(blocks)
+
+
 def test_handle_command_marks_compact():
     """/compact 被识别为命令:handled=True 且 compact 标志打开;reply 为空(由压缩轮回复)。"""
     outcome = gateway_core.handle_command("/compact", "web:x", "claude-sonnet-4")

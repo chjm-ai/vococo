@@ -89,6 +89,27 @@ async def test_preflight_exhaustion_does_not_send_original_question(turn):
 
 
 @pytest.mark.anyio
+async def test_new_attachments_trigger_preflight_before_old_context_is_full(turn):
+    from vococo.core.agent import FileAttachment
+
+    key, tid = turn
+    session_store.record_usage(key, 500, 0, window=1000)
+    calls = []
+
+    async def stream(history, text, **options):
+        calls.append(options)
+        yield Done(reply(sdk_session_id="compacted-sdk"))
+
+    attachment = FileAttachment(b"x" * 200, "text/plain", "notes.txt")
+    _ = [event async for event in stream_run(SharedTurn(key, tid), "分析", stream_fn=stream,
+                                             files=[attachment])]
+    assert len(calls) == 2
+    assert calls[0]["compact_only"] and "files" not in calls[0]
+    assert calls[1]["files"] == [attachment]
+    assert calls[1]["resume"] == "compacted-sdk"
+
+
+@pytest.mark.anyio
 async def test_deleted_turn_cannot_recreate_sdk_session(turn):
     key, tid = turn
     shared = SharedTurn(key, tid)

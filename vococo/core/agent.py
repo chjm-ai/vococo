@@ -9,7 +9,6 @@ run_turn() 是其上的便捷封装(累积成最终回复),给纯文本 chat 用
 from __future__ import annotations
 
 import asyncio
-import base64
 import functools
 import hashlib
 import json
@@ -42,7 +41,7 @@ from ..gateway import clarify, settings_store
 from ..memory import agents, session_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
-from . import client_pool, reviewer, subagent
+from . import attachment_policy, client_pool, reviewer, subagent
 from .repository_locks import protect_repositories
 from .checklist import CHECKLIST_TOOLS, ChecklistTracker, ChecklistUpdated
 from .token_usage import StreamUsage
@@ -201,6 +200,7 @@ class Turn:
     user: str
     assistant: str = ""
     image_paths: list[str] = field(default_factory=list)
+    attachment_refs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -210,59 +210,21 @@ class ImageAttachment:
     data: str  # base64
     media_type: str  # 如 image/jpeg
     local_path: str = ""  # 持久化后供模型直接读取的受控本机路径
+    source_index: int = 0  # 部分图片未直传时仍保留用户原始序号
 
 
 @dataclass
 class FileAttachment:
-    """一个原样转交模型的通用文件附件。
+    """保留原件的通用文件附件。
 
-    Web 端不按扩展名或 MIME 类型拦截。模型/API 不支持的文件类型由上游返回明确错误，
-    避免浏览器擅自拒绝用户要发送的文件。
-
-    local_path 同图片/音频：附件落盘后的本机绝对路径。正文虽然也进了 content block，
-    但要用工具处理原始文件（xlsx 读表、pdf 抽页、大文件 grep）就必须有路径。
+    Web 端不按扩展名或 MIME 类型拦截上传；小文本限量内联，办公文档、PDF、
+    大文件及未知二进制传 local_path，由本机工具按需读取，不盲传 document block。
     """
 
     data: bytes
     media_type: str
     filename: str
     local_path: str = ""  # 落盘后供模型直接读取/处理的受控本机路径
-
-
-def _file_text(file: FileAttachment) -> str | None:
-    """能无损按 UTF-8 解码的附件直接作为文本送入模型。
-
-    HTML、Markdown、代码等文本文件若伪装成 document block，第三方 Anthropic 兼容端点
-    常会静默忽略或不解析；改成 text block 才能确保正文实际到达模型。二进制文件仍保留
-    document block，交由上游判断是否支持。
-    """
-    try:
-        text = file.data.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    return None if "\0" in text else text
-
-
-_ATTACHMENT_TEXT_MAX_CHARS = 24_000
-_INLINE_DATA_URL = re.compile(r"data:[^,\s<>\"']*;base64,[A-Za-z0-9+/=\r\n]+", re.IGNORECASE)
-
-
-def _file_prompt_text(file: FileAttachment, remaining: int) -> str | None:
-    """附件正文共用预算；落盘 HTML 避免把内嵌媒体编码带进上下文。"""
-    is_html = (Path(file.filename).suffix.lower() in {".html", ".htm", ".xhtml"}
-               or file.media_type.split(";", 1)[0].strip().lower() in {"text/html", "application/xhtml+xml"})
-    if file.local_path and is_html:
-        return ("[正文未内联，请按需处理本机文件。先用脚本提取文字和结构，"
-                "跳过内嵌媒体编码；不要整份输出 HTML 或超长行。]")
-    text = _file_text(file)
-    if text is None:
-        return None
-    if file.local_path and len(text) > remaining:
-        return "[正文超出附件总预算，未内联；请按需分段读取本机文件，不要整份输出。]"
-    text = _INLINE_DATA_URL.sub("[内嵌媒体编码已省略]", text)
-    if len(text) > remaining:
-        return text[:remaining] + "\n[正文已截断；没有本机路径，请重新提供文件或拆分内容。]"
-    return text
 
 
 @dataclass
@@ -285,6 +247,7 @@ class AudioAttachment:
     filename: str
     transcript: str  # 上传时已转写好的文字稿
     local_path: str = ""  # 落盘后供模型直接读取/处理的受控本机路径
+    transcript_path: str = ""  # 完整转写文字稿，长内容按需分段读取
 
 
 @dataclass
@@ -749,6 +712,8 @@ def _compose_prompt(history: list[Turn], user_text: str) -> str:
                 "[本条消息携带的聊天图片附件，可用 Read 工具读取]\n"
                 + "\n".join(f"本机文件：{path}" for path in t.image_paths)
             )
+        if t.attachment_refs:
+            lines.append("[本条消息的附件引用，内容需按需读取]\n" + "\n".join(t.attachment_refs))
         if t.assistant:
             lines.append(f"你:{t.assistant}")
     lines.append("\n[当前这轮]")
@@ -795,12 +760,17 @@ def _build_prompt(
     user_text: str,
     images: list[ImageAttachment],
     files: list[FileAttachment],
+    *, attachment_units: int = attachment_policy.TOTAL_UNITS,
 ) -> str | AsyncIterator[dict[str, Any]]:
-    text = _compose_prompt(history, user_text)
     if not images and not files:
-        return text
+        return _compose_prompt(history, user_text)
+    images, image_notes = attachment_policy.prepare_images(images, total_units=attachment_units)
+    if image_notes:
+        user_text += "\n\n" + image_notes
+    text = _compose_prompt(history, user_text)
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
     for idx, img in enumerate(images, start=1):
+        idx = img.source_index or idx
         if img.local_path:
             content.append({
                 "type": "text",
@@ -816,31 +786,15 @@ def _build_prompt(
                 },
             }
         )
-    remaining = _ATTACHMENT_TEXT_MAX_CHARS
+    remaining = attachment_policy.text_limit(len(images), attachment_units)
     for file in files:
-        # 大文件只传路径，保留工具处理原始文件的入口。
         where = f"\n本机文件（可直接读取/处理）：{file.local_path}" if file.local_path else ""
-        file_text = _file_prompt_text(file, remaining)
-        if file_text is not None:
-            remaining = max(0, remaining - len(file_text))
-            content.append({
-                "type": "text",
-                "text": f"[文件附件: {file.filename}]{where}\n{file_text}",
-            })
-            continue
-        if where:
-            content.append({"type": "text", "text": f"[文件附件: {file.filename}]{where}"})
-        content.append(
-            {
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": file.media_type,
-                    "data": base64.b64encode(file.data).decode("ascii"),
-                },
-                "title": file.filename,
-            }
-        )
+        file_text = attachment_policy.file_text(file, remaining)
+        remaining = max(0, remaining - len(file_text.encode("utf-8")))
+        content.append({
+            "type": "text",
+            "text": f"[文件附件: {file.filename}]{where}\n{file_text}",
+        })
     return _attachment_prompt_stream(content)
 
 
@@ -1147,15 +1101,25 @@ async def stream_turn(
     if extra_body and provider_env:
         provider_env = {**provider_env, "CLAUDE_CODE_EXTRA_BODY": extra_body}
     # 图片旁路:第三方非视觉模型(如 DeepSeek)不收 image block,硬传直接报错 →
-    # 先用 qwen-vl 把图转成文字描述拼进 user_text,再以纯文本喂主模型
-    # (见 core/vision.py)。官方订阅直传原图,行为不变;转换失败抛错,由 converse
+    # 先用 qwen-vl 把受限预览转成文字附件，完整结果落盘后按共用预算喂主模型
+    # (见 core/vision.py)。支持视觉的模型直传受限图片预览;转换失败抛错,由 converse
     # 的错误回复兜底,绝不把图硬塞给不支持视觉的模型。懒加载:vision 依赖本模块
     # 的 ImageAttachment,顶部 import 会循环引用。
+    attachment_units = min(attachment_policy.TOTAL_UNITS, turn_window // 5)
     if images and not vision.is_vision_capable(provider_env):
-        desc, err = await vision.convert_images(images)
-        if err:
-            raise RuntimeError(err)
-        user_text = f"{user_text}\n\n{desc}" if user_text.strip() else desc
+        previews, notes = await asyncio.to_thread(
+            attachment_policy.prepare_images, images, total_units=attachment_units,
+        )
+        refs = "\n".join(f"本机图片：{image.local_path}" for image in images if image.local_path)
+        user_text += f"\n\n{refs}\n{notes}"
+        if previews:
+            desc, err = await vision.convert_images(previews)
+            if err:
+                raise RuntimeError(err)
+            from ..memory.images import save_image_description
+            description_path = await asyncio.to_thread(save_image_description, previews, desc)
+            files = [FileAttachment(desc.encode("utf-8"), "text/plain", "图片识别文字.txt",
+                                    description_path), *(files or [])]
         images = None
     # 外部 MCP 默认不挂；本轮明确的数据任务或当前会话的手动开关才会请求对应 server。
     # settings 的 enabled 仍是全局总开关，但任务匹配绝不会反向改它。
@@ -1425,7 +1389,8 @@ async def stream_turn(
                     if not research and (use_resume or warm) and not checklist_guided:
                         query_text = f"<system-reminder>\n{CHECKLIST_GUIDANCE}\n</system-reminder>\n{query_text}"
                     await client.query(
-                        _build_prompt(prompt_history, query_text, images or [], files or [])
+                        _build_prompt(prompt_history, query_text, images or [], files or [],
+                                      attachment_units=attachment_units)
                     )
                     client._vococo_checklist_guided = True
                 pending_subagents: set[str] = set()  # Agent/Task 调用 id,未拿到结果 = 子代理还在跑

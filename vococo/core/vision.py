@@ -3,8 +3,8 @@
 和 multimodal-generation 端点,不新增任何配置(2026-08-03 新增)。
 
 为什么不做成"直传图片让主模型自己看":DeepSeek 的 Anthropic 兼容端点根本不接受
-image content block,硬传直接报错。转文字后描述文本会拼进 user_text,随对话落库,
-后续轮次主模型也"记得"图的内容(虽然只是描述版)。
+image content block,硬传直接报错。识别文字按附件预算输入；完整结果跟随受控原图
+保存为文字稿，后续轮次或切换模型可按需读取。
 """
 from __future__ import annotations
 
@@ -126,5 +126,6 @@ async def convert_images(images: list[ImageAttachment]) -> tuple[str | None, str
         text, error = res
         if error:
             return None, f"图片 {i} 读取失败: {error}"
-        parts.append(f"[图片附件: 图片{i}]\n{text}")
+        index = img.source_index or i
+        parts.append(f"[图片附件: 图片{index}]\n{text}")
     return "\n\n".join(parts), ""

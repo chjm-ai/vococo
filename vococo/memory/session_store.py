@@ -151,6 +151,42 @@ def _user_image_paths(raw: str | None) -> list[str]:
     ]
 
 
+def _user_attachment_refs(files: str | None, audios: str | None, videos: str | None,
+                          *, turn_id: int | None = None, images: str | None = None) -> list[str]:
+    """重建模型上下文时只恢复受控文件引用，不重放附件正文。"""
+    import re
+    from .. import config
+
+    refs = []
+    for kind, raw, directory in (("文件", files, config.FILES_DIR),
+                                  ("音频", audios, config.AUDIO_DIR),
+                                  ("视频", videos, config.VIDEOS_DIR)):
+        for index, entry in enumerate(_loads_list(raw)):
+            if not isinstance(entry, dict) or str(entry.get("file", "")).startswith("ai_"):
+                continue
+            info = {"类型": kind, "文件名": str(entry.get("name") or entry.get("filename") or "")}
+            for field, label in (("file", "本机文件"), ("transcript_file", "转写文字稿")):
+                name = entry.get(field)
+                if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                    continue
+                path = directory / name
+                if path.is_file() and not path.is_symlink():
+                    info[label] = str(path)
+            if kind == "音频" and "转写文字稿" not in info and turn_id is not None:
+                from .audio import restore_transcript
+                if transcript := restore_transcript(entry, turn_id, index):
+                    info["转写文字稿"] = transcript
+            if "本机文件" not in info:
+                info["状态"] = "原文件缺失，不能假装已读取"
+            refs.append(json.dumps(info, ensure_ascii=False))
+    from pathlib import Path
+    for original in _user_image_paths(images):
+        path = Path(original + ".vision.txt")
+        if path.is_file() and not path.is_symlink():
+            refs.append(json.dumps({"类型": "图片识别文字", "本机文件": str(path)}, ensure_ascii=False))
+    return refs
+
+
 def load_recent(session_key: str, limit: int = 40) -> list[Turn]:
     """只取当前会话(水位线之后)的最近 N 轮;跳过进行中(assistant_text='')的 turn。"""
     from ..core.agent import Turn  # 延迟 import:打破模块级循环依赖
@@ -158,13 +194,14 @@ def load_recent(session_key: str, limit: int = 40) -> list[Turn]:
     c = _conn()
     wm = _watermark(c, session_key)
     rows = c.execute(
-        "SELECT user_text, assistant_text, images FROM turns "
+        "SELECT id, user_text, assistant_text, images, files, audios, videos FROM turns "
         "WHERE session_key=? AND id>? AND assistant_text!='' ORDER BY id DESC LIMIT ?",
         (session_key, wm, limit),
     ).fetchall()
     return [
-        Turn(user=u, assistant=a, image_paths=_user_image_paths(images))
-        for u, a, images in reversed(rows)
+        Turn(user=u, assistant=a, image_paths=_user_image_paths(images),
+             attachment_refs=_user_attachment_refs(files, audios, videos, turn_id=tid, images=images))
+        for tid, u, a, images, files, audios, videos in reversed(rows)
     ]
 
 
