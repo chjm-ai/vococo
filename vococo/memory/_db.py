@@ -9,6 +9,8 @@ prefs.py / search.py 这几个同包兄弟模块用,它们共享同一个 state.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from .. import config
 
@@ -114,7 +116,24 @@ CREATE TABLE IF NOT EXISTS missed_approvals(
 """
 
 
+_READ_DB: ContextVar[sqlite3.Connection | None] = ContextVar("state_read_db", default=None)
+
+
+@contextmanager
+def read_connection():
+    """侧栏线程独占只读连接，避免与主线程写入共享事务或游标状态。"""
+    connection = sqlite3.connect((config.DATA_DIR / "state.db").resolve().as_uri() + "?mode=ro", uri=True)
+    token = _READ_DB.set(connection)
+    try:
+        yield
+    finally:
+        _READ_DB.reset(token)
+        connection.close()
+
+
 def conn() -> sqlite3.Connection:
+    if (reader := _READ_DB.get()) is not None:
+        return reader
     global _DB
     if _DB is None:
         config.DATA_DIR.mkdir(parents=True, exist_ok=True)

@@ -21,6 +21,8 @@ import json
 import secrets
 import sqlite3
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from .. import config
@@ -123,7 +125,25 @@ def _db_path() -> Path:
     return config.DATA_DIR / "voice" / "voice.db"
 
 
+_READ_DB: ContextVar[sqlite3.Connection | None] = ContextVar("tasks_read_db", default=None)
+
+
+@contextmanager
+def read_connection():
+    """侧栏线程只查任务，不借用执行器正在写入的连接。"""
+    connection = sqlite3.connect(_db_path().resolve().as_uri() + "?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    token = _READ_DB.set(connection)
+    try:
+        yield
+    finally:
+        _READ_DB.reset(token)
+        connection.close()
+
+
 def _conn() -> sqlite3.Connection:
+    if (reader := _READ_DB.get()) is not None:
+        return reader
     global _DB
     if _DB is None:
         path = _db_path()

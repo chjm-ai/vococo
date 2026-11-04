@@ -581,6 +581,25 @@ def _authed(fn):
     return wrapper
 
 
+def _sidebar_read(fn):
+    """慢磁盘和历史归属解析不得堵住 SSE；同一请求只扫描一次 Agent。"""
+    @functools.wraps(fn)
+    async def wrapper(self, request):
+        from ...core import tasks
+        from ...memory import _db, agents
+
+        # 共享连接的首次建表仍串行，避免多个侧栏同时启动时竞相迁移。
+        session_store._conn()
+        tasks._conn()
+
+        def read():
+            with _db.read_connection(), tasks.read_connection(), agents.read_snapshot():
+                return fn(self, request)
+
+        return await asyncio.to_thread(read)
+    return wrapper
+
+
 def _json_body(fn):
     """handler 装饰器:解析 POST JSON,坏 body 直接 400;好 body 注入为第三个位置参数。"""
     @functools.wraps(fn)
@@ -1428,7 +1447,8 @@ class WebAdapter:
         return web.json_response({"ok": True, "stopped": stopped})
 
     @_authed
-    async def _handle_conversations(self, request: web.Request) -> web.Response:
+    @_sidebar_read
+    def _handle_conversations(self, request: web.Request) -> web.Response:
         # ?filter=active|archived 时在 SQL 层就把另一半过滤掉,只传前端要看的
         # 那部分——不带该参数(如首屏用户偏好还没加载出来前那次)则保持全量,
         # 见 sidebar.js loadConvs()/app-core.js tryEnter() 里的调用方注释。
@@ -1446,12 +1466,12 @@ class WebAdapter:
         return _compressed_json({"main": main, "conversations": convs})
 
     @_authed
-    async def _handle_conv_search(self, request: web.Request) -> web.Response:
+    @_sidebar_read
+    def _handle_conv_search(self, request: web.Request) -> web.Response:
         """侧边栏全局搜索(⌘F):标题优先、正文其次,含归档会话;被删除的
         会话已物理删除,天然不在结果里。"""
         q = (request.query.get("q") or "").strip()
-        # 全表 LIKE 扫描,数据涨到 9000 轮后要 60~100ms,放线程里别卡住其他请求
-        items = await asyncio.to_thread(_search_session_rows, q)
+        items = _search_session_rows(q)
         from ...cron import scheduler
 
         jobs = {config.resolve_session_key("web", j.get("conv") or f"task:{j['id']}"): j
@@ -1466,7 +1486,8 @@ class WebAdapter:
         return _compressed_json({"results": items})
 
     @_authed
-    async def _handle_voice_sidebar(self, request: web.Request) -> web.Response:
+    @_sidebar_read
+    def _handle_voice_sidebar(self, request: web.Request) -> web.Response:
         """侧边栏"后台任务"固定分组:主语音会话 + 语音/网页派发的各后台任务会话。
 
         跟 _handle_conversations 一个模板,只是数据源换成 voice-chat:/task: 前缀
@@ -1551,7 +1572,8 @@ class WebAdapter:
 
     # ── 定时任务 ─────────────────────────────────────────────────────────
     @_authed
-    async def _handle_cron_sidebar(self, request: web.Request) -> web.Response:
+    @_sidebar_read
+    def _handle_cron_sidebar(self, request: web.Request) -> web.Response:
         """侧边栏"定时任务"分组:每个任务一条专属会话(task:<job_id>,job_id 本身
         就复用作统一后台任务引擎的 task_id,见 core/tasks.py 的 origin 字段说明),
         跟"语音任务"同一个模板。只在有任务时前端才渲染这个分组。"""
