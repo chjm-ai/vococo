@@ -83,8 +83,9 @@ async def test_copies_are_isolated_and_source_stays_readonly(isolated):
     copy = policy.repositories[0].checkout
     assert git(copy, "rev-parse", "--show-toplevel") == str(copy)
     assert git(copy, "branch", "--show-current").startswith("vococo/")
-    assert (copy / ".git").is_dir()
-    assert not (copy / ".git/objects/info/alternates").exists()
+    assert (copy / ".git").is_file()
+    assert git(copy, "rev-parse", "--path-format=absolute", "--git-common-dir") == str(source / ".git")
+    assert str(copy) in git(source, "worktree", "list", "--porcelain")
     assert not git(copy, "remote")  # 没有发布地址时不保留指向主检出的 origin。
     assert danger._business_write_allowed({"file_path": str(copy / "article.md")}, str(policy.workspace), policy)
     assert danger._business_write_allowed({"file_path": str(source / "article.md")}, str(policy.workspace), policy)
@@ -95,6 +96,10 @@ async def test_copies_are_isolated_and_source_stays_readonly(isolated):
     assert (copy / "article.md").read_text() == "仅修改副本\n"
     assert (source / "article.md").read_text() == "原文\n"
     assert git(source, "status", "--porcelain") == ""
+    assert git(source, "branch", "--show-current") == "main"
+    (copy / "article.md").write_text("未提交成果\n")
+    await execution.prepare_repositories(policy)
+    assert (copy / "article.md").read_text() == "未提交成果\n"
     second_key = config.new_session_key()
     session_store.bind_session(second_key, agent_id=owner["id"])
     second = execution.policy_for_session(second_key)
@@ -190,24 +195,118 @@ def test_slow_binding_update_does_not_restore_revoked_permissions(isolated, monk
 
 
 @pytest.mark.anyio
-async def test_failed_clone_can_retry_without_touching_existing_work(isolated, monkeypatch):
+async def test_failed_worktree_can_retry_without_touching_existing_work(isolated, monkeypatch):
     from vococo.core import business_repositories
 
     _, source, key = owner_with_repository(isolated)
     policy = execution.policy_for_session(key)
-    clone = business_repositories._clone_copy
+    real_git = business_repositories._git
 
-    def fail(binding):
-        (binding.checkout / "partial.txt").write_text("克隆中断")
-        raise ValueError("模拟克隆失败")
+    def fail(cwd, *args):
+        if args[:2] == ("worktree", "move"):
+            raise ValueError("模拟工作树初始化失败")
+        return real_git(cwd, *args)
 
-    monkeypatch.setattr(business_repositories, "_clone_copy", fail)
-    with pytest.raises(ValueError, match="模拟克隆失败"):
+    monkeypatch.setattr(business_repositories, "_git", fail)
+    with pytest.raises(ValueError, match="模拟工作树初始化失败"):
         await execution.prepare_repositories(policy)
     copy = policy.repositories[0].checkout
     assert not copy.exists()
-    assert list(copy.parent.iterdir()) == []
-    monkeypatch.setattr(business_repositories, "_clone_copy", clone)
+    assert not list(copy.parent.glob(".initializing-*"))
+    assert str(copy.parent) not in git(source, "worktree", "list", "--porcelain")
+    monkeypatch.setattr(business_repositories, "_git", real_git)
     await execution.prepare_repositories(policy)
     assert (copy / "article.md").read_text() == "原文\n"
     assert git(source, "status", "--porcelain") == ""
+
+
+@pytest.mark.anyio
+async def test_worktree_never_clones_and_preserves_dirty_source(isolated, monkeypatch):
+    from vococo.core import business_repositories
+
+    _, source, key = owner_with_repository(isolated)
+    git(source, "remote", "add", "origin", "https://example.invalid/project.git")
+    (source / "article.md").write_text("原目录未提交内容\n")
+    (source / ".env").write_text("LOCAL_ONLY=1\n")
+    before = git(source, "status", "--porcelain")
+    real_git = business_repositories._git
+
+    def no_clone(cwd, *args):
+        assert args[0] != "clone"
+        return real_git(cwd, *args)
+
+    monkeypatch.setattr(business_repositories, "_git", no_clone)
+    policy = execution.policy_for_session(key)
+    await execution.prepare_repositories(policy)
+    copy = policy.repositories[0].checkout
+    assert (copy / "article.md").read_text() == "原文\n"
+    assert not (copy / ".env").exists()
+    assert git(copy, "remote", "get-url", "origin") == "https://example.invalid/project.git"
+    assert git(source, "status", "--porcelain") == before
+    assert (source / "article.md").read_text() == "原目录未提交内容\n"
+
+
+@pytest.mark.anyio
+async def test_legacy_clone_preserves_commits_and_uncommitted_work(isolated):
+    _, source, key = owner_with_repository(isolated)
+    policy = execution.policy_for_session(key)
+    binding = policy.repositories[0]
+    binding.checkout.parent.mkdir(parents=True)
+    git(source, "clone", "--no-local", "--", str(source), str(binding.checkout))
+    git(binding.checkout, "config", "vococo.source", str(source))
+    (binding.checkout / "article.md").write_text("旧副本成果\n")
+    git(binding.checkout, "add", ".")
+    git(binding.checkout, "-c", "user.name=测试", "-c", "user.email=test@example.invalid",
+        "commit", "-m", "旧成果")
+    head = git(binding.checkout, "rev-parse", "HEAD")
+    (binding.checkout / "draft.md").write_text("不能丢失\n")
+    await execution.prepare_repositories(policy)
+    assert (binding.checkout / ".git").is_dir()
+    assert git(binding.checkout, "rev-parse", "HEAD") == head
+    assert (binding.checkout / "draft.md").read_text() == "不能丢失\n"
+
+
+@pytest.mark.anyio
+async def test_parallel_initialization_reuses_same_worktree(isolated):
+    import asyncio
+
+    _, source, key = owner_with_repository(isolated)
+    policy = execution.policy_for_session(key)
+    await asyncio.gather(*(execution.prepare_repositories(policy) for _ in range(3)))
+    copy = policy.repositories[0].checkout
+    assert (copy / ".git").is_file()
+    listing = git(source, "worktree", "list", "--porcelain")
+    assert listing.count(f"worktree {copy}\n") == 1
+    assert ".initializing-" not in listing
+
+
+@pytest.mark.anyio
+async def test_interrupted_worktree_initialization_recovers_without_losing_work(isolated):
+    _, source, key = owner_with_repository(isolated)
+    policy = execution.policy_for_session(key)
+    binding = policy.repositories[0]
+    staging = binding.checkout.parent / ".initializing-interrupted"
+    staging.parent.mkdir(parents=True)
+    git(source, "worktree", "add", "-b", binding.branch, str(staging))
+    (staging / "draft.md").write_text("中断前的成果\n")
+    await execution.prepare_repositories(policy)
+    assert not staging.exists()
+    assert (binding.checkout / "draft.md").read_text() == "中断前的成果\n"
+    assert git(binding.checkout, "branch", "--show-current") == binding.branch
+    await execution.prepare_repositories(policy)
+    assert (binding.checkout / "draft.md").read_text() == "中断前的成果\n"
+
+
+@pytest.mark.anyio
+async def test_foreign_worktree_is_rejected_without_removing_work(isolated):
+    _, source, key = owner_with_repository(isolated)
+    policy = execution.policy_for_session(key)
+    binding = policy.repositories[0]
+    other = repository(isolated / "other")
+    binding.checkout.parent.mkdir(parents=True)
+    git(other, "worktree", "add", "-b", binding.branch, str(binding.checkout))
+    (binding.checkout / "draft.md").write_text("保留\n")
+    with pytest.raises(ValueError, match="来源或分支不匹配"):
+        await execution.prepare_repositories(policy)
+    assert (binding.checkout / "draft.md").read_text() == "保留\n"
+    assert git(source, "branch", "--show-current") == "main"

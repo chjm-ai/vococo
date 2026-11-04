@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
+import fcntl
 import shutil
 import subprocess
 import tempfile
@@ -77,51 +77,85 @@ def _git(cwd: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _git_path(checkout: Path, option: str) -> Path:
+    return Path(_git(checkout, "rev-parse", "--path-format=absolute", option)).resolve()
+
+
 def _verify_copy(binding: RepositoryCopy) -> None:
     checkout = binding.checkout
-    if checkout.absolute() != checkout.resolve() or not (checkout / ".git").is_dir():
-        raise ValueError(f"仓库副本必须有独立 Git 目录：{checkout}")
-    common = Path(_git(checkout, "rev-parse", "--git-common-dir"))
-    common = (checkout / common).resolve()
-    if common != checkout / ".git" or (common / "objects/info/alternates").exists():
-        raise ValueError(f"仓库副本不能共享 Git 元数据或对象：{checkout}")
+    marker = checkout / ".git"
+    if checkout.absolute() != checkout.resolve() or marker.is_symlink() or not marker.exists():
+        raise ValueError(f"仓库副本 Git 目录无效：{checkout}")
     if Path(_git(checkout, "rev-parse", "--show-toplevel")).resolve() != checkout:
         raise ValueError(f"仓库副本根目录不匹配：{checkout}")
-    if _git(checkout, "config", "--get", "vococo.source") != str(binding.source):
-        raise ValueError(f"仓库副本初始化未完成或来源不匹配，请检查：{checkout}")
+    common = _git_path(checkout, "--git-common-dir")
+    if marker.is_dir():
+        # 旧版本的完整克隆原地复用，不能丢弃已有提交或未提交改动。
+        if (common != marker or (common / "objects/info/alternates").exists()
+                or _git(checkout, "config", "--get", "vococo.source") != str(binding.source)):
+            raise ValueError(f"仓库副本初始化未完成或来源不匹配：{checkout}")
+        return
+    git_dir = _git_path(checkout, "--git-dir")
+    if (common != _git_path(binding.source, "--git-common-dir")
+            or git_dir.parent != common / "worktrees"
+            or not (git_dir / "gitdir").is_file()
+            or Path((git_dir / "gitdir").read_text().strip()).resolve() != marker
+            or _git(checkout, "branch", "--show-current") != binding.branch):
+        raise ValueError(f"仓库副本工作树来源或分支不匹配：{checkout}")
 
 
 def _prepare_copy(binding: RepositoryCopy) -> None:
-    if binding.checkout.exists() or binding.checkout.is_symlink():
-        _verify_copy(binding)
-        return  # 保留现有提交和未提交改动，不自动重置或拉取。
-    normalize_repositories([str(binding.source)])
     binding.checkout.parent.mkdir(parents=True, exist_ok=True)
+    # 同一会话可能同时被前台和任务引擎初始化，跨线程/进程串行处理。
+    with (binding.checkout.parent / f".{binding.checkout.name}.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if binding.checkout.exists() or binding.checkout.is_symlink():
+            _verify_copy(binding)
+            return  # 保留现有提交和未提交改动，不自动重置或拉取。
+        normalize_repositories([str(binding.source)])
+        _create_worktree(binding)
+        _verify_copy(binding)
+
+
+def _resume_worktree(binding: RepositoryCopy) -> bool:
+    registered = _git(binding.source, "worktree", "list", "--porcelain", "-z")
+    checkout = None
+    for field in registered.split("\0"):
+        if field.startswith("worktree "):
+            checkout = Path(field.removeprefix("worktree "))
+        elif field == f"branch refs/heads/{binding.branch}":
+            if (checkout is None or checkout.parent != binding.checkout.parent
+                    or not checkout.name.startswith(".initializing-")):
+                raise ValueError(f"会话分支已被其它工作树使用：{binding.checkout}")
+            _verify_copy(replace(binding, checkout=checkout))
+            # 进程中断留下的工作树只移动不清空，保留其中可能存在的成果。
+            _git(binding.source, "worktree", "move", str(checkout), str(binding.checkout))
+            return True
+    return False
+
+
+def _create_worktree(binding: RepositoryCopy) -> None:
+    if _resume_worktree(binding):
+        return
     staging = Path(tempfile.mkdtemp(prefix=".initializing-", dir=binding.checkout.parent))
     try:
-        _clone_copy(replace(binding, checkout=staging))
-        try:
-            os.rename(staging, binding.checkout)
-        except OSError:
-            if not binding.checkout.exists():
-                raise
-            _verify_copy(binding)  # 另一个初始化进程先完成时只复用已验证的副本。
+        # 只检出工作文件，共享本地 Git 历史；不复制对象，也不改原目录当前分支。
+        branches = _git(binding.source, "for-each-ref", "--format=%(refname)", "refs/heads/")
+        if f"refs/heads/{binding.branch}" in branches.splitlines():
+            args = (str(staging), binding.branch)  # 上次初始化中断留下的会话分支。
+        elif not _git(binding.source, "rev-parse", "--revs-only", "HEAD"):
+            args = ("--orphan", "-b", binding.branch, str(staging))
+        else:
+            args = ("-b", binding.branch, str(staging), "HEAD")
+        _git(binding.source, "worktree", "add", *args)
+        _git(binding.source, "worktree", "move", str(staging), str(binding.checkout))
     finally:
         if staging.exists():
-            shutil.rmtree(staging)  # 只清理本次创建、尚未暴露给会话的临时副本。
-
-
-def _clone_copy(binding: RepositoryCopy) -> None:
-    # --no-local 使用 Git 传输协议，避免本地克隆的硬链接/共享对象越过沙箱。
-    _git(binding.source, "clone", "--no-local", "--", str(binding.source), str(binding.checkout))
-    remotes = _git(binding.source, "remote").splitlines()
-    origin = _git(binding.source, "remote", "get-url", "origin") if "origin" in remotes else ""
-    _git(binding.checkout, "remote", "remove", "origin")
-    if origin:
-        _git(binding.checkout, "remote", "add", "origin", origin)
-    _git(binding.checkout, "switch", "-c", binding.branch)
-    _git(binding.checkout, "config", "vococo.source", str(binding.source))
-    _verify_copy(binding)
+            # 只清理本次新建的临时目录和登记，绝不删除已暴露给会话的工作成果。
+            if (staging / ".git").is_file():
+                _git(binding.source, "worktree", "remove", "--force", str(staging))
+            else:
+                shutil.rmtree(staging)
 
 
 async def prepare_repositories(policy) -> None:
@@ -133,7 +167,7 @@ def prompt_note(copies: tuple[RepositoryCopy, ...]) -> str:
     guidance = (
         "代码开发默认由当前 Agent 自行完成。Git 仓库无需单独绑定，关联目录会自动识别。"
         "没有关联目录不代表禁止开发：标准权限下写未关联目录需授权，完全访问无需绑定或重复审批。"
-        "并发开发默认使用当前会话的独立副本；未列出的仓库也应先建立独立副本，不能把开发隔离当作权限拒绝。"
+        "并发开发默认在本地仓库创建会话分支和独立工作目录（git worktree），无需完整克隆；未列出的仓库也按此处理，不能把开发隔离当作权限拒绝。"
         "修改前读取目标仓库的 AGENTS.md/CLAUDE.md，保留已有未提交修改。"
         "业务部署沿用仓库部署脚本或 CI/CD；独立 HTML 报告分享仍走 publish_website。"
         "推送、发布按当前有效权限处理，不能一律宣称需要审批。"
@@ -144,6 +178,6 @@ def prompt_note(copies: tuple[RepositoryCopy, ...]) -> str:
     return (
         "\n## 关联目录中的 Git 仓库\n" + rows + "\n" + guidance
         + "修改、构建及本地提交默认在会话副本进行，这不是原目录只读的权限限制。"
-        "副本只含已提交内容，不带原目录未提交修改、.env 或 node_modules，也不会自动同步远端。"
+        "新工作目录共享本地 Git 历史和远程配置，只检出已提交文件，不复制历史、不带原目录未提交或忽略的文件（如 .env、node_modules），也不会自动同步远端；已有完整副本原地保留。"
         "缺少依赖或部署配置先说明，不得猜测或外发凭据。"
     )
