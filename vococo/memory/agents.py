@@ -43,6 +43,10 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
+from functools import wraps
 from pathlib import Path
 from typing import Callable
 
@@ -161,6 +165,32 @@ def _default_avatar(agent_id: str) -> dict:
 DELETED_DIR = ".deleted"
 
 
+_READ_SNAPSHOT: ContextVar[dict | None] = ContextVar("agent_read_snapshot", default=None)
+
+
+@contextmanager
+def read_snapshot():
+    """仅供一批只读查询复用；请求结束即丢弃，不缓存后续执行的权限。"""
+    token = _READ_SNAPSHOT.set({})
+    try:
+        yield
+    finally:
+        _READ_SNAPSHOT.reset(token)
+
+
+def _snapshot_read(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        cache = _READ_SNAPSHOT.get()
+        if cache is None:
+            return fn(*args, **kwargs)
+        key = (fn.__name__, args, tuple(sorted(kwargs.items())))
+        if key not in cache:
+            cache[key] = fn(*args, **kwargs)
+        return deepcopy(cache[key])
+    return wrapper
+
+
 def _read_meta(agent_id: str) -> dict:
     try:
         return json.loads((home(agent_id) / "agent.json").read_text(encoding="utf-8"))
@@ -169,11 +199,12 @@ def _read_meta(agent_id: str) -> dict:
 
 
 def _write_meta(agent_id: str, meta: dict) -> None:
-    d = home(agent_id)
-    d.mkdir(parents=True, exist_ok=True)
-    tmp = d / "agent.json.tmp"
-    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, d / "agent.json")
+    with _UPDATE_LOCK:
+        d = home(agent_id)
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / "agent.json.tmp"
+        tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, d / "agent.json")
 
 
 def _normalize_avatar(av: dict | None, agent_id: str) -> dict:
@@ -274,6 +305,7 @@ def list_agents() -> list[dict]:
     return out
 
 
+@_snapshot_read
 def _agents_by_project_hash() -> dict[str, str]:
     """扫家目录:项目哈希 → Agent id。"""
     out: dict[str, str] = {}
@@ -291,17 +323,20 @@ def _agents_by_project_hash() -> dict[str, str]:
 
 def _materialize(phash: str) -> dict:
     """显式访问可见项目时按项目哈希落配置;隐藏项目不能补建,避免删除后复活。"""
-    meta = _read_meta(phash)
-    if not meta.get("workdir"):
-        path = next((p["path"] for p in projects.list_projects() if p["hash"] == phash), None)
-        if not path:
-            return {}
-        meta.update(workdir=path)
-        meta.setdefault("created_at", time.time())
-        _write_meta(phash, meta)
-    return meta
+    # 多个侧栏会并发访问同一旧项目；检查和补建必须与配置更新共用一把锁。
+    with _UPDATE_LOCK:
+        meta = _read_meta(phash)
+        if not meta.get("workdir"):
+            path = next((p["path"] for p in projects.list_projects() if p["hash"] == phash), None)
+            if not path:
+                return {}
+            meta.update(workdir=path)
+            meta.setdefault("created_at", time.time())
+            _write_meta(phash, meta)
+        return meta
 
 
+@_snapshot_read
 def get(agent_id: str) -> dict | None:
     if not valid_id(agent_id):
         return None
