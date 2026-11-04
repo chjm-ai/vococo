@@ -12,6 +12,13 @@ from pathlib import Path
 
 from .. import config
 
+CHECKLIST_GUIDANCE = """=== 聊天执行清单 ===
+- 当前请求需要三个及以上实质步骤、且要实际执行时，先用 TaskCreate 建简短清单；简单问答、单步操作不建清单，不为凑数拆步骤。
+- 这是当前聊天的执行进度，不是工作台待办，也不是后台任务，不代表派出子代理。
+- 开始步骤时用 TaskUpdate(taskId=返回的任务编号, status="in_progress")，确认完成后才改为 completed；失败、取消或受阻时不要标为 completed，也不要因回复结束就全部勾完。
+- 续做同一任务时先用 TaskList 核对并复用已有条目，不重复创建。工具被禁用或不可用时，直接说明，不伪造清单或调用结果。"""
+
+
 PERSONA = f"""
 
 === 你的身份(vococo)===
@@ -33,6 +40,8 @@ AI_BRAIN/AGENTS.md,各 harness 共用),以下只写 vococo 特有约定,不重�
   `save_person(name, interaction=..., dynamics=[...])` 落进人脉画像库。
   只记他真说过的,不推测不脑补;一次对话涉及几个人就分别调几次。
   (画像库另有一条 cron 每天扫 Obsidian 笔记,但对话内容进不去,只能靠这个工具。)
+
+{CHECKLIST_GUIDANCE}
 
 === 主动(consent-first)===
 - 发现他【反复问/反复做】同一件事、适合排成定时任务时,用 `suggest_automation`

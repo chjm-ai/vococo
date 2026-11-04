@@ -138,3 +138,13 @@ def test_cache_invalidated_on_agents_mtime_change(tmp_path: Path):
     os.utime(agents, (time.time() + 60, time.time() + 60))
     out = build_system_prompt(str(tmp_path), cache_key=key)["append"]
     assert "RULE_V2" in out and "RULE_V1" not in out
+
+
+def test_prompt_explains_checklist_trigger_and_truthful_status():
+    out = build_system_prompt(None)["append"]
+    assert "三个及以上实质步骤" in out
+    assert "TaskCreate" in out and "TaskUpdate" in out
+    assert "简单问答、单步操作不建清单" in out
+    assert "不是工作台待办，也不是后台任务" in out
+    assert "失败、取消或受阻时不要标为 completed" in out
+    assert "工具被禁用或不可用时" in out
