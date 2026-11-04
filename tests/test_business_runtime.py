@@ -80,7 +80,7 @@ async def test_stream_uses_workspace_but_loads_output_rules(isolated, monkeypatc
     assert "所有 Agent 均可编写和修改代码" in options.system_prompt["append"]
     if with_repository:
         copy = policy.repositories[0].checkout
-        assert (copy / ".git").is_dir()
+        assert (copy / ".git").is_file()
         assert str(copy) in options.system_prompt["append"]
     serialized = json.loads(SubprocessCLITransport(prompt="test", options=options)._build_settings_value())
     assert serialized["sandbox"] == options.sandbox

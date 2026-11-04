@@ -1,5 +1,6 @@
 """多仓库汇总只读取本会话副本，不读取或创建主检出。"""
 import subprocess
+from pathlib import Path
 
 import pytest
 from aiohttp import web
@@ -83,7 +84,8 @@ async def test_failed_repository_does_not_hide_healthy_one(isolated):
     policy = execution.policy_for_session(key)
     await execution.prepare_repositories(policy)
     first = policy.repositories[0].checkout
-    (first / ".git" / "index").write_text("损坏的索引\n")
+    index = Path(git(first, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+    index.write_text("损坏的索引\n")
     (policy.repositories[1].checkout / "file.txt").write_text("healthy\n")
     result = await git_status.session_repository_status(key)
     assert result["repositories"][0]["state"] == "error"
