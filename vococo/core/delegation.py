@@ -75,19 +75,34 @@ def _blocked(name: str, denied: list[str]) -> bool:
 
 
 def _source(session: str) -> tuple[str, str]:
-    owner = agents.agent_for_session(session)
+    # 远程 MCP(remote_brain)落在目标 Agent 主会话的轮次上：这个会话本来就是该 Agent 的
+    # 会话，按它自己的运行设定(权限/技能)跑，所以派给同一个 Agent 也允许(builder 自派)。
+    # 只做「自派过滤」,不按 Agent 名称给 whitelist/提前提权;去重放在 _lineage(只删,
+    # 清空后的空集会被 fnmatch 当成「全拦」,属收紧不是放宽)。
+    remote = session_store.active_source_access(session).get("remote_brain") is True
+    try:
+        row = session_store._conn().execute(
+            "SELECT id FROM turns WHERE session_key=? AND user_text!='' AND assistant_text='' ORDER BY id DESC LIMIT 1",
+            (session,),
+        ).fetchone()
+    except Exception:  # noqa: BLE001 —— 远程轮次可能刚收尾,读不到就按无进行中轮次处理
+        row = None
+    if remote and not row:
+        return agents.GENERAL_ID, f"{session}:remote"
+    if not row:
+        raise ValueError("来源没有正在执行的用户轮次，不能新建委托链")
+    try:
+        owner = agents.agent_for_session(session)
+    except ValueError:
+        if not remote:
+            raise
+        owner = None
     if not owner:
         # 普通 Web 会话归总助理；无法确认的任意路由不默认为总助理。
         if (config.project_hash_from_key(session)
                 or not (session == config.SESSION_KEY or session.startswith("web:"))):
             raise ValueError("无法确认来源 Agent")
         owner = {"id": agents.GENERAL_ID}
-    row = session_store._conn().execute(
-        "SELECT id FROM turns WHERE session_key=? AND user_text!='' AND assistant_text='' ORDER BY id DESC LIMIT 1",
-        (session,),
-    ).fetchone()
-    if not row:
-        raise ValueError("来源没有正在执行的用户轮次，不能新建委托链")
     return owner["id"], f"{session}:{row[0]}"
 
 
@@ -121,14 +136,20 @@ def _lineage(session: str, denied: list[str], target: dict) -> dict:
     parent = get(parent_id) if parent_id else None
     if parent_id and not parent:
         raise ValueError("来源自动链关系缺失，不能重建委托链")
+    # 远程 MCP 来源本身就在目标 Agent 的会话里跑,来源 = 目标不算「绕回去」:去重后去掉它,
+    # 祖先链仍然挡住真正的回环(子任务再派回上游 Agent)。
+    strip = {source} if access and access.get("remote_brain") is True else set()
+    if source in strip:
+        source = agents.GENERAL_ID
     if parent:
         chain = parent["chain_id"]
-        ancestors = list(dict.fromkeys(json.loads(parent["ancestors"]) + [parent["target_agent"], source]))
+        ancestors = [a for a in dict.fromkeys(json.loads(parent["ancestors"]) + [parent["target_agent"], source])
+                     if a not in strip]
         denied = list(set(denied + access.get("denied", []) + json.loads(parent["denied"])))
         depth = parent["depth"] + 1
     else:
         ancestors, depth = [source], 1
-    if depth > 2 or target["id"] in ancestors:
+    if depth > 2 or (target["id"] in ancestors and target["id"] not in strip):
         raise ValueError("超过两层委托或目标是本链祖先")
     if _blocked("mcp__vococo__delegate_to_agent", denied):
         raise ValueError("来源禁止 Agent 委托")

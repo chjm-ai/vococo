@@ -846,6 +846,10 @@ def dispatch(
                "origin": origin, "task_id": task_id,
                "session_key": session_key, "job_id": job_id,
                "agent_id": _task_agent_id(cwd if cwd_explicit else None, context_session_key)}
+    # 远程 MCP(remote_brain)来源的任务，归属显式传下去：就是来源会话所属的那个 Agent
+    # (经 chatgpt 的 continue_session 派单时即目标 Agent)，而不是按 cwd 反猜或落到总助理。
+    if context_session_key and tasks.capture_source_access(context_session_key).get("remote_brain") is True:
+        options["agent_id"] = _source_agent_id(context_session_key) or options["agent_id"]
     access = tasks.capture_source_access(context_session_key) if context_session_key else {}
     if access.get("chain_session"):
         task = delegation.create_related_task(context_session_key, title, prompt, **options)

@@ -660,3 +660,37 @@ async def test_background_finish_turn_error_keeps_owner_for_terminal_fallback(en
     assert tasks.get(row["id"])["status"] == "failed"
     assert row["id"] not in runner._running
     assert len(receipts(env.source)) == 1
+
+
+@pytest.mark.anyio
+async def test_remote_mcp_source_may_delegate_to_own_agent_and_keeps_its_access(env):
+    """远程 MCP 落在目标 Agent 主会话的轮次:派给它自己不算回环,新任务沿用该 Agent 的既有
+    设定(完全访问 + 技能),来源禁用项照旧生效;来源会话失去绑定也照样可用、提不了权。"""
+    from vococo.core import permissions
+
+    agents.update(env.b["id"], permission="full", skills=["lark-doc"])
+    agents.update(env.c["id"], permission="full")
+    remote = agents.main_session_key(agents.get(env.b["id"]))
+    source_access = {"session": remote, "mode": "standard", "remote_brain": True, "denied": ["Agent"]}
+    session_store.start_turn(remote, "远程派单", source_access=source_access)
+    task = d.delegate(remote, ["Agent"], env.b["id"], "自己派自己", "完整背景")
+    row = tasks.get(task["id"])
+    key = tasks.session_key(row["id"])
+    assert row["agent_id"] == env.b["id"]
+    assert "Agent" in tasks.automatic_access(row)["denied"]
+    assert permissions.state(key)["mode"] == "full"
+    assert agents.runtime_for_session(key)["skills"] == ["lark-doc"]
+    assert d.get(task["id"])["source_agent"] == agents.GENERAL_ID
+    # 远程去重只作用于来源本身:链上祖先仍只有来源占位符,回环判定沿用原有祖先链。
+    assert json.loads(d.get(task["id"])["ancestors"]) == [agents.GENERAL_ID]
+    session_store.finish_turn(session_store.start_turn(key, "子轮次"), "完成")
+    runner.cancel(row["id"])
+
+
+@pytest.mark.anyio
+async def test_unbound_remote_source_delegation_fails_closed(env):
+    """来源既绑不到 Agent、又不是远程真值来源时,不能借「未知路由」落到总助理。"""
+    key = "web:pxx999:main"
+    session_store.start_turn(key, "陌生轮次")
+    with pytest.raises(ValueError, match="无法确认来源"):
+        d.delegate(key, [], env.b["id"], "陌生来源", "背景")
