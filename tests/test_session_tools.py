@@ -91,6 +91,62 @@ async def test_query_returns_recent_bounded_turns_for_both_ids(chat, full_id):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("prefix", ["session:", "web:", "task:", "voice-chat:"])
+async def test_query_resolves_bare_id_with_supported_prefix(chat, prefix):
+    target = prefix + "bare-target"
+    session_store.append(target, "问题", "回答")
+    result = await call(chat[1], "query_session", {"session_id": "bare-target"})
+    assert result["session_id"] == target
+    assert result["turns"] == [{"user": "问题", "assistant": "回答"}]
+
+
+@pytest.mark.anyio
+async def test_continue_resolves_unified_bare_id(chat, bridge):
+    target = "session:bare-target"
+    session_store.bind_session(target, agent_id=chat[0]["id"], project_hash=chat[0]["project_hash"])
+    session_store.append(target, "问题", "回答")
+    result = await call(chat[1], "continue_session", {
+        "session_id": "bare-target", "instruction": "继续",
+    })
+    assert result["status"] == "queued"
+    assert bridge[0][0] == target
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("method", ["query_session", "continue_session"])
+async def test_bare_id_collision_requires_full_id(chat, bridge, method):
+    targets = ["session:collision", "web:collision"]
+    for target in targets:
+        session_store.bind_session(target, agent_id=chat[0]["id"], project_hash=chat[0]["project_hash"])
+        session_store.append(target, "问题", "回答")
+    result = await call(chat[1], method, {"session_id": "collision", "instruction": "继续"})
+    assert "多个会话" in result["error"]
+    assert all(target in result["error"] for target in targets)
+    assert not bridge
+    result = await call(chat[1], method, {"session_id": targets[0], "instruction": "继续"})
+    assert "error" not in result
+
+
+@pytest.mark.anyio
+async def test_exact_bare_session_key_takes_precedence(chat):
+    for key in ("exact-target", "session:exact-target", "web:exact-target"):
+        session_store.append(key, key, "回答")
+    result = await call(chat[1], "query_session", {"session_id": "exact-target"})
+    assert result["session_id"] == "exact-target"
+
+
+@pytest.mark.anyio
+async def test_bare_id_cannot_bypass_self_guard(chat, bridge):
+    source = "session:bare-source"
+    session_store.bind_session(source, agent_id=chat[0]["id"], project_hash=chat[0]["project_hash"])
+    session_store.append(source, "问题", "回答")
+    for method in ("query_session", "continue_session"):
+        result = await call(source, method, {"session_id": "bare-source", "instruction": "继续"})
+        assert "自身" in result["error"]
+    assert not bridge
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("full_id", [False, True])
 async def test_continue_really_injects_into_existing_session(chat, monkeypatch, full_id):
     from vococo.gateway.adapters.web import WebAdapter
