@@ -288,9 +288,12 @@ async def recycle_empty_worktree(session_key: str) -> bool:
     未提交改动的留着,交给合并(merge-main.sh)或删会话(remove_worktree)流程,
     绝不自动丢内容。
     """
+    from . import repository_cleanup
+
+    results = await repository_cleanup.collect_session(session_key)
     path = session_store.get_worktree(session_key)
     if not path or not os.path.isdir(path):
-        return False
+        return any(row["removed"] for row in results)
     root = config.execution_project_root_for(session_key)
     if not (root and os.path.isdir(root)):
         return False
@@ -347,6 +350,9 @@ async def remove_worktree(session_key: str) -> None:
     删目录后,若它绑的 vococo/* 分支没干活(没超前主分支)就一并删掉,不攒悬空分支;
     有独立提交的分支保留,避免误删工作成果。
     """
+    from . import repository_cleanup
+
+    await repository_cleanup.collect_session(session_key)
     path = session_store.get_worktree(session_key)
     if not path:
         return

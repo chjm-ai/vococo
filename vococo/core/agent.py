@@ -43,6 +43,7 @@ from ..memory import agents, session_store
 from ..tools.builtin import build_mcp_servers
 from ..tools.danger import build_hooks
 from . import client_pool, reviewer, subagent
+from .repository_locks import protect_repositories
 from .checklist import CHECKLIST_TOOLS, ChecklistTracker, ChecklistUpdated
 from .token_usage import StreamUsage
 from .prompt import CHECKLIST_GUIDANCE, build_system_prompt
@@ -1008,6 +1009,7 @@ def _research_hooks(tool_guard: Callable[..., Awaitable[dict]], mcp_servers: dic
     return {**hooks, "PreToolUse": [HookMatcher(matcher=None, hooks=[guarded])]}
 
 
+@protect_repositories
 async def stream_turn(
     history: list[Turn],
     user_text: str,
