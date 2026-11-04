@@ -117,8 +117,7 @@ def _ownership_fields(key: str) -> dict:
         return {"agent_id": None, "project_hash": None}
     from . import agents
 
-    agent = agents.agent_for_session(key)
-    return {"agent_id": agent["id"] if agent else None,
+    return {"agent_id": agents.legacy_owner_id(key),
             "project_hash": config.project_hash_from_key(key)}
 
 
@@ -1108,6 +1107,15 @@ def session_summary(session_key: str) -> dict:
     out.update(_usage_fields(trow if trow else (0, 0, 0, 0, 0, 0, "", "", 0, 0)))
     out.update(_ownership_fields(session_key))
     return out
+
+
+def pending_reviews(prefix: str) -> dict[str, bool]:
+    """未读标记直接读元数据，不为侧栏重新统计历史或解析归属。"""
+    rows = _conn().execute(
+        "SELECT session_key FROM session_meta WHERE session_key LIKE ? AND pending_review=1",
+        (prefix + "%",),
+    ).fetchall()
+    return {row[0]: True for row in rows}
 
 
 def set_pending_review(session_key: str, pending: bool) -> None:

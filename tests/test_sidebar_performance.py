@@ -73,6 +73,60 @@ async def test_conversation_list_reads_each_agent_once_per_request(sidebar_app, 
 
 
 @pytest.mark.anyio
+async def test_project_sidebar_does_not_build_execution_policy(sidebar_app, monkeypatch):
+    from vococo.core import execution
+
+    owner = agents.create("项目")
+    key = f"web:p{owner['project_hash']}:legacy"
+    session_store.set_title(key, "旧项目对话")
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("显示归属不应探测 Git 或读取完整执行策略")
+
+    monkeypatch.setattr(execution, "execution_mode", unexpected)
+    async with TestClient(TestServer(sidebar_app)) as client:
+        response = await client.get("/conversations")
+        assert response.status == 200
+        rows = (await response.json())["conversations"]
+    assert next(row for row in rows if row["key"] == key)["agent_id"] == owner["id"]
+
+
+@pytest.mark.anyio
+async def test_cron_sidebar_does_not_aggregate_unrelated_history(sidebar_app, monkeypatch):
+    from vococo.cron import scheduler
+
+    job = scheduler.create_job(name="巡检", prompt="检查", schedule={"kind": "cron", "expr": "0 9 * * *"})
+    session_store.set_pending_review(job["conv"], True)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("定时侧栏不应为未读标记统计全部历史")
+
+    monkeypatch.setattr(session_store, "list_sessions", unexpected)
+    async with TestClient(TestServer(sidebar_app)) as client:
+        response = await client.get("/cron/sidebar")
+        assert response.status == 200
+        row = (await response.json())["jobs"][0]
+    assert row["conv"] == job["conv"]
+    assert row["pending_review"] is True
+
+
+def test_metadata_looks_up_task_only_once(sidebar_app, monkeypatch):
+    from vococo.gateway.adapters.web import _session_metadata
+
+    calls = []
+    original = tasks.task_for_session
+
+    def counted(key):
+        calls.append(key)
+        return original(key)
+
+    monkeypatch.setattr(tasks, "task_for_session", counted)
+    row = _session_metadata({"key": "task:missing", "agent_id": None, "project_hash": None})
+    assert row["title"] == "新对话"
+    assert calls == ["task:missing"]
+
+
+@pytest.mark.anyio
 async def test_sidebar_uses_private_readonly_database_connections(sidebar_app, monkeypatch):
     import sqlite3
     from vococo.memory import _db
@@ -172,7 +226,8 @@ def test_agent_read_snapshots_are_isolated_between_threads(sidebar_app):
 @pytest.mark.parametrize("route", ["/conversations", "/voice/sidebar", "/cron/sidebar", "/conv/search?q=测试"])
 async def test_slow_sidebar_storage_does_not_block_other_requests(sidebar_app, monkeypatch, route):
     entered, release = threading.Event(), threading.Event()
-    name = "search_sessions" if route.startswith("/conv/search") else "list_sessions"
+    name = ("search_sessions" if route.startswith("/conv/search") else
+            "pending_reviews" if route == "/cron/sidebar" else "list_sessions")
     original = getattr(session_store, name)
 
     def slow(*args, **kwargs):
