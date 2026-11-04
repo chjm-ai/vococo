@@ -547,7 +547,7 @@ async def test_resume_failure_restores_history_without_prompt_injection(clients,
     async for _ in agent.stream_turn(history, "继续", resume="missing-sid"):
         pass
     assert len(clients) == 2
-    assert clients[0].prompts == ["继续"]
+    assert clients[0].prompts == [f"<system-reminder>\n{agent.CHECKLIST_GUIDANCE}\n</system-reminder>\n继续"]
     assert clients[1].prompts == [agent._compose_prompt(history, "继续")]
     assert clients[1].prompts[0].count("历史问题") == 1
     assert all("[本轮表达提醒" not in client.prompts[0] for client in clients)
@@ -623,7 +623,7 @@ async def test_verbosity_change_reconnects_and_keeps_effort(clients, monkeypatch
     await _turn(resume="sid-1")
     assert len(clients) == 2 and first.disconnected
     assert json.loads(clients[1].options.env["CLAUDE_CODE_EXTRA_BODY"])["text"]["verbosity"] == "high"
-    assert clients[1].prompts == ["hi"]
+    assert clients[1].prompts == [f"<system-reminder>\n{agent.CHECKLIST_GUIDANCE}\n</system-reminder>\nhi"]
     selected["value"] = ""
     await _turn(resume="sid-1")
     assert len(clients) == 3
@@ -666,3 +666,40 @@ async def test_priority_change_reconnects_next_turn(clients, monkeypatch, tmp_pa
     await _turn(resume="sid-1")
     assert len(clients) == 3 and clients[1].disconnected
     assert "CLAUDE_CODE_EXTRA_BODY" not in clients[2].options.env
+
+
+@pytest.mark.anyio
+async def test_old_resume_gets_checklist_guidance_once_per_client(clients):
+    await _turn(resume="sid-1")
+    assert "三个及以上实质步骤" in clients[0].prompts[0]
+    assert "TaskCreate" in clients[0].prompts[0]
+    assert "TaskUpdate" in clients[0].prompts[0]
+    assert clients[0].options.tools is None
+    assert clients[0].options.env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] == "1"
+    await _turn(resume="sid-1")
+    assert len(clients) == 1
+    assert clients[0].prompts[1] == "hi"
+
+
+@pytest.mark.anyio
+async def test_old_warm_stream_failure_retries_same_checklist_guidance(clients, monkeypatch):
+    await _turn(resume="sid-1")
+    del clients[0]._vococo_checklist_guided  # 模拟只做过 compact 的旧保温 client。
+
+    async def broken_stream():
+        raise RuntimeError("CLI 收流中断")
+        yield
+
+    monkeypatch.setattr(clients[0], "receive_messages", broken_stream)
+    await _turn(resume="sid-1")
+    expected = f"<system-reminder>\n{agent.CHECKLIST_GUIDANCE}\n</system-reminder>\nhi"
+    assert len(clients) == 2
+    assert clients[0].prompts[-1] == clients[1].prompts[0] == expected
+
+
+@pytest.mark.anyio
+async def test_new_session_keeps_checklist_guidance_in_system_prompt(clients):
+    await _turn()
+    assert clients[0].prompts[0] == "hi"
+    await _turn(resume="sid-1")
+    assert clients[0].prompts[1] == "hi"

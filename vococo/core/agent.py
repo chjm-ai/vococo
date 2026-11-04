@@ -45,7 +45,7 @@ from ..tools.danger import build_hooks
 from . import client_pool, reviewer, subagent
 from .checklist import CHECKLIST_TOOLS, ChecklistTracker, ChecklistUpdated
 from .token_usage import StreamUsage
-from .prompt import build_system_prompt
+from .prompt import CHECKLIST_GUIDANCE, build_system_prompt
 
 
 # vococo 专属 skill 插件(config.PLUGIN_DIR):每轮都挂,不受设置页 skill 白名单影响。
@@ -921,7 +921,9 @@ def _turn_env(provider_env: dict, no_auto_memory: bool = False) -> dict:
     .env 里配置的长效订阅令牌(claude setup-token 生成,专为无人值守场景设计),这里显式
     带上,不依赖本机是否恰好登录着。danger.py 已有针对性拦截挡 curl/wget 等外带这个变量
     名的命令,是这个必要暴露面的兜底防线。"""
-    env = {"DISABLE_PROMPT_CACHING": "", **provider_env, **_FORCE_FOREGROUND_ENV}
+    env = {"DISABLE_PROMPT_CACHING": "", **provider_env, **_FORCE_FOREGROUND_ENV,
+           # CLI 对部分第三方模型默认关闭待办；用开关启用，避免 tools 白名单替换默认工具集。
+           "CLAUDE_CODE_ENABLE_TASKS": "1", "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}
     # 项目 Agent 会话:关掉 CLI 的 auto-memory——它按项目目录把整份 AI_BRAIN/MEMORY.md 再注一遍,
     # 我们自己只注入和该 Agent 相关的分节(记忆分区,见 memory/agents.py)
     if no_auto_memory:
@@ -1307,9 +1309,13 @@ async def stream_turn(
                 session_tools=session_tools)["vococo"]
         return options
 
+    checklist_guided = False
+
     async def _stream_once(
         use_resume: str | None, warm: ClaudeSDKClient | None = None
     ) -> AsyncIterator[Event]:
+        nonlocal checklist_guided
+        checklist_guided = checklist_guided or bool(getattr(warm, "_vococo_checklist_guided", False))
         # 保温命中:历史就在活 client 的会话里;resume 模式历史由 SDK transcript
         # 重放 —— 两者本轮都只发新消息(history 传空);非 resume 才把历史拼进 prompt。
         prompt_history = [] if (warm is not None or use_resume) else history
@@ -1387,9 +1393,13 @@ async def stream_turn(
                     # 保温命中时压在活 client 上,下一轮正常对话自然落在压缩后。
                     await client.query("/compact")
                 else:
+                    # 旧 SDK 会话冻结了 system prompt；冷续接时补一次规则，不清历史、不改快照。
+                    if not research and (use_resume or warm) and not checklist_guided:
+                        query_text = f"<system-reminder>\n{CHECKLIST_GUIDANCE}\n</system-reminder>\n{query_text}"
                     await client.query(
                         _build_prompt(prompt_history, query_text, images or [], files or [])
                     )
+                    client._vococo_checklist_guided = True
                 pending_subagents: set[str] = set()  # Agent/Task 调用 id,未拿到结果 = 子代理还在跑
                 active_tasks: set[str] = set()  # 后台任务 task_id,未见终态 = 还在跑
                 live_tools: set[str] = set()  # 已见 tool_use、还没等到 tool_result 的调用 id

@@ -354,3 +354,15 @@ def test_query_context_usage_falls_back_on_error():
     assert total == 0
     assert ctx_window_val == 200_000
     assert stale is False
+
+
+@pytest.mark.parametrize("provider", [{}, {"ANTHROPIC_BASE_URL": "https://provider.example"}, {
+    "CLAUDE_CODE_ENABLE_TASKS": "0", "CLAUDE_CODE_ENABLE_TODO_TOOLS": "0",
+}])
+def test_turn_env_enables_checklist_without_replacing_default_tools(provider):
+    original = dict(provider)
+    env = _turn_env(provider)
+    assert env["CLAUDE_CODE_ENABLE_TASKS"] == "1"
+    assert env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] == "1"
+    assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+    assert provider == original
