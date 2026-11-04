@@ -408,7 +408,7 @@ class GatewayRunner:
 
             agents.set_listener(lambda conv: web_adapter._emit({"type": "agent_run", "conv": conv}))
         from . import watchdog
-        from ..core import proxy_health, token_health
+        from ..core import proxy_health, token_health, repository_cleanup
 
         watchdog.start_thread()  # 假死看门狗:循环卡死 → dump 堆栈 → 自杀交 run.sh 拉起
         try:
@@ -421,6 +421,7 @@ class GatewayRunner:
                 tg.start_soon(self._resume_after_restart)
                 tg.start_soon(selfops.mark_runtime_stable)
                 tg.start_soon(client_pool.sweep_loop)  # 定期回收空闲超时的保温 client
+                tg.start_soon(repository_cleanup.sweep_loop)  # 每日回收已收尾会话的仓库空壳
                 tg.start_soon(watchdog.beat_loop)  # 在循环里刷心跳,供看门狗线程判卡死
                 # 本地 GPT 代理体检:清单缺档/掉线就重启它,救不回来发系统推送(见模块头)
                 tg.start_soon(proxy_health.patrol_loop)
