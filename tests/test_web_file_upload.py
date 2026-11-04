@@ -330,6 +330,84 @@ async def test_utf8_html_attachment_becomes_text_content_block():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("filename,media_type", [
+    ("deck.HTML", "application/octet-stream"),
+    ("deck.htm", "text/plain"),
+    ("deck", "text/html; charset=utf-8"),
+    ("deck.xhtml", "application/xhtml+xml"),
+])
+async def test_persisted_html_is_referenced_without_inline_media(filename, media_type):
+    """复现大 HTML 附件：图片编码不能进入用户消息。"""
+    data = b'<html><img src="data:image/png;base64,' + b"A" * 7_730_000 + b'"></html>'
+    attachment = FileAttachment(data, media_type, filename, "/tmp/f/deck.html")
+    message = await anext(agent._build_prompt([], "合并这份 HTML", [], [attachment]))
+    content = message["message"]["content"]
+    assert len(content) == 2
+    assert content[1]["type"] == "text"
+    assert "/tmp/f/deck.html" in content[1]["text"]
+    assert "按需" in content[1]["text"]
+    assert "base64," not in content[1]["text"]
+    assert len(content[1]["text"]) < 500
+
+
+@pytest.mark.anyio
+async def test_large_persisted_text_is_referenced_without_inline_body():
+    attachment = FileAttachment(b"x" * 100_000, "text/plain", "large.txt", "/tmp/f/large.txt")
+    message = await anext(agent._build_prompt([], "分析附件", [], [attachment]))
+    text = message["message"]["content"][1]["text"]
+    assert "/tmp/f/large.txt" in text
+    assert "按需" in text
+    assert "x" * 100 not in text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("size", [0, 24_000, 24_001])
+async def test_persisted_text_at_inline_budget_boundary(size):
+    attachment = FileAttachment(b"x" * size, "text/plain", "notes.txt", "/tmp/f/notes.txt")
+    message = await anext(agent._build_prompt([], "分析附件", [], [attachment]))
+    text = message["message"]["content"][1]["text"]
+    if size <= 24_000:
+        assert text.endswith("\n" + "x" * size)
+    else:
+        assert "按需" in text
+        assert "x" * 100 not in text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("data", [b"<h1>Hello</h1>", "<h1>你好</h1>".encode("utf-16")])
+async def test_persisted_html_never_falls_back_to_document_block(data):
+    attachment = FileAttachment(data, "text/html", "deck.html", "/tmp/f/deck.html")
+    message = await anext(agent._build_prompt([], "分析附件", [], [attachment]))
+    content = message["message"]["content"]
+    assert len(content) == 2
+    assert content[1]["type"] == "text"
+    assert "按需" in content[1]["text"]
+    assert "<h1>" not in content[1]["text"]
+
+
+@pytest.mark.anyio
+async def test_text_attachments_share_one_inline_budget():
+    attachments = [FileAttachment(b"x" * 16_000, "text/plain", f"{i}.txt") for i in range(4)]
+    message = await anext(agent._build_prompt([], "分析附件", [], attachments))
+    texts = [block["text"] for block in message["message"]["content"][1:]]
+    assert sum(text.count("x") for text in texts) < 25_000
+    assert any("截断" in text for text in texts)
+    assert all(f"{i}.txt" in texts[i] for i in range(4))
+
+
+@pytest.mark.anyio
+async def test_unpersisted_html_omits_inline_base64_and_bounds_preview():
+    data = b'<h1>Hello</h1><img src="data:image/png;base64,' + b"A" * 100_000 + b'">'
+    attachment = FileAttachment(data, "text/html", "deck.html")
+    message = await anext(agent._build_prompt([], "分析附件", [], [attachment]))
+    text = message["message"]["content"][1]["text"]
+    assert "Hello" in text
+    assert "A" * 100 not in text
+    assert "base64," not in text
+    assert len(text) < 25_000
+
+
+@pytest.mark.anyio
 async def test_file_attachment_prompt_carries_local_path():
     """落盘路径必须进提示词:没有它模型就只有一个磁盘上不存在的原始文件名,
     想用工具处理原始文件(xlsx 读表/pdf 抽页)只能瞎猜位置。"""
