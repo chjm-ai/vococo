@@ -1102,7 +1102,10 @@ async def stream_turn(
     selection_model = model or config.MODEL
     configured_window = configured_context_window(selection_model, resolved_model)
     turn_window = configured_window or context_window(resolved_model)
-    saved_effort = settings_store.get_web_effort(selection_model)
+    from .model_preferences import for_model
+
+    options = for_model(session_key, selection_model)
+    saved_effort = options["effort"]
     effective_effort = (
         saved_effort if saved_effort in providers.effort_levels_for_model(selection_model) else ""
     )
@@ -1113,7 +1116,7 @@ async def stream_turn(
     summary = settings_store.get_web_summary(selection_model)
     extra_body = providers.extra_body_for_model(
         resolved_model, effective_effort, verbosity, summary,
-        settings_store.get_web_service_tier(selection_model), selection_model=selection_model,
+        options["service_tier"], selection_model=selection_model,
     )
     cli_effort = "" if providers.extra_body_for_effort(effective_effort) else effective_effort
     if extra_body and provider_env:

@@ -28,7 +28,8 @@ async function switchState(page,checked){
 }
 
 async function savedTier(page,token,tier){
-  const response=await page.request.get('/models',{headers:{'X-Auth-Token':token}});
+  const conv=await page.evaluate(()=>permConvId(S.conv));
+  const response=await page.request.get('/models?conv='+encodeURIComponent(conv),{headers:{'X-Auth-Token':token}});
   assert.equal(response.status(),200);
   assert.deepEqual((await response.json()).service_tiers[GPT],{supported:true,value:tier});
 }
@@ -57,7 +58,8 @@ async function toggle(page,checked,fail=false){
     r.request().method()==='POST');
   await page.locator('.priority-label').click();
   const response=await responsePromise;
-  assert.deepEqual(response.request().postDataJSON(),{model:GPT,tier:checked?'priority':''});
+  const conv=await page.evaluate(()=>permConvId(S.conv));
+  assert.deepEqual(response.request().postDataJSON(),{conv,model:GPT,tier:checked?'priority':''});
   assert.equal(response.status(),fail?503:200);
   await switchState(page,fail?!checked:checked);
   if(fail){
@@ -130,6 +132,96 @@ async function exercise(page,origin,token){
   await fits(page);
 }
 
+async function openSession(page,conv){
+  await page.evaluate(conv=>openConv(conv),conv);
+  await page.waitForFunction(conv=>S.models._conv===conv &&
+    S.models.efforts?.['gpt-6.1-sol'],conv);
+}
+
+async function chooseEffort(page,value){
+  await openEffort(page);
+  const posted=page.waitForResponse(r=>new URL(r.url()).pathname==='/effort');
+  await page.locator(`#effortPop .mi[data-e="${value}"]`).click();
+  assert.equal((await posted).status(),200);
+}
+
+async function sessionIsolation(page){
+  await openSession(page,'session:browser-a');
+  await chooseEffort(page,'high');
+  await openEffort(page);
+  await toggle(page,true);
+  await openSession(page,'session:browser-b');
+  await openEffort(page);
+  await switchState(page,false);
+  await chooseEffort(page,'low');
+  await pickModel(page,'gpt-6.1-terra');
+  await openSession(page,'session:browser-a');
+  assert.equal(await page.evaluate(()=>curModel()),GPT);
+  assert.equal(await page.evaluate(()=>effortState().value),'high');
+  await openEffort(page);
+  await switchState(page,true);
+  await page.evaluate(()=>openCallView());
+  await page.waitForFunction(()=>S.models._conv==='voice-chat:main' && S.models.efforts?.['gpt-6.1-sol']);
+  assert.equal(await page.evaluate(()=>curModel()),GPT);
+  await openEffort(page);
+  await switchState(page,false);
+  await openSession(page,'session:browser-b');
+  assert.equal(await page.evaluate(()=>curModel()),'gpt-6.1-terra');
+  await pickModel(page,GPT);
+  assert.equal(await page.evaluate(()=>effortState().value),'low');
+  await switchState(page,false);
+  // A 的旧请求即使晚于 B 返回，也不能把 B 的胶囊改回 A。
+  let release;
+  const hold=new Promise(resolve=>{release=resolve;});
+  await page.route('**/models?conv=session%3Abrowser-a',async route=>{await hold; await route.continue();});
+  await page.evaluate(()=>{openConv('session:browser-a');});
+  await openSession(page,'session:browser-b');
+  const late=page.waitForResponse(r=>r.url().includes('/models?conv=session%3Abrowser-a'));
+  release(); await late;
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(()=>curModel()),GPT);
+  assert.equal(await page.evaluate(()=>effortState().value),'low');
+  await page.unroute('**/models?conv=session%3Abrowser-a');
+}
+
+async function saveDuringNavigation(page){
+  await openSession(page,'session:browser-b');
+  await openEffort(page);
+  let release;
+  const hold=new Promise(resolve=>{release=resolve;});
+  let started;
+  const waiting=new Promise(resolve=>{started=resolve;});
+  await page.route('**/service-tier',async route=>{started(); await hold; await route.continue();});
+  await page.locator('.priority-label').click();
+  await waiting;
+  await openSession(page,'session:browser-a');
+  await openSession(page,'session:browser-b');
+  await openEffort(page);
+  release();
+  await switchState(page,true);
+  await page.unroute('**/service-tier');
+  await toggle(page,false);
+}
+
+async function chooseBeforeSettingsLoad(page){
+  let release, started;
+  const hold=new Promise(resolve=>{release=resolve;});
+  const waiting=new Promise(resolve=>{started=resolve;});
+  let first=true;
+  const pattern='**/models?conv=session%3Abrowser-early';
+  await page.route(pattern,async route=>{
+    if(first){ first=false; started(); await hold; }
+    await route.continue();
+  });
+  await page.evaluate(()=>{openConv('session:browser-early');});
+  await waiting;
+  await pickModel(page,'gpt-6.1-terra');
+  assert.equal(await page.evaluate(()=>effortState().levels.length>0),true);
+  const late=page.waitForResponse(r=>r.url().includes('/models?conv=session%3Abrowser-early'));
+  release(); await late;
+  await page.unroute(pattern);
+}
+
 (async()=>{
   const [origin,token,widthText]=process.argv.slice(2), width=Number(widthText);
   const browser=await chromium.launch({headless:true,
@@ -150,6 +242,10 @@ async function exercise(page,origin,token){
     await exercise(page,origin,token);
     assert.deepEqual(errors,[]);
     assert.deepEqual(posts,[503,200,503,200]);
+    await sessionIsolation(page);
+    await saveDuringNavigation(page);
+    await chooseBeforeSettingsLoad(page);
+    assert.deepEqual(errors,[]);
     console.log(JSON.stringify({ok:true,width,successfulPosts:2,failedPosts:2}));
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exit(1);});

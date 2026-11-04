@@ -688,7 +688,7 @@ function setMeta(d){
     lin:+d.last_in||0, lc:+d.last_cache||0, lout:+d.last_out||0, model:d.model||"",
     crt:+d.cache_read_total||0, ift:+d.input_fresh_total||0,
   };
-  setModel(d.chosen_model||"");   // 胶囊显示"会话选定的模型",空则回落默认(不用带日期的实跑 id)
+  setModel(d.chosen_model || (S.models._conv===permConvId(S.conv) ? S.models.chosen_model : ""));
   renderMeta();
 }
 
@@ -721,8 +721,32 @@ function updateUsageMeta(d){
 }
 
 // ── 模型选择器 ────────────────────────────────────────────────────────────
+const sessionModels = new Map();
+let modelsLoadSeq=0;
 async function loadModels(){
-  try{ const r=await api("/models"); S.models=await r.json(); renderModelChip(); renderEffortChip(); }catch(e){}
+  const conv=permConvId(S.conv), seq=++modelsLoadSeq;
+  try{
+    const r=await api("/models"+(conv?"?conv="+encodeURIComponent(conv):""));
+    if(!r.ok) return;
+    const data=await r.json();
+    if(conv!==permConvId(S.conv) || seq!==modelsLoadSeq) return;
+    data._conv=conv;
+    sessionModels.set(conv,data);
+    S.models=data;
+    setModel(data.chosen_model||S.model);
+  }catch(e){}
+}
+async function reloadSavedModels(conv){
+  sessionModels.delete(conv);
+  if(conv===permConvId(S.conv)) await loadModels();
+}
+function restoreSessionModels(){
+  const conv=permConvId(S.conv), cached=sessionModels.get(conv);
+  S.models=cached || {...S.models, _conv:conv, chosen_model:"", efforts:{}, service_tiers:{}};
+  $("#effortPop").hidden=true;
+  $("#modelPop").hidden=true;
+  setModel(S.models.chosen_model||"");
+  loadModels();
 }
 
 // ── 思考深度选择器 ────────────────────────────────────────────────────────
@@ -768,24 +792,28 @@ function renderPrioritySwitch(pop){
     '<span class="track"></span></label></div><div class="priority-error" role="alert" hidden></div>');
   const input=pop.querySelector("#prioritySwitch");
   input.checked=tier.value==="priority";
-  input.disabled=priorityPending.has(model);
+  input.disabled=priorityPending.has(permConvId(S.conv)+":"+model);
   input.closest(".priority-tier").title="优先处理，不保证两倍速度；订阅内含额度可能按 2.5 倍消耗，购买额度按 2 倍消耗。下一条消息生效。";
   input.onchange=()=>pickServiceTier(input, model);
 }
 async function pickServiceTier(input, model){
-  const tier=input.checked?"priority":"";
-  if(priorityPending.has(model)) return;
-  priorityPending.add(model); input.disabled=true;
+  const tier=input.checked?"priority":"", conv=permConvId(S.conv), pendingKey=conv+":"+model;
+  if(priorityPending.has(pendingKey)) return;
+  ++modelsLoadSeq;
+  const saved=((S.models&&S.models.service_tiers)||{})[model];
+  priorityPending.add(pendingKey); input.disabled=true;
   let error="";
   try{
     const r=await api("/service-tier", {method:"POST", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({model:model, tier:tier})});
+      body:JSON.stringify({conv:conv, model:model, tier:tier})});
     if(!r.ok) throw new Error("优先档保存失败，请重试");
-    const result=await r.json(), saved=((S.models&&S.models.service_tiers)||{})[model];
+    const result=await r.json();
     if(saved) saved.value=result.tier;
+    await reloadSavedModels(conv);
   }catch(e){ error="优先档保存失败，请重试"; }
   finally{
-    priorityPending.delete(model);
+    priorityPending.delete(pendingKey);
+    if(conv!==permConvId(S.conv)) return;
     renderEffortChip();
     if(!$("#effortPop").hidden){
       const notice=$("#effortPop .priority-error");
@@ -794,16 +822,18 @@ async function pickServiceTier(input, model){
   }
 }
 function pickEffort(id){
-  const state=effortState(), old=state.value, saved=((S.models&&S.models.efforts)||{})[state.model];
+  const conv=permConvId(S.conv), state=effortState(), old=state.value;
+  const saved=((S.models&&S.models.efforts)||{})[state.model];
+  ++modelsLoadSeq;
   $("#effortPop").hidden=true;
   if(!saved || !id || id===old) return;
   saved.value=id;  // 乐观更新当前模型的胶囊；失败时恢复原值
   renderEffortChip();
   // POST /effort 静默切换：不走命令管道、不触发 SSE/推送;agent 下一条消息即生效
   api("/effort", {method:"POST", headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({model:state.model, effort:id})})
+    body:JSON.stringify({conv:conv, model:state.model, effort:id})})
     .then(function(r){ if(!r.ok) throw new Error("effort switch failed"); return r.json(); })
-    .then(function(result){ saved.value=result.effort||id; renderEffortChip(); })
+    .then(async function(result){ saved.value=result.effort||id; await reloadSavedModels(conv); renderEffortChip(); })
     .catch(function(){ saved.value=old; renderEffortChip(); });
 }
 $("#effortBtn").onclick=e=>{ e.stopPropagation(); const p=$("#effortPop");
@@ -1140,11 +1170,14 @@ function pickModel(id){
   $("#modelPop").hidden=true;
   hideUsageTip();
   if(!id || id===curModel()) return;
-  setModel(id);            // 乐观更新胶囊
-  S.models.default=id;     // 同步"本端默认":之后新开会话也默认用这个模型
-  // POST /model 静默切换：不走命令管道、不触发 SSE/推送通知
+  const conv=permConvId(S.conv), saved=S.models, old=curModel();
+  ++modelsLoadSeq;
+  setModel(id);
+  saved.chosen_model=id;
   api("/model", {method:"POST", headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({conv:S.conv, model:id})}).catch(()=>{});
+    body:JSON.stringify({conv:conv, model:id})})
+    .then(async r=>{ if(!r.ok) throw new Error("model switch failed"); saved.default=id; await reloadSavedModels(conv); })
+    .catch(()=>{ saved.chosen_model=old; if(conv===permConvId(S.conv)) setModel(old); });
 }
 $("#modelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#modelPop");
   if(p.hidden){ closeComposerPopovers(p); renderModelPop(); p.hidden=false; } else { p.hidden=true; hideUsageTip(); } };
@@ -1879,6 +1912,7 @@ async function openConv(conv, silentGroup){
   $("#convTitle").textContent = c ? (c.title||"新对话") : "新对话";
   syncCronHeader();   // 定时任务会话 → 标题栏亮出启停开关/编辑/「⋯」
   syncMoreHeader();   // 普通会话 → 标题栏最右侧亮出「⋯」(置顶/归档/删除)
+  restoreSessionModels();
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   syncModelLock();   // 定时任务会话 → 模型只读锁定编辑页的值 + 隐藏思考深度
   refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮

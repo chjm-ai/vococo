@@ -1192,6 +1192,26 @@ def set_chosen_model(session_key: str, model: str) -> None:
     c.commit()
 
 
+def model_preferences(session_key: str) -> dict:
+    """按模型保留本会话的参数；空字符串也是明确的选择（例如关闭优先档）。"""
+    row = _conn().execute(
+        "SELECT model_preferences FROM session_meta WHERE session_key=?", (session_key,),
+    ).fetchone()
+    return json.loads(row[0]) if row and row[0] else {}
+
+
+def set_model_preferences(session_key: str, model: str, options: dict) -> None:
+    saved = model_preferences(session_key)
+    saved[model] = {**saved.get(model, {}), **options}
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_meta(session_key, watermark_id, model_preferences) VALUES (?,0,?) "
+        "ON CONFLICT(session_key) DO UPDATE SET model_preferences=excluded.model_preferences",
+        (session_key, json.dumps(saved, ensure_ascii=False)),
+    )
+    c.commit()
+
+
 def get_chosen_model(session_key: str) -> str:
     """会话选定的模型;没设过返回空串(调用方回落到 config.MODEL 默认)。"""
     row = _conn().execute(
