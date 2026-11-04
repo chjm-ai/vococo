@@ -3429,6 +3429,7 @@
       if(typeof saveComposerState==="function") saveComposerState(S.conv);
     }
     S.conv = "voice-chat:main";
+    restoreSessionModels();
     if(typeof restoreComposerState==="function") restoreComposerState(S.conv);
     renderProjSelChip();  // 草稿会话切入主会话时，收起仅草稿可见的项目选择器
     mountSharedComposer(true);
@@ -3463,6 +3464,7 @@
     $("#callView").hidden = true;
     $("#chatMain").hidden = false;
     S.conv = S.callReturnConv;
+    restoreSessionModels();
     if(typeof restoreComposerState==="function") restoreComposerState(S.conv);
     renderProjSelChip();  // 返回草稿会话时，恢复项目选择器
     teardownCallResources();

@@ -176,6 +176,8 @@ def conn() -> sqlite3.Connection:
         # chosen_model=用户为该会话选定、下一轮要用的模型(与 model「实际跑过的带日期 id」分开)
         if "chosen_model" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN chosen_model TEXT")
+        if "model_preferences" not in cols:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN model_preferences TEXT")
         # sdk_session_id=SDK(claude CLI)自己维护的会话 id。存下它,下一轮用 resume=<id>
         # 让 SDK 从它自己的 transcript 重放【真·多轮历史】,而不是我们把历史拼成一坨文本喂进去
         # (后者会让模型误判自己"记不住/被压缩")。NULL=还没有,起新会话。

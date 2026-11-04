@@ -32,7 +32,7 @@ from urllib.parse import unquote, urlsplit
 from aiohttp import web
 
 from ... import config, providers
-from ...core import title
+from ...core import model_preferences, title
 from ...core.agent import AgentReply, FileAttachment
 from ...memory import session_store, workbench
 from .. import git_status, settings_store, stats
@@ -2189,10 +2189,19 @@ class WebAdapter:
         # default = web 端上次选定的模型;没设过才回落到 config.MODEL
         active_model = settings_store.get_web_default_model() \
             or config.MODEL
-        efforts = {}
+        conv = request.query.get("conv", "")
+        key = config.resolve_session_key("web", conv) if conv else ""
+        chosen = session_store.get_chosen_model(key) if key else ""
+        if key and not chosen:
+            chosen = active_model
+            session_store.set_chosen_model(key, chosen)
+        efforts, tiers = {}, {}
         for model, _, _ in choices:
+            options = model_preferences.for_model(key, model)
             levels = providers.effort_levels_for_model(model)
-            value = settings_store.get_web_effort(model)
+            value = options["effort"]
+            tier = providers.priority_state(model)
+            tiers[model] = {**tier, "value": options["service_tier"] if tier["supported"] else ""}
             efforts[model] = {
                 "levels": providers.effort_choices_for_model(model),
                 # 旧版可能留有此模型不支持的值；不回显为已选，运行时也不会传它。
@@ -2201,9 +2210,10 @@ class WebAdapter:
         return _compressed_json(
             {
                 "default": active_model,
-                "effort": efforts.get(active_model, {}).get("value", ""),  # 兼容旧 Web 客户端
+                "chosen_model": chosen,
+                "effort": efforts.get(chosen or active_model, {}).get("value", ""),
                 "efforts": efforts,
-                "service_tiers": {model: providers.priority_state(model) for model, _, _ in choices},
+                "service_tiers": tiers,
                 "choices": [[v, label, group] for v, label, group in choices],
             }
         )
@@ -2226,7 +2236,15 @@ class WebAdapter:
             return web.json_response(
                 {"error": f"{model} 仅支持 {'/'.join(levels)}"}, status=400
             )
-        settings_store.set_web_effort(effort, model=model)
+        conv = body.get("conv")
+        if "conv" in body and (not isinstance(conv, str) or not conv.strip()):
+            return web.json_response({"error": "会话标识不能为空"}, status=400)
+        if conv:
+            key = config.resolve_session_key("web", conv)
+            model_preferences.for_model(key, model)
+            session_store.set_model_preferences(key, model, {"effort": effort})
+        else:
+            settings_store.set_web_effort(effort, model=model)
         return web.json_response({"ok": True, "model": model, "effort": effort})
 
     @_authed
@@ -2238,10 +2256,17 @@ class WebAdapter:
         available = {item[0] for item in providers.available_models(MODEL_CHOICES)}
         if model not in available or not providers.supports_priority_tier(model):
             return web.json_response({"error": "此模型不支持优先档"}, status=400)
-        try:
+        if tier not in ("", "priority"):
+            return web.json_response({"error": "不支持的优先档"}, status=400)
+        conv = body.get("conv")
+        if "conv" in body and (not isinstance(conv, str) or not conv.strip()):
+            return web.json_response({"error": "会话标识不能为空"}, status=400)
+        if conv:
+            key = config.resolve_session_key("web", conv)
+            model_preferences.for_model(key, model)
+            session_store.set_model_preferences(key, model, {"service_tier": tier})
+        else:
             settings_store.set_web_service_tier(tier, model=model)
-        except ValueError as exc:
-            return web.json_response({"error": str(exc)}, status=400)
         return web.json_response({"ok": True, "model": model, "tier": tier})
 
     @_authed
