@@ -380,11 +380,13 @@ def _session_metadata(row: dict) -> dict:
     key = row["key"]
     binding = session_store.session_binding(key)
     if not binding and not key.startswith("session:"):
-        owner = agents.agent_for_session(key)
-        binding = {"agent_id": owner["id"] if owner else "general",
+        owner_id = row["agent_id"] if "agent_id" in row else agents.legacy_owner_id(key)
+        binding = {"agent_id": owner_id or "general",
                    "project_hash": config.project_hash_from_key(key)}
     task = tasks.task_for_session(key)
-    row["title"] = tasks.conversation_title(key, row.get("title") or "新对话")
+    row["title"] = session_store.get_title(key) or (
+        task["title"] if task else row.get("title") or "新对话"
+    )
     row.update(binding)
     row.setdefault("agent_id", None)
     row.setdefault("project_hash", None)
@@ -448,10 +450,8 @@ def _rows_with_conv(prefix: str, *, archived: bool | None = None) -> list[dict]:
 
 
 def _pending_map(prefix: str) -> dict[str, bool]:
-    """key → pending_review 的映射,给数据源不是 list_sessions() 直接返回行的
-    场景(如 cron-task,行来自 scheduler.load_jobs())按 key 单独查这个字段用。
-    """
-    return {r["key"]: r.get("pending_review", False) for r in session_store.list_sessions(prefix)}
+    """非会话列表的数据源只读未读元数据，不聚合全部历史或解析 Agent。"""
+    return session_store.pending_reviews(prefix)
 
 
 def _compressed_json(data: dict | list) -> web.Response:

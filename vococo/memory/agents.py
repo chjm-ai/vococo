@@ -696,6 +696,23 @@ def main_session_key(agent: dict) -> str:
     return config.resolve_session_key("web", agent["main_conv"])
 
 
+@_snapshot_read
+def _project_owner_id(phash: str) -> str | None:
+    aid = _agents_by_project_hash().get(phash)
+    if aid:
+        return aid
+    owner = get(phash)  # 保留尚未补建配置的旧项目兼容路径。
+    return owner["id"] if owner else None
+
+
+def legacy_owner_id(session_key: str) -> str | None:
+    """摘要展示只需要归属 id；执行/权限判定仍须调用 agent_for_session 读取完整策略。"""
+    if phash := config.project_hash_from_key(session_key):
+        return _project_owner_id(phash)
+    owner = agent_for_session(session_key)
+    return owner["id"] if owner else None
+
+
 def agent_for_session(session_key: str) -> dict | None:
     """会话属于哪个 Agent:项目会话按项目哈希;定时任务会话按 job 的 agent_id;其余 None。
 
