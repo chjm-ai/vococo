@@ -57,11 +57,18 @@ def save_turn_audio(turn_id: int, audios: list) -> list[dict]:
             au.local_path = str(path)
         except AttributeError:
             pass
-        entries.append({
+        entry = {
             "file": name,
             "filename": str(getattr(au, "filename", "") or ""),
             "text": getattr(au, "transcript", "") or "",
-        })
+        }
+        if entry["text"]:
+            transcript_name = f"{turn_id}_{idx}.transcript.txt"
+            transcript_path = config.AUDIO_DIR / transcript_name
+            transcript_path.write_text(entry["text"], encoding="utf-8")
+            entry["transcript_file"] = transcript_name
+            au.transcript_path = str(transcript_path)
+        entries.append(entry)
     if entries:
         c = _db.conn()
         c.execute(
@@ -93,8 +100,28 @@ def clone_turn_audio(turn_id: int, entries: list) -> list[dict]:
             new_entry["file"] = new
         else:
             new_entry.pop("file", None)
+        new_entry.pop("transcript_file", None)
+        if new_entry.get("text"):
+            transcript_name = f"{turn_id}_{idx}.transcript.txt"
+            (config.AUDIO_DIR / transcript_name).write_text(new_entry["text"], encoding="utf-8")
+            new_entry["transcript_file"] = transcript_name
         out.append(new_entry)
     return out
+
+
+def restore_transcript(entry: dict, turn_id: int, index: int) -> str:
+    """旧录音只在 JSON 存转写，恢复历史时补文字稿，不改数据库。"""
+    text = entry.get("text")
+    if not isinstance(text, str) or not text:
+        return ""
+    config.AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    path = config.AUDIO_DIR / f"{turn_id}_{index}.transcript.txt"
+    try:
+        with path.open("x", encoding="utf-8") as output:
+            output.write(text)
+    except FileExistsError:
+        pass
+    return str(path) if path.is_file() and not path.is_symlink() else ""
 
 
 def audio_path(name: str):
@@ -109,15 +136,21 @@ def purge_session_audio(c: sqlite3.Connection, session_key: str) -> None:
     """删会话前把它名下所有音频文件从磁盘清掉,避免孤儿文件堆积。供 session_store 的
     clear()/delete_session() 调用(传入同一条连接,同一事务里先清文件再删行)。"""
     rows = c.execute(
-        "SELECT audios FROM turns WHERE session_key=? AND audios IS NOT NULL",
+        "SELECT id, audios FROM turns WHERE session_key=? AND audios IS NOT NULL",
         (session_key,),
     ).fetchall()
-    for (auds,) in rows:
+    for turn_id, auds in rows:
         try:
             entries = json.loads(auds) if auds else []
         except (json.JSONDecodeError, ValueError):
             continue
-        for e in entries:
-            name = e.get("file") or ""
-            if _AUDIO_NAME_RE.match(name):
-                (config.AUDIO_DIR / name).unlink(missing_ok=True)
+        if not isinstance(entries, list):
+            continue
+        for index, e in enumerate(entries):
+            if not isinstance(e, dict):
+                continue
+            for field in ("file", "transcript_file"):
+                name = e.get(field) or ""
+                if isinstance(name, str) and _AUDIO_NAME_RE.fullmatch(name):
+                    (config.AUDIO_DIR / name).unlink(missing_ok=True)
+            (config.AUDIO_DIR / f"{turn_id}_{index}.transcript.txt").unlink(missing_ok=True)

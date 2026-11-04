@@ -511,9 +511,8 @@ $("#ta").addEventListener("input", saveDraft);
 document.querySelectorAll("#empty .sug[data-s]").forEach(b=>{ b.onclick=()=>send(b.dataset.s); });
 
 // ── 图片 ────────────────────────────────────────────────────────────────
-// 读一个图片文件 → 必要时前端先压缩 → base64 并入待发送队列(选择/粘贴复用)。
-// 压缩策略:长边超 1568px(Claude 视觉输入的有效上限)或体积超 300KB 时,
-// 缩到 1568px 内并重编码 JPEG(q=0.85);GIF 保动画不压;压完更大则退回原图。
+// 原图 base64 并入待发送队列，前端压缩只用于缩略图，不覆盖原件。
+// 模型视觉预览由服务端统一生成，避免前端上传前就丢掉高清细节和透明通道。
 const IMG_MAX_EDGE=1568, IMG_KEEP_BYTES=300*1024;
 function addImageFile(f){
   if(!f || !(f.type||"").startsWith("image/")) return;
@@ -538,7 +537,7 @@ async function compressImage(f){
     ctx.drawImage(im,0,0,w,h);
     const out=cv.toDataURL("image/jpeg",0.85);
     if(out.length>=raw.length) return orig;
-    return {data:out.split(",")[1], media_type:"image/jpeg", url:out};
+    return {data:orig.data, media_type:orig.media_type, url:out};
   }catch(e){ return orig; }   // 解码失败(如 heic 某些浏览器不认)兜底发原图
 }
 function loadImgEl(src){ return new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=src; }); }

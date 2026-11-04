@@ -68,6 +68,24 @@ def save_turn_images(turn_id: int, images: list) -> list[str]:
     return names
 
 
+def save_image_description(images: list, text: str) -> str:
+    """完整识别结果跟随首张受控原图保存，避免长文字截断后无法续读。"""
+    from pathlib import Path
+
+    for image in images:
+        original = Path(image.local_path) if image.local_path else None
+        if (original is None or original.parent != config.IMAGES_DIR
+                or not _IMG_NAME_RE.fullmatch(original.name) or not original.is_file()
+                or original.is_symlink()):
+            continue
+        path = original.with_name(original.name + ".vision.txt")
+        if path.is_symlink():
+            continue
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+    return ""
+
+
 def clone_turn_images(turn_id: int, names: list) -> list[str]:
     """把一批已落盘的图片复制成属于 turn_id 的新副本,返回新文件名列表。
 
@@ -88,6 +106,9 @@ def clone_turn_images(turn_id: int, names: list) -> list[str]:
         prefix = AI_IMAGE_PREFIX if old.startswith(AI_IMAGE_PREFIX) else ""
         new = f"{prefix}{turn_id}_{idx}.{ext}"
         (config.IMAGES_DIR / new).write_bytes(src.read_bytes())
+        description = src.with_name(src.name + ".vision.txt")
+        if description.is_file() and not description.is_symlink():
+            (config.IMAGES_DIR / (new + ".vision.txt")).write_bytes(description.read_bytes())
         out.append(new)
     return out
 
@@ -195,7 +216,7 @@ def backfill_thumbs() -> int:
     origs = []
     for p in d.iterdir():
         try:
-            if p.is_file() and _IMG_NAME_RE.match(p.name):
+            if p.is_file() and _IMG_NAME_RE.match(p.name) and not p.name.endswith(".vision.txt"):
                 origs.append((p.stat().st_mtime, p))
         except OSError:
             continue
@@ -227,4 +248,5 @@ def purge_session_images(c: sqlite3.Connection, session_key: str) -> None:
         for n in names:
             if _IMG_NAME_RE.match(n or ""):
                 (config.IMAGES_DIR / n).unlink(missing_ok=True)
+                (config.IMAGES_DIR / (n + ".vision.txt")).unlink(missing_ok=True)
                 _thumb_file(n).unlink(missing_ok=True)

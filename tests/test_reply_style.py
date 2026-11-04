@@ -27,7 +27,8 @@ def test_plain_prompt_preserves_text_and_history_on_rebuild():
 
 @pytest.mark.anyio
 async def test_attachments_keep_original_order_without_trailing_reminder():
-    images = [agent.ImageAttachment("QUJD", "image/png", "/tmp/test.png")]
+    png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+    images = [agent.ImageAttachment(png, "image/png", "/tmp/test.png")]
     files = [agent.FileAttachment(b"hello", "text/plain", "test.txt"),
              agent.FileAttachment(b"\0\xff", "application/pdf", "test.pdf")]
     payload = agent._build_prompt([], "看看附件", images, files)
@@ -36,10 +37,9 @@ async def test_attachments_keep_original_order_without_trailing_reminder():
     assert content == [
         {"type": "text", "text": "看看附件"},
         {"type": "text", "text": "[聊天图片附件 1，可用 Read 工具读取]\n本机文件：/tmp/test.png"},
-        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": png}},
         {"type": "text", "text": "[文件附件: test.txt]\nhello"},
-        {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "AP8="},
-         "title": "test.pdf"},
+        {"type": "text", "text": "[文件附件: test.pdf]\n[无法读取：该格式不能作为普通文本直传，且缺少本机文件路径，请重新上传。]"},
     ]
     assert "[本轮表达提醒" not in str(content)
     with pytest.raises(StopAsyncIteration):
