@@ -19,6 +19,13 @@ def _key(reference: str) -> str:
         raise ValueError("会话 ID 必须是非空文本")
     if reference == config.SESSION_KEY or (not reference.startswith("web:") and session_store.find_session(reference)):
         return reference
+    if ":" not in reference and reference != "main":
+        matches = [prefix + reference for prefix in ("session:", "web:", "task:", "voice-chat:")
+                   if session_store.find_session(prefix + reference)]
+        if len(matches) > 1:
+            raise ValueError("ID 匹配到多个会话，请使用完整 ID：" + "、".join(matches))
+        if matches:
+            return matches[0]
     conv = reference.removeprefix("web:")
     key = config.resolve_session_key("web", conv)
     if (not key.startswith(("web:", "session:", "task:")) or not conv
@@ -271,7 +278,7 @@ def build_tools(session_key: str, denied: list[str], capabilities: dict | None =
         except ValueError as exc:
             return _reply({"error": str(exc)})
 
-    @tool("query_session", "查询各 Agent 会话最近少量对话，支持裸 ID 或完整 web: ID。", {
+    @tool("query_session", "查询各 Agent 会话最近少量对话，支持裸 ID 或完整 session:/web:/task: 等 ID；裸 ID 重名时须使用完整 ID。", {
         "type": "object", "properties": {"session_id": {"type": "string"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 10}}, "required": ["session_id"],
     })
