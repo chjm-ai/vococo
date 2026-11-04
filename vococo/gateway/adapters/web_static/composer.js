@@ -543,44 +543,26 @@ async function compressImage(f){
 }
 function loadImgEl(src){ return new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=src; }); }
 $("#imgBtn").onclick = ()=>$("#file").click();
-// 通用附件只放行模型链路已覆盖的常见文本/文档格式;不支持的格式在上传前明确提示。
-const SUPPORTED_FILE_EXTENSIONS = new Set([
-  "md","markdown","txt","log","csv","tsv","json","yaml","yml","xml",
-  "html","htm","css","js","jsx","ts","tsx","py","sh","bash","zsh","sql","ini","toml",
-  "pdf","doc","docx","odt","rtf","xls","xlsx","numbers","ppt","pptx","key","pages",
-]);
-const SUPPORTED_FILE_TYPES = new Set([
-  "application/pdf","application/json","application/xml","text/csv","text/markdown",
-]);
 function fileExtension(name){
   const value=String(name||"").toLowerCase();
   const dot=value.lastIndexOf(".");
   return dot>0 && dot<value.length-1 ? value.slice(dot+1) : "";
 }
-// MIME 兜底:部分浏览器/系统给 m4a、wav 之类的 type 是空串,光靠 type 会误判成
-// 「不支持的文件」直接拒掉;按扩展名再认一次,保证音频永远走 /upload_audio 那条落盘链路。
+// 部分浏览器/系统给 m4a、wav 之类的 type 是空串,按扩展名兜底,
+// 保证音频走 /upload_audio 的转写链路,而不是作为通用文件发送。
 const AUDIO_EXTENSIONS = new Set(["m4a","mp3","wav","aac","flac","ogg","opus","webm","amr","aiff","aif","wma","caf"]);
 function isAudioFile(f){
   const type=String(f?.type||"").toLowerCase();
   return type.startsWith("audio/") || AUDIO_EXTENSIONS.has(fileExtension(f?.name));
 }
-function isSupportedFile(f){
-  const type=String(f?.type||"").split(";",1)[0].toLowerCase();
-  return type.startsWith("text/") || SUPPORTED_FILE_TYPES.has(type) || SUPPORTED_FILE_EXTENSIONS.has(fileExtension(f?.name));
-}
-function rejectUnsupportedFile(f){
-  const name=f?.name||"未命名文件";
-  const ext=fileExtension(name);
-  addBubble("ai", `⚠️ 暂不支持文件「${name}」${ext ? `（.${ext}）` : ""}，请上传图片、音频、视频或常见文本/文档格式。`);
-}
+// 媒体保留专用处理,其余文件不按扩展名或 MIME 拦截,与服务端保持一致。
 function handleAttachmentFiles(files){
   for(const f of Array.from(files||[])){
     const type=String(f.type||"").toLowerCase();
     if(type.startsWith("image/")) addImageFile(f);
     else if(isVideoFile(f)) addVideoFile(f);
     else if(isAudioFile(f)) addAudioFile(f);
-    else if(isSupportedFile(f)) addFile(f);
-    else rejectUnsupportedFile(f);
+    else addFile(f);
   }
 }
 $("#file").onchange = e=>{

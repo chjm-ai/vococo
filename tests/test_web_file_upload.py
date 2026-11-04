@@ -220,16 +220,50 @@ def test_unsent_attachments_are_isolated_by_conversation():
     _check_composer_state("isolation")
 
 
-def test_file_drop_reuses_upload_validation_and_reports_unsupported_formats():
+def test_file_selection_and_drop_accept_all_types_and_keep_size_limit():
+    import subprocess
+
     composer = (Path(__file__).parents[1] / "vococo/gateway/adapters/web_static/composer.js").read_text(
         encoding="utf-8"
     )
-
-    assert "function handleAttachmentFiles(files)" in composer
+    assert "handleAttachmentFiles(e.target.files);" in composer
     assert "handleAttachmentFiles(e.dataTransfer?.files);" in composer
-    assert "function rejectUnsupportedFile(f)" in composer
-    assert "暂不支持文件" in composer
-    assert "else if(isSupportedFile(f)) addFile(f);" in composer
+    script = """
+const assert = require('node:assert/strict');
+const S = {files:[]}, uploads = [], media = [], errors = [];
+const renderThumbs = ()=>{};
+const uploadFile = f=>uploads.push(f.name);
+const addBubble = (_,text)=>errors.push(text);
+const addImageFile = f=>media.push('image:'+f.name);
+const addAudioFile = f=>media.push('audio:'+f.name);
+const addVideoFile = f=>media.push('video:'+f.name);
+"""
+    script += composer[composer.index("function fileExtension("):composer.index('$("#file").onchange')]
+    script += composer[composer.index("const FILE_MAX_BYTES"):composer.index("function uploadFile(")]
+    script += composer[composer.index("const VIDEO_EXTENSIONS"):composer.index("function addVideoFile(")]
+    script += """
+const files = [
+  {name:'archive.zip',type:'application/zip',size:10},
+  {name:'sample.nd',type:'application/x-nd',size:10},
+  {name:'README',type:'',size:10},
+  {name:'unknown.bin',type:'application/octet-stream',size:FILE_MAX_BYTES},
+  {name:'large.zip',type:'application/zip',size:FILE_MAX_BYTES+1},
+  {name:'image.png',type:'image/png',size:10},
+  {name:'sound.m4a',type:'',size:10},
+  {name:'clip.mov',type:'',size:10},
+  {name:'sound.webm',type:'audio/webm',size:10},
+];
+handleAttachmentFiles(files);
+handleAttachmentFiles([]);
+handleAttachmentFiles(null);
+assert.deepEqual(uploads,['archive.zip','sample.nd','README','unknown.bin']);
+assert.equal(S.files.length,4);
+assert.equal(S.files[2].mediaType,'application/octet-stream');
+assert.deepEqual(media,['image:image.png','audio:sound.m4a','video:clip.mov','audio:sound.webm']);
+assert.equal(errors.length,1);
+assert.match(errors[0],/32MB/);
+"""
+    subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True, timeout=15)
 
 
 def test_send_failure_keeps_file_attachment_for_retry():
