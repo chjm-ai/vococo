@@ -243,6 +243,28 @@ def _file_text(file: FileAttachment) -> str | None:
     return None if "\0" in text else text
 
 
+_ATTACHMENT_TEXT_MAX_CHARS = 24_000
+_INLINE_DATA_URL = re.compile(r"data:[^,\s<>\"']*;base64,[A-Za-z0-9+/=\r\n]+", re.IGNORECASE)
+
+
+def _file_prompt_text(file: FileAttachment, remaining: int) -> str | None:
+    """附件正文共用预算；落盘 HTML 避免把内嵌媒体编码带进上下文。"""
+    is_html = (Path(file.filename).suffix.lower() in {".html", ".htm", ".xhtml"}
+               or file.media_type.split(";", 1)[0].strip().lower() in {"text/html", "application/xhtml+xml"})
+    if file.local_path and is_html:
+        return ("[正文未内联，请按需处理本机文件。先用脚本提取文字和结构，"
+                "跳过内嵌媒体编码；不要整份输出 HTML 或超长行。]")
+    text = _file_text(file)
+    if text is None:
+        return None
+    if file.local_path and len(text) > remaining:
+        return "[正文超出附件总预算，未内联；请按需分段读取本机文件，不要整份输出。]"
+    text = _INLINE_DATA_URL.sub("[内嵌媒体编码已省略]", text)
+    if len(text) > remaining:
+        return text[:remaining] + "\n[正文已截断；没有本机路径，请重新提供文件或拆分内容。]"
+    return text
+
+
 @dataclass
 class AudioAttachment:
     """一段用户上传的音频。
@@ -794,12 +816,13 @@ def _build_prompt(
                 },
             }
         )
+    remaining = _ATTACHMENT_TEXT_MAX_CHARS
     for file in files:
-        # 路径必须给:正文虽然也塞进了 block,但要用工具处理原始文件(xlsx 读表、
-        # pdf 抽页、转格式)时,没有路径模型就只有一个磁盘上不存在的原始文件名
+        # 大文件只传路径，保留工具处理原始文件的入口。
         where = f"\n本机文件（可直接读取/处理）：{file.local_path}" if file.local_path else ""
-        file_text = _file_text(file)
+        file_text = _file_prompt_text(file, remaining)
         if file_text is not None:
+            remaining = max(0, remaining - len(file_text))
             content.append({
                 "type": "text",
                 "text": f"[文件附件: {file.filename}]{where}\n{file_text}",
