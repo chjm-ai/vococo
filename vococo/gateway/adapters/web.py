@@ -344,6 +344,18 @@ class _WebSink(Sink):
         )
         if not self._notify_done:
             return  # 后台任务已有独立的通知及未读处理，不能重复推送。
+        from ...core import tasks
+
+        task_id = tasks.task_id_from_session_key(key)
+        task = tasks.get(task_id) if task_id else None
+        if task and task.get("origin") == "cron":
+            from ...cron import scheduler
+
+            # 已删除或转移的规则不会推送旧会话，真人续聊仍需普通完成提醒。
+            task = task if any(job.get("id") == task.get("job_id") and job.get("conv") == key
+                                for job in scheduler.load_jobs()) else None
+        if task:
+            return  # 任务会话的真人续聊也已走终态通知，只保留这一条推送。
         # 场景①「回复完成」:人不在页面时弹系统通知(前台由 SW 自行抑制)
         title = "主会话" if self.conv == "main" else (
             session_store.get_title(key) or config.PERSONA_NAME

@@ -121,7 +121,9 @@ async def test_foreground_message_refreshes_sidebar_after_pending_turn_is_saved(
 
 
 @pytest.mark.anyio
-async def test_foreground_task_followup_emits_only_one_done(isolated, monkeypatch):
+@pytest.mark.parametrize("source", ["chat", "voice", "ordinary", "cron", "cron_deleted", "cron_moved"])
+@pytest.mark.parametrize("is_error", [False, True])
+async def test_foreground_followup_emits_one_done_and_one_push(isolated, monkeypatch, source, is_error):
     from vococo.gateway import core
     from vococo.gateway.adapters.web import _WebSink
 
@@ -129,24 +131,57 @@ async def test_foreground_task_followup_emits_only_one_done(isolated, monkeypatc
     monkeypatch.setattr(task_events, "_terminal_handlers", [])
     monkeypatch.setattr(task_events, "_main_event_bridge", None)
     monkeypatch.setattr(task_events, "_stream_sink_factory", None)
+    from vococo.gateway.adapters.web_push import PUSH
+    from vococo.voice import notify
+
     adapter = WebAdapter()
-    events = []
+    events, pushes = [], []
+
+    async def capture_push(**kw):
+        pushes.append(kw)
+
     monkeypatch.setattr(adapter, "_emit", events.append)
-    monkeypatch.setattr(adapter, "_push_notify", lambda **kw: None)
+    monkeypatch.setattr(adapter, "_push_notify", lambda **kw: pushes.append(kw))
+    monkeypatch.setattr(PUSH, "notify", capture_push)
+    monkeypatch.setattr(notify, "_platform_push", None)
+    monkeypatch.setattr(task_events, "_terminal_handlers", [notify._terminal_event_handler])
     task_events.register_main_event_bridge(events.append)
-    row = tasks.create("续聊", "问题", cwd=str(isolated), origin="chat")
-    key = tasks.session_key(row["id"])
+    origin = "cron" if source.startswith("cron") else source
+    row = (tasks.create("续聊", "问题", cwd=str(isolated), origin=origin, job_id="test-job")
+           if source != "ordinary" else None)
+    key = tasks.session_key(row["id"]) if row else "web:ordinary-followup"
+    if origin == "cron":
+        from vococo.cron import scheduler
+
+        jobs = [] if source == "cron_deleted" else [{
+            "id": "test-job", "name": "续聊", "conv": "session:moved" if source == "cron_moved" else key,
+        }]
+        monkeypatch.setattr(scheduler, "load_jobs", lambda: jobs)
+        monkeypatch.setattr(scheduler, "save_jobs", lambda jobs: None)
+
+        async def push(platform, conv, text):
+            pushes.append({"conv": conv, "body": text})
+
+        async def cron_terminal(task):
+            await scheduler._on_task_terminal(task, push)
+
+        monkeypatch.setattr(notify, "_cron_terminal_hook", cron_terminal)
 
     async def stream(*args, **kwargs):
         yield TextDelta("续聊回答")
-        yield Done(AgentReply("续聊回答", [], None, False))
+        yield Done(AgentReply("续聊回答", [], None, is_error, error="测试错误" if is_error else ""))
 
     monkeypatch.setattr(core, "stream_turn", stream)
     await core.converse(key, "继续", None, _WebSink(adapter, key), cwd_override=str(isolated))
     done = [e for e in events if e["type"] == "done"]
     assert len(done) == 1, events
     assert done[0]["turn_id"] is not None
-    assert tasks.get(row["id"])["status"] == "done"
+    if row:
+        assert tasks.get(row["id"])["status"] == ("failed" if is_error else "done")
+    assert len(pushes) == 1, pushes
+    assert pushes[0]["conv"] == key
+    if source in {"chat", "voice"}:
+        assert pushes[0]["kind"] == ("error" if is_error else "done")
     tasks._DB.close()
     tasks._DB = None
 
