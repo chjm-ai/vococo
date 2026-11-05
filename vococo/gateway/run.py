@@ -36,6 +36,15 @@ class GatewayRunner:
         if adapter is not None:
             await adapter.send(chat_id, text)
 
+    async def deliver_completion_copy(self, platform: str, chat_id, text: str) -> None:
+        adapter = self.adapters.get(platform)
+        if adapter is None:
+            raise RuntimeError(f"结果副本通道不可用:{platform}")
+        if platform == "web":
+            await adapter.send(chat_id, text, notify=False)
+        else:
+            await adapter.send(chat_id, text)
+
     def _lock_for(self, key: str) -> anyio.Lock:
         lock = self._locks.get(key)
         if lock is None:
@@ -378,10 +387,11 @@ class GatewayRunner:
         if n:
             print(f"🧹 启动清理:回收 {n} 个孤儿 worktree/悬空分支")
         clarify.register_push(self.push)  # 让 send_message 等工具能主动发消息
-        # 注册语音后台任务通知回推:任务完成后,通过派发者所在的平台/会话发一条消息通知
-        from ..voice import notify as voice_notify
+        # 完成通知统一投递；派发者/额外目标的结果副本不能再触发第二次系统推送。
+        from ..core import completion
+        from ..voice import notify as voice_notify  # 注册语音状态订阅者
 
-        voice_notify.register_platform_push(self.push)
+        completion.register_platform_push(self.deliver_completion_copy)
         # 注册取消回调到所有支持的 adapter(如 WebAdapter)。删除会话用等待版，
         # 普通「停止回复」保留原来的立即返回版，避免用户点击后白等。
         for adapter in self.adapters.values():

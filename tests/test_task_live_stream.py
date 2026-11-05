@@ -143,7 +143,9 @@ async def test_foreground_followup_emits_one_done_and_one_push(isolated, monkeyp
     monkeypatch.setattr(adapter, "_emit", events.append)
     monkeypatch.setattr(adapter, "_push_notify", lambda **kw: pushes.append(kw))
     monkeypatch.setattr(PUSH, "notify", capture_push)
-    monkeypatch.setattr(notify, "_platform_push", None)
+    from vococo.core import completion
+
+    monkeypatch.setattr(completion, "_platform_push", None)
     monkeypatch.setattr(task_events, "_terminal_handlers", [notify._terminal_event_handler])
     task_events.register_main_event_bridge(events.append)
     origin = "cron" if source.startswith("cron") else source
@@ -159,13 +161,7 @@ async def test_foreground_followup_emits_one_done_and_one_push(isolated, monkeyp
         monkeypatch.setattr(scheduler, "load_jobs", lambda: jobs)
         monkeypatch.setattr(scheduler, "save_jobs", lambda jobs: None)
 
-        async def push(platform, conv, text):
-            pushes.append({"conv": conv, "body": text})
-
-        async def cron_terminal(task):
-            await scheduler._on_task_terminal(task, push)
-
-        monkeypatch.setattr(notify, "_cron_terminal_hook", cron_terminal)
+        monkeypatch.setattr(completion, "_policy", scheduler._prepare_completion)
 
     async def stream(*args, **kwargs):
         yield TextDelta("续聊回答")
@@ -179,9 +175,12 @@ async def test_foreground_followup_emits_one_done_and_one_push(isolated, monkeyp
     if row:
         assert tasks.get(row["id"])["status"] == ("failed" if is_error else "done")
     assert len(pushes) == 1, pushes
-    assert pushes[0]["conv"] == key
-    if source in {"chat", "voice"}:
-        assert pushes[0]["kind"] == ("error" if is_error else "done")
+    from vococo import config
+
+    assert pushes[0]["conv"] == config.conversation_id_for_key(key)
+    assert pushes[0]["kind"] == ("error" if is_error else "done")
+    if origin == "cron":
+        assert all("last_run_at" not in job for job in jobs)  # 人工追问不更新旧调度规则。
     tasks._DB.close()
     tasks._DB = None
 

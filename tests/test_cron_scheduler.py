@@ -1,13 +1,13 @@
 """cron 调度器的测试(2026-07-29 随统一后台任务引擎改写)。
 
 _run_job 现在只是"触发"——真正跑一轮走 core/task_runner.py 那套语音/cron/chat
-三方共用的引擎(job_id 与 task_id 独立映射),跑完后异步触发 _on_task_terminal 做
+三方共用的引擎(job_id 与 task_id 独立映射)，跑完后进入统一完成入口做
 回填统计 + 推送,不再像以前那样在 _run_job 里同步等 run_turn 跑完再处理。
 
 创建/管理走 web 接口(见 test_web_cron_sidebar.py);这里测两段:
 1. _run_job 触发后,任务真正落进它自己的专属会话,且第二次触发是原地续聊
    (不产生新任务行)。
-2. _on_task_terminal 收到终态任务后正确回填 last_status/last_run_at,并按
+2. 统一完成入口收到终态任务后正确回填 last_status/last_run_at，并按
    "专属会话 + 可选额外目标"的规则推送——独立测,不用等真的跑一轮。
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ import asyncio
 
 import pytest
 
-from vococo.core import task_runner
+from vococo.core import completion, task_events, task_runner
 from vococo.core import tasks as bg_tasks
 from vococo.core.task_runner import _SUMMARY_TAG_INSTRUCTION
 from vococo.core.agent import AgentReply, Done, SessionStarted
@@ -33,6 +33,11 @@ def cron_env(isolated, monkeypatch):
     monkeypatch.setattr(bg_tasks, "_DB", None)
     task_runner._running.clear()
     scheduler._script_running.clear()
+    monkeypatch.setattr(completion, "_policy", scheduler._prepare_completion)
+    monkeypatch.setattr(completion, "_platform_push", None)
+    from vococo.gateway.adapters.web_push import PUSH
+
+    monkeypatch.setattr(PUSH, "notify", _noop_coro)
     yield data
     if bg_tasks._DB is not None:
         bg_tasks._DB.close()
@@ -41,6 +46,18 @@ def cron_env(isolated, monkeypatch):
 
 async def _noop_coro(*_a, **_k) -> None:
     return None
+
+
+def _capture_delivery(monkeypatch, push):
+    """只替换实际传输边界，策略和统一完成入口仍跑真实实现。"""
+    from vococo.gateway.adapters.web_push import PUSH
+
+    async def notify(**payload):
+        await push("web", payload["conv"], payload["body"])
+        return 1
+
+    monkeypatch.setattr(PUSH, "notify", notify)
+    monkeypatch.setattr(completion, "_platform_push", push)
 
 
 # ── 内置记忆复盘:通知前先保存到实际目标会话 ──────────────────────────────
@@ -219,7 +236,7 @@ async def test_cron_second_trigger_starts_fresh_no_resume(cron_env, monkeypatch)
     assert histories[2]
 
 
-# ── _on_task_terminal:回填统计 + 推送(真实任务映射,不启动执行进程) ──
+# ── _completion_entry:回填统计 + 推送(真实任务映射,不启动执行进程) ──
 
 
 def _terminal_task(job, status="done", text=""):
@@ -235,7 +252,7 @@ def _terminal_task(job, status="done", text=""):
 
 
 @pytest.mark.anyio
-async def test_on_task_terminal_persists_status_and_pushes_web(cron_env):
+async def test_completion_entry_persists_status_and_pushes_web(cron_env, monkeypatch):
     job = scheduler.create_job(
         name="晨间简报", prompt="汇总今天安排", schedule={"kind": "cron", "expr": "0 8 * * *"}
     )
@@ -244,8 +261,10 @@ async def test_on_task_terminal_persists_status_and_pushes_web(cron_env):
     async def fake_push(platform, chat_id, text):
         pushes.append((platform, chat_id, text))
 
+    _capture_delivery(monkeypatch, fake_push)
+
     task = _terminal_task(job, text="今天没什么特别的")
-    await scheduler._on_task_terminal(task, fake_push)
+    await task_events.emit_terminal(task["id"])
 
     updated = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
     assert updated["last_status"] == "success"
@@ -256,7 +275,7 @@ async def test_on_task_terminal_persists_status_and_pushes_web(cron_env):
 
 
 @pytest.mark.anyio
-async def test_on_task_terminal_also_pushes_extra_target(cron_env):
+async def test_completion_entry_also_pushes_extra_target(cron_env, monkeypatch):
     job = scheduler.create_job(
         name="每周复盘", prompt="回顾这周", schedule={"kind": "cron", "expr": "0 21 * * 0"},
         target={"platform": "web", "chat_id": "conv1"},
@@ -266,14 +285,16 @@ async def test_on_task_terminal_also_pushes_extra_target(cron_env):
     async def fake_push(platform, chat_id, text):
         pushes.append((platform, chat_id))
 
+    _capture_delivery(monkeypatch, fake_push)
+
     task = _terminal_task(job, text="本周进展良好")
-    await scheduler._on_task_terminal(task, fake_push)
+    await task_events.emit_terminal(task["id"])
 
     assert pushes == [("web", job["conv"]), ("web", "conv1")]
 
 
 @pytest.mark.anyio
-async def test_on_task_terminal_marks_failed_status(cron_env):
+async def test_completion_entry_marks_failed_status(cron_env, monkeypatch):
     job = scheduler.create_job(
         name="任务", prompt="p", schedule={"kind": "cron", "expr": "0 8 * * *"}
     )
@@ -282,14 +303,14 @@ async def test_on_task_terminal_marks_failed_status(cron_env):
         pass
 
     task = _terminal_task(job, status="failed")
-    await scheduler._on_task_terminal(task, fake_push)
+    await task_events.emit_terminal(task["id"])
 
     updated = next(j for j in scheduler.load_jobs() if j["id"] == job["id"])
     assert updated["last_status"] == "error"
 
 
 @pytest.mark.anyio
-async def test_on_task_terminal_skips_deleted_job(cron_env):
+async def test_completion_entry_skips_deleted_job(cron_env, monkeypatch):
     """任务定义已被删除:只是一次孤立的收尾,不报错、不推送(job 已经不存在了)。"""
     async def fake_push(platform, chat_id, text):
         raise AssertionError("job 已删除不该推送")
@@ -299,7 +320,7 @@ async def test_on_task_terminal_skips_deleted_job(cron_env):
     )
     task = _terminal_task(job, text="x")
     scheduler.save_jobs([])
-    await scheduler._on_task_terminal(task, fake_push)  # 不抛异常即通过
+    await task_events.emit_terminal(task["id"])  # 不抛异常即通过
     assert scheduler.load_jobs() == []
 
 
@@ -312,6 +333,8 @@ async def test_repeated_same_error_goes_quiet_then_auto_disables(cron_env, monke
 
     async def fake_push(platform, chat_id, text):
         pushes.append(text)
+
+    _capture_delivery(monkeypatch, fake_push)
 
     for i in range(scheduler.FAIL_DISABLE_STREAK):
         # 数字每次不同(耗时/计数),仍算同一错误
@@ -339,6 +362,8 @@ async def test_policy_script_repeated_errors_always_push_and_remain_enabled(cron
 
     async def fake_push(platform, chat_id, text):
         pushes.append(text)
+
+    _capture_delivery(monkeypatch, fake_push)
 
     for _ in range(scheduler.FAIL_DISABLE_STREAK + 1):
         await scheduler._run_script_job(job, fake_push)
@@ -407,12 +432,13 @@ async def test_pending_run_survives_push_failure_and_is_acknowledged_after_deliv
     job = _make_script_job(track_script_runs=True)
     async def fail(*args):
         raise RuntimeError("channel down")
-    with pytest.raises(RuntimeError, match="channel down"):
-        await scheduler._run_script_job(job, fail)
+    _capture_delivery(monkeypatch, fail)
+    await scheduler._run_script_job(job, fail)
     first = scheduler.load_jobs()[0]["running_run_id"]
     assert scheduler.load_jobs()[0]["pending_run_ids"] == [first]
     async def push(*args):
         assert first in scheduler.load_jobs()[0]["pending_run_ids"]
+    _capture_delivery(monkeypatch, push)
     await scheduler._run_script_job(job, push)
     assert seen == [[], [first]]
     assert "pending_run_ids" not in scheduler.load_jobs()[0]
@@ -438,6 +464,8 @@ async def test_suppressed_failure_keeps_pending_until_actual_delivery(cron_env, 
     async def push(*args):
         pushes.append(args)
 
+    _capture_delivery(monkeypatch, push)
+
     await scheduler._run_script_job(job, push)
     saved = scheduler.load_jobs()[0]
     assert pushes == []
@@ -459,6 +487,7 @@ async def test_failed_replay_warns_and_keeps_old_run_pending(cron_env, monkeypat
     pushes = []
     async def push(platform, chat_id, text):
         pushes.append(text)
+    _capture_delivery(monkeypatch, push)
     await scheduler._run_script_job(job, push)
     assert "未能重播" in pushes[0] and "old" in pushes[0]
     assert scheduler.load_jobs()[0]["pending_run_ids"] == ["old"]
@@ -512,12 +541,14 @@ def test_update_job_resets_failure_streak(cron_env):
 
 
 @pytest.mark.anyio
-async def test_different_error_or_success_resets_streak(cron_env):
+async def test_different_error_or_success_resets_streak(cron_env, monkeypatch):
     job = scheduler.create_job(name="扫描", prompt="p", schedule={"kind": "cron", "expr": "0 8 * * *"})
     pushes = []
 
     async def fake_push(platform, chat_id, text):
         pushes.append(text)
+
+    _capture_delivery(monkeypatch, fake_push)
 
     await scheduler._push_job_result(job["id"], "error", "BLOCKED", fake_push)
     await scheduler._push_job_result(job["id"], "error", "PARSE_FAIL", fake_push)  # 换了错误 → 从 1 算
@@ -600,6 +631,8 @@ async def test_run_script_job_no_signal_skips_llm(cron_env, monkeypatch):
     async def fake_push(platform, chat_id, text):
         pushes.append((platform, chat_id, text))
 
+    _capture_delivery(monkeypatch, fake_push)
+
     await scheduler._run_script_job(job, fake_push)
 
     turns = session_store.load_recent(job["conv"])
@@ -627,6 +660,8 @@ async def test_run_script_job_bare_zero_signal_is_silent(cron_env, monkeypatch):
 
     async def fake_push(platform, chat_id, text):
         pushes.append(text)
+
+    _capture_delivery(monkeypatch, fake_push)
 
     await scheduler._run_script_job(job, fake_push)
 

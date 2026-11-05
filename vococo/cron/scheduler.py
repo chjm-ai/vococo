@@ -26,8 +26,8 @@ job 结构:
 统一后台任务引擎——job_id、task_id、会话 key 独立,通过任务映射关联:
 第一次触发 dispatch,以后每次到点都是对同一个 task 再 append 一轮,天然
 获得 resume(job 记得上次跑过什么)/worktree(能安全改文件)/并发上限(慢任务不再
-卡住整个调度循环)。真正的「回填统计 + 推送」在任务跑完后异步触发(见
-_on_task_terminal,由 voice/notify.py 的 register_cron_terminal_hook 转发过来),
+卡住整个调度循环)。运行结束后进入 core/completion.py 的统一完成入口，
+调度器通过 _prepare_completion 准备统计、静默策略和结果副本，
 不再像以前那样在 _run_job 里同步等它跑完再处理——_tick 触发完就该去处理下一个
 到期任务/写心跳,不能被一个慢任务拖住整个调度器。
 
@@ -430,8 +430,8 @@ def _run_job(
     """触发一次 job 执行,不等它跑完。mode=="script" 直接丢给 _run_script_job
     (脚本任务,见模块头说明);默认走统一后台任务引擎——按 job_id 找执行记录:
     首次触发 dispatch,以后每次到点都是对同一个 task
-    再 append 一轮。Agent 任务的回填统计(last_run_at/last_status)和推送在
-    _on_task_terminal 里,任务跑完后异步触发。
+    再 append 一轮。执行结束后由统一完成入口调用 _prepare_completion 回填统计，
+    调度器不自行发送完成通知。
 
     prompt / extra_env:事件触发(cron/events.py)时传入——Agent 任务这一轮用 prompt
     (原指令 + 事件数据)代替 job["prompt"],脚本任务把 extra_env 并进子进程环境变量。"""
@@ -498,40 +498,48 @@ async def _push_job_result(
     job_id: str, status: str, text: str, push: PushFn, metrics: dict | None = None,
     silent: bool = False, run_id: str | None = None, session_key: str | None = None,
 ) -> dict | None:
-    """回填 job 的 last_run_at/last_status 并推送结果——Agent 任务
-    (_on_task_terminal)和脚本任务(_run_script_job)收尾共用,格式/目标完全
-    一致(专属会话 + 可选额外目标)。任务定义已被删除时返回 None,不报错、
-    不推送(只是一次孤立的收尾)。"""
+    """脚本结果进入统一完成入口；只有明确投递的运行才可确认补播。"""
+    from ..core import completion
+
+    job = next((job for job in load_jobs() if job["id"] == job_id), None)
+    if job is None:
+        return None
+    runner = getattr(push, "__self__", None)
+    if run_id and not silent and hasattr(runner, "adapters") and "web" not in runner.adapters:
+        raise RuntimeError("巡检通知通道不可用，保留未确认运行")
+    event = completion.Completion(
+        session_key or job["conv"], "failed" if status == "error" else "done", text,
+        run_id=run_id or "", job_id=job_id, metrics=metrics, silent=silent,
+    )
+    completion.register_policy(_prepare_completion)
+    delivered = await completion.publish(event)
+    return event.job if delivered or silent else None
+
+
+def _prepare_completion(event) -> None:
+    """只处理本次实际自动触发的规则，不根据会话历史来源重新推送。"""
     with JOBS_LOCK:
         jobs = load_jobs()
-        job = next((j for j in jobs if j.get("id") == job_id), None)
-        if job is None or (session_key is not None and job.get("conv") != session_key):
-            # 归属已转移：旧结果留在原会话，不覆盖新规则统计，也不投给新 Agent。
-            return None
-        job["last_run_at"] = int(time.time())
-        job["last_status"] = status
-        if run_id is not None:
-            job["last_run_id"] = run_id
-        quiet, notice = _track_failure(job, status, text)
+        job = next((job for job in jobs if job["id"] == event.job_id), None)
+        if job is None or job.get("conv") != event.session_key:
+            event.silent = True
+            return  # 在途旧运行不覆盖已转移/删除的规则；人工续聊没有 job_id。
+        status = "error" if event.status == "failed" else "success"
+        job["last_run_at"], job["last_status"] = int(time.time()), status
+        if event.run_id:
+            job["last_run_id"] = event.run_id
+        quiet, notice = _track_failure(job, status, event.text)
         save_jobs(jobs)
-    if silent:  # 静默收尾:只回填运行时间/状态,见 _run_script_job
-        return job
-    conv = job.get("conv") or f"task:{job_id}"
-    msg = f"⏰ {job.get('name','任务')}\n\n{text}{notice}"
-    if quiet:  # 同一错误重复出现:不推送、不进 Agent 主会话,只记运行数据供复盘统计
-        _record_agent_run(job, status, text, metrics, to_main=False)
-        return None  # 未投递不能确认运行；开启补播的任务仍保留待确认编号。
-    # 默认目标就是这条专属会话本身(platform=web):走 send() 会同时触发系统推送
-    # (场景③"主动/cron",已覆盖 Mac/iPhone 等一切订阅了 Web Push 的设备)。
-    runner = getattr(push, "__self__", None)
-    if run_id and hasattr(runner, "adapters") and "web" not in runner.adapters:
-        raise RuntimeError("巡检通知通道不可用，保留未确认运行")
-    await push("web", conv, msg)
-    tgt = job.get("target") or {}  # 额外目标(如 web),可选,不填就只有上面这条
-    if tgt.get("platform") and tgt.get("chat_id") is not None:
-        await push(tgt["platform"], tgt["chat_id"], msg)
-    _record_agent_run(job, status, text + notice, metrics)
-    return job
+    event.job = job
+    if event.silent:
+        return
+    event.silent = quiet
+    event.text += notice
+    event.title = job.get("name") or event.title
+    _record_agent_run(job, status, event.text, event.metrics, to_main=not quiet)
+    target = job.get("target") or {}
+    if target.get("platform") and target.get("chat_id") is not None:
+        event.copies.append((target["platform"], str(target["chat_id"]), event.text))
 
 
 # 同错抑制(2026-10-03):Upwork/猎聘这类登录态或改版坏掉的任务,会一天几次推送一模一样的
@@ -592,21 +600,6 @@ def _record_agent_run(
         agents.record_run(job["agent_id"], job, status, text, metrics=metrics, to_main=to_main)
     except Exception as exc:  # noqa: BLE001 —— 复制失败不影响任务本身
         print(f"[cron] 结果复制到 Agent 主会话失败:{exc}", flush=True)
-
-
-async def _on_task_terminal(task: dict, push: PushFn) -> None:
-    """由 voice/notify.py 的 register_cron_terminal_hook 转发过来,Agent 任务
-    (origin=cron)跑完一轮后异步调用一次——它自己的会话轮次已经由
-    task_runner._run() 写好(真的 Agent 会话,带完整时间线),这里只回填
-    统计+推送,跟以前一样,只是现在是异步触发,不再是 _tick 同步等出来的。"""
-    text = task.get("result_summary") or task.get("result_full") or "(无输出)"
-    status = "error" if task["status"] == "failed" else "success"
-    from ..memory import agents
-
-    if task.get("job_id"):
-        await _push_job_result(task["job_id"], status, text, push,
-                               metrics=agents.metrics_from_task(task),
-                               session_key=bg_tasks.session_key(task["id"]))
 
 
 _SIGNAL_RE = re.compile(r"[ \t]*##CRON_SIGNAL:([01])##[ \t]*\n?")
@@ -926,15 +919,9 @@ def _schedule_after(expr: str, after: float) -> float:
 
 async def run_scheduler(push: PushFn) -> None:
     """常驻调度循环:心跳 + 到期任务 +(可选)定时反思/人脉扫描。启动时播种起步建议目录。"""
-    from ..voice import notify as voice_notify
+    from ..core import completion
 
-    # cron 任务(origin="cron")跑完一轮后,统一后台任务引擎经这个钩子把结果转发
-    # 回来做回填统计 + 推送(见 _on_task_terminal、voice/notify.py 的
-    # register_cron_terminal_hook 说明)。
-    async def _hook(task: dict) -> None:
-        await _on_task_terminal(task, push)
-
-    voice_notify.register_cron_terminal_hook(_hook)
+    completion.register_policy(_prepare_completion)
     global _push
     _push = push
     try:
