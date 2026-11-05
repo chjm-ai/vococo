@@ -12,7 +12,6 @@ from vococo.instance_config import local_path
 
 ROOT = Path(__file__).resolve().parents[1]
 VIDEO = ROOT / "vococo/plugin/skills/video-assets/scripts/manage.py"
-PPT = ROOT / "vococo/plugin/skills/editable-pptx/scripts/ppt_master_check.py"
 ROUTING = ROOT / "scripts/verify_session_routing.py"
 
 
@@ -20,11 +19,10 @@ ROUTING = ROOT / "scripts/verify_session_routing.py"
 def private(tmp_path, monkeypatch):
     path = tmp_path / "instance.json"
     values = {"version": 1, "video_assets": {"library_dir": str(tmp_path / "library")},
-              "ppt_master": {"install_dir": str(tmp_path / "ppt")},
               "session_routing": {"env_file": str(tmp_path / "test.env")}}
     path.write_text(json.dumps(values))
     monkeypatch.setenv("VOCOCO_INSTANCE_CONFIG", str(path))
-    for name in ("VOCOCO_VIDEO_ASSETS_DIR", "VOCOCO_PPT_MASTER_DIR", "VOCOCO_SESSION_ENV_FILE"):
+    for name in ("VOCOCO_VIDEO_ASSETS_DIR", "VOCOCO_SESSION_ENV_FILE"):
         monkeypatch.delenv(name, raising=False)
     return path, values
 
@@ -36,10 +34,6 @@ def test_paths_are_optional_until_tool_requires_them(private, tmp_path):
     video = runpy.run_path(str(VIDEO))
     with pytest.raises(ValueError, match="请配置"):
         video["configure"]()
-    ppt = runpy.run_path(str(PPT))
-    with pytest.raises(ValueError, match="请配置"):
-        ppt["configured_root"]()
-    assert ppt["main"]() == 1
     assert not (tmp_path / "library").exists()
 
 
@@ -51,7 +45,7 @@ def test_invalid_path_fails_before_creating_library(private, monkeypatch, value)
     video = runpy.run_path(str(VIDEO))
     with pytest.raises(ValueError, match="绝对路径"):
         video["configure"]()
-    assert not Path(private[1]["ppt_master"]["install_dir"]).exists()
+    assert not (path.parent / "library").exists()
     monkeypatch.setenv("VOCOCO_VIDEO_ASSETS_DIR", "")
     with pytest.raises(ValueError, match="绝对路径"):
         video["configure"]()
@@ -84,16 +78,6 @@ def test_video_reads_existing_index_and_writes_only_configured_library(private, 
     video["save_index"](old + [{"id": "v0010"}])
     assert json.loads(index.read_text())[0] == old[0]
     assert not (tmp_path / "Media").exists()
-
-
-def test_ppt_resolves_config_and_env_but_still_runs_verification(private, monkeypatch, tmp_path):
-    ppt = runpy.run_path(str(PPT))
-    assert ppt["configured_root"]() == Path(private[1]["ppt_master"]["install_dir"])
-    alternate = tmp_path / "other-ppt"
-    monkeypatch.setenv("VOCOCO_PPT_MASTER_DIR", str(alternate))
-    assert ppt["configured_root"]() == alternate
-    # 未安装不能因配置外置就绕过完整上游校验。
-    assert ppt["main"]() == 1
 
 
 def test_routing_loads_only_configured_fallback_without_importing_runtime(private, monkeypatch, tmp_path):
@@ -129,7 +113,7 @@ def test_routing_without_fallback_keeps_existing_process_auth(private, tmp_path)
 
 
 @pytest.mark.parametrize("script,args", [(VIDEO, ["--help"]), (VIDEO, ["list"]),
-                                         (PPT, []), (ROUTING, ["--help"])])
+                                         (ROUTING, ["--help"])])
 def test_cli_from_other_directory_needs_no_runtime_login(private, tmp_path, script, args):
     env = dict(os.environ)
     env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
@@ -149,7 +133,7 @@ def test_default_instance_path_belongs_to_install_and_does_not_import_auth(tmp_p
         {"version": 1, "video_assets": {"library_dir": str(tmp_path / "chosen")}}))
     assert local_path("video_assets", "library_dir", root=tmp_path, env="VOCOCO_VIDEO_ASSETS_DIR") == tmp_path / "chosen"
     code = ("import runpy, sys; "
-            f"runpy.run_path({str(VIDEO)!r}); runpy.run_path({str(PPT)!r}); runpy.run_path({str(ROUTING)!r}); "
+            f"runpy.run_path({str(VIDEO)!r}); runpy.run_path({str(ROUTING)!r}); "
             "assert 'vococo.config' not in sys.modules")
     subprocess.run([sys.executable, "-B", "-c", code], cwd=ROOT, check=True, capture_output=True, timeout=30)
 
