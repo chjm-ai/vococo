@@ -297,6 +297,124 @@ async def test_interrupted_worktree_initialization_recovers_without_losing_work(
     assert (binding.checkout / "draft.md").read_text() == "中断前的成果\n"
 
 
+def test_prepare_repository_tool_is_registered(monkeypatch):
+    from vococo.tools import builtin
+
+    registered = []
+    monkeypatch.setattr(builtin, "create_sdk_mcp_server",
+                        lambda name, tools: registered.extend(tools) or {})
+    builtin.build_mcp_servers()
+    assert builtin.prepare_repository in registered
+
+
+@pytest.mark.anyio
+async def test_prepare_tool_initializes_only_requested_repository(isolated, monkeypatch):
+    from vococo.tools import builtin
+
+    owner, source, key = owner_with_repository(isolated)
+    other = repository(isolated / "other")
+    agents.update(owner["id"], repositories=[str(source), str(other)])
+    policy = execution.policy_for_session(key)
+    monkeypatch.setattr(danger, "current_session_key", lambda: key)
+    result = await builtin.prepare_repository.handler({"path": str(source)})
+    assert not result.get("isError")
+    assert str(policy.repositories[0].checkout) in result["content"][0]["text"]
+    assert (policy.repositories[0].checkout / "article.md").read_text() == "原文\n"
+    assert not policy.repositories[1].checkout.exists()
+    assert not (await builtin.prepare_repository.handler({"path": str(source)})).get("isError")
+    agents.update(owner["id"], repositories=[])
+    assert (await builtin.prepare_repository.handler({"path": str(source)}))["isError"]
+    assert policy.repositories[0].checkout.exists()
+
+
+@pytest.mark.anyio
+async def test_prepare_tool_rejects_missing_session_or_unbound_path(isolated, monkeypatch):
+    from vococo.tools import builtin
+
+    _, source, key = owner_with_repository(isolated)
+    other = repository(isolated / "unbound")
+    monkeypatch.setattr(danger, "current_session_key", lambda: None)
+    assert (await builtin.prepare_repository.handler({"path": str(source)}))["isError"]
+    monkeypatch.setattr(danger, "current_session_key", lambda: key)
+    assert (await builtin.prepare_repository.handler({"path": str(other)}))["isError"]
+    assert (await builtin.prepare_repository.handler({"path": ""}))["isError"]
+    assert not (config.AGENT_WORKSPACES_DIR / ".repositories").exists()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("locked", [True, False])
+async def test_timeout_cleanup_preserves_original_error_and_incomplete_work(isolated, monkeypatch, locked):
+    from vococo.core import business_repositories
+
+    _, source, key = owner_with_repository(isolated)
+    binding = execution.policy_for_session(key).repositories[0]
+    real_git = business_repositories._git
+
+    def interrupt(cwd, *args):
+        if args[:2] == ("worktree", "add"):
+            real_git(cwd, *args[:2], "--no-checkout", *args[2:])
+            staging = Path(args[-2])
+            if locked:
+                real_git(cwd, "worktree", "lock", "--reason", "initializing", str(staging))
+            (staging / "draft.md").write_text("必须保留\n")
+            raise subprocess.TimeoutExpired("git worktree add", 300)
+        return real_git(cwd, *args)
+
+    monkeypatch.setattr(business_repositories, "_git", interrupt)
+    with pytest.raises(subprocess.TimeoutExpired):
+        await execution.prepare_repositories(execution.policy_for_session(key))
+    monkeypatch.setattr(business_repositories, "_git", real_git)
+    staging, = binding.checkout.parent.glob(".initializing-*")
+    with pytest.raises(ValueError, match="初始化未完成"):
+        await execution.prepare_repositories(execution.policy_for_session(key))
+    assert (staging / "draft.md").read_text() == "必须保留\n"
+    assert not binding.checkout.exists()
+    assert git(source, "status", "--porcelain") == ""
+
+
+@pytest.mark.anyio
+async def test_failed_move_preserves_ignored_work_and_can_resume(isolated, monkeypatch):
+    from vococo.core import business_repositories
+
+    _, source, key = owner_with_repository(isolated)
+    policy = execution.policy_for_session(key)
+    excludes = isolated / "ignore"
+    excludes.write_text("draft.md\n")
+    git(source, "config", "core.excludesfile", str(excludes))
+    real_git = business_repositories._git
+
+    def fail(cwd, *args):
+        if args[:2] == ("worktree", "move"):
+            staging = Path(args[2])
+            (staging / "draft.md").write_text("不能丢弃\n")
+            raise ValueError("模拟移动失败")
+        return real_git(cwd, *args)
+
+    monkeypatch.setattr(business_repositories, "_git", fail)
+    with pytest.raises(ValueError, match="模拟移动失败"):
+        await execution.prepare_repositories(policy)
+    staging, = policy.repositories[0].checkout.parent.glob(".initializing-*")
+    assert (staging / "draft.md").read_text() == "不能丢弃\n"
+    monkeypatch.setattr(business_repositories, "_git", real_git)
+    await execution.prepare_repositories(policy)
+    assert (policy.repositories[0].checkout / "draft.md").read_text() == "不能丢弃\n"
+
+
+def test_worktree_checkout_has_longer_timeout_than_metadata(isolated, monkeypatch):
+    from vococo.core import business_repositories
+
+    timeouts = []
+
+    def run(*args, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(business_repositories.subprocess, "run", run)
+    business_repositories._git(isolated, "worktree", "add", "checkout", "HEAD")
+    business_repositories._git(isolated, "worktree", "list", "--porcelain")
+    assert timeouts == [300, 60]
+
+
 @pytest.mark.anyio
 async def test_foreign_worktree_is_rejected_without_removing_work(isolated):
     _, source, key = owner_with_repository(isolated)

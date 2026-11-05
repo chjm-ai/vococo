@@ -63,6 +63,32 @@ def _library_result(text: str, receipt: dict) -> dict:
     return _ok(text + "\n" + json.dumps(receipt, ensure_ascii=False))
 
 @tool(
+    "prepare_repository",
+    "按需创建或复用当前会话的关联仓库副本，仅准备 path 指定的原仓库。"
+    "普通聊天、读取资料、运行已有技能不需要调用；修改、构建或提交关联仓库前先调用，"
+    "成功后使用返回的副本路径。保留原仓库未提交改动，不拉远端、不推送。"
+    "path 必须是当前 Agent 关联仓库的原目录绝对路径。失败时不得使用未完成副本。",
+    {"path": str},
+)
+async def prepare_repository(args: dict) -> dict:
+    import subprocess
+    from ..core import business_repositories
+    from . import danger
+
+    try:
+        binding = await asyncio.to_thread(
+            business_repositories.prepare_for_session,
+            danger.current_session_key(), (args.get("path") or "").strip(),
+        )
+    except subprocess.TimeoutExpired:
+        return {**_ok("仓库副本准备超时，未报告为可用；原始错误未被清理失败覆盖。"
+                      "如有未完成的初始化目录将保留现场，请稍后重试或新建会话。"), "isError": True}
+    except (OSError, ValueError) as exc:
+        return {**_ok(f"仓库副本未就绪：{exc}"), "isError": True}
+    return _ok(f"仓库副本已就绪：{binding.checkout}\n原目录：{binding.source}\n分支：{binding.branch}")
+
+
+@tool(
     "recall_past",
     "检索跨会话的历史对话记录(当前会话之外、可能已被 /new 归档的旧对话)。"
     "当用户提到「上次/之前我们聊过/我记得说过」之类、而当前上下文里找不到时,用它召回。"
@@ -2099,6 +2125,7 @@ def build_mcp_servers(*, subagent_tool=None, delegation_tools=(), session_tools=
             "vococo",
             tools=[
                 recall_past,
+                prepare_repository,
                 lark_document,
                 save_memory,
                 note_memory,

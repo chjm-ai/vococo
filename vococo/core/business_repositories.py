@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import fcntl
-import shutil
+import logging
 import subprocess
 import tempfile
 from dataclasses import dataclass, replace
@@ -68,8 +68,9 @@ def copies_for_session(agent: dict, session_key: str) -> tuple[RepositoryCopy, .
 
 
 def _git(cwd: Path, *args: str) -> str:
+    timeout = 300 if args[:2] == ("worktree", "add") else 60
     result = subprocess.run(
-        ["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=60,
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=timeout,
     )
     if result.returncode:
         # 不把可能含远程凭据的 Git stderr 带进提示词或接口回执。
@@ -96,6 +97,13 @@ def _verify_copy(binding: RepositoryCopy) -> None:
             raise ValueError(f"仓库副本初始化未完成或来源不匹配：{checkout}")
         return
     git_dir = _git_path(checkout, "--git-dir")
+    if ((checkout.name.startswith(".initializing-") and (git_dir / "locked").exists())
+            or (not (git_dir / "index").exists()
+                and _git(checkout, "rev-parse", "--revs-only", "HEAD"))):
+        raise ValueError(
+            f"仓库副本上次初始化未完成，现场已保留，未解锁或覆盖：{checkout}。"
+            "普通聊天无需该副本；需要修改代码时请新建会话重试。"
+        )
     if (common != _git_path(binding.source, "--git-common-dir")
             or git_dir.parent != common / "worktrees"
             or not (git_dir / "gitdir").is_file()
@@ -150,12 +158,41 @@ def _create_worktree(binding: RepositoryCopy) -> None:
         _git(binding.source, "worktree", "add", *args)
         _git(binding.source, "worktree", "move", str(staging), str(binding.checkout))
     finally:
-        if staging.exists():
-            # 只清理本次新建的临时目录和登记，绝不删除已暴露给会话的工作成果。
-            if (staging / ".git").is_file():
-                _git(binding.source, "worktree", "remove", "--force", str(staging))
-            else:
-                shutil.rmtree(staging)
+        _cleanup_staging(binding, staging)
+
+
+def _cleanup_staging(binding: RepositoryCopy, staging: Path) -> None:
+    if not staging.exists():
+        return
+    try:
+        # 只清理已完整检出且无改动的本次临时副本；不强解锁或删除半成品。
+        if (staging / ".git").is_file():
+            _verify_copy(replace(binding, checkout=staging))
+            if _git(staging, "status", "--porcelain", "--untracked-files=all", "--ignored=matching"):
+                logging.getLogger(__name__).warning("仓库临时副本含改动，现场保留：%s", staging)
+                return
+            _git(binding.source, "worktree", "remove", str(staging))
+        else:
+            staging.rmdir()
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        logging.getLogger(__name__).warning("仓库副本清理未完成，现场保留：%s", staging, exc_info=True)
+
+
+def prepare_for_session(session_key: str | None, source: str) -> RepositoryCopy:
+    from ..memory import agents
+    from .repository_locks import lease, session_digest
+
+    owner = agents.agent_for_session(session_key) if session_key else None
+    if not owner or not source.strip():
+        raise ValueError("需要有效会话及关联仓库的原目录路径")
+    requested = Path(source).expanduser().resolve()
+    with lease(owner["id"], session_digest(session_key)):
+        binding = next((item for item in copies_for_session(owner, session_key)
+                        if item.source == requested), None)
+        if binding is None:
+            raise ValueError("该目录不是当前 Agent 的关联仓库；未创建或修改任何副本")
+        _prepare_copy(binding)
+        return binding
 
 
 async def prepare_repositories(policy) -> None:
@@ -177,7 +214,10 @@ def prompt_note(copies: tuple[RepositoryCopy, ...]) -> str:
     rows = "\n".join(f"- 原目录：{x.source} → 会话副本：{x.checkout}（分支 {x.branch}）" for x in copies)
     return (
         "\n## 关联目录中的 Git 仓库\n" + rows + "\n" + guidance
-        + "修改、构建及本地提交默认在会话副本进行，这不是原目录只读的权限限制。"
+        + "这里只列出副本位置，不代表已经创建。普通聊天、读取资料、运行已有技能无需准备副本。"
+        "需要修改、构建或提交关联仓库时，先调用 prepare_repository(path=原目录)，"
+        "成功后使用返回的副本路径；失败不得使用未完成的目录。"
+        "修改、构建及本地提交默认在会话副本进行，这不是原目录只读的权限限制。"
         "新工作目录共享本地 Git 历史和远程配置，只检出已提交文件，不复制历史、不带原目录未提交或忽略的文件（如 .env、node_modules），也不会自动同步远端；已有完整副本原地保留。"
         "缺少依赖或部署配置先说明，不得猜测或外发凭据。"
     )

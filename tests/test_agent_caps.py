@@ -43,6 +43,36 @@ def test_runtime_for_session_carries_tools(env):
     assert agents.runtime_for_session("web:abc")["disallowed_tools"] is None
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["workspace", "project"])
+async def test_chat_does_not_initialize_linked_repositories(clients, env, monkeypatch, mode):
+    import subprocess
+    from vococo.core import business_repositories
+
+    source = env / "linked"
+    source.mkdir()
+    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    owner = agents.by_project_hash(projects.project_hash(str(env)))
+    agents.update(owner["id"], repositories=[str(source)])
+    meta = agents._read_meta(owner["id"])
+    meta["execution_mode"] = mode
+    agents._write_meta(owner["id"], meta)
+    key = agents.main_session_key(agents.get(owner["id"]))
+
+    def unexpected_prepare(*_args):
+        pytest.fail("普通聊天不能等待关联仓库检出")
+
+    async def prompt(*_args, **_kwargs):
+        return {"append": "p"}
+
+    monkeypatch.setattr(agent, "_load_system_prompt", prompt)
+    monkeypatch.setattr(business_repositories, "_prepare_copy", unexpected_prepare)
+    await _turn(key)
+    assert clients
+    assert "prepare_repository" in clients[0].options.system_prompt["append"]
+    assert not business_repositories.copies_for_session(agents.get(owner["id"]), key)[0].checkout.exists()
+
+
 # ── stream_turn 把 Agent 运行设定落到 ClaudeAgentOptions 上 ─────────────────────────
 class _Client:
     def __init__(self, options, registry):
