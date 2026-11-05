@@ -94,7 +94,6 @@ Bash 与同步子代理使用正常系统网络和命令，不再注入业务沙
 | `xhs_health` | `crawl_dir`：爬虫项目绝对路径；`cron_jobs_path`：正式任务 JSON 绝对路径；`publish_job_id`：发布任务编号；`publish_log_path`：远程发布日志位置（仅用于提示，不读取或执行） |
 | `cron_job_defaults` | 按现有任务编号补入 `failure_policy`、`track_script_runs`；仅补缺失字段，不覆盖已有策略、不创建任务 |
 | `video_assets` | `library_dir`：视频素材库绝对路径；`VOCOCO_VIDEO_ASSETS_DIR` 可覆盖 |
-| `ppt_master` | `install_dir`：完整 PPT Master 安装绝对路径；`VOCOCO_PPT_MASTER_DIR` 可覆盖，仍需通过原有完整源码校验 |
 | `session_routing` | `env_file`：开发验收复用的认证文件绝对路径；`VOCOCO_SESSION_ENV_FILE` 可覆盖，仅在本安装没有 `.env` 时使用 |
 
 旧安装升级前，从**改动前的提交**提取原值，只新建权限为 `0600` 的文件，不覆盖、不联网：
@@ -228,27 +227,13 @@ Web 入口:`serve` 时设 `WEB_ENABLED=1` 即在同进程起网页服务(默认�
 模型传输与外部 MCP 使用本地夹具，实际经过 gateway、执行器、`stream_turn`、SDK 钩子、
 内置 MCP 和临时 SQLite；不调用付费模型、不操作生产数据。
 
-## 可编辑 PowerPoint 与私有文件成果
+## 私有文件成果
 
-- “做一份可编辑 PPT / 修改这份 PPT”触发内置 `editable-pptx` 适配入口，默认加载成熟的 **PPT Master**，由上游负责设计、原生 PPTX 生成和编辑；vococo 只补权限、真实 PPT 渲染与私有交付，不再自建默认设计流程。
-- PPT Master（MIT）独立完整安装在 `~/Desktop/Repos/AI_Skills/ppt-master/`，也可用 `VOCOCO_PPT_MASTER_DIR` 指定；当前核验 6.7.3 / `78759bf62e9a1ef43e926ff9e50afa4cfe9a63cb`，不捆入 vococo wheel。缺安装/校验失败会明确停止，不静默回退。安装边界、路由和可选依赖见 `vococo/plugin/skills/editable-pptx/references/ppt-master.md`。
-- 已移除自建生成器、原生编辑工作台及旧 JSON 协议，不提供旧稿 JSON 兼容入口。保留锁定的 python-pptx，供上游及文件验收使用。
-- 不含网页内 PPT 编辑器；任意第三方动画/SmartArt/扩展不保证无损，先在副本验证。解释器解析见上面的接入文档。
-- 维护者安装与最终文件检查（下面命令在 vococo 源码安装目录运行；业务任务使用安装环境解释器和脚本的绝对路径，cwd 保持在用户工作区）：
-
-  ```sh
-  uv sync --extra dev  # 包含锁定的 python-pptx
-  uv run python vococo/plugin/skills/editable-pptx/scripts/ppt_master_check.py
-  uv run python vococo/plugin/skills/editable-pptx/scripts/check.py 演示-v2.pptx --render 预览-v2
-  ```
-
-  适配层校验/渲染不联网、不自动装包、不覆盖旧预览；上游每次导出须指定新的版本路径，不覆盖原稿。上游联网搜图、生图或 TTS 须另获授权，不代表整个上游流程天然离线。
-  实际预览需要本机 LibreOffice + Poppler（pdftoppm/pdfinfo），核对真实页数并输出逐页 PNG；AI 查看图片、修正后再渲染。输入须在当前工作区；外部获准成果目录可作为 cwd 执行。缺字体/渲染器时明确报告未验证 Office 排版，不把结构检查或另画 HTML 当视觉验收。
+- PPT Master 及内置 `editable-pptx` 适配入口已移除，不再提供这套 PPT 制作流程；已有 PPT 文件不受影响，仍可通过 `send_file` 交付。
 - Web 由 `send_file` 交付持久下载卡片：当前工作目录/业务成果目录/当前 Agent 显式可写关联目录内文件、单个 ≤64MB、私有快照、会话绑定、认证下载；只读关联不授予交付权限，可写关联也不开放运行数据、隐藏或凭据目录。拒绝越界、软硬链、敏感文件/不安全压缩包，不公开发布、不进入图片作品库。快照存 SQLite，删除回合同步删除记录，但数据库体积不会自动缩小。
 - 文件交付不依赖 PPT：`send_file` 与 `show_html` 共用受控读取、私有附件存储、会话生命周期和下载卡片。同一轮相同文件名/字节复用快照；HTML 下载保留原字节（含 BOM/换行），不是净化后的预览副本。
 - ≤200KB 的有效 UTF-8 HTML 附件附带静态沙箱预览，禁止脚本和外链；更大或非 UTF-8 HTML 通过 `send_file` 时只提供下载。`show_html` 展示无需单独审批（含目录外文件），仍严格拒绝不符合预览条件的文件；历史链接点击仍限会话工作目录，不扩大普通附件来源权限。旧 HTML 历史记录继续读取，无需改写生产数据；新 HTML 只在附件表保存一份原文件。
 - CLI/TUI 暂无文件卡片；需明确本机文件位置。PowerPoint/WPS 的实际打开和编辑仍需用户验收。
-- 适配与验收说明见 `vococo/plugin/skills/editable-pptx/`；PPT 定向回归 `uv run --extra dev python -m pytest tests/test_editable_pptx.py tests/test_pptx_render.py tests/test_ppt_master_integration.py -q`。
 
 ## 历史研究
 
