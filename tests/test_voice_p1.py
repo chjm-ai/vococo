@@ -922,7 +922,7 @@ async def test_notify_broadcasts_sse_event_when_online(voice_db, monkeypatch):
 
     q = notify.subscribe()
     try:
-        await notify.on_task_terminal(t["id"])
+        await task_events.emit_terminal(t["id"])
         await asyncio.sleep(0.05)  # 等后台补发协程(合成即回)跑完
         first_event, first = q.get_nowait()
         second_event, second = q.get_nowait()
@@ -951,7 +951,7 @@ async def test_notify_terminal_marks_pending_review_for_done_not_cancelled(voice
     session_store.append(tasks.session_key(done_task["id"]), "p", "结果")  # 真实任务必有 turn 行
     tasks.set_status(done_task["id"], "running")
     tasks.finish(done_task["id"], "done", "结果", "摘要")
-    await notify.on_task_terminal(done_task["id"])
+    await task_events.emit_terminal(done_task["id"])
     rows = {r["key"]: r for r in session_store.list_sessions("")}
     assert rows[tasks.session_key(done_task["id"])]["pending_review"] is True
 
@@ -959,7 +959,7 @@ async def test_notify_terminal_marks_pending_review_for_done_not_cancelled(voice
     session_store.append(tasks.session_key(cancelled_task["id"]), "p", "(任务已取消)")
     tasks.set_status(cancelled_task["id"], "running")
     tasks.finish(cancelled_task["id"], "cancelled", "", "已取消")
-    await notify.on_task_terminal(cancelled_task["id"])
+    await task_events.emit_terminal(cancelled_task["id"])
     rows = {r["key"]: r for r in session_store.list_sessions("")}
     assert rows[tasks.session_key(cancelled_task["id"])]["pending_review"] is False
 
@@ -979,7 +979,7 @@ async def test_notify_synthesizes_tts_even_when_omni_enabled(voice_db, monkeypat
 
     q = notify.subscribe()
     try:
-        await notify.on_task_terminal(t["id"])
+        await task_events.emit_terminal(t["id"])
         await asyncio.sleep(0.05)  # 等后台补发协程(合成即回)跑完
         events = []
         while not q.empty():
@@ -1023,7 +1023,7 @@ async def test_notify_broadcast_not_blocked_by_slow_tts(voice_db, monkeypatch):
     q = notify.subscribe()
     try:
         # on_task_terminal 本身不该被合成拖住:0.3s 内返回(慢合成才跑一半)
-        await asyncio.wait_for(notify.on_task_terminal(t["id"]), timeout=0.3)
+        await asyncio.wait_for(task_events.emit_terminal(t["id"]), timeout=0.3)
         # 广播和 Web Push 必须在合成完成前就绪
         first_event, first = q.get_nowait()
         assert first_event == "task_done"
@@ -1061,19 +1061,19 @@ async def test_notify_online_also_fires_web_push_fallback(voice_db, monkeypatch)
 
     q = notify.subscribe()
     try:
-        await notify.on_task_terminal(done_task["id"])
+        await task_events.emit_terminal(done_task["id"])
         event, _ = q.get_nowait()
     finally:
         notify.unsubscribe(q)
 
     assert event == "task_done"  # SSE 播报照发
-    assert calls and calls[-1]["title"] == "任务完成:完成的活"  # 兜底推送也没被吞
+    assert calls and calls[-1]["title"] == "完成:完成的活"  # 兜底推送也没被吞
 
     cancelled_task = tasks.create("取消的活", "p")
     tasks.set_status(cancelled_task["id"], "running")
     tasks.finish(cancelled_task["id"], "cancelled", "", "已取消")
-    await notify.on_task_terminal(cancelled_task["id"])
-    assert calls[-1]["title"] == "任务取消:取消的活"
+    await task_events.emit_terminal(cancelled_task["id"])
+    assert calls[-1]["title"] == "已取消:取消的活"
 
 
 @pytest.mark.anyio
@@ -1148,10 +1148,10 @@ async def test_notify_falls_back_to_web_push_when_offline(voice_db, monkeypatch)
     monkeypatch.setattr(web_push.PUSH, "notify", fake_notify)
     assert notify.is_online() is False
 
-    await notify.on_task_terminal(t["id"])
+    await task_events.emit_terminal(t["id"])
 
     assert len(calls) == 1
-    assert calls[0]["title"] == "任务失败:标题"
+    assert calls[0]["title"] == "失败:标题"
     assert calls[0]["body"] == "出错了"
 
 

@@ -172,8 +172,8 @@ class PushManager:
             self._save()
 
     # ── 发送 ─────────────────────────────────────────────────────────────
-    def _send_one(self, sub: dict, payload: str) -> str | None:
-        """阻塞发送单个订阅。返回该 endpoint 若已失效(需清理),否则 None。"""
+    def _send_one(self, sub: dict, payload: str) -> tuple[bool, str | None]:
+        """返回网关是否接受，以及需要清理的失效订阅。"""
         c = _cfg()
         try:
             webpush(
@@ -187,17 +187,17 @@ class PushManager:
                 # 同步等结果的请求),客户端最终看到"Load failed"——限时让它快速失败,别的设备照常收到。
                 timeout=10,
             )
-            return None
+            return True, None
         except WebPushException as e:  # type: ignore
             status = getattr(getattr(e, "response", None), "status_code", None)
             # 404/410 = 订阅已注销(用户删了 PWA / 换设备),清掉
             if status in (404, 410):
-                return sub.get("endpoint")
+                return False, sub.get("endpoint")
             print(f"[推送] 发送失败 HTTP {status}:{sub.get('ua', '')[:40]} {e}"[:300], flush=True)
-            return None
+            return False, None
         except Exception as e:  # noqa: BLE001
             print(f"[推送] 发送出错:{sub.get('ua', '')[:40]} {e}"[:300], flush=True)
-            return None
+            return False, None
 
     async def notify(
         self,
@@ -242,11 +242,11 @@ class PushManager:
         results = await asyncio.gather(
             *(loop.run_in_executor(None, self._send_one, s, payload) for s in subs)
         )
-        dead = {ep for ep in results if ep}
+        dead = {endpoint for _, endpoint in results if endpoint}
         if dead:
             print(f"[推送] {len(dead)} 个订阅已失效(404/410),已移除;剩 {len(subs) - len(dead)} 个", flush=True)
         self._prune(dead)
-        return len(subs) - len(dead)
+        return sum(accepted for accepted, _ in results)
 
 
 # 进程内单例:web.py / 调度器都从这里拿

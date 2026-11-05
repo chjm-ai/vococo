@@ -158,9 +158,8 @@ class _WebSink(Sink):
     这才是 Claude Code 那种"说一句、跑个工具、接着说"的画面。
     """
 
-    def __init__(self, adapter: "WebAdapter", conv: str, *, notify_done: bool = True):
+    def __init__(self, adapter: "WebAdapter", conv: str):
         super().__init__()
-        self._notify_done = notify_done
         self.a = adapter
         self.conv = conv
         self._seg = 0  # 当前文字段序号
@@ -342,33 +341,6 @@ class _WebSink(Sink):
                 "input_fresh_total": meta.get("input_fresh_total", 0),
             }
         )
-        if not self._notify_done:
-            return  # 后台任务已有独立的通知及未读处理，不能重复推送。
-        from ...core import tasks
-
-        task_id = tasks.task_id_from_session_key(key)
-        task = tasks.get(task_id) if task_id else None
-        if task and task.get("origin") == "cron":
-            from ...cron import scheduler
-
-            # 已删除或转移的规则不会推送旧会话，真人续聊仍需普通完成提醒。
-            task = task if any(job.get("id") == task.get("job_id") and job.get("conv") == key
-                                for job in scheduler.load_jobs()) else None
-        if task:
-            return  # 任务会话的真人续聊也已走终态通知，只保留这一条推送。
-        # 场景①「回复完成」:人不在页面时弹系统通知(前台由 SW 自行抑制)
-        title = "主会话" if self.conv == "main" else (
-            session_store.get_title(key) or config.PERSONA_NAME
-        )
-        self.a._push_notify(
-            title=title,
-            body=reply.text or "回复完成",
-            conv=self.conv,
-            kind="done",
-            enabled=config.PUSH_ON_DONE,
-        )
-        # 该会话已有新完成内容,标记为待查看(用户打开后会清零)。
-        session_store.set_pending_review(key, True)
 
 
 def _conv_id_for_key(key: str) -> str:
@@ -666,7 +638,7 @@ class WebAdapter:
         from ...core import task_events
         task_events.register_main_event_bridge(self._emit)
         task_events.register_stream_sink_factory(
-            lambda key: _WebSink(self, _conv_id_for_key(key), notify_done=False)
+            lambda key: _WebSink(self, _conv_id_for_key(key))
         )
 
     def set_cancel_callback(self, cb: Callable[[str], bool]) -> None:
@@ -809,12 +781,14 @@ class WebAdapter:
             pass  # 没有运行中的事件循环(理论上不会走到),放弃这条通知
 
     # ── Adapter 协议 ─────────────────────────────────────────────────────
-    async def send(self, chat_id: int | str, text: str) -> None:
-        """一条完整消息(命令回复 / cron 主动推送 / 报错)→ 作为一条 assistant 气泡推给前端。"""
+    async def send(self, chat_id: int | str, text: str, *, notify: bool = True) -> None:
+        """主动消息可推送；执行结果副本只展示，完成通知由统一入口负责。"""
         self._emit({"conv": str(chat_id), "type": "message", "text": text})
         # 该会话收到一条完整消息,标记为待查看。
         session_store.set_pending_review(config.resolve_session_key("web", str(chat_id)), True)
-        # 场景③「主动/cron」与 场景④「出错」共用这条出口,靠 ⚠️ 前缀区分
+        if not notify:
+            return
+        # 主动消息与工具报错共用这条出口，执行完成不再走这里。
         is_err = text.lstrip().startswith("⚠️")
         self._push_notify(
             title="⚠️ 出错了" if is_err else config.PERSONA_NAME,

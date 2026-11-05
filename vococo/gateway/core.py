@@ -358,7 +358,7 @@ async def _converse(
                 shared.record_usage(shared.reply)
             # 通知渲染层本轮已被人为取消(Web 端可据此清理进行中快照,防止刷新后重放旧内容)
             if not compact:
-                await _finish_task_turn(task_id, "cancelled", partial)
+                await _finish_execution(session_key, task_id, "cancelled", partial, turn_id)
             await sink.cancelled()
         raise  # 原样抛出;cwd 由 finally 统一 reset
     except Exception as exc:
@@ -405,29 +405,29 @@ async def _converse(
         session_store.set_last_error(session_key, bool(reply.is_error))
         shared.record_usage(reply)
         if not compact:
-            await _finish_task_turn(task_id, "failed" if reply.is_error else "done", reply.text)
+            await _finish_execution(session_key, task_id, "failed" if reply.is_error else "done", reply.text, turn_id)
         await sink.done(reply, turn_id)
     else:
         session_store.cancel_turn(turn_id, session_key=session_key)
         if not compact:
-            await _finish_task_turn(task_id, "cancelled", "")
+            await _finish_execution(session_key, task_id, "cancelled", "", turn_id)
     return reply
 
 
-async def _finish_task_turn(task_id: str | None, status: str, text: str) -> None:
-    """真人续聊和后台执行共用任务终态通知，来源关系不参与执行判定。"""
-    from ..core import task_events, task_runner, tasks
+async def _finish_execution(session_key: str, task_id: str | None, status: str,
+                            text: str, turn_id: int) -> None:
+    """人工输入的一轮统一收尾；旧的派发/定时关联不改变本轮通知策略。"""
+    import anyio
+    from ..core import completion, task_events, task_runner, tasks
 
-    if not task_id or not tasks.get(task_id):
-        return
-    clean, summary = task_runner._split_summary_tag(text)
-    if tasks.finish(task_id, status, clean, summary or task_runner._summarize(clean)):
-        import anyio
-
-        with anyio.CancelScope(shield=True):
-            # 前台这一轮由调用方的 sink 收尾，任务通知不能再发一条 done。
-            await task_events.emit_terminal(task_id, emit_session=False)
-            task_runner._maybe_start_next()
+    with anyio.CancelScope(shield=True):
+        if task_id and tasks.get(task_id):
+            clean, summary = task_runner._split_summary_tag(text)
+            if tasks.finish(task_id, status, clean, summary or task_runner._summarize(clean)):
+                # 前台持有本轮收尾权；终态订阅者只刷新状态，不再重复完成本轮。
+                await task_events.emit_terminal(task_id, emit_session=False)
+                task_runner._maybe_start_next()
+        await completion.publish(completion.Completion(session_key, status, text, turn_id))
 
 
 # === 命令注册表(单一来源:TG 菜单 setMyCommands 和 /help 都从这生成)===

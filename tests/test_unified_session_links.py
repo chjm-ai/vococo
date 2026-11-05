@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from vococo import config
-from vococo.core import delegation, task_events, task_runner, tasks
+from vococo.core import completion, delegation, task_events, task_runner, tasks
+from vococo.gateway.adapters.web_push import PUSH
 from vococo.cron import scheduler
 from vococo.gateway import brain_routes, library_api, notice_actions, task_routes
 from vococo.memory import agents, session_store
@@ -26,6 +27,9 @@ def links(isolated, monkeypatch):
     monkeypatch.setattr(tasks, "_DB", None)
     monkeypatch.setattr(config, "CRON_JOBS_PATH", isolated / "cron.json")
     monkeypatch.setattr(task_runner, "_maybe_start_next", Mock())
+    monkeypatch.setattr(completion, "_policy", scheduler._prepare_completion)
+    monkeypatch.setattr(completion, "_platform_push", None)
+    monkeypatch.setattr(PUSH, "notify", AsyncMock(return_value=1))
     for aid in ("abcdef1234", "1234abcdef"):
         workdir = isolated / aid
         workdir.mkdir()
@@ -87,10 +91,9 @@ async def test_terminal_updates_job_not_execution_id(links):
     created = job()
     task = tasks.create("巡检", "检查", origin="cron", job_id=created["id"],
                         session_key=created["conv"], agent_id="abcdef1234")
-    push = AsyncMock()
-    await scheduler._on_task_terminal({**task, "status": "done", "result_summary": "成功"}, push)
+    await completion.publish(completion.from_task({**task, "status": "done", "result_summary": "成功"}))
     assert scheduler.load_jobs()[0]["last_status"] == "success"
-    assert push.call_args.args[1] == created["conv"]
+    assert PUSH.notify.call_args.kwargs["conv"] == created["conv"]
 
 
 @pytest.mark.anyio
@@ -174,7 +177,8 @@ async def test_old_execution_cannot_notify_new_owner_after_transfer(links, monke
     push = AsyncMock()
     record = Mock()
     monkeypatch.setattr(scheduler, "_record_agent_run", record)
-    await scheduler._on_task_terminal({**task, "status": "done", "result_summary": "旧结果"}, push)
+    await completion.publish(completion.from_task({**task, "status": "done", "result_summary": "旧结果"}))
+    PUSH.notify.assert_not_awaited()
     assert scheduler.load_jobs()[0] == updated
     push.assert_not_awaited()
     record.assert_not_called()
@@ -269,8 +273,8 @@ async def test_terminal_notification_sends_mapped_conversation(links, monkeypatc
     events, push = [], AsyncMock()
     monkeypatch.setattr(notify, "_broadcast", lambda event, payload: events.append(payload))
     monkeypatch.setattr(PUSH, "notify", push)
-    monkeypatch.setattr(notify, "_platform_push", None)
-    await notify.on_task_terminal(task["id"])
+    monkeypatch.setattr(task_events, "_terminal_handlers", [notify._terminal_event_handler])
+    await task_events.emit_terminal(task["id"])
     assert events[0]["task_id"] == task["id"]
     assert events[0]["conversation_id"] == task["session_key"]
     assert events[0]["job_id"] is None

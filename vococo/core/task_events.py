@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..gateway.core import Sink
     from .agent import AgentReply
+    from .completion import Completion
 
 from . import tasks
 
@@ -152,7 +153,7 @@ async def _finish_stream(task: dict, sink, reply, turn_id: int | None) -> None:
 async def emit_terminal(
     task_id: str, *, sink: Sink | None = None,
     reply: AgentReply | None = None, turn_id: int | None = None,
-    emit_session: bool = True,
+    emit_session: bool = True, completion_event: Completion | None = None,
 ) -> None:
     """通知所有终态处理器,处理器失败不阻塞其他处理器。"""
     # 任务进入终态即解除 start 去重:同一任务被续接/追问重新激活(running)时,
@@ -173,3 +174,7 @@ async def emit_terminal(
             await handler(task_id)
         except Exception:
             continue
+    if emit_session and task and task["status"] in tasks.TERMINAL_STATUSES:
+        from . import completion
+
+        await completion.publish(completion_event or completion.from_task(task, turn_id))

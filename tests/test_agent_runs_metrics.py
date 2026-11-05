@@ -129,6 +129,9 @@ async def test_goal_review_trigger_gets_stats_and_cron_metrics(env, monkeypatch)
     monkeypatch.setattr(notify, "on_task_terminal", _noop)
     agents.write_doc(env["id"], "GOAL.md", "# 目标\n\n每月 20 个询盘\n")
     job = agents.ensure_goal_review(env["id"])
+    from vococo.core import completion
+
+    monkeypatch.setattr(completion, "_policy", scheduler._prepare_completion)
     scheduler._run_job(scheduler.load_jobs()[0], _noop)
     task = bg_tasks.task_for_job(job["id"])
     assert task["id"] != job["id"]
@@ -137,8 +140,7 @@ async def test_goal_review_trigger_gets_stats_and_cron_metrics(env, monkeypatch)
     assert seen[0]["prompt"].startswith("【运行统计·近 7 天】")
     assert "【目标复盘】" in seen[0]["prompt"]
 
-    # cron 终态钩子把任务行上的指标带进运行记录
-    await scheduler._on_task_terminal(bg_tasks.get(task["id"]), _noop)
+    # 统一完成入口在实际执行结束时，把本轮指标交给调度统计。
     r = agents.recent_runs(env["id"])[0]
     assert (r["job_name"], r["tokens"], r["tool_calls"]) == ("目标复盘", 12345, 2)
     assert r["turn_id"] is not None  # 定时任务照旧复制进主会话

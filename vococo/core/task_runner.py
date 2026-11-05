@@ -128,8 +128,12 @@ async def foreground_execution(task_id: str | None, *, interrupt: bool = True):
                 row = tasks.get(task_id)
                 if row and row["status"] == "running":
                     tasks.finish(task_id, "cancelled" if scope.cancel_called else "failed", "", "前台轮次中断")
+                    from .completion import Completion
+
+                    event = Completion(tasks.conversation_id(row),
+                                       "cancelled" if scope.cancel_called else "failed", "前台轮次中断")
                     with anyio.CancelScope(shield=True):
-                        await task_events.emit_terminal(task_id)
+                        await task_events.emit_terminal(task_id, completion_event=event)
         finally:
             if _running.get(task_id) is owner:
                 _running.pop(task_id, None)
@@ -222,11 +226,12 @@ def _spawn(task_id: str, turn_text: str | None = None, *, fresh: bool = False) -
     if row and row.get("kind") == "research":
         spawned.add_done_callback(lambda finished: _research_run_done(task_id, finished))
     else:
-        spawned.add_done_callback(lambda finished: _ordinary_run_done(task_id, finished))
+        spawned.add_done_callback(lambda finished: _ordinary_run_done(
+            task_id, finished, followup=turn_text is not None and not fresh))
     return spawned
 
 
-def _ordinary_run_done(task_id: str, finished: asyncio.Task) -> None:
+def _ordinary_run_done(task_id: str, finished: asyncio.Task, *, followup: bool = False) -> None:
     """覆盖尚未进入协程就取消、初始化失败等没有常规收尾的情况。"""
     error = None if finished.cancelled() else finished.exception()
     row = tasks.get(task_id)
@@ -240,7 +245,11 @@ def _ordinary_run_done(task_id: str, finished: asyncio.Task) -> None:
         tasks.set_status(task_id, "cancelled", progress_note="已取消")
     else:
         tasks.finish(task_id, "failed", "", danger.redact_secrets(f"执行器中断：{error or '未写入终态'}"))
-    asyncio.create_task(task_events.emit_terminal(task_id))
+    from .completion import Completion
+
+    current = tasks.get(task_id)
+    event = Completion(tasks.conversation_id(current), current["status"], current["result_summary"] or "已取消") if followup else None
+    asyncio.create_task(task_events.emit_terminal(task_id, completion_event=event))
     _maybe_start_next()
 
 
@@ -656,7 +665,11 @@ async def _run(task_id: str, turn_text: str | None = None, *, fresh: bool = Fals
     reply.text = stored_text
     reply.is_error = status == "failed"
     reply.error = danger.redact_secrets(error_note or reply.error)
-    await task_events.emit_terminal(task_id, sink=sink, reply=reply, turn_id=turn_id)
+    from .completion import Completion
+
+    # 自动调度显式 fresh；人工续接不能继承历史调度与派发者的通知策略。
+    event = Completion(session_key, status, stored_text, turn_id) if turn_text is not None and not fresh else None
+    await task_events.emit_terminal(task_id, sink=sink, reply=reply, turn_id=turn_id, completion_event=event)
 
     _maybe_start_next()
 
