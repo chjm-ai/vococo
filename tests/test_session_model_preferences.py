@@ -10,6 +10,7 @@ from vococo.memory import session_store
 
 GPT = "gpt-6.1-sol"
 OTHER = "gpt-6.1-terra"
+GEMINI = "gemini-4-argon"
 
 
 @pytest.fixture
@@ -26,8 +27,11 @@ def preference_app(isolated, monkeypatch):
         "base_url": "http://127.0.0.1:8317", "api_key": "fake",
         "mgmt_key": "fake", "model": GPT,
     })
+    settings_store.upsert_web_provider("gemini-api", {
+        "base_url": "https://gemini.example", "api_key": "fake", "model": GEMINI,
+    })
     monkeypatch.setattr(providers, "available_models", lambda *a: [
-        (GPT, "Sol", "codex"), (OTHER, "Terra", "codex"),
+        (GPT, "Sol", "codex"), (OTHER, "Terra", "codex"), (GEMINI, "Gemini", "api"),
     ])
     adapter = WebAdapter()
     app = web.Application()
@@ -58,7 +62,7 @@ async def test_sessions_keep_model_effort_and_priority_independent(preference_ap
         assert a["service_tiers"][GPT]["value"] == "priority"
         assert b["efforts"][GPT]["value"] == ""
         assert b["service_tiers"][GPT]["value"] == ""
-        assert settings_store.get_web_effort(GPT) == ""
+        assert settings_store.get_web_effort(GPT) == "high"
         assert settings_store.get_web_service_tier(GPT) == ""
         await client.post("/model", json={"conv": "session:b", "model": OTHER})
         a = await (await client.get("/models?conv=session:a")).json()
@@ -71,6 +75,34 @@ async def test_sessions_keep_model_effort_and_priority_independent(preference_ap
         a = await (await client.get("/models?conv=session:a")).json()
         assert a["efforts"][GPT]["value"] == "high"
         assert a["service_tiers"][GPT]["value"] == "priority"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("model", [GEMINI, GPT])
+async def test_new_session_inherits_latest_effort_without_changing_existing_sessions(preference_app, model):
+    async with TestClient(TestServer(preference_app)) as client:
+        await client.get("/models?conv=session:old")
+        await client.post("/model", json={"conv": "session:a", "model": model})
+        await client.get("/models?conv=session:a")
+        response = await client.post("/effort", json={
+            "conv": "session:a", "model": model, "effort": "max",
+        })
+        assert response.status == 200
+        fresh = await (await client.get("/models?conv=session:new")).json()
+        assert fresh["chosen_model"] == model
+        assert fresh["efforts"][model]["value"] == "max"
+        await client.post("/effort", json={
+            "conv": "session:new", "model": model, "effort": "high",
+        })
+        old = await (await client.get("/models?conv=session:old")).json()
+        a = await (await client.get("/models?conv=session:a")).json()
+        assert old["efforts"][model]["value"] == ""
+        assert a["efforts"][model]["value"] == "max"
+        assert settings_store.get_web_effort(OTHER) == ""
+        from vococo.memory import _db
+        _db.reset()
+        latest = await (await client.get("/models?conv=session:latest")).json()
+        assert latest["efforts"][model]["value"] == "high"
 
 
 @pytest.mark.anyio
@@ -107,6 +139,7 @@ async def test_actual_turn_uses_session_options_not_global_defaults(preference_a
     settings_store.set_web_service_tier("priority" if not tier else "", model=GPT)
     session_store.set_model_preferences("session:a", GPT, {"effort": "high", "service_tier": tier})
     monkeypatch.setattr(agent.agents, "runtime_for_session", lambda key: {})
+    monkeypatch.setattr(agent.agents, "agent_for_session", lambda key: None)
     monkeypatch.setattr(agent, "configured_context_window", lambda *a: None)
 
     class Captured(Exception):

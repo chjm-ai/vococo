@@ -38,7 +38,11 @@ async def priority_browser_server(isolated, monkeypatch):
         "base_url": "http://127.0.0.1:8317", "api_key": "fake",
         "mgmt_key": "fake-management", "model": GPT,
     })
+    settings_store.upsert_web_provider("gemini-api", {
+        "base_url": "https://gemini.example", "api_key": "fake", "model": "gemini-4-argon",
+    })
     choices = [(GPT, "GPT Sol", "codex"), ("gpt-6.1-terra", "GPT Terra", "codex"),
+               ("gemini-4-argon", "Gemini 4 Argon", "api"),
                ("claude-sonnet-5-5", "Sonnet", "anthropic"),
                ("deepseek-flash", "DeepSeek", "api")]
     monkeypatch.setattr(providers, "available_models", lambda *a, **kw: choices)

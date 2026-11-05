@@ -222,6 +222,30 @@ async function chooseBeforeSettingsLoad(page){
   await page.unroute(pattern);
 }
 
+async function inheritGeminiEffort(page){
+  const gemini='gemini-4-argon';
+  await openSession(page,'session:gemini-old');
+  await openSession(page,'session:gemini-source');
+  await pickModel(page,gemini);
+  await chooseEffort(page,'max');
+  const saved=page.waitForResponse(r=>new URL(r.url()).pathname==='/models' &&
+    r.url().includes('conv=session%3A') && !r.url().includes('gemini-source'));
+  await page.evaluate(()=>newChatIn(null,false));
+  await saved;
+  await page.waitForFunction(()=>curModel()==='gemini-4-argon' && effortState().value==='max');
+  const fresh=await page.evaluate(()=>S.conv);
+  await chooseEffort(page,'high');
+  await openSession(page,'session:gemini-source');
+  assert.equal(await page.evaluate(()=>effortState().value),'max');
+  await openSession(page,'session:gemini-old');
+  await pickModel(page,gemini);
+  assert.equal(await page.evaluate(()=>effortState().value),'');
+  await page.reload();
+  await ready(page);
+  await openSession(page,fresh);
+  await page.waitForFunction(()=>curModel()==='gemini-4-argon' && effortState().value==='high');
+}
+
 (async()=>{
   const [origin,token,widthText]=process.argv.slice(2), width=Number(widthText);
   const browser=await chromium.launch({headless:true,
@@ -245,6 +269,7 @@ async function chooseBeforeSettingsLoad(page){
     await sessionIsolation(page);
     await saveDuringNavigation(page);
     await chooseBeforeSettingsLoad(page);
+    await inheritGeminiEffort(page);
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({ok:true,width,successfulPosts:2,failedPosts:2}));
   }finally{await browser.close();}
