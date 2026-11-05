@@ -2243,8 +2243,8 @@ class WebAdapter:
             key = config.resolve_session_key("web", conv)
             model_preferences.for_model(key, model)
             session_store.set_model_preferences(key, model, {"effort": effort})
-        else:
-            settings_store.set_web_effort(effort, model=model)
+        # 最近选择仅作为新会话的初始值；已有会话继续读自己的快照。
+        settings_store.set_web_effort(effort, model=model)
         return web.json_response({"ok": True, "model": model, "effort": effort})
 
     @_authed
