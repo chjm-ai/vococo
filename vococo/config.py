@@ -279,6 +279,14 @@ PEOPLE_PROFILES_BASE_URL: str = "https://api.deepseek.com"
 # 危险分级拦),而 AI_BRAIN 是后台任务唯一可写的豁免目录。
 PEOPLE_PROFILES_WATERMARK: Path = AI_BRAIN_DIR / "people_profile_obsidian_watermark.json"
 PEOPLE_PROFILES_PENDING: Path = AI_BRAIN_DIR / "people_profile_pending.json"
+# 录音 skill(audio-processor)的会议登记库:里面有用户逐场确认过的「说话人→姓名」
+# 映射,是人工核实过的一手人名来源。只读;读不到就跳过这条路(不报错)。
+PEOPLE_PROFILES_MEETING_REGISTRY: Path = Path(
+    os.environ.get(
+        "PEOPLE_PROFILES_MEETING_REGISTRY",
+        str(Path.home() / ".config/audio-processor/recordings.json"),
+    )
+).expanduser()
 # 待确认提醒推送目标 "platform:chat_id"(可选;不配则只记 pending 文件+日志)
 PEOPLE_PROFILE_TARGET: str = os.environ.get("PEOPLE_PROFILE_TARGET", "").strip()
 
@@ -298,6 +306,24 @@ PEOPLE_PROFILES_OBSIDIAN_FOLDERS: list[str] = (
     [f.strip() for f in os.environ["PEOPLE_PROFILES_OBSIDIAN_FOLDERS"].split(",") if f.strip()]
     if "PEOPLE_PROFILES_OBSIDIAN_FOLDERS" in os.environ
     else _instance_strings("preferences", "people_folders")
+)
+
+# 扫描目录的收窄规则(逐条正则匹配笔记相对路径,命中就不扫):
+# ① 会议纪要/逐字稿 是录音 skill(audio-processor)的产出(2026-11-06 起纪要同时
+#    写进 DeepLeaper/公司资料 等项目目录),同一场会既有"思考"总结
+#    又有"会议纪要"副本,两边都扫会让同一个人重复更新,且纪要里带说话人映射,
+#    噪音更大——统一只从"思考"侧提取;
+# ② 各项目目录里的 index/PLAN/NOW/AGENTS 等文档是写作资料,不是人物互动记录。
+PEOPLE_PROFILES_ALWAYS_EXCLUDE: list[str] = [
+    f.strip() for f in os.environ.get(
+        "PEOPLE_PROFILES_ALWAYS_EXCLUDE",
+        "会议纪要|逐字稿,(^|/)index\\.md$,(^|/)(PLAN|NOW|AGENTS)\\.md$",
+    ).split(",") if f.strip()
+]
+# 收窄规则屏蔽后,某个扫描目录一篇都不剩(比如整目录都是会议纪要)→ 报错误,
+# 说明目录配错了/录音产出位置变了,不许静默扫成 0 篇。
+PEOPLE_PROFILES_REQUIRE_HITS: bool = _parse_bool(
+    os.environ.get("PEOPLE_PROFILES_REQUIRE_HITS", ""), True
 )
 # 缺了必须当错误报出的扫描目录(默认没有:候选目录都可缺)。
 PEOPLE_PROFILES_REQUIRED_FOLDERS: list[str] = [

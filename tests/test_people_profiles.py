@@ -62,9 +62,39 @@ def test_iter_candidate_notes_walks_configured_folders(tmp_path, monkeypatch):
     monkeypatch.setattr(
         pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", ["1.个人/思考", "1.个人/社交/聊天"]
     )
-    found = pp._iter_candidate_notes()
+    found, emptied = pp._iter_candidate_notes()
     names = {f.name: should for f, should in found}
     assert names == {"一篇思考.md": False, "250101 聊天.md": True}  # 思考不强制有人物,聊天要
+    assert emptied == []
+
+
+def test_iter_candidate_notes_skips_meeting_minutes_and_index_docs(tmp_path, monkeypatch):
+    """会议纪要是录音 skill 的副本(思考侧已有总结),索引类文档不是人物记录 → 不扫。"""
+    d = tmp_path / "2.重点项目/DeepLeaper/公司资料"
+    d.mkdir(parents=True)
+    (d / "创通AI合作会议纪要（20261105-1013）.md").write_text("x", encoding="utf-8")
+    (d / "日本渠道逐字稿.md").write_text("x", encoding="utf-8")
+    (d / "index.md").write_text("x", encoding="utf-8")
+    (d / "PLAN.md").write_text("x", encoding="utf-8")
+    (d / "客户访谈.md").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", ["2.重点项目/DeepLeaper/公司资料"])
+    found, emptied = pp._iter_candidate_notes()
+    assert [f.name for f, _ in found] == ["客户访谈.md"]
+    assert emptied == []
+
+
+@pytest.mark.anyio
+async def test_scan_flags_folder_emptied_by_exclude_rules(tmp_path, monkeypatch):
+    """整目录都是会议纪要 → 报错误,不许静默扫成 0 篇。"""
+    d = tmp_path / "公司资料"
+    d.mkdir()
+    (d / "会议纪要-甲.md").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", ["公司资料"])
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_REQUIRE_HITS", True)
+    summaries = await pp.scan_obsidian_notes()
+    assert any(s.get("status") == "error" and s.get("note") == "公司资料" for s in summaries)
 
 
 # ── scan_obsidian_notes:水位增量 + 待确认标记 ───────────────────────────────
@@ -99,7 +129,7 @@ async def test_scan_retries_failed_note_without_advancing_watermark(tmp_path, mo
     note = tmp_path / "笔记.md"
     note.write_text("内容", encoding="utf-8")
     monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
-    monkeypatch.setattr(pp, "_iter_candidate_notes", lambda: [(note, True)])
+    monkeypatch.setattr(pp, "_iter_candidate_notes", lambda: ([(note, True)], []))
     monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "wm.json")
     calls = []
 
@@ -160,7 +190,7 @@ async def test_scan_reports_errors_without_advancing_watermark(tmp_path, monkeyp
     note = tmp_path / "笔记.md"
     note.write_text("内容", encoding="utf-8")
     monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
-    monkeypatch.setattr(pp, "_iter_candidate_notes", lambda: [(note, True)])
+    monkeypatch.setattr(pp, "_iter_candidate_notes", lambda: ([(note, True)], []))
     monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "wm.json")
     async def read(_):
         return None if failure == "read" else "内容"
@@ -202,7 +232,7 @@ async def test_scan_reports_watermark_write_failure(tmp_path, monkeypatch):
     note.write_text("内容", encoding="utf-8")
     monkeypatch.setattr(pp.config, "OBSIDIAN_VAULT_DIR", tmp_path)
     monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_OBSIDIAN_FOLDERS", [])
-    monkeypatch.setattr(pp, "_iter_candidate_notes", lambda: [(note, False)])
+    monkeypatch.setattr(pp, "_iter_candidate_notes", lambda: ([(note, False)], []))
     monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "missing" / "wm.json")
 
     async def process(*_):

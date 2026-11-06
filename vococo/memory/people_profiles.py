@@ -87,7 +87,7 @@ def index_path() -> Path:
 
 # ── 已知人物库:从 people/ 文件 + 索引表格读 ──────────────────────────────────
 def _frontmatter_block(text: str) -> dict:
-    """解析画像文件 frontmatter(简易:只要 relationship/tags/last_updated 三个键)。"""
+    """解析画像文件 frontmatter(简易:只要 relationship/aliases/tags/last_updated)。"""
     out: dict = {}
     m = re.match(r"^---\s*\n(.*?)\n---", text, re.S)
     if not m:
@@ -98,7 +98,7 @@ def _frontmatter_block(text: str) -> dict:
         v = v.strip()
         if k == "tags":
             out["tags"] = [t.strip().strip("'\"") for t in re.findall(r"[\w\-一-龥]+", v)]
-        elif k in ("relationship", "last_updated"):
+        elif k in ("relationship", "aliases", "last_updated"):
             out[k] = v
     return out
 
@@ -170,6 +170,18 @@ def _refresh_index_count(name: str) -> None:
         index_path().write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _load_owner_names() -> set[str]:
+    """同步读本人姓名配置(逻辑同 _owner_names,给同步的 known_people 用)。"""
+    path = config.AI_BRAIN_DIR / "people-profile-owner.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {config.USER_NAME.strip().casefold()} - {""}
+    if not isinstance(raw, list) or not all(isinstance(n, str) for n in raw):
+        return set()
+    return {n.strip().casefold() for n in raw if n.strip()}
+
+
 def known_people() -> list[dict]:
     """已知人物列表:名字 + 别名(索引) + 关系/标签(索引 + 画像 frontmatter 兜底)。
 
@@ -179,9 +191,20 @@ def known_people() -> list[dict]:
     """
     pd = people_dir()
     files = {f.stem for f in pd.glob("*.md")} if pd.is_dir() else set()
+    # 每次调用重读本人配置:主人会改 people-profile-owner.json,缓存会让改配置不生效
+    owner_names = _load_owner_names()
     people: dict[str, dict] = {}
     for name, aliases, rel, tags, _cnt in _index_rows():
-        if name not in files:
+        # 索引里写的可能是"主人本人"行(AI_BRAIN/people-profile-owner.json 配的自称):
+        # 索引行保留(描述/信任度),但别名里的自称(如"阿泽""林伟泽")要删掉,
+        # 否则本人记录被匹配成一条普通互动;未匹配的还会被建出一份"阿泽.md"。
+        if name.casefold() in owner_names:
+            aliases = ", ".join(
+                t.strip() for t in re.split(r"[、,，/]", aliases or "")
+                # 索引别名里写了本人自称(如"阿泽")的就删掉,别当成一个联系人
+                if t.strip() and t.strip().casefold() not in owner_names
+            )
+        elif name not in files:
             continue  # 幽灵索引行:文件不存在,不纳入已知名单
         people[name] = {"name": name, "aliases": aliases, "relationship": rel, "tags": tags}
     if pd.is_dir():
@@ -195,6 +218,9 @@ def known_people() -> list[dict]:
             meta["file"] = str(f)
             meta["relationship"] = meta["relationship"] or fm.get("relationship", "")
             meta["tags"] = meta["tags"] or " ".join(fm.get("tags", []))
+            # 画像 frontmatter 也支持 aliases(本人文件的索引行别名会被清掉,
+            # 见上一步;自己有哪些自称只有画像文件本身知道)
+            meta["aliases"] = meta.get("aliases") or fm.get("aliases", "")
             people[name] = meta
     return list(people.values())
 
@@ -897,20 +923,87 @@ def _note_pending(rel_path: str, note_date: str) -> None:
         pass
 
 
-def _iter_candidate_notes() -> list[tuple[Path, bool]]:
-    """遍历配置的扫描目录,返回 [(笔记绝对路径, 该笔记是否该有具体人物)]。
+_EXCLUDE_PATTERNS = None
+
+
+def _exclude_patterns() -> list[re.Pattern]:
+    """config.PEOPLE_PROFILES_ALWAYS_EXCLUDE 编译一次(每次扫描复用)。"""
+    global _EXCLUDE_PATTERNS
+    if _EXCLUDE_PATTERNS is None:
+        _EXCLUDE_PATTERNS = [
+            re.compile(p) for p in config.PEOPLE_PROFILES_ALWAYS_EXCLUDE
+        ]
+    return _EXCLUDE_PATTERNS
+
+
+def _is_excluded(rel_note: Path) -> bool:
+    """笔记相对 vault 根的路径命中收窄规则(会议纪要/索引类文档)就不扫。"""
+    s = str(rel_note)
+    return any(p.search(s) for p in _exclude_patterns())
+
+
+def _iter_candidate_notes() -> tuple[list[tuple[Path, bool]], list[str]]:
+    """遍历配置的扫描目录,返回 ([(笔记绝对路径, 该笔记是否该有具体人物)], 被收窄规则
+    清空的目录列表)。
 
     "思考" 类笔记允许纯自我反思、没有具体互动对象;"聊天"/"线下活动" 类笔记
     天然是跟人打交道产生的,零人物提取结果值得记一条待确认项。
     """
     out: list[tuple[Path, bool]] = []
+    emptied: list[str] = []
+    vault = config.OBSIDIAN_VAULT_DIR
     for rel in config.PEOPLE_PROFILES_OBSIDIAN_FOLDERS:
-        folder = config.OBSIDIAN_VAULT_DIR / rel
+        folder = vault / rel
         if not folder.is_dir():
             continue
         should_have_people = "思考" not in rel
+        kept = 0
         for f in folder.rglob("*.md"):
+            try:
+                rel_note = f.relative_to(vault)
+            except ValueError:
+                continue
+            if _is_excluded(rel_note):
+                continue
             out.append((f, should_have_people))
+            kept += 1
+        if kept == 0 and any(folder.rglob("*.md")):
+            emptied.append(rel)
+    return out, emptied
+
+
+def _meeting_attendees() -> list[dict]:
+    """读录音 skill 的会议登记库,汇总每场会议确认过的参会人(不含主人自己)。
+
+    为什么单开这条路:会议纪要/逐字稿已从扫描目录收窄掉(和"思考"总结重复),
+    但"思考"总结是 AI 写的匿名稿("说话人2"之类),人名最可靠的来源恰恰是
+    录音时用户逐场确认过的说话人映射。只认名字,不把长括注("康业(曾老师,
+    晓蕾姐助理)")当人名,括注内容丢给 extract 自然语言处理。
+    """
+    path = config.PEOPLE_PROFILES_MEETING_REGISTRY
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return []
+    owner = {"wesley", "伟泽", "阿泽"}
+    out: list[dict] = []
+    for rid, rec in (data.items() if isinstance(data, dict) else []):
+        if not isinstance(rec, dict):
+            continue
+        names = []
+        for v in (rec.get("identities") or {}).values():
+            if not isinstance(v, str):
+                continue
+            base = re.sub(r"[（(].*?[)）]", "", v).strip()
+            if not base or "wesley" in base.casefold() or base.endswith("本人") or base in owner:
+                continue
+            names.append(v.strip())
+        if names:
+            out.append({
+                "id": rid,
+                "filename": rec.get("filename", ""),
+                "identities": names,
+            })
     return out
 
 
@@ -934,7 +1027,14 @@ async def scan_obsidian_notes() -> list[dict]:
         for folder in sorted(required)
         if not (vault / folder).is_dir()
     ]
-    candidates = _iter_candidate_notes()
+    candidates, emptied = _iter_candidate_notes()
+    if emptied and config.PEOPLE_PROFILES_REQUIRE_HITS:
+        for rel in emptied:
+            summaries.append({
+                "note": rel,
+                "status": "error",
+                "reason": "目录下笔记全被收窄规则排除(会议纪要/索引类),检查配置或录音产出位置",
+            })
     if not candidates:
         print(
             f"[people_profiles] 未在配置目录下找到笔记(vault={config.OBSIDIAN_VAULT_DIR},"
