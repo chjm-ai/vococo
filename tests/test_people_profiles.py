@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from vococo.memory import people_profiles as pp
@@ -112,7 +114,7 @@ async def test_scan_skips_unchanged_files_via_watermark(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_process_note(text, note_title, note_date):
+    async def fake_process_note(text, note_title, note_date, attendees=None):
         calls.append(note_title)
         return {"status": "skipped", "reason": "未提取到人物"}
 
@@ -272,7 +274,7 @@ async def test_scan_reprocesses_after_mtime_change(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_process_note(text, note_title, note_date):
+    async def fake_process_note(text, note_title, note_date, attendees=None):
         calls.append(text)
         return {"status": "skipped", "reason": "未提取到人物"}
 
@@ -300,7 +302,7 @@ async def test_scan_flags_pending_when_chat_note_has_no_people(tmp_path, monkeyp
     monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "wm.json")
     monkeypatch.setattr(pp, "_pending_path", lambda: tmp_path / "pending.json")
 
-    async def fake_process_note(text, note_title, note_date):
+    async def fake_process_note(text, note_title, note_date, attendees=None):
         return {"status": "skipped", "reason": "未提取到人物"}
 
     monkeypatch.setattr(pp, "process_note", fake_process_note)
@@ -878,3 +880,48 @@ def test_append_section_keeps_single_blank_line(tmp_path, monkeypatch):
     text = (people / "胜源.md").read_text(encoding="utf-8")
     assert "\n\n\n" not in text
     assert text.count("## 互动记录") == 1
+
+
+def test_meeting_attendees_maps_registry_by_audio_stem(tmp_path, monkeypatch):
+    registry = tmp_path / "recordings.json"
+    registry.write_text(json.dumps({
+        "id1": {"filename": "2026年11月5日 10_13_54.m4a",
+                "identities": {"说话人1": "晓蕾姐", "说话人2": "康业(曾老师,晓蕾姐助理)",
+                               "说话人3": "Wesley（本人）"}},
+        "id2": {"filename": "no-names.m4a", "identities": {"说话人1": "Wesley"}},
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_MEETING_REGISTRY", registry)
+    out = pp._meeting_attendees()
+    assert out == {"2026年11月5日 10_13_54": ["晓蕾姐", "康业(曾老师,晓蕾姐助理)"]}
+
+
+def test_note_attendees_matches_source_basename_without_ext(tmp_path, monkeypatch):
+    monkeypatch.setattr(pp.config, "PEOPLE_PROFILES_MEETING_REGISTRY", tmp_path / "none.json")
+    registry = {"2026年11月6日 10_59_06": ["笑笑"]}
+    text = ('---\nsource: /Users/wesley/Library/.../2026年11月6日 10_59_06.m4a\n'
+            'identities: {"说话人1": "笑笑"}\n---\n# 纪要\n')
+    assert pp._note_attendees(text, registry) == ["笑笑"]
+    assert pp._note_attendees("---\ntitle: x\n---\n正文", registry) == []
+
+
+@pytest.mark.anyio
+async def test_analyze_accepts_attendees_confirmed_by_recording(monkeypatch):
+    async def fake_chat_json(_messages):
+        return {"people": [
+            {"name": "笑笑", "interaction": "11-06 内部会议讨论产品方向", "evidence": ""},
+            {"name": "编出来的人", "evidence": ""},
+        ]}
+
+    monkeypatch.setattr(pp, "_chat_json", fake_chat_json)
+    monkeypatch.setattr(pp, "known_people", lambda: [])
+    prompts = []
+
+    async def capture(messages):
+        prompts.append(messages[1]["content"])
+        return await fake_chat_json(messages)
+
+    monkeypatch.setattr(pp, "_chat_json", capture)
+    result = await pp.analyze("# 纪要\n聊天内容", "2026-11-06-会议纪要", "2026-11-06",
+                              attendees=["笑笑"])
+    assert "【本场会议参会人" in prompts[0] and "笑笑" in prompts[0]
+    assert [p["name"] for p in result["people"]] == ["笑笑"]

@@ -98,7 +98,7 @@ def _frontmatter_block(text: str) -> dict:
         v = v.strip()
         if k == "tags":
             out["tags"] = [t.strip().strip("'\"") for t in re.findall(r"[\w\-一-龥]+", v)]
-        elif k in ("relationship", "aliases", "last_updated"):
+        elif k in ("relationship", "aliases", "last_updated", "source"):
             out[k] = v
     return out
 
@@ -339,6 +339,7 @@ _ANALYZE_SYSTEM = (
 _ANALYZE_PROMPT = """从下面这篇笔记里提取人物互动信息,输出 JSON。
 
 【笔记信息】标题:{note_title} | 日期:{note_date}
+{attendees_block}
 
 【已知人物库】(名字 | 别名 | 关系 | 标签):
 {people_list}
@@ -372,7 +373,11 @@ _ANALYZE_PROMPT = """从下面这篇笔记里提取人物互动信息,输出 JSO
    - relationship:明确的关系表述(如"工作坊合作伙伴"),没有就省略
 3. 内容太少(只是顺带一提)的人物可以省略,不为凑数硬写。
 4. 已知库匹配不到、但确实是明确人名 → known=false 当新人物,名字用文本里最合理的写法。
-5. 严禁靠"主题相似"联想人物:比如笔记提到"看医生/耳鼻喉科"不代表在说某个从事
+5. 【会议参会人】如上方给出了「本场会议参会人」,这些名字来自录音时主人逐场确认的
+   说话人映射,事实性最高:名单里每个是真人姓名的都【必须】提取,interaction 从本篇
+   纪要正文归纳,evidence 可以留空(程序按名单单独核实);名单不是人名(如"客户技术
+   同学""男士")就跳过,不硬凑;不得编造名单外的人名。
+6. 严禁靠"主题相似"联想人物:比如笔记提到"看医生/耳鼻喉科"不代表在说某个从事
    医疗行业的已知朋友——除非笔记真的直接提到这个人的名字或明确指代他,否则不要
    提取。evidence 字段就是用来防止这种联想的:编不出真实存在的原句片段,就说明
    这个人物提取本身站不住脚。
@@ -479,12 +484,26 @@ def _describe_people(people: list[dict]) -> str:
     return "\n".join(lines) if lines else "(空)"
 
 
-async def analyze(text: str, note_title: str, note_date: str) -> dict | None:
-    """分析一篇笔记,返回结构化结果 {"people": [...]}; 失败返回 None。"""
+async def analyze(
+    text: str, note_title: str, note_date: str,
+    attendees: list[str] | None = None,
+) -> dict | None:
+    """分析一篇笔记,返回结构化结果 {"people": [...]}; 失败返回 None。
+
+    attendees: 会议笔记从录音登记库带出的"本场确认参会人",会写进 prompt 并要求
+    必须提取;这些名字同时视为已核实(不用在正文里再出现一次)。
+    """
     people = known_people()
+    attendees = [a for a in (attendees or []) if a and a.strip()]
+    attendees_block = ""
+    if attendees:
+        attendees_block = (
+            "【本场会议参会人(主人已确认,必须提取)】" + "、".join(attendees)
+        )
     prompt = _ANALYZE_PROMPT.format(
         note_title=note_title,
         note_date=note_date,
+        attendees_block=attendees_block,
         people_list=_describe_people(people),
         text=text[:6000],  # 控制 token,长笔记截前 6000 字(核心内容通常在前段)
     )
@@ -502,6 +521,7 @@ async def analyze(text: str, note_title: str, note_date: str) -> dict | None:
     if not isinstance(people_out, list):
         people_out = []
     normalized_text = _normalize_for_match(text)
+    attendee_bases = {_base_name(a) for a in attendees}
     verified = []
     for p in people_out:
         if not isinstance(p, dict) or not p.get("name"):
@@ -533,6 +553,8 @@ async def analyze(text: str, note_title: str, note_date: str) -> dict | None:
         # 被格式差异误杀,而 Alex 明明就在正文里)。
         elif _normalize_for_match(name) in normalized_text:
             pass  # 名字出现在正文 → 降级通过
+        elif _base_name(name) in attendee_bases:
+            pass  # 来自录音时确认过的参会人名单(比正文引用更硬的依据)
         else:
             print(
                 f"[people_profiles] 丢弃未验证的提取: {name}"
@@ -789,7 +811,9 @@ def save_from_conversation(
     }
 
 
-async def process_note(text: str, note_title: str, note_date: str) -> dict:
+async def process_note(
+    text: str, note_title: str, note_date: str, attendees: list[str] | None = None,
+) -> dict:
     """处理一篇笔记正文:分析 + 更新画像。返回结果摘要(不含 flag_pending 判断,
     由调用方 scan_obsidian_notes 决定要不要为零人物结果记待确认项)。
     """
@@ -797,7 +821,7 @@ async def process_note(text: str, note_title: str, note_date: str) -> dict:
         owner_names = await _owner_names()
     except ValueError as exc:
         return {"status": "error", "reason": str(exc)}
-    result = await analyze(text, note_title, note_date)
+    result = await analyze(text, note_title, note_date, attendees)
     if result is None:
         return {"status": "error", "reason": "LLM 分析失败"}
     if not result["people"]:
@@ -972,21 +996,26 @@ def _iter_candidate_notes() -> tuple[list[tuple[Path, bool]], list[str]]:
     return out, emptied
 
 
-def _meeting_attendees() -> list[dict]:
-    """读录音 skill 的会议登记库,汇总每场会议确认过的参会人(不含主人自己)。
+def _base_name(value: str) -> str:
+    """去掉括注/空白后的小写名字,用于把「康业(曾老师…)」和「康业」认成同一人。"""
+    return re.sub(r"[（(].*?[)）]", "", value).strip().casefold()
 
-    为什么单开这条路:会议纪要/逐字稿已从扫描目录收窄掉(和"思考"总结重复),
+
+def _meeting_attendees() -> dict[str, list[str]]:
+    """读录音 skill 的会议登记库,按音频文件名汇总每场确认过的参会人(不含主人自己)。
+
+    为什么单开这条路:会议纪要/逐字稿正文已从扫描目录收窄掉(和"思考"总结重复),
     但"思考"总结是 AI 写的匿名稿("说话人2"之类),人名最可靠的来源恰恰是
-    录音时用户逐场确认过的说话人映射。只认名字,不把长括注("康业(曾老师,
-    晓蕾姐助理)")当人名,括注内容丢给 extract 自然语言处理。
+    录音时用户逐场确认过的说话人映射。返回 {音频文件名(不含扩展名): [人名...]},
+    扫描会议笔记时用 frontmatter 的 source 文件名去对。
     """
     path = config.PEOPLE_PROFILES_MEETING_REGISTRY
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
-        return []
+        return {}
     owner = {"wesley", "伟泽", "阿泽"}
-    out: list[dict] = []
+    out: dict[str, list[str]] = {}
     for rid, rec in (data.items() if isinstance(data, dict) else []):
         if not isinstance(rec, dict):
             continue
@@ -998,13 +1027,23 @@ def _meeting_attendees() -> list[dict]:
             if not base or "wesley" in base.casefold() or base.endswith("本人") or base in owner:
                 continue
             names.append(v.strip())
-        if names:
-            out.append({
-                "id": rid,
-                "filename": rec.get("filename", ""),
-                "identities": names,
-            })
+        filename = Path(str(rec.get("filename", ""))).stem
+        if names and filename:
+            out[filename] = names
     return out
+
+
+def _note_attendees(text: str, registry: dict[str, list[str]]) -> list[str]:
+    """按笔记 frontmatter 的 source 文件名,取出这场会议确认过的参会人。
+
+    source 可能是相对文件名,也可能是绝对/相对路径(录音 skill 登记源文件时
+    写的是完整路径),取 basename 去扩展名后对登记库。
+    """
+    fm = _frontmatter_block(text)
+    source = fm.get("source", "").strip().strip("'\"")
+    if not source:
+        return []
+    return registry.get(Path(source).stem, [])
 
 
 async def scan_obsidian_notes() -> list[dict]:
@@ -1043,6 +1082,7 @@ async def scan_obsidian_notes() -> list[dict]:
         )
         return summaries
     processed = 0
+    meeting_registry = _meeting_attendees() if config.PEOPLE_PROFILES_MEETING_REGISTRY.is_file() else {}
     for path, should_have_people in candidates:
         try:
             mtime = path.stat().st_mtime
@@ -1062,8 +1102,9 @@ async def scan_obsidian_notes() -> list[dict]:
             continue
         note_title = path.stem
         note_date = _note_date(path, text)
+        attendees = _note_attendees(text, meeting_registry) if meeting_registry else []
         try:
-            r = await process_note(text, note_title, note_date)
+            r = await process_note(text, note_title, note_date, attendees)
         except Exception as e:  # noqa: BLE001——单篇失败不拖垮整轮扫描
             print(f"[people_profiles] 笔记「{note_title}」处理失败: {type(e).__name__}", flush=True)
             summaries.append({"note": rel_path, "status": "error", "reason": f"处理失败: {type(e).__name__}"})

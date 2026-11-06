@@ -302,10 +302,20 @@ OBSIDIAN_VAULT_DIR: Path = (
 # 必需目录用 PEOPLE_PROFILES_REQUIRED_FOLDERS 单独声明,缺了才报错。
 from .instance_config import strings as _instance_strings
 
+# 公司会议统一归档目录(录音 skill 默认往这里写纪要+署名逐字稿)。它不走扫描目录,
+# 只读 frontmatter 的 identities(exclude 规则把纪要/逐字稿正文挡在扫描之外):
+# 参会人用录音时确认过的说话人映射,再按 source 音频文件名去对登记库。
+PEOPLE_PROFILES_CORPORATE_MEETING_DIR: str = os.environ.get(
+    "PEOPLE_PROFILES_CORPORATE_MEETING_DIR", "2.重点项目/DeepLeaper/会议"
+).strip()
+
 PEOPLE_PROFILES_OBSIDIAN_FOLDERS: list[str] = (
     [f.strip() for f in os.environ["PEOPLE_PROFILES_OBSIDIAN_FOLDERS"].split(",") if f.strip()]
-    if "PEOPLE_PROFILES_OBSIDIAN_FOLDERS" in os.environ
-    else _instance_strings("preferences", "people_folders")
+    if os.environ.get("PEOPLE_PROFILES_OBSIDIAN_FOLDERS") is not None
+    else list(dict.fromkeys([
+        *_instance_strings("preferences", "people_folders"),
+        *([PEOPLE_PROFILES_CORPORATE_MEETING_DIR] if PEOPLE_PROFILES_CORPORATE_MEETING_DIR else []),
+    ]))
 )
 
 # 扫描目录的收窄规则(逐条正则匹配笔记相对路径,命中就不扫):
