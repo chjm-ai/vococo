@@ -98,7 +98,7 @@ def _frontmatter_block(text: str) -> dict:
         v = v.strip()
         if k == "tags":
             out["tags"] = [t.strip().strip("'\"") for t in re.findall(r"[\w\-一-龥]+", v)]
-        elif k in ("relationship", "aliases", "last_updated", "source"):
+        elif k in ("relationship", "aliases", "last_updated", "source", "identities"):
             out[k] = v
     return out
 
@@ -486,12 +486,17 @@ def _describe_people(people: list[dict]) -> str:
 
 async def analyze(
     text: str, note_title: str, note_date: str,
-    attendees: list[str] | None = None,
+    attendees: list[str] | None = None, identities: list[str] | None = None,
+    note_text: str | None = None, merge_map_of: dict[str, str] | None = None,
 ) -> dict | None:
     """分析一篇笔记,返回结构化结果 {"people": [...]}; 失败返回 None。
 
     attendees: 会议笔记从录音登记库带出的"本场确认参会人",会写进 prompt 并要求
     必须提取;这些名字同时视为已核实(不用在正文里再出现一次)。
+    identities: 会议笔记原稿 frontmatter 的说话人→姓名表,表内姓名同样视为已核实。
+    merge_map_of: 名字归并表(提取名→标准名),用于把已归并的名字认成参会人本人。
+    note_text: 送 LLM 的原文;默认全文截 6000 字。会议纪要常把身份表放在 frontmatter、
+    正文在后,截断会把表切掉,调用方可以传去掉 frontmatter 后的长文。
     """
     people = known_people()
     attendees = [a for a in (attendees or []) if a and a.strip()]
@@ -505,7 +510,8 @@ async def analyze(
         note_date=note_date,
         attendees_block=attendees_block,
         people_list=_describe_people(people),
-        text=text[:6000],  # 控制 token,长笔记截前 6000 字(核心内容通常在前段)
+        text=(note_text if note_text is not None else text)[:6000],
+        # 控制 token,长笔记截前 6000 字(核心内容通常在前段)
     )
     # 主动节流:批量扫描连续调用同一个端点,不等就容易撞限流(实测切 DeepSeek
     # 前用 SiliconFlow 时,275 次连续请求 429 了 200+ 次)。0.5s 间隔换成
@@ -522,7 +528,21 @@ async def analyze(
         people_out = []
     normalized_text = _normalize_for_match(text)
     attendee_bases = {_base_name(a) for a in attendees}
+    # 会议笔记原稿的「说话人→姓名」身份表:名字在这张表里即为已核实,
+    # 不必再要求正文引用(逐字稿里常以 [姓名] 标签出现,纪要里只写"某某认为")。
+    origin_bases = set(identities or []) | attendee_bases
     verified = []
+    # 同一个真人可能有好几个写法:登记库/身份表里的全称、去掉括注的根名、
+    # 已经归并出的标准名(如"笑笑"→"刘笑笑")。any 写法命中就算核实,
+    # 否则"刘笑笑""晓蕾姐 vs 小雷姐"这种会被整条误杀。
+    origin_aliases = origin_bases | {_base_name(v) for v in origin_bases}
+    if merge_map_of:
+        origin_aliases |= {
+            merge_map_of[n] for n in origin_aliases if n in merge_map_of
+        } | {
+            _base_name(merge_map_of[_base_name(n)])
+            for n in origin_aliases if _base_name(n) in merge_map_of
+        }
     for p in people_out:
         if not isinstance(p, dict) or not p.get("name"):
             continue
@@ -553,8 +573,8 @@ async def analyze(
         # 被格式差异误杀,而 Alex 明明就在正文里)。
         elif _normalize_for_match(name) in normalized_text:
             pass  # 名字出现在正文 → 降级通过
-        elif _base_name(name) in attendee_bases:
-            pass  # 来自录音时确认过的参会人名单(比正文引用更硬的依据)
+        elif _base_name(name) in origin_aliases:
+            pass  # 会议笔记:参会人取自 frontmatter identities / 录音登记库,已确认过的同一人
         else:
             print(
                 f"[people_profiles] 丢弃未验证的提取: {name}"
@@ -813,15 +833,24 @@ def save_from_conversation(
 
 async def process_note(
     text: str, note_title: str, note_date: str, attendees: list[str] | None = None,
+    identities: list[str] | None = None, note_text: str | None = None,
+    merge_map_of: dict[str, str] | None = None,
 ) -> dict:
     """处理一篇笔记正文:分析 + 更新画像。返回结果摘要(不含 flag_pending 判断,
     由调用方 scan_obsidian_notes 决定要不要为零人物结果记待确认项)。
     """
+    return await _process_analyzed(text, note_title, note_date, attendees, identities,
+                                   note_text, merge_map_of)
+
+
+async def _process_analyzed(text, note_title, note_date, attendees, identities,
+                            note_text, merge_map_of):
     try:
         owner_names = await _owner_names()
     except ValueError as exc:
         return {"status": "error", "reason": str(exc)}
-    result = await analyze(text, note_title, note_date, attendees)
+    result = await analyze(text, note_title, note_date, attendees, identities, note_text,
+                           merge_map_of)
     if result is None:
         return {"status": "error", "reason": "LLM 分析失败"}
     if not result["people"]:
@@ -875,6 +904,15 @@ async def _safe_read_text(path: Path, timeout: float = 3.0) -> str | None:
 _DATE_FRONTMATTER = re.compile(r"^created:\s*(\d{4}-\d{2}-\d{2})", re.M)
 _DATE_FILENAME_ISO = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 _DATE_FILENAME_YYMMDD = re.compile(r"^(\d{6})[\s\-_]")
+
+
+_FRONTMATTER_RE = re.compile(r"\A---\s*\n.*?\n---\s*\n", re.S)
+
+
+def _body_text(text: str) -> str:
+    """去掉 YAML frontmatter 的正文。会议纪要的 identities/source 都在 frontmatter 里,
+    直接截前 6000 字常常只看到 frontmatter,LLM 拿不到正文就没法归纳互动。"""
+    return _FRONTMATTER_RE.sub("", text, count=1).lstrip() or text
 
 
 def _note_date(path: Path, text: str) -> str:
@@ -960,10 +998,17 @@ def _exclude_patterns() -> list[re.Pattern]:
     return _EXCLUDE_PATTERNS
 
 
-def _is_excluded(rel_note: Path) -> bool:
-    """笔记相对 vault 根的路径命中收窄规则(会议纪要/索引类文档)就不扫。"""
+def _is_excluded(rel_note: Path, in_meeting_dir: bool = False) -> bool:
+    """笔记相对 vault 根的路径命中收窄规则(会议纪要/索引类文档)就不扫。
+
+    会议目录靠 frontmatter identities 单独走参会人那条路,所以它下面的
+    "会议/" 规则不生效(index/PLAN 之类照样排除)。
+    """
     s = str(rel_note)
-    return any(p.search(s) for p in _exclude_patterns())
+    patterns = _exclude_patterns()
+    if in_meeting_dir:
+        patterns = [p for p in patterns if p.pattern != "会议纪要|会议/|逐字稿"]
+    return any(p.search(s) for p in patterns)
 
 
 def _iter_candidate_notes() -> tuple[list[tuple[Path, bool]], list[str]]:
@@ -976,10 +1021,12 @@ def _iter_candidate_notes() -> tuple[list[tuple[Path, bool]], list[str]]:
     out: list[tuple[Path, bool]] = []
     emptied: list[str] = []
     vault = config.OBSIDIAN_VAULT_DIR
+    meeting_dir = config.PEOPLE_PROFILES_CORPORATE_MEETING_DIR
     for rel in config.PEOPLE_PROFILES_OBSIDIAN_FOLDERS:
         folder = vault / rel
         if not folder.is_dir():
             continue
+        # 会议目录期望有具体人物:没有真名(名字待核)就记一条待确认
         should_have_people = "思考" not in rel
         kept = 0
         for f in folder.rglob("*.md"):
@@ -987,7 +1034,7 @@ def _iter_candidate_notes() -> tuple[list[tuple[Path, bool]], list[str]]:
                 rel_note = f.relative_to(vault)
             except ValueError:
                 continue
-            if _is_excluded(rel_note):
+            if _is_excluded(rel_note, in_meeting_dir=(rel == meeting_dir)):
                 continue
             out.append((f, should_have_people))
             kept += 1
@@ -1031,6 +1078,29 @@ def _meeting_attendees() -> dict[str, list[str]]:
         if names and filename:
             out[filename] = names
     return out
+
+
+def _note_identities(text: str) -> list[str]:
+    """会议笔记 frontmatter 的 identities(说话人→姓名映射)里的姓名,去掉主人自己。"""
+    raw = _frontmatter_block(text).get("identities", "")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    owner = {"wesley", "伟泽", "阿泽"}
+    names = []
+    for v in data.values():
+        if not isinstance(v, str):
+            continue
+        base = re.sub(r"[（(].*?[)）]", "", v).strip()
+        if not base or "wesley" in base.casefold() or base.endswith("本人") or base in owner:
+            continue
+        names.append(v.strip())
+    return names
 
 
 def _note_attendees(text: str, registry: dict[str, list[str]]) -> list[str]:
@@ -1103,8 +1173,14 @@ async def scan_obsidian_notes() -> list[dict]:
         note_title = path.stem
         note_date = _note_date(path, text)
         attendees = _note_attendees(text, meeting_registry) if meeting_registry else []
+        identities = _note_identities(text)
         try:
-            r = await process_note(text, note_title, note_date, attendees)
+            # 先把名字归并跑出来(只读,不写),再交给处理:参会人身份表里的
+            # "笑笑""小雷姐"要靠这张表才能认成已归并的"刘笑笑""晓蕾姐";
+            # 归并结果不变,处理阶段还会再算一次,这里只借用结果。
+            merge_map = await _resolve_name_merges(attendees, known_people()) if attendees else {}
+            r = await process_note(text, note_title, note_date, attendees, identities,
+                                   _body_text(text), merge_map)
         except Exception as e:  # noqa: BLE001——单篇失败不拖垮整轮扫描
             print(f"[people_profiles] 笔记「{note_title}」处理失败: {type(e).__name__}", flush=True)
             summaries.append({"note": rel_path, "status": "error", "reason": f"处理失败: {type(e).__name__}"})

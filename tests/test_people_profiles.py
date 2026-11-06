@@ -114,7 +114,7 @@ async def test_scan_skips_unchanged_files_via_watermark(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_process_note(text, note_title, note_date, attendees=None):
+    async def fake_process_note(text, note_title, note_date, attendees=None, identities=None, note_text=None, merge_map_of=None):
         calls.append(note_title)
         return {"status": "skipped", "reason": "未提取到人物"}
 
@@ -274,7 +274,7 @@ async def test_scan_reprocesses_after_mtime_change(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_process_note(text, note_title, note_date, attendees=None):
+    async def fake_process_note(text, note_title, note_date, attendees=None, identities=None, note_text=None, merge_map_of=None):
         calls.append(text)
         return {"status": "skipped", "reason": "未提取到人物"}
 
@@ -302,7 +302,7 @@ async def test_scan_flags_pending_when_chat_note_has_no_people(tmp_path, monkeyp
     monkeypatch.setattr(pp, "_obsidian_watermark_path", lambda: tmp_path / "wm.json")
     monkeypatch.setattr(pp, "_pending_path", lambda: tmp_path / "pending.json")
 
-    async def fake_process_note(text, note_title, note_date, attendees=None):
+    async def fake_process_note(text, note_title, note_date, attendees=None, identities=None, note_text=None, merge_map_of=None):
         return {"status": "skipped", "reason": "未提取到人物"}
 
     monkeypatch.setattr(pp, "process_note", fake_process_note)
