@@ -30,7 +30,7 @@ def upsert_project(path: str) -> dict:
     """按文件夹路径建/复活项目;返回 {hash, path, name, last_used}。
 
     同一文件夹已存在则复活(hidden=0)并刷新 last_used;不存在则新建。
-    新建/复活都把 sort_order 顶到最前(-now),侧边栏习惯是"新项目出现在最上面"。
+    已可见项目保留手动排序;仅新建/复活时置顶(-now)。
     """
     norm = normalize_project_path(path)
     h = project_hash(norm)
@@ -38,7 +38,8 @@ def upsert_project(path: str) -> dict:
     c = _db.conn()
     c.execute(
         "INSERT INTO projects(hash, path, last_used, hidden, sort_order) VALUES (?,?,?,0,?) "
-        "ON CONFLICT(hash) DO UPDATE SET last_used=excluded.last_used, hidden=0, sort_order=excluded.sort_order",
+        "ON CONFLICT(hash) DO UPDATE SET last_used=excluded.last_used, hidden=0, "
+        "sort_order=CASE WHEN projects.hidden=1 THEN excluded.sort_order ELSE projects.sort_order END",
         (h, norm, now, -now),
     )
     c.commit()
