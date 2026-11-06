@@ -315,6 +315,44 @@ def test_project_soft_remove_and_revive(isolated, tmp_path):
     assert len(session_store.list_projects()) == 1          # 复活
 
 
+def test_project_upsert_preserves_manual_order(isolated, tmp_path, monkeypatch):
+    from vococo.memory import _db, projects
+
+    monkeypatch.setattr(projects.time, "time", lambda: 100.0)
+    items = [projects.upsert_project(str(tmp_path / name)) for name in ("a", "b", "c")]
+    order = [p["hash"] for p in items]
+    projects.reorder_projects(order)
+    monkeypatch.setattr(projects.time, "time", lambda: 200.0)
+
+    updated = projects.upsert_project(items[-1]["path"] + "/")
+    assert [p["hash"] for p in projects.list_projects()] == order
+    assert updated["last_used"] == 200.0
+    assert projects.list_projects()[-1]["last_used"] == 200.0
+    _db.reset()
+    assert [p["hash"] for p in projects.list_projects()] == order
+
+
+def test_project_new_and_revived_still_move_to_front(isolated, tmp_path, monkeypatch):
+    from vococo.memory import projects
+
+    monkeypatch.setattr(projects.time, "time", lambda: 100.0)
+    first = projects.upsert_project(str(tmp_path / "a"))
+    second = projects.upsert_project(str(tmp_path / "b"))
+    projects.reorder_projects([first["hash"], second["hash"]])
+    monkeypatch.setattr(projects.time, "time", lambda: 200.0)
+    third = projects.upsert_project(str(tmp_path / "c"))
+    assert [p["hash"] for p in projects.list_projects()] == [
+        third["hash"], first["hash"], second["hash"],
+    ]
+
+    projects.hide_project(second["hash"])
+    monkeypatch.setattr(projects.time, "time", lambda: 300.0)
+    projects.upsert_project(second["path"])
+    assert [p["hash"] for p in projects.list_projects()] == [
+        second["hash"], third["hash"], first["hash"],
+    ]
+
+
 def test_conv_pin_unpin_in_list(isolated):
     import time
     from vococo.memory import session_store
