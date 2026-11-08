@@ -577,8 +577,8 @@ def project_cwd_for(session_key: str) -> str | None:
 # 在 .env 配 AGENT_SKILLS=monthly-planner,things-assistant,... 只挂常用的。
 SKILLS: list[str] | str | None = _parse_skills(os.environ.get("AGENT_SKILLS", ""))
 
-# === 记忆晋升:定时反思(把会话沉淀成 AI_BRAIN 长期记忆)===
-# 默认关:开启后按 REFLECT_CRON 定时回顾统一会话,让 agent 用 save_memory 沉淀。
+# === 共享记忆库只读体检(保留 REFLECT_*，原地替换旧会话复盘)===
+# 默认关:结构全查、正文分批轮巡；只报建议，不读聊天，不自动改记忆。
 REFLECT_ENABLED: bool = _parse_bool(os.environ.get("REFLECT_ENABLED", ""), False)
 REFLECT_CRON: str = os.environ.get("REFLECT_CRON", "0 23 * * *").strip()
 # 反思结果推送目标 "platform:chat_id"(可选;不配则只写日志)
