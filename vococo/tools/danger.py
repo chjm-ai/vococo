@@ -1043,16 +1043,17 @@ def _known_secret_values() -> list[str]:
     return [v for v in vals if v and len(v) >= 8]
 
 
-def redact_secrets(text: str) -> str:
-    """回复文本发出前的最后一道扫描:命中已知密钥字面值/常见密钥形状则打码。"""
+def redact_secrets(text: str, *, preserve_lines: bool = False) -> str:
+    """回复文本发出前打码；文件审计保留换行数，引用行号仍对应原件。"""
     if not text:
         return text
     out = text
     for val in _known_secret_values():
         if val in out:
-            out = out.replace(val, _REDACTED)
+            replacement = _REDACTED + ("\n" * val.count("\n") if preserve_lines else "")
+            out = out.replace(val, replacement)
     for rx in _SECRET_SHAPE_PATTERNS:
-        out = rx.sub(_REDACTED, out)
+        out = rx.sub(lambda match: _REDACTED + ("\n" * match[0].count("\n") if preserve_lines else ""), out)
     return out
 
 

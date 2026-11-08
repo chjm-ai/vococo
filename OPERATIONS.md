@@ -90,6 +90,15 @@ system prompt 的 append 块 + skill 描述是每轮都进的固定成本,长会
 - 服务器侧 sshd 要配 `ClientAliveInterval`,否则本机断网重连时,旧转发还占着端口,新连接会反复失败(见脚本头注释)。
 - 隧道断开时入口返回 502,先看 `bash deploy/cn-tunnel.sh logs`。
 
+## 共享记忆库体检
+
+- 原地复用 `REFLECT_ENABLED`、`REFLECT_CRON`、`REFLECT_TARGET`，不新增 cron/launchd/OpenClaw 调度；旧的「main 最近 80 轮」复盘已移除。既有实例定义登记到 `~/ai-automation/tasks.yaml`，执行仍由 vococo 内置 `_reflect` 承担。
+- 输入仅为 `AI_BRAIN/MEMORY.md`、`memory/**/*.md`，包含各项目记忆和历史归档；不读会话数据库或模型会话历史。允许 AI_BRAIN 根目录为软链，库内软链、读取失败、超大文件会报未完成，不把缺失当无问题。
+- 每次检查全部文件的精确重复、标准索引 Markdown/箭头链接和注入长度；不检查外部 URL、非标准引用或真实服务状态，不能据此断言所有引用有效。
+- 语义审计每次轮巡约 60,000 字符正文，长文按行分段，不截尾；全局索引同时提供作对照。不同批次正文并未全面交叉比较。模型使用现有默认供应商，严格隔离、无工具/技能/MCP/自动记忆/历史，只能给建议。报告原文引用须通过路径、行号及内容匹配。
+- `data/memory-audit.json` 保存轮巡位置、当前内容版本的覆盖统计、本轮 findings 和已通知的问题指纹，不复制整库正文。无新增问题静默（不代表零模型调用），失败单独提醒且不推进游标；同一问题不反复通知。
+- 所有建议均待确认；日期更新不代表事实更正确，历史归档与现行结论不同也不直接判冲突。审计绝不自动修改、合并或删除记忆。
+
 ## 排障:查会话
 
 会话数据在 `data/state.db`(SQLite,`turns`/`session_meta`/`projects` 三张表,见 [session_store.py](vococo/memory/session_store.py))。别再手写 SQL 或翻 `~/.claude/projects/`——用 [scripts/inspect_sessions.py](scripts/inspect_sessions.py):

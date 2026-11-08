@@ -21,7 +21,7 @@ from vococo.core import tasks as bg_tasks
 from vococo.core.task_runner import _SUMMARY_TAG_INSTRUCTION
 from vococo.core.agent import AgentReply, Done, SessionStarted
 from vococo.cron import scheduler
-from vococo.memory import session_store
+from vococo.memory import audit, session_store
 from vococo.voice import notify
 
 
@@ -72,10 +72,10 @@ async def test_reflect_persists_before_notifying(cron_env, monkeypatch, conv):
     monkeypatch.setattr(scheduler.config, "REFLECT_TARGET", f"web:{conv}")
     session_store.append(scheduler.config.SESSION_KEY, "记住这个", "已记住")
 
-    async def fake_run(*args, **kwargs):
-        return AgentReply(text="已整理一条长期记忆", tool_calls=[], cost_usd=None, is_error=False)
+    async def fake_review():
+        return audit.AuditResult("发现一条待确认的记忆冲突，未修改文件", {})
 
-    monkeypatch.setattr(scheduler, "run_turn", fake_run)
+    monkeypatch.setattr(audit, "review", fake_review)
     adapter = WebAdapter()
     emitted = []
     key = scheduler.config.resolve_session_key("web", conv)
@@ -100,13 +100,13 @@ async def test_reflect_without_output_or_target_does_not_append(cron_env, monkey
     session_store.append(scheduler.config.SESSION_KEY, "问题", "回复")
     monkeypatch.setattr(scheduler.config, "REFLECT_TARGET", target)
 
-    async def fake_run(*args, **kwargs):
-        return AgentReply(text=summary, tool_calls=[], cost_usd=None, is_error=False)
+    async def fake_review():
+        return audit.AuditResult(summary, {})
 
     async def unexpected_push(*args):
         raise AssertionError("无输出或无目标不应推送")
 
-    monkeypatch.setattr(scheduler, "run_turn", fake_run)
+    monkeypatch.setattr(audit, "review", fake_review)
     await scheduler._reflect(unexpected_push)
     assert len(session_store.load_history(scheduler.config.SESSION_KEY)) == 1
 
@@ -116,13 +116,13 @@ async def test_reflect_push_failure_keeps_saved_message(cron_env, monkeypatch):
     monkeypatch.setattr(scheduler.config, "REFLECT_TARGET", "web:main")
     session_store.append(scheduler.config.SESSION_KEY, "问题", "回复")
 
-    async def fake_run(*args, **kwargs):
-        return AgentReply(text="可找回的摘要", tool_calls=[], cost_usd=None, is_error=False)
+    async def fake_review():
+        return audit.AuditResult("可找回的摘要", {})
 
     async def failed_push(*args):
         raise RuntimeError("通知暂时不可用")
 
-    monkeypatch.setattr(scheduler, "run_turn", fake_run)
+    monkeypatch.setattr(audit, "review", fake_review)
     with pytest.raises(RuntimeError, match="通知暂时不可用"):
         await scheduler._reflect(failed_push)
     assert session_store.load_history(scheduler.config.SESSION_KEY)[-1]["assistant"].endswith("可找回的摘要")
