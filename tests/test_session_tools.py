@@ -178,8 +178,11 @@ async def test_continue_really_injects_into_existing_session(chat, monkeypatch, 
 @pytest.mark.anyio
 @pytest.mark.parametrize("method", ["query_session", "continue_session"])
 @pytest.mark.parametrize("kind", ["unknown", "archived", "self", "project", "agent", "task", "voice"])
-async def test_target_guards(chat, method, kind):
+async def test_target_guards(chat, monkeypatch, method, kind):
     _, source, target = chat
+    deliveries = []
+    if kind == "archived":
+        monkeypatch.setattr(web_bridge, "_inject_key_fn", lambda key, text: deliveries.append(key))
     if kind == "unknown":
         target += "missing"
     elif kind == "archived":
@@ -196,8 +199,12 @@ async def test_target_guards(chat, method, kind):
     result = await call(source, method, {"session_id": target, "instruction": "继续"})
     if method == "query_session" and kind in {"project", "agent", "task", "voice"}:
         assert result["turns"] == [{"user": "秘密", "assistant": "不能泄露"}]
-    elif method == "query_session" and kind == "archived":
-        assert result["turns"] == [{"user": "旧问题", "assistant": "旧回答"}]
+    elif kind == "archived":
+        if method == "query_session":
+            assert result["turns"] == [{"user": "旧问题", "assistant": "旧回答"}]
+        else:
+            assert result["status"] == "queued"
+            assert deliveries == [target]
     else:
         assert "error" in result and "turns" not in result
 

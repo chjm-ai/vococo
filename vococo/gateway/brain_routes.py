@@ -409,10 +409,6 @@ def _history_target(data: dict, target: str) -> tuple[str, str]:
         _reject(404, f"会话不存在或不属于该 Agent{hint}")
     if session_key == config.SESSION_KEY:
         _reject(400, "不支持向统一主会话续接")
-    _archived = session_store._conn().execute(
-        "SELECT archived FROM session_meta WHERE session_key=?", (session_key,)).fetchone()
-    if _archived and _archived[0]:
-        _reject(409, "该会话已归档，先取消归档再续接")
     return session_key, agent_id
 
 

@@ -684,8 +684,15 @@ def fake_web(monkeypatch):
     return calls
 
 
-async def test_continue_history_session_in_place_once(client, monkeypatch):
+@pytest.mark.parametrize("archived", [False, True])
+@pytest.mark.parametrize("session_prefix", ["web", "session"])
+async def test_continue_history_session_in_place_once(client, monkeypatch, archived, session_prefix):
     key, phash = history_session()
+    if session_prefix == "session":
+        key = "session:archived-history"
+        session_store.bind_session(key, agent_id="123456abcd")
+        session_store.append(key, "旧问题", "旧回答")
+    session_store.set_conv_archived(key, archived)
     delivery = fake_web(monkeypatch)
     payload = {"id": key, "instruction": "只确认收到，不要改研究计划", "idempotency_key": "hist-session-01"}
     first = await post(client, "continue_task", payload)
@@ -748,11 +755,13 @@ async def test_continue_history_session_scope_and_validation(client, monkeypatch
     assert delivery == []
 
 
-async def test_continue_history_session_rejects_busy_without_sending(client, monkeypatch):
+@pytest.mark.parametrize("archived", [False, True])
+async def test_continue_history_session_rejects_busy_without_sending(client, monkeypatch, archived):
     from vococo.gateway import clarify
 
     key, _ = history_session()
     delivery = fake_web(monkeypatch)
+    session_store.set_conv_archived(key, archived)
     monkeypatch.setattr(clarify, "_active_sessions", {key})
     assert clarify.has_pending(key) is False
     payload = {"id": key, "instruction": "不要在生成时插话", "idempotency_key": "busy-00000001"}
