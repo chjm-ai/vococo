@@ -34,13 +34,6 @@ def _key(reference: str) -> str:
     return key
 
 
-def _archived(key: str) -> bool:
-    row = session_store._conn().execute(
-        "SELECT archived FROM session_meta WHERE session_key=?", (key,),
-    ).fetchone()
-    return bool(row and row[0])
-
-
 def _scope(key: str) -> tuple:
     project = config.project_hash_from_key(key)
     owner = agents.agent_for_session(key)
@@ -235,8 +228,8 @@ async def _continue(source: str, denied: tuple, reference: str, instruction: str
     if not access:
         _send_access(source, key, denied)
     _scope(key)
-    if not (key == config.SESSION_KEY or key.startswith(("web:", "session:", "task:"))) or _archived(key):
-        raise ValueError("暂不支持向此类型或已归档会话发送指令")
+    if not (key == config.SESSION_KEY or key.startswith(("web:", "session:", "task:"))):
+        raise ValueError("暂不支持向此类型会话发送指令")
     from ..core import task_runner
 
     if (key in clarify._active_sessions or clarify.has_pending(key)

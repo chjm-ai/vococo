@@ -152,5 +152,10 @@ async def test_task_return_obeys_target_guards(task_chat, monkeypatch, state):
     else:
         monkeypatch.setattr(web_bridge, "_inject_key_fn", None)
     monkeypatch.setattr(web_bridge, "_cancel_fn", None)
-    assert "error" in await send(source, parent)
-    assert adapter._inbox.empty()
+    result = await send(source, parent)
+    if state == "archived":
+        assert result["status"] == "queued"
+        assert adapter._inbox.get_nowait().session_key == parent
+    else:
+        assert "error" in result
+        assert adapter._inbox.empty()
