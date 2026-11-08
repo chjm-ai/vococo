@@ -568,6 +568,13 @@ function renderCronTab(box, inCall){
     }
   }
 }
+// 状态数据立即写入，只将同一帧内的重复列表重绘合并；点击与加载仍可同步渲染。
+let convRenderPending=false;
+function scheduleConvsRender(){
+  if(convRenderPending) return;
+  convRenderPending=true;
+  requestAnimationFrame(()=>{ convRenderPending=false; renderConvs(); });
+}
 // 「项目」Tab:手风琴——默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
 function renderConvs(){
   const inCall = !$("#callView").hidden;  // 统一对话视图打开时,侧栏只高亮「对话」入口
@@ -661,7 +668,7 @@ function syncSidebarTaskStatus(t){
   const row=(S.voiceSidebar.tasks||[]).find(x=>x.task_id===t.id || x.conv===t.session_key);
   if(!row){ loadVoiceSidebar(); return; }
   if(row.task_status===t.status) return;
-  row.task_status=t.status; renderConvs();
+  row.task_status=t.status; scheduleConvsRender();
 }
 // ── 定时任务:侧边栏固定分组(每个任务一条专属会话)────────────────────────────
 var _cronSidebarRequestId = 0;
