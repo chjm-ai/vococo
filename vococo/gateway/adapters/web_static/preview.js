@@ -600,8 +600,12 @@ function renderPreviewMarkdown(target, source, streaming=false){
   for(const next of holder.childNodes){
     if(next._reuseLocal){patchLocalHtmlContent(next._reuseLocal,next);next._reuse=next._reuseLocal;}
   }
-  const nodes=[...holder.childNodes].map(n=>n._reuse||n);
-  for(const child of [...target.childNodes]) if(!nodes.includes(child)) child.remove();
+  // 已完成的段落通常不再变化，保留 DOM，避免每个 token 都触发整篇布局和观察器。
+  const previousNodes=[...target.childNodes];
+  const nodes=[...holder.childNodes].map((node,index)=>
+    node._reuse || (previousNodes[index]?.isEqualNode(node) ? previousNodes[index] : node));
+  const retained=new Set(nodes);
+  for(const child of previousNodes) if(!retained.has(child)) child.remove();
   let cursor=target.firstChild;
   for(const child of nodes){
     if(child===cursor) cursor=cursor.nextSibling;

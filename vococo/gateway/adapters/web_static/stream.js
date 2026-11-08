@@ -411,9 +411,15 @@ async function loadAuthedImg(im, url, thumb){
   const o = await fetchCachedBlobUrl(full);
   if(o) im.src=o;
 }
+let scrollPending=false, scrollForce=false;
 function scrollDown(force){
+  scrollForce=scrollForce || !!force;
+  if(scrollPending) return;
+  scrollPending=true;
   const m=$("#messages");
   requestAnimationFrame(()=>{
+    const force=scrollForce;
+    scrollPending=false; scrollForce=false;
     if(_chatAnchor?.conv===S.conv) return;
     if(force){ m.scrollTop=m.scrollHeight; updateScrollBtn(); return; }
     const dist=m.scrollHeight - m.scrollTop - m.clientHeight;
@@ -657,7 +663,7 @@ function retryLabel(rt){
 function clearUpstreamRetry(s){ if(s && s.retry) s.retry=null; }
 function renderStatus(){
   if(!S.stream) return;
-  const t=S.stream.tools, hasBody=!!streamText(S.stream);
+  const t=S.stream.tools, hasBody=Object.values(S.stream.segs).some(segment=>!!segment.dataset.raw);
   // 工具 chip 已下放到 flow 卡片,这里不再重复;只留一条持续的"工作中/思考中"指示
   const secs=Math.max(0, Math.round((Date.now()-(S.stream.t0||Date.now()))/1000));
   const tick=secs>=1?(" · "+(secs>=60?Math.floor(secs/60)+"m"+(secs%60)+"s":secs+"s")):"";
@@ -667,7 +673,10 @@ function renderStatus(){
   // 没动静。没有这层,连续重试几分钟就是干转的「思考中」,用户以为卡死了(2026-10-15)。
   const rt=S.stream.retry, rl=rt?retryLabel(rt):"";
   const label = S.stream.audioPending ? "音频转写中" : (rl || (working ? "工作中" : "思考中"));
-  S.stream.status.innerHTML = '<span class="chip live'+(rl?' warn':'')+'">'+esc(label)+DOTS+esc(tick)+'</span>'
+  const status=S.stream.status, signature=JSON.stringify([label,tick,!!rl]);
+  if(status._renderSignature===signature) return;
+  status._renderSignature=signature;
+  status.innerHTML = '<span class="chip live'+(rl?' warn':'')+'">'+esc(label)+DOTS+esc(tick)+'</span>'
     + '<button type="button" class="statusstop" title="停止回复" aria-label="停止回复"><span class="sq"></span></button>';
 }
 function discardStream(){
@@ -746,7 +755,7 @@ let _liveSig="";
 function markLive(){
   const sig=Object.keys(S.live).sort().join(",");
   if(sig===_liveSig) return;
-  _liveSig=sig; renderConvs();
+  _liveSig=sig; scheduleConvsRender();
 }
 function flushHistoryRefresh(conv, required=false){
   if(conv!==S.conv || S.stream) return;
