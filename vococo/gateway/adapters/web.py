@@ -1085,7 +1085,6 @@ class WebAdapter:
         q: asyncio.Queue[tuple[int, str]] = asyncio.Queue(maxsize=1000)
         self._clients.add(q)  # 先挂上队列,再补发,漏网的靠前端按 id 去重
         try:
-            await resp.write(b": connected\n\n")
             # 不带 SSE id(不占游标、不参与去重):告诉前端这次连的是哪个进程实例,
             # 前端跟自己记的上一个值一比对,变了就知道服务端重启过、缓冲补不全了。
             # 顺带带上当前 seq:重启后编号从 0 重新数,前端拿到新进程的编号起点,
@@ -1095,12 +1094,14 @@ class WebAdapter:
                 {"type": "hello", "boot_id": self._boot_id, "seq": self._seq},
                 ensure_ascii=False,
             )
-            await resp.write(f"data: {hello}\n\n".encode("utf-8"))
             # 首连/重连都两阶段恢复「进行中那一轮」——先秒推状态帧(几十字节,让用户立刻看到
             # "还在跑、到哪步",不会误发),内容帧随后慢补。旧历史仍走 /history 拉,不在此重放。
             # 重连也要走这条路:下面的环形缓冲只有 512 条,长时间断线或多会话同时飙事件很容易
             # 把它撑爆,导致某个后台会话的 done 被挤出缓冲、前端永远等不到收尾(卡死在"思考中")。
             # `_live` 按会话只留最新一帧,不受缓冲大小影响,补发它才能保证重连必定能追平现状。
+            # 首次写出前冻结所有恢复帧；写出期间的新事件只走队列，不能插入旧快照。
+            replay = {seq: data for seq, data in self._buffer if seq > last_id}
+            statuses = []
             if self._live:
                 now = time.time()
                 for conv, st in list(self._live.items()):  # 阶段①:状态帧先行
@@ -1113,19 +1114,21 @@ class WebAdapter:
                         ensure_ascii=False,
                     )
                     # 不带 SSE id:纯状态提示,不去重、不污染重连游标
-                    await resp.write(f"data: {status}\n\n".encode("utf-8"))
+                    statuses.append(status)
                 for conv, st in list(self._live.items()):  # 阶段②:内容帧随后
                     # 按 seq 升序补发,保证前端按 id 去重时单调不丢帧
                     for seq, payload in sorted(st["frames"], key=lambda x: x[0]):
                         if payload.get("type") == "start":  # start 带真实已跑秒数
                             payload = {**payload,
                                        "elapsed": max(0, int(now - st.get("started", now)))}
-                        data = json.dumps(payload, ensure_ascii=False)
-                        await resp.write(f"id: {seq}\ndata: {data}\n\n".encode("utf-8"))
-            # 重连:补发断线期间漏掉的事件(全文快照,直接重放即还原画面)
-            for seq, data in list(self._buffer):
-                if seq > last_id:
-                    await resp.write(f"id: {seq}\ndata: {data}\n\n".encode("utf-8"))
+                        replay[seq] = json.dumps(payload, ensure_ascii=False)
+            await resp.write(b": connected\n\n")
+            await resp.write(f"data: {hello}\n\n".encode("utf-8"))
+            for status in statuses:
+                await resp.write(f"data: {status}\n\n".encode("utf-8"))
+            # 快照和漏接事件必须全局有序；先发较新的快照会让前端丢掉其他会话的完成帧。
+            for seq, data in sorted(replay.items()):
+                await resp.write(f"id: {seq}\ndata: {data}\n\n".encode("utf-8"))
             while True:
                 try:
                     seq, data = await asyncio.wait_for(q.get(), timeout=15)
