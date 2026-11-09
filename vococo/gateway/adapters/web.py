@@ -825,6 +825,10 @@ class WebAdapter:
         if row is None:
             raise web.HTTPNotFound(text="附件不存在或不属于当前会话。")
         filename, content = row
+        if request.query.get("format") == "office":
+            from ..office_preview import office_response
+
+            return await office_response(filename, content)
         return web.Response(body=content, content_type="application/octet-stream", headers={
             "Content-Disposition": "attachment; filename=download; filename*=UTF-8''" + quote(filename, safe=""),
             "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
@@ -3280,12 +3284,18 @@ class WebAdapter:
             size = target.stat().st_size
         except OSError:
             return web.json_response({"error": "读取失败"}, status=500)
-        if size > _DOC_PREVIEW_MAX:
-            return web.json_response({"error": "文件太大(超过 3MB),暂不支持预览"}, status=413)
+        from ..office_preview import EXTENSIONS, MAX_BYTES, office_response
+
+        is_office = target.suffix.lower() in EXTENSIONS
+        limit = MAX_BYTES if is_office else _DOC_PREVIEW_MAX
+        if size > limit:
+            return web.json_response({"error": f"文件太大(超过 {limit // 1024 // 1024}MB),暂不支持预览"}, status=413)
         try:
-            data = target.read_bytes()
+            data = await asyncio.to_thread(target.read_bytes)
         except OSError:
             return web.json_response({"error": "读取失败"}, status=500)
+        if request.query.get("format") == "office":
+            return await office_response(target.name, data)
         ctype, _ = mimetypes.guess_type(target.name)
         resp = web.Response(body=data, headers={"Cache-Control": "no-cache"})
         resp.content_type = ctype or "text/plain"
