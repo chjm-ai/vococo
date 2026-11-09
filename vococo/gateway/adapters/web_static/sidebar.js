@@ -264,14 +264,15 @@ function convProject(conv){
   const m = String(conv).replace(/^local-/,"").match(/^p([0-9a-f]+):/);
   return m ? m[1] : null;
 }
-// 取所有置顶行(含普通会话与语音任务;不含主会话——主会话独立渲染,不归置顶分组)。
+// 取所有稍后处理行(含普通会话、语音和定时任务;不含主会话)。
 // 返回 {ts,build} 而非会话对象本身,因为语音任务要用 buildVoiceTaskRow 渲染,跟
 // 普通会话的 buildConvRow 不是同一个函数(2026-07-29:语音任务开放置顶后补上,
 // 否则点了置顶按钮却不会真的挪进置顶区,是个死功能)。
 function pinnedConvs(inCall){
   const convItems = S.convs.filter(c=>c.pinned && c.conv!=="main").map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
   const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
-  return [...convItems, ...taskItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
+  const cronItems = (S.cronJobs||[]).filter(j=>j.pinned).map(j=>({ts:j.last_ts||0, build:()=>buildCronJobRow(j, inCall)}));
+  return [...convItems, ...taskItems, ...cronItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
 }
 // 分组的存储键:默认项目用固定串,项目用其 hash
 function grpKey(hash){ return hash===null ? "__default__" : hash; }
@@ -456,10 +457,10 @@ const SIDE_TABS = [{key:"agents",label:"Agent"},{key:"pinned",label:"稍后"},{k
 // 这里的点击刷新只是断线/后台挂起期间(移动端切后台网络被系统冻结)的兜底,不需要很灵敏,
 // 30s 内重复点击/来回切 Tab 不重新拉取,避免抖动请求。
 const SIDE_TAB_REFRESH_MS = 30000;
-// 各 Tab 展示的数据分别来自哪份接口:置顶是从 S.convs 里筛的,刷新即 loadConvs();
+// 「稍后」汇总普通会话、语音和定时任务,刷新时同步三份列表;
 // 「最近」还混了语音任务,一并刷 loadVoiceSidebar();「定时」是 vococo 任务 + 本机系统任务两块。
 const SIDE_TAB_REFRESHERS = {
-  pinned: () => loadConvs(),
+  pinned: () => Promise.all([loadConvs(), loadVoiceSidebar(), loadCronSidebar()]),
   recent: () => Promise.all([loadConvs(), loadVoiceSidebar()]),
   cron: () => Promise.all([loadCronSidebar(), loadSystemTasks()]),
   agents: () => Promise.all([loadConvs(), loadAgents(), loadCronSidebar(), loadVoiceSidebar()]),
@@ -908,11 +909,16 @@ async function removeProject(hash){
 }
 
 async function pinConv(conv, pinned){
-  const c=findConv(conv); if(c) c.pinned=pinned;  // 乐观更新,立即重渲
+  const c=findConv(conv), wasPinned=!!c?.pinned;
+  if(c) c.pinned=pinned;  // 乐观更新,立即重渲
   renderConvs();
-  try{ await api("/conv/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,pinned})}); }
-  catch(e){ /* 失败也不回滚,下次 loadConvs 会自然纠正 */ }
-  await loadConvs(); renderConvs();
+  try{
+    const r=await api("/conv/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,pinned})});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+  }
+  catch(e){ if(c) c.pinned=wasPinned; renderConvs(); alert("稍后处理设置失败"); }
+  await Promise.all([loadConvs(), loadVoiceSidebar(), loadCronSidebar()]);
+  renderConvs();
 }
 
 // 目录浏览器弹窗

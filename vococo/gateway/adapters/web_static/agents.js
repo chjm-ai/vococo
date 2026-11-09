@@ -478,6 +478,7 @@ function apMenuAt(btn, items){
 function openApTaskMenu(btn, j, a){
   const others=S.agents.filter(x=>x.id!==a.id);
   apMenuAt(btn, [
+    {icon:"pin", label:j.pinned?"取消稍后处理":"稍后处理", run:()=>pinConv(j.conv, !j.pinned)},
     {icon:"edit", label:"编辑", run:()=>openCronModal(j)},
     {icon:"zap", label:"试跑", run:()=>runCronNow(j)},
     {icon:"copy", label:"复制到…", run:()=>pickAgentMenu(btn, others, t=>copyJobTo(j, t))},
