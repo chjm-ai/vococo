@@ -920,7 +920,7 @@ document.addEventListener("click", e=>{ if(!e.target.closest(".conv")) closeAllS
 $("#messages").addEventListener("scroll", ()=>{
   updateScrollBtn();
   // 滚到顶部自动按最早一轮继续取历史,函数在 index.html 主脚本中声明。
-  if(typeof loadEarlierHistory === "function") loadEarlierHistory();
+  if($("#messages").scrollTop<100 && typeof loadEarlierHistory === "function") loadEarlierHistory();
 }, {passive:true}); // 流式时用户上翻→显示↓按钮
 
 // 按 conv id 找会话对象:普通会话在 S.convs,后台任务(语音/cron)行分别在 S.voiceSidebar.tasks / S.cronJobs
