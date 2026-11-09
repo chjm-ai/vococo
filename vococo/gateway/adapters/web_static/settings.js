@@ -863,11 +863,14 @@ function openConvMenu(btn, conv, slim){
   convMenuBtn=btn; btn.classList.add("on");
   const m=el("div","convmenu"); m.style.visibility="hidden";
   // 定时任务会话:菜单换成编辑/启停/删除(归档对定时任务没意义,见 buildCronJobRow)。
-  // slim=true(标题栏「⋯」):启停开关和编辑图标已在标题栏直出,菜单里只剩删除。
+  // slim=true(标题栏「⋯」):启停开关和编辑图标已直出,菜单保留稍后处理和删除。
   // 直接按 conv 精确匹配 S.cronJobs(不再靠前缀字符串猜,理由同 syncCronHeader)。
   const cronJob=(S.cronJobs||[]).find(x=>x.conv===conv);
   if(cronJob){
     const job=cronJob;
+    const pin=el("button","cmitem"); pin.innerHTML=ic("pin")+(job.pinned?" 取消稍后处理":" 稍后处理");
+    pin.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); pinConv(conv, !job.pinned); };
+    m.append(pin);
     if(!slim){
       const edit=el("button","cmitem"); edit.innerHTML=ic("edit")+" 编辑";
       edit.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); if(job) openCronModal(job); };
