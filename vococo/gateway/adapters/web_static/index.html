@@ -2036,8 +2036,12 @@ async function reloadHistory(force){
       // finalizeStream 只清状态条、不摘 DOM 节点,且这颗气泡没有 data-tid——
       // 不手动 remove 的话 renderTurns 认不出它是同一轮,会跟权威重绘的新气泡重复显示。
       const staleRow=S.stream.row;
+      delete S.live[conv]; delete S.streamSnap[conv]; delete S.pendingChoice[conv];
+      markLive();
       finalizeStream();
       staleRow.remove();
+      loadConvs();
+      if(isTaskConv(conv) || String(conv).startsWith("session:")){ loadVoiceSidebar(); loadCronSidebar(); }
     }
     const state=S.histPaging[conv]||(S.histPaging[conv]={loading:false,hasMore:true});
     const turns=mergeLatestHistory(S.histCache[conv], d.turns);
