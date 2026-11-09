@@ -322,6 +322,7 @@ def test_recent_main_filter_uses_ids_before_pagination_and_toggle_restores_rows(
     script = f"""
 const assert = require('node:assert/strict');
 const checkbox = {{}};
+const isChildTask=item=>item?.relation==='child';
 const stored = {{}};
 const localStorage = {{setItem:(key, value)=>stored[key]=value}};
 const TAB_PAGE_SIZE = 20;
@@ -410,6 +411,41 @@ for(const status of ['queued','running','done','failed','cancelled',undefined]){
 assert.equal(menus,12);
 S.convFilter='archived';
 assert.equal(buildVoiceTaskRow({{conv:'task:1'}},false),null);
+"""
+    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+
+
+def test_agent_tab_hides_pinned_children_and_their_unread_badges():
+    """稍后会话从 Agent 子列表及角标统计移除，取消后恢复。"""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("需要 Node 执行 Agent 筛选函数")
+    source = STATIC_AGENTS.read_text(encoding="utf-8")
+    convs = source[source.index("function agentConvs(") : source.index("// Agent 行的两种状态提示")]
+    items = source[source.index("function agentTasks(") : source.index("function agentKey(")]
+    script = f"""
+const assert=require('node:assert/strict');
+const a={{id:'general',main_conv:'main'}};
+const S={{convs:[{{conv:'main',pinned:true}},{{conv:'later',pinned:true,pending_review:true}},
+  {{conv:'normal'}},{{conv:'archived',archived:true}}],
+  voiceSidebar:{{tasks:[{{conv:'task:later',pinned:true,pending_review:true}}]}},
+  live:{{}},pendingReview:{{}},convFilter:'active'}};
+const isChildTask=item=>item?.relation==='child';
+const agentOwnsConv=(a,conv)=>conv!=='main';
+const agentById=()=>a;
+{convs}
+{items}
+assert.deepEqual(agentConvs(a).map(c=>c.conv),['normal']);
+assert.deepEqual(agentOwnItems(a).map(c=>c.conv),['main','normal','archived']);
+assert.equal(agentUnread(a),0);
+S.convs[1].pinned=false; S.voiceSidebar.tasks[0].pinned=false;
+assert.deepEqual(agentConvs(a).map(c=>c.conv),['later','normal']);
+assert.equal(agentUnread(a),2);
+S.convFilter='archived';
+assert.deepEqual(agentConvs(a).map(c=>c.conv),['archived']);
+S.convs=[]; S.voiceSidebar=null;
+assert.deepEqual(agentConvs(a),[]);
+assert.equal(agentUnread(a),0);
 """
     subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
 
