@@ -63,6 +63,25 @@ def _describe_caps(changes: dict) -> str:
     return "；".join(f"{k}: {'跟随全局' if v is None else ', '.join(v) or '无'}" for k, v in changes.items()) or "能力跟随全局"
 
 
+def _cosmetic_settings(args: dict) -> dict:
+    changes = {}
+    if "name" in args:
+        name = args["name"]
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 40:
+            raise ValueError("名称须为 1–40 个字符")
+        changes["name"] = name.strip()
+    if "avatar" in args:
+        avatar = args["avatar"]
+        allowed = {"shape": agents.AVATAR_SHAPES, "color": agents.AVATAR_COLORS, "eyes": agents.AVATAR_EYES}
+        if not isinstance(avatar, dict) or not avatar:
+            raise ValueError("头像须为包含 shape/color/eyes 的对象")
+        if any(key not in allowed or not isinstance(value, str) or value not in allowed[key]
+               for key, value in avatar.items()):
+            raise ValueError("头像字段或取值无效")
+        changes["avatar"] = avatar
+    return changes
+
+
 def _read_agent(agent_id: str) -> dict | None:
     meta = agents._read_meta(agent_id)
     if meta.get("workdir"):
@@ -119,11 +138,17 @@ async def create_agent(args: dict) -> dict:
 
 @tool(
     "update_agent",
-    "配置已有 Agent 的技能和外部 MCP，需经过审批。按 ID 指定；省略字段不修改，null 跟随全局，"
-    "空列表清空专属名单，但插件技能或会话临时 MCP 仍可能加载。只接受设置页列出的全局技能和已启用 MCP；"
-    "不更改名称、权限或人格文档。",
+    "配置已有 Agent。仅修改 name(名称)或 avatar(头像)免审批；技能和外部 MCP 仍需审批。"
+    "按 ID 指定；能力名单省略不修改，null 跟随全局，空列表清空专属名单。"
+    "仅接受设置页已有技能和启用的 MCP，不更改权限。头像字段 shape/color/eyes 使用已有合法值。",
     {"type": "object", "properties": {
         "id": {"type": "string"},
+        "name": {"type": "string"},
+        "avatar": {"type": "object", "properties": {
+            "shape": {"type": "string", "enum": sorted(agents.AVATAR_SHAPES)},
+            "color": {"type": "string", "enum": sorted(agents.AVATAR_COLORS)},
+            "eyes": {"type": "string", "enum": sorted(agents.AVATAR_EYES)},
+        }, "additionalProperties": False},
         "skills": {"type": ["array", "null"], "items": {"type": "string"}},
         "mcp": {"type": ["array", "null"], "items": {"type": "string"}},
     }, "required": ["id"]},
@@ -137,12 +162,13 @@ async def update_agent(args: dict) -> dict:
         return _result("Agent 不存在。")
     try:
         changes = _capabilities(args)
-        if not changes:
-            raise ValueError("请指定 skills 或 mcp")
+        cosmetic = _cosmetic_settings(args)
+        if not changes and not cosmetic:
+            raise ValueError("请指定 name、avatar、skills 或 mcp")
     except ValueError as exc:
         return _result(f"未修改：{exc}")
     detail = f"配置「{before['name']}」（{agent_id}）；原配置：{_describe_caps({k: before.get(k) for k in changes})}；新配置：{_describe_caps(changes)}"
-    if not await danger.require_approval("创建或配置 Agent", detail):
+    if changes and not await danger.require_approval("创建或配置 Agent", detail):
         return _result("未批准，未修改 Agent。")
     with agents._UPDATE_LOCK:
         current = _read_agent(agent_id)
@@ -150,7 +176,9 @@ async def update_agent(args: dict) -> dict:
             return _result("Agent 或相关配置在审批期间发生变化，请重新确认。")
         try:
             changes = _capabilities(args)
-            updated = agents.update(agent_id, **changes)
+            # agents.update 在同一把锁内重读元数据，只提交指定字段，不回写权限快照。
+            updated = agents.update(agent_id, **changes, **cosmetic)
         except ValueError as exc:
             return _result(f"未修改：{exc}")
-    return _result(f"已配置 Agent「{updated['name']}」（{agent_id}）：{_describe_caps(changes)}。")
+    summary = _describe_caps(changes) if changes else "已更新名称/头像，未更改能力或权限"
+    return _result(f"已配置 Agent「{updated['name']}」（{agent_id}）：{summary}。")
