@@ -2115,7 +2115,7 @@ async def retry_website_cover(args: dict) -> dict:
         return _ok(f"封面待生成：{exc}；未重新发布。")
 
 
-def build_mcp_servers(*, subagent_tool=None, delegation_tools=(), session_tools=()) -> dict:
+def build_mcp_servers(*, subagent_tool=None, delegation_tools=(), session_tools=(), dispatch_tools=()) -> dict:
     """返回 server 表；同步子代理由父轮绑定权限后传入，离线调用不暴露入口。"""
     from .agent_management import create_agent, update_agent
     from .lark_documents import lark_document
@@ -2159,7 +2159,7 @@ def build_mcp_servers(*, subagent_tool=None, delegation_tools=(), session_tools=
                 publish_website,
                 unpublish_website,
                 retry_website_cover,
-                dispatch_session,
+                *(dispatch_tools or [dispatch_session]),
                 restart_self,
                 create_agent,
                 update_agent,

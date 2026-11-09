@@ -982,6 +982,7 @@
   let voiceTasksClearedAt = Number(localStorage.getItem("vococo_voice_tasks_cleared_at") || 0);
 
   function isCurrentConversationTask(task){
+    if(isChildTask(task)) return false;
     if(task.origin !== "voice" && task.origin !== "chat") return false;
     // 「清空上下文」时间戳只该滤掉旧对话遗留的终态任务;任务被续接/追问重新
     // 激活(活跃状态)后不再受它限制——否则老任务重开时状态条永远停在旧的
@@ -1447,11 +1448,13 @@
     const es = new EventSource("/tasks/stream?token=" + encodeURIComponent(S.token));
     es.addEventListener("task_update", e=>{
       const t=JSON.parse(e.data);
+      taskTree.schedule();
       upsertTaskBar(t);  // 派发/起跑/进度变化 → 状态条实时刷新
       syncSidebarTaskStatus(t);  // 侧边栏默认项目任务行的进行中圆点同步亮/灭
     });
     es.addEventListener("task_done", e=>{
       const data = JSON.parse(e.data);
+      taskTree.schedule();
       tasksBadge.classList.add("on");
       loadTasks();
       loadVoiceSidebar();  // 任务终态 → 同步刷新侧边栏默认项目里那条后台任务的状态点
@@ -1469,7 +1472,7 @@
       }
     });
     // SSE 断线重连成功后全量校准一次:重连期间错过的 task_done 靠这次拉全量补上
-    es.onopen = ()=>{ taskStreamOpened = true; loadTasks(); };
+    es.onopen = ()=>{ taskStreamOpened = true; loadTasks(); taskTree.schedule(); };
   }
 
   // ── Omni-Realtime WebRTC 通话(免提唯一管线,ADR 0004)──────────────────────
@@ -3464,6 +3467,7 @@
     $("#callView").hidden = true;
     $("#chatMain").hidden = false;
     S.conv = S.callReturnConv;
+    taskTree.schedule();
     restoreSessionModels();
     if(typeof restoreComposerState==="function") restoreComposerState(S.conv);
     renderProjSelChip();  // 返回草稿会话时，恢复项目选择器

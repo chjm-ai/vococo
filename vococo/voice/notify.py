@@ -56,6 +56,12 @@ async def on_task_terminal(task_id: str) -> None:
     task = tasks.get(task_id)
     if task is None:
         return
+    from ..core import dispatch
+
+    own = dispatch.current(task["session_key"]) if dispatch.enabled() else None
+    if (own and own["state"] == "waiting") or (task.get("relation") == "child" and task["status"] == "done"):
+        task_events.on_task_activity(task)
+        return
     announce_text = _announce_text(task)
     payload = {
         "id": task["id"], "task_id": task["id"], "job_id": task.get("job_id"),

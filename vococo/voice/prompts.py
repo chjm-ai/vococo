@@ -17,7 +17,7 @@ build_prompt() 的输出就有 4461 字符。现在拆成:
 from __future__ import annotations
 
 from .. import config
-from ..core import tasks
+from ..core import dispatch, tasks
 
 # 2026-07-15 P1:追加 voice_append_task(追加指令),共四个工具。
 # 2026-07-07 P1:追加「派活规则」——voice_dispatch_task/voice_query_task/voice_list_tasks
@@ -192,10 +192,19 @@ def voice_system_prompt_extra() -> str:
     (成本可忽略,不是文件 I/O),只为了让 config.ROOT_DIR/TASK_TIMEOUT_MIN
     运行期被改(设置页/测试 monkeypatch)时立即反映,不用等进程重启。
     """
-    return _VOICE_STABLE_RULES_TEMPLATE.format(
+    rules = _VOICE_STABLE_RULES_TEMPLATE.format(
         project_root=config.ROOT_DIR,
         timeout_min=config.TASK_TIMEOUT_MIN,
     )
+    if dispatch.enabled():
+        rules += (
+            "\n\n【语音统一派发】语音前台仍只用 voice_dispatch_task 派后台任务，"
+            "由服务端进入统一派发的 independent 独立会话；不要改调文字入口 dispatch_task。"
+            "实时音频不是可恢复的 SDK 父轮，任务完成后通知用户，不自动续跑音频对话。"
+            "已有任务仍按上述续接规则匹配标题并使用 voice_continue_session。"
+            "model 仅在用户明确指定时传入；不传不继承语音前台模型，使用 config.MODEL 全局默认。"
+        )
+    return rules
 
 
 # 派活规则第2条完全靠模型临场判断"这事要不要拆后台",没有代码兜底——2026-07-09

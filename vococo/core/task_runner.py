@@ -385,6 +385,15 @@ def _counts_daily(row: dict) -> bool:
 
 
 def _token_budget(row: dict) -> tuple[int, str]:
+    from . import dispatch as dispatching
+
+    budget, refused = _source_token_budget(row)
+    if refused or not dispatching.enabled():
+        return budget, refused
+    return dispatching.limit_budget(row.get("session_key", ""), budget, row.get("origin", "chat"))
+
+
+def _source_token_budget(row: dict) -> tuple[int, str]:
     """本轮 token 上限 + 超每日总量时的拒跑原因(空串=可以跑)。0=不限。"""
     if row.get("origin") == "chat":
         return config.CHAT_TASK_TOKEN_BUDGET, ""
@@ -444,6 +453,11 @@ async def _run(task_id: str, turn_text: str | None = None, *, fresh: bool = Fals
     inline_research = tasks.is_inline_research(row)
     turn_id = None if inline_research else session_store.start_turn(
         session_key, prompt_text, source_access=tasks.automatic_access(row))
+    from . import dispatch as dispatching
+
+    execution_id = None
+    if dispatching.enabled() and turn_id is not None:
+        execution_id = dispatching.begin(session_key, turn_id, tasks.automatic_access(row))
     sdk_session_id: str | None = None
     chosen_at_start = ""
     # Git 项目任务必须在专属 worktree + 分支(vococo/<task_id>)执行;创建失败就让任务失败,
@@ -542,6 +556,11 @@ async def _run(task_id: str, turn_text: str | None = None, *, fresh: bool = Fals
         def track_usage(tokens):
             nonlocal used_tokens
             used_tokens = max(used_tokens, tokens)
+            if dispatching.enabled():
+                dispatching.record_usage(session_key, turn_id, used_tokens, execution_id=execution_id)
+                _, refused = dispatching.limit_budget(session_key, token_budget, row.get("origin", "chat"))
+                if refused:
+                    raise ValueError(refused)
 
         execution = {"token_budget": token_budget, "usage_callback": track_usage}
         if turn_text is not None and tasks.automatic_access(row).get("remote_brain") is True:
@@ -567,7 +586,7 @@ async def _run(task_id: str, turn_text: str | None = None, *, fresh: bool = Fals
         if is_research:
             effective_cwd = str(config.DATA_DIR / "research" / task_id)
         else:
-            effective_cwd = await worktree.execution_cwd_for_task(row["cwd"], task_id)
+            effective_cwd = row.get("review_cwd") if row.get("execution_profile") == "review" else await worktree.execution_cwd_for_task(row["cwd"], task_id)
         cwd_token = danger.set_cwd(
             effective_cwd,
             project_root=row["cwd"] if not is_research and effective_cwd != row["cwd"] else None,
@@ -605,6 +624,8 @@ async def _run(task_id: str, turn_text: str | None = None, *, fresh: bool = Fals
 
     try:
         tasks.set_run_metrics(task_id, used_tokens, time.monotonic() - started_at, tool_calls)
+        if dispatching.enabled():
+            dispatching.record_usage(session_key, turn_id, used_tokens, execution_id=execution_id)
     except Exception as exc:  # noqa: BLE001 —— 指标只是统计,写失败不影响任务收尾
         print(f"[task_runner] 运行指标记账失败:{exc}", flush=True)
 
@@ -669,6 +690,8 @@ async def _run(task_id: str, turn_text: str | None = None, *, fresh: bool = Fals
 
     # 自动调度显式 fresh；人工续接不能继承历史调度与派发者的通知策略。
     event = Completion(session_key, status, stored_text, turn_id) if turn_text is not None and not fresh else None
+    if dispatching.enabled():
+        dispatching.finish(session_key, status)
     await task_events.emit_terminal(task_id, sink=sink, reply=reply, turn_id=turn_id, completion_event=event)
 
     _maybe_start_next()
@@ -697,7 +720,9 @@ def _record_agent_run(task_id: str, status: str, turn_id: int) -> None:
 
 def _maybe_start_next() -> None:
     """并发有空位就从队首拉一个 queued 任务起跑;没有空位/没有排队任务则什么都不做。"""
-    while tasks.count_running() < config.TASK_MAX_CONCURRENCY:
+    from . import dispatch as dispatching
+
+    while tasks.count_running() + (dispatching.running_resumes() if dispatching.enabled() else 0) < config.TASK_MAX_CONCURRENCY:
         queued = tasks.list_queued()
         if not queued:
             return
@@ -930,6 +955,9 @@ def cancel(task_id: str) -> bool:
     row = tasks.get(task_id)
     if row is None:
         return False
+    from . import dispatch as dispatching
+
+    stopped_children = dispatching.cancel_session(row["session_key"]) if dispatching.enabled() else False
     if row["status"] == "queued":
         # 排队中取消不会走 _run 的终态收尾(没有 on_task_terminal),
         # 但已是一个终态——需要通知离线用户(Web Push / 平台推送),
@@ -954,7 +982,7 @@ def cancel(task_id: str) -> bool:
             else:
                 t.cancel()
             return True
-    return False
+    return stopped_children
 
 
 async def cancel_and_wait(task_id: str, timeout: float = 10.0) -> None:
@@ -998,6 +1026,10 @@ async def heal_after_restart() -> None:
     for task_id in terminal_ids:
         await task_events.emit_terminal(task_id)
     delegation.wake()  # 包括上次已终态但回执尚未确认的任务。
+    from . import dispatch as dispatching
+
+    if dispatching.enabled():
+        dispatching.recover()
     _maybe_start_next()
 
 

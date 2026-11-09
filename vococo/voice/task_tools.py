@@ -23,7 +23,7 @@ from __future__ import annotations
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from .. import config, providers
-from ..core import task_runner, task_words, tasks
+from ..core import dispatch, task_runner, task_words, tasks
 from ..core.task_words import status_word
 from ..gateway import clarify, web_bridge
 from ..gateway.core import MODEL_CHOICES
@@ -104,8 +104,7 @@ def _find_web_session(session_id: str) -> dict | None:
     "仓库。只要是 git 仓库就自动开独立 worktree+分支,绝不会动主目录。model:用户明确指定要用哪个"
     f"模型跑这个任务时才传(如「用 opus 跑」),可选值:{_MODEL_EXAMPLES};"
     "没听到用户点名要哪个模型就不要传——任务【不会】继承当前对话的模型,"
-    "而是自动兜底到已配置的第三方供应商(优先 DeepSeek,"
-    "没有已配置的第三方才落 config.MODEL 官方默认)。",
+    "而是使用 config.MODEL 配置的全局默认模型。",
     {
         "type": "object",
         "properties": {
@@ -144,11 +143,24 @@ async def voice_dispatch_task(args: dict) -> dict:
     ctx = clarify.current()
     dispatch_platform = ctx.adapter.platform if (ctx and ctx.adapter) else None
     dispatch_chat_id = str(ctx.chat_id) if (ctx and ctx.chat_id is not None) else None
-    task = task_runner.dispatch(
-        title=title, prompt=prompt, cwd=cwd, model=model or None,
-        dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
-        origin="voice", context_session_key=ctx.session_key if ctx else None,
-    )
+    if dispatch.enabled():
+        if not ctx or not ctx.session_key:
+            return _ok("派发失败:缺少语音来源会话，请重新发起。")
+        try:
+            # 实时音频没有可恢复的 SDK 父轮，只创建独立会话，不挂自动续跑关系。
+            task = dispatch.dispatch(
+                ctx.session_key, "independent", title, prompt, cwd=cwd,
+                model=model or None, origin="voice",
+                platform=dispatch_platform, chat_id=dispatch_chat_id,
+            )
+        except (ValueError, TypeError) as exc:
+            return _ok(f"派发失败:{exc}")
+    else:
+        task = task_runner.dispatch(
+            title=title, prompt=prompt, cwd=cwd, model=model or None,
+            dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
+            origin="voice", context_session_key=ctx.session_key if ctx else None,
+        )
     model_note = f",模型:{model}" if model else ""
     return _ok(f"已派发,session_id={tasks.session_key(task['id'])},标题「{title}」{model_note},状态:{status_word(task['status'])}。")
 

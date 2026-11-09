@@ -66,7 +66,10 @@ async def test_emit_terminal_calls_all_handlers_even_if_one_fails(clean_task_eve
 
 @pytest.mark.anyio
 async def test_stream_failure_does_not_skip_terminal_handlers(clean_task_events, monkeypatch):
+    from unittest.mock import AsyncMock
     from vococo.core.agent import AgentReply
+
+    monkeypatch.setattr("vococo.core.completion.publish", AsyncMock())
 
     class BrokenSink:
         async def done(self, reply, turn_id):
@@ -76,6 +79,7 @@ async def test_stream_failure_does_not_skip_terminal_handlers(clean_task_events,
     task_events.register_main_event_bridge(events.append)
     monkeypatch.setattr(task_events.tasks, "get", lambda _: {
         "id": "broken", "status": "done", "kind": "chat", "result_full": "完成",
+        "title": "测试任务", "result_summary": "完成", "progress_note": "", "origin": "chat",
     })
 
     async def handler(task_id):

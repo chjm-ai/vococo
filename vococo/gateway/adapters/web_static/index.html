@@ -346,6 +346,7 @@ try{
         <div class="fbchips" id="findChips" hidden></div>
       </div>
     </header>
+    <section id="taskTree" class="task-tree" aria-label="任务树" hidden></section>
     <div id="messages">
       <div id="historyLoading" role="status" aria-live="polite" hidden>
         <span class="hloadspin" aria-hidden="true"></span><span>加载更早消息…</span>
@@ -609,6 +610,7 @@ function renderEmptyRecent(){
   for(const c of S.convs) convs.set(c.conv,c);
   const items = [];
   for(const c of convs.values()){
+    if(isChildTask(c)) continue;
     if(ag && c.conv!==ag.main_conv && !agentOwnsConv(ag,c.conv)) continue;
     if(c.pinned) continue;  // 主会话单独处理
     if(c.conv===S.conv) continue;
@@ -619,6 +621,7 @@ function renderEmptyRecent(){
   const vs = S.voiceSidebar;
   if(!ag && vs && vs.tasks){
     for(const t of vs.tasks){
+      if(isChildTask(t)) continue;
       items.push({conv:t.conv, title:t.title||"语音任务", ts:t.last_ts, archived:!!t.archived, type:"voice"});
     }
   }
@@ -1882,6 +1885,7 @@ async function openConv(conv, silentGroup){
   if(typeof saveComposerState==="function") saveComposerState(S.conv);
   if(S.conv!==conv) upsertChecklist({},[],false);
   S.conv=conv; S.stream=null;
+  taskTree.open(conv);
   navRecord({kind:"chat", conv});
   if(typeof restoreComposerState==="function") restoreComposerState(conv);
   // 文档预览面板同样按会话独立:目标会话之前打开过就重新渲染,没有就保持上面已隐藏的状态
@@ -2084,6 +2088,7 @@ async function openSearchResult(r, q){
     S.searchConvs.push({
       conv:r.conv, title:r.title||"新对话", archived:!!r.archived,
       last_ts:r.last_ts||null, turns:r.last_ts ? 1 : 0,
+      relation:r.relation, parent_session_key:r.parent_session_key,
     });
   }
   await openConv(r.conv);
@@ -2096,9 +2101,13 @@ function renderSearchResults(q){
     const row = el("div","smrow" + (i===SM.sel?" sel":""));
     const t = el("div","smtitle");
     const name = el("span","t"); name.innerHTML = smHl(r.title||"新对话", q); t.append(name);
+    if(isChildTask(r)){ const tag=el("span","smtag"); tag.textContent="子任务"; t.append(tag); }
     if(r.archived){ const tag=el("span","smtag"); tag.textContent="已归档"; t.append(tag); }
     const tm = fmtTime(r.last_ts); if(tm){ const te=el("span","smtime"); te.textContent=tm; t.append(te); }
     row.append(t);
+    if(isChildTask(r) && r.parent_session_key){
+      const parent=el("div","smsnip"); parent.textContent="父任务："+(findConv(r.parent_session_key)?.title || r.parent_session_key); row.append(parent);
+    }
     if(r.snippet){ const sn=el("div","smsnip"); sn.innerHTML = smHl(r.snippet, q); row.append(sn); }
     row.onclick = ()=>{ closeSearchModal(); openSearchResult(r, q); };
     box.append(row);
@@ -2170,6 +2179,7 @@ function _updateChromePad(){
   const h=document.querySelector('header.bar'), c=document.getElementById('composer'),
         m=document.getElementById('messages');
   if(h&&c&&m){ m.style.setProperty('--header-h',h.offsetHeight+'px');
+    document.getElementById('taskTree').style.setProperty('--header-h',h.offsetHeight+'px');
     m.style.setProperty('--composer-h',c.offsetHeight+'px'); }
 }
 _updateChromePad();

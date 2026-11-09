@@ -1201,7 +1201,19 @@ async def stream_turn(
 
     effective_max_turns = max_turns or config.MAX_TURNS
     # 程序化子代理:显式 Git 项目会话挂评审员(见 core/reviewer.py),其余会话不挂
-    subagents = None if research or business_policy else reviewer.definitions(cwd, is_explicit_project)
+    from . import dispatch, tasks
+
+    own_task = tasks.task_for_session(session_key) if session_key else None
+    review_profile = bool(own_task and own_task.get("execution_profile") == "review")
+    unified_dispatch = dispatch.enabled() and not research
+    dispatch_denied = list(disallowed_tools or [])
+    if unified_dispatch:
+        inherited_denied = list(disallowed_tools or [])
+        if any(delegation_name in inherited_denied for delegation_name in ("Agent", "Task")):
+            inherited_denied.append("mcp__vococo__dispatch_task")
+        dispatch_denied = inherited_denied
+        disallowed_tools = list(dict.fromkeys([*inherited_denied, "Agent", "Task"]))
+    subagents = None if research or business_policy or unified_dispatch else reviewer.definitions(cwd, is_explicit_project)
 
     pooling = not research and bool(session_key) and client_pool.enabled()
     base_key = (
@@ -1218,6 +1230,9 @@ async def stream_turn(
         if pooling
         else ""
     )
+
+    if pooling:
+        base_key += f":dispatch-v2={unified_dispatch}:review={review_profile}"
 
     if business_policy and pooling:
         # 目录/沙箱范围变化时不能复用旧边界的进程。
@@ -1274,11 +1289,10 @@ async def stream_turn(
                 "strict_mcp_config": True} if research else {}),
         )
         if mcp_on:
-            child_tool = subagent.build_tool(options, child_usage)
-            options.hooks = subagent.protect_entry(options.hooks)
-            options.hooks = subagent.protect_entry(options.hooks, "mcp__vococo__delegate_to_agent")
-            from . import delegation
-
+            child_tool = None if unified_dispatch else subagent.build_tool(options, child_usage)
+            if not unified_dispatch:
+                options.hooks = subagent.protect_entry(options.hooks)
+                options.hooks = subagent.protect_entry(options.hooks, "mcp__vococo__delegate_to_agent")
             options.mcp_servers = {**build_mcp_servers(subagent_tool=child_tool), **mcp_servers}
         from . import delegation
 
@@ -1292,9 +1306,19 @@ async def stream_turn(
             session_tools = sessions.build_tools(
                 session_key, list(options.disallowed_tools or []),
                 {"skills": skill_snapshot, "mcp": list(external_mcp)}) if session_key else []
+            dispatch_tools = dispatch.build_tools(
+                session_key, dispatch_denied,
+                {"skills": skill_snapshot, "mcp": list(external_mcp)}, parent_cwd=cwd) if unified_dispatch and session_key else ()
             options.mcp_servers["vococo"] = build_mcp_servers(
-                subagent_tool=child_tool, delegation_tools=delegation_tools,
-                session_tools=session_tools)["vococo"]
+                subagent_tool=child_tool, delegation_tools=delegation_tools[:1] if dispatch_tools else delegation_tools,
+                session_tools=session_tools, dispatch_tools=dispatch_tools)["vococo"]
+        if review_profile:
+            options.tools = ["Read", "Grep", "Glob"]
+            options.mcp_servers = {}
+            options.strict_mcp_config = True
+            options.skills = None
+            options.plugins = []
+            options.setting_sources = []
         return options
 
     checklist_guided = False

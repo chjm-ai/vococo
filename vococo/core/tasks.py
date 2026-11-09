@@ -179,6 +179,10 @@ def _conn() -> sqlite3.Connection:
             ("source_session_key", "source_session_key TEXT"),
             ("source_access", "source_access TEXT"),
             ("run_version", "run_version INTEGER NOT NULL DEFAULT 0"),
+            ("relation", "relation TEXT NOT NULL DEFAULT 'independent'"),
+            ("parent_execution_id", "parent_execution_id TEXT"),
+            ("execution_profile", "execution_profile TEXT NOT NULL DEFAULT ''"),
+            ("review_cwd", "review_cwd TEXT"),
             ("research_delivered_at", "research_delivered_at REAL"),
             # 所属 Agent(派发时从来源会话推出来,见 task_runner.dispatch)+ 最近一轮的运行指标
             # (见 set_run_metrics),给 Agent 的运行记录 / 复盘当数据
