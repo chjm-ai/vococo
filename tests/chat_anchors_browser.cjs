@@ -15,6 +15,31 @@ const assert=require('node:assert/strict');
     await page.waitForFunction(()=>!$('#app').hidden && S.agents?.length>0);
     await page.evaluate(async()=>{
       await openConv('main');
+    });
+    await page.waitForTimeout(500);
+    assert.equal(cursors.length,0,'打开会话滚到底部不应触发历史分页');
+    const bottomGap=()=>page.evaluate(()=>{
+      const m=$('#messages'); return m.scrollHeight-m.clientHeight-m.scrollTop;
+    });
+    assert.ok(await bottomGap()<16,'首次打开定位最新消息: '+JSON.stringify(await page.evaluate(()=>{
+      const m=$('#messages');return {top:m.scrollTop,height:m.scrollHeight,client:m.clientHeight,conv:S.conv,loading:S.histLoading};
+    })));
+    await page.locator('#messages').evaluate(m=>m.scrollTop=m.scrollHeight/2);
+    await page.waitForTimeout(200);
+    assert.equal(cursors.length,0,'在对话中间阅读不应触发历史分页');
+    await page.evaluate(()=>reloadHistory());
+    await page.waitForTimeout(100);
+    assert.ok(await bottomGap()>100,'刷新同一会话保留阅读位置');
+    const earlier=page.waitForResponse(r=>r.url().includes('/history?') && r.url().includes('before='));
+    await page.locator('#messages').evaluate(m=>m.scrollTop=0);
+    await earlier;
+    await page.waitForFunction(()=>!S.histPaging.main.loading);
+    assert.equal(cursors.length,1,'滚到顶部才加载一页更早记录');
+    await page.evaluate(()=>openConv('local-scroll-test'));
+    await page.evaluate(()=>openConv('main'));
+    await page.waitForTimeout(200);
+    assert.ok(await bottomGap()<16,'从缓存重新打开仍定位最新消息');
+    await page.evaluate(()=>{
       S.agentPanelTab='feed';
       if(!S.agentPanelOn) toggleAgentPanel();
       else renderAgentPanel();
