@@ -327,8 +327,10 @@ const localStorage = {{setItem:(key, value)=>stored[key]=value}};
 const TAB_PAGE_SIZE = 20;
 const S = {{recentShowMain:false, convFilter:'active', tabShown:{{recent:20}},
   agents:[{{main_conv:'agent:alpha'}}, {{main_conv:'agent:beta'}}],
-  voiceSidebar:{{tasks:[{{conv:'task:1', title:'主会话', last_ts:500}}]}},
-  convs:[{{conv:'main', title:'主会话', last_ts:1000}},
+  voiceSidebar:{{tasks:[{{conv:'task:1', title:'主会话', last_ts:500}},
+    {{conv:'task:later', pinned:true, last_ts:2000}}]}},
+  convs:[{{conv:'later', pinned:true, last_ts:2001}},
+    {{conv:'main', title:'主会话', pinned:true, last_ts:1000}},
     {{conv:'agent:alpha', title:'Alpha', last_ts:999}},
     {{conv:'agent:beta', title:'Beta', last_ts:998}},
     {{conv:'child', title:'主会话', last_ts:997}},
@@ -353,6 +355,13 @@ assert.equal(ids().at(-1), 'child-16');
 assert.ok(rows.at(-1).cls.includes('convmore'));
 rows.at(-1).onclick();
 assert.equal(ids().length, 23);
+assert.ok(!ids().includes('later') && !ids().includes('task:later'));
+S.convs.find(c=>c.conv==='later').pinned=false;
+S.voiceSidebar.tasks.find(t=>t.conv==='task:later').pinned=false;
+renderConvs();
+assert.deepEqual(ids().slice(0,2), ['later','task:later']);
+S.convs.find(c=>c.conv==='later').pinned=true;
+S.voiceSidebar.tasks.find(t=>t.conv==='task:later').pinned=true;
 checkbox.onchange({{target:{{checked:true}}}});
 assert.equal(stored.vococo_recent_show_main, '1');
 assert.equal(S.tabShown.recent, 20);

@@ -888,7 +888,7 @@ function openConvMenu(btn, conv, slim){
     ren.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); renameConv(conv); };
     m.append(ren);
     if(!isMain){
-      const pin=el("button","cmitem"); pin.innerHTML=ic("pin")+(isPinned?" 取消置顶":" 置顶");
+      const pin=el("button","cmitem"); pin.innerHTML=ic("pin")+(isPinned?" 取消稍后处理":" 稍后处理");
       pin.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); pinConv(conv, !isPinned); };
       m.append(pin);
     }

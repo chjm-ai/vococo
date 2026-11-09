@@ -369,7 +369,7 @@ function bindRowSwipeActions(row, body, conv, archived){
   // 也支持置顶(后端 pinned 字段本就通用,之前只是前端没开放入口)
   const convObj=findConv(conv);
   const isPinned=!!(convObj&&convObj.pinned);
-  const pinBtn=el("button","cvpin"); pinBtn.innerHTML=ic("pin"); pinBtn.title=isPinned?"取消置顶":"置顶";
+  const pinBtn=el("button","cvpin"); pinBtn.innerHTML=ic("pin"); pinBtn.title=isPinned?"取消稍后处理":"稍后处理";
   pinBtn.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); pinConv(conv, !isPinned); };
   act.append(archBtn,pinBtn,del);
   row.append(act);
@@ -438,7 +438,7 @@ const CONV_SHOW_MAX = 7;   // 每个项目分组默认最多展示的会话数,�
 const TAB_PAGE_SIZE = 20;   // 「置顶」「最近」Tab 分页粒度:默认 20 条,点「更多」每次再加 20 条
 // 2026-10-03「定时」Tab 隐藏(主人:基本没用了):定时任务已在各 Agent 面板「定时」页管理。
 // 只是不出 Tab,renderCronTab 等代码留着,恢复只需把 {key:"cron",label:"定时"} 加回来。
-const SIDE_TABS = [{key:"agents",label:"Agent"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
+const SIDE_TABS = [{key:"agents",label:"Agent"},{key:"pinned",label:"稍后"},{key:"recent",label:"最近"}];
 // SSE 已经在有数据变更时主动 push 刷新(见 stream.js loadConvs/loadCronSidebar 调用点),
 // 这里的点击刷新只是断线/后台挂起期间(移动端切后台网络被系统冻结)的兜底,不需要很灵敏,
 // 30s 内重复点击/来回切 Tab 不重新拉取,避免抖动请求。
@@ -478,7 +478,7 @@ function sideTabEmpty(text){ const e=el("div","tabempty"); e.textContent=text; r
 // 「置顶」Tab:扁平列表(不再是可折叠分组,Tab 本身就是入口),默认 20 条,点「更多」每次 +20
 function renderPinnedTab(box, inCall){
   const pc=pinnedConvs(inCall);
-  if(!pc.length){ box.append(sideTabEmpty("暂无置顶会话")); return; }
+  if(!pc.length){ box.append(sideTabEmpty("暂无稍后处理的会话")); return; }
   const shownN=Math.min(S.tabShown.pinned, pc.length);
   for(const it of pc.slice(0, shownN)){ const r=it.build(); if(r) box.append(r); }
   if(pc.length > shownN){
@@ -489,7 +489,7 @@ function renderPinnedTab(box, inCall){
   }
 }
 // 「最近」Tab:汇总所有项目(含语音任务)的会话,按最后活跃时间混排,不看归属项目、数量不封顶,
-// 默认 20 条,点「更多」每次 +20(置顶与最近是正交维度,置顶项目若时间够新也会出现在这里)
+// 默认 20 条,点「更多」每次 +20;已加入「稍后处理」的会话不在这里重复显示。
 // 每行最前面挂所属 Agent 的头像(withAvatar),在跑时头像蹦跳 + 「···」气泡,替代橙色闪点(2026-10-03)
 // 默认隐藏总助理与各 Agent 主会话,仍可从 Agent Tab 进入。
 $("#recentShowMain").onchange=e=>{
@@ -503,8 +503,8 @@ function isRecentMainConv(c){
 }
 function renderRecentTab(box, inCall){
   const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
-  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall, true)}));
-  const convItems = S.convs.filter(c=>passesArchFilter(!!c.archived) && (S.recentShowMain || !isRecentMainConv(c))).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall, true)}));
+  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall, true)}));
+  const convItems = S.convs.filter(c=>(c.conv==="main" || !c.pinned) && passesArchFilter(!!c.archived) && (S.recentShowMain || !isRecentMainConv(c))).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall, true)}));
   const rows = [...taskItems, ...convItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
   if(!rows.length){ box.append(sideTabEmpty("暂无最近会话")); return; }
   const shownN=Math.min(S.tabShown.recent, rows.length);
