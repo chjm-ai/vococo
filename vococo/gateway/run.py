@@ -60,11 +60,14 @@ class GatewayRunner:
 
     def cancel_turn(self, session_key: str) -> bool:
         """取消某会话当前正在进行的 AI 回复轮次;返回是否找到并取消了。"""
+        from ..core import dispatch
+
+        stopped_children = dispatch.cancel_session(session_key) if dispatch.enabled() else False
         scope = self._cancel_scopes.get(session_key)
         if scope is not None:
             scope.cancel()
             return True
-        return False
+        return stopped_children
 
     async def cancel_and_wait_turn(
         self, session_key: str, timeout: float = 10.0
@@ -100,25 +103,45 @@ class GatewayRunner:
             # 判定与释放都按本条文本取标记:同目标先后两条续接时,先到的不会把后到的当自己。
             from ..core import task_runner
 
+            from ..core import dispatch
+
+            automatic = bool((inc.source_access or {}).get("dispatch_resume"))
+            if automatic and not dispatch.valid_resume(inc.session_key, inc.source_access):
+                return
             queued = sessions.is_queued_instruction(inc.session_key, inc.text)
             if queued and (clarify.has_pending(inc.session_key)
                            or inc.session_key in clarify._active_sessions
                            or task_runner.session_busy(inc.session_key)
                            or self._lock_for(inc.session_key).locked()):
-                await adapter.send(inc.chat_id, "跨会话指令未执行：目标忙碌或正在等待用户回答，请处理后重试。")
+                if automatic:
+                    dispatch.defer_resume(inc.session_key, inc.source_access)
+                else:
+                    await adapter.send(inc.chat_id, "跨会话指令未执行：目标忙碌或正在等待用户回答，请处理后重试。")
                 return
             await self._dispatch_one(adapter, inc)
         finally:
             sessions.dispatch_finished(inc.session_key, inc.text)
+            from ..core import dispatch
+
+            dispatch.fail_resume(inc.session_key, inc.source_access)
 
     async def _dispatch_one(self, adapter: Adapter, inc: Incoming) -> None:
         # clarify 回复必须在【拿锁前】拦截:发起 ask_user 的那一轮还占着会话锁、
         # 阻塞等回答,若这里再去抢同一把锁就死锁。
-        if await self._try_clarify(adapter, inc):
+        automatic = bool((inc.source_access or {}).get("dispatch_resume"))
+        if not automatic and await self._try_clarify(adapter, inc):
             return
         # 同一会话排队串行(防并发写库/串消息),不同会话并发互不阻塞。
         # 整体 try 兜底:start_soon 的子任务若抛异常会炸掉 nursery。
         async with self._lock_for(inc.session_key):
+            if automatic:
+                from ..core import dispatch
+
+                if not dispatch.valid_resume(inc.session_key, inc.source_access):
+                    return
+                if clarify.has_pending(inc.session_key) or inc.session_key in clarify._active_sessions:
+                    dispatch.defer_resume(inc.session_key, inc.source_access)
+                    return
             try:
                 await self._handle(adapter, inc)
             except Exception as e:
@@ -226,7 +249,7 @@ class GatewayRunner:
         is_explicit_project_override = None
         row = bg_tasks.task_for_session(key)
         if row is not None:
-            cwd_override = await worktree.execution_cwd_for_task(row["cwd"], row["id"])
+            cwd_override = row.get("review_cwd") if row.get("execution_profile") == "review" else await worktree.execution_cwd_for_task(row["cwd"], row["id"])
             is_explicit_project_override = bool(row.get("cwd_explicit"))
         # 设置本轮路由上下文(供 ask_user 工具反问时找到该发给谁),随 contextvar 传入工具
         token = clarify.set_current(key, adapter, inc.chat_id)

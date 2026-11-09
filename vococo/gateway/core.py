@@ -282,6 +282,11 @@ async def _converse(
     cwd_token = danger.set_cwd(cwd, project_root=root)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
     stored_user = store_user if store_user is not None else user_text
     turn_id = session_store.start_turn(session_key, stored_user, source_access=source_access)
+    from ..core import dispatch
+
+    execution_id = None
+    if dispatch.enabled() and not compact:
+        execution_id = dispatch.begin(session_key, turn_id, source_access)
     await sink.turn_saved()
     # 图片落盘 + 文件名入库:让刷新页面后历史里仍能显示这些图(仅落盘,不影响喂模型的 in-memory 版本)
     if images:
@@ -331,15 +336,41 @@ async def _converse(
     from . import clarify
 
     source_token = None
+    automatic = bool((source_access or {}).get("dispatch_resume"))
+    automatic_usage = 0
+    execution_options = {}
+
+    def track_automatic_usage(tokens):
+        nonlocal automatic_usage
+        automatic_usage = max(automatic_usage, tokens)
+        if dispatch.enabled():
+            dispatch.record_usage(session_key, turn_id, automatic_usage, execution_id=execution_id)
+            _, refused = dispatch.limit_budget(session_key, 0, (task or {}).get("origin", "chat"))
+            if refused:
+                raise ValueError(refused)
+
+    if dispatch.enabled():
+        execution_options["usage_callback"] = track_automatic_usage
     try:
         source_token = clarify.bind_turn(session_key, turn_id)
+        if automatic:
+            from ..core import task_runner
+
+            budget, refused = task_runner._token_budget(task or {"origin": "chat", "session_key": session_key})
+            if refused:
+                raise ValueError(refused)
+            execution_options = {"token_budget": budget, "usage_callback": track_automatic_usage,
+                                 "max_turns": config.TASK_MAX_TURNS, "require_resume": True}
         async for ev in stream_run(
             shared, user_text, stream_fn=stream_turn, model=model,
             images=images, files=prompt_files, cwd=cwd,
-            is_explicit_project=is_explicit_project, compact=compact,
+            is_explicit_project=is_explicit_project, compact=compact, **execution_options,
         ):
             await shared.observe(ev)
         reply = shared.reply
+        if automatic and reply and reply.budget_exceeded:
+            reply.is_error = True
+            reply.text += "\n\n自动续跑预算已用尽，已停止。请核对已有结果后手动继续。"
     except asyncio.CancelledError:
         # 用户手动取消(/abort → scope.cancel())。CancelledError 继承 BaseException,
         # 上面的 except Exception 抓不到,若不在此拦下,后面的落库逻辑一行都不会跑 →
@@ -367,6 +398,12 @@ async def _converse(
         if source_token is not None:
             clarify.unbind_turn(session_key, turn_id, source_token)
         danger.reset_cwd(cwd_token)
+        if shared.reply:
+            automatic_usage = max(automatic_usage, shared.reply.stream_tokens, shared.reply.turn_tokens)
+        if dispatch.enabled():
+            dispatch.record_usage(session_key, turn_id, automatic_usage, execution_id=execution_id)
+        if automatic and task and task.get("origin") != "chat" and automatic_usage:
+            bg_tasks.add_daily_usage(automatic_usage)
     # 流式异常(SDK/进程层面,连 ResultMessage 都没拿到)→ 构造一条错误回复,
     # 确保 sink.done() 始终能发(前端不会空泡)
     if reply is None and _err_msg:
@@ -421,13 +458,21 @@ async def _finish_execution(session_key: str, task_id: str | None, status: str,
     from ..core import completion, task_events, task_runner, tasks
 
     with anyio.CancelScope(shield=True):
+        finished_task = False
         if task_id and tasks.get(task_id):
             clean, summary = task_runner._split_summary_tag(text)
-            if tasks.finish(task_id, status, clean, summary or task_runner._summarize(clean)):
-                # 前台持有本轮收尾权；终态订阅者只刷新状态，不再重复完成本轮。
-                await task_events.emit_terminal(task_id, emit_session=False)
-                task_runner._maybe_start_next()
-        await completion.publish(completion.Completion(session_key, status, text, turn_id))
+            finished_task = tasks.finish(task_id, status, clean, summary or task_runner._summarize(clean))
+        from ..core import dispatch
+
+        # 订阅者（包括语音播报）必须先看见协调等待态，不能把单轮结束当成整树完成。
+        waiting = dispatch.finish(session_key, status) if dispatch.enabled() else False
+        if finished_task:
+            await task_events.emit_terminal(task_id, emit_session=False)
+        if finished_task or dispatch.enabled():
+            task_runner._maybe_start_next()
+        row = tasks.get(task_id) if task_id else None
+        if not waiting and not (row and row.get("relation") == "child" and status == "done"):
+            await completion.publish(completion.Completion(session_key, status, text, turn_id))
 
 
 # === 命令注册表(单一来源:TG 菜单 setMyCommands 和 /help 都从这生成)===

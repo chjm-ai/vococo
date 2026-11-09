@@ -375,7 +375,9 @@ def _session_metadata(row: dict) -> dict:
     row.setdefault("agent_id", None)
     row.setdefault("project_hash", None)
     row.update(conv=_conv_id_for_key(key), conversation_id=_conv_id_for_key(key),
-               task_id=task["id"] if task else None, job_id=task.get("job_id") if task else None)
+               task_id=task["id"] if task else None, job_id=task.get("job_id") if task else None,
+               relation=task.get("relation", "independent") if task else "independent",
+               parent_session_key=task.get("source_session_key") if task and task.get("relation") == "child" else None)
     return row
 
 

@@ -1,3 +1,23 @@
+  /* 任务树保持紧凑，独立滚动不挤走聊天输入区；深浅主题共用现有令牌。 */
+  .task-tree{flex:none;max-height:35vh;overflow:auto;padding:var(--sp-3) var(--sp-5);border-bottom:1px solid var(--line);background:var(--bg2);font-size:var(--fs-md);color:var(--text)}
+  .task-tree{margin-top:var(--header-h,calc(var(--sp-5)*4))}
+  .task-tree[hidden]{display:none}
+  #taskTree:not([hidden]) + #messages{padding-top:var(--sp-3)}
+  .task-tree-branch summary{cursor:pointer;padding:var(--sp-2) 0;font-size:var(--fs-md);color:var(--dim)}
+  .task-tree-list{list-style:none;margin:0;padding:0 0 0 var(--sp-4);border-left:1px solid var(--line)}
+  .task-tree-node{min-width:0;padding:var(--sp-3) 0 var(--sp-3) var(--sp-3)}
+  .task-tree-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--sp-2) var(--sp-3)}
+  .task-tree-title{min-width:0;overflow-wrap:anywhere;flex:1}
+  .task-tree-status{font-size:var(--fs-sm);color:var(--dim)}
+  .task-tree-status[data-status="running"],.task-tree-status[data-status="waiting_children"],.task-tree-status[data-status="queued"]{color:var(--warn)}
+  .task-tree-status[data-status="done"]{color:var(--ok-fg)}
+  .task-tree-status[data-status="failed"]{color:var(--err-fg)}
+  .task-tree-meta,.task-tree-note{font-size:var(--fs-sm);color:var(--dim);overflow-wrap:anywhere;margin-top:var(--sp-1)}
+  .task-tree-action{font:inherit;font-size:var(--fs-sm);color:var(--accent);border:0;border-radius:var(--r-sm);background:transparent;cursor:pointer;padding:var(--sp-2) var(--sp-3);transition:background var(--t-fast)}
+  .task-tree-action:hover{background:var(--panel2)}
+  .task-tree-action:focus-visible,.task-tree-branch summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .task-tree-error{font-size:var(--fs-sm);color:var(--err-fg);margin-inline:var(--sp-3)}
+
   /* ── 深色(默认)· Claude Code 暖炭灰 + 赤陶橙 ────────────────────────── */
   :root{
     --bg:#181716; --bg2:#1c1b19; --panel:#252320; --panel2:#302f2c; --card:#2b2a27;

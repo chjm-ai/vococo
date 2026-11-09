@@ -56,6 +56,20 @@ async def handle_tasks_list(request: web.Request) -> web.Response:
     return _json(rows)
 
 
+async def handle_task_tree(request: web.Request) -> web.Response:
+    if (guard := _guard(request)) is not None:
+        return guard
+    from ..core import dispatch
+
+    value = (request.query.get("conv") or "").strip()
+    if not value or len(value) > 512:
+        return web.json_response({"error": "需要有效会话"}, status=400)
+    key = config.resolve_session_key("web", value)
+    response = _json(dispatch.tree(key))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 async def handle_task_detail(request: web.Request) -> web.Response:
     if (guard := _guard(request)) is not None:
         return guard
@@ -165,6 +179,7 @@ def register_routes(app: web.Application) -> None:
         [
             web.get("/tasks", handle_tasks_list),
             web.get("/tasks/stream", handle_tasks_stream),
+            web.get("/tasks/tree", handle_task_tree),
             web.get("/tasks/{task_id}", handle_task_detail),
             web.post("/tasks/{task_id}/stop", handle_task_stop),
             web.post("/research", handle_research_start),
