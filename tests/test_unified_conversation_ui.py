@@ -322,6 +322,7 @@ def test_recent_main_filter_uses_ids_before_pagination_and_toggle_restores_rows(
     script = f"""
 const assert = require('node:assert/strict');
 const checkbox = {{}};
+const isChildTask=item=>item?.relation==='child';
 const stored = {{}};
 const localStorage = {{setItem:(key, value)=>stored[key]=value}};
 const TAB_PAGE_SIZE = 20;
@@ -429,6 +430,7 @@ const S={{convs:[{{conv:'main',pinned:true}},{{conv:'later',pinned:true,pending_
   {{conv:'normal'}},{{conv:'archived',archived:true}}],
   voiceSidebar:{{tasks:[{{conv:'task:later',pinned:true,pending_review:true}}]}},
   live:{{}},pendingReview:{{}},convFilter:'active'}};
+const isChildTask=item=>item?.relation==='child';
 const agentOwnsConv=(a,conv)=>conv!=='main';
 const agentById=()=>a;
 {convs}

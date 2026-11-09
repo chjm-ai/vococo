@@ -177,6 +177,119 @@ async function loadPrefs(){
     }
   }catch(e){}
 }
+// ── 当前会话的任务树：只用持久化快照，事件仅触发节流刷新 ────────────────
+const taskTree = (()=>{
+  let conv=null, generation=0, timer=null, busy=false, dirty=false, snapshot=null, rendered="";
+  const expanded=new Map();
+  const states={queued:"排队中",running:"运行中",waiting_children:"等待子任务",done:"已完成",failed:"失败",cancelled:"已取消"};
+  const receipts={pending:"待回传",delivered:"已回传",processed:"已处理"};
+  const panel=()=>$("#taskTree");
+  function button(label, key, action){
+    const node=el("button","task-tree-action"); node.type="button"; node.textContent=label;
+    node.dataset.treeFocus=key; node.onclick=action; return node;
+  }
+  function disclosure(key, label){
+    const node=el("details", "task-tree-branch"), summary=el("summary");
+    node.dataset.treeKey=key; node.open=expanded.get(conv+":"+key)!==false;
+    summary.textContent=label; summary.dataset.treeFocus=key; node.append(summary); return node;
+  }
+  function openTask(task, parent){
+    if(!findConv(task.session_key)) S.searchConvs.push({conv:task.session_key,title:task.title,
+      agent_id:task.agent_id,relation:"child",parent_session_key:parent});
+    openConv(task.session_key);
+  }
+  function taskNode(task, parent){
+    const item=el("li","task-tree-node"), row=el("div","task-tree-row"); item.dataset.taskId=task.id;
+    const title=el("span","task-tree-title"); title.textContent=task.title||"未命名任务"; row.append(title);
+    const status=el("span","task-tree-status"); status.dataset.status=task.status;
+    status.textContent=states[task.status]||task.status||"未知状态"; row.append(status); item.append(row);
+    const agent=(S.agents||[]).find(a=>a.id===task.agent_id);
+    const meta=[agent?.name||task.agent_id,task.model,receipts[task.receipt_state]].filter(Boolean);
+    if(meta.length){ const text=el("div","task-tree-meta"); text.textContent=meta.join(" · "); item.append(text); }
+    if(task.progress_note){ const note=el("div","task-tree-note"); note.textContent=task.progress_note; item.append(note); }
+    if(task.session_key) item.append(button("查看子会话", "open:"+task.id, ()=>openTask(task,parent)));
+    if(task.children?.length){
+      const branch=disclosure("node:"+task.id,"子任务（"+task.children.length+"）");
+      branch.append(taskList(task.children,task.session_key)); item.append(branch);
+    }
+    return item;
+  }
+  function taskList(tasks, parent){
+    const list=el("ul","task-tree-list");
+    for(const task of tasks) list.append(taskNode(task,parent));
+    return list;
+  }
+  function parentLink(key){
+    return button("返回父任务", "parent", ()=>openConv(key.replace(/^web:/,"")));
+  }
+  async function stopTree(){
+    const target=conv;
+    try{
+      const response=await api("/abort",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv:target})});
+      if(!response.ok) throw new Error("abort failed");
+      const result=await response.json();
+      if(!result.stopped) throw new Error("not stopped");
+      if(conv===target) schedule();
+    }catch(e){ if(conv===target) render(snapshot,"任务树停止失败，请重试"); }
+  }
+  function render(data, error=""){
+    const box=panel(), signature=JSON.stringify([data,error]);
+    if(signature===rendered) return;
+    rendered=signature;
+    const focus=box.contains(document.activeElement) ? document.activeElement.dataset.treeFocus : null;
+    for(const node of box.querySelectorAll("details")) expanded.set(conv+":"+node.dataset.treeKey,node.open);
+    box.replaceChildren();
+    const parent=data?.parent_session_key || findConv(conv)?.parent_session_key;
+    if(parent) box.append(parentLink(parent));
+    if(data?.children?.length){
+      const root=disclosure("root","任务树（"+data.children.length+"）");
+      root.append(taskList(data.children,data.session_key)); box.append(root);
+      if(["active","waiting","claimed"].includes(data.state)) box.append(button("停止整个任务树", "stop", stopTree));
+    }
+    if(error){
+      const note=el("span","task-tree-error"); note.setAttribute("role","status"); note.textContent=error; box.append(note);
+      box.append(button("重试", "retry", ()=>schedule()));
+    }
+    box.hidden=!box.childNodes.length;
+    if(focus) [...box.querySelectorAll("[data-tree-focus]")].find(n=>n.dataset.treeFocus===focus)?.focus({preventScroll:true});
+  }
+  async function refresh(){
+    if(!conv || S.conv!==conv || isDraftConv(conv)) return;
+    if(busy){ dirty=true; return; }
+    const current=conv, version=generation; busy=true; dirty=false;
+    try{
+      const response=await api("/tasks/tree?conv="+encodeURIComponent(current));
+      if(!response.ok) throw new Error("tree unavailable");
+      const data=await response.json();
+      if(!data || !Array.isArray(data.children) || typeof data.session_key!=="string") throw new Error("invalid tree");
+      if(version!==generation || current!==S.conv) return;
+      snapshot=data; render(data);
+    }catch(e){
+      if(version===generation && current===S.conv) render(snapshot,snapshot ? "任务树加载失败，显示上次快照" : "任务树加载失败");
+    }finally{
+      if(version===generation){ busy=false; if(dirty) schedule(); }
+    }
+  }
+  function schedule(){
+    if(timer || !conv) return;
+    // 固定窗口节流，不因连续进度事件无限推迟，也不设轮询定时器。
+    timer=setTimeout(()=>{ timer=null; refresh(); },400);
+  }
+  function open(next){
+    for(const node of panel().querySelectorAll("details")) expanded.set(conv+":"+node.dataset.treeKey,node.open);
+    conv=next; generation++; clearTimeout(timer); timer=null; busy=false; dirty=false; snapshot=null; rendered="";
+    panel().replaceChildren(); panel().hidden=true;
+    render(null); refresh();
+  }
+  function event(e){
+    if(["task_update","task_done","agent_run","start","done","cancelled","hello"].includes(e.type)) schedule();
+  }
+  return {open,schedule,event};
+})();
+
+// 关系只认服务端显式字段，旧任务不根据来源或会话前缀猜测父子关系。
+function isChildTask(item){ return item?.relation==="child"; }
+
 // 用一份 /conversations 响应数据重建 S.convs(供 loadConvs() 与登录时的首次拉取共用,
 // 登录那次不用再多打一次 /conversations)。
 var _convsFetchedAt = 0, _convsSoonTimer = null, _convsRequestId = 0;
@@ -269,8 +382,8 @@ function convProject(conv){
 // 普通会话的 buildConvRow 不是同一个函数(2026-07-29:语音任务开放置顶后补上,
 // 否则点了置顶按钮却不会真的挪进置顶区,是个死功能)。
 function pinnedConvs(inCall){
-  const convItems = S.convs.filter(c=>c.pinned && c.conv!=="main").map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
-  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
+  const convItems = S.convs.filter(c=>!isChildTask(c) && c.pinned && c.conv!=="main").map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
+  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!isChildTask(t) && t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
   const cronItems = (S.cronJobs||[]).filter(j=>j.pinned).map(j=>({ts:j.last_ts||0, build:()=>buildCronJobRow(j, inCall)}));
   return [...convItems, ...taskItems, ...cronItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
 }
@@ -517,8 +630,8 @@ function isRecentMainConv(c){
 }
 function renderRecentTab(box, inCall){
   const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
-  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall, true)}));
-  const convItems = S.convs.filter(c=>(c.conv==="main" || !c.pinned) && passesArchFilter(!!c.archived) && (S.recentShowMain || !isRecentMainConv(c))).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall, true)}));
+  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!isChildTask(t) && !t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall, true)}));
+  const convItems = S.convs.filter(c=>!isChildTask(c) && (c.conv==="main" || !c.pinned) && passesArchFilter(!!c.archived) && (S.recentShowMain || !isRecentMainConv(c))).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall, true)}));
   const rows = [...taskItems, ...convItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
   if(!rows.length){ box.append(sideTabEmpty("暂无最近会话")); return; }
   const shownN=Math.min(S.tabShown.recent, rows.length);

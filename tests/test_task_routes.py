@@ -28,6 +28,25 @@ async def task_api_client(task_api_db):
         yield client
 
 
+@pytest.mark.anyio
+async def test_tree_api_auth_validation_and_persisted_relations(task_api_client, monkeypatch):
+    assert (await task_api_client.get("/tasks/tree")).status == 400
+    row = tasks.create("树内任务", "背景", source_session_key="web:source")
+    connection = tasks._conn()
+    connection.execute("UPDATE tasks SET relation='child' WHERE id=?", (row["id"],))
+    connection.commit()
+    response = await task_api_client.get("/tasks/tree?conv=source")
+    assert response.status == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    snapshot = await response.json()
+    assert snapshot["session_key"] == "web:source"
+    assert snapshot["children"][0]["session_key"] == row["session_key"]
+    response = await task_api_client.get(f"/tasks/tree?conv={row['session_key']}")
+    assert (await response.json())["parent_session_key"] == "web:source"
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "fixture-auth")
+    assert (await task_api_client.get("/tasks/tree?conv=source")).status == 401
+
+
 def _create_task(*, origin: str, dispatch_chat_id: str | None) -> dict:
     return tasks.create(
         f"{origin} task",

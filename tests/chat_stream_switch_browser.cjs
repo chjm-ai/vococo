@@ -37,6 +37,21 @@ const assert=require('node:assert/strict');
     pending=false;
     await page.evaluate(()=>reloadHistory(true));
     assert.equal(await page.locator('#wrap .row.ai').count(),1,'完成后重载历史仍只有一条回复');
+    // 漏掉完成事件后，HTTP 核对必须同时清理详情、侧栏及可重放快照。
+    pending=true; draft='等待收尾';
+    await page.evaluate(async()=>{
+      await openConv('local-switch-b'); await openConv('switch-a');
+      handleEvent({type:'start',conv:S.conv});
+      handleEvent({type:'text',conv:S.conv,seg:0,text:'等待收尾'});
+    });
+    pending=false; draft='权威完成内容';
+    await page.evaluate(()=>reloadHistory(true));
+    assert.equal(await page.evaluate(()=>!!S.live['switch-a']),false,'历史确认完成后侧栏必须停止运行状态');
+    assert.equal(await page.evaluate(()=>!!S.streamSnap['switch-a']),false);
+    assert.equal(await page.locator('#wrap .status').count(),0);
+    await page.evaluate(async()=>{ await openConv('local-switch-b'); await openConv('switch-a'); });
+    assert.equal(await page.evaluate(()=>!!S.stream),false,'切回不能复活已完成的回复');
+    assert.equal(await page.locator('#wrap .row.ai').count(),1);
     // 草稿不带段号：覆盖同段、多段、丢失末帧和上游改写，不能拿它伪造真实段号。
     for(const scenario of [
       {name:'同段分次追上',initial:['甲'],draft:'甲乙丙',updates:[[0,'甲乙'],[0,'甲乙丙丁']],final:'甲乙丙丁'},

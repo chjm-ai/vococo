@@ -236,6 +236,7 @@ async function send(text, display, opts){
       }
     }
     if(isCurrent()) renderProjSelChip();
+    if(wasLocal && isCurrent()) taskTree.open(sendConv);
     loadConvsSoon();
     // 服务端确认后才丢弃后台快照。可见输入框早已在发送入口清空,
     // 用户若在上传或发送期间切会话,回来仍保持「已发出」的表面状态。
@@ -288,6 +289,7 @@ async function sendCmd(cmd, conv){
     if(!response.ok) throw new Error((await response.json()).error||"发送失败");
     const entry=S.convs.find(x=>x.conv===conv); if(entry) entry.draft=false;
     if(isCurrent) renderProjSelChip();
+    if(wasLocal && isCurrent) taskTree.open(conv);
     loadConvsSoon();
     if(wasLocal) setTimeout(loadConvs, 400);
   }catch(err){ addBubble("ai","⚠️ 发送失败:"+err.message); }

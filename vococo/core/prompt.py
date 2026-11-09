@@ -11,6 +11,35 @@ from collections import OrderedDict
 from pathlib import Path
 
 from .. import config
+from . import dispatch
+
+_DISPATCH_GUIDANCE = """=== 执行方式(统一派发)===
+- 默认自己完成任务，不为步骤多或文件位置不确定而派发。需要当前任务分工、并行或独立评审时用 `dispatch_task(title, prompt, agent可选, model可选, cwd可选)`。
+- 子任务保存为可查看、可续聊的子会话；结果自动回传，本轮结束后系统等待并继续主任务。派出后继续其他独立工作，不轮询、不重复执行已派工作，不把已派发说成已完成。
+- 只有用户要求另开独立主题、单独推进时才用 `dispatch_session`；它显示在侧栏，完成后通知，不自动续跑当前对话。
+- prompt 必须包含完整背景、目标和约束；返回结论、证据位置和未完成项。Agent 和模型默认继承，用户明确指定时才传 model。
+- 项目要求的独立代码评审照常执行：用 `dispatch_task(agent="code-reviewer")`，不要把评审改成独立主题。
+- 实时语音按语音专属规则使用 voice_dispatch_task，创建独立后台会话，不依赖音频父轮自动续跑。
+- 工具不可用或拒绝时如实说明，不绕路换入口派发，不伪造结果。"""
+
+
+def _dispatch_preferences(text: str) -> str:
+    # 实例偏好可能仍引用旧入口，保留委派条件，只更新工具名称。
+    for old in ("Agent/Task", "run_subagent", "delegate_to_agent"):
+        text = text.replace(old, "dispatch_task")
+    return text
+
+
+def _persona(dispatch_v2: bool) -> str:
+    if not dispatch_v2:
+        return PERSONA
+    before, rest = PERSONA.split("=== 执行方式(重要)===", 1)
+    _, after = rest.split("=== 图片工具防重(重要)===", 1)
+    before = before.replace(
+        "持久 Agent 委托仍用 `list_delegate_agents` / `delegate_to_agent`",
+        "查找持久 Agent 用 `list_delegate_agents`，委托用 `dispatch_task(agent=名称或ID)`",
+    )
+    return before + _DISPATCH_GUIDANCE + "\n\n=== 图片工具防重(重要)===" + after
 
 CHECKLIST_GUIDANCE = """=== 聊天执行清单 ===
 - 当前请求需要三个及以上实质步骤、且要实际执行时，先用 TaskCreate 建简短清单；简单问答、单步操作不建清单，不为凑数拆步骤。
@@ -314,7 +343,7 @@ def _load_memory_sections(sections: list[str], own_dir: str | None = None) -> st
 # 下一轮的前缀变化 → 整条对话的 prompt cache 全部作废(长会话一次全价重读,隐性大税)。
 # 同一 SDK 会话内冻结快照(画像/索引/项目 AGENTS.md 统一),前缀稳定缓存必命中;
 # 刚存的记忆本就在对话里,不靠索引想起。/new 后 resume 换新 id → 自然拿到最新内容。
-_APPEND_CACHE: OrderedDict[str, tuple[float | None, str]] = OrderedDict()
+_APPEND_CACHE: OrderedDict[str, tuple[float | None, bool, str]] = OrderedDict()
 _APPEND_CACHE_MAX = 64  # 有界:活跃会话数远小于此,超出挤掉最旧
 
 
@@ -378,9 +407,10 @@ def build_system_prompt(
     memory_sections:项目 Agent 会话传它要的 MEMORY.md 分节,只注入这几节;None = 整份(总助理/普通会话)。
     own_memory_dir:项目 Agent 自己的记忆目录,其 INDEX.md 一并注入(只在 memory_sections 非 None 时有意义)。
     """
+    dispatch_v2 = dispatch.enabled()
     if cache_key and cache_key in _APPEND_CACHE:
-        mtime, text = _APPEND_CACHE[cache_key]
-        if mtime == _agents_mtime(cwd):  # AGENTS.md 没变,冻结快照照用
+        mtime, cached_dispatch_v2, text = _APPEND_CACHE[cache_key]
+        if mtime == _agents_mtime(cwd) and cached_dispatch_v2 == dispatch_v2:
             _APPEND_CACHE.move_to_end(cache_key)
             return {"type": "preset", "preset": "claude_code", "append": text}
         # AGENTS.md 变了 → 落到下方重新组装,并覆盖该 key 的快照
@@ -392,9 +422,11 @@ def build_system_prompt(
     from ..instance_config import text
 
     preferences = text("preferences", "persona")
-    append = PERSONA + "\n\n" + preferences + global_agents + fence + data_blocks + _load_project_agents(cwd)
+    if dispatch_v2:
+        preferences = _dispatch_preferences(preferences)
+    append = _persona(dispatch_v2) + "\n\n" + preferences + global_agents + fence + data_blocks + _load_project_agents(cwd)
     if cache_key:
-        _APPEND_CACHE[cache_key] = (_agents_mtime(cwd), append)
+        _APPEND_CACHE[cache_key] = (_agents_mtime(cwd), dispatch_v2, append)
         while len(_APPEND_CACHE) > _APPEND_CACHE_MAX:
             _APPEND_CACHE.popitem(last=False)
     return {"type": "preset", "preset": "claude_code", "append": append}

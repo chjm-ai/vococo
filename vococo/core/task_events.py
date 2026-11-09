@@ -177,4 +177,10 @@ async def emit_terminal(
     if emit_session and task and task["status"] in tasks.TERMINAL_STATUSES:
         from . import completion
 
-        await completion.publish(completion_event or completion.from_task(task, turn_id))
+        from . import dispatch
+
+        own = dispatch.current(task["session_key"]) if dispatch.enabled() else None
+        waiting = own and own["state"] == "waiting"
+        child_done = task.get("relation") == "child" and task["status"] == "done"
+        if not waiting and not child_done:
+            await completion.publish(completion_event or completion.from_task(task, turn_id))
