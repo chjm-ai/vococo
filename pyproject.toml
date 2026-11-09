@@ -56,7 +56,7 @@ build-backend = "setuptools.build_meta"
 include = ["vococo*"]
 
 [tool.setuptools.package-data]
-"vococo.core" = ["research_method.md", "sandbox_bin/ssh", "sandbox_bin/sshpass", "sandbox_bin/ssh_askpass"]
+"vococo.core" = ["sandbox_bin/ssh", "sandbox_bin/sshpass", "sandbox_bin/ssh_askpass"]
 "vococo.tools" = ["*.cjs"]
 "vococo" = [
     "plugin/.claude-plugin/*.json",
