@@ -572,15 +572,15 @@ async def test_strict_resume_never_retries_without_original_session(clients, iso
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("compact,research", [(True, False), (False, True)])
-async def test_compaction_and_isolated_research_keep_original_payload(clients, isolated, monkeypatch, compact, research):
+@pytest.mark.parametrize("compact,guarded", [(True, False), (False, True)])
+async def test_compaction_and_isolated_analysis_keep_original_payload(clients, isolated, monkeypatch, compact, guarded):
     from vococo.tools.danger import build_hooks
 
     monkeypatch.setattr(agent, "build_hooks", build_hooks)
     monkeypatch.setattr(agent.providers, "resolve", lambda *a: ("gpt-6.1-sol", {}))
     async for _ in agent.stream_turn(
         [], "完整研究任务", model="gpt-6.1-sol", compact_only=compact,
-        tool_guard=(lambda *a: None) if research else None,
+        tool_guard=(lambda *a: None) if guarded else None,
     ):
         pass
     assert clients[0].prompts == ["/compact" if compact else "完整研究任务"]
