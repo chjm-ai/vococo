@@ -113,3 +113,51 @@ async def test_symlink_swap_and_legacy_agent(capabilities, monkeypatch, tmp_path
     monkeypatch.setattr(danger, "require_approval", approve)
     assert "已配置" in text(await tools.update_agent.handler({"id": agent_id, "mcp": ["legacy"]}))
     assert agents.get(agent_id)["mcp"] == ["legacy"]
+
+
+@pytest.mark.anyio
+async def test_cosmetic_settings_without_approval_preserve_revoked_permissions(capabilities, monkeypatch):
+    agent = agents.create("原名")
+    agents.update(agent["id"], permission="full", mcp=["penpot"])
+    original = tools._read_agent
+    reads = 0
+
+    def read_and_revoke(agent_id):
+        nonlocal reads
+        value = original(agent_id)
+        reads += 1
+        if reads == 1:
+            agents.update(agent_id, permission="standard", mcp=[])
+        return value
+
+    async def unexpected_approval(*args):
+        pytest.fail("普通设置不应弹审批")
+
+    monkeypatch.setattr(tools, "_read_agent", read_and_revoke)
+    monkeypatch.setattr(danger, "require_approval", unexpected_approval)
+    result = await tools.update_agent.handler({"id": agent["id"], "name": "新名", "avatar": agent["avatar"]})
+    assert "已配置" in text(result)
+    current = agents.get(agent["id"])
+    assert current["name"] == "新名"
+    assert current["permission"] == "standard"
+    assert current["mcp"] == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("settings", [
+    {"name": ""}, {"name": 1}, {"name": "x" * 41},
+    {"avatar": "broken"}, {"avatar": {}}, {"avatar": {"color": []}},
+    {"avatar": {"permission": "full"}},
+])
+async def test_invalid_cosmetic_settings_leave_agent_unchanged(capabilities, settings):
+    agent = agents.create("原名")
+    assert "未修改" in text(await tools.update_agent.handler({"id": agent["id"], **settings}))
+    assert agents.get(agent["id"]) == agent
+
+
+@pytest.mark.anyio
+async def test_cosmetic_settings_with_capability_changes_still_ask(capabilities):
+    agent = agents.create("原名")
+    result = await tools.update_agent.handler({"id": agent["id"], "name": "新名", "mcp": []})
+    assert "未批准" in text(result)
+    assert agents.get(agent["id"]) == agent

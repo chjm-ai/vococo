@@ -242,16 +242,18 @@ def test_cron_admin_toggle_delete_needs_approval(sugg_env):
     # 读列表不需审批
     assert "晨报" in _text(asyncio.run(builtin.list_cron_jobs.handler({})))
 
-    # 无交互通道 → 拒绝(fail-closed)
+    # 停用免批；重新启用仍 fail-closed。
     out = _text(asyncio.run(builtin.set_cron_job_enabled.handler({"ref": "晨报", "enabled": False})))
-    assert "未批准" in out
-    assert scheduler.load_jobs()[0]["enabled"] is True  # 没被改动
-
-    # 有通道 + 批准 → 生效
-    out = _text(_run_approved(lambda: builtin.set_cron_job_enabled.handler(
-        {"ref": "晨报", "enabled": False})))
     assert "已停用" in out
     assert scheduler.load_jobs()[0]["enabled"] is False
+    out = _text(asyncio.run(builtin.set_cron_job_enabled.handler({"ref": "晨报", "enabled": True})))
+    assert "未批准" in out
+    assert scheduler.load_jobs()[0]["enabled"] is False
+
+    out = _text(_run_approved(lambda: builtin.set_cron_job_enabled.handler(
+        {"ref": "晨报", "enabled": True})))
+    assert "已启用" in out
+    assert scheduler.load_jobs()[0]["enabled"] is True
 
     out = _text(_run_approved(lambda: builtin.delete_cron_job.handler({"ref": "1"})))
     assert "已删除" in out
@@ -329,6 +331,71 @@ def test_add_cron_job_validation(sugg_env):
     out = _text(asyncio.run(builtin.add_cron_job.handler(
         {"name": "x", "prompt": "y", "cron": "not-a-cron"})))
     assert "不合法" in out
+
+
+@pytest.mark.parametrize("changes", [
+    {"name": "新名称"}, {"cron": "13 9 * * *"}, {"run_in_minutes": 30},
+])
+def test_cron_metadata_update_without_approval(sugg_env, changes):
+    from vococo.cron import scheduler
+    from vococo.tools import builtin
+
+    job = scheduler.create_job(name="原任务", prompt="保持原指令", schedule={"kind": "cron", "expr": "0 8 * * *"})
+    before = scheduler.load_jobs()[0]
+    out = _text(asyncio.run(builtin.update_cron_job.handler({"ref": job["id"], **changes})))
+    assert "已更新" in out
+    after = scheduler.load_jobs()[0]
+    for field in ("prompt", "target", "cwd", "model", "enabled", "agent_id", "conv"):
+        assert after.get(field) == before.get(field)
+    if "name" in changes:
+        assert after["name"] == changes["name"]
+    elif "cron" in changes:
+        assert after["schedule"]["expr"] == changes["cron"]
+    else:
+        assert after["schedule"]["kind"] == "once"
+
+
+@pytest.mark.parametrize("changes", [
+    {"prompt": "新指令"}, {"model": "other"}, {"cwd": "/tmp"},
+    {"agent_id": "none"}, {"mode": "script", "command": "printf test"},
+    {"cron": "13 9 * * *", "prompt": "夹带指令"},
+])
+def test_cron_execution_changes_keep_approval(sugg_env, changes):
+    from vococo.cron import scheduler
+    from vococo.tools import builtin
+
+    job = scheduler.create_job(name="原任务", prompt="原指令", schedule={"kind": "cron", "expr": "0 8 * * *"})
+    before = scheduler.load_jobs()
+    out = _text(asyncio.run(builtin.update_cron_job.handler({"ref": job["id"], **changes})))
+    assert "未批准" in out
+    assert scheduler.load_jobs() == before
+
+
+def test_cron_rename_keeps_concurrently_updated_execution(sugg_env, monkeypatch):
+    from vococo.cron import scheduler
+    from vococo.tools import builtin
+
+    job = scheduler.create_job(name="原名", prompt="原指令", schedule={"kind": "cron", "expr": "0 8 * * *"})
+    original = scheduler.load_jobs
+    reads = 0
+
+    def load_with_concurrent_update():
+        nonlocal reads
+        reads += 1
+        jobs = original()
+        if reads == 2:
+            jobs[0].update(prompt="新指令", target={"platform": "web", "chat_id": "new"},
+                           schedule={"kind": "cron", "expr": "13 9 * * *"})
+            scheduler.save_jobs(jobs)
+        return jobs
+
+    monkeypatch.setattr(scheduler, "load_jobs", load_with_concurrent_update)
+    assert "已更新" in _text(asyncio.run(builtin.update_cron_job.handler({"ref": job["id"], "name": "新名"})))
+    current = original()[0]
+    assert current["name"] == "新名"
+    assert current["prompt"] == "新指令"
+    assert current["target"]["chat_id"] == "new"
+    assert current["schedule"]["expr"] == "13 9 * * *"
 
 
 def test_script_cron_approval_shows_actual_command(sugg_env, monkeypatch):
