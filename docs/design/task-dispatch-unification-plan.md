@@ -240,4 +240,5 @@ dispatch_task / dispatch_session 共用 title、prompt、可选 agent/model/cwd�
 - 扩大旧派发/会话/定时/渠道/历史研究回归：590 passed，5 failed。五项均用改前模块重新复现：`test_cron_job_locking.py::test_result_push_releases_lock_before_await`；`test_research_tasks.py::test_research_notify_links_source_and_sends_full_report`；`test_prompt.py` 的三个委派规则断言。前两项分别涉及既有定时推送路径与已移除通知 API，后三项依赖实例偏好正文；未删除或放宽这些测试，不扩大范围修历史问题。
 - `tests/task_tree_browser.cjs`：导航、多层返回、侧栏过滤/搜索、状态/回执、整树停止、重连/重载、节流/迟到响应，以及深浅主题×五种宽度共十组布局通过。
 - 独立评审确认的问题均已修复并补回归；最终针对用量编号复用、旧账迁移和提前语音播报的独立复核无待修问题。
+- 整合同期主干（研究执行器移除、稍后处理、定时置后等）后，关键组 135 passed；扩大相关组 567 passed、5 failed，其中 4 项为上述既有定时锁/prompt 断言，另 1 项创建 worktree 的 Git 命令超过 8 秒，单独复测 1 passed。已移除研究通知测试随主干退休。任务树浏览器在整合后复测通过；顶栏高度向上取整，避免亚像素遮挡。
 - 未跑全仓全部测试；未做真实模型、真机语音或外部客户端验收；未修改生产开关、未重启。启用前先备份生产数据，在隔离实例取得真实模型调用许可后验收，再确认生产启用与重启。

@@ -585,10 +585,9 @@ async def set_cron_job_enabled(args: dict) -> dict:
     j = _resolve_job(ref, jobs)
     if not j:
         return _ok(f"没找到任务「{ref}」。用 list_cron_jobs 看列表。")
-    # 改定时任务开关是持久化类操作(被注入后可「偷偷重开后门 / 停掉安全任务」),要用户点头;
-    # cron/eval 上下文(无人可问)直接拒绝。见 安全策略优化方案.md 的 2-2。
+    # 停用可恢复且不会启动新执行；重新启用仍须审批。
     verb = "启用" if enabled else "停用"
-    if not await danger.require_approval(f"{verb}定时任务", f"任务「{j.get('name')}」"):
+    if enabled and not await danger.require_approval(f"{verb}定时任务", f"任务「{j.get('name')}」"):
         return _ok(f"🛑 未批准{verb}任务「{j.get('name')}」,已跳过。")
     job_id = j["id"]
     try:
@@ -710,21 +709,32 @@ async def update_cron_job(args: dict) -> dict:
     )
     if err:
         return _ok(err)
-    # 改定时任务是持久化类操作,和 add/delete/set_enabled 一样要用户点头;
-    # cron/eval 上下文(无人可问)直接拒绝。
+    # 只有名称和时间可免批；执行内容、目录、模型、归属等仍保留审批。
+    schedule_only = set(args) <= {"ref", "name", "cron", "run_in_minutes"}
     detail = f"「{job.get('name')}」— 改为 {_sched_desc(schedule)}"
     if mode == "script":
         detail += f"\n工作目录:{kwargs.get('cwd', job.get('cwd'))}\n脚本命令:\n{command}"
     if name != job.get("name"):
         detail += f" — 改名为「{name}」"
-    if not await danger.require_approval("修改定时任务", detail):
+    if not schedule_only and not await danger.require_approval("修改定时任务", detail):
         return _ok(f"🛑 未批准修改任务「{job.get('name')}」,已跳过。")
 
     try:
-        updated = scheduler.update_job(
-            job["id"], name=name, prompt=prompt, schedule=schedule,
-            target=job.get("target"), **kwargs,
-        )
+        with scheduler.JOBS_LOCK:
+            if schedule_only:
+                current = next((j for j in scheduler.load_jobs() if j["id"] == job["id"]), None)
+                if current is None:
+                    return _ok(f"没找到任务「{ref}」。")
+                # 只修改请求字段，不把并发更新的执行内容恢复成审批前的快照。
+                name = (args.get("name") or "").strip() or current.get("name")
+                prompt = current.get("prompt")
+                if not cron_expr and run_in_minutes is None:
+                    schedule = current.get("schedule", {})
+                job = current
+            updated = scheduler.update_job(
+                job["id"], name=name, prompt=prompt, schedule=schedule,
+                target=job.get("target"), **kwargs,
+            )
     except ValueError as exc:
         return _ok(str(exc))
     if updated is None:

@@ -6,7 +6,7 @@
 // 文档预览:识别"看起来是文档"的链接/本地路径,点击不跳新标签页,而是右侧分屏预览
 // (见 openDocPreview)。http(s) 链接后缀命中或落在 /pub/ 发布目录下才算文档;
 // 本地路径(无协议头,以 / . ~ 开头)只要后缀命中就算,不要求存在——服务端会校验。
-const DOC_EXT_RE = /\.(md|markdown|txt|html?|pdf|csv|json|log|ya?ml|py|jsx?|tsx?|sh|css|xml)(\?[^\s)]*)?$/i;
+const DOC_EXT_RE = /\.(md|markdown|txt|html?|pdf|xlsx?|docx|csv|tsv|json|log|ya?ml|py|jsx?|tsx?|sh|css|xml)(\?[^\s)]*)?$/i;
 function isDocUrl(url){
   if(/^https?:\/\//i.test(url)) return DOC_EXT_RE.test(url) || /\/pub\//.test(url);
   return DOC_EXT_RE.test(url);
@@ -225,8 +225,10 @@ async function openDocPreview({kind, target, title, highlight=""}){
     const endpoint=kind==="artifact"
       ? "/artifacts/"+encodeURIComponent(target)+"/download?"+new URLSearchParams({conv:conv||""})
       : "/doc/preview?"+new URLSearchParams({conv:conv||"",path:target});
-    const resp = await api(endpoint);
-    const blob=resp.ok ? await resp.blob() : null;
+    const office=/^(xlsx?|csv|tsv|docx)$/.test(extOf(kind==="artifact" ? title : target));
+    if(office) prepareOfficeDownload(endpoint,kind==="artifact" ? title : target);
+    const resp = await api(endpoint+(office ? "&format=office" : ""));
+    const content=resp.ok ? (office ? await resp.json() : await resp.blob()) : null;
     if(S.conv!==conv || S.docPreview[conv]!==state || $("#docPreview").hidden) return;
     if(!resp.ok){
       let msg = "预览失败("+resp.status+")";
@@ -234,7 +236,8 @@ async function openDocPreview({kind, target, title, highlight=""}){
       body.innerHTML = '<div class="dp-err">'+esc(msg)+'</div>';
       return;
     }
-    renderDocBlob(blob, kind==="artifact" ? title : target, highlight);
+    if(office) renderOfficePreview(content,body);
+    else renderDocBlob(content, kind==="artifact" ? title : target, highlight);
   }catch(e){
     if(S.conv!==conv || S.docPreview[conv]!==state || $("#docPreview").hidden) return;
     body.innerHTML = '<div class="dp-err">加载失败,检查一下网络</div>';
@@ -288,6 +291,72 @@ function dpExternalFallback(target, note){
   body.innerHTML =
     '<div class="dp-err">'+esc(note)+' 如果下面还是空白,点右上角"在新标签页打开"直接看原页面。</div>'+
     '<iframe class="dp-frame" '+DP_URL_SANDBOX+' src="'+esc(target)+'"></iframe>';
+}
+function prepareOfficeDownload(endpoint,filename){
+  const button=$("#dpDlBtn"); button.hidden=false;
+  button.onclick=async()=>{
+    button.disabled=true;
+    try{
+      const response=await api(endpoint);
+      if(!response.ok) throw new Error("下载失败，请稍后重试");
+      const url=URL.createObjectURL(await response.blob());
+      const link=document.createElement("a"); link.href=url; link.download=filename.split("/").pop();
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),4000);
+    }catch(error){ alert(error.message||"下载失败，请稍后重试"); }
+    finally{ button.disabled=false; }
+  };
+}
+function officeTable(sheet){
+  const wrap=el("div","dp-office-grid"), table=document.createElement("table");
+  const rows=sheet.rows||[];
+  if(!rows.length){ wrap.textContent="空表格"; return wrap; }
+  const head=document.createElement("tr"); head.append(el("th"));
+  const columns=Math.max(0,...rows.map(row=>row.length));
+  for(let col=0;col<columns;col++){
+    const th=el("th"); let n=col+1, label="";
+    while(n){ n--; label=String.fromCharCode(65+n%26)+label; n=Math.floor(n/26); }
+    th.textContent=label; head.append(th);
+  }
+  const thead=document.createElement("thead"); thead.append(head); table.append(thead);
+  const tbody=document.createElement("tbody");
+  rows.forEach((row,index)=>{
+    const tr=document.createElement("tr"), number=el("th"); number.textContent=String(index+1); tr.append(number);
+    for(let col=0;col<columns;col++){ const td=el("td"); td.textContent=row[col]??""; tr.append(td); }
+    tbody.append(tr);
+  });
+  table.append(tbody); wrap.append(table); return wrap;
+}
+function officeNote(text){ const note=el("p","dp-office-note"); note.textContent=text; return note; }
+function renderOfficePreview(data,body){
+  body.replaceChildren(); const root=el("div","dp-office"); body.append(root);
+  root.append(officeNote(data.note||"只读预览"));
+  if(data.kind==="spreadsheet"){
+    const tabs=el("div","dp-office-tabs"), content=el("div","dp-office-content");
+    tabs.setAttribute("role","group"); tabs.setAttribute("aria-label","工作表"); root.append(tabs,content);
+    (data.sheets||[]).forEach((sheet,index)=>{
+      const button=el("button"); button.type="button"; button.textContent=sheet.name;
+      button.setAttribute("aria-pressed",String(index===0));
+      const select=()=>{
+        for(const tab of tabs.children) tab.setAttribute("aria-pressed",String(tab===button));
+        content.replaceChildren(officeTable(sheet));
+        if(sheet.truncated) content.append(officeNote("此工作表已截断，请下载查看完整内容。"));
+      };
+      button.onclick=select; tabs.append(button); if(index===0) select();
+    });
+    if(!data.sheets?.length) content.append(officeNote("没有可预览的工作表。"));
+  }else{
+    for(const block of data.blocks||[]){
+      if(block.type==="table"){
+        root.append(officeTable(block));
+        if(block.truncated) root.append(officeNote("此表格已截断，请下载查看完整内容。"));
+      }else if(block.type==="image" && /^data:image\/png;base64,/.test(block.src)){
+        const image=el("img","dp-img"); image.src=block.src; image.alt="文档图片"; root.append(image);
+      }else{ const paragraph=el("p"); paragraph.textContent=block.text||""; root.append(paragraph); }
+    }
+    if(!data.blocks?.length) root.append(officeNote("文档无可预览内容。"));
+  }
+  if(data.truncated) root.append(officeNote("内容已截断，请下载查看完整文件。"));
 }
 function renderDocBlob(blob, target, highlight=""){
   const body=$("#dpBody"), ctype=(blob.type||"").split(";")[0].trim(), ext=extOf(target);

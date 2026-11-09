@@ -59,6 +59,7 @@ const S = {
   live: {},             // conv → 进行中回合的事件缓冲:任意会话(含后台)都记录,切回时重放重建流式气泡
   histLoading: null,    // openConv 正在拉 /history 的会话名:该窗口内 SSE 流式事件只缓冲不建气泡,
                          // 防止和 /history 里的草稿气泡各建一个、切会话瞬间闪出重复内容(见 openConv/handleEvent)
+  histAbort: null,      // 最新一次 openConv 拉 /history 的 AbortController:切到别的会话时中止它(见 openConv)
   streamSnap: {},       // conv → {state,asOf}:离开时摘下的流式气泡 DOM + 已处理到的事件下标,
                          // 切回来同一进度直接接上,不用把 live 缓冲从头重放一遍(见 maybeReplayStream)
   pendingReview: {},    // conv → bool:本地缓存会话是否有未读完成内容(避免灰点闪烁)
@@ -306,7 +307,11 @@ async function api(path, opts={}){
   opts.headers = Object.assign({"X-Auth-Token": S.token}, opts.headers||{});
   let r;
   try{ r = await fetch(path, opts); }
-  catch(e){ setServiceState("offline"); throw e; }
+  catch(e){
+    // 自己主动取消的请求(切走会话时中止过期 /history,见 openConv)不是断网,别亮离线
+    if(!(e && e.name==="AbortError")) setServiceState("offline");
+    throw e;
+  }
   if(r.status===401){ showLogin(); throw new Error("401"); }
   setServiceState(r.status>=500 ? "offline" : "online");
   return r;

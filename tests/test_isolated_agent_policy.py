@@ -1,4 +1,4 @@
-"""研究 SDK 策略:只用 mock client,不连接模型、不读写个人配置或数据库。"""
+"""隔离分析 SDK 策略:只用 mock client,不连接模型、不读写个人配置或数据库。"""
 from __future__ import annotations
 
 import asyncio
@@ -22,12 +22,12 @@ async def _allow(*args):
 
 
 def _event(kind, **data):
-    return StreamEvent(uuid="event", session_id="research", event={"type": kind, **data})
+    return StreamEvent(uuid="event", session_id="isolated", event={"type": kind, **data})
 
 
 def _result(tokens=20):
     return ResultMessage(
-        subtype="success", duration_ms=1, duration_api_ms=1, session_id="research",
+        subtype="success", duration_ms=1, duration_api_ms=1, session_id="isolated",
         is_error=False, num_turns=1,
         usage={"input_tokens": tokens - 2, "output_tokens": 2},
     )
@@ -80,7 +80,7 @@ def sdk(monkeypatch):
 
 
 async def _run(**kwargs):
-    return [event async for event in agent.stream_turn([], "研究公开资料", **kwargs)]
+    return [event async for event in agent.stream_turn([], "隔离分析公开资料", **kwargs)]
 
 
 def _hook(client):
@@ -88,8 +88,8 @@ def _hook(client):
 
 
 @pytest.mark.anyio
-async def test_research_configuration_never_loads_private_runtime(sdk, monkeypatch):
-    forbidden = Mock(side_effect=AssertionError("研究模式不能读取普通配置"))
+async def test_isolated_configuration_never_loads_private_runtime(sdk, monkeypatch):
+    forbidden = Mock(side_effect=AssertionError("隔离分析模式不能读取普通配置"))
     for target, name in [
         (agent.agents, "runtime_for_session"), (agent, "_load_system_prompt"),
         (agent, "build_mcp_servers"), (agent, "_external_mcp_for_task"),
@@ -102,13 +102,13 @@ async def test_research_configuration_never_loads_private_runtime(sdk, monkeypat
         (agent.client_pool, "checkin"), (agent, "_compat_base_key"),
     ]:
         monkeypatch.setattr(target, name, forbidden)
-    servers = {"research": {"type": "http", "url": "https://research.invalid/mcp"}}
+    servers = {"isolated": {"type": "http", "url": "https://isolated.invalid/mcp"}}
     for _ in range(2):
         events = [event async for event in agent.stream_turn(
-            [agent.Turn(user="私人历史")], "研究公开资料",
+            [agent.Turn(user="私人历史")], "隔离分析公开资料",
             tool_guard=_allow, session_key="same-task", resume="private-session",
-            cwd="/research-workspace", is_explicit_project=True,
-            extra_mcp_servers=servers, system_prompt_extra="仅研究公开资料",
+            cwd="/isolated-workspace", is_explicit_project=True,
+            extra_mcp_servers=servers, system_prompt_extra="仅隔离分析公开资料",
         )]
         assert isinstance(events[-1], agent.Done)
     assert len(sdk.clients) == 2
@@ -121,7 +121,7 @@ async def test_research_configuration_never_loads_private_runtime(sdk, monkeypat
         assert options.env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
         assert options.resume is None
         assert isinstance(options.system_prompt, str)
-        assert options.system_prompt.endswith("仅研究公开资料")
+        assert options.system_prompt.endswith("仅隔离分析公开资料")
         assert "私人历史" not in str(client.prompts)
     assert sdk.discard.await_count == 2
     forbidden.assert_not_called()
@@ -129,8 +129,9 @@ async def test_research_configuration_never_loads_private_runtime(sdk, monkeypat
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("failed", [True, False])
-async def test_failed_result_is_not_hidden_by_stage_convergence(sdk, failed):
-    from vococo.core.research import _StageConverged
+async def test_failed_result_is_not_hidden_by_usage_callback(sdk, failed):
+    class UsageStopped(RuntimeError):
+        pass
     result = _result(50)
     result.is_error = failed
     result.result = "HTTP 500" if failed else "完成"
@@ -138,13 +139,13 @@ async def test_failed_result_is_not_hidden_by_stage_convergence(sdk, failed):
     usage = []
     def converge(total):
         usage.append(total)
-        raise _StageConverged("阶段已收束")
+        raise UsageStopped("用量回调停止")
     if failed:
         with pytest.raises(RuntimeError, match="HTTP 500") as error:
             await _run(tool_guard=_allow, usage_callback=converge)
-        assert not isinstance(error.value, _StageConverged)
+        assert not isinstance(error.value, UsageStopped)
     else:
-        with pytest.raises(_StageConverged):
+        with pytest.raises(UsageStopped):
             await _run(tool_guard=_allow, usage_callback=converge)
     assert usage == [50]
     sdk.discard.assert_awaited_once()
@@ -169,7 +170,7 @@ async def test_guard_is_bound_to_each_new_client(sdk):
     "Agent", "Task", "Bash", "Read", "Write", "Skill", "TaskOutput", "TaskStop",
     "Unknown", "mcp__vococo__save_memory", "mcp__unregistered__search",
 ])
-async def test_tools_outside_research_envelope_are_denied(sdk, name):
+async def test_tools_outside_isolated_envelope_are_denied(sdk, name):
     guard = AsyncMock(return_value=_decision())
     await _run(tool_guard=guard)
     result = await _hook(sdk.clients[0])({"tool_name": name}, "id", {})
@@ -179,10 +180,10 @@ async def test_tools_outside_research_envelope_are_denied(sdk, name):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("name", ["WebSearch", "WebFetch", "mcp__research__search"])
+@pytest.mark.parametrize("name", ["WebSearch", "WebFetch", "mcp__isolated__search"])
 async def test_explicit_guard_allow_still_passes_global_safety(sdk, name):
     guard = AsyncMock(return_value=_decision())
-    await _run(tool_guard=guard, extra_mcp_servers={"research": {"type": "sdk"}})
+    await _run(tool_guard=guard, extra_mcp_servers={"isolated": {"type": "sdk"}})
     data, context = {"tool_name": name, "tool_input": {"query": "公开资料"}}, {}
     assert await _hook(sdk.clients[0])(data, "id", context) == {}
     guard.assert_awaited_once_with(data, "id", context)
@@ -234,7 +235,7 @@ async def test_missing_global_safety_refuses_to_start(sdk, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_research_cannot_run_compaction(sdk):
+async def test_isolated_cannot_run_compaction(sdk):
     with pytest.raises(ValueError, match="compact_only"):
         await _run(tool_guard=_allow, compact_only=True)
     assert not sdk.clients
@@ -336,7 +337,7 @@ async def test_usage_callback_error_never_retries_resumed_or_warm_client(sdk, or
 
 
 @pytest.mark.anyio
-async def test_research_never_performs_end_of_turn_compaction(sdk, monkeypatch):
+async def test_isolated_never_performs_end_of_turn_compaction(sdk, monkeypatch):
     monkeypatch.setattr(agent, "_query_context_usage", AsyncMock(return_value=(
         {"isAutoCompactEnabled": True}, 190_000, 200_000, False,
     )))

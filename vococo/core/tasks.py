@@ -348,19 +348,6 @@ def mark_research_delivered(task_id: str) -> None:
     connection.commit()
 
 
-def requeue_research(task_id: str, expected_status: str) -> bool:
-    """研究专用 CAS，不改变普通任务的终态迁移规则。"""
-    if expected_status not in {"running", "failed", "cancelled"}:
-        return False
-    connection = _conn()
-    changed = connection.execute(
-        "UPDATE tasks SET status='queued', progress_note='等待继续研究', research_delivered_at=NULL, updated_at=? "
-        "WHERE id=? AND kind='research' AND status=?",
-        (time.time(), task_id, expected_status),
-    ).rowcount
-    connection.commit()
-    return bool(changed)
-
 
 def fail_research(task_id: str, reason: str) -> bool:
     """重启校验不通过的研究即使还在排队也必须明确失败，不能留下悬空任务。"""

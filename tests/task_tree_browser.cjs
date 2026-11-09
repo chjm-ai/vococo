@@ -132,7 +132,8 @@ let current=structuredClone(child), fails=false, slow=false, requests=0, release
     await page.locator('[data-task-id="one"] > .task-tree-note').getByText('通话返回恢复').waitFor();
     await page.evaluate(()=>{$('#findBar').hidden=false;_updateChromePad();});
     await page.waitForTimeout(300);
-    assert.equal(await page.locator('#taskTree').evaluate(node=>node.getBoundingClientRect().top>=document.querySelector('header.bar').getBoundingClientRect().bottom),true,'展开查找条后任务树不被顶栏挡住');
+    const chromeLayout=await page.locator('#taskTree').evaluate(node=>({treeTop:node.getBoundingClientRect().top,headerBottom:document.querySelector('header.bar').getBoundingClientRect().bottom,headerHeight:document.querySelector('header.bar').offsetHeight,margin:getComputedStyle(node).marginTop}));
+    assert.ok(chromeLayout.treeTop>=chromeLayout.headerBottom,`展开查找条后任务树不被顶栏挡住: ${JSON.stringify(chromeLayout)}`);
     await page.evaluate(()=>{$('#findBar').hidden=true;_updateChromePad();});
     const beforeDraft=requests;
     await page.evaluate(async()=>{S.convs.push({conv:'local-fixture',draft:true,turns:0});await openConv('local-fixture');await sendCmd('/fixture');});

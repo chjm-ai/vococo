@@ -913,6 +913,61 @@ def _project_dependency_install(command: str, cwd: str | None) -> bool:
         return False
 
 
+def _scratch_has_repository(target: Path) -> bool:
+    if any((parent / ".git").exists() for parent in (target, *target.parents)):
+        return True
+    # 无法完整检查或目录过大时仍审批，避免清理临时容器时连带删除其中的仓库。
+    try:
+        def unreadable(error):
+            raise error
+        for count, (_, directories, files) in enumerate(os.walk(target, onerror=unreadable)):
+            if count >= 200 or any(name.lower() == ".git" for name in (*directories, *files)):
+                return True
+    except OSError:
+        return True
+    return False
+
+
+def _disposable_target(path: str, cwd: str | None) -> bool:
+    if not cwd:
+        return False
+    target = Path(os.path.realpath(os.path.join(cwd, os.path.expanduser(path))))
+    root = Path(os.path.realpath(cwd))
+    if target == root or target in root.parents:
+        return False
+    if target.is_relative_to(root):
+        relative = target.relative_to(root)
+        return bool(relative.parts) and relative.parts[0] in {
+            ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__",
+        }
+    bases = {Path(os.path.realpath(tempfile.gettempdir())), Path(os.path.realpath("/tmp"))}
+    if not any(target != base and target.is_relative_to(base) for base in bases):
+        return False
+    # 临时目录也可能放着另一个真实仓库，不能把它当作草稿删除。
+    return not _scratch_has_repository(target)
+
+
+def _disposable_cleanup(command: str, cwd: str | None) -> bool:
+    if any(char in command for char in "$`*?[]{};&|()<>\n"):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    if not words or words[0] not in {"rm", "/bin/rm", "/usr/bin/rm"}:
+        return False
+    paths, options_done = [], False
+    for word in words[1:]:
+        if word == "--" and not options_done:
+            options_done = True
+        elif word.startswith("-") and not options_done:
+            if word not in {"-r", "-f", "-rf", "-fr", "-R", "-Rf", "-fR", "--recursive", "--force"}:
+                return False
+        else:
+            paths.append(word)
+    return bool(paths) and all(_disposable_target(path, cwd) for path in paths)
+
+
 def classify(
     tool_name: str, tool_input: dict, cwd: str | None = None
 ) -> tuple[str, str, bool]:
@@ -945,6 +1000,8 @@ def classify(
         for rx, reason, restrict in _ESCALATE_BASH:
             if rx.search(cmd):
                 if reason == "包安装(改动环境)" and _project_dependency_install(cmd, cwd):
+                    continue
+                if reason == "rm -rf(递归删除)" and _disposable_cleanup(cmd, cwd):
                     continue
                 return ("escalate", reason, restrict)
         return ("allow", "", False)

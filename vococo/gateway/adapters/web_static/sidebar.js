@@ -40,12 +40,25 @@ function applyGitBtn(d){
   if(!d.repositories && (!d.is_repo||d.error)){ btn.hidden=false; btn.textContent=d.error?'⎇ 读取失败':'⎇ 非 git 仓库'; return; }
   btn.hidden=false; btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0)||(d.unavailable>0));
 }
-// 切会话专用:先把按钮重置成加载态、收起弹层,再整份刷新
-async function refreshGit(conv){
+// 切会话专用:先把按钮重置成加载态、收起弹层,再整份刷新(请求本身由 scheduleConvAux 延后)
+function resetGitBtn(){
+  S.git=null;
+  $("#gitPop").replaceChildren();
   const btn=$("#convGit"), pbtn=$("#convProjName");
   $("#gitPop").hidden=true; $("#projPop").hidden=true;
   btn.hidden=false; btn.classList.remove("dirty"); btn.textContent="⎇ …"; pbtn.hidden=true;
-  applyGitBtn(await fetchGitStatus(conv));
+}
+async function refreshGit(conv){
+  const d=await fetchGitStatus(conv);
+  if(S.conv===conv) applyGitBtn(d);  // 旧请求返回 null 也不能隐藏新会话的按钮
+}
+// 切会话的辅助读取(见 openConv):停留 ms 毫秒后才跑,期间又切走就作废。
+// 只作废前端触发的读取,不涉及任何写操作。
+var _convAuxTimer=null, _convAuxSeq=0;
+function scheduleConvAux(conv, ms, run){
+  const seq=++_convAuxSeq;
+  clearTimeout(_convAuxTimer);
+  _convAuxTimer=setTimeout(()=>{ if(seq===_convAuxSeq && S.conv===conv) run(); }, ms);
 }
 // 悄悄刷新:不重置按钮文字、不关已开着的弹层——供"打开弹层"和"这一轮任务跑完"两处调用,
 // 避免每次都用加载态闪一下,也避免打断用户正在看的弹层内容
@@ -364,14 +377,15 @@ function convProject(conv){
   const m = String(conv).replace(/^local-/,"").match(/^p([0-9a-f]+):/);
   return m ? m[1] : null;
 }
-// 取所有置顶行(含普通会话与语音任务;不含主会话——主会话独立渲染,不归置顶分组)。
+// 取所有稍后处理行(含普通会话、语音和定时任务;不含主会话)。
 // 返回 {ts,build} 而非会话对象本身,因为语音任务要用 buildVoiceTaskRow 渲染,跟
 // 普通会话的 buildConvRow 不是同一个函数(2026-07-29:语音任务开放置顶后补上,
 // 否则点了置顶按钮却不会真的挪进置顶区,是个死功能)。
 function pinnedConvs(inCall){
   const convItems = S.convs.filter(c=>!isChildTask(c) && c.pinned && c.conv!=="main").map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
   const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!isChildTask(t) && t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
-  return [...convItems, ...taskItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
+  const cronItems = (S.cronJobs||[]).filter(j=>j.pinned).map(j=>({ts:j.last_ts||0, build:()=>buildCronJobRow(j, inCall)}));
+  return [...convItems, ...taskItems, ...cronItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
 }
 // 分组的存储键:默认项目用固定串,项目用其 hash
 function grpKey(hash){ return hash===null ? "__default__" : hash; }
@@ -482,7 +496,7 @@ function bindRowSwipeActions(row, body, conv, archived){
   // 也支持置顶(后端 pinned 字段本就通用,之前只是前端没开放入口)
   const convObj=findConv(conv);
   const isPinned=!!(convObj&&convObj.pinned);
-  const pinBtn=el("button","cvpin"); pinBtn.innerHTML=ic("pin"); pinBtn.title=isPinned?"取消置顶":"置顶";
+  const pinBtn=el("button","cvpin"); pinBtn.innerHTML=ic("pin"); pinBtn.title=isPinned?"取消稍后处理":"稍后处理";
   pinBtn.onclick=ev=>{ ev.stopPropagation(); closeSwipe(row); pinConv(conv, !isPinned); };
   act.append(archBtn,pinBtn,del);
   row.append(act);
@@ -551,15 +565,15 @@ const CONV_SHOW_MAX = 7;   // 每个项目分组默认最多展示的会话数,�
 const TAB_PAGE_SIZE = 20;   // 「置顶」「最近」Tab 分页粒度:默认 20 条,点「更多」每次再加 20 条
 // 2026-10-03「定时」Tab 隐藏(主人:基本没用了):定时任务已在各 Agent 面板「定时」页管理。
 // 只是不出 Tab,renderCronTab 等代码留着,恢复只需把 {key:"cron",label:"定时"} 加回来。
-const SIDE_TABS = [{key:"agents",label:"Agent"},{key:"pinned",label:"置顶"},{key:"recent",label:"最近"}];
+const SIDE_TABS = [{key:"agents",label:"Agent"},{key:"pinned",label:"稍后"},{key:"recent",label:"最近"}];
 // SSE 已经在有数据变更时主动 push 刷新(见 stream.js loadConvs/loadCronSidebar 调用点),
 // 这里的点击刷新只是断线/后台挂起期间(移动端切后台网络被系统冻结)的兜底,不需要很灵敏,
 // 30s 内重复点击/来回切 Tab 不重新拉取,避免抖动请求。
 const SIDE_TAB_REFRESH_MS = 30000;
-// 各 Tab 展示的数据分别来自哪份接口:置顶是从 S.convs 里筛的,刷新即 loadConvs();
+// 「稍后」汇总普通会话、语音和定时任务,刷新时同步三份列表;
 // 「最近」还混了语音任务,一并刷 loadVoiceSidebar();「定时」是 vococo 任务 + 本机系统任务两块。
 const SIDE_TAB_REFRESHERS = {
-  pinned: () => loadConvs(),
+  pinned: () => Promise.all([loadConvs(), loadVoiceSidebar(), loadCronSidebar()]),
   recent: () => Promise.all([loadConvs(), loadVoiceSidebar()]),
   cron: () => Promise.all([loadCronSidebar(), loadSystemTasks()]),
   agents: () => Promise.all([loadConvs(), loadAgents(), loadCronSidebar(), loadVoiceSidebar()]),
@@ -591,7 +605,7 @@ function sideTabEmpty(text){ const e=el("div","tabempty"); e.textContent=text; r
 // 「置顶」Tab:扁平列表(不再是可折叠分组,Tab 本身就是入口),默认 20 条,点「更多」每次 +20
 function renderPinnedTab(box, inCall){
   const pc=pinnedConvs(inCall);
-  if(!pc.length){ box.append(sideTabEmpty("暂无置顶会话")); return; }
+  if(!pc.length){ box.append(sideTabEmpty("暂无稍后处理的会话")); return; }
   const shownN=Math.min(S.tabShown.pinned, pc.length);
   for(const it of pc.slice(0, shownN)){ const r=it.build(); if(r) box.append(r); }
   if(pc.length > shownN){
@@ -602,7 +616,7 @@ function renderPinnedTab(box, inCall){
   }
 }
 // 「最近」Tab:汇总所有项目(含语音任务)的会话,按最后活跃时间混排,不看归属项目、数量不封顶,
-// 默认 20 条,点「更多」每次 +20(置顶与最近是正交维度,置顶项目若时间够新也会出现在这里)
+// 默认 20 条,点「更多」每次 +20;已加入「稍后处理」的会话不在这里重复显示。
 // 每行最前面挂所属 Agent 的头像(withAvatar),在跑时头像蹦跳 + 「···」气泡,替代橙色闪点(2026-10-03)
 // 默认隐藏总助理与各 Agent 主会话,仍可从 Agent Tab 进入。
 $("#recentShowMain").onchange=e=>{
@@ -616,8 +630,8 @@ function isRecentMainConv(c){
 }
 function renderRecentTab(box, inCall){
   const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
-  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!isChildTask(t)).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall, true)}));
-  const convItems = S.convs.filter(c=>!isChildTask(c) && passesArchFilter(!!c.archived) && (S.recentShowMain || !isRecentMainConv(c))).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall, true)}));
+  const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!isChildTask(t) && !t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall, true)}));
+  const convItems = S.convs.filter(c=>!isChildTask(c) && (c.conv==="main" || !c.pinned) && passesArchFilter(!!c.archived) && (S.recentShowMain || !isRecentMainConv(c))).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall, true)}));
   const rows = [...taskItems, ...convItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
   if(!rows.length){ box.append(sideTabEmpty("暂无最近会话")); return; }
   const shownN=Math.min(S.tabShown.recent, rows.length);
@@ -1008,11 +1022,16 @@ async function removeProject(hash){
 }
 
 async function pinConv(conv, pinned){
-  const c=findConv(conv); if(c) c.pinned=pinned;  // 乐观更新,立即重渲
+  const c=findConv(conv), wasPinned=!!c?.pinned;
+  if(c) c.pinned=pinned;  // 乐观更新,立即重渲
   renderConvs();
-  try{ await api("/conv/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,pinned})}); }
-  catch(e){ /* 失败也不回滚,下次 loadConvs 会自然纠正 */ }
-  await loadConvs(); renderConvs();
+  try{
+    const r=await api("/conv/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,pinned})});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+  }
+  catch(e){ if(c) c.pinned=wasPinned; renderConvs(); alert("稍后处理设置失败"); }
+  await Promise.all([loadConvs(), loadVoiceSidebar(), loadCronSidebar()]);
+  renderConvs();
 }
 
 // 目录浏览器弹窗

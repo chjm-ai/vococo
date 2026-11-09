@@ -154,3 +154,70 @@ def test_lark_session_approval_reused_across_entrypoints(isolated, first_reason,
             danger.clear_session_approvals(key)
             clarify.reset_current(context)
     anyio.run(scenario)
+
+
+@pytest.mark.parametrize("command", [
+    "rm -rf .pytest_cache", "rm -rf -- .ruff_cache __pycache__", "rm -fr .mypy_cache",
+])
+def test_cache_cleanup_is_allowed(project, command):
+    assert danger.classify("Bash", {"command": command}, str(project))[0] == "allow"
+
+
+@pytest.mark.parametrize("command", [
+    "rm -rf src", "rm -rf .", "rm -rf ..", "rm -rf .git", "rm -rf dist",
+    "rm -rf .pytest_cache && git push", "rm -rf .pytest_cache; echo done",
+    "rm -rf .pytest_cache\necho done",
+    "rm -rf $CACHE", "rm -rf .pytest_cache/*", "rm -rf .pytest_cache > log",
+    "rm -rf .pytest_cache ../project", "rm -rf /tmp", "rm -rf /tmp/..",
+])
+def test_ambiguous_cleanup_keeps_approval(project, command):
+    assert danger.classify("Bash", {"command": command}, str(project))[0] != "allow"
+
+
+def test_temp_cleanup_excludes_repositories_and_symlink_escape(project, tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    command = f"rm -rf {scratch}"
+    assert danger.classify("Bash", {"command": command}, str(project))[0] == "allow"
+    nested = scratch / "nested"
+    nested.mkdir()
+    (nested / ".GIT").mkdir()
+    assert danger.classify("Bash", {"command": command}, str(project))[0] == "escalate"
+    (project / ".pytest_cache").symlink_to(project)
+    assert danger.classify("Bash", {"command": "rm -rf .pytest_cache"}, str(project))[0] == "escalate"
+
+
+@pytest.fixture
+def agent_config(isolated):
+    from vococo import config
+    path = config.DATA_DIR / "agents" / "abcdef" / "agent.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"name":"原名","permission":"standard","mcp":[]}')
+    return path
+
+
+@pytest.mark.parametrize("tool,change", [
+    ("Write", {"content": '{"name":"新名","permission":"standard","mcp":[]}'}),
+    ("Edit", {"old_string": "原名", "new_string": "新名"}),
+    ("MultiEdit", {"edits": [{"old_string": "原名", "new_string": "新名"}]}),
+])
+def test_raw_cosmetic_agent_config_edit_still_asks(agent_config, tool, change):
+    # 原生文件工具无法保证“检查到写入”期间权限不变，只在专用字段更新工具免批。
+    assert danger.classify(tool, {"file_path": str(agent_config), **change})[0] == "escalate"
+
+
+@pytest.mark.parametrize("change", [
+    {"content": '{"name":"新名","permission":"full","mcp":[]}'},
+    {"content": '{"name":"新名"}'},
+    {"content": '{"name":"新名","permission":"standard","mcp":["new"]}'},
+    {"content": '[]'}, {"content": 'not json'},
+])
+def test_agent_config_privilege_or_malformed_edit_still_asks(agent_config, change):
+    assert danger.classify("Write", {"file_path": str(agent_config), **change})[0] == "escalate"
+
+
+def test_agent_config_edit_failure_and_unknown_fields_keep_approval(agent_config):
+    assert danger.classify("Edit", {"file_path": str(agent_config), "old_string": "missing", "new_string": "new"})[0] == "escalate"
+    assert danger.classify("Edit", {"file_path": str(agent_config), "old_string": "standard", "new_string": "full"})[0] == "escalate"
+    agent_config.unlink()
+    assert danger.classify("Write", {"file_path": str(agent_config), "content": '{"name":"新建"}'})[0] == "escalate"

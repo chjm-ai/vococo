@@ -6,12 +6,12 @@ import json
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from claude_agent_sdk._internal.sdk_mcp_bridge import SdkMcpBridge
 
 from vococo import config
-from vococo.core import research, research_store, task_runner, tasks
+from vococo.core import research, task_runner, tasks
 from vococo.gateway import task_routes
 from vococo.tools import builtin
+from historical_research import initialize, update
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ async def client(db):
 
 def _historical_research():
     row = tasks.create("技术选型", "比较 Python 的任务队列", kind="research")
-    research.initialize(row["id"], row["prompt"], "claude-sonnet-5-5")
+    initialize(row["id"], row["prompt"], "claude-sonnet-5-5")
     return row
 
 
@@ -79,9 +79,6 @@ async def test_task_summary_and_activity_share_normalized_conversation(client, m
     {"title": "研究", "prompt": "问题"}, {}, {"budget": {"tokens": 0}}, "not-json",
 ])
 async def test_removed_start_never_dispatches(client, monkeypatch, body):
-    def forbidden(*args, **kwargs):
-        pytest.fail("移除后的 HTTP 入口不能派发研究")
-    monkeypatch.setattr(task_runner, "dispatch_research", forbidden)
     response = await client.post("/research?session_key=main", data=json.dumps(body),
                                  headers={"Content-Type": "application/json"})
     assert response.status == 410
@@ -101,7 +98,7 @@ async def test_progress_is_slim_and_compatible_with_old_state(client):
                      sources=[{"id": "S1", "title": "标题", "url": "https://example.com/",
                                "extracts": [{"text": "网页全文", "fetched_at": 123}],
                                "claims": [{"quote": "秘密摘录", "claim": "待验证"}]}])
-    research_store.update(task_id, legacy)
+    update(task_id, legacy)
     response = await client.get(f"/tasks/{task_id}/research/progress")
     assert response.status == 200
     progress = await response.json()
@@ -126,12 +123,9 @@ async def test_removed_resume_does_not_change_historical_data(client, monkeypatc
     row = _historical_research()
     task_id = row["id"]
     tasks.set_status(task_id, status if status != "missing" else "failed")
-    research_store.update(task_id, lambda state: state.update(
+    update(task_id, lambda state: state.update(
         status="interrupted", usage={"searches": 2, "fetches": 1, "tokens": 500}))
     before_task, before_state = tasks.get(task_id), research.get(task_id)
-    async def forbidden(*args, **kwargs):
-        pytest.fail("移除后的 HTTP 入口不能恢复研究")
-    monkeypatch.setattr(task_runner, "resume_research", forbidden)
     target = "missing" if status == "missing" else task_id
     response = await client.post(f"/tasks/{target}/resume")
     assert response.status == 410
@@ -144,7 +138,7 @@ async def test_removed_resume_does_not_change_historical_data(client, monkeypatc
 async def test_historical_report_download_and_cancel(client):
     row = _historical_research()
     task_id = row["id"]
-    research_store.update(task_id, lambda state: state.update(status="done", report="# 测试报告\n引用 [S1]"))
+    update(task_id, lambda state: state.update(status="done", report="# 测试报告\n引用 [S1]"))
     response = await client.get(f"/tasks/{task_id}/report")
     assert response.status == 200
     assert "attachment" in response.headers["Content-Disposition"]
@@ -166,19 +160,37 @@ async def test_all_research_routes_require_auth(client, monkeypatch):
     assert tasks.list_queued() == []
 
 
-@pytest.mark.anyio
-async def test_mcp_list_excludes_removed_research_tools(db):
-    server = builtin.build_mcp_servers()["vococo"]["instance"]
-    bridge = SdkMcpBridge("vococo", server)
-    try:
-        initialized = await bridge.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-            "protocolVersion": "2025-11-25", "capabilities": {},
-            "clientInfo": {"name": "test", "version": "1"}}})
-        assert "result" in initialized
-        await bridge.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        result = await bridge.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-        names = {tool["name"] for tool in result["result"]["tools"]}
-    finally:
-        await bridge.aclose()
+def test_mcp_list_excludes_removed_research_tools(db, monkeypatch):
+    # 这里只验证实际注册清单，不依赖 SDK 私有桥接器的传输生命周期。
+    monkeypatch.setattr(builtin, "create_sdk_mcp_server", lambda name, tools: tools)
+    names = {tool.name for tool in builtin.build_mcp_servers()["vococo"]}
     assert not {"start_research", "get_research", "resume_research"} & names
     assert {"dispatch_session", "recall_past", "send_message"} <= names
+
+
+def test_missing_history_read_never_creates_database(db):
+    assert research.get("missing") is None
+    assert research.progress("missing") is None
+    assert not (config.DATA_DIR / "research.db").exists()
+
+
+def test_history_read_does_not_modify_database(db):
+    row = _historical_research()
+    path = config.DATA_DIR / "research.db"
+    before = path.read_bytes()
+    assert research.get(row["id"])["question"] == row["prompt"]
+    assert research.progress(row["id"])["id"] == row["id"]
+    assert research.get("missing") is None
+    assert path.read_bytes() == before
+
+
+def test_database_without_history_table_is_not_modified(db):
+    import sqlite3
+
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path = config.DATA_DIR / "research.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE unrelated (id TEXT)")
+    before = path.read_bytes()
+    assert research.get("missing") is None
+    assert path.read_bytes() == before

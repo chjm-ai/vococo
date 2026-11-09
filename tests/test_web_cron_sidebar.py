@@ -35,6 +35,7 @@ def cron_web_app(isolated, monkeypatch):
         [
             web.get("/cron/sidebar", adapter._handle_cron_sidebar),
             web.post("/conv/read", adapter._handle_conv_read),
+            web.post("/conv/pin", adapter._handle_conv_pin),
             web.post("/cron/jobs/create", adapter._handle_cron_create),
             web.post("/cron/jobs/update", adapter._handle_cron_update),
             web.post("/cron/jobs/enable", adapter._handle_cron_set_enabled),
@@ -108,6 +109,30 @@ async def test_sidebar_empty_then_create_shows_job(cron_web_app):
         assert jobs[0]["title"] == "晨间简报"
         assert jobs[0]["schedule_desc"] == "0 8 * * *"
         assert jobs[0]["enabled"] is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("legacy", [False, True], ids=["session", "legacy-task"])
+async def test_cron_can_be_pinned_before_first_run(cron_web_app, legacy):
+    from vococo.cron import scheduler
+
+    job = scheduler.create_job(name="稍后处理", prompt="汇总", schedule={"kind": "cron", "expr": "0 8 * * *"})
+    if legacy:
+        jobs = scheduler.load_jobs()
+        jobs[0]["conv"] = f"task:{job['id']}"
+        scheduler.save_jobs(jobs)
+        job = jobs[0]
+    async with TestClient(TestServer(cron_web_app)) as client:
+        row = (await (await client.get("/cron/sidebar")).json())["jobs"][0]
+        assert row["pinned"] is False
+        assert row["turns"] == 0
+        for pinned in (True, False):
+            response = await client.post("/conv/pin", json={"conv": job["conv"], "pinned": pinned})
+            assert response.status == 200
+            row = (await (await client.get("/cron/sidebar")).json())["jobs"][0]
+            assert row["pinned"] is pinned
+            assert row["enabled"] is True
+            assert row["turns"] == 0
 
 
 @pytest.mark.anyio

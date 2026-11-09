@@ -1131,7 +1131,7 @@ def session_summary(session_key: str) -> dict:
         "SELECT COALESCE(ctx_tokens,0), COALESCE(total_tokens,0), "
         "COALESCE(ctx_window,0), COALESCE(last_in,0), COALESCE(last_cache,0), "
         "COALESCE(last_out,0), model, chosen_model, "
-        "COALESCE(cache_read_total,0), COALESCE(input_fresh_total,0) "
+        "COALESCE(cache_read_total,0), COALESCE(input_fresh_total,0), COALESCE(pinned,0) "
         "FROM session_meta WHERE session_key=?",
         (session_key,),
     ).fetchone()
@@ -1141,7 +1141,8 @@ def session_summary(session_key: str) -> dict:
         "turns": turns,
         "last_ts": last_ts,
     }
-    out.update(_usage_fields(trow if trow else (0, 0, 0, 0, 0, 0, "", "", 0, 0)))
+    out["pinned"] = bool(trow[10]) if trow else False
+    out.update(_usage_fields(trow[:10] if trow else (0, 0, 0, 0, 0, 0, "", "", 0, 0)))
     out.update(_ownership_fields(session_key))
     return out
 
