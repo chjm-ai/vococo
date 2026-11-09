@@ -414,6 +414,40 @@ assert.equal(buildVoiceTaskRow({{conv:'task:1'}},false),null);
     subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
 
 
+def test_agent_tab_hides_pinned_children_and_their_unread_badges():
+    """稍后会话从 Agent 子列表及角标统计移除，取消后恢复。"""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("需要 Node 执行 Agent 筛选函数")
+    source = STATIC_AGENTS.read_text(encoding="utf-8")
+    convs = source[source.index("function agentConvs(") : source.index("// Agent 行的两种状态提示")]
+    items = source[source.index("function agentTasks(") : source.index("function agentKey(")]
+    script = f"""
+const assert=require('node:assert/strict');
+const a={{id:'general',main_conv:'main'}};
+const S={{convs:[{{conv:'main',pinned:true}},{{conv:'later',pinned:true,pending_review:true}},
+  {{conv:'normal'}},{{conv:'archived',archived:true}}],
+  voiceSidebar:{{tasks:[{{conv:'task:later',pinned:true,pending_review:true}}]}},
+  live:{{}},pendingReview:{{}},convFilter:'active'}};
+const agentOwnsConv=(a,conv)=>conv!=='main';
+const agentById=()=>a;
+{convs}
+{items}
+assert.deepEqual(agentConvs(a).map(c=>c.conv),['normal']);
+assert.deepEqual(agentOwnItems(a).map(c=>c.conv),['main','normal','archived']);
+assert.equal(agentUnread(a),0);
+S.convs[1].pinned=false; S.voiceSidebar.tasks[0].pinned=false;
+assert.deepEqual(agentConvs(a).map(c=>c.conv),['later','normal']);
+assert.equal(agentUnread(a),2);
+S.convFilter='archived';
+assert.deepEqual(agentConvs(a).map(c=>c.conv),['archived']);
+S.convs=[]; S.voiceSidebar=null;
+assert.deepEqual(agentConvs(a),[]);
+assert.equal(agentUnread(a),0);
+"""
+    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+
+
 def test_agent_row_state_covers_main_children_and_tasks():
     """工作中/未读都要算上主会话 + 名下子会话(+ 归它的后台任务),同一份清单判断。"""
     js = STATIC_AGENTS.read_text(encoding="utf-8")
