@@ -51,7 +51,7 @@ _SEND_REQUEST_TIMEOUT = 300
 _VERSIONED_ASSETS = (
     "styles.css", "mascot.css", "library.css", "library.js", "tool-card.js",
     # 2026-08-14 前端模块化:从 index.html 拆出的功能块(加载顺序即此顺序)
-    "app-core.js", "mascot.js", "preview.js", "mermaid-11.12.2.min.js", "markdown.js", "sidebar.js", "settings.js", "stats.js",
+    "lazy.js", "app-core.js", "mascot.js", "preview.js", "mermaid-11.12.2.min.js", "markdown.js", "sidebar.js", "settings.js", "stats.js",
     "workbench.js",
     "research.js", "stream.js", "notices.js", "agents.js", "find.js", "composer.js", "voice.js",
 )
@@ -3849,7 +3849,7 @@ class WebAdapter:
                 web.get("/library.css", self._handle_library_styles),
                 web.get("/tool-card.js", self._handle_tool_card_js),
                 web.get(
-                    r"/{name:(?:app-core|mascot|preview|mermaid-11\.12\.2\.min|markdown|sidebar|settings|stats|workbench|research|stream|notices|agents|find|composer|voice|library)\.js}",
+                    r"/{name:(?:lazy|app-core|mascot|preview|mermaid-11\.12\.2\.min|markdown|sidebar|settings|stats|workbench|research|stream|notices|agents|find|composer|voice|library)\.js}",
                     self._handle_app_js,
                 ),
                 web.get("/favicon.ico", self._handle_favicon),

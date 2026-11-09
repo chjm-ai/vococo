@@ -546,12 +546,13 @@ try{
      (它引用的 el/esc/ic/mdToHtml/DOTS 只在函数体内用,真正被调用时主脚本早已跑完)。 -->
 <script src="/mascot.js"></script>
 <script src="/tool-card.js"></script>
+<script type="application/json" id="lazyAssets">{"settings":"/settings.js","workbench":"/workbench.js","library":"/library.js"}</script>
+<script src="/lazy.js"></script>
 <script src="/app-core.js"></script>
 <script src="/preview.js"></script>
 <script src="/markdown.js"></script>
 <script src="/sidebar.js"></script>
-<script src="/workbench.js"></script>
-<script src="/settings.js"></script>
+
 <script src="/stats.js"></script>
 <script src="/research.js"></script>
 <script src="/stream.js"></script>
@@ -2248,7 +2249,6 @@ syncTheme();
 if(S.token){ tryEnter(); } else { $("#pw").focus(); }
 </script>
 <script src="/composer.js"></script>
-<script src="/library.js"></script>
 <script src="/voice.js"></script>
 </body>
 </html>

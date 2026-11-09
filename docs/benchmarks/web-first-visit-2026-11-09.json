@@ -1,0 +1,546 @@
+{
+  "baseline": "5f3accd",
+  "measurements": [
+    {
+      "ms": 5571,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 2535.7999999523163,
+      "bytes": 393993,
+      "networkBytes": 400593,
+      "scripts": 17,
+      "conversations": [
+        378.5
+      ],
+      "label": "before",
+      "profile": "4g",
+      "cache": "cold",
+      "run": 1,
+      "errors": []
+    },
+    {
+      "ms": 3693.5,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 2471.5,
+      "bytes": 325579,
+      "networkBytes": 331579,
+      "scripts": 15,
+      "conversations": [
+        317.60000014305115
+      ],
+      "label": "after",
+      "profile": "4g",
+      "cache": "cold",
+      "run": 1,
+      "errors": []
+    },
+    {
+      "ms": 3922.9000000953674,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 2769.0999999046326,
+      "bytes": 393993,
+      "networkBytes": 400593,
+      "scripts": 17,
+      "conversations": [
+        313.40000009536743
+      ],
+      "label": "before",
+      "profile": "4g",
+      "cache": "cold",
+      "run": 2,
+      "errors": []
+    },
+    {
+      "ms": 3342.5,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 2429.899999856949,
+      "bytes": 325579,
+      "networkBytes": 331579,
+      "scripts": 15,
+      "conversations": [
+        172.5
+      ],
+      "label": "after",
+      "profile": "4g",
+      "cache": "cold",
+      "run": 2,
+      "errors": []
+    },
+    {
+      "ms": 3440.9000000953674,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 2388.5,
+      "bytes": 393993,
+      "networkBytes": 400593,
+      "scripts": 17,
+      "conversations": [
+        296
+      ],
+      "label": "before",
+      "profile": "4g",
+      "cache": "cold",
+      "run": 3,
+      "errors": []
+    },
+    {
+      "ms": 3488.2000000476837,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 2278.5,
+      "bytes": 325579,
+      "networkBytes": 331579,
+      "scripts": 15,
+      "conversations": [
+        322.10000014305115
+      ],
+      "label": "after",
+      "profile": "4g",
+      "cache": "cold",
+      "run": 3,
+      "errors": []
+    },
+    {
+      "ms": 1299.8999998569489,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 1025.7000000476837,
+      "bytes": 393993,
+      "networkBytes": 819,
+      "scripts": 17,
+      "conversations": [
+        156.5
+      ],
+      "label": "before",
+      "profile": "4g",
+      "cache": "warm",
+      "run": 1,
+      "errors": []
+    },
+    {
+      "ms": 1485,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 971.2999999523163,
+      "bytes": 325579,
+      "networkBytes": 819,
+      "scripts": 15,
+      "conversations": [
+        324.7000000476837
+      ],
+      "label": "after",
+      "profile": "4g",
+      "cache": "warm",
+      "run": 1,
+      "errors": []
+    },
+    {
+      "ms": 1394.5,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 902.2999999523163,
+      "bytes": 393993,
+      "networkBytes": 819,
+      "scripts": 17,
+      "conversations": [
+        313.60000014305115
+      ],
+      "label": "before",
+      "profile": "4g",
+      "cache": "warm",
+      "run": 2,
+      "errors": []
+    },
+    {
+      "ms": 1391.5999999046326,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 883.8999998569489,
+      "bytes": 325579,
+      "networkBytes": 819,
+      "scripts": 15,
+      "conversations": [
+        326.60000014305115
+      ],
+      "label": "after",
+      "profile": "4g",
+      "cache": "warm",
+      "run": 2,
+      "errors": []
+    },
+    {
+      "ms": 1171.2999999523163,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 783.2000000476837,
+      "bytes": 393993,
+      "networkBytes": 819,
+      "scripts": 17,
+      "conversations": [
+        174.59999990463257
+      ],
+      "label": "before",
+      "profile": "4g",
+      "cache": "warm",
+      "run": 3,
+      "errors": []
+    },
+    {
+      "ms": 1116.5,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 776.9000000953674,
+      "bytes": 325579,
+      "networkBytes": 819,
+      "scripts": 15,
+      "conversations": [
+        176.70000004768372
+      ],
+      "label": "after",
+      "profile": "4g",
+      "cache": "warm",
+      "run": 3,
+      "errors": []
+    },
+    {
+      "ms": null,
+      "failure": "脚本全部就绪后等10秒仍未进入默认界面",
+      "surface": "chat",
+      "service": "online",
+      "shellMs": 9161.700000047684,
+      "bytes": 394109,
+      "networkBytes": 401609,
+      "scripts": 17,
+      "conversations": [
+        573.5999999046326
+      ],
+      "label": "before",
+      "profile": "slow",
+      "cache": "cold",
+      "run": 1,
+      "errors": []
+    },
+    {
+      "ms": 8219.300000190735,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 7638.400000095367,
+      "bytes": 325579,
+      "networkBytes": 331579,
+      "scripts": 15,
+      "conversations": [
+        350.2999999523163
+      ],
+      "label": "after",
+      "profile": "slow",
+      "cache": "cold",
+      "run": 1,
+      "errors": []
+    },
+    {
+      "ms": null,
+      "failure": "脚本全部就绪后等10秒仍未进入默认界面",
+      "surface": "chat",
+      "service": "online",
+      "shellMs": 9222.900000095367,
+      "bytes": 394109,
+      "networkBytes": 401609,
+      "scripts": 17,
+      "conversations": [
+        566.5
+      ],
+      "label": "before",
+      "profile": "slow",
+      "cache": "cold",
+      "run": 2,
+      "errors": []
+    },
+    {
+      "ms": 8341.800000190735,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 7770.300000190735,
+      "bytes": 325579,
+      "networkBytes": 331579,
+      "scripts": 15,
+      "conversations": [
+        402.39999985694885
+      ],
+      "label": "after",
+      "profile": "slow",
+      "cache": "cold",
+      "run": 2,
+      "errors": []
+    },
+    {
+      "ms": null,
+      "failure": "脚本全部就绪后等10秒仍未进入默认界面",
+      "surface": "chat",
+      "service": "online",
+      "shellMs": 9169.099999904633,
+      "bytes": 394109,
+      "networkBytes": 401609,
+      "scripts": 17,
+      "conversations": [
+        365.2999999523163
+      ],
+      "label": "before",
+      "profile": "slow",
+      "cache": "cold",
+      "run": 3,
+      "errors": []
+    },
+    {
+      "ms": 8428.700000047684,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 7698,
+      "bytes": 325579,
+      "networkBytes": 331579,
+      "scripts": 15,
+      "conversations": [
+        412.2999999523163
+      ],
+      "label": "after",
+      "profile": "slow",
+      "cache": "cold",
+      "run": 3,
+      "errors": []
+    },
+    {
+      "ms": 2087,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 1179.7999999523163,
+      "bytes": 393993,
+      "networkBytes": 819,
+      "scripts": 17,
+      "conversations": [
+        519.2999999523163
+      ],
+      "label": "before",
+      "profile": "slow",
+      "cache": "warm",
+      "run": 1,
+      "errors": []
+    },
+    {
+      "ms": 1887.1999998092651,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 1263.7999999523163,
+      "bytes": 325579,
+      "networkBytes": 819,
+      "scripts": 15,
+      "conversations": [
+        453.7000000476837
+      ],
+      "label": "after",
+      "profile": "slow",
+      "cache": "warm",
+      "run": 1,
+      "errors": []
+    },
+    {
+      "ms": 1909.7000000476837,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 1046.7000000476837,
+      "bytes": 393993,
+      "networkBytes": 819,
+      "scripts": 17,
+      "conversations": [
+        357.5
+      ],
+      "label": "before",
+      "profile": "slow",
+      "cache": "warm",
+      "run": 2,
+      "errors": []
+    },
+    {
+      "ms": 1791.4000000953674,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 1203,
+      "bytes": 325579,
+      "networkBytes": 819,
+      "scripts": 15,
+      "conversations": [
+        471.89999985694885
+      ],
+      "label": "after",
+      "profile": "slow",
+      "cache": "warm",
+      "run": 2,
+      "errors": []
+    },
+    {
+      "ms": 2621.9000000953674,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 1462.2999999523163,
+      "bytes": 393993,
+      "networkBytes": 819,
+      "scripts": 17,
+      "conversations": [
+        565.5999999046326
+      ],
+      "label": "before",
+      "profile": "slow",
+      "cache": "warm",
+      "run": 3,
+      "errors": []
+    },
+    {
+      "ms": 2563.5999999046326,
+      "failure": null,
+      "surface": "call",
+      "service": "online",
+      "shellMs": 1762.4000000953674,
+      "bytes": 325579,
+      "networkBytes": 819,
+      "scripts": 15,
+      "conversations": [
+        583.6000001430511
+      ],
+      "label": "after",
+      "profile": "slow",
+      "cache": "warm",
+      "run": 3,
+      "errors": []
+    }
+  ],
+  "checks": [
+    {
+      "scenario": "first-open-repeat",
+      "profile": "4g",
+      "module": "settings",
+      "ms": 1310.5,
+      "downloadMs": 357,
+      "requests": [
+        "http://127.0.0.1:57117/settings.js?v=370070c4e990"
+      ]
+    },
+    {
+      "scenario": "first-open-repeat",
+      "profile": "4g",
+      "module": "library",
+      "ms": 1308.9000000953674,
+      "downloadMs": 348.2000000476837,
+      "requests": [
+        "http://127.0.0.1:57117/library.js?v=3199b792916d"
+      ]
+    },
+    {
+      "scenario": "first-open-repeat",
+      "profile": "4g",
+      "module": "workbench",
+      "ms": 1318.6999998092651,
+      "downloadMs": 393.5,
+      "requests": [
+        "http://127.0.0.1:57117/workbench.js?v=220f830cf749"
+      ]
+    },
+    {
+      "scenario": "first-open-repeat",
+      "profile": "slow",
+      "module": "settings",
+      "ms": 2355.5999999046326,
+      "downloadMs": 743.2000000476837,
+      "requests": [
+        "http://127.0.0.1:57117/settings.js?v=370070c4e990"
+      ]
+    },
+    {
+      "scenario": "first-open-repeat",
+      "profile": "slow",
+      "module": "library",
+      "ms": 1905.3000001907349,
+      "downloadMs": 660.7999999523163,
+      "requests": [
+        "http://127.0.0.1:57117/library.js?v=3199b792916d"
+      ]
+    },
+    {
+      "scenario": "first-open-repeat",
+      "profile": "slow",
+      "module": "workbench",
+      "ms": 2720.600000143051,
+      "downloadMs": 1640.5999999046326,
+      "requests": [
+        "http://127.0.0.1:57117/workbench.js?v=220f830cf749"
+      ]
+    },
+    {
+      "scenario": "failure-retry",
+      "module": "settings",
+      "passed": true
+    },
+    {
+      "scenario": "failure-retry",
+      "module": "library",
+      "passed": true
+    },
+    {
+      "scenario": "failure-retry",
+      "module": "workbench",
+      "passed": true
+    },
+    {
+      "scenario": "standalone-refresh",
+      "passed": true
+    },
+    {
+      "scenario": "partial-init-error-visible-no-reexecution",
+      "passed": true
+    },
+    {
+      "scenario": "no-eager-modules-slash-conv-menu-navigation-cancel",
+      "passed": true
+    },
+    {
+      "scenario": "old-sw-upgrade-offline-miss-retry-cached-modules-refresh",
+      "passed": true
+    }
+  ],
+  "environment": {
+    "sampling": "相邻新旧版本交错,每组各3次",
+    "viewport": "390x844",
+    "device_scale_factor": 3,
+    "user_agent": "iPhone iOS18 Safari UA, Chromium模拟",
+    "cpu_rate": 4,
+    "service_workers": "冷暖性能测量均绕过SW;另有真实SW路径验收",
+    "profiles": {
+      "4g": "1600kbps/120ms",
+      "slow": "400kbps/300ms"
+    },
+    "database": "同一临时空数据库,真实WebAdapter路由",
+    "bytes": "encodedBodySize压缩正文,含缓存资源大小;不能当暖缓存传输量",
+    "networkBytes": "ResourceTiming transferSize,含浏览器估算头部;缓存命中为0",
+    "main_ready": "DOMContentLoaded后默认callView可见;脚本就绪10秒仍不可见记失败"
+  }
+}

@@ -358,7 +358,7 @@ function buildLibraryRow(){
   const title=el("div","ct"); title.textContent="作品库"; body.append(title);
   row.append(body); row.onclick=()=>{
     if(typeof openLibrary==="function") openLibrary();
-    else alert("作品库模块未加载，请刷新或完成静态资源接入。");
+    else vococoLazy.run("library", ()=>openLibrary());
   };
   return row;
 }
@@ -366,7 +366,7 @@ function buildWorkbenchRow(){
   const row=el("div","conv"+(S.surface==="workbench"?" active":""));
   const body=el("div","cvbody"); body.innerHTML=ic("grid");
   const title=el("div","ct"); title.textContent="工作台"; body.append(title);
-  row.append(body); row.onclick=()=>openWorkbench();
+  row.append(body); row.onclick=()=>vococoLazy.run("workbench", ()=>openWorkbench());
   return row;
 }
 // 语音后台任务的单条行(与普通会话行同构);archived 筛选不通过时返回 null。
@@ -857,6 +857,7 @@ const NAV = {stack:[], idx:-1, replaying:false};
 const NAV_MAX = 50;
 function navSame(a, b){ return !!a && !!b && a.kind===b.kind && a.conv===b.conv; }
 function navRecord(entry){
+  vococoLazy.cancel();  // 加载期间已切到别处,旧入口到货后不能抢回页面。
   if(NAV.replaying || navSame(NAV.stack[NAV.idx], entry)) return;
   NAV.stack.splice(NAV.idx+1);          // 后退之后再开新视图 → 丢掉原来的「前进」分支
   NAV.stack.push(entry);
@@ -1156,3 +1157,213 @@ async function openSystemTaskModal(t){
 function closeSystemTaskModal(){ $("#sysTaskModal").hidden=true; }
 $("#stClose").onclick = closeSystemTaskModal;
 $("#sysTaskModal").onclick = e=>{ if(e.target===$("#sysTaskModal")) closeSystemTaskModal(); };
+
+// 会话操作属于首页,不能随设置面板一起延迟。
+// 会话「更多」浮层菜单(单例):点 ⋯ 弹出,重命名/置顶/归档/复制/删除,点即执行(不再二次确认)
+let convMenuEl=null, convMenuBtn=null;
+function closeConvMenu(){
+  if(convMenuBtn){ convMenuBtn.classList.remove("on"); convMenuBtn=null; }
+  if(convMenuEl){ convMenuEl.remove(); convMenuEl=null; }
+}
+// 触屏左滑会话行露出归档/删除(iOS 邮件同款手势,比长按更符合触屏习惯)
+const SWIPE_W=108;   // 需与 CSS .cvact 宽度一致(归档+置顶+删除,3个按钮)
+function closeSwipe(row){ row.classList.remove("swiped"); if(S.swipedConv===row.dataset.conv) S.swipedConv=null; }
+function closeAllSwipes(except){
+  $("#convBody").querySelectorAll(".conv.swiped").forEach(r=>{ if(r!==except) closeSwipe(r); });
+}
+function bindSwipe(row, body, act){
+  let startX=0, startY=0, dx=0, lock=null, dragging=false;
+  row.addEventListener("touchstart", ev=>{
+    if(ev.touches.length!==1) return;
+    startX=ev.touches[0].clientX; startY=ev.touches[0].clientY;
+    dx=0; lock=null; dragging=false;
+    row.classList.add("swiping");
+  }, {passive:true});
+  row.addEventListener("touchmove", ev=>{
+    if(ev.touches.length!==1) return;
+    const x=ev.touches[0].clientX, y=ev.touches[0].clientY, ddx=x-startX, ddy=y-startY;
+    if(lock===null) lock = Math.abs(ddx)>Math.abs(ddy)+4 ? "x" : (Math.abs(ddy)>Math.abs(ddx)+4 ? "y" : null);
+    if(lock!=="x") return;   // 竖向滑动交给列表滚动,不拦截
+    dragging=true;
+    const base = row.classList.contains("swiped") ? -SWIPE_W : 0;
+    dx = Math.max(-SWIPE_W, Math.min(0, base+ddx));
+    body.style.transform="translateX("+dx+"px)"; act.style.transform="translateX("+(SWIPE_W+dx)+"px)";
+  }, {passive:true});
+  const end=()=>{
+    row.classList.remove("swiping");
+    body.style.transform=""; act.style.transform="";
+    if(dragging){
+      row._justSwiped=true;
+      if(dx<=-SWIPE_W/2){ closeAllSwipes(row); row.classList.add("swiped"); S.swipedConv=row.dataset.conv; } else closeSwipe(row);
+    }
+    dragging=false;
+  };
+  row.addEventListener("touchend", end);
+  row.addEventListener("touchcancel", end);
+}
+$("#convBody").addEventListener("scroll", ()=>closeAllSwipes());
+function openConvMenu(btn, conv, slim){
+  if(convMenuBtn===btn){ closeConvMenu(); return; }   // 再点一次同一个 → 收起
+  closeHeaderPopovers();
+  convMenuBtn=btn; btn.classList.add("on");
+  const m=el("div","convmenu"); m.style.visibility="hidden";
+  // 定时任务会话:菜单换成编辑/启停/删除(归档对定时任务没意义,见 buildCronJobRow)。
+  // slim=true(标题栏「⋯」):启停开关和编辑图标已直出,菜单保留稍后处理和删除。
+  // 直接按 conv 精确匹配 S.cronJobs(不再靠前缀字符串猜,理由同 syncCronHeader)。
+  const cronJob=(S.cronJobs||[]).find(x=>x.conv===conv);
+  if(cronJob){
+    const job=cronJob;
+    const pin=el("button","cmitem"); pin.innerHTML=ic("pin")+(job.pinned?" 取消稍后处理":" 稍后处理");
+    pin.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); pinConv(conv, !job.pinned); };
+    m.append(pin);
+    if(!slim){
+      const edit=el("button","cmitem"); edit.innerHTML=ic("edit")+" 编辑";
+      edit.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); if(job) openCronModal(job); };
+      m.append(edit);
+      const enabled=job?!!job.enabled:true;
+      const tg=el("button","cmitem"); tg.innerHTML=ic(enabled?"stop":"zap")+" "+(enabled?"停用":"启用");
+      tg.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); if(job) toggleCronJob(job.job_id, !job.enabled); };
+      m.append(tg);
+    }
+    const del=el("button","cmitem danger"); del.innerHTML=ic("trash")+" 删除";
+    del.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); if(job) deleteCronJob(job.job_id, job.title, job.conv); };
+    m.append(del);
+  }else{
+    const convObj=findConv(conv);
+    const isMain=conv==="main";
+    const isPinned=!!(convObj&&convObj.pinned);
+    const ren=el("button","cmitem"); ren.innerHTML=ic("edit")+" 重命名";
+    ren.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); renameConv(conv); };
+    m.append(ren);
+    if(!isMain){
+      const pin=el("button","cmitem"); pin.innerHTML=ic("pin")+(isPinned?" 取消稍后处理":" 稍后处理");
+      pin.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); pinConv(conv, !isPinned); };
+      m.append(pin);
+    }
+    const isArch=!!(convObj&&convObj.archived);
+    const arch=el("button","cmitem"); arch.innerHTML=ic("folder")+" "+(isArch?"取消归档":"归档");
+    arch.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); toggleArchive(conv); };
+    m.append(arch);
+    const cpy=el("button","cmitem"); cpy.innerHTML=ic("copy")+" 复制";
+    cpy.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); duplicateConv(conv); };
+    m.append(cpy);
+    const del=el("button","cmitem danger"); del.innerHTML=ic("trash")+" 删除";
+    del.onclick=ev=>{ ev.stopPropagation(); closeConvMenu(); delConv(conv); };
+    m.append(del);
+  }
+  document.body.append(m); convMenuEl=m;
+  // 右对齐按钮,默认显示在其下方;贴到视口底部时自动上翻
+  const r=btn.getBoundingClientRect();
+  let top=r.bottom+4, left=r.right-m.offsetWidth;
+  if(top+m.offsetHeight>window.innerHeight) top=r.top-4-m.offsetHeight;
+  m.style.top=Math.max(6,top)+"px"; m.style.left=Math.max(6,left)+"px"; m.style.visibility="visible";
+}
+document.addEventListener("click", closeConvMenu);       // 点空白处关闭
+$("#convBody").addEventListener("scroll", closeConvMenu); // 列表滚动时关闭,避免菜单错位
+document.addEventListener("click", e=>{ if(!e.target.closest(".conv")) closeAllSwipes(); });  // 点空白处收起滑开的行
+
+$("#messages").addEventListener("scroll", ()=>{
+  updateScrollBtn();
+  // 滚到顶部自动按最早一轮继续取历史,函数在 index.html 主脚本中声明。
+  if(typeof loadEarlierHistory === "function") loadEarlierHistory();
+}, {passive:true}); // 流式时用户上翻→显示↓按钮
+
+// 按 conv id 找会话对象:普通会话在 S.convs,后台任务(语音/cron)行分别在 S.voiceSidebar.tasks / S.cronJobs
+// (2026-07-29:定时任务漏查这里,导致打开定时任务会话时顶部上下文占用图标读不到数据而隐藏)
+function findConv(conv){
+  return S.convs.find(x=>x.conv===conv)
+    || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv)
+    || (S.cronJobs||[]).find(x=>x.conv===conv)
+    || (S.searchConvs||[]).find(x=>x.conv===conv)
+    || (S.homeConvs||[]).find(x=>x.conv===conv);
+}
+async function delConv(conv){
+  // 语音/定时任务行不在 S.convs 里,从各自所在的列表里乐观移除(定时任务目前走 openConvMenu 的
+  // deleteCronJob 专用分支,不会真的调到这里,这里补上纯防御,免得以后加了滑动删除入口却漏改)
+  const list = S.convs.some(x=>x.conv===conv) ? S.convs
+    : (S.voiceSidebar.tasks||[]).some(x=>x.conv===conv) ? S.voiceSidebar.tasks
+    : (S.cronJobs||[]).some(x=>x.conv===conv) ? S.cronJobs
+    : (S.searchConvs||[]).some(x=>x.conv===conv) ? S.searchConvs
+    : (S.homeConvs||[]).some(x=>x.conv===conv) ? S.homeConvs
+    : null;
+  if(!list) return;
+  const idx=list.findIndex(x=>x.conv===conv);
+  const removed=list[idx], wasActive=(S.conv===conv);
+  // 乐观假删:先从列表移除并立即重绘,不等服务器
+  list.splice(idx,1); delete S.histCache[conv]; idbDel("hist:"+conv); delete S.live[conv]; delete S.streamSnap[conv]; markLive(); renderConvs();
+  navForget(conv);
+  if(wasActive) openConv(S.convs[0]?S.convs[0].conv:"main");   // 删的是当前会话→切到最近一个
+  // 纯本地会话(从未发过消息)服务端没有记录,删完即止
+  if(removed.draft || String(conv).startsWith("local-")) return;
+  try{
+    const r=await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok || !j.ok && !j.need_confirm) throw new Error(j.error||"删除失败");
+    if(j.need_confirm){
+      // 会话 worktree 里有未提交改动/未合并提交:先回滚乐观假删,弹三选——
+      // 归档保留(只提醒不丢内容)/ 仍然删除(force,worktree 内容一起丢) / 取消
+      list.splice(idx,0,removed); renderConvs();
+      const choice=await delConfirmChoice(dirtyBits(j.dirty||{}));
+      if(choice==="archive"){ toggleArchive(conv); return; }  // 归档保留:代码留 worktree,只提醒不回收
+      if(choice!=="delete") return;                            // 取消:列表已恢复
+      const forceResp=await api("/conv/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,force:true})});
+      const forceData=await forceResp.json().catch(()=>({}));
+      if(!forceResp.ok || !forceData.ok) throw new Error(forceData.error||"删除失败");
+      // force 删除成功后行已被回滚恢复,需再移除一次(否则残留到刷新还看得到)
+      const f=list.findIndex(x=>x.conv===conv);
+      if(f>=0){
+        list.splice(f,1); delete S.histCache[conv]; idbDel("hist:"+conv); delete S.live[conv]; delete S.streamSnap[conv]; markLive(); renderConvs();
+      }
+    }
+    // 独立首页缓存/搜索缓存可能还有副本，只在服务端确认删除后清理。
+    S.homeConvsVersion++;
+    if(S.homeConvs) S.homeConvs=S.homeConvs.filter(c=>c.conv!==conv);
+    S.searchConvs=S.searchConvs.filter(c=>c.conv!==conv);
+    if($("#empty").style.display==="flex") renderEmptyRecent();
+  }catch(err){
+    // 删除失败:回滚列表并提示(行可能已恢复,先确认不在再插,避免重复行)
+    if(!list.some(x=>x.conv===conv)) list.splice(idx,0,removed);
+    renderConvs();
+    alert((err&&err.message)||"删除失败,已恢复该会话");
+  }
+}
+// 删除会话三选确认(worktree 有未提交改动时):归档保留 / 仍然删除 / 取消。
+// 返回 "archive" | "delete" | "cancel"。
+function delConfirmChoice(bits){
+  return new Promise(res=>{
+    const m=$("#delModal");
+    $("#delDirty").textContent="该会话的代码还有 "+bits+",直接删除会全部丢失。";
+    const done=v=>{ m.hidden=true; m.onclick=null; res(v); };
+    $("#delArchive").onclick=()=>done("archive");
+    $("#delForce").onclick=()=>done("delete");
+    $("#delCancel").onclick=()=>done("cancel");
+    m.onclick=e=>{ if(e.target===m) done("cancel"); };  // 点遮罩 = 取消
+    m.hidden=false;
+  });
+}
+async function renameConv(conv){
+  const c=findConv(conv); if(!c) return;
+  const title=(prompt("重命名会话", c.title||"")||"").trim();
+  if(!title || title===c.title) return;
+  const prev=c.title;
+  c.title=title; renderConvs();   // 乐观更新,立即重绘
+  // 纯本地会话(从未发过消息)服务端没有记录,改名只停在本地——发出第一条消息后
+  // conv 会转正成新 key(见 composer.js sendMsg 的 wasLocal 分支),这里存了也白存
+  if(isDraftConv(conv)) return;
+  try{
+    const r=await api("/conv/rename",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv,title})});
+    const j=await r.json().catch(()=>({}));
+    if(!j.ok) throw new Error();
+  }catch(e){
+    c.title=prev; renderConvs(); alert("重命名失败");
+  }
+}
+async function duplicateConv(conv){
+  try{
+    const r=await api("/conv/duplicate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conv})});
+    const j=await r.json().catch(()=>({}));
+    if(!j.conv){ alert("复制失败"); return; }
+    await loadConvs();  // 列表刷新出新副本(ts 已刷新,顶到最前)
+    openConv(j.conv);   // 直接打开副本,标题「原标题副本」立即可见
+  }catch(err){ alert("复制失败"); }
+}

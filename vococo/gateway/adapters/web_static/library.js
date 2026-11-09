@@ -412,3 +412,5 @@ Object.defineProperty(S,"token",{configurable:true,enumerable:true,
 });
 const libraryOriginalShowLogin=showLogin;
 showLogin=function(){ libraryClearPrivateImages(); return libraryOriginalShowLogin(); };
+
+vococoLazy.ready("library");
