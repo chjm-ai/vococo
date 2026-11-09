@@ -40,12 +40,25 @@ function applyGitBtn(d){
   if(!d.repositories && (!d.is_repo||d.error)){ btn.hidden=false; btn.textContent=d.error?'⎇ 读取失败':'⎇ 非 git 仓库'; return; }
   btn.hidden=false; btn.innerHTML=gitBtnLabel(d); btn.classList.toggle("dirty", (d.dirty>0)||(d.unmerged>0)||(d.unavailable>0));
 }
-// 切会话专用:先把按钮重置成加载态、收起弹层,再整份刷新
-async function refreshGit(conv){
+// 切会话专用:先把按钮重置成加载态、收起弹层,再整份刷新(请求本身由 scheduleConvAux 延后)
+function resetGitBtn(){
+  S.git=null;
+  $("#gitPop").replaceChildren();
   const btn=$("#convGit"), pbtn=$("#convProjName");
   $("#gitPop").hidden=true; $("#projPop").hidden=true;
   btn.hidden=false; btn.classList.remove("dirty"); btn.textContent="⎇ …"; pbtn.hidden=true;
-  applyGitBtn(await fetchGitStatus(conv));
+}
+async function refreshGit(conv){
+  const d=await fetchGitStatus(conv);
+  if(S.conv===conv) applyGitBtn(d);  // 旧请求返回 null 也不能隐藏新会话的按钮
+}
+// 切会话的辅助读取(见 openConv):停留 ms 毫秒后才跑,期间又切走就作废。
+// 只作废前端触发的读取,不涉及任何写操作。
+var _convAuxTimer=null, _convAuxSeq=0;
+function scheduleConvAux(conv, ms, run){
+  const seq=++_convAuxSeq;
+  clearTimeout(_convAuxTimer);
+  _convAuxTimer=setTimeout(()=>{ if(seq===_convAuxSeq && S.conv===conv) run(); }, ms);
 }
 // 悄悄刷新:不重置按钮文字、不关已开着的弹层——供"打开弹层"和"这一轮任务跑完"两处调用,
 // 避免每次都用加载态闪一下,也避免打断用户正在看的弹层内容
