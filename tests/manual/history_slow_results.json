@@ -1,0 +1,64 @@
+{
+  "date": "2026-11-09",
+  "baseline_ref": "6589195",
+  "environment": "本机隔离 WebAdapter、临时数据库、Chrome 无头浏览器、每条 60 轮合成会话",
+  "model": "仅 /history 使用单通道串行、1200ms 分片 JSON 响应;不是生产网络模型的定论",
+  "commands": [
+    "uv run python tests/manual/history_slow_probe.py --baseline --baseline-ref 6589195 --tag baseline-final --slow-ms 1200 --out /tmp/vococo-history-baseline-final.json",
+    "uv run python tests/manual/history_slow_probe.py --tag fixed-final --slow-ms 1200 --out /tmp/vococo-history-fixed-final.json"
+  ],
+  "final_pair": {
+    "baseline": {
+      "cold_visible_ms": [6084, 3956],
+      "burst_switch_times_ms": [0, 220, 448, 624, 766],
+      "burst_last_visible_ms": 6366,
+      "burst_from_last_switch_ms": 5600,
+      "burst_cancelled": 0,
+      "burst_git_requests": 5,
+      "burst_task_requests": 5,
+      "foreign_rows": 0,
+      "hot_visible_ms": 248,
+      "old_finally_cleared_new_gate": true,
+      "cached_switch_left_skeleton": true,
+      "cached_switch_showed_old_git": true
+    },
+    "fixed": {
+      "cold_visible_ms": [4516, 2953],
+      "burst_switch_times_ms": [0, 151, 316, 476, 618],
+      "burst_last_visible_ms": 3569,
+      "burst_from_last_switch_ms": 2951,
+      "burst_cancelled": 4,
+      "burst_git_requests": 1,
+      "burst_task_requests": 1,
+      "foreign_rows": 0,
+      "hot_visible_ms": 96,
+      "old_finally_cleared_new_gate": false,
+      "cached_switch_left_skeleton": false,
+      "cached_switch_showed_old_git": false
+    }
+  },
+  "earlier_pair_burst_visible_ms": {"baseline": 10948, "fixed": 2621},
+  "validation": {
+    "pytest": "34 passed in 462.54s",
+    "paths": [
+      "tests/test_history_switch_browser.py",
+      "tests/test_chat_stream_switch.py",
+      "tests/test_chat_anchors.py",
+      "tests/test_web_static_cache.py",
+      "tests/test_sidebar_performance.py",
+      "tests/test_frontend_performance.py"
+    ],
+    "covered": ["冷打开", "缓存热切", "五条连切", "A→B→A 门控归属", "取消不标离线", "真实断网", "草稿恢复不重复", "40→60 轮分页", "锚点", "旧权限不串台", "缓存切换骨架屏", "Git 加载期间旧仓库不串台"],
+    "independent_review": "两条确认问题均已修复,并由新增浏览器断言覆盖"
+  },
+  "limits": [
+    "连切设置间隔为 120ms,实际发起时刻见 switch_times;包含同步界面处理和定时器开销,并非精确 120ms。",
+    "先等启动预热结束再测前台;未修改预热策略,不把预热重复或覆盖缓存断言为生产根因。",
+    "热切计时为正文可见,不要求后台历史校验完成;每个场景仍等待请求收尾。",
+    "绝对耗时波动较大,取消数和辅助请求数稳定;不能用少量样本承诺生产提速比例。",
+    "未读取生产认证信息、未对生产真实会话进行 loopback/国内入口配对测量。",
+    "单次冷打开仍受首字节、下载和正文处理影响;本次主要消除快速连切的过期请求占用。",
+    "下一步若验证生产:同会话同页数各重复至少 10 次,分别记录 loopback 与国内入口 TTFB、下载、JSON 解析、正文绘制时间,再确定瓶颈。",
+    "仅提交会话分支;未合并 main、未部署、未重启、未推送。"
+  ]
+}

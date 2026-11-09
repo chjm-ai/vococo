@@ -1861,6 +1861,9 @@ function revealChatTurn(node){
 }
 async function openConv(conv, silentGroup){
   const openSeq=++_convOpenSeq;
+  // 在读取磁盘缓存之前取消旧请求,包括切到本地草稿和重复打开同一会话。
+  if(S.histAbort) S.histAbort.abort();
+  S.histAbort=null; S.histLoading=conv && !isDraftConv(conv) ? conv : null;
   _chatAnchor=null;
   if(typeof closeLibrary==="function") closeLibrary();
   closeWorkbench();
@@ -1915,10 +1918,14 @@ async function openConv(conv, silentGroup){
   restoreSessionModels();
   setMeta(c || {}); $("#ctxPop").hidden=true;   // 切会话时收起明细弹层
   syncModelLock();   // 定时任务会话 → 模型只读锁定编辑页的值 + 隐藏思考深度
-  refreshGit(conv);                              // 项目会话 → 拉 git 状态点亮 ⎇ 按钮
+  // git 状态 / 任务状态条是辅助读取,别跟 /history 同时点火抢慢链路:连切会话时每条都打一枪,
+  // 到头来只有最后一条有用,前面的都在排队。按钮/状态条先亮加载态,停留 400ms 才真发请求;
+  // 期间又切走就作废。只是延后,不取消——停在这个会话上该有的数据照常拿到。
+  // 权限胶囊不走这条:上面 refreshPerm 立即调用,先清旧权限显示,请求本身照常发。
+  resetGitBtn();                                 // 项目会话 → 按钮先变「⎇ …」加载态(不发请求)
+  scheduleConvAux(conv, 400, ()=>{ refreshGit(conv); window.refreshTaskStatus && window.refreshTaskStatus(); });
   refreshPerm(conv);                             // 权限胶囊:本会话 / 所属 Agent 的权限档位
   renderConvs(); closeSidebar(); drawPending();  // 待发送队列按会话独立,切回时重绘
-  window.refreshTaskStatus && window.refreshTaskStatus();  // 刷新任务状态条(loadTasks 在通话视图 IIFE 内,经 window 出口调)
   const isLocal = isDraftConv(conv);
   let cached = S.histCache[conv];
   if(!cached && !isLocal){
@@ -1928,6 +1935,7 @@ async function openConv(conv, silentGroup){
   }
   const hasMsgs = c && c.turns > 0;             // 侧栏记录里该会话有历史消息
   if(cached){
+    $("#convLoading").classList.remove("on");
     if(!S.histPaging[conv]) S.histPaging[conv]={loading:false,hasMore:cached.length>=40};
     renderTurns(cached, conv);
   }      // 命中缓存:立即渲染,消除"先闪空屏再出内容"
@@ -1944,10 +1952,13 @@ async function openConv(conv, silentGroup){
     // 拉历史这段网络往返期间,若该会话仍在流式,SSE 事件会先到——handleEvent 里
     // 已经无条件 bufPush 进 S.live,这里挡住 applyStreamEvent 直接建气泡,避免它
     // 跟 /history 铺出来的草稿气泡各建一个;等下面 maybeReplayStream 统一从缓冲重放。
+    // 序号只能丢弃结果,不能释放旧请求占用的连接;每次打开单独持有可取消请求。
+    const ctl=new AbortController(); S.histAbort=ctl;
+    const owns=()=>S.conv===conv && openSeq===_convOpenSeq;
     S.histLoading=conv;
     try{
-      const r=await api("/history?conv="+encodeURIComponent(conv)); const d=await r.json();
-      if(S.conv!==conv || openSeq!==_convOpenSeq) return;  // 连点同会话锚点也只接受最新一次
+      const r=await api("/history?conv="+encodeURIComponent(conv),{signal:ctl.signal}); const d=await r.json();
+      if(!owns()) return;  // 连点同会话锚点也只接受最新一次
       $("#convLoading").classList.remove("on");
       const state=S.histPaging[conv]||(S.histPaging[conv]={loading:false,hasMore:true});
       const turns=mergeLatestHistory(S.histCache[conv], d.turns);
@@ -1956,13 +1967,26 @@ async function openConv(conv, silentGroup){
       idbSetHist(conv, turns);  // 落盘,下次刷新页面这个会话也能秒开
       // renderTurns 内部按轮 diff,没变的轮直接跳过——不用再在这里整包比对一次
       renderTurns(turns, conv, {checklist:d.checklist});
-    }catch(e){ $("#convLoading").classList.remove("on"); }
-    finally{
-      if(S.histLoading===conv) S.histLoading=null;
-      researchProgress.render();
-      const pendingResearch=Object.entries(S.researchPending||{}).filter(([,e])=>e.conv===conv);
-      for(const [key,event] of pendingResearch){ delete S.researchPending[key]; handleEvent(event); }
+    }catch(e){
+      // 被新一轮打开中止(切走了)→ 骨架屏/流式门控归新一轮管,别在这里动
+      if(!owns()) return;
+      $("#convLoading").classList.remove("on");
     }
+    finally{
+      // 归属检查:同会话 A→B→A 时,第一次 A 的 finally 只比 conv 会清掉最新那次请求的
+      // histLoading,让 SSE 事件在 /history 回来前直接建气泡 → 和随后铺的历史重复、闪回
+      if(owns()){
+        if(S.histAbort===ctl) S.histAbort=null;
+        if(S.histLoading===conv) S.histLoading=null;
+      }
+      if(owns()){
+        researchProgress.render();
+        const pendingResearch=Object.entries(S.researchPending||{}).filter(([,e])=>e.conv===conv);
+        for(const [key,event] of pendingResearch){ delete S.researchPending[key]; handleEvent(event); }
+      }
+    }
+    // 被中止的旧请求(切走了):重放/待审批交给新一轮,自己别再动画面
+    if(ctl.signal.aborted) return;
     maybeReplayStream(conv);   // 该会话仍在流式 → 用缓冲在历史下方重建流式气泡(切换不中断)
     if(S.conv===conv && S.pendingChoice[conv]) renderChoice(S.pendingChoice[conv]);  // 切回带待审批的会话 → 补出按钮
     return;
