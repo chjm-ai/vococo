@@ -60,6 +60,21 @@ def _capture_delivery(monkeypatch, push):
     monkeypatch.setattr(completion, "_platform_push", push)
 
 
+@pytest.mark.parametrize("mode", ["agent", "script"])
+@pytest.mark.parametrize("model", ["deepseek-flash", "gpt-6-luna", None])
+def test_job_model_edits_sync_conversation(cron_env, mode, model):
+    options = {"mode": "script", "command": "true"} if mode == "script" else {}
+    job = scheduler.create_job(name="模型同步", prompt="p", schedule={"kind": "cron", "expr": "*/5 * * * *"},
+                            model="gemini-4-argon", **options)
+    assert session_store.get_chosen_model(job["conv"]) == "gemini-4-argon"
+    updated = scheduler.update_job(job["id"], name=job["name"], prompt=job["prompt"],
+                                   schedule=job["schedule"], model=model)
+    assert updated["model"] == model
+    assert session_store.get_chosen_model(job["conv"]) == (model or "")
+    scheduler.update_job(job["id"], name="只改标题", prompt=job["prompt"], schedule=job["schedule"])
+    assert session_store.get_chosen_model(job["conv"]) == (model or "")
+
+
 # ── 内置记忆复盘:通知前先保存到实际目标会话 ──────────────────────────────
 
 

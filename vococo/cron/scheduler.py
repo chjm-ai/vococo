@@ -259,6 +259,7 @@ def create_job(
     _bind_job_session(job)
     jobs.append(job)
     save_jobs(jobs)
+    session_store.set_chosen_model(job["conv"], model or "")
     return job
 
 
@@ -343,7 +344,29 @@ def update_job(
     job["next_run_at"] = None
     reset_failures(job)
     save_jobs(jobs)
+    if model is not _UNSET or ownership_changed:
+        # 脚本任务不会经过 Agent 调度入口；编辑时就要同步续聊模型。
+        session_store.set_chosen_model(job["conv"], job.get("model") or "")
     return job
+
+
+@_with_jobs_lock
+def model_for_session(session_key: str) -> str | None:
+    """只读模型，不让无关任务的策略校验或迁移阻断普通聊天。"""
+    try:
+        jobs = json.loads(config.CRON_JOBS_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[cron] 读取续聊模型失败:{exc}", flush=True)
+        return None
+    for job in jobs:
+        conv = job.get("conv") or f"task:{job['id']}"
+        if conv.startswith("cron-task:"):
+            conv = "task:" + conv.removeprefix("cron-task:")
+        if conv == session_key:
+            return job.get("model") or ""
+    return None
 
 
 @_with_jobs_lock

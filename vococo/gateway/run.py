@@ -201,10 +201,19 @@ class GatewayRunner:
                 notices.close_asks_for_session(key)
             except Exception as exc:  # noqa: BLE001
                 print(f"[通知] 关闭旧提问失败:{exc}", flush=True)
-        # DB(chosen_model)是模型选择的唯一事实源:/model 命令、Web 胶囊、switch_model
-        # 工具都写它;内存 self.models 只是本进程镜像。以 DB 为准每轮刷新镜像 ——
+        # 普通会话以 DB(chosen_model)为准；定时任务优先读编辑页配置再同步 DB。
+        # 内存 self.models 只是本进程镜像，每轮刷新 ——
         # 否则 switch_model 这类只写 DB 的切换,下一轮仍读到内存旧值,切了不生效。
         stored = session_store.get_chosen_model(key)
+        from ..cron.scheduler import model_for_session
+
+        job_model = model_for_session(key)
+        if job_model is not None:
+            # 先解析默认模型再比较，避免空值来回切换清掉相同模型的 SDK 上下文。
+            job_model = job_model or settings_store.get_web_default_model() or config.MODEL
+            if stored != job_model:
+                session_store.set_chosen_model(key, job_model)
+            stored = job_model
         if stored:
             self.models[key] = stored
             model = stored

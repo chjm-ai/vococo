@@ -141,6 +141,70 @@ def script_target(env):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("model", ["deepseek-flash", "gpt-6-luna", None])
+async def test_script_continuation_uses_job_model_not_stale_selection(env, monkeypatch, legacy, model):
+    from vococo.gateway import settings_store
+
+    script_target(env)
+    jobs = scheduler.load_jobs()
+    if legacy:
+        jobs[0]["conv"] = "task:legacy-model"
+        session_store.bind_session(jobs[0]["conv"], agent_id=env.owner["id"])
+    jobs[0]["model"] = model
+    scheduler.save_jobs(jobs)
+    key = jobs[0]["conv"]
+    session_store.set_chosen_model(key, "gemini-4-argon")
+    env.runner.models[key] = "gemini-4-argon"
+    monkeypatch.setattr(settings_store, "get_web_default_model", lambda: "default-model")
+    used = []
+
+    async def stream(history, text, **kwargs):
+        used.append(kwargs["model"])
+        yield Done(AgentReply(text="核对完成", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(core, "stream_turn", stream)
+    await env.runner._handle(env.adapter, Incoming(platform="web", chat_id=key, text="确认说话人"))
+    assert used == [model or "default-model"]
+    assert session_store.get_chosen_model(key) == (model or "default-model")
+    assert session_store.load_recent(key)[-1].assistant == "核对完成"
+
+
+@pytest.mark.anyio
+async def test_job_following_unchanged_default_keeps_sdk_context(env, monkeypatch):
+    from vococo.gateway import settings_store
+
+    job = script_target(env)
+    key = job["conv"]
+    monkeypatch.setattr(settings_store, "get_web_default_model", lambda: "default-model")
+    session_store.set_chosen_model(key, "default-model")
+    session_store.set_sdk_session_id(key, "existing-sdk-session")
+    resumes = []
+
+    async def stream(history, text, **kwargs):
+        resumes.append(kwargs["resume"])
+        yield Done(AgentReply(text="接着核对", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(core, "stream_turn", stream)
+    await env.runner._handle(env.adapter, Incoming(platform="web", chat_id=key, text="继续"))
+    assert resumes == ["existing-sdk-session"]
+    assert session_store.get_sdk_session_id(key) == "existing-sdk-session"
+
+
+@pytest.mark.anyio
+async def test_invalid_unrelated_cron_policy_does_not_block_chat(env):
+    job = script_target(env)
+    jobs = scheduler.load_jobs()
+    jobs[0]["failure_policy"] = "invalid-policy"
+    scheduler.save_jobs(jobs)
+    session_store.set_chosen_model(env.source, "fake-model")
+    await env.runner._handle(env.adapter, Incoming(platform="web", chat_id=env.source, text="继续聊天"))
+    assert env.calls[0][:2] == (env.source, "继续聊天")
+    assert session_store.get_chosen_model(env.source) == "fake-model"
+    assert scheduler.model_for_session(job["conv"]) == ""
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("registry", ["_script_running", "_script_tasks"])
 async def test_script_without_tasks_row_is_rejected_while_busy(env, registry):
     job = script_target(env)
