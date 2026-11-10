@@ -918,9 +918,10 @@ $("#convBody").addEventListener("scroll", closeConvMenu); // 列表滚动时关�
 document.addEventListener("click", e=>{ if(!e.target.closest(".conv")) closeAllSwipes(); });  // 点空白处收起滑开的行
 
 $("#messages").addEventListener("scroll", ()=>{
+  const movedUp=trackMessageScroll();
   updateScrollBtn();
-  // 滚到顶部自动按最早一轮继续取历史,函数在 index.html 主脚本中声明。
-  if($("#messages").scrollTop<100 && typeof loadEarlierHistory === "function") loadEarlierHistory();
+  // 换会话清空 DOM 也会触发 scroll，不能把它当成用户上翻。
+  if(movedUp && $("#messages").scrollTop<100 && S.histLoading!==S.conv && typeof loadEarlierHistory === "function") loadEarlierHistory();
 }, {passive:true}); // 流式时用户上翻→显示↓按钮
 
 // 按 conv id 找会话对象:普通会话在 S.convs,后台任务(语音/cron)行分别在 S.voiceSidebar.tasks / S.cronJobs

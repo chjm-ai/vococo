@@ -1889,6 +1889,7 @@ async function openConv(conv, silentGroup){
   if(typeof saveComposerState==="function") saveComposerState(S.conv);
   if(S.conv!==conv) upsertChecklist({},[],false);
   S.conv=conv; S.stream=null;
+  resetMessageScroll();
   taskTree.open(conv);
   navRecord({kind:"chat", conv});
   if(typeof restoreComposerState==="function") restoreComposerState(conv);
@@ -1943,6 +1944,7 @@ async function openConv(conv, silentGroup){
     $("#convLoading").classList.remove("on");
     if(!S.histPaging[conv]) S.histPaging[conv]={loading:false,hasMore:cached.length>=40};
     renderTurns(cached, conv);
+    scrollDown(true);  // 重开同一会话也回到最新消息，不依赖 DOM 是否变化。
   }      // 命中缓存:立即渲染,消除"先闪空屏再出内容"
   // 这两条分支自己清空消息区、不经过 renderTurns,必须顺手把 _wrapConv 记成目标会话。
   // 漏记的话消息区装的是新会话的内容、_wrapConv 还停在上一个会话,之后 renderTurns 会误判

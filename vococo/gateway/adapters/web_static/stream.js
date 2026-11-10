@@ -412,6 +412,25 @@ async function loadAuthedImg(im, url, thumb){
   if(o) im.src=o;
 }
 let scrollPending=false, scrollForce=false;
+let followMessageBottom=true, lastMessageScrollTop=0;
+function resetMessageScroll(){
+  followMessageBottom=true;
+  lastMessageScrollTop=$("#messages").scrollTop;
+  messageLayoutObserver.observe($("#wrap"));
+  messageLayoutObserver.observe($("#messages"));
+}
+function trackMessageScroll(){
+  const m=$("#messages"), dist=m.scrollHeight-m.scrollTop-m.clientHeight;
+  const movedUp=m.scrollTop<lastMessageScrollTop;
+  // 布局增长也会产生 scroll 事件，只有实际向上滚动才退出跟随。
+  if(movedUp && dist>=80) followMessageBottom=false;
+  else if(dist<80) followMessageBottom=true;
+  lastMessageScrollTop=m.scrollTop;
+  return movedUp;
+}
+const messageLayoutObserver=new ResizeObserver(()=>{
+  if(followMessageBottom && _wrapConv===S.conv) scrollDown();
+});
 function scrollDown(force){
   scrollForce=scrollForce || !!force;
   if(scrollPending) return;
@@ -421,9 +440,11 @@ function scrollDown(force){
     const force=scrollForce;
     scrollPending=false; scrollForce=false;
     if(_chatAnchor?.conv===S.conv) return;
-    if(force){ m.scrollTop=m.scrollHeight; updateScrollBtn(); return; }
-    const dist=m.scrollHeight - m.scrollTop - m.clientHeight;
-    if(dist < 80) m.scrollTop = m.scrollHeight;  // 距底<80px 才跟滚,否则用户在阅读历史
+    if(force) followMessageBottom=true;
+    if(followMessageBottom){
+      m.scrollTop=m.scrollHeight;
+      lastMessageScrollTop=m.scrollTop;
+    }
     updateScrollBtn();
   });
 }

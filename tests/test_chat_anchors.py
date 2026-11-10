@@ -36,7 +36,10 @@ async def test_agent_feed_chat_anchor_in_browser(running_library, width):
     tid = agents.record_run(agent["id"], {"id": "old-cron", "name": "旧日报"}, "success", "锚点结果")
     for i in range(85):
         turn = session_store.start_turn(agents.main_session_key(agent), f"问题 {i}")
-        session_store.finish_turn(turn, "普通回复\n\n" * 8, session_key=agents.main_session_key(agent))
+        reply = "普通回复\n\n" * 8
+        if i == 84:
+            reply += "```mermaid\nflowchart TD\nA[开始] --> B[读取] --> C[分析] --> D[完成]\n```"
+        session_store.finish_turn(turn, reply, session_key=agents.main_session_key(agent))
     process = await asyncio.create_subprocess_exec(
         "node", str(Path(__file__).with_name("chat_anchors_browser.cjs")),
         origin, config.WEB_AUTH_TOKEN, str(tid), str(task_tid), str(width), env=_browser_environment(),
