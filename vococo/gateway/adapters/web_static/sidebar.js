@@ -809,6 +809,7 @@ async function loadCronSidebar(){
   refillCurrentMeta();   // 同 loadVoiceSidebar:数据到位后补一次模型回填
   if(typeof syncModelLock==="function") syncModelLock();   // job 列表刚到位/编辑后刷新 → 重新锁定模型显示
   if(typeof refreshAgentPanelIf==="function") refreshAgentPanelIf(["tasks"]);
+  if(typeof refreshAutomationWorkbench==="function") refreshAutomationWorkbench();
 }
 // 「定时」Tab 里的「本机系统任务」区块:本机 launchd/crontab 里真正带调度周期的任务
 // (只读,见 web.py /system/tasks、cron/system_tasks.py 模块头的识别标准),跟上面
@@ -1122,14 +1123,19 @@ function showCronForm(job){
   $("#cfCommand").value = job ? (job.command || "") : "";
   $("#cfSummarizePrompt").value = job ? (job.summarize_prompt || "") : "";
   syncCronMode();
-  // 编辑表单只支持 cron 表达式调度(跟新建一致);任务若是 interval/once 调度(只能靠
-  // 工具/建议创建),这里留空,保存时必须重新选一个频率,不会静默把调度类型改掉。
+  // 一次性/间隔任务可保留原计划编辑名称，不因保存表单改变调度类型。
+  S.cronOriginalSchedule=job?.schedule && ["once","interval"].includes(job.schedule.kind) ? {...job.schedule} : null;
+  $("#cfTrigger").querySelector('option[value="preserve"]')?.remove();
+  if(S.cronOriginalSchedule){
+    const option=document.createElement("option"); option.value="preserve";
+    option.textContent="保留原计划（"+(job.schedule_desc||job.schedule.kind)+"）"; $("#cfTrigger").append(option);
+  }
   const expr = (job && job.schedule && job.schedule.kind==="cron") ? (job.schedule.expr||"") : "";
   const presetOpts=[...$("#cfPreset").options].map(o=>o.value);
   $("#cfPreset").value = expr && presetOpts.includes(expr) ? expr : "custom";
   $("#cfCron").value = expr;
   const kind = job && job.schedule ? job.schedule.kind : "cron";
-  $("#cfTrigger").value = (kind==="webhook"||kind==="watch") ? kind : "cron";
+  $("#cfTrigger").value = S.cronOriginalSchedule ? "preserve" : (kind==="webhook"||kind==="watch") ? kind : "cron";
   $("#cfHookUrl").value = cronHookUrl(job);
   $("#cfWatchPath").value = kind==="watch" ? (job.schedule.path||"") : "";
   $("#cfWatchGlob").value = kind==="watch" ? (job.schedule.glob||"") : "";
@@ -1148,7 +1154,9 @@ async function saveCronJob(){
   if(mode==="script" && !command){ alert("脚本任务需要填写要执行的命令"); return; }
   const trigger=$("#cfTrigger").value;
   let schedule;
-  if(trigger==="webhook"){
+  if(trigger==="preserve" && S.cronOriginalSchedule){
+    schedule={...S.cronOriginalSchedule};
+  }else if(trigger==="webhook"){
     schedule={kind:"webhook"};   // secret 由服务端生成/沿用
   }else if(trigger==="watch"){
     const path=$("#cfWatchPath").value.trim();
@@ -1181,8 +1189,10 @@ async function saveCronJob(){
   closeCronModal(); await loadCronSidebar();
 }
 async function toggleCronJob(id, enabled){
-  try{ await api("/cron/jobs/enable",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,enabled})}); }
-  catch(e){ alert("操作失败"); return; }
+  try{
+    const r=await api("/cron/jobs/enable",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,enabled})});
+    const d=await r.json(); if(!r.ok || d.error) throw new Error(d.error||"操作失败");
+  }catch(e){ alert(e.message||"操作失败"); return; }
   await loadCronSidebar();
 }
 async function deleteCronJob(id, title, conv){

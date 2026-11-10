@@ -839,9 +839,11 @@ function renderWbDock(){
 }
 
 function renderWorkbench(){
+  if(typeof automationWorkbenchActive==="function" && automationWorkbenchActive()) return renderAutomationWorkbench();
   const root = $("#wbContent");
   if(!root) return;
   root.innerHTML = renderWorkbenchHeader()+renderWorkbenchBody();
+  if(typeof AWB!=="undefined") root.querySelector(".wb-title-actions")?.insertAdjacentHTML("afterbegin",'<button type="button" class="awb-link" data-open-automation>Agent 工作台</button>');
   hydrateWorkbenchImages();
   workbenchAutoGrowAll();
   wbBindAllSwipes();
@@ -2310,6 +2312,11 @@ async function openWorkbench(){
   navRecord({kind:"workbench"});
   $("#chatMain").hidden = true; $("#workbenchView").hidden = false;
   closeSidebar(); renderConvs();
+  if(typeof automationWorkbenchActive==="function" && automationWorkbenchActive()){
+    WB.selected.clear(); WB.multiSelectMode=false; WB.newTask=null; WB.editorTaskId=null;
+    workbenchDpClose(); wbCloseAllSwipes();
+    await loadAutomationWorkbench(); return;
+  }
   if(!WB.anchor) WB.anchor = workbenchToday();
   await loadWorkbenchData();
   renderWorkbench();
@@ -2339,6 +2346,13 @@ $("#workbenchView").addEventListener("click", event => {
   }
   if(event.target.closest("[data-workbench-win]")){ openWorkbenchStandalone(); return; }
   if(event.target.closest("[data-sidebar]")){ expandSidebarResponsive(); return; }
+  if(event.target.closest("[data-open-automation]")){
+    workbenchFlushActiveEditOnHide(); WB.selected.clear(); WB.multiSelectMode=false;
+    WB.newTask=null; WB.editorTaskId=null; workbenchDpClose();
+    workbenchCloseCtxMenu(); workbenchProjectPickerClose();
+    AWB.mode="automation"; loadAutomationWorkbench(); return;
+  }
+  if(typeof automationWorkbenchActive==="function" && automationWorkbenchActive()) return;
   if(event.target.closest("[data-toggle-show-done]")){ wbToggleShowDone(); return; }
   if(event.target.closest("[data-toggle-notes]")){ wbToggleNotes(); return; }
   if(event.target.closest("[data-toggle-parent-labels]")){ wbToggleParentLabels(); return; }
@@ -2951,7 +2965,7 @@ $("#workbenchView").addEventListener("paste", event => {
 });
 
 document.addEventListener("keydown", event => {
-  if($("#workbenchView").hidden) return;
+  if($("#workbenchView").hidden || (typeof automationWorkbenchActive==="function" && automationWorkbenchActive())) return;
   if(event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "z"){
     // 文本框保留浏览器原生的逐字撤销；其他工作台操作才走任务历史。
     if(event.target.closest("input,textarea,select,[contenteditable='true']")) return;
