@@ -458,6 +458,16 @@ def get_item(id) -> dict | None:
         return _item(connection, id)
 
 
+def visible_counts() -> dict[str, int]:
+    """按登记归属统计可见、仍可访问的作品，与作品库列表使用相同可用性规则。"""
+    counts: dict[str, int] = {}
+    with _connect() as connection:
+        for row in connection.execute('SELECT * FROM library_items WHERE hidden=0 AND inactive=0'):
+            if _available(row):
+                counts[row['agent_id']] = counts.get(row['agent_id'], 0) + 1
+    return counts
+
+
 def list_items(kind='', agent_id='', state='visible', search='', limit=60, offset=0) -> list[dict]:
     if kind not in {"", "image", "website"} or state not in {"visible", "pinned", "hidden", "all"}:
         raise ValueError("作品类型或状态无效")

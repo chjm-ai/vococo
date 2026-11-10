@@ -52,7 +52,7 @@ _VERSIONED_ASSETS = (
     "styles.css", "mascot.css", "library.css", "library.js", "tool-card.js",
     # 2026-08-14 前端模块化:从 index.html 拆出的功能块(加载顺序即此顺序)
     "app-core.js", "mascot.js", "preview.js", "mermaid-11.12.2.min.js", "markdown.js", "sidebar.js", "settings.js", "stats.js",
-    "workbench.js",
+    "workbench.js", "automation-workbench.js",
     "research.js", "stream.js", "notices.js", "agents.js", "find.js", "composer.js", "voice.js",
 )
 _DOC_PREVIEW_MAX = 3 * 1024 * 1024  # 文档预览分屏读文件上限;超过就不读,前端提示下载/自己开
@@ -3861,7 +3861,7 @@ class WebAdapter:
                 web.get("/library.css", self._handle_library_styles),
                 web.get("/tool-card.js", self._handle_tool_card_js),
                 web.get(
-                    r"/{name:(?:app-core|mascot|preview|mermaid-11\.12\.2\.min|markdown|sidebar|settings|stats|workbench|research|stream|notices|agents|find|composer|voice|library)\.js}",
+                    r"/{name:(?:app-core|mascot|preview|mermaid-11\.12\.2\.min|markdown|sidebar|settings|stats|workbench|automation-workbench|research|stream|notices|agents|find|composer|voice|library)\.js}",
                     self._handle_app_js,
                 ),
                 web.get("/favicon.ico", self._handle_favicon),
@@ -3982,11 +3982,12 @@ class WebAdapter:
                 web.get("/doc-preview.html", self._handle_doc_preview_page),
             ]
         )
-        from ...gateway import library_api, task_routes, preview_shares
+        from ...gateway import library_api, task_routes, preview_shares, automation_api
 
         preview_shares.register_routes(app)
         task_routes.register_routes(app)
         library_api.register_routes(app)
+        automation_api.register_routes(app)
         if config.VOICE_ENABLED:  # 实验性语音伴聊模式,见 vococo/voice/
             from ...voice import register_routes as _voice_register_routes
 

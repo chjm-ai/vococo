@@ -108,6 +108,7 @@ _METRIC_COLUMNS = (
     "duration REAL NOT NULL DEFAULT 0",
     "tool_calls INTEGER NOT NULL DEFAULT 0",
     "source_turn_id INTEGER",
+    "source_text_hash TEXT",
 )
 _ready_for = None  # 已建表的那条连接(测试会换库重连,换了就重新建表)
 _listener: Callable[[str], None] | None = None
@@ -917,11 +918,19 @@ def record_run(agent_id: str, job: dict, status: str, text: str, *,
             (key, now, f"{SYS_MARKER} ⏰ {name}", text),
         )
         turn_id = cur.lastrowid
+    source_hash = None
+    if source_turn_id is not None:
+        import hashlib
+
+        source = c.execute('SELECT session_key,assistant_text FROM turns WHERE id=? AND ts<=?',
+                           (source_turn_id, now)).fetchone()
+        if source and session_store._ownership_fields(source[0]).get('agent_id') == agent_id:
+            source_hash = hashlib.sha256((source[0] + '\0' + source[1]).encode()).hexdigest()
     c.execute(
-        "INSERT INTO agent_runs(agent_id, job_id, job_name, ts, status, text, turn_id, tokens, duration, tool_calls, source_turn_id)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO agent_runs(agent_id, job_id, job_name, ts, status, text, turn_id, tokens, duration, tool_calls, source_turn_id, source_text_hash)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (agent_id, job.get("id") or "", name, now, status, text[:4000], turn_id,
-         int(m.get("tokens") or 0), float(m.get("duration") or 0), int(m.get("tool_calls") or 0), source_turn_id),
+         int(m.get("tokens") or 0), float(m.get("duration") or 0), int(m.get("tool_calls") or 0), source_turn_id, source_hash),
     )
     c.commit()
     if not to_main:

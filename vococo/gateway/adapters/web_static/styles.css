@@ -2408,3 +2408,71 @@
   #workbenchView .wb-session-link{display:inline-flex;align-items:center;height:28px;max-width:220px;padding:0 var(--sp-3);border-radius:var(--r-sm);overflow:hidden;color:var(--dim);font-size:var(--fs-md);white-space:nowrap;text-overflow:ellipsis;text-decoration:none;cursor:pointer}
   #workbenchView .wb-session-link:hover{background:var(--panel2)}
   #workbenchView .wb-new-child{margin:4px 0 0}
+
+  /* Agent 工作台：复用原工作台壳、Agent 控件与现有设计令牌。 */
+  #workbenchView.automation-workbench #wbContent{width:100%;max-width:calc(var(--sp-5)*80);padding:var(--sp-5) calc(var(--sp-5)*2) calc(var(--sp-5)*4)}
+  #workbenchView.automation-workbench .wb-toolbar{padding-top:0;gap:var(--sp-4)}
+  .awb-link{color:var(--dim);font-size:var(--fs-md);padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);white-space:nowrap}
+  .awb-link:hover{background:var(--panel2);color:var(--text)}
+  .awb-controls{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);flex-wrap:wrap}
+  .awb-search{min-width:0;flex:1}
+  .awb-search input{width:100%;min-width:0;border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-3) var(--sp-4);background:var(--panel);color:var(--text);font:inherit;font-size:var(--fs-base)}
+  .awb-search input:focus{outline:1px solid var(--accent)}
+  .automation-workbench .awb-stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--sp-3);margin:var(--sp-4) 0;padding:var(--sp-4);background:var(--panel);border-radius:var(--r-md)}
+  .awb-stats .apstat{min-width:0;display:flex;flex-direction:column;gap:var(--sp-1);padding:var(--sp-1);border:0;text-align:left}
+  .awb-stats b{font-size:var(--fs-xl);overflow-wrap:anywhere}.awb-stats span{font-size:var(--fs-sm);color:var(--dim)}
+  .awb-note,.awb-fold{color:var(--dim);font-size:var(--fs-sm);line-height:1.6;margin:var(--sp-4) 0}
+  .awb-note summary,.awb-fold>summary{cursor:pointer;padding:var(--sp-2) 0}
+  .awb-note p{margin:var(--sp-2) 0}
+  .awb-owner{border-bottom:1px solid var(--line);min-width:0}
+  .awb-owner-row{display:flex;align-items:center;gap:var(--sp-4);padding:var(--sp-5) 0;min-width:0}
+  .awb-owner-toggle{display:flex;align-items:center;gap:var(--sp-4);min-width:0;flex:1;text-align:left;color:var(--text)}
+  .awb-owner-toggle .agav{width:calc(var(--sp-5)*2);height:calc(var(--sp-5)*2);flex-shrink:0}
+  .awb-owner-toggle>span:first-of-type{min-width:0}.awb-owner-toggle strong{display:block;font-size:var(--fs-lg);overflow-wrap:anywhere}
+  .awb-owner-toggle small{display:block;margin-top:var(--sp-1);color:var(--dim);font-size:var(--fs-sm)}
+  .awb-chevron{color:var(--dim);font-size:var(--fs-xl)}
+  .awb-owner-metrics,.awb-job-metrics{font-size:var(--fs-sm);color:var(--dim);line-height:1.6;text-align:right}
+  .awb-owner-body{padding:0 0 var(--sp-5) calc(var(--sp-5)*3);min-width:0}
+  #workbenchView .awb-tabs{width:fit-content;margin-bottom:var(--sp-4)}
+  .awb-job.aptask{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-4) 0;min-width:0}
+  .awb-job .aptmain{flex:1;min-width:0;text-align:left;padding:var(--sp-1);color:var(--text)}
+  .awb-job .aptname{display:block;white-space:normal;overflow-wrap:anywhere;font-size:var(--fs-base)}
+  .awb-job .aptsub{display:block;overflow-wrap:anywhere}
+  .awb-job .more{flex-shrink:0;opacity:1;padding:var(--sp-2) var(--sp-3);color:var(--dim);font-size:var(--fs-xl)}
+  .awb-dot{display:inline-block;width:var(--sp-3);height:var(--sp-3);border-radius:50%;background:var(--dim2);flex-shrink:0}
+  .awb-dot.ok{background:var(--ok-fg)}.awb-dot.error{background:var(--err-fg)}
+  .awb-dot.running,.awb-dot.queued{background:var(--accent)}
+  .awb-dot.running{animation:awb-pulse calc(var(--t-base)*6) ease-in-out infinite}
+  @keyframes awb-pulse{50%{opacity:.35}}
+  .awb-actions{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-3);font-size:var(--fs-sm);color:var(--dim);margin-bottom:var(--sp-3)}
+  .awb-history .aprun{padding:var(--sp-4) 0;border-bottom:1px solid var(--line)}
+  .awb-run-head{display:flex;align-items:center;gap:var(--sp-3);width:100%;text-align:left;font-size:var(--fs-sm);color:var(--dim)}
+  .awb-run-name{flex:1;color:var(--text);font-size:var(--fs-base);min-width:0;overflow-wrap:anywhere}
+  .awb-run-head time{flex-shrink:0}
+  .awb-excerpt{color:var(--dim);font-size:var(--fs-md);line-height:1.6;margin:var(--sp-3) 0 0;overflow-wrap:anywhere}
+  .awb-detail{min-width:0;padding-top:var(--sp-4)}
+  .awb-result{white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;font-size:var(--fs-base);line-height:1.75;margin:0;padding:var(--sp-4);border-radius:var(--r-md);background:var(--panel);max-height:60vh;overflow:auto}
+  .awb-detail h3{font-size:var(--fs-base);margin:var(--sp-5) 0 var(--sp-3)}.awb-detail h3 span{color:var(--dim);font-size:var(--fs-sm);font-weight:400}
+  .awb-trace{display:flex;list-style:none;gap:var(--sp-3);overflow-x:auto;padding:var(--sp-2) 0 var(--sp-4);margin:0;scroll-snap-type:x proximity}
+  .awb-trace li{flex:0 0 calc(var(--sp-5)*10);padding:var(--sp-4);background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);scroll-snap-align:start}
+  .awb-trace li.error{border-color:var(--err-line)}.awb-trace li.ok{border-color:var(--ok-line)}
+  .awb-trace span,.awb-trace small{display:block;color:var(--dim);font-size:var(--fs-sm)}
+  .awb-trace strong{display:block;font-size:var(--fs-base);margin:var(--sp-2) 0;overflow-wrap:anywhere}
+  .awb-artifact{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-4);font-size:var(--fs-md);min-width:0}
+  .awb-artifact>div{min-width:0;flex:1}.awb-artifact strong,.awb-artifact small{display:block;overflow-wrap:anywhere}
+  .awb-artifact small{font-size:var(--fs-sm);color:var(--dim);margin-top:var(--sp-1)}
+  .awb-artifact button{padding:var(--sp-2);border-radius:var(--r-sm);color:var(--dim);flex-shrink:0}
+  .awb-empty,.awb-error{font-size:var(--fs-base);color:var(--dim);padding:var(--sp-4) 0;margin:0;overflow-wrap:anywhere}.awb-error{color:var(--err-fg)}
+  .automation-workbench #wbMultiBar,.automation-workbench #wbDock{display:none!important}
+  .automation-workbench button:focus-visible,.automation-workbench summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  @media(max-width:1040px){.automation-workbench .awb-stats{grid-template-columns:repeat(3,minmax(0,1fr))}.awb-owner-metrics{display:none}}
+  @media(max-width:760px){
+    #workbenchView.automation-workbench #wbContent{padding:var(--sp-4) var(--sp-5) calc(var(--sp-5)*4)}
+    .awb-controls{gap:var(--sp-3)}.awb-search{flex-basis:100%}
+    .awb-owner-row{flex-wrap:wrap;gap:var(--sp-2)}.awb-owner-toggle{flex-basis:100%}
+    .awb-owner-body{padding-left:0}.awb-job{flex-wrap:wrap}.awb-job-metrics{display:none}
+    .awb-run-head{flex-wrap:wrap}.awb-run-name{flex-basis:60%}
+    .awb-artifact{flex-wrap:wrap}.awb-artifact>div{flex-basis:100%}
+    .automation-workbench .awb-stats{padding:var(--sp-3);gap:var(--sp-2)}
+  }
+  @media(prefers-reduced-motion:reduce){.awb-dot.running{animation:none}}
