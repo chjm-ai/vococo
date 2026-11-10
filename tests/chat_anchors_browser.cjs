@@ -9,6 +9,9 @@ const assert=require('node:assert/strict');
     const page=await browser.newPage({viewport:{width:Number(width),height:900}}), errors=[], cursors=[];
     page.on('pageerror',error=>errors.push(error.message));
     page.on('request',request=>{if(request.url().includes('/history?') && request.url().includes('before=')) cursors.push(request.url());});
+    let releaseDiagram;
+    const diagramGate=new Promise(resolve=>{releaseDiagram=resolve;});
+    await page.route('**/mermaid-11.12.2.min.js',async route=>{await diagramGate;await route.continue();});
     await page.goto(origin);
     await page.fill('#pw',token);
     await page.click('#loginBtn');
@@ -24,8 +27,27 @@ const assert=require('node:assert/strict');
     assert.ok(await bottomGap()<16,'首次打开定位最新消息: '+JSON.stringify(await page.evaluate(()=>{
       const m=$('#messages');return {top:m.scrollTop,height:m.scrollHeight,client:m.clientHeight,conv:S.conv,loading:S.histLoading};
     })));
-    await page.locator('#messages').evaluate(m=>m.scrollTop=m.scrollHeight/2);
+    releaseDiagram();
+    await page.waitForSelector('#wrap .preview-diagram');
     await page.waitForTimeout(200);
+    assert.ok(await bottomGap()<16,'图表异步展开后仍应停在最新消息，距底部: '+await bottomGap());
+    // 只延迟真实图表渲染，不替换渲染结果；等待期间主动上翻必须停止跟随。
+    await page.evaluate(async()=>{
+      const render=mermaid.render.bind(mermaid);
+      let release;
+      const gate=new Promise(resolve=>{release=resolve;});
+      mermaid.render=async(...args)=>{window.scrollDiagramStarted=true;await gate;return render(...args);};
+      window.releaseScrollDiagram=()=>{mermaid.render=render;release();};
+      await openConv('local-scroll-diagram');
+      await openConv('main');
+    });
+    await page.waitForFunction(()=>window.scrollDiagramStarted);
+    await page.locator('#messages').evaluate(m=>m.scrollTop=m.scrollHeight/2);
+    await page.waitForTimeout(100);
+    await page.evaluate(()=>releaseScrollDiagram());
+    await page.waitForSelector('#wrap .preview-diagram');
+    await page.waitForTimeout(200);
+    assert.ok(await bottomGap()>100,'主动上翻后，图表展开不能拉回底部');
     assert.equal(cursors.length,0,'在对话中间阅读不应触发历史分页');
     await page.evaluate(()=>reloadHistory());
     await page.waitForTimeout(100);
@@ -38,7 +60,15 @@ const assert=require('node:assert/strict');
     await page.evaluate(()=>openConv('local-scroll-test'));
     await page.evaluate(()=>openConv('main'));
     await page.waitForTimeout(200);
+    await page.waitForFunction(()=>{
+      const m=$('#messages');return m.scrollHeight-m.clientHeight-m.scrollTop<16;
+    });
     assert.ok(await bottomGap()<16,'从缓存重新打开仍定位最新消息');
+    await page.locator('#messages').evaluate(m=>m.scrollTop=m.scrollHeight/2);
+    await page.waitForTimeout(100);
+    await page.evaluate(()=>openConv('main'));
+    await page.waitForTimeout(100);
+    assert.ok(await bottomGap()<16,'重复打开当前会话也回到最新消息');
     await page.evaluate(()=>{
       S.agentPanelTab='feed';
       if(!S.agentPanelOn) toggleAgentPanel();
