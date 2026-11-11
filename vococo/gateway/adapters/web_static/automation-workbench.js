@@ -63,15 +63,16 @@ function awbMatches(j){
   if(AWB.filter==="error") return awbStatus(j)[0]==="error";
   return true;
 }
-function awbRecentRuns(a){
+function awbRecentRuns(a,owner=null){
   const runs=a.recent_runs||[],latest=runs.at(-1);
   const marks=runs.map(r=>{
     const status=r.status.startsWith("success")?"ok":r.status.startsWith("error")||r.status==="failed"?"error":"unknown";
     const label=status==="ok"?"调度成功":status==="error"?"运行异常":"状态未确认";
     return '<span class="awb-tick '+status+'" title="'+esc(awbTime(r.ts)+' · '+label)+'"></span>';
   }).join("");
-  return '<button type="button" class="awb-recent" data-awb="all-runs" data-id="'+esc(a.id)+'" aria-label="查看 '+esc(a.name)+' 的运行记录" title="最近 '+runs.length+' 次运行，从左到右由旧到新；绿色为调度成功，红色为异常，灰色为未确认">'+
-    (marks?'<span class="awb-spark" aria-hidden="true">'+marks+'</span>':"")+'<small>'+awbNumber(a.runs)+' 运行 · '+(latest?awbTime(latest.ts):"暂无记录")+'</small></button>';
+  const isJob=owner!==null;
+  return '<button type="button" class="'+(isJob?'awb-job-recent':'awb-recent')+'" data-awb="'+(isJob?'job-runs':'all-runs')+'" data-id="'+esc(a.id)+'"'+(isJob?' data-owner="'+esc(owner)+'"':'')+' aria-label="查看 '+esc(a.name)+' 的运行记录" title="'+(runs.length?'最近 '+runs.length+' 次运行，从左到右由旧到新；绿色为调度成功，红色为异常，灰色为未确认':'暂无运行记录')+'">'+
+    (marks?'<span class="awb-spark" aria-hidden="true">'+marks+'</span>':isJob?'—':'')+(isJob?'':'<small>'+awbNumber(a.runs)+' 运行 · '+(latest?awbTime(latest.ts):'暂无记录')+'</small>')+'</button>';
 }
 function awbOwner(a,jobs){
   const tab=AWB.tabs.get(a.id)||{tab:"tasks",job:""}, open=AWB.open.has(a.id);
@@ -86,7 +87,8 @@ function awbOwnerBody(a,jobs,tab){
   if(tab.tab!=="tasks") return awbHistoryHtml(a.id,tab);
   return '<div class="awb-jobs">'+(jobs.length?jobs.map(j=>{
     const [status,label]=awbStatus(j);
-    return '<div class="aptask awb-job"><span class="awb-dot '+status+'" title="'+label+'"></span><button type="button" class="aptmain" data-awb="job-runs" data-id="'+esc(j.id)+'" data-owner="'+esc(a.id)+'"><span class="aptname">'+esc(j.name)+'</span><span class="aptsub">'+esc(awbSchedule(j))+' · '+(j.mode==="script"?"脚本":"AI")+' · '+label+'</span></button><span class="awb-job-metrics">'+j.runs+' 运行<br>'+esc(awbMetricText(j.stats))+'</span><button type="button" class="more" data-awb="menu" data-id="'+esc(j.id)+'" aria-label="管理定时任务 '+esc(j.name)+'" aria-haspopup="menu">⋯</button></div>';
+    return '<div class="aptask awb-job"><button type="button" class="aptmain" data-awb="job-runs" data-id="'+esc(j.id)+'" data-owner="'+esc(a.id)+'" title="'+esc(j.name+' · '+awbSchedule(j))+'"><span class="aptname">'+esc(j.name)+'</span></button>'+awbRecentRuns(j,a.id)+
+      '<span class="awb-job-count" title="累计运行 '+awbNumber(j.runs)+' 次">'+awbNumber(j.runs)+' 运行</span><span class="awb-job-status '+status+'">'+(status==='idle'?'':label)+'</span><button type="button" class="more" data-awb="menu" data-id="'+esc(j.id)+'" aria-label="管理定时任务 '+esc(j.name)+'" aria-haspopup="menu">⋯</button></div>';
   }).join(""):'<p class="awb-empty">暂无定时任务</p>')+awbButton("create","＋ 新建定时任务",a.id,"awb-link")+'</div>';
 }
 function awbHistoryKey(a,tab){ return [a,tab.tab,tab.job||""].join(":"); }

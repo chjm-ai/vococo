@@ -25,7 +25,12 @@ const assert=require('node:assert/strict');
     await recent.click();
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===30);
     await page.locator(`[data-awb="tab"][data-id="${agent}"][data-tab="tasks"]`).click();
-    await page.locator(`[data-awb="job-runs"][data-id="${job}"]`).click();
+    const jobRecent=page.locator(`.awb-job-recent[data-id="${job}"]`);
+    assert.equal(await jobRecent.locator('.awb-tick').count(),24);
+    assert.equal(await jobRecent.locator('.awb-tick.ok').count(),1);
+    assert.equal(await page.locator('.awb-job .aptsub').count(),0,'任务行不再显示第二行元信息');
+    assert.ok((await page.locator(`.aptmain[data-id="${job}"]`).getAttribute('title')).includes('每天 06:17'));
+    await jobRecent.click();
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===30);
     await page.locator(`[data-awb="more"][data-id="${agent}"]`).click();
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===35);
@@ -57,6 +62,7 @@ const assert=require('node:assert/strict');
     await page.locator(`[data-awb="menu"][data-id="${job}"]`).click();
     await page.getByRole('menuitem',{name:'停用',exact:true}).click();
     await page.waitForFunction(()=>AWB.data.jobs[0].enabled===false && !AWB.loading);
+    assert.equal(await page.locator(`[data-owner="${agent}"] .awb-job-status`).innerText(),'已停用');
     const countBefore=await page.evaluate(()=>WB_DATA.tasks.length);
     await page.keyboard.press('Space');await page.keyboard.press('Delete');
     assert.equal(await page.evaluate(()=>WB_DATA.tasks.length),countBefore,'旧待办快捷键不生效');
@@ -70,8 +76,17 @@ const assert=require('node:assert/strict');
           stats:{...base.stats,tokens:i?123456789:12,median_duration:i?678.9:1}});
         AWB.data.jobs.push({...job,id:'layout-job-'+i,agent_id:id});
       }
+      for(const [i,state] of ['idle','running','queued','error'].entries()){
+        AWB.data.jobs.push({...structuredClone(job),id:'layout-state-'+i,enabled:true,
+          name:i?'用于验证任务长名称省略及单行布局的定时任务':'未运行',
+          last_status:state==='error'?'error':'success',activity:state,runs:i?1234567:0,
+          recent_runs:i?job.recent_runs:[]});
+      }
       renderAutomationWorkbench();
     },agent);
+    assert.equal(await page.locator('.awb-job-recent[data-id="layout-state-0"] .awb-tick').count(),0);
+    assert.equal(await page.locator('.awb-job-status.idle').innerText(),'');
+    for(const label of ['运行中','排队中','上次异常']) assert.ok(await page.getByText(label,{exact:true}).count()>0);
     for(const theme of ['dark','light']){
       await page.emulateMedia({colorScheme:theme});
       for(const width of [1440,1280,1041,1040,768,390,375,320]){
@@ -89,6 +104,22 @@ const assert=require('node:assert/strict');
           return ['.awb-recent','.awb-owner-metrics','.awb-link'].map(selector=>rows.map(r=>r.querySelector(selector)).filter(n=>n.checkVisibility()).map(n=>n.getBoundingClientRect().x));
         });
         for(const xs of columns) if(xs.length) assert.ok(Math.max(...xs)-Math.min(...xs)<=1,'跨行列起点对齐 '+width+' '+JSON.stringify(xs));
+        const jobsLayout=await page.evaluate(agent=>{
+          const rows=[...document.querySelectorAll(`[data-owner="${agent}"] .awb-job`)];
+          const columns=['.awb-job-recent','.awb-job-count','.awb-job-status','.more'].map(s=>rows.map(r=>r.querySelector(s).getBoundingClientRect().x));
+          const singleLine=rows.every(r=>{
+            const items=[...r.children].map(n=>n.getBoundingClientRect());
+            const centers=items.map(b=>b.y+b.height/2);
+            const name=r.querySelector('.aptname'),style=getComputedStyle(name);
+            const spark=r.querySelector('.awb-spark');
+            return Math.max(...centers)-Math.min(...centers)<=1 && name.clientWidth>=40 &&
+              style.whiteSpace==='nowrap' && style.textOverflow==='ellipsis' &&
+              (!spark || spark.scrollWidth<=spark.clientWidth+1);
+          });
+          return {columns,singleLine,names:rows.map(r=>r.querySelector('.aptname').clientWidth)};
+        },agent);
+        for(const xs of jobsLayout.columns) assert.ok(Math.max(...xs)-Math.min(...xs)<=1,'任务跨行列对齐 '+width);
+        assert.ok(jobsLayout.singleLine,'任务保持单行、名称可读且色条不溢出 '+width+' '+JSON.stringify(jobsLayout));
         if([1440,390].includes(width)) await page.screenshot({path:output+'/workbench-'+theme+'-'+width+'.png',fullPage:true,animations:'disabled'});
       }
     }
@@ -100,7 +131,7 @@ const assert=require('node:assert/strict');
     await page.fill('#awbSearch','');
     assert.equal(await page.locator('#awbOwners>.awb-owner').count(),1);
     await page.locator('[data-awb-fold="orphan"]>summary').click();
-    await page.locator('[data-awb="job-runs"][data-id="deadbeef"]').click();
+    await page.locator('.aptmain[data-awb="job-runs"][data-id="deadbeef"]').click();
     await page.waitForFunction(()=>document.querySelector('[data-awb-fold="orphan"] .aprun')?.textContent.includes('历史未归属任务'));
     assert.ok(await page.locator('[data-awb-fold="orphan"]').evaluate(n=>n.open),'未归属历史切换后保持展开');
     await page.locator('[data-awb-fold="orphan"] [data-tab="tasks"]').click();
@@ -132,7 +163,9 @@ const assert=require('node:assert/strict');
     await page.locator('.convmenu button').filter({hasText:'乙 Agent'}).click();
     await page.waitForFunction(({job,emptyAgent})=>AWB.data.jobs.find(j=>j.id===job).agent_id===emptyAgent && !AWB.loading,{job,emptyAgent});
     await page.locator(`[data-awb="owner"][data-id="${emptyAgent}"]`).click();
-    await page.locator(`[data-awb="job-runs"][data-id="${job}"]`).click();
+    const movedRecent=page.locator(`.awb-job-recent[data-id="${job}"]`);
+    assert.equal(await movedRecent.locator('.awb-tick').count(),24,'移动后仍显示原任务的历史色条');
+    await movedRecent.click();
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===30);
     await page.locator(`[data-awb="more"][data-id="${emptyAgent}"]`).click();
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===35);
