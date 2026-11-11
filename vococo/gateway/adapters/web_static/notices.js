@@ -85,7 +85,7 @@ function renderNoticePop(){
     loadNotices();
   });
   const go=$("#ntPushGo");
-  if(go) go.onclick=e=>{ e.preventDefault(); pop.hidden=true; openSettingsTab("notify"); };
+  if(go) go.onclick=e=>{ e.preventDefault(); pop.hidden=true; vococoLazy.run("settings", ()=>openSettingsTab("notify")); };
   const all=$("#ntDismissAll");
   if(all) all.onclick=async()=>{
     const nDec = NTC.items.filter(it=>it.status==="expired" && it.kind==="decision").length;
@@ -112,7 +112,7 @@ async function actNotice(id, label, btn){
   if(it && it.conv) delete S.pendingChoice[it.conv];
   $("#noticePop").hidden = true;
   await loadNotices();
-  if(d.open){ openSettingsTab(d.open); return; }  // 规则清理提醒 → 设置页「安全」
+  if(d.open){ vococoLazy.run("settings", ()=>openSettingsTab(d.open)); return; }  // 规则清理提醒 → 设置页「安全」
   const conv = d.conv || (it && it.conv);
   if(conv && label!=="拒绝") openConv(conv);  // 去看它接着干
 }

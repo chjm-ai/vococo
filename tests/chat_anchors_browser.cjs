@@ -101,10 +101,16 @@ const assert=require('node:assert/strict');
     assert.equal(await page.evaluate(()=>S.conv),'task:anchor-background');
     assert.match(await page.locator(`.chat-anchor[data-tid="${taskId}"]`).innerText(),/后台完整结果/);
     // 时间戳不一致代表 ID 已复用,不能错误定位。
-    const dialog=page.waitForEvent('dialog');
-    const invalid=page.evaluate(t=>openConvAtTurn('main',t.id,t.ts+1),latest);
-    const warning=await dialog;
-    assert.match(warning.message(),/未能定位/); await warning.dismiss(); await invalid;
+    // 验证真实定位逻辑发出提示，不依赖 Chrome 原生弹窗关闭的协议时序。
+    const warnings=await page.evaluate(async t=>{
+      const original=window.alert, warnings=[];
+      window.alert=message=>warnings.push(message);
+      try{ await openConvAtTurn('main',t.id,t.ts+1); }
+      finally{ window.alert=original; }
+      return warnings;
+    },latest);
+    assert.equal(warnings.length,1);
+    assert.match(warnings[0],/未能定位/);
     // 加载中切走:旧定位不得把用户拉回来。
     await page.route('**/history?conv=main',async route=>{await new Promise(r=>setTimeout(r,200));await route.continue();});
     await page.evaluate(async({latest,turnId})=>{

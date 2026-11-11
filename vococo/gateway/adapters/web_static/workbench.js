@@ -3249,3 +3249,5 @@ document.addEventListener("mousedown", event => {
 
 window.openWorkbench = openWorkbench;
 window.closeWorkbench = closeWorkbench;
+
+vococoLazy.ready("workbench");

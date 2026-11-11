@@ -357,6 +357,8 @@ async function tryEnter(){
     if(r.status===401){ $("#loginErr").textContent="口令错误"; showLogin(); return; }
     if(!r.ok) throw new Error("HTTP "+r.status);
     const d = await r.json();
+    // /conversations 与脚本并行下载,但不能在 composer/voice 尚未就绪时调用首页入口。
+    if(document.readyState==="loading") await new Promise(resolve=>window.addEventListener("DOMContentLoaded", resolve, {once:true}));
     setServiceState("online");
     idbSet("convs", d);   // 落盘,下次刷新页面秒出侧栏
     localStorage.setItem("vococo_token", S.token);
@@ -372,7 +374,7 @@ async function tryEnter(){
     // 直接落地工作台内容区。sb-collapsed 把桌面侧边栏收起到宽度 0(跟手动收起是同一套
     // CSS/状态),但保留 wb-hamb 展开图标——收起不等于砍掉入口,想展开还是能点开。
     // wb-standalone 只用来藏"独立窗口"按钮本身,不做二次开窗。
-    if(S.standaloneWorkbench){ document.body.classList.add("wb-standalone", "sb-collapsed"); openWorkbench(); }
+    if(S.standaloneWorkbench){ document.body.classList.add("wb-standalone", "sb-collapsed"); vococoLazy.run("workbench", ()=>openWorkbench()); }
     else { openCallView(); }  // 默认进入统一对话视图:文本和语音共用一个输入区,主会话入口不再单独占一行。
     // 侧边栏用得到的次要数据(主题偏好/项目列表/模型/斜杠命令)并行去拉,不再堵在落地页前面。
     const secondary = Promise.all([loadPrefs(), loadProjects(), loadModels(), loadCommands(), loadVoiceOmniConfig()])
@@ -394,3 +396,78 @@ async function tryEnter(){
 }
 $("#loginBtn").onclick = ()=>{ S.token = $("#pw").value.trim(); tryEnter(); };
 $("#pw").onkeydown = e=>{ if(e.key==="Enter"){ S.token=$("#pw").value.trim(); tryEnter(); } };
+
+// SW 注册和已有推送订阅续报必须保留在首页。
+const PUSH = { pubKey:"", enabled:false, ready:false, count:null };
+function b64ToU8(base64){
+  const pad="=".repeat((4-base64.length%4)%4);
+  const b=(base64+pad).replace(/-/g,"+").replace(/_/g,"/");
+  const raw=atob(b), arr=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++) arr[i]=raw.charCodeAt(i);
+  return arr;
+}
+function isStandalone(){
+  return (window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone===true;
+}
+// 固定设备号:iOS 订阅失效后重新 subscribe() 会拿到全新 endpoint,单靠 endpoint 去重会让
+// 同一台设备在服务端越攒越多。存一个不变的 deviceId 让服务端"认设备"而不是"认 endpoint"。
+function getDeviceId(){
+  try{
+    let id=localStorage.getItem("vococo_device_id");
+    if(!id){ id=(crypto.randomUUID?crypto.randomUUID():(Date.now()+"-"+Math.random().toString(36).slice(2))); localStorage.setItem("vococo_device_id", id); }
+    return id;
+  }catch(e){ return ""; }
+}
+// SW 外壳缓存让页面秒开(可能是旧版);后台发现新版后弹这个提示条,点了才刷新——
+// 不自动 reload,免得把正在输入的草稿冲掉
+function showShellUpdated(){
+  if(document.getElementById("shellUpd")) return;
+  const b=document.createElement("div");
+  b.id="shellUpd";
+  b.textContent="界面已更新 · 点击刷新";
+  b.style.cssText="position:fixed;left:50%;transform:translateX(-50%);bottom:76px;z-index:9999;"+
+    "padding:8px 14px;border-radius:18px;font-size:13px;cursor:pointer;"+
+    "background:var(--accent,#d97757);color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.25)";
+  b.onclick=()=>location.reload();
+  document.body.appendChild(b);
+}
+var pushMsgListenerInited = false;  // 防重入:挡重登录时监听器重复叠加
+async function initPush(){
+  if(!("serviceWorker" in navigator)) return;
+  try{ await navigator.serviceWorker.register("/sw.js"); }catch(e){ return; }
+  if(!pushMsgListenerInited){
+    pushMsgListenerInited = true;
+    // 点系统通知 → SW 让页面切到对应会话
+    navigator.serviceWorker.addEventListener("message", ev=>{
+      const m=ev.data||{};
+      if(m.type==="open" && m.conv){ try{ openConv(m.conv); }catch(e){} }
+      if(m.type==="open" && m.url && m.url.includes("notices=1")){ try{ openNoticePop(); }catch(e){} }
+      if(m.type==="shell-updated"){ try{ showShellUpdated(); }catch(e){} }
+    });
+  }
+  try{
+    const cfg = await (await api("/push/config")).json();
+    PUSH.enabled=!!cfg.enabled; PUSH.pubKey=cfg.vapidPublicKey||""; PUSH.count=cfg.count;
+  }catch(e){ return; }
+  PUSH.ready=true;
+  syncPushSub();
+}
+// 2026-09-28:服务端订阅列表空了近两个月(换域名/iOS 作废订阅),而手机上一直显示「已开启」,
+// 推送全被静默丢掉。现在每次打开页面:已授权通知的设备把本机订阅重新报给服务端(按 deviceId
+// 覆盖,不会重复);本机订阅被系统作废了就静默重订一个。
+async function syncPushSub(){
+  if(!PUSH.enabled || !PUSH.pubKey || typeof Notification==="undefined" || Notification.permission!=="granted") return;
+  try{
+    const reg=await navigator.serviceWorker.ready;
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub) sub=await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:b64ToU8(PUSH.pubKey) });
+    const payload=Object.assign(sub.toJSON(), {ua:navigator.userAgent, deviceId:getDeviceId()});
+    const r=await api("/push/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(r.ok) PUSH.count=Math.max(1, PUSH.count||0);
+  }catch(e){}
+}
+
+function closeWorkbench(){ const view=$("#workbenchView"); if(view) view.hidden=true; }
+
+$("#settingsBtn").innerHTML=ic("gear");
+$("#settingsBtn").onclick=()=>vococoLazy.run("settings", ()=>openSettings());

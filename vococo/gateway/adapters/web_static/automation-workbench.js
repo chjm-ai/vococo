@@ -209,7 +209,13 @@ async function awbClick(event){
   }
   if(action==="menu"){await awbManage(b,id);return;}
   if(action==="create"){openCronModal(null);S.cronAgentId=id||null;$("#cfCwd").value=agentById(id)?.workdir||"";return;}
-  if(action==="library"){LIB.filters.agent_id=id;LIB.filters.kind="";LIB.filters.state="visible";LIB.filters.search="";await openLibrary();return;}
+  if(action==="library"){
+    await vococoLazy.run("library", async()=>{
+      LIB.filters.agent_id=id;LIB.filters.kind="";LIB.filters.state="visible";LIB.filters.search="";
+      await openLibrary();
+    });
+    return;
+  }
   if(action==="source"){const d=AWB.details.get(Number(id));if(d?.target?.conv) await openConvAtTurn(d.target.conv,d.target.turn_id,d.target.ts);return;}
   if(action==="copy-result"){
     try{await navigator.clipboard.writeText(AWB.details.get(Number(id))?.text||"");b.textContent="已复制";}catch(e){alert("复制失败，请手动选择结果正文");}return;

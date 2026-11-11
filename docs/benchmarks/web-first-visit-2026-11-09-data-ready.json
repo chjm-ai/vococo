@@ -1,0 +1,103 @@
+{
+  "baseline": "5f3accd",
+  "measurements": [],
+  "checks": [
+    {
+      "scenario": "first-open-repeat",
+      "profile": "4g",
+      "module": "settings",
+      "ms": 1071.5999999046326,
+      "dataReadyMs": 1992.8999998569489,
+      "downloadMs": 381.09999990463257,
+      "requests": [
+        "http://127.0.0.1:58983/settings.js?v=370070c4e990"
+      ]
+    },
+    {
+      "scenario": "first-open-repeat",
+      "profile": "4g",
+      "module": "library",
+      "ms": 897.6000001430511,
+      "dataReadyMs": 1254.7000000476837,
+      "downloadMs": 354,
+      "requests": [
+        "http://127.0.0.1:58983/library.js?v=3199b792916d"
+      ]
+    },
+    {
+      "scenario": "first-open-repeat",
+      "profile": "4g",
+      "module": "workbench",
+      "ms": 1156.7999999523163,
+      "dataReadyMs": 1352.9000000953674,
+      "downloadMs": 418.2999999523163,
+      "requests": [
+        "http://127.0.0.1:58983/workbench.js?v=220f830cf749"
+      ]
+    },
+    {
+      "scenario": "first-open-repeat",
+      "profile": "slow",
+      "module": "settings",
+      "ms": 1807.5999999046326,
+      "dataReadyMs": 3980.4000000953674,
+      "downloadMs": 665.0999999046326,
+      "requests": [
+        "http://127.0.0.1:58983/settings.js?v=370070c4e990"
+      ]
+    },
+    {
+      "scenario": "first-open-repeat",
+      "profile": "slow",
+      "module": "library",
+      "ms": 1106.0,
+      "dataReadyMs": 1696.6000001430511,
+      "downloadMs": 527.5,
+      "requests": [
+        "http://127.0.0.1:58983/library.js?v=3199b792916d"
+      ]
+    },
+    {
+      "scenario": "first-open-repeat",
+      "profile": "slow",
+      "module": "workbench",
+      "ms": 2376.899999856949,
+      "dataReadyMs": 2462.5,
+      "downloadMs": 1279.5,
+      "requests": [
+        "http://127.0.0.1:58983/workbench.js?v=220f830cf749"
+      ]
+    },
+    {
+      "scenario": "failure-retry",
+      "module": "settings",
+      "passed": true
+    },
+    {
+      "scenario": "failure-retry",
+      "module": "library",
+      "passed": true
+    },
+    {
+      "scenario": "failure-retry",
+      "module": "workbench",
+      "passed": true
+    },
+    {
+      "scenario": "standalone-refresh",
+      "passed": true
+    },
+    {
+      "scenario": "partial-init-error-visible-no-reexecution",
+      "passed": true
+    },
+    {
+      "scenario": "no-eager-modules-slash-conv-menu-navigation-cancel",
+      "passed": true
+    },
+    {
+      "scenario": "old-sw-upgrade-offline-miss-retry-cached-modules-refresh",
+      "passed": true
+    }
+  ]
+}

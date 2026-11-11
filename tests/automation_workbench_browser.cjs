@@ -9,7 +9,7 @@ const assert=require('node:assert/strict');
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto(origin);await page.fill('#pw',token);await page.click('#loginBtn');
     await page.waitForFunction(()=>!$('#app').hidden);
-    await page.evaluate(()=>openWorkbench());
+    await page.locator('#convTopRows .conv').filter({hasText:'工作台'}).click();
     await page.waitForSelector('.awb-owner');
     assert.equal(await page.locator('.awb-owner-toggle').count(),3);
     assert.ok(await page.locator(`[data-owner="${emptyAgent}"]`).evaluate(n=>!n.checkVisibility()),'无任务 Agent 默认折叠');
@@ -169,7 +169,14 @@ const assert=require('node:assert/strict');
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===30);
     await page.locator(`[data-awb="more"][data-id="${emptyAgent}"]`).click();
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===35);
+    // 新工作台的作品库入口也必须等待按需模块，不能提前引用 LIB。
+    await page.setViewportSize({width:1440,height:1000});
+    assert.equal(await page.evaluate(()=>typeof LIB),'undefined');
+    await page.locator(`[data-awb="products"][data-id="${emptyAgent}"]`).click();
+    await page.locator(`[data-awb="library"][data-id="${emptyAgent}"]`).click();
+    await page.waitForFunction(()=>$('#libraryView') && !$('#libraryView').hidden && !LIB.loading);
+    assert.equal(await page.evaluate(()=>LIB.filters.agent_id),emptyAgent);
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({ok:true,widths:8,themes:2,history:35,nodes:3,management:true,aligned:true}));
+    console.log(JSON.stringify({ok:true,widths:8,themes:2,history:35,nodes:3,management:true,aligned:true,lazyLibrary:true}));
   }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1);});
