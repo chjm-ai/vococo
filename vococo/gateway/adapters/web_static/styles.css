@@ -2419,7 +2419,7 @@
   .awb-search input{width:100%;min-width:0;border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-3) var(--sp-4);background:var(--panel);color:var(--text);font:inherit;font-size:var(--fs-base)}
   .awb-search input:focus{outline:1px solid var(--accent)}
   .automation-workbench .awb-stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--sp-3);margin:var(--sp-4) 0;padding:var(--sp-4);background:var(--panel);border-radius:var(--r-md)}
-  .awb-stats .apstat{min-width:0;display:flex;flex-direction:column;gap:var(--sp-1);padding:var(--sp-1);border:0;text-align:left}
+  .awb-stats .apstat{min-width:0;display:flex;flex-direction:column;gap:var(--sp-1);padding:var(--sp-1);border:0;border-radius:0;background:transparent;text-align:left}
   .awb-stats b{font-size:var(--fs-xl);overflow-wrap:anywhere}.awb-stats span{font-size:var(--fs-sm);color:var(--dim)}
   .awb-note,.awb-fold{color:var(--dim);font-size:var(--fs-sm);line-height:1.6;margin:var(--sp-4) 0}
   .awb-note summary,.awb-fold>summary{cursor:pointer;padding:var(--sp-2) 0}
@@ -2431,6 +2431,11 @@
   .awb-owner-toggle>span:first-of-type{min-width:0}.awb-owner-toggle strong{display:block;font-size:var(--fs-lg);overflow-wrap:anywhere}
   .awb-owner-toggle small{display:block;margin-top:var(--sp-1);color:var(--dim);font-size:var(--fs-sm)}
   .awb-chevron{color:var(--dim);font-size:var(--fs-xl)}
+  .awb-recent{display:flex;flex-direction:column;gap:var(--sp-2);flex:0 1 calc(var(--sp-5)*12);min-width:0;text-align:left;color:var(--dim);padding:var(--sp-1) 0}
+  .awb-recent small{font-size:var(--fs-sm);line-height:1.6;white-space:nowrap}
+  .awb-spark{display:flex;gap:2px;min-width:0}
+  .awb-tick{flex:0 1 var(--sp-2);min-width:2px;height:var(--sp-4);border-radius:2px;background:var(--dim2)}
+  .awb-tick.ok{background:var(--ok-fg)}.awb-tick.error{background:var(--err-fg)}
   .awb-owner-metrics,.awb-job-metrics{font-size:var(--fs-sm);color:var(--dim);line-height:1.6;text-align:right}
   .awb-owner-body{padding:0 0 var(--sp-5) calc(var(--sp-5)*3);min-width:0}
   #workbenchView .awb-tabs{width:fit-content;margin-bottom:var(--sp-4)}
