@@ -2436,7 +2436,7 @@
   .awb-recent{display:flex;flex-direction:column;gap:var(--sp-2);flex:0 1 calc(var(--sp-5)*12);min-width:0;text-align:left;color:var(--dim);padding:var(--sp-1) 0}
   .awb-recent small{font-size:var(--fs-sm);line-height:1.6;white-space:nowrap}
   .awb-spark{display:flex;gap:2px;min-width:0}
-  .awb-tick{flex:0 1 var(--sp-2);min-width:2px;height:var(--sp-4);border-radius:2px;background:var(--dim2)}
+  .awb-tick{flex:1 1 0;min-width:2px;height:var(--sp-4);border-radius:2px;background:var(--dim2)}
   .awb-tick.ok{background:var(--ok-fg)}.awb-tick.error{background:var(--err-fg)}
   .awb-owner-metrics{font-size:var(--fs-sm);color:var(--dim);line-height:1.6;text-align:right}
   .awb-owner-body{padding:0 0 var(--sp-5) calc(var(--sp-5)*3);min-width:0}
@@ -2445,6 +2445,7 @@
   .awb-job .aptmain{min-width:0;text-align:left;padding:var(--sp-1);color:var(--text)}
   .awb-job .aptname{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:var(--fs-base)}
   .awb-job-recent{min-width:0;text-align:left;color:var(--dim);padding:var(--sp-2) 0}
+  .awb-job-recent .awb-spark{gap:1px}.awb-job-recent .awb-tick{min-width:1px}
   .awb-job-count,.awb-job-status{font-size:var(--fs-sm);color:var(--dim);white-space:nowrap}
   .awb-job-count{overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
   .awb-job-status.error{color:var(--err-fg)}
@@ -2483,8 +2484,7 @@
     .awb-owner-row{grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:var(--sp-2)}.awb-owner-toggle{grid-column:1/-1}
     .awb-recent small{white-space:normal}
     .awb-owner-body{padding-left:0}
-    .awb-job.aptask{grid-template-columns:minmax(0,1fr) calc(var(--sp-3)*7) calc(var(--sp-5)*3) calc(var(--sp-5)*3) calc(var(--sp-5)*2);gap:var(--sp-1)}
-    .awb-job-recent .awb-spark{gap:1px}.awb-job-recent .awb-tick{min-width:1px}
+    .awb-job.aptask{grid-template-columns:minmax(0,1fr) calc(var(--sp-5)*4) calc(var(--sp-5)*3) calc(var(--sp-5)*3) calc(var(--sp-5)*2);gap:var(--sp-1)}
     .awb-run-head{flex-wrap:wrap}.awb-run-name{flex-basis:60%}
     .awb-artifact{flex-wrap:wrap}.awb-artifact>div{flex-basis:100%}
     .automation-workbench .awb-stats{padding:var(--sp-3);gap:var(--sp-2)}

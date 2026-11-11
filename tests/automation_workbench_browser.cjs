@@ -14,11 +14,19 @@ const assert=require('node:assert/strict');
     assert.equal(await page.locator('.awb-owner-toggle').count(),3);
     assert.ok(await page.locator(`[data-owner="${emptyAgent}"]`).evaluate(n=>!n.checkVisibility()),'无任务 Agent 默认折叠');
     const recent=page.locator(`[data-owner="${agent}"] .awb-recent`);
-    assert.equal(await recent.locator('.awb-tick').count(),24);
-    assert.equal(await recent.locator('.awb-tick.ok').count(),1);
-    assert.equal(await recent.locator('.awb-tick.error').count(),23);
+    const expectedDays=await page.evaluate(agent=>AWB.data.agents.find(a=>a.id===agent).run_days,agent);
+    assert.equal(await recent.locator('.awb-tick').count(),30);
+    assert.deepEqual(await recent.locator('.awb-tick').evaluateAll(nodes=>nodes.map(n=>n.dataset.date)),expectedDays.map(d=>d.date));
+    assert.deepEqual(await recent.locator('.awb-tick').evaluateAll(nodes=>nodes.map(n=>n.className)),expectedDays.map(d=>'awb-tick '+d.status));
+    for(const [i,day] of expectedDays.entries()){
+      const tick=recent.locator('.awb-tick').nth(i);
+      await tick.hover();
+      const title=await tick.getAttribute('title');
+      assert.ok(title.includes(day.date));
+      assert.ok(title.includes(day.runs?`${day.runs} 次运行`:'无运行记录'));
+    }
     assert.ok((await recent.innerText()).includes('35 运行'));
-    assert.equal(await page.locator(`[data-owner="${emptyAgent}"] .awb-tick`).count(),0);
+    assert.equal(await page.locator(`[data-owner="${emptyAgent}"] .awb-tick.unknown`).count(),30);
     for(const stat of await page.locator('.awb-stats .apstat').all()){
       assert.equal(await stat.evaluate(n=>getComputedStyle(n).backgroundColor),'rgba(0, 0, 0, 0)','指标内部不再有第二层背景框');
     }
@@ -26,8 +34,11 @@ const assert=require('node:assert/strict');
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===30);
     await page.locator(`[data-awb="tab"][data-id="${agent}"][data-tab="tasks"]`).click();
     const jobRecent=page.locator(`.awb-job-recent[data-id="${job}"]`);
-    assert.equal(await jobRecent.locator('.awb-tick').count(),24);
-    assert.equal(await jobRecent.locator('.awb-tick.ok').count(),1);
+    assert.equal(await jobRecent.locator('.awb-tick').count(),30);
+    assert.deepEqual(await jobRecent.locator('.awb-tick').evaluateAll(nodes=>nodes.map(n=>n.className)),expectedDays.map(d=>'awb-tick '+d.status));
+    await jobRecent.locator('.awb-tick').last().hover();
+    assert.ok((await jobRecent.locator('.awb-tick').last().getAttribute('title')).includes('失败'));
+    assert.ok((await jobRecent.locator('.awb-tick').last().getAttribute('title')).includes('120 Token'));
     assert.equal(await page.locator('.awb-job .aptsub').count(),0,'任务行不再显示第二行元信息');
     assert.ok((await page.locator(`.aptmain[data-id="${job}"]`).getAttribute('title')).includes('每天 06:17'));
     await jobRecent.click();
@@ -80,11 +91,11 @@ const assert=require('node:assert/strict');
         AWB.data.jobs.push({...structuredClone(job),id:'layout-state-'+i,enabled:true,
           name:i?'用于验证任务长名称省略及单行布局的定时任务':'未运行',
           last_status:state==='error'?'error':'success',activity:state,runs:i?1234567:0,
-          recent_runs:i?job.recent_runs:[]});
+          recent_runs:i?job.recent_runs:[],run_days:i?job.run_days:job.run_days.map(d=>({...d,runs:0,status:'unknown'}))});
       }
       renderAutomationWorkbench();
     },agent);
-    assert.equal(await page.locator('.awb-job-recent[data-id="layout-state-0"] .awb-tick').count(),0);
+    assert.equal(await page.locator('.awb-job-recent[data-id="layout-state-0"] .awb-tick.unknown').count(),30);
     assert.equal(await page.locator('.awb-job-status.idle').innerText(),'');
     for(const label of ['运行中','排队中','上次异常']) assert.ok(await page.getByText(label,{exact:true}).count()>0);
     for(const theme of ['dark','light']){
@@ -164,7 +175,8 @@ const assert=require('node:assert/strict');
     await page.waitForFunction(({job,emptyAgent})=>AWB.data.jobs.find(j=>j.id===job).agent_id===emptyAgent && !AWB.loading,{job,emptyAgent});
     await page.locator(`[data-awb="owner"][data-id="${emptyAgent}"]`).click();
     const movedRecent=page.locator(`.awb-job-recent[data-id="${job}"]`);
-    assert.equal(await movedRecent.locator('.awb-tick').count(),24,'移动后仍显示原任务的历史色条');
+    assert.equal(await movedRecent.locator('.awb-tick').count(),30,'移动后仍显示原任务的30天历史格');
+    assert.deepEqual(await movedRecent.locator('.awb-tick').evaluateAll(nodes=>nodes.map(n=>n.className)),expectedDays.map(d=>'awb-tick '+d.status));
     await movedRecent.click();
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===30);
     await page.locator(`[data-awb="more"][data-id="${emptyAgent}"]`).click();

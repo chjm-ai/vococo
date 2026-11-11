@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from datetime import datetime, timedelta
 import hashlib
 from statistics import median
 import time
@@ -17,6 +18,26 @@ def metrics(rows: list[dict]) -> dict:
             'tokens': sum(r['tokens'] for r in token_rows), 'token_samples': len(token_rows),
             'duration_samples': len(durations),
             'median_duration': median(durations) if durations else None}
+
+
+def _run_days(rows: list[dict], now: float) -> list[dict]:
+    # 按服务器本地日历日分桶；空记录不代表已确认「触发条件未满足」。
+    today = datetime.fromtimestamp(now).date()
+    dates = [(today - timedelta(days=offset)).isoformat() for offset in range(29, -1, -1)]
+    buckets = {day: [] for day in dates}
+    for row in rows:
+        day = datetime.fromtimestamp(row['ts']).date().isoformat()
+        if row['ts'] <= now and day in buckets:
+            buckets[day].append(row)
+    days = []
+    for day, items in buckets.items():
+        stats = metrics(items)
+        failed = sum(r['status'].startswith('error') or r['status'] == 'failed' for r in items)
+        unknown = len(items) - stats['ok'] - failed
+        days.append({'date': day, **stats, 'failed': failed, 'unknown': unknown,
+                     'status': 'error' if failed else 'ok' if stats['ok'] else 'unknown',
+                     'last_ts': max((r['ts'] for r in items), default=None)})
+    return days
 
 
 def _artifact_groups() -> dict:
@@ -38,7 +59,11 @@ def overview(jobs: list[dict], now: float | None = None) -> dict:
             for row in c.execute('SELECT id,agent_id,job_id,ts,status,tokens,duration FROM agent_runs '
                                  'ORDER BY ts DESC,id DESC')]
     recent_runs, job_runs = defaultdict(list), defaultdict(list)
+    calendar_agents, calendar_jobs = defaultdict(list), defaultdict(list)
     for row in rows:
+        if now - 31 * 86400 <= row['ts'] <= now:
+            calendar_agents[row['agent_id']].append(row)
+            calendar_jobs[row['job_id']].append(row)
         mark = {k: row[k] for k in ('id', 'ts', 'status')}
         if len(recent_runs[row['agent_id']]) < 24:
             recent_runs[row['agent_id']].append(mark)
@@ -55,15 +80,17 @@ def overview(jobs: list[dict], now: float | None = None) -> dict:
     owners = [{**{k: a[k] for k in ('id', 'name', 'avatar', 'main_conv')},
                'stats': metrics(by_agent[a['id']]), 'runs': counts[a['id']],
                'recent_runs': list(reversed(recent_runs[a['id']])),
+               'run_days': _run_days(calendar_agents[a['id']], now),
                'artifacts': artifacts.get(a['id'], 0), 'works': works.get(a['id'], 0)}
               for a in agents.list_agents()]
     return {'agents': owners, 'jobs': [_public_job(j, metrics(by_job[j['id']]), job_counts[j['id']],
-                                                  list(reversed(job_runs[j['id']]))) for j in jobs],
+                                                  list(reversed(job_runs[j['id']])),
+                                                  _run_days(calendar_jobs[j['id']], now)) for j in jobs],
             'stats': metrics(recent), 'runs': len(rows), 'artifacts': sum(artifacts.values()),
             'works': sum(works.values()), 'generated_at': now}
 
 
-def _public_job(job: dict, stats: dict, count: int, recent_runs: list[dict]) -> dict:
+def _public_job(job: dict, stats: dict, count: int, recent_runs: list[dict], run_days: list[dict]) -> dict:
     # 概览不回传 prompt、命令、目录或 webhook 密钥；编辑仍走原接口。
     sch = job.get('schedule') or {}
     safe_schedule = {k: sch[k] for k in ('kind', 'expr', 'at', 'seconds', 'minutes') if k in sch}
@@ -72,7 +99,7 @@ def _public_job(job: dict, stats: dict, count: int, recent_runs: list[dict]) -> 
             'mode': job.get('mode') or 'agent', 'schedule': safe_schedule,
             'conv': config.conversation_id_for_key(job.get('conv') or 'task:' + job['id']),
             'last_status': job.get('last_status') or '', 'stats': stats, 'runs': count,
-            'recent_runs': recent_runs}
+            'recent_runs': recent_runs, 'run_days': run_days}
 
 
 def runs(agent_id: str, job_id: str = '', before: int = 0, limit: int = 30) -> dict:
