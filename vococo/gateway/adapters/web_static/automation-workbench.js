@@ -63,16 +63,17 @@ function awbMatches(j){
   if(AWB.filter==="error") return awbStatus(j)[0]==="error";
   return true;
 }
+function awbDayTitle(day){
+  if(!day.runs) return day.date+'\n无运行记录；可能未触发或历史未记录，不能确认触发条件是否满足。';
+  return day.date+'\n'+day.runs+' 次运行 · 成功 '+day.ok+' · 失败 '+day.failed+(day.unknown?' · 状态未确认 '+day.unknown:'')+
+    '\n'+awbMetricText(day)+'\n最近运行 '+awbTime(day.last_ts)+'\n调度成功不等于业务目标完成';
+}
 function awbRecentRuns(a,owner=null){
-  const runs=a.recent_runs||[],latest=runs.at(-1);
-  const marks=runs.map(r=>{
-    const status=r.status.startsWith("success")?"ok":r.status.startsWith("error")||r.status==="failed"?"error":"unknown";
-    const label=status==="ok"?"调度成功":status==="error"?"运行异常":"状态未确认";
-    return '<span class="awb-tick '+status+'" title="'+esc(awbTime(r.ts)+' · '+label)+'"></span>';
-  }).join("");
+  const days=a.run_days||[],latest=(a.recent_runs||[]).at(-1);
+  const marks=days.map(day=>'<span class="awb-tick '+day.status+'" data-date="'+esc(day.date)+'" title="'+esc(awbDayTitle(day))+'"></span>').join('');
   const isJob=owner!==null;
-  return '<button type="button" class="'+(isJob?'awb-job-recent':'awb-recent')+'" data-awb="'+(isJob?'job-runs':'all-runs')+'" data-id="'+esc(a.id)+'"'+(isJob?' data-owner="'+esc(owner)+'"':'')+' aria-label="查看 '+esc(a.name)+' 的运行记录" title="'+(runs.length?'最近 '+runs.length+' 次运行，从左到右由旧到新；绿色为调度成功，红色为异常，灰色为未确认':'暂无运行记录')+'">'+
-    (marks?'<span class="awb-spark" aria-hidden="true">'+marks+'</span>':isJob?'—':'')+(isJob?'':'<small>'+awbNumber(a.runs)+' 运行 · '+(latest?awbTime(latest.ts):'暂无记录')+'</small>')+'</button>';
+  return '<button type="button" class="'+(isJob?'awb-job-recent':'awb-recent')+'" data-awb="'+(isJob?'job-runs':'all-runs')+'" data-id="'+esc(a.id)+'"'+(isJob?' data-owner="'+esc(owner)+'"':'')+' aria-label="查看 '+esc(a.name)+' 的运行记录" title="最近 30 天，每格一天，从左到右由旧到新；绿色成功，红色失败，灰色无运行记录或状态未确认。按服务器本地日期统计。">'+
+    '<span class="awb-spark" aria-hidden="true">'+marks+'</span>'+(isJob?'':'<small>'+awbNumber(a.runs)+' 运行 · '+(latest?awbTime(latest.ts):'暂无记录')+'</small>')+'</button>';
 }
 function awbOwner(a,jobs){
   const tab=AWB.tabs.get(a.id)||{tab:"tasks",job:""}, open=AWB.open.has(a.id);

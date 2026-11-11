@@ -1,5 +1,6 @@
 """工作台只读投影与真实浏览器回归；所有业务数据均位于临时目录。"""
 import asyncio
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -105,7 +106,33 @@ def test_job_run_bars_are_separate_and_include_old_history(sample):
     assert jobs[old['id']]['recent_runs'] == [{'id': c.execute('SELECT MAX(id) FROM agent_runs').fetchone()[0],
                                              'ts': ts, 'status': 'unknown'}]
     assert jobs[old['id']]['stats']['runs'] == 0 and jobs[old['id']]['runs'] == 1
+    assert len(jobs[old['id']]['run_days']) == len(jobs[empty['id']]['run_days']) == 30
+    assert all(day['runs'] == 0 and day['status'] == 'unknown' for day in jobs[old['id']]['run_days'])
+    assert all(day['runs'] == 0 for day in jobs[empty['id']]['run_days'])
     assert '不应暴露的正文' not in json.dumps(jobs)
+
+
+def test_daily_calendar_boundaries_status_priority_and_missing_metrics():
+    now = datetime(2026, 11, 11, 12).timestamp()
+    def row(day, status, tokens=0, duration=0):
+        return {'ts': datetime.fromisoformat(day).timestamp(), 'status': status,
+                'tokens': tokens, 'duration': duration}
+    rows = [row('2026-10-12T23:59:59', 'error'), row('2026-10-13T00:00:00', 'success', 120, 10),
+            row('2026-11-11T12:00:01', 'error'), row('2026-11-11T11:59:59', 'success'),
+            row('2026-11-10T12:00:00', 'success', 80, 20), row('2026-11-10T13:00:00', 'error'),
+            row('2026-11-09T12:00:00', 'unknown')]
+    days = automation._run_days(rows, now)
+    assert len(days) == 30
+    assert [d['date'] for d in days] == [(datetime(2026, 10, 13) + timedelta(days=i)).date().isoformat()
+                                       for i in range(30)]
+    assert days[0]['runs'] == 1 and days[0]['status'] == 'ok' and days[0]['tokens'] == 120
+    assert days[-1]['runs'] == 1 and days[-1]['status'] == 'ok'
+    assert days[-1]['median_duration'] is None and days[-1]['token_samples'] == 0
+    assert days[-2]['status'] == 'error' and days[-2]['ok'] == days[-2]['failed'] == 1
+    assert days[-2]['median_duration'] == 20 and days[-2]['tokens'] == 80
+    assert days[-3]['status'] == 'unknown' and days[-3]['unknown'] == 1
+    assert days[1]['status'] == 'unknown' and days[1]['runs'] == 0 and days[1]['last_ts'] is None
+    assert all(d['runs'] == 0 for d in automation._run_days([], now))
 
 
 def test_cursor_and_exact_source_no_guessed_nodes(sample):
@@ -165,6 +192,9 @@ def test_rename_preserves_next_run_and_moved_job_history(sample):
     expected = [dict(zip(('id', 'ts', 'status'), row)) for row in agents._conn().execute(
         'SELECT id,ts,status FROM agent_runs WHERE job_id=? ORDER BY ts DESC,id DESC LIMIT 24', (j['id'],))]
     assert d['jobs'][0]['recent_runs'] == list(reversed(expected))
+    owner = next(o for o in d['agents'] if o['id'] == a['id'])
+    assert d['jobs'][0]['run_days'] == owner['run_days']
+    assert sum(day['runs'] for day in d['jobs'][0]['run_days']) == 35
     changed = scheduler.update_job(j['id'], name='改计划', prompt=j['prompt'],
                                    schedule={'kind': 'interval', 'minutes': 30}, target=None)
     assert changed['next_run_at'] is None
