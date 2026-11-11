@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from unittest.mock import Mock
 
+import anyio
 import pytest
 
 from vococo import config
@@ -79,7 +80,7 @@ def _issue():
             "evidence": [{"path": "memory/project/decision.md", "line": 2, "quote": "当前使用方案甲。"}]}
 
 
-@pytest.mark.parametrize("bad", ["filename", "line", "quote", "one_conflict", "empty", "shape"])
+@pytest.mark.parametrize("bad", ["filename", "line", "quote", "one_conflict", "empty", "shape", "kind_type"])
 def test_model_findings_must_match_visible_evidence(brain, bad):
     item = _issue()
     if bad == "filename":
@@ -92,10 +93,14 @@ def test_model_findings_must_match_visible_evidence(brain, bad):
         item["kind"] = "冲突"
     elif bad == "empty":
         item["evidence"][0]["quote"] = " "
+    elif bad == "kind_type":
+        item["kind"] = []
     else:
         item = "不是对象"
-    with pytest.raises(ValueError):
-        audit._parse(json.dumps({"findings": [item]}, ensure_ascii=False), audit._chunks(audit._documents(brain)[0]))
+    accepted, rejected = audit._parse(json.dumps({"findings": [item]}, ensure_ascii=False),
+                                      audit._chunks(audit._documents(brain)[0]))
+    assert accepted == []
+    assert len(rejected) == 1 and rejected[0]["finding"] == item and rejected[0]["reason"]
 
 
 @pytest.mark.anyio
@@ -122,7 +127,8 @@ async def test_review_only_uses_memory_keeps_sources_unchanged_and_deduplicates(
 
 
 @pytest.mark.anyio
-async def test_analyze_isolates_history_settings_and_denies_every_tool(brain, monkeypatch):
+@pytest.mark.parametrize("repair", [False, True])
+async def test_analyze_isolates_history_settings_and_denies_every_tool(brain, monkeypatch, repair):
     calls = []
 
     async def fake_stream(history, prompt, **kwargs):
@@ -132,13 +138,16 @@ async def test_analyze_isolates_history_settings_and_denies_every_tool(brain, mo
         assert kwargs["disallowed_tools"] == ["WebSearch", "WebFetch"]
         assert kwargs["max_turns"] == 1
         assert "不回顾聊天" in kwargs["system_prompt_extra"]
+        assert ("待补证候选" in prompt) == repair
+        assert ("不得改问题类型" in kwargs["system_prompt_extra"]) == repair
         for name in ["Bash", "Read", "Write", "WebFetch", "mcp__vococo__recall_past"]:
             decision = await kwargs["tool_guard"]({"tool_name": name}, None, None)
             assert decision["hookSpecificOutput"]["permissionDecision"] == "deny"
         yield agent.Done(agent.AgentReply(text='{"findings": []}', tool_calls=[], cost_usd=None, is_error=False))
 
     monkeypatch.setattr(agent, "stream_turn", fake_stream)
-    assert await audit._analyze(audit._chunks(audit._documents(brain)[0])) == '{"findings": []}'
+    rejected = [{"index": 1, "finding": _issue(), "reason": "测试补证"}] if repair else None
+    assert await audit._analyze(audit._chunks(audit._documents(brain)[0]), rejected=rejected) == '{"findings": []}'
     assert len(calls) == 1
 
 
@@ -158,7 +167,8 @@ async def test_failed_audit_notifies_without_advancing_or_reading_history(brain,
     monkeypatch.setattr(audit, "_analyze", analyze)
     await scheduler._reflect(push)
     assert len(notices) == 1 and "未完成" in notices[0]
-    assert not (config.DATA_DIR / "memory-audit.json").exists()
+    state = json.loads((config.DATA_DIR / "memory-audit.json").read_text())
+    assert state["covered"] == 0 and state["after"] == [] and state["incomplete"]
 
 
 @pytest.mark.anyio
@@ -275,3 +285,238 @@ def test_resolved_link_does_not_survive_in_pending_queue():
     key = audit._issue_key(issue)
     state = {"pending": {key: {"issue": issue, "sources": {"MEMORY.md": "same"}}}}
     assert audit._pending_issues([], state, {"MEMORY.md": "same", "memory/a.md": "new"}) == {}
+
+
+@pytest.mark.anyio
+async def test_bad_candidate_keeps_valid_results_and_retries_only_evidence(brain, monkeypatch):
+    (brain / "MEMORY.md").write_text("# 索引\n→ memory/absent.md\n")
+    before = {str(path): path.read_bytes() for path in brain.rglob("*.md")}
+    bad = {**_issue(), "kind": "冲突", "summary": "未经证实的冲突"}
+    calls = []
+
+    async def analyze(chunks, *, rejected=None):
+        calls.append(rejected)
+        if rejected is not None:
+            assert [item["finding"] for item in rejected] == [bad]
+            return '{"repairs": {}}'
+        return json.dumps({"findings": [_issue(), bad]}, ensure_ascii=False)
+
+    monkeypatch.setattr(audit, "_analyze", analyze)
+    first = await audit.review()
+    assert len(calls) == 2
+    assert "部分完成" in first.text and "两处依据" in first.text
+    assert "当前方案缺少适用日期" in first.text and "memory/absent.md" in first.text
+    assert "未经证实的冲突" not in first.text
+    assert first.state["covered"] == 0 and first.state["after"] == []
+    assert first.state["incomplete"] and len(first.state["reported"]) == 2
+    audit.save_result(first)
+    second = await audit.review()
+    assert "部分完成" in second.text and "当前方案缺少适用日期" not in second.text
+    assert {str(path): path.read_bytes() for path in brain.rglob("*.md")} == before
+
+
+@pytest.mark.anyio
+async def test_repaired_conflict_completes_batch_and_keeps_original_claim(brain, monkeypatch):
+    (brain / "memory/project/other.md").write_text("当前使用方案乙。\n")
+    bad = {**_issue(), "kind": "冲突"}
+    evidence = bad["evidence"] + [{"path": "memory/project/other.md", "line": 1, "quote": "当前使用方案乙。"}]
+    calls = []
+
+    async def analyze(_chunks, *, rejected=None):
+        calls.append(rejected)
+        if rejected is None:
+            return json.dumps({"findings": [_issue(), bad]}, ensure_ascii=False)
+        return json.dumps({"repairs": {"2": evidence}}, ensure_ascii=False)
+
+    monkeypatch.setattr(audit, "_analyze", analyze)
+    result = await audit.review()
+    assert len(calls) == 2 and calls[1][0]["index"] == 2
+    assert result.state["incomplete"] == []
+    assert result.state["covered"] == result.state["segments"] and result.state["after"]
+    assert "部分完成" not in result.text
+    conflict = next(item for item in result.state["findings"] if item["kind"] == "冲突")
+    assert conflict == {**bad, "evidence": evidence}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", [TimeoutError(), RuntimeError("供应商不可用"), "不是JSON", '{"findings": []}'])
+async def test_repair_failure_preserves_first_pass_results(brain, monkeypatch, failure):
+    calls = []
+
+    async def analyze(_chunks, *, rejected=None):
+        calls.append(rejected)
+        if rejected is None:
+            return json.dumps({"findings": [_issue(), {**_issue(), "kind": "重复"}]}, ensure_ascii=False)
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+
+    monkeypatch.setattr(audit, "_analyze", analyze)
+    result = await audit.review()
+    assert len(calls) == 2 and result.state["incomplete"]
+    assert result.state["findings"] == [_issue()]
+    assert "补证重试失败" in result.text and "当前方案缺少适用日期" in result.text
+    assert result.state["covered"] == 0 and result.state["after"] == []
+
+
+@pytest.mark.parametrize("case", ["missing", "same_position", "wrong_quote", "downgrade", "unknown_index"])
+def test_bad_repairs_cannot_bypass_evidence_rules(brain, case):
+    chunks = audit._chunks(audit._documents(brain)[0])
+    bad = {**_issue(), "kind": "冲突"}
+    _, rejected = audit._parse(json.dumps({"findings": [bad]}, ensure_ascii=False), chunks)
+    repairs = {"1": bad["evidence"]}
+    if case == "missing":
+        repairs = {}
+    elif case == "same_position":
+        repairs["1"] = bad["evidence"] * 2
+    elif case == "wrong_quote":
+        repairs["1"] += [{"path": "memory/project/decision.md", "line": 1, "quote": "编造的原文"}]
+    elif case == "downgrade":
+        repairs["1"] = {**bad, "kind": "过时待核实"}
+    else:
+        repairs = {"999": bad["evidence"]}
+    accepted, remaining = audit._parse_repairs(json.dumps({"repairs": repairs}, ensure_ascii=False), rejected, chunks)
+    assert accepted == [] and len(remaining) == 1
+    assert remaining[0]["finding"]["kind"] == "冲突"
+
+
+@pytest.mark.anyio
+async def test_partial_repairs_keep_fixed_items_and_report_remaining_indices(brain, monkeypatch):
+    (brain / "memory/project/other.md").write_text("当前使用方案乙。\n")
+    bad = {**_issue(), "kind": "冲突"}
+    evidence = bad["evidence"] + [{"path": "memory/project/other.md", "line": 1, "quote": "当前使用方案乙。"}]
+
+    async def analyze(_chunks, *, rejected=None):
+        if rejected is None:
+            return json.dumps({"findings": [bad, {**_issue(), "kind": "重复"}]}, ensure_ascii=False)
+        assert len(rejected) == 2
+        return json.dumps({"repairs": {"1": evidence}}, ensure_ascii=False)
+
+    monkeypatch.setattr(audit, "_analyze", analyze)
+    result = await audit.review()
+    assert len(result.state["findings"]) == 1 and result.state["findings"][0]["kind"] == "冲突"
+    assert len(result.state["incomplete"]) == 1 and "第 2 项" in result.text
+    assert result.state["covered"] == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("response", ["不是JSON", "[]", "{}", '{"findings": null}'])
+async def test_malformed_first_response_preserves_structure_checks(brain, monkeypatch, response):
+    (brain / "MEMORY.md").write_text("# 索引\n→ memory/absent.md\n")
+
+    async def analyze(_chunks):
+        return response
+
+    monkeypatch.setattr(audit, "_analyze", analyze)
+    result = await audit.review()
+    assert "memory/absent.md" in result.text and "语义审计失败" in result.text
+    assert result.state["covered"] == 0 and result.state["after"] == []
+
+
+@pytest.mark.anyio
+async def test_partial_audit_keeps_existing_cursor_and_can_recover(brain, monkeypatch):
+    monkeypatch.setattr(audit, "_BODY_CHARS", 1)
+    runs = []
+
+    async def analyze(chunks, *, rejected=None):
+        if rejected is not None:
+            return '{"repairs": {}}'
+        runs.append(chunks)
+        if len(runs) == 2:
+            return json.dumps({"findings": [{**_issue(), "kind": "冲突"}]}, ensure_ascii=False)
+        return '{"findings": []}'
+
+    monkeypatch.setattr(audit, "_analyze", analyze)
+    first = await audit.review()
+    audit.save_result(first)
+    partial = await audit.review()
+    assert partial.state["after"] == first.state["after"]
+    assert partial.state["reviewed"] == first.state["reviewed"] and partial.state["covered"] == 1
+    audit.save_result(partial)
+    recovered = await audit.review()
+    assert runs[1] == runs[2]
+    assert recovered.state["incomplete"] == [] and recovered.state["covered"] == 2
+    assert recovered.state["after"] != partial.state["after"]
+
+
+@pytest.mark.anyio
+async def test_scheduler_saves_partial_results_without_history_input(brain, monkeypatch):
+    monkeypatch.setattr(config, "REFLECT_TARGET", "web:main")
+    monkeypatch.setattr(session_store, "load_recent", Mock(side_effect=AssertionError("禁止读取聊天")))
+    notices = []
+
+    async def analyze(_chunks, *, rejected=None):
+        if rejected is None:
+            return json.dumps({"findings": [_issue(), {**_issue(), "kind": "冲突"}]}, ensure_ascii=False)
+        return '{"repairs": {}}'
+
+    async def push(_platform, _target, text):
+        notices.append(text)
+
+    monkeypatch.setattr(audit, "_analyze", analyze)
+    await scheduler._reflect(push)
+    state = json.loads((config.DATA_DIR / "memory-audit.json").read_text())
+    assert len(notices) == 1 and "部分完成" in notices[0] and "当前方案缺少适用日期" in notices[0]
+    assert state["incomplete"] and state["findings"] == [_issue()] and state["covered"] == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("changed", [False, True])
+async def test_repeat_failure_keeps_unchanged_successful_coverage(brain, monkeypatch, changed):
+    responses = iter(['{"findings": []}', '不是JSON'])
+
+    async def analyze(_chunks):
+        return next(responses)
+
+    monkeypatch.setattr(audit, "_analyze", analyze)
+    first = await audit.review()
+    audit.save_result(first)
+    if changed:
+        (brain / "memory/project/decision.md").write_text("当前使用方案乙。\n")
+    partial = await audit.review()
+    assert partial.state["incomplete"] and partial.state["after"] == first.state["after"]
+    assert partial.state["covered"] == first.state["covered"] - int(changed)
+    if not changed:
+        assert partial.state["reviewed"] == first.state["reviewed"]
+
+
+@pytest.mark.anyio
+async def test_repair_timeout_waits_for_cleanup_and_keeps_valid_results(brain, monkeypatch):
+    fail_after = anyio.fail_after
+    limits, cleaned = [], []
+
+    def short_deadline(seconds, *args, **kwargs):
+        limits.append(seconds)
+        return fail_after(0.01 if seconds == 90 else seconds, *args, **kwargs)
+
+    async def analyze(_chunks, *, rejected=None):
+        if rejected is None:
+            return json.dumps({"findings": [_issue(), {**_issue(), "kind": "冲突"}]}, ensure_ascii=False)
+        try:
+            await anyio.sleep_forever()
+        finally:
+            with anyio.CancelScope(shield=True):
+                await anyio.sleep(0.02)
+                cleaned.append(True)
+
+    monkeypatch.setattr(anyio, "fail_after", short_deadline)
+    monkeypatch.setattr(audit, "_analyze", analyze)
+    result = await audit.review()
+    assert limits == [30, 180, 90] and cleaned == [True]
+    assert result.state["findings"] == [_issue()] and result.state["incomplete"]
+    assert "TimeoutError" in result.text and result.state["covered"] == 0
+
+
+@pytest.mark.anyio
+async def test_source_read_failure_still_notifies_without_saving_progress(brain, monkeypatch):
+    (brain / "MEMORY.md").unlink()
+    monkeypatch.setattr(config, "REFLECT_TARGET", "web:main")
+    monkeypatch.setattr(audit, "_analyze", Mock(side_effect=AssertionError("读失败不能调用模型")))
+    notices = []
+
+    async def push(_platform, _target, text):
+        notices.append(text)
+
+    await scheduler._reflect(push)
+    assert len(notices) == 1 and "未完成" in notices[0]
+    assert not (config.DATA_DIR / "memory-audit.json").exists()

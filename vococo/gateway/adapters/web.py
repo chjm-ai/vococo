@@ -52,7 +52,7 @@ _VERSIONED_ASSETS = (
     "styles.css", "mascot.css", "library.css", "library.js", "tool-card.js",
     # 2026-08-14 前端模块化:从 index.html 拆出的功能块(加载顺序即此顺序)
     "lazy.js", "app-core.js", "mascot.js", "preview.js", "mermaid-11.12.2.min.js", "markdown.js", "sidebar.js", "settings.js", "stats.js",
-    "workbench.js",
+    "workbench.js", "automation-workbench.js",
     "research.js", "stream.js", "notices.js", "agents.js", "find.js", "composer.js", "voice.js",
 )
 _DOC_PREVIEW_MAX = 3 * 1024 * 1024  # 文档预览分屏读文件上限;超过就不读,前端提示下载/自己开
@@ -375,7 +375,9 @@ def _session_metadata(row: dict) -> dict:
     row.setdefault("agent_id", None)
     row.setdefault("project_hash", None)
     row.update(conv=_conv_id_for_key(key), conversation_id=_conv_id_for_key(key),
-               task_id=task["id"] if task else None, job_id=task.get("job_id") if task else None)
+               task_id=task["id"] if task else None, job_id=task.get("job_id") if task else None,
+               relation=task.get("relation", "independent") if task else "independent",
+               parent_session_key=task.get("source_session_key") if task and task.get("relation") == "child" else None)
     return row
 
 
@@ -825,6 +827,10 @@ class WebAdapter:
         if row is None:
             raise web.HTTPNotFound(text="附件不存在或不属于当前会话。")
         filename, content = row
+        if request.query.get("format") == "office":
+            from ..office_preview import office_response
+
+            return await office_response(filename, content)
         return web.Response(body=content, content_type="application/octet-stream", headers={
             "Content-Disposition": "attachment; filename=download; filename*=UTF-8''" + quote(filename, safe=""),
             "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
@@ -3280,12 +3286,18 @@ class WebAdapter:
             size = target.stat().st_size
         except OSError:
             return web.json_response({"error": "读取失败"}, status=500)
-        if size > _DOC_PREVIEW_MAX:
-            return web.json_response({"error": "文件太大(超过 3MB),暂不支持预览"}, status=413)
+        from ..office_preview import EXTENSIONS, MAX_BYTES, office_response
+
+        is_office = target.suffix.lower() in EXTENSIONS
+        limit = MAX_BYTES if is_office else _DOC_PREVIEW_MAX
+        if size > limit:
+            return web.json_response({"error": f"文件太大(超过 {limit // 1024 // 1024}MB),暂不支持预览"}, status=413)
         try:
-            data = target.read_bytes()
+            data = await asyncio.to_thread(target.read_bytes)
         except OSError:
             return web.json_response({"error": "读取失败"}, status=500)
+        if request.query.get("format") == "office":
+            return await office_response(target.name, data)
         ctype, _ = mimetypes.guess_type(target.name)
         resp = web.Response(body=data, headers={"Cache-Control": "no-cache"})
         resp.content_type = ctype or "text/plain"
@@ -3849,7 +3861,7 @@ class WebAdapter:
                 web.get("/library.css", self._handle_library_styles),
                 web.get("/tool-card.js", self._handle_tool_card_js),
                 web.get(
-                    r"/{name:(?:lazy|app-core|mascot|preview|mermaid-11\.12\.2\.min|markdown|sidebar|settings|stats|workbench|research|stream|notices|agents|find|composer|voice|library)\.js}",
+                    r"/{name:(?:lazy|app-core|mascot|preview|mermaid-11\.12\.2\.min|markdown|sidebar|settings|stats|workbench|automation-workbench|research|stream|notices|agents|find|composer|voice|library)\.js}",
                     self._handle_app_js,
                 ),
                 web.get("/favicon.ico", self._handle_favicon),
@@ -3970,11 +3982,12 @@ class WebAdapter:
                 web.get("/doc-preview.html", self._handle_doc_preview_page),
             ]
         )
-        from ...gateway import library_api, task_routes, preview_shares
+        from ...gateway import library_api, task_routes, preview_shares, automation_api
 
         preview_shares.register_routes(app)
         task_routes.register_routes(app)
         library_api.register_routes(app)
+        automation_api.register_routes(app)
         if config.VOICE_ENABLED:  # 实验性语音伴聊模式,见 vococo/voice/
             from ...voice import register_routes as _voice_register_routes
 

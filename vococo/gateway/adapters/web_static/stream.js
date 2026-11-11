@@ -412,6 +412,25 @@ async function loadAuthedImg(im, url, thumb){
   if(o) im.src=o;
 }
 let scrollPending=false, scrollForce=false;
+let followMessageBottom=true, lastMessageScrollTop=0;
+function resetMessageScroll(){
+  followMessageBottom=true;
+  lastMessageScrollTop=$("#messages").scrollTop;
+  messageLayoutObserver.observe($("#wrap"));
+  messageLayoutObserver.observe($("#messages"));
+}
+function trackMessageScroll(){
+  const m=$("#messages"), dist=m.scrollHeight-m.scrollTop-m.clientHeight;
+  const movedUp=m.scrollTop<lastMessageScrollTop;
+  // 布局增长也会产生 scroll 事件，只有实际向上滚动才退出跟随。
+  if(movedUp && dist>=80) followMessageBottom=false;
+  else if(dist<80) followMessageBottom=true;
+  lastMessageScrollTop=m.scrollTop;
+  return movedUp;
+}
+const messageLayoutObserver=new ResizeObserver(()=>{
+  if(followMessageBottom && _wrapConv===S.conv) scrollDown();
+});
 function scrollDown(force){
   scrollForce=scrollForce || !!force;
   if(scrollPending) return;
@@ -421,9 +440,11 @@ function scrollDown(force){
     const force=scrollForce;
     scrollPending=false; scrollForce=false;
     if(_chatAnchor?.conv===S.conv) return;
-    if(force){ m.scrollTop=m.scrollHeight; updateScrollBtn(); return; }
-    const dist=m.scrollHeight - m.scrollTop - m.clientHeight;
-    if(dist < 80) m.scrollTop = m.scrollHeight;  // 距底<80px 才跟滚,否则用户在阅读历史
+    if(force) followMessageBottom=true;
+    if(followMessageBottom){
+      m.scrollTop=m.scrollHeight;
+      lastMessageScrollTop=m.scrollTop;
+    }
     updateScrollBtn();
   });
 }
@@ -523,6 +544,7 @@ function connect(){
     // 重连补回断连期间漏掉的消息(尤其服务端自我重启后注入的系统消息)。force:重连这一刻
     // 恰是最容易出现"流式气泡卡死"的时候(断线期间 done 被环形缓冲挤掉),顺带核对一次。
     reloadHistory(true);
+    taskTree.schedule();
     if(typeof loadNotices==="function") loadNotices();  // 铃铛:补上断线期间的待处理项
     if(!firstOpen) checkShellVersion();
   };
@@ -540,6 +562,7 @@ function connect(){
 function reviveSSE(){
   if(document.hidden) return;
   if(!S.es) connect(); else S.es.reconnectNow();
+  taskTree.schedule();
   loadConvs();                   // 断线期间侧栏本身(新会话/标题/置顶等)也可能变了,一并核对
   reloadHistory(true);          // 强制核对:回前台/回网络时最可能出现"卡在思考中"的漏接
 }
@@ -762,6 +785,7 @@ function flushHistoryRefresh(conv, required=false){
   if(required || S.historyRefreshPending?.[conv]) reloadHistory();
 }
 function handleEvent(e){
+  taskTree.event(e);
   // 必须先拦再写 S.live，否则即使 DOM 不重建，侧栏黄点仍会重新亮起。
   if(S.stopping?.[e.conv]){
     if(["user","done","cancelled"].includes(e.type) || (e.type==="message" && !e.mid_turn)) delete S.stopping[e.conv];

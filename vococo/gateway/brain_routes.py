@@ -35,7 +35,7 @@ def bridge_agent_id() -> str:
     return agent_id
 
 _BLOCKED = (
-    "delegate_to_agent", "dispatch_session", "run_subagent", "add_cron_job",
+    "delegate_to_agent", "dispatch_task", "dispatch_session", "run_subagent", "add_cron_job",
     "update_cron_job", "delete_cron_job", "set_cron_job_enabled", "list_cron_jobs", "suggest_automation",
     "add_mcp_server", "remove_mcp_server", "set_external_mcp", "switch_model",
     "restart_self", "update_agent", "create_agent", "delete_agent", "set_permission",

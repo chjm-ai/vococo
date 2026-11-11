@@ -88,7 +88,7 @@ function agentOwnsConv(a, conv){
 }
 function agentConvs(a){
   return S.convs.filter(c=>{
-    if(!agentOwnsConv(a, c.conv)) return false;
+    if(c.pinned || isChildTask(c) || !agentOwnsConv(a, c.conv)) return false;
     if(S.convFilter==="archived" && !c.archived) return false;
     if(S.convFilter==="active" && c.archived) return false;
     return true;
@@ -103,13 +103,13 @@ function agentConvs(a){
 // 后台任务(语音/会话里派发的)归属:后端记了 agent_id 就挂到那个 Agent 下,无主的归总助理;
 // agent_id 指向已不存在的 Agent 也算无主,别让任务凭空消失
 function agentTasks(a){
-  return ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!t.pinned
+  return ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!isChildTask(t) && !t.pinned
     && ((t.agent_id && agentById(t.agent_id)) ? t.agent_id===a.id : a.id==="general"));
 }
 function agentOwnItems(a){
   const main=S.convs.find(c=>c.conv===a.main_conv)||{conv:a.main_conv};
   const tasks=agentTasks(a);
-  return [main, ...S.convs.filter(c=>agentOwnsConv(a, c.conv)), ...tasks];
+  return [main, ...S.convs.filter(c=>!c.pinned && !isChildTask(c) && agentOwnsConv(a, c.conv)), ...tasks];
 }
 const agentItemBusy=c=>S.live[c.conv] || c.task_status==="queued" || c.task_status==="running";   // 同行内显示橙色闪点的条件
 function agentWorking(a){ return agentOwnItems(a).some(agentItemBusy); }
@@ -437,7 +437,7 @@ function apStatsCard(st){
 
 // 定时:挂在这个 Agent 名下的任务;点行看该任务自己的会话
 function renderApTasks(body, a){
-  const jobs=(S.cronJobs||[]).filter(j=>j.agent_id===a.id);
+  const jobs=(S.cronJobs||[]).filter(j=>!j.pinned && j.agent_id===a.id);
   if(!jobs.length) body.append(apEmpty("还没有定时任务。"));
   for(const j of jobs){
     const row=el("div","aptask"+(S.conv===j.conv?" active":""));

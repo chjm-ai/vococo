@@ -259,6 +259,7 @@ def create_job(
     _bind_job_session(job)
     jobs.append(job)
     save_jobs(jobs)
+    session_store.set_chosen_model(job["conv"], model or "")
     return job
 
 
@@ -340,10 +341,33 @@ def update_job(
         job.pop("mode", None)
         job.pop("command", None)
         job.pop("summarize_prompt", None)
-    job["next_run_at"] = None
+    if schedule != previous_job.get("schedule"):
+        job["next_run_at"] = None
     reset_failures(job)
     save_jobs(jobs)
+    if model is not _UNSET or ownership_changed:
+        # 脚本任务不会经过 Agent 调度入口；编辑时就要同步续聊模型。
+        session_store.set_chosen_model(job["conv"], job.get("model") or "")
     return job
+
+
+@_with_jobs_lock
+def model_for_session(session_key: str) -> str | None:
+    """只读模型，不让无关任务的策略校验或迁移阻断普通聊天。"""
+    try:
+        jobs = json.loads(config.CRON_JOBS_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[cron] 读取续聊模型失败:{exc}", flush=True)
+        return None
+    for job in jobs:
+        conv = job.get("conv") or f"task:{job['id']}"
+        if conv.startswith("cron-task:"):
+            conv = "task:" + conv.removeprefix("cron-task:")
+        if conv == session_key:
+            return job.get("model") or ""
+    return None
 
 
 @_with_jobs_lock
@@ -535,7 +559,7 @@ def _prepare_completion(event) -> None:
     event.silent = quiet
     event.text += notice
     event.title = job.get("name") or event.title
-    _record_agent_run(job, status, event.text, event.metrics, to_main=not quiet)
+    _record_agent_run(job, status, event.text, event.metrics, to_main=not quiet, source_turn_id=event.turn_id)
     target = job.get("target") or {}
     if target.get("platform") and target.get("chat_id") is not None:
         event.copies.append((target["platform"], str(target["chat_id"]), event.text))
@@ -589,6 +613,7 @@ def _track_failure(job: dict, status: str, text: str) -> tuple[bool, str]:
 
 def _record_agent_run(
     job: dict, status: str, text: str, metrics: dict | None, *, to_main: bool = True,
+    source_turn_id: int | None = None,
 ) -> None:
     """挂在某个 Agent 名下:记进动态;to_main 时再复制一份到它的主会话(只落库 + 刷新,不发系统推送)。"""
     if not job.get("agent_id"):
@@ -596,7 +621,7 @@ def _record_agent_run(
     from ..memory import agents
 
     try:
-        agents.record_run(job["agent_id"], job, status, text, metrics=metrics, to_main=to_main)
+        agents.record_run(job["agent_id"], job, status, text, metrics=metrics, to_main=to_main, source_turn_id=source_turn_id)
     except Exception as exc:  # noqa: BLE001 —— 复制失败不影响任务本身
         print(f"[cron] 结果复制到 Agent 主会话失败:{exc}", flush=True)
 
