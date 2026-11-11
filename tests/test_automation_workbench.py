@@ -86,6 +86,28 @@ def test_recent_run_bars_use_latest_real_records_across_all_history(sample):
     assert set(owner['recent_runs'][0]) == {'id', 'ts', 'status'}
 
 
+def test_job_run_bars_are_separate_and_include_old_history(sample):
+    a, b, j, _, _ = sample
+    old = scheduler.create_job(name='很久以前的任务', prompt='隔离测试',
+                               schedule={'kind': 'cron', 'expr': '17 6 * * *'}, agent_id=b['id'])
+    empty = scheduler.create_job(name='尚未运行的任务', prompt='隔离测试',
+                                 schedule={'kind': 'cron', 'expr': '17 6 * * *'}, agent_id=a['id'])
+    ts = time.time() - 30 * 86400
+    c = agents._conn()
+    c.execute('INSERT INTO agent_runs(agent_id,job_id,job_name,ts,status,text) VALUES (?,?,?,?,?,?)',
+              (b['id'], old['id'], old['name'], ts, 'unknown', '不应暴露的正文'))
+    c.commit()
+    jobs = {job['id']: job for job in automation.overview(scheduler.load_jobs())['jobs']}
+    expected = [dict(zip(('id', 'ts', 'status'), row)) for row in c.execute(
+        'SELECT id,ts,status FROM agent_runs WHERE job_id=? ORDER BY ts DESC,id DESC LIMIT 24', (j['id'],))]
+    assert jobs[j['id']]['recent_runs'] == list(reversed(expected))
+    assert jobs[empty['id']]['recent_runs'] == [] and jobs[empty['id']]['runs'] == 0
+    assert jobs[old['id']]['recent_runs'] == [{'id': c.execute('SELECT MAX(id) FROM agent_runs').fetchone()[0],
+                                             'ts': ts, 'status': 'unknown'}]
+    assert jobs[old['id']]['stats']['runs'] == 0 and jobs[old['id']]['runs'] == 1
+    assert '不应暴露的正文' not in json.dumps(jobs)
+
+
 def test_cursor_and_exact_source_no_guessed_nodes(sample):
     a, _, j, tid, artifact = sample
     first = automation.runs(a['id'], j['id'])
@@ -140,6 +162,9 @@ def test_rename_preserves_next_run_and_moved_job_history(sample):
     assert automation.runs(b['id'])['items'] == []
     d = automation.overview(scheduler.load_jobs())
     assert d['jobs'][0]['runs'] == 35
+    expected = [dict(zip(('id', 'ts', 'status'), row)) for row in agents._conn().execute(
+        'SELECT id,ts,status FROM agent_runs WHERE job_id=? ORDER BY ts DESC,id DESC LIMIT 24', (j['id'],))]
+    assert d['jobs'][0]['recent_runs'] == list(reversed(expected))
     changed = scheduler.update_job(j['id'], name='改计划', prompt=j['prompt'],
                                    schedule={'kind': 'interval', 'minutes': 30}, target=None)
     assert changed['next_run_at'] is None

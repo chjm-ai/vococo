@@ -37,10 +37,13 @@ def overview(jobs: list[dict], now: float | None = None) -> dict:
     rows = [dict(zip(('id', 'agent_id', 'job_id', 'ts', 'status', 'tokens', 'duration'), row))
             for row in c.execute('SELECT id,agent_id,job_id,ts,status,tokens,duration FROM agent_runs '
                                  'ORDER BY ts DESC,id DESC')]
-    recent_runs = defaultdict(list)
+    recent_runs, job_runs = defaultdict(list), defaultdict(list)
     for row in rows:
+        mark = {k: row[k] for k in ('id', 'ts', 'status')}
         if len(recent_runs[row['agent_id']]) < 24:
-            recent_runs[row['agent_id']].append({k: row[k] for k in ('id', 'ts', 'status')})
+            recent_runs[row['agent_id']].append(mark)
+        if len(job_runs[row['job_id']]) < 24:
+            job_runs[row['job_id']].append(mark)
     recent = [row for row in rows if now - 7 * 86400 <= row['ts'] <= now]
     by_agent, by_job = defaultdict(list), defaultdict(list)
     for row in recent:
@@ -54,13 +57,13 @@ def overview(jobs: list[dict], now: float | None = None) -> dict:
                'recent_runs': list(reversed(recent_runs[a['id']])),
                'artifacts': artifacts.get(a['id'], 0), 'works': works.get(a['id'], 0)}
               for a in agents.list_agents()]
-    return {'agents': owners, 'jobs': [_public_job(j, metrics(by_job[j['id']]), job_counts[j['id']])
-                                      for j in jobs],
+    return {'agents': owners, 'jobs': [_public_job(j, metrics(by_job[j['id']]), job_counts[j['id']],
+                                                  list(reversed(job_runs[j['id']]))) for j in jobs],
             'stats': metrics(recent), 'runs': len(rows), 'artifacts': sum(artifacts.values()),
             'works': sum(works.values()), 'generated_at': now}
 
 
-def _public_job(job: dict, stats: dict, count: int) -> dict:
+def _public_job(job: dict, stats: dict, count: int, recent_runs: list[dict]) -> dict:
     # 概览不回传 prompt、命令、目录或 webhook 密钥；编辑仍走原接口。
     sch = job.get('schedule') or {}
     safe_schedule = {k: sch[k] for k in ('kind', 'expr', 'at', 'seconds', 'minutes') if k in sch}
@@ -68,7 +71,8 @@ def _public_job(job: dict, stats: dict, count: int) -> dict:
             'agent_id': job.get('agent_id') or '', 'enabled': bool(job.get('enabled')),
             'mode': job.get('mode') or 'agent', 'schedule': safe_schedule,
             'conv': config.conversation_id_for_key(job.get('conv') or 'task:' + job['id']),
-            'last_status': job.get('last_status') or '', 'stats': stats, 'runs': count}
+            'last_status': job.get('last_status') or '', 'stats': stats, 'runs': count,
+            'recent_runs': recent_runs}
 
 
 def runs(agent_id: str, job_id: str = '', before: int = 0, limit: int = 30) -> dict:
