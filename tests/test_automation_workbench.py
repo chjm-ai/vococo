@@ -44,7 +44,7 @@ def sample(isolated, monkeypatch):
     c = agents._conn()
     for i in range(34):
         c.execute('INSERT INTO agent_runs(agent_id,job_id,job_name,ts,status,text) VALUES (?,?,?,?,?,?)',
-                  (a['id'], j['id'], j['name'], time.time(), 'error', f'旧结果 {i}'))
+                  (a['id'], j['id'], j['name'], time.time() - 100 + i, 'error', f'旧结果 {i}'))
     c.commit()
     yield a, b, j, tid, artifact
     if tasks._DB is not None:
@@ -64,6 +64,26 @@ def test_overview_metrics_order_and_no_sensitive_configuration(sample):
     assert not {'prompt', 'command', 'cwd'} & d['jobs'][0].keys()
     j['schedule'] = {'kind': 'webhook', 'secret': 'never-expose'}
     assert 'never-expose' not in json.dumps(automation.overview([j]))
+
+
+def test_recent_run_bars_use_latest_real_records_across_all_history(sample):
+    a, b, j, _, _ = sample
+    c = agents._conn()
+    expected = [dict(zip(('id', 'ts', 'status'), row)) for row in c.execute(
+        'SELECT id,ts,status FROM agent_runs WHERE agent_id=? ORDER BY ts DESC,id DESC LIMIT 24', (a['id'],))]
+    owners = {r['id']: r for r in automation.overview(scheduler.load_jobs())['agents']}
+    assert owners[a['id']]['recent_runs'] == list(reversed(expected))
+    assert owners[a['id']]['recent_runs'][-1]['status'] == 'success'
+    assert owners[b['id']]['recent_runs'] == []
+    # 超过七天的记录仍是最近运行，不能用空白补满或只取统计窗口内的记录。
+    old_ts = time.time() - 30 * 86400
+    c.execute('INSERT INTO agent_runs(agent_id,job_id,job_name,ts,status,text) VALUES (?,?,?,?,?,?)',
+              (b['id'], j['id'], '旧任务', old_ts, 'unknown', '不应进入概览的正文'))
+    c.commit()
+    owner = next(r for r in automation.overview(scheduler.load_jobs())['agents'] if r['id'] == b['id'])
+    assert len(owner['recent_runs']) == 1 and owner['recent_runs'][0]['ts'] == old_ts
+    assert owner['recent_runs'][0]['status'] == 'unknown' and owner['stats']['runs'] == 0
+    assert set(owner['recent_runs'][0]) == {'id', 'ts', 'status'}
 
 
 def test_cursor_and_exact_source_no_guessed_nodes(sample):

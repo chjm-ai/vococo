@@ -13,7 +13,18 @@ const assert=require('node:assert/strict');
     await page.waitForSelector('.awb-owner');
     assert.equal(await page.locator('.awb-owner-toggle').count(),3);
     assert.ok(await page.locator(`[data-owner="${emptyAgent}"]`).evaluate(n=>!n.checkVisibility()),'无任务 Agent 默认折叠');
-    await page.locator(`[data-awb="owner"][data-id="${agent}"]`).click();
+    const recent=page.locator(`[data-owner="${agent}"] .awb-recent`);
+    assert.equal(await recent.locator('.awb-tick').count(),24);
+    assert.equal(await recent.locator('.awb-tick.ok').count(),1);
+    assert.equal(await recent.locator('.awb-tick.error').count(),23);
+    assert.ok((await recent.innerText()).includes('35 运行'));
+    assert.equal(await page.locator(`[data-owner="${emptyAgent}"] .awb-tick`).count(),0);
+    for(const stat of await page.locator('.awb-stats .apstat').all()){
+      assert.equal(await stat.evaluate(n=>getComputedStyle(n).backgroundColor),'rgba(0, 0, 0, 0)','指标内部不再有第二层背景框');
+    }
+    await recent.click();
+    await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===30);
+    await page.locator(`[data-awb="tab"][data-id="${agent}"][data-tab="tasks"]`).click();
     await page.locator(`[data-awb="job-runs"][data-id="${job}"]`).click();
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===30);
     await page.locator(`[data-awb="more"][data-id="${agent}"]`).click();
@@ -53,6 +64,7 @@ const assert=require('node:assert/strict');
       await page.emulateMedia({colorScheme:theme});
       for(const width of [1440,1280,768,390,375,320]){
         await page.setViewportSize({width,height:1000});
+        await page.evaluate(width=>{setSidebarCollapsed(width<=760);closeSidebar();},width);
         assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'页面不横向溢出 '+width);
         assert.ok(await page.locator('#wbContent').evaluate(n=>n.scrollWidth<=n.clientWidth+1),'工作台不横向溢出 '+width);
         await page.locator(`[data-awb="menu"][data-id="${job}"]`).click();
@@ -60,7 +72,7 @@ const assert=require('node:assert/strict');
         const box=await page.locator('.convmenu').boundingBox();
         assert.ok(box.x>=0 && box.x+box.width<=width+1,'菜单位于可视区 '+width);
         await page.keyboard.press('Escape');
-        if([1440,390].includes(width)) await page.screenshot({path:output+'/workbench-'+theme+'-'+width+'.png',fullPage:true});
+        if([1440,390].includes(width)) await page.screenshot({path:output+'/workbench-'+theme+'-'+width+'.png',fullPage:true,animations:'disabled'});
       }
     }
     await page.locator('[data-awb="todos"]').click();await page.waitForSelector('[data-open-automation]');
@@ -93,7 +105,9 @@ const assert=require('node:assert/strict');
     await page.locator(`[data-awb="tab"][data-id="${agent}"][data-tab="tasks"]`).click();
     await page.locator(`[data-awb="menu"][data-id="${job}"]`).click();
     await page.getByRole('menuitem',{name:'复制到…',exact:true}).click();
+    const copiedAgents=page.waitForResponse(r=>new URL(r.url()).pathname==='/agents');
     await page.locator('.convmenu button').filter({hasText:'乙 Agent'}).click();
+    await (await copiedAgents).finished();
     await page.waitForFunction(()=>AWB.data.jobs.length===3 && !AWB.loading);
     await page.locator(`[data-awb="menu"][data-id="${job}"]`).click();
     await page.getByRole('menuitem',{name:'移动到…',exact:true}).click();

@@ -34,8 +34,13 @@ def _artifact_groups() -> dict:
 def overview(jobs: list[dict], now: float | None = None) -> dict:
     now = time.time() if now is None else now
     c = agents._conn()
-    rows = [dict(zip(('agent_id', 'job_id', 'ts', 'status', 'tokens', 'duration'), row))
-            for row in c.execute('SELECT agent_id,job_id,ts,status,tokens,duration FROM agent_runs')]
+    rows = [dict(zip(('id', 'agent_id', 'job_id', 'ts', 'status', 'tokens', 'duration'), row))
+            for row in c.execute('SELECT id,agent_id,job_id,ts,status,tokens,duration FROM agent_runs '
+                                 'ORDER BY ts DESC,id DESC')]
+    recent_runs = defaultdict(list)
+    for row in rows:
+        if len(recent_runs[row['agent_id']]) < 24:
+            recent_runs[row['agent_id']].append({k: row[k] for k in ('id', 'ts', 'status')})
     recent = [row for row in rows if now - 7 * 86400 <= row['ts'] <= now]
     by_agent, by_job = defaultdict(list), defaultdict(list)
     for row in recent:
@@ -46,6 +51,7 @@ def overview(jobs: list[dict], now: float | None = None) -> dict:
     artifacts, works = _artifact_groups(), library.visible_counts()
     owners = [{**{k: a[k] for k in ('id', 'name', 'avatar', 'main_conv')},
                'stats': metrics(by_agent[a['id']]), 'runs': counts[a['id']],
+               'recent_runs': list(reversed(recent_runs[a['id']])),
                'artifacts': artifacts.get(a['id'], 0), 'works': works.get(a['id'], 0)}
               for a in agents.list_agents()]
     return {'agents': owners, 'jobs': [_public_job(j, metrics(by_job[j['id']]), job_counts[j['id']])

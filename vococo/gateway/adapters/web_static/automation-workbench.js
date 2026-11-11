@@ -63,11 +63,21 @@ function awbMatches(j){
   if(AWB.filter==="error") return awbStatus(j)[0]==="error";
   return true;
 }
+function awbRecentRuns(a){
+  const runs=a.recent_runs||[],latest=runs.at(-1);
+  const marks=runs.map(r=>{
+    const status=r.status.startsWith("success")?"ok":r.status.startsWith("error")||r.status==="failed"?"error":"unknown";
+    const label=status==="ok"?"调度成功":status==="error"?"运行异常":"状态未确认";
+    return '<span class="awb-tick '+status+'" title="'+esc(awbTime(r.ts)+' · '+label)+'"></span>';
+  }).join("");
+  return '<button type="button" class="awb-recent" data-awb="all-runs" data-id="'+esc(a.id)+'" aria-label="查看 '+esc(a.name)+' 的运行记录" title="最近 '+runs.length+' 次运行，从左到右由旧到新；绿色为调度成功，红色为异常，灰色为未确认">'+
+    (marks?'<span class="awb-spark" aria-hidden="true">'+marks+'</span>':"")+'<small>'+awbNumber(a.runs)+' 运行 · '+(latest?awbTime(latest.ts):"暂无记录")+'</small></button>';
+}
 function awbOwner(a,jobs){
   const tab=AWB.tabs.get(a.id)||{tab:"tasks",job:""}, open=AWB.open.has(a.id);
   return '<section class="awb-owner" data-owner="'+esc(a.id)+'"><div class="awb-owner-row">'+
     '<button type="button" class="awb-owner-toggle" data-awb="owner" data-id="'+esc(a.id)+'" aria-expanded="'+open+'">'+avatarSvg(a.avatar)+
-    '<span><strong>'+esc(a.name)+'</strong><small>'+jobs.length+' 定时任务 · '+awbNumber(a.runs)+' 运行</small></span><span class="awb-chevron">'+(open?"⌄":"›")+'</span></button>'+
+    '<span><strong>'+esc(a.name)+'</strong><small>'+jobs.length+' 定时任务</small></span><span class="awb-chevron">'+(open?"⌄":"›")+'</span></button>'+awbRecentRuns(a)+
     '<span class="awb-owner-metrics">'+esc(awbMetricText(a.stats))+'</span>'+awbButton("products",a.artifacts+' 附件 · '+a.works+' 作品',a.id,"awb-link")+'</div>'+
     (open?'<div class="awb-owner-body"><nav class="wb-switch awb-tabs" aria-label="'+esc(a.name)+' 工作内容">'+
       [["tasks","定时任务"],["runs","运行"],["products","产出"]].map(([v,t])=>'<button type="button" data-awb="tab" data-id="'+esc(a.id)+'" data-tab="'+v+'" class="'+(tab.tab===v?"on":"")+'">'+t+'</button>').join("")+ '</nav>'+awbOwnerBody(a,jobs,tab)+'</div>':"")+ '</section>';
