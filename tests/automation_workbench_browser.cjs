@@ -60,9 +60,21 @@ const assert=require('node:assert/strict');
     const countBefore=await page.evaluate(()=>WB_DATA.tasks.length);
     await page.keyboard.press('Space');await page.keyboard.press('Delete');
     assert.equal(await page.evaluate(()=>WB_DATA.tasks.length),countBefore,'旧待办快捷键不生效');
+    // 仅在浏览器内增加长短内容样本，验证跨行列对齐，不写入任何业务数据。
+    await page.evaluate(agent=>{
+      window.awbLayoutOriginal=AWB.data; AWB.data=structuredClone(AWB.data);
+      const base=AWB.data.agents.find(a=>a.id===agent),job=AWB.data.jobs.find(j=>j.agent_id===agent);
+      for(const [i,name] of ['短名称','用于验证长名称和长指标的 Agent'].entries()){
+        const id='layout-'+i;
+        AWB.data.agents.push({...structuredClone(base),id,name,artifacts:i?12345:0,works:i?987:0,
+          stats:{...base.stats,tokens:i?123456789:12,median_duration:i?678.9:1}});
+        AWB.data.jobs.push({...job,id:'layout-job-'+i,agent_id:id});
+      }
+      renderAutomationWorkbench();
+    },agent);
     for(const theme of ['dark','light']){
       await page.emulateMedia({colorScheme:theme});
-      for(const width of [1440,1280,768,390,375,320]){
+      for(const width of [1440,1280,1041,1040,768,390,375,320]){
         await page.setViewportSize({width,height:1000});
         await page.evaluate(width=>{setSidebarCollapsed(width<=760);closeSidebar();},width);
         assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'页面不横向溢出 '+width);
@@ -72,9 +84,15 @@ const assert=require('node:assert/strict');
         const box=await page.locator('.convmenu').boundingBox();
         assert.ok(box.x>=0 && box.x+box.width<=width+1,'菜单位于可视区 '+width);
         await page.keyboard.press('Escape');
+        const columns=await page.evaluate(()=>{
+          const rows=[...document.querySelectorAll('#awbOwners>.awb-owner .awb-owner-row')];
+          return ['.awb-recent','.awb-owner-metrics','.awb-link'].map(selector=>rows.map(r=>r.querySelector(selector)).filter(n=>n.checkVisibility()).map(n=>n.getBoundingClientRect().x));
+        });
+        for(const xs of columns) if(xs.length) assert.ok(Math.max(...xs)-Math.min(...xs)<=1,'跨行列起点对齐 '+width+' '+JSON.stringify(xs));
         if([1440,390].includes(width)) await page.screenshot({path:output+'/workbench-'+theme+'-'+width+'.png',fullPage:true,animations:'disabled'});
       }
     }
+    await page.evaluate(()=>{AWB.data=window.awbLayoutOriginal;delete window.awbLayoutOriginal;renderAutomationWorkbench();});
     await page.locator('[data-awb="todos"]').click();await page.waitForSelector('[data-open-automation]');
     await page.locator('[data-open-automation]').click();await page.waitForSelector('#awbSearch');
     await page.fill('#awbSearch','不存在的关键词');
@@ -119,6 +137,6 @@ const assert=require('node:assert/strict');
     await page.locator(`[data-awb="more"][data-id="${emptyAgent}"]`).click();
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===35);
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({ok:true,widths:6,themes:2,history:35,nodes:3,management:true}));
+    console.log(JSON.stringify({ok:true,widths:8,themes:2,history:35,nodes:3,management:true,aligned:true}));
   }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1);});
