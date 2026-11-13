@@ -672,24 +672,13 @@ def _source_agent_id(context_session_key: str | None) -> str | None:
     return a["id"] if a and a["id"] != agents.GENERAL_ID else None
 
 
-def _task_agent_id(explicit_cwd: str | None, context_session_key: str | None) -> str | None:
-    """任务归哪个 Agent:显式指定的 cwd 落在某个项目 Agent 的工作目录里(本身或子目录,取最近的一层)→ 归它;
-    否则归派发来源会话的 Agent。
+def _task_agent_id(reference: str | None, context_session_key: str | None) -> str:
+    """执行目录不决定身份；只有显式指定目标才切换 Agent。"""
+    from ..memory import agents
 
-    2026-10-01 修:原来只看来源会话,在「vococo 开发」里派去面料外贸目录干活的任务,
-    带的是 vococo 开发的设定/技能/MCP,外贸的 lemlist 等工具全拿不到。"""
-    if explicit_cwd:
-        from ..memory import agents, projects
-
-        try:
-            p = Path(projects.normalize_project_path(explicit_cwd))
-            for d in (p, *p.parents):
-                a = agents.by_project_hash(projects.project_hash(str(d)))
-                if a and a["id"] != agents.GENERAL_ID:
-                    return a["id"]
-        except Exception:  # noqa: BLE001 —— 认不出就回落来源会话
-            pass
-    return _source_agent_id(context_session_key)
+    if reference:
+        return delegation.resolve(reference)["id"]
+    return _source_agent_id(context_session_key) or agents.GENERAL_ID
 
 
 def _reconcile_research_usage(row: dict, state: dict | None = None) -> None:
@@ -712,6 +701,7 @@ def dispatch(
     context_session_key: str | None = None,
     session_key: str | None = None,
     job_id: str | None = None,
+    agent: str | None = None,
 ) -> dict:
     """落库 + 尝试立即起跑(并发满则排队)。立即返回任务行,不等待执行。
 
@@ -721,25 +711,29 @@ def dispatch(
     必须在 _maybe_start_next() 真正起跑前写进 session_meta.chosen_model,
     _run()/_drive() 才能读到(见 _drive 里的 get_chosen_model)。
     origin/task_id/session_key/job_id 透传给 tasks.create()；规则、任务和会话身份独立。
-    context_session_key:当前对话 key;cwd 未指定时按该会话匹配具体项目,匹配不到回落
-    默认项目。最终落库的是项目根,执行时再由 _run() 创建任务专属 worktree。
+    agent:显式指定名称或 ID 才切换，否则继承来源 Agent；cwd 不改变身份。
+    context_session_key:当前对话 key;cwd 未指定时，显式目标使用其工作目录，
+    否则按来源会话匹配项目。执行时再由 _run() 创建任务专属 worktree。
     """
     from ..gateway import clarify
 
     source = clarify.get_context()
     context_session_key = source.session_key if source else context_session_key
+    from ..memory import agents
+
+    target_id = _task_agent_id(agent, context_session_key)
+    access = tasks.capture_source_access(context_session_key) if context_session_key else {}
+    if access.get("remote_brain") and target_id != _task_agent_id(None, context_session_key):
+        raise ValueError("远程 MCP 来源不能切换派发 Agent")
+    target = agents.get(target_id)
     cwd_explicit = bool((cwd or "").strip())
-    cwd = config.resolve_execution_root(session_key=context_session_key, cwd=cwd)
-    options = {"cwd": cwd, "cwd_explicit": cwd_explicit,
+    cwd = config.resolve_execution_root(
+        session_key=context_session_key, cwd=cwd or (target.get("workdir") if agent else None))
+    options = {"cwd": cwd, "cwd_explicit": cwd_explicit or bool(agent),
                "dispatch_platform": dispatch_platform, "dispatch_chat_id": dispatch_chat_id,
                "origin": origin, "task_id": task_id,
                "session_key": session_key, "job_id": job_id,
-               "agent_id": _task_agent_id(cwd if cwd_explicit else None, context_session_key)}
-    # 远程 MCP(remote_brain)来源的任务，归属显式传下去：就是来源会话所属的那个 Agent
-    # (经 chatgpt 的 continue_session 派单时即目标 Agent)，而不是按 cwd 反猜或落到总助理。
-    if context_session_key and tasks.capture_source_access(context_session_key).get("remote_brain") is True:
-        options["agent_id"] = _source_agent_id(context_session_key) or options["agent_id"]
-    access = tasks.capture_source_access(context_session_key) if context_session_key else {}
+               "agent_id": target_id}
     if access.get("chain_session"):
         task = delegation.create_related_task(context_session_key, title, prompt, **options)
     else:

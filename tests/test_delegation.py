@@ -499,7 +499,8 @@ async def test_alternative_dispatch_cannot_reset_chain_or_bypass_source(env):
         assert clarify.current() is None
         with pytest.raises(ValueError, match="祖先"):
             runner.dispatch("同 Agent 派生", "不能借新会话重置", origin="chat")
-        child = runner.dispatch("普通派发到 C", "完整背景", cwd=env.c["workdir"], origin="chat")
+        child = runner.dispatch("普通派发到 C", "完整背景", cwd=env.c["workdir"],
+                                agent=env.c["id"], origin="chat")
         env.children.append(child["id"])
         assert d.get(child["id"])["depth"] == 2
         assert json.loads(child["source_access"])["mode"] == "standard"

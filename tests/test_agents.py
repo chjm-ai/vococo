@@ -265,26 +265,18 @@ def test_skills_and_mcp_lists(env):
     assert agents.runtime_for_session(None) == dict.fromkeys(agents.RUNTIME_KEYS)
 
 
-def test_dispatch_explicit_cwd_belongs_to_that_agent(env, tmp_path):
-    """显式 cwd 是某个 Agent 的工作目录 → 任务归那个 Agent,不归派发来源会话的 Agent(2026-10-01 修)。"""
+def test_dispatch_agent_defaults_to_source_and_resolves_explicit_target(env):
     from vococo.core import task_runner
 
-    src = agents.by_project_hash(projects.project_hash(str(env)))
-    other_dir = tmp_path / "trade"
-    other_dir.mkdir()
-    other = agents.create("外贸", str(other_dir))
+    src = agents.create("开发", str(env))
+    other = agents.create("外贸")
     src_key = f"web:p{src['project_hash']}:c1"
-    assert task_runner._task_agent_id(str(other_dir), src_key) == other["id"]
-    sub = other_dir / "报价单"
-    sub.mkdir()
-    assert task_runner._task_agent_id(str(sub), src_key) == other["id"]  # 子目录也归它
-    # 不传 cwd / cwd 不是任何 Agent 的目录 → 仍按来源会话
     assert task_runner._task_agent_id(None, src_key) == src["id"]
-    stray = tmp_path / "stray"
-    stray.mkdir()
-    assert task_runner._task_agent_id(str(stray), src_key) == src["id"]
-    # 来源是全局主会话、cwd 也不指向 Agent → 无主
-    assert task_runner._task_agent_id(None, config.SESSION_KEY) is None
+    assert task_runner._task_agent_id(other["name"], src_key) == other["id"]
+    assert task_runner._task_agent_id(other["id"], src_key) == other["id"]
+    assert task_runner._task_agent_id(None, config.SESSION_KEY) == agents.GENERAL_ID
+    with pytest.raises(ValueError, match="不存在"):
+        task_runner._task_agent_id("不存在的 Agent", src_key)
 
 
 def test_delete_agent_archives_and_hides(env):
