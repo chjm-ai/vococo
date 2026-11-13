@@ -84,6 +84,18 @@ const assert=require('node:assert/strict');
     await page.waitForTimeout(250);
     assert.equal(await page.evaluate(()=>S.conv),task);
     assert.equal(await page.evaluate(()=>S.surface),'chat');
+    const main=await page.evaluate(owner=>{
+      const a=agentById(owner);
+      S.sideTab='agents'; S.expanded.add(agentKey(a)); renderConvs();
+      const row=document.querySelector('.agmain[data-conv="'+a.main_conv+'"]');
+      if(!row || row.querySelector('.ct').textContent!=='主会话')
+        throw new Error('Agent 固定首行必须显示主会话');
+      row.click();
+      return a.main_conv;
+    },owner);
+    await page.waitForFunction(main=>S.conv===main && S.surface==='chat' && !S.histLoading,main);
+    await page.evaluate(owner=>openAgentMain(agentById(owner)),owner);
+    assert.equal(await page.evaluate(()=>S.conv),main,'再次点 Agent 不得创建新聊天');
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({ok:true}));
   }finally{await browser.close();}

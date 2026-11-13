@@ -488,8 +488,7 @@ def test_agent_row_state_covers_main_children_and_tasks():
 
 
 def test_agent_expanded_lists_main_conversation_first():
-    """展开 Agent 后第一行是「新聊天」，排在任务前面。
-    点 Agent 行本身也开新聊天；没有子项时不显示展开箭头。"""
+    """展开 Agent 后第一行保留「主会话」，点 Agent 本身也恢复同一主会话。"""
     js = STATIC_AGENTS.read_text(encoding="utf-8")
     row = js[js.index("function renderAgentGroup(") : js.index("function buildAgentMainRow(")]
     after_open = row[row.index("if(!open) return;") :]
@@ -501,10 +500,11 @@ def test_agent_expanded_lists_main_conversation_first():
     assert "visibility:hidden" in _declarations(styles, ".projgrp.agrow .pgcaret.agnone")
 
     main_row = js[js.index("function buildAgentMainRow(") : js.index("function openAgentMain(")]
-    assert '"新聊天"' in main_row and "openAgentMain(a)" in main_row
-    open_main = js[js.index("function openAgentMain(") : js.index("function openAgentMain(") + 180]
-    assert 'openCallView({agentId:a.id, fresh:true})' in open_main
-    assert "openConvMenu" not in main_row   # 新聊天入口不是已有会话，不给归档/删除菜单
+    assert '"主会话"' in main_row and '"新聊天"' not in main_row and "openAgentMain(a)" in main_row
+    open_main = js[js.index("function openAgentMain(") : js.index("function openAgentMain(") + 100]
+    assert 'openConv(a.main_conv)' in open_main
+    assert 'openCallView' not in open_main
+    assert "openConvMenu" not in main_row   # 固定主会话不给归档/删除菜单
     assert 'ic("star")' not in main_row     # 主人定案:和子会话同款,不加星标
 
     # 默认露 5 行 = 主会话 + 4 个子会话,其余折进「展开更多」
