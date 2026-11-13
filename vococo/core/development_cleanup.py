@@ -234,8 +234,14 @@ def _identity(path: Path) -> str:
 def _fingerprint(path: Path, sessions: list[dict], activity: float) -> str:
     # 目录 mtime 不能代表闲置；连干净文件被手工改后还原的情况也要重新计时。
     tracked = (path / name for name in _git(path, "ls-files", "-z").split("\0") if name)
-    stamps = [(str(file.relative_to(path)), file.lstat().st_mtime_ns, file.lstat().st_ctime_ns)
-              for file in tracked]
+    stamps = []
+    for file in tracked:
+        try:
+            info = file.lstat()
+            stamps.append((str(file.relative_to(path)), info.st_mtime_ns, info.st_ctime_ns))
+        except FileNotFoundError:
+            # 跟踪文件被删除是未提交成果，不是巡检故障；Git 状态检查仍会阻止回收。
+            stamps.append((str(file.relative_to(path)), None, None))
     history = [hashlib.sha256(content).hexdigest() for content in _reflogs(path)]
     values = [_identity(path), _git(path, "rev-parse", "HEAD"), activity, stamps, history,
               sorted(_private_commits(path)), sorted((row["key"], row["activity"]) for row in sessions)]

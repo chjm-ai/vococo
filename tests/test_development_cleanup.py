@@ -54,6 +54,19 @@ def add_worktree(root: Path, name="test"):
     return key, path
 
 
+@pytest.mark.anyio
+async def test_deleted_tracked_file_is_preserved_instead_of_failing_inspection(repository):
+    root, clock = repository
+    key, path = add_worktree(root)
+    (path / "file.txt").unlink()
+    rows = await cleanup.sweep()
+    assert "有未提交或未跟踪成果" in rows[0]["reason"]
+    assert "失败" not in rows[0]["reason"]
+    clock[0] += 365 * 86400
+    assert not (await cleanup.sweep())[0]["removed"]
+    assert path.exists() and session_store.get_worktree(key) == str(path)
+
+
 async def observe_new(root):
     assert await cleanup.sweep() == []
     key, path = add_worktree(root)

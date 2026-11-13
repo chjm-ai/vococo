@@ -275,6 +275,10 @@ async def test_initializing_worktree_has_additional_grace(isolated, old):
 
 @pytest.mark.anyio
 async def test_sweep_loop_isolated_failure_does_not_stop_service(isolated, monkeypatch):
+    from vococo.core import storage_maintenance
+    called = []
+    monkeypatch.setattr(storage_maintenance, "maintain", lambda *args, **kwargs: called.append(args))
+
     async def failed():
         raise ValueError("失败必须保留目录")
 
@@ -286,3 +290,4 @@ async def test_sweep_loop_isolated_failure_does_not_stop_service(isolated, monke
     monkeypatch.setattr(cleanup.asyncio, "sleep", stop)
     with pytest.raises(asyncio.CancelledError):
         await cleanup.sweep_loop()
+    assert len(called) == 1

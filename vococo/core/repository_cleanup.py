@@ -189,10 +189,24 @@ async def sweep() -> list[dict]:
     return results
 
 
+def _storage_worktrees(results: list[dict]) -> list[Path]:
+    paths = []
+    for row in results:
+        value = row.get("path")
+        if not isinstance(value, str) or not value:
+            continue
+        path = Path(value)
+        if path.is_absolute() and any(parent.name == "worktrees" and parent.parent.name == "data"
+                                      for parent in path.parents):
+            paths.append(path)
+    return paths
+
+
 async def sweep_loop() -> None:
     # 不阻塞启动；服务自带每日纯代码巡检，不派模型、不产生新工作副本。
     await asyncio.sleep(60)
     while True:
+        results = []
         try:
             results = await sweep()
             from . import development_cleanup
@@ -205,4 +219,13 @@ async def sweep_loop() -> None:
                             sum(not r["removed"] for r in results))
         except Exception:
             logger.exception("仓库巡检失败，已保留文件")
+        try:
+            from . import storage_maintenance
+
+            await asyncio.to_thread(
+                storage_maintenance.maintain, config.DATA_DIR, worktrees=_storage_worktrees(results),
+                repositories=config.AGENT_WORKSPACES_DIR.expanduser().absolute() / ".repositories",
+            )
+        except Exception:
+            logger.exception("存储养护失败，已保留文件")
         await asyncio.sleep(_DAY)
