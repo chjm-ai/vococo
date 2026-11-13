@@ -111,7 +111,7 @@ async def git_status(cwd: str) -> dict:
 
 def _session_repositories(session_key: str, agent: dict) -> list[dict]:
     from .. import config
-    from ..core.business_repositories import copies_for_session, repository_sources
+    from ..core.business_repositories import copy_for_source, session_sources
     from ..memory import session_store
 
     repositories = []
@@ -119,9 +119,9 @@ def _session_repositories(session_key: str, agent: dict) -> list[dict]:
         source = config.project_root_for(session_key) or agent["workdir"]
         repositories.append({"project_path": str(Path(source).resolve()),
                              "path": session_store.get_worktree(session_key)})
-    for source in repository_sources(agent):
+    for source in session_sources(agent, session_key):
         try:
-            binding, = copies_for_session({**agent, "repositories": [source], "links": []}, session_key)
+            binding = copy_for_source(agent["id"], session_key, source)
             if source not in agent.get("repositories", []) and not binding.checkout.exists():
                 continue  # 尚未执行的关联仓库继续展示原目录状态，不隐式创建副本。
             row = {"project_path": str(binding.source), "path": str(binding.checkout)}

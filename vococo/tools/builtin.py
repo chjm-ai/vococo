@@ -64,10 +64,11 @@ def _library_result(text: str, receipt: dict) -> dict:
 
 @tool(
     "prepare_repository",
-    "按需创建或复用当前会话的关联仓库副本，仅准备 path 指定的原仓库。"
-    "普通聊天、读取资料、运行已有技能不需要调用；修改、构建或提交关联仓库前先调用，"
+    "按需创建或复用当前会话的仓库隔离副本，仅准备 path 指定的原仓库。"
+    "普通聊天、读取资料、运行已有技能不需要调用；修改、构建或提交仓库前先调用，"
     "成功后使用返回的副本路径。保留原仓库未提交改动，不拉远端、不推送。"
-    "path 必须是当前任务原项目或当前 Agent 关联仓库的绝对路径。聊天不可调用；失败不得回退原仓库修改。",
+    "path 为目标原仓库的绝对路径，不要求关联：完全访问直接准备，标准权限由工具按需请求审批。"
+    "无需先询问主人到设置里关联；授权仅用于本会话，不改变长期关联。聊天不可调用；失败不得回退原仓库修改。",
     {"path": str},
 )
 async def prepare_repository(args: dict) -> dict:
@@ -93,9 +94,9 @@ async def prepare_repository(args: dict) -> dict:
             return {**_ok("工作树准备失败，禁止回退到主仓库修改。"), "isError": True}
         return _ok(f"仓库副本已就绪：{checkout}\n原目录：{root}")
     try:
+        source, authorization = await business_repositories.authorize_source(key, source)
         binding = await asyncio.to_thread(
-            business_repositories.prepare_for_session,
-            danger.current_session_key(), (args.get("path") or "").strip(),
+            business_repositories.prepare_for_session, key, source, authorization,
         )
     except subprocess.TimeoutExpired:
         return {**_ok("仓库副本准备超时，未报告为可用；原始错误未被清理失败覆盖。"
@@ -1612,13 +1613,16 @@ async def generate_image(args: dict) -> dict:
     "title:20 字以内短名;prompt:完整任务描述(新会话看不到当前对话,必须把要做的事"
     "和必要的背景信息都写进去,不能只写「继续上面的」这种当前会话里才懂的话);"
     "cwd:要在哪个项目目录下干活,不传则跟随当前对话绑定的项目(不绑定项目就落到"
-    "vococo 自己的仓库),同样走 worktree 隔离,不会碰主目录。",
+    "vococo 自己的仓库),同样走 worktree 隔离,不会碰主目录。"
+    "agent:可选的 Agent 名称或唯一 ID；默认继承当前 Agent，cwd 不改变身份。"
+    "只有用户指定或明确需要专门 Agent 时才传；AI 自选时说明原因。",
     {
         "type": "object",
         "properties": {
             "title": {"type": "string"},
             "prompt": {"type": "string"},
             "cwd": {"type": "string"},
+            "agent": {"type": "string"},
         },
         "required": ["title", "prompt"],
     },
@@ -1637,11 +1641,14 @@ async def dispatch_session(args: dict) -> dict:
     cwd = (args.get("cwd") or "").strip() or None
     dispatch_platform = ctx.adapter.platform if (ctx and ctx.adapter) else None
     dispatch_chat_id = str(ctx.chat_id) if (ctx and ctx.chat_id is not None) else None
-    task = task_runner.dispatch(
-        title=title, prompt=prompt, cwd=cwd,
-        dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
-        origin="chat", context_session_key=ctx.session_key if ctx else None,
-    )
+    try:
+        task = task_runner.dispatch(
+            title=title, prompt=prompt, cwd=cwd, agent=(args.get("agent") or "").strip() or None,
+            dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
+            origin="chat", context_session_key=ctx.session_key if ctx else None,
+        )
+    except (ValueError, TypeError) as exc:
+        return _ok(f"派发失败:{exc}")
     from ..core import tasks
 
     key = tasks.session_key(task["id"])

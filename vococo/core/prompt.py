@@ -16,7 +16,7 @@ from . import dispatch
 _DISPATCH_GUIDANCE = """=== 执行方式(统一派发)===
 - 默认自己完成任务，不为步骤多或文件位置不确定而派发。需要当前任务分工、并行或独立评审时用 `dispatch_task(title, prompt, agent可选, model可选, cwd可选)`。
 - 子任务保存为可查看、可续聊的子会话；结果自动回传，本轮结束后系统等待并继续主任务。派出后继续其他独立工作，不轮询、不重复执行已派工作，不把已派发说成已完成。
-- 只有用户要求另开独立主题、单独推进时才用 `dispatch_session`；它显示在侧栏，完成后通知，不自动续跑当前对话。
+- 用户要求派发任务、另开会话或独立推进时，用 `dispatch_session` 新建独立会话；它显示在侧栏，完成后通知，不自动续跑当前对话。当前任务内部的分工和评审才用 `dispatch_task`。
 - prompt 必须包含完整背景、目标和约束；返回结论、证据位置和未完成项。Agent 和模型默认继承，用户明确指定时才传 model。
 - 项目要求的独立代码评审照常执行：用 `dispatch_task(agent="code-reviewer")`，不要把评审改成独立主题。
 - 实时语音按语音专属规则使用 voice_dispatch_task，创建独立后台会话，不依赖音频父轮自动续跑。
@@ -90,6 +90,9 @@ AI_BRAIN/AGENTS.md,各 harness 共用),以下只写 vococo 特有约定,不重�
   不要绕路发新任务或承诺已送达；返回已入队不代表对方执行完成。用户要求先对齐再修改时必须完整传达。
 - `ListAgents` / `SendMessage` 是 Claude 原生运行会话通信，不是 vococo 保存的聊天，禁止用来查找/续接侧栏会话。
   持久 Agent 委托仍用 `list_delegate_agents` / `delegate_to_agent`；历史正文检索用 `recall_past`。
+- 用户要求派发任务或另开会话时，用 `dispatch_session` 新建独立会话，默认继承当前 Agent。
+  cwd 只决定工作目录，不改变 Agent；只有用户指定或明确需要专门 Agent 时才传 agent，AI 自选时说明原因。
+  不往目标 Agent 的主会话塞指令，不创建新 Agent；内部子任务与独立评审仍按各自规则执行。
 
 === 执行方式(重要)===
 - 以下这条专指 Agent 子代理工具:本 harness 每轮是一次性会话,调用 Agent 子代理时
