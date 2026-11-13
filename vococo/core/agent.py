@@ -276,8 +276,10 @@ class VideoAttachment:
 # 不路由,是真独立的 Pro 档(单价约 4 倍),别把它当 Flash 的别名。旧名
 # deepseek-chat/deepseek-reasoner 虽也路由到 deepseek-flash,但作为已弃用别名不登记,
 # 按 200k 保守兜底。
-# GPT 现役与旧版统一按用户要求放到 1M，自动压缩仍在 65%（650k）触发。
-# 这是本地预算，不保证代理实际支持；遇到超窗错误可在模型设置单独覆盖窗口。
+# gpt-5.6 三档(Sol/Terra/Luna)官方 API 直连可达 1.05M input / 128k output；但当前
+# Codex 本机模型目录均标 272k，并要求预留 5% 自动压缩空间，实际可用 258,400。
+# GPT-6 官方同为 1.05M / 128k；当前代理没有上下文元数据，先按 500k 逐步放量，
+# 自动压缩会在 65%（325k）触发。有超窗错误再回退，实测稳定后再考虑继续提高。
 _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-fable-5-1": 1_000_000,
     "claude-opus-5-5": 1_000_000,
@@ -288,9 +290,8 @@ _CONTEXT_WINDOWS: dict[str, int] = {
     "deepseek-flash": 1_000_000,
     "deepseek-v4": 1_000_000,
     "kimi-k3": 1_000_000,
-    "gpt-6": 1_000_000,
-    "gpt-5.6": 1_000_000,
-    "gpt-5.5": 1_000_000,
+    "gpt-6": 500_000,
+    "gpt-5.6": 258_400,
 }
 
 
