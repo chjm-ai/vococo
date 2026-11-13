@@ -314,6 +314,7 @@ async def _untracked_diff(cwd: str) -> str:
 
 def build_tools(session: str, denied=(), capabilities: dict | None = None, *, parent_cwd: str | None = None):
     def create(name, relation, description):
+        description += " Agent 默认继承当前会话，cwd 只决定目录、不改变身份；只有用户指定或明确需要专门 Agent 时才传 agent（名称或唯一 ID），AI 自选时说明原因。"
         @tool(name, description, {"type": "object", "properties": {
             key: {"type": "string"} for key in ("title", "prompt", "agent", "model", "cwd")},
             "required": ["title", "prompt"], "additionalProperties": False})
@@ -339,7 +340,7 @@ def build_tools(session: str, denied=(), capabilities: dict | None = None, *, pa
                 return _reply({"error": str(exc)})
         return invoke
     return [create("dispatch_task", "child", "为当前任务派子任务。保存子会话、可查看进度与续聊，不占侧栏；完成后主任务自动继续。完整背景放 prompt；Agent/模型默认继承。派发后可继续其他工作，本轮结束由系统等待并汇总，不要轮询或重复派发。"),
-            create("dispatch_session", "independent", "另开独立会话推进新主题，显示在侧栏；完成通知，不自动续跑当前对话。仅用户要求独立推进时使用；当前任务分工请用 dispatch_task。")]
+            create("dispatch_session", "independent", "另开独立会话推进新主题，显示在侧栏；完成通知，不自动续跑当前对话。用户要求派发任务、另开会话或独立推进时使用；内部任务分工请用 dispatch_task。")]
 
 
 def metadata(session: str) -> dict:

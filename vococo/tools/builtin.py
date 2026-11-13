@@ -1612,13 +1612,16 @@ async def generate_image(args: dict) -> dict:
     "title:20 字以内短名;prompt:完整任务描述(新会话看不到当前对话,必须把要做的事"
     "和必要的背景信息都写进去,不能只写「继续上面的」这种当前会话里才懂的话);"
     "cwd:要在哪个项目目录下干活,不传则跟随当前对话绑定的项目(不绑定项目就落到"
-    "vococo 自己的仓库),同样走 worktree 隔离,不会碰主目录。",
+    "vococo 自己的仓库),同样走 worktree 隔离,不会碰主目录。"
+    "agent:可选的 Agent 名称或唯一 ID；默认继承当前 Agent，cwd 不改变身份。"
+    "只有用户指定或明确需要专门 Agent 时才传；AI 自选时说明原因。",
     {
         "type": "object",
         "properties": {
             "title": {"type": "string"},
             "prompt": {"type": "string"},
             "cwd": {"type": "string"},
+            "agent": {"type": "string"},
         },
         "required": ["title", "prompt"],
     },
@@ -1637,11 +1640,14 @@ async def dispatch_session(args: dict) -> dict:
     cwd = (args.get("cwd") or "").strip() or None
     dispatch_platform = ctx.adapter.platform if (ctx and ctx.adapter) else None
     dispatch_chat_id = str(ctx.chat_id) if (ctx and ctx.chat_id is not None) else None
-    task = task_runner.dispatch(
-        title=title, prompt=prompt, cwd=cwd,
-        dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
-        origin="chat", context_session_key=ctx.session_key if ctx else None,
-    )
+    try:
+        task = task_runner.dispatch(
+            title=title, prompt=prompt, cwd=cwd, agent=(args.get("agent") or "").strip() or None,
+            dispatch_platform=dispatch_platform, dispatch_chat_id=dispatch_chat_id,
+            origin="chat", context_session_key=ctx.session_key if ctx else None,
+        )
+    except (ValueError, TypeError) as exc:
+        return _ok(f"派发失败:{exc}")
     from ..core import tasks
 
     key = tasks.session_key(task["id"])
