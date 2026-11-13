@@ -72,7 +72,7 @@ async def test_overfull_session_compacts_before_sending_user_message(isolated, m
     key = "web:overfull-context"
     session_store.set_chosen_model(key, "gpt-5.6-luna")
     session_store.set_sdk_session_id(key, "old-sdk-session")
-    session_store.record_usage(key, 370_000, 0, window=258_400)
+    session_store.record_usage(key, 1_100_000, 0, window=1_000_000)
     calls = []
 
     async def fake_stream(history, user_text, **kwargs):
@@ -167,7 +167,7 @@ async def test_preflight_keeps_initial_model_when_selection_changes(isolated, mo
     key = "web:model-changed-during-compact"
     session_store.set_chosen_model(key, "gpt-5.6-luna")
     session_store.set_sdk_session_id(key, "old-sdk")
-    session_store.record_usage(key, 180_000, 0, window=258_400)
+    session_store.record_usage(key, 650_000, 0, window=1_000_000)
     calls = []
 
     async def fake_stream(history, user_text, **kwargs):
