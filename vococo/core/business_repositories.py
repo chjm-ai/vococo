@@ -53,18 +53,35 @@ def repository_sources(agent: dict) -> list[str]:
     return list(dict.fromkeys(roots))
 
 
-def copies_for_session(agent: dict, session_key: str) -> tuple[RepositoryCopy, ...]:
+def session_sources(agent: dict, session_key: str) -> list[str]:
+    from ..memory import session_store
+    from . import permissions
+
+    roots = repository_sources(agent)
+    access = session_store.active_source_access(session_key)
+    if access and access.get("mode") != permissions.FULL:
+        return roots  # 自动来源不继承交互会话的临时授权。
+    full = permissions.is_full(session_key)
+    roots.extend(source for source, authorization in
+                 session_store.repository_grants(session_key, agent["id"]).items()
+                 if authorization == "approved" or full)
+    return list(dict.fromkeys(roots))
+
+
+def copy_for_source(agent_id: str, session_key: str, source: str) -> RepositoryCopy:
     session = hashlib.sha256(session_key.encode()).hexdigest()[:20]
-    base = config.AGENT_WORKSPACES_DIR.expanduser().resolve() / ".repositories" / agent["id"] / session
-    copies = []
-    for source in repository_sources(agent):
-        root = Path(source).expanduser().resolve()
-        digest = hashlib.sha256(str(root).encode()).hexdigest()[:12]
-        checkout = base / digest
-        if checkout.absolute() != checkout.resolve():
-            raise ValueError(f"仓库副本路径不能经过软链接：{checkout}")
-        copies.append(RepositoryCopy(root, checkout, f"vococo/business-{session}-{digest}"))
-    return tuple(copies)
+    base = config.AGENT_WORKSPACES_DIR.expanduser().resolve() / ".repositories" / agent_id / session
+    root = Path(source).expanduser().resolve()
+    digest = hashlib.sha256(str(root).encode()).hexdigest()[:12]
+    checkout = base / digest
+    if checkout.absolute() != checkout.resolve():
+        raise ValueError(f"仓库副本路径不能经过软链接：{checkout}")
+    return RepositoryCopy(root, checkout, f"vococo/business-{session}-{digest}")
+
+
+def copies_for_session(agent: dict, session_key: str) -> tuple[RepositoryCopy, ...]:
+    return tuple(copy_for_source(agent["id"], session_key, source)
+                 for source in session_sources(agent, session_key))
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -178,20 +195,57 @@ def _cleanup_staging(binding: RepositoryCopy, staging: Path) -> None:
         logging.getLogger(__name__).warning("仓库副本清理未完成，现场保留：%s", staging, exc_info=True)
 
 
-def prepare_for_session(session_key: str | None, source: str) -> RepositoryCopy:
+def _authorization_target(session_key: str | None, source: str) -> tuple[str, bool]:
     from ..memory import agents
+
+    owner = agents.agent_for_session(session_key) if session_key else None
+    if not owner or not source.strip() or not Path(source).is_absolute():
+        raise ValueError("需要有效会话及仓库原目录的绝对路径")
+    requested = normalize_repositories([source])[0]
+    if Path(requested).is_relative_to(config.AGENT_WORKSPACES_DIR.expanduser().resolve() / ".repositories"):
+        raise ValueError("请指定原仓库，不能把其它会话的副本作为来源")
+    return requested, requested in session_sources(owner, session_key)
+
+
+async def authorize_source(session_key: str | None, source: str) -> tuple[str, str]:
+    from ..tools import danger
+    from . import permissions
+
+    requested, available = await asyncio.to_thread(_authorization_target, session_key, source)
+    if available:
+        return requested, ""
+    was_full = permissions.is_full(session_key)
+    if not await danger.require_approval(
+        "写入未关联仓库（授权本会话使用隔离副本）", requested,
+    ):
+        raise ValueError("未获仓库操作授权；未创建副本，无需到设置中关联仓库")
+    if permissions.is_full(session_key):
+        return requested, "full"
+    if was_full:
+        raise ValueError("完全访问已失效，请按当前权限重新授权")
+    return requested, "approved"
+
+
+def prepare_for_session(session_key: str | None, source: str, authorization: str = "") -> RepositoryCopy:
+    from ..memory import agents, session_store
+    from . import permissions
     from .repository_locks import lease, session_digest
 
     owner = agents.agent_for_session(session_key) if session_key else None
     if not owner or not source.strip():
-        raise ValueError("需要有效会话及关联仓库的原目录路径")
+        raise ValueError("需要有效会话及仓库的原目录路径")
     requested = Path(source).expanduser().resolve()
+    if str(requested) != source:
+        raise ValueError("仓库路径在授权后发生变化，请重新准备")
     with lease(owner["id"], session_digest(session_key)):
-        binding = next((item for item in copies_for_session(owner, session_key)
-                        if item.source == requested), None)
-        if binding is None:
-            raise ValueError("该目录不是当前 Agent 的关联仓库；未创建或修改任何副本")
+        if authorization == "full" and not permissions.is_full(session_key):
+            raise ValueError("完全访问已失效，请按当前权限重新授权")
+        if str(requested) not in session_sources(owner, session_key) and authorization not in ("full", "approved"):
+            raise ValueError("尚未获得该仓库的会话授权；未创建或修改任何副本")
+        binding = copy_for_source(owner["id"], session_key, str(requested))
         _prepare_copy(binding)
+        if authorization:
+            session_store.grant_repository(session_key, owner["id"], str(requested), authorization)
         return binding
 
 
@@ -204,6 +258,8 @@ def prompt_note(copies: tuple[RepositoryCopy, ...]) -> str:
     guidance = (
         "代码开发默认由当前 Agent 自行完成。Git 仓库无需单独绑定，关联目录会自动识别。"
         "没有关联目录不代表禁止开发：标准权限下写未关联目录需授权，完全访问无需绑定或重复审批。"
+        "修改、构建或提交任何目标仓库前，直接调用 prepare_repository(path=原仓库绝对路径)；"
+        "工具负责按当前权限授权并准备隔离副本，不要先要求主人到设置里关联仓库。"
         "并发开发默认在本地仓库创建会话分支和独立工作目录（git worktree），无需完整克隆；未列出的仓库也按此处理，不能把开发隔离当作权限拒绝。"
         "修改前读取目标仓库的 AGENTS.md/CLAUDE.md，保留已有未提交修改。"
         "业务部署沿用仓库部署脚本或 CI/CD；独立 HTML 报告分享仍走 publish_website。"
@@ -213,7 +269,7 @@ def prompt_note(copies: tuple[RepositoryCopy, ...]) -> str:
         return guidance
     rows = "\n".join(f"- 原目录：{x.source} → 会话副本：{x.checkout}（分支 {x.branch}）" for x in copies)
     return (
-        "\n## 关联目录中的 Git 仓库\n" + rows + "\n" + guidance
+        "\n## 本会话可用的 Git 仓库\n" + rows + "\n" + guidance
         + "这里只列出副本位置，不代表已经创建。普通聊天、读取资料、运行已有技能无需准备副本。"
         "需要修改、构建或提交关联仓库时，先调用 prepare_repository(path=原目录)，"
         "成功后使用返回的副本路径；失败不得使用未完成的目录。"

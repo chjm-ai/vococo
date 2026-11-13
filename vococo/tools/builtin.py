@@ -64,10 +64,11 @@ def _library_result(text: str, receipt: dict) -> dict:
 
 @tool(
     "prepare_repository",
-    "按需创建或复用当前会话的关联仓库副本，仅准备 path 指定的原仓库。"
-    "普通聊天、读取资料、运行已有技能不需要调用；修改、构建或提交关联仓库前先调用，"
+    "按需创建或复用当前会话的仓库隔离副本，仅准备 path 指定的原仓库。"
+    "普通聊天、读取资料、运行已有技能不需要调用；修改、构建或提交仓库前先调用，"
     "成功后使用返回的副本路径。保留原仓库未提交改动，不拉远端、不推送。"
-    "path 必须是当前任务原项目或当前 Agent 关联仓库的绝对路径。聊天不可调用；失败不得回退原仓库修改。",
+    "path 为目标原仓库的绝对路径，不要求关联：完全访问直接准备，标准权限由工具按需请求审批。"
+    "无需先询问主人到设置里关联；授权仅用于本会话，不改变长期关联。聊天不可调用；失败不得回退原仓库修改。",
     {"path": str},
 )
 async def prepare_repository(args: dict) -> dict:
@@ -93,9 +94,9 @@ async def prepare_repository(args: dict) -> dict:
             return {**_ok("工作树准备失败，禁止回退到主仓库修改。"), "isError": True}
         return _ok(f"仓库副本已就绪：{checkout}\n原目录：{root}")
     try:
+        source, authorization = await business_repositories.authorize_source(key, source)
         binding = await asyncio.to_thread(
-            business_repositories.prepare_for_session,
-            danger.current_session_key(), (args.get("path") or "").strip(),
+            business_repositories.prepare_for_session, key, source, authorization,
         )
     except subprocess.TimeoutExpired:
         return {**_ok("仓库副本准备超时，未报告为可用；原始错误未被清理失败覆盖。"

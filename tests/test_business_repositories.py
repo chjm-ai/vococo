@@ -428,3 +428,216 @@ async def test_foreign_worktree_is_rejected_without_removing_work(isolated):
         await execution.prepare_repositories(policy)
     assert (binding.checkout / "draft.md").read_text() == "保留\n"
     assert git(source, "branch", "--show-current") == "main"
+
+
+@pytest.mark.anyio
+async def test_full_access_prepares_unlinked_repository_and_revokes_on_downgrade(isolated, monkeypatch):
+    from vococo.core import business_repositories, permissions
+    from vococo.gateway.git_status import _session_repositories
+    from vococo.tools import builtin
+
+    owner = agents.create("未关联开发")
+    key = agents.main_session_key(owner)
+    source = repository(isolated / "unlinked")
+    (source / "article.md").write_text("原目录未提交内容\n")
+    before = agents.get(owner["id"])
+    monkeypatch.setattr(danger, "_current_session_key", lambda: key)
+    permissions.set_session(key, "full")
+    result = await builtin.prepare_repository.handler({"path": str(source)})
+    assert not result.get("isError"), result
+    binding, = business_repositories.copies_for_session(before, key)
+    assert (binding.checkout / "article.md").read_text() == "原文\n"
+    assert (source / "article.md").read_text() == "原目录未提交内容\n"
+    assert agents.get(owner["id"]) == before
+    assert session_store.repository_grants(key, owner["id"]) == {str(source): "full"}
+    (binding.checkout / "article.md").write_text("副本未提交成果\n")
+    assert not (await builtin.prepare_repository.handler({"path": str(source)})).get("isError")
+    assert (binding.checkout / "article.md").read_text() == "副本未提交成果\n"
+    assert str(binding.checkout) in execution.prompt_note(execution.policy_for_session(key))
+    assert _session_repositories(key, before)[0]["path"] == str(binding.checkout)
+
+    permissions.set_session(key, "standard")
+    assert not business_repositories.copies_for_session(before, key)
+    revoked = execution.policy_for_session(key)
+    assert not danger._business_write_allowed({"file_path": str(binding.checkout / "article.md")}, str(revoked.workspace), revoked)
+    result = await builtin.prepare_repository.handler({"path": str(source)})
+    assert result.get("isError")  # 无交互审批时保守拒绝，不能复用 full 授权。
+    assert binding.checkout.exists()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("approved", [False, True])
+async def test_standard_unlinked_repository_approval_is_session_scoped(isolated, monkeypatch, approved):
+    from vococo.core import business_repositories
+    from vococo.tools import builtin
+
+    owner = agents.create("标准权限")
+    key = agents.main_session_key(owner)
+    source = repository(isolated / "unlinked")
+    monkeypatch.setattr(danger, "_current_session_key", lambda: key)
+    calls = []
+
+    async def approve(reason, detail, **kwargs):
+        calls.append(detail)
+        return approved
+
+    monkeypatch.setattr(danger, "require_approval", approve)
+    result = await builtin.prepare_repository.handler({"path": str(source)})
+    assert bool(result.get("isError")) is not approved
+    assert calls == [str(source)]
+    assert agents.get(owner["id"])["repositories"] == []
+    assert agents.get(owner["id"])["links"] == []
+    if not approved:
+        assert not session_store.repository_grants(key, owner["id"])
+        assert not (config.AGENT_WORKSPACES_DIR / ".repositories").exists()
+        return
+    assert session_store.repository_grants(key, owner["id"]) == {str(source): "approved"}
+    binding, = business_repositories.copies_for_session(owner, key)
+    assert not (await builtin.prepare_repository.handler({"path": str(source)})).get("isError")
+    assert len(calls) == 1
+    other_key = config.new_session_key()
+    session_store.bind_session(other_key, agent_id=owner["id"])
+    assert not business_repositories.copies_for_session(owner, other_key)
+    session_store.clear(key)
+    assert not session_store.repository_grants(key, owner["id"])
+    assert binding.checkout.exists()  # 清理授权不能删除成果。
+
+
+@pytest.mark.anyio
+async def test_full_unlinked_copies_are_isolated_and_expire(isolated, monkeypatch):
+    from vococo.core import business_repositories, permissions
+    from vococo.tools import builtin
+
+    owner = agents.create("会话隔离")
+    source = repository(isolated / "unlinked")
+    keys = [config.new_session_key(), config.new_session_key()]
+    copies = []
+    for key in keys:
+        session_store.bind_session(key, agent_id=owner["id"])
+        permissions.set_session(key, "full")
+        monkeypatch.setattr(danger, "_current_session_key", lambda: key)
+        assert not (await builtin.prepare_repository.handler({"path": str(source)})).get("isError")
+        copies.append(business_repositories.copies_for_session(owner, key)[0])
+    assert copies[0].checkout != copies[1].checkout
+    session_store.set_permission(keys[0], "full", until=1)
+    assert not business_repositories.copies_for_session(owner, keys[0])
+    assert business_repositories.copies_for_session(owner, keys[1])
+    session_store.delete_session(keys[0])
+    assert not session_store.repository_grants(keys[0], owner["id"])
+
+
+@pytest.mark.anyio
+async def test_unlinked_invalid_or_foreign_copy_never_creates_grant(isolated, monkeypatch):
+    from vococo.core import business_repositories, permissions
+    from vococo.tools import builtin
+
+    owner = agents.create("路径检查")
+    key = agents.main_session_key(owner)
+    monkeypatch.setattr(danger, "_current_session_key", lambda: key)
+    permissions.set_session(key, "full")
+    source = repository(isolated / "source")
+    for path in ("", "relative", str(isolated), str(source / "missing")):
+        assert (await builtin.prepare_repository.handler({"path": path})).get("isError")
+    assert not session_store.repository_grants(key, owner["id"])
+    assert not (await builtin.prepare_repository.handler({"path": str(source)})).get("isError")
+    binding, = business_repositories.copies_for_session(owner, key)
+    result = await builtin.prepare_repository.handler({"path": str(binding.checkout)})
+    assert result.get("isError")
+    assert "原仓库" in result["content"][0]["text"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("replace_root", [False, True])
+async def test_approval_is_bound_to_canonical_repository(isolated, monkeypatch, replace_root):
+    from vococo.tools import builtin
+
+    owner = agents.create("路径审批")
+    key = agents.main_session_key(owner)
+    source = repository(isolated / "source")
+    other = repository(isolated / "other")
+    link = isolated / "link"
+    link.symlink_to(source, target_is_directory=True)
+    monkeypatch.setattr(danger, "_current_session_key", lambda: key)
+
+    async def approve(reason, detail, **kwargs):
+        assert detail == str(source)
+        if replace_root:
+            source.rename(isolated / "moved")
+            source.symlink_to(other, target_is_directory=True)
+        else:
+            link.unlink()
+            link.symlink_to(other, target_is_directory=True)
+        return True
+
+    monkeypatch.setattr(danger, "require_approval", approve)
+    result = await builtin.prepare_repository.handler({"path": str(link)})
+    assert bool(result.get("isError")) == replace_root
+    grants = session_store.repository_grants(key, owner["id"])
+    assert str(other) not in grants
+    assert grants == ({} if replace_root else {str(source): "approved"})
+    assert "vococo/business-" not in git(other, "branch", "--list")
+
+
+@pytest.mark.anyio
+async def test_repository_validation_runs_off_event_loop(isolated, monkeypatch):
+    import threading
+    from vococo.core import business_repositories
+    from vococo.tools import builtin
+
+    owner, source, key = owner_with_repository(isolated)
+    monkeypatch.setattr(danger, "_current_session_key", lambda: key)
+    loop_thread = threading.get_ident()
+    normalize = business_repositories.normalize_repositories
+    threads = []
+
+    def validate(paths):
+        threads.append(threading.get_ident())
+        return normalize(paths)
+
+    monkeypatch.setattr(business_repositories, "normalize_repositories", validate)
+    assert not (await builtin.prepare_repository.handler({"path": str(source)})).get("isError")
+    assert threads and loop_thread not in threads
+
+
+@pytest.mark.anyio
+async def test_repository_grants_survive_reopen_but_not_restricted_source(isolated, monkeypatch):
+    from vococo.core import business_repositories, permissions
+    from vococo.memory import _db
+    from vococo.tools import builtin
+
+    owner = agents.create("持久化")
+    key = agents.main_session_key(owner)
+    source = repository(isolated / "source")
+    monkeypatch.setattr(danger, "_current_session_key", lambda: key)
+    permissions.set_session(key, "full")
+    assert not (await builtin.prepare_repository.handler({"path": str(source)})).get("isError")
+    _db.reset()
+    assert len(business_repositories.copies_for_session(owner, key)) == 1
+    monkeypatch.setattr(session_store, "active_source_access", lambda _: {"mode": "standard"})
+    assert not business_repositories.copies_for_session(owner, key)
+    session_store.grant_repository(key, owner["id"], str(source), "approved")
+    assert not business_repositories.copies_for_session(owner, key)
+
+
+@pytest.mark.anyio
+async def test_project_agent_prepares_additional_unlinked_repository(isolated, monkeypatch):
+    from vococo.core import business_repositories, permissions
+    from vococo.gateway.git_status import _session_repositories
+    from vococo.tools import builtin
+
+    primary = repository(isolated / "primary")
+    source = repository(isolated / "skills")
+    owner = agents.create("开发", str(primary))
+    key = agents.main_session_key(owner)
+    assert owner["execution_mode"] == "project"
+    monkeypatch.setattr(danger, "_current_session_key", lambda: key)
+    permissions.set_session(key, "full")
+    result = await builtin.prepare_repository.handler({"path": str(source)})
+    assert not result.get("isError"), result
+    binding, = business_repositories.copies_for_session(owner, key)
+    assert binding.source == source
+    assert session_store.get_worktree(key) is None  # 不抢占主项目副本绑定。
+    rows = _session_repositories(key, owner)
+    assert {row["project_path"] for row in rows} == {str(primary), str(source)}
+    permissions.set_session(key, "standard")
+    assert not danger._inside_agent_writable(str(binding.checkout / "article.md"), str(primary))
