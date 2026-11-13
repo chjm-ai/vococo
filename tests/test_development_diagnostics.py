@@ -31,8 +31,44 @@ def environment(tmp_path, monkeypatch):
                                  "CREATE TABLE session_meta(session_key TEXT, worktree_path TEXT);")
     (data / "heartbeat").write_text(str(time.time()))
     (data / "repository-cleanup.json").write_text(json.dumps({"at": time.time(), "results": []}))
+    (data / "storage-maintenance.json").write_text(json.dumps(
+        {"at": time.time(), "sizes": {}, "limits": {}, "samples": [], "errors": []}))
     monkeypatch.setattr(diag, "machine_issues", lambda _: [])
     return root, data
+
+
+def test_storage_budgets_and_growth_only_report_safe_numeric_summary(environment):
+    _, data = environment
+    now = time.time()
+    report = {"at": now, "sizes": {"附件": 300 * 1048576},
+              "limits": {"附件": 200 * 1048576}, "errors": ["PRIVATE_SECRET"],
+              "samples": [{"at": now - 86400, "sizes": {"附件": 10 * 1048576}}]}
+    (data / "storage-maintenance.json").write_text(json.dumps(report))
+    issues = diag.storage_issues(data, now)
+    assert any("容量偏高" in issue for issue in issues)
+    assert any("增长偏快" in issue for issue in issues)
+    assert "PRIVATE_SECRET" not in str(issues)
+    assert any("1 项" in issue for issue in issues)
+
+
+@pytest.mark.parametrize("kind", ["missing", "expired", "future", "symlink", "corrupt"])
+def test_storage_receipt_failures_are_actionable(environment, kind):
+    root, data = environment
+    path = data / "storage-maintenance.json"
+    if kind == "missing":
+        path.unlink()
+    elif kind == "symlink":
+        path.unlink()
+        path.symlink_to(data / "state.db")
+    elif kind == "corrupt":
+        path.write_text("PRIVATE_SECRET")
+    else:
+        value = json.loads(path.read_text())
+        value["at"] = 0 if kind == "expired" else time.time() + 86400
+        path.write_text(json.dumps(value))
+    output = diag.render(diag.diagnose(root, data))
+    assert "存储养护" in output and "PRIVATE_SECRET" not in output
+    assert output.endswith("##CRON_SIGNAL:1##")
 
 
 def test_healthy_diagnostics_are_completely_silent_except_signal(environment):

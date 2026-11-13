@@ -138,13 +138,43 @@ def cleanup_issues(data: Path, now: float) -> list[str]:
     return issues
 
 
+def storage_issues(data: Path, now: float) -> list[str]:
+    path = data / "storage-maintenance.json"
+    if not path.exists():
+        return ["尚无每日存储养护回执，请核对服务版本和巡检是否启用"]
+    if path.is_symlink():
+        raise ValueError("存储回执路径异常")
+    report = json.loads(path.read_text())
+    age = now - float(report["at"])
+    if not 0 <= age <= 2 * 86400:
+        return ["每日存储养护回执已过期或时间异常"]
+    issues = []
+    for label in ("附件", "恢复备份", "数据库", "日志", "提示词缓存", "视频预览", "工作树"):
+        size = report["sizes"].get(label)
+        if size is None:
+            continue
+        if size >= report["limits"][label]:
+            issues.append(f"{label}容量偏高：{size / 1048576:.0f} MiB；请审核保留策略，不自动删除成果")
+        samples = [row for row in report.get("samples", [])
+                   if 20 * 3600 <= now - row["at"] <= 8 * 86400 and label in row["sizes"]]
+        if samples:
+            previous = min(samples, key=lambda row: abs(now - row["at"] - 7 * 86400))
+            growth = size - previous["sizes"][label]
+            if growth >= 256 * 1048576 and growth >= previous["sizes"][label] * 0.2:
+                issues.append(f"{label}增长偏快：近 {(now - previous['at']) / 86400:.1f} 天新增 {growth / 1048576:.0f} MiB；需人工审核")
+    if report.get("errors"):
+        issues.append(f"存储养护有 {len(report['errors'])} 项检查或回收失败；未处理内容已保留")
+    return issues
+
+
 def diagnose(root: Path, data: Path, *, max_worktrees: int = 30) -> list[str]:
     now = time.time()
     probes = {"机器状态": lambda: machine_issues(root),
               "运行心跳": lambda: heartbeat_issues(data, now),
               "任务状态": lambda: task_issues(data, now),
               "工作树": lambda: worktree_issues(root, data, max_worktrees),
-              "回收巡检": lambda: cleanup_issues(data, now)}
+              "回收巡检": lambda: cleanup_issues(data, now),
+              "存储养护": lambda: storage_issues(data, now)}
     issues = []
     for label, probe in probes.items():
         try:
