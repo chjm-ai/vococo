@@ -192,14 +192,14 @@ function buildAgentMainRow(a, inCall){
   const body=el("div","cvbody");
   if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
   else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }
-  const ct=el("div","ct"); ct.textContent="新聊天"; body.append(ct);
+  const ct=el("div","ct"); ct.textContent="主会话"; body.append(ct);
   const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }
   e.append(body);
   e.onclick=()=>openAgentMain(a);
   return e;
 }
 function openAgentMain(a){
-  return openCallView({agentId:a.id, fresh:true});
+  return openConv(a.main_conv);
 }
 
 // ── 新建 Agent 弹窗:名字 + 目录(默认新建 / 用已有目录)────────────────────────
@@ -832,7 +832,7 @@ function renderAgentEmpty(a){
   }
   const sugs=el("div","sugs");
   const add=(label, fn)=>{ const b=el("button","sug"); b.type="button"; b.textContent=label; b.onclick=fn; sugs.append(b); };
-  if(S.conv!==a.main_conv) add("新聊天", ()=>openAgentMain(a));
+  if(S.conv!==a.main_conv) add("进入主会话", ()=>openAgentMain(a));
   if(!a.goal) add("设定目标", ()=>openAgentPanelTab("goal"));
   else if(!a.has_plan) add("拆解计划", async()=>{
     let g; try{ g=await (await api("/agents/goal?id="+encodeURIComponent(a.id))).json(); }catch(e){ return; }
