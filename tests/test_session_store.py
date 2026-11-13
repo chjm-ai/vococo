@@ -85,15 +85,15 @@ def test_find_session_matches_turn_or_title_visibility(isolated):
 
 
 def test_gpt56_summary_normalizes_stale_context_window(isolated):
-    """旧会话保存的窗口值不应覆盖当前统一的 1M 预算。"""
+    """旧会话曾按 API 的 1.05M 落库，Web 进度条必须改按 Codex 的实际有效窗口显示。"""
     from vococo.memory import session_store
 
     session_store.append("web:gpt", "你好", "你好")
     session_store.set_chosen_model("web:gpt", "gpt-5.6-luna")
     session_store.record_usage("web:gpt", 100_000, 0, window=1_050_000)
 
-    assert session_store.session_summary("web:gpt")["ctx_window"] == 1_000_000
-    assert session_store.list_sessions("web:gpt")[0]["ctx_window"] == 1_000_000
+    assert session_store.session_summary("web:gpt")["ctx_window"] == 258_400
+    assert session_store.list_sessions("web:gpt")[0]["ctx_window"] == 258_400
 
 
 def test_gpt56_summary_uses_configured_context_window(isolated, monkeypatch, tmp_path):
