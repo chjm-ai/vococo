@@ -195,9 +195,12 @@ async def sweep_loop() -> None:
     while True:
         try:
             results = await sweep()
+            from . import development_cleanup
+
+            results.extend(await development_cleanup.sweep())
+            report = config.DATA_DIR / "repository-cleanup.json"
+            report.write_text(json.dumps({"at": time.time(), "results": results}, ensure_ascii=False, indent=2))
             if results:
-                report = config.DATA_DIR / "repository-cleanup.json"
-                report.write_text(json.dumps({"at": time.time(), "results": results}, ensure_ascii=False, indent=2))
                 logger.info("仓库回收：移除%s个，保留%s个", sum(r["removed"] for r in results),
                             sum(not r["removed"] for r in results))
         except Exception:

@@ -371,7 +371,10 @@ def _session_metadata(row: dict) -> dict:
     row["title"] = session_store.get_title(key) or (
         task["title"] if task else row.get("title") or "新对话"
     )
+    from ...memory import chats
+
     row.update(binding)
+    row["conversation_mode"] = chats.mode(key)
     row.setdefault("agent_id", None)
     row.setdefault("project_hash", None)
     row.update(conv=_conv_id_for_key(key), conversation_id=_conv_id_for_key(key),
@@ -2828,6 +2831,32 @@ class WebAdapter:
 
     # ── 设置:技能 / MCP ─────────────────────────────────────────────────
     @_authed
+    async def _handle_chat_history(self, request: web.Request) -> web.Response:
+        from ...memory import chats
+
+        try:
+            return web.json_response({"chats": chats.recent(request.query.get("agent_id", "general"))})
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+    @_authed
+    @_json_body
+    async def _handle_chat_open(self, request: web.Request, body: dict) -> web.Response:
+        from ...memory import chats
+
+        agent_id = body.get("agent_id", "general")
+        if not isinstance(agent_id, str) or (body.get("conv") is not None and not isinstance(body["conv"], str)):
+            return web.json_response({"error": "无效的聊天参数"}, status=400)
+        try:
+            if body.get("conv"):
+                row = chats.select(str(body["conv"]), agent_id)
+            else:
+                row = chats.create(agent_id) if body.get("new") else chats.current(agent_id)
+            return web.json_response(row)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+    @_authed
     @_json_body
     async def _handle_conv_archive(self, request: web.Request, body: dict) -> web.Response:
         """POST /conv/archive  {conv, archived: bool}  设置会话归档状态。"""
@@ -2840,9 +2869,8 @@ class WebAdapter:
         if not archived:
             session_store.set_conv_archived(session_key, False)
             return web.json_response({"ok": True})
-        # 归档 = 会话收尾信号:没改过代码的空壳 worktree 当场回收,不留残留。
-        # 有独立提交/未提交改动的留着(内容不能丢)——但归档前先问用户:未确认(force)时
-        # 不归档,返回 need_confirm 让前端弹选择框,确认后才真归档并提示未回收原因。
+        # 归档只收起会话，开发副本统一交每日安全巡检，不绕过观察期和租约。
+        # 有独立提交/未提交改动时先让用户确认，保留成果并提示未回收原因。
         from ...core import worktree  # 懒加载
 
         dirty = await worktree.worktree_dirty_summary(session_key)
@@ -2857,7 +2885,7 @@ class WebAdapter:
             return web.json_response({
                 "ok": True, "warning": True, "dirty": dirty,
                 "msg": "该会话有未提交改动或未合并提交,worktree 暂未回收(内容不能丢),"
-                       "合并或提交后再次归档即可回收",
+                       "合并后由每日安全巡检判断是否回收",
             })
         return web.json_response({"ok": True})
 
@@ -3899,6 +3927,8 @@ class WebAdapter:
                 web.post("/abort", self._handle_abort),
                 web.get("/conversations", self._handle_conversations),
                 web.get("/conv/search", self._handle_conv_search),
+                web.get("/chats/history", self._handle_chat_history),
+                web.post("/chats/open", self._handle_chat_open),
                 web.get("/voice/sidebar", self._handle_voice_sidebar),
                 web.post("/voice/tasks/cancel", self._handle_voice_task_cancel),
                 web.get("/cron/sidebar", self._handle_cron_sidebar),

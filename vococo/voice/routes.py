@@ -60,6 +60,7 @@ def _cancel_active_turn(turn_id: str | None = None) -> bool:
 # _prev_ts 存上一轮启动时刻。两段文字直发请求在 _TEXT_MERGE_WINDOW 秒内到达
 # 且锁还被占着时,合并后取消旧轮重新跑,避免丢段+复读。
 _prev_text: str = ""
+_prev_key: str = ""
 _prev_ts: float = 0.0
 _TEXT_MERGE_WINDOW: float = 3.0
 
@@ -204,6 +205,21 @@ def _sse(resp: web.StreamResponse, event: str, payload: dict) -> "asyncio.Future
 
 
 async def _handle_send(request: web.Request) -> web.StreamResponse:
+    if (guard := _guard(request)) is not None:
+        return guard
+    from ..memory import chats, session_store
+
+    key = request.query.get("conv")
+    if key and (chats.mode(key) != "chat" or not session_store.session_binding(key)):
+        return web.json_response({"error": "无效的聊天会话"}, status=400)
+    token = session.activate(key)
+    try:
+        return await _send_turn(request)
+    finally:
+        session._active_key.reset(token)
+
+
+async def _send_turn(request: web.Request) -> web.StreamResponse:
     """发起一轮:body 既可以是 {"text": "..."} 也可以直接传 multipart 音频
     (字段名 audio)——后者省掉「先 /voice/stt 拿文字、再单独发一次 /voice/send」
     这一趟完整的网络往返(手机 ⇄ 服务器隔着隧道,这一趟在真机上很有分量),
@@ -212,7 +228,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     # _prev_text/_prev_ts 缺 global 声明曾是定时炸弹(2026-07-22):函数里对它们有
     # 赋值,Python 会把整个函数内的引用都当局部变量,抢占路径一读就 UnboundLocalError
     # → 新一句直接 500,旧轮也没被取消。
-    global _stop_event, _turn_task, _turn_id, _prev_text, _prev_ts
+    global _stop_event, _turn_task, _turn_id, _prev_text, _prev_ts, _prev_key
     if (g := _guard(request)) is not None:
         return g
     turn_id = _request_turn_id(request)
@@ -242,7 +258,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     # 快,锁已释放,后段就会作为全新一轮独立发出,Claude 缺前文,答非所问。窗口从
     # 前段请求"启动时刻"起算,真人两句独立的话极难挤进 3 秒,误拼风险可忽略;
     # 音频请求(带完整整句)不参与合并;干净收尾的轮次会清掉 _prev_text(见 Done 分支)。
-    if not is_audio and _prev_text and (time.monotonic() - _prev_ts) < _TEXT_MERGE_WINDOW:
+    if not is_audio and _prev_key == session.current_key() and _prev_text and (time.monotonic() - _prev_ts) < _TEXT_MERGE_WINDOW:
         print(f"[voice/send] 文本累积合并: prev={_prev_text[-30:]!r} + {user_text[:30]!r}", flush=True)
         user_text = _prev_text + user_text
     if _lock.locked():
@@ -269,6 +285,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     # 为下一轮可能的文本累积记录当前请求的文本和时间戳
     if not is_audio:
         _prev_text = user_text
+        _prev_key = session.current_key()
         _prev_ts = time.monotonic()
 
     resp = web.StreamResponse(
@@ -283,7 +300,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     try:  # 锁已在上面拿到,这里 try/finally 保证释放(含 prepare 失败/return/抢占取消的所有路径)
         await resp.prepare(request)
         voice_adapter = VoiceAdapter(resp)
-        clarify_token = clarify.set_current(session.SESSION_KEY, voice_adapter, "main")
+        clarify_token = clarify.set_current(session.current_key(), voice_adapter, "main")
         stop_event = asyncio.Event()
         _stop_event = stop_event
         t0 = time.monotonic()
@@ -334,10 +351,10 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
             # 语音通话跟文字聊天走同一套模型选择:本会话已选 > 网页默认 > 全局默认。
             # 语音长期不传 model 参数,导致永远锁死在 config.MODEL(Claude),设置页配了
             # 第三方或文字聊天切过模型都不生效。
-            model = session_store.get_chosen_model(session.SESSION_KEY)
+            model = session_store.get_chosen_model(session.current_key())
             if not model:
                 model = settings_store.get_web_default_model() or config.MODEL
-                session_store.set_chosen_model(session.SESSION_KEY, model)
+                session_store.set_chosen_model(session.current_key(), model)
             filler_sent = False
             async for ev in session.run_turn(prompt_text, model=model, extra_mcp_servers=task_tools.build_server()):
                 if (
@@ -385,10 +402,10 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                     # 切了模型(switch_model 工具写库),此刻 chosen_model ≠ 本轮开跑
                     # 时的 model,再回写会把用户刚切的覆盖掉 —— 只在没人动过时回写。
                     _model_untouched = (
-                        session_store.get_chosen_model(session.SESSION_KEY) == model
+                        session_store.get_chosen_model(session.current_key()) == model
                     )
                     if reply.model and not reply.is_error and _model_untouched:
-                        session_store.set_chosen_model(session.SESSION_KEY, reply.model)
+                        session_store.set_chosen_model(session.current_key(), reply.model)
                     # 轮中若切了模型,set_chosen_model 已把 sdk_session_id 清掉(新旧模型
                     # 的 transcript 不兼容,resume 会延续旧模型的调用身份);这里不要再把
                     # 旧 sid 存回去,否则下一轮又 resume 旧 transcript,切换等于白切。
@@ -438,15 +455,15 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
     finally:
         if clarify_token is not None:
             clarify.reset_current(clarify_token)
-            clarify.clear_session(session.SESSION_KEY)
+            clarify.clear_session(session.current_key())
         if _turn_task is asyncio.current_task():
             _turn_task = None
             _turn_id = None
         _lock.release()
 
     # 语音版重启退出:不经过 GatewayRunner._dispatch, 直接在这里检测退出
-    if selfops.restart_pending(session.SESSION_KEY):
-        selfops.pop_restart_pending(session.SESSION_KEY)
+    if selfops.restart_pending(session.current_key()):
+        selfops.pop_restart_pending(session.current_key())
 
         class _RestartNotifier:
             async def send(self, _chat_id, text: str) -> None:
@@ -457,7 +474,7 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
                 )
 
         await selfops.exit_for_restart(
-            _RestartNotifier(), "voice", session.SESSION_KEY
+            _RestartNotifier(), "voice", session.current_key()
         )
 
     return resp

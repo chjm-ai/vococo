@@ -1068,6 +1068,29 @@ async def stream_turn(
         if compact_only:
             raise ValueError("隔离模式不支持 compact_only")
     agent_rt = {} if isolated else agents.runtime_for_session(session_key)
+    from ..memory import chats
+    from . import worktree
+
+    from . import tasks
+
+    own_task = tasks.task_for_session(session_key) if session_key else None
+    project_root = config.resolve_execution_root(
+        session_key=session_key, cwd=own_task.get("cwd") if own_task else None,
+    ) if session_key else cwd
+    if not isolated and session_key and cwd and not Path(cwd).is_dir():
+        cwd = worktree.conversation_workspace(session_key)
+    chat_denied = []
+    is_chat = not isolated and chats.mode(session_key) == "chat"
+    if is_chat:
+        cwd = worktree.conversation_workspace(session_key)
+        # 聊天只读限制仅作用本轮，不能继承给用户明确派出的开发任务。
+        chat_denied = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Agent", "Task",
+                       "mcp__vococo__prepare_repository", "mcp__vococo__run_subagent"]
+        system_prompt_extra += "\n当前为聊天模式：仅讨论、检索与读取，不修改代码、不运行命令、不创建分支或工作树。用户要求修改代码时，用 dispatch_session 或 voice_dispatch_task 创建新任务，并传入完整背景；不得直接修改主仓库。"
+    elif session_key and not isolated:
+        root = project_root
+        checkout = session_store.get_worktree(session_key)
+        system_prompt_extra += f"\n当前为任务模式，原项目：{root}。只读分析不创建分支。修改、构建或测试前必须先调用 prepare_repository(path=原项目绝对路径)，只在成功返回的副本路径操作，使用绝对路径。当前已绑定副本：{checkout or '尚未准备'}。"
     source_access = session_store.active_source_access(session_key) if session_key and not isolated else {}
     disallowed_tools = list(dict.fromkeys([*(disallowed_tools or []), *source_access.get("denied", [])]))
     if agent_rt.get("disallowed_tools"):
@@ -1178,7 +1201,9 @@ async def stream_turn(
             sys_prompt += "\n" + system_prompt_extra
         cli_cwd = cwd
     else:
-        prompt_dir = str(business_policy.source_dir or business_policy.output_dir) if business_policy else cwd
+        prompt_dir = str(business_policy.source_dir or business_policy.output_dir) if business_policy else (
+            project_root
+        )
         sys_prompt = await _load_system_prompt(prompt_dir, resume, agent_memory)
         if business_policy:
             cli_cwd = str(business_policy.workspace)
@@ -1188,6 +1213,8 @@ async def stream_turn(
                 cloud_project_note += await _business_project_rules(str(business_policy.output_dir))
         else:
             cli_cwd, cloud_project_note = _cli_working_dir(cwd)
+            if prompt_dir and (not cli_cwd or Path(prompt_dir).resolve() != Path(cli_cwd).resolve()):
+                cloud_project_note += await _business_project_rules(prompt_dir)
             from . import business_repositories
 
             owner = agents.agent_for_session(session_key) if session_key else None
@@ -1213,7 +1240,8 @@ async def stream_turn(
             inherited_denied.append("mcp__vococo__dispatch_task")
         dispatch_denied = inherited_denied
         disallowed_tools = list(dict.fromkeys([*inherited_denied, "Agent", "Task"]))
-    subagents = None if isolated or business_policy or unified_dispatch else reviewer.definitions(cwd, is_explicit_project)
+    disallowed_tools = list(dict.fromkeys([*(disallowed_tools or []), *chat_denied]))
+    subagents = None if isolated or business_policy or unified_dispatch or is_chat else reviewer.definitions(cwd, is_explicit_project)
 
     pooling = not isolated and bool(session_key) and client_pool.enabled()
     base_key = (
@@ -1298,13 +1326,13 @@ async def stream_turn(
 
         if mcp_on and "vococo" in options.mcp_servers:
             delegation_tools = delegation.build_tools(
-                session_key, list(options.disallowed_tools or [])) if session_key else []
+                session_key, dispatch_denied) if session_key else []
             from ..tools import sessions
 
             skill_snapshot = options.skills if isinstance(options.skills, list) else sorted(
                 {item["name"] for item in settings_store.list_skills()} | set(_PLUGIN_SKILLS))
             session_tools = sessions.build_tools(
-                session_key, list(options.disallowed_tools or []),
+                session_key, dispatch_denied,
                 {"skills": skill_snapshot, "mcp": list(external_mcp)}) if session_key else []
             dispatch_tools = dispatch.build_tools(
                 session_key, dispatch_denied,

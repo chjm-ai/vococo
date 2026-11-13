@@ -1,15 +1,12 @@
-"""语音会话:主会话历史落进跟普通文字对话共用的 memory/session_store(data/state.db),
-固定键 `voice-chat:main` —— 这样侧边栏「语音任务」分组、`/history` 接口、消息渲染都能
-直接复用普通会话那一套现成代码,不用为语音再单独拼一套跨库读取逻辑(见
-03-phase2-实现记录.md 存储统一改动一节)。
+"""文字和语音共用聊天身份及 session_store 历史。
 
-历史上这里曾经是完全独立的一份 sqlite(data/voice/voice.db),2026-07-08 起改为委托
-session_store,对外的 load_history/append/get_resume/set_resume/run_turn 签名不变,
-ws.py/routes.py 的调用点不用跟着改。
+HTTP 请求通过 ContextVar 绑定当前聊天；旧客户端未传身份时仍使用 voice-chat:main。
+聊天只读工具限制统一由 core.agent 添加，不传给用户明确派出的开发任务。
 """
 from __future__ import annotations
 
 from typing import AsyncIterator
+from contextvars import ContextVar
 
 from .. import config, providers
 from ..core.agent import AgentReply, Done, Event, describe_llm_error, stream_turn
@@ -17,38 +14,42 @@ from ..memory import session_store
 from . import prompts
 
 SESSION_KEY = "voice-chat:main"
+_active_key: ContextVar[str | None] = ContextVar("voice_chat_key", default=None)
+
+
+def current_key() -> str:
+    return _active_key.get() or SESSION_KEY
+
+
+def activate(key: str | None):
+    return _active_key.set(key)
+
+
 HISTORY_LIMIT = 20
 
-# 语音前台会话代码层硬禁改代码的工具(2026-07-09):【派活规则】里"改代码要走
-# voice_dispatch_task"以前完全靠 prompt 临场判断,没有代码兜底,真机测出过嘴上
-# 答应却直接自己动手/漏派的情况。这里直接不给前台会话这几个工具,模型物理上叫不动
-# Edit/Write,真要改代码只能走 voice_dispatch_task 派后台任务——那条路径现在会自动
-# 给任务开独立 git worktree + 分支(见 core/worktree.ensure_worktree_for_task),
-# 跟 Web/CLI 新对话「一任务一分支」的规矩保持一致,而不是在语音上下文里直接改主目录。
-_DISALLOWED_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
-
-
 def load_history(limit: int = HISTORY_LIMIT) -> list:
-    return session_store.load_recent(SESSION_KEY, limit=limit)
+    return session_store.load_recent(current_key(), limit=limit)
 
 
 def append(user_text: str, assistant_text: str) -> None:
-    session_store.append(SESSION_KEY, user_text, assistant_text)
+    if session_store.get_title(current_key()) in (None, "", "新聊天"):
+        session_store.set_title(current_key(), user_text[:40])
+    session_store.append(current_key(), user_text, assistant_text)
 
 
 def get_resume() -> str | None:
-    return session_store.get_sdk_session_id(SESSION_KEY)
+    return session_store.get_sdk_session_id(current_key())
 
 
 def set_resume(sid: str) -> None:
-    session_store.set_sdk_session_id(SESSION_KEY, sid)
+    session_store.set_sdk_session_id(current_key(), sid)
 
 
 def clear() -> None:
     """清空语音会话上下文:推进 watermark(旧轮次仍留库可 search)+ 抹掉 SDK resume。
     run_turn 每轮现读 load_history()/get_resume(),所以下一轮语音立即从零开始,
     通话进行中也生效(WS 层不缓存 resume 态)。"""
-    session_store.new_session(SESSION_KEY)
+    session_store.new_session(current_key())
 
 
 class _CandidateFailed(Exception):
@@ -81,8 +82,8 @@ async def _candidate_stream(
     buffer: list[Event] = []
     try:
         async for ev in stream_turn(
-            history, prompt_text, model=model, resume=resume, session_key=SESSION_KEY,
-            extra_mcp_servers=extra_mcp_servers, disallowed_tools=_DISALLOWED_TOOLS,
+            history, prompt_text, model=model, resume=resume, session_key=current_key(),
+            extra_mcp_servers=extra_mcp_servers,
             system_prompt_extra=prompts.voice_system_prompt_extra(),
         ):
             if isinstance(ev, Done):

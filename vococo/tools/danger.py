@@ -1213,7 +1213,10 @@ def _writes_outside_worktree(
     if not path or _inside_ai_brain(path, cwd) or _inside_agents_root(path, cwd):
         return None
     try:
-        base = os.path.realpath(cwd)
+        from ..memory import session_store
+
+        prepared = session_store.get_worktree(_current_session_key()) if _current_session_key() else None
+        base = os.path.realpath(prepared or cwd)
         pbase = os.path.realpath(proot)
         if base == pbase:
             return None  # 非 worktree / 回退会话:cwd 就是主仓库根,不由本防线管

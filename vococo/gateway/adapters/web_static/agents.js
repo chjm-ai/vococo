@@ -192,17 +192,14 @@ function buildAgentMainRow(a, inCall){
   const body=el("div","cvbody");
   if(S.live[c.conv]){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); }
   else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }
-  const ct=el("div","ct"); ct.textContent="主会话"; body.append(ct);
+  const ct=el("div","ct"); ct.textContent="新聊天"; body.append(ct);
   const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }
   e.append(body);
   e.onclick=()=>openAgentMain(a);
   return e;
 }
 function openAgentMain(a){
-  // 主会话还没有任何记录时,/conversations 里没有它;先放一条占位,标题/项目归属才对得上
-  if(a.main_conv!=="main" && !S.convs.some(c=>c.conv===a.main_conv))
-    S.convs.push({conv:a.main_conv, title:a.name, turns:0, last_ts:null, agent_id:a.id, project_hash:a.project_hash||null});
-  openConv(a.main_conv);
+  return openCallView({agentId:a.id, fresh:true});
 }
 
 // ── 新建 Agent 弹窗:名字 + 目录(默认新建 / 用已有目录)────────────────────────
@@ -224,7 +221,7 @@ async function createAgent(){
   await Promise.all([loadAgents(), loadProjects()]);
   const a=agentById(d.agent.id)||d.agent;
   S.agentPanelOn=true; S.agentPanelTab="goal"; saveAgentPanelPref();   // 新建完直接落到「职责」,接着定人格和目标
-  openAgentMain(a);
+  openConv(a.main_conv);
 }
 $("#agDirNew").onchange=syncAgentDirMode;
 $("#agDirPick").onchange=syncAgentDirMode;
@@ -550,7 +547,7 @@ function renderApGoalPart(parent, a, g){
   const acts=el("div","apacts");
   const edit=el("button","apbtn"); edit.textContent="编辑目标"; edit.onclick=()=>editGoal(body, a, g.goal);
   const plan=el("button","apbtn"); plan.textContent="拆解计划"; plan.title="让它按目标拆里程碑和任务,写进 PLAN.md";
-  plan.onclick=()=>{ openAgentMain(a); send(g.plan_prompt); };
+  plan.onclick=()=>{ openConv(a.main_conv); send(g.plan_prompt); };
   acts.append(edit, plan);
   if(g.review){
     const rv=el("button","apbtn"); rv.textContent="立即复盘";
@@ -835,11 +832,11 @@ function renderAgentEmpty(a){
   }
   const sugs=el("div","sugs");
   const add=(label, fn)=>{ const b=el("button","sug"); b.type="button"; b.textContent=label; b.onclick=fn; sugs.append(b); };
-  if(S.conv!==a.main_conv) add("进入主会话", ()=>openAgentMain(a));
+  if(S.conv!==a.main_conv) add("新聊天", ()=>openAgentMain(a));
   if(!a.goal) add("设定目标", ()=>openAgentPanelTab("goal"));
   else if(!a.has_plan) add("拆解计划", async()=>{
     let g; try{ g=await (await api("/agents/goal?id="+encodeURIComponent(a.id))).json(); }catch(e){ return; }
-    openAgentMain(a); send(g.plan_prompt);
+    openConv(a.main_conv); send(g.plan_prompt);
   });
   else add("看看进展", ()=>send("对照目标和计划,说说现在进展到哪、卡在哪、下一步做什么。"));
   if(a.task_count) add("定时任务 · "+a.task_count, ()=>openAgentPanelTab("tasks"));

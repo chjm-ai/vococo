@@ -165,6 +165,7 @@ const ICONS = {
   search:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
   save:'<path d="M20 6L9 17l-5-5"/>',
   plus:'<path d="M12 5v14"/><path d="M5 12h14"/>',
+  history:'<path d="M3 12a9 9 0 1 0 2.64-6.36L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
   close:'<path d="M18 6L6 18"/><path d="M6 6l12 12"/>',
   filter:'<path d="M22 3H2l8 9.46V19l4 2V12.46L22 3z"/>',
   copy:'<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',

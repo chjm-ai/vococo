@@ -185,7 +185,9 @@ class WorktreeIsolationError(RuntimeError):
 
 async def ensure_worktree(session_key: str) -> str | None:
     """确保开发会话有独立 worktree；业务 Agent 和非 Git 目录返回 None。"""
-    if policy_for_session(session_key) is not None:
+    from ..memory import chats
+
+    if chats.mode(session_key) == "chat" or policy_for_session(session_key) is not None:
         return None
     root = config.resolve_execution_root(session_key=session_key)
     if not root:
@@ -219,14 +221,28 @@ async def _execution_cwd(root: str, session_key: str, candidate: str | None) -> 
     return root
 
 
+def conversation_workspace(session_key: str) -> str:
+    from .repository_locks import session_digest
+
+    path = config.AGENT_WORKSPACES_DIR / ".conversations" / session_digest(session_key)
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path.resolve())
+
+
 async def execution_cwd(session_key: str) -> str:
-    """业务会话从 workspace 启动；开发 Git 项目必须成功绑定 worktree。"""
+    """聊天和只读任务使用中立目录，开发任务按需准备独立工作树。"""
     policy = policy_for_session(session_key)
     if policy is not None:
         return str(policy.workspace)
-    root = config.resolve_execution_root(session_key=session_key)
-    wt = await ensure_worktree(session_key)
-    return await _execution_cwd(root, session_key, wt)
+    from ..memory import chats
+
+    if chats.mode(session_key) == "chat":
+        return conversation_workspace(session_key)
+    existing = session_store.get_worktree(session_key)
+    if existing and os.path.isdir(existing):
+        return existing
+    # 只读任务也不提前复制源码，修改前通过 prepare_repository 按需准备。
+    return conversation_workspace(session_key)
 
 
 async def execution_cwd_for_task(root: str, task_id: str) -> str:
@@ -238,8 +254,10 @@ async def execution_cwd_for_task(root: str, task_id: str) -> str:
     if policy is not None:
         return str(policy.workspace)
     root = config.resolve_execution_root(session_key=session_key, cwd=root)
-    wt = await ensure_worktree_for_task(root, task_id)
-    return await _execution_cwd(root, session_key, wt)
+    existing = session_store.get_worktree(session_key)
+    if existing and os.path.isdir(existing):
+        return existing
+    return conversation_workspace(session_key)
 
 
 async def _ensure_worktree_impl(session_key: str, root: str, phash: str, slug: str) -> str | None:
@@ -279,42 +297,15 @@ async def _ensure_worktree_impl(session_key: str, root: str, phash: str, slug: s
 
 
 async def recycle_empty_worktree(session_key: str) -> bool:
-    """归档等「会话收尾」场景:worktree 是空壳就立即回收,有内容则不动。返回是否回收。
+    """归档只触发业务副本检查；开发工作树统一交每日安全巡检。
 
-    空壳判定 = 分支没超前主分支(从未提交过) 且 工作区干净(含未跟踪文件——新代码
-    没 add 前就是未跟踪状态,不能当临时产物无声丢掉)。与 worktree_dirty_summary
-    同一语义:归档弹窗说有内容,回收就必须真保留,否则提示「未回收」实际却删了。
-    满足说明这个会话从没改过代码,worktree/分支都没有保留价值;有独立提交或有
-    未提交改动的留着,交给合并(merge-main.sh)或删会话(remove_worktree)流程,
-    绝不自动丢内容。
+    归档不代表目录没有忽略文件或没有进程使用，不能绕过七天观察期与执行租约。
+    开发副本及其绑定保留，旧存量仅列清单。
     """
     from . import repository_cleanup
 
     results = await repository_cleanup.collect_session(session_key)
-    path = session_store.get_worktree(session_key)
-    if not path or not os.path.isdir(path):
-        return any(row["removed"] for row in results)
-    root = config.execution_project_root_for(session_key)
-    if not (root and os.path.isdir(root)):
-        return False
-    branch = await _branch_of_worktree(root, path)
-    if not branch:
-        return False
-    # ① 分支没超前主分支(没干过活)
-    base = await _default_branch(root)
-    code, out, _ = await _git(root, "rev-list", "--count", f"{base}..{branch}")
-    if not (code == 0 and out.strip() == "0"):
-        return False
-    # ② 工作区干净(完整 status:未跟踪文件也算内容,见函数文档)
-    _, st, _ = await _git(path, "status", "--porcelain")
-    if st.strip():
-        return False
-    # 空壳 → 回收
-    session_store.clear_worktree(session_key)
-    await _git(root, "worktree", "remove", "--force", path)
-    await _git(root, "worktree", "prune")
-    await _git(root, "branch", "-D", branch)
-    return True
+    return any(row["removed"] for row in results)
 
 
 async def worktree_dirty_summary(session_key: str) -> dict | None:
@@ -368,40 +359,9 @@ async def remove_worktree(session_key: str) -> None:
 
 
 async def prune_orphans() -> int:
-    """启动兜底:回收「真孤儿」—— 各项目 data/worktrees 下 DB 已无会话绑定的
-    worktree,以及悬空的 vococo/* 空分支。返回清理总数。
-
-    回收依据只有用户意图:归档(archived→recycle_empty_worktree)和删除会话
-    (remove_worktree)。系统不做推断回收——DB 还绑着的 worktree 一律不动,哪怕
-    会话早不活跃、代码干净,用户可能随时回来继续聊。
-
-    遍历全部项目(vococo 自己的 data/worktrees 位置不变 + 其他项目各归各的),
-    绝不动 Claude Code 的 .claude/worktrees。分支只认 vococo/* 及改名前存量
-    hermes/*。
-    """
-    bound = {os.path.realpath(p) for p in session_store.all_worktree_paths()}
-    cleaned = 0
-    roots: dict[str, str] = {
-        os.path.realpath(proj["path"]): proj["path"]
-        for proj in session_store.list_projects()
-    }
-    # 默认项目不在 projects 表里,但它的会话同样会创建 worktree,需要纳入启动清理。
-    default_root = str(config.ROOT_DIR)
-    roots.setdefault(os.path.realpath(default_root), default_root)
-    for root in roots.values():
-        if not os.path.isdir(root) or not await _is_git_repo(root):
-            continue
-        base = _wt_base(root) / session_store.project_hash(root)
-        if not base.exists():
-            continue
-        for wt in base.iterdir():
-            if not wt.is_dir() or os.path.realpath(str(wt)) in bound:
-                continue  # 有主(DB 绑定)的 worktree → 一律跳过
-            branch = await _branch_of_worktree(root, str(wt))
-            await _git(root, "worktree", "remove", "--force", str(wt))
-            if branch.startswith(("vococo/", "hermes/")):
-                await _delete_branch_if_empty(root, branch)
-            cleaned += 1
-        await _git(root, "worktree", "prune")
-        cleaned += await _prune_dangling_branches(root)  # 顺手清该 repo 的悬空空分支
-    return cleaned
+    """启动只清失效登记；目录回收统一交给每日安全巡检，旧存量仅列清单。"""
+    roots = {str(config.ROOT_DIR), *(row["path"] for row in session_store.list_projects())}
+    for root in roots:
+        if os.path.isdir(root):
+            await _git(root, "worktree", "prune")
+    return 0

@@ -295,7 +295,7 @@ function isChildTask(item){ return item?.relation==="child"; }
 var _convsFetchedAt = 0, _convsSoonTimer = null, _convsRequestId = 0;
 function applyConvs(d){
   _convsFetchedAt = Date.now();
-  const main = d.main; main.conv="main"; main.title="主会话"; main.pinned=true;
+  const main = d.main; main.conv="main"; main.title="历史聊天"; main.pinned=true;
   // 新建但还没发出第一条消息的草稿会话后端还不认识,不在返回列表里;
   // 合并时保留它,否则录音/转写等待期间只要有别的会话触发这次刷新,这条新会话就会被冲没
   const locals = S.convs.filter(c=>isDraftConv(c.conv) && !d.conversations.some(x=>x.conv===c.conv));
@@ -459,10 +459,10 @@ function buildVoiceMainRow(inCall){
   const mainRow=el("div","conv"+(inCall?" active":""));
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");
-  const mainCt=el("div","ct"); mainCt.textContent="主会话"; mainBody.append(mainCt);
+  const mainCt=el("div","ct"); mainCt.textContent="新聊天"; mainBody.append(mainCt);
   // 主行不显示时刻(2026-08-04:与其他会话行区分,保持简洁)
   mainRow.append(mainBody);
-  mainRow.onclick=()=>{ openCallView(); };
+  mainRow.onclick=()=>{ openCallView({fresh:true}); };
   return mainRow;
 }
 function buildLibraryRow(){
@@ -519,7 +519,7 @@ function buildVoiceTaskRow(t, inCall, withAvatar){
   } else if(t.pending_review || S.pendingReview[t.conv]){
     const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot);
   }
-  const ct=el("div","ct"); ct.textContent=t.title||"新对话"; body.append(ct);
+  const ct=el("div","ct"); ct.textContent=t.title||"新任务"; body.append(ct);
   const tm=fmtTime(t.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }
   const more=el("button","more"); more.textContent="⋯"; more.title="更多";
   more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,t.conv);}; body.append(more);
@@ -543,7 +543,7 @@ function buildConvRow(c, inCall, withAvatar){
   if(withAvatar) body.append(convAgentAvatar(e, c.conv, !!S.live[c.conv]));
   if(S.live[c.conv]){ if(!withAvatar){ const dot=el("span","livedot"); dot.title="AI 正在回复中"; body.append(dot); } }   // 带头像时由头像动效代替
   else if(c.pending_review || S.pendingReview[c.conv]){ const dot=el("span","reviewdot"); dot.title="有新内容"; body.append(dot); }   // 完成未读:灰色圆点
-  const ct=el("div","ct"); ct.textContent=(isMain && agentById("general")?.name) || c.title || "新对话"; body.append(ct);
+  const ct=el("div","ct"); ct.textContent=(isMain && agentById("general")?.name) || c.title || "新任务"; body.append(ct);
   const tm=fmtTime(c.last_ts); if(tm){ const tmEl=el("span","ctime"); tmEl.textContent=tm; body.append(tmEl); }   // 会话时刻:名称右侧
   if(!isMain){ const more=el("button","more"); more.textContent="⋯"; more.title="更多"; more.onclick=ev=>{ev.stopPropagation();openConvMenu(more,c.conv);}; body.append(more); }
   e.append(body);
@@ -708,9 +708,9 @@ function renderConvs(){
   // 工作台/通话打开期间 S.conv 还停在离开前那个会话上没变,普通会话/任务/定时行不能再按
   // c.conv===S.conv 高亮——否则会跟工作台/通话入口的高亮同时出现(2026-08-21 反馈的双重高亮)。
   const awayFromChat = inCall || S.surface==="workbench" || S.surface==="library";
-  // 顶部固定区只保留新对话按钮和统一对话入口,不再显示重复的主会话行。
-  const isDraft = !awayFromChat && isDraftConv(S.conv);   // 当前正停在一个还没发出第一条消息的新对话草稿上
-  $("#newBtn").innerHTML = '<div class="cvbody">'+ic("edit")+'<div class="ct">新对话</div></div>';
+  // 顶部固定区只保留新任务按钮和统一对话入口,不再显示重复的主会话行。
+  const isDraft = !awayFromChat && isDraftConv(S.conv);   // 当前正停在一个还没发出第一条消息的新任务草稿上
+  $("#newBtn").innerHTML = '<div class="cvbody">'+ic("edit")+'<div class="ct">新任务</div></div>';
   $("#newBtn").classList.toggle("active", isDraft);
   const top=$("#convTopRows"); top.innerHTML="";
   const vm=buildVoiceMainRow(inCall); if(vm) top.append(vm);
@@ -729,7 +729,7 @@ function renderConvs(){
   // 查找逻辑跟 openConv 保持一致——否则在任务自己的会话里改名,顶部标题栏不会跟着刷新
   // (侧栏那行没事,因为它是整个重建的;标题栏是这里单独同步的,漏了这几个来源就会显示旧名字)。
   const activeConv=findConv(S.conv);
-  if(activeConv) $("#convTitle").textContent=activeConv.title||"新对话";
+  if(activeConv) $("#convTitle").textContent=activeConv.title||"新任务";
   if(typeof syncAgentHeader==="function") syncAgentHeader();   // Agent 按钮/面板跟着当前会话走(agents.js)
 }
 
@@ -943,20 +943,20 @@ function reorderProject(srcHash, targetHash){
   api("/projects/reorder",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({order:arr.filter(a=>a.project_hash).map(a=>a.project_hash)})}).catch(()=>{});
 }
-// 在指定项目下开新会话(顶部 ＋新对话 用当前活跃项目;分组 ＋ 用该分组)。
-// focus=false 用于 APP 启动时静默落地到一个新对话——不弹键盘打扰用户。
+// 在指定项目下开新会话(顶部 ＋新任务 用当前活跃项目;分组 ＋ 用该分组)。
+// focus=false 用于 APP 启动时静默落地到一个新任务——不弹键盘打扰用户。
 // expand=false 同样只用于 APP 启动时的静默落地:别把用户上次手动折叠的分组重新展开。
 function newChatIn(hash, focus, expand){
   S.project=hash;
   if(expand!==false){ S.expanded.add(grpKey(hash)); saveExpanded(); }
   // 同项目下若已有一个还没发出第一条消息的草稿会话(draft=true,turns=0),直接复用它
   // (连同它在 localStorage 里存的输入框草稿一起带回来),不再另起一个空会话——
-  // 否则"新对话→打几个字→切走→再点新对话"每次都会把刚才的草稿会话晾在一边。
+  // 否则"新任务→打几个字→切走→再点新任务"每次都会把刚才的草稿会话晾在一边。
   const existing = S.convs.find(c=>isDraftConv(c.conv) && c.turns===0 && convProject(c.conv)===hash);
   if(existing){ openConv(existing.conv, expand===false); if(focus!==false) $("#ta").focus(); return; }
   const conv="session:"+crypto.randomUUID().replaceAll("-", "");
   const owner=projAgent(hash);
-  S.convs.unshift({conv,title:"新对话",turns:0,last_ts:null,draft:true,
+  S.convs.unshift({conv,title:"新任务",turns:0,last_ts:null,draft:true,
     project_hash:hash||null,agent_id:owner ? owner.id : (hash ? null : "general")});
   openConv(conv, expand===false);
   if(focus!==false) $("#ta").focus();
@@ -1003,7 +1003,7 @@ function navGo(delta){
   try{
     if(e.kind==="library") openLibrary();
     else if(e.kind==="workbench") openWorkbench();
-    else if(e.kind==="call") openCallView();
+    else if(e.kind==="call") openCallView({conv:e.conv,agentId:e.agentId,replay:true});
     else openConv(e.conv);
   }finally{ NAV.replaying=false; }   // 三个入口的入栈都在同步段里,await 之前就已跳过
 }

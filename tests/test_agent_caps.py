@@ -73,6 +73,58 @@ async def test_chat_does_not_initialize_linked_repositories(clients, env, monkey
     assert not business_repositories.copies_for_session(agents.get(owner["id"]), key)[0].checkout.exists()
 
 
+@pytest.mark.anyio
+async def test_chat_readonly_restrictions_do_not_transfer_to_dispatched_tasks(clients, env, monkeypatch):
+    from vococo.core import dispatch
+    from vococo.memory import chats
+    from vococo.tools import builtin
+
+    captured = []
+    build = dispatch.build_tools
+    def capture(key, denied, capabilities=None, **kwargs):
+        captured.append(list(denied))
+        return build(key, denied, capabilities, **kwargs)
+
+    monkeypatch.setenv("VOCOCO_TASK_DISPATCH_V2", "1")
+    monkeypatch.setattr(dispatch, "build_tools", capture)
+    monkeypatch.setattr(agent.settings_store, "vococo_enabled", lambda: True)
+    monkeypatch.setattr(builtin, "create_sdk_mcp_server", lambda *args, **kwargs: {})
+    monkeypatch.setattr(agent, "build_mcp_servers", builtin.build_mcp_servers)
+    key = chats.create("general")["conv"]
+    await _turn(key, denied=["mcp__vococo__send_video"])
+    assert {"Bash", "Write", "mcp__vococo__prepare_repository"} <= set(clients[0].options.disallowed_tools)
+    assert captured == [["mcp__vococo__send_video"]]
+
+
+@pytest.mark.anyio
+async def test_lazy_task_loads_rules_from_explicit_task_project(clients, env, monkeypatch):
+    from vococo.core import tasks, worktree
+
+    monkeypatch.setattr(tasks, "_DB", None)
+    owner = agents.by_project_hash(projects.project_hash(str(env)))
+    meta = agents._read_meta(owner["id"])
+    meta["execution_mode"] = "project"
+    agents._write_meta(owner["id"], meta)
+    other = env / "explicit"
+    other.mkdir()
+    (other / "AGENTS.md").write_text("显式任务项目指南")
+    (other / "CLAUDE.md").symlink_to("AGENTS.md")
+    row = tasks.create("只读", "检查", task_id="explicit-root", cwd=str(other), agent_id=owner["id"])
+    key = tasks.session_key("explicit-root")
+    workspace = await worktree.execution_cwd_for_task(str(other), "explicit-root")
+    try:
+        async for _ in agent.stream_turn([], "检查", session_key=key, cwd=workspace):
+            pass
+        prompt = clients[0].options.system_prompt["append"]
+        assert f"原项目：{other}" in prompt
+        assert "显式任务项目指南" in prompt
+        assert not agent.session_store.get_worktree(key)
+    finally:
+        if tasks._DB:
+            tasks._DB.close()
+            tasks._DB = None
+
+
 # ── stream_turn 把 Agent 运行设定落到 ClaudeAgentOptions 上 ─────────────────────────
 class _Client:
     def __init__(self, options, registry):
@@ -113,7 +165,7 @@ def clients(monkeypatch):
                         lambda names=None: {n: {"type": "http", "url": "http://x"} for n in (names or ())})
     monkeypatch.setattr(agent.settings_store, "effective_skills", lambda cwd=None, **kw: ["global-skill"])
     monkeypatch.setattr(agent.session_store, "get_external_mcp_names", lambda key: set())
-    monkeypatch.setattr(agent, "build_system_prompt", lambda cwd=None, cache_key=None: {"append": "p"})
+    monkeypatch.setattr(agent, "build_system_prompt", lambda cwd=None, cache_key=None, **kwargs: {"append": "p"})
     monkeypatch.setattr(agent, "build_mcp_servers", lambda: {})
     monkeypatch.setattr(agent, "build_hooks", lambda: {})
     monkeypatch.setattr(agent.client_pool, "enabled", lambda: False)

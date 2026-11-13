@@ -23,7 +23,11 @@
   setIcon(muteToggleBtn, "mic");  // 静音按钮:默认图标是"麦克风开着",点了切成"mute"
   setIcon(startBtn, "phone");  // 开始通话:电话图标
   setIcon($("#voiceIcon"), "voice");  // 音色切换:静音/挂断中间的圆钮,点开原生选择器
-  setIcon($("#clearVoiceCtxBtn"), "eraser");  // 顶栏:清空语音通话上下文
+  setIcon($("#clearVoiceCtxBtn"), "plus");
+  setIcon($("#chatHistoryBtn"), "history");
+  let chatAgentId = "general";
+  let chatOpenRevision = 0;
+  let historyLoading = false;
   // 左上角只管展开侧栏(浮层叠在通话视图上),不碰通话本身——通话继续跑,
   // 收起侧栏后还在原来的通话画面。真正挂断走下面的"结束"/"停"按钮;
   // 侧栏里切到别的会话才会触发 closeCallView()(见 openConv 收口处)。
@@ -665,7 +669,7 @@
   }
 
   async function startRecording(){
-    if(busy) return;
+    if(busy || historyLoading) return;
     unlockAudio();
     try{ await ensureMicStream(); }
     catch(e){ addMsg("ai error", "麦克风权限被拒绝,请到系统设置里允许"); return; }
@@ -734,6 +738,7 @@
   }
 
   async function sendTurn(body){
+    if(historyLoading) return;
     const turn = beginVoiceTurn();
     busy = true; talkBtn.disabled = true; stopBtn.hidden = false;
     ttsFailureNoticedThisTurn = false;
@@ -753,7 +758,7 @@
     };
 
     let resp;
-    try{ resp = await fetch("/voice/send", init); }
+    try{ resp = await fetch("/voice/send?conv=" + encodeURIComponent(S.conv), init); }
     catch(e){ if(isActiveVoiceTurn(turn)) addMsg("ai error", "连不上服务"); finish(); return; }
     if(!isActiveVoiceTurn(turn)) return;
     if(resp.status === 401){ authError(); finish(); return; }
@@ -1500,6 +1505,7 @@
   let omniIdleSince = 0;  // 本段连续空闲的起点时间戳;0 = 当前没在空闲计时
 
   async function startOmniHandsFree(){
+    if(historyLoading) return false;
     vdbg("omni.start");
     setStatus("连接中…", "");
     setOmniConnStatus("connecting");
@@ -2833,7 +2839,7 @@
 
     let resp;
     try{
-      resp = await fetch("/voice/send", {
+      resp = await fetch("/voice/send?conv=" + encodeURIComponent(S.conv), {
         method: "POST",
         headers: {"Content-Type": "application/json", "X-Auth-Token": S.token, "X-Voice-Turn-Id": turn.id},
         body: JSON.stringify({text, tts: false}),
@@ -3013,20 +3019,40 @@
   });
 
   async function loadMainHistory(){
+    const revision=chatOpenRevision;
+    const conv = S.conv;
     try{
-      const resp = await fetch("/history?conv=" + encodeURIComponent("voice-chat:main"), {
+      const resp = await fetch("/history?conv=" + encodeURIComponent(conv), {
         headers: {"X-Auth-Token": S.token},
       });
-      if(!resp.ok) return;
+      if(!resp.ok) throw new Error("聊天历史加载失败，请重新打开聊天");
       const d = await resp.json();
-      if(!d.turns || !d.turns.length) return;
-      clearHint();
-      for(const t of d.turns){
+      if(revision!==chatOpenRevision || S.conv!==conv || S.surface!=="call") return false;
+      transcriptEl.replaceChildren();
+      if(d.turns?.length) clearHint();
+      for(const t of d.turns || []){
         if(t.user) addMsg("me", t.user);
         if(t.assistant) addMsg("ai", t.assistant);
       }
-    }catch(e){ /* 历史加载失败不阻塞进入通话,当作空历史处理 */ }
+      return true;
+    }catch(e){
+      if(revision===chatOpenRevision && S.conv===conv) setStatus("聊天历史加载失败，请重试", "error");
+      return false;
+    }
   }
+  window.onChatGatewayEvent = function(e){
+    if(S.surface!=="call" || e.conv!==S.conv) return false;
+    if(!e.mid_turn && ["done","message","sync","research_result"].includes(e.type)){
+      loadMainHistory().then(ok=>{
+        if(!ok || e.conv!==S.conv || S.surface!=="call") return;
+        delete S.live[e.conv]; delete S.streamSnap[e.conv];
+        S.pendingReview[e.conv]=false;
+        api("/conv/read",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({conv:e.conv})}).then(loadConvs).catch(()=>{});
+      });
+    }
+    return !["choice","usage","notice","sidebar_refresh","title"].includes(e.type);
+  };
 
   // 挂断=直接退出通话视图,回到聊天界面(电话挂断的直觉),不是留在这里等重新开始
   endHandsFreeBtn.addEventListener("click", ()=>{ returnToButtonState(); });  // 挂断但留在语音页面
@@ -3044,24 +3070,37 @@
     setIcon(muteToggleBtn, micMuted ? "mute" : "mic");
   });
 
-  // 清空语音通话上下文:清的是 voice-chat:main(见后端 /voice/clear),下一轮从零开始;
-  // 同时抹掉本地已显示的对话与半截的流式态,视觉上也回到干净起点。
-  $("#clearVoiceCtxBtn").addEventListener("click", async ()=>{
-    if(!confirm("清空主会话的上下文?(AI 会从头开始,历史记录仍保留)")) return;
+  setIcon($("#chatAgentBtn"),"gear");
+  $("#chatAgentBtn").onclick = async ()=>{
+    if(busy || handsFreeActive){ alert("请先停止回复或挂断通话，再打开设置"); return; }
+    const owner=agentById(chatAgentId);
+    if(!owner) return;
+    await openConv(owner.main_conv);
+    openAgentPanelTab("goal");
+  };
+  $("#clearVoiceCtxBtn").onclick = ()=>openCallView({agentId:chatAgentId, fresh:true});
+  const historyDialog = $("#chatHistoryDialog");
+  $("#chatHistoryClose").onclick = ()=>historyDialog.close();
+  historyDialog.onclick = e=>{ if(e.target===historyDialog) historyDialog.close(); };
+  function historyRow(chat){
+    const button=el("button"), name=el("span","chat-name"), time=el("time");
+    button.type="button"; name.textContent=chat.title; time.textContent=fmtTime(chat.last_ts);
+    button.append(name,time);
+    button.onclick=()=>{ historyDialog.close(); openCallView({agentId:chatAgentId, conv:chat.conv}); };
+    return button;
+  }
+  $("#chatHistoryBtn").onclick = async ()=>{
+    const list=$("#chatHistoryList"), owner=chatAgentId;
+    list.textContent="加载中…"; historyDialog.showModal();
     try{
-      const resp = await fetch("/voice/clear", {method:"POST", headers:{"X-Auth-Token":S.token}});
-      if(!resp.ok) throw new Error("HTTP "+resp.status);
-      transcriptEl.innerHTML = "";
-      currentTurnAiEl = null; currentTurnFull = "";
-      addMsg("ai filler", "上下文已清空,我们重新开始吧。");
-      // 顶部任务状态条也跟着这次清空同步重置:旧对话遗留的任务不该继续挂在条上
-      // (见 voiceTasksClearedAt 声明处的说明)。
-      voiceTasksClearedAt = Date.now() / 1000;
-      localStorage.setItem("vococo_voice_tasks_cleared_at", String(voiceTasksClearedAt));
-      barTasks.clear();
-      renderTaskBar();
-    }catch(e){ addMsg("ai error", "清空失败:"+e.message); }
-  });
+      const response=await api("/chats/history?agent_id="+encodeURIComponent(owner));
+      if(!response.ok) throw new Error("加载失败，请重试");
+      const data=await response.json();
+      if(owner!==chatAgentId) return;
+      list.replaceChildren(...data.chats.map(historyRow));
+      if(!data.chats.length) list.textContent="暂无聊天历史";
+    }catch(e){ list.textContent=e.message; }
+  };
 
   function initUiMode(){
     if(!vadCapable()){
@@ -3341,6 +3380,7 @@
   }
 
   async function sendCallText(text){
+    if(historyLoading){ alert("聊天历史加载中，请稍后发送"); return; }
     text=(text||"").trim();
     if(!text) return;
     if(S.images.length || S.audios.length){
@@ -3361,7 +3401,6 @@
   function initOnce(){
     if(initialized) return;
     initialized = true;
-    loadMainHistory();
     initUiMode();
   }
 
@@ -3419,19 +3458,36 @@
     setStatus("空闲");
   }
 
-  window.openCallView = function(){
+  window.openCallView = async function(options={}){
+    if(busy || handsFreeActive){ alert("请先停止回复或挂断通话，再切换聊天"); return; }
+    const revision=++chatOpenRevision;
+    const agentId=options.agentId || "general";
+    let chat;
+    try{
+      const response=await api("/chats/open",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({agent_id:agentId,new:!!options.fresh,conv:options.conv})});
+      chat=await response.json();
+      if(!response.ok) throw new Error(chat.error||"打开聊天失败");
+    }catch(e){ alert(e.message); return; }
+    if(revision!==chatOpenRevision) return;
+    chatAgentId=agentId;
     if(typeof closeLibrary==="function") closeLibrary();
     closeWorkbench();
+    const wasInCall=S.surface==="call";
     S.surface = "call";
-    navRecord({kind:"call"});
+    if(!options.replay) navRecord({kind:"call",conv:chat.conv,agentId});
     closeSidebar();
     // 从普通会话进入主会话时记住原位置。重复点入口时 S.conv 已是语音主会话,
     // 不能覆盖掉返回位置。
-    if(S.conv !== "voice-chat:main"){
-      S.callReturnConv = S.conv || "main";
-      if(typeof saveComposerState==="function") saveComposerState(S.conv);
-    }
-    S.conv = "voice-chat:main";
+    if(!wasInCall) S.callReturnConv = S.conv || "main";
+    if(typeof saveComposerState==="function") saveComposerState(S.conv);
+    S.conv = chat.conv;
+    S.convs = S.convs.filter(row=>row.conv!==chat.conv);
+    S.convs.unshift(chat);
+    $("#callChatTitle").textContent=chat.title || "新聊天";
+    transcriptEl.replaceChildren();
+    currentTurnAiEl=null; currentTurnFull="";
+    barTasks.clear();
     restoreSessionModels();
     if(typeof restoreComposerState==="function") restoreComposerState(S.conv);
     renderProjSelChip();  // 草稿会话切入主会话时，收起仅草稿可见的项目选择器
@@ -3456,9 +3512,16 @@
       handsFreeUi.hidden = true;
       talkBtn.hidden = false;
     }
-    renderConvs();   // 侧栏按通话状态重绘,让「语音通话」行高亮
+    renderConvs();
+    historyLoading=true;
+    try{ await loadMainHistory(); }
+    finally{ if(revision===chatOpenRevision) historyLoading=false; }
+    loadTasks();
   };
   window.closeCallView = function(){
+    ++chatOpenRevision;
+    historyLoading=false;
+    if(historyDialog.open) historyDialog.close();
     mountSharedComposer(false);
     // 缓存版本错位或上次加载中断时,composer 可能留在隐藏的文本面板里。
     // 即使 callView 已隐藏也先归位,保证普通会话始终有输入框。

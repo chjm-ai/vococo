@@ -1534,7 +1534,15 @@
     padding-top:calc(14px + env(safe-area-inset-top));border-bottom:1px solid var(--line)}
   #callHead #backLink{color:var(--dim);line-height:1;padding:var(--sp-1);display:inline-flex}
   #callHead #backLink .ic{width:20px;height:20px}
-  #callHead .title{font-weight:600;flex:1}
+  #callHead .title{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chat-history-dialog{width:min(90vw,30rem);max-height:70vh;padding:var(--sp-5);border:1px solid var(--line);border-radius:var(--r-lg);background:var(--panel);color:var(--text)}
+  .chat-history-dialog::backdrop{background:var(--ov-3)}
+  .chat-history-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);margin-bottom:var(--sp-4)}
+  .chat-history-list{display:flex;flex-direction:column;gap:var(--sp-2);overflow:auto}
+  .chat-history-list button{display:flex;align-items:center;gap:var(--sp-3);width:100%;text-align:left;padding:var(--sp-4);border-radius:var(--r-md);font-size:var(--fs-base)}
+  .chat-history-list button:hover{background:var(--panel2)}
+  .chat-history-list .chat-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chat-history-list time{font-size:var(--fs-sm);color:var(--dim);white-space:nowrap}
   /* callFoot 改浮层后 callBody 一直铺到视图底;底 padding 让最新气泡的停靠点
      抬到渐变遮罩完全透明的边界(128px)之上——最新消息任何时候都清晰可读,
      只有往回翻的历史消息才滑进吉祥物身后的渐隐区。这个数值 2026-08-21 跟着

@@ -67,14 +67,31 @@ def _library_result(text: str, receipt: dict) -> dict:
     "按需创建或复用当前会话的关联仓库副本，仅准备 path 指定的原仓库。"
     "普通聊天、读取资料、运行已有技能不需要调用；修改、构建或提交关联仓库前先调用，"
     "成功后使用返回的副本路径。保留原仓库未提交改动，不拉远端、不推送。"
-    "path 必须是当前 Agent 关联仓库的原目录绝对路径。失败时不得使用未完成副本。",
+    "path 必须是当前任务原项目或当前 Agent 关联仓库的绝对路径。聊天不可调用；失败不得回退原仓库修改。",
     {"path": str},
 )
 async def prepare_repository(args: dict) -> dict:
     import subprocess
+    from pathlib import Path
     from ..core import business_repositories
     from . import danger
 
+    from ..memory import chats
+    from ..core import worktree
+
+    key = danger.current_session_key()
+    if chats.mode(key) == "chat":
+        return {**_ok("聊天模式不修改代码、不创建分支。请创建新任务执行。"), "isError": True}
+    source = (args.get("path") or "").strip()
+    from ..core import tasks
+
+    task = tasks.task_for_session(key) if key else None
+    root = config.resolve_execution_root(session_key=key, cwd=task.get("cwd") if task else None)
+    if key and root and Path(source).resolve() == Path(root).resolve() and worktree.policy_for_session(key) is None:
+        checkout = await worktree.ensure_worktree_for_task(root, task["id"]) if task else await worktree.ensure_worktree(key)
+        if not checkout:
+            return {**_ok("工作树准备失败，禁止回退到主仓库修改。"), "isError": True}
+        return _ok(f"仓库副本已就绪：{checkout}\n原目录：{root}")
     try:
         binding = await asyncio.to_thread(
             business_repositories.prepare_for_session,

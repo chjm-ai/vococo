@@ -144,6 +144,9 @@ def conn() -> sqlite3.Connection:
         _DB.executescript(_SCHEMA)
         if "source_access" not in {r[1] for r in _DB.execute("PRAGMA table_info(turns)")}:
             _DB.execute("ALTER TABLE turns ADD COLUMN source_access TEXT")
+        if "conversation_mode" not in {r[1] for r in _DB.execute("PRAGMA table_info(session_meta)")}:
+            _DB.execute("ALTER TABLE session_meta ADD COLUMN conversation_mode TEXT DEFAULT 'task'")
+            _DB.execute("UPDATE session_meta SET conversation_mode='chat' WHERE session_key IN ('main','web:main','voice-chat:main')")
         # 迁移:session_meta 增列(老库平滑升级)
         cols = {r[1] for r in _DB.execute("PRAGMA table_info(session_meta)")}
         for col, kind in (("agent_id", "TEXT"), ("project_hash", "TEXT"), ("bound_at", "REAL")):
