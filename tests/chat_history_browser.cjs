@@ -2,10 +2,10 @@ const {chromium}=require('playwright');
 const assert=require('node:assert/strict');
 
 (async()=>{
-  const [origin,token,owner,first,output]=process.argv.slice(2);
+  const [origin,token,owner,first,output,device]=process.argv.slice(2);
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
   try{
-    const page=await browser.newPage();
+    const page=await browser.newPage(device==='mobile'?{viewport:{width:390,height:844},isMobile:true,hasTouch:true,userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148'}:{});
     const errors=[];
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto(origin);
@@ -15,6 +15,33 @@ const assert=require('node:assert/strict');
     await page.waitForSelector('#callView:not([hidden])');
     const current=await page.evaluate(()=>S.conv);
     assert.notEqual(current,first);
+    await page.evaluate(async owner=>{
+      for(const filter of ['active','archived','all']){
+        S.convFilter=filter; S.homeConvs=null;
+        await loadConvs();
+        if(convOwnership(S.conv).agent_id!==owner || !findConv(S.conv))
+          throw new Error('列表刷新不得丢失当前聊天及所属 Agent：'+filter);
+      }
+      S.convFilter='active'; await loadConvs();
+    },owner);
+    const partition=await page.evaluate(async({owner,first})=>{
+      const apiRows=(await (await api('/conversations')).json()).conversations;
+      const current=S.convs.find(c=>c.conv===S.conv);
+      const recent=el('div'); renderRecentTab(recent,false);
+      const a=agentById(owner);
+      // 即使旧客户端把聊天置顶，稍后列表也不能显示它。
+      const wasPinned=current.pinned; current.pinned=true;
+      const pinnedChat=pinnedConvs(false).some(row=>row.build()?.dataset.conv===current.conv);
+      current.pinned=wasPinned;
+      renderEmptyRecent();
+      return {apiChats:apiRows.filter(c=>c.conversation_mode==='chat').length,
+        taskPresent:apiRows.some(c=>c.title==='必须保留的任务'),
+        recentChat:!!recent.querySelector('[data-conv="'+current.conv+'"]'),
+        recentTask:recent.textContent.includes('必须保留的任务'),
+        agentChat:agentConvs(a).some(c=>c.conversation_mode==='chat'),pinnedChat,
+        homeChat:$('#homeRecent').textContent.includes('已保存的旧聊天')};
+    },{owner,first});
+    assert.deepEqual(partition,{apiChats:0,taskPresent:true,recentChat:false,recentTask:true,agentChat:false,pinnedChat:false,homeChat:false});
     await page.click('#chatHistoryBtn');
     await page.waitForSelector('#chatHistoryList button');
     assert.deepEqual(await page.locator('#chatHistoryList .chat-name').allTextContents(),['已保存的旧聊天']);

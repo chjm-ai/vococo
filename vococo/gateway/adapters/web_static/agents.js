@@ -88,7 +88,7 @@ function agentOwnsConv(a, conv){
 }
 function agentConvs(a){
   return S.convs.filter(c=>{
-    if(c.pinned || isChildTask(c) || !agentOwnsConv(a, c.conv)) return false;
+    if(isChatConversation(c) || c.pinned || isChildTask(c) || !agentOwnsConv(a, c.conv)) return false;
     if(S.convFilter==="archived" && !c.archived) return false;
     if(S.convFilter==="active" && c.archived) return false;
     return true;
@@ -109,7 +109,7 @@ function agentTasks(a){
 function agentOwnItems(a){
   const main=S.convs.find(c=>c.conv===a.main_conv)||{conv:a.main_conv};
   const tasks=agentTasks(a);
-  return [main, ...S.convs.filter(c=>!c.pinned && !isChildTask(c) && agentOwnsConv(a, c.conv)), ...tasks];
+  return [main, ...S.convs.filter(c=>!isChatConversation(c) && !c.pinned && !isChildTask(c) && agentOwnsConv(a, c.conv)), ...tasks];
 }
 const agentItemBusy=c=>S.live[c.conv] || c.task_status==="queued" || c.task_status==="running";   // 同行内显示橙色闪点的条件
 function agentWorking(a){ return agentOwnItems(a).some(agentItemBusy); }

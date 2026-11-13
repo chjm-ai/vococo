@@ -1456,7 +1456,8 @@ class WebAdapter:
         cron_keys = {j.get("conv") or f"task:{j['id']}" for j in scheduler.load_jobs()}
         convs = [c for prefix in ("web:", "session:")
                  for c in _rows_with_conv(prefix, archived=archived)
-                 if not c["task_id"] and c["key"] not in cron_keys]
+                 if not c["task_id"] and c["key"] not in cron_keys
+                 and c["conversation_mode"] != "chat"]
         # 主会话(与 TG/CLI 共享的统一会话)固定置顶,conv id 用 "main"
         main = session_store.session_summary(config.resolve_session_key("web", "main"))
         main.update(key=config.SESSION_KEY, title="主会话", pinned=True, conv="main")
