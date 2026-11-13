@@ -180,18 +180,17 @@ def test_context_window_unknown_falls_back():
     assert context_window("some-unknown-model") == 200_000
 
 
-def test_context_window_codex_proxy_gpt_is_258k_for_all_tiers():
-    # Codex 本机模型目录:272k × 95% = 258,400；三档窗口相同，不是 API 直连的 1.05M。
-    for model in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
-        assert context_window(model) == 258_400
+def test_context_window_legacy_gpt_is_1m_for_all_tiers():
+    for model in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"):
+        assert context_window(model) == 1_000_000
 
 
-def test_context_window_gpt6_uses_staged_500k_limit():
-    # 官方 API 是 1.05M；当前代理不报窗口元数据，先放到 500k 观察真实长会话表现。
+def test_context_window_gpt6_is_1m_for_all_tiers():
     for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol"):
-        assert context_window(model) == 500_000
-    # 只匹配 GPT-6 家族，不能把恰好同前缀的未来/自定义型号误判成 500k。
-    assert context_window("gpt-60-small") == 200_000
+        assert context_window(model) == 1_000_000
+    # 不能把恰好同前缀的未来/自定义型号误判成已配置的 GPT 家族。
+    for model in ("gpt-60-small", "gpt-5.60-sol", "gpt-5.50"):
+        assert context_window(model) == 200_000
 
 
 def test_configured_window_does_not_cross_claude_providers(monkeypatch):
