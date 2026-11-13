@@ -44,6 +44,17 @@ CREATE TABLE IF NOT EXISTS session_meta(
   session_key TEXT PRIMARY KEY,
   watermark_id INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS session_repositories(
+  session_key TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  authorization TEXT NOT NULL CHECK(authorization IN ('full', 'approved')),
+  PRIMARY KEY(session_key, agent_id, source)
+);
+CREATE TRIGGER IF NOT EXISTS delete_session_repositories AFTER DELETE ON session_meta
+BEGIN
+  DELETE FROM session_repositories WHERE session_key=OLD.session_key;
+END;
 CREATE TABLE IF NOT EXISTS projects(
   hash TEXT PRIMARY KEY,
   path TEXT NOT NULL UNIQUE,

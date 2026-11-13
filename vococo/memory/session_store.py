@@ -838,6 +838,24 @@ def get_permission(session_key: str) -> tuple[str, float]:
     return row[0] or "", float(row[1] or 0)
 
 
+def repository_grants(session_key: str, agent_id: str) -> dict[str, str]:
+    """仅记录本会话的仓库授权来源，不改变 Agent 长期关联。"""
+    return dict(_conn().execute(
+        "SELECT source, authorization FROM session_repositories WHERE session_key=? AND agent_id=?",
+        (session_key, agent_id),
+    ).fetchall())
+
+
+def grant_repository(session_key: str, agent_id: str, source: str, authorization: str) -> None:
+    c = _conn()
+    c.execute(
+        "INSERT INTO session_repositories(session_key,agent_id,source,authorization) VALUES (?,?,?,?) "
+        "ON CONFLICT(session_key,agent_id,source) DO UPDATE SET authorization=excluded.authorization",
+        (session_key, agent_id, source, authorization),
+    )
+    c.commit()
+
+
 def set_external_mcp_names(session_key: str, names: set[str]) -> None:
     """保存用户手动开启的外部 MCP；状态只属于当前会话。"""
     c = _conn()
@@ -889,6 +907,7 @@ def get_recent_auto_external_mcp_names(session_key: str, max_age: float = 1800) 
 
 def clear(session_key: str) -> None:
     c = _conn()
+    c.execute("DELETE FROM session_repositories WHERE session_key=?", (session_key,))
     purge_session_images(c, session_key)  # 先清图片文件,再删轮次
     purge_session_audio(c, session_key)  # 音频同理
     purge_session_files(c, session_key)  # 通用附件同理
