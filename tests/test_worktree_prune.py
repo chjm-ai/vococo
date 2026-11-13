@@ -3,8 +3,8 @@
 回收依据只有用户意图(2026-08-04 定案):
 - 归档会话 → recycle_empty_worktree(空壳才回收,有内容不动)
 - 删除会话 → remove_worktree(无条件回收)
-- 启动兜底 prune_orphans → 只回收「无主孤儿」(DB 无绑定),任何有绑定的 worktree
-  一律不动——哪怕会话早不活跃、代码干净,用户可能随时回来继续聊。
+- 启动兜底 prune_orphans → 只运行 git worktree prune 清理失效登记，不删除目录
+  或分支；有无 DB 绑定都保留，实际目录回收交给安全巡检。
 """
 from __future__ import annotations
 
@@ -106,21 +106,36 @@ async def test_dirty_summary_reports_uncommitted(isolated, monkeypatch, tmp_path
     assert d["commits"] == 1      # work.txt 的提交
 
 
-# ── prune_orphans:只清无主孤儿 ─────────────────────────────────────────────
+# ── prune_orphans:只清失效登记，不回收目录 ─────────────────────────────────
 
 
 @pytest.mark.anyio
-async def test_prune_removes_unbound_orphan(isolated, monkeypatch, tmp_path):
-    """没绑定的孤儿 worktree:回收(worktree+空分支)。"""
+async def test_prune_keeps_unbound_orphan_and_only_prunes_registration(isolated, monkeypatch, tmp_path):
+    """未绑定且干净的目录也保留；启动仅运行 git worktree prune。"""
     repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
     wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
     assert wt.is_dir()
+    calls = []
+    original_git = worktree._git
 
+    async def record_git(root, *args):
+        calls.append((root, args))
+        return await original_git(root, *args)
+
+    monkeypatch.setattr(worktree, "_git", record_git)
     n = await worktree.prune_orphans()
-    assert n == 1
-    assert not wt.exists()
-    out = subprocess.run(["git", "branch"], cwd=repo, capture_output=True, text=True).stdout
-    assert "vococo/s1" not in out  # 空分支一并删
+    assert n == 0
+    assert wt.is_dir()
+    assert (wt / "README.md").read_text() == "hi"
+    assert (str(repo), ("worktree", "prune")) in calls
+    assert all(args == ("worktree", "prune") for _, args in calls)
+    out = subprocess.run(["git", "branch"], cwd=repo, capture_output=True, text=True, check=True).stdout
+    assert "vococo/s1" in out  # 启动不擅自删空分支。
+    registered = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert f"worktree {wt}" in registered
 
 
 @pytest.mark.anyio
@@ -161,18 +176,36 @@ async def test_prune_keeps_bound_with_commits(isolated, monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 async def test_recycle_empty_worktree_on_archive(isolated, monkeypatch, tmp_path):
-    """归档场景:没改过代码的空壳 worktree → 立即回收(worktree+分支+绑定全清)。"""
+    """归档不直接回收开发副本，目录、分支和绑定留给每日安全巡检。"""
     repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
     wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
     session_store.set_worktree(f"web:p{phash}:s1", str(wt))
     assert wt.is_dir()
 
     recycled = await worktree.recycle_empty_worktree(f"web:p{phash}:s1")
-    assert recycled is True
-    assert not wt.exists()
-    assert session_store.get_worktree(f"web:p{phash}:s1") is None  # 绑定已解
+    assert recycled is False
+    assert wt.is_dir()
+    assert session_store.get_worktree(f"web:p{phash}:s1") == str(wt)
     out = subprocess.run(["git", "branch"], cwd=repo, capture_output=True, text=True).stdout
-    assert "vococo/s1" not in out  # 空分支一并删
+    assert "vococo/s1" in out
+
+
+@pytest.mark.anyio
+async def test_archive_keeps_ignored_files_and_active_lease(isolated, monkeypatch, tmp_path):
+    from vococo.core.repository_locks import lease, session_digest
+
+    repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
+    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
+    key = f"web:p{phash}:s1"
+    session_store.set_worktree(key, str(wt))
+    exclude = repo / ".git" / "info" / "exclude"
+    with exclude.open("a") as handle:
+        handle.write("\n.env\n")
+    (wt / ".env").write_text("LOCAL_TEST_VALUE=preserve")
+    with lease("general", session_digest(key)):
+        assert not await worktree.recycle_empty_worktree(key)
+    assert (wt / ".env").read_text() == "LOCAL_TEST_VALUE=preserve"
+    assert session_store.get_worktree(key) == str(wt)
 
 
 @pytest.mark.anyio

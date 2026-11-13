@@ -58,7 +58,9 @@ const assert=require('node:assert/strict');
         const rect=pop.getBoundingClientRect(), vv=window.visualViewport;
         return {top:rect.top,bottom:rect.bottom,viewTop:vv?.offsetTop||0,
           viewBottom:(vv?.offsetTop||0)+(vv?.height||innerHeight),
-          height:pop.clientHeight,total:pop.scrollHeight,overflow:getComputedStyle(pop).overflowY};
+          height:pop.clientHeight,total:pop.scrollHeight,overflow:getComputedStyle(pop).overflowY,
+          anchor:document.querySelector('#projSel').getBoundingClientRect().top,
+          space:pop.style.getPropertyValue('--proj-menu-space'),max:getComputedStyle(pop).maxHeight};
       });
       assert.ok(bounds.top>=bounds.viewTop,JSON.stringify({viewport,bounds}));
       assert.ok(bounds.bottom<=bounds.viewBottom,JSON.stringify({viewport,bounds}));

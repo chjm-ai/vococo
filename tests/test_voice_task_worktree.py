@@ -1,9 +1,7 @@
 """语音后台任务的代码隔离:core/worktree.ensure_worktree_for_task。
 
-背景:语音前台会话现在代码层禁掉了 Edit/Write(见 voice/session.py),真要改代码
-只能走 voice_dispatch_task 派后台任务;这里验证该任务一旦拿到 git 仓库的 cwd,
-就会自动开一个独立 worktree + `vococo/<task_id>` 分支,而不是直接在原目录/原
-分支上改——跟 Web/CLI「一会话一分支」看齐。
+聊天不创建 worktree；开发任务先进入中立工作目录，显式 ensure/prepare 后才创建
+独立 worktree + `vococo/<task_id>` 分支。准备失败必须报错，不能回退到原仓库。
 """
 from __future__ import annotations
 
@@ -64,8 +62,9 @@ async def test_ensure_worktree_for_task_creates_isolated_branch(isolated, monkey
 
 
 @pytest.mark.anyio
-async def test_ensure_worktree_for_default_session_uses_default_project(
-    isolated, monkeypatch, tmp_path
+@pytest.mark.parametrize("key", ["main", "web:main", "voice-chat:main"])
+async def test_ensure_worktree_for_default_chat_never_creates_worktree(
+    isolated, monkeypatch, tmp_path, key
 ):
     from vococo import config
     from vococo.core import worktree
@@ -76,16 +75,18 @@ async def test_ensure_worktree_for_default_session_uses_default_project(
     repo = tmp_path / "default-project"
     _init_repo(repo)
 
-    wt_dir = await worktree.ensure_worktree("main")
-
-    assert wt_dir is not None
-    assert Path(wt_dir).is_dir()
-    assert session_store.get_worktree("main") == wt_dir
-    branch = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=wt_dir, capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    assert branch == "vococo/main"
+    before = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert await worktree.ensure_worktree(key) is None
+    assert session_store.get_worktree(key) is None
+    assert not (tmp_path / "wt-base").exists()
+    after = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert after == before
 
 
 @pytest.mark.anyio
@@ -125,43 +126,85 @@ async def test_two_tasks_same_repo_get_distinct_branches(isolated, monkeypatch, 
 @pytest.mark.anyio
 async def test_git_task_refuses_to_run_without_worktree(isolated, monkeypatch, tmp_path):
     """worktree 创建失败时必须 fail closed，不能把任务放回项目主目录。"""
-    from vococo.core import worktree
+    from vococo import config
+    from vococo.core import tasks, worktree
+    from vococo.memory import session_store
+    from vococo.tools import builtin, danger
 
     repo = tmp_path / "proj"
     _init_repo(repo)
+    monkeypatch.setattr(config, "ROOT_DIR", repo)
+    task_id = "task-no-fallback"
+    tasks.create("开发", "改代码", task_id=task_id, cwd=str(repo))
+    key = tasks.session_key(task_id)
+    monkeypatch.setattr(danger, "current_session_key", lambda: key)
+    attempts = []
 
-    async def fail_add(*_args):
+    async def fail_add(*args):
+        attempts.append(args)
         return False, "simulated failure"
 
     monkeypatch.setattr(worktree, "_try_add", fail_add)
-    with pytest.raises(worktree.WorktreeIsolationError, match="已停止执行"):
-        await worktree.execution_cwd_for_task(str(repo), "task-no-fallback")
+    cwd = await worktree.execution_cwd_for_task(str(repo), task_id)
+    assert Path(cwd).parent.name == ".conversations"
+    assert Path(cwd).is_dir() and Path(cwd) != repo
+    assert attempts == []  # 启动只读任务不准备代码副本。
+    result = await builtin.prepare_repository.handler({"path": str(repo)})
+    assert result.get("isError") is True
+    assert "禁止回退" in result["content"][0]["text"]
+    assert attempts  # 确实测试了创建失败，而非聊天模式提前拒绝。
+    assert session_store.get_worktree(key) is None
+    assert await worktree.execution_cwd_for_task(str(repo), task_id) == cwd
+    assert subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout == ""
 
 
 @pytest.mark.anyio
-async def test_non_git_task_keeps_original_cwd(isolated, tmp_path):
+async def test_non_git_task_starts_in_neutral_cwd(isolated, tmp_path):
     from vococo.core import worktree
+    from vococo.memory import session_store
 
     plain = tmp_path / "plain"
     plain.mkdir()
-    assert await worktree.execution_cwd_for_task(str(plain), "task-plain") == str(plain)
+    cwd = await worktree.execution_cwd_for_task(str(plain), "task-plain")
+    assert Path(cwd).parent.name == ".conversations"
+    assert Path(cwd).is_dir() and Path(cwd) != plain
+    assert session_store.get_worktree("task:task-plain") is None
+    assert list(plain.iterdir()) == []
 
 
 @pytest.mark.anyio
-async def test_git_session_refuses_to_run_without_worktree(isolated, monkeypatch, tmp_path):
+async def test_git_session_prepare_failure_keeps_neutral_cwd(isolated, monkeypatch, tmp_path):
     from vococo import config
     from vococo.core import worktree
+    from vococo.memory import session_store
+    from vococo.tools import builtin, danger
 
     repo = tmp_path / "default-project"
     _init_repo(repo)
     monkeypatch.setattr(config, "ROOT_DIR", repo)
+    key = "web:development"
+    monkeypatch.setattr(danger, "current_session_key", lambda: key)
+    attempts = []
 
-    async def fail_add(*_args):
+    async def fail_add(*args):
+        attempts.append(args)
         return False, "simulated failure"
 
     monkeypatch.setattr(worktree, "_try_add", fail_add)
-    with pytest.raises(worktree.WorktreeIsolationError, match="已停止执行"):
-        await worktree.execution_cwd("main")
+    cwd = await worktree.execution_cwd(key)
+    assert Path(cwd).parent.name == ".conversations"
+    assert Path(cwd).is_dir() and Path(cwd) != repo
+    assert attempts == []
+    result = await builtin.prepare_repository.handler({"path": str(repo)})
+    assert result.get("isError") is True
+    assert "禁止回退" in result["content"][0]["text"]
+    assert attempts
+    assert session_store.get_worktree(key) is None
+    assert await worktree.execution_cwd(key) == cwd
+    assert not Path(cwd, ".git").exists()
 
 
 @pytest.mark.anyio

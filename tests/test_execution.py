@@ -152,15 +152,34 @@ async def test_development_agent_preserves_explicit_project_and_isolation(env):
     assert agent["execution_mode"] == "project"
     assert execution.policy_for_session(key) is None
     cwd = await worktree.execution_cwd(key)
-    assert cwd != str(repo) and Path(cwd, ".git").is_file()
+    assert Path(cwd).is_dir() and Path(cwd).parent.name == ".conversations"
+    assert cwd != str(repo) and not Path(cwd, ".git").exists()
+    assert session_store.get_worktree(key) is None
+    assert not (repo / "data").exists()
+    # 显式准备后才绑定源码副本，仍保留原有的物理隔离保证。
+    prepared = await worktree.ensure_worktree(key)
+    assert prepared != str(repo) and Path(prepared, ".git").is_file()
+    assert await worktree.execution_cwd(key) == prepared
     other = _repo(env / "explicit-project")
     assert config.resolve_execution_root(session_key=key, cwd=str(other)) == str(other)
     tasks.create("开发", "改代码", task_id="dev-task", agent_id=agent["id"])
     task_cwd = await worktree.execution_cwd_for_task(str(other), "dev-task")
-    assert _git(task_cwd, "rev-parse", "--git-common-dir") == str(other / ".git")
+    assert Path(task_cwd).is_dir() and Path(task_cwd).parent.name == ".conversations"
+    assert task_cwd != cwd and not Path(task_cwd, ".git").exists()
+    assert session_store.get_worktree(tasks.session_key("dev-task")) is None
+    assert not (other / "data").exists()
+    prepared_task = await worktree.ensure_worktree_for_task(str(other), "dev-task")
+    assert _git(prepared_task, "rev-parse", "--git-common-dir") == str(other / ".git")
+    assert await worktree.execution_cwd_for_task(str(other), "dev-task") == prepared_task
     tasks.create("继承", "改代码", task_id="inherit-dev", agent_id=agent["id"])
     inherited = await worktree.execution_cwd_for_task(None, "inherit-dev")
-    assert _git(inherited, "rev-parse", "--git-common-dir") == str(repo / ".git")
+    assert Path(inherited).is_dir() and Path(inherited).parent.name == ".conversations"
+    assert inherited not in {cwd, task_cwd} and not Path(inherited, ".git").exists()
+    inherited_root = config.resolve_execution_root(session_key=tasks.session_key("inherit-dev"))
+    assert inherited_root == str(repo)
+    prepared_inherited = await worktree.ensure_worktree_for_task(inherited_root, "inherit-dev")
+    assert _git(prepared_inherited, "rev-parse", "--git-common-dir") == str(repo / ".git")
+    assert await worktree.execution_cwd_for_task(None, "inherit-dev") == prepared_inherited
 
 
 def test_task_keeps_memory_and_skills_owner(env):

@@ -289,7 +289,7 @@ try{
       </div>
     </div>
     <label id="recentMainFilter" class="recent-main-filter" hidden>
-      <input id="recentShowMain" type="checkbox">显示主会话
+      <input id="recentShowMain" type="checkbox">显示历史聊天
     </label>
     <div class="sfoot" id="sfoot"><span class="savatar">U</span><span class="sfoottxt" id="sfoottxt">User</span>
       <div id="convFilterBox">
@@ -305,7 +305,7 @@ try{
       <div class="barwrap">
         <button class="icon" id="hamb"></button>
         <div class="title">
-          <span id="convTitle">主会话</span>
+          <span id="convTitle">新聊天</span>
           <span class="tsub">
             <span class="tagent" id="convAgentName" hidden></span>
             <span id="projBox">
@@ -366,7 +366,7 @@ try{
         <h2 class="dflt">你好，我是 vococo</h2>
         <p class="dflt">你的私人 AI 助理 · 有什么需要直接说</p>
         <div class="sugs dflt">
-          <button type="button" class="sug" onclick="openCallView()">进入主会话</button>
+          <button type="button" class="sug" onclick="openCallView()">新聊天</button>
           <button class="sug" data-s="你能做什么">你能做什么</button>
           <button class="sug" data-s="有哪些技能">有哪些技能</button>
           <button class="sug" data-s="看看今天的安排">看看今天的安排</button>
@@ -459,10 +459,16 @@ try{
   <main id="callView" hidden>
     <header id="callHead">
       <button id="backLink" title="展开侧栏"></button>
-      <span class="title">主会话</span>
-      <button id="clearVoiceCtxBtn" title="清空主会话上下文(AI 从头开始,历史保留)"></button>
+      <span class="title" id="callChatTitle">新聊天</span>
+      <button id="chatAgentBtn" type="button" title="Agent 设置" aria-label="Agent 设置"></button>
+      <button id="chatHistoryBtn" type="button" title="最近聊天" aria-label="最近聊天" aria-haspopup="dialog"></button>
+      <button id="clearVoiceCtxBtn" type="button" title="新聊天" aria-label="新聊天"></button>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
+    <dialog id="chatHistoryDialog" class="chat-history-dialog" aria-labelledby="chatHistoryTitle">
+      <div class="chat-history-head"><strong id="chatHistoryTitle">最近聊天</strong><button id="chatHistoryClose" type="button" aria-label="关闭">×</button></div>
+      <div id="chatHistoryList" class="chat-history-list"></div>
+    </dialog>
     <!-- 后台任务状态条:有排队/进行中任务才出现,见 renderTaskBar() -->
     <div id="taskBar" hidden></div>
     <div id="callBody">
@@ -563,9 +569,9 @@ try{
 <script src="/find.js"></script>
 <script>
 "use strict";
-// ── 空状态欢迎屏(新对话默认落地页,含最近对话列表)──────────────────────────
+// ── 空状态欢迎屏(新任务默认落地页,含最近对话列表)──────────────────────────
 // 2026-07-15:原独立首页(#homeView)已下架,语音通话入口 + 最近对话并入这个欢迎屏,
-// APP 启动后直接落在一个新对话上,不再有单独的"首页"中间态。
+// APP 启动后直接落在一个新任务上,不再有单独的"首页"中间态。
 const HOME_RECENT_COLLAPSED = 5;   // 默认只显示这么多条,避免欢迎屏信息量太大
 let homeRecentExpanded = false;
 function updateEmpty(){
@@ -604,7 +610,7 @@ function loadHomeConvs(){
 function renderEmptyRecent(){
   const recent = $("#homeRecent");
   if(!recent) return;
-  // 收集所有会话(含语音任务),排除当前正打开的这个(避免"最近对话"里出现指向自己的空新对话)。
+  // 收集所有会话(含语音任务),排除当前正打开的这个(避免"最近对话"里出现指向自己的空新任务)。
   // Agent 名下的会话只列这个 Agent 自己的(主会话 + 子会话),不混别的 Agent
   const ag = typeof agentForConv==="function" ? agentForConv(S.conv) : null;
   if(S.homeConvs===null && S.convFilter!=="all") loadHomeConvs();
@@ -616,7 +622,7 @@ function renderEmptyRecent(){
     if(ag && c.conv!==ag.main_conv && !agentOwnsConv(ag,c.conv)) continue;
     if(c.pinned) continue;  // 主会话单独处理
     if(c.conv===S.conv) continue;
-    items.push({conv:c.conv, title:(ag && c.conv===ag.main_conv) ? "主会话" : (c.title||"新对话"), ts:c.last_ts, archived:!!c.archived, type:"chat"});
+    items.push({conv:c.conv, title:(ag && c.conv===ag.main_conv) ? "历史聊天" : (c.title||"新任务"), ts:c.last_ts, archived:!!c.archived, type:"chat"});
   }
   // 加入语音任务(侧边栏/最近列表始终全量可见;「终态满 10 分钟自动隐藏」只
   // 作用于语音界面顶部的任务状态条,见 renderTaskBar / taskBarDoneHidden)
@@ -1915,11 +1921,11 @@ async function openConv(conv, silentGroup){
     || findConv(conv);
   if(!(c && c.pinned)){   // 主会话等置顶行不属于任何分组,别联动展开/切换"默认项目"
     S.project=convProject(conv);
-    // silentGroup:APP 启动时静默落地到新对话用,别把用户上次手动折叠的分组重新展开
+    // silentGroup:APP 启动时静默落地到新任务用,别把用户上次手动折叠的分组重新展开
     if(!silentGroup){ S.expanded.add(grpKey(S.project)); saveExpanded(); }
   }
   renderProjSelChip();
-  $("#convTitle").textContent = c ? (c.title||"新对话") : "新对话";
+  $("#convTitle").textContent = c ? (c.title||"新任务") : "新任务";
   syncCronHeader();   // 定时任务会话 → 标题栏亮出启停开关/编辑/「⋯」
   syncMoreHeader();   // 普通会话 → 标题栏最右侧亮出「⋯」(置顶/归档/删除)
   restoreSessionModels();
@@ -2080,7 +2086,7 @@ $("#hamb").innerHTML = ic("panel");
 // 设备)点它等同点背景遮罩,只是关掉这次打开的浮层,没有"收起态"可言。
 $("#collapseBtn").onclick = ()=> { if(window.innerWidth<=760) closeSidebar(); else setSidebarCollapsed(true); };
 $("#backdrop").onclick = closeSidebar;
-$(".brand").onclick = ()=>{ closeSidebar(); newChat(); };  // 品牌名 → 开一个新对话
+$(".brand").onclick = ()=>{ closeSidebar(); newChat(); };  // 品牌名 → 开一个新任务
 function closeSidebar(){ $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("show"); }
 // 桌面侧边栏折叠态(记忆到 localStorage)
 function setSidebarCollapsed(v){
@@ -2118,7 +2124,7 @@ async function openSearchResult(r, q){
   if(!r || !r.conv) return;
   if(!findConv(r.conv)){
     S.searchConvs.push({
-      conv:r.conv, title:r.title||"新对话", archived:!!r.archived,
+      conv:r.conv, title:r.title||"新任务", archived:!!r.archived,
       last_ts:r.last_ts||null, turns:r.last_ts ? 1 : 0,
       relation:r.relation, parent_session_key:r.parent_session_key,
     });
@@ -2132,7 +2138,7 @@ function renderSearchResults(q){
   SM.results.forEach((r, i)=>{
     const row = el("div","smrow" + (i===SM.sel?" sel":""));
     const t = el("div","smtitle");
-    const name = el("span","t"); name.innerHTML = smHl(r.title||"新对话", q); t.append(name);
+    const name = el("span","t"); name.innerHTML = smHl(r.title||"新任务", q); t.append(name);
     if(isChildTask(r)){ const tag=el("span","smtag"); tag.textContent="子任务"; t.append(tag); }
     if(r.archived){ const tag=el("span","smtag"); tag.textContent="已归档"; t.append(tag); }
     const tm = fmtTime(r.last_ts); if(tm){ const te=el("span","smtime"); te.textContent=tm; t.append(te); }
@@ -2194,7 +2200,7 @@ document.addEventListener("keydown", e=>{
   if((e.metaKey||e.ctrlKey) && !e.altKey && (e.key==="f"||e.key==="F")){
     if($("#app").hidden) return;
     e.preventDefault();
-    // 新对话欢迎屏(local- 会话)没东西可搜,仍走全局搜索
+    // 新任务欢迎屏(local- 会话)没东西可搜,仍走全局搜索
     const inChat=!e.shiftKey && S.surface==="chat" && !$("#chatMain").hidden && S.conv
       && !isDraftConv(S.conv) && $("#searchModal").hidden;
     if(inChat) openFind(); else { closeFind(); openSearchModal(); }

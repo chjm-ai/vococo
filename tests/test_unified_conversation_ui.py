@@ -36,18 +36,21 @@ def test_call_view_reuses_shared_composer_and_routes_text_to_voice_turn():
     assert "mountSharedComposer(true);" in html
     assert "window.sendCallText = sendCallText;" in html
     assert "return window.sendCallText(text);" in html
-    assert "fetch(\"/voice/send\"" in html
+    assert 'fetch("/voice/send?conv=" + encodeURIComponent(S.conv)' in html
+    assert 'fetch("/voice/send",' not in html
 
 
 def test_sidebar_has_one_unified_conversation_entry():
     html = _shell()
 
     assert 'const mainConv=S.convs.find(c=>c.conv==="main");' not in html
-    assert 'mainCt.textContent="主会话"' in html
+    assert 'mainCt.textContent="新聊天"' in html
     assert 'if(!S.voiceSidebarLoaded) return skelRow("voicemain");' not in html
     assert "if(!vs || !vs.main) return null;" not in html
-    assert 'onclick="openCallView()">进入主会话</button>' in html
-    assert '<span class="title">主会话</span>' in html
+    assert 'mainRow.onclick=()=>{ openCallView({fresh:true}); };' in html
+    assert '<span class="title" id="callChatTitle">新聊天</span>' in html
+    assert '<div class="ct">新任务</div>' in html
+    assert 'mainCt.textContent="主会话"' not in html
 
 
 def test_call_view_uses_exclusive_voice_or_text_panels():
@@ -87,7 +90,7 @@ def test_closing_call_view_restores_previously_open_conversation():
 def test_switching_views_preserves_composer_draft_and_uploading_attachment():
     html = _shell()
 
-    open_view = html[html.index("window.openCallView = function()") : html.index("window.closeCallView = function()")]
+    open_view = html[html.index("window.openCallView = async function(options={})") : html.index("window.closeCallView = function()")]
     close_view = html[html.index("window.closeCallView = function()") : html.index("// 任务状态条")]
 
     assert 'saveComposerState(S.conv);' in open_view
@@ -99,10 +102,14 @@ def test_switching_views_preserves_composer_draft_and_uploading_attachment():
 def test_switching_main_view_refreshes_draft_project_selector():
     html = _shell()
 
-    call_view = html[html.index("window.openCallView = function()") : html.index("window.closeCallView = function()")]
+    call_view = html[html.index("window.openCallView = async function(options={})") : html.index("window.closeCallView = function()")]
     close_view = html[html.index("window.closeCallView = function()") : html.index("// 任务状态条")]
 
-    assert 'S.conv = "voice-chat:main";' in call_view
+    assert 'await api("/chats/open"' in call_view
+    assert 'agent_id:agentId,new:!!options.fresh,conv:options.conv' in call_view
+    assert 'if(revision!==chatOpenRevision) return;' in call_view
+    assert 'S.conv = chat.conv;' in call_view
+    assert 'S.conv = "voice-chat:main";' not in call_view
     assert "S.conv = S.callReturnConv;" in close_view
     assert "renderProjSelChip();  // 草稿会话切入主会话时，收起仅草稿可见的项目选择器" in call_view
     assert "renderProjSelChip();  // 返回草稿会话时，恢复项目选择器" in close_view
@@ -476,8 +483,8 @@ def test_agent_row_state_covers_main_children_and_tasks():
 
 
 def test_agent_expanded_lists_main_conversation_first():
-    """展开 Agent 后第一行固定是「主会话」,和子会话同一层(主人反馈:主会话收在父级行里看不出来)。
-    点 Agent 行本身照样进主会话;名下只有主会话时不给展开(藏箭头、不渲染主会话行)。"""
+    """展开 Agent 后第一行是「新聊天」，排在任务前面。
+    点 Agent 行本身也开新聊天；没有子项时不显示展开箭头。"""
     js = STATIC_AGENTS.read_text(encoding="utf-8")
     row = js[js.index("function renderAgentGroup(") : js.index("function buildAgentMainRow(")]
     after_open = row[row.index("if(!open) return;") :]
@@ -489,8 +496,10 @@ def test_agent_expanded_lists_main_conversation_first():
     assert "visibility:hidden" in _declarations(styles, ".projgrp.agrow .pgcaret.agnone")
 
     main_row = js[js.index("function buildAgentMainRow(") : js.index("function openAgentMain(")]
-    assert '"主会话"' in main_row and "openAgentMain(a)" in main_row
-    assert "openConvMenu" not in main_row   # 主会话不能归档/删除,不给菜单
+    assert '"新聊天"' in main_row and "openAgentMain(a)" in main_row
+    open_main = js[js.index("function openAgentMain(") : js.index("function openAgentMain(") + 180]
+    assert 'openCallView({agentId:a.id, fresh:true})' in open_main
+    assert "openConvMenu" not in main_row   # 新聊天入口不是已有会话，不给归档/删除菜单
     assert 'ic("star")' not in main_row     # 主人定案:和子会话同款,不加星标
 
     # 默认露 5 行 = 主会话 + 4 个子会话,其余折进「展开更多」

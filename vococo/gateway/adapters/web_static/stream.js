@@ -835,6 +835,7 @@ function handleEvent(e){
   // 后台标题总结完成 → 刷新侧边栏/标题栏(loadConvs 会顺带同步顶栏标题),无论前后台会话
   if(e.type==="title"){ loadConvs(); return; }
   if(e.type==="video_preview"){ onVideoPreviewReady(e); return; }
+  if(typeof window.onChatGatewayEvent==="function" && window.onChatGatewayEvent(e)) return;
   // 非 web 入口(cron/语音任务等)驱动的会话有新动静,见 core/task_events.py 主事件桥:
   // 那边没有 start/thinking 流式过程可镜像,直接拼气泡容易出现"回复凭空冒出来,
   // 缺前面那句提问"的错位画面——干脆让浏览器去核对真实数据最省心。
