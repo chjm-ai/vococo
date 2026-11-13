@@ -41,6 +41,32 @@ def test_new_chat_preserves_history_and_owner(isolated):
         chats.select(first["conv"], owner["id"])
 
 
+@pytest.mark.parametrize("saved", ["missing", "deleted", "foreign"])
+def test_chat_mode_falls_back_to_recent_history(isolated, saved):
+    first = chats.create("general")["conv"]
+    session_store.append(first, "旧聊天", "旧回答")
+    latest = chats.create("general")["conv"]
+    session_store.append(latest, "最近聊天", "最近回答")
+    owner = agents.create("其他归属")
+    foreign = chats.create(owner["id"])["conv"]
+    key = {"missing": None, "deleted": "session:missing", "foreign": foreign}[saved]
+    session_store.set_prefs({"active_chat:general": key})
+    assert chats.current("general")["conv"] == latest
+    assert session_store.get_prefs()["active_chat:general"] == latest
+    assert {row["conv"] for row in chats.recent("general")} == {first, latest}
+    chats.select(first, "general")
+    assert chats.current("general")["conv"] == first  # 上次选择优先于最近消息
+
+
+def test_chat_mode_without_history_creates_only_one_empty_chat(isolated):
+    first = chats.current("general")
+    assert not first["turns"]
+    assert chats.current("general")["conv"] == first["conv"]
+    assert chats.recent("general") == []
+    with pytest.raises(ValueError):
+        chats.current("nonexistent-agent")
+
+
 @pytest.mark.anyio
 async def test_chat_and_readonly_task_do_not_create_worktree(isolated, monkeypatch):
     root = isolated / "repo"

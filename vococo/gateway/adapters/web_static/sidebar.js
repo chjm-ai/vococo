@@ -459,10 +459,10 @@ function buildVoiceMainRow(inCall){
   const mainRow=el("div","conv"+(inCall?" active":""));
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");
-  const mainCt=el("div","ct"); mainCt.textContent="新聊天"; mainBody.append(mainCt);
+  const mainCt=el("div","ct"); mainCt.textContent="聊天模式"; mainBody.append(mainCt);
   // 主行不显示时刻(2026-08-04:与其他会话行区分,保持简洁)
   mainRow.append(mainBody);
-  mainRow.onclick=()=>{ openCallView({fresh:true}); };
+  mainRow.onclick=()=>{ openCallView(); };
   return mainRow;
 }
 function buildLibraryRow(){

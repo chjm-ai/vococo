@@ -44,10 +44,11 @@ def test_sidebar_has_one_unified_conversation_entry():
     html = _shell()
 
     assert 'const mainConv=S.convs.find(c=>c.conv==="main");' not in html
-    assert 'mainCt.textContent="新聊天"' in html
+    assert 'mainCt.textContent="聊天模式"' in html
     assert 'if(!S.voiceSidebarLoaded) return skelRow("voicemain");' not in html
     assert "if(!vs || !vs.main) return null;" not in html
-    assert 'mainRow.onclick=()=>{ openCallView({fresh:true}); };' in html
+    assert 'mainRow.onclick=()=>{ openCallView(); };' in html
+    assert 'mainRow.onclick=()=>{ openCallView({fresh:true}); };' not in html
     assert '<span class="title" id="callChatTitle">新聊天</span>' in html
     assert '<div class="ct">新任务</div>' in html
     assert 'mainCt.textContent="主会话"' not in html

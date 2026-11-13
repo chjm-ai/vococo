@@ -53,6 +53,9 @@ def current(agent_id: str) -> dict:
     key = session_store.get_prefs().get(f"active_chat:{agent_id}")
     if key and mode(key) == "chat" and session_store.session_binding(key).get("agent_id") == agent_id:
         return _summary(key)
+    history = recent(agent_id)
+    if history:
+        return select(history[0]["conv"], agent_id)
     return create(agent_id)
 
 
