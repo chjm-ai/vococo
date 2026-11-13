@@ -296,9 +296,9 @@ var _convsFetchedAt = 0, _convsSoonTimer = null, _convsRequestId = 0;
 function applyConvs(d){
   _convsFetchedAt = Date.now();
   const main = d.main; main.conv="main"; main.title="历史聊天"; main.pinned=true;
-  // 新建但还没发出第一条消息的草稿会话后端还不认识,不在返回列表里;
-  // 合并时保留它,否则录音/转写等待期间只要有别的会话触发这次刷新,这条新会话就会被冲没
-  const locals = S.convs.filter(c=>isDraftConv(c.conv) && !d.conversations.some(x=>x.conv===c.conv));
+  // 草稿和当前聊天不在任务列表响应中，保留详情元数据，避免刷新丢失 Agent 归属。
+  const locals = S.convs.filter(c=>(isDraftConv(c.conv) || (isChatConversation(c) && c.conv===S.conv))
+    && c.conv!==main.conv && !d.conversations.some(x=>x.conv===c.conv));
   // 全部会话(含主会话)按最近活跃排序,最新的排最前面
   S.convs = [main, ...d.conversations, ...locals].sort((a,b)=>(b.last_ts||0)-(a.last_ts||0));
   if(typeof patchAgentTitles==="function") patchAgentTitles(S.convs);   // Agent 主会话显示 Agent 名字
@@ -382,7 +382,7 @@ function convProject(conv){
 // 普通会话的 buildConvRow 不是同一个函数(2026-07-29:语音任务开放置顶后补上,
 // 否则点了置顶按钮却不会真的挪进置顶区,是个死功能)。
 function pinnedConvs(inCall){
-  const convItems = S.convs.filter(c=>!isChildTask(c) && c.pinned && c.conv!=="main").map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
+  const convItems = S.convs.filter(c=>!isChatConversation(c) && !isChildTask(c) && c.pinned && c.conv!=="main").map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall)}));
   const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!isChildTask(t) && t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall)}));
   const cronItems = (S.cronJobs||[]).filter(j=>j.pinned).map(j=>({ts:j.last_ts||0, build:()=>buildCronJobRow(j, inCall)}));
   return [...convItems, ...taskItems, ...cronItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
@@ -625,13 +625,17 @@ $("#recentShowMain").onchange=e=>{
   S.tabShown.recent=TAB_PAGE_SIZE;
   renderConvs();
 };
+// 聊天元数据仍供当前详情使用，但记录只在聊天历史浮层展示。
+function isChatConversation(c){
+  return c.conversation_mode==="chat";
+}
 function isRecentMainConv(c){
   return c.conv==="main" || !!agentByMainConv(c.conv);
 }
 function renderRecentTab(box, inCall){
   const passesArchFilter = arch => !(S.convFilter==="archived"&&!arch) && !(S.convFilter==="active"&&arch);
   const taskItems = ((S.voiceSidebar&&S.voiceSidebar.tasks)||[]).filter(t=>!isChildTask(t) && !t.pinned).map(t=>({ts:t.last_ts||0, build:()=>buildVoiceTaskRow(t, inCall, true)}));
-  const convItems = S.convs.filter(c=>!isChildTask(c) && (c.conv==="main" || !c.pinned) && passesArchFilter(!!c.archived) && (S.recentShowMain || !isRecentMainConv(c))).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall, true)}));
+  const convItems = S.convs.filter(c=>!isChatConversation(c) && !isChildTask(c) && (c.conv==="main" || !c.pinned) && passesArchFilter(!!c.archived) && (S.recentShowMain || !isRecentMainConv(c))).map(c=>({ts:c.last_ts||0, build:()=>buildConvRow(c, inCall, true)}));
   const rows = [...taskItems, ...convItems].sort((a,b)=>(b.ts||0)-(a.ts||0));
   if(!rows.length){ box.append(sideTabEmpty("暂无最近会话")); return; }
   const shownN=Math.min(S.tabShown.recent, rows.length);

@@ -225,7 +225,7 @@ def test_browser_draft_id_stays_stable_and_metadata_drives_owner():
     root = Path(__file__).parents[1] / "vococo/gateway/adapters/web_static"
     source = (root / "sidebar.js").read_text()
     functions = []
-    for name in ("isDraftConv", "convOwnership", "convProject", "newChatIn", "pickDraftProject", "applyConvs"):
+    for name in ("isDraftConv", "isChatConversation", "convOwnership", "convProject", "newChatIn", "pickDraftProject", "applyConvs"):
         functions.append(re.search(r"^function " + name + r"\(.*?^}", source, re.M | re.S)[0])
     script = """
 const assert=require('node:assert/strict');

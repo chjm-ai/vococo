@@ -618,7 +618,7 @@ function renderEmptyRecent(){
   for(const c of S.convs) convs.set(c.conv,c);
   const items = [];
   for(const c of convs.values()){
-    if(isChildTask(c)) continue;
+    if(isChatConversation(c) || isChildTask(c)) continue;
     if(ag && c.conv!==ag.main_conv && !agentOwnsConv(ag,c.conv)) continue;
     if(c.pinned) continue;  // 主会话单独处理
     if(c.conv===S.conv) continue;

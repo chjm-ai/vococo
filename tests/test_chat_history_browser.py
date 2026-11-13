@@ -16,7 +16,8 @@ def anyio_backend():
 
 
 @pytest.mark.anyio
-async def test_chat_history_in_real_browser(running_library, isolated):
+@pytest.mark.parametrize("device", ["desktop", "mobile"])
+async def test_chat_history_in_real_browser(running_library, isolated, device):
     _, origin, *_ = running_library
     owner = agents.create("历史验收 Agent")
     first = chats.create(owner["id"])["conv"]
@@ -24,9 +25,13 @@ async def test_chat_history_in_real_browser(running_library, isolated):
     session_store.append(first, "第一段提问", "第一段回答")
     other = chats.create("general")["conv"]
     session_store.append(other, "别的 Agent 提问", "不应显示")
+    task = "session:" + "a" * 32
+    session_store.bind_session(task, agent_id=owner["id"])
+    session_store.set_title(task, "必须保留的任务")
+    session_store.append(task, "任务提问", "任务回答")
     process = await asyncio.create_subprocess_exec(
         "node", str(Path(__file__).with_name("chat_history_browser.cjs")),
-        origin, config.WEB_AUTH_TOKEN, owner["id"], first, str(isolated),
+        origin, config.WEB_AUTH_TOKEN, owner["id"], first, str(isolated), device,
         env=_browser_environment(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     try:

@@ -430,16 +430,21 @@ def test_agent_tab_hides_pinned_children_and_their_unread_badges():
     source = STATIC_AGENTS.read_text(encoding="utf-8")
     convs = source[source.index("function agentConvs(") : source.index("// Agent 行的两种状态提示")]
     items = source[source.index("function agentTasks(") : source.index("function agentKey(")]
+    sidebar = STATIC_SIDEBAR.read_text(encoding="utf-8")
+    chat_filter = sidebar[sidebar.index("function isChatConversation(") : sidebar.index("function isRecentMainConv(")]
     script = f"""
 const assert=require('node:assert/strict');
 const a={{id:'general',main_conv:'main'}};
 const S={{convs:[{{conv:'main',pinned:true}},{{conv:'later',pinned:true,pending_review:true}},
-  {{conv:'normal'}},{{conv:'archived',archived:true}}],
+  {{conv:'normal'}},{{conv:'archived',archived:true}},
+  {{conv:'chat',conversation_mode:'chat',pending_review:true}},
+  {{conv:'archived-chat',conversation_mode:'chat',archived:true}}],
   voiceSidebar:{{tasks:[{{conv:'task:later',pinned:true,pending_review:true}}]}},
   live:{{}},pendingReview:{{}},convFilter:'active'}};
 const isChildTask=item=>item?.relation==='child';
 const agentOwnsConv=(a,conv)=>conv!=='main';
 const agentById=()=>a;
+{chat_filter}
 {convs}
 {items}
 assert.deepEqual(agentConvs(a).map(c=>c.conv),['normal']);
