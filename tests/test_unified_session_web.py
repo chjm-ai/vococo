@@ -68,6 +68,10 @@ async def test_first_send_binds_and_internal_inject_reuses_ownership(setup_web):
         assert response.status == 200
         await adapter.inject(key, "/help")
         assert session_store.session_binding(key)["agent_id"] == "general"
+        # /help 不保存聊天历史，不能单靠归属绑定把空占位塞进最近列表。
+        rows = (await (await client.get("/conversations")).json())["conversations"]
+        assert key not in {r["conv"] for r in rows}
+        session_store.append(key, "开始对话", "回复")
         rows = (await (await client.get("/conversations")).json())["conversations"]
         assert next(r for r in rows if r["conv"] == key)["conversation_id"] == key
 
@@ -113,6 +117,29 @@ async def test_inject_cannot_create_unbound_session(setup_web):
     with pytest.raises(ValueError, match="显式"):
         await adapter.inject(config.new_session_key(), "/help")
     assert adapter._inbox.empty()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("list_filter", ["all", "active", "archived"])
+async def test_recent_list_excludes_bound_placeholders_without_deleting_them(setup_web, list_filter):
+    _, app, _ = setup_web
+    placeholders = [config.new_session_key() for _ in range(10)]
+    for key in placeholders:
+        session_store.bind_session(key, agent_id="general")
+    pending, historical = config.new_session_key(), config.new_session_key()
+    session_store.bind_session(pending, agent_id="general")
+    session_store.ensure_title(pending, "正在等待首条回复")
+    session_store.append(historical, "历史消息", "回复")
+    if list_filter == "archived":
+        for key in [*placeholders, pending, historical]:
+            session_store.set_conv_archived(key, True)
+    async with TestClient(TestServer(app)) as client:
+        for _ in range(2):
+            response = await client.get("/conversations", params={"filter": list_filter})
+            rows = (await response.json())["conversations"]
+            assert {row["conv"] for row in rows} == {pending, historical}
+    assert all(session_store.session_binding(key) for key in placeholders)
+    assert {row["key"] for row in session_store.list_sessions("session:")} >= set(placeholders)
 
 
 @pytest.mark.anyio

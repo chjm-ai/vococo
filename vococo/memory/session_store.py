@@ -1026,7 +1026,8 @@ def ensure_title(session_key: str, from_text: str, limit: int = 40) -> str | Non
     return title
 
 
-def list_sessions(prefix: str, *, archived: bool | None = None) -> list[dict]:
+def list_sessions(prefix: str, *, archived: bool | None = None,
+                  include_empty: bool = True) -> list[dict]:
     """列出 session_key 以 prefix 开头的会话摘要,最近活跃的排前面。
 
     返回 [{key, title, turns, last_ts}, ...]。turns 只算当前上下文窗口
@@ -1035,6 +1036,8 @@ def list_sessions(prefix: str, *, archived: bool | None = None) -> list[dict]:
     会话键来源取「有 turn」∪「有标题」:新建会话在 AI 回复完之前只写了
     session_meta 标题、还没有 turn 落库,若只按 turns 表列会导致它刚发完
     第一条就从侧边栏消失(要等回复完才出现)。带标题即视为一个会话。
+    默认也包含仅绑定归属的记录，供工具查找尚未使用的 Agent 主会话；
+    最近列表传 include_empty=False，避免把绑定占位误当成已经开始的对话。
 
     archived=None(默认)不过滤,兼容旧调用;传 True/False 时在 SQL 层
     (HAVING,因为 archived 是聚合后的字段)只取归档/未归档会话——过滤越境
@@ -1043,6 +1046,7 @@ def list_sessions(prefix: str, *, archived: bool | None = None) -> list[dict]:
     c = _conn()
     having = ""
     params: list = [prefix + "%", prefix + "%"]
+    bound_clause = " OR bound_at IS NOT NULL" if include_empty else ""
     if archived is not None:
         having = " HAVING COALESCE(MAX(m.archived),0) = ?"
         params.append(1 if archived else 0)
@@ -1051,7 +1055,8 @@ def list_sessions(prefix: str, *, archived: bool | None = None) -> list[dict]:
         "  SELECT session_key FROM turns WHERE session_key LIKE ?"
         "  UNION"
         "  SELECT session_key FROM session_meta "
-        "  WHERE session_key LIKE ? AND ((title IS NOT NULL AND title != '') OR bound_at IS NOT NULL)"
+        "  WHERE session_key LIKE ? AND ((title IS NOT NULL AND title != '')"
+        f"{bound_clause})"
         ") "
         # 还没 turn 的新会话用「当前时间」兜底,好让它在等首条回复期间稳定
         # 排在列表最前(前端按 last_ts 倒序);回复落库后自然换成真实 turn 时间。

@@ -420,7 +420,8 @@ def _bind_browser_session(key: str, ownership: dict | None, *, bind: bool = True
         session_store.bind_session(key, agent_id=aid, project_hash=phash)
 
 
-def _rows_with_conv(prefix: str, *, archived: bool | None = None) -> list[dict]:
+def _rows_with_conv(prefix: str, *, archived: bool | None = None,
+                    include_empty: bool = True) -> list[dict]:
     """session_store.list_sessions(prefix) 的结果统一装上 conv 字段。
 
     普通会话/语音任务两个侧栏分组都从这里取数据——它们和 pending_review/
@@ -432,7 +433,7 @@ def _rows_with_conv(prefix: str, *, archived: bool | None = None) -> list[dict]:
 
     archived 透传给 list_sessions:None 取全部,True/False 只取归档/未归档。
     """
-    rows = session_store.list_sessions(prefix, archived=archived)
+    rows = session_store.list_sessions(prefix, archived=archived, include_empty=include_empty)
     for r in rows:
         _session_metadata(r)
     return rows
@@ -1455,7 +1456,7 @@ class WebAdapter:
 
         cron_keys = {j.get("conv") or f"task:{j['id']}" for j in scheduler.load_jobs()}
         convs = [c for prefix in ("web:", "session:")
-                 for c in _rows_with_conv(prefix, archived=archived)
+                 for c in _rows_with_conv(prefix, archived=archived, include_empty=False)
                  if not c["task_id"] and c["key"] not in cron_keys
                  and c["conversation_mode"] != "chat"]
         # 主会话(与 TG/CLI 共享的统一会话)固定置顶,conv id 用 "main"
