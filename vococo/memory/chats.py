@@ -3,7 +3,15 @@ from __future__ import annotations
 
 import uuid
 
+from .. import config
 from . import _db, agents, session_store
+
+
+def _is_agent_main(key: str, agent_id: str | None) -> bool:
+    owner = agents.get(agent_id) if agent_id else None
+    if owner is None and (phash := config.project_hash_from_key(key)):
+        owner = agents.by_project_hash(phash)
+    return bool(owner and owner["id"] != "general" and agents.main_session_key(owner) == key)
 
 
 def mode(key: str | None) -> str:
@@ -12,8 +20,11 @@ def mode(key: str | None) -> str:
     if key in {"main", "web:main", "voice-chat:main"}:
         return "chat"
     row = _db.conn().execute(
-        "SELECT conversation_mode FROM session_meta WHERE session_key=?", (key,),
+        "SELECT conversation_mode, agent_id FROM session_meta WHERE session_key=?", (key,),
     ).fetchone()
+    # 旧版本读聊天历史时误标过 Agent 主会话；直接执行也要纠正，不能依赖先打开历史。
+    if row and row[0] == "chat" and _is_agent_main(key, row[1]):
+        return "task"
     return row[0] if row and row[0] else "task"
 
 
@@ -21,13 +32,14 @@ def preserve_legacy(owner: dict) -> None:
     keys = [agents.main_session_key(owner)]
     if owner["id"] == "general":
         keys.append("voice-chat:main")
+    legacy_mode = "chat" if owner["id"] == "general" else "task"
     for key in keys:
         if not session_store.session_summary(key)["turns"]:
             continue
         if not session_store.session_binding(key):
             session_store.bind_session(key, agent_id=owner["id"], project_hash=owner.get("project_hash"))
         with _db.conn() as connection:
-            connection.execute("UPDATE session_meta SET conversation_mode='chat' WHERE session_key=?", (key,))
+            connection.execute("UPDATE session_meta SET conversation_mode=? WHERE session_key=?", (legacy_mode, key))
 
 
 def _summary(key: str) -> dict:
@@ -75,6 +87,6 @@ def recent(agent_id: str) -> list[dict]:
         "SELECT session_key FROM session_meta WHERE agent_id=? AND conversation_mode='chat' "
         "AND COALESCE(archived,0)=0", (agent_id,),
     ).fetchall()
-    rows = [_summary(key) for (key,) in keys]
+    rows = [_summary(key) for (key,) in keys if mode(key) == "chat"]
     return sorted((row for row in rows if row.get("turns")),
                   key=lambda row: row.get("last_ts") or 0, reverse=True)[:30]

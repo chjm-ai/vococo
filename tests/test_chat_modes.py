@@ -9,7 +9,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from vococo import config
 from vococo.core import worktree
 from vococo.gateway.adapters.web import WebAdapter
-from vococo.memory import agents, chats, session_store
+from vococo.memory import _db, agents, chats, session_store
 from vococo.voice import session
 
 
@@ -67,6 +67,44 @@ def test_chat_mode_without_history_creates_only_one_empty_chat(isolated):
         chats.current("nonexistent-agent")
 
 
+@pytest.mark.parametrize("stored_mode", ["task", "chat", None])
+@pytest.mark.parametrize("legacy_key", [False, True])
+def test_legacy_project_main_stays_task_when_reading_chat_history(isolated, stored_mode, legacy_key):
+    root = isolated / "project"
+    root.mkdir()
+    owner = agents.create("开发", path=str(root))
+    if legacy_key:
+        meta = agents._read_meta(owner["id"])
+        meta["main_conv"] = f"p{owner['project_hash']}:main"
+        agents._write_meta(owner["id"], meta)
+        owner = agents.get(owner["id"])
+    key = agents.main_session_key(owner)
+    session_store.bind_session(key, agent_id=owner["id"], project_hash=owner["project_hash"])
+    session_store.append(key, "旧开发成果", "保留回答")
+    with _db.conn() as connection:
+        connection.execute("UPDATE session_meta SET conversation_mode=? WHERE session_key=?", (stored_mode, key))
+    session_store.set_prefs({f"active_chat:{owner['id']}": key})
+
+    # 未打开聊天历史时也必须兼容已经被旧版本误标的主会话。
+    assert chats.mode(key) == "task"
+    assert chats.recent(owner["id"]) == []
+    chat = chats.current(owner["id"])
+    assert chat["conv"] != key
+    assert chats.mode(chat["conv"]) == "chat"
+    with pytest.raises(ValueError):
+        chats.select(key, owner["id"])
+    assert chats.mode(key) == "task"
+    assert _db.conn().execute("SELECT conversation_mode FROM session_meta WHERE session_key=?", (key,)).fetchone()[0] == "task"
+    assert session_store.session_summary(key)["turns"] == 1
+
+
+def test_legacy_general_main_remains_chat(isolated):
+    session_store.append("main", "旧聊天", "保留回答")
+    chats.preserve_legacy(agents.get("general"))
+    assert chats.mode("main") == "chat"
+    assert "main" in {row["conv"] for row in chats.recent("general")}
+
+
 @pytest.mark.anyio
 async def test_chat_and_readonly_task_do_not_create_worktree(isolated, monkeypatch):
     root = isolated / "repo"
@@ -85,6 +123,40 @@ async def test_chat_and_readonly_task_do_not_create_worktree(isolated, monkeypat
     checkout = await worktree.ensure_worktree(task)
     assert Path(checkout, ".git").is_file()
     assert await worktree.execution_cwd(task) == checkout
+
+
+@pytest.mark.anyio
+async def test_mislabeled_main_prepares_real_worktree_but_chat_refuses(isolated, monkeypatch):
+    from vococo.tools import builtin, danger
+
+    root = isolated / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(root)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "初始"], check=True, capture_output=True)
+    monkeypatch.setattr(config, "ROOT_DIR", root)
+    monkeypatch.setattr(worktree, "_wt_base", lambda _root: isolated / "worktrees")
+    owner = agents.create("开发", path=str(root))
+    agents.update(owner["id"], permission="full")
+    meta = agents._read_meta(owner["id"])
+    meta["main_conv"] = f"p{owner['project_hash']}:main"
+    agents._write_meta(owner["id"], meta)
+    key = agents.main_session_key(agents.get(owner["id"]))
+    session_store.bind_session(key, agent_id=owner["id"], project_hash=owner["project_hash"])
+    with _db.conn() as connection:
+        connection.execute("UPDATE session_meta SET conversation_mode='chat' WHERE session_key=?", (key,))
+    monkeypatch.setattr(danger, "current_session_key", lambda: key)
+    result = await builtin.prepare_repository.handler({"path": str(root)})
+    assert not result.get("isError"), result
+    checkout = session_store.get_worktree(key)
+    assert checkout and Path(checkout, ".git").is_file()
+    assert Path(checkout) != root
+
+    chat = chats.create(owner["id"])["conv"]
+    monkeypatch.setattr(danger, "current_session_key", lambda: chat)
+    result = await builtin.prepare_repository.handler({"path": str(root)})
+    assert result.get("isError")
+    assert "聊天模式" in result["content"][0]["text"]
+    assert session_store.get_worktree(chat) is None
 
 
 @pytest.mark.anyio
