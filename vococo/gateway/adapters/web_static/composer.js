@@ -1088,6 +1088,23 @@ window.vococoKeyboard = (()=>{
     else active.click();
     return true;
   }
+  function openFocusedMenu(){
+    const row=document.activeElement.closest?.('#sidebar .conv[data-conv]');
+    const button=row?.querySelector('.more');
+    if(!button) return false;
+    openConvMenu(button,row.dataset.conv);
+    convMenuEl?.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
+    return true;
+  }
+  function navigateMenu(e){
+    const menu=document.activeElement.closest?.('.convmenu');
+    if(!menu || !['ArrowUp','ArrowDown','Home','End'].includes(e.key)) return false;
+    const items=[...menu.querySelectorAll('button:not(:disabled)')].filter(visible);
+    if(!items.length) return false;
+    const index=items.indexOf(document.activeElement);
+    const next=e.key==='Home' ? 0 : e.key==='End' ? items.length-1 : (index+(e.key==='ArrowUp'?-1:1)+items.length)%items.length;
+    items[next].focus({preventScroll:true}); return true;
+  }
   function navigateChoices(e){
     const active=document.activeElement;
     const root=active.closest?.(".choice") || (visible($("#choiceModal")) ? $("#choiceModalOpts") : null);
@@ -1122,6 +1139,7 @@ window.vococoKeyboard = (()=>{
       // 没有安全关闭入口的弹窗不穿透到停止操作。
       return true;
     }
+    if(visible(convMenuEl)){ closeConvMenu(); return true; }
     const pops=[...document.querySelectorAll(popSelector)].filter(visible);
     if(pops.length){ closeComposerPopovers(); closeHeaderPopovers(); pops.forEach(node=>node.hidden=true); return true; }
     if([...document.querySelectorAll('.artifact-menu-panel:not([hidden])')].some(visible)){
@@ -1146,13 +1164,19 @@ window.vococoKeyboard = (()=>{
     else switchConversation(e.code==="ArrowUp"?-1:1);
     return true;
   }
+  function handleMenuShortcut(e){
+    const menuKey=(e.ctrlKey && e.altKey && !e.metaKey && !e.shiftKey && e.code==='KeyM') ||
+      (!e.ctrlKey && !e.altKey && !e.metaKey && (e.key==='ContextMenu' || (e.shiftKey && e.key==='F10')));
+    if(!menuKey || modal() || (!e.repeat && !openFocusedMenu())) return false;
+    e.preventDefault(); e.stopImmediatePropagation(); return true;
+  }
   function handleKey(e){
     if($("#app").hidden || e.isComposing || e.keyCode===229) return;
-    if(handleShortcut(e)) return;
+    if(handleMenuShortcut(e) || handleShortcut(e)) return;
     // 不吞语音工具的修饰键；网页只能处理 Safari 实际交付的事件。
     if(e.code===voiceFocusKey() && !e.repeat && !e.ctrlKey && !e.shiftKey){ voiceHeld=true; focusComposer(); return; }
     if(e.key==="Escape"){
-      if(!modal() && ((!chat() && !$("#sidebar").classList.contains("open")) || (editable(e.target) && e.target!==$("#ta") && !(typeof FIND!=="undefined" && FIND.open)))) return;
+      if(!modal() && !visible(convMenuEl) && ((!chat() && !$("#sidebar").classList.contains("open")) || (editable(e.target) && e.target!==$("#ta") && !(typeof FIND!=="undefined" && FIND.open)))) return;
       if(e.repeat){ e.preventDefault(); e.stopImmediatePropagation(); return; }
       const closed=escapeLayer();
       if(!closed && chat() && !S.stopping?.[S.conv]) void stopReply();
@@ -1160,7 +1184,7 @@ window.vococoKeyboard = (()=>{
     }
     if(e.key==="Enter" && e.repeat){ e.preventDefault(); e.stopImmediatePropagation(); return; }
     if(e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
-    if(navigateChoices(e) || (!modal() && navigateSidebar(e))){ e.preventDefault(); e.stopImmediatePropagation(); return; }
+    if(navigateChoices(e) || (!modal() && (navigateMenu(e) || navigateSidebar(e)))){ e.preventDefault(); e.stopImmediatePropagation(); return; }
     if(modal() || !chat()) return;
     const active=document.activeElement;
     if(!editable(active) && (active===$("#messages") || active===document.body) && ["ArrowUp","ArrowDown"].includes(e.key)){

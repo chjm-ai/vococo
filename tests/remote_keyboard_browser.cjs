@@ -40,6 +40,36 @@ const assert=require('node:assert/strict');
     assert.equal(await page.evaluate(()=>document.activeElement.dataset.conv),'local-remote-c','侧栏重绘不丢高亮');
     assert.equal(await page.evaluate(()=>getComputedStyle(document.activeElement).outlineStyle),'solid');
     await page.screenshot({path:screenshot+'.focused.png'});
+    // 菜单作用于高亮行，而不是仍在正文中打开的会话；上下循环，Esc 返回原行。
+    await shortcut('m');
+    assert.match(await page.evaluate(()=>document.activeElement.textContent),/重命名/);
+    assert.equal(await page.evaluate(()=>getComputedStyle(document.activeElement).outlineStyle),'solid');
+    await page.keyboard.press('ArrowUp');
+    assert.match(await page.evaluate(()=>document.activeElement.textContent),/删除/);
+    await page.keyboard.press('ArrowDown');
+    assert.match(await page.evaluate(()=>document.activeElement.textContent),/重命名/);
+    await page.screenshot({path:screenshot+'.menu.png',animations:'disabled'});
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('.convmenu').count(),0);
+    assert.equal(await page.evaluate(()=>document.activeElement.dataset.conv),'local-remote-c');
+    // 工作台/作品库状态下，桌面侧栏菜单也要能用 Esc 退出。
+    await page.evaluate(()=>{S.surface='library';});
+    await shortcut('m');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('.convmenu').count(),0);
+    assert.equal(await page.evaluate(()=>document.activeElement.dataset.conv),'local-remote-c');
+    await page.evaluate(()=>{S.surface='chat';});
+    await page.keyboard.press('Shift+F10');
+    await page.keyboard.press('ArrowDown');
+    assert.match(await page.evaluate(()=>document.activeElement.textContent),/稍后处理/);
+    await page.keyboard.press('ArrowUp');
+    let renameDefault;
+    page.once('dialog',async dialog=>{renameDefault=dialog.defaultValue();await dialog.accept('第三个已改名');});
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(()=>S.convs.find(c=>c.conv==='local-remote-c')?.title==='第三个已改名');
+    assert.equal(renameDefault,'第三个');
+    assert.equal(await page.evaluate(()=>S.conv),'local-remote-b');
+    assert.equal(await page.evaluate(()=>document.activeElement.dataset.conv),'local-remote-c');
     // 鼠标操作之后，遥控器程序式聚焦也必须可见，不能依赖 :focus-visible 的浏览器判断。
     await page.click('#ta');
     await page.evaluate(()=>{
@@ -56,6 +86,8 @@ const assert=require('node:assert/strict');
     await page.fill('#ta','正在输入');
     await page.keyboard.press('ArrowUp');
     assert.equal(await page.evaluate(()=>document.activeElement.id),'ta');
+    await shortcut('m');
+    assert.equal(await page.locator('.convmenu').count(),0,'输入框中不误开会话菜单');
     assert.equal(await page.evaluate(()=>S.conv),'local-remote-c');
     let sends=0,aborts=0;
     await page.route('**/send',route=>{sends++;return route.fulfill({json:{ok:true}});});
