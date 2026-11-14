@@ -49,7 +49,17 @@ function renderAppearancePane(){
   h += '<div class="theme-seg">';
   opts.forEach(o=>{ h += `<button class="tsopt${mode===o.v?" active":""}" onclick="setTheme('${o.v}')">${o.label}</button>`; });
   h += '</div>';
+  h += '<h3>键盘与遥控器</h3><p class="shint">Control＋Option＋↑ / ↓：上 / 下一个可见会话；Control＋Option＋L：会话列表；方向键选择，Enter 确认；Esc 先关闭浮层，否则停止回复。</p>';
+  h += '<label class="sname" for="voiceFocusKey">语音键自动聚焦输入框</label><select id="voiceFocusKey">';
+  const voiceKeys=[["off","关闭"],["MetaRight","右 Command"],["AltRight","右 Option"],["Fn","Fn（取决于浏览器）"]];
+  const voiceKey=window.vococoKeyboard?.voiceFocusKey() || "off";
+  for(const [value,label] of voiceKeys) h += `<option value="${value}"${value===voiceKey?" selected":""}>${label}</option>`;
+  h += '</select><p class="shint">与遥控搭子和语音输入工具的触发键保持一致，仅保存在当前浏览器。仅在聊天页、没有弹窗时聚焦，不接管录音。系统若拦截该键，网页无法感知；Control＋Option＋I 可单独聚焦输入框。</p>';
   $("#setPane").innerHTML = h;
+  $("#voiceFocusKey").onchange=e=>{
+    try{ localStorage.setItem("vococo_voice_focus_key",e.target.value); }
+    catch(error){ alert("无法保存，请检查浏览器本地存储权限"); }
+  };
 }
 
 // ── 安全分区(永久审批规则 / 审批记录;待处理的审批在铃铛里,见 notices.js)────────

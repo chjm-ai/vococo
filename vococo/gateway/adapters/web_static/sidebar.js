@@ -708,6 +708,7 @@ function scheduleConvsRender(){
 }
 // 「项目」Tab:手风琴——默认项目 + 每个项目一个可折叠分组,展开后列出其会话;末尾一行「新建项目」
 function renderConvs(){
+  const keyboardFocus=window.vococoKeyboard?.captureSidebar();
   const inCall = !$("#callView").hidden;  // 统一对话视图打开时,侧栏只高亮「对话」入口
   // 工作台/通话打开期间 S.conv 还停在离开前那个会话上没变,普通会话/任务/定时行不能再按
   // c.conv===S.conv 高亮——否则会跟工作台/通话入口的高亮同时出现(2026-08-21 反馈的双重高亮)。
@@ -728,6 +729,7 @@ function renderConvs(){
   if(S.sideTab==="pinned") renderPinnedTab(box, awayFromChat);
   else if(S.sideTab==="recent") renderRecentTab(box, awayFromChat);
   else renderAgentsTab(box, awayFromChat);   // 「项目」Tab 2026-09-30 下架,项目都成了 Agent
+  window.vococoKeyboard?.restoreSidebar(keyboardFocus);
   // 同步标题栏:loadConvs/loadVoiceSidebar/loadCronSidebar 刷新各自列表后都会调 renderConvs,
   // 标题(含改名)可能已更新。语音任务/定时任务会话不在 S.convs 里(那是 /conversations 拉的),
   // 查找逻辑跟 openConv 保持一致——否则在任务自己的会话里改名,顶部标题栏不会跟着刷新
