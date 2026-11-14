@@ -1046,10 +1046,10 @@ window.vococoKeyboard = (()=>{
     if(key) focusItem(sidebarItems().find(node=>node.dataset.keyboardKey===key));
   }
   function focusList(){
-    $("#sidebar").classList.add("open"); $("#backdrop").classList.add("show");
+    expandSidebarResponsive();
     prepareSidebar();
     const rows=sidebarItems();
-    focusItem(rows.find(node=>node.dataset.conv===S.conv) || rows.find(node=>node.dataset.keyboardKey===sidebarKey) || rows[0]);
+    focusItem(rows.find(node=>node.dataset.conv===S.conv) || rows.find(node=>node.dataset.keyboardKey===sidebarKey) || rows.find(node=>node.closest("#convBody")) || rows[0]);
   }
   function focusComposer(){
     if(!chat() || modal() || !visible($("#ta")) || $("#ta").disabled) return;
