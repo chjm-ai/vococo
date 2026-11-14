@@ -1291,8 +1291,10 @@ $("#sysTaskModal").onclick = e=>{ if(e.target===$("#sysTaskModal")) closeSystemT
 // 会话「更多」浮层菜单(单例):点 ⋯ 弹出,重命名/置顶/归档/复制/删除,点即执行(不再二次确认)
 let convMenuEl=null, convMenuBtn=null;
 function closeConvMenu(){
+  const keyboardFocus=convMenuEl?.contains(document.activeElement) ? convMenuBtn?.closest("[data-keyboard-key]")?.dataset.keyboardKey : null;
   if(convMenuBtn){ convMenuBtn.classList.remove("on"); convMenuBtn=null; }
   if(convMenuEl){ convMenuEl.remove(); convMenuEl=null; }
+  if(keyboardFocus) window.vococoKeyboard?.restoreSidebar(keyboardFocus);
 }
 // 触屏左滑会话行露出归档/删除(iOS 邮件同款手势,比长按更符合触屏习惯)
 const SWIPE_W=108;   // 需与 CSS .cvact 宽度一致(归档+置顶+删除,3个按钮)
