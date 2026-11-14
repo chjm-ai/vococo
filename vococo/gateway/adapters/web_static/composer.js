@@ -1006,3 +1006,178 @@ $("#recSend").onclick = e=>{ e.stopPropagation(); if(REC.state==="recording") st
 $("#recCancel").onclick = e=>{ e.stopPropagation(); stopRec(true); };        // 左侧 ✕:取消
 // 兜底:关页/切后台也释放一次,防止极端情况下(录音中直接切走)残留占用
 window.addEventListener("pagehide", releaseMic);
+
+// 遥控器只发送键盘事件；不接管蓝牙、录音或系统级快捷键。
+window.vococoKeyboard = (()=>{
+  const visible=node=>!!node && !node.closest("[hidden]") && node.getClientRects().length>0 && getComputedStyle(node).visibility!=="hidden";
+  const editable=node=>!!node?.closest?.('input,textarea,select,[contenteditable="true"],[contenteditable=""]');
+  const modalSelector='#app > [id$="Modal"],#imgViewer,dialog[open]';
+  const popSelector='#projSelPop,#permPop,#effortPop,#modelPop,#cmdPop,#projPop,#gitPop,#ctxPop,#convDocsPop,#noticePop,#convFilterPop,.convmenu';
+  const modal=()=>[...document.querySelectorAll(modalSelector)].find(visible);
+  const chat=()=>!$("#app").hidden && visible($("#chatMain")) && S.surface==="chat";
+  const rowSelector='.sidetab,.agrow,.conv,.projadd';
+  let sidebarKey=null, focusRevision=0, voiceHeld=false;
+
+  function sidebarItems(){
+    return [...$("#sidebar").querySelectorAll(rowSelector)].filter(visible);
+  }
+  function prepareSidebar(){
+    $("#sidebar").querySelectorAll(rowSelector).forEach((node,index)=>{
+      node.dataset.keyboardKey=node.dataset.conv || (node.classList.contains("agrow") ? "agent:"+node.querySelector(".pgname")?.textContent : "item:"+index);
+      node.tabIndex=-1;
+      if(!node.hasAttribute("role")) node.setAttribute("role","button");
+    });
+    const rows=sidebarItems();
+    const entry=rows.find(node=>node.dataset.keyboardKey===sidebarKey) || rows.find(node=>node.dataset.conv===S.conv) || rows[0];
+    if(entry) entry.tabIndex=0;
+  }
+  function focusItem(node){
+    if(!node) return;
+    sidebarItems().forEach(row=>row.tabIndex=row===node?0:-1);
+    sidebarKey=node.dataset.keyboardKey;
+    node.focus({preventScroll:true}); node.scrollIntoView({block:"nearest"});
+  }
+  function captureSidebar(){
+    const active=document.activeElement;
+    return active.closest?.("#sidebar") ? active.dataset.keyboardKey : null;
+  }
+  function restoreSidebar(key){
+    prepareSidebar();
+    if(key) focusItem(sidebarItems().find(node=>node.dataset.keyboardKey===key));
+  }
+  function focusList(){
+    $("#sidebar").classList.add("open"); $("#backdrop").classList.add("show");
+    prepareSidebar();
+    const rows=sidebarItems();
+    focusItem(rows.find(node=>node.dataset.conv===S.conv) || rows.find(node=>node.dataset.keyboardKey===sidebarKey) || rows[0]);
+  }
+  function focusComposer(){
+    if(!chat() || modal() || !visible($("#ta")) || $("#ta").disabled) return;
+    closeSidebar(); $("#ta").focus({preventScroll:true});
+  }
+  async function openConversation(conv){
+    const opening=openConv(conv), revision=focusRevision;
+    await opening;
+    if(S.conv!==conv || focusRevision!==revision || modal()) return;
+    $("#messages").focus({preventScroll:true});
+  }
+  function switchConversation(step){
+    // 与当前侧栏展示顺序一致，不把隐藏、折叠或筛掉的会话混进导航。
+    const rows=[...$("#convBody").querySelectorAll("[data-conv]")].filter(visible);
+    const keys=[...new Set(rows.map(node=>node.dataset.conv))];
+    if(!keys.length) return;
+    const current=keys.indexOf(S.conv), index=current<0 ? (step>0?0:keys.length-1) : current+step;
+    if(index>=0 && index<keys.length) void openConversation(keys[index]);
+  }
+  function navigateSidebar(e){
+    const active=document.activeElement;
+    if(!active.closest?.("#sidebar") || editable(active)) return false;
+    const rows=sidebarItems(), index=rows.indexOf(active);
+    if(index<0) return false;
+    if(e.key==="ArrowUp" || e.key==="ArrowDown"){
+      focusItem(rows[Math.max(0,Math.min(rows.length-1,index+(e.key==="ArrowDown"?1:-1)))]); return true;
+    }
+    if((e.key==="ArrowLeft" || e.key==="ArrowRight") && active.classList.contains("agrow")){
+      const caret=active.querySelector(".pgcaret:not(.agnone)");
+      const expanded=!!caret?.querySelector(".down");
+      if(caret && expanded===(e.key==="ArrowLeft")) caret.click();
+      return true;
+    }
+    if(e.key!=="Enter" || e.repeat) return e.key==="Enter";
+    if(active.dataset.conv) void openConversation(active.dataset.conv);
+    else active.click();
+    return true;
+  }
+  function navigateChoices(e){
+    const active=document.activeElement;
+    const root=active.closest?.(".choice") || (visible($("#choiceModal")) ? $("#choiceModalOpts") : null);
+    if(!root || !["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(e.key)) return false;
+    const buttons=[...root.querySelectorAll("button:not(:disabled)")].filter(visible);
+    if(!buttons.length) return false;
+    const index=buttons.indexOf(active), step=["ArrowLeft","ArrowUp"].includes(e.key)?-1:1;
+    const next=index<0 ? (step>0?0:buttons.length-1) : (index+step+buttons.length)%buttons.length;
+    buttons[next].focus(); return true;
+  }
+  function focusChoice(root){
+    // 未知选项不猜同意/拒绝，落在容器上，先用方向键选择才能确认。
+    root.tabIndex=-1;
+    root.focus({preventScroll:true}); root.scrollIntoView({block:"nearest"});
+  }
+  function choiceAppeared(records){
+    const active=document.activeElement;
+    const writing=editable(active) && (active!==$("#ta") || active.value.trim());
+    if(!chat() || writing || voiceHeld || REC.state!=="idle" || active.closest?.("#sidebar")) return;
+    const roots=records.flatMap(record=>[...record.addedNodes]).filter(node=>node.nodeType===1)
+      .flatMap(node=>[...(node.matches(".choice")?[node]:[]),...node.querySelectorAll(".choice")]);
+    const root=roots.filter(visible).at(-1);
+    if(root && !modal()) focusChoice(root);
+  }
+  function escapeLayer(){
+    const layer=modal();
+    if(layer){
+      const cancel=layer.querySelector('#delCancel,#archCancel,#choiceModalClose,#setClose,#ivClose,#pmCancel,#agCancel,#cfCancel,#stClose,.pmcancel');
+      if(cancel) cancel.click();
+      else if(layer.id==="searchModal") closeSearchModal();
+      else if(layer.tagName==="DIALOG") layer.close();
+      // 没有安全关闭入口的弹窗不穿透到停止操作。
+      return true;
+    }
+    const pops=[...document.querySelectorAll(popSelector)].filter(visible);
+    if(pops.length){ closeComposerPopovers(); closeHeaderPopovers(); pops.forEach(node=>node.hidden=true); return true; }
+    if([...document.querySelectorAll('.artifact-menu-panel:not([hidden])')].some(visible)){
+      closeArtifactMenus({type:"keydown",key:"Escape"}); return true;
+    }
+    if(typeof FIND!=="undefined" && FIND.open){ closeFind(); return true; }
+    if(visible($("#docPreview"))){ closeDocPreview(); return true; }
+    if($("#sidebar").classList.contains("open")){ closeSidebar(); $("#messages").focus({preventScroll:true}); return true; }
+    return false;
+  }
+  function voiceFocusKey(){
+    try{ return localStorage.getItem("vococo_voice_focus_key") || "off"; }catch(e){ return "off"; }
+  }
+  function handleShortcut(e){
+    if(!e.ctrlKey || !e.altKey || e.metaKey || e.shiftKey) return false;
+    if(!["ArrowUp","ArrowDown","KeyL","KeyI"].includes(e.code)) return false;
+    if(modal()) return false;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if(e.repeat) return true;
+    if(e.code==="KeyL") focusList();
+    else if(e.code==="KeyI") focusComposer();
+    else switchConversation(e.code==="ArrowUp"?-1:1);
+    return true;
+  }
+  function handleKey(e){
+    if($("#app").hidden || e.isComposing || e.keyCode===229) return;
+    if(handleShortcut(e)) return;
+    // 不吞语音工具的修饰键；网页只能处理 Safari 实际交付的事件。
+    if(e.code===voiceFocusKey() && !e.repeat && !e.ctrlKey && !e.shiftKey){ voiceHeld=true; focusComposer(); return; }
+    if(e.key==="Escape"){
+      if(!modal() && ((!chat() && !$("#sidebar").classList.contains("open")) || (editable(e.target) && e.target!==$("#ta") && !(typeof FIND!=="undefined" && FIND.open)))) return;
+      if(e.repeat){ e.preventDefault(); e.stopImmediatePropagation(); return; }
+      const closed=escapeLayer();
+      if(!closed && chat() && !S.stopping?.[S.conv]) void stopReply();
+      e.preventDefault(); e.stopImmediatePropagation(); return;
+    }
+    if(e.key==="Enter" && e.repeat){ e.preventDefault(); e.stopImmediatePropagation(); return; }
+    if(e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+    if(navigateChoices(e) || (!modal() && navigateSidebar(e))){ e.preventDefault(); e.stopImmediatePropagation(); return; }
+    if(modal() || !chat()) return;
+    const active=document.activeElement;
+    if(!editable(active) && (active===$("#messages") || active===document.body) && ["ArrowUp","ArrowDown"].includes(e.key)){
+      e.preventDefault(); $("#messages").scrollBy({top:(e.key==="ArrowUp"?-1:1)*Math.max(40,$("#messages").clientHeight/5)});
+    }
+  }
+  $("#messages").tabIndex=-1;
+  $("#messages").setAttribute("aria-label","对话正文");
+  document.addEventListener("focusin",()=>{ focusRevision++; });
+  document.addEventListener("keydown",handleKey,true);
+  document.addEventListener("keyup",e=>{ if(e.code===voiceFocusKey()) voiceHeld=false; },true);
+  window.addEventListener("blur",()=>{ voiceHeld=false; });
+  new MutationObserver(choiceAppeared).observe($("#wrap"),{childList:true,subtree:true});
+  // 跨会话审批是模态弹窗；焦点只落在关闭按钮，不能默认批准其他会话。
+  new MutationObserver(()=>{
+    if(visible($("#choiceModal"))) $("#choiceModalClose").focus();
+  }).observe($("#choiceModal"),{attributes:true,attributeFilter:["hidden"]});
+  prepareSidebar();
+  return {captureSidebar,restoreSidebar,focusComposer,voiceFocusKey};
+})();
