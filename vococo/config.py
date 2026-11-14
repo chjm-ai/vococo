@@ -59,10 +59,14 @@ def _parse_skills(raw: str) -> list[str] | str | None:
 def _oauth_required() -> bool:
     """订阅 token 是否必需。
 
-    仅当设置页里配置了可用的第三方供应商(DeepSeek/Kimi 等,带 key)时可免——那种
-    场景下走第三方端点,不需要 Claude 订阅。其余情况(激活官方、未配置第三方、读取
-    异常)一律要求订阅 token,保持原有行为。
+    - .env 设 CLAUDE_SUBSCRIPTION_DISABLED=1(订阅账号已封/不再使用):即使没配第三方
+      供应商也不再强制要求。启动照样能起来,官方模型会话实际调用时报认证错。
+    - 否则:仅当设置页里配置了可用的第三方供应商(DeepSeek/Kimi 等,带 key)时可免——
+      那种场景下走第三方端点,不需要 Claude 订阅。其余情况(激活官方、未配置第三方、
+      读取异常)一律要求订阅 token,保持原有行为。
     """
+    if _parse_bool(os.environ.get("CLAUDE_SUBSCRIPTION_DISABLED", ""), False):
+        return False
     try:
         from . import providers
 
@@ -72,6 +76,8 @@ def _oauth_required() -> bool:
 
 
 OAUTH_TOKEN: str = _ensure_subscription_auth(require=_oauth_required())
+# 订阅账号已封/停用:令牌探活与自动推送一律跳过(见 core/token_health.py),免得反复报错
+SUBSCRIPTION_DISABLED: bool = _parse_bool(os.environ.get("CLAUDE_SUBSCRIPTION_DISABLED", ""), False)
 # 助理主人的称呼:注入 PERSONA / 工具描述,让助理知道在为谁服务。
 # 开源默认「主人」,在 .env 设 VOCOCO_USER_NAME=你的名字 即个性化。
 USER_NAME: str = os.environ.get("VOCOCO_USER_NAME", "主人").strip() or "主人"

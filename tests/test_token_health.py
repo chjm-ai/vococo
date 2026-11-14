@@ -26,6 +26,7 @@ def env(monkeypatch):
 
     monkeypatch.setattr(alerts, "alert", fake_alert)
     monkeypatch.setattr(config, "OAUTH_TOKEN", "sk-ant-oat01-test")
+    monkeypatch.setattr(config, "SUBSCRIPTION_DISABLED", False)
 
     def probe(state, detail="服务端原话"):
         monkeypatch.setattr(
@@ -92,6 +93,23 @@ def test_no_token_is_not_applicable(env, monkeypatch):
     monkeypatch.setattr(config, "OAUTH_TOKEN", "")
     r = _check()
     assert r["applicable"] is False and r["alert"] is None
+
+
+def test_subscription_disabled_skips_probe_and_alert(env, monkeypatch):
+    """账号已封/主动停用:连探都不探,更不许再推"令牌失效"。"""
+    box, probe = env
+    called: list[str] = []
+    monkeypatch.setattr(config, "SUBSCRIPTION_DISABLED", True)
+    monkeypatch.setattr(
+        "vococo.providers.probe_subscription_token",
+        lambda token, **kw: (called.append(token), ("bad", "HTTP 401"))[1],
+    )
+    r = _check()
+    assert called == [] and r["applicable"] is False and r["alert"] is None
+    monkeypatch.setattr(token_health, "FIRST_DELAY", 0)
+    monkeypatch.setattr(token_health, "INTERVAL", 0.01)
+    _run_patrol_once()
+    assert box == []
 
 
 def test_probe_uses_config_token(env, monkeypatch):

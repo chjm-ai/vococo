@@ -32,6 +32,9 @@ async def check() -> dict:
     """
     from .. import providers
 
+    if config.SUBSCRIPTION_DISABLED:
+        # 订阅账号已封/主动停用:探活没有意义,也不该再往手机上推"令牌失效"。
+        return {"applicable": False, "state": "disabled", "detail": "订阅令牌已停用", "alert": None}
     token = (config.OAUTH_TOKEN or "").strip()
     if not token:
         return {"applicable": False, "state": "none", "detail": "没配订阅令牌", "alert": None}
