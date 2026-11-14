@@ -68,11 +68,55 @@ function awbDayTitle(day){
   return day.date+'\n'+day.runs+' 次运行 · 成功 '+day.ok+' · 失败 '+day.failed+(day.unknown?' · 状态未确认 '+day.unknown:'')+
     '\n'+awbMetricText(day)+'\n最近运行 '+awbTime(day.last_ts)+'\n调度成功不等于业务目标完成';
 }
+let awbTip, awbTipTick, awbTipKeyboard=false;
+function awbHideTip(){
+  if(awbTip) awbTip.hidden=true;
+  awbTipTick=null; awbTipKeyboard=false;
+  document.querySelector('[aria-describedby="awbTip"]')?.removeAttribute("aria-describedby");
+}
+function awbScrollTip(){
+  const tick=awbTipTick;
+  if(!awbTipKeyboard || !tick?.isConnected){ awbHideTip(); return; }
+  const rect=tick.getBoundingClientRect();
+  if(rect.top<0 || rect.bottom>innerHeight){ awbHideTip(); return; }
+  awbShowTip(tick,true);
+}
+function awbShowTip(tick,keyboard=false){
+  if(!tick) return;
+  if(!awbTip){
+    awbTip=document.createElement("div"); awbTip.id="awbTip"; awbTip.className="sttip";
+    awbTip.setAttribute("role","tooltip"); $("#workbenchView").append(awbTip);
+  }
+  awbHideTip(); awbTipTick=tick; awbTipKeyboard=keyboard;
+  awbTip.textContent=tick.dataset.awbTip; awbTip.hidden=false;
+  tick.closest("button").setAttribute("aria-describedby","awbTip");
+  const gap=parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sp-3"))||8;
+  const cell=tick.getBoundingClientRect(),rect=awbTip.getBoundingClientRect();
+  awbTip.style.left=Math.max(gap,Math.min(cell.left,innerWidth-rect.width-gap))+"px";
+  awbTip.style.top=Math.max(gap,cell.bottom+gap+rect.height<=innerHeight-gap?cell.bottom+gap:cell.top-rect.height-gap)+"px";
+}
+$("#workbenchView").addEventListener("pointerover",event=>{
+  if(event.pointerType==="touch" || !awbVisible()) return;
+  const tick=event.target.closest("[data-awb-tip]");
+  if(tick) awbShowTip(tick);
+  else if(!awbTipTick || event.target.closest(".awb-spark")!==awbTipTick.closest(".awb-spark")) awbHideTip();
+});
+$("#workbenchView").addEventListener("pointerleave",awbHideTip);
+$("#workbenchView").addEventListener("focusin",event=>{
+  const button=event.target.closest(".awb-recent,.awb-job-recent");
+  if(button?.matches(":focus-visible")) awbShowTip(button.querySelector("[data-awb-tip]:last-child"),true);
+});
+$("#workbenchView").addEventListener("focusout",awbHideTip);
+$("#workbenchView").addEventListener("click",awbHideTip);
+document.addEventListener("scroll",awbScrollTip,true);
+document.addEventListener("keydown",event=>{ if(event.key==="Escape") awbHideTip(); });
+window.addEventListener("resize",awbHideTip);
+window.addEventListener("blur",awbHideTip);
 function awbRecentRuns(a,owner=null){
   const days=a.run_days||[],latest=(a.recent_runs||[]).at(-1);
-  const marks=days.map(day=>'<span class="awb-tick '+day.status+'" data-date="'+esc(day.date)+'" title="'+esc(awbDayTitle(day))+'"></span>').join('');
+  const marks=days.map(day=>'<span class="awb-tick '+day.status+'" data-date="'+esc(day.date)+'" data-awb-tip="'+esc(awbDayTitle(day))+'"></span>').join('');
   const isJob=owner!==null;
-  return '<button type="button" class="'+(isJob?'awb-job-recent':'awb-recent')+'" data-awb="'+(isJob?'job-runs':'all-runs')+'" data-id="'+esc(a.id)+'"'+(isJob?' data-owner="'+esc(owner)+'"':'')+' aria-label="查看 '+esc(a.name)+' 的运行记录" title="最近 30 天，每格一天，从左到右由旧到新；绿色成功，红色失败，灰色无运行记录或状态未确认。按服务器本地日期统计。">'+
+  return '<button type="button" class="'+(isJob?'awb-job-recent':'awb-recent')+'" data-awb="'+(isJob?'job-runs':'all-runs')+'" data-id="'+esc(a.id)+'"'+(isJob?' data-owner="'+esc(owner)+'"':'')+' aria-label="查看 '+esc(a.name)+' 的运行记录，最近 30 天，每格一天；绿色成功，红色失败，灰色无运行记录或状态未确认。按服务器本地日期统计。">'+
     '<span class="awb-spark" aria-hidden="true">'+marks+'</span>'+(isJob?'':'<small>'+awbNumber(a.runs)+' 运行 · '+(latest?awbTime(latest.ts):'暂无记录')+'</small>')+'</button>';
 }
 function awbOwner(a,jobs){
@@ -121,6 +165,7 @@ function awbArtifactHtml(e){
     (e.conv?'<button type="button" data-awb="preview" data-artifact-id="'+esc(e.id)+'" data-conv="'+esc(e.conv)+'" data-filename="'+esc(e.filename)+'">预览</button><button type="button" data-awb="download" data-artifact-id="'+esc(e.id)+'" data-conv="'+esc(e.conv)+'" data-filename="'+esc(e.filename)+'">下载</button>':'<span>来源不可定位</span>')+'</div>';
 }
 function renderAutomationWorkbench(){
+  awbHideTip();
   const root=$("#wbContent"); if(!root || !automationWorkbenchActive()) return;
   $("#workbenchView").classList.add("automation-workbench");
   $("#wbFab").classList.add("wb-fab-off"); $("#wbDock").innerHTML="";
@@ -129,6 +174,7 @@ function renderAutomationWorkbench(){
   if(AWB.data) awbRenderOwners();
 }
 function awbRenderOwners(){
+  awbHideTip();
   const root=$("#awbOwners"); if(!root) return;
   const focused=document.activeElement, focusData=root.contains(focused)?{...focused.dataset}:null;
   const d=AWB.data,q=AWB.search.trim().toLowerCase(), active=[], empty=[];

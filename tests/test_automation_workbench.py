@@ -221,7 +221,7 @@ async def test_api_auth_and_invalid_parameters(sample, monkeypatch):
 async def test_real_browser_workbench(sample, isolated, monkeypatch):
     if not shutil.which('node'):
         pytest.skip('浏览器检查需要 Node')
-    env = dict(os.environ, NODE_PATH='/usr/local/lib/node_modules')
+    env = dict(os.environ, NODE_PATH=os.environ.get('NODE_PATH', '/usr/local/lib/node_modules'))
     chrome = Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
     if chrome.exists():
         env['CHROME_PATH'] = str(chrome)
