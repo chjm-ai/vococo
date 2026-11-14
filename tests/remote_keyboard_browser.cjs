@@ -28,13 +28,26 @@ const assert=require('node:assert/strict');
     await shortcut('ArrowDown');
     await page.waitForFunction(()=>S.conv==='local-remote-b');
     assert.equal(await page.locator('#ta').inputValue(),'第二个会话草稿');
+    // 桌面手动收起侧栏后，快捷键必须真正展开，而不是聚焦在被裁切的行上。
+    await page.click('#collapseBtn');
     await shortcut('l');
+    assert.equal(await page.evaluate(()=>document.body.classList.contains('sb-collapsed')),false,'聚焦列表应展开桌面侧栏');
     assert.equal(await page.evaluate(()=>document.activeElement.dataset.conv),'local-remote-b');
     await page.keyboard.press('ArrowDown');
     assert.equal(await page.evaluate(()=>S.conv),'local-remote-b','上下只移动焦点');
     assert.equal(await page.evaluate(()=>document.activeElement.dataset.conv),'local-remote-c');
     await page.evaluate(()=>renderConvs());
     assert.equal(await page.evaluate(()=>document.activeElement.dataset.conv),'local-remote-c','侧栏重绘不丢高亮');
+    assert.equal(await page.evaluate(()=>getComputedStyle(document.activeElement).outlineStyle),'solid');
+    await page.screenshot({path:screenshot+'.focused.png'});
+    // 鼠标操作之后，遥控器程序式聚焦也必须可见，不能依赖 :focus-visible 的浏览器判断。
+    await page.click('#ta');
+    await page.evaluate(()=>{
+      document.dispatchEvent(new KeyboardEvent('keydown',{key:'l',code:'KeyL',ctrlKey:true,altKey:true,bubbles:true,cancelable:true}));
+    });
+    assert.equal(await page.evaluate(()=>document.activeElement.dataset.conv),'local-remote-b');
+    assert.equal(await page.evaluate(()=>getComputedStyle(document.activeElement).outlineStyle),'solid');
+    await page.keyboard.press('ArrowDown');
     await page.keyboard.press('Enter');
     await page.waitForFunction(()=>S.conv==='local-remote-c' && document.activeElement.id==='messages');
     assert.equal(await page.evaluate(()=>$('#sidebar').classList.contains('open')),false);

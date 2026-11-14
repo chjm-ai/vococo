@@ -1,5 +1,5 @@
   /* 遥控导航的焦点与当前会话选中态分开；轮廓内缩避免被滚动容器裁切。 */
-  #sidebar [data-keyboard-key]:focus-visible,#messages:focus-visible,.choice:focus-visible,.choice button:focus-visible,#choiceModal button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  #sidebar [data-keyboard-key]:focus,#messages:focus-visible,.choice:focus-visible,.choice button:focus-visible,#choiceModal button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
   /* 任务树保持紧凑，独立滚动不挤走聊天输入区；深浅主题共用现有令牌。 */
   .task-tree{flex:none;max-height:35vh;overflow:auto;padding:var(--sp-3) var(--sp-5);border-bottom:1px solid var(--line);background:var(--bg2);font-size:var(--fs-md);color:var(--text)}
   .task-tree{margin-top:var(--header-h,calc(var(--sp-5)*4))}
