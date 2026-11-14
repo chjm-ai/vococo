@@ -21,10 +21,42 @@ const assert=require('node:assert/strict');
     for(const [i,day] of expectedDays.entries()){
       const tick=recent.locator('.awb-tick').nth(i);
       await tick.hover();
-      const title=await tick.getAttribute('title');
-      assert.ok(title.includes(day.date));
-      assert.ok(title.includes(day.runs?`${day.runs} 次运行`:'无运行记录'));
+      const text=await page.locator('#awbTip').innerText();
+      assert.ok(text.includes(day.date));
+      assert.ok(text.includes(day.runs?`${day.runs} 次运行`:'无运行记录'));
+      assert.equal(await tick.evaluate(n=>n.closest('[title]')),null,'格子及祖先不再触发原生延迟提示');
     }
+    const immediate=await recent.evaluate(n=>{
+      const cells=[...n.querySelectorAll('.awb-tick')],tip=document.querySelector('#awbTip');
+      const start=performance.now();
+      const instant=cells.every(cell=>{
+        cell.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,pointerType:'mouse'}));
+        return !tip.hidden && tip.textContent===cell.dataset.awbTip;
+      });
+      n.querySelector('.awb-spark').dispatchEvent(new PointerEvent('pointerover',{bubbles:true,pointerType:'mouse'}));
+      return {instant,gapVisible:!tip.hidden,elapsed:performance.now()-start};
+    });
+    assert.ok(immediate.instant,'30格连续移入在事件当轮更新，不等待定时器');
+    assert.ok(immediate.gapVisible,'经过格子间隙不闪烁');
+    await page.keyboard.press('Escape');
+    assert.ok(await page.locator('#awbTip').evaluate(n=>n.hidden),'Escape 关闭提示');
+    await recent.locator('.awb-tick').first().dispatchEvent('pointerover',{pointerType:'touch'});
+    assert.ok(await page.locator('#awbTip').evaluate(n=>n.hidden),'触屏不弹悬浮提示');
+    await recent.locator('.awb-tick').first().hover();
+    await page.evaluate(()=>document.querySelector('#workbenchView').dispatchEvent(new Event('scroll')));
+    assert.ok(await page.locator('#awbTip').evaluate(n=>n.hidden),'滚动关闭提示');
+    await recent.focus();
+    assert.equal(await recent.getAttribute('aria-describedby'),'awbTip','键盘聚焦可查看最新日期');
+    await page.locator('#awbSearch').focus();
+    assert.ok(await page.locator('#awbTip').evaluate(n=>n.hidden),'焦点移出关闭提示');
+    await page.evaluate(()=>{
+      const probe=document.createElement('div'); probe.id='awbScrollProbe'; probe.style.paddingTop='200vh';
+      probe.innerHTML='<button class="awb-job-recent"><span class="awb-spark"><span class="awb-tick" data-awb-tip="屏外聚焦测试"></span></span></button>';
+      document.querySelector('#wbContent').append(probe); probe.querySelector('button').focus();
+    });
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    assert.equal(await page.locator('#awbTip').innerText(),'屏外聚焦测试','键盘聚焦引起的滚动后提示仍可见');
+    await page.evaluate(()=>{document.querySelector('#awbScrollProbe').remove(); awbHideTip();});
     assert.ok((await recent.innerText()).includes('35 运行'));
     assert.equal(await page.locator(`[data-owner="${emptyAgent}"] .awb-tick.unknown`).count(),30);
     for(const stat of await page.locator('.awb-stats .apstat').all()){
@@ -37,8 +69,13 @@ const assert=require('node:assert/strict');
     assert.equal(await jobRecent.locator('.awb-tick').count(),30);
     assert.deepEqual(await jobRecent.locator('.awb-tick').evaluateAll(nodes=>nodes.map(n=>n.className)),expectedDays.map(d=>'awb-tick '+d.status));
     await jobRecent.locator('.awb-tick').last().hover();
-    assert.ok((await jobRecent.locator('.awb-tick').last().getAttribute('title')).includes('失败'));
-    assert.ok((await jobRecent.locator('.awb-tick').last().getAttribute('title')).includes('120 Token'));
+    assert.ok((await page.locator('#awbTip').innerText()).includes('失败'));
+    assert.ok((await page.locator('#awbTip').innerText()).includes('120 Token'));
+    await recent.locator('.awb-spark').dispatchEvent('pointerover',{pointerType:'mouse'});
+    assert.ok(await page.locator('#awbTip').evaluate(n=>n.hidden),'进入另一行格间空隙不残留上一行提示');
+    await jobRecent.locator('.awb-tick').last().hover();
+    await page.mouse.move(0,0);
+    assert.ok(await page.locator('#awbTip').evaluate(n=>n.hidden),'移出图表立即关闭提示');
     assert.equal(await page.locator('.awb-job .aptsub').count(),0,'任务行不再显示第二行元信息');
     assert.ok((await page.locator(`.aptmain[data-id="${job}"]`).getAttribute('title')).includes('每天 06:17'));
     await jobRecent.click();
@@ -131,6 +168,10 @@ const assert=require('node:assert/strict');
         },agent);
         for(const xs of jobsLayout.columns) assert.ok(Math.max(...xs)-Math.min(...xs)<=1,'任务跨行列对齐 '+width);
         assert.ok(jobsLayout.singleLine,'任务保持单行、名称可读且色条不溢出 '+width+' '+JSON.stringify(jobsLayout));
+        await page.locator('.awb-job-recent[data-id="layout-state-0"] .awb-tick').last().hover();
+        const tipBox=await page.locator('#awbTip').boundingBox();
+        assert.ok(tipBox && tipBox.x>=0 && tipBox.x+tipBox.width<=width && tipBox.y>=0 && tipBox.y+tipBox.height<=1000,'提示完整位于屏内 '+width);
+        assert.ok((await page.locator('#awbTip').innerText()).includes('无运行记录'));
         if([1440,390].includes(width)) await page.screenshot({path:output+'/workbench-'+theme+'-'+width+'.png',fullPage:true,animations:'disabled'});
       }
     }
