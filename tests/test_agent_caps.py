@@ -97,6 +97,31 @@ async def test_chat_readonly_restrictions_do_not_transfer_to_dispatched_tasks(cl
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("permission", ["standard", "full"])
+async def test_mislabeled_agent_main_can_prepare_but_explicit_chat_stays_readonly(clients, env, permission):
+    from vococo.memory import _db, chats, session_store
+
+    owner = agents.by_project_hash(projects.project_hash(str(env)))
+    agents.update(owner["id"], permission=permission, disallowed_tools=["Edit"])
+    key = agents.main_session_key(owner)
+    session_store.bind_session(key, agent_id=owner["id"], project_hash=owner["project_hash"])
+    session_store.append(key, "修复", "旧回答")
+    with _db.conn() as connection:
+        connection.execute("UPDATE session_meta SET conversation_mode='chat' WHERE session_key=?", (key,))
+    await _turn(key, denied=[])
+    denied = clients[-1].options.disallowed_tools
+    assert "mcp__vococo__prepare_repository" not in denied
+    assert "Bash" not in denied
+    assert "Edit" in denied  # 修正会话分类，不能顺便解除 Agent 显式禁令。
+    assert "当前为任务模式" in clients[-1].options.system_prompt["append"]
+
+    chat = chats.create(owner["id"])["conv"]
+    await _turn(chat, denied=[])
+    assert {"Bash", "Edit", "mcp__vococo__prepare_repository"} <= set(clients[-1].options.disallowed_tools)
+    assert "当前为聊天模式" in clients[-1].options.system_prompt["append"]
+
+
+@pytest.mark.anyio
 async def test_lazy_task_loads_rules_from_explicit_task_project(clients, env, monkeypatch):
     from vococo.core import tasks, worktree
 
