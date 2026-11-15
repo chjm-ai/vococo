@@ -40,6 +40,7 @@ def sample(isolated, monkeypatch):
          'input': {'credential': 'never-expose'}},
         {'type': 'tool', 'name': 'Bash', 'ok': True},
         {'type': 'tool', 'name': 'Write', 'preview': '错误', 'ok': False},
+        {'type': 'text', 'text': '完整结果正文'},
     ])
     agents.record_run(a['id'], j, 'success', '完整结果正文', metrics={'tokens': 120, 'duration': 10}, source_turn_id=tid)
     c = agents._conn()
@@ -155,6 +156,35 @@ def test_cursor_and_exact_source_no_guessed_nodes(sample):
     assert not automation.run_detail(linked['id'])['source_linked']
 
 
+def test_five_run_pages_and_verified_conversation_targets(sample):
+    a, _, j, tid, _ = sample
+    pages, cursor = [], 0
+    while True:
+        page = automation.runs(a['id'], j['id'], cursor, limit=5)
+        pages.append(page['items'])
+        if not page['next']:
+            break
+        cursor = page['next']
+    assert [len(page) for page in pages] == [5] * 7
+    ids = [run['id'] for page in pages for run in page]
+    assert ids == sorted(set(ids), reverse=True) and len(ids) == 35
+    assert all(run['target'] is None for page in pages[:-1] for run in page)
+    linked = pages[-1][-1]
+    assert linked['target'] == automation.run_detail(linked['id'])['target']
+    assert linked['target']['conv'] == j['conv'] and linked['target']['turn_id'] == tid
+    assert not {'source_turn_id', 'turn_id', 'source_text_hash'} & linked.keys()
+    assert len(automation.runs(a['id'], limit=0)['items']) == 1
+    assert len(automation.runs(a['id'], limit=1000)['items']) == 35
+    session_store._conn().execute('UPDATE turns SET assistant_text=? WHERE id=?', ('已变更', tid))
+    session_store._conn().commit()
+    # 来源不再匹配时只可回退到已验证的主会话副本，不能猜测原会话。
+    target = automation.runs(a['id'], j['id'], limit=100)['items'][-1]['target']
+    assert not target or target['conv'] != j['conv']
+    session_store._conn().execute('DELETE FROM turns')
+    session_store._conn().commit()
+    assert automation.runs(a['id'], j['id'], limit=100)['items'][-1]['target'] is None
+
+
 def test_completion_keeps_exact_source_despite_summary(sample):
     from vococo.core.completion import Completion
 
@@ -212,7 +242,14 @@ async def test_api_auth_and_invalid_parameters(sample, monkeypatch):
         response = await client.get('/workbench/automation', headers=headers)
         assert response.status == 200
         assert (await response.json())['stats']['runs'] == 35
-        for query, code in [('run?id=no', 400), ('run?id=999999', 404), ('runs?before=no', 400)]:
+        a, _, j, _, _ = sample
+        response = await client.get('/workbench/automation/runs', headers=headers,
+                                    params={'agent': a['id'], 'job': j['id'], 'limit': '5'})
+        page = await response.json()
+        assert len(page['items']) == 5 and page['next']
+        assert 'target' in page['items'][0]
+        for query, code in [('run?id=no', 400), ('run?id=999999', 404), ('runs?before=no', 400),
+                            ('runs?limit=no', 400)]:
             response = await client.get('/workbench/automation/' + query, headers=headers)
             assert response.status == code
 

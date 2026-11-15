@@ -51,7 +51,8 @@ async def overview(request):
 @_endpoint
 async def runs(request):
     q = request.query
-    return automation.runs(q.get('agent', ''), q.get('job', ''), int(q.get('before', '0')))
+    return automation.runs(q.get('agent', ''), q.get('job', ''), int(q.get('before', '0')),
+                           int(q.get('limit', '30')))
 
 
 @_endpoint
