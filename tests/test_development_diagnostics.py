@@ -49,7 +49,7 @@ def test_storage_budgets_and_growth_only_report_safe_numeric_summary(environment
     _, data = environment
     fake_disk(monkeypatch, 400 * _GIB)
     now = time.time()
-    report = {"at": now, "sizes": {"附件": 300 * _MIB},
+    report = {"at": now, "sizes": {"附件": 1300 * _MIB},
               "limits": {"附件": 200 * _MIB}, "errors": ["PRIVATE_SECRET"],
               "samples": [{"at": now - 7 * 86400, "sizes": {"附件": 10 * _MIB}}]}
     (data / "storage-maintenance.json").write_text(json.dumps(report))
@@ -201,14 +201,53 @@ def test_stock_baseline_is_silent_and_only_changes_are_reported(environment):
     facts = ["治理存量记录：失效/异常工作树绑定或 Git 登记 1 个（不改动）"]
     assert diag._compare(facts, {}) == []
     label = "失效/异常工作树绑定或 Git 登记"
-    assert diag._compare(facts, {label: 3}) == [f"{label}存量减少：3 → 1"]
-    assert diag._compare(facts, {"开发工作树": 2}) == ["失效/异常工作树绑定或 Git 登记存量变化：0 → 1"]
+    assert diag._compare(facts, {label: 3}) == []
+    assert diag._compare(facts, {"开发工作树": 2}) == []
     # 状态里按标签存最新数字，下次同类变化能对上。
     assert state == {"worktrees": {}, "cleanup": {}}
     tracking = {"开发工作树": 2}
     diag._compare(facts, tracking)
     assert tracking == {label: 1}
     assert diag._compare(facts, tracking) == []
+
+
+def test_stock_growth_accumulates_and_decreases_reset_baseline():
+    label = "开发工作树"
+    state = {label: 50}
+    facts = lambda count: [f"治理存量记录：{label} {count} 个"]
+    assert diag._compare(facts(59), state) == []
+    assert state == {label: 50}
+    assert diag._compare(facts(60), state) == [f"{label}存量增加：50 → 60"]
+    assert state == {label: 60}
+    assert diag._compare(facts(60), state) == []
+    assert diag._compare(facts(40), state) == []
+    assert state == {label: 40}
+    # 兼容旧版本用整句作为键的账本。
+    old = {facts(40)[0]: 40}
+    assert diag._compare(facts(40), old) == []
+    assert old == {label: 40}
+
+
+@pytest.mark.parametrize("total,orphaned,expected", [(56, 4, 0), (99, 9, 0), (100, 9, 1), (99, 10, 1)])
+def test_worktree_raised_thresholds(environment, monkeypatch, total, orphaned, expected):
+    root, data = environment
+    monkeypatch.setattr(diag, "_worktree_inventory", lambda *args: {
+        "total": total, "orphaned": orphaned, "broken": 337, "unreadable": 0})
+    issues = diag.diagnose(root, data)
+    assert len(issues) == expected
+
+
+@pytest.mark.parametrize("old_mib,new_mib,alarmed", [
+    (2000, 2742, False), (2000, 3023, False), (2000, 3024, True),
+    (4096, 6143, False), (4096, 6144, True), (3000, 2000, False),
+])
+def test_capacity_raised_growth_thresholds(environment, monkeypatch, old_mib, new_mib, alarmed):
+    root, _ = environment
+    fake_disk(monkeypatch, 300 * _GIB)
+    now = time.time()
+    report = {"sizes": {"工作树": new_mib * _MIB}, "limits": {"工作树": 2048 * _MIB},
+              "samples": [{"at": now - 86400, "sizes": {"工作树": old_mib * _MIB}}]}
+    assert bool(diag._capacity_issues(report, now, root)) == alarmed
 
 
 def test_legacy_inventory_is_counted_without_listing_identifiers(environment):
@@ -238,7 +277,8 @@ def test_unbound_managed_worktree_is_reported_without_removing_it(environment):
                    check=True, capture_output=True)
     issues, facts = diag.worktree_issues(root, data, max_worktrees=1)
     assert any("数量偏多" in issue for issue in issues)
-    assert any("无会话绑定" in issue for issue in issues)
+    assert not any("无会话绑定" in issue for issue in issues)
+    assert any("无会话绑定的受管工作树 1 个" in fact for fact in facts)
     assert any("开发工作树 1 个" in fact for fact in facts)
     assert path.is_dir()
 
@@ -345,8 +385,8 @@ def test_slow_growth_is_seen_over_the_full_sample_window(environment, monkeypatc
     _, data = environment
     fake_disk(monkeypatch, 60 * _GIB)
     now = time.time()
-    # 每天 ~30 MiB：单次对比看不出，30 天累计 ~900 MiB 要能被识别。
-    samples = [{"at": now - day * 86400, "sizes": {"附件": (3072 - day * 30) * _MIB}} for day in range(29, -1, -1)]
+    # 每天 50 MiB：单次对比看不出，29 天累计 1450 MiB 且超过 50% 要能被识别。
+    samples = [{"at": now - day * 86400, "sizes": {"附件": (3072 - day * 50) * _MIB}} for day in range(29, -1, -1)]
     report = {"at": now, "sizes": {"附件": 3072 * _MIB}, "limits": {"附件": 2048 * _MIB}, "samples": samples}
     (data / "storage-maintenance.json").write_text(json.dumps(report))
     assert any("附件增长偏快" in issue for issue in diag.storage_issues(data, now))
