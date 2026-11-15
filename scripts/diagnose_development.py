@@ -3,7 +3,7 @@
 
 去噪与销账约定（2026-11-14）：
 - 已确认保留、且不再变化的存量记入 data/development-diagnostics.json，不再每天要求拍板；
-  失效绑定和旧存量清单只报数量变化，不逐个罗列。
+  存量累计新增 10 个才提醒，减少不报警，不逐个罗列（2026-11-15 上调阈值）。
 - 容量只在“增长速度偏快”或“磁盘剩余会因此吃紧”时报警，不因超过固定提醒线就报。
 - 问题消失、存量确认保留后，自动关闭对应旧提醒；未经确认不删除目录、分支或附件原件。
 """
@@ -145,8 +145,8 @@ def worktree_issues(root: Path, data: Path, max_worktrees: int) -> tuple[list[st
     issues = []
     if inventory["total"] >= max_worktrees:
         issues.append(f"开发工作树数量偏多：{inventory['total']} 个（阈值 {max_worktrees}）")
-    if inventory["orphaned"]:
-        issues.append(f"发现 {inventory['orphaned']} 个无会话绑定的受管工作树；仅列清单，不自动删除")
+    if inventory["orphaned"] >= 10:
+        issues.append(f"发现 {inventory['orphaned']} 个无会话绑定的受管工作树（阈值 10）；仅列清单，不自动删除")
     if inventory["unreadable"]:
         issues.append(f"工作树统计可能不全：有 {inventory['unreadable']} 个项目仓库读取工作树登记失败，请只读排查")
     facts = [f"治理存量记录：失效/异常工作树绑定或 Git 登记 {inventory['broken']} 个（不改动）",
@@ -200,7 +200,7 @@ def _capacity_issues(report: dict, now: float, root: Path) -> list[str]:
             old_size = sum(old["sizes"][name] for name in members)
             growth = size - old_size
             days = (now - old["at"]) / 86400
-            if growth >= 256 * _MIB and growth >= old_size * 0.2:
+            if growth >= _GIB and growth >= old_size * 0.5:
                 issues.append(f"{label}增长偏快：近 {days:.1f} 天新增 {growth / _MIB:.0f} MiB；需人工审核")
             daily = growth / days
         if size < max(3 * limit, 10 * _GIB):
@@ -289,7 +289,7 @@ def _save_state(data, state: dict, now: float) -> None:
 
 
 def _compare(facts: list[str], previous: dict) -> list[str]:
-    """存量只在数量变化时报告一次；没变化的存量不进异常清单。状态里按标签记数字。"""
+    """存量累计新增 10 个才报告；下降更新基线，小幅增长保留原基线，避免漏掉慢增长。"""
     issues = []
     current = {}
     for fact in facts:
@@ -302,20 +302,19 @@ def _compare(facts: list[str], previous: dict) -> list[str]:
         old = previous.get(label, previous.get(fact))
         current[label] = count
         if old is None:
-            if previous:
-                # 首次出现的新存量清单：只计数量变化，不整体报一遍。
-                issues.append(f"{label}存量变化：0 → {count}")
-        elif old != count:
-            direction = "增加" if count > old else "减少"
-            issues.append(f"{label}存量{direction}：{old} → {count}")
+            continue  # 首次采样只建立基线，已确认的历史存量不重新报警。
+        if count - old >= 10:
+            issues.append(f"{label}存量增加：{old} → {count}")
+        elif count > old:
+            current[label] = old
     if isinstance(previous, dict):
-        # 原地更新成最新数字，下次直接按标签比对；旧版本整句键在下一次比对后自然淘汰。
+        # 原地保存提醒基线；旧版本整句键在下一次比对后自然淘汰。
         previous.clear()
         previous.update(current)
     return issues
 
 
-def diagnose(root: Path, data: Path, *, max_worktrees: int = 30,
+def diagnose(root: Path, data: Path, *, max_worktrees: int = 100,
              state: dict | None = None) -> list[str]:
     now = time.time()
     if state is None:
@@ -425,7 +424,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--data-dir", type=Path)
-    parser.add_argument("--max-worktrees", type=int, default=30)
+    parser.add_argument("--max-worktrees", type=int, default=100)
     parser.add_argument("--notify-agent", help="确需拍板的异常登记到指定 Agent 的铃铛；省略时只读")
     args = parser.parse_args()
     if args.max_worktrees < 1:
