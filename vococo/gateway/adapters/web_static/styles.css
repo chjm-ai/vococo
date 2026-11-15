@@ -2490,7 +2490,9 @@
   .automation-workbench button:focus-visible,.automation-workbench summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   @media(max-width:1040px){.automation-workbench .awb-stats{grid-template-columns:repeat(3,minmax(0,1fr))}.awb-owner-row{grid-template-columns:minmax(0,1fr) calc(var(--sp-5)*12) calc(var(--sp-5)*9)}.awb-owner-metrics{display:none}.awb-job.aptask{grid-template-columns:minmax(0,1fr) calc(var(--sp-5)*6) calc(var(--sp-5)*4) calc(var(--sp-5)*3) calc(var(--sp-5)*2)}}
   @media(max-width:760px){
-    #workbenchView.automation-workbench #wbContent{padding:var(--sp-4) var(--sp-5) calc(var(--sp-5)*4)}
+    /* 安全区放在吸顶栏内部，滚动后仍能避开 PWA 状态栏；内容不重复留白。 */
+    #workbenchView.automation-workbench #wbContent{padding:0 var(--sp-5) calc(var(--sp-5)*4)}
+    #workbenchView.automation-workbench .wb-toolbar{padding-top:calc(var(--sp-4) + env(safe-area-inset-top,0px))}
     .awb-controls{gap:var(--sp-3)}.awb-search{flex-basis:100%}
     .awb-owner-row{grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:var(--sp-2)}.awb-owner-toggle{grid-column:1/-1}
     .awb-recent small{white-space:normal}
