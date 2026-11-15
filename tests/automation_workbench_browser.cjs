@@ -92,9 +92,9 @@ async function checkWorkbenchSafeArea(page,output){
     for(const stat of await page.locator('.awb-stats .apstat').all()){
       assert.equal(await stat.evaluate(n=>getComputedStyle(n).backgroundColor),'rgba(0, 0, 0, 0)','指标内部不再有第二层背景框');
     }
-    await recent.click();
-    await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===30);
-    await page.locator(`[data-awb="tab"][data-id="${agent}"][data-tab="tasks"]`).click();
+    await page.locator(`[data-awb="owner"][data-id="${agent}"]`).click();
+    assert.equal(await page.locator('[data-awb="tab"]').count(),0,'展开 Agent 直接展示定时任务，不再有 Tab');
+    assert.equal(await page.locator('.awb-history').count(),0,'历史只在展开具体任务后读取');
     const jobRecent=page.locator(`.awb-job-recent[data-id="${job}"]`);
     assert.equal(await jobRecent.locator('.awb-tick').count(),30);
     assert.deepEqual(await jobRecent.locator('.awb-tick').evaluateAll(nodes=>nodes.map(n=>n.className)),expectedDays.map(d=>'awb-tick '+d.status));
@@ -109,23 +109,69 @@ async function checkWorkbenchSafeArea(page,output){
     assert.equal(await page.locator('.awb-job .aptsub').count(),0,'任务行不再显示第二行元信息');
     assert.ok((await page.locator(`.aptmain[data-id="${job}"]`).getAttribute('title')).includes('每天 06:17'));
     await jobRecent.click();
-    await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===30);
-    await page.locator(`[data-awb="more"][data-id="${agent}"]`).click();
-    await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===35);
-    await page.locator('[data-awb="run"]').last().click();
-    await page.waitForSelector('.awb-trace li');
-    assert.equal(await page.locator('.awb-trace li').count(),3);
-    assert.equal(await page.locator('.awb-trace li.unknown').count(),1);
-    assert.equal(await page.locator('.awb-result').innerText(),'完整结果正文');
+    const history=page.locator(`.awb-task[data-job="${job}"] .awb-job-history`);
+    await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===5);
+    assert.ok(await history.locator('[data-awb="job-prev"]').isDisabled());
+    assert.equal(await history.locator('[data-awb="source-run"]:disabled').count(),5,'无可靠来源的旧记录明确不可跳转');
+    assert.ok((await history.innerText()).includes('未关联会话'));
+    const firstIds=await history.locator('[data-awb="source-run"]').evaluateAll(nodes=>nodes.map(n=>n.dataset.id));
+    // 翻页失败可在原页重试，不能跳过游标或累积旧行。
+    await page.route('**/workbench/automation/runs?**',route=>route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:'历史读取失败'})}));
+    await history.locator('[data-awb="job-next"]').click();
+    await history.locator('.awb-error').waitFor();
+    assert.ok(await history.locator('[data-awb="job-next"]').isDisabled());
+    await page.unroute('**/workbench/automation/runs?**');
+    await history.locator('[data-awb="job-retry"]').click();
+    await page.waitForFunction(()=>document.querySelector('.awb-pager')?.textContent.includes('第 2 页') && document.querySelectorAll('.awb-history .aprun').length===5);
+    await history.locator('[data-awb="job-prev"]').click();
+    await page.waitForFunction(()=>document.querySelector('.awb-pager')?.textContent.includes('第 1 页') && document.querySelectorAll('.awb-history .aprun').length===5);
+    assert.deepEqual(await history.locator('[data-awb="source-run"]').evaluateAll(nodes=>nodes.map(n=>n.dataset.id)),firstIds);
+    const allIds=[...firstIds];
+    for(let n=2;n<=7;n++){
+      await history.locator('[data-awb="job-next"]').click();
+      await page.waitForFunction(n=>document.querySelector('.awb-pager')?.textContent.includes('第 '+n+' 页') && document.querySelectorAll('.awb-history .aprun').length===5,n);
+      allIds.push(...await history.locator('[data-awb="source-run"]').evaluateAll(nodes=>nodes.map(n=>n.dataset.id)));
+    }
+    assert.equal(new Set(allIds).size,35,'每页5条，7页无重复');
+    assert.ok(await history.locator('[data-awb="job-next"]').isDisabled(),'末页禁止继续翻页');
+    const target=await page.evaluate(({agent,job})=>AWB.histories.get(awbHistoryKey(agent,job)).items.at(-1).target,{agent,job});
+    let releaseDetail,detailStarted;
+    const detailGate=new Promise(resolve=>{releaseDetail=resolve;}),detailSeen=new Promise(resolve=>{detailStarted=resolve;});
+    await page.route('**/workbench/automation/run?*',async route=>{detailStarted();await detailGate;await route.continue();});
+    const sourceButton=await history.locator('[data-awb="source-run"]:enabled').elementHandle();
+    await sourceButton.click();
+    await detailSeen;
+    await recent.click();
+    assert.equal(await sourceButton.evaluate(n=>n.isConnected),false,'复现其他操作造成来源按钮被重绘');
+    releaseDetail();
+    await page.waitForFunction(target=>S.surface==='chat' && S.conv===target.conv && document.querySelector('#wrap [data-tid="'+target.turn_id+'"]'),target);
+    await page.unroute('**/workbench/automation/run?*');
+    assert.ok((await page.locator('#wrap').innerText()).includes('完整结果正文'),'真实打开来源会话并定位轮次');
+    const returnedOverview=page.waitForResponse(r=>new URL(r.url()).pathname==='/workbench/automation');
+    await page.locator('#convTopRows .conv').filter({hasText:'工作台'}).click();
+    await (await returnedOverview).finished();
+    await page.waitForFunction(()=>!AWB.loading && document.querySelector('.awb-pager')?.textContent.includes('第 7 页') && document.querySelectorAll('.awb-history .aprun').length===5);
+    let releaseStale,staleStarted;
+    const staleGate=new Promise(resolve=>{releaseStale=resolve;}),staleSeen=new Promise(resolve=>{staleStarted=resolve;});
+    await page.route('**/workbench/automation/run?*',async route=>{staleStarted();await staleGate;await route.continue();});
+    const staleButton=await history.locator('[data-awb="source-run"]:enabled').elementHandle();
+    await staleButton.click();await staleSeen;
+    await page.evaluate(()=>openConv('main'));
+    releaseStale();
+    await page.waitForFunction(button=>!button.disabled,staleButton);
+    assert.equal(await page.evaluate(()=>S.conv),'main','切换会话后旧来源请求不得抢回导航');
+    await page.unroute('**/workbench/automation/run?*');
+    await page.locator('#convTopRows .conv').filter({hasText:'工作台'}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===5);
+    await page.locator(`[data-awb="products"][data-id="${agent}"]`).click();
+    await page.waitForSelector('.awb-artifact');
+    assert.equal(await page.locator('.awb-artifact strong').innerText(),'测试报告');
     const [popup]=await Promise.all([page.waitForEvent('popup'),page.locator('[data-awb="preview"]').click()]);
     await popup.waitForLoadState();
     assert.ok(popup.url().includes('conv=session%3A'));
     assert.ok((await popup.content()).includes('docPreview') || (await popup.content()).includes('dpBody'));
     await popup.close();
     await page.locator(`[data-awb="products"][data-id="${agent}"]`).click();
-    await page.waitForSelector('.awb-artifact');
-    assert.equal(await page.locator('.awb-artifact strong').innerText(),'测试报告');
-    await page.locator(`[data-awb="tab"][data-id="${agent}"][data-tab="tasks"]`).click();
     await page.locator(`[data-awb="menu"][data-id="${job}"]`).click();
     await page.waitForSelector('.convmenu');
     assert.equal(await page.locator('.convmenu button').count(),6);
@@ -198,7 +244,10 @@ async function checkWorkbenchSafeArea(page,output){
         },agent);
         for(const xs of jobsLayout.columns) assert.ok(Math.max(...xs)-Math.min(...xs)<=1,'任务跨行列对齐 '+width);
         assert.ok(jobsLayout.singleLine,'任务保持单行、名称可读且色条不溢出 '+width+' '+JSON.stringify(jobsLayout));
-        await page.locator('.awb-job-recent[data-id="layout-state-0"] .awb-tick').last().hover();
+        const layoutTick=page.locator('.awb-job-recent[data-id="layout-state-0"] .awb-tick').last();
+        await layoutTick.scrollIntoViewIfNeeded();
+        await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+        await layoutTick.hover();
         const tipBox=await page.locator('#awbTip').boundingBox();
         assert.ok(tipBox && tipBox.x>=0 && tipBox.x+tipBox.width<=width && tipBox.y>=0 && tipBox.y+tipBox.height<=1000,'提示完整位于屏内 '+width);
         assert.ok((await page.locator('#awbTip').innerText()).includes('无运行记录'));
@@ -215,9 +264,10 @@ async function checkWorkbenchSafeArea(page,output){
     assert.equal(await page.locator('#awbOwners>.awb-owner').count(),1);
     await page.locator('[data-awb-fold="orphan"]>summary').click();
     await page.locator('.aptmain[data-awb="job-runs"][data-id="deadbeef"]').click();
-    await page.waitForFunction(()=>document.querySelector('[data-awb-fold="orphan"] .aprun')?.textContent.includes('历史未归属任务'));
+    await page.waitForFunction(()=>document.querySelectorAll('[data-awb-fold="orphan"] .aprun').length===1);
     assert.ok(await page.locator('[data-awb-fold="orphan"]').evaluate(n=>n.open),'未归属历史切换后保持展开');
-    await page.locator('[data-awb-fold="orphan"] [data-tab="tasks"]').click();
+    assert.equal(await history.locator('.aprun').count(),5,'另一个任务展开不影响原任务的页码和记录');
+    assert.ok((await history.locator('.awb-pager').innerText()).includes('第 7 页'));
     await page.locator('[data-awb="menu"][data-id="deadbeef"]').click();
     await page.locator('.convmenu button').first().click();
     await page.waitForFunction(()=>!$('#cronModal').hidden);
@@ -234,7 +284,6 @@ async function checkWorkbenchSafeArea(page,output){
     await page.locator('[data-awb="refresh"]').click();
     await page.waitForFunction(()=>!AWB.loading && !AWB.error);
     // 复制、移动后的任务历史继续可读；全部操作都只命中隔离数据。
-    await page.locator(`[data-awb="tab"][data-id="${agent}"][data-tab="tasks"]`).click();
     await page.locator(`[data-awb="menu"][data-id="${job}"]`).click();
     await page.getByRole('menuitem',{name:'复制到…',exact:true}).click();
     const copiedAgents=page.waitForResponse(r=>new URL(r.url()).pathname==='/agents');
@@ -249,10 +298,19 @@ async function checkWorkbenchSafeArea(page,output){
     const movedRecent=page.locator(`.awb-job-recent[data-id="${job}"]`);
     assert.equal(await movedRecent.locator('.awb-tick').count(),30,'移动后仍显示原任务的30天历史格');
     assert.deepEqual(await movedRecent.locator('.awb-tick').evaluateAll(nodes=>nodes.map(n=>n.className)),expectedDays.map(d=>'awb-tick '+d.status));
-    await movedRecent.click();
-    await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===30);
-    await page.locator(`[data-awb="more"][data-id="${emptyAgent}"]`).click();
-    await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===35);
+    await page.waitForFunction(job=>document.querySelectorAll(`.awb-task[data-job="${job}"] .aprun`).length===5,job);
+    const movedHistory=page.locator(`.awb-task[data-job="${job}"] .awb-job-history`);
+    const movedIds=await movedHistory.locator('[data-awb="source-run"]').evaluateAll(nodes=>nodes.map(n=>n.dataset.id));
+    for(let n=2;n<=7;n++){
+      await movedHistory.locator('[data-awb="job-next"]').click();
+      await page.waitForFunction(({job,n})=>document.querySelector(`.awb-task[data-job="${job}"] .awb-pager`)?.textContent.includes('第 '+n+' 页') && document.querySelectorAll(`.awb-task[data-job="${job}"] .aprun`).length===5,{job,n});
+      movedIds.push(...await movedHistory.locator('[data-awb="source-run"]').evaluateAll(nodes=>nodes.map(n=>n.dataset.id)));
+    }
+    assert.deepEqual(movedIds,allIds,'任务移动后仍可逐页查看全部35条原历史');
+    const copiedJob=await page.evaluate(({job,emptyAgent})=>AWB.data.jobs.find(j=>j.agent_id===emptyAgent && j.id!==job).id,{job,emptyAgent});
+    await page.locator(`.aptmain[data-id="${copiedJob}"]`).click();
+    await page.waitForFunction(job=>document.querySelector(`.awb-task[data-job="${job}"] .awb-job-history`)?.textContent.includes('暂无运行记录'),copiedJob);
+    assert.ok(await page.locator(`.awb-task[data-job="${copiedJob}"] [data-awb="job-next"]`).isDisabled());
     // 新工作台的作品库入口也必须等待按需模块，不能提前引用 LIB。
     await page.setViewportSize({width:1440,height:1000});
     assert.equal(await page.evaluate(()=>typeof LIB),'undefined');

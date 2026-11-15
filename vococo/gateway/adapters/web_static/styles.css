@@ -2451,9 +2451,14 @@
   .awb-tick.ok{background:var(--ok-fg)}.awb-tick.error{background:var(--err-fg)}
   .awb-owner-metrics{font-size:var(--fs-sm);color:var(--dim);line-height:1.6;text-align:right}
   .awb-owner-body{padding:0 0 var(--sp-5) calc(var(--sp-5)*3);min-width:0}
-  #workbenchView .awb-tabs{width:fit-content;margin-bottom:var(--sp-4)}
+  .awb-task{min-width:0}
+  .awb-job-history{margin:0 0 var(--sp-4) var(--sp-5);padding-left:var(--sp-4);border-left:1px solid var(--line)}
+  .awb-pager{display:flex;align-items:center;justify-content:flex-end;gap:var(--sp-3);padding-top:var(--sp-3);color:var(--dim);font-size:var(--fs-sm)}
+  .awb-pager button:disabled{color:var(--dim2);background:transparent;cursor:default}
+  .awb-products{margin-bottom:var(--sp-4)}
   .awb-job.aptask{display:grid;grid-template-columns:minmax(0,1fr) calc(var(--sp-5)*12) calc(var(--sp-5)*5) calc(var(--sp-5)*4) calc(var(--sp-5)*2);align-items:center;gap:var(--sp-3);padding:var(--sp-3) 0;min-width:0}
-  .awb-job .aptmain{min-width:0;text-align:left;padding:var(--sp-1);color:var(--text)}
+  .awb-job .aptmain{display:flex;align-items:center;gap:var(--sp-2);min-width:0;text-align:left;padding:var(--sp-1);color:var(--text)}
+  .awb-job .awb-chevron{flex-shrink:0}
   .awb-job .aptname{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:var(--fs-base)}
   .awb-job-recent{min-width:0;text-align:left;color:var(--dim);padding:var(--sp-2) 0}
   .awb-job-recent .awb-spark{gap:1px}.awb-job-recent .awb-tick{min-width:1px}
@@ -2468,19 +2473,14 @@
   .awb-dot.running{animation:awb-pulse calc(var(--t-base)*6) ease-in-out infinite}
   @keyframes awb-pulse{50%{opacity:.35}}
   .awb-actions{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-3);font-size:var(--fs-sm);color:var(--dim);margin-bottom:var(--sp-3)}
-  .awb-history .aprun{padding:var(--sp-4) 0;border-bottom:1px solid var(--line)}
+  .awb-history .aprun{padding:0;border-bottom:1px solid var(--line)}
+  .awb-run-link{display:block;width:100%;text-align:left;padding:var(--sp-4) var(--sp-2);border-radius:var(--r-sm)}
+  .awb-run-link:not(:disabled):hover{background:var(--panel2)}
+  .awb-run-link:disabled{cursor:default}
+  .awb-run-link .aptsub{display:block;margin-top:var(--sp-2)}
   .awb-run-head{display:flex;align-items:center;gap:var(--sp-3);width:100%;text-align:left;font-size:var(--fs-sm);color:var(--dim)}
   .awb-run-name{flex:1;color:var(--text);font-size:var(--fs-base);min-width:0;overflow-wrap:anywhere}
   .awb-run-head time{flex-shrink:0}
-  .awb-excerpt{color:var(--dim);font-size:var(--fs-md);line-height:1.6;margin:var(--sp-3) 0 0;overflow-wrap:anywhere}
-  .awb-detail{min-width:0;padding-top:var(--sp-4)}
-  .awb-result{white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;font-size:var(--fs-base);line-height:1.75;margin:0;padding:var(--sp-4);border-radius:var(--r-md);background:var(--panel);max-height:60vh;overflow:auto}
-  .awb-detail h3{font-size:var(--fs-base);margin:var(--sp-5) 0 var(--sp-3)}.awb-detail h3 span{color:var(--dim);font-size:var(--fs-sm);font-weight:400}
-  .awb-trace{display:flex;list-style:none;gap:var(--sp-3);overflow-x:auto;padding:var(--sp-2) 0 var(--sp-4);margin:0;scroll-snap-type:x proximity}
-  .awb-trace li{flex:0 0 calc(var(--sp-5)*10);padding:var(--sp-4);background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);scroll-snap-align:start}
-  .awb-trace li.error{border-color:var(--err-line)}.awb-trace li.ok{border-color:var(--ok-line)}
-  .awb-trace span,.awb-trace small{display:block;color:var(--dim);font-size:var(--fs-sm)}
-  .awb-trace strong{display:block;font-size:var(--fs-base);margin:var(--sp-2) 0;overflow-wrap:anywhere}
   .awb-artifact{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-4);font-size:var(--fs-md);min-width:0}
   .awb-artifact>div{min-width:0;flex:1}.awb-artifact strong,.awb-artifact small{display:block;overflow-wrap:anywhere}
   .awb-artifact small{font-size:var(--fs-sm);color:var(--dim);margin-top:var(--sp-1)}

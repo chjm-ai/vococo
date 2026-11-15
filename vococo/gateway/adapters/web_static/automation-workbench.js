@@ -1,8 +1,8 @@
 "use strict";
 // 默认工作台只读概览；旧待办保留，所有任务管理仍使用原来的接口与控件。
 const AWB = {mode:"automation", data:null, error:"", loading:false, version:0,
-  open:new Set(), folds:new Set(), tabs:new Map(), histories:new Map(), details:new Map(), menuTrigger:null,
-  search:"", filter:"all", request:0};
+  open:new Set(), folds:new Set(), jobs:new Set(), products:new Set(), histories:new Map(), menuTrigger:null,
+  search:"", filter:"all", sourceRequest:0};
 function automationWorkbenchActive(){ return AWB.mode==="automation"; }
 function awbVisible(){ return automationWorkbenchActive() && S.surface==="workbench" && !$("#workbenchView").hidden; }
 async function awbJson(url){
@@ -19,6 +19,19 @@ async function loadAutomationWorkbench(){
     AWB.data=data;
   }catch(e){ if(version!==AWB.version) return; AWB.error=e.message; }
   AWB.loading=false; if(awbVisible()) renderAutomationWorkbench();
+  if(!AWB.error) await awbRefreshHistories();
+}
+async function awbRefreshHistories(){
+  const owners=new Set(AWB.data.agents.map(a=>a.id)),pending=[];
+  const previous=AWB.histories; AWB.histories=new Map();
+  for(const job of AWB.data.jobs){
+    if(!AWB.jobs.has(job.id)) continue;
+    const owner=owners.has(job.agent_id)?job.agent_id:"",key=awbHistoryKey(owner,job.id),old=previous.get(key);
+    if(old) AWB.histories.set(key,old);
+    pending.push(awbLoadJobHistory(owner,job.id,old?.page||0));
+  }
+  for(const owner of AWB.products) if(owners.has(owner)) pending.push(awbLoadProducts(owner));
+  await Promise.all(pending);
 }
 function refreshAutomationWorkbench(){ if(awbVisible()) return loadAutomationWorkbench(); }
 function awbNumber(n){ return new Intl.NumberFormat("zh-CN").format(n||0); }
@@ -120,45 +133,46 @@ function awbRecentRuns(a,owner=null){
     '<span class="awb-spark" aria-hidden="true">'+marks+'</span>'+(isJob?'':'<small>'+awbNumber(a.runs)+' 运行 · '+(latest?awbTime(latest.ts):'暂无记录')+'</small>')+'</button>';
 }
 function awbOwner(a,jobs){
-  const tab=AWB.tabs.get(a.id)||{tab:"tasks",job:""}, open=AWB.open.has(a.id);
+  const open=AWB.open.has(a.id);
   return '<section class="awb-owner" data-owner="'+esc(a.id)+'"><div class="awb-owner-row">'+
     '<button type="button" class="awb-owner-toggle" data-awb="owner" data-id="'+esc(a.id)+'" aria-expanded="'+open+'">'+avatarSvg(a.avatar)+
     '<span><strong>'+esc(a.name)+'</strong><small>'+jobs.length+' 定时任务</small></span><span class="awb-chevron">'+(open?"⌄":"›")+'</span></button>'+awbRecentRuns(a)+
     '<span class="awb-owner-metrics">'+esc(awbMetricText(a.stats))+'</span>'+awbButton("products",a.artifacts+' 附件 · '+a.works+' 作品',a.id,"awb-link")+'</div>'+
-    (open?'<div class="awb-owner-body"><nav class="wb-switch awb-tabs" aria-label="'+esc(a.name)+' 工作内容">'+
-      [["tasks","定时任务"],["runs","运行"],["products","产出"]].map(([v,t])=>'<button type="button" data-awb="tab" data-id="'+esc(a.id)+'" data-tab="'+v+'" class="'+(tab.tab===v?"on":"")+'">'+t+'</button>').join("")+ '</nav>'+awbOwnerBody(a,jobs,tab)+'</div>':"")+ '</section>';
+    (open?'<div class="awb-owner-body">'+awbOwnerBody(a,jobs)+'</div>':"")+ '</section>';
 }
-function awbOwnerBody(a,jobs,tab){
-  if(tab.tab!=="tasks") return awbHistoryHtml(a.id,tab);
-  return '<div class="awb-jobs">'+(jobs.length?jobs.map(j=>{
-    const [status,label]=awbStatus(j);
-    return '<div class="aptask awb-job"><button type="button" class="aptmain" data-awb="job-runs" data-id="'+esc(j.id)+'" data-owner="'+esc(a.id)+'" title="'+esc(j.name+' · '+awbSchedule(j))+'"><span class="aptname">'+esc(j.name)+'</span></button>'+awbRecentRuns(j,a.id)+
-      '<span class="awb-job-count" title="累计运行 '+awbNumber(j.runs)+' 次">'+awbNumber(j.runs)+' 运行</span><span class="awb-job-status '+status+'">'+(status==='idle'?'':label)+'</span><button type="button" class="more" data-awb="menu" data-id="'+esc(j.id)+'" aria-label="管理定时任务 '+esc(j.name)+'" aria-haspopup="menu">⋯</button></div>';
-  }).join(""):'<p class="awb-empty">暂无定时任务</p>')+awbButton("create","＋ 新建定时任务",a.id,"awb-link")+'</div>';
+function awbOwnerBody(a,jobs){
+  return (AWB.products.has(a.id)?awbProductsHtml(a.id):"")+'<div class="awb-jobs">'+
+    (jobs.length?jobs.map(j=>awbJobHtml(a.id,j)).join(""):'<p class="awb-empty">暂无定时任务</p>')+
+    awbButton("create","＋ 新建定时任务",a.id,"awb-link")+'</div>';
 }
-function awbHistoryKey(a,tab){ return [a,tab.tab,tab.job||""].join(":"); }
-function awbHistoryHtml(a,tab){
-  const h=AWB.histories.get(awbHistoryKey(a,tab));
-  const job=AWB.data.jobs.find(j=>j.id===tab.job);
-  const head=tab.tab==="products"?'<div class="awb-actions">'+awbButton("library","图片和网站作品库",a,"awb-link")+'<span>以下为附件快照，可预览或下载复用</span></div>':
-    (job?'<div class="awb-actions"><strong>'+esc(job.name)+'</strong>'+(a?awbButton("all-runs","查看全部运行",a,"awb-link"):'<button type="button" data-awb="tab" data-id="" data-tab="tasks" class="awb-link">返回定时任务</button>')+'</div>':"");
+function awbJobHtml(owner,j){
+  const [status,label]=awbStatus(j),open=AWB.jobs.has(j.id);
+  return '<section class="awb-task" data-job="'+esc(j.id)+'"><div class="aptask awb-job"><button type="button" class="aptmain" data-awb="job-runs" data-id="'+esc(j.id)+'" data-owner="'+esc(owner)+'" aria-expanded="'+open+'" title="'+esc(j.name+' · '+awbSchedule(j))+'"><span class="awb-chevron">'+(open?'⌄':'›')+'</span><span class="aptname">'+esc(j.name)+'</span></button>'+awbRecentRuns(j,owner)+
+    '<span class="awb-job-count" title="累计运行 '+awbNumber(j.runs)+' 次">'+awbNumber(j.runs)+' 运行</span><span class="awb-job-status '+status+'">'+(status==='idle'?'':label)+'</span><button type="button" class="more" data-awb="menu" data-id="'+esc(j.id)+'" aria-label="管理定时任务 '+esc(j.name)+'" aria-haspopup="menu">⋯</button></div>'+
+    (open?awbJobHistoryHtml(owner,j.id):"")+'</section>';
+}
+function awbHistoryKey(agent,job){ return JSON.stringify([agent,job]); }
+function awbJobHistoryHtml(agent,job){
+  const h=AWB.histories.get(awbHistoryKey(agent,job));
+  if(!h) return '<p class="awb-empty" role="status">正在读取…</p>';
+  const pageButton=(action,label,disabled)=>'<button type="button" class="awb-link" data-awb="'+action+'" data-id="'+esc(job)+'"'+(disabled?' disabled':'')+'>'+label+'</button>';
+  return '<div class="awb-job-history" data-history-owner="'+esc(agent)+'" aria-label="运行记录">'+
+    (h.loading?'<p class="awb-empty" role="status">正在读取…</p>':h.error?'<p class="awb-error" role="alert">'+esc(h.error)+'</p>'+pageButton('job-retry','重试',false):
+      '<div class="awb-history">'+(h.items.length?h.items.map(awbRunHtml).join(""):'<p class="awb-empty">暂无运行记录</p>')+'</div>')+
+    '<nav class="awb-pager" aria-label="运行记录翻页">'+pageButton('job-prev','上一页',h.loading||h.page===0)+'<span>第 '+(h.page+1)+' 页</span>'+pageButton('job-next','下一页',h.loading||!!h.error||!h.next)+'</nav></div>';
+}
+function awbProductsHtml(agent){
+  const h=AWB.histories.get(awbHistoryKey(agent,"products"));
+  const head='<div class="awb-actions">'+awbButton("library","图片和网站作品库",agent,"awb-link")+'<span>附件</span></div>';
   if(!h) return head+'<p class="awb-empty" role="status">正在读取…</p>';
-  const body=tab.tab==="products"?h.items.map(awbArtifactHtml).join(""):h.items.map(awbRunHtml).join("");
-  return head+'<div class="awb-history">'+body+'</div>'+(h.error?'<p class="awb-error" role="alert">'+esc(h.error)+'</p>':"")+
-    (!h.items.length&&!h.loading&&!h.error?'<p class="awb-empty">暂无'+(tab.tab==="products"?"附件":"运行记录")+'</p>':"")+
-    (h.loading?'<p class="awb-empty" role="status">正在读取…</p>':(h.next||h.error?awbButton("more",h.error?"重试":"加载更多",a,"awb-link"):""));
+  return '<div class="awb-products">'+head+h.items.map(awbArtifactHtml).join("")+
+    (h.error?'<p class="awb-error" role="alert">'+esc(h.error)+'</p>':"")+
+    (!h.items.length&&!h.loading&&!h.error?'<p class="awb-empty">暂无附件</p>':"")+
+    (h.loading?'<p class="awb-empty" role="status">正在读取…</p>':h.next||h.error?awbButton("more-products",h.error?"重试":"加载更多",agent,"awb-link"):"")+'</div>';
 }
 function awbRunHtml(r){
-  const open=AWB.details.has(r.id), detail=AWB.details.get(r.id);
-  return '<article class="aprun"><button type="button" class="awb-run-head" data-awb="run" data-id="'+r.id+'" aria-expanded="'+open+'"><span class="awb-dot '+(r.status.startsWith("success")?"ok":"error")+'"></span><span class="awb-run-name">'+esc(r.job_name||"运行记录")+'</span><time>'+awbTime(r.ts)+'</time><span>'+ (r.status.startsWith("success")?"调度成功":"运行异常")+'</span></button><div class="aptsub">'+esc((r.tokens>0?awbTokens(r.tokens)+" Token":"Token 未记录")+' · '+awbDuration(r.duration))+'</div>'+
-    (open?awbDetailHtml(r,detail):'<p class="awb-excerpt">'+esc(r.text.slice(0,160))+'</p>')+'</article>';
-}
-function awbDetailHtml(r,d){
-  if(d.loading) return '<p role="status">正在读取运行详情…</p>';
-  if(d.error) return '<p class="awb-error" role="alert">'+esc(d.error)+'</p>'+awbButton("retry-run","重试",String(r.id),"awb-link");
-  return '<div class="awb-detail"><div class="awb-actions">'+(d.target&&d.target.conv?awbButton("source","来源会话",String(r.id),"awb-link"):"")+awbButton("copy-result","复制结果",String(r.id),"awb-link")+'</div><pre class="awb-result">'+esc(d.text||"未保存结果正文")+'</pre>'+
-    '<h3>工具轨迹 <span>'+d.tools.length+' 个节点</span></h3>'+(d.source_linked?(d.tools.length?'<ol class="awb-trace">'+d.tools.map((t,i)=>'<li class="'+t.status+'"><span>'+String(i+1).padStart(2,"0")+'</span><strong>'+esc(t.name)+'</strong><small>'+(t.status==="ok"?"已完成":t.status==="error"?"异常":"未记录完成状态")+(t.children?' · '+t.children+' 子步骤':"")+'</small></li>').join("")+'</ol>':'<p class="awb-empty">这次运行没有保存工具轨迹</p>'):'<p class="awb-empty">历史记录未关联原始执行轮，无法确认工具过程和附件。</p>')+
-    d.artifacts.map(e=>awbArtifactHtml({...e,conv:d.artifact_conv})).join("")+'</div>';
+  const ok=r.status.startsWith("success"),failed=r.status.startsWith("error")||r.status==="failed",linked=!!r.target?.conv;
+  return '<article class="aprun"><button type="button" class="awb-run-link" data-awb="source-run" data-id="'+r.id+'"'+(linked?'':' disabled')+'><span class="awb-run-head"><span class="awb-dot '+(ok?"ok":failed?"error":"unknown")+'"></span><time>'+awbTime(r.ts)+'</time><span class="awb-run-name">'+(ok?"调度成功":failed?"运行异常":"状态未确认")+'</span><span>'+(linked?'查看会话 ›':'未关联会话')+'</span></span><span class="aptsub">'+esc((r.tokens>0?awbTokens(r.tokens)+" Token":"Token 未记录")+' · '+awbDuration(r.duration))+'</span></button></article>';
 }
 function awbArtifactHtml(e){
   return '<div class="artifact-card awb-artifact"><div><strong>'+esc(e.title||e.filename)+'</strong><small>'+esc(e.filename)+' · '+awbNumber(e.size)+' 字节</small></div>'+
@@ -186,35 +200,57 @@ function awbRenderOwners(){
   }
   const known=new Set(d.agents.map(a=>a.id)), orphan=d.jobs.filter(j=>!known.has(j.agent_id)&&awbMatches(j)&&(!q||j.name.toLowerCase().includes(q)));
   root.innerHTML=active.join("")+(!active.length?'<p class="awb-empty">没有符合条件的定时任务</p>':"")+
-    (orphan.length?'<details class="awb-fold" data-awb-fold="orphan" '+(AWB.folds.has("orphan")?'open':'')+'><summary>历史 / 未归属 · '+orphan.length+' 定时任务</summary>'+awbOwnerBody({id:""},orphan,AWB.tabs.get("")||{tab:"tasks"})+'</details>':"")+
+    (orphan.length?'<details class="awb-fold" data-awb-fold="orphan" '+(AWB.folds.has("orphan")?'open':'')+'><summary>历史 / 未归属 · '+orphan.length+' 定时任务</summary>'+awbOwnerBody({id:""},orphan)+'</details>':"")+
     (empty.length?'<details class="awb-fold" data-awb-fold="empty" '+(AWB.folds.has("empty")?'open':'')+'><summary>暂无定时任务的 Agent · '+empty.length+'</summary>'+empty.join("")+'</details>':"");
   if(focusData?.awb){
-    [...root.querySelectorAll("[data-awb]")].find(b=>b.dataset.awb===focusData.awb && b.dataset.id===focusData.id && b.dataset.tab===focusData.tab)?.focus({preventScroll:true});
+    [...root.querySelectorAll("[data-awb]")].find(b=>b.dataset.awb===focusData.awb && b.dataset.id===focusData.id && b.dataset.owner===focusData.owner)?.focus({preventScroll:true});
   }
 }
-async function awbSelect(agent,tab="tasks",job=""){
+function awbExpandOwner(agent){
   AWB.open.add(agent); if(!agent) AWB.folds.add("orphan");
-  AWB.tabs.set(agent,{tab,job}); awbRenderOwners();
-  if(tab!=="tasks") await awbLoadHistory(agent);
 }
-async function awbLoadHistory(agent,more=false){
-  const tab=AWB.tabs.get(agent)||{tab:"runs"},key=awbHistoryKey(agent,tab),prev=AWB.histories.get(key);
-  if(more && prev?.loading) return;
-  const state={items:more?(prev?.items||[]):[],next:more?prev?.next:null,loading:true,error:"",version:++AWB.request};
+async function awbToggleJob(agent,job){
+  awbExpandOwner(agent);
+  if(AWB.jobs.has(job)){ AWB.jobs.delete(job); awbRenderOwners(); return; }
+  AWB.jobs.add(job); await awbLoadJobHistory(agent,job);
+}
+async function awbLoadJobHistory(agent,job,page=0){
+  const key=awbHistoryKey(agent,job),prev=AWB.histories.get(key);
+  const cursors=prev?.cursors.slice()||[0];
+  if(page<0 || (page>0 && !cursors[page])) return;
+  const state={items:[],next:null,page,cursors,loading:true,error:""};
   AWB.histories.set(key,state); awbRenderOwners();
   try{
-    const query=new URLSearchParams({agent,job:tab.job||"",before:String(state.next||0)});
-    const data=await awbJson("/workbench/automation/"+(tab.tab==="products"?"artifacts":"runs")+"?"+query);
+    const query=new URLSearchParams({agent,job,before:String(cursors[page]),limit:"5"});
+    const data=await awbJson("/workbench/automation/runs?"+query);
+    if(AWB.histories.get(key)!==state) return;
+    state.items=data.items; state.next=data.next;
+    state.cursors=state.cursors.slice(0,page+1); if(data.next) state.cursors.push(data.next);
+  }catch(e){ if(AWB.histories.get(key)!==state) return; state.error=e.message; }
+  state.loading=false; if(awbVisible()) awbRenderOwners();
+}
+async function awbLoadProducts(agent,more=false){
+  const key=awbHistoryKey(agent,"products"),prev=AWB.histories.get(key);
+  if(more && prev?.loading) return;
+  const state={items:more?(prev?.items||[]):[],next:more?prev?.next:null,loading:true,error:""};
+  AWB.histories.set(key,state); awbRenderOwners();
+  try{
+    const data=await awbJson("/workbench/automation/artifacts?"+new URLSearchParams({agent,before:String(state.next||0)}));
     if(AWB.histories.get(key)!==state) return;
     const ids=new Set(state.items.map(i=>i.id)); state.items.push(...data.items.filter(i=>!ids.has(i.id))); state.next=data.next;
   }catch(e){ if(AWB.histories.get(key)!==state) return; state.error=e.message; }
   state.loading=false; if(awbVisible()) awbRenderOwners();
 }
-async function awbLoadRun(id){
-  const state={loading:true}; AWB.details.set(id,state); awbRenderOwners();
-  try{ const d=await awbJson("/workbench/automation/run?id="+id); if(AWB.details.get(id)===state) AWB.details.set(id,d); }
-  catch(e){ if(AWB.details.get(id)===state) AWB.details.set(id,{error:e.message}); }
-  if(awbVisible()) awbRenderOwners();
+async function awbOpenRun(id,button){
+  const request=++AWB.sourceRequest,convSeq=_convOpenSeq;
+  button.disabled=true; button.setAttribute("aria-busy","true");
+  try{
+    const d=await awbJson("/workbench/automation/run?id="+id);
+    // 历史加载会重绘按钮，但不应取消跳转；只丢弃后点的记录或切换会话前的旧请求。
+    if(request!==AWB.sourceRequest || convSeq!==_convOpenSeq || !awbVisible()) return;
+    if(!d.target?.conv){ alert("对应会话已清空或未关联，无法跳转"); return; }
+    await openConvAtTurn(d.target.conv,d.target.turn_id,d.target.ts);
+  }finally{ button.disabled=false; button.removeAttribute("aria-busy"); }
 }
 async function awbJobConfig(id){
   const d=await awbJson("/cron/sidebar"),j=d.jobs.find(j=>j.job_id===id);
@@ -247,13 +283,20 @@ async function awbClick(event){
   }
   if(action==="filter"){AWB.filter=id;renderAutomationWorkbench();return;}
   if(action==="owner"){ AWB.open.has(id)?AWB.open.delete(id):AWB.open.add(id); awbRenderOwners(); return; }
-  if(action==="products"||action==="tab"){await awbSelect(id,action==="products"?"products":b.dataset.tab);return;}
-  if(action==="job-runs"){await awbSelect(b.dataset.owner,"runs",id);return;}
-  if(action==="all-runs"){await awbSelect(id,"runs");return;}
-  if(action==="more"){await awbLoadHistory(id,true);return;}
-  if(action==="run"||action==="retry-run"){
-    const n=Number(id); if(action==="run"&&AWB.details.has(n)){AWB.details.delete(n);awbRenderOwners();}else await awbLoadRun(n); return;
+  if(action==="products"){
+    awbExpandOwner(id);
+    if(AWB.products.has(id)){AWB.products.delete(id);awbRenderOwners();}
+    else {AWB.products.add(id);await awbLoadProducts(id);} return;
   }
+  if(action==="job-runs"){await awbToggleJob(b.dataset.owner,id);return;}
+  if(action==="all-runs"){awbExpandOwner(id);awbRenderOwners();return;}
+  if(action==="more-products"){await awbLoadProducts(id,true);return;}
+  if(["job-prev","job-next","job-retry"].includes(action)){
+    const owner=b.closest("[data-history-owner]").dataset.historyOwner,h=AWB.histories.get(awbHistoryKey(owner,id));
+    if(!h || h.loading) return;
+    await awbLoadJobHistory(owner,id,h.page+(action==="job-prev"?-1:action==="job-next"?1:0)); return;
+  }
+  if(action==="source-run"){await awbOpenRun(id,b);return;}
   if(action==="menu"){await awbManage(b,id);return;}
   if(action==="create"){openCronModal(null);S.cronAgentId=id||null;$("#cfCwd").value=agentById(id)?.workdir||"";return;}
   if(action==="library"){
@@ -262,10 +305,6 @@ async function awbClick(event){
       await openLibrary();
     });
     return;
-  }
-  if(action==="source"){const d=AWB.details.get(Number(id));if(d?.target?.conv) await openConvAtTurn(d.target.conv,d.target.turn_id,d.target.ts);return;}
-  if(action==="copy-result"){
-    try{await navigator.clipboard.writeText(AWB.details.get(Number(id))?.text||"");b.textContent="已复制";}catch(e){alert("复制失败，请手动选择结果正文");}return;
   }
   if(action==="preview"){
     const params=new URLSearchParams({kind:"artifact",target:b.dataset.artifactId,title:b.dataset.filename,conv:b.dataset.conv});

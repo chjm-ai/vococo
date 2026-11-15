@@ -110,11 +110,11 @@ def runs(agent_id: str, job_id: str = '', before: int = 0, limit: int = 30) -> d
         clauses.append('id<?')
         args.append(before)
     limit = max(1, min(limit, 100))
-    rows = c.execute('SELECT id,job_id,job_name,ts,status,text,tokens,duration,tool_calls,agent_id'
-                     ' FROM agent_runs WHERE ' + ' AND '.join(clauses) + ' ORDER BY id DESC LIMIT ?',
-                     (*args, limit + 1)).fetchall()
-    fields = ('id', 'job_id', 'job_name', 'ts', 'status', 'text', 'tokens', 'duration', 'tool_calls', 'agent_id')
-    items = [dict(zip(fields, row)) for row in rows[:limit]]
+    fields = ('id', 'job_id', 'job_name', 'ts', 'status', 'text', 'tokens', 'duration', 'tool_calls',
+              'agent_id', 'turn_id', 'source_turn_id', 'source_text_hash')
+    rows = c.execute('SELECT ' + ','.join(fields) + ' FROM agent_runs WHERE ' +
+                     ' AND '.join(clauses) + ' ORDER BY id DESC LIMIT ?', (*args, limit + 1)).fetchall()
+    items = [_run_summary(dict(zip(fields, row))) for row in rows[:limit]]
     return {'items': items, 'next': items[-1]['id'] if len(rows) > limit else None}
 
 
@@ -146,6 +146,20 @@ def conv_for_key(key: str) -> str:
     return conv if conv and config.resolve_session_key('web', conv) == key else ''
 
 
+def _turn_target(turn: dict | None) -> dict | None:
+    if not turn or not (conv := conv_for_key(turn['key'])):
+        return None
+    return {'conv': conv, 'turn_id': turn['id'], 'ts': turn['ts']}
+
+
+def _run_summary(run: dict) -> dict:
+    source = _verified_turn(run, run['source_turn_id'])
+    run['target'] = _turn_target(source or _verified_turn(run, run['turn_id'], copied=True))
+    for field in ('source_turn_id', 'turn_id', 'source_text_hash'):
+        run.pop(field)
+    return run
+
+
 def run_detail(run_id: int) -> dict:
     c = agents._conn()
     fields = ('id', 'agent_id', 'job_id', 'job_name', 'ts', 'status', 'text',
@@ -159,8 +173,7 @@ def run_detail(run_id: int) -> dict:
     run['text'] = result['text'] if result else run['text']
     run.pop('source_text_hash', None)
     run['source_linked'] = bool(source)
-    run['target'] = ({'conv': conv_for_key(result['key']), 'turn_id': result['id'], 'ts': result['ts']}
-                     if result else None)
+    run['target'] = _turn_target(result)
     run['tools'] = _tools(source)
     run['artifacts'] = session_store.turn_artifacts(source['key'], source['id']) if source else []
     run['artifact_conv'] = conv_for_key(source['key']) if source else ''
