@@ -1,5 +1,35 @@
 const {chromium}=require('playwright');
 const assert=require('node:assert/strict');
+async function checkWorkbenchSafeArea(page,output){
+  const cdp=await page.context().newCDPSession(page);
+  for(const [width,top] of [[390,59],[375,47],[320,20],[390,0]]){
+    await page.setViewportSize({width,height:640});
+    await cdp.send('Emulation.setSafeAreaInsetsOverride',{insets:{top,bottom:0,left:0,right:0}});
+    await page.evaluate(async()=>{
+      closeSidebar();
+      await Promise.all(document.getAnimations().filter(a=>a.effect?.target?.closest('#sidebar')).map(a=>a.finished.catch(()=>{})));
+    });
+    for(const scroll of [0,200]){
+      await page.evaluate(scroll=>{document.querySelector('#workbenchView').scrollTop=scroll;},scroll);
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(resolve)));
+      const layout=await page.evaluate(()=>{
+        const bar=document.querySelector('.wb-toolbar'),content=document.querySelector('#wbContent');
+        const buttons=[...bar.querySelectorAll('.wb-title-row button')].filter(b=>b.checkVisibility());
+        return {padding:parseFloat(getComputedStyle(bar).paddingTop),contentPadding:parseFloat(getComputedStyle(content).paddingTop),
+          buttons:buttons.map(b=>{const r=b.getBoundingClientRect();return {top:r.top,hit:b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};})};
+      });
+      assert.equal(layout.padding,top+12,'标题栏必须保留系统安全区 '+width+' '+top);
+      assert.equal(layout.contentPadding,0,'安全区只由标题栏补齐，不叠加内容留白');
+      assert.ok(layout.buttons.every(b=>b.top>=top && b.hit),'首屏及滚动吸顶后按钮都在安全区下且可点击 '+JSON.stringify(layout));
+    }
+    if(top===59) await page.screenshot({path:output+'/workbench-safe-area.png',fullPage:true});
+    await page.locator('.wb-hamb').click();
+    assert.ok(await page.locator('#sidebar').evaluate(n=>n.classList.contains('open')),'移动端顶部展开按钮可用');
+    await page.evaluate(()=>closeSidebar());
+  }
+  await cdp.send('Emulation.setSafeAreaInsetsOverride',{insets:{}});
+  await cdp.detach();
+}
 (async()=>{
   const [origin,token,agent,emptyAgent,job,output]=process.argv.slice(2);
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
@@ -175,6 +205,7 @@ const assert=require('node:assert/strict');
         if([1440,390].includes(width)) await page.screenshot({path:output+'/workbench-'+theme+'-'+width+'.png',fullPage:true,animations:'disabled'});
       }
     }
+    await checkWorkbenchSafeArea(page,output);
     await page.evaluate(()=>{AWB.data=window.awbLayoutOriginal;delete window.awbLayoutOriginal;renderAutomationWorkbench();});
     await page.locator('[data-awb="todos"]').click();await page.waitForSelector('[data-open-automation]');
     await page.locator('[data-open-automation]').click();await page.waitForSelector('#awbSearch');
@@ -229,6 +260,9 @@ const assert=require('node:assert/strict');
     await page.locator(`[data-awb="library"][data-id="${emptyAgent}"]`).click();
     await page.waitForFunction(()=>$('#libraryView') && !$('#libraryView').hidden && !LIB.loading);
     assert.equal(await page.evaluate(()=>LIB.filters.agent_id),emptyAgent);
+    await page.goto(origin+'/workbench/window');
+    await page.waitForSelector('.awb-owner');
+    await checkWorkbenchSafeArea(page,output);
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({ok:true,widths:8,themes:2,history:35,nodes:3,management:true,aligned:true,lazyLibrary:true}));
   }finally{await browser.close();}
