@@ -1090,7 +1090,15 @@ async def stream_turn(
     elif session_key and not isolated:
         root = project_root
         checkout = session_store.get_worktree(session_key)
-        system_prompt_extra += f"\n当前为任务模式，原项目：{root}。只读分析不创建分支。修改、构建或测试前必须先调用 prepare_repository(path=原项目绝对路径)，只在成功返回的副本路径操作，使用绝对路径。当前已绑定副本：{checkout or '尚未准备'}。"
+        system_prompt_extra += (
+            f"\n当前为任务模式，原项目：{root}。只读分析不创建分支。"
+            "仅当目标属于 Git 仓库时，修改、构建或测试前必须先调用 "
+            "prepare_repository(path=目标原仓库绝对路径)，只在成功返回的副本路径操作；"
+            "Git 副本准备失败不得回退原仓库修改。"
+            "非 Git 目录（如 Obsidian 笔记库）不要求准备仓库副本，不得为此初始化 Git；"
+            "在现有授权范围内使用绝对路径操作，迁移或批量整理前先备份，不绕过审批或禁用工具。"
+            f"当前已绑定副本：{checkout or '尚未准备'}。"
+        )
     source_access = session_store.active_source_access(session_key) if session_key and not isolated else {}
     disallowed_tools = list(dict.fromkeys([*(disallowed_tools or []), *source_access.get("denied", [])]))
     if agent_rt.get("disallowed_tools"):
