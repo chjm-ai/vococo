@@ -22,11 +22,11 @@ const assert=require('node:assert/strict');
     });
     const shortcut=key=>page.keyboard.press('Control+Alt+'+key);
     await shortcut('ArrowUp');
-    await page.waitForFunction(()=>S.conv==='local-remote-a');
+    await page.waitForFunction(()=>S.conv==='local-remote-a' && document.activeElement.id==='ta');
     await shortcut('ArrowUp');
     assert.equal(await page.evaluate(()=>S.conv),'local-remote-a','到边界不循环');
     await shortcut('ArrowDown');
-    await page.waitForFunction(()=>S.conv==='local-remote-b');
+    await page.waitForFunction(()=>S.conv==='local-remote-b' && document.activeElement.id==='ta');
     assert.equal(await page.locator('#ta').inputValue(),'第二个会话草稿');
     // 桌面手动收起侧栏后，快捷键必须真正展开，而不是聚焦在被裁切的行上。
     await page.click('#collapseBtn');
@@ -79,7 +79,7 @@ const assert=require('node:assert/strict');
     assert.equal(await page.evaluate(()=>getComputedStyle(document.activeElement).outlineStyle),'solid');
     await page.keyboard.press('ArrowDown');
     await page.keyboard.press('Enter');
-    await page.waitForFunction(()=>S.conv==='local-remote-c' && document.activeElement.id==='messages');
+    await page.waitForFunction(()=>S.conv==='local-remote-c' && document.activeElement.id==='ta');
     assert.equal(await page.evaluate(()=>$('#sidebar').classList.contains('open')),false);
     // 列表边界、修饰键和中文输入不能触发发送或导航。
     await shortcut('i');

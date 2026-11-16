@@ -1059,7 +1059,7 @@ window.vococoKeyboard = (()=>{
     const opening=openConv(conv), revision=focusRevision;
     await opening;
     if(S.conv!==conv || focusRevision!==revision || modal()) return;
-    $("#messages").focus({preventScroll:true});
+    focusComposer();
   }
   function switchConversation(step){
     // 与当前侧栏展示顺序一致，不把隐藏、折叠或筛掉的会话混进导航。
