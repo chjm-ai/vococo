@@ -92,6 +92,9 @@ async function checkWorkbenchSafeArea(page,output){
     for(const stat of await page.locator('.awb-stats .apstat').all()){
       assert.equal(await stat.evaluate(n=>getComputedStyle(n).backgroundColor),'rgba(0, 0, 0, 0)','指标内部不再有第二层背景框');
     }
+    const showDisabled=page.getByRole('checkbox',{name:'显示已停用',exact:true});
+    assert.ok(await showDisabled.isChecked(),'默认勾选显示已停用');
+    assert.equal(await page.locator('[data-awb="filter"]').count(),0,'移除全部/运行中/异常按钮');
     assert.equal(await page.locator('.awb-stats .apstat').count(),6);
     assert.ok((await page.locator('.awb-stats').innerText()).includes('近 7 天中位耗时'));
     assert.ok((await page.locator('.awb-stats').innerText()).includes('近 7 天调度成功率'));
@@ -202,6 +205,17 @@ async function checkWorkbenchSafeArea(page,output){
     const countBefore=await page.evaluate(()=>WB_DATA.tasks.length);
     await page.keyboard.press('Space');await page.keyboard.press('Delete');
     assert.equal(await page.evaluate(()=>WB_DATA.tasks.length),countBefore,'旧待办快捷键不生效');
+    await showDisabled.uncheck();
+    assert.equal(await page.locator('#awbOwners>.awb-owner').count(),0,'只有停用任务的 Agent 随任务一起隐藏');
+    assert.equal(await page.locator('[data-awb-fold="orphan"]').count(),0,'未归属的停用任务同样隐藏');
+    assert.ok((await page.locator('#awbOwners').innerText()).includes('没有符合条件的定时任务'));
+    await page.locator('[data-awb="refresh"]').click();
+    await page.waitForFunction(()=>!AWB.loading && !AWB.error);
+    assert.ok(!await showDisabled.isChecked(),'刷新数据不重置用户的勾选状态');
+    await page.getByText('显示已停用',{exact:true}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===5);
+    assert.ok(await showDisabled.isChecked(),'点击文字标签也能切换');
+    assert.ok((await history.locator('.awb-pager').innerText()).includes('第 7 页'),'重新显示后保留任务展开和历史页码');
     // 仅在浏览器内增加长短内容样本，验证跨行列对齐，不写入任何业务数据。
     await page.evaluate(agent=>{
       window.awbLayoutOriginal=AWB.data; AWB.data=structuredClone(AWB.data);
@@ -226,6 +240,22 @@ async function checkWorkbenchSafeArea(page,output){
     assert.equal(await page.locator('.awb-job-recent[data-id="layout-state-0"] .awb-tick.unknown').count(),30);
     assert.equal(await page.locator('.awb-job-status.idle').innerText(),'');
     for(const label of ['运行中','排队中','上次异常']) assert.ok(await page.getByText(label,{exact:true}).count()>0);
+    const jobStates=await page.evaluate(()=>AWB.data.jobs.map(j=>[j.id,j.enabled]));
+    await showDisabled.focus();await page.keyboard.press('Space');
+    assert.ok(!await showDisabled.isChecked(),'空格键可以取消勾选');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'awbShowDisabled','筛选不丢失键盘焦点');
+    assert.ok(await showDisabled.evaluate(n=>getComputedStyle(n).outlineStyle!=='none'));
+    assert.equal(await page.locator('#awbOwners>.awb-owner').count(),1,'隐藏全部停用任务的 Agent');
+    assert.equal(await page.locator('.awb-task').count(),4,'启用的待触发、执行中、排队和异常任务均保留');
+    await page.fill('#awbSearch','未运行');
+    assert.equal(await page.locator('.awb-task').count(),1,'搜索与勾选条件同时生效');
+    assert.equal(await page.locator('.awb-task').getAttribute('data-job'),'layout-state-0','待触发并非停用，不应隐藏');
+    await page.fill('#awbSearch','从工作台重命名');
+    assert.equal(await page.locator('.awb-task').count(),0,'搜索也不能显示已隐藏的停用任务');
+    await showDisabled.check();
+    assert.equal(await page.locator('.awb-task').count(),1,'重新勾选后恢复搜索命中的停用任务');
+    await page.fill('#awbSearch','');
+    assert.deepEqual(await page.evaluate(()=>AWB.data.jobs.map(j=>[j.id,j.enabled])),jobStates,'仅改变显示，不修改任务的启停状态');
     for(const theme of ['dark','light']){
       await page.emulateMedia({colorScheme:theme});
       for(const width of [1440,1280,1041,1040,768,390,375,320]){
@@ -233,6 +263,13 @@ async function checkWorkbenchSafeArea(page,output){
         await page.evaluate(width=>{setSidebarCollapsed(width<=760);closeSidebar();},width);
         assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'页面不横向溢出 '+width);
         assert.ok(await page.locator('#wbContent').evaluate(n=>n.scrollWidth<=n.clientWidth+1),'工作台不横向溢出 '+width);
+        await showDisabled.uncheck();
+        assert.equal(await page.locator(`.awb-task[data-job="${job}"]`).count(),0,'当前屏宽隐藏停用任务 '+width);
+        assert.equal(await page.locator('.awb-task[data-job="layout-state-0"]').count(),1,'启用的待触发任务仍显示 '+width);
+        await showDisabled.check();
+        assert.equal(await history.locator('.aprun').count(),5,'恢复显示不重置运行历史 '+width);
+        const filterBox=await page.locator('.awb-show-disabled').boundingBox();
+        assert.ok(filterBox.x>=0 && filterBox.x+filterBox.width<=width,'复选框与文案不溢出 '+width);
         await page.locator(`[data-awb="menu"][data-id="${job}"]`).click();
         await page.waitForSelector('.convmenu');
         const box=await page.locator('.convmenu').boundingBox();
