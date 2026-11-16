@@ -2,7 +2,7 @@
 // 默认工作台只读概览；旧待办保留，所有任务管理仍使用原来的接口与控件。
 const AWB = {mode:"automation", data:null, error:"", loading:false, version:0,
   open:new Set(), folds:new Set(), jobs:new Set(), products:new Set(), histories:new Map(), menuTrigger:null,
-  search:"", filter:"all", sourceRequest:0};
+  search:"", showDisabled:true, sourceRequest:0};
 function automationWorkbenchActive(){ return AWB.mode==="automation"; }
 function awbVisible(){ return automationWorkbenchActive() && S.surface==="workbench" && !$("#workbenchView").hidden; }
 async function awbJson(url){
@@ -60,8 +60,7 @@ function awbHeader(){
     awbButton("refresh",AWB.loading?"刷新中":"刷新","","awb-link")+
     awbButton("todos","待办","","awb-link")+
     '<button class="wb-win-btn" data-workbench-win title="独立窗口" aria-label="在独立窗口打开工作台">'+ic("newwin")+'</button></div></div>'+
-    '<div class="awb-controls"><label class="awb-search"><input id="awbSearch" aria-label="搜索 Agent 或定时任务" type="search" value="'+esc(AWB.search)+'" placeholder="搜索 Agent、定时任务"></label><div class="wb-switch" role="group" aria-label="筛选定时任务">'+
-    [["all","全部"],["active","运行中"],["error","异常"]].map(([v,t])=>'<button type="button" class="'+(AWB.filter===v?"on":"")+'" data-awb="filter" data-id="'+v+'" aria-pressed="'+(AWB.filter===v)+'">'+t+'</button>').join("")+ '</div></div></header>';
+    '<div class="awb-controls"><label class="awb-search"><input id="awbSearch" aria-label="搜索 Agent 或定时任务" type="search" value="'+esc(AWB.search)+'" placeholder="搜索 Agent、定时任务"></label><label class="awb-show-disabled"><input id="awbShowDisabled" type="checkbox"'+(AWB.showDisabled?' checked':'')+'>显示已停用</label></div></header>';
 }
 function awbStats(){
   const d=AWB.data,s=d.stats;
@@ -71,11 +70,7 @@ function awbStats(){
     .map(([n,t])=>'<div class="apstat"><b>'+esc(String(n))+'</b><span>'+t+'</span></div>').join("")+'</div>'+
     '<details class="awb-note"><summary>近 7 天 · 指标口径与覆盖</summary><p>Token 有记录 '+s.token_samples+'/'+s.runs+' 次，耗时有记录 '+s.duration_samples+'/'+s.runs+' 次；未记录不算零。Token 沿用保存口径，不是精确账单，也不据此推算费用。</p><p>运行包含历史任务与独立后台任务。调度成功不等于业务目标完成；工具轨迹不是业务阶段。附件是保存的快照，网站作品指向当前版本。</p></details>';
 }
-function awbMatches(j){
-  if(AWB.filter==="active") return ["running","queued"].includes(j.activity);
-  if(AWB.filter==="error") return awbStatus(j)[0]==="error";
-  return true;
-}
+function awbMatches(j){ return AWB.showDisabled || j.enabled; }
 function awbDayTitle(day){
   if(!day.runs) return day.date+'\n无运行记录；可能未触发或历史未记录，不能确认触发条件是否满足。';
   return day.date+'\n'+day.runs+' 次运行 · 成功 '+day.ok+' · 失败 '+day.failed+(day.unknown?' · 状态未确认 '+day.unknown:'')+
@@ -198,7 +193,7 @@ function awbRenderOwners(){
     const all=d.jobs.filter(j=>j.agent_id===a.id);
     const jobs=all.filter(j=>awbMatches(j) && (!q||a.name.toLowerCase().includes(q)||j.name.toLowerCase().includes(q)));
     if(all.length && jobs.length) active.push(awbOwner(a,jobs));
-    else if(!all.length && AWB.filter==="all" && (!q||a.name.toLowerCase().includes(q))) empty.push(awbOwner(a,[]));
+    else if(!all.length && (!q||a.name.toLowerCase().includes(q))) empty.push(awbOwner(a,[]));
   }
   const known=new Set(d.agents.map(a=>a.id)), orphan=d.jobs.filter(j=>!known.has(j.agent_id)&&awbMatches(j)&&(!q||j.name.toLowerCase().includes(q)));
   root.innerHTML=active.join("")+(!active.length?'<p class="awb-empty">没有符合条件的定时任务</p>':"")+
@@ -283,7 +278,6 @@ async function awbClick(event){
     AWB.mode="todos"; $("#workbenchView").classList.remove("automation-workbench");
     if(!WB.anchor) WB.anchor=workbenchToday(); await loadWorkbenchData(); renderWorkbench(); return;
   }
-  if(action==="filter"){AWB.filter=id;renderAutomationWorkbench();return;}
   if(action==="owner"){ AWB.open.has(id)?AWB.open.delete(id):AWB.open.add(id); awbRenderOwners(); return; }
   if(action==="products"){
     awbExpandOwner(id);
@@ -325,6 +319,9 @@ $("#workbenchView").addEventListener("toggle",event=>{
 },true);
 $("#workbenchView").addEventListener("input",event=>{
   if(event.target.id!=="awbSearch") return; AWB.search=event.target.value; awbRenderOwners();
+});
+$("#workbenchView").addEventListener("change",event=>{
+  if(event.target.id!=="awbShowDisabled") return; AWB.showDisabled=event.target.checked; awbRenderOwners();
 });
 document.addEventListener("keydown",event=>{
   if(!awbVisible()||!apMenuEl) return;

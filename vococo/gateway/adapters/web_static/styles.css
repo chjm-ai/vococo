@@ -2431,6 +2431,9 @@
   .awb-link{color:var(--dim);font-size:var(--fs-md);padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);white-space:nowrap}
   .awb-link:hover{background:var(--panel2);color:var(--text)}
   .awb-controls{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);flex-wrap:wrap}
+  .awb-show-disabled{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-3) 0;flex-shrink:0;white-space:nowrap;color:var(--dim);font-size:var(--fs-md);cursor:pointer}
+  .awb-show-disabled input{margin:0;width:var(--sp-5);height:var(--sp-5);accent-color:var(--accent);cursor:pointer}
+  .awb-show-disabled input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .awb-search{min-width:0;flex:1}
   .awb-search input{width:100%;min-width:0;border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-3) var(--sp-4);background:var(--panel);color:var(--text);font:inherit;font-size:var(--fs-base)}
   .awb-search input:focus{outline:1px solid var(--accent)}
