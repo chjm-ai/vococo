@@ -35,7 +35,7 @@ async function awbRefreshHistories(){
 }
 function refreshAutomationWorkbench(){ if(awbVisible()) return loadAutomationWorkbench(); }
 function awbNumber(n){ return new Intl.NumberFormat("zh-CN").format(n||0); }
-function awbTokens(n){ return n>=10000 ? (n/10000).toFixed(1)+" 万" : awbNumber(n); }
+function awbTokens(n){ return n>=10000 ? new Intl.NumberFormat("zh-CN",{minimumFractionDigits:1,maximumFractionDigits:1}).format(n/10000)+" 万" : awbNumber(n); }
 function awbDuration(n){ return n==null || !(n>0) ? "未记录" : n>=60 ? Math.round(n/60*10)/10+" 分钟" : Math.round(n)+" 秒"; }
 function awbRate(s){ return s.runs ? (100*s.ok/s.runs).toFixed(1)+"%" : "—"; }
 function awbTime(ts){ return new Date(ts*1000).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}); }
@@ -65,9 +65,9 @@ function awbHeader(){
 }
 function awbStats(){
   const d=AWB.data,s=d.stats;
-  return '<div class="apstats awb-stats">'+[[d.jobs.length,"定时任务"],[awbNumber(d.runs),"累计运行"],
-    [s.token_samples?awbTokens(s.tokens):"未记录","近 7 天 Token"],[awbDuration(s.median_duration),"中位耗时"],
-    [awbRate(s),"调度成功率"],[awbNumber(d.artifacts)+" / "+awbNumber(d.works),"附件 / 作品"]]
+  return '<div class="apstats awb-stats">'+[[awbNumber(d.jobs.length),"定时任务"],[awbNumber(d.runs),"累计运行"],
+    [s.token_samples?awbTokens(s.tokens):"未记录","近 7 天 Token"],[awbDuration(s.median_duration),'近 7 天<span class="awb-stat-label">中位耗时</span>'],
+    [awbRate(s),'近 7 天<span class="awb-stat-label">调度成功率</span>'],[awbNumber(d.artifacts)+" / "+awbNumber(d.works),"附件 / 作品"]]
     .map(([n,t])=>'<div class="apstat"><b>'+esc(String(n))+'</b><span>'+t+'</span></div>').join("")+'</div>'+
     '<details class="awb-note"><summary>近 7 天 · 指标口径与覆盖</summary><p>Token 有记录 '+s.token_samples+'/'+s.runs+' 次，耗时有记录 '+s.duration_samples+'/'+s.runs+' 次；未记录不算零。Token 沿用保存口径，不是精确账单，也不据此推算费用。</p><p>运行包含历史任务与独立后台任务。调度成功不等于业务目标完成；工具轨迹不是业务阶段。附件是保存的快照，网站作品指向当前版本。</p></details>';
 }
@@ -135,9 +135,9 @@ function awbRecentRuns(a,owner=null){
 function awbOwner(a,jobs){
   const open=AWB.open.has(a.id);
   return '<section class="awb-owner" data-owner="'+esc(a.id)+'"><div class="awb-owner-row">'+
-    '<button type="button" class="awb-owner-toggle" data-awb="owner" data-id="'+esc(a.id)+'" aria-expanded="'+open+'">'+avatarSvg(a.avatar)+
-    '<span><strong>'+esc(a.name)+'</strong><small>'+jobs.length+' 定时任务</small></span><span class="awb-chevron">'+(open?"⌄":"›")+'</span></button>'+awbRecentRuns(a)+
-    '<span class="awb-owner-metrics">'+esc(awbMetricText(a.stats))+'</span>'+awbButton("products",a.artifacts+' 附件 · '+a.works+' 作品',a.id,"awb-link")+'</div>'+
+    '<button type="button" class="awb-owner-toggle" data-awb="owner" data-id="'+esc(a.id)+'" aria-expanded="'+open+'"><span class="awb-chevron" aria-hidden="true">'+(open?"⌄":"›")+'</span>'+avatarSvg(a.avatar)+
+    '<span class="awb-owner-name"><strong>'+esc(a.name)+'</strong><small>'+awbNumber(jobs.length)+' 定时任务</small></span></button>'+awbRecentRuns(a)+
+    '<span class="awb-owner-metrics">'+esc(awbMetricText(a.stats))+'</span>'+awbButton("products",awbNumber(a.artifacts)+' 附件 · '+awbNumber(a.works)+' 作品',a.id,"awb-link")+'</div>'+
     (open?'<div class="awb-owner-body">'+awbOwnerBody(a,jobs)+'</div>':"")+ '</section>';
 }
 function awbOwnerBody(a,jobs){
@@ -147,8 +147,8 @@ function awbOwnerBody(a,jobs){
 }
 function awbJobHtml(owner,j){
   const [status,label]=awbStatus(j),open=AWB.jobs.has(j.id);
-  return '<section class="awb-task" data-job="'+esc(j.id)+'"><div class="aptask awb-job"><button type="button" class="aptmain" data-awb="job-runs" data-id="'+esc(j.id)+'" data-owner="'+esc(owner)+'" aria-expanded="'+open+'" title="'+esc(j.name+' · '+awbSchedule(j))+'"><span class="awb-chevron">'+(open?'⌄':'›')+'</span><span class="aptname">'+esc(j.name)+'</span></button>'+awbRecentRuns(j,owner)+
-    '<span class="awb-job-count" title="累计运行 '+awbNumber(j.runs)+' 次">'+awbNumber(j.runs)+' 运行</span><span class="awb-job-status '+status+'">'+(status==='idle'?'':label)+'</span><button type="button" class="more" data-awb="menu" data-id="'+esc(j.id)+'" aria-label="管理定时任务 '+esc(j.name)+'" aria-haspopup="menu">⋯</button></div>'+
+  return '<section class="awb-task" data-job="'+esc(j.id)+'"><div class="aptask awb-job"><button type="button" class="aptmain" data-awb="job-runs" data-id="'+esc(j.id)+'" data-owner="'+esc(owner)+'" aria-expanded="'+open+'" title="'+esc(j.name+' · '+awbSchedule(j))+'"><span class="awb-chevron" aria-hidden="true">'+(open?'⌄':'›')+'</span><span class="awb-job-title"><span class="aptname">'+esc(j.name)+'</span><span class="awb-job-status '+status+'">'+(status==='idle'?'':label)+'</span></span></button>'+awbRecentRuns(j,owner)+
+    '<span class="awb-job-count" title="累计运行 '+awbNumber(j.runs)+' 次">'+awbNumber(j.runs)+' 运行</span><button type="button" class="more" data-awb="menu" data-id="'+esc(j.id)+'" aria-label="管理定时任务 '+esc(j.name)+'" aria-haspopup="menu">⋯</button></div>'+
     (open?awbJobHistoryHtml(owner,j.id):"")+'</section>';
 }
 function awbHistoryKey(agent,job){ return JSON.stringify([agent,job]); }
@@ -158,7 +158,7 @@ function awbJobHistoryHtml(agent,job){
   const pageButton=(action,label,disabled)=>'<button type="button" class="awb-link" data-awb="'+action+'" data-id="'+esc(job)+'"'+(disabled?' disabled':'')+'>'+label+'</button>';
   return '<div class="awb-job-history" data-history-owner="'+esc(agent)+'" aria-label="运行记录">'+
     (h.loading?'<p class="awb-empty" role="status">正在读取…</p>':h.error?'<p class="awb-error" role="alert">'+esc(h.error)+'</p>'+pageButton('job-retry','重试',false):
-      '<div class="awb-history">'+(h.items.length?h.items.map(awbRunHtml).join(""):'<p class="awb-empty">暂无运行记录</p>')+'</div>')+
+      '<div class="awb-history">'+(h.items.length?'<div class="awb-history-head" aria-hidden="true"><span>运行时间</span><span>运行结果</span><span>Token</span><span>耗时</span><span>会话</span></div>'+h.items.map(awbRunHtml).join(""):'<p class="awb-empty">暂无运行记录</p>')+'</div>')+
     '<nav class="awb-pager" aria-label="运行记录翻页">'+pageButton('job-prev','上一页',h.loading||h.page===0)+'<span>第 '+(h.page+1)+' 页</span>'+pageButton('job-next','下一页',h.loading||!!h.error||!h.next)+'</nav></div>';
 }
 function awbProductsHtml(agent){
@@ -172,7 +172,9 @@ function awbProductsHtml(agent){
 }
 function awbRunHtml(r){
   const ok=r.status.startsWith("success"),failed=r.status.startsWith("error")||r.status==="failed",linked=!!r.target?.conv;
-  return '<article class="aprun"><button type="button" class="awb-run-link" data-awb="source-run" data-id="'+r.id+'"'+(linked?'':' disabled')+'><span class="awb-run-head"><span class="awb-dot '+(ok?"ok":failed?"error":"unknown")+'"></span><time>'+awbTime(r.ts)+'</time><span class="awb-run-name">'+(ok?"调度成功":failed?"运行异常":"状态未确认")+'</span><span>'+(linked?'查看会话 ›':'未关联会话')+'</span></span><span class="aptsub">'+esc((r.tokens>0?awbTokens(r.tokens)+" Token":"Token 未记录")+' · '+awbDuration(r.duration))+'</span></button></article>';
+  const tokens=r.tokens>0?awbTokens(r.tokens):"未记录",duration=awbDuration(r.duration);
+  return '<article class="aprun"><button type="button" class="awb-run-link" data-awb="source-run" data-id="'+r.id+'"'+(linked?'':' disabled')+'><time>'+awbTime(r.ts)+'</time><span class="awb-run-name"><span class="awb-dot '+(ok?"ok":failed?"error":"unknown")+'" aria-hidden="true"></span>'+(ok?"调度成功":failed?"运行异常":"状态未确认")+'</span>'+
+    '<span class="awb-run-tokens" aria-label="Token '+esc(tokens)+'" title="Token '+esc(tokens)+'">'+esc(tokens)+'<span class="awb-token-unit"> Token</span></span><span class="awb-run-duration" aria-label="耗时 '+esc(duration)+'" title="耗时 '+esc(duration)+'">'+esc(duration)+'</span><span class="awb-run-action">'+(linked?'查看会话 ›':'未关联会话')+'</span></button></article>';
 }
 function awbArtifactHtml(e){
   return '<div class="artifact-card awb-artifact"><div><strong>'+esc(e.title||e.filename)+'</strong><small>'+esc(e.filename)+' · '+awbNumber(e.size)+' 字节</small></div>'+
