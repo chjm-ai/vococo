@@ -196,6 +196,54 @@ class Sink:
         return ""
 
 
+def prepare_turn_attachments(
+    turn_id: int, user_text: str, *, images=None, audios=None, files=None, videos=None,
+) -> tuple[str, list[FileAttachment]]:
+    """附件统一落盘并构造模型输入；任务与聊天保留相同的读取方式。"""
+    # 图片落盘 + 文件名入库:让刷新页面后历史里仍能显示这些图(仅落盘,不影响喂模型的 in-memory 版本)
+    if images:
+        session_store.save_turn_images(turn_id, images)
+    # 音频落盘 + 转写文字入库(供回放/历史展示);喂给模型的文字另外拼,不进 stored_user——
+    # 道理跟图片一样:附件不该塞进"给人看的那句话"里,只是这次没有原生 block 能装,
+    # 只能退化成文字拼接(见 AudioAttachment 类注释)。
+    prompt_files = list(files or [])
+    if audios:
+        session_store.save_turn_audio(turn_id, audios)
+        for au in audios:
+            user_text += f"\n\n[语音/音频附件:{au.filename}]"
+            # 路径必须给:转写失败或要对原始音频再做处理(长音频重跑 ASR、剪辑、抽轨)
+            # 时,模型只有原始文件名的话在磁盘上根本找不到,只会去猜"是不是没同步"
+            if getattr(au, "local_path", ""):
+                user_text += f"\n本机文件(可直接读取/处理):{au.local_path}"
+            prompt_files.append(FileAttachment(
+                data=au.transcript.encode("utf-8"), media_type="text/plain",
+                filename=f"{au.filename} 转写文字稿.txt", local_path=au.transcript_path,
+            ))
+    if files:
+        session_store.save_turn_files(turn_id, files)
+    # 视频落盘 + 元信息入库。喂模型的只有【路径 + 元信息】,视频本体一个字节都不进
+    # 请求体:协议没有 video block,几十 MB base64 塞进去不是被拒就是烧穿窗口
+    # (见 core/agent.py VideoAttachment)。要看内容,模型自己 ffmpeg 抽帧再 Read。
+    if videos:
+        session_store.save_turn_videos(turn_id, videos)
+        for vi in videos:
+            user_text += f"\n\n[视频附件:{vi.filename}]"
+            local = getattr(vi, "local_path", "")
+            if local:
+                from pathlib import Path
+
+                meta = session_store.video_probe_meta(Path(local))
+                if meta:
+                    user_text += f"\n{meta}"
+                user_text += (
+                    f"\n本机文件:{local}"
+                    "\n(模型无法直接观看视频。需要了解画面内容就用 ffmpeg 按需抽帧"
+                    "到临时目录再 Read 那几张图;需要听内容就抽出音轨再转写。"
+                    "用户没要求分析内容时不必自作主张跑这些。)"
+                )
+    return user_text, prompt_files
+
+
 async def converse(
     session_key: str,
     user_text: str,
@@ -288,47 +336,9 @@ async def _converse(
     if dispatch.enabled() and not compact:
         execution_id = dispatch.begin(session_key, turn_id, source_access)
     await sink.turn_saved()
-    # 图片落盘 + 文件名入库:让刷新页面后历史里仍能显示这些图(仅落盘,不影响喂模型的 in-memory 版本)
-    if images:
-        session_store.save_turn_images(turn_id, images)
-    # 音频落盘 + 转写文字入库(供回放/历史展示);喂给模型的文字另外拼,不进 stored_user——
-    # 道理跟图片一样:附件不该塞进"给人看的那句话"里,只是这次没有原生 block 能装,
-    # 只能退化成文字拼接(见 AudioAttachment 类注释)。
-    prompt_files = list(files or [])
-    if audios:
-        session_store.save_turn_audio(turn_id, audios)
-        for au in audios:
-            user_text += f"\n\n[语音/音频附件:{au.filename}]"
-            # 路径必须给:转写失败或要对原始音频再做处理(长音频重跑 ASR、剪辑、抽轨)
-            # 时,模型只有原始文件名的话在磁盘上根本找不到,只会去猜"是不是没同步"
-            if getattr(au, "local_path", ""):
-                user_text += f"\n本机文件(可直接读取/处理):{au.local_path}"
-            prompt_files.append(FileAttachment(
-                data=au.transcript.encode("utf-8"), media_type="text/plain",
-                filename=f"{au.filename} 转写文字稿.txt", local_path=au.transcript_path,
-            ))
-    if files:
-        session_store.save_turn_files(turn_id, files)
-    # 视频落盘 + 元信息入库。喂模型的只有【路径 + 元信息】,视频本体一个字节都不进
-    # 请求体:协议没有 video block,几十 MB base64 塞进去不是被拒就是烧穿窗口
-    # (见 core/agent.py VideoAttachment)。要看内容,模型自己 ffmpeg 抽帧再 Read。
-    if videos:
-        session_store.save_turn_videos(turn_id, videos)
-        for vi in videos:
-            user_text += f"\n\n[视频附件:{vi.filename}]"
-            local = getattr(vi, "local_path", "")
-            if local:
-                from pathlib import Path
-
-                meta = session_store.video_probe_meta(Path(local))
-                if meta:
-                    user_text += f"\n{meta}"
-                user_text += (
-                    f"\n本机文件:{local}"
-                    "\n(模型无法直接观看视频。需要了解画面内容就用 ffmpeg 按需抽帧"
-                    "到临时目录再 Read 那几张图;需要听内容就抽出音轨再转写。"
-                    "用户没要求分析内容时不必自作主张跑这些。)"
-                )
+    user_text, prompt_files = prepare_turn_attachments(
+        turn_id, user_text, images=images, audios=audios, files=files, videos=videos,
+    )
     shared = SharedTurn(session_key, turn_id, sink)
     reply: AgentReply | None = None
     timeline = shared.timeline

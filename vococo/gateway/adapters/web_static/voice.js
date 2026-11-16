@@ -230,7 +230,7 @@
   $("#callTextStop").onclick = ()=>stopBtn.click();
   function clearHint(){ const h = transcriptEl.querySelector(".hint"); if(h) h.remove(); }
 
-  function addMsg(kind, text){
+  function addMsg(kind, text, attachments={}){
     clearHint();
     const parts = kind.split(" ");
     const who = parts[0];
@@ -251,6 +251,14 @@
     span.className = "msgtext";
     span.textContent = text;
     b.append(span);
+    appendImgs(b, attachments.images);
+    appendAuds(b, attachments.audios);
+    appendVids(b, attachments.videos);
+    if(attachments.files?.length){
+      const label=el("div","msgfiles");
+      label.textContent="📎 附件："+attachments.files.map(file=>file.name||file.filename).join("、");
+      b.append(label);
+    }
     row.append(b);
     transcriptEl.appendChild(row);
     row.scrollIntoView({block:"end"});
@@ -738,12 +746,12 @@
   }
   function beginVoiceTurn(){
     cancelActiveVoiceTurn("superseded");
-    const turn = {id:makeVoiceTurnId(), controller:new AbortController()};
+    const turn = {id:makeVoiceTurnId(), conv:S.conv, controller:new AbortController()};
     activeVoiceTurn = turn;
     return turn;
   }
 
-  async function sendTurn(body){
+  async function sendTurn(body, onAccepted=()=>{}){
     if(historyLoading) return;
     const turn = beginVoiceTurn();
     busy = true; talkBtn.disabled = true; stopBtn.hidden = false;
@@ -764,14 +772,17 @@
     };
 
     let resp;
-    try{ resp = await fetch("/voice/send?conv=" + encodeURIComponent(S.conv), init); }
+    try{ resp = await fetch("/voice/send?conv=" + encodeURIComponent(turn.conv), init); }
     catch(e){ if(isActiveVoiceTurn(turn)) addMsg("ai error", "连不上服务"); finish(); return; }
     if(!isActiveVoiceTurn(turn)) return;
     if(resp.status === 401){ authError(); finish(); return; }
     if(!resp.ok || !resp.body){
-      addMsg("ai error", resp.status === 409 ? "上一轮还没说完" : "出错了");
+      let detail="";
+      try{ detail=(await resp.json()).error||""; }catch(e){}
+      addMsg("ai error", detail || (resp.status === 409 ? "上一轮还没说完" : "出错了"));
       finish(); return;
     }
+    onAccepted();
 
     let aiEl = null, full = "";
     const reader = resp.body.getReader(), dec = new TextDecoder();
@@ -3038,8 +3049,8 @@
       transcriptEl.replaceChildren();
       if(d.turns?.length) clearHint();
       for(const t of d.turns || []){
-        if(t.user) addMsg("me", t.user);
-        if(t.assistant) addMsg("ai", t.assistant);
+        if(t.user || t.images?.length || t.audios?.length || t.files?.length || t.videos?.length) addMsg("me", t.user||"", t);
+        if(t.assistant || t.ai_images?.length || t.ai_videos?.length) addMsg("ai", t.assistant||"", {images:t.ai_images,videos:t.ai_videos});
       }
       return true;
     }catch(e){
@@ -3386,23 +3397,49 @@
     if(sharedComposer.parentElement !== $("#chatMain")) $("#chatMain").appendChild(sharedComposer);
   }
 
+  // 聊天在服务端接受前保留输入，不能复用任务模式“发送即清空”的草稿锁。
+  const callTextSending={};
   async function sendCallText(text){
     if(historyLoading){ alert("聊天历史加载中，请稍后发送"); return; }
     text=(text||"").trim();
-    if(!text) return;
-    if(S.images.length || S.audios.length){
-      addMsg("ai error", "统一对话暂不支持附件发送,请切回普通会话处理附件");
-      return;
+    const conv=S.conv;
+    if(callTextSending[conv]) return;
+    const attachments={images:S.images.slice(),audios:S.audios.slice(),files:S.files.slice(),libraryRefs:S.libraryRefs.slice()};
+    if(!text && !Object.values(attachments).some(items=>items.length)) return;
+    callTextSending[conv]=attachments;
+    let meRow=null, accepted=false;
+    try{
+      const uploads=[...attachments.audios,...attachments.files];
+      await Promise.all(uploads.map(item=>item.done||Promise.resolve()));
+      if(S.conv!==conv || S.surface!=="call") return;
+      if(uploads.some(item=>item.status==="error" || !item.id)){
+        addMsg("ai error", "附件上传失败，请移除失败附件或重新上传后发送；文字和附件已保留。");
+        return;
+      }
+      closeCmdMenu();
+      const shown=text+(attachments.libraryRefs.length ? "\n\n作品引用："+attachments.libraryRefs.map(item=>item.title||item.id).join("、") : "");
+      meRow=addMsg("me",shown,{
+        images:attachments.images.map(item=>item.url),audios:attachments.audios,
+        files:attachments.files.filter(item=>item.kind!=="video"),videos:attachments.files.filter(item=>item.kind==="video"),
+      }).parentElement;
+      await sendTurn({
+        text,tts:false,images:attachments.images.map(item=>({data:item.data,media_type:item.media_type})),
+        audios:attachments.audios.map(item=>({id:item.id})),
+        files:attachments.files.filter(item=>item.kind!=="video").map(item=>({id:item.id})),
+        videos:attachments.files.filter(item=>item.kind==="video").map(item=>({id:item.id})),
+        library_refs:attachments.libraryRefs.map(item=>item.id),
+      },()=>{
+        accepted=true;
+        if(callTextSending[conv]===attachments) delete callTextSending[conv];
+        if(S.conv!==conv) return;
+        for(const field of Object.keys(attachments)) S[field]=S[field].filter(item=>!attachments[field].includes(item));
+        if($("#ta").value.trim()===text){ $("#ta").value=""; clearDraft(conv); autoGrow(); }
+        saveComposerAttachments(conv); renderThumbs();
+      });
+    }finally{
+      if(callTextSending[conv]===attachments) delete callTextSending[conv];
+      if(!accepted && meRow) meRow.remove();
     }
-    closeCmdMenu();
-    clearDraft();
-    $("#ta").value="";
-    autoGrow();
-    // 服务端只在音频转写路径回一条 event:transcript(见 voice/routes.py _handle_send)——
-    // 文字直发没有"转写"这一步,不会收到这条事件,气泡得在本地立刻补上,否则用户
-    // 发的消息永远不会出现在转写区(AI 照样能回复,只是自己那句话画面上凭空消失)。
-    addMsg("me", text);
-    await sendTurn({text, tts:false});
   }
   window.sendCallText = sendCallText;
   function initOnce(){

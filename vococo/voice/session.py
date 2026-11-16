@@ -76,6 +76,7 @@ async def _candidate_stream(
     model: str,
     resume: str | None,
     extra_mcp_servers: dict | None,
+    attachments: dict | None = None,
 ) -> AsyncIterator[Event]:
     """跑单个候选模型。若失败前没有任何非 Done 事件,不吐出 Done,由外层换候选重试。"""
     emitted = False
@@ -85,6 +86,7 @@ async def _candidate_stream(
             history, prompt_text, model=model, resume=resume, session_key=current_key(),
             extra_mcp_servers=extra_mcp_servers,
             system_prompt_extra=prompts.voice_system_prompt_extra(),
+            **(attachments or {}),
         ):
             if isinstance(ev, Done):
                 if ev.reply.is_error and not emitted:
@@ -111,6 +113,7 @@ async def run_turn(
     prompt_text: str,
     model: str | None = None,
     extra_mcp_servers: dict | None = None,
+    attachments: dict | None = None,
 ) -> AsyncIterator[Event]:
     """载入历史、调 stream_turn,把事件流原样透传给调用方消费。
 
@@ -133,7 +136,7 @@ async def run_turn(
             async for ev in _candidate_stream(
                 history, prompt_text, cand,
                 resume=resume_sid if idx == 0 else None,
-                extra_mcp_servers=extra_mcp_servers,
+                extra_mcp_servers=extra_mcp_servers, attachments=attachments,
             ):
                 yield ev
             return

@@ -204,7 +204,7 @@ def _sse(resp: web.StreamResponse, event: str, payload: dict) -> "asyncio.Future
     return resp.write(f"event: {event}\ndata: {data}\n\n".encode("utf-8"))
 
 
-async def _handle_send(request: web.Request) -> web.StreamResponse:
+async def _handle_send(request: web.Request, *, prepare_message=None) -> web.StreamResponse:
     if (guard := _guard(request)) is not None:
         return guard
     from ..memory import chats, session_store
@@ -214,12 +214,12 @@ async def _handle_send(request: web.Request) -> web.StreamResponse:
         return web.json_response({"error": "无效的聊天会话"}, status=400)
     token = session.activate(key)
     try:
-        return await _send_turn(request)
+        return await _send_turn(request, prepare_message=prepare_message)
     finally:
         session._active_key.reset(token)
 
 
-async def _send_turn(request: web.Request) -> web.StreamResponse:
+async def _send_turn(request: web.Request, *, prepare_message=None) -> web.StreamResponse:
     """发起一轮:body 既可以是 {"text": "..."} 也可以直接传 multipart 音频
     (字段名 audio)——后者省掉「先 /voice/stt 拿文字、再单独发一次 /voice/send」
     这一趟完整的网络往返(手机 ⇄ 服务器隔着隧道,这一趟在真机上很有分量),
@@ -236,6 +236,8 @@ async def _send_turn(request: web.Request) -> web.StreamResponse:
     audio = filename = actype = None
     user_text = ""
     synth_tts = True
+    has_attachments = False
+    attachment_turn_id = None
     if is_audio:
         audio, filename, actype = await stt.read_audio(request)
         if not audio:
@@ -245,8 +247,13 @@ async def _send_turn(request: web.Request) -> web.StreamResponse:
             body = await request.json()
         except (json.JSONDecodeError, ValueError):
             return web.json_response({"error": "bad json"}, status=400)
-        user_text = (body.get("text") or "").strip()
-        if not user_text:
+        if not isinstance(body, dict) or not isinstance(body.get("text", ""), str):
+            return web.json_response({"error": "消息格式不正确"}, status=400)
+        user_text = body.get("text", "").strip()
+        has_attachments = any(body.get(field) for field in ("images", "audios", "files", "videos", "library_refs"))
+        if has_attachments and prepare_message is None:
+            return web.json_response({"error": "当前入口不支持附件"}, status=400)
+        if not user_text and not has_attachments:
             return web.json_response({"error": "text 不能为空"}, status=400)
         # Omni 出声模式(前端把 Claude 的回答转给 Omni 朗读)不需要服务端再合成
         # TTS——sentence 事件照发(前端拿它做逐句朗读的切分),只是不带音频,
@@ -258,7 +265,7 @@ async def _send_turn(request: web.Request) -> web.StreamResponse:
     # 快,锁已释放,后段就会作为全新一轮独立发出,Claude 缺前文,答非所问。窗口从
     # 前段请求"启动时刻"起算,真人两句独立的话极难挤进 3 秒,误拼风险可忽略;
     # 音频请求(带完整整句)不参与合并;干净收尾的轮次会清掉 _prev_text(见 Done 分支)。
-    if not is_audio and _prev_key == session.current_key() and _prev_text and (time.monotonic() - _prev_ts) < _TEXT_MERGE_WINDOW:
+    if not is_audio and not has_attachments and _prev_key == session.current_key() and _prev_text and (time.monotonic() - _prev_ts) < _TEXT_MERGE_WINDOW:
         print(f"[voice/send] 文本累积合并: prev={_prev_text[-30:]!r} + {user_text[:30]!r}", flush=True)
         user_text = _prev_text + user_text
     if _lock.locked():
@@ -284,7 +291,7 @@ async def _send_turn(request: web.Request) -> web.StreamResponse:
 
     # 为下一轮可能的文本累积记录当前请求的文本和时间戳
     if not is_audio:
-        _prev_text = user_text
+        _prev_text = "" if has_attachments else user_text
         _prev_key = session.current_key()
         _prev_ts = time.monotonic()
 
@@ -298,7 +305,17 @@ async def _send_turn(request: web.Request) -> web.StreamResponse:
     )
     clarify_token = None
     try:  # 锁已在上面拿到,这里 try/finally 保证释放(含 prepare 失败/return/抢占取消的所有路径)
-        await resp.prepare(request)
+        message = None
+        if has_attachments:
+            message = await prepare_message(
+                request, {**body, "conv": session.current_key()},
+                before_accept=lambda: resp.prepare(request),
+            )
+            if isinstance(message, web.Response):
+                return message
+            user_text = message.text
+        else:
+            await resp.prepare(request)
         voice_adapter = VoiceAdapter(resp)
         clarify_token = clarify.set_current(session.current_key(), voice_adapter, "main")
         stop_event = asyncio.Event()
@@ -347,6 +364,18 @@ async def _send_turn(request: web.Request) -> web.StreamResponse:
                     user_text_for_prompt += "\n\n---\n\n用户新消息:\n" + user_text
             else:
                 user_text_for_prompt = user_text or ""
+            attachment_options = {}
+            if message is not None:
+                from ..gateway.core import prepare_turn_attachments
+
+                attachment_turn_id = session_store.start_turn(
+                    session.current_key(), _stored_user if _stored_user is not None else user_text,
+                )
+                user_text_for_prompt, prompt_files = prepare_turn_attachments(
+                    attachment_turn_id, user_text_for_prompt, images=message.images,
+                    audios=message.audios, files=message.files, videos=message.videos,
+                )
+                attachment_options = {"attachments": {"images": message.images, "files": prompt_files}}
             prompt_text = prompts.build_prompt(user_text_for_prompt)
             # 语音通话跟文字聊天走同一套模型选择:本会话已选 > 网页默认 > 全局默认。
             # 语音长期不传 model 参数,导致永远锁死在 config.MODEL(Claude),设置页配了
@@ -356,7 +385,9 @@ async def _send_turn(request: web.Request) -> web.StreamResponse:
                 model = settings_store.get_web_default_model() or config.MODEL
                 session_store.set_chosen_model(session.current_key(), model)
             filler_sent = False
-            async for ev in session.run_turn(prompt_text, model=model, extra_mcp_servers=task_tools.build_server()):
+            async for ev in session.run_turn(
+                prompt_text, model=model, extra_mcp_servers=task_tools.build_server(), **attachment_options,
+            ):
                 if (
                     isinstance(ev, ToolStarted) and ev.parent_id is None
                     and not filler_sent and not full_text and not stop_event.is_set()
@@ -392,7 +423,12 @@ async def _send_turn(request: web.Request) -> web.StreamResponse:
                     await sender_task
                     t_first_audio = first_audio_ts[0] if first_audio_ts else 0.0
                     reply = ev.reply
-                    session.append(_stored_user if _stored_user is not None else user_text, reply.text)
+                    if attachment_turn_id is not None:
+                        session_store.finish_turn(attachment_turn_id, reply.text)
+                        if session_store.get_title(session.current_key()) in (None, "", "新聊天"):
+                            session_store.set_title(session.current_key(), user_text[:40])
+                    else:
+                        session.append(_stored_user if _stored_user is not None else user_text, reply.text)
                     # 这轮干净收尾了,累积器清零——之后到的文字是新话,不是本句的断片,
                     # 别把它拼在已经答完的问题后面。
                     _prev_text = ""
@@ -433,7 +469,10 @@ async def _send_turn(request: web.Request) -> web.StreamResponse:
                         if full_text.strip()
                         else "(这句还没来得及回答,就被下一句打断了)"
                     )
-                    session.append(user_text, partial)
+                    if attachment_turn_id is not None:
+                        session_store.finish_turn(attachment_turn_id, partial)
+                    else:
+                        session.append(user_text, partial)
                 except Exception:  # noqa: BLE001 —— 落库失败不该在取消路径上再抛
                     pass
         except Exception as exc:  # noqa: BLE001 —— 兜底:出错也要给前端一个 done,不让它干等
@@ -441,6 +480,8 @@ async def _send_turn(request: web.Request) -> web.StreamResponse:
             # ——语音场景用户根本不看屏幕,表现就是"发了消息没反应",日志还查无此轮。
             import traceback
             print(f"[voice/send] 本轮异常: {exc!r}\n{traceback.format_exc()}", flush=True)
+            if attachment_turn_id is not None:
+                session_store.finish_turn(attachment_turn_id, full_text or f"(本轮出错:{exc})")
             try:
                 await _sse(resp, "done", {"full_text": full_text, "error": str(exc)})
             except (ConnectionResetError, RuntimeError):
@@ -596,15 +637,17 @@ async def _handle_tasks_stream(request: web.Request) -> web.StreamResponse:
     return await task_routes.handle_tasks_stream(request)
 
 
-def register_routes(app: web.Application) -> None:
-    """挂载语音模式全部路由。仅当 config.VOICE_ENABLED 时,web.py 才会调用本函数。"""
+def register_routes(app: web.Application, *, prepare_message=None) -> None:
+    """挂载语音模式全部路由；主 Web 服务注入共用附件解析入口。"""
+    from functools import partial
+
     app.add_routes(
         [
             web.get("/voice", _handle_page_gone),
             web.get("/voice/config", _handle_config),
             web.post("/voice/config", _handle_config_post),
             web.post("/voice/stt", _handle_stt),
-            web.post("/voice/send", _handle_send),
+            web.post("/voice/send", partial(_handle_send, prepare_message=prepare_message)),
             web.post("/voice/stop", _handle_stop),
             web.post("/voice/clear", _handle_clear),
             web.post("/voice/debug", _handle_debug),
