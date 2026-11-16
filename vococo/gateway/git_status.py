@@ -171,9 +171,10 @@ async def _repository_status(repository: dict) -> dict:
     row = {"scope": "session", **repository, "name": Path(source).name}
     if row.get("state") == "error":
         return row
-    # 展示状态不能隐式初始化副本，更不能回退去读取业务主检出。
+    # 状态展示不创建副本；尚无副本时只读原仓库，不影响执行时的隔离。
     if not cwd or not Path(cwd).exists():
-        return {**row, "state": "uninitialized"}
+        cwd = source
+        row.update(path=source, scope="shared")
     info = await git_status(cwd)
     state = "error" if info.get("error") or not info.get("is_repo") else "ready"
     return {**row, **info, "state": state}
