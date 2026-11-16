@@ -1,7 +1,7 @@
 "use strict";
 // 默认工作台只读概览；旧待办保留，所有任务管理仍使用原来的接口与控件。
 const AWB = {mode:"automation", data:null, error:"", loading:false, version:0,
-  open:new Set(), folds:new Set(), jobs:new Set(), products:new Set(), histories:new Map(), menuTrigger:null,
+  open:new Set(), folds:new Set(), jobs:new Set(), histories:new Map(), menuTrigger:null,
   search:"", showDisabled:true, sourceRequest:0};
 function automationWorkbenchActive(){ return AWB.mode==="automation"; }
 function awbVisible(){ return automationWorkbenchActive() && S.surface==="workbench" && !$("#workbenchView").hidden; }
@@ -30,7 +30,6 @@ async function awbRefreshHistories(){
     if(old) AWB.histories.set(key,old);
     pending.push(awbLoadJobHistory(owner,job.id,old?.page||0));
   }
-  for(const owner of AWB.products) if(owners.has(owner)) pending.push(awbLoadProducts(owner));
   await Promise.all(pending);
 }
 function refreshAutomationWorkbench(){ if(awbVisible()) return loadAutomationWorkbench(); }
@@ -68,7 +67,7 @@ function awbStats(){
     [s.token_samples?awbTokens(s.tokens):"未记录","近 7 天 Token"],[awbDuration(s.median_duration),'近 7 天<span class="awb-stat-label">中位耗时</span>'],
     [awbRate(s),'近 7 天<span class="awb-stat-label">调度成功率</span>']]
     .map(([n,t])=>'<div class="apstat"><b>'+esc(String(n))+'</b><span>'+t+'</span></div>').join("")+'</div>'+
-    '<details class="awb-note"><summary>近 7 天 · 指标口径与覆盖</summary><p>Token 有记录 '+s.token_samples+'/'+s.runs+' 次，耗时有记录 '+s.duration_samples+'/'+s.runs+' 次；未记录不算零。Token 沿用保存口径，不是精确账单，也不据此推算费用。</p><p>运行包含历史任务与独立后台任务。调度成功不等于业务目标完成；工具轨迹不是业务阶段。附件是保存的快照，网站作品指向当前版本。</p></details>';
+    '<details class="awb-note"><summary>近 7 天 · 指标口径与覆盖</summary><p>Token 有记录 '+s.token_samples+'/'+s.runs+' 次，耗时有记录 '+s.duration_samples+'/'+s.runs+' 次；未记录不算零。Token 沿用保存口径，不是精确账单，也不据此推算费用。</p><p>运行包含历史任务与独立后台任务。调度成功不等于业务目标完成；工具轨迹不是业务阶段。</p></details>';
 }
 function awbMatches(j){ return AWB.showDisabled || j.enabled; }
 function awbDayTitle(day){
@@ -132,11 +131,11 @@ function awbOwner(a,jobs){
   return '<section class="awb-owner" data-owner="'+esc(a.id)+'"><div class="awb-owner-row">'+
     '<button type="button" class="awb-owner-toggle" data-awb="owner" data-id="'+esc(a.id)+'" aria-expanded="'+open+'"><span class="awb-chevron" aria-hidden="true">'+(open?"⌄":"›")+'</span>'+avatarSvg(a.avatar)+
     '<span class="awb-owner-name"><strong>'+esc(a.name)+'</strong><small>'+awbNumber(jobs.length)+' 定时任务</small></span></button>'+awbRecentRuns(a)+
-    '<span class="awb-owner-metrics">'+esc(awbMetricText(a.stats))+'</span>'+awbButton("products","附件与作品",a.id,"awb-link")+'</div>'+
+    '<span class="awb-owner-metrics">'+esc(awbMetricText(a.stats))+'</span></div>'+
     (open?'<div class="awb-owner-body">'+awbOwnerBody(a,jobs)+'</div>':"")+ '</section>';
 }
 function awbOwnerBody(a,jobs){
-  return (AWB.products.has(a.id)?awbProductsHtml(a.id):"")+'<div class="awb-jobs">'+
+  return '<div class="awb-jobs">'+
     (jobs.length?jobs.map(j=>awbJobHtml(a.id,j)).join(""):'<p class="awb-empty">暂无定时任务</p>')+'</div>';
 }
 function awbJobHtml(owner,j){
@@ -155,24 +154,11 @@ function awbJobHistoryHtml(agent,job){
       '<div class="awb-history">'+(h.items.length?'<div class="awb-history-head" aria-hidden="true"><span>运行时间</span><span>运行结果</span><span>Token</span><span>耗时</span><span>会话</span></div>'+h.items.map(awbRunHtml).join(""):'<p class="awb-empty">暂无运行记录</p>')+'</div>')+
     '<nav class="awb-pager" aria-label="运行记录翻页">'+pageButton('job-prev','上一页',h.loading||h.page===0)+'<span>第 '+(h.page+1)+' 页</span>'+pageButton('job-next','下一页',h.loading||!!h.error||!h.next)+'</nav></div>';
 }
-function awbProductsHtml(agent){
-  const h=AWB.histories.get(awbHistoryKey(agent,"products"));
-  const head='<div class="awb-actions">'+awbButton("library","图片和网站作品库",agent,"awb-link")+'<span>附件</span></div>';
-  if(!h) return head+'<p class="awb-empty" role="status">正在读取…</p>';
-  return '<div class="awb-products">'+head+h.items.map(awbArtifactHtml).join("")+
-    (h.error?'<p class="awb-error" role="alert">'+esc(h.error)+'</p>':"")+
-    (!h.items.length&&!h.loading&&!h.error?'<p class="awb-empty">暂无附件</p>':"")+
-    (h.loading?'<p class="awb-empty" role="status">正在读取…</p>':h.next||h.error?awbButton("more-products",h.error?"重试":"加载更多",agent,"awb-link"):"")+'</div>';
-}
 function awbRunHtml(r){
   const ok=r.status.startsWith("success"),failed=r.status.startsWith("error")||r.status==="failed",linked=!!r.target?.conv;
   const tokens=r.tokens>0?awbTokens(r.tokens):"未记录",duration=awbDuration(r.duration);
   return '<article class="aprun"><button type="button" class="awb-run-link" data-awb="source-run" data-id="'+r.id+'"'+(linked?'':' disabled')+'><time>'+awbTime(r.ts)+'</time><span class="awb-run-name"><span class="awb-dot '+(ok?"ok":failed?"error":"unknown")+'" aria-hidden="true"></span>'+(ok?"调度成功":failed?"运行异常":"状态未确认")+'</span>'+
     '<span class="awb-run-tokens" aria-label="Token '+esc(tokens)+'" title="Token '+esc(tokens)+'">'+esc(tokens)+'<span class="awb-token-unit"> Token</span></span><span class="awb-run-duration" aria-label="耗时 '+esc(duration)+'" title="耗时 '+esc(duration)+'">'+esc(duration)+'</span><span class="awb-run-action">'+(linked?'查看会话 ›':'未关联会话')+'</span></button></article>';
-}
-function awbArtifactHtml(e){
-  return '<div class="artifact-card awb-artifact"><div><strong>'+esc(e.title||e.filename)+'</strong><small>'+esc(e.filename)+' · '+awbNumber(e.size)+' 字节</small></div>'+
-    (e.conv?'<button type="button" data-awb="preview" data-artifact-id="'+esc(e.id)+'" data-conv="'+esc(e.conv)+'" data-filename="'+esc(e.filename)+'">预览</button><button type="button" data-awb="download" data-artifact-id="'+esc(e.id)+'" data-conv="'+esc(e.conv)+'" data-filename="'+esc(e.filename)+'">下载</button>':'<span>来源不可定位</span>')+'</div>';
 }
 function renderAutomationWorkbench(){
   awbHideTip();
@@ -225,18 +211,6 @@ async function awbLoadJobHistory(agent,job,page=0){
   }catch(e){ if(AWB.histories.get(key)!==state) return; state.error=e.message; }
   state.loading=false; if(awbVisible()) awbRenderOwners();
 }
-async function awbLoadProducts(agent,more=false){
-  const key=awbHistoryKey(agent,"products"),prev=AWB.histories.get(key);
-  if(more && prev?.loading) return;
-  const state={items:more?(prev?.items||[]):[],next:more?prev?.next:null,loading:true,error:""};
-  AWB.histories.set(key,state); awbRenderOwners();
-  try{
-    const data=await awbJson("/workbench/automation/artifacts?"+new URLSearchParams({agent,before:String(state.next||0)}));
-    if(AWB.histories.get(key)!==state) return;
-    const ids=new Set(state.items.map(i=>i.id)); state.items.push(...data.items.filter(i=>!ids.has(i.id))); state.next=data.next;
-  }catch(e){ if(AWB.histories.get(key)!==state) return; state.error=e.message; }
-  state.loading=false; if(awbVisible()) awbRenderOwners();
-}
 async function awbOpenRun(id,button){
   const request=++AWB.sourceRequest,convSeq=_convOpenSeq;
   button.disabled=true; button.setAttribute("aria-busy","true");
@@ -278,14 +252,8 @@ async function awbClick(event){
     if(!WB.anchor) WB.anchor=workbenchToday(); await loadWorkbenchData(); renderWorkbench(); return;
   }
   if(action==="owner"){ AWB.open.has(id)?AWB.open.delete(id):AWB.open.add(id); awbRenderOwners(); return; }
-  if(action==="products"){
-    awbExpandOwner(id);
-    if(AWB.products.has(id)){AWB.products.delete(id);awbRenderOwners();}
-    else {AWB.products.add(id);await awbLoadProducts(id);} return;
-  }
   if(action==="job-runs"){await awbToggleJob(b.dataset.owner,id);return;}
   if(action==="all-runs"){awbExpandOwner(id);awbRenderOwners();return;}
-  if(action==="more-products"){await awbLoadProducts(id,true);return;}
   if(["job-prev","job-next","job-retry"].includes(action)){
     const owner=b.closest("[data-history-owner]").dataset.historyOwner,h=AWB.histories.get(awbHistoryKey(owner,id));
     if(!h || h.loading) return;
@@ -293,20 +261,6 @@ async function awbClick(event){
   }
   if(action==="source-run"){await awbOpenRun(id,b);return;}
   if(action==="menu"){await awbManage(b,id);return;}
-  if(action==="library"){
-    await vococoLazy.run("library", async()=>{
-      LIB.filters.agent_id=id;LIB.filters.kind="";LIB.filters.state="visible";LIB.filters.search="";
-      await openLibrary();
-    });
-    return;
-  }
-  if(action==="preview"){
-    const params=new URLSearchParams({kind:"artifact",target:b.dataset.artifactId,title:b.dataset.filename,conv:b.dataset.conv});
-    window.open("/doc-preview.html?"+params,"_blank","noopener");return;
-  }
-  if(action==="download"){
-    const status=el("span");b.after(status);await downloadArtifact({id:b.dataset.artifactId,filename:b.dataset.filename},b.dataset.conv,b,status);
-  }
 }
 $("#workbenchView").addEventListener("click",event=>{
   if(automationWorkbenchActive()) awbClick(event).catch(e=>alert(e.message));

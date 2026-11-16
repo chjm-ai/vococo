@@ -97,7 +97,7 @@ async function checkWorkbenchSafeArea(page,output){
     assert.equal(await page.locator('[data-awb="filter"]').count(),0,'移除全部/运行中/异常按钮');
     assert.equal(await page.locator('.awb-stats .apstat').count(),5,'顶部仅保留任务与运行指标');
     assert.ok(!/附件|作品/.test(await page.locator('.awb-stats').innerText()),'顶部不显示附件/作品数量');
-    assert.ok((await page.locator('[data-awb="products"]').allTextContents()).every(t=>t==='附件与作品'),'查看入口不带数量');
+    assert.equal(await page.locator('[data-awb="products"], [data-awb="library"]').count(),0,'工作台不提供附件与作品入口');
     assert.ok((await page.locator('.awb-stats').innerText()).includes('近 7 天中位耗时'));
     assert.ok((await page.locator('.awb-stats').innerText()).includes('近 7 天调度成功率'));
     assert.equal(await page.evaluate(()=>awbTokens(12304000)),'1,230.4 万','万位数字同样使用千位分隔');
@@ -181,15 +181,7 @@ async function checkWorkbenchSafeArea(page,output){
     await page.unroute('**/workbench/automation/run?*');
     await page.locator('#convTopRows .conv').filter({hasText:'工作台'}).click();
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===5);
-    await page.locator(`[data-awb="products"][data-id="${agent}"]`).click();
-    await page.waitForSelector('.awb-artifact');
-    assert.equal(await page.locator('.awb-artifact strong').innerText(),'测试报告');
-    const [popup]=await Promise.all([page.waitForEvent('popup'),page.locator('[data-awb="preview"]').click()]);
-    await popup.waitForLoadState();
-    assert.ok(popup.url().includes('conv=session%3A'));
-    assert.ok((await popup.content()).includes('docPreview') || (await popup.content()).includes('dpBody'));
-    await popup.close();
-    await page.locator(`[data-awb="products"][data-id="${agent}"]`).click();
+    assert.equal(await page.locator('[data-awb="products"], .awb-products, .awb-artifact').count(),0,'展开及返回工作台后不出现附件与作品入口或内容');
     await page.locator(`[data-awb="menu"][data-id="${job}"]`).click();
     await page.waitForSelector('.convmenu');
     assert.equal(await page.locator('.convmenu button').count(),6);
@@ -266,7 +258,7 @@ async function checkWorkbenchSafeArea(page,output){
         await page.evaluate(width=>{setSidebarCollapsed(width<=760);closeSidebar();},width);
         assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'页面不横向溢出 '+width);
         assert.ok(await page.locator('#wbContent').evaluate(n=>n.scrollWidth<=n.clientWidth+1),'工作台不横向溢出 '+width);
-        assert.ok((await page.locator('[data-awb="products"]').allTextContents()).every(t=>t==='附件与作品'),'各屏宽和不同数量样本均不显示数量 '+width);
+        assert.equal(await page.locator('[data-awb="products"], [data-awb="library"], .awb-products, .awb-artifact').count(),0,'各屏宽和不同附件数量样本均不显示入口或内容 '+width);
         assert.equal(await page.locator('[data-awb="create"]').count(),0);
         await showDisabled.uncheck();
         assert.equal(await page.locator(`.awb-task[data-job="${job}"]`).count(),0,'当前屏宽隐藏停用任务 '+width);
@@ -282,7 +274,7 @@ async function checkWorkbenchSafeArea(page,output){
         await page.keyboard.press('Escape');
         const columns=await page.evaluate(()=>{
           const rows=[...document.querySelectorAll('#awbOwners>.awb-owner .awb-owner-row')];
-          return ['.awb-recent','.awb-owner-metrics','.awb-link'].map(selector=>rows.map(r=>r.querySelector(selector)).filter(n=>n.checkVisibility()).map(n=>n.getBoundingClientRect().x));
+          return ['.awb-recent','.awb-owner-metrics'].map(selector=>rows.map(r=>r.querySelector(selector)).filter(n=>n.checkVisibility()).map(n=>n.getBoundingClientRect().x));
         });
         for(const xs of columns) if(xs.length) assert.ok(Math.max(...xs)-Math.min(...xs)<=1,'跨行列起点对齐 '+width+' '+JSON.stringify(xs));
         const jobsLayout=await page.evaluate(agent=>{
@@ -410,13 +402,14 @@ async function checkWorkbenchSafeArea(page,output){
     await page.locator(`.aptmain[data-id="${copiedJob}"]`).click();
     await page.waitForFunction(job=>document.querySelector(`.awb-task[data-job="${job}"] .awb-job-history`)?.textContent.includes('暂无运行记录'),copiedJob);
     assert.ok(await page.locator(`.awb-task[data-job="${copiedJob}"] [data-awb="job-next"]`).isDisabled());
-    // 新工作台的作品库入口也必须等待按需模块，不能提前引用 LIB。
+    // 移除工作台入口不影响侧栏作品库的按需加载。
     await page.setViewportSize({width:1440,height:1000});
+    await page.evaluate(()=>setSidebarCollapsed(false));
     assert.equal(await page.evaluate(()=>typeof LIB),'undefined');
-    await page.locator(`[data-awb="products"][data-id="${emptyAgent}"]`).click();
-    await page.locator(`[data-awb="library"][data-id="${emptyAgent}"]`).click();
+    assert.equal(await page.locator('[data-awb="products"], [data-awb="library"]').count(),0);
+    await page.locator('#convTopRows .conv').filter({hasText:'作品库'}).click();
     await page.waitForFunction(()=>$('#libraryView') && !$('#libraryView').hidden && !LIB.loading);
-    assert.equal(await page.evaluate(()=>LIB.filters.agent_id),emptyAgent);
+    assert.equal(await page.evaluate(()=>S.surface),'library');
     await page.goto(origin+'/workbench/window');
     await page.waitForSelector('.awb-owner');
     await checkWorkbenchSafeArea(page,output);
