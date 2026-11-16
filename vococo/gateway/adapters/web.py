@@ -1215,13 +1215,35 @@ class WebAdapter:
 
     async def _handle_send_once(self, request: web.Request, body: dict) -> web.Response:
         conv = str(body.get("conv") or "main")
-        text = (body.get("text") or "").strip()
         ownership = {"agent_id": body.get("agent_id"), "project_hash": body.get("project_hash")}
         try:
             _bind_browser_session(config.resolve_session_key("web", conv), ownership, bind=False)
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
-        client_request_id = str(body.get("client_request_id") or "")
+        message = await self._prepare_message(request, body)
+        if isinstance(message, web.Response):
+            return message
+        await self._ingest(
+            conv, message.text, images=message.images, audios=message.audios,
+            files=message.files, videos=message.videos,
+            client_request_id=str(body.get("client_request_id") or ""), ownership=ownership,
+        )
+        return web.json_response({"ok": True})
+
+    async def _prepare_message(self, request: web.Request, body: dict, *, before_accept=None) -> Incoming | web.Response:
+        """共用附件解析；聊天建流成功后才确认消费上传缓存。"""
+        for field, pending in (("files", self._pending_files), ("audios", self._pending_audio),
+                               ("videos", self._pending_videos)):
+            items = body.get(field) or []
+            if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+                return web.json_response({"error": "附件格式不正确"}, status=400)
+            ids = [item.get("id") for item in items]
+            if any(not isinstance(item_id, str) or item_id not in pending for item_id in ids):
+                return web.json_response({"error": "附件上传已失效，请重新上传后再发送"}, status=400)
+            if len(set(ids)) != len(ids):
+                return web.json_response({"error": "附件不能重复提交"}, status=400)
+        conv = str(body.get("conv") or "main")
+        text = (body.get("text") or "").strip()
         images = [
             ImageAttachment(
                 data=i["data"], media_type=i.get("media_type", "image/jpeg")
@@ -1277,6 +1299,8 @@ class WebAdapter:
                 audios.append(AudioAttachment(
                     data=data, media_type=media_type, filename=filename, transcript=transcript,
                 ))
+            if before_accept is not None:
+                await before_accept()
         except (asyncio.CancelledError, Exception):
             # 转写尚未入队，取消/异常时恢复本次全部音频供同一请求重试。
             self._pending_audio.update(consumed_audio)
@@ -1304,11 +1328,7 @@ class WebAdapter:
                 text = "(视频,无文字说明,先别自行分析内容,等我说要做什么)"
             else:
                 text = "(图片,无文字说明,看看图里是什么)"
-        await self._ingest(
-            conv, text, images=images, audios=audios, files=files, videos=videos,
-            client_request_id=client_request_id, ownership=ownership,
-        )
-        return web.json_response({"ok": True})
+        return Incoming(self.platform, conv, text, images=images, audios=audios, files=files, videos=videos)
 
     async def _ingest(
         self,
@@ -4023,7 +4043,7 @@ class WebAdapter:
         if config.VOICE_ENABLED:  # 实验性语音伴聊模式,见 vococo/voice/
             from ...voice import register_routes as _voice_register_routes
 
-            _voice_register_routes(app)
+            _voice_register_routes(app, prepare_message=self._prepare_message)
         # F11 重启自愈(统一后台任务引擎,原来叫「语音任务板」)只能挂在这里(serve
         # 真正启动的唯一路径),不能挂在 register_routes 里——否则测试/脚本组建 app
         # 也会触发孤儿回收,误杀别的进程里正在跑的任务(2026-07-12 "假失败"事故

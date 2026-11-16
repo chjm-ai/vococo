@@ -209,9 +209,47 @@ const assert=require('node:assert/strict');
     await page.unroute('**/voice/send?*');
     await page.route('**/voice/send?*',route=>route.fulfill({status:500,json:{error:'测试失败'}}));
     await page.fill('#ta','失败测试'); await page.click('#sendBtn');
-    await page.waitForFunction(()=>$('#transcript').textContent.includes('出错了'));
+    await page.waitForFunction(()=>$('#transcript').textContent.includes('测试失败'));
     await page.waitForSelector('#callTextStatus',{state:'hidden'});
+    assert.equal(await page.inputValue('#ta'),'失败测试');
+    // 文件选择和上传复用真实端点，聊天请求必须包含附件而不是只发送文字。
+    await page.locator('#file').setInputFiles({name:'chat-report.txt',mimeType:'text/plain',buffer:Buffer.from('聊天附件内容')});
+    await page.waitForFunction(()=>S.files.length===1 && !!S.files[0].id);
+    await page.click('#sendBtn');
+    await page.waitForFunction(()=>$('#transcript').textContent.includes('测试失败'));
+    await page.waitForSelector('#callTextStatus',{state:'hidden'});
+    assert.equal(await page.evaluate(()=>S.files.length),1,'拒绝发送不能清空附件');
+    assert.equal(await page.locator('#transcript .row.me').filter({hasText:'chat-report.txt'}).count(),0);
+    await page.unroute('**/voice/send?*');
+    let attachmentPayload;
+    await page.route('**/voice/send?*',route=>{
+      attachmentPayload=route.request().postDataJSON();
+      return route.fulfill({contentType:'text/event-stream',body:'event: done\ndata: {"full_text":"附件已处理"}\n\n'});
+    });
+    await page.fill('#ta',''); await page.click('#sendBtn');
+    await page.waitForFunction(()=>$('#transcript').textContent.includes('附件已处理'));
+    assert.equal(attachmentPayload.text,''); assert.equal(attachmentPayload.files.length,1);
+    assert.equal(await page.evaluate(()=>S.files.length),0);
+    assert.equal(await page.locator('#transcript .row.me').filter({hasText:'chat-report.txt'}).count(),1);
+    // 上传等待期间反复切换输入状态，不得触发任务模式的“发送即清空”。
+    await page.evaluate(()=>{
+      const conv=S.conv;
+      let release;
+      const item={name:'pending.wav',status:'uploading',done:new Promise(resolve=>release=resolve)};
+      S.audios=[item]; $('#ta').value='上传中的草稿';
+      window.pendingChatSend=sendCallText($('#ta').value);
+      for(let i=0;i<2;i++){
+        saveComposerState(conv); S.conv='attachment-other'; restoreComposerState(S.conv);
+        saveComposerState(S.conv); S.conv=conv; restoreComposerState(conv);
+      }
+      window.uploadDraftPreserved=S.audios[0]===item;
+      item.status='error'; release();
+    });
+    await page.evaluate(()=>window.pendingChatSend);
+    assert.equal(await page.evaluate(()=>window.uploadDraftPreserved),true);
+    assert.equal(await page.evaluate(()=>S.audios.length),1);
+    assert.equal(await page.inputValue('#ta'),'上传中的草稿');
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({ok:true,aborts,voiceStops:stops.length}));
+    console.log(JSON.stringify({ok:true,aborts,voiceStops:stops.length,chatAttachments:true}));
   }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1);});
