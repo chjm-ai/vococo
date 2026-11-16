@@ -1012,8 +1012,10 @@ window.vococoKeyboard = (()=>{
   const visible=node=>!!node && !node.closest("[hidden]") && node.getClientRects().length>0 && getComputedStyle(node).visibility!=="hidden";
   const editable=node=>!!node?.closest?.('input,textarea,select,[contenteditable="true"],[contenteditable=""]');
   const modalSelector='#app > [id$="Modal"],#imgViewer,dialog[open]';
+  const modalCancelSelector='#delCancel,#archCancel,#choiceModalClose,#setClose,#ivClose,#pmCancel,#agCancel,#cfCancel,#stClose,.pmcancel';
   const popSelector='#projSelPop,#permPop,#effortPop,#modelPop,#cmdPop,#projPop,#gitPop,#ctxPop,#convDocsPop,#noticePop,#convFilterPop,.convmenu';
-  const modal=()=>[...document.querySelectorAll(modalSelector)].find(visible);
+  const modal=()=>[...document.querySelectorAll(modalSelector)].filter(visible)
+    .sort((a,b)=>(parseInt(getComputedStyle(a).zIndex)||0)-(parseInt(getComputedStyle(b).zIndex)||0)).at(-1);
   const chat=()=>!$("#app").hidden && visible($("#chatMain")) && S.surface==="chat";
   const rowSelector='.sidetab,.agrow,.conv,.projadd';
   let sidebarKey=null, focusRevision=0, voiceHeld=false;
@@ -1129,10 +1131,29 @@ window.vococoKeyboard = (()=>{
     const root=roots.filter(visible).at(-1);
     if(root && !modal()) focusChoice(root);
   }
+  function focusModal(){
+    const layer=modal(), active=document.activeElement;
+    if(!layer || (layer.contains(active) && visible(active) && !active.matches(':disabled') && (editable(active) || active.matches(modalCancelSelector)))) return;
+    // 优先落在取消/关闭；没有安全入口就聚焦容器，不默认批准或提交。
+    layer.tabIndex=-1;
+    const cancel=layer.querySelector(modalCancelSelector);
+    (cancel && visible(cancel) && !cancel.disabled ? cancel : layer).focus({preventScroll:true});
+  }
+  function tabModal(e){
+    const layer=modal();
+    if(e.key!=='Tab' || e.ctrlKey || e.altKey || e.metaKey || !layer) return false;
+    const items=[...layer.querySelectorAll('button,input,select,textarea,a[href],[tabindex]')]
+      .filter(node=>node.tabIndex>=0 && !node.matches(':disabled') && !node.closest('[inert]') && visible(node));
+    const index=items.indexOf(document.activeElement);
+    const next=index<0 ? (e.shiftKey?items.length-1:0) : (index+(e.shiftKey?-1:1)+items.length)%items.length;
+    layer.tabIndex=-1;
+    (items[next] || layer).focus({preventScroll:true});
+    e.preventDefault(); e.stopImmediatePropagation(); return true;
+  }
   function escapeLayer(){
     const layer=modal();
     if(layer){
-      const cancel=layer.querySelector('#delCancel,#archCancel,#choiceModalClose,#setClose,#ivClose,#pmCancel,#agCancel,#cfCancel,#stClose,.pmcancel');
+      const cancel=layer.querySelector(modalCancelSelector);
       if(cancel) cancel.click();
       else if(layer.id==="searchModal") closeSearchModal();
       else if(layer.tagName==="DIALOG") layer.close();
@@ -1172,7 +1193,7 @@ window.vococoKeyboard = (()=>{
   }
   function handleKey(e){
     if($("#app").hidden || e.isComposing || e.keyCode===229) return;
-    if(handleMenuShortcut(e) || handleShortcut(e)) return;
+    if(tabModal(e) || handleMenuShortcut(e) || handleShortcut(e)) return;
     // 不吞语音工具的修饰键；网页只能处理 Safari 实际交付的事件。
     if(e.code===voiceFocusKey() && !e.repeat && !e.ctrlKey && !e.shiftKey){ voiceHeld=true; focusComposer(); return; }
     if(e.key==="Escape"){
@@ -1198,10 +1219,11 @@ window.vococoKeyboard = (()=>{
   document.addEventListener("keyup",e=>{ if(e.code===voiceFocusKey()) voiceHeld=false; },true);
   window.addEventListener("blur",()=>{ voiceHeld=false; });
   new MutationObserver(choiceAppeared).observe($("#wrap"),{childList:true,subtree:true});
-  // 跨会话审批是模态弹窗；焦点只落在关闭按钮，不能默认批准其他会话。
-  new MutationObserver(()=>{
-    if(visible($("#choiceModal"))) $("#choiceModalClose").focus();
-  }).observe($("#choiceModal"),{attributes:true,attributeFilter:["hidden"]});
+  const modalObserver=new MutationObserver(focusModal);
+  document.querySelectorAll(modalSelector.replace('dialog[open]','dialog')).forEach(layer=>{
+    modalObserver.observe(layer,{attributes:true,attributeFilter:['hidden','open']});
+  });
+  focusModal();
   prepareSidebar();
   return {captureSidebar,restoreSidebar,focusComposer,voiceFocusKey};
 })();
