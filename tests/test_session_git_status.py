@@ -1,4 +1,4 @@
-"""多仓库汇总只读取本会话副本，不读取或创建主检出。"""
+"""多仓库优先读会话副本；尚无副本时只读原仓库，不隐式创建副本。"""
 import subprocess
 from pathlib import Path
 
@@ -68,14 +68,52 @@ async def test_totals_include_all_current_session_copies_not_source_or_other_ses
 
 
 @pytest.mark.anyio
-async def test_missing_copies_do_not_initialize_or_fall_back_to_source(isolated):
+async def test_missing_copies_read_source_without_initializing_or_writing(isolated):
     _, sources, key = owner_with_repositories(isolated)
     (sources[0] / "dirty.txt").write_text("主目录的变化\n")
+    before = git(sources[0], "status", "--porcelain=v1")
+    index_stamp = (sources[0] / ".git" / "index").stat().st_mtime_ns
     result = await git_status.session_repository_status(key)
-    assert result["repo_count"] == result["unavailable"] == 3
-    assert result["dirty"] == result["changed_repos"] == 0
-    assert all(row["state"] == "uninitialized" for row in result["repositories"])
+    assert result["repo_count"] == 3
+    assert result["unavailable"] == 0
+    assert result["dirty"] == result["changed_repos"] == 1
+    assert [row["dirty"] for row in result["repositories"]] == [1, 0, 0]
+    for row, source in zip(result["repositories"], sources):
+        assert row["state"] == "ready"
+        assert row["scope"] == "shared"
+        assert row["path"] == row["project_path"] == str(source)
+    assert (sources[0] / ".git" / "index").stat().st_mtime_ns == index_stamp
+    assert git(sources[0], "status", "--porcelain=v1") == before
     assert not (config.AGENT_WORKSPACES_DIR / ".repositories").exists()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("missing_copy", [None, "removed-copy"])
+async def test_missing_project_copy_reads_original_repository(isolated, missing_copy):
+    source = repository(isolated / "project")
+    (source / "file.txt").write_text("shared change\n")
+    copy_path = str(isolated / missing_copy) if missing_copy else None
+    result = await git_status._repository_status({"project_path": str(source), "path": copy_path})
+    assert result["state"] == "ready"
+    assert result["scope"] == "shared"
+    assert result["path"] == str(source)
+    assert result["dirty"] == 1
+    assert not copy_path or not Path(copy_path).exists()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("problem", ["missing", "broken_index"])
+async def test_unavailable_original_without_copy_is_error_not_clean(isolated, problem):
+    source = repository(isolated / "project")
+    if problem == "missing":
+        source.rename(source.with_name("moved-project"))
+    else:
+        (source / ".git" / "index").write_text("损坏的索引\n")
+    result = await git_status._repository_status({"project_path": str(source), "path": None})
+    assert result["state"] == "error"
+    assert result["scope"] == "shared"
+    assert result["path"] == str(source)
+    assert "dirty" not in result
 
 
 @pytest.mark.anyio
@@ -105,12 +143,15 @@ async def test_project_worktree_and_bound_copies_are_deduplicated(isolated):
     (source / "unrelated.txt").write_text("不能计入\n")
     result = await git_status.session_repository_status(key)
     assert result["repo_count"] == 2
-    assert result["dirty"] == result["unavailable"] == 1
+    assert result["dirty"] == 1
+    assert result["unavailable"] == 0
     assert result["repositories"][0]["path"] == str(worktree)
     session_store.set_worktree(key, "")
     result = await git_status.session_repository_status(key)
-    assert result["dirty"] == 0
-    assert result["unavailable"] == 2
+    assert result["dirty"] == 1
+    assert result["unavailable"] == 0
+    assert result["repositories"][0]["path"] == str(source)
+    assert all(row["scope"] == "shared" for row in result["repositories"])
 
 
 @pytest.mark.anyio
@@ -259,5 +300,6 @@ async def test_conv_git_endpoint_returns_multi_repo_summary(isolated, monkeypatc
         assert response.status == 200
         data = await response.json()
     assert data["repo_count"] == 3
-    assert data["unavailable"] == 3
+    assert data["unavailable"] == 0
+    assert all(row["state"] == "ready" for row in data["repositories"])
     assert data["name"] == "业务"
