@@ -150,6 +150,30 @@ async def test_lazy_task_loads_rules_from_explicit_task_project(clients, env, mo
             tasks._DB = None
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("git_project", [False, True])
+@pytest.mark.parametrize("permission", ["standard", "full"])
+async def test_task_isolation_rule_only_requires_copies_for_git(clients, env, permission, git_project):
+    import subprocess
+
+    if git_project:
+        subprocess.run(["git", "init", str(env)], check=True, capture_output=True)
+    owner = agents.by_project_hash(projects.project_hash(str(env)))
+    agents.update(owner["id"], permission=permission, disallowed_tools=["Edit"])
+    key = agents.main_session_key(owner)
+    await _turn(key, denied=[])
+    options = clients[-1].options
+    prompt = options.system_prompt["append"]
+    assert "仅当目标属于 Git 仓库时" in prompt
+    assert "Git 副本准备失败不得回退原仓库修改" in prompt
+    assert "非 Git 目录（如 Obsidian 笔记库）不要求准备仓库副本" in prompt
+    assert "不得为此初始化 Git" in prompt
+    assert "不绕过审批或禁用工具" in prompt
+    assert "只读分析不创建分支。修改、构建或测试前必须先调用" not in prompt
+    assert "Edit" in options.disallowed_tools
+    assert agent.session_store.get_worktree(key) is None
+
+
 # ── stream_turn 把 Agent 运行设定落到 ClaudeAgentOptions 上 ─────────────────────────
 class _Client:
     def __init__(self, options, registry):
