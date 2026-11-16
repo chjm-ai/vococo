@@ -221,7 +221,13 @@
   // 一天内连续炸出"哑巴→双音重叠→再哑巴"三个不同故障,iOS Safari 音频会话的怪癖猜不动,
   // 拆掉换回最简单可靠的单路直连播放。回声消除这个需求单独另开工作评估。
 
-  function setStatus(text, cls){ statusEl.textContent = text; statusEl.className = cls || ""; }
+  function setStatus(text, cls){
+    statusEl.textContent = text; statusEl.className = cls || "";
+    // 文本 Tab 会隐藏整个语音面板，等待状态和停止入口需同步到文本面板。
+    $("#callTextStatus").hidden = !busy;
+    $("#callTextStatusLabel").textContent = busy ? text : "";
+  }
+  $("#callTextStop").onclick = ()=>stopBtn.click();
   function clearHint(){ const h = transcriptEl.querySelector(".hint"); if(h) h.remove(); }
 
   function addMsg(kind, text){
@@ -743,7 +749,7 @@
     busy = true; talkBtn.disabled = true; stopBtn.hidden = false;
     ttsFailureNoticedThisTurn = false;
     currentTurnAudioExpected = !(body && !(body instanceof FormData) && body.tts === false);
-    setStatus("识别中…", "thinking");
+    setStatus(body instanceof FormData ? "识别中…" : "思考中…", "thinking");
     const headers = {"X-Auth-Token": S.token, "X-Voice-Turn-Id": turn.id};
     const init = {method: "POST", headers, signal:turn.controller.signal};
     if(body instanceof FormData) init.body = body;
@@ -785,6 +791,7 @@
             addMsg("me", ev.data.text || "");
             setStatus("思考中…", "thinking");
           } else if(ev.event === "text"){
+            setStatus("工作中…", "playing");
             stopWorkSound();  // AI 开口了,工作音效退场
             if(!aiEl) aiEl = addMsg("ai", "");
             full += ev.data.text || "";

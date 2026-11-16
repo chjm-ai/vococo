@@ -168,7 +168,50 @@ const assert=require('node:assert/strict');
     assert.equal(await page.locator('#pending .ptext').innerText(),'停止失败保留');
     assert.equal(await page.locator('#pending .pnow:disabled').count(),0);
     assert.equal(sent.at(-1),'切回后优先发送');
+    // 聊天模式的文本面板不能把等待状态和停止入口一起藏进语音面板。
+    await page.evaluate(()=>openCallView({fresh:true}));
+    let releaseVoice;
+    const voiceGate=new Promise(resolve=>{releaseVoice=resolve;});
+    await page.route('**/voice/send?*',async route=>{
+      await voiceGate;
+      await route.fulfill({contentType:'text/event-stream',body:'event: done\ndata: {"full_text":"完成"}\n\n'}).catch(()=>{});
+    });
+    const stops=[];
+    await page.route('**/voice/stop',route=>{stops.push(route.request().postDataJSON()); return route.fulfill({json:{ok:true}});});
+    await page.fill('#ta','等待状态测试'); await page.click('#sendBtn');
+    await page.waitForSelector('#callTextStatus:not([hidden])',{timeout:3000});
+    assert.ok((await page.locator('#callTextStatus').innerText()).includes('思考中'));
+    for(const width of [320,375,390,768,1280]){
+      await page.setViewportSize({width,height:844});
+      for(const theme of ['dark','light']){
+        await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+        const row=page.locator('#callTextStatus');
+        assert.ok(await row.isVisible());
+        const size=await row.evaluate(status=>{
+          const button=status.querySelector('button'), bounds=button.getBoundingClientRect();
+          return {display:getComputedStyle(status).display,left:bounds.left,right:bounds.right,width:innerWidth,
+            background:getComputedStyle(button).backgroundColor};
+        });
+        assert.equal(size.display,'flex'); assert.ok(size.left>=0 && size.right<=size.width);
+        assert.notEqual(size.background,'rgba(0, 0, 0, 0)');
+      }
+    }
+    await page.screenshot({path:'/tmp/vococo-chat-status-after.png'});
+    await page.locator('#callTextStatus .statusstop').click();
+    await page.waitForSelector('#callTextStatus',{state:'hidden'});
+    assert.equal(stops.length,1); assert.equal(stops[0].reason,'manual');
+    releaseVoice();
+    await page.unroute('**/voice/send?*');
+    await page.route('**/voice/send?*',route=>route.fulfill({contentType:'text/event-stream',body:'event: done\ndata: {"full_text":"正常完成"}\n\n'}));
+    await page.fill('#ta','正常完成测试'); await page.click('#sendBtn');
+    await page.waitForFunction(()=>$('#transcript').textContent.includes('正常完成'));
+    await page.waitForSelector('#callTextStatus',{state:'hidden'});
+    await page.unroute('**/voice/send?*');
+    await page.route('**/voice/send?*',route=>route.fulfill({status:500,json:{error:'测试失败'}}));
+    await page.fill('#ta','失败测试'); await page.click('#sendBtn');
+    await page.waitForFunction(()=>$('#transcript').textContent.includes('出错了'));
+    await page.waitForSelector('#callTextStatus',{state:'hidden'});
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({ok:true,aborts}));
+    console.log(JSON.stringify({ok:true,aborts,voiceStops:stops.length}));
   }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1);});

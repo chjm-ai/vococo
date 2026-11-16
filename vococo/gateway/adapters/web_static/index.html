@@ -510,7 +510,12 @@ try{
           <button id="startCallBtn" hidden title="开始录音" aria-label="开始录音"></button>
         </footer>
       </div>
-      <div id="callTextPanel" hidden></div>
+      <div id="callTextPanel" hidden>
+        <div id="callTextStatus" class="status" hidden>
+          <span class="chip live"><span id="callTextStatusLabel" role="status"></span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></span>
+          <button id="callTextStop" type="button" class="statusstop" title="停止回复" aria-label="停止回复"><span class="sq"></span></button>
+        </div>
+      </div>
     </div>
     <div id="tasksDrawer">
       <div id="tasksSheet">
