@@ -2437,7 +2437,7 @@
   .awb-search{min-width:0;flex:1}
   .awb-search input{width:100%;min-width:0;border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-3) var(--sp-4);background:var(--panel);color:var(--text);font:inherit;font-size:var(--fs-base)}
   .awb-search input:focus{outline:1px solid var(--accent)}
-  .automation-workbench .awb-stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--sp-3);margin:var(--sp-4) 0;padding:var(--sp-4);background:var(--panel);border-radius:var(--r-md)}
+  .automation-workbench .awb-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:var(--sp-3);margin:var(--sp-4) 0;padding:var(--sp-4);background:var(--panel);border-radius:var(--r-md)}
   .awb-stats .apstat{min-width:0;display:flex;flex-direction:column;gap:var(--sp-1);padding:var(--sp-1);border:0;border-radius:0;background:transparent;text-align:left}
   .awb-stats b{font-size:var(--fs-xl);overflow-wrap:anywhere}.awb-stats span{font-size:var(--fs-sm);color:var(--dim)}
   .awb-stats .awb-stat-label{display:inline-block;white-space:nowrap}
@@ -2461,7 +2461,6 @@
   .awb-tick.ok{background:var(--ok-fg)}.awb-tick.error{background:var(--err-fg)}
   .awb-owner-metrics{font-size:var(--fs-sm);color:var(--dim);line-height:1.6;text-align:right}
   .awb-owner-body{padding:0 0 var(--sp-5);min-width:0}
-  .awb-jobs>.awb-link{margin-left:calc(var(--sp-5)*3 + var(--sp-4) + var(--sp-3))}
   .awb-task{min-width:0}
   .awb-job-history{margin:0 0 var(--sp-4) calc(var(--sp-5)*3 + var(--sp-4));padding-left:var(--sp-3);border-left:1px solid var(--line)}
   .awb-pager{display:flex;align-items:center;justify-content:flex-end;gap:var(--sp-3);padding-top:var(--sp-3);color:var(--dim);font-size:var(--fs-sm)}
@@ -2524,7 +2523,7 @@
     .awb-job.aptask{grid-template-columns:minmax(0,1fr) calc(var(--sp-5)*4) calc(var(--sp-5)*3) calc(var(--sp-4)*2);gap:var(--sp-1)}
     .awb-job .aptmain{padding-left:var(--sp-3);gap:var(--sp-2)}
     .awb-job-recent .awb-spark{gap:1px}.awb-job-recent .awb-tick{min-width:1px}
-    .awb-jobs>.awb-link{margin-left:var(--sp-5)}.awb-job-history{margin-left:var(--sp-4)}
+    .awb-job-history{margin-left:var(--sp-4)}
     .awb-history-head{display:none}
     .awb-run-link{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:var(--sp-2) var(--sp-3)}
     .awb-run-link time{grid-column:1/3;grid-row:1}.awb-run-name{grid-column:3;grid-row:1;justify-self:end}

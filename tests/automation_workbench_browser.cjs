@@ -95,7 +95,9 @@ async function checkWorkbenchSafeArea(page,output){
     const showDisabled=page.getByRole('checkbox',{name:'显示已停用',exact:true});
     assert.ok(await showDisabled.isChecked(),'默认勾选显示已停用');
     assert.equal(await page.locator('[data-awb="filter"]').count(),0,'移除全部/运行中/异常按钮');
-    assert.equal(await page.locator('.awb-stats .apstat').count(),6);
+    assert.equal(await page.locator('.awb-stats .apstat').count(),5,'顶部仅保留任务与运行指标');
+    assert.ok(!/附件|作品/.test(await page.locator('.awb-stats').innerText()),'顶部不显示附件/作品数量');
+    assert.ok((await page.locator('[data-awb="products"]').allTextContents()).every(t=>t==='附件与作品'),'查看入口不带数量');
     assert.ok((await page.locator('.awb-stats').innerText()).includes('近 7 天中位耗时'));
     assert.ok((await page.locator('.awb-stats').innerText()).includes('近 7 天调度成功率'));
     assert.equal(await page.evaluate(()=>awbTokens(12304000)),'1,230.4 万','万位数字同样使用千位分隔');
@@ -106,6 +108,7 @@ async function checkWorkbenchSafeArea(page,output){
     await page.keyboard.press('Enter');
     assert.equal(await ownerToggle.getAttribute('aria-expanded'),'true');
     assert.equal(await page.locator('[data-awb="tab"]').count(),0,'展开 Agent 直接展示定时任务，不再有 Tab');
+    assert.equal(await page.locator('[data-awb="create"]').count(),0,'工作台不提供新建定时任务入口');
     assert.equal(await page.locator('.awb-history').count(),0,'历史只在展开具体任务后读取');
     const jobRecent=page.locator(`.awb-job-recent[data-id="${job}"]`);
     assert.equal(await jobRecent.locator('.awb-tick').count(),30);
@@ -263,6 +266,8 @@ async function checkWorkbenchSafeArea(page,output){
         await page.evaluate(width=>{setSidebarCollapsed(width<=760);closeSidebar();},width);
         assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'页面不横向溢出 '+width);
         assert.ok(await page.locator('#wbContent').evaluate(n=>n.scrollWidth<=n.clientWidth+1),'工作台不横向溢出 '+width);
+        assert.ok((await page.locator('[data-awb="products"]').allTextContents()).every(t=>t==='附件与作品'),'各屏宽和不同数量样本均不显示数量 '+width);
+        assert.equal(await page.locator('[data-awb="create"]').count(),0);
         await showDisabled.uncheck();
         assert.equal(await page.locator(`.awb-task[data-job="${job}"]`).count(),0,'当前屏宽隐藏停用任务 '+width);
         assert.equal(await page.locator('.awb-task[data-job="layout-state-0"]').count(),1,'启用的待触发任务仍显示 '+width);

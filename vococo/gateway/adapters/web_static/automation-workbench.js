@@ -66,7 +66,7 @@ function awbStats(){
   const d=AWB.data,s=d.stats;
   return '<div class="apstats awb-stats">'+[[awbNumber(d.jobs.length),"定时任务"],[awbNumber(d.runs),"累计运行"],
     [s.token_samples?awbTokens(s.tokens):"未记录","近 7 天 Token"],[awbDuration(s.median_duration),'近 7 天<span class="awb-stat-label">中位耗时</span>'],
-    [awbRate(s),'近 7 天<span class="awb-stat-label">调度成功率</span>'],[awbNumber(d.artifacts)+" / "+awbNumber(d.works),"附件 / 作品"]]
+    [awbRate(s),'近 7 天<span class="awb-stat-label">调度成功率</span>']]
     .map(([n,t])=>'<div class="apstat"><b>'+esc(String(n))+'</b><span>'+t+'</span></div>').join("")+'</div>'+
     '<details class="awb-note"><summary>近 7 天 · 指标口径与覆盖</summary><p>Token 有记录 '+s.token_samples+'/'+s.runs+' 次，耗时有记录 '+s.duration_samples+'/'+s.runs+' 次；未记录不算零。Token 沿用保存口径，不是精确账单，也不据此推算费用。</p><p>运行包含历史任务与独立后台任务。调度成功不等于业务目标完成；工具轨迹不是业务阶段。附件是保存的快照，网站作品指向当前版本。</p></details>';
 }
@@ -132,13 +132,12 @@ function awbOwner(a,jobs){
   return '<section class="awb-owner" data-owner="'+esc(a.id)+'"><div class="awb-owner-row">'+
     '<button type="button" class="awb-owner-toggle" data-awb="owner" data-id="'+esc(a.id)+'" aria-expanded="'+open+'"><span class="awb-chevron" aria-hidden="true">'+(open?"⌄":"›")+'</span>'+avatarSvg(a.avatar)+
     '<span class="awb-owner-name"><strong>'+esc(a.name)+'</strong><small>'+awbNumber(jobs.length)+' 定时任务</small></span></button>'+awbRecentRuns(a)+
-    '<span class="awb-owner-metrics">'+esc(awbMetricText(a.stats))+'</span>'+awbButton("products",awbNumber(a.artifacts)+' 附件 · '+awbNumber(a.works)+' 作品',a.id,"awb-link")+'</div>'+
+    '<span class="awb-owner-metrics">'+esc(awbMetricText(a.stats))+'</span>'+awbButton("products","附件与作品",a.id,"awb-link")+'</div>'+
     (open?'<div class="awb-owner-body">'+awbOwnerBody(a,jobs)+'</div>':"")+ '</section>';
 }
 function awbOwnerBody(a,jobs){
   return (AWB.products.has(a.id)?awbProductsHtml(a.id):"")+'<div class="awb-jobs">'+
-    (jobs.length?jobs.map(j=>awbJobHtml(a.id,j)).join(""):'<p class="awb-empty">暂无定时任务</p>')+
-    awbButton("create","＋ 新建定时任务",a.id,"awb-link")+'</div>';
+    (jobs.length?jobs.map(j=>awbJobHtml(a.id,j)).join(""):'<p class="awb-empty">暂无定时任务</p>')+'</div>';
 }
 function awbJobHtml(owner,j){
   const [status,label]=awbStatus(j),open=AWB.jobs.has(j.id);
@@ -294,7 +293,6 @@ async function awbClick(event){
   }
   if(action==="source-run"){await awbOpenRun(id,b);return;}
   if(action==="menu"){await awbManage(b,id);return;}
-  if(action==="create"){openCronModal(null);S.cronAgentId=id||null;$("#cfCwd").value=agentById(id)?.workdir||"";return;}
   if(action==="library"){
     await vococoLazy.run("library", async()=>{
       LIB.filters.agent_id=id;LIB.filters.kind="";LIB.filters.state="visible";LIB.filters.search="";
