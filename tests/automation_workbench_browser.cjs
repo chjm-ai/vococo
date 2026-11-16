@@ -92,7 +92,16 @@ async function checkWorkbenchSafeArea(page,output){
     for(const stat of await page.locator('.awb-stats .apstat').all()){
       assert.equal(await stat.evaluate(n=>getComputedStyle(n).backgroundColor),'rgba(0, 0, 0, 0)','指标内部不再有第二层背景框');
     }
-    await page.locator(`[data-awb="owner"][data-id="${agent}"]`).click();
+    assert.equal(await page.locator('.awb-stats .apstat').count(),6);
+    assert.ok((await page.locator('.awb-stats').innerText()).includes('近 7 天中位耗时'));
+    assert.ok((await page.locator('.awb-stats').innerText()).includes('近 7 天调度成功率'));
+    assert.equal(await page.evaluate(()=>awbTokens(12304000)),'1,230.4 万','万位数字同样使用千位分隔');
+    const ownerToggle=page.locator(`[data-awb="owner"][data-id="${agent}"]`);
+    assert.equal(await ownerToggle.locator(':scope>.awb-chevron:first-child').count(),1,'Agent 箭头统一放在最左侧');
+    await ownerToggle.focus();
+    assert.ok(await ownerToggle.evaluate(n=>getComputedStyle(n).outlineStyle!=='none'),'键盘焦点可见');
+    await page.keyboard.press('Enter');
+    assert.equal(await ownerToggle.getAttribute('aria-expanded'),'true');
     assert.equal(await page.locator('[data-awb="tab"]').count(),0,'展开 Agent 直接展示定时任务，不再有 Tab');
     assert.equal(await page.locator('.awb-history').count(),0,'历史只在展开具体任务后读取');
     const jobRecent=page.locator(`.awb-job-recent[data-id="${job}"]`);
@@ -108,7 +117,10 @@ async function checkWorkbenchSafeArea(page,output){
     assert.ok(await page.locator('#awbTip').evaluate(n=>n.hidden),'移出图表立即关闭提示');
     assert.equal(await page.locator('.awb-job .aptsub').count(),0,'任务行不再显示第二行元信息');
     assert.ok((await page.locator(`.aptmain[data-id="${job}"]`).getAttribute('title')).includes('每天 06:17'));
-    await jobRecent.click();
+    const jobToggle=page.locator(`.aptmain[data-id="${job}"]`);
+    assert.equal(await jobToggle.locator(':scope>.awb-chevron:first-child').count(),1);
+    await jobToggle.focus();await page.keyboard.press('Enter');
+    assert.equal(await jobToggle.getAttribute('aria-expanded'),'true');
     const history=page.locator(`.awb-task[data-job="${job}"] .awb-job-history`);
     await page.waitForFunction(()=>document.querySelectorAll('.awb-history .aprun').length===5);
     assert.ok(await history.locator('[data-awb="job-prev"]').isDisabled());
@@ -193,6 +205,9 @@ async function checkWorkbenchSafeArea(page,output){
     // 仅在浏览器内增加长短内容样本，验证跨行列对齐，不写入任何业务数据。
     await page.evaluate(agent=>{
       window.awbLayoutOriginal=AWB.data; AWB.data=structuredClone(AWB.data);
+      window.awbLayoutHistories=AWB.histories; AWB.histories=structuredClone(AWB.histories);
+      const history=AWB.histories.get(awbHistoryKey(agent,AWB.data.jobs.find(j=>j.agent_id===agent).id));
+      history.items[0]={...history.items[0],status:'unknown',tokens:12304000,duration:321};
       const base=AWB.data.agents.find(a=>a.id===agent),job=AWB.data.jobs.find(j=>j.agent_id===agent);
       for(const [i,name] of ['短名称','用于验证长名称和长指标的 Agent'].entries()){
         const id='layout-'+i;
@@ -230,7 +245,7 @@ async function checkWorkbenchSafeArea(page,output){
         for(const xs of columns) if(xs.length) assert.ok(Math.max(...xs)-Math.min(...xs)<=1,'跨行列起点对齐 '+width+' '+JSON.stringify(xs));
         const jobsLayout=await page.evaluate(agent=>{
           const rows=[...document.querySelectorAll(`[data-owner="${agent}"] .awb-job`)];
-          const columns=['.awb-job-recent','.awb-job-count','.awb-job-status','.more'].map(s=>rows.map(r=>r.querySelector(s).getBoundingClientRect().x));
+          const columns=['.awb-job-recent','.awb-job-count','.more'].map(s=>rows.map(r=>r.querySelector(s).getBoundingClientRect().x));
           const singleLine=rows.every(r=>{
             const items=[...r.children].map(n=>n.getBoundingClientRect());
             const centers=items.map(b=>b.y+b.height/2);
@@ -244,6 +259,41 @@ async function checkWorkbenchSafeArea(page,output){
         },agent);
         for(const xs of jobsLayout.columns) assert.ok(Math.max(...xs)-Math.min(...xs)<=1,'任务跨行列对齐 '+width);
         assert.ok(jobsLayout.singleLine,'任务保持单行、名称可读且色条不溢出 '+width+' '+JSON.stringify(jobsLayout));
+        const hierarchy=await page.evaluate(agent=>{
+          const owner=document.querySelector(`[data-owner="${agent}"]`),spark=owner.querySelector('.awb-recent .awb-spark').getBoundingClientRect();
+          return [...owner.querySelectorAll('.awb-job')].map(row=>{
+            const bar=row.querySelector('.awb-spark').getBoundingClientRect(),name=row.querySelector('.aptname').getBoundingClientRect();
+            const status=row.querySelector('.awb-job-status'),state=status.getBoundingClientRect();
+            return {aligned:Math.abs(bar.x-spark.x)<=1 && Math.abs(bar.width-spark.width)<=1,
+              nearby:!status.textContent || (state.x>=name.right && state.x-name.right<=8 && Math.abs(state.y+state.height/2-name.y-name.height/2)<=1)};
+          });
+        },agent);
+        if(width>760) assert.ok(hierarchy.every(r=>r.aligned),'Agent 与任务的30天色条同列对齐 '+width);
+        assert.ok(hierarchy.every(r=>r.nearby),'状态紧邻名称，不再漂在最右侧 '+width);
+        const runLayout=await history.evaluate(root=>{
+          const head=root.querySelector('.awb-history-head'),rows=[...root.querySelectorAll('.awb-run-link')];
+          const cells=rows.map(r=>[...r.children].map(n=>n.getBoundingClientRect()));
+          const centers=cells.map(bs=>bs.map(b=>b.y+b.height/2));
+          const headers=[...head.children].map(n=>n.getBoundingClientRect());
+          return {heads:root.querySelectorAll('.awb-history-head').length,headVisible:head.checkVisibility(),
+            height:root.getBoundingClientRect().height,maxRow:Math.max(...rows.map(r=>r.getBoundingClientRect().height)),
+            geometry:rows.map(r=>({width:r.clientWidth,scroll:r.scrollWidth,columns:getComputedStyle(r).gridTemplateColumns,
+              cells:[...r.children].map(n=>({text:n.textContent,width:n.clientWidth,scroll:n.scrollWidth}))})),
+            singleLine:centers.every(cs=>Math.max(...cs)-Math.min(...cs)<=1),
+            twoLines:centers.every(cs=>Math.abs(cs[0]-cs[1])<=1 && cs[2]>cs[0] && Math.abs(cs[2]-cs[3])<=1 && Math.abs(cs[3]-cs[4])<=1),
+            aligned:cells.every(bs=>bs.every((b,i)=>Math.abs(i===4?b.right-headers[i].right:b.x-headers[i].x)<=1)),
+            contained:rows.every(r=>r.scrollWidth<=r.clientWidth+1 && r.querySelector('.awb-run-tokens').clientWidth>=36 && [...r.children].every(n=>{
+              const b=n.getBoundingClientRect(),p=r.getBoundingClientRect();return b.x>=p.x && b.right<=p.right+1;
+            }))};
+        });
+        assert.equal(runLayout.heads,1,'每页只出现一个表头');
+        assert.ok(runLayout.contained,'记录内容不挤出行边界 '+width+' '+JSON.stringify(runLayout));
+        if(width>760){
+          assert.ok(runLayout.headVisible && runLayout.singleLine && runLayout.aligned,'桌面明细单行且表头列对齐 '+width+' '+JSON.stringify(runLayout));
+          assert.ok(runLayout.maxRow<=40 && runLayout.height<=270,'五条记录和分页压紧，不再占据大半屏 '+width+' '+JSON.stringify(runLayout));
+        }else{
+          assert.ok(!runLayout.headVisible && runLayout.twoLines && runLayout.maxRow<=70,'手机每条使用两行，不硬塞桌面表格 '+width+' '+JSON.stringify(runLayout));
+        }
         const layoutTick=page.locator('.awb-job-recent[data-id="layout-state-0"] .awb-tick').last();
         await layoutTick.scrollIntoViewIfNeeded();
         await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
@@ -251,11 +301,18 @@ async function checkWorkbenchSafeArea(page,output){
         const tipBox=await page.locator('#awbTip').boundingBox();
         assert.ok(tipBox && tipBox.x>=0 && tipBox.x+tipBox.width<=width && tipBox.y>=0 && tipBox.y+tipBox.height<=1000,'提示完整位于屏内 '+width);
         assert.ok((await page.locator('#awbTip').innerText()).includes('无运行记录'));
-        if([1440,390].includes(width)) await page.screenshot({path:output+'/workbench-'+theme+'-'+width+'.png',fullPage:true,animations:'disabled'});
+        if([1440,390].includes(width)){
+          await page.mouse.move(0,0);
+          await page.evaluate(()=>{document.activeElement?.blur();$('#workbenchView').scrollTop=0;});
+          await page.screenshot({path:output+'/workbench-'+theme+'-'+width+'.png',fullPage:true,animations:'disabled'});
+        }
       }
     }
     await checkWorkbenchSafeArea(page,output);
-    await page.evaluate(()=>{AWB.data=window.awbLayoutOriginal;delete window.awbLayoutOriginal;renderAutomationWorkbench();});
+    await page.evaluate(()=>{
+      AWB.data=window.awbLayoutOriginal;AWB.histories=window.awbLayoutHistories;
+      delete window.awbLayoutOriginal;delete window.awbLayoutHistories;renderAutomationWorkbench();
+    });
     await page.locator('[data-awb="todos"]').click();await page.waitForSelector('[data-open-automation]');
     await page.locator('[data-open-automation]').click();await page.waitForSelector('#awbSearch');
     await page.fill('#awbSearch','不存在的关键词');
