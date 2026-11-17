@@ -49,7 +49,7 @@ function renderAppearancePane(){
   h += '<div class="theme-seg">';
   opts.forEach(o=>{ h += `<button class="tsopt${mode===o.v?" active":""}" onclick="setTheme('${o.v}')">${o.label}</button>`; });
   h += '</div>';
-  h += '<h3>键盘与遥控器</h3><p class="shint">Control＋Option＋↑ / ↓：上 / 下一个可见会话；Control＋Option＋L：会话列表；Control＋Option＋M / Shift＋F10：焦点会话菜单；方向键选择，Enter 确认；Esc 先关闭浮层，否则停止回复。</p>';
+  h += '<h3>键盘与遥控器</h3><p class="shint">Control＋Option＋↑ / ↓：上 / 下一个可见会话；BTT 鼠标可改用 Control＋Option＋K / J（上 / 下），避开模拟方向键的 Fn 标记；Control＋Option＋L：会话列表；Control＋Option＋M / Shift＋F10：焦点会话菜单；方向键选择，Enter 确认；Esc 先关闭浮层，否则停止回复。</p>';
   h += '<label class="sname" for="voiceFocusKey">语音键自动聚焦输入框</label><select id="voiceFocusKey">';
   const voiceKeys=[["off","关闭"],["MetaRight","右 Command"],["AltRight","右 Option"],["Fn","Fn（取决于浏览器）"]];
   const voiceKey=window.vococoKeyboard?.voiceFocusKey() || "off";

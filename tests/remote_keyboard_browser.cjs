@@ -28,6 +28,23 @@ const assert=require('node:assert/strict');
     await shortcut('ArrowDown');
     await page.waitForFunction(()=>S.conv==='local-remote-b' && document.activeElement.id==='ta');
     assert.equal(await page.locator('#ta').inputValue(),'第二个会话草稿');
+    // 重放 Safari/BTT 日志：组合键正确，但被标记为组字或 keyCode 229。
+    for(const [code,key,next] of [['ArrowUp','ArrowUp','ArrowDown'],['KeyK','k','j']]){
+      for(const flags of [{isComposing:true},{keyCode:229},{isComposing:true,keyCode:229}]){
+        const up=await page.evaluate(({flags,code,key})=>{
+          const e=new KeyboardEvent('keydown',{key,code,ctrlKey:true,altKey:true,bubbles:true,cancelable:true,...flags});
+          $('#ta').dispatchEvent(e); return e.defaultPrevented;
+        },{flags,code,key});
+        assert.equal(up,true,'明确会话切换不受错误组字标记阻断');
+        await page.waitForFunction(()=>S.conv==='local-remote-a' && document.activeElement.id==='ta');
+        await shortcut(next);
+        await page.waitForFunction(()=>S.conv==='local-remote-b' && document.activeElement.id==='ta');
+        assert.equal(await page.locator('#ta').inputValue(),'第二个会话草稿');
+      }
+    }
+    await page.keyboard.type('jk');
+    assert.equal(await page.evaluate(()=>S.conv),'local-remote-b','普通字母不触发切换');
+    await page.fill('#ta','第二个会话草稿');
     // 桌面手动收起侧栏后，快捷键必须真正展开，而不是聚焦在被裁切的行上。
     await page.click('#collapseBtn');
     await shortcut('l');
@@ -92,8 +109,14 @@ const assert=require('node:assert/strict');
     let sends=0,aborts=0;
     await page.route('**/send',route=>{sends++;return route.fulfill({json:{ok:true}});});
     await page.route('**/abort',route=>{aborts++;return route.fulfill({json:{ok:true,stopped:true}});});
-    await page.evaluate(()=>$('#ta').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true,cancelable:true})));
+    for(const flags of [{isComposing:true},{keyCode:229},{isComposing:true,keyCode:229}]){
+      await page.evaluate(flags=>{
+        for(const key of ['Enter','ArrowUp','Escape']) $('#ta').dispatchEvent(new KeyboardEvent('keydown',{key,code:key,bubbles:true,cancelable:true,...flags}));
+      },flags);
+    }
     assert.equal(sends,0);
+    assert.equal(aborts,0);
+    assert.equal(await page.evaluate(()=>S.conv),'local-remote-c','无明确修饰键的组字操作不切会话');
     await page.keyboard.press('Shift+Enter');
     assert.ok((await page.locator('#ta').inputValue()).includes('\n'));
     await page.keyboard.press('Enter');
@@ -243,13 +266,26 @@ const assert=require('node:assert/strict');
     assert.equal(diagnostic.active,false);
     assert.equal(diagnostic.voiceFocusKey,'AltRight');
     assert.ok(diagnostic.events.some(e=>e.type==='keydown' && e.code==='ArrowUp' && e.shortcutMatch && e.prevented && e.focus==='输入框'));
-    assert.ok(diagnostic.events.some(e=>e.code==='ArrowDown' && e.composing && !e.prevented));
+    assert.ok(diagnostic.events.some(e=>e.code==='ArrowDown' && e.composing && e.prevented));
+    assert.equal(diagnostic.version,2);
+    assert.ok(diagnostic.events.filter(e=>e.type==='keydown').every(e=>e.recorderState==='idle'));
+    assert.ok(!diagnostic.events.some(e=>e.type.startsWith('web-recorder')),'切换不应触发网页录音');
     assert.ok(diagnostic.events.some(e=>e.type==='keyup' && e.code==='AltLeft'));
     assert.ok(diagnostic.events.some(e=>e.type==='horizontal-wheel' && e.direction==='right'));
     assert.ok(!/private-text|秘密文本|local-remote|KeyP/.test(diagnosticText));
     await page.keyboard.press('Tab');
     assert.equal(await page.evaluate(()=>vococoKeyboardDiagnostic.report()),diagnosticText,'停止后不再采集');
     await page.screenshot({path:screenshot+'.diagnostic.png',animations:'disabled'});
+    // 录音请求要有独立证据；模拟权限失败，不访问真实麦克风。
+    await page.evaluate(async()=>{
+      vococoKeyboardDiagnostic.start();
+      const originalMic=getMic, originalAlert=window.alert;
+      getMic=async()=>{throw new Error('测试权限拒绝');}; window.alert=()=>{};
+      try{await startRec();}finally{getMic=originalMic;window.alert=originalAlert;vococoKeyboardDiagnostic.stop();}
+    });
+    const recording=JSON.parse(await page.evaluate(()=>vococoKeyboardDiagnostic.report()));
+    assert.ok(recording.events.some(e=>e.type==='web-recorder-request'));
+    assert.ok(!recording.events.some(e=>e.type==='web-recorder-start'));
     await page.evaluate(()=>{
       vococoKeyboardDiagnostic.start();
       for(let i=0;i<810;i++) document.dispatchEvent(new KeyboardEvent('keyup',{code:'AltLeft'}));
