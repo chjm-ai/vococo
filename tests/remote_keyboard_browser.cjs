@@ -245,56 +245,6 @@ const assert=require('node:assert/strict');
     await page.selectOption('#voiceFocusKey','AltRight');
     assert.equal(await page.evaluate(()=>vococoKeyboard.voiceFocusKey()),'AltRight');
     await page.keyboard.press('Escape');
-    // 临时诊断通过真实设置入口开启；不影响输入框快捷键，也不收集文字。
-    assert.equal(JSON.parse(await page.evaluate(()=>vococoKeyboardDiagnostic.report())).events.length,0);
-    await page.evaluate(()=>{renderAppearancePane();$('#setModal').hidden=false;});
-    await page.click('#keyDiagStart');
-    await page.waitForFunction(()=>document.activeElement.id==='ta');
-    await page.keyboard.type('private-text-8492');
-    await shortcut('ArrowUp');
-    await page.waitForFunction(()=>S.conv==='local-remote-b' && document.activeElement.id==='ta');
-    await page.evaluate(()=>{
-      $('#ta').dispatchEvent(new KeyboardEvent('keydown',{code:'ArrowDown',key:'ArrowDown',ctrlKey:true,altKey:true,isComposing:true,bubbles:true,cancelable:true}));
-      $('#ta').dispatchEvent(new CompositionEvent('compositionstart',{data:'秘密文本',bubbles:true}));
-      $('#ta').dispatchEvent(new CompositionEvent('compositionend',{data:'秘密文本',bubbles:true}));
-      $('#ta').dispatchEvent(new WheelEvent('wheel',{deltaX:20,bubbles:true}));
-    });
-    await page.evaluate(()=>{renderAppearancePane();$('#setModal').hidden=false;});
-    await page.click('#keyDiagShow');
-    const diagnosticText=await page.locator('#keyDiagReport').inputValue();
-    const diagnostic=JSON.parse(diagnosticText);
-    assert.equal(diagnostic.active,false);
-    assert.equal(diagnostic.voiceFocusKey,'AltRight');
-    assert.ok(diagnostic.events.some(e=>e.type==='keydown' && e.code==='ArrowUp' && e.shortcutMatch && e.prevented && e.focus==='输入框'));
-    assert.ok(diagnostic.events.some(e=>e.code==='ArrowDown' && e.composing && e.prevented));
-    assert.equal(diagnostic.version,2);
-    assert.ok(diagnostic.events.filter(e=>e.type==='keydown').every(e=>e.recorderState==='idle'));
-    assert.ok(!diagnostic.events.some(e=>e.type.startsWith('web-recorder')),'切换不应触发网页录音');
-    assert.ok(diagnostic.events.some(e=>e.type==='keyup' && e.code==='AltLeft'));
-    assert.ok(diagnostic.events.some(e=>e.type==='horizontal-wheel' && e.direction==='right'));
-    assert.ok(!/private-text|秘密文本|local-remote|KeyP/.test(diagnosticText));
-    await page.keyboard.press('Tab');
-    assert.equal(await page.evaluate(()=>vococoKeyboardDiagnostic.report()),diagnosticText,'停止后不再采集');
-    await page.screenshot({path:screenshot+'.diagnostic.png',animations:'disabled'});
-    // 录音请求要有独立证据；模拟权限失败，不访问真实麦克风。
-    await page.evaluate(async()=>{
-      vococoKeyboardDiagnostic.start();
-      const originalMic=getMic, originalAlert=window.alert;
-      getMic=async()=>{throw new Error('测试权限拒绝');}; window.alert=()=>{};
-      try{await startRec();}finally{getMic=originalMic;window.alert=originalAlert;vococoKeyboardDiagnostic.stop();}
-    });
-    const recording=JSON.parse(await page.evaluate(()=>vococoKeyboardDiagnostic.report()));
-    assert.ok(recording.events.some(e=>e.type==='web-recorder-request'));
-    assert.ok(!recording.events.some(e=>e.type==='web-recorder-start'));
-    await page.evaluate(()=>{
-      vococoKeyboardDiagnostic.start();
-      for(let i=0;i<810;i++) document.dispatchEvent(new KeyboardEvent('keyup',{code:'AltLeft'}));
-    });
-    const capped=JSON.parse(await page.evaluate(()=>vococoKeyboardDiagnostic.report()));
-    assert.equal(capped.active,false);
-    assert.equal(capped.events.length,801);
-    assert.equal(capped.events.at(-1).reason,'达到800条上限');
-    await page.keyboard.press('Escape');
     // 手机、桌面窄窗都能通过同一快捷键打开列表，焦点在屏幕内。
     for(const width of [320,390,768,1280]){
       await page.setViewportSize({width,height:900});
