@@ -1007,6 +1007,66 @@ $("#recCancel").onclick = e=>{ e.stopPropagation(); stopRec(true); };        // 
 // 兜底:关页/切后台也释放一次,防止极端情况下(录音中直接切走)残留占用
 window.addEventListener("pagehide", releaseMic);
 
+// 临时诊断：仅显式开启时记录，排障结束后整块移除；不读取文本、会话名或消息。
+window.vococoKeyboardDiagnostic = (()=>{
+  let enabled=false, started=0, timer=null, rows=[], initialVoiceKey='off';
+  const special=/^(Arrow(Up|Down|Left|Right)|Control(Left|Right)|Alt(Left|Right)|Meta(Left|Right)|Shift(Left|Right)|Tab|Enter|Escape|ContextMenu|F10|Fn|CapsLock)$/;
+  function focusLabel(node){
+    if(node?.closest?.('#ta')) return '输入框';
+    if(node?.closest?.('#setModal')) return '设置';
+    if(node?.closest?.('#app > [id$="Modal"],#imgViewer,dialog[open]')) return '弹窗';
+    if(node?.closest?.('#sidebar')) return '侧栏';
+    if(node?.closest?.('#messages')) return '聊天区域';
+    return '其他区域';
+  }
+  function record(type,detail={}){
+    if(!enabled) return null;
+    const row={ms:Math.round(performance.now()-started),type,...detail};
+    rows.push(row);
+    if(rows.length>=800) stop('达到800条上限');
+    return row;
+  }
+  function stop(reason='手动停止'){
+    if(enabled) rows.push({ms:Math.round(performance.now()-started),type:'stop',reason});
+    enabled=false; clearTimeout(timer); timer=null;
+  }
+  function start(){
+    stop(); rows=[]; started=performance.now(); enabled=true;
+    initialVoiceKey=window.vococoKeyboard?.voiceFocusKey() || 'off';
+    record('start',{voiceFocusKey:initialVoiceKey});
+    timer=setTimeout(()=>stop('已满5分钟'),5*60*1000);
+  }
+  function keyboard(e){
+    if(!enabled) return;
+    const shortcut=e.ctrlKey && e.altKey && /^Key[LIM]$/.test(e.code);
+    const known=special.test(e.code), composing=e.isComposing || e.keyCode===229;
+    if(!known && !shortcut && !composing) return;
+    const conv=S.conv;
+    const row=record(e.type,{code:known || shortcut ? e.code : 'IME',
+      ctrl:e.ctrlKey,alt:e.altKey,meta:e.metaKey,shift:e.shiftKey,
+      composing,legacy229:e.keyCode===229,repeat:e.repeat,trusted:e.isTrusted,
+      focus:focusLabel(document.activeElement),target:focusLabel(e.target),
+      shortcutMatch:e.ctrlKey && e.altKey && !e.metaKey && !e.shiftKey && ['ArrowUp','ArrowDown','KeyL','KeyI','KeyM'].includes(e.code),
+      modal:!!document.querySelector('#app > [id$="Modal"]:not([hidden]),#imgViewer:not([hidden]),dialog[open]')});
+    // 等本次事件的其他处理器执行完，再观察是否被消费，不改变原有键盘逻辑。
+    setTimeout(()=>{
+      if(!row) return;
+      row.prevented=e.defaultPrevented; row.afterFocus=focusLabel(document.activeElement);
+      row.conversationChanged=S.conv!==conv;
+    },0);
+  }
+  document.addEventListener('keydown',keyboard,true);
+  document.addEventListener('keyup',keyboard,true);
+  document.addEventListener('focusin',e=>record('focus',{focus:focusLabel(e.target)}),true);
+  for(const type of ['compositionstart','compositionend']) document.addEventListener(type,()=>record(type),true);
+  window.addEventListener('blur',()=>record('window-blur'));
+  window.addEventListener('focus',()=>record('window-focus'));
+  document.addEventListener('wheel',e=>{
+    if(e.deltaX) record('horizontal-wheel',{direction:e.deltaX>0?'right':'left',focus:focusLabel(document.activeElement),target:focusLabel(e.target)});
+  },{capture:true,passive:true});
+  return {start,stop,active:()=>enabled,report:()=>JSON.stringify({version:1,active:enabled,voiceFocusKey:initialVoiceKey,events:rows},null,2)};
+})();
+
 // 遥控器只发送键盘事件；不接管蓝牙、录音或系统级快捷键。
 window.vococoKeyboard = (()=>{
   const visible=node=>!!node && !node.closest("[hidden]") && node.getClientRects().length>0 && getComputedStyle(node).visibility!=="hidden";
