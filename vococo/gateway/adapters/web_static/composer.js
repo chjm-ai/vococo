@@ -906,6 +906,7 @@ async function getMic(){
 function releaseMic(){ if(REC.stream){ REC.stream.getTracks().forEach(t=>t.stop()); REC.stream=null; } }
 async function startRec(){
   if(REC.state!=="idle") return;
+  window.vococoKeyboardDiagnostic?.recorderRequested();
   if(!navigator.mediaDevices || !window.MediaRecorder){ alert("此浏览器不支持录音"); return; }
   try{ await getMic(); }
   catch(e){ alert("麦克风权限被拒绝或不可用"); return; }
@@ -923,6 +924,7 @@ async function startRec(){
     REC.waveColor=(getComputedStyle(document.documentElement).getPropertyValue("--err").trim())||"#ef4444";
   }catch(e){ REC.analyser=null; }
   REC.mr.start(); REC.state="recording"; REC.t0=Date.now(); recTick();
+  window.vococoKeyboardDiagnostic?.recorderStarted();
   REC.timer=setInterval(recTick,500); setRecUI();
   if(REC.analyser) drawWave();
 }
@@ -1038,15 +1040,15 @@ window.vococoKeyboardDiagnostic = (()=>{
   }
   function keyboard(e){
     if(!enabled) return;
-    const shortcut=e.ctrlKey && e.altKey && /^Key[LIM]$/.test(e.code);
+    const shortcut=e.ctrlKey && e.altKey && /^Key[LIMJK]$/.test(e.code);
     const known=special.test(e.code), composing=e.isComposing || e.keyCode===229;
     if(!known && !shortcut && !composing) return;
     const conv=S.conv;
     const row=record(e.type,{code:known || shortcut ? e.code : 'IME',
       ctrl:e.ctrlKey,alt:e.altKey,meta:e.metaKey,shift:e.shiftKey,
-      composing,legacy229:e.keyCode===229,repeat:e.repeat,trusted:e.isTrusted,
+      composing,legacy229:e.keyCode===229,repeat:e.repeat,trusted:e.isTrusted,recorderState:REC.state,
       focus:focusLabel(document.activeElement),target:focusLabel(e.target),
-      shortcutMatch:e.ctrlKey && e.altKey && !e.metaKey && !e.shiftKey && ['ArrowUp','ArrowDown','KeyL','KeyI','KeyM'].includes(e.code),
+      shortcutMatch:e.ctrlKey && e.altKey && !e.metaKey && !e.shiftKey && ['ArrowUp','ArrowDown','KeyL','KeyI','KeyM','KeyJ','KeyK'].includes(e.code),
       modal:!!document.querySelector('#app > [id$="Modal"]:not([hidden]),#imgViewer:not([hidden]),dialog[open]')});
     // 等本次事件的其他处理器执行完，再观察是否被消费，不改变原有键盘逻辑。
     setTimeout(()=>{
@@ -1064,7 +1066,9 @@ window.vococoKeyboardDiagnostic = (()=>{
   document.addEventListener('wheel',e=>{
     if(e.deltaX) record('horizontal-wheel',{direction:e.deltaX>0?'right':'left',focus:focusLabel(document.activeElement),target:focusLabel(e.target)});
   },{capture:true,passive:true});
-  return {start,stop,active:()=>enabled,report:()=>JSON.stringify({version:1,active:enabled,voiceFocusKey:initialVoiceKey,events:rows},null,2)};
+  return {start,stop,active:()=>enabled,
+    recorderRequested:()=>record('web-recorder-request'),recorderStarted:()=>record('web-recorder-start'),
+    report:()=>JSON.stringify({version:2,active:enabled,voiceFocusKey:initialVoiceKey,events:rows},null,2)};
 })();
 
 // 遥控器只发送键盘事件；不接管蓝牙、录音或系统级快捷键。
@@ -1078,6 +1082,7 @@ window.vococoKeyboard = (()=>{
     .sort((a,b)=>(parseInt(getComputedStyle(a).zIndex)||0)-(parseInt(getComputedStyle(b).zIndex)||0)).at(-1);
   const chat=()=>!$("#app").hidden && visible($("#chatMain")) && S.surface==="chat";
   const rowSelector='.sidetab,.agrow,.conv,.projadd';
+  const conversationSteps={ArrowUp:-1,ArrowDown:1,KeyK:-1,KeyJ:1};
   let sidebarKey=null, focusRevision=0, voiceHeld=false;
 
   function sidebarItems(){
@@ -1236,13 +1241,13 @@ window.vococoKeyboard = (()=>{
   }
   function handleShortcut(e){
     if(!e.ctrlKey || !e.altKey || e.metaKey || e.shiftKey) return false;
-    if(!["ArrowUp","ArrowDown","KeyL","KeyI"].includes(e.code)) return false;
+    if(!Object.hasOwn(conversationSteps,e.code) && !['KeyL','KeyI'].includes(e.code)) return false;
     if(modal()) return false;
     e.preventDefault(); e.stopImmediatePropagation();
     if(e.repeat) return true;
     if(e.code==="KeyL") focusList();
     else if(e.code==="KeyI") focusComposer();
-    else switchConversation(e.code==="ArrowUp"?-1:1);
+    else switchConversation(conversationSteps[e.code]);
     return true;
   }
   function handleMenuShortcut(e){
@@ -1252,7 +1257,10 @@ window.vococoKeyboard = (()=>{
     e.preventDefault(); e.stopImmediatePropagation(); return true;
   }
   function handleKey(e){
-    if($("#app").hidden || e.isComposing || e.keyCode===229) return;
+    if($("#app").hidden) return;
+    // Safari 会把 BTT 的明确会话组合键标为组字；只让会话切换先行，普通选字仍受保护。
+    if(Object.hasOwn(conversationSteps,e.code) && handleShortcut(e)) return;
+    if(e.isComposing || e.keyCode===229) return;
     if(tabModal(e) || handleMenuShortcut(e) || handleShortcut(e)) return;
     // 不吞语音工具的修饰键；网页只能处理 Safari 实际交付的事件。
     if(e.code===voiceFocusKey() && !e.repeat && !e.ctrlKey && !e.shiftKey){ voiceHeld=true; focusComposer(); return; }
