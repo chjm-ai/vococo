@@ -55,24 +55,7 @@ function renderAppearancePane(){
   const voiceKey=window.vococoKeyboard?.voiceFocusKey() || "off";
   for(const [value,label] of voiceKeys) h += `<option value="${value}"${value===voiceKey?" selected":""}>${label}</option>`;
   h += '</select><p class="shint">与遥控搭子和语音输入工具的触发键保持一致，仅保存在当前浏览器。仅在聊天页、没有弹窗时聚焦，不接管录音。系统若拦截该键，网页无法感知；Control＋Option＋I 可单独聚焦输入框。</p>';
-  h += '<h3>临时按键诊断</h3><p class="shint">仅记录按键状态、焦点与横向滚动，不记录输入内容，不上传。最多记录5分钟或800条；刷新页面即清除，排障后移除。</p>';
-  h += '<button class="btn ghost sm" id="keyDiagStart">开始／重新记录</button> <button class="btn ghost sm" id="keyDiagShow">停止并显示日志</button> <button class="btn ghost sm" id="keyDiagCopy" hidden>复制日志</button>';
-  h += '<p class="shint" id="keyDiagStatus"></p><textarea id="keyDiagReport" aria-label="按键诊断日志" rows="12" readonly hidden></textarea>';
   $("#setPane").innerHTML = h;
-  const diagnostic=window.vococoKeyboardDiagnostic;
-  $("#keyDiagStatus").textContent=diagnostic?.active()?'正在记录；复现后回到这里停止并显示日志。':'未在记录。';
-  $("#keyDiagStart").onclick=()=>{
-    diagnostic.start(); closeSettings(); window.vococoKeyboard.focusComposer();
-  };
-  $("#keyDiagShow").onclick=()=>{
-    diagnostic.stop();
-    $("#keyDiagReport").value=diagnostic.report(); $("#keyDiagReport").hidden=false;
-    $("#keyDiagCopy").hidden=false; $("#keyDiagStatus").textContent='记录已停止。复制日志后发到聊天中。';
-  };
-  $("#keyDiagCopy").onclick=async()=>{
-    try{ await navigator.clipboard.writeText($("#keyDiagReport").value); $("#keyDiagStatus").textContent='日志已复制。'; }
-    catch(error){ $("#keyDiagReport").focus(); $("#keyDiagReport").select(); $("#keyDiagStatus").textContent='自动复制不可用，日志已选中，请按 Command＋C。'; }
-  };
   $("#voiceFocusKey").onchange=e=>{
     try{ localStorage.setItem("vococo_voice_focus_key",e.target.value); }
     catch(error){ alert("无法保存，请检查浏览器本地存储权限"); }
