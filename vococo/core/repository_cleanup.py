@@ -1,4 +1,4 @@
-"""回收已收尾会话的可重建仓库；未知内容和检查失败一律保留。"""
+"""按归档期限回收会话仓库；归属无法确认或检查失败则保留。"""
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .. import config
 from ..memory import session_store
-from . import business_repositories as repositories, development_cleanup, repository_backup
+from . import business_repositories as repositories, development_cleanup
 from .repository_locks import lease, session_digest
 
 logger = logging.getLogger(__name__)
@@ -163,11 +163,13 @@ def _collect_path(path: Path, *, closing: bool = False, preview: bool = False,
             with (path.parent / f".{digest}.lock").open("a") as handle:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 repositories._verify_copy(binding)
-                result["reason"] = _preserve_reason(binding)
-                if not result["reason"]:
-                    _finish_collection(binding, states, result, preview=closing or preview)
-                if not (closing or preview or result["removed"] or result.get("recovery_path")):
-                    _finish_archived_backup(binding, states.get(path.parent.name), result)
+                state = states.get(path.parent.name)
+                if not (closing or preview) and state and development_cleanup.archive_expired(state[1], time.time()):
+                    _finish_expired_collection(binding, state, result)
+                else:
+                    result["reason"] = _preserve_reason(binding)
+                    if not result["reason"]:
+                        _finish_collection(binding, states, result, preview=closing or preview)
     except BlockingIOError:
         result["reason"] = "正在执行或初始化"
     except Exception as exc:
@@ -188,27 +190,24 @@ def _finish_collection(binding: repositories.RepositoryCopy, states: dict, resul
                                                  lambda retired: _retirement_reason(binding, retired)))
 
 
-def _finish_archived_backup(binding: repositories.RepositoryCopy, state: tuple | None, result: dict) -> None:
+def _finish_expired_collection(binding: repositories.RepositoryCopy, state: tuple, result: dict) -> None:
     path = binding.checkout
-    if state is None or not repository_backup.due(state[1], time.time()):
-        return
-    with session_store._db.read_connection():
-        reason = _archive_reason(path, state)
-    if reason:
-        result["reason"] = reason + "；归档满三十天，本轮保留"
-        return
 
-    def check(retired: Path) -> str:
+    def check(candidate: Path) -> str:
         with session_store._db.read_connection():
             latest = _sessions().get(path.parent.name)
-            if latest != state:
+            if latest != state or not development_cleanup.archive_expired(state[1], time.time()):
                 return "会话绑定或归档状态已变化"
             if reason := _archive_reason(path, latest):
                 return reason
-        repositories._verify_copy(replace(binding, checkout=retired))
+        repositories._verify_copy(replace(binding, checkout=candidate))
+        development_cleanup._validate(binding.source, candidate)
         return ""
 
-    development_cleanup._backup_or_retain(binding.source, path, check, result)
+    if reason := check(path):
+        result["reason"] = reason
+        return
+    result.update(development_cleanup._retire(binding.source, path, check, expired=True))
 
 
 def _candidates(states: dict, only: str | None = None):

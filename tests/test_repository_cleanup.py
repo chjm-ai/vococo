@@ -1,8 +1,7 @@
-"""真实 Git 回归：只删可重建目录，执行与回收互斥。"""
+"""真实 Git 回归：按归档期限回收，执行与回收互斥。"""
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import subprocess
 import time
@@ -154,104 +153,62 @@ async def test_preserves_work_in_archived_session(isolated, content):
     assert path.is_dir()
 
 
-@pytest.fixture
-def backup_directory(isolated, monkeypatch):
-    from vococo.core import repository_backup
-
-    folder = isolated / "private-backup"
-    folder.mkdir(mode=0o700)
-    monkeypatch.setattr(config, "REPOSITORY_BACKUP_DIR", str(folder))
-    monkeypatch.setattr(repository_backup, "_different_volume", lambda *_: True)
-    return folder
-
-
 @pytest.mark.anyio
-async def test_thirty_day_backup_restores_unique_commit_and_working_files(isolated, monkeypatch, backup_directory):
+async def test_thirty_day_recovery_discards_working_files_without_archive(isolated, monkeypatch):
     _, key, binding = await setup(isolated)
     path = binding.checkout
-    git(path, "commit", "--allow-empty", "-m", "独有提交")
+    git(path, "commit", "--allow-empty", "-m", "会话分支提交")
     revision = git(path, "rev-parse", "HEAD")
-    (path / "file.txt").unlink()
+    session_store.append(key, "测试问题", "测试回复")
     (path / ".env.local").write_text("LOCAL_ONLY=1\n")
-    (path / "draft").write_text("本地成果")
-    (path / "link").symlink_to("draft")
-    (path / "empty").mkdir()
+    (path / "draft").write_text("可以丢弃的草稿")
+    git(path, "add", "draft")
+    (path / "outside").symlink_to(binding.source, target_is_directory=True)
     clock = [time.time()]
     monkeypatch.setattr(cleanup.time, "time", lambda: clock[0])
     session_store.set_conv_archived(key, True)
-    clock[0] += cleanup.repository_backup.ARCHIVE_AGE - 1
+    clock[0] += 30 * 86400 - 1
     assert not (await cleanup.sweep())[0]["removed"]
     clock[0] += 1
+    preview, = await worktree.preview_session_cleanup(key)
+    assert "不备份" in preview["reason"] and path.exists()
     row, = await cleanup.sweep()
-    assert row["removed"], row
-    assert not path.exists() and (binding.source / "file.txt").exists()
-    backup = Path(row["backup_path"])
-    assert backup.parent == backup_directory
-    receipt = config.DATA_DIR / "repository-backups" / f"{backup.name}.json"
-    assert json.loads(receipt.read_text())["backup_path"] == str(backup)
-    restored = isolated / "restored"
-    git(isolated, "clone", "--no-checkout", "--branch", binding.branch, str(backup / "history.bundle"), str(restored))
-    git(restored, "read-tree", "HEAD")
-    subprocess.run(["tar", "-xpf", str(backup / "files.tar"), "-C", str(restored)], check=True)
-    assert git(restored, "rev-parse", "HEAD") == revision
-    assert "D file.txt" in git(restored, "status", "--porcelain") and not (restored / "file.txt").exists()
-    assert (restored / ".env.local").read_text() == "LOCAL_ONLY=1\n"
-    assert (restored / "link").is_symlink() and (restored / "link").read_text() == "本地成果"
-    assert (restored / "empty").is_dir()
+    assert row["removed"] and "直接回收" in row["reason"], row
+    assert not path.exists()
+    assert not (config.DATA_DIR / "repository-backups").exists()
+    assert session_store.load_recent(key, 1)[0].user == "测试问题"
+    assert (binding.source / "file.txt").read_text() == "原文\n"
+    assert git(binding.source, "rev-parse", binding.branch) == revision
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("failure", [
-    "same_volume", "unmounted", "staged", "open", "changed", "last_git_check", "receipt_denied", "unconfigured",
-])
-async def test_thirty_day_backup_failure_keeps_checkout(isolated, monkeypatch, backup_directory, failure):
-    from vococo.core import repository_backup
-
-    _, key, binding = await setup(isolated)
+@pytest.mark.parametrize("protected", ["open", "restored", "nested_repo", "bare_repo", "legacy", "git_lock", "merge"])
+async def test_thirty_day_recovery_keeps_unsafe_or_reactivated_checkout(isolated, monkeypatch, protected):
+    _, key, binding = await setup(isolated, legacy=protected == "legacy")
     path = binding.checkout
     draft = path / "draft"
-    draft.write_text("保留")
+    draft.write_text("暂不删除")
     session_store.set_conv_archived(key, True)
     now = time.time()
-    monkeypatch.setattr(cleanup.time, "time", lambda: now + repository_backup.ARCHIVE_AGE)
-    if failure == "same_volume":
-        monkeypatch.setattr(repository_backup, "_different_volume", lambda _dest, _path: False)
-    elif failure == "unmounted":
-        monkeypatch.setattr(config, "REPOSITORY_BACKUP_DIR", str(backup_directory / "missing"))
-    elif failure == "staged":
-        git(path, "add", "draft")
-    elif failure == "unconfigured":
-        monkeypatch.setattr(config, "REPOSITORY_BACKUP_DIR", "")
-    elif failure == "changed":
-        snapshot = repository_backup._snapshot
-
-        def changed(source, destination):
-            stamps = snapshot(source, destination)
-            (source / "draft").write_text("最新内容")
-            return stamps
-
-        monkeypatch.setattr(repository_backup, "_snapshot", changed)
-    elif failure == "last_git_check":
-        git_revision = repository_backup._git_revision
-
-        def changed_in_git(source, *args):
-            revision = git_revision(source, *args)
-            if list(backup_directory.glob("vococo-*")):
-                (source / "draft").write_text("最新内容")
-            return revision
-
-        monkeypatch.setattr(repository_backup, "_git_revision", changed_in_git)
-    elif failure == "receipt_denied":
-        (config.DATA_DIR / "repository-backups").mkdir(mode=0o755)
-    if failure == "open":
+    monkeypatch.setattr(cleanup.time, "time", lambda: now + 30 * 86400)
+    if protected == "restored":
+        session_store.set_conv_archived(key, False)
+        assert await cleanup.sweep() == []
+        session_store.set_conv_archived(key, True)
+    elif protected in {"nested_repo", "bare_repo"}:
+        (path / "nested").mkdir()
+        git(path / "nested", "init", *(["--bare"] if protected == "bare_repo" else []))
+    elif protected in {"git_lock", "merge"}:
+        git_dir = Path(git(path, "rev-parse", "--absolute-git-dir"))
+        marker = "index.lock" if protected == "git_lock" else "MERGE_HEAD"
+        (git_dir / marker).write_text(git(path, "rev-parse", "HEAD") + "\n")
+    if protected == "open":
         with draft.open():
             row, = await cleanup.sweep()
     else:
         row, = await cleanup.sweep()
-    assert not row["removed"] and "三十天" in row["reason"], row
-    assert draft.read_text() == ("最新内容" if failure in {"changed", "last_git_check"} else "保留")
-    assert not row.get("backup_path")
-    assert not list(backup_directory.iterdir())
+    assert not row["removed"], row
+    assert draft.read_text() == "暂不删除"
 
 
 @pytest.mark.anyio

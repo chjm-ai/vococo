@@ -1497,7 +1497,7 @@ function dirtyBits(d){
 function archConfirmChoice(bits){
   return new Promise(res=>{
     const m=$("#archModal");
-    $("#archDirty").textContent="该会话的代码还有 "+bits+",归档后 worktree 暂不回收(内容不能丢)。确定归档吗?";
+    $("#archDirty").textContent="此会话还有"+bits+"。归档满 30 天后，符合条件的副本会直接删除，不做备份，未提交内容也会丢失。确定归档吗？";
     const done=v=>{ m.hidden=true; m.onclick=null; res(v); };
     $("#archGo").onclick=()=>done("archive");
     $("#archCancel").onclick=()=>done("cancel");

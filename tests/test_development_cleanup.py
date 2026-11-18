@@ -91,18 +91,18 @@ async def test_new_worktree_requires_full_observed_idle_period(repository):
 
 
 @pytest.mark.anyio
-async def test_development_worktree_backup_starts_at_thirty_days(repository, monkeypatch):
-    from vococo.core import repository_backup
-
+@pytest.mark.parametrize("alternate", [False, True])
+async def test_development_worktree_is_discarded_at_thirty_days(repository, alternate):
     root, clock = repository
-    backup = root.parent / "private-backup"
-    backup.mkdir(mode=0o700)
-    monkeypatch.setattr(config, "REPOSITORY_BACKUP_DIR", str(backup))
-    monkeypatch.setattr(repository_backup, "_different_volume", lambda *_: True)
-    key, path = add_worktree(root)
-    (path / "draft").write_text("本地成果")
+    key, path = add_worktree(root, "test-2" if alternate else "test")
+    if alternate:
+        key = "session:test"
+        session_store.bind_session(key, agent_id="test-owner")
+        session_store.clear_worktree("session:test-2")
+        session_store.set_worktree(key, str(path))
+    (path / "draft").write_text("可丢弃的本地成果")
     session_store.set_conv_archived(key, True)
-    clock[0] += repository_backup.ARCHIVE_AGE - 1
+    clock[0] += 30 * 86400 - 1
     assert not (await cleanup.sweep())[0]["removed"]
     clock[0] += 1
     active_lease = repository_locks.session_digest(key)
@@ -111,21 +111,26 @@ async def test_development_worktree_backup_starts_at_thirty_days(repository, mon
     row, = await cleanup.sweep()
     assert row["removed"], row
     assert not path.exists() and session_store.get_worktree(key) is None
-    assert Path(row["backup_path"]).parent == backup
+    assert (root / "file.txt").read_text() == "原文\n"
+    assert git(root, "branch", "--list", f"vococo/{path.name}")
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("days", [7, 30])
-@pytest.mark.parametrize("metadata", ["draft", "resolve_undo"])
-async def test_checkout_recovery_preserves_private_git_work(repository, monkeypatch, days, metadata):
-    from vococo.core import repository_backup
+async def test_cleanup_rejects_same_device_mount(repository, monkeypatch, days):
+    root, clock = repository
+    _, path = await observe_new(root)
+    clock[0] += days * 86400
+    monkeypatch.setattr(cleanup, "_nested_linux_mount", lambda checkout: checkout == path)
+    row, = await cleanup.sweep()
+    assert not row["removed"] and path.exists(), row
 
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("metadata", ["draft", "resolve_undo"])
+async def test_weekly_checkout_recovery_preserves_private_git_work(repository, metadata):
     root, clock = repository
     key, path = await observe_new(root)
-    backup = root.parent / "private-backup"
-    backup.mkdir(mode=0o700)
-    monkeypatch.setattr(config, "REPOSITORY_BACKUP_DIR", str(backup))
-    monkeypatch.setattr(repository_backup, "_different_volume", lambda *_: True)
     if metadata == "draft":
         git_dir = Path(git(path, "rev-parse", "--absolute-git-dir"))
         (git_dir / "COMMIT_EDITMSG").write_text("提交草稿\n")
@@ -138,11 +143,10 @@ async def test_checkout_recovery_preserves_private_git_work(repository, monkeypa
         git(path, "add", "file.txt")
         assert git(path, "ls-files", "--resolve-undo")
     assert not git(path, "status", "--porcelain")
-    clock[0] += days * 86400
+    clock[0] += 7 * 86400
     row, = await cleanup.sweep()
     assert not row["removed"] and ("提交消息草稿" if metadata == "draft" else "冲突撤销记录") in row["reason"]
     assert path.exists() and session_store.get_worktree(key) == str(path)
-    assert not list(backup.iterdir())
 
 
 @pytest.mark.anyio
@@ -209,10 +213,11 @@ async def test_clean_filter_does_not_make_local_bytes_rebuildable(repository):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("status", ["queued", "done"])
-async def test_review_task_protects_parent_checkout(repository, status):
+@pytest.mark.parametrize("days", [8, 30])
+async def test_review_task_protects_parent_checkout(repository, status, days):
     root, clock = repository
     _, path = await observe_new(root)
-    clock[0] += 8 * 86400
+    clock[0] += days * 86400
     connection = tasks._conn()
     connection.execute(
         "INSERT INTO tasks(id,title,prompt,cwd,status,created_at,updated_at,session_key,review_cwd) "

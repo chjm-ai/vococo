@@ -332,14 +332,14 @@ async def preview_session_cleanup(session_key: str, *, locked_owner: str | None 
     """收尾只预览，删除聊天不代表授权删除代码和本地配置。"""
     from . import repository_cleanup
 
+    policy = "归档满七天回收可重建副本；满三十天后，确认归属且未被占用的副本会直接删除，不备份"
     results = await repository_cleanup.collect_session(session_key, preview=True, locked_owner=locked_owner)
     if archived:
         for row in results:
-            if row["reason"] == repository_cleanup.PREVIEW_REASON:
-                row["reason"] = "归档满七天后由每日巡检复核；通过才回收"
+            row["reason"] = policy if row["reason"] == repository_cleanup.PREVIEW_REASON else f"{row['reason']}；{policy}"
     path = session_store.get_worktree(session_key)
     if path:
-        reason = "归档满七天后由每日巡检复核；通过才回收" if archived else "开发工作树保留，未删除代码"
+        reason = policy if archived else "开发工作树保留，未删除代码"
         results.append({"path": path, "removed": False, "reason": reason})
     return results
 

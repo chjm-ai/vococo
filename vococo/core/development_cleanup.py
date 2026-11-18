@@ -1,4 +1,4 @@
-"""开发工作树巡检：仅回收归档满七天且通过复核的标准工作树。"""
+"""开发工作树巡检：满七天回收可重建副本，满三十天按归属直接回收。"""
 from __future__ import annotations
 
 import asyncio
@@ -19,11 +19,15 @@ import time
 
 from .. import config
 from ..memory import session_store
-from . import repository_backup
 from .repository_locks import checkout_retirement_lease, lease, session_digest
 
 _IDLE_SECONDS = 7 * 86400
+_ARCHIVE_EXPIRY = 30 * 86400
 _STATE_VERSION = 1
+
+
+def archive_expired(archived_at: float | None, now: float) -> bool:
+    return archived_at is not None and math.isfinite(archived_at) and now - archived_at >= _ARCHIVE_EXPIRY
 
 
 def _git(path: Path, *args: str) -> str:
@@ -178,8 +182,7 @@ def _preserve_reason(root: Path, path: Path, branch: str, git_dir: Path) -> str:
         return "Git 操作未结束"
     if any((git_dir / name).exists() for name in ("config.worktree", "info")):
         return "有工作树专属配置或引用"
-    operations = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply")
-    if any((git_dir / name).exists() for name in operations):
+    if _git_operation_pending(git_dir):
         return "合并或变基未结束"
     if _private_metadata(git_dir):
         return "有工作树专属配置或引用"
@@ -197,6 +200,11 @@ def _preserve_reason(root: Path, path: Path, branch: str, git_dir: Path) -> str:
     if _git(path, "ls-files", "--others", "--ignored", "--exclude-standard", "-z"):
         return "有本地配置或其它忽略文件"
     return _history_reason(root, path, branch)
+
+
+def _git_operation_pending(git_dir: Path) -> bool:
+    operations = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply", "sequencer")
+    return any((git_dir / name).exists() or (git_dir / name).is_symlink() for name in operations)
 
 
 def _private_metadata(git_dir: Path) -> bool:
@@ -382,11 +390,12 @@ def _collect(root: Path, path: Path, sessions: list[dict], state: dict, now: flo
             if sessions != _current_sessions(path):
                 result["reason"] = "会话绑定或状态已变化，稍后复查"
                 return result
+            if len(sessions) == 1 and sessions[0]["owner"] and archive_expired(sessions[0]["archived_at"], now):
+                _finish_expired_collection(root, path, sessions, result)
+                return result
             result.update(_inspect(root, path, sessions, state, now))
             if not result["reason"]:
                 _finish_collection(root, path, sessions, state, now, result)
-            if not result["removed"] and not result.get("recovery_path"):
-                _finish_archived_backup(root, path, sessions, now, result)
     except BlockingIOError:
         result["reason"] = "正在执行或初始化"
         if str(path) in state["entries"]:
@@ -409,42 +418,32 @@ def _finish_collection(root: Path, path: Path, sessions: list[dict], state: dict
     _clear_bindings(path, sessions)
 
 
-def _finish_archived_backup(root: Path, path: Path, sessions: list[dict], now: float, result: dict) -> None:
-    if len(sessions) != 1 or not sessions[0]["owner"] or not repository_backup.due(sessions[0]["archived_at"], now):
-        return
+def _finish_expired_collection(root: Path, path: Path, sessions: list[dict], result: dict) -> None:
     from .worktree import _slug
 
     slug = _slug(sessions[0]["key"].split(":")[-1])
-    if path != root / "data" / "worktrees" / session_store.project_hash(str(root)) / slug:
-        result["reason"] += "；归档满三十天，需人工处理"
+    base = root / "data" / "worktrees" / session_store.project_hash(str(root))
+    if path.parent != base or path.name not in {slug, f"{slug}-2"}:
+        result["reason"] = "旧版或非标准路径，仅列清单"
         return
 
-    def check(retired: Path) -> str:
-        if sessions != _current_sessions(path):
+    def check(candidate: Path) -> str:
+        if sessions != _current_sessions(path) or not archive_expired(sessions[0]["archived_at"], time.time()):
             return "会话绑定或归档状态已变化"
         task_reason, _ = _task_state(sessions, path)
         if task_reason or _runtime_busy(sessions):
             return task_reason or "会话或任务正在执行/排队"
-        branch, _ = _validate(root, retired)
-        return "分支不是该会话的标准分支" if branch != f"refs/heads/vococo/{slug}" else ""
+        branch, _ = _validate(root, candidate)
+        return "分支不是该会话的标准分支" if branch not in {
+            f"refs/heads/vococo/{path.name}", f"refs/heads/hermes/{path.name}",
+        } else ""
 
-    _backup_or_retain(root, path, check, result)
+    if reason := check(path):
+        result["reason"] = reason
+        return
+    result.update(_retire(root, path, check, expired=True))
     if result["removed"]:
         _clear_bindings(path, sessions)
-
-
-def _backup_or_retain(root: Path, path: Path, check, result: dict) -> None:
-    previous = result["reason"]
-    if not config.REPOSITORY_BACKUP_DIR:
-        result["reason"] = f"{previous}；归档满三十天，未配置私有异盘备份，需人工处理"
-        return
-    reason = check(path)
-    if reason:
-        result["reason"] = f"{reason}；归档满三十天，本轮保留"
-        return
-    result.update(_retire(root, path, check, backup=True))
-    if not result["removed"]:
-        result["reason"] += "；归档满三十天，需复核后再处理"
 
 
 def _open_handles(path: Path) -> bool:
@@ -486,18 +485,40 @@ def _restore_retired(root: Path, original: Path, retired: Path, result: dict) ->
         result["reason"] += "；未能恢复原路径，成果留在恢复目录，请人工核对"
 
 
-def _check_filesystem(path: Path) -> None:
+def _check_filesystem(path: Path, *, expired: bool = False) -> None:
     device = path.stat().st_dev
+    if os.path.ismount(path) or _nested_linux_mount(path):
+        raise ValueError("工作树包含挂载点")
 
     def raise_error(error):
         raise error
 
     for parent, directories, files in os.walk(path, onerror=raise_error, followlinks=False):
-        for name in directories + files:
-            entry = (Path(parent) / name).lstat()
+        names = directories + files
+        if expired and Path(parent) != path and (
+            any(name.casefold() == ".git" for name in names) or ("HEAD" in files and "objects" in directories)
+        ):
+            raise ValueError("工作树包含独立仓库或子模块")
+        for name in names:
+            child = Path(parent) / name
+            entry = child.lstat()
+            if stat.S_ISDIR(entry.st_mode) and os.path.ismount(child):
+                raise ValueError("工作树包含挂载点")
             if entry.st_dev != device or not (stat.S_ISDIR(entry.st_mode)
                     or stat.S_ISREG(entry.st_mode) or stat.S_ISLNK(entry.st_mode)):
                 raise ValueError("工作树包含挂载点或特殊文件")
+
+
+def _nested_linux_mount(path: Path) -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    # 同设备的 bind mount 不一定能被 st_dev 或 ismount 识别。
+    for line in Path("/proc/self/mountinfo").read_bytes().splitlines():
+        mountpoint = line.split()[4].replace(b"\\040", b" ").replace(b"\\011", b"\t")
+        mountpoint = mountpoint.replace(b"\\012", b"\n").replace(b"\\134", b"\\")
+        if Path(os.fsdecode(mountpoint)).is_relative_to(path):
+            return True
+    return False
 
 
 def _blob_hash(path: Path, mode: str, algorithm: str) -> str:
@@ -546,44 +567,36 @@ def _has_extra_files(path: Path, tracked: set[Path]) -> bool:
     return False
 
 
-def _retire(root: Path, path: Path, check, *, backup: bool = False) -> dict:
+def _retire(root: Path, path: Path, check, *, expired: bool = False) -> dict:
     with checkout_retirement_lease(path):
-        return _retire_locked(root, path, check, backup=backup)
+        return _retire_locked(root, path, check, expired=expired)
 
 
-def _retire_locked(root: Path, path: Path, check, *, backup: bool) -> dict:
+def _retire_locked(root: Path, path: Path, check, *, expired: bool) -> dict:
     # 先原子搬离公开执行路径再检查，避免非强制 Git remove 仍会丢弃临时写入的忽略文件。
     from .repository_recovery import retirement_record
     from .storage_maintenance import _measure
 
     holding = path.with_name(f".retiring-{path.name}-{secrets.token_hex(6)}")
-    retired = holding / "checkout" if backup else holding
+    retired = holding / "checkout" if expired else holding
     result = {"removed": False, "reason": ""}
     created_holding = False
     try:
         if _open_handles(path):
             result["reason"] = "目录仍被其它进程使用"
             return result
-        _check_filesystem(path)
-        if backup:
+        _check_filesystem(path, expired=expired)
+        if expired:
             holding.mkdir(mode=0o700)
             created_holding = True
-            repository_backup.check_holding(holding)
         with retirement_record(path, retired):
             try:
                 _git(root, "worktree", "move", str(path), str(retired))
-                if backup:
-                    _finish_backup_retirement(root, path, retired, check, result, _measure)
-                else:
-                    _finish_retirement(root, retired, check, result, _measure)
-            except repository_backup.BackupUnavailable as exc:
-                result["reason"] = str(exc)
+                _finish_retirement(root, retired, check, result, _measure, expired=expired)
             except Exception as exc:
                 result["reason"] = f"回收检查失败：{type(exc).__name__}"
             finally:
                 _restore_retired(root, path, retired, result)
-    except repository_backup.BackupUnavailable as exc:
-        result["reason"] = str(exc)
     except Exception as exc:
         result["reason"] = f"回收检查失败：{type(exc).__name__}"
     finally:
@@ -602,33 +615,28 @@ def _extended_attributes_reason(path: Path) -> str:
     return ""
 
 
-def _finish_retirement(root, retired, check, result, measure) -> None:
-    _check_filesystem(retired)
+def _finish_retirement(root, retired, check, result, measure, *, expired: bool) -> None:
     size = measure([retired])
+    _check_filesystem(retired, expired=expired)
     if _open_handles(retired):
         result["reason"] = "目录仍被其它进程使用"
         return
-    result["reason"] = _extended_attributes_reason(retired) or _rebuild_reason(retired) or check(retired)
-    if not result["reason"]:
-        _git(root, "worktree", "remove", str(retired))
-        result.update(removed=True, bytes=size)
-
-
-def _finish_backup_retirement(root, original, retired, check, result, measure) -> None:
-    def recheck(path):
-        return "目录仍被其它进程使用" if _open_handles(path) else check(path)
-
-    _check_filesystem(retired)
-    if reason := recheck(retired):
-        result["reason"] = reason
+    if not expired:
+        result["reason"] = _extended_attributes_reason(retired) or _rebuild_reason(retired) or check(retired)
+        if not result["reason"]:
+            _git(root, "worktree", "remove", str(retired))
+            result.update(removed=True, bytes=size)
         return
-    size = measure([retired])
-    branch, git_dir = _validate(root, retired)
-    with repository_backup.verified_copy(root, retired, original, branch, git_dir, recheck) as target:
-        result["backup_path"] = str(target)
-        # 七天路径仍只允许非强制删除；三十天路径要先有异盘验证回执。
-        _git(root, "worktree", "remove", "--force", str(retired))
-        result.update(removed=True, bytes=size, reason="归档满三十天，异盘备份校验通过后回收")
+
+    result["reason"] = check(retired)
+    if result["reason"]:
+        return
+    git_dir = _git_path(retired, "--git-dir")
+    if _git_operation_pending(git_dir) or any(git_dir.glob("*.lock")) or _open_handles(retired):
+        result["reason"] = "目录仍在使用或有未结束的 Git 操作"
+        return
+    _git(root, "worktree", "remove", "--force", str(retired))
+    result.update(removed=True, bytes=size, reason="归档满三十天，已直接回收副本")
 
 
 def _clear_bindings(path: Path, sessions: list[dict]) -> None:
