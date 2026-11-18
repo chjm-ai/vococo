@@ -82,9 +82,9 @@ async def test_new_worktree_requires_full_observed_idle_period(repository):
     clock[0] += 7 * 86400 - 1
     assert not (await cleanup.sweep())[0]["removed"]
     clock[0] += 1
-    assert (await cleanup.sweep())[0]["removed"]
-    assert not path.exists()
-    assert session_store.get_worktree(key) is None
+    assert (await cleanup.sweep())[0]["reason"] == "检查通过，暂只列清单，不自动回收"
+    assert path.exists()
+    assert session_store.get_worktree(key) == str(path)
     assert (root / "file.txt").read_text() == "原文\n"
     assert git(root, "branch", "--list", "vococo/test")
 
@@ -148,7 +148,7 @@ async def test_merged_commit_resets_observation_then_can_be_collected(repository
     clock[0] += 8 * 86400
     assert (await cleanup.sweep())[0]["reason"] == "七天闲置观察期未满"
     clock[0] += 7 * 86400
-    assert (await cleanup.sweep())[0]["removed"]
+    assert (await cleanup.sweep())[0]["reason"] == "检查通过，暂只列清单，不自动回收"
 
 
 @pytest.mark.anyio
@@ -173,7 +173,7 @@ async def test_execution_lease_blocks_then_restarts_idle_observation(repository)
     assert (await cleanup.sweep())[0]["reason"] == "七天闲置观察期未满"
     assert path.exists()
     clock[0] += 7 * 86400
-    assert (await cleanup.sweep())[0]["removed"]
+    assert (await cleanup.sweep())[0]["reason"] == "检查通过，暂只列清单，不自动回收"
 
 
 @pytest.mark.anyio
@@ -307,9 +307,11 @@ async def test_late_ignored_write_during_retirement_is_restored(repository, monk
         if args[:3] == ("worktree", "move", str(path)):
             (path / ".env.local").write_text("PRIVATE_LOCAL_RESULT\n")
         return original_git(cwd, *args)
+    sessions = cleanup._sessions()[str(path)]
+    _, activity = cleanup._task_state(sessions, path)
+    fingerprint = cleanup._fingerprint(path, sessions, activity)
     monkeypatch.setattr(cleanup, "_git", write_during_move)
-    clock[0] += 8 * 86400
-    row = (await cleanup.sweep())[0]
+    row = cleanup._retire(root, path, sessions, fingerprint)
     assert not row["removed"]
     assert "忽略文件" in row["reason"]
     assert (path / ".env.local").read_text() == "PRIVATE_LOCAL_RESULT\n"
@@ -382,13 +384,13 @@ async def test_failed_final_receipt_keeps_actual_removal_result(repository, monk
     calls = []
     def fail_final(state_path, state):
         calls.append(state_path)
-        if len(calls) == 3:
+        if len(calls) == 2:
             raise OSError("PRIVATE_DETAIL")
         original_write(state_path, state)
     monkeypatch.setattr(cleanup, "_write_state", fail_final)
     clock[0] += 8 * 86400
     rows = await cleanup.sweep()
-    assert rows[0]["removed"] and not path.exists()
+    assert not rows[0]["removed"] and path.exists()
     assert "保存失败" in rows[-1]["reason"]
     assert "PRIVATE_DETAIL" not in json.dumps(rows)
 

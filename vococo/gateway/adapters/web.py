@@ -19,12 +19,14 @@ import hashlib
 import functools
 import hmac
 import json
+import logging
 import mimetypes
 import os
 import re
 import time
 import uuid
 from collections import Counter, deque
+from contextlib import nullcontext
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
 from urllib.parse import unquote, urlsplit
@@ -601,12 +603,17 @@ def _json_body(fn):
     return wrapper
 
 
+class SessionClosingError(RuntimeError):
+    pass
+
+
 class WebAdapter:
     platform = "web"
 
     def __init__(self) -> None:
         self._inbox: asyncio.Queue[Incoming] = asyncio.Queue()
         self._queued_sessions: Counter[str] = Counter()
+        self._closing_sessions: dict[str, asyncio.Event] = {}
         # 每个浏览器 SSE 连接一个队列,元素是 (事件编号, JSON 串)
         self._clients: set[asyncio.Queue[tuple[int, str]]] = set()
         self._seq = 0  # 全局单调递增的事件编号
@@ -999,6 +1006,15 @@ class WebAdapter:
         self._inbox.put_nowait(incoming)
         self._queued_sessions[incoming.session_key] += 1
 
+    def session_closing(self, session_key: str) -> bool:
+        return session_key in self._closing_sessions or session_store.is_deleted_web_session(session_key)
+
+    async def wait_session_open(self, session_key: str) -> bool:
+        event = self._closing_sessions.get(session_key)
+        if event is not None:
+            await event.wait()
+        return not self.session_closing(session_key)
+
     def has_queued(self, session_key: str) -> bool:
         return self._queued_sessions[session_key] > 0
 
@@ -1220,14 +1236,22 @@ class WebAdapter:
             _bind_browser_session(config.resolve_session_key("web", conv), ownership, bind=False)
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
-        message = await self._prepare_message(request, body)
-        if isinstance(message, web.Response):
-            return message
-        await self._ingest(
-            conv, message.text, images=message.images, audios=message.audios,
-            files=message.files, videos=message.videos,
-            client_request_id=str(body.get("client_request_id") or ""), ownership=ownership,
-        )
+        async def check_open():
+            if self.session_closing(config.resolve_session_key("web", conv)):
+                raise SessionClosingError("会话正在删除或已删除")
+
+        try:
+            await check_open()
+            message = await self._prepare_message(request, body, before_accept=check_open)
+            if isinstance(message, web.Response):
+                return message
+            await self._ingest(
+                conv, message.text, images=message.images, audios=message.audios,
+                files=message.files, videos=message.videos,
+                client_request_id=str(body.get("client_request_id") or ""), ownership=ownership,
+            )
+        except SessionClosingError:
+            return web.json_response({"error": "会话正在删除或已删除"}, status=409)
         return web.json_response({"ok": True})
 
     async def _prepare_message(self, request: web.Request, body: dict, *, before_accept=None) -> Incoming | web.Response:
@@ -1346,6 +1370,8 @@ class WebAdapter:
         (语音跨端续聊,见 inject()/gateway/web_bridge.py)共用同一份逻辑,保证标题
         占位/项目 touch/用户气泡广播/入队 dispatch 完全一致的行为,不会两边走岔。"""
         session_key = config.resolve_session_key("web", conv)
+        if self.session_closing(session_key):
+            raise SessionClosingError("会话正在删除或已删除")
         _bind_browser_session(session_key, ownership)
         images = images or []
         audios = audios or []
@@ -1397,6 +1423,8 @@ class WebAdapter:
         它们经 web adapter 的路由交给 GatewayRunner._dispatch,与真人发消息同一条
         执行链(锁/审批/clarify/落库一致)。
         同步(只 put_nowait):调用方要「忙碌判定 → 登记 → 投递」无 await 空档地完成。"""
+        if self.session_closing(session_key):
+            raise SessionClosingError("会话正在删除或已删除")
         conv = _conv_id_for_key(session_key)
         self._emit({"conv": conv, "type": "user", "text": text, "images": []})
         self._queue_incoming(Incoming(self.platform, conv, text, source_access=source_access))
@@ -2728,7 +2756,21 @@ class WebAdapter:
     async def _handle_delete(self, request: web.Request) -> web.Response:
         body = await request.json()
         conv = str(body.get("conv") or "")
-        force = bool(body.get("force", False))
+        if not conv or conv == "main":
+            return web.json_response({"ok": True, "cleanup": []})
+        key = config.resolve_session_key("web", conv)
+        if self.session_closing(key):
+            return web.json_response({"ok": False, "error": "会话正在删除或已删除"}, status=409)
+        event = self._closing_sessions[key] = asyncio.Event()
+        try:
+            return await self._delete_session(body)
+        finally:
+            self._closing_sessions.pop(key, None)
+            event.set()
+
+    async def _delete_session(self, body: dict) -> web.Response:
+        conv = str(body.get("conv") or "")
+        cleanup = []
         if conv and conv != "main":
             key = config.resolve_session_key("web", conv)
             from ...cron import scheduler
@@ -2757,22 +2799,29 @@ class WebAdapter:
                 current = bg_tasks.get(task_id)
                 if current and current["status"] not in bg_tasks.TERMINAL_STATUSES:
                     return web.json_response({"ok": False, "error": "任务仍在停止，请稍后再试"}, status=409)
-            from ...core import worktree  # 懒加载
+            from ...core import repository_cleanup, worktree
+            from ...core.repository_locks import lease, session_digest
+            from ...memory import agents
 
-            # 有未提交改动/独立提交:先提示,用户确认(force)后才真删——删 worktree
-            # 会把这些内容一起丢掉,不能无声进行
-            dirty = await worktree.worktree_dirty_summary(key)
-            if dirty and not force:
-                return web.json_response({
-                    "ok": False, "need_confirm": True, "dirty": dirty,
-                    "msg": "该会话的代码有未提交改动或未合并提交,删除会丢这些内容",
-                })
-            await worktree.remove_worktree(key)  # 先清 worktree(删库会抹掉绑定字段)
-            session_store.delete_session(key)
+            try:
+                owner = agents.agent_for_session(key)
+            except ValueError:
+                owner = None
+            owner_id = owner["id"] if owner else None
+            lock = lease(owner_id, session_digest(key), exclusive=True) if owner_id else nullcontext()
+            try:
+                with lock:
+                    # 收尾期间禁止新执行或新建副本；回执写入失败时不删除会话绑定。
+                    cleanup = await worktree.remove_worktree(key, locked_owner=owner_id) or []
+                    await asyncio.to_thread(repository_cleanup.record_retained_session, key, cleanup)
+                    logging.getLogger(__name__).info("会话删除，副本保留：%s %s", key, cleanup)
+                    session_store.delete_session(key, prevent_web_revival=True)
+            except BlockingIOError:
+                return web.json_response({"ok": False, "error": "会话正在执行，请稍后重试"}, status=409)
             from ...tools import danger  # 懒加载:清「本次会话都允许」记忆
 
             danger.clear_session_approvals(key)
-        return web.json_response({"ok": True})
+        return web.json_response({"ok": True, "cleanup": cleanup})
 
     # ── 项目 Git 状态 ────────────────────────────────────────────────────
     def _conv_cwd(self, conv: str) -> str | None:
@@ -2902,14 +2951,15 @@ class WebAdapter:
                 "msg": "该会话的代码有未提交改动或未合并提交,归档后 worktree 暂不回收",
             })
         session_store.set_conv_archived(session_key, True)
-        await worktree.recycle_empty_worktree(session_key)
+        cleanup = await worktree.preview_session_cleanup(session_key)
+        logging.getLogger(__name__).info("会话归档，副本预览：%s %s", session_key, cleanup)
         if dirty:
             return web.json_response({
-                "ok": True, "warning": True, "dirty": dirty,
+                "ok": True, "warning": True, "dirty": dirty, "cleanup": cleanup,
                 "msg": "该会话有未提交改动或未合并提交,worktree 暂未回收(内容不能丢),"
                        "合并后由每日安全巡检判断是否回收",
             })
-        return web.json_response({"ok": True})
+        return web.json_response({"ok": True, "cleanup": cleanup})
 
     @_authed
     @_json_body

@@ -40,6 +40,9 @@ CREATE TRIGGER IF NOT EXISTS delete_turn_artifacts AFTER DELETE ON turns
 BEGIN
   DELETE FROM artifacts WHERE turn_id=OLD.id AND session_key=OLD.session_key;
 END;
+CREATE TABLE IF NOT EXISTS deleted_web_sessions(
+  session_key TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS session_meta(
   session_key TEXT PRIMARY KEY,
   watermark_id INTEGER NOT NULL DEFAULT 0

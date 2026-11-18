@@ -304,7 +304,7 @@ async def recycle_empty_worktree(session_key: str) -> bool:
     """
     from . import repository_cleanup
 
-    results = await repository_cleanup.collect_session(session_key)
+    results = await repository_cleanup.collect_session(session_key, preview=True)
     return any(row["removed"] for row in results)
 
 
@@ -335,27 +335,20 @@ async def worktree_dirty_summary(session_key: str) -> dict | None:
     return {"uncommitted": uncommitted, "untracked": untracked, "commits": commits}
 
 
-async def remove_worktree(session_key: str) -> None:
-    """会话删除时把它的 worktree 清干净:删目录 + 删空分支 + prune 失效登记。
-
-    删目录后,若它绑的 vococo/* 分支没干活(没超前主分支)就一并删掉,不攒悬空分支;
-    有独立提交的分支保留,避免误删工作成果。
-    """
+async def preview_session_cleanup(session_key: str, *, locked_owner: str | None = None) -> list[dict]:
+    """收尾只预览，删除聊天不代表授权删除代码和本地配置。"""
     from . import repository_cleanup
 
-    await repository_cleanup.collect_session(session_key)
+    results = await repository_cleanup.collect_session(session_key, preview=True, locked_owner=locked_owner)
     path = session_store.get_worktree(session_key)
-    if not path:
-        return
-    root = config.execution_project_root_for(session_key)
-    session_store.clear_worktree(session_key)
-    if not (root and os.path.isdir(root)):
-        return
-    branch = await _branch_of_worktree(root, path)  # 删前先拿到分支名
-    await _git(root, "worktree", "remove", "--force", path)
-    await _git(root, "worktree", "prune")
-    if branch.startswith(("vococo/", "hermes/")):  # hermes/ 是改名前存量,同样清
-        await _delete_branch_if_empty(root, branch)
+    if path:
+        results.append({"path": path, "removed": False,
+                        "reason": "开发工作树暂时保留，交安全巡检复核"})
+    return results
+
+
+async def remove_worktree(session_key: str, *, locked_owner: str | None = None) -> list[dict]:
+    return await preview_session_cleanup(session_key, locked_owner=locked_owner)
 
 
 async def prune_orphans() -> int:

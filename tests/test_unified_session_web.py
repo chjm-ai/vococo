@@ -236,7 +236,7 @@ async def test_delete_and_abort_use_task_mapping_and_wait_until_stopped(setup_we
         assert calls == [task["id"], task["id"]]
         assert session_store.session_binding(key)
         tasks.set_status(task["id"], "cancelled")
-        async def clean(_key):
+        async def clean(_key, **_kwargs):
             return None
         monkeypatch.setattr(worktree, "worktree_dirty_summary", clean)
         monkeypatch.setattr(worktree, "remove_worktree", clean)

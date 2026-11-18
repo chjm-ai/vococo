@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import fcntl
 import hashlib
 import json
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -18,8 +20,7 @@ from .repository_locks import lease, session_digest
 
 logger = logging.getLogger(__name__)
 _DAY = 86400
-# 只豁免明确可重建的依赖缓存；其它忽略文件（包括配置）同样算成果。
-_CACHES = {"node_modules", ".venv", ".pytest_cache", "__pycache__"}
+# 忽略目录也可能含手工文件和配置，预览时不能把它们视为可安全删除。
 
 
 def _sessions() -> dict:
@@ -70,7 +71,7 @@ def _preserve_reason(binding: repositories.RepositoryCopy) -> str:
     if repositories._git(path, "status", "--porcelain", "--untracked-files=all"):
         return "有未提交或未跟踪成果"
     ignored = repositories._git(path, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
-    if any(Path(name).parts[0] not in _CACHES for name in ignored.split("\0") if name):
+    if any(ignored.split("\0")):
         return "有本地配置或其它忽略文件"
     if (path / ".git").is_dir():
         own = set(repositories._git(path, "rev-list", "--all", "--reflog").splitlines())
@@ -120,10 +121,13 @@ def _eligible(path: Path, states: dict) -> bool:
     return time.time() - float(marker.read_text()) >= 7 * _DAY
 
 
-def _collect_path(path: Path, *, closing: bool = False) -> dict:
+def _collect_path(path: Path, *, closing: bool = False, preview: bool = False,
+                  locked_owner: str | None = None) -> dict:
     result = {"path": str(path), "removed": False, "reason": ""}
     try:
-        with lease(path.parent.parent.name, path.parent.name, exclusive=True):
+        owner = path.parent.parent.name
+        lock = nullcontext() if owner == locked_owner else lease(owner, path.parent.name, exclusive=True)
+        with lock:
             with session_store._db.read_connection():
                 states = _sessions()
             if not closing and not _eligible(path, states):
@@ -136,8 +140,11 @@ def _collect_path(path: Path, *, closing: bool = False) -> dict:
                 repositories._verify_copy(binding)
                 result["reason"] = _preserve_reason(binding)
                 if not result["reason"]:
-                    _remove(binding)
-                    result["removed"] = True
+                    if preview:
+                        result["reason"] = "初步检查通过，仍需复核进程和文件，暂不回收"
+                    else:
+                        _remove(binding)
+                        result["removed"] = True
     except BlockingIOError:
         result["reason"] = "正在执行或初始化"
     except (OSError, ValueError, RuntimeError) as exc:
@@ -163,7 +170,8 @@ def _candidates(states: dict, only: str | None = None):
             yield path
 
 
-async def collect_session(session_key: str) -> list[dict]:
+async def collect_session(session_key: str, *, preview: bool = False,
+                          locked_owner: str | None = None) -> list[dict]:
     states = _sessions()
     digest = session_digest(session_key)
     # 归档/删除调用属于明确收尾，但不能回收仍在运行或排队的任务。
@@ -173,11 +181,28 @@ async def collect_session(session_key: str) -> list[dict]:
         with tasks.read_connection():
             task = tasks.task_for_session(session_key)
             if task and task["status"] in {"running", "queued"}:
-                return []
+                return [{"path": str(path), "removed": False, "reason": "任务仍在执行或排队"}
+                        for path in _candidates(states, digest)]
     results = []
     for path in list(_candidates(states, digest)):
-        results.append(await asyncio.to_thread(_collect_path, path, closing=True))
+        results.append(await asyncio.to_thread(_collect_path, path, closing=True, preview=preview,
+                                               locked_owner=locked_owner))
     return results
+
+
+def record_retained_session(session_key: str, results: list[dict]) -> None:
+    """删除会话前落盘保留位置，写入失败则调用方不得删除绑定。"""
+    if not results:
+        return
+    path = config.DATA_DIR / "retained-session-copies.jsonl"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        handle.write(json.dumps({"at": time.time(), "session": session_key, "results": results},
+                                ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 async def sweep() -> list[dict]:
@@ -185,7 +210,7 @@ async def sweep() -> list[dict]:
     candidates = await asyncio.to_thread(lambda: list(_candidates(states)))
     results = []
     for path in candidates:
-        results.append(await asyncio.to_thread(_collect_path, path))
+        results.append(await asyncio.to_thread(_collect_path, path, preview=True))
     return results
 
 

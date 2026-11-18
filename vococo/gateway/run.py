@@ -78,13 +78,14 @@ class GatewayRunner:
         时调用方必须拒绝删除，避免 Agent 还在执行工具却被用户误以为已经停止。
         """
         scope = self._cancel_scopes.get(session_key)
-        finished = self._turn_finished.get(session_key)
-        if scope is None or finished is None:
-            return False, True
-        scope.cancel()
+        lock = self._lock_for(session_key)
+        was_running = scope is not None or lock.locked()
+        if scope is not None:
+            scope.cancel()
         with anyio.move_on_after(timeout) as timeout_scope:
-            await finished.wait()
-        return True, not timeout_scope.cancel_called
+            async with lock:
+                pass
+        return was_running, not timeout_scope.cancel_called
 
     def update_model_cache(self, session_key: str, model: str) -> None:
         """同步更新内存中的模型缓存;UI 切模型时由 WebAdapter 回调触发。"""
@@ -126,6 +127,9 @@ class GatewayRunner:
             dispatch.fail_resume(inc.session_key, inc.source_access)
 
     async def _dispatch_one(self, adapter: Adapter, inc: Incoming) -> None:
+        wait_open = getattr(adapter, "wait_session_open", None)
+        if wait_open is not None and not await wait_open(inc.session_key):
+            return
         # clarify 回复必须在【拿锁前】拦截:发起 ask_user 的那一轮还占着会话锁、
         # 阻塞等回答,若这里再去抢同一把锁就死锁。
         automatic = bool((inc.source_access or {}).get("dispatch_resume"))
@@ -133,22 +137,27 @@ class GatewayRunner:
             return
         # 同一会话排队串行(防并发写库/串消息),不同会话并发互不阻塞。
         # 整体 try 兜底:start_soon 的子任务若抛异常会炸掉 nursery。
-        async with self._lock_for(inc.session_key):
-            if automatic:
-                from ..core import dispatch
+        while True:
+            async with self._lock_for(inc.session_key):
+                if not getattr(adapter, "session_closing", lambda _: False)(inc.session_key):
+                    if automatic:
+                        from ..core import dispatch
 
-                if not dispatch.valid_resume(inc.session_key, inc.source_access):
-                    return
-                if clarify.has_pending(inc.session_key) or inc.session_key in clarify._active_sessions:
-                    dispatch.defer_resume(inc.session_key, inc.source_access)
-                    return
-            try:
-                await self._handle(adapter, inc)
-            except Exception as e:
-                try:
-                    await adapter.send(inc.chat_id, f"⚠️ 出错了:{e}")
-                except Exception:
-                    pass
+                        if not dispatch.valid_resume(inc.session_key, inc.source_access):
+                            return
+                        if clarify.has_pending(inc.session_key) or inc.session_key in clarify._active_sessions:
+                            dispatch.defer_resume(inc.session_key, inc.source_access)
+                            return
+                    try:
+                        await self._handle(adapter, inc)
+                    except Exception as e:
+                        try:
+                            await adapter.send(inc.chat_id, f"⚠️ 出错了:{e}")
+                        except Exception:
+                            pass
+                    break
+            if wait_open is None or not await wait_open(inc.session_key):
+                return
         # 自我重启安排在【本轮完整结束、历史已落库】之后:不杀半条消息,
         # 也不自己 spawn 新进程 —— 退出即可,拉起交给 run.sh 守护循环(单实例)
         # 消费 pop 以确保只退出一次(即使有多条后续消息进来也不重复)
