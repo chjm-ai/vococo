@@ -137,6 +137,8 @@ DATA_DIR: Path = _ROOT / "data"
 AGENT_WORKSPACES_DIR: Path = Path(
     os.path.expanduser(os.environ.get("AGENT_WORKSPACES_DIR", "~/vococo-workspaces"))
 )
+# 只接受管理员明确指定的私有异盘目录；不配置就只列出需人工处理的副本。
+REPOSITORY_BACKUP_DIR: str = os.environ.get("REPOSITORY_BACKUP_DIR", "").strip()
 # 用户发的图片落盘目录(Web 端消息里的图片,持久化后刷新页面仍可见)
 IMAGES_DIR: Path = DATA_DIR / "images"
 # 用户发的音频落盘目录(转写后仍保留原文件供回放,见 memory/audio.py)

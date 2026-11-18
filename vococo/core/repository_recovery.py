@@ -49,8 +49,9 @@ def _read_receipt(record: Path) -> dict | None:
     with os.fdopen(descriptor, encoding="utf-8") as handle:
         row = json.loads(handle.read(32768))
     original, retired = Path(row["original"]), Path(row["retired"])
-    if not (original.is_absolute() and retired.parent == original.parent
-            and retired.name.startswith(f".retiring-{original.name}-")):
+    holding = retired.parent if retired.name == "checkout" and retired.parent != original.parent else retired
+    if not (original.is_absolute() and holding.parent == original.parent
+            and holding.name.startswith(f".retiring-{original.name}-")):
         raise ValueError("恢复记录路径不匹配")
     with checkout_retirement_lease(original):
         if not _exists(retired):
