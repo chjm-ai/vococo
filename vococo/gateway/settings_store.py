@@ -404,7 +404,7 @@ _UNSET = object()
 def upsert_web_extra_model(
     model_id: str, label: str, *, group: str = "", provider: str | None = None,
     order: int | None = None, context_window: object = _UNSET,
-    effort_levels: object = _UNSET,
+    effort_levels: object = _UNSET, cli_context_window: object = _UNSET,
 ) -> str | None:
     """新增/编辑模型档位;可选复用已有第三方服务商的连接配置。"""
     if not isinstance(model_id, str) or not model_id.strip():
@@ -419,6 +419,10 @@ def upsert_web_extra_model(
         type(context_window) is not int or context_window <= 0
     ):
         return "上下文窗口必须是正整数或 null"
+    if cli_context_window is not _UNSET and cli_context_window is not None and (
+        type(cli_context_window) is not int or not 100_000 <= cli_context_window <= 1_000_000
+    ):
+        return "Claude Code 窗口上限必须是 100000 到 1000000 的整数或 null"
     if effort_levels is not _UNSET and effort_levels is not None and (
         not isinstance(effort_levels, list)
         or any(not isinstance(level, str) or level not in _WEB_EFFORTS for level in effort_levels)
@@ -447,6 +451,10 @@ def upsert_web_extra_model(
             extra = {"id": model_id}
             d["web_extra_models"].append(extra)
         extra["id"] = model_id
+        if cli_context_window is not _UNSET:
+            extra["cli_context_window"] = cli_context_window
+        elif "provider" in fields and fields["provider"] != extra.get("provider"):
+            extra.pop("cli_context_window", None)
         extra.update(fields)
         _save(d)
     return None

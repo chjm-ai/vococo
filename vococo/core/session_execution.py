@@ -55,10 +55,14 @@ class SharedTurn:
         if not self.alive():
             return
         self.save_session(reply.sdk_session_id)
-        if reply.context_tokens or reply.turn_tokens:
+        if reply.context_tokens or reply.turn_tokens or reply.cli_context_window:
+            is_current_model = session_store.get_chosen_model(self.session_key) == self.chosen_model
             session_store.record_usage(
                 self.session_key, reply.context_tokens, reply.turn_tokens,
-                window=reply.context_window, last_in=reply.input_fresh,
+                window=reply.context_window,
+                cli_window=reply.cli_context_window if is_current_model else 0,
+                compact_threshold=reply.cli_compact_threshold if is_current_model else 0,
+                last_in=reply.input_fresh,
                 last_cache=reply.cache_read, last_out=reply.output_tokens, model=reply.model,
             )
 
@@ -70,7 +74,7 @@ class SharedTurn:
         if isinstance(event, SessionStarted):
             self.save_session(event.session_id)
         elif isinstance(event, ContextUsage):
-            if self.alive():
+            if self.alive() and session_store.get_chosen_model(self.session_key) == self.chosen_model:
                 session_store.update_context(self.session_key, event.tokens, event.window, event.model)
                 await self.send("context_usage")
         elif isinstance(event, TextDelta):

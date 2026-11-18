@@ -175,6 +175,33 @@ async def test_window_change_rebuilds_warm_client(clients, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_cli_window_override_rebuilds_warm_client(clients, monkeypatch, tmp_path):
+    settings = agent.settings_store
+    monkeypatch.setattr(settings, "_PATH", tmp_path / "settings.json")
+    model = "gpt-6.2-sol"
+    settings.upsert_web_provider("codex-gpt", {
+        "base_url": "http://127.0.0.1:8317", "api_key": "test", "model": model,
+    })
+    monkeypatch.setattr(agent.providers, "resolve", lambda *args: (
+        model, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8317", "ANTHROPIC_API_KEY": "test"},
+    ))
+    monkeypatch.setattr(agent.config, "MODEL", model)
+    monkeypatch.setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "1000000")
+    key = "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
+    await _turn()
+    assert clients[0].options.env[key] == ""
+    settings.upsert_web_extra_model(model, "Sol", provider="codex-gpt", cli_context_window=300_000)
+    await _turn(resume="sid-1")
+    assert len(clients) == 2 and clients[0].disconnected
+    assert clients[1].options.env[key] == "300000"
+    assert clients[1].options.extra_args["autocompact"] == "325000"
+    settings.upsert_web_extra_model(model, "Sol", cli_context_window=None)
+    await _turn(resume="sid-1")
+    assert len(clients) == 3 and clients[1].disconnected
+    assert clients[2].options.env[key] == ""
+
+
+@pytest.mark.anyio
 async def test_effort_change_rebuilds_warm_client(clients, monkeypatch):
     """思考深度在 connect 时固定，切换后必须丢弃保温 client，下一轮才会真生效。"""
     await _turn()

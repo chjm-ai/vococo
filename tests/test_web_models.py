@@ -28,6 +28,7 @@ def settings_models_app():
         web.get("/settings", adapter._handle_settings),
         web.get("/models", adapter._handle_models),
         web.post("/settings/model", adapter._handle_settings_model),
+        web.post("/model", adapter._handle_model_switch),
     ])
     return app
 
@@ -273,6 +274,63 @@ async def test_model_configuration_hot_reload_preserves_default(settings_models_
         data = await (await client.get("/models")).json()
         assert model not in {m[0] for m in data["choices"]}
         assert data["default"] == "gpt-6.1-sol"
+
+
+@pytest.mark.anyio
+async def test_model_switch_returns_cleared_cli_limits(settings_models_app, monkeypatch, tmp_path):
+    from vococo import config
+    from vococo.memory import session_store
+
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
+    conv = "switch-cli-limits"
+    key = config.resolve_session_key("web", conv)
+    session_store.set_chosen_model(key, "gpt-6.2-sol")
+    session_store.record_usage(key, 220_416, 128, model="gpt-6.2-sol", window=500_000,
+                               cli_window=300_000, compact_threshold=286_872)
+    async with TestClient(TestServer(settings_models_app)) as client:
+        data = await (await client.post("/model", json={"conv": conv, "model": "kimi-k3"})).json()
+    assert data["ok"] and data["chosen_model"] == "kimi-k3"
+    assert data["ctx_cli_window"] == data["ctx_compact_threshold"] == 0
+
+
+@pytest.mark.anyio
+async def test_cli_context_override_requires_explicit_route_setting(settings_models_app, monkeypatch, tmp_path):
+    from vococo import providers
+
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(settings_store, "list_skills", lambda: [])
+    for name in ("Codex-GPT", "other"):
+        settings_store.upsert_web_provider(name, {
+            "base_url": "http://127.0.0.1:8317", "api_key": "test", "model": "gpt-6.2-sol",
+        })
+    model = "gpt-6.2-sol"
+    settings_store.upsert_web_extra_model(model, "Sol", context_window=1_000_000)
+    assert providers.cli_context_window(model) is None
+    async with TestClient(TestServer(settings_models_app)) as client:
+        for invalid in (True, 99_999, 1_000_001, "300000"):
+            response = await client.post("/settings/model", json={"id": model, "cli_context_window": invalid})
+            assert response.status == 400
+        response = await client.post("/settings/model", json={"id": model, "cli_context_window": 300_000})
+        assert response.status == 200
+        choices = (await (await client.get("/settings")).json())["models"]["choices"]
+        choice = next(row for row in choices if row["id"] == model)
+        assert choice["context_window"] == 1_000_000
+        assert choice["cli_context_window"] == providers.cli_context_window(model) == 300_000
+        settings_store.upsert_web_extra_model(model, "Sol", provider="codex-gpt", cli_context_window=300_000)
+        assert providers.cli_context_window(model) == 300_000
+        settings_store.remove_web_provider("Codex-GPT")
+        assert providers.cli_context_window(model) is None
+        settings_store.upsert_web_provider("relay", {
+            "base_url": "http://127.0.0.1:8317", "api_key": "test", "model": "claude-sonnet-4-6",
+        })
+        response = await client.post("/settings/model", json={
+            "id": "relay/claude-sonnet-4-6", "cli_context_window": 300_000,
+        })
+        assert response.status == 400
+        response = await client.post("/settings/model", json={
+            "id": "claude-sonnet-5-5", "cli_context_window": 1_000_000,
+        })
+        assert response.status == 400
 
 
 @pytest.mark.anyio

@@ -109,6 +109,19 @@ async def test_new_attachments_trigger_preflight_before_old_context_is_full(turn
     assert calls[1]["resume"] == "compacted-sdk"
 
 
+def test_finished_old_model_cannot_restore_cli_limits_after_switch(turn):
+    key, tid = turn
+    session_store.set_chosen_model(key, "gpt-6.2-sol")
+    shared = SharedTurn(key, tid)
+    session_store.set_chosen_model(key, "kimi-k3")
+    shared.record_usage(reply(context_tokens=180_000, turn_tokens=123, cli_context_window=300_000,
+                              cli_compact_threshold=267_000, model="gpt-6.2-sol"))
+    summary = session_store.session_summary(key)
+    assert summary["total_tokens"] == 123
+    assert summary["chosen_model"] == "kimi-k3"
+    assert summary["ctx_cli_window"] == summary["ctx_compact_threshold"] == 0
+
+
 @pytest.mark.anyio
 async def test_deleted_turn_cannot_recreate_sdk_session(turn):
     key, tid = turn

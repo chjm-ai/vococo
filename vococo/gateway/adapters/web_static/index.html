@@ -701,6 +701,7 @@ function setMeta(d){
   d = d || {};
   S.meta = {
     ctx:+d.ctx_tokens||0, total:+d.total_tokens||0, win:+d.ctx_window||CTX_WINDOW,
+    cliWin:+d.ctx_cli_window||0, compact:+d.ctx_compact_threshold||0,
     lin:+d.last_in||0, lc:+d.last_cache||0, lout:+d.last_out||0, model:d.model||"",
     crt:+d.cache_read_total||0, ift:+d.input_fresh_total||0,
   };
@@ -724,7 +725,8 @@ function refillCurrentMeta(){
 }
 function updateUsageMeta(d){
   const meta={};
-  for(const name of ['ctx_tokens','total_tokens','ctx_window','last_in','last_cache','last_out',
+  for(const name of ['ctx_tokens','total_tokens','ctx_window','ctx_cli_window','ctx_compact_threshold',
+                     'last_in','last_cache','last_out',
                      'model','chosen_model','cache_read_total','input_fresh_total']){
     if(name in d) meta[name]=d[name];
   }
@@ -1192,7 +1194,13 @@ function pickModel(id){
   saved.chosen_model=id;
   api("/model", {method:"POST", headers:{"Content-Type":"application/json"},
     body:JSON.stringify({conv:conv, model:id})})
-    .then(async r=>{ if(!r.ok) throw new Error("model switch failed"); saved.default=id; await reloadSavedModels(conv); })
+    .then(async r=>{
+      if(!r.ok) throw new Error("model switch failed");
+      const meta=await r.json();
+      saved.default=id;
+      if(saved.chosen_model===id) updateUsageMeta({...meta, conv});
+      await reloadSavedModels(conv);
+    })
     .catch(()=>{ saved.chosen_model=old; if(conv===permConvId(S.conv)) setModel(old); });
 }
 $("#modelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#modelPop");
@@ -1348,7 +1356,8 @@ function renderMeta(){
   const m=S.meta, bar=$("#barMeta"), pop=$("#ctxPop");
   if(!m || (!m.ctx && !m.total)){ bar.hidden=true; pop.hidden=true; return; }  // 全新会话不显示
   bar.hidden=false;
-  const win=m.win||CTX_WINDOW, pct=Math.min(100, Math.round(m.ctx/win*100)), warn=pct>=80;
+  const win=m.win||CTX_WINDOW, pct=Math.min(100, Math.round(m.ctx/win*100));
+  const warn=m.compact>0 ? m.ctx>=m.compact*0.9 : pct>=80;
   $("#ctxRing").style.strokeDasharray="50.27"; $("#ctxRing").style.strokeDashoffset=String(50.27*(1-pct/100)); $("#ctxPct").textContent=pct+"%";
   bar.classList.toggle("warn", warn); pop.classList.toggle("warn", warn);
   const free=Math.max(0,win-m.ctx), fpct=Math.max(0,100-pct);
@@ -1358,10 +1367,11 @@ function renderMeta(){
   const cid = S.conv || "";
   pop.innerHTML =
     '<div class="convid"><span class="k">会话 ID</span><span class="idv" title="'+esc(cid)+'">'+esc(cid)+'</span><button class="cpy" id="ctxCopyBtn" title="复制 ID">'+ic("copy")+'</button></div>'+
-    '<div class="ph"><span class="t">上下文窗口</span><span class="m">'+fmtTok(m.ctx)+' / '+fmtTok(win)+' <b>'+pct+'%</b></span></div>'+
+    '<div class="ph"><span class="t">'+(m.cliWin?"CLI 生效窗口":"上下文窗口")+'</span><span class="m">'+fmtTok(m.ctx)+' / '+fmtTok(win)+' <b>'+pct+'%</b></span></div>'+
     '<div class="pbar"><i style="width:'+pct+'%"></i></div>'+
     metaRow("已用上下文", fmtTok(m.ctx), pct+"%")+
     metaRow("空闲", fmtTok(free), fpct+"%")+
+    (m.compact ? metaRow("CLI 自动压缩", m.compact<0?"已关闭":fmtTok(m.compact), "") : "")+
     metaRow("本轮新增输入", fmtTok(m.lin), "", "sep")+
     metaRow("其中缓存复用", fmtTok(m.lc), "", "sub")+
     metaRow("本轮输出", fmtTok(m.lout), "")+

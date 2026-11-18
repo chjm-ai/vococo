@@ -375,6 +375,7 @@ function modelConfig(id){
   // 第三方 Claude 的面板 ID 带供应商前缀，编辑时仍须更新原始配置记录。
   return {...custom,...choice,id:configId,label:custom.label??choice.label,
     context_window:Object.hasOwn(custom,"context_window")?custom.context_window:choice.context_window,
+    cli_context_window:choice.cli_context_window,
     effort_levels:Object.hasOwn(custom,"effort_levels")?custom.effort_levels:choice.effort_levels};
 }
 async function modelSettingsRequest(url, body){
@@ -500,6 +501,7 @@ function modelFormHtml(){
     '<div class="fld"><label>供应商'+(cur.builtin?'（内置模型路由不可修改）':'')+'</label><select id="mdProvider"'+(cur.builtin?' disabled':'')+'>'+options+'</select></div>'+
     '<div class="fld"><label>分组内排序（-1000000 到 1000000，越小越靠前）</label><input id="mdOrder" type="number" step="1" value="'+esc(String(cur.order??1000))+'"></div>'+
     '<div class="fld"><label for="mdContext">上下文窗口（留空使用默认）</label><input id="mdContext" type="text" inputmode="numeric" value="'+esc(String(cur.context_window??""))+'"></div>'+
+    '<div class="fld"><label for="mdCliContext">Claude Code 窗口上限（第三方非 Claude；确认路由容量后再填）</label><input id="mdCliContext" type="text" inputmode="numeric" placeholder="留空不覆盖，例如 300000" value="'+esc(String(cur.cli_context_window??""))+'"></div>'+
     '<div class="fld"><label for="mdEfforts">思考档位（逗号分隔，留空使用默认）</label><input id="mdEfforts" placeholder="low,medium,high,xhigh,ultra,max,off" value="'+esc(Array.isArray(cur.effort_levels)?cur.effort_levels.join(","):"")+'"></div>'+
     '<div class="mcperr" id="mdErr" role="status"></div>'+
     '<div class="setrowbtns"><button class="btn primary sm" id="mdSave">保存</button><button class="btn ghost sm" id="mdCancel">取消</button></div>'+
@@ -575,6 +577,8 @@ function bindModelsPane(){
   const mdAdd=$("#mdAddBtn"); if(mdAdd) mdAdd.onclick=()=>{ SET.modelEditing=null; SET.modelFormOpen=true; renderModelsPane(); };
   const mdCancel=$("#mdCancel"); if(mdCancel) mdCancel.onclick=()=>{ SET.modelFormOpen=false; SET.modelEditing=null; renderModelsPane(); };
   const mdSave=$("#mdSave"); if(mdSave) mdSave.onclick=saveModelForm;
+  const mdProvider=$("#mdProvider");
+  if(mdProvider) mdProvider.onchange=()=>{ $("#mdCliContext").value=""; };
   const pvAdd=$("#pvAddBtn"); if(pvAdd) pvAdd.onclick=()=>{ SET.providerEditing=null; SET.providerFormOpen=true; renderModelsPane(); };
   const pvCancel=$("#pvCancel"); if(pvCancel) pvCancel.onclick=()=>{ SET.providerFormOpen=false; SET.providerEditing=null; renderModelsPane(); };
   const pvSave=$("#pvSave"); if(pvSave) pvSave.onclick=saveProviderForm;
@@ -589,13 +593,17 @@ async function saveModelForm(){
   if(contextText && (!/^\d+$/.test(contextText) || !Number.isSafeInteger(context_window) || context_window<=0)){
     err.textContent="上下文窗口必须是正整数，留空使用默认"; return;
   }
+  const cliText=$("#mdCliContext").value.trim(), cli_context_window=cliText?Number(cliText):null;
+  if(cliText && (!/^\d+$/.test(cliText) || cli_context_window<100000 || cli_context_window>1000000)){
+    err.textContent="Claude Code 窗口上限必须是 100000 到 1000000 的整数"; return;
+  }
   const effortText=$("#mdEfforts").value.trim();
   const effort_levels=effortText?effortText.split(",").map(level=>level.trim()):null;
   const allowed=["low","medium","high","xhigh","ultra","max","off"];
   if(effort_levels && (effort_levels.some(level=>!allowed.includes(level)) || new Set(effort_levels).size!==effort_levels.length)){
     err.textContent="思考档位须用英文逗号分隔，且不能重复；支持 low, medium, high, xhigh, ultra, max, off"; return;
   }
-  const body={action:"add", id, label:$("#mdLabel").value.trim(), order, context_window, effort_levels};
+  const body={action:"add", id, label:$("#mdLabel").value.trim(), order, context_window, cli_context_window, effort_levels};
   // 新增表单也可能填入已有内置 ID，不能借此改掉它的路由。
   if(!modelConfig(id).builtin) body.provider=$("#mdProvider").value;
   const btn=$("#mdSave"); btn.disabled=true;

@@ -555,6 +555,7 @@ def new_session(session_key: str) -> None:
         "VALUES (?,?,0,0) "
         "ON CONFLICT(session_key) DO UPDATE SET "
         "watermark_id=excluded.watermark_id, ctx_tokens=0, total_tokens=0, "
+        "ctx_cli_window=0, ctx_compact_threshold=0, "
         "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL, checklist_json=NULL, "
         "cache_read_total=0, input_fresh_total=0",
         (session_key, row[0]),
@@ -570,7 +571,9 @@ def update_context(session_key: str, tokens: int, window: int, model: str) -> No
     c.execute(
         "INSERT INTO session_meta(session_key,watermark_id,ctx_tokens,ctx_window,model) "
         "VALUES (?,0,?,?,?) ON CONFLICT(session_key) DO UPDATE SET "
-        "ctx_tokens=excluded.ctx_tokens,ctx_window=excluded.ctx_window,model=excluded.model",
+        "ctx_tokens=excluded.ctx_tokens,ctx_window=excluded.ctx_window,model=excluded.model, "
+        "ctx_cli_window=CASE WHEN session_meta.model=excluded.model THEN ctx_cli_window ELSE 0 END, "
+        "ctx_compact_threshold=CASE WHEN session_meta.model=excluded.model THEN ctx_compact_threshold ELSE 0 END",
         (session_key, tokens, window, model),
     )
     c.commit()
@@ -582,6 +585,8 @@ def record_usage(
     add_tokens: int,
     *,
     window: int = 0,
+    cli_window: int = 0,
+    compact_threshold: int = 0,
     last_in: int = 0,
     last_cache: int = 0,
     last_out: int = 0,
@@ -599,20 +604,22 @@ def record_usage(
     c.execute(
         "INSERT INTO session_meta"
         "(session_key, watermark_id, ctx_tokens, total_tokens, ctx_window, "
-        " last_in, last_cache, last_out, model, cache_read_total, input_fresh_total) "
-        "VALUES (?,0,?,?,?,?,?,?,?,?,?) "
+        " last_in, last_cache, last_out, model, cache_read_total, input_fresh_total, "
+        " ctx_cli_window, ctx_compact_threshold) "
+        "VALUES (?,0,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(session_key) DO UPDATE SET "
         "ctx_tokens=CASE WHEN excluded.ctx_tokens>0 THEN excluded.ctx_tokens "
         "ELSE session_meta.ctx_tokens END, "
         "total_tokens=COALESCE(session_meta.total_tokens,0)+excluded.total_tokens, "
         "ctx_window=excluded.ctx_window, last_in=excluded.last_in, "
         "last_cache=excluded.last_cache, last_out=excluded.last_out, "
-        "model=excluded.model, "
+        "model=excluded.model, ctx_cli_window=excluded.ctx_cli_window, "
+        "ctx_compact_threshold=excluded.ctx_compact_threshold, "
         "cache_read_total=COALESCE(session_meta.cache_read_total,0)+excluded.cache_read_total, "
         "input_fresh_total=COALESCE(session_meta.input_fresh_total,0)+excluded.input_fresh_total",
         (
             session_key, ctx_tokens, add_tokens, window, last_in, last_cache, last_out, model,
-            last_cache, last_in,
+            last_cache, last_in, cli_window, compact_threshold,
         ),
     )
     c.commit()
@@ -914,7 +921,7 @@ def clear(session_key: str) -> None:
     purge_session_videos(c, session_key)  # 视频同理(体积最大,更不能留孤儿)
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute(
-        "UPDATE session_meta SET ctx_tokens=0, total_tokens=0, "
+        "UPDATE session_meta SET ctx_tokens=0, total_tokens=0, ctx_cli_window=0, ctx_compact_threshold=0, "
         "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL, checklist_json=NULL, "
         "cache_read_total=0, input_fresh_total=0, "
         "external_mcp_names=NULL, auto_external_mcp_names=NULL, auto_external_mcp_at=NULL, "
@@ -1069,7 +1076,8 @@ def list_sessions(prefix: str, *, archived: bool | None = None,
         "  COALESCE(MAX(m.cache_read_total),0), COALESCE(MAX(m.input_fresh_total),0), "
         "  COALESCE(MAX(m.archived),0), "
         "  COALESCE(MAX(m.pending_review),0), COALESCE(MAX(m.pinned),0), "
-        "  COALESCE(MAX(m.last_error),0), MAX(m.title) "
+        "  COALESCE(MAX(m.last_error),0), MAX(m.title), "
+        "  MAX(m.ctx_cli_window), MAX(m.ctx_compact_threshold) "
         "FROM keys k "
         "LEFT JOIN session_meta m ON k.session_key = m.session_key "
         "LEFT JOIN turns t ON t.session_key = k.session_key "
@@ -1081,7 +1089,7 @@ def list_sessions(prefix: str, *, archived: bool | None = None,
     for row in rows:
         key, turns, last_ts = row[0], row[1], row[2]
         item = {"key": key, "title": row[17] or "新对话", "turns": turns, "last_ts": last_ts}
-        item.update(_usage_fields(row[3:13]))
+        item.update(_usage_fields(row[3:13], *row[18:20]))
         item["archived"] = bool(row[13])
         item["pending_review"] = bool(row[14])
         item["pinned"] = bool(row[15])
@@ -1115,7 +1123,7 @@ def find_session(session_key: str) -> dict | None:
     }
 
 
-def _usage_fields(vals) -> dict:
+def _usage_fields(vals, cli_window: int = 0, compact_threshold: int = 0) -> dict:
     """把 (ctx, total, window, last_in, last_cache, last_out, model, chosen_model,
     cache_read_total, input_fresh_total) 组装成统一字段。"""
     ctx, total, window, l_in, l_cache, l_out, model, chosen, cache_read_total, input_fresh_total = vals
@@ -1123,14 +1131,16 @@ def _usage_fields(vals) -> dict:
     # 272k × 95%=258,400。摘要是 Web 进度条唯一数据源，在此归一可立即修正旧
     # 会话显示，不必等下一轮成功请求覆盖数据库残值。
     effective_model = chosen or model or ""
-    if effective_model.lower().startswith("gpt-5.6"):
+    if not cli_window and effective_model.lower().startswith("gpt-5.6"):
         from ..core.agent import effective_context_window
 
         window = effective_context_window(effective_model, model)
     return {
         "ctx_tokens": ctx or 0,
         "total_tokens": total or 0,
-        "ctx_window": window or 0,
+        "ctx_window": cli_window or window or 0,
+        "ctx_cli_window": cli_window or 0,
+        "ctx_compact_threshold": compact_threshold or 0,
         "last_in": l_in or 0,
         "last_cache": l_cache or 0,
         "last_out": l_out or 0,
@@ -1155,7 +1165,8 @@ def session_summary(session_key: str) -> dict:
         "SELECT COALESCE(ctx_tokens,0), COALESCE(total_tokens,0), "
         "COALESCE(ctx_window,0), COALESCE(last_in,0), COALESCE(last_cache,0), "
         "COALESCE(last_out,0), model, chosen_model, "
-        "COALESCE(cache_read_total,0), COALESCE(input_fresh_total,0), COALESCE(pinned,0) "
+        "COALESCE(cache_read_total,0), COALESCE(input_fresh_total,0), COALESCE(pinned,0), "
+        "ctx_cli_window, ctx_compact_threshold "
         "FROM session_meta WHERE session_key=?",
         (session_key,),
     ).fetchone()
@@ -1166,7 +1177,7 @@ def session_summary(session_key: str) -> dict:
         "last_ts": last_ts,
     }
     out["pinned"] = bool(trow[10]) if trow else False
-    out.update(_usage_fields(trow[:10] if trow else (0, 0, 0, 0, 0, 0, "", "", 0, 0)))
+    out.update(_usage_fields(trow[:10], *trow[11:13]) if trow else _usage_fields((0, 0, 0, 0, 0, 0, "", "", 0, 0)))
     out.update(_ownership_fields(session_key))
     return out
 
@@ -1243,7 +1254,8 @@ def set_chosen_model(session_key: str, model: str) -> None:
     if row and row[0] != model:
         # 老会话没记模型时也不能确认旧 transcript 的身份，保守地走历史恢复。
         c.execute(
-            "UPDATE session_meta SET sdk_session_id=NULL WHERE session_key=?",
+            "UPDATE session_meta SET sdk_session_id=NULL, ctx_cli_window=0, "
+            "ctx_compact_threshold=0 WHERE session_key=?",
             (session_key,),
         )
     c.execute(
