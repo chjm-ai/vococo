@@ -154,6 +154,25 @@ async def test_cross_provider_isolated_env(sdk, model, expected, url, key):
     assert parent.model == "gpt-6.1-sol" and parent.env["ANTHROPIC_API_KEY"] == "parent-key"
 
 
+@pytest.mark.parametrize("selection,expected,compact", [
+    (None, "500000", "12345"),
+    ("gpt-6-luna", "400000", "260000"),
+    ("relay/claude-sonnet-5-5", "", "650000"),
+    ("claude-sonnet-5-5", "", "650000"),
+])
+def test_child_cli_window_follows_selected_model(selection, expected, compact):
+    key = "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
+    parent = _parent(extra_args={"autocompact": "12345"})
+    parent.env[key] = "500000"
+    settings_store.upsert_web_extra_model("gpt-6-luna", "Luna", context_window=400_000)
+
+    child = subagent._child_options(parent, selection)
+
+    assert child.env[key] == expected
+    assert child.extra_args["autocompact"] == compact
+    assert parent.env[key] == "500000"
+
+
 def test_child_compact_inherits_frozen_parent_threshold():
     parent = _parent(extra_args={"autocompact": "12345", "other": "keep"})
     settings_store.upsert_web_extra_model("gpt-6.1-sol", "Sol", context_window=400_000)

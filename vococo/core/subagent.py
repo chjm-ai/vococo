@@ -206,7 +206,7 @@ def _child_hooks(parent: ClaudeAgentOptions, tools: list[str], usage: Usage | No
 
 
 def _child_options(parent: ClaudeAgentOptions, selection: str | None, usage: Usage | None = None) -> ClaudeAgentOptions:
-    from .agent import _turn_env, _window_ratio, effective_context_window
+    from .agent import _cli_autocompact_arg, _turn_env, effective_context_window
 
     denied = list(parent.disallowed_tools)
     # 带参数的禁用规则也保守禁掉整个工具，避免自制解析器误放行。
@@ -216,8 +216,12 @@ def _child_options(parent: ClaudeAgentOptions, selection: str | None, usage: Usa
     if isinstance(parent.tools, list):
         tools = [name for name in tools if name in parent.tools]
     model, env, effort = parent.model, dict(parent.env), parent.effort
+    # 未指定模型时继承已冻结的环境与压缩参数。
+    compact = (parent.extra_args or {}).get("autocompact")
     if selection is not None:
         model, provider_env = providers.resolve(selection, config.MODEL)
+        window = effective_context_window(selection, model)
+        compact = _cli_autocompact_arg(window)
         saved = settings_store.get_web_effort(selection)
         effective = saved if saved in providers.effort_levels_for_model(selection) else ""
         body = providers.extra_body_for_model(
@@ -227,18 +231,15 @@ def _child_options(parent: ClaudeAgentOptions, selection: str | None, usage: Usa
         )
         if body and provider_env:
             provider_env = {**provider_env, "CLAUDE_CODE_EXTRA_BODY": body}
-        env = _turn_env(provider_env, no_auto_memory=True,
-                        cli_window=providers.cli_context_window(selection) if provider_env else None)
+        env = _turn_env(provider_env, no_auto_memory=True, model=model, model_window=window)
         # 切模型只重置供应商环境，业务 SSH 的沙箱适配器必须继续继承。
         if "PATH" in parent.env:
             env["PATH"] = parent.env["PATH"]
         # 不继承父进程可能残留的模型特有请求体。
         env.setdefault("CLAUDE_CODE_EXTRA_BODY", "")
         effort = None if providers.extra_body_for_effort(effective) else effective or None
-    # 未指定模型时继承父轮已冻结的阈值，保留父模型选择别名的配置。
-    compact = (parent.extra_args or {}).get("autocompact") if selection is None else None
     if compact is None:
-        compact = str(_window_ratio(effective_context_window(selection, model), 0.65))
+        compact = _cli_autocompact_arg(effective_context_window(selection, model))
     env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     note = (
         "\n你是同步子代理，只完成本次明确交办的任务，最后返回结果。你没有父对话历史。"

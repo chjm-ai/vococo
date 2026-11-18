@@ -238,25 +238,18 @@ def resolve(chosen_model: str | None, default_model: str) -> tuple[str, dict[str
     return selection, {}
 
 
+def model_provider_name(selection: str) -> str:
+    """取当前实际路由的名称；历史会话的供应商可能已经删除。"""
+    try:
+        route = _provider_for_model(selection)
+    except ValueError:
+        return ""
+    return route.name if route and not route.is_official else ""
+
+
 def supports_cli_context_override(model: str) -> bool:
     # CLI 对注册表里的 Claude 优先用原生模型上限，不采用这个环境变量。
     return not model.rsplit("/", 1)[-1].lower().startswith("claude-")
-
-
-def cli_context_window(selection: str) -> int | None:
-    """只把明确填写的窗口交给对应第三方路由，旧显示配置不能自动升档。"""
-    from .gateway import settings_store
-
-    for record in settings_store.list_web_extra_models():
-        value = record.get("cli_context_window")
-        if record.get("id") != selection or type(value) is not int or not 100_000 <= value <= 1_000_000:
-            continue
-        route = _provider_for_model(selection)
-        provider = record.get("provider")
-        if (route and not route.is_official and supports_cli_context_override(route.model)
-                and isinstance(provider, str) and route.name.lower() == provider.lower()):
-            return value
-    return None
 
 
 def sidecar_env(name: str, *, selection_id: bool = False) -> tuple[str, dict[str, str]] | None:
@@ -470,11 +463,14 @@ def model_configuration(model: str, default_choices: list[tuple[str, str]]) -> d
     builtin = model in dict(default_choices) or (
         model in dict(_CODEX_BUILTIN_MODELS) and _codex_proxy_entry(_all_web_providers()) is not None
     )
-    override = cli_context_window(model) if extra.get("cli_context_window") else None
-    return {"provider": found[0] if found else "", "order": _model_order(extra),
+    route_name = found[0] if found else ""
+    bound_name = extra.get("provider")
+    window = extra.get("context_window")
+    if bound_name and (not isinstance(bound_name, str) or bound_name.casefold() != route_name.casefold()):
+        window = None
+    return {"provider": route_name, "order": _model_order(extra),
             "builtin": builtin, "config_id": extra.get("id", model),
-            "context_window": extra.get("context_window"), "effort_levels": extra.get("effort_levels"),
-            **({"cli_context_window": override} if override else {})}
+            "context_window": window, "effort_levels": extra.get("effort_levels")}
 
 
 def validate_model_provider(model: str, provider: str | None, default_choices: list[tuple[str, str]]) -> str | None:

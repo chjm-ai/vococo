@@ -294,43 +294,31 @@ async def test_model_switch_returns_cleared_cli_limits(settings_models_app, monk
 
 
 @pytest.mark.anyio
-async def test_cli_context_override_requires_explicit_route_setting(settings_models_app, monkeypatch, tmp_path):
-    from vococo import providers
+async def test_deprecated_cli_window_is_ignored(settings_models_app, monkeypatch, tmp_path):
+    from vococo.core.agent import effective_context_window
 
-    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "settings.json")
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_store, "_PATH", path)
     monkeypatch.setattr(settings_store, "list_skills", lambda: [])
-    for name in ("Codex-GPT", "other"):
-        settings_store.upsert_web_provider(name, {
-            "base_url": "http://127.0.0.1:8317", "api_key": "test", "model": "gpt-6.2-sol",
-        })
     model = "gpt-6.2-sol"
-    settings_store.upsert_web_extra_model(model, "Sol", context_window=1_000_000)
-    assert providers.cli_context_window(model) is None
+    path.write_text('{"web_extra_models":[{"id":"gpt-6.2-sol","cli_context_window":300000}]}')
+    settings_store.upsert_web_provider("codex-gpt", {
+        "base_url": "http://127.0.0.1:8317", "api_key": "test", "model": model,
+    })
+    assert effective_context_window(model) == 1_000_000
     async with TestClient(TestServer(settings_models_app)) as client:
-        for invalid in (True, 99_999, 1_000_001, "300000"):
-            response = await client.post("/settings/model", json={"id": model, "cli_context_window": invalid})
-            assert response.status == 400
-        response = await client.post("/settings/model", json={"id": model, "cli_context_window": 300_000})
+        models = (await (await client.get("/settings")).json())["models"]
+        assert all("cli_context_window" not in row for row in models["custom"])
+        response = await client.post("/settings/model", json={
+            "id": model, "context_window": 400_000, "cli_context_window": 200_000,
+        })
         assert response.status == 200
-        choices = (await (await client.get("/settings")).json())["models"]["choices"]
-        choice = next(row for row in choices if row["id"] == model)
-        assert choice["context_window"] == 1_000_000
-        assert choice["cli_context_window"] == providers.cli_context_window(model) == 300_000
-        settings_store.upsert_web_extra_model(model, "Sol", provider="codex-gpt", cli_context_window=300_000)
-        assert providers.cli_context_window(model) == 300_000
-        settings_store.remove_web_provider("Codex-GPT")
-        assert providers.cli_context_window(model) is None
-        settings_store.upsert_web_provider("relay", {
-            "base_url": "http://127.0.0.1:8317", "api_key": "test", "model": "claude-sonnet-4-6",
-        })
-        response = await client.post("/settings/model", json={
-            "id": "relay/claude-sonnet-4-6", "cli_context_window": 300_000,
-        })
-        assert response.status == 400
-        response = await client.post("/settings/model", json={
-            "id": "claude-sonnet-5-5", "cli_context_window": 1_000_000,
-        })
-        assert response.status == 400
+        models = (await (await client.get("/settings")).json())["models"]
+        choice = next(row for row in models["choices"] if row["id"] == model)
+        assert all("cli_context_window" not in row for row in models["custom"])
+        assert "cli_context_window" not in path.read_text()
+        assert choice["context_window"] == effective_context_window(model) == 400_000
+        assert "cli_context_window" not in choice
 
 
 @pytest.mark.anyio

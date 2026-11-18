@@ -3171,18 +3171,13 @@ class WebAdapter:
             return str(exc)
         if err:
             return err
-        if body.get("cli_context_window") is not None:
-            if provider is None:
-                provider = providers.model_configuration(model_id, MODEL_CHOICES)["provider"]
-            if not provider or not providers.supports_cli_context_override(model_id):
-                return "Claude Code 窗口上限仅支持第三方非 Claude 模型"
         group = ""
         if provider is not None:
             choice = providers.model_choice_for_provider(model_id, provider)
             group = choice[2] if choice else "anthropic"
         return settings_store.upsert_web_extra_model(
             model_id, body.get("label", ""), provider=provider, group=group, order=body.get("order"),
-            **{key: body[key] for key in ("context_window", "cli_context_window", "effort_levels") if key in body},
+            **{key: body[key] for key in ("context_window", "effort_levels") if key in body},
         )
 
     @_authed
