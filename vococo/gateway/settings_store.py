@@ -395,6 +395,7 @@ def list_web_extra_models() -> list[dict]:
         key = model_record_id(record)
         if key not in result or record.get("id") == key:
             result[key] = {**record, "id": key}
+            result[key].pop("cli_context_window", None)
     return list(result.values())
 
 
@@ -447,6 +448,7 @@ def upsert_web_extra_model(
             extra = {"id": model_id}
             d["web_extra_models"].append(extra)
         extra["id"] = model_id
+        extra.pop("cli_context_window", None)
         extra.update(fields)
         _save(d)
     return None

@@ -450,7 +450,7 @@ def sessions(range_key: str = "30d", limit: int = 200) -> list[dict]:
     for (key, title, model, chosen, tot, cr, fresh, arch, err, sdk, wt, ctx, win) in st.execute(
         "SELECT session_key, title, model, chosen_model, total_tokens, cache_read_total,"
         " input_fresh_total, archived, last_error, sdk_session_id, worktree_path,"
-        " ctx_tokens, ctx_window FROM session_meta"
+        " ctx_tokens, COALESCE(NULLIF(ctx_cli_window,0), ctx_window) FROM session_meta"
     ):
         t = tstat.get(key)
         if not t or (since and t[2] < since):

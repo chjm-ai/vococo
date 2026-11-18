@@ -28,6 +28,7 @@ def settings_models_app():
         web.get("/settings", adapter._handle_settings),
         web.get("/models", adapter._handle_models),
         web.post("/settings/model", adapter._handle_settings_model),
+        web.post("/model", adapter._handle_model_switch),
     ])
     return app
 
@@ -273,6 +274,51 @@ async def test_model_configuration_hot_reload_preserves_default(settings_models_
         data = await (await client.get("/models")).json()
         assert model not in {m[0] for m in data["choices"]}
         assert data["default"] == "gpt-6.1-sol"
+
+
+@pytest.mark.anyio
+async def test_model_switch_returns_cleared_cli_limits(settings_models_app, monkeypatch, tmp_path):
+    from vococo import config
+    from vococo.memory import session_store
+
+    monkeypatch.setattr(settings_store, "_PATH", tmp_path / "web_settings.json")
+    conv = "switch-cli-limits"
+    key = config.resolve_session_key("web", conv)
+    session_store.set_chosen_model(key, "gpt-6.2-sol")
+    session_store.record_usage(key, 220_416, 128, model="gpt-6.2-sol", window=500_000,
+                               cli_window=300_000, compact_threshold=286_872)
+    async with TestClient(TestServer(settings_models_app)) as client:
+        data = await (await client.post("/model", json={"conv": conv, "model": "kimi-k3"})).json()
+    assert data["ok"] and data["chosen_model"] == "kimi-k3"
+    assert data["ctx_cli_window"] == data["ctx_compact_threshold"] == 0
+
+
+@pytest.mark.anyio
+async def test_deprecated_cli_window_is_ignored(settings_models_app, monkeypatch, tmp_path):
+    from vococo.core.agent import effective_context_window
+
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_store, "_PATH", path)
+    monkeypatch.setattr(settings_store, "list_skills", lambda: [])
+    model = "gpt-6.2-sol"
+    path.write_text('{"web_extra_models":[{"id":"gpt-6.2-sol","cli_context_window":300000}]}')
+    settings_store.upsert_web_provider("codex-gpt", {
+        "base_url": "http://127.0.0.1:8317", "api_key": "test", "model": model,
+    })
+    assert effective_context_window(model) == 1_000_000
+    async with TestClient(TestServer(settings_models_app)) as client:
+        models = (await (await client.get("/settings")).json())["models"]
+        assert all("cli_context_window" not in row for row in models["custom"])
+        response = await client.post("/settings/model", json={
+            "id": model, "context_window": 400_000, "cli_context_window": 200_000,
+        })
+        assert response.status == 200
+        models = (await (await client.get("/settings")).json())["models"]
+        choice = next(row for row in models["choices"] if row["id"] == model)
+        assert all("cli_context_window" not in row for row in models["custom"])
+        assert "cli_context_window" not in path.read_text()
+        assert choice["context_window"] == effective_context_window(model) == 400_000
+        assert "cli_context_window" not in choice
 
 
 @pytest.mark.anyio

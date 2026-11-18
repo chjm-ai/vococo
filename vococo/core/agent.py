@@ -278,8 +278,7 @@ class VideoAttachment:
 # 按 200k 保守兜底。
 # gpt-5.6 三档(Sol/Terra/Luna)官方 API 直连可达 1.05M input / 128k output；但当前
 # Codex 本机模型目录均标 272k，并要求预留 5% 自动压缩空间，实际可用 258,400。
-# GPT-6 官方同为 1.05M / 128k；当前代理没有上下文元数据，先按 500k 逐步放量，
-# 自动压缩会在 65%（325k）触发。有超窗错误再回退，实测稳定后再考虑继续提高。
+# GPT-6.2 Sol 按模型表配置 1M；其他 GPT-6 档位仍按 500k 逐步放量。
 _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-fable-5-1": 1_000_000,
     "claude-opus-5-5": 1_000_000,
@@ -290,6 +289,7 @@ _CONTEXT_WINDOWS: dict[str, int] = {
     "deepseek-flash": 1_000_000,
     "deepseek-v4": 1_000_000,
     "kimi-k3": 1_000_000,
+    "gpt-6.2-sol": 1_000_000,
     "gpt-6": 500_000,
     "gpt-5.6": 258_400,
 }
@@ -307,6 +307,7 @@ def context_window(model: str) -> int:
 def configured_context_window(selection: str | None, resolved: str | None = None) -> int | None:
     """按选择 ID 查配置，避免同名 Claude 模型跨供应商串用。"""
     records = settings_store.list_web_extra_models()
+    route_name = None
     for model_id in (selection, resolved):
         if not model_id:
             continue
@@ -320,8 +321,14 @@ def configured_context_window(selection: str | None, resolved: str | None = None
                     continue
             elif selection and "/" in selection and model_id != selection:
                 continue
-            if record_id == model_id or selection == f"{provider}/{record_id}" and provider:
-                return value
+            if record_id != model_id and not (provider and selection == f"{provider}/{record_id}"):
+                continue
+            if provider:
+                if route_name is None:
+                    route_name = providers.model_provider_name(selection or resolved or "").casefold()
+                if not isinstance(provider, str) or provider.casefold() != route_name:
+                    continue
+            return value
     return None
 
 
@@ -334,6 +341,11 @@ def _window_ratio(window: int, ratio: float) -> int:
 
     fraction = Fraction(str(ratio))
     return window * fraction.numerator // fraction.denominator
+
+
+def _cli_autocompact_arg(window: int) -> str:
+    """传给 CLI 的是压缩窗口，CLI 还会按自身上限和余量计算实际阈值。"""
+    return str(min(1_000_000, max(100_000, _window_ratio(window, 0.65))))
 
 
 def _compact_threshold(
@@ -399,6 +411,8 @@ class AgentReply:
     context_tokens: int = 0  # 当前上下文占用(input+cache),≈ 塞进窗口的总量
     turn_tokens: int = 0  # 本轮新增吞吐(input+output),累计即"消耗"
     context_window: int = 200_000  # 该模型的上下文窗口
+    cli_context_window: int = 0  # CLI 实际采用的窗口，可能比模型窗口小
+    cli_compact_threshold: int = 0  # 0=未知，-1=关闭
     input_fresh: int = 0  # 本轮非缓存输入
     cache_read: int = 0  # 本轮缓存命中(便宜的复读)
     output_tokens: int = 0  # 本轮输出
@@ -882,7 +896,9 @@ def _cli_stderr(line: str) -> None:
     print(f"[cli/stderr] {s}", flush=True)
 
 
-def _turn_env(provider_env: dict, no_auto_memory: bool = False) -> dict:
+def _turn_env(
+    provider_env: dict, no_auto_memory: bool = False, *, model: str = "", model_window: int = 0,
+) -> dict:
     """本轮传给 CLI 子进程的 env:设置页供应商 env(base_url+key)叠加恒定的强制前台开关。
 
     切换到官方模型时(provider_env 为空),显式清掉第三方环境变量——否则 CLI 子进程
@@ -902,6 +918,13 @@ def _turn_env(provider_env: dict, no_auto_memory: bool = False) -> dict:
     env = {"DISABLE_PROMPT_CACHING": "", **provider_env, **_FORCE_FOREGROUND_ENV,
            # CLI 对部分第三方模型默认关闭待办；用开关启用，避免 tools 白名单替换默认工具集。
            "CLAUDE_CODE_ENABLE_TASKS": "1", "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}
+    # 显式清空继承值，CLI 窗口覆盖必须跟着供应商和模型走。
+    # 小窗口留给应用层安全网处理，不能传给 CLI 一个小于其内置预留空间的上限。
+    env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = (
+        str(model_window)
+        if provider_env and model_window >= 100_000 and providers.supports_cli_context_override(model)
+        else ""
+    )
     # 项目 Agent 会话:关掉 CLI 的 auto-memory——它按项目目录把整份 AI_BRAIN/MEMORY.md 再注一遍,
     # 我们自己只注入和该 Agent 相关的分节(记忆分区,见 memory/agents.py)
     if no_auto_memory:
@@ -913,6 +936,16 @@ def _turn_env(provider_env: dict, no_auto_memory: bool = False) -> dict:
         if config.OAUTH_TOKEN:
             env["CLAUDE_CODE_OAUTH_TOKEN"] = config.OAUTH_TOKEN
     return env
+
+
+def _cli_context_limits(usage: dict | None) -> tuple[int, int]:
+    if not usage:
+        return 0, 0
+    window = int(usage.get("rawMaxTokens") or usage.get("maxTokens") or 0)
+    threshold = int(usage.get("autoCompactThreshold") or 0)
+    if usage.get("isAutoCompactEnabled") is False:
+        threshold = -1
+    return window, threshold
 
 
 async def _query_context_usage(
@@ -1251,10 +1284,12 @@ async def stream_turn(
     disallowed_tools = list(dict.fromkeys([*(disallowed_tools or []), *chat_denied]))
     subagents = None if isolated or business_policy or unified_dispatch or is_chat else reviewer.definitions(cwd, is_explicit_project)
 
+    turn_env = _turn_env(provider_env, model=resolved_model, model_window=turn_window,
+                         no_auto_memory=isolated or agent_rt.get("memory_sections") is not None)
     pooling = not isolated and bool(session_key) and client_pool.enabled()
     base_key = (
         _compat_base_key(
-            resolved_model, provider_env, sys_prompt, skills, cwd, mcp_on, external_mcp,
+            resolved_model, turn_env, sys_prompt, skills, cwd, mcp_on, external_mcp,
             tuple(sorted((extra_mcp_servers or {}).keys())),
             tuple(sorted(disallowed_tools or ())),
             effective_max_turns,
@@ -1305,22 +1340,14 @@ async def stream_turn(
             cwd=cli_cwd,
             sandbox=execution.sandbox_settings(business_policy) if business_policy else None,
             # 设置页供应商 base_url+key + 恒定强制前台开关(见 _turn_env);项目 Agent 关 CLI auto-memory
-            env=_turn_env(provider_env, no_auto_memory=isolated or agent_rt.get("memory_sections") is not None),
+            env=turn_env.copy(),
             resume=use_resume,  # 非空=SDK 用自己的 transcript 重放真·多轮历史;None=起新会话
             disallowed_tools=list(disallowed_tools or []),
             agents=subagents,
             max_buffer_size=_SDK_MAX_BUFFER_SIZE,
             stderr=_cli_stderr,  # 过滤 Bun 源码刷屏,见 _cli_stderr 顶部注释
-            # CLI 内置 autocompact 按它自己的模型注册表算阈值,对新扩容大窗口模型
-            # (如 opus-4-6 1M)经常没跟上、按旧的小窗口提前触发,跟前端按我们权威表
-            # 算的百分比对不上(2026-09-04 真机案例)。不能直接拉满到 1M 完全关闭——
-            # 那样会丢失 CLI 唯一还在起作用的"轮次内(单次用户请求的多轮工具调用
-            # 循环中途)"压缩检查,我们自己的安全网只在轮次收工后/下一轮开始前才查,
-            # 轮次进行中完全没有保护,一旦本轮工具调用密集就可能在收工前就撞穿真实
-            # 窗口报"prompt too long"硬错误。改成按我们权威表现算阈值(0.65,同安全网
-            # MCP 档更保守的比例)直接告诉 CLI——判断依据换成我们信任的数字,而不是
-            # CLI 自己可能过时的注册表,轮次内检查照样保留。
-            extra_args={"autocompact": str(_window_ratio(turn_window, 0.65))},
+            # 保留轮内压缩保护；进程的模型窗口与压缩参数取同一份配置。
+            extra_args={"autocompact": _cli_autocompact_arg(turn_window)},
             **({"tools": ["WebSearch", "WebFetch"], "setting_sources": [],
                 "strict_mcp_config": True} if isolated else {}),
         )
@@ -1743,6 +1770,7 @@ async def stream_turn(
                 cu, total, ctx_window_val, cli_window_stale = await _query_context_usage(
                     client, used_model, configured_window
                 )
+            cli_context_window, cli_compact_threshold = _cli_context_limits(cu)
             if total:
                 context_tokens = total
 
@@ -1764,9 +1792,10 @@ async def stream_turn(
             ):
                 mcp_tool_calls = sum(1 for n in tool_calls if n.startswith("mcp__"))
                 fallback_ratio = 0.65 if mcp_tool_calls else 0.83
-                official_threshold = int(cu.get("autoCompactThreshold") or 0)
+                official_threshold = max(0, cli_compact_threshold)
                 threshold = _compact_threshold(
-                    ctx_window_val, fallback_ratio, official_threshold, cli_window_stale
+                    ctx_window_val, fallback_ratio, official_threshold,
+                    cli_window_stale and not turn_env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"],
                 )
                 if total and threshold and total >= threshold:
                     try:
@@ -1894,6 +1923,8 @@ async def stream_turn(
                 context_tokens=context_tokens,
                 turn_tokens=turn_tokens,
                 context_window=ctx_window_val,
+                cli_context_window=cli_context_window,
+                cli_compact_threshold=cli_compact_threshold,
                 input_fresh=input_fresh,
                 cache_read=cache_read,
                 output_tokens=output_tokens,

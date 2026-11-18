@@ -334,6 +334,8 @@ class _WebSink(Sink):
                 "ctx_tokens": meta.get("ctx_tokens", 0),
                 "total_tokens": meta.get("total_tokens", 0),
                 "ctx_window": meta.get("ctx_window", 0),
+                "ctx_cli_window": meta.get("ctx_cli_window", 0),
+                "ctx_compact_threshold": meta.get("ctx_compact_threshold", 0),
                 "last_in": meta.get("last_in", 0),
                 "last_cache": meta.get("last_cache", 0),
                 "last_out": meta.get("last_out", 0),
@@ -1444,7 +1446,7 @@ class WebAdapter:
         # 同步更新 GatewayRunner 的内存缓存,否则下一条消息还会用旧模型
         if self._model_switch_callback:
             self._model_switch_callback(session_key, model)
-        return web.json_response({"ok": True})
+        return web.json_response({"ok": True, **session_store.session_summary(session_key)})
 
     async def _summarize_title(
         self, conv: str, session_key: str, text: str, placeholder: str

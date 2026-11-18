@@ -238,6 +238,20 @@ def resolve(chosen_model: str | None, default_model: str) -> tuple[str, dict[str
     return selection, {}
 
 
+def model_provider_name(selection: str) -> str:
+    """取当前实际路由的名称；历史会话的供应商可能已经删除。"""
+    try:
+        route = _provider_for_model(selection)
+    except ValueError:
+        return ""
+    return route.name if route and not route.is_official else ""
+
+
+def supports_cli_context_override(model: str) -> bool:
+    # CLI 对注册表里的 Claude 优先用原生模型上限，不采用这个环境变量。
+    return not model.rsplit("/", 1)[-1].lower().startswith("claude-")
+
+
 def sidecar_env(name: str, *, selection_id: bool = False) -> tuple[str, dict[str, str]] | None:
     """按供应商名取 (model, 注入env),给标题总结这类轻量辅助调用做兜底。
 
@@ -449,9 +463,14 @@ def model_configuration(model: str, default_choices: list[tuple[str, str]]) -> d
     builtin = model in dict(default_choices) or (
         model in dict(_CODEX_BUILTIN_MODELS) and _codex_proxy_entry(_all_web_providers()) is not None
     )
-    return {"provider": found[0] if found else "", "order": _model_order(extra),
+    route_name = found[0] if found else ""
+    bound_name = extra.get("provider")
+    window = extra.get("context_window")
+    if bound_name and (not isinstance(bound_name, str) or bound_name.casefold() != route_name.casefold()):
+        window = None
+    return {"provider": route_name, "order": _model_order(extra),
             "builtin": builtin, "config_id": extra.get("id", model),
-            "context_window": extra.get("context_window"), "effort_levels": extra.get("effort_levels")}
+            "context_window": window, "effort_levels": extra.get("effort_levels")}
 
 
 def validate_model_provider(model: str, provider: str | None, default_choices: list[tuple[str, str]]) -> str | None:
