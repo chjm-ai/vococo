@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .. import config
 from ..memory import session_store
-from . import business_repositories as repositories, development_cleanup
+from . import business_repositories as repositories, development_cleanup, repository_backup
 from .repository_locks import lease, session_digest
 
 logger = logging.getLogger(__name__)
@@ -166,6 +166,8 @@ def _collect_path(path: Path, *, closing: bool = False, preview: bool = False,
                 result["reason"] = _preserve_reason(binding)
                 if not result["reason"]:
                     _finish_collection(binding, states, result, preview=closing or preview)
+                if not (closing or preview or result["removed"] or result.get("recovery_path")):
+                    _finish_archived_backup(binding, states.get(path.parent.name), result)
     except BlockingIOError:
         result["reason"] = "正在执行或初始化"
     except Exception as exc:
@@ -184,6 +186,29 @@ def _finish_collection(binding: repositories.RepositoryCopy, states: dict, resul
     if not result["reason"]:
         result.update(development_cleanup._retire(binding.source, path,
                                                  lambda retired: _retirement_reason(binding, retired)))
+
+
+def _finish_archived_backup(binding: repositories.RepositoryCopy, state: tuple | None, result: dict) -> None:
+    path = binding.checkout
+    if state is None or not repository_backup.due(state[1], time.time()):
+        return
+    with session_store._db.read_connection():
+        reason = _archive_reason(path, state)
+    if reason:
+        result["reason"] = reason + "；归档满三十天，本轮保留"
+        return
+
+    def check(retired: Path) -> str:
+        with session_store._db.read_connection():
+            latest = _sessions().get(path.parent.name)
+            if latest != state:
+                return "会话绑定或归档状态已变化"
+            if reason := _archive_reason(path, latest):
+                return reason
+        repositories._verify_copy(replace(binding, checkout=retired))
+        return ""
+
+    development_cleanup._backup_or_retain(binding.source, path, check, result)
 
 
 def _candidates(states: dict, only: str | None = None):

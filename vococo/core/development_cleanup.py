@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import ExitStack, closing
+from contextlib import ExitStack, closing, suppress
 import fcntl
 import hashlib
 import json
@@ -19,6 +19,7 @@ import time
 
 from .. import config
 from ..memory import session_store
+from . import repository_backup
 from .repository_locks import checkout_retirement_lease, lease, session_digest
 
 _IDLE_SECONDS = 7 * 86400
@@ -182,6 +183,8 @@ def _preserve_reason(root: Path, path: Path, branch: str, git_dir: Path) -> str:
         return "合并或变基未结束"
     if _private_metadata(git_dir):
         return "有工作树专属配置或引用"
+    if reason := _index_metadata_reason(path, git_dir):
+        return reason
     entries = _git(path, "ls-files", "--stage", "-z").split("\0")
     if any(entry.startswith("160000 ") for entry in entries):
         return "含子模块，需人工确认"
@@ -203,6 +206,33 @@ def _private_metadata(git_dir: Path) -> bool:
     if any((git_dir / "refs").rglob("*")):
         return True
     return any(entry.is_symlink() or entry.name != "HEAD" for entry in (git_dir / "logs").glob("*"))
+
+
+def _index_metadata_reason(path: Path, git_dir: Path) -> str:
+    if _git(path, "ls-files", "--resolve-undo", "-z"):
+        return "索引有未保存的冲突撤销记录，需人工处理"
+    try:
+        descriptor = os.open(git_dir / "COMMIT_EDITMSG", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return ""
+    with os.fdopen(descriptor, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
+            return "提交消息草稿无法验证，需人工处理"
+        draft = handle.read(1024 * 1024 + 1).rstrip(b"\n")
+    if draft and not _has_committed_message(path, draft):
+        return "有未保存的提交消息草稿，需人工处理"
+    return ""
+
+
+def _has_committed_message(path: Path, draft: bytes) -> bool:
+    if draft == _git(path, "log", "-1", "--format=%B", "HEAD").encode():
+        return True
+    revisions = _private_commits(path)
+    if not revisions:
+        return False
+    messages = _git(path, "log", "--no-walk", "-z", "--format=tformat:%B", *sorted(revisions))
+    return any(draft == message.encode().rstrip(b"\n") for message in messages.split("\0"))
 
 
 def _history_reason(root: Path, path: Path, branch: str) -> str:
@@ -353,9 +383,10 @@ def _collect(root: Path, path: Path, sessions: list[dict], state: dict, now: flo
                 result["reason"] = "会话绑定或状态已变化，稍后复查"
                 return result
             result.update(_inspect(root, path, sessions, state, now))
-            if result["reason"]:
-                return result
-            _finish_collection(root, path, sessions, state, now, result)
+            if not result["reason"]:
+                _finish_collection(root, path, sessions, state, now, result)
+            if not result["removed"] and not result.get("recovery_path"):
+                _finish_archived_backup(root, path, sessions, now, result)
     except BlockingIOError:
         result["reason"] = "正在执行或初始化"
         if str(path) in state["entries"]:
@@ -376,6 +407,44 @@ def _finish_collection(root: Path, path: Path, sessions: list[dict], state: dict
         state["entries"][str(path)]["idle_since"] = now
         return
     _clear_bindings(path, sessions)
+
+
+def _finish_archived_backup(root: Path, path: Path, sessions: list[dict], now: float, result: dict) -> None:
+    if len(sessions) != 1 or not sessions[0]["owner"] or not repository_backup.due(sessions[0]["archived_at"], now):
+        return
+    from .worktree import _slug
+
+    slug = _slug(sessions[0]["key"].split(":")[-1])
+    if path != root / "data" / "worktrees" / session_store.project_hash(str(root)) / slug:
+        result["reason"] += "；归档满三十天，需人工处理"
+        return
+
+    def check(retired: Path) -> str:
+        if sessions != _current_sessions(path):
+            return "会话绑定或归档状态已变化"
+        task_reason, _ = _task_state(sessions, path)
+        if task_reason or _runtime_busy(sessions):
+            return task_reason or "会话或任务正在执行/排队"
+        branch, _ = _validate(root, retired)
+        return "分支不是该会话的标准分支" if branch != f"refs/heads/vococo/{slug}" else ""
+
+    _backup_or_retain(root, path, check, result)
+    if result["removed"]:
+        _clear_bindings(path, sessions)
+
+
+def _backup_or_retain(root: Path, path: Path, check, result: dict) -> None:
+    previous = result["reason"]
+    if not config.REPOSITORY_BACKUP_DIR:
+        result["reason"] = f"{previous}；归档满三十天，未配置私有异盘备份，需人工处理"
+        return
+    reason = check(path)
+    if reason:
+        result["reason"] = f"{reason}；归档满三十天，本轮保留"
+        return
+    result.update(_retire(root, path, check, backup=True))
+    if not result["removed"]:
+        result["reason"] += "；归档满三十天，需复核后再处理"
 
 
 def _open_handles(path: Path) -> bool:
@@ -477,33 +546,50 @@ def _has_extra_files(path: Path, tracked: set[Path]) -> bool:
     return False
 
 
-def _retire(root: Path, path: Path, check) -> dict:
+def _retire(root: Path, path: Path, check, *, backup: bool = False) -> dict:
     with checkout_retirement_lease(path):
-        return _retire_locked(root, path, check)
+        return _retire_locked(root, path, check, backup=backup)
 
 
-def _retire_locked(root: Path, path: Path, check) -> dict:
+def _retire_locked(root: Path, path: Path, check, *, backup: bool) -> dict:
     # 先原子搬离公开执行路径再检查，避免非强制 Git remove 仍会丢弃临时写入的忽略文件。
     from .repository_recovery import retirement_record
     from .storage_maintenance import _measure
 
-    retired = path.with_name(f".retiring-{path.name}-{secrets.token_hex(6)}")
+    holding = path.with_name(f".retiring-{path.name}-{secrets.token_hex(6)}")
+    retired = holding / "checkout" if backup else holding
     result = {"removed": False, "reason": ""}
+    created_holding = False
     try:
         if _open_handles(path):
             result["reason"] = "目录仍被其它进程使用"
             return result
         _check_filesystem(path)
+        if backup:
+            holding.mkdir(mode=0o700)
+            created_holding = True
+            repository_backup.check_holding(holding)
         with retirement_record(path, retired):
             try:
                 _git(root, "worktree", "move", str(path), str(retired))
-                _finish_retirement(root, retired, check, result, _measure)
+                if backup:
+                    _finish_backup_retirement(root, path, retired, check, result, _measure)
+                else:
+                    _finish_retirement(root, retired, check, result, _measure)
+            except repository_backup.BackupUnavailable as exc:
+                result["reason"] = str(exc)
             except Exception as exc:
                 result["reason"] = f"回收检查失败：{type(exc).__name__}"
             finally:
                 _restore_retired(root, path, retired, result)
+    except repository_backup.BackupUnavailable as exc:
+        result["reason"] = str(exc)
     except Exception as exc:
         result["reason"] = f"回收检查失败：{type(exc).__name__}"
+    finally:
+        if created_holding:
+            with suppress(OSError):
+                holding.rmdir()  # 只移除本轮空壳；恢复失败仍有内容时保留。
     return result
 
 
@@ -526,6 +612,23 @@ def _finish_retirement(root, retired, check, result, measure) -> None:
     if not result["reason"]:
         _git(root, "worktree", "remove", str(retired))
         result.update(removed=True, bytes=size)
+
+
+def _finish_backup_retirement(root, original, retired, check, result, measure) -> None:
+    def recheck(path):
+        return "目录仍被其它进程使用" if _open_handles(path) else check(path)
+
+    _check_filesystem(retired)
+    if reason := recheck(retired):
+        result["reason"] = reason
+        return
+    size = measure([retired])
+    branch, git_dir = _validate(root, retired)
+    with repository_backup.verified_copy(root, retired, original, branch, git_dir, recheck) as target:
+        result["backup_path"] = str(target)
+        # 七天路径仍只允许非强制删除；三十天路径要先有异盘验证回执。
+        _git(root, "worktree", "remove", "--force", str(retired))
+        result.update(removed=True, bytes=size, reason="归档满三十天，异盘备份校验通过后回收")
 
 
 def _clear_bindings(path: Path, sessions: list[dict]) -> None:

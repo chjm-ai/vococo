@@ -91,6 +91,61 @@ async def test_new_worktree_requires_full_observed_idle_period(repository):
 
 
 @pytest.mark.anyio
+async def test_development_worktree_backup_starts_at_thirty_days(repository, monkeypatch):
+    from vococo.core import repository_backup
+
+    root, clock = repository
+    backup = root.parent / "private-backup"
+    backup.mkdir(mode=0o700)
+    monkeypatch.setattr(config, "REPOSITORY_BACKUP_DIR", str(backup))
+    monkeypatch.setattr(repository_backup, "_different_volume", lambda *_: True)
+    key, path = add_worktree(root)
+    (path / "draft").write_text("本地成果")
+    session_store.set_conv_archived(key, True)
+    clock[0] += repository_backup.ARCHIVE_AGE - 1
+    assert not (await cleanup.sweep())[0]["removed"]
+    clock[0] += 1
+    active_lease = repository_locks.session_digest(key)
+    with repository_locks.lease("test-owner", active_lease):
+        assert not (await cleanup.sweep())[0]["removed"]
+    row, = await cleanup.sweep()
+    assert row["removed"], row
+    assert not path.exists() and session_store.get_worktree(key) is None
+    assert Path(row["backup_path"]).parent == backup
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("days", [7, 30])
+@pytest.mark.parametrize("metadata", ["draft", "resolve_undo"])
+async def test_checkout_recovery_preserves_private_git_work(repository, monkeypatch, days, metadata):
+    from vococo.core import repository_backup
+
+    root, clock = repository
+    key, path = await observe_new(root)
+    backup = root.parent / "private-backup"
+    backup.mkdir(mode=0o700)
+    monkeypatch.setattr(config, "REPOSITORY_BACKUP_DIR", str(backup))
+    monkeypatch.setattr(repository_backup, "_different_volume", lambda *_: True)
+    if metadata == "draft":
+        git_dir = Path(git(path, "rev-parse", "--absolute-git-dir"))
+        (git_dir / "COMMIT_EDITMSG").write_text("提交草稿\n")
+    else:
+        oid = git(path, "rev-parse", "HEAD:file.txt")
+        index_info = f"0 {'0' * len(oid)}\tfile.txt\n" + "".join(
+            f"100644 {oid} {stage}\tfile.txt\n" for stage in (1, 2, 3)
+        )
+        subprocess.run(["git", "-C", str(path), "update-index", "--index-info"], input=index_info, text=True, check=True)
+        git(path, "add", "file.txt")
+        assert git(path, "ls-files", "--resolve-undo")
+    assert not git(path, "status", "--porcelain")
+    clock[0] += days * 86400
+    row, = await cleanup.sweep()
+    assert not row["removed"] and ("提交消息草稿" if metadata == "draft" else "冲突撤销记录") in row["reason"]
+    assert path.exists() and session_store.get_worktree(key) == str(path)
+    assert not list(backup.iterdir())
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("explicit_task", [False, True])
 async def test_web_branch_recreates_retired_development_worktree(repository, monkeypatch, explicit_task):
     from aiohttp import web
