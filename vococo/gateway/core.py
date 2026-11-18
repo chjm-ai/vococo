@@ -31,6 +31,7 @@ from ..core.agent import (
     stream_turn,
 )
 
+from ..core.repository_locks import checkout_lease, session_lease
 from ..core.session_execution import SharedTurn, stream_run
 from ..memory import session_store
 from .. import providers
@@ -265,11 +266,15 @@ async def converse(
 
     task_id = tasks.task_id_from_session_key(session_key) if not compact else None
     interrupt = not sessions.is_queued_instruction(session_key, user_text)
-    async with task_runner.foreground_execution(task_id, interrupt=interrupt):
-        return await _converse(
-            session_key, user_text, model, sink, images, audios, files, videos,
-            store_user, cwd_override, is_explicit_project_override, compact, source_access,
-        )
+    async with session_lease(session_key), checkout_lease(cwd_override):
+        if session_store.is_deleted_web_session(session_key):
+            return None
+        session_store.set_conv_archived(session_key, False)
+        async with task_runner.foreground_execution(task_id, interrupt=interrupt):
+            return await _converse(
+                session_key, user_text, model, sink, images, audios, files, videos,
+                store_user, cwd_override, is_explicit_project_override, compact, source_access,
+            )
 
 
 async def _converse(

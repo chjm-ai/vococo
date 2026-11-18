@@ -1329,6 +1329,7 @@ def delete_session(session_key: str, *, prevent_web_revival: bool = False) -> No
     purge_session_videos(c, session_key)  # 视频同理(体积最大,更不能留孤儿)
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute("DELETE FROM session_meta WHERE session_key=?", (session_key,))
+    c.execute("DELETE FROM session_archive_times WHERE session_key=?", (session_key,))
     if prevent_web_revival:
         c.execute("INSERT OR IGNORE INTO deleted_web_sessions(session_key) VALUES (?)", (session_key,))
     c.commit()
@@ -1342,4 +1343,9 @@ def set_conv_archived(session_key: str, archived: bool) -> None:
         "ON CONFLICT(session_key) DO UPDATE SET archived=excluded.archived",
         (session_key, 1 if archived else 0),
     )
+    if archived:
+        c.execute("INSERT OR IGNORE INTO session_archive_times(session_key, archived_at) VALUES (?,?)",
+                  (session_key, time.time()))
+    else:
+        c.execute("DELETE FROM session_archive_times WHERE session_key=?", (session_key,))
     c.commit()

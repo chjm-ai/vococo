@@ -100,7 +100,7 @@ async def test_deleted_owner_cannot_run_stale_job_or_resume_queue(owner, monkeyp
     assert tasks.get(queued["id"])["status"] == "cancelled"
     with pytest.raises(ValueError, match="Agent"):
         scheduler._run_job(job, None)
-    assert not task_runner._start_one(tasks.get(queued["id"]))
+    assert not await task_runner._start_one(tasks.get(queued["id"]))
 
 
 @pytest.mark.anyio

@@ -16,6 +16,7 @@ worktree、resume、通知这些主体逻辑完全共用,不因触发方分叉�
 from __future__ import annotations
 
 import asyncio
+import os
 import contextvars
 from contextlib import asynccontextmanager
 
@@ -29,6 +30,7 @@ from .. import config, providers
 from ..memory import session_store
 from ..tools import danger
 from . import delegation, research, task_events, tasks, worktree
+from .repository_locks import checkout_lease, session_lease
 from .agent import (
     AgentReply,
     BudgetWarning,
@@ -156,7 +158,7 @@ def _owner_available(task: dict) -> bool:
     return not agent_id or agents.get(agent_id) is not None
 
 
-def _start_one(task: dict, turn_text: str | None = None, *, fresh: bool = False) -> bool:
+async def _start_one(task: dict, turn_text: str | None = None, *, fresh: bool = False) -> bool:
     """内部:立刻起跑一条任务(跳过排队队列),用于首次派发之外的重开场景
     (追问/cron 再次触发打断续接 / 原地续聊)。turn_text 非空时作为这一轮实际发给
     模型的文本(而不是 row['prompt']),配合 resume 续同一条 SDK 会话。
@@ -169,15 +171,14 @@ def _start_one(task: dict, turn_text: str | None = None, *, fresh: bool = False)
         return False
     if task.get("kind") == "research":
         return False
-    if not tasks.set_status(task_id, "running"):
-        return False
-    # 任务重新激活(追问/续接/cron 再次触发)时自动取消归档——归档只在任务静默时
-    # 才有意义,重新开跑必须回到侧边栏可见,否则前端「工作中」过滤会藏掉它
-    # (见 web_static/sidebar.js buildVoiceTaskRow 的 convFilter 判定)。
-    if not tasks.is_inline_research(task):
-        session_store.set_conv_archived(tasks.session_key(task_id), False)
-    _notify_activity(task_id)
-    _running[task_id] = _spawn(task_id, turn_text, fresh=True) if fresh else _spawn(task_id, turn_text)
+    key = tasks.session_key(task_id)
+    async with session_lease(key):
+        if session_store.is_deleted_web_session(key) or not tasks.set_status(task_id, "running"):
+            return False
+        if not tasks.is_inline_research(task):
+            session_store.set_conv_archived(key, False)
+        _notify_activity(task_id)
+        _running[task_id] = _spawn(task_id, turn_text, fresh=True) if fresh else _spawn(task_id, turn_text)
     return True
 
 
@@ -185,8 +186,6 @@ def start_claimed(task: dict, turn_text: str) -> None:
     """启动已由调用方原子抢占为 running 的任务，启动失败时释放并发槽。"""
     task_id = task["id"]
     try:
-        if not tasks.is_inline_research(task):
-            session_store.set_conv_archived(tasks.session_key(task_id), False)
         _notify_activity(task_id)
         _running[task_id] = _spawn(task_id, turn_text)
     except Exception:
@@ -390,6 +389,17 @@ def _timeout_min(row: dict) -> int:
 
 
 async def _run(task_id: str, turn_text: str | None = None, *, fresh: bool = False) -> None:
+    key = tasks.session_key(task_id)
+    row = tasks.get(task_id) or {}
+    review_cwd = row.get("review_cwd") if row.get("execution_profile") == "review" else None
+    async with session_lease(key), checkout_lease(review_cwd):
+        if review_cwd and not os.path.isdir(review_cwd):
+            raise ValueError("待评审的工作树已不可用")
+        if not session_store.is_deleted_web_session(key):
+            await _run_with_workspace(task_id, turn_text, fresh=fresh)
+
+
+async def _run_with_workspace(task_id: str, turn_text: str | None, *, fresh: bool) -> None:
     """跑一个任务的一轮对话。turn_text 为 None(首次派发)用 row['prompt'];
     非 None(追问/cron 再次触发)则是这一轮实际发给模型的文本——历史靠 resume 接,
     不用每次都把全部历史重新拼进 prompt(见 append())。"""
@@ -400,11 +410,13 @@ async def _run(task_id: str, turn_text: str | None = None, *, fresh: bool = Fals
         return
     if row.get("kind") == "research":
         raise RuntimeError("原生深度研究已移除，历史研究只支持查看")
+    session_key = tasks.session_key(task_id)
+    if not tasks.is_inline_research(row):
+        session_store.set_conv_archived(session_key, False)
     prompt_text = turn_text if turn_text is not None else row["prompt"]
     # 派发的这一轮对话也落进跟普通文字对话共用的 session_store(不只是 voice.db 里的
     # result_full 摘要)——这样任务完成后用户能在侧边栏"后台任务"分组里看到完整对话,
     # 并且能继续用文字追问(续聊直接走 web 发消息路径的 converse(),见 web.py)。
-    session_key = tasks.session_key(task_id)
     turn_id = session_store.start_turn(
         session_key, prompt_text, source_access=tasks.automatic_access(row))
     from . import dispatch as dispatching
@@ -777,7 +789,7 @@ async def append(task_id: str, instruction: str, *, fresh: bool = False) -> dict
 
     if row["status"] == "running":
         await cancel_and_wait(task_id)  # 等 _run 真正收尾(sdk_session_id 已提前存好)
-        started = _start_one(tasks.get(task_id), turn_text=instruction, fresh=fresh)
+        started = await _start_one(tasks.get(task_id), turn_text=instruction, fresh=fresh)
         if not started:
             return {"ok": False, "message": "任务状态被别处改过,追加失败",
                     "task": tasks.get(task_id)}
@@ -786,7 +798,7 @@ async def append(task_id: str, instruction: str, *, fresh: bool = False) -> dict
                 "task": tasks.get(task_id)}
 
     # 终态:done / failed / cancelled —— 原地续聊
-    started = _start_one(row, turn_text=instruction, fresh=fresh)
+    started = await _start_one(row, turn_text=instruction, fresh=fresh)
     if not started:
         return {"ok": False, "message": "任务状态被别处改过,追加失败",
                 "task": tasks.get(task_id)}

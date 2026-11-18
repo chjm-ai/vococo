@@ -90,7 +90,7 @@ async def test_task_from_plain_session_is_owned_by_general_agent(env, monkeypatc
         if src is None:
             # 无来源也无项目目录，直接验证新任务的默认归属。
             t = bg_tasks.create(title="x", prompt="y", origin="chat")
-            assert task_runner._start_one(t)
+            assert await task_runner._start_one(t)
         else:
             t = task_runner.dispatch(title="x", prompt="y", origin="chat", context_session_key=src)
         assert t["agent_id"] == agents.GENERAL_ID
