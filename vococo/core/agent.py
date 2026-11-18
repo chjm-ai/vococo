@@ -278,7 +278,7 @@ class VideoAttachment:
 # 按 200k 保守兜底。
 # gpt-5.6 三档(Sol/Terra/Luna)官方 API 直连可达 1.05M input / 128k output；但当前
 # Codex 本机模型目录均标 272k，并要求预留 5% 自动压缩空间，实际可用 258,400。
-# GPT-6.2 Sol 按模型表配置 1M；其他 GPT-6 档位仍按 500k 逐步放量。
+# GPT-6.2 Astra / Sol 按模型表配置 1M；其他 GPT-6 档位仍按 500k 逐步放量。
 _CONTEXT_WINDOWS: dict[str, int] = {
     "claude-fable-5-1": 1_000_000,
     "claude-opus-5-5": 1_000_000,
@@ -289,6 +289,7 @@ _CONTEXT_WINDOWS: dict[str, int] = {
     "deepseek-flash": 1_000_000,
     "deepseek-v4": 1_000_000,
     "kimi-k3": 1_000_000,
+    "gpt-6.2-astra": 1_000_000,
     "gpt-6.2-sol": 1_000_000,
     "gpt-6": 500_000,
     "gpt-5.6": 258_400,
