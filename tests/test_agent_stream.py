@@ -194,10 +194,11 @@ def test_context_window_gpt6_uses_staged_500k_limit():
     assert context_window("gpt-60-small") == 200_000
 
 
-def test_context_window_gpt62_sol_matches_model_table():
-    assert context_window("gpt-6.2-sol") == 1_000_000
-    assert context_window("gpt-6.2-sol-2026-11-18") == 1_000_000
-    assert context_window("gpt-6.2-solstice") == 500_000
+@pytest.mark.parametrize("model", ["gpt-6.2-astra", "gpt-6.2-sol"])
+def test_context_window_gpt62_matches_model_table(model):
+    assert context_window(model) == 1_000_000
+    assert context_window(f"{model}-2026-11-18") == 1_000_000
+    assert context_window(f"{model}x") == 500_000
 
 
 @pytest.mark.parametrize("window,arg", [(50_000, "100000"), (200_000, "130000"), (2_000_000, "1000000")])
