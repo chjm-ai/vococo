@@ -1456,15 +1456,18 @@ async function toggleArchive(conv){
       const r2=await api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({conv,archived:true,force:true})});
       const j2=await r2.json().catch(()=>({}));
-      if(j2 && j2.warning){
-        alert("已归档成功。该会话的代码还有"+dirtyBits(j2.dirty||{})+",worktree 暂未回收(内容不能丢)。\n\n合并或提交后再次归档即可回收。");
+      if(j2 && Array.isArray(j2.cleanup) && j2.cleanup.length){
+        alert("已归档，以下副本暂时保留：\n"+j2.cleanup.map(x=>x.path+"："+x.reason).join("\n"));
+      }else if(j2 && j2.warning){
+        alert("已归档，代码尚有 "+dirtyBits(j2.dirty||{})+"，副本暂时保留。");
       }
       if(next && c.pinned) pinConv(conv, false);
       return;
     }
-    if(j && j.warning){
-      // worktree 有未提交改动/未合并提交,归档了但没回收——告诉用户为什么
-      alert("已归档成功。该会话的代码还有"+dirtyBits(j.dirty||{})+",worktree 暂未回收(内容不能丢)。\n\n合并或提交后再次归档即可回收。");
+    if(next && j && Array.isArray(j.cleanup) && j.cleanup.length){
+      alert("已归档，以下副本暂时保留：\n"+j.cleanup.map(x=>x.path+"："+x.reason).join("\n"));
+    }else if(j && j.warning){
+      alert("已归档，代码尚有 "+dirtyBits(j.dirty||{})+"，副本暂时保留。");
     }
   }catch(err){ c.archived=!next; renderConvs(); return; }
   // 从历史搜索打开的归档会话不在当前「工作中」筛选数据里；取消归档成功后需重拉，

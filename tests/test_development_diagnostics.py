@@ -250,6 +250,27 @@ def test_capacity_raised_growth_thresholds(environment, monkeypatch, old_mib, ne
     assert bool(diag._capacity_issues(report, now, root)) == alarmed
 
 
+def test_long_term_growth_informs_prediction_after_one_flat_day(environment, monkeypatch):
+    root, _ = environment
+    fake_disk(monkeypatch, 35 * _GIB)
+    now = time.time()
+    report = {"at": now, "sizes": {"工作树": 23 * _GIB}, "limits": {"工作树": 2048 * _MIB},
+              "samples": [{"at": now - 30 * 86400, "sizes": {"工作树": 20 * _GIB}},
+                          {"at": now - 86400, "sizes": {"工作树": 23 * _GIB}}]}
+    assert any("占用较大" in issue for issue in diag._capacity_issues(report, now, root))
+
+
+def test_weekly_growth_informs_prediction_when_other_windows_are_flat(environment, monkeypatch):
+    root, _ = environment
+    fake_disk(monkeypatch, 35 * _GIB)
+    now = time.time()
+    report = {"at": now, "sizes": {"工作树": 23 * _GIB}, "limits": {"工作树": 2048 * _MIB},
+              "samples": [{"at": now - 30 * 86400, "sizes": {"工作树": 23 * _GIB}},
+                          {"at": now - 7 * 86400, "sizes": {"工作树": 20 * _GIB}},
+                          {"at": now - 86400, "sizes": {"工作树": 23 * _GIB}}]}
+    assert any("占用较大" in issue for issue in diag._capacity_issues(report, now, root))
+
+
 def test_legacy_inventory_is_counted_without_listing_identifiers(environment):
     _, data = environment
     rows = [{"path": f"/PRIVATE/path/{index}", "reason": "旧存量仅列清单；有本地配置"} for index in range(25)]
@@ -357,6 +378,48 @@ def test_entrypoint_emits_exactly_one_signal_and_does_not_modify_receipts(enviro
     diag.main()
     assert capsys.readouterr().out == "##CRON_SIGNAL:0##\n"
     assert before == {name: (data / name).read_bytes() for name in names}
+
+
+def test_growth_dedup_keeps_issues_for_notice_and_repeats_on_new_sample(environment, monkeypatch, capsys):
+    root, data = environment
+    growth = "工作树增长偏快：11-14 07:45 至 11-17 14:21 新增 4582 MiB；需人工审核"
+    issues = diag.Issues()
+    issues.add(growth, "容量")
+    seen = []
+    monkeypatch.setattr(diag, "diagnose", lambda *a, **kw: issues)
+    monkeypatch.setattr(diag, "reconcile", lambda rows, *a: seen.append(list(rows)) or [])
+    monkeypatch.setattr(sys, "argv", ["diagnose_development.py", "--root", str(root),
+                                  "--data-dir", str(data), "--notify-agent", "general"])
+    diag.main()
+    assert growth in capsys.readouterr().out
+    diag.main()
+    assert capsys.readouterr().out == "##CRON_SIGNAL:0##\n"
+    assert seen == [[growth], [growth]]
+    monkeypatch.setattr(sys, "argv", ["diagnose_development.py", "--root", str(root),
+                                  "--data-dir", str(data), "--notify-agent", "other"])
+    diag.main()
+    assert growth in capsys.readouterr().out
+    report_path = data / "storage-maintenance.json"
+    report = json.loads(report_path.read_text())
+    report["at"] += 1
+    report_path.write_text(json.dumps(report))
+    diag.main()
+    assert growth in capsys.readouterr().out
+
+
+def test_growth_notice_failure_does_not_suppress_retry(environment, monkeypatch, capsys):
+    root, data = environment
+    issues = diag.Issues()
+    issues.add("工作树增长偏快：一段增长", "容量")
+    monkeypatch.setattr(diag, "diagnose", lambda *a, **kw: issues)
+    monkeypatch.setattr(sys, "argv", ["diagnose_development.py", "--root", str(root),
+                                  "--data-dir", str(data), "--notify-agent", "general"])
+    monkeypatch.setattr(diag, "reconcile", lambda *a: (_ for _ in ()).throw(ValueError()))
+    diag.main()
+    assert "诊断通知登记失败" in capsys.readouterr().out
+    monkeypatch.setattr(diag, "reconcile", lambda *a: [])
+    diag.main()
+    assert "工作树增长偏快" in capsys.readouterr().out
 
 
 def test_machine_disk_and_load_thresholds_are_numeric_only(tmp_path, monkeypatch):

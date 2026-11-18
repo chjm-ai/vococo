@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+import fcntl
 import hashlib
 import json
 import os
@@ -191,18 +192,41 @@ def _capacity_issues(report: dict, now: float, root: Path) -> list[str]:
         size = sum(sizes[name] for name in members)
         limit = max(sum(limits.get(name, 0) for name in members) or 2048 * _MIB, 256 * _MIB)
         daily = 0
-        # 以回执本身的采样为准：拿最早的一份（最多 30 天前）对比，慢增长才看得出趋势。
+        # 用实际采样时间，而不是诊断运行时间，避免旧回执每天多算一天。
+        sampled_at = report.get("at", now)
         previous = [row for row in samples
-                    if 20 * 3600 <= now - row["at"] <= 31 * 86400
+                    if 20 * 3600 <= sampled_at - row["at"] <= 31 * 86400
                     and all(name in row["sizes"] for name in members)]
         if previous:
-            old = previous[0]
+            old = max(previous, key=lambda row: row["at"])
             old_size = sum(old["sizes"][name] for name in members)
             growth = size - old_size
-            days = (now - old["at"]) / 86400
+            days = (sampled_at - old["at"]) / 86400
             if growth >= _GIB and growth >= old_size * 0.5:
-                issues.append(f"{label}增长偏快：近 {days:.1f} 天新增 {growth / _MIB:.0f} MiB；需人工审核")
+                start = time.strftime("%m-%d %H:%M", time.localtime(old["at"]))
+                end = time.strftime("%m-%d %H:%M", time.localtime(sampled_at))
+                issues.append(f"{label}增长偏快：{start} 至 {end} 新增 {growth / _MIB:.0f} MiB；需人工审核")
             daily = growth / days
+        trend = [row for row in previous if sampled_at - row["at"] <= 8 * 86400]
+        if trend:
+            week = min(trend, key=lambda row: abs(sampled_at - row["at"] - 7 * 86400))
+            week_old = sum(week["sizes"][name] for name in members)
+            week_growth = size - week_old
+            daily = max(daily, week_growth / ((sampled_at - week["at"]) / 86400))
+            if week["at"] != old["at"] and week_growth >= _GIB and week_growth >= week_old * 0.5:
+                start = time.strftime("%m-%d %H:%M", time.localtime(week["at"]))
+                end = time.strftime("%m-%d %H:%M", time.localtime(sampled_at))
+                issues.append(f"{label}近七天增长偏快：{start} 至 {end} 新增 {week_growth / _MIB:.0f} MiB；需人工审核")
+        if previous:
+            oldest = min(previous, key=lambda row: row["at"])
+            oldest_size = sum(oldest["sizes"][name] for name in members)
+            long_growth = size - oldest_size
+            daily = max(daily, long_growth / ((sampled_at - oldest["at"]) / 86400))
+            if (oldest["at"] != old["at"] and sampled_at - oldest["at"] > 8 * 86400
+                    and long_growth >= _GIB and long_growth >= oldest_size * 0.5):
+                start = time.strftime("%m-%d %H:%M", time.localtime(oldest["at"]))
+                end = time.strftime("%m-%d %H:%M", time.localtime(sampled_at))
+                issues.append(f"{label}增长偏快：{start} 至 {end} 累计新增 {long_growth / _MIB:.0f} MiB；需人工审核")
         if size < max(3 * limit, 10 * _GIB):
             continue
         # 按日均增速外推，看会不会在半年内把磁盘余量吃光（扣除 5% 系统缓冲）。
@@ -230,14 +254,16 @@ def storage_issues(data: Path, now: float, root: Path | None = None) -> list[str
             continue
         if size >= report["limits"][label]:
             issues.append(f"{label}容量偏高：{size / _MIB:.0f} MiB；请审核保留策略，不自动删除成果")
+        sampled_at = float(report["at"])
         samples = [row for row in report.get("samples", [])
-                   if 20 * 3600 <= now - row["at"] <= 8 * 86400 and label in row["sizes"]]
+                   if 20 * 3600 <= sampled_at - row["at"] <= 8 * 86400 and label in row["sizes"]]
         if samples:
-            previous = min(samples, key=lambda row: abs(now - row["at"] - 7 * 86400))
+            previous = min(samples, key=lambda row: abs(sampled_at - row["at"] - 7 * 86400))
             growth = size - previous["sizes"][label]
             if growth >= 256 * _MIB and growth >= previous["sizes"][label] * 0.2:
-                issues.append(f"{label}增长偏快：近 {(now - previous['at']) / 86400:.1f} 天新增 "
-                              f"{growth / _MIB:.0f} MiB；需人工审核")
+                start = time.strftime("%m-%d %H:%M", time.localtime(previous["at"]))
+                end = time.strftime("%m-%d %H:%M", time.localtime(sampled_at))
+                issues.append(f"{label}增长偏快：{start} 至 {end} 新增 {growth / _MIB:.0f} MiB；需人工审核")
     if report.get("errors"):
         issues.append(f"存储养护有 {len(report['errors'])} 项检查或回收失败；未处理内容已保留")
     return issues
@@ -365,6 +391,30 @@ def _keep_state(state: dict) -> dict:
     return {key: value for key, value in state.items() if key != "at"}
 
 
+def _new_output(issues: Issues, state: dict, sample_at: float | None, agent_id: str) -> tuple[list[str], dict]:
+    """只抑制同一归属和采样的重复推送，完整问题仍交给铃铛复核。"""
+    records = state.get("reported_growth_by_agent", {})
+    records = records if isinstance(records, dict) else {}
+    previous = records.get(agent_id, {})
+    if not isinstance(previous, dict) or not isinstance(previous.get("issues", []), list):
+        previous = {}
+    seen = set(previous.get("issues", [])) if sample_at is not None and previous.get("sample_at") == sample_at else set()
+    current = {issue for issue in issues if issues.groups.get(issue) == "容量" and "增长偏快" in issue}
+    output = [issue for issue in issues if issue not in current or issue not in seen]
+    records[agent_id] = {"sample_at": sample_at, "issues": sorted(seen | current)}
+    return output, records
+
+
+def _storage_sample_at(data: Path) -> float | None:
+    path = data / "storage-maintenance.json"
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        return float(json.loads(path.read_text())["at"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
 def reconcile(issues: list[str], agent_id: str, root: Path, data, now: float | None = None) -> list[str]:
     """同次巡检只留一条提醒、只登记需要拍板的；问题消失后自动关闭旧提醒。"""
     now = time.time() if now is None else now
@@ -431,8 +481,21 @@ def main() -> None:
         parser.error("工作树阈值必须大于零")
     root = args.root.expanduser().resolve()
     data = (args.data_dir or root / "data").expanduser().resolve()
+    lock_path = data / "development-diagnostics.lock"
+    try:
+        descriptor = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        _run_diagnostics(args, root, data)
+        return
+    with os.fdopen(descriptor, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        _run_diagnostics(args, root, data)
+
+
+def _run_diagnostics(args, root: Path, data: Path) -> None:
     now = time.time()
     state = _load_state(data)
+    sample_before = _storage_sample_at(data)
     issues = diagnose(root, data, max_worktrees=args.max_worktrees, state=state)
     _save_state(data, _keep_state(state), now)
     lines = list(issues)
@@ -440,6 +503,12 @@ def main() -> None:
     if args.notify_agent:
         try:
             closed = reconcile(issues, args.notify_agent, root, data, now)
+            current_state = _load_state(data)
+            sample_at = _storage_sample_at(data)
+            if sample_at is not None and sample_at == sample_before:
+                lines, reported = _new_output(issues, current_state, sample_at, args.notify_agent)
+                current_state["reported_growth_by_agent"] = reported
+                _save_state(data, _keep_state(current_state), now)
         except Exception as exc:
             lines.append(f"诊断通知登记失败：{type(exc).__name__}；请人工查看诊断结果")
     output = render(lines)

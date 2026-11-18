@@ -56,14 +56,27 @@ async def setup(root, *, legacy=False):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("legacy", [False, True])
-async def test_archive_removes_only_rebuildable_copy(isolated, legacy):
+async def test_archive_previews_rebuildable_copy(isolated, legacy):
     _, key, binding = await setup(isolated, legacy=legacy)
     session_store.set_conv_archived(key, True)
-    assert await worktree.recycle_empty_worktree(key)
-    assert not binding.checkout.exists()
+    results = await worktree.preview_session_cleanup(key)
+    assert results[0]["reason"] == "初步检查通过，仍需复核进程和文件，暂不回收"
+    assert binding.checkout.exists()
     assert (binding.source / "file.txt").read_text() == "原文\n"
-    await execution.prepare_repositories(execution.policy_for_session(key))
-    assert (binding.checkout / ".git").is_file()
+
+
+@pytest.mark.anyio
+async def test_delete_keeps_local_configuration_and_records_path(isolated):
+    _, key, binding = await setup(isolated)
+    config_file = binding.checkout / ".env.local"
+    config_file.write_text("LOCAL_ONLY=1\n")
+    results = await worktree.remove_worktree(key)
+    cleanup.record_retained_session(key, results)
+    session_store.delete_session(key)
+    assert config_file.read_text() == "LOCAL_ONLY=1\n"
+    receipt = (config.DATA_DIR / "retained-session-copies.jsonl").read_text()
+    assert str(binding.checkout) in receipt
+    assert "有本地配置" in receipt
 
 
 @pytest.mark.anyio
@@ -108,8 +121,9 @@ async def test_deleted_session_has_grace_period(isolated, monkeypatch):
     observed = time.time()
     monkeypatch.setattr(cleanup.time, "time", lambda: observed + 8 * 86400)
     results = await cleanup.sweep()
-    assert results[0]["removed"]
-    assert not binding.checkout.exists()
+    assert not results[0]["removed"]
+    assert "仍需复核" in results[0]["reason"]
+    assert binding.checkout.exists()
 
 
 @pytest.mark.anyio
@@ -120,7 +134,7 @@ async def test_active_lease_blocks_cleanup_then_releases(isolated):
         results = await cleanup.sweep()
         assert results[0]["reason"] == "正在执行或初始化"
         assert binding.checkout.exists()
-    assert (await cleanup.sweep())[0]["removed"]
+    assert (await cleanup.sweep())[0]["reason"] == "初步检查通过，仍需复核进程和文件，暂不回收"
 
 
 @pytest.mark.anyio
@@ -149,7 +163,7 @@ async def test_stream_lease_covers_execution_and_is_released_on_close(isolated):
     assert await anext(events) == "开始"
     assert not (await cleanup.sweep())[0]["removed"]
     await events.aclose()
-    assert (await cleanup.sweep())[0]["removed"]
+    assert (await cleanup.sweep())[0]["reason"] == "初步检查通过，仍需复核进程和文件，暂不回收"
 
 
 @pytest.mark.anyio
@@ -172,13 +186,14 @@ async def test_new_execution_waits_for_collector_lease(isolated):
 
 
 @pytest.mark.anyio
-async def test_known_dependency_cache_can_be_rebuilt(isolated):
+async def test_ignored_dependency_may_contain_local_results(isolated):
     _, key, binding = await setup(isolated)
     dependency = binding.checkout / "node_modules"
     dependency.mkdir()
-    (dependency / "cache.js").write_text("可重建\n")
+    (dependency / "cache.js").write_text("本地文件\n")
     session_store.set_conv_archived(key, True)
-    assert (await cleanup.sweep())[0]["removed"]
+    assert (await cleanup.sweep())[0]["reason"] == "有本地配置或其它忽略文件"
+    assert (dependency / "cache.js").exists()
 
 
 @pytest.mark.anyio
@@ -270,7 +285,7 @@ async def test_initializing_worktree_has_additional_grace(isolated, old):
     session_store.set_conv_archived(key, True)
     results = await cleanup.sweep()
     assert bool(results) == old
-    assert staging.exists() != old
+    assert staging.exists()
 
 
 @pytest.mark.anyio

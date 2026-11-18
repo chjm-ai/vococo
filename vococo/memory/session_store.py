@@ -1316,7 +1316,11 @@ def set_sdk_session_id(session_key: str, sid: str, *, expected_model: str | None
     c.commit()
 
 
-def delete_session(session_key: str) -> None:
+def is_deleted_web_session(session_key: str) -> bool:
+    return _conn().execute("SELECT 1 FROM deleted_web_sessions WHERE session_key=?", (session_key,)).fetchone() is not None
+
+
+def delete_session(session_key: str, *, prevent_web_revival: bool = False) -> None:
     """彻底删掉一个会话(所有轮次 + 元数据 + 图片文件)。"""
     c = _conn()
     purge_session_images(c, session_key)  # 先清图片文件,再删轮次
@@ -1325,6 +1329,8 @@ def delete_session(session_key: str) -> None:
     purge_session_videos(c, session_key)  # 视频同理(体积最大,更不能留孤儿)
     c.execute("DELETE FROM turns WHERE session_key=?", (session_key,))
     c.execute("DELETE FROM session_meta WHERE session_key=?", (session_key,))
+    if prevent_web_revival:
+        c.execute("INSERT OR IGNORE INTO deleted_web_sessions(session_key) VALUES (?)", (session_key,))
     c.commit()
 
 

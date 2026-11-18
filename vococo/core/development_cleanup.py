@@ -322,15 +322,8 @@ def _collect(root: Path, path: Path, sessions: list[dict], state: dict, now: flo
             result.update(_inspect(root, path, sessions, state, now))
             if result["reason"]:
                 return result
-            # 删除前重新读绑定；会话归属、执行状态或文件检查失败均保留现场。
-            with session_store._db.read_connection():
-                fresh = _sessions().get(str(path), [])
-            if fresh != sessions:
-                result["reason"] = "会话绑定已变化"
-                return result
-            result.update(_inspect(root, path, fresh, state, time.time()))
-            if not result["reason"]:
-                _finish_collection(root, path, fresh, state, now, result)
+            # 新收尾规则观察期间只列清单，不因一次巡检删除任何开发工作树。
+            result["reason"] = "检查通过，暂只列清单，不自动回收"
     except BlockingIOError:
         result["reason"] = "正在执行或初始化"
         if str(path) in state["entries"]:

@@ -1447,6 +1447,9 @@ async function delConv(conv){
         list.splice(f,1); delete S.histCache[conv]; idbDel("hist:"+conv); delete S.live[conv]; delete S.streamSnap[conv]; markLive(); renderConvs();
       }
     }
+    if(Array.isArray(j.cleanup) && j.cleanup.length){
+      alert("聊天已删除，以下副本暂时保留：\n"+j.cleanup.map(x=>x.path+"："+x.reason).join("\n"));
+    }
     // 独立首页缓存/搜索缓存可能还有副本，只在服务端确认删除后清理。
     S.homeConvsVersion++;
     if(S.homeConvs) S.homeConvs=S.homeConvs.filter(c=>c.conv!==conv);
