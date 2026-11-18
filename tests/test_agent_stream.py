@@ -194,14 +194,52 @@ def test_context_window_gpt6_uses_staged_500k_limit():
     assert context_window("gpt-60-small") == 200_000
 
 
+def test_context_window_gpt62_sol_matches_model_table():
+    assert context_window("gpt-6.2-sol") == 1_000_000
+    assert context_window("gpt-6.2-sol-2026-11-18") == 1_000_000
+    assert context_window("gpt-6.2-solstice") == 500_000
+
+
+@pytest.mark.parametrize("window,arg", [(50_000, "100000"), (200_000, "130000"), (2_000_000, "1000000")])
+def test_cli_autocompact_arg_stays_in_cli_range(window, arg):
+    from vococo.core.agent import _cli_autocompact_arg
+
+    assert _cli_autocompact_arg(window) == arg
+
+
 def test_configured_window_does_not_cross_claude_providers(monkeypatch):
     from vococo.core import agent
 
     records = [{"id": "claude-sonnet-5-5", "provider": "relay", "context_window": 300_000}]
     monkeypatch.setattr(agent.settings_store, "list_web_extra_models", lambda: records)
+    monkeypatch.setattr(agent.providers, "model_provider_name", lambda _: "relay")
     assert agent.configured_context_window("claude-sonnet-5-5", "claude-sonnet-5-5") is None
     assert agent.configured_context_window("relay/claude-sonnet-5-5", "claude-sonnet-5-5") == 300_000
     assert agent.configured_context_window("other/claude-sonnet-5-5", "claude-sonnet-5-5") is None
+
+
+def test_configured_window_ignores_old_provider_after_reroute(monkeypatch, tmp_path):
+    from vococo.core import agent
+
+    settings = agent.settings_store
+    monkeypatch.setattr(settings, "_PATH", tmp_path / "settings.json")
+    model = "example-model"
+    route = {"base_url": "http://127.0.0.1:8317", "api_key": "test", "model": model}
+    settings.upsert_web_provider("old", route)
+    settings.upsert_web_extra_model(model, "模型", provider="Old", context_window=900_000)
+    assert agent.effective_context_window(model) == 900_000
+    settings.remove_web_provider("old")
+    settings.upsert_web_provider("new", route)
+    assert agent.effective_context_window(model) == 200_000
+    assert agent.providers.model_configuration(model, [])["context_window"] is None
+
+
+def test_tiny_context_window_does_not_override_cli_limit():
+    from vococo.core.agent import _turn_env
+
+    env = _turn_env({"ANTHROPIC_BASE_URL": "http://127.0.0.1:8317"},
+                    model="example-model", model_window=1000)
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == ""
 
 
 def test_configured_window_prefers_selection_then_resolved(monkeypatch):
