@@ -60,9 +60,60 @@ async def test_archive_previews_rebuildable_copy(isolated, legacy):
     _, key, binding = await setup(isolated, legacy=legacy)
     session_store.set_conv_archived(key, True)
     results = await worktree.preview_session_cleanup(key)
-    assert results[0]["reason"] == "初步检查通过，仍需复核进程和文件，暂不回收"
+    assert ("旧式完整克隆" if legacy else "归档满七天") in results[0]["reason"]
     assert binding.checkout.exists()
     assert (binding.source / "file.txt").read_text() == "原文\n"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_sweep_reclaims_only_managed_archived_checkout_after_seven_days(isolated, monkeypatch, legacy):
+    _, key, binding = await setup(isolated, legacy=legacy)
+    clock = [time.time()]
+    monkeypatch.setattr(cleanup.time, "time", lambda: clock[0])
+    revision = git(binding.checkout, "rev-parse", "HEAD")
+    session_store.append(key, "测试问题", "测试回复")
+    session_store.set_conv_archived(key, True)
+    clock[0] += cleanup._ARCHIVE_GRACE - 1
+    assert (await cleanup.sweep())[0]["reason"] == "归档七天观察期未满"
+    clock[0] += 1
+    with (binding.checkout / "file.txt").open():
+        assert not (await cleanup.sweep())[0]["removed"]
+    row = (await cleanup.sweep())[0]
+    if legacy:
+        assert "旧式完整克隆" in row["reason"] and binding.checkout.exists()
+        return
+    assert row["removed"] and row["bytes"] > 0 and not binding.checkout.exists()
+    assert session_store.load_recent(key, 1)[0].user == "测试问题"
+    assert git(binding.source, "rev-parse", binding.branch) == revision
+    session_store.set_conv_archived(key, False)
+    await execution.prepare_repositories(execution.policy_for_session(key))
+    assert git(binding.checkout, "rev-parse", "HEAD") == revision
+
+
+@pytest.mark.anyio
+async def test_business_checkout_with_review_lease_is_not_removed(isolated, monkeypatch):
+    _, key, binding = await setup(isolated)
+    session_store.set_conv_archived(key, True)
+    now = time.time()
+    monkeypatch.setattr(cleanup.time, "time", lambda: now + cleanup._ARCHIVE_GRACE)
+    async with locks.checkout_lease(binding.checkout):
+        assert (await cleanup.sweep())[0]["reason"] == "正在执行或初始化"
+    assert binding.checkout.exists()
+
+
+@pytest.mark.anyio
+async def test_unarchiving_restarts_business_copy_observation(isolated, monkeypatch):
+    _, key, binding = await setup(isolated)
+    clock = [time.time()]
+    monkeypatch.setattr(cleanup.time, "time", lambda: clock[0])
+    session_store.set_conv_archived(key, True)
+    clock[0] += cleanup._ARCHIVE_GRACE
+    session_store.set_conv_archived(key, False)
+    assert await cleanup.sweep() == []
+    session_store.set_conv_archived(key, True)
+    assert (await cleanup.sweep())[0]["reason"] == "归档七天观察期未满"
+    assert binding.checkout.exists()
 
 
 @pytest.mark.anyio
@@ -122,7 +173,7 @@ async def test_deleted_session_has_grace_period(isolated, monkeypatch):
     monkeypatch.setattr(cleanup.time, "time", lambda: observed + 8 * 86400)
     results = await cleanup.sweep()
     assert not results[0]["removed"]
-    assert "仍需复核" in results[0]["reason"]
+    assert "找不到已归档会话" in results[0]["reason"]
     assert binding.checkout.exists()
 
 
@@ -134,7 +185,7 @@ async def test_active_lease_blocks_cleanup_then_releases(isolated):
         results = await cleanup.sweep()
         assert results[0]["reason"] == "正在执行或初始化"
         assert binding.checkout.exists()
-    assert (await cleanup.sweep())[0]["reason"] == "初步检查通过，仍需复核进程和文件，暂不回收"
+    assert (await cleanup.sweep())[0]["reason"] == "归档七天观察期未满"
 
 
 @pytest.mark.anyio
@@ -163,7 +214,30 @@ async def test_stream_lease_covers_execution_and_is_released_on_close(isolated):
     assert await anext(events) == "开始"
     assert not (await cleanup.sweep())[0]["removed"]
     await events.aclose()
-    assert (await cleanup.sweep())[0]["reason"] == "初步检查通过，仍需复核进程和文件，暂不回收"
+    assert (await cleanup.sweep())[0]["reason"] == "归档七天观察期未满"
+
+
+@pytest.mark.anyio
+async def test_converse_waits_before_reactivating_archived_session(isolated, monkeypatch):
+    from vococo.gateway import core
+
+    owner, key, _ = await setup(isolated)
+    session_store.set_conv_archived(key, True)
+    entered = asyncio.Event()
+
+    async def converse(*_args):
+        entered.set()
+
+    monkeypatch.setattr(core, "_converse", converse)
+    query = "SELECT archived_at FROM session_archive_times WHERE session_key=?"
+    with locks.lease(owner["id"], locks.session_digest(key), exclusive=True):
+        pending = asyncio.create_task(core.converse(key, "继续", None, None))
+        await asyncio.sleep(0.15)
+        assert not entered.is_set()
+        assert session_store._conn().execute(query, (key,)).fetchone()
+    await pending
+    assert entered.is_set()
+    assert session_store._conn().execute(query, (key,)).fetchone() is None
 
 
 @pytest.mark.anyio

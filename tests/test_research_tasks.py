@@ -243,7 +243,7 @@ async def test_removed_core_resume_and_start_leave_history_unchanged(environment
     before_task, before_state = tasks.get(row["id"]), research.get(row["id"])
     result = await runner.append(row["id"], "恢复研究")
     assert not result["ok"] and "已移除" in result["message"]
-    assert not runner._start_one(row)
+    assert not await runner._start_one(row)
     with pytest.raises(RuntimeError, match="已移除"):
         runner._spawn(row["id"])
     assert tasks.get(row["id"]) == before_task

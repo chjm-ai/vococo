@@ -14,7 +14,6 @@ import asyncio
 from contextlib import suppress
 import os
 import re
-import shutil
 import sys
 from pathlib import Path
 
@@ -102,17 +101,10 @@ def _slug(conv: str) -> str:
 
 
 async def _try_add(root: str, wt_dir: str, branch: str) -> tuple[bool, str]:
-    """在 wt_dir 建 worktree 绑到 branch;分支已存在则复用,否则新建。返回 (是否成功, 错误)。
-
-    add 前先自愈两类最常见的失败源:①失效的 worktree 登记(目录被手删但 git 还记着)
-    → git worktree prune;②同名残留目录(上次 add 半途失败/没清干净)→ 先正规 remove,
-    仍在则强删。清干净再 add,把「建失败静默回退 main」的触发概率压到极低。
-    """
+    """新建或复用会话分支，但绝不覆盖没有明确绑定的目录。"""
     await _git(root, "worktree", "prune")
-    if os.path.exists(wt_dir):
-        await _git(root, "worktree", "remove", "--force", wt_dir)
-        if os.path.exists(wt_dir):
-            shutil.rmtree(wt_dir, ignore_errors=True)
+    if os.path.lexists(wt_dir):
+        return False, f"已有未绑定的同名目录，未覆盖：{wt_dir}"
     exists, _, _ = await _git(
         root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"
     )
@@ -300,7 +292,7 @@ async def recycle_empty_worktree(session_key: str) -> bool:
     """归档只触发业务副本检查；开发工作树统一交每日安全巡检。
 
     归档不代表目录没有忽略文件或没有进程使用，不能绕过七天观察期与执行租约。
-    开发副本及其绑定保留，旧存量仅列清单。
+    归档请求不删除目录；标准工作树交每日巡检按归档时间复核。
     """
     from . import repository_cleanup
 
@@ -335,20 +327,25 @@ async def worktree_dirty_summary(session_key: str) -> dict | None:
     return {"uncommitted": uncommitted, "untracked": untracked, "commits": commits}
 
 
-async def preview_session_cleanup(session_key: str, *, locked_owner: str | None = None) -> list[dict]:
+async def preview_session_cleanup(session_key: str, *, locked_owner: str | None = None,
+                                  archived: bool = True) -> list[dict]:
     """收尾只预览，删除聊天不代表授权删除代码和本地配置。"""
     from . import repository_cleanup
 
     results = await repository_cleanup.collect_session(session_key, preview=True, locked_owner=locked_owner)
+    if archived:
+        for row in results:
+            if row["reason"] == repository_cleanup.PREVIEW_REASON:
+                row["reason"] = "归档满七天后由每日巡检复核；通过才回收"
     path = session_store.get_worktree(session_key)
     if path:
-        results.append({"path": path, "removed": False,
-                        "reason": "开发工作树暂时保留，交安全巡检复核"})
+        reason = "归档满七天后由每日巡检复核；通过才回收" if archived else "开发工作树保留，未删除代码"
+        results.append({"path": path, "removed": False, "reason": reason})
     return results
 
 
 async def remove_worktree(session_key: str, *, locked_owner: str | None = None) -> list[dict]:
-    return await preview_session_cleanup(session_key, locked_owner=locked_owner)
+    return await preview_session_cleanup(session_key, locked_owner=locked_owner, archived=False)
 
 
 async def prune_orphans() -> int:

@@ -13,6 +13,7 @@ import anyio
 
 from .. import config
 from ..core import tasks as bg_tasks, worktree
+from ..core.repository_locks import session_lease
 from ..cron.scheduler import run_scheduler
 from ..memory import notices, session_store
 from ..tools import selfops
@@ -199,6 +200,11 @@ class GatewayRunner:
         return f"已按你选的「{label}」接着处理。"
 
     async def _handle(self, adapter: Adapter, inc: Incoming) -> None:
+        async with session_lease(inc.session_key):
+            if not session_store.is_deleted_web_session(inc.session_key):
+                await self._handle_with_workspace(adapter, inc)
+
+    async def _handle_with_workspace(self, adapter: Adapter, inc: Incoming) -> None:
         key = inc.session_key
         # 人工续聊链路:用户手动给这个会话发消息 = 重新激活它(归档只该滤掉静默
         # 会话)——自动取消归档,任何会话(web: 普通对话 / task: 后台任务)一视同仁,

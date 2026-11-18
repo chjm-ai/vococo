@@ -43,6 +43,10 @@ END;
 CREATE TABLE IF NOT EXISTS deleted_web_sessions(
   session_key TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS session_archive_times(
+  session_key TEXT PRIMARY KEY,
+  archived_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS session_meta(
   session_key TEXT PRIMARY KEY,
   watermark_id INTEGER NOT NULL DEFAULT 0
@@ -204,6 +208,9 @@ def conn() -> sqlite3.Connection:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN checklist_json TEXT")
         if "archived" not in cols:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN archived INTEGER DEFAULT 0")
+        # 历史归档没有可靠时间，只从升级后首次看到开始计算观察期。
+        _DB.execute("INSERT OR IGNORE INTO session_archive_times(session_key, archived_at) "
+                    "SELECT session_key, CAST(strftime('%s','now') AS REAL) FROM session_meta WHERE archived=1")
         # worktree_path=该会话独占的 git worktree 目录(每会话一分支的物理隔离);
         # NULL=没有独立 worktree,回退项目根/进程默认目录。
         if "worktree_path" not in cols:

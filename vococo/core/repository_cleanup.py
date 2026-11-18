@@ -3,38 +3,43 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import nullcontext
+from dataclasses import replace
 import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
-import shutil
-import subprocess
 import time
 from pathlib import Path
 
 from .. import config
 from ..memory import session_store
-from . import business_repositories as repositories
+from . import business_repositories as repositories, development_cleanup
 from .repository_locks import lease, session_digest
 
 logger = logging.getLogger(__name__)
 _DAY = 86400
-# 忽略目录也可能含手工文件和配置，预览时不能把它们视为可安全删除。
+_ARCHIVE_GRACE = 7 * _DAY
+PREVIEW_REASON = "初步检查通过，仍需复核进程和文件，暂不回收"
 
 
 def _sessions() -> dict:
-    rows = session_store._conn().execute("SELECT session_key, archived FROM session_meta").fetchall()
-    result = {session_digest(row[0]): bool(row[1]) for row in rows}
+    rows = session_store._conn().execute(
+        "SELECT m.session_key, m.archived, a.archived_at FROM session_meta m "
+        "LEFT JOIN session_archive_times a ON m.session_key=a.session_key"
+    )
+    result = {session_digest(key): (key, archived_at) if archived else None
+              for key, archived, archived_at in rows}
     for row in session_store._conn().execute("SELECT DISTINCT session_key FROM turns"):
-        result.setdefault(session_digest(row[0]), False)
+        result.setdefault(session_digest(row[0]), None)
     from . import tasks
 
     if tasks._db_path().exists():
         with tasks.read_connection():
             for task in tasks._conn().execute("SELECT id, session_key FROM tasks WHERE status IN ('running', 'queued')"):
                 key = task["session_key"] or tasks.session_key(task["id"])
-                result[session_digest(key)] = False
+                result[session_digest(key)] = None
     return result
 
 
@@ -88,17 +93,37 @@ def _preserve_reason(binding: repositories.RepositoryCopy) -> str:
     return ""
 
 
-def _remove(binding: repositories.RepositoryCopy) -> None:
-    path = binding.checkout
-    if (path / ".git").is_dir():
-        shutil.rmtree(path)
-        return
-    # 未跟踪和忽略文件已逐项检查；不强制移除被Git标记为锁定的工作树。
-    repositories._git(binding.source, "worktree", "remove", "--force", str(path))
-    try:
-        repositories._git(binding.source, "branch", "-d", binding.branch)
-    except (OSError, ValueError, subprocess.SubprocessError):
-        logger.warning("工作目录已回收，会话分支暂时保留：%s", binding.branch)
+def _archive_reason(path: Path, state: tuple[str, float | None] | None) -> str:
+    from ..memory import agents
+
+    if state is None:
+        return "找不到已归档会话，仅列清单"
+    key, archived_at = state
+    owner = agents.agent_for_session(key)
+    if not owner or owner["id"] != path.parent.parent.name:
+        return "会话与副本归属不匹配，仅列清单"
+    if archived_at is None or not math.isfinite(archived_at) or time.time() - archived_at < _ARCHIVE_GRACE:
+        return "归档七天观察期未满"
+    if path.name.startswith(".initializing-") or (path / ".git").is_dir():
+        return "初始化残留或旧式完整克隆，仅列清单"
+    sessions = [{"key": key}]
+    task_reason, _ = development_cleanup._task_state(sessions, path)
+    if task_reason:
+        return task_reason
+    if development_cleanup._runtime_busy(sessions):
+        return "会话或任务正在执行/排队"
+    return ""
+
+
+def _retirement_reason(binding: repositories.RepositoryCopy, retired: Path) -> str:
+    with session_store._db.read_connection():
+        state = _sessions().get(binding.checkout.parent.name)
+        reason = _archive_reason(binding.checkout, state)
+    if reason:
+        return reason
+    repositories._verify_copy(replace(binding, checkout=retired))
+    branch, git_dir = development_cleanup._validate(binding.source, retired)
+    return development_cleanup._preserve_reason(binding.source, retired, branch, git_dir)
 
 
 def _eligible(path: Path, states: dict) -> bool:
@@ -111,14 +136,14 @@ def _eligible(path: Path, states: dict) -> bool:
     if digest in states:
         marker.unlink(missing_ok=True)
         old_enough = time.time() - path.stat().st_mtime >= _DAY
-        return states[digest] is True and (not path.name.startswith(".initializing-") or old_enough)
+        return states[digest] is not None and (not path.name.startswith(".initializing-") or old_enough)
     # 没有删除时间的旧会话从首次观察到失联起算，不能拿目录年龄冒充宽限期。
     try:
         with marker.open("x") as handle:
             handle.write(str(time.time()))
     except FileExistsError:
         pass
-    return time.time() - float(marker.read_text()) >= 7 * _DAY
+    return time.time() - float(marker.read_text()) >= _ARCHIVE_GRACE
 
 
 def _collect_path(path: Path, *, closing: bool = False, preview: bool = False,
@@ -140,19 +165,25 @@ def _collect_path(path: Path, *, closing: bool = False, preview: bool = False,
                 repositories._verify_copy(binding)
                 result["reason"] = _preserve_reason(binding)
                 if not result["reason"]:
-                    if preview:
-                        result["reason"] = "初步检查通过，仍需复核进程和文件，暂不回收"
-                    else:
-                        _remove(binding)
-                        result["removed"] = True
+                    _finish_collection(binding, states, result, preview=closing or preview)
     except BlockingIOError:
         result["reason"] = "正在执行或初始化"
-    except (OSError, ValueError, RuntimeError) as exc:
-        result["reason"] = f"检查或回收失败：{type(exc).__name__}"
     except Exception as exc:
         # Git超时等意外也不能变成“没有成果”。不输出可能含凭据的错误原文。
         result["reason"] = f"检查或回收失败：{type(exc).__name__}"
     return result
+
+
+def _finish_collection(binding: repositories.RepositoryCopy, states: dict, result: dict, *, preview: bool) -> None:
+    path = binding.checkout
+    if preview:
+        result["reason"] = "旧式完整克隆，仅列清单" if (path / ".git").is_dir() else PREVIEW_REASON
+        return
+    with session_store._db.read_connection():
+        result["reason"] = _archive_reason(path, states.get(path.parent.name))
+    if not result["reason"]:
+        result.update(development_cleanup._retire(binding.source, path,
+                                                 lambda retired: _retirement_reason(binding, retired)))
 
 
 def _candidates(states: dict, only: str | None = None):
@@ -166,7 +197,11 @@ def _candidates(states: dict, only: str | None = None):
             if digest == only:
                 yield path
             continue
-        if _eligible(path, states):
+        try:
+            listed = _eligible(path, states)
+        except (OSError, ValueError):
+            listed = True  # 交由逐项巡检记录失败，不影响其它副本。
+        if listed:
             yield path
 
 
@@ -210,7 +245,7 @@ async def sweep() -> list[dict]:
     candidates = await asyncio.to_thread(lambda: list(_candidates(states)))
     results = []
     for path in candidates:
-        results.append(await asyncio.to_thread(_collect_path, path, preview=True))
+        results.append(await asyncio.to_thread(_collect_path, path))
     return results
 
 
@@ -234,11 +269,19 @@ async def sweep_loop() -> None:
         results = []
         try:
             results = await sweep()
-            from . import development_cleanup
-
             results.extend(await development_cleanup.sweep())
+            from .repository_recovery import pending_retirements
+
+            known = {row["recovery_path"] for row in results if row.get("recovery_path")}
+            results.extend(row for row in await asyncio.to_thread(pending_retirements)
+                           if row.get("recovery_path") not in known)
             report = config.DATA_DIR / "repository-cleanup.json"
             report.write_text(json.dumps({"at": time.time(), "results": results}, ensure_ascii=False, indent=2))
+            for row in results:
+                if row["removed"]:
+                    logger.info("已回收会话副本：%s（目录占用约 %s 字节）", row["path"], row["bytes"])
+                if row.get("recovery_path"):
+                    logger.warning("副本未能移回原路径，成果保留在：%s", row["recovery_path"])
             if results:
                 logger.info("仓库回收：移除%s个，保留%s个", sum(r["removed"] for r in results),
                             sum(not r["removed"] for r in results))

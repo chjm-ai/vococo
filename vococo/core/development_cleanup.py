@@ -1,4 +1,4 @@
-"""开发工作树的保守巡检：首次见到的存量只列清单，新目录观察七天后才回收。"""
+"""开发工作树巡检：仅回收归档满七天且通过复核的标准工作树。"""
 from __future__ import annotations
 
 import asyncio
@@ -11,13 +11,15 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import stat
+import sys
 import secrets
 import shutil
 import time
 
 from .. import config
 from ..memory import session_store
-from .repository_locks import lease, session_digest
+from .repository_locks import checkout_retirement_lease, lease, session_digest
 
 _IDLE_SECONDS = 7 * 86400
 _STATE_VERSION = 1
@@ -28,7 +30,7 @@ def _git(path: Path, *args: str) -> str:
     environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     environment.update(GIT_OPTIONAL_LOCKS="0", GIT_NO_REPLACE_OBJECTS="1")
     result = subprocess.run(
-        ["git", "--no-replace-objects", "-C", str(path), *args], env=environment,
+        ["git", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", str(path), *args], env=environment,
         capture_output=True, text=True, timeout=15,
     )
     if result.returncode:
@@ -46,19 +48,23 @@ def _roots() -> list[Path]:
     return sorted(root for root in roots if (root / ".git").exists())
 
 
-def _sessions() -> dict[str, list[dict]]:
+def _sessions(path: Path | None = None):
+    path_filter = "AND m.worktree_path=? " if path is not None else ""
     rows = session_store._conn().execute(
-        "SELECT m.session_key, m.worktree_path, m.agent_id, "
+        "SELECT m.session_key, m.worktree_path, m.agent_id, a.archived_at, "
         "MAX(COALESCE(m.bound_at,0), COALESCE(MAX(t.ts),0)) AS activity "
         "FROM session_meta m LEFT JOIN turns t ON t.session_key=m.session_key "
-        "WHERE m.worktree_path IS NOT NULL AND m.worktree_path!='' GROUP BY m.session_key"
+        "LEFT JOIN session_archive_times a ON a.session_key=m.session_key AND m.archived=1 "
+        "WHERE m.worktree_path IS NOT NULL AND m.worktree_path!='' "
+        + path_filter + "GROUP BY m.session_key", (str(path),) if path is not None else (),
     )
     result: dict[str, list[dict]] = {}
-    for key, path, owner, activity in rows:
-        result.setdefault(str(Path(path).expanduser().absolute()), []).append(
-            {"key": key, "owner": owner or _legacy_owner(key), "activity": float(activity)}
+    for key, bound_path, owner, archived_at, activity in rows:
+        result.setdefault(str(Path(bound_path).expanduser().absolute()), []).append(
+            {"key": key, "owner": owner or _legacy_owner(key), "activity": float(activity),
+             "archived_at": archived_at}
         )
-    return result
+    return result if path is None else result.get(str(path), [])
 
 
 def _legacy_owner(key: str) -> str | None:
@@ -71,23 +77,31 @@ def _legacy_owner(key: str) -> str | None:
     return owner["id"] if owner else None
 
 
-def _task_state(sessions: list[dict], path: Path) -> tuple[bool, float]:
+def _task_state(sessions: list[dict], path: Path) -> tuple[str, float]:
     from . import tasks
 
     if not tasks._db_path().exists():
-        return False, 0.0
+        return "", 0.0
     keys = {row["key"] for row in sessions}
-    busy, activity = False, 0.0
-    with tasks.read_connection():
-        rows = tasks._conn().execute("SELECT id, session_key, cwd, status, updated_at FROM tasks")
+    busy, review, activity = False, False, 0.0
+    with tasks.read_connection(), session_store._db.read_connection():
+        rows = tasks._conn().execute("SELECT id, session_key, cwd, review_cwd, status, updated_at FROM tasks")
         for row in rows:
             key = row["session_key"] or tasks.session_key(row["id"])
-            cwd = row["cwd"]
-            if key not in keys and (not cwd or not Path(cwd).expanduser().resolve().is_relative_to(path)):
+            review_path, cwd = row["review_cwd"], row["cwd"]
+            has_review = _under_checkout(review_path, path)
+            if key not in keys and not has_review and not _under_checkout(cwd, path):
                 continue
             busy |= row["status"] in {"queued", "running"}
+            review |= has_review and not session_store.is_deleted_web_session(key)
             activity = max(activity, float(row["updated_at"]))
-    return busy, activity
+    if busy:
+        return "会话或任务正在执行/排队", activity
+    return ("仍有关联评审可续跑，保留原工作树" if review else ""), activity
+
+
+def _under_checkout(value: str | None, path: Path) -> bool:
+    return bool(value and Path(value).expanduser().resolve().is_relative_to(path))
 
 
 def _runtime_busy(sessions: list[dict]) -> bool:
@@ -163,11 +177,11 @@ def _preserve_reason(root: Path, path: Path, branch: str, git_dir: Path) -> str:
         return "Git 操作未结束"
     if any((git_dir / name).exists() for name in ("config.worktree", "info")):
         return "有工作树专属配置或引用"
-    if any((git_dir / "refs").rglob("*")):
-        return "有工作树专属配置或引用"
     operations = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply")
     if any((git_dir / name).exists() for name in operations):
         return "合并或变基未结束"
+    if _private_metadata(git_dir):
+        return "有工作树专属配置或引用"
     entries = _git(path, "ls-files", "--stage", "-z").split("\0")
     if any(entry.startswith("160000 ") for entry in entries):
         return "含子模块，需人工确认"
@@ -180,6 +194,15 @@ def _preserve_reason(root: Path, path: Path, branch: str, git_dir: Path) -> str:
     if _git(path, "ls-files", "--others", "--ignored", "--exclude-standard", "-z"):
         return "有本地配置或其它忽略文件"
     return _history_reason(root, path, branch)
+
+
+def _private_metadata(git_dir: Path) -> bool:
+    standard = {"HEAD", "ORIG_HEAD", "FETCH_HEAD", "index", "gitdir", "commondir", "logs", "refs", "COMMIT_EDITMSG"}
+    if any(entry.is_symlink() or entry.name not in standard for entry in git_dir.iterdir()):
+        return True
+    if any((git_dir / "refs").rglob("*")):
+        return True
+    return any(entry.is_symlink() or entry.name != "HEAD" for entry in (git_dir / "logs").glob("*"))
 
 
 def _history_reason(root: Path, path: Path, branch: str) -> str:
@@ -290,24 +313,31 @@ def _observe(state: dict, root: Path, path: Path, fingerprint: str, now: float) 
 
 def _inspect(root: Path, path: Path, sessions: list[dict], state: dict, now: float) -> dict:
     branch, git_dir = _validate(root, path)
-    busy, activity = _task_state(sessions, path)
+    task_reason, activity = _task_state(sessions, path)
     fingerprint = _fingerprint(path, sessions, activity)
     observed = _observe(state, root, path, fingerprint, now)
     reason = _preserve_reason(root, path, branch, git_dir)
-    if busy or _runtime_busy(sessions) or reason:
+    if task_reason or _runtime_busy(sessions) or reason:
         observed["idle_since"] = now
-    if observed["legacy"]:
-        return {"reason": "旧存量仅列清单" + (f"；{reason}" if reason else "")}
     if path.parent != root / "data" / "worktrees" / session_store.project_hash(str(root)):
         return {"reason": "旧版或非标准路径，仅列清单"}
-    if not sessions or any(not row["owner"] for row in sessions):
+    if len(sessions) != 1 or not sessions[0]["owner"]:
         return {"reason": "会话绑定或执行租约归属缺失，仅列清单"}
-    if busy or _runtime_busy(sessions):
-        return {"reason": "会话或任务正在执行/排队"}
+    if task_reason or _runtime_busy(sessions):
+        return {"reason": task_reason or "会话或任务正在执行/排队"}
     if reason:
         return {"reason": reason}
-    last_activity = max([activity, *(row["activity"] for row in sessions)])
-    if now - max(observed["idle_since"], last_activity) < _IDLE_SECONDS:
+    archived_at = sessions[0]["archived_at"]
+    if archived_at is None:
+        return {"reason": "旧存量仅列清单" if observed["legacy"] else "会话未归档，仅列清单"}
+    if not math.isfinite(archived_at) or now - archived_at < _IDLE_SECONDS:
+        return {"reason": "归档七天观察期未满"}
+    from .worktree import _slug
+
+    slug = _slug(sessions[0]["key"].split(":")[-1])
+    if path.name != slug or branch != f"refs/heads/vococo/{slug}":
+        return {"reason": "会话分支不可按原版本重建，仅列清单"}
+    if now - max(observed["idle_since"], activity, sessions[0]["activity"]) < _IDLE_SECONDS:
         return {"reason": "七天闲置观察期未满"}
     return {"reason": "", "branch": branch}
 
@@ -319,11 +349,13 @@ def _collect(root: Path, path: Path, sessions: list[dict], state: dict, now: flo
             for row in sorted(sessions, key=lambda item: item["key"]):
                 if row["owner"]:
                     stack.enter_context(lease(row["owner"], session_digest(row["key"]), exclusive=True))
+            if sessions != _current_sessions(path):
+                result["reason"] = "会话绑定或状态已变化，稍后复查"
+                return result
             result.update(_inspect(root, path, sessions, state, now))
             if result["reason"]:
                 return result
-            # 新收尾规则观察期间只列清单，不因一次巡检删除任何开发工作树。
-            result["reason"] = "检查通过，暂只列清单，不自动回收"
+            _finish_collection(root, path, sessions, state, now, result)
     except BlockingIOError:
         result["reason"] = "正在执行或初始化"
         if str(path) in state["entries"]:
@@ -337,7 +369,9 @@ def _collect(root: Path, path: Path, sessions: list[dict], state: dict, now: flo
 
 def _finish_collection(root: Path, path: Path, sessions: list[dict], state: dict, now: float, result: dict) -> None:
     _write_state(config.DATA_DIR / "development-cleanup-state.json", state)
-    result.update(_retire(root, path, sessions, state["entries"][str(path)]["fingerprint"]))
+    fingerprint = state["entries"][str(path)]["fingerprint"]
+    result.update(_retire(root, path, lambda retired: _retirement_reason(
+        root, retired, sessions, fingerprint, original=path)))
     if not result["removed"]:
         state["entries"][str(path)]["idle_since"] = now
         return
@@ -348,17 +382,24 @@ def _open_handles(path: Path) -> bool:
     executable = shutil.which("lsof")
     if not executable:
         raise ValueError("无法确认目录是否仍被其它进程使用")
-    result = subprocess.run([executable, "-t", "+D", str(path)], capture_output=True, timeout=15)
+    result = subprocess.run([executable, "+D", str(path)], capture_output=True, timeout=15)
     if result.stderr or result.returncode not in (0, 1):
         raise ValueError("打开文件检查失败")
     return bool(result.stdout.strip())
 
 
-def _retirement_reason(root: Path, path: Path, sessions: list[dict], fingerprint: str) -> str:
+def _current_sessions(path: Path) -> list[dict]:
+    with session_store._db.read_connection():
+        return _sessions(path)
+
+
+def _retirement_reason(root: Path, path: Path, sessions: list[dict], fingerprint: str, *, original: Path) -> str:
     branch, git_dir = _validate(root, path)
-    busy, activity = _task_state(sessions, path)
-    if busy or _runtime_busy(sessions) or _open_handles(path):
-        return "目录仍被执行任务或其它进程使用"
+    task_reason, activity = _task_state(sessions, original)
+    if sessions != _current_sessions(original):
+        return "会话绑定或状态已变化，已保留"
+    if task_reason or _runtime_busy(sessions):
+        return task_reason or "目录仍被执行任务使用"
     if _fingerprint(path, sessions, activity) != fingerprint:
         return "检查期间文件或历史发生变化，已保留"
     return _preserve_reason(root, path, branch, git_dir)
@@ -376,21 +417,115 @@ def _restore_retired(root: Path, original: Path, retired: Path, result: dict) ->
         result["reason"] += "；未能恢复原路径，成果留在恢复目录，请人工核对"
 
 
-def _retire(root: Path, path: Path, sessions: list[dict], fingerprint: str) -> dict:
+def _check_filesystem(path: Path) -> None:
+    device = path.stat().st_dev
+
+    def raise_error(error):
+        raise error
+
+    for parent, directories, files in os.walk(path, onerror=raise_error, followlinks=False):
+        for name in directories + files:
+            entry = (Path(parent) / name).lstat()
+            if entry.st_dev != device or not (stat.S_ISDIR(entry.st_mode)
+                    or stat.S_ISREG(entry.st_mode) or stat.S_ISLNK(entry.st_mode)):
+                raise ValueError("工作树包含挂载点或特殊文件")
+
+
+def _blob_hash(path: Path, mode: str, algorithm: str) -> str:
+    info = path.lstat()
+    if mode == "120000" and stat.S_ISLNK(info.st_mode):
+        target = os.fsencode(os.readlink(path))
+        return hashlib.new(algorithm, f"blob {len(target)}\0".encode() + target).hexdigest()
+    if not stat.S_ISREG(info.st_mode) or mode != ("100755" if info.st_mode & stat.S_IXUSR else "100644"):
+        return ""
+    digest = hashlib.new(algorithm, f"blob {info.st_size}\0".encode())
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as source:
+        if os.fstat(source.fileno()) != info:
+            return ""
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    after = path.lstat()
+    if (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+        return ""
+    return digest.hexdigest()
+
+
+def _rebuild_reason(path: Path) -> str:
+    # Git status 可能经过过滤器或换行转换。只有原始文件字节与对象一致才允许删除。
+    algorithm = _git(path, "rev-parse", "--show-object-format")
+    entries = _git(path, "ls-files", "--stage", "-z")
+    tracked = {path / ".git"}
+    for entry in filter(None, entries.split("\0")):
+        meta, name = entry.split("\t", 1)
+        mode, revision, stage = meta.split()
+        file = path / name
+        tracked.add(file)
+        if stage != "0" or revision != _blob_hash(file, mode, algorithm):
+            return "跟踪文件与 Git 原始内容不同，无法保证按原样恢复"
+    return "有未登记的本地文件" if _has_extra_files(path, tracked) else ""
+
+
+def _has_extra_files(path: Path, tracked: set[Path]) -> bool:
+    def raise_error(error):
+        raise error
+
+    for parent, directories, files in os.walk(path, onerror=raise_error, followlinks=False):
+        links = (name for name in directories if (Path(parent) / name).is_symlink())
+        if any(Path(parent) / name not in tracked for name in (*files, *links)):
+            return True
+    return False
+
+
+def _retire(root: Path, path: Path, check) -> dict:
+    with checkout_retirement_lease(path):
+        return _retire_locked(root, path, check)
+
+
+def _retire_locked(root: Path, path: Path, check) -> dict:
     # 先原子搬离公开执行路径再检查，避免非强制 Git remove 仍会丢弃临时写入的忽略文件。
+    from .repository_recovery import retirement_record
+    from .storage_maintenance import _measure
+
     retired = path.with_name(f".retiring-{path.name}-{secrets.token_hex(6)}")
     result = {"removed": False, "reason": ""}
     try:
-        _git(root, "worktree", "move", str(path), str(retired))
-        result["reason"] = _retirement_reason(root, retired, sessions, fingerprint)
-        if not result["reason"]:
-            _git(root, "worktree", "remove", str(retired))
-            result["removed"] = True
+        if _open_handles(path):
+            result["reason"] = "目录仍被其它进程使用"
+            return result
+        _check_filesystem(path)
+        with retirement_record(path, retired):
+            try:
+                _git(root, "worktree", "move", str(path), str(retired))
+                _finish_retirement(root, retired, check, result, _measure)
+            except Exception as exc:
+                result["reason"] = f"回收检查失败：{type(exc).__name__}"
+            finally:
+                _restore_retired(root, path, retired, result)
     except Exception as exc:
         result["reason"] = f"回收检查失败：{type(exc).__name__}"
-    finally:
-        _restore_retired(root, path, retired, result)
     return result
+
+
+def _extended_attributes_reason(path: Path) -> str:
+    if sys.platform == "darwin":
+        result = subprocess.run(["/usr/bin/xattr", "-rs", str(path)], capture_output=True, timeout=15, check=True)
+        # provenance 是系统生成的标记；其它扩展属性可能是用户标签或资源分支。
+        if any(line.rsplit(b": ", 1)[-1] != b"com.apple.provenance" for line in result.stdout.splitlines()):
+            return "有 Git 不记录的文件扩展属性"
+    return ""
+
+
+def _finish_retirement(root, retired, check, result, measure) -> None:
+    _check_filesystem(retired)
+    size = measure([retired])
+    if _open_handles(retired):
+        result["reason"] = "目录仍被其它进程使用"
+        return
+    result["reason"] = _extended_attributes_reason(retired) or _rebuild_reason(retired) or check(retired)
+    if not result["reason"]:
+        _git(root, "worktree", "remove", str(retired))
+        result.update(removed=True, bytes=size)
 
 
 def _clear_bindings(path: Path, sessions: list[dict]) -> None:
@@ -403,7 +538,7 @@ def _clear_bindings(path: Path, sessions: list[dict]) -> None:
 
 
 def _seed_legacy(state: dict, candidates: dict[Path, Path], now: float) -> None:
-    # 即使首轮因执行锁或损坏目录无法检查，也要把当时的存量永远标成只列清单。
+    # 标记旧存量用于回执；没有可靠归档和闲置时间前仅列清单。
     for path, root in candidates.items():
         if str(root) not in state["roots"]:
             state["entries"].setdefault(str(path), {"legacy": True, "idle_since": now,

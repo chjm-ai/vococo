@@ -2872,33 +2872,54 @@ class WebAdapter:
     async def _handle_conv_git_branch(self, request: web.Request, body: dict) -> web.Response:
         """在项目工作目录建并切到新分支(当前改动随之带过去)。"""
         name = (body.get("name") or "").strip()
-        from ...core import worktree  # 懒加载
 
         # 先确保该会话有独立 worktree,再在它自己的目录里建分支 —— 只影响本会话,不动别人。
         # Git 项目建 worktree 失败时拒绝操作，禁止 checkout 到主检出目录。
         key = config.resolve_session_key("web", str(body.get("conv") or ""))
-        if config.project_root_for(key) is None:
-            return web.json_response({"error": "该会话不是项目会话"}, status=400)
-        try:
-            cwd = await worktree.execution_cwd(key)
-        except worktree.WorktreeIsolationError as exc:
-            return web.json_response({"error": str(exc)}, status=503)
-        if not name or " " in name or name.startswith("-"):
+        from ...core.repository_locks import session_lease
+
+        async with session_lease(key):
+            if self.session_closing(key):
+                return web.json_response({"error": "会话已删除或正在删除"}, status=409)
+            return await self._create_session_branch(key, name)
+
+    async def _create_session_branch(self, key: str, name: str) -> web.Response:
+        from ...core import tasks, worktree
+
+        if not name or name.startswith("-") or " " in name:
             return web.json_response({"error": "分支名非法"}, status=400)
+        task = tasks.task_for_session(key)
+        root = (task or {}).get("cwd") or config.project_root_for(key)
+        if not root or (task and task.get("execution_profile") == "review"):
+            return web.json_response({"error": "该会话没有可写的项目目录"}, status=400)
+        cwd = (await worktree.ensure_worktree_for_task(root, task["id"]) if task
+               else await worktree.ensure_worktree(key))
+        if not cwd or Path(cwd).resolve() == Path(root).resolve():
+            return web.json_response({"error": "无法准备独立工作树"}, status=503)
+        if not await self._branch_checkout_matches(root, cwd):
+            return web.json_response({"error": "工作树根目录不匹配"}, status=503)
         # 交给 git 兜底校验(拒绝 .. / ~ / 控制字符 / 已占用等)
         code, _, _ = await git_status.run_git(cwd, "check-ref-format", "--branch", name)
         if code != 0:
             return web.json_response({"error": f"分支名非法:{name}"}, status=400)
+        session_store.set_conv_archived(key, False)
         code, _, err = await git_status.run_git(cwd, "checkout", "-b", name)
         if code != 0:
             return web.json_response({"error": err.strip() or "创建分支失败"}, status=400)
         info = await git_status.git_status(cwd)
-        proj_root = config.project_root_for(key) or cwd
-        info.update(
-            is_project=True, path=cwd,
-            name=os.path.basename(proj_root) or proj_root, project_path=proj_root,
-        )
+        info.update(is_project=True, path=cwd, name=os.path.basename(root) or root, project_path=root)
         return web.json_response(info)
+
+    @staticmethod
+    async def _branch_checkout_matches(root: str, cwd: str) -> bool:
+        # 已有的目录绑定也可能来自别的仓库，不能仅凭目录存在就写入。
+        _, top, _ = await git_status.run_git(cwd, "rev-parse", "--show-toplevel")
+        if not top.strip() or Path(top.strip()).resolve() != Path(cwd).resolve():
+            return False
+        args = ("rev-parse", "--path-format=absolute", "--git-common-dir")
+        code, current, _ = await git_status.run_git(cwd, *args)
+        root_code, original, _ = await git_status.run_git(root, *args)
+        return not code and not root_code and current.strip() == original.strip()
 
     # ── 设置:技能 / MCP ─────────────────────────────────────────────────
     @_authed
@@ -2938,7 +2959,12 @@ class WebAdapter:
         force = bool(body.get("force", False))
         session_key = config.resolve_session_key("web", conv)
         if not archived:
-            session_store.set_conv_archived(session_key, False)
+            from ...core.repository_locks import session_lease
+
+            async with session_lease(session_key):
+                if self.session_closing(session_key):
+                    return web.json_response({"ok": False, "error": "会话已删除或正在删除"}, status=409)
+                session_store.set_conv_archived(session_key, False)
             return web.json_response({"ok": True})
         # 归档只收起会话，开发副本统一交每日安全巡检，不绕过观察期和租约。
         # 有独立提交/未提交改动时先让用户确认，保留成果并提示未回收原因。
@@ -2950,6 +2976,8 @@ class WebAdapter:
                 "ok": False, "need_confirm": True, "dirty": dirty,
                 "msg": "该会话的代码有未提交改动或未合并提交,归档后 worktree 暂不回收",
             })
+        if self.session_closing(session_key):
+            return web.json_response({"ok": False, "error": "会话已删除或正在删除"}, status=409)
         session_store.set_conv_archived(session_key, True)
         cleanup = await worktree.preview_session_cleanup(session_key)
         logging.getLogger(__name__).info("会话归档，副本预览：%s %s", session_key, cleanup)

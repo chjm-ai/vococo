@@ -4,6 +4,44 @@ from __future__ import annotations
 import base64
 
 
+def test_archive_time_is_stable_and_restarts_after_reactivation(isolated, monkeypatch):
+    from vococo.memory import session_store
+
+    clock = [1000.0]
+    monkeypatch.setattr(session_store.time, "time", lambda: clock[0])
+    key = "session:archive-test"
+    session_store.set_conv_archived(key, True)
+    clock[0] += 100
+    session_store.set_conv_archived(key, True)
+    query = "SELECT archived_at FROM session_archive_times WHERE session_key=?"
+    assert session_store._conn().execute(query, (key,)).fetchone()[0] == 1000
+    session_store.set_conv_archived(key, False)
+    assert session_store._conn().execute(query, (key,)).fetchone() is None
+    clock[0] += 100
+    session_store.set_conv_archived(key, True)
+    assert session_store._conn().execute(query, (key,)).fetchone()[0] == 1200
+    session_store.delete_session(key)
+    assert session_store._conn().execute(query, (key,)).fetchone() is None
+
+
+def test_legacy_archived_session_gets_upgrade_observation_start(isolated):
+    from vococo.memory import _db, session_store
+
+    key = "session:legacy"
+    connection = session_store._conn()
+    connection.execute("INSERT INTO session_meta(session_key, archived) VALUES (?,1)", (key,))
+    connection.commit()
+    connection.close()
+    _db._DB = None
+    connection = session_store._conn()
+    query = "SELECT archived_at FROM session_archive_times WHERE session_key=?"
+    first = connection.execute(query, (key,)).fetchone()[0]
+    assert first > 0
+    connection.close()
+    _db._DB = None
+    assert session_store._conn().execute(query, (key,)).fetchone()[0] == first
+
+
 def test_append_and_load_recent(isolated):
     from vococo.memory import session_store
 
