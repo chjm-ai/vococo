@@ -162,6 +162,28 @@ def test_record_usage_zero_ctx_tokens_keeps_previous_value(isolated):
     assert summary["last_cache"] == 2_000  # 其它明细仍照常刷新
 
 
+def test_observed_cli_context_limits_are_used_in_session_views(isolated):
+    from vococo.memory import session_store
+
+    key = "web:cli-limits"
+    session_store.append(key, "你好", "你好")
+    session_store.set_chosen_model(key, "gpt-6.2-sol")
+    session_store.record_usage(key, 220_416, 228, model="gpt-6.2-sol", window=500_000,
+                               cli_window=300_000, compact_threshold=286_872)
+    session_store.update_context(key, 221_000, 500_000, "gpt-6.2-sol")
+    for summary in (session_store.session_summary(key), session_store.list_sessions(key)[0]):
+        assert summary["ctx_window"] == summary["ctx_cli_window"] == 300_000
+        assert summary["ctx_compact_threshold"] == 286_872
+        assert summary["ctx_tokens"] == 221_000
+    session_store.set_chosen_model(key, "kimi-k3")
+    assert session_store.session_summary(key)["ctx_compact_threshold"] == 0
+    session_store.record_usage(key, 221_001, 100, model="kimi-k3", window=500_000,
+                               cli_window=300_000, compact_threshold=-1)
+    assert session_store.session_summary(key)["ctx_compact_threshold"] == -1
+    session_store.clear(key)
+    assert session_store.session_summary(key)["ctx_cli_window"] == 0
+
+
 def test_duplicate_session_copies_turns_and_title(isolated):
     from vococo.memory import session_store
 

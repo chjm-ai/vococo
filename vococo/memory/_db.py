@@ -178,6 +178,8 @@ def conn() -> sqlite3.Connection:
             "ctx_tokens",
             "total_tokens",
             "ctx_window",
+            "ctx_cli_window",
+            "ctx_compact_threshold",
             "last_in",
             "last_cache",
             "last_out",

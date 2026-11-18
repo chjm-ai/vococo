@@ -227,7 +227,8 @@ def _child_options(parent: ClaudeAgentOptions, selection: str | None, usage: Usa
         )
         if body and provider_env:
             provider_env = {**provider_env, "CLAUDE_CODE_EXTRA_BODY": body}
-        env = _turn_env(provider_env, no_auto_memory=True)
+        env = _turn_env(provider_env, no_auto_memory=True,
+                        cli_window=providers.cli_context_window(selection) if provider_env else None)
         # 切模型只重置供应商环境，业务 SSH 的沙箱适配器必须继续继承。
         if "PATH" in parent.env:
             env["PATH"] = parent.env["PATH"]
