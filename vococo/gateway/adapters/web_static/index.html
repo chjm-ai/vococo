@@ -1120,7 +1120,7 @@ function syncModelLock(){
 }
 // 模型面板分组:Anthropic 订阅(拿不到具体用量,只显示重置时间)/ Kimi 订阅(有具体用量,带小圆环)
 // / API(按量计费,不查额度)。分组顺序固定,组间只画一条分割线,不做折叠。
-var MODEL_GROUPS = [["anthropic","Anthropic 订阅"],["kimi","Kimi 订阅"],["codex","Codex 订阅"],["api","API"]];
+var MODEL_GROUPS = [["anthropic","Anthropic 订阅"],["kimi","Kimi 订阅"],["codex","Codex 订阅"],["api","API"],["agy","Antigravity 试用 · 仅当前文字"]];
 var quotaCache = {};   // 按模型名缓存 {data, ts},60s 内直接复用,不重复打接口
 var quotaGroupData = {}; // 分组标题当前额度,供面板跨午夜时只刷新日期文案、不重打接口
 var quotaResetClock = 0;
@@ -1208,7 +1208,7 @@ function pickModel(id){
     .then(async r=>{
       if(!r.ok) throw new Error("model switch failed");
       const meta=await r.json();
-      saved.default=id;
+      if(!id.startsWith("agy-trial:")) saved.default=id;
       if(saved.chosen_model===id) updateUsageMeta({...meta, conv});
       await reloadSavedModels(conv);
     })

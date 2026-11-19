@@ -37,6 +37,7 @@ from ... import config, providers
 from ...core import model_preferences, title
 from ...core.agent import AgentReply, FileAttachment
 from ...memory import session_store, workbench
+from .. import agy_trial
 from .. import git_status, settings_store, stats
 from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink, is_command
 from .base import AudioAttachment, ImageAttachment, Incoming, VideoAttachment
@@ -1244,6 +1245,18 @@ class WebAdapter:
 
         try:
             await check_open()
+            key = config.resolve_session_key("web", conv)
+            selected = session_store.get_chosen_model(key)
+            trial_model = selected if agy_trial.is_trial_model(selected) else ""
+            expected = body.get("agy_trial_model", "")
+            command = is_command(str(body.get("text") or "").strip())
+            if expected != trial_model and not command:
+                return web.json_response({"error": "试用只接受手动发送的文字；若模型已变化，请刷新后重试"}, status=409)
+            if trial_model and not command:
+                if not agy_trial.enabled() or not agy_trial.accepts_session(key):
+                    return web.json_response({"error": "这个会话的 Antigravity 试用不可用，请切换模型"}, status=400)
+                if any(body.get(field) for field in ("images", "audios", "files", "videos", "library_refs")):
+                    return web.json_response({"error": "Antigravity 试用仅接受当前文字，不支持附件或作品引用"}, status=400)
             message = await self._prepare_message(request, body, before_accept=check_open)
             if isinstance(message, web.Response):
                 return message
@@ -1251,6 +1264,7 @@ class WebAdapter:
                 conv, message.text, images=message.images, audios=message.audios,
                 files=message.files, videos=message.videos,
                 client_request_id=str(body.get("client_request_id") or ""), ownership=ownership,
+                agy_trial_model=trial_model if expected == trial_model else "",
             )
         except SessionClosingError:
             return web.json_response({"error": "会话正在删除或已删除"}, status=409)
@@ -1367,6 +1381,7 @@ class WebAdapter:
         client_request_id: str = "",
         source_access: dict | None = None,
         ownership: dict | None = None,
+        agy_trial_model: str = "",
     ) -> None:
         """把一条消息塞进指定会话的处理流水线——浏览器发送(_handle_send)和外部注入
         (语音跨端续聊,见 inject()/gateway/web_bridge.py)共用同一份逻辑,保证标题
@@ -1384,7 +1399,7 @@ class WebAdapter:
         if not is_command(text) and conv != "main":
             session_key = config.resolve_session_key("web", conv)
             placeholder = session_store.ensure_title(session_key, text)
-            if placeholder:
+            if placeholder and not (agy_trial_model or agy_trial.is_trial_model(session_store.get_chosen_model(session_key))):
                 asyncio.create_task(
                     self._summarize_title(conv, session_key, text, placeholder)
                 )
@@ -1410,7 +1425,7 @@ class WebAdapter:
             Incoming(
                 self.platform, conv, text,
                 images=images, audios=audios, files=files, videos=videos,
-                source_access=source_access,
+                source_access=source_access, agy_trial_model=agy_trial_model,
             )
         )
 
@@ -1436,13 +1451,18 @@ class WebAdapter:
     async def _handle_model_switch(self, request: web.Request, body: dict) -> web.Response:
         """静默切模型：不走命令管道、不触发任何 SSE/推送通知。直接落库。"""
         conv = str(body.get("conv") or "main")
-        model = (body.get("model") or "").strip()
-        if not model:
+        model = body.get("model")
+        if not isinstance(model, str) or not (model := model.strip()):
             return web.json_response({"error": "empty model"}, status=400)
         session_key = config.resolve_session_key("web", conv)
+        trial = agy_trial.is_trial_model(model)
+        if trial and (model not in agy_trial.CHOICES or not agy_trial.enabled()
+                      or not agy_trial.accepts_session(session_key)):
+            return web.json_response({"error": "Antigravity 试用不可用"}, status=400)
         session_store.backfill_chosen_models()  # 冻结老会话
         session_store.set_chosen_model(session_key, model)
-        settings_store.set_web_default_model(model)
+        if not trial:
+            settings_store.set_web_default_model(model)
         # 同步更新 GatewayRunner 的内存缓存,否则下一条消息还会用旧模型
         if self._model_switch_callback:
             self._model_switch_callback(session_key, model)
@@ -2235,18 +2255,22 @@ class WebAdapter:
         # 模型清单 = 官方档 + 设置页里配好的 DeepSeek/Kimi 等(available_models);
         # label 带描述(如订阅/API 标签),前端 renderModelPop 直接展示。
         # default=当前激活的模型(跟随设置页默认或 config.MODEL)。
-        choices = providers.available_models(MODEL_CHOICES)
+        choices = list(providers.available_models(MODEL_CHOICES))
         # default = web 端上次选定的模型;没设过才回落到 config.MODEL
         active_model = settings_store.get_web_default_model() \
             or config.MODEL
         conv = request.query.get("conv", "")
         key = config.resolve_session_key("web", conv) if conv else ""
+        if agy_trial.enabled() and (not key or agy_trial.accepts_session(key)):
+            choices.extend((mid, label, "agy") for mid, label in agy_trial.CHOICES.items())
         chosen = session_store.get_chosen_model(key) if key else ""
         if key and not chosen:
             chosen = active_model
             session_store.set_chosen_model(key, chosen)
         efforts, tiers = {}, {}
-        for model, _, _ in choices:
+        for model, _, group in choices:
+            if group == "agy":
+                continue
             options = model_preferences.for_model(key, model)
             levels = providers.effort_levels_for_model(model)
             value = options["effort"]
@@ -2693,6 +2717,8 @@ class WebAdapter:
         if not conv:
             return web.json_response({"error": "missing conv"}, status=400)
         key = config.resolve_session_key("web", conv)
+        if agy_trial.is_trial_model(session_store.get_chosen_model(key)):
+            return web.json_response({"error": "Antigravity 试用不自动重发，请手动发送文字"}, status=409)
         user_text = session_store.delete_last_turn(key, turn_id)
         if user_text is None:
             return web.json_response(

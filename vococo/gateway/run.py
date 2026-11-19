@@ -272,9 +272,18 @@ class GatewayRunner:
         cwd_override = None
         is_explicit_project_override = None
         row = bg_tasks.task_for_session(key)
+        from . import agy_trial
+
+        if (row is not None or job_model is not None) and agy_trial.is_trial_model(inc.agy_trial_model or model):
+            await adapter.send(inc.chat_id, "Antigravity 试用不支持任务会话，请先切换模型。", notify=False)
+            return
         if row is not None:
             cwd_override = row.get("review_cwd") if row.get("execution_profile") == "review" else await worktree.execution_cwd_for_task(row["cwd"], row["id"])
             is_explicit_project_override = bool(row.get("cwd_explicit"))
+        allow_agy_trial = bool(inc.agy_trial_model and inc.agy_trial_model == model
+                               and row is None and job_model is None)
+        # 请求入队后切模型：拒绝旧请求，不把它悄悄交给新供应商。
+        model = inc.agy_trial_model or model
         # 设置本轮路由上下文(供 ask_user 工具反问时找到该发给谁),随 contextvar 传入工具
         token = clarify.set_current(key, adapter, inc.chat_id)
         clarify.mark_active(key)  # 全局登记"我在跑了",供 restart_self 等查"还有谁没结束"
@@ -293,6 +302,7 @@ class GatewayRunner:
                             store_user=inc.store_text, cwd_override=cwd_override,
                             is_explicit_project_override=is_explicit_project_override,
                             compact=compact_flag, source_access=inc.source_access,
+                            allow_agy_trial=allow_agy_trial,
                         )
                 except TimeoutError:
                     pass  # 超时静默处理,不向用户发送错误消息

@@ -259,6 +259,7 @@ async def converse(
     is_explicit_project_override: bool | None = None,
     compact: bool = False,
     source_access: dict | None = None,
+    allow_agy_trial: bool = False,
 ) -> AgentReply | None:
     from ..core import task_runner, tasks
 
@@ -273,7 +274,7 @@ async def converse(
         async with task_runner.foreground_execution(task_id, interrupt=interrupt):
             return await _converse(
                 session_key, user_text, model, sink, images, audios, files, videos,
-                store_user, cwd_override, is_explicit_project_override, compact, source_access,
+                store_user, cwd_override, is_explicit_project_override, compact, source_access, allow_agy_trial,
             )
 
 
@@ -291,6 +292,7 @@ async def _converse(
     is_explicit_project_override: bool | None = None,
     compact: bool = False,
     source_access: dict | None = None,
+    allow_agy_trial: bool = False,
 ) -> AgentReply | None:
     """跑一轮:载入历史 → 流式 → 喂 sink → 落库。
 
@@ -311,6 +313,7 @@ async def _converse(
     from .. import config  # 懒加载,与本模块其余用法一致
 
     from ..tools import danger  # 懒加载,避免 config↔tools 循环
+    from . import agy_trial
 
     from ..core import tasks as bg_tasks, worktree  # 懒加载
 
@@ -341,10 +344,12 @@ async def _converse(
     if dispatch.enabled() and not compact:
         execution_id = dispatch.begin(session_key, turn_id, source_access)
     await sink.turn_saved()
-    user_text, prompt_files = prepare_turn_attachments(
-        turn_id, user_text, images=images, audios=audios, files=files, videos=videos,
-    )
-    shared = SharedTurn(session_key, turn_id, sink)
+    agy_model = model if agy_trial.is_trial_model(model) else None
+    if not agy_model:
+        user_text, prompt_files = prepare_turn_attachments(
+            turn_id, user_text, images=images, audios=audios, files=files, videos=videos,
+        )
+    shared = SharedTurn(session_key, turn_id, sink, fresh=True) if agy_model else SharedTurn(session_key, turn_id, sink)
     reply: AgentReply | None = None
     timeline = shared.timeline
     _err_msg = ""           # 流式期间抛出的异常消息
@@ -376,12 +381,24 @@ async def _converse(
                 raise ValueError(refused)
             execution_options = {"token_budget": budget, "usage_callback": track_automatic_usage,
                                  "max_turns": config.TASK_MAX_TURNS, "require_resume": True}
-        async for ev in stream_run(
-            shared, user_text, stream_fn=stream_turn, model=model,
-            images=images, files=prompt_files, cwd=cwd,
-            is_explicit_project=is_explicit_project, compact=compact, **execution_options,
-        ):
-            await shared.observe(ev)
+        if agy_model:
+            from contextlib import aclosing
+
+            refusal = ""
+            if not allow_agy_trial or source_access or store_user is not None or compact or any((images, audios, files, videos)):
+                refusal = "Antigravity 试用只支持在网页手动发送当前文字。"
+            elif danger.redact_secrets(user_text) != user_text:
+                refusal = "这段文字可能含凭据，未发送给 Antigravity。"
+            async with aclosing(agy_trial.stream_trial(agy_model, user_text, refusal)) as events:
+                async for ev in events:
+                    await shared.observe(ev)
+        else:
+            async for ev in stream_run(
+                shared, user_text, stream_fn=stream_turn, model=model,
+                images=images, files=prompt_files, cwd=cwd,
+                is_explicit_project=is_explicit_project, compact=compact, **execution_options,
+            ):
+                await shared.observe(ev)
         reply = shared.reply
         if automatic and reply and reply.budget_exceeded:
             reply.is_error = True
@@ -564,6 +581,10 @@ def handle_command(text: str, session_key: str, current_model: str) -> CommandOu
         return CommandOutcome(reply=HELP_TEXT)
     if cmd == "/model":
         if arg:
+            from . import agy_trial
+
+            if agy_trial.is_trial_model(arg):
+                return CommandOutcome(reply="请通过网页模型选择器启用 Antigravity 试用。", handled=True)
             session_store.set_chosen_model(session_key, arg)  # 持久化,刷新/重启不丢
             return CommandOutcome(new_model=arg)
         # 候选 = 官方默认档 + 设置页里配好的 DeepSeek/Kimi 等供应商模型
