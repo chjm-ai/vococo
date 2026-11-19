@@ -1417,7 +1417,36 @@
   .qt{stroke:currentColor;stroke-linecap:round}
   #imgBtn{color:var(--dim);font-size:22px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
     display:flex;align-items:center;justify-content:center;transition:color var(--t-fast),background var(--t-fast)}
-  #imgBtn:hover{color:var(--text);background:var(--panel2)}
+  #imgBtn:hover,#imgBtn[aria-expanded="true"]{color:var(--text);background:var(--panel2)}
+  #composerAddMenu,#composerPrompts{position:absolute;inset:auto auto calc(100% + var(--sp-3)) 0;z-index:21;
+    margin:0;background:var(--card);color:var(--text);border:1px solid var(--line2);border-radius:var(--r-xl);box-shadow:var(--shadow)}
+  #composerAddMenu{padding:var(--sp-2)}
+  #composerAddMenu button{display:flex;align-items:center;gap:var(--sp-3);width:100%;min-width:10em;
+    padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);text-align:left;font-size:var(--fs-base)}
+  #composerAddMenu button span,#composerPromptsClose{display:grid;place-items:center;color:var(--dim)}
+  #composerPrompts{box-sizing:border-box;width:min(100%,32rem);padding:0;
+    max-height:min(65dvh,calc(100dvh - var(--composer-h,0px) - var(--sp-5)))}
+  #composerPrompts::backdrop{background:var(--ov-3)}
+  .composer-prompts-inner{padding:var(--sp-4)}
+  .composer-prompts-head{display:flex;align-items:center;justify-content:space-between;
+    margin-bottom:var(--sp-2);padding-left:var(--sp-3);font-size:var(--fs-xl)}
+  #composerPromptsClose{padding:var(--sp-3);border-radius:var(--r-md)}
+  #composerPromptCategories{display:flex;flex-wrap:wrap;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3) var(--sp-3);
+    border-bottom:1px solid var(--line2)}
+  #composerPromptCategories button{padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);color:var(--dim);font-size:var(--fs-md)}
+  #composerPromptCategories [aria-pressed="true"]{color:var(--accent);background:var(--panel2)}
+  #composerPromptRows{display:grid;gap:var(--sp-1);padding-top:var(--sp-2)}
+  .composer-prompt-row{display:grid;gap:var(--sp-1);width:100%;padding:var(--sp-3);text-align:left;
+    border-radius:var(--r-md);font-size:var(--fs-base)}
+  .composer-prompt-row small{color:var(--dim);font-size:var(--fs-sm);line-height:1.45}
+  #composerAddMenu button:hover,#composerPrompts button:hover{background:var(--panel2)}
+  #composerAddMenu button:focus-visible,#composerPrompts button:focus-visible,#imgBtn:focus-visible{
+    outline:2px solid var(--accent);outline-offset:-2px}
+  html.device-mobile #composerPrompts{position:fixed;inset:auto 0 0;width:100%;max-width:100%;max-height:80dvh;
+    border-radius:var(--r-xl) var(--r-xl) 0 0;padding-bottom:env(safe-area-inset-bottom)}
+  html.device-mobile #composerPromptCategories{display:grid;grid-template-columns:repeat(5,minmax(max-content,1fr));
+    gap:var(--sp-1);padding-inline:0;overflow-x:auto}
+  html.device-mobile #composerPromptCategories button{padding:var(--sp-4) 0;white-space:nowrap}
   #micBtn{position:relative;color:var(--dim);font-size:18px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
     display:flex;align-items:center;justify-content:center;transition:color var(--t-fast),background var(--t-fast),transform var(--t-fast)}
   #micBtn:hover{color:var(--text);background:var(--panel2)}
