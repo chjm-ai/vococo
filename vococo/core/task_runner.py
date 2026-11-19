@@ -79,6 +79,18 @@ _running: dict[str, asyncio.Task] = {}
 _foreground_scopes: dict[asyncio.Task, anyio.CancelScope] = {}
 
 
+def cron_execution_busy(job_id: str, session_key: str) -> bool:
+    """包含已写终态但还在收尾的旧会话执行句柄。"""
+    if tasks.cron_execution_active(job_id, session_key):
+        return True
+    for task_id in tuple(_running):
+        row = tasks.get(task_id) or {}
+        if (row.get("job_id") == job_id or row.get("session_key") == session_key
+                or (task_id == job_id and row.get("origin") == "cron" and not row.get("job_id"))):
+            return True
+    return False
+
+
 def session_busy(session_key: str) -> bool:
     """会话有排队/运行执行或尚未释放的执行句柄时，不接受跨会话打断。"""
     row = tasks.task_for_session(session_key)

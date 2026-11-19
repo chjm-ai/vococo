@@ -643,6 +643,34 @@ async def delete_cron_job(args: dict) -> dict:
         scheduler.save_jobs(jobs)
     return _ok(f"🗑 已删除任务「{j.get('name')}」。")
 
+async def _update_cron_prompt_if_unchanged(args: dict) -> dict:
+    from ..cron import scheduler
+    from . import danger
+
+    if set(args) != {"ref", "prompt", "expected_job_sha256"}:
+        return _ok("条件更新只接受任务 ID、prompt 和 expected_job_sha256。")
+    job_id, prompt, expected = args["ref"], args["prompt"], args["expected_job_sha256"]
+    if not isinstance(job_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", job_id):
+        return _ok("条件更新需要精确任务 ID。")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _ok("新指令不能为空。")
+    if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        return _ok("expected_job_sha256 必须是完整任务记录的 SHA256。")
+    proposed = scheduler.job_snapshot_sha256({"prompt": prompt})
+    detail = (f"任务 {job_id}：仅替换指令，不改排期或执行状态。\n"
+              f"旧记录 SHA256：{expected}\n新指令 SHA256：{proposed}\n"
+              "请对照此会话的工具入参或已复核候选确认；通知和审计不复制指令正文。")
+    if not await danger.require_approval("修改定时任务", detail):
+        return _ok(f"🛑 未批准修改任务 {job_id}，已跳过。")
+    try:
+        scheduler.update_job_prompt(job_id, prompt, expected)
+    except ValueError as exc:
+        return _ok(str(exc))
+    except OSError:
+        return _ok("任务配置读写异常，未确认更新；请读回核对，不要直接重试。")
+    return _ok(f"✅ 已更新任务 {job_id} 的指令，其余字段不变。")
+
+
 @tool(
     "update_cron_job",
     "修改一个已有定时任务(按 序号/id/名字定位),原地更新而不是删除重建。"
@@ -650,13 +678,17 @@ async def delete_cron_job(args: dict) -> dict:
     "ref:必填,定位任务;name/prompt:可选,改名字/指令;cron:可选,改成新的周期性cron表达式"
     "(如 '0 9 * * *' = 每天早9点);run_in_minutes:可选,改成多少分钟后跑一次的一次性任务"
     "(cron 与 run_in_minutes 最多传一个,都不传则调度不变);model/cwd:可选;"
-    "mode='script' 时需配 command,可选 summarize_prompt;agent_id:可选,改归属 Agent('none' = 不归属)。",
+    "mode='script' 时需配 command,可选 summarize_prompt;agent_id:可选,改归属 Agent('none' = 不归属)。"
+    "传 expected_job_sha256 时只允许精确任务 ID 和 prompt，只改已绑定的 Agent cron 指令。"
+    "指纹取完整旧任务记录 json.dumps(sort_keys=True, ensure_ascii=False, allow_nan=False) 的 UTF-8 SHA256；"
+    "审批后记录有变化或任务在途则拒绝。",
     {
         "type": "object",
         "properties": {
             "ref": {"type": "string"},
             "name": {"type": "string"},
             "prompt": {"type": "string"},
+            "expected_job_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "cron": {"type": "string"},
             "run_in_minutes": {"type": "number"},
             "model": {"type": "string"},
@@ -670,6 +702,9 @@ async def delete_cron_job(args: dict) -> dict:
     },
 )
 async def update_cron_job(args: dict) -> dict:
+    if "expected_job_sha256" in args:
+        return await _update_cron_prompt_if_unchanged(args)
+
     import time as _time
 
     from ..cron import scheduler
@@ -739,19 +774,20 @@ async def update_cron_job(args: dict) -> dict:
 
     try:
         with scheduler.JOBS_LOCK:
-            if schedule_only:
-                current = next((j for j in scheduler.load_jobs() if j["id"] == job["id"]), None)
-                if current is None:
-                    return _ok(f"没找到任务「{ref}」。")
-                # 只修改请求字段，不把并发更新的执行内容恢复成审批前的快照。
-                name = (args.get("name") or "").strip() or current.get("name")
-                prompt = current.get("prompt")
-                if not cron_expr and run_in_minutes is None:
-                    schedule = current.get("schedule", {})
-                job = current
+            current = next((j for j in scheduler.load_jobs() if j["id"] == job["id"]), None)
+            if current is None:
+                return _ok(f"没找到任务「{ref}」。")
+            approved_scope = ("agent_id", "conv", "cwd", "mode", "command")
+            if not schedule_only and any(job.get(key) != current.get(key) for key in approved_scope):
+                return _ok("任务归属或执行范围已变化；未修改，请重新核对。")
+            # 未申请修改的字段取当前值，不能覆盖审批期间已写入的新指令。
+            name = (args.get("name") or "").strip() or current.get("name")
+            prompt = (args.get("prompt") or "").strip() or current.get("prompt")
+            if not cron_expr and run_in_minutes is None:
+                schedule = current.get("schedule", {})
             updated = scheduler.update_job(
-                job["id"], name=name, prompt=prompt, schedule=schedule,
-                target=job.get("target"), **kwargs,
+                current["id"], name=name, prompt=prompt, schedule=schedule,
+                target=current.get("target"), **kwargs,
             )
     except ValueError as exc:
         return _ok(str(exc))
