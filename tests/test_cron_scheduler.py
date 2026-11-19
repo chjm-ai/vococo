@@ -434,6 +434,35 @@ async def test_tracked_script_run_ids_are_unique_and_running_is_persisted(cron_e
 
 
 @pytest.mark.anyio
+async def test_tracked_cron_persists_original_due_slot_but_manual_run_clears_it(cron_env, monkeypatch):
+    due = int(scheduler.time.time()) - 7200
+    slots = []
+
+    async def fake_subprocess_shell(cmd, **kw):
+        current, = scheduler.load_jobs()
+        assert kw["env"]["VOCOCO_CRON_RUN_ID"] == current["running_run_id"]
+        slots.append(current.get("running_scheduled_for"))
+        return _FakeProc(b"##CRON_SIGNAL:0##", returncode=0)
+
+    monkeypatch.setattr(scheduler.asyncio, "create_subprocess_shell", fake_subprocess_shell)
+    monkeypatch.setattr(scheduler, "_push", _noop_coro)
+    job = _make_script_job(track_script_runs=True, next_run_at=due)
+    scheduler._tick(_noop_coro)
+    await scheduler._script_tasks[job["id"]]
+    saved, = scheduler.load_jobs()
+    assert saved["last_run_scheduled_for"] == due < saved["last_run_at"]
+    assert "running_scheduled_for" not in saved
+    old_id = saved["last_run_id"]
+    await asyncio.sleep(0)
+    scheduler.run_now(job["id"])
+    await scheduler._script_tasks[job["id"]]
+    manual, = scheduler.load_jobs()
+    assert manual["last_run_id"] != old_id
+    assert "last_run_scheduled_for" not in manual
+    assert slots == [due, None]
+
+
+@pytest.mark.anyio
 async def test_pending_run_survives_push_failure_and_is_acknowledged_after_delivery(cron_env, monkeypatch):
     import json
     seen = []

@@ -50,10 +50,14 @@ import json
 import os
 import re
 import signal
+import sqlite3
+import stat
+import tempfile
 import threading
 import time
 import uuid
 from functools import wraps
+from hashlib import sha256
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -150,12 +154,22 @@ def _apply_job_defaults(jobs: list[dict]) -> bool:
     return changed
 
 
+def _unique_job_fields(pairs: list[tuple[str, object]]) -> dict:
+    fields = dict(pairs)
+    if len(fields) != len(pairs):
+        raise ValueError("任务配置含有重复字段；未修改。")
+    return fields
+
+
 @_with_jobs_lock
-def load_jobs() -> list[dict]:
+def load_jobs(*, migrate: bool = True) -> list[dict]:
     try:
-        jobs = json.loads(config.CRON_JOBS_PATH.read_text(encoding="utf-8"))
+        fields_hook = None if migrate else _unique_job_fields
+        jobs = json.loads(config.CRON_JOBS_PATH.read_text(encoding="utf-8"), object_pairs_hook=fields_hook)
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+    if not migrate:
+        return jobs  # 条件更新比较原记录；拒绝时也不能写入其他任务的迁移。
     changed = _apply_job_defaults(jobs)
     for job in jobs:
         if not job.get("conv"):  # 老数据补一个专属会话 id(灰度迁移,见模块头 job 结构注释)
@@ -351,6 +365,89 @@ def update_job(
     return job
 
 
+def job_snapshot_sha256(job: dict) -> str:
+    """绑定完整旧记录，包括运行状态；只读比较，不折叠缺失字段或布尔值。"""
+    raw = json.dumps(job, ensure_ascii=False, sort_keys=True, allow_nan=False)
+    return sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _prompt_update_busy(job: dict) -> bool:
+    job_id = job["id"]
+    if (job_id in _deleting_jobs or job_id in _script_tasks or job_id in _script_running
+            or job_id in _script_processes or job_id in _pending_agent_appends.values()):
+        return True
+    if "running_run_id" in job:
+        run_id = job["running_run_id"]
+        completed = (isinstance(run_id, str) and re.fullmatch(r"[a-f0-9]{32}", run_id)
+                     and run_id == job.get("last_run_id") and job.get("last_status") in ("success", "error")
+                     and type(job.get("last_run_at")) in (int, float))
+        if not completed:
+            raise ValueError("原脚本运行标记未核清；未修改，也不清理挂账。")
+    try:
+        with bg_tasks.read_connection():
+            return task_runner.cron_execution_busy(job_id, job["conv"])
+    except sqlite3.Error:
+        raise ValueError("无法确认任务是否在途；未修改。") from None
+
+
+def _require_persisted_job_binding(job: dict) -> None:
+    from ..memory import _db, agents
+
+    owner = job.get("agent_id") or agents.GENERAL_ID
+    try:
+        with _db.read_connection():
+            binding = session_store.session_binding(job["conv"])
+    except sqlite3.Error:
+        raise ValueError("无法读取任务会话归属；未修改。") from None
+    if binding.get("agent_id") != owner or not agents.has_persisted_agent(owner):
+        raise ValueError("任务没有有效的持久会话归属；未修改。")
+
+
+def _replace_job_prompt_records(jobs: list[dict]) -> None:
+    # 保留原文件权限；即使写盘失败也不把全部定时配置截断成半份。
+    path = config.CRON_JOBS_PATH
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("任务配置不是普通文件；未修改。")
+    payload = json.dumps(jobs, ensure_ascii=False, indent=2, allow_nan=False)
+    temp = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False)
+    try:
+        with temp:
+            temp.write(payload)
+            temp.flush()
+            os.fchmod(temp.fileno(), stat.S_IMODE(info.st_mode))
+            os.fsync(temp.fileno())
+        os.replace(temp.name, path)
+    finally:
+        Path(temp.name).unlink(missing_ok=True)
+
+
+@_with_jobs_lock
+def update_job_prompt(job_id: str, prompt: str, expected_job_sha256: str) -> None:
+    """审批后在调度器同一把锁内比较再写，仅用于已绑定的 Agent cron 任务。"""
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("新指令不能为空。")
+    jobs = load_jobs(migrate=False)
+    if not isinstance(jobs, list) or any(not isinstance(row, dict) for row in jobs):
+        raise ValueError("任务配置不可识别；未修改。")
+    matches = [row for row in jobs if row.get("id") == job_id]
+    if len(matches) != 1:
+        raise ValueError("目标任务不存在或不唯一；未修改。")
+    job, = matches
+    if job_snapshot_sha256(job) != expected_job_sha256:
+        raise ValueError("任务记录已变化；未修改。请按当前记录重新核对切换计划。")
+    conv, schedule = job.get("conv"), job.get("schedule")
+    if (not isinstance(conv, str) or not conv.startswith(("session:", "task:"))
+            or not isinstance(schedule, dict) or schedule.get("kind") != "cron"
+            or job.get("mode") not in (None, "", "agent")):
+        raise ValueError("条件更新只支持已绑定会话的 Agent cron 任务；未修改。")
+    _require_persisted_job_binding(job)
+    if _prompt_update_busy(job):
+        raise ValueError("任务在途或正在移除；未修改。")
+    job["prompt"] = prompt
+    _replace_job_prompt_records(jobs)
+
+
 @_with_jobs_lock
 def model_for_session(session_key: str) -> str | None:
     """只读模型，不让无关任务的策略校验或迁移阻断普通聊天。"""
@@ -449,6 +546,7 @@ def _write_heartbeat() -> None:
 @_with_jobs_lock
 def _run_job(
     job: dict, push: PushFn, *, prompt: str | None = None, extra_env: dict | None = None,
+    scheduled_for: int | float | None = None,
 ) -> None:
     """触发一次 job 执行,不等它跑完。mode=="script" 直接丢给 _run_script_job
     (脚本任务,见模块头说明);默认走统一后台任务引擎——按 job_id 找执行记录:
@@ -466,7 +564,8 @@ def _run_job(
     if job.get("mode") == "script":
         if job_id not in _script_tasks and job_id not in _script_processes:
             _script_sessions[job_id] = job["conv"]
-            script = asyncio.create_task(_run_script_job(job, push, extra_env=extra_env))
+            kwargs = {} if scheduled_for is None else {"scheduled_for": scheduled_for}
+            script = asyncio.create_task(_run_script_job(job, push, extra_env=extra_env, **kwargs))
             _script_tasks[job_id] = script
             script.add_done_callback(lambda done: _script_finished(job_id))
         return
@@ -499,12 +598,22 @@ def _run_job(
         # 用户通过 web UI 手动发消息走 gateway/core.py converse(),
         # 仍会 resume 最近一次运行的 SDK session,可用于排查。
         session_store.set_sdk_session_id(bg_tasks.session_key(task["id"]), None)
-        asyncio.create_task(task_runner.append(task["id"], turn_prompt, fresh=True))
+        append = asyncio.create_task(task_runner.append(task["id"], turn_prompt, fresh=True))
+        # append 尚未开始时任务行可能仍是终态，但已经取到了旧指令。
+        _pending_agent_appends[append] = job_id
+        append.add_done_callback(_agent_append_done)
 
 
 _push: PushFn | None = None  # run_scheduler 起来后记下推送出口,供「试跑」(run_now)用
+_pending_agent_appends: dict[asyncio.Task, str] = {}
 
 
+@_with_jobs_lock
+def _agent_append_done(append: asyncio.Task) -> None:
+    _pending_agent_appends.pop(append, None)
+
+
+@_with_jobs_lock
 def run_now(job_id: str) -> dict | None:
     """「试跑」:不改下次到点时间,立刻触发一次。任务不存在返回 None;调度器没起来抛 RuntimeError。"""
     job = next((j for j in load_jobs() if j.get("id") == job_id), None)
@@ -551,6 +660,11 @@ def _prepare_completion(event) -> None:
         job["last_run_at"], job["last_status"] = int(time.time()), status
         if event.run_id:
             job["last_run_id"] = event.run_id
+        scheduled_for = job.get("running_scheduled_for")
+        if event.run_id and job.get("running_run_id") == event.run_id and type(scheduled_for) in (int, float):
+            job["last_run_scheduled_for"] = scheduled_for
+        else:
+            job.pop("last_run_scheduled_for", None)
         quiet, notice = _track_failure(job, status, event.text)
         save_jobs(jobs)
     event.job = job
@@ -754,10 +868,12 @@ def _ack_script_runs(job_id: str, run_id: str, acknowledged: list[str]) -> None:
             job.pop("pending_run_ids")
         if job.get("running_run_id") == run_id:
             job.pop("running_run_id", None)
+            job.pop("running_scheduled_for", None)
         save_jobs(jobs)
 
 
-async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None) -> None:
+async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None, *,
+                          scheduled_for: int | float | None = None) -> None:
     """脚本任务模式(mode=="script",见模块头说明):直接跑 job["command"],不进
     Agent 会话——没有系统提示/工具定义的打包成本。命令输出末尾若带
     ##CRON_SIGNAL:0/1## 标记,0 表示没有实质产出,原始输出直接当结果、零 LLM
@@ -795,6 +911,10 @@ async def _run_script_job(job: dict, push: PushFn, extra_env: dict | None = None
                     pending.append(previous_running)
                 current["pending_run_ids"] = pending + [run_id]
                 current["running_run_id"] = run_id
+                if type(scheduled_for) in (int, float):
+                    current["running_scheduled_for"] = scheduled_for
+                else:
+                    current.pop("running_scheduled_for", None)
                 save_jobs(jobs)
             extra_env = {**(extra_env or {}), "VOCOCO_CRON_RUN_ID": run_id,
                          "VOCOCO_CRON_PENDING_RUN_IDS": json.dumps(pending)}
@@ -881,7 +1001,8 @@ def _tick(push: PushFn) -> None:
             changed = True
             continue
         if job["next_run_at"] <= now:
-            # 先推进(at-most-once),再触发
+            # 先推进(at-most-once),再触发。记录本来该执行的时点，不用延迟后的开跑时间代替。
+            due = job["next_run_at"]
             if job["schedule"].get("kind") == "once":
                 job["enabled"] = False
                 job["next_run_at"] = None
@@ -889,7 +1010,10 @@ def _tick(push: PushFn) -> None:
                 job["next_run_at"] = _next_run(job["schedule"], now)
             changed = True
             try:
-                _run_job(job, push)
+                if job.get("mode") == "script" and job.get("track_script_runs") is True and job["schedule"].get("kind") == "cron":
+                    _run_job(job, push, scheduled_for=due)
+                else:
+                    _run_job(job, push)
             except Exception as e:  # 单个任务触发失败不拖垮调度
                 job["last_status"] = f"error: {e}"
     if changed:

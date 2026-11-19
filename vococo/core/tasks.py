@@ -95,6 +95,15 @@ def task_for_job(job_id: str) -> dict | None:
     return _row(row) if row else None
 
 
+def cron_execution_active(job_id: str, session_key: str) -> bool:
+    """旧会话仍可能在执行；不能让新会话的终态遮住旧执行。"""
+    return _conn().execute(
+        "SELECT 1 FROM tasks WHERE status IN ('queued','running') AND "
+        "(job_id=? OR session_key=? OR (origin='cron' AND job_id IS NULL AND id=?)) LIMIT 1",
+        (job_id, session_key, job_id),
+    ).fetchone() is not None
+
+
 def task_id_from_session_key(key: str) -> str | None:
     row = task_for_session(key) if key else None
     if row:

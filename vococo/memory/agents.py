@@ -199,6 +199,16 @@ def _read_meta(agent_id: str) -> dict:
         return {}
 
 
+def has_persisted_agent(agent_id: str) -> bool:
+    """调度锁内只读，不补建旧项目，也不取得 Agent 更新锁。"""
+    if not isinstance(agent_id, str) or not valid_id(agent_id):
+        return False
+    if agent_id == GENERAL_ID:
+        return True
+    meta = _read_meta(agent_id)
+    return isinstance(meta, dict) and bool(meta.get("workdir"))
+
+
 def _write_meta(agent_id: str, meta: dict) -> None:
     with _UPDATE_LOCK:
         d = home(agent_id)
@@ -740,7 +750,7 @@ def _legacy_task_owner(row: dict | None, session_key: str) -> dict | None:
     from ..cron import scheduler
 
     job_id = row.get("job_id") if row else session_key.removeprefix("task:")
-    job = next((j for j in scheduler.load_jobs() if j.get("id") == job_id), None) if job_id else None
+    job = next((j for j in scheduler.load_jobs(migrate=False) if j.get("id") == job_id), None) if job_id else None
     if job and job.get("agent_id"):
         return get(job["agent_id"])
     return get(row["agent_id"]) if row and row.get("agent_id") else None
