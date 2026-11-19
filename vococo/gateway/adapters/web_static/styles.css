@@ -1226,9 +1226,9 @@
   .inbar{display:flex;align-items:center;gap:2px;margin-top:2px}
   .inbar .spacer{flex:1}
   /* 模型选择器(发送按钮左侧,无边框)*/
-  #modelBox{position:relative}
+  #modelBox{position:relative;min-width:0;max-width:150px}
   #modelBtn{display:flex;align-items:center;gap:6px;font-size:var(--fs-sm);color:var(--dim);font-weight:500;
-    padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);max-width:150px;transition:color var(--t-fast),background var(--t-fast),transform var(--t-fast)}
+    padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);max-width:100%;transition:color var(--t-fast),background var(--t-fast),transform var(--t-fast)}
   #modelBtn #modelName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #modelBtn:hover{color:var(--text);background:var(--panel2)}
   #modelBtn:active{transform:scale(.96)}
@@ -1417,20 +1417,16 @@
   .qt{stroke:currentColor;stroke-linecap:round}
   #imgBtn{color:var(--dim);font-size:22px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
     display:flex;align-items:center;justify-content:center;transition:color var(--t-fast),background var(--t-fast)}
-  #imgBtn:hover,#imgBtn[aria-expanded="true"]{color:var(--text);background:var(--panel2)}
-  #composerAddMenu,#composerPrompts{position:absolute;inset:auto auto calc(100% + var(--sp-3)) 0;z-index:21;
-    margin:0;background:var(--card);color:var(--text);border:1px solid var(--line2);border-radius:var(--r-xl);box-shadow:var(--shadow)}
-  #composerAddMenu{padding:var(--sp-2)}
-  #composerAddMenu button{display:flex;align-items:center;gap:var(--sp-3);width:100%;min-width:10em;
-    padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);text-align:left;font-size:var(--fs-base)}
-  #composerAddMenu button span,#composerPromptsClose{display:grid;place-items:center;color:var(--dim)}
-  #composerPrompts{box-sizing:border-box;width:min(100%,32rem);padding:0;
+  #imgBtn:hover{color:var(--text);background:var(--panel2)}
+  #composerPrompts{position:absolute;inset:auto auto calc(100% + var(--sp-3)) 0;z-index:21;
+    margin:0;background:var(--card);color:var(--text);border:1px solid var(--line2);border-radius:var(--r-xl);box-shadow:var(--shadow);
+    box-sizing:border-box;width:min(100%,32rem);padding:0;
     max-height:min(65dvh,calc(100dvh - var(--composer-h,0px) - var(--sp-5)))}
   #composerPrompts::backdrop{background:var(--ov-3)}
   .composer-prompts-inner{padding:var(--sp-4)}
   .composer-prompts-head{display:flex;align-items:center;justify-content:space-between;
     margin-bottom:var(--sp-2);padding-left:var(--sp-3);font-size:var(--fs-xl)}
-  #composerPromptsClose{padding:var(--sp-3);border-radius:var(--r-md)}
+  #composerPromptsClose{display:grid;place-items:center;color:var(--dim);padding:var(--sp-3);border-radius:var(--r-md)}
   #composerPromptCategories{display:flex;flex-wrap:wrap;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3) var(--sp-3);
     border-bottom:1px solid var(--line2)}
   #composerPromptCategories button{padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);color:var(--dim);font-size:var(--fs-md)}
@@ -1439,18 +1435,19 @@
   .composer-prompt-row{display:grid;gap:var(--sp-1);width:100%;padding:var(--sp-3);text-align:left;
     border-radius:var(--r-md);font-size:var(--fs-base)}
   .composer-prompt-row small{color:var(--dim);font-size:var(--fs-sm);line-height:1.45}
-  #composerAddMenu button:hover,#composerPrompts button:hover{background:var(--panel2)}
-  #composerAddMenu button:focus-visible,#composerPrompts button:focus-visible,#imgBtn:focus-visible{
+  #composerPrompts button:hover{background:var(--panel2)}
+  #composerPrompts button:focus-visible,#composerOpenPrompts:focus-visible,#imgBtn:focus-visible{
     outline:2px solid var(--accent);outline-offset:-2px}
   html.device-mobile #composerPrompts{position:fixed;inset:auto 0 0;width:100%;max-width:100%;max-height:80dvh;
     border-radius:var(--r-xl) var(--r-xl) 0 0;padding-bottom:env(safe-area-inset-bottom)}
   html.device-mobile #composerPromptCategories{display:grid;grid-template-columns:repeat(5,minmax(max-content,1fr));
     gap:var(--sp-1);padding-inline:0;overflow-x:auto}
   html.device-mobile #composerPromptCategories button{padding:var(--sp-4) 0;white-space:nowrap}
-  #micBtn{position:relative;color:var(--dim);font-size:18px;width:34px;height:34px;border-radius:50%;flex-shrink:0;
+  #micBtn,#composerOpenPrompts{position:relative;color:var(--dim);width:calc(2 * var(--sp-5) + 2px);height:calc(2 * var(--sp-5) + 2px);border-radius:50%;flex-shrink:0;
     display:flex;align-items:center;justify-content:center;transition:color var(--t-fast),background var(--t-fast),transform var(--t-fast)}
-  #micBtn:hover{color:var(--text);background:var(--panel2)}
-  #micBtn:active{transform:scale(.9)}
+  #micBtn{font-size:18px}
+  #micBtn:hover,#composerOpenPrompts:hover{color:var(--text);background:var(--panel2)}
+  #micBtn:active,#composerOpenPrompts:active{transform:scale(.9)}
   @keyframes spin{to{transform:rotate(360deg)}}
   @keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
   @keyframes recIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
@@ -1536,7 +1533,7 @@
   html:not(.device-mobile) body.sb-collapsed #hamb{display:flex}
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
   .ic{width:14px;height:14px;vertical-align:-2.5px;flex-shrink:0}
-  #micBtn .ic{width:17px;height:17px;vertical-align:-4px}
+  #micBtn .ic,#composerOpenPrompts .ic{width:calc(var(--fs-xl) + 1px);height:calc(var(--fs-xl) + 1px);vertical-align:calc(-1 * var(--sp-1))}
   .pmrow .ic{width:15px;height:15px;vertical-align:-3px;margin-right:2px;color:var(--dim)}
 
   /* ── 通话视图(#callView,原独立 /voice 页):跟 #chatMain 同级互斥显隐,

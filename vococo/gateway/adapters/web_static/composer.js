@@ -502,7 +502,7 @@ function saveDraft(conv=S.conv, value){
   }catch(e){}
 }
 function restoreDraft(conv){
-  closeComposerAddMenu(); closeComposerPrompts();
+  closeComposerPrompts();
   let v=""; try{ v=localStorage.getItem(draftKey(conv))||""; }catch(e){}
   $("#ta").value=v; autoGrow();
 }
@@ -598,19 +598,11 @@ try{
   if(COMPOSER_PROMPTS.some(category=>category.id===stored)) composerPromptCategory=stored;
 }catch(e){}
 
-function closeComposerAddMenu(restoreFocus=false){
-  const menu=$("#composerAddMenu");
-  if(!menu || menu.hidden) return;
-  menu.hidden=true;
-  const button=$("#imgBtn");
-  button.setAttribute("aria-expanded","false");
-  if(restoreFocus) button.focus({preventScroll:true});
-}
 function closeComposerPrompts(restoreFocus=false){
   const dialog=$("#composerPrompts");
   if(!dialog?.open) return;
   dialog.close();
-  if(restoreFocus) $("#imgBtn").focus({preventScroll:true});
+  if(restoreFocus) $("#composerOpenPrompts").focus({preventScroll:true});
 }
 function insertComposerPrompt(body){
   const ta=$("#ta");
@@ -639,16 +631,16 @@ function selectComposerPromptCategory(category){
   }));
 }
 function openComposerPrompts(){
-  closeComposerAddMenu();
   const dialog=$("#composerPrompts");
+  if(dialog.open){ closeComposerPrompts(true); return; }
+  closeComposerPopovers();
   selectComposerPromptCategory(COMPOSER_PROMPTS.find(category=>category.id===composerPromptCategory));
   if(IS_MOBILE_DEVICE) dialog.showModal(); else dialog.show();
   $("#composerPromptsClose").focus({preventScroll:true});
 }
 function initComposerPrompts(){
-  const add=$("#imgBtn"), menu=$("#composerAddMenu"), dialog=$("#composerPrompts");
-  setIcon($("#composerOpenPrompts span"),"book");
-  setIcon($("#composerOpenFile span"),"doc");
+  const trigger=$("#composerOpenPrompts"), dialog=$("#composerPrompts");
+  setIcon(trigger,"doc");
   setIcon($("#composerPromptsClose"),"close");
   for(const category of COMPOSER_PROMPTS){
     const button=el("button"); button.type="button";
@@ -656,19 +648,12 @@ function initComposerPrompts(){
     button.onclick=()=>selectComposerPromptCategory(category);
     $("#composerPromptCategories").append(button);
   }
-  add.onclick=()=>{
-    if(!menu.hidden){ closeComposerAddMenu(true); return; }
-    closeComposerPopovers(menu);
-    menu.hidden=false; add.setAttribute("aria-expanded","true");
-    $("#composerOpenPrompts").focus({preventScroll:true});
-  };
-  $("#composerOpenPrompts").onclick=openComposerPrompts;
-  $("#composerOpenFile").onclick=()=>{ closeComposerAddMenu(true); $("#file").click(); };
+  $("#imgBtn").onclick=()=>{ closeComposerPopovers(); $("#file").click(); };
+  trigger.onclick=openComposerPrompts;
   $("#composerPromptsClose").onclick=()=>closeComposerPrompts(true);
   dialog.oncancel=e=>{ e.preventDefault(); closeComposerPrompts(true); };
   dialog.onclick=e=>{ if(e.target===dialog && IS_MOBILE_DEVICE) closeComposerPrompts(true); };
   document.addEventListener("click",e=>{
-    if(!e.target.closest("#imgBtn,#composerAddMenu")) closeComposerAddMenu();
     if(!IS_MOBILE_DEVICE && !e.target.closest("#composerPrompts,#composerOpenPrompts")) closeComposerPrompts();
   });
 }
@@ -1291,7 +1276,6 @@ window.vococoKeyboard = (()=>{
       return true;
     }
     if(visible(convMenuEl)){ closeConvMenu(); return true; }
-    if(visible($("#composerAddMenu"))){ closeComposerAddMenu(true); return true; }
     const pops=[...document.querySelectorAll(popSelector)].filter(visible);
     if(pops.length){ closeComposerPopovers(); closeHeaderPopovers(); pops.forEach(node=>node.hidden=true); return true; }
     if([...document.querySelectorAll('.artifact-menu-panel:not([hidden])')].some(visible)){
