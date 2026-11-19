@@ -1121,6 +1121,7 @@ function syncModelLock(){
 // 模型面板分组:Anthropic 订阅(拿不到具体用量,只显示重置时间)/ Kimi 订阅(有具体用量,带小圆环)
 // / API(按量计费,不查额度)。分组顺序固定,组间只画一条分割线,不做折叠。
 var MODEL_GROUPS = [["anthropic","Anthropic 订阅"],["kimi","Kimi 订阅"],["codex","Codex 订阅"],["api","API"],["agy","Antigravity 试用 · 仅当前文字"]];
+var QUOTA_GROUPS = ["anthropic", "kimi", "codex", "agy"];
 var quotaCache = {};   // 按模型名缓存 {data, ts},60s 内直接复用,不重复打接口
 var quotaGroupData = {}; // 分组标题当前额度,供面板跨午夜时只刷新日期文案、不重打接口
 var quotaResetClock = 0;
@@ -1148,7 +1149,7 @@ function renderModelPop(){
     groupsShown++;
     // 额度是账号级、组内所有模型共用(实测过,同组各模型接口返回完全一样)——
     // 圆环+重置时间挂在分组标题上查一次,不再每行重复挂一份。
-    const showMeta = gkey==="anthropic" || gkey==="kimi" || gkey==="codex";
+    const showMeta = QUOTA_GROUPS.includes(gkey);
     const meta = showMeta ? '<span class="mgmeta"><span class="mreset" data-m="'+esc(gkey)+'"></span>'+ringSvg(gkey)+'</span>' : "";
     html += '<div class="mgrouplabel"><span>'+esc(gname)+'</span>'+meta+'</div>';
     html += items.map(function(c){
@@ -1169,6 +1170,13 @@ function renderModelPop(){
   pop.querySelectorAll(".mring").forEach(ring=>{
     ring.addEventListener("mouseenter", ()=>showUsageTip(ring));
     ring.addEventListener("mouseleave", hideUsageTip);
+    if(ring.dataset.m === "agy"){
+      ring.tabIndex = 0;
+      ring.setAttribute("aria-label", "Antigravity 额度详情");
+      ring.addEventListener("focus", ()=>showUsageTip(ring));
+      ring.addEventListener("blur", hideUsageTip);
+      ring.addEventListener("click", ()=>showUsageTip(ring));
+    }
   });
   loadModelQuotas(choices);
   startQuotaResetClock();
@@ -1222,21 +1230,45 @@ document.addEventListener("click", e=>{ const b=$("#modelBox"); if(b && !b.conta
 // loadUsage 只负责拿数据+缓存(60s 内复用),不碰 DOM;渲染交给调用方按行更新。
 function loadUsage(model, force){
   var cached = quotaCache[model];
-  if(cached && !force && (Date.now() - cached.ts) < 60000){
+  var isAgy = model.startsWith("agy-trial:");
+  // Antigravity 服务端按账号缓存，避免前端跨过重置时间仍复用旧值。
+  if(!isAgy && cached && !force && (Date.now() - cached.ts) < 60000){
     return Promise.resolve(cached.data);
   }
   var ctrl = new AbortController();
-  var timeout = setTimeout(function(){ ctrl.abort(); }, 10000);
-  return api("/api/usage?model="+encodeURIComponent(model), {signal: ctrl.signal})
+  var timeout = setTimeout(function(){ ctrl.abort(); }, isAgy ? 25000 : 10000);
+  return api("/api/usage?model="+encodeURIComponent(model), {signal: ctrl.signal}, {trackService: !isAgy})
     .then(function(r){ clearTimeout(timeout); if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
     .then(function(data){ quotaCache[model] = {data: data, ts: Date.now()}; return data; })
     .catch(function(){ clearTimeout(timeout); delete quotaCache[model]; return null; });
 }
 // resets_at:Claude 给秒级 unix 时间戳,Kimi 给 ISO 字符串——统一转毫秒;已过期的窗口不显示。
+function quotaRingLimit(data){
+  if(!data) return null;
+  return data.provider === "agy" ? data.primary_limit : data.limits && data.limits.five_hour;
+}
+function activeAgyQuota(data){
+  var now = Date.now();
+  var groups = data.groups.map(function(group){
+    return {name: group.name, limits: group.limits.filter(function(limit){
+      return !limit.resets_at || limit.resets_at*1000 > now;
+    })};
+  }).filter(function(group){ return group.limits.length; });
+  var limits = groups.flatMap(function(group){ return group.limits; });
+  if(!limits.length) return {error: "额度已到重置时间，重新打开面板刷新"};
+  var primary = limits.reduce(function(a,b){ return a.utilization >= b.utilization ? a : b; });
+  return {...data, groups: groups, primary_limit: primary};
+}
 function resetLabel(data, nowMs){
-  var five = data && data.limits && data.limits.five_hour;
-  if(!five || !five.resets_at) return "";
-  var ts = typeof five.resets_at === "number" ? five.resets_at * 1000 : new Date(five.resets_at).getTime();
+  var limit = quotaRingLimit(data);
+  if(!limit) return "";
+  var label = data.provider === "agy" ? "最低剩 "+Math.round(limit.remaining_fraction*100)+"%" : "";
+  var reset = formatQuotaReset(limit.resets_at, nowMs);
+  return [label, reset].filter(Boolean).join(" · ");
+}
+function formatQuotaReset(resetsAt, nowMs){
+  if(!resetsAt) return "";
+  var ts = typeof resetsAt === "number" ? resetsAt * 1000 : new Date(resetsAt).getTime();
   var current = nowMs == null ? Date.now() : nowMs;
   if(!(ts > current)) return "";
   var target = new Date(ts), now = new Date(current);
@@ -1259,6 +1291,10 @@ function startQuotaResetClock(){
     var pop = $("#modelPop");
     if(!pop || pop.hidden){ clearInterval(quotaResetClock); quotaResetClock=0; return; }
     Object.keys(quotaGroupData).forEach(function(id){
+      if(id === "agy"){
+        applyUsageRow(id, quotaGroupData[id]);
+        return;
+      }
       var reset = findRowEls(id).reset;
       if(reset) reset.textContent = resetLabel(quotaGroupData[id]);
     });
@@ -1268,6 +1304,18 @@ function fmtUSD(n){ n=+n||0; return "$"+n.toFixed(2); }
 function fmtNum(n){ n=+n||0; return n.toLocaleString("en-US"); }
 function fmtPct(n){ if(n==null) return "-"; return (n*100).toFixed(1)+"%"; }
 
+function renderAgyQuota(groups){
+  var html = '<div class="mqh">Antigravity 订阅额度</div>';
+  groups.forEach(function(group){
+    html += '<div class="mqsep"></div><div class="mqrow"><b>'+esc(group.name)+'</b></div>';
+    group.limits.forEach(function(limit){
+      html += '<div class="mqrow"><span>'+esc(limit.label)+'剩余</span><b>'+fmtPct(limit.remaining_fraction)+'</b></div>';
+      var reset = formatQuotaReset(limit.resets_at);
+      if(reset) html += '<div class="mqrow mqsub">'+esc(reset)+'</div>';
+    });
+  });
+  return html;
+}
 function renderQuotaTooltip(data){
   var five = data && data.limits && data.limits.five_hour || {};
   var seven = data && data.limits && data.limits.seven_day || {};
@@ -1313,6 +1361,8 @@ function renderQuotaTooltip(data){
     if(five.status) html += '<div class="mqrow"><span>状态</span><b>'+esc(five.status)+'</b></div>';
     var ts = typeof five.resets_at === "string" ? new Date(five.resets_at).getTime() : (five.resets_at||0)*1000;
     if(ts > Date.now()) html += '<div class="mqrow"><span>重置时间</span><b>'+new Date(ts).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})+'</b></div>';
+  } else if(data.provider === "agy"){
+    html += renderAgyQuota(data.groups);
   } else {
     html += '<div class="mqh">额度信息</div><div class="mqrow"><span>暂无详细数据</span></div>';
   }
@@ -1321,26 +1371,28 @@ function renderQuotaTooltip(data){
   return html;
 }
 function applyUsageRow(id, data){
+  if(data && data.provider === "agy") data = activeAgyQuota(data);
   var els = findRowEls(id);
   if(els.reset) els.reset.textContent = resetLabel(data);
   var ring = els.ring;
   if(!ring) return;
   var arc = ring.querySelector(".qa");
   var tip = ring.querySelector(".mqtip");
-  var five = data && data.limits && data.limits.five_hour;
-  if(!data || data.error || !five){
+  var limit = quotaRingLimit(data);
+  if(!data || data.error || !limit){
     ring.dataset.state = "error";
-    if(tip) tip.innerHTML = '<div class="mqt">额度查询失败</div>';
+    if(tip) tip.innerHTML = '<div class="mqt">'+esc(data && data.error || "额度查询失败")+'</div>';
+    if(id === "agy" && ring.matches(":hover, :focus")) showUsageTip(ring);
     if(arc){ arc.setAttribute("stroke-dashoffset","0"); arc.style.stroke="var(--dim2)"; }
     return;
   }
   ring.dataset.state = "ok";
-  if(five.utilization == null){
+  if(limit.utilization == null){
     if(tip) tip.innerHTML = '<div class="mqt"><div class="mqh">订阅可用</div><div class="mqrow"><span>暂无具体百分比</span></div></div>';
     if(arc){ arc.setAttribute("stroke-dashoffset","0"); arc.style.stroke="var(--dim2)"; }
     return;
   }
-  var pct = Math.round(five.utilization * 100);   // 真实值,超 100% 也如实显示(美元口径下是可能的)
+  var pct = Math.round(limit.utilization * 100);   // 真实值,超 100% 也如实显示(美元口径下是可能的)
   if(tip) tip.innerHTML = renderQuotaTooltip(data);
   if(arc){
     var fillPct = Math.min(100, pct);   // 圆环视觉上封顶,不然 dashoffset 变负会画歪
@@ -1353,7 +1405,7 @@ function applyUsageRow(id, data){
 function loadModelQuotas(choices){
   // 额度是账号级、组内所有模型共用,圆环挂在分组标题上,每组只查一次接口
   // (用组内第一个模型的 id 代表整组去查,结果套到分组标题的圆环上)。
-  ["anthropic","kimi","codex"].forEach(function(gkey){
+  QUOTA_GROUPS.forEach(function(gkey){
     var rep = choices.find(function(c){ return c[2]===gkey; });
     if(!rep) return;
     loadUsage(rep[0]).then(function(data){ quotaGroupData[gkey]=data; applyUsageRow(gkey, data); });

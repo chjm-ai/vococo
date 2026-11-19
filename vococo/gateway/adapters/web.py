@@ -2392,10 +2392,13 @@ class WebAdapter:
     async def _handle_api_usage(self, request: web.Request) -> web.Response:
         """GET /api/usage — 查询当前模型的订阅配额(5h/7d 利用率+重置时间)。
 
-        各供应商(Kimi/Codex/Claude/按量 API)的查询与合并逻辑收在
-        providers.usage_for_model,这里只做 HTTP 壳。
+        Antigravity 试用仅供 Web 使用，不进入常规模型供应商。
         """
-        payload, status = await providers.usage_for_model(request.query.get("model"))
+        model = request.query.get("model")
+        if agy_trial.is_trial_model(model):
+            payload, status = await agy_trial.quota_usage(model)
+        else:
+            payload, status = await providers.usage_for_model(model)
         return web.json_response(payload, status=status)
 
     # ── 运行数据面板 ───────────────────────────────────────────────────────

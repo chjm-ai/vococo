@@ -546,6 +546,9 @@ async def exit_for_restart(
         await client_pool.close_all()  # 收掉保温的 CLI 子进程再退,不留孤儿
     except Exception:
         pass
+    from ..gateway import agy_trial
+
+    await agy_trial.close_all()
     # close_all 期间也可能发生监督者崩溃；紧贴 os._exit 再核对一次。
     if not supervisor_ready_for_exit(session_key):
         try:

@@ -149,7 +149,7 @@ def _run_reset_label(tz: str, now: str, targets: list[str]) -> list[str]:
         pytest.skip("需要 Node 执行前端日期格式化函数")
     html = STATIC_INDEX.read_text(encoding="utf-8")
     source = html[
-        html.index("function resetLabel(data, nowMs){") : html.index("function findRowEls(id){")
+        html.index("function quotaRingLimit(data){") : html.index("function findRowEls(id){")
     ]
     script = f"""
 eval({json.dumps(source)});
@@ -192,7 +192,7 @@ def test_model_quota_reset_clock_refreshes_visible_dom_from_cached_data():
         pytest.skip("需要 Node 执行模型面板计时器")
     html = STATIC_INDEX.read_text(encoding="utf-8")
     source = html[
-        html.index("function resetLabel(data, nowMs){") : html.index("function fmtUSD(n){")
+        html.index("function quotaRingLimit(data){") : html.index("function fmtUSD(n){")
     ]
     script = f"""
 let resetNode = {{dataset:{{m:'codex'}}, textContent:''}};
