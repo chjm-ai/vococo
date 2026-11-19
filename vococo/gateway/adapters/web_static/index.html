@@ -397,8 +397,22 @@ try{
             </div>
             <div id="cmdPop" hidden></div>
             <textarea id="ta" rows="2" placeholder="发消息…"></textarea>
+            <div id="composerAddMenu" role="group" aria-label="添加到消息" hidden>
+              <button type="button" id="composerOpenPrompts" aria-haspopup="dialog" aria-controls="composerPrompts"><span></span>提示词</button>
+              <button type="button" id="composerOpenFile"><span></span>上传文件</button>
+            </div>
+            <dialog id="composerPrompts" aria-labelledby="composerPromptsTitle">
+              <div class="composer-prompts-inner">
+                <header class="composer-prompts-head">
+                  <strong id="composerPromptsTitle">提示词</strong>
+                  <button type="button" id="composerPromptsClose" aria-label="关闭提示词"></button>
+                </header>
+                <div id="composerPromptCategories" role="group" aria-label="提示词分类"></div>
+                <div id="composerPromptRows" role="group" aria-label="提示词列表"></div>
+              </div>
+            </dialog>
             <div class="inbar">
-              <button type="button" id="imgBtn">＋</button>
+              <button type="button" id="imgBtn" aria-label="添加到消息" aria-expanded="false" aria-controls="composerAddMenu">＋</button>
               <button type="button" id="micBtn" title="语音输入"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/><path d="M8 22h8"/></svg></button>
               <span class="spacer"></span>
               <!-- 权限档位胶囊:标准只显示一把锁;完全访问高亮显示,免得忘了关(见 renderPermChip) -->
@@ -2236,7 +2250,9 @@ function _updateChromePad(){
         m=document.getElementById('messages');
   if(h&&c&&m){ m.style.setProperty('--header-h',h.offsetHeight+'px');
     document.getElementById('taskTree').style.setProperty('--header-h',Math.ceil(h.getBoundingClientRect().height)+'px');
-    m.style.setProperty('--composer-h',c.offsetHeight+'px'); }
+    const composerHeight=c.offsetHeight+'px';
+    m.style.setProperty('--composer-h',composerHeight);
+    c.style.setProperty('--composer-h',composerHeight); }
 }
 _updateChromePad();
 new ResizeObserver(_updateChromePad).observe(document.querySelector('header.bar'));

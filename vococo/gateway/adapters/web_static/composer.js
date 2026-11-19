@@ -502,13 +502,14 @@ function saveDraft(conv=S.conv, value){
   }catch(e){}
 }
 function restoreDraft(conv){
+  closeComposerAddMenu(); closeComposerPrompts();
   let v=""; try{ v=localStorage.getItem(draftKey(conv))||""; }catch(e){}
   $("#ta").value=v; autoGrow();
 }
 function clearDraft(conv){
   try{ localStorage.removeItem(draftKey(conv||S.conv)); }catch(e){}
 }
-$("#ta").addEventListener("input", saveDraft);
+$("#ta").addEventListener("input", ()=>saveDraft());
 // 欢迎屏快捷入口:点击直接发送
 document.querySelectorAll("#empty .sug[data-s]").forEach(b=>{ b.onclick=()=>send(b.dataset.s); });
 
@@ -543,7 +544,135 @@ async function compressImage(f){
   }catch(e){ return orig; }   // 解码失败(如 heic 某些浏览器不认)兜底发原图
 }
 function loadImgEl(src){ return new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=src; }); }
-$("#imgBtn").onclick = ()=>$("#file").click();
+// ── 输入框「＋」与提示词 ───────────────────────────────────────────
+const COMPOSER_PROMPTS=[
+  {id:"research", label:"研究调研", items:[
+    ["研究框架","先定范围、问题和证据要求，不开始搜索",`我要研究［对象］，目的是［要支持的判断或决策］。
+先设计研究框架，不要开始搜索。请给出：
+1. 研究范围：该纳入什么、不纳入什么；
+2. 最值得回答的 3–5 个问题，按重要性排序；
+3. 每个问题优先找哪类一手资料，以及什么证据可能改变判断。
+缺少会改变研究范围的信息时先问我，其余用明确标注的假设推进。`],
+    ["横纵分析","梳理发展转折，再用同一标准比较同类",`请研究［对象］。纵向梳理它如何走到今天，找出改变方向的关键转折；横向挑选真正可比的对象，说明为什么选它们，并用同一套维度比较。
+最后解释今天的差异有哪些源自过去的选择，哪些仍是推测。关键事实附原始来源和日期；找不到可比数据就标明，不强行排名。`],
+    ["核查证据","逐条核对数字、出处和证据缺口",`请核查［结论或材料］。先拆出可验证的关键说法，再对照原始来源。数字重点核对单位、时间、样本和分母；正文、表格与附件不一致时，列出各自的原话和位置。
+逐条标注「已证实／有冲突／证据不足」。能复算就给算式，只找到转述不能标为已证实。`],
+  ]},
+  {id:"paper", label:"论文写作", items:[
+    ["文献对照","按问题比较文献的证据、条件和结论",`围绕［研究问题］对照我提供的文献。用表格列出每篇的研究对象、方法、样本或条件、核心发现和局限，每项附文献编号及位置。
+汇总共识、冲突与空白；指出哪些差异可能解释冲突，哪些暂不能判断。不要逐篇复述摘要，不补写材料中没有的信息。`],
+    ["综述提纲","按研究问题组织章节，不堆文献",`请为［综述主题］拟一份提纲，目标读者是［读者］，已有材料是［文献或笔记］。
+以研究问题而非发表顺序分节；每节写清要回答什么、用哪些证据、和下一节怎么衔接。明确区分已有共识、尚有争议和材料缺口。先给提纲，不写正文，也不编造参考文献。`],
+    ["稿件审阅","检查论证跳步、引文缺口和结论过度",`请审阅［论文段落或全文］，先不重写。按影响从高到低找出论证跳步、证据不足、引文与表述不符，以及超出数据能支持范围的结论。
+每条给原句或段落位置、为什么是问题、建议怎么改。区分事实问题与写作偏好；缺原文或数据时标为待核实。`],
+  ]},
+  {id:"code", label:"代码开发", items:[
+    ["需求对齐","开工前定范围、边界和验收条件",`我想实现［需求］。先看现状，不要改代码。用用户操作路径说明这次要做什么、不做什么、哪些现有行为必须保留，并给可验证的验收条件。
+优先问清会改变范围或实现方式的问题；其余细节标为假设。最后给最小实现方案和主要风险，等我确认后再动手。`],
+    ["故障排查","先定位原因，再建议最小修复",`故障是［现象］，期望行为是［预期］，已有线索是［日志或操作步骤］。
+先从现有代码和日志找证据，区分已知事实与猜测。列最可能的原因及区分它们的最小检查；确认根因后给最小修复和回归验证办法。不要只凭一个报错就断定原因或顺手重构。`],
+    ["代码审查","找会改变行为的缺陷和测试盲区",`请审查［改动范围］，不直接修改代码。优先找会导致错误、数据丢失或现有功能退化的问题，并检查关键路径是否有测试。
+每条写清严重程度、文件和行号、触发条件、实际后果及最小修法。只报告有依据的问题；没发现时说明覆盖范围和未验证项。`],
+  ]},
+  {id:"expression", label:"内容表达", items:[
+    ["口述成稿","先追问影响重点的缺口，再写提纲和正文",`这是我的口述：［口述稿］。受众是［读者］，我想传达［核心观点］。
+先别写文章，只问会改变文章重点、但我没说清的问题。等我答完再按「提纲 → 正文」整理。保留我的表达习惯和真实例子，不补写我没说过的经历、数字或引语。`],
+    ["拆解范例","从成品提炼可以迁移的做法",`我想从［范例］学会［能力］。先说明它服务谁、解决什么问题，再拆解它的结构与关键选择，每个判断附原文或具体位置。
+最后给三条可迁移的做法和一个小练习，注明哪些细节只适用于这一个案例。不要把单一范例的特点当成成功原因。`],
+    ["发前检查","找出消息里可能引发误读的假设和措辞",`这是对方的话：［原话］。这是我打算发的回复：［草稿］。我希望［目标］，不能让步的是［底线］。
+先区分事实和我的推测，指出对方最可能误读哪一句，再给一个说得通的替代解释。最后改写一版保留诉求、不升级冲突的回复，不替我发送。`],
+  ]},
+  {id:"decision", label:"判断决策", items:[
+    ["方案比较","先过硬约束，再比较代价和取舍",`我的目标是［目标］，候选方案是［方案］，硬约束是［预算、时间或其他底线］。
+先剔除不满足硬约束的方案，再用统一维度比较收益、代价、可逆性和未知项。给出当前建议，并说明什么条件变化会让推荐反转，以及最低成本的验证办法。`],
+    ["找反证","先找能推翻结论的证据，再重新判断",`我目前的结论是［结论］，依据是［证据］。先站在最强反对者的角度，找能真正推翻结论的反例、边界和替代解释，不要只罗列泛泛缺点。
+再说明哪些反对意见有现成证据、哪些还需验证。最后重新判断：维持、收窄还是推翻结论？说明理由和把握程度。`],
+    ["失败预演","倒推失败的路径、预警信号和补救动作",`假设［计划］在［时间范围］后失败了。倒推最可能的三条失败路径，不要把结果当成原因。
+每条写清最早可观察的信号、达到什么程度要停或改，以及现在能做的最低成本验证或补救。最后指出哪一项应该先验证，为什么。`],
+  ]},
+];
+const COMPOSER_PROMPT_CATEGORY_KEY="vococo_composer_prompt_category";
+let composerPromptCategory=COMPOSER_PROMPTS[0].id;
+try{
+  const stored=localStorage.getItem(COMPOSER_PROMPT_CATEGORY_KEY);
+  if(COMPOSER_PROMPTS.some(category=>category.id===stored)) composerPromptCategory=stored;
+}catch(e){}
+
+function closeComposerAddMenu(restoreFocus=false){
+  const menu=$("#composerAddMenu");
+  if(!menu || menu.hidden) return;
+  menu.hidden=true;
+  const button=$("#imgBtn");
+  button.setAttribute("aria-expanded","false");
+  if(restoreFocus) button.focus({preventScroll:true});
+}
+function closeComposerPrompts(restoreFocus=false){
+  const dialog=$("#composerPrompts");
+  if(!dialog?.open) return;
+  dialog.close();
+  if(restoreFocus) $("#imgBtn").focus({preventScroll:true});
+}
+function insertComposerPrompt(body){
+  const ta=$("#ta");
+  closeComposerPrompts();
+  const separator=ta.value ? "\n".repeat(Math.max(0,2-(ta.value.match(/\n*$/)?.[0].length||0))) : "";
+  const start=ta.value.length+separator.length;
+  ta.value+=separator+body;
+  const placeholder=/［[^］]+］/.exec(body);
+  const position=placeholder ? start+placeholder.index : ta.value.length;
+  ta.dispatchEvent(new Event("input",{bubbles:true}));
+  ta.focus({preventScroll:true});
+  ta.setSelectionRange(position,position+(placeholder?.[0].length||0));
+}
+function selectComposerPromptCategory(category){
+  composerPromptCategory=category.id;
+  try{ localStorage.setItem(COMPOSER_PROMPT_CATEGORY_KEY,category.id); }catch(e){}
+  $("#composerPromptCategories").querySelectorAll("button").forEach(button=>{
+    button.setAttribute("aria-pressed",String(button.dataset.category===category.id));
+  });
+  $("#composerPromptRows").replaceChildren(...category.items.map(([name,description,body])=>{
+    const row=el("button","composer-prompt-row"), title=el("strong"), hint=el("small");
+    row.type="button"; title.textContent=name; hint.textContent=description;
+    row.append(title,hint);
+    row.onclick=()=>insertComposerPrompt(body);
+    return row;
+  }));
+}
+function openComposerPrompts(){
+  closeComposerAddMenu();
+  const dialog=$("#composerPrompts");
+  selectComposerPromptCategory(COMPOSER_PROMPTS.find(category=>category.id===composerPromptCategory));
+  if(IS_MOBILE_DEVICE) dialog.showModal(); else dialog.show();
+  $("#composerPromptsClose").focus({preventScroll:true});
+}
+function initComposerPrompts(){
+  const add=$("#imgBtn"), menu=$("#composerAddMenu"), dialog=$("#composerPrompts");
+  setIcon($("#composerOpenPrompts span"),"book");
+  setIcon($("#composerOpenFile span"),"doc");
+  setIcon($("#composerPromptsClose"),"close");
+  for(const category of COMPOSER_PROMPTS){
+    const button=el("button"); button.type="button";
+    button.textContent=category.label; button.dataset.category=category.id;
+    button.onclick=()=>selectComposerPromptCategory(category);
+    $("#composerPromptCategories").append(button);
+  }
+  add.onclick=()=>{
+    if(!menu.hidden){ closeComposerAddMenu(true); return; }
+    closeComposerPopovers(menu);
+    menu.hidden=false; add.setAttribute("aria-expanded","true");
+    $("#composerOpenPrompts").focus({preventScroll:true});
+  };
+  $("#composerOpenPrompts").onclick=openComposerPrompts;
+  $("#composerOpenFile").onclick=()=>{ closeComposerAddMenu(true); $("#file").click(); };
+  $("#composerPromptsClose").onclick=()=>closeComposerPrompts(true);
+  dialog.oncancel=e=>{ e.preventDefault(); closeComposerPrompts(true); };
+  dialog.onclick=e=>{ if(e.target===dialog && IS_MOBILE_DEVICE) closeComposerPrompts(true); };
+  document.addEventListener("click",e=>{
+    if(!e.target.closest("#imgBtn,#composerAddMenu")) closeComposerAddMenu();
+    if(!IS_MOBILE_DEVICE && !e.target.closest("#composerPrompts,#composerOpenPrompts")) closeComposerPrompts();
+  });
+}
+initComposerPrompts();
 function fileExtension(name){
   const value=String(name||"").toLowerCase();
   const dot=value.lastIndexOf(".");
@@ -1012,7 +1141,7 @@ window.vococoKeyboard = (()=>{
   const visible=node=>!!node && !node.closest("[hidden]") && node.getClientRects().length>0 && getComputedStyle(node).visibility!=="hidden";
   const editable=node=>!!node?.closest?.('input,textarea,select,[contenteditable="true"],[contenteditable=""]');
   const modalSelector='#app > [id$="Modal"],#imgViewer,dialog[open]';
-  const modalCancelSelector='#delCancel,#archCancel,#choiceModalClose,#setClose,#ivClose,#pmCancel,#agCancel,#cfCancel,#stClose,.pmcancel';
+  const modalCancelSelector='#delCancel,#archCancel,#choiceModalClose,#setClose,#ivClose,#pmCancel,#agCancel,#cfCancel,#stClose,#composerPromptsClose,.pmcancel';
   const popSelector='#projSelPop,#permPop,#effortPop,#modelPop,#cmdPop,#projPop,#gitPop,#ctxPop,#convDocsPop,#noticePop,#convFilterPop,.convmenu';
   const modal=()=>[...document.querySelectorAll(modalSelector)].filter(visible)
     .sort((a,b)=>(parseInt(getComputedStyle(a).zIndex)||0)-(parseInt(getComputedStyle(b).zIndex)||0)).at(-1);
@@ -1162,6 +1291,7 @@ window.vococoKeyboard = (()=>{
       return true;
     }
     if(visible(convMenuEl)){ closeConvMenu(); return true; }
+    if(visible($("#composerAddMenu"))){ closeComposerAddMenu(true); return true; }
     const pops=[...document.querySelectorAll(popSelector)].filter(visible);
     if(pops.length){ closeComposerPopovers(); closeHeaderPopovers(); pops.forEach(node=>node.hidden=true); return true; }
     if([...document.querySelectorAll('.artifact-menu-panel:not([hidden])')].some(visible)){

@@ -136,6 +136,8 @@ function closeComposerPopovers(except){
     const pop=$("#"+id);
     if(pop && pop!==except) pop.hidden=true;
   }
+  if(except!==$("#composerAddMenu")) closeComposerAddMenu();
+  closeComposerPrompts();
   if(except!==$("#modelPop")) hideUsageTip();
   if(except!==$("#cmdPop")) closeCmdMenu();
 }
