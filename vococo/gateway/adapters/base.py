@@ -29,6 +29,7 @@ class Incoming:
     store_text: str | None = None
     # 仅服务端注入设置；浏览器请求不得提供自动来源权限。
     source_access: dict | None = None
+    agy_trial_model: str = ""  # 只由已认证的 Web 发送入口对已选试用模型设置
 
     @property
     def session_key(self) -> str:

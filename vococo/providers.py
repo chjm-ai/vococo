@@ -232,6 +232,8 @@ def resolve(chosen_model: str | None, default_model: str) -> tuple[str, dict[str
     保存选择、查思考深度和用量时仍须保留原选择 ID。默认模型同样支持第三方选择 ID。
     """
     selection = chosen_model or default_model
+    if selection.startswith("agy-trial:"):
+        raise ValueError("Antigravity 试用仅支持网页手动发送文字")
     found = _provider_for_model(selection)
     if found and not found.is_official:
         return found.model, _env_for(found)

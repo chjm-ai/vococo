@@ -85,6 +85,8 @@ async function send(text, display, opts){
   // 发送目标钉死在发起时的会话/附件快照:下面等上传的 await 期间用户可能已经切走,
   // S.conv/S.images 等全局状态会变成新会话的——不钉死就会把这条消息、气泡、回执错投过去。
   let sendConv=S.conv;
+  const selectedModel=opts.manualText && typeof curModel==="function" ? curModel() : "";
+  const agyTrialModel=selectedModel.startsWith("agy-trial:") ? selectedModel : "";
   const isCurrent=()=>S.conv===sendConv;
   const ownership=convOwnership(sendConv);
   const sendImages=S.images.slice(), sendAudios=S.audios.slice(), sendFiles=S.files.slice(), sendLibraryRefs=S.libraryRefs.slice();
@@ -177,6 +179,7 @@ async function send(text, display, opts){
   S.sendAcks[clientRequestId]=false;
   const payload={
     conv:sendConv, text, ...ownership,
+    ...(agyTrialModel ? {agy_trial_model:agyTrialModel} : {}),
     images:sendImages.map(x=>({data:x.data,media_type:x.media_type})),
     audios:sendAudios.map(x=>({id:x.id})),
     files:sendFiles.filter(x=>x.kind!=="video").map(x=>({id:x.id})),
@@ -470,7 +473,7 @@ async function sendPendingSnapshot(conv,item){
     }
   }finally{ delete S.sendAcks[requestId]; }
 }
-$("#composer").onsubmit = e=>{ e.preventDefault(); send($("#ta").value); };
+$("#composer").onsubmit = e=>{ e.preventDefault(); send($("#ta").value, null, {manualText:true}); };
 $("#ta").addEventListener("keydown", e=>{
   // 输入法组合中(中文/日文等候选未上屏)的回车只上屏,不发送
   if(e.isComposing || e.keyCode===229) return;
@@ -480,7 +483,7 @@ $("#ta").addEventListener("keydown", e=>{
     if((e.key==="Enter"||e.key==="Tab") && S.cmd.items.length){ e.preventDefault(); pickCmd(S.cmd.active); return; }
     if(e.key==="Escape"){ e.preventDefault(); closeCmdMenu(); return; }
   }
-  if(e.key==="Enter" && !e.shiftKey && !IS_MOBILE_DEVICE){ e.preventDefault(); send($("#ta").value); }
+  if(e.key==="Enter" && !e.shiftKey && !IS_MOBILE_DEVICE){ e.preventDefault(); send($("#ta").value, null, {manualText:true}); }
 });
 // "工作中"状态行右侧的停止按钮(状态行每秒重绘,用事件委托一次绑定)
 document.addEventListener("click", e=>{ if(e.target.closest(".statusstop")){ e.preventDefault(); stopReply(); } });
