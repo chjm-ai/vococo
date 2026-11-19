@@ -5,9 +5,10 @@ import json
 import os
 import signal
 from contextlib import aclosing, suppress
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic, time
 
 import anyio
 
@@ -72,10 +73,14 @@ async def start_cli(command, model, cwd):
         "--model", model, "--input-format", "stream-json", "--output-format", "stream-json",
         "--mode", "plan", "--sandbox", "--disable-slash-commands", "--settings", SETTINGS,
     )
+    return await spawn_cli((*command, *args), cwd, asyncio.subprocess.PIPE)
+
+
+async def spawn_cli(args, cwd, stdin):
     # 取消恰好发生在启动过程中时，也要拿到子进程句柄后再回收。
     spawn = asyncio.create_task(asyncio.create_subprocess_exec(
-        *command, *args, cwd=cwd, env=child_env(), start_new_session=True,
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        *args, cwd=cwd, env=child_env(), start_new_session=True,
+        stdin=stdin, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL, limit=MAX_OUTPUT,
     ))
     try:
@@ -158,7 +163,106 @@ async def generate(command, cwd, timeout, model, prompt):
                 await terminate(proc)
 
 
-_busy = False
+_quota_cache: tuple[float, dict, int] | None = None
+_quota_refresh: asyncio.Task | None = None
+_active_trials: set[asyncio.Task] = set()
+_closing = False
+
+
+async def close_all():
+    global _closing
+    _closing = True
+    try:
+        tasks = {task for task in (*_active_trials, _quota_refresh) if task is not None and not task.done()}
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        _closing = False
+
+
+def _quota_limit(bucket):
+    if not isinstance(bucket, dict) or bucket.get("disabled") is True:
+        return None
+    fraction = bucket.get("remaining_fraction")
+    if type(fraction) not in (int, float) or not 0 <= fraction <= 1:
+        return None
+    reset = bucket.get("reset_time")
+    try:
+        when = datetime.fromisoformat(reset) if isinstance(reset, str) else None
+        resets_at = int(when.timestamp()) if when and when.tzinfo else None
+    except (ValueError, OverflowError, OSError):
+        resets_at = None
+    window = bucket.get("window")
+    label = bucket.get("name")
+    if window == "weekly":
+        label = "每周"
+    elif window in ("five_hour", "five-hour", "5h"):
+        label = "5 小时"
+    return {"label": label[:80] if isinstance(label, str) else "额度",
+            "remaining_fraction": fraction, "utilization": 1 - fraction, "resets_at": resets_at}
+
+
+def _parse_quota(report):
+    # 只信 CLI 命令的结构化额度，不解析模型正文或传回原始 CLI 输出。
+    if report.get("status") != "SUCCESS" or report["command"]["name"] != "usage":
+        raise ValueError("quota command failed")
+    groups = []
+    for group in report["command"]["data"]["groups"]:
+        limits = [limit for bucket in group["buckets"] if (limit := _quota_limit(bucket)) is not None]
+        name = group["name"]
+        if isinstance(name, str) and limits:
+            groups.append({"name": name[:80], "limits": limits})
+    if not groups:
+        raise ValueError("quota unavailable")
+    primary = max((limit for group in groups for limit in group["limits"]), key=lambda limit: limit["utilization"])
+    return {"provider": "agy", "groups": groups, "primary_limit": primary}
+
+
+async def _read_quota():
+    proc = None
+    complete = False
+    with TemporaryDirectory(prefix="vococo-agy-quota-") as cwd:
+        try:
+            async with asyncio.timeout(20):
+                proc = await spawn_cli((str(cli_binary()), "--sandbox", "--mode", "plan",
+                                        "--settings", SETTINGS, "--print", "/usage", "--output-format", "json"),
+                                       cwd, asyncio.subprocess.DEVNULL)
+                line = await proc.stdout.readline()
+                if await proc.stdout.read(1) or await proc.wait() != 0:
+                    raise ValueError("invalid quota response")
+                complete = True
+                return _parse_quota(json.loads(line))
+        finally:
+            if proc is not None and not complete:
+                with anyio.CancelScope(shield=True):
+                    await terminate(proc)
+
+
+async def _refresh_quota():
+    global _quota_cache
+    try:
+        data, status = await _read_quota(), 200
+    except (ValueError, TypeError, KeyError, AttributeError, OSError, TimeoutError):
+        data, status = {"error": "Antigravity 额度暂时不可用"}, 502
+    ttl = 10
+    if status == 200:
+        resets = [limit["resets_at"] for group in data["groups"] for limit in group["limits"] if limit["resets_at"]]
+        ttl = min(60, max(1, min(resets) - time())) if resets else 60
+    _quota_cache = (monotonic() + ttl, data, status)
+    return data, status
+
+
+async def quota_usage(model):
+    global _quota_refresh
+    if model not in CHOICES or not enabled():
+        return {"error": "Antigravity 试用未启用或已结束"}, 404
+    if _quota_cache is not None and _quota_cache[0] > monotonic():
+        return _quota_cache[1:]
+    # 合并额度刷新，不限制聊天请求并发。
+    if _quota_refresh is None or _quota_refresh.done():
+        _quota_refresh = asyncio.create_task(_refresh_quota())
+    return await asyncio.shield(_quota_refresh)
 
 
 def is_trial_model(model: str | None) -> bool:
@@ -196,7 +300,7 @@ def enabled() -> bool:
         until = date.fromisoformat(os.environ.get("VOCOCO_AGY_TRIAL_UNTIL", ""))
     except ValueError:
         return False
-    return bool(config.WEB_AUTH_TOKEN and date.today() < until
+    return bool(not _closing and config.WEB_AUTH_TOKEN and date.today() < until
                 and os.access(cli_binary(), os.X_OK) and cli_config_is_clean())
 
 
@@ -217,16 +321,14 @@ _ERRORS = {
 async def stream_trial(model: str, prompt: str, refusal: str = ""):
     from ..core.agent import AgentReply, Done, TextDelta
 
-    global _busy
     chunks = []
     if not refusal and (model not in CHOICES or not enabled()):
         refusal = "Antigravity 试用未启用或已结束，请切换模型。"
     if not refusal and (not prompt.strip() or len(prompt) > MAX_PROMPT):
         refusal = f"Antigravity 试用只接受 1–{MAX_PROMPT} 字的纯文本。"
-    if not refusal and _busy:
-        refusal = "已有一个 Antigravity 试用请求在运行，请稍后重试。"
     if not refusal:
-        _busy = True
+        task = asyncio.current_task()
+        _active_trials.add(task)
         try:
             with TemporaryDirectory(prefix="vococo-agy-") as cwd:
                 async with aclosing(generate((str(cli_binary()),), cwd, 90, model.split(":", 1)[1], prompt)) as events:
@@ -237,5 +339,5 @@ async def stream_trial(model: str, prompt: str, refusal: str = ""):
         except UpstreamError as exc:
             refusal = _ERRORS.get(exc.code, "Antigravity 未返回完整回复，请重试。")
         finally:
-            _busy = False
+            _active_trials.discard(task)
     yield Done(AgentReply("".join(chunks), [], None, bool(refusal), error=refusal, model=model))

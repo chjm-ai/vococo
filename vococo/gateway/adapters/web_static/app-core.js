@@ -305,17 +305,17 @@ function turnEventsSet(tid, events){
 }
 
 // ── API ─────────────────────────────────────────────────────────────────
-async function api(path, opts={}){
+async function api(path, opts={}, {trackService=true}={}){
   opts.headers = Object.assign({"X-Auth-Token": S.token}, opts.headers||{});
   let r;
   try{ r = await fetch(path, opts); }
   catch(e){
     // 自己主动取消的请求(切走会话时中止过期 /history,见 openConv)不是断网,别亮离线
-    if(!(e && e.name==="AbortError")) setServiceState("offline");
+    if(trackService && !(e && e.name==="AbortError")) setServiceState("offline");
     throw e;
   }
   if(r.status===401){ showLogin(); throw new Error("401"); }
-  setServiceState(r.status>=500 ? "offline" : "online");
+  if(trackService) setServiceState(r.status>=500 ? "offline" : "online");
   return r;
 }
 

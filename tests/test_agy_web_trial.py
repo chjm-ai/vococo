@@ -31,6 +31,7 @@ def trial_web(isolated, monkeypatch):
         web.get("/events", adapter._handle_events), web.get("/models", adapter._handle_models),
         web.post("/model", adapter._handle_model_switch), web.post("/send", adapter._handle_send),
         web.post("/turn/regenerate", adapter._handle_turn_regenerate),
+        web.get("/api/usage", adapter._handle_api_usage),
     ])
     return adapter, app
 
@@ -139,6 +140,117 @@ async def test_trial_streams_through_web_and_does_not_leak_history(trial_web, mo
         assert (await client.post("/send", json={"text": "过期页面", "agy_trial_model": MEDIUM})).status == 409
         await runner._handle(adapter, queued)
         assert len(captured) == 1
+
+
+@pytest.mark.anyio
+async def test_trial_quota_uses_authenticated_official_groups(trial_web, monkeypatch):
+    _, app = trial_web
+    calls = 0
+    report = {"status": "SUCCESS", "command": {"name": "usage", "data": {"groups": [
+        {"name": "Gemini Models", "buckets": [
+            {"window": "five_hour", "remaining_fraction": 1},
+            {"window": "weekly", "remaining_fraction": 0.9, "reset_time": "2026-11-26T13:15:13Z"},
+        ]},
+        {"name": "Claude and GPT models", "buckets": [
+            {"window": "weekly", "remaining_fraction": 0, "reset_time": "bad"},
+            {"window": "five_hour", "remaining_fraction": True},
+        ]},
+    ]}}}
+
+    async def fake_read():
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return agy_trial._parse_quota(report)
+
+    monkeypatch.setattr(agy_trial, "enabled", lambda: True)
+    monkeypatch.setattr(agy_trial, "_read_quota", fake_read)
+    monkeypatch.setattr(agy_trial, "_quota_cache", None)
+    monkeypatch.setattr(agy_trial, "_quota_refresh", None)
+    url = "/api/usage"
+    async with TestClient(TestServer(app)) as client:
+        assert (await client.get(url, params={"model": MEDIUM})).status == 401
+        client.session.headers.update(HEADERS)
+        assert (await client.get(url, params={"model": "agy-trial:unknown"})).status == 404
+        replies = await asyncio.gather(*(client.get(url, params={"model": model}) for model in agy_trial.CHOICES))
+        assert all(reply.status == 200 for reply in replies)
+        data = await replies[0].json()
+        assert calls == 1
+        assert data["primary_limit"]["remaining_fraction"] == 0
+        assert data["primary_limit"]["resets_at"] is None
+        assert [len(group["limits"]) for group in data["groups"]] == [2, 1]
+        assert data["groups"][0]["limits"][1]["resets_at"] == 1795698913
+        monkeypatch.setattr(agy_trial, "_quota_cache", None)
+        report["command"]["name"] = "unexpected"
+        assert (await client.get(url, params={"model": MEDIUM})).status == 502
+        monkeypatch.setattr(agy_trial, "enabled", lambda: False)
+        assert (await client.get(url, params={"model": MEDIUM})).status == 404
+
+
+@pytest.mark.anyio
+async def test_trial_accepts_three_overlapping_streams(monkeypatch):
+    monkeypatch.setattr(agy_trial, "enabled", lambda: True)
+    entered = asyncio.Queue()
+    release = asyncio.Event()
+
+    async def fake_cli(command, cwd, timeout, model, prompt):
+        entered.put_nowait(cwd)
+        yield "delta", {"text": prompt}
+        await release.wait()
+        yield "done", {"model": model}
+
+    async def collect(prompt):
+        return [event async for event in agy_trial.stream_trial(MEDIUM, prompt)]
+
+    monkeypatch.setattr(agy_trial, "generate", fake_cli)
+    prompts = ["第一个请求", "第二个请求", "第三个请求"]
+    streams = [asyncio.create_task(collect(prompt)) for prompt in prompts]
+    try:
+        async with asyncio.timeout(2):
+            assert len({await entered.get() for _ in prompts}) == len(prompts)
+            assert all(not stream.done() for stream in streams)
+    finally:
+        release.set()
+        results = await asyncio.gather(*streams)
+    assert [events[0].text for events in results] == prompts
+    assert all(not events[-1].reply.error for events in results)
+
+
+@pytest.mark.anyio
+async def test_trial_shutdown_cancels_chat_and_quota(monkeypatch):
+    monkeypatch.setattr(agy_trial, "enabled", lambda: True)
+    monkeypatch.setattr(agy_trial, "_quota_cache", None)
+    monkeypatch.setattr(agy_trial, "_quota_refresh", None)
+    entered = asyncio.Queue()
+    closed = set()
+
+    async def hang(label):
+        entered.put_nowait(label)
+        try:
+            await asyncio.Future()
+        finally:
+            closed.add(label)
+
+    async def fake_cli(*args):
+        await hang("chat")
+        yield "done", {}
+
+    async def collect():
+        return [event async for event in agy_trial.stream_trial(MEDIUM, "测试重启")]
+
+    monkeypatch.setattr(agy_trial, "generate", fake_cli)
+    monkeypatch.setattr(agy_trial, "_read_quota", lambda: hang("quota"))
+    tasks = [asyncio.create_task(collect()), asyncio.create_task(agy_trial.quota_usage(MEDIUM))]
+    try:
+        async with asyncio.timeout(2):
+            assert {await entered.get(), await entered.get()} == {"chat", "quota"}
+            await agy_trial.close_all()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    assert closed == {"chat", "quota"}
+    assert not agy_trial._active_trials
 
 
 def test_global_hook_and_mcp_are_not_inherited(tmp_path, monkeypatch):
