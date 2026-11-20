@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import re
 import signal
@@ -13,6 +14,8 @@ from tempfile import TemporaryDirectory, mkdtemp
 from time import monotonic, time
 
 import anyio
+
+log = logging.getLogger(__name__)
 
 CHOICES = {
     "agy-trial:gemini-3.8-flash-low": "Gemini 3.8 Flash Low",
@@ -145,10 +148,10 @@ async def read_answer(proc, model, cwd, *, resume=None, native=False, first=None
                 yield "delta", {"text": text}
         elif kind == "result":
             result = event.get("result", {})
-            if result.get("status") != "SUCCESS":
-                raise UpstreamError("agy_request_failed")
             if native and result.get("denied_actions"):
                 raise UpstreamError("agy_unexpected_tool")
+            if result.get("status") != "SUCCESS":
+                raise UpstreamError("agy_request_failed")
             final = result.get("response")
     if await proc.wait() != 0 or seen_model != model or not isinstance(final, str):
         raise UpstreamError("agy_no_result")
@@ -300,6 +303,11 @@ async def quota_usage(model):
 
 
 NATIVE_PREFIX = "agy-native:"
+_NATIVE_TEXT_ONLY = (
+    "本会话为纯文本模式，不得调用搜索或任何工具，也不能启动子代理。"
+    "如果用户的任务必须联网或使用工具，请直接用文字说明当前模式无法完成，不要尝试调用。"
+    "\n\n用户消息：\n"
+)
 _catalog: tuple[float, dict[str, str]] = (0, {})
 _catalog_lock = asyncio.Lock()
 _native_pending: set[str] = set()
@@ -409,6 +417,7 @@ _ERRORS = {
     "agy_timeout": "Antigravity 试用请求超时。",
     "agy_unavailable": "Antigravity CLI 不可用。",
     "agy_request_failed": "Antigravity 未完成请求，请在官方 CLI 检查登录、额度或网络。",
+    "agy_unexpected_tool": "Antigravity 网页只支持纯文本。本轮尝试调用工具，已停止；如需联网或使用工具，请另开普通会话，或使用 Antigravity CLI。",
 }
 
 
@@ -448,8 +457,9 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
             bound = session_store.agy_native_session(key)
             cwd = _native_workspace(bound)
             session_id = None
-            async with aclosing(generate((str(cli_binary()),), cwd, 90, model[len(NATIVE_PREFIX):], prompt,
-                                         resume=bound["id"] if bound else None, native=True)) as events:
+            async with aclosing(generate((str(cli_binary()),), cwd, 90, model[len(NATIVE_PREFIX):],
+                                         _NATIVE_TEXT_ONLY + prompt, resume=bound["id"] if bound else None,
+                                         native=True)) as events:
                 async for event, payload in events:
                     if event == "delta":
                         chunks.append(payload["text"])
@@ -460,7 +470,9 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                     key, model, turn_id, {"id": session_id, "cwd": cwd})):
                 raise UpstreamError("agy_native_lock_failed")
         except (ValueError, OSError, UpstreamError) as exc:
-            refusal = _ERRORS.get(getattr(exc, "code", ""), "Antigravity 会话未完成；请检查可用模型或稍后重试。")
+            code = exc.code if isinstance(exc, UpstreamError) else type(exc).__name__
+            log.warning("Antigravity 网页轮次失败: turn_id=%s code=%s", turn_id, code)
+            refusal = _ERRORS.get(code, "Antigravity 会话未完成；请检查可用模型或稍后重试。")
         finally:
             _native_pending.discard(key)
             _active_trials.discard(task)
