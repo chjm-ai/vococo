@@ -3,11 +3,32 @@ import os
 import time
 from pathlib import Path
 
+from vococo import config
 from vococo.core.prompt import (
     _load_memory_index,
     _load_project_agents,
     build_system_prompt,
+    load_reply_preferences,
 )
+
+
+def test_reply_preferences_only_reads_the_named_section(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "AI_BRAIN_DIR", tmp_path)
+    rules = tmp_path / "AGENTS.md"
+    assert load_reply_preferences() == ""
+    rules.write_text("# 其他规则\n不发送", encoding="utf-8")
+    assert load_reply_preferences() == ""
+    rules.write_text("```md\n# 回复偏好\n不发送\n```", encoding="utf-8")
+    assert load_reply_preferences() == ""
+    rules.write_text("    # 回复偏好\n    不发送", encoding="utf-8")
+    assert load_reply_preferences() == ""
+    for boundary in ("  ## 其他规则", "其他规则\n---", "```md"):
+        rules.write_text(f"# 回复偏好\n\n只说结论。\n\n{boundary}\n不发送", encoding="utf-8")
+        assert load_reply_preferences() == "只说结论。"
+    rules.write_text("# 回复偏好\n" + "长" * 2001, encoding="utf-8")
+    assert load_reply_preferences() == ""
+    rules.write_bytes(b"\xff")
+    assert load_reply_preferences() == ""
 
 
 def test_agents_only_injected(tmp_path: Path):

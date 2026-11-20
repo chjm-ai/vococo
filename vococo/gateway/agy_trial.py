@@ -330,7 +330,6 @@ _ACP_NOTE = (
     "派发、续接、取消任务会先请主人在网页确认，被拒绝就如实说明。"
     "Skill 每轮可能更新：本轮要遵循任何 Skill 时，必须重新调用 read_skill 取最新正文，"
     "不要沿用历史对话里的技能内容。"
-    "\n\n用户消息：\n"
 )
 _EFFORT_ORDER = ("low", "medium", "high", "xhigh")
 _EFFORT_LABEL = {"low": "Low", "medium": "Medium", "high": "High", "xhigh": "XHigh"}
@@ -779,6 +778,7 @@ async def _vococo_mcp_bundle():
 _APPROVAL_MAX = 4000
 _MD_LINK = re.compile(r'\[([^\]]*)\]\(([^)]*)\)')
 _URL = re.compile(r'(?i)\b(?:https?://|www\.)[^\s<>()]+')
+_AUTH_HEADER = re.compile(r'(?i)\b(?:proxy-)?authorization["\']?\s*[:=]\s*["\']?\s*(?:bearer|basic)\s+\S+')
 _APPROVAL_SECRET = re.compile(
     r'(?i)\b(?:api[_-]?key|password|passwd|access[_-]?token|secret)\b["\']?\s*[:=]\s*'
     r'["\']?[A-Za-z0-9_+./=-]{8,}')
@@ -865,7 +865,9 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
     from ..core.agent import (
         AgentReply, Done, TextDelta, ThinkingDelta, ToolFinished, ToolInput, ToolStarted,
     )
+    from ..core.prompt import load_reply_preferences
     from ..memory import session_store
+    from ..tools import danger
     from . import agy_acp, agy_handoff
 
     chunks = []
@@ -928,10 +930,18 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                     denied_note = note
                 return decision
 
+            preferences = await asyncio.to_thread(load_reply_preferences)
+            if (danger.redact_secrets(preferences) != preferences
+                    or _APPROVAL_SECRET.search(preferences) or _AUTH_HEADER.search(preferences)):
+                log.warning("Antigravity 回复偏好疑似含凭据，跳过注入")
+                preferences = ""
+            style_note = f"\n\n回复偏好（默认，用户明确要求优先）：\n{preferences}" if preferences else ""
+            turn_prompt = f"{_ACP_NOTE}{style_note}\n\n用户消息：\n{prompt}"
+
             async def consume_once(sid):
                 nonlocal session_id
                 async with aclosing(agy_acp.stream_turn(
-                        cwd, 360, base, _ACP_NOTE + prompt, effort=effort, session_id=sid,
+                        cwd, 360, base, turn_prompt, effort=effort, session_id=sid,
                         extra_servers=extra_servers, allowed_tools=allowed_tools, approve=approve)) as events:
                     async for event, payload in events:
                         if event == "delta":

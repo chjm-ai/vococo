@@ -180,6 +180,23 @@ def _read_clipped(path, hint: str) -> str:
     return text
 
 
+def load_reply_preferences() -> str:
+    """从普通通道使用的全局约定中，只提取可独立注入的回复偏好。"""
+    try:
+        text = (config.AI_BRAIN_DIR / "AGENTS.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return ""
+    # 只接受顶端的约定格式，避免把示例代码里的同名标题当成政策。
+    heading, _, body = text.partition("\n")
+    if heading.rstrip() != "# 回复偏好":
+        return ""
+    section = re.split(
+        r"^ {0,3}(?:#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|\S[^\n]*\n {0,3}(?:=+|-+)[ \t]*$)",
+        body, maxsplit=1, flags=re.M,
+    )[0].strip()
+    return section if len(section) <= 2000 else ""
+
+
 def _load_global_agents() -> str:
     """读 AI_BRAIN/AGENTS.md 作为跨 harness 全局约定。缺失则跳过。
 
