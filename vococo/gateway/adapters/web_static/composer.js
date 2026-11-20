@@ -87,7 +87,7 @@ async function send(text, display, opts){
   // S.conv/S.images 等全局状态会变成新会话的——不钉死就会把这条消息、气泡、回执错投过去。
   let sendConv=S.conv;
   const selectedModel=opts.manualText && typeof curModel==="function" ? curModel() : "";
-  const agyTrialModel=selectedModel.startsWith("agy-trial:") ? selectedModel : "";
+  const agyTrialModel=/^agy-(trial|native):/.test(selectedModel) ? selectedModel : "";
   const isCurrent=()=>S.conv===sendConv;
   const ownership=convOwnership(sendConv);
   const sendImages=S.images.slice(), sendAudios=S.audios.slice(), sendFiles=S.files.slice(), sendLibraryRefs=S.libraryRefs.slice();
@@ -158,7 +158,7 @@ async function send(text, display, opts){
   if(S.stream && !opts.forceSend && isCurrent()){
     if(meRow) meRow.remove();
     if(S.audioLoading) S.audioLoading=null;
-    const queued=queuePending(text, sendImages, sendAudios, sendFiles, sendLibraryRefs);
+    const queued=queuePending(text, sendImages, sendAudios, sendFiles, sendLibraryRefs, agyTrialModel);
     const pending=S.inflightComposer[sendConv];
     delete S.sending[sendConv]; delete S.inflightComposer[sendConv];
     if(queued){
@@ -390,11 +390,11 @@ function restoreTaskStopped(conv, prev){
   renderTaskBar();
 }
 // ── 待发送队列 ────────────────────────────────────────────────────────────
-function queuePending(text, images, audios, files, libraryRefs){
+function queuePending(text, images, audios, files, libraryRefs, agyTrialModel=""){
   if(!text && !(images||[]).length && !(audios||[]).length && !(files||[]).length && !(libraryRefs||[]).length) return;
   const q = S.pending[S.conv] || (S.pending[S.conv]=[]);
   if(q.length>=3){ pendFull(); return false; }  // 满 3 条不再排队,抖一下提示
-  q.push({id:++S.pendId, text, images:images||[], audios:audios||[], files:files||[], libraryRefs:libraryRefs||[]});
+  q.push({id:++S.pendId, text, images:images||[], audios:audios||[], files:files||[], libraryRefs:libraryRefs||[], agyTrialModel});
   drawPending();
   return true;
 }
@@ -486,6 +486,7 @@ async function sendPendingSnapshot(conv,item){
   S.sendAcks[requestId]=false;
   const payload={
     conv, text:item.text, client_request_id:requestId,
+    ...(item.agyTrialModel ? {agy_trial_model:item.agyTrialModel} : {}),
     library_refs:(item.libraryRefs||[]).map(reference=>reference.id),
     images:(item.images||[]).map(x=>({data:x.data,media_type:x.media_type})),
     audios:(item.audios||[]).map(x=>({id:x.id})),

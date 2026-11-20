@@ -1252,9 +1252,18 @@ class WebAdapter:
             trial_model = selected if agy_trial.is_trial_model(selected) else ""
             expected = body.get("agy_trial_model", "")
             command = is_command(str(body.get("text") or "").strip())
-            if expected != trial_model and not command:
-                return web.json_response({"error": "试用只接受手动发送的文字；若模型已变化，请刷新后重试"}, status=409)
-            if trial_model and not command:
+            if not command and session_store.agy_native_session(key) and not agy_trial.is_native_model(selected):
+                return web.json_response({"error": "会话已锁定 Antigravity，请选 Antigravity 模型"}, status=409)
+            manual_only = (agy_trial.is_native_model(trial_model)
+                           or (isinstance(expected, str) and agy_trial.is_native_model(expected)) or not command)
+            if expected != trial_model and manual_only:
+                return web.json_response({"error": "Antigravity 只接受手动文字；若模型已变化，请核对后重试"}, status=409)
+            if trial_model and manual_only:
+                from ...tools import danger
+
+                text = body.get("text")
+                if isinstance(text, str) and danger.redact_secrets(text) != text:
+                    return web.json_response({"error": "这段文字可能含凭据，未发送或保存"}, status=400)
                 if not agy_trial.enabled() or not agy_trial.accepts_session(key):
                     return web.json_response({"error": "这个会话的 Antigravity 试用不可用，请切换模型"}, status=400)
                 if any(body.get(field) for field in ("images", "audios", "files", "videos", "library_refs")):
@@ -1458,9 +1467,20 @@ class WebAdapter:
             return web.json_response({"error": "empty model"}, status=400)
         session_key = config.resolve_session_key("web", conv)
         trial = agy_trial.is_trial_model(model)
-        if trial and (model not in agy_trial.CHOICES or not agy_trial.enabled()
-                      or not agy_trial.accepts_session(session_key)):
+        native = agy_trial.is_native_model(model)
+        if native:
+            if not (session_key.startswith("session:") and self._agy_handoff_available(session_key)
+                    and model in await agy_trial.native_catalog()):
+                return web.json_response({"error": "该 Antigravity 模型或会话不可用"}, status=400)
+            if self.session_closing(session_key):
+                return web.json_response({"error": "会话正在删除或已删除"}, status=409)
+        elif trial and (model not in agy_trial.CHOICES or not agy_trial.enabled()
+                        or not agy_trial.accepts_session(session_key)):
             return web.json_response({"error": "Antigravity 试用不可用"}, status=400)
+        if agy_trial.native_pending(session_key):
+            return web.json_response({"error": "Antigravity 正在回复，请等本轮结束再切换"}, status=409)
+        if session_store.agy_native_session(session_key) and not native:
+            return web.json_response({"error": "此会话已锁定 Antigravity；其他模型请另开新会话"}, status=409)
         session_store.backfill_chosen_models()  # 冻结老会话
         session_store.set_chosen_model(session_key, model)
         if not trial:
@@ -2263,12 +2283,20 @@ class WebAdapter:
             or config.MODEL
         conv = request.query.get("conv", "")
         key = config.resolve_session_key("web", conv) if conv else ""
+        handoff = self._agy_handoff_available(key)
+        native_choices = await agy_trial.native_catalog() if handoff and key.startswith("session:") else {}
+        native_locked = bool(key and session_store.agy_native_session(key))
+        if native_locked:
+            choices = []
+        choices.extend((mid, label, "agy-native") for mid, label in native_choices.items())
         chosen = session_store.get_chosen_model(key) if key else ""
         if key and not chosen:
             chosen = active_model
             session_store.set_chosen_model(key, chosen)
         efforts, tiers = {}, {}
-        for model, _, _ in choices:
+        for model, _, group in choices:
+            if group == "agy-native":
+                continue  # 思考档位以原生模型 ID 为准
             options = model_preferences.for_model(key, model)
             levels = providers.effort_levels_for_model(model)
             value = options["effort"]
@@ -2286,7 +2314,8 @@ class WebAdapter:
                 "effort": efforts.get(chosen or active_model, {}).get("value", ""),
                 "efforts": efforts,
                 "service_tiers": tiers,
-                "agy_handoff": self._agy_handoff_available(key),
+                "agy_handoff": handoff and not native_locked,
+                "agy_native_locked": native_locked,
                 "choices": [[v, label, group] for v, label, group in choices],
             }
         )

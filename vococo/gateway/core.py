@@ -330,13 +330,20 @@ async def _converse(
     )
     if task and task.get("cwd"):
         root = task["cwd"]
-    if cwd_override is not None:
+    agy_locked = session_store.agy_native_session(session_key) is not None
+    agy_model = model if agy_trial.is_trial_model(model) else None
+    if agy_locked or agy_trial.is_native_model(agy_model):
+        cwd = None  # 原生纯文本会话在独立目录，不为这一轮准备项目副本
+    elif cwd_override is not None:
         cwd = cwd_override
     else:
         # Git 项目必须先拿到独立 worktree。创建失败就中止本轮,不能把 Agent 放回主检出目录。
         cwd = await worktree.execution_cwd(session_key)
     cwd_token = danger.set_cwd(cwd, project_root=root)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
+    agy_path = bool(agy_model or agy_locked)
     stored_user = store_user if store_user is not None else user_text
+    if agy_path:
+        stored_user = danger.redact_secrets(stored_user)
     turn_id = session_store.start_turn(session_key, stored_user, source_access=source_access)
     from ..core import dispatch
 
@@ -344,12 +351,11 @@ async def _converse(
     if dispatch.enabled() and not compact:
         execution_id = dispatch.begin(session_key, turn_id, source_access)
     await sink.turn_saved()
-    agy_model = model if agy_trial.is_trial_model(model) else None
-    if not agy_model:
+    if not agy_path:
         user_text, prompt_files = prepare_turn_attachments(
             turn_id, user_text, images=images, audios=audios, files=files, videos=videos,
         )
-    shared = SharedTurn(session_key, turn_id, sink, fresh=True) if agy_model else SharedTurn(session_key, turn_id, sink)
+    shared = SharedTurn(session_key, turn_id, sink, fresh=True) if agy_path else SharedTurn(session_key, turn_id, sink)
     reply: AgentReply | None = None
     timeline = shared.timeline
     _err_msg = ""           # 流式期间抛出的异常消息
@@ -381,7 +387,7 @@ async def _converse(
                 raise ValueError(refused)
             execution_options = {"token_budget": budget, "usage_callback": track_automatic_usage,
                                  "max_turns": config.TASK_MAX_TURNS, "require_resume": True}
-        if agy_model:
+        if agy_path:
             from contextlib import aclosing
 
             refusal = ""
@@ -389,7 +395,13 @@ async def _converse(
                 refusal = "Antigravity 试用只支持在网页手动发送当前文字。"
             elif danger.redact_secrets(user_text) != user_text:
                 refusal = "这段文字可能含凭据，未发送给 Antigravity。"
-            async with aclosing(agy_trial.stream_trial(agy_model, user_text, refusal)) as events:
+            if agy_locked and not agy_trial.is_native_model(agy_model):
+                refusal = "此会话已锁定 Antigravity，请选择 Antigravity 模型。"
+            if agy_trial.is_native_model(agy_model):
+                stream = agy_trial.stream_native(session_key, turn_id, agy_model, user_text, refusal)
+            else:
+                stream = agy_trial.stream_trial(agy_model or model, user_text, refusal)
+            async with aclosing(stream) as events:
                 async for ev in events:
                     await shared.observe(ev)
         else:
@@ -567,6 +579,8 @@ def handle_command(text: str, session_key: str, current_model: str) -> CommandOu
     cmd, _, arg = text.partition(" ")
     cmd, arg = cmd.lower(), arg.strip()
 
+    if cmd in ("/model", "/new", "/clear", "/reset", "/compact") and session_store.agy_native_session(session_key):
+        return CommandOutcome(reply="此会话由 Antigravity 管理，请用网页模型面板切换同组模型；其他模型请另开新会话。")
     if cmd in ("/exit", "/quit"):
         return CommandOutcome(reply="再见。", exit=True)
     if cmd in ("/new", "/reset"):

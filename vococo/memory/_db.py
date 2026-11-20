@@ -167,7 +167,8 @@ def conn() -> sqlite3.Connection:
             _DB.execute("UPDATE session_meta SET conversation_mode='chat' WHERE session_key IN ('main','web:main','voice-chat:main')")
         # 迁移:session_meta 增列(老库平滑升级)
         cols = {r[1] for r in _DB.execute("PRAGMA table_info(session_meta)")}
-        for col, kind in (("agent_id", "TEXT"), ("project_hash", "TEXT"), ("bound_at", "REAL")):
+        for col, kind in (("agent_id", "TEXT"), ("project_hash", "TEXT"), ("bound_at", "REAL"),
+                          ("agy_native_session", "TEXT")):
             if col not in cols:
                 _DB.execute(f"ALTER TABLE session_meta ADD COLUMN {col} {kind}")
         if "title" not in cols:  # Web 会话列表用

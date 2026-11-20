@@ -1238,6 +1238,23 @@ def set_last_error(session_key: str, is_error: bool) -> None:
     c.commit()
 
 
+def agy_native_session(session_key: str) -> dict | None:
+    row = _conn().execute("SELECT agy_native_session FROM session_meta WHERE session_key=?", (session_key,)).fetchone()
+    return json.loads(row[0]) if row and row[0] else None
+
+
+def lock_agy_native_session(session_key: str, model: str, turn_id: int, native: dict) -> bool:
+    """首轮原生终态成功才持久化；不复活被删除或已改模型的会话。"""
+    c = _conn()
+    cur = c.execute(
+        "UPDATE session_meta SET agy_native_session=? WHERE session_key=? AND chosen_model=? "
+        "AND agy_native_session IS NULL AND EXISTS (SELECT 1 FROM turns WHERE session_key=? AND id=?)",
+        (json.dumps(native), session_key, model, session_key, turn_id),
+    )
+    c.commit()
+    return cur.rowcount == 1
+
+
 def set_chosen_model(session_key: str, model: str) -> None:
     """记住某会话用户选定的模型(下一轮要用哪个);/model 切换时写入,刷新/重启都不丢。
 
@@ -1248,9 +1265,11 @@ def set_chosen_model(session_key: str, model: str) -> None:
     """
     c = _conn()
     row = c.execute(
-        "SELECT chosen_model FROM session_meta WHERE session_key=?",
+        "SELECT chosen_model, agy_native_session FROM session_meta WHERE session_key=?",
         (session_key,),
     ).fetchone()
+    if row and row[1] and not model.startswith("agy-native:"):
+        return  # 其他入口不能把已锁定的会话切回普通模型
     if row and row[0] != model:
         # 老会话没记模型时也不能确认旧 transcript 的身份，保守地走历史恢复。
         c.execute(
@@ -1260,7 +1279,8 @@ def set_chosen_model(session_key: str, model: str) -> None:
         )
     c.execute(
         "INSERT INTO session_meta(session_key, watermark_id, chosen_model) VALUES (?,0,?) "
-        "ON CONFLICT(session_key) DO UPDATE SET chosen_model=excluded.chosen_model",
+        "ON CONFLICT(session_key) DO UPDATE SET chosen_model=excluded.chosen_model "
+        "WHERE agy_native_session IS NULL OR excluded.chosen_model GLOB 'agy-native:*'",
         (session_key, model),
     )
     c.commit()
