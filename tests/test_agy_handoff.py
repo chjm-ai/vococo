@@ -38,11 +38,22 @@ async def test_auth_and_current_agent_scope(isolated, monkeypatch):
     scoped.mkdir()
     (scoped / 'SKILL.md').write_text('skill')
     (scoped / 'helper.py').write_text('helper')
+    unsafe = isolated / 'skills' / 'unsafe-config'
+    unsafe.mkdir()
+    (unsafe / 'SKILL.md').write_text('requires local configuration')
+    (unsafe / 'config.json').write_text('not exported')
+    own = config.AI_BRAIN_DIR / 'memory' / 'project'
+    own.mkdir(parents=True)
+    (config.AI_BRAIN_DIR / 'MEMORY.md').write_text('private-preamble\n## 允许\nshared-marker\n## 不允许\nprivate-marker\n')
+    (own / 'INDEX.md').write_text('own-marker')
     monkeypatch.setattr(config, 'WEB_AUTH_TOKEN', 'test-web')
     monkeypatch.setattr(agy_trial, 'cli_binary', lambda: Path('/bin/sh'))
     monkeypatch.setattr(agy_trial, 'accepts_session', lambda _: True)
     monkeypatch.setattr(agents, 'agent_for_session', owner)
-    monkeypatch.setattr(agents, 'runtime_for_session', lambda _: {'skills': ['standalone', 'has-helper'], 'mcp': ['api']})
+    monkeypatch.setattr(agents, 'runtime_for_session', lambda _: {
+        'skills': ['standalone', 'has-helper', 'not-found', 'unsafe-config'], 'mcp': ['api'],
+        'memory_sections': ['允许'], 'memory_dir': str(own),
+    })
     monkeypatch.setattr(session_store, 'get_external_mcp_names', lambda _: [])
     monkeypatch.setattr(settings_store, '_SKILLS_DIR', single.parent)
     monkeypatch.setattr(settings_store, 'effective_external_mcp', lambda _: {'api': {'headers': {'Authorization': 'DO-NOT-COPY'}}})
@@ -64,7 +75,8 @@ async def test_auth_and_current_agent_scope(isolated, monkeypatch):
         data = await response.json()
     assert seen == ['session:qa']
     assert (data['global_agent_id'], data['agent_id']) == ('general', 'abc123')
-    assert data['native_skills'] == ['standalone'] and data['unmapped_skills'] == ['has-helper']
+    assert data['native_skills'] == ['has-helper', 'standalone']
+    assert data['unmapped_skills'] == ['not-found', 'unsafe-config']
     assert data['unmapped_vococo_mcp'] == ['api']
     w = Path(data['workspace'])
     assert w.stat().st_mode & 0o777 == 0o700
@@ -72,7 +84,28 @@ async def test_auth_and_current_agent_scope(isolated, monkeypatch):
     assert (w / 'context/AGENT.md').read_text() == 'role:abc123'
     assert (w / 'context/PROJECT-RULES.md').read_text() == 'project-rule'
     assert 'DO-NOT-COPY' not in str(data) and not list(w.rglob('.env'))
-    assert 'api' not in json.loads((w / '.agents/mcp_config.json').read_text())['mcpServers']
+    assert (w / '.agents/skills/has-helper/helper.py').read_text() == 'helper'
+    memory = (w / 'context/MEMORY.md').read_text()
+    assert 'shared-marker' in memory and 'private-marker' not in memory and 'private-preamble' not in memory
+    link = own.with_name('another-project')
+    link.symlink_to(own, target_is_directory=True)
+    assert agy_handoff._memory_docs({'memory_dir': str(link), 'memory_sections': ['不存在']}) == {}
+    assert (w / 'context/AGENT-MEMORY.md').read_text() == 'own-marker'
+    assert list(json.loads((w / '.agents/mcp_config.json').read_text())['mcpServers']) == data['local_mcp']
+
+
+def test_cli_mcp_permissions_do_not_override_user_rules(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    local = 'vococo-context-fixture'
+    assert agy_handoff._cli_settings(local) == {
+        'allowNonWorkspaceAccess': False, 'permissions': {'allow': [
+            f'mcp({local}/read_agent_context)', f'mcp({local}/read_agent_memory)',
+        ]},
+    }
+    path = tmp_path / '.gemini/antigravity-cli/settings.json'
+    path.parent.mkdir(parents=True)
+    path.write_text('{"permissions":{"deny":["mcp(*)"]}}')
+    assert agy_handoff._cli_settings(local) == {'allowNonWorkspaceAccess': False}
 
 
 def test_command_preserves_multiline_text_without_zsh_expansion(tmp_path):

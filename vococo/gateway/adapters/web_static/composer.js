@@ -308,8 +308,8 @@ function quoteAgyArg(value){
 }
 function agyShellCommand(workspace, text){
   if(new TextEncoder().encode(text).length>16000) throw new Error("文字太长，请缩短后再复制");
-  return "cd -- "+quoteAgyArg(workspace)+' && PATH="$HOME/.local/bin:$PATH" agy --mode plan --sandbox --settings \''+
-    '{"allowNonWorkspaceAccess":false}'+"'"+(text.trim() ? " --prompt-interactive="+quoteAgyArg(text) : "");
+  return "cd -- "+quoteAgyArg(workspace)+' && PATH="$HOME/.local/bin:$PATH" agy --mode accept-edits --sandbox --settings ./context/cli-settings.json'+
+    (text.trim() ? " --prompt-interactive="+quoteAgyArg(text) : "");
 }
 async function copyAgyCommand(){
   const state=S.agyHandoff, btn=$("#sendBtn");

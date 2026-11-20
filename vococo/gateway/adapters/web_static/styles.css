@@ -1266,7 +1266,11 @@
   .mqt .mqdist span{font-size:var(--fs-sm);color:var(--dim);background:var(--panel2);padding:2px var(--sp-2);border-radius:var(--r-md)}
   #modelPop .mgrouplabel{padding:var(--sp-2) var(--sp-4) var(--sp-1);font-size:var(--fs-sm);font-weight:600;color:var(--dim2);display:flex;align-items:center;justify-content:space-between;gap:8px}
   #modelPop .mgrouplabel .mgmeta{display:flex;align-items:center;gap:6px;flex-shrink:0}
-  #modelPop .mgrouplabel .mreset{font-size:var(--fs-sm);color:var(--dim2);font-weight:400;white-space:nowrap}
+  #modelPop .mreset{font-size:var(--fs-sm);color:var(--dim2);font-weight:400;white-space:nowrap}
+  #modelPop .agy-cli-row{display:flex;align-items:center;gap:var(--sp-1);padding-inline-end:var(--sp-4)}
+  #modelPop .agy-cli-row .mi{flex:1;min-width:0}
+  #modelPop .agy-cli-row .mgmeta{display:flex;align-items:center;gap:var(--sp-2);flex-shrink:0}
+  #modelPop .agy-cli-row .mreset{max-width:13ch;overflow:hidden;text-overflow:ellipsis}
   #modelPop .mdivider{height:1px;margin:5px 7px;background:var(--line2)}
   /* 思考深度选择器(模型切换胶囊左侧,样式与模型胶囊一致) */
   #effortBox{position:relative}

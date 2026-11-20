@@ -2261,16 +2261,12 @@ class WebAdapter:
             or config.MODEL
         conv = request.query.get("conv", "")
         key = config.resolve_session_key("web", conv) if conv else ""
-        if agy_trial.enabled() and (not key or agy_trial.accepts_session(key)):
-            choices.extend((mid, label, "agy") for mid, label in agy_trial.CHOICES.items())
         chosen = session_store.get_chosen_model(key) if key else ""
         if key and not chosen:
             chosen = active_model
             session_store.set_chosen_model(key, chosen)
         efforts, tiers = {}, {}
-        for model, _, group in choices:
-            if group == "agy":
-                continue
+        for model, _, _ in choices:
             options = model_preferences.for_model(key, model)
             levels = providers.effort_levels_for_model(model)
             value = options["effort"]
@@ -2424,7 +2420,7 @@ class WebAdapter:
         Antigravity 试用仅供 Web 使用，不进入常规模型供应商。
         """
         model = request.query.get("model")
-        if agy_trial.is_trial_model(model):
+        if model == "agy-handoff" or agy_trial.is_trial_model(model):
             payload, status = await agy_trial.quota_usage(model)
         else:
             payload, status = await providers.usage_for_model(model)

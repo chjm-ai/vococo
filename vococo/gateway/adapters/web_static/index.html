@@ -1145,8 +1145,8 @@ function syncModelLock(){
 }
 // 模型面板分组:Anthropic 订阅(拿不到具体用量,只显示重置时间)/ Kimi 订阅(有具体用量,带小圆环)
 // / API(按量计费,不查额度)。分组顺序固定,组间只画一条分割线,不做折叠。
-var MODEL_GROUPS = [["anthropic","Anthropic 订阅"],["kimi","Kimi 订阅"],["codex","Codex 订阅"],["api","API"],["agy","Antigravity 试用 · 仅当前文字"]];
-var QUOTA_GROUPS = ["anthropic", "kimi", "codex", "agy"];
+var MODEL_GROUPS = [["anthropic","Anthropic 订阅"],["kimi","Kimi 订阅"],["codex","Codex 订阅"],["api","API"]];
+var QUOTA_GROUPS = ["anthropic", "kimi", "codex"];
 var quotaCache = {};   // 按模型名缓存 {data, ts},60s 内直接复用,不重复打接口
 var quotaGroupData = {}; // 分组标题当前额度,供面板跨午夜时只刷新日期文案、不重打接口
 var quotaResetClock = 0;
@@ -1188,8 +1188,9 @@ function renderModelPop(){
   });
   if(S.models.agy_handoff){
     html += (groupsShown ? '<div class="mdivider"></div>' : '')+
-      '<button type="button" class="mi'+(cur==="agy-handoff"?" on":"")+'" data-m="agy-handoff">'+
-      '<span class="ml">Antigravity · 复制到终端</span>'+(cur==="agy-handoff"?'<span class="mk">✓</span>':'')+'</button>';
+      '<div class="agy-cli-row"><button type="button" class="mi'+(cur==="agy-handoff"?" on":"")+'" data-m="agy-handoff">'+
+      '<span class="ml">Antigravity CLI</span>'+(cur==="agy-handoff"?'<span class="mk">✓</span>':'')+'</button>'+
+      '<span class="mgmeta"><span class="mreset" data-m="agy-handoff"></span>'+ringSvg("agy-handoff")+'</span></div>';
   }
   pop.innerHTML = html || '<div style="padding:9px 11px;color:var(--dim);font-size:13px">暂无可选模型</div>';
   pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickModel(b.dataset.m); });
@@ -1200,7 +1201,7 @@ function renderModelPop(){
   pop.querySelectorAll(".mring").forEach(ring=>{
     ring.addEventListener("mouseenter", ()=>showUsageTip(ring));
     ring.addEventListener("mouseleave", hideUsageTip);
-    if(ring.dataset.m === "agy"){
+    if(ring.dataset.m === "agy-handoff"){
       ring.tabIndex = 0;
       ring.setAttribute("aria-label", "Antigravity 额度详情");
       ring.addEventListener("focus", ()=>showUsageTip(ring));
@@ -1268,7 +1269,7 @@ document.addEventListener("click", e=>{ const b=$("#modelBox"); if(b && !b.conta
 // loadUsage 只负责拿数据+缓存(60s 内复用),不碰 DOM;渲染交给调用方按行更新。
 function loadUsage(model, force){
   var cached = quotaCache[model];
-  var isAgy = model.startsWith("agy-trial:");
+  var isAgy = model === "agy-handoff";
   // Antigravity 服务端按账号缓存，避免前端跨过重置时间仍复用旧值。
   if(!isAgy && cached && !force && (Date.now() - cached.ts) < 60000){
     return Promise.resolve(cached.data);
@@ -1329,7 +1330,7 @@ function startQuotaResetClock(){
     var pop = $("#modelPop");
     if(!pop || pop.hidden){ clearInterval(quotaResetClock); quotaResetClock=0; return; }
     Object.keys(quotaGroupData).forEach(function(id){
-      if(id === "agy"){
+      if(id === "agy-handoff"){
         applyUsageRow(id, quotaGroupData[id]);
         return;
       }
@@ -1420,7 +1421,7 @@ function applyUsageRow(id, data){
   if(!data || data.error || !limit){
     ring.dataset.state = "error";
     if(tip) tip.innerHTML = '<div class="mqt">'+esc(data && data.error || "额度查询失败")+'</div>';
-    if(id === "agy" && ring.matches(":hover, :focus")) showUsageTip(ring);
+    if(id === "agy-handoff" && ring.matches(":hover, :focus")) showUsageTip(ring);
     if(arc){ arc.setAttribute("stroke-dashoffset","0"); arc.style.stroke="var(--dim2)"; }
     return;
   }
@@ -1448,6 +1449,9 @@ function loadModelQuotas(choices){
     if(!rep) return;
     loadUsage(rep[0]).then(function(data){ quotaGroupData[gkey]=data; applyUsageRow(gkey, data); });
   });
+  if(S.models.agy_handoff){
+    loadUsage("agy-handoff").then(function(data){ quotaGroupData["agy-handoff"]=data; applyUsageRow("agy-handoff", data); });
+  }
 }
 function metaRow(k, v, pp, cls){
   return '<div class="pr'+(cls?" "+cls:"")+'"><span class="k">'+k+'</span>'+
