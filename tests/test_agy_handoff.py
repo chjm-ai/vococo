@@ -70,7 +70,8 @@ async def test_auth_and_current_agent_scope(isolated, monkeypatch):
         draft = await (await client.get('/models?conv=session:draft')).json()
         assert draft['agy_handoff'] is False
         assert (await client.post('/agy-handoff', json={'conv': 'session:draft'})).status == 400
-        response = await client.post('/agy-handoff', json={'conv': 'session:qa'})
+        # 已绑定会话忽略客户端提供的其他归属。
+        response = await client.post('/agy-handoff', json={'conv': 'session:qa', 'agent_id': 'general'})
         assert response.status == 200, await response.text()
         data = await response.json()
     assert seen == ['session:qa']
@@ -92,6 +93,50 @@ async def test_auth_and_current_agent_scope(isolated, monkeypatch):
     assert agy_handoff._memory_docs({'memory_dir': str(link), 'memory_sections': ['不存在']}) == {}
     assert (w / 'context/AGENT-MEMORY.md').read_text() == 'own-marker'
     assert list(json.loads((w / '.agents/mcp_config.json').read_text())['mcpServers']) == data['local_mcp']
+
+
+@pytest.mark.anyio
+async def test_unbound_draft_can_prepare_current_project_without_saving_chat(isolated, monkeypatch):
+    project = isolated / 'project'
+    project.mkdir()
+    (project / 'AGENTS.md').write_text('draft rules')
+    own = {'id': 'abc123', 'project_hash': 'abc999', 'workdir': str(project),
+           'execution_mode': 'project', 'skills': [], 'mcp': [], 'memory_sections': []}
+    monkeypatch.setattr(config, 'WEB_AUTH_TOKEN', 'test-web')
+    monkeypatch.setattr(agy_trial, 'cli_binary', lambda: Path('/bin/sh'))
+    monkeypatch.setattr(agents, 'get', lambda aid: own if aid == own['id'] else None)
+    monkeypatch.setattr(session_store, 'path_for_hash', lambda phash: str(project) if phash == 'abc999' else None)
+    key = 'session:bf3275bece8745009bd6c1e1e2363ad3'
+    app = web.Application()
+    adapter = WebAdapter()
+    app.router.add_get('/models', adapter._handle_models)
+    app.router.add_post('/agy-handoff', adapter._handle_agy_handoff)
+    app.router.add_get('/conv/git', adapter._handle_conv_git)
+    async with TestClient(TestServer(app), headers={'X-Auth-Token': 'test-web'}) as client:
+        git = await client.get('/conv/git', params={'conv': key})
+        assert git.status == 200 and await git.json() == {'is_project': False}
+        models = await (await client.get('/models', params={'conv': key})).json()
+        assert models['agy_handoff'] is True
+        assert (await client.post('/agy-handoff', json={'conv': key})).status == 400
+        valid = {'conv': key, 'agent_id': 'abc123', 'project_hash': 'abc999'}
+        for bad in ({**valid, 'project_hash': 'other'}, {**valid, 'agent_id': 'missing'}):
+            assert (await client.post('/agy-handoff', json=bad)).status == 400
+        response = await client.post('/agy-handoff', json=valid)
+        assert response.status == 200, await response.text()
+        snapshot = await response.json()
+        assert snapshot['agent_id'] == 'abc123'
+        assert (Path(snapshot['workspace']) / 'context/PROJECT-RULES.md').read_text() == 'draft rules'
+        assert not session_store.session_binding(key) and not session_store.load_recent(key)
+        after = await (await client.get('/models', params={'conv': key})).json()
+        assert (after['default'], after['chosen_model']) == (models['default'], models['chosen_model'])
+
+        def concurrent_bind(session_key, *, draft_owner):
+            session_store.bind_session(session_key, agent_id='general')
+            return {'workspace': '/isolated/old-agent', 'agent_id': draft_owner['id']}
+
+        monkeypatch.setattr(agy_handoff, 'prepare', concurrent_bind)
+        stale = await client.post('/agy-handoff', json=valid)
+        assert stale.status == 409 and 'workspace' not in await stale.json()
 
 
 def test_cli_mcp_permissions_do_not_override_user_rules(tmp_path, monkeypatch):

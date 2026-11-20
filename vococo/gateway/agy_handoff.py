@@ -102,17 +102,20 @@ def _memory_docs(runtime):
     return docs
 
 
-def _context(key):
+def _context(key, draft_owner=None):
     from .. import config
     from ..memory import agents, session_store
     from . import settings_store
 
-    owner = agents.agent_for_session(key) or agents.get(agents.GENERAL_ID)
+    # 准备目录与正常发送可能同时发生；已有持久归属优先于草稿参数。
+    if draft_owner is not None and session_store.session_binding(key):
+        draft_owner = None
+    owner = draft_owner or agents.agent_for_session(key) or agents.get(agents.GENERAL_ID)
     agent_id = owner['id']
     if not re.fullmatch(r'general|[a-f0-9]{6,32}', agent_id):
         raise ValueError('无效的 Agent ID')
     source = Path(owner['workdir'] or config.ROOT_DIR).resolve(strict=True)
-    runtime = agents.runtime_for_session(key)
+    runtime = agents.runtime_for_agent(owner) if draft_owner is not None else agents.runtime_for_session(key)
     skill_names = runtime['skills']
     if skill_names is None:
         skill_names = settings_store.effective_skills(str(source), is_explicit_project=bool(owner['workdir']))
@@ -164,10 +167,10 @@ def _cli_settings(server_name):
     return settings
 
 
-def prepare(key: str):
+def prepare(key: str, *, draft_owner: dict | None = None):
     from .. import config
 
-    owner, source, docs, meta = _context(key)
+    owner, source, docs, meta = _context(key, draft_owner)
     root = config.AGENT_WORKSPACES_DIR.resolve() / 'agy-handoff'
     if (root.is_symlink() or root.is_relative_to(config.ROOT_DIR.resolve()) or root.is_relative_to(source)
             or any(os.path.lexists(path / '.git') for path in (root, *root.parents))):

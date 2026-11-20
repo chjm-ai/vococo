@@ -761,8 +761,10 @@ async function loadModels(){
     if(conv!==permConvId(S.conv) || seq!==modelsLoadSeq) return;
     data._conv=conv;
     sessionModels.set(conv,data);
+    const cliChanged=S.models.agy_handoff!==data.agy_handoff;
     S.models=data;
     setModel(data.chosen_model||S.model);
+    if(cliChanged && !$("#modelPop").hidden) renderModelPop();
   }catch(e){}
 }
 async function reloadSavedModels(conv){
@@ -1117,14 +1119,16 @@ function renderModelChip(){
 }
 async function selectAgyHandoff(){
   const state={conv:S.conv,workspace:""};
+  const ownership=isDraftConv(state.conv) ? convOwnership(state.conv) : {};
   S.agyHandoff=state;
   closeCmdMenu(); renderModelChip(); renderEffortChip();
   try{
     const r=await api("/agy-handoff", {method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({conv:permConvId(state.conv)})}, {trackService:false});
+      body:JSON.stringify({conv:permConvId(state.conv),...ownership})}, {trackService:false});
     const data=await r.json();
     if(!r.ok || !data.workspace) throw new Error(data.error || "无法准备 CLI 交接");
     if(S.agyHandoff!==state || S.conv!==state.conv) return;
+    if(ownership.agent_id && data.agent_id!==ownership.agent_id) throw new Error("会话归属已变更，请刷新后重试");
     state.workspace=data.workspace;
     updateSendBtn();
   }catch(error){

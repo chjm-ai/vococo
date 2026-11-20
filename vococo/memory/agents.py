@@ -853,8 +853,13 @@ def runtime_for_session(session_key: str | None) -> dict:
             raise
         print(f"[agents] 读取 Agent 名单失败:{exc}", flush=True)
         a = None
+    return runtime_for_agent(a)
+
+
+def runtime_for_agent(a: dict | None) -> dict:
+    """用已校验的 Agent 描述计算运行设定，不要求会话先落库。"""
     if not a or a["id"] == GENERAL_ID:
-        return empty
+        return dict.fromkeys(RUNTIME_KEYS)
     rt = {k: a.get(k) for k in RUNTIME_KEYS}
     # 业务执行目录已不再是项目目录；保留原 Git 目录的技能匹配，显式 Agent 名单仍优先。
     if a["execution_mode"] == "workspace" and rt["skills"] is None:
