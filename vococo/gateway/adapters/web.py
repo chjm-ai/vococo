@@ -402,7 +402,8 @@ def _search_session_rows(query: str) -> list[dict]:
     ))[:50]
 
 
-def _bind_browser_session(key: str, ownership: dict | None, *, bind: bool = True) -> None:
+def _bind_browser_session(key: str, ownership: dict | None, *, bind: bool = True) -> dict | None:
+    """验证新浏览器会话的归属；仅校验时返回已核实的 Agent，不写库。"""
     from ...memory import agents
 
     if not key.startswith("session:") or session_store.session_binding(key):
@@ -423,6 +424,7 @@ def _bind_browser_session(key: str, ownership: dict | None, *, bind: bool = True
         raise ValueError("项目不存在")
     if bind:
         session_store.bind_session(key, agent_id=aid, project_hash=phash)
+    return owner
 
 
 def _rows_with_conv(prefix: str, *, archived: bool | None = None,
@@ -2389,8 +2391,11 @@ class WebAdapter:
         if (not config.WEB_AUTH_TOKEN or not key or key.startswith(("task:", "voice-chat:"))
                 or not os.access(agy_trial.cli_binary(), os.X_OK)):
             return False
-        if key.startswith("session:") and not session_store.session_binding(key).get("agent_id"):
-            return False
+        if key.startswith("session:") and not session_store.session_binding(key):
+            try:
+                uuid.UUID(key.removeprefix("session:"))
+            except ValueError:
+                return False
         return agy_trial.accepts_session(key)
 
     @_authed
@@ -2407,9 +2412,16 @@ class WebAdapter:
         if not self._agy_handoff_available(key):
             return web.json_response({"error": "请先打开已归属 Agent 的普通会话"}, status=400)
         try:
-            context = await asyncio.to_thread(agy_handoff.prepare, key)
+            owner = _bind_browser_session(key, body, bind=False)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        try:
+            context = await asyncio.to_thread(agy_handoff.prepare, key, draft_owner=owner)
         except (OSError, ValueError):
             return web.json_response({"error": "无法准备此会话的 Agent 交接目录"}, status=400)
+        if owner is not None and (binding := session_store.session_binding(key)):
+            if binding.get("agent_id") != context["agent_id"]:
+                return web.json_response({"error": "会话归属已变更，请重新准备 CLI 指令"}, status=409)
         return web.json_response(context, headers={"Cache-Control": "no-store"})
 
     # ── 订阅配额查询 ───────────────────────────────────────────────────────
@@ -2894,6 +2906,8 @@ class WebAdapter:
     async def _handle_conv_git(self, request: web.Request) -> web.Response:
         """优先汇总 Agent 当前会话的仓库副本，兼容旧项目会话。"""
         key = config.resolve_session_key("web", request.query.get("conv", ""))
+        if key.startswith("session:") and not session_store.session_binding(key):
+            return web.json_response({"is_project": False})  # 草稿还没有仓库副本
         repositories = await git_status.session_repository_status(key)
         if repositories is not None:
             return web.json_response(repositories)

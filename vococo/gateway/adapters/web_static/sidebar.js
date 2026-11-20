@@ -435,6 +435,7 @@ function pickDraftProject(hash){
   S.project=hash;
   S.expanded.add(grpKey(hash)); saveExpanded();
   renderConvs(); renderProjSelChip();
+  if(typeof agyCopyActive==="function" && agyCopyActive()) selectAgyHandoff();
 }
 function fitProjSelPop(){
   const pop=$("#projSelPop"); if(pop.hidden) return;
