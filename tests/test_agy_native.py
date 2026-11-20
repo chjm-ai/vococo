@@ -38,6 +38,11 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
     monkeypatch.setattr(agy_trial, "enabled", lambda: True)
     settings_store.set_web_default_model("deepseek-flash")
     called = []
+    brain = isolated / "brain"
+    brain.mkdir(exist_ok=True)
+    monkeypatch.setattr(config, "AI_BRAIN_DIR", brain)
+    rules = brain / "AGENTS.md"
+    rules.write_text("# 回复偏好\n\n测试规则：只说结论。\n\n## 其他规则\n不发送的规则", encoding="utf-8")
 
     async def spec():
         return native_spec_for((HIGH, LOW))
@@ -58,6 +63,15 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
     async def stream_turn(cwd, timeout, model, prompt, *, effort=None, session_id=None, **kwargs):
         called.append((str(cwd), model, effort, session_id))
         assert prompt.startswith("本会话由 vococo 网页代理")
+        assert "不发送的规则" not in prompt
+        if prompt.endswith("skip unsafe style"):
+            assert "回复偏好" not in prompt
+            assert secret not in prompt
+        elif session_id:
+            assert "测试规则：先说结果。" in prompt
+            assert "测试规则：只说结论。" not in prompt
+        else:
+            assert "测试规则：只说结论。" in prompt
         if prompt.endswith("first failure"):
             raise agy_acp.AcpError("agy_request_failed")
         if prompt.endswith("test search"):
@@ -123,9 +137,15 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
         assert core.handle_command("/model deepseek-flash", conv, HIGH).new_model is None
         assert session_store.get_chosen_model(conv) == HIGH
         assert (await choose(LOW)).status == 200
+        rules.write_text("# 回复偏好\n\n测试规则：先说结果。", encoding="utf-8")
         await send("same native session", LOW)
         assert called[-1] == (lock["cwd"], "gemini-4-argon", "high", NATIVE_ID)
         assert session_store.agy_native_session(conv) == lock
+        for unsafe in (secret, "Authorization: Bearer synthetic_unknown_value"):
+            rules.write_text(f"# 回复偏好\n\n测试规则：{unsafe}", encoding="utf-8")
+            await send("skip unsafe style", LOW)
+            assert "测试通过" in str(session_store.load_recent(conv)[-1])
+        assert len(called) == 6
         locked = await (await client.get("/models", params={"conv": conv})).json()
         assert locked["agy_native_locked"] and not locked["agy_handoff"]
         assert {x[0] for x in locked["choices"]} == {HIGH, LOW}
