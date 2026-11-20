@@ -2288,6 +2288,7 @@ class WebAdapter:
                 "effort": efforts.get(chosen or active_model, {}).get("value", ""),
                 "efforts": efforts,
                 "service_tiers": tiers,
+                "agy_handoff": self._agy_handoff_available(key),
                 "choices": [[v, label, group] for v, label, group in choices],
             }
         )
@@ -2386,6 +2387,34 @@ class WebAdapter:
                 "skills": [{"name": s["name"], "desc": s["description"]} for s in skills],
             }
         )
+
+    @staticmethod
+    def _agy_handoff_available(key: str) -> bool:
+        if (not config.WEB_AUTH_TOKEN or not key or key.startswith(("task:", "voice-chat:"))
+                or not os.access(agy_trial.cli_binary(), os.X_OK)):
+            return False
+        if key.startswith("session:") and not session_store.session_binding(key).get("agent_id"):
+            return False
+        return agy_trial.accepts_session(key)
+
+    @_authed
+    @_json_body
+    async def _handle_agy_handoff(self, request: web.Request, body: dict) -> web.Response:
+        from .. import agy_handoff
+
+        if not config.WEB_AUTH_TOKEN or not os.access(agy_trial.cli_binary(), os.X_OK):
+            return web.json_response({"error": "本机 Antigravity CLI 交接不可用"}, status=503)
+        conv = body.get("conv") if isinstance(body, dict) else None
+        if not isinstance(conv, str) or not conv or len(conv) > 160 or conv.startswith("local-"):
+            return web.json_response({"error": "请先打开已归属 Agent 的会话"}, status=400)
+        key = config.resolve_session_key("web", conv)
+        if not self._agy_handoff_available(key):
+            return web.json_response({"error": "请先打开已归属 Agent 的普通会话"}, status=400)
+        try:
+            context = await asyncio.to_thread(agy_handoff.prepare, key)
+        except (OSError, ValueError):
+            return web.json_response({"error": "无法准备此会话的 Agent 交接目录"}, status=400)
+        return web.json_response(context, headers={"Cache-Control": "no-store"})
 
     # ── 订阅配额查询 ───────────────────────────────────────────────────────
     @_authed
@@ -4098,6 +4127,7 @@ class WebAdapter:
                 web.get("/conv/perm", self._handle_conv_perm),
                 web.post("/conv/perm", self._handle_conv_perm_set),
                 web.get("/models", self._handle_models),
+                web.post("/agy-handoff", self._handle_agy_handoff),
                 web.post("/effort", self._handle_effort_switch),
                 web.post("/service-tier", self._handle_service_tier_switch),
                 web.post("/verbosity", self._handle_verbosity_switch),

@@ -794,6 +794,9 @@ function effortShort(id, levels){
   return hit ? hit[1] : (id?esc(id):"auto");
 }
 function renderEffortChip(){
+  const copy=typeof agyCopyActive==="function" && agyCopyActive();
+  $("#effortBox").hidden=copy || (S.cronJobs||[]).some(x=>x.conv===S.conv);
+  if(copy){ $("#effortPop").hidden=true; return; }
   const state=effortState(), btn=$("#effortBtn"), enabled=state.levels.length>0;
   const tier=((S.models&&S.models.service_tiers)||{})[curModel()];
   $("#effortName").textContent=effortShort(state.value, state.levels)+(tier && tier.supported && tier.value==="priority" ? "⚡2x" : "");
@@ -1107,7 +1110,29 @@ function curModel(){
   return S.model || S.models.default || "";
 }
 function setModel(id){ S.model=id||""; renderModelChip(); renderEffortChip(); }
-function renderModelChip(){ $("#modelName").textContent=modelShort(curModel()); }
+function renderModelChip(){
+  const copy=typeof agyCopyActive==="function" && agyCopyActive();
+  $("#modelName").textContent=copy ? "Antigravity CLI" : modelShort(curModel());
+  if(typeof updateSendBtn==="function") updateSendBtn();
+}
+async function selectAgyHandoff(){
+  const state={conv:S.conv,workspace:""};
+  S.agyHandoff=state;
+  closeCmdMenu(); renderModelChip(); renderEffortChip();
+  try{
+    const r=await api("/agy-handoff", {method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({conv:permConvId(state.conv)})}, {trackService:false});
+    const data=await r.json();
+    if(!r.ok || !data.workspace) throw new Error(data.error || "无法准备 CLI 交接");
+    if(S.agyHandoff!==state || S.conv!==state.conv) return;
+    state.workspace=data.workspace;
+    updateSendBtn();
+  }catch(error){
+    if(S.agyHandoff!==state || S.conv!==state.conv) return;
+    S.agyHandoff=null; renderModelChip(); renderEffortChip();
+    window.alert(error.message);
+  }
+}
 // 定时任务会话:模型只读(锁定编辑页的值,对话里不可切换)+ 思考深度整个隐藏
 // (2026-09-03 反馈:两处模型来源不一致会打乱缓存命中,干脆锁死为编辑页单一来源)。
 function syncModelLock(){
@@ -1137,7 +1162,7 @@ function ringSvg(id){
     '<span class="mqtip"></span></span>';
 }
 function renderModelPop(){
-  const pop=$("#modelPop"), cur=curModel();
+  const pop=$("#modelPop"), cur=agyCopyActive() ? "agy-handoff" : curModel();
   const choices = S.models.choices || [];
   var html = "";
   var groupsShown = 0;
@@ -1161,6 +1186,11 @@ function renderModelPop(){
         '</button>';
     }).join("");
   });
+  if(S.models.agy_handoff){
+    html += (groupsShown ? '<div class="mdivider"></div>' : '')+
+      '<button type="button" class="mi'+(cur==="agy-handoff"?" on":"")+'" data-m="agy-handoff">'+
+      '<span class="ml">Antigravity · 复制到终端</span>'+(cur==="agy-handoff"?'<span class="mk">✓</span>':'')+'</button>';
+  }
   pop.innerHTML = html || '<div style="padding:9px 11px;color:var(--dim);font-size:13px">暂无可选模型</div>';
   pop.querySelectorAll(".mi").forEach(b=>{ b.onclick=()=>pickModel(b.dataset.m); });
   // Hover 卡片改走 JS 悬浮定位(挂在 body 下),不再用 CSS :hover——
@@ -1206,7 +1236,15 @@ function hideUsageTip(){ if(usageTipEl) usageTipEl.style.display = "none"; }
 function pickModel(id){
   $("#modelPop").hidden=true;
   hideUsageTip();
-  if(!id || id===curModel()) return;
+  if(!id) return;
+  if(id==="agy-handoff"){
+    if(!agyCopyActive()) selectAgyHandoff();
+    return;
+  }
+  if(agyCopyActive()){
+    S.agyHandoff=null; renderModelChip(); renderEffortChip();
+  }
+  if(id===curModel()) return;
   const conv=permConvId(S.conv), saved=S.models, old=curModel();
   ++modelsLoadSeq;
   setModel(id);
@@ -1975,7 +2013,7 @@ async function openConv(conv, silentGroup){
   // 切到目标会话时,若全局审批弹窗正开着则关闭(用户选择进去处理)
   const cmodal=$("#choiceModal"); if(cmodal && !cmodal.hidden){ cmodal.hidden=true; }
   if(typeof saveComposerState==="function") saveComposerState(S.conv);
-  if(S.conv!==conv) upsertChecklist({},[],false);
+  if(S.conv!==conv){ S.agyHandoff=null; upsertChecklist({},[],false); }
   S.conv=conv; S.stream=null;
   resetMessageScroll();
   taskTree.open(conv);
