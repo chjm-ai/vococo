@@ -976,6 +976,7 @@ function handleEvent(e){
         }
       }else{ setRateStatus("ok","",""); }
       setMeta(e); loadConvs();
+      if(!e.is_error && (e.chosen_model||"").startsWith("agy-native:") && !S.models.agy_native_locked) loadModels();
       flushHistoryRefresh(e.conv, isTaskConv(e.conv));
       flushPending(e.conv); break; }
     case "message": // 命令回复 / 报错 / cron 推送(AI 主动发图走 mid_turn 分支,不会到这里)

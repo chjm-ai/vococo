@@ -1085,6 +1085,7 @@ def _known_secret_values() -> list[str]:
     vals = [
         config.OAUTH_TOKEN,
         config.STT_API_KEY,
+        config.DASHSCOPE_API_KEY,
         config.VAPID_PRIVATE_KEY,
         config.WEB_AUTH_TOKEN,
     ]

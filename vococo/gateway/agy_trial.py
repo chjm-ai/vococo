@@ -3,11 +3,13 @@
 import asyncio
 import json
 import os
+import re
 import signal
+import uuid
 from contextlib import aclosing, suppress
 from datetime import date, datetime
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 from time import monotonic, time
 
 import anyio
@@ -68,11 +70,13 @@ async def terminate(proc):
         break
 
 
-async def start_cli(command, model, cwd):
+async def start_cli(command, model, cwd, *, resume=None):
     args = (
         "--model", model, "--input-format", "stream-json", "--output-format", "stream-json",
         "--mode", "plan", "--sandbox", "--disable-slash-commands", "--settings", SETTINGS,
     )
+    if resume:
+        args += ("--conversation", resume)
     return await spawn_cli((*command, *args), cwd, asyncio.subprocess.PIPE)
 
 
@@ -91,8 +95,13 @@ async def spawn_cli(args, cwd, stdin):
         raise
 
 
-async def read_events(pipe):
+async def read_events(pipe, first=None):
     total = 0
+    if first is not None:
+        total = len(first)
+        if total > MAX_OUTPUT:
+            raise UpstreamError("agy_output_limit")
+        yield json.loads(first)
     while line := await pipe.readline():
         total += len(line)
         if total > MAX_OUTPUT:
@@ -103,18 +112,32 @@ async def read_events(pipe):
         yield event
 
 
-async def read_answer(proc, model, cwd):
-    seen_model, final, chunks = None, None, []
-    async for event in read_events(proc.stdout):
+def _check_init(event, model, cwd, resume=None, native=False):
+    if not isinstance(event, dict) or event.get("event") != "init":
+        raise UpstreamError("agy_missing_init")
+    init = event.get("init", {})
+    session_id = event.get("conversation_id")
+    if native and (not _valid_native_id(session_id) or (resume and resume != session_id)):
+        raise UpstreamError("agy_session_mismatch")
+    if init.get("model") != model:
+        raise UpstreamError("agy_model_mismatch")
+    actual = init.get("cwd")
+    if not isinstance(actual, str) or Path(actual).resolve() != Path(cwd).resolve():
+        raise UpstreamError("agy_workspace_mismatch")
+    return session_id
+
+
+async def read_answer(proc, model, cwd, *, resume=None, native=False, first=None):
+    seen_model, final, chunks, session_id = None, None, [], None
+    async for event in read_events(proc.stdout, first):
         kind = event.get("event")
+        if native and kind == "step_update" and event.get("step_update", {}).get("step_type") in ("tool", "subagent"):
+            raise UpstreamError("agy_unexpected_tool")
         if kind == "init":
-            init = event.get("init", {})
-            seen_model = init.get("model")
-            if seen_model != model:
-                raise UpstreamError("agy_model_mismatch")
-            reported_cwd = init.get("cwd")
-            if not isinstance(reported_cwd, str) or Path(reported_cwd).resolve() != Path(cwd).resolve():
-                raise UpstreamError("agy_workspace_mismatch")
+            if native and seen_model is not None:
+                raise UpstreamError("agy_session_mismatch")
+            session_id = _check_init(event, model, cwd, resume, native)
+            seen_model = model
         elif kind == "step_update" and seen_model == model and final is None:
             step = event.get("step_update", {})
             if step.get("step_type") == "agent_response" and isinstance(text := step.get("text_delta"), str) and text:
@@ -124,6 +147,8 @@ async def read_answer(proc, model, cwd):
             result = event.get("result", {})
             if result.get("status") != "SUCCESS":
                 raise UpstreamError("agy_request_failed")
+            if native and result.get("denied_actions"):
+                raise UpstreamError("agy_unexpected_tool")
             final = result.get("response")
     if await proc.wait() != 0 or seen_model != model or not isinstance(final, str):
         raise UpstreamError("agy_no_result")
@@ -132,20 +157,26 @@ async def read_answer(proc, model, cwd):
         raise UpstreamError("agy_stream_mismatch")
     if tail := final[len(streamed):]:
         yield "delta", {"text": tail}
-    yield "done", {"model": model}
+    if native and not final.strip():
+        raise UpstreamError("agy_no_result")
+    yield "done", {"model": model, "session_id": session_id} if native else {"model": model}
 
 
-async def generate(command, cwd, timeout, model, prompt):
+async def generate(command, cwd, timeout, model, prompt, *, resume=None, native=False):
     proc = None
     complete = False
     try:
         async with asyncio.timeout(timeout):
-            proc = await start_cli(command, model, cwd)
+            proc = await start_cli(command, model, cwd, resume=resume) if resume else await start_cli(command, model, cwd)
+            first = None
+            if native:
+                first = await asyncio.wait_for(proc.stdout.readline(), 18)
+                _check_init(json.loads(first), model, cwd, resume, native=True)
             msg = {"event": "user", "message": {"content": prompt}}
             proc.stdin.write((json.dumps(msg) + "\n").encode())
             await proc.stdin.drain()
             proc.stdin.close()
-            async for event in read_answer(proc, model, cwd):
+            async for event in read_answer(proc, model, cwd, resume=resume, native=native, first=first):
                 if event[0] == "done":
                     complete = True
                 yield event
@@ -268,8 +299,64 @@ async def quota_usage(model):
     return await asyncio.shield(_quota_refresh)
 
 
+NATIVE_PREFIX = "agy-native:"
+_catalog: tuple[float, dict[str, str]] = (0, {})
+_catalog_lock = asyncio.Lock()
+_native_pending: set[str] = set()
+
+
+def is_native_model(model: str | None) -> bool:
+    return bool(model and model.startswith(NATIVE_PREFIX))
+
+
 def is_trial_model(model: str | None) -> bool:
-    return bool(model and model.startswith("agy-trial:"))
+    return bool(model and (model.startswith("agy-trial:") or is_native_model(model)))
+
+
+def _valid_native_id(value) -> bool:
+    try:
+        return isinstance(value, str) and str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+async def native_catalog() -> dict[str, str]:
+    global _catalog
+    if not enabled():
+        return {}
+    async with _catalog_lock:
+        if _catalog[0] > monotonic():
+            return _catalog[1]
+        proc = None
+        try:
+            async with asyncio.timeout(9):
+                with TemporaryDirectory(prefix="vococo-agy-catalog-") as cwd:
+                    proc = await spawn_cli((str(cli_binary()), "models"), cwd, asyncio.subprocess.DEVNULL)
+                    try:
+                        await proc.stdout.readexactly(65537)
+                    except asyncio.IncompleteReadError as exc:
+                        raw = exc.partial
+                    else:
+                        raise ValueError("catalog too large")
+                    if await proc.wait() != 0:
+                        raise ValueError("invalid catalog")
+            choices = {}
+            for line in raw.decode().splitlines():
+                model, sep, label = line.partition("\t")
+                if sep and re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,79}", model) and label.strip():
+                    choices[NATIVE_PREFIX + model] = label.strip()[:100]
+        except (OSError, TimeoutError, ValueError):
+            choices = {}
+        finally:
+            if proc is not None and proc.returncode is None:
+                with anyio.CancelScope(shield=True):
+                    await terminate(proc)
+        _catalog = (monotonic() + (90 if choices else 8), choices)
+        return choices
+
+
+def native_pending(key: str) -> bool:
+    return key in _native_pending
 
 
 def cli_binary() -> Path:
@@ -323,6 +410,61 @@ _ERRORS = {
     "agy_unavailable": "Antigravity CLI 不可用。",
     "agy_request_failed": "Antigravity 未完成请求，请在官方 CLI 检查登录、额度或网络。",
 }
+
+
+def _native_workspace(bound):
+    from .. import config
+
+    root = config.AGENT_WORKSPACES_DIR.resolve() / "agy-native"
+    if root.is_symlink() or root.is_relative_to(config.ROOT_DIR.resolve()):
+        raise ValueError("invalid native workspace root")
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if root.stat().st_mode & 0o077 or root.stat().st_uid != os.getuid():
+        raise ValueError("invalid native workspace permissions")
+    if not bound:
+        return mkdtemp(prefix="chat-", dir=root)
+    cwd = Path(bound["cwd"])
+    if cwd.parent != root or cwd.is_symlink() or not cwd.is_dir() or not _valid_native_id(bound["id"]):
+        raise ValueError("native workspace is unavailable")
+    return str(cwd)
+
+
+async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal: str = ""):
+    from ..core.agent import AgentReply, Done, TextDelta
+    from ..memory import session_store
+
+    chunks = []
+    if not refusal and (not prompt.strip() or len(prompt) > MAX_PROMPT):
+        refusal = f"Antigravity 会话只接受 1–{MAX_PROMPT} 字的纯文本。"
+    if not refusal and (native_pending(key) or session_store.get_chosen_model(key) != model):
+        refusal = "会话正在运行或已切换模型，请重试。"
+    if not refusal:
+        task = asyncio.current_task()
+        _active_trials.add(task)
+        _native_pending.add(key)
+        try:
+            if model not in await native_catalog():
+                raise UpstreamError("agy_unknown_native_model")
+            bound = session_store.agy_native_session(key)
+            cwd = _native_workspace(bound)
+            session_id = None
+            async with aclosing(generate((str(cli_binary()),), cwd, 90, model[len(NATIVE_PREFIX):], prompt,
+                                         resume=bound["id"] if bound else None, native=True)) as events:
+                async for event, payload in events:
+                    if event == "delta":
+                        chunks.append(payload["text"])
+                        yield TextDelta(payload["text"])
+                    elif event == "done":
+                        session_id = payload["session_id"]
+            if not _valid_native_id(session_id) or (not bound and not session_store.lock_agy_native_session(
+                    key, model, turn_id, {"id": session_id, "cwd": cwd})):
+                raise UpstreamError("agy_native_lock_failed")
+        except (ValueError, OSError, UpstreamError) as exc:
+            refusal = _ERRORS.get(getattr(exc, "code", ""), "Antigravity 会话未完成；请检查可用模型或稍后重试。")
+        finally:
+            _native_pending.discard(key)
+            _active_trials.discard(task)
+    yield Done(AgentReply("".join(chunks), [], None, bool(refusal), error=refusal, model=model))
 
 
 async def stream_trial(model: str, prompt: str, refusal: str = ""):
