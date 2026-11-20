@@ -12,8 +12,21 @@ from vococo.gateway.adapters.web import WebAdapter
 from vococo.gateway.run import GatewayRunner
 from vococo.memory import session_store
 
-HIGH = "agy-native:gemini-3.8-flash-high"
-LOW = "agy-native:gemini-3.8-flash-low"
+HIGH = "agy-native:gemini-4-neon"
+LOW = "agy-native:gemini-4-argon"
+SPEC = {
+    "generation": "new",
+    "models": {
+        HIGH: {"base": "gemini-4-neon", "label": "Gemini 4 Neon",
+               "efforts": ["low", "medium", "high", "xhigh"], "default_effort": "high"},
+        LOW: {"base": "gemini-4-argon", "label": "Gemini 4 Argon",
+              "efforts": ["low", "medium", "high"], "default_effort": "high"},
+    },
+}
+
+
+def native_spec_for(ids):
+    return {"generation": "new", "models": {key: SPEC["models"][key] for key in ids}}
 NATIVE_ID = "3596d05e-5d0e-47a7-b5a8-77aee32011d2"
 
 
@@ -26,8 +39,8 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
     settings_store.set_web_default_model("deepseek-flash")
     called = []
 
-    async def catalog():
-        return {HIGH: "Gemini 3.8 Flash (High)", LOW: "Gemini 3.8 Flash (Low)"}
+    async def spec():
+        return native_spec_for((HIGH, LOW))
 
     workspace = isolated / "workspaces" / "agy-handoff" / "abc123-test"
     (workspace / ".agents").mkdir(parents=True)
@@ -42,8 +55,8 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
         assert Path(path) == workspace
         return dict(meta)
 
-    async def stream_turn(cwd, timeout, model, prompt, *, session_id=None, **kwargs):
-        called.append((str(cwd), model, session_id))
+    async def stream_turn(cwd, timeout, model, prompt, *, effort=None, session_id=None, **kwargs):
+        called.append((str(cwd), model, effort, session_id))
         assert prompt.startswith("本会话由 vococo 网页代理")
         if prompt.endswith("first failure"):
             raise agy_acp.AcpError("agy_request_failed")
@@ -56,7 +69,7 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
     async def no_mcp():
         return None
 
-    monkeypatch.setattr(agy_trial, "native_catalog", catalog)
+    monkeypatch.setattr(agy_trial, "native_spec", spec)
     monkeypatch.setattr(agy_trial, "_vococo_mcp_bundle", no_mcp)
     monkeypatch.setattr(agy_handoff, "prepare", prepare)
     monkeypatch.setattr(agy_handoff, "prepare_into", prepare_into)
@@ -65,7 +78,7 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
     runner = GatewayRunner([adapter])
     app = web.Application()
     app.add_routes([web.get("/models", adapter._handle_models), web.post("/model", adapter._handle_model_switch),
-                    web.post("/send", adapter._handle_send)])
+                    web.post("/effort", adapter._handle_effort_switch), web.post("/send", adapter._handle_send)])
     conv = "session:" + uuid.uuid4().hex
 
     async with TestClient(TestServer(app), headers={"X-Auth-Token": "test-web"}) as client:
@@ -80,6 +93,13 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
 
         before = await (await client.get("/models", params={"conv": conv})).json()
         assert not before["agy_native_locked"] and any(item[2] == "agy-native" for item in before["choices"])
+        assert before["efforts"][HIGH]["value"] == "high"
+        assert [level[0] for level in before["efforts"][HIGH]["levels"]] == ["low", "medium", "high", "xhigh"]
+        effort_resp = await client.post("/effort", json={"conv": conv, "model": HIGH, "effort": "xhigh"})
+        assert effort_resp.status == 200
+        after_effort = await (await client.get("/models", params={"conv": conv})).json()
+        assert after_effort["efforts"][HIGH]["value"] == "xhigh"
+        assert (await client.post("/effort", json={"conv": conv, "model": HIGH, "effort": "bogus"})).status == 400
         assert (await choose("agy-native:missing")).status == 400
         assert (await choose(HIGH)).status == 200
         secret = 'synthetic-test-secret-value'
@@ -104,7 +124,7 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
         assert session_store.get_chosen_model(conv) == HIGH
         assert (await choose(LOW)).status == 200
         await send("same native session", LOW)
-        assert called[-1] == (lock["cwd"], "gemini-3.8-flash-low", NATIVE_ID)
+        assert called[-1] == (lock["cwd"], "gemini-4-argon", "high", NATIVE_ID)
         assert session_store.agy_native_session(conv) == lock
         locked = await (await client.get("/models", params={"conv": conv})).json()
         assert locked["agy_native_locked"] and not locked["agy_handoff"]
@@ -118,10 +138,10 @@ async def test_antigravity_models_available_in_draft_but_not_main(isolated, monk
     monkeypatch.setattr(agy_trial, "cli_binary", lambda: Path("/bin/sh"))
     monkeypatch.setattr(agy_trial, "enabled", lambda: True)
 
-    async def catalog():
-        return {HIGH: "Gemini 3.8 Flash (High)"}
+    async def spec():
+        return native_spec_for((HIGH,))
 
-    monkeypatch.setattr(agy_trial, "native_catalog", catalog)
+    monkeypatch.setattr(agy_trial, "native_spec", spec)
     adapter = WebAdapter()
     app = web.Application()
     app.add_routes([web.get("/models", adapter._handle_models), web.post("/model", adapter._handle_model_switch)])
@@ -137,6 +157,28 @@ async def test_antigravity_models_available_in_draft_but_not_main(isolated, monk
 
 
 @pytest.mark.anyio
+async def test_legacy_variant_migrates_to_family_and_keeps_effort(isolated, monkeypatch):
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "test-web")
+    monkeypatch.setattr(agy_trial, "cli_binary", lambda: Path("/bin/sh"))
+    monkeypatch.setattr(agy_trial, "enabled", lambda: True)
+
+    async def spec():
+        return native_spec_for((HIGH,))
+
+    monkeypatch.setattr(agy_trial, "native_spec", spec)
+    key = "session:" + uuid.uuid4().hex
+    session_store.set_chosen_model(key, "agy-native:gemini-3.8-flash-medium")
+    adapter = WebAdapter()
+    app = web.Application()
+    app.add_routes([web.get("/models", adapter._handle_models)])
+    async with TestClient(TestServer(app), headers={"X-Auth-Token": "test-web"}) as client:
+        data = await (await client.get("/models", params={"conv": key})).json()
+    assert data["chosen_model"] == HIGH
+    assert data["efforts"][HIGH]["value"] == "medium"
+    assert session_store.get_chosen_model(key) == HIGH
+
+
+@pytest.mark.anyio
 async def test_legacy_session_falls_back_to_new_acp_session(isolated, monkeypatch):
     workspace = isolated / "workspaces" / "agy-handoff" / "session-legacy"
     workspace.mkdir(parents=True)
@@ -148,8 +190,8 @@ async def test_legacy_session_falls_back_to_new_acp_session(isolated, monkeypatc
     conn.commit()
     new_id = "8a5bd0ee-0c3a-4bbf-8e0f-a99b5dbe7ec8"
 
-    async def catalog():
-        return {HIGH: "Gemini 3.8 Flash (High)"}
+    async def spec():
+        return native_spec_for((HIGH,))
 
     def prepare_into(path, key, *, draft_owner=None):
         return {"agent_id": "general", "global_agent_id": "general"}
@@ -164,7 +206,7 @@ async def test_legacy_session_falls_back_to_new_acp_session(isolated, monkeypatc
     async def no_mcp():
         return None
 
-    monkeypatch.setattr(agy_trial, "native_catalog", catalog)
+    monkeypatch.setattr(agy_trial, "native_spec", spec)
     monkeypatch.setattr(agy_trial, "_vococo_mcp_bundle", no_mcp)
     monkeypatch.setattr(agy_handoff, "prepare_into", prepare_into)
     monkeypatch.setattr(agy_acp, "stream_turn", stream_turn)
@@ -293,8 +335,8 @@ async def test_denied_write_tool_without_model_text_returns_receipt_and_does_not
     key = "session:denied"
     session_store.set_chosen_model(key, HIGH)
 
-    async def catalog():
-        return {HIGH: "Gemini 3.8 Flash (High)"}
+    async def spec():
+        return native_spec_for((HIGH,))
 
     def prepare(key, *, draft_owner=None):
         return {"workspace": str(workspace), "agent_id": "general", "global_agent_id": "general"}
@@ -311,7 +353,7 @@ async def test_denied_write_tool_without_model_text_returns_receipt_and_does_not
     async def deny(tool, call):
         return "deny", "已拒绝 Antigravity 的派发请求，本轮未执行。"
 
-    monkeypatch.setattr(agy_trial, "native_catalog", catalog)
+    monkeypatch.setattr(agy_trial, "native_spec", spec)
     monkeypatch.setattr(agy_trial, "_vococo_mcp_bundle", bundle)
     monkeypatch.setattr(agy_trial, "_approve_vococo_tool", deny)
     monkeypatch.setattr(agy_handoff, "prepare", prepare)
@@ -321,6 +363,98 @@ async def test_denied_write_tool_without_model_text_returns_receipt_and_does_not
     assert not done.reply.is_error
     assert "已拒绝" in done.reply.text
     assert session_store.agy_native_session(key) is None
+
+
+def test_new_catalog_collapses_effort_and_hides_gpt_and_old_models():
+    options = [("gemini-4-neon", "Gemini 4 Neon"), ("gemini-4-argon", "Gemini 4 Argon"),
+               ("gemini-pro-orchestrator-neon", "Orchestrator (Neon)"),
+               ("gemini-3.8-flash", "Gemini 3.8 Flash"), ("claude-opus-5-5", "Claude Opus 5.5"),
+               ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+               ("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)")]
+    available = {
+        "gemini-4-neon-low": "Gemini 4 Neon (Low)", "gemini-4-neon-medium": "Gemini 4 Neon (Medium)",
+        "gemini-4-neon-high": "Gemini 4 Neon (High)", "gemini-4-neon-xhigh": "Gemini 4 Neon (XHigh)",
+        "gemini-4-argon-low": "Gemini 4 Argon (Low)", "gemini-4-argon-high": "Gemini 4 Argon (High)",
+        "gemini-pro-orchestrator-neon": "Orchestrator (Neon)",
+        "gemini-3.8-flash-high": "Gemini 3.8 Flash (High)",
+        "claude-opus-5-5-low": "Claude Opus 5.5 (Low)",
+        "claude-sonnet-5-5-medium": "Claude Sonnet 5.5 (Medium)",
+        "gpt-oss-120b-medium": "GPT-OSS 120B (Medium)",
+    }
+    spec = agy_trial._spec_from_options(options, available, ["low", "medium", "high", "xhigh"], "high")
+    assert spec["generation"] == "new"
+    assert set(spec["models"]) == {
+        "agy-native:gemini-4-neon", "agy-native:gemini-4-argon",
+        "agy-native:gemini-pro-orchestrator-neon", "agy-native:claude-opus-5-5",
+        "agy-native:claude-sonnet-5-5"}
+    neon = spec["models"]["agy-native:gemini-4-neon"]
+    assert neon["efforts"] == ["low", "medium", "high", "xhigh"] and neon["base"] == "gemini-4-neon"
+    assert spec["models"]["agy-native:claude-opus-5-5"]["efforts"] == ["low"]
+    assert not any("gpt" in mid.lower() for mid in spec["models"])
+
+
+@pytest.mark.anyio
+async def test_spec_uses_thought_level_current_value(monkeypatch):
+    class Client:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def request(self, method, params):
+            if method == "initialize":
+                yield "result", {}
+            elif method == "session/new":
+                yield "result", {
+                    "sessionId": "3596d05e-5d0e-47a7-b5a8-77aee32011d2",
+                    "models": {"availableModels": [
+                        {"modelId": "gemini-4-neon-low", "name": "Gemini 4 Neon (Low)"},
+                        {"modelId": "gemini-4-neon-high", "name": "Gemini 4 Neon (High)"}]},
+                    "configOptions": [
+                        {"id": "model", "currentValue": "gemini-4-neon",
+                         "options": [{"value": "gemini-4-neon", "name": "Gemini 4 Neon"}]},
+                        {"id": "thought_level", "currentValue": "low",
+                         "options": [{"value": "low", "name": "Low"},
+                                     {"value": "high", "name": "High"}]},
+                    ]}
+
+    class Proc:
+        returncode = 0
+
+    async def spawn(*args, **kwargs):
+        return Proc()
+
+    monkeypatch.setattr(agy_acp, "_Client", Client)
+    monkeypatch.setattr(agy_trial, "spawn_cli", spawn)
+    monkeypatch.setattr(agy_trial, "cli_binary", lambda: Path("/bin/true"))
+    spec = await agy_trial._fetch_spec_acp()
+    assert spec["models"]["agy-native:gemini-4-neon"]["default_effort"] == "low"
+
+
+@pytest.mark.anyio
+async def test_native_spec_keeps_last_success_when_probes_fail(monkeypatch):
+    async def none():
+        return None
+
+    monkeypatch.setattr(agy_trial, "enabled", lambda: True)
+    monkeypatch.setattr(agy_trial, "_fetch_spec_acp", none)
+    monkeypatch.setattr(agy_trial, "_fetch_spec_cli", none)
+    monkeypatch.setattr(agy_trial, "_spec_cache", (0.0, None))
+    monkeypatch.setattr(agy_trial, "_spec_best", (0.0, None))
+    monkeypatch.setattr(agy_trial, "_spec_last",
+                        (agy_trial.monotonic(), native_spec_for((HIGH,))))
+    spec = await agy_trial.native_spec()
+    assert set(spec["models"]) == {HIGH}
+
+
+def test_legacy_choice_migrates_to_first_family_with_effort():
+    spec = agy_trial._spec_from_options(
+        [("gemini-4-neon", "Gemini 4 Neon")],
+        {"gemini-4-neon-high": "Gemini 4 Neon (High)"},
+        ["low", "medium", "high", "xhigh"], "high")
+    hit = agy_trial.resolve_native_choice(spec, "agy-native:gemini-3.8-flash-medium")
+    assert hit[0] == "agy-native:gemini-4-neon" and hit[2] == "medium"
+    assert agy_trial.resolve_native_choice(spec, "agy-native:gpt-oss-120b-medium")[0] == \
+        "agy-native:gemini-4-neon"
+    assert agy_trial.resolve_native_choice(spec, "agy-native:unknown-model") is None
 
 
 @pytest.mark.anyio

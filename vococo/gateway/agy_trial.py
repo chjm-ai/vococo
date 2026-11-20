@@ -298,9 +298,9 @@ async def _refresh_quota():
 
 async def quota_usage(model):
     global _quota_refresh
-    if model == "agy-handoff":
+    if model in ("agy-handoff", "agy-native") or is_native_model(model):
         if not _quota_cli_ready():
-            return {"error": "Antigravity CLI 额度暂不可查"}, 503
+            return {"error": "Antigravity 额度暂不可查"}, 503
     elif model not in CHOICES or not enabled():
         return {"error": "Antigravity 试用未启用或已结束"}, 404
     if _quota_cache is not None and _quota_cache[0] > monotonic():
@@ -330,8 +330,15 @@ _ACP_NOTE = (
     "如果用户的任务必须联网或使用这些工具，请直接用文字说明当前模式无法完成，不要尝试调用。"
     "\n\n用户消息：\n"
 )
-_catalog: tuple[float, dict[str, str]] = (0, {})
-_catalog_lock = asyncio.Lock()
+_EFFORT_ORDER = ("low", "medium", "high", "xhigh")
+_EFFORT_LABEL = {"low": "Low", "medium": "Medium", "high": "High", "xhigh": "XHigh"}
+_EFFORT_SUFFIX = re.compile(r'^(?P<base>.+)-(?P<effort>low|medium|high|xhigh)$')
+_GPT_MODEL = re.compile(r'gpt|oss', re.I)
+_OLD_CLAUDE = {"claude-sonnet-4-6", "claude-opus-4-6-thinking"}
+_spec_cache: tuple[float, dict | None] = (0.0, None)
+_spec_best: tuple[float, dict | None] = (0.0, None)
+_spec_last: tuple[float, dict | None] = (0.0, None)
+_spec_lock = asyncio.Lock()
 _native_pending: set[str] = set()
 
 
@@ -350,41 +357,228 @@ def _valid_native_id(value) -> bool:
         return False
 
 
-async def native_catalog() -> dict[str, str]:
-    global _catalog
+def _spec_from_options(model_options, available, thought_levels, current_effort):
+    """把官方 model/thought_level 选项归一成「模型族 + 思考档位」。
+
+    model_options: [(base_id, label)]，来自 ACP configOptions（首选）
+    available: {variant_id: label}，来自 availableModels / `agy models`
+    thought_levels: 官方返回的档位，按 low→xhigh 排序
+    """
+    levels = [level for level in _EFFORT_ORDER if level in set(thought_levels)]
+    if not levels:
+        levels = ["low", "medium", "high"]
+    labels = dict(available)
+    ordered = list(model_options)
+    seen = {base for base, _ in ordered}
+    for variant, label in available.items():
+        base = variant
+        match = _EFFORT_SUFFIX.match(variant)
+        if match:
+            base = match.group("base")
+        if base not in seen and not _GPT_MODEL.search(base):
+            ordered.append((base, label))
+            seen.add(base)
+    models = {}
+    bases = []
+    for base, label in ordered:
+        if not isinstance(base, str) or _GPT_MODEL.search(base):
+            continue
+        variants = [vid for vid in available if vid == base or vid.startswith(base + "-")]
+        efforts = []
+        for vid in variants:
+            match = _EFFORT_SUFFIX.match(vid)
+            if match and match.group("base") == base and match.group("effort") in levels:
+                efforts.append(match.group("effort"))
+        efforts = [level for level in levels if level in set(efforts)] or list(levels)
+        clean_label = re.sub(r'\s*\((?:Low|Medium|High|XHigh|Thinking)\)\s*$', '', str(label or base)).strip()
+        model_id = NATIVE_PREFIX + base
+        models[model_id] = {
+            "base": base,
+            "label": clean_label[:100],
+            "efforts": efforts,
+            "default_effort": current_effort if current_effort in efforts else (
+                "high" if "high" in efforts else efforts[-1]),
+        }
+        bases.append(base)
+    generation = "new" if any(
+        base.startswith("gemini-4-") or base.startswith("gemini-pro-orchestrator")
+        or base in {"claude-opus-5-5", "claude-sonnet-5-5"} for base in bases
+    ) else "old"
+    if generation == "new":
+        # 升级后只留最新一代；旧的 Claude 4.6 不再展示（3.8 Flash 仍可能在老灰度里用）。
+        models = {mid: meta for mid, meta in models.items() if meta["base"] not in _OLD_CLAUDE}
+        models = {mid: meta for mid, meta in models.items() if not meta["base"].startswith("gemini-3.8-flash")}
+    # 极端灰度下 configOptions 可能直接给带档位后缀的值；按显示名去重，不把档位塞回模型列表。
+    deduped, labels = {}, set()
+    for mid, meta in models.items():
+        if meta["label"] in labels:
+            continue
+        labels.add(meta["label"])
+        deduped[mid] = meta
+    return {"models": deduped, "generation": generation}
+
+
+async def _fetch_spec_acp():
+    from . import agy_acp
+
+    proc = None
+    try:
+        async with asyncio.timeout(18):
+            with TemporaryDirectory(prefix="vococo-agy-spec-") as cwd:
+                proc = await spawn_cli(
+                    (str(cli_binary()), "--sandbox", "--mode", "plan", "--settings", SETTINGS_ACP,
+                     "acp", "--stdio"), cwd, asyncio.subprocess.PIPE)
+                client = agy_acp._Client(proc, set())
+                await agy_acp._result(client.request("initialize", {
+                    "protocolVersion": 1, "clientCapabilities": {},
+                    "clientInfo": {"name": "vococo-spec", "version": "1"}}))
+                new = await agy_acp._result(client.request("session/new", {
+                    "cwd": cwd, "mcpServers": []}))
+                configs = {item.get("id"): item for item in new.get("configOptions") or []
+                           if isinstance(item, dict)}
+                model_cfg = configs.get("model") or {}
+                options = [(opt.get("value"), opt.get("name")) for opt in model_cfg.get("options") or []
+                           if isinstance(opt, dict) and isinstance(opt.get("value"), str)]
+                thought = [opt.get("value") for opt in (configs.get("thought_level") or {}).get("options") or []
+                           if isinstance(opt, dict) and isinstance(opt.get("value"), str)]
+                available = {item.get("modelId"): item.get("name")
+                             for item in (new.get("models") or {}).get("availableModels") or []
+                             if isinstance(item, dict) and isinstance(item.get("modelId"), str)}
+                if not options and not available:
+                    return None
+                thought_cfg = configs.get("thought_level") or {}
+                return _spec_from_options(options, available, thought,
+                                          thought_cfg.get("currentValue") or "high")
+    except (OSError, TimeoutError, ValueError, AttributeError, TypeError, agy_acp.AcpError):
+        return None
+    finally:
+        if proc is not None and proc.returncode is None:
+            with anyio.CancelScope(shield=True):
+                await terminate(proc)
+
+
+async def _fetch_spec_cli():
+    proc = None
+    try:
+        async with asyncio.timeout(12):
+            with TemporaryDirectory(prefix="vococo-agy-catalog-") as cwd:
+                proc = await spawn_cli((str(cli_binary()), "models"), cwd, asyncio.subprocess.DEVNULL)
+                try:
+                    await proc.stdout.readexactly(65537)
+                except asyncio.IncompleteReadError as exc:
+                    raw = exc.partial
+                else:
+                    raise ValueError("catalog too large")
+                if await proc.wait() != 0:
+                    raise ValueError("invalid catalog")
+        available = {}
+        for line in raw.decode().splitlines():
+            model, sep, label = line.partition("\t")
+            if sep and re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,79}", model) and label.strip():
+                available[model] = label.strip()[:100]
+        if not available:
+            return None
+        levels = []
+        for model in available:
+            match = _EFFORT_SUFFIX.match(model)
+            if match and match.group("effort") not in levels:
+                levels.append(match.group("effort"))
+        levels = [level for level in _EFFORT_ORDER if level in set(levels)] or ["low", "medium", "high"]
+        return _spec_from_options([], available, levels, "high")
+    except (OSError, TimeoutError, ValueError):
+        return None
+    finally:
+        if proc is not None and proc.returncode is None:
+            with anyio.CancelScope(shield=True):
+                await terminate(proc)
+
+
+async def native_spec():
+    """当前可用的 Antigravity 模型族与思考档位。
+
+    上游升级期间同一账号会随机返回新旧两套清单；这里重试并保留最近一次新清单，
+    避免模型面板在 6 个旧模型和 23 个新模型之间来回跳。"""
+    global _spec_cache, _spec_best, _spec_last
     if not enabled():
-        return {}
-    async with _catalog_lock:
-        if _catalog[0] > monotonic():
-            return _catalog[1]
-        proc = None
-        previous = _catalog[1]
-        try:
-            async with asyncio.timeout(9):
-                with TemporaryDirectory(prefix="vococo-agy-catalog-") as cwd:
-                    proc = await spawn_cli((str(cli_binary()), "models"), cwd, asyncio.subprocess.DEVNULL)
-                    try:
-                        await proc.stdout.readexactly(65537)
-                    except asyncio.IncompleteReadError as exc:
-                        raw = exc.partial
-                    else:
-                        raise ValueError("catalog too large")
-                    if await proc.wait() != 0:
-                        raise ValueError("invalid catalog")
-            choices = {}
-            for line in raw.decode().splitlines():
-                model, sep, label = line.partition("\t")
-                if sep and re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,79}", model) and label.strip():
-                    choices[NATIVE_PREFIX + model] = label.strip()[:100]
-        except (OSError, TimeoutError, ValueError):
-            # 代理/网络抖动时保留上一次成功清单，避免已锁定的会话模型组整块消失。
-            choices = previous
-        finally:
-            if proc is not None and proc.returncode is None:
-                with anyio.CancelScope(shield=True):
-                    await terminate(proc)
-        _catalog = (monotonic() + (90 if choices else 8), choices)
-        return choices
+        return {"models": {}, "generation": "none"}
+    async with _spec_lock:
+        if _spec_cache[0] > monotonic():
+            return _spec_cache[1]
+        now = monotonic()
+        best_new = _spec_best[1] if _spec_best[0] and now - _spec_best[0] < 3600 else None
+        last = None
+        for attempt in range(2):
+            spec = await _fetch_spec_acp()
+            if spec:
+                last = spec
+                if spec["generation"] == "new":
+                    _spec_best = (monotonic(), spec)
+                    break
+            if attempt == 0:
+                await asyncio.sleep(0.15)
+        if not (last and last["generation"] == "new"):
+            cli = await _fetch_spec_cli()
+            if cli and cli["generation"] == "new":
+                last = cli
+                _spec_best = (monotonic(), cli)
+            elif best_new:
+                last = best_new
+            elif last is None:
+                last = cli
+        if last is None or not last["models"]:
+            # 一次网络/CLI 抖动不应让已锁定会话的模型组消失；沿用最近一次成功清单。
+            if _spec_last[1] and _spec_last[0] and monotonic() - _spec_last[0] < 3600:
+                last = _spec_last[1]
+            else:
+                last = {"models": {}, "generation": "none"}
+        if last["models"]:
+            _spec_last = (monotonic(), last)
+        _spec_cache = (monotonic() + (90 if last["models"] else 15), last)
+        return last
+
+
+def find_native_model(spec, model):
+    """把 `agy-native:xxx` 或旧 variant 映射到 (族 ID, 元数据, 后缀档位)。"""
+    if not is_native_model(model) or not spec or not spec.get("models"):
+        return None
+    models = spec["models"]
+    if model in models:
+        return model, models[model], None
+    tail = model[len(NATIVE_PREFIX):]
+    match = _EFFORT_SUFFIX.match(tail)
+    if match:
+        candidate = NATIVE_PREFIX + match.group("base")
+        if candidate in models:
+            return candidate, models[candidate], match.group("effort")
+    return None
+
+
+def _legacy_effort(model):
+    if not is_native_model(model):
+        return None
+    match = _EFFORT_SUFFIX.match(model[len(NATIVE_PREFIX):])
+    return match.group("effort") if match else None
+
+
+_LEGACY_BASES = {"gemini-3.8-flash", "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b"}
+
+
+def resolve_native_choice(spec, model):
+    """新族优先；被下线的旧模型（3.8 / Claude 4.6 / GPT）迁移到当前第一族。"""
+    hit = find_native_model(spec, model)
+    if hit or not is_native_model(model) or not spec or not spec.get("models"):
+        return hit
+    tail = model[len(NATIVE_PREFIX):]
+    match = _EFFORT_SUFFIX.match(tail)
+    base = match.group("base") if match else tail
+    if base not in _LEGACY_BASES:
+        return None
+    first_id = next(iter(spec["models"]))
+    return first_id, spec["models"][first_id], (match.group("effort") if match else None)
+
+
+def effort_choices(entry):
+    return [(level, _EFFORT_LABEL[level]) for level in entry["efforts"]]
 
 
 def native_pending(key: str) -> bool:
@@ -445,6 +639,8 @@ _ERRORS = {
     "agy_unknown_native_model": "Antigravity 暂未提供这个模型，请刷新模型列表。",
     "agy_native_lock_failed": "Antigravity 会话未能锁定，请重新发送。",
     "agy_no_result": "Antigravity 未返回文字回复，请重试。",
+    "agy_model_unavailable": "Antigravity 暂时没有返回这个模型，请稍后重试或换一个模型。",
+    "agy_effort_unavailable": "这个会话暂时不支持所选思考档位，请换一档。",
 }
 
 
@@ -602,6 +798,7 @@ async def _approve_vococo_tool(tool: str, call: dict) -> tuple[str, str]:
 
 
 async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal: str = ""):
+    from ..core import model_preferences
     from ..core.agent import AgentReply, Done, TextDelta
     from ..memory import session_store
     from . import agy_acp, agy_handoff
@@ -609,15 +806,27 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
     chunks = []
     if not refusal and (not prompt.strip() or len(prompt) > MAX_PROMPT):
         refusal = f"Antigravity 会话只接受 1–{MAX_PROMPT} 字的纯文本。"
-    if not refusal and (native_pending(key) or session_store.get_chosen_model(key) != model):
+    if not refusal and native_pending(key):
         refusal = "会话正在运行或已切换模型，请重试。"
     if not refusal:
         task = asyncio.current_task()
         _active_trials.add(task)
         _native_pending.add(key)
         try:
-            if model not in await native_catalog():
+            spec = await native_spec()
+            hit = resolve_native_choice(spec, model)
+            if hit is None:
                 raise UpstreamError("agy_unknown_native_model")
+            entry_id, entry, suffix = hit
+            base, default_effort = entry["base"], entry["default_effort"]
+            saved = model_preferences.for_model(key, entry_id)
+            effort = saved.get("effort") or suffix or default_effort
+            if effort not in entry["efforts"]:
+                effort = default_effort
+            if session_store.get_chosen_model(key) != entry_id:
+                session_store.set_chosen_model(key, entry_id)
+            if entry_id != model and suffix:
+                session_store.set_model_preferences(key, entry_id, {"effort": suffix})
             bound = session_store.agy_native_session(key)
             if bound:
                 cwd = _native_workspace(bound)
@@ -648,10 +857,10 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                     denied_note = note
                 return decision
 
-            async def consume(sid):
+            async def consume_once(sid):
                 nonlocal session_id
                 async with aclosing(agy_acp.stream_turn(
-                        cwd, 360, model[len(NATIVE_PREFIX):], _ACP_NOTE + prompt, session_id=sid,
+                        cwd, 360, base, _ACP_NOTE + prompt, effort=effort, session_id=sid,
                         extra_servers=extra_servers, allowed_tools=allowed_tools, approve=approve)) as events:
                     async for event, payload in events:
                         if event == "delta":
@@ -659,6 +868,19 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                             yield TextDelta(payload)
                         elif event == "session":
                             session_id = payload
+
+            async def consume(sid):
+                # 上游灰度期间新模型可能落在旧目录的进程里；换进程重试即可命中新目录。
+                for attempt in range(3):
+                    try:
+                        async for delta in consume_once(sid):
+                            yield delta
+                        return
+                    except agy_acp.AcpError as exc:
+                        if (exc.code not in ("agy_model_unavailable", "agy_effort_unavailable")
+                                or attempt == 2):
+                            raise
+                        await asyncio.sleep(0.3)
 
             try:
                 async for delta in consume(bound["id"] if bound else None):
@@ -685,9 +907,9 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
             elif not _valid_native_id(session_id):
                 raise UpstreamError("agy_native_lock_failed")
             elif bound and recovered:
-                if not session_store.replace_agy_native_session(key, model, lock):
+                if not session_store.replace_agy_native_session(key, entry_id, lock):
                     raise UpstreamError("agy_native_lock_failed")
-            elif not bound and not session_store.lock_agy_native_session(key, model, turn_id, lock):
+            elif not bound and not session_store.lock_agy_native_session(key, entry_id, turn_id, lock):
                 raise UpstreamError("agy_native_lock_failed")
         except (ValueError, OSError, UpstreamError, agy_acp.AcpError) as exc:
             code = exc.code if isinstance(exc, (UpstreamError, agy_acp.AcpError)) else type(exc).__name__

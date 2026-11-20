@@ -1267,6 +1267,7 @@
   #modelPop .mgrouplabel{padding:var(--sp-2) var(--sp-4) var(--sp-1);font-size:var(--fs-sm);font-weight:600;color:var(--dim2);display:flex;align-items:center;justify-content:space-between;gap:8px}
   #modelPop .mgrouplabel .mgmeta{display:flex;align-items:center;gap:6px;flex-shrink:0}
   #modelPop .mreset{font-size:var(--fs-sm);color:var(--dim2);font-weight:400;white-space:nowrap}
+  #modelPop .mgrouplabel .mreset{max-width:13ch;overflow:hidden;text-overflow:ellipsis}
   #modelPop .agy-cli-row{display:flex;align-items:center;gap:var(--sp-1);padding-inline-end:var(--sp-4)}
   #modelPop .agy-cli-row .mi{flex:1;min-width:0}
   #modelPop .agy-cli-row .mgmeta{display:flex;align-items:center;gap:var(--sp-2);flex-shrink:0}
