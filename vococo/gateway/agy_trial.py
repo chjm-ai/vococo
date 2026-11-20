@@ -648,6 +648,64 @@ _ERRORS = {
     "agy_input_failed": "Antigravity 启动时输入失败，请重试。",
 }
 
+# 把 AGY 的工具名映射到 Web 前端已有的工具卡，命令行/文件编辑才有可读的卡片。
+_AGY_TOOL_NAMES = {
+    "run_command": "Bash",
+    "write_file": "Write",
+    "edit_file": "Edit",
+    "read_file": "Read",
+    "search_web": "WebSearch",
+}
+_TOOL_DETAIL_MAX = 6000
+
+
+def _agy_tool_path(raw: dict) -> str:
+    # AGY 真实入参用 Path（本机 ACP 实测），其余拼写是给灰度版本兜底。
+    for key in ("Path", "file_path", "path", "AbsolutePath", "TargetFile", "target_file", "filepath"):
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _agy_tool_input(name: str, raw: dict) -> dict:
+    """按前端卡片的参数约定归一化 AGY 的入参。"""
+    if name == "run_command":
+        return {
+            "command": raw.get("CommandLine") or raw.get("command") or "",
+            "description": raw.get("toolSummary") or raw.get("description") or "",
+        }
+    path = _agy_tool_path(raw)
+    if name == "write_file":
+        return {"file_path": path,
+                "content": raw.get("Content") or raw.get("content") or raw.get("CodeContent")
+                or raw.get("code_content") or ""}
+    if name == "edit_file":
+        # AGY 实测入参：Path / Target（被替换文本）/ Replacement（新文本）。
+        return {"file_path": path,
+                "old_string": raw.get("Target") or raw.get("old_string") or raw.get("OldString")
+                or raw.get("oldText") or "",
+                "new_string": raw.get("Replacement") or raw.get("new_string") or raw.get("NewString")
+                or raw.get("newText") or raw.get("CodeContent") or ""}
+    if name == "read_file":
+        return {"file_path": path}
+    if name == "search_web":
+        return {"query": raw.get("query") or raw.get("Query") or ""}
+    return raw
+
+
+def _agy_tool_result(name: str, status: str, output: str, exit_code) -> tuple[bool, str, str]:
+    ok = status == "completed" and exit_code in (None, 0)
+    text = (output or "").replace("\r\n", "\n").strip()
+    # run_command 的输出带 Created/Completed 头和退出码说明，卡片里只留真正的命令输出。
+    if name == "run_command":
+        if "Command output:" in text:
+            text = text.split("Command output:", 1)[1].strip()
+        elif "No output from the command" in text:
+            text = ""
+    preview = next((line.strip() for line in text.splitlines() if line.strip()), "")[:120]
+    return ok, preview, text[:_TOOL_DETAIL_MAX]
+
 
 def _native_root():
     from .. import config
@@ -804,7 +862,9 @@ async def _approve_vococo_tool(tool: str, call: dict) -> tuple[str, str]:
 
 async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal: str = ""):
     from ..core import model_preferences
-    from ..core.agent import AgentReply, Done, TextDelta
+    from ..core.agent import (
+        AgentReply, Done, TextDelta, ThinkingDelta, ToolFinished, ToolInput, ToolStarted,
+    )
     from ..memory import session_store
     from . import agy_acp, agy_handoff
 
@@ -877,6 +937,21 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                         if event == "delta":
                             chunks.append(payload)
                             yield TextDelta(payload)
+                        elif event == "thinking":
+                            yield ThinkingDelta(payload)
+                        elif event == "tool":
+                            raw_name = payload.get("name") or "tool"
+                            display = _AGY_TOOL_NAMES.get(raw_name, raw_name)
+                            tid = payload.get("id") or ""
+                            if payload.get("phase") == "start":
+                                yield ToolStarted(display, tid)
+                                yield ToolInput(display, tid,
+                                                _agy_tool_input(raw_name, payload.get("input") or {}))
+                            else:
+                                ok, preview, detail = _agy_tool_result(
+                                    raw_name, payload.get("status") or "",
+                                    payload.get("output") or "", payload.get("exit_code"))
+                                yield ToolFinished(display, ok, preview, tid, detail)
                         elif event == "session":
                             session_id = payload
 

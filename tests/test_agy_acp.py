@@ -92,6 +92,63 @@ async def test_forbidden_permission_stops_the_turn():
 
 
 @pytest.mark.anyio
+async def test_tool_updates_stream_start_and_end():
+    proc = Proc([
+        {'jsonrpc': '2.0', 'id': 1, 'result': {}},
+        {'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': 's', 'update': {
+            'sessionUpdate': 'tool_call', 'toolCallId': 't1', 'name': 'run_command',
+            'status': 'in_progress', 'title': 'echo hi', 'kind': 'execute',
+            'rawInput': {'CommandLine': 'echo hi'}}}},
+        {'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': 's', 'update': {
+            'sessionUpdate': 'tool_call_update', 'toolCallId': 't1', 'name': 'run_command',
+            'status': 'completed', 'rawOutput': {'output': 'hi\n', 'exit_code': 0}}}},
+        {'jsonrpc': '2.0', 'id': 2, 'result': {'stopReason': 'end_turn'}},
+    ])
+    client = agy_acp._Client(proc, set())
+    assert await agy_acp._result(client.request('initialize', {})) == {}
+    events = await collect(client.request('session/prompt', {}))
+    tools = [payload for kind, payload in events if kind == 'tool']
+    assert tools[0]['phase'] == 'start' and tools[0]['input']['CommandLine'] == 'echo hi'
+    assert tools[1]['phase'] == 'end' and tools[1]['exit_code'] == 0 and 'hi' in tools[1]['output']
+
+
+@pytest.mark.anyio
+async def test_replay_suppresses_tool_updates():
+    proc = Proc([
+        {'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': 's', 'update': {
+            'sessionUpdate': 'tool_call', 'toolCallId': 't1', 'name': 'run_command',
+            'status': 'completed', 'rawInput': {'CommandLine': 'echo hi'}}}},
+        {'jsonrpc': '2.0', 'id': 1, 'result': {'sessionId': 's'}},
+    ])
+    client = agy_acp._Client(proc, set())
+    events = await collect(client.request('session/load', {'sessionId': 's'}, replay=True))
+    assert [kind for kind, _ in events] == ['result']
+
+
+def test_native_tool_mapping_matches_web_cards():
+    assert agy_trial._AGY_TOOL_NAMES['run_command'] == 'Bash'
+    assert agy_trial._agy_tool_input('run_command', {
+        'CommandLine': 'ls', 'toolSummary': '列目录'}) == {'command': 'ls', 'description': '列目录'}
+    ok, preview, detail = agy_trial._agy_tool_result('run_command', 'completed', 'a\nb', 0)
+    assert ok and preview == 'a' and detail == 'a\nb'
+    ok2, _, _ = agy_trial._agy_tool_result('run_command', 'completed', 'x', 1)
+    assert not ok2
+    # 本机 ACP 实测的文件工具入参：Path / Content / Target / Replacement
+    assert agy_trial._agy_tool_input('write_file', {
+        'Path': '/tmp/a', 'Content': 'new', 'Overwrite': True}) == {
+        'file_path': '/tmp/a', 'content': 'new'}
+    assert agy_trial._agy_tool_input('edit_file', {
+        'Path': '/tmp/a', 'Target': 'old', 'Replacement': 'new'}) == {
+        'file_path': '/tmp/a', 'old_string': 'old', 'new_string': 'new'}
+    assert agy_trial._agy_tool_input('read_file', {'Path': '/tmp/a'}) == {'file_path': '/tmp/a'}
+    # 零输出命令不能把时间戳噪声当 preview
+    _, preview, detail = agy_trial._agy_tool_result(
+        'run_command', 'completed',
+        'Created At: x\nCommand exited with code 0.\n\nNo output from the command.', 0)
+    assert preview == '' and detail == ''
+
+
+@pytest.mark.anyio
 async def test_session_load_replay_does_not_emit_old_chunks():
     proc = Proc([
         update('历史正文'),
@@ -129,7 +186,12 @@ async def test_stream_turn_creates_session_and_streams_reply(tmp_path, monkeypat
         {'jsonrpc': '2.0', 'id': 1, 'result': {}},
         {'jsonrpc': '2.0', 'id': 2, 'result': {'sessionId': sid}},
         {'jsonrpc': '2.0', 'id': 3, 'result': {}},
+        {'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': sid, 'update': {
+            'sessionUpdate': 'agent_thought_chunk', 'content': {'type': 'text', 'text': '先看目录'}}}},
         update('新回复'),
+        {'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': sid, 'update': {
+            'sessionUpdate': 'tool_call', 'toolCallId': 't1', 'name': 'run_command',
+            'status': 'in_progress', 'rawInput': {'CommandLine': 'echo hi'}}}},
         {'jsonrpc': '2.0', 'id': 4, 'result': {'stopReason': 'end_turn'}},
     ])
 
@@ -147,6 +209,8 @@ async def test_stream_turn_creates_session_and_streams_reply(tmp_path, monkeypat
     monkeypatch.setattr(agy_acp.agy_trial, 'cli_binary', lambda: Path('/bin/true'))
     events = await collect(agy_acp.stream_turn(workspace, 10, 'gemini-x', '你好'))
     assert ('session', sid) in events and ('delta', '新回复') in events and ('done', None) in events
+    assert any(kind == 'tool' and payload['phase'] == 'start' for kind, payload in events)
+    assert ('thinking', '先看目录') in events
     argv = calls[0][0]
     assert '--sandbox' not in argv
     assert argv[argv.index('--mode') + 1] == 'accept-edits'

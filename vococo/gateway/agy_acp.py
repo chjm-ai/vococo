@@ -32,6 +32,62 @@ def _valid_id(value) -> bool:
         return False
 
 
+_TOOL_DONE = {'completed', 'failed', 'error', 'cancelled'}
+
+
+def _tool_output(update: dict) -> tuple[str, int | None]:
+    """从 tool_call_update 里抽命令输出和退出码；没有就返回空串。"""
+    code = None
+    raw = update.get('rawOutput')
+    if isinstance(raw, dict):
+        if isinstance(raw.get('exit_code'), int):
+            code = raw['exit_code']
+        for key in ('output', 'content', 'text'):
+            value = raw.get(key)
+            if isinstance(value, str) and value:
+                return value, code
+    content = update.get('content')
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            inner = item.get('content') or {}
+            if isinstance(inner, dict) and isinstance(inner.get('text'), str):
+                parts.append(inner['text'])
+        if parts:
+            return '\n'.join(parts), code
+    return '', code
+
+
+def _tool_events(update: dict, state: tuple[set[str], set[str]]):
+    """把一个 tool_call/tool_call_update 归并成 start/end 事件列表。
+
+    同一个 toolCallId 只发一次 start、一次 end；pending/in_progress 之类的中转状态
+    直接忽略，只在终态（completed/failed/error/cancelled）发 end。
+    """
+    started, ended = state
+    tid = update.get('toolCallId')
+    if not isinstance(tid, str) or not tid:
+        return []
+    name = update.get('name') if isinstance(update.get('name'), str) else ''
+    status = update.get('status') if isinstance(update.get('status'), str) else ''
+    events = []
+    if tid not in started:
+        started.add(tid)
+        raw = update.get('rawInput') or update.get('args') or {}
+        events.append(('tool', {'phase': 'start', 'id': tid, 'name': name,
+                                'title': update.get('title') or '',
+                                'kind': update.get('kind') or '',
+                                'input': raw if isinstance(raw, dict) else {}}))
+    if status in _TOOL_DONE and tid not in ended:
+        ended.add(tid)
+        output, code = _tool_output(update)
+        events.append(('tool', {'phase': 'end', 'id': tid, 'name': name,
+                                'status': status, 'output': output, 'exit_code': code}))
+    return events
+
+
 class _Client:
     def __init__(self, proc, allowed, approve=None):
         self.proc = proc
@@ -85,19 +141,33 @@ class _Client:
             raise AcpError('agy_unexpected_tool')
 
     async def request(self, method, params, *, replay=False):
-        """流式请求：逐条产出 ('delta', 文本)，最后产出 ('result', 结果)。"""
+        """流式请求：逐条产出 ('delta', 文本)、('thinking', 文本)、('tool', 工具事件)，
+        最后产出 ('result', 结果)。replay=True 时只回放结果，不重发历史正文和工具。
+        """
         self.seq += 1
         request_id = self.seq
         await self._send({'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params})
+        tool_state: tuple[set[str], set[str]] = (set(), set())
         while True:
             message = await self._read()
             if message.get('method') == 'session/update':
                 update = (message.get('params') or {}).get('update') or {}
-                if not replay and update.get('sessionUpdate') == 'agent_message_chunk':
+                kind = update.get('sessionUpdate')
+                if replay:
+                    continue
+                if kind == 'agent_message_chunk':
                     content = update.get('content') or {}
                     text = content.get('text')
                     if isinstance(text, str) and text:
                         yield 'delta', text
+                elif kind == 'agent_thought_chunk':
+                    content = update.get('content') or {}
+                    text = content.get('text')
+                    if isinstance(text, str) and text:
+                        yield 'thinking', text
+                elif kind in ('tool_call', 'tool_call_update'):
+                    for event in _tool_events(update, tool_state):
+                        yield event
                 continue
             if message.get('method') == 'session/request_permission':
                 await self._permission(message)
@@ -238,6 +308,8 @@ async def stream_turn(workspace, timeout, model, prompt, *, effort=None, session
                     'prompt': [{'type': 'text', 'text': prompt}]}):
                 if kind == 'delta':
                     yield 'delta', payload
+                elif kind in ('thinking', 'tool'):
+                    yield kind, payload
                 elif kind == 'result':
                     stop = payload.get('stopReason')
             if stop in ('cancelled', 'refusal'):
