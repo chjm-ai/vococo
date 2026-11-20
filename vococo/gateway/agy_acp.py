@@ -33,9 +33,10 @@ def _valid_id(value) -> bool:
 
 
 class _Client:
-    def __init__(self, proc, allowed):
+    def __init__(self, proc, allowed, approve=None):
         self.proc = proc
         self.allowed = set(allowed)
+        self.approve = approve
         self.seq = 0
         self.output = 0
 
@@ -63,6 +64,12 @@ class _Client:
         call = request.get('toolCall') or {}
         name = call.get('name')
         allowed = isinstance(name, str) and name in self.allowed
+        decision = 'allow' if allowed else 'abort'
+        if not allowed and self.approve is not None:
+            # 需要在 vococo 侧确认的工具（如派发任务）由上层回调决定；
+            # deny 只拒绝这一次，让模型继续解释；abort 才中止本轮。
+            decision = await self.approve(name, call)
+            allowed = decision == 'allow'
         kind = 'allow_once' if allowed else 'reject_once'
         options = request.get('options') or []
         option = next((item.get('optionId') for item in options
@@ -72,7 +79,7 @@ class _Client:
         else:
             outcome = {'outcome': 'selected', 'optionId': option}
         await self._send({'jsonrpc': '2.0', 'id': message['id'], 'result': {'outcome': outcome}})
-        if not allowed:
+        if decision == 'abort':
             # 网页模式只允许只读上下文工具；其他工具尝试一旦出现就中止本轮，
             # 不把「已拒绝」当成正常完成，避免用户误以为任务跑完了。
             raise AcpError('agy_unexpected_tool')
@@ -136,13 +143,23 @@ async def _result(events):
     return result
 
 
-async def stream_turn(workspace, timeout, model, prompt, *, session_id=None):
+def _tool_names(server_name, tools):
+    # ACP 里 MCP 工具名通常是 mcp_<server>_<tool>；服务名带连字符时也兼容下划线写法。
+    names = {f"mcp_{server_name}_{tool}" for tool in tools}
+    names.update(f"mcp_{server_name.replace('-', '_')}_{tool}" for tool in tools)
+    return names
+
+
+async def stream_turn(workspace, timeout, model, prompt, *, session_id=None,
+                      extra_servers=(), allowed_tools=(), approve=None):
     """运行一轮 ACP 会话；产出 ('delta', 文本)、('session', id)、('done', None)。"""
     from pathlib import Path
 
     workspace = Path(workspace)
     servers = _mcp_servers(workspace / '.agents/mcp_config.json')
-    allowed = {f"mcp_{server['name']}_{tool}" for server in servers for tool in _CONTEXT_TOOLS}
+    allowed = {name for server in servers for name in _tool_names(server['name'], _CONTEXT_TOOLS)}
+    allowed |= set(allowed_tools or ())
+    servers = [*servers, *extra_servers]
     proc = None
     try:
         async with asyncio.timeout(timeout):
@@ -150,7 +167,7 @@ async def stream_turn(workspace, timeout, model, prompt, *, session_id=None):
                 (str(agy_trial.cli_binary()), '--sandbox', '--mode', 'plan',
                  '--settings', agy_trial.SETTINGS_ACP, 'acp', '--stdio'),
                 workspace, asyncio.subprocess.PIPE)
-            client = _Client(proc, allowed)
+            client = _Client(proc, allowed, approve=approve)
             await _result(client.request('initialize', {
                 'protocolVersion': 1, 'clientCapabilities': {},
                 'clientInfo': {'name': 'vococo', 'version': '1'}}))

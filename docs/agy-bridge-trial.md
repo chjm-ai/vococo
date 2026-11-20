@@ -13,8 +13,11 @@
 - 当前 Agent 的项目规则、Agent 职责、README 和两份记忆索引（全局分区 + Agent 自己的索引）；
 - 当前 Agent 允许的文本 Skill 清单，模型用只读 MCP `read_skill` 按需读取正文；
 - 5 个只读 MCP 工具：`read_agent_context`、`read_agent_memory`、`read_context_file`、`list_skills`、`read_skill`。
+- 本机 `vococo-local` MCP（若 `~/.local/share/vococo-mcp/static-token.txt` 存在且前端可达）：
+  - 只读：`vococo_list_agents`、`vococo_list_sessions`、`vococo_search_history`、`vococo_read_session`、`vococo_get_task`；
+  - 写操作：`vococo_create_task`、`vococo_continue_task`、`vococo_cancel_task`，每次都会在网页弹出「允许一次 / 拒绝」，未点允许不会执行；超过 4000 字或疑似含凭据的指令直接拒绝，不弹窗。
 
-文件读写、编辑、命令和联网在会话设置里直接拒绝；除上述只读工具外的工具审批一律拒绝并中止本轮。外部 MCP 凭据、聊天历史、完整仓库不会同步过去。模型选择器仍通过官方 `agy --print /usage --output-format json` 查询额度。
+文件读写、编辑、命令和联网在会话设置里直接拒绝；除上述只读工具和被批准的写操作外，其他工具审批一律拒绝并中止本轮。`vococo_create_task` 目前按 MCP 连接默认派给 Vococo 开发；聊天历史来自本机 MCP，不会写进交接目录。静态 token 只在进程内传给 `agy`，不落到工作区。模型选择器仍通过官方 `agy --print /usage --output-format json` 查询额度。
 
 首轮成功才锁定原生会话，之后可在同组切模型，但不能切到其他供应商。`agy` 按自己的会话 ID 恢复历史；旧版纯文本会话会自动尝试用 ACP 载入。后台、语音和自动续跑不走此通道，不支持重新生成。Web 通道复用现有 SSE，不需要启动下方独立端口，也不影响「Antigravity CLI」终端交接。
 
