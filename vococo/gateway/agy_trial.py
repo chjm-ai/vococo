@@ -643,6 +643,9 @@ _ERRORS = {
     "agy_no_result": "Antigravity 未返回文字回复，请重试。",
     "agy_model_unavailable": "Antigravity 暂时没有返回这个模型，请稍后重试或换一个模型。",
     "agy_effort_unavailable": "这个会话暂时不支持所选思考档位，请换一档。",
+    "agy_output_limit": "Antigravity 本轮输出过大（超过 8MB），已停止；请让它截短命令输出或分步执行。",
+    "agy_protocol_error": "Antigravity 返回了无法识别的数据，本轮已停止。",
+    "agy_input_failed": "Antigravity 启动时输入失败，请重试。",
 }
 
 
@@ -851,7 +854,11 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                 short = bundle["write"].get(name) if bundle else None
                 if short is None:
                     # 文件、命令、联网等原生工具已由 SETTINGS_ACP 放开；
-                    # 万一上游仍发来审批请求，也按放行处理。
+                    # 但名字里带 vococo 写工具却没被映射上时（上游改了命名），
+                    # 必须 fail-closed，避免把派单/续接/取消误放行。
+                    if isinstance(name, str) and any(
+                            tool in name.lower() for tool in VOCOCO_MCP_WRITE):
+                        return "deny"
                     return "allow"
                 if short in denied_tools:
                     return "deny"

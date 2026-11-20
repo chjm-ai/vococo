@@ -242,8 +242,9 @@ def prepare_into(workspace: Path, key: str, *, draft_owner: dict | None = None):
         f'涉及历史决策、习惯或经验时，先调用 `read_agent_memory`；'
         f'技能清单可用 `list_skills` 查询，Agent 身份与能力清单可用 `read_agent_context`。'
         '工具不可用就按清单读取本地记忆索引，不去原笔记库。\n'
-        '这里仅有交接快照，不含原会话、完整仓库或凭据。只改当前工作区；'
-        '不把未迁移的 vococo MCP 当成可用，也不自动执行对外或破坏性操作。\n'
+        '这里仅有交接快照，不含原会话、完整仓库或凭据；文件、命令和联网权限以'
+        '当前会话设置为准。不把未迁移的 vococo MCP 当成可用；'
+        '对外或破坏性操作先简要说明再执行。\n'
     )
     docs['context/agent-context.json'] = json.dumps(meta, ensure_ascii=False, indent=2)
     docs['context/cli-settings.json'] = json.dumps(_cli_settings(server_name))
