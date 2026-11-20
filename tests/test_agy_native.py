@@ -7,7 +7,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from vococo import config
-from vococo.gateway import agy_trial, core, settings_store
+from vococo.gateway import agy_acp, agy_handoff, agy_trial, core, settings_store
 from vococo.gateway.adapters.web import WebAdapter
 from vococo.gateway.run import GatewayRunner
 from vococo.memory import session_store
@@ -29,18 +29,34 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
     async def catalog():
         return {HIGH: "Gemini 3.8 Flash (High)", LOW: "Gemini 3.8 Flash (Low)"}
 
-    async def generate(command, cwd, timeout, model, prompt, *, resume=None, native=False):
-        called.append((cwd, model, resume, native))
-        assert prompt.startswith("本会话为纯文本模式，不得调用搜索或任何工具")
+    workspace = isolated / "workspaces" / "agy-handoff" / "abc123-test"
+    (workspace / ".agents").mkdir(parents=True)
+    (workspace / ".agents/mcp_config.json").write_text(json.dumps({"mcpServers": {}}))
+    meta = {"agent_id": "general", "global_agent_id": "general", "workspace": str(workspace)}
+
+    def prepare(key, *, draft_owner=None):
+        assert draft_owner is None
+        return dict(meta)
+
+    def prepare_into(path, key, *, draft_owner=None):
+        assert Path(path) == workspace
+        return dict(meta)
+
+    async def stream_turn(cwd, timeout, model, prompt, *, session_id=None):
+        called.append((str(cwd), model, session_id))
+        assert prompt.startswith("本会话由 vococo 网页代理")
         if prompt.endswith("first failure"):
-            raise agy_trial.UpstreamError("agy_request_failed")
+            raise agy_acp.AcpError("agy_request_failed")
         if prompt.endswith("test search"):
-            raise agy_trial.UpstreamError("agy_unexpected_tool")
-        yield "delta", {"text": "测试通过"}
-        yield "done", {"session_id": NATIVE_ID}
+            raise agy_acp.AcpError("agy_unexpected_tool")
+        yield "session", NATIVE_ID
+        yield "delta", "测试通过"
+        yield "done", None
 
     monkeypatch.setattr(agy_trial, "native_catalog", catalog)
-    monkeypatch.setattr(agy_trial, "generate", generate)
+    monkeypatch.setattr(agy_handoff, "prepare", prepare)
+    monkeypatch.setattr(agy_handoff, "prepare_into", prepare_into)
+    monkeypatch.setattr(agy_acp, "stream_turn", stream_turn)
     adapter = WebAdapter()
     runner = GatewayRunner([adapter])
     app = web.Application()
@@ -84,12 +100,48 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
         assert session_store.get_chosen_model(conv) == HIGH
         assert (await choose(LOW)).status == 200
         await send("same native session", LOW)
-        assert called[-1] == (lock["cwd"], "gemini-3.8-flash-low", NATIVE_ID, True)
+        assert called[-1] == (lock["cwd"], "gemini-3.8-flash-low", NATIVE_ID)
         assert session_store.agy_native_session(conv) == lock
         locked = await (await client.get("/models", params={"conv": conv})).json()
         assert locked["agy_native_locked"] and not locked["agy_handoff"]
         assert {x[0] for x in locked["choices"]} == {HIGH, LOW}
         assert locked["default"] == "deepseek-flash"
+
+
+@pytest.mark.anyio
+async def test_legacy_session_falls_back_to_new_acp_session(isolated, monkeypatch):
+    workspace = isolated / "workspaces" / "agy-handoff" / "session-legacy"
+    workspace.mkdir(parents=True)
+    key = "session:legacy"
+    session_store.set_chosen_model(key, HIGH)
+    conn = session_store._conn()
+    conn.execute("UPDATE session_meta SET agy_native_session=? WHERE session_key=?",
+                 (json.dumps({"id": NATIVE_ID, "cwd": str(workspace)}), key))
+    conn.commit()
+    new_id = "8a5bd0ee-0c3a-4bbf-8e0f-a99b5dbe7ec8"
+
+    async def catalog():
+        return {HIGH: "Gemini 3.8 Flash (High)"}
+
+    def prepare_into(path, key, *, draft_owner=None):
+        return {"agent_id": "general", "global_agent_id": "general"}
+
+    async def stream_turn(cwd, timeout, model, prompt, *, session_id=None):
+        if session_id:
+            raise agy_acp.AcpError("agy_session_mismatch")
+        yield "session", new_id
+        yield "delta", "继续了"
+        yield "done", None
+
+    monkeypatch.setattr(agy_trial, "native_catalog", catalog)
+    monkeypatch.setattr(agy_handoff, "prepare_into", prepare_into)
+    monkeypatch.setattr(agy_acp, "stream_turn", stream_turn)
+    events = [event async for event in agy_trial.stream_native(key, 1, HIGH, "继续")]
+    done = events[-1]
+    assert "继续了" in done.reply.text and "原 Antigravity 会话无法恢复" in done.reply.text
+    assert not done.reply.is_error
+    lock = session_store.agy_native_session(key)
+    assert lock["id"] == new_id and lock["acp"] is True
 
 
 @pytest.mark.anyio

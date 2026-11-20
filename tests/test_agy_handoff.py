@@ -95,6 +95,34 @@ async def test_auth_and_current_agent_scope(isolated, monkeypatch):
     assert list(json.loads((w / '.agents/mcp_config.json').read_text())['mcpServers']) == data['local_mcp']
 
 
+def test_prepare_into_refreshes_context_and_hides_removed_skills(tmp_path, monkeypatch):
+    source = tmp_path / 'project'
+    source.mkdir()
+    (source / 'AGENTS.md').write_text('project-rule')
+    workspace = tmp_path / 'workspaces' / 'agy-handoff' / 'session-test'
+    (workspace / '.agents/skills/current').mkdir(parents=True)
+    (workspace / '.agents/skills/removed').mkdir(parents=True)
+    (workspace / '.agents/skills/removed/SKILL.md').write_text('旧技能')
+    (workspace / 'context').mkdir()
+    (workspace / 'context/MEMORY.md').write_text('旧记忆')
+    docs = {'.agents/skills/current/SKILL.md':
+            '---\nname: current\ndescription: 当前技能。\n---\n正文'}
+    meta = {'agent_id': 'abc123', 'global_agent_id': 'general', 'native_skills': ['current'],
+            'unmapped_skills': [], 'unmapped_vococo_mcp': [], 'memory_files': []}
+    monkeypatch.setattr(agy_handoff, '_context',
+                        lambda key, draft_owner=None: ({'id': 'abc123'}, source, dict(docs), dict(meta)))
+    result = agy_handoff.prepare_into(workspace, 'session:x')
+    assert result['skills'] == [{'name': 'current', 'description': '当前技能。'}]
+    assert not (workspace / '.agents/skills/removed').exists()
+    assert not (workspace / 'context/MEMORY.md').exists()
+    assert (workspace / 'context/PROJECT-RULES.md').read_text() == 'project-rule'
+    agents_md = (workspace / 'AGENTS.md').read_text()
+    assert 'current' in agents_md and 'read_skill' in agents_md and 'read_context_file' in agents_md
+    config = json.loads((workspace / '.agents/mcp_config.json').read_text())
+    assert next(iter(config['mcpServers'])).startswith('vococo-context-')
+    assert (workspace / 'context/cli-settings.json').is_file()
+
+
 @pytest.mark.anyio
 async def test_unbound_draft_can_prepare_current_project_without_saving_chat(isolated, monkeypatch):
     project = isolated / 'project'
@@ -145,6 +173,7 @@ def test_cli_mcp_permissions_do_not_override_user_rules(tmp_path, monkeypatch):
     assert agy_handoff._cli_settings(local) == {
         'allowNonWorkspaceAccess': False, 'permissions': {'allow': [
             f'mcp({local}/read_agent_context)', f'mcp({local}/read_agent_memory)',
+            f'mcp({local}/read_context_file)', f'mcp({local}/list_skills)', f'mcp({local}/read_skill)',
         ]},
     }
     path = tmp_path / '.gemini/antigravity-cli/settings.json'

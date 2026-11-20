@@ -8,9 +8,9 @@ import re
 import signal
 import uuid
 from contextlib import aclosing, suppress
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
-from tempfile import TemporaryDirectory, mkdtemp
+from tempfile import TemporaryDirectory
 from time import monotonic, time
 
 import anyio
@@ -32,6 +32,14 @@ SETTINGS = json.dumps({
     "toolPermission": "strict",
     "permissions": {"deny": [f"{action}(*)" for action in (
         "read_file", "write_file", "read_url", "execute_url", "command", "mcp",
+    )]},
+})
+# ACP 会话保留只读交接 MCP；文件、命令和联网仍然直接拒绝。
+SETTINGS_ACP = json.dumps({
+    "allowNonWorkspaceAccess": False,
+    "toolPermission": "strict",
+    "permissions": {"deny": [f"{action}(*)" for action in (
+        "read_file", "write_file", "edit_file", "read_url", "execute_url", "command", "search_web",
     )]},
 })
 
@@ -303,9 +311,12 @@ async def quota_usage(model):
 
 
 NATIVE_PREFIX = "agy-native:"
-_NATIVE_TEXT_ONLY = (
-    "本会话为纯文本模式，不得调用搜索或任何工具，也不能启动子代理。"
-    "如果用户的任务必须联网或使用工具，请直接用文字说明当前模式无法完成，不要尝试调用。"
+_ACP_NOTE = (
+    "本会话由 vococo 网页代理，可用只读 MCP 读取交接上下文、记忆索引和 Skill；"
+    "不能直接读写文件、不能联网、不能执行命令。"
+    "Skill 每轮可能更新：本轮要遵循任何 Skill 时，必须重新调用 read_skill 取最新正文，"
+    "不要沿用历史对话里的技能内容。"
+    "如果用户的任务必须联网或使用这些工具，请直接用文字说明当前模式无法完成，不要尝试调用。"
     "\n\n用户消息：\n"
 )
 _catalog: tuple[float, dict[str, str]] = (0, {})
@@ -399,11 +410,9 @@ def _quota_cli_ready() -> bool:
 
 
 def enabled() -> bool:
-    try:
-        until = date.fromisoformat(os.environ.get("VOCOCO_AGY_TRIAL_UNTIL", ""))
-    except ValueError:
-        return False
-    return date.today() < until and _quota_cli_ready()
+    # 网页 Antigravity 已不再设试用截止日；只保留 CLI 可用性与全局配置检查。
+    # VOCOCO_AGY_TRIAL_UNTIL 仅作历史配置保留，不再参与判定。
+    return _quota_cli_ready()
 
 
 def accepts_session(session_key: str) -> bool:
@@ -414,14 +423,19 @@ def accepts_session(session_key: str) -> bool:
 
 
 _ERRORS = {
-    "agy_timeout": "Antigravity 试用请求超时。",
+    "agy_timeout": "Antigravity 会话超时，请重试。",
     "agy_unavailable": "Antigravity CLI 不可用。",
     "agy_request_failed": "Antigravity 未完成请求，请在官方 CLI 检查登录、额度或网络。",
-    "agy_unexpected_tool": "Antigravity 网页只支持纯文本。本轮尝试调用工具，已停止；如需联网或使用工具，请另开普通会话，或使用 Antigravity CLI。",
+    "agy_unexpected_tool": "Antigravity 网页只支持纯文本和只读上下文工具。本轮尝试调用其他工具，已停止。",
+    "agy_session_mismatch": "无法恢复上次的 Antigravity 会话，请新开一条会话。",
+    "agy_mcp_config_invalid": "Antigravity 交接配置不可用，请重新选择模型后再试。",
+    "agy_unknown_native_model": "Antigravity 暂未提供这个模型，请刷新模型列表。",
+    "agy_native_lock_failed": "Antigravity 会话未能锁定，请重新发送。",
+    "agy_no_result": "Antigravity 未返回文字回复，请重试。",
 }
 
 
-def _native_workspace(bound):
+def _native_root():
     from .. import config
 
     root = config.AGENT_WORKSPACES_DIR.resolve() / "agy-native"
@@ -430,10 +444,19 @@ def _native_workspace(bound):
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     if root.stat().st_mode & 0o077 or root.stat().st_uid != os.getuid():
         raise ValueError("invalid native workspace permissions")
-    if not bound:
-        return mkdtemp(prefix="chat-", dir=root)
+    return root
+
+
+def _native_workspace(bound):
+    from .. import config
+
+    # 旧纯文本会话在 agy-native/；新版 ACP 会话复用 agy_handoff 的快照目录。
+    handoff = config.AGENT_WORKSPACES_DIR.resolve() / "agy-handoff"
+    if handoff.is_symlink() or handoff.is_relative_to(config.ROOT_DIR.resolve()):
+        raise ValueError("invalid handoff workspace root")
     cwd = Path(bound["cwd"])
-    if cwd.parent != root or cwd.is_symlink() or not cwd.is_dir() or not _valid_native_id(bound["id"]):
+    if (cwd.is_symlink() or not cwd.is_dir() or not _valid_native_id(bound["id"])
+            or cwd.resolve().parent not in (_native_root(), handoff.resolve())):
         raise ValueError("native workspace is unavailable")
     return str(cwd)
 
@@ -441,6 +464,7 @@ def _native_workspace(bound):
 async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal: str = ""):
     from ..core.agent import AgentReply, Done, TextDelta
     from ..memory import session_store
+    from . import agy_acp, agy_handoff
 
     chunks = []
     if not refusal and (not prompt.strip() or len(prompt) > MAX_PROMPT):
@@ -455,22 +479,52 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
             if model not in await native_catalog():
                 raise UpstreamError("agy_unknown_native_model")
             bound = session_store.agy_native_session(key)
-            cwd = _native_workspace(bound)
+            if bound:
+                cwd = _native_workspace(bound)
+                meta = await asyncio.to_thread(agy_handoff.prepare_into, Path(cwd), key)
+                if bound.get("agent_id") and bound["agent_id"] != meta["agent_id"]:
+                    raise UpstreamError("agy_session_mismatch")
+            else:
+                prepared = await asyncio.to_thread(agy_handoff.prepare, key)
+                cwd, meta = prepared["workspace"], prepared
             session_id = None
-            async with aclosing(generate((str(cli_binary()),), cwd, 90, model[len(NATIVE_PREFIX):],
-                                         _NATIVE_TEXT_ONLY + prompt, resume=bound["id"] if bound else None,
-                                         native=True)) as events:
-                async for event, payload in events:
-                    if event == "delta":
-                        chunks.append(payload["text"])
-                        yield TextDelta(payload["text"])
-                    elif event == "done":
-                        session_id = payload["session_id"]
-            if not _valid_native_id(session_id) or (not bound and not session_store.lock_agy_native_session(
-                    key, model, turn_id, {"id": session_id, "cwd": cwd})):
+            recovered = False
+
+            async def consume(sid):
+                nonlocal session_id
+                async with aclosing(agy_acp.stream_turn(
+                        cwd, 120, model[len(NATIVE_PREFIX):], _ACP_NOTE + prompt, session_id=sid)) as events:
+                    async for event, payload in events:
+                        if event == "delta":
+                            chunks.append(payload)
+                            yield TextDelta(payload)
+                        elif event == "session":
+                            session_id = payload
+
+            try:
+                async for delta in consume(bound["id"] if bound else None):
+                    yield delta
+            except agy_acp.AcpError as exc:
+                # 升级前创建的纯文本会话理论上可用 ACP 载入；万一载入失败，
+                # 只对这种旧会话降级为新会话，避免整条会话锁死无法继续。
+                if not (bound and not bound.get("acp") and exc.code == "agy_session_mismatch"):
+                    raise
+                recovered = True
+                async for delta in consume(None):
+                    yield delta
+                chunks.append("\n\n（原 Antigravity 会话无法恢复，已新建会话继续。）")
+            if not "".join(chunks).strip():
+                raise UpstreamError("agy_no_result")
+            lock = {"id": session_id, "cwd": cwd, "agent_id": meta["agent_id"], "acp": True}
+            if not _valid_native_id(session_id):
                 raise UpstreamError("agy_native_lock_failed")
-        except (ValueError, OSError, UpstreamError) as exc:
-            code = exc.code if isinstance(exc, UpstreamError) else type(exc).__name__
+            if bound and recovered:
+                if not session_store.replace_agy_native_session(key, model, lock):
+                    raise UpstreamError("agy_native_lock_failed")
+            elif not bound and not session_store.lock_agy_native_session(key, model, turn_id, lock):
+                raise UpstreamError("agy_native_lock_failed")
+        except (ValueError, OSError, UpstreamError, agy_acp.AcpError) as exc:
+            code = exc.code if isinstance(exc, (UpstreamError, agy_acp.AcpError)) else type(exc).__name__
             log.warning("Antigravity 网页轮次失败: turn_id=%s code=%s", turn_id, code)
             refusal = _ERRORS.get(code, "Antigravity 会话未完成；请检查可用模型或稍后重试。")
         finally:

@@ -3,7 +3,9 @@
 import json
 import os
 import re
+import shutil
 import sys
+from contextlib import suppress
 from pathlib import Path
 from tempfile import mkdtemp
 
@@ -65,6 +67,21 @@ def _portable_skills(names):
             docs.update({f'.agents/skills/{name}/{path}': text for path, text in files.items()})
             shared.append(name)
     return docs, sorted(shared)
+
+
+def _skill_description(text: str) -> str:
+    # 只取 SKILL.md frontmatter/首段的简短说明，不把技能正文塞进常驻上下文。
+    front = re.match(r'---\s*\n(.*?)\n---', text, re.S)
+    if front:
+        found = re.search(r'(?m)^description\s*:\s*(.+?)\s*$', front.group(1))
+        if found:
+            return found.group(1).strip('"\'')[:200]
+    body = re.sub(r'(?m)^---\s*$', '', text)
+    for line in body.splitlines():
+        line = line.strip().lstrip('#').strip()
+        if line:
+            return line[:200]
+    return ''
 
 
 def _owned_memory_dir(brain: Path, path: Path) -> Path | None:
@@ -151,6 +168,12 @@ def _read_scope(source, agent_id):
     return docs
 
 
+_CONTEXT_TOOLS = ('read_agent_context', 'read_agent_memory', 'read_context_file',
+                  'list_skills', 'read_skill')
+_CONTEXT_FILES = ('agent-context.json', 'MEMORY.md', 'AGENT-MEMORY.md',
+                  'PROJECT-RULES.md', 'README.md', 'AGENT.md', 'GLOBAL-AGENT.md')
+
+
 def _cli_settings(server_name):
     settings = {'allowNonWorkspaceAccess': False}
     path = Path.home() / '.gemini/antigravity-cli/settings.json'
@@ -161,34 +184,64 @@ def _cli_settings(server_name):
                 return settings  # 不因会话覆盖而抹掉用户自己配置的拒绝或询问规则
     except (OSError, ValueError):
         return settings
-    settings['permissions'] = {'allow': [f'mcp({server_name}/{tool})' for tool in (
-        'read_agent_context', 'read_agent_memory',
-    )]}
+    settings['permissions'] = {'allow': [f'mcp({server_name}/{tool})' for tool in _CONTEXT_TOOLS]}
     return settings
 
 
 def prepare(key: str, *, draft_owner: dict | None = None):
     from .. import config
 
-    owner, source, docs, meta = _context(key, draft_owner)
     root = config.AGENT_WORKSPACES_DIR.resolve() / 'agy-handoff'
-    if (root.is_symlink() or root.is_relative_to(config.ROOT_DIR.resolve()) or root.is_relative_to(source)
+    if (root.is_symlink() or root.is_relative_to(config.ROOT_DIR.resolve())
             or any(os.path.lexists(path / '.git') for path in (root, *root.parents))):
         raise ValueError('交接目录必须独立于项目和 Git 仓库')
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if root.stat().st_mode & 0o077 or root.stat().st_uid != os.getuid():
         raise ValueError('交接目录权限必须仅属于当前用户')
-    workspace = Path(mkdtemp(prefix=f"{owner['id']}-", dir=root))
-    server_name = f"vococo-context-{workspace.name.split('-', 1)[1]}"
+    workspace = Path(mkdtemp(prefix='session-', dir=root))
+    try:
+        meta = prepare_into(workspace, key, draft_owner=draft_owner)
+    except Exception:
+        # 准备失败时不留下空快照目录；只删刚创建且仍为空的那一层。
+        with suppress(OSError):
+            workspace.rmdir()
+        raise
+    return {'workspace': str(workspace), **meta}
+
+
+def prepare_into(workspace: Path, key: str, *, draft_owner: dict | None = None):
+    """把当前 Agent 的规则、技能、记忆索引和只读 MCP 写进既有工作区。
+
+    网页 ACP 会话每轮都调用它，让技能/记忆索引跟随 vococo 最新配置；
+    只写 vococo 自己的交接目录，不读会话正文、不改原项目。"""
+    owner, source, docs, meta = _context(key, draft_owner)
+    workspace = Path(workspace)
+    if (workspace.is_symlink() or not workspace.is_dir()
+            or workspace.resolve().is_relative_to(Path(source).resolve())
+            or any(os.path.lexists(path / '.git') for path in (workspace, *workspace.parents))):
+        raise ValueError('交接目录不可用')
+    server_name = f"vococo-context-{workspace.name.split('-', 1)[-1]}"
     meta['local_mcp'] = [server_name]
+    meta['skills'] = [
+        {'name': name, 'description': _skill_description(files['SKILL.md'])}
+        for name in meta['native_skills']
+        if (files := _portable_skill_from_docs(docs, name))
+    ]
     docs.update(_read_scope(source, owner['id']))
+    skill_names = '、'.join(item['name'] for item in meta['skills']) or '无'
     docs['AGENTS.md'] = (
         '# vococo 本机交接\n\n'
         f"总助理 ID：`{meta['global_agent_id']}`；当前 Agent ID：`{meta['agent_id']}`。\n"
-        '开始任务前读取 `context/agent-context.json` 和现有的 `context/AGENT.md`、'
-        '`context/GLOBAL-AGENT.md`、`context/PROJECT-RULES.md`。\n'
-        f'涉及历史决策、习惯或经验时，先调用只读 MCP `{server_name}` 的 `read_agent_memory`；'
-        '工具不可用就按清单读取本地记忆索引，不去原笔记库。匹配任务时按名称加载 `.agents/skills/` 中的 Skill。\n'
+        '开始任务前用下面的只读 MCP 读取 `agent-context.json`；需要时再读 '
+        '`PROJECT-RULES.md`、`AGENT.md`、`GLOBAL-AGENT.md`。\n'
+        f'可用 Skill：{skill_names}。任务匹配某个 Skill 时，先调用只读 MCP `{server_name}` 的 '
+        '`read_skill` 读取正文再遵循；不要臆测未读取的技能内容。'
+        'Skill 文件可能在本轮前被更新，每轮要使用时都要重新读取，不要沿用历史里的技能正文。\n'
+        f'项目规则、Agent 职责和项目说明通过只读 MCP `{server_name}` 的 `read_context_file` 读取'
+        '（PROJECT-RULES.md / AGENT.md / GLOBAL-AGENT.md / README.md），不要假设自己已经读过。'
+        f'涉及历史决策、习惯或经验时，先调用 `read_agent_memory`；'
+        f'技能清单可用 `list_skills` 查询，Agent 身份与能力清单可用 `read_agent_context`。'
+        '工具不可用就按清单读取本地记忆索引，不去原笔记库。\n'
         '这里仅有交接快照，不含原会话、完整仓库或凭据。只改当前工作区；'
         '不把未迁移的 vococo MCP 当成可用，也不自动执行对外或破坏性操作。\n'
     )
@@ -197,11 +250,45 @@ def prepare(key: str, *, draft_owner: dict | None = None):
     docs['.agents/mcp_config.json'] = json.dumps({'mcpServers': {server_name: {
         'command': sys.executable, 'args': [str(Path(__file__).resolve()), '--serve', str(workspace)],
     }}})
+    # 配置变化后，本轮不再生成的交接文件要清掉，免得旧记忆/旧规则继续被 MCP 读到。
+    for name in _CONTEXT_FILES:
+        with suppress(OSError):
+            if f'context/{name}' not in docs:
+                (workspace / 'context' / name).unlink()
+    # 技能快照也要跟着 Agent 名单走：移出名单的旧目录会让 agy 原生技能发现继续列出它。
+    current_skills = {item['name'] for item in meta['skills']}
+    skills_root = workspace / '.agents/skills'
+    if not skills_root.is_symlink() and skills_root.is_dir():
+        for folder in skills_root.iterdir():
+            if (re.fullmatch(r'[a-z0-9][a-z0-9-]*', folder.name) and folder.name not in current_skills
+                    and folder.is_dir() and not folder.is_symlink()):
+                with suppress(OSError):
+                    shutil.rmtree(folder)
     for relative, text in docs.items():
         target = workspace / relative
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         target.write_text(text, encoding='utf-8')
-    return {'workspace': str(workspace), **meta}
+    return meta
+
+
+def _portable_skill_from_docs(docs, name):
+    prefix = f'.agents/skills/{name}/'
+    files = {path[len(prefix):]: text for path, text in docs.items() if path.startswith(prefix)}
+    return files if files.get('SKILL.md') else {}
+
+
+def _skill_files(workspace: Path):
+    root = workspace / '.agents/skills'
+    if root.is_symlink() or not root.is_dir():
+        return {}
+    found = {}
+    for folder in root.iterdir():
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]*', folder.name) or folder.is_symlink() or not folder.is_dir():
+            continue
+        text = _small_text(folder / 'SKILL.md')
+        if text is not None:
+            found[folder.name] = text
+    return found
 
 
 def _serve(workspace: Path):
@@ -213,6 +300,12 @@ def _serve(workspace: Path):
         raise ValueError('缺少交接快照')
     memory = {name: text for name in ('MEMORY.md', 'AGENT-MEMORY.md')
               if (text := _small_text(path.parent / name))}
+    try:
+        allowed = set(json.loads(payload).get('native_skills') or ())
+    except (ValueError, AttributeError, TypeError):
+        allowed = set()
+    # 工作区会按轮刷新；技能从 Agent 名单移除后，旧目录不再对外暴露（不删除文件）。
+    skills = {name: text for name, text in _skill_files(workspace).items() if name in allowed}
     server = MCPServer('vococo-context')
 
     @server.tool()
@@ -224,6 +317,28 @@ def _serve(workspace: Path):
     def read_agent_memory() -> dict[str, str]:
         """只读: 返回本次可用的全局分区与 Agent 记忆索引；不读原笔记库。"""
         return memory
+
+    @server.tool()
+    def read_context_file(name: str) -> str:
+        """只读: 读取本次交接的项目规则/Agent 职责/说明文件（固定名单，不支持任意路径）。"""
+        if not isinstance(name, str) or name not in _CONTEXT_FILES:
+            raise ValueError('未找到该交接文件')
+        text = _small_text(path.parent / name)
+        if text is None:
+            raise ValueError('未找到该交接文件')
+        return text
+
+    @server.tool()
+    def list_skills() -> list[dict[str, str]]:
+        """只读: 列出本次交接可用的 Skill 名称与说明。"""
+        return [{'name': name, 'description': _skill_description(text)} for name, text in skills.items()]
+
+    @server.tool()
+    def read_skill(name: str) -> str:
+        """只读: 按名称读取本次交接的技能正文（SKILL.md）。"""
+        if not isinstance(name, str) or name not in skills:
+            raise ValueError('未找到该 Skill')
+        return skills[name]
 
     server.run(transport='stdio')
 
