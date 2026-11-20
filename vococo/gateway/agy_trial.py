@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import signal
+import stat
 import uuid
 from contextlib import aclosing, suppress
 from datetime import datetime
@@ -311,8 +312,18 @@ async def quota_usage(model):
 
 
 NATIVE_PREFIX = "agy-native:"
+# 本机 vococo MCP 前端（brain_mcp）：把会话历史/任务工具同时给网页 Antigravity 使用。
+VOCOCO_MCP_URL = "http://127.0.0.1:8852/mcp/token"
+VOCOCO_MCP_TOKEN_FILE = Path.home() / ".local/share/vococo-mcp/static-token.txt"
+VOCOCO_MCP_READ = ("vococo_list_agents", "vococo_list_sessions", "vococo_search_history",
+                   "vococo_read_session", "vococo_get_task")
+VOCOCO_MCP_WRITE = ("vococo_create_task", "vococo_continue_task", "vococo_cancel_task")
+_vococo_mcp_cache: tuple[float, dict | None] = (0.0, None)
 _ACP_NOTE = (
     "本会话由 vococo 网页代理，可用只读 MCP 读取交接上下文、记忆索引和 Skill；"
+    "如挂载了 `vococo-local` MCP，可查历史会话和任务；用户问过去聊过什么时，"
+    "用 `vococo_search_history`/`vococo_read_session` 查，不要凭空回忆；"
+    "派发、续接、取消任务会先请主人在网页确认，被拒绝就如实说明。"
     "不能直接读写文件、不能联网、不能执行命令。"
     "Skill 每轮可能更新：本轮要遵循任何 Skill 时，必须重新调用 read_skill 取最新正文，"
     "不要沿用历史对话里的技能内容。"
@@ -463,6 +474,133 @@ def _native_workspace(bound):
     return str(cwd)
 
 
+def _vococo_mcp_token() -> str:
+    token = os.environ.get("VOCOCO_MCP_STATIC_TOKEN", "").strip()
+    if not token:
+        try:
+            meta = VOCOCO_MCP_TOKEN_FILE.lstat()
+            if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.getuid()
+                    or meta.st_mode & 0o077):
+                return ""
+            token = VOCOCO_MCP_TOKEN_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+    if len(token) < 32 or not token.isascii() or any(char.isspace() for char in token):
+        return ""
+    return token
+
+
+async def _vococo_mcp_bundle():
+    """本机 brain_mcp 只读/派单工具；服务不可达时安静跳过，不影响普通聊天。"""
+    global _vococo_mcp_cache
+    now = monotonic()
+    if _vococo_mcp_cache[0] > now:
+        return _vococo_mcp_cache[1]
+    bundle = None
+    token = _vococo_mcp_token()
+    if token:
+        try:
+            _, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", 8852), 0.6)
+            writer.close()
+            with suppress(Exception):
+                await writer.wait_closed()
+            server = {"type": "http", "name": "vococo-local", "url": VOCOCO_MCP_URL,
+                      "headers": [{"name": "Authorization", "value": f"Bearer {token}"}]}
+            read = {name: tool for tool in VOCOCO_MCP_READ
+                    for name in (f"mcp_vococo-local_{tool}", f"mcp_vococo_local_{tool}")}
+            write = {name: tool for tool in VOCOCO_MCP_WRITE
+                     for name in (f"mcp_vococo-local_{tool}", f"mcp_vococo_local_{tool}")}
+            bundle = {"server": server, "read": read, "write": write}
+        except (OSError, TimeoutError):
+            bundle = None
+    _vococo_mcp_cache = (now + 30, bundle)
+    return bundle
+
+
+_APPROVAL_MAX = 4000
+_MD_LINK = re.compile(r'\[([^\]]*)\]\(([^)]*)\)')
+_URL = re.compile(r'(?i)\b(?:https?://|www\.)[^\s<>()]+')
+_APPROVAL_SECRET = re.compile(
+    r'(?i)\b(?:api[_-]?key|password|passwd|access[_-]?token|secret)\b["\']?\s*[:=]\s*'
+    r'["\']?[A-Za-z0-9_+./=-]{8,}')
+
+
+def _fence(text: str) -> str:
+    # 用代码块展示原文，避免 prompt/instruction 里的链接或 Markdown 被渲染成可点内容。
+    fence = '````'
+    while fence in text:
+        fence += '`'
+    return f"{fence}text\n{text}\n{fence}"
+
+
+def _approval_text(tool: str, args: dict) -> str:
+    def clip(value, limit):
+        return str(value or "").strip()[:limit]
+
+    def display(value):
+        from ..tools import danger
+
+        text = danger.redact_secrets(str(value or ''))
+        text = _MD_LINK.sub(r'\1', text)
+        return _URL.sub('[链接已移除]', text)
+
+    if tool == "vococo_create_task":
+        body = display(args.get('prompt'))
+        detail = f"标题: {clip(args.get('title'), 100)}\n\n{body}"
+        return f"Antigravity 想派发后台任务给 vococo：\n\n{_fence(detail)}\n\n共 {len(body)} 字。"
+    if tool == "vococo_continue_task":
+        body = display(args.get('instruction'))
+        agent = clip(args.get('agent_id'), 64) or '默认'
+        detail = f"会话: {clip(args.get('id'), 160)}\nAgent: {agent}\n\n{body}"
+        return f"Antigravity 想向历史会话续发指令：\n\n{_fence(detail)}\n\n共 {len(body)} 字。"
+    if tool == "vococo_cancel_task":
+        return f"Antigravity 想取消任务：\n\n{_fence(clip(args.get('id'), 160))}"
+    return f"Antigravity 想执行工具 `{tool}`，允许吗？"
+
+
+async def _approve_vococo_tool(tool: str, call: dict) -> tuple[str, str]:
+    """派单/续接/取消这类写操作必须由主人在网页上点一次允许。
+
+    返回 (决定, 拒绝说明)。内容含凭据或过长时不弹窗，直接拒绝并说明原因。"""
+    from .. import config
+    from ..tools import danger
+    from . import clarify
+    from .core import Choice
+
+    ctx = clarify.current()
+    if ctx is None or not callable(getattr(ctx.adapter, "present_choice", None)):
+        return "deny", "当前没有可确认的网页入口，已拒绝这次操作。"
+    args = call.get("rawInput") or call.get("args") or {}
+    if not isinstance(args, dict):
+        args = {}
+    raw = args.get('prompt') or args.get('instruction') or ''
+    scanned = ' '.join(str(args.get(key) or '') for key in ('title', 'prompt', 'instruction', 'id', 'agent_id'))
+    if danger.redact_secrets(scanned) != scanned or _APPROVAL_SECRET.search(scanned):
+        return "deny", "Antigravity 的指令可能包含凭据，已拒绝派发。"
+    if isinstance(raw, str) and len(raw) > _APPROVAL_MAX:
+        return "deny", f"Antigravity 的指令过长（{len(raw)} 字），已拒绝；请让它拆成更短的指令。"
+    prompt = _approval_text(tool, args)
+    pending = clarify.register(
+        ctx.session_key, ["允许一次", "拒绝"],
+        notice={"kind": "approval", "prompt": prompt, "reason": "Antigravity 请求写操作",
+                "detail": prompt[:2000], "tool": tool},
+    )
+    try:
+        await ctx.adapter.present_choice(ctx.chat_id, Choice(
+            prompt=prompt,
+            options=[(f"/clarify {pending.clarify_id} 0", "允许一次"),
+                     (f"/clarify {pending.clarify_id} 1", "拒绝")],
+        ))
+    except Exception:
+        clarify.abandon(pending.clarify_id)
+        return "deny", "审批弹窗没有送达，已拒绝这次操作。"
+    # agy 对权限答复的等待有上限（实测至少 75s）；留一点余量，超时就按拒绝处理。
+    answer = await clarify.wait(pending.clarify_id, min(config.CLARIFY_TIMEOUT, 90))
+    if answer == "允许一次":
+        return "allow", ""
+    return "deny", "已拒绝 Antigravity 的派发请求，本轮未执行。"
+
+
 async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal: str = ""):
     from ..core.agent import AgentReply, Done, TextDelta
     from ..memory import session_store
@@ -491,11 +629,30 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                 cwd, meta = prepared["workspace"], prepared
             session_id = None
             recovered = False
+            bundle = await _vococo_mcp_bundle()
+            extra_servers = [bundle["server"]] if bundle else []
+            allowed_tools = set(bundle["read"]) if bundle else set()
+            denied_tools = set()
+            denied_note = ""
+
+            async def approve(name, call):
+                nonlocal denied_note
+                short = bundle["write"].get(name) if bundle else None
+                if short is None:
+                    return "abort"
+                if short in denied_tools:
+                    return "deny"
+                decision, note = await _approve_vococo_tool(short, call)
+                if decision != "allow":
+                    denied_tools.add(short)
+                    denied_note = note
+                return decision
 
             async def consume(sid):
                 nonlocal session_id
                 async with aclosing(agy_acp.stream_turn(
-                        cwd, 120, model[len(NATIVE_PREFIX):], _ACP_NOTE + prompt, session_id=sid)) as events:
+                        cwd, 360, model[len(NATIVE_PREFIX):], _ACP_NOTE + prompt, session_id=sid,
+                        extra_servers=extra_servers, allowed_tools=allowed_tools, approve=approve)) as events:
                     async for event, payload in events:
                         if event == "delta":
                             chunks.append(payload)
@@ -515,12 +672,19 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                 async for delta in consume(None):
                     yield delta
                 chunks.append("\n\n（原 Antigravity 会话无法恢复，已新建会话继续。）")
+            # 真实 agy 在用户拒绝写工具后可能直接 end_turn 且不产出正文；
+            # 这不是模型故障，给一条明确回执，并视为本轮没有成功执行。
+            denied_only = not "".join(chunks).strip() and bool(denied_tools)
+            if denied_only:
+                chunks.append(denied_note or "已拒绝 Antigravity 的写操作，本轮未执行。")
             if not "".join(chunks).strip():
                 raise UpstreamError("agy_no_result")
             lock = {"id": session_id, "cwd": cwd, "agent_id": meta["agent_id"], "acp": True}
-            if not _valid_native_id(session_id):
+            if denied_only and not bound:
+                pass  # 首轮只发生被拒写操作，不算成功会话，不锁定
+            elif not _valid_native_id(session_id):
                 raise UpstreamError("agy_native_lock_failed")
-            if bound and recovered:
+            elif bound and recovered:
                 if not session_store.replace_agy_native_session(key, model, lock):
                     raise UpstreamError("agy_native_lock_failed")
             elif not bound and not session_store.lock_agy_native_session(key, model, turn_id, lock):

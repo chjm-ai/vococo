@@ -172,6 +172,82 @@ async def test_stream_turn_loads_without_replaying_history(tmp_path, monkeypatch
         'initialize', 'session/load', 'session/set_model', 'session/prompt']
 
 
+@pytest.mark.anyio
+async def test_extra_mcp_write_tool_uses_approval_callback(tmp_path, monkeypatch):
+    sid = '3596d05e-5d0e-47a7-b5a8-77aee32011d2'
+    workspace = tmp_path / 'workspace'
+    (workspace / '.agents').mkdir(parents=True)
+    (workspace / '.agents/mcp_config.json').write_text(json.dumps({'mcpServers': {
+        'vococo-context-test': {'command': '/bin/echo', 'args': ['serve']}}}))
+    proc = Proc([
+        {'jsonrpc': '2.0', 'id': 1, 'result': {}},
+        {'jsonrpc': '2.0', 'id': 2, 'result': {'sessionId': sid}},
+        {'jsonrpc': '2.0', 'id': 3, 'result': {}},
+        permission(0, 'mcp_vococo-local_vococo_create_task'),
+        {'jsonrpc': '2.0', 'id': 4, 'result': {'stopReason': 'end_turn'}},
+    ])
+    seen = []
+
+    async def spawn(*args, **kwargs):
+        return proc
+
+    async def terminate(_proc):
+        return None
+
+    async def approve(name, call):
+        seen.append((name, call.get('rawInput')))
+        return 'allow'
+
+    monkeypatch.setattr(agy_acp.agy_trial, 'spawn_cli', spawn)
+    monkeypatch.setattr(agy_acp.agy_trial, 'terminate', terminate)
+    monkeypatch.setattr(agy_acp.agy_trial, 'cli_binary', lambda: Path('/bin/true'))
+    extra = [{'type': 'http', 'name': 'vococo-local', 'url': 'http://127.0.0.1:8852/mcp/token',
+              'headers': [{'name': 'Authorization', 'value': 'Bearer test'}]}]
+    await collect(agy_acp.stream_turn(workspace, 10, 'gemini-x', '派发任务', session_id=sid,
+                                      extra_servers=extra, approve=approve))
+    assert seen and seen[0][0] == 'mcp_vococo-local_vococo_create_task'
+    sent = requests(proc)
+    replies = [item['result']['outcome'] for item in sent if 'result' in item and item.get('id') == 0]
+    assert replies == [{'outcome': 'selected', 'optionId': 'a'}]
+    assert any(item.get('method') == 'session/load' and item['params']['mcpServers'][-1]['name'] == 'vococo-local'
+               for item in sent)
+
+
+@pytest.mark.anyio
+async def test_denied_write_tool_does_not_abort_turn(tmp_path, monkeypatch):
+    sid = '3596d05e-5d0e-47a7-b5a8-77aee32011d2'
+    workspace = tmp_path / 'workspace'
+    (workspace / '.agents').mkdir(parents=True)
+    (workspace / '.agents/mcp_config.json').write_text(json.dumps({'mcpServers': {
+        'vococo-context-test': {'command': '/bin/echo', 'args': ['serve']}}}))
+    proc = Proc([
+        {'jsonrpc': '2.0', 'id': 1, 'result': {}},
+        {'jsonrpc': '2.0', 'id': 2, 'result': {'sessionId': sid}},
+        {'jsonrpc': '2.0', 'id': 3, 'result': {}},
+        permission(0, 'mcp_vococo-local_vococo_create_task'),
+        update('已取消派发'),
+        {'jsonrpc': '2.0', 'id': 4, 'result': {'stopReason': 'end_turn'}},
+    ])
+
+    async def spawn(*args, **kwargs):
+        return proc
+
+    async def terminate(_proc):
+        return None
+
+    async def approve(name, call):
+        return 'deny'
+
+    monkeypatch.setattr(agy_acp.agy_trial, 'spawn_cli', spawn)
+    monkeypatch.setattr(agy_acp.agy_trial, 'terminate', terminate)
+    monkeypatch.setattr(agy_acp.agy_trial, 'cli_binary', lambda: Path('/bin/true'))
+    events = await collect(agy_acp.stream_turn(workspace, 10, 'gemini-x', '派发任务', session_id=sid,
+                                               approve=approve))
+    assert ('delta', '已取消派发') in events
+    replies = [item['result']['outcome'] for item in requests(proc) if 'result' in item and item.get('id') == 0]
+    assert replies == [{'outcome': 'selected', 'optionId': 'r'}]
+
+
 def test_mcp_servers_requires_explicit_stdio_command(tmp_path):
     path = tmp_path / 'mcp.json'
     path.write_text(json.dumps({'mcpServers': {'x': {'command': '/bin/echo', 'args': ['a']}}}))

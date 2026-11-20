@@ -42,7 +42,7 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
         assert Path(path) == workspace
         return dict(meta)
 
-    async def stream_turn(cwd, timeout, model, prompt, *, session_id=None):
+    async def stream_turn(cwd, timeout, model, prompt, *, session_id=None, **kwargs):
         called.append((str(cwd), model, session_id))
         assert prompt.startswith("本会话由 vococo 网页代理")
         if prompt.endswith("first failure"):
@@ -53,7 +53,11 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
         yield "delta", "测试通过"
         yield "done", None
 
+    async def no_mcp():
+        return None
+
     monkeypatch.setattr(agy_trial, "native_catalog", catalog)
+    monkeypatch.setattr(agy_trial, "_vococo_mcp_bundle", no_mcp)
     monkeypatch.setattr(agy_handoff, "prepare", prepare)
     monkeypatch.setattr(agy_handoff, "prepare_into", prepare_into)
     monkeypatch.setattr(agy_acp, "stream_turn", stream_turn)
@@ -150,14 +154,18 @@ async def test_legacy_session_falls_back_to_new_acp_session(isolated, monkeypatc
     def prepare_into(path, key, *, draft_owner=None):
         return {"agent_id": "general", "global_agent_id": "general"}
 
-    async def stream_turn(cwd, timeout, model, prompt, *, session_id=None):
+    async def stream_turn(cwd, timeout, model, prompt, *, session_id=None, **kwargs):
         if session_id:
             raise agy_acp.AcpError("agy_session_mismatch")
         yield "session", new_id
         yield "delta", "继续了"
         yield "done", None
 
+    async def no_mcp():
+        return None
+
     monkeypatch.setattr(agy_trial, "native_catalog", catalog)
+    monkeypatch.setattr(agy_trial, "_vococo_mcp_bundle", no_mcp)
     monkeypatch.setattr(agy_handoff, "prepare_into", prepare_into)
     monkeypatch.setattr(agy_acp, "stream_turn", stream_turn)
     events = [event async for event in agy_trial.stream_native(key, 1, HIGH, "继续")]
@@ -166,6 +174,153 @@ async def test_legacy_session_falls_back_to_new_acp_session(isolated, monkeypatc
     assert not done.reply.is_error
     lock = session_store.agy_native_session(key)
     assert lock["id"] == new_id and lock["acp"] is True
+
+
+@pytest.mark.anyio
+async def test_vococo_mcp_bundle_exposes_read_and_write_tools(monkeypatch):
+    class Writer:
+        def close(self):
+            pass
+
+        async def wait_closed(self):
+            pass
+
+    async def connect(host, port):
+        assert (host, port) == ('127.0.0.1', 8852)
+        return None, Writer()
+
+    monkeypatch.setenv('VOCOCO_MCP_STATIC_TOKEN', 'x' * 32)
+    monkeypatch.setattr(agy_trial.asyncio, 'open_connection', connect)
+    monkeypatch.setattr(agy_trial, '_vococo_mcp_cache', (0.0, None))
+    bundle = await agy_trial._vococo_mcp_bundle()
+    assert bundle['server']['url'] == agy_trial.VOCOCO_MCP_URL
+    assert bundle['server']['headers'][0]['value'] == 'Bearer ' + 'x' * 32
+    assert 'mcp_vococo-local_vococo_list_sessions' in bundle['read']
+    assert 'mcp_vococo-local_vococo_create_task' in bundle['write']
+    assert bundle['read']['mcp_vococo-local_vococo_list_sessions'] == 'vococo_list_sessions'
+
+
+@pytest.mark.anyio
+async def test_write_tool_approval_shows_prompt_and_allows(monkeypatch):
+    from vococo.gateway import clarify
+
+    shown = []
+
+    class Adapter:
+        async def present_choice(self, chat_id, choice):
+            shown.append((chat_id, choice.prompt, [label for _, label in choice.options]))
+
+    class Ctx:
+        session_key = 'session:qa'
+        chat_id = 'conv1'
+        adapter = Adapter()
+
+    class Pending:
+        clarify_id = 'cid'
+
+    monkeypatch.setattr(clarify, 'current', lambda: Ctx())
+    registered = []
+    monkeypatch.setattr(clarify, 'register',
+                        lambda key, choices, notice=None: registered.append(notice) or Pending())
+
+    async def wait(_cid, _timeout):
+        return '允许一次'
+
+    monkeypatch.setattr(clarify, 'wait', wait)
+    decision, note = await agy_trial._approve_vococo_tool(
+        'vococo_create_task', {'rawInput': {'title': '测试派单', 'prompt': '具体任务'}})
+    assert (decision, note) == ('allow', '')
+    assert shown and '测试派单' in shown[0][1] and '具体任务' in shown[0][1]
+    assert shown[0][2] == ['允许一次', '拒绝']
+    assert '````text' in shown[0][1]
+    assert registered and registered[0]['kind'] == 'approval'
+
+
+@pytest.mark.anyio
+async def test_write_tool_approval_rejects_secrets_and_long_text(monkeypatch):
+    from vococo.gateway import clarify
+
+    shown = []
+
+    class Adapter:
+        async def present_choice(self, chat_id, choice):
+            shown.append(choice)
+
+    class Ctx:
+        session_key = 'session:qa'
+        chat_id = 'conv1'
+        adapter = Adapter()
+
+    monkeypatch.setattr(clarify, 'current', lambda: Ctx())
+    decision, note = await agy_trial._approve_vococo_tool(
+        'vococo_create_task', {'rawInput': {'title': 'x', 'prompt': 'api_key=' + 'a' * 32}})
+    assert decision == 'deny' and '凭据' in note and not shown
+    decision, note = await agy_trial._approve_vococo_tool(
+        'vococo_create_task', {'rawInput': {'title': 'x', 'prompt': '长' * 4001}})
+    assert decision == 'deny' and '过长' in note and not shown
+
+
+@pytest.mark.anyio
+async def test_approval_present_failure_abandons_pending(monkeypatch):
+    from vococo.gateway import clarify
+
+    class Adapter:
+        async def present_choice(self, chat_id, choice):
+            raise RuntimeError('sse down')
+
+    class Ctx:
+        session_key = 'session:qa'
+        chat_id = 'conv1'
+        adapter = Adapter()
+
+    class Pending:
+        clarify_id = 'cid'
+
+    abandoned = []
+    monkeypatch.setattr(clarify, 'current', lambda: Ctx())
+    monkeypatch.setattr(clarify, 'register', lambda key, choices, notice=None: Pending())
+    monkeypatch.setattr(clarify, 'abandon', abandoned.append)
+    decision, note = await agy_trial._approve_vococo_tool(
+        'vococo_create_task', {'rawInput': {'title': 'x', 'prompt': '任务'}})
+    assert decision == 'deny' and '没有送达' in note
+    assert abandoned == ['cid']
+
+
+@pytest.mark.anyio
+async def test_denied_write_tool_without_model_text_returns_receipt_and_does_not_lock(isolated, monkeypatch):
+    workspace = isolated / "workspaces" / "agy-handoff" / "session-denied"
+    workspace.mkdir(parents=True)
+    key = "session:denied"
+    session_store.set_chosen_model(key, HIGH)
+
+    async def catalog():
+        return {HIGH: "Gemini 3.8 Flash (High)"}
+
+    def prepare(key, *, draft_owner=None):
+        return {"workspace": str(workspace), "agent_id": "general", "global_agent_id": "general"}
+
+    async def bundle():
+        return {"server": {"name": "vococo-local"}, "read": {},
+                "write": {"mcp_vococo-local_vococo_create_task": "vococo_create_task"}}
+
+    async def stream_turn(cwd, timeout, model, prompt, *, session_id=None, approve=None, **kwargs):
+        yield "session", NATIVE_ID
+        assert await approve("mcp_vococo-local_vococo_create_task", {"rawInput": {"title": "x"}}) == "deny"
+        yield "done", None
+
+    async def deny(tool, call):
+        return "deny", "已拒绝 Antigravity 的派发请求，本轮未执行。"
+
+    monkeypatch.setattr(agy_trial, "native_catalog", catalog)
+    monkeypatch.setattr(agy_trial, "_vococo_mcp_bundle", bundle)
+    monkeypatch.setattr(agy_trial, "_approve_vococo_tool", deny)
+    monkeypatch.setattr(agy_handoff, "prepare", prepare)
+    monkeypatch.setattr(agy_acp, "stream_turn", stream_turn)
+    events = [event async for event in agy_trial.stream_native(key, 1, HIGH, "派个任务")]
+    done = events[-1]
+    assert not done.reply.is_error
+    assert "已拒绝" in done.reply.text
+    assert session_store.agy_native_session(key) is None
 
 
 @pytest.mark.anyio
