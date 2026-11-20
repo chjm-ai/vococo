@@ -86,12 +86,11 @@ async def test_trial_requires_auth_opt_in_and_does_not_change_default(trial_web,
         assert (await client.post("/model", json={"model": MEDIUM})).status == 400
         assert (await client.post("/send", json={"text": "任务会话", "agy_trial_model": MEDIUM})).status == 400
         monkeypatch.setattr(agy_trial, "accepts_session", lambda key: True)
+        # 试用截止日已取消：旧环境变量不再影响可用性。
         monkeypatch.setenv("VOCOCO_AGY_TRIAL_UNTIL", "2020-01-01")
         data = await (await client.get("/models")).json()
         assert not any(group == "agy" for _, _, group in data["choices"])
-        assert (await client.post("/model", json={"model": MEDIUM})).status == 400
-        assert (await client.post("/send", json={"text": "到期了", "agy_trial_model": MEDIUM})).status == 400
-        monkeypatch.setenv("VOCOCO_AGY_TRIAL_UNTIL", "2099-01-01")
+        assert (await client.post("/model", json={"model": MEDIUM})).status == 200
         monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
         assert (await client.post("/model", json={"model": MEDIUM})).status == 400
 

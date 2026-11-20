@@ -1255,6 +1255,18 @@ def lock_agy_native_session(session_key: str, model: str, turn_id: int, native: 
     return cur.rowcount == 1
 
 
+def replace_agy_native_session(session_key: str, model: str, native: dict) -> bool:
+    """旧纯文本会话无法用 ACP 恢复时，换成同一个 Antigravity 模型的新会话 ID。"""
+    c = _conn()
+    cur = c.execute(
+        "UPDATE session_meta SET agy_native_session=? WHERE session_key=? AND chosen_model=? "
+        "AND agy_native_session IS NOT NULL",
+        (json.dumps(native), session_key, model),
+    )
+    c.commit()
+    return cur.rowcount == 1
+
+
 def set_chosen_model(session_key: str, model: str) -> None:
     """记住某会话用户选定的模型(下一轮要用哪个);/model 切换时写入,刷新/重启都不丢。
 
