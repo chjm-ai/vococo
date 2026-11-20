@@ -109,6 +109,30 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_antigravity_models_available_in_draft_but_not_main(isolated, monkeypatch):
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "test-web")
+    monkeypatch.setattr(agy_trial, "cli_binary", lambda: Path("/bin/sh"))
+    monkeypatch.setattr(agy_trial, "enabled", lambda: True)
+
+    async def catalog():
+        return {HIGH: "Gemini 3.8 Flash (High)"}
+
+    monkeypatch.setattr(agy_trial, "native_catalog", catalog)
+    adapter = WebAdapter()
+    app = web.Application()
+    app.add_routes([web.get("/models", adapter._handle_models), web.post("/model", adapter._handle_model_switch)])
+
+    async with TestClient(TestServer(app), headers={"X-Auth-Token": "test-web"}) as client:
+        draft = "local-" + uuid.uuid4().hex
+        data = await (await client.get("/models", params={"conv": draft})).json()
+        assert any(item[2] == "agy-native" for item in data["choices"])
+        assert (await client.post("/model", json={"conv": draft, "model": HIGH})).status == 200
+        main = await (await client.get("/models", params={"conv": "main"})).json()
+        assert not any(item[2] == "agy-native" for item in main["choices"])
+        assert (await client.post("/model", json={"conv": "main", "model": HIGH})).status == 400
+
+
+@pytest.mark.anyio
 async def test_legacy_session_falls_back_to_new_acp_session(isolated, monkeypatch):
     workspace = isolated / "workspaces" / "agy-handoff" / "session-legacy"
     workspace.mkdir(parents=True)
