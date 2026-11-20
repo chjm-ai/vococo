@@ -80,6 +80,7 @@ function waitForSendAck(clientRequestId, timeout=4000){
 async function send(text, display, opts){
   opts=opts||{};
   closeCmdMenu();
+  if(opts.manualText && agyCopyActive()) return;
   if(!$("#callView").hidden && !opts.forceMain) return window.sendCallText(text);
   text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length && !S.files.length && !S.libraryRefs.length) return;
   // 发送目标钉死在发起时的会话/附件快照:下面等上传的 await 期间用户可能已经切走,
@@ -297,10 +298,42 @@ async function sendCmd(cmd, conv){
     if(wasLocal) setTimeout(loadConvs, 400);
   }catch(err){ addBubble("ai","⚠️ 发送失败:"+err.message); }
 }
-// 输入框按钮恒为「发送」;停止改由"工作中"状态行右侧的按钮承担
+// CLI 交接只走剪贴板；不创建聊天轮次，也不清空草稿。
+function agyCopyActive(){ return !!S.agyHandoff && S.agyHandoff.conv===S.conv; }
+function quoteAgyArg(value){
+  if(value.includes("\0")) throw new Error("指令不支持空字符");
+  return "$'"+value.replace(/[\\'\u0001-\u001f\u007f-\u009f\u2028\u2029]/g, ch=>
+    ch==="\\" || ch==="'" ? "\\"+ch : Array.from(new TextEncoder().encode(ch),
+      byte=>"\\x"+byte.toString(16).padStart(2,"0")).join(""))+"'";
+}
+function agyShellCommand(workspace, text){
+  if(new TextEncoder().encode(text).length>16000) throw new Error("文字太长，请缩短后再复制");
+  return "cd -- "+quoteAgyArg(workspace)+' && PATH="$HOME/.local/bin:$PATH" agy --mode plan --sandbox --settings \''+
+    '{"allowNonWorkspaceAccess":false}'+"'"+(text.trim() ? " --prompt-interactive="+quoteAgyArg(text) : "");
+}
+async function copyAgyCommand(){
+  const state=S.agyHandoff, btn=$("#sendBtn");
+  if(!agyCopyActive() || !state.workspace) return;
+  try{
+    if(S.images.length || S.audios.length || S.files.length || S.libraryRefs.length){
+      throw new Error("CLI 指令只包含文字，请先移除附件");
+    }
+    await navigator.clipboard.writeText(agyShellCommand(state.workspace,$("#ta").value));
+    if(S.agyHandoff!==state) return;
+    btn.textContent="已复制";
+    setTimeout(()=>{ if(S.agyHandoff===state) updateSendBtn(); },1200);
+  }catch(error){
+    if(S.agyHandoff===state) window.alert(error.message || "无法访问剪贴板");
+  }
+}
 function updateSendBtn(){
   const btn=$("#sendBtn"); if(!btn) return;
-  btn.textContent="↑"; btn.classList.remove("stop-mode");
+  const copy=agyCopyActive();
+  btn.textContent=copy ? (S.agyHandoff.workspace ? "复制指令" : "准备中…") : "↑";
+  btn.setAttribute("aria-label",copy ? "复制 Antigravity 指令" : "发送");
+  btn.title=copy ? "复制后在 Mac mini 的 SSH 终端粘贴运行，命令可能留在终端历史" : "发送";
+  btn.classList.toggle("copy-mode",copy);
+  btn.classList.remove("stop-mode");
 }
 async function stopReply(){
   if(!S.stream && !S.live[S.conv]) return;
@@ -473,10 +506,14 @@ async function sendPendingSnapshot(conv,item){
     }
   }finally{ delete S.sendAcks[requestId]; }
 }
-$("#composer").onsubmit = e=>{ e.preventDefault(); send($("#ta").value, null, {manualText:true}); };
+$("#composer").onsubmit = e=>{
+  e.preventDefault();
+  if(agyCopyActive()){ copyAgyCommand(); return; }
+  send($("#ta").value, null, {manualText:true});
+};
 $("#ta").addEventListener("keydown", e=>{
   // 输入法组合中(中文/日文等候选未上屏)的回车只上屏,不发送
-  if(e.isComposing || e.keyCode===229) return;
+  if(e.isComposing || e.keyCode===229 || agyCopyActive()) return;
   if(S.cmd.open){
     if(e.key==="ArrowDown"){ e.preventDefault(); if(S.cmd.items.length){ S.cmd.active=(S.cmd.active+1)%S.cmd.items.length; renderCmdPop(); } return; }
     if(e.key==="ArrowUp"){ e.preventDefault(); if(S.cmd.items.length){ S.cmd.active=(S.cmd.active-1+S.cmd.items.length)%S.cmd.items.length; renderCmdPop(); } return; }
@@ -490,7 +527,7 @@ document.addEventListener("click", e=>{ if(e.target.closest(".statusstop")){ e.p
 document.addEventListener("click", e=>{ if(S.cmd.open && !e.target.closest("#cmdPop") && e.target!==$("#ta")) closeCmdMenu(); });
 function autoGrow(){ const t=$("#ta"); t.style.height="auto"; t.style.height=Math.min(t.scrollHeight,160)+"px"; }
 $("#ta").addEventListener("input", autoGrow);
-$("#ta").addEventListener("input", checkCmdMenu);
+$("#ta").addEventListener("input", ()=>{ if(!agyCopyActive()) checkCmdMenu(); });
 // ── 会话级输入草稿(纯本地缓存,按会话 id 分 key)────────────────────────
 // 每个会话的输入框内容独立存 localStorage;切会话时恢复目标会话的草稿,
 // 发送/清空时删除,避免 A 会话打的字串到 B 会话。local- 前缀的未转正新会话

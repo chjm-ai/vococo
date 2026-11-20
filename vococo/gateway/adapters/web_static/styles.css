@@ -1472,6 +1472,7 @@
     transition:transform var(--t-fast),opacity var(--t-base),box-shadow var(--t-base);box-shadow:0 2px 10px var(--glow2)}
   #sendBtn:hover,#recRow #recSend:hover{box-shadow:0 4px 16px var(--glow1)}
   #sendBtn:active,#recRow #recSend:active{transform:scale(.9)}
+  #sendBtn.copy-mode{width:auto;padding-inline:var(--sp-4);border-radius:var(--r-pill);font-size:var(--fs-md);white-space:nowrap}
   /* 语音占位气泡:转写中 spinner / 没听清可重录 */
   .bubble .vwait{display:inline-flex;align-items:center;gap:8px}
   .bubble .vwait .sp{width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,.42);border-top-color:var(--on-accent);animation:spin .7s linear infinite;flex-shrink:0}
