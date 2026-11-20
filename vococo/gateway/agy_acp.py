@@ -1,8 +1,8 @@
 """通过官方 ACP 协议驱动 Antigravity 会话（仅网页手动文字轮次使用）。
 
 这里只负责协议：启动 `agy acp --stdio`、建立/恢复会话、流式收正文、
-按白名单放行只读 MCP。文件访问、命令和联网在会话设置里直接拒绝，
-模型发起的其他工具审批一律拒绝。
+按白名单放行只读 MCP。文件、命令和联网权限由 SETTINGS_ACP 决定；
+默认完全放开，vococo 写任务仍由上层回调转成网页确认。
 """
 
 import asyncio
@@ -80,7 +80,7 @@ class _Client:
             outcome = {'outcome': 'selected', 'optionId': option}
         await self._send({'jsonrpc': '2.0', 'id': message['id'], 'result': {'outcome': outcome}})
         if decision == 'abort':
-            # 网页模式只允许只读上下文工具；其他工具尝试一旦出现就中止本轮，
+            # 调用方明确要求中止（例如没有可用的网页确认入口）；
             # 不把「已拒绝」当成正常完成，避免用户误以为任务跑完了。
             raise AcpError('agy_unexpected_tool')
 
@@ -212,7 +212,7 @@ async def stream_turn(workspace, timeout, model, prompt, *, effort=None, session
     try:
         async with asyncio.timeout(timeout):
             proc = await agy_trial.spawn_cli(
-                (str(agy_trial.cli_binary()), '--sandbox', '--mode', 'plan',
+                (str(agy_trial.cli_binary()), '--mode', 'accept-edits',
                  '--settings', agy_trial.SETTINGS_ACP, 'acp', '--stdio'),
                 workspace, asyncio.subprocess.PIPE)
             client = _Client(proc, allowed, approve=approve)

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from vococo.gateway import agy_acp
+from vococo.gateway import agy_acp, agy_trial
 
 
 class Writer:
@@ -62,6 +62,17 @@ async def test_permission_allows_only_exact_context_tools():
     outcomes = [reply['result']['outcome'] for reply in replies if 'result' in reply and 'id' in reply
                 and reply['id'] == 0]
     assert outcomes == [{'outcome': 'selected', 'optionId': 'a'}]
+
+
+def test_settings_open_native_tools_but_keep_task_approval():
+    data = json.loads(agy_trial.SETTINGS_ACP)
+    assert data['allowNonWorkspaceAccess'] is True
+    assert data['toolPermission'] == 'always-proceed'
+    assert sorted(data['permissions']['ask']) == [
+        'mcp(vococo-local/vococo_cancel_task)',
+        'mcp(vococo-local/vococo_continue_task)',
+        'mcp(vococo-local/vococo_create_task)',
+    ]
 
 
 @pytest.mark.anyio
@@ -122,7 +133,10 @@ async def test_stream_turn_creates_session_and_streams_reply(tmp_path, monkeypat
         {'jsonrpc': '2.0', 'id': 4, 'result': {'stopReason': 'end_turn'}},
     ])
 
+    calls = []
+
     async def spawn(*args, **kwargs):
+        calls.append(args)
         return proc
 
     async def terminate(_proc):
@@ -133,6 +147,9 @@ async def test_stream_turn_creates_session_and_streams_reply(tmp_path, monkeypat
     monkeypatch.setattr(agy_acp.agy_trial, 'cli_binary', lambda: Path('/bin/true'))
     events = await collect(agy_acp.stream_turn(workspace, 10, 'gemini-x', '你好'))
     assert ('session', sid) in events and ('delta', '新回复') in events and ('done', None) in events
+    argv = calls[0][0]
+    assert '--sandbox' not in argv
+    assert argv[argv.index('--mode') + 1] == 'accept-edits'
     sent = requests(proc)
     by_method = {item['method']: item['params'] for item in sent if 'method' in item}
     assert by_method['session/new']['cwd'] == str(workspace)
