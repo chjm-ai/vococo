@@ -1469,7 +1469,7 @@ class WebAdapter:
         trial = agy_trial.is_trial_model(model)
         native = agy_trial.is_native_model(model)
         if native:
-            if not (session_key.startswith("session:") and self._agy_handoff_available(session_key)
+            if not (self._agy_native_available(session_key)
                     and model in await agy_trial.native_catalog()):
                 return web.json_response({"error": "该 Antigravity 模型或会话不可用"}, status=400)
             if self.session_closing(session_key):
@@ -2284,7 +2284,7 @@ class WebAdapter:
         conv = request.query.get("conv", "")
         key = config.resolve_session_key("web", conv) if conv else ""
         handoff = self._agy_handoff_available(key)
-        native_choices = await agy_trial.native_catalog() if handoff and key.startswith("session:") else {}
+        native_choices = await agy_trial.native_catalog() if self._agy_native_available(key) else {}
         native_locked = bool(key and session_store.agy_native_session(key))
         if native_locked:
             choices = []
@@ -2426,6 +2426,14 @@ class WebAdapter:
             except ValueError:
                 return False
         return agy_trial.accepts_session(key)
+
+    @classmethod
+    def _agy_native_available(cls, key: str) -> bool:
+        """网页 Antigravity 会话的可用范围：普通 Web 会话和已归属 Agent 的会话，
+        排除统一主会话(main)与后台任务；新任务草稿也可直接选择。"""
+        if not key or key == config.SESSION_KEY:
+            return False
+        return cls._agy_handoff_available(key)
 
     @_authed
     @_json_body

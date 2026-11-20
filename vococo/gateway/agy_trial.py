@@ -347,6 +347,7 @@ async def native_catalog() -> dict[str, str]:
         if _catalog[0] > monotonic():
             return _catalog[1]
         proc = None
+        previous = _catalog[1]
         try:
             async with asyncio.timeout(9):
                 with TemporaryDirectory(prefix="vococo-agy-catalog-") as cwd:
@@ -365,7 +366,8 @@ async def native_catalog() -> dict[str, str]:
                 if sep and re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,79}", model) and label.strip():
                     choices[NATIVE_PREFIX + model] = label.strip()[:100]
         except (OSError, TimeoutError, ValueError):
-            choices = {}
+            # 代理/网络抖动时保留上一次成功清单，避免已锁定的会话模型组整块消失。
+            choices = previous
         finally:
             if proc is not None and proc.returncode is None:
                 with anyio.CancelScope(shield=True):
