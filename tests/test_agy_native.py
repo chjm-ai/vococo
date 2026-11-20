@@ -31,8 +31,11 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
 
     async def generate(command, cwd, timeout, model, prompt, *, resume=None, native=False):
         called.append((cwd, model, resume, native))
-        if prompt == "first failure":
+        assert prompt.startswith("本会话为纯文本模式，不得调用搜索或任何工具")
+        if prompt.endswith("first failure"):
             raise agy_trial.UpstreamError("agy_request_failed")
+        if prompt.endswith("test search"):
+            raise agy_trial.UpstreamError("agy_unexpected_tool")
         yield "delta", {"text": "测试通过"}
         yield "done", {"session_id": NATIVE_ID}
 
@@ -67,6 +70,10 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
         assert (await client.post('/send', json={**body, 'text': '/help', 'library_refs': ['test']})).status == 400
         await send("first failure", HIGH)
         assert session_store.agy_native_session(conv) is None
+        await send("test search", HIGH)
+        assert session_store.agy_native_session(conv) is None
+        assert "Antigravity 网页只支持纯文本" in str(session_store.load_recent(conv))
+        assert "用户消息：" not in str(session_store.load_recent(conv))
         assert (await choose("deepseek-flash")).status == 200
         assert (await choose(HIGH)).status == 200
         await send("first success", HIGH)
@@ -110,4 +117,8 @@ async def test_native_parser_rejects_session_mismatch_and_unexpected_tools(tmp_p
     tool = {"event": "step_update", "step_update": {"step_type": "tool"}}
     with pytest.raises(agy_trial.UpstreamError, match="agy_unexpected_tool"):
         async for _ in agy_trial.read_answer(proc_for([init, tool, result]), model, tmp_path, native=True):
+            pass
+    denied = {"event": "result", "result": {"status": "ERROR", "denied_actions": ["search_web"]}}
+    with pytest.raises(agy_trial.UpstreamError, match="agy_unexpected_tool"):
+        async for _ in agy_trial.read_answer(proc_for([init, denied]), model, tmp_path, native=True):
             pass
